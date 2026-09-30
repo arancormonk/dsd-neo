@@ -655,6 +655,9 @@ struct RtlSdrInternals {
     std::atomic<uint64_t> replay_last_submit_gen{0U};
     std::atomic<uint64_t> replay_last_submit_gen_at_eof{0U};
     std::atomic<uint64_t> replay_last_consume_gen{0U};
+    /* The capture chunk in the input ring: the replay reader writes it before the commit, the demod copies it at reserve
+       (struct rtl_replay_chunk_meta). */
+    struct rtl_replay_chunk_meta replay_chunk{};
     /* The EOF drain decision (input drained, demod drained) is made under replay_eof_m by the demod and the replay
        reader alike. Lock order: replay_eof_m, then output.ready_m. */
     dsd_mutex_t replay_eof_m{};
@@ -684,6 +687,16 @@ rtl_stream_test_replay_stage(int stage, size_t count) {
     if (g_test_replay_stage_hook) {
         g_test_replay_stage_hook(stage, count, g_test_replay_stage_ctx);
     }
+}
+
+/* Installed while the stream is stopped (rtl_stream_test_set_replay_block_hook()), called by the demod thread. */
+static rtl_stream_test_replay_block_fn g_test_replay_block_hook = NULL;
+static void* g_test_replay_block_ctx = NULL;
+
+extern "C" void
+rtl_stream_test_set_replay_block_hook(rtl_stream_test_replay_block_fn hook, void* ctx) {
+    g_test_replay_block_hook = hook;
+    g_test_replay_block_ctx = ctx;
 }
 #endif
 
@@ -772,6 +785,7 @@ stream_reset_replay_eof_state(struct RtlSdrInternals* s) {
     s->replay_last_submit_gen.store(0, std::memory_order_release);
     s->replay_last_submit_gen_at_eof.store(0, std::memory_order_release);
     s->replay_last_consume_gen.store(0, std::memory_order_release);
+    s->replay_chunk = rtl_replay_chunk_meta{};
     g_replay_event_retune_count.store(0, std::memory_order_release);
     g_replay_event_mute_count.store(0, std::memory_order_release);
     g_replay_event_reset_count.store(0, std::memory_order_release);
@@ -849,8 +863,11 @@ rtl_stream_test_replay_acknowledge_discarded_span(uint64_t submitted_gen, uint64
  * the consumption, mark the input drained once EOF was marked and the input ring is empty, and mark the demod drained
  * once the input is drained and every generation submitted before EOF is acknowledged. The replay reader decides the
  * same under the same lock (replay_mark_input_drained(), rtl_device.cpp), so neither side can miss what the other
- * stored last. The demod publishes a block's output before it gets here, so a decoder that reads "drained" finds that
- * output already in the ring. */
+ * stored last. After a block, @p consumed_gen is the generation of the one chunk the block took, and the demod gets here
+ * only once the block's output is in the ring. A purge acknowledges everything submitted, but a replay purges only at a
+ * RESET or loop boundary, where the reader waits with every chunk already acknowledged. So the demod is reported
+ * drained only once the output of every chunk submitted before EOF is published, and a decoder that reads "drained"
+ * finds all of it already in the ring. */
 static void
 replay_demod_drain_decide(uint64_t consumed_gen) {
     struct RtlSdrInternals* s = g_stream;
@@ -2346,6 +2363,8 @@ struct DemodInputSpan {
     int got;
     int direct_input_span;
     float* input_block;
+    int replay; /* an I/Q replay block: chunk holds the capture chunk's metadata */
+    struct rtl_replay_chunk_meta chunk;
 };
 
 struct DemodRetuneDiagBlock {
@@ -2477,6 +2496,8 @@ demod_input_span_init(DemodInputSpan* span) {
     span->got = 0;
     span->direct_input_span = 0;
     span->input_block = NULL;
+    span->replay = 0;
+    span->chunk = rtl_replay_chunk_meta{};
 }
 
 static void
@@ -2561,7 +2582,30 @@ demod_read_input_block(const struct demod_state* d, DemodInputSpan* span) {
     span->direct_input_span =
         (span->ring_p1 && span->ring_n1 == (size_t)span->got && (!span->ring_p2 || span->ring_n2 == 0)) ? 1 : 0;
     span->reserved_count = (size_t)span->got;
+    span->replay = stream_is_replay_active();
+    if (span->replay && g_stream) {
+        /* In replay the ring holds exactly one capture chunk (the reader commits a chunk only into an empty ring), and
+           this block takes all of it. Its metadata is copied now, before any of it is released: once the ring is
+           empty the reader writes the next chunk's. */
+        span->chunk = g_stream->replay_chunk;
+    }
     RTL_REPLAY_TEST_STAGE(RTL_STREAM_TEST_REPLAY_DEMOD_AFTER_RESERVE, span->reserved_count);
+#if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
+    if (g_test_replay_block_hook && span->replay) {
+        rtl_stream_test_replay_block block = {};
+        block.sequence = span->chunk.sequence;
+        block.submit_gen = span->chunk.submit_gen;
+        block.media_start_ns = span->chunk.media_start_ns;
+        block.media_end_ns = span->chunk.media_end_ns;
+        block.have_input_level = span->chunk.have_input_level;
+        block.float_count = span->reserved_count;
+        block.p1 = span->ring_p1;
+        block.n1 = span->ring_n1;
+        block.p2 = span->ring_p2;
+        block.n2 = span->ring_n2;
+        g_test_replay_block_hook(&block, g_test_replay_block_ctx);
+    }
+#endif
     return 1;
 }
 
@@ -3452,16 +3496,16 @@ demod_mark_replay_drained_on_exit(void) {
 static void
 demod_discard_iteration_input(DemodInputSpan* span) {
     demod_input_span_commit_reserved(span);
-    if (!stream_is_replay_active() || !g_stream) {
+    if (!span || !span->replay || !g_stream) {
         return;
     }
 
     /* Rewind/RESET boundaries wait for both an empty ring and the submitted
      * generation to be acknowledged. A controller gate can discard the final
      * reserved span, so publish that consumption even though it produced no
-     * demodulated output. */
-    uint64_t submitted_gen = g_stream->replay_last_submit_gen.load(std::memory_order_acquire);
-    demod_update_replay_drain_state(1, submitted_gen);
+     * demodulated output: the generation of the chunk this span holds, never
+     * one the reader numbered after it. */
+    demod_update_replay_drain_state(1, span->chunk.submit_gen);
 }
 
 static void
@@ -3684,9 +3728,15 @@ demod_prepare_iteration_processing(const struct demod_state* d, const DemodInput
         return 0;
     }
     *consumed_gen = 0ULL;
-    *replay_active = stream_is_replay_active();
-    if (*replay_active && g_stream) {
-        *consumed_gen = g_stream->replay_last_submit_gen.load(std::memory_order_acquire);
+    *replay_active = span->replay;
+    if (*replay_active) {
+        /* The block starts: it acknowledges its own chunk's generation once its output is written (never one the
+           reader numbered since, which could still be outside the ring), and the chunk's input level is the one the
+           stream reports from now. */
+        *consumed_gen = span->chunk.submit_gen;
+        if (span->chunk.have_input_level) {
+            rtl_stream_input_level_publish(&span->chunk.input_level);
+        }
     }
     return 1;
 }
@@ -3762,10 +3812,12 @@ static DSD_THREAD_RETURN_TYPE
             perf_output_samples = demod_write_output_block(d, o);
             RTL_REPLAY_TEST_STAGE(RTL_STREAM_TEST_REPLAY_DEMOD_AFTER_OUTPUT_WRITE, perf_output_samples);
         }
-        /* A replay generation is consumed only after its demodulated output is
-         * committed. RESET/rewind boundaries use this generation to avoid
-         * entering the reconfigure gate between DSP processing and the output
-         * write, which would silently discard every pass of a short loop. */
+        /* A replay chunk's generation is consumed only after its demodulated
+         * output is committed. RESET/rewind boundaries use this generation to
+         * avoid entering the reconfigure gate between DSP processing and the
+         * output write, which would silently discard every pass of a short
+         * loop, and the EOF drain decision uses it so the decoder never takes
+         * the replay for ended while the final block's output is unwritten. */
         demod_update_replay_drain_state(replay_active, consumed_gen);
         demod_perf_log_block(perf_on, perf_output_start_ns, perf_full_demod_ns, perf_metrics_ns, span.got,
                              perf_output_samples, d);
@@ -6589,6 +6641,7 @@ stream_open_fill_replay_eof_state(struct rtl_replay_eof_state* eof_state) {
     eof_state->replay_last_submit_gen = &g_stream->replay_last_submit_gen;
     eof_state->replay_last_submit_gen_at_eof = &g_stream->replay_last_submit_gen_at_eof;
     eof_state->replay_last_consume_gen = &g_stream->replay_last_consume_gen;
+    eof_state->chunk = &g_stream->replay_chunk;
     eof_state->eof_m = &g_stream->replay_eof_m;
     eof_state->eof_cond = &g_stream->replay_eof_cond;
     eof_state->on_input_drained = rtl_replay_on_input_drained;
@@ -7837,8 +7890,9 @@ rtl_stream_replay_wait_for_output(void) {
 }
 
 /* The decoder's replay read. It never blocks inside a ring read, whose waits know nothing of a replay's end. It reads
- * the end-of-stream facts before it looks at the ring: the demod publishes its last output before it is reported
- * drained, so a drained demod seen first means the ring already holds all of it, and an empty ring then is the end. */
+ * the end-of-stream facts before it looks at the ring: the demod is reported drained only once it has acknowledged the
+ * last chunk, which it does after that chunk's output is in the ring (replay_demod_drain_decide()), so a drained demod
+ * seen first means the ring already holds all of it, and an empty ring then is the end. */
 static int
 rtl_stream_read_replay(float* out, size_t count) {
     for (;;) {

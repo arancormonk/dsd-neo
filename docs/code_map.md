@@ -2073,6 +2073,26 @@ Notes:
     read that loaded the first bump can still reach the ring before the clear and take samples the clear drops, and
     the second bump keeps the stream from running on the generation that read carried them under.
     Tests: `RUNTIME_RINGS`, `IO_RTL_ANALOG_FAMILY_SWITCH`.
+  - I/Q replay framing (issue #572; `replay_thread_process_block()` in `rtl_device.cpp`, `demod_read_input_block()`
+    in `rtl_sdr_fm.cpp`). Each demod block is exactly one capture chunk:
+    - The reader reads a chunk whole with `replay_read_exact()`: 64 KiB, or up to the next event or the end, looping
+      over short reads. A cf32 read that stopped inside a complex sample would otherwise be skipped, and every read
+      after it would stay off the sample grid. A read that fails after part of a chunk hands over that part first.
+    - `replay_submit_whole_chunk()` waits for the chunk's realtime deadline, then (with no deadline) for an empty input
+      ring, and commits the whole chunk at once. The reader reads and converts the next chunk while the demod works on
+      this one.
+    - The chunk's metadata (`struct rtl_replay_chunk_meta` in `rtl_replay_device.h`) travels with it: sequence, submit
+      generation, raw input level, and media start and end in ns. Media time counts every capture sample handed over
+      or omitted by a MUTE, and a loop does not restart it. The reader writes it into the stream's one chunk slot before
+      the commit, and the demod copies it into its `DemodInputSpan` at reserve, before any of the chunk is released
+      (the wrapped path releases early).
+    - The demod acknowledges its span's own generation, after the block's output is written or when it discards the
+      block, never the newest the reader bumped, which can belong to a chunk still outside the ring. It publishes the
+      chunk's input level when it starts the block.
+
+    Tests: `IO_RTL_REPLAY_EOF_AND_CF32` (block log per chunk in fast and realtime replay, media time across a loop, a
+    chunk held numbered but uncommitted, a multi-chunk EOF, cf32 short reads, a read failure mid-chunk, the input
+    level at the first block).
   - I/Q replay end of stream (issue #572; `replay_thread_fn()` in `rtl_device.cpp`, `rtl_stream_read_replay()` in
     `rtl_sdr_fm.cpp`). The capture's end and a read the capture source refuses end a replay the same way:
     - The reader marks input EOF, waits on the input ring's `space` (50 ms at a time) for the demod to take the rest,
@@ -2082,10 +2102,13 @@ Notes:
     - The drain decision (input drained, demod drained) is made under `replay_eof_m` by the reader and the demod
       alike, so whichever decides second sees the other's store. The demod thread marks itself drained when it
       leaves.
-    - The decoder's read never blocks inside a ring read. It loads "drained" before it looks at the ring: the demod
-      publishes its last output before it is reported drained. It copies with the non-blocking
-      `ring_read_available_copy()`, which a clear can leave empty-handed, and otherwise waits 10 ms at a time on
-      `output.ready`. A reader that left without marking EOF counts as EOF.
+    - The decoder's read never blocks inside a ring read. It loads "drained" before it looks at the ring, copies with
+      the non-blocking `ring_read_available_copy()`, which a clear can leave empty-handed, and otherwise waits 10 ms
+      at a time on `output.ready`. A reader that left without marking EOF counts as EOF.
+    - A drained demod seen first means the ring already holds all of its output. The demod is reported drained only
+      once it has acknowledged the last chunk submitted before EOF, and it acknowledges a chunk only after that
+      chunk's output is in the ring. A replay purges its input only at a RESET or loop boundary, with every chunk
+      already acknowledged.
     - `replay_wake_all()` wakes every replay wait (both rings' `ready` and `space`, and the EOF condition). It runs at
       EOF, on a failure, on a stop and when a start unwinds.
 

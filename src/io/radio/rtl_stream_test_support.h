@@ -1124,6 +1124,13 @@ enum {
     RTL_STREAM_TEST_REPLAY_READER_DRAIN_DECISION = 5,     /* replay reader: input ring empty at EOF, about to decide */
     RTL_STREAM_TEST_REPLAY_DECODER_OUTPUT_FOUND = 6,      /* decoder: saw output queued, before it copies any */
     RTL_STREAM_TEST_REPLAY_DECODER_OUTPUT_EMPTY = 7,      /* decoder: found nothing to copy, before its end check */
+    /* replay reader: read the next chunk, about to wait for the demod to take the one before it (count: the next
+       chunk's sequence) */
+    RTL_STREAM_TEST_REPLAY_READER_WAIT_FOR_EMPTY_INPUT = 8,
+    /* replay reader: bumped the submit generation for a chunk it has not committed yet (count: that generation) */
+    RTL_STREAM_TEST_REPLAY_READER_BEFORE_COMMIT = 9,
+    /* replay reader: made its drain decision (count: 1 if it reported the demod drained) */
+    RTL_STREAM_TEST_REPLAY_READER_DRAIN_DECIDED = 10,
 };
 
 typedef void (*rtl_stream_test_replay_stage_fn)(int stage, size_t count, void* ctx);
@@ -1133,9 +1140,32 @@ void rtl_stream_test_set_replay_stage_hook(rtl_stream_test_replay_stage_fn hook,
 /* Report @p stage to the installed hook. The replay reader in rtl_device.cpp reports its stage through this too. */
 void rtl_stream_test_replay_stage(int stage, size_t count);
 
+/* One block the demod took from an I/Q replay's input ring (issue #572), reported on the demod thread as it takes it.
+ * The chunk fields are what the replay reader attached to the capture chunk the block holds. */
+typedef struct rtl_stream_test_replay_block {
+    uint64_t sequence;       /* the chunk's place in the replay, from 1 */
+    uint64_t submit_gen;     /* the submit generation the chunk was committed under */
+    uint64_t media_start_ns; /* capture time of the chunk's first sample, time a MUTE omitted included */
+    uint64_t media_end_ns;   /* capture time just past its last sample */
+    int have_input_level;    /* the chunk carries an input-level snapshot */
+    size_t float_count;      /* interleaved I/Q floats in the block */
+    const float* p1;         /* the block's floats, in one or two ring segments, valid during the call */
+    size_t n1;
+    const float* p2;
+    size_t n2;
+} rtl_stream_test_replay_block;
+
+typedef void (*rtl_stream_test_replay_block_fn)(const rtl_stream_test_replay_block* block, void* ctx);
+
+/* Install only while the stream is stopped. NULL removes the hook. */
+void rtl_stream_test_set_replay_block_hook(rtl_stream_test_replay_block_fn hook, void* ctx);
+
 /* The next I/Q replay reader fails the read that follows @p after_chunks reads that returned data, with @p code (a
  * DSD_IQ_ERR_* value) as dsd_iq_replay_read() would. One failure per arming; a negative @p after_chunks disarms it. */
 void rtl_device_test_replay_inject_read_error(int after_chunks, int code);
+/* Each capture read the next I/Q replay reader makes returns at most @p max_bytes, as a source that returns short reads
+ * would; 0 lifts the limit. Set while no replay runs. */
+void rtl_device_test_replay_limit_read(size_t max_bytes);
 /* Nonzero: rtl_device_start_async() refuses to start an I/Q replay reader, as a failed thread create would. */
 void rtl_device_test_replay_fail_start(int fail);
 /* How many times the last replay reader's EOF sequence looked at the input ring while it waited for the ring to

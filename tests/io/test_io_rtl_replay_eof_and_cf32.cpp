@@ -694,6 +694,59 @@ drain_stream_to_eof(RtlSdrContext* ctx, uint64_t timeout_ms, uint64_t* out_total
     }
 }
 
+namespace {
+/* The input level as the demod found it when it took its first block (level_before_first_block_stage()). */
+struct FirstBlockLevel {
+    std::atomic<int> checked{0};
+    std::atomic<int> published{0};
+};
+} // namespace
+
+static void
+level_before_first_block_stage(int stage, size_t count, void* ctx) {
+    (void)count;
+    FirstBlockLevel* first = static_cast<FirstBlockLevel*>(ctx);
+    if (stage != RTL_STREAM_TEST_REPLAY_DEMOD_AFTER_RESERVE || first->checked.exchange(1, std::memory_order_acq_rel)) {
+        return;
+    }
+    dsd_input_level_snapshot level;
+    DSD_MEMSET(&level, 0, sizeof(level));
+    if (rtl_stream_get_input_level(&level) == 0 && level.sample_count > 0U) {
+        first->published.store(1, std::memory_order_release);
+    }
+}
+
+/* Start a looping replay for an input-level test. The demod publishes a chunk's input level when it starts the chunk's
+ * block, so none is published before it takes its first block: the hook looks then. */
+static int
+start_level_replay(const char* metadata_path, FirstBlockLevel* first, std::unique_ptr<dsd_opts>* out_opts,
+                   RtlSdrContext** out_ctx) {
+    dsd_input_level_snapshot stale;
+    (void)rtl_stream_get_input_level(&stale); /* with no stream running, this drops a level an earlier replay left */
+    rtl_stream_test_set_replay_stage_hook(level_before_first_block_stage, first);
+    if (start_replay_stream_with_loop(metadata_path, 1, out_opts, out_ctx) != 0) {
+        rtl_stream_test_set_replay_stage_hook(NULL, NULL);
+        return 1;
+    }
+    return 0;
+}
+
+/* Stop a replay start_level_replay() started, and check the demod found no level published before its first block. */
+static int
+finish_level_replay(const char* label, RtlSdrContext* ctx, const FirstBlockLevel* first) {
+    stop_and_destroy_stream(ctx);
+    rtl_stream_test_set_replay_stage_hook(NULL, NULL);
+    int rc = 0;
+    if (!first->checked.load(std::memory_order_acquire)) {
+        DSD_FPRINTF(stderr, "FAIL: %s: the demod took no block\n", label);
+        rc = 1;
+    } else if (first->published.load(std::memory_order_acquire)) {
+        DSD_FPRINTF(stderr, "FAIL: %s: an input level was published before the demod took its first block\n", label);
+        rc = 1;
+    }
+    return rc;
+}
+
 static int
 test_cu8_replay_publishes_raw_input_level(void) {
     int rc = 0;
@@ -706,7 +759,8 @@ test_cu8_replay_publishes_raw_input_level(void) {
 
     std::unique_ptr<dsd_opts> opts;
     RtlSdrContext* ctx = NULL;
-    rc |= start_replay_stream_with_loop(metadata_path, 1, &opts, &ctx);
+    FirstBlockLevel first;
+    rc |= start_level_replay(metadata_path, &first, &opts, &ctx);
     if (rc != 0) {
         stop_and_destroy_stream(ctx);
         return 1;
@@ -735,7 +789,7 @@ test_cu8_replay_publishes_raw_input_level(void) {
         rc |= expect_true("cu8 replay input level is unclipped", level.clip_pct == 0.0);
     }
 
-    stop_and_destroy_stream(ctx);
+    rc |= finish_level_replay("cu8 replay input level", ctx, &first);
     return rc;
 }
 
@@ -751,7 +805,8 @@ test_cu8_replay_legacy_fs4_level_uses_raw_block(void) {
 
     std::unique_ptr<dsd_opts> opts;
     RtlSdrContext* ctx = NULL;
-    rc |= start_replay_stream_with_loop(metadata_path, 1, &opts, &ctx);
+    FirstBlockLevel first;
+    rc |= start_level_replay(metadata_path, &first, &opts, &ctx);
     if (rc != 0) {
         stop_and_destroy_stream(ctx);
         return 1;
@@ -778,7 +833,7 @@ test_cu8_replay_legacy_fs4_level_uses_raw_block(void) {
         rc |= expect_true("legacy CU8 replay raw DC level remains near zero RMS", level.rms_dbfs < -100.0);
     }
 
-    stop_and_destroy_stream(ctx);
+    rc |= finish_level_replay("legacy CU8 replay input level", ctx, &first);
     return rc;
 }
 
@@ -794,7 +849,8 @@ test_cf32_replay_fs4_level_uses_raw_block(void) {
 
     std::unique_ptr<dsd_opts> opts;
     RtlSdrContext* ctx = NULL;
-    rc |= start_replay_stream_with_loop(metadata_path, 1, &opts, &ctx);
+    FirstBlockLevel first;
+    rc |= start_level_replay(metadata_path, &first, &opts, &ctx);
     if (rc != 0) {
         stop_and_destroy_stream(ctx);
         return 1;
@@ -823,7 +879,7 @@ test_cf32_replay_fs4_level_uses_raw_block(void) {
                           level.peak_dbfs > -7.0 && level.peak_dbfs < -5.0);
     }
 
-    stop_and_destroy_stream(ctx);
+    rc |= finish_level_replay("CF32 replay input level", ctx, &first);
     return rc;
 }
 
@@ -1706,6 +1762,664 @@ test_replay_eof_wait_does_not_spin(void) {
     return rc;
 }
 
+/* One replay reader chunk in floats: cu8 widens each byte to a float, cf32 carries a float in every 4 bytes. */
+static const size_t kCu8ChunkFloats = kReplayChunkBytes;
+static const size_t kCf32ChunkFloats = kReplayChunkBytes / sizeof(float);
+/* fill_capture_cfg()'s sample rate. */
+static const uint64_t kFixtureSampleRateHz = 1536000U;
+
+/* Capture time of @p complex_samples at the fixtures' sample rate, rounded down. */
+static uint64_t
+fixture_media_ns(uint64_t complex_samples) {
+    return (complex_samples * 1000000000ULL) / kFixtureSampleRateHz;
+}
+
+namespace {
+/* One demod block as the block hook reported it. */
+struct LoggedBlock {
+    uint64_t sequence;
+    uint64_t submit_gen;
+    uint64_t media_start_ns;
+    uint64_t media_end_ns;
+    int have_input_level;
+    size_t float_count;
+};
+
+/* Every block the demod took during a replay, with the floats they held when keep_samples is set. The demod thread
+ * writes it; the test reads it once the stream is stopped. */
+struct BlockLog {
+    int keep_samples = 0;
+    std::vector<LoggedBlock> blocks;
+    std::vector<float> samples;
+};
+
+/* A capture chunk the replay reader hands the demod as one block. */
+struct ExpectedChunk {
+    size_t float_count;
+    uint64_t start_complex; /* capture position of its first sample, samples a MUTE omitted included */
+};
+} // namespace
+
+static void
+block_log_hook(const rtl_stream_test_replay_block* block, void* ctx) {
+    BlockLog* log = static_cast<BlockLog*>(ctx);
+    LoggedBlock entry = {block->sequence,     block->submit_gen,       block->media_start_ns,
+                         block->media_end_ns, block->have_input_level, block->float_count};
+    log->blocks.push_back(entry);
+    if (!log->keep_samples) {
+        return;
+    }
+    if (block->p1 && block->n1 > 0U) {
+        log->samples.insert(log->samples.end(), block->p1, block->p1 + block->n1);
+    }
+    if (block->p2 && block->n2 > 0U) {
+        log->samples.insert(log->samples.end(), block->p2, block->p2 + block->n2);
+    }
+}
+
+/* One block a chunk: each block has its chunk's length, sequence and submit generation (both count chunks from 1 here)
+ * and media span. */
+static int
+expect_blocks_match_chunks(const char* label, const BlockLog& log, const std::vector<ExpectedChunk>& chunks) {
+    int rc = 0;
+    if (log.blocks.size() != chunks.size()) {
+        DSD_FPRINTF(stderr, "FAIL: %s: the demod took %zu blocks for the capture's %zu chunks\n", label,
+                    log.blocks.size(), chunks.size());
+        rc = 1;
+    }
+    const size_t n = std::min(log.blocks.size(), chunks.size());
+    for (size_t i = 0; i < n; i++) {
+        const LoggedBlock& got = log.blocks[i];
+        const ExpectedChunk& want = chunks[i];
+        const uint64_t want_start_ns = fixture_media_ns(want.start_complex);
+        const uint64_t want_end_ns = fixture_media_ns(want.start_complex + want.float_count / 2U);
+        if (got.float_count != want.float_count || got.sequence != i + 1U || got.submit_gen != i + 1U
+            || got.media_start_ns != want_start_ns || got.media_end_ns != want_end_ns) {
+            DSD_FPRINTF(stderr,
+                        "FAIL: %s: block %zu has %zu floats, sequence %llu, generation %llu, media %llu-%llu ns; "
+                        "chunk %zu has %zu floats, media %llu-%llu ns\n",
+                        label, i + 1U, got.float_count, (unsigned long long)got.sequence,
+                        (unsigned long long)got.submit_gen, (unsigned long long)got.media_start_ns,
+                        (unsigned long long)got.media_end_ns, i + 1U, want.float_count,
+                        (unsigned long long)want_start_ns, (unsigned long long)want_end_ns);
+            rc = 1;
+        }
+    }
+    return rc;
+}
+
+/* Wait up to @p timeout_ms for the replay reader to catch up with the demod: it has read chunk @p seq and waits for the
+ * demod to take the one before it, or it has already read the whole capture (a reader that runs ahead). */
+static int
+wait_for_reader_caught_up(const std::atomic<uint64_t>* reader_waiting_seq, uint64_t seq, unsigned int timeout_ms) {
+    for (unsigned int waited = 0U; waited <= timeout_ms; waited++) {
+        if (reader_waiting_seq->load(std::memory_order_acquire) >= seq) {
+            return 1;
+        }
+        rtl_stream_test_replay_state state;
+        DSD_MEMSET(&state, 0, sizeof(state));
+        if (dsd_rtl_stream_test_get_replay_state(&state) == 0 && state.replay_input_eof) {
+            return 1;
+        }
+        dsd_sleep_ms(1U);
+    }
+    return 0;
+}
+
+namespace {
+/* test_replay_blocks_follow_capture_chunks(): hold the first block after the events until the reader caught up. */
+struct ChunkFraming {
+    std::atomic<int> blocks{0};
+    std::atomic<uint64_t> reader_waiting_seq{0U};
+    std::atomic<int> held{0};
+};
+} // namespace
+
+static void
+chunk_framing_stage(int stage, size_t count, void* ctx) {
+    ChunkFraming* framing = static_cast<ChunkFraming*>(ctx);
+    if (stage == RTL_STREAM_TEST_REPLAY_READER_WAIT_FOR_EMPTY_INPUT) {
+        framing->reader_waiting_seq.store((uint64_t)count, std::memory_order_release);
+        return;
+    }
+    /* Block 1 is the chunk before the events, and the RESET among them waits for the demod to finish it. Hold block 2,
+       the first after the events: a reader that runs ahead has queued the rest of the capture by the time it goes on,
+       and the demod would take all of it as one block. */
+    if (stage == RTL_STREAM_TEST_REPLAY_DEMOD_AFTER_RESERVE
+        && framing->blocks.fetch_add(1, std::memory_order_acq_rel) + 1 == 2) {
+        framing->held.store(wait_for_reader_caught_up(&framing->reader_waiting_seq, 3U, 2000U),
+                            std::memory_order_release);
+    }
+}
+
+/* Issue #572: every demod block is exactly one capture chunk, a whole 64 KiB read or the shorter read an event cut,
+ * and carries the chunk's sequence, submit generation and media span (time a MUTE omitted included), in fast and
+ * realtime replay alike. A demod that takes whatever the input ring holds makes its blocks, and so its output, depend on
+ * how far ahead the reader got. */
+static int
+test_replay_blocks_follow_capture_chunks(int realtime) {
+    const char* label = realtime ? "chunk framing (realtime)" : "chunk framing (fast)";
+    const size_t first_bytes = 4096U; /* make_eventful_replay_fixture(): the events follow the first 4096 bytes */
+    const uint64_t mute_complex = 4096U / 2U; /* ... and its MUTE omits 4096 bytes */
+    int rc = 0;
+    char metadata_path[DSD_TEST_PATH_MAX];
+    rc |= make_eventful_replay_fixture(metadata_path, sizeof(metadata_path), first_bytes + 3U * kReplayChunkBytes);
+    if (rc != 0) {
+        return 1;
+    }
+
+    std::vector<ExpectedChunk> chunks;
+    chunks.push_back(ExpectedChunk{first_bytes, 0U});
+    uint64_t position = first_bytes / 2U + mute_complex;
+    for (int i = 0; i < 3; i++) {
+        chunks.push_back(ExpectedChunk{kCu8ChunkFloats, position});
+        position += kCu8ChunkFloats / 2U;
+    }
+
+    BlockLog log;
+    ChunkFraming framing;
+    rtl_stream_test_set_replay_block_hook(block_log_hook, &log);
+    rtl_stream_test_set_replay_stage_hook(chunk_framing_stage, &framing);
+    std::unique_ptr<dsd_opts> opts;
+    RtlSdrContext* ctx = NULL;
+    if (start_replay_stream_with_loop_and_rate(metadata_path, 0, realtime, &opts, &ctx) != 0) {
+        rtl_stream_test_set_replay_stage_hook(NULL, NULL);
+        rtl_stream_test_set_replay_block_hook(NULL, NULL);
+        stop_and_destroy_stream(ctx);
+        return 1;
+    }
+    uint64_t delivered = 0U;
+    int rescued = 0;
+    rc |= read_replay_to_end(ctx, 5000U, label, &delivered, &rescued);
+    finish_replay(ctx, rescued);
+    rtl_stream_test_set_replay_stage_hook(NULL, NULL);
+    rtl_stream_test_set_replay_block_hook(NULL, NULL);
+
+    if (!framing.held.load()) {
+        DSD_FPRINTF(stderr, "FAIL: %s: the reader did not catch up while the demod held the block after the events\n",
+                    label);
+        rc |= 1;
+    }
+    rc |= expect_blocks_match_chunks(label, log, chunks);
+    for (size_t i = 0; i < log.blocks.size(); i++) {
+        if (!log.blocks[i].have_input_level) {
+            DSD_FPRINTF(stderr, "FAIL: %s: block %zu carries no input level\n", label, i + 1U);
+            rc |= 1;
+        }
+    }
+    return rc;
+}
+
+namespace {
+/* test_replay_demod_never_acknowledges_an_unread_chunk(). */
+struct AckWindow {
+    uint64_t chunks = 0U;
+    std::atomic<uint64_t> blocks{0U};
+    std::atomic<uint64_t> reader_waiting_seq{0U};
+    std::atomic<uint64_t> reader_holding_gen{0U}; /* the chunk the reader holds numbered, not committed */
+    std::atomic<int> windows{0};                  /* chunks held until the demod acknowledged the block before them */
+    std::atomic<int> timeouts{0};
+    std::atomic<int> violations{0};
+    std::atomic<uint64_t> violation_consumed{0U};
+    std::atomic<uint64_t> violation_gen{0U};
+};
+} // namespace
+
+static uint64_t
+replay_consumed_generation(void) {
+    rtl_stream_test_replay_state state;
+    DSD_MEMSET(&state, 0, sizeof(state));
+    return dsd_rtl_stream_test_get_replay_state(&state) == 0 ? state.replay_last_consume_gen : 0U;
+}
+
+static int
+wait_for_u64_at_least(const std::atomic<uint64_t>* value, uint64_t want, unsigned int timeout_ms) {
+    for (unsigned int waited = 0U; waited <= timeout_ms; waited++) {
+        if (value->load(std::memory_order_acquire) >= want) {
+            return 1;
+        }
+        dsd_sleep_ms(1U);
+    }
+    return 0;
+}
+
+static void
+ack_window_hold_numbered_chunk(AckWindow* window, uint64_t gen) {
+    window->reader_holding_gen.store(gen, std::memory_order_release);
+    for (unsigned int waited = 0U; waited <= 2000U; waited++) {
+        const uint64_t consumed = replay_consumed_generation();
+        if (consumed >= gen - 1U) {
+            if (consumed >= gen) {
+                window->violation_consumed.store(consumed, std::memory_order_relaxed);
+                window->violation_gen.store(gen, std::memory_order_relaxed);
+                window->violations.fetch_add(1, std::memory_order_acq_rel);
+            } else {
+                window->windows.fetch_add(1, std::memory_order_acq_rel);
+            }
+            return;
+        }
+        dsd_sleep_ms(1U);
+    }
+    window->timeouts.fetch_add(1, std::memory_order_acq_rel);
+}
+
+static void
+ack_window_stage(int stage, size_t count, void* ctx) {
+    AckWindow* window = static_cast<AckWindow*>(ctx);
+    switch (stage) {
+        case RTL_STREAM_TEST_REPLAY_READER_WAIT_FOR_EMPTY_INPUT:
+            window->reader_waiting_seq.store((uint64_t)count, std::memory_order_release);
+            break;
+        case RTL_STREAM_TEST_REPLAY_DEMOD_AFTER_RESERVE: {
+            /* Block k: let the reader get to chunk k+1 first. A reader that runs ahead numbers it before the demod
+               looks at a generation; one that waits for the demod has read it and waits for the ring to empty. */
+            const uint64_t block = window->blocks.fetch_add(1U, std::memory_order_acq_rel) + 1U;
+            for (unsigned int waited = 0U; block < window->chunks && waited <= 2000U; waited++) {
+                if (window->reader_waiting_seq.load(std::memory_order_acquire) > block
+                    || window->reader_holding_gen.load(std::memory_order_acquire) > block) {
+                    break;
+                }
+                dsd_sleep_ms(1U);
+            }
+            break;
+        }
+        case RTL_STREAM_TEST_REPLAY_DEMOD_DRAIN_DECISION: {
+            /* Acknowledge block k only while the reader holds chunk k+1 numbered but not committed. */
+            const uint64_t block = window->blocks.load(std::memory_order_acquire);
+            if (block < window->chunks) {
+                (void)wait_for_u64_at_least(&window->reader_holding_gen, block + 1U, 2000U);
+            }
+            break;
+        }
+        case RTL_STREAM_TEST_REPLAY_READER_BEFORE_COMMIT:
+            /* Chunk g is numbered and outside the ring: hold it there until the demod acknowledged block g-1. */
+            if (count >= 2U) {
+                ack_window_hold_numbered_chunk(window, (uint64_t)count);
+            }
+            break;
+        default: break;
+    }
+}
+
+/* Issue #572: the replay reader numbers a chunk (bumps the submit generation) just before it commits the chunk to the
+ * input ring. A demod that acknowledges the newest submitted generation, not the one its own block carries, can
+ * acknowledge a chunk it never read, and at EOF the reader then takes the demod for drained while it still holds the
+ * last chunk. Every chunk after the first is held numbered but uncommitted until the demod acknowledged the block before
+ * it; the demod must acknowledge only what it took. */
+static int
+test_replay_demod_never_acknowledges_an_unread_chunk(void) {
+    const uint64_t chunks = 4U;
+    int rc = 0;
+    char metadata_path[DSD_TEST_PATH_MAX];
+    rc |= make_replay_fixture(metadata_path, sizeof(metadata_path), DSD_IQ_FORMAT_CU8, "post_mute_pre_widen", 1,
+                              (size_t)chunks * kReplayChunkBytes);
+    if (rc != 0) {
+        return 1;
+    }
+
+    AckWindow window;
+    window.chunks = chunks;
+    rtl_stream_test_set_replay_stage_hook(ack_window_stage, &window);
+    std::unique_ptr<dsd_opts> opts;
+    RtlSdrContext* ctx = NULL;
+    if (start_replay_stream(metadata_path, &opts, &ctx) != 0) {
+        rtl_stream_test_set_replay_stage_hook(NULL, NULL);
+        stop_and_destroy_stream(ctx);
+        return 1;
+    }
+    uint64_t delivered = 0U;
+    int rescued = 0;
+    rc |= read_replay_to_end(ctx, 10000U, "unread chunk", &delivered, &rescued);
+    finish_replay(ctx, rescued);
+    rtl_stream_test_set_replay_stage_hook(NULL, NULL);
+
+    if (window.violations.load() != 0) {
+        DSD_FPRINTF(stderr,
+                    "FAIL: unread chunk: the demod acknowledged generation %llu while the reader held chunk %llu "
+                    "numbered but not committed\n",
+                    (unsigned long long)window.violation_consumed.load(),
+                    (unsigned long long)window.violation_gen.load());
+        rc |= 1;
+    }
+    rc |= expect_int_eq("unread chunk: chunks held uncommitted while the demod acknowledged the block before them",
+                        window.windows.load(), (int)(chunks - 1U));
+    rc |= expect_int_eq("unread chunk: holds that timed out", window.timeouts.load(), 0);
+    rc |= expect_true("unread chunk: the replay delivered output", delivered > 0U);
+    return rc;
+}
+
+namespace {
+/* test_replay_multi_chunk_eof_delivers_final_block(). */
+struct FinalBlockHold {
+    size_t total_floats = 0U;
+    std::atomic<int> blocks{0};
+    std::atomic<size_t> taken{0U};
+    std::atomic<uint64_t> reader_waiting_seq{0U};
+    std::atomic<int> final_block{0}; /* the demod took the capture's last floats */
+    std::atomic<int> held{0};
+    std::atomic<int> reader_reported_drained{0};
+    std::atomic<int> reader_decided{0};
+    std::atomic<int> decided_while_held{0};
+    std::atomic<uint64_t> written{0U};
+};
+} // namespace
+
+/* Wait up to @p timeout_ms for the decoder to take the end of the replay (output drained). */
+static int
+wait_for_output_drained(unsigned int timeout_ms) {
+    for (unsigned int waited = 0U; waited <= timeout_ms; waited++) {
+        rtl_stream_test_replay_state state;
+        DSD_MEMSET(&state, 0, sizeof(state));
+        if (dsd_rtl_stream_test_get_replay_state(&state) == 0 && state.replay_output_drained) {
+            return 1;
+        }
+        dsd_sleep_ms(1U);
+    }
+    return 0;
+}
+
+static void
+final_block_hold_stage(int stage, size_t count, void* ctx) {
+    FinalBlockHold* hold = static_cast<FinalBlockHold*>(ctx);
+    switch (stage) {
+        case RTL_STREAM_TEST_REPLAY_READER_WAIT_FOR_EMPTY_INPUT:
+            hold->reader_waiting_seq.store((uint64_t)count, std::memory_order_release);
+            break;
+        case RTL_STREAM_TEST_REPLAY_DEMOD_AFTER_RESERVE: {
+            const int block = hold->blocks.fetch_add(1, std::memory_order_acq_rel) + 1;
+            const size_t taken = hold->taken.fetch_add(count, std::memory_order_acq_rel) + count;
+            /* A reader that runs ahead numbers the whole capture before the demod goes on with its first block. */
+            if (block == 1) {
+                (void)wait_for_reader_caught_up(&hold->reader_waiting_seq, 2U, 2000U);
+            }
+            if (taken >= hold->total_floats) {
+                hold->final_block.store(1, std::memory_order_release);
+            }
+            break;
+        }
+        case RTL_STREAM_TEST_REPLAY_DEMOD_BEFORE_OUTPUT_WRITE:
+            /* Hold the final block's output until the reader, which sees the input ring empty now, has decided whether
+               the demod drained. A reader that reported it drained lets the decoder end the stream: hold on until it
+               has, so the loss shows. */
+            if (hold->final_block.load(std::memory_order_acquire) && !hold->held.exchange(1)) {
+                hold->decided_while_held.store(wait_for_flag(&hold->reader_decided, 2000U), std::memory_order_release);
+                if (hold->reader_reported_drained.load(std::memory_order_acquire)) {
+                    (void)wait_for_output_drained(2000U);
+                }
+            }
+            break;
+        case RTL_STREAM_TEST_REPLAY_DEMOD_AFTER_OUTPUT_WRITE:
+            hold->written.fetch_add((uint64_t)count, std::memory_order_relaxed);
+            break;
+        case RTL_STREAM_TEST_REPLAY_READER_DRAIN_DECIDED:
+            hold->reader_reported_drained.store(count ? 1 : 0, std::memory_order_release);
+            hold->reader_decided.store(1, std::memory_order_release);
+            break;
+        default: break;
+    }
+}
+
+/* Issue #572: at the end of a multi-chunk fast replay, the reader decides the demod drained once the input ring is
+ * empty and every chunk it numbered is acknowledged. A demod that acknowledged a chunk before it took it lets that
+ * decision come while the demod still holds the final block, and the decoder then ends the stream with that block
+ * unwritten. The demod holds the final block's output until the reader has decided; every sample it wrote must still
+ * reach the decoder. */
+static int
+test_replay_multi_chunk_eof_delivers_final_block(void) {
+    const size_t chunks = 4U;
+    int rc = 0;
+    char metadata_path[DSD_TEST_PATH_MAX];
+    rc |= make_replay_fixture(metadata_path, sizeof(metadata_path), DSD_IQ_FORMAT_CU8, "post_mute_pre_widen", 1,
+                              chunks * kReplayChunkBytes);
+    if (rc != 0) {
+        return 1;
+    }
+
+    for (int rep = 0; rep < 5; rep++) {
+        FinalBlockHold hold;
+        hold.total_floats = chunks * kCu8ChunkFloats;
+        rtl_stream_test_set_replay_stage_hook(final_block_hold_stage, &hold);
+        std::unique_ptr<dsd_opts> opts;
+        RtlSdrContext* ctx = NULL;
+        if (start_replay_stream(metadata_path, &opts, &ctx) != 0) {
+            rtl_stream_test_set_replay_stage_hook(NULL, NULL);
+            stop_and_destroy_stream(ctx);
+            return 1;
+        }
+        uint64_t delivered = 0U;
+        int rescued = 0;
+        rc |= read_replay_to_end(ctx, 5000U, "final block", &delivered, &rescued);
+
+        rtl_stream_test_replay_state state;
+        DSD_MEMSET(&state, 0, sizeof(state));
+        rc |= expect_int_eq("final block replay state", dsd_rtl_stream_test_get_replay_state(&state), 0);
+        finish_replay(ctx, rescued);
+        rtl_stream_test_set_replay_stage_hook(NULL, NULL);
+
+        const uint64_t written = hold.written.load(std::memory_order_relaxed);
+        rc |= expect_true("final block: the demod held the final block", hold.held.load());
+        rc |= expect_true("final block: the reader decided while the demod held the final block",
+                          hold.decided_while_held.load());
+        rc |= expect_true("final block: the demod published output", written > 0U);
+        if (delivered != written) {
+            DSD_FPRINTF(stderr, "FAIL: final block rep %d: the decoder read %llu of the %llu samples the demod wrote\n",
+                        rep, (unsigned long long)delivered, (unsigned long long)written);
+            rc |= 1;
+        }
+        rc |= expect_int_eq("final block: demod drained", state.replay_demod_drained, 1);
+        rc |= expect_int_eq("final block: output drained", state.replay_output_drained, 1);
+    }
+    return rc;
+}
+
+namespace {
+/* test_loop_replay_media_time_runs_on(): the first blocks of a looping replay, kept on the demod thread. */
+struct LoopBlocks {
+    static const int kWanted = 3;
+    LoggedBlock blocks[kWanted] = {};
+    std::atomic<int> count{0};
+};
+} // namespace
+
+static void
+loop_blocks_hook(const rtl_stream_test_replay_block* block, void* ctx) {
+    LoopBlocks* loop = static_cast<LoopBlocks*>(ctx);
+    const int index = loop->count.load(std::memory_order_relaxed);
+    if (index >= LoopBlocks::kWanted) {
+        return;
+    }
+    loop->blocks[index] = LoggedBlock{block->sequence,     block->submit_gen,       block->media_start_ns,
+                                      block->media_end_ns, block->have_input_level, block->float_count};
+    loop->count.store(index + 1, std::memory_order_release);
+}
+
+/* Issue #572: a loop rewinds the capture, not the replay's timeline. Each pass's chunk keeps counting the sequence
+ * and the submit generation, and its media time follows the pass before it, so capture time never runs backwards. */
+static int
+test_loop_replay_media_time_runs_on(void) {
+    int rc = 0;
+    char metadata_path[DSD_TEST_PATH_MAX];
+    rc |= make_replay_fixture(metadata_path, sizeof(metadata_path), DSD_IQ_FORMAT_CU8, "post_mute_pre_widen", 1,
+                              kReplayChunkBytes);
+    if (rc != 0) {
+        return 1;
+    }
+
+    LoopBlocks loop;
+    rtl_stream_test_set_replay_block_hook(loop_blocks_hook, &loop);
+    std::unique_ptr<dsd_opts> opts;
+    RtlSdrContext* ctx = NULL;
+    if (start_replay_stream_with_loop(metadata_path, 1, &opts, &ctx) != 0) {
+        rtl_stream_test_set_replay_block_hook(NULL, NULL);
+        stop_and_destroy_stream(ctx);
+        return 1;
+    }
+    float audio[1024];
+    const uint64_t deadline_ns = dsd_time_monotonic_ns() + 5000ULL * 1000000ULL;
+    while (loop.count.load(std::memory_order_acquire) < LoopBlocks::kWanted && dsd_time_monotonic_ns() < deadline_ns) {
+        int got = 0;
+        (void)rtl_stream_read(ctx, audio, sizeof(audio) / sizeof(audio[0]), &got);
+    }
+    stop_and_destroy_stream(ctx);
+    rtl_stream_test_set_replay_block_hook(NULL, NULL);
+
+    BlockLog log;
+    log.blocks.assign(loop.blocks, loop.blocks + loop.count.load(std::memory_order_acquire));
+    std::vector<ExpectedChunk> chunks;
+    chunks.reserve(LoopBlocks::kWanted);
+    for (int pass = 0; pass < LoopBlocks::kWanted; pass++) {
+        chunks.push_back(ExpectedChunk{kCu8ChunkFloats, (uint64_t)pass * (kCu8ChunkFloats / 2U)});
+    }
+    rc |= expect_blocks_match_chunks("loop media time", log, chunks);
+    return rc;
+}
+
+/* A cf32 capture whose floats count up from 0 (payload[i] == i), with no fs/4 shift, so the demod gets them as written.
+ */
+static int
+make_indexed_cf32_replay_fixture(char* out_metadata_path, size_t out_metadata_path_size, size_t float_count) {
+    char temp_dir[DSD_TEST_PATH_MAX];
+    if (!dsd_test_mkdtemp(temp_dir, sizeof(temp_dir), "dsdneo_replay_indexed_cf32")) {
+        DSD_FPRINTF(stderr, "FAIL: could not create indexed CF32 fixture directory\n");
+        return 1;
+    }
+    track_fixture_dir(temp_dir, "indexed.iq", "indexed.iq.json");
+
+    char data_path[DSD_TEST_PATH_MAX];
+    char metadata_path[DSD_TEST_PATH_MAX];
+    if (dsd_test_path_join(data_path, sizeof(data_path), temp_dir, "indexed.iq") != 0
+        || dsd_test_path_join(metadata_path, sizeof(metadata_path), temp_dir, "indexed.iq.json") != 0) {
+        return 1;
+    }
+
+    dsd_iq_capture_config cfg;
+    fill_capture_cfg(&cfg, data_path, metadata_path, DSD_IQ_FORMAT_CF32, "post_driver_cf32_pre_ring", 0);
+    dsd_iq_capture_writer* writer = NULL;
+    char err_buf[256] = {0};
+    if (dsd_iq_capture_open(&cfg, &writer, err_buf, sizeof(err_buf)) != DSD_IQ_OK || !writer) {
+        DSD_FPRINTF(stderr, "FAIL: could not open indexed CF32 capture writer: %s\n", err_buf[0] ? err_buf : "unknown");
+        return 1;
+    }
+    std::vector<float> payload(float_count);
+    for (size_t i = 0; i < float_count; i++) {
+        payload[i] = static_cast<float>(i);
+    }
+    if (dsd_iq_capture_submit(writer, payload.data(), payload.size() * sizeof(float)) != DSD_IQ_OK) {
+        dsd_iq_capture_abort(writer);
+        return 1;
+    }
+    dsd_iq_capture_final_stats stats;
+    DSD_MEMSET(&stats, 0, sizeof(stats));
+    dsd_iq_capture_close(writer, &stats);
+    if (DSD_SNPRINTF(out_metadata_path, out_metadata_path_size, "%s", metadata_path) >= (int)out_metadata_path_size) {
+        return 1;
+    }
+    return 0;
+}
+
+/* Issue #572: a capture source can return fewer bytes than asked. The reader fills each chunk before it converts it,
+ * so a cf32 read that stops inside a complex sample is completed, not skipped, and the chunks after it stay on the
+ * sample grid: the demod takes every float of the capture, in order, one chunk a block. */
+static int
+test_cf32_replay_short_reads_stay_aligned(void) {
+    const size_t float_count = 3U * kCf32ChunkFloats + kCf32ChunkFloats / 2U;
+    int rc = 0;
+    char metadata_path[DSD_TEST_PATH_MAX];
+    rc |= make_indexed_cf32_replay_fixture(metadata_path, sizeof(metadata_path), float_count);
+    if (rc != 0) {
+        return 1;
+    }
+
+    std::vector<ExpectedChunk> chunks;
+    for (size_t start = 0U; start < float_count; start += kCf32ChunkFloats) {
+        chunks.push_back(ExpectedChunk{std::min(kCf32ChunkFloats, float_count - start), start / 2U});
+    }
+
+    BlockLog log;
+    log.keep_samples = 1;
+    rtl_stream_test_set_replay_block_hook(block_log_hook, &log);
+    rtl_device_test_replay_limit_read(4092U); /* each read stops half a complex sample short of 4 KiB */
+    std::unique_ptr<dsd_opts> opts;
+    RtlSdrContext* ctx = NULL;
+    if (start_replay_stream(metadata_path, &opts, &ctx) != 0) {
+        rtl_device_test_replay_limit_read(0U);
+        rtl_stream_test_set_replay_block_hook(NULL, NULL);
+        stop_and_destroy_stream(ctx);
+        return 1;
+    }
+    uint64_t delivered = 0U;
+    int rescued = 0;
+    rc |= read_replay_to_end(ctx, 5000U, "cf32 short reads", &delivered, &rescued);
+    finish_replay(ctx, rescued);
+    rtl_device_test_replay_limit_read(0U);
+    rtl_stream_test_set_replay_block_hook(NULL, NULL);
+
+    rc |= expect_blocks_match_chunks("cf32 short reads", log, chunks);
+    if (log.samples.size() != float_count) {
+        DSD_FPRINTF(stderr, "FAIL: cf32 short reads: the demod took %zu of the capture's %zu floats\n",
+                    log.samples.size(), float_count);
+        rc |= 1;
+    }
+    const size_t n = std::min(log.samples.size(), float_count);
+    for (size_t i = 0; i < n; i++) {
+        if (std::fabs(log.samples[i] - static_cast<float>(i)) > 0.25f) {
+            DSD_FPRINTF(stderr, "FAIL: cf32 short reads: float %zu the demod took is %.1f, not %zu\n", i,
+                        (double)log.samples[i], i);
+            rc |= 1;
+            break;
+        }
+    }
+    return rc;
+}
+
+/* Issue #572: a read that fails after part of a chunk was read still hands the demod the part it got, as one block
+ * (the replay ends after the samples already read), and the replay then ends with the failure reported. */
+static int
+test_replay_read_failure_mid_chunk_delivers_what_was_read(void) {
+    const size_t read_bytes = 4096U;
+    int rc = 0;
+    char metadata_path[DSD_TEST_PATH_MAX];
+    rc |= make_replay_fixture(metadata_path, sizeof(metadata_path), DSD_IQ_FORMAT_CU8, "post_mute_pre_widen", 1,
+                              2U * kReplayChunkBytes);
+    if (rc != 0) {
+        return 1;
+    }
+
+    BlockLog log;
+    dsd_input_failure_clear();
+    rtl_stream_test_set_replay_block_hook(block_log_hook, &log);
+    rtl_device_test_replay_limit_read(read_bytes);
+    rtl_device_test_replay_inject_read_error(3, DSD_IQ_ERR_IO);
+    std::unique_ptr<dsd_opts> opts;
+    RtlSdrContext* ctx = NULL;
+    if (start_replay_stream(metadata_path, &opts, &ctx) != 0) {
+        rtl_device_test_replay_inject_read_error(-1, 0);
+        rtl_device_test_replay_limit_read(0U);
+        rtl_stream_test_set_replay_block_hook(NULL, NULL);
+        stop_and_destroy_stream(ctx);
+        return 1;
+    }
+    uint64_t delivered = 0U;
+    int rescued = 0;
+    rc |= read_replay_to_end(ctx, 5000U, "read failure mid-chunk", &delivered, &rescued);
+    finish_replay(ctx, rescued);
+    rtl_device_test_replay_inject_read_error(-1, 0);
+    rtl_device_test_replay_limit_read(0U);
+    rtl_stream_test_set_replay_block_hook(NULL, NULL);
+
+    std::vector<ExpectedChunk> chunks;
+    chunks.push_back(ExpectedChunk{3U * read_bytes, 0U});
+    rc |= expect_blocks_match_chunks("read failure mid-chunk", log, chunks);
+    rc |= expect_true("read failure mid-chunk: the part read reached the decoder", delivered > 0U);
+    dsd_input_failure failure;
+    dsd_input_failure_get(&failure);
+    rc |=
+        expect_int_eq("read failure mid-chunk: reported as a file input failure", failure.kind, DSD_INPUT_FAILURE_FILE);
+    rc |= expect_int_eq("read failure mid-chunk: code reported", failure.native_code, DSD_IQ_ERR_IO);
+    dsd_input_failure_clear();
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -1714,6 +2428,13 @@ main(void) {
     rc |= test_replay_read_error_ends_stream();
     rc |= test_replay_reader_start_failure_unwinds();
     rc |= test_replay_eof_wait_does_not_spin();
+    rc |= test_replay_blocks_follow_capture_chunks(0);
+    rc |= test_replay_blocks_follow_capture_chunks(1);
+    rc |= test_loop_replay_media_time_runs_on();
+    rc |= test_replay_demod_never_acknowledges_an_unread_chunk();
+    rc |= test_replay_multi_chunk_eof_delivers_final_block();
+    rc |= test_cf32_replay_short_reads_stay_aligned();
+    rc |= test_replay_read_failure_mid_chunk_delivers_what_was_read();
     rc |= test_cu8_replay_publishes_raw_input_level();
     rc |= test_cu8_replay_legacy_fs4_level_uses_raw_block();
     rc |= test_cf32_replay_fs4_level_uses_raw_block();

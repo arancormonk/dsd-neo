@@ -9,10 +9,24 @@
 #include <atomic>
 #include <stdint.h>
 
+#include <dsd-neo/core/input_level.h>
 #include <dsd-neo/io/iq_replay.h>
 #include <dsd-neo/platform/threading.h>
 
 #include "dsd-neo/io/iq_types.h"
+
+/* What the replay reader knows of one capture chunk, the unit the demod takes as one block (issue #572). The reader
+ * writes it into rtl_replay_eof_state::chunk before it commits the chunk, while the input ring is empty, and the demod
+ * copies it as it reserves the chunk, before it releases any of it; the reader writes the next chunk's only once the ring
+ * is empty again, so it always describes the chunk in the ring. */
+struct rtl_replay_chunk_meta {
+    uint64_t sequence;       /* the chunk's place in the replay, from 1; a loop does not restart it */
+    uint64_t submit_gen;     /* the replay_last_submit_gen value the chunk was committed under */
+    uint64_t media_start_ns; /* capture time of its first sample: the samples before it, time a MUTE omitted included */
+    uint64_t media_end_ns;   /* capture time just past its last sample */
+    int have_input_level;
+    dsd_input_level_snapshot input_level; /* its raw input level, published when the demod starts its block */
+};
 
 typedef void (*rtl_replay_input_drained_cb)(void* user);
 typedef void (*rtl_replay_wake_cb)(void* user);
@@ -34,6 +48,7 @@ struct rtl_replay_eof_state {
     std::atomic<uint64_t>* replay_last_submit_gen;
     std::atomic<uint64_t>* replay_last_submit_gen_at_eof;
     std::atomic<uint64_t>* replay_last_consume_gen;
+    struct rtl_replay_chunk_meta* chunk; /* the chunk in the input ring (see struct rtl_replay_chunk_meta) */
     dsd_mutex_t* eof_m;
     dsd_cond_t* eof_cond;
     rtl_replay_input_drained_cb on_input_drained;
