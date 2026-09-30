@@ -17,7 +17,6 @@
 
 #include <algorithm>
 #include <atomic>
-#include <chrono>
 #include <cmath>
 #include <condition_variable>
 #include <dsd-neo/core/constants.h>
@@ -46,6 +45,7 @@
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/input_failure.h>
 #include <dsd-neo/runtime/input_ring.h>
@@ -2496,9 +2496,10 @@ struct DemodAutogainState {
     int low = 0;
     int manual_target = 180;
     int target_initialized = 0;
-    std::chrono::steady_clock::time_point next_allowed = std::chrono::steady_clock::now();
-    std::chrono::steady_clock::time_point hold_until{};
-    std::chrono::steady_clock::time_point probe_until{};
+    /* Real monotonic ns: tuner gain control is device timing. 0 is unset for the hold and the probe. */
+    uint64_t next_allowed_ns = dsd_realtime_mono_ns();
+    uint64_t hold_until_ns = 0U;
+    uint64_t probe_until_ns = 0U;
     uint32_t last_freq = 0U;
     uint32_t last_reconfigure_seq = 0U;
     int probe_ms = 3000;
@@ -2539,7 +2540,7 @@ demod_wait_for_watermark_if_needed(void) {
         return 0;
     }
     struct input_ring_watermark* wm = &g_stream->watermark;
-    watermark_periodic_adjust(wm, dsd_time_monotonic_ns());
+    watermark_periodic_adjust(wm, dsd_realtime_mono_ns());
     int control_work_pending = 0;
     while (1) {
         if (g_ring_purge_pending.load(std::memory_order_acquire)
@@ -2553,7 +2554,7 @@ demod_wait_for_watermark_if_needed(void) {
             break;
         }
         if (!was_paused) {
-            watermark_on_low_event(wm, dsd_time_monotonic_ns());
+            watermark_on_low_event(wm, dsd_realtime_mono_ns());
         }
         dsd_sleep_ms(5);
         if (demod_should_exit_requested()) {
@@ -2564,7 +2565,7 @@ demod_wait_for_watermark_if_needed(void) {
             control_work_pending = 1;
             break;
         }
-        watermark_periodic_adjust(wm, dsd_time_monotonic_ns());
+        watermark_periodic_adjust(wm, dsd_realtime_mono_ns());
     }
     if (demod_should_exit_requested() || control_work_pending) {
         return 1;
@@ -2785,24 +2786,9 @@ demod_log_retune_diag_block(const struct demod_state* d, int got, const DemodRet
 
 static DemodAutogainState&
 demod_autogain_state(void) {
-    static DemodAutogainState state = {0,
-                                       0,
-                                       0,
-                                       0,
-                                       180,
-                                       0,
-                                       std::chrono::steady_clock::now(),
-                                       std::chrono::steady_clock::time_point{},
-                                       std::chrono::steady_clock::time_point{},
-                                       0U,
-                                       0U,
-                                       3000,
-                                       300,
-                                       6.0,
-                                       0.60,
-                                       30,
-                                       2,
-                                       0};
+    static DemodAutogainState state = {
+        0, 0, 0, 0, 180, 0, dsd_realtime_mono_ns(), 0U, 0U, 0U, 0U, 3000, 300, 6.0, 0.60, 30, 2, 0,
+    };
     return state;
 }
 
@@ -2825,11 +2811,11 @@ demod_autogain_reset_window(DemodAutogainState* st, uint32_t current_freq_hz, ui
     st->last_freq = current_freq_hz;
     st->last_reconfigure_seq = current_reconfigure_seq;
     st->blocks = st->high = st->low = 0;
-    st->hold_until = std::chrono::steady_clock::now() + std::chrono::milliseconds(1200);
+    st->hold_until_ns = dsd_realtime_mono_ns() + 1200ULL * 1000000ULL;
     if (st->probe_ms > 0) {
-        st->probe_until = std::chrono::steady_clock::now() + std::chrono::milliseconds(st->probe_ms);
+        st->probe_until_ns = dsd_realtime_mono_ns() + (uint64_t)st->probe_ms * 1000000ULL;
     } else {
-        st->probe_until = std::chrono::steady_clock::time_point{};
+        st->probe_until_ns = 0U;
     }
     st->spec_pass = 0;
 }
@@ -2968,7 +2954,7 @@ demod_autogain_spectral_gate_ok(DemodAutogainState* st, const struct demod_state
 }
 
 static void
-demod_autogain_probe_handle(DemodAutogainState* st, const std::chrono::steady_clock::time_point& now) {
+demod_autogain_probe_handle(DemodAutogainState* st, uint64_t now_ns) {
     if (!st || st->high < 3) {
         return;
     }
@@ -2976,13 +2962,13 @@ demod_autogain_probe_handle(DemodAutogainState* st, const std::chrono::steady_cl
     st->manual_target = demod_autogain_clamp_db10(seed - 50);
     rtl_device_set_gain_nearest(rtl_device_handle, st->manual_target);
     dongle.gain = st->manual_target;
-    st->next_allowed = now + std::chrono::milliseconds(1500);
+    st->next_allowed_ns = now_ns + 1500ULL * 1000000ULL;
     LOG_INFO("AUTOGAIN: exiting probe due to clipping; set ~%d.%d dB.\n", st->manual_target / 10,
              st->manual_target % 10);
 }
 
 static void
-demod_autogain_bootstrap_if_low(DemodAutogainState* st, int is_auto, const std::chrono::steady_clock::time_point& now) {
+demod_autogain_bootstrap_if_low(DemodAutogainState* st, int is_auto, uint64_t now_ns) {
     if (!st || is_auto <= 0 || st->high != 0 || st->low < (st->blocks * 3) / 4) {
         return;
     }
@@ -2990,19 +2976,18 @@ demod_autogain_bootstrap_if_low(DemodAutogainState* st, int is_auto, const std::
     rtl_device_set_gain_nearest(rtl_device_handle, kick);
     dongle.gain = kick;
     st->manual_target = kick;
-    st->next_allowed = now + std::chrono::milliseconds(1500);
+    st->next_allowed_ns = now_ns + 1500ULL * 1000000ULL;
     LOG_INFO("AUTOGAIN: bootstrapping from device auto to ~%d.%d dB due to low input level.\n", kick / 10, kick % 10);
 }
 
 static void
-demod_autogain_adjust_manual(DemodAutogainState* st, const struct demod_state* d,
-                             const std::chrono::steady_clock::time_point& now) {
+demod_autogain_adjust_manual(DemodAutogainState* st, const struct demod_state* d, uint64_t now_ns) {
     if (!st || !d) {
         return;
     }
     int is_auto = rtl_device_is_auto_gain(rtl_device_handle);
     bool changed = false;
-    demod_autogain_bootstrap_if_low(st, is_auto, now);
+    demod_autogain_bootstrap_if_low(st, is_auto, now_ns);
     if (st->high >= 3) {
         st->manual_target = demod_autogain_clamp_db10(st->manual_target - 50);
         changed = true;
@@ -3015,7 +3000,7 @@ demod_autogain_adjust_manual(DemodAutogainState* st, const struct demod_state* d
     }
     rtl_device_set_gain_nearest(rtl_device_handle, st->manual_target);
     dongle.gain = st->manual_target;
-    st->next_allowed = now + std::chrono::milliseconds(1500);
+    st->next_allowed_ns = now_ns + 1500ULL * 1000000ULL;
     st->spec_pass = 0;
     if (is_auto > 0) {
         LOG_INFO("AUTOGAIN: threshold hit; exiting device auto and setting ~%d.%d dB.\n", st->manual_target / 10,
@@ -3031,16 +3016,16 @@ demod_autogain_maybe_adjust(DemodAutogainState* st, const struct demod_state* d)
         return;
     }
     demod_autogain_latch_manual_target(st);
-    auto now = std::chrono::steady_clock::now();
-    bool in_hold = (st->hold_until.time_since_epoch().count() != 0) && (now < st->hold_until);
-    bool in_probe = (st->probe_until.time_since_epoch().count() != 0) && (now < st->probe_until)
-                    && (rtl_device_is_auto_gain(rtl_device_handle) > 0);
-    bool throttled = now < st->next_allowed;
+    const uint64_t now_ns = dsd_realtime_mono_ns();
+    bool in_hold = (st->hold_until_ns != 0U) && (now_ns < st->hold_until_ns);
+    bool in_probe =
+        (st->probe_until_ns != 0U) && (now_ns < st->probe_until_ns) && (rtl_device_is_auto_gain(rtl_device_handle) > 0);
+    bool throttled = now_ns < st->next_allowed_ns;
     if (!in_hold && !throttled) {
         if (in_probe) {
-            demod_autogain_probe_handle(st, now);
+            demod_autogain_probe_handle(st, now_ns);
         } else {
-            demod_autogain_adjust_manual(st, d, now);
+            demod_autogain_adjust_manual(st, d, now_ns);
         }
     }
     st->blocks = st->high = st->low = 0;
@@ -3068,10 +3053,10 @@ demod_autogain_update(const struct demod_state* d, float input_mean_abs, float i
     demod_autogain_maybe_adjust(&st, d);
 }
 
+/* Real monotonic ms for the SNR freshness stamps, which auto-PPM compares on the same clock (auto_ppm_now_ms()). */
 static long long
 demod_now_ms(void) {
-    auto now = std::chrono::steady_clock::now();
-    return std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
+    return (long long)dsd_realtime_mono_ms();
 }
 
 static DemodMetricsState&
@@ -3572,13 +3557,13 @@ demod_metrics_process(const struct demod_state* d, int perf_on) {
     if (!demod_metrics_due_for_block(&st, d)) {
         return 0ULL;
     }
-    uint64_t perf_metrics_start_ns = perf_on ? dsd_time_monotonic_ns() : 0ULL;
+    uint64_t perf_metrics_start_ns = perf_on ? dsd_realtime_mono_ns() : 0ULL;
     demod_metrics_capture_views(d);
     demod_metrics_update_snr(d, &st);
     if (!perf_on) {
         return 0ULL;
     }
-    return dsd_time_monotonic_ns() - perf_metrics_start_ns;
+    return dsd_realtime_mono_ns() - perf_metrics_start_ns;
 }
 
 static void
@@ -3783,7 +3768,7 @@ demod_wait_for_replay_demand(struct output_state* o) {
     }
     RTL_REPLAY_TEST_STAGE(RTL_STREAM_TEST_REPLAY_DEMOD_WAIT_FOR_DEMAND,
                           (size_t)s->replay_out_written.load(std::memory_order_acquire));
-    const uint64_t wait_start_ns = dsd_time_monotonic_ns();
+    const uint64_t wait_start_ns = dsd_realtime_mono_ns();
     int demand = 0;
     dsd_mutex_lock(&o->ready_m);
     for (;;) {
@@ -3797,7 +3782,7 @@ demod_wait_for_replay_demand(struct output_state* o) {
             break;
         }
         (void)dsd_cond_timedwait(&s->replay_demand_cond, &o->ready_m, 10);
-        if (!s->replay_demand_warned && dsd_time_monotonic_ns() - wait_start_ns > 5000000000ULL
+        if (!s->replay_demand_warned && dsd_realtime_mono_ns() - wait_start_ns > 5000000000ULL
             && rtl_stream_receive_request_outcome(rtl_stream_receive_request_seq()) == RTL_STREAM_RX_REQUEST_PENDING) {
             s->replay_demand_warned = 1;
             dsd_mutex_unlock(&o->ready_m);
@@ -3938,7 +3923,7 @@ demod_perf_log_block(int perf_on, uint64_t perf_output_start_ns, uint64_t perf_f
     if (!perf_on || !d) {
         return;
     }
-    uint64_t perf_output_write_ns = dsd_time_monotonic_ns() - perf_output_start_ns;
+    uint64_t perf_output_write_ns = dsd_realtime_mono_ns() - perf_output_start_ns;
     rtl_perf_record_demod_block(perf_full_demod_ns, perf_metrics_ns, perf_output_write_ns, (size_t)got,
                                 perf_output_samples);
     double snr_db = demod_perf_pick_snr_db(d);
@@ -4105,7 +4090,7 @@ static DSD_THREAD_RETURN_TYPE
             continue;
         }
         int perf_on = rtl_perf_enabled();
-        uint64_t perf_full_start_ns = perf_on ? dsd_time_monotonic_ns() : 0ULL;
+        uint64_t perf_full_start_ns = perf_on ? dsd_realtime_mono_ns() : 0ULL;
         rtl_stream_consume_demod_profile_request();
         (void)rtl_stream_consume_fsk_modem_config_pending(d);
         (void)rtl_stream_consume_cqpsk_reacquire_pending(d);
@@ -4119,7 +4104,7 @@ static DSD_THREAD_RETURN_TYPE
         rtl_stream_publish_demod_profile_snapshot();
         rtl_stream_publish_ted_bias();
         rtl_stream_publish_fsk_phase_cfo_snapshot(d);
-        uint64_t perf_full_demod_ns = perf_on ? (dsd_time_monotonic_ns() - perf_full_start_ns) : 0ULL;
+        uint64_t perf_full_demod_ns = perf_on ? (dsd_realtime_mono_ns() - perf_full_start_ns) : 0ULL;
         demod_log_retune_diag_block(d, span.got, &retune_diag);
         demod_input_span_release_direct(d, &span);
         uint64_t perf_metrics_ns = demod_metrics_process(d, perf_on);
@@ -4130,7 +4115,7 @@ static DSD_THREAD_RETURN_TYPE
             }
         }
         demod_maybe_signal_squelch_hop(d);
-        uint64_t perf_output_start_ns = perf_on ? dsd_time_monotonic_ns() : 0ULL;
+        uint64_t perf_output_start_ns = perf_on ? dsd_realtime_mono_ns() : 0ULL;
         size_t perf_output_samples = demod_emit_output_block(d, o, &span, replay_pull);
         /* A replay chunk's generation is consumed only after its demodulated
          * output is committed. RESET/rewind boundaries use this generation to
@@ -7918,10 +7903,10 @@ dsd_rtl_stream_soft_stop(void) {
     return 0;
 }
 
+/* Real monotonic ms: auto-PPM trains the device against live SNR, stamped by demod_now_ms() on the same clock. */
 static uint64_t
 auto_ppm_now_ms(void) {
-    auto now = std::chrono::steady_clock::now();
-    return (uint64_t)std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
+    return dsd_realtime_mono_ms();
 }
 
 static double
@@ -8188,13 +8173,13 @@ rtl_stream_read_live(float* out, size_t count, dsd_opts* opts, const dsd_state* 
     sync_requested_ppm_to_controller(opts);
 
     int perf_on = rtl_perf_enabled();
-    uint64_t perf_read_start_ns = perf_on ? dsd_time_monotonic_ns() : 0ULL;
+    uint64_t perf_read_start_ns = perf_on ? dsd_realtime_mono_ns() : 0ULL;
     int got = rtl_stream_read_live_samples(out, count);
     if (got <= 0) {
         return -1;
     }
     if (perf_on) {
-        rtl_perf_record_consumer_read(dsd_time_monotonic_ns() - perf_read_start_ns, (size_t)got);
+        rtl_perf_record_consumer_read(dsd_realtime_mono_ns() - perf_read_start_ns, (size_t)got);
     }
     return got;
 }
@@ -8324,11 +8309,11 @@ rtl_stream_read_replay(float* out, size_t count) {
         if (used > 0U) {
             RTL_REPLAY_TEST_STAGE(RTL_STREAM_TEST_REPLAY_DECODER_OUTPUT_FOUND, used);
             int perf_on = rtl_perf_enabled();
-            uint64_t perf_read_start_ns = perf_on ? dsd_time_monotonic_ns() : 0ULL;
+            uint64_t perf_read_start_ns = perf_on ? dsd_realtime_mono_ns() : 0ULL;
             int got = ring_read_available_copy(&output, out, count);
             if (got > 0) {
                 if (perf_on) {
-                    rtl_perf_record_consumer_read(dsd_time_monotonic_ns() - perf_read_start_ns, (size_t)got);
+                    rtl_perf_record_consumer_read(dsd_realtime_mono_ns() - perf_read_start_ns, (size_t)got);
                 }
                 if (finished && ring_used(&output) == 0U) {
                     rtl_stream_replay_mark_output_drained();
@@ -10591,7 +10576,7 @@ static int
 rtl_stream_tune_wait_for_completion(uint32_t request_id, uint32_t requested_freq) {
     int rc = RTL_STREAM_TUNE_OK;
     int completion = RTL_STREAM_TUNE_OK;
-    const uint64_t deadline_ns = dsd_time_monotonic_ns() + 500000000ULL;
+    const uint64_t deadline_ns = dsd_realtime_mono_ns() + 500000000ULL;
     dsd_mutex_lock(&controller.retune_done_m);
     while (controller.retune_complete_id.load(std::memory_order_acquire) < request_id) {
         if (dsd_exitflag_load() || (g_stream && g_stream->should_exit.load(std::memory_order_acquire))) {
@@ -10599,7 +10584,7 @@ rtl_stream_tune_wait_for_completion(uint32_t request_id, uint32_t requested_freq
             rc = RTL_STREAM_TUNE_FAILED;
             break;
         }
-        uint64_t now_ns = dsd_time_monotonic_ns();
+        uint64_t now_ns = dsd_realtime_mono_ns();
         if (now_ns >= deadline_ns) {
             rtl_stream_log_tune_warning(requested_freq, "timeout");
             controller_gate_tune_timeout(&controller, request_id);
@@ -10666,7 +10651,7 @@ rtl_stream_tune_impl(dsd_opts* opts, long int frequency, uint64_t caller_token) 
     }
     if (stream_is_replay_active()) {
         static std::atomic<uint64_t> s_last_notice_ns{0};
-        uint64_t now_ns = dsd_time_monotonic_ns();
+        uint64_t now_ns = dsd_realtime_mono_ns();
         uint64_t prev_ns = s_last_notice_ns.load(std::memory_order_acquire);
         if (now_ns > prev_ns + 1000000000ULL) {
             s_last_notice_ns.store(now_ns, std::memory_order_release);

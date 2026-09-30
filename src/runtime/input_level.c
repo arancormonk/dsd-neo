@@ -10,6 +10,7 @@
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/log.h>
 #include <math.h>
 
@@ -119,7 +120,7 @@ input_level_fill(dsd_input_level_snapshot* out, dsd_input_level_source source, d
     out->peak_dbfs = input_level_peak_to_dbfs(peak);
     out->clip_pct = (count > 0U) ? ((double)clipped * 100.0 / (double)count) : 0.0;
     out->sample_count = count;
-    out->updated = time(NULL);
+    out->updated = dsd_realtime_time();
 }
 
 static int
@@ -543,7 +544,7 @@ dsd_input_level_publish(dsd_opts* opts, dsd_state* state, const dsd_input_level_
         return;
     }
 
-    time_t now = next.updated != 0 ? next.updated : time(NULL);
+    time_t now = next.updated != 0 ? next.updated : dsd_realtime_time();
     int notify = input_level_should_suppress_tcp_pcm_toast(opts, state, &next)
                      ? 0
                      : input_level_should_notify(opts, state, &next, notify_mask, now);

@@ -5,7 +5,6 @@
 
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
-#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
@@ -23,6 +22,7 @@
 #include <dsd-neo/protocol/p25/p25p2_frame.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
@@ -158,7 +158,7 @@ dsd_engine_release_tuned_call_state(dsd_opts* opts, dsd_state* state) {
     if (!opts || !state) {
         return;
     }
-    const double ended_m = dsd_time_now_monotonic_s();
+    const double ended_m = dsd_decode_now_mono_s();
     for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
         // The state machine is leaving this voice channel by decision, not because the carrier
         // went away, so nothing that follows on the control channel may be read as this
@@ -555,8 +555,8 @@ dsd_engine_update_vc_tune_state(dsd_opts* opts, dsd_state* state, long int freq)
     dsd_frame_sync_sps_hunt_restart_dwell(state);
     /* Reset activity timers so noCarrier() does not immediately force a return
      * to CC before we have a chance to acquire sync on the new VC. */
-    state->last_vc_sync_time = time(NULL);
-    state->last_vc_sync_time_m = dsd_time_now_monotonic_s();
+    state->last_vc_sync_time = dsd_decode_time();
+    state->last_vc_sync_time_m = dsd_decode_now_mono_s();
     state->last_cc_sync_time = state->last_vc_sync_time;
     state->last_cc_sync_time_m = state->last_vc_sync_time_m;
     state->p25_last_vc_tune_time = state->last_vc_sync_time;
@@ -960,8 +960,8 @@ dsd_engine_trunk_tune_to_cc_request(dsd_opts* opts, dsd_state* state, long int f
     dsd_frame_sync_reset_mod_state();
     // Do not set trunk_is_tuned here; this is a CC hunt action.
     state->trunk_cc_freq = (long int)freq;
-    state->last_cc_sync_time = time(NULL);
-    state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
+    state->last_cc_sync_time = dsd_decode_time();
+    state->last_cc_sync_time_m = dsd_decode_now_mono_s();
     return result;
 }
 
@@ -1117,8 +1117,8 @@ dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, in
     }
 
     dsd_frame_sync_reset_mod_state();
-    state->last_cc_sync_time = time(NULL);
-    state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
+    state->last_cc_sync_time = dsd_decode_time();
+    state->last_cc_sync_time_m = dsd_decode_now_mono_s();
     state->last_vc_sync_time = 0;
     state->last_vc_sync_time_m = 0.0;
     opts->trunk_is_tuned = 0;

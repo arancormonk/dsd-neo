@@ -225,6 +225,14 @@ dsd_time_monotonic_ms(void) {
     return dsd_time_monotonic_ns() / 1000000U;
 }
 
+/* The decode clock (src/runtime/decode_clock.c) reads the wall clock as well. Stubbing it keeps the platform timing
+   object, whose monotonic reads this file replaces, out of the link. */
+uint64_t
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+dsd_time_realtime_ns(void) {
+    return 0ULL;
+}
+
 static dsd_trunk_tune_result
 nxdn_hook_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
     (void)request_id;

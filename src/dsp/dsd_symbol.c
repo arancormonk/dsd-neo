@@ -21,7 +21,6 @@
 
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/audio_filters.h>
-#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/input_level.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
@@ -38,6 +37,7 @@
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/net_audio_input_hooks.h>
@@ -1321,12 +1321,12 @@ symbol_stamp_unsynced_carrier(const dsd_opts* opts, dsd_state* state) {
         return;
     }
     if (opts->trunk_enable != 1) {
-        state->last_cc_sync_time = time(NULL);
-        state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
+        state->last_cc_sync_time = dsd_decode_time();
+        state->last_cc_sync_time_m = dsd_decode_now_mono_s();
     }
     if (!(opts->trunk_enable == 1 && opts->trunk_is_tuned == 1)) {
-        state->last_vc_sync_time = time(NULL);
-        state->last_vc_sync_time_m = dsd_time_now_monotonic_s();
+        state->last_vc_sync_time = dsd_decode_time();
+        state->last_vc_sync_time_m = dsd_decode_now_mono_s();
     }
 }
 

@@ -25,6 +25,7 @@
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
 #include <stdbool.h>
@@ -682,12 +683,6 @@ rtl_stream_request_demod_profile(int cqpsk_enable, int symbol_rate_hz, int level
     return 0;
 }
 
-uint64_t
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-dsd_time_monotonic_ns(void) {
-    return 1234500000000ULL;
-}
-
 void
 dsd_neo_config_init(void) {}
 
@@ -1298,6 +1293,8 @@ main(void) {
         free(opts);
         return 1;
     }
+    /* The tune stamps trunk_tuning.c writes are decode time: hold it still, the real clocks untouched. */
+    dsd_decode_clock_use_test(1234500000000ULL);
 
     test_backend_tune_updates_center_freq_cache();
 #ifdef USE_RADIO
@@ -2377,6 +2374,7 @@ main(void) {
     test_gfsk_retune_decides_its_family_once(opts, state);
 #endif
 
+    dsd_decode_clock_use_system();
     printf("ENGINE_TRUNK_RETUNE_REGRESSION: OK\n");
     free(state);
     free(opts);

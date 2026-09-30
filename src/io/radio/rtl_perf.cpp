@@ -11,7 +11,7 @@
 #include "rtl_perf.h"
 #include <atomic>
 #include <dsd-neo/platform/file_compat.h>
-#include <dsd-neo/platform/timing.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <errno.h>
 #include <inttypes.h>
 #include <mutex>
@@ -112,7 +112,7 @@ init_locked(void) {
 
     g_perf_file = f;
     g_perf_interval_ns = parse_interval_ns();
-    g_perf_next_log_ns = dsd_time_monotonic_ns() + g_perf_interval_ns;
+    g_perf_next_log_ns = dsd_realtime_mono_ns() + g_perf_interval_ns;
     g_perf_state.store(2, std::memory_order_release);
 }
 
@@ -174,7 +174,7 @@ rtl_perf_maybe_log(const rtl_perf_log_snapshot* snapshot) {
         return;
     }
 
-    uint64_t now_ns = dsd_time_monotonic_ns();
+    uint64_t now_ns = dsd_realtime_mono_ns();
     if (now_ns < g_perf_next_log_ns) {
         return;
     }
@@ -183,7 +183,7 @@ rtl_perf_maybe_log(const rtl_perf_log_snapshot* snapshot) {
     if (g_perf_state.load(std::memory_order_acquire) != 2 || !g_perf_file) {
         return;
     }
-    now_ns = dsd_time_monotonic_ns();
+    now_ns = dsd_realtime_mono_ns();
     if (now_ns < g_perf_next_log_ns) {
         return;
     }

@@ -7,6 +7,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/runtime/analog_channel.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <time.h>
@@ -809,6 +810,6 @@ dsd_decode_mode_keep_saved_am(dsd_state* state) {
     state->config_autosave_enabled = 0;
     DSD_SNPRINTF(state->ui_msg, sizeof state->ui_msg, "%s",
                  "Decoding Analog: AM needs an IQ radio input. Autosave is off this session to keep decode = am");
-    state->ui_msg_expire = time(NULL) + DSD_DECODE_MODE_KEEP_SAVED_AM_TOAST_S;
+    state->ui_msg_expire = dsd_realtime_time() + DSD_DECODE_MODE_KEEP_SAVED_AM_TOAST_S;
     return 1;
 }

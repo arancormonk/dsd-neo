@@ -1781,6 +1781,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
     ${PROJECT_SOURCE_DIR}/src/core/util/key_set.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/decode_clock.c
     ${PROJECT_SOURCE_DIR}/src/runtime/decode_mode.c
     ${PROJECT_SOURCE_DIR}/src/runtime/trunk_scan_hooks.c
 )
@@ -5254,6 +5255,7 @@ add_executable(
     engine/test_engine_trunk_retune_regression.c
     ${PROJECT_SOURCE_DIR}/src/engine/trunk_tuning.c
     ${PROJECT_SOURCE_DIR}/src/runtime/decode_mode.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/decode_clock.c
 )
 target_include_directories(
     dsd-neo_test_engine_trunk_retune_regression
@@ -5261,7 +5263,7 @@ target_include_directories(
 )
 target_link_libraries(
     dsd-neo_test_engine_trunk_retune_regression
-    PRIVATE dsd-neo_feature_radio
+    PRIVATE dsd-neo_feature_radio dsd-neo_platform
 )
 target_sources(
     dsd-neo_test_engine_trunk_retune_regression
@@ -10087,7 +10089,7 @@ target_compile_definitions(
         dsd_fopen_private=test_dsd_fopen_private
         dsd_fileno=test_dsd_fileno
         dsd_fstat=test_dsd_fstat
-        dsd_time_monotonic_ns=test_dsd_time_monotonic_ns
+        dsd_realtime_mono_ns=test_dsd_realtime_mono_ns
 )
 target_include_directories(
     dsd-neo_test_io_rtl_perf
@@ -10455,6 +10457,7 @@ if(DSD_HAS_RADIO)
         dsd-neo_test_io_rtl_wideband_spectrum
         io/test_io_rtl_wideband_spectrum.cpp
         ${PROJECT_SOURCE_DIR}/src/io/radio/rtl_wideband_spectrum.cpp
+        ${PROJECT_SOURCE_DIR}/src/runtime/decode_clock.c
         # The Hann window the tap uses comes from the project's own window
         # builder; firdes.cpp is pure math over <math.h>, so compiling it here
         # keeps this test standalone rather than linking the whole DSP library.

@@ -50,14 +50,14 @@ Generated (do not edit/commit):
     protocol terminator cannot erase the scanner's tail anchor (tests: `ENGINE_SCAN_VOICE_GATE`,
     `ENGINE_NO_CARRIER_RESET`, `ENGINE_TRUNK_SCAN`). The same file owns the scan-timing publication
     (`dsd_scan_timing_clear()` / `dsd_scan_timing_publish()`) and the -Y timing tick `dsd_engine_scan_y_timing_tick()`,
-    which stamps `dsd_state::scan_timing` with the stay reason and the absolute monotonic deadline of the window that is
-    running (issue #508); the deadline it publishes is the same instant `dsd_scan_voice_gate_should_step()` flips, so
-    the readout cannot drift from the rotation it describes. It also owns the analog carrier probe both scanners hold
-    analog rows on, `dsd_scan_analog_carrier_open()` (issue #526): the received-tone tap's carrier held to the channel
-    on air (`dsd_analog_rx_carrier_open_now()`) while the analog monitor runs, FM or AM
-    (`dsd_analog_monitor_tap_active()`, issue #524), never on a stale publication, a flagged digital carrier or a
-    trunking-owned channel, and independent of audio output. The -Y voice gate never owns
-    an analog row (`scan_voice_gate_enabled()` is false under the analog family), and the -Y timing tick reports
+    which stamps `dsd_state::scan_timing` with the stay reason and the absolute deadline, on the decode clock's
+    monotonic reading, of the window that is running (issue #508); the deadline it publishes is the same instant
+    `dsd_scan_voice_gate_should_step()` flips, so the readout cannot drift from the rotation it describes. It also owns
+    the analog carrier probe both scanners hold analog rows on, `dsd_scan_analog_carrier_open()` (issue #526): the
+    received-tone tap's carrier held to the channel on air (`dsd_analog_rx_carrier_open_now()`) while the analog
+    monitor runs, FM or AM (`dsd_analog_monitor_tap_active()`, issue #524), never on a stale publication, a flagged
+    digital carrier or a trunking-owned channel, and independent of audio output. The -Y voice gate never owns an
+    analog row (`scan_voice_gate_enabled()` is false under the analog family), and the -Y timing tick reports
     `DSD_SCAN_STAY_CARRIER` for the hangtime window while that probe is open. Under the CTCSS/DCS receive policy (issue
     #527) the probe is only traffic the policy passes (`dsd_analog_tone_gate_passes()` in `runtime/analog_tones.c`:
     OFF or ALLOWED, the one rule the monitor sink and its -Y hangtime stamp in `dsd_symbol.c` follow too), and
@@ -524,9 +524,9 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   and `gate_no_tone`, the CTCSS/DCS receive policy's verdict (issue #527: OFF with no policy in force, PENDING while it
   checks, ALLOWED, REJECTED; `gate_no_tone` when no confirmed value decided it), `gate_rejected_ended` (1 once a
   rejected reception has ended with its carrier, until the next carrier or any other reset), a `generation`
-  bumped by every reset, input switch and input-rate change, and `stale_after_ms`, the monotonic deadline
-  past which the publication of an input that may pause (stdin, UDP, TCP, a live RTL-family radio stream) no longer
-  describes the channel, 0 on inputs that never pause: files, Pulse and IQ replay).
+  bumped by every reset, input switch and input-rate change, and `stale_after_ms`, the real-time monotonic deadline
+  (`dsd_realtime_mono_ms()`) past which the publication of an input that may pause (stdin, UDP, TCP, a live RTL-family
+  radio stream) no longer describes the channel, 0 on inputs that never pause: files, Pulse and IQ replay).
   It rides the `vertex_ks_count..ui_msg` snapshot range beside `scan_timing`, pinned by a `_Static_assert` in
   `ui_snapshot.c`; no float, so the semgrep float-field list is unchanged. Only the DSP tap writes it. `tone_state`
   INACTIVE means nothing has been processed since the last reset, or detection is not running; it is not the
@@ -622,7 +622,15 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
     at 2000-01-01Z, media time monotone and advanced only by the decoder thread) and TEST sources, held in
     process-wide atomics. Sleeps, condvar deadlines, pacing, timeouts and metrics use the separate real-time reads
     (`dsd_realtime_mono_{s,ms,ns}()`, `dsd_realtime_time()`, `dsd_realtime_now_s()`). One comparison never mixes the
-    two domains.
+    two domains. In `src/dsp`, `src/engine`, `src/runtime` and `src/io`, decode time drives the frame-sync and symbol
+    sync stamps (and `dsd_mark_cc_sync()`/`dsd_mark_vc_sync()` in `src/core/time/dsd_time_state.c`), the CQPSK dwell,
+    the FSK no-sync reacquire watchdog, the no-carrier, stale-follow, scan and trunk timers, the retune completion
+    stamps in `src/runtime/trunk_tuning_hooks.c` and the rdio sidecar's fallback start time. Real time drives device,
+    socket and ring waits, replay pacing, auto-gain and auto-PPM, the analog tap's input-pause deadline and backlog
+    skip, UI publish throttles, `ui_msg_expire` toasts, the input-level warning cooldown, RadioReference dates and perf.
+    Two sources below runtime in the link order keep the platform clocks for their real-time reads:
+    `src/io/iq/iq_capture.c` (`dsd-neo_io_iq`) and `src/io/radio/tcp_quality_metrics.cpp` (built into
+    `dsd-neo_platform`).
   - Analog channel contract shared by the CLI, config, app commands, scan rows and the demodulator
     (`include/dsd-neo/runtime/analog_channel.h`, `src/runtime/analog_channel.c`): `dsd_analog_demod` (FM = 0,
     AM = 1), `dsd_rx_family`, per-kind width ranges and defaults (NFM 8000–25000 Hz, default 16000; AM
@@ -1424,11 +1432,12 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
     each whole block only once the block is complete). The carrier hangover counts samples, which only works while
     samples arrive: on stdin, UDP and TCP input, whose producer may squelch by sending nothing, and on a live RTL-family
     radio stream, which stops when its source does (an `rtl_tcp` server that went away, whose client retries without
-    end; a stalled device), each read also sets a monotonic deadline (its arrival plus its own duration and the
-    hangover, at least `DSD_ANALOG_STREAM_PAUSE_MIN_MS`), published as `stale_after_ms`. A read arriving past it follows
-    a pause as long as a dropped carrier: it starts a new reception, and is itself dropped, since its first samples may
-    have arrived before the pause. The frontends age the row against the same deadline meanwhile. Files, Pulse and IQ
-    replay deliver continuously and never set one, so a replay stays deterministic however slowly it is read.
+    end; a stalled device), each read also sets a real-time monotonic deadline (its arrival plus its own duration and
+    the hangover, at least `DSD_ANALOG_STREAM_PAUSE_MIN_MS`), published as `stale_after_ms`. A read arriving past it
+    follows a pause as long as a dropped carrier: it starts a new reception, and is itself dropped, since its first
+    samples may have arrived before the pause. The frontends age the row against the same deadline meanwhile. Files,
+    Pulse and IQ replay deliver continuously and never set one, so a replay stays deterministic however slowly it is
+    read.
   - `src/dsp/analog_ctcss.c` is the CTCSS detector: one continuously running phasor per table tone, 50 ms sub-blocks
     with absolute phase in a 250 ms window, one hop per sub-block. Each hop fits every bin's sub-block phases (a
     pulse-pair estimate refined by weighted least squares), snaps the fine estimate to the table within +/-0.8 Hz,
@@ -1573,7 +1582,7 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
     that read included, or until `DSD_ANALOG_RX_BACKLOG_MAX_MS` (2 s) of input, after which stdin fed from a file faster
     than real time is heard again. A read shows it with a span of `DSD_ANALOG_RX_TAP_READ_MS` or more of input that
     passes two tests, since a backlog drains at the decoder's own speed. First, the span took at least half as long to
-    arrive on the monotonic clock, not counting the time the symbol path spends playing monitor audio
+    arrive on the real-time monotonic clock, not counting the time the symbol path spends playing monitor audio
     (`dsd_analog_rx_playback_begin()` / `_end()` around the output write): synchronous playback of stdin input holds the
     decoder for each block's playing time once its buffer is full, and it then reads a backlog at real-time pace.
     Second, the decoder waited inside the input read for at least an eighth of the span: `symbol_take_sample()` brackets

@@ -11,8 +11,8 @@
 #include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/engine/scan_voice_gate.h>
-#include <dsd-neo/platform/timing.h>
 #include <dsd-neo/runtime/analog_tones.h>
+#include <dsd-neo/runtime/decode_clock.h>
 
 #include <math.h>
 #include <stdint.h>
@@ -47,7 +47,7 @@ scan_analog_carrier_heard(const dsd_opts* opts, const dsd_state* state) {
     /* An input that stopped delivering leaves its last word published; past this the pause has outlasted
        the hangover (rx_tone_view.c reads it the same way). */
     const uint64_t stale_after_ms = state->analog_rx.stale_after_ms;
-    return stale_after_ms == 0U || dsd_time_monotonic_ms() <= stale_after_ms;
+    return stale_after_ms == 0U || dsd_realtime_mono_ms() <= stale_after_ms;
 }
 
 int

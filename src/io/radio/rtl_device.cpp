@@ -14,6 +14,7 @@
 
 #include <dsd-neo/core/airspy_config.h>
 #include <dsd-neo/core/input_level.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/input_failure.h>
 
 #include <algorithm>
@@ -878,7 +879,7 @@ rtl_u8_perf_begin(const struct rtl_device* s) {
     rtl_u8_perf_state perf = {};
     perf.enabled = rtl_perf_enabled();
     if (perf.enabled) {
-        perf.start_ns = dsd_time_monotonic_ns();
+        perf.start_ns = dsd_realtime_mono_ns();
         perf.drops_before = s->input_ring->producer_drops.load(std::memory_order_relaxed);
     }
     return perf;
@@ -891,7 +892,7 @@ rtl_u8_perf_end(const struct rtl_device* s, const rtl_u8_perf_state* perf, size_
     }
     uint64_t drops_after = s->input_ring->producer_drops.load(std::memory_order_relaxed);
     uint64_t drops_delta = (drops_after >= perf->drops_before) ? (drops_after - perf->drops_before) : 0ULL;
-    rtl_perf_record_ingest(dsd_time_monotonic_ns() - perf->start_ns, done, drops_delta);
+    rtl_perf_record_ingest(dsd_realtime_mono_ns() - perf->start_ns, done, drops_delta);
 }
 
 static inline int
@@ -1292,7 +1293,7 @@ soapy_write_cf32_to_ring(struct rtl_device* s, const float* src, size_t num_elem
         return 0;
     }
     int perf_on = rtl_perf_enabled();
-    uint64_t perf_t0 = perf_on ? dsd_time_monotonic_ns() : 0ULL;
+    uint64_t perf_t0 = perf_on ? dsd_realtime_mono_ns() : 0ULL;
     uint64_t perf_drops_before = perf_on ? s->input_ring->producer_drops.load(std::memory_order_relaxed) : 0ULL;
     size_t need = num_elems * 2;
     size_t done = 0;
@@ -1323,7 +1324,7 @@ soapy_write_cf32_to_ring(struct rtl_device* s, const float* src, size_t num_elem
     if (perf_on) {
         uint64_t drops_after = s->input_ring->producer_drops.load(std::memory_order_relaxed);
         uint64_t drops_delta = (drops_after >= perf_drops_before) ? (drops_after - perf_drops_before) : 0ULL;
-        rtl_perf_record_ingest(dsd_time_monotonic_ns() - perf_t0, done, drops_delta);
+        rtl_perf_record_ingest(dsd_realtime_mono_ns() - perf_t0, done, drops_delta);
     }
     return done / 2;
 }
@@ -1335,7 +1336,7 @@ soapy_write_cs16_to_ring(struct rtl_device* s, const int16_t* src, size_t num_el
         return 0;
     }
     int perf_on = rtl_perf_enabled();
-    uint64_t perf_t0 = perf_on ? dsd_time_monotonic_ns() : 0ULL;
+    uint64_t perf_t0 = perf_on ? dsd_realtime_mono_ns() : 0ULL;
     uint64_t perf_drops_before = perf_on ? s->input_ring->producer_drops.load(std::memory_order_relaxed) : 0ULL;
     const float scale = 1.0f / 32768.0f;
     size_t need = num_elems * 2;
@@ -1367,7 +1368,7 @@ soapy_write_cs16_to_ring(struct rtl_device* s, const int16_t* src, size_t num_el
     if (perf_on) {
         uint64_t drops_after = s->input_ring->producer_drops.load(std::memory_order_relaxed);
         uint64_t drops_delta = (drops_after >= perf_drops_before) ? (drops_after - perf_drops_before) : 0ULL;
-        rtl_perf_record_ingest(dsd_time_monotonic_ns() - perf_t0, done, drops_delta);
+        rtl_perf_record_ingest(dsd_realtime_mono_ns() - perf_t0, done, drops_delta);
     }
     return done / 2;
 }
@@ -1557,7 +1558,7 @@ replay_wait_for_empty_input_ring(struct rtl_device* s, int note_eof_wait) {
         if (note_eof_wait) {
             replay_test_note_eof_wait();
         }
-        (void)dsd_cond_timedwait_monotonic(&ring->space, &ring->ready_m, dsd_time_monotonic_ns() + 50000000ULL);
+        (void)dsd_cond_timedwait_monotonic(&ring->space, &ring->ready_m, dsd_realtime_mono_ns() + 50000000ULL);
     }
     dsd_mutex_unlock(&ring->ready_m);
     return replay_forced_stop_requested(s) ? 0 : 1;
@@ -1600,7 +1601,7 @@ replay_wait_for_input_boundary_drain(struct rtl_device* s) {
         replay_signal_input_waiters(s);
         dsd_mutex_lock(&ring->ready_m);
         if (!replay_forced_stop_requested(s) && !replay_event_boundary_drained(s)) {
-            uint64_t wait_deadline = dsd_time_monotonic_ns() + 50000000ULL;
+            uint64_t wait_deadline = dsd_realtime_mono_ns() + 50000000ULL;
             (void)dsd_cond_timedwait_monotonic(&ring->space, &ring->ready_m, wait_deadline);
         }
         dsd_mutex_unlock(&ring->ready_m);
@@ -1647,12 +1648,12 @@ replay_wait_until(struct rtl_device* s, uint64_t deadline_ns) {
     if (!s || !s->input_ring) {
         return 0;
     }
-    if (dsd_time_monotonic_ns() >= deadline_ns) {
+    if (dsd_realtime_mono_ns() >= deadline_ns) {
         return 1;
     }
     dsd_mutex_lock(&s->input_ring->ready_m);
     while (!replay_forced_stop_requested(s)) {
-        uint64_t now_ns = dsd_time_monotonic_ns();
+        uint64_t now_ns = dsd_realtime_mono_ns();
         if (now_ns >= deadline_ns) {
             dsd_mutex_unlock(&s->input_ring->ready_m);
             return 1;
@@ -2396,7 +2397,7 @@ replay_handle_empty_read(struct rtl_device* s, uint64_t* complex_written, uint64
     *complex_written = 0;
     *data_offset = 0;
     *event_cursor = 0;
-    *start_ns = dsd_time_monotonic_ns();
+    *start_ns = dsd_realtime_mono_ns();
     return REPLAY_STEP_CONTINUE;
 }
 
@@ -2499,7 +2500,7 @@ replay_thread_read_capture(struct rtl_device* s, int* out_failure_rc) {
     uint64_t complex_written = 0;
     uint64_t data_offset = 0;
     uint32_t event_cursor = 0;
-    uint64_t start_ns = dsd_time_monotonic_ns();
+    uint64_t start_ns = dsd_realtime_mono_ns();
     uint64_t timeline_samples = 0;
     uint64_t chunk_sequence = 0;
     int realtime = s->replay_cfg.realtime ? 1 : 0;
@@ -3360,7 +3361,7 @@ soapy_handle_read_result(struct rtl_device* dev, int ret) {
     }
     if (ret == SOAPY_SDR_OVERFLOW) {
         dev->soapy_overflow_count++;
-        uint64_t now_ns = dsd_time_monotonic_ns();
+        uint64_t now_ns = dsd_realtime_mono_ns();
         if ((now_ns - dev->soapy_last_overflow_log_ns) > 1000000000ULL) {
             DSD_FPRINTF(stderr, "SoapySDR: RX overflow count=%llu.\n", (unsigned long long)dev->soapy_overflow_count);
             dev->soapy_last_overflow_log_ns = now_ns;
@@ -3851,7 +3852,7 @@ rtl_tcp_init_adaptive_state(struct rtl_device* s, const dsdneoRuntimeConfig* cfg
     st->prev_drops = s->input_ring ? s->input_ring->producer_drops.load() : 0ULL;
     st->prev_rdto = s->input_ring ? s->input_ring->read_timeouts.load() : 0ULL;
     st->prev_res_full = s->reserve_full_events;
-    st->auto_last_ns = dsd_time_monotonic_ns();
+    st->auto_last_ns = dsd_realtime_mono_ns();
     st->timeout_limit = cfg ? cfg->tcp_max_timeouts : 3;
     st->consec_timeouts = 0;
 }
@@ -4061,7 +4062,7 @@ rtl_tcp_watchdog_allows_processing(struct rtl_device* s, int r) {
     if (!s) {
         return 0;
     }
-    uint64_t recv_ns = dsd_time_monotonic_ns();
+    uint64_t recv_ns = dsd_realtime_mono_ns();
     if (!rtl_tcp_metrics_record_recv_device(s, (uint32_t)r, recv_ns)) {
         return 1;
     }
@@ -4423,7 +4424,7 @@ rtl_tcp_autotune_if_due(struct rtl_device* s, struct rtl_tcp_loop_state* st, uin
 
 static inline void
 rtl_tcp_periodic_maintenance(struct rtl_device* s, struct rtl_tcp_loop_state* st) {
-    uint64_t now_ns = dsd_time_monotonic_ns();
+    uint64_t now_ns = dsd_realtime_mono_ns();
     rtl_tcp_print_stats_if_due(s, now_ns);
     rtl_tcp_autotune_if_due(s, st, now_ns);
 }
@@ -5497,7 +5498,7 @@ rtl_device_create_tcp(const char* host, int port, struct input_ring_state* input
         const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
         if (cfg && cfg->tcp_stats_enable) {
             dev->stats_enabled = 1;
-            dev->stats_last_ns = dsd_time_monotonic_ns();
+            dev->stats_last_ns = dsd_realtime_mono_ns();
             DSD_FPRINTF(stderr, "rtl_tcp: stats enabled.\n");
         }
     }

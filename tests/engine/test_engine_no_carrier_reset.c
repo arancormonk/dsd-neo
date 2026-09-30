@@ -26,12 +26,14 @@
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/platform/sockets.h>
+#include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/scan_mode.h>
@@ -44,6 +46,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <time.h>
 
 #ifndef M_PI
@@ -269,8 +272,8 @@ static int g_rigctl_setmod_calls = 0;
 static int g_rigctl_setmod_bw = 0;
 
 #ifdef DSD_NEO_TEST_TIME_WRAP
-// The wall clock time() reads, which the -Y hangtime rule compares (engine.c no_carrier_run()): 0 leaves the real one,
-// any other value is the second a case injects.
+// The wall clock time() reads, which the -Y hangtime rule compares (engine.c no_carrier_run() reads it through the
+// decode clock's SYSTEM source, dsd_decode_time()): 0 leaves the real one, any other value is the second a case injects.
 static time_t g_test_wall = 0;
 #endif
 
@@ -3058,6 +3061,201 @@ test_tone_rejection_stays_on_a_single_row(void) {
 }
 #endif
 
+/* The TEST decode clock at @p ms past a fixed origin (5000 s); the real clocks are left alone. */
+static void
+decode_clock_at_ms(uint64_t ms) {
+    dsd_decode_clock_use_test((5000ULL * 1000ULL + ms) * 1000000ULL);
+}
+
+#if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
+/*
+ * The FSK no-sync reacquire watchdog is a decode decision, so it runs on the decode clock: a replay reaches the same
+ * request at the same capture time however fast it is read. Driven through the TEST decode clock with no real time
+ * passing: the gap that opened at decode +0 requests a reacquire at +11 s, not at +9 s, and the 0.75 s cooldown after
+ * it is on the decode clock too: held at +11.5 s, the next request at +11.8 s.
+ */
+static int
+test_fsk_reacquire_watchdog_runs_on_the_decode_clock(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    dsd_rtl_stream_metrics_hooks hooks = {.output_kind = fake_rtl_fsk_output_kind};
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+    opts->audio_in_type = AUDIO_IN_RTL;
+    state->rtl_ctx = (struct RtlSdrContext*)state;
+    decode_clock_at_ms(0U);
+    const time_t t0 = dsd_decode_time();
+    const double t0_m = dsd_decode_now_mono_s();
+    state->lastsynctype = DSD_SYNC_NONE;
+    state->last_cc_sync_time = t0;
+    state->last_cc_sync_time_m = t0_m;
+    state->last_vc_sync_time = 0;
+    state->last_vc_sync_time_m = 0.0;
+    state->rtl_fsk_reacquire_last_sync_time = t0;
+    state->rtl_fsk_reacquire_last_sync_m = t0_m;
+    state->rtl_fsk_reacquire_gap_start_m = t0_m;
+    state->rtl_fsk_reacquire_last_request_m = 0.0;
+    g_rtl_fsk_reacquire_requests = 0;
+
+    noCarrier(opts, state);
+    rc |= expect_true("decode-clock fsk watchdog: none as the gap opens", g_rtl_fsk_reacquire_requests == 0);
+    decode_clock_at_ms(9000U);
+    noCarrier(opts, state);
+    rc |= expect_true("decode-clock fsk watchdog: none at +9 s", g_rtl_fsk_reacquire_requests == 0);
+    decode_clock_at_ms(11000U);
+    noCarrier(opts, state);
+    rc |= expect_true("decode-clock fsk watchdog: requests at +11 s",
+                      g_rtl_fsk_reacquire_requests == 1
+                          && fabs(state->rtl_fsk_reacquire_last_request_m - (t0_m + 11.0)) < 1e-6);
+    decode_clock_at_ms(11500U);
+    noCarrier(opts, state);
+    rc |= expect_true("decode-clock fsk watchdog: cooldown holds at +11.5 s", g_rtl_fsk_reacquire_requests == 1);
+    decode_clock_at_ms(11800U);
+    noCarrier(opts, state);
+    rc |= expect_true("decode-clock fsk watchdog: cooldown over at +11.8 s", g_rtl_fsk_reacquire_requests == 2);
+
+    dsd_decode_clock_use_system();
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    free_test_runtime(opts, state);
+    return rc;
+}
+#endif
+
+/* The manufacturer and branding a Hytera XPT control channel leaves on the state. */
+static void
+seed_xpt_identity(dsd_state* state) {
+    state->dmr_mfid = 0x68;
+    DSD_SNPRINTF(state->dmr_branding, sizeof state->dmr_branding, "%s", "  Hytera");
+    DSD_SNPRINTF(state->dmr_branding_sub, sizeof state->dmr_branding_sub, "%s", "XPT ");
+}
+
+static int
+xpt_identity_intact(const dsd_state* state) {
+    return state->dmr_mfid == 0x68 && strcmp(state->dmr_branding, "  Hytera") == 0
+           && strcmp(state->dmr_branding_sub, "XPT ") == 0;
+}
+
+static void
+put_bits(uint8_t* bits, size_t at, uint32_t value, size_t width) {
+    for (size_t i = 0; i < width; i++) {
+        bits[at + i] = (uint8_t)((value >> (width - 1U - i)) & 1U);
+    }
+}
+
+/*
+ * Decode a standard group Preamble CSBK (opcode 61, feature set 0) to target 0x123456 from source 0x0ABCDE. Returns
+ * the address width it printed: 24 as the standard reads it, 16 as an XPT site's short addresses read it (the low 16
+ * bits of each: 0x3456, 0xBCDE), or 0 when neither line appeared.
+ */
+static int
+preamble_csbk_address_bits(dsd_opts* opts, dsd_state* state) {
+    uint8_t bits[256] = {0};
+    uint8_t bytes[48] = {0};
+    bytes[0] = 0x3DU;
+    bytes[1] = 0x00U;
+    put_bits(bits, 0U, bytes[0], 8U);
+    put_bits(bits, 8U, bytes[1], 8U);
+    bits[17] = 1U;
+    put_bits(bits, 32U, 0x123456U, 24U);
+    put_bits(bits, 56U, 0x0ABCDEU, 24U);
+    dsd_test_capture_stderr cap;
+    if (dsd_test_capture_stderr_begin(&cap, "preamble-csbk") != 0) {
+        return -1;
+    }
+    dmr_cspdu(opts, state, bits, bytes, 1U, 0U);
+    (void)dsd_test_capture_stderr_end(&cap);
+    char log[4096];
+    if (dsd_test_capture_stderr_read(&cap, log, sizeof log) != 0) {
+        return -1;
+    }
+    if (strstr(log, "Source: 703710 - Target: 1193046") != NULL) {
+        return 24;
+    }
+    if (strstr(log, "Source: 48350 - Target: 13398") != NULL) {
+        return 16;
+    }
+    return 0;
+}
+
+/*
+ * The DMR stale-follow clear is a decode decision: a control channel quiet for more than 10 s of decode time forgets
+ * the manufacturer and branding it announced, so a replay forgets them at the same capture time however fast it is
+ * read. Driven through the TEST decode clock with no real time passing, on a trunked setup that follows no voice
+ * channel (nothing to preserve): the XPT identity stands at decode +10 s and is gone at +11 s, after which a standard
+ * Preamble CSBK reads 24-bit addresses instead of XPT's 16-bit ones.
+ */
+static int
+test_dmr_stale_follow_clear_runs_on_the_decode_clock(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    opts->trunk_enable = 1;
+    opts->trunk_is_tuned = 0;
+    decode_clock_at_ms(0U);
+    seed_xpt_identity(state);
+    rc |=
+        expect_true("stale-follow: an XPT site reads 16-bit addresses", preamble_csbk_address_bits(opts, state) == 16);
+    state->last_cc_sync_time = dsd_decode_time();
+    state->last_cc_sync_time_m = dsd_decode_now_mono_s();
+    state->last_vc_sync_time = 0;
+    state->last_vc_sync_time_m = 0.0;
+
+    decode_clock_at_ms(10000U);
+    noCarrier(opts, state);
+    rc |= expect_true("stale-follow: +10 s keeps the XPT identity", xpt_identity_intact(state));
+    decode_clock_at_ms(11000U);
+    noCarrier(opts, state);
+    rc |= expect_true("stale-follow: +11 s clears manufacturer and branding",
+                      state->dmr_mfid == -1 && state->dmr_branding[0] == '\0' && state->dmr_branding_sub[0] == '\0');
+    rc |= expect_true("stale-follow: then a Preamble CSBK reads 24-bit addresses",
+                      preamble_csbk_address_bits(opts, state) == 24);
+
+    dsd_decode_clock_use_system();
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+/*
+ * The conventional control for the case above: without trunking, noCarrier() drops the branding at every pass
+ * whatever the clock says, while the manufacturer id still waits out more than 10 s of decode time since the last
+ * control-channel sync.
+ */
+static int
+test_dmr_mfid_clear_runs_on_the_decode_clock_without_trunking(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    opts->trunk_enable = 0;
+    decode_clock_at_ms(0U);
+    seed_xpt_identity(state);
+    state->last_cc_sync_time = dsd_decode_time();
+    state->last_cc_sync_time_m = dsd_decode_now_mono_s();
+
+    noCarrier(opts, state);
+    rc |= expect_true("conventional: branding cleared at every pass",
+                      state->dmr_branding[0] == '\0' && state->dmr_branding_sub[0] == '\0');
+    rc |= expect_true("conventional: manufacturer kept at +0 s", state->dmr_mfid == 0x68);
+    decode_clock_at_ms(10000U);
+    noCarrier(opts, state);
+    rc |= expect_true("conventional: manufacturer kept at +10 s", state->dmr_mfid == 0x68);
+    decode_clock_at_ms(11000U);
+    noCarrier(opts, state);
+    rc |= expect_true("conventional: manufacturer cleared at +11 s", state->dmr_mfid == -1);
+
+    dsd_decode_clock_use_system();
+    free_test_runtime(opts, state);
+    return rc;
+}
+
 /*
  * The received tone (issue #522) has to survive noCarrier(): in analog mode it runs on every
  * no-sync pass, about every 375 ms, and a reset there would keep any tone from ever locking.
@@ -5199,6 +5397,8 @@ main(void) {
     free_test_runtime(opts, state);
 
     rc |= test_rx_tone_survives_no_carrier();
+    rc |= test_dmr_stale_follow_clear_runs_on_the_decode_clock();
+    rc |= test_dmr_mfid_clear_runs_on_the_decode_clock_without_trunking();
 #ifdef DSD_NEO_TEST_RTL_WRAP
     rc |= test_rx_tone_rigctl_scan_step();
     rc |= test_rigctl_reconnect_forgets_the_legacy_tune_cache();
@@ -5245,6 +5445,7 @@ main(void) {
     rc |= test_typed_scan_analog_rows_hold_on_carrier();
     rc |= test_trunk_cache_with_mode_metadata();
     rc |= test_dmr_explicit_return_destination();
+    rc |= test_fsk_reacquire_watchdog_runs_on_the_decode_clock();
 #endif
 
     if (rc == 0) {

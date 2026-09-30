@@ -26,7 +26,7 @@ static int g_open_count = 0;
 static off_t g_stub_size = 0;
 
 extern "C" uint64_t
-test_dsd_time_monotonic_ns(void) {
+test_dsd_realtime_mono_ns(void) {
     return g_now_ns;
 }
 

@@ -6,7 +6,6 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/channel_mode.h>
 #include <dsd-neo/core/dmr_key_map.h>
-#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/key_set.h>
@@ -27,6 +26,7 @@
 #include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/analog_tones.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
@@ -120,7 +120,7 @@ channel_scan_row_is_current(const dsd_opts* opts, const dsd_state* state, const 
 
 static void
 channel_scan_end_calls(dsd_opts* opts, dsd_state* state) {
-    const double now = dsd_time_now_monotonic_s();
+    const double now = dsd_decode_now_mono_s();
     for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
         if (dsd_call_state_end(state, (uint8_t)slot, now) > 0) {
             dsd_event_sync_slot(opts, state, (uint8_t)slot);
@@ -226,8 +226,8 @@ channel_scan_commit(dsd_opts* opts, dsd_state* state, channel_scan* scan) {
         dsd_enc_lockout_bump_key_epoch(state);
     }
     dsd_frame_sync_reset_acquisition(opts, state, 1);
-    state->last_cc_sync_time = time(NULL);
-    state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
+    state->last_cc_sync_time = dsd_decode_time();
+    state->last_cc_sync_time_m = dsd_decode_now_mono_s();
     state->nxdn_last_ran = -1;
     dsd_scan_voice_gate_note_retune(state, state->last_cc_sync_time_m);
     scan->request = 0;
@@ -517,7 +517,7 @@ dsd_engine_scan_note_skipped_rows(dsd_state* state, const dsd_engine_scan_skippe
         DSD_SNPRINTF(state->ui_msg, sizeof state->ui_msg, "Skipped at every visit: %s and %d more: %s", skipped->label,
                      skipped->count - 1, skipped->brief);
     }
-    state->ui_msg_expire = time(NULL) + 5;
+    state->ui_msg_expire = dsd_realtime_time() + 5;
 }
 
 /* A row without a width of its own runs the configured width of its kind @p kind. The width commands hold that width to
@@ -791,8 +791,8 @@ channel_scan_start_row(dsd_opts* opts, dsd_state* state, int row) {
     const long freq = *dsd_state_trunk_lcn_slot(state, row);
     if (!freq) {
         state->lcn_freq_roll = row + 1;
-        state->last_cc_sync_time = time(NULL);
-        state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
+        state->last_cc_sync_time = dsd_decode_time();
+        state->last_cc_sync_time_m = dsd_decode_now_mono_s();
         dsd_scan_voice_gate_note_retune(state, state->last_cc_sync_time_m);
         return 0;
     }

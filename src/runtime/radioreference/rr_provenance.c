@@ -18,6 +18,7 @@
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/string_utils.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/path_policy.h>
 #include <dsd-neo/runtime/radioreference_generate.h>
 #include <dsd-neo/runtime/radioreference_import.h>
@@ -51,7 +52,7 @@ rr_emit_text(FILE* fp, const char* key, const char* value) {
 /* Takes ownership of fp: closes it on every path. */
 static int
 rr_provenance_emit(FILE* fp, const dsd_rr_provenance* p) {
-    long long stamp = p->imported_at != 0 ? p->imported_at : (long long)time(NULL);
+    long long stamp = p->imported_at != 0 ? p->imported_at : (long long)dsd_realtime_time();
 
     DSD_FPRINTF(fp, "# dsd-neo RadioReference provenance. Regenerated on refresh; do not edit.\n");
     rr_emit_text(fp, "kind", p->kind);
