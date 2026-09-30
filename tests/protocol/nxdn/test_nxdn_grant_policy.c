@@ -14,6 +14,7 @@
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/crypto/aes.h>
 #include <dsd-neo/crypto/des.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -187,26 +188,6 @@ dsd_rigctl_query_hook_get_current_freq_hz(const dsd_opts* opts) {
     return 0;
 }
 
-uint64_t
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-dsd_time_monotonic_ns(void) {
-    return 0ULL;
-}
-
-uint64_t
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-dsd_time_monotonic_ms(void) {
-    return dsd_time_monotonic_ns() / 1000000U;
-}
-
-/* The decode clock (src/runtime/decode_clock.c) reads the wall clock as well. Stubbing it keeps the platform timing
-   object, whose monotonic reads this file replaces, out of the link. */
-uint64_t
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-dsd_time_realtime_ns(void) {
-    return 0ULL;
-}
-
 static dsd_trunk_tune_result
 hook_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
     (void)request_id;
@@ -306,6 +287,7 @@ main(void) {
         return 1;
     }
 
+    dsd_decode_clock_use_test(1000000000000ULL);
     opts->trunk_enable = 1;
     opts->trunk_use_allow_list = 1;
     opts->trunk_tune_group_calls = 1;
@@ -349,6 +331,7 @@ main(void) {
     rc |= expect_true("group source fallback allowed", g_tune_count == 1 && g_last_tune_freq == freq);
 
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+    dsd_decode_clock_use_system();
 
     if (rc == 0) {
         printf("NXDN_GRANT_POLICY: OK\n");

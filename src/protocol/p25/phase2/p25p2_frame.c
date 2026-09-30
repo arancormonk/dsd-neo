@@ -16,7 +16,6 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dibit.h>
-#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/key_presence.h>
@@ -34,6 +33,7 @@
 #include <dsd-neo/protocol/p25/p25p2_soft.h>
 #include <dsd-neo/runtime/colors.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/p25_p2_audio_ring.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/telemetry.h>
@@ -760,8 +760,8 @@ p25p2_emit_voice_activity(dsd_opts* opts, dsd_state* state) {
         return;
     }
     p25_sm_emit_active(opts, state, slot);
-    state->last_vc_sync_time = time(NULL);
-    state->last_vc_sync_time_m = dsd_time_now_monotonic_s();
+    state->last_vc_sync_time = dsd_decode_time();
+    state->last_vc_sync_time_m = dsd_decode_now_mono_s();
 }
 
 static int
@@ -1484,7 +1484,7 @@ p25p2_duid_collect_and_decode(int timeslot_index) {
 static void
 p25p2_duid_print_frame_header(void) {
     char timestr[9];
-    (void)dsd_format_local_datetime(time(NULL), DSD_LOCAL_DATETIME_TIME_COLON, timestr, sizeof timestr);
+    (void)dsd_format_local_datetime(dsd_decode_time(), DSD_LOCAL_DATETIME_TIME_COLON, timestr, sizeof timestr);
     DSD_FPRINTF(stderr, "\n%s        P25p2 ", timestr);
 }
 
@@ -1546,14 +1546,14 @@ p25p2_duid_compute_pending_release(dsd_opts* opts, dsd_state* state, time_t now)
 
     double mac_hold = p25p2_frame_mac_hold_s(0.75);
     int left_mac_active = (state->p25_p2_last_mac_active_m[0] > 0.0)
-                          && (dsd_time_now_monotonic_s() - state->p25_p2_last_mac_active_m[0]) <= mac_hold;
+                          && (dsd_decode_now_mono_s() - state->p25_p2_last_mac_active_m[0]) <= mac_hold;
     int right_mac_active = (state->p25_p2_last_mac_active_m[1] > 0.0)
-                           && (dsd_time_now_monotonic_s() - state->p25_p2_last_mac_active_m[1]) <= mac_hold;
+                           && (dsd_decode_now_mono_s() - state->p25_p2_last_mac_active_m[1]) <= mac_hold;
     if (opts->trunk_enable == 1) {
         return !(left_mac_active || right_mac_active);
     }
 
-    const double ended_m = dsd_time_now_monotonic_s();
+    const double ended_m = dsd_decode_now_mono_s();
     for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
         if (dsd_call_state_end(state, (uint8_t)slot, ended_m) > 0) {
             dsd_event_sync_slot(opts, state, (uint8_t)slot);
@@ -1585,7 +1585,7 @@ static void
 p25p2_duid_refresh_recent_voice(const dsd_opts* opts, dsd_state* state, time_t now) {
     if (state->p25_p2_audio_allowed[state->currentslot] || opts->trunk_tune_enc_calls == 1) {
         state->last_vc_sync_time = now;
-        state->last_vc_sync_time_m = dsd_time_now_monotonic_s();
+        state->last_vc_sync_time_m = dsd_decode_now_mono_s();
     }
 }
 
@@ -1723,7 +1723,7 @@ p25p2_frame_slot_recently_occupied(const dsd_state* state, int slot, double mac_
         return 1;
     }
     return (state->p25_p2_last_mac_active_m[slot] > 0.0)
-           && (dsd_time_now_monotonic_s() - state->p25_p2_last_mac_active_m[slot]) <= mac_hold_s;
+           && (dsd_decode_now_mono_s() - state->p25_p2_last_mac_active_m[slot]) <= mac_hold_s;
 }
 
 static void DSD_ATTR_USED
@@ -1732,7 +1732,7 @@ p25p2_duid_fallback_release(dsd_opts* opts, dsd_state* state) {
         return;
     }
 
-    time_t now2 = time(NULL);
+    time_t now2 = dsd_decode_time();
     int no_recent_voice = (state->last_vc_sync_time != 0) && ((now2 - state->last_vc_sync_time) > opts->trunk_hangtime);
     double mac_hold = p25p2_frame_mac_hold_s(0.75);
     int both_slots_idle = !p25p2_frame_slot_recently_occupied(state, 0, mac_hold)
@@ -1750,7 +1750,7 @@ void
 p25p2_process_duid(dsd_opts* opts, dsd_state* state) {
     vc_counter = 0;
     int err_counter = 0;
-    const time_t now = time(NULL);
+    const time_t now = dsd_decode_time();
 
     for (ts_counter = 0; ts_counter < 4; ts_counter++) {
         duid_decoded = -2;

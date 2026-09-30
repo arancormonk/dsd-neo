@@ -20,6 +20,7 @@
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/protocol/p25/p25_crypto.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <math.h>
 #include <stdint.h>
@@ -275,6 +276,66 @@ test_clear_regroup_override_survives_voice_burst(void) {
     rc |= expect_eq("clear regroup: audio gate remains open", state.p25_p2_audio_allowed[0], 1);
     rc |= expect_eq("clear regroup: voice activity emitted", ctx->slots[0].voice_active, 1);
     dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+// A regroup's KEY=0 clear policy expires 20 s after its last update, on the decode clock. Without
+// -T, an encrypted-service voice burst on a member talkgroup 20 s after the update still runs the
+// vocoder (both frames decode and advance the slot's voice counter). The same burst 21 s after it
+// is gated: crypto goes pending, the audio gate closes, and no frame decodes. Each burst starts
+// from a fresh call, and T is far from any platform clock reading.
+static int
+run_regroup_clear_key_burst_at(uint64_t age_s, dsd_p25_crypto_state* crypto, int* audio_allowed, int* decoded) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static const uint64_t k_t0_ns = 1000000000000000000ULL;
+    dsd_state_ext_free_all(&state);
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+    opts.trunk_enable = 0;
+    state.currentslot = 0;
+    state.lastsynctype = DSD_SYNC_P25P2_POS;
+    state.p25_vc_cqpsk_pref = -1;
+    state.p25_vc_cqpsk_override = -1;
+    dsd_decode_clock_use_test(k_t0_ns);
+    p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
+    p25_patch_update(&state, 1234, /*is_patch*/ 1, /*active*/ 1);
+    p25_patch_set_kas(&state, 1234, /*key*/ 0, /*alg*/ 0x84, /*ssn*/ 1);
+
+    dsd_decode_clock_test_set_ns(k_t0_ns + (age_s * 1000000000ULL));
+    if (!seed_call(&state, 0U, DSD_CALL_KIND_GROUP_VOICE, 1234)) {
+        dsd_decode_clock_use_system();
+        dsd_state_ext_free_all(&state);
+        return 1;
+    }
+    state.dmr_so = 0x40;
+    state.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
+    state.p25_p2_audio_allowed[0] = 1;
+    state.voice_counter[0] = 0;
+    process_2V(&opts, &state);
+    *crypto = state.p25_crypto_state[0];
+    *audio_allowed = state.p25_p2_audio_allowed[0];
+    *decoded = state.voice_counter[0];
+    dsd_decode_clock_use_system();
+    dsd_state_ext_free_all(&state);
+    return 0;
+}
+
+static int
+test_regroup_clear_key_expiry_gates_the_vocoder_on_the_decode_clock(void) {
+    dsd_p25_crypto_state crypto = DSD_P25_CRYPTO_UNKNOWN;
+    int audio_allowed = -1;
+    int decoded = -1;
+    int rc = 0;
+    rc |= run_regroup_clear_key_burst_at(20U, &crypto, &audio_allowed, &decoded);
+    rc |= expect_eq("regroup key 20 s old: crypto remains clear", crypto, DSD_P25_CRYPTO_CLEAR);
+    rc |= expect_eq("regroup key 20 s old: audio gate open", audio_allowed, 1);
+    rc |= expect_eq("regroup key 20 s old: vocoder decoded both frames", decoded, 2);
+
+    rc |= run_regroup_clear_key_burst_at(21U, &crypto, &audio_allowed, &decoded);
+    rc |= expect_eq("regroup key 21 s old: crypto pending", crypto, DSD_P25_CRYPTO_ENCRYPTED_PENDING);
+    rc |= expect_eq("regroup key 21 s old: audio gate closed", audio_allowed, 0);
+    rc |= expect_eq("regroup key 21 s old: vocoder gated", decoded, 0);
     return rc;
 }
 
@@ -901,6 +962,7 @@ main(void) {
     rc |= test_clear_voice_to_encrypted_restarts_deadline();
     rc |= test_pre_ess_opposite_clear_slot_stays_tuned();
     rc |= test_clear_regroup_override_survives_voice_burst();
+    rc |= test_regroup_clear_key_expiry_gates_the_vocoder_on_the_decode_clock();
     rc |= test_private_voice_ignores_regroup_clear_key_collision();
     rc |= test_encrypted_follow_tracks_activity_while_media_is_muted();
     rc |= test_new_transmission_inherits_fresh_clear_grant_service();

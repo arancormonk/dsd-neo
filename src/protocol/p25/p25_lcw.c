@@ -15,7 +15,6 @@
 #include <dsd-neo/core/call_state.h>
 
 #include <dsd-neo/core/constants.h>
-#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/embedded_alias.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/gps.h>
@@ -28,6 +27,7 @@
 #include <dsd-neo/protocol/p25/p25_lcw.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/colors.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/unicode.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -854,7 +854,7 @@ p25_lcw_handle_mfid90_opcode_0f(p25_lcw_ctx* ctx) {
     DSD_MEMSET(ctx->state->dmr_pdu_sf[0], 0, sizeof(ctx->state->dmr_pdu_sf[0]));
     dsd_call_snapshot call;
     const int target = dsd_call_state_get(ctx->state, 0U, &call) > 0 ? (int)call.ota_target_id : 0;
-    p25_sm_emit_end_call_at(ctx->opts, ctx->state, 0, target, (int)src, dsd_time_now_monotonic_s());
+    p25_sm_emit_end_call_at(ctx->opts, ctx->state, 0, target, (int)src, dsd_decode_now_mono_s());
 }
 
 static void

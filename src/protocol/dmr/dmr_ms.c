@@ -26,6 +26,7 @@
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/telemetry.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -323,7 +324,7 @@ dmr_ms_print_bootstrap_sync(const dsd_opts* opts, dsd_state* state, const char t
 void
 dmrMS(dsd_opts* opts, dsd_state* state) {
     char timestr[9];
-    (void)dsd_format_local_datetime(time(NULL), DSD_LOCAL_DATETIME_TIME_COLON, timestr, sizeof timestr);
+    (void)dsd_format_local_datetime(dsd_decode_time(), DSD_LOCAL_DATETIME_TIME_COLON, timestr, sizeof timestr);
     UNUSED(timestr);
 
     dmr_ms_voice_frames frames;
@@ -384,7 +385,7 @@ dmrMS(dsd_opts* opts, dsd_state* state) {
 void
 dmrMSBootstrap(dsd_opts* opts, dsd_state* state) {
     char timestr[9];
-    (void)dsd_format_local_datetime(time(NULL), DSD_LOCAL_DATETIME_TIME_COLON, timestr, sizeof timestr);
+    (void)dsd_format_local_datetime(dsd_decode_time(), DSD_LOCAL_DATETIME_TIME_COLON, timestr, sizeof timestr);
 
     dmr_ms_voice_frames frames;
     char cachdata[25];
@@ -421,7 +422,7 @@ void
 dmrMSData(dsd_opts* opts, dsd_state* state) {
 
     char timestr[9];
-    (void)dsd_format_local_datetime(time(NULL), DSD_LOCAL_DATETIME_TIME_COLON, timestr, sizeof timestr);
+    (void)dsd_format_local_datetime(dsd_decode_time(), DSD_LOCAL_DATETIME_TIME_COLON, timestr, sizeof timestr);
 
     int i;
     int dibit;

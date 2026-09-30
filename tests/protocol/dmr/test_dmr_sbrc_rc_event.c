@@ -17,6 +17,7 @@
 #include <dsd-neo/fec/bptc.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -158,6 +159,41 @@ test_valid_rc_command_emits_on_received_slot(void) {
     dsd_state_ext_free_all(&state);
 }
 
+/* The repeat window (5 s, refreshed by every suppressed repeat) reads decode time. Commands at
+ * T, T + 4 s and T + 8 s are one repeat train; the one at T + 14 s, 6 s after the last repeat, is a
+ * new operator event. T is far from any platform clock reading. */
+static void
+test_rc_repeat_window_runs_on_the_decode_clock(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static const uint64_t k_t0_ns = 1000000000000000000ULL;
+
+    static const struct {
+        uint64_t offset_s;
+        int commits;
+    } k_steps[] = {{0U, 1}, {4U, 0}, {8U, 0}, {14U, 1}};
+
+    reset_fixture(&opts, &state);
+    state.currentslot = 1;
+    load_sbrc_value(&state, 1, build_rc_command_value(5U), /*odd_parity*/ 1);
+    dsd_decode_clock_use_test(k_t0_ns);
+    int commits = 0;
+    for (size_t i = 0; i < sizeof(k_steps) / sizeof(k_steps[0]); i++) {
+        dsd_decode_clock_test_set_ns(k_t0_ns + (k_steps[i].offset_s * 1000000000ULL));
+        const uint64_t revision_before = g_event_history[1].revision;
+        dmr_sbrc(&opts, &state, 1);
+        const int committed = g_event_history[1].revision != revision_before ? 1 : 0;
+        if (committed != k_steps[i].commits) {
+            DSD_FPRINTF(stderr, "RC repeat window: +%u s committed %d, want %d\n", (unsigned)k_steps[i].offset_s,
+                        committed, k_steps[i].commits);
+        }
+        commits += committed;
+    }
+    dsd_decode_clock_use_system();
+    assert(commits == 2);
+    dsd_state_ext_free_all(&state);
+}
+
 static void
 expect_no_commit(dsd_opts* opts, dsd_state* state, uint16_t value, int odd_parity, uint8_t power) {
     reset_fixture(opts, state);
@@ -204,6 +240,7 @@ main(void) {
     InitAllFecFunction();
 
     test_valid_rc_command_emits_on_received_slot();
+    test_rc_repeat_window_runs_on_the_decode_clock();
     test_invalid_or_gated_variants_do_not_emit();
 
     printf("DMR_SBRC_RC_EVENT: OK\n");

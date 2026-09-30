@@ -29,7 +29,6 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dibit.h>
-#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
@@ -45,6 +44,7 @@
 #include <dsd-neo/protocol/edacs/edacs.h>
 #include <dsd-neo/protocol/edacs/edacs_bch.h>
 #include <dsd-neo/runtime/colors.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/net_audio_input_hooks.h>
@@ -552,7 +552,7 @@ edacs_should_release_voice(unsigned long long int sr, int sql_disabled, time_t s
     if (is_dotting_sequence_candidate(sr)) {
         return 1;
     }
-    if (sql_disabled && difftime(time(NULL), start_time) >= no_sql_watchdog_s) {
+    if (sql_disabled && difftime(dsd_decode_time(), start_time) >= no_sql_watchdog_s) {
         LOG_WARN("edacs_analog: forcing VC release after %.0fs (SQL disabled, no release marker).\n",
                  no_sql_watchdog_s);
         return 1;
@@ -715,8 +715,8 @@ edacs_publish_data_activity(dsd_state* state, int lcn, uint64_t target, uint64_t
 //listening to and playing back analog audio
 static void
 edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
-    const time_t now = time(NULL);
-    const double nowm = dsd_time_now_monotonic_s();
+    const time_t now = dsd_decode_time();
+    const double nowm = dsd_decode_now_mono_s();
     int count = 5;
     short analog1[960];
     short analog2[960];
@@ -2081,8 +2081,8 @@ edacs(dsd_opts* opts, dsd_state* state) {
 
     char timestr[7];
     char datestr[9];
-    (void)dsd_format_local_datetime(time(NULL), DSD_LOCAL_DATETIME_TIME_COMPACT, timestr, sizeof timestr);
-    (void)dsd_format_local_datetime(time(NULL), DSD_LOCAL_DATETIME_DATE_COMPACT, datestr, sizeof datestr);
+    (void)dsd_format_local_datetime(dsd_decode_time(), DSD_LOCAL_DATETIME_TIME_COMPACT, timestr, sizeof timestr);
+    (void)dsd_format_local_datetime(dsd_decode_time(), DSD_LOCAL_DATETIME_DATE_COMPACT, datestr, sizeof datestr);
 
     int edacs_bit[241] = {0}; //zero out bit array and collect bits into it.
     edacs_collect_bits(opts, state, edacs_bit);
@@ -2128,8 +2128,8 @@ EDACS_END:
 
 void
 eot_cc(dsd_opts* opts, dsd_state* state) {
-    const time_t now = time(NULL);
-    const double nowm = dsd_time_now_monotonic_s();
+    const time_t now = dsd_decode_time();
+    const double nowm = dsd_decode_now_mono_s();
 
     DSD_FPRINTF(stderr, "EOT; \n");
 

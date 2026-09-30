@@ -10,8 +10,8 @@
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_P25_P25_CC_ACTIVITY_H
 #define DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_P25_P25_CC_ACTIVITY_H
 
-#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <time.h>
 #include "dsd-neo/core/state_fwd.h"
@@ -34,8 +34,8 @@ p25_sm_note_cc_activity(dsd_state* state) {
         return;
     }
     dsd_trunk_recovery_note_protocol(state, DSD_TRUNK_RECOVERY_P25);
-    const time_t now = time(NULL);
-    const double now_m = dsd_time_now_monotonic_s();
+    const time_t now = dsd_decode_time();
+    const double now_m = dsd_decode_now_mono_s();
     state->last_cc_sync_time = now;
     state->last_cc_sync_time_m = now_m;
     state->p25_last_cc_msg_time = now;

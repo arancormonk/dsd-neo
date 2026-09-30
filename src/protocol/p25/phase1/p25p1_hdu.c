@@ -23,7 +23,6 @@
 
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dibit.h>
-#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/parse.h>
 #include <dsd-neo/core/state.h>
@@ -36,6 +35,7 @@
 #include <dsd-neo/protocol/p25/p25p1_hdu.h>
 #include <dsd-neo/protocol/p25/p25p1_soft.h>
 #include <dsd-neo/runtime/colors.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -285,8 +285,8 @@ hdu_read_and_fec(dsd_opts* opts, dsd_state* state, char hex_data[20][6], char he
     }
 
     state->p25_p1_voice_fec_ok++;
-    state->last_vc_sync_time = time(NULL);
-    state->last_vc_sync_time_m = dsd_time_now_monotonic_s();
+    state->last_vc_sync_time = dsd_decode_time();
+    state->last_vc_sync_time_m = dsd_decode_now_mono_s();
 
     return 0;
 }

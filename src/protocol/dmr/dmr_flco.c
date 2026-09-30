@@ -12,6 +12,7 @@
 
 #include <dsd-neo/core/bit_packing.h>
 #include <dsd-neo/core/key_presence.h>
+#include <dsd-neo/runtime/decode_clock.h>
 
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
@@ -714,7 +715,7 @@ dmr_flco_voice_boundary(const dmr_flco_ctx* ctx) {
         || current.media_active != 0U) {
         return DSD_CALL_BOUNDARY_BEGIN;
     }
-    if (dsd_time_now_monotonic_s() - current.started_m > DMR_FLCO_HEADER_REPEAT_WINDOW_S) {
+    if (dsd_decode_now_mono_s() - current.started_m > DMR_FLCO_HEADER_REPEAT_WINDOW_S) {
         return DSD_CALL_BOUNDARY_BEGIN;
     }
     return DSD_CALL_BOUNDARY_CONTINUE;
@@ -1486,7 +1487,7 @@ dmr_cach_handle_single_fragment(dsd_state* state, uint8_t cach_bits[25], uint8_t
     }
 
     int slot = state->currentslot;
-    time_t now = time(NULL);
+    time_t now = dsd_decode_time();
     if (state->slco_sfrag_last[slot] != 0 && (now - state->slco_sfrag_last[slot]) < 1) {
         return err;
     }
@@ -1843,7 +1844,7 @@ dmr_slco_handle_con_plus_control(dsd_opts* opts, dsd_state* state, const dmr_slc
     DSD_SNPRINTF(state->dmr_site_parms, sizeof(state->dmr_site_parms), "%d-%d ", data->con_netid, data->con_siteid);
 
     dmr_sm_note_cc_activity(opts, state, 0);
-    if ((time(NULL) - state->last_vc_sync_time) > 2) {
+    if ((dsd_decode_time() - state->last_vc_sync_time) > 2) {
         rotate_symbol_out_file(opts, state);
     }
 }

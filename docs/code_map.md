@@ -625,12 +625,16 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
     two domains. In `src/dsp`, `src/engine`, `src/runtime` and `src/io`, decode time drives the frame-sync and symbol
     sync stamps (and `dsd_mark_cc_sync()`/`dsd_mark_vc_sync()` in `src/core/time/dsd_time_state.c`), the CQPSK dwell,
     the FSK no-sync reacquire watchdog, the no-carrier, stale-follow, scan and trunk timers, the retune completion
-    stamps in `src/runtime/trunk_tuning_hooks.c` and the rdio sidecar's fallback start time. Real time drives device,
-    socket and ring waits, replay pacing, auto-gain and auto-PPM, the analog tap's input-pause deadline and backlog
-    skip, UI publish throttles, `ui_msg_expire` toasts, the input-level warning cooldown, RadioReference dates and perf.
-    Two sources below runtime in the link order keep the platform clocks for their real-time reads:
-    `src/io/iq/iq_capture.c` (`dsd-neo_io_iq`) and `src/io/radio/tcp_quality_metrics.cpp` (built into
-    `dsd-neo_platform`).
+    stamps in `src/runtime/trunk_tuning_hooks.c` and the rdio sidecar's fallback start time. Every clock read in
+    `src/protocol` (and `p25_sm_note_cc_activity()` in `include/dsd-neo/protocol/p25/p25_cc_activity.h`) is decode
+    time: protocol windows (the DMR header repeat, SLCO print throttle and RC repeat dedup, the P25 PTT
+    retransmission and FACCH double-END windows, the regroup key TTL, NXDN recent context), trunk SM stamps and ticks,
+    sync stamps, and decoded-output timestamps and file names. The P25 SM watchdog thread sleeps in real time, but the
+    ticks it drives compare decode time. Real time drives device, socket and ring waits, replay pacing, auto-gain and
+    auto-PPM, the analog tap's input-pause deadline and backlog skip, UI publish throttles, `ui_msg_expire` toasts, the
+    input-level warning cooldown, RadioReference dates and perf. Two sources below runtime in the link order keep the
+    platform clocks for their real-time reads: `src/io/iq/iq_capture.c` (`dsd-neo_io_iq`) and
+    `src/io/radio/tcp_quality_metrics.cpp` (built into `dsd-neo_platform`).
   - Analog channel contract shared by the CLI, config, app commands, scan rows and the demodulator
     (`include/dsd-neo/runtime/analog_channel.h`, `src/runtime/analog_channel.c`): `dsd_analog_demod` (FM = 0,
     AM = 1), `dsd_rx_family`, per-kind width ranges and defaults (NFM 8000–25000 Hz, default 16000; AM

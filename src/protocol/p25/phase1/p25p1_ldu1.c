@@ -24,7 +24,6 @@
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dibit.h>
-#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/events.h> // IWYU pragma: keep - private-source tests need the enrichment declaration
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
@@ -39,6 +38,7 @@
 #include <dsd-neo/protocol/p25/p25p1_ldu.h>
 #include <dsd-neo/protocol/p25/p25p1_soft.h>
 #include <dsd-neo/runtime/colors.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -101,14 +101,14 @@ p25p1_ldu1_refresh_vc_hysteresis(const dsd_opts* opts, dsd_state* state) {
     // Hysteresis: if we have very recent activity within a fraction of the
     // hangtime window, refresh the timer early to avoid thrashing between the
     // VC and CC on marginal signals.
-    time_t now = time(NULL);
+    time_t now = dsd_decode_time();
     double hold_hyst = opts->trunk_hangtime * 0.75;
     if (hold_hyst < 0.75) {
         hold_hyst = 0.75; // minimum grace window
     }
     if (state->last_vc_sync_time != 0 && (double)(now - state->last_vc_sync_time) <= hold_hyst) {
         state->last_vc_sync_time = now;
-        state->last_vc_sync_time_m = dsd_time_now_monotonic_s();
+        state->last_vc_sync_time_m = dsd_decode_now_mono_s();
     }
 }
 
@@ -252,8 +252,8 @@ p25p1_ldu1_apply_rs_fec(dsd_state* state, char hex_data[12][6], char hex_parity[
     state->p25_p1_voice_fec_ok++;
     // Passed FEC checks: mark recent voice activity for trunk hangtime
     // tracking so we don't prematurely return to CC mid-call.
-    state->last_vc_sync_time = time(NULL);
-    state->last_vc_sync_time_m = dsd_time_now_monotonic_s();
+    state->last_vc_sync_time = dsd_decode_time();
+    state->last_vc_sync_time_m = dsd_decode_now_mono_s();
 
     return irrecoverable_errors;
 }

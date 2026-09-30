@@ -271,12 +271,6 @@ static long int g_rigctl_setfreq_freq = 0;
 static int g_rigctl_setmod_calls = 0;
 static int g_rigctl_setmod_bw = 0;
 
-#ifdef DSD_NEO_TEST_TIME_WRAP
-// The wall clock time() reads, which the -Y hangtime rule compares (engine.c no_carrier_run() reads it through the
-// decode clock's SYSTEM source, dsd_decode_time()): 0 leaves the real one, any other value is the second a case injects.
-static time_t g_test_wall = 0;
-#endif
-
 // GNU ld --wrap entry points must keep the reserved __wrap_* symbol names.
 // NOLINTBEGIN(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
 #ifdef USE_RADIO
@@ -724,22 +718,6 @@ __wrap_SetModulation(dsd_socket_t sockfd, int bandwidth) {
     g_rigctl_setmod_bw = bandwidth;
     return true;
 }
-
-#ifdef DSD_NEO_TEST_TIME_WRAP
-time_t __real_time(time_t* result);
-time_t __wrap_time(time_t* result);
-
-time_t
-__wrap_time(time_t* result) {
-    if (!g_test_wall) {
-        return __real_time(result);
-    }
-    if (result) {
-        *result = g_test_wall;
-    }
-    return g_test_wall;
-}
-#endif
 
 // NOLINTEND(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
 #endif
@@ -3563,7 +3541,6 @@ test_allowed_traffic_holds_the_legacy_scan_before_its_block_ends(void) {
     return rc;
 }
 
-#ifdef DSD_NEO_TEST_TIME_WRAP
 /* Feed @p blocks 20 ms blocks at 48 kHz of a tone at @p hz, or of silence (a closed squelch) for 0, through the tap.
    Nothing here stamps the -Y hangtime anchor: the monitor's stamp at each block's end is proven through the real
    monitor block by DSP_SYMBOL_REPLAY (only traffic the policy passes stamps), and the case below sets the anchor to
@@ -3581,18 +3558,24 @@ feed_tap_blocks(dsd_opts* opts, dsd_state* state, int blocks, double hz) {
     }
 }
 
-/* Run a -Y pass with the injected wall clock at @p wall; whether it stepped off the row on air. */
+/* Hold the decode clock (wall and monotonic alike) at @p second. */
+static void
+decode_clock_at_s(time_t second) {
+    dsd_decode_clock_use_test((uint64_t)second * 1000000000ULL);
+}
+
+/* Run a -Y pass with the decode clock at @p wall; whether it stepped off the row on air. */
 static int
 legacy_scan_pass_steps_at(dsd_opts* opts, dsd_state* state, time_t wall) {
-    g_test_wall = wall;
+    decode_clock_at_s(wall);
     g_rigctl_setfreq_calls = 0;
     noCarrier(opts, state);
     return g_rigctl_setfreq_calls > 0;
 }
 
 /*
- * The -Y step rule against the hangtime anchor the monitor leaves (issue #527), which this case sets itself, on a wall
- * clock it injects (time() is what the rule compares whole seconds of). A carrier the tone policy is still checking is
+ * The -Y step rule against the hangtime anchor the monitor leaves (issue #527), which this case sets itself, on the
+ * decode clock it holds (the rule compares whole decode seconds). A carrier the tone policy is still checking is
  * no activity, so the monitor stamps no anchor for it (DSP_SYMBOL_REPLAY): it holds the legacy -Y row while it lasts,
  * under "Tone check" with nothing counting down, and short no-tone bursts under an allow list -- kerchunks, noise --
  * each end before a verdict and leave the anchor where the row's landing put it. With a burst in every second of -t,
@@ -3613,17 +3596,18 @@ test_tone_check_leaves_no_hangtime_tail(void) {
     rc |= expect_true("no tail: allow 100.0", dsd_tone_set_parse("100.0", &opts->analog_tone_set, NULL, 0) == 0);
     opts->trunk_hangtime = 2;
     g_rigctl_setfreq_ok = 1;
-    const time_t landed = time(NULL);
+    decode_clock_at_ms(0U);
+    const time_t landed = dsd_decode_time();
     state->last_cc_sync_time = landed;
     for (int burst = 0; burst <= 2; burst++) {
         const time_t now = landed + burst;
-        g_test_wall = now;
+        decode_clock_at_s(now);
         feed_tap_blocks(opts, state, 15, 1000.0);
         rc |= expect_true("no tail: a burst is checked",
                           dsd_scan_analog_tone_gate(opts, state) == DSD_ANALOG_TONE_GATE_PENDING);
         rc |= expect_true("no tail: the check holds the row",
                           !legacy_scan_pass_steps_at(opts, state, now) && state->lcn_freq_roll == 1);
-        dsd_engine_scan_y_timing_tick(opts, state, dsd_time_now_monotonic_s(), (double)now);
+        dsd_engine_scan_y_timing_tick(opts, state, dsd_decode_now_mono_s(), (double)now);
         rc |= expect_true("no tail: Tone check, nothing counting down",
                           state->scan_timing.reason == (uint8_t)DSD_SCAN_STAY_TONE_PENDING
                               && state->scan_timing.deadline_m < 0.0);
@@ -3637,7 +3621,7 @@ test_tone_check_leaves_no_hangtime_tail(void) {
     rc |= expect_true("no tail: the pass once -t since the landing has run out steps",
                       legacy_scan_pass_steps_at(opts, state, landed + 3) && g_rigctl_setfreq_freq == 972012500
                           && state->lcn_freq_roll == 2);
-    g_test_wall = 0;
+    dsd_decode_clock_use_system();
     free_test_runtime(opts, state);
 
     /* The listed tone: checked, then allowed and stamped by its last block; once it ends, the row waits out -t. */
@@ -3648,8 +3632,8 @@ test_tone_check_leaves_no_hangtime_tail(void) {
     rc |= expect_true("tail: allow 100.0", dsd_tone_set_parse("100.0", &opts->analog_tone_set, NULL, 0) == 0);
     opts->trunk_hangtime = 2;
     g_rigctl_setfreq_ok = 1;
-    const time_t heard = time(NULL);
-    g_test_wall = heard;
+    decode_clock_at_ms(0U);
+    const time_t heard = dsd_decode_time();
     /* The row landed 10 s ago: -t has run out, and the check stamps nothing. */
     state->last_cc_sync_time = heard - 10;
     feed_tap_blocks(opts, state, 30, 100.0);
@@ -3660,7 +3644,7 @@ test_tone_check_leaves_no_hangtime_tail(void) {
     rc |= expect_true("tail: ended", state->analog_rx.carrier_open == 0 && state->analog_rx.gate_rejected_ended == 0);
     rc |= expect_true("tail: the row waits out -t",
                       !legacy_scan_pass_steps_at(opts, state, heard + 2) && state->lcn_freq_roll == 1);
-    const double now_m = dsd_time_now_monotonic_s();
+    const double now_m = dsd_decode_now_mono_s();
     dsd_engine_scan_y_timing_tick(opts, state, now_m, (double)(heard + 2));
     rc |= expect_true("tail: Hangtime, its last second counting down",
                       state->scan_timing.reason == (uint8_t)DSD_SCAN_STAY_HANGTIME
@@ -3668,12 +3652,11 @@ test_tone_check_leaves_no_hangtime_tail(void) {
     rc |= expect_true("tail: the pass once -t has run out steps", legacy_scan_pass_steps_at(opts, state, heard + 3)
                                                                       && g_rigctl_setfreq_freq == 974012500
                                                                       && state->lcn_freq_roll == 2);
-    g_test_wall = 0;
+    dsd_decode_clock_use_system();
     g_rigctl_setfreq_ok = 0;
     free_test_runtime(opts, state);
     return rc;
 }
-#endif
 #endif
 
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
@@ -5407,9 +5390,7 @@ main(void) {
     rc |= test_tone_rejection_that_ended_steps_the_legacy_scan();
     rc |= test_tone_check_holds_the_legacy_scan_while_the_verdict_is_pending();
     rc |= test_allowed_traffic_holds_the_legacy_scan_before_its_block_ends();
-#ifdef DSD_NEO_TEST_TIME_WRAP
     rc |= test_tone_check_leaves_no_hangtime_tail();
-#endif
 #endif
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
     rc |= test_rx_tone_resets_on_legacy_scan_step();

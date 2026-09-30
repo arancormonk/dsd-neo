@@ -22,6 +22,7 @@
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/protocol/edacs/edacs_afs.h>
 #include <dsd-neo/protocol/nxdn/nxdn_lfsr.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
@@ -1472,6 +1473,99 @@ test_cach_single_fragment_labels_cover_known_and_reserved_codes(void) {
     }
 }
 
+// A decode instant far from any platform clock reading (1e9 s), so a window that read the platform
+// clock instead of the decode clock could not land on the expected side of its boundary.
+#define DMR_FLCO_TEST_DECODE_T0_NS 1000000000000000000ULL
+#define DMR_FLCO_TEST_DECODE_T0_S  1000000000
+
+static size_t
+count_occurrences(const char* haystack, const char* needle) {
+    size_t count = 0U;
+    const size_t len = strlen(needle);
+    for (const char* p = strstr(haystack, needle); p != NULL; p = strstr(p + len, needle)) {
+        count++;
+    }
+    return count;
+}
+
+// The single-fragment SLCO print is throttled to one line per slot per decode second: two
+// fragments at T print one line, and two more at T + 1 s print the second.
+static void
+test_cach_single_fragment_throttle_runs_on_the_decode_clock(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t slc[17];
+    uint8_t cach[25];
+    char out[4096];
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.currentslot = 0;
+    build_slc17(slc, 0x1U, 0x8U, 0x0U);
+    build_cach_fragment(cach, 0U, slc);
+
+    dsd_decode_clock_use_test(DMR_FLCO_TEST_DECODE_T0_NS);
+    dsd_test_capture_stderr cap;
+    assert(dsd_test_capture_stderr_begin(&cap, "dmr_cach_single_throttle") == 0);
+    assert(dmr_cach(&opts, &state, cach) == 0U);
+    assert(dmr_cach(&opts, &state, cach) == 0U);
+    dsd_decode_clock_test_set_ns(DMR_FLCO_TEST_DECODE_T0_NS + 1000000000ULL);
+    assert(dmr_cach(&opts, &state, cach) == 0U);
+    assert(dmr_cach(&opts, &state, cach) == 0U);
+    assert(dsd_test_capture_stderr_end(&cap) == 0);
+    assert(dsd_test_capture_stderr_read(&cap, out, sizeof(out)) == 0);
+    dsd_decode_clock_use_system();
+
+    assert(count_occurrences(out, "SLC Activity (single)") == 2U);
+    assert(state.slco_sfrag_last[0] == (time_t)DMR_FLCO_TEST_DECODE_T0_S + 1);
+}
+
+// The voice LC header repeat window (2 s) reads decode time: a same-identity header 1.9 s after
+// the call started continues its epoch, and one 2.1 s after it opens the next transmission's.
+// The call is seeded with an explicit start instant, so the window alone is measured.
+static void
+test_header_repeat_window_runs_on_the_decode_clock(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t bits[80];
+    uint32_t irr = 0;
+    dsd_call_snapshot call;
+
+    dsd_state_ext_free_all(&state);
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.currentslot = 0;
+    dsd_decode_clock_use_test(DMR_FLCO_TEST_DECODE_T0_NS);
+    const dsd_call_observation observation = {
+        .protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 1001U,
+        .policy_target_id = 1001U,
+        .ota_source_id = 2002U,
+        .observed_m = dsd_decode_now_mono_s(),
+    };
+    assert(dsd_call_state_observe(&state, &observation, DSD_CALL_BOUNDARY_BEGIN) > 0);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    const uint64_t epoch = call.epoch;
+
+    build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 1001U, 2002U);
+    dsd_decode_clock_test_set_ns(DMR_FLCO_TEST_DECODE_T0_NS + 1900000000ULL);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE);
+    assert(call.epoch == epoch);
+
+    irr = 0;
+    dsd_decode_clock_test_set_ns(DMR_FLCO_TEST_DECODE_T0_NS + 2100000000ULL);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE);
+    assert(call.epoch != epoch);
+    dsd_decode_clock_use_system();
+    dsd_state_ext_free_all(&state);
+}
+
 static void
 test_cach_completed_fragment_crc_error_reports_voice_payload_context(void) {
     static dsd_opts opts;
@@ -2586,6 +2680,8 @@ main(void) {
     test_hytera_xpt_alert_records_free_lcn_and_targets();
     test_cach_single_fragment_throttle_and_reject_paths();
     test_cach_single_fragment_labels_cover_known_and_reserved_codes();
+    test_cach_single_fragment_throttle_runs_on_the_decode_clock();
+    test_header_repeat_window_runs_on_the_decode_clock();
     test_cach_completed_fragment_crc_error_reports_voice_payload_context();
     test_cach_fragment_counter_overflow_resets_fragments();
     test_encrypted_flco_lockout_inserts_policy_and_event_history();

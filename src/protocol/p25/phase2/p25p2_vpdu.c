@@ -15,7 +15,6 @@
 #include <dsd-neo/core/bit_packing.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/constants.h>
-#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/embedded_alias.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
@@ -35,6 +34,7 @@
 #include <dsd-neo/protocol/p25/p25p2_mac_parse.h>
 #include <dsd-neo/runtime/colors.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/p25_p2_audio_ring.h>
 #include <stdarg.h>
 #include <stdint.h>
@@ -215,8 +215,7 @@ p25p2_vpdu_voice_repeats_recent_end(dsd_opts* opts, dsd_state* state, int slot, 
                                     uint64_t subscriber_source, int service_options) {
     dsd_call_snapshot current = {0};
     if (dsd_call_state_get(state, (uint8_t)slot, &current) <= 0 || current.phase != DSD_CALL_PHASE_ENDED
-        || !p25_sm_voice_user_repeats_recent_end(slot, (int)target, (int)subscriber_source,
-                                                 dsd_time_now_monotonic_s())) {
+        || !p25_sm_voice_user_repeats_recent_end(slot, (int)target, (int)subscriber_source, dsd_decode_now_mono_s())) {
         return 0;
     }
     p25p2_vpdu_update_voice_crypto(state, slot, service_options, 0,
@@ -466,7 +465,7 @@ p25p2_emit_mac_json_if_enabled(const dsd_state* state, int xch_type, uint8_t mfi
         sum[j] = '\0';
     }
 
-    time_t ts = time(NULL);
+    time_t ts = dsd_decode_time();
     DSD_FPRINTF(stderr,
                 "{\"ts\":%ld,\"proto\":\"p25\",\"mac\":1,\"xch\":\"%s\",\"mfid\":%u,\"op\":%u,\"slot\":%d,\"slot1\":%d,"
                 "\"lenB\":%d,\"lenC\":%d,\"summary\":\"%s\"}\n",
@@ -973,8 +972,8 @@ p25p2_vpdu_elapsed_s(double mono_stamp, time_t wall_stamp, double nowm, double n
 
 static int
 p25p2_vpdu_recent_voice_active(const dsd_state* state, double voice_hold_s) {
-    double nowm = dsd_time_now_monotonic_s();
-    double noww = (double)time(NULL);
+    double nowm = dsd_decode_now_mono_s();
+    double noww = (double)dsd_decode_time();
     double dt = p25p2_vpdu_elapsed_s(state->last_vc_sync_time_m, state->last_vc_sync_time, nowm, noww);
     return dt <= voice_hold_s;
 }
@@ -982,8 +981,8 @@ p25p2_vpdu_recent_voice_active(const dsd_state* state, double voice_hold_s) {
 static int
 p25p2_vpdu_other_slot_audio_with_history(const dsd_state* state, int slot, double mac_hold_s, double voice_hold_s) {
     int other_slot = slot ^ 1;
-    double nowm = dsd_time_now_monotonic_s();
-    double noww = (double)time(NULL);
+    double nowm = dsd_decode_now_mono_s();
+    double noww = (double)dsd_decode_time();
     double dt_mac = p25p2_vpdu_elapsed_s(state->p25_p2_last_mac_active_m[other_slot],
                                          state->p25_p2_last_mac_active[other_slot], nowm, noww);
     int recent_voice = p25p2_vpdu_recent_voice_active(state, voice_hold_s);
@@ -1012,7 +1011,7 @@ p25p2_vpdu_carrier_occupied_for_response(const dsd_opts* opts, const dsd_state* 
 static int
 p25p2_vpdu_force_release_after_grace(dsd_opts* opts, dsd_state* state) {
     double vc_grace = p25p2_vpdu_cfg_vc_grace_s(0.75);
-    double nowm = dsd_time_now_monotonic_s();
+    double nowm = dsd_decode_now_mono_s();
     double dt_since_tune = (state->p25_last_vc_tune_time_m > 0.0) ? (nowm - state->p25_last_vc_tune_time_m) : 1e9;
     if (dt_since_tune < vc_grace) {
         return 0;
@@ -3480,7 +3479,7 @@ p25p2_vpdu_iter_block_44(p25p2_vpdu_ctx* ctx) {
 
         dsd_p25p2_flush_partial_audio_slot(opts, state, released_slot);
         p25p2_vpdu_gate_slot_audio(state, eslot);
-        p25_sm_emit_mac_release(opts, state, released_slot, dsd_time_now_monotonic_s());
+        p25_sm_emit_mac_release(opts, state, released_slot, dsd_decode_now_mono_s());
         p25_crypto_reset_slot(state, released_slot);
         other_audio = p25p2_vpdu_other_slot_audio_with_history(state, eslot, mac_hold, voice_hold);
         if (!other_audio) {
@@ -3537,7 +3536,7 @@ p25p2_vpdu_iter_block_45(p25p2_vpdu_ctx* ctx) {
             p25p2_vpdu_observe_voice(opts, state, slot, DSD_CALL_KIND_GROUP_VOICE, (uint64_t)(uint32_t)gr,
                                      (uint64_t)(uint32_t)src, svc, ctx->pdu_type);
         if (tracked_voice) {
-            state->p25_p2_last_mac_active[slot] = time(NULL);
+            state->p25_p2_last_mac_active[slot] = dsd_decode_time();
             p25p2_vpdu_store_slot_svc(state, slot, svc);
         }
         DSD_FPRINTF(stderr, (MAC[1 + len_a] == 0x21) ? " - Extended " : " - Abbreviated ");
@@ -3596,7 +3595,7 @@ p25p2_vpdu_iter_block_46(p25p2_vpdu_ctx* ctx) {
             p25p2_vpdu_observe_voice(opts, state, slot, DSD_CALL_KIND_PRIVATE_VOICE, (uint64_t)(uint32_t)gr,
                                      (uint64_t)(uint32_t)src, svc, ctx->pdu_type);
         if (tracked_voice) {
-            state->p25_p2_last_mac_active[slot] = time(NULL);
+            state->p25_p2_last_mac_active[slot] = dsd_decode_time();
             p25p2_vpdu_store_slot_svc(state, slot, svc);
         }
 
@@ -5056,8 +5055,8 @@ p25p2_vpdu_handle_standard_group_regroup_voice_user_abbreviated(p25p2_vpdu_ctx* 
         p25_patch_update(state, supergroup, /*is_patch*/ 1, /*active*/ 1);
         if (p25p2_vpdu_observe_voice(ctx->opts, state, slot, DSD_CALL_KIND_GROUP_VOICE, (uint64_t)(uint32_t)supergroup,
                                      (uint64_t)(uint32_t)source, -1, ctx->pdu_type)) {
-            state->p25_p2_last_mac_active[slot] = time(NULL);
-            state->p25_p2_last_mac_active_m[slot] = dsd_time_now_monotonic_s();
+            state->p25_p2_last_mac_active[slot] = dsd_decode_time();
+            state->p25_p2_last_mac_active_m[slot] = dsd_decode_now_mono_s();
         }
     }
 }

@@ -11,7 +11,6 @@
 
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
-#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/key_presence.h>
 #include <dsd-neo/core/keyring.h>
@@ -20,6 +19,7 @@
 #include <dsd-neo/crypto/dmr_keystream.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/runtime/colors.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <time.h>
@@ -32,10 +32,10 @@
 static void
 dmr_pi_update_sync_times_if_tuned(const dsd_opts* opts, dsd_state* state) {
     if (opts->trunk_is_tuned == 1) {
-        state->last_vc_sync_time = time(NULL);
-        state->last_vc_sync_time_m = dsd_time_now_monotonic_s();
-        state->last_cc_sync_time = time(NULL);
-        state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
+        state->last_vc_sync_time = dsd_decode_time();
+        state->last_vc_sync_time_m = dsd_decode_now_mono_s();
+        state->last_cc_sync_time = dsd_decode_time();
+        state->last_cc_sync_time_m = dsd_decode_now_mono_s();
     }
 }
 

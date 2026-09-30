@@ -9,12 +9,13 @@
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/frame_sync.h>
-#include <dsd-neo/platform/timing.h>
 #include <dsd-neo/protocol/nxdn/nxdn.h>
 
 #include <dsd-neo/protocol/nxdn/nxdn_deperm.h>
 #include <dsd-neo/protocol/nxdn/nxdn_lfsr.h>
 #include <dsd-neo/protocol/nxdn/nxdn_voice.h>
+#include <dsd-neo/runtime/decode_clock.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -159,16 +160,6 @@ getDibitSoft(dsd_opts* opts, dsd_state* state, dsd_dibit_soft_t* out_soft) {
         out_soft->reliability = reliab;
     }
     return dibit;
-}
-
-uint64_t
-dsd_time_monotonic_ns(void) {
-    return 42000000000ULL;
-}
-
-uint64_t
-dsd_time_monotonic_ms(void) {
-    return dsd_time_monotonic_ns() / 1000000U;
 }
 
 dsd_nxdn_variant
@@ -423,7 +414,7 @@ test_public_frame_entry_lich_collection(void) {
     rc |= expect_int("frame consumed dibits", (int)g_dibit_stream_pos, 182);
     rc |= expect_int("frame cac route", g_cac_calls, 1);
     rc |= expect_int("frame carrier active", g_state.carrier, 1);
-    rc |= expect_int("frame cc mono timestamp", g_state.last_cc_sync_time_m == 42.0, 1);
+    rc |= expect_int("frame cc mono timestamp", fabs(g_state.last_cc_sync_time_m - 1042.0) < 1e-9, 1);
     rc |= expect_int("frame cac reliability", g_last_cac_reliab, g_dibit_reliab_stream[8]);
 
     reset_state();
@@ -521,7 +512,7 @@ test_lfsr_and_scanner_state(void) {
     g_opts.frame_nxdn48 = 1;
     g_opts.frame_nxdn96 = 1;
     g_active_nxdn_variant = DSD_NXDN_VARIANT_96;
-    g_state.last_vc_sync_time = time(NULL);
+    g_state.last_vc_sync_time = dsd_decode_time();
     rc |= expect_int("full-auto NXDN96 recent data keeps mbe file route", route_frame(0x01U), 1);
     rc |= expect_int("full-auto NXDN96 recent data keeps mbe file", g_opts.mbe_out_f == stdout, 1);
     g_state.last_vc_sync_time = 0;
@@ -612,12 +603,15 @@ int
 main(void) {
     int rc = 0;
 
+    /* Decode time, in whole seconds past the stamps the cases seed (1000 s). */
+    dsd_decode_clock_use_test(1042000000000ULL);
     rc |= test_control_channel_routes_and_reliability();
     rc |= test_bad_frame_and_filter_gates();
     rc |= test_public_frame_entry_lich_collection();
     rc |= test_lfsr_and_scanner_state();
     rc |= test_unconfirmed_frame_is_inert();
     rc |= test_short_crc_confirms_only_when_repeated();
+    dsd_decode_clock_use_system();
 
     if (rc == 0) {
         DSD_FPRINTF(stdout, "NXDN_FRAME_ROUTING: OK\n");

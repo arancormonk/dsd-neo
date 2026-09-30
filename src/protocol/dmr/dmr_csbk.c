@@ -19,6 +19,7 @@
 
 #include <dsd-neo/core/bit_packing.h>
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/runtime/decode_clock.h>
 
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dsd_time.h>
@@ -903,8 +904,8 @@ dmr_cspdu_pf0_handle_p_protect(const dsd_opts* opts, dsd_state* state, uint8_t c
     }
     if (p_kind == 2) {
         if (state->trunk_cc_freq != 0 && opts->trunk_is_tuned == 1) {
-            state->last_vc_sync_time = time(NULL);
-            state->last_vc_sync_time_m = dsd_time_now_monotonic_s();
+            state->last_vc_sync_time = dsd_decode_time();
+            state->last_vc_sync_time_m = dsd_decode_now_mono_s();
             if (opts->verbose > 2) {
                 DSD_FPRINTF(stderr, " Hold VC (hangtime advisory) ");
             }
@@ -1974,7 +1975,7 @@ dmr_cspdu_cap_plus_3e_set_branding(dsd_state* state) {
 
 static void
 dmr_cspdu_cap_plus_3e_try_tune_grants(dsd_opts* opts, dsd_state* state, const dmr_cap_plus_3e_ctx* ctx) {
-    if ((time(NULL) - state->last_vc_sync_time) <= 2) {
+    if ((dsd_decode_time() - state->last_vc_sync_time) <= 2) {
         return;
     }
 
@@ -2084,7 +2085,7 @@ dmr_cspdu_cap_plus_handle_3e(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bi
     if (state->tg_hold != 0) {
         state->last_vc_sync_time = 0;
     }
-    if ((time(NULL) - state->last_vc_sync_time) > 2) {
+    if ((dsd_decode_time() - state->last_vc_sync_time) > 2) {
         rotate_symbol_out_file(opts, state);
     }
 
@@ -2184,7 +2185,7 @@ dmr_cspdu_con_plus_try_tune_voice(dsd_opts* opts, dsd_state* state, const dmr_co
     if (opts->trunk_tune_group_calls != 1) {
         return;
     }
-    if (time(NULL) - state->last_vc_sync_time <= (opts->trunk_tune_data_calls == 1 ? 4 : 2)) {
+    if (dsd_decode_time() - state->last_vc_sync_time <= (opts->trunk_tune_data_calls == 1 ? 4 : 2)) {
         return;
     }
 
@@ -2278,7 +2279,7 @@ dmr_cspdu_con_plus_handle_data(dsd_opts* opts, dsd_state* state, const uint8_t c
 
     dmr_format_chan_suffix(tslot, suf, sizeof suf);
     (void)dsd_recent_activity_save(state, tslot, &activity_transaction);
-    now = time(NULL);
+    now = dsd_decode_time();
     char notice[DSD_RECENT_ACTIVITY_TEXT_SIZE];
     DSD_SNPRINTF(notice, sizeof notice, "Active Ch: %04X%s TG: %d; ", lcn, suf, dtarget);
     dmr_csbk_publish_activity(state, tslot, tslot, DSD_CALL_KIND_DATA, dtarget, 0U, lcn, state->trunk_chan_map[lcn], 0,
@@ -2437,7 +2438,7 @@ dmr_cspdu_xpt_print_and_collect(const dsd_opts* opts, dsd_state* state, uint8_t 
 
 static void
 dmr_cspdu_xpt_try_tune(dsd_opts* opts, dsd_state* state, const uint8_t t_tg[18], uint8_t xpt_bank) {
-    if ((time(NULL) - state->last_vc_sync_time) <= 2) {
+    if ((dsd_decode_time() - state->last_vc_sync_time) <= 2) {
         return;
     }
 
@@ -2518,7 +2519,7 @@ dmr_cspdu_xpt_handle_site_status(dsd_opts* opts, dsd_state* state, uint8_t cs_pd
         if (state->tg_hold != 0) {
             state->last_vc_sync_time = 0;
         }
-        if ((time(NULL) - state->last_vc_sync_time) > 2) {
+        if ((dsd_decode_time() - state->last_vc_sync_time) > 2) {
             rotate_symbol_out_file(opts, state);
         }
         dmr_cspdu_xpt_try_tune(opts, state, t_tg, xpt_bank);
@@ -2666,8 +2667,8 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
     // This does not process the PDU further — it only keeps the CC timer warm.
     else if (opts->dmr_crc_relaxed_default) {
         dmr_sm_note_cc_heartbeat(opts, state);
-        state->last_cc_sync_time = time(NULL);
-        state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
+        state->last_cc_sync_time = dsd_decode_time();
+        state->last_cc_sync_time_m = dsd_decode_now_mono_s();
     }
 
     DSD_FPRINTF(stderr, "%s", KNRM);

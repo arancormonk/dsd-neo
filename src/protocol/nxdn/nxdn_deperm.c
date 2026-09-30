@@ -39,6 +39,7 @@
 #include <dsd-neo/protocol/nxdn/nxdn_deperm.h>
 #include <dsd-neo/protocol/nxdn/nxdn_lfsr.h>
 #include <dsd-neo/runtime/colors.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -546,7 +547,7 @@ nxdn_reset_after_cac_fail(dsd_state* state) {
     state->synctype = DSD_SYNC_P25P1_POS;
     state->lastsynctype = DSD_SYNC_NONE;
     state->carrier = 0;
-    state->last_cc_sync_time = time(NULL) + 2;
+    state->last_cc_sync_time = dsd_decode_time() + 2;
     cac_fail = 0;
 
     state->center = 0.0f;

@@ -25,7 +25,6 @@
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dibit.h>
-#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/parse.h>
@@ -42,6 +41,7 @@
 #include <dsd-neo/protocol/p25/p25p1_ldu.h>
 #include <dsd-neo/protocol/p25/p25p1_soft.h>
 #include <dsd-neo/runtime/colors.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -107,14 +107,14 @@ typedef struct {
 
 static void
 ldu2_refresh_hold_hysteresis(const dsd_opts* opts, dsd_state* state) {
-    time_t now = time(NULL);
+    time_t now = dsd_decode_time();
     double hold_hyst = opts->trunk_hangtime * 0.75;
     if (hold_hyst < 0.75) {
         hold_hyst = 0.75;
     }
     if (state->last_vc_sync_time != 0 && (double)(now - state->last_vc_sync_time) <= hold_hyst) {
         state->last_vc_sync_time = now;
-        state->last_vc_sync_time_m = dsd_time_now_monotonic_s();
+        state->last_vc_sync_time_m = dsd_decode_now_mono_s();
     }
 }
 
@@ -275,8 +275,8 @@ ldu2_run_fec(dsd_state* state, char hex_data[16][6], char hex_parity[8][6],
     }
 
     state->p25_p1_voice_fec_ok++;
-    state->last_vc_sync_time = time(NULL);
-    state->last_vc_sync_time_m = dsd_time_now_monotonic_s();
+    state->last_vc_sync_time = dsd_decode_time();
+    state->last_vc_sync_time_m = dsd_decode_now_mono_s();
 
     return 0;
 }

@@ -25,6 +25,7 @@
 #include <dsd-neo/protocol/pdu.h>
 #include <dsd-neo/runtime/colors.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -73,7 +74,7 @@ p25_emit_pdu_json_if_enabled(const p25_pdu_json_fields* fields) {
         return;
     }
 
-    time_t ts = time(NULL);
+    time_t ts = dsd_decode_time();
     char sum[160];
     if (fields->summary && fields->summary[0] != '\0') {
         /* ensure no embedded quotes break JSON (very minimal escape) */

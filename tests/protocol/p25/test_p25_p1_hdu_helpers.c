@@ -25,12 +25,12 @@
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/core/synctype_ids.h"
 #include "dsd-neo/core/talkgroup_policy.h"
-#include "dsd-neo/platform/timing.h"
 #include "dsd-neo/protocol/p25/p25_crypto.h"
 #include "dsd-neo/protocol/p25/p25_lfsr.h"
 #include "dsd-neo/protocol/p25/p25_status_symbol.h"
 #include "dsd-neo/protocol/p25/p25_trunk_sm.h"
 #include "dsd-neo/protocol/p25/p25p1_check_hdu.h"
+#include "dsd-neo/runtime/decode_clock.h"
 #include "dsd-neo/runtime/p25_optional_hooks.h"
 
 #if defined(__GNUC__) && !defined(__cplusplus)
@@ -185,11 +185,6 @@ p25_status_accum_ensure_started(dsd_state* state) {
 void
 p25_status_accum_classify(dsd_state* state) {
     (void)state;
-}
-
-uint64_t
-dsd_time_monotonic_ns(void) {
-    return 123456789000ULL;
 }
 
 int
@@ -785,6 +780,7 @@ test_hdu_encrypted_trunk_lockout_state(void) {
 int
 main(void) {
     int rc = 0;
+    dsd_decode_clock_use_test(123456789000ULL);
     reset_fec_stubs();
     rc |= test_hdu_extracts_payload_fields();
     rc |= test_hdu_rs_reliability_uses_wire_order();
@@ -795,6 +791,7 @@ main(void) {
     rc |= test_hdu_key_reporting_preserves_user_unmute_and_good_decode_state();
     rc |= test_hdu_nondefinitive_metadata_preserves_prior_tuple();
     rc |= test_hdu_encrypted_trunk_lockout_state();
+    dsd_decode_clock_use_system();
     return rc;
 }
 

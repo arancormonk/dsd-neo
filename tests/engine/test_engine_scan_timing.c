@@ -4,7 +4,6 @@
 #include <assert.h>
 #include <dsd-neo/app_control/scan_timing_view.h>
 #include <dsd-neo/core/channel_mode.h>
-#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
@@ -22,6 +21,7 @@
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/control_pump.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
@@ -42,7 +42,6 @@ static int g_tune_calls;
 static uint64_t g_tune_request;
 static int g_wait_polls;
 static int g_pending_seen;
-static time_t g_test_wall;
 
 // NOLINTBEGIN(misc-use-internal-linkage)
 void printFrameInfo(dsd_opts* opts, dsd_state* state);
@@ -75,19 +74,6 @@ dsd_trunk_tune_result __wrap_dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_st
                                                           uint64_t* request);
 int __wrap_getFrameSync(dsd_opts* opts, dsd_state* state);
 bool __wrap_SetFreq(dsd_socket_t sockfd, long freq);
-time_t __real_time(time_t* result);
-time_t __wrap_time(time_t* result);
-
-time_t
-__wrap_time(time_t* result) {
-    if (!g_test_wall) {
-        return __real_time(result);
-    }
-    if (result) {
-        *result = g_test_wall;
-    }
-    return g_test_wall;
-}
 
 bool
 __wrap_SetFreq(dsd_socket_t sockfd, long freq) {
@@ -117,12 +103,12 @@ int
 __wrap_getFrameSync(dsd_opts* opts, dsd_state* state) {
     ++g_sync_calls;
     assert(state->lcn_freq_roll == 1);
-    assert(state->last_cc_sync_time >= time(NULL) - 1);
+    assert(state->last_cc_sync_time >= dsd_decode_time() - 1);
     assert(state->scan_timing.reason == DSD_SCAN_STAY_HANGTIME);
     assert(state->scan_timing.span_ms == 3000U);
     /* The outgoing anchor was a minute old. The first snapshot on this frequency
      * must already contain the new visit's positive countdown. */
-    assert(state->scan_timing.deadline_m > dsd_time_now_monotonic_s());
+    assert(state->scan_timing.deadline_m > dsd_decode_now_mono_s());
     assert(fabs(state->scan_timing.started_m - state->last_cc_sync_time_m) < 1.1);
     if (g_typed) {
         assert(opts->frame_dmr == 1);
@@ -160,8 +146,8 @@ start_scan(dsd_opts* opts, dsd_state* state, void* context) {
     opts->use_rigctl = 1;
     opts->setmod_bw = 0;
     opts->trunk_hangtime = 2.0f;
-    state->last_cc_sync_time = time(NULL) - 60;
-    state->last_cc_sync_time_m = dsd_time_now_monotonic_s() - 60.0;
+    state->last_cc_sync_time = dsd_decode_time() - 60;
+    state->last_cc_sync_time_m = dsd_decode_now_mono_s() - 60.0;
     state->lcn_freq_count = 2;
     state->lcn_freq_roll = 0;
     *dsd_state_trunk_lcn_slot(state, 0) = 150000000;
@@ -204,6 +190,13 @@ test_scan_retune_publication(int typed, int pending, int staged) {
     free(opts);
 }
 
+/* The -Y step compares whole decode seconds against the hangtime anchor: hold the decode clock (wall and monotonic
+ * alike) at @p second. */
+static void
+decode_clock_at_s(uint64_t second) {
+    dsd_decode_clock_use_test(second * 1000000000ULL);
+}
+
 static void
 test_legacy_deadline_matches_rotation(void) {
     dsd_opts* opts = calloc(1, sizeof(*opts));
@@ -223,14 +216,15 @@ test_legacy_deadline_matches_rotation(void) {
         dsd_engine_scan_y_timing_tick(opts, state, 1000.0, 100.0);
         const double deadline = state->scan_timing.deadline_m;
         assert(deadline > 1000.0);
-        g_test_wall = 100 + (time_t)(deadline - 1000.0) - 1;
+        const uint64_t hold_s = 100U + (uint64_t)(deadline - 1000.0) - 1U;
+        decode_clock_at_s(hold_s);
         noCarrier(opts, state);
         assert(state->lcn_freq_roll == 0);
-        ++g_test_wall;
+        decode_clock_at_s(hold_s + 1U);
         noCarrier(opts, state);
         assert(state->lcn_freq_roll == 1);
     }
-    g_test_wall = 0;
+    dsd_decode_clock_use_system();
     freeState(state);
     free(state);
     free(opts);
@@ -265,13 +259,14 @@ test_analog_carrier_deadline_matches_rotation(void) {
     assert(state->scan_timing.reason == DSD_SCAN_STAY_CARRIER);
     const double deadline = state->scan_timing.deadline_m;
     assert(deadline > 1000.0);
-    g_test_wall = 100 + (time_t)(deadline - 1000.0) - 1;
+    const uint64_t hold_s = 100U + (uint64_t)(deadline - 1000.0) - 1U;
+    decode_clock_at_s(hold_s);
     noCarrier(opts, state);
     assert(state->lcn_freq_roll == 0);
-    ++g_test_wall;
+    decode_clock_at_s(hold_s + 1U);
     noCarrier(opts, state);
     assert(state->lcn_freq_roll == 1);
-    g_test_wall = 0;
+    dsd_decode_clock_use_system();
     freeState(state);
     free(state);
     free(opts);
@@ -300,8 +295,10 @@ test_protocol_hangtime_publication(const char* protocol, float configured_hangti
     DSD_SNPRINTF(opts->trunk_scan_targets_csv, sizeof(opts->trunk_scan_targets_csv), "%s", path);
     char err[256] = {0};
     g_pending = 0;
+    /* The scan's own stamps, the SM stamps below and every tick read one decode instant. */
+    decode_clock_at_s(5000U);
     assert(dsd_engine_trunk_scan_init(opts, state, err, sizeof(err)) == 0);
-    const double now = dsd_time_now_monotonic_s();
+    const double now = dsd_decode_now_mono_s();
     if (strcmp(protocol, "p25-trunk") == 0) {
         p25_sm_ctx_t* ctx = dsd_engine_trunk_scan_active_p25_ctx();
         assert(ctx && ctx->config.hangtime_s == 7.0);
@@ -349,6 +346,7 @@ test_protocol_hangtime_publication(const char* protocol, float configured_hangti
         assert(state->scan_timing.hang_ms == (i == 0 ? 172800000U : UINT32_MAX));
     }
     dsd_engine_trunk_scan_shutdown(opts, state);
+    dsd_decode_clock_use_system();
     assert(state->scan_timing.hang_ms == 0U);
     freeState(state);
     free(state);

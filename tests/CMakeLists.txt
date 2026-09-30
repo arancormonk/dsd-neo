@@ -96,6 +96,19 @@ target_compile_definitions(
     PRIVATE DSD_NEO_TEST_HOOKS
 )
 
+# The decode clock alone, for tests that compile protocol sources directly
+# instead of linking dsd-neo_runtime.
+add_library(
+    dsd-neo_test_decode_clock
+    STATIC
+    ${PROJECT_SOURCE_DIR}/src/runtime/decode_clock.c
+)
+target_include_directories(
+    dsd-neo_test_decode_clock
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(dsd-neo_test_decode_clock PUBLIC dsd-neo_platform)
+
 add_library(
     dsd-neo_test_bit_packing
     OBJECT
@@ -4983,17 +4996,6 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
         dsd-neo_test_engine_no_carrier_reset
         PRIVATE DSD_NEO_TEST_RTL_WRAP=1
     )
-    # The time() wrapper that injects the -Y wall clock requires a Unix time symbol.
-    if(NOT WIN32)
-        target_compile_definitions(
-            dsd-neo_test_engine_no_carrier_reset
-            PRIVATE DSD_NEO_TEST_TIME_WRAP=1
-        )
-        target_link_libraries(
-            dsd-neo_test_engine_no_carrier_reset
-            PRIVATE "-Wl,--wrap=time"
-        )
-    endif()
     target_link_libraries(
         dsd-neo_test_engine_no_carrier_reset
         PRIVATE
@@ -5219,35 +5221,28 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
         NAME ENGINE_SYNCED_TRUNK_SCAN_TICK
         COMMAND dsd-neo_test_engine_synced_trunk_scan_tick
     )
-    # The time() wrapper below requires a Unix time symbol.
-    if(NOT WIN32)
-        add_executable(
-            dsd-neo_test_engine_scan_timing
-            engine/test_engine_scan_timing.c
-            ${PROJECT_SOURCE_DIR}/src/app_control/scan_timing_view.c
-        )
-        target_include_directories(
-            dsd-neo_test_engine_scan_timing
-            PRIVATE ${PROJECT_SOURCE_DIR}/include
-        )
-        target_link_libraries(
-            dsd-neo_test_engine_scan_timing
-            PRIVATE
-                "-Wl,--wrap=getFrameSync"
-                "-Wl,--wrap=dsd_engine_scan_tune_to_freq"
-                "-Wl,--wrap=SetFreq"
-                "-Wl,--wrap=time"
-                "-Wl,--start-group"
-                dsd-neo_engine
-                "-Wl,--end-group"
-                ${LIBS}
-                dsd-neo_test_support
-        )
-        add_test(
-            NAME ENGINE_SCAN_TIMING
-            COMMAND dsd-neo_test_engine_scan_timing
-        )
-    endif()
+    add_executable(
+        dsd-neo_test_engine_scan_timing
+        engine/test_engine_scan_timing.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/scan_timing_view.c
+    )
+    target_include_directories(
+        dsd-neo_test_engine_scan_timing
+        PRIVATE ${PROJECT_SOURCE_DIR}/include
+    )
+    target_link_libraries(
+        dsd-neo_test_engine_scan_timing
+        PRIVATE
+            "-Wl,--wrap=getFrameSync"
+            "-Wl,--wrap=dsd_engine_scan_tune_to_freq"
+            "-Wl,--wrap=SetFreq"
+            "-Wl,--start-group"
+            dsd-neo_engine
+            "-Wl,--end-group"
+            ${LIBS}
+            dsd-neo_test_support
+    )
+    add_test(NAME ENGINE_SCAN_TIMING COMMAND dsd-neo_test_engine_scan_timing)
 endif()
 
 add_executable(
@@ -7466,11 +7461,16 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
             dsd-neo_proto_dmr
             dsd-neo_core
             "-Wl,--end-group"
+            dsd-neo_test_support
     )
 else()
     target_link_libraries(
         dsd-neo_test_p25_sm_unified_core
-        PRIVATE dsd-neo_proto_p25 dsd-neo_proto_dmr dsd-neo_core
+        PRIVATE
+            dsd-neo_proto_p25
+            dsd-neo_proto_dmr
+            dsd-neo_core
+            dsd-neo_test_support
     )
 endif()
 add_test(NAME P25_SM_UNIFIED_CORE COMMAND dsd-neo_test_p25_sm_unified_core)
@@ -11125,6 +11125,37 @@ foreach(_target IN LISTS _DSD_NEO_BIT_PACKING_TEST_TARGETS)
     target_link_libraries(${_target} PRIVATE dsd-neo_test_bit_packing)
 endforeach()
 unset(_DSD_NEO_BIT_PACKING_TEST_TARGETS)
+
+# Protocol code reads time through the decode clock (src/runtime/decode_clock.c).
+# These tests compile protocol sources directly without dsd-neo_runtime.
+set(_DSD_NEO_DECODE_CLOCK_TEST_TARGETS
+    dsd-neo_test_dmr_bs_sync_times
+    dsd-neo_test_dmr_locn_time_fallback
+    dsd-neo_test_dmr_lrrp_crc_gating
+    dsd-neo_test_dmr_lrrp_empty_payload_type
+    dsd-neo_test_dmr_lrrp_event_crc_gating
+    dsd-neo_test_dmr_lrrp_ip_udp_lengths
+    dsd-neo_test_dmr_lrrp_position_token_precedence
+    dsd-neo_test_dmr_lrrp_response_token_lengths
+    dsd-neo_test_dmr_lrrp_resync_prefix
+    dsd-neo_test_dmr_lrrp_time_fallback
+    dsd-neo_test_dmr_lrrp_time_valid
+    dsd-neo_test_dmr_lrrp_token_alignment
+    dsd-neo_test_dmr_lrrp_wrapped_document
+    dsd-neo_test_dmr_ms_data
+    dsd-neo_test_dmr_pdu_utf16_text
+    dsd-neo_test_dmr_tms_utf16le
+    dsd-neo_test_dmr_udp_comp_header
+    dsd-neo_test_nxdn_frame_routing
+    dsd-neo_test_p25_p1_hdu_helpers
+    dsd-neo_test_p25_p1_ldu1_helpers
+    dsd-neo_test_p25_p1_ldu2_helpers
+    dsd-neo_test_p25_p1_tdu
+)
+foreach(_target IN LISTS _DSD_NEO_DECODE_CLOCK_TEST_TARGETS)
+    target_link_libraries(${_target} PRIVATE dsd-neo_test_decode_clock)
+endforeach()
+unset(_DSD_NEO_DECODE_CLOCK_TEST_TARGETS)
 
 # ---------------------------------------------------------------------------
 # Full-chain modulation decode regression tests

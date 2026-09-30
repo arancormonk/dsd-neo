@@ -28,6 +28,7 @@
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/runtime/colors.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -145,7 +146,7 @@ static void
 dmr_rc_print(const dsd_opts* opts, int emb_ok, const uint8_t emb_bits[16], int rc_err, uint8_t rc_command,
              uint32_t rc_hex) {
     char timestr[9];
-    (void)dsd_format_local_datetime(time(NULL), DSD_LOCAL_DATETIME_TIME_COLON, timestr, sizeof timestr);
+    (void)dsd_format_local_datetime(dsd_decode_time(), DSD_LOCAL_DATETIME_TIME_COLON, timestr, sizeof timestr);
     DSD_FPRINTF(stderr, "%s Sync: %cDMR RC ", timestr, (opts->inverted_dmr == 1) ? '-' : '+');
 
     if (emb_ok == 1) {
@@ -213,7 +214,7 @@ dmrRC(dsd_opts* opts, dsd_state* state) {
         /* Slot 0 + sentinel IDs: the event row is a slot-less notice, and the
          * dedup ext slot is module-private bookkeeping, so the handler's no-op
          * contract for slot/trunking/call state still holds. */
-        dmr_rc_notify_command(opts, state, 0U, DMR_RC_NOTIFY_KEY_STANDALONE, rc_command, emb_ok, cc, time(NULL));
+        dmr_rc_notify_command(opts, state, 0U, DMR_RC_NOTIFY_KEY_STANDALONE, rc_command, emb_ok, cc, dsd_decode_time());
     }
 
     if (opts->dmr_debug_burst != 0) {

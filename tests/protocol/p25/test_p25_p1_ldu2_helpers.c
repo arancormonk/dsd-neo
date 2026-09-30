@@ -19,6 +19,7 @@
 #include <dsd-neo/protocol/p25/p25_status_symbol.h>
 #include <dsd-neo/protocol/p25/p25p1_check_ldu.h>
 #include <dsd-neo/protocol/p25/p25p1_ldu.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -120,11 +121,6 @@ p25_lsd_fec_16x8_soft(uint8_t* bits16, const int16_t llr16[16]) {
     (void)bits16;
     (void)llr16;
     return g_lsd_soft_result;
-}
-
-uint64_t
-dsd_time_monotonic_ns(void) {
-    return 42000000000ULL;
 }
 
 void
@@ -588,7 +584,7 @@ test_ldu2_hold_hysteresis_refreshes_only_recent_activity(void) {
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
     opts.trunk_hangtime = 0.0;
-    state.last_vc_sync_time = time(NULL);
+    state.last_vc_sync_time = dsd_decode_time();
     state.last_vc_sync_time_m = 17.0;
 
     ldu2_refresh_hold_hysteresis(&opts, &state);
@@ -597,7 +593,7 @@ test_ldu2_hold_hysteresis_refreshes_only_recent_activity(void) {
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
     opts.trunk_hangtime = 1.0;
-    state.last_vc_sync_time = time(NULL) - 10;
+    state.last_vc_sync_time = dsd_decode_time() - 10;
     state.last_vc_sync_time_m = 19.0;
 
     ldu2_refresh_hold_hysteresis(&opts, &state);
@@ -947,6 +943,7 @@ test_ldu2_encrypted_trunk_lockout_state(void) {
 int
 main(void) {
     int rc = 0;
+    dsd_decode_clock_use_test(42000000000ULL);
     rc |= test_ldu2_extracts_ess_fields();
     rc |= test_lsd_corrected_byte();
     rc |= test_ldu2_rs_reliability_uses_wire_order();
@@ -962,6 +959,7 @@ main(void) {
     rc |= test_ldu2_key_reporting_preserves_user_unmute();
     rc |= test_ldu2_lsd_alias_begin_clamps_length();
     rc |= test_ldu2_encrypted_trunk_lockout_state();
+    dsd_decode_clock_use_system();
     return rc;
 }
 

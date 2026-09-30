@@ -19,9 +19,9 @@
 #include <dsd-neo/crypto/dmr_keystream.h>
 #include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/platform/file_compat.h>
-#include <dsd-neo/platform/timing.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/shutdown.h>
@@ -236,11 +236,6 @@ bool
 QR_16_7_6_decode(unsigned char* rxBits) {
     (void)rxBits;
     return true;
-}
-
-uint64_t
-dsd_time_monotonic_ns(void) {
-    return 1234567890ULL;
 }
 
 void
@@ -745,6 +740,7 @@ test_continuous_voice_yields_at_burst_boundary(void) {
 
 int
 main(void) {
+    dsd_decode_clock_use_test(1234567890ULL);
     test_continuous_voice_yields_at_burst_boundary();
     test_bs_voice_sync_refreshes_when_trunk_tuned();
     test_bs_slot2_voice_routes_right_channel_and_post_skip_hooks();
@@ -753,6 +749,7 @@ main(void) {
     test_bs_confidence_reject_resets_slot_without_voice_decode();
     test_bs_voice_gate_closed_skips_decode_but_keeps_loop_hooks();
     test_bs_bootstrap_prefetched_voice_runs_first_frame_path();
+    dsd_decode_clock_use_system();
     printf("DMR BS sync times: OK\n");
     return 0;
 }

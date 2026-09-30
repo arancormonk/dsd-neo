@@ -10,6 +10,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/p25/p25_sm_ui.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <stdio.h>
 #include <time.h>
@@ -24,7 +25,7 @@ p25_sm_log_status(const dsd_opts* opts, dsd_state* state, const char* tag) {
     }
     if (tag && tag[0] != '\0') {
         DSD_SNPRINTF(state->p25_sm_last_reason, sizeof state->p25_sm_last_reason, "%s", tag);
-        state->p25_sm_last_reason_time = time(NULL);
+        state->p25_sm_last_reason_time = dsd_decode_time();
         int idx = state->p25_sm_tag_head % 8;
         DSD_SNPRINTF(state->p25_sm_tags[idx], sizeof state->p25_sm_tags[idx], "%s", tag);
         state->p25_sm_tag_time[idx] = state->p25_sm_last_reason_time;

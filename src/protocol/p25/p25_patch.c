@@ -9,6 +9,7 @@
 
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <time.h>
@@ -96,7 +97,7 @@ p25_patch_sweep_stale(dsd_state* state) {
     if (!state) {
         return;
     }
-    time_t now = time(NULL);
+    time_t now = dsd_decode_time();
     int w = 0;
     for (int i = 0; i < state->p25_patch_count && i < 8; i++) {
         int keep = 1;
@@ -132,7 +133,7 @@ p25_patch_update(dsd_state* state, int sgid, int is_patch, int active) {
     if (!state || sgid <= 0 || sgid > 0xFFFF) {
         return;
     }
-    time_t now = time(NULL);
+    time_t now = dsd_decode_time();
     // Try to find existing entry
     for (int i = 0; i < state->p25_patch_count && i < 8; i++) {
         if (state->p25_patch_sgid[i] == (uint16_t)sgid) {
@@ -341,7 +342,7 @@ p25_patch_clear_sg(dsd_state* state, int sgid) {
     }
     p25_patch_clear_entry_context(state, idx);
     state->p25_patch_active[idx] = 0;
-    state->p25_patch_last_update[idx] = time(NULL);
+    state->p25_patch_last_update[idx] = dsd_decode_time();
 }
 
 int
@@ -408,7 +409,7 @@ p25_patch_tg_key_is_clear(const dsd_state* state, int tg) {
     }
     // Copy pointer (const) usage only
     const dsd_state* s = state;
-    time_t now = time(NULL);
+    time_t now = dsd_decode_time();
     for (int i = 0; i < s->p25_patch_count && i < 8; i++) {
         if (!s->p25_patch_active[i]) {
             continue;
@@ -438,7 +439,7 @@ p25_patch_sg_key_is_clear(const dsd_state* state, int sgid) {
         return 0;
     }
     const dsd_state* s = state;
-    time_t now = time(NULL);
+    time_t now = dsd_decode_time();
     for (int i = 0; i < s->p25_patch_count && i < 8; i++) {
         if (!s->p25_patch_active[i]) {
             continue;
@@ -460,7 +461,7 @@ p25_patch_collect_active_wgids(const dsd_state* state, int sgid, uint16_t* out, 
         return 0;
     }
 
-    time_t now = time(NULL);
+    time_t now = dsd_decode_time();
     int idx = find_patch_idx(state, (uint16_t)sgid);
     if (idx < 0 || !state->p25_patch_active[idx] || p25_patch_entry_is_stale(state, idx, now)) {
         return 0;

@@ -101,6 +101,18 @@ dsd_time_monotonic_ns(void) {
     return g_now_ns;
 }
 
+/* The decode clock (src/runtime/decode_clock.c) also reads the millisecond and wall clocks. Stubbing them keeps the
+   platform timing object, whose monotonic read this file replaces, out of the link. */
+uint64_t
+dsd_time_monotonic_ms(void) {
+    return dsd_time_monotonic_ns() / 1000000U;
+}
+
+uint64_t
+dsd_time_realtime_ns(void) {
+    return 0ULL;
+}
+
 int
 crc12_xb_bridge(const int* payload, int len) {
     (void)payload;
