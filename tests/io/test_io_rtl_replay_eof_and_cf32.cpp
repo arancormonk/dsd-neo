@@ -15,8 +15,10 @@
 #include <dsd-neo/io/iq_replay.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
+#include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/input_failure.h>
 #include <memory>
@@ -205,9 +207,11 @@ prepare_replay_opts_with_loop_and_rate(dsd_opts* opts, const char* metadata_path
     opts->iq_replay_rate_mode = realtime ? DSD_IQ_REPLAY_RATE_REALTIME : DSD_IQ_REPLAY_RATE_FAST;
 }
 
+/* make_replay_fixture() with the tuner gain the sidecar records (0: none, as an auto-gain capture can leave it). */
 static int
-make_replay_fixture(char* out_metadata_path, size_t out_metadata_path_size, dsd_iq_sample_format format,
-                    const char* capture_stage, int fs4_shift_enabled, size_t payload_bytes) {
+make_replay_fixture_with_gain(char* out_metadata_path, size_t out_metadata_path_size, dsd_iq_sample_format format,
+                              const char* capture_stage, int fs4_shift_enabled, size_t payload_bytes,
+                              int tuner_gain_tenth_db) {
     if (!out_metadata_path || out_metadata_path_size == 0U || !capture_stage) {
         return 1;
     }
@@ -229,6 +233,7 @@ make_replay_fixture(char* out_metadata_path, size_t out_metadata_path_size, dsd_
 
     dsd_iq_capture_config cfg;
     fill_capture_cfg(&cfg, data_path, metadata_path, format, capture_stage, fs4_shift_enabled);
+    cfg.tuner_gain_tenth_db = tuner_gain_tenth_db;
 
     dsd_iq_capture_writer* writer = NULL;
     char err_buf[256] = {0};
@@ -285,6 +290,13 @@ make_replay_fixture(char* out_metadata_path, size_t out_metadata_path_size, dsd_
         return 1;
     }
     return 0;
+}
+
+static int
+make_replay_fixture(char* out_metadata_path, size_t out_metadata_path_size, dsd_iq_sample_format format,
+                    const char* capture_stage, int fs4_shift_enabled, size_t payload_bytes) {
+    return make_replay_fixture_with_gain(out_metadata_path, out_metadata_path_size, format, capture_stage,
+                                         fs4_shift_enabled, payload_bytes, 270);
 }
 
 static int
@@ -1115,6 +1127,10 @@ test_eventful_replay_applies_scheduled_events(void) {
     rc |= expect_int_eq("scheduled reset count", (int)state.replay_event_reset_count, 1);
     rc |= expect_int_eq("scheduled last frequency", (int)state.replay_event_last_frequency_hz, 851500000);
     rc |= expect_int_eq("scheduled reset reason", state.replay_event_last_reset_reason, kReplayResetReasonFrequency);
+    /* The reset's wait for its input purge is right only for exactly one request. */
+    rc |= expect_true("scheduled reset made exactly one purge request",
+                      state.replay_event_last_reset_purge_requests == 1ULL);
+    rc |= expect_int_eq("scheduled reset purge mismatches", (int)state.replay_event_reset_purge_mismatch_count, 0);
     rc |= expect_true("scheduled mute duration recorded", state.replay_event_last_mute_bytes == 4096ULL);
 
     uint32_t applied_freq = 0;
@@ -1152,6 +1168,9 @@ test_eventful_replay_preserves_ppm_reset_reason(void) {
     rc |= expect_int_eq("ppm scheduled reset count", (int)state.replay_event_reset_count, 1);
     rc |= expect_int_eq("ppm scheduled reset reason", state.replay_event_last_reset_reason,
                         kReplayResetReasonPpmCorrection);
+    rc |= expect_true("ppm scheduled reset made exactly one purge request",
+                      state.replay_event_last_reset_purge_requests == 1ULL);
+    rc |= expect_int_eq("ppm scheduled reset purge mismatches", (int)state.replay_event_reset_purge_mismatch_count, 0);
 
     stop_and_destroy_stream(ctx);
     return rc;
@@ -2662,6 +2681,46 @@ test_replay_read_failure_mid_chunk_delivers_what_was_read(void) {
     return rc;
 }
 
+/* An I/Q replay has no tuner gain to adjust, so the supervisory tuner autogain stays off under it even when the runtime
+ * config enables it (DSD_NEO_TUNER_AUTOGAIN) and the capture records no gain, which is where a live open turns it on:
+ * its hold and throttle windows run on real time, and its adjustments would only log on a wall-clock cadence. A flag
+ * raised during the replay (a menu toggle, a retune profile) supervises nothing. Runs last: it leaves the runtime
+ * config initialized. */
+static int
+test_replay_keeps_tuner_autogain_off(void) {
+    int rc = 0;
+    char metadata_path[DSD_TEST_PATH_MAX];
+    rc |= make_replay_fixture_with_gain(metadata_path, sizeof(metadata_path), DSD_IQ_FORMAT_CU8, "post_mute_pre_widen",
+                                        1, kReplayChunkBytes * 8U, 0);
+    if (rc != 0) {
+        return 1;
+    }
+    (void)dsd_setenv("DSD_NEO_TUNER_AUTOGAIN", "1", 1);
+    dsd_neo_config_init();
+
+    std::unique_ptr<dsd_opts> opts;
+    RtlSdrContext* ctx = NULL;
+    if (start_replay_stream(metadata_path, &opts, &ctx) != 0) {
+        stop_and_destroy_stream(ctx);
+        (void)dsd_unsetenv("DSD_NEO_TUNER_AUTOGAIN");
+        dsd_neo_config_init();
+        return 1;
+    }
+    rc |= expect_int_eq("tuner autogain off at a replay open", rtl_stream_get_tuner_autogain(), 0);
+    const uint64_t supervised_before = rtl_stream_test_autogain_supervised_blocks();
+    rtl_stream_set_tuner_autogain(1);
+    uint64_t drained_samples = 0;
+    rc |= drain_stream_to_eof(ctx, 5000U, &drained_samples);
+    rc |= expect_true("replay produced output", drained_samples > 0U);
+    rc |= expect_true("tuner autogain supervised no replay block",
+                      rtl_stream_test_autogain_supervised_blocks() == supervised_before);
+    rtl_stream_set_tuner_autogain(0);
+    stop_and_destroy_stream(ctx);
+    (void)dsd_unsetenv("DSD_NEO_TUNER_AUTOGAIN");
+    dsd_neo_config_init();
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -2690,6 +2749,7 @@ main(void) {
     rc |= test_realtime_loop_waits_for_terminal_mute_before_rewind();
     rc |= test_cf32_replay_fs4_policy_changes_output();
     rc |= test_cf32_unknown_capture_stage_rejected();
+    rc |= test_replay_keeps_tuner_autogain_off();
     rc |= remove_fixture_dirs();
     return rc ? 1 : 0;
 }

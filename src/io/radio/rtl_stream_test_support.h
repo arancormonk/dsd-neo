@@ -1176,6 +1176,8 @@ typedef struct rtl_stream_test_replay_state {
     uint32_t replay_event_last_frequency_hz;
     uint64_t replay_event_last_mute_bytes;
     int replay_event_last_reset_reason;
+    uint64_t replay_event_last_reset_purge_requests;  /* input purge requests the last RESET's finalize made (1) */
+    uint32_t replay_event_reset_purge_mismatch_count; /* RESETs whose finalize made any other number (none) */
     uint32_t replay_loop_restart_count;
     uint32_t replay_loop_restart_last_frequency_hz;
     uint64_t replay_out_written;      /* output batches the demod published, the virtual block 0 included */
@@ -1233,6 +1235,9 @@ typedef void (*rtl_stream_test_replay_stage_fn)(int stage, size_t count, void* c
 void rtl_stream_test_set_replay_stage_hook(rtl_stream_test_replay_stage_fn hook, void* ctx);
 /* Report @p stage to the installed hook. The replay reader in rtl_device.cpp reports its stage through this too. */
 void rtl_stream_test_replay_stage(int stage, size_t count);
+
+/* Blocks the tuner autogain supervisor has counted in this process (demod_autogain_update() past its on/off check). */
+uint64_t rtl_stream_test_autogain_supervised_blocks(void);
 
 /* One block the demod took from an I/Q replay's input ring (issue #572), reported on the demod thread as it takes it.
  * The chunk fields are what the replay reader attached to the capture chunk the block holds. */

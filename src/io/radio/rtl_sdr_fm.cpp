@@ -414,6 +414,10 @@ static std::atomic<uint32_t> g_replay_event_reset_count{0};
 static std::atomic<uint32_t> g_replay_event_last_frequency_hz{0};
 static std::atomic<uint64_t> g_replay_event_last_mute_bytes{0};
 static std::atomic<int> g_replay_event_last_reset_reason{0};
+/* Input purge requests the last replayed RESET's finalize made (exactly 1 when it is correct), and the RESETs that made
+ * any other number (rtl_replay_on_reset_event()). */
+static std::atomic<uint64_t> g_replay_event_last_reset_purge_requests{0};
+static std::atomic<uint32_t> g_replay_event_reset_purge_mismatch_count{0};
 static std::atomic<uint32_t> g_replay_loop_restart_count{0};
 static std::atomic<uint32_t> g_replay_loop_restart_last_frequency_hz{0};
 /* The centre the demod was last reset on, kept by a replayed RETUNE as it moves last_applied_freq_hz on
@@ -846,6 +850,8 @@ stream_reset_replay_eof_state(struct RtlSdrInternals* s) {
     g_replay_event_last_frequency_hz.store(0, std::memory_order_release);
     g_replay_event_last_mute_bytes.store(0, std::memory_order_release);
     g_replay_event_last_reset_reason.store(0, std::memory_order_release);
+    g_replay_event_last_reset_purge_requests.store(0U, std::memory_order_release);
+    g_replay_event_reset_purge_mismatch_count.store(0U, std::memory_order_release);
     g_replay_loop_restart_count.store(0, std::memory_order_release);
     g_replay_loop_restart_last_frequency_hz.store(0, std::memory_order_release);
 }
@@ -3031,13 +3037,32 @@ demod_autogain_maybe_adjust(DemodAutogainState* st, const struct demod_state* d)
     st->blocks = st->high = st->low = 0;
 }
 
+#if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
+/* Blocks the tuner autogain supervisor counted (rtl_stream_test_autogain_supervised_blocks()). */
+static std::atomic<uint64_t> g_test_autogain_supervised_blocks{0U};
+
+extern "C" uint64_t
+rtl_stream_test_autogain_supervised_blocks(void) {
+    return g_test_autogain_supervised_blocks.load(std::memory_order_acquire);
+}
+#endif
+
 static void
 demod_autogain_update(const struct demod_state* d, float input_mean_abs, float input_max_abs) {
+    /* An I/Q replay has no tuner gain to adjust, and the supervisor's hold and throttle windows run on real time: under
+     * replay it would only log adjustments on a wall-clock cadence. It stays out of a replay whatever raised the flag
+     * (stream open keeps it down there; a menu toggle or a retune profile can still raise it). */
+    if (stream_is_replay_active()) {
+        return;
+    }
     DemodAutogainState& st = demod_autogain_state();
     demod_autogain_init_once(&st);
     if (!g_tuner_autogain_on.load(std::memory_order_relaxed)) {
         return;
     }
+#if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
+    g_test_autogain_supervised_blocks.fetch_add(1U, std::memory_order_acq_rel);
+#endif
     uint32_t current_freq_hz = load_dongle_frequency();
     uint32_t current_reconfigure_seq = controller.reconfigure_seq.load(std::memory_order_acquire);
     if (st.last_freq != current_freq_hz || st.last_reconfigure_seq != current_reconfigure_seq) {
@@ -5137,6 +5162,17 @@ rtl_replay_on_reset_event(const dsd_iq_event* event, void* user) {
     const ReplayPurgeMark purge_mark = replay_input_purge_mark();
     controller_finalize_reconfigure(&controller, g_stream ? g_stream->opts : NULL, center_hz, reset_reason,
                                     previous_center_hz, previous_rate_out_hz, NULL);
+    /* The wait below is right for exactly one request: with none it returns at once, and with two the demod could still
+     * be discarding for the first while the reader took the second, and discard the first chunk after the boundary. A
+     * finalize that makes any other number is reported here rather than left to misplace that chunk unseen. */
+    const uint64_t purge_requests = input_ring_discard_generation(&input_ring) - purge_mark.requested;
+    g_replay_event_last_reset_purge_requests.store(purge_requests, std::memory_order_release);
+    if (purge_requests != 1U) {
+        g_replay_event_reset_purge_mismatch_count.fetch_add(1U, std::memory_order_acq_rel);
+        LOG_ERROR("Replay RESET at %u Hz made %llu input purge requests where its finalize makes exactly 1; the replay "
+                  "may lose or misplace the first chunk after it.\n",
+                  center_hz, (unsigned long long)purge_requests);
+    }
     controller_end_reconfigure(&controller);
     replay_wait_for_input_purge_applied(purge_mark);
     g_replay_event_last_reset_reason.store((int)reset_reason, std::memory_order_release);
@@ -6956,8 +6992,9 @@ stream_open_init_pipeline(const dsd_opts* opts, int demod_base_rate_hz) {
 }
 
 static void
-stream_open_enable_default_autogain(const dsd_opts* opts) {
-    if (opts && dsd_opts_audio_in_dev_is_airspy_spec(opts->audio_in_dev)) {
+stream_open_enable_default_autogain(const dsd_opts* opts, RadioSourceKind source_kind) {
+    /* An I/Q replay has no tuner gain to adjust (demod_autogain_update() stays out of it too). */
+    if (source_kind == RADIO_SOURCE_IQ_REPLAY || (opts && dsd_opts_audio_in_dev_is_airspy_spec(opts->audio_in_dev))) {
         g_tuner_autogain_on.store(0);
         return;
     }
@@ -7707,7 +7744,7 @@ stream_open_configure_pipeline_state(dsd_opts* opts, RadioSourceKind source_kind
     if (stream_open_init_pipeline(opts, rtl_dsp_bw_hz) != 0) {
         return -1;
     }
-    stream_open_enable_default_autogain(opts);
+    stream_open_enable_default_autogain(opts, source_kind);
     setup_initial_freq_and_rate(opts);
     if (!output.rate) {
         output.rate = demod.rate_out;
@@ -12497,6 +12534,10 @@ dsd_rtl_stream_test_get_replay_state(rtl_stream_test_replay_state* out_state) {
     out_state->replay_event_last_frequency_hz = g_replay_event_last_frequency_hz.load(std::memory_order_acquire);
     out_state->replay_event_last_mute_bytes = g_replay_event_last_mute_bytes.load(std::memory_order_acquire);
     out_state->replay_event_last_reset_reason = g_replay_event_last_reset_reason.load(std::memory_order_acquire);
+    out_state->replay_event_last_reset_purge_requests =
+        g_replay_event_last_reset_purge_requests.load(std::memory_order_acquire);
+    out_state->replay_event_reset_purge_mismatch_count =
+        g_replay_event_reset_purge_mismatch_count.load(std::memory_order_acquire);
     out_state->replay_loop_restart_count = g_replay_loop_restart_count.load(std::memory_order_acquire);
     out_state->replay_loop_restart_last_frequency_hz =
         g_replay_loop_restart_last_frequency_hz.load(std::memory_order_acquire);
@@ -15802,11 +15843,11 @@ rtl_stream_clear_output_ring(struct output_state* outp, int bump_generation) {
 #endif
     /* Clear the entire ring to prevent sample 'lag'. Under ready_m, which a consumer holds from its tail snapshot to
        its tail store (ring_read_available(), ring_read_available_copy(), ring_read_batch()), so a read in flight
-       cannot put its old tail back over
-       the cleared indices. A read can also load the generation after the bump above and still reach ready_m before
-       the clear does, copying samples the clear was meant to drop under that generation. Bumping again under ready_m,
-       once the ring is empty, leaves the stream on a generation that only reads made after the clear can load, so the
-       decoder never takes pre-clear samples under the generation it runs on from here. */
+       cannot put its old tail back over the cleared indices. A read can also load the generation after the bump above
+       and still reach ready_m before the clear does, copying samples the clear was meant to drop under that
+       generation. Bumping again under ready_m, once the ring is empty, leaves the stream on a generation that only
+       reads made after the clear can load, so the decoder never takes pre-clear samples under the generation it runs
+       on from here. */
     dsd_mutex_lock(&outp->ready_m);
     ring_clear(outp);
     if (bump_generation) {

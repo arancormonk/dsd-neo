@@ -1580,8 +1580,11 @@ replay_event_boundary_drained(struct rtl_device* s) {
     return (input_ring_used(ring) == 0U && generation_drained) ? 1 : 0;
 }
 
-/* The input half of an event boundary on its own, for a replay with no stream behind it (no wait_event_boundary): 50 ms
- * timed waits until the demod has taken and acknowledged every chunk. */
+/* The input half of an event boundary on its own: 50 ms timed waits until the demod has taken and acknowledged every
+ * chunk. This is the no-stream path, for a replay device whose EOF state carries no wait_event_boundary. The stream
+ * always installs one (stream_open_fill_replay_eof_state() in rtl_sdr_fm.cpp), so a stream's replay never comes here.
+ * It stays as the device's own boundary rule, which replay_event_boundary_drained() states and IO_RTL_RETUNE_PREPARE
+ * checks through rtl_device_test_replay_event_boundary_drained(). */
 static int
 replay_wait_for_input_boundary_drain(struct rtl_device* s) {
     if (!s || !s->input_ring || s->input_ring->capacity == 0U) {
@@ -1695,12 +1698,18 @@ replay_media_ns(const struct rtl_device* s, uint64_t complex_samples) {
 
 namespace {
 
+/* The failure code of a replay step that failed outside the capture file: an input ring that would not take a whole
+ * chunk, an event boundary the pipeline gave up on without a stop, or a missing buffer or ring. No DSD_IQ_ERR_* has
+ * its value, so replay_report_failure() can name the pipeline instead of the read; the session's input failure latch
+ * still gets DSD_IQ_ERR_INVALID_ARG for it, as before. */
+const int kReplayPipelineFailureRc = -1000;
+
 /* What one pass of the replay reader loop (replay_thread_process_block()) leaves the reader to do. */
 enum replay_step {
     REPLAY_STEP_CONTINUE = 0, /* read on */
     REPLAY_STEP_STOP = 1,     /* a stop was requested: leave now */
     REPLAY_STEP_EOF_DONE = 2, /* the capture ended and does not loop: drain what was delivered, then leave */
-    REPLAY_STEP_FAILED = 3,   /* the capture cannot be read on: report it, drain what was delivered, then leave */
+    REPLAY_STEP_FAILED = 3,   /* the replay cannot go on: report it, drain what was delivered, then leave */
 };
 
 } // namespace
@@ -1885,7 +1894,7 @@ replay_thread_read_or_handle_empty(struct rtl_device* s, uint8_t* raw_block, siz
     if (!s || !raw_block || !io || !io->data_offset || !io->complex_written || !io->start_ns || !io->phase
         || !io->have_carry || !io->carry_byte || !io->event_cursor || !out_bytes) {
         if (io) {
-            io->failure_rc = DSD_IQ_ERR_INVALID_ARG;
+            io->failure_rc = kReplayPipelineFailureRc;
         }
         return REPLAY_STEP_FAILED;
     }
@@ -1908,7 +1917,7 @@ replay_thread_process_block(struct rtl_device* s, uint8_t* raw_block, size_t raw
                             replay_thread_io_state* io) {
     if (!replay_thread_process_inputs_valid(s, raw_block, f32_block, io)) {
         if (io) {
-            io->failure_rc = DSD_IQ_ERR_INVALID_ARG;
+            io->failure_rc = kReplayPipelineFailureRc;
         }
         return REPLAY_STEP_FAILED;
     }
@@ -1916,7 +1925,7 @@ replay_thread_process_block(struct rtl_device* s, uint8_t* raw_block, size_t raw
     const uint64_t complex_written_before_events = *io->complex_written;
     if (!replay_dispatch_pending_events(s, io->event_cursor, *io->data_offset, io->phase, io->have_carry,
                                         io->carry_byte, io->complex_written)) {
-        return replay_step_stopped_or_failed(s, &io->failure_rc, DSD_IQ_ERR_INVALID_ARG);
+        return replay_step_stopped_or_failed(s, &io->failure_rc, kReplayPipelineFailureRc);
     }
     /* Capture time an event omits (a MUTE) passes on the media timeline as it does on the realtime schedule. */
     *io->timeline_samples += *io->complex_written - complex_written_before_events;
@@ -1960,7 +1969,7 @@ replay_thread_process_block(struct rtl_device* s, uint8_t* raw_block, size_t raw
         chunk.input_level = input_level;
     }
     if (replay_submit_whole_chunk(s, f32_block, (size_t)produced, io, &chunk) != 0) {
-        return replay_step_stopped_or_failed(s, &io->failure_rc, DSD_IQ_ERR_INVALID_ARG);
+        return replay_step_stopped_or_failed(s, &io->failure_rc, kReplayPipelineFailureRc);
     }
     return REPLAY_STEP_CONTINUE;
 }
@@ -2367,12 +2376,12 @@ replay_handle_empty_read(struct rtl_device* s, uint64_t* complex_written, uint64
     if (!s || !complex_written || !start_ns || !phase || !have_carry || !carry_byte || !data_offset || !event_cursor
         || !out_failure_rc) {
         if (out_failure_rc) {
-            *out_failure_rc = DSD_IQ_ERR_INVALID_ARG;
+            *out_failure_rc = kReplayPipelineFailureRc;
         }
         return REPLAY_STEP_FAILED;
     }
     if (!replay_wait_for_timeline_position(s, *complex_written, *start_ns, realtime)) {
-        return replay_step_stopped_or_failed(s, out_failure_rc, DSD_IQ_ERR_INVALID_ARG);
+        return replay_step_stopped_or_failed(s, out_failure_rc, kReplayPipelineFailureRc);
     }
     if (!s->replay_cfg.loop) {
         return REPLAY_STEP_EOF_DONE;
@@ -2383,7 +2392,7 @@ replay_handle_empty_read(struct rtl_device* s, uint64_t* complex_written, uint64
      * reconfigure callback would otherwise purge that work and a short
      * fast-mode capture could loop without ever publishing output. */
     if (!replay_wait_for_event_boundary_drain(s, 0)) {
-        return replay_step_stopped_or_failed(s, out_failure_rc, DSD_IQ_ERR_INVALID_ARG);
+        return replay_step_stopped_or_failed(s, out_failure_rc, kReplayPipelineFailureRc);
     }
     int rewind_rc = dsd_iq_replay_rewind(s->replay_src);
     if (rewind_rc != DSD_IQ_OK) {
@@ -2525,12 +2534,17 @@ replay_thread_read_capture(struct rtl_device* s, int* out_failure_rc) {
     return step;
 }
 
-/* The capture cannot be read on: say so, and latch it as the session's file input failure, for which
+/* The replay cannot go on: say why, and latch it as the session's file input failure, for which
  * dsd_engine_run_with_lifecycle() returns 1 once the replay ends. */
 static void
 replay_report_failure(int rc) {
     if (rc == DSD_IQ_ERR_ALLOC) {
         LOG_ERROR("IQ replay: no memory for the capture read buffers (rc=%d); the replay ends.\n", rc);
+    } else if (rc == kReplayPipelineFailureRc) {
+        LOG_ERROR("IQ replay: the capture could not be handed on to the demodulator (the input ring would not take a "
+                  "whole chunk, or the pipeline gave up on an event boundary); the replay ends after the samples "
+                  "already delivered.\n");
+        rc = DSD_IQ_ERR_INVALID_ARG;
     } else {
         LOG_ERROR("IQ replay: reading the capture failed (rc=%d); the replay ends after the samples already read.\n",
                   rc);
@@ -2551,7 +2565,7 @@ static DSD_THREAD_RETURN_TYPE
     maybe_set_thread_realtime_and_affinity("DONGLE");
     replay_test_reset_eof_wait();
 
-    int failure_rc = DSD_IQ_ERR_INVALID_ARG;
+    int failure_rc = kReplayPipelineFailureRc;
     replay_step step =
         (s->replay_src && s->input_ring) ? replay_thread_read_capture(s, &failure_rc) : REPLAY_STEP_FAILED;
     if (step == REPLAY_STEP_FAILED) {

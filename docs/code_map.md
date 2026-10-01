@@ -2255,7 +2255,8 @@ Notes:
     - The reader marks input EOF, waits on the input ring's `space` (50 ms at a time) for the demod to take the rest,
       marks the input drained, then waits for the demod to drain.
     - A failure is logged and latched as `DSD_INPUT_FAILURE_FILE`. Under `--iq-replay`,
-      `dsd_engine_run_with_lifecycle()` then returns 1.
+      `dsd_engine_run_with_lifecycle()` then returns 1. The log names what failed: reading the capture, or handing it
+      on (an input ring that would not take a whole chunk, an event boundary the pipeline gave up on).
     - The drain decision (input drained, demod drained) is made under `replay_eof_m` by the reader and the demod
       alike, so whichever decides second sees the other's store. The demod thread marks itself drained when it
       leaves.
@@ -2315,7 +2316,9 @@ Notes:
     - A RESET or rewind waits for its input purge by `g_ring_purge_done_seq`, which `replay_note_input_purge_consumed()`
       counts after the discard: the reader takes the flag itself when the input ring is empty, and otherwise waits for
       the demod that took it to finish discarding, so the next chunk is never the one discarded. Each wait covers one
-      purge request (a RESET's is the finalize's), read against a mark taken before it, with no deadline.
+      purge request (a RESET's is the finalize's), read against a mark taken before it, with no deadline. A RESET
+      checks that its finalize moved the discard generation by exactly one; any other count is logged and counted
+      (`replay_event_reset_purge_mismatch_count` in `rtl_stream_test_replay_state`).
     - A RETUNE keeps the centre the demod was last reset on, and the RESET after it resets the demod from there, as the
       live retune the pair records does (`demod_retune_reset_plan()`: a hop starts the band-edge FLL fresh, a hop back
       restores the cached seed). A rewind clears it.
@@ -2333,7 +2336,9 @@ Notes:
     (`docs/iq-capture-replay.md`). The `iq-determinism` CTest cases hold it to that: `dsd-neo_test_replay_jitter`
     (`tests/engine/replay_jitter.c`) runs the real engine with seeded sleeps after the decoder's reads, short reads or a
     stalling asynchronous audio sink, and `tests/iq_determinism_check.cmake` requires every leg to match the first line
-    for line (`docs/testing.md`, "Replay determinism").
+    for line (`docs/testing.md`, "Replay determinism"). The supervisory tuner autogain stays off under a replay, which
+    has no gain to adjust, so its real-time windows log nothing there (`stream_open_enable_default_autogain()`,
+    `demod_autogain_update()`; `IO_RTL_REPLAY_EOF_AND_CF32`).
 - Local audio output backends and audio device listing live in `dsd-neo_platform` (see `src/platform/audio_*.c`).
 - Network audio/input backends live in `src/io/audio_backends/` (`udp_input.c`, `tcp_input.c`, `udp_audio.c`,
   `m17_udp.c`, `udp_bind.c`).
