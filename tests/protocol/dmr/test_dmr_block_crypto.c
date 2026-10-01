@@ -333,7 +333,10 @@ test_rc4_decrypts_window_with_key_id_lookup(void) {
     state.rkey_array[kid] = 0x0123456789ULL;
 
     dmr_block_crypto_load_ctx(&state, slot, 1, 24, &ctx);
-    rc |= expect_int("rc4 ctx end", ctx.end, 28);
+    /* The window length sizes every write into plaintext below; a wrong one ends the case here. */
+    if (expect_int("rc4 ctx end", ctx.end, 28) != 0) {
+        return 1;
+    }
     fill_pattern(plaintext, (size_t)ctx.end, 0x31);
     DSD_MEMSET(stream, 0, sizeof(stream));
     rc4_block_output(256, 9, ctx.end, ctx.rc4_iv, stream);
@@ -361,7 +364,10 @@ test_des_decrypts_window_with_manual_key_fallback(void) {
     state.RR = 0x0123456789ABCDEFULL;
 
     dmr_block_crypto_load_ctx(&state, slot, 1, 24, &ctx);
-    rc |= expect_int("des ctx end", ctx.end, 24);
+    /* The window length sizes every write into plaintext below; a wrong one ends the case here. */
+    if (expect_int("des ctx end", ctx.end, 24) != 0) {
+        return 1;
+    }
     rc |= expect_int("des manual key fallback", ctx.rkey != 0ULL, 1);
     fill_pattern(plaintext, (size_t)ctx.end, 0x52);
     DSD_MEMSET(stream, 0, sizeof(stream));
@@ -389,7 +395,10 @@ test_basic_privacy_decrypts_window(void) {
     stream[1] = (uint8_t)(BPK[state.K] & 0xFFU);
 
     dmr_block_crypto_load_ctx(&state, slot, 1, 24, &ctx);
-    rc |= expect_int("bp ctx end", ctx.end, 16);
+    /* The window length sizes every write into plaintext below; a wrong one ends the case here. */
+    if (expect_int("bp ctx end", ctx.end, 16) != 0) {
+        return 1;
+    }
     fill_pattern(plaintext, (size_t)ctx.end, 0x73);
     for (int i = 0; i < ctx.end; i++) {
         state.dmr_pdu_sf[slot][ctx.start + i] = (uint8_t)(plaintext[i] ^ stream[i % 2]);
