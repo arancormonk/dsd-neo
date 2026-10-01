@@ -500,7 +500,8 @@ realization (see [Decode-Quality A/B on Real Captures](#decode-quality-ab-on-rea
 needs only a new sidecar: point its `data_file` at the original data and add the same whole number of samples (2 bytes
 each for cu8, 8 for cf32) to every event's `byte_offset`, keeping each within `data_bytes`. The number of samples must
 not be a multiple of the front end's total decimation; spread the copies across one symbol at the capture's rate, as
-`replay_ab.sh` does (copy i of n shifted floor(i P / n) + i samples, P the samples in one 2400-baud symbol).
+`replay_ab.sh` does (copy i of n shifted floor(i P / n) + i samples, P the samples in one 2400-baud symbol, and one
+sample more where that lands on a multiple of the decimation).
 
 #### Received tone (CTCSS) on the analog monitor
 
@@ -1462,24 +1463,30 @@ Reading it:
   and the report compares within a repeat. Before issue #572 a fixed order
   credited the better slot to whichever build held it; with repeatable replay
   the order changes nothing unless determinism has regressed.
-- **Each repeat is its own realization.** Replay is deterministic, so repeats
-  of a capture as recorded are all one draw of it, and an interval paired over
-  them claims a precision the capture does not have
+- **Each repeat is its own realization.** Replay is deterministic, so repeats of
+  a capture as recorded are all one draw of it, and an interval paired over them
+  claims a precision the capture does not have
   ([Replay determinism](#replay-determinism-issue-572) measures how much).
   Repeat r therefore replays `<out>/realizations/r<r>.json`, a copy of the
-  sidecar whose `data_file` is the original data's absolute path and whose
-  every event `byte_offset` is s_r = floor((r-1) P / reps) + (r-1) input
-  samples later, held to `data_bytes`, where P = round(sample rate / 2400) is
-  one 2400-baud symbol: 640 samples at 1.536 Msps, 20 at 48 kHz. Repeat 1 is
-  the capture as recorded, and the (r-1) keeps an even split of the symbol off
-  whole multiples of the front end's decimation. Only cu8 and cf32 captures
-  (2 and 8 bytes a sample) can be shifted; any other `sample_format` stops the
-  run before it replays anything. Each progress line prints its repeat's
-  `shift=`, `summary.tsv` records it in its last column, `shift`, and the
-  report's first line counts the realizations. More repeats buy more
-  realizations again: the default `--reps 12` is a floor for a result, and the
-  measurements in [Replay determinism](#replay-determinism-issue-572) took 16
-  and 32.
+  sidecar whose `data_file` is the original data's path, made absolute the way
+  replay resolves it (the sidecar's directory as given, with no `..`
+  collapsed), and whose every event `byte_offset` is
+  s_r = floor((r-1) P / reps) + (r-1) input samples later, held to
+  `data_bytes`, where P = round(sample rate / 2400) is one 2400-baud symbol:
+  640 samples at 1.536 Msps, 20 at 48 kHz. Repeat 1 is the capture as recorded.
+  A later shift that lands on a whole multiple of the front end's total
+  decimation D (`sample_rate_hz` over `demod_rate_hz`, else `base_decimation`
+  x `post_downsample`) moves up one sample, so no repeat after the first hands
+  every dwell the recorded output samples, only later; at 1.536 Msps,
+  `--reps 24` would otherwise shift its 23rd repeat by 608 samples, 19 x 32.
+  With `--reps 1` only repeat 1 runs, unshifted, and the header says so. Only
+  cu8 and cf32 captures (2 and 8 bytes a sample) can be shifted; any other
+  `sample_format` stops the run before it replays anything. Each progress line
+  prints its repeat's `shift=`, `summary.tsv` records it in its last column,
+  `shift`, and the report's first line counts the realizations. More repeats
+  buy more realizations again: the default `--reps 12` is a floor for a result,
+  and the measurements in [Replay determinism](#replay-determinism-issue-572)
+  took 16 and 32.
 - **A capture with no events** has nothing to shift. `replay_ab.sh` warns once
   (`the capture has no events: every repeat replays the same realization;
   compare it across captures`), replays every repeat as recorded and says so in
@@ -1558,12 +1565,13 @@ too, since one pair says nothing about the spread. A build missing a column that
 host) makes the report warn and exit 1, rather than leave the other builds' rows looking like a clean result.
 `tests/tools/test_replay_ab_report.py` (stdlib only) covers the per-repeat pairing, the A-vs-A control, probe frequency
 keying, the coverage reporting, crashed and off-path repeats, the single-pair interval, the received-tone columns, the
-duplicate-name refusal and the realizations: the shifted copies, their hold at `data_bytes`, the absolute `data_file`,
-the cf32 stride, the no-events warning, `--no-realizations`, an unknown `sample_format` and the report's reading of
-`shift`. CTest runs it as four tests: `TOOLS_REPLAY_AB_REPORT` scores canned summaries and runs wherever Python does,
-and `TOOLS_REPLAY_AB_ANALOG_METRIC`, `TOOLS_REPLAY_AB_DIGITAL_METRIC` and `TOOLS_REPLAY_AB_REALIZATIONS` drive the real
-`replay_ab.sh` with fake hosts, so they are registered only outside Windows where bash and coreutils `timeout` are
-found.
+duplicate-name refusal and the realizations: the shifted copies, their hold at `data_bytes`, the cf32 stride, the shift
+moved off a multiple of the decimation, `data_file` made absolute as replay resolves it (also under a symlinked
+directory) or kept when already absolute, paths with spaces, `--reps 1`, the no-events warning, `--no-realizations`, an
+unknown `sample_format` and the report's reading of `shift`. CTest runs it as four tests: `TOOLS_REPLAY_AB_REPORT`
+scores canned summaries and runs wherever Python does, and `TOOLS_REPLAY_AB_ANALOG_METRIC`,
+`TOOLS_REPLAY_AB_DIGITAL_METRIC` and `TOOLS_REPLAY_AB_REALIZATIONS` drive the real `replay_ab.sh` with fake hosts, so
+they are registered only outside Windows where bash and coreutils `timeout` are found.
 
 `tone`, `tone_lock_ms` and `tone_lock_pct` come from the host's `ANALOG METRIC:` line, which reads them from the
 decoder's received-tone publication (`dsd_state::analog_rx`) after every block the monitor delivers; a host built
