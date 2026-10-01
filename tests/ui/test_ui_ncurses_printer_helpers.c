@@ -44,8 +44,8 @@
 #include <string.h>
 #include <time.h>
 #include "dsd-neo/core/call_state.h"
-#include "dsd-neo/core/dsd_time.h"
 #include "dsd-neo/platform/platform.h"
+#include "dsd-neo/runtime/decode_clock.h"
 
 #if defined(NCURSES_VERSION)
 /* Read the real cursor before replacing ncurses accessors with helper-test stubs. */
@@ -2067,7 +2067,7 @@ test_edacs_tree_update_helpers(void) {
         .ota_source_id = 5678U,
         .channel = 5U,
     };
-    const uint64_t now_ms = (uint64_t)(dsd_time_now_monotonic_s() * 1000.0);
+    const uint64_t now_ms = (uint64_t)(dsd_decode_now_mono_s() * 1000.0);
     assert(dsd_recent_activity_publish(&state, 5U, &observation, "Group Voice Ch: 5 TG: 1234 Src: 5678;", now_ms) == 1);
     state.trunk_lcn_freq[4] = 851012500L;
     dsd_recent_activity_snapshot recent;
@@ -2292,7 +2292,7 @@ test_canonical_p25_slot_and_recent_activity(void) {
     assert(strstr(g_printw_capture, "9999") == NULL);
     assert(strstr(g_printw_capture, "8888") == NULL);
 
-    const uint64_t now_ms = (uint64_t)(dsd_time_now_monotonic_s() * 1000.0);
+    const uint64_t now_ms = (uint64_t)(dsd_decode_now_mono_s() * 1000.0);
     dsd_call_observation old_activity = observation;
     old_activity.ota_target_id = 100U;
     old_activity.policy_target_id = 100U;

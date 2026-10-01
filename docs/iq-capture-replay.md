@@ -106,9 +106,10 @@ capture chunk at a time, so throughput is bounded by decode speed and a capture'
 considerably less wall-clock time.
 
 That matters because there is currently **no decode-derived clock** in the decoder. Protocol layers time call state
-against `dsd_time_now_monotonic_s()` (wall-clock monotonic), and any call site that passes `observed_m = 0.0` falls
-back to the same source. Under `fast` replay every wall-clock-measured interval in the canonical call state is
-therefore compressed relative to the air time it is meant to describe:
+against the decode clock's `dsd_decode_now_mono_s()`, which still reads the wall-clock monotonic clock during a replay,
+and any call site that passes `observed_m = 0.0` falls back to the same source. Under `fast` replay every
+wall-clock-measured interval in the canonical call state is therefore compressed relative to the air time it is meant
+to describe:
 
 - Gaps look shorter than they were, so the call reacquisition window (`DSD_CALL_REACQUIRE_GAP_S`, which decides
   whether a sync-loss-interrupted transmission is one history row or two) coalesces more readily than it would live.

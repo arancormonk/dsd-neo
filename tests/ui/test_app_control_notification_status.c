@@ -11,7 +11,6 @@
 #include <dsd-neo/app_control/call_view.h>
 #include <dsd-neo/app_control/notification_status.h>
 #include <dsd-neo/core/call_state.h>
-#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/safe_api.h>
@@ -21,6 +20,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/runtime/decode_clock.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -91,7 +91,7 @@ test_publish_state_carries_protocol_and_call(void) {
     observation.has_service_metadata = 1;
     observation.emergency = 1;
     observation.priority = 3;
-    observation.observed_m = dsd_time_now_monotonic_s();
+    observation.observed_m = dsd_decode_now_mono_s();
     assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) > 0);
 
     dsd_app_notification_publish_state(state);
@@ -269,7 +269,7 @@ test_lead_slot_is_published_and_survives_encoding(void) {
     /* Slot 1 alone: the lead is the slot with the call, not simply the lowest one. */
     dsd_call_observation observation = dsd_call_observation_data(DSD_SYNC_P25P2_POS, 1U, 1234567U, 51023U);
     observation.kind = DSD_CALL_KIND_GROUP_VOICE;
-    observation.observed_m = dsd_time_now_monotonic_s() - 1.0;
+    observation.observed_m = dsd_decode_now_mono_s() - 1.0;
     assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) > 0);
     dsd_app_notification_publish_state(state);
     assert(dsd_app_notification_get(&status) == 1);
@@ -278,7 +278,7 @@ test_lead_slot_is_published_and_survives_encoding(void) {
     /* Both up: the earlier call keeps the headline, matching MonitorScreen.qml's hero. */
     dsd_call_observation other = dsd_call_observation_data(DSD_SYNC_P25P2_POS, 0U, 7654321U, 51024U);
     other.kind = DSD_CALL_KIND_GROUP_VOICE;
-    other.observed_m = dsd_time_now_monotonic_s();
+    other.observed_m = dsd_decode_now_mono_s();
     assert(dsd_call_state_observe(state, &other, DSD_CALL_BOUNDARY_BEGIN) > 0);
     dsd_app_notification_publish_state(state);
     assert(dsd_app_notification_get(&status) == 1);
@@ -296,7 +296,7 @@ test_lead_slot_is_published_and_survives_encoding(void) {
     }
     assert(eighth[0] == '1' && eighth[1] == '\t');
 
-    assert(dsd_call_state_end(state, 1U, dsd_time_now_monotonic_s()) == 1);
+    assert(dsd_call_state_end(state, 1U, dsd_decode_now_mono_s()) == 1);
     dsd_app_notification_publish_state(state);
     assert(dsd_app_notification_get(&status) == 1);
     assert(status.slots[1].state == DSD_APP_CALL_LINE_ENDED);
@@ -367,7 +367,7 @@ test_encode_sanitises_control_characters(void) {
 
     dsd_call_observation observation = dsd_call_observation_data(DSD_SYNC_P25P2_POS, 0U, 1234567U, 51023U);
     observation.kind = DSD_CALL_KIND_GROUP_VOICE;
-    observation.observed_m = dsd_time_now_monotonic_s();
+    observation.observed_m = dsd_decode_now_mono_s();
     DSD_SNPRINTF(observation.target_text, sizeof(observation.target_text), "Metro\tFire\nDispatch");
     assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) > 0);
     dsd_app_notification_publish_state(state);
@@ -391,7 +391,7 @@ encode_with_target_text(const char* target, char* record, size_t record_size) {
 
     dsd_call_observation observation = dsd_call_observation_data(DSD_SYNC_P25P2_POS, 0U, 1234567U, 51023U);
     observation.kind = DSD_CALL_KIND_GROUP_VOICE;
-    observation.observed_m = dsd_time_now_monotonic_s();
+    observation.observed_m = dsd_decode_now_mono_s();
     DSD_SNPRINTF(observation.target_text, sizeof(observation.target_text), "%s", target);
     assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) > 0);
     dsd_app_notification_publish_state(state);
@@ -466,7 +466,7 @@ test_encode_round_trips_a_long_group_name(void) {
 
     dsd_call_observation observation = dsd_call_observation_data(DSD_SYNC_P25P2_POS, 0U, 1234567U, 51023U);
     observation.kind = DSD_CALL_KIND_GROUP_VOICE;
-    observation.observed_m = dsd_time_now_monotonic_s();
+    observation.observed_m = dsd_decode_now_mono_s();
     assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) > 0);
 
     /* 199 characters, with a distinct tail so a truncation cannot pass on a prefix
@@ -553,7 +553,7 @@ test_encode_matches_expected_record_field_order(void) {
     observation.has_service_metadata = 1;
     observation.emergency = 1;
     observation.priority = 3;
-    observation.observed_m = dsd_time_now_monotonic_s();
+    observation.observed_m = dsd_decode_now_mono_s();
     assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) > 0);
 
     /* Staged on the same talkgroup id the observation above carries, so
@@ -568,7 +568,7 @@ test_encode_matches_expected_record_field_order(void) {
     crypto.classification = DSD_CALL_CRYPTO_ENCRYPTED;
     crypto.algid = 0xAAU;
     crypto.kid = 0x1234U;
-    crypto.observed_m = dsd_time_now_monotonic_s();
+    crypto.observed_m = dsd_decode_now_mono_s();
     assert(dsd_call_state_update_crypto(state, 0U, &crypto) > 0);
 
     dsd_app_notification_publish_state(state);

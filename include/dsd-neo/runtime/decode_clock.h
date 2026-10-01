@@ -45,7 +45,7 @@ typedef enum dsd_decode_clock_source {
 /** @brief Decode-domain replacement for `time(NULL)`. */
 time_t dsd_decode_time(void);
 
-/** @brief Decode-domain monotonic seconds (same formula as `dsd_time_now_monotonic_s`). */
+/** @brief Decode-domain monotonic seconds (`dsd_decode_now_mono_ns() / 1e9`). */
 double dsd_decode_now_mono_s(void);
 
 /** @brief Decode-domain monotonic milliseconds (replaces `dsd_time_monotonic_ms`). */
@@ -54,7 +54,7 @@ uint64_t dsd_decode_now_mono_ms(void);
 /** @brief Decode-domain monotonic nanoseconds (replaces `dsd_time_monotonic_ns`). */
 uint64_t dsd_decode_now_mono_ns(void);
 
-/** @brief Decode-domain wall-clock seconds with sub-second precision (same formula as `dsd_time_now_realtime_s`). */
+/** @brief Decode-domain wall-clock seconds with sub-second precision (`dsd_time_realtime_ns() / 1e9` under SYSTEM). */
 double dsd_decode_now_realtime_s(void);
 
 /* ---- Real-time domain (never affected by the decode source) ---- */
@@ -65,7 +65,7 @@ uint64_t dsd_realtime_mono_ms(void);
 /** @brief Real monotonic nanoseconds. */
 uint64_t dsd_realtime_mono_ns(void);
 
-/** @brief Real monotonic seconds (same formula as `dsd_time_now_monotonic_s`). */
+/** @brief Real monotonic seconds (`dsd_realtime_mono_ns() / 1e9`). */
 double dsd_realtime_mono_s(void);
 
 /** @brief Real `time(NULL)`. */

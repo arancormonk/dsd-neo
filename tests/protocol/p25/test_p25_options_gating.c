@@ -8,12 +8,12 @@
  * Ensures trunk_tune_group_calls / trunk_tune_private_calls disable tuning.
  */
 
-#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25_vpdu.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -115,7 +115,7 @@ mark_cc_reacquired(dsd_state* st) {
     if (!st) {
         return;
     }
-    double now_m = dsd_time_now_monotonic_s();
+    double now_m = dsd_decode_now_mono_s();
     if (now_m <= st->last_cc_sync_time_m) {
         now_m = st->last_cc_sync_time_m + 0.001;
     }

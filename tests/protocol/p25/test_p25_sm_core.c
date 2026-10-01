@@ -20,6 +20,7 @@
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/rigctl_query_hooks.h>
 #include <math.h>
 #ifdef USE_RADIO
@@ -278,7 +279,7 @@ static void
 init_stalled_vc_reacquire_case(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int audio_in_type, int is_tdma,
                                int data_call) {
     const long vc_freq = 851125000;
-    const double tune_m = dsd_time_now_monotonic_s() - 0.9;
+    const double tune_m = dsd_decode_now_mono_s() - 0.9;
     dsd_state_ext_free_all(state);
     DSD_MEMSET(opts, 0, sizeof(*opts));
     DSD_MEMSET(state, 0, sizeof(*state));
@@ -327,7 +328,7 @@ init_stalled_vc_reacquire_case(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* sta
 
 static void
 age_stalled_vc_reacquire_case(p25_sm_ctx_t* ctx, dsd_state* state, double age_s) {
-    const double tune_m = dsd_time_now_monotonic_s() - age_s;
+    const double tune_m = dsd_decode_now_mono_s() - age_s;
     ctx->t_tune_m = tune_m;
     ctx->slots[0].last_grant_m = tune_m;
     state->p25_last_vc_tune_time_m = tune_m;
@@ -345,7 +346,7 @@ main(void) {
     // 1) Post-hang watchdog release (monotonic)
     st.p25_vc_freq[0] = 851012500; // voice tuned
     opts.trunk_is_tuned = 1;
-    double nowm = dsd_time_now_monotonic_s();
+    double nowm = dsd_decode_now_mono_s();
     st.p25_last_vc_tune_time_m = nowm - 1.0;
     st.last_vc_sync_time_m = nowm - 1.0; // stale
     st.p25_p2_active_slot = -1;          // P1 behavior path allowed
@@ -357,7 +358,7 @@ main(void) {
     static dsd_opts o3;
     static dsd_state s3;
     init_basic(&o3, &s3);
-    s3.last_cc_sync_time_m = dsd_time_now_monotonic_s() - 10.0; // stale CC
+    s3.last_cc_sync_time_m = dsd_decode_now_mono_s() - 10.0; // stale CC
     (void)dsd_trunk_cc_candidates_add(&s3, 852000000, 0, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE);
     g_last_tuned_cc = 0;
     p25_sm_tick_ctx(p25_sm_get_ctx(), &o3, &s3);
@@ -429,7 +430,7 @@ main(void) {
     init_basic(&o5, &s5);
     s5.p2_cc = 0x293;
     s5.nac = 0x293;
-    s5.last_cc_sync_time_m = dsd_time_now_monotonic_s();
+    s5.last_cc_sync_time_m = dsd_decode_now_mono_s();
 
     p25_sm_ctx_t ctx5;
     p25_sm_init_ctx(&ctx5, &o5, &s5);
@@ -459,7 +460,7 @@ main(void) {
     init_basic(&o6, &s6);
     s6.p2_cc = 0x293;
     s6.nac = 0x293;
-    s6.last_cc_sync_time_m = dsd_time_now_monotonic_s();
+    s6.last_cc_sync_time_m = dsd_decode_now_mono_s();
 
     p25_sm_ctx_t ctx6;
     p25_sm_init_ctx(&ctx6, &o6, &s6);
@@ -480,7 +481,7 @@ main(void) {
     init_basic(&o7, &s7);
     s7.p2_cc = 0x293;
     s7.nac = 0x293;
-    s7.last_cc_sync_time_m = dsd_time_now_monotonic_s();
+    s7.last_cc_sync_time_m = dsd_decode_now_mono_s();
 
     p25_sm_ctx_t ctx7;
     p25_sm_init_ctx(&ctx7, &o7, &s7);
@@ -520,7 +521,7 @@ main(void) {
     o8.trunk_hangtime = 0.2f;
     o8.p25_prefer_candidates = 1;
     s8.p25_cc_freq = 851000000;
-    s8.last_cc_sync_time_m = dsd_time_now_monotonic_s() - 10.0;
+    s8.last_cc_sync_time_m = dsd_decode_now_mono_s() - 10.0;
 
     p25_sm_ctx_t ctx8;
     p25_sm_init_ctx(&ctx8, &o8, &s8);
@@ -550,7 +551,7 @@ main(void) {
     assert(g_last_tuned_cc == 851000000);
 
     ctx8b.state = P25_SM_HUNTING;
-    ctx8b.t_hunt_try_m = dsd_time_now_monotonic_s() - 10.0;
+    ctx8b.t_hunt_try_m = dsd_decode_now_mono_s() - 10.0;
     g_last_tuned_cc = 0;
     p25_sm_tick_ctx(&ctx8b, &o8b, &s8b);
     assert(g_last_tuned_cc == 851000000);
@@ -581,7 +582,7 @@ main(void) {
     assert(g_last_tuned_cc == 851000000);
 
     ctx8d.state = P25_SM_HUNTING;
-    ctx8d.t_hunt_try_m = dsd_time_now_monotonic_s() - 10.0;
+    ctx8d.t_hunt_try_m = dsd_decode_now_mono_s() - 10.0;
     g_last_tuned_cc = 0;
     p25_sm_tick_ctx(&ctx8d, &o8d, &s8d);
     assert(g_last_tuned_cc == 852000000);
@@ -594,7 +595,7 @@ main(void) {
     o8c.trunk_enable = 1;
     o8c.trunk_hangtime = 0.2f;
     s8c.p25_cc_freq = 851000000;
-    s8c.last_cc_sync_time_m = dsd_time_now_monotonic_s() - 10.0;
+    s8c.last_cc_sync_time_m = dsd_decode_now_mono_s() - 10.0;
     dsd_state_set_trunk_chan_freq(&s8c, 101U, 889000000L);
     assert(s8c.trunk_chan_map_used_count == 1U);
     (void)dsd_trunk_cc_candidates_add(&s8c, 852000000, 0, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE);
@@ -650,7 +651,7 @@ main(void) {
     o10.p25_prefer_candidates = 1;
     s10.p25_cc_freq = 851000000;
     s10.trunk_cc_freq = 851000000;
-    s10.last_cc_sync_time_m = dsd_time_now_monotonic_s() - 10.0;
+    s10.last_cc_sync_time_m = dsd_decode_now_mono_s() - 10.0;
     const double old_cc_sync_m = s10.last_cc_sync_time_m;
     const double cc_sync_epsilon_s = 1.0e-9;
     (void)dsd_trunk_cc_candidates_add(&s10, 852000000, 0, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE);
@@ -952,7 +953,7 @@ main(void) {
     assert(s18.last_cc_sync_time_m > 0.0);
 
     s18.last_cc_sync_time = time(NULL) - 10;
-    s18.last_cc_sync_time_m = dsd_time_now_monotonic_s() - 10.0;
+    s18.last_cc_sync_time_m = dsd_decode_now_mono_s() - 10.0;
     ctx18.t_cc_sync_m = s18.last_cc_sync_time_m;
     const double stale_seed_cc_sync_m = s18.last_cc_sync_time_m;
     g_result_return_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
@@ -965,7 +966,7 @@ main(void) {
 
     int cc_calls_before_seeded_release_tick = g_result_tune_to_cc_calls;
     int vc_calls_before_seeded_release_tick = g_result_tune_to_freq_calls;
-    const double seeded_return_tune_m = dsd_time_now_monotonic_s() - 2.5;
+    const double seeded_return_tune_m = dsd_decode_now_mono_s() - 2.5;
     ctx18.t_cc_sync_m = seeded_return_tune_m;
     ctx18.t_cc_tune_m = seeded_return_tune_m;
     s18.last_cc_sync_time_m = seeded_return_tune_m;
@@ -992,7 +993,7 @@ main(void) {
     p25_sm_release(&ctx18, &o18, &s18, "seeded-release-timeout");
     assert(g_result_return_to_cc_calls == 2);
     assert(ctx18.cc_acquisition_origin == P25_SM_CC_ACQUISITION_RETURN);
-    const double expired_seeded_return_m = dsd_time_now_monotonic_s() - 5.5;
+    const double expired_seeded_return_m = dsd_decode_now_mono_s() - 5.5;
     ctx18.t_cc_sync_m = expired_seeded_return_m;
     ctx18.t_cc_tune_m = expired_seeded_return_m;
     s18.last_cc_sync_time_m = expired_seeded_return_m;
@@ -1020,7 +1021,7 @@ main(void) {
     s18aa.p25_chan_tdma_explicit[id9] = 1;
     p25_sm_ctx_t ctx18aa;
     p25_sm_init_ctx(&ctx18aa, &o18aa, &s18aa);
-    const double pending_grant_cc_tune_m = dsd_time_now_monotonic_s();
+    const double pending_grant_cc_tune_m = dsd_decode_now_mono_s();
     ctx18aa.state = P25_SM_ON_CC;
     ctx18aa.t_cc_sync_m = pending_grant_cc_tune_m - 0.25;
     ctx18aa.t_cc_tune_m = pending_grant_cc_tune_m;
@@ -1071,7 +1072,7 @@ main(void) {
     p25_sm_ctx_t ctx18b;
     p25_sm_init_ctx(&ctx18b, &o18b, &s18b);
     ctx18b.config.cc_grace_s = 5.0;
-    const double pending_cc_tune_m = dsd_time_now_monotonic_s() - 2.5;
+    const double pending_cc_tune_m = dsd_decode_now_mono_s() - 2.5;
     ctx18b.t_cc_sync_m = pending_cc_tune_m;
     ctx18b.t_cc_tune_m = pending_cc_tune_m;
     ctx18b.cc_sync_pending = 1;
@@ -1106,7 +1107,7 @@ main(void) {
     p25_sm_ctx_t ctx18c;
     p25_sm_init_ctx(&ctx18c, &o18c, &s18c);
     ctx18c.config.cc_grace_s = 5.0;
-    const double hunting_pending_tune_m = dsd_time_now_monotonic_s() - 2.5;
+    const double hunting_pending_tune_m = dsd_decode_now_mono_s() - 2.5;
     ctx18c.t_cc_sync_m = hunting_pending_tune_m;
     ctx18c.t_cc_tune_m = hunting_pending_tune_m;
     ctx18c.cc_sync_pending = 1;
@@ -1306,7 +1307,7 @@ main(void) {
     assert(ctx18g.cc_sync_pending == 1);
     assert(ctx18g.cc_acquisition_origin == P25_SM_CC_ACQUISITION_RETURN);
 
-    const double async_return_tune_m = dsd_time_now_monotonic_s() - 2.5;
+    const double async_return_tune_m = dsd_decode_now_mono_s() - 2.5;
     ctx18g.t_cc_sync_m = async_return_tune_m;
     ctx18g.t_cc_tune_m = async_return_tune_m;
     s18g.last_cc_sync_time_m = async_return_tune_m;
@@ -1337,7 +1338,7 @@ main(void) {
     g_cc_reacquire_request_rc = 1;
     g_cc_reacquire_request_calls = 0;
 
-    const double early_reacquire_tune_m = dsd_time_now_monotonic_s() - 0.25;
+    const double early_reacquire_tune_m = dsd_decode_now_mono_s() - 0.25;
     assert(
         p25_sm_restart_pending_cc_acquisition(&ctx18r, &o18r, &s18r, early_reacquire_tune_m, "test-cqpsk-return-early")
         == 1);
@@ -1373,7 +1374,7 @@ main(void) {
     assert(ctx18r.t_cc_first_no_sync_m == 0.0);
 
     // A decoded block observed before the recovery check suppresses the reset.
-    const double fast_reacquire_tune_m = dsd_time_now_monotonic_s() - 0.25;
+    const double fast_reacquire_tune_m = dsd_decode_now_mono_s() - 0.25;
     assert(p25_sm_restart_pending_cc_acquisition(&ctx18r, &o18r, &s18r, fast_reacquire_tune_m, "test-cqpsk-return-fast")
            == 1);
     s18r.last_cc_sync_time_m = fast_reacquire_tune_m + 0.25;
@@ -1386,7 +1387,7 @@ main(void) {
 
     // C4FM remains untouched even after an unsuccessful frame-sync search.
     g_cc_reacquire_cqpsk = 0;
-    const double c4fm_reacquire_tune_m = dsd_time_now_monotonic_s() - 0.25;
+    const double c4fm_reacquire_tune_m = dsd_decode_now_mono_s() - 0.25;
     assert(p25_sm_restart_pending_cc_acquisition(&ctx18r, &o18r, &s18r, c4fm_reacquire_tune_m, "test-c4fm-return")
            == 1);
     s18r.last_cc_sync_time_m = c4fm_reacquire_tune_m;
@@ -1400,7 +1401,7 @@ main(void) {
     // the former one-second-remaining gate could suppress it entirely.
     g_cc_reacquire_cqpsk = 1;
     ctx18r.config.cc_grace_s = 0.5;
-    const double short_reacquire_tune_m = dsd_time_now_monotonic_s() - 0.25;
+    const double short_reacquire_tune_m = dsd_decode_now_mono_s() - 0.25;
     assert(p25_sm_restart_pending_cc_acquisition(&ctx18r, &o18r, &s18r, short_reacquire_tune_m,
                                                  "test-cqpsk-return-short-grace")
            == 1);
@@ -1425,9 +1426,9 @@ main(void) {
     p25_sm_ctx_t ctx18h;
     p25_sm_init_ctx(&ctx18h, &o18h, &s18h);
     ctx18h.config.cc_grace_s = 1.0;
-    assert(p25_sm_restart_pending_cc_acquisition(&ctx18h, &o18h, &s18h, dsd_time_now_monotonic_s(), "test-short-return")
+    assert(p25_sm_restart_pending_cc_acquisition(&ctx18h, &o18h, &s18h, dsd_decode_now_mono_s(), "test-short-return")
            == 1);
-    const double short_return_tune_m = dsd_time_now_monotonic_s() - 1.5;
+    const double short_return_tune_m = dsd_decode_now_mono_s() - 1.5;
     ctx18h.t_cc_sync_m = short_return_tune_m;
     ctx18h.t_cc_tune_m = short_return_tune_m;
     s18h.last_cc_sync_time_m = short_return_tune_m;
@@ -1448,9 +1449,9 @@ main(void) {
     p25_sm_ctx_t ctx18i;
     p25_sm_init_ctx(&ctx18i, &o18i, &s18i);
     ctx18i.config.cc_grace_s = 0.0;
-    assert(p25_sm_restart_pending_cc_acquisition(&ctx18i, &o18i, &s18i, dsd_time_now_monotonic_s(), "test-zero-return")
+    assert(p25_sm_restart_pending_cc_acquisition(&ctx18i, &o18i, &s18i, dsd_decode_now_mono_s(), "test-zero-return")
            == 1);
-    const double zero_return_tune_m = dsd_time_now_monotonic_s() - 0.1;
+    const double zero_return_tune_m = dsd_decode_now_mono_s() - 0.1;
     ctx18i.t_cc_sync_m = zero_return_tune_m;
     ctx18i.t_cc_tune_m = zero_return_tune_m;
     s18i.last_cc_sync_time_m = zero_return_tune_m;
@@ -1521,7 +1522,7 @@ main(void) {
     ctx19b.slots[1].freq_hz = 851000000;
     ctx19b.slots[1].channel = tdma_slot1_ch;
     ctx19b.slots[1].target_id = 5102;
-    ctx19b.slots[1].last_grant_m = dsd_time_now_monotonic_s();
+    ctx19b.slots[1].last_grant_m = dsd_decode_now_mono_s();
     s19b.p25_p2_audio_allowed[0] = 1;
     s19b.p25_crypto_state[0] = DSD_P25_CRYPTO_BLOCKED;
 
@@ -1565,7 +1566,7 @@ main(void) {
     ctx19e.slots[0].src = 6401;
     ctx19e.slots[0].is_group = 1;
     ctx19e.slots[0].svc_bits = 0x40;
-    ctx19e.slots[0].last_grant_m = dsd_time_now_monotonic_s() - 1.0;
+    ctx19e.slots[0].last_grant_m = dsd_decode_now_mono_s() - 1.0;
     ctx19e.slots[1].grant_active = 1;
     ctx19e.slots[1].voice_active = 1;
     ctx19e.slots[1].freq_hz = 851000000;
@@ -1624,7 +1625,7 @@ main(void) {
     assert(ctx19g.slots[0].svc_bits == 0x40);
     assert(ctx19g.slots[0].crypto_attempt_m > 0.0);
     assert(s19g.p25_crypto_state[0] == DSD_P25_CRYPTO_ENCRYPTED_PENDING);
-    const double stale_crypto_attempt_m = dsd_time_now_monotonic_s() - 1.0;
+    const double stale_crypto_attempt_m = dsd_decode_now_mono_s() - 1.0;
     ctx19g.slots[0].crypto_attempt_m = stale_crypto_attempt_m;
     p25_sm_event(&ctx19g, &o19g, &s19g, &duplicate_encrypted);
     assert(ctx19g.slots[0].last_grant_m > stale_crypto_attempt_m);
@@ -1878,7 +1879,7 @@ main(void) {
     ctx19j.vc_tg = 5701;
     ctx19j.config.hangtime_s = 0.1;
     ctx19j.config.grant_timeout_s = 1.0;
-    const double stale_inband_activity_m = dsd_time_now_monotonic_s() - 0.2;
+    const double stale_inband_activity_m = dsd_decode_now_mono_s() - 0.2;
     ctx19j.t_tune_m = stale_inband_activity_m - 1.0;
     ctx19j.t_voice_m = stale_inband_activity_m;
     ctx19j.slots[0].grant_active = 1;
@@ -1961,7 +1962,7 @@ main(void) {
     p25_sm_event(&ctx19f, &o19f, &s19f, &follow_active);
     assert(ctx19f.slots[0].voice_active == 1);
 
-    const double stale_follow_grant_m = dsd_time_now_monotonic_s() - 1.0;
+    const double stale_follow_grant_m = dsd_decode_now_mono_s() - 1.0;
     ctx19f.t_tune_m = stale_follow_grant_m;
     ctx19f.slots[0].last_grant_m = stale_follow_grant_m;
     s19f.p25_crypto_state[0] = DSD_P25_CRYPTO_ENCRYPTED_PENDING;
@@ -1978,7 +1979,7 @@ main(void) {
     // cannot keep sliding the hangtime deadline indefinitely.
     o19f.trunk_tune_enc_calls = 0;
     s19f.p25_crypto_state[0] = DSD_P25_CRYPTO_BLOCKED;
-    ctx19f.t_voice_m = dsd_time_now_monotonic_s() - 10.0;
+    ctx19f.t_voice_m = dsd_decode_now_mono_s() - 10.0;
     p25_sm_event(&ctx19f, &o19f, &s19f, &follow_active);
     assert(ctx19f.slots[0].voice_active == 0);
 
@@ -2017,13 +2018,13 @@ main(void) {
     ctx19c.vc_channel = tdma_slot0_ch;
     ctx19c.vc_tg = 5201;
     ctx19c.config.grant_timeout_s = 0.1;
-    ctx19c.t_tune_m = dsd_time_now_monotonic_s() - 1.0;
+    ctx19c.t_tune_m = dsd_decode_now_mono_s() - 1.0;
     ctx19c.slots[0].grant_active = 1;
-    ctx19c.slots[0].last_grant_m = dsd_time_now_monotonic_s();
+    ctx19c.slots[0].last_grant_m = dsd_decode_now_mono_s();
     ctx19c.slots[0].crypto_attempt_m = ctx19c.t_tune_m;
     ctx19c.slots[1].grant_active = 1;
     ctx19c.slots[1].voice_active = 1;
-    ctx19c.slots[1].last_grant_m = dsd_time_now_monotonic_s();
+    ctx19c.slots[1].last_grant_m = dsd_decode_now_mono_s();
     g_result_return_to_cc_calls = 0;
     p25_sm_tick_ctx(&ctx19c, &o19c, &s19c);
     assert(ctx19c.state == P25_SM_TUNED);
@@ -2061,7 +2062,7 @@ main(void) {
     ctx19i.vc_channel = tdma_slot1_ch;
     ctx19i.vc_tg = 5202;
     ctx19i.config.grant_timeout_s = 0.1;
-    ctx19i.t_tune_m = dsd_time_now_monotonic_s();
+    ctx19i.t_tune_m = dsd_decode_now_mono_s();
     ctx19i.slots[0].grant_active = 1;
     ctx19i.slots[0].last_grant_m = ctx19i.t_tune_m - 1.0;
     ctx19i.slots[0].crypto_attempt_m = ctx19i.t_tune_m - 1.0;
@@ -2102,7 +2103,7 @@ main(void) {
     ctx19d.vc_freq_hz = 851125000;
     ctx19d.vc_tg = 5301;
     ctx19d.config.grant_timeout_s = 0.1;
-    ctx19d.t_tune_m = dsd_time_now_monotonic_s() - 1.0;
+    ctx19d.t_tune_m = dsd_decode_now_mono_s() - 1.0;
     ctx19d.slots[0].grant_active = 1;
     ctx19d.slots[0].last_grant_m = ctx19d.t_tune_m;
     ctx19d.slots[0].crypto_attempt_m = ctx19d.t_tune_m;
@@ -2156,7 +2157,7 @@ main(void) {
     const int tuned_center = s19.symbolCenter;
 
     s19.p25_vc_cqpsk_override = 0;
-    ctx19.t_tune_m = dsd_time_now_monotonic_s() - 1.0;
+    ctx19.t_tune_m = dsd_decode_now_mono_s() - 1.0;
     g_result_tune_to_freq_result = DSD_TRUNK_TUNE_RESULT_FAILED;
     int calls_before_cqpsk_retry = g_result_tune_to_freq_calls;
     p25_sm_tick_ctx(&ctx19, &o19, &s19);
@@ -2206,7 +2207,7 @@ main(void) {
     assert(o20.trunk_is_tuned == 1);
 
     s20.p25_vc_cqpsk_override = 0;
-    const double stale_grant_m = dsd_time_now_monotonic_s() - 0.85;
+    const double stale_grant_m = dsd_decode_now_mono_s() - 0.85;
     ctx20.t_tune_m = stale_grant_m;
     ctx20.t_voice_m = 0.0;
     ctx20.slots[0].last_grant_m = stale_grant_m;
@@ -2341,7 +2342,7 @@ main(void) {
     p25_sm_release(&ctx20v, &o20v, &s20v, "frame-sync-no-sync");
     assert(g_cc_reacquire_request_calls == 1);
     assert(g_result_return_to_cc_calls == 0);
-    ctx20v.t_vc_reacquire_m = dsd_time_now_monotonic_s() - 1.0;
+    ctx20v.t_vc_reacquire_m = dsd_decode_now_mono_s() - 1.0;
     s20v.p25_sm_force_release = 1;
     p25_sm_release(&ctx20v, &o20v, &s20v, "frame-sync-no-sync");
     assert(ctx20v.state == P25_SM_ON_CC);
@@ -2572,7 +2573,7 @@ main(void) {
     o24.trunk_enable = 1;
     s24.p25_cc_freq = 851000000;
     s24.trunk_cc_freq = 851000000;
-    s24.last_cc_sync_time_m = dsd_time_now_monotonic_s();
+    s24.last_cc_sync_time_m = dsd_decode_now_mono_s();
 
     p25_sm_ctx_t ctx24;
     p25_sm_init_ctx(&ctx24, &o24, &s24);

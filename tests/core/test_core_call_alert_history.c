@@ -7,7 +7,6 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/csv_import.h>
-#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
@@ -2154,10 +2153,10 @@ test_end_alert_deadline_matches_reacquire_window(void) {
                                        0U, 0U, DSD_CALL_BOUNDARY_BEGIN),
                      1);
     dsd_event_sync_slot(&opts, &state, 0U);
-    double before = dsd_time_now_monotonic_s();
+    double before = dsd_decode_now_mono_s();
     rc |= expect_int("sync loss ends it", end_test_call(&state, 0U, DSD_CALL_END_SYNC_LOSS), 1);
     dsd_event_sync_slot(&opts, &state, 0U);
-    double after = dsd_time_now_monotonic_s();
+    double after = dsd_decode_now_mono_s();
     rc |= expect_int("context snapshot copies", dsd_call_context_copy_snapshot(&state, &context) > 0, 1);
     rc |= expect_int("sync-loss end holds the alert", context.events[0].end_alert_pending, 1);
     rc |= expect_int("sync-loss deadline is not below its window",
@@ -2172,10 +2171,10 @@ test_end_alert_deadline_matches_reacquire_window(void) {
                                        0U, 0U, DSD_CALL_BOUNDARY_BEGIN),
                      1);
     dsd_event_sync_slot(&opts, &state, 0U);
-    before = dsd_time_now_monotonic_s();
+    before = dsd_decode_now_mono_s();
     rc |= expect_int("unverified terminator ends it", end_test_call(&state, 0U, DSD_CALL_END_UNVERIFIED_TERMINATOR), 1);
     dsd_event_sync_slot(&opts, &state, 0U);
-    after = dsd_time_now_monotonic_s();
+    after = dsd_decode_now_mono_s();
     rc |= expect_int("second context snapshot copies", dsd_call_context_copy_snapshot(&state, &context) > 0, 1);
     rc |= expect_int("unverified end holds the alert", context.events[0].end_alert_pending, 1);
     rc |= expect_int("terminator deadline is not below the heal window",
@@ -3362,7 +3361,7 @@ test_route_identity_reacquisition_still_coalesces(void) {
 
 // The gap test compares an end against a reopen on one clock, but only one side of that comparison
 // reads the clock itself: every production end site passes a timeline derived from
-// dsd_time_now_monotonic_s(), while a reopening observation usually passes 0.0 and takes the
+// dsd_decode_now_mono_s(), while a reopening observation usually passes 0.0 and takes the
 // fallback. If the fallback truncates to whole milliseconds it can land *behind* an end stamped at
 // nanosecond resolution moments earlier, and the reacquisition is rejected for going backwards --
 // committing a second row and a spurious START for one transmission.
@@ -3382,10 +3381,10 @@ test_observed_fallback_matches_end_site_clock_resolution(void) {
            == 1);
     dsd_event_sync_slot(&opts, &state, 0U);
 
-    const double before = dsd_time_now_monotonic_s();
+    const double before = dsd_decode_now_mono_s();
     // observed_m of 0.0 is what the protocol end paths pass, so this takes the fallback.
     assert(dsd_call_state_end_ex(&state, 0U, 0.0, DSD_CALL_END_SYNC_LOSS) == 1);
-    const double after = dsd_time_now_monotonic_s();
+    const double after = dsd_decode_now_mono_s();
 
     dsd_call_snapshot ended;
     assert(dsd_call_state_get(&state, 0U, &ended) > 0);

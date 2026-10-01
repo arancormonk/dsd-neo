@@ -10,7 +10,6 @@
 
 #include <assert.h>
 #include <dsd-neo/core/call_state.h>
-#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
@@ -2441,7 +2440,7 @@ test_completed_slco_xpt_hold_does_not_start_cc_hunt(void) {
     assert(s_tune_to_cc_calls == 1 && s_tune_to_cc_freq == 852000000L);
     dmr_sm_ctx_t* ctx = dmr_sm_get_ctx();
     assert(ctx->state == DMR_SM_IDLE && !ctx->cc_acquiring && !ctx->cc_freq_hz);
-    ctx->cc_acquire_start_m = ctx->t_cc_sync_m = dsd_time_now_monotonic_s() - 10.0;
+    ctx->cc_acquire_start_m = ctx->t_cc_sync_m = dsd_decode_now_mono_s() - 10.0;
     dmr_sm_tick_ctx(ctx, &opts, &state);
     dmr_sm_tick_ctx(ctx, &opts, &state);
     assert(s_tune_to_cc_calls == 1 && ctx->state == DMR_SM_IDLE);
@@ -2566,7 +2565,7 @@ test_stale_headerless_epoch_does_not_absorb_next_header(void) {
         .ota_target_id = 1001U,
         .policy_target_id = 1001U,
         .ota_source_id = 2002U,
-        .observed_m = dsd_time_now_monotonic_s() - 10.0,
+        .observed_m = dsd_decode_now_mono_s() - 10.0,
     };
     assert(dsd_call_state_observe(&state, &stale, DSD_CALL_BOUNDARY_BEGIN) > 0);
     dsd_call_snapshot call;

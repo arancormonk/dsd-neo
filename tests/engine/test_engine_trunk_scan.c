@@ -9,7 +9,6 @@
 #include <dsd-neo/core/csv_import.h>
 #include <dsd-neo/core/csv_validate.h>
 #include <dsd-neo/core/dmr_key_map.h>
-#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/key_set.h>
@@ -43,6 +42,7 @@
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
@@ -378,7 +378,7 @@ dsd_engine_release_tuned_call_state(dsd_opts* opts, dsd_state* state) {
     if (!opts || !state) {
         return;
     }
-    const double ended_m = dsd_time_now_monotonic_s();
+    const double ended_m = dsd_decode_now_mono_s();
     for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
         if (dsd_call_state_end_ex(state, (uint8_t)slot, ended_m, DSD_CALL_END_EXPLICIT) > 0) {
             g_explicit_call_ends++;

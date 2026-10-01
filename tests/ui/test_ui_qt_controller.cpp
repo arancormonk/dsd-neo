@@ -28,7 +28,6 @@
 #include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/call_state.h>
-#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
@@ -38,6 +37,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/runtime/analog_tones.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <functional>
 #include <initializer_list>
 #include <memory>
@@ -253,7 +253,7 @@ test_metrics_age_without_decoder_redraw() {
     state.synctype = DSD_SYNC_NONE;
     state.scan_timing.reason = DSD_SCAN_STAY_HANGTIME;
     state.scan_timing.conventional = 1U;
-    state.scan_timing.started_m = dsd_time_now_monotonic_s();
+    state.scan_timing.started_m = dsd_decode_now_mono_s();
     state.scan_timing.deadline_m = state.scan_timing.started_m + 1.0;
     state.scan_timing.span_ms = 1000U;
     dsd_app_telemetry_publish_opts_snapshot(&opts);
@@ -677,12 +677,12 @@ main(int argc, char** argv) {
     call.ota_target_id = 42;
     call.policy_target_id = 42;
     call.ota_source_id = 1;
-    call.observed_m = dsd_time_now_monotonic_s();
+    call.observed_m = dsd_decode_now_mono_s();
     check(dsd_call_state_observe(&state, &call, DSD_CALL_BOUNDARY_BEGIN) == 1);
-    check(!dsd_tg_policy_call_skip_active(&state, 42, dsd_time_now_monotonic_s()));
+    check(!dsd_tg_policy_call_skip_active(&state, 42, dsd_decode_now_mono_s()));
     check(bridge.skipSlot(0));
     check(dsd_app_drain_cmds(&opts, &state) == 1);
-    check(dsd_tg_policy_call_skip_active(&state, 42, dsd_time_now_monotonic_s()));
+    check(dsd_tg_policy_call_skip_active(&state, 42, dsd_decode_now_mono_s()));
     check(dsd_tg_policy_session_avoid_add(&state, 42) == 0);
     check(!bridge.clearTemporaryTgAvoids("invalid context"));
     check(bridge.clearTemporaryTgAvoids(QString::number(context + 1)));
@@ -691,7 +691,7 @@ main(int argc, char** argv) {
     check(bridge.clearTemporaryTgAvoids(QString::number(context)));
     check(dsd_app_drain_cmds(&opts, &state) == 1);
     check(!dsd_tg_policy_session_avoid_contains(&state, 42));
-    check(!dsd_tg_policy_call_skip_active(&state, 42, dsd_time_now_monotonic_s()));
+    check(!dsd_tg_policy_call_skip_active(&state, 42, dsd_decode_now_mono_s()));
     refreshVersion();
     const QString version = QString::number(context);
     check(!bridge.renameTalkgroup(42, 42, version, generation, QString(50, QLatin1Char('x'))));

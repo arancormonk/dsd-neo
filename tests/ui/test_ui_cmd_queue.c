@@ -15,7 +15,6 @@
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/channel_mode.h>
-#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/init.h>
@@ -45,6 +44,7 @@
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/analog_tones.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/input_failure.h>
 #include <dsd-neo/runtime/log.h>
@@ -1426,7 +1426,7 @@ test_lockout_hands_p25_sm_back_to_cc(int persist) {
 
     // The site keeps trunking: once the CC decodes again, a grant for another
     // talkgroup is followed instead of being refused as a preemption.
-    state.p25_last_cc_msg_time_m = dsd_time_now_monotonic_s() + 0.01;
+    state.p25_last_cc_msg_time_m = dsd_decode_now_mono_s() + 0.01;
     ev = p25_sm_ev_group_grant(0x1234, 852000000L, 1201, 1202, 0);
     p25_sm_event(sm, &opts, &state, &ev);
     rc |= expect_true("avoided grant remains blocked", p25_sm_get_state(sm) != P25_SM_TUNED);
@@ -1487,7 +1487,7 @@ test_skip_hands_p25_sm_back_to_cc(void) {
     rc |= expect_true("deferred skip keeps the SM voice channel", sm->vc_freq_hz == 852000000L);
 
     rc |= expect_true("refused skip remains armed",
-                      dsd_tg_policy_call_skip_active(&state, 1201, dsd_time_now_monotonic_s()));
+                      dsd_tg_policy_call_skip_active(&state, 1201, dsd_decode_now_mono_s()));
     int muted = 0;
     rc |= expect_int("refused skip media gate", dsd_audio_group_gate_mono(&opts, &state, 1201, 0, &muted), 0);
     rc |= expect_int("refused skip remains muted", muted, 1);
@@ -1504,12 +1504,12 @@ test_skip_hands_p25_sm_back_to_cc(void) {
 
     // The site keeps trunking: once the CC decodes again, a grant for another
     // talkgroup is followed instead of being refused as a preemption.
-    state.p25_last_cc_msg_time_m = dsd_time_now_monotonic_s() + 0.01;
+    state.p25_last_cc_msg_time_m = dsd_decode_now_mono_s() + 0.01;
     ev = p25_sm_ev_group_grant(0x1234, 852000000L, 1201, 1202, 0);
     p25_sm_event(sm, &opts, &state, &ev);
     rc |= expect_true("skipped grant remains blocked", p25_sm_get_state(sm) != P25_SM_TUNED);
     rc |= expect_str("grant refusal identifies skip kind", state.p25_sm_last_reason, "grant-blocked-call-skip");
-    const double refresh_m = dsd_time_now_monotonic_s();
+    const double refresh_m = dsd_decode_now_mono_s();
     rc |= expect_int("backdate active skip", dsd_tg_policy_call_skip_arm(&state, 1201, 1202, 0, refresh_m - 10.0), 0);
     p25_sm_event(sm, &opts, &state, &ev);
     rc |= expect_true("repeated grant refreshes skip", dsd_tg_policy_call_skip_active(&state, 1201, refresh_m + 10.0));
@@ -1564,11 +1564,10 @@ skip_reader_run(void* opaque) {
         reader->failures |= dsd_audio_group_gate_dual(reader->opts, reader->state, 1201, 1201, 0, 0, &left, &right);
         reader->failures |= dsd_tg_policy_evaluate_group_call(reader->opts, reader->state, 1201, 1202, 0, 0, &decision);
         const int blocked = (decision.block_reasons & DSD_TG_POLICY_BLOCK_CALL_SKIP) != 0;
-        reader->failures |=
-            left != blocked || right != blocked || decision.audio_allowed != !blocked
-            || decision.tune_allowed != !blocked || decision.record_allowed != !blocked
-            || decision.stream_allowed != !blocked
-            || dsd_tg_policy_call_skip_count(reader->state, dsd_time_now_monotonic_s()) != (size_t)blocked;
+        reader->failures |= left != blocked || right != blocked || decision.audio_allowed != !blocked
+                            || decision.tune_allowed != !blocked || decision.record_allowed != !blocked
+                            || decision.stream_allowed != !blocked
+                            || dsd_tg_policy_call_skip_count(reader->state, dsd_decode_now_mono_s()) != (size_t)blocked;
         if (blocked) {
             ++reader->blocked;
         } else {
@@ -1594,7 +1593,7 @@ test_skip_command_reader_stress(void) {
                                        .ota_target_id = 1201,
                                        .policy_target_id = 1201,
                                        .ota_source_id = 1202,
-                                       .observed_m = dsd_time_now_monotonic_s()};
+                                       .observed_m = dsd_decode_now_mono_s()};
     int rc = expect_int("stress seeds Phase 2 call", dsd_call_state_observe(&state, &call, DSD_CALL_BOUNDARY_BEGIN), 1);
     rc |= expect_int("stress creates retained store",
                      dsd_tg_policy_call_skip_arm(&state, 1201, 1202, 0, call.observed_m), 0);
@@ -1622,7 +1621,7 @@ test_skip_command_reader_stress(void) {
         rc |= expect_int("concurrent policy verdicts consistent", reader.failures, 0);
         rc |= expect_true("reader observed both policy states", reader.blocked > 0 && reader.allowed > 0);
         rc |= expect_true("stress final count cleared",
-                          dsd_tg_policy_call_skip_count(&state, dsd_time_now_monotonic_s()) == 0);
+                          dsd_tg_policy_call_skip_count(&state, dsd_decode_now_mono_s()) == 0);
     }
     reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_OK);
     freeState(&state);
@@ -1671,7 +1670,7 @@ test_channel_cycle_hands_p25_sm_back_to_cc(void) {
 
     // The site keeps trunking: the next grant is followed instead of refused as a
     // preemption of the call the SM was still holding.
-    state.p25_last_cc_msg_time_m = dsd_time_now_monotonic_s() + 0.01;
+    state.p25_last_cc_msg_time_m = dsd_decode_now_mono_s() + 0.01;
     ev = p25_sm_ev_group_grant(0x1235, 853000000L, 1300, 1301, 0);
     p25_sm_event(sm, &opts, &state, &ev);
     rc |= expect_int("next grant is followed after a candidate cycle", p25_sm_get_state(sm), P25_SM_TUNED);
@@ -4086,7 +4085,7 @@ lockout_patched_call(dsd_opts* opts, dsd_state* state, uint32_t supergroup, uint
                                               .ota_target_id = supergroup,
                                               .policy_target_id = member,
                                               .ota_source_id = 1,
-                                              .observed_m = dsd_time_now_monotonic_s()};
+                                              .observed_m = dsd_decode_now_mono_s()};
     int rc = expect_int("seed patched call", dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN), 1);
     dsd_event_sync_slot(opts, state, 0U);
     rc |= expect_true("patched lockout queued", dsd_app_command_set_u8(DSD_APP_CMD_LOCKOUT_SLOT, 0U) > 0);
@@ -5089,7 +5088,7 @@ test_skip_commands(uint8_t slot) {
     dsd_tg_policy_table_version(&state, &context, &generation);
     rc |= expect_true("idle skip queued", dsd_app_command_set_u8(DSD_APP_CMD_SKIP_SLOT, slot) > 0);
     rc |= expect_int("idle skip drained", dsd_app_drain_cmds(&opts, &state), 1);
-    rc |= expect_true("idle skip no-op", dsd_tg_policy_call_skip_count(&state, dsd_time_now_monotonic_s()) == 0);
+    rc |= expect_true("idle skip no-op", dsd_tg_policy_call_skip_count(&state, dsd_decode_now_mono_s()) == 0);
     rc |= expect_true("idle skip stages no event",
                       strstr(state.event_history_s[slot].Event_History_Items[0].internal_str, "call skipped.") == NULL);
     rc |= expect_true("idle skip commits no event",
@@ -5100,7 +5099,7 @@ test_skip_commands(uint8_t slot) {
         opts.persist_tg_lockouts = (uint8_t)persist;
         for (size_t i = 0; i < sizeof protocols / sizeof protocols[0]; ++i) {
             dsd_event_history_reset(&state);
-            const double now = dsd_time_now_monotonic_s();
+            const double now = dsd_decode_now_mono_s();
             dsd_call_observation observation = {.protocol = protocols[i],
                                                 .slot = slot,
                                                 .kind =
@@ -5169,7 +5168,7 @@ test_skip_commands(uint8_t slot) {
             rc |= expect_true("clear drops skip", dsd_tg_policy_call_skip_count(&state, now) == 0);
         }
     }
-    rc |= expect_int("export seed skip", dsd_tg_policy_call_skip_arm(&state, 123, 1, 0, dsd_time_now_monotonic_s()), 0);
+    rc |= expect_int("export seed skip", dsd_tg_policy_call_skip_arm(&state, 123, 1, 0, dsd_decode_now_mono_s()), 0);
 
     union {
         max_align_t alignment;
@@ -14039,7 +14038,7 @@ test_dmr_policy_command_ticks_owner(int command) {
     dmr_sm_init_ctx(ctx, &opts, &state);
     ctx->state = DMR_SM_TUNED;
     ctx->vc_freq_hz = 452000000;
-    ctx->t_tune_m = dsd_time_now_monotonic_s() - ctx->grant_timeout_s - 1.0;
+    ctx->t_tune_m = dsd_decode_now_mono_s() - ctx->grant_timeout_s - 1.0;
     const dsd_call_observation call = {.protocol = DSD_SYNC_DMR_BS_VOICE_POS,
                                        .slot = 0,
                                        .kind = DSD_CALL_KIND_GROUP_VOICE,
@@ -14047,7 +14046,7 @@ test_dmr_policy_command_ticks_owner(int command) {
                                        .policy_target_id = 1234,
                                        .ota_source_id = 42,
                                        .frequency_hz = 452000000,
-                                       .observed_m = dsd_time_now_monotonic_s()};
+                                       .observed_m = dsd_decode_now_mono_s()};
     int rc = expect_true("expired DMR call seeded", dsd_call_state_observe(&state, &call, DSD_CALL_BOUNDARY_BEGIN) > 0);
     g_dmr_policy_returns = 0;
     rc |= expect_true("DMR policy command queued", dsd_app_command_set_u8(command, 0) > 0);

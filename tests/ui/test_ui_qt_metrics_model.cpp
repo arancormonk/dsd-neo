@@ -28,7 +28,6 @@
 #include <dsd-neo/app_control/scan_timing_view.h>
 #include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/call_state.h>
-#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
@@ -293,7 +292,7 @@ test_lead_slot_keeps_earlier_call_and_quality() {
 
     dsd_call_observation call = dsd_call_observation_data(DSD_SYNC_P25P2_POS, 1U, 4242U, 1202U);
     call.kind = DSD_CALL_KIND_GROUP_VOICE;
-    call.observed_m = dsd_time_now_monotonic_s() - 2.0;
+    call.observed_m = dsd_decode_now_mono_s() - 2.0;
     expect("slot 2 opens first", dsd_call_state_observe(&state, &call, DSD_CALL_BOUNDARY_BEGIN) == 1);
     state.p25_p2_voice_err_hist_len = 50;
     state.p25_p2_voice_err_hist_count[1] = 3;
@@ -316,7 +315,7 @@ test_lead_slot_keeps_earlier_call_and_quality() {
                                                              && model.voiceErrsPerFrame() == 2.0
                                                              && model.slot1VoiceErrsPerFrame() == 5.0);
 
-    expect("earlier slot 2 call ends", dsd_call_state_end(&state, 1U, dsd_time_now_monotonic_s()) == 1);
+    expect("earlier slot 2 call ends", dsd_call_state_end(&state, 1U, dsd_decode_now_mono_s()) == 1);
     model.refresh(&opts, &state);
     expect("remaining slot 1 call takes the headline",
            model.slot1CallState() == 2 && model.slot2CallState() == 3 && model.leadSlot() == 1);
@@ -338,7 +337,7 @@ test_lead_slot_change_alone_notifies() {
      * test is descheduled. Restarting an epoch can then change only the lead. */
     dsd_call_observation call = dsd_call_observation_data(DSD_SYNC_P25P2_POS, 0U, 4242U, 1201U);
     call.kind = DSD_CALL_KIND_GROUP_VOICE;
-    call.observed_m = dsd_time_now_monotonic_s() + 60.0;
+    call.observed_m = dsd_decode_now_mono_s() + 60.0;
     expect("initial lead opens", dsd_call_state_observe(&state, &call, DSD_CALL_BOUNDARY_BEGIN) == 1);
     dsd_call_observation other = call;
     other.slot = 1U;
@@ -604,7 +603,7 @@ test_call_skip_metrics() {
     model.refresh(&opts, &snapshot);
     int changes = 0;
     QObject::connect(&model, &dsd_qt::MetricsModel::controlChanged, [&]() { ++changes; });
-    const double now = dsd_time_now_monotonic_s();
+    const double now = dsd_decode_now_mono_s();
     expect("seed metric skip", dsd_tg_policy_call_skip_arm(&state, 100, 1, 0, now) == 0);
     expect("publish skip snapshot", dsd_tg_policy_copy_snapshot(&snapshot, &state) == 0);
     model.refresh(&opts, &snapshot);
@@ -1178,7 +1177,7 @@ main(int argc, char** argv) {
     emergency.has_service_metadata = 1;
     emergency.emergency = 1;
     emergency.priority = 3;
-    emergency.observed_m = dsd_time_now_monotonic_s();
+    emergency.observed_m = dsd_decode_now_mono_s();
     dsd_call_state_observe(&state, &emergency, DSD_CALL_BOUNDARY_BEGIN);
     model.refresh(&opts, &state);
     expect("emergency and priority reach metrics", model.slot1CallEmergency() && model.slot1CallPriority() == 3);

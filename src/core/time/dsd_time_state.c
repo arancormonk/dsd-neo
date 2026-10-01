@@ -6,7 +6,6 @@
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/runtime/decode_clock.h>
-#include <time.h>
 
 #include "dsd-neo/core/state_fwd.h"
 

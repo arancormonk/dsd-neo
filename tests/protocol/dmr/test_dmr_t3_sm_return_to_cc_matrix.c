@@ -15,13 +15,13 @@
  * radio or rigctl backends.
  */
 
-#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
@@ -141,7 +141,7 @@ dmr_hook_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_s
             state->trunk_vc_freq[0] = freq;
             state->trunk_vc_freq[1] = freq;
             state->last_vc_sync_time = time(NULL);
-            state->last_vc_sync_time_m = dsd_time_now_monotonic_s();
+            state->last_vc_sync_time_m = dsd_decode_now_mono_s();
         }
     }
     return result;
@@ -228,13 +228,13 @@ dmr_setup_blank_fixture(void) {
 
 static void
 dmr_age_grant_timeout(void) {
-    g_ctx.t_tune_m = dsd_time_now_monotonic_s() - 1.0;
+    g_ctx.t_tune_m = dsd_decode_now_mono_s() - 1.0;
     g_ctx.t_voice_m = 0.0;
 }
 
 static void
 dmr_age_hangtime(void) {
-    double old_m = dsd_time_now_monotonic_s() - 1.0;
+    double old_m = dsd_decode_now_mono_s() - 1.0;
     g_ctx.t_tune_m = old_m;
     g_ctx.t_voice_m = old_m;
     g_ctx.slots[0].last_active_m = old_m;
@@ -362,7 +362,7 @@ dmr_apply_terminal_flow(const dmr_grant_case* grant, const dmr_flow_case* flow, 
             dmr_sm_event(&g_ctx, &g_opts, &g_state, &ev);
             ev = dmr_sm_ev_release(0);
             dmr_sm_event(&g_ctx, &g_opts, &g_state, &ev);
-            g_ctx.t_tune_m = dsd_time_now_monotonic_s() - 1.0;
+            g_ctx.t_tune_m = dsd_decode_now_mono_s() - 1.0;
             dmr_sm_tick_ctx(&g_ctx, &g_opts, &g_state);
             rc |= dmr_expect(g_ctx.state == DMR_SM_TUNED, grant->name, flow->name, script->name,
                              "partial slot release remains tuned");
@@ -462,7 +462,7 @@ dmr_run_active_without_terminal_case(const dmr_grant_case* grant) {
 
     dmr_sm_event_t ev = dmr_sm_ev_voice_sync(0);
     dmr_sm_event(&g_ctx, &g_opts, &g_state, &ev);
-    g_ctx.t_tune_m = dsd_time_now_monotonic_s() - 1.0;
+    g_ctx.t_tune_m = dsd_decode_now_mono_s() - 1.0;
     dmr_sm_tick_ctx(&g_ctx, &g_opts, &g_state);
 
     rc |= dmr_expect(g_ctx.state == DMR_SM_TUNED, grant->name, flow, "no-return", "active voice remains tuned");
@@ -601,7 +601,7 @@ dmr_run_cc_loss_reacquire_case(void) {
     dmr_install_hooks();
     dmr_setup_fixture(&grant);
 
-    g_ctx.t_cc_sync_m = dsd_time_now_monotonic_s() - 1.0;
+    g_ctx.t_cc_sync_m = dsd_decode_now_mono_s() - 1.0;
     dmr_sm_tick_ctx(&g_ctx, &g_opts, &g_state);
 
     int rc = 0;
@@ -739,7 +739,7 @@ dmr_run_data_sync_and_stale_slot_case(void) {
     rc |= dmr_expect_close(g_state.last_vc_sync_time_m, g_ctx.t_voice_m, 1.0e-9, grant.name, flow, script,
                            "data sync records matching voice sync time");
 
-    double stale_m = dsd_time_now_monotonic_s() - 1.0;
+    double stale_m = dsd_decode_now_mono_s() - 1.0;
     g_ctx.t_tune_m = 0.0;
     g_ctx.t_voice_m = 0.0;
     g_ctx.slots[0].voice_active = 1;

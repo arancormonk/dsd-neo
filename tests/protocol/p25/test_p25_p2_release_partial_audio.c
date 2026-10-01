@@ -14,11 +14,11 @@
  */
 
 #include <dsd-neo/core/call_state.h>
-#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/p25_optional_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
@@ -243,7 +243,7 @@ main(void) {
     rc |= expect_eq_int("voice_counter[1] reset", st.voice_counter[1], 0);
 
     // A capped departure flushes before ending the call, without tuning back to the CC.
-    st.p25_last_cc_msg_time_m = dsd_time_now_monotonic_s();
+    st.p25_last_cc_msg_time_m = dsd_decode_now_mono_s();
     p25_sm_event(p25_sm_get_ctx(), &opts, &st,
                  &(p25_sm_event_t){.type = P25_SM_EV_GRANT,
                                    .slot = -1,

@@ -9,7 +9,6 @@
  */
 
 #include <dsd-neo/core/call_state.h>
-#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
@@ -494,7 +493,7 @@ test_enc_repeat_holds_channel_through_companion_hangtime(void) {
     // The clear talker un-keys; the conversation gap opens well inside the
     // hangtime window.
     rc |= expect_eq("clear transmission end accepted",
-                    p25_sm_emit_end_call_at(&opts, &state, 0, 1234, 42, dsd_time_now_monotonic_s()), 1);
+                    p25_sm_emit_end_call_at(&opts, &state, 0, 1234, 42, dsd_decode_now_mono_s()), 1);
     state.p25_p2_audio_allowed[0] = 0;
 
     // The locked-out call's next ESS repeat re-runs the lockout action inside
@@ -507,7 +506,7 @@ test_enc_repeat_holds_channel_through_companion_hangtime(void) {
     // Once the companion's gap outlives the hangtime, the repeat releases.
     // Age the whole slot history together: a grant newer than the stop is a
     // pending assignment and retains the carrier on its own.
-    const double past_stop_m = dsd_time_now_monotonic_s() - (ctx->config.hangtime_s + 1.0);
+    const double past_stop_m = dsd_decode_now_mono_s() - (ctx->config.hangtime_s + 1.0);
     ctx->slots[0].last_start_m = past_stop_m - 1.0;
     ctx->slots[0].last_grant_m = past_stop_m - 1.0;
     ctx->slots[0].last_stop_m = past_stop_m;
@@ -594,7 +593,7 @@ test_facch_double_end_holds_channel_while_companion_enc_suppressed(void) {
     // the locked-out call is still transmitting. Reading that repeat as the
     // channel closing would bounce to the CC and clip the conversation's next
     // over, which the site re-grants on this same channel moments later.
-    const double end_m = dsd_time_now_monotonic_s();
+    const double end_m = dsd_decode_now_mono_s();
     rc |= expect_eq("first facch end applied", p25_sm_emit_facch_end_call_at(&opts, &state, 0, 1234, 42, end_m),
                     P25_SM_END_APPLIED);
     state.p25_p2_audio_allowed[0] = 0;
@@ -653,7 +652,7 @@ test_facch_double_end_releases_after_companion_end_observed(void) {
     // The locked-out call un-keys: its MAC_END_PTT decodes on slot 1 even
     // though lockout erased the assignment it would have applied to. The
     // active clear call still holds the channel.
-    const double enc_end_m = dsd_time_now_monotonic_s();
+    const double enc_end_m = dsd_decode_now_mono_s();
     (void)p25_sm_emit_facch_end_call_at(&opts, &state, 1, 5678, 0xFFFFFF, enc_end_m);
     rc |= expect_eq("companion end observed: still tuned", ctx->state == P25_SM_TUNED, 1);
     rc |= expect_eq("companion end observed: no cc return", g_return_to_cc_called, 0);
@@ -735,9 +734,9 @@ test_enc_blocked_repeat_edge_triggered_tick_owns_release(void) {
     // The clear talker un-keys and the conversation ends for good; age the
     // slot history and the armed hangtime start past the window.
     rc |= expect_eq("clear transmission end accepted",
-                    p25_sm_emit_end_call_at(&opts, &state, 0, 1234, 42, dsd_time_now_monotonic_s()), 1);
+                    p25_sm_emit_end_call_at(&opts, &state, 0, 1234, 42, dsd_decode_now_mono_s()), 1);
     state.p25_p2_audio_allowed[0] = 0;
-    const double past_stop_m = dsd_time_now_monotonic_s() - (ctx->config.hangtime_s + 1.0);
+    const double past_stop_m = dsd_decode_now_mono_s() - (ctx->config.hangtime_s + 1.0);
     ctx->slots[0].last_start_m = past_stop_m - 1.0;
     ctx->slots[0].last_grant_m = past_stop_m - 1.0;
     ctx->slots[0].last_stop_m = past_stop_m;
@@ -789,9 +788,9 @@ test_enc_key_identity_change_reemits_lockout(void) {
     rc |= expect_eq("transition: no cc return", g_return_to_cc_called, 0);
 
     rc |= expect_eq("clear transmission end accepted",
-                    p25_sm_emit_end_call_at(&opts, &state, 0, 1234, 42, dsd_time_now_monotonic_s()), 1);
+                    p25_sm_emit_end_call_at(&opts, &state, 0, 1234, 42, dsd_decode_now_mono_s()), 1);
     state.p25_p2_audio_allowed[0] = 0;
-    const double past_stop_m = dsd_time_now_monotonic_s() - (ctx->config.hangtime_s + 1.0);
+    const double past_stop_m = dsd_decode_now_mono_s() - (ctx->config.hangtime_s + 1.0);
     ctx->slots[0].last_start_m = past_stop_m - 1.0;
     ctx->slots[0].last_grant_m = past_stop_m - 1.0;
     ctx->slots[0].last_stop_m = past_stop_m;
@@ -895,11 +894,11 @@ test_call_skip_rejected_slot_refresh(void) {
     state.p25_crypto_state[0] = state.p25_crypto_state[1] = DSD_P25_CRYPTO_CLEAR;
     int rc = expect_eq("skip companion active", p25_sm_emit_active_call(&opts, &state, 0, 1234, 0, 42, 1, 0), 1);
     rc |= expect_eq("skip selected call active", p25_sm_emit_active_call(&opts, &state, 1, 5678, 0, 43, 1, 0), 1);
-    const double armed_m = dsd_time_now_monotonic_s();
+    const double armed_m = dsd_decode_now_mono_s();
     rc |= expect_eq("skip second slot arm", dsd_tg_policy_call_skip_arm(&state, 5678, 43, 0, armed_m), 0);
     p25_sm_release(ctx, &opts, &state, "user-skip");
     rc |= expect_eq("skip returns to CC", ctx->state, P25_SM_ON_CC);
-    state.p25_last_cc_msg_time_m = dsd_time_now_monotonic_s() + 0.01;
+    state.p25_last_cc_msg_time_m = dsd_decode_now_mono_s() + 0.01;
     p25_sm_event_t grant = p25_sm_ev_group_grant(0x2000, 851000000, 1234, 42, 0);
     p25_sm_event(ctx, &opts, &state, &grant);
     rc |= expect_eq("skip companion reacquired", ctx->state, P25_SM_TUNED);
@@ -912,14 +911,14 @@ test_call_skip_rejected_slot_refresh(void) {
     state.currentslot = 1;
     // Costs about 15.2 s: real voice bursts must refresh across the production clock's quiet window.
     const double until_m = armed_m + DSD_TG_CALL_SKIP_QUIET_S + 0.2;
-    while (dsd_time_now_monotonic_s() <= until_m) {
+    while (dsd_decode_now_mono_s() <= until_m) {
         process_2V(&opts, &state);
         dsd_sleep_ms(100);
     }
     rc |= expect_eq("rejected voice outlives quiet window",
-                    dsd_tg_policy_call_skip_active(&state, 5678, dsd_time_now_monotonic_s()), 1);
+                    dsd_tg_policy_call_skip_active(&state, 5678, dsd_decode_now_mono_s()), 1);
     rc |= expect_eq("rejected voice remains muted", state.p25_p2_audio_allowed[1], 0);
-    const double ended_m = dsd_time_now_monotonic_s();
+    const double ended_m = dsd_decode_now_mono_s();
     (void)p25_sm_emit_end_call_at(&opts, &state, 1, 5678, 43, ended_m);
     rc |= expect_eq("quiet skip expires",
                     dsd_tg_policy_call_skip_active(&state, 5678, ended_m + DSD_TG_CALL_SKIP_QUIET_S + 1.0), 0);
@@ -931,7 +930,7 @@ test_call_skip_rejected_slot_refresh(void) {
     rc |= expect_eq("accepted grant clears rejected identity", ctx->slots[1].rejected_target_id, 0);
     rc |= expect_eq("next voice accepted", p25_sm_emit_active_call(&opts, &state, 1, 5678, 0, 43, 1, 0), 1);
 
-    const double now = dsd_time_now_monotonic_s();
+    const double now = dsd_decode_now_mono_s();
     rc |= expect_eq("seed teardown skip", dsd_tg_policy_call_skip_arm(&state, 5678, 43, 0, now - 10.0), 0);
     ctx->slots[1].rejected_target_id = 5678;
     state.p25_p2_media_rejected[1] = 0;

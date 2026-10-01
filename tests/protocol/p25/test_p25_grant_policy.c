@@ -7,7 +7,6 @@
 
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
-#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
@@ -18,6 +17,7 @@
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/protocol/p25/p25_crypto.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -94,7 +94,7 @@ mark_cc_reacquired(dsd_state* st) {
     if (!st) {
         return;
     }
-    double now_m = dsd_time_now_monotonic_s();
+    double now_m = dsd_decode_now_mono_s();
     if (now_m <= st->last_cc_sync_time_m) {
         now_m = st->last_cc_sync_time_m + 0.001;
     }
@@ -414,7 +414,7 @@ main(void) {
                 .ota_target_id = 2000,
                 .policy_target_id = 2000,
                 .ota_source_id = 2400,
-                .observed_m = dsd_time_now_monotonic_s(),
+                .observed_m = dsd_decode_now_mono_s(),
             };
             rc |= expect_true("companion clear call seeded",
                               dsd_call_state_observe(&comp_st, &clear_call, DSD_CALL_BOUNDARY_BEGIN) > 0);
@@ -987,7 +987,7 @@ main(void) {
     dsd_tg_policy_call_route active_route = {
         .target_id = 1600, .source_id = 2600, .freq_hz = st.p25_vc_freq[0], .channel = d1_channel, .slot = -1};
     dsd_tg_policy_clear_active_call(&st, -1);
-    dsd_tg_policy_note_active_call(&st, &active_route, &active_decision, dsd_time_now_monotonic_s() - 2.0);
+    dsd_tg_policy_note_active_call(&st, &active_route, &active_decision, dsd_decode_now_mono_s() - 2.0);
     p25_sm_event(p25_sm_get_ctx(), &opts, &st, &candidate);
     rc |= expect_true("[P25 SM] preempt-flag-off preserves active lower priority call",
                       st.p25_sm_tune_count == before && p25_sm_get_ctx()->vc_tg == 1600);
@@ -995,11 +995,11 @@ main(void) {
     rc |= expect_true("enable D1 preempt through policy API",
                       dsd_tg_policy_set_fields(&st, 1601, 1601, &edited, DSD_TG_POLICY_FIELD_PREEMPT) == 0);
     dsd_tg_policy_clear_active_call(&st, -1);
-    dsd_tg_policy_note_active_call(&st, &active_route, &active_decision, dsd_time_now_monotonic_s());
+    dsd_tg_policy_note_active_call(&st, &active_route, &active_decision, dsd_decode_now_mono_s());
     p25_sm_event(p25_sm_get_ctx(), &opts, &st, &candidate);
     rc |= expect_true("D1 preempt respects dwell", st.p25_sm_tune_count == before);
     dsd_tg_policy_clear_active_call(&st, -1);
-    dsd_tg_policy_note_active_call(&st, &active_route, &active_decision, dsd_time_now_monotonic_s() - 2.0);
+    dsd_tg_policy_note_active_call(&st, &active_route, &active_decision, dsd_decode_now_mono_s() - 2.0);
     p25_sm_event(p25_sm_get_ctx(), &opts, &st, &candidate);
     rc |= expect_true("[P25 SM] preempt-policy-allow",
                       st.p25_sm_tune_count == before + 1 && p25_sm_get_ctx()->vc_tg == 1601);
