@@ -9,7 +9,7 @@
 # timestamps included.
 #
 # Expected -D inputs: HOST_BIN, MODE, FIXTURE, RUNS, EXPECTED, MIN_FSK,
-# MIN_CQPSK; optional NOT_EXPECTED.
+# MIN_CQPSK, MIN_TOTAL; optional NOT_EXPECTED.
 #
 # RUNS is a ;-list of legs; a leg joins one or more parts with '+':
 #   fast | realtime        --iq-replay-rate (fast when neither is given)
@@ -22,7 +22,17 @@
 # during IQ replay": that notice fires only under -T/-Y, which the replay
 # determinism guarantee excludes, so a case that prints it is misconfigured.
 # Its REPLAY STREAM line must count at least MIN_FSK FSK discriminator samples
-# and MIN_CQPSK CQPSK symbols (different units, kept apart).
+# and MIN_CQPSK CQPSK symbols (different units, kept apart), and at least
+# MIN_TOTAL front-end samples in all, FSK + 8 x CQPSK: every case runs a 48 kHz
+# front end whose CQPSK path makes 6000 symbols a second, 8 samples each, so
+# the total does not depend on how a hunt splits its time between the paths.
+#
+# Each leg must also show that its perturbation happened, or the comparison
+# proves nothing. The host's REPLAY JITTER line must report sleeps=N > 0 on a
+# leg with a jitter part and shortened_reads=N > 0 on one with a short part,
+# and a realtime leg must take at least 90 % of the air time its REPLAY STREAM
+# line reports (media_ms) in wall time. An inert jitter or short-read option,
+# or a replay rate the host ignores, fails the leg.
 #
 # The legs' outputs are compared in memory after this normalization, applied to
 # stdout and stderr separately:
@@ -45,6 +55,11 @@
 #   - every other line, the decoder's output with its HH:MM:SS capture-time
 #     stamps, the host's REPLAY STREAM and REPLAY SINK lines and the end-of-run
 #     totals, is compared verbatim and in order.
+# Two more differences vanish before any of that, in CMake itself:
+# execute_process turns CRLF line ends into LF, so a CR just before a line
+# break is never compared (a CR anywhere else in a line is); and a CMake list
+# keeps no empty element at its front, so blank lines before a stream's first
+# text line are not compared either (blank lines after it are).
 # A mismatch prints both legs' specs and the first differing line with context.
 foreach(
     _var
@@ -55,12 +70,13 @@ foreach(
     EXPECTED
     MIN_FSK
     MIN_CQPSK
+    MIN_TOTAL
 )
     if(NOT DEFINED ${_var})
         message(FATAL_ERROR "iq_determinism_check: missing -D${_var}")
     endif()
 endforeach()
-foreach(_var MIN_FSK MIN_CQPSK)
+foreach(_var MIN_FSK MIN_CQPSK MIN_TOTAL)
     if(NOT "${${_var}}" MATCHES "^[0-9]+$")
         message(
             FATAL_ERROR
@@ -90,11 +106,13 @@ set(_io_thread_patterns)
 separate_arguments(_mode_args UNIX_COMMAND "${MODE}")
 string(ASCII 27 _esc)
 
-# Host arguments and audio output for one leg spec.
-function(_leg_args leg out_args out_output)
+# Host arguments, audio output and perturbations (jitter, short, realtime) for
+# one leg spec.
+function(_leg_args leg out_args out_output out_perturbations)
     set(_args)
     set(_output null)
     set(_rate)
+    set(_perturbations)
     string(REPLACE "+" ";" _parts "${leg}")
     foreach(_part IN LISTS _parts)
         if(_part STREQUAL "fast" OR _part STREQUAL "realtime")
@@ -113,8 +131,10 @@ function(_leg_args leg out_args out_output)
                 --replay-jitter-max-ms
                 "${CMAKE_MATCH_2}"
             )
+            list(APPEND _perturbations jitter)
         elseif(_part MATCHES "^short:([0-9]+)$")
             list(APPEND _args --replay-short-reads "${CMAKE_MATCH_1}")
+            list(APPEND _perturbations short)
         elseif(_part MATCHES "^sink:(free|stalled)$")
             list(APPEND _args --replay-sink "${CMAKE_MATCH_1}")
             set(_output pulse)
@@ -128,9 +148,30 @@ function(_leg_args leg out_args out_output)
     if(NOT _rate)
         set(_rate fast)
     endif()
+    if(_rate STREQUAL "realtime")
+        list(APPEND _perturbations realtime)
+    endif()
     list(APPEND _args --iq-replay-rate "${_rate}")
     set(${out_args} "${_args}" PARENT_SCOPE)
     set(${out_output} "${_output}" PARENT_SCOPE)
+    set(${out_perturbations} "${_perturbations}" PARENT_SCOPE)
+endfunction()
+
+# Wall-clock time in ms: microsecond stamps from CMake 3.23, whole seconds
+# before it (still within a second of the truth for the 90 % check).
+function(_now_ms out)
+    if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.23)
+        string(TIMESTAMP _stamp "%s.%f" UTC)
+    else()
+        string(TIMESTAMP _stamp "%s.000000" UTC)
+    endif()
+    if(NOT _stamp MATCHES "^([0-9]+)\\.([0-9][0-9][0-9])[0-9]*$")
+        message(
+            FATAL_ERROR
+            "iq_determinism_check: cannot read the time stamp '${_stamp}'"
+        )
+    endif()
+    set(${out} "${CMAKE_MATCH_1}${CMAKE_MATCH_2}" PARENT_SCOPE)
 endfunction()
 
 # One stream's text as a list of normalized lines: decoder lines in order
@@ -255,7 +296,8 @@ set(_index 0)
 foreach(_leg IN LISTS RUNS)
     math(EXPR _leg_number "${_index} + 1")
     set(_label "#${_leg_number} ${_leg}")
-    _leg_args("${_leg}" _leg_extra _leg_output)
+    _leg_args("${_leg}" _leg_extra _leg_output _leg_perturbations)
+    _now_ms(_start_ms)
     execute_process(
         COMMAND
             "${HOST_BIN}" --frontend none ${_mode_args} ${_leg_extra}
@@ -265,6 +307,8 @@ foreach(_leg IN LISTS RUNS)
         ERROR_VARIABLE _err
         TIMEOUT 240
     )
+    _now_ms(_end_ms)
+    math(EXPR _wall_ms "${_end_ms} - ${_start_ms}")
     set(_all "${_out}\n${_err}")
     if(
         "${_all}"
@@ -301,6 +345,63 @@ foreach(_leg IN LISTS RUNS)
             message(
                 FATAL_ERROR
                 "iq_determinism_check: leg ${_label}: forbidden output /${NOT_EXPECTED}/ matched '${_hit}'\n${_all}"
+            )
+        endif()
+    endif()
+
+    # The perturbation the leg names must have happened.
+    string(REGEX MATCHALL "REPLAY JITTER: [^\n]*" _jitter_lines "${_all}")
+    list(LENGTH _jitter_lines _jitter_count)
+    if(NOT _jitter_count EQUAL 1)
+        message(
+            FATAL_ERROR
+            "iq_determinism_check: leg ${_label}: expected one REPLAY JITTER line, found ${_jitter_count}\n${_all}"
+        )
+    endif()
+    set(_sleeps 0)
+    if(_jitter_lines MATCHES " sleeps=([0-9]+)")
+        set(_sleeps "${CMAKE_MATCH_1}")
+    endif()
+    set(_shortened 0)
+    if(_jitter_lines MATCHES " shortened_reads=([0-9]+)")
+        set(_shortened "${CMAKE_MATCH_1}")
+    endif()
+    list(FIND _leg_perturbations jitter _jitter_at)
+    list(FIND _leg_perturbations short _short_at)
+    list(FIND _leg_perturbations realtime _realtime_at)
+    if(NOT _jitter_at EQUAL -1)
+        if(_sleeps EQUAL 0)
+            message(
+                FATAL_ERROR
+                "iq_determinism_check: leg ${_label}: a jitter leg that slept after no read perturbed nothing "
+                "(${_jitter_lines})"
+            )
+        endif()
+    endif()
+    if(NOT _short_at EQUAL -1)
+        if(_shortened EQUAL 0)
+            message(
+                FATAL_ERROR
+                "iq_determinism_check: leg ${_label}: a short-read leg that shortened no read perturbed nothing "
+                "(${_jitter_lines})"
+            )
+        endif()
+    endif()
+    if(NOT _realtime_at EQUAL -1)
+        if(NOT "${_all}" MATCHES "REPLAY STREAM: [^\n]* media_ms=([0-9]+)")
+            message(
+                FATAL_ERROR
+                "iq_determinism_check: leg ${_label}: no REPLAY STREAM media_ms to time a realtime leg against\n${_all}"
+            )
+        endif()
+        set(_air_ms "${CMAKE_MATCH_1}")
+        math(EXPR _wall_x10 "${_wall_ms} * 10")
+        math(EXPR _air_x9 "${_air_ms} * 9")
+        if(_wall_x10 LESS _air_x9)
+            message(
+                FATAL_ERROR
+                "iq_determinism_check: leg ${_label}: a realtime leg took ${_wall_ms} ms of wall time for ${_air_ms} ms "
+                "of air time (need at least 90 %), so the replay rate was not applied"
             )
         endif()
     endif()
@@ -360,11 +461,19 @@ foreach(_i RANGE 0 ${_last_leg})
             "symbols (need at least ${MIN_FSK} and ${MIN_CQPSK})"
         )
     endif()
+    math(EXPR _total "${_fsk} + 8 * ${_cqpsk}")
+    if(_total LESS MIN_TOTAL)
+        message(
+            FATAL_ERROR
+            "iq_determinism_check: leg ${_leg_${_i}_spec}: the decoder read ${_total} front-end samples in all "
+            "(${_fsk} FSK + 8 x ${_cqpsk} CQPSK; need at least ${MIN_TOTAL})"
+        )
+    endif()
 endforeach()
 
 list(LENGTH _leg_0_err_record _record_lines)
 list(LENGTH _leg_0_err_io _io_lines)
 message(
     "iq_determinism_check: ${_leg_count} legs decoded identically (${_record_lines} decoder lines, ${_io_lines} "
-    "IO-thread lines on stderr; fsk_samples=${_fsk} cqpsk_symbols=${_cqpsk})"
+    "IO-thread lines on stderr; fsk_samples=${_fsk} cqpsk_symbols=${_cqpsk} total=${_total})"
 )

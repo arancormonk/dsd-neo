@@ -211,9 +211,18 @@ frame unproductive drops the payload from 23 hits to 13 and steps the hunt to 20
 `DECODE_IQ_P25P1_CQPSK_VOICE_AUTO_HUNT` covers issue #400, the same rule as the YSF case read the other way. A
 handler's credit is bounded by what it read, and P25p1 reads 33 symbols when the NID fails against 134 of a
 ~180-symbol slot when a one-block TSDU decodes, so a channel that was decoding still lost the profile to the failures
-between its frames. The `p25p1_cqpsk_vc` capture is already registered under `-f1`; under `-fa` it steps to 20 sps
-partway through on `main` and finishes in dPMR, so holding the profile is what the negative half of this case pins.
-Both halves were confirmed stable over repeated runs on `dev-debug`, `asan-ubsan-debug` and `tsan-debug`.
+between its frames. The `p25p1_cqpsk_vc` capture is already registered under `-f1 -mq`; under `-fa` it steps to 20
+sps partway through on `main` and finishes in dPMR, so holding the profile is what the negative half of this case pins.
+Both halves were confirmed stable over repeated runs on `dev-debug`, `asan-ubsan-debug` and `tsan-debug`. Under `-fa`
+the modulation vote never picks CQPSK on this capture, so that hunt runs the FSK discriminator path; it is
+`DECODE_IQ_P25P1_CQPSK_VOICE_AUTO_HUNT_UNLOCKED` now, and `DECODE_IQ_P25P1_CQPSK_VOICE_AUTO_HUNT` runs `-fa -mq`, the
+same protocols on the CQPSK chain. The `-mq` lock lets the hunt rotate only among profiles with the same timing, which
+prints no `SPS hunt: trying` line, so there the negative half guards against a timing change.
+
+The P25 CQPSK fixtures run the CQPSK chain only with `-mq` after the preset. `-f1` sets C4FM modulation and the last of
+the two options wins, so `-f1` alone (how `DECODE_IQ_P25P1_CQPSK_CC`, `_VOICE` and `_SIMULCAST_CC` were first
+registered) and `-mq -f1` both demodulate them on the FSK path; the replay jitter host's `REPLAY STREAM` line shows it
+(`cqpsk_symbols=0`). They are registered under `-f1 -mq` now, and the same goes for an A/B of a CQPSK change.
 
 Its payload assertion changed in issue #388, and the reason is worth recording: it had been
 `ALG ID: 0xC0 KEY ID: 0x3900`, which is not in this capture. The `-f1` preset emits no `0xC0` anywhere in it, reading
@@ -221,7 +230,7 @@ three clear-voice headers (`ALG ID: 0x80 KEY ID: 0x0000`) and six `Group Voice C
 produced was a corrupted read of one of those clear headers — the run decoded zero grants, two headers and 127 header
 errors — and the case had been asserting that artifact. Holding the 4800/4 co-tenants off the frame brings the `-fa`
 run in line with the native one (seven grants, four clear headers, irrecoverable header errors 3 → 0), so the
-assertion is now the same real payload `DECODE_IQ_P25P1_CQPSK_VOICE` asserts under `-f1`. The lesson generalizes: an
+assertion is now the same real payload `DECODE_IQ_P25P1_CQPSK_VOICE` asserts. The lesson generalizes: an
 AUTO case should assert a payload the native preset also produces, or it can end up pinning the corruption it was
 meant to catch.
 
@@ -327,13 +336,16 @@ from the batch tags the decoder read, each output kind in its own unit, and a `R
 FNV-1a of every sample the decoder handed it. A sample read without a tag, or with an unknown kind, fails the host.
 
 The runner is `tests/iq_determinism_check.cmake`, registered through
-`dsd_neo_add_iq_determinism_test(name fixture mode runs expected min_fsk min_cqpsk)`. RUNS is a `;` list of at least two
-legs, each joining parts with `+`: `fast` or `realtime`, `jitter:SEED:MAX_MS`, `short:SEED`, and `sink:free` or
-`sink:stalled` (which plays to `-o pulse` in place of `-o null`). Each leg is one process, held to
-`iq_decode_check.cmake`'s exit-status and sanitizer checks and to EXPECTED. A leg that prints
-`Retune ignored during IQ replay` fails as misconfigured: only `-T` and `-Y` print it, and they are outside the
-guarantee. Every leg's stdout and stderr are then compared with the first leg's, line for line, after a normalization
-kept as small as the measurement allows:
+`dsd_neo_add_iq_determinism_test(name fixture mode runs expected min_fsk min_cqpsk min_total [NOT_EXPECTED regex])`.
+RUNS is a `;` list of at least two legs, each joining parts with `+`: `fast` or `realtime`, `jitter:SEED:MAX_MS`,
+`short:SEED`, and `sink:free` or `sink:stalled` (which plays to `-o pulse` in place of `-o null`). Each leg is one
+process, held to `iq_decode_check.cmake`'s exit-status and sanitizer checks, to EXPECTED and, when given, to
+NOT_EXPECTED. A leg that prints `Retune ignored during IQ replay` fails as misconfigured: only `-T` and `-Y` print it,
+and they are outside the guarantee. A leg must also show that its perturbation happened: the host's `REPLAY JITTER`
+line has to report `sleeps` above 0 on a leg with a jitter part and `shortened_reads` above 0 on one with a short part,
+and a realtime leg has to take at least 90 % of its `REPLAY STREAM` `media_ms` in wall time, so an inert option or a
+replay rate the host ignores fails the case instead of comparing two identical fast runs. Every leg's stdout and stderr
+are then compared with the first leg's, line for line, after a normalization kept as small as the measurement allows:
 
 - ANSI colour sequences are removed.
 - Four kinds of line are dropped: `NOTICE: Runtime:` (the decode loop's real-time duration), `REPLAY JITTER:` (what
@@ -345,6 +357,9 @@ kept as small as the measurement allows:
 - Lines the reader, demod or controller threads print would be compared as a sorted set, since where they fall among
   the decoder's lines follows thread timing. The pattern list is empty, by measurement: traced per thread
   (`strace -f -e trace=write`) under every leg kind, everything these legs print comes from the decoder thread.
+- CMake itself drops two differences before any of that: `execute_process` turns CRLF line ends into LF, so a CR just
+  before a line break is never compared (one anywhere else in a line is), and a CMake list keeps no empty element at
+  its front, so blank lines before a stream's first text line are not compared either.
 
 Everything else is compared verbatim and in order: the decoder's lines with their `HH:MM:SS` capture-time stamps, the
 `REPLAY STREAM` and `REPLAY SINK` lines and the end-of-run totals. A mismatch prints both legs' specs and the first
@@ -358,8 +373,9 @@ kinds and generations, and the two counts cover all but 158 of the capture's 648
 (FSK = 648,000 - 158 - 8 x CQPSK). MIN_CQPSK is 5,000, just under one CQPSK dwell, a fixed 3 passes of 1,800 symbols
 (`DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS`), 5,400; the other 2.8k or so of the 8,189 come from the hunt's visit and
 credit accounting, which may legitimately change. MIN_FSK is 535,000, the measured count less one more full dwell
-(5,400 x 8 = 43,200 samples, leaving 539,130) and a little more. The comment beside the registration records the
-measurement; re-derive both from it when the hunt or the fixture changes.
+(5,400 x 8 = 43,200 samples, leaving 539,130) and a little more. MIN_TOTAL floors the two together, FSK + 8 x CQPSK,
+which no split of the hunt's time between the paths moves: 647,842 measured, so 647,000. The comment beside the
+registration records the measurement; re-derive all three from it when the hunt or the fixture changes.
 
 The fixture, `nxdn48_after_retune` (1.3 MB, `DERIVED_RETUNE` in `tools/build_iq_fixtures.py`), is a call after a scan
 retune: the first 7.5 s of `noise_floor` on one channel, then the four events a real scan retune records, all at byte
@@ -401,6 +417,11 @@ lead-in.
 | `DECODE_IQ_NXDN48_AFTER_RETUNE_AUTO_DETERMINISM_REALTIME` | `fast;realtime` |
 | `DECODE_IQ_NXDN48_AFTER_RETUNE_AUTO_DETERMINISM_REALTIME_JITTER` | `fast;realtime+jitter:17:120` |
 | `DECODE_IQ_NXDN48_AFTER_RETUNE_AUTO_DETERMINISM_STALLED_SINK` | `sink:free;sink:stalled`, only where `--wrap` links |
+| `DECODE_IQ_P25P2_CC_DETERMINISM` (`p25p2_cc`, `-f2`) | `fast;short:19;jitter:23:120` |
+
+`DECODE_IQ_P25P2_CC_DETERMINISM` holds the CQPSK path decoding real frames to the same rule: under `-f2` the whole
+2 s capture runs the CQPSK chain (`fsk_samples=0 cqpsk_symbols=11992`, 95,936 of its 96,000 samples), and every leg
+must decode its `P25p2 SACCH` lines alike; MIN_CQPSK 11,900 and MIN_TOTAL 95,000 sit just under the measurement.
 
 On `main` before issue #572 the cases fail. The host needs the replay batch tag, which `main` lacks, so its own
 `dsd-neo` ran the fast and realtime legs through the runner: `fast;fast` and `fast;realtime` both stop at the first
@@ -411,8 +432,8 @@ of the call and one `Src=901` line each, two distinct outputs in three runs, and
 fails `_REALTIME` on a timestamp alone (`03:15:34` against `03:15:36`), and making replay audio output synchronous
 fails `_STALLED_SINK`.
 
-The five cases take 46 s in `dev-debug` run one after another, the two realtime ones 15.6 s each, since a realtime leg
-takes the capture's 13.7 s of air time. Under `ctest -j 16` they run beside the suite's longest test, and the full
+The six cases under the label take 47.5 s in `dev-debug` run one after another, the two realtime ones 15.6 s each,
+since a realtime leg takes the capture's 13.7 s of air time, and `DECODE_IQ_P25P2_CC_DETERMINISM` 1.3 s. Under `ctest -j 16` they run beside the suite's longest test, and the full
 suite's wall time does not move (about 55 s). Under `tsan-debug` and `asan-ubsan-debug` they take up to 37 s each.
 
 Repeatable is not the same as representative. Under `-fa`, which calls a replay catches depends on where the hunt's

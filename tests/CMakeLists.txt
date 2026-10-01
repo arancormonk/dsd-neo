@@ -11375,16 +11375,25 @@ if(DSD_HAS_RADIO)
         -f1
         "Group Voice Channel User"
     )
+    # The CQPSK fixtures run the front end's CQPSK chain only with -mq after the preset:
+    # -f1 sets C4FM modulation, and the last of -f1 and -mq wins, so "-f1" alone (as these
+    # cases were first registered) and "-mq -f1" both demodulate them on the FSK
+    # discriminator path (REPLAY STREAM cqpsk_symbols=0). Under "-f1 -mq" each reads
+    # about 9,590 CQPSK symbols and no FSK samples. The clean CC decodes the same either
+    # way (18 implicit grants, no irrecoverable header error, against 17 and 1); the voice
+    # capture improves to 8 grants, 51 audio errors and 5 header errors (from 7, 84 and
+    # 147) and the simulcast one to 18 grants and the site identity 41 times (from 3 and
+    # none).
     dsd_neo_add_iq_decode_test(
         DECODE_IQ_P25P1_CQPSK_CC
         p25p1_cqpsk_cc
-        -f1
+        "-f1 -mq"
         "WACN: 92065; SYS: 0D5"
     )
     dsd_neo_add_iq_decode_test(
         DECODE_IQ_P25P1_CQPSK_VOICE
         p25p1_cqpsk_vc
-        -f1
+        "-f1 -mq"
         "Group Voice Channel User"
     )
     # Issue #400: the same capture under -fa, where the SPS hunt is live. P25p1 syncs arrive
@@ -11406,8 +11415,22 @@ if(DSD_HAS_RADIO)
     # same real payload its -f1 sibling above asserts, which is the thing a hunt that holds
     # the profile is supposed to deliver. Both halves hold across dev-debug, asan-ubsan-debug
     # and tsan-debug.
+    #
+    # Under -fa the modulation vote never picks CQPSK on this capture, so the hunt above runs
+    # the FSK discriminator path (cqpsk_symbols=0); the _UNLOCKED case keeps that unlocked
+    # hunt and its negative half. The case itself runs "-fa -mq", the -fa protocol set on the
+    # CQPSK chain (8 grants, 52 audio errors, 5 header errors). The -mq lock lets the hunt
+    # rotate only among profiles with the same timing, which it does without the
+    # "SPS hunt: trying" line, so the negative half there guards against a timing change.
     dsd_neo_add_iq_decode_test(
         DECODE_IQ_P25P1_CQPSK_VOICE_AUTO_HUNT
+        p25p1_cqpsk_vc
+        "-fa -mq"
+        "Group Voice Channel User"
+        "SPS hunt: trying"
+    )
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_P25P1_CQPSK_VOICE_AUTO_HUNT_UNLOCKED
         p25p1_cqpsk_vc
         -fa
         "Group Voice Channel User"
@@ -11419,7 +11442,7 @@ if(DSD_HAS_RADIO)
     dsd_neo_add_iq_decode_test(
         DECODE_IQ_P25P1_CQPSK_SIMULCAST_CC
         p25p1_cqpsk_cc_simulcast
-        -f1
+        "-f1 -mq"
         "Group Voice Channel Grant Update - Implicit"
     )
     dsd_neo_add_iq_decode_test(DECODE_IQ_P25P2_CC p25p2_cc -f2 "P25p2 SACCH")
@@ -11830,8 +11853,10 @@ if(DSD_HAS_RADIO)
         )
     endif()
 
-    # dsd_neo_add_iq_determinism_test(name fixture mode runs expected min_fsk min_cqpsk)
+    # dsd_neo_add_iq_determinism_test(name fixture mode runs expected min_fsk min_cqpsk
+    #                                 min_total [NOT_EXPECTED regex])
     # runs is the ;-list of legs (see iq_determinism_check.cmake for the leg grammar).
+    # min_total floors FSK samples + 8 x CQPSK symbols, which no hunt split moves.
     function(
         dsd_neo_add_iq_determinism_test
         test_name
@@ -11841,7 +11866,13 @@ if(DSD_HAS_RADIO)
         expected
         min_fsk
         min_cqpsk
+        min_total
     )
+        cmake_parse_arguments(PARSE_ARGV 8 _det "" "NOT_EXPECTED" "")
+        set(_not_expected_arg)
+        if(DEFINED _det_NOT_EXPECTED)
+            set(_not_expected_arg "-DNOT_EXPECTED=${_det_NOT_EXPECTED}")
+        endif()
         add_test(
             NAME ${test_name}
             COMMAND
@@ -11850,7 +11881,8 @@ if(DSD_HAS_RADIO)
                 "-DMODE=${mode}"
                 "-DFIXTURE=${_DSD_NEO_IQ_FIXTURE_DIR}/${fixture}.iq.json"
                 "-DRUNS=${runs}" "-DEXPECTED=${expected}" "-DMIN_FSK=${min_fsk}"
-                "-DMIN_CQPSK=${min_cqpsk}" -P
+                "-DMIN_CQPSK=${min_cqpsk}" "-DMIN_TOTAL=${min_total}"
+                ${_not_expected_arg} -P
                 "${CMAKE_CURRENT_SOURCE_DIR}/iq_determinism_check.cmake"
         )
         set_tests_properties(
@@ -11874,9 +11906,12 @@ if(DSD_HAS_RADIO)
     # proves the hunt dwelt on the CQPSK path. The FSK count moves the other way:
     # 648,000 - 158 - 8 x cqpsk_symbols. MIN_FSK 535,000 is the measured 582,330 less one
     # more full CQPSK dwell (5,400 x 8 = 43,200 samples, leaving 539,130) and a little
-    # more, and it still holds 83 % of the capture to the FSK path.
+    # more, and it still holds 83 % of the capture to the FSK path. The two together,
+    # 582,330 + 8 x 8,189 = 647,842 front-end samples, do not depend on that split at all,
+    # so MIN_TOTAL 647,000 holds every leg to all but 1,000 of the capture's 648,000.
     set(_nxdn48_retune_min_fsk 535000)
     set(_nxdn48_retune_min_cqpsk 5000)
+    set(_nxdn48_retune_min_total 647000)
     dsd_neo_add_iq_determinism_test(
         DECODE_IQ_NXDN48_AFTER_RETUNE_AUTO_DETERMINISM
         nxdn48_after_retune
@@ -11885,6 +11920,7 @@ if(DSD_HAS_RADIO)
         "Src=901"
         ${_nxdn48_retune_min_fsk}
         ${_nxdn48_retune_min_cqpsk}
+        ${_nxdn48_retune_min_total}
     )
     # Paced at the capture's own rate the decoder reads the same stream: realtime must
     # match fast, with and without seeded sleeps on top. Each realtime leg takes the
@@ -11897,6 +11933,7 @@ if(DSD_HAS_RADIO)
         "Src=901"
         ${_nxdn48_retune_min_fsk}
         ${_nxdn48_retune_min_cqpsk}
+        ${_nxdn48_retune_min_total}
     )
     dsd_neo_add_iq_determinism_test(
         DECODE_IQ_NXDN48_AFTER_RETUNE_AUTO_DETERMINISM_REALTIME_JITTER
@@ -11906,6 +11943,7 @@ if(DSD_HAS_RADIO)
         "Src=901"
         ${_nxdn48_retune_min_fsk}
         ${_nxdn48_retune_min_cqpsk}
+        ${_nxdn48_retune_min_total}
     )
     # Audio output is real time: a sink whose device stops taking audio must not reach
     # back into the decoder. Against a sink that takes everything, a stalled one (which
@@ -11920,8 +11958,23 @@ if(DSD_HAS_RADIO)
             "Src=901"
             ${_nxdn48_retune_min_fsk}
             ${_nxdn48_retune_min_cqpsk}
+            ${_nxdn48_retune_min_total}
         )
     endif()
+    # The CQPSK path decoding real frames: p25p2_cc under -f2 runs the front end's CQPSK
+    # chain for the whole capture (fsk_samples=0 cqpsk_symbols=11992 media_ms=2000, so
+    # 95,936 of its 96,000 samples), and fast, short-read and jitter legs must decode its
+    # SACCH the same way. MIN_CQPSK 11,900 and MIN_TOTAL 95,000 sit just under that.
+    dsd_neo_add_iq_determinism_test(
+        DECODE_IQ_P25P2_CC_DETERMINISM
+        p25p2_cc
+        -f2
+        "fast;short:19;jitter:23:120"
+        "P25p2 SACCH"
+        0
+        11900
+        95000
+    )
 endif()
 
 if(DSD_HAS_RADIO)
