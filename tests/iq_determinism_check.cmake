@@ -156,10 +156,24 @@ endfunction()
 # Wall-clock time in ms: microsecond stamps from CMake 3.23, whole seconds
 # before it (still within a second of the truth for the 90 % check).
 function(_now_ms out)
+    # string(TIMESTAMP) returns the fixed SOURCE_DATE_EPOCH instead of the current
+    # time while that variable is set (reproducible builds), which would read every
+    # elapsed time as 0 ms. Hide it for this one read and put it back exactly, so a
+    # defined-but-empty value stays defined and the decoder child still sees the
+    # environment it was started with.
+    set(_had_sde FALSE)
+    if(DEFINED ENV{SOURCE_DATE_EPOCH})
+        set(_had_sde TRUE)
+        set(_saved_sde "$ENV{SOURCE_DATE_EPOCH}")
+        unset(ENV{SOURCE_DATE_EPOCH})
+    endif()
     if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.23)
         string(TIMESTAMP _stamp "%s.%f" UTC)
     else()
         string(TIMESTAMP _stamp "%s.000000" UTC)
+    endif()
+    if(_had_sde)
+        set(ENV{SOURCE_DATE_EPOCH} "${_saved_sde}")
     endif()
     if(NOT _stamp MATCHES "^([0-9]+)\\.([0-9][0-9][0-9])[0-9]*$")
         message(

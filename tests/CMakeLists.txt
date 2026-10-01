@@ -11945,6 +11945,14 @@ if(DSD_HAS_RADIO)
         ${_nxdn48_retune_min_cqpsk}
         ${_nxdn48_retune_min_total}
     )
+    # This leg runs with SOURCE_DATE_EPOCH set, as in a reproducible build: the runner's
+    # wall clock must not follow it (string(TIMESTAMP) does), or every realtime leg reads
+    # 0 ms of elapsed time and fails the pacing check. The _JITTER leg and the gap leg
+    # below keep the plain environment covered.
+    set_tests_properties(
+        DECODE_IQ_NXDN48_AFTER_RETUNE_AUTO_DETERMINISM_REALTIME
+        PROPERTIES ENVIRONMENT "SOURCE_DATE_EPOCH=1700000000"
+    )
     dsd_neo_add_iq_determinism_test(
         DECODE_IQ_NXDN48_AFTER_RETUNE_AUTO_DETERMINISM_REALTIME_JITTER
         nxdn48_after_retune
