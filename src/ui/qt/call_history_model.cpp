@@ -39,11 +39,13 @@ constexpr const char kSeenStoreFileName[] = "call_history_seen.json";
 constexpr const char kSessionUidKey[] = "callHistory/sessionUid";
 constexpr const char kSessionLabelKey[] = "callHistory/sessionLabel";
 constexpr const char kSessionKey[] = "callHistory/session";
-/* The clear mark: callHistory/clear/{session,pending,pushSeq0,pushSeq1}, absent when none applies. */
+/* The clear mark: callHistory/clear/{session,pending,pushSeq0,pushSeq1,ring}, absent when none applies. */
 constexpr const char kClearGroup[] = "callHistory/clear";
 constexpr const char kClearSessionKey[] = "callHistory/clear/session";
 constexpr const char kClearPendingKey[] = "callHistory/clear/pending";
 constexpr const char kClearPushSeqKey[2][32] = {"callHistory/clear/pushSeq0", "callHistory/clear/pushSeq1"};
+/* Absent in a mark written before marks named their ring, which then reads 0. */
+constexpr const char kClearRingKey[] = "callHistory/clear/ring";
 /* Older builds persisted Clear as a decode-time watermark; read once to retire it. */
 constexpr const char kLegacyClearedThroughKey[] = "callHistory/clearedThrough";
 constexpr int kMaxRows = 1000;
@@ -152,6 +154,7 @@ CallHistoryModel::loadSessionState() {
         for (int slot = 0; slot < 2; slot++) {
             m_clear.pushSeq[slot] = m_settings.value(QLatin1String(kClearPushSeqKey[slot])).toULongLong();
         }
+        m_clear.ring = m_settings.value(QLatin1String(kClearRingKey)).toULongLong();
     }
     /* A build that stamped Clear with the decode time left this watermark. Nothing it guarded
      * is left. The log rows it cleared were deleted from the store, and the ring rows it held
@@ -291,10 +294,13 @@ CallHistoryModel::beginSession() {
      * read can come late. If the previous session heard nothing, both rings sit at the same
      * commit_rev, and the new one is first read at its first commit, which a clear waiting for
      * that read would hide. Only a freshly constructed model clears before knowing the ring.
-     * If the old ring is read again after this, its position replaces this one, and the new
-     * ring's lower position then drops the mark (settleClear()). */
+     * The new ring's identity is not known yet, so a clear before its first read names no ring;
+     * it covers nothing, and that read drops it. If the old ring is read again after this, its
+     * position and identity replace these, and the new ring's identity then drops the mark
+     * (settleClear()). */
     m_ringPushSeq[0] = 0U;
     m_ringPushSeq[1] = 0U;
+    m_ringPushSeqRing = 0U;
     m_ringRead = true;
     Q_EMIT sessionChanged();
 }
@@ -315,10 +321,11 @@ CallHistoryModel::saveClear() {
     for (int slot = 0; slot < 2; slot++) {
         m_settings.setValue(QLatin1String(kClearPushSeqKey[slot]), m_clear.pushSeq[slot]);
     }
+    m_settings.setValue(QLatin1String(kClearRingKey), static_cast<qulonglong>(m_clear.ring));
 }
 
 void
-CallHistoryModel::settleClear(const qulonglong pushSeq[2]) {
+CallHistoryModel::settleClear(const qulonglong pushSeq[2], quint64 ring) {
     if (!m_clear.active || m_clear.session != m_session) {
         return;
     }
@@ -328,12 +335,16 @@ CallHistoryModel::settleClear(const qulonglong pushSeq[2]) {
         m_clear.pending = false;
         m_clear.pushSeq[0] = pushSeq[0];
         m_clear.pushSeq[1] = pushSeq[1];
+        m_clear.ring = ring;
         saveClear();
         return;
     }
-    // push_seq never falls within one ring. A position below the mark means a new ring the clear never saw.
-    // That happens when a ring was replaced without a start (beginSession()).
-    if (pushSeq[0] < m_clear.pushSeq[0] || pushSeq[1] < m_clear.pushSeq[1]) {
+    // The mark's position is one in the ring the clear was made on. Any other ring is one the clear never
+    // saw, whatever its position: a ring replaced without a start (beginSession()) can already be past the
+    // mark at its first read. A mark that names no ring covers no ring the model reads: one made on a
+    // start's new ring before its first read sits at position zero and covers nothing, and one an older
+    // build wrote belongs to a ring that died with the process an app update replaced.
+    if (ring != m_clear.ring) {
         m_clear = ClearMark();
         saveClear();
     }
@@ -833,10 +844,13 @@ CallHistoryModel::refresh(const dsd_state* snapshot, const dsd_opts* opts_snapsh
     // new ring's (beginSession() has set that to zero).
     const qulonglong pushSeq[2] = {static_cast<qulonglong>(snapshot->event_history_s[0].push_seq),
                                    static_cast<qulonglong>(snapshot->event_history_s[1].push_seq)};
+    // initState() draws one identity for both slots' rings.
+    const quint64 ring = static_cast<quint64>(snapshot->event_history_s[0].instance);
     m_ringPushSeq[0] = pushSeq[0];
     m_ringPushSeq[1] = pushSeq[1];
+    m_ringPushSeqRing = ring;
     m_ringRead = true;
-    settleClear(pushSeq);
+    settleClear(pushSeq, ring);
 
     // The effective options cover scans started from a saved system's extra
     // arguments as well as the list UI. Unknown options cannot establish identity.
@@ -903,6 +917,7 @@ CallHistoryModel::clearAll() {
     m_clear.pending = !m_ringRead;
     m_clear.pushSeq[0] = m_ringRead ? m_ringPushSeq[0] : 0U;
     m_clear.pushSeq[1] = m_ringRead ? m_ringPushSeq[1] : 0U;
+    m_clear.ring = m_ringRead ? m_ringPushSeqRing : 0U;
     saveClear();
     endResetModel();
     Q_EMIT countChanged();

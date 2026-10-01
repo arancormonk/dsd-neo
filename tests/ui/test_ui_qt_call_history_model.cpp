@@ -778,13 +778,59 @@ test_new_session_starts_fresh(void) {
         expect("the session survives a relaunch", relaunched.session() == model.session());
     }
 
-    // A ring replaced without a start: push_seq never falls within one ring, so a position
-    // below the clear's is a ring the clear never saw.
+    // A ring replaced without a start, here at a position below the clear's: its identity says the
+    // clear never saw it (test_clear_is_bound_to_its_ring covers one already past the position).
     model.clearAll();
     ring = std::make_unique<RingFixture>();
     ring->commit(0, 7201, 300, kCaptureStart + 100, kCaptureStart + 104);
     model.refresh(ring->state);
     expect("a clear does not reach a ring whose position fell below it", model.count() == 1);
+}
+
+/* A clear covers the ring it was made on, named by its identity (Event_History_I::instance). A ring
+ * replaced without a start may already sit past the clear's push position at its first read, and a
+ * position alone cannot tell it from the cleared ring: all its calls are new. */
+void
+test_clear_is_bound_to_its_ring(void) {
+    resetStorage();
+    auto ring = std::make_unique<RingFixture>();
+    CallHistoryModel model;
+    for (uint32_t i = 0; i < 4; i++) {
+        ring->commit(0, 7301 + i, 100 + i, 1754503000 + 10 * i, 1754503004 + 10 * i);
+    }
+    model.refresh(ring->state);
+    expect("the four calls land before the clear", model.count() == 4);
+    model.clearAll();
+    ring = std::make_unique<RingFixture>(); // a replacement ring, no beginSession()
+    for (uint32_t i = 0; i < 6; i++) {
+        ring->commit(0, 7401 + i, 200 + i, kCaptureStart + 10 * i, kCaptureStart + 4 + 10 * i);
+    }
+    model.refresh(ring->state);
+    expect("a clear does not reach a replacement ring already past its position", model.count() == 6);
+}
+
+/* A clear mark written before marks named their ring cannot say which ring it covers. Its ring died with
+ * the process an app update replaced, so it hides nothing: every call the first read finds shows. */
+void
+test_clear_without_a_ring_hides_nothing(void) {
+    resetStorage();
+    {
+        QSettings settings;
+        settings.setValue(QStringLiteral("callHistory/session"), 1);
+        settings.setValue(QStringLiteral("callHistory/clear/session"), 1);
+        settings.setValue(QStringLiteral("callHistory/clear/pending"), false);
+        settings.setValue(QStringLiteral("callHistory/clear/pushSeq0"), 4);
+        settings.setValue(QStringLiteral("callHistory/clear/pushSeq1"), 0);
+        settings.sync();
+    }
+    RingFixture ring;
+    CallHistoryModel model;
+    for (uint32_t i = 0; i < 6; i++) {
+        ring.commit(0, 7501 + i, 300 + i, kCaptureStart + 10 * i, kCaptureStart + 4 + 10 * i);
+    }
+    model.refresh(ring.state);
+    expect("a clear mark that names no ring hides none of a ring's calls", model.count() == 6);
+    expect("and is dropped", !QSettings().contains(QStringLiteral("callHistory/clear/session")));
 }
 
 /* A clear tapped after a start, before the new ring has been read, covers none of that ring:
@@ -1197,6 +1243,8 @@ main(int argc, char** argv) {
     test_clear_survives_a_relaunch();
     test_legacy_clear_watermark_is_retired();
     test_new_session_starts_fresh();
+    test_clear_is_bound_to_its_ring();
+    test_clear_without_a_ring_hides_nothing();
     test_clear_after_a_quiet_start_keeps_the_next_call();
     test_session_view_selects_by_session();
     test_full_log_keeps_the_running_session();

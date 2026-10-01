@@ -162,7 +162,8 @@ class CallHistoryModel : public QAbstractListModel {
      * @brief Empty the log, and keep the rows the session's ring still holds out of it.
      *
      * Those rows are named by the ring position (push_seq per slot) this model last read, in
-     * the current session. Everything the ring takes in after that is shown, whatever its stamps.
+     * the current session, and by that ring's identity (Event_History_I::instance). Everything the
+     * ring takes in after that is shown, whatever its stamps, and so is every row of another ring.
      * Persisted, so a relaunched UI does not ingest the cleared rows again. A start counts as reading
      * the new ring at position zero, so a clear after it covers none of that ring. Only a freshly
      * constructed model (a relaunched UI clearing before its first tick) has not read the ring; its
@@ -246,16 +247,20 @@ class CallHistoryModel : public QAbstractListModel {
     };
 
     /**
-     * @brief What Clear wiped: session @c session's ring rows up to @c pushSeq per slot.
+     * @brief What Clear wiped: session @c session's rows of ring @c ring up to @c pushSeq per slot.
      *
      * Named by push position rather than by stamps, because a ring's pushes are ordered and its
      * stamps are not (a replay's are the capture's). @c pending until the ring position is known.
+     * The position means something only in its own ring (Event_History_I::instance; initState()
+     * draws one for both slots), so @c ring names it. 0 names no ring: pending, a start's new ring
+     * not yet read (at position zero, which covers nothing), or a mark an older build wrote.
      */
     struct ClearMark {
         bool active = false;
         qint64 session = 0;
         bool pending = false;
         qulonglong pushSeq[2] = {0U, 0U};
+        quint64 ring = 0U;
     };
 
     /** @brief A ring row worth ingesting: brand new, heard again in a new ring, or a seen row that advanced. */
@@ -333,8 +338,9 @@ class CallHistoryModel : public QAbstractListModel {
     void scheduleDayRollover();
     /** @brief Whether the clear mark covers ring rows of the current session. */
     bool clearApplies() const;
-    /** @brief Settle the clear mark against a ring read at @p pushSeq: bind a pending one, drop a stale one. */
-    void settleClear(const qulonglong pushSeq[2]);
+    /** @brief Settle the clear mark against ring @p ring read at @p pushSeq: bind a pending one, drop one made on
+        another ring. */
+    void settleClear(const qulonglong pushSeq[2], quint64 ring);
     void saveClear();
     /** @brief Restore the session and the clear mark; retire the timestamp watermark older builds wrote. */
     void loadSessionState();
@@ -349,6 +355,8 @@ class CallHistoryModel : public QAbstractListModel {
     ClearMark m_clear;
     /* The ring position (push_seq per slot) the last refresh read; valid once m_ringRead. */
     qulonglong m_ringPushSeq[2] = {0U, 0U};
+    /* The ring that position is in (Event_History_I::instance); 0 for a start's new ring, not yet read. */
+    quint64 m_ringPushSeqRing = 0U;
     bool m_ringRead = false;
     /* Committed-rows change counter per slot (Event_History_I::commit_rev). The
      * staged row re-renders at the poll rate while a call is up, bumping only

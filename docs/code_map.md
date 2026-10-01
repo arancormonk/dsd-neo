@@ -2608,14 +2608,17 @@ Qt Quick frontend (`src/ui/qt`):
     reattaching to a running session (the service survived an Activity restart) takes the session the history kept,
     so it sees the calls its predecessor logged in that session.
   - Clear (`clearAll()`) names what it wiped by ring position: the current session's push_seq per slot as last read
-    (`callHistory/clear/*`). Whatever the ring takes in after the clear shows, whatever its stamps. A relaunched UI
-    does not ingest the cleared rows again. A start counts as reading the new ring at position zero, so a clear
-    after it covers none of that ring, even when a quiet previous session leaves its first read until its first
-    commit. Only a freshly constructed model clears before reading the ring, and its clear binds to what the first
-    read finds. The mark is dropped by `beginSession()`, and also when a read finds a slot's push_seq below it, which
-    means the ring was replaced. The decode-time watermark older builds wrote (`callHistory/clearedThrough`) is
-    removed on load. The rows it cleared had already left the store, and the ring it guarded died with the replaced
-    process.
+    (`callHistory/clear/*`). Whatever the ring takes in after the clear shows, whatever its stamps. A relaunched UI does
+    not ingest the cleared rows again. A start counts as reading the new ring at position zero, so a clear after it
+    covers none of that ring, even when a quiet previous session leaves its first read until its first commit. Only a
+    freshly constructed model clears before reading the ring, and its clear binds to what the first read finds. The
+    position means something only in its own ring, so the mark also names that ring (`Event_History_I::instance`,
+    `callHistory/clear/ring`). It is dropped by `beginSession()`, and by a read of any other ring, whatever its
+    position: a ring replaced without a start can already be past the mark at its first read. A mark that names no ring
+    is dropped at the first read too. Made on a start's new ring before its first read, it sits at position zero and
+    covers nothing; written before marks named their ring, it belongs to a ring that died with the process an app update
+    replaced. The decode-time watermark older builds wrote (`callHistory/clearedThrough`) is removed on load. The rows
+    it cleared had already left the store, and the ring it guarded died with the replaced process.
   - Retention: a full log (1000 rows) gives up the oldest session's oldest row, and the seen map and its store keep
     the newest entries in the same (session, start) order. Ranked by stamps alone, a replay's calls would be trimmed
     as they landed and its ring rows logged again as new calls.
