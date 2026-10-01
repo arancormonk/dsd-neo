@@ -1369,6 +1369,14 @@ main(void) {
                                                    simd_hb_decim2_real_sse2);
     failures += test_direct_fixed_hb_kernels("sse2", simd_hb_decim2_complex_sse2, 7);
 #if defined(DSD_NEO_TEST_HAVE_AVX2_IMPL)
+#if defined(__GNUC__) || defined(__clang__)
+    /* The probe reads the same CPUID and XCR0 bits as the compiler's own runtime check. A probe that disagreed would
+       skip the AVX2 backends below, and route the decoder past them, without saying so. */
+    if (dsd_neo_cpu_has_avx2_with_os_support() != (__builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma"))) {
+        std::printf("AVX2 probe disagrees with __builtin_cpu_supports(\"avx2\") && (\"fma\")\n");
+        failures++;
+    }
+#endif
     if (dsd_neo_cpu_has_avx2_with_os_support()) {
         failures += test_direct_complex_fir_backend("avx2", simd_fir_complex_apply_avx2);
         failures += test_direct_complex_hb_backend("avx2", simd_hb_decim2_complex_avx2);
