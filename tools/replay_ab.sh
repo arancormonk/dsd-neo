@@ -45,16 +45,16 @@ set -euo pipefail
 #
 # A capture with no events has nothing to shift: every repeat replays it as
 # recorded, and the run warns that its repeats are one realization, to be
-# compared across captures. Events held at the end of the bytes replay reads
-# stop moving, so two shifts can land every event in the same place: a repeat
-# whose events do that replays the same realization as the earlier repeat,
-# records that repeat's shift so the report counts it once, and its progress
-# lines say so. The run warns as for a capture with no events when every repeat
-# collapses onto one, and names how many distinct realizations it has when some
-# do. --no-realizations replays every repeat as recorded on purpose: that is the
-# determinism control. Two properties this keeps from before issue #572, which
-# cost nothing now and keep a determinism regression from passing for a
-# difference in builds:
+# compared across captures. Two repeats can also land every event in the same
+# place, when the events sit at the end of the bytes replay reads, where they
+# stop moving, or when two shifts coincide: the later repeat replays the same
+# realization as the earlier one, records that repeat's shift so the report
+# counts it once, and its progress lines say so. The run warns as for a capture
+# with no events when every repeat collapses onto one, and names how many
+# distinct realizations it has when some do. --no-realizations replays every
+# repeat as recorded on purpose: that is the determinism control. Two
+# properties this keeps from before issue #572, which cost nothing now and keep
+# a determinism regression from passing for a difference in builds:
 #
 #   * Round-robin, not blocked. Running all of build A and then all of build B
 #     measured whatever else the machine was doing as if it were the build.
@@ -305,7 +305,8 @@ for index, event in enumerate(events):
 os.makedirs(outdir, exist_ok=True)
 rows = [f"symbol\t{symbol}\t{decimation}"]
 # Event schedule (kind and offset of each event, in order) -> the first repeat that replays it, and its shift. Events
-# held at the end of the bytes replay reads stop moving, so two shifts can give one schedule, which is one realization.
+# held at the end of the bytes replay reads stop moving, and two shifts can coincide, so two repeats can give one
+# schedule, which is one realization.
 schedules = {}
 for rep in range(1, reps + 1):
     shift = (rep - 1) * symbol // reps + (rep - 1)
@@ -376,9 +377,9 @@ else
       realization_note+=" capture as recorded"
     else
       if [ "$distinct" -lt "$reps" ]; then
-        echo "notice: the run has $distinct distinct realizations over its $reps repeats: the rest replay the same" \
-          "realization as an earlier repeat (their progress lines name it), since events held at the end of the" \
-          "bytes replay reads stop moving" >&2
+        echo "notice: $((reps - distinct)) of $reps repeats replay the same event schedule as an earlier repeat" \
+          "(their progress lines name it), so the run has $distinct distinct realizations; events at the end of" \
+          "the bytes replay reads, or shifts that coincide, do that" >&2
         realization_note="$distinct over $reps repeats"
       else
         realization_note="one per repeat"

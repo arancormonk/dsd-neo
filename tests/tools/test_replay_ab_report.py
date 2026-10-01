@@ -840,7 +840,11 @@ class ReplayAbRealizations(unittest.TestCase):
         self.write_capture(original)
         result = self.replay_ab("--reps", "3")
         self.assertEqual(result.returncode, 0, result.stdout)
-        self.assertEqual(result.stdout.count("the run has 2 distinct realizations"), 1, result.stdout)
+        notice = " ".join(line for line in result.stdout.splitlines() if line.startswith("notice: "))
+        self.assertIn("notice: 1 of 3 repeats replay the same event schedule as an earlier repeat", notice)
+        self.assertEqual(result.stdout.count("so the run has 2 distinct realizations"), 1, result.stdout)
+        # Two causes give a shared schedule, and the notice blames neither alone.
+        self.assertIn("events at the end of the bytes replay reads, or shifts that coincide", notice)
         self.assertNotIn(ONE_REALIZATION, result.stdout)
         self.assert_realizations(original, [0, 7, 7], [[3990, 3990], [4000, 4000], [4000, 4000]],
                                  str(self.tmp / "caps" / "capture.iq"))

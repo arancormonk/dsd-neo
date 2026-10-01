@@ -1498,18 +1498,19 @@ Reading it:
   its header, and the report notes that every repeat replayed one realization.
   Such a capture is one draw however many repeats it gets, so compare builds
   across captures.
-- **Events held at the end** of the bytes replay reads stop moving, so two
-  shifts can put every event in the same place. A repeat whose events land
-  where an earlier repeat's did replays the same realization: its progress
-  lines say `(same realization as rN)`, and `summary.tsv` records repeat N's
-  shift, so the report counts the realization once. When every event sits at
-  the end, every repeat is one realization, and the run warns once as for a
-  capture with no events (`every event sits at the end of the bytes replay
-  reads, where no shift moves it: every repeat replays the same realization;
-  compare it across captures`). When only some repeats collapse, it prints one
-  notice naming how many distinct realizations the run has, and the report
-  notes that a realization several repeats replayed counts more than once in
-  its interval.
+- **Repeats that share an event schedule.** Events held at the end of the
+  bytes replay reads stop moving, and two shifts can coincide, so two repeats
+  can put every event in the same place. A repeat whose events land where an
+  earlier repeat's did replays the same realization: its progress lines say
+  `(same realization as rN)`, and `summary.tsv` records repeat N's shift, so
+  the report counts the realization once. When every event sits at the end,
+  every repeat is one realization, and the run warns once as for a capture with
+  no events (`every event sits at the end of the bytes replay reads, where no
+  shift moves it: every repeat replays the same realization; compare it across
+  captures`). When only some repeats collapse, it prints one notice
+  (`N of M repeats replay the same event schedule as an earlier repeat ..., so
+  the run has K distinct realizations`), and the report notes that a
+  realization several repeats replayed counts more than once in its interval.
 - **`--no-realizations`** replays every repeat as recorded on purpose: the
   determinism control, in which each build's repeats must decode alike (an `sd`
   of 0) as well as pair to `+0.00 +/- 0.00`.

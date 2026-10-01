@@ -154,9 +154,9 @@ def print_realization_note(rows: list[dict[str, str]], reps: list[int]) -> None:
         print("realizations of one whose events can move.")
     elif 1 < count < len(reps):
         print(f"\nnote: the {len(reps)} repeats replayed only {count} distinct realizations of the capture: some")
-        print("repeats' shifted events were held at the end of the bytes replay reads, where an earlier")
-        print("repeat's landed, so a realization several repeats replayed counts more than once in the")
-        print("interval.")
+        print("repeats replayed the same event schedule as an earlier repeat (events at the end of the bytes")
+        print("replay reads, or shifts that coincide), so a realization several repeats replayed counts more")
+        print("than once in the interval.")
 
 
 def interval_text(diffs: list[float]) -> str:
