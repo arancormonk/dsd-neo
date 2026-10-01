@@ -2249,6 +2249,8 @@ Notes:
     - The reader reads a chunk whole with `replay_read_exact()`: 64 KiB, or up to the next event or the end, looping
       over short reads. A cf32 read that stopped inside a complex sample would otherwise be skipped, and every read
       after it would stay off the sample grid. A read that fails after part of a chunk hands over that part first.
+      A chunk the capture's end or a failure cuts short ends on its last whole complex sample (2 bytes for cu8, 8 for
+      cf32): nothing can complete a part of one, and a cf32 chunk holding one could not be converted at all.
     - `replay_submit_whole_chunk()` waits for the chunk's realtime deadline, then (with no deadline) for an empty input
       ring, and commits the whole chunk at once. The reader reads and converts the next chunk while the demod works on
       this one.
@@ -2263,8 +2265,8 @@ Notes:
 
     Tests: `IO_RTL_REPLAY_EOF_AND_CF32` (block log per chunk in fast and realtime replay, media time across a loop, a
     chunk held numbered but uncommitted, a block that wraps the ring end and a discarded block, each releasing its
-    input before it acknowledges, a multi-chunk EOF, cf32 short reads, a read failure mid-chunk, the input level at
-    the first block).
+    input before it acknowledges, a multi-chunk EOF, cf32 short reads, a read failure mid-chunk, in cu8 and inside a
+    cf32 sample, a cf32 end inside a sample, the input level at the first block).
   - I/Q replay end of stream (issue #572; `replay_thread_fn()` in `rtl_device.cpp`, `rtl_stream_read_replay()` in
     `rtl_sdr_fm.cpp`). The capture's end and a read the capture source refuses end a replay the same way:
     - The reader marks input EOF, waits on the input ring's `space` (50 ms at a time) for the demod to take the rest,

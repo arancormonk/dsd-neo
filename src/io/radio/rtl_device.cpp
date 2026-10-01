@@ -1446,7 +1446,9 @@ replay_read_capture(struct rtl_device* s, uint8_t* raw_block, size_t read_limit,
 /* Read the next @p limit bytes of the capture, looping over short reads until they are all read or the capture ends,
  * so a chunk is whole: a cf32 read that stopped inside a complex sample would otherwise be skipped as unaligned, and
  * every read after it would stay off the sample grid. A read that fails after part of the chunk was read hands over
- * that part (the replay ends after the samples already read) and reports the failure on the next call. */
+ * that part (the replay ends after the samples already read) and reports the failure on the next call. A chunk the
+ * capture's end or a failure cut short ends on its last whole complex sample: nothing can complete a part of one, and
+ * a cf32 chunk holding one could not be converted at all. */
 static int
 replay_read_exact(struct rtl_device* s, uint8_t* raw_block, size_t limit, size_t* out_bytes) {
     *out_bytes = 0U;
@@ -1455,20 +1457,30 @@ replay_read_exact(struct rtl_device* s, uint8_t* raw_block, size_t limit, size_t
         s->replay_deferred_read_rc = DSD_IQ_OK;
         return rc;
     }
+    int failure_rc = DSD_IQ_OK;
     while (*out_bytes < limit) {
         size_t got = 0U;
         int rc = replay_read_capture(s, raw_block + *out_bytes, limit - *out_bytes, &got);
         if (rc != DSD_IQ_OK) {
-            if (*out_bytes == 0U) {
-                return rc;
-            }
-            s->replay_deferred_read_rc = rc;
+            failure_rc = rc;
             break;
         }
         if (got == 0U) {
             break;
         }
         *out_bytes += got;
+    }
+    if (*out_bytes < limit) {
+        const size_t align = dsd_iq_sample_format_alignment_bytes(s->replay_cfg.format);
+        if (align > 0U) {
+            *out_bytes -= *out_bytes % align;
+        }
+    }
+    if (failure_rc != DSD_IQ_OK) {
+        if (*out_bytes == 0U) {
+            return failure_rc;
+        }
+        s->replay_deferred_read_rc = failure_rc;
     }
     return DSD_IQ_OK;
 }

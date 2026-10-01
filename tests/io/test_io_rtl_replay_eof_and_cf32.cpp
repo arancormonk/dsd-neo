@@ -2633,51 +2633,125 @@ test_cf32_replay_short_reads_stay_aligned(void) {
     return rc;
 }
 
-/* Issue #572: a read that fails after part of a chunk was read still hands the demod the part it got, as one block
- * (the replay ends after the samples already read), and the replay then ends with the failure reported. */
+/* Replay @p metadata_path with every capture read limited to @p read_bytes, and with the read after @p error_after
+ * reads that returned data replaced by one that returns @p error_code and no bytes. The demod's blocks go to @p log,
+ * the samples the decoder read to @p delivered, and the input failure the replay reported (DSD_INPUT_FAILURE_NONE
+ * when it reached its end) to @p failure. */
 static int
-test_replay_read_failure_mid_chunk_delivers_what_was_read(void) {
-    const size_t read_bytes = 4096U;
-    int rc = 0;
-    char metadata_path[DSD_TEST_PATH_MAX];
-    rc |= make_replay_fixture(metadata_path, sizeof(metadata_path), DSD_IQ_FORMAT_CU8, "post_mute_pre_widen", 1,
-                              2U * kReplayChunkBytes);
-    if (rc != 0) {
-        return 1;
-    }
-
-    BlockLog log;
+replay_with_failed_read(const char* label, const char* metadata_path, size_t read_bytes, int error_after,
+                        int error_code, BlockLog* log, uint64_t* delivered, dsd_input_failure* failure) {
     dsd_input_failure_clear();
-    rtl_stream_test_set_replay_block_hook(block_log_hook, &log);
+    rtl_stream_test_set_replay_block_hook(block_log_hook, log);
     rtl_device_test_replay_limit_read(read_bytes);
-    rtl_device_test_replay_inject_read_error(3, DSD_IQ_ERR_IO);
+    rtl_device_test_replay_inject_read_error(error_after, error_code);
     std::unique_ptr<dsd_opts> opts;
     RtlSdrContext* ctx = NULL;
+    int rc = 0;
+    *delivered = 0U;
     if (start_replay_stream(metadata_path, &opts, &ctx) != 0) {
-        rtl_device_test_replay_inject_read_error(-1, 0);
-        rtl_device_test_replay_limit_read(0U);
-        rtl_stream_test_set_replay_block_hook(NULL, NULL);
         stop_and_destroy_stream(ctx);
-        return 1;
+        rc = 1;
+    } else {
+        int rescued = 0;
+        rc |= read_replay_to_end(ctx, 5000U, label, delivered, &rescued);
+        finish_replay(ctx, rescued);
     }
-    uint64_t delivered = 0U;
-    int rescued = 0;
-    rc |= read_replay_to_end(ctx, 5000U, "read failure mid-chunk", &delivered, &rescued);
-    finish_replay(ctx, rescued);
     rtl_device_test_replay_inject_read_error(-1, 0);
     rtl_device_test_replay_limit_read(0U);
     rtl_stream_test_set_replay_block_hook(NULL, NULL);
-
-    std::vector<ExpectedChunk> chunks;
-    chunks.push_back(ExpectedChunk{3U * read_bytes, 0U});
-    rc |= expect_blocks_match_chunks("read failure mid-chunk", log, chunks);
-    rc |= expect_true("read failure mid-chunk: the part read reached the decoder", delivered > 0U);
-    dsd_input_failure failure;
-    dsd_input_failure_get(&failure);
-    rc |=
-        expect_int_eq("read failure mid-chunk: reported as a file input failure", failure.kind, DSD_INPUT_FAILURE_FILE);
-    rc |= expect_int_eq("read failure mid-chunk: code reported", failure.native_code, DSD_IQ_ERR_IO);
+    dsd_input_failure_get(failure);
     dsd_input_failure_clear();
+    return rc;
+}
+
+/* The demod took exactly floats 0 .. @p float_count - 1 of an indexed cf32 capture, in order. */
+static int
+expect_indexed_floats(const char* label, const BlockLog& log, size_t float_count) {
+    if (log.samples.size() != float_count) {
+        DSD_FPRINTF(stderr, "FAIL: %s: the demod took %zu floats, not %zu\n", label, log.samples.size(), float_count);
+        return 1;
+    }
+    for (size_t i = 0; i < float_count; i++) {
+        if (std::fabs(log.samples[i] - static_cast<float>(i)) > 0.25f) {
+            DSD_FPRINTF(stderr, "FAIL: %s: float %zu the demod took is %.1f, not %zu\n", label, i,
+                        (double)log.samples[i], i);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* Issue #572: a read that fails after part of a chunk was read still hands the demod the part it got, as one block
+ * (the replay ends after the samples already read), and the replay then ends with the failure reported. The part is
+ * cut to whole complex samples: a cf32 chunk with half a sample at its end could not be converted at all. The same
+ * holds when the capture ends inside a sample. */
+static int
+test_replay_read_failure_mid_chunk_delivers_what_was_read(void) {
+    int rc = 0;
+    char metadata_path[DSD_TEST_PATH_MAX];
+
+    /* cu8, three whole 4096-byte reads, then the failure. */
+    if (make_replay_fixture(metadata_path, sizeof(metadata_path), DSD_IQ_FORMAT_CU8, "post_mute_pre_widen", 1,
+                            2U * kReplayChunkBytes)
+        != 0) {
+        return 1;
+    }
+    {
+        BlockLog log;
+        uint64_t delivered = 0U;
+        dsd_input_failure failure;
+        rc |= replay_with_failed_read("read failure mid-chunk", metadata_path, 4096U, 3, DSD_IQ_ERR_IO, &log,
+                                      &delivered, &failure);
+        std::vector<ExpectedChunk> chunks;
+        chunks.push_back(ExpectedChunk{3U * 4096U, 0U});
+        rc |= expect_blocks_match_chunks("read failure mid-chunk", log, chunks);
+        rc |= expect_true("read failure mid-chunk: the part read reached the decoder", delivered > 0U);
+        rc |= expect_int_eq("read failure mid-chunk: reported as a file input failure", failure.kind,
+                            DSD_INPUT_FAILURE_FILE);
+        rc |= expect_int_eq("read failure mid-chunk: code reported", failure.native_code, DSD_IQ_ERR_IO);
+    }
+
+    /* cf32, three 4092-byte reads (12276 bytes: 1534 complex samples and half of the next), then the failure. The
+     * 1534 whole samples reach the demod, and the failure is still reported. */
+    if (make_indexed_cf32_replay_fixture(metadata_path, sizeof(metadata_path), 2U * kCf32ChunkFloats) != 0) {
+        return 1;
+    }
+    {
+        BlockLog log;
+        log.keep_samples = 1;
+        uint64_t delivered = 0U;
+        dsd_input_failure failure;
+        rc |= replay_with_failed_read("cf32 read failure mid-sample", metadata_path, 4092U, 3, DSD_IQ_ERR_IO, &log,
+                                      &delivered, &failure);
+        std::vector<ExpectedChunk> chunks;
+        chunks.push_back(ExpectedChunk{2U * 1534U, 0U});
+        rc |= expect_blocks_match_chunks("cf32 read failure mid-sample", log, chunks);
+        rc |= expect_indexed_floats("cf32 read failure mid-sample", log, 2U * 1534U);
+        rc |= expect_int_eq("cf32 read failure mid-sample: reported as a file input failure", failure.kind,
+                            DSD_INPUT_FAILURE_FILE);
+        rc |= expect_int_eq("cf32 read failure mid-sample: code reported", failure.native_code, DSD_IQ_ERR_IO);
+    }
+
+    /* cf32 ending inside a sample. The fourth read returns no bytes, as a source does at its end, after 12276 bytes:
+     * 1534 complex samples and half of the 1535th. The capture's last 4 bytes, the other half, follow, and the real
+     * end comes after them. The 1534 whole samples reach the demod, the halves are dropped, and the replay ends at
+     * its end, with no failure. */
+    if (make_indexed_cf32_replay_fixture(metadata_path, sizeof(metadata_path), 2U * 1535U) != 0) {
+        return 1;
+    }
+    {
+        BlockLog log;
+        log.keep_samples = 1;
+        uint64_t delivered = 0U;
+        dsd_input_failure failure;
+        rc |= replay_with_failed_read("cf32 end mid-sample", metadata_path, 4092U, 3, DSD_IQ_OK, &log, &delivered,
+                                      &failure);
+        std::vector<ExpectedChunk> chunks;
+        chunks.push_back(ExpectedChunk{2U * 1534U, 0U});
+        rc |= expect_blocks_match_chunks("cf32 end mid-sample", log, chunks);
+        rc |= expect_indexed_floats("cf32 end mid-sample", log, 2U * 1534U);
+        rc |= expect_int_eq("cf32 end mid-sample: the replay reached its end", failure.kind, DSD_INPUT_FAILURE_NONE);
+    }
     return rc;
 }
 
