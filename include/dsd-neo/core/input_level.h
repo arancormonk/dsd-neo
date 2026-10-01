@@ -48,7 +48,7 @@ typedef struct dsd_input_level_snapshot {
     double peak_dbfs;
     double clip_pct;
     uint64_t sample_count;
-    time_t updated;
+    time_t updated; /* real time the level was measured at; the warning cooldown runs on decode time instead */
 } dsd_input_level_snapshot;
 
 /**
@@ -101,6 +101,13 @@ int dsd_input_level_metrics_from_cs16(const int16_t* samples, size_t count, dsd_
 int dsd_input_level_metrics_from_cf32(const float* samples, size_t count, dsd_input_level_source source,
                                       dsd_input_level_snapshot* out);
 int dsd_input_level_format_advisory(const dsd_input_level_snapshot* snapshot, char* out, size_t out_size);
+/**
+ * @brief Classify @p snapshot into @p state, and print and toast an advisory when @p notify_mask allows its status.
+ *
+ * A repeat of a warning waits out `opts->input_warn_cooldown_sec` of decode time, measured from the decode time of the
+ * last one (`state->input_level_last_toast_time`), unless the status worsens. The decoder prints it, so a replay
+ * prints it at the same capture time in every run. The toast stays up for real time (`state->ui_msg_expire`).
+ */
 void dsd_input_level_publish(dsd_opts* opts, dsd_state* state, const dsd_input_level_snapshot* snapshot,
                              unsigned int notify_mask);
 

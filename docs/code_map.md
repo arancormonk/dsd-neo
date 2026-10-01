@@ -636,13 +636,16 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
     (`call_state_observed_m()` and the recent-activity stamps, so the reacquisition window, `started_m` and
     recent-activity TTLs share the protocols' clock), the event layer's VOICE_END alert and drop-hold due times, event
     and history row stamps (merged-row spans), enc-lockout, patch-TTL and call-skip checks, init-time sync seeds,
-    output-file names, the symbol-file rotation timer, the frame, P25 SM and LRRP log stamps, the decoder-thread command
-    stamps in `app_command_queue.c` (call ends, `mark_cc_sync`, the `-Y` ticks, call-skip arming) and every view that
+    output-file names, the symbol-file rotation timer, the frame, P25 SM and LRRP log stamps, the input-level warning
+    cooldown (`dsd_input_level_publish()`: whether a repeated RF or input-level warning prints, against the decode
+    time of the last one, `input_level_last_toast_time`), the decoder-thread command stamps in `app_command_queue.c`
+    (call ends, `mark_cc_sync`, the `-Y` ticks, call-skip arming) and every view that
     ages those stamps (`call_view`, `notification_status`, `p25_network`, the ncurses printer and P25 display,
     the Qt metrics model). Qt and QML read decode time through `MetricsModel::decodeNowMs` (wall-clock ms, the scale of
     a JavaScript time value). Real time drives device, socket and ring waits, replay pacing, auto-gain and auto-PPM, the
-    analog tap's input-pause deadline and backlog skip, the input-level warning cooldown, RadioReference dates and perf,
-    and in `src/core`, `src/app_control` and `src/ui` the `ui_msg_expire` and terminal status toasts, UI frame and
+    analog tap's input-pause deadline and backlog skip, the input-level snapshot's measurement stamp (`updated`),
+    RadioReference dates and perf, and in `src/core`, `src/app_control` and `src/ui` the `ui_msg_expire` (the
+    input-level warning's toast included) and terminal status toasts, UI frame and
     publish throttles, the `.bin` symbol-file pacing (`dsd_dibit.c`), the received-tone input-pause check, the Qt
     sync-label hold, import stamps and the Qt frontend's own clock (`src/ui/qt/realtime_clock.h`: last-listened stamps
     and their ages, location fix and diagnostics-tail ages, the history's day sections and midnight timer), the one

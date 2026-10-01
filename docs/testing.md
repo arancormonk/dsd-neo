@@ -348,12 +348,12 @@ replay rate the host ignores fails the case instead of comparing two identical f
 are then compared with the first leg's, line for line, after a normalization kept as small as the measurement allows:
 
 - ANSI colour sequences are removed.
-- Four kinds of line are dropped: `NOTICE: Runtime:` (the decode loop's real-time duration), `REPLAY JITTER:` (what
-  the host injected), the audio-sink diagnostics (`PulseAudio output stats:` and the other backends', and the host's
-  `Replay sink output stats:`, the device side a stall changes on purpose) and the input-level advisories
-  (`WARNING: …` to raise or lower the RF gain or the source volume), whose 10 s cooldown runs on real time. The decoder
-  can print an advisory in the middle of one of its own lines, so it is cut out with its line break and the decoder's
-  line joined again.
+- Three kinds of line are dropped: `NOTICE: Runtime:` (the decode loop's real-time duration), `REPLAY JITTER:` (what
+  the host injected) and the audio-sink diagnostics (`PulseAudio output stats:` and the other backends', and the
+  host's `Replay sink output stats:`, the device side a stall changes on purpose). The input-level advisories
+  (`WARNING: …` to raise or lower the RF gain or the source volume) are the decoder's own lines and are compared like
+  the rest: their 10 s cooldown runs on decode time (`dsd_input_level_publish()`), so a replay prints each at the same
+  capture time however fast it runs, even where one lands in the middle of a decoder line.
 - Lines the reader, demod or controller threads print would be compared as a sorted set, since where they fall among
   the decoder's lines follows thread timing. The pattern list is empty, by measurement: traced per thread
   (`strace -f -e trace=write`) under every leg kind, everything these legs print comes from the decoder thread.
@@ -418,10 +418,21 @@ lead-in.
 | `DECODE_IQ_NXDN48_AFTER_RETUNE_AUTO_DETERMINISM_REALTIME_JITTER` | `fast;realtime+jitter:17:120` |
 | `DECODE_IQ_NXDN48_AFTER_RETUNE_AUTO_DETERMINISM_STALLED_SINK` | `sink:free;sink:stalled`, only where `--wrap` links |
 | `DECODE_IQ_P25P2_CC_DETERMINISM` (`p25p2_cc`, `-f2`) | `fast;short:19;jitter:23:120` |
+| `DECODE_IQ_NXDN48_GAP_ADVISORY_DETERMINISM` (`nxdn48_gap`, `-fi`) | `fast;realtime;jitter:29:120` |
 
 `DECODE_IQ_P25P2_CC_DETERMINISM` holds the CQPSK path decoding real frames to the same rule: under `-f2` the whole
 2 s capture runs the CQPSK chain (`fsk_samples=0 cqpsk_symbols=11992`, 95,936 of its 96,000 samples), and every leg
 must decode its `P25p2 SACCH` lines alike; MIN_CQPSK 11,900 and MIN_TOTAL 95,000 sit just under the measurement.
+
+`DECODE_IQ_NXDN48_GAP_ADVISORY_DETERMINISM` holds the input-level advisories to it. `nxdn48_gap` (`DERIVED_GAP` in
+`tools/build_iq_fixtures.py`) is `nxdn48` byte for byte, one blob in git with it, behind a version 2 sidecar that adds
+one 12 s `MUTE` (a `driver_overflow` gap) 4 s in, so the capture spans 18 s. `nxdn48` sits near full scale, RF HOT
+throughout: every leg warns 3 s into the capture and again 17 s in, once the 10 s cooldown has run out across the gap,
+and decodes the call between the two (EXPECTED `RF Level HOT.*Src=901.*RF Level HOT`). Each leg measured
+`fsk_samples=287933 cqpsk_symbols=0 media_ms=18000`; MIN_FSK and MIN_TOTAL 287,000 sit just under it. With the
+cooldown on real time, before the fix, the fast and jitter legs finished before it ran out and printed only the first
+warning, and the realtime leg printed both, so the case failed at the second warning's line. Four `nxdn48` captures
+played back to back show the same split (one warning fast, two realtime) in 2.3 MB where the gap costs no new bytes.
 
 On `main` before issue #572 the cases fail. The host needs the replay batch tag, which `main` lacks, so its own
 `dsd-neo` ran the fast and realtime legs through the runner: `fast;fast` and `fast;realtime` both stop at the first
@@ -432,8 +443,10 @@ of the call and one `Src=901` line each, two distinct outputs in three runs, and
 fails `_REALTIME` on a timestamp alone (`03:15:34` against `03:15:36`), and making replay audio output synchronous
 fails `_STALLED_SINK`.
 
-The six cases under the label take 47.5 s in `dev-debug` run one after another, the two realtime ones 15.6 s each,
-since a realtime leg takes the capture's 13.7 s of air time, and `DECODE_IQ_P25P2_CC_DETERMINISM` 1.3 s. Under `ctest -j 16` they run beside the suite's longest test, and the full
+The seven cases under the label take 68 s in `dev-debug` run one after another, the two `nxdn48_after_retune`
+realtime ones 15.6 s each, since a realtime leg takes the capture's 13.7 s of air time,
+`DECODE_IQ_NXDN48_GAP_ADVISORY_DETERMINISM` 20.5 s (its realtime leg takes 18 s), and
+`DECODE_IQ_P25P2_CC_DETERMINISM` 1.3 s. Under `ctest -j 16` they run beside the suite's longest test, and the full
 suite's wall time does not move (about 55 s). Under `tsan-debug` and `asan-ubsan-debug` they take up to 37 s each.
 
 Repeatable is not the same as representative. Under `-fa`, which calls a replay catches depends on where the hunt's

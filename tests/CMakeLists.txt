@@ -11961,6 +11961,25 @@ if(DSD_HAS_RADIO)
             ${_nxdn48_retune_min_total}
         )
     endif()
+    # The input-level advisories are decoder lines too, compared like the rest: their 10 s
+    # cooldown runs on decode time (dsd_input_level_publish()), so a replay prints each at the
+    # same capture time however fast it runs. nxdn48_gap (DERIVED_GAP in
+    # tools/build_iq_fixtures.py) is nxdn48, RF HOT throughout, with a 12 s capture gap (a
+    # MUTE) 4 s in: every leg warns 3 s into the capture and again 17 s in, after the gap, and
+    # decodes the call between the two. On real time a fast leg finished before the cooldown
+    # ran out and printed only the first. Each leg measured fsk_samples=287933 cqpsk_symbols=0
+    # media_ms=18000 (all but 67 of the capture's 288,000 samples, plus the gap); the floors
+    # sit just under that.
+    dsd_neo_add_iq_determinism_test(
+        DECODE_IQ_NXDN48_GAP_ADVISORY_DETERMINISM
+        nxdn48_gap
+        -fi
+        "fast;realtime;jitter:29:120"
+        "RF Level HOT.*Src=901.*RF Level HOT"
+        287000
+        0
+        287000
+    )
     # The CQPSK path decoding real frames: p25p2_cc under -f2 runs the front end's CQPSK
     # chain for the whole capture (fsk_samples=0 cqpsk_symbols=11992 media_ms=2000, so
     # 95,936 of its 96,000 samples), and fast, short-read and jitter legs must decode its

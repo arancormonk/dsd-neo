@@ -68,6 +68,8 @@ for file-specific license/provenance details.
   - The `nxdn48_after_retune` fixture is the `nxdn48` excerpt of the wiki's `NXDN_IQ.zip`, preceded by a lead-in cut
     from the seeded `noise_floor` fixture (no recorded material) and joined byte for byte by
     `tools/build_iq_fixtures.py`. It is redistributed on the same terms as `nxdn48`.
+  - The `nxdn48_gap` fixture is the `nxdn48` excerpt byte for byte, behind a sidecar that adds a capture gap, written
+    by `tools/build_iq_fixtures.py`. It is redistributed on the same terms as `nxdn48`.
   - The M17 fixture derives from `samples/m17_clear_voice_wav.wav` in [lwvmobile/m17-fme](https://github.com/lwvmobile/m17-fme),
     licensed GPL.
   - The `dmr_t3_ras_cc` fixture derives from a DSDPlus raw discriminator capture of a DMR Tier III control

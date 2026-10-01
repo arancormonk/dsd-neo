@@ -313,6 +313,20 @@ RESET_MUTE_BYTES = 2400
 # the fixture read the capture's own time, the same in every run.
 RETUNE_CAPTURE_STARTED_UTC = "2026-01-01T00:00:00Z"
 
+# A call with a gap in its capture (issue #572): the samples stop for longer than the input-level
+# warning's 10 s cooldown, then go on, as a driver overflow that drops them leaves a capture. The gap
+# is one MUTE event. Muted bytes are left out of the data file (muted_bytes_excluded), so the data
+# is the source fixture's bytes unchanged and only the media clock, and with it the decode clock,
+# moves through the gap. nxdn48 is normalized near full scale, RF HOT throughout, so the decoder
+# warns before the gap (3 s in) and again after it (17 s in): the 12 s gap clears the cooldown by
+# 4 s. Every replay, fast or realtime, must print both warnings at the same capture time.
+#
+# name, source fixture, gap start s, gap length s, MUTE reason
+DERIVED_GAP = [
+    ("nxdn48_gap", "nxdn48", 4.0, 12.0, "driver_overflow"),
+]
+GAP_CAPTURE_STARTED_UTC = "2026-07-30T00:00:00Z"
+
 # A dPMR signal synthesized from the CCH reference vectors (issue #407).
 #
 # The one off-air dPMR recording available to this project carries no recoverable
@@ -902,6 +916,35 @@ def build_derived_retune(out_dir):
     return total
 
 
+def build_gap_fixture(out_dir, src_dir, name, source, gap_at_s, gap_s, reason):
+    """Write name: all of source, a committed fixture read from src_dir, with a gap_s MUTE at gap_at_s.
+
+    The source's bytes are written unchanged; the version 2 sidecar's one MUTE event moves only the
+    media clock (see DERIVED_GAP). Returns the bytes written.
+    """
+    if name == source:
+        raise ValueError(f"{name}: would overwrite its own source")
+    payload = read_committed_capture(src_dir, source)
+    gap_at = round(gap_at_s * SAMPLE_RATE_HZ) * CU8_ALIGN_BYTES
+    gap_bytes = round(gap_s * SAMPLE_RATE_HZ) * CU8_ALIGN_BYTES
+    if gap_at <= 0 or gap_at >= len(payload):
+        raise ValueError(f"{name}: a gap at {gap_at_s} s needs samples on both sides of byte {gap_at}")
+    event = {"kind": "MUTE", "byte_offset": gap_at, "duration_bytes": gap_bytes, "reason": reason}
+    return write_capture(
+        out_dir, name, payload, version=2, capture_started_utc=GAP_CAPTURE_STARTED_UTC, events=(event,)
+    )
+
+
+def build_derived_gap(out_dir):
+    """Write the capture-gap fixtures (issue #572) from the committed fixtures in out_dir."""
+    total = 0
+    for name, source, gap_at_s, gap_s, reason in DERIVED_GAP:
+        written = build_gap_fixture(out_dir, out_dir, name, source, gap_at_s, gap_s, reason)
+        total += written
+        print(f"{name:28s} gap     {written // 1024:6d} KiB")
+    return total
+
+
 def load_dpmr_reference_vectors():
     """Import the dPMR CCH vector generator so fixture and unit test share one source."""
     import importlib.util
@@ -1189,6 +1232,7 @@ def derived_fixture_names():
         + [entry[0] for entry in DERIVED_ATTENUATED]
         + [entry[0] for entry in DERIVED_NOISE]
         + [entry[0] for entry in DERIVED_RETUNE]
+        + [entry[0] for entry in DERIVED_GAP]
         + [DPMR_SYNTH_NAME]
         + [entry[0] for entry in NFM_SYNTH]
         + [entry[0] for entry in AM_SYNTH]
@@ -1238,6 +1282,7 @@ def main():
         total += build_derived(args.out)
         total += build_noise(args.out)
         total += build_derived_retune(args.out)
+        total += build_derived_gap(args.out)
         total += build_dpmr_synth(args.out)
         total += build_nfm_synth(args.out)
         total += build_am_synth(args.out)

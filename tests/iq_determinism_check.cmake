@@ -39,12 +39,6 @@
 #   - ANSI colour sequences are removed;
 #   - these lines are dropped, and nothing else:
 #       "NOTICE: Runtime: N ms"   the decode loop's real-time duration (-Z);
-#       the input-level advisories ("WARNING: ... raise|lower RF gain" and
-#       "... source/input volume"): their 10 s cooldown runs on real time
-#       (dsd_input_level_publish()), so how often they repeat follows the
-#       replay rate; the decoder may print one in the middle of its own line,
-#       so the text is cut out together with its line break and the line it
-#       split is joined again;
 #       "REPLAY JITTER: ..."      what the host injected, which differs by design;
 #       audio-sink diagnostics ("PulseAudio output stats:", "PortAudio output
 #       stats:", "AAudio input|output stats:", the host's "Replay sink output
@@ -53,8 +47,10 @@
 #     compared as a sorted set, since where they fall among the decoder's lines
 #     follows thread timing;
 #   - every other line, the decoder's output with its HH:MM:SS capture-time
-#     stamps, the host's REPLAY STREAM and REPLAY SINK lines and the end-of-run
-#     totals, is compared verbatim and in order.
+#     stamps, the input-level advisories it prints (their cooldown runs on
+#     decode time, dsd_input_level_publish()), the host's REPLAY STREAM and
+#     REPLAY SINK lines and the end-of-run totals, is compared verbatim and in
+#     order.
 # Two more differences vanish before any of that, in CMake itself:
 # execute_process turns CRLF line ends into LF, so a CR just before a line
 # break is never compared (a CR anywhere else in a line is); and a CMake list
@@ -179,13 +175,6 @@ endfunction()
 # for placeholders so that a line stays one list element.
 function(_normalize_stream text out_record out_io)
     string(REGEX REPLACE "${_esc}\\[[0-9;?]*[A-Za-z]" "" _t "${text}")
-    string(
-        REGEX REPLACE
-            "WARNING: [^\n]*(raise|lower) (RF gain|source/input volume)[^\n]*\n?"
-        ""
-        _t
-        "${_t}"
-    )
     string(REPLACE ";" "<SC>" _t "${_t}")
     string(REPLACE "[" "<LB>" _t "${_t}")
     string(REPLACE "]" "<RB>" _t "${_t}")

@@ -1811,6 +1811,7 @@ struct dsd_state {
 
     // Advisory-only input level health for ncurses/status snapshots.
     dsd_input_level_snapshot input_level;
+    // Decode time of the last input-level warning, which its cooldown runs against (dsd_input_level_publish()).
     time_t input_level_last_toast_time;
     dsd_input_level_status input_level_last_toast_status;
     dsd_input_level_source input_level_last_toast_source;
