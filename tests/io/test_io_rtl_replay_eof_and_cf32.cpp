@@ -2687,6 +2687,10 @@ expect_indexed_floats(const char* label, const BlockLog& log, size_t float_count
  * holds when the capture ends inside a sample. */
 static int
 test_replay_read_failure_mid_chunk_delivers_what_was_read(void) {
+    /* Sizes in size_t from the start: the reads, and the whole cf32 samples they leave (2 floats each). */
+    const size_t cu8_read_bytes = 4096U;
+    const size_t cf32_read_bytes = 4092U;
+    const size_t cf32_whole_floats = 2U * static_cast<size_t>(1534U);
     int rc = 0;
     char metadata_path[DSD_TEST_PATH_MAX];
 
@@ -2700,10 +2704,10 @@ test_replay_read_failure_mid_chunk_delivers_what_was_read(void) {
         BlockLog log;
         uint64_t delivered = 0U;
         dsd_input_failure failure;
-        rc |= replay_with_failed_read("read failure mid-chunk", metadata_path, 4096U, 3, DSD_IQ_ERR_IO, &log,
+        rc |= replay_with_failed_read("read failure mid-chunk", metadata_path, cu8_read_bytes, 3, DSD_IQ_ERR_IO, &log,
                                       &delivered, &failure);
         std::vector<ExpectedChunk> chunks;
-        chunks.push_back(ExpectedChunk{3U * 4096U, 0U});
+        chunks.push_back(ExpectedChunk{3U * cu8_read_bytes, 0U});
         rc |= expect_blocks_match_chunks("read failure mid-chunk", log, chunks);
         rc |= expect_true("read failure mid-chunk: the part read reached the decoder", delivered > 0U);
         rc |= expect_int_eq("read failure mid-chunk: reported as a file input failure", failure.kind,
@@ -2721,12 +2725,12 @@ test_replay_read_failure_mid_chunk_delivers_what_was_read(void) {
         log.keep_samples = 1;
         uint64_t delivered = 0U;
         dsd_input_failure failure;
-        rc |= replay_with_failed_read("cf32 read failure mid-sample", metadata_path, 4092U, 3, DSD_IQ_ERR_IO, &log,
-                                      &delivered, &failure);
+        rc |= replay_with_failed_read("cf32 read failure mid-sample", metadata_path, cf32_read_bytes, 3, DSD_IQ_ERR_IO,
+                                      &log, &delivered, &failure);
         std::vector<ExpectedChunk> chunks;
-        chunks.push_back(ExpectedChunk{2U * 1534U, 0U});
+        chunks.push_back(ExpectedChunk{cf32_whole_floats, 0U});
         rc |= expect_blocks_match_chunks("cf32 read failure mid-sample", log, chunks);
-        rc |= expect_indexed_floats("cf32 read failure mid-sample", log, 2U * 1534U);
+        rc |= expect_indexed_floats("cf32 read failure mid-sample", log, cf32_whole_floats);
         rc |= expect_int_eq("cf32 read failure mid-sample: reported as a file input failure", failure.kind,
                             DSD_INPUT_FAILURE_FILE);
         rc |= expect_int_eq("cf32 read failure mid-sample: code reported", failure.native_code, DSD_IQ_ERR_IO);
@@ -2736,7 +2740,7 @@ test_replay_read_failure_mid_chunk_delivers_what_was_read(void) {
      * 1534 complex samples and half of the 1535th. The capture's last 4 bytes, the other half, follow, and the real
      * end comes after them. The 1534 whole samples reach the demod, the halves are dropped, and the replay ends at
      * its end, with no failure. */
-    if (make_indexed_cf32_replay_fixture(metadata_path, sizeof(metadata_path), 2U * 1535U) != 0) {
+    if (make_indexed_cf32_replay_fixture(metadata_path, sizeof(metadata_path), cf32_whole_floats + 2U) != 0) {
         return 1;
     }
     {
@@ -2744,12 +2748,12 @@ test_replay_read_failure_mid_chunk_delivers_what_was_read(void) {
         log.keep_samples = 1;
         uint64_t delivered = 0U;
         dsd_input_failure failure;
-        rc |= replay_with_failed_read("cf32 end mid-sample", metadata_path, 4092U, 3, DSD_IQ_OK, &log, &delivered,
-                                      &failure);
+        rc |= replay_with_failed_read("cf32 end mid-sample", metadata_path, cf32_read_bytes, 3, DSD_IQ_OK, &log,
+                                      &delivered, &failure);
         std::vector<ExpectedChunk> chunks;
-        chunks.push_back(ExpectedChunk{2U * 1534U, 0U});
+        chunks.push_back(ExpectedChunk{cf32_whole_floats, 0U});
         rc |= expect_blocks_match_chunks("cf32 end mid-sample", log, chunks);
-        rc |= expect_indexed_floats("cf32 end mid-sample", log, 2U * 1534U);
+        rc |= expect_indexed_floats("cf32 end mid-sample", log, cf32_whole_floats);
         rc |= expect_int_eq("cf32 end mid-sample: the replay reached its end", failure.kind, DSD_INPUT_FAILURE_NONE);
     }
     return rc;
