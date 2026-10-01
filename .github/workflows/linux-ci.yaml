@@ -456,7 +456,7 @@ jobs:
     name: gcc lto link (x86-64-v4)
     runs-on: ubuntu-latest
     container:
-      image: archlinux:base-devel@sha256:25074821d28e54a0bbbd87a88d392f1489be9bd815ee5c60744be6e57fd500d8
+      image: archlinux:base-devel@sha256:51dd3d24f7fba779e7c471caeee7804c50e8c134ad948e19685a1c83a42facc3
     defaults:
       run:
         shell: bash
@@ -660,7 +660,7 @@ jobs:
     needs: [build-linux, validate-release-tag]
     runs-on: ubuntu-latest
     container:
-      image: archlinux:base-devel@sha256:25074821d28e54a0bbbd87a88d392f1489be9bd815ee5c60744be6e57fd500d8
+      image: archlinux:base-devel@sha256:51dd3d24f7fba779e7c471caeee7804c50e8c134ad948e19685a1c83a42facc3
     env:
       AUR_MAKEPKG_USER: aurbuilder
     defaults:
@@ -839,7 +839,7 @@ jobs:
     needs: [build-linux, validate-release-tag]
     runs-on: ubuntu-latest
     container:
-      image: archlinux:base-devel@sha256:25074821d28e54a0bbbd87a88d392f1489be9bd815ee5c60744be6e57fd500d8
+      image: archlinux:base-devel@sha256:51dd3d24f7fba779e7c471caeee7804c50e8c134ad948e19685a1c83a42facc3
     env:
       AUR_MAKEPKG_USER: aurbuilder
     defaults:
