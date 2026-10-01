@@ -85,6 +85,7 @@ typedef struct {
     int floor_checks; /* run the 1970-anchor checks inside the hook */
     int slco_check;   /* feed one single-fragment SLCO inside the hook */
     time_t slco_stamp_after;
+    time_t slco_now_after; /* decode time read just after the SLCO, to bracket its stamp */
 } hook_view;
 
 static void
@@ -186,6 +187,7 @@ observe_start(dsd_opts* opts, dsd_state* state, void* context) {
         (void)dmr_cach(opts, state, cach);
         state->currentslot = slot;
         view->slco_stamp_after = state->slco_sfrag_last[0];
+        view->slco_now_after = dsd_decode_time();
     }
     /* Seen what it needed: end the run before the decoder reads a sample. */
     dsd_exitflag_store(1);
@@ -379,8 +381,15 @@ test_reused_state_stays_on_the_system_clock(void) {
     check("the start hook ran once on the reused state", second.calls == 1);
     check("a replay run on a reused state stays on the system clock", second.source == DSD_DECODE_CLOCK_SYSTEM);
     check("no stamp the earlier run left is ahead of the reused run's now", second.now >= left);
-    check_time("the single-fragment SLCO is not held back by the earlier run's stamp", second.slco_stamp_after,
-               second.now);
+    /* Printed, it is restamped at the decode time it ran at, which lies between the two reads around it (on the system
+       clock a second can turn between them). Held back, it keeps the earlier run's stamp, 5 s before both. */
+    if (second.slco_stamp_after < second.now || second.slco_stamp_after > second.slco_now_after) {
+        DSD_FPRINTF(stderr,
+                    "FAIL: the single-fragment SLCO is not held back by the earlier run's stamp: stamp %lld, want "
+                    "within [%lld, %lld]\n",
+                    (long long)second.slco_stamp_after, (long long)second.now, (long long)second.slco_now_after);
+        g_failures++;
+    }
     const size_t warnings = count_text(out, "reuses a decoder state an earlier run used");
     if (warnings != 1U) {
         DSD_FPRINTF(stderr, "FAIL: the reused-state warning printed %zu times, want once\n", warnings);
