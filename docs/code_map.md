@@ -1736,29 +1736,52 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   width published for an unset default that plan runs.
   The plan cache key is (rate_out, profile, width). The SIMD complex FIR kernels size their scratch per call, so the
   288-tap capacity needs no kernel change. Tests: `DSP_CHANNEL_FILTERS`, `DSP_DEMOD_MISC`.
-- Streaming channel FIR (issue #572, `simd_fir_complex_apply()` in `<dsd-neo/dsp/simd_fir.h>`, every backend sharing
-  the call contract in `src/dsp/simd_fir_internal.h`): a block's output does not depend on where the blocks are cut.
-  In complex samples, with c = (taps - 1) / 2, a call makes max(0, pending + N - c) outputs, output k centred at
-  `hist_len - pending + k` of [history | block], and leaves pending + N - outputs pending with the newest `hist_len`
-  inputs in the history. No variant pads the look-ahead past a block's end; an invalid call or a short `out_cap` returns
-  -1 with nothing touched. Scalar is bit-exact across splits; the SSE2, AVX2 and NEON kernels (and the dispatcher, which
-  sends blocks shorter than the filter to scalar) agree with their own whole-stream output within 1e-5.
-  - State: `demod_state::channel_lpf_hist_i/q` hold `DSD_CHANNEL_LPF_HIST_LEN` (287) samples whatever the taps, and
-    `channel_lpf_pending` the outputs held back. A tap-count change without a reset reconciles through pending (up to
-    N + c_old - c_new outputs), so the work buffers the filter writes (`hb_workbuf`, `timing_buf`) are
+- Streaming linear front end (issue #572): the half-band cascade and the channel FIR (`simd_hb_decim2_complex()`,
+  `simd_hb_decim2_real()` and `simd_fir_complex_apply()` in `<dsd-neo/dsp/simd_fir.h>`, every backend sharing the call
+  contracts in `src/dsp/simd_fir_internal.h`) carry their look-ahead, and the half-band its decimation phase, from one
+  block to the next, so the front end's output does not depend on where the blocks are cut. The stages after it still
+  decide per block, so `full_demod()`'s output as a whole does: channel power and the squelch decision, the squelch
+  envelope, I/Q balance, the AM detector's warm start, CQPSK's adaptive Gardner gain, the rounding of a squelched
+  block's zero-symbol count, metrics, and the block a profile request is consumed on.
+  - Channel FIR, in complex samples, with c = (taps - 1) / 2: a call makes max(0, pending + N - c) outputs, output k
+    centred at `hist_len - pending + k` of [history | block], and leaves pending + N - outputs pending with the newest
+    `hist_len` inputs in the history. No variant pads the look-ahead past a block's end; an invalid call or a short
+    `out_cap` returns -1 with nothing touched. Scalar is bit-exact across splits; the SSE2, AVX2 and NEON kernels (and
+    the dispatcher, which sends blocks shorter than the filter to scalar) agree with their own whole-stream output
+    within 1e-5.
+  - Channel state: `demod_state::channel_lpf_hist_i/q` hold `DSD_CHANNEL_LPF_HIST_LEN` (287) samples whatever the
+    taps, and `channel_lpf_pending` the outputs held back. A tap-count change without a reset reconciles through
+    pending (up to N + c_old - c_new outputs), so the work buffers the filter writes (`hb_workbuf`, `timing_buf`) are
     `DSD_DEMOD_WORKBUF_LENGTH` floats, a maximum block plus 287 complex.
-  - `dsd_demod_reset_filter_state()` (`<dsd-neo/dsp/demod_pipeline.h>`) is the one filter reset: half-band histories,
-    channel history, pending 0, so the next output is centred on the next input and what was held is dropped (a RESET
-    or loop rewind drops the last 67 samples at 48 kHz; EOF does not flush them). `rtl_demod_clear_filter_histories()`
+  - Half-band decimators, with c = (taps - 1) / 2, H = taps - 1 and lt = pending + N (the complex decimator counts
+    floats in and out, 2 a sample): a call makes m = (lt - c + 1) / 2 outputs once lt reaches c + 1 and none before,
+    output k centred at H - pending + 2k of [history | block], and leaves pending lt - 2m, which is any of 0..c during
+    a warm-up and c - 1 or c once outputs flow. N = 0 is valid, and a call makes at most (N + 1) / 2 outputs. No
+    variant pads past a block's end; an invalid call (bad taps, a NULL buffer the call needs, a negative or odd float
+    count, pending outside 0..c) returns -1 with nothing touched. Every backend's prefix condition, vector base and
+    load-footprint guard derives from centre_rel = 2n - pending, and the fixed 15/31-tap kernels read a scalar
+    output's centre through the history boundary loader too. Scalar is bit-exact across splits; SSE2, AVX2, NEON and
+    the dispatcher agree with their whole-stream output within 1e-5.
+  - Half-band state: `demod_state::hb_hist_i/q` and `hb_pending` per stage. `hb_state_passes` is the pass count that
+    state belongs to: `full_demod_apply_halfband_decimation()` clears it when `downsample_passes` differs, since the
+    rate setup and `restore_capture_rate_settings()` write the count without a reset. The cascade drops a stray odd
+    float, as it always did.
+  - `dsd_demod_reset_filter_state()` (`<dsd-neo/dsp/demod_pipeline.h>`) is the one filter reset: half-band histories
+    and pending counts, channel history, channel pending 0, so every filter's next output is centred on its next input
+    and what they held is dropped (a RESET or loop rewind drops about the last 74 samples at 48 kHz on the 1.536 Msps
+    RTL chain, about 7 in the cascade and 67 in the 135-tap FIR; EOF does not flush them). `rtl_demod_clear_filter_histories()`
     and stream open (`demod_init_common_defaults()`) delegate to it.
   - `channel_lpf_apply()` clears the channel state on a plan for another `rate_out` than the last one, and on the first
     block the filter does not run on (filter off, or no plan for the width); a width or profile change at the same rate
     keeps it. `full_demod()` gives a block its front end left empty (a filter warm-up) `result_len` 0 and no per-block
     decision: squelch gate, envelope, channel power and CQPSK zero symbols wait for a block with samples.
-  - Tests: `DSP_FIR_SEGMENTATION` (FIR part: every backend and the dispatcher against the count formula, a
+  - Tests: `DSP_FIR_SEGMENTATION` (every backend and the dispatcher, FIR and half-band, against the count formulas, a
     double-precision reference and their whole-stream output over many splits; tap switches; invalid calls; capacity;
-    exact-size buffers; the pipeline rules above), `DSP_SIMD_FIR`, `IO_RTL_REPLAY_DETERMINISM` (its count oracle is the
-    per-RESET-epoch streaming formula).
+    exact-size buffers at every half-band block size up to a few filter spans; the pipeline rules above, the pass-count
+    guard included), `DSP_DEMOD_SEGMENTATION` (`full_demod()` over the 1.536 Msps chain, 12K5 and analog NFM 16 kHz,
+    pass-through and FM, with the per-block stages held: one block vs many splits), `DSP_SIMD_FIR`,
+    `IO_RTL_REPLAY_DETERMINISM` (its count oracle runs each half-band stage's formula and then the FIR's, cumulatively
+    within a RESET epoch).
 
 Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
 

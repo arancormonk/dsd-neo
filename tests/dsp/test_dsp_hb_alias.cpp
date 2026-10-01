@@ -50,6 +50,7 @@ stage_atten_db(int stages, double fs, double f_pass, double f_stop) {
     std::vector<float> buf((size_t)N);
     std::vector<float> out((size_t)N);
     float hist_i[10][HB_TAPS - 1] = {};
+    int pending[10] = {};
 
     // Passband tone
     gen_tone(in, fs, f_pass, amp);
@@ -57,7 +58,7 @@ stage_atten_db(int stages, double fs, double f_pass, double f_stop) {
     const float* src = in.data();
     float* dst = buf.data();
     for (int s = 0; s < stages; s++) {
-        int out_len = simd_hb_decim2_real(src, in_len, dst, hist_i[s], hb_q15_taps, HB_TAPS);
+        int out_len = simd_hb_decim2_real(src, in_len, dst, hist_i[s], &pending[s], hb_q15_taps, HB_TAPS);
         src = dst;
         in_len = out_len;
         dst = (src == buf.data()) ? out.data() : buf.data();
@@ -73,13 +74,14 @@ stage_atten_db(int stages, double fs, double f_pass, double f_stop) {
         for (int k = 0; k < HB_TAPS - 1; k++) {
             hist_i[i][k] = 0;
         }
+        pending[i] = 0;
     }
     gen_tone(in, fs, f_stop, amp);
     in_len = N;
     src = in.data();
     dst = buf.data();
     for (int s = 0; s < stages; s++) {
-        int out_len = simd_hb_decim2_real(src, in_len, dst, hist_i[s], hb_q15_taps, HB_TAPS);
+        int out_len = simd_hb_decim2_real(src, in_len, dst, hist_i[s], &pending[s], hb_q15_taps, HB_TAPS);
         src = dst;
         in_len = out_len;
         dst = (src == buf.data()) ? out.data() : buf.data();

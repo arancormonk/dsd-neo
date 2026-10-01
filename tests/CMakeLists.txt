@@ -7997,6 +7997,20 @@ endif()
 dsd_neo_link_dsp_test(dsd-neo_test_dsp_fir_segmentation)
 add_test(NAME DSP_FIR_SEGMENTATION COMMAND dsd-neo_test_dsp_fir_segmentation)
 
+add_executable(
+    dsd-neo_test_dsp_demod_segmentation
+    dsp/test_dsp_demod_segmentation.cpp
+)
+target_include_directories(
+    dsd-neo_test_dsp_demod_segmentation
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+dsd_neo_link_dsp_test(dsd-neo_test_dsp_demod_segmentation)
+add_test(
+    NAME DSP_DEMOD_SEGMENTATION
+    COMMAND dsd-neo_test_dsp_demod_segmentation
+)
+
 add_executable(dsd-neo_bench_dsp EXCLUDE_FROM_ALL dsp/bench_dsp.cpp)
 target_include_directories(
     dsd-neo_bench_dsp

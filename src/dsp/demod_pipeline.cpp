@@ -591,15 +591,23 @@ channel_lpf_reset_state(struct demod_state* d) {
     d->channel_lpf_pending = 0;
 }
 
+/* The half-band cascade starts over: no history and nothing pending in any stage, so each stage's next output is centred
+   on its next input sample. */
+static void
+halfband_reset_state(struct demod_state* d) {
+    for (int st = 0; st < 10; st++) {
+        DSD_MEMSET(d->hb_hist_i[st], 0, sizeof(d->hb_hist_i[st]));
+        DSD_MEMSET(d->hb_hist_q[st], 0, sizeof(d->hb_hist_q[st]));
+    }
+    DSD_MEMSET(d->hb_pending, 0, sizeof(d->hb_pending));
+}
+
 void
 dsd_demod_reset_filter_state(struct demod_state* d) {
     if (!d) {
         return;
     }
-    for (int st = 0; st < 10; st++) {
-        DSD_MEMSET(d->hb_hist_i[st], 0, sizeof(d->hb_hist_i[st]));
-        DSD_MEMSET(d->hb_hist_q[st], 0, sizeof(d->hb_hist_q[st]));
-    }
+    halfband_reset_state(d);
     channel_lpf_reset_state(d);
 }
 
@@ -1254,19 +1262,40 @@ iq_dc_block(struct demod_state* d) {
 
 /**
  * @brief Apply stage-wise half-band decimation for complex baseband.
+ *
+ * Streaming: each stage carries its look-ahead and decimation phase in hb_pending, so the cascade's output does not
+ * depend on where the blocks are cut. A stage makes at most (N + 1) / 2 outputs for N in, so every stage after the first
+ * fits the block's own buffer, which it writes in turn with hb_workbuf.
  */
 static void
 full_demod_apply_halfband_decimation(struct demod_state* d) {
-    if (!d || d->downsample_passes <= 0) {
+    if (!d) {
         return;
     }
-    int in_len = d->lp_len;
+    if (d->hb_state_passes != d->downsample_passes) {
+        /* Another cascade: its stages run at other rates, so what the old one held is not their past. */
+        halfband_reset_state(d);
+        d->hb_state_passes = d->downsample_passes;
+    }
+    if (d->downsample_passes <= 0) {
+        return;
+    }
+    /* Whole complex samples: a stray trailing float was never a sample. */
+    int in_len = d->lp_len > 0 ? (d->lp_len & ~1) : 0;
     float* src = d->lowpassed;
     float* dst = d->hb_workbuf;
     for (int i = 0; i < d->downsample_passes; i++) {
         const float* taps = (i == 0) ? hb31_q15_taps : hb_q15_taps;
         int taps_len = (i == 0) ? 31 : HB_TAPS;
-        int out_len = simd_hb_decim2_complex(src, in_len, dst, d->hb_hist_i[i], d->hb_hist_q[i], taps, taps_len);
+        int out_len = simd_hb_decim2_complex(src, in_len, dst, d->hb_hist_i[i], d->hb_hist_q[i], &d->hb_pending[i],
+                                             taps, taps_len);
+        if (out_len < 0) {
+            /* Not reachable: fixed odd taps, pending kept within 0..c by the decimator and a reset, and whole samples.
+               Should it happen, the cascade starts over and the block makes no samples. */
+            halfband_reset_state(d);
+            d->lp_len = 0;
+            return;
+        }
         src = dst;
         in_len = out_len;
         dst = (src == d->hb_workbuf) ? d->lowpassed : d->hb_workbuf;

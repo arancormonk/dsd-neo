@@ -173,8 +173,8 @@ void rtl_demod_refresh_audio_coefficients(struct demod_state* demod);
  */
 void rtl_demod_reset_audio_monitor_state(struct demod_state* demod);
 
-/** Clear the half-band and channel-LPF histories and the channel FIR's pending outputs: the single filter reset,
- * dsd_demod_reset_filter_state(). */
+/** Clear the half-band and channel-LPF histories and their pending counts (each half-band stage's look-ahead and
+ * phase, the channel FIR's held outputs): the single filter reset, dsd_demod_reset_filter_state(). */
 void rtl_demod_clear_filter_histories(struct demod_state* demod);
 
 /** Reset the rational resampler's phase and history. */

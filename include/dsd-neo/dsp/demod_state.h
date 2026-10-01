@@ -170,6 +170,13 @@ struct demod_state {
     float hb_workbuf[DSD_DEMOD_WORKBUF_LENGTH];
     float hb_hist_i[10][HB_TAPS_MAX - 1];
     float hb_hist_q[10][HB_TAPS_MAX - 1];
+    /* Per stage: input samples taken but not yet decimated past (simd_hb_decim2_complex()), the look-ahead and the
+       decimation phase in one count. 0 after a reset (dsd_demod_reset_filter_state()), so the stage's next output is
+       centred on its next input. */
+    int hb_pending[10];
+    /* The downsample_passes the half-band state above belongs to: the cascade starts over when the count changes,
+       since writers of the count (rate setup, restore_capture_rate_settings()) do not reset it. */
+    int hb_state_passes;
 
     /* Fixed channel low-pass (post-HB) to bound noise bandwidth at higher Fs.
      * At 48 kHz with 1200 Hz transition, Blackman needs 135 taps.

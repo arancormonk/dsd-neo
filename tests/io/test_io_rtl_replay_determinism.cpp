@@ -250,20 +250,47 @@ capture_layout(size_t capture_bytes, const std::vector<CaptureEvent>& events) {
  * 135-tap Blackman filter with the 1200 Hz transition, so c = (135 - 1) / 2. */
 static const uint64_t kChannelFirHalfSpan = 67U;
 
-/* The oracle for how many samples each chunk's block delivers, from the capture layout alone. The half-band cascade
- * decimates the block's complex samples by 32, floor(n / 32) (five nested halvings). The streaming channel FIR then
- * makes max(0, pending + N - c) outputs and holds the rest back, pending' = pending + N - outputs, so a filter epoch
- * delivers all its samples but its last c. A RESET starts an epoch: pending goes back to 0 and what the last one held
- * is dropped. The FSK discriminator makes one output per sample, with no resampling at 48 kHz. */
+/* Half the span of each half-band stage that decimates by 32 (log2 32 = 5 stages): the first runs the 31-tap filter,
+ * c = 15, and the other four the 15-tap one, c = 7. */
+static const uint64_t kHalfbandHalfSpans[] = {15U, 7U, 7U, 7U, 7U};
+static_assert((1U << (sizeof(kHalfbandHalfSpans) / sizeof(kHalfbandHalfSpans[0]))) == kDecimation,
+              "one half-band stage per halving of the decimation");
+
+/* One streaming half-band stage, by its documented formula: with lt = pending + N, it makes m = (lt - c + 1) / 2
+ * outputs once lt reaches c + 1 and none before, and keeps pending' = lt - 2m (its look-ahead and its decimation
+ * phase) for the next block. */
+static uint64_t
+oracle_halfband_stage(uint64_t* pending, uint64_t n_in, uint64_t c) {
+    const uint64_t lt = *pending + n_in;
+    const uint64_t made = lt >= c + 1U ? (lt - c + 1U) / 2U : 0U;
+    *pending = lt - 2U * made;
+    return made;
+}
+
+/* The oracle for how many samples each chunk's block delivers, from the capture layout alone. Each half-band stage
+ * takes the samples the stage before made, by the formula above, its pending carried from one block to the next. The
+ * streaming channel FIR then makes max(0, pending + N - c) outputs and holds the rest back, pending' = pending + N -
+ * outputs. A RESET starts a filter epoch: every pending count goes back to 0 and what the stages held is dropped, so
+ * an epoch delivers what the cascade and the FIR centre, cumulatively, not chunk by chunk. The FSK discriminator makes
+ * one output per sample, with no resampling at 48 kHz. */
 static std::vector<uint64_t>
 oracle_chunk_outputs(const std::vector<LayoutChunk>& chunks) {
+    const size_t stages = sizeof(kHalfbandHalfSpans) / sizeof(kHalfbandHalfSpans[0]);
     std::vector<uint64_t> outputs;
+    uint64_t halfband_pending[sizeof(kHalfbandHalfSpans) / sizeof(kHalfbandHalfSpans[0])] = {0U};
     uint64_t pending = 0U;
     for (const LayoutChunk& chunk : chunks) {
         if (chunk.epoch_start) {
+            for (size_t st = 0; st < stages; st++) {
+                halfband_pending[st] = 0U;
+            }
             pending = 0U;
         }
-        const uint64_t held = pending + (chunk.bytes / 2U) / kDecimation;
+        uint64_t samples = chunk.bytes / 2U;
+        for (size_t st = 0; st < stages; st++) {
+            samples = oracle_halfband_stage(&halfband_pending[st], samples, kHalfbandHalfSpans[st]);
+        }
+        const uint64_t held = pending + samples;
         const uint64_t made = held > kChannelFirHalfSpan ? held - kChannelFirHalfSpan : 0U;
         pending = held - made;
         outputs.push_back(made);

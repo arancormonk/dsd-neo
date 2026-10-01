@@ -12067,6 +12067,7 @@ cqpsk_reacquire_test_init_demod(struct demod_state* test_demod, int active_cqpsk
     test_demod->cqpsk_agc_avg = 0.625f;
     test_demod->hb_hist_i[0][0] = 1.0f;
     test_demod->hb_hist_q[0][0] = -1.0f;
+    test_demod->hb_pending[0] = 4;
     test_demod->channel_lpf_hist_i[0] = 2.0f;
     test_demod->channel_lpf_hist_q[0] = -2.0f;
     test_demod->channel_lpf_pending = 8;
@@ -12092,7 +12093,7 @@ cqpsk_reacquire_test_capture_result(const struct demod_state* test_demod,
     out_result->cqpsk_agc_after = test_demod->cqpsk_agc_avg;
     out_result->resamp_phase_after = test_demod->resamp_phase;
     out_result->histories_cleared =
-        (test_demod->hb_hist_i[0][0] == 0.0f && test_demod->hb_hist_q[0][0] == 0.0f
+        (test_demod->hb_hist_i[0][0] == 0.0f && test_demod->hb_hist_q[0][0] == 0.0f && test_demod->hb_pending[0] == 0
          && test_demod->channel_lpf_hist_i[0] == 0.0f && test_demod->channel_lpf_hist_q[0] == 0.0f
          && test_demod->channel_lpf_pending == 0)
             ? 1
@@ -12630,10 +12631,16 @@ family_test_channel_hist_clear(void) {
            && demod.channel_lpf_pending == 0;
 }
 
+/* The half-band cascade starts over: every stage's history zero and nothing pending (the seeded state below holds
+   both). */
 static int
 family_test_hb_hist_clear(void) {
+    int pending = 0;
+    for (int st = 0; st < 10; st++) {
+        pending |= demod.hb_pending[st];
+    }
     return family_test_all_zero(&demod.hb_hist_i[0][0], sizeof(demod.hb_hist_i) / sizeof(float))
-           && family_test_all_zero(&demod.hb_hist_q[0][0], sizeof(demod.hb_hist_q) / sizeof(float));
+           && family_test_all_zero(&demod.hb_hist_q[0][0], sizeof(demod.hb_hist_q) / sizeof(float)) && pending == 0;
 }
 
 static void
@@ -12648,6 +12655,7 @@ family_test_seed_stale_filter_histories(void) {
             demod.hb_hist_i[st][k] = 1.0f;
             demod.hb_hist_q[st][k] = -1.0f;
         }
+        demod.hb_pending[st] = 5;
     }
 }
 

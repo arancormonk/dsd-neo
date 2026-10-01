@@ -170,9 +170,10 @@ float mean_power(const float* samples, int len, int step);
 void full_demod(struct demod_state* d);
 
 /**
- * Return the front-end filter state to a fresh stream's: the half-band histories and the channel FIR's history and
- * pending outputs. The channel FIR's next output is centred on its next input sample, and the outputs it held back
- * are dropped. The one filter reset: stream open, retunes and family switches all reset through it.
+ * Return the front-end filter state to a fresh stream's: each half-band stage's history and pending count (its
+ * look-ahead and decimation phase), and the channel FIR's history and pending outputs. Every filter's next output is
+ * centred on its next input sample, and what they held back is dropped. The one filter reset: stream open, retunes and
+ * family switches all reset through it.
  *
  * @param d Demodulator state; NULL is ignored.
  */
