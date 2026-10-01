@@ -17,7 +17,6 @@
 #include <dsd-neo/protocol/p25/p25_status_symbol.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/decode_clock.h>
-#include <stdint.h>
 #include <stdio.h>
 
 #include "dsd-neo/core/opts_fwd.h"

@@ -27,7 +27,6 @@
 #include <dsd-neo/runtime/radioreference.h>
 #include <stdint.h>
 #include <stdlib.h>
-#include <time.h>
 
 #ifdef USE_CURL
 #include <curl/curl.h>

@@ -26,7 +26,6 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 #include "dsd-neo/core/call_state.h"
 #include "dsd-neo/core/dibit.h"
 #include "dsd-neo/core/frontend_types.h"

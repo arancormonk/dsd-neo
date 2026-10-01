@@ -30,7 +30,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 #include "dmr_ars.h"
 #include "dmr_pdu_internal.h"
 #include "dmr_text.h"

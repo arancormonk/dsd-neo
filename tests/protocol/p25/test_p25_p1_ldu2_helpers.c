@@ -23,7 +23,6 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-#include <time.h>
 
 #include "dsd-neo/core/opts.h"
 #include "dsd-neo/core/opts_fwd.h"

@@ -22,7 +22,6 @@
 #include <dsd-neo/runtime/decode_clock.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <time.h>
 #include "dmr_hytera.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"

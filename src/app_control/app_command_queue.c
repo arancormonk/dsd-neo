@@ -81,7 +81,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 #include "command_dispatch.h"
 #include "commands_internal.h"
 #include "key_commands.h"

@@ -29,7 +29,6 @@
 #include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <time.h>
 #include "../p25_trunk_sm_internal.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"

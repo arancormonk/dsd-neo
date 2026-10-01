@@ -35,7 +35,6 @@
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdlib.h>
-#include <time.h>
 
 #include "scan_analog_internal.h"
 

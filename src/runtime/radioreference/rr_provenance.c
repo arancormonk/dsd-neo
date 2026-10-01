@@ -27,7 +27,6 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-#include <time.h>
 
 static int
 rr_sidecar_path(const char* csv_path, char* out, size_t out_sz) {

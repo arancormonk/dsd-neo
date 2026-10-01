@@ -13,7 +13,6 @@
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <stdio.h>
-#include <time.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"

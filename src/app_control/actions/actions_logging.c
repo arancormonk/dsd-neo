@@ -8,7 +8,6 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <string.h>
-#include <time.h>
 #include "../command_dispatch.h"
 #include "../services.h"
 #include "dsd-neo/app_control/commands.h"
