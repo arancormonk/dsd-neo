@@ -137,7 +137,8 @@ input-level gain warnings, whose cooldown runs on real time. Two kinds of replay
 - **A replay restarted mid-run.** Only a replay started as the run's input runs on the capture's clock, from its first
   sample. When an interactive frontend restarts the stream (a gain, device or DSP bandwidth change, or a stream
   restart) or switches the input away, the decode clock goes back to the system clock, and a replay that starts again
-  within the same run decodes on the system clock.
+  within the same run decodes on the system clock. A restart that replays the same capture logs this once, as "IQ
+  replay restarted mid-run; decode timestamps now follow the system clock."
 
 The last 1.5 ms or so of a capture is never decoded. The front end's filters hold back their look-ahead (about 74
 samples at 48 kHz on the default 1.536 Msps chain, 67 on a 48 kHz capture), and nothing flushes it when the capture

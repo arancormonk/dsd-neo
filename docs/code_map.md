@@ -659,8 +659,9 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
     there). REPLAY is entered only there, at a run's start, on a state fresh from `initState()`. The clock returns to
     SYSTEM with the same rebase once the replay no longer feeds the decoder (`dsd_engine_decode_clock_leave_replay()`):
     at the end of the run, when app-control stops the stream to restart it (`svc_rtl_stop_locked()`; the replay it
-    restarts runs on SYSTEM), and when the input moves away from it (`ui_input_left()` in `app_command_queue.c`: an
-    input switch, a stop of playback, a config apply that moves the input). Decode-mono time goes on from the capture
+    restarts runs on SYSTEM, which it logs once at that leave when the input is still the replay), and when the input
+    moves away from it (`ui_input_left()` in `app_command_queue.c`: an input switch, a stop of playback, a config
+    apply that moves the input). Decode-mono time goes on from the capture
     time the replay reached (a SYSTEM offset over the platform monotonic clock, set only by leaving REPLAY), so the
     replay's stamps keep ageing; wall time returns to real time. Each replay sample moves media time to its own capture
     time as it reaches symbol processing (`dsd_decode_clock_batch_media_ns()` over the batch tag's span): the symbol

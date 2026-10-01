@@ -29,6 +29,10 @@ typedef enum {
 
 typedef struct {
     uint64_t request_id;
+    /* Decode-mono time the request's result was published or completed at (dsd_trunk_tuning_request_publish(),
+       dsd_trunk_tuning_request_complete()), 0 before. Read through dsd_trunk_tuning_request_status()'s out_completed_m:
+       the trunk scan's visit timer (trunk_scan_arm_visit()), the P25 and DMR trunk state machines' control channel
+       acquisition and grace windows, and the engine's no-carrier return all start from it. */
     uint64_t completed_m_ns;
     dsd_trunk_tune_result result;
     dsd_trunk_tuning_request_state state;

@@ -35,6 +35,7 @@
 #include <dsd-neo/runtime/airspy_config.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/input_failure.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/scan_mode.h>
@@ -1405,7 +1406,8 @@ svc_rtl_restart(dsd_opts* opts, dsd_state* state) {
 
 /* Stop and destroy any existing stream context. An I/Q replay stopped here restarts from the capture's first sample, if
    at all, so its decode time can no longer follow the capture: the decode clock goes back to the system clock with the
-   stream stopped (issue #572). */
+   stream stopped (issue #572). When the input is still that replay, the restart replays it on the system clock, which
+   is logged once, at the leave. */
 static void
 svc_rtl_stop_locked(dsd_opts* opts, dsd_state* state) {
     if (state->rtl_ctx) {
@@ -1415,7 +1417,12 @@ svc_rtl_stop_locked(dsd_opts* opts, dsd_state* state) {
     }
     opts->rtl_started = 0;
     opts->rtl_needs_restart = 0;
+    const int leaves_replay = dsd_decode_clock_source() == DSD_DECODE_CLOCK_REPLAY;
     dsd_engine_decode_clock_leave_replay(opts, state);
+    if (leaves_replay && opts->audio_in_type == AUDIO_IN_RTL && opts->iq_replay_requested
+        && dsd_opts_audio_in_dev_is_iqreplay_spec(opts->audio_in_dev)) {
+        LOG_INFO("IQ replay restarted mid-run; decode timestamps now follow the system clock.\n");
+    }
 }
 
 /* If the radio pipeline is the active input, create and start the stream so changes take effect as soon as the user
