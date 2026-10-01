@@ -109,7 +109,9 @@ In both modes the decoder paces the demodulator, a capture chunk at a time: the 
 and every event and `--iq-loop` rewind waits for the same point. Both modes therefore hand the decoder the same
 stream, with each event applied at the same position in it, and whatever the decoder asks of the front end mid-replay
 (a symbol profile the sync hunt tries, a CQPSK switch, a reacquire) lands at the start of the next chunk, however fast
-the machine is or however loaded.
+the machine is or however loaded. Fast replay is somewhat slower than it was before issue #572 for the same reason: the
+front end waits for the decoder instead of running ahead of it, so the two no longer overlap. A 94 s capture that
+replayed in 8.4 s now takes 10.8 s.
 
 The decoder's clock follows the capture as well. Under `--iq-replay`, decode time is the sidecar's
 `capture_started_utc` plus the capture time of the sample being decoded, the time `MUTE` events omitted included:
@@ -121,11 +123,17 @@ The decoder's clock follows the capture as well. Under `--iq-replay`, decode tim
 - Call durations, the call reacquisition window (`DSD_CALL_REACQUIRE_GAP_S`, which decides whether a
   sync-loss-interrupted transmission is one history row or two), protocol windows and staleness timers measure air
   time, as they would live, in both modes.
+- Decode time stamps an output about 1.54 ms later than the capture time of the signal in it, on the default
+  1.536 Msps chain: each block's output carries the capture span of the chunk it came from, while the front end's
+  filters centre its first outputs on samples they held back from the chunk before (their look-ahead, below). The
+  offset is the same on every replay and far below any decode window.
 
-So every replay of a capture decodes the same way, fast or realtime, loaded or idle: the same decoder lines with the
-same timestamps. `docs/testing.md` ("Replay determinism") describes the cases that hold it to that. Lines measured or
-paced on real time are not part of it: the audio-sink statistics, the decode loop's `Runtime:` total, and the
-input-level gain warnings, whose cooldown runs on real time. Two kinds of replay are outside it altogether:
+So, for one build, configuration and machine, every replay of a capture decodes the same way, fast or realtime, loaded
+or idle: the same decoder lines with the same timestamps. Another machine can differ, since the front end's SIMD paths
+agree with each other only to within about 1e-5. `docs/testing.md` ("Replay determinism") describes the cases that hold
+it to that. Lines measured or paced on real time are not part of it: the audio-sink statistics, the decode loop's
+`Runtime:` total, and the input-level gain warnings, whose cooldown runs on real time. Two kinds of replay are outside
+it altogether:
 
 - **Trunking (`-T`).** The P25 trunking state machine's watchdog thread checks its hangtime and
   return-to-control-channel timers at a real-time cadence, so where those checks fall among the replayed samples follows
