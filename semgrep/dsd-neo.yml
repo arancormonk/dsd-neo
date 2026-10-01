@@ -674,7 +674,9 @@ rules:
               regex: ^current
       - pattern: QDate::currentDate(...)
       - pattern: QTime::currentTime(...)
+      - pattern: QDeadlineTimer::current(...)
       - pattern: '#include <QElapsedTimer>'
+      - pattern: '#include <QtCore/QElapsedTimer>'
       - pattern: QElapsedTimer $TIMER;
       - pattern: QElapsedTimer $TIMER = $INIT;
       - pattern: QElapsedTimer(...)

@@ -102,6 +102,8 @@ integer_arrays(unsigned i, int actual) {
 
 // ruleid: dsd-neo.no-direct-clock-read
 #include <QElapsedTimer>
+// ruleid: dsd-neo.no-direct-clock-read
+#include <QtCore/QElapsedTimer>
 // ok: dsd-neo.no-direct-clock-read
 #include <chrono>
 
@@ -140,13 +142,15 @@ qt_clock_reads() {
     // ruleid: dsd-neo.no-direct-clock-read
     QTime clock = QTime::currentTime();
     // ruleid: dsd-neo.no-direct-clock-read
+    QDeadlineTimer started = QDeadlineTimer::current();
+    // ruleid: dsd-neo.no-direct-clock-read
     QElapsedTimer timer;
     timer.start();
     // ruleid: dsd-neo.no-direct-clock-read
     auto* heap_timer = new QElapsedTimer();
     // ruleid: dsd-neo.no-direct-clock-read
     qint64 reference = QElapsedTimer::msecsSinceReference();
-    consume(ms, secs, shown, utc, today, clock, heap_timer, reference);
+    consume(ms, secs, shown, utc, today, clock, started, heap_timer, reference);
 }
 
 class ThrottledModel {
