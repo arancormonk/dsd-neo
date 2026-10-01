@@ -306,8 +306,9 @@ voice calls per run on `main` against 66 and 9 with the verdict change, every pa
 could not see this then: the same build scored anywhere from 57 to 94 NXDN48 syncs run to run under `-fa`, which is
 wider than the effect. Replay is repeatable now, so a build scores the same on every replay, but that score is one
 draw of the hunt's phase against the calls, which a change to the hunt's timeline can move by as much;
-[Replay determinism](#replay-determinism-issue-572) says how to judge such a change across captures instead. Decode
-*volume* under the hunt is not covered by the `iq-decode` suite, which asks only whether a build still decodes.
+[Replay determinism](#replay-determinism-issue-572) says how to judge such a change across captures and their
+realizations instead. Decode *volume* under the hunt is not covered by the `iq-decode` suite, which asks only whether a
+build still decodes.
 
 #### Replay determinism (issue #572)
 
@@ -449,20 +450,52 @@ realtime ones 15.6 s each, since a realtime leg takes the capture's 13.7 s of ai
 `DECODE_IQ_P25P2_CC_DETERMINISM` 1.3 s. Under `ctest -j 16` they run beside the suite's longest test, and the full
 suite's wall time does not move (about 55 s). Under `tsan-debug` and `asan-ubsan-debug` they take up to 37 s each.
 
-Repeatable is not the same as representative. Under `-fa`, which calls a replay catches depends on where the hunt's
-rotation stands when each one arrives, and one capture is one fixed draw of that: anything that moves the hunt's
-timeline by a few samples, an event's offset, the front end's filter latency or a dwell, can win or lose a call, in
-either direction, with nothing decoding better or worse. The sweep above shows it on one fixture. The uncommitted 94 s
-NXDN48 scan capture behind this issue (88 retunes at 1.536 Msps) shows it on a real one: the streaming filters, which
-hold back 1.5 ms of look-ahead and drop it at each `RESET`, took its `-fa` replay from 144 voice frames and a caught
-`Src=102` call to 82 frames and no `Src=102`, as repeatably as before. Thirty copies of the capture, each with every
-event shifted by one amount (from one sample to 50 ms either way), told the rest: the build before the filter change
-caught that call at 15 of the 31 alignments, and the two builds after it at 13 and 7 (a difference 31 alignments cannot
-settle, p about 0.06), while `-fi` caught it at all 31 on every build, with errors per voice frame no worse. So judge a
-hunt or front-end change across captures, or across copies of one with its events shifted, with a pinned mode beside
-`-fa`, never from one replay. A shifted copy needs only a new sidecar: point its `data_file` at the original data and
-add the same whole number of samples (2 bytes each for cu8) to every event's `byte_offset`, keeping each within
-`data_bytes`.
+Repeatable is not the same as representative. Which frames a replay yields depends on where the decoder stands when each
+transmission arrives, the `-fa` hunt's rotation above all but a pinned mode's symbol timing too, and a capture replayed
+as recorded is one fixed draw of that: anything that moves the front end's output against the signal, an event's offset,
+the filters' latency or a dwell, can win or lose a call or a frame, in either direction, with nothing decoding better or
+worse. The sweep above shows it on one fixture. The uncommitted 94 s NXDN48 scan capture behind this issue
+(`faNXDNScan`, 88 retunes at 1.536 Msps) shows it on a real one: the streaming filters, which hold back 1.5 ms of
+look-ahead and drop it at each `RESET`, took its `-fa` replay from 144 voice frames and a caught `Src=102` call to 82
+frames and no `Src=102`, as repeatably as before. Repeating a replay repeats its draw, so two builds paired over
+identical repeats read a precision the capture does not have: six realtime replays of the uncommitted 35 s `fiNXDN`
+capture (30 retunes) under `-fi` put the branch +4.09 +/- 0.04 errors per voice frame from the build before the
+streaming filters.
+
+A draw is a realization of the capture: a copy with every event shifted by k input samples. Over 32 of them,
+k = 20i + (7i mod 20) for i = 0 to 31, spread over one 2400-baud symbol (640 samples at 1.536 Msps), the build before
+the streaming filters and the branch compare as below (fast replays of `dev-release` builds, paired per realization, 95%
+intervals):
+
+- `fiNXDN`, `-fi`: SACCH CRC passes 89.3% against 87.8% (paired -1.6 +/- 3.4 points) and errors per AMBE frame 0.75
+  against 0.86 (+0.12 +/- 0.16). Neither difference is resolved, and the build before the filters alone passes anywhere
+  from 62% to 100% of SACCH across the realizations.
+- `faNXDNScan`, `-fa`: `Src=102` caught at 25 of the 32 realizations against 17 (13 caught only before the change, 5
+  only after it: McNemar p about 0.10, not settled), 123.0 voice frames against 114.7 (paired -8.3 +/- 9.1) and 4.19
+  errors per voice frame against 4.14.
+- `faNXDNScan`, `-fi`: `Src=102` caught at all 32 on both builds, 5.26 errors per voice frame against 4.90
+  (paired -0.36 +/- 0.27, better) and SACCH 61.3% against 61.7%.
+
+A capture of a local P25 Phase 1/2 system (593 s, 36 retunes between the control channel and Phase 2 voice channels),
+replayed with `-f2 -mq -X` and its WACN, system and control channel, without `-T`, over 16 realizations, puts the branch
+at -3.88 +/- 0.18 of 677 Phase 2 syncs, -2.44 +/- 0.75 of 1040 voice frames and +0.19 +/- 0.40 audio errors (equal)
+against the build before the streaming filters. That loss is small and repeatable across the realizations: it is the
+filter tail each `RESET` drops (`docs/iq-capture-replay.md`, "Replay Pacing And The Decode Clock").
+
+A shift must not be a whole multiple of the front end's total decimation (the capture rate over its `demod_rate_hz`, 32
+at 1.536 Msps). Replay anchors the chunk grid and restarts every filter at each event, so a shift of m whole decimations
+hands every dwell the same output samples, m outputs later: it changes nothing inside a dwell, and copies shifted that
+way are not independent draws of the signal. The earlier sweeps of this kind shifted mostly by multiples of 32 samples
+at 1.536 Msps, so their copies were not independent draws either. A capture made at its demod rate, decimation 1, has no
+other kind of shift, so its realizations vary only where each dwell starts against the decoder's own timeline.
+
+So judge a hunt, timing or front-end change across captures and across realizations of each, with a pinned mode beside
+`-fa`, never from one replay or from identical repeats of it. `tools/replay_ab.sh` replays each repeat as its own
+realization (see [Decode-Quality A/B on Real Captures](#decode-quality-ab-on-real-captures)). A shifted copy by hand
+needs only a new sidecar: point its `data_file` at the original data and add the same whole number of samples (2 bytes
+each for cu8, 8 for cf32) to every event's `byte_offset`, keeping each within `data_bytes`. The number of samples must
+not be a multiple of the front end's total decimation; spread the copies across one symbol at the capture's rate, as
+`replay_ab.sh` does (copy i of n shifted floor(i P / n) + i samples, P the samples in one 2400-baud symbol).
 
 #### Received tone (CTCSS) on the analog monitor
 
@@ -1373,8 +1406,9 @@ again decodes exactly as before, but that is one draw: which frames a capture
 yields depends on where the decoder's state stands when each transmission
 arrives, the sync hunt's above all, and a change that moves the front end's
 timing by a few samples can move that draw by more than the effect being looked
-for. Measure on real captures, more than one where you can, and on copies of one
-with its events shifted.
+for. Measure on real captures, more than one where you can, and on several
+realizations of each: copies with every event shifted by a fraction of a
+symbol, which `tools/replay_ab.sh` makes, one per repeat.
 
 `tools/replay_ab.sh` replays one I/Q capture through two or more builds and
 `tools/replay_ab_report.py` reports the result:
@@ -1383,7 +1417,7 @@ with its events shifted.
 cmake --build --preset dev-debug -j --target dsd-neo
 cp build/dev-debug/apps/dsd-cli/dsd-neo /tmp/dsd-neo.after   # and one for 'before'
 
-tools/replay_ab.sh --capture ~/captures/nxdn.json --mode -fi --reps 3 \
+tools/replay_ab.sh --capture ~/captures/nxdn.json --mode -fi \
     --out /tmp/ab /tmp/dsd-neo.before /tmp/dsd-neo.after
 tools/replay_ab_report.py /tmp/ab/summary.tsv
 ```
@@ -1419,21 +1453,44 @@ Reading it:
   hard and soft decoding (issues #588 and #599), compare the builds' `-Z` IMBE or
   AMBE payloads against a reference decode as well.
 - **Paired per repeat.** Builds run round-robin with the order rotated each
-  repeat, and the report compares within a repeat. Before issue #572 a fixed
-  order credited the better slot to whichever build held it; with repeatable
-  replay the order changes nothing unless determinism has regressed.
+  repeat, every build replays the same realization of the capture in a repeat,
+  and the report compares within a repeat. Before issue #572 a fixed order
+  credited the better slot to whichever build held it; with repeatable replay
+  the order changes nothing unless determinism has regressed.
+- **Each repeat is its own realization.** Replay is deterministic, so repeats
+  of a capture as recorded are all one draw of it, and an interval paired over
+  them claims a precision the capture does not have
+  ([Replay determinism](#replay-determinism-issue-572) measures how much).
+  Repeat r therefore replays `<out>/realizations/r<r>.json`, a copy of the
+  sidecar whose `data_file` is the original data's absolute path and whose
+  every event `byte_offset` is s_r = floor((r-1) P / reps) + (r-1) input
+  samples later, held to `data_bytes`, where P = round(sample rate / 2400) is
+  one 2400-baud symbol: 640 samples at 1.536 Msps, 20 at 48 kHz. Repeat 1 is
+  the capture as recorded, and the (r-1) keeps an even split of the symbol off
+  whole multiples of the front end's decimation. Only cu8 and cf32 captures
+  (2 and 8 bytes a sample) can be shifted; any other `sample_format` stops the
+  run before it replays anything. Each progress line prints its repeat's
+  `shift=`, `summary.tsv` records it in its last column, `shift`, and the
+  report's first line counts the realizations. More repeats buy more
+  realizations again: the default `--reps 12` is a floor for a result, and the
+  measurements in [Replay determinism](#replay-determinism-issue-572) took 16
+  and 32.
+- **A capture with no events** has nothing to shift. `replay_ab.sh` warns once
+  (`the capture has no events: every repeat replays the same realization;
+  compare it across captures`), replays every repeat as recorded and says so in
+  its header, and the report notes that every repeat replayed one realization.
+  Such a capture is one draw however many repeats it gets, so compare builds
+  across captures.
+- **`--no-realizations`** replays every repeat as recorded on purpose: the
+  determinism control, in which each build's repeats must decode alike (an `sd`
+  of 0) as well as pair to `+0.00 +/- 0.00`.
 - **Run the baseline against itself first**, as a copy under another name
   (replay_ab.sh refuses two builds with the same basename). Replay is
-  deterministic, so that control must read `+0.00 +/- 0.00` in every column,
-  with no differing repeat: the repeats are the control, and any spread is a
-  determinism regression to fix before anything is measured. Before issue #572
-  the control measured a noise floor instead, about 0.1 errors per voice frame
-  over 12 repeats on the captures behind issue #444. Two or three repeats are
-  enough to show the control reads `+0.00 +/- 0.00`, and more add nothing:
-  `replay_ab.sh` still defaults to `--reps 12`, from when the repeats measured
-  that floor, so the examples here pass `--reps 3`. Keep at least two, which
-  the report's paired interval needs, and spend the time saved on more
-  captures.
+  deterministic and both copies replay the same realization in a repeat, so
+  that control must read `+0.00 +/- 0.00` in every column, with no differing
+  repeat; any spread is a determinism regression to fix before anything is
+  measured. Before issue #572 the control measured a noise floor instead, about
+  0.1 errors per voice frame over 12 repeats on the captures behind issue #444.
 - Leave `-T` and `-Y` out of `--mode`: those replays are outside the
   determinism guarantee. Otherwise load on the machine no longer changes what a
   replay decodes, and `--rate realtime`, the default, decodes what `fast` does,
@@ -1441,11 +1498,10 @@ Reading it:
 - **Judge an acquisition change across draws.** Under `-fa`, which calls a
   capture yields depends on the hunt's phase when each arrives, so a change that
   moves the hunt's timeline or the front end's latency by a few samples can win
-  or lose a call on one capture with nothing decoding better or worse. Replay
-  several captures, or copies of one whose sidecar moves every event's
-  `byte_offset` by the same amount, and compare a pinned mode (`-fi`, `-f1`)
-  beside `-fa`. [Replay determinism](#replay-determinism-issue-572) has a worked
-  case.
+  or lose a call on one capture with nothing decoding better or worse. The
+  realizations are such draws; replay several captures as well, and compare a
+  pinned mode (`-fi`, `-f1`) beside `-fa`.
+  [Replay determinism](#replay-determinism-issue-572) has a worked case.
 
 - **When the frame count moves, match payloads before calling it quality.**
   Paying off the matched filter's group delay at every switch took errors per
@@ -1482,24 +1538,27 @@ Analog DSP changes (channel width, AM demodulation, de-emphasis, tone detection)
 excerpts in `tests/fixtures/iq` and on any longer real capture, with `--metric analog`. The builds are analog replay
 hosts rather than `dsd-neo`, and `summary.tsv` gains the analog columns: `tone_snr_db`, `inband_db`, `clip`,
 `audible_ms`, `first_audible_ms`, `rms_dbfs`, the first probe given as `probe_hz`, `probe_dbfs` and `probe_dbc`, `tone`,
-`tone_lock_ms` and `tone_lock_pct`, and last the run's exit status `rc` and `off_path`, 1 when the host warned that the
-front end delivered CQPSK symbols instead of monitor samples. `probe_dbc` needs `--analog-expect-tone-hz`, so on a real
-capture, which has no test tone, it is `NA` and `probe_dbfs` is the probe's level. The report pairs each column per
-repeat, pairs probe levels only between builds that probed the same frequency (a wrapper that puts its own
-`--analog-probe-hz` first changes which probe comes first), and gives the tone label each build settled on. A repeat
-that exited non-zero or ran off the monitor path is left out of every column and counted in a per-build warning, even
-though the host prints its metrics before it exits: it measured a crash, a timeout or the modulation auto-switch, not
-the build. So give the host no `--analog-*` bounds in `--mode`, since a missed bound exits 1. Its `n` column counts the
-repeats in which a build measured that column. The paired interval needs at least two paired repeats and reads `n/a`
-with one (`--reps 1`, or every other repeat left out), in the digital report too, since one pair says nothing about the
-spread. A build missing a column that another build measured gets an explicit `NA` row, and a build with no usable
-repeat (it crashed, timed out, left the monitor path, or is not an analog replay host) makes the report warn and exit 1,
-rather than leave the other builds' rows looking like a clean result. `tests/tools/test_replay_ab_report.py` (stdlib
-only) covers the per-repeat pairing, the A-vs-A control, probe frequency keying, the coverage reporting, crashed and
-off-path repeats, the single-pair interval, the received-tone columns and the duplicate-name refusal. CTest runs it as
-two tests: `TOOLS_REPLAY_AB_REPORT` scores canned summaries and runs wherever Python does, and
-`TOOLS_REPLAY_AB_ANALOG_METRIC` drives the real `replay_ab.sh` with a fake host, so it is registered only outside
-Windows where bash and coreutils `timeout` are found.
+`tone_lock_ms` and `tone_lock_pct`, then the run's exit status `rc` and `off_path`, 1 when the host warned that the
+front end delivered CQPSK symbols instead of monitor samples, and last the repeat's `shift`, as in a digital run.
+`probe_dbc` needs `--analog-expect-tone-hz`, so on a real capture, which has no test tone, it is `NA` and `probe_dbfs`
+is the probe's level. The report pairs each column per repeat, pairs probe levels only between builds that probed the
+same frequency (a wrapper that puts its own `--analog-probe-hz` first changes which probe comes first), and gives the
+tone label each build settled on. A repeat that exited non-zero or ran off the monitor path is left out of every column
+and counted in a per-build warning, even though the host prints its metrics before it exits: it measured a crash, a
+timeout or the modulation auto-switch, not the build. So give the host no `--analog-*` bounds in `--mode`, since a
+missed bound exits 1. Its `n` column counts the repeats in which a build measured that column. The paired interval needs
+at least two paired repeats and reads `n/a` with one (`--reps 1`, or every other repeat left out), in the digital report
+too, since one pair says nothing about the spread. A build missing a column that another build measured gets an explicit
+`NA` row, and a build with no usable repeat (it crashed, timed out, left the monitor path, or is not an analog replay
+host) makes the report warn and exit 1, rather than leave the other builds' rows looking like a clean result.
+`tests/tools/test_replay_ab_report.py` (stdlib only) covers the per-repeat pairing, the A-vs-A control, probe frequency
+keying, the coverage reporting, crashed and off-path repeats, the single-pair interval, the received-tone columns, the
+duplicate-name refusal and the realizations: the shifted copies, their hold at `data_bytes`, the absolute `data_file`,
+the cf32 stride, the no-events warning, `--no-realizations`, an unknown `sample_format` and the report's reading of
+`shift`. CTest runs it as four tests: `TOOLS_REPLAY_AB_REPORT` scores canned summaries and runs wherever Python does,
+and `TOOLS_REPLAY_AB_ANALOG_METRIC`, `TOOLS_REPLAY_AB_DIGITAL_METRIC` and `TOOLS_REPLAY_AB_REALIZATIONS` drive the real
+`replay_ab.sh` with fake hosts, so they are registered only outside Windows where bash and coreutils `timeout` are
+found.
 
 `tone`, `tone_lock_ms` and `tone_lock_pct` come from the host's `ANALOG METRIC:` line, which reads them from the
 decoder's received-tone publication (`dsd_state::analog_rx`) after every block the monitor delivers; a host built
@@ -1550,15 +1609,18 @@ tools/replay_ab_report.py /tmp/ab/ctcss/summary.tsv --baseline analog_replay.mai
 The 12.5 kHz probe there reads the neighbour channel's leakage as `probe_dbfs`, over about 75 Hz around 12.5 kHz in
 each 20 ms block, no finer.
 Run the control first, one host against a copy of itself. I/Q replay is deterministic (issue #572), so the control must
-read `+0.00 +/- 0.00` with no differing repeats, as the digital one must, and as there two or three repeats show it
-(hence `--reps 3` above): 12 realtime repeats on `nfm_ctcss_real` and on `nfm_tone_synth` did, for every column. A run
-whose log carries the host's CQPSK-symbols warning left the monitor path: a build from before the analog family stood
-the modulation auto-switch down does that on `am_airband_real` (see the `am_airband_real` note under
+read `+0.00 +/- 0.00` with no differing repeats, as the digital one must: 12 realtime repeats on `nfm_ctcss_real` and on
+`nfm_tone_synth` did, for every column. The analog excerpts in `tests/fixtures/iq` have no events, so `replay_ab.sh`
+warns and replays each as recorded in every repeat: there two or three repeats show the control (hence `--reps 3` above)
+and more add nothing, and a difference between builds is one draw of each excerpt, to be compared across the excerpts. A
+longer capture with events gets a realization per repeat, as a digital one does. A run whose log carries the host's
+CQPSK-symbols warning left the monitor path: a build from before the analog family stood the modulation auto-switch down
+does that on `am_airband_real` (see the `am_airband_real` note under
 [Full-chain modulation decode tests](#full-chain-modulation-decode-tests)), and such a run measures the auto-switch, not
 the change, and on a build from before issue #572 is not deterministic either; the report leaves it out as `off_path`
-and warns, and a build with no other repeats fails the report. A difference that shows up in a control is a determinism regression in
-the build or the harness, not the change's. Attach the report to the pull request with the capture, flags and repeat
-count.
+and warns, and a build with no other repeats fails the report. A difference that shows up in a control is a determinism
+regression in the build or the harness, not the change's. Attach the report to the pull request with the capture, flags
+and repeat count.
 
 ### Analog listen-test sign-off
 
