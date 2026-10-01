@@ -1519,6 +1519,21 @@ wait_for_demod_drained(unsigned int timeout_ms) {
     return 0;
 }
 
+/* Wait up to @p timeout_ms for the replay reader thread to leave. It stores that after the EOF sequence, so the
+ * decoder can see the stream end first; a test that asserts the reader left waits for it here. */
+static int
+wait_for_reader_exited(unsigned int timeout_ms) {
+    for (unsigned int waited = 0U; waited <= timeout_ms; waited++) {
+        rtl_stream_test_replay_state state;
+        DSD_MEMSET(&state, 0, sizeof(state));
+        if (dsd_rtl_stream_test_get_replay_state(&state) == 0 && state.replay_reader_exited) {
+            return 1;
+        }
+        dsd_sleep_ms(1U);
+    }
+    return 0;
+}
+
 namespace {
 /* One run of the EOF drain race on a one-chunk capture (test_replay_eof_drain_delivers_final_block()). */
 struct EofDrainRace {
@@ -1720,6 +1735,7 @@ test_replay_read_error_ends_stream(void) {
     int rescued = 0;
     rc |= read_replay_to_end(ctx, 5000U, "read error", &delivered, &rescued);
 
+    (void)wait_for_reader_exited(2000U);
     rtl_stream_test_replay_state state;
     DSD_MEMSET(&state, 0, sizeof(state));
     rc |= expect_int_eq("read error replay state", dsd_rtl_stream_test_get_replay_state(&state), 0);
