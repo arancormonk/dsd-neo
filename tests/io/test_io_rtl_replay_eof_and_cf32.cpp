@@ -2925,6 +2925,62 @@ test_replay_conversion_failure_ends_with_the_failure(void) {
     return rc;
 }
 
+/* Issue #572: an --iq-loop pass that hands the demod no chunk is not rewound: the replay ends there, as at the end of a
+ * replay without --iq-loop, instead of rewinding in a tight loop through the reconfigure gate and a full finalize on
+ * every pass with nothing ever reaching the decoder. Every chunk is made to convert to no sample (the shape a capture
+ * the open now refuses had), from the first pass, and from the second after a first pass that delivered its chunk. */
+static int
+test_loop_pass_that_submits_nothing_ends(void) {
+    int rc = 0;
+    char metadata_path[DSD_TEST_PATH_MAX];
+    if (make_replay_fixture(metadata_path, sizeof(metadata_path), DSD_IQ_FORMAT_CU8, "post_mute_pre_widen", 1,
+                            kReplayChunkBytes)
+        != 0) {
+        return 1;
+    }
+    for (int passes_delivered = 0; passes_delivered <= 1; passes_delivered++) {
+        const char* label = passes_delivered ? "loop, second pass submits nothing" : "loop, first pass submits nothing";
+        char what[160];
+        dsd_input_failure_clear();
+        BlockLog log;
+        rtl_stream_test_set_replay_block_hook(block_log_hook, &log);
+        rtl_device_test_replay_override_conversion(passes_delivered, 0);
+        std::unique_ptr<dsd_opts> opts;
+        RtlSdrContext* ctx = NULL;
+        uint64_t delivered = 0U;
+        rtl_stream_test_replay_state state;
+        DSD_MEMSET(&state, 0, sizeof(state));
+        if (start_replay_stream_with_loop(metadata_path, 1, &opts, &ctx) != 0) {
+            stop_and_destroy_stream(ctx);
+            rc = 1;
+        } else {
+            int rescued = 0;
+            rc |= read_replay_to_end(ctx, 3000U, label, &delivered, &rescued);
+            (void)dsd_rtl_stream_test_get_replay_state(&state);
+            finish_replay(ctx, rescued);
+        }
+        rtl_device_test_replay_override_conversion(-1, 0);
+        rtl_stream_test_set_replay_block_hook(NULL, NULL);
+        dsd_input_failure failure;
+        dsd_input_failure_get(&failure);
+        dsd_input_failure_clear();
+
+        DSD_SNPRINTF(what, sizeof(what), "%s: loop rewinds", label);
+        rc |= expect_int_eq(what, (int)state.replay_loop_restart_count, passes_delivered);
+        DSD_SNPRINTF(what, sizeof(what), "%s: blocks the demod took", label);
+        rc |= expect_int_eq(what, (int)log.blocks.size(), passes_delivered);
+        DSD_SNPRINTF(what, sizeof(what), "%s: the replay reached its end", label);
+        rc |= expect_true(what, state.replay_input_eof && state.replay_output_drained);
+        DSD_SNPRINTF(what, sizeof(what), "%s: ended as at the capture's end, with no failure", label);
+        rc |= expect_int_eq(what, failure.kind, DSD_INPUT_FAILURE_NONE);
+        if (passes_delivered) {
+            DSD_SNPRINTF(what, sizeof(what), "%s: the first pass reached the decoder", label);
+            rc |= expect_true(what, delivered > 0U);
+        }
+    }
+    return rc;
+}
+
 /* An I/Q replay has no tuner gain to adjust, so the supervisory tuner autogain stays off under it even when the runtime
  * config enables it (DSD_NEO_TUNER_AUTOGAIN) and the capture records no gain, which is where a live open turns it on:
  * its hold and throttle windows run on real time, and its adjustments would only log on a wall-clock cadence. A flag
@@ -2984,6 +3040,7 @@ main(void) {
     rc |= test_replay_read_failure_mid_chunk_delivers_what_was_read();
     rc |= test_replay_refuses_a_capture_it_cannot_convert();
     rc |= test_replay_conversion_failure_ends_with_the_failure();
+    rc |= test_loop_pass_that_submits_nothing_ends();
     rc |= test_cu8_replay_publishes_raw_input_level();
     rc |= test_cu8_replay_legacy_fs4_level_uses_raw_block();
     rc |= test_cf32_replay_fs4_level_uses_raw_block();

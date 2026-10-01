@@ -236,7 +236,9 @@ dsd-neo -fM --iq-replay tests/fixtures/iq/am_airband_real.iq.json --iq-replay-ra
   The decoder then meets each event at the same point in fast and realtime replay, and a `RESET` drops nothing a slow
   decoder has not read. It decodes from the first sample demodulated after a `RESET`, or after a symbol profile or
   CQPSK change it asked for, where a live stream discards the samples read across such a change.
-- `--iq-loop` rewinds the event cursor and replay timing so the event schedule repeats each pass.
+- `--iq-loop` rewinds the event cursor and replay timing so the event schedule repeats each pass. A pass that handed
+  the demodulator no samples is not rewound: the replay logs a warning and ends there, as it does at the end without
+  `--iq-loop`.
 - User/API retune requests during IQ replay remain ignored; only metadata-scheduled replay events are applied.
 - Event timelines currently require a constant sample rate through the capture. Metadata with event sample-rate changes is
   rejected until segment-rate replay is supported.

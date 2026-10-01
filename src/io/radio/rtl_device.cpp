@@ -1767,7 +1767,8 @@ static size_t replay_next_read_limit(const struct rtl_device* s, uint64_t data_o
                                      size_t block_size);
 static replay_step replay_handle_empty_read(struct rtl_device* s, uint64_t* complex_written, uint64_t* start_ns,
                                             int realtime, int* phase, int* have_carry, uint8_t* carry_byte,
-                                            uint64_t* data_offset, uint32_t* event_cursor, int* out_failure_rc);
+                                            uint64_t* data_offset, uint32_t* event_cursor, int pass_submitted,
+                                            int* out_failure_rc);
 static int replay_convert_block_to_f32(const struct rtl_device* s, const uint8_t* raw_block, size_t out_bytes,
                                        float* f32_block, size_t f32_cap, int* phase, int* have_carry,
                                        uint8_t* carry_byte, dsd_input_level_cu8_moments* moments);
@@ -1869,6 +1870,7 @@ struct replay_thread_io_state {
     uint64_t* start_ns;
     uint64_t* timeline_samples; /* capture samples handed over or omitted so far (the media timeline); a loop goes on */
     uint64_t* chunk_sequence;   /* chunks submitted so far */
+    uint64_t* pass_start_sequence; /* chunk_sequence when this pass over the capture began: at the start, or a rewind */
     int realtime;
     /* What REPLAY_STEP_FAILED failed on: the capture file's DSD_IQ_* error, or kReplayPipelineFailureRc for a failure
        outside it. */
@@ -1889,7 +1891,7 @@ replay_thread_process_inputs_valid(const struct rtl_device* s, const uint8_t* ra
     if (!io->complex_written || !io->data_offset || !io->event_cursor || !io->start_ns) {
         return 0;
     }
-    if (!io->timeline_samples || !io->chunk_sequence) {
+    if (!io->timeline_samples || !io->chunk_sequence || !io->pass_start_sequence) {
         return 0;
     }
     return 1;
@@ -1929,7 +1931,8 @@ static inline replay_step
 replay_thread_read_or_handle_empty(struct rtl_device* s, uint8_t* raw_block, size_t read_limit,
                                    replay_thread_io_state* io, size_t* out_bytes) {
     if (!s || !raw_block || !io || !io->data_offset || !io->complex_written || !io->start_ns || !io->phase
-        || !io->have_carry || !io->carry_byte || !io->event_cursor || !out_bytes) {
+        || !io->have_carry || !io->carry_byte || !io->event_cursor || !io->chunk_sequence || !io->pass_start_sequence
+        || !out_bytes) {
         if (io) {
             io->failure_rc = kReplayPipelineFailureRc;
         }
@@ -1942,8 +1945,15 @@ replay_thread_read_or_handle_empty(struct rtl_device* s, uint8_t* raw_block, siz
         return REPLAY_STEP_FAILED;
     }
     if (*out_bytes == 0U) {
-        return replay_handle_empty_read(s, io->complex_written, io->start_ns, io->realtime, io->phase, io->have_carry,
-                                        io->carry_byte, io->data_offset, io->event_cursor, &io->failure_rc);
+        const int pass_submitted = *io->chunk_sequence != *io->pass_start_sequence;
+        const replay_step step = replay_handle_empty_read(s, io->complex_written, io->start_ns, io->realtime, io->phase,
+                                                          io->have_carry, io->carry_byte, io->data_offset,
+                                                          io->event_cursor, pass_submitted, &io->failure_rc);
+        if (step == REPLAY_STEP_CONTINUE) {
+            /* Rewound: the next pass begins. */
+            *io->pass_start_sequence = *io->chunk_sequence;
+        }
+        return step;
     }
     *io->data_offset += (uint64_t)(*out_bytes);
     return REPLAY_STEP_CONTINUE;
@@ -2416,10 +2426,11 @@ replay_next_read_limit(const struct rtl_device* s, uint64_t data_offset, uint32_
     return read_limit;
 }
 
+/* The capture's end on this pass (@p pass_submitted: the pass handed the demod a chunk). */
 static replay_step
 replay_handle_empty_read(struct rtl_device* s, uint64_t* complex_written, uint64_t* start_ns, int realtime, int* phase,
                          int* have_carry, uint8_t* carry_byte, uint64_t* data_offset, uint32_t* event_cursor,
-                         int* out_failure_rc) {
+                         int pass_submitted, int* out_failure_rc) {
     if (!s || !complex_written || !start_ns || !phase || !have_carry || !carry_byte || !data_offset || !event_cursor
         || !out_failure_rc) {
         if (out_failure_rc) {
@@ -2431,6 +2442,14 @@ replay_handle_empty_read(struct rtl_device* s, uint64_t* complex_written, uint64
         return replay_step_stopped_or_failed(s, out_failure_rc, kReplayPipelineFailureRc);
     }
     if (!s->replay_cfg.loop) {
+        return REPLAY_STEP_EOF_DONE;
+    }
+    if (!pass_submitted) {
+        /* A pass that handed the demod no chunk hands it none the next time either: a rewind would only spin through
+           the boundary, the reconfigure gate and a full finalize, pass after pass, with nothing reaching the decoder.
+           The replay ends here instead, as one without --iq-loop ends at the capture's end. */
+        LOG_WARN("IQ replay: a pass over the capture delivered no samples to the demodulator; --iq-loop does not "
+                 "rewind it, and the replay ends.\n");
         return REPLAY_STEP_EOF_DONE;
     }
     /* A rewind is a replay timeline boundary just like RESET. Do not restore
@@ -2559,6 +2578,7 @@ replay_thread_read_capture(struct rtl_device* s, int* out_failure_rc) {
     uint64_t start_ns = dsd_realtime_mono_ns();
     uint64_t timeline_samples = 0;
     uint64_t chunk_sequence = 0;
+    uint64_t pass_start_sequence = 0;
     int realtime = s->replay_cfg.realtime ? 1 : 0;
     s->replay_deferred_read_rc = DSD_IQ_OK;
 
@@ -2567,9 +2587,9 @@ replay_thread_read_capture(struct rtl_device* s, int* out_failure_rc) {
             step = REPLAY_STEP_STOP;
             break;
         }
-        replay_thread_io_state io = {&phase,          &have_carry,   &carry_byte, &complex_written,
-                                     &data_offset,    &event_cursor, &start_ns,   &timeline_samples,
-                                     &chunk_sequence, realtime,      DSD_IQ_OK};
+        replay_thread_io_state io = {&phase,          &have_carry,          &carry_byte, &complex_written,
+                                     &data_offset,    &event_cursor,        &start_ns,   &timeline_samples,
+                                     &chunk_sequence, &pass_start_sequence, realtime,    DSD_IQ_OK};
         step = replay_thread_process_block(s, raw_block, raw_block_bytes, f32_block, &io);
         if (step == REPLAY_STEP_FAILED) {
             *out_failure_rc = io.failure_rc;
