@@ -1699,9 +1699,9 @@ replay_media_ns(const struct rtl_device* s, uint64_t complex_samples) {
 namespace {
 
 /* The failure code of a replay step that failed outside the capture file: an input ring that would not take a whole
- * chunk, an event boundary the pipeline gave up on without a stop, or a missing buffer or ring. No DSD_IQ_ERR_* has
- * its value, so replay_report_failure() can name the pipeline instead of the read; the session's input failure latch
- * still gets DSD_IQ_ERR_INVALID_ARG for it, as before. */
+ * chunk, an event boundary the pipeline gave up on without a stop, or a missing source, buffer or ring. No
+ * DSD_IQ_ERR_* has its value, so replay_report_failure() can name the pipeline instead of the read; the session's input
+ * failure latch still gets DSD_IQ_ERR_INVALID_ARG for it, as before. */
 const int kReplayPipelineFailureRc = -1000;
 
 /* What one pass of the replay reader loop (replay_thread_process_block()) leaves the reader to do. */
@@ -1835,7 +1835,9 @@ struct replay_thread_io_state {
     uint64_t* timeline_samples; /* capture samples handed over or omitted so far (the media timeline); a loop goes on */
     uint64_t* chunk_sequence;   /* chunks submitted so far */
     int realtime;
-    int failure_rc; /* the DSD_IQ_* error behind REPLAY_STEP_FAILED */
+    /* What REPLAY_STEP_FAILED failed on: the capture file's DSD_IQ_* error, or kReplayPipelineFailureRc for a failure
+       outside it. */
+    int failure_rc;
 };
 
 } // namespace
@@ -2541,9 +2543,9 @@ replay_report_failure(int rc) {
     if (rc == DSD_IQ_ERR_ALLOC) {
         LOG_ERROR("IQ replay: no memory for the capture read buffers (rc=%d); the replay ends.\n", rc);
     } else if (rc == kReplayPipelineFailureRc) {
-        LOG_ERROR("IQ replay: the capture could not be handed on to the demodulator (the input ring would not take a "
-                  "whole chunk, or the pipeline gave up on an event boundary); the replay ends after the samples "
-                  "already delivered.\n");
+        LOG_ERROR("IQ replay: the capture could not be handed on to the demodulator (no replay source or input ring "
+                  "to start from, an input ring that would not take a whole chunk, or an event boundary the pipeline "
+                  "gave up on); the replay ends after the samples already delivered.\n");
         rc = DSD_IQ_ERR_INVALID_ARG;
     } else {
         LOG_ERROR("IQ replay: reading the capture failed (rc=%d); the replay ends after the samples already read.\n",

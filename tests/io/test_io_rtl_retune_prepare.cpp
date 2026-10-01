@@ -1281,6 +1281,12 @@ test_external_backend_landing_filter_state(void) {
                             r.after_profileless_cleared, 1);
     failed |= expect_int_eq("external landing after a stream open: taken", r.reopened_taken, 1);
     failed |= expect_int_eq("external landing after a stream open: filters start over", r.reopened_cleared, 1);
+    /* D, then C with no profile, then D: the landing on C applied nothing, but the filters ran on C's samples since. */
+    failed |= expect_int_eq("external landing away with no profile queued: nothing taken", r.profileless_away_taken, 0);
+    failed |= expect_int_eq("external landing back after a profile-less landing away: taken",
+                            r.back_after_profileless_taken, 1);
+    failed |= expect_int_eq("external landing back after a profile-less landing away: filters start over",
+                            r.back_after_profileless_cleared, 1);
     return failed;
 }
 

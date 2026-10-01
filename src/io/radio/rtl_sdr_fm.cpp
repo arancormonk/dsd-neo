@@ -4750,9 +4750,9 @@ controller_refresh_analog_channel_for_rate(DemodRetuneResetReason reset_reason, 
 }
 
 /* The target of the last external backend's retune that took its profile
- * (rtl_stream_apply_pending_retune_profile_for_target()), or 0: before any, and after every finalize
- * (controller_finalize_rate_chain(), a stream open's or a controller retune's), whose demod reset leaves the filters on
- * a centre no external landing chose. */
+ * (rtl_stream_apply_pending_retune_profile_for_target()), or 0: before any, after an external landing that took no
+ * profile (the tuner moved all the same), and after every finalize (controller_finalize_rate_chain(), a stream open's
+ * or a controller retune's), whose demod reset leaves the filters on a centre no external landing chose. */
 static std::atomic<uint32_t> g_external_retune_freq_hz{0U};
 
 /* Returns 1 when @p retune_profile asked for an analog channel the demod rate the retune landed on cannot run: the
@@ -10540,12 +10540,16 @@ rtl_stream_apply_retune_profile(const RtlRetuneProfile* profile, uint32_t center
  * With no finalize there is no retune reset (demod_reset_on_retune()) either, so a landing on another frequency than
  * the last external retune's starts the half-band and channel filters over itself, whatever its width: what they hold
  * is the old channel's (issue #572). A landing on the frequency already tuned (a width or profile change only) keeps
- * them, as a live width edit does. Only a landing that took its profile counts as the last one (one with nothing queued
- * applies nothing), and a finalize since forgets it (g_external_retune_freq_hz). */
+ * them, as a live width edit does. The record of the last landing (g_external_retune_freq_hz) is set only by a landing
+ * that took its profile. One with nothing queued applies nothing but still moved the tuner, so it forgets the record,
+ * and the next landing starts the filters over wherever it lands; so does a finalize. */
 extern "C" void
 rtl_stream_apply_pending_retune_profile_for_target(uint32_t target_freq_hz) {
     RtlRetuneProfile profile{};
     if (!rtl_stream_take_pending_retune_profile(&profile, 0U, target_freq_hz)) {
+        /* The external backend tuned the device here, so the filters now run on this channel's samples, whatever the
+           record says (a DMR or NXDN voice-channel tune queues no profile; the return to the control channel does). */
+        g_external_retune_freq_hz.store(0U, std::memory_order_release);
         return;
     }
     const int gate = rtl_stream_enter_demod_family_switch_gate();
@@ -14993,6 +14997,12 @@ rtl_stream_test_external_landing_filter_state(rtl_stream_test_external_landing_f
         return -2;
     }
     out->reopened_taken = external_filter_test_step(freq_d, 12500, &out->reopened_cleared, &unused);
+    /* An external retune away to C with no profile queued, then back to D: the filters ran on C's samples in between,
+       though the landing on C applied nothing. */
+    rtl_stream_clear_pending_retune_profile();
+    out->profileless_away_taken = family_test_apply_external_retune(freq_c);
+    out->back_after_profileless_taken =
+        external_filter_test_step(freq_d, 12500, &out->back_after_profileless_cleared, &unused);
     rtl_stream_clear_pending_retune_profile();
     family_test_restore(saved);
     family_test_release_buffers();

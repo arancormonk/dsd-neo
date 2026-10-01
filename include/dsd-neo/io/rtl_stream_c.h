@@ -791,8 +791,11 @@ void rtl_stream_supersede_familyless_retunes(void);
  * own retune (rtl_stream_prepare_retune_analog_profile_for_target()): the output chain is designed again for the CQPSK
  * state and symbol rate it lands, so the stream runs at the rate rtl_stream_output_rate_for_family() predicted (issue
  * #583). A profile without a family keeps the output chain. With no retune of the stream's own there is no retune
- * reset, so a landing on another frequency than the last external retune's starts the half-band and channel filters
- * over, whatever its width; one on the frequency already tuned keeps them, as a live width edit does (issue #572).
+ * reset, so the landing starts the half-band and channel filters over itself, whatever its width, unless it lands on
+ * the frequency of the last external landing that took a profile, which keeps them as a live width edit does (issue
+ * #572). That record is set only when a landing takes a profile; a landing with no profile queued (which applies
+ * nothing) forgets it, and so does every retune or open of the stream's own, so the next landing starts the filters
+ * over wherever it lands.
  */
 void rtl_stream_apply_pending_retune_profile_for_target(uint32_t target_freq_hz);
 
