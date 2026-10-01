@@ -11468,6 +11468,20 @@ if(DSD_HAS_RADIO)
         "Format: +dsd-neo-iq v2.*Contains retunes: +yes \\(1 retune events\\).*Event timeline: +4 event\\(s\\).*Replay compatible: +yes"
         "WARNING"
     )
+    # The same call under -fa: the SPS hunt has to land on 20 sps after the RESET by itself. The 7.5 s
+    # lead-in sits mid-plateau (6.7-8.1 s) of the lead-ins whose hunt reaches the RESET after the same five
+    # steps; the iq-determinism cases (Replay determinism, below) require every replay of it to decode
+    # identically.
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_NXDN48_AFTER_RETUNE_AUTO
+        nxdn48_after_retune
+        -fa
+        "Src=901"
+    )
+    set_tests_properties(
+        DECODE_IQ_NXDN48_AFTER_RETUNE_AUTO
+        PROPERTIES LABELS "iq-decode;iq-determinism" TIMEOUT 600
+    )
     # dPMR modulated from the CCH reference vectors, the only dPMR signal in the tree
     # whose content is known rather than guessed (#407). Every CCH CRC-7 in it passes,
     # so this is what a working integrity check has to be validated against. The voice
@@ -11777,6 +11791,130 @@ if(DSD_HAS_RADIO)
     )
     add_test(NAME ENGINE_RESTART COMMAND dsd-neo_test_engine_restart)
     set_tests_properties(ENGINE_RESTART PROPERTIES TIMEOUT 240)
+endif()
+
+# Replay determinism (issue #572). Under --iq-replay the decoder paces the front end and
+# the decode clock follows the capture, so every replay of a capture must decode the
+# same way. dsd-neo_test_replay_jitter runs the real engine on the arguments dsd-neo
+# would get and perturbs only the decoder's side: seeded sleeps after its reads (1.5 s
+# total at most), reads capped at seeded short counts, and, where GNU ld can replace the
+# audio device (--wrap, as CORE_AUDIO_ENSURE_OUTPUT does), an asynchronous sink whose
+# device stalls. It prints the REPLAY STREAM line the runner compares and checks against
+# MIN_FSK/MIN_CQPSK. tests/iq_determinism_check.cmake runs each leg of RUNS, keeps
+# iq_decode_check.cmake's exit-code and sanitizer checks for each, and requires the legs'
+# decoder output to match line for line, capture-time timestamps included.
+if(DSD_HAS_RADIO)
+    add_executable(dsd-neo_test_replay_jitter engine/replay_jitter.c)
+    target_include_directories(
+        dsd-neo_test_replay_jitter
+        PRIVATE ${PROJECT_SOURCE_DIR}/include
+    )
+    target_link_libraries(
+        dsd-neo_test_replay_jitter
+        PRIVATE dsd-neo_engine dsd-neo_io_radio ${LIBS}
+    )
+    set(_DSD_NEO_REPLAY_SINK_WRAP OFF)
+    if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
+        set(_DSD_NEO_REPLAY_SINK_WRAP ON)
+        target_compile_definitions(
+            dsd-neo_test_replay_jitter
+            PRIVATE DSD_NEO_TEST_AUDIO_WRAP
+        )
+        target_link_options(
+            dsd-neo_test_replay_jitter
+            PRIVATE
+                "LINKER:--wrap=dsd_audio_open_output"
+                "LINKER:--wrap=dsd_audio_write"
+                "LINKER:--wrap=dsd_audio_drain"
+                "LINKER:--wrap=dsd_audio_close"
+        )
+    endif()
+
+    # dsd_neo_add_iq_determinism_test(name fixture mode runs expected min_fsk min_cqpsk)
+    # runs is the ;-list of legs (see iq_determinism_check.cmake for the leg grammar).
+    function(
+        dsd_neo_add_iq_determinism_test
+        test_name
+        fixture
+        mode
+        runs
+        expected
+        min_fsk
+        min_cqpsk
+    )
+        add_test(
+            NAME ${test_name}
+            COMMAND
+                ${CMAKE_COMMAND}
+                "-DHOST_BIN=$<TARGET_FILE:dsd-neo_test_replay_jitter>"
+                "-DMODE=${mode}"
+                "-DFIXTURE=${_DSD_NEO_IQ_FIXTURE_DIR}/${fixture}.iq.json"
+                "-DRUNS=${runs}" "-DEXPECTED=${expected}" "-DMIN_FSK=${min_fsk}"
+                "-DMIN_CQPSK=${min_cqpsk}" -P
+                "${CMAKE_CURRENT_SOURCE_DIR}/iq_determinism_check.cmake"
+        )
+        set_tests_properties(
+            ${test_name}
+            PROPERTIES LABELS "iq-decode;iq-determinism" TIMEOUT 600
+        )
+    endfunction()
+
+    # nxdn48_after_retune under -fa: the SPS hunt, the RETUNE/MUTE/RESET/MUTE group and the
+    # call after it. Two fast replays, two with seeded sleeps after reads and one with short
+    # reads must match the first. Each leg measured fsk_samples=582330 cqpsk_symbols=8189
+    # generation_changes=3 media_ms=13679.666666 (13.5 s of samples plus the two MUTEs): the
+    # hunt runs the front end on its CQPSK path (6000 symbols/s, 8 samples each) for 1.37 s,
+    # so the legs cross output kinds and generations, and the FSK samples and CQPSK symbols
+    # together cover all but 158 of the capture's 648,000 samples. The minimums sit 1.3 %
+    # and 2.3 % under those counts: a leg that stopped short, or a hunt that no longer
+    # reaches the CQPSK path, fails here even when every leg agrees.
+    set(_nxdn48_retune_min_fsk 575000)
+    set(_nxdn48_retune_min_cqpsk 8000)
+    dsd_neo_add_iq_determinism_test(
+        DECODE_IQ_NXDN48_AFTER_RETUNE_AUTO_DETERMINISM
+        nxdn48_after_retune
+        -fa
+        "fast;fast;jitter:7:120;jitter:11:120;short:13"
+        "Src=901"
+        ${_nxdn48_retune_min_fsk}
+        ${_nxdn48_retune_min_cqpsk}
+    )
+    # Paced at the capture's own rate the decoder reads the same stream: realtime must
+    # match fast, with and without seeded sleeps on top. Each realtime leg takes the
+    # capture's 13.7 s of air time.
+    dsd_neo_add_iq_determinism_test(
+        DECODE_IQ_NXDN48_AFTER_RETUNE_AUTO_DETERMINISM_REALTIME
+        nxdn48_after_retune
+        -fa
+        "fast;realtime"
+        "Src=901"
+        ${_nxdn48_retune_min_fsk}
+        ${_nxdn48_retune_min_cqpsk}
+    )
+    dsd_neo_add_iq_determinism_test(
+        DECODE_IQ_NXDN48_AFTER_RETUNE_AUTO_DETERMINISM_REALTIME_JITTER
+        nxdn48_after_retune
+        -fa
+        "fast;realtime+jitter:17:120"
+        "Src=901"
+        ${_nxdn48_retune_min_fsk}
+        ${_nxdn48_retune_min_cqpsk}
+    )
+    # Audio output is real time: a sink whose device stops taking audio must not reach
+    # back into the decoder. Against a sink that takes everything, a stalled one (which
+    # must back up and drop, or the host fails the leg) leaves the decoder's lines and
+    # the audio it handed over (REPLAY SINK) unchanged.
+    if(_DSD_NEO_REPLAY_SINK_WRAP)
+        dsd_neo_add_iq_determinism_test(
+            DECODE_IQ_NXDN48_AFTER_RETUNE_AUTO_DETERMINISM_STALLED_SINK
+            nxdn48_after_retune
+            -fa
+            "sink:free;sink:stalled"
+            "Src=901"
+            ${_nxdn48_retune_min_fsk}
+            ${_nxdn48_retune_min_cqpsk}
+        )
+    endif()
 endif()
 
 if(DSD_HAS_RADIO)
