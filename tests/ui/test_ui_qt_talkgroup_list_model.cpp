@@ -57,14 +57,18 @@ struct Fixture {
     dsd_state* state = static_cast<dsd_state*>(calloc(1, sizeof(dsd_state)));
     Event_History_I* rings = static_cast<Event_History_I*>(calloc(2, sizeof(Event_History_I)));
 
+    /* Each fixture is a new ring, with an identity of its own as initState() draws one. */
     Fixture() {
+        static uint64_t nextInstance = 0x7A160000ULL;
         if (!opts || !state || !rings) {
             abort();
         }
+        nextInstance++;
         state->event_history_s = rings;
         for (int slot = 0; slot < 2; ++slot) {
             rings[slot].revision = 1;
             rings[slot].commit_rev = 1;
+            rings[slot].instance = nextInstance;
         }
     }
 
@@ -220,6 +224,36 @@ test_policy_and_heard_rows() {
     expect("clear retains the session selection", model.count() == 3 && model.historySession() == history.session());
 }
 
+/* The heard talkgroups follow the history's session. A capture replayed in a fresh state pushes the
+ * same rows as the first replay, which the history takes in as calls heard again: their logged rows
+ * join the new session, and the talkgroups are heard in it. */
+void
+test_replay_heard_again_lists_its_talkgroups() {
+    const time_t capture = 1262304000; // 2010-01-01Z: a replay's calls carry the capture's time
+    CallHistoryModel history;
+    TalkgroupListModel model(&history);
+    auto replay = [capture](Fixture& fixture) {
+        fixture.commit(9301, capture);
+        fixture.commit(9302, capture + 30);
+    };
+    Fixture first;
+    history.beginSession();
+    model.setHistorySession(history.session());
+    replay(first);
+    history.refresh(first.state);
+    model.refresh(first.opts, first.state);
+    expect("the first replay's talkgroups are heard", model.count() == 2);
+
+    Fixture second; // the next start's fresh state
+    history.beginSession();
+    model.setHistorySession(history.session());
+    replay(second);
+    history.refresh(second.state);
+    model.refresh(second.opts, second.state);
+    expect("a replayed capture's talkgroups are heard in the next session",
+           model.count() == 2 && find(model, 9301).isValid() && find(model, 9302).isValid());
+}
+
 void
 test_edit_fields_and_version() {
     Fixture fixture;
@@ -372,6 +406,7 @@ main(int argc, char** argv) {
     test_temporary_avoid_status();
     test_policy_and_heard_rows();
     test_history_role_names_and_mutations();
+    test_replay_heard_again_lists_its_talkgroups();
     QDir(dataDir).removeRecursively();
     if (failures != 0) {
         return 1;

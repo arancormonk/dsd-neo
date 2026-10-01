@@ -470,7 +470,14 @@ CallHistoryModel::noteSeen(const QString& key, quint64 ring, qint64 when, qint64
         m_seen.insert(key, SeenState{when, end, src, emergency, enc, sourceName, m_session, ring});
         return SeenNew;
     }
-    if (seen->ring != ring) {
+    if (seen->ring == 0U) {
+        // An entry that does not know its ring: a logged row's own entry, seeded by load() when the seen
+        // store has lost it, or one from a store written before rings had an identity. It is taken to be
+        // the reading ring's, as every entry was before: the row stays in the session that logged it,
+        // never moved into the running one. A capture replayed again across such an entry is not known
+        // as heard again.
+        seen->ring = ring;
+    } else if (seen->ring != ring) {
         // Another ring's row at the same push stamp, with the same start, target and kind: the same
         // capture decoded again in a fresh state, which pushes the same rows at the same stamps. It is a
         // call heard again, not the entry's own row read again, so it is taken in as the live path takes
@@ -656,8 +663,10 @@ int
 CallHistoryModel::findRepeatedNotice(const Row& row) const {
     for (int i = 0; i < m_rows.size(); i++) {
         const Row& existing = m_rows.at(i);
-        if (existing.kind == KindNotice && existing.when == row.when && existing.tg == row.tg && existing.src == row.src
-            && existing.name == row.name && existing.detail == row.detail && existing.systemName == row.systemName
+        // A twin already in the row's session is taken: it stands for another of two identical notices.
+        if (existing.kind == KindNotice && existing.session != row.session && existing.when == row.when
+            && existing.tg == row.tg && existing.src == row.src && existing.name == row.name
+            && existing.detail == row.detail && existing.systemName == row.systemName
             && existing.systemUid == row.systemUid && existing.channel == row.channel) {
             return i;
         }
@@ -684,9 +693,11 @@ CallHistoryModel::ingestRow(const Row& row, bool isUpdate, bool again) {
     static const QVector<int> mergeRoles = {WhenRole,     SrcRole,      SourceNameRole, EncRole,    DurationSecsRole,
                                             DayLabelRole, TimeTextRole, EmergencyRole,  SessionRole};
     // A call heard again overlaps the logged call it repeats, which the merge folds it into as it
-    // folds any overlapping fragment, so the log keeps one row and that row joins the running session.
+    // folds any overlapping fragment, so that row joins the running session and no new row is logged.
     // Only the search reaches further: a replay's calls sort by the capture's stamps, anywhere in the
-    // log, where a live fragment's call is among the newest rows.
+    // log, where a live fragment's call is among the newest rows. A first sighting still searches the
+    // newest rows only, so a call the first replay logged as two rows, its fragments landing apart under
+    // newer rows, stays two, and the repeat folds into the newer of them.
     const int merged = tryMerge(row, again ? static_cast<int>(m_rows.size()) : kMergeScanRows);
     if (merged >= 0) {
         const QModelIndex idx = index(merged);
@@ -918,8 +929,9 @@ CallHistoryModel::load() {
     // Oldest first through the same merge the ingest path uses, so a log written
     // before fragment-coalescing existed collapses on its first load.
     for (auto it = rows.crbegin(); it != rows.crend(); ++it) {
-        // A row does not keep the ring it was read from. Should the seen store have lost its entry, a
-        // running ring that holds it reads as another ring's (ring 0), and the row folds into itself.
+        // A row does not keep the ring it was read from, so its seed knows none (ring 0). The persisted
+        // seen store below replaces it with the real entry; should the store have lost that, the next read
+        // takes the seed to be the reading ring's (noteSeen()) and leaves the row in its session.
         m_seen.insert(keyFor(*it), SeenState{it->when, it->when + qMax(it->durationSecs, 0), it->src, it->emergency,
                                              it->enc, it->sourceName, it->session, 0U});
         if (tryMerge(*it, kMergeScanRows) < 0) {

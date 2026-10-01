@@ -24,7 +24,9 @@
  * first, and only within one session the oldest start. A capture replayed in a
  * fresh state pushes the same rows at the same stamps into a new ring, told apart by
  * the ring's identity (Event_History_I::instance): those calls are heard again, and
- * each folds into the call it repeats, which joins the running session.
+ * each folds into a logged row it overlaps, which joins the running session. (A first
+ * sighting merges only within the newest rows, so a call the first replay split in
+ * two stays two rows.)
  */
 
 #ifndef DSD_NEO_SRC_UI_QT_CALL_HISTORY_MODEL_H_
@@ -283,7 +285,7 @@ class CallHistoryModel : public QAbstractListModel {
      */
     int tryMerge(const Row& row, int scanRows);
 
-    /** @brief The logged notice @p row repeats field for field, or -1. */
+    /** @brief The logged notice @p row repeats field for field, not yet in @p row's session, or -1. */
     int findRepeatedNotice(const Row& row) const;
 
     /**

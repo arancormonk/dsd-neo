@@ -1038,6 +1038,58 @@ test_reused_ring_keeps_the_last_sessions_rows(void) {
     expect("and only it is the new session's", view.count() == 1 && rows_in_tg_range(view, 9401, 9401) == 1);
 }
 
+/* Two identical notices in one second (the same SMS delivered twice) are two rows. Replayed again,
+ * both are heard again, and each promotes a twin of its own, so the new session shows both. */
+void
+test_identical_notices_heard_again_both_join_the_session(void) {
+    resetStorage();
+    CallHistoryModel model;
+    CallHistoryFilterModel view;
+    view.setSourceModel(&model);
+    auto ring = std::make_unique<RingFixture>();
+    model.beginSession();
+    ring->commitNotice(1, kCaptureStart + 70, "2010-01-01 00:01:10 SMS from 44");
+    ring->commitNotice(1, kCaptureStart + 70, "2010-01-01 00:01:10 SMS from 44");
+    model.refresh(ring->state);
+    expect("two identical notices log two rows", model.count() == 2);
+
+    model.beginSession();
+    view.setHistorySession(model.session());
+    ring = std::make_unique<RingFixture>();
+    ring->commitNotice(1, kCaptureStart + 70, "2010-01-01 00:01:10 SMS from 44");
+    ring->commitNotice(1, kCaptureStart + 70, "2010-01-01 00:01:10 SMS from 44");
+    model.refresh(ring->state);
+    expect("both identical notices heard again show in the new session", view.count() == 2);
+    expect("and the log keeps two rows", model.count() == 2);
+}
+
+/* A row's seed in load() knows no ring. When the seen store has lost the row's entry, a relaunched
+ * UI reading the state's ring again (a reused state, after a start) must leave the row in the session
+ * that logged it: only what the new run pushes is the new session's. */
+void
+test_seed_without_a_ring_keeps_its_session(void) {
+    resetStorage();
+    RingFixture ring;
+    {
+        CallHistoryModel model;
+        model.beginSession();
+        ring.commit(0, 9501, 51, kCaptureStart, kCaptureStart + 4);
+        ring.commit(0, 9502, 52, kCaptureStart + 30, kCaptureStart + 34);
+        model.refresh(ring.state);
+        expect("the first run's calls are logged", model.count() == 2);
+    } // destructor flushes the stores
+    expect("seen store removed", QFile::remove(seen_store_path()));
+    CallHistoryModel relaunched;
+    CallHistoryFilterModel view;
+    view.setSourceModel(&relaunched);
+    relaunched.beginSession();
+    view.setHistorySession(relaunched.session());
+    ring.commit(0, 9503, 53, kCaptureStart + 600, kCaptureStart + 604);
+    relaunched.refresh(ring.state);
+    expect("the reused ring's new call is logged", relaunched.count() == 3);
+    expect("and only it is the new session's", view.count() == 1 && rows_in_tg_range(view, 9503, 9503) == 1);
+}
+
 } // namespace
 
 int
@@ -1084,6 +1136,8 @@ main(int argc, char** argv) {
     test_replay_heard_again_in_a_new_session();
     test_replay_heard_again_after_a_clear();
     test_reused_ring_keeps_the_last_sessions_rows();
+    test_identical_notices_heard_again_both_join_the_session();
+    test_seed_without_a_ring_keeps_its_session();
 
     QDir(dataDir).removeRecursively();
     if (g_failures != 0) {
