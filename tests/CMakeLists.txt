@@ -8011,6 +8011,25 @@ add_test(
     COMMAND dsd-neo_test_dsp_demod_segmentation
 )
 
+# The post-demod audio decimator (polyphase and its fallback) streams across
+# blocks; the private test-support DSP build forces the fallback (issue #572).
+add_executable(
+    dsd-neo_test_dsp_audio_decim_segmentation
+    dsp/test_dsp_audio_decim_segmentation.cpp
+)
+target_include_directories(
+    dsd-neo_test_dsp_audio_decim_segmentation
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/dsp
+)
+target_link_libraries(
+    dsd-neo_test_dsp_audio_decim_segmentation
+    PRIVATE dsd-neo_dsp_private_test_support ${DSD_NEO_TEST_MATH_LIB}
+)
+add_test(
+    NAME DSP_AUDIO_DECIM_SEGMENTATION
+    COMMAND dsd-neo_test_dsp_audio_decim_segmentation
+)
+
 add_executable(dsd-neo_bench_dsp EXCLUDE_FROM_ALL dsp/bench_dsp.cpp)
 target_include_directories(
     dsd-neo_bench_dsp

@@ -313,6 +313,18 @@ struct demod_state {
     int post_polydecim_K;         /* taps per phase (phase==1), e.g., 16 */
     int post_polydecim_hist_head; /* head index into circular history [0..K-1] */
     int post_polydecim_phase;     /* sample phase accumulator [0..M-1] */
+    /* Its fallback, run when the polyphase allocation fails: a one-pole low-pass, then the mean of each M samples. Its
+       state carries across blocks as the polyphase decimator's does, so neither depends on where the blocks are cut;
+       dsd_demod_reset_filter_state() clears both. */
+    float post_fallback_lp_y;    /* the one-pole's last output */
+    int post_fallback_lp_valid;  /* 1 once post_fallback_lp_y holds an output; 0 starts it from the next sample */
+    float post_fallback_box_acc; /* sum of the part-filled group */
+    int post_fallback_box_phase; /* samples in the part-filled group [0..M-1] */
+    /* What the decimator state above belongs to: the factor (0 = none yet), the rate_out and the path (1 = the
+       fallback) of the block that last ran it. A block with another of any starts the stage over. */
+    int post_decim_state_M;
+    int post_decim_state_rate_out;
+    int post_decim_state_fallback;
 
     /* Costas diagnostics (updated per block) */
     int costas_err_avg_q14;     /* average smoothed |err| scaled to Q14 for UI/metrics */

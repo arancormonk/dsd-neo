@@ -770,6 +770,7 @@ typedef struct rtl_stream_test_audio_reset_result {
     int channel_hist_cleared;
     int hb_hist_cleared;
     int resamp_hist_cleared;
+    int post_decim_cleared; /* a replay's post-demod decimator back at its start (none allocated counts) */
     float deemph_a_before;
     float deemph_a_after;
     float audio_lpf_alpha_before;

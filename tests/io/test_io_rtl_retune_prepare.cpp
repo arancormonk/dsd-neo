@@ -223,8 +223,9 @@ expected_audio_lpf_alpha(int rate_hz, int cutoff_hz) {
 
 /*
  * A retune on the analog monitor starts from clean filter state: de-emphasis,
- * DC, audio-LPF and squelch-envelope state and the channel/half-band/resampler
- * histories all return to their fresh-open values, and the rate-dependent
+ * DC, audio-LPF and squelch-envelope state, the channel/half-band/resampler
+ * histories and a replay's post-demod decimator all return to their fresh-open
+ * values (the decimator through dsd_demod_reset_filter_state()), and the rate-dependent
  * coefficients follow the output rate the device actually settled on.
  */
 static int
@@ -240,6 +241,7 @@ test_audio_monitor_retune_reset(void) {
     failed |= expect_int_eq("channel LPF history cleared", r.channel_hist_cleared, 1);
     failed |= expect_int_eq("half-band history cleared", r.hb_hist_cleared, 1);
     failed |= expect_int_eq("resampler history cleared", r.resamp_hist_cleared, 1);
+    failed |= expect_int_eq("post-demod decimator cleared", r.post_decim_cleared, 1);
     failed |=
         expect_double_near("deemph seeded for 48 kHz", r.deemph_a_before, expected_deemph_alpha(48000, 75e-6), 1e-9);
     failed |= expect_double_near("deemph follows the forced 78125 Hz rate", r.deemph_a_after,
@@ -258,6 +260,7 @@ test_audio_monitor_retune_reset(void) {
     failed |=
         expect_float_bits_equal("same-rate audio LPF unchanged", r.audio_lpf_alpha_after, r.audio_lpf_alpha_before);
     failed |= expect_int_eq("same-ratio resampler history cleared", r.resamp_hist_cleared, 1);
+    failed |= expect_int_eq("same-rate post-demod decimator cleared", r.post_decim_cleared, 1);
     failed |= expect_double_near("same-rate deemph state reset", r.deemph_avg, 0.0, kResetTolerance);
     failed |= expect_double_near("same-rate squelch envelope reopened", r.squelch_env, 1.0, kResetTolerance);
     return failed;
@@ -283,6 +286,7 @@ test_am_monitor_retune(void) {
     failed |= expect_double_near("AM retune squelch envelope reopened", r.squelch_env, 1.0, kResetTolerance);
     failed |= expect_int_eq("AM retune channel history cleared", r.channel_hist_cleared, 1);
     failed |= expect_int_eq("AM retune half-band history cleared", r.hb_hist_cleared, 1);
+    failed |= expect_int_eq("AM retune post-demod decimator cleared", r.post_decim_cleared, 1);
     failed |= expect_int_eq("AM retune keeps the AM detector", r.demod_is_am, 1);
     failed |= expect_int_eq("AM retune keeps the AM kind", r.analog_kind, DSD_ANALOG_DEMOD_AM);
     failed |= expect_int_eq("AM retune keeps de-emphasis off", r.deemph_after, 0);

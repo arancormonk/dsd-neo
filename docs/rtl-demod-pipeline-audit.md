@@ -346,8 +346,8 @@ floor moves with the width (about 3 dB per halving).
   finalized, so they follow the rate the device actually delivers. At unforced
   rates this is bit-identical.
 - A retune on any `AUDIO_MONITOR` stream resets the de-emphasis, DC, audio-LPF
-  and squelch-envelope state and the channel, half-band and resampler histories
-  to their fresh-open values.
+  and squelch-envelope state, the channel, half-band and resampler histories
+  and a replay's post-demod decimator to their fresh-open values.
 - When a retune leaves the stream on a different demod rate (a device that
   settles on another rate than it delivered before), the analog channel is
   resolved again for that rate: the unset default moves between the 16 kHz

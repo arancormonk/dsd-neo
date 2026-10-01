@@ -1778,10 +1778,11 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
     rate setup and `restore_capture_rate_settings()` write the count without a reset. The cascade drops a stray odd
     float, as it always did.
   - `dsd_demod_reset_filter_state()` (`<dsd-neo/dsp/demod_pipeline.h>`) is the one filter reset: half-band histories
-    and pending counts, channel history, channel pending 0, so every filter's next output is centred on its next input
-    and what they held is dropped (a RESET or loop rewind drops about the last 74 samples at 48 kHz on the 1.536 Msps
-    RTL chain, about 7 in the cascade and 67 in the 135-tap FIR; EOF does not flush them). `rtl_demod_clear_filter_histories()`
-    and stream open (`demod_init_common_defaults()`) delegate to it.
+    and pending counts, channel history, channel pending 0, and the post-demod decimator below on both paths, so every
+    filter's next output is centred on its next input and what they held is dropped (a RESET or loop rewind drops about
+    the last 74 samples at 48 kHz on the 1.536 Msps RTL chain, about 7 in the cascade and 67 in the 135-tap FIR; EOF
+    does not flush them). `rtl_demod_clear_filter_histories()` and stream open (`demod_init_common_defaults()`)
+    delegate to it, so a retune restarts the post-demod decimator too, as a family switch does.
   - `channel_lpf_apply()` clears the channel state on a plan for another `rate_out` than the last one, and on the first
     block the filter does not run on (filter off, or no plan for the width); a width or profile change at the same rate
     keeps it, and so does the stream layer's live width edit, which keeps the half-band state too (see Channel LPF).
@@ -1793,6 +1794,16 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
     (`hb_workbuf` when the channel filter left the block in `timing_buf`, as after an odd half-band pass count), up to
     that buffer's capacity. Only its adaptive gain is decided per block. Test: `DSP_COSTAS` (1-, 2- and 3-pair blocks,
     warm and cold, from each buffer, bit-exact against the whole stream).
+  - The post-demod audio decimator (`full_demod_apply_post_audio_decimation()`, only on an I/Q replay whose sidecar
+    sets `post_downsample` above 1; every live source and committed fixture runs 1) streams on both paths: the 16-tap
+    polyphase decimator (its history and phase) and, when that allocation fails, the fallback, a one-pole low-pass
+    and the mean of each M samples, whose one-pole output and part-filled group carry in `demod_state`
+    (`post_fallback_*`). A block publishes the outputs its samples complete, 0 included, never its undecimated input.
+    A block with another factor, `rate_out` or path than the last one (`post_decim_state_*`) starts the stage over.
+    `low_pass_simple()` stays a one-block helper (a trailing part-filled group dropped) over the same boxcar. Test:
+    `DSP_AUDIO_DECIM_SEGMENTATION` (both paths, the fallback forced with the DSP test hook
+    `dsd_demod_test_fail_post_polydecim_alloc()`: whole stream against a reference, blocks shorter than M bit-exact
+    against the whole stream, 0-output blocks, and reset, factor, rate and path changes after a part-filled group).
   - Tests: `DSP_FIR_SEGMENTATION` (every backend and the dispatcher, FIR and half-band, against the count formulas, a
     double-precision reference and their whole-stream output over many splits; tap switches; invalid calls; capacity;
     exact-size buffers at every half-band block size up to a few filter spans; the pipeline rules above, the pass-count

@@ -12682,8 +12682,9 @@ family_test_seed_stale_filter_histories(void) {
  * designs it). */
 static const int kFamilyTestPostDecimTaps = 16;
 
-/* A replay's post-demod decimator part-way through a block: its delay line full of the old family's samples and its
- * head and phase off their start. Only the state a switch has to reset: nothing here runs the decimator. */
+/* A replay's post-demod decimator part-way through a block on either path: the polyphase delay line full of the old
+ * family's samples with its head and phase off their start, and the fallback's one-pole output and part-filled group.
+ * Only the state a switch has to reset: nothing here runs the decimator. */
 static int
 family_test_seed_stale_post_decimator(void) {
     if (!demod.post_polydecim_hist) {
@@ -12699,6 +12700,10 @@ family_test_seed_stale_post_decimator(void) {
     }
     demod.post_polydecim_hist_head = 3;
     demod.post_polydecim_phase = 1;
+    demod.post_fallback_lp_y = 0.5f;
+    demod.post_fallback_lp_valid = 1;
+    demod.post_fallback_box_acc = -1.0f;
+    demod.post_fallback_box_phase = 2;
     return 0;
 }
 
@@ -12727,9 +12732,14 @@ family_test_seed_stale_monitor_state(void) {
     return family_test_seed_stale_post_decimator();
 }
 
-/* No decimator counts as clear: the pipeline allocates one from nothing, head and phase included. */
+/* The fallback's state at its start, and the polyphase decimator's; no polyphase decimator counts as clear for it, since
+   the pipeline allocates one from nothing, head and phase included. */
 static int
 family_test_post_decim_clear(void) {
+    if (fabsf(demod.post_fallback_lp_y) > 1e-12f || demod.post_fallback_lp_valid != 0
+        || fabsf(demod.post_fallback_box_acc) > 1e-12f || demod.post_fallback_box_phase != 0) {
+        return 0;
+    }
     if (!demod.post_polydecim_hist || demod.post_polydecim_K <= 0) {
         return 1;
     }
@@ -13703,6 +13713,7 @@ rtl_stream_test_audio_monitor_retune_kind(int kind, int rate_before_hz, int rate
     out->resamp_hist_cleared = (demod.resamp_hist && demod.resamp_taps_per_phase > 0)
                                    ? family_test_all_zero(demod.resamp_hist, (size_t)demod.resamp_taps_per_phase * 2U)
                                    : 0;
+    out->post_decim_cleared = family_test_post_decim_clear();
     out->deemph_a_after = demod.deemph_a;
     out->audio_lpf_alpha_after = demod.audio_lpf_alpha;
     out->channel_lpf_width_after = demod.channel_lpf_width_hz;

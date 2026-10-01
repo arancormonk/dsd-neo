@@ -29,6 +29,9 @@
 #include <stdio.h>
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/dsp/fsk_modem.h"
+#ifdef DSD_NEO_TEST_HOOKS
+#include "demod_pipeline_test_support.h"
+#endif
 
 #ifndef DSD_NEO_RESTRICT
 #if defined(_MSC_VER)
@@ -355,8 +358,23 @@ audio_polydecim_release(struct demod_state* d) {
     }
 }
 
+#ifdef DSD_NEO_TEST_HOOKS
+/* While set (dsd_demod_test_fail_post_polydecim_alloc()), the decimator's allocation fails. */
+static int g_post_polydecim_test_fail_alloc = 0;
+
+extern "C" void
+dsd_demod_test_fail_post_polydecim_alloc(int fail) {
+    g_post_polydecim_test_fail_alloc = fail ? 1 : 0;
+}
+#endif
+
 static int
 audio_polydecim_allocate(struct demod_state* d, int K) {
+#ifdef DSD_NEO_TEST_HOOKS
+    if (g_post_polydecim_test_fail_alloc) {
+        return 0;
+    }
+#endif
     d->post_polydecim_taps = static_cast<float*>(dsd_neo_aligned_malloc((size_t)K * sizeof(float)));
     d->post_polydecim_hist = static_cast<float*>(dsd_neo_aligned_malloc((size_t)K * sizeof(float)));
     if (!d->post_polydecim_taps || !d->post_polydecim_hist) {
@@ -469,6 +487,21 @@ audio_polydecim_process(struct demod_state* d, const float* in, int in_len, floa
     d->post_polydecim_hist_head = head;
     d->post_polydecim_phase = phase;
     return out_len;
+}
+
+/* The post-demod decimator starts over on either path: the polyphase history and phase, and the fallback's one-pole and
+   part-filled group, so the next output comes with the M-th sample from here and holds nothing from before. */
+static void
+post_decim_reset_state(struct demod_state* d) {
+    if (d->post_polydecim_hist && d->post_polydecim_K > 0) {
+        DSD_MEMSET(d->post_polydecim_hist, 0, (size_t)d->post_polydecim_K * sizeof(float));
+    }
+    d->post_polydecim_hist_head = 0;
+    d->post_polydecim_phase = 0;
+    d->post_fallback_lp_y = 0.0f;
+    d->post_fallback_lp_valid = 0;
+    d->post_fallback_box_acc = 0.0f;
+    d->post_fallback_box_phase = 0;
 }
 
 /* ---------------- Fixed channel LPF (complex, no decimation) ----------------- */
@@ -609,6 +642,7 @@ dsd_demod_reset_filter_state(struct demod_state* d) {
     }
     halfband_reset_state(d);
     channel_lpf_reset_state(d);
+    post_decim_reset_state(d);
 }
 
 /**
@@ -717,6 +751,31 @@ channel_lpf_apply(struct demod_state* d) {
     d->lp_len = made << 1;
 }
 
+/*
+ * The mean of each step consecutive samples, in place: output k overwrites sample k, which the loop has read by then.
+ * *acc and *phase hold the group a call leaves part-filled (its sum and its sample count, 0..step-1), and the next call
+ * completes it, so the output does not depend on where the blocks are cut. A group sums from 0 in sample order, as a
+ * whole block would. Returns the outputs made.
+ */
+static int
+boxcar_decimate_stream(float* signal, int len, int step, float* acc, int* phase) {
+    float sum = *acc;
+    int count = *phase;
+    int out_len = 0;
+    for (int i = 0; i < len; i++) {
+        sum += signal[i];
+        if (++count < step) {
+            continue;
+        }
+        signal[out_len++] = sum / (float)step;
+        sum = 0.0f;
+        count = 0;
+    }
+    *acc = sum;
+    *phase = count;
+    return out_len;
+}
+
 /**
  * @brief Boxcar low-pass and decimate by step (no wraparound).
  *
@@ -729,23 +788,19 @@ channel_lpf_apply(struct demod_state* d) {
  */
 int
 low_pass_simple(float* signal2, int len, int step) {
-    int i, i2;
     if (step <= 0) {
         return len;
     }
-    for (i = 0; i + (step - 1) < len; i += step) {
-        float sum = 0.0f;
-        for (i2 = 0; i2 < step; i2++) {
-            sum += signal2[i + i2];
-        }
-        // Normalize by step with rounding. Writes output at i/step index.
-        float val = sum / (float)step;
-        signal2[i / step] = val;
+    if (len <= 0) {
+        return len / step;
     }
+    /* One block on its own: a trailing part-filled group is dropped. */
+    float acc = 0.0f;
+    int phase = 0;
+    const int out_len = boxcar_decimate_stream(signal2, len, step, &acc, &phase);
     /* Duplicate the final sample to provide one-sample lookahead for callers
 	   that expect at least one extra element. Only do this when there is
 	   capacity (i.e., out_len < len) to avoid writing past the end. */
-    int out_len = len / step;
     if (out_len > 0 && out_len < len) {
         signal2[out_len] = signal2[out_len - 1];
     }
@@ -1581,19 +1636,30 @@ full_demod_run_output_demod(struct demod_state* d) {
     }
 }
 
+/* A block that runs the post-demod decimator with another factor, rate_out or path than the block before (the factor
+   and rate a replay's rate chain sets, the path the polyphase allocation decides) starts it over: its state holds
+   samples at the old rate, or belongs to the other path. */
 static void
-full_demod_apply_post_audio_decimation(struct demod_state* d) {
-    if (d->cqpsk_enable || d->post_downsample <= 1) {
+post_decim_track_state_key(struct demod_state* d, int decim) {
+    const int fallback = d->post_polydecim_enabled ? 0 : 1;
+    if (d->post_decim_state_M == decim && d->post_decim_state_rate_out == d->rate_out
+        && d->post_decim_state_fallback == fallback) {
         return;
     }
-    int decim = d->post_downsample;
-    audio_polydecim_ensure(d, decim);
-    if (d->post_polydecim_enabled) {
-        int out_n = audio_polydecim_process(d, d->result, d->result_len, d->timing_buf);
-        if (out_n > 0) {
-            DSD_MEMCPY(d->result, d->timing_buf, (size_t)out_n * sizeof(float));
-            d->result_len = out_n;
-        }
+    post_decim_reset_state(d);
+    d->post_decim_state_M = decim;
+    d->post_decim_state_rate_out = d->rate_out;
+    d->post_decim_state_fallback = fallback;
+}
+
+/* The fallback when the polyphase decimator cannot be allocated: a one-pole low-pass, then the mean of each decim
+   samples. Both carry their state across blocks: the one-pole starts from the first sample after a reset and then runs
+   on, and a group a block leaves part-filled is completed by the next one. */
+static void
+post_decim_run_fallback(struct demod_state* d, int decim) {
+    const int n = d->result_len > 0 ? d->result_len : 0;
+    if (n == 0) {
+        d->result_len = 0;
         return;
     }
     int Fs = (d->rate_out > 0) ? d->rate_out : 48000;
@@ -1608,13 +1674,40 @@ full_demod_apply_post_audio_decimation(struct demod_state* d) {
         a = 1.0;
     }
     float alpha_f = clamp_float((float)a, 0.0f, 1.0f);
-    float y = (d->result_len > 0) ? d->result[0] : 0.0f;
-    for (int k = 0; k < d->result_len; k++) {
+    float y = d->post_fallback_lp_y;
+    if (!d->post_fallback_lp_valid) {
+        y = d->result[0];
+        d->post_fallback_lp_valid = 1;
+    }
+    for (int k = 0; k < n; k++) {
         float x = d->result[k];
         y += (x - y) * alpha_f;
         d->result[k] = y;
     }
-    d->result_len = low_pass_simple(d->result, d->result_len, decim);
+    d->post_fallback_lp_y = y;
+    d->result_len = boxcar_decimate_stream(d->result, n, decim, &d->post_fallback_box_acc, &d->post_fallback_box_phase);
+}
+
+/* Decimate the audio by post_downsample, streaming on either path: the block publishes the outputs its samples
+   complete, 0 included (a block shorter than what the next output still needs makes none and its samples wait in the
+   decimator's state), so the output does not depend on where the blocks are cut. */
+static void
+full_demod_apply_post_audio_decimation(struct demod_state* d) {
+    if (d->cqpsk_enable || d->post_downsample <= 1) {
+        return;
+    }
+    const int decim = d->post_downsample;
+    audio_polydecim_ensure(d, decim);
+    post_decim_track_state_key(d, decim);
+    if (d->post_polydecim_enabled) {
+        const int out_n = audio_polydecim_process(d, d->result, d->result_len, d->timing_buf);
+        if (out_n > 0) {
+            DSD_MEMCPY(d->result, d->timing_buf, (size_t)out_n * sizeof(float));
+        }
+        d->result_len = out_n > 0 ? out_n : 0;
+        return;
+    }
+    post_decim_run_fallback(d, decim);
 }
 
 static void
