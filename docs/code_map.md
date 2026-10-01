@@ -1787,6 +1787,12 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
     keeps it, and so does the stream layer's live width edit, which keeps the half-band state too (see Channel LPF).
     `full_demod()` gives a block its front end left empty (a filter warm-up) `result_len` 0 and no per-block decision:
     squelch gate, envelope, channel power and CQPSK zero symbols wait for a block with samples.
+  - The CQPSK Gardner (`op25_gardner_cc()`) runs every block, however short, through the state in `ted_state` (mu,
+    omega, the delay line, the last symbol), so its symbols do not depend on the cut either: a block can make none, and
+    a symbol the last block owed comes out of the next one. It writes them to the work buffer its input is not in
+    (`hb_workbuf` when the channel filter left the block in `timing_buf`, as after an odd half-band pass count), up to
+    that buffer's capacity. Only its adaptive gain is decided per block. Test: `DSP_COSTAS` (1-, 2- and 3-pair blocks,
+    warm and cold, from each buffer, bit-exact against the whole stream).
   - Tests: `DSP_FIR_SEGMENTATION` (every backend and the dispatcher, FIR and half-band, against the count formulas, a
     double-precision reference and their whole-stream output over many splits; tap switches; invalid calls; capacity;
     exact-size buffers at every half-band block size up to a few filter spans; the pipeline rules above, the pass-count

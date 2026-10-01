@@ -299,7 +299,7 @@ struct gardner_loop_context_t {
     float* iq_in;
     float* iq_out;
     float* dl;
-    int buf_len;
+    int out_cap; /* floats iq_out holds */
     int nc;
     int i;
     int o;
@@ -397,13 +397,21 @@ gardner_reinit_state(demod_state* d, ted_state_t* ted, int sps, int is_first_ini
     return 1;
 }
 
+static_assert(sizeof(demod_state::hb_workbuf) / sizeof(float) == DSD_DEMOD_WORKBUF_LENGTH
+                  && sizeof(demod_state::timing_buf) / sizeof(float) == DSD_DEMOD_WORKBUF_LENGTH,
+              "the Gardner writes either work buffer up to DSD_DEMOD_WORKBUF_LENGTH floats");
+
 static inline void
 gardner_init_loop_context(demod_state* d, ted_state_t* ted, float gain_mu, float gain_omega,
                           gardner_loop_context_t* ctx) {
     ctx->iq_in = d->lowpassed;
-    ctx->iq_out = d->timing_buf;
+    /* The symbols go to the work buffer the samples are not in: a symbol the last block owed is written before this
+       block's first sample is read, so writing over the input would overwrite that sample. The channel filter leaves
+       its output in timing_buf after an odd half-band pass count. The buffer's capacity bounds the symbols, not the
+       block's length: a one-pair block that pays an owed symbol must still read its sample. */
+    ctx->iq_out = (d->lowpassed == d->timing_buf) ? d->hb_workbuf : d->timing_buf;
+    ctx->out_cap = DSD_DEMOD_WORKBUF_LENGTH;
     ctx->dl = ted->dl;
-    ctx->buf_len = d->lp_len;
     ctx->nc = d->lp_len >> 1;
     ctx->i = 0;
     ctx->o = 0;
@@ -800,6 +808,12 @@ fll_commit_loop(dsd_fll_band_edge_state_t* f, const fll_loop_context_t* ctx) {
  *   - NO NCO rotation applied to input samples
  *   - NO phase error computation or Costas tracking
  *   - Output is raw symbols, not carrier-corrected
+ *
+ * Blocks (issue #572): every block, however short, runs through the state kept
+ * in ted_state (mu, omega, the delay line, the last symbol). A symbol comes out
+ * once mu has run down and one more sample is in, which may be in the next
+ * block, so a stream gives the same symbols however it is cut; a block can make
+ * none. Only the adaptive gain is decided per block.
  */
 extern "C" void
 op25_gardner_cc(struct demod_state* d) {
@@ -808,10 +822,6 @@ op25_gardner_cc(struct demod_state* d) {
     }
 
     ted_state_t* ted = &d->ted_state;
-    if ((d->lp_len >> 1) < 4) {
-        return;
-    }
-
     const int sps = d->ted_sps > 0 ? d->ted_sps : 5;
     float omega = ted->omega;
     int is_first_init = 0;
@@ -827,7 +837,7 @@ op25_gardner_cc(struct demod_state* d) {
     gardner_init_loop_context(d, ted, gain_mu, gain_omega, &ctx);
     ctx.omega = omega;
 
-    while (ctx.o < ctx.buf_len && ctx.i < ctx.nc) {
+    while (ctx.o < ctx.out_cap && ctx.i < ctx.nc) {
         if (!gardner_consume_until_ready(&ctx)) {
             break;
         }
