@@ -551,13 +551,16 @@ bench_channel_lpf_taps(const BenchOptions& opts, const char* name, const BenchMe
     std::vector<float> hist_i((size_t)taps_len - 1U, 0.0f);
     std::vector<float> hist_q((size_t)taps_len - 1U, 0.0f);
     std::vector<float> taps(designed, designed + taps_len);
+    int pending = 0;
     fill_noise(&in, seed);
 
+    /* The streaming FIR makes kPairs outputs per call once warm (pending at c), so a call measures kPairs pairs. */
     return run_case(
         opts, name, "pair", (double)kPairs,
         [&]() -> float {
-            simd_fir_complex_apply(in.data(), kInLen, out.data(), hist_i.data(), hist_q.data(), taps.data(), taps_len);
-            return out[0] + out[kInLen - 1] + hist_i[0] + hist_q[0];
+            const int made = simd_fir_complex_apply(in.data(), kPairs, out.data(), kPairs, hist_i.data(), hist_q.data(),
+                                                    taps_len - 1, &pending, taps.data(), taps_len);
+            return out[0] + (made > 0 ? out[(size_t)made * 2U - 1U] : 0.0f) + hist_i[0] + hist_q[0];
         },
         &meta);
 }
@@ -664,12 +667,15 @@ bench_fir(const BenchOptions& opts) {
     std::vector<float> hist_i(kTaps - 1, 0.0f);
     std::vector<float> hist_q(kTaps - 1, 0.0f);
     std::vector<float> taps(kTaps);
+    int pending = 0;
     fill_noise(&in, 0x2468u);
     make_symmetric_taps(&taps);
 
+    /* kPairs outputs per call once warm (pending at c). */
     ran += run_case(opts, "simd_fir_complex_apply", "pair", (double)kPairs, [&]() -> float {
-        simd_fir_complex_apply(in.data(), kInLen, out.data(), hist_i.data(), hist_q.data(), taps.data(), kTaps);
-        return out[0] + out[kInLen - 1] + hist_i[0] + hist_q[0];
+        const int made = simd_fir_complex_apply(in.data(), kPairs, out.data(), kPairs, hist_i.data(), hist_q.data(),
+                                                kTaps - 1, &pending, taps.data(), kTaps);
+        return out[0] + (made > 0 ? out[(size_t)made * 2U - 1U] : 0.0f) + hist_i[0] + hist_q[0];
     });
 
     std::vector<float> hb15_hist_i(HB_TAPS - 1, 0.0f);

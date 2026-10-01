@@ -204,27 +204,31 @@ tone_and_noise_payload(size_t complex_samples) {
 }
 
 namespace {
-/* A chunk the replay reader hands the demod as one block: its bytes, and the capture time of its first sample in
- * complex samples, the samples a MUTE omitted included. */
+/* A chunk the replay reader hands the demod as one block: its bytes, the capture time of its first sample in complex
+ * samples, the samples a MUTE omitted included, and whether a RESET (or the start) comes before it. */
 struct LayoutChunk {
     uint64_t bytes;
     uint64_t media_start;
+    int epoch_start;
 };
 } // namespace
 
 /* The chunks a replay of @p capture_bytes with @p events delivers, from the capture layout alone: the reader reads 64
- * KiB at a time, cut short at the next event and at the end, and a MUTE moves the media timeline on by what it
- * omitted. */
+ * KiB at a time, cut short at the next event and at the end, a MUTE moves the media timeline on by what it omitted,
+ * and a RESET starts the chunk after it on a new filter epoch. */
 static std::vector<LayoutChunk>
 capture_layout(size_t capture_bytes, const std::vector<CaptureEvent>& events) {
     std::vector<LayoutChunk> chunks;
     uint64_t offset = 0U;
     uint64_t media = 0U;
+    int epoch_start = 1;
     std::vector<CaptureEvent>::const_iterator next = events.begin();
     while (offset < capture_bytes) {
         for (; next != events.end() && next->offset <= offset; ++next) {
             if (next->kind == DSD_IQ_EVENT_MUTE) {
                 media += next->value / 2U;
+            } else if (next->kind == DSD_IQ_EVENT_RESET) {
+                epoch_start = 1;
             }
         }
         uint64_t bytes = kChunkBytes;
@@ -234,22 +238,44 @@ capture_layout(size_t capture_bytes, const std::vector<CaptureEvent>& events) {
         if (capture_bytes - offset < bytes) {
             bytes = capture_bytes - offset;
         }
-        chunks.push_back(LayoutChunk{bytes, media});
+        chunks.push_back(LayoutChunk{bytes, media, epoch_start});
+        epoch_start = 0;
         offset += bytes;
         media += bytes / 2U;
     }
     return chunks;
 }
 
-/* The oracle for how many samples a replay delivers, from its chunks alone: each chunk's block decimates its complex
- * samples by 32 to the 48 kHz FSK discriminator output, floor(n / 32), with no resampling at 48 kHz. (A channel FIR
- * that carries its look-ahead across blocks moves this.) Nothing is dropped: a replay delivers every sample of every
- * block. */
+/* Half the channel FIR's span at the 48 kHz demod rate: every channel design there, whatever the profile, is the
+ * 135-tap Blackman filter with the 1200 Hz transition, so c = (135 - 1) / 2. */
+static const uint64_t kChannelFirHalfSpan = 67U;
+
+/* The oracle for how many samples each chunk's block delivers, from the capture layout alone. The half-band cascade
+ * decimates the block's complex samples by 32, floor(n / 32) (five nested halvings). The streaming channel FIR then
+ * makes max(0, pending + N - c) outputs and holds the rest back, pending' = pending + N - outputs, so a filter epoch
+ * delivers all its samples but its last c. A RESET starts an epoch: pending goes back to 0 and what the last one held
+ * is dropped. The FSK discriminator makes one output per sample, with no resampling at 48 kHz. */
+static std::vector<uint64_t>
+oracle_chunk_outputs(const std::vector<LayoutChunk>& chunks) {
+    std::vector<uint64_t> outputs;
+    uint64_t pending = 0U;
+    for (const LayoutChunk& chunk : chunks) {
+        if (chunk.epoch_start) {
+            pending = 0U;
+        }
+        const uint64_t held = pending + (chunk.bytes / 2U) / kDecimation;
+        const uint64_t made = held > kChannelFirHalfSpan ? held - kChannelFirHalfSpan : 0U;
+        pending = held - made;
+        outputs.push_back(made);
+    }
+    return outputs;
+}
+
+/* ... and how many the whole replay delivers. Nothing is dropped: a replay delivers every sample of every block. */
 static uint64_t
 oracle_output_count_of(const std::vector<LayoutChunk>& chunks) {
-    return std::accumulate(chunks.begin(), chunks.end(), (uint64_t)0U, [](uint64_t total, const LayoutChunk& chunk) {
-        return total + (chunk.bytes / 2U) / kDecimation;
-    });
+    const std::vector<uint64_t> outputs = oracle_chunk_outputs(chunks);
+    return std::accumulate(outputs.begin(), outputs.end(), (uint64_t)0U);
 }
 
 /* ... of a capture of @p capture_bytes with no events. */
@@ -601,9 +627,11 @@ expect_blocks_follow_layout(const char* label, const Signature& sig, const std::
  * included). UINT64_MAX past the last output. */
 static uint64_t
 oracle_media_at(const std::vector<LayoutChunk>& layout, uint64_t position) {
+    const std::vector<uint64_t> outputs = oracle_chunk_outputs(layout);
     uint64_t first = 0U;
-    for (const LayoutChunk& chunk : layout) {
-        const uint64_t count = (chunk.bytes / 2U) / kDecimation;
+    for (size_t i = 0; i < layout.size(); i++) {
+        const LayoutChunk& chunk = layout[i];
+        const uint64_t count = outputs[i];
         if (position < first + count) {
             const uint64_t start = media_ns(chunk.media_start);
             const uint64_t span = media_ns(chunk.media_start + chunk.bytes / 2U) - start;
@@ -867,13 +895,18 @@ tagged_reader_fail(TaggedReader* reader, const char* what) {
 }
 
 /* Whether @p tag describes a batch of the four-chunk capture as the block made it: its capture time (whole ns, rounded
- * down, from the capture's first sample), its size, and the DMR output it ran on. */
+ * down, from the capture's first sample), its size (the oracle's count for its chunk), and the DMR output it ran on. */
 static int
 tag_matches_its_chunk(const rtl_stream_replay_batch& tag) {
     const uint64_t chunk_complex = kChunkBytes / 2U;
+    const std::vector<uint64_t> outputs =
+        oracle_chunk_outputs(capture_layout(4U * kChunkBytes, std::vector<CaptureEvent>()));
+    if (tag.chunk_sequence < 1U || tag.chunk_sequence > outputs.size()) {
+        return 0;
+    }
     const uint64_t start_ns = ((tag.chunk_sequence - 1U) * chunk_complex * 1000000000ULL) / kCaptureRateHz;
     const uint64_t end_ns = (tag.chunk_sequence * chunk_complex * 1000000000ULL) / kCaptureRateHz;
-    return tag.output_count == chunk_complex / kDecimation && tag.media_start_ns == start_ns
+    return tag.output_count == outputs[tag.chunk_sequence - 1U] && tag.media_start_ns == start_ns
            && tag.media_duration_ns == end_ns - start_ns && tag.output_kind == RTL_STREAM_OUTPUT_FSK_DISCRIMINATOR
            && tag.symbol_rate_hz == 4800 && tag.output_rate_hz == (int)(kCaptureRateHz / kDecimation)
            && tag.output_generation == rtl_stream_output_generation();

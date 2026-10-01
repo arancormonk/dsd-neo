@@ -7980,6 +7980,23 @@ endif()
 dsd_neo_link_dsp_test(dsd-neo_test_dsp_simd_fir)
 add_test(NAME DSP_SIMD_FIR COMMAND dsd-neo_test_dsp_simd_fir)
 
+add_executable(
+    dsd-neo_test_dsp_fir_segmentation
+    dsp/test_dsp_fir_segmentation.cpp
+)
+target_include_directories(
+    dsd-neo_test_dsp_fir_segmentation
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src
+)
+if(_dsd_neo_dsp_sources MATCHES "simd_fir_avx2\\.cpp")
+    target_compile_definitions(
+        dsd-neo_test_dsp_fir_segmentation
+        PRIVATE DSD_NEO_TEST_HAVE_AVX2_IMPL=1
+    )
+endif()
+dsd_neo_link_dsp_test(dsd-neo_test_dsp_fir_segmentation)
+add_test(NAME DSP_FIR_SEGMENTATION COMMAND dsd-neo_test_dsp_fir_segmentation)
+
 add_executable(dsd-neo_bench_dsp EXCLUDE_FROM_ALL dsp/bench_dsp.cpp)
 target_include_directories(
     dsd-neo_bench_dsp

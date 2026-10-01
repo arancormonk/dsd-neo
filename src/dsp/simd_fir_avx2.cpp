@@ -13,16 +13,20 @@
  */
 
 #if defined(__clang_analyzer__)
-extern "C" void
-simd_fir_complex_apply_avx2(const float* in, int in_len, float* out, float* hist_i, float* hist_q, const float* taps,
-                            int taps_len) {
+extern "C" int
+simd_fir_complex_apply_avx2(const float* in, int n_in, float* out, int out_cap, float* hist_i, float* hist_q,
+                            int hist_len, int* pending, const float* taps, int taps_len) {
     (void)in;
-    (void)in_len;
+    (void)n_in;
     (void)out;
+    (void)out_cap;
     (void)hist_i;
     (void)hist_q;
+    (void)hist_len;
+    (void)pending;
     (void)taps;
     (void)taps_len;
+    return 0;
 }
 
 extern "C" int
@@ -55,6 +59,7 @@ simd_hb_decim2_real_avx2(const float* in, int in_len, float* out, float* hist, c
 #include <vector>
 #include <xmmintrin.h>
 #include "dsd-neo/core/safe_api.h"
+#include "simd_fir_internal.h"
 
 // NOLINTBEGIN(portability-simd-intrinsics)
 
@@ -116,11 +121,12 @@ pack_iq4(const float* scratch, int i0, int i1, int i2, int i3) {
     return _mm256_set_ps(s3.q, s3.i, s2.q, s2.i, s1.q, s1.i, s0.q, s0.i);
 }
 
+/* Four complex outputs from @p n on, output n centred at scratch index first_center + n. */
 static inline __m256
-fir_complex_accumulate4(const float* scratch, const float* taps, int hist_len, int center, int n) {
+fir_complex_accumulate4(const float* scratch, const float* taps, int first_center, int center, int n) {
     __m256 acc = _mm256_setzero_ps();
     const __m256 tap_c = _mm256_set1_ps(taps[center]);
-    const size_t center_offset = ((size_t)(hist_len + n)) << 1;
+    const size_t center_offset = ((size_t)(first_center + n)) << 1;
     const __m256 center_val = _mm256_loadu_ps(scratch + center_offset);
     acc = _mm256_fmadd_ps(tap_c, center_val, acc);
 
@@ -130,8 +136,8 @@ fir_complex_accumulate4(const float* scratch, const float* taps, int hist_len, i
             continue;
         }
         const int d = center - k;
-        const size_t minus_offset = ((size_t)(hist_len + n - d)) << 1;
-        const size_t plus_offset = ((size_t)(hist_len + n + d)) << 1;
+        const size_t minus_offset = ((size_t)(first_center + n - d)) << 1;
+        const size_t plus_offset = ((size_t)(first_center + n + d)) << 1;
         const __m256 sum_m = _mm256_loadu_ps(scratch + minus_offset);
         const __m256 sum_p = _mm256_loadu_ps(scratch + plus_offset);
         const __m256 sum = _mm256_add_ps(sum_m, sum_p);
@@ -392,61 +398,64 @@ hb_complex_decim2_fixed(const float* in, int ch_len, float* out, const float* hi
 } // namespace
 
 /**
- * AVX2+FMA complex symmetric FIR filter (no decimation).
+ * AVX2+FMA complex symmetric FIR filter (no decimation), streaming (simd_fir_complex_apply()).
  * Processes 4 complex samples (8 floats) at a time.
  * Uses pre-concatenated scratch buffer to eliminate branching in hot loop.
  */
-extern "C" void
-simd_fir_complex_apply_avx2(const float* in, int in_len, float* out, float* hist_i, float* hist_q, const float* taps,
-                            int taps_len) {
-    if (taps_len < 3 || (taps_len & 1) == 0 || in_len < 2) {
-        return;
+extern "C" int
+simd_fir_complex_apply_avx2(const float* in, int n_in, float* out, int out_cap, float* hist_i, float* hist_q,
+                            int hist_len, int* pending, const float* taps, int taps_len) {
+    const int outputs =
+        simd_fir_complex_outputs(in, n_in, out, out_cap, hist_i, hist_q, hist_len, pending, taps, taps_len);
+    if (outputs < 0) {
+        return -1;
     }
 
-    const int sample_count = in_len >> 1; /* complex samples */
-    const int hist_len = taps_len - 1;
     const int center = (taps_len - 1) >> 1;
-    const int total_len = hist_len + sample_count;
-    const int pad = center + 8;                    /* for n+7+d lookups */
-    const int scratch_len = (total_len + pad) * 2; /* *2 for complex (I, Q) */
+    if (outputs > 0) {
+        /* The windows span the history's last pending + center samples and the block: output n is centred at
+           scratch index center + n, and the last window ends on the block's last sample. */
+        const int take = *pending + center;
+        const size_t scratch_len = ((size_t)take + (size_t)n_in) * 2U; /* *2 for complex (I, Q) */
 
-    /* Resize thread-local buffer if needed (amortized O(1)) */
-    if (tls_scratch_iq.size() < (size_t)scratch_len) {
-        tls_scratch_iq.resize((size_t)scratch_len);
+        /* Resize thread-local buffer if needed (amortized O(1)) */
+        if (tls_scratch_iq.size() < scratch_len) {
+            tls_scratch_iq.resize(scratch_len);
+        }
+        float* scratch = tls_scratch_iq.data();
+
+        copy_iq_history(scratch, hist_i + (hist_len - take), hist_q + (hist_len - take), take);
+        if (n_in > 0) {
+            copy_iq_input(scratch, take, in, n_in);
+        }
+
+        /* Process 8 complex samples at a time (16 floats). */
+        int n = 0;
+        for (; n + 7 < outputs; n += 8) {
+            const __m256 acc0 = fir_complex_accumulate4(scratch, taps, center, center, n);
+            const __m256 acc1 = fir_complex_accumulate4(scratch, taps, center, center, n + 4);
+            _mm256_storeu_ps(out + (n << 1), acc0);
+            _mm256_storeu_ps(out + ((n + 4) << 1), acc1);
+        }
+
+        /* Process 4 complex samples at a time (8 floats) */
+        for (; n + 3 < outputs; n += 4) {
+            const __m256 acc = fir_complex_accumulate4(scratch, taps, center, center, n);
+            _mm256_storeu_ps(out + (n << 1), acc);
+        }
+
+        /* Scalar epilogue for remaining samples */
+        for (; n < outputs; n++) {
+            const ComplexIq acc = fir_complex_accumulate_scalar(scratch, taps, center, center + n);
+            out[n << 1] = acc.i;
+            out[(n << 1) + 1] = acc.q;
+        }
+        _mm256_zeroupper(); /* Avoid AVX-SSE transition penalty */
     }
-    float* scratch = tls_scratch_iq.data();
 
-    copy_iq_history(scratch, hist_i, hist_q, hist_len);
-    copy_iq_input(scratch, hist_len, in, sample_count);
-    const float last_i = in[(sample_count - 1) << 1];
-    const float last_q = in[((sample_count - 1) << 1) + 1];
-    pad_iq_tail(scratch, hist_len, sample_count, pad, last_i, last_q);
-
-    /* Process 8 complex samples at a time (16 floats). */
-    int n = 0;
-    for (; n + 7 < sample_count; n += 8) {
-        const __m256 acc0 = fir_complex_accumulate4(scratch, taps, hist_len, center, n);
-        const __m256 acc1 = fir_complex_accumulate4(scratch, taps, hist_len, center, n + 4);
-        _mm256_storeu_ps(out + (n << 1), acc0);
-        _mm256_storeu_ps(out + ((n + 4) << 1), acc1);
-    }
-
-    /* Process 4 complex samples at a time (8 floats) */
-    for (; n + 3 < sample_count; n += 4) {
-        const __m256 acc = fir_complex_accumulate4(scratch, taps, hist_len, center, n);
-        _mm256_storeu_ps(out + (n << 1), acc);
-    }
-
-    /* Scalar epilogue for remaining samples */
-    for (; n < sample_count; n++) {
-        const int center_idx = hist_len + n;
-        const ComplexIq acc = fir_complex_accumulate_scalar(scratch, taps, center, center_idx);
-        out[n << 1] = acc.i;
-        out[(n << 1) + 1] = acc.q;
-    }
-
-    update_iq_history(in, sample_count, hist_i, hist_q, hist_len);
-    _mm256_zeroupper(); /* Avoid AVX-SSE transition penalty */
+    *pending += n_in - outputs;
+    simd_fir_complex_push_history(in, n_in, hist_i, hist_q, hist_len);
+    return outputs;
 }
 
 /**

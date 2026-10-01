@@ -280,10 +280,7 @@ demod_init_common_defaults(struct demod_state* s, int rtl_dsp_bw_hz, struct outp
     s->am_carrier = 0.0f;
     s->am_squelched_samples = 0;
     s->channel_lpf_enable = 0;
-    s->channel_lpf_hist_len = 143;
     s->channel_lpf_profile = DSD_CH_LPF_PROFILE_WIDE;
-    DSD_MEMSET(s->channel_lpf_hist_i, 0, sizeof(s->channel_lpf_hist_i));
-    DSD_MEMSET(s->channel_lpf_hist_q, 0, sizeof(s->channel_lpf_hist_q));
     s->channel_pwr = 0.0f;
     g_channel_pwr.store(0.0f, std::memory_order_relaxed);
     s->channel_squelch_level.store(0.0f, std::memory_order_relaxed);
@@ -327,10 +324,7 @@ demod_init_common_defaults(struct demod_state* s, int rtl_dsp_bw_hz, struct outp
     s->squelch_env = 1.0f;
     s->squelch_env_attack = 0.125f;
     s->squelch_env_release = 0.03125f;
-    for (int st = 0; st < 10; st++) {
-        DSD_MEMSET(s->hb_hist_i[st], 0, sizeof(s->hb_hist_i[st]));
-        DSD_MEMSET(s->hb_hist_q[st], 0, sizeof(s->hb_hist_q[st]));
-    }
+    dsd_demod_reset_filter_state(s);
     s->lowpassed = s->input_cb_buf;
     s->lp_len = 0;
     s->iqbal_alpha_ema_r = 0.0f;
@@ -1262,16 +1256,7 @@ rtl_demod_reset_audio_monitor_state(struct demod_state* demod) {
 
 void
 rtl_demod_clear_filter_histories(struct demod_state* demod) {
-    if (!demod) {
-        return;
-    }
-    for (int st = 0; st < 10; st++) {
-        DSD_MEMSET(demod->hb_hist_i[st], 0, sizeof(demod->hb_hist_i[st]));
-        DSD_MEMSET(demod->hb_hist_q[st], 0, sizeof(demod->hb_hist_q[st]));
-    }
-    DSD_MEMSET(demod->channel_lpf_hist_i, 0, sizeof(demod->channel_lpf_hist_i));
-    DSD_MEMSET(demod->channel_lpf_hist_q, 0, sizeof(demod->channel_lpf_hist_q));
-    demod->channel_lpf_hist_len = 0;
+    dsd_demod_reset_filter_state(demod);
 }
 
 void

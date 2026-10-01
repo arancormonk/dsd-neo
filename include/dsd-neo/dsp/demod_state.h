@@ -39,6 +39,15 @@
  * DSD_ANALOG_CHANNEL_MAX_TAPS in demod_pipeline.cpp. */
 #define DSD_CHANNEL_LPF_MAX_TAPS 288
 
+/* Channel LPF history, in complex samples: the streaming FIR (simd_fir_complex_apply()) keeps the newest this many
+ * input samples. Its windows reach pending + c samples back, with pending at most the largest c (143, for the
+ * largest odd tap count) and c at most that too, so a tap change without a reset always finds its history. */
+#define DSD_CHANNEL_LPF_HIST_LEN (DSD_CHANNEL_LPF_MAX_TAPS - 1)
+
+/* The channel LPF's output work buffers (hb_workbuf, timing_buf), in floats: a call makes at most N + 143 complex
+ * outputs for N in (N + c_old - c_new on a tap shrink), and N is at most MAXIMUM_BUF_LENGTH / 2 complex. */
+#define DSD_DEMOD_WORKBUF_LENGTH (MAXIMUM_BUF_LENGTH + 2 * DSD_CHANNEL_LPF_HIST_LEN)
+
 /* Channel LPF profile ids */
 enum DSD_ATTR_PACKED {
     DSD_CH_LPF_PROFILE_WIDE = 0,
@@ -83,10 +92,10 @@ struct demod_state {
     alignas(64) float hb_q_out[MAXIMUM_BUF_LENGTH / 2];
     alignas(64) float input_cb_buf[MAXIMUM_BUF_LENGTH];
     alignas(64) float result[MAXIMUM_BUF_LENGTH];
-    alignas(64) float timing_buf[MAXIMUM_BUF_LENGTH];
+    alignas(64) float timing_buf[DSD_DEMOD_WORKBUF_LENGTH];
     alignas(64) float resamp_outbuf[MAXIMUM_BUF_LENGTH * 4];
-    alignas(64) float channel_lpf_hist_i[DSD_CHANNEL_LPF_MAX_TAPS]; /* symmetric FIR history (taps - 1) */
-    alignas(64) float channel_lpf_hist_q[DSD_CHANNEL_LPF_MAX_TAPS];
+    alignas(64) float channel_lpf_hist_i[DSD_CHANNEL_LPF_HIST_LEN]; /* streaming FIR history, newest right-aligned */
+    alignas(64) float channel_lpf_hist_q[DSD_CHANNEL_LPF_HIST_LEN];
     alignas(64) float channel_lpf_plan_taps[DSD_CHANNEL_LPF_MAX_TAPS];
 
     /* Pointers and 64-bit items next */
@@ -158,20 +167,24 @@ struct demod_state {
     int dc_block;
     float dc_avg;
     /* Half-band decimator */
-    float hb_workbuf[MAXIMUM_BUF_LENGTH];
+    float hb_workbuf[DSD_DEMOD_WORKBUF_LENGTH];
     float hb_hist_i[10][HB_TAPS_MAX - 1];
     float hb_hist_q[10][HB_TAPS_MAX - 1];
 
     /* Fixed channel low-pass (post-HB) to bound noise bandwidth at higher Fs.
-     * At 48 kHz with 1200 Hz transition, Blackman needs 135 taps (hist = 134).
+     * At 48 kHz with 1200 Hz transition, Blackman needs 135 taps.
      * Digital profiles cap the design at 144 taps; the analog family may use
-     * the full DSD_CHANNEL_LPF_MAX_TAPS. */
+     * the full DSD_CHANNEL_LPF_MAX_TAPS. The history is DSD_CHANNEL_LPF_HIST_LEN
+     * samples whatever the taps. */
     int channel_lpf_enable; /* gate */
     /* The historical enable rule (DSD_NEO_CHANNEL_LPF, else a 20 kHz rate_in) as decided when the stream was
        configured. The unset analog default and a switch back to digital restore it; an explicit analog width
        overrides it. */
     int channel_lpf_default_enable;
-    int channel_lpf_hist_len;
+    /* Channel FIR outputs held back for look-ahead (simd_fir_complex_apply()). 0 after a reset
+       (dsd_demod_reset_filter_state()), so the first output is centred on the first new sample; above 0 exactly when
+       the filter took samples since. */
+    int channel_lpf_pending;
     int channel_lpf_profile;       /* see DSD_CH_LPF_PROFILE_* */
     int channel_lpf_plan_rate_out; /* cached rate for channel_lpf_plan_taps */
     int channel_lpf_plan_profile;  /* cached profile for channel_lpf_plan_taps */

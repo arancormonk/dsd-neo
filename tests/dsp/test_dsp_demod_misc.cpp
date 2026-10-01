@@ -61,10 +61,10 @@ channel_lpf_tone_gain_at(demod_state* s, int profile, int analog_width_hz, doubl
     double power = 0.0;
     int count = 0;
     const int start = 512; /* Skip FIR startup transient. */
-    /* The channel FIR is centred (zero delay) and pads its look-ahead past the
-     * block end with the last sample, so the final taps/2 outputs are not a
-     * steady-state reading; keep them out of the measurement. */
-    const int pairs = (s->result_len >> 1) - (DSD_CHANNEL_LPF_MAX_TAPS / 2);
+    /* The channel FIR makes only outputs whose look-ahead it holds (it keeps the
+     * last taps/2 samples' outputs pending), so every output is a steady-state
+     * reading up to the block's end. */
+    const int pairs = s->result_len >> 1;
     for (int n = start; n < pairs; n++) {
         double i = (double)s->result[(size_t)(n << 1) + 0];
         double q = (double)s->result[(size_t)(n << 1) + 1];

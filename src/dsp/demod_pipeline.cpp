@@ -152,8 +152,18 @@ static_assert(DSD_CHANNEL_LPF_MAX_TAPS == DSD_ANALOG_CHANNEL_MAX_TAPS,
               "demod_state channel LPF capacity must match the analog validator's tap limit");
 static_assert(sizeof(demod_state::channel_lpf_plan_taps) / sizeof(float) == DSD_ANALOG_CHANNEL_MAX_TAPS,
               "channel LPF plan array must hold the analog tap capacity");
-static_assert(sizeof(demod_state::channel_lpf_hist_i) / sizeof(float) >= DSD_ANALOG_CHANNEL_MAX_TAPS - 1,
-              "channel LPF history must hold taps - 1 samples at analog capacity");
+static_assert(sizeof(demod_state::channel_lpf_hist_i) / sizeof(float) == DSD_CHANNEL_LPF_HIST_LEN
+                  && sizeof(demod_state::channel_lpf_hist_q) / sizeof(float) == DSD_CHANNEL_LPF_HIST_LEN,
+              "channel LPF history arrays hold DSD_CHANNEL_LPF_HIST_LEN samples");
+/* The streaming FIR's windows reach pending + c back, pending up to the largest c a plan had and c up to the largest
+   c the capacity allows: a tap change without a reset must still find them in the history. */
+static_assert(2 * ((DSD_CHANNEL_LPF_MAX_TAPS - 1) / 2) <= DSD_CHANNEL_LPF_HIST_LEN,
+              "channel LPF history must hold pending + c at any two plans' tap counts");
+static_assert(sizeof(demod_state::hb_workbuf) / sizeof(float) == DSD_DEMOD_WORKBUF_LENGTH
+                  && sizeof(demod_state::timing_buf) / sizeof(float) == DSD_DEMOD_WORKBUF_LENGTH,
+              "the channel LPF writes either work buffer");
+static_assert(DSD_DEMOD_WORKBUF_LENGTH / 2 >= MAXIMUM_BUF_LENGTH / 2 + (DSD_CHANNEL_LPF_MAX_TAPS - 1) / 2,
+              "a channel LPF work buffer holds a maximum block's outputs on a tap shrink");
 static_assert(kChannelLpfTaps <= DSD_CHANNEL_LPF_MAX_TAPS, "digital channel LPF cap exceeds the plan array");
 static_assert(DSD_ANALOG_DEMOD_FM == 0, "a zeroed demod_state must mean the FM analog demodulator");
 /* Protected channel edges: the highest frequency each profile's channel LPF is
@@ -573,6 +583,26 @@ dsd_channel_lpf_legacy_wide_width_hz(int rate_hz) {
     return width_hz > 0.0 ? (int)lround(width_hz) : 0;
 }
 
+/* The channel FIR starts over: no history, no pending outputs, so its next output is centred on its next input. */
+static void
+channel_lpf_reset_state(struct demod_state* d) {
+    DSD_MEMSET(d->channel_lpf_hist_i, 0, sizeof(d->channel_lpf_hist_i));
+    DSD_MEMSET(d->channel_lpf_hist_q, 0, sizeof(d->channel_lpf_hist_q));
+    d->channel_lpf_pending = 0;
+}
+
+void
+dsd_demod_reset_filter_state(struct demod_state* d) {
+    if (!d) {
+        return;
+    }
+    for (int st = 0; st < 10; st++) {
+        DSD_MEMSET(d->hb_hist_i[st], 0, sizeof(d->hb_hist_i[st]));
+        DSD_MEMSET(d->hb_hist_q[st], 0, sizeof(d->hb_hist_q[st]));
+    }
+    channel_lpf_reset_state(d);
+}
+
 /**
  * @brief Ensure channel LPF taps are generated for this demodulator state.
  *
@@ -580,6 +610,10 @@ dsd_channel_lpf_legacy_wide_width_hz(int rate_hz) {
  * Keeps absolute cutoffs in Hz constant across sample rates and avoids global
  * per-block profile dispatch. The plan is cached by (rate_out, profile, width): the analog
  * family's width-driven design when it has a width, the profile design otherwise.
+ *
+ * A plan for another rate_out than the previous one starts the channel over, since its history holds samples at the
+ * old rate. A width or profile change at the same rate keeps the history and pending outputs: the streaming FIR
+ * reconciles a new tap count through pending.
  */
 static void
 channel_lpf_ensure_plan(struct demod_state* d) {
@@ -600,6 +634,10 @@ channel_lpf_ensure_plan(struct demod_state* d) {
         return;
     }
 
+    if (d->channel_lpf_plan_rate_out > 0 && d->channel_lpf_plan_rate_out != rate_out) {
+        channel_lpf_reset_state(d);
+    }
+
     int taps_len = 0;
     if (width_hz > 0) {
         taps_len =
@@ -616,35 +654,59 @@ channel_lpf_ensure_plan(struct demod_state* d) {
     d->channel_lpf_plan_taps_len = taps_len;
 }
 
+/* A block the channel filter does not run on (the filter off, or no plan for the width) passes unfiltered and breaks
+   the stream the filter was on: what it held back is dropped and its next block starts over. pending is above 0
+   exactly when the filter took samples since its last reset, so only the first such block clears. */
+static void
+channel_lpf_bypass(struct demod_state* d) {
+    if (d->channel_lpf_pending != 0) {
+        channel_lpf_reset_state(d);
+    }
+}
+
+/*
+ * The channel FIR, streaming: a block makes the outputs whose look-ahead it completes, max(0, pending + N - c), each
+ * centred on its own input sample, so the output does not depend on where the blocks are cut. The first c samples
+ * after a reset make no output yet (about 1.4 ms at 48 kHz with 135 taps), and a block can make none at all.
+ */
 static void
 channel_lpf_apply(struct demod_state* d) {
-    if (!d || !d->channel_lpf_enable || d->lp_len < 2) {
+    if (!d) {
+        return;
+    }
+    if (!d->channel_lpf_enable) {
+        channel_lpf_bypass(d);
         return;
     }
 
     channel_lpf_ensure_plan(d);
     const float* taps = d->channel_lpf_plan_taps;
-    int taps_len = d->channel_lpf_plan_taps_len;
-    if (!taps || taps_len < 3) {
+    const int taps_len = d->channel_lpf_plan_taps_len;
+    if (taps_len < 3 || !d->lowpassed || d->lp_len < 0) {
+        channel_lpf_bypass(d);
         return;
     }
 
-    const int hist_len = taps_len - 1;
     const int N = d->lp_len >> 1; /* complex samples */
-    if (hist_len > d->channel_lpf_hist_len) {
-        d->channel_lpf_hist_len = hist_len;
-    }
-
     const float* in = assume_aligned_ptr(d->lowpassed, DSD_NEO_ALIGN);
     float* out = (d->lowpassed == d->hb_workbuf) ? d->timing_buf : d->hb_workbuf;
     float* hi = assume_aligned_ptr(d->channel_lpf_hist_i, DSD_NEO_ALIGN);
     float* hq = assume_aligned_ptr(d->channel_lpf_hist_q, DSD_NEO_ALIGN);
+    const int out_cap = DSD_DEMOD_WORKBUF_LENGTH / 2;
 
     /* Use SIMD-dispatched complex symmetric FIR */
-    simd_fir_complex_apply(in, d->lp_len, out, hi, hq, taps, taps_len);
+    const int made = simd_fir_complex_apply(in, N, out, out_cap, hi, hq, DSD_CHANNEL_LPF_HIST_LEN,
+                                            &d->channel_lpf_pending, taps, taps_len);
+    if (made < 0) {
+        /* Not reachable: a plan has odd taps within the capacity, pending stays within the history (the static
+           asserts above), and a block fits the work buffer. Should it happen, the block passes unfiltered and the
+           filter starts over. */
+        channel_lpf_reset_state(d);
+        return;
+    }
 
     d->lowpassed = out;
-    d->lp_len = N << 1;
+    d->lp_len = made << 1;
 }
 
 /**
@@ -880,11 +942,15 @@ dsd_demod_iq_balance_active(const struct demod_state* d) {
  */
 void
 raw_demod(struct demod_state* fm) {
+    /* The channel FIR can make up to 143 complex samples more than a maximum block on a tap shrink (its work buffers
+       hold them); result holds MAXIMUM_BUF_LENGTH floats. */
+    const int capacity = (int)(sizeof(fm->result) / sizeof(fm->result[0]));
+    const int n = fm->lp_len < capacity ? fm->lp_len : capacity;
     int i;
-    for (i = 0; i < fm->lp_len; i++) {
+    for (i = 0; i < n; i++) {
         fm->result[i] = fm->lowpassed[i];
     }
-    fm->result_len = fm->lp_len;
+    fm->result_len = n;
 }
 
 /**
@@ -1209,9 +1275,20 @@ full_demod_apply_halfband_decimation(struct demod_state* d) {
     d->lp_len = in_len;
 }
 
+/* The half-band cascade and the channel filter made no samples (a filter warm-up, or nothing in): the block has no
+   output, and the per-block decisions after this point (squelch gate, envelope, CQPSK zero symbols) wait for one with
+   samples. */
+static int
+full_demod_front_end_empty(struct demod_state* d) {
+    if (d->lowpassed && d->lp_len >= 2) {
+        return 0;
+    }
+    d->result_len = 0;
+    return 1;
+}
+
 static void
 full_demod_update_channel_state(struct demod_state* d) {
-    channel_lpf_apply(d);
     if (d->lowpassed && d->lp_len >= 2) {
         int n = (d->lp_len > 512) ? 512 : d->lp_len;
         d->channel_pwr = mean_power(d->lowpassed, n, 1);
@@ -1549,6 +1626,10 @@ full_demod_apply_squelch_envelope(struct demod_state* d) {
 void
 full_demod(struct demod_state* d) {
     full_demod_apply_halfband_decimation(d);
+    channel_lpf_apply(d);
+    if (full_demod_front_end_empty(d)) {
+        return;
+    }
     full_demod_update_channel_state(d);
     if (full_demod_emit_zero_cqpsk_symbols(d)) {
         return;

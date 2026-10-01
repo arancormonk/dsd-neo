@@ -15,6 +15,7 @@
 #include <vector>
 #include <xmmintrin.h>
 #include "dsd-neo/core/safe_api.h"
+#include "simd_fir_internal.h"
 
 // NOLINTBEGIN(portability-simd-intrinsics)
 
@@ -65,6 +66,27 @@ prepare_complex_scratch(const float* in, int in_len, const float* hist_i, const 
         scratch[2 * kk + 1] = last_q;
     }
 
+    return scratch;
+}
+
+/* The streaming FIR's windows: the history's last @p take samples, then the block, as interleaved I/Q. */
+static float*
+prepare_fir_scratch(const float* in, int n_in, const float* hist_i, const float* hist_q, int hist_len, int take) {
+    const size_t scratch_len = ((size_t)take + (size_t)n_in) * 2U;
+    if (tls_scratch_iq.size() < scratch_len) {
+        tls_scratch_iq.resize(scratch_len);
+    }
+
+    float* scratch = tls_scratch_iq.data();
+    const int first = hist_len - take;
+    for (int k = 0; k < take; k++) {
+        const size_t kk = (size_t)k;
+        scratch[2 * kk] = hist_i[first + k];
+        scratch[2 * kk + 1] = hist_q[first + k];
+    }
+    if (n_in > 0) {
+        DSD_MEMCPY(scratch + (size_t)take * 2, in, (size_t)n_in * 2 * sizeof(float));
+    }
     return scratch;
 }
 
@@ -255,91 +277,96 @@ hb_complex_decim2_fixed_dispatch(const float* in, int ch_len, float* out, float*
 } /* namespace */
 
 /**
- * SSE2 complex symmetric FIR filter (no decimation).
+ * SSE2 complex symmetric FIR filter (no decimation), streaming (simd_fir_complex_apply()).
  * Processes 2 complex samples (4 floats) at a time.
  */
-extern "C" void
-simd_fir_complex_apply_sse2(const float* in, int in_len, float* out, float* hist_i, float* hist_q, const float* taps,
-                            int taps_len) {
-    if (taps_len < 3 || (taps_len & 1) == 0 || in_len < 2) {
-        return;
+extern "C" int
+simd_fir_complex_apply_sse2(const float* in, int n_in, float* out, int out_cap, float* hist_i, float* hist_q,
+                            int hist_len, int* pending, const float* taps, int taps_len) {
+    const int outputs =
+        simd_fir_complex_outputs(in, n_in, out, out_cap, hist_i, hist_q, hist_len, pending, taps, taps_len);
+    if (outputs < 0) {
+        return -1;
     }
 
-    const int N = in_len >> 1; /* complex samples */
-    const int hist_len = taps_len - 1;
     const int center = (taps_len - 1) >> 1;
-    const int pad = center + 2;
-    float* scratch = prepare_complex_scratch(in, in_len, hist_i, hist_q, hist_len, pad);
+    if (outputs > 0) {
+        /* The windows span the history's last pending + center samples and the block: output n is centred at
+           scratch index center + n, and the last window ends on the block's last sample. */
+        const float* scratch = prepare_fir_scratch(in, n_in, hist_i, hist_q, hist_len, *pending + center);
 
-    auto get_iq = [&](int idx, float& xi, float& xq) {
-        const size_t ii = (size_t)idx;
-        xi = scratch[2 * ii];
-        xq = scratch[2 * ii + 1];
-    };
+        auto get_iq = [&](int idx, float& xi, float& xq) {
+            const size_t ii = (size_t)idx;
+            xi = scratch[2 * ii];
+            xq = scratch[2 * ii + 1];
+        };
 
-    /* Process 2 complex samples at a time (4 floats) */
-    int n = 0;
-    for (; n + 1 < N; n += 2) {
-        __m128 acc = _mm_setzero_ps(); /* [I0, Q0, I1, Q1] */
+        /* Process 2 complex samples at a time (4 floats) */
+        int n = 0;
+        for (; n + 1 < outputs; n += 2) {
+            __m128 acc = _mm_setzero_ps(); /* [I0, Q0, I1, Q1] */
 
-        /* Center tap for both samples */
-        float cc = taps[center];
-        __m128 tap_c = _mm_set1_ps(cc);
+            /* Center tap for both samples */
+            float cc = taps[center];
+            __m128 tap_c = _mm_set1_ps(cc);
 
-        const size_t center_offset = ((size_t)hist_len + (size_t)n) << 1;
-        __m128 center_val = _mm_loadu_ps(scratch + center_offset);
-        acc = _mm_add_ps(acc, _mm_mul_ps(tap_c, center_val));
+            const size_t center_offset = ((size_t)center + (size_t)n) << 1;
+            __m128 center_val = _mm_loadu_ps(scratch + center_offset);
+            acc = _mm_add_ps(acc, _mm_mul_ps(tap_c, center_val));
 
-        /* Symmetric pairs */
-        for (int k = 0; k < center; k++) {
-            float ce = taps[k];
-            if (ce == 0.0f) {
-                continue;
+            /* Symmetric pairs */
+            for (int k = 0; k < center; k++) {
+                float ce = taps[k];
+                if (ce == 0.0f) {
+                    continue;
+                }
+                int d = center - k;
+                __m128 tap_e = _mm_set1_ps(ce);
+
+                const size_t minus_offset = ((size_t)(center + n - d)) << 1;
+                const size_t plus_offset = ((size_t)(center + n + d)) << 1;
+                __m128 sum_m = _mm_loadu_ps(scratch + minus_offset);
+                __m128 sum_p = _mm_loadu_ps(scratch + plus_offset);
+                __m128 sum = _mm_add_ps(sum_m, sum_p);
+                acc = _mm_add_ps(acc, _mm_mul_ps(tap_e, sum));
             }
-            int d = center - k;
-            __m128 tap_e = _mm_set1_ps(ce);
 
-            const size_t minus_offset = ((size_t)(hist_len + n - d)) << 1;
-            const size_t plus_offset = ((size_t)(hist_len + n + d)) << 1;
-            __m128 sum_m = _mm_loadu_ps(scratch + minus_offset);
-            __m128 sum_p = _mm_loadu_ps(scratch + plus_offset);
-            __m128 sum = _mm_add_ps(sum_m, sum_p);
-            acc = _mm_add_ps(acc, _mm_mul_ps(tap_e, sum));
+            _mm_storeu_ps(out + (n << 1), acc);
         }
 
-        _mm_storeu_ps(out + (n << 1), acc);
-    }
+        /* Scalar epilogue for remaining sample */
+        for (; n < outputs; n++) {
+            int center_idx = center + n;
+            float accI = 0.0f;
+            float accQ = 0.0f;
 
-    /* Scalar epilogue for remaining sample */
-    for (; n < N; n++) {
-        int center_idx = hist_len + n;
-        float accI = 0.0f;
-        float accQ = 0.0f;
+            float ci, cq;
+            get_iq(center_idx, ci, cq);
+            float cc = taps[center];
+            accI += cc * ci;
+            accQ += cc * cq;
 
-        float ci, cq;
-        get_iq(center_idx, ci, cq);
-        float cc = taps[center];
-        accI += cc * ci;
-        accQ += cc * cq;
-
-        for (int k = 0; k < center; k++) {
-            float ce = taps[k];
-            if (ce == 0.0f) {
-                continue;
+            for (int k = 0; k < center; k++) {
+                float ce = taps[k];
+                if (ce == 0.0f) {
+                    continue;
+                }
+                int d = center - k;
+                float xmI, xmQ, xpI, xpQ;
+                get_iq(center_idx - d, xmI, xmQ);
+                get_iq(center_idx + d, xpI, xpQ);
+                accI += ce * (xmI + xpI);
+                accQ += ce * (xmQ + xpQ);
             }
-            int d = center - k;
-            float xmI, xmQ, xpI, xpQ;
-            get_iq(center_idx - d, xmI, xmQ);
-            get_iq(center_idx + d, xpI, xpQ);
-            accI += ce * (xmI + xpI);
-            accQ += ce * (xmQ + xpQ);
-        }
 
-        out[n << 1] = accI;
-        out[(n << 1) + 1] = accQ;
+            out[n << 1] = accI;
+            out[(n << 1) + 1] = accQ;
+        }
     }
 
-    update_complex_history(in, N, hist_i, hist_q, hist_len);
+    *pending += n_in - outputs;
+    simd_fir_complex_push_history(in, n_in, hist_i, hist_q, hist_len);
+    return outputs;
 }
 
 /**

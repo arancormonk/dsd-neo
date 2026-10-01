@@ -30,15 +30,15 @@
 #if defined(DSD_NEO_TEST_HAVE_AVX2_IMPL)
 #include "dsp/simd_x86_cpu.h"
 #endif
-extern "C" void simd_fir_complex_apply_sse2(const float* in, int in_len, float* out, float* hist_i, float* hist_q,
-                                            const float* taps, int taps_len);
+extern "C" int simd_fir_complex_apply_sse2(const float* in, int n_in, float* out, int out_cap, float* hist_i,
+                                           float* hist_q, int hist_len, int* pending, const float* taps, int taps_len);
 extern "C" int simd_hb_decim2_complex_sse2(const float* in, int in_len, float* out, float* hist_i, float* hist_q,
                                            const float* taps, int taps_len);
 extern "C" int simd_hb_decim2_real_sse2(const float* in, int in_len, float* out, float* hist, const float* taps,
                                         int taps_len);
 #if defined(DSD_NEO_TEST_HAVE_AVX2_IMPL)
-extern "C" void simd_fir_complex_apply_avx2(const float* in, int in_len, float* out, float* hist_i, float* hist_q,
-                                            const float* taps, int taps_len);
+extern "C" int simd_fir_complex_apply_avx2(const float* in, int n_in, float* out, int out_cap, float* hist_i,
+                                           float* hist_q, int hist_len, int* pending, const float* taps, int taps_len);
 extern "C" int simd_hb_decim2_complex_avx2(const float* in, int in_len, float* out, float* hist_i, float* hist_q,
                                            const float* taps, int taps_len);
 extern "C" int simd_hb_decim2_real_avx2(const float* in, int in_len, float* out, float* hist, const float* taps,
@@ -47,8 +47,8 @@ extern "C" int simd_hb_decim2_real_avx2(const float* in, int in_len, float* out,
 #endif
 
 #if defined(__aarch64__) || defined(__arm64) || defined(_M_ARM64) || defined(_M_ARM64EC)
-extern "C" void simd_fir_complex_apply_neon(const float* in, int in_len, float* out, float* hist_i, float* hist_q,
-                                            const float* taps, int taps_len);
+extern "C" int simd_fir_complex_apply_neon(const float* in, int n_in, float* out, int out_cap, float* hist_i,
+                                           float* hist_q, int hist_len, int* pending, const float* taps, int taps_len);
 extern "C" int simd_hb_decim2_complex_neon(const float* in, int in_len, float* out, float* hist_i, float* hist_q,
                                            const float* taps, int taps_len);
 extern "C" int simd_hb_decim2_real_neon(const float* in, int in_len, float* out, float* hist, const float* taps,
@@ -88,7 +88,7 @@ randf() {
     return (unit * 2.0f) - 1.0f;
 }
 
-using complex_fir_backend_fn = void (*)(const float*, int, float*, float*, float*, const float*, int);
+using complex_fir_backend_fn = int (*)(const float*, int, float*, int, float*, float*, int, int*, const float*, int);
 using complex_hb_backend_fn = int (*)(const float*, int, float*, float*, float*, const float*, int);
 using real_hb_backend_fn = int (*)(const float*, int, float*, float*, const float*, int);
 
@@ -119,9 +119,18 @@ test_direct_complex_fir_backend(const char* name, complex_fir_backend_fn fn) {
         hist_q_simd[i] = hist_q_ref[i] = 0.40f - 0.02f * (float)i;
     }
 
-    fn(in, N * 2, out_simd, hist_i_simd, hist_q_simd, taps, taps_len);
-    simd_fir_complex_apply_scalar(in, N * 2, out_ref, hist_i_ref, hist_q_ref, taps, taps_len);
+    /* A steady stream: pending at c, so the N samples make N outputs. */
+    int pending_simd = (taps_len - 1) / 2;
+    int pending_ref = pending_simd;
+    const int len_simd = fn(in, N, out_simd, N, hist_i_simd, hist_q_simd, hist_len, &pending_simd, taps, taps_len);
+    const int len_ref = simd_fir_complex_apply_scalar(in, N, out_ref, N, hist_i_ref, hist_q_ref, hist_len, &pending_ref,
+                                                      taps, taps_len);
 
+    if (len_simd != N || len_ref != N || pending_simd != pending_ref) {
+        DSD_FPRINTF(stderr, "  FAIL: Output length mismatch (%d vs %d, pending %d vs %d)\n", len_simd, len_ref,
+                    pending_simd, pending_ref);
+        return 1;
+    }
     if (!arrays_close(out_simd, out_ref, N * 2, kTolerance)) {
         DSD_FPRINTF(stderr, "  FAIL: Output mismatch\n");
         return 1;
@@ -260,9 +269,15 @@ test_direct_backend_tail_mix(const char* name, complex_fir_backend_fn fir_fn, co
             hist_q_simd[i] = hist_q_ref[i] = -0.35f + 0.02f * (float)i;
         }
 
-        fir_fn(in, N * 2, out_simd, hist_i_simd, hist_q_simd, taps, taps_len);
-        simd_fir_complex_apply_scalar(in, N * 2, out_ref, hist_i_ref, hist_q_ref, taps, taps_len);
-        if (!arrays_close(out_simd, out_ref, N * 2, kTolerance)
+        /* A steady stream: pending at c, so the N samples make N outputs. */
+        int pending_simd = (taps_len - 1) / 2;
+        int pending_ref = pending_simd;
+        const int len_simd =
+            fir_fn(in, N, out_simd, N, hist_i_simd, hist_q_simd, hist_len, &pending_simd, taps, taps_len);
+        const int len_ref = simd_fir_complex_apply_scalar(in, N, out_ref, N, hist_i_ref, hist_q_ref, hist_len,
+                                                          &pending_ref, taps, taps_len);
+        if (len_simd != N || len_ref != N || pending_simd != pending_ref
+            || !arrays_close(out_simd, out_ref, N * 2, kTolerance)
             || !arrays_close(hist_i_simd, hist_i_ref, hist_len, kTolerance)
             || !arrays_close(hist_q_simd, hist_q_ref, hist_len, kTolerance)) {
             DSD_FPRINTF(stderr, "  FAIL: FIR vector/tail mix mismatch\n");
@@ -346,8 +361,13 @@ test_direct_backend_invalid_guards(const char* name, complex_fir_backend_fn fir_
     const float even_taps[4] = {0.25f, 0.5f, 0.5f, 0.25f};
     const float short_taps[2] = {0.5f, 0.5f};
 
-    fir_fn(in, 4, out, hist_i, hist_q, even_taps, 4);
-    fir_fn(in, 1, out, hist_i, hist_q, short_taps, 2);
+    int pending = 1;
+    const int f0 = fir_fn(in, 2, out, 2, hist_i, hist_q, 4, &pending, even_taps, 4);
+    const int f1 = fir_fn(in, 1, out, 2, hist_i, hist_q, 4, &pending, short_taps, 2);
+    if (f0 != -1 || f1 != -1 || pending != 1) {
+        DSD_FPRINTF(stderr, "  FAIL: invalid FIR taps returned %d/%d, pending %d\n", f0, f1, pending);
+        return 1;
+    }
     int c0 = hb_complex_fn(in, 4, out, hist_i, hist_q, even_taps, 4);
     int c1 = hb_complex_fn(in, 0, out, hist_i, hist_q, hb_q15_taps, 15);
     int r0 = hb_real_fn(in, 4, out, hist_r, even_taps, 4);
@@ -731,11 +751,22 @@ test_complex_fir_63tap() {
         in[i] = randf();
     }
 
-    /* Run both implementations */
-    simd_fir_complex_apply(in, N * 2, out_simd, hist_i_simd, hist_q_simd, taps, taps_len);
-    simd_fir_complex_apply_scalar(in, N * 2, out_ref, hist_i_ref, hist_q_ref, taps, taps_len);
+    /* Run both implementations from a fresh stream: the first c samples make no output yet. */
+    const int want = N - (taps_len - 1) / 2;
+    int pending_simd = 0;
+    int pending_ref = 0;
+    const int len_simd =
+        simd_fir_complex_apply(in, N, out_simd, N, hist_i_simd, hist_q_simd, hist_len, &pending_simd, taps, taps_len);
+    const int len_ref = simd_fir_complex_apply_scalar(in, N, out_ref, N, hist_i_ref, hist_q_ref, hist_len, &pending_ref,
+                                                      taps, taps_len);
 
-    if (!arrays_close(out_simd, out_ref, N * 2, kTolerance)) {
+    if (len_simd != want || len_ref != want || pending_simd != pending_ref || pending_ref != (taps_len - 1) / 2) {
+        DSD_FPRINTF(stderr, "  FAIL: Output length mismatch (%d vs %d, want %d; pending %d vs %d)\n", len_simd, len_ref,
+                    want, pending_simd, pending_ref);
+        return 1;
+    }
+
+    if (!arrays_close(out_simd, out_ref, want * 2, kTolerance)) {
         DSD_FPRINTF(stderr, "  FAIL: Output mismatch\n");
         return 1;
     }
@@ -1098,10 +1129,16 @@ test_public_scalar_fallback_edges() {
             hist_q_simd[i] = hist_q_ref[i] = 2.0f - (float)i;
         }
 
-        simd_fir_complex_apply(in, 8, out_simd, hist_i_simd, hist_q_simd, sparse_taps, taps_len);
-        simd_fir_complex_apply_scalar(in, 8, out_ref, hist_i_ref, hist_q_ref, sparse_taps, taps_len);
+        /* A steady stream: pending at c, so the 4 samples make 4 outputs. */
+        int pending_simd = (taps_len - 1) / 2;
+        int pending_ref = pending_simd;
+        const int len_simd = simd_fir_complex_apply(in, 4, out_simd, 4, hist_i_simd, hist_q_simd, hist_len,
+                                                    &pending_simd, sparse_taps, taps_len);
+        const int len_ref = simd_fir_complex_apply_scalar(in, 4, out_ref, 4, hist_i_ref, hist_q_ref, hist_len,
+                                                          &pending_ref, sparse_taps, taps_len);
 
-        if (!arrays_close(out_simd, out_ref, 8, kTolerance)
+        if (len_simd != 4 || len_ref != 4 || pending_simd != pending_ref
+            || !arrays_close(out_simd, out_ref, 8, kTolerance)
             || !arrays_close(hist_i_simd, hist_i_ref, hist_len, kTolerance)
             || !arrays_close(hist_q_simd, hist_q_ref, hist_len, kTolerance)) {
             DSD_FPRINTF(stderr, "  FAIL: Scalar complex FIR fallback mismatch\n");
@@ -1163,9 +1200,12 @@ test_public_scalar_fallback_edges() {
         alignas(64) float out_complex[2] = {11.0f, 12.0f};
         alignas(64) float hist_i[14] = {};
         alignas(64) float hist_q[14] = {};
-        simd_fir_complex_apply(in_complex, 1, out_complex, hist_i, hist_q, hb_q15_taps, 15);
-        if (out_complex[0] != 11.0f || out_complex[1] != 12.0f) {
-            DSD_FPRINTF(stderr, "  FAIL: Invalid complex FIR guard mutated output\n");
+        /* A sample that would make an output with no room for it is refused whole. */
+        int pending = 7;
+        const int fir_len =
+            simd_fir_complex_apply(in_complex, 1, out_complex, 0, hist_i, hist_q, 14, &pending, hb_q15_taps, 15);
+        if (fir_len != -1 || pending != 7 || out_complex[0] != 11.0f || out_complex[1] != 12.0f) {
+            DSD_FPRINTF(stderr, "  FAIL: Invalid complex FIR guard returned %d or mutated state\n", fir_len);
             return 1;
         }
 

@@ -19,15 +19,15 @@
 #include "simd_x86_cpu.h"
 
 #if defined(__x86_64__) || defined(_M_X64)
-extern "C" void simd_fir_complex_apply_sse2(const float* in, int in_len, float* out, float* hist_i, float* hist_q,
-                                            const float* taps, int taps_len);
+extern "C" int simd_fir_complex_apply_sse2(const float* in, int n_in, float* out, int out_cap, float* hist_i,
+                                           float* hist_q, int hist_len, int* pending, const float* taps, int taps_len);
 extern "C" int simd_hb_decim2_complex_sse2(const float* in, int in_len, float* out, float* hist_i, float* hist_q,
                                            const float* taps, int taps_len);
 extern "C" int simd_hb_decim2_real_sse2(const float* in, int in_len, float* out, float* hist, const float* taps,
                                         int taps_len);
 #if defined(DSD_NEO_DSP_HAVE_AVX2_IMPL) && DSD_NEO_X86_AVX2_RUNTIME_PROBE_SUPPORTED
-extern "C" void simd_fir_complex_apply_avx2(const float* in, int in_len, float* out, float* hist_i, float* hist_q,
-                                            const float* taps, int taps_len);
+extern "C" int simd_fir_complex_apply_avx2(const float* in, int n_in, float* out, int out_cap, float* hist_i,
+                                           float* hist_q, int hist_len, int* pending, const float* taps, int taps_len);
 extern "C" int simd_hb_decim2_complex_avx2(const float* in, int in_len, float* out, float* hist_i, float* hist_q,
                                            const float* taps, int taps_len);
 extern "C" int simd_hb_decim2_real_avx2(const float* in, int in_len, float* out, float* hist, const float* taps,
@@ -36,8 +36,8 @@ extern "C" int simd_hb_decim2_real_avx2(const float* in, int in_len, float* out,
 #endif
 
 #if defined(__aarch64__) || defined(__arm64) || defined(_M_ARM64) || defined(_M_ARM64EC)
-extern "C" void simd_fir_complex_apply_neon(const float* in, int in_len, float* out, float* hist_i, float* hist_q,
-                                            const float* taps, int taps_len);
+extern "C" int simd_fir_complex_apply_neon(const float* in, int n_in, float* out, int out_cap, float* hist_i,
+                                           float* hist_q, int hist_len, int* pending, const float* taps, int taps_len);
 extern "C" int simd_hb_decim2_complex_neon(const float* in, int in_len, float* out, float* hist_i, float* hist_q,
                                            const float* taps, int taps_len);
 extern "C" int simd_hb_decim2_real_neon(const float* in, int in_len, float* out, float* hist, const float* taps,
@@ -49,23 +49,21 @@ extern "C" int simd_hb_decim2_real_neon(const float* in, int in_len, float* out,
 /* -------------------------------------------------------------------------- */
 
 /**
- * Scalar complex symmetric FIR filter (no decimation).
+ * Scalar complex symmetric FIR filter (no decimation), streaming: output n is centred at logical index
+ * hist_len - pending + n of [history | block], so a call makes only the outputs whose look-ahead it holds.
  * Exploits tap symmetry: acc += tap[k] * (x[center-d] + x[center+d]).
  */
-void
-simd_fir_complex_apply_scalar(const float* in, int in_len, float* out, float* hist_i, float* hist_q, const float* taps,
-                              int taps_len) {
-    if (taps_len < 3 || (taps_len & 1) == 0 || in_len < 2) {
-        return;
+int
+simd_fir_complex_apply_scalar(const float* in, int n_in, float* out, int out_cap, float* hist_i, float* hist_q,
+                              int hist_len, int* pending, const float* taps, int taps_len) {
+    const int outputs =
+        simd_fir_complex_outputs(in, n_in, out, out_cap, hist_i, hist_q, hist_len, pending, taps, taps_len);
+    if (outputs < 0) {
+        return -1;
     }
 
-    const int N = in_len >> 1; /* complex samples */
-    const int hist_len = taps_len - 1;
     const int center = (taps_len - 1) >> 1;
-
-    /* Get last sample for edge handling */
-    float lastI = in[(N - 1) << 1];
-    float lastQ = in[((N - 1) << 1) + 1];
+    const int first_center = hist_len - *pending;
 
     /* Lambda to fetch sample from history or input */
     auto get_iq = [&](int src_idx, float& xi, float& xq) {
@@ -73,19 +71,14 @@ simd_fir_complex_apply_scalar(const float* in, int in_len, float* out, float* hi
             xi = hist_i[src_idx];
             xq = hist_q[src_idx];
         } else {
-            int rel = src_idx - hist_len;
-            if (rel < N) {
-                xi = in[rel << 1];
-                xq = in[(rel << 1) + 1];
-            } else {
-                xi = lastI;
-                xq = lastQ;
-            }
+            const size_t rel = (size_t)(src_idx - hist_len);
+            xi = in[2 * rel];
+            xq = in[2 * rel + 1];
         }
     };
 
-    for (int n = 0; n < N; n++) {
-        int center_idx = hist_len + n;
+    for (int n = 0; n < outputs; n++) {
+        int center_idx = first_center + n;
         float accI = 0.0f;
         float accQ = 0.0f;
 
@@ -114,22 +107,9 @@ simd_fir_complex_apply_scalar(const float* in, int in_len, float* out, float* hi
         out[(n << 1) + 1] = accQ;
     }
 
-    /* Update history with last (hist_len) complex samples */
-    if (N >= hist_len) {
-        for (int k = 0; k < hist_len; k++) {
-            int rel = N - hist_len + k;
-            hist_i[k] = in[rel << 1];
-            hist_q[k] = in[(rel << 1) + 1];
-        }
-    } else {
-        int need = hist_len - N;
-        DSD_MEMMOVE(hist_i, hist_i + (hist_len - need), (size_t)need * sizeof(float));
-        DSD_MEMMOVE(hist_q, hist_q + (hist_len - need), (size_t)need * sizeof(float));
-        for (int k = 0; k < N; k++) {
-            hist_i[need + k] = in[k << 1];
-            hist_q[need + k] = in[(k << 1) + 1];
-        }
-    }
+    *pending += n_in - outputs;
+    simd_fir_complex_push_history(in, n_in, hist_i, hist_q, hist_len);
+    return outputs;
 }
 
 /**
@@ -287,7 +267,7 @@ simd_hb_decim2_real_scalar(const float* in, int in_len, float* out, float* hist,
 /* Function Pointer Dispatch                                                  */
 /* -------------------------------------------------------------------------- */
 
-using fir_complex_fn = void (*)(const float*, int, float*, float*, float*, const float*, int);
+using fir_complex_fn = int (*)(const float*, int, float*, int, float*, float*, int, int*, const float*, int);
 using hb_decim2_complex_fn = int (*)(const float*, int, float*, float*, float*, const float*, int);
 using hb_decim2_real_fn = int (*)(const float*, int, float*, float*, const float*, int);
 
@@ -347,17 +327,17 @@ simd_fir_init_dispatch() {
 /* Public API                                                                 */
 /* -------------------------------------------------------------------------- */
 
-extern "C" void
-simd_fir_complex_apply(const float* in, int in_len, float* out, float* hist_i, float* hist_q, const float* taps,
-                       int taps_len) {
-    if (simd_fir_prefer_scalar_for_block(in_len, taps_len)) {
-        simd_fir_complex_apply_scalar(in, in_len, out, hist_i, hist_q, taps, taps_len);
-        return;
+extern "C" int
+simd_fir_complex_apply(const float* in, int n_in, float* out, int out_cap, float* hist_i, float* hist_q, int hist_len,
+                       int* pending, const float* taps, int taps_len) {
+    /* Blocks shorter than the filter stay scalar, as they did when this counted floats (in_len < 2 * taps_len). */
+    if (n_in > 0 && taps_len > 0 && n_in < taps_len) {
+        return simd_fir_complex_apply_scalar(in, n_in, out, out_cap, hist_i, hist_q, hist_len, pending, taps, taps_len);
     }
     if (g_fir_init_done.load(std::memory_order_acquire) != 2) {
         simd_fir_init_dispatch();
     }
-    g_fir_complex_impl(in, in_len, out, hist_i, hist_q, taps, taps_len);
+    return g_fir_complex_impl(in, n_in, out, out_cap, hist_i, hist_q, hist_len, pending, taps, taps_len);
 }
 
 extern "C" int

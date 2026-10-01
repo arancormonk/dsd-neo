@@ -12069,7 +12069,7 @@ cqpsk_reacquire_test_init_demod(struct demod_state* test_demod, int active_cqpsk
     test_demod->hb_hist_q[0][0] = -1.0f;
     test_demod->channel_lpf_hist_i[0] = 2.0f;
     test_demod->channel_lpf_hist_q[0] = -2.0f;
-    test_demod->channel_lpf_hist_len = 8;
+    test_demod->channel_lpf_pending = 8;
     test_demod->resamp_phase = 5;
     test_demod->resamp_hist_head = 3;
 }
@@ -12094,7 +12094,7 @@ cqpsk_reacquire_test_capture_result(const struct demod_state* test_demod,
     out_result->histories_cleared =
         (test_demod->hb_hist_i[0][0] == 0.0f && test_demod->hb_hist_q[0][0] == 0.0f
          && test_demod->channel_lpf_hist_i[0] == 0.0f && test_demod->channel_lpf_hist_q[0] == 0.0f
-         && test_demod->channel_lpf_hist_len == 0)
+         && test_demod->channel_lpf_pending == 0)
             ? 1
             : 0;
     out_result->output_kind_after = test_demod->output_kind;
@@ -12622,10 +12622,12 @@ family_test_all_zero(const float* v, size_t n) {
     return 1;
 }
 
+/* The channel filter starts over: its history zero and nothing pending (the seeded state below holds both). */
 static int
 family_test_channel_hist_clear(void) {
-    return family_test_all_zero(demod.channel_lpf_hist_i, DSD_CHANNEL_LPF_MAX_TAPS)
-           && family_test_all_zero(demod.channel_lpf_hist_q, DSD_CHANNEL_LPF_MAX_TAPS);
+    return family_test_all_zero(demod.channel_lpf_hist_i, DSD_CHANNEL_LPF_HIST_LEN)
+           && family_test_all_zero(demod.channel_lpf_hist_q, DSD_CHANNEL_LPF_HIST_LEN)
+           && demod.channel_lpf_pending == 0;
 }
 
 static int
@@ -12636,10 +12638,11 @@ family_test_hb_hist_clear(void) {
 
 static void
 family_test_seed_stale_filter_histories(void) {
-    for (int k = 0; k < DSD_CHANNEL_LPF_MAX_TAPS; k++) {
+    for (int k = 0; k < DSD_CHANNEL_LPF_HIST_LEN; k++) {
         demod.channel_lpf_hist_i[k] = 1.0f;
         demod.channel_lpf_hist_q[k] = -1.0f;
     }
+    demod.channel_lpf_pending = 9;
     for (int st = 0; st < 10; st++) {
         for (int k = 0; k < HB_TAPS_MAX - 1; k++) {
             demod.hb_hist_i[st][k] = 1.0f;

@@ -578,7 +578,10 @@ make_terminal_mute_replay_fixture(char* out_metadata_path, size_t out_metadata_p
         return 1;
     }
 
-    uint8_t payload[4096];
+    /* Each pass of the loop must make output for its reader to see (stop_loop_reader()): every rewind starts the
+       channel FIR over, which holds back its first 67 samples at 48 kHz (135 taps), so a pass needs more than 67 x 32
+       complex samples. 8192 bytes make 128 at the demod rate, 61 of them output. */
+    uint8_t payload[8192];
     for (size_t i = 0; i < sizeof(payload); i++) {
         payload[i] = static_cast<uint8_t>(i & 0xFFU);
     }

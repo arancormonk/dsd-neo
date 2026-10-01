@@ -1736,6 +1736,29 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   width published for an unset default that plan runs.
   The plan cache key is (rate_out, profile, width). The SIMD complex FIR kernels size their scratch per call, so the
   288-tap capacity needs no kernel change. Tests: `DSP_CHANNEL_FILTERS`, `DSP_DEMOD_MISC`.
+- Streaming channel FIR (issue #572, `simd_fir_complex_apply()` in `<dsd-neo/dsp/simd_fir.h>`, every backend sharing
+  the call contract in `src/dsp/simd_fir_internal.h`): a block's output does not depend on where the blocks are cut.
+  In complex samples, with c = (taps - 1) / 2, a call makes max(0, pending + N - c) outputs, output k centred at
+  `hist_len - pending + k` of [history | block], and leaves pending + N - outputs pending with the newest `hist_len`
+  inputs in the history. No variant pads the look-ahead past a block's end; an invalid call or a short `out_cap` returns
+  -1 with nothing touched. Scalar is bit-exact across splits; the SSE2, AVX2 and NEON kernels (and the dispatcher, which
+  sends blocks shorter than the filter to scalar) agree with their own whole-stream output within 1e-5.
+  - State: `demod_state::channel_lpf_hist_i/q` hold `DSD_CHANNEL_LPF_HIST_LEN` (287) samples whatever the taps, and
+    `channel_lpf_pending` the outputs held back. A tap-count change without a reset reconciles through pending (up to
+    N + c_old - c_new outputs), so the work buffers the filter writes (`hb_workbuf`, `timing_buf`) are
+    `DSD_DEMOD_WORKBUF_LENGTH` floats, a maximum block plus 287 complex.
+  - `dsd_demod_reset_filter_state()` (`<dsd-neo/dsp/demod_pipeline.h>`) is the one filter reset: half-band histories,
+    channel history, pending 0, so the next output is centred on the next input and what was held is dropped (a RESET
+    or loop rewind drops the last 67 samples at 48 kHz; EOF does not flush them). `rtl_demod_clear_filter_histories()`
+    and stream open (`demod_init_common_defaults()`) delegate to it.
+  - `channel_lpf_apply()` clears the channel state on a plan for another `rate_out` than the last one, and on the first
+    block the filter does not run on (filter off, or no plan for the width); a width or profile change at the same rate
+    keeps it. `full_demod()` gives a block its front end left empty (a filter warm-up) `result_len` 0 and no per-block
+    decision: squelch gate, envelope, channel power and CQPSK zero symbols wait for a block with samples.
+  - Tests: `DSP_FIR_SEGMENTATION` (FIR part: every backend and the dispatcher against the count formula, a
+    double-precision reference and their whole-stream output over many splits; tap switches; invalid calls; capacity;
+    exact-size buffers; the pipeline rules above), `DSP_SIMD_FIR`, `IO_RTL_REPLAY_DETERMINISM` (its count oracle is the
+    per-RESET-epoch streaming formula).
 
 Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
 
