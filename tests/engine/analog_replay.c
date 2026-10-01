@@ -151,8 +151,8 @@ typedef struct {
  * ("D023N/D047I"), the library's "DCS D023N / D047I" label less its prefix and spaces. Sized by both library label
  * sizes, so a longer label format grows the field instead of cutting the tone= token short. */
 enum {
-    ANALOG_TONE_LABEL_SIZE =
-        (int)DSD_CTCSS_LABEL_SIZE > (int)DSD_DCS_LABEL_SIZE ? (int)DSD_CTCSS_LABEL_SIZE : (int)DSD_DCS_LABEL_SIZE
+    ANALOG_TONE_LABEL_SIZE = (int)DSD_CTCSS_LABEL_SIZE > (int)DSD_DCS_LABEL_SIZE ? (int)DSD_CTCSS_LABEL_SIZE
+                                                                                 : (int)DSD_DCS_LABEL_SIZE
 };
 
 _Static_assert(sizeof("D023N/D047I") <= (size_t)ANALOG_TONE_LABEL_SIZE,
