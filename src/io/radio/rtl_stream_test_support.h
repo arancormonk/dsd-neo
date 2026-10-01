@@ -1244,6 +1244,9 @@ enum {
     RTL_STREAM_TEST_REPLAY_READER_EVENT_BOUNDARY = 17,
     /* replay reader: requested the input purge of a RESET or loop boundary, about to wait for it to be applied */
     RTL_STREAM_TEST_REPLAY_READER_PURGE_WAIT = 18,
+    /* demod: past its purge check, about to wait for its next input block, where it cannot see a purge flag (count:
+       blocks published so far, the virtual block 0 included) */
+    RTL_STREAM_TEST_REPLAY_DEMOD_INPUT_WAIT = 19,
 };
 
 typedef void (*rtl_stream_test_replay_stage_fn)(int stage, size_t count, void* ctx);

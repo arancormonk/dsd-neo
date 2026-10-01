@@ -2336,6 +2336,11 @@ Notes:
       purge request (a RESET's is the finalize's), read against a mark taken before it, with no deadline. A RESET
       checks that its finalize moved the discard generation by exactly one; any other count is logged and counted
       (`replay_event_reset_purge_mismatch_count` in `rtl_stream_test_replay_state`).
+    - The purge flag (`g_ring_purge_pending`) is cleared when a stream opens (`stream_open_init_pipeline()`, with the
+      input ring's discard generation). A stop between a RESET's or a live retune's request and its take leaves it
+      set, and the next stream's demod would otherwise discard its first input: a replay's chunk 1, with every later
+      block's media time a chunk late. `g_ring_purge_done_seq` only counts on, so a mark taken before each request
+      stays valid across streams.
     - A RETUNE keeps the centre the demod was last reset on, and the RESET after it resets the demod from there, as the
       live retune the pair records does (`demod_retune_reset_plan()`: a hop starts the band-edge FLL fresh, a hop back
       restores the cached seed). A rewind clears it.
@@ -2345,8 +2350,8 @@ Notes:
     Tests: `IO_RTL_REPLAY_DETERMINISM` (an eventful capture: RETUNE, MUTE and RESET groups off chunk boundaries, a lone
     MUTE, a MUTE at offset 0 and at the end, identical across the fast, slow and realtime readers with every chunk a
     block and nothing discarded; a decoder stalled at a RESET or a rewind loses nothing; the demod taking the purge
-    flag keeps the next chunk; the reset plans of a hop and a hop back; bounded stops at an event boundary and at a
-    rewind).
+    flag keeps the next chunk; a purge a stop left untaken does not reach the next replay; the reset plans of a hop
+    and a hop back; bounded stops at an event boundary and at a rewind).
   - I/Q replay end to end (issue #572). With the pacing and events above, the streaming front end (see DSP) and the
     decode clock on the capture's time (see Runtime), a replay without `-T` or `-Y` prints the same decoder output on
     every run, fast or realtime, however the decoder is scheduled, capture-time timestamps included

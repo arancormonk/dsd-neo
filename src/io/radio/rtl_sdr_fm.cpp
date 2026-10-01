@@ -3989,6 +3989,8 @@ demod_prepare_iteration_input(struct demod_state* d, int is_rtltcp_input, DemodI
     if (demod_should_pause_before_read(is_rtltcp_input)) {
         return 0;
     }
+    RTL_REPLAY_TEST_STAGE(RTL_STREAM_TEST_REPLAY_DEMOD_INPUT_WAIT,
+                          g_stream ? (size_t)g_stream->replay_out_written.load(std::memory_order_acquire) : 0U);
     if (!demod_read_input_block(d, span)) {
         return 0;
     }
@@ -6982,6 +6984,11 @@ stream_open_init_pipeline(const dsd_opts* opts, int demod_base_rate_hz) {
         LOG_ERROR("Failed to initialize input ring buffer.\n");
         return -1;
     }
+    /* A purge requested and never taken belongs to the stream that requested it: a stop can land between a RESET's or
+       a live retune's request and the demod's or the replay reader's take. Left set, it would discard this stream's
+       first input, a replay's chunk 1. The ring's discard generation starts again at input_ring_init(); the count of
+       purges applied only moves on, and a replay waits on it from a mark it takes before each request. */
+    g_ring_purge_pending.store(0, std::memory_order_release);
     input_ring_enable_space_notify(&input_ring, 0);
     controller_init(&controller);
     rtl_demod_config_from_env_and_opts(&demod, opts);

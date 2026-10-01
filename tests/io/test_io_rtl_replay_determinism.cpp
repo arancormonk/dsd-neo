@@ -1635,6 +1635,116 @@ test_replay_purge_the_demod_takes_keeps_the_next_chunk(void) {
 }
 
 namespace {
+/* test_replay_purge_a_stop_left_does_not_reach_the_next_replay(). */
+struct StalePurge {
+    std::atomic<int> session{1};
+    std::atomic<int> demod_waits_for_input{0};     /* replay 1: the demod waits for chunk 2, past its purge check */
+    std::atomic<int> reader_held{0};               /* replay 1: the reader held the RETUNE until then */
+    std::atomic<int> purge_waits{0};               /* replay 1: the reader's waits for the RESET's purge */
+    std::atomic<int> purges_taken[2] = {{0}, {0}}; /* purge flags the demod took, per replay */
+    std::atomic<int> chunk_one_committed{0};       /* replay 2: the reader committed chunk 1 */
+    std::atomic<int> held_until_committed{0};      /* replay 2: the demod's first demand wait lasted until then */
+};
+} // namespace
+
+static void
+stale_purge_stage(int stage, size_t count, void* ctx) {
+    StalePurge* sp = static_cast<StalePurge*>(ctx);
+    const int session = sp->session.load(std::memory_order_acquire);
+    if (stage == RTL_STREAM_TEST_REPLAY_DEMOD_PURGE_TAKEN) {
+        sp->purges_taken[session == 1 ? 0 : 1].fetch_add(1, std::memory_order_acq_rel);
+        return;
+    }
+    if (session == 1) {
+        if (stage == RTL_STREAM_TEST_REPLAY_DEMOD_INPUT_WAIT && count == 2U) {
+            /* Block 1 is published and read: the demod passed its purge check and waits for chunk 2. */
+            sp->demod_waits_for_input.store(1, std::memory_order_release);
+        } else if (stage == RTL_STREAM_TEST_REPLAY_READER_EVENT_BOUNDARY
+                   && sp->reader_held.exchange(1, std::memory_order_acq_rel) == 0) {
+            /* The reader applies the RETUNE and RESET only once the demod waits for input, where it cannot see the
+               RESET's purge flag. */
+            (void)wait_for_int(&sp->demod_waits_for_input, 1, 3000U);
+        } else if (stage == RTL_STREAM_TEST_REPLAY_READER_PURGE_WAIT
+                   && sp->purge_waits.fetch_add(1, std::memory_order_acq_rel) == 0) {
+            /* The RESET requested its purge. The replay stops here, as an app-control restart stops it, before the
+               reader takes the flag; the demod leaves its input wait on the stream's stop. Neither takes it. */
+            rtl_stream_test_replay_force_stop();
+        }
+        return;
+    }
+    if (stage == RTL_STREAM_TEST_REPLAY_READER_EVENT_BOUNDARY) {
+        /* The reader committed chunk 1 and waits for it to be read before the first RETUNE. */
+        sp->chunk_one_committed.store(1, std::memory_order_release);
+    } else if (stage == RTL_STREAM_TEST_REPLAY_DEMOD_WAIT_FOR_DEMAND && count == 1U) {
+        /* The demod's first block: it reaches its purge check only once chunk 1 is in the input ring. */
+        sp->held_until_committed.store(wait_for_int(&sp->chunk_one_committed, 1, 3000U), std::memory_order_release);
+    }
+}
+
+/* Issue #572: an input purge a stop left untaken belongs to the stream that requested it. A replay stopped between a
+ * RESET's purge request and its take (the reader's purge wait and the demod's purge check both leave on the stop) is
+ * followed by a second replay in the same process, which must deliver every chunk: the demod takes no purge flag before
+ * the second replay's first RESET, so chunk 1 is not discarded and every block keeps its media time. The forced
+ * interleaving: the first replay's RESET only once its demod waits for input past its purge check, and the stop at the
+ * reader's purge wait; then the second replay's demod held until the reader committed chunk 1. */
+static int
+test_replay_purge_a_stop_left_does_not_reach_the_next_replay(void) {
+    std::vector<LayoutChunk> first_layout;
+    char first_path[DSD_TEST_PATH_MAX];
+    std::vector<LayoutChunk> layout;
+    char metadata_path[DSD_TEST_PATH_MAX];
+    if (make_retune_capture(2U, &first_layout, first_path, sizeof(first_path)) != 0
+        || make_retune_capture(3U, &layout, metadata_path, sizeof(metadata_path)) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    StalePurge sp;
+    rtl_stream_test_set_replay_stage_hook(stale_purge_stage, &sp);
+    std::unique_ptr<dsd_opts> opts;
+    RtlSdrContext* ctx = NULL;
+    uint64_t delivered = 0U;
+    if (start_replay(first_path, 0, &opts, &ctx) != 0) {
+        rtl_stream_test_set_replay_stage_hook(NULL, NULL);
+        return 1;
+    }
+    /* The stop ends the decoder's read. */
+    rc |= read_replay_to_end("stale purge, replay 1", ctx, &delivered);
+    (void)stop_replay(ctx);
+    rc |= expect_true("stale purge, replay 1: the demod waited for input, past its purge check, before the RETUNE",
+                      sp.demod_waits_for_input.load());
+    rc |= expect_true("stale purge, replay 1: the reader waited for the RESET's purge", sp.purge_waits.load() >= 1);
+    rc |= expect_u64_eq("stale purge, replay 1: purge flags the demod took", (uint64_t)sp.purges_taken[0].load(), 0U);
+
+    sp.session.store(2, std::memory_order_release);
+    LegObserver observer;
+    rtl_stream_test_set_replay_block_hook(leg_block_hook, &observer);
+    rtl_stream_test_replay_state state;
+    DSD_MEMSET(&state, 0, sizeof(state));
+    if (start_replay(metadata_path, 0, &opts, &ctx) != 0) {
+        rc = 1;
+    } else {
+        rc |= read_replay_to_end("stale purge, replay 2", ctx, &delivered);
+        state = replay_state();
+        (void)stop_replay(ctx);
+    }
+    rtl_stream_test_set_replay_stage_hook(NULL, NULL);
+    rtl_stream_test_set_replay_block_hook(NULL, NULL);
+    rc |= expect_true("stale purge, replay 2: the demod reached its first block once chunk 1 was committed",
+                      sp.held_until_committed.load());
+    Signature sig;
+    sig.blocks = observer.blocks;
+    rc |= expect_blocks_follow_layout("stale purge, replay 2 (every chunk, chunk 1 first)", sig, layout);
+    rc |= expect_u64_eq("stale purge, replay 2: samples delivered (the oracle's count, none dropped)", delivered,
+                        oracle_output_count_of(layout));
+    rc |= expect_u64_eq("stale purge, replay 2: RESETs applied", state.replay_event_reset_count, 2U);
+    rc |= expect_u64_eq("stale purge, replay 2: RESETs whose finalize made other than one purge request",
+                        state.replay_event_reset_purge_mismatch_count, 0U);
+    rc |= expect_true("stale purge, replay 2: the demod took no more purge flags than its RESETs requested",
+                      sp.purges_taken[1].load() <= 2);
+    return rc;
+}
+
+namespace {
 /* test_replay_reset_after_a_retune_resets_from_the_old_centre(): the reset plan in force as the reader goes on past
  * each RESET. */
 struct ResetPlans {
@@ -1806,6 +1916,7 @@ main(void) {
     rc |= test_replay_reader_start_failure_at_the_first_demand_wait();
     rc |= test_replay_boundary_waits_for_a_stalled_decoder();
     rc |= test_replay_purge_the_demod_takes_keeps_the_next_chunk();
+    rc |= test_replay_purge_a_stop_left_does_not_reach_the_next_replay();
     rc |= test_replay_reset_after_a_retune_resets_from_the_old_centre();
     rc |= test_replay_event_boundary_waits_stop_in_bounded_time();
     rc |= remove_fixture_dirs();
