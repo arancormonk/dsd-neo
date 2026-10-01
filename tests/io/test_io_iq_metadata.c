@@ -1602,6 +1602,7 @@ test_committed_fixture_capture_times_parse(void) {
         "nfm_tone_synth",
         "noise_floor",
         "nxdn48",
+        "nxdn48_after_retune",
         "nxdn48_attenuated",
         "nxdn96",
         "p25p1_c4fm_cc",

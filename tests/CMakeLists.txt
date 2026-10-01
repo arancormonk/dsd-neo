@@ -11449,6 +11449,25 @@ if(DSD_HAS_RADIO)
     )
     dsd_neo_add_iq_decode_test(DECODE_IQ_NXDN48 nxdn48 -fi "Src=901")
     dsd_neo_add_iq_decode_test(DECODE_IQ_NXDN96 nxdn96 -fn "RAN 00")
+    # A call after a scan retune (issue #572): 7.5 s of noise_floor on one channel, the RETUNE, MUTE,
+    # RESET and MUTE a real scan retune records, then all of nxdn48 on the next channel
+    # (DERIVED_RETUNE in tools/build_iq_fixtures.py). -fi holds the receiver on NXDN48, so whatever
+    # the SPS hunt would do, this is the control: the eventful replay path decodes the call at 48 kHz.
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_NXDN48_AFTER_RETUNE
+        nxdn48_after_retune
+        -fi
+        "Src=901"
+    )
+    # --iq-info reads the fixture's version 2 sidecar, counts its event timeline and finds it
+    # replayable, with no warning. It prints and exits before the --iq-replay the helper adds runs.
+    dsd_neo_add_iq_decode_test(
+        IQ_INFO_NXDN48_AFTER_RETUNE
+        nxdn48_after_retune
+        "--iq-info \"${_DSD_NEO_IQ_FIXTURE_DIR}/nxdn48_after_retune.iq.json\""
+        "Format: +dsd-neo-iq v2.*Contains retunes: +yes \\(1 retune events\\).*Event timeline: +4 event\\(s\\).*Replay compatible: +yes"
+        "WARNING"
+    )
     # dPMR modulated from the CCH reference vectors, the only dPMR signal in the tree
     # whose content is known rather than guessed (#407). Every CCH CRC-7 in it passes,
     # so this is what a working integrity check has to be validated against. The voice
