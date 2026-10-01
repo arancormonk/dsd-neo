@@ -426,14 +426,15 @@ lead-in.
 must decode its `P25p2 SACCH` lines alike; MIN_CQPSK 11,900 and MIN_TOTAL 95,000 sit just under the measurement.
 
 `DECODE_IQ_NXDN48_GAP_ADVISORY_DETERMINISM` holds the input-level advisories to it. `nxdn48_gap` (`DERIVED_GAP` in
-`tools/build_iq_fixtures.py`) is `nxdn48` byte for byte, one blob in git with it, behind a version 2 sidecar that adds
-one 12 s `MUTE` (a `driver_overflow` gap) 4 s in, so the capture spans 18 s. `nxdn48` sits near full scale, RF HOT
-throughout: every leg warns 3 s into the capture and again 17 s in, once the 10 s cooldown has run out across the gap,
-and decodes the call between the two (EXPECTED `RF Level HOT.*Src=901.*RF Level HOT`). Each leg measured
+`tools/build_iq_fixtures.py`) is a version 2 sidecar alone: its `data_file` names `nxdn48.iq` (replay resolves it beside
+the sidecar), and it adds one 12 s `MUTE` (a `driver_overflow` gap) 4 s in, so the capture spans 18 s. `nxdn48` sits
+near full scale, RF HOT throughout: every leg warns 3 s into the capture and again 17 s in, the cooldown having run out
+at 13 s, and decodes the call between the two (EXPECTED `RF Level HOT.*Src=901.*RF Level HOT`; it decodes `Src=901`
+before the first warning too). Each leg measured
 `fsk_samples=287933 cqpsk_symbols=0 media_ms=18000`; MIN_FSK and MIN_TOTAL 287,000 sit just under it. With the
 cooldown on real time, before the fix, the fast and jitter legs finished before it ran out and printed only the first
 warning, and the realtime leg printed both, so the case failed at the second warning's line. Four `nxdn48` captures
-played back to back show the same split (one warning fast, two realtime) in 2.3 MB where the gap costs no new bytes.
+played back to back show the same split (one warning fast, two realtime) in 2.3 MB of data where the gap adds none.
 
 On `main` before issue #572 the cases fail. The host needs the replay batch tag, which `main` lacks, so its own
 `dsd-neo` ran the fast and realtime legs through the runner: `fast;fast` and `fast;realtime` both stop at the first

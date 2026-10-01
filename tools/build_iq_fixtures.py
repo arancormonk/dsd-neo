@@ -317,9 +317,11 @@ RETUNE_CAPTURE_STARTED_UTC = "2026-01-01T00:00:00Z"
 # warning's 10 s cooldown, then go on, as a driver overflow that drops them leaves a capture. The gap
 # is one MUTE event. Muted bytes are left out of the data file (muted_bytes_excluded), so the data
 # is the source fixture's bytes unchanged and only the media clock, and with it the decode clock,
-# moves through the gap. nxdn48 is normalized near full scale, RF HOT throughout, so the decoder
-# warns before the gap (3 s in) and again after it (17 s in): the 12 s gap clears the cooldown by
-# 4 s. Every replay, fast or realtime, must print both warnings at the same capture time.
+# moves through the gap. The fixture is a sidecar alone: its data_file names the source's data, which
+# replay resolves beside the sidecar, so it adds no data bytes. nxdn48 is normalized near full scale,
+# RF HOT throughout, so the decoder warns before the gap (3 s in) and again after it (17 s in). The
+# cooldown runs out at 13 s, so the gap, which ends at 16 s, clears it by 3 s, and the second warning
+# falls 4 s past it. Every replay, fast or realtime, must print both warnings at the same capture time.
 #
 # name, source fixture, gap start s, gap length s, MUTE reason
 DERIVED_GAP = [
@@ -764,8 +766,13 @@ def format_events(events):
     return ',\n  "events": [\n' + ",\n".join(blocks) + "\n  ]"
 
 
-def write_capture(out_dir, name, payload, **sidecar):
-    """Write a cu8 payload and its sidecar; keywords override SIDECAR_DEFAULTS."""
+def write_capture(out_dir, name, payload, data_file=None, **sidecar):
+    """Write a cu8 payload and its sidecar; keywords override SIDECAR_DEFAULTS.
+
+    With data_file, a path relative to out_dir that already holds the payload byte for byte, only the
+    sidecar is written, and it names that file: the fixture shares the data and adds none. Returns the
+    data bytes written (0 for a shared file).
+    """
     unknown = sorted(set(sidecar) - set(SIDECAR_DEFAULTS))
     if unknown:
         raise TypeError(f"write_capture: unknown sidecar field(s) {', '.join(unknown)}")
@@ -774,10 +781,17 @@ def write_capture(out_dir, name, payload, **sidecar):
     if len(payload) % CU8_ALIGN_BYTES:
         raise ValueError(f"{name}: {len(payload)} bytes is not a whole number of I/Q pairs")
     check_replay_events(fields, len(payload))
-    data_name = name + ".iq"
-    data_path = os.path.join(out_dir, data_name)
-    with open(data_path, "wb") as handle:
-        handle.write(payload)
+    written = len(payload)
+    if data_file is None:
+        data_name = name + ".iq"
+        with open(os.path.join(out_dir, data_name), "wb") as handle:
+            handle.write(payload)
+    else:
+        data_name = data_file
+        with open(os.path.join(out_dir, data_name), "rb") as handle:
+            if handle.read() != payload:
+                raise ValueError(f"{name}: {data_name} does not hold the payload the sidecar describes")
+        written = 0
     metadata = METADATA_TEMPLATE.format(
         version=fields["version"],
         sample_rate=SAMPLE_RATE_HZ,
@@ -792,9 +806,9 @@ def write_capture(out_dir, name, payload, **sidecar):
         data_bytes=len(payload),
         events=format_events(fields["events"]),
     )
-    with open(data_path + ".json", "w", encoding="utf-8") as handle:
+    with open(os.path.join(out_dir, name + ".iq.json"), "w", encoding="utf-8") as handle:
         handle.write(metadata)
-    return len(payload)
+    return written
 
 
 def write_fixture(out_dir, name, samples, normalize=True):
@@ -919,8 +933,9 @@ def build_derived_retune(out_dir):
 def build_gap_fixture(out_dir, src_dir, name, source, gap_at_s, gap_s, reason):
     """Write name: all of source, a committed fixture read from src_dir, with a gap_s MUTE at gap_at_s.
 
-    The source's bytes are written unchanged; the version 2 sidecar's one MUTE event moves only the
-    media clock (see DERIVED_GAP). Returns the bytes written.
+    Only the version 2 sidecar is written. Its data_file names the source's data file, relative to
+    out_dir, and its one MUTE event moves only the media clock (see DERIVED_GAP). Returns the data
+    bytes written, 0.
     """
     if name == source:
         raise ValueError(f"{name}: would overwrite its own source")
@@ -930,8 +945,15 @@ def build_gap_fixture(out_dir, src_dir, name, source, gap_at_s, gap_s, reason):
     if gap_at <= 0 or gap_at >= len(payload):
         raise ValueError(f"{name}: a gap at {gap_at_s} s needs samples on both sides of byte {gap_at}")
     event = {"kind": "MUTE", "byte_offset": gap_at, "duration_bytes": gap_bytes, "reason": reason}
+    data_file = os.path.relpath(os.path.join(src_dir, source + ".iq"), out_dir)
     return write_capture(
-        out_dir, name, payload, version=2, capture_started_utc=GAP_CAPTURE_STARTED_UTC, events=(event,)
+        out_dir,
+        name,
+        payload,
+        data_file=data_file,
+        version=2,
+        capture_started_utc=GAP_CAPTURE_STARTED_UTC,
+        events=(event,),
     )
 
 
@@ -941,7 +963,7 @@ def build_derived_gap(out_dir):
     for name, source, gap_at_s, gap_s, reason in DERIVED_GAP:
         written = build_gap_fixture(out_dir, out_dir, name, source, gap_at_s, gap_s, reason)
         total += written
-        print(f"{name:28s} gap     {written // 1024:6d} KiB")
+        print(f"{name:28s} gap     sidecar on {source}.iq")
     return total
 
 
