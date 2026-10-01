@@ -2925,6 +2925,117 @@ test_replay_conversion_failure_ends_with_the_failure(void) {
     return rc;
 }
 
+namespace {
+/* test_replay_of_a_data_file_cut_short(): the data file a replay reads, cut to its first keep_bytes once the reader
+ * has read chunk at_chunk. */
+struct FileCut {
+    std::string data_path;
+    size_t keep_bytes = 0U;
+    size_t at_chunk = 0U;
+    std::atomic<int> cut{0};
+    std::atomic<int> cut_ok{0};
+};
+} // namespace
+
+/* Write @p path again with only its first @p keep_bytes, as a file cut short under a reader that holds it open. */
+static int
+cut_file_to(const char* path, size_t keep_bytes) {
+    std::vector<uint8_t> kept(keep_bytes);
+    FILE* fp = dsd_fopen_private(path, "rb");
+    if (!fp) {
+        return -1;
+    }
+    const size_t got = std::fread(kept.data(), 1, keep_bytes, fp);
+    std::fclose(fp);
+    if (got != keep_bytes) {
+        return -1;
+    }
+    return write_bytes_file(path, kept.data(), kept.size());
+}
+
+static void
+file_cut_stage(int stage, size_t count, void* ctx) {
+    FileCut* cut = static_cast<FileCut*>(ctx);
+    /* The reader has read chunk at_chunk and waits for the demod to take the one before it. */
+    if (stage == RTL_STREAM_TEST_REPLAY_READER_WAIT_FOR_EMPTY_INPUT && count == cut->at_chunk
+        && cut->cut.exchange(1, std::memory_order_acq_rel) == 0) {
+        cut->cut_ok.store(cut_file_to(cut->data_path.c_str(), cut->keep_bytes) == 0, std::memory_order_release);
+    }
+}
+
+/* Issue #572: a data file cut short while it replays ends the replay as a failed read does: the reader hands over
+ * every whole sample still in the file, then the read that finds the file's end before the capture's is a failure,
+ * reported as such (dsd_engine_run_with_lifecycle() then returns 1). It used to end as the capture's end, with no
+ * failure. The cut lands on the reader's thread once it has read chunk 2 of 4: at the end of chunk 2 (cu8), and inside
+ * a complex sample 4092 bytes into chunk 3 (cf32), whose 511 whole samples reach the demod. */
+static int
+test_replay_of_a_data_file_cut_short(void) {
+    int rc = 0;
+    for (int cf32 = 0; cf32 <= 1; cf32++) {
+        const char* label = cf32 ? "cf32 data file cut inside a sample" : "cu8 data file cut at a chunk's end";
+        char metadata_path[DSD_TEST_PATH_MAX];
+        const int made =
+            cf32 ? make_indexed_cf32_replay_fixture(metadata_path, sizeof(metadata_path), 4U * kCf32ChunkFloats)
+                 : make_replay_fixture(metadata_path, sizeof(metadata_path), DSD_IQ_FORMAT_CU8, "post_mute_pre_widen",
+                                       1, 4U * kReplayChunkBytes);
+        if (made != 0) {
+            return 1;
+        }
+        FileCut cut;
+        cut.data_path = metadata_path;
+        cut.data_path.resize(cut.data_path.size() - std::strlen(".json"));
+        cut.at_chunk = 2U;
+        cut.keep_bytes = 2U * kReplayChunkBytes + (cf32 ? 4092U : 0U);
+        std::vector<ExpectedChunk> chunks;
+        if (cf32) {
+            chunks.push_back(ExpectedChunk{kCf32ChunkFloats, 0U});
+            chunks.push_back(ExpectedChunk{kCf32ChunkFloats, kCf32ChunkFloats / 2U});
+            chunks.push_back(ExpectedChunk{2U * static_cast<size_t>(511U), kCf32ChunkFloats});
+        } else {
+            chunks.push_back(ExpectedChunk{kCu8ChunkFloats, 0U});
+            chunks.push_back(ExpectedChunk{kCu8ChunkFloats, kCu8ChunkFloats / 2U});
+        }
+
+        dsd_input_failure_clear();
+        BlockLog log;
+        log.keep_samples = cf32;
+        rtl_stream_test_set_replay_block_hook(block_log_hook, &log);
+        rtl_stream_test_set_replay_stage_hook(file_cut_stage, &cut);
+        std::unique_ptr<dsd_opts> opts;
+        RtlSdrContext* ctx = NULL;
+        uint64_t delivered = 0U;
+        if (start_replay_stream(metadata_path, &opts, &ctx) != 0) {
+            stop_and_destroy_stream(ctx);
+            rc = 1;
+        } else {
+            int rescued = 0;
+            rc |= read_replay_to_end(ctx, 5000U, label, &delivered, &rescued);
+            finish_replay(ctx, rescued);
+        }
+        rtl_stream_test_set_replay_stage_hook(NULL, NULL);
+        rtl_stream_test_set_replay_block_hook(NULL, NULL);
+        dsd_input_failure failure;
+        dsd_input_failure_get(&failure);
+        dsd_input_failure_clear();
+
+        char what[160];
+        DSD_SNPRINTF(what, sizeof(what), "%s: the file was cut under the reader", label);
+        rc |= expect_true(what, cut.cut.load() && cut.cut_ok.load());
+        rc |= expect_blocks_match_chunks(label, log, chunks);
+        if (cf32) {
+            rc |= expect_indexed_floats(label, log, 2U * kCf32ChunkFloats + 2U * static_cast<size_t>(511U));
+        } else {
+            DSD_SNPRINTF(what, sizeof(what), "%s: what was read reached the decoder", label);
+            rc |= expect_true(what, delivered > 0U);
+        }
+        DSD_SNPRINTF(what, sizeof(what), "%s: reported as a file input failure", label);
+        rc |= expect_int_eq(what, failure.kind, DSD_INPUT_FAILURE_FILE);
+        DSD_SNPRINTF(what, sizeof(what), "%s: code reported", label);
+        rc |= expect_int_eq(what, failure.native_code, DSD_IQ_ERR_IO);
+    }
+    return rc;
+}
+
 /* Issue #572: an --iq-loop pass that hands the demod no chunk is not rewound: the replay ends there, as at the end of a
  * replay without --iq-loop, instead of rewinding in a tight loop through the reconfigure gate and a full finalize on
  * every pass with nothing ever reaching the decoder. Every chunk is made to convert to no sample (the shape a capture
@@ -3041,6 +3152,7 @@ main(void) {
     rc |= test_replay_refuses_a_capture_it_cannot_convert();
     rc |= test_replay_conversion_failure_ends_with_the_failure();
     rc |= test_loop_pass_that_submits_nothing_ends();
+    rc |= test_replay_of_a_data_file_cut_short();
     rc |= test_cu8_replay_publishes_raw_input_level();
     rc |= test_cu8_replay_legacy_fs4_level_uses_raw_block();
     rc |= test_cf32_replay_fs4_level_uses_raw_block();

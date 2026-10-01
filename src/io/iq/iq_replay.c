@@ -2140,7 +2140,11 @@ dsd_iq_replay_read(dsd_iq_replay_source* src, void* out, size_t max_bytes, size_
         max_bytes = (size_t)src->remaining_bytes;
     }
     size_t n = fread(out, 1, max_bytes, src->fp);
-    if (n == 0 && ferror(src->fp)) {
+    if (n == 0) {
+        /* Capture bytes remain: the open measured them, and remaining_bytes counts what is left. A read that gets none
+           failed (ferror()), or found the end of a file cut short after the open, which is a read error too, not the
+           capture's end. A capture whose data_bytes is 0 counts the file's size at the open, so a healthy file never
+           runs out before it. */
         return DSD_IQ_ERR_IO;
     }
     src->remaining_bytes -= (uint64_t)n;

@@ -1435,6 +1435,98 @@ test_replay_read_partial_eof_and_rewind(void) {
     return rc;
 }
 
+enum { kReplayReadChunk = 65536 }; /* one replay reader read */
+
+/* Issue #572: the replay source knows from its open how many bytes the capture holds. A data file cut short after the
+ * open (truncated while it replays) runs out before them, and the read that finds nothing more is an I/O error, not
+ * the capture's end: the bytes still there are read first, then reads fail. A sidecar whose data_bytes is 0 (an
+ * interrupted capture, replayed as the file was at its open) reads to that end with no error. The reads are whole
+ * replay chunks, as the replay reader's are, so no stdio buffer holds bytes the cut removed. */
+static int
+test_replay_read_of_a_data_file_cut_short(void) {
+    static const char* const files[] = {"cut.iq", "cut.iq.json", "whole.iq", "whole.iq.json", NULL};
+    static uint8_t payload[3 * kReplayReadChunk];
+    static uint8_t buf[kReplayReadChunk];
+    int rc = 0;
+    char dir[256];
+    char err[256];
+    if (mk_temp_dir(dir, sizeof(dir), files) != 0) {
+        return 1;
+    }
+    for (size_t i = 0; i < sizeof(payload); i++) {
+        payload[i] = (uint8_t)((i * 31U) & 0xFFU);
+    }
+
+    char meta[512];
+    char data[512];
+    path_join(meta, sizeof(meta), dir, "cut.iq.json");
+    path_join(data, sizeof(data), dir, "cut.iq");
+    if (write_bytes_file(data, payload, sizeof(payload)) != 0
+        || write_valid_metadata(meta, "cut.iq", "cu8", "none", "post_mute_pre_widen", 1536000, 32, 1, 48000, 0,
+                                sizeof(payload))
+               != 0) {
+        return 1;
+    }
+    dsd_iq_replay_config cfg;
+    dsd_iq_replay_source* src = NULL;
+    DSD_MEMSET(&cfg, 0, sizeof(cfg));
+    int prc = dsd_iq_replay_open(meta, &cfg, &src, err, sizeof(err));
+    rc |= expect_int("cut data file: open", prc, DSD_IQ_OK);
+    if (prc != DSD_IQ_OK || !src) {
+        dsd_iq_replay_config_clear(&cfg);
+        return 1;
+    }
+    size_t got = 99U;
+    rc |= expect_int("cut data file: first chunk", dsd_iq_replay_read(src, buf, sizeof(buf), &got), DSD_IQ_OK);
+    rc |= expect_u64("cut data file: first chunk size", got, kReplayReadChunk);
+    rc |= expect_true("cut data file: first chunk bytes", memcmp(buf, payload, kReplayReadChunk) == 0);
+
+    /* Cut the file 1000 bytes into the second chunk, under the open source. */
+    rc |= expect_int("cut data file: cut", write_bytes_file(data, payload, kReplayReadChunk + 1000U), 0);
+    got = 99U;
+    rc |= expect_int("cut data file: the bytes left", dsd_iq_replay_read(src, buf, sizeof(buf), &got), DSD_IQ_OK);
+    rc |= expect_u64("cut data file: the bytes left, size", got, 1000U);
+    rc |= expect_true("cut data file: the bytes left, bytes", memcmp(buf, payload + kReplayReadChunk, 1000U) == 0);
+    got = 99U;
+    rc |= expect_int("cut data file: the read past the cut fails", dsd_iq_replay_read(src, buf, sizeof(buf), &got),
+                     DSD_IQ_ERR_IO);
+    rc |= expect_u64("cut data file: the failed read's size", got, 0U);
+    got = 99U;
+    rc |= expect_int("cut data file: the next read fails too", dsd_iq_replay_read(src, buf, sizeof(buf), &got),
+                     DSD_IQ_ERR_IO);
+    dsd_iq_replay_close(src);
+    src = NULL;
+    dsd_iq_replay_config_clear(&cfg);
+
+    /* data_bytes 0: the file's size at the open, rounded down to a whole sample, is the capture. */
+    path_join(meta, sizeof(meta), dir, "whole.iq.json");
+    path_join(data, sizeof(data), dir, "whole.iq");
+    if (write_bytes_file(data, payload, kReplayReadChunk + 1001U) != 0
+        || write_valid_metadata(meta, "whole.iq", "cu8", "none", "post_mute_pre_widen", 1536000, 32, 1, 48000, 0, 0U)
+               != 0) {
+        return 1;
+    }
+    DSD_MEMSET(&cfg, 0, sizeof(cfg));
+    prc = dsd_iq_replay_open(meta, &cfg, &src, err, sizeof(err));
+    rc |= expect_int("data_bytes 0: open", prc, DSD_IQ_OK);
+    if (prc != DSD_IQ_OK || !src) {
+        dsd_iq_replay_config_clear(&cfg);
+        return 1;
+    }
+    got = 99U;
+    rc |= expect_int("data_bytes 0: first chunk", dsd_iq_replay_read(src, buf, sizeof(buf), &got), DSD_IQ_OK);
+    rc |= expect_u64("data_bytes 0: first chunk size", got, kReplayReadChunk);
+    got = 99U;
+    rc |= expect_int("data_bytes 0: the rest", dsd_iq_replay_read(src, buf, sizeof(buf), &got), DSD_IQ_OK);
+    rc |= expect_u64("data_bytes 0: the rest, whole samples", got, 1000U);
+    got = 99U;
+    rc |= expect_int("data_bytes 0: the end", dsd_iq_replay_read(src, buf, sizeof(buf), &got), DSD_IQ_OK);
+    rc |= expect_u64("data_bytes 0: the end's size", got, 0U);
+    dsd_iq_replay_close(src);
+    dsd_iq_replay_config_clear(&cfg);
+    return rc;
+}
+
 /* One sidecar of test_replay_open_refuses_formats_it_cannot_convert(). */
 typedef struct {
     const char* metadata_file;
@@ -1779,6 +1871,7 @@ main(void) {
     rc |= test_rate_chain_validation();
     rc |= test_relative_data_resolution_info_and_open_validation();
     rc |= test_replay_read_partial_eof_and_rewind();
+    rc |= test_replay_read_of_a_data_file_cut_short();
     rc |= test_replay_open_refuses_formats_it_cannot_convert();
     rc |= remove_temp_dirs();
     return rc ? 1 : 0;

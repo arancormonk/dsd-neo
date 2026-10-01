@@ -104,6 +104,13 @@ int dsd_iq_replay_parse_utc_seconds(const char* text, int64_t* out_s);
  * successful replay metadata/open call.
  */
 void dsd_iq_replay_config_clear(dsd_iq_replay_config* cfg);
+
+/**
+ * @brief Read up to @p max_bytes of the capture's data into @p out.
+ *
+ * @p out_bytes gets the bytes read, 0 with DSD_IQ_OK once every byte the open measured for the capture is read.
+ * DSD_IQ_ERR_IO for a failed read, and for a data file that ends before those bytes (cut short after the open).
+ */
 int dsd_iq_replay_read(dsd_iq_replay_source* src, void* out, size_t max_bytes, size_t* out_bytes);
 int dsd_iq_replay_rewind(dsd_iq_replay_source* src);
 void dsd_iq_replay_close(dsd_iq_replay_source* src);

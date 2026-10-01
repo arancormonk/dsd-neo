@@ -11,6 +11,10 @@
  * GNU ld --wrap) fails after a few chunks. The replay has to end by itself, within a bound, with exit code 1 and the
  * read error reported as a file input failure. A watchdog raises the global exit flag if the engine is still running
  * after the bound, so a replay that hangs fails the test instead of the ctest timeout.
+ *
+ * With the argument "truncate" the wrapper fails no read itself: it cuts the data file to the chunks already read,
+ * under the open replay source, before the next real read, as a capture file that shrinks during its replay. The real
+ * read has to report that as the same read error.
  */
 
 #include <dsd-neo/core/init.h>
@@ -21,6 +25,7 @@
 #include <dsd-neo/io/iq_replay.h>
 #include <dsd-neo/io/iq_types.h>
 #include <dsd-neo/platform/atomic_compat.h>
+#include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/runtime/bootstrap.h>
@@ -29,6 +34,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -46,6 +52,26 @@ static atomic_int g_reads;
 static atomic_int g_engine_done;
 static atomic_int g_watchdog_fired;
 
+/* The capture's payload, and the data file it is written to. */
+static uint8_t g_payload[kChunks * kReplayChunkBytes];
+static char g_data_path[DSD_TEST_PATH_MAX];
+/* "truncate": cut the data file instead of failing the read. */
+static int g_truncate_mode;
+static atomic_int g_cut_ok;
+
+/* Write the data file again with only the chunks already read. */
+static int
+cut_data_file(void) {
+    FILE* fp = dsd_fopen_private(g_data_path, "wb");
+    if (!fp) {
+        return -1;
+    }
+    const size_t keep = (size_t)kReadsBeforeError * (size_t)kReplayChunkBytes;
+    const size_t wrote = fwrite(g_payload, 1, keep, fp);
+    const int close_rc = fclose(fp);
+    return (wrote == keep && close_rc == 0) ? 0 : -1;
+}
+
 // GNU ld --wrap entry points must keep the reserved __wrap_*/__real_* symbol names.
 // NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
 int __real_dsd_iq_replay_read(dsd_iq_replay_source* src, void* out, size_t max_bytes, size_t* out_bytes);
@@ -55,7 +81,14 @@ int __wrap_dsd_iq_replay_read(dsd_iq_replay_source* src, void* out, size_t max_b
 int
 // NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
 __wrap_dsd_iq_replay_read(dsd_iq_replay_source* src, void* out, size_t max_bytes, size_t* out_bytes) {
-    if (atomic_fetch_add(&g_reads, 1) >= kReadsBeforeError) {
+    const int read_index = atomic_fetch_add(&g_reads, 1);
+    if (read_index >= kReadsBeforeError) {
+        if (g_truncate_mode) {
+            if (read_index == kReadsBeforeError) {
+                atomic_store(&g_cut_ok, cut_data_file() == 0);
+            }
+            return __real_dsd_iq_replay_read(src, out, max_bytes, out_bytes);
+        }
         if (out_bytes) {
             *out_bytes = 0U;
         }
@@ -84,15 +117,14 @@ watchdog_fn(void* arg) {
 
 static int
 write_fixture(const char* dir, char* out_metadata_path, size_t out_metadata_path_size) {
-    char data_path[DSD_TEST_PATH_MAX];
-    if (dsd_test_path_join(data_path, sizeof(data_path), dir, "read_error.iq") != 0
+    if (dsd_test_path_join(g_data_path, sizeof(g_data_path), dir, "read_error.iq") != 0
         || dsd_test_path_join(out_metadata_path, out_metadata_path_size, dir, "read_error.iq.json") != 0) {
         return -1;
     }
 
     dsd_iq_capture_config cfg;
     DSD_MEMSET(&cfg, 0, sizeof(cfg));
-    DSD_SNPRINTF(cfg.data_path, sizeof(cfg.data_path), "%s", data_path);
+    DSD_SNPRINTF(cfg.data_path, sizeof(cfg.data_path), "%s", g_data_path);
     DSD_SNPRINTF(cfg.metadata_path, sizeof(cfg.metadata_path), "%s", out_metadata_path);
     cfg.format = DSD_IQ_FORMAT_CU8;
     DSD_SNPRINTF(cfg.capture_stage, sizeof(cfg.capture_stage), "%s", "post_mute_pre_widen");
@@ -116,11 +148,10 @@ write_fixture(const char* dir, char* out_metadata_path, size_t out_metadata_path
         DSD_FPRINTF(stderr, "FAIL: could not open the capture writer: %s\n", err[0] ? err : "unknown");
         return -1;
     }
-    static uint8_t payload[kChunks * kReplayChunkBytes];
-    for (size_t i = 0; i < sizeof(payload); i++) {
-        payload[i] = (uint8_t)(96U + ((i * 17U) % 65U));
+    for (size_t i = 0; i < sizeof(g_payload); i++) {
+        g_payload[i] = (uint8_t)(96U + ((i * 17U) % 65U));
     }
-    if (dsd_iq_capture_submit(writer, payload, sizeof(payload)) != DSD_IQ_OK) {
+    if (dsd_iq_capture_submit(writer, g_payload, sizeof(g_payload)) != DSD_IQ_OK) {
         dsd_iq_capture_abort(writer);
         return -1;
     }
@@ -140,7 +171,9 @@ expect_true(const char* label, int cond) {
 }
 
 int
-main(void) {
+main(int test_argc, char** test_argv) {
+    g_truncate_mode = test_argc > 1 && strcmp(test_argv[1], "truncate") == 0;
+    const char* const test_name = g_truncate_mode ? "ENGINE_REPLAY_TRUNCATED_CAPTURE" : "ENGINE_REPLAY_READ_ERROR";
     char dir[DSD_TEST_PATH_MAX];
     if (!dsd_test_mkdtemp(dir, sizeof(dir), "dsdneo_replay_read_error")) {
         DSD_FPRINTF(stderr, "FAIL: could not create the fixture directory\n");
@@ -196,14 +229,18 @@ main(void) {
     dsd_input_failure_get(&failure);
     rc |= expect_true("the replay ended by itself, before the watchdog", !atomic_load(&g_watchdog_fired));
     rc |= expect_true("the read error was reached", atomic_load(&g_reads) > kReadsBeforeError);
+    if (g_truncate_mode) {
+        rc |= expect_true("the data file was cut under the replay", atomic_load(&g_cut_ok));
+    }
     if (engine_rc != 1) {
-        DSD_FPRINTF(stderr, "FAIL: the engine returned %d for a replay read error (want 1)\n", engine_rc);
+        DSD_FPRINTF(stderr, "FAIL: the engine returned %d for a replay %s (want 1)\n", engine_rc,
+                    g_truncate_mode ? "whose data file was cut short" : "read error");
         rc = 1;
     }
     rc |= expect_true("the read error was reported as a file input failure",
                       failure.kind == DSD_INPUT_FAILURE_FILE && failure.native_code == DSD_IQ_ERR_IO);
     if (rc == 0) {
-        DSD_FPRINTF(stderr, "ENGINE_REPLAY_READ_ERROR: OK (engine rc %d after %llu ms)\n", engine_rc,
+        DSD_FPRINTF(stderr, "%s: OK (engine rc %d after %llu ms)\n", test_name, engine_rc,
                     (unsigned long long)elapsed_ms);
     }
 

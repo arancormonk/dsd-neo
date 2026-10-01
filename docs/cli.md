@@ -328,8 +328,8 @@ Notes
   workers, an Airspy that did not stream), or one a config undid because its stream could not run the scan row on air,
   had already written the file anew, and the log says that instead.
 - `--iq-replay` and `--iq-info` accept either the data file or the `.json` metadata path.
-- A capture that cannot be read to its end (an I/O error partway) ends the replay after the samples already read, as
-  its end would, and `dsd-neo` exits with status 1.
+- A capture that cannot be read to its end (an I/O error partway, or a data file cut short while it replays) ends the
+  replay after the samples already read, as its end would, and `dsd-neo` exits with status 1.
 - Retuned captures with v2 replay event timelines can be replayed. Older retuned captures without an event timeline are
   reported by `--iq-info` and rejected by `--iq-replay`.
 - `--iq-replay` refuses a capture replay cannot convert (a `cs16` sidecar, or `cf32` stamped with a stage other than

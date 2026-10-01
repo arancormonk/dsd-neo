@@ -2269,6 +2269,10 @@ Notes:
     cf32 sample, a cf32 end inside a sample, the input level at the first block).
   - I/Q replay end of stream (issue #572; `replay_thread_fn()` in `rtl_device.cpp`, `rtl_stream_read_replay()` in
     `rtl_sdr_fm.cpp`). The capture's end and a read the capture source refuses end a replay the same way:
+    - The source refuses a read that gets no bytes before the capture's end as its open measured it
+      (`dsd_iq_replay_read()` returns `DSD_IQ_ERR_IO`): a failed read, or a data file cut short after the open, which
+      is not the capture's end. `replay_read_exact()` hands over the whole samples read before it and reports the
+      failure on its next call.
     - The reader marks input EOF, waits on the input ring's `space` (50 ms at a time) for the demod to take the rest,
       marks the input drained, then waits for the demod to drain.
     - Under `--iq-loop` the capture's end rewinds only a pass that submitted a chunk (`replay_handle_empty_read()`,
@@ -2298,8 +2302,10 @@ Notes:
       the EOF condition). It runs at EOF, on a failure, on a stop and when a start unwinds.
 
     Tests: `IO_RTL_REPLAY_EOF_AND_CF32` (a cs16 and a cf32-at-the-cu8-stage capture refused at the start, a
-    conversion failure mid-replay reported, an `--iq-loop` pass that submits nothing ending the replay),
-    `IO_IQ_METADATA` (the open's and `--iq-info`'s format and stage check), `ENGINE_REPLAY_READ_ERROR`.
+    conversion failure mid-replay reported, an `--iq-loop` pass that submits nothing ending the replay, a data file
+    cut short under the reader at a chunk's end and inside a cf32 sample), `IO_IQ_METADATA` (the open's and
+    `--iq-info`'s format and stage check, the read past a cut, a `data_bytes: 0` capture read to its end),
+    `ENGINE_REPLAY_READ_ERROR` and `ENGINE_REPLAY_TRUNCATED_CAPTURE` (exit status 1).
   - I/Q replay decoder pacing (issue #572; "Replay decoder pacing" in `rtl_sdr_fm.cpp`). Under `--iq-replay` the
     decoder paces the demod, so the demod's blocks and the decoder's reads and requests interleave the same way fast
     or realtime, however the host is loaded and however the decoder reads:

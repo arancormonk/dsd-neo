@@ -5200,7 +5200,17 @@ if(DSD_HAS_RADIO AND NOT APPLE AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
         NAME ENGINE_REPLAY_READ_ERROR
         COMMAND dsd-neo_test_engine_replay_read_error
     )
-    set_tests_properties(ENGINE_REPLAY_READ_ERROR PROPERTIES TIMEOUT 60)
+    # The same replay, with its data file cut short under it instead: the real
+    # read reports that as the read error, and the run exits 1.
+    add_test(
+        NAME ENGINE_REPLAY_TRUNCATED_CAPTURE
+        COMMAND dsd-neo_test_engine_replay_read_error truncate
+    )
+    set_tests_properties(
+        ENGINE_REPLAY_READ_ERROR
+        ENGINE_REPLAY_TRUNCATED_CAPTURE
+        PROPERTIES TIMEOUT 60
+    )
 endif()
 
 # Issue #572: a replay run through the engine decodes on its capture's clock, from the
