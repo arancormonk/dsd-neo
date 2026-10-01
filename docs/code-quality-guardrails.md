@@ -76,6 +76,13 @@ reason: the stderr and stdin capture helpers in tests, where `dup2()` returns a 
 must not close, and `config_profile_free_context()`, where the analyzer loses the tie between `pctx->n` and the count
 that filled the array.
 
+`tools/iwyu.sh` fails a translation unit that does not compile under IWYU's clang, in strict mode and out of it, and
+prints its diagnostics. IWYU 0.27 exits 0 after a compile error such as a `-Werror` diagnostic and goes on to analyse
+the unit, so the verdict comes from the output: a line that starts with `file:line:col: error:`, `fatal error:` or the
+driver's bare `error:`. The summary counts these as `compile_errors`, apart from include suggestions. Before this check
+matched a located diagnostic, units that failed to compile passed the strict gate as clean.
+`tests/tools/test_iwyu.sh` drives the classification with a fake IWYU.
+
 The repository intentionally blocks or flags patterns that are easy to reintroduce during large edits:
 
 - Use the project safe API wrappers instead of raw C memory/string/formatting APIs in project-owned code.
