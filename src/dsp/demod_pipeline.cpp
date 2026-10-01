@@ -1365,9 +1365,11 @@ full_demod_apply_halfband_decimation(struct demod_state* d) {
 static int
 full_demod_front_end_empty(struct demod_state* d) {
     if (d->lowpassed && d->lp_len >= 2) {
+        d->front_end_empty = 0;
         return 0;
     }
     d->result_len = 0;
+    d->front_end_empty = 1;
     return 1;
 }
 

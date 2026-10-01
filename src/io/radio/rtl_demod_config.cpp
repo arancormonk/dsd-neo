@@ -285,6 +285,7 @@ demod_init_common_defaults(struct demod_state* s, int rtl_dsp_bw_hz, struct outp
     g_channel_pwr.store(0.0f, std::memory_order_relaxed);
     s->channel_squelch_level.store(0.0f, std::memory_order_relaxed);
     s->channel_squelched = 0;
+    s->front_end_empty = 0;
     s->audio_lpf_enable = 0;
     s->audio_lpf_alpha = 0.0f;
     s->audio_lpf_state = 0.0f;

@@ -1797,7 +1797,9 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
     block the filter does not run on (filter off, or no plan for the width); a width or profile change at the same rate
     keeps it, and so does the stream layer's live width edit, which keeps the half-band state too (see Channel LPF).
     `full_demod()` gives a block its front end left empty (a filter warm-up) `result_len` 0 and no per-block decision:
-    squelch gate, envelope, channel power and CQPSK zero symbols wait for a block with samples.
+    squelch gate, envelope, channel power and CQPSK zero symbols wait for a block with samples. It marks the block
+    (`demod_state::front_end_empty`), and the stream's squelch hop count skips it, so a squelched block before it does
+    not count twice (`IO_RTL_ANALOG_FAMILY_SWITCH`, `rtl_stream_test_squelch_hop_empty_block()`).
   - The CQPSK Gardner (`op25_gardner_cc()`) runs every block, however short, through the state in `ted_state` (mu,
     omega, the delay line, the last symbol), so its symbols do not depend on the cut either: a block can make none, and
     a symbol the last block owed comes out of the next one. It writes them to the work buffer its input is not in

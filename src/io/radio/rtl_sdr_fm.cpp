@@ -3633,7 +3633,9 @@ demod_discard_iteration_input(DemodInputSpan* span) {
 
 static void
 demod_maybe_signal_squelch_hop(struct demod_state* d) {
-    if (!d) {
+    /* A block the front end made no samples for decided no squelch: channel_squelched still holds the block before's
+       verdict, which already counted. */
+    if (!d || d->front_end_empty) {
         return;
     }
     if (d->channel_squelch_level.load(std::memory_order_relaxed) > 0.0f && d->channel_squelched) {
@@ -14277,6 +14279,60 @@ rtl_stream_test_analog_width_continuity(const rtl_stream_test_width_continuity_c
     family_test_release_buffers();
     fsk_reacquire_test_cleanup_output_ring(initialized_output);
     return rc;
+}
+
+/* One block of @p pairs complex samples of a low tone through full_demod() and the squelch hop count after it, as the
+ * demod thread runs them. Returns the hop count it leaves. */
+static int
+squelch_hop_test_block(int pairs) {
+    for (int k = 0; k < pairs; k++) {
+        const float phase = 0.0625f * (float)k;
+        demod.input_cb_buf[2 * k] = 0.5f * cosf(phase);
+        demod.input_cb_buf[2 * k + 1] = 0.5f * sinf(phase);
+    }
+    demod.lowpassed = demod.input_cb_buf;
+    demod.lp_len = pairs * 2;
+    full_demod(&demod);
+    demod_maybe_signal_squelch_hop(&demod);
+    return demod.squelch_hits;
+}
+
+extern "C" int
+rtl_stream_test_squelch_hop_empty_block(rtl_stream_test_squelch_hop_result* out) {
+    if (!out) {
+        return -1;
+    }
+    *out = {};
+    const FamilyTestSaved saved = family_test_save();
+    static dsd_opts analog_opts;
+    DSD_MEMSET(&analog_opts, 0, sizeof analog_opts);
+    analog_opts.analog_only = 1;
+    analog_opts.monitor_input_audio = 1;
+    g_cqpsk_toggle_test_stream.output = &output;
+    g_cqpsk_toggle_test_stream.opts = &analog_opts;
+    g_stream = NULL;
+    if (family_test_seed_open(&analog_opts, 48000, 0) != 0) {
+        family_test_restore(saved);
+        family_test_release_buffers();
+        return -2;
+    }
+    const float saved_level = demod.channel_squelch_level.load(std::memory_order_relaxed);
+    const int saved_conseq = demod.conseq_squelch;
+    const int block_pairs = 4096;
+    demod.conseq_squelch = 10;
+    demod.squelch_hits = 0;
+    demod.channel_squelch_level.store(1.0e6f, std::memory_order_relaxed);
+    out->hits_after_squelched = squelch_hop_test_block(block_pairs);
+    out->hits_after_empty = squelch_hop_test_block(0);
+    out->empty_marked = demod.front_end_empty;
+    demod.channel_squelch_level.store(1.0e-12f, std::memory_order_relaxed);
+    out->hits_after_open = squelch_hop_test_block(block_pairs);
+    demod.channel_squelch_level.store(saved_level, std::memory_order_relaxed);
+    demod.conseq_squelch = saved_conseq;
+    demod.squelch_hits = 0;
+    family_test_restore(saved);
+    family_test_release_buffers();
+    return 0;
 }
 
 extern "C" int

@@ -1403,6 +1403,20 @@ expect_width_edit_continuity(const continuity_case& tc) {
     return rc;
 }
 
+/* A block the front end made no samples for (a filter warm-up, or nothing in) decides no squelch: the hop count keeps
+ * the value the block before left, rather than count that block's verdict a second time. */
+static int
+test_squelch_hop_skips_empty_block(void) {
+    rtl_stream_test_squelch_hop_result r;
+    DSD_MEMSET(&r, 0, sizeof r);
+    int rc = expect_int("squelch hop: run", rtl_stream_test_squelch_hop_empty_block(&r), 0);
+    rc |= expect_int("squelch hop: a squelched block counts", r.hits_after_squelched, 1);
+    rc |= expect_int("squelch hop: the empty block is marked empty", r.empty_marked, 1);
+    rc |= expect_int("squelch hop: an empty block does not count", r.hits_after_empty, 1);
+    rc |= expect_int("squelch hop: an open block clears the count", r.hits_after_open, 0);
+    return rc;
+}
+
 /* Issue #572: a live width edit is seamless. The edit drops only the plan; the half-band cascade and the channel filter
  * keep their histories and pending counts, so the new taps run over the true past. At one rate every width designs the
  * same tap count (135 at 48 kHz), so the edits onto more and onto fewer taps run a seeded plan of another length before
@@ -2057,6 +2071,7 @@ main(void) {
     rc |= test_digital_row_on_analog_session();
     rc |= test_width_only_change();
     rc |= test_width_edit_continuity();
+    rc |= test_squelch_hop_skips_empty_block();
     rc |= test_requests_without_stream();
     rc |= test_requests_against_running_stream();
     rc |= test_request_across_rate_change();

@@ -711,6 +711,19 @@ typedef struct rtl_stream_test_width_continuity_result {
 int rtl_stream_test_analog_width_continuity(const rtl_stream_test_width_continuity_case* c,
                                             rtl_stream_test_width_continuity_result* out);
 
+/* The channel squelch's hop count (demod_state::squelch_hits) across a block the front end made no samples for. */
+typedef struct rtl_stream_test_squelch_hop_result {
+    int hits_after_squelched; /* after one block the channel squelch closed on: 1 */
+    int hits_after_empty;     /* after an empty block next: still 1, since that block decided nothing */
+    int empty_marked;         /* demod_state::front_end_empty after the empty block: 1 */
+    int hits_after_open;      /* after a block above the squelch threshold: 0 */
+} rtl_stream_test_squelch_hop_result;
+
+/* Open the NFM monitor at 48 kHz and run three blocks through full_demod() and the squelch hop count the demod thread
+ * runs after it: a tone under a squelch threshold no block reaches, an empty block, and the tone with a threshold every
+ * block passes. */
+int rtl_stream_test_squelch_hop_empty_block(rtl_stream_test_squelch_hop_result* out);
+
 /* With no stream running and @p stale_rate_out_hz left in the published rate mirror by an earlier session, ask for an
  * analog profile (@p kind, @p width_hz) through the live request and through a retune profile. Returns the live
  * request's result and stores the retune profile's in @p out_retune_rc; any profile queued is discarded. */

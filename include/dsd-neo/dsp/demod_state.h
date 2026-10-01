@@ -226,6 +226,9 @@ struct demod_state {
      * (config apply, menus) while the demod thread reads it per block. */
     std::atomic<float> channel_squelch_level;
     int channel_squelched; /* 1 if squelched this block, 0 otherwise */
+    /* 1 when full_demod()'s front end made no samples this block (a filter warm-up, or nothing in): the block decided
+       nothing, so channel_squelched and the other per-block decisions still hold the last block's. */
+    int front_end_empty;
 
     /* Polyphase rational resampler (L/M) */
     int resamp_enabled;
