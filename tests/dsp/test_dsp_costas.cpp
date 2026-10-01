@@ -1194,6 +1194,65 @@ test_fll_band_edge_processes_block(void) {
     return 0;
 }
 
+/*
+ * Test: an initialized FLL whose tap count or delay index is outside the range the
+ * mirrored delay line is indexed with is designed afresh rather than run.
+ *
+ * Every writer keeps 3 <= n_taps <= FLL_BAND_EDGE_MAX_TAPS and 0 <= delay_idx < n_taps,
+ * so these states are corrupt. The first two cases come first because the block is
+ * short enough that running them unchecked still stays inside the delay arrays (the
+ * third would write before delay_r); what tells checked from unchecked is whether the
+ * filter was redesigned (11 taps at sps 5) and the index wrapped within it.
+ */
+static int
+test_fll_band_edge_redesigns_inconsistent_delay_line(void) {
+    const int pairs = 16;
+    static float buf[pairs * 2];
+
+    struct {
+        const char* name;
+        int n_taps;
+        int delay_idx;
+    } const cases[] = {
+        {"delay index at the tap count", 11, 11},
+        {"no taps", 0, 0},
+        {"negative delay index", 11, -1},
+    };
+
+    for (const auto& c : cases) {
+        for (int k = 0; k < pairs; k++) {
+            const float phase = 0.11f * (float)k;
+            buf[(size_t)k * 2] = cosf(phase);
+            buf[(size_t)k * 2 + 1] = sinf(phase);
+        }
+        demod_state* s = alloc_state();
+        if (!s) {
+            DSD_FPRINTF(stderr, "alloc failed\n");
+            return 1;
+        }
+        s->cqpsk_enable = 1;
+        s->lowpassed = buf;
+        s->lp_len = pairs * 2;
+        s->ted_sps = 5;
+        s->rate_out = 24000;
+
+        op25_fll_band_edge_cc(s);
+        dsd_fll_band_edge_state_t* f = &s->fll_band_edge_state;
+        f->n_taps = c.n_taps;
+        f->delay_idx = c.delay_idx;
+        op25_fll_band_edge_cc(s);
+
+        if (f->n_taps != 11 || f->delay_idx != pairs % 11 || !std::isfinite(f->freq)) {
+            DSD_FPRINTF(stderr, "FLL INCONSISTENT (%s): taps=%d delay=%d (want 11 and %d) freq=%f\n", c.name, f->n_taps,
+                        f->delay_idx, pairs % 11, f->freq);
+            free(s);
+            return 1;
+        }
+        free(s);
+    }
+    return 0;
+}
+
 int
 main(void) {
     if (test_basic_passthrough() != 0) {
@@ -1248,6 +1307,9 @@ main(void) {
         return 1;
     }
     if (test_fll_band_edge_processes_block() != 0) {
+        return 1;
+    }
+    if (test_fll_band_edge_redesigns_inconsistent_delay_line() != 0) {
         return 1;
     }
     if (test_gardner_short_blocks_match_whole_stream() != 0) {

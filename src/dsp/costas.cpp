@@ -640,13 +640,21 @@ costas_commit_loop(dsd_costas_loop_state_t* c, const costas_loop_context_t* ctx)
     c->error_smooth = ctx->error_smooth;
 }
 
+/* The sample loop indexes the mirrored delay line at delay_idx and delay_idx + n_taps, so it needs the filter's tap
+ * count within [3, FLL_BAND_EDGE_MAX_TAPS] and delay_idx within [0, n_taps). Every writer of the persisted state keeps
+ * that, so a state outside it is corrupt rather than reachable; it is designed afresh instead of being indexed. */
+static inline int
+fll_delay_line_consistent(const dsd_fll_band_edge_state_t* f) {
+    return f->n_taps >= 3 && f->n_taps <= FLL_BAND_EDGE_MAX_TAPS && f->delay_idx >= 0 && f->delay_idx < f->n_taps;
+}
+
 static inline int
 fll_need_reinit(const dsd_fll_band_edge_state_t* f, int sps, int* is_first_init) {
     const int first_init = !f->initialized;
     if (is_first_init) {
         *is_first_init = first_init;
     }
-    if (first_init) {
+    if (first_init || !fll_delay_line_consistent(f)) {
         return 1;
     }
     return (f->sps > 0 && f->sps != sps) ? 1 : 0;
