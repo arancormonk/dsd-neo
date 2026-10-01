@@ -800,6 +800,30 @@ validate_replay_semantics(const dsd_iq_replay_config* cfg, char* err_buf, size_t
     return DSD_IQ_OK;
 }
 
+/* The sample format and capture stage pairs a replay can convert to the demodulator's float input, as the replay
+ * reader's converters do (replay_convert_block_to_f32() in rtl_device.cpp): cu8 at either capture stage, and cf32 only
+ * as the driver delivered it, before the input ring. A cs16 capture parses, and --iq-info describes it, but nothing
+ * converts it. */
+static int
+validate_replay_convertible(const dsd_iq_replay_config* cfg, char* err_buf, size_t err_buf_size) {
+    if (cfg->format == DSD_IQ_FORMAT_CU8) {
+        return DSD_IQ_OK;
+    }
+    if (cfg->format == DSD_IQ_FORMAT_CF32) {
+        if (strcmp(cfg->capture_stage, "post_driver_cf32_pre_ring") == 0) {
+            return DSD_IQ_OK;
+        }
+        set_error(err_buf, err_buf_size,
+                  "replay cannot convert sample_format 'cf32' at capture_stage '%s' (cf32 replays only from "
+                  "'post_driver_cf32_pre_ring')",
+                  cfg->capture_stage);
+        return DSD_IQ_ERR_UNSUPPORTED_FMT;
+    }
+    set_error(err_buf, err_buf_size, "replay cannot convert sample_format '%s' (replay accepts cu8 and cf32)",
+              dsd_iq_sample_format_name(cfg->format));
+    return DSD_IQ_ERR_UNSUPPORTED_FMT;
+}
+
 static int
 require_field(unsigned seen, const char* field_name, char* err_buf, size_t err_buf_size) {
     if (seen) {
@@ -2042,6 +2066,11 @@ dsd_iq_replay_open(const char* path, dsd_iq_replay_config* out_cfg, dsd_iq_repla
     if (rc != DSD_IQ_OK) {
         return rc;
     }
+    rc = validate_replay_convertible(&cfg, err_buf, err_buf_size);
+    if (rc != DSD_IQ_OK) {
+        dsd_iq_replay_config_clear(&cfg);
+        return rc;
+    }
 
     uint64_t actual_size = 0;
     if (file_size_u64(cfg.data_path, &actual_size) != DSD_IQ_OK) {
@@ -2231,7 +2260,7 @@ dsd_iq_info_print(const dsd_iq_replay_config* cfg, const char* display_path, uin
     }
     char compat_err[256] = {0};
     int replay_compatible =
-        (effective > 0
+        (effective > 0 && validate_replay_convertible(cfg, compat_err, sizeof(compat_err)) == DSD_IQ_OK
          && validate_replay_events_metadata(cfg, effective, 1, 1, compat_err, sizeof(compat_err)) == DSD_IQ_OK);
 
     dsd_iq_info_print_summary(cfg, display_path, actual_file_size, effective, replay_compatible, out);

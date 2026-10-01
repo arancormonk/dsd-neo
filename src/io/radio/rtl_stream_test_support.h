@@ -1291,6 +1291,10 @@ void rtl_device_test_replay_inject_read_error(int after_chunks, int code);
 /* Each capture read the next I/Q replay reader makes returns at most @p max_bytes, as a source that returns short reads
  * would; 0 lifts the limit. Set while no replay runs. */
 void rtl_device_test_replay_limit_read(size_t max_bytes);
+/* Once the next I/Q replay reader has converted @p after_chunks chunks, every later chunk's conversion returns
+ * @p produced in place of its samples: -1 as a chunk the converter refuses, 0 as one that holds no whole sample yet. A
+ * negative @p after_chunks disarms it. Set while no replay runs. */
+void rtl_device_test_replay_override_conversion(int after_chunks, int produced);
 /* Nonzero: rtl_device_start_async() refuses to start an I/Q replay reader, as a failed thread create would. */
 void rtl_device_test_replay_fail_start(int fail);
 /* How many times the last replay reader's EOF sequence looked at the input ring while it waited for the ring to

@@ -1435,6 +1435,127 @@ test_replay_read_partial_eof_and_rewind(void) {
     return rc;
 }
 
+/* One sidecar of test_replay_open_refuses_formats_it_cannot_convert(). */
+typedef struct {
+    const char* metadata_file;
+    const char* sample_format;
+    const char* endianness;
+    const char* capture_stage;
+    int want_rc;
+    const char* named[2]; /* what a refusal's error names */
+} replay_format_case;
+
+/* Issue #572: replay converts cu8 at either capture stage, and cf32 only as the driver delivered it, before the input
+ * ring (replay_convert_block_to_f32() in rtl_device.cpp). The open refuses any other format and stage, naming them,
+ * where it used to open a capture whose every chunk the reader then dropped. --iq-info still describes such a
+ * capture, and reports it as not replay compatible. */
+static int
+test_replay_open_refuses_formats_it_cannot_convert(void) {
+    static const char* const files[] = {"capture.iq",   "cs16.iq.json",           "cf32_cu8_stage.iq.json",
+                                        "cf32.iq.json", "cu8_cf32_stage.iq.json", NULL};
+    static const replay_format_case cases[] = {
+        {"cs16.iq.json", "cs16", "little", "post_mute_pre_widen", DSD_IQ_ERR_UNSUPPORTED_FMT, {"cs16", NULL}},
+        {"cf32_cu8_stage.iq.json",
+         "cf32",
+         "little",
+         "post_mute_pre_widen",
+         DSD_IQ_ERR_UNSUPPORTED_FMT,
+         {"cf32", "post_mute_pre_widen"}},
+        {"cf32.iq.json", "cf32", "little", "post_driver_cf32_pre_ring", DSD_IQ_OK, {NULL, NULL}},
+        {"cu8_cf32_stage.iq.json", "cu8", "none", "post_driver_cf32_pre_ring", DSD_IQ_OK, {NULL, NULL}},
+    };
+    int rc = 0;
+    char dir[256];
+    if (mk_temp_dir(dir, sizeof(dir), files) != 0) {
+        return 1;
+    }
+    char data[512];
+    path_join(data, sizeof(data), dir, "capture.iq");
+    uint8_t payload[64];
+    for (size_t i = 0; i < sizeof(payload); i++) {
+        payload[i] = (uint8_t)(96U + i);
+    }
+    if (write_bytes_file(data, payload, sizeof(payload)) != 0) {
+        return 1;
+    }
+
+    for (size_t c = 0; c < sizeof(cases) / sizeof(cases[0]); c++) {
+        const replay_format_case* tc = &cases[c];
+        char meta[512];
+        char label[160];
+        char err[256] = {0};
+        path_join(meta, sizeof(meta), dir, tc->metadata_file);
+        if (write_valid_metadata(meta, "capture.iq", tc->sample_format, tc->endianness, tc->capture_stage, 1536000, 32,
+                                 1, 48000, 0, sizeof(payload))
+            != 0) {
+            return 1;
+        }
+        dsd_iq_replay_config cfg;
+        dsd_iq_replay_source* src = NULL;
+        DSD_MEMSET(&cfg, 0, sizeof(cfg));
+        DSD_SNPRINTF(label, sizeof(label), "replay open of %s at %s", tc->sample_format, tc->capture_stage);
+        rc |= expect_int(label, dsd_iq_replay_open(meta, &cfg, &src, err, sizeof(err)), tc->want_rc);
+        if (tc->want_rc != DSD_IQ_OK) {
+            DSD_SNPRINTF(label, sizeof(label), "refused replay open of %s at %s: no source", tc->sample_format,
+                         tc->capture_stage);
+            rc |= expect_true(label, src == NULL);
+            for (size_t n = 0; n < 2U && tc->named[n]; n++) {
+                DSD_SNPRINTF(label, sizeof(label), "refused replay open of %s at %s: the error names %s",
+                             tc->sample_format, tc->capture_stage, tc->named[n]);
+                if (expect_true(label, strstr(err, tc->named[n]) != NULL) != 0) {
+                    DSD_FPRINTF(stderr, "  error: %s\n", err);
+                    rc = 1;
+                }
+            }
+            close_refused_source(&src);
+        }
+        dsd_iq_replay_close(src);
+        dsd_iq_replay_config_clear(&cfg);
+
+        /* --iq-info parses every one of them, and says whether replay accepts it. */
+        DSD_MEMSET(&cfg, 0, sizeof(cfg));
+        DSD_SNPRINTF(label, sizeof(label), "metadata read of %s at %s", tc->sample_format, tc->capture_stage);
+        rc |= expect_int(label, dsd_iq_replay_read_metadata(meta, &cfg, err, sizeof(err)), DSD_IQ_OK);
+        FILE* out = tmpfile();
+        FILE* warn = tmpfile();
+        if (!out || !warn) {
+            if (out) {
+                fclose(out);
+            }
+            if (warn) {
+                fclose(warn);
+            }
+            dsd_iq_replay_config_clear(&cfg);
+            return 1;
+        }
+        DSD_SNPRINTF(label, sizeof(label), "info print of %s at %s", tc->sample_format, tc->capture_stage);
+        rc |= expect_int(label, dsd_iq_info_print(&cfg, meta, sizeof(payload), out, warn), DSD_IQ_OK);
+        char out_buf[4096];
+        char warn_buf[1024];
+        fflush(out);
+        fseek(out, 0, SEEK_SET);
+        size_t n = fread(out_buf, 1, sizeof(out_buf) - 1, out);
+        out_buf[n] = '\0';
+        fflush(warn);
+        fseek(warn, 0, SEEK_SET);
+        n = fread(warn_buf, 1, sizeof(warn_buf) - 1, warn);
+        warn_buf[n] = '\0';
+        fclose(out);
+        fclose(warn);
+        const char* want_compat = tc->want_rc == DSD_IQ_OK ? "Replay compatible:   yes" : "Replay compatible:   no";
+        DSD_SNPRINTF(label, sizeof(label), "info of %s at %s: %s", tc->sample_format, tc->capture_stage, want_compat);
+        rc |= expect_true(label, strstr(out_buf, want_compat) != NULL);
+        if (tc->want_rc != DSD_IQ_OK) {
+            DSD_SNPRINTF(label, sizeof(label), "info of %s at %s: the warning names %s", tc->sample_format,
+                         tc->capture_stage, tc->named[0]);
+            rc |= expect_true(label, strstr(warn_buf, "replay compatibility check failed") != NULL
+                                         && strstr(warn_buf, tc->named[0]) != NULL);
+        }
+        dsd_iq_replay_config_clear(&cfg);
+    }
+    return rc;
+}
+
 typedef struct {
     const char* name;
     double duration_s;
@@ -1658,6 +1779,7 @@ main(void) {
     rc |= test_rate_chain_validation();
     rc |= test_relative_data_resolution_info_and_open_validation();
     rc |= test_replay_read_partial_eof_and_rewind();
+    rc |= test_replay_open_refuses_formats_it_cannot_convert();
     rc |= remove_temp_dirs();
     return rc ? 1 : 0;
 }

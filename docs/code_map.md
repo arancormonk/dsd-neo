@@ -2272,8 +2272,14 @@ Notes:
     - The reader marks input EOF, waits on the input ring's `space` (50 ms at a time) for the demod to take the rest,
       marks the input drained, then waits for the demod to drain.
     - A failure is logged and latched as `DSD_INPUT_FAILURE_FILE`. Under `--iq-replay`,
-      `dsd_engine_run_with_lifecycle()` then returns 1. The log names what failed: reading the capture, or handing it
-      on (an input ring that would not take a whole chunk, an event boundary the pipeline gave up on).
+      `dsd_engine_run_with_lifecycle()` then returns 1. The log names what failed: reading the capture, converting a
+      chunk of it (with its sample format and capture stage), or handing it on (an input ring that would not take a
+      whole chunk, an event boundary the pipeline gave up on).
+    - A chunk the converters (`replay_convert_block_to_f32()`) refuse is such a failure, not an empty chunk; a chunk
+      that converts to no sample yet (a one-byte cu8 chunk, all carry) is skipped. `dsd_iq_replay_open()` refuses
+      every capture they cannot convert, naming its format and stage (`validate_replay_convertible()` in
+      `iq_replay.c`, which `dsd_iq_info_print()`'s "Replay compatible" also checks): only cu8, and cf32 at
+      `post_driver_cf32_pre_ring`, replay.
     - The drain decision (input drained, demod drained) is made under `replay_eof_m` by the reader and the demod
       alike, so whichever decides second sees the other's store. The demod thread marks itself drained when it
       leaves.
@@ -2287,7 +2293,9 @@ Notes:
     - `replay_wake_all()` wakes every replay wait (both rings' `ready` and `space`, the demod's demand condition, and
       the EOF condition). It runs at EOF, on a failure, on a stop and when a start unwinds.
 
-    Tests: `IO_RTL_REPLAY_EOF_AND_CF32`, `ENGINE_REPLAY_READ_ERROR`.
+    Tests: `IO_RTL_REPLAY_EOF_AND_CF32` (a cs16 and a cf32-at-the-cu8-stage capture refused at the start, a
+    conversion failure mid-replay reported), `IO_IQ_METADATA` (the open's and `--iq-info`'s format and stage check),
+    `ENGINE_REPLAY_READ_ERROR`.
   - I/Q replay decoder pacing (issue #572; "Replay decoder pacing" in `rtl_sdr_fm.cpp`). Under `--iq-replay` the
     decoder paces the demod, so the demod's blocks and the decoder's reads and requests interleave the same way fast
     or realtime, however the host is loaded and however the decoder reads:

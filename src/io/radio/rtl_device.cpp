@@ -1382,6 +1382,9 @@ static std::atomic<int> g_test_replay_reads_with_data{0};
 static std::atomic<int> g_test_replay_fail_start{0};
 static std::atomic<uint64_t> g_test_replay_eof_wait_iterations{0U};
 static std::atomic<size_t> g_test_replay_read_limit{0U};
+static std::atomic<int> g_test_replay_convert_after{-1};
+static std::atomic<int> g_test_replay_convert_result{0};
+static std::atomic<int> g_test_replay_conversions{0};
 
 extern "C" void
 rtl_device_test_replay_inject_read_error(int after_chunks, int code) {
@@ -1393,6 +1396,23 @@ rtl_device_test_replay_inject_read_error(int after_chunks, int code) {
 extern "C" void
 rtl_device_test_replay_limit_read(size_t max_bytes) {
     g_test_replay_read_limit.store(max_bytes, std::memory_order_release);
+}
+
+extern "C" void
+rtl_device_test_replay_override_conversion(int after_chunks, int produced) {
+    g_test_replay_conversions.store(0, std::memory_order_relaxed);
+    g_test_replay_convert_result.store(produced, std::memory_order_relaxed);
+    g_test_replay_convert_after.store(after_chunks, std::memory_order_release);
+}
+
+/* A chunk conversion's result, or the one a test put in its place once its first chunks were converted. */
+static int
+replay_test_override_conversion(int produced) {
+    const int after = g_test_replay_convert_after.load(std::memory_order_acquire);
+    if (after < 0 || g_test_replay_conversions.fetch_add(1, std::memory_order_acq_rel) < after) {
+        return produced;
+    }
+    return g_test_replay_convert_result.load(std::memory_order_relaxed);
 }
 
 extern "C" void
@@ -1715,6 +1735,9 @@ namespace {
  * DSD_IQ_ERR_* has its value, so replay_report_failure() can name the pipeline instead of the read; the session's input
  * failure latch still gets DSD_IQ_ERR_INVALID_ARG for it, as before. */
 const int kReplayPipelineFailureRc = -1000;
+/* The failure code of a chunk the reader read whole but could not convert to samples, which
+ * replay_report_failure() names with the capture's format and stage. */
+const int kReplayConvertFailureRc = -1001;
 
 /* What one pass of the replay reader loop (replay_thread_process_block()) leaves the reader to do. */
 enum replay_step {
@@ -1967,7 +1990,17 @@ replay_thread_process_block(struct rtl_device* s, uint8_t* raw_block, size_t raw
 
     int produced = replay_convert_block_to_f32(s, raw_block, out_bytes, f32_block, raw_block_bytes, io->phase,
                                                io->have_carry, io->carry_byte, is_cu8 ? &moments : NULL);
-    if (produced <= 0) {
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+    produced = replay_test_override_conversion(produced);
+#endif
+    if (produced < 0) {
+        /* The open refuses every format and stage the converters cannot handle, so a chunk they refuse is a read the
+           replay cannot complete: it ends after the samples already delivered, with the failure reported, rather than
+           going on without the chunk. */
+        return replay_step_stopped_or_failed(s, &io->failure_rc, kReplayConvertFailureRc);
+    }
+    if (produced == 0) {
+        /* No whole sample yet: a one-byte cu8 chunk stays in the carry for the next. */
         return REPLAY_STEP_CONTINUE;
     }
     if (is_cu8) {
@@ -2551,9 +2584,14 @@ replay_thread_read_capture(struct rtl_device* s, int* out_failure_rc) {
 /* The replay cannot go on: say why, and latch it as the session's file input failure, for which
  * dsd_engine_run_with_lifecycle() returns 1 once the replay ends. */
 static void
-replay_report_failure(int rc) {
+replay_report_failure(const struct rtl_device* s, int rc) {
     if (rc == DSD_IQ_ERR_ALLOC) {
         LOG_ERROR("IQ replay: no memory for the capture read buffers (rc=%d); the replay ends.\n", rc);
+    } else if (rc == kReplayConvertFailureRc) {
+        LOG_ERROR("IQ replay: a capture chunk could not be converted to samples (sample_format '%s', capture_stage "
+                  "'%s'); the replay ends after the samples already delivered.\n",
+                  dsd_iq_sample_format_name(s->replay_cfg.format), s->replay_cfg.capture_stage);
+        rc = DSD_IQ_ERR_UNSUPPORTED_FMT;
     } else if (rc == kReplayPipelineFailureRc) {
         LOG_ERROR("IQ replay: the capture could not be handed on to the demodulator (no replay source or input ring "
                   "to start from, an input ring that would not take a whole chunk, or an event boundary the pipeline "
@@ -2583,7 +2621,7 @@ static DSD_THREAD_RETURN_TYPE
     replay_step step =
         (s->replay_src && s->input_ring) ? replay_thread_read_capture(s, &failure_rc) : REPLAY_STEP_FAILED;
     if (step == REPLAY_STEP_FAILED) {
-        replay_report_failure(failure_rc);
+        replay_report_failure(s, failure_rc);
     }
     if (step == REPLAY_STEP_EOF_DONE || step == REPLAY_STEP_FAILED) {
         replay_handle_eof_sequence(s);

@@ -2759,6 +2759,172 @@ test_replay_read_failure_mid_chunk_delivers_what_was_read(void) {
     return rc;
 }
 
+/* A sidecar written by hand, for a sample format or capture stage the capture writer does not produce, over
+ * @p payload_bytes of data. */
+static int
+make_hand_written_replay_fixture(char* out_metadata_path, size_t out_metadata_path_size, const char* sample_format,
+                                 const char* endianness, const char* capture_stage, size_t payload_bytes) {
+    char temp_dir[DSD_TEST_PATH_MAX];
+    if (!dsd_test_mkdtemp(temp_dir, sizeof(temp_dir), "dsdneo_replay_format")) {
+        DSD_FPRINTF(stderr, "FAIL: could not create a fixture directory\n");
+        return 1;
+    }
+    track_fixture_dir(temp_dir, "format.iq", "format.iq.json");
+    char data_path[DSD_TEST_PATH_MAX];
+    if (dsd_test_path_join(data_path, sizeof(data_path), temp_dir, "format.iq") != 0
+        || dsd_test_path_join(out_metadata_path, out_metadata_path_size, temp_dir, "format.iq.json") != 0) {
+        return 1;
+    }
+    std::vector<uint8_t> payload(payload_bytes);
+    for (size_t i = 0; i < payload.size(); i++) {
+        payload[i] = static_cast<uint8_t>((i * 7U) & 0xFFU);
+    }
+    if (write_bytes_file(data_path, payload.data(), payload.size()) != 0) {
+        return 1;
+    }
+    char json[2048];
+    DSD_SNPRINTF(json, sizeof(json),
+                 "{\n"
+                 "  \"format\": \"dsd-neo-iq\",\n"
+                 "  \"version\": 1,\n"
+                 "  \"sample_format\": \"%s\",\n"
+                 "  \"iq_order\": \"IQ\",\n"
+                 "  \"endianness\": \"%s\",\n"
+                 "  \"capture_stage\": \"%s\",\n"
+                 "  \"sample_rate_hz\": 1536000,\n"
+                 "  \"center_frequency_hz\": 851375000,\n"
+                 "  \"capture_center_frequency_hz\": 851759000,\n"
+                 "  \"ppm\": 0,\n"
+                 "  \"tuner_gain_tenth_db\": 270,\n"
+                 "  \"rtl_dsp_bw_khz\": 48,\n"
+                 "  \"base_decimation\": 32,\n"
+                 "  \"post_downsample\": 1,\n"
+                 "  \"demod_rate_hz\": 48000,\n"
+                 "  \"offset_tuning_enabled\": false,\n"
+                 "  \"fs4_shift_enabled\": false,\n"
+                 "  \"combine_rotate_enabled\": true,\n"
+                 "  \"muted_bytes_excluded\": true,\n"
+                 "  \"contains_retunes\": false,\n"
+                 "  \"capture_retune_count\": 0,\n"
+                 "  \"source_backend\": \"soapy\",\n"
+                 "  \"source_args\": \"driver=x\",\n"
+                 "  \"capture_started_utc\": \"2026-04-12T00:00:00Z\",\n"
+                 "  \"data_file\": \"format.iq\",\n"
+                 "  \"data_bytes\": %zu,\n"
+                 "  \"capture_drops\": 0,\n"
+                 "  \"capture_drop_blocks\": 0,\n"
+                 "  \"input_ring_drops\": 0,\n"
+                 "  \"notes\": \"\"\n"
+                 "}\n",
+                 sample_format, endianness, capture_stage, payload_bytes);
+    return write_text_file(out_metadata_path, json);
+}
+
+/* Start a replay of @p metadata_path, with --iq-loop when @p loop, without reporting a refused start: 0 when it
+ * started, 1 when it was refused. */
+static int
+start_replay_stream_quietly(const char* metadata_path, int loop, std::unique_ptr<dsd_opts>* out_opts,
+                            RtlSdrContext** out_ctx) {
+    *out_ctx = NULL;
+    out_opts->reset(new dsd_opts());
+    prepare_replay_opts_with_loop(out_opts->get(), metadata_path, loop);
+    RtlSdrContext* ctx = NULL;
+    if (rtl_stream_create(out_opts->get(), &ctx) != 0 || !ctx) {
+        return 1;
+    }
+    if (rtl_stream_start(ctx) != 0) {
+        rtl_stream_destroy(ctx);
+        return 1;
+    }
+    *out_ctx = ctx;
+    return 0;
+}
+
+/* Issue #572: replay converts cu8 and cf32 captured as the driver delivered it, before the input ring, and nothing
+ * else. A cs16 sidecar, or a cf32 capture stamped with the cu8 stage (which the capture writer accepts), is refused at
+ * the start, as an unreadable sidecar is, and leaves nothing behind. Such a capture used to start, and the reader then
+ * dropped every chunk it could not convert: the replay ended with nothing delivered and no failure. */
+static int
+test_replay_refuses_a_capture_it_cannot_convert(void) {
+    int rc = 0;
+    for (int cf32 = 0; cf32 <= 1; cf32++) {
+        const char* label = cf32 ? "cf32 at the cu8 stage" : "cs16";
+        char metadata_path[DSD_TEST_PATH_MAX];
+        const int made = cf32 ? make_replay_fixture(metadata_path, sizeof(metadata_path), DSD_IQ_FORMAT_CF32,
+                                                    "post_mute_pre_widen", 0, 2U * kReplayChunkBytes)
+                              : make_hand_written_replay_fixture(metadata_path, sizeof(metadata_path), "cs16", "little",
+                                                                 "post_mute_pre_widen", 3U * kReplayChunkBytes);
+        if (made != 0) {
+            return 1;
+        }
+        dsd_input_failure_clear();
+        std::unique_ptr<dsd_opts> opts;
+        RtlSdrContext* ctx = NULL;
+        char what[160];
+        const int refused = start_replay_stream_quietly(metadata_path, 0, &opts, &ctx) != 0;
+        if (!refused) {
+            uint64_t delivered = 0U;
+            int rescued = 0;
+            rc |= read_replay_to_end(ctx, 5000U, label, &delivered, &rescued);
+            finish_replay(ctx, rescued);
+            dsd_input_failure failure;
+            dsd_input_failure_get(&failure);
+            DSD_FPRINTF(stderr, "  %s: the replay started, delivered %llu samples, input failure kind %d\n", label,
+                        (unsigned long long)delivered, (int)failure.kind);
+        }
+        DSD_SNPRINTF(what, sizeof(what), "%s: the replay start is refused", label);
+        rc |= expect_true(what, refused);
+        DSD_SNPRINTF(what, sizeof(what), "%s: no stream resources left", label);
+        rc |= expect_true(what, rtl_stream_test_has_resources() == 0);
+        dsd_input_failure_clear();
+    }
+    return rc;
+}
+
+/* Issue #572: a chunk the reader cannot convert ends the replay as a failed read does, after the chunks already
+ * delivered, with the failure reported (dsd_engine_run_with_lifecycle() then returns 1). The open refuses every
+ * capture the converter cannot handle, so the conversion failure is injected: the third of four chunks. It used to be
+ * dropped as an empty chunk, and the replay went on and ended with no failure. */
+static int
+test_replay_conversion_failure_ends_with_the_failure(void) {
+    int rc = 0;
+    char metadata_path[DSD_TEST_PATH_MAX];
+    if (make_replay_fixture(metadata_path, sizeof(metadata_path), DSD_IQ_FORMAT_CU8, "post_mute_pre_widen", 1,
+                            4U * kReplayChunkBytes)
+        != 0) {
+        return 1;
+    }
+    dsd_input_failure_clear();
+    BlockLog log;
+    rtl_stream_test_set_replay_block_hook(block_log_hook, &log);
+    rtl_device_test_replay_override_conversion(2, -1);
+    std::unique_ptr<dsd_opts> opts;
+    RtlSdrContext* ctx = NULL;
+    uint64_t delivered = 0U;
+    if (start_replay_stream(metadata_path, &opts, &ctx) != 0) {
+        stop_and_destroy_stream(ctx);
+        rc = 1;
+    } else {
+        int rescued = 0;
+        rc |= read_replay_to_end(ctx, 5000U, "conversion failure", &delivered, &rescued);
+        finish_replay(ctx, rescued);
+    }
+    rtl_device_test_replay_override_conversion(-1, 0);
+    rtl_stream_test_set_replay_block_hook(NULL, NULL);
+    dsd_input_failure failure;
+    dsd_input_failure_get(&failure);
+    dsd_input_failure_clear();
+
+    std::vector<ExpectedChunk> chunks;
+    chunks.push_back(ExpectedChunk{kCu8ChunkFloats, 0U});
+    chunks.push_back(ExpectedChunk{kCu8ChunkFloats, kCu8ChunkFloats / 2U});
+    rc |= expect_blocks_match_chunks("conversion failure", log, chunks);
+    rc |= expect_true("conversion failure: the chunks before it reached the decoder", delivered > 0U);
+    rc |= expect_int_eq("conversion failure: reported as a file input failure", failure.kind, DSD_INPUT_FAILURE_FILE);
+    rc |= expect_int_eq("conversion failure: code reported", failure.native_code, DSD_IQ_ERR_UNSUPPORTED_FMT);
+    return rc;
+}
+
 /* An I/Q replay has no tuner gain to adjust, so the supervisory tuner autogain stays off under it even when the runtime
  * config enables it (DSD_NEO_TUNER_AUTOGAIN) and the capture records no gain, which is where a live open turns it on:
  * its hold and throttle windows run on real time, and its adjustments would only log on a wall-clock cadence. A flag
@@ -2816,6 +2982,8 @@ main(void) {
     rc |= test_replay_multi_chunk_eof_delivers_final_block();
     rc |= test_cf32_replay_short_reads_stay_aligned();
     rc |= test_replay_read_failure_mid_chunk_delivers_what_was_read();
+    rc |= test_replay_refuses_a_capture_it_cannot_convert();
+    rc |= test_replay_conversion_failure_ends_with_the_failure();
     rc |= test_cu8_replay_publishes_raw_input_level();
     rc |= test_cu8_replay_legacy_fs4_level_uses_raw_block();
     rc |= test_cf32_replay_fs4_level_uses_raw_block();

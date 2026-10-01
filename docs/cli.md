@@ -332,6 +332,8 @@ Notes
   its end would, and `dsd-neo` exits with status 1.
 - Retuned captures with v2 replay event timelines can be replayed. Older retuned captures without an event timeline are
   reported by `--iq-info` and rejected by `--iq-replay`.
+- `--iq-replay` refuses a capture replay cannot convert (a `cs16` sidecar, or `cf32` stamped with a stage other than
+  `post_driver_cf32_pre_ring`), naming its format and stage, and `dsd-neo` exits with status 1.
 - `-i iqreplay:...` is intentionally not a supported public input form; use `--iq-replay`.
 - More details and format notes: `docs/iq-capture-replay.md`.
 
