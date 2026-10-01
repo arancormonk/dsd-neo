@@ -3,6 +3,7 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/threading.h>
@@ -17,7 +18,7 @@
 #define CHECK(cond)                                                                                                    \
     do {                                                                                                               \
         if (!(cond)) {                                                                                                 \
-            fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond);                                            \
+            DSD_FPRINTF(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond);                                        \
             exit(1);                                                                                                   \
         }                                                                                                              \
     } while (0)
@@ -112,7 +113,13 @@ test_replay_leave_keeps_mono_continuous(void) {
     const uint64_t ms = dsd_decode_now_mono_ms();
     const uint64_t ns_after_ms = dsd_decode_now_mono_ns();
     CHECK(ms * 1000000ULL >= after - 1000000ULL && ms <= ns_after_ms / 1000000ULL);
-    CHECK(fabs(dsd_decode_now_mono_s() - (double)dsd_decode_now_mono_ns() / 1e9) < 1e-3);
+    /* The s read lies between two ns reads taken around it; eps covers only the double conversion, so a preemption
+       between the reads cannot fail the check. */
+    const uint64_t ns_before_s = dsd_decode_now_mono_ns();
+    const double s_read = dsd_decode_now_mono_s();
+    const uint64_t ns_after_s = dsd_decode_now_mono_ns();
+    const double s_eps = 1e-6;
+    CHECK((double)ns_before_s / 1e9 - s_eps <= s_read && s_read <= (double)ns_after_s / 1e9 + s_eps);
     /* Wall reads are real time again. */
     CHECK(llabs((long long)dsd_decode_time() - (long long)time(NULL)) <= 1);
     CHECK(fabs(dsd_decode_now_realtime_s() - dsd_realtime_now_s()) < 1.0);
