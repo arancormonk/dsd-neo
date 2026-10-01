@@ -664,7 +664,10 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
     run has used the state. A replay run on a state an earlier run used (the Android service's reuse when a start races
     `stopSelfLatest()`) stays on SYSTEM with one `LOG_WARN`, since the stamps that run left (such as
     `slco_sfrag_last`) are on the system clock and no rebase reaches them; its decode times are then not the
-    capture's. The clock returns to
+    capture's. The system clock only moves forward, so those stamps stay behind now, with one exception: an earlier
+    replay of a capture stamped ahead of the device's clock (recorded elsewhere, or on a clock that is behind) leaves
+    its protocol stamps at the capture's later time, since leaving REPLAY rebases only the init seeds. The clock
+    returns to
     SYSTEM with the same rebase once the replay no longer feeds the decoder (`dsd_engine_decode_clock_leave_replay()`):
     at the end of the run, when app-control stops the stream to restart it (`svc_rtl_stop_locked()`; the replay it
     restarts runs on SYSTEM, which it logs once at that leave when the input is still the replay), and when the input

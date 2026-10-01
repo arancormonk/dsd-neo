@@ -132,8 +132,8 @@ So, for one build, configuration and machine, every replay of a capture decodes 
 or idle: the same decoder lines with the same timestamps. Another machine can differ, since the front end's SIMD paths
 agree with each other only to within about 1e-5. `docs/testing.md` ("Replay determinism") describes the cases that hold
 it to that. Lines measured or paced on real time are not part of it: the audio-sink statistics and the decode loop's
-`Runtime:` total. The input-level gain warnings are, since their cooldown runs on decode time. Two kinds of replay are
-outside it altogether:
+`Runtime:` total. The input-level gain warnings are, since their cooldown runs on decode time. These replays are outside
+it altogether:
 
 - **Trunking (`-T`).** The P25 trunking state machine's watchdog thread checks its hangtime and
   return-to-control-channel timers at a real-time cadence, so where those checks fall among the replayed samples follows
@@ -147,6 +147,13 @@ outside it altogether:
   restart) or switches the input away, the decode clock goes back to the system clock, and a replay that starts again
   within the same run decodes on the system clock. A restart that replays the same capture logs this once, as "IQ
   replay restarted mid-run; decode timestamps now follow the system clock."
+- **A replay on a reused decoder state.** Only a run on a decoder state no earlier run has used moves onto the
+  capture's clock. An embedding host can run again on the state its last run used: the Android service does when a
+  start races the previous run's teardown. A replay started as that run's input then decodes on the system clock, and
+  the log says so once: "IQ replay: this run reuses a decoder state an earlier run used; replay timing stays on the
+  system clock for this run, and decode times are not anchored to the capture." The earlier run's stamps are on the
+  system clock, and moving the clock back to an older capture's time would hold its throttles and timers until the
+  capture caught up.
 
 The last 1.5 ms or so of a capture is never decoded. The front end's filters hold back their look-ahead (about 74
 samples at 48 kHz on the default 1.536 Msps chain, 67 on a 48 kHz capture), and nothing flushes it when the capture

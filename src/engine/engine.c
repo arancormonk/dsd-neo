@@ -3235,8 +3235,10 @@ dsd_engine_decode_clock_enter_replay(dsd_opts* opts, dsd_state* state) {
     if (!state->engine_fresh) {
         /* An earlier run on this state left decode-domain stamps on the system clock, and the rebase reaches only the
            init seeds. Moved onto an older capture's time, the clock would read behind them, and a throttle or timer
-           measured from one (a DMR single-fragment SLCO stamp, say) would hold until the capture caught up. Staying
-           on the system clock keeps every stamp behind now. */
+           measured from one (a DMR single-fragment SLCO stamp, say) would hold until the capture caught up. The system
+           clock only moves forward, so staying on it keeps behind now every stamp a run took on it. (An earlier replay
+           of a capture stamped ahead of this device's clock leaves stamps at the capture's later time; no clock choice
+           here moves them.) */
         dsd_iq_replay_config_clear(&cfg);
         LOG_WARN("IQ replay: this run reuses a decoder state an earlier run used; replay timing stays on the system "
                  "clock for this run, and decode times are not anchored to the capture.\n");

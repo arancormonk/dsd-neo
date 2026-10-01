@@ -38,8 +38,11 @@
  *   REPLAY only while dsd_state::engine_fresh says no run has used the state. A
  *   replay run on a state an earlier run used (the Android service reuses its
  *   state when a start races the previous run's stopSelfLatest(),
- *   DecoderService.kt) stays on SYSTEM, with one warning, so no stamp the earlier
- *   run left is ever ahead of now; its decode times are then not the capture's.
+ *   DecoderService.kt) stays on SYSTEM, with one warning; its decode times are
+ *   then not the capture's. The system clock only moves forward, so a stamp the
+ *   earlier run took on it stays behind now. An earlier replay of a capture
+ *   stamped ahead of this device's clock is the exception: leaving REPLAY rebases
+ *   only the init seeds, so its protocol stamps keep the capture's later time.
  * - Leaving REPLAY for SYSTEM keeps decode-mono time continuous. SYSTEM mono then
  *   reads the platform monotonic clock plus the offset that puts it where the
  *   replay's capture time stood at the switch, so every stamp the replay took goes

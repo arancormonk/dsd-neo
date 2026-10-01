@@ -53,7 +53,10 @@ void dsd_engine_cleanup(dsd_opts* opts, dsd_state* state);
  * clears once it has called this). Only the init seeds are rebased, so a stamp an earlier run left in a reused state
  * (the Android service reuses its state when a start races the previous run's stopSelfLatest(), DecoderService.kt)
  * would sit ahead of the capture's wall time. On such a state the clock stays on SYSTEM, with one warning that the
- * run's replay timing is not anchored to the capture, and every stamp stays behind now.
+ * run's replay timing is not anchored to the capture. The system clock only moves forward, so every stamp the earlier
+ * run took on it stays behind now. The exception is an earlier replay of a capture stamped ahead of this device's
+ * clock (recorded elsewhere, or on a clock that is behind): the leave rebases only the init seeds, so that run's
+ * protocol stamps keep the capture's later time and can still sit ahead of now.
  *
  * @return 0 on success or for no replay; -1 when the sidecar does not parse (logged), which fails the run.
  */
