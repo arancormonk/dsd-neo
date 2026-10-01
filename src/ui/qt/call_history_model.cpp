@@ -663,11 +663,10 @@ int
 CallHistoryModel::findRepeatedNotice(const Row& row) const {
     for (int i = 0; i < m_rows.size(); i++) {
         const Row& existing = m_rows.at(i);
-        // A twin already in the row's session is taken: it stands for another of two identical notices.
-        if (existing.kind == KindNotice && existing.session != row.session && existing.when == row.when
-            && existing.tg == row.tg && existing.src == row.src && existing.name == row.name
-            && existing.detail == row.detail && existing.systemName == row.systemName
-            && existing.systemUid == row.systemUid && existing.channel == row.channel) {
+        if (existing.kind == KindNotice && existing.when == row.when && existing.tg == row.tg && existing.src == row.src
+            && existing.name == row.name && existing.detail == row.detail && existing.systemName == row.systemName
+            && existing.systemUid == row.systemUid && existing.channel == row.channel
+            && !m_noticeTwinsTaken.contains(keyFor(existing))) {
             return i;
         }
     }
@@ -721,6 +720,7 @@ CallHistoryModel::ingestRow(const Row& row, bool isUpdate, bool again) {
         // notice joins the running session.
         const int repeated = findRepeatedNotice(row);
         if (repeated >= 0) {
+            m_noticeTwinsTaken.insert(keyFor(m_rows.at(repeated)));
             m_rows[repeated].session = qMax(m_rows.at(repeated).session, row.session);
             const QModelIndex idx = index(repeated);
             Q_EMIT dataChanged(idx, idx, {SessionRole});
@@ -756,6 +756,10 @@ CallHistoryModel::noteCommitRevs(const dsd_state* snapshot, bool scan[2]) {
     for (int slot = 0; slot < 2; slot++) {
         const quint64 commitRev = static_cast<quint64>(snapshot->event_history_s[slot].commit_rev);
         const quint64 ring = static_cast<quint64>(snapshot->event_history_s[slot].instance);
+        if (ring != m_ringInstance[slot]) {
+            // The twins notices heard again have taken belong to the ring that heard them.
+            m_noticeTwinsTaken.clear();
+        }
         scan[slot] = !m_seeded || commitRev != m_commitRev[slot] || ring != m_ringInstance[slot];
         m_commitRev[slot] = commitRev;
         m_ringInstance[slot] = ring;

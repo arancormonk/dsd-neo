@@ -37,6 +37,7 @@
 #include <QJsonArray>
 #include <QList>
 #include <QObject>
+#include <QSet>
 #include <QSettings>
 #include <QString>
 #include <QStringList>
@@ -285,7 +286,7 @@ class CallHistoryModel : public QAbstractListModel {
      */
     int tryMerge(const Row& row, int scanRows);
 
-    /** @brief The logged notice @p row repeats field for field, not yet in @p row's session, or -1. */
+    /** @brief The logged notice @p row repeats field for field, not yet taken by another notice of the ring, or -1. */
     int findRepeatedNotice(const Row& row) const;
 
     /**
@@ -352,6 +353,11 @@ class CallHistoryModel : public QAbstractListModel {
     /* The ring (Event_History_I::instance) each slot was last read from. A new ring walks even at the
      * commit_rev the last one stopped at: a capture replayed in a fresh state reaches the same count. */
     quint64 m_ringInstance[2] = {0U, 0U};
+    /* The logged notices (by keyFor()) that a notice heard again from the ring being read has taken as its
+     * twin. Two identical notices, the same delivery logged twice, then promote two rows, even read in two
+     * ticks. A notice whose twin no notice of this ring has taken dedups onto it, wherever its session:
+     * a new ring within the session repeats the session's own notices. Cleared when the ring changes. */
+    QSet<QString> m_noticeTwinsTaken;
     bool m_seeded = false;
     QTimer m_saveTimer;
     QThreadPool m_savePool;

@@ -1061,6 +1061,42 @@ test_identical_notices_heard_again_both_join_the_session(void) {
     model.refresh(ring->state);
     expect("both identical notices heard again show in the new session", view.count() == 2);
     expect("and the log keeps two rows", model.count() == 2);
+
+    // Read in two ticks, the second notice still finds the twin the first one left.
+    model.beginSession();
+    view.setHistorySession(model.session());
+    ring = std::make_unique<RingFixture>();
+    ring->commitNotice(1, kCaptureStart + 70, "2010-01-01 00:01:10 SMS from 44");
+    model.refresh(ring->state);
+    ring->commitNotice(1, kCaptureStart + 70, "2010-01-01 00:01:10 SMS from 44");
+    model.refresh(ring->state);
+    expect("both show when read in two ticks", view.count() == 2 && model.count() == 2);
+}
+
+/* A new ring within one session, with no start between (a state set up again without a start): its rows
+ * repeat the session's own. A notice heard again that way finds its twin already in the session and
+ * logs nothing new, as a call heard again does. */
+void
+test_new_ring_within_a_session_logs_nothing_twice(void) {
+    resetStorage();
+    CallHistoryModel model;
+    CallHistoryFilterModel view;
+    view.setSourceModel(&model);
+    auto ring = std::make_unique<RingFixture>();
+    model.beginSession();
+    view.setHistorySession(model.session());
+    replay_capture(*ring);
+    ring->commitNotice(1, kCaptureStart + 70, "2010-01-01 00:01:10 SMS from 44");
+    ring->commitNotice(1, kCaptureStart + 70, "2010-01-01 00:01:10 SMS from 44");
+    model.refresh(ring->state);
+    expect("the session logs two calls and three notices", model.count() == 5 && view.count() == 5);
+
+    ring = std::make_unique<RingFixture>(); // a new ring, no beginSession()
+    replay_capture(*ring);
+    ring->commitNotice(1, kCaptureStart + 70, "2010-01-01 00:01:10 SMS from 44");
+    ring->commitNotice(1, kCaptureStart + 70, "2010-01-01 00:01:10 SMS from 44");
+    model.refresh(ring->state);
+    expect("a new ring in the same session logs no duplicate", model.count() == 5 && view.count() == 5);
 }
 
 /* A row's seed in load() knows no ring. When the seen store has lost the row's entry, a relaunched
@@ -1137,6 +1173,7 @@ main(int argc, char** argv) {
     test_replay_heard_again_after_a_clear();
     test_reused_ring_keeps_the_last_sessions_rows();
     test_identical_notices_heard_again_both_join_the_session();
+    test_new_ring_within_a_session_logs_nothing_twice();
     test_seed_without_a_ring_keeps_its_session();
 
     QDir(dataDir).removeRecursively();

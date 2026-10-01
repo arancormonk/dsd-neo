@@ -2625,8 +2625,8 @@ Qt Quick frontend (`src/ui/qt`):
     the seen store as hex), and a new ring is walked whatever its `commit_rev`. A key read from another ring is a
     call heard again, taken in as the live path takes one: it merges into the logged call it overlaps, searched
     through the whole log rather than the newest 32 rows, and that row joins the running session (a notice heard
-    again promotes a field-for-field twin not yet in the session, so two identical notices promote two rows). So a
-    second replay shows its calls in the new session's views, logs no new row for a call the first replay logged,
+    again promotes a field-for-field twin no other notice of its ring has taken, so two identical notices promote
+    two rows, and a new ring within the session logs none twice). So a second replay shows its calls in the new session's views, logs no new row for a call the first replay logged,
     and a replay after a clear logs them again. A first sighting still merges within the newest 32 rows only: a call
     the first replay logged as two rows, because newer rows sat between its fragments, stays two rows, and the
     repeat folds into the newer one. An entry that knows no ring (a row's seed in `load()` when the seen store has
