@@ -12,9 +12,13 @@ differ from each other by more than builds do, so the comparison is the
 per-repeat difference, not the difference of the means. Before issue #572 the
 repeats differed by run-to-run variation instead, and on the captures behind
 issue #444 the within-build spread was large enough to reverse a blocked
-comparison. The report names the realizations, and says so when every repeat
-replayed the same one (replay_ab.sh --no-realizations, or a capture with no
-events): such an interval shows only that replay is deterministic.
+comparison. The report names the distinct realizations, and says so when every
+repeat replayed the same one (replay_ab.sh --no-realizations, a capture with no
+events, or one whose events all sit at the end of the data): such an interval
+shows only that replay is deterministic. A repeat whose shifted events landed
+where an earlier repeat's did records that repeat's shift, so it is counted
+once, and the report says when the repeats replayed fewer realizations than
+there are repeats.
 
 Digital runs report errors per decoded voice frame. A build that loses sync
 decodes fewer frames and accrues fewer errors without being better, so the raw
@@ -132,19 +136,27 @@ def realizations_text(rows: list[dict[str, str]]) -> str:
 
 
 def realization_count(rows: list[dict[str, str]]) -> int:
-    """How many realizations of the capture the repeats replayed; 0 for a summary written before replay_ab.sh
-    recorded the shift."""
+    """How many distinct realizations of the capture the repeats replayed; 0 for a summary written before
+    replay_ab.sh recorded the shift. A repeat whose shifted events landed where an earlier repeat's did records that
+    repeat's shift, so it is not counted again."""
     return len({row["shift"] for row in rows if row.get("shift", "").isdigit()})
 
 
-def print_one_realization_note(rows: list[dict[str, str]], reps: list[int]) -> None:
-    """Warns when several repeats replayed one realization, where a +/- 0.00 interval reads as a resolved
-    difference."""
-    if realization_count(rows) == 1 and len(reps) > 1:
-        print("\nnote: every repeat replayed the same realization of the capture (replay_ab.sh --no-realizations, or")
-        print("a capture with no events), so the repeats show only that replay is deterministic, and the interval")
-        print("says nothing about how the difference holds across the capture's realizations. Compare across")
-        print("captures, or across realizations of one with events.")
+def print_realization_note(rows: list[dict[str, str]], reps: list[int]) -> None:
+    """Warns when the repeats replayed fewer realizations than there are repeats: with one, a +/- 0.00 interval reads
+    as a resolved difference, and with more, a realization several repeats replayed counts more than once."""
+    count = realization_count(rows)
+    if count == 1 and len(reps) > 1:
+        print("\nnote: every repeat replayed the same realization of the capture (replay_ab.sh --no-realizations, a")
+        print("capture with no events, or one whose events all sit at the end of the bytes replay reads), so the")
+        print("repeats show only that replay is deterministic, and the interval says nothing about how the")
+        print("difference holds across the capture's realizations. Compare across captures, or across")
+        print("realizations of one whose events can move.")
+    elif 1 < count < len(reps):
+        print(f"\nnote: the {len(reps)} repeats replayed only {count} distinct realizations of the capture: some")
+        print("repeats' shifted events were held at the end of the bytes replay reads, where an earlier")
+        print("repeat's landed, so a realization several repeats replayed counts more than once in the")
+        print("interval.")
 
 
 def interval_text(diffs: list[float]) -> str:
@@ -286,13 +298,13 @@ def report_analog(rows: list[dict[str, str]], baseline_arg: str | None) -> int:
     print_analog_labels(columns, builds, reps)
     print_flagged(rows, builds, reps)
     status = print_analog_coverage(analog_coverage(rows), builds, reps)
-    print_one_realization_note(rows, reps)
+    print_realization_note(rows, reps)
 
     print("\nPaired column is the mean per-repeat difference from the baseline with a 95%")
     print("interval; 'differ' counts the repeats where the two builds disagreed at all.")
     if realization_count(rows) > 1:
-        print("Each repeat replayed its own realization of the capture in every build, so the")
-        print("interval spans the realizations.")
+        print("Each repeat replayed a realization of the capture, the same one in every build,")
+        print("so the interval spans the realizations.")
     print("Run the baseline against a copy of itself first: I/Q replay is deterministic")
     print("(issue #572), and both copies replay the same realization in a repeat, so that")
     print("control must read +0.00 +/- 0.00 with 0 differing repeats, and any spread is a")
@@ -343,14 +355,14 @@ def report_digital(path: Path, baseline_arg: str | None) -> int:
           f"{'paired vs baseline':>20}  {'better':>7}")
     for build in builds:
         print(digital_row(by_rep, reps, build, baseline))
-    print_one_realization_note(rows, reps)
+    print_realization_note(rows, reps)
 
     print("\nPaired column is the mean per-repeat difference in errors per voice frame,")
     print("with a 95% interval (n/a with one paired repeat: the interval needs at least two")
     print("paired repeats).")
     if realization_count(rows) > 1:
-        print("Each repeat replayed its own realization of the capture in every build, so the")
-        print("interval spans the realizations.")
+        print("Each repeat replayed a realization of the capture, the same one in every build,")
+        print("so the interval spans the realizations.")
     print("Negative beats the baseline; an interval spanning 0 means the run did not resolve")
     print("a difference. Watch the voice column too: a build that decodes noticeably fewer")
     print("frames is losing sync, whatever its error rate says.")

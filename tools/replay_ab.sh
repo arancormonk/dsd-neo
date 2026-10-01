@@ -45,10 +45,16 @@ set -euo pipefail
 #
 # A capture with no events has nothing to shift: every repeat replays it as
 # recorded, and the run warns that its repeats are one realization, to be
-# compared across captures. --no-realizations replays every repeat as recorded
-# on purpose: that is the determinism control. Two properties this keeps from
-# before issue #572, which cost nothing now and keep a determinism regression
-# from passing for a difference in builds:
+# compared across captures. Events held at the end of the bytes replay reads
+# stop moving, so two shifts can land every event in the same place: a repeat
+# whose events do that replays the same realization as the earlier repeat,
+# records that repeat's shift so the report counts it once, and its progress
+# lines say so. The run warns as for a capture with no events when every repeat
+# collapses onto one, and names how many distinct realizations it has when some
+# do. --no-realizations replays every repeat as recorded on purpose: that is the
+# determinism control. Two properties this keeps from before issue #572, which
+# cost nothing now and keep a determinism regression from passing for a
+# difference in builds:
 #
 #   * Round-robin, not blocked. Running all of build A and then all of build B
 #     measured whatever else the machine was doing as if it were the build.
@@ -188,8 +194,10 @@ done
 
 # Writes repeat r's realization of the capture, for r = 1..reps, to <dir>/r<r>.json: a copy of the sidecar whose
 # data_file is the original data's absolute path and whose every event byte_offset moves forward by s_r whole samples,
-# held to the bytes replay reads. Prints "symbol<TAB>P<TAB>D" and then "<r><TAB><s_r><TAB><path>" for each repeat, or only "none",
-# and writes nothing, when the capture has no events to shift. Fails, writing nothing, on a sidecar it cannot shift.
+# held to the bytes replay reads. Prints "symbol<TAB>P<TAB>D" and then "<r><TAB><s_r><TAB><path><TAB><q><TAB><s_q>"
+# for each repeat, where q is the first repeat whose events landed where r's did (r itself, unless holding them at
+# the end of the bytes replay reads made the two copies one schedule) and s_q its shift. Prints only "none", and
+# writes nothing, when the capture has no events to shift. Fails, writing nothing, on a sidecar it cannot shift.
 write_realizations() {
   python3 - "$@" << 'PY'
 import json
@@ -296,17 +304,22 @@ for index, event in enumerate(events):
         fail(f"events[{index}].byte_offset {event['byte_offset']} is past the {limit} bytes replay reads")
 os.makedirs(outdir, exist_ok=True)
 rows = [f"symbol\t{symbol}\t{decimation}"]
+# Event schedule (kind and offset of each event, in order) -> the first repeat that replays it, and its shift. Events
+# held at the end of the bytes replay reads stop moving, so two shifts can give one schedule, which is one realization.
+schedules = {}
 for rep in range(1, reps + 1):
     shift = (rep - 1) * symbol // reps + (rep - 1)
     if rep > 1 and decimation > 1 and shift % decimation == 0:
         shift += 1
     copy["events"] = [dict(event, byte_offset=min(event["byte_offset"] + shift * bytes_per_sample, limit))
                       for event in events]
+    schedule = tuple((event.get("kind"), event["byte_offset"]) for event in copy["events"])
+    first_rep, first_shift = schedules.setdefault(schedule, (rep, shift))
     path = os.path.join(outdir, f"r{rep}.json")
     with open(path, "w", encoding="utf-8", errors="surrogateescape") as handle:
         json.dump(copy, handle, indent=2, ensure_ascii=False)
         handle.write("\n")
-    rows.append(f"{rep}\t{shift}\t{path}")
+    rows.append(f"{rep}\t{shift}\t{path}\t{first_rep}\t{first_shift}")
 print("\n".join(rows))
 PY
 }
@@ -316,12 +329,16 @@ if [ -z "$out" ]; then
 fi
 mkdir -p "$out"
 
-# Repeat r replays replays[r], whose events sit shifts[r] input samples after the capture's.
+# Repeat r replays replays[r], whose events sit shifts[r] input samples after the capture's. same_as[r] is the first
+# repeat that replays the same realization, r itself unless r's shifted events landed where an earlier repeat's did;
+# shifts[r] is then that repeat's shift, so summary.tsv and the report count the realization once.
 replays=()
 shifts=()
+same_as=()
 for r in $(seq 1 "$reps"); do
   replays[r]=$capture
   shifts[r]=0
+  same_as[r]=$r
 done
 if [ "$realizations" -eq 0 ]; then
   realization_note="off (--no-realizations): every repeat replays the capture as recorded, the determinism control"
@@ -335,18 +352,38 @@ else
     echo "warning: the capture has no events: every repeat replays the same realization; compare it across captures" >&2
     realization_note="none: the capture has no events to shift, so every repeat replays it as recorded"
   else
+    distinct=0
     {
       IFS=$'\t' read -r _ symbol decimation
-      while IFS=$'\t' read -r r shift_samples path; do
+      while IFS=$'\t' read -r r _ path first_rep first_shift; do
         replays[r]=$path
-        shifts[r]=$shift_samples
+        shifts[r]=$first_shift
+        same_as[r]=$first_rep
+        if [ "$first_rep" -eq "$r" ]; then
+          distinct=$((distinct + 1))
+        fi
       done
     } <<< "$table"
     if [ "$reps" -eq 1 ]; then
       realization_note="only repeat 1 runs, unshifted: the capture as recorded (--reps 2 or more gives each repeat"
       realization_note+=" its own realization)"
+    elif [ "$distinct" -eq 1 ]; then
+      # Repeat 2 is shifted, so its events landing where repeat 1's are means every event sits at the end of the
+      # bytes replay reads.
+      echo "warning: every event sits at the end of the bytes replay reads, where no shift moves it:" \
+        "every repeat replays the same realization; compare it across captures" >&2
+      realization_note="one: every event sits at the end of the bytes replay reads, so every repeat replays the"
+      realization_note+=" capture as recorded"
     else
-      realization_note="one per repeat, every event moved ${shifts[1]} to ${shifts[reps]} input samples later"
+      if [ "$distinct" -lt "$reps" ]; then
+        echo "notice: the run has $distinct distinct realizations over its $reps repeats: the rest replay the same" \
+          "realization as an earlier repeat (their progress lines name it), since events held at the end of the" \
+          "bytes replay reads stop moving" >&2
+        realization_note="$distinct over $reps repeats"
+      else
+        realization_note="one per repeat"
+      fi
+      realization_note+=", every event moved ${shifts[1]} to ${shifts[reps]} input samples later"
       realization_note+=" (a 2400-baud symbol is $symbol samples"
       if [ "$decimation" -gt 1 ]; then
         realization_note+=", and no shift after the first is a multiple of the $decimation-sample decimation"
@@ -438,6 +475,9 @@ for r in $(seq 1 "$reps"); do
     exit_note=$([ "$rc" -ne 0 ] && echo " (exit $rc)" || true)
     if [ "$off_path" -eq 1 ]; then
       exit_note="$exit_note (off the monitor path)"
+    fi
+    if [ "${same_as[r]}" -ne "$r" ]; then
+      exit_note="$exit_note (same realization as r${same_as[r]})"
     fi
     if [ "$metric" = analog ]; then
       # analog[] follows the summary header: snr inband clip audible first rms probe_hz probe_dbfs ...

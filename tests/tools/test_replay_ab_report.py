@@ -593,6 +593,8 @@ exit 0
 """
 
 NO_EVENTS_WARNING = "the capture has no events: every repeat replays the same realization; compare it across captures"
+# The no-events warning's verdict, which a capture whose shifted events all collapse onto one schedule gets too.
+ONE_REALIZATION = "every repeat replays the same realization; compare it across captures"
 
 
 def frequency_event(kind, offset, rate):
@@ -800,6 +802,61 @@ class ReplayAbRealizations(unittest.TestCase):
         self.assertIn("events[0].byte_offset 4002 is past the 4000 bytes replay reads", result.stdout)
         self.assertFalse((self.out / "realizations").exists())
         self.assertEqual(list(self.out.glob("*.log")), [])
+
+    def progress_lines(self, output, rep):
+        return [line for line in output.splitlines() if line.startswith(f"  r{rep} ")]
+
+    def test_events_all_at_the_end_make_every_repeat_one_realization(self):
+        # Every event sits at the end of the 4000 bytes replay reads, where no shift moves it, so the three repeats'
+        # copies hold one event schedule. The run is then one realization, warned of as a capture with no events
+        # is, and neither the summary nor the report may count three.
+        events = [frequency_event("RETUNE", 4000, 48000), frequency_event("RESET", 4000, 48000)]
+        original = sidecar("cu8", 48000, "capture.iq", 4000, events)
+        self.write_capture(original)
+        result = self.replay_ab("--reps", "3")
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(result.stdout.count(ONE_REALIZATION), 1, result.stdout)
+        self.assertNotIn(NO_EVENTS_WARNING, result.stdout)
+        self.assert_realizations(original, [0, 0, 0], [[4000, 4000]] * 3, str(self.tmp / "caps" / "capture.iq"))
+        for line in self.progress_lines(result.stdout, 1):
+            self.assertNotIn("same realization", line)
+        for rep in (2, 3):
+            lines = self.progress_lines(result.stdout, rep)
+            self.assertEqual(len(lines), 2, result.stdout)
+            for line in lines:
+                self.assertRegex(line, r"\sshift=0\s.*\(same realization as r1\)$")
+
+        result = report(self.out / "summary.tsv", "--baseline", "host.main")
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("realizations: 1 (the capture as recorded)", result.stdout)
+        self.assertIn("note: every repeat replayed the same realization of the capture", result.stdout)
+
+    def test_repeats_whose_events_are_held_at_the_end_share_a_realization(self):
+        # The events sit 10 bytes before the end of the 4000 replay reads. Three repeats at 48 kHz shift them by 0,
+        # 7 and 15 samples, 0, 14 and 30 bytes, so repeats 2 and 3 both hold them at 4000: one realization between
+        # them, recorded with repeat 2's shift, and two in the run, which the run and the report both say.
+        events = [frequency_event("RETUNE", 3990, 48000), frequency_event("RESET", 3990, 48000)]
+        original = sidecar("cu8", 48000, "capture.iq", 4000, events)
+        self.write_capture(original)
+        result = self.replay_ab("--reps", "3")
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(result.stdout.count("the run has 2 distinct realizations"), 1, result.stdout)
+        self.assertNotIn(ONE_REALIZATION, result.stdout)
+        self.assert_realizations(original, [0, 7, 7], [[3990, 3990], [4000, 4000], [4000, 4000]],
+                                 str(self.tmp / "caps" / "capture.iq"))
+        for rep in (1, 2):
+            for line in self.progress_lines(result.stdout, rep):
+                self.assertNotIn("same realization", line)
+        lines = self.progress_lines(result.stdout, 3)
+        self.assertEqual(len(lines), 2, result.stdout)
+        for line in lines:
+            self.assertRegex(line, r"\sshift=7\s.*\(same realization as r2\)$")
+
+        result = report(self.out / "summary.tsv", "--baseline", "host.main")
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("realizations: 2 (events shifted 0 to 7 input samples)", result.stdout)
+        self.assertIn("note: the 3 repeats replayed only 2 distinct realizations", " ".join(result.stdout.split()))
+        self.assertNotIn("same realization of the capture", result.stdout)
 
     def test_one_repeat_says_it_runs_unshifted(self):
         self.write_capture(sidecar("cu8", 48000, "capture.iq", 4000, [frequency_event("RESET", 1000, 48000)]))

@@ -1498,6 +1498,18 @@ Reading it:
   its header, and the report notes that every repeat replayed one realization.
   Such a capture is one draw however many repeats it gets, so compare builds
   across captures.
+- **Events held at the end** of the bytes replay reads stop moving, so two
+  shifts can put every event in the same place. A repeat whose events land
+  where an earlier repeat's did replays the same realization: its progress
+  lines say `(same realization as rN)`, and `summary.tsv` records repeat N's
+  shift, so the report counts the realization once. When every event sits at
+  the end, every repeat is one realization, and the run warns once as for a
+  capture with no events (`every event sits at the end of the bytes replay
+  reads, where no shift moves it: every repeat replays the same realization;
+  compare it across captures`). When only some repeats collapse, it prints one
+  notice naming how many distinct realizations the run has, and the report
+  notes that a realization several repeats replayed counts more than once in
+  its interval.
 - **`--no-realizations`** replays every repeat as recorded on purpose: the
   determinism control, in which each build's repeats must decode alike (an `sd`
   of 0) as well as pair to `+0.00 +/- 0.00`.
@@ -1573,11 +1585,11 @@ keying, the coverage reporting, crashed and off-path repeats, the single-pair in
 duplicate-name refusal and the realizations: the shifted copies, their hold at the bytes replay reads (with `data_bytes`
 0 or past the data file too), the cf32 stride, the shift moved off a multiple of the decimation, `data_file` made
 absolute as replay resolves it (also under a symlinked directory) or kept when already absolute, paths with spaces,
-`--reps 1`, the no-events warning, `--no-realizations`, an unknown `sample_format` and the report's reading of `shift`.
-CTest runs it as four tests: `TOOLS_REPLAY_AB_REPORT` scores canned summaries and runs wherever Python does, and
-`TOOLS_REPLAY_AB_ANALOG_METRIC`, `TOOLS_REPLAY_AB_DIGITAL_METRIC` and `TOOLS_REPLAY_AB_REALIZATIONS` drive the real
-`replay_ab.sh` with fake hosts, so they are registered only outside Windows where bash and coreutils `timeout` are
-found.
+`--reps 1`, the no-events warning, repeats whose events collapse onto one schedule (all of them or some),
+`--no-realizations`, an unknown `sample_format` and the report's reading of `shift`. CTest runs it as four tests:
+`TOOLS_REPLAY_AB_REPORT` scores canned summaries and runs wherever Python does, and `TOOLS_REPLAY_AB_ANALOG_METRIC`,
+`TOOLS_REPLAY_AB_DIGITAL_METRIC` and `TOOLS_REPLAY_AB_REALIZATIONS` drive the real `replay_ab.sh` with fake hosts, so
+they are registered only outside Windows where bash and coreutils `timeout` are found.
 
 `tone`, `tone_lock_ms` and `tone_lock_pct` come from the host's `ANALOG METRIC:` line, which reads them from the
 decoder's received-tone publication (`dsd_state::analog_rx`) after every block the monitor delivers; a host built
