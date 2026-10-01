@@ -6,17 +6,27 @@ set -euo pipefail
 # reporting the decode quality each achieved.
 #
 # Why this exists: a change to the symbol timing, the slicer or the demodulator
-# cannot be judged from one replay. Decoding runs on a threaded pipeline, so how
-# much of a capture gets decoded varies run to run, and the difference between two
-# builds is easily smaller than that variation. Issue #444 asked for exactly this
-# -- several runs of a real capture, not one number -- and there was no way to do
-# it. Two properties this handles that a hand-rolled loop usually does not:
+# cannot be judged from one number. Issue #444 asked for several runs of a real
+# capture, because decoding then varied run to run by more than the difference
+# between two builds. Since issue #572 an I/Q replay is deterministic: a build
+# decodes a capture the same way on every run, fast or realtime, loaded or idle
+# (replays under -T or -Y excepted, so leave them out of --mode). The repeats are
+# now the control: a build against a copy of itself must report +0.00 +/- 0.00,
+# and any spread is a determinism regression to fix before comparing builds.
+# What still varies is the capture: one replay is one draw of how the decoder,
+# the -fa sync hunt above all, meets its transmissions, so compare builds across
+# several captures, or copies of one with its events shifted (docs/testing.md,
+# "Replay determinism"). Two properties this keeps from then, which cost nothing
+# now and keep a determinism regression from passing for a difference in builds:
 #
 #   * Round-robin, not blocked. Running all of build A and then all of build B
-#     measures whatever else the machine was doing as if it were the build.
-#   * Rotated order within each repeat. A fixed order inside a repeat credits the
-#     better slot to whichever build holds it; a control of one build against
-#     itself scored the two slots 0.26 err/frame apart.
+#     measured whatever else the machine was doing as if it were the build.
+#   * Rotated order within each repeat. A fixed order inside a repeat credited the
+#     better slot to whichever build held it; a control of one build against
+#     itself once scored the two slots 0.26 err/frame apart.
+#
+# The default --rate stays realtime, which runs each replay in the capture's own
+# time; fast decodes the same thing sooner.
 #
 # Report errors per decoded voice frame, never the raw error total: a build that
 # loses sync decodes fewer frames and accrues fewer errors without being better.

@@ -98,25 +98,51 @@ Replay uses `min(data_bytes, actual_file_size)` rounded down to sample alignment
 interrupted capture never finalized metadata (`data_bytes == 0`), replay falls back to the actual file size and still
 rounds down to sample alignment. Zero effective bytes are rejected for `--iq-replay`.
 
-## Replay Pacing And Decode-Time Windows
+## Replay Pacing And The Decode Clock
 
 `--iq-replay-rate realtime` pins the replay thread to `start + samples_written / sample_rate`, so air time and wall
-clock advance together. The default `fast` mode puts no clock on the reader: the decoder paces the demodulator, a
-capture chunk at a time, so throughput is bounded by decode speed and a capture's worth of air time completes in
-considerably less wall-clock time.
+clock advance together. The default `fast` mode puts no clock on the reader, so a capture's worth of air time takes
+only as long as decoding it does.
 
-That matters because there is currently **no decode-derived clock** in the decoder. Protocol layers time call state
-against the decode clock's `dsd_decode_now_mono_s()`, which still reads the wall-clock monotonic clock during a replay,
-and any call site that passes `observed_m = 0.0` falls back to the same source. Under `fast` replay every
-wall-clock-measured interval in the canonical call state is therefore compressed relative to the air time it is meant
-to describe:
+In both modes the decoder paces the demodulator, a capture chunk at a time: the demodulator starts on the next chunk
+(64 KiB of the capture, or up to the next event) only once the decoder has read everything it made of the last one,
+and every event and `--iq-loop` rewind waits for the same point. Both modes therefore hand the decoder the same
+stream, with each event applied at the same position in it, and whatever the decoder asks of the front end mid-replay
+(a symbol profile the sync hunt tries, a CQPSK switch, a reacquire) lands at the start of the next chunk, however fast
+the machine is or however loaded.
 
-- Gaps look shorter than they were, so the call reacquisition window (`DSD_CALL_REACQUIRE_GAP_S`, which decides
-  whether a sync-loss-interrupted transmission is one history row or two) coalesces more readily than it would live.
-- Hangtime and staleness timers in the trunking state machines expire later in air-time terms than they would live.
+The decoder's clock follows the capture as well. Under `--iq-replay`, decode time is the sidecar's
+`capture_started_utc` plus the capture time of the sample being decoded, the time `MUTE` events omitted included:
 
-Use `--iq-replay-rate realtime` when reproducing or asserting on any of that timing. The same caveat applies to
-non-`.bin` file input under `-r`/WAV replay, which is likewise unthrottled; only `.bin` symbol-capture replay is paced.
+- Timestamps in the decoder's output (the console, event and call history, logs and file names) show when the
+  capture was made, in the local time zone as live, not when it was replayed. A `capture_started_utc` before
+  2000-01-01T00:00:00Z, such as the `1970-01-01T00:00:00Z` the generated fixtures in `tests/fixtures/iq` carry, starts
+  the clock at 2000-01-01T00:00:00Z instead; one that does not parse is logged and starts it there too.
+- Call durations, the call reacquisition window (`DSD_CALL_REACQUIRE_GAP_S`, which decides whether a
+  sync-loss-interrupted transmission is one history row or two), protocol windows and staleness timers measure air
+  time, as they would live, in both modes.
+
+So every replay of a capture decodes the same way, fast or realtime, loaded or idle: the same decoder lines with the
+same timestamps. `docs/testing.md` ("Replay determinism") describes the cases that hold it to that. Lines measured or
+paced on real time are not part of it: the audio-sink statistics, the decode loop's `Runtime:` total, and the
+input-level gain warnings, whose cooldown runs on real time. Two kinds of replay are outside it altogether:
+
+- **Trunking and scanning (`-T`, `-Y`).** The P25 trunking state machine's watchdog thread checks its hangtime and
+  return-to-control-channel timers at a real-time cadence, and replay refuses the retunes trunking and scanning ask for
+  (`NOTICE: Retune ignored during IQ replay.`, itself paced on real time), so such a replay can decide differently from
+  run to run.
+- **A replay restarted mid-run.** Only a replay started as the run's input runs on the capture's clock, from its first
+  sample. When an interactive frontend restarts the stream (a gain, device or DSP bandwidth change, or a stream
+  restart) or switches the input away, the decode clock goes back to the system clock, and a replay that starts again
+  within the same run decodes on the system clock.
+
+The last 1.5 ms or so of a capture is never decoded. The front end's filters hold back their look-ahead (about 74
+samples at 48 kHz on the default 1.536 Msps chain, 67 on a 48 kHz capture), and nothing flushes it when the capture
+ends, so a frame that ends inside those samples is lost: the `edacs` fixture's last message fails its BCH check for
+this reason. A `RESET` drops what the filters held the same way, as a live retune does.
+
+File input under `-r` or WAV replay has no capture clock: it decodes on the system clock and is unthrottled (only `.bin`
+symbol-capture replay is paced), so its call gaps, hangtime and staleness windows look shorter than they were on air.
 
 ## Analog Monitor Replay
 
@@ -140,8 +166,7 @@ dsd-neo -fM --iq-replay tests/fixtures/iq/am_airband_real.iq.json --iq-replay-ra
   demodulator would run the AM channel filter at a multiple of the demod rate, so the stream start refuses it with
   `...; AM needs a capture with post_downsample 1`. FM replays such a capture as before.
 - The power squelch and the monitor's voice filters (`-v`) apply as they do live; `-o null` discards the audio.
-- Use `realtime` pacing to listen. `fast` replay is right for scoring, which is sample-deterministic either way as
-  long as the front end stays on the monitor path.
+- Use `realtime` pacing to listen. `fast` replay delivers the same samples and is right for scoring.
 - Under `-fA` and `-fM` the modulation auto-switch stands down, so a carrier within a few hertz of 0 Hz
   (`am_airband_real`), which votes for CQPSK, no longer moves the front end to the P25 CQPSK path, and the monitor
   delivers the whole capture. No other symbol profile the sync hunt requests reaches the RTL front end in analog-only
@@ -166,7 +191,8 @@ dsd-neo -fM --iq-replay tests/fixtures/iq/am_airband_real.iq.json --iq-replay-ra
   safely.
 - `RETUNE` events update replay-visible center frequency state. `RESET` events apply the same demod reset/purge/output
   handling used by live retunes, from the center the `RETUNE` before them left, as the live retune did. `MUTE` events
-  emit no samples, but advance replay phase accounting and realtime virtual sample time by `duration_bytes`.
+  emit no samples, but advance replay phase accounting, realtime virtual sample time and the decode clock by
+  `duration_bytes`.
 - Replay applies an event, and an `--iq-loop` rewind, only once the decoder has read everything demodulated before it.
   The decoder then meets each event at the same point in fast and realtime replay, and a `RESET` drops nothing a slow
   decoder has not read. It decodes from the first sample demodulated after a `RESET`, or after a symbol profile or

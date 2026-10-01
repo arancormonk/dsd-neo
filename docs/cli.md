@@ -301,12 +301,14 @@ DirWatch modes keep the WAV and JSON files because the watcher needs stable file
 - `--iq-capture-format <cu8|cf32>` Capture format request (`cu8` default).
 - `--iq-capture-max-mb <n>` Capture byte cap in MiB (`0` unlimited).
 - `--iq-replay <path>` Replay capture metadata/data through the RTL pipeline.
-- `--iq-replay-rate <fast|realtime>` Replay pacing mode (`fast` default). In both modes the decoder paces the front
-  end: the demodulator starts on the next capture chunk only once the decoder has read everything before it. So what
-  the decoder asks of the front end mid-replay (the Auto hunt narrowing the channel filter onto a candidate, a
-  reacquire) lands at the same place in the capture, fast or realtime. `realtime` also holds the reader to the
-  capture's own sample clock; `fast` runs as fast as decoding allows. Decode-time windows (call gaps, hangtime) still
-  run on the wall clock, so reproduce trunking timing with `realtime` (see `docs/iq-capture-replay.md`).
+- `--iq-replay-rate <fast|realtime>` Replay pacing mode (`fast` default). In both modes the decoder paces the front end:
+  the demodulator starts on the next capture chunk only once the decoder has read everything before it, so `fast` no
+  longer demodulates ahead of the decoder (up to about 43 s at 48 kHz in older builds). What the decoder asks of the
+  front end mid-replay (the Auto hunt narrowing the channel filter onto a candidate, a reacquire) lands at the start of
+  the next capture chunk, fast or realtime. The decode clock follows the capture: timestamps show capture time (from the
+  sidecar's `capture_started_utc`), and call gaps, call durations and protocol windows measure air time. So a replay
+  without `-T` or `-Y` decodes the same way on every run, in either mode. `realtime` also holds the reader to the
+  capture's own sample clock; `fast` runs as fast as decoding allows (see `docs/iq-capture-replay.md`).
 - `--iq-loop` Loop replay when EOF is reached.
 - `--iq-info <path>` Print capture metadata summary and exit.
 

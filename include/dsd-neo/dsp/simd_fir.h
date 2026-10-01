@@ -13,6 +13,27 @@
  * - Complex general symmetric FIR (exploits symmetry only)
  * - Real half-band decimator (exploits zero-tap sparsity + symmetry)
  *
+ * The streaming contract the three share (issue #572):
+ * - Units: simd_fir_complex_apply() counts complex samples, simd_hb_decim2_complex() floats (two a complex sample) and
+ *   simd_hb_decim2_real() real samples.
+ * - State: a history of the newest inputs and a pending count of inputs taken but not yet filtered past, which carries
+ *   the look-ahead (and the half-band's decimation phase) from one call to the next. A zeroed history with pending = 0
+ *   is the only reset: the next output is centred on the next input, and whatever was pending is dropped. The
+ *   demodulator's one reset is dsd_demod_reset_filter_state() (<dsd-neo/dsp/demod_pipeline.h>).
+ * - Latency: an output comes out only once the c = (taps_len - 1) / 2 inputs after its centre have arrived, so each
+ *   filter holds back c inputs at its own rate. On the default 1.536 Msps RTL chain the five-pass cascade and the
+ *   135-tap channel filter hold about 74 samples at 48 kHz, 1.54 ms. Nothing here flushes them; the pipeline drops
+ *   them at a reset and at the end of an I/Q replay.
+ * - Capacity: out_cap must hold every output a channel-filter call makes, up to N + c_old - c_new after a tap-count
+ *   shrink; a half-band call makes at most (N + 1) / 2, so each cascade stage fits in its input's buffer.
+ * - An invalid call returns -1 and touches nothing, and no call consumes part of its input. Scalar output is
+ *   bit-exact across any split of the input; SSE2, AVX2, NEON and the dispatcher agree with their own whole-stream
+ *   output within 1e-5.
+ * - Only these filters stream. The demodulator stages after them still decide per block: channel power and the
+ *   squelch decision, the squelch envelope, I/Q balance, the AM detector's warm start, CQPSK's adaptive Gardner gain,
+ *   the rounding of a squelched block's zero-symbol count, the metrics, and the block a profile request is consumed
+ *   on (docs/code_map.md, "Streaming linear front end").
+ *
  * Runtime dispatch automatically selects the best available implementation:
  * - x86-64: AVX2+FMA > SSE2 > scalar
  * - ARM64: NEON (always available)

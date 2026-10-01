@@ -3744,8 +3744,8 @@ demod_write_output_block(struct demod_state* d, struct output_state* o) {
  *   batch tag, written++ and the broadcast of output.ready. A block with no output publishes nothing, and the demod
  *   goes on to the next block while the decoder still waits.
  * - The decoder's empty check, acknowledgement and demand broadcast happen under the same lock.
- * So the demod and the decoder never run at once: a request, a clear or a snapshot the decoder makes lands at the start
- * of the next block. Lock order: replay_eof_m, then output.ready_m. */
+ * So the demod never starts a block while the decoder runs: a request, a clear or a snapshot the decoder makes lands at
+ * the start of the next block. Lock order: replay_eof_m, then output.ready_m. */
 
 /* The replay is stopping: a stop, a forced stop (the replay device's stop) or the global exit. */
 static int

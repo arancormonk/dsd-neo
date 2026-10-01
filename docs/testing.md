@@ -119,9 +119,14 @@ ctest --preset dev-debug -L iq-decode --output-on-failure
 Each decode case asserts on a decoded payload field (NAC, WACN/SYS, colour code,
 RAN, callsign, site ID) rather than a sync count, so a silent framing or protocol
 regression fails the test instead of merely moving a counter. The
-`DECODE_IQ_*_AUTO_HUNT` cases are the documented exception, described below. The
-whole set runs in about 7 seconds because I/Q replay defaults to
-`--iq-replay-rate fast`.
+`DECODE_IQ_*_AUTO_HUNT` cases are the documented exception, described below. I/Q
+replay defaults to `--iq-replay-rate fast`, so run one after another in
+`dev-debug` the 40 digital cases take about 27 seconds and the analog ones (see
+[Analog monitor audio checks](#analog-monitor-audio-checks)) about 22. The five
+`iq-determinism` cases (see [Replay determinism](#replay-determinism-issue-572))
+add 46 seconds, two realtime cases of 15.6 seconds among them; under
+`ctest -j 16` they run beside the suite's longest test, and the full suite
+still takes about 55 seconds.
 
 Covered: P25 Phase 1 C4FM (control and voice), P25 Phase 1 CQPSK/LSM (control and
 voice, plus a two-ray simulcast-impaired control channel), P25 Phase 2, DMR
@@ -239,11 +244,14 @@ the SPS hunt until PRBS9 locks, which is the price of a frame type that carries 
 
 The other half of #399 — that a capture containing no M17 does not decode any — is pinned in
 `FRAME_SYNC_INTERNAL_HELPERS` (`test_m17_alternating_runs_alone_are_never_a_sync`) rather than as a reject case on
-the `dstar` fixture. A reject case there was tried and removed: how far the hunt gets through a 4 s capture under
-`-fa` depends on front-end and thread scheduling, so the run varies between builds and between presets, and the
-assertion failed under `tsan-debug` while passing repeatedly under `dev-debug`. Only assertions that hold for every
-schedule belong in an `-fa` decode case, which is why the AUTO cases here assert either a payload the capture always
-reaches or a hunt line that always prints.
+the `dstar` fixture. A reject case there was tried and removed: at the time, how far the hunt got through a 4 s
+capture under `-fa` depended on front-end and thread scheduling, so the run varied between builds and between
+presets, and the assertion failed under `tsan-debug` while passing repeatedly under `dev-debug`. Replay no longer
+depends on scheduling (issue #572), but how far the hunt gets still depends on its phase: anything that shifts its
+timeline by a few samples, the front end's latency or an event's offset, can move it, so it still differs between
+builds (see [Replay determinism](#replay-determinism-issue-572)). Only assertions that hold whatever that phase
+belong in an `-fa` decode case, which is why the AUTO cases here assert either a payload the capture always reaches
+or a hunt line that always prints.
 
 Reject cases assert the opposite: that a fixture produces *no* decode. `dsd_neo_add_iq_reject_test` takes a
 `NOT_EXPECTED` regex alongside the usual `EXPECTED` one, so a run that printed nothing at all cannot pass by
@@ -251,14 +259,14 @@ default. `noise_floor` is 10 s of synthetic complex Gaussian receiver noise (see
 `python3 tools/build_iq_fixtures.py --derived-only`) with no signal in it whatsoever. The `DECODE_IQ_NOISE_FLOOR_*`
 cases assert `Total audio errors: 0`, which is the count of vocoder frames the decoder synthesized: before issue
 \#398's confirmation gate this fixture produced 89 of them under `-fn` and 49 under `-fi`, decoded from nothing.
-They deliberately do not cover `-fa`, where how far the hunt gets is schedule-dependent.
+They deliberately do not cover `-fa`, where how far the hunt gets moves with its phase.
 
 There is no `-fa` hunt case on `noise_floor`, and the measurement behind that is worth recording. Issue #391's
 remaining set — DMR, P25 Phase 2 and X2-TDMA, the handlers that report no verdict — is bounded by arithmetic
 rather than by a verdict, so a replay assertion cannot see it. Under `-fa` the fixture completes six rotations in its
 10 s; defeating the verdict gate in `frame_sync_sps_hunt_note_handler_consumption()` gives five, and every individual
 `SPS hunt: trying` line still prints in both. Only the rotation *count* separates them, and how far the hunt gets is
-exactly the schedule-dependent quantity that got the `dstar` reject case removed above. So the property is pinned
+exactly the phase-dependent quantity that keeps a reject case off the `dstar` fixture above. So the property is pinned
 where it can be stated exactly, in `FRAME_SYNC_SPS_HUNT_FALSE_SYNC`
 (`test_no_verdict_handlers_still_rotate_at_the_noise_cadence`): a handler consuming a dPMR FS2 frame's 372 symbols on
 the default productive verdict still reaches its dwell at the cadence that matcher reaches on noise. Both bounds are
@@ -270,8 +278,8 @@ CCH decodes nothing still rotates, and one whose CCH decodes on three frames in 
 There is no `-fa` case on `nxdn48` for issue #445 either, and for the same reason plus one of its own. The guard
 that issue added withholds the NXDN96 and M17 matchers on 4800/4 while a 2400/4 transmission has recently proved
 itself, so seeing it work in a replay needs the hunt to complete a rotation *after* a proof — and the `nxdn48`
-fixture is 6 s, about one full rotation, which is precisely the schedule-dependent regime that got the `dstar`
-reject case removed above. The change also leaves the hunt's own accounting untouched, so an `-fa` case would mostly
+fixture is 6 s, about one full rotation, which is precisely the phase-dependent regime that keeps a reject case off
+the `dstar` fixture above. The change also leaves the hunt's own accounting untouched, so an `-fa` case would mostly
 re-assert rotation behaviour that did not move. The property is pinned exactly instead, in
 `FRAME_SYNC_INTERNAL_HELPERS` (the matchers stand down inside the span and are live again past it, the level blend
 still runs while the sync is withheld, the guard is scoped to its arming protocols and to the profile proved, and it
@@ -286,9 +294,140 @@ against rotation — makes the decoder worse, and no test here would have caught
 hooks that end a call and clear the state the next one is assembled from. On the uncommitted 35 s four-channel
 NXDN48 capture from issue #373, ten rotated replays per build (`tools/replay_ab.sh`) scored 75 NXDN48 syncs and 11
 voice calls per run on `main` against 66 and 9 with the verdict change, every paired repeat worse. Single replays
-cannot see this: the same build scores anywhere from 57 to 94 NXDN48 syncs run to run under `-fa`, which is wider
-than the effect. Decode *volume* under the hunt is not covered by the `iq-decode` suite, which asks only whether a
-build still decodes.
+could not see this then: the same build scored anywhere from 57 to 94 NXDN48 syncs run to run under `-fa`, which is
+wider than the effect. Replay is repeatable now, so a build scores the same on every replay, but that score is one
+draw of the hunt's phase against the calls, which a change to the hunt's timeline can move by as much;
+[Replay determinism](#replay-determinism-issue-572) says how to judge such a change across captures instead. Decode
+*volume* under the hunt is not covered by the `iq-decode` suite, which asks only whether a build still decodes.
+
+#### Replay determinism (issue #572)
+
+Under `--iq-replay` the decoder paces the front end a capture chunk at a time, every event and loop rewind lands on an
+idle pipeline, the front end's filters carry their state across blocks, and the decode clock runs on the capture's time
+(`docs/iq-capture-replay.md` says what that means for a user, and the IO, DSP and Runtime sections of `docs/code_map.md`
+how it works). For one build, configuration and machine, a replay without `-T` or `-Y` therefore prints the same decoder
+output on every run, fast or realtime, idle or loaded, capture-time timestamps included. The cases under the CTest label
+`iq-determinism` (also in `iq-decode`, radio builds only) hold it to that:
+
+```sh
+ctest --preset dev-debug -L iq-determinism --output-on-failure
+```
+
+The host is `dsd-neo_test_replay_jitter` (`tests/engine/replay_jitter.c`). It runs the real engine on the arguments
+`dsd-neo` would get and perturbs only the decoder's side of the replay, through the stream read hook: with
+`--replay-jitter-seed N` it sleeps a seeded U(0, `--replay-jitter-max-ms`) ms (120 by default) after about one read in
+`--replay-jitter-every` (64), within `--replay-jitter-budget-ms` (1.5 s, which cannot be raised); with
+`--replay-short-reads N` it caps each read at a seeded 1 to count samples. Where GNU ld can replace the audio device
+layer (`--wrap=dsd_audio_*`, the seam `CORE_AUDIO_GAIN` uses; not on Apple or Windows), `--replay-sink free|stalled`
+gives the engine a test sink with the real backends' asynchronous contract (a 1 s ring, writes that never wait, a
+pump thread) whose device takes every chunk or stalls after the first. The host fails a leg whose stalled sink never
+backed up and dropped audio, whose decoder drained a stalled sink, or whose engine opened a synchronous one. At the end
+it prints `REPLAY STREAM: fsk_samples=… cqpsk_symbols=… monitor_samples=… generation_changes=… media_ms=…`, counted
+from the batch tags the decoder read, each output kind in its own unit, and a `REPLAY SINK:` line per stream with an
+FNV-1a of every sample the decoder handed it. A sample read without a tag, or with an unknown kind, fails the host.
+
+The runner is `tests/iq_determinism_check.cmake`, registered through
+`dsd_neo_add_iq_determinism_test(name fixture mode runs expected min_fsk min_cqpsk)`. RUNS is a `;` list of at least two
+legs, each joining parts with `+`: `fast` or `realtime`, `jitter:SEED:MAX_MS`, `short:SEED`, and `sink:free` or
+`sink:stalled` (which plays to `-o pulse` in place of `-o null`). Each leg is one process, held to
+`iq_decode_check.cmake`'s exit-status and sanitizer checks and to EXPECTED. A leg that prints
+`Retune ignored during IQ replay` fails as misconfigured: only `-T` and `-Y` print it, and they are outside the
+guarantee. Every leg's stdout and stderr are then compared with the first leg's, line for line, after a normalization
+kept as small as the measurement allows:
+
+- ANSI colour sequences are removed.
+- Four kinds of line are dropped: `NOTICE: Runtime:` (the decode loop's real-time duration), `REPLAY JITTER:` (what
+  the host injected), the audio-sink diagnostics (`PulseAudio output stats:` and the other backends', and the host's
+  `Replay sink output stats:`, the device side a stall changes on purpose) and the input-level advisories
+  (`WARNING: …` to raise or lower the RF gain or the source volume), whose 10 s cooldown runs on real time. The decoder
+  can print an advisory in the middle of one of its own lines, so it is cut out with its line break and the decoder's
+  line joined again.
+- Lines the reader, demod or controller threads print would be compared as a sorted set, since where they fall among
+  the decoder's lines follows thread timing. The pattern list is empty, by measurement: traced per thread
+  (`strace -f -e trace=write`) under every leg kind, everything these legs print comes from the decoder thread.
+
+Everything else is compared verbatim and in order: the decoder's lines with their `HH:MM:SS` capture-time stamps, the
+`REPLAY STREAM` and `REPLAY SINK` lines and the end-of-run totals. A mismatch prints both legs' specs and the first
+differing line with context. A new difference is a defect to fix, not a pattern to add to the list.
+
+Every leg's `REPLAY STREAM` line must also count at least MIN_FSK discriminator samples and MIN_CQPSK CQPSK symbols.
+The verbatim comparison already catches one leg reading less than the others; the floors catch every leg doing so,
+and keep the case on the path it was written for. On `nxdn48_after_retune` under `-fa` every leg measures 582,330 and
+8,189: the hunt spends about 1.37 s on the CQPSK path (6000 symbols a second, 8 samples each), so the legs cross output
+kinds and generations, and the two counts cover all but 158 of the capture's 648,000 samples
+(FSK = 648,000 - 158 - 8 x CQPSK). MIN_CQPSK is 5,000, just under one CQPSK dwell, a fixed 3 passes of 1,800 symbols
+(`DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS`), 5,400; the other 2.8k or so of the 8,189 come from the hunt's visit and
+credit accounting, which may legitimately change. MIN_FSK is 535,000, the measured count less one more full dwell
+(5,400 x 8 = 43,200 samples, leaving 539,130) and a little more. The comment beside the registration records the
+measurement; re-derive both from it when the hunt or the fixture changes.
+
+The fixture, `nxdn48_after_retune` (1.3 MB, `DERIVED_RETUNE` in `tools/build_iq_fixtures.py`), is a call after a scan
+retune: the first 7.5 s of `noise_floor` on one channel, then the four events a real scan retune records, all at byte
+720,000 (a `RETUNE` to 467.75625 MHz, a 154.7 ms `retune_mute` `MUTE`, a `RESET` and a 25 ms `MUTE`, the reasons and
+lengths of the first retunes in a real 1.536 Msps NXDN scan capture divided by its decimation of 32), then all of
+`nxdn48`, byte for byte. Its version 2 sidecar starts the capture at 2026-01-01T00:00:00Z.
+`DECODE_IQ_NXDN48_AFTER_RETUNE` (`-fi`) is the control that the eventful path decodes the call,
+`IQ_INFO_NXDN48_AFTER_RETUNE` reads the event timeline back, and `DECODE_IQ_NXDN48_AFTER_RETUNE_AUTO` decodes the call
+under `-fa`, which needs the hunt to land on 20 sps after the `RESET` by itself. The lead-in was chosen by sweeping it,
+three fast `-fa` replays per point; the three were byte-identical at every one of the 48 points, and `-fi` decoded the
+call at all of them:
+
+| Lead-in (s) | `-fa` decodes `Src=901` | Hunt steps before the `RESET` (sps) | First hunt step after it | `Src=901` lines / audio errors |
+| --- | --- | --- | --- | --- |
+| 1.5 | yes | 1 (20) | none | 4 / 76 |
+| 2.0, 2.5 | no | 1 (20) | 5 | 0 / 8, 0 / 30 |
+| 3.0-4.0 | yes | 1 (20) | 5 | 1-2 / 19-72 |
+| 4.5 | yes | 2 (20, 5) | 8 | 3 / 30 |
+| 5.0, 5.5 | yes | 3 (20, 5, 8) | 10 | 3 / 45, 3 / 55 |
+| 6.0-6.6 | yes | 4 (20, 5, 8, 10) | 10 | 4 / 76 (6 / 86 at 6.3 and 6.4) |
+| **6.7-8.1** | **yes** | **5 (20, 5, 8, 10, 10)** | **20** | **4 / 76** |
+| 8.2, 8.3 | yes | 6 | none | 4 / 76, 6 / 64 |
+| 8.4-8.8, 9.0 | no | 6 | 5 | 0 / 0 |
+| 8.9 | yes | 6 | none | 6 / 64 |
+| 9.5 | no | 6 | 5 | 0 / 8 |
+
+The lead-in had to put at least a whole hunt rotation (five steps) before the `RESET`, with its neighbours 0.5 s either
+side decoding under `-fa` too. 7.5 s sits mid-plateau: every point from 6.7 to 8.1 s reaches the `RESET` after the same
+five steps and decodes identically, 0.8 s above the four-step edge (which still decodes) and about 0.85 s below the
+cliff at 8.35-8.4 s, where the hunt reaches 20 sps just before the `RESET` and its dwell runs out early in the call. A
+change to the hunt's dwell or to the front end's latency can move those edges. When `DECODE_IQ_NXDN48_AFTER_RETUNE_AUTO`
+fails after one, run the sweep again (`build_retune_fixture()` builds a fixture at any lead-in) before moving the
+lead-in.
+
+| Case | Legs |
+| --- | --- |
+| `DECODE_IQ_NXDN48_AFTER_RETUNE_AUTO_DETERMINISM` | `fast;fast;jitter:7:120;jitter:11:120;short:13` |
+| `DECODE_IQ_NXDN48_AFTER_RETUNE_AUTO_DETERMINISM_REALTIME` | `fast;realtime` |
+| `DECODE_IQ_NXDN48_AFTER_RETUNE_AUTO_DETERMINISM_REALTIME_JITTER` | `fast;realtime+jitter:17:120` |
+| `DECODE_IQ_NXDN48_AFTER_RETUNE_AUTO_DETERMINISM_STALLED_SINK` | `sink:free;sink:stalled`, only where `--wrap` links |
+
+On `main` before issue #572 the cases fail. The host needs the replay batch tag, which `main` lacks, so its own
+`dsd-neo` ran the fast and realtime legs through the runner: `fast;fast` and `fast;realtime` both stop at the first
+differing decoder line. Even with the timestamps stripped as well, three fast replays decoded 9, 9 and 13 voice frames
+of the call and one `Src=901` line each, two distinct outputs in three runs, and a realtime one 50 frames and four
+`Src=901` lines. Every leg on the fixed tree decodes the whole call as that realtime run did, four `Src=901` lines and
+76 audio errors. Two mutations show the cases are live: leaving the decode clock on the system clock under replay
+fails `_REALTIME` on a timestamp alone (`03:15:34` against `03:15:36`), and making replay audio output synchronous
+fails `_STALLED_SINK`.
+
+The five cases take 46 s in `dev-debug` run one after another, the two realtime ones 15.6 s each, since a realtime leg
+takes the capture's 13.7 s of air time. Under `ctest -j 16` they run beside the suite's longest test, and the full
+suite's wall time does not move (about 55 s). Under `tsan-debug` and `asan-ubsan-debug` they take up to 37 s each.
+
+Repeatable is not the same as representative. Under `-fa`, which calls a replay catches depends on where the hunt's
+rotation stands when each one arrives, and one capture is one fixed draw of that: anything that moves the hunt's
+timeline by a few samples, an event's offset, the front end's filter latency or a dwell, can win or lose a call, in
+either direction, with nothing decoding better or worse. The sweep above shows it on one fixture. The uncommitted 94 s
+NXDN48 scan capture behind this issue (88 retunes at 1.536 Msps) shows it on a real one: the streaming filters, which
+hold back 1.5 ms of look-ahead and drop it at each `RESET`, took its `-fa` replay from 144 voice frames and a caught
+`Src=102` call to 82 frames and no `Src=102`, as repeatably as before. Thirty copies of the capture, each with every
+event shifted by one amount (from one sample to 50 ms either way), told the rest: the build before the filter change
+caught that call at 15 of the 31 alignments, and the two builds after it at 13 and 7 (a difference 31 alignments cannot
+settle, p about 0.06), while `-fi` caught it at all 31 on every build, with errors per voice frame no worse. So judge a
+hunt or front-end change across captures, or across copies of one with its events shifted, with a pinned mode beside
+`-fa`, never from one replay. A shifted copy needs only a new sidecar: point its `data_file` at the original data and
+add the same whole number of samples (2 bytes each for cu8) to every event's `byte_offset`, keeping each within
+`data_bytes`.
 
 #### Received tone (CTCSS) on the analog monitor
 
@@ -739,9 +878,11 @@ Known gaps and caveats:
   it still syncs and still publishes no identity; `DECODE_IQ_DPMR_SYNTH` is the accept case.
 - **P25 Phase 2** asserts SACCH framing only. Full payload decode needs the
   system WACN/SYSID/CC via `-X`, which the public sample does not identify.
-- Fixtures are timing-insensitive by construction. Do not add assertions that
-  depend on wall-clock call-state timers, because `fast` replay compresses them;
-  use `--iq-replay-rate realtime` for that.
+- Call-state timers run on the capture's clock under replay (issue #572), so an
+  assertion that depends on one holds in `fast` and `realtime` replay alike. Not
+  under `-T` or `-Y`, though: the P25 trunking watchdog ticks on a real-time
+  cadence and replay refuses their retunes, so those replays are outside the
+  determinism guarantee (see [Replay determinism](#replay-determinism-issue-572)).
 - **AM** cases run `-fM`, native AM reception (issue #524): `DECODE_IQ_ANALOG_AM_*` in the table below. Under `-fA` the
   FM monitor demodulates `am_airband_real`, which measures an FM discriminator on an AM signal, so `-fA` cannot stand in
   for an AM case (`DECODE_IQ_ANALOG_REAL_CTCSS_NOFALSE_AM` uses it under `-fA` only as no-false-lock material for the
@@ -749,9 +890,9 @@ Known gaps and caveats:
   modulation auto-switch (`frame_sync_maybe_auto_switch_modulation()` in `src/dsp/dsd_frame_sync.c`) votes for CQPSK.
   The switch used to run in analog-only mode too, because `-fA` does not set `opts->mod_cli_lock`: it applied the P25
   CQPSK demod profile to the RTL front end, which then delivered CQPSK symbols instead of monitor audio, after 0 or 20
-  ms of monitor audio in `fast` replay and 680 ms in `realtime` (the switch's dwell is timed by the wall clock). The
-  analog family (`dsd_opts_is_analog_family()`) now stands the switch down, so the front end stays on the monitor path
-  whatever the carrier offset, and replay of the excerpt is sample-deterministic. Two tests pin it:
+  ms of monitor audio in `fast` replay and 680 ms in `realtime` (the switch's dwell was then timed by the wall
+  clock). The analog family (`dsd_opts_is_analog_family()`) now stands the switch down, so the front end stays on the
+  monitor path whatever the carrier offset, and replay of the excerpt is sample-deterministic. Two tests pin it:
   `FRAME_SYNC_INTERNAL_HELPERS` feeds the switch CQPSK-favouring metrics under the analog preset and requires no vote
   and no demod profile, with no clock involved, and `DECODE_IQ_ANALOG_NO_MOD_AUTO_SWITCH` replays the excerpt under
   `-fA` and requires all 8000 ms on the monitor path. The vote is not the hunt's only request: every symbol profile the
@@ -875,13 +1016,13 @@ output with the filter off byte-identical to a session without one, the AM and `
 policy passes leaves (no-tone bursts shorter than the window stamp nothing). What the scanners do with a check is
 engine-side. `ENGINE_NO_CARRIER_RESET` cannot run the monitor block (the DSP test seam is not linked into the engine
 test), so it feeds such bursts through the real tap and sets the `-Y` hangtime anchor itself, to where the monitor's
-stamp leaves it, and checks the step rule against it on a wall clock it injects by wrapping `time()` at link time (not
-on Windows, which has no Unix `time` symbol to wrap): with a burst in every second of `-t`, the pass at `-t` after the
-row's landing holds and the pass a second later steps, and allowed traffic holds the row through `-t` after its last
-block and steps a second later. A check, or traffic whose verdict turned ALLOWED part-way through a monitor block (at
-22050 Hz, before the block's end stamps it), holds the row with `-t` run out. `ENGINE_TRUNK_SCAN` shows the bursts, on
-its injected clock, restart neither the activity hold nor the idle dwell, and a check that spans the end of an activity
-or operator hold arm the dwell as a quiet tick would.
+stamp leaves it, and checks the step rule against it on the decode clock's TEST source, held at each whole second it
+checks (see [Decode time in unit tests](#decode-time-in-unit-tests)): with a burst in every second of `-t`, the pass at
+`-t` after the row's landing holds and the pass a second later steps, and allowed traffic holds the row through `-t`
+after its last block and steps a second later. A check, or traffic whose verdict turned ALLOWED part-way through a
+monitor block (at 22050 Hz, before the block's end stamps it), holds the row with `-t` run out. `ENGINE_TRUNK_SCAN`
+shows the bursts, on its injected clock, restart neither the activity hold nor the idle dwell, and a check that spans
+the end of an activity or operator hold arm the dwell as a quiet tick would.
 
 The cases above can only show that bounds hold. The `DECODE_IQ_ANALOG_NEG_*` negative controls show that a missed
 bound fails: they run the host through `tests/analog_replay_fail_check.cmake`, which requires its exit status (1 for
@@ -1081,6 +1222,43 @@ Clear the `DSD_REQUIRE_*` flags alongside the `DSD_ENABLE_*` ones. Against a
 cached build tree, configure otherwise stops with
 `DSD_REQUIRE_RTLSDR=ON requires DSD_ENABLE_RTLSDR=ON.`
 
+### Decode time in unit tests
+
+Decode decisions and decoded-output stamps read the decode clock (`<dsd-neo/runtime/decode_clock.h>`), never the
+platform clock (`docs/code-quality-guardrails.md` has the rule). So a test that steps a decode window, an expiry or a
+stamp drives the clock's TEST source, rather than sleeping through the window or wrapping `time()` at link time:
+
+```c
+static const uint64_t k_t0_ns = 1000000000000000000ULL; /* far from any platform clock reading */
+dsd_decode_clock_use_test(k_t0_ns); /* before anything stamps, init included */
+/* ... set up and run the code under test ... */
+dsd_decode_clock_test_set_ns(k_t0_ns + 1250000000ULL); /* 1.25 s later */
+/* ... check the window, reading now back through dsd_decode_now_*() ... */
+dsd_decode_clock_use_system(); /* on every return path */
+```
+
+- Select TEST before anything stamps. Init seeds stamps from the clock (`initState()`, `p25_sm_init_ctx()`), and a
+  stamp taken on the system clock read against a TEST value compares two origins.
+- TEST holds one value for the monotonic and the wall reads alike (`dsd_decode_time()` is its whole seconds), so a rule
+  that compares wall seconds, such as the `-Y` hangtime step in `ENGINE_NO_CARRIER_RESET`, is stepped a second at a
+  time.
+- Time moves only when the test moves it. A loop that waits for decode time to pass steps the clock itself, as the P25
+  call-skip case in `P25_P2_FRAME_LOCKOUT_SM` does, 100 ms a voice burst. Unstepped, it never ends on TEST, and on
+  SYSTEM it sits out the whole window in real time.
+- The source is process-wide, so put it back with `dsd_decode_clock_use_system()` on every return path, failures
+  included, or the next case in the binary inherits it. Leaving TEST carries no value into SYSTEM. Leaving REPLAY does:
+  SYSTEM's monotonic reads then go on from the replay's capture time for the rest of the process, so a case that runs
+  a replay leave (`dsd_engine_decode_clock_leave_replay()`) leaves later cases reading SYSTEM there; they use TEST or
+  run before it.
+- Real-time reads (`dsd_realtime_*()`: sleeps, condvar deadlines, ring, device and socket timeouts) do not move with
+  TEST. A case that needs both steps the decode clock and lets the real one run.
+- `dsd_decode_clock_use_replay(anchor_s)` and `dsd_decode_clock_set_media_ns()` (monotone: a smaller value is ignored)
+  stand in for a replay's capture time the same way, as `ENGINE_NO_CARRIER_RESET` and `APP_COMMAND_QUEUE` do to test a
+  replay leave.
+- A test that compiles protocol, core, app-control or terminal sources directly instead of linking `dsd-neo_runtime`
+  gets the clock from `dsd-neo_test_decode_clock`: add its target to `_DSD_NEO_DECODE_CLOCK_TEST_TARGETS` in
+  `tests/CMakeLists.txt`.
+
 ### Temporary files and directories
 
 A test must remove every temporary file and directory it creates, on its failure
@@ -1151,9 +1329,15 @@ rather than after one.
 
 The `iq-decode` suite answers whether a change still decodes; it does not answer
 whether it decodes *as well*. Symbol-timing, slicer and demodulator changes need
-the second question answered, and one replay cannot answer it: decoding runs on a
-threaded pipeline, so how much of a capture gets decoded varies run to run by more
-than the effect being looked for.
+the second question answered, and one replay cannot answer it. Replay is
+repeatable (issue #572, see
+[Replay determinism](#replay-determinism-issue-572)), so a capture replayed
+again decodes exactly as before, but that is one draw: which frames a capture
+yields depends on where the decoder's state stands when each transmission
+arrives, the sync hunt's above all, and a change that moves the front end's
+timing by a few samples can move that draw by more than the effect being looked
+for. Measure on real captures, more than one where you can, and on copies of one
+with its events shifted.
 
 `tools/replay_ab.sh` replays one I/Q capture through two or more builds and
 `tools/replay_ab_report.py` reports the result:
@@ -1162,7 +1346,7 @@ than the effect being looked for.
 cmake --build --preset dev-debug -j --target dsd-neo
 cp build/dev-debug/apps/dsd-cli/dsd-neo /tmp/dsd-neo.after   # and one for 'before'
 
-tools/replay_ab.sh --capture ~/captures/nxdn.json --mode -fi --reps 12 \
+tools/replay_ab.sh --capture ~/captures/nxdn.json --mode -fi --reps 3 \
     --out /tmp/ab /tmp/dsd-neo.before /tmp/dsd-neo.after
 tools/replay_ab_report.py /tmp/ab/summary.tsv
 ```
@@ -1198,15 +1382,30 @@ Reading it:
   hard and soft decoding (issues #588 and #599), compare the builds' `-Z` IMBE or
   AMBE payloads against a reference decode as well.
 - **Paired per repeat.** Builds run round-robin with the order rotated each
-  repeat, because a fixed order credits the better slot to whichever build holds
-  it. The report compares within a repeat for the same reason.
+  repeat, and the report compares within a repeat. Before issue #572 a fixed
+  order credited the better slot to whichever build held it; with repeatable
+  replay the order changes nothing unless determinism has regressed.
 - **Run the baseline against itself first**, as a copy under another name
-  (replay_ab.sh refuses two builds with the same basename). That control
-  establishes the noise floor for the machine and the capture; a difference
-  smaller than it has not been measured. On the captures behind issue #444 the
-  floor was about 0.1 errors per voice frame over 12 repeats.
-- Keep the machine otherwise idle: `--rate realtime` is wall-clock paced, so a
-  build competing with a compile is measured under different conditions.
+  (replay_ab.sh refuses two builds with the same basename). Replay is
+  deterministic, so that control must read `+0.00 +/- 0.00` in every column,
+  with no differing repeat: the repeats are the control, and any spread is a
+  determinism regression to fix before anything is measured. Before issue #572
+  the control measured a noise floor instead, about 0.1 errors per voice frame
+  over 12 repeats on the captures behind issue #444. Keep at least two repeats,
+  which the report's paired interval needs; past a few, spend the time on more
+  captures rather than more repeats.
+- Leave `-T` and `-Y` out of `--mode`: those replays are outside the
+  determinism guarantee. Otherwise load on the machine no longer changes what a
+  replay decodes, and `--rate realtime`, the default, decodes what `fast` does,
+  in the capture's own time.
+- **Judge an acquisition change across draws.** Under `-fa`, which calls a
+  capture yields depends on the hunt's phase when each arrives, so a change that
+  moves the hunt's timeline or the front end's latency by a few samples can win
+  or lose a call on one capture with nothing decoding better or worse. Replay
+  several captures, or copies of one whose sidecar moves every event's
+  `byte_offset` by the same amount, and compare a pinned mode (`-fi`, `-f1`)
+  beside `-fa`. [Replay determinism](#replay-determinism-issue-572) has a worked
+  case.
 
 - **When the frame count moves, match payloads before calling it quality.**
   Paying off the matched filter's group delay at every switch took errors per
@@ -1310,14 +1509,16 @@ tools/replay_ab_report.py /tmp/ab/ctcss/summary.tsv --baseline analog_replay.mai
 [Analog monitor audio checks](#analog-monitor-audio-checks)); leave it out when the question is what a listener gets.
 The 12.5 kHz probe there reads the neighbour channel's leakage as `probe_dbfs`, over about 75 Hz around 12.5 kHz in
 each 20 ms block, no finer.
-Run the control first, one host against a copy of itself. While the front end stays on the monitor path, I/Q replay
-is sample-deterministic, so the control must read `+0.00 +/- 0.00` with no differing repeats: 12 realtime repeats on
-`nfm_ctcss_real` and on `nfm_tone_synth` did, for every column. A run whose log carries the host's CQPSK-symbols
-warning left the monitor path and is not deterministic: a build from before the analog family stood the modulation
-auto-switch down does that on `am_airband_real` (see the `am_airband_real` note under
+Run the control first, one host against a copy of itself. I/Q replay is deterministic (issue #572), so the control
+must read `+0.00 +/- 0.00` with no differing repeats, as the digital one must: 12 realtime repeats on `nfm_ctcss_real`
+and on `nfm_tone_synth` did, for every column. A run whose log carries the host's CQPSK-symbols warning left the
+monitor path: a build from before the analog family stood the modulation auto-switch down does that on
+`am_airband_real` (see the `am_airband_real` note under
 [Full-chain modulation decode tests](#full-chain-modulation-decode-tests)), and such a run measures the auto-switch,
-not the change; the report leaves it out as `off_path` and warns, and a build with no other repeats fails the report. A
-difference that shows up in a monitor-path control is the harness's, not the change's. Attach the report to the pull request with the capture, flags and repeat count.
+not the change, and on a build from before issue #572 is not deterministic either; the report leaves it out as
+`off_path` and warns, and a build with no other repeats fails the report. A difference that shows up in a control is
+a determinism regression in the build or the harness, not the change's. Attach the report to the pull request with the
+capture, flags and repeat count.
 
 ### Analog listen-test sign-off
 
