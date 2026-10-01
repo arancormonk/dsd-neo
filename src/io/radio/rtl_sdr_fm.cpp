@@ -173,7 +173,6 @@ static struct udp_control* g_udp_ctrl = NULL;
 
 /* DSP baseband for RTL path in Hz (derived from opts->rtl_dsp_bw_khz). */
 static int rtl_dsp_bw_hz;
-static short int volume_multiplier;
 static uint16_t port;
 static char udp_control_bindaddr[64] = "127.0.0.1";
 
@@ -6970,15 +6969,6 @@ stream_open_warn_low_dsp_bw(const dsd_opts* opts) {
     }
 }
 
-static short int
-stream_open_volume_multiplier(const dsd_opts* opts) {
-    int vm = opts ? opts->rtl_volume_multiplier : 1;
-    if (vm < 1 || vm > 3) {
-        vm = 1;
-    }
-    return (short int)vm;
-}
-
 static int
 stream_open_init_pipeline(const dsd_opts* opts, int demod_base_rate_hz) {
     dongle_init(&dongle);
@@ -7757,7 +7747,6 @@ stream_open_configure_pipeline_state(dsd_opts* opts, RadioSourceKind source_kind
 
     rtl_dsp_bw_hz = opts->rtl_dsp_bw_khz * 1000;
     stream_open_warn_low_dsp_bw(opts);
-    volume_multiplier = stream_open_volume_multiplier(opts);
     if (stream_open_init_pipeline(opts, rtl_dsp_bw_hz) != 0) {
         return -1;
     }
