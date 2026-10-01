@@ -25,15 +25,36 @@
  * State is process-wide atomics. Reads are loads and are safe from any
  * thread. Only the decoder thread should advance media time.
  *
- * Switch the source only while no reader runs. A REPLAY read is three separate
- * loads (source, anchor, media), so a switch while another thread reads can hand
- * that reader one value mixed from the old and new sources. The engine selects
- * REPLAY at the start of a replay run, before its common setup and before the
- * stream, the P25 watchdog and the terminal frontend start, and returns to SYSTEM
- * only once the stream has stopped (dsd_engine_decode_clock_enter_replay(),
- * dsd_engine_decode_clock_leave_replay()). A host frontend that already polls
- * then (the Qt shell starts before the engine) can read one mixed value for one
- * display refresh; nothing decides on it.
+ * A source switch moves the clock's origin, not only its rate, so the engine
+ * makes one only at a session boundary (dsd_engine_decode_clock_enter_replay(),
+ * dsd_engine_decode_clock_leave_replay()):
+ *
+ * - Entering REPLAY moves both decode domains onto the capture's time. A stamp
+ *   taken before on the system clock would then sit ahead of the capture's wall
+ *   time, so REPLAY is entered only at the start of a run, before common setup
+ *   and before the stream and the P25 watchdog start, on a state fresh from
+ *   initState() whose seeds the engine rebases
+ *   (dsd_state_rebase_decode_timestamps()). A host that runs a replay on a state
+ *   an earlier run used breaks that precondition: the Android service reuses its
+ *   state when a start races the previous run's stopSelfLatest()
+ *   (DecoderService.kt), and that replay sees the earlier run's wall stamps ahead
+ *   of its now.
+ * - Leaving REPLAY for SYSTEM keeps decode-mono time continuous. SYSTEM mono then
+ *   reads the platform monotonic clock plus the offset that puts it where the
+ *   replay's capture time stood at the switch, so every stamp the replay took goes
+ *   on ageing. Wall reads go back to real time: a jump forward from the capture's
+ *   date, which ages every wall stamp at once. Only leaving REPLAY sets the
+ *   offset. A process that never ran a replay reads exactly the platform clocks,
+ *   and leaving TEST carries no test value into SYSTEM. The leave runs on the
+ *   decoder thread once the replay no longer feeds it: with the stream stopped
+ *   (the end of the run, an app-control restart) or still open but unread (an
+ *   input switch).
+ *
+ * The stores are ordered, so a reader on any thread sees one source's value
+ * whole: use_replay() stores the media time, the anchor, then the source;
+ * use_system() stores the offset, then the source. The P25 watchdog and a host
+ * frontend that polls across a switch (the Qt shell starts before the engine)
+ * see the origin move on entering REPLAY and time go on continuously on leaving.
  */
 
 #include <stdint.h>
@@ -86,7 +107,13 @@ double dsd_realtime_now_s(void);
 
 /* ---- Control ---- */
 
-/** @brief Select the SYSTEM source. Call it only while no reader runs (see the file comment). */
+/**
+ * @brief Select the SYSTEM source.
+ *
+ * Left from REPLAY, SYSTEM mono reads go on from the replay's capture time
+ * (platform monotonic + an offset set here); wall reads are real time. Left from
+ * TEST or SYSTEM, nothing changes but the source. See the file comment.
+ */
 void dsd_decode_clock_use_system(void);
 
 /** @brief Earliest REPLAY anchor, in seconds since the Unix epoch: 2000-01-01T00:00:00Z. */
@@ -105,7 +132,8 @@ void dsd_decode_clock_use_system(void);
  * anchor in nanoseconds fits in 64 bits with some 14 years of media time to
  * spare.
  *
- * Call it only while no reader runs (see the file comment).
+ * Only at the start of a run, on a state fresh from initState() (see the file
+ * comment).
  */
 void dsd_decode_clock_use_replay(int64_t anchor_utc_s);
 

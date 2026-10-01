@@ -65,6 +65,87 @@ test_system(void) {
     CHECK(dsd_realtime_mono_ms() >= r0 / 1000000ULL);
 }
 
+/* The SYSTEM reads bracketed by the platform clocks: what a process that never left a replay reads. */
+static void
+check_system_reads_platform_clocks(void) {
+    CHECK(dsd_decode_clock_source() == DSD_DECODE_CLOCK_SYSTEM);
+    uint64_t a = dsd_time_monotonic_ns();
+    uint64_t d = dsd_decode_now_mono_ns();
+    uint64_t b = dsd_time_monotonic_ns();
+    CHECK(a <= d && d <= b);
+    uint64_t ms0 = dsd_time_monotonic_ms();
+    uint64_t ms = dsd_decode_now_mono_ms();
+    uint64_t ms1 = dsd_time_monotonic_ms();
+    CHECK(ms0 <= ms && ms <= ms1);
+}
+
+/* Leaving TEST for SYSTEM carries no test value into SYSTEM: with no replay left before, SYSTEM reads exactly the
+   platform clocks again. Run before any REPLAY in the process. */
+static void
+test_leaving_test_sets_no_offset(void) {
+    dsd_decode_clock_use_system();
+    check_system_reads_platform_clocks();
+    dsd_decode_clock_use_test(42 * NS);
+    CHECK(dsd_decode_now_mono_ns() == 42 * NS);
+    dsd_decode_clock_use_system();
+    check_system_reads_platform_clocks();
+    dsd_decode_clock_use_test(UINT64_MAX / 2U);
+    dsd_decode_clock_use_system();
+    check_system_reads_platform_clocks();
+}
+
+/* Leaving REPLAY for SYSTEM keeps decode-mono time continuous: it goes on from the capture time the replay reached, at
+   the platform clock's rate, while wall reads go back to real time. Leaving TEST afterwards does not move it, and a
+   later replay's leave moves the origin to that replay's capture time. */
+static void
+test_replay_leave_keeps_mono_continuous(void) {
+    const int64_t anchor = 1788245497LL; /* 2026-09-01T06:51:37Z */
+    dsd_decode_clock_use_replay(anchor);
+    dsd_decode_clock_set_media_ns(5 * NS + 250000000ULL);
+    const uint64_t before = dsd_decode_now_mono_ns();
+    CHECK(before == (uint64_t)anchor * NS + 5 * NS + 250000000ULL);
+    dsd_decode_clock_use_system();
+    CHECK(dsd_decode_clock_source() == DSD_DECODE_CLOCK_SYSTEM);
+    const uint64_t after = dsd_decode_now_mono_ns();
+    CHECK(after >= before && after - before < NS);
+    /* The ms and s reads follow the ns read. */
+    const uint64_t ms = dsd_decode_now_mono_ms();
+    const uint64_t ns_after_ms = dsd_decode_now_mono_ns();
+    CHECK(ms * 1000000ULL >= after - 1000000ULL && ms <= ns_after_ms / 1000000ULL);
+    CHECK(fabs(dsd_decode_now_mono_s() - (double)dsd_decode_now_mono_ns() / 1e9) < 1e-3);
+    /* Wall reads are real time again. */
+    CHECK(llabs((long long)dsd_decode_time() - (long long)time(NULL)) <= 1);
+    CHECK(fabs(dsd_decode_now_realtime_s() - dsd_realtime_now_s()) < 1.0);
+    /* Real-time reads never moved. */
+    CHECK(dsd_realtime_mono_ns() < (uint64_t)anchor * NS);
+    /* It runs at the platform clock's rate. */
+    const uint64_t platform0 = dsd_time_monotonic_ns();
+    const uint64_t decode0 = dsd_decode_now_mono_ns();
+    dsd_sleep_ms(20U);
+    const uint64_t decode1 = dsd_decode_now_mono_ns();
+    const uint64_t platform1 = dsd_time_monotonic_ns();
+    CHECK(decode1 - decode0 >= 20000000ULL && decode1 - decode0 <= platform1 - platform0);
+
+    /* A TEST value does not carry into SYSTEM, and the replay's origin stays. */
+    dsd_decode_clock_use_test(42 * NS);
+    dsd_decode_clock_use_system();
+    const uint64_t after_test = dsd_decode_now_mono_ns();
+    CHECK(after_test >= decode1 && after_test - decode1 < NS);
+
+    /* Leaving SYSTEM for SYSTEM changes nothing. */
+    dsd_decode_clock_use_system();
+    CHECK(dsd_decode_now_mono_ns() >= after_test);
+
+    /* A later replay's leave goes on from that replay's capture time. */
+    dsd_decode_clock_use_replay(FLOOR_S);
+    dsd_decode_clock_set_media_ns(3 * NS);
+    const uint64_t second = dsd_decode_now_mono_ns();
+    dsd_decode_clock_use_system();
+    const uint64_t second_after = dsd_decode_now_mono_ns();
+    CHECK(second == (uint64_t)FLOOR_S * NS + 3 * NS);
+    CHECK(second_after >= second && second_after - second < NS);
+}
+
 static void
 test_replay(void) {
     int64_t anchor = 1700000000LL;
@@ -266,6 +347,8 @@ test_concurrent(void) {
 int
 main(void) {
     test_system();
+    test_leaving_test_sets_no_offset();
+    test_replay_leave_keeps_mono_continuous();
     test_replay();
     test_replay_anchor_clamp();
     test_batch_media_time();

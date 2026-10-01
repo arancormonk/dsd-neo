@@ -46,8 +46,12 @@ void dsd_engine_cleanup(dsd_opts* opts, dsd_state* state);
  * Reads the sidecar's `capture_started_utc` (dsd_iq_replay_parse_utc_seconds()) and selects the REPLAY source on it
  * (dsd_decode_clock_use_replay(), which floors it at 2000-01-01Z); a field in another form starts decode time at the
  * floor, with a warning. Then rebases the init stamps onto the capture clock (dsd_state_rebase_decode_timestamps()).
- * dsd_engine_run_with_lifecycle() calls it first, before common setup writes any record and before any other thread
- * reads the clock. Does nothing for an input that is no replay.
+ * dsd_engine_run_with_lifecycle() calls it first, before common setup writes any record and before the stream and the
+ * P25 watchdog read the clock. Does nothing for an input that is no replay.
+ *
+ * Precondition: @p state is fresh from initState(). Only its init seeds are rebased, so a stamp an earlier run left in
+ * a reused state (the Android service reuses its state when a start races the previous run's stopSelfLatest(),
+ * DecoderService.kt) stays on the system clock, ahead of the capture's wall time.
  *
  * @return 0 on success or for no replay; -1 when the sidecar does not parse (logged), which fails the run.
  */
@@ -56,8 +60,10 @@ int dsd_engine_decode_clock_enter_replay(dsd_opts* opts, dsd_state* state);
 /**
  * Put the decode clock back on the system clock, and rebase the init stamps onto it, once the replay no longer feeds
  * the decoder: at the end of the run, and when app-control stops the stream to restart it or switches the input
- * away from it. A replay restarted that way runs on the system clock. Does nothing unless the REPLAY source is
- * selected. Decoder thread, with the replay stream stopped or no longer read.
+ * away from it. Decode-mono time goes on from the capture time the replay reached (dsd_decode_clock_use_system()), so
+ * every stamp the replay took keeps ageing; wall time jumps forward to real time. A replay restarted that way runs on
+ * the system clock. Does nothing unless the REPLAY source is selected. Decoder thread, with the replay stream stopped
+ * or no longer read.
  */
 void dsd_engine_decode_clock_leave_replay(dsd_opts* opts, dsd_state* state);
 

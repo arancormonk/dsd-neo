@@ -17,6 +17,7 @@
 #include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/engine/channel_scan.h>
+#include <dsd-neo/engine/engine.h>
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/engine/scan_voice_gate.h>
 #include <dsd-neo/engine/trunk_scan.h>
@@ -25,6 +26,7 @@
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/platform/sockets.h>
+#include <dsd-neo/platform/timing.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
@@ -3099,6 +3101,67 @@ test_fsk_reacquire_watchdog_runs_on_the_decode_clock(void) {
     free_test_runtime(opts, state);
     return rc;
 }
+
+/*
+ * Issue #572: a replay left mid-run (an app-control restart or input switch, through
+ * dsd_engine_decode_clock_leave_replay()) puts the decode clock back on the system clock without moving decode-mono
+ * time back to the platform clock's origin, so the watchdog's stamps from the replay go on ageing. The gap that opened
+ * at capture +0 requested a reacquire at +11 s on the replay's clock; right after the leave its 0.75 s cooldown still
+ * holds, and 0.8 s of real time later it is over and the next request goes out. A clock that fell back to the
+ * platform origin would leave both stamps ~1.8e9 s in the future, and the watchdog would never request again.
+ */
+static int
+test_fsk_reacquire_cooldown_runs_across_a_replay_leave(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    dsd_rtl_stream_metrics_hooks hooks = {.output_kind = fake_rtl_fsk_output_kind};
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+    opts->audio_in_type = AUDIO_IN_RTL;
+    state->rtl_ctx = (struct RtlSdrContext*)state;
+    dsd_decode_clock_use_replay(1788245497LL); /* 2026-09-01T06:51:37Z */
+    const double t0_m = dsd_decode_now_mono_s();
+    state->lastsynctype = DSD_SYNC_NONE;
+    state->last_cc_sync_time = dsd_decode_time();
+    state->last_cc_sync_time_m = t0_m;
+    state->last_vc_sync_time = 0;
+    state->last_vc_sync_time_m = 0.0;
+    /* Ahead of every wall stamp the leave's rebase writes (2100-01-01), so the restamped sync stamps do not read as a
+       new sync that restarts the gap: this case is about the cooldown. */
+    state->rtl_fsk_reacquire_last_sync_time = (time_t)4102444800LL;
+    state->rtl_fsk_reacquire_last_sync_m = t0_m;
+    state->rtl_fsk_reacquire_gap_start_m = t0_m;
+    state->rtl_fsk_reacquire_last_request_m = 0.0;
+    g_rtl_fsk_reacquire_requests = 0;
+
+    noCarrier(opts, state);
+    rc |= expect_true("replay leave fsk watchdog: none as the gap opens", g_rtl_fsk_reacquire_requests == 0);
+    dsd_decode_clock_set_media_ns(11ULL * 1000000000ULL);
+    noCarrier(opts, state);
+    rc |= expect_true("replay leave fsk watchdog: requests at capture +11 s", g_rtl_fsk_reacquire_requests == 1);
+
+    dsd_engine_decode_clock_leave_replay(opts, state);
+    rc |= expect_true("replay leave fsk watchdog: the decode clock is the system's",
+                      dsd_decode_clock_source() == DSD_DECODE_CLOCK_SYSTEM);
+    const double since_request = dsd_decode_now_mono_s() - state->rtl_fsk_reacquire_last_request_m;
+    rc |= expect_true("replay leave fsk watchdog: the request is not in the future", since_request >= 0.0);
+    rc |= expect_true("replay leave fsk watchdog: and was just now", since_request < 0.5);
+    noCarrier(opts, state);
+    rc |= expect_true("replay leave fsk watchdog: cooldown holds right after the leave",
+                      g_rtl_fsk_reacquire_requests == 1);
+    dsd_sleep_ms(800U);
+    noCarrier(opts, state);
+    rc |= expect_true("replay leave fsk watchdog: cooldown over 0.8 s after the leave",
+                      g_rtl_fsk_reacquire_requests == 2);
+
+    dsd_decode_clock_use_system();
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    free_test_runtime(opts, state);
+    return rc;
+}
 #endif
 
 /* The manufacturer and branding a Hytera XPT control channel leaves on the state. */
@@ -5426,6 +5489,7 @@ main(void) {
     rc |= test_trunk_cache_with_mode_metadata();
     rc |= test_dmr_explicit_return_destination();
     rc |= test_fsk_reacquire_watchdog_runs_on_the_decode_clock();
+    rc |= test_fsk_reacquire_cooldown_runs_across_a_replay_leave();
 #endif
 
     if (rc == 0) {

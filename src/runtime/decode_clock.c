@@ -15,6 +15,10 @@ static atomic_int g_source = DSD_DECODE_CLOCK_SYSTEM;
 static dsd_atomic_u64 g_anchor_ns = {0U};
 static dsd_atomic_u64 g_media_ns = {0U};
 static dsd_atomic_u64 g_test_ns = {0U};
+/* Added to the platform monotonic clock under SYSTEM once a REPLAY source has been left, so decode-mono time goes on
+   from the capture time the replay reached instead of jumping back to the platform clock's origin. Zero in a process
+   that never left REPLAY, where SYSTEM reads exactly the platform clocks. */
+static dsd_atomic_u64 g_system_mono_offset_ns = {0U};
 
 /* Value read by REPLAY and TEST sources for both mono and wall. */
 static uint64_t
@@ -34,11 +38,19 @@ dsd_decode_time(void) {
     return (time_t)(decode_virtual_ns(s) / DSD_DECODE_CLOCK_NS_PER_S);
 }
 
+/* The platform monotonic clock plus the offset a left replay set, saturating. */
+static uint64_t
+system_mono_ns(uint64_t offset_ns) {
+    const uint64_t platform_ns = dsd_time_monotonic_ns();
+    return offset_ns > UINT64_MAX - platform_ns ? UINT64_MAX : platform_ns + offset_ns;
+}
+
 uint64_t
 dsd_decode_now_mono_ns(void) {
     int s = atomic_load(&g_source);
     if (s == DSD_DECODE_CLOCK_SYSTEM) {
-        return dsd_time_monotonic_ns();
+        const uint64_t offset_ns = dsd_atomic_u64_load_acquire(&g_system_mono_offset_ns);
+        return offset_ns == 0U ? dsd_time_monotonic_ns() : system_mono_ns(offset_ns);
     }
     return decode_virtual_ns(s);
 }
@@ -47,7 +59,8 @@ uint64_t
 dsd_decode_now_mono_ms(void) {
     int s = atomic_load(&g_source);
     if (s == DSD_DECODE_CLOCK_SYSTEM) {
-        return dsd_time_monotonic_ms();
+        const uint64_t offset_ns = dsd_atomic_u64_load_acquire(&g_system_mono_offset_ns);
+        return offset_ns == 0U ? dsd_time_monotonic_ms() : system_mono_ns(offset_ns) / 1000000ULL;
     }
     return decode_virtual_ns(s) / 1000000ULL;
 }
@@ -93,6 +106,14 @@ dsd_realtime_now_s(void) {
 
 void
 dsd_decode_clock_use_system(void) {
+    /* Leaving REPLAY: SYSTEM mono goes on from where the replay's capture time stands. The offset is stored before the
+       source, so a reader that sees SYSTEM sees it. Leaving TEST (or SYSTEM) sets nothing, so no test value reaches a
+       later SYSTEM read. */
+    if (atomic_load(&g_source) == DSD_DECODE_CLOCK_REPLAY) {
+        const uint64_t replay_ns = decode_virtual_ns(DSD_DECODE_CLOCK_REPLAY);
+        const uint64_t platform_ns = dsd_time_monotonic_ns();
+        dsd_atomic_u64_store_release(&g_system_mono_offset_ns, replay_ns > platform_ns ? replay_ns - platform_ns : 0U);
+    }
     atomic_store(&g_source, DSD_DECODE_CLOCK_SYSTEM);
 }
 

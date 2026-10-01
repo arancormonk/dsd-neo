@@ -5836,6 +5836,111 @@ test_squelch_edit_keeps_live_acquisition(void) {
 }
 #endif
 
+#if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP) && defined(DSD_NEO_TEST_IO_CONTROL_WRAP)
+/* How a replay is left mid-run: an input switch (ui_input_switched()), a stream restart (svc_rtl_stop_locked()), and
+   a stop of playback whose Pulse input then fails to open. */
+enum {
+    REPLAY_LEAVE_INPUT_SWITCH = 0,
+    REPLAY_LEAVE_RTL_RESTART = 1,
+    REPLAY_LEAVE_STOP_PLAYBACK = 2,
+};
+
+static int
+leave_replay_through(int how, dsd_opts* opts, dsd_state* state) {
+    if (how == REPLAY_LEAVE_INPUT_SWITCH) {
+        if (post_empty(DSD_APP_CMD_INPUT_SET_PULSE) != DSD_APP_COMMAND_SUBMIT_QUEUED) {
+            return -1;
+        }
+    } else if (how == REPLAY_LEAVE_RTL_RESTART) {
+        if (dsd_app_command_action(DSD_APP_CMD_RTL_RESTART) != DSD_APP_COMMAND_SUBMIT_QUEUED) {
+            return -1;
+        }
+    } else if (post_empty(DSD_APP_CMD_STOP_PLAYBACK) != DSD_APP_COMMAND_SUBMIT_QUEUED) {
+        return -1;
+    }
+    return dsd_app_drain_cmds(opts, state);
+}
+
+/*
+ * Issue #572: a replay left mid-run puts the decode clock back on the system clock, and the stamps the replay took on
+ * its capture clock go on ageing from where they stood. A recent-activity row, a call ended by sync loss and the FSK
+ * watchdog's last request, all stamped at capture time, read as just now right after the leave, never ahead of it, and
+ * a row past its TTL expires. A leave that fell back to the platform monotonic clock's origin would leave them ~1.8e9 s
+ * in the future: the row would never expire and every window from them would read negative.
+ */
+static int
+test_replay_leave_keeps_decode_stamps_ageing(void) {
+    static const struct {
+        int how;
+        const char* tag;
+    } cases[] = {
+        {REPLAY_LEAVE_INPUT_SWITCH, "replay left by an input switch"},
+        {REPLAY_LEAVE_RTL_RESTART, "replay left by a stream restart"},
+        {REPLAY_LEAVE_STOP_PLAYBACK, "replay left by stopping playback onto a failed pulse"},
+    };
+
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        const char* case_tag = cases[i].tag;
+        char tag[160];
+        init_test_context(&opts, &state);
+        reset_config_rtl_wrap();
+        if (cases[i].how == REPLAY_LEAVE_RTL_RESTART) {
+            opts.audio_in_type = AUDIO_IN_RTL;
+            state.rtl_ctx = (RtlSdrContext*)g_config_rtl_ctx;
+            g_config_rtl_open_ok = 1;
+        } else if (cases[i].how == REPLAY_LEAVE_STOP_PLAYBACK) {
+            opts.audio_out_type = 0;
+            opts.audio_in_type = AUDIO_IN_WAV;
+            arm_open_audio_input_stub(1, -1);
+        }
+        dsd_decode_clock_use_replay(1788245497LL); /* 2026-09-01T06:51:37Z */
+        dsd_decode_clock_set_media_ns(5ULL * 1000000000ULL);
+
+        dsd_call_observation call = dsd_call_observation_data(DSD_SYNC_DMR_BS_VOICE_POS, 0U, 5678U, 1234U);
+        call.kind = DSD_CALL_KIND_GROUP_VOICE;
+        call.policy_target_id = 1234U;
+        DSD_SNPRINTF(tag, sizeof tag, "%s: stamps taken on the capture clock", case_tag);
+        rc |= expect_int(tag, dsd_recent_activity_publish(&state, 1U, &call, NULL, 0U), 1);
+        rc |= expect_true(tag, dsd_call_state_observe(&state, &call, DSD_CALL_BOUNDARY_BEGIN) > 0);
+        rc |= expect_true(tag, dsd_call_state_end_ex(&state, 0U, 0.0, DSD_CALL_END_SYNC_LOSS) > 0);
+        state.rtl_fsk_reacquire_last_request_m = dsd_decode_now_mono_s();
+        const double stamped_m = dsd_decode_now_mono_s();
+
+        DSD_SNPRINTF(tag, sizeof tag, "%s: the leave ran", case_tag);
+        rc |= expect_int(tag, leave_replay_through(cases[i].how, &opts, &state), 1);
+        DSD_SNPRINTF(tag, sizeof tag, "%s: the decode clock is the system's", case_tag);
+        rc |= expect_int(tag, (int)dsd_decode_clock_source(), (int)DSD_DECODE_CLOCK_SYSTEM);
+        const double now_m = dsd_decode_now_mono_s();
+        DSD_SNPRINTF(tag, sizeof tag, "%s: decode-mono time goes on from the capture time", case_tag);
+        rc |= expect_true(tag, now_m >= stamped_m && now_m - stamped_m < 1.0);
+        dsd_call_snapshot ended;
+        DSD_SNPRINTF(tag, sizeof tag, "%s: the ended call is just behind now", case_tag);
+        rc |= expect_true(tag, dsd_call_state_get(&state, 0U, &ended) > 0 && ended.phase == DSD_CALL_PHASE_ENDED);
+        rc |= expect_true(tag, now_m >= ended.ended_m && now_m - ended.ended_m < 1.0);
+        DSD_SNPRINTF(tag, sizeof tag, "%s: the watchdog's last request is not in the future", case_tag);
+        rc |= expect_true(tag, now_m >= state.rtl_fsk_reacquire_last_request_m);
+        /* The row stands within a TTL longer than the time since, and expires past a shorter one. */
+        DSD_SNPRINTF(tag, sizeof tag, "%s: the recent-activity row stands within 5 s", case_tag);
+        rc |= expect_int(tag, dsd_recent_activity_expire(&state, 0U, 5000U), 0);
+        dsd_sleep_ms(20U);
+        DSD_SNPRINTF(tag, sizeof tag, "%s: the recent-activity row expires past 1 ms", case_tag);
+        rc |= expect_int(tag, dsd_recent_activity_expire(&state, 0U, 1U), 1);
+        DSD_SNPRINTF(tag, sizeof tag, "%s: the watchdog's request ages at real time", case_tag);
+        rc |= expect_true(tag, dsd_decode_now_mono_s() - state.rtl_fsk_reacquire_last_request_m >= 0.02);
+
+        arm_open_audio_input_stub(0, 0);
+        state.rtl_ctx = NULL;
+        reset_config_rtl_wrap();
+        dsd_decode_clock_use_system();
+        freeState(&state);
+    }
+    return rc;
+}
+#endif
+
 #ifdef DSD_NEO_TEST_AUDIO_ENSURE_WRAP
 /* The sink helpers a decode-mode change calls, recorded instead of run (every build, radio or not). */
 static int g_ensure_analog_calls;
@@ -14432,6 +14537,9 @@ main(void) {
     rc |= test_tcp_connect_clears_received_tone();
     rc |= test_rigctl_reconnect_key_uses_the_connect_service();
     rc |= test_stop_playback_pulse_failure_clears_received_tone();
+#endif
+#if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP) && defined(DSD_NEO_TEST_IO_CONTROL_WRAP)
+    rc |= test_replay_leave_keeps_decode_stamps_ageing();
 #endif
     rc |= test_trunk_set();
     rc |= test_scan_voice_gate_commands();

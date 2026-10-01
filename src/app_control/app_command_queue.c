@@ -373,14 +373,20 @@ ui_reconfigure_output_for_input_policy(dsd_opts* opts, dsd_state* state) {
     return 0;
 }
 
-/* The audio input changed. A tone heard on the old input does not describe the new one, so it
-   goes now rather than when the detector next loses it (issue #522); an I/Q replay's capture
-   clock no longer times what the decoder reads, so decode time is the system's again (issue
-   #572); then the output follows the new input's policy. */
-static int
-ui_input_switched(dsd_opts* opts, dsd_state* state) {
+/* The decoder left its input. A tone heard on it does not describe the next one, so it goes now
+   rather than when the detector next loses it (issue #522), and an I/Q replay's capture clock no
+   longer times what the decoder reads, so decode time is the system's again (issue #572). */
+static void
+ui_input_left(dsd_opts* opts, dsd_state* state) {
     dsd_analog_rx_reset(state);
     dsd_engine_decode_clock_leave_replay(opts, state);
+}
+
+/* The audio input changed: the old one is left (ui_input_left()), then the output follows the
+   new input's policy. */
+static int
+ui_input_switched(dsd_opts* opts, dsd_state* state) {
+    ui_input_left(opts, state);
     return ui_reconfigure_output_for_input_policy(opts, state);
 }
 
@@ -5945,8 +5951,8 @@ ui_cmd_handle_stop_playback(dsd_opts* opts, dsd_state* state, const struct dsd_a
         opts->audio_in_type = AUDIO_IN_PULSE;
         if (openAudioInput(opts) != 0) {
             LOG_ERROR("UI: failed to open PulseAudio input\n");
-            /* The playback is gone either way; its tone goes with it (issue #522). */
-            dsd_analog_rx_reset(state);
+            /* The playback is gone either way: its tone and a replay's capture clock go with it. */
+            ui_input_left(opts, state);
         } else {
             (void)ui_input_switched(opts, state);
         }
@@ -6546,17 +6552,19 @@ ui_cfg_note_refused_row(int radio_rc) {
 }
 #endif
 
-/* A config apply that moved the input is an input switch like the commands that make one, and
-   one that changed the decode mode a decode-mode change: either way the tone heard before it
-   goes (issue #522). Out of the analog monitor nothing else forgets it before the row can come
-   back, since no monitor block need arrive in between. An unrelated settings change keeps it,
-   including the mode every runtime apply restates. */
+/* A config apply that moved the input is an input switch like the commands that make one
+   (ui_input_left(): the tone heard before it goes, issue #522, and so does an I/Q replay's
+   capture clock, issue #572), and one that changed the decode mode a decode-mode change, which
+   forgets the tone too. Out of the analog monitor nothing else forgets it before the row can
+   come back, since no monitor block need arrive in between. An unrelated settings change keeps
+   it, including the mode every runtime apply restates. */
 static void
-cfg_forget_rx_tone_on_boundary(const dsd_opts* opts, dsd_state* state, int old_audio_in_type,
-                               const char* old_audio_in_dev, dsdneoUserDecodeMode old_decode_mode) {
+cfg_forget_rx_tone_on_boundary(dsd_opts* opts, dsd_state* state, int old_audio_in_type, const char* old_audio_in_dev,
+                               dsdneoUserDecodeMode old_decode_mode) {
     if (opts->audio_in_type != old_audio_in_type
-        || strncmp(old_audio_in_dev, opts->audio_in_dev, sizeof opts->audio_in_dev) != 0
-        || dsd_infer_decode_mode_preset_exact(opts) != old_decode_mode) {
+        || strncmp(old_audio_in_dev, opts->audio_in_dev, sizeof opts->audio_in_dev) != 0) {
+        ui_input_left(opts, state);
+    } else if (dsd_infer_decode_mode_preset_exact(opts) != old_decode_mode) {
         dsd_analog_rx_reset(state);
     }
 }

@@ -653,14 +653,18 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
     the run, before common setup writes its first record (`dsd_engine_decode_clock_enter_replay()`: the sidecar's
     `capture_started_utc`, parsed by `dsd_iq_replay_parse_utc_seconds()`, then `dsd_state_rebase_decode_timestamps()` in
     `<dsd-neo/core/init.h>`, the one list of decode stamps `initOpts()`/`initState()` seed with "now"; a sidecar that
-    does not parse fails the run there). It returns to SYSTEM with the same rebase once the replay no longer feeds the
-    decoder: at the end of the run, when app-control stops the stream to restart it (`svc_rtl_stop_locked()`), and on an
-    input switch (`dsd_engine_decode_clock_leave_replay()`). The source switches only while no reader runs, because a
-    REPLAY read is three loads. Each replay sample moves media time to its own capture time as it reaches symbol
-    processing (`dsd_decode_clock_batch_media_ns()` over the batch tag's span): the symbol cache's pop, and the
-    one-sample readers (the analog monitor, M17, EDACS analog) through
+    does not parse fails the run there). REPLAY is entered only there, at a run's start, on a state fresh from
+    `initState()`. The clock returns to SYSTEM with the same rebase once the replay no longer feeds the decoder
+    (`dsd_engine_decode_clock_leave_replay()`): at the end of the run, when app-control stops the stream to restart it
+    (`svc_rtl_stop_locked()`), and when the input moves away from it (`ui_input_left()` in `app_command_queue.c`: an
+    input switch, a stop of playback, a config apply that moves the input). Decode-mono time goes on from the capture
+    time the replay reached (a SYSTEM offset over the platform monotonic clock, set only by leaving REPLAY), so the
+    replay's stamps keep ageing; wall time returns to real time. Each replay sample moves media time to its own capture
+    time as it reaches symbol processing (`dsd_decode_clock_batch_media_ns()` over the batch tag's span): the symbol
+    cache's pop, and the one-sample readers (the analog monitor, M17, EDACS analog) through
     `dsd_rtl_stream_metrics_hook_replay_advance_decode_clock()`. Tests: `RUNTIME_DECODE_CLOCK`,
-    `RTL_SYMBOL_REPLAY_CLOCK`, `ENGINE_REPLAY_DECODE_CLOCK`.
+    `RTL_SYMBOL_REPLAY_CLOCK`, `ENGINE_REPLAY_DECODE_CLOCK`, and the leave in `ENGINE_NO_CARRIER_RESET` and
+    `APP_COMMAND_QUEUE`.
   - Analog channel contract shared by the CLI, config, app commands, scan rows and the demodulator
     (`include/dsd-neo/runtime/analog_channel.h`, `src/runtime/analog_channel.c`): `dsd_analog_demod` (FM = 0,
     AM = 1), `dsd_rx_family`, per-kind width ranges and defaults (NFM 8000–25000 Hz, default 16000; AM
