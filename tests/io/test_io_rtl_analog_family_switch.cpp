@@ -32,7 +32,7 @@
  * cascade and the channel filter no sample is lost or repeated at the edit and
  * every output after it is the new taps over the true history, whether the tap
  * count holds, rises or falls. An FM <-> AM switch starts the filters over
- * whatever the width.
+ * whatever the width, as a fresh open of the new kind does.
  *
  * While a stream runs, a width its published demod rate (or a replay's post-demod
  * decimation) cannot realize is refused before it is queued, as a live request

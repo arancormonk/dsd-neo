@@ -9545,17 +9545,22 @@ rtl_stream_apply_analog_request(int kind, int width_hz) {
     const int kind_changed = rtl_demod_set_analog_kind(&demod, kind) > 0;
     if (rtl_demod_apply_analog_channel(&demod, kind, width_hz)) {
         /* A new width: the next block designs its plan. The rate is the same, so the half-band and channel histories
-           and their pending counts stay (issue #572): the new taps run over the true past, and the edit neither drops
-           nor repeats a sample. A family switch, a retune and a rate change still start the filters over. */
+           and their pending counts stay (issue #572): the new taps run over the true past, and while the channel
+           filter stays on the edit neither drops nor repeats a sample. An edit that turns it off (the unset NFM
+           default with channel_lpf_default_enable 0) drops what it held on the next block, and the reverse edit
+           starts it from an empty history. A family switch, a retune and a rate change still start the filters
+           over. */
         demod.channel_lpf_plan_taps_len = 0;
         demod.channel_lpf_plan_width_hz = 0;
     }
     if (kind_changed) {
-        /* An FM <-> AM switch starts the monitor over as a fresh open of the new kind does, whatever the width: the
-           output ring and the resampler hold the old detector's audio (the FM discriminator reading an AM carrier, or
-           the reverse), so the new kind starts from neither, nor from the filter histories the old kind ran on, and
-           the generation moves so the decoder discards a read of the old audio in flight. A width-only change keeps all
-           of it: its audio is the same kind's. */
+        /* An FM <-> AM switch: the output ring and the resampler hold the old detector's audio (the FM discriminator
+           reading an AM carrier, or the reverse), so the new kind starts from neither, and the generation moves so the
+           decoder discards a read of the old audio in flight. The half-band and channel filters start over too,
+           whatever the width. Their histories hold raw I/Q, the same under either kind (the I/Q DC blocker and I/Q
+           balance run after the channel filter), so this is not for the audio's sake: it keeps the switch landing
+           where a fresh open of the new kind does, as the kind switch's contract says (issue #524). A width-only
+           change keeps all of it: its audio is the same kind's. */
         rtl_demod_clear_filter_histories(&demod);
         rtl_demod_reset_resampler_state(&demod);
         rtl_stream_clear_output_ring(rtl_stream_active_output(), 1);
@@ -10480,9 +10485,17 @@ rtl_stream_apply_retune_profile(const RtlRetuneProfile* profile, uint32_t center
  * (rtl_stream_design_digital_landing_output(), as a live digital landing on the digital family does), so the front end
  * runs where rtl_stream_output_rate_for_family() predicted, the rate the engine timed the decoder for when it attached
  * the family (issue #583), whichever family it ran here. A profile without a family keeps the output chain the stream
- * runs, as it always has. */
+ * runs, as it always has.
+ *
+ * With no finalize there is no retune reset (demod_reset_on_retune()) either, so a landing on another frequency than
+ * the last external retune's starts the half-band and channel filters over itself, whatever its width: what they hold
+ * is the old channel's (issue #572). A landing on the frequency already tuned (a width or profile change only) keeps
+ * them, as a live width edit does. */
+static std::atomic<uint32_t> g_external_retune_freq_hz{0U}; /* the last external retune's target, 0 before any */
+
 extern "C" void
 rtl_stream_apply_pending_retune_profile_for_target(uint32_t target_freq_hz) {
+    const uint32_t previous_freq_hz = g_external_retune_freq_hz.exchange(target_freq_hz, std::memory_order_acq_rel);
     RtlRetuneProfile profile{};
     if (!rtl_stream_take_pending_retune_profile(&profile, 0U, target_freq_hz)) {
         return;
@@ -10493,6 +10506,9 @@ rtl_stream_apply_pending_retune_profile_for_target(uint32_t target_freq_hz) {
         g_test_external_landing_hook(g_test_external_landing_ctx);
     }
 #endif
+    if (previous_freq_hz != target_freq_hz) {
+        rtl_demod_clear_filter_histories(&demod);
+    }
     rtl_stream_apply_retune_gain_profile(&profile);
     int lands_digital_family = 0;
     (void)rtl_stream_apply_retune_receive_profile(&profile, &lands_digital_family);
@@ -14776,6 +14792,70 @@ rtl_stream_test_retune_profile_sequence_external(const rtl_stream_test_retune_st
         family_test_land_retune_step(&dmr_opts, kFamilyTestRetuneHz + (uint32_t)(i * 12500U), &steps[i],
                                      external_backend, &out[i]);
     }
+    rtl_stream_clear_pending_retune_profile();
+    family_test_restore(saved);
+    family_test_release_buffers();
+    return 0;
+}
+
+/* Queue an NFM retune profile of @p width_hz for @p target_hz and land it as an external backend's retune does. Returns
+ * 1 when the landing took it. */
+static int
+external_filter_test_land(uint32_t target_hz, int width_hz) {
+    rtl_stream_clear_pending_retune_profile();
+    const rtl_stream_retune_analog_profile analog = {DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_FM, width_hz, 0};
+    if (rtl_stream_prepare_retune_analog_profile_for_target(target_hz, &analog) != 0) {
+        return 0;
+    }
+    return family_test_apply_external_retune(target_hz);
+}
+
+/* One landing over seeded stale filter state (and a seeded plan). @p out_cleared says it started the filters over,
+ * @p out_kept that it left the seeded state exactly as it was. Returns 1 when the landing took its profile. */
+static int
+external_filter_test_step(uint32_t target_hz, int width_hz, int* out_cleared, int* out_kept) {
+    static FamilyTestFilterState seeded;
+    family_test_seed_channel_plan();
+    family_test_seed_stale_filter_histories();
+    family_test_snapshot_filter_state(&seeded);
+    const int taken = external_filter_test_land(target_hz, width_hz);
+    *out_cleared = (family_test_channel_hist_clear() && family_test_hb_hist_clear()) ? 1 : 0;
+    *out_kept = (family_test_channel_state_same(&seeded) && family_test_hb_state_same(&seeded)) ? 1 : 0;
+    return taken;
+}
+
+extern "C" int
+rtl_stream_test_external_landing_filter_state(rtl_stream_test_external_landing_filter_result* out) {
+    if (!out) {
+        return -1;
+    }
+    *out = {};
+    const FamilyTestSaved saved = family_test_save();
+    g_stream = NULL;
+    static dsd_opts analog_opts;
+    DSD_MEMSET(&analog_opts, 0, sizeof analog_opts);
+    analog_opts.analog_only = 1;
+    analog_opts.monitor_input_audio = 1;
+    analog_opts.analog_nfm_bandwidth_hz = 16000;
+    g_cqpsk_toggle_test_stream.output = &output;
+    g_cqpsk_toggle_test_stream.opts = &analog_opts;
+    if (family_test_seed_open(&analog_opts, 48000, 0) != 0) {
+        family_test_restore(saved);
+        family_test_release_buffers();
+        return -2;
+    }
+    rtl_stream_clear_demod_profile_request();
+    const uint32_t freq_a = kFamilyTestRetuneHz;
+    const uint32_t freq_b = kFamilyTestRetuneHz + 12500U;
+    const uint32_t freq_c = kFamilyTestRetuneHz + 25000U;
+    int unused = 0;
+    out->first_taken = external_filter_test_land(freq_a, 16000);
+    out->new_freq_width_taken = external_filter_test_step(freq_b, 12500, &out->new_freq_width_cleared, &unused);
+    out->new_freq_same_width_taken =
+        external_filter_test_step(freq_c, 12500, &out->new_freq_same_width_cleared, &unused);
+    out->same_freq_width_taken = external_filter_test_step(freq_c, 16000, &unused, &out->same_freq_width_kept);
+    out->same_freq_width_after = demod.channel_lpf_width_hz;
+    out->same_freq_plan_dropped = family_test_channel_plan_dropped();
     rtl_stream_clear_pending_retune_profile();
     family_test_restore(saved);
     family_test_release_buffers();

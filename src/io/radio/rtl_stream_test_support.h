@@ -1013,6 +1013,25 @@ int rtl_stream_test_retune_profile_sequence_external(const rtl_stream_test_retun
                                                      int forced_rate_out_hz, uint32_t external_steps,
                                                      rtl_stream_test_retune_landing* out);
 
+/* External backends' retunes landing NFM profiles on a running monitor (issue #572), each over stale filter state. */
+typedef struct rtl_stream_test_external_landing_filter_result {
+    int first_taken;                 /* 1 when the first landing (16 kHz on frequency A) took its profile */
+    int new_freq_width_taken;        /* frequency B, 12.5 kHz */
+    int new_freq_width_cleared;      /* 1 when that landing started the half-band and channel filters over */
+    int new_freq_same_width_taken;   /* frequency C, 12.5 kHz again */
+    int new_freq_same_width_cleared; /* likewise */
+    int same_freq_width_taken;       /* frequency C again, 16 kHz */
+    int same_freq_width_kept;   /* 1 when that landing left every filter history and pending count as it found them */
+    int same_freq_width_after;  /* demod_state::channel_lpf_width_hz after it */
+    int same_freq_plan_dropped; /* 1 when it dropped the channel plan, so the next block designs 16 kHz */
+} rtl_stream_test_external_landing_filter_result;
+
+/* Open the NFM monitor at 48 kHz, 16 kHz wide, and land NFM retune profiles as an external backend's retunes do
+ * (rtl_stream_apply_pending_retune_profile_for_target(), with no controller retune and no finalize): on frequency A,
+ * then each over seeded stale filter state, on B with a new width, on C with the width B left, and on C again with
+ * only a new width. */
+int rtl_stream_test_external_landing_filter_state(rtl_stream_test_external_landing_filter_result* out);
+
 /* An external backend's retune landing against a controller reconfiguration on another thread (issue #583). */
 typedef struct rtl_stream_test_external_landing_race_result {
     /* The controller holds its reconfigure gate (controller_enter_reconfigure_gate()) when the landing starts. */

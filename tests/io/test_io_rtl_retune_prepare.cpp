@@ -1242,6 +1242,33 @@ test_external_backend_landing_waits_for_reconfiguration(void) {
     return failed;
 }
 
+/* An external backend's retune (a rigctl peer that tuned an RTL input) has no finalize, so no retune reset of the
+ * stream's own: its landing starts the half-band and channel filters over itself whenever it lands on a new frequency,
+ * whatever the width, since what they hold is the old channel's. A landing on the frequency already tuned that only
+ * changes the width is a live width edit, seamless (issue #572): the filter state stays and only the plan is
+ * redesigned. */
+static int
+test_external_backend_landing_filter_state(void) {
+    rtl_stream_test_external_landing_filter_result r;
+    DSD_MEMSET(&r, 0, sizeof r);
+    int failed = expect_int_eq("external landing filter hook", rtl_stream_test_external_landing_filter_state(&r), 0);
+    failed |= expect_int_eq("external landing on A: taken", r.first_taken, 1);
+    failed |= expect_int_eq("external landing on a new frequency with a new width: taken", r.new_freq_width_taken, 1);
+    failed |= expect_int_eq("external landing on a new frequency with a new width: filters start over",
+                            r.new_freq_width_cleared, 1);
+    failed |= expect_int_eq("external landing on a new frequency, same width: taken", r.new_freq_same_width_taken, 1);
+    failed |= expect_int_eq("external landing on a new frequency, same width: filters start over",
+                            r.new_freq_same_width_cleared, 1);
+    failed |= expect_int_eq("external landing on the same frequency, new width: taken", r.same_freq_width_taken, 1);
+    failed |= expect_int_eq("external landing on the same frequency, new width: filter state kept",
+                            r.same_freq_width_kept, 1);
+    failed |= expect_int_eq("external landing on the same frequency, new width: width applied", r.same_freq_width_after,
+                            16000);
+    failed |=
+        expect_int_eq("external landing on the same frequency, new width: plan dropped", r.same_freq_plan_dropped, 1);
+    return failed;
+}
+
 /* Whether a digital retune queued now lands on a receive family's landing (issue #583): the union of the published
  * analog family, an outstanding retune that lands a family, and the live requests still unsettled. The engine attaches
  * the digital family to a digital retune by it, and times the decoder for that landing, so each has to count: a width
@@ -2309,6 +2336,7 @@ main(void) {
     failed |= test_digital_family_lands_where_timed_on_a_digital_front_end();
     failed |= test_external_backend_retune_lands_where_timed();
     failed |= test_external_backend_landing_waits_for_reconfiguration();
+    failed |= test_external_backend_landing_filter_state();
     failed |= test_family_landing_after_pending();
     failed |= test_live_republish_lands_where_it_was_timed();
 

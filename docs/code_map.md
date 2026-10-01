@@ -1738,8 +1738,15 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   288-tap capacity needs no kernel change. A live width edit on the running monitor is seamless (issue #572):
   `rtl_stream_apply_analog_request()` drops only the plan, and the half-band cascade and the channel FIR keep their
   histories and pending counts, so the new width's taps run over the true past and no sample is lost or repeated at
-  the edit. A family or FM <-> AM kind switch, a retune and a rate change still start the filters over. Tests:
-  `DSP_CHANNEL_FILTERS`, `DSP_DEMOD_MISC`, `IO_RTL_ANALOG_FAMILY_SWITCH` (`rtl_stream_test_analog_width_continuity()`).
+  the edit. The exception is an NFM edit between an explicit width and the unset default when
+  `channel_lpf_default_enable` is 0 (`DSD_NEO_CHANNEL_LPF=0`, or `rate_in` below 20 kHz): it turns the channel filter
+  off, whose bypass then drops the pending samples, or on, over a zeroed history. A family or FM <-> AM kind switch,
+  a rate change and a retune still start the filters over: the controller's retune through its reset
+  (`demod_reset_on_retune()`), and an external backend's landing
+  (`rtl_stream_apply_pending_retune_profile_for_target()`, which has no finalize) itself when it lands on another
+  frequency than the last one, whatever its width. Tests:
+  `DSP_CHANNEL_FILTERS`, `DSP_DEMOD_MISC`, `IO_RTL_ANALOG_FAMILY_SWITCH` (`rtl_stream_test_analog_width_continuity()`),
+  `IO_RTL_RETUNE_PREPARE` (`rtl_stream_test_external_landing_filter_state()`).
 - Streaming linear front end (issue #572): the half-band cascade and the channel FIR (`simd_hb_decim2_complex()`,
   `simd_hb_decim2_real()` and `simd_fir_complex_apply()` in `<dsd-neo/dsp/simd_fir.h>`, every backend sharing the call
   contracts in `src/dsp/simd_fir_internal.h`) carry their look-ahead, and the half-band its decimation phase, from one
@@ -1927,13 +1934,15 @@ Notes:
     level. A configured I/Q DC blocker and I/Q balance are bypassed under AM, each with a one-time note
     (`rtl_demod_note_am_iq_dc_bypass()`, `rtl_demod_note_am_iq_balance_bypass()`, from configuration, a kind switch, a
     switch onto the analog family (`rtl_demod_enter_analog_family()`) and the runtime toggles); a kind switch clears
-    both estimates. A live FM <-> AM switch on the running monitor (`rtl_stream_apply_analog_request()`) also starts
-    the half-band and channel filters over, whatever the width, resets the resampler history and clears the output ring
-    with a generation bump, so the new kind's audio does not follow the old detector's; a width-only change keeps all
-    of them. Only a family or kind switch changes the detector: a profile that
-    turns CQPSK off (`rtl_stream_disable_cqpsk_mode()`) installs the analog family's own, so an AM monitor keeps the
-    envelope detector through a CQPSK-off toggle, a failed tune's restore and a typed digital row's profile, which
-    `full_demod()` reads with the discriminator while its channel is not the monitor's. Tests: `IO_RTL_DEMOD_CONFIG`,
+    both estimates. A live FM <-> AM switch on the running monitor (`rtl_stream_apply_analog_request()`) also resets
+    the resampler history and clears the output ring with a generation bump, so the new kind's audio does not follow the
+    old detector's, and starts the half-band and channel filters over whatever the width, so it lands where a fresh open
+    of the new kind does (their raw I/Q histories are the same under either kind: the I/Q DC blocker and balance run
+    after the channel filter); a width-only change keeps all of them. Only a family or kind switch changes the
+    detector: a profile that turns CQPSK off (`rtl_stream_disable_cqpsk_mode()`) installs the analog family's own, so
+    an AM monitor keeps the envelope detector through a CQPSK-off toggle, a failed tune's restore and a typed digital
+    row's profile, which `full_demod()` reads with the discriminator while its channel is not the monitor's. Tests:
+    `IO_RTL_DEMOD_CONFIG`,
     `IO_RTL_ANALOG_FAMILY_SWITCH` (digital <-> AM, an AM start to digital and back to AM on the same stream, live FM <->
     AM against fresh opens via `rtl_stream_test_analog_kind_switch()`, at the same width too, the CQPSK-off profiles via
     `rtl_stream_test_am_monitor_symbol_profiles()`, the DSP menu's return from CQPSK to the FM or AM monitor, taken and
@@ -2090,7 +2099,7 @@ Notes:
     I/Q DC and balance estimates, the squelch dwell toward a multi-frequency hop and a replay's post-demod decimator as
     an open does, clears the output ring and bumps
     the output generation; a width-only change redesigns the filter and keeps its histories and the half-band cascade's,
-    so the edit is seamless. A switch to digital also
+    so the edit is seamless while the channel filter stays on (see Channel LPF). A switch to digital also
     keeps the open's floor of two samples per symbol for the TED, which the symbol-profile setter it applies does not
     (ProVoice at a 12 kHz DSP rate), and times a profile it does not override for the demod rate it lands on, as an
     open does, not for the rate the decoder read when it queued the profile: a retune can settle the device on

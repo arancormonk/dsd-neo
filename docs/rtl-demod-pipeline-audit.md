@@ -390,7 +390,11 @@ drained in the same pass of the command queue as the mode change):
   and pending counts kept (issue #572), so the new taps run over the true past
   and no sample is lost or repeated at the edit, with the output ring, the
   generation and the monitor audio state left alone (a request for the width
-  already running changes nothing);
+  already running changes nothing). The exception is an NFM edit between an
+  explicit width and the unset default when `channel_lpf_default_enable` is 0
+  (`DSD_NEO_CHANNEL_LPF=0`, or `rate_in` below 20 kHz): it turns the channel
+  filter off, whose bypass drops the pending samples, or on, over a zeroed
+  history;
 - analog <-> digital: the new family's fresh-open defaults (output kind,
   demodulator, de-emphasis, channel filter, resampler), carrier and timing loops
   restarted as on an open (Costas, band-edge FLL, Gardner TED), the I/Q DC and
@@ -450,8 +454,9 @@ drained in the same pass of the command queue as the mode change):
 - FM <-> AM: the detector and de-emphasis swap with a monitor-state reset (the
   AM carrier estimate included) and the I/Q DC estimate starts over (AM leaves
   it where FM had it); the channel and half-band filters start over from empty
-  histories whatever the width, and a changed width redesigns the channel
-  filter. The output ring and the resampler history hold the old
+  histories whatever the width, so the switch lands where a fresh open of the
+  new kind does (the raw I/Q they hold is the same under either kind), and a
+  changed width redesigns the channel filter. The output ring and the resampler history hold the old
   detector's audio, so the switch clears the ring with a generation bump and
   resets the resampler, as a family switch does, and the decoder drops the
   monitor block it had part-collected; a width-only change keeps all three.
