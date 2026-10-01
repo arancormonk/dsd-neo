@@ -16,7 +16,6 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/platform/sockets.h>
-#include <dsd-neo/platform/timing.h>
 #include <dsd-neo/protocol/p25/p25_crypto.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/decode_clock.h>
@@ -881,7 +880,12 @@ static int
 test_call_skip_rejected_slot_refresh(void) {
     static dsd_opts opts;
     static dsd_state state;
+    // The whole case runs on the TEST source, from before the first stamp, so the quiet window
+    // below is stepped rather than slept through. T is far from any platform clock reading.
+    static const uint64_t k_t0_ns = 1000000000000000000ULL;
+    static const uint64_t k_burst_step_ns = 100000000ULL; // one voice burst every 100 ms
     p25_sm_ctx_t* ctx = NULL;
+    dsd_decode_clock_use_test(k_t0_ns);
     setup_tuned_tdma(&opts, &state, &ctx);
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){.tune_to_freq_request = skip_tune_request,
                                                         .return_to_cc_request = return_to_cc_result});
@@ -909,11 +913,12 @@ test_call_skip_rejected_slot_refresh(void) {
     p25_sm_emit_active(&opts, &state, 1);
     rc |= expect_eq("anonymous ACTIVE preserves rejection", ctx->slots[1].rejected_target_id == 5678, 1);
     state.currentslot = 1;
-    // Costs about 15.2 s: real voice bursts must refresh across the production clock's quiet window.
+    // Real voice bursts must refresh the skip across the production quiet window. Each burst
+    // advances decode time by 100 ms, so the loop ends after about 150 bursts whatever the host does.
     const double until_m = armed_m + DSD_TG_CALL_SKIP_QUIET_S + 0.2;
     while (dsd_decode_now_mono_s() <= until_m) {
         process_2V(&opts, &state);
-        dsd_sleep_ms(100);
+        dsd_decode_clock_test_set_ns(dsd_decode_now_mono_ns() + k_burst_step_ns);
     }
     rc |= expect_eq("rejected voice outlives quiet window",
                     dsd_tg_policy_call_skip_active(&state, 5678, dsd_decode_now_mono_s()), 1);
@@ -949,6 +954,7 @@ test_call_skip_rejected_slot_refresh(void) {
     rc |= expect_eq("missing attribution never refreshes", dsd_tg_policy_call_skip_active(&state, 5678, now + 10.0), 0);
     dsd_state_ext_free_all(&state);
     install_trunk_tuning_hooks();
+    dsd_decode_clock_use_system();
     return rc;
 }
 
