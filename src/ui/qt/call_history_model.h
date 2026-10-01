@@ -247,10 +247,6 @@ class CallHistoryModel : public QAbstractListModel {
         /* For a notice heard again: the logged notice (by keyFor()) it took as its twin, else empty.
          * Persisted, so a relaunched model knows the twins its ring has taken (m_noticeTwinsTaken). */
         QString twin;
-        /* Read from a new ring as a call heard again (SeenAgain). Its row folded into the logged call
-         * it repeats, wherever that sits in the log, so the updates the ring makes to it later search
-         * the whole log too (SeenAgainAdvanced). Persisted, for a relaunched model's updates. */
-        bool again = false;
     };
 
     /**
@@ -280,7 +276,7 @@ class CallHistoryModel : public QAbstractListModel {
     };
 
     /** @brief noteSeen() verdicts. */
-    enum SeenVerdict { SeenUnchanged = 0, SeenNew = 1, SeenAdvanced = 2, SeenAgain = 3, SeenAgainAdvanced = 4 };
+    enum SeenVerdict { SeenUnchanged = 0, SeenNew = 1, SeenAdvanced = 2, SeenAgain = 3 };
 
     static QString keyFor(const Row& row);
 
@@ -288,8 +284,7 @@ class CallHistoryModel : public QAbstractListModel {
      * @brief Record what was just read from a ring row of ring @p ring and say what to do with it.
      * @return SeenNew for a first sighting, SeenAgain when the key was read from another ring (a
      *         call heard again: the same capture decoded in a new ring), SeenAdvanced when a voice
-     *         row already ingested has since learned something, SeenAgainAdvanced when that row was
-     *         a call heard again, SeenUnchanged otherwise.
+     *         row already ingested has since learned something, SeenUnchanged otherwise.
      */
     int noteSeen(const QString& key, quint64 ring, qint64 when, qint64 end, qulonglong src, bool emergency, bool enc,
                  bool voice, const QString& sourceName);
@@ -310,11 +305,11 @@ class CallHistoryModel : public QAbstractListModel {
     /**
      * @brief Merge @p row into the log or insert it at its sorted position.
      *
-     * An update (a seen ring row that advanced) may only refine an existing row;
-     * if its row cannot be found it is dropped, never inserted as a duplicate.
-     * A row heard @p again merges into the call it repeats wherever that call sits
-     * in the log, and that call joins the running session. So does an update (@p isUpdate
-     * and @p again) of a call heard again: it refines the row that call folded into.
+     * An update (a seen ring row that advanced) may only refine an existing row, which it
+     * looks for through the whole log; if its row cannot be found it is dropped, never
+     * inserted as a duplicate. A row heard @p again merges into the call it repeats wherever
+     * that call sits in the log, and that call joins the running session. A first sighting
+     * merges only within the newest rows.
      *
      * @return true when a new row was inserted (the count changed).
      */

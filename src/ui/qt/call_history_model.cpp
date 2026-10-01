@@ -484,7 +484,7 @@ CallHistoryModel::noteSeen(const QString& key, quint64 ring, qint64 when, qint64
                            bool enc, bool voice, const QString& sourceName) {
     auto seen = m_seen.find(key);
     if (seen == m_seen.end()) {
-        m_seen.insert(key, SeenState{when, end, src, emergency, enc, sourceName, m_session, ring, QString(), false});
+        m_seen.insert(key, SeenState{when, end, src, emergency, enc, sourceName, m_session, ring, QString()});
         return SeenNew;
     }
     if (seen->ring == 0U) {
@@ -500,7 +500,7 @@ CallHistoryModel::noteSeen(const QString& key, quint64 ring, qint64 when, qint64
         // call heard again, not the entry's own row read again, so it is taken in as the live path takes
         // a call heard again. A state an embedding host reuses keeps its ring, and the rows an earlier run
         // left in it stay this entry's (Event_History_I::instance).
-        *seen = SeenState{when, end, src, emergency, enc, sourceName, m_session, ring, QString(), true};
+        *seen = SeenState{when, end, src, emergency, enc, sourceName, m_session, ring, QString()};
         return SeenAgain;
     }
     seen->session = qMax(seen->session, m_session);
@@ -526,8 +526,7 @@ CallHistoryModel::noteSeen(const QString& key, quint64 ring, qint64 when, qint64
     seen->end = storedEnd;
     seen->src = storedSrc;
     seen->enc = storedEnc;
-    // A call heard again folded into its logged row wherever that sits, so its updates must search as far.
-    return seen->again ? SeenAgainAdvanced : SeenAdvanced;
+    return SeenAdvanced;
 }
 
 QList<CallHistoryModel::FreshRow>
@@ -574,8 +573,7 @@ CallHistoryModel::collectFresh(const dsd_state* snapshot, const bool scan[2], co
             }
             Row row = row_from_item(item, m_sessionLabel, systemUid, slot, seq);
             row.session = m_session;
-            const bool update = verdict == SeenAdvanced || verdict == SeenAgainAdvanced;
-            fresh.append(FreshRow{row, update, verdict == SeenAgain || verdict == SeenAgainAdvanced});
+            fresh.append(FreshRow{row, verdict == SeenAdvanced, verdict == SeenAgain});
         }
     }
     return fresh;
@@ -713,11 +711,14 @@ CallHistoryModel::ingestRow(const Row& row, bool isUpdate, bool again) {
     // A call heard again overlaps the logged call it repeats, which the merge folds it into as it
     // folds any overlapping fragment, so that row joins the running session and no new row is logged.
     // Only the search reaches further: a replay's calls sort by the capture's stamps, anywhere in the
-    // log, where a live fragment's call is among the newest rows. The ring's later updates to a call heard
-    // again (its end extending, its crypto verdict) search as far, or they would miss the row it folded into.
-    // A first sighting still searches the newest rows only, so a call the first replay logged as two rows,
-    // its fragments landing apart under newer rows, stays two, and the repeat folds into the newer of them.
-    const int merged = tryMerge(row, again ? static_cast<int>(m_rows.size()) : kMergeScanRows);
+    // log, where a live fragment's call is among the newest rows. An update (its end extending, its
+    // source learned, its crypto verdict) searches as far, or it would miss a replayed call's row under
+    // newer ones, whether it was a first sighting or heard again. Newest first, so a live update still
+    // lands on the row the newest rows hold for it. A first sighting still searches the newest rows only,
+    // so a call the first replay logged as two rows, its fragments landing apart under newer rows, stays
+    // two, and the repeat folds into the newer of them.
+    const bool wholeLog = again || isUpdate;
+    const int merged = tryMerge(row, wholeLog ? static_cast<int>(m_rows.size()) : kMergeScanRows);
     if (merged >= 0) {
         const QModelIndex idx = index(merged);
         Q_EMIT dataChanged(idx, idx, mergeRoles);
@@ -756,9 +757,8 @@ CallHistoryModel::ingestRow(const Row& row, bool isUpdate, bool again) {
     }
     if (isUpdate) {
         // A seen row that advanced refines a call this model already logged; if
-        // its row cannot be found (absorbed and trimmed, or deeper than the merge
-        // scan), inserting it would mint the duplicate the seen map exists to
-        // prevent. Drop it instead.
+        // its row cannot be found (trimmed, or cleared), inserting it would mint
+        // the duplicate the seen map exists to prevent. Drop it instead.
         return false;
     }
     int pos = 0;
@@ -987,7 +987,7 @@ CallHistoryModel::load() {
         // fragment's start, so its seed's key is no ring row's, and a merged call whose seen entries were
         // evicted or lost is logged again as new rows, one per fragment.
         m_seen.insert(keyFor(*it), SeenState{it->when, it->when + qMax(it->durationSecs, 0), it->src, it->emergency,
-                                             it->enc, it->sourceName, it->session, 0U, QString(), false});
+                                             it->enc, it->sourceName, it->session, 0U, QString()});
         if (tryMerge(*it, kMergeScanRows) < 0) {
             m_rows.prepend(*it);
         }
@@ -1022,7 +1022,6 @@ CallHistoryModel::load() {
             state.ring = 0U;
         }
         state.twin = obj.value(QLatin1String("twin")).toString();
-        state.again = obj.value(QLatin1String("again")).toBool();
         m_seen.insert(key, state);
     }
     endResetModel();
@@ -1102,9 +1101,6 @@ CallHistoryModel::seenToJson() const {
         obj.insert(QLatin1String("ring"), QString::number(state.ring, 16));
         if (!state.twin.isEmpty()) {
             obj.insert(QLatin1String("twin"), state.twin);
-        }
-        if (state.again) {
-            obj.insert(QLatin1String("again"), true);
         }
         seenArray.append(obj);
     }

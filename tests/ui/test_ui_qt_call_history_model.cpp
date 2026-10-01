@@ -1391,6 +1391,87 @@ test_update_of_a_call_heard_again_reaches_its_row(void) {
     }
 }
 
+/* An old capture replayed for the first time sorts by the capture's stamps, below every newer live row, here
+ * 40 of them, past the newest 32 a first sighting searches. That is where its call is logged. The ring then
+ * enriches the call in place (it runs longer, learns its source, turns out encrypted), and the update must
+ * reach that row, as an update of a live row reaches its own, also after a relaunch between the two. */
+void
+test_update_of_a_replayed_call_under_newer_rows_reaches_its_row(void) {
+    for (int relaunch = 0; relaunch < 2; relaunch++) {
+        resetStorage();
+        auto model = std::make_unique<CallHistoryModel>();
+        RingFixture live;
+        model->beginSession();
+        live.commitBatch(0, 40, 9700, 1000, 1754600000);
+        model->refresh(live.state);
+        model->beginSession();
+        RingFixture capture; // the replay's fresh state
+        Event_History* call = capture.commit(0, 9801, 0, kCaptureStart, kCaptureStart + 4);
+        model->refresh(capture.state);
+        expect("a replayed call is logged below the 40 newer live calls",
+               model->count() == 41 && row_with_tg(*model, 9801) == 40);
+
+        if (relaunch != 0) {
+            model.reset(); // destructor flushes the stores
+            model = std::make_unique<CallHistoryModel>();
+            model->refresh(capture.state);
+            expect("a relaunch reading the replay's ring logs nothing new", model->count() == 41);
+        }
+        call->event_time = kCaptureStart + 9;
+        call->source_id = 71;
+        call->enc = 1U;
+        capture.touchCommitted(0);
+        model->refresh(capture.state);
+        const int row = row_with_tg(*model, 9801);
+        expect(relaunch != 0 ? "after a relaunch, the replayed call's enrichment reaches its row"
+                             : "the replayed call's enrichment reaches its row",
+               model->count() == 41 && row >= 0
+                   && model->data(model->index(row), CallHistoryModel::DurationSecsRole).toInt() == 9
+                   && model->data(model->index(row), CallHistoryModel::SrcRole).toULongLong() == 71U
+                   && model->data(model->index(row), CallHistoryModel::EncRole).toBool());
+    }
+}
+
+/* The control: an update of a live call still lands on that call's row, the newest one it merges with, and
+ * not on an older row of the same talkgroup and source further down that it would also merge with. Here that
+ * older row is a long call that spans the newer one, with 40 other calls between them in the log. */
+void
+test_update_of_a_live_call_keeps_landing_on_its_row(void) {
+    resetStorage();
+    RingFixture ring;
+    CallHistoryModel model;
+    model.beginSession();
+    ring.commit(0, 9901, 81, 1754700000, 1754700200); // a 200 s call
+    model.refresh(ring.state);
+    for (uint32_t i = 0; i < 40; i++) {
+        ring.commit(1, 9910 + i, 82 + i, 1754700001 + i, 1754700003 + i);
+    }
+    model.refresh(ring.state);
+    Event_History* call = ring.commit(0, 9901, 81, 1754700100, 1754700104);
+    model.refresh(ring.state);
+    expect("the later call of the same talkgroup is a row of its own above the long one",
+           model.count() == 42 && rows_in_tg_range(model, 9901, 9901) == 2 && row_with_tg(model, 9901) == 0);
+
+    call->event_time = 1754700110;
+    call->enc = 1U;
+    ring.touchCommitted(0);
+    model.refresh(ring.state);
+    const int top = row_with_tg(model, 9901);
+    int older = -1;
+    for (int i = top + 1; i < model.rowCount(); i++) {
+        if (model.data(model.index(i), CallHistoryModel::TgRole).toULongLong() == 9901U) {
+            older = i;
+        }
+    }
+    expect("the live update lands on its own row",
+           model.count() == 42 && top == 0
+               && model.data(model.index(top), CallHistoryModel::DurationSecsRole).toInt() == 10
+               && model.data(model.index(top), CallHistoryModel::EncRole).toBool());
+    expect("and leaves the older row of the same talkgroup alone",
+           older > top && model.data(model.index(older), CallHistoryModel::DurationSecsRole).toInt() == 200
+               && !model.data(model.index(older), CallHistoryModel::EncRole).toBool());
+}
+
 } // namespace
 
 int
@@ -1448,6 +1529,8 @@ main(int argc, char** argv) {
     test_new_ring_within_a_session_logs_nothing_twice();
     test_seed_without_a_ring_keeps_its_session();
     test_update_of_a_call_heard_again_reaches_its_row();
+    test_update_of_a_replayed_call_under_newer_rows_reaches_its_row();
+    test_update_of_a_live_call_keeps_landing_on_its_row();
 
     QDir(dataDir).removeRecursively();
     if (g_failures != 0) {
