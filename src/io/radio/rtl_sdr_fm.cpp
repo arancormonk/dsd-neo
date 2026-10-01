@@ -756,6 +756,15 @@ rtl_stream_test_replay_force_stop(void) {
 #endif
 
 #if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
+/* The blocks a replay's demod has published, the virtual block 0 included (0 with no stream): the count of the demod's
+ * stages. */
+static size_t
+replay_test_blocks_published(void) {
+    return g_stream ? (size_t)g_stream->replay_out_written.load(std::memory_order_acquire) : 0U;
+}
+#endif
+
+#if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
 static struct RtlSdrInternals g_cqpsk_toggle_test_stream;
 /* Called by ring_read_available() between its copy and the tail it publishes, with ready_m held. */
 static void (*g_test_live_read_pause_hook)(void*) = NULL;
@@ -3989,8 +3998,7 @@ demod_prepare_iteration_input(struct demod_state* d, int is_rtltcp_input, DemodI
     if (demod_should_pause_before_read(is_rtltcp_input)) {
         return 0;
     }
-    RTL_REPLAY_TEST_STAGE(RTL_STREAM_TEST_REPLAY_DEMOD_INPUT_WAIT,
-                          g_stream ? (size_t)g_stream->replay_out_written.load(std::memory_order_acquire) : 0U);
+    RTL_REPLAY_TEST_STAGE(RTL_STREAM_TEST_REPLAY_DEMOD_INPUT_WAIT, replay_test_blocks_published());
     if (!demod_read_input_block(d, span)) {
         return 0;
     }
