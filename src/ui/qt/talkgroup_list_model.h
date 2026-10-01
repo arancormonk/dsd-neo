@@ -48,7 +48,7 @@ class TalkgroupListModel : public QAbstractListModel {
     Q_PROPERTY(bool allowListMode READ allowListMode NOTIFY policyChanged)
     Q_PROPERTY(bool persistent READ persistent NOTIFY policyChanged)
     Q_PROPERTY(QString persistenceScope READ persistenceScope NOTIFY policyChanged)
-    Q_PROPERTY(qint64 sinceWhen READ sinceWhen WRITE setSinceWhen NOTIFY sinceWhenChanged)
+    Q_PROPERTY(qint64 historySession READ historySession WRITE setHistorySession NOTIFY historySessionChanged)
 
   public:
     enum Role {
@@ -95,9 +95,16 @@ class TalkgroupListModel : public QAbstractListModel {
         return m_persistent;
     }
 
+    /**
+     * @brief The decode session whose history rows count as heard (the history's
+     *        `session` role); 0 = the whole log.
+     *
+     * Selected by the session that logged a row, not by its stamps, which in a
+     * replay are the capture's time.
+     */
     qint64
-    sinceWhen() const {
-        return m_sinceWhen;
+    historySession() const {
+        return m_historySession;
     }
 
     QString
@@ -120,9 +127,9 @@ class TalkgroupListModel : public QAbstractListModel {
         return m_persistenceScope;
     }
 
-    void setSinceWhen(qint64 when);
+    void setHistorySession(qint64 session);
     void refresh(const dsd_opts* opts_snapshot, const dsd_state* snapshot);
-    /** @brief Drop snapshot state, retaining the session's history cutoff. */
+    /** @brief Drop snapshot state, retaining the session's history selection. */
     void clear();
     /** Re-read the new target without resetting the list view. */
     void invalidateForTarget();
@@ -131,7 +138,7 @@ class TalkgroupListModel : public QAbstractListModel {
     void countChanged();
     void categoriesChanged();
     void policyChanged();
-    void sinceWhenChanged();
+    void historySessionChanged();
 
   private:
     void updatePersistence(const dsd_opts* opts_snapshot, const dsd_state* snapshot, bool allowListChanged,
@@ -163,14 +170,14 @@ class TalkgroupListModel : public QAbstractListModel {
 
     QPointer<QAbstractItemModel> m_history;
     int m_tgRole = -1;
-    int m_whenRole = -1;
+    int m_sessionRole = -1;
     int m_kindRole = -1;
     QVector<Row> m_rows;
     QStringList m_categories;
     int m_notTunedCount = 0;
     bool m_allowListMode = false;
     bool m_persistent = false;
-    qint64 m_sinceWhen = 0;
+    qint64 m_historySession = 0;
     uint64_t m_contextId = 0;
     unsigned int m_generation = 0;
     bool m_heardDirty = true;

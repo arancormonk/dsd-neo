@@ -132,8 +132,11 @@ test_policy_and_heard_rows() {
     CallHistoryModel history;
     TalkgroupListModel model(&history);
     const time_t now = time(nullptr);
-    model.setSinceWhen(now);
+    // A call the previous session logged; the session's own calls follow its start.
     fixture.commit(6001, now - 60);
+    history.refresh(fixture.state);
+    history.beginSession();
+    model.setHistorySession(history.session());
     fixture.commit(4001, now);
     fixture.commit(4001, now + 5);
     fixture.commit(1350, now + 10);
@@ -204,16 +207,17 @@ test_policy_and_heard_rows() {
     model.refresh(fixture.opts, fixture.state);
     expect("configured file changes persistence without rebuilding rows",
            model.persistent() && resets == 0 && changes == 0);
-    model.setSinceWhen(now + 6);
+    history.beginSession();
+    model.setHistorySession(history.session());
     model.refresh(fixture.opts, fixture.state);
-    expect("moving cutoff removes heard rows even with unchanged policy",
+    expect("a new session removes heard rows even with unchanged policy",
            model.count() == 3 && !find(model, 4001).isValid());
     model.refresh(nullptr, fixture.state);
     expect("missing snapshot clears policy and rows", model.count() == 0 && model.notTunedCount() == 0
                                                           && model.categories().isEmpty() && !model.allowListMode()
                                                           && !model.persistent());
     model.refresh(fixture.opts, fixture.state);
-    expect("clear retains session cutoff", model.count() == 3 && model.sinceWhen() == now + 6);
+    expect("clear retains the session selection", model.count() == 3 && model.historySession() == history.session());
 }
 
 void
@@ -259,7 +263,7 @@ class AlternateHistory : public QAbstractListModel {
 
     QHash<int, QByteArray>
     roleNames() const override {
-        return {{Qt::UserRole + 71, "tg"}, {Qt::UserRole + 72, "when"}, {Qt::UserRole + 73, "kind"}};
+        return {{Qt::UserRole + 71, "tg"}, {Qt::UserRole + 72, "session"}, {Qt::UserRole + 73, "kind"}};
     }
 
     QVariant

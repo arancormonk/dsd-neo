@@ -39,7 +39,7 @@ Item {
 
         function init() {
             callHistory.clearAll();
-            talkgroups.sinceWhen = 0;
+            talkgroups.historySession = 0;
             talkgroupView.filterTag = "";
             tc.search.text = "";
             talkgroupView.filterText = "";

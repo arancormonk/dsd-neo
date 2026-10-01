@@ -2447,15 +2447,36 @@ Qt Quick frontend (`src/ui/qt`):
 - Two clocks: `MetricsModel` ages the call lines, the call-skip count and the scan countdown on the decode clock, and
   publishes its wall-clock now as `decodeNowMs` (read live; `decodeNowMsChanged` fires from `refresh()` when the decode
   second moves). QML compares decoded stamps only against it: `Util.shortAge(when, metrics.decodeNowMs)` for the
-  Monitor's recent-call ages and the session-start `monitorView.minWhen`/`talkgroups.sinceWhen` cutoffs in `Main.qml`.
+  Monitor's recent-call ages. The session views read no clock at all (next bullet).
   The viewer's own moments stay on real time through `realtime_clock.h`, and QML ages a saved system's `lastHeard`
   against `savedSystems.realtimeNowMs()` (`Util.heardText(lastHeard, nowMs)`). The sync-label hold (in the Qt panel and
   the Android notification record, `app_control/notification_status.c`) and the received-tone input-pause check use
   `dsd_realtime_mono_s()`. One sanctioned exception compares a decoded stamp with real time: `day_label()` in
   `call_history_model.cpp` labels history sections "TODAY"/"YESTERDAY" against the viewer's real calendar day, paired
   with the real midnight rollover timer, because the log spans sessions and a replay's calls keep their own dates.
-  Tests: `UI_QT_METRICS_MODEL`, `UI_QT_QML_CALL_LISTS` (`tst_monitor_recent_calls.qml`,
-  `tst_history_session_identity.qml`), `APP_CONTROL_NOTIFICATION_STATUS`.
+  Tests: `UI_QT_METRICS_MODEL`, `UI_QT_QML_CALL_LISTS` (`tst_monitor_recent_calls.qml`),
+  `APP_CONTROL_NOTIFICATION_STATUS`.
+- Call history order and identity (`call_history_model.{h,cpp}`) never come from the rows' stamps. Those are decode
+  time, a replay's are the capture's, and the decode clock may not have moved to the capture when a start reads it.
+  - Session: `CallHistoryModel::session()`, persisted in `callHistory/session`. `Main.qml` calls `beginSession()` on
+    every start, after `UiController::flushHistory()` has logged the previous session's tail. A replay start or an
+    input change is a start, and so is the first start after a process start. Every row carries the session that
+    logged it, or that last extended it through a merge (`session` role, persisted per row and per seen entry).
+  - Views: the monitor's recent calls (`monitorView.historySession`) and the heard talkgroups
+    (`TalkgroupListModel::historySession`) select the running session's rows; 0 selects the whole log. A UI
+    reattaching to a running session (the service survived an Activity restart) takes the session the history kept,
+    so it sees the calls its predecessor logged in that session.
+  - Clear (`clearAll()`) names what it wiped by ring position: the current session's push_seq per slot as last read
+    (`callHistory/clear/*`). Whatever the ring takes in after the clear shows, whatever its stamps. A relaunched UI
+    does not ingest the cleared rows again. A clear before the first ring read binds to what that read finds. The
+    mark is dropped by `beginSession()`, and also when a read finds a slot's push_seq below it, which means the ring
+    was replaced. The decode-time watermark older builds wrote (`callHistory/clearedThrough`) is removed on load.
+    The rows it cleared had already left the store, and the ring it guarded died with the replaced process.
+  - Retention: a full log (1000 rows) gives up the oldest session's oldest row, and the seen map and its store keep
+    the newest entries in the same (session, start) order. Ranked by stamps alone, a replay's calls would be trimmed
+    as they landed and its ring rows logged again as new calls.
+  - Tests: `UI_QT_CALL_HISTORY_MODEL`, `UI_QT_TALKGROUP_LIST_MODEL`, `UI_QT_QML_CALL_LISTS`
+    (`tst_history_session_identity.qml`).
 - Received tone or code (issues #522, #523): `MetricsModel` publishes the `rxTone*` group (`rxToneVisible`,
   `rxToneStatus`, `rxToneText`, `rxToneKind`, `rxToneTenthsHz`, `rxToneDcsCode`, `rxToneDcsInverted`,
   `rxToneDcsAliasCode`, `rxToneDcsAliasInverted`, `rxToneCarrier`) with its own `rxToneChanged` signal, filled from
@@ -2499,8 +2520,9 @@ Qt Quick frontend (`src/ui/qt`):
   acquisition and geocoding, with `decoder_host_android` polling terminal results.
   `AppPrefs::setLocationFix` retains the private fix and accuracy for 24 hours.
 - `talkgroup_list_model.{h,cpp}` polls the effective core policy's source-context/generation pair after call-history
-  ingestion, merging listed rows with uncovered talkgroups heard this session. `talkgroup_filter_model.{h,cpp}`
-  filters by category and name/ID for `qml/TalkgroupsScreen.qml`, opened by the monitor's **TG list** action.
+  ingestion, merging listed rows with uncovered talkgroups heard this session (history rows of `historySession`).
+  `talkgroup_filter_model.{h,cpp}` filters by category and name/ID for `qml/TalkgroupsScreen.qml`, opened by the
+  monitor's **TG list** action.
   `CommandBridge` submits `TG_LISTEN_SET`/`TG_LISTEN_SET_ALL` through app-control; only the decoder thread mutates
   policy and atomically rewrites a configured group file. Scan-row lists remain session-only. **Lock out** shares
   this mutation path, preserving labels; with `persist_tg_lockouts` off it becomes **Avoid TG**, adding a session

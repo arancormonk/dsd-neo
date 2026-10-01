@@ -16,6 +16,11 @@
  *
  * This model is the store alone: every view that shows it binds through its own
  * CallHistoryFilterModel, so one screen's search or pills never filter another.
+ *
+ * Order and identity never come from the rows' stamps. Those are decode time, which
+ * in a replay is the capture's time, days or years before any live row. A decode
+ * session (beginSession()) tags each row it logs. Clear wipes the session's ring by
+ * its push order. A full log gives up the oldest session's rows first.
  */
 
 #ifndef DSD_NEO_SRC_UI_QT_CALL_HISTORY_MODEL_H_
@@ -43,6 +48,7 @@ class CallHistoryModel : public QAbstractListModel {
     Q_PROPERTY(int count READ count NOTIFY countChanged)
     Q_PROPERTY(QString sessionLabel READ sessionLabel WRITE setSessionLabel NOTIFY sessionLabelChanged)
     Q_PROPERTY(QString sessionUid READ sessionUid WRITE setSessionUid NOTIFY sessionUidChanged)
+    Q_PROPERTY(qlonglong session READ session NOTIFY sessionChanged)
     Q_PROPERTY(QStringList systemLabels READ systemLabels NOTIFY countChanged)
 
   public:
@@ -56,12 +62,13 @@ class CallHistoryModel : public QAbstractListModel {
         DurationSecsRole, // -1 when unknown
         SystemNameRole,
         SystemUidRole,
-        DayLabelRole,  // "TODAY" / "YESTERDAY" / "MON 3 AUG" — drives list sections
-        TimeTextRole,  // "12:04"
-        KindRole,      // RowKind: voice call or data/control notice
-        DetailRole,    // notice payload: decoded text message or GPS string
-        ChannelRole,   // scan channel the row was heard on (-Y row name or trunk-scan target id), else empty
-        SourceNameRole // resolved source label, falling back to the OTA source text
+        DayLabelRole,   // "TODAY" / "YESTERDAY" / "MON 3 AUG" — drives list sections
+        TimeTextRole,   // "12:04"
+        KindRole,       // RowKind: voice call or data/control notice
+        DetailRole,     // notice payload: decoded text message or GPS string
+        ChannelRole,    // scan channel the row was heard on (-Y row name or trunk-scan target id), else empty
+        SourceNameRole, // resolved source label, falling back to the OTA source text
+        SessionRole     // decode session that logged the row, or last extended it (see session())
     };
 
     /** @brief What a row logs; pinned values because rows persist as JSON. */
@@ -102,6 +109,31 @@ class CallHistoryModel : public QAbstractListModel {
 
     void setSessionUid(const QString& uid);
 
+    /**
+     * @brief Identity of the decode session the history is logging.
+     *
+     * Every row carries the session that logged it, or that last extended it with a
+     * later fragment. The views of "this session" (the monitor's recent calls, the heard
+     * talkgroups) select on it rather than on the rows' stamps, which in a replay are the
+     * capture's time. Persisted, so a relaunched UI reattaching to the running session keeps it.
+     * 0 until the first beginSession(); only moves forward.
+     */
+    qlonglong
+    session() const {
+        return m_session;
+    }
+
+    /**
+     * @brief Begin a new decode session, whose ring counts its pushes from zero.
+     *
+     * The UI calls this on every start. A replay start or an input change is a start,
+     * and so is the first start after the process starts. Ingest the previous session's
+     * tail first (UiController::flushHistory()), or it would be logged under the new session.
+     * A clear made in the previous session stops applying: its push positions describe a
+     * ring that is gone.
+     */
+    Q_INVOKABLE void beginSession();
+
     /** @brief Distinct system names present in the log, for the filter pill. */
     QStringList systemLabels() const;
 
@@ -119,12 +151,22 @@ class CallHistoryModel : public QAbstractListModel {
      */
     void refresh(const dsd_state* snapshot, const dsd_opts* opts_snapshot = nullptr);
 
+    /**
+     * @brief Empty the log, and keep the rows the session's ring still holds out of it.
+     *
+     * Those rows are named by the ring position (push_seq per slot) this model last read, in
+     * the current session. Everything the ring takes in after that is shown, whatever its stamps.
+     * Persisted, so a relaunched UI does not ingest the cleared rows again. When the ring has not
+     * been read yet (a relaunched UI clearing before its first tick), the clear covers what the
+     * first read finds.
+     */
     Q_INVOKABLE void clearAll();
 
   Q_SIGNALS:
     void countChanged();
     void sessionLabelChanged();
     void sessionUidChanged();
+    void sessionChanged();
 
   public:
     /** @brief One logged call or notice. Public only so file-local helpers can build one. */
@@ -159,6 +201,9 @@ class CallHistoryModel : public QAbstractListModel {
          * and unlike its stamps, which merges may still refine. */
         int slot = 0;
         qulonglong seq = 0;
+        /* The decode session that logged the row, or last extended it (session()). Rows from
+         * stores written before sessions existed read 0. */
+        qint64 session = 0;
     };
 
   private:
@@ -180,6 +225,22 @@ class CallHistoryModel : public QAbstractListModel {
         bool emergency = false;
         bool enc = false;
         QString sourceName;
+        /* The session the ring row was last read in. The map keeps the newest sessions'
+         * entries, not the newest stamps: a replay's rows are older than live ones. */
+        qint64 session = 0;
+    };
+
+    /**
+     * @brief What Clear wiped: session @c session's ring rows up to @c pushSeq per slot.
+     *
+     * Named by push position rather than by stamps, because a ring's pushes are ordered and its
+     * stamps are not (a replay's are the capture's). @c pending until the ring position is known.
+     */
+    struct ClearMark {
+        bool active = false;
+        qint64 session = 0;
+        bool pending = false;
+        qulonglong pushSeq[2] = {0U, 0U};
     };
 
     /** @brief A ring row worth ingesting: brand new, or a seen row that advanced. */
@@ -241,14 +302,25 @@ class CallHistoryModel : public QAbstractListModel {
     void pruneSeen();
     /** @brief Arm m_dayTimer for the next local midnight. */
     void scheduleDayRollover();
+    /** @brief Whether the clear mark covers ring rows of the current session. */
+    bool clearApplies() const;
+    /** @brief Settle the clear mark against a ring read at @p pushSeq: bind a pending one, drop a stale one. */
+    void settleClear(const qulonglong pushSeq[2]);
+    void saveClear();
+    /** @brief Restore the session and the clear mark; retire the timestamp watermark older builds wrote. */
+    void loadSessionState();
 
     QList<Row> m_rows; // newest first
     QHash<QString, SeenState> m_seen;
     QString m_sessionLabel;
     QString m_sessionUid;
-    /* Rows starting at or before this stamp were cleared by the user; persisted so
-     * the still-populated ring cannot resurrect them after an Activity restart. */
-    qint64 m_clearedThrough = 0;
+    qint64 m_session = 0;
+    /* Persisted so the still-populated ring cannot resurrect cleared rows after an
+     * Activity restart. */
+    ClearMark m_clear;
+    /* The ring position (push_seq per slot) the last refresh read; valid once m_ringRead. */
+    qulonglong m_ringPushSeq[2] = {0U, 0U};
+    bool m_ringRead = false;
     /* Committed-rows change counter per slot (Event_History_I::commit_rev). The
      * staged row re-renders at the poll rate while a call is up, bumping only
      * `revision`; gating the 2x254-row rescan on this instead keeps the idle and

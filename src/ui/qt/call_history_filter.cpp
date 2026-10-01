@@ -80,11 +80,11 @@ CallHistoryFilterModel::setFilterKind(int kind) {
 }
 
 void
-CallHistoryFilterModel::setMinWhen(qlonglong when) {
-    if (when == m_minWhen) {
+CallHistoryFilterModel::setHistorySession(qlonglong session) {
+    if (session == m_historySession) {
         return;
     }
-    applyFilterChange([&]() { m_minWhen = when; });
+    applyFilterChange([&]() { m_historySession = session; });
     Q_EMIT filterChanged();
 }
 
@@ -95,7 +95,7 @@ CallHistoryFilterModel::filterAcceptsRow(int source_row, const QModelIndex& sour
         return false;
     }
     const QModelIndex idx = source->index(source_row, 0, source_parent);
-    if (m_minWhen > 0 && source->data(idx, CallHistoryModel::WhenRole).toLongLong() < m_minWhen) {
+    if (m_historySession > 0 && source->data(idx, CallHistoryModel::SessionRole).toLongLong() != m_historySession) {
         return false;
     }
     if (!m_filterSystem.isEmpty() && source->data(idx, CallHistoryModel::SystemNameRole).toString() != m_filterSystem) {

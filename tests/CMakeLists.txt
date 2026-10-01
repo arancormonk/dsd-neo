@@ -3056,6 +3056,7 @@ if(DSD_ENABLE_QT_UI)
         dsd-neo_test_ui_qt_call_history_model
         ui/test_ui_qt_call_history_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_filter.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
     )
     target_include_directories(
@@ -3064,7 +3065,7 @@ if(DSD_ENABLE_QT_UI)
     )
     target_link_libraries(
         dsd-neo_test_ui_qt_call_history_model
-        PRIVATE Qt6::Core Qt6::Test dsd-neo_test_decode_clock
+        PRIVATE Qt6::Core Qt6::Test
     )
     target_compile_definitions(
         dsd-neo_test_ui_qt_call_history_model

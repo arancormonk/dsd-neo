@@ -22,7 +22,7 @@ Item {
         }
         function test_emergency_in_history_and_recent_delegates() {
             callHistory.clearAll();
-            monitorView.minWhen = 0;
+            monitorView.historySession = 0;
             history.visible = true;
             var name = callHistory.pushEmergency();
             for (var list of [findChild(monitor.item, "recentCallsList"), findChild(history.item, "callLogList")]) {

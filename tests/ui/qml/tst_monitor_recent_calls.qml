@@ -41,7 +41,7 @@ Item {
 
         function init() {
             testContext.resetCommands()
-            monitorView.minWhen = 0
+            monitorView.historySession = 0
             callHistory.clearAll()
             callHistory.pushMany(12, "TODAY")
             tc.list.positionViewAtBeginning()
