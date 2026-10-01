@@ -13103,6 +13103,7 @@ configure_file(
 add_executable(
     dsd-neo_test_io_airspy_source
     io/test_io_airspy_source.cpp
+    io/airspy_sdk_double.cpp
     ${PROJECT_SOURCE_DIR}/src/io/radio/airspy_source.cpp
 )
 target_include_directories(
@@ -13149,6 +13150,7 @@ if(DSD_HAS_AIRSPY)
     add_executable(
         dsd-neo_test_io_rtl_stream_start_failure
         io/test_io_airspy_source.cpp
+        io/airspy_sdk_double.cpp
         ${PROJECT_SOURCE_DIR}/src/io/radio/airspy_source.cpp
     )
     target_include_directories(
