@@ -43,7 +43,6 @@
 #endif
 
 // Test stubs capture state-machine tuning requests.
-static long g_last_tuned_vc = 0;
 static long g_last_tuned_cc = 0;
 static int g_return_to_cc_called = 0;
 static int g_mark_cc_sync_on_cc_tune = 0;
@@ -115,7 +114,7 @@ trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps,
     (void)opts;
     (void)state;
     (void)ted_sps;
-    g_last_tuned_vc = freq;
+    (void)freq;
     return DSD_TRUNK_TUNE_RESULT_OK;
 }
 
@@ -156,7 +155,6 @@ trunk_tune_to_freq_result(dsd_opts* opts, dsd_state* state, long int freq, int t
     (void)request_id;
     (void)ted_sps;
     g_result_tune_to_freq_calls++;
-    g_last_tuned_vc = freq;
     if (g_result_tune_to_freq_result == DSD_TRUNK_TUNE_RESULT_OK && g_result_hook_commits_decoder_state) {
         if (opts) {
             opts->trunk_is_tuned = 1;

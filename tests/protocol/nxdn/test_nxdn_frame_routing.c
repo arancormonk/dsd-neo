@@ -339,6 +339,7 @@ test_control_channel_routes_and_reliability(void) {
     rc |= expect_int("sacch/facch accepted", route_frame(0x32U), 1);
     rc |= expect_int("sacch route", g_sacch_calls, 1);
     rc |= expect_int("facch route", g_facch_calls, 1);
+    rc |= expect_int("facch single part", g_facch_part_mask, 1 << 0);
     rc |= expect_int("voice route", g_voice_calls, 1);
     rc |= expect_int("voice mode", g_last_voice, 2);
     rc |= expect_int("sacch first bit", g_last_sacch_bit, (g_dibit_stream[8] >> 1U) & 1U);
@@ -349,6 +350,7 @@ test_control_channel_routes_and_reliability(void) {
     reset_state();
     rc |= expect_int("facch-both accepted", route_frame(0x20U), 1);
     rc |= expect_int("facch both routes", g_facch_calls, 2);
+    rc |= expect_int("facch both parts", g_facch_part_mask, (1 << 1) | (1 << 2));
     rc |= expect_int("non-superframe sacch mode", g_state.nxdn_sacch_non_superframe, 1);
 
     reset_state();

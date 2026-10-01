@@ -24,14 +24,12 @@
 #endif
 
 static int g_tune_to_freq_calls = 0;
-static long g_last_tuned_vc = 0;
 
 static dsd_trunk_tune_result
 tune_to_freq_stub(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
     (void)request_id;
     (void)ted_sps;
     g_tune_to_freq_calls++;
-    g_last_tuned_vc = freq;
     if (opts) {
         opts->trunk_is_tuned = 1;
     }

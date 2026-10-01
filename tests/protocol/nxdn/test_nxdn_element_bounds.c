@@ -1874,6 +1874,7 @@ test_assignment_group_grant_anchors_tunes_and_loads_scrambler(void) {
     NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
 
     int rc = 0;
+    rc |= expect_int("assignment-group-quiet-calls", g_channel_to_frequency_quiet_calls, 1);
     rc |= expect_int("assignment-group-quiet-channel", g_channel_to_frequency_quiet_channel, channel);
     rc |= expect_int("assignment-group-channel", g_channel_to_frequency_channel, channel);
     rc |= expect_int("assignment-group-tune-calls", g_tune_freq_calls, 1);

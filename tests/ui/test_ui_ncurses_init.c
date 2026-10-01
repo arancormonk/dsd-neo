@@ -41,7 +41,6 @@ static int g_devnull_open_ok = 1;
 static int g_fileno_stderr = 2;
 static int g_fileno_devnull = 99;
 static FILE* g_devnull_file;
-static int g_fileno_calls;
 static int g_isatty_calls;
 static int g_dup_calls;
 static int g_dup2_calls;
@@ -165,7 +164,6 @@ dsd_unicode_init_locale(void) {
 
 int
 dsd_fileno(FILE* fp) {
-    g_fileno_calls++;
     if (fp == stderr) {
         return g_fileno_stderr;
     }
@@ -236,7 +234,6 @@ reset_stubs(void) {
     g_dup_result = 10;
     g_devnull_open_ok = 1;
     g_devnull_file = NULL;
-    g_fileno_calls = 0;
     g_isatty_calls = 0;
     g_dup_calls = 0;
     g_dup2_calls = 0;

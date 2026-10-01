@@ -28,9 +28,7 @@
 #pragma GCC diagnostic ignored "-Wmissing-prototypes"
 #endif
 
-static int g_seed_count;
 static int g_group_grant_count;
-static int g_enc_lockout_count;
 static int g_last_group_channel;
 static int g_last_group_svc;
 static int g_last_group_tg;
@@ -58,9 +56,7 @@ recent_activity(dsd_state* state, dsd_recent_activity_entry* entry) {
 
 static void
 reset_calls(void) {
-    g_seed_count = 0;
     g_group_grant_count = 0;
-    g_enc_lockout_count = 0;
     g_last_group_channel = 0;
     g_last_group_svc = 0;
     g_last_group_tg = 0;
@@ -205,7 +201,6 @@ p25_emit_enc_lockout_once_typed(dsd_opts* opts, dsd_state* state, uint8_t slot, 
     (void)is_group;
     (void)algid;
     (void)keyid;
-    g_enc_lockout_count++;
 }
 
 void
@@ -213,7 +208,6 @@ void
 p25_sm_seed_cc_from_current_tuner_if_unknown(const dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
-    g_seed_count++;
 }
 
 static p25_sm_ctx_t g_sm_ctx;
@@ -379,6 +373,9 @@ main(void) {
     rc |= expect_true("p1 pdu group priority state", activity.observation.priority == 0U);
     rc |= expect_true("p1 pdu group activity target", activity.observation.ota_target_id == 0x1234U);
     rc |= expect_true("p1 pdu group activity notice", strstr(activity.notice, "TG: 4660") != NULL);
+    rc |= expect_true("p1 pdu group grant reaches the state machine once", g_group_grant_count == 1);
+    rc |= expect_true("p1 pdu group grant fields", g_last_group_tg == 0x1234 && g_last_group_src == 0x010203
+                                                       && g_last_group_channel == 0x100A && g_last_group_svc == 0);
 
     DSD_MEMSET(mpdu, 0, sizeof mpdu);
     mpdu[0] = 0x37;
@@ -442,6 +439,9 @@ main(void) {
     rc |= expect_true("p1 pdu mfid90 activity", recent_activity(&st, &activity));
     rc |= expect_true("p1 pdu mfid90 activity kind", activity.observation.kind == DSD_CALL_KIND_GROUP_VOICE);
     rc |= expect_true("p1 pdu mfid90 activity notice", strstr(activity.notice, "SG: 8738") != NULL);
+    rc |= expect_true("p1 pdu mfid90 grant reaches the state machine once", g_group_grant_count == 1);
+    rc |= expect_true("p1 pdu mfid90 grant fields", g_last_group_tg == 0x2222 && g_last_group_src == 0x040506
+                                                        && g_last_group_channel == 0x100A && g_last_group_svc == 0);
 
     DSD_MEMSET(mpdu, 0, sizeof mpdu);
     mpdu[0] = 0x17; // inbound ALT MBT ISP

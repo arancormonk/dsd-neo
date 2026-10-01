@@ -54,7 +54,6 @@ static int g_timeout_calls;
 static int g_escdelay_calls;
 static int g_ncurses_open_calls;
 static int g_ncurses_close_calls;
-static int g_rr_panel_shutdown_calls;
 static int g_clearok_calls;
 static int g_ncurses_input_calls;
 static int g_last_menu_key = ERR;
@@ -184,9 +183,7 @@ dsd_terminal_close(void) {
 }
 
 void
-rr_panel_shutdown(void) {
-    g_rr_panel_shutdown_calls++;
-}
+rr_panel_shutdown(void) {}
 
 void
 dsd_terminal_render(dsd_opts* opts, dsd_state* state) {
@@ -363,7 +360,6 @@ test_ui_curses_close_uses_opened_state(void) {
 
     g_ncurses_open_calls = 0;
     g_ncurses_close_calls = 0;
-    g_rr_panel_shutdown_calls = 0;
     dsd_neo_ui_async_test_set_context(&opts, &state);
 
     int curses_opened = dsd_neo_ui_async_test_open_curses_if_needed();

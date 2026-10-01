@@ -73,7 +73,6 @@ p25p1_hamming_rs_symbol_reliability(const P25P1SoftDibit* symbol) {
 static int g_hard_rs_result;
 static int g_soft_rs_result;
 static int g_lsd_soft_result;
-static int g_lfsr128_calls;
 static int g_watchdog_calls;
 static int g_write_event_calls;
 static int g_push_event_calls;
@@ -125,7 +124,6 @@ p25_lsd_fec_16x8_soft(uint8_t* bits16, const int16_t llr16[16]) {
 void
 LFSR128(dsd_state* state) {
     (void)state;
-    g_lfsr128_calls++;
 }
 
 int
@@ -352,7 +350,6 @@ reset_hook_counters(void) {
     g_hard_rs_result = 0;
     g_soft_rs_result = 0;
     g_lsd_soft_result = 1;
-    g_lfsr128_calls = 0;
     g_watchdog_calls = 0;
     g_write_event_calls = 0;
     g_push_event_calls = 0;
@@ -928,6 +925,10 @@ test_ldu2_encrypted_trunk_lockout_state(void) {
     rc |= expect_int("lockout does not make runtime policy", g_policy_make_calls, 0);
     rc |= expect_int("lockout does not upsert runtime policy", g_policy_upsert_calls, 0);
     rc |= expect_int("lockout logging delegated", g_watchdog_calls, 0);
+    /* With an event log configured, the LDU2 still writes and stages no event of its own. */
+    rc |= expect_int("lockout writes no event", g_write_event_calls, 0);
+    rc |= expect_int("lockout pushes no event history", g_push_event_calls, 0);
+    rc |= expect_int("lockout resets no event history", g_init_event_calls, 0);
 
     reset_hook_counters();
     state.p25_sm_force_release = 0;

@@ -113,9 +113,6 @@ static int g_push_event_calls;
 static int g_init_event_calls;
 static int g_policy_make_calls;
 static int g_policy_upsert_calls;
-static uint32_t g_last_policy_id;
-static uint8_t g_last_policy_source;
-static dsd_tg_policy_upsert_mode g_last_policy_upsert_mode;
 static const char* g_lookup_label;
 static Event_History_I g_event_history[2];
 static int g_hard_golay_fixed;
@@ -269,12 +266,9 @@ dsd_tg_policy_make_exact_entry(uint32_t id, const char* mode, const char* name, 
 int
 dsd_tg_policy_upsert_exact(dsd_state* state, const dsd_tg_policy_entry* entry, dsd_tg_policy_upsert_mode mode) {
     (void)state;
+    (void)entry;
+    (void)mode;
     g_policy_upsert_calls++;
-    g_last_policy_upsert_mode = mode;
-    if (entry != NULL) {
-        g_last_policy_id = entry->id_start;
-        g_last_policy_source = entry->source;
-    }
     return 0;
 }
 
@@ -320,9 +314,6 @@ reset_hook_counters(void) {
     g_init_event_calls = 0;
     g_policy_make_calls = 0;
     g_policy_upsert_calls = 0;
-    g_last_policy_id = 0U;
-    g_last_policy_source = 0U;
-    g_last_policy_upsert_mode = 0;
     g_lookup_label = NULL;
     g_resolve_entry_algid = 0;
     g_resolve_entry_keyid = 0;
@@ -773,6 +764,10 @@ test_hdu_encrypted_trunk_lockout_state(void) {
     rc |= expect_int("lockout does not make runtime policy", g_policy_make_calls, 0);
     rc |= expect_int("lockout does not upsert runtime policy", g_policy_upsert_calls, 0);
     rc |= expect_int("lockout logging delegated", g_watchdog_calls, 0);
+    /* With an event log configured, the HDU still writes and stages no event of its own. */
+    rc |= expect_int("lockout writes no event", g_write_event_calls, 0);
+    rc |= expect_int("lockout pushes no event history", g_push_event_calls, 0);
+    rc |= expect_int("lockout resets no event history", g_init_event_calls, 0);
 
     return rc;
 }

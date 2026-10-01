@@ -5698,21 +5698,30 @@ test_scan_tick_skips_rotation_when_p25_guard_busy(void) {
         test_rc = 1;
     }
 
+    /* Each tick asks for the guard once: the busy tick must have asked and been refused, so that what held the
+       rotation back is the guard and not some other early return. */
+    const int enters_before = g_p25_tick_guard_enter_calls;
     g_p25_tick_guard_available = 0;
     trunk_scan_test_set_now(0.26);
     dsd_engine_trunk_scan_tick(&opts, &state);
-    if (dsd_engine_trunk_scan_active_index(&state) != 0 || g_p25_tick_guard_leave_calls != 0) {
-        DSD_FPRINTF(stderr, "scan rotated or left guard while P25 guard busy active=%zu leaves=%d\n",
-                    dsd_engine_trunk_scan_active_index(&state), g_p25_tick_guard_leave_calls);
+    if (dsd_engine_trunk_scan_active_index(&state) != 0 || g_p25_tick_guard_leave_calls != 0
+        || g_p25_tick_guard_enter_calls != enters_before + 1) {
+        DSD_FPRINTF(stderr,
+                    "scan rotated, left the guard or did not ask for it while P25 guard busy active=%zu "
+                    "leaves=%d enters=%d\n",
+                    dsd_engine_trunk_scan_active_index(&state), g_p25_tick_guard_leave_calls,
+                    g_p25_tick_guard_enter_calls - enters_before);
         test_rc = 1;
     }
 
     g_p25_tick_guard_available = 1;
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 1 || g_p25_tick_guard_depth != 0
-        || g_p25_tick_guard_leave_calls != 1) {
-        DSD_FPRINTF(stderr, "scan did not rotate cleanly after P25 guard released active=%zu depth=%d leaves=%d\n",
-                    dsd_engine_trunk_scan_active_index(&state), g_p25_tick_guard_depth, g_p25_tick_guard_leave_calls);
+        || g_p25_tick_guard_leave_calls != 1 || g_p25_tick_guard_enter_calls != enters_before + 2) {
+        DSD_FPRINTF(stderr,
+                    "scan did not rotate cleanly after P25 guard released active=%zu depth=%d leaves=%d enters=%d\n",
+                    dsd_engine_trunk_scan_active_index(&state), g_p25_tick_guard_depth, g_p25_tick_guard_leave_calls,
+                    g_p25_tick_guard_enter_calls - enters_before);
         test_rc = 1;
     }
 

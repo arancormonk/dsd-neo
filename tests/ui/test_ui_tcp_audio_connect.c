@@ -143,6 +143,8 @@ test_preserves_wav_input_when_tcp_backend_open_fails(void) {
     assert(strcmp(g_last_connect_host, "127.0.0.1") == 0);
     assert(g_last_connect_port == 9000);
     assert(g_tcp_open_calls == 1);
+    assert(g_last_tcp_open_sockfd == (dsd_socket_t)77);
+    assert(g_last_tcp_open_samplerate == 24000);
     assert(g_close_audio_input_calls == 0);
     assert(g_tcp_close_calls == 0);
     assert(g_socket_close_calls == 1);
@@ -246,6 +248,10 @@ test_switches_tcp_backend_only_after_successful_open(void) {
     assert(opts.tcp_in_ctx == (tcp_input_ctx*)&g_ctx_new_token);
     assert(strcmp(opts.tcp_hostname, "live.example") == 0);
     assert(opts.tcp_portno == 1400);
+    /* The new backend opens on the socket just connected, at the input's sample rate. */
+    assert(g_tcp_open_calls == 1);
+    assert(g_last_tcp_open_sockfd == (dsd_socket_t)88);
+    assert(g_last_tcp_open_samplerate == 8000);
     assert(g_tcp_close_calls == 1);
     assert(g_last_tcp_close_ctx == (tcp_input_ctx*)&g_ctx_existing_token);
     assert(g_socket_close_calls == 1);
