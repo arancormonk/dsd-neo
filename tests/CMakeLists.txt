@@ -11865,11 +11865,18 @@ if(DSD_HAS_RADIO)
     # generation_changes=3 media_ms=13679.666666 (13.5 s of samples plus the two MUTEs): the
     # hunt runs the front end on its CQPSK path (6000 symbols/s, 8 samples each) for 1.37 s,
     # so the legs cross output kinds and generations, and the FSK samples and CQPSK symbols
-    # together cover all but 158 of the capture's 648,000 samples. The minimums sit 1.3 %
-    # and 2.3 % under those counts: a leg that stopped short, or a hunt that no longer
-    # reaches the CQPSK path, fails here even when every leg agrees.
-    set(_nxdn48_retune_min_fsk 575000)
-    set(_nxdn48_retune_min_cqpsk 8000)
+    # together cover all but 158 of the capture's 648,000 samples. The verbatim REPLAY
+    # STREAM comparison already catches a leg that reads less than the others; the floors
+    # catch every leg reading too little, and are sized to survive a legitimate change to
+    # the hunt's visit and credit accounting. One CQPSK dwell is a fixed 3 passes x 1800 =
+    # 5,400 symbols (DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS); the other ~2.8k of the 8,189
+    # come from that accounting. MIN_CQPSK 5,000 sits just under one dwell, so it still
+    # proves the hunt dwelt on the CQPSK path. The FSK count moves the other way:
+    # 648,000 - 158 - 8 x cqpsk_symbols. MIN_FSK 535,000 is the measured 582,330 less one
+    # more full CQPSK dwell (5,400 x 8 = 43,200 samples, leaving 539,130) and a little
+    # more, and it still holds 83 % of the capture to the FSK path.
+    set(_nxdn48_retune_min_fsk 535000)
+    set(_nxdn48_retune_min_cqpsk 5000)
     dsd_neo_add_iq_determinism_test(
         DECODE_IQ_NXDN48_AFTER_RETUNE_AUTO_DETERMINISM
         nxdn48_after_retune

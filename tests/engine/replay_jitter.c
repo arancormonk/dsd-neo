@@ -38,8 +38,10 @@
  * (fnv1a hashes every sample the decoder handed over), then its device side, dropped by the runner as an audio-sink
  * diagnostic:
  *   Replay sink output stats: rate=R ch=C mode=M taken_frames=T dropped_frames=X
- * A stalled sink that dropped nothing never backed up, so it proved nothing: the host then prints
- * "REPLAY SINK FAIL:" and exits 1, as it does when the engine opened a synchronous sink, whose write would block.
+ * A stalled stream that took audio but dropped nothing never backed up, and a stalled run in which no stream both took
+ * audio and dropped some tested nothing: the host then prints "REPLAY SINK FAIL:" and exits 1. It does the same when
+ * the engine opened a synchronous sink, whose write would block, and when the decoder drains a stalled sink, which the
+ * real asynchronous drain would wait on for good.
  */
 
 #include <dsd-neo/core/init.h>
@@ -433,6 +435,7 @@ typedef struct {
 static replay_sink_stream* g_sink_streams[REPLAY_SINK_MAX_STREAMS];
 static int g_sink_opened;
 static int g_sink_closed;
+static int g_sink_backed_up; /* stalled streams that took audio from the decoder and dropped some */
 
 // GNU ld --wrap requires these exact external symbol names.
 // NOLINTBEGIN(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp,misc-use-internal-linkage)
@@ -580,8 +583,15 @@ __wrap_dsd_audio_drain(dsd_audio_stream* stream) {
         return __real_dsd_audio_drain(stream);
     }
     s->drains++;
-    /* A drain on a wedged device would never finish; this one reports failure at once rather than hang. */
-    return s->stalled ? -1 : 0;
+    if (s->stalled) {
+        /* The real asynchronous drain waits for the pump to empty the ring, which a wedged device never lets it do:
+           a replay that drains would hang there. Fail the leg instead of letting the drain pass unseen. */
+        DSD_FPRINTF(stderr, "REPLAY SINK FAIL: the decoder drained stalled stream %d, which would block it\n",
+                    s->index);
+        g_failed = 1;
+        return -1;
+    }
+    return 0;
 }
 
 void
@@ -619,6 +629,9 @@ __wrap_dsd_audio_close(dsd_audio_stream* stream) {
                     s->index);
         g_failed = 1;
     }
+    if (s->stalled && s->writes > 0U && s->dropped > 0U) {
+        g_sink_backed_up++;
+    }
     for (int i = 0; i < g_sink_opened; i++) {
         if (g_sink_streams[i] == s) {
             g_sink_streams[i] = NULL;
@@ -628,7 +641,8 @@ __wrap_dsd_audio_close(dsd_audio_stream* stream) {
     replay_sink_free(s);
 }
 
-/* After the engine returned: a sink the run asked for must have been opened, written to and closed. */
+/* After the engine returned: a sink the run asked for must have been opened and closed, and a stalled one must have
+ * backed up on at least one stream. A replay whose decoder handed no audio over would otherwise pass vacuously. */
 static void
 replay_sink_finish(void) {
     if (!g_options.sink) {
@@ -636,6 +650,11 @@ replay_sink_finish(void) {
     }
     if (g_sink_opened == 0) {
         DSD_FPRINTF(stderr, "REPLAY SINK FAIL: the engine opened no local audio output (run with -o pulse)\n");
+        g_failed = 1;
+    }
+    if (g_options.sink_stalled && g_sink_backed_up == 0) {
+        DSD_FPRINTF(stderr, "REPLAY SINK FAIL: no stalled stream both took audio from the decoder and dropped some, so "
+                            "the stall was never tested\n");
         g_failed = 1;
     }
     if (g_sink_closed != g_sink_opened) {
