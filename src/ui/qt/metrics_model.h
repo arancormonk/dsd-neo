@@ -1243,10 +1243,10 @@ class MetricsModel : public QObject {
      * @brief The decode clock's wall-clock now, in milliseconds since the Unix epoch.
      *
      * The scale of a JavaScript time value, and in live decoding the viewer's own clock, but on the
-     * decoder's timeline: what a call row's `when` and the history cutoffs are stamped on. QML
-     * compares decoded stamps against this rather than the JavaScript clock, so a call's age and a
-     * session's cutoff follow the decoder's clock, not the viewer's. Pure UI timers stay on real
-     * time.
+     * decoder's timeline: what a call row's `when` is stamped on. QML compares decoded stamps
+     * against this rather than the JavaScript clock, so a call's age follows the decoder's clock,
+     * not the viewer's. The history's session views read no clock (CallHistoryModel::session()).
+     * Pure UI timers stay on real time.
      *
      * Read live on every access. decodeNowMsChanged is a re-render cue raised from refresh()
      * whenever the whole second has moved, so a binding on it follows decode time between the

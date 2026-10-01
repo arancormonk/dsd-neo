@@ -283,9 +283,16 @@ CallHistoryModel::beginSession() {
         m_clear = ClearMark();
         saveClear();
     }
-    /* The old ring's position is not this session's either. A clear before the new ring's
-     * first change is read waits for it. */
-    m_ringRead = false;
+    /* The new ring counts its pushes from zero, and nothing from it has been taken in yet.
+     * So its position is known: a clear before its first read covers none of its rows. That
+     * read can come late. If the previous session heard nothing, both rings sit at the same
+     * commit_rev, and the new one is first read at its first commit, which a clear waiting for
+     * that read would hide. Only a freshly constructed model clears before knowing the ring.
+     * If the old ring is read again after this, its position replaces this one, and the new
+     * ring's lower position then drops the mark (settleClear()). */
+    m_ringPushSeq[0] = 0U;
+    m_ringPushSeq[1] = 0U;
+    m_ringRead = true;
     Q_EMIT sessionChanged();
 }
 
@@ -709,7 +716,7 @@ CallHistoryModel::refresh(const dsd_state* snapshot, const dsd_opts* opts_snapsh
     }
     // Only a snapshot that moved says where the ring is. Right after a start the old
     // session's last snapshot is still the latest, unchanged, and its position is not the
-    // new ring's.
+    // new ring's (beginSession() has set that to zero).
     const qulonglong pushSeq[2] = {static_cast<qulonglong>(snapshot->event_history_s[0].push_seq),
                                    static_cast<qulonglong>(snapshot->event_history_s[1].push_seq)};
     m_ringPushSeq[0] = pushSeq[0];

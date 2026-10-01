@@ -11,8 +11,8 @@
  * moments that belong to the person using the app rather than to anything decoded: when a system
  * or scan list was last listened to, when a file was imported, how old a location fix or a
  * diagnostics tail is, and the calendar day the history's day sections count from. Anything
- * compared against a decoded stamp (a call's age, a history cutoff) reads the decode clock instead,
- * and QML gets that through MetricsModel::decodeNowMs.
+ * compared against a decoded stamp (a call's age) reads the decode clock instead, and QML gets
+ * that through MetricsModel::decodeNowMs.
  *
  * These are Qt's own reads, unchanged, because the stamps they are compared with come from Qt too:
  * a location fix is stamped with a JavaScript time value, which Qt rounds to the nearest

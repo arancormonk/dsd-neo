@@ -17,10 +17,11 @@
  * This model is the store alone: every view that shows it binds through its own
  * CallHistoryFilterModel, so one screen's search or pills never filter another.
  *
- * Order and identity never come from the rows' stamps. Those are decode time, which
- * in a replay is the capture's time, days or years before any live row. A decode
- * session (beginSession()) tags each row it logs. Clear wipes the session's ring by
- * its push order. A full log gives up the oldest session's rows first.
+ * Identity, and order across sessions, never come from the rows' stamps. Those are
+ * decode time, which in a replay is the capture's time, days or years before any live
+ * row. A decode session (beginSession()) tags each row it logs. Clear wipes the
+ * session's ring by its push order. A full log gives up the oldest session's rows
+ * first, and only within one session the oldest start.
  */
 
 #ifndef DSD_NEO_SRC_UI_QT_CALL_HISTORY_MODEL_H_
@@ -130,7 +131,7 @@ class CallHistoryModel : public QAbstractListModel {
      * and so is the first start after the process starts. Ingest the previous session's
      * tail first (UiController::flushHistory()), or it would be logged under the new session.
      * A clear made in the previous session stops applying: its push positions describe a
-     * ring that is gone.
+     * ring that is gone. The new ring's position is zero until a read moves it.
      */
     Q_INVOKABLE void beginSession();
 
@@ -156,9 +157,10 @@ class CallHistoryModel : public QAbstractListModel {
      *
      * Those rows are named by the ring position (push_seq per slot) this model last read, in
      * the current session. Everything the ring takes in after that is shown, whatever its stamps.
-     * Persisted, so a relaunched UI does not ingest the cleared rows again. When the ring has not
-     * been read yet (a relaunched UI clearing before its first tick), the clear covers what the
-     * first read finds.
+     * Persisted, so a relaunched UI does not ingest the cleared rows again. A start counts as reading
+     * the new ring at position zero, so a clear after it covers none of that ring. Only a freshly
+     * constructed model (a relaunched UI clearing before its first tick) has not read the ring; its
+     * clear covers what the first read finds.
      */
     Q_INVOKABLE void clearAll();
 

@@ -782,6 +782,35 @@ test_new_session_starts_fresh(void) {
     expect("a clear does not reach a ring whose position fell below it", model.count() == 1);
 }
 
+/* A clear tapped after a start, before the new ring has been read, covers none of that ring:
+ * it counts its pushes from zero, and nothing from it has been taken in. When the previous
+ * session heard nothing, both rings sit at the same commit_rev, so the new ring's snapshots look
+ * unchanged and are first read at its first commit. That call must still be logged. */
+void
+test_clear_after_a_quiet_start_keeps_the_next_call(void) {
+    resetStorage();
+    auto ring = std::make_unique<RingFixture>();
+    {
+        CallHistoryModel model;
+        model.beginSession();
+        model.refresh(ring->state); // a session that heard nothing
+        model.beginSession();
+        ring = std::make_unique<RingFixture>(); // the next session's fresh ring, at the same commit_rev
+        model.refresh(ring->state);
+        model.clearAll();
+        ring->commit(0, 4242, 1, kCaptureStart, kCaptureStart + 4);
+        model.refresh(ring->state);
+        expect("the first call after a clear in a session that started quiet is logged", model.count() == 1);
+        ring->commit(0, 4243, 1, kCaptureStart + 10, kCaptureStart + 14);
+        model.refresh(ring->state);
+        expect("and so is the next", model.count() == 2);
+    }
+    CallHistoryModel relaunched;
+    relaunched.refresh(ring->state);
+    expect("the persisted clear does not hide it after a relaunch either",
+           relaunched.count() == 2 && rows_in_tg_range(relaunched, 4242, 4242) == 1);
+}
+
 /* The monitor's recent calls select the running session's rows by the session that logged
  * them. A replayed call shows whatever its stamps, a call from before the start does not, and
  * a call heard again after the start joins the session through the merge. */
@@ -930,6 +959,7 @@ main(int argc, char** argv) {
     test_clear_survives_a_relaunch();
     test_legacy_clear_watermark_is_retired();
     test_new_session_starts_fresh();
+    test_clear_after_a_quiet_start_keeps_the_next_call();
     test_session_view_selects_by_session();
     test_full_log_keeps_the_running_session();
     test_seen_map_keeps_the_running_session();

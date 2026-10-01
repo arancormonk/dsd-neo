@@ -2456,8 +2456,9 @@ Qt Quick frontend (`src/ui/qt`):
   with the real midnight rollover timer, because the log spans sessions and a replay's calls keep their own dates.
   Tests: `UI_QT_METRICS_MODEL`, `UI_QT_QML_CALL_LISTS` (`tst_monitor_recent_calls.qml`),
   `APP_CONTROL_NOTIFICATION_STATUS`.
-- Call history order and identity (`call_history_model.{h,cpp}`) never come from the rows' stamps. Those are decode
-  time, a replay's are the capture's, and the decode clock may not have moved to the capture when a start reads it.
+- Call history identity, and order across sessions (`call_history_model.{h,cpp}`), never come from the rows'
+  stamps. Those are decode time, a replay's are the capture's, and the decode clock may not have moved to the capture
+  when a start reads it.
   - Session: `CallHistoryModel::session()`, persisted in `callHistory/session`. `Main.qml` calls `beginSession()` on
     every start, after `UiController::flushHistory()` has logged the previous session's tail. A replay start or an
     input change is a start, and so is the first start after a process start. Every row carries the session that
@@ -2468,10 +2469,13 @@ Qt Quick frontend (`src/ui/qt`):
     so it sees the calls its predecessor logged in that session.
   - Clear (`clearAll()`) names what it wiped by ring position: the current session's push_seq per slot as last read
     (`callHistory/clear/*`). Whatever the ring takes in after the clear shows, whatever its stamps. A relaunched UI
-    does not ingest the cleared rows again. A clear before the first ring read binds to what that read finds. The
-    mark is dropped by `beginSession()`, and also when a read finds a slot's push_seq below it, which means the ring
-    was replaced. The decode-time watermark older builds wrote (`callHistory/clearedThrough`) is removed on load.
-    The rows it cleared had already left the store, and the ring it guarded died with the replaced process.
+    does not ingest the cleared rows again. A start counts as reading the new ring at position zero, so a clear
+    after it covers none of that ring, even when a quiet previous session leaves its first read until its first
+    commit. Only a freshly constructed model clears before reading the ring, and its clear binds to what the first
+    read finds. The mark is dropped by `beginSession()`, and also when a read finds a slot's push_seq below it, which
+    means the ring was replaced. The decode-time watermark older builds wrote (`callHistory/clearedThrough`) is
+    removed on load. The rows it cleared had already left the store, and the ring it guarded died with the replaced
+    process.
   - Retention: a full log (1000 rows) gives up the oldest session's oldest row, and the seen map and its store keep
     the newest entries in the same (session, start) order. Ranked by stamps alone, a replay's calls would be trimmed
     as they landed and its ring rows logged again as new calls.
