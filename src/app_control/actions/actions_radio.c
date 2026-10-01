@@ -11,8 +11,8 @@
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
+#include <stddef.h>
 #include <stdint.h>
-#include <string.h>
 #include "../command_dispatch.h"
 #include "../services.h"
 #include "dsd-neo/app_control/commands.h"

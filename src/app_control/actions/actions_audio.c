@@ -9,8 +9,8 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/runtime/decode_clock.h>
+#include <stddef.h>
 #include <stdint.h>
-#include <time.h>
 #include "../command_dispatch.h"
 #include "dsd-neo/app_control/commands.h"
 #include "dsd-neo/core/opts_fwd.h"

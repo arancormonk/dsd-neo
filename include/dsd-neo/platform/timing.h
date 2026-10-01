@@ -14,10 +14,6 @@
 #include <stdint.h>
 #include <time.h>
 
-#ifndef __cplusplus
-struct tm;
-#endif
-
 #ifdef __cplusplus
 extern "C" {
 #endif

@@ -15,8 +15,8 @@
 #include <dsd-neo/runtime/mem.h>
 #include <limits.h>
 #include <math.h>
+#include <stddef.h>
 #include <stdint.h>
-#include <stdlib.h>
 #include "dsd-neo/core/safe_api.h"
 
 #if defined(__clang__)

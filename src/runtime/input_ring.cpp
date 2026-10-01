@@ -4,11 +4,11 @@
  */
 
 #include <atomic>
-#include <cstring>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/input_ring.h>
 #include <dsd-neo/runtime/mem.h>
+#include <stddef.h>
 #include "dsd-neo/core/safe_api.h"
 
 #ifdef USE_RADIO

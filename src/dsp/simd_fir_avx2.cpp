@@ -57,8 +57,8 @@ simd_hb_decim2_real_avx2(const float* in, int in_len, float* out, float* hist, i
 }
 #else
 
-#include <cstring>
 #include <immintrin.h>
+#include <stddef.h>
 #include <vector>
 #include <xmmintrin.h>
 #include "dsd-neo/core/safe_api.h"

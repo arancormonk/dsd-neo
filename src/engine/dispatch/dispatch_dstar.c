@@ -9,7 +9,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/engine/protocol_dispatch.h>
 #include <dsd-neo/protocol/dstar/dstar.h>
-#include <stdio.h>
+#include <stddef.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"

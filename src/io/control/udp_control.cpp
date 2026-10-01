@@ -22,8 +22,8 @@
 #endif
 #include <atomic>
 #include <new>
+#include <stddef.h>
 #include <stdint.h>
-#include <stdio.h>
 #if !DSD_PLATFORM_WIN_NATIVE
 #include <sys/socket.h>
 #endif

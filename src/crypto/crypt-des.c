@@ -5,8 +5,8 @@
  *-----------------------------------------------------------------------------*/
 
 #include <dsd-neo/crypto/des.h>
+#include <stddef.h>
 #include <stdint.h>
-#include <string.h>
 #include "dsd-neo/core/safe_api.h"
 
 static uint8_t SLUT1[64] = {0xE0, 0x00, 0x40, 0xF0, 0xD0, 0x70, 0x10, 0x40, 0x20, 0xE0, 0xF0, 0x20, 0xB0,

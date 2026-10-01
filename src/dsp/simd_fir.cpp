@@ -12,8 +12,8 @@
  */
 
 #include <atomic>
-#include <cstring>
 #include <dsd-neo/dsp/simd_fir.h>
+#include <stddef.h>
 #include "simd_fir_internal.h"
 #include "simd_x86_cpu.h"
 

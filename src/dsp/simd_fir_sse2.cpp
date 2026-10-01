@@ -11,7 +11,7 @@
  * registers. Uses scalar epilogue for remaining samples.
  */
 
-#include <cstring>
+#include <stddef.h>
 #include <vector>
 #include <xmmintrin.h>
 #include "dsd-neo/core/safe_api.h"

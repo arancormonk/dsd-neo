@@ -14,8 +14,8 @@
 #define DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_INPUT_RING_H_
 
 #include <atomic>
+#include <stddef.h>
 #include <stdint.h>
-#include <stdlib.h>
 
 #include <dsd-neo/platform/threading.h>
 

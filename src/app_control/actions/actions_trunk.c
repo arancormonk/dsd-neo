@@ -13,8 +13,8 @@
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
+#include <stddef.h>
 #include <stdint.h>
-#include <time.h>
 #include "../command_dispatch.h"
 #include "../services.h"
 

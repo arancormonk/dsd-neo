@@ -36,7 +36,6 @@
 #include <dsd-neo/dsp/simd_fir.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/mem.h>
-#include <initializer_list>
 #include <iterator>
 #include <memory>
 #include <vector>

@@ -13,8 +13,6 @@
 #include <errno.h>
 #include <time.h>
 
-struct tm;
-
 uint64_t
 dsd_time_monotonic_ns(void) {
     struct timespec ts;

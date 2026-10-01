@@ -12,8 +12,8 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/engine/protocol_dispatch.h>
 #include <dsd-neo/protocol/x2tdma/x2tdma.h>
+#include <stddef.h>
 #include <stdint.h>
-#include <stdio.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"

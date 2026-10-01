@@ -5,8 +5,8 @@
 
 #include <dsd-neo/core/bit_packing.h>
 #include <dsd-neo/protocol/nxdn/nxdn_deperm.h>
+#include <stddef.h>
 #include <stdint.h>
-#include <stdio.h>
 #include "dsd-neo/core/safe_api.h"
 
 uint8_t

@@ -18,7 +18,7 @@
 #include <dsd-neo/dsp/ted.h>
 #include <dsd-neo/io/rtl_metrics.h>
 #include <dsd-neo/io/rtl_stream_c.h>
-#include <string.h>
+#include <stddef.h>
 
 #include "rtl_fft_cache.h"
 #include "rtl_spectrum_kernels.h"

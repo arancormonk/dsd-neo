@@ -285,6 +285,15 @@ if qt_units and not qt_mapping.is_file():
     print(f"iwyu: NOTE: {qt_units} Qt translation unit(s) analyzed without "
           f"{qt_mapping.name}; expect private-header suggestions.")
 
+# Shared C headers are compiled as C and as C++, and IWYU 0.27 in C++ mode asks
+# for <cstdint> where C needs <stdint.h>. --use_c_headers plus this mapping give
+# both one answer; tools/iwyu-c-headers.imp states the rule. Unlike the Qt
+# mapping it is not optional: the flag without it gives C++ sources different
+# advice than the rule, so a missing file stops the run rather than changing it.
+c_headers_mapping = root / "tools" / "iwyu-c-headers.imp"
+if not c_headers_mapping.is_file():
+    raise SystemExit(f"iwyu: {c_headers_mapping} not found; it is required for every translation unit.")
+
 if not selected_entries:
     print("No translation units left for IWYU analysis.")
     raise SystemExit(0)
@@ -314,6 +323,8 @@ def run_iwyu(rel, entry):
         compiler_index = 1
     cmd[compiler_index] = "include-what-you-use"
     cmd.append("-fno-color-diagnostics")
+    # Every unit, C and C++ alike: see tools/iwyu-c-headers.imp for the rule.
+    cmd.extend(["-Xiwyu", "--use_c_headers", "-Xiwyu", f"--mapping_file={c_headers_mapping}"])
     if qt_mapping.is_file() and compiles_against_qt(entry):
         cmd.extend(["-Xiwyu", f"--mapping_file={qt_mapping}"])
     if strict:

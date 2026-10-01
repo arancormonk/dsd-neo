@@ -34,8 +34,6 @@
 
 #if !DSD_PLATFORM_WIN_NATIVE
 
-struct timespec;
-
 int dsd_thread_create_impl(dsd_thread_t* thread, void* arg, dsd_thread_fn func);
 
 static void

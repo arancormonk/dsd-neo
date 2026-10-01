@@ -27,7 +27,7 @@
 #include <dsd-neo/ui/menu_core.h>
 #include <dsd-neo/ui/menu_defs.h>
 #include <dsd-neo/ui/ui_prims.h>
-#include <stdio.h>
+#include <stddef.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
