@@ -2619,20 +2619,21 @@ Qt Quick frontend (`src/ui/qt`):
   - Retention: a full log (1000 rows) gives up the oldest session's oldest row, and the seen map and its store keep
     the newest entries in the same (session, start) order. Ranked by stamps alone, a replay's calls would be trimmed
     as they landed and its ring rows logged again as new calls.
-  - Calls heard again: a capture replayed in a fresh state pushes the same rows at the same push stamps, with the
-    same starts and targets, so the seen key alone cannot tell them from rows already read. Each seen entry keeps
-    the ring it was read from (`Event_History_I::instance`, a nonce `initState()` draws for the ring; persisted in
-    the seen store as hex), and a new ring is walked whatever its `commit_rev`. A key read from another ring is a
-    call heard again, taken in as the live path takes one: it merges into the logged call it overlaps, searched
-    through the whole log rather than the newest 32 rows, and that row joins the running session (a notice heard
-    again promotes a field-for-field twin no other notice of its ring has taken, so two identical notices promote
-    two rows, and a new ring within the session logs none twice). So a second replay shows its calls in the new session's views, logs no new row for a call the first replay logged,
-    and a replay after a clear logs them again. A first sighting still merges within the newest 32 rows only: a call
-    the first replay logged as two rows, because newer rows sat between its fragments, stays two rows, and the
-    repeat folds into the newer one. An entry that knows no ring (a row's seed in `load()` when the seen store has
+  - Calls heard again: a capture replayed in a fresh state pushes the same rows at the same push stamps, with the same
+    starts and targets, so the seen key alone cannot tell them from rows already read. Each seen entry keeps the ring it
+    was read from (`Event_History_I::instance`, a nonce `initState()` draws for the ring; persisted in the seen store as
+    hex), and a new ring is walked whatever its `commit_rev`. A key read from another ring is a call heard again, taken
+    in as the live path takes one: it merges into the logged call it overlaps, searched through the whole log rather
+    than the newest 32 rows, and that row joins the running session (a notice heard again promotes a field-for-field
+    twin no other notice of its ring has taken, so two identical notices promote two rows, and a new ring within the
+    session logs none twice; the seen store keeps the twin each such notice took, so a relaunched UI rebuilds what its
+    ring has taken). So a second replay shows its calls in the new session's views, logs no new row for a call the first
+    replay logged, and a replay after a clear logs them again. A first sighting still merges within the newest 32 rows
+    only: a call the first replay logged as two rows, because newer rows sat between its fragments, stays two rows, and
+    the repeat folds into the newer one. An entry that knows no ring (a row's seed in `load()` when the seen store has
     lost its entry, or an entry from an older store) is taken to be the reading ring's, so a relaunch never moves a
-    logged row into the running session. A state an embedding host reuses for another run keeps its ring and
-    identity, and the rows the earlier run left there stay that session's.
+    logged row into the running session. A state an embedding host reuses for another run keeps its ring and identity,
+    and the rows the earlier run left there stay that session's.
   - Tests: `UI_QT_CALL_HISTORY_MODEL`, `UI_QT_TALKGROUP_LIST_MODEL`, `UI_QT_QML_CALL_LISTS`
     (`tst_history_session_identity.qml`), `CORE_INIT_STATE` (the ring identity).
 - Received tone or code (issues #522, #523): `MetricsModel` publishes the `rxTone*` group (`rxToneVisible`,

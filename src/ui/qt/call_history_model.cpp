@@ -467,7 +467,7 @@ CallHistoryModel::noteSeen(const QString& key, quint64 ring, qint64 when, qint64
                            bool enc, bool voice, const QString& sourceName) {
     auto seen = m_seen.find(key);
     if (seen == m_seen.end()) {
-        m_seen.insert(key, SeenState{when, end, src, emergency, enc, sourceName, m_session, ring});
+        m_seen.insert(key, SeenState{when, end, src, emergency, enc, sourceName, m_session, ring, QString()});
         return SeenNew;
     }
     if (seen->ring == 0U) {
@@ -483,7 +483,7 @@ CallHistoryModel::noteSeen(const QString& key, quint64 ring, qint64 when, qint64
         // call heard again, not the entry's own row read again, so it is taken in as the live path takes
         // a call heard again. A state an embedding host reuses keeps its ring, and the rows an earlier run
         // left in it stay this entry's (Event_History_I::instance).
-        *seen = SeenState{when, end, src, emergency, enc, sourceName, m_session, ring};
+        *seen = SeenState{when, end, src, emergency, enc, sourceName, m_session, ring, QString()};
         return SeenAgain;
     }
     seen->session = qMax(seen->session, m_session);
@@ -720,7 +720,14 @@ CallHistoryModel::ingestRow(const Row& row, bool isUpdate, bool again) {
         // notice joins the running session.
         const int repeated = findRepeatedNotice(row);
         if (repeated >= 0) {
-            m_noticeTwinsTaken.insert(keyFor(m_rows.at(repeated)));
+            const QString twin = keyFor(m_rows.at(repeated));
+            m_noticeTwinsTaken.insert(twin);
+            // Kept on the notice's own seen entry, which the seen store persists: a relaunched model rebuilds
+            // the ring's taken twins from it, and its next identical notice then promotes the other twin.
+            const auto seen = m_seen.find(keyFor(row));
+            if (seen != m_seen.end()) {
+                seen->twin = twin;
+            }
             m_rows[repeated].session = qMax(m_rows.at(repeated).session, row.session);
             const QModelIndex idx = index(repeated);
             Q_EMIT dataChanged(idx, idx, {SessionRole});
@@ -753,20 +760,36 @@ CallHistoryModel::noteCommitRevs(const dsd_state* snapshot, bool scan[2]) {
     // A new ring (Event_History_I::instance) is walked whatever its commit_rev: a capture replayed in a
     // fresh state can be read first at the very count the last ring stopped at.
     bool anyChanged = false;
+    bool ringChanged = false;
     for (int slot = 0; slot < 2; slot++) {
         const quint64 commitRev = static_cast<quint64>(snapshot->event_history_s[slot].commit_rev);
         const quint64 ring = static_cast<quint64>(snapshot->event_history_s[slot].instance);
-        if (ring != m_ringInstance[slot]) {
-            // The twins notices heard again have taken belong to the ring that heard them.
-            m_noticeTwinsTaken.clear();
-        }
+        ringChanged = ringChanged || ring != m_ringInstance[slot];
         scan[slot] = !m_seeded || commitRev != m_commitRev[slot] || ring != m_ringInstance[slot];
         m_commitRev[slot] = commitRev;
         m_ringInstance[slot] = ring;
         anyChanged = anyChanged || scan[slot];
     }
+    if (ringChanged) {
+        // The twins notices heard again have taken belong to the ring that heard them.
+        restoreNoticeTwinsTaken();
+    }
     m_seeded = true;
     return anyChanged;
+}
+
+void
+CallHistoryModel::restoreNoticeTwinsTaken() {
+    // A new ring has taken none yet. A ring read before, by this model or by the one a relaunch replaced,
+    // has taken exactly the twins its notices' seen entries record: an entry read again from another ring
+    // starts over with no twin.
+    m_noticeTwinsTaken.clear();
+    for (const SeenState& state : m_seen) {
+        if (!state.twin.isEmpty() && state.ring != 0U
+            && (state.ring == m_ringInstance[0] || state.ring == m_ringInstance[1])) {
+            m_noticeTwinsTaken.insert(state.twin);
+        }
+    }
 }
 
 bool
@@ -937,7 +960,7 @@ CallHistoryModel::load() {
         // seen store below replaces it with the real entry; should the store have lost that, the next read
         // takes the seed to be the reading ring's (noteSeen()) and leaves the row in its session.
         m_seen.insert(keyFor(*it), SeenState{it->when, it->when + qMax(it->durationSecs, 0), it->src, it->emergency,
-                                             it->enc, it->sourceName, it->session, 0U});
+                                             it->enc, it->sourceName, it->session, 0U, QString()});
         if (tryMerge(*it, kMergeScanRows) < 0) {
             m_rows.prepend(*it);
         }
@@ -971,6 +994,7 @@ CallHistoryModel::load() {
         if (!ringOk) {
             state.ring = 0U;
         }
+        state.twin = obj.value(QLatin1String("twin")).toString();
         m_seen.insert(key, state);
     }
     endResetModel();
@@ -1048,6 +1072,9 @@ CallHistoryModel::seenToJson() const {
         }
         obj.insert(QLatin1String("session"), state.session);
         obj.insert(QLatin1String("ring"), QString::number(state.ring, 16));
+        if (!state.twin.isEmpty()) {
+            obj.insert(QLatin1String("twin"), state.twin);
+        }
         seenArray.append(obj);
     }
     return seenArray;

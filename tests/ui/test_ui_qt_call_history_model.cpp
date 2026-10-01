@@ -1073,6 +1073,39 @@ test_identical_notices_heard_again_both_join_the_session(void) {
     expect("both show when read in two ticks", view.count() == 2 && model.count() == 2);
 }
 
+/* The same two identical notices replayed again, with the UI relaunched between the two deliveries (an
+ * Activity restart while the service decodes). The relaunched model must still know which twin the first
+ * delivery took, or the second takes it again and the other logged notice never joins the session. */
+void
+test_identical_notices_heard_again_across_a_relaunch(void) {
+    resetStorage();
+    auto ring = std::make_unique<RingFixture>();
+    {
+        CallHistoryModel model;
+        model.beginSession();
+        ring->commitNotice(1, kCaptureStart + 70, "2010-01-01 00:01:10 SMS from 44");
+        ring->commitNotice(1, kCaptureStart + 70, "2010-01-01 00:01:10 SMS from 44");
+        model.refresh(ring->state);
+        expect("two identical notices log two rows", model.count() == 2);
+
+        model.beginSession();
+        ring = std::make_unique<RingFixture>();
+        ring->commitNotice(1, kCaptureStart + 70, "2010-01-01 00:01:10 SMS from 44");
+        model.refresh(ring->state);
+        expect("the first delivery heard again joins the session", rows_in_session(model, model.session()) == 1);
+    } // destructor flushes the stores
+    CallHistoryModel relaunched;
+    CallHistoryFilterModel view;
+    view.setSourceModel(&relaunched);
+    view.setHistorySession(relaunched.session());
+    relaunched.refresh(ring->state);
+    expect("the reattached ring's first delivery logs nothing new", relaunched.count() == 2 && view.count() == 1);
+    ring->commitNotice(1, kCaptureStart + 70, "2010-01-01 00:01:10 SMS from 44");
+    relaunched.refresh(ring->state);
+    expect("both identical notices heard again show in the session across a relaunch", view.count() == 2);
+    expect("and the log keeps two rows across a relaunch", relaunched.count() == 2);
+}
+
 /* A new ring within one session, with no start between (a state set up again without a start): its rows
  * repeat the session's own. A notice heard again that way finds its twin already in the session and
  * logs nothing new, as a call heard again does. */
@@ -1173,6 +1206,7 @@ main(int argc, char** argv) {
     test_replay_heard_again_after_a_clear();
     test_reused_ring_keeps_the_last_sessions_rows();
     test_identical_notices_heard_again_both_join_the_session();
+    test_identical_notices_heard_again_across_a_relaunch();
     test_new_ring_within_a_session_logs_nothing_twice();
     test_seed_without_a_ring_keeps_its_session();
 

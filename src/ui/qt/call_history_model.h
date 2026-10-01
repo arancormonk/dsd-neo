@@ -240,6 +240,9 @@ class CallHistoryModel : public QAbstractListModel {
          * rings had one. The key alone cannot tell a row read again from a new ring's row that
          * repeats its push stamp and content, as a capture replayed in a fresh state does. */
         quint64 ring = 0;
+        /* For a notice heard again: the logged notice (by keyFor()) it took as its twin, else empty.
+         * Persisted, so a relaunched model knows the twins its ring has taken (m_noticeTwinsTaken). */
+        QString twin;
     };
 
     /**
@@ -320,6 +323,8 @@ class CallHistoryModel : public QAbstractListModel {
     /** @brief Record each slot's commit_rev and ring; @p scan marks the slots a ring walk could find something new in.
         Returns whether either slot moved. */
     bool noteCommitRevs(const dsd_state* snapshot, bool scan[2]);
+    /** @brief Rebuild m_noticeTwinsTaken for the rings now read, from the twins their seen entries record. */
+    void restoreNoticeTwinsTaken();
     /** @brief Trim m_rows to kMaxRows, oldest session's oldest row first; returns whether any row went. */
     bool trimToCapacity();
     /** @brief Bound m_seen once it is well past what the ring could resurrect. */
@@ -355,8 +360,10 @@ class CallHistoryModel : public QAbstractListModel {
     quint64 m_ringInstance[2] = {0U, 0U};
     /* The logged notices (by keyFor()) that a notice heard again from the ring being read has taken as its
      * twin. Two identical notices, the same delivery logged twice, then promote two rows, even read in two
-     * ticks. A notice whose twin no notice of this ring has taken dedups onto it, wherever its session:
-     * a new ring within the session repeats the session's own notices. Cleared when the ring changes. */
+     * ticks or across a relaunch. A notice whose twin no notice of this ring has taken dedups onto it,
+     * wherever its session: a new ring within the session repeats the session's own notices. Rebuilt when
+     * the ring changes, a relaunched model's first read included, from the twins the seen entries of that
+     * ring record (SeenState::twin). */
     QSet<QString> m_noticeTwinsTaken;
     bool m_seeded = false;
     QTimer m_saveTimer;
