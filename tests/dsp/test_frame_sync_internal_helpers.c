@@ -2927,10 +2927,9 @@ dwell_arm_at(dsd_opts* opts, dsd_state* state, uint64_t armed_ns) {
  *   three votes hold and a fourth past the dwell switches.
  */
 static void
-test_cqpsk_dwell_runs_on_the_decode_clock(void) {
+check_cqpsk_dwell_on_the_decode_clock(uint64_t armed_ns) {
     static dsd_opts opts;
     static dsd_state state;
-    const uint64_t armed_ns = 7000ULL * 1000000000ULL;
     int c4fm_votes = -1;
     int qpsk_votes = -1;
     int gfsk_votes = -1;
@@ -2967,6 +2966,16 @@ test_cqpsk_dwell_runs_on_the_decode_clock(void) {
 
     dsd_rtl_stream_metrics_hooks_set(NULL);
     dsd_decode_clock_use_system();
+}
+
+/* The dwell holds and lets go the same way at a short decode time and at a replay's capture time, whose ms are far past
+ * INT_MAX, including one whose ms are a whole multiple of 2^32: the stamp is kept full width, so it is armed there
+ * too, not mistaken for the 0 that means disarmed. */
+static void
+test_cqpsk_dwell_runs_on_the_decode_clock(void) {
+    check_cqpsk_dwell_on_the_decode_clock(7000ULL * 1000000000ULL);
+    check_cqpsk_dwell_on_the_decode_clock(1788245497ULL * 1000000000ULL + 123000000ULL); /* 2026-09-01T06:51:37.123Z */
+    check_cqpsk_dwell_on_the_decode_clock(416ULL * 4294967296ULL * 1000000ULL);          /* 416 x 2^32 ms */
 }
 
 static void
