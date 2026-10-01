@@ -26,17 +26,19 @@ set -euo pipefail
 #
 # held to data_bytes. P is one symbol of the slowest common digital rate at the
 # capture's own rate: 640 samples at 1.536 Msps, 20 at 48 kHz. Repeat 1 is the
-# capture as recorded. The first term spreads the shifts over a symbol, and the
-# (r-1) adds a sample a repeat, which keeps an even split of the symbol off
-# whole multiples of the front end's decimation: replay restarts the chunk grid
-# and the filters at each event, so a shift by such a multiple hands each dwell
-# the same output samples, only later, and is no new draw of the instants the
-# decoder samples the signal at. Every build replays the same copy in a repeat,
-# so the report pairs like with like, and a build against a copy of itself
-# still reads +0.00 +/- 0.00; any spread in that control is a determinism
-# regression to fix before comparing builds. More repeats buy more
-# realizations, so a result wants the default 12 or more, and other captures
-# besides (docs/testing.md, "Replay determinism").
+# capture as recorded. The first term spreads the shifts over a symbol and the
+# (r-1) adds a sample a repeat. A shift after the first that still lands on a
+# whole multiple of the front end's total decimation D (sample_rate_hz over
+# demod_rate_hz, else base_decimation x post_downsample, else 1) moves up one
+# sample, when D is above 1: replay restarts the chunk grid and the filters at
+# each event, so a shift by such a multiple hands each dwell the same output
+# samples, only later, and is no new draw of the instants the decoder samples
+# the signal at. Every build replays the same copy in a repeat, so the report
+# pairs like with like, and a build against a copy of itself still reads
+# +0.00 +/- 0.00; any spread in that control is a determinism regression to fix
+# before comparing builds. More repeats buy more realizations, so a result wants
+# the default 12 or more, and other captures besides (docs/testing.md, "Replay
+# determinism").
 #
 # A capture with no events has nothing to shift: every repeat replays it as
 # recorded, and the run warns that its repeats are one realization, to be
@@ -183,11 +185,12 @@ done
 
 # Writes repeat r's realization of the capture, for r = 1..reps, to <dir>/r<r>.json: a copy of the sidecar whose
 # data_file is the original data's absolute path and whose every event byte_offset moves forward by s_r whole samples,
-# held to data_bytes. Prints "symbol<TAB>P" and then "<r><TAB><s_r><TAB><path>" for each repeat, or only "none", and
-# writes nothing, when the capture has no events to shift. Fails, writing nothing, on a sidecar it cannot shift.
+# held to data_bytes. Prints "symbol<TAB>P<TAB>D" and then "<r><TAB><s_r><TAB><path>" for each repeat, or only "none",
+# and writes nothing, when the capture has no events to shift. Fails, writing nothing, on a sidecar it cannot shift.
 write_realizations() {
   python3 - "$@" << 'PY'
 import json
+import math
 import os
 import sys
 
@@ -204,6 +207,38 @@ def whole(fields, key, minimum, where=""):
     if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
         fail(f"{where}{key} must be a whole number of at least {minimum}, not {value!r}")
     return value
+
+
+def positive(key):
+    value = meta.get(key)
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
+
+
+def is_absolute(path):
+    """path_is_absolute() in src/io/iq/iq_replay.c."""
+    return path[:1] in ("/", "\\") or (path[:1].isascii() and path[:1].isalpha() and path[1:2] == ":")
+
+
+def resolve_data_file(data_file):
+    """resolve_data_path() in src/io/iq/iq_replay.c, made absolute: a relative data_file is appended to the sidecar
+    path up to its last separator, as given, and the system resolves the result. Nothing collapses a ".." here, since
+    the system follows a symlinked directory first and lands elsewhere."""
+    if is_absolute(data_file):
+        return data_file
+    cut = max(capture.rfind("/"), capture.rfind("\\"))
+    path = capture[:cut + 1] + data_file
+    return path if is_absolute(path) else os.path.join(os.getcwd(), path)
+
+
+def total_decimation(rate):
+    """Input samples per output sample, D: a shift by a whole multiple of it moves every dwell by whole output samples.
+    sample_rate_hz over demod_rate_hz (the smallest such shift when the two do not divide), else base_decimation x
+    post_downsample, else 1."""
+    demod = positive("demod_rate_hz")
+    if demod:
+        return rate // math.gcd(rate, demod)
+    base, post = positive("base_decimation"), positive("post_downsample")
+    return base * post if base and post else 1
 
 
 # surrogateescape carries whatever bytes the sidecar's strings hold into the copies unchanged.
@@ -234,13 +269,16 @@ if not isinstance(data_file, str) or not data_file:
 
 # One symbol at 2400 baud, rounded to whole samples.
 symbol = (rate + 1200) // 2400
+decimation = total_decimation(rate)
 copy = dict(meta)
 # Replay resolves a relative data_file against the sidecar's directory, which the copies do not share.
-copy["data_file"] = os.path.abspath(os.path.join(os.path.dirname(capture), data_file))
+copy["data_file"] = resolve_data_file(data_file)
 os.makedirs(outdir, exist_ok=True)
-rows = [f"symbol\t{symbol}"]
+rows = [f"symbol\t{symbol}\t{decimation}"]
 for rep in range(1, reps + 1):
     shift = (rep - 1) * symbol // reps + (rep - 1)
+    if rep > 1 and decimation > 1 and shift % decimation == 0:
+        shift += 1
     copy["events"] = [dict(event, byte_offset=min(event["byte_offset"] + shift * bytes_per_sample, data_bytes))
                       for event in events]
     path = os.path.join(outdir, f"r{rep}.json")
@@ -277,14 +315,23 @@ else
     realization_note="none: the capture has no events to shift, so every repeat replays it as recorded"
   else
     {
-      IFS=$'\t' read -r _ symbol
+      IFS=$'\t' read -r _ symbol decimation
       while IFS=$'\t' read -r r shift_samples path; do
         replays[r]=$path
         shifts[r]=$shift_samples
       done
     } <<< "$table"
-    realization_note="one per repeat, every event moved ${shifts[1]} to ${shifts[reps]} input samples later"
-    realization_note+=" (a 2400-baud symbol is $symbol samples), the same one for every build in a repeat"
+    if [ "$reps" -eq 1 ]; then
+      realization_note="only repeat 1 runs, unshifted: the capture as recorded (--reps 2 or more gives each repeat"
+      realization_note+=" its own realization)"
+    else
+      realization_note="one per repeat, every event moved ${shifts[1]} to ${shifts[reps]} input samples later"
+      realization_note+=" (a 2400-baud symbol is $symbol samples"
+      if [ "$decimation" -gt 1 ]; then
+        realization_note+=", and no shift after the first is a multiple of the $decimation-sample decimation"
+      fi
+      realization_note+="), the same one for every build in a repeat"
+    fi
   fi
 fi
 
