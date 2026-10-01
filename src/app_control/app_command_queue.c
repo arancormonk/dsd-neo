@@ -673,7 +673,9 @@ apply_cmd_key_management_stream_keys(const dsd_opts* opts, dsd_state* state, con
 
     for (size_t i = 0U; i < sizeof entries / sizeof entries[0]; i++) {
         if (entries[i].cmd_id == c->id) {
-            char s[256];
+            /* Zeroed up front: an empty payload copies nothing, and the wipe below covers the whole buffer either
+             * way, so it should never be handed bytes nothing wrote. */
+            char s[256] = {0};
             if (ui_cmd_copy_payload_string(c, s, entries[i].payload_cap)) {
                 entries[i].fn(state, s, opts->show_keys);
                 dsd_enc_lockout_bump_key_epoch(state);
