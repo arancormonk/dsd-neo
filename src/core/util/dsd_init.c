@@ -17,6 +17,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/symbol_timing_debug.h>
 #include <dsd-neo/dsp/sync_calibration.h>
+#include <dsd-neo/platform/nonce.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/decode_clock.h>
@@ -1259,6 +1260,16 @@ init_state_codec2_and_events(dsd_state* state) {
     //initialize event history items (0 to 255)
     for (uint8_t i = 0; i < 2; i++) {
         init_event_history(&state->event_history_s[i], 0, 255);
+    }
+    if (state->event_history_s != NULL) {
+        /* The ring's identity (Event_History_I::instance): a replay decoded again in a fresh state pushes the
+           same rows at the same stamps, and only this tells that ring from the one a frontend read before. */
+        uint64_t instance = 0U;
+        while (instance == 0U) {
+            dsd_nonce_fill(&instance, sizeof(instance));
+        }
+        state->event_history_s[0].instance = instance;
+        state->event_history_s[1].instance = instance;
     }
 
     // Initialize transient UI toast message state

@@ -52,6 +52,9 @@ constexpr int kMaxRows = 1000;
  * re-ingested and is dead weight in the store. */
 constexpr int kMaxSeenEntries = 2048;
 constexpr int kSaveDelayMs = 3000;
+/* How far down the log a live fragment looks for the call it continues: fragments arrive while
+ * their call is among the newest rows. */
+constexpr int kMergeScanRows = 32;
 
 /** @brief End of a logged row on the shared timeline; unknown durations count as 0. */
 qint64
@@ -460,12 +463,21 @@ row_from_item(const Event_History* item, const QString& sessionLabel, const QStr
 } // namespace
 
 int
-CallHistoryModel::noteSeen(const QString& key, qint64 when, qint64 end, qulonglong src, bool emergency, bool enc,
-                           bool voice, const QString& sourceName) {
+CallHistoryModel::noteSeen(const QString& key, quint64 ring, qint64 when, qint64 end, qulonglong src, bool emergency,
+                           bool enc, bool voice, const QString& sourceName) {
     auto seen = m_seen.find(key);
     if (seen == m_seen.end()) {
-        m_seen.insert(key, SeenState{when, end, src, emergency, enc, sourceName, m_session});
+        m_seen.insert(key, SeenState{when, end, src, emergency, enc, sourceName, m_session, ring});
         return SeenNew;
+    }
+    if (seen->ring != ring) {
+        // Another ring's row at the same push stamp, with the same start, target and kind: the same
+        // capture decoded again in a fresh state, which pushes the same rows at the same stamps. It is a
+        // call heard again, not the entry's own row read again, so it is taken in as the live path takes
+        // a call heard again. A state an embedding host reuses keeps its ring, and the rows an earlier run
+        // left in it stay this entry's (Event_History_I::instance).
+        *seen = SeenState{when, end, src, emergency, enc, sourceName, m_session, ring};
+        return SeenAgain;
     }
     seen->session = qMax(seen->session, m_session);
     // Seen is not final: the core merges a reacquired segment into its committed
@@ -502,6 +514,7 @@ CallHistoryModel::collectFresh(const dsd_state* snapshot, const bool scan[2], co
             continue;
         }
         const qulonglong pushSeq = static_cast<qulonglong>(snapshot->event_history_s[slot].push_seq);
+        const quint64 ring = static_cast<quint64>(snapshot->event_history_s[slot].instance);
         // Index 0 is the still-active staged row; only committed rows are finished
         // calls that belong in a log.
         for (int idx = 1; idx < DSD_EVENT_HISTORY_LEN; idx++) {
@@ -529,14 +542,14 @@ CallHistoryModel::collectFresh(const dsd_state* snapshot, const bool scan[2], co
             // Must match keyFor() on the equivalent Row, or a relaunched UI would
             // re-ingest every row its predecessor already logged.
             const QString key = seen_key(slot, seq, when, item->target_id, kind);
-            const int verdict = noteSeen(key, when, end, src, item->emergency != 0U, item->enc != 0U, voice,
+            const int verdict = noteSeen(key, ring, when, end, src, item->emergency != 0U, item->enc != 0U, voice,
                                          QString::fromUtf8(item->s_name[0] ? item->s_name : item->src_str));
             if (verdict == SeenUnchanged) {
                 continue;
             }
             Row row = row_from_item(item, m_sessionLabel, systemUid, slot, seq);
             row.session = m_session;
-            fresh.append(FreshRow{row, verdict == SeenAdvanced});
+            fresh.append(FreshRow{row, verdict == SeenAdvanced, verdict == SeenAgain});
         }
     }
     return fresh;
@@ -608,13 +621,13 @@ merge_source_label(CallHistoryModel::Row& existing, const CallHistoryModel::Row&
 } // namespace
 
 int
-CallHistoryModel::tryMerge(const Row& row) {
+CallHistoryModel::tryMerge(const Row& row, int scanRows) {
     if (row.kind != KindVoice) {
         // Notices are discrete deliveries: two SMS a second apart are two
         // messages, never fragments of one.
         return -1;
     }
-    for (int i = 0; i < m_rows.size() && i < 32; i++) {
+    for (int i = 0; i < m_rows.size() && i < scanRows; i++) {
         Row& existing = m_rows[i];
         if (!rows_mergeable(existing, row)) {
             continue;
@@ -639,6 +652,19 @@ CallHistoryModel::tryMerge(const Row& row) {
     return -1;
 }
 
+int
+CallHistoryModel::findRepeatedNotice(const Row& row) const {
+    for (int i = 0; i < m_rows.size(); i++) {
+        const Row& existing = m_rows.at(i);
+        if (existing.kind == KindNotice && existing.when == row.when && existing.tg == row.tg && existing.src == row.src
+            && existing.name == row.name && existing.detail == row.detail && existing.systemName == row.systemName
+            && existing.systemUid == row.systemUid && existing.channel == row.channel) {
+            return i;
+        }
+    }
+    return -1;
+}
+
 QString
 CallHistoryModel::keyFor(const Row& row) {
     // Derived from the persisted row so it survives an Activity restart: the
@@ -650,14 +676,18 @@ CallHistoryModel::keyFor(const Row& row) {
 }
 
 bool
-CallHistoryModel::ingestRow(const Row& row, bool isUpdate) {
+CallHistoryModel::ingestRow(const Row& row, bool isUpdate, bool again) {
     // Coalesce fragments into the call they belong to, with granular model
     // signals: a merge is a dataChanged on the absorbing row, a new call inserts
     // at its sorted (newest-first) position. Never a reset — delegates and the
     // reader's scroll position survive every ingest.
     static const QVector<int> mergeRoles = {WhenRole,     SrcRole,      SourceNameRole, EncRole,    DurationSecsRole,
                                             DayLabelRole, TimeTextRole, EmergencyRole,  SessionRole};
-    const int merged = tryMerge(row);
+    // A call heard again overlaps the logged call it repeats, which the merge folds it into as it
+    // folds any overlapping fragment, so the log keeps one row and that row joins the running session.
+    // Only the search reaches further: a replay's calls sort by the capture's stamps, anywhere in the
+    // log, where a live fragment's call is among the newest rows.
+    const int merged = tryMerge(row, again ? static_cast<int>(m_rows.size()) : kMergeScanRows);
     if (merged >= 0) {
         const QModelIndex idx = index(merged);
         Q_EMIT dataChanged(idx, idx, mergeRoles);
@@ -674,6 +704,17 @@ CallHistoryModel::ingestRow(const Row& row, bool isUpdate) {
             endMoveRows();
         }
         return false;
+    }
+    if (again && row.kind == KindNotice) {
+        // Notices never merge, but one decoded again is the same delivery, not a second one: the logged
+        // notice joins the running session.
+        const int repeated = findRepeatedNotice(row);
+        if (repeated >= 0) {
+            m_rows[repeated].session = qMax(m_rows.at(repeated).session, row.session);
+            const QModelIndex idx = index(repeated);
+            Q_EMIT dataChanged(idx, idx, {SessionRole});
+            return false;
+        }
     }
     if (isUpdate) {
         // A seen row that advanced refines a call this model already logged; if
@@ -698,11 +739,15 @@ CallHistoryModel::noteCommitRevs(const dsd_state* snapshot, bool scan[2]) {
     // at the poll rate, and each render bumps revision without there being
     // anything new below index 0. Only actual commits, merges and enrichment move
     // commit_rev, so the ring walk runs exactly when it can find something.
+    // A new ring (Event_History_I::instance) is walked whatever its commit_rev: a capture replayed in a
+    // fresh state can be read first at the very count the last ring stopped at.
     bool anyChanged = false;
     for (int slot = 0; slot < 2; slot++) {
         const quint64 commitRev = static_cast<quint64>(snapshot->event_history_s[slot].commit_rev);
-        scan[slot] = !m_seeded || commitRev != m_commitRev[slot];
+        const quint64 ring = static_cast<quint64>(snapshot->event_history_s[slot].instance);
+        scan[slot] = !m_seeded || commitRev != m_commitRev[slot] || ring != m_ringInstance[slot];
         m_commitRev[slot] = commitRev;
+        m_ringInstance[slot] = ring;
         anyChanged = anyChanged || scan[slot];
     }
     m_seeded = true;
@@ -766,7 +811,7 @@ CallHistoryModel::refresh(const dsd_state* snapshot, const dsd_opts* opts_snapsh
 
     bool rowsChanged = false;
     for (const FreshRow& item : fresh) {
-        rowsChanged = ingestRow(item.row, item.isUpdate) || rowsChanged;
+        rowsChanged = ingestRow(item.row, item.isUpdate, item.again) || rowsChanged;
     }
     rowsChanged = trimToCapacity() || rowsChanged;
     pruneSeen();
@@ -873,9 +918,11 @@ CallHistoryModel::load() {
     // Oldest first through the same merge the ingest path uses, so a log written
     // before fragment-coalescing existed collapses on its first load.
     for (auto it = rows.crbegin(); it != rows.crend(); ++it) {
+        // A row does not keep the ring it was read from. Should the seen store have lost its entry, a
+        // running ring that holds it reads as another ring's (ring 0), and the row folds into itself.
         m_seen.insert(keyFor(*it), SeenState{it->when, it->when + qMax(it->durationSecs, 0), it->src, it->emergency,
-                                             it->enc, it->sourceName, it->session});
-        if (tryMerge(*it) < 0) {
+                                             it->enc, it->sourceName, it->session, 0U});
+        if (tryMerge(*it, kMergeScanRows) < 0) {
             m_rows.prepend(*it);
         }
     }
@@ -902,6 +949,12 @@ CallHistoryModel::load() {
         state.emergency = obj.value(QLatin1String("em")).toBool();
         state.sourceName = obj.value(QLatin1String("srcName")).toString();
         state.session = obj.value(QLatin1String("session")).toVariant().toLongLong();
+        // Hex text: a nonce can use all 64 bits, more than a JSON number holds exactly.
+        bool ringOk = false;
+        state.ring = obj.value(QLatin1String("ring")).toString().toULongLong(&ringOk, 16);
+        if (!ringOk) {
+            state.ring = 0U;
+        }
         m_seen.insert(key, state);
     }
     endResetModel();
@@ -978,6 +1031,7 @@ CallHistoryModel::seenToJson() const {
             obj.insert(QLatin1String("em"), true);
         }
         obj.insert(QLatin1String("session"), state.session);
+        obj.insert(QLatin1String("ring"), QString::number(state.ring, 16));
         seenArray.append(obj);
     }
     return seenArray;

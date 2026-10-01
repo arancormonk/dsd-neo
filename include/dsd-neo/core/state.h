@@ -218,6 +218,12 @@ typedef struct Event_History_I {
     // `revision`, so a consumer that mirrors committed rows only (the Qt call
     // history) can skip rescanning the ring while this is unchanged.
     uint64_t commit_rev;
+    // Which ring this is: a nonzero nonce drawn once, when initState() allocates the ring, and shared by
+    // its two slots. A state an embedding host reuses for another run keeps it, and its push_seq goes on
+    // counting; a new state draws another. A frontend that keys its mirror on push stamps tells by it the
+    // rows it already read from a new ring that repeats their stamps and content, as a capture replayed in
+    // a fresh state does.
+    uint64_t instance;
     // Decoder-thread scratch consumed by next data notice; snapshots incidental, no dirty marks; frontends never render
     Event_History_Staged staged;
 } Event_History_I;

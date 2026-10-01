@@ -21,7 +21,10 @@
  * decode time, which in a replay is the capture's time, days or years before any live
  * row. A decode session (beginSession()) tags each row it logs. Clear wipes the
  * session's ring by its push order. A full log gives up the oldest session's rows
- * first, and only within one session the oldest start.
+ * first, and only within one session the oldest start. A capture replayed in a
+ * fresh state pushes the same rows at the same stamps into a new ring, told apart by
+ * the ring's identity (Event_History_I::instance): those calls are heard again, and
+ * each folds into the call it repeats, which joins the running session.
  */
 
 #ifndef DSD_NEO_SRC_UI_QT_CALL_HISTORY_MODEL_H_
@@ -230,6 +233,10 @@ class CallHistoryModel : public QAbstractListModel {
         /* The session the ring row was last read in. The map keeps the newest sessions'
          * entries, not the newest stamps: a replay's rows are older than live ones. */
         qint64 session = 0;
+        /* The ring it was read from (Event_History_I::instance); 0 in stores written before
+         * rings had one. The key alone cannot tell a row read again from a new ring's row that
+         * repeats its push stamp and content, as a capture replayed in a fresh state does. */
+        quint64 ring = 0;
     };
 
     /**
@@ -245,44 +252,51 @@ class CallHistoryModel : public QAbstractListModel {
         qulonglong pushSeq[2] = {0U, 0U};
     };
 
-    /** @brief A ring row worth ingesting: brand new, or a seen row that advanced. */
+    /** @brief A ring row worth ingesting: brand new, heard again in a new ring, or a seen row that advanced. */
     struct FreshRow {
         Row row;
         bool isUpdate = false;
+        bool again = false;
     };
 
     /** @brief noteSeen() verdicts. */
-    enum SeenVerdict { SeenUnchanged = 0, SeenNew = 1, SeenAdvanced = 2 };
+    enum SeenVerdict { SeenUnchanged = 0, SeenNew = 1, SeenAdvanced = 2, SeenAgain = 3 };
 
     static QString keyFor(const Row& row);
 
     /**
-     * @brief Record what was just read from a ring row and say what to do with it.
-     * @return SeenNew for a first sighting, SeenAdvanced when a voice row already
-     *         ingested has since learned something, SeenUnchanged otherwise.
+     * @brief Record what was just read from a ring row of ring @p ring and say what to do with it.
+     * @return SeenNew for a first sighting, SeenAgain when the key was read from another ring (a
+     *         call heard again: the same capture decoded in a new ring), SeenAdvanced when a voice
+     *         row already ingested has since learned something, SeenUnchanged otherwise.
      */
-    int noteSeen(const QString& key, qint64 when, qint64 end, qulonglong src, bool emergency, bool enc, bool voice,
-                 const QString& sourceName);
+    int noteSeen(const QString& key, quint64 ring, qint64 when, qint64 end, qulonglong src, bool emergency, bool enc,
+                 bool voice, const QString& sourceName);
 
     /** @brief Scan the flagged slots' rings for rows not seen before, or seen but advanced. */
     QList<FreshRow> collectFresh(const dsd_state* snapshot, const bool scan[2], const QString& systemUid);
 
     /**
-     * @brief Absorb @p row into a recent same-target row when the two overlap
-     *        within the merge window; the merged row spans both fragments.
+     * @brief Absorb @p row into a same-target row among the newest @p scanRows when the two
+     *        overlap within the merge window; the merged row spans both fragments.
      * @return Index of the row it merged into, or -1 when it is a new call.
      */
-    int tryMerge(const Row& row);
+    int tryMerge(const Row& row, int scanRows);
+
+    /** @brief The logged notice @p row repeats field for field, or -1. */
+    int findRepeatedNotice(const Row& row) const;
 
     /**
      * @brief Merge @p row into the log or insert it at its sorted position.
      *
      * An update (a seen ring row that advanced) may only refine an existing row;
      * if its row cannot be found it is dropped, never inserted as a duplicate.
+     * A row heard @p again merges into the call it repeats wherever that call sits
+     * in the log, and that call joins the running session.
      *
      * @return true when a new row was inserted (the count changed).
      */
-    bool ingestRow(const Row& row, bool isUpdate);
+    bool ingestRow(const Row& row, bool isUpdate, bool again);
 
     void load();
     void scheduleSave();
@@ -300,8 +314,8 @@ class CallHistoryModel : public QAbstractListModel {
     void onSaveFinished();
     QJsonArray rowsToJson() const;
     QJsonArray seenToJson() const;
-    /** @brief Record each slot's commit_rev; @p scan marks the slots a ring walk could find something new in. Returns
-        whether either slot moved. */
+    /** @brief Record each slot's commit_rev and ring; @p scan marks the slots a ring walk could find something new in.
+        Returns whether either slot moved. */
     bool noteCommitRevs(const dsd_state* snapshot, bool scan[2]);
     /** @brief Trim m_rows to kMaxRows, oldest session's oldest row first; returns whether any row went. */
     bool trimToCapacity();
@@ -333,6 +347,9 @@ class CallHistoryModel : public QAbstractListModel {
      * `revision`; gating the 2x254-row rescan on this instead keeps the idle and
      * live-call ticks free of ring walks that cannot find anything. */
     quint64 m_commitRev[2] = {0U, 0U};
+    /* The ring (Event_History_I::instance) each slot was last read from. A new ring walks even at the
+     * commit_rev the last one stopped at: a capture replayed in a fresh state reaches the same count. */
+    quint64 m_ringInstance[2] = {0U, 0U};
     bool m_seeded = false;
     QTimer m_saveTimer;
     QThreadPool m_savePool;

@@ -3,6 +3,7 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/events.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/p25_cqpsk_dibit.h>
@@ -89,8 +90,51 @@ test_init_stamps_and_rebase_share_one_list(void) {
     return rc;
 }
 
+/* Each initState() ring has an identity of its own, nonzero and shared by its two slots, and keeps it through a reset
+   of its rows (its push stamps go on counting there). The Qt call history tells by it a capture's rows decoded again
+   in a fresh state from the rows it already read. */
+static int
+test_init_state_draws_a_ring_identity(void) {
+    dsd_state* a = (dsd_state*)calloc(1, sizeof(*a));
+    dsd_state* b = (dsd_state*)calloc(1, sizeof(*b));
+    int rc = 0;
+    if (!a || !b) {
+        free(a);
+        free(b);
+        return 40;
+    }
+    initState(a);
+    initState(b);
+    if (!a->event_history_s || !b->event_history_s) {
+        rc = 41;
+    } else if (a->event_history_s[0].instance == 0U
+               || a->event_history_s[1].instance != a->event_history_s[0].instance) {
+        DSD_FPRINTF(stderr, "a ring has no identity, or its slots disagree on it\n");
+        rc = 42;
+    } else if (b->event_history_s[0].instance == a->event_history_s[0].instance) {
+        DSD_FPRINTF(stderr, "two states drew the same ring identity\n");
+        rc = 43;
+    } else {
+        const uint64_t instance = a->event_history_s[0].instance;
+        dsd_event_history_reset(a);
+        if (a->event_history_s[0].instance != instance || a->event_history_s[1].instance != instance) {
+            DSD_FPRINTF(stderr, "a reset of the rows changed the ring's identity\n");
+            rc = 44;
+        }
+    }
+    freeState(a);
+    freeState(b);
+    free(a);
+    free(b);
+    return rc;
+}
+
 int
 main(void) {
+    int ring_rc = test_init_state_draws_a_ring_identity();
+    if (ring_rc != 0) {
+        return ring_rc;
+    }
     int init_opts_rc = test_init_opts_clears_trunk_scan_targets_csv();
     if (init_opts_rc != 0) {
         return init_opts_rc;

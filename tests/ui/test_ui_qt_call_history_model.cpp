@@ -78,18 +78,23 @@ resetStorage(void) {
     settings.sync();
 }
 
-/* A minimal decoder state: the model only reads event_history_s. */
+/* A minimal decoder state: the model only reads event_history_s. Each fixture is a new ring, with
+ * an identity of its own as initState() draws one; a run on a reused state keeps reading the same
+ * fixture. */
 struct RingFixture {
     dsd_state* state;
     Event_History_I* rings;
 
     RingFixture() {
+        static uint64_t nextInstance = 0x5EED0000ULL;
+        nextInstance++;
         state = static_cast<dsd_state*>(calloc(1, sizeof(dsd_state)));
         rings = static_cast<Event_History_I*>(calloc(2, sizeof(Event_History_I)));
         state->event_history_s = rings;
         for (int slot = 0; slot < 2; slot++) {
             rings[slot].revision = 1U;
             rings[slot].commit_rev = 1U;
+            rings[slot].instance = nextInstance;
         }
     }
 
@@ -921,6 +926,118 @@ test_seen_store_keeps_the_running_session(void) {
            relaunched.count() == 41 && rows_in_tg_range(relaunched, 31000, 31000) == 1);
 }
 
+/* One replay of a capture: two calls, the second in two fragments the merge folds together, and a
+ * data notice, committed in the ring's order. A capture replayed in a fresh state pushes exactly these
+ * rows at exactly these push stamps again. */
+void
+replay_capture(RingFixture& ring) {
+    ring.commit(0, 9301, 41, kCaptureStart, kCaptureStart + 4);
+    ring.commit(0, 9302, 42, kCaptureStart + 30, kCaptureStart + 34);
+    ring.commit(0, 9302, 42, kCaptureStart + 36, kCaptureStart + 40);
+    ring.commitNotice(1, kCaptureStart + 50, "2010-01-01 00:00:50 SMS from 42");
+}
+
+/* Logged rows whose session is @p session. */
+int
+rows_in_session(const CallHistoryModel& model, qlonglong session) {
+    int n = 0;
+    for (int i = 0; i < model.rowCount(); i++) {
+        n += model.data(model.index(i), CallHistoryModel::SessionRole).toLongLong() == session ? 1 : 0;
+    }
+    return n;
+}
+
+/* The same capture replayed in two sessions. The second replay's fresh state pushes the same rows at
+ * the same push stamps, with the same starts and targets, so it reads exactly as the first did, and at
+ * the same commit_rev. Those calls are heard again: they belong to the second session's views. The log
+ * keeps one row for each, as it does for any fragment that overlaps a logged call, and that row joins
+ * the running session. */
+void
+test_replay_heard_again_in_a_new_session(void) {
+    resetStorage();
+    CallHistoryModel model;
+    CallHistoryFilterModel view;
+    view.setSourceModel(&model);
+    auto ring = std::make_unique<RingFixture>();
+    model.beginSession();
+    replay_capture(*ring);
+    model.refresh(ring->state);
+    view.setHistorySession(model.session());
+    expect("the first replay logs two calls and a notice", model.count() == 3 && view.count() == 3);
+
+    model.beginSession();
+    view.setHistorySession(model.session());
+    ring = std::make_unique<RingFixture>(); // the next start's fresh state
+    replay_capture(*ring);
+    model.refresh(ring->state);
+    expect("a replayed capture's calls show in the next session's views", view.count() == 3);
+    expect("the log keeps one row per call and notice", model.count() == 3);
+    expect("each logged row joins the session that heard it again", rows_in_session(model, model.session()) == 3);
+    expect("the calls are the replay's",
+           rows_in_tg_range(view, 9301, 9301) == 1 && rows_in_tg_range(view, 9302, 9302) == 1);
+
+    // Read again in the same ring, they are no new sighting.
+    ring->touchCommitted(0);
+    model.refresh(ring->state);
+    expect("rereading the ring changes nothing", model.count() == 3 && view.count() == 3);
+}
+
+/* Clear, then the same capture replayed in the next session: the calls show again, in the log and in
+ * the session's views, although the seen map still holds the cleared ring's keys. */
+void
+test_replay_heard_again_after_a_clear(void) {
+    resetStorage();
+    CallHistoryModel model;
+    CallHistoryFilterModel view;
+    view.setSourceModel(&model);
+    auto ring = std::make_unique<RingFixture>();
+    model.beginSession();
+    replay_capture(*ring);
+    model.refresh(ring->state);
+    model.clearAll();
+    expect("the clear empties the log", model.count() == 0);
+
+    model.beginSession();
+    view.setHistorySession(model.session());
+    ring = std::make_unique<RingFixture>();
+    replay_capture(*ring);
+    model.refresh(ring->state);
+    expect("the replayed calls are logged again after a clear", model.count() == 3);
+    expect("and show in the session's views", view.count() == 3);
+
+    // A relaunched UI reattaching to that ring logs nothing twice.
+    CallHistoryModel relaunched;
+    relaunched.refresh(ring->state);
+    expect("a relaunch reading the same ring logs nothing twice", relaunched.count() == 3);
+}
+
+/* An embedding host can run again on the state its last run used (the Android service reuses it when
+ * a start races the previous run's stopSelfLatest()). That ring keeps its identity and the rows the
+ * last run pushed, and goes on counting its pushes. Its old rows are the last session's, read again;
+ * only what the new run pushes is the new session's. Across a relaunch too, so the ring a seen entry
+ * was read from has to survive the seen store. */
+void
+test_reused_ring_keeps_the_last_sessions_rows(void) {
+    resetStorage();
+    RingFixture ring;
+    {
+        CallHistoryModel model;
+        model.beginSession();
+        replay_capture(ring);
+        model.refresh(ring.state);
+        expect("the first run's calls are logged", model.count() == 3);
+    } // destructor flushes the stores
+    CallHistoryModel relaunched;
+    CallHistoryFilterModel view;
+    view.setSourceModel(&relaunched);
+    relaunched.beginSession();
+    view.setHistorySession(relaunched.session());
+    ring.commit(0, 9401, 43, kCaptureStart + 600, kCaptureStart + 604);
+    relaunched.refresh(ring.state);
+    expect("the reused ring's new call is logged", relaunched.count() == 4);
+    expect("and only it is the new session's", view.count() == 1 && rows_in_tg_range(view, 9401, 9401) == 1);
+}
+
 } // namespace
 
 int
@@ -964,6 +1081,9 @@ main(int argc, char** argv) {
     test_full_log_keeps_the_running_session();
     test_seen_map_keeps_the_running_session();
     test_seen_store_keeps_the_running_session();
+    test_replay_heard_again_in_a_new_session();
+    test_replay_heard_again_after_a_clear();
+    test_reused_ring_keeps_the_last_sessions_rows();
 
     QDir(dataDir).removeRecursively();
     if (g_failures != 0) {

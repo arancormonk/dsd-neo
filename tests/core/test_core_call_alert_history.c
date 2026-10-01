@@ -43,9 +43,11 @@ _Static_assert(offsetof(Event_History_I, push_seq) == sizeof(Event_History) * 25
                "event history push sequence must follow the revision");
 _Static_assert(offsetof(Event_History_I, commit_rev) == sizeof(Event_History) * 255U + (2U * sizeof(uint64_t)),
                "event history commit revision must follow the push sequence");
+_Static_assert(offsetof(Event_History_I, instance) == sizeof(Event_History) * 255U + (3U * sizeof(uint64_t)),
+               "event history ring identity must follow the commit revision");
 _Static_assert(sizeof(Event_History_I)
-                   == sizeof(Event_History) * 255U + (3U * sizeof(uint64_t)) + sizeof(Event_History_Staged),
-               "event history appends three counters and a separate staged data payload");
+                   == sizeof(Event_History) * 255U + (4U * sizeof(uint64_t)) + sizeof(Event_History_Staged),
+               "event history appends three counters, the ring identity and a separate staged data payload");
 
 #if defined(__GNUC__) && !defined(__cplusplus)
 #pragma GCC diagnostic push
