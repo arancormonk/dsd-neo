@@ -692,17 +692,12 @@ CallHistoryModel::ingestRow(const Row& row, bool isUpdate) {
     return true;
 }
 
-void
-CallHistoryModel::refresh(const dsd_state* snapshot, const dsd_opts* opts_snapshot) {
-    if (snapshot == nullptr || snapshot->event_history_s == nullptr) {
-        return;
-    }
-
+bool
+CallHistoryModel::noteCommitRevs(const dsd_state* snapshot, bool scan[2]) {
     // Gated on commit_rev, not revision: an active call re-renders its staged row
     // at the poll rate, and each render bumps revision without there being
     // anything new below index 0. Only actual commits, merges and enrichment move
     // commit_rev, so the ring walk runs exactly when it can find something.
-    bool scan[2];
     bool anyChanged = false;
     for (int slot = 0; slot < 2; slot++) {
         const quint64 commitRev = static_cast<quint64>(snapshot->event_history_s[slot].commit_rev);
@@ -711,7 +706,43 @@ CallHistoryModel::refresh(const dsd_state* snapshot, const dsd_opts* opts_snapsh
         anyChanged = anyChanged || scan[slot];
     }
     m_seeded = true;
-    if (!anyChanged) {
+    return anyChanged;
+}
+
+bool
+CallHistoryModel::trimToCapacity() {
+    // Trimmed rows keep their seen entry: the ring may still hold them, and
+    // forgetting the key would re-ingest (and re-trim) each one every tick. The
+    // map itself is bounded by pruneSeen() instead.
+    bool trimmed = false;
+    while (m_rows.size() > kMaxRows) {
+        // The oldest session's oldest row, not the bottom of the list. A replay's calls
+        // sort below every live one by their stamps, and trimming the bottom would drop
+        // them as they land.
+        int victim = static_cast<int>(m_rows.size()) - 1;
+        for (int i = victim - 1; i >= 0; i--) {
+            const Row& row = m_rows.at(i);
+            const Row& oldest = m_rows.at(victim);
+            if (retained_older(row.session, row.when, oldest.session, oldest.when)) {
+                victim = i;
+            }
+        }
+        beginRemoveRows(QModelIndex(), victim, victim);
+        m_rows.removeAt(victim);
+        endRemoveRows();
+        trimmed = true;
+    }
+    return trimmed;
+}
+
+void
+CallHistoryModel::refresh(const dsd_state* snapshot, const dsd_opts* opts_snapshot) {
+    if (snapshot == nullptr || snapshot->event_history_s == nullptr) {
+        return;
+    }
+
+    bool scan[2];
+    if (!noteCommitRevs(snapshot, scan)) {
         return;
     }
     // Only a snapshot that moved says where the ring is. Right after a start the old
@@ -737,26 +768,7 @@ CallHistoryModel::refresh(const dsd_state* snapshot, const dsd_opts* opts_snapsh
     for (const FreshRow& item : fresh) {
         rowsChanged = ingestRow(item.row, item.isUpdate) || rowsChanged;
     }
-    // Trimmed rows keep their seen entry: the ring may still hold them, and
-    // forgetting the key would re-ingest (and re-trim) each one every tick. The
-    // map itself is bounded below instead.
-    while (m_rows.size() > kMaxRows) {
-        // The oldest session's oldest row, not the bottom of the list. A replay's calls
-        // sort below every live one by their stamps, and trimming the bottom would drop
-        // them as they land.
-        int victim = static_cast<int>(m_rows.size()) - 1;
-        for (int i = victim - 1; i >= 0; i--) {
-            const Row& row = m_rows.at(i);
-            const Row& oldest = m_rows.at(victim);
-            if (retained_older(row.session, row.when, oldest.session, oldest.when)) {
-                victim = i;
-            }
-        }
-        beginRemoveRows(QModelIndex(), victim, victim);
-        m_rows.removeAt(victim);
-        endRemoveRows();
-        rowsChanged = true;
-    }
+    rowsChanged = trimToCapacity() || rowsChanged;
     pruneSeen();
     if (rowsChanged) {
         Q_EMIT countChanged();

@@ -300,6 +300,11 @@ class CallHistoryModel : public QAbstractListModel {
     void onSaveFinished();
     QJsonArray rowsToJson() const;
     QJsonArray seenToJson() const;
+    /** @brief Record each slot's commit_rev; @p scan marks the slots a ring walk could find something new in. Returns
+        whether either slot moved. */
+    bool noteCommitRevs(const dsd_state* snapshot, bool scan[2]);
+    /** @brief Trim m_rows to kMaxRows, oldest session's oldest row first; returns whether any row went. */
+    bool trimToCapacity();
     /** @brief Bound m_seen once it is well past what the ring could resurrect. */
     void pruneSeen();
     /** @brief Arm m_dayTimer for the next local midnight. */

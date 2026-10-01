@@ -1773,6 +1773,10 @@ class MetricsModel : public QObject {
     void fillScanTimingView(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot, double now_m) const;
     /** @brief The received sub-audible tone and the configured tone policy (#522). */
     void fillRxToneView(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot, double now_m) const;
+    /** @brief The tuner gain readout: "auto", the gain in dB, or a dash when the tuner reports none. */
+    static QString tunerGainText(const dsd_frontend_metrics& metrics);
+    /** @brief The engine's command acknowledgement until its expiry stamp; arms m_messageTimer for that expiry. */
+    void fillUiMessage(View& next, const dsd_state* snapshot);
     /** @brief The Tone filter row (#527): on screen or not, and the verdict @p gate in words (@p no_tone: a
         rejection for want of a tone). */
     static void fillToneFilterView(View& next, bool visible, int gate, bool no_tone);

@@ -941,6 +941,29 @@ MetricsModel::airspyView(const dsd_opts* opts_snapshot) {
     return native;
 }
 
+QString
+MetricsModel::tunerGainText(const dsd_frontend_metrics& metrics) {
+    if (metrics.tuner_gain_is_auto != 0) {
+        return QStringLiteral("auto");
+    }
+    if (metrics.tuner_gain_valid != 0) {
+        return QStringLiteral("%1 dB").arg(metrics.tuner_gain_tenth_db / 10.0, 0, 'f', 1);
+    }
+    return QStringLiteral("—");
+}
+
+void
+MetricsModel::fillUiMessage(View& next, const dsd_state* snapshot) {
+    /* The engine's command acknowledgement, shown until its own expiry stamp. The
+     * timer takes an expired message down without waiting for another publish —
+     * an idle engine may not raise the redraw flag again for minutes. */
+    const qint64 message_remaining_s = static_cast<qint64>(snapshot->ui_msg_expire) - realtimeSecsSinceEpoch();
+    if (snapshot->ui_msg[0] != '\0' && message_remaining_s > 0) {
+        next.ui_message = QString::fromUtf8(snapshot->ui_msg);
+        m_messageTimer.start(static_cast<int>(qMin<qint64>(message_remaining_s, 30) * 1000) + 100);
+    }
+}
+
 void
 MetricsModel::refresh(const dsd_opts* opts_snapshot, const dsd_state* snapshot) {
     dsd_frontend_metrics metrics;
@@ -1005,13 +1028,7 @@ MetricsModel::refresh(const dsd_opts* opts_snapshot, const dsd_state* snapshot) 
     next.snr_valid = snr.valid != 0;
     next.snr_db = next.snr_valid ? snr.snr_db : 0.0;
 
-    if (metrics.tuner_gain_is_auto != 0) {
-        next.tuner_gain_text = QStringLiteral("auto");
-    } else if (metrics.tuner_gain_valid != 0) {
-        next.tuner_gain_text = QStringLiteral("%1 dB").arg(metrics.tuner_gain_tenth_db / 10.0, 0, 'f', 1);
-    } else {
-        next.tuner_gain_text = QStringLiteral("—");
-    }
+    next.tuner_gain_text = tunerGainText(metrics);
 
     /* Decode time: the call lines and the scan countdown age stamps the decoder took
      * from the decode clock. */
@@ -1034,14 +1051,7 @@ MetricsModel::refresh(const dsd_opts* opts_snapshot, const dsd_state* snapshot) 
     fillScanTimingView(next, opts_snapshot, snapshot, now_m);
     fillRxToneView(next, opts_snapshot, snapshot, dsd_realtime_mono_s());
 
-    /* The engine's command acknowledgement, shown until its own expiry stamp. The
-     * timer takes an expired message down without waiting for another publish —
-     * an idle engine may not raise the redraw flag again for minutes. */
-    const qint64 message_remaining_s = static_cast<qint64>(snapshot->ui_msg_expire) - realtimeSecsSinceEpoch();
-    if (snapshot->ui_msg[0] != '\0' && message_remaining_s > 0) {
-        next.ui_message = QString::fromUtf8(snapshot->ui_msg);
-        m_messageTimer.start(static_cast<int>(qMin<qint64>(message_remaining_s, 30) * 1000) + 100);
-    }
+    fillUiMessage(next, snapshot);
 
     publish(next);
     notifyDecodeNow();
