@@ -950,7 +950,9 @@ static const int kGardnerStreamPairs = 1000;
 static const int kGardnerWarmPairs = 400;
 static const float kGardnerSplitTol = 0.0f;
 
+namespace {
 enum gardner_feed { GARDNER_FEED_HEAP = 0, GARDNER_FEED_HB_WORKBUF = 1, GARDNER_FEED_TIMING_BUF = 2 };
+} // namespace
 
 static const char*
 gardner_feed_name(int feed) {
@@ -1101,7 +1103,7 @@ test_gardner_short_blocks_match_whole_stream(void) {
     gardner_feed_block(ref, stream.data(), kGardnerStreamPairs, GARDNER_FEED_HEAP, &want);
     const ted_state_t want_ted = ref->ted_state;
     free(ref);
-    if (want.size() < 2 * 150) {
+    if (want.size() < static_cast<size_t>(2) * 150U) {
         DSD_FPRINTF(stderr, "GARDNER SPLIT: whole stream made only %zu symbols\n", want.size() / 2);
         return 1;
     }

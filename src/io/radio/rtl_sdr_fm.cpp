@@ -14287,8 +14287,9 @@ static int
 squelch_hop_test_block(int pairs) {
     for (int k = 0; k < pairs; k++) {
         const float phase = 0.0625f * (float)k;
-        demod.input_cb_buf[2 * k] = 0.5f * cosf(phase);
-        demod.input_cb_buf[2 * k + 1] = 0.5f * sinf(phase);
+        const size_t at = (size_t)k * 2U;
+        demod.input_cb_buf[at] = 0.5f * cosf(phase);
+        demod.input_cb_buf[at + 1U] = 0.5f * sinf(phase);
     }
     demod.lowpassed = demod.input_cb_buf;
     demod.lp_len = pairs * 2;

@@ -215,6 +215,9 @@ class SavedSystemsModel : public QAbstractListModel {
     bool saveRows(const QList<Row>& rows) const;
 
     QList<Row> m_rows;
+    /* The one real clock, in ms since the Unix epoch, that touch() stamps lastHeard from and realtimeNowMs() ages it
+       against. */
+    qint64 (*m_realtime_now_ms)();
 };
 
 } // namespace dsd_qt

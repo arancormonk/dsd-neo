@@ -58,7 +58,6 @@
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/rtl_stream_io_hooks.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
-#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -534,7 +533,7 @@ __wrap_dsd_audio_open_output(const dsd_audio_params* params) {
     }
     s->pump_started = 1;
     g_sink_streams[g_sink_opened++] = s;
-    return (dsd_audio_stream*)(void*)s;
+    return (dsd_audio_stream*)s;
 }
 
 int
