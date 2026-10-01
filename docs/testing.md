@@ -498,10 +498,11 @@ So judge a hunt, timing or front-end change across captures and across realizati
 `-fa`, never from one replay or from identical repeats of it. `tools/replay_ab.sh` replays each repeat as its own
 realization (see [Decode-Quality A/B on Real Captures](#decode-quality-ab-on-real-captures)). A shifted copy by hand
 needs only a new sidecar: point its `data_file` at the original data and add the same whole number of samples (2 bytes
-each for cu8, 8 for cf32) to every event's `byte_offset`, keeping each within `data_bytes`. The number of samples must
-not be a multiple of the front end's total decimation; spread the copies across one symbol at the capture's rate, as
-`replay_ab.sh` does (copy i of n shifted floor(i P / n) + i samples, P the samples in one 2400-baud symbol, and one
-sample more where that lands on a multiple of the decimation).
+each for cu8, 8 for cf32) to every event's `byte_offset`, keeping each within the bytes replay reads. Those are
+`data_bytes`, or the data file's size when that is smaller or `data_bytes` is 0, rounded down to whole samples. The
+number of samples must not be a multiple of the front end's total decimation; spread the copies across one symbol at the
+capture's rate, as `replay_ab.sh` does (copy i of n shifted floor(i P / n) + i samples, P the samples in one 2400-baud
+symbol, and one sample more where that lands on a multiple of the decimation).
 
 #### Received tone (CTCSS) on the analog monitor
 
@@ -1471,9 +1472,13 @@ Reading it:
   sidecar whose `data_file` is the original data's path, made absolute the way
   replay resolves it (the sidecar's directory as given, with no `..`
   collapsed), and whose every event `byte_offset` is
-  s_r = floor((r-1) P / reps) + (r-1) input samples later, held to
-  `data_bytes`, where P = round(sample rate / 2400) is one 2400-baud symbol:
-  640 samples at 1.536 Msps, 20 at 48 kHz. Repeat 1 is the capture as recorded.
+  s_r = floor((r-1) P / reps) + (r-1) input samples later, held to the bytes
+  replay reads, where P = round(sample rate / 2400) is one 2400-baud symbol:
+  640 samples at 1.536 Msps, 20 at 48 kHz. Those bytes are `data_bytes`, or
+  the data file's size when that is smaller or `data_bytes` is 0, rounded down
+  to whole samples, as replay computes them. Repeat 1 is the capture as
+  recorded; a sidecar with an event past those bytes, which replay refuses,
+  stops the run before it replays anything.
   A later shift that lands on a whole multiple of the front end's total
   decimation D (`sample_rate_hz` over `demod_rate_hz`, else `base_decimation`
   x `post_downsample`) moves up one sample, so no repeat after the first hands
@@ -1565,13 +1570,14 @@ too, since one pair says nothing about the spread. A build missing a column that
 host) makes the report warn and exit 1, rather than leave the other builds' rows looking like a clean result.
 `tests/tools/test_replay_ab_report.py` (stdlib only) covers the per-repeat pairing, the A-vs-A control, probe frequency
 keying, the coverage reporting, crashed and off-path repeats, the single-pair interval, the received-tone columns, the
-duplicate-name refusal and the realizations: the shifted copies, their hold at `data_bytes`, the cf32 stride, the shift
-moved off a multiple of the decimation, `data_file` made absolute as replay resolves it (also under a symlinked
-directory) or kept when already absolute, paths with spaces, `--reps 1`, the no-events warning, `--no-realizations`, an
-unknown `sample_format` and the report's reading of `shift`. CTest runs it as four tests: `TOOLS_REPLAY_AB_REPORT`
-scores canned summaries and runs wherever Python does, and `TOOLS_REPLAY_AB_ANALOG_METRIC`,
-`TOOLS_REPLAY_AB_DIGITAL_METRIC` and `TOOLS_REPLAY_AB_REALIZATIONS` drive the real `replay_ab.sh` with fake hosts, so
-they are registered only outside Windows where bash and coreutils `timeout` are found.
+duplicate-name refusal and the realizations: the shifted copies, their hold at the bytes replay reads (with `data_bytes`
+0 or past the data file too), the cf32 stride, the shift moved off a multiple of the decimation, `data_file` made
+absolute as replay resolves it (also under a symlinked directory) or kept when already absolute, paths with spaces,
+`--reps 1`, the no-events warning, `--no-realizations`, an unknown `sample_format` and the report's reading of `shift`.
+CTest runs it as four tests: `TOOLS_REPLAY_AB_REPORT` scores canned summaries and runs wherever Python does, and
+`TOOLS_REPLAY_AB_ANALOG_METRIC`, `TOOLS_REPLAY_AB_DIGITAL_METRIC` and `TOOLS_REPLAY_AB_REALIZATIONS` drive the real
+`replay_ab.sh` with fake hosts, so they are registered only outside Windows where bash and coreutils `timeout` are
+found.
 
 `tone`, `tone_lock_ms` and `tone_lock_pct` come from the host's `ANALOG METRIC:` line, which reads them from the
 decoder's received-tone publication (`dsd_state::analog_rx`) after every block the monitor delivers; a host built

@@ -644,10 +644,19 @@ class ReplayAbRealizations(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def write_capture(self, meta):
+    def write_capture(self, meta, data_size=None):
+        """Writes the sidecar and, unless it is already there, the data file it names, data_size bytes long (by
+        default data_bytes): replay_ab.sh reads the data file's size, as replay does, to bound the shifted events."""
         with open(self.capture, "w", encoding="utf-8") as handle:
             json.dump(meta, handle, indent=2, ensure_ascii=False)
             handle.write("\n")
+        data = meta.get("data_file")
+        if isinstance(data, str) and data:
+            path = Path(data) if os.path.isabs(data) else self.capture.parent / data
+            if not path.exists():
+                path.parent.mkdir(parents=True, exist_ok=True)
+                with open(path, "wb") as handle:
+                    handle.truncate(meta["data_bytes"] if data_size is None else data_size)
         return self.capture.read_bytes()
 
     def replay_ab(self, *args, capture=None, cwd=None):
@@ -764,6 +773,34 @@ class ReplayAbRealizations(unittest.TestCase):
                 else:
                     self.assertNotIn("decimation", result.stdout)
 
+    def test_events_are_held_to_the_length_replay_reads(self):
+        # Replay reads min(data_bytes, the data file's size) bytes, or the whole file when data_bytes is 0, rounded
+        # down to whole samples (dsd_iq_replay_compute_effective_bytes()), and the shifted events are held to that.
+        # The file here is 4001 bytes, 4000 of them whole cu8 samples. Repeat 1 keeps every offset as recorded;
+        # repeat 2 moves each by 11 samples (22 bytes), and the event at 3990 stops at 4000.
+        for name, data_bytes in (("data_bytes 0", 0), ("data_bytes past the file", 8000)):
+            with self.subTest(name):
+                shutil.rmtree(self.out, ignore_errors=True)
+                (self.tmp / "caps" / "capture.iq").unlink(missing_ok=True)
+                events = [frequency_event("RESET", 1000, 48000), frequency_event("RESET", 3990, 48000)]
+                original = sidecar("cu8", 48000, "capture.iq", data_bytes, events)
+                self.write_capture(original, data_size=4001)
+                result = self.replay_ab("--reps", "2")
+                self.assertEqual(result.returncode, 0, result.stdout)
+                self.assert_realizations(original, [0, 11], [[1000, 3990], [1022, 4000]],
+                                         str(self.tmp / "caps" / "capture.iq"))
+
+        # Replay refuses an event past that length, so no copy of such a sidecar is written.
+        shutil.rmtree(self.out, ignore_errors=True)
+        (self.tmp / "caps" / "capture.iq").unlink()
+        self.write_capture(sidecar("cu8", 48000, "capture.iq", 0, [frequency_event("RESET", 4002, 48000)]),
+                           data_size=4001)
+        result = self.replay_ab("--reps", "2")
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn("events[0].byte_offset 4002 is past the 4000 bytes replay reads", result.stdout)
+        self.assertFalse((self.out / "realizations").exists())
+        self.assertEqual(list(self.out.glob("*.log")), [])
+
     def test_one_repeat_says_it_runs_unshifted(self):
         self.write_capture(sidecar("cu8", 48000, "capture.iq", 4000, [frequency_event("RESET", 1000, 48000)]))
         result = self.replay_ab("--reps", "1")
@@ -801,8 +838,9 @@ class ReplayAbRealizations(unittest.TestCase):
         # name another file: here the decoy beside the link.
         real = self.tmp / "real" / "a" / "b"
         real.mkdir(parents=True)
-        (self.tmp / "real" / "a" / "capture.iq").write_bytes(b"recorded")
-        (self.tmp / "capture.iq").write_bytes(b"decoy")
+        recorded = b"recorded".ljust(4000, b"\0")
+        (self.tmp / "real" / "a" / "capture.iq").write_bytes(recorded)
+        (self.tmp / "capture.iq").write_bytes(b"decoy".ljust(4000, b"\0"))
         os.symlink(real, self.tmp / "link")
         self.capture = self.tmp / "link" / "capture.iq.json"
         self.write_capture(sidecar("cu8", 48000, "../capture.iq", 4000, [frequency_event("RESET", 1000, 48000)]))
@@ -811,7 +849,7 @@ class ReplayAbRealizations(unittest.TestCase):
         for rep in (1, 2):
             data = self.realization(rep)["data_file"]
             self.assertTrue(os.path.isabs(data), data)
-            self.assertEqual(Path(data).read_bytes(), b"recorded", data)
+            self.assertEqual(Path(data).read_bytes(), recorded, data)
 
     def test_capture_without_events_warns_once_and_replays_as_recorded(self):
         for events in (None, []):

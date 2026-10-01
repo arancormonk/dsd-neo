@@ -24,13 +24,16 @@ set -euo pipefail
 #
 #   s_r = floor((r-1) * P / reps) + (r-1) input samples,  P = round(rate / 2400),
 #
-# held to data_bytes. P is one symbol of the slowest common digital rate at the
-# capture's own rate: 640 samples at 1.536 Msps, 20 at 48 kHz. Repeat 1 is the
-# capture as recorded. The first term spreads the shifts over a symbol and the
-# (r-1) adds a sample a repeat. A shift after the first that still lands on a
-# whole multiple of the front end's total decimation D (sample_rate_hz over
-# demod_rate_hz, else base_decimation x post_downsample, else 1) moves up one
-# sample, when D is above 1: replay restarts the chunk grid and the filters at
+# held to the bytes replay reads (data_bytes, or the data file's size when that
+# is smaller or data_bytes is 0, in whole samples). P is one symbol of the
+# slowest common digital rate at the capture's own rate: 640 samples at
+# 1.536 Msps, 20 at 48 kHz. Repeat 1 is the capture as recorded, and a sidecar
+# with an event past those bytes, which replay refuses, gets no copies. The
+# first term spreads the shifts over a symbol and the (r-1) adds a sample a
+# repeat. A shift after the first that still lands on a whole multiple of the
+# front end's total decimation D (sample_rate_hz over demod_rate_hz, else
+# base_decimation x post_downsample, else 1) moves up one sample, when D is
+# above 1: replay restarts the chunk grid and the filters at
 # each event, so a shift by such a multiple hands each dwell the same output
 # samples, only later, and is no new draw of the instants the decoder samples
 # the signal at. Every build replays the same copy in a repeat, so the report
@@ -185,7 +188,7 @@ done
 
 # Writes repeat r's realization of the capture, for r = 1..reps, to <dir>/r<r>.json: a copy of the sidecar whose
 # data_file is the original data's absolute path and whose every event byte_offset moves forward by s_r whole samples,
-# held to data_bytes. Prints "symbol<TAB>P<TAB>D" and then "<r><TAB><s_r><TAB><path>" for each repeat, or only "none",
+# held to the bytes replay reads. Prints "symbol<TAB>P<TAB>D" and then "<r><TAB><s_r><TAB><path>" for each repeat, or only "none",
 # and writes nothing, when the capture has no events to shift. Fails, writing nothing, on a sidecar it cannot shift.
 write_realizations() {
   python3 - "$@" << 'PY'
@@ -228,6 +231,17 @@ def resolve_data_file(data_file):
     cut = max(capture.rfind("/"), capture.rfind("\\"))
     path = capture[:cut + 1] + data_file
     return path if is_absolute(path) else os.path.join(os.getcwd(), path)
+
+
+def replay_bytes(path):
+    """dsd_iq_replay_compute_effective_bytes() in src/io/iq/iq_replay.c: the whole data file when data_bytes is 0,
+    else data_bytes held to the file's size, rounded down to whole samples."""
+    try:
+        size = os.stat(path).st_size
+    except OSError as exc:
+        fail(f"cannot read the size of data file {path!r}: {exc}")
+    raw = size if data_bytes == 0 else min(data_bytes, size)
+    return raw - raw % bytes_per_sample
 
 
 def total_decimation(rate):
@@ -273,13 +287,20 @@ decimation = total_decimation(rate)
 copy = dict(meta)
 # Replay resolves a relative data_file against the sidecar's directory, which the copies do not share.
 copy["data_file"] = resolve_data_file(data_file)
+# Replay refuses an event past the bytes it reads, so repeat 1 keeps every offset as recorded.
+limit = replay_bytes(copy["data_file"])
+if limit == 0:
+    fail("no aligned I/Q samples available for replay")
+for index, event in enumerate(events):
+    if event["byte_offset"] > limit:
+        fail(f"events[{index}].byte_offset {event['byte_offset']} is past the {limit} bytes replay reads")
 os.makedirs(outdir, exist_ok=True)
 rows = [f"symbol\t{symbol}\t{decimation}"]
 for rep in range(1, reps + 1):
     shift = (rep - 1) * symbol // reps + (rep - 1)
     if rep > 1 and decimation > 1 and shift % decimation == 0:
         shift += 1
-    copy["events"] = [dict(event, byte_offset=min(event["byte_offset"] + shift * bytes_per_sample, data_bytes))
+    copy["events"] = [dict(event, byte_offset=min(event["byte_offset"] + shift * bytes_per_sample, limit))
                       for event in events]
     path = os.path.join(outdir, f"r{rep}.json")
     with open(path, "w", encoding="utf-8", errors="surrogateescape") as handle:
