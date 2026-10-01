@@ -10,17 +10,40 @@ set -euo pipefail
 # capture, because decoding then varied run to run by more than the difference
 # between two builds. Since issue #572 an I/Q replay is deterministic: a build
 # decodes a capture the same way on every run, fast or realtime, loaded or idle
-# (replays under -T or -Y excepted, so leave them out of --mode). The repeats are
-# now the control: a build against a copy of itself must report +0.00 +/- 0.00,
-# and any spread is a determinism regression to fix before comparing builds.
-# Two or three repeats are enough to show that, and more add nothing; --reps
-# still defaults to 12, from when the repeats measured a noise floor, so the
-# example below passes --reps 3 (the report's paired interval needs two).
-# What still varies is the capture: one replay is one draw of how the decoder,
-# the -fa sync hunt above all, meets its transmissions, so compare builds across
-# several captures, or copies of one with its events shifted (docs/testing.md,
-# "Replay determinism"). Two properties this keeps from then, which cost nothing
-# now and keep a determinism regression from passing for a difference in builds:
+# (replays under -T or -Y excepted, so leave them out of --mode). Identical
+# repeats would then all be one draw of the capture: which frames a replay
+# yields depends on where the decoder, the -fa sync hunt above all, stands when
+# each transmission arrives, and a change that moves the front end's output by a
+# fraction of a sample, such as a filter's latency, moves that draw. Paired over
+# identical repeats, two builds read a tight interval that the capture does not
+# support.
+#
+# So each repeat replays its own realization of the capture. Repeat r (from 1)
+# replays a copy of the sidecar, <out>/realizations/r<r>.json, whose data_file is
+# the original data and whose every event byte_offset moves forward by
+#
+#   s_r = floor((r-1) * P / reps) + (r-1) input samples,  P = round(rate / 2400),
+#
+# held to data_bytes. P is one symbol of the slowest common digital rate at the
+# capture's own rate: 640 samples at 1.536 Msps, 20 at 48 kHz. Repeat 1 is the
+# capture as recorded. The first term spreads the shifts over a symbol, and the
+# (r-1) adds a sample a repeat, which keeps an even split of the symbol off
+# whole multiples of the front end's decimation: replay restarts the chunk grid
+# and the filters at each event, so a shift by such a multiple hands each dwell
+# the same output samples, only later, and is no new draw of the instants the
+# decoder samples the signal at. Every build replays the same copy in a repeat,
+# so the report pairs like with like, and a build against a copy of itself
+# still reads +0.00 +/- 0.00; any spread in that control is a determinism
+# regression to fix before comparing builds. More repeats buy more
+# realizations, so a result wants the default 12 or more, and other captures
+# besides (docs/testing.md, "Replay determinism").
+#
+# A capture with no events has nothing to shift: every repeat replays it as
+# recorded, and the run warns that its repeats are one realization, to be
+# compared across captures. --no-realizations replays every repeat as recorded
+# on purpose: that is the determinism control. Two properties this keeps from
+# before issue #572, which cost nothing now and keep a determinism regression
+# from passing for a difference in builds:
 #
 #   * Round-robin, not blocked. Running all of build A and then all of build B
 #     measured whatever else the machine was doing as if it were the build.
@@ -45,16 +68,20 @@ set -euo pipefail
 # Options:
 #   --capture <path>   I/Q capture sidecar JSON to replay (required)
 #   --mode <flags>     Decoder flags, e.g. "-fi" (required; quote if several)
-#   --reps <n>         Repeats per build (default 12)
+#   --reps <n>         Repeats per build, each its own realization of the
+#                      capture (default 12)
+#   --no-realizations  Replay every repeat as recorded: the determinism
+#                      control, where every repeat must decode alike
 #   --rate <mode>      --iq-replay-rate value: realtime (default) or fast
 #   --metric <kind>    digital (default) or analog: also score the host's
 #                      ANALOG METRIC / ANALOG PROBE lines. Give the host no
 #                      --analog-* bounds: summary.tsv records each run's exit
 #                      status, and the report leaves non-zero ones out
-#   --out <dir>        Where to write logs and summary.tsv (default: mktemp -d)
+#   --out <dir>        Where to write logs, summary.tsv and the realizations'
+#                      sidecars (default: mktemp -d)
 #
 # Example:
-#   tools/replay_ab.sh --capture ~/captures/nxdn.json --mode -fi --reps 3 \
+#   tools/replay_ab.sh --capture ~/captures/nxdn.json --mode -fi \
 #       /tmp/dsd-neo.before ./build/dev-debug/apps/dsd-cli/dsd-neo
 #   tools/replay_ab_report.py <out>/summary.tsv
 
@@ -68,6 +95,7 @@ usage() {
 capture=""
 mode=""
 reps=12
+realizations=1
 rate=realtime
 metric=digital
 out=""
@@ -86,6 +114,10 @@ while [ $# -gt 0 ]; do
     --reps)
       reps="${2:-}"
       shift 2
+      ;;
+    --no-realizations)
+      realizations=0
+      shift
       ;;
     --rate)
       rate="${2:-}"
@@ -124,6 +156,10 @@ if [ "$metric" != digital ] && [ "$metric" != analog ]; then
   echo "error: --metric must be digital or analog, not '$metric'" >&2
   usage 1
 fi
+if ! [[ $reps =~ ^[1-9][0-9]*$ ]]; then
+  echo "error: --reps must be a positive whole number, not '$reps'" >&2
+  usage 1
+fi
 if [ ! -r "$capture" ]; then
   echo "error: cannot read capture '$capture'" >&2
   exit 1
@@ -145,16 +181,120 @@ for ((i = 0; i < ${#builds[@]}; i++)); do
   done
 done
 
+# Writes repeat r's realization of the capture, for r = 1..reps, to <dir>/r<r>.json: a copy of the sidecar whose
+# data_file is the original data's absolute path and whose every event byte_offset moves forward by s_r whole samples,
+# held to data_bytes. Prints "symbol<TAB>P" and then "<r><TAB><s_r><TAB><path>" for each repeat, or only "none", and
+# writes nothing, when the capture has no events to shift. Fails, writing nothing, on a sidecar it cannot shift.
+write_realizations() {
+  python3 - "$@" << 'PY'
+import json
+import os
+import sys
+
+capture, reps, outdir = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+BYTES_PER_SAMPLE = {"cu8": 2, "cf32": 8}
+
+
+def fail(message):
+    sys.exit(f"error: {capture}: {message}")
+
+
+def whole(fields, key, minimum, where=""):
+    value = fields.get(key)
+    if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+        fail(f"{where}{key} must be a whole number of at least {minimum}, not {value!r}")
+    return value
+
+
+# surrogateescape carries whatever bytes the sidecar's strings hold into the copies unchanged.
+try:
+    with open(capture, encoding="utf-8", errors="surrogateescape") as handle:
+        meta = json.load(handle)
+except (OSError, ValueError) as exc:
+    fail(f"cannot read it as an I/Q capture sidecar (--capture takes the .json): {exc}")
+if not isinstance(meta, dict):
+    fail("not an I/Q capture sidecar (expected a JSON object)")
+events = meta.get("events")
+if not events:
+    print("none")
+    sys.exit(0)
+if not isinstance(events, list) or not all(isinstance(event, dict) for event in events):
+    fail("events must be an array of objects")
+bytes_per_sample = BYTES_PER_SAMPLE.get(meta.get("sample_format"))
+if bytes_per_sample is None:
+    fail(f"cannot shift the events of sample_format {meta.get('sample_format')!r}, only of cu8 or cf32; "
+         "pass --no-realizations to replay it as recorded")
+rate = whole(meta, "sample_rate_hz", 1)
+data_bytes = whole(meta, "data_bytes", 0)
+for index, event in enumerate(events):
+    whole(event, "byte_offset", 0, f"events[{index}].")
+data_file = meta.get("data_file")
+if not isinstance(data_file, str) or not data_file:
+    fail("has no data_file")
+
+# One symbol at 2400 baud, rounded to whole samples.
+symbol = (rate + 1200) // 2400
+copy = dict(meta)
+# Replay resolves a relative data_file against the sidecar's directory, which the copies do not share.
+copy["data_file"] = os.path.abspath(os.path.join(os.path.dirname(capture), data_file))
+os.makedirs(outdir, exist_ok=True)
+rows = [f"symbol\t{symbol}"]
+for rep in range(1, reps + 1):
+    shift = (rep - 1) * symbol // reps + (rep - 1)
+    copy["events"] = [dict(event, byte_offset=min(event["byte_offset"] + shift * bytes_per_sample, data_bytes))
+                      for event in events]
+    path = os.path.join(outdir, f"r{rep}.json")
+    with open(path, "w", encoding="utf-8", errors="surrogateescape") as handle:
+        json.dump(copy, handle, indent=2, ensure_ascii=False)
+        handle.write("\n")
+    rows.append(f"{rep}\t{shift}\t{path}")
+print("\n".join(rows))
+PY
+}
+
 if [ -z "$out" ]; then
   out=$(mktemp -d "${TMPDIR:-/tmp}/dsd-neo-replay-ab.XXXXXX")
 fi
 mkdir -p "$out"
+
+# Repeat r replays replays[r], whose events sit shifts[r] input samples after the capture's.
+replays=()
+shifts=()
+for r in $(seq 1 "$reps"); do
+  replays[r]=$capture
+  shifts[r]=0
+done
+if [ "$realizations" -eq 0 ]; then
+  realization_note="off (--no-realizations): every repeat replays the capture as recorded, the determinism control"
+else
+  if ! command -v python3 > /dev/null 2>&1; then
+    echo "error: per-repeat realizations need python3; pass --no-realizations to replay without them" >&2
+    exit 1
+  fi
+  table=$(write_realizations "$capture" "$reps" "$out/realizations")
+  if [ "$table" = none ]; then
+    echo "warning: the capture has no events: every repeat replays the same realization; compare it across captures" >&2
+    realization_note="none: the capture has no events to shift, so every repeat replays it as recorded"
+  else
+    {
+      IFS=$'\t' read -r _ symbol
+      while IFS=$'\t' read -r r shift_samples path; do
+        replays[r]=$path
+        shifts[r]=$shift_samples
+      done
+    } <<< "$table"
+    realization_note="one per repeat, every event moved ${shifts[1]} to ${shifts[reps]} input samples later"
+    realization_note+=" (a 2400-baud symbol is $symbol samples), the same one for every build in a repeat"
+  fi
+fi
+
 summary="$out/summary.tsv"
 analog_keys=(tone_snr_db inband_db clip audible_ms first_audible_ms rms_dbfs)
 probe_keys=(hz dbfs dbc)
 printf 'variant\tcase\trep\terrs\tvoice\tsync' > "$summary"
+# shift is last, so readers of the earlier columns by position still find them.
 printf '\t%s' "${analog_keys[@]}" probe_hz probe_dbfs probe_dbc \
-  tone tone_lock_ms tone_lock_pct rc off_path >> "$summary"
+  tone tone_lock_ms tone_lock_pct rc off_path shift >> "$summary"
 printf '\n' >> "$summary"
 
 # Value of key=value on the last (or, with which=first, the first) line of the log
@@ -176,6 +316,7 @@ read -r -a mode_args <<< "$mode"
 nbuilds=${#builds[@]}
 
 echo "replaying $(basename "$capture") through $nbuilds builds, $reps repeats each, $rate pacing, $metric metric"
+echo "realizations: $realization_note"
 echo "results: $out"
 
 for r in $(seq 1 "$reps"); do
@@ -185,7 +326,7 @@ for r in $(seq 1 "$reps"); do
     log="$out/${name}__r${r}.log"
     set +e
     timeout 900 "$build" --frontend none "${mode_args[@]}" \
-      --iq-replay "$capture" --iq-replay-rate "$rate" -o null > "$log" 2>&1
+      --iq-replay "${replays[r]}" --iq-replay-rate "$rate" -o null > "$log" 2>&1
     rc=$?
     set -e
     # The log is read as text (-a) whatever it holds: a D-STAR header decoded from noise prints its callsigns as
@@ -223,7 +364,7 @@ for r in $(seq 1 "$reps"); do
     {
       printf '%s\t%s\t%s\t%s\t%s\t%s' \
         "$name" "$(basename "$capture")-$rate" "$r" "${errs:-NA}" "$voice" "$sync"
-      printf '\t%s' "${analog[@]}" "$rc" "$off_path"
+      printf '\t%s' "${analog[@]}" "$rc" "$off_path" "${shifts[r]}"
       printf '\n'
     } >> "$summary"
     exit_note=$([ "$rc" -ne 0 ] && echo " (exit $rc)" || true)
@@ -232,11 +373,12 @@ for r in $(seq 1 "$reps"); do
     fi
     if [ "$metric" = analog ]; then
       # analog[] follows the summary header: snr inband clip audible first rms probe_hz probe_dbfs ...
-      printf '  r%-3s %-24s snr=%-8s inband=%-8s audible_ms=%-9s rms=%-8s probe_dbfs=%-8s%s\n' \
-        "$r" "$name" "${analog[0]}" "${analog[1]}" "${analog[3]}" "${analog[5]}" "${analog[7]}" "$exit_note"
+      printf '  r%-3s %-24s shift=%-5s snr=%-8s inband=%-8s audible_ms=%-9s rms=%-8s probe_dbfs=%-8s%s\n' \
+        "$r" "$name" "${shifts[r]}" "${analog[0]}" "${analog[1]}" "${analog[3]}" "${analog[5]}" "${analog[7]}" \
+        "$exit_note"
     else
-      printf '  r%-3s %-24s errs=%-6s voice=%-5s sync=%-5s%s\n' \
-        "$r" "$name" "${errs:-NA}" "$voice" "$sync" "$exit_note"
+      printf '  r%-3s %-24s shift=%-5s errs=%-6s voice=%-5s sync=%-5s%s\n' \
+        "$r" "$name" "${shifts[r]}" "${errs:-NA}" "$voice" "$sync" "$exit_note"
     fi
   done
 done

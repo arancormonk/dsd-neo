@@ -6,9 +6,16 @@ The analog metrics come from the analog replay host's "ANALOG METRIC:" and "ANAL
 is the same as for the digital metrics: every build is compared with the baseline inside one repeat, never across
 repeats, and a build compared with itself reports no difference.
 
-ReplayAbReport runs the report on canned summaries and needs only Python; ReplayAbAnalogMetric also runs
-replay_ab.sh. Name a class on the command line to run just that one, as tests/CMakeLists.txt does.
+Since replay is deterministic, replay_ab.sh replays each repeat as its own realization of the capture: a copy of the
+sidecar with every event moved by a fraction of a symbol, the same copy for every build in that repeat.
+ReplayAbRealizations holds the copies to that.
+
+ReplayAbReport runs the report on canned summaries and needs only Python; ReplayAbAnalogMetric, ReplayAbDigitalMetric
+and ReplayAbRealizations also run replay_ab.sh. Name a class on the command line to run just that one, as
+tests/CMakeLists.txt does.
 """
+
+import json
 
 import os
 from pathlib import Path
@@ -30,6 +37,9 @@ COLUMNS = [
     "tone_snr_db", "inband_db", "clip", "audible_ms", "first_audible_ms", "rms_dbfs",
     "probe_hz", "probe_dbfs", "probe_dbc", "tone", "tone_lock_ms", "tone_lock_pct", "rc", "off_path",
 ]
+# What replay_ab.sh writes: COLUMNS and, last, the input samples it shifted the capture's events by in that repeat.
+# The canned summaries below use COLUMNS, the layout of a summary written before the shift was recorded.
+SUMMARY_COLUMNS = COLUMNS + ["shift"]
 
 
 def analog_row(build, rep, snr, inband="30.00", audible="1500.00", tone="NA", lock="NA", probe="NA",
@@ -269,6 +279,57 @@ class ReplayAbReport(unittest.TestCase):
         self.assertIn("-1.00 +/- n/a", after[0])
         self.assertIn("needs at least two paired repeats", " ".join(result.stdout.split()))
 
+    def test_report_names_the_realizations_the_repeats_replayed(self):
+        rows = []
+        for rep, shift in ((1, "0"), (2, "214"), (3, "428")):
+            rows.append(["before", "cap.json-fast", str(rep), "40", "20", "5", shift])
+            rows.append(["after", "cap.json-fast", str(rep), "20", "20", "5", shift])
+        write_summary(self.summary, rows, COLUMNS[:6] + ["shift"])
+        result = report(self.summary, "--baseline", "before")
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("realizations: 3 (events shifted 0 to 428 input samples)", result.stdout)
+        self.assertIn("interval spans the realizations", " ".join(result.stdout.split()))
+        self.assertNotIn("same realization of the capture", result.stdout)
+
+        analog = []
+        for rep, shift in ((1, "0"), (2, "214")):
+            analog.append(analog_row("a", rep, "20.00") + [shift])
+            analog.append(analog_row("b", rep, "21.00") + [shift])
+        write_summary(self.summary, analog, SUMMARY_COLUMNS)
+        result = report(self.summary, "--baseline", "a")
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("realizations: 2 (events shifted 0 to 214 input samples)", result.stdout)
+
+    def test_one_realization_in_every_repeat_is_called_out(self):
+        # --no-realizations, or a capture with no events: the repeats are identical replays, so the difference
+        # reads +/- 0.00 whatever the capture would say about it, and the report must not let that pass for a
+        # resolved difference.
+        rows = []
+        for rep in (1, 2, 3):
+            rows.append(["before", "cap.json-fast", str(rep), "40", "20", "5", "0"])
+            rows.append(["after", "cap.json-fast", str(rep), "20", "20", "5", "0"])
+        write_summary(self.summary, rows, COLUMNS[:6] + ["shift"])
+        result = report(self.summary, "--baseline", "before")
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("-1.00 +/- 0.00", result.stdout)
+        self.assertIn("realizations: 1 (the capture as recorded)", result.stdout)
+        self.assertIn("note: every repeat replayed the same realization of the capture", result.stdout)
+        self.assertNotIn("interval spans the realizations", " ".join(result.stdout.split()))
+
+        analog = [analog_row(build, rep, "20.00") + ["0"] for rep in (1, 2) for build in ("a", "b")]
+        write_summary(self.summary, analog, SUMMARY_COLUMNS)
+        result = report(self.summary, "--baseline", "a")
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("note: every repeat replayed the same realization of the capture", result.stdout)
+
+    def test_summary_without_a_shift_column_names_no_realizations(self):
+        rows = [["before", "cap.json-fast", "1", "40", "20", "5"], ["after", "cap.json-fast", "1", "20", "20", "5"],
+                ["before", "cap.json-fast", "2", "40", "20", "5"], ["after", "cap.json-fast", "2", "20", "20", "5"]]
+        write_summary(self.summary, rows, COLUMNS[:6])
+        result = report(self.summary, "--baseline", "before")
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertNotIn("realization", result.stdout)
+
     def test_analog_request_without_analog_rows_fails(self):
         write_summary(self.summary, [["a", "cap.json-fast", "1", "4", "2", "1"]], COLUMNS[:6])
         result = report(self.summary, "--metric", "analog")
@@ -333,8 +394,8 @@ class ReplayAbAnalogMetric(unittest.TestCase):
         result = self.replay_ab("--metric", "analog", "--reps", "2", "--out", str(out), str(self.host), str(boosted))
         self.assertEqual(result.returncode, 0, result.stdout)
         lines = (out / "summary.tsv").read_text(encoding="utf-8").splitlines()
-        self.assertEqual(lines[0].split("\t"), COLUMNS)
-        rows = [dict(zip(COLUMNS, line.split("\t"))) for line in lines[1:]]
+        self.assertEqual(lines[0].split("\t"), SUMMARY_COLUMNS)
+        rows = [dict(zip(SUMMARY_COLUMNS, line.split("\t"))) for line in lines[1:]]
         self.assertEqual(len(rows), 4)
         by_variant = {(row["variant"], row["rep"]): row for row in rows}
         self.assertEqual(by_variant[("host.main", "1")]["tone_snr_db"], "25.00")
@@ -354,6 +415,8 @@ class ReplayAbAnalogMetric(unittest.TestCase):
             self.assertEqual(row["tone_lock_pct"], "0.00")
             self.assertEqual(row["rc"], "0")
             self.assertEqual(row["off_path"], "0")
+            # The capture has no events, so no repeat is shifted.
+            self.assertEqual(row["shift"], "0")
 
         result = report(out / "summary.tsv", "--baseline", "host.main")
         self.assertEqual(result.returncode, 0, result.stdout)
@@ -514,6 +577,191 @@ class ReplayAbDigitalMetric(unittest.TestCase):
         self.assertEqual(rows["host.main"]["voice"], "2")
         self.assertEqual(rows["host.variant"]["voice"], "2")
         self.assertEqual(rows["host.main"]["errs"], "4")
+
+
+FAKE_REPLAY_HOST = """#!/usr/bin/env bash
+# Stands in for dsd-neo: says which sidecar it was given to replay, so a test can see what each repeat replayed.
+while [ $# -gt 0 ]; do
+  if [ "$1" = --iq-replay ]; then
+    echo "REPLAYED: $2"
+  fi
+  shift
+done
+echo "12:00:00 Sync: +NXDN48 RTCH Voice"
+echo "NOTICE: Total audio errors: 1"
+exit 0
+"""
+
+NO_EVENTS_WARNING = "the capture has no events: every repeat replays the same realization; compare it across captures"
+
+
+def frequency_event(kind, offset, rate):
+    return {"kind": kind, "byte_offset": offset, "center_frequency_hz": 467756250,
+            "capture_center_frequency_hz": 467756250, "sample_rate_hz": rate, "reason": "frequency"}
+
+
+def mute_event(offset, duration):
+    return {"kind": "MUTE", "byte_offset": offset, "duration_bytes": duration, "reason": "retune_mute"}
+
+
+def sidecar(sample_format, rate, data_file, data_bytes, events=None):
+    """A sidecar with every field dsd-neo's replay requires, laid out as tests/fixtures/iq writes them."""
+    retunes = sum(1 for event in events or () if event["kind"] == "RETUNE")
+    meta = {
+        "format": "dsd-neo-iq", "version": 1 if events is None else 2, "sample_format": sample_format, "iq_order": "IQ",
+        "endianness": "none" if sample_format == "cu8" else "little", "capture_stage": "post_mute_pre_widen",
+        "sample_rate_hz": rate, "center_frequency_hz": 467087500, "capture_center_frequency_hz": 467087500, "ppm": 0,
+        "tuner_gain_tenth_db": 270, "rtl_dsp_bw_khz": 48, "base_decimation": rate // 48000, "post_downsample": 1,
+        "demod_rate_hz": 48000, "offset_tuning_enabled": False, "fs4_shift_enabled": False,
+        "combine_rotate_enabled": False, "muted_bytes_excluded": True, "contains_retunes": retunes > 0,
+        "capture_retune_count": retunes, "source_backend": "rtl", "source_args": "fixture",
+        "capture_started_utc": "2026-01-01T00:00:00Z", "data_file": data_file, "data_bytes": data_bytes,
+        "capture_drops": 0, "capture_drop_blocks": 0, "input_ring_drops": 0, "notes": "scan of the caf\u00e9 site",
+    }
+    if events is not None:
+        meta["events"] = events
+    return meta
+
+
+class ReplayAbRealizations(unittest.TestCase):
+    """Replay is deterministic, so identical repeats of one capture are one draw of it, and a paired interval over
+    them reports a precision the capture does not have. replay_ab.sh therefore replays repeat r from a copy of the
+    sidecar whose every event is moved forward by s_r = floor((r-1) * P / reps) + (r-1) input samples, with P one
+    2400-baud symbol at the capture's rate, so the shifts spread across a symbol and are not all multiples of the
+    front end's decimation. Every build replays the same copy in a repeat. Drives the real script, so
+    tests/CMakeLists.txt registers it beside ReplayAbAnalogMetric."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="replay-ab-realizations-"))
+        (self.tmp / "caps").mkdir()
+        self.capture = self.tmp / "caps" / "capture.iq.json"
+        self.out = self.tmp / "out"
+        self.builds = [self.tmp / "host.main", self.tmp / "host.copy"]
+        for build in self.builds:
+            write_script(build, FAKE_REPLAY_HOST)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def write_capture(self, meta):
+        with open(self.capture, "w", encoding="utf-8") as handle:
+            json.dump(meta, handle, indent=2, ensure_ascii=False)
+            handle.write("\n")
+        return self.capture.read_bytes()
+
+    def replay_ab(self, *args, capture=None, cwd=None):
+        return run([BASH, str(REPLAY_AB), "--capture", str(capture or self.capture), "--mode", "-fi", "--rate", "fast",
+                    "--out", str(self.out), *args, *(str(build) for build in self.builds)], cwd=str(cwd or ROOT))
+
+    def summary_rows(self):
+        lines = (self.out / "summary.tsv").read_text(encoding="utf-8").splitlines()
+        self.assertEqual(lines[0].split("\t"), SUMMARY_COLUMNS)
+        return [dict(zip(SUMMARY_COLUMNS, line.split("\t"))) for line in lines[1:]]
+
+    def replayed(self, build, rep):
+        log = (self.out / f"{build}__r{rep}.log").read_text(encoding="utf-8")
+        return [line[len("REPLAYED: "):] for line in log.splitlines() if line.startswith("REPLAYED: ")]
+
+    def realization(self, rep):
+        with open(self.out / "realizations" / f"r{rep}.json", encoding="utf-8") as handle:
+            return json.load(handle)
+
+    def assert_realizations(self, original, shifts, offsets, data_file):
+        """Repeat r replayed realizations/r<r>.json in every build, which is the original sidecar with data_file
+        absolute and each event's byte_offset replaced by offsets[r-1], and summary.tsv records shifts[r-1]."""
+        rows = self.summary_rows()
+        self.assertEqual(len(rows), 2 * len(shifts))
+        for rep, (shift, rep_offsets) in enumerate(zip(shifts, offsets), start=1):
+            copy_path = str(self.out / "realizations" / f"r{rep}.json")
+            for build in ("host.main", "host.copy"):
+                self.assertEqual(self.replayed(build, rep), [copy_path])
+            for row in rows:
+                if row["rep"] == str(rep):
+                    self.assertEqual(row["shift"], str(shift), row)
+            copy = self.realization(rep)
+            self.assertEqual(copy["data_file"], data_file)
+            self.assertEqual([event["byte_offset"] for event in copy["events"]], rep_offsets)
+            expected = json.loads(json.dumps(original))
+            expected["data_file"] = data_file
+            for event, offset in zip(expected["events"], rep_offsets):
+                event["byte_offset"] = offset
+            self.assertEqual(copy, expected)
+
+    def test_each_repeat_replays_its_own_copy_with_the_events_shifted(self):
+        # 48 kHz cu8: P = 20 samples, so four repeats shift by 0, 6, 12 and 18 samples, 2 bytes each. The event at
+        # 3990 stops at data_bytes from the second repeat on, and one already there stays. The capture is given by
+        # a path relative to the working directory, so data_file must resolve against the sidecar's own directory.
+        events = [frequency_event("RETUNE", 1000, 48000), mute_event(1000, 200), frequency_event("RESET", 1000, 48000),
+                  frequency_event("RETUNE", 3990, 48000), frequency_event("RESET", 4000, 48000)]
+        original = sidecar("cu8", 48000, "capture.iq", 4000, events)
+        before = self.write_capture(original)
+        result = self.replay_ab("--reps", "4", capture="caps/capture.iq.json", cwd=self.tmp)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assert_realizations(original, [0, 6, 12, 18],
+                                 [[1000, 1000, 1000, 3990, 4000], [1012, 1012, 1012, 4000, 4000],
+                                  [1024, 1024, 1024, 4000, 4000], [1036, 1036, 1036, 4000, 4000]],
+                                 str(self.tmp / "caps" / "capture.iq"))
+        self.assertEqual(self.capture.read_bytes(), before)
+        self.assertRegex(result.stdout, r"(?m)^  r2\s+host\.\w+\s+shift=6\s")
+        self.assertIn("0 to 18 input samples", result.stdout)
+        self.assertNotIn(NO_EVENTS_WARNING, result.stdout)
+
+        result = report(self.out / "summary.tsv", "--baseline", "host.main")
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("realizations: 4 (events shifted 0 to 18 input samples)", result.stdout)
+
+    def test_cf32_events_move_eight_bytes_a_sample(self):
+        # 1.536 Msps: P = 640 samples, so three repeats shift by 0, 214 and 428 samples, 8 bytes each in cf32. An
+        # absolute data_file is kept as it is.
+        data = str(self.tmp / "elsewhere" / "capture.cf32")
+        events = [frequency_event("RETUNE", 8000, 1536000), mute_event(8000, 4096),
+                  frequency_event("RESET", 78000, 1536000)]
+        original = sidecar("cf32", 1536000, data, 80000, events)
+        self.write_capture(original)
+        result = self.replay_ab("--reps", "3")
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assert_realizations(original, [0, 214, 428],
+                                 [[8000, 8000, 78000], [9712, 9712, 79712], [11424, 11424, 80000]], data)
+
+    def test_capture_without_events_warns_once_and_replays_as_recorded(self):
+        for events in (None, []):
+            with self.subTest(events=events):
+                shutil.rmtree(self.out, ignore_errors=True)
+                self.write_capture(sidecar("cu8", 48000, "capture.iq", 4000, events))
+                result = self.replay_ab("--reps", "3")
+                self.assertEqual(result.returncode, 0, result.stdout)
+                self.assertEqual(result.stdout.count(NO_EVENTS_WARNING), 1, result.stdout)
+                self.assertIn("realizations: none", result.stdout)
+                self.assertFalse((self.out / "realizations").exists())
+                for rep in (1, 2, 3):
+                    for build in ("host.main", "host.copy"):
+                        self.assertEqual(self.replayed(build, rep), [str(self.capture)])
+                self.assertEqual({row["shift"] for row in self.summary_rows()}, {"0"})
+
+    def test_no_realizations_replays_every_repeat_as_recorded(self):
+        # The determinism control: identical repeats, which must pair to +0.00 +/- 0.00.
+        self.write_capture(sidecar("cu8", 48000, "capture.iq", 4000, [frequency_event("RESET", 1000, 48000)]))
+        result = self.replay_ab("--reps", "3", "--no-realizations")
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("realizations: off", result.stdout)
+        self.assertNotIn(NO_EVENTS_WARNING, result.stdout)
+        self.assertFalse((self.out / "realizations").exists())
+        for rep in (1, 2, 3):
+            for build in ("host.main", "host.copy"):
+                self.assertEqual(self.replayed(build, rep), [str(self.capture)])
+        self.assertEqual({row["shift"] for row in self.summary_rows()}, {"0"})
+
+    def test_unknown_sample_format_fails_before_any_replay(self):
+        # The bytes a sample takes are known only for cu8 and cf32, the formats replay accepts.
+        self.write_capture(sidecar("cs16", 48000, "capture.iq", 4000, [frequency_event("RESET", 1000, 48000)]))
+        result = self.replay_ab("--reps", "2")
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn("sample_format 'cs16'", result.stdout)
+        self.assertEqual(list(self.out.glob("*.log")), [])
+
+        # --no-realizations needs no shift, so it still replays such a capture.
+        result = self.replay_ab("--reps", "2", "--no-realizations")
+        self.assertEqual(result.returncode, 0, result.stdout)
 
 
 if __name__ == "__main__":
