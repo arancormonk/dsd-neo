@@ -2643,8 +2643,11 @@ Qt Quick frontend (`src/ui/qt`):
     rows only: a call the first replay logged as two rows, because newer rows sat between its fragments, stays two rows,
     and the repeat folds into the newer one. An entry that knows no ring (a row's seed in `load()` when the seen store
     has lost its entry, or an entry from an older store) is taken to be the reading ring's, so a relaunch never moves a
-    logged row into the running session. A state an embedding host reuses for another run keeps its ring and identity,
-    and the rows the earlier run left there stay that session's.
+    single-fragment logged row into the running session. The seed covers single-fragment rows only: a merged row keeps
+    one fragment's slot and push stamp but the earliest fragment's start, so its seed's key is no ring row's. A merged
+    call whose seen entries were evicted or lost is logged again as new rows, one per fragment. A state an embedding
+    host reuses for another run keeps its ring and identity, and the rows the earlier run left there stay that
+    session's.
   - Tests: `UI_QT_CALL_HISTORY_MODEL`, `UI_QT_TALKGROUP_LIST_MODEL`, `UI_QT_QML_CALL_LISTS`
     (`tst_history_session_identity.qml`), `CORE_INIT_STATE` (the ring identity).
 - Received tone or code (issues #522, #523): `MetricsModel` publishes the `rxTone*` group (`rxToneVisible`,

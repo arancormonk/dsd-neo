@@ -488,8 +488,8 @@ CallHistoryModel::noteSeen(const QString& key, quint64 ring, qint64 when, qint64
         return SeenNew;
     }
     if (seen->ring == 0U) {
-        // An entry that does not know its ring: a logged row's own entry, seeded by load() when the seen
-        // store has lost it, or one from a store written before rings had an identity. It is taken to be
+        // An entry that does not know its ring: a single-fragment row's own entry, seeded by load() when the
+        // seen store has lost it, or one from a store written before rings had an identity. It is taken to be
         // the reading ring's, as every entry was before: the row stays in the session that logged it,
         // never moved into the running one. A capture replayed again across such an entry is not known
         // as heard again.
@@ -982,7 +982,10 @@ CallHistoryModel::load() {
     for (auto it = rows.crbegin(); it != rows.crend(); ++it) {
         // A row does not keep the ring it was read from, so its seed knows none (ring 0). The persisted
         // seen store below replaces it with the real entry; should the store have lost that, the next read
-        // takes the seed to be the reading ring's (noteSeen()) and leaves the row in its session.
+        // takes the seed to be the reading ring's (noteSeen()) and leaves the row in its session. That holds
+        // for a row of one fragment only. A merged row keeps one fragment's slot and seq but the earliest
+        // fragment's start, so its seed's key is no ring row's, and a merged call whose seen entries were
+        // evicted or lost is logged again as new rows, one per fragment.
         m_seen.insert(keyFor(*it), SeenState{it->when, it->when + qMax(it->durationSecs, 0), it->src, it->emergency,
                                              it->enc, it->sourceName, it->session, 0U, QString(), false});
         if (tryMerge(*it, kMergeScanRows) < 0) {
