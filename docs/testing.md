@@ -369,8 +369,9 @@ lengths of the first retunes in a real 1.536 Msps NXDN scan capture divided by i
 `DECODE_IQ_NXDN48_AFTER_RETUNE` (`-fi`) is the control that the eventful path decodes the call,
 `IQ_INFO_NXDN48_AFTER_RETUNE` reads the event timeline back, and `DECODE_IQ_NXDN48_AFTER_RETUNE_AUTO` decodes the call
 under `-fa`, which needs the hunt to land on 20 sps after the `RESET` by itself. The lead-in was chosen by sweeping it,
-three fast `-fa` replays per point; the three were byte-identical at every one of the 48 points, and `-fi` decoded the
-call at all of them:
+three fast `-fa` replays per point: 1.5-9.5 s in 0.5 s steps, then 6.0-9.0 s in 0.1 s steps (the grid the comment above
+`DERIVED_RETUNE` records), 48 sweep points over 41 distinct lead-ins, since the fine grid repeats seven of the coarse
+ones. The three replays were byte-identical at every point, and `-fi` decoded the call at all of them:
 
 | Lead-in (s) | `-fa` decodes `Src=901` | Hunt steps before the `RESET` (sps) | First hunt step after it | `Src=901` lines / audio errors |
 | --- | --- | --- | --- | --- |
@@ -677,12 +678,12 @@ with open(os.path.join(out, "nfm_ctcss_real_neighbour.iq.json"), "w", encoding="
     json.dump(meta, handle, indent=2)
 EOF
 tools/replay_ab.sh --metric analog --capture /tmp/neighbour/nfm_ctcss_real_neighbour.iq.json \
-    --mode -fA --reps 12 --out /tmp/ab/neighbour /tmp/ab/analog_replay.main /tmp/ab/analog_replay.branch
+    --mode -fA --reps 3 --out /tmp/ab/neighbour /tmp/ab/analog_replay.main /tmp/ab/analog_replay.branch
 ```
 
-The hosts are set up as under [Analog A/B](#analog-ab). Over those 12 realtime repeats the detector locked 173.8 Hz at
-300 ms on every one, reported no other tone, and dropped and re-locked it once around a similar reversal and gap at
-2.44 s, 90.33% locked in all.
+The hosts are set up as under [Analog A/B](#analog-ab), which says why three repeats are enough. Over the 12 realtime
+repeats measured when this case was added, the detector locked 173.8 Hz at 300 ms on every one, reported no other
+tone, and dropped and re-locked it once around a similar reversal and gap at 2.44 s, 90.33% locked in all.
 
 #### Received code (DCS) on the analog monitor
 
@@ -879,10 +880,12 @@ Known gaps and caveats:
 - **P25 Phase 2** asserts SACCH framing only. Full payload decode needs the
   system WACN/SYSID/CC via `-X`, which the public sample does not identify.
 - Call-state timers run on the capture's clock under replay (issue #572), so an
-  assertion that depends on one holds in `fast` and `realtime` replay alike. Not
-  under `-T` or `-Y`, though: the P25 trunking watchdog ticks on a real-time
-  cadence and replay refuses their retunes, so those replays are outside the
-  determinism guarantee (see [Replay determinism](#replay-determinism-issue-572)).
+  assertion that depends on one holds in `fast` and `realtime` replay alike.
+  `-T` and `-Y` replays are outside that guarantee (see
+  [Replay determinism](#replay-determinism-issue-572)): under `-T` the P25
+  trunking watchdog checks its timers at a real-time cadence, and under `-Y`
+  replay refuses the scanner's retunes, so its hangtime and visit timers cannot
+  follow the scan they time.
 - **AM** cases run `-fM`, native AM reception (issue #524): `DECODE_IQ_ANALOG_AM_*` in the table below. Under `-fA` the
   FM monitor demodulates `am_airband_real`, which measures an FM discriminator on an AM signal, so `-fA` cannot stand in
   for an AM case (`DECODE_IQ_ANALOG_REAL_CTCSS_NOFALSE_AM` uses it under `-fA` only as no-false-lock material for the
@@ -1391,9 +1394,12 @@ Reading it:
   with no differing repeat: the repeats are the control, and any spread is a
   determinism regression to fix before anything is measured. Before issue #572
   the control measured a noise floor instead, about 0.1 errors per voice frame
-  over 12 repeats on the captures behind issue #444. Keep at least two repeats,
-  which the report's paired interval needs; past a few, spend the time on more
-  captures rather than more repeats.
+  over 12 repeats on the captures behind issue #444. Two or three repeats are
+  enough to show the control reads `+0.00 +/- 0.00`, and more add nothing:
+  `replay_ab.sh` still defaults to `--reps 12`, from when the repeats measured
+  that floor, so the examples here pass `--reps 3`. Keep at least two, which
+  the report's paired interval needs, and spend the time saved on more
+  captures.
 - Leave `-T` and `-Y` out of `--mode`: those replays are outside the
   determinism guarantee. Otherwise load on the machine no longer changes what a
   replay decodes, and `--rate realtime`, the default, decodes what `fast` does,
@@ -1500,7 +1506,7 @@ printf '#!/bin/sh\nDSD_NEO_DEEMPH=nfm exec /tmp/ab/analog_replay.branch "$@"\n' 
 chmod +x /tmp/ab/deemph_nfm
 
 tools/replay_ab.sh --metric analog --capture tests/fixtures/iq/nfm_ctcss_real.iq.json \
-    --mode "-fA -v 0 --analog-probe-hz 12500" --reps 12 --out /tmp/ab/ctcss \
+    --mode "-fA -v 0 --analog-probe-hz 12500" --reps 3 --out /tmp/ab/ctcss \
     /tmp/ab/analog_replay.main /tmp/ab/analog_replay.branch /tmp/ab/deemph_nfm
 tools/replay_ab_report.py /tmp/ab/ctcss/summary.tsv --baseline analog_replay.main
 ```
@@ -1509,16 +1515,16 @@ tools/replay_ab_report.py /tmp/ab/ctcss/summary.tsv --baseline analog_replay.mai
 [Analog monitor audio checks](#analog-monitor-audio-checks)); leave it out when the question is what a listener gets.
 The 12.5 kHz probe there reads the neighbour channel's leakage as `probe_dbfs`, over about 75 Hz around 12.5 kHz in
 each 20 ms block, no finer.
-Run the control first, one host against a copy of itself. I/Q replay is deterministic (issue #572), so the control
-must read `+0.00 +/- 0.00` with no differing repeats, as the digital one must: 12 realtime repeats on `nfm_ctcss_real`
-and on `nfm_tone_synth` did, for every column. A run whose log carries the host's CQPSK-symbols warning left the
-monitor path: a build from before the analog family stood the modulation auto-switch down does that on
-`am_airband_real` (see the `am_airband_real` note under
-[Full-chain modulation decode tests](#full-chain-modulation-decode-tests)), and such a run measures the auto-switch,
-not the change, and on a build from before issue #572 is not deterministic either; the report leaves it out as
-`off_path` and warns, and a build with no other repeats fails the report. A difference that shows up in a control is
-a determinism regression in the build or the harness, not the change's. Attach the report to the pull request with the
-capture, flags and repeat count.
+Run the control first, one host against a copy of itself. I/Q replay is deterministic (issue #572), so the control must
+read `+0.00 +/- 0.00` with no differing repeats, as the digital one must, and as there two or three repeats show it
+(hence `--reps 3` above): 12 realtime repeats on `nfm_ctcss_real` and on `nfm_tone_synth` did, for every column. A run
+whose log carries the host's CQPSK-symbols warning left the monitor path: a build from before the analog family stood
+the modulation auto-switch down does that on `am_airband_real` (see the `am_airband_real` note under
+[Full-chain modulation decode tests](#full-chain-modulation-decode-tests)), and such a run measures the auto-switch, not
+the change, and on a build from before issue #572 is not deterministic either; the report leaves it out as `off_path`
+and warns, and a build with no other repeats fails the report. A difference that shows up in a control is a determinism regression in
+the build or the harness, not the change's. Attach the report to the pull request with the capture, flags and repeat
+count.
 
 ### Analog listen-test sign-off
 

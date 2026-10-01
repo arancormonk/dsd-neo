@@ -127,10 +127,13 @@ same timestamps. `docs/testing.md` ("Replay determinism") describes the cases th
 paced on real time are not part of it: the audio-sink statistics, the decode loop's `Runtime:` total, and the
 input-level gain warnings, whose cooldown runs on real time. Two kinds of replay are outside it altogether:
 
-- **Trunking and scanning (`-T`, `-Y`).** The P25 trunking state machine's watchdog thread checks its hangtime and
-  return-to-control-channel timers at a real-time cadence, and replay refuses the retunes trunking and scanning ask for
-  (`NOTICE: Retune ignored during IQ replay.`, itself paced on real time), so such a replay can decide differently from
-  run to run.
+- **Trunking (`-T`).** The P25 trunking state machine's watchdog thread checks its hangtime and
+  return-to-control-channel timers at a real-time cadence, so where those checks fall among the replayed samples follows
+  the wall clock, and a trunked replay can decide differently from run to run. Replay also refuses the retunes trunking
+  asks for.
+- **Conventional scanning (`-Y`).** Replay refuses the scanner's retunes (`NOTICE: Retune ignored during IQ replay.`,
+  logged at most once a second of real time), so its hangtime and visit timers step a scan that never leaves the
+  capture's channel, and how often the notice prints follows the replay's pace.
 - **A replay restarted mid-run.** Only a replay started as the run's input runs on the capture's clock, from its first
   sample. When an interactive frontend restarts the stream (a gain, device or DSP bandwidth change, or a stream
   restart) or switches the input away, the decode clock goes back to the system clock, and a replay that starts again

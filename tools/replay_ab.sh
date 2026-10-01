@@ -13,6 +13,9 @@ set -euo pipefail
 # (replays under -T or -Y excepted, so leave them out of --mode). The repeats are
 # now the control: a build against a copy of itself must report +0.00 +/- 0.00,
 # and any spread is a determinism regression to fix before comparing builds.
+# Two or three repeats are enough to show that, and more add nothing; --reps
+# still defaults to 12, from when the repeats measured a noise floor, so the
+# example below passes --reps 3 (the report's paired interval needs two).
 # What still varies is the capture: one replay is one draw of how the decoder,
 # the -fa sync hunt above all, meets its transmissions, so compare builds across
 # several captures, or copies of one with its events shifted (docs/testing.md,
@@ -51,7 +54,7 @@ set -euo pipefail
 #   --out <dir>        Where to write logs and summary.tsv (default: mktemp -d)
 #
 # Example:
-#   tools/replay_ab.sh --capture ~/captures/nxdn.json --mode -fi --reps 12 \
+#   tools/replay_ab.sh --capture ~/captures/nxdn.json --mode -fi --reps 3 \
 #       /tmp/dsd-neo.before ./build/dev-debug/apps/dsd-cli/dsd-neo
 #   tools/replay_ab_report.py <out>/summary.tsv
 
