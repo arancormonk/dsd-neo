@@ -1735,7 +1735,11 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   its cutoff held to 0.9 x Nyquist, or above ~51.4 kHz the 63-tap fallback prototype, cut at a third of the rate), the
   width published for an unset default that plan runs.
   The plan cache key is (rate_out, profile, width). The SIMD complex FIR kernels size their scratch per call, so the
-  288-tap capacity needs no kernel change. Tests: `DSP_CHANNEL_FILTERS`, `DSP_DEMOD_MISC`.
+  288-tap capacity needs no kernel change. A live width edit on the running monitor is seamless (issue #572):
+  `rtl_stream_apply_analog_request()` drops only the plan, and the half-band cascade and the channel FIR keep their
+  histories and pending counts, so the new width's taps run over the true past and no sample is lost or repeated at
+  the edit. A family or FM <-> AM kind switch, a retune and a rate change still start the filters over. Tests:
+  `DSP_CHANNEL_FILTERS`, `DSP_DEMOD_MISC`, `IO_RTL_ANALOG_FAMILY_SWITCH` (`rtl_stream_test_analog_width_continuity()`).
 - Streaming linear front end (issue #572): the half-band cascade and the channel FIR (`simd_hb_decim2_complex()`,
   `simd_hb_decim2_real()` and `simd_fir_complex_apply()` in `<dsd-neo/dsp/simd_fir.h>`, every backend sharing the call
   contracts in `src/dsp/simd_fir_internal.h`) carry their look-ahead, and the half-band its decimation phase, from one
@@ -1773,8 +1777,9 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
     and stream open (`demod_init_common_defaults()`) delegate to it.
   - `channel_lpf_apply()` clears the channel state on a plan for another `rate_out` than the last one, and on the first
     block the filter does not run on (filter off, or no plan for the width); a width or profile change at the same rate
-    keeps it. `full_demod()` gives a block its front end left empty (a filter warm-up) `result_len` 0 and no per-block
-    decision: squelch gate, envelope, channel power and CQPSK zero symbols wait for a block with samples.
+    keeps it, and so does the stream layer's live width edit, which keeps the half-band state too (see Channel LPF).
+    `full_demod()` gives a block its front end left empty (a filter warm-up) `result_len` 0 and no per-block decision:
+    squelch gate, envelope, channel power and CQPSK zero symbols wait for a block with samples.
   - Tests: `DSP_FIR_SEGMENTATION` (every backend and the dispatcher, FIR and half-band, against the count formulas, a
     double-precision reference and their whole-stream output over many splits; tap switches; invalid calls; capacity;
     exact-size buffers at every half-band block size up to a few filter spans; the pipeline rules above, the pass-count
@@ -1922,14 +1927,15 @@ Notes:
     level. A configured I/Q DC blocker and I/Q balance are bypassed under AM, each with a one-time note
     (`rtl_demod_note_am_iq_dc_bypass()`, `rtl_demod_note_am_iq_balance_bypass()`, from configuration, a kind switch, a
     switch onto the analog family (`rtl_demod_enter_analog_family()`) and the runtime toggles); a kind switch clears
-    both estimates. A live FM <-> AM switch on the running monitor (`rtl_stream_apply_analog_request()`) also resets
-    the resampler history and clears the output ring with a generation bump, so the new kind's audio does not follow the
-    old detector's; a width-only change keeps both. Only a family or kind switch changes the detector: a profile that
+    both estimates. A live FM <-> AM switch on the running monitor (`rtl_stream_apply_analog_request()`) also starts
+    the half-band and channel filters over, whatever the width, resets the resampler history and clears the output ring
+    with a generation bump, so the new kind's audio does not follow the old detector's; a width-only change keeps all
+    of them. Only a family or kind switch changes the detector: a profile that
     turns CQPSK off (`rtl_stream_disable_cqpsk_mode()`) installs the analog family's own, so an AM monitor keeps the
     envelope detector through a CQPSK-off toggle, a failed tune's restore and a typed digital row's profile, which
     `full_demod()` reads with the discriminator while its channel is not the monitor's. Tests: `IO_RTL_DEMOD_CONFIG`,
     `IO_RTL_ANALOG_FAMILY_SWITCH` (digital <-> AM, an AM start to digital and back to AM on the same stream, live FM <->
-    AM against fresh opens via `rtl_stream_test_analog_kind_switch()`, the CQPSK-off profiles via
+    AM against fresh opens via `rtl_stream_test_analog_kind_switch()`, at the same width too, the CQPSK-off profiles via
     `rtl_stream_test_am_monitor_symbol_profiles()`, the DSP menu's return from CQPSK to the FM or AM monitor, taken and
     refused where it lands, via `rtl_stream_test_monitor_return_from_cqpsk()`, and the live output scale through
     `demod_write_output_block()` via `rtl_stream_test_monitor_output_scale()`: 1/pi for FM, none for AM or digital
@@ -2083,7 +2089,8 @@ Notes:
     `_digital_family()`), restarts the carrier and timing loops (Costas, band-edge FLL, Gardner TED) and zeroes the
     I/Q DC and balance estimates, the squelch dwell toward a multi-frequency hop and a replay's post-demod decimator as
     an open does, clears the output ring and bumps
-    the output generation; a width-only change redesigns the filter from empty histories. A switch to digital also
+    the output generation; a width-only change redesigns the filter and keeps its histories and the half-band cascade's,
+    so the edit is seamless. A switch to digital also
     keeps the open's floor of two samples per symbol for the TED, which the symbol-profile setter it applies does not
     (ProVoice at a 12 kHz DSP rate), and times a profile it does not override for the demod rate it lands on, as an
     open does, not for the rate the decoder read when it queued the profile: a retune can settle the device on
@@ -2153,7 +2160,8 @@ Notes:
     from a `-fA` session a CQPSK toggle or a
     typed digital row had moved off the monitor output, or with a CQPSK toggle still queued when the digital mode is
     picked; a typed digital row under `-fA` and on a DMR session switched
-    to analog; width-only changes; requests with no stream; live requests and
+    to analog; width-only changes, seamless through the half-band cascade and the channel filter at one tap count and
+    onto more and fewer taps; requests with no stream; live requests and
     retune profiles refused against a running stream's rate and a replay's `post_downsample`, and a live request
     refused at the rate a retune moved the stream to before it was consumed, a DMR session's switch onto the monitor
     included (also one requested after a retune moved the rate its check accepted), with the unset default switching

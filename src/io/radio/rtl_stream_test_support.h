@@ -647,9 +647,9 @@ typedef struct rtl_stream_test_width_change_result {
     int lpf_enable_after;
     int output_kind_after;
     int analog_family_after;
-    int plan_invalidated; /* the consume dropped the channel-filter plan (taps and width) */
-    int channel_hist_cleared;
-    int hb_hist_cleared;
+    int plan_invalidated;   /* the consume dropped the channel-filter plan (taps and width) */
+    int channel_state_kept; /* 1 when the consume left the (seeded) channel history and pending count as they were */
+    int hb_state_kept;      /* likewise every half-band stage's history and pending count */
     int published_width_hz;
     int published_lpf_on;
     uint32_t generation_before;
@@ -667,6 +667,49 @@ typedef struct rtl_stream_test_width_change_result {
  * demod-thread block boundary, then queue the same width again. */
 int rtl_stream_test_analog_width_change(int rate_hz, int width_before_hz, int width_after_hz,
                                         rtl_stream_test_width_change_result* out);
+
+/* A live width edit on a running NFM monitor, with its blocks run through full_demod(): the half-band cascade, the
+ * channel filter, then a pass-through demodulator, so each block's output is the channel filter's (the I/Q DC blocker,
+ * I/Q balance and the channel squelch are off). */
+typedef struct rtl_stream_test_width_continuity_case {
+    int rate_hz;         /* the demod rate the monitor opens at */
+    int passes;          /* half-band passes ahead of the channel filter (1..10): the input runs at rate_hz << passes */
+    int width_before_hz; /* the NFM width the monitor opens with */
+    int width_after_hz;  /* the width the live request asks for */
+    /* NULL, or the channel plan the blocks before the edit run in place of the opening width's design. At one rate
+       every analog width designs the same tap count (the Blackman transition is fixed), so a seeded plan of another
+       length is what makes the edit change the tap count. */
+    const float* seeded_taps;
+    int seeded_taps_len;
+    const float* iq;        /* interleaved input, the sum of block_sizes complex samples */
+    const int* block_sizes; /* complex samples per block, each at most MAXIMUM_BUF_LENGTH / 2 */
+    int n_blocks;
+    int edit_block; /* the request is queued and consumed at the block boundary before this block */
+    float* out;     /* the channel filter's output over all the blocks, interleaved */
+    int out_cap;    /* floats */
+} rtl_stream_test_width_continuity_case;
+
+typedef struct rtl_stream_test_width_continuity_result {
+    int request_rc;              /* rtl_stream_request_analog_profile() for the new width, while the stream runs */
+    int monitor_after;           /* dsd_demod_analog_monitor_active() once the edit was consumed */
+    int width_after;             /* demod_state::channel_lpf_width_hz, likewise */
+    int plan_dropped;            /* the consume dropped the running plan, so the next block designs the new width's */
+    int channel_state_kept;      /* the consume left the channel history and pending count as they were */
+    int hb_state_kept;           /* likewise every half-band stage's history and pending count */
+    int channel_pending_at_edit; /* demod_state::channel_lpf_pending when the request was queued */
+    int hb_pending_at_edit;      /* the sum of demod_state::hb_pending over the cascade's stages, likewise */
+    int taps_before;             /* the plan's tap count on the last block before the edit */
+    int taps_after;              /* the plan's tap count on the last block */
+    int outputs_before_edit;     /* complex samples the channel filter made before the edit */
+    int outputs;                 /* complex samples it made over all the blocks (in out) */
+    int channel_pending_end;     /* demod_state::channel_lpf_pending after the last block */
+} rtl_stream_test_width_continuity_result;
+
+/* Open the NFM monitor described by @p c, run its blocks with the width edit consumed before c->edit_block, and record
+ * the channel filter's output in c->out. Returns 0, or a negative value when the case is invalid, the open failed or
+ * the output did not fit c->out_cap. */
+int rtl_stream_test_analog_width_continuity(const rtl_stream_test_width_continuity_case* c,
+                                            rtl_stream_test_width_continuity_result* out);
 
 /* With no stream running and @p stale_rate_out_hz left in the published rate mirror by an earlier session, ask for an
  * analog profile (@p kind, @p width_hz) through the live request and through a retune profile. Returns the live

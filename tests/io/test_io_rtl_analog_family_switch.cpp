@@ -27,7 +27,12 @@
  * lands on a fresh open at the new rate, its CQPSK timing included.
  *
  * A width-only change on a running analog stream stays inside the family: it
- * drops the channel plan and the channel/half-band histories and nothing else.
+ * drops the channel plan and nothing else. It is seamless (issue #572): the
+ * half-band and channel histories and pending counts stay, so through the
+ * cascade and the channel filter no sample is lost or repeated at the edit and
+ * every output after it is the new taps over the true history, whether the tap
+ * count holds, rises or falls. An FM <-> AM switch starts the filters over
+ * whatever the width.
  *
  * While a stream runs, a width its published demod rate (or a replay's post-demod
  * decimation) cannot realize is refused before it is queued, as a live request
@@ -80,14 +85,20 @@
  */
 
 #include <cmath>
+#include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/dsp/demod_pipeline.h>
+#include <dsd-neo/dsp/demod_state.h>
+#include <dsd-neo/dsp/halfband.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/log.h>
+#include <vector>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "rtl_stream_test_support.h"
@@ -571,6 +582,11 @@ test_fm_am_kind_switch(void) {
     am_wide = am;
     am_wide.analog_am_bandwidth_hz = 15000;
     rc |= expect_same_kind_keeps_audio("AM 10k -> AM 15k @48k", &am, &am_wide, 48000);
+    /* The same width on both sides: the kind alone starts the channel and half-band filters over, as a fresh open of
+       the new kind does, while a width-only change keeps them (test_width_edit_continuity()). */
+    fm.analog_nfm_bandwidth_hz = 10000;
+    rc |= expect_kind_switch("FM 10k -> AM 10k @48k", &fm, &am, 48000);
+    rc |= expect_kind_switch("AM 10k -> FM 10k @48k", &am, &fm, 48000);
     return rc;
 }
 
@@ -1115,8 +1131,10 @@ test_digital_row_on_analog_session(void) {
 }
 
 /* A width-only request on a running analog stream: the new width reaches the filter at the next block boundary, the
- * old plan and the channel/half-band delay lines are dropped, and nothing a family switch does happens (the ring and
- * the output generation are untouched). Asking again for the width already running changes nothing. */
+ * old plan is dropped so the next block designs the new width's, the channel and half-band filters keep their histories
+ * and pending counts (the edit is seamless, issue #572: see test_width_edit_continuity()), and nothing a family switch
+ * does happens (the ring and the output generation are untouched). Asking again for the width already running changes
+ * nothing. */
 static int
 test_width_only_change(void) {
     rtl_stream_test_width_change_result w;
@@ -1129,8 +1147,8 @@ test_width_only_change(void) {
     rc |= expect_int("still the monitor output", w.output_kind_after, RTL_STREAM_OUTPUT_AUDIO_MONITOR);
     rc |= expect_int("still the analog family", w.analog_family_after, 1);
     rc |= expect_int("old plan dropped", w.plan_invalidated, 1);
-    rc |= expect_int("channel history cleared", w.channel_hist_cleared, 1);
-    rc |= expect_int("half-band history cleared", w.hb_hist_cleared, 1);
+    rc |= expect_int("channel history and pending kept", w.channel_state_kept, 1);
+    rc |= expect_int("half-band histories and pending kept", w.hb_state_kept, 1);
     rc |= expect_int("new width published", w.published_width_hz, 12500);
     rc |= expect_int("new width published as filtered", w.published_lpf_on, 1);
     rc |= expect_int("width change keeps the generation", w.generation_after == w.generation_before, 1);
@@ -1145,8 +1163,261 @@ test_width_only_change(void) {
     rc |= expect_int("default to explicit run", rtl_stream_test_analog_width_change(24000, 0, 8000, &w), 0);
     rc |= expect_int("default to explicit width", w.width_after, 8000);
     rc |= expect_int("default to explicit plan dropped", w.plan_invalidated, 1);
-    rc |= expect_int("default to explicit histories cleared", w.channel_hist_cleared && w.hb_hist_cleared, 1);
+    rc |= expect_int("default to explicit histories kept", w.channel_state_kept && w.hb_state_kept, 1);
     rc |= expect_int("default to explicit published", w.published_width_hz, 8000);
+    return rc;
+}
+
+namespace {
+
+/* The width continuity cases: the 48 kHz NFM monitor after two half-band passes from 192 kHz, 16 kHz wide, asked for
+ * 12.5 kHz. */
+const int kContinuityRateHz = 48000;
+const int kContinuityPasses = 2;
+const int kContinuityWidthBeforeHz = 16000;
+const int kContinuityWidthAfterHz = 12500;
+/* Against a double-precision reference. The float pipeline stays far inside it; a dropped, repeated or zeroed sample of
+   history moves an output by the order of the input (uniform in +/-1). */
+const double kContinuityTol = 2e-5;
+
+/* Blocks in complex input samples, the edit consumed before kContinuityEditBlock. The odd and tiny sizes leave the
+   cascade's stages and the channel filter part-way through their look-ahead at the edit, and the first blocks after it
+   make few outputs or none. */
+const int kContinuityBlocks[] = {1000, 1, 2, 3,  517, 2049, 33, 777,  1023, 5,   4095,
+                                 1,    3, 7, 64, 333, 4096, 1,  2047, 999,  2501};
+const int kContinuityBlockCount = (int)(sizeof kContinuityBlocks / sizeof kContinuityBlocks[0]);
+const int kContinuityEditBlock = 11;
+
+struct continuity_case {
+    const char* name;
+    /* The plan the blocks before the edit run: 0 for the opening width's own design at kContinuityRateHz, else the
+       opening width's design at this rate, a plan of another length (see rtl_stream_test_width_continuity_case). */
+    int seed_design_rate_hz;
+    int want_tap_change; /* the sign of the new tap count minus the old */
+};
+
+} // namespace
+
+static uint32_t g_continuity_rand = 0U;
+
+static float
+continuity_noise(void) {
+    uint32_t x = g_continuity_rand;
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    g_continuity_rand = x;
+    return ((float)(x >> 8) * (1.0f / 16777215.0f) * 2.0f) - 1.0f;
+}
+
+static std::vector<float>
+continuity_input(int complex_samples, uint32_t seed) {
+    g_continuity_rand = seed;
+    std::vector<float> iq((size_t)complex_samples * 2U);
+    for (float& v : iq) {
+        v = continuity_noise();
+    }
+    return iq;
+}
+
+static std::vector<float>
+continuity_design(int rate_hz, int width_hz) {
+    std::vector<float> taps((size_t)DSD_CHANNEL_LPF_MAX_TAPS, 0.0f);
+    const int len = dsd_channel_lpf_design_analog(rate_hz, width_hz, taps.data(), DSD_CHANNEL_LPF_MAX_TAPS);
+    taps.resize(len > 0 ? (size_t)len : 0U);
+    return taps;
+}
+
+/* One half-band stage over a whole stream from nothing, in double: output k is centred on input 2k, the sum over j of
+ * taps[j] * x[2k + j - c] with nothing before the stream, for each k whose look-ahead the stream holds. */
+static std::vector<double>
+continuity_halfband_stage(const std::vector<double>& x, const float* taps, int len) {
+    const int n = (int)(x.size() / 2U);
+    const int c = (len - 1) / 2;
+    const int m = n >= c + 1 ? (n - c + 1) / 2 : 0;
+    std::vector<double> y((size_t)m * 2U, 0.0);
+    for (int k = 0; k < m; k++) {
+        double acc_i = 0.0;
+        double acc_q = 0.0;
+        for (int j = 0; j < len; j++) {
+            const int idx = 2 * k + j - c;
+            if (idx < 0) {
+                continue;
+            }
+            acc_i += (double)taps[j] * x[(size_t)idx * 2U];
+            acc_q += (double)taps[j] * x[(size_t)idx * 2U + 1U];
+        }
+        y[(size_t)k * 2U] = acc_i;
+        y[(size_t)k * 2U + 1U] = acc_q;
+    }
+    return y;
+}
+
+/* The pipeline's cascade over the first @p complex_samples of @p iq: the 31-tap half-band, then the 15-tap one. */
+static std::vector<double>
+continuity_cascade(const std::vector<float>& iq, int complex_samples, int passes) {
+    std::vector<double> x(iq.begin(), iq.begin() + (std::ptrdiff_t)complex_samples * 2);
+    for (int st = 0; st < passes; st++) {
+        x = st == 0 ? continuity_halfband_stage(x, hb31_q15_taps, 31)
+                    : continuity_halfband_stage(x, hb_q15_taps, HB_TAPS);
+    }
+    return x;
+}
+
+/* Channel-filter output @p k over the cascade's true output @p y: centred on cascade sample k, the sum over j of
+ * taps[j] * y[k + j - c], with nothing before the stream. */
+static void
+continuity_channel_output(const std::vector<double>& y, const std::vector<float>& taps, int k, double* out_i,
+                          double* out_q) {
+    const int len = (int)taps.size();
+    const int c = (len - 1) / 2;
+    const int n = (int)(y.size() / 2U);
+    double acc_i = 0.0;
+    double acc_q = 0.0;
+    for (int j = 0; j < len; j++) {
+        const int idx = k + j - c;
+        if (idx < 0 || idx >= n) {
+            continue;
+        }
+        acc_i += (double)taps[(size_t)j] * y[(size_t)idx * 2U];
+        acc_q += (double)taps[(size_t)j] * y[(size_t)idx * 2U + 1U];
+    }
+    *out_i = acc_i;
+    *out_q = acc_q;
+}
+
+/* Every output the channel filter made: each one before the edit the old taps over the true history, each one after it
+ * the new taps over the true history, the history before the edit included. */
+static int
+expect_continuity_values(const char* name, const float* got, int outputs, const std::vector<double>& y,
+                         const std::vector<float>& old_taps, const std::vector<float>& new_taps, int switch_at) {
+    int bad = 0;
+    int first_bad = -1;
+    double worst = 0.0;
+    for (int k = 0; k < outputs; k++) {
+        double want_i = 0.0;
+        double want_q = 0.0;
+        continuity_channel_output(y, k < switch_at ? old_taps : new_taps, k, &want_i, &want_q);
+        const double dev = std::fmax(std::fabs((double)got[(size_t)k * 2U] - want_i),
+                                     std::fabs((double)got[(size_t)k * 2U + 1U] - want_q));
+        if (!(dev <= kContinuityTol)) {
+            bad++;
+            if (first_bad < 0) {
+                first_bad = k;
+            }
+        }
+        if (!(dev <= worst)) {
+            worst = dev;
+        }
+    }
+    std::printf("%s: %d outputs, worst deviation from the reference %.3g\n", name, outputs, worst);
+    if (bad != 0) {
+        DSD_FPRINTF(stderr,
+                    "FAIL: %s: %d of %d outputs off the reference by more than %.0e (first at output %d, the edit at "
+                    "%d); worst %.3g\n",
+                    name, bad, outputs, kContinuityTol, first_bad, switch_at, worst);
+        return 1;
+    }
+    return 0;
+}
+
+static int
+continuity_sign(int v) {
+    return (v > 0) - (v < 0);
+}
+
+/* A live width edit on a running monitor, the blocks before and after it run through the half-band cascade and the
+ * channel filter: no output is lost or repeated at the edit (the counts are what the stream with no edit in it gives,
+ * each stage and the channel filter holding back its own look-ahead), and every output after it is the new width's
+ * taps over the true history. */
+static int
+expect_width_edit_continuity(const continuity_case& tc) {
+    char label[192];
+    int total = 0;
+    int before_edit = 0;
+    for (int b = 0; b < kContinuityBlockCount; b++) {
+        total += kContinuityBlocks[b];
+        before_edit += b < kContinuityEditBlock ? kContinuityBlocks[b] : 0;
+    }
+    const std::vector<float> iq = continuity_input(total, 0x572C0DEu);
+    const std::vector<float> old_taps = continuity_design(
+        tc.seed_design_rate_hz > 0 ? tc.seed_design_rate_hz : kContinuityRateHz, kContinuityWidthBeforeHz);
+    const std::vector<float> new_taps = continuity_design(kContinuityRateHz, kContinuityWidthAfterHz);
+    std::vector<float> got((size_t)total * 2U, 0.0f);
+
+    rtl_stream_test_width_continuity_case c;
+    DSD_MEMSET(&c, 0, sizeof c);
+    c.rate_hz = kContinuityRateHz;
+    c.passes = kContinuityPasses;
+    c.width_before_hz = kContinuityWidthBeforeHz;
+    c.width_after_hz = kContinuityWidthAfterHz;
+    if (tc.seed_design_rate_hz > 0) {
+        c.seeded_taps = old_taps.data();
+        c.seeded_taps_len = (int)old_taps.size();
+    }
+    c.iq = iq.data();
+    c.block_sizes = kContinuityBlocks;
+    c.n_blocks = kContinuityBlockCount;
+    c.edit_block = kContinuityEditBlock;
+    c.out = got.data();
+    c.out_cap = (int)got.size();
+    rtl_stream_test_width_continuity_result r;
+    DSD_MEMSET(&r, 0, sizeof r);
+#define CONT_EXPECT(text, got_value, want_value)                                                                       \
+    do {                                                                                                               \
+        DSD_SNPRINTF(label, sizeof label, "width edit continuity, %s: %s", tc.name, text);                             \
+        rc |= expect_int(label, (got_value), (want_value));                                                            \
+    } while (0)
+    int rc = 0;
+    CONT_EXPECT("designs", old_taps.size() >= 3U && new_taps.size() >= 3U, 1);
+    if (rc != 0) {
+        return rc;
+    }
+    CONT_EXPECT("run", rtl_stream_test_analog_width_continuity(&c, &r), 0);
+    CONT_EXPECT("request accepted", r.request_rc, 0);
+    CONT_EXPECT("still the monitor", r.monitor_after, 1);
+    CONT_EXPECT("new width reaches the filter", r.width_after, kContinuityWidthAfterHz);
+    CONT_EXPECT("old plan dropped", r.plan_dropped, 1);
+    CONT_EXPECT("taps before the edit", r.taps_before, (int)old_taps.size());
+    CONT_EXPECT("taps after the edit", r.taps_after, (int)new_taps.size());
+    CONT_EXPECT("tap count change", continuity_sign(r.taps_after - r.taps_before), tc.want_tap_change);
+    CONT_EXPECT("channel history and pending kept", r.channel_state_kept, 1);
+    CONT_EXPECT("half-band histories and pending kept", r.hb_state_kept, 1);
+    CONT_EXPECT("the cascade held samples at the edit", r.hb_pending_at_edit > 0, 1);
+
+    /* The counts the stream gives with no edit in it: the cascade's own output, less each filter's look-ahead. */
+    const std::vector<double> y = continuity_cascade(iq, total, kContinuityPasses);
+    const int y_total = (int)(y.size() / 2U);
+    const int y_before = (int)(continuity_cascade(iq, before_edit, kContinuityPasses).size() / 2U);
+    const int c_old = ((int)old_taps.size() - 1) / 2;
+    const int c_new = ((int)new_taps.size() - 1) / 2;
+    const int want_before = y_before > c_old ? y_before - c_old : 0;
+    CONT_EXPECT("channel pending at the edit", r.channel_pending_at_edit, y_before - want_before);
+    CONT_EXPECT("outputs before the edit", r.outputs_before_edit, want_before);
+    CONT_EXPECT("outputs in all (no gap, no repeat)", r.outputs, y_total - c_new);
+    CONT_EXPECT("channel pending at the end", r.channel_pending_end, c_new);
+#undef CONT_EXPECT
+    const int outputs = r.outputs < y_total - c_new ? r.outputs : y_total - c_new;
+    DSD_SNPRINTF(label, sizeof label, "width edit continuity, %s", tc.name);
+    rc |= expect_continuity_values(label, got.data(), outputs, y, old_taps, new_taps, want_before);
+    return rc;
+}
+
+/* Issue #572: a live width edit is seamless. The edit drops only the plan; the half-band cascade and the channel filter
+ * keep their histories and pending counts, so the new taps run over the true past. At one rate every width designs the
+ * same tap count (135 at 48 kHz), so the edits onto more and onto fewer taps run a seeded plan of another length before
+ * the edit: the 16 kHz design at 24 kHz (67 taps) and at 78125 Hz (219). */
+static int
+test_width_edit_continuity(void) {
+    static const continuity_case cases[] = {
+        {"one tap count", 0, 0},
+        {"onto more taps", 24000, 1},
+        {"onto fewer taps", 78125, -1},
+    };
+    int rc = 0;
+    for (const continuity_case& tc : cases) {
+        rc |= expect_width_edit_continuity(tc);
+    }
     return rc;
 }
 
@@ -1785,6 +2056,7 @@ main(void) {
 
     rc |= test_digital_row_on_analog_session();
     rc |= test_width_only_change();
+    rc |= test_width_edit_continuity();
     rc |= test_requests_without_stream();
     rc |= test_requests_against_running_stream();
     rc |= test_request_across_rate_change();

@@ -9544,16 +9544,19 @@ rtl_stream_apply_analog_request(int kind, int width_hz) {
     }
     const int kind_changed = rtl_demod_set_analog_kind(&demod, kind) > 0;
     if (rtl_demod_apply_analog_channel(&demod, kind, width_hz)) {
-        /* Width-only change: the next block designs a new plan and starts from empty filter histories. */
+        /* A new width: the next block designs its plan. The rate is the same, so the half-band and channel histories
+           and their pending counts stay (issue #572): the new taps run over the true past, and the edit neither drops
+           nor repeats a sample. A family switch, a retune and a rate change still start the filters over. */
         demod.channel_lpf_plan_taps_len = 0;
         demod.channel_lpf_plan_width_hz = 0;
-        rtl_demod_clear_filter_histories(&demod);
     }
     if (kind_changed) {
-        /* An FM <-> AM switch: the output ring and the resampler hold the old detector's audio (the FM discriminator
-           reading an AM carrier, or the reverse), so the new kind starts from neither, and the generation moves so the
-           decoder discards a read of the old audio in flight. A width-only change keeps both: its audio is the same
-           kind's. */
+        /* An FM <-> AM switch starts the monitor over as a fresh open of the new kind does, whatever the width: the
+           output ring and the resampler hold the old detector's audio (the FM discriminator reading an AM carrier, or
+           the reverse), so the new kind starts from neither, nor from the filter histories the old kind ran on, and
+           the generation moves so the decoder discards a read of the old audio in flight. A width-only change keeps all
+           of it: its audio is the same kind's. */
+        rtl_demod_clear_filter_histories(&demod);
         rtl_demod_reset_resampler_state(&demod);
         rtl_stream_clear_output_ring(rtl_stream_active_output(), 1);
     }
@@ -13903,6 +13906,59 @@ family_test_channel_plan_dropped(void) {
     return (demod.channel_lpf_plan_taps_len == 0 && demod.channel_lpf_plan_width_hz == 0) ? 1 : 0;
 }
 
+namespace {
+/* The filter state a live width edit keeps (issue #572): the channel filter's history and pending count, and every
+ * half-band stage's. */
+struct FamilyTestFilterState {
+    float channel_i[DSD_CHANNEL_LPF_HIST_LEN];
+    float channel_q[DSD_CHANNEL_LPF_HIST_LEN];
+    int channel_pending;
+    float hb_i[sizeof(demod_state::hb_hist_i) / sizeof(float)];
+    float hb_q[sizeof(demod_state::hb_hist_q) / sizeof(float)];
+    int hb_pending[sizeof(demod_state::hb_pending) / sizeof(int)];
+};
+} // namespace
+
+static void
+family_test_snapshot_filter_state(FamilyTestFilterState* st) {
+    DSD_MEMCPY(st->channel_i, demod.channel_lpf_hist_i, sizeof(st->channel_i));
+    DSD_MEMCPY(st->channel_q, demod.channel_lpf_hist_q, sizeof(st->channel_q));
+    st->channel_pending = demod.channel_lpf_pending;
+    DSD_MEMCPY(st->hb_i, demod.hb_hist_i, sizeof(st->hb_i));
+    DSD_MEMCPY(st->hb_q, demod.hb_hist_q, sizeof(st->hb_q));
+    DSD_MEMCPY(st->hb_pending, demod.hb_pending, sizeof(st->hb_pending));
+}
+
+/* Exactly the values held, with the explicit (zero) tolerance float comparisons carry. */
+static int
+family_test_same_floats(const float* a, const float* b, size_t n) {
+    for (size_t i = 0; i < n; i++) {
+        if (!(fabsf(a[i] - b[i]) <= 0.0f)) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int
+family_test_channel_state_same(const FamilyTestFilterState* st) {
+    return family_test_same_floats(st->channel_i, demod.channel_lpf_hist_i, DSD_CHANNEL_LPF_HIST_LEN)
+           && family_test_same_floats(st->channel_q, demod.channel_lpf_hist_q, DSD_CHANNEL_LPF_HIST_LEN)
+           && st->channel_pending == demod.channel_lpf_pending;
+}
+
+static int
+family_test_hb_state_same(const FamilyTestFilterState* st) {
+    const size_t stages = sizeof(st->hb_pending) / sizeof(st->hb_pending[0]);
+    for (size_t i = 0; i < stages; i++) {
+        if (st->hb_pending[i] != demod.hb_pending[i]) {
+            return 0;
+        }
+    }
+    return family_test_same_floats(st->hb_i, &demod.hb_hist_i[0][0], sizeof(st->hb_i) / sizeof(float))
+           && family_test_same_floats(st->hb_q, &demod.hb_hist_q[0][0], sizeof(st->hb_q) / sizeof(float));
+}
+
 /* Queue an NFM width request while the analog stream runs and consume it at one demod-thread block boundary. */
 static int
 family_test_request_width(int width_hz) {
@@ -13937,8 +13993,10 @@ rtl_stream_test_analog_width_change(int rate_hz, int width_before_hz, int width_
     g_stream = &g_cqpsk_toggle_test_stream; /* live: requests queue for the demod thread */
 
     const int width_before = demod.channel_lpf_width_hz;
+    static FamilyTestFilterState seeded;
     family_test_seed_channel_plan();
     family_test_seed_stale_filter_histories();
+    family_test_snapshot_filter_state(&seeded);
     family_test_seed_ring(queued);
     out->used_before = ring_used(&output);
     out->generation_before = rtl_stream_output_generation();
@@ -13950,22 +14008,196 @@ rtl_stream_test_analog_width_change(int rate_hz, int width_before_hz, int width_
     out->output_kind_after = demod.output_kind;
     out->analog_family_after = demod.analog_family;
     out->plan_invalidated = family_test_channel_plan_dropped();
-    out->channel_hist_cleared = family_test_channel_hist_clear();
-    out->hb_hist_cleared = family_test_hb_hist_clear();
+    out->channel_state_kept = family_test_channel_state_same(&seeded);
+    out->hb_state_kept = family_test_hb_state_same(&seeded);
     out->generation_after = rtl_stream_output_generation();
     out->used_after = ring_used(&output);
     (void)rtl_stream_get_analog_profile(NULL, &out->published_width_hz, &out->published_lpf_on);
 
     family_test_seed_channel_plan();
     family_test_seed_stale_filter_histories();
+    family_test_snapshot_filter_state(&seeded);
     out->same_width_rc = family_test_request_width(width_after_hz);
-    out->same_width_kept_histories = !family_test_channel_hist_clear() && !family_test_hb_hist_clear();
+    out->same_width_kept_histories = family_test_channel_state_same(&seeded) && family_test_hb_state_same(&seeded);
     out->same_width_kept_plan = !family_test_channel_plan_dropped();
 
     family_test_restore(saved);
     family_test_release_buffers();
     fsk_reacquire_test_cleanup_output_ring(initialized_output);
     return open_rc == 0 ? 0 : -3;
+}
+
+namespace {
+/* The demod fields the width continuity run changes to see the channel filter's output, put back afterwards. */
+struct ContinuityTestSaved {
+    void (*mode_demod)(struct demod_state*);
+    int downsample_passes;
+    int rate_in;
+    int iq_dc_block_enable;
+    int iqbal_enable;
+    int hb_state_passes;
+    float channel_squelch_level;
+};
+} // namespace
+
+/* No seeded plan, or one the channel filter can run: odd taps, at least 3, within the plan's capacity. */
+static int
+continuity_test_seed_valid(const rtl_stream_test_width_continuity_case* c) {
+    if (!c->seeded_taps) {
+        return c->seeded_taps_len == 0 ? 1 : 0;
+    }
+    return (c->seeded_taps_len >= 3 && c->seeded_taps_len <= DSD_CHANNEL_LPF_MAX_TAPS && (c->seeded_taps_len & 1) == 1)
+               ? 1
+               : 0;
+}
+
+static int
+continuity_test_case_valid(const rtl_stream_test_width_continuity_case* c) {
+    if (!c || c->rate_hz <= 0 || c->passes < 1 || c->passes > 10 || !c->iq || !c->block_sizes || c->n_blocks <= 0) {
+        return 0;
+    }
+    if (!c->out || c->out_cap <= 0 || c->edit_block < 0 || c->edit_block >= c->n_blocks) {
+        return 0;
+    }
+    return continuity_test_seed_valid(c);
+}
+
+/* The open monitor, run through the half-band cascade and the channel filter only: a pass-through demodulator after
+ * them, and no I/Q DC blocker, I/Q balance or channel squelch on the way. The filters start from nothing, on the
+ * seeded plan when the case has one (keyed as the pipeline keys the running width's, so the blocks run it). */
+static ContinuityTestSaved
+continuity_test_prepare(const rtl_stream_test_width_continuity_case* c) {
+    const ContinuityTestSaved saved = {demod.mode_demod,
+                                       demod.downsample_passes,
+                                       demod.rate_in,
+                                       demod.iq_dc_block_enable,
+                                       demod.iqbal_enable,
+                                       demod.hb_state_passes,
+                                       demod.channel_squelch_level.load(std::memory_order_relaxed)};
+    demod.mode_demod = &raw_demod;
+    demod.downsample_passes = c->passes;
+    demod.rate_in = c->rate_hz << c->passes;
+    demod.iq_dc_block_enable = 0;
+    demod.iqbal_enable = 0;
+    demod.channel_squelch_level.store(0.0f, std::memory_order_relaxed);
+    dsd_demod_reset_filter_state(&demod);
+    if (c->seeded_taps) {
+        DSD_MEMCPY(demod.channel_lpf_plan_taps, c->seeded_taps, (size_t)c->seeded_taps_len * sizeof(float));
+        demod.channel_lpf_plan_taps_len = c->seeded_taps_len;
+        demod.channel_lpf_plan_rate_out = demod.rate_out;
+        demod.channel_lpf_plan_profile = demod.channel_lpf_profile;
+        demod.channel_lpf_plan_width_hz = demod.channel_lpf_width_hz;
+    }
+    return saved;
+}
+
+static void
+continuity_test_restore(const ContinuityTestSaved& saved) {
+    demod.mode_demod = saved.mode_demod;
+    demod.downsample_passes = saved.downsample_passes;
+    demod.rate_in = saved.rate_in;
+    demod.iq_dc_block_enable = saved.iq_dc_block_enable;
+    demod.iqbal_enable = saved.iqbal_enable;
+    demod.hb_state_passes = saved.hb_state_passes;
+    demod.channel_squelch_level.store(saved.channel_squelch_level, std::memory_order_relaxed);
+    dsd_demod_reset_filter_state(&demod);
+    demod.channel_lpf_plan_taps_len = 0;
+    demod.channel_lpf_plan_width_hz = 0;
+}
+
+/* The live width request, queued while the stream runs and consumed at one demod-thread block boundary. */
+static void
+continuity_test_edit(const rtl_stream_test_width_continuity_case* c, int written,
+                     rtl_stream_test_width_continuity_result* out) {
+    static FamilyTestFilterState before;
+    family_test_snapshot_filter_state(&before);
+    out->outputs_before_edit = written / 2;
+    out->channel_pending_at_edit = demod.channel_lpf_pending;
+    for (int st = 0; st < c->passes; st++) {
+        out->hb_pending_at_edit += demod.hb_pending[st];
+    }
+    out->request_rc = rtl_stream_request_analog_profile(DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_FM, c->width_after_hz);
+    family_test_demod_thread_boundary();
+    out->monitor_after = dsd_demod_analog_monitor_active(&demod);
+    out->width_after = demod.channel_lpf_width_hz;
+    out->plan_dropped = family_test_channel_plan_dropped();
+    out->channel_state_kept = family_test_channel_state_same(&before);
+    out->hb_state_kept = family_test_hb_state_same(&before);
+}
+
+/* One block through full_demod(), its output appended at @p written (floats). Returns the new count, or -1 when the
+ * block is too large for the input buffer or its output does not fit. */
+static int
+continuity_test_block(const rtl_stream_test_width_continuity_case* c, const float* in, int n, int written) {
+    if (n < 0 || n > MAXIMUM_BUF_LENGTH / 2) {
+        return -1;
+    }
+    if (n > 0) {
+        DSD_MEMCPY(demod.input_cb_buf, in, (size_t)n * 2U * sizeof(float));
+    }
+    demod.lowpassed = demod.input_cb_buf;
+    demod.lp_len = n * 2;
+    full_demod(&demod);
+    if (demod.result_len < 0 || demod.result_len > c->out_cap - written) {
+        return -1;
+    }
+    if (demod.result_len > 0) {
+        DSD_MEMCPY(c->out + written, demod.result, (size_t)demod.result_len * sizeof(float));
+    }
+    return written + demod.result_len;
+}
+
+extern "C" int
+rtl_stream_test_analog_width_continuity(const rtl_stream_test_width_continuity_case* c,
+                                        rtl_stream_test_width_continuity_result* out) {
+    if (!out || !continuity_test_case_valid(c)) {
+        return -1;
+    }
+    *out = {};
+    int initialized_output = 0;
+    if (fsk_reacquire_test_prepare_output_ring(0U, &initialized_output) != 0) {
+        fsk_reacquire_test_cleanup_output_ring(initialized_output);
+        return -2;
+    }
+    const FamilyTestSaved saved = family_test_save();
+    static dsd_opts analog_opts;
+    DSD_MEMSET(&analog_opts, 0, sizeof analog_opts);
+    analog_opts.analog_only = 1;
+    analog_opts.monitor_input_audio = 1;
+    analog_opts.analog_nfm_bandwidth_hz = c->width_before_hz;
+    g_cqpsk_toggle_test_stream.output = &output;
+    g_cqpsk_toggle_test_stream.opts = &analog_opts;
+    g_stream = NULL;
+    int rc = family_test_seed_open(&analog_opts, c->rate_hz, 0) == 0 ? 0 : -3;
+    g_stream = &g_cqpsk_toggle_test_stream; /* live: requests queue for the demod thread */
+    const ContinuityTestSaved demod_saved = continuity_test_prepare(c);
+
+    const float* in = c->iq;
+    int written = 0;
+    for (int b = 0; b < c->n_blocks && rc == 0; b++) {
+        if (b == c->edit_block) {
+            continuity_test_edit(c, written, out);
+        }
+        written = continuity_test_block(c, in, c->block_sizes[b], written);
+        if (written < 0) {
+            rc = -4;
+            break;
+        }
+        in += (size_t)c->block_sizes[b] * 2U;
+        if (b < c->edit_block) {
+            out->taps_before = demod.channel_lpf_plan_taps_len;
+        } else {
+            out->taps_after = demod.channel_lpf_plan_taps_len;
+        }
+    }
+    out->outputs = written > 0 ? written / 2 : 0;
+    out->channel_pending_end = demod.channel_lpf_pending;
+
+    continuity_test_restore(demod_saved);
+    family_test_restore(saved);
+    family_test_release_buffers();
+    fsk_reacquire_test_cleanup_output_ring(initialized_output);
+    return rc;
 }
 
 extern "C" int

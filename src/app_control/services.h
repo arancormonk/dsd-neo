@@ -376,9 +376,10 @@ void svc_describe_monitor_return_refusal(const dsd_opts* opts, int kind, int wid
  * force until the row leaves, and the edit reaches the front end with the next row that takes the configured width or
  * the leave. A width in force is handed to
  * a running RTL front end (svc_publish_analog_bandwidth()): on the analog monitor a width-only change redesigns the
- * channel filter from empty histories at the next block. A request the front end refuses there after all (a retune
- * moved the rate since the check) is refused here too, with the previous width put back; one refused where it lands is
- * put back by the command drain, before its next command (svc_take_monitor_request_outcome()). Anywhere else (another
+ * channel filter at the next block, over the history the filters hold, so no sample is lost. A request the front end
+ * refuses there after all (a retune moved the rate since the check) is refused here too, with the previous width put
+ * back; one refused where it lands is put back by the command drain, before its next command
+ * (svc_take_monitor_request_outcome()). Anywhere else (another
  * preset, a typed digital scan row on an analog session, CQPSK toggled on under -fA, a stopped stream) the stored width
  * applies the next time that kind's analog profile is requested or the stream opens. Decoder thread only.
  *

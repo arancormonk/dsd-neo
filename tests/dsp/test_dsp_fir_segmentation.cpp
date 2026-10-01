@@ -1567,15 +1567,33 @@ test_channel_state_rules(void) {
     const std::vector<float> warm = make_stream(1000, 0x1111u);
     const std::vector<float> small = make_stream(10, 0x2222u);
 
-    /* Warm at 48 kHz: 135 taps, pending 67. A profile change at the same rate keeps the state: 10 samples make 10. */
-    configure_raw(s, 48000, DSD_CH_LPF_PROFILE_12K5, 0);
+    /* Warm on the analog monitor's 16 kHz width at 78125 Hz: 219 taps, pending 109. A profile change at the same rate
+       keeps the state, and the tap count it changes reconciles through pending. Onto the 12K5 profile, whose design
+       does not fit its 144-tap cap there and runs the 63-tap fallback (a typed digital row's profile on an analog
+       session at the Airspy's rate), 10 samples make 109 + 10 - 31 = 88 outputs and leave 31 pending; back onto the
+       219-tap analog design, 10 samples make none and leave 41. */
+    configure_raw(s, 78125, DSD_CH_LPF_PROFILE_WIDE, 0);
+    s->analog_family = 1;
+    s->analog_demod = DSD_ANALOG_DEMOD_FM;
+    s->channel_lpf_width_hz = 16000;
     run_block(s, warm);
-    s->channel_lpf_profile = DSD_CH_LPF_PROFILE_6K25;
+    const int warm_taps = s->channel_lpf_plan_taps_len;
+    const int warm_pending = *channel_pending_of(s);
+    s->channel_lpf_profile = DSD_CH_LPF_PROFILE_12K5;
     run_block(s, small);
-    if (s->channel_lpf_plan_taps_len != 135 || s->result_len != 20 || *channel_pending_of(s) != 67) {
+    const int fewer_taps = s->channel_lpf_plan_taps_len;
+    const int fewer_len = s->result_len;
+    const int fewer_pending = *channel_pending_of(s);
+    s->channel_lpf_profile = DSD_CH_LPF_PROFILE_WIDE;
+    run_block(s, small);
+    if (warm_taps != 219 || warm_pending != 109 || fewer_taps != 63 || fewer_len != 176 || fewer_pending != 31
+        || s->channel_lpf_plan_taps_len != 219 || s->result_len != 0 || *channel_pending_of(s) != 41) {
         DSD_FPRINTF(stderr,
-                    "  FAIL: a profile change at 48 kHz: %d taps, %d floats out, pending %d; want 135, 20, 67\n",
-                    s->channel_lpf_plan_taps_len, s->result_len, *channel_pending_of(s));
+                    "  FAIL: profile changes at 78125 Hz: warm %d taps, pending %d; onto fewer taps %d taps, %d floats "
+                    "out, pending %d; back onto more %d taps, %d floats out, pending %d; want 219, 109; 63, 176, 31; "
+                    "219, 0, 41\n",
+                    warm_taps, warm_pending, fewer_taps, fewer_len, fewer_pending, s->channel_lpf_plan_taps_len,
+                    s->result_len, *channel_pending_of(s));
         rc = 1;
     }
 
