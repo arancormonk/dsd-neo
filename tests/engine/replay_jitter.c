@@ -437,17 +437,22 @@ static int g_sink_closed;
 static int g_sink_backed_up; /* stalled streams that took audio from the decoder and dropped some */
 
 // GNU ld --wrap requires these exact external symbol names.
-// NOLINTBEGIN(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp,misc-use-internal-linkage)
+// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
 dsd_audio_stream* __real_dsd_audio_open_output(const dsd_audio_params* params);
+// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
 int __real_dsd_audio_write(dsd_audio_stream* stream, const int16_t* buffer, size_t frames);
+// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
 int __real_dsd_audio_drain(dsd_audio_stream* stream);
+// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
 void __real_dsd_audio_close(dsd_audio_stream* stream);
+// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
 dsd_audio_stream* __wrap_dsd_audio_open_output(const dsd_audio_params* params);
+// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
 int __wrap_dsd_audio_write(dsd_audio_stream* stream, const int16_t* buffer, size_t frames);
+// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
 int __wrap_dsd_audio_drain(dsd_audio_stream* stream);
+// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
 void __wrap_dsd_audio_close(dsd_audio_stream* stream);
-
-// NOLINTEND(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp,misc-use-internal-linkage)
 
 static replay_sink_stream*
 replay_sink_find(const dsd_audio_stream* stream) {
@@ -496,6 +501,7 @@ replay_sink_free(replay_sink_stream* s) {
 }
 
 dsd_audio_stream*
+// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
 __wrap_dsd_audio_open_output(const dsd_audio_params* params) {
     if (!g_options.sink) {
         return __real_dsd_audio_open_output(params);
@@ -537,6 +543,7 @@ __wrap_dsd_audio_open_output(const dsd_audio_params* params) {
 }
 
 int
+// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
 __wrap_dsd_audio_write(dsd_audio_stream* stream, const int16_t* buffer, size_t frames) {
     replay_sink_stream* s = replay_sink_find(stream);
     if (s == NULL) {
@@ -576,6 +583,7 @@ __wrap_dsd_audio_write(dsd_audio_stream* stream, const int16_t* buffer, size_t f
 }
 
 int
+// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
 __wrap_dsd_audio_drain(dsd_audio_stream* stream) {
     replay_sink_stream* s = replay_sink_find(stream);
     if (s == NULL) {
@@ -594,6 +602,7 @@ __wrap_dsd_audio_drain(dsd_audio_stream* stream) {
 }
 
 void
+// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
 __wrap_dsd_audio_close(dsd_audio_stream* stream) {
     replay_sink_stream* s = replay_sink_find(stream);
     if (s == NULL) {

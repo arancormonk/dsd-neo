@@ -47,11 +47,13 @@ static atomic_int g_engine_done;
 static atomic_int g_watchdog_fired;
 
 // GNU ld --wrap entry points must keep the reserved __wrap_*/__real_* symbol names.
-// NOLINTBEGIN(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
 int __real_dsd_iq_replay_read(dsd_iq_replay_source* src, void* out, size_t max_bytes, size_t* out_bytes);
+// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
 int __wrap_dsd_iq_replay_read(dsd_iq_replay_source* src, void* out, size_t max_bytes, size_t* out_bytes);
 
 int
+// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
 __wrap_dsd_iq_replay_read(dsd_iq_replay_source* src, void* out, size_t max_bytes, size_t* out_bytes) {
     if (atomic_fetch_add(&g_reads, 1) >= kReadsBeforeError) {
         if (out_bytes) {
@@ -61,8 +63,6 @@ __wrap_dsd_iq_replay_read(dsd_iq_replay_source* src, void* out, size_t max_bytes
     }
     return __real_dsd_iq_replay_read(src, out, max_bytes, out_bytes);
 }
-
-// NOLINTEND(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
 
 static DSD_THREAD_RETURN_TYPE
 watchdog_fn(void* arg) {
