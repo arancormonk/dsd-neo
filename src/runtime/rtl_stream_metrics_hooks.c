@@ -7,6 +7,7 @@
 
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/runtime/analog_channel.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 
 #include <stdint.h>
@@ -184,6 +185,17 @@ dsd_rtl_stream_metrics_hook_replay_batch(dsd_rtl_stream_replay_batch* out) {
     }
     *out = (dsd_rtl_stream_replay_batch){0};
     return 0;
+}
+
+int
+dsd_rtl_stream_metrics_hook_replay_advance_decode_clock(void) {
+    dsd_rtl_stream_replay_batch batch;
+    if (dsd_rtl_stream_metrics_hook_replay_batch(&batch) != 1) {
+        return 0;
+    }
+    dsd_decode_clock_set_media_ns(dsd_decode_clock_batch_media_ns(batch.media_start_ns, batch.media_duration_ns,
+                                                                  batch.output_count, batch.first_index));
+    return 1;
 }
 
 int

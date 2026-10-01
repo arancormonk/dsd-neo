@@ -115,6 +115,66 @@ test_replay(void) {
     CHECK(llabs((long long)dsd_decode_time() - (long long)time(NULL)) <= 1);
 }
 
+/* An anchor past 18e9 s (about the year 2540) is held there, so anchor_ns stays inside 64 bits; the floor and the
+   ceiling are the header's. */
+static void
+test_replay_anchor_clamp(void) {
+    CHECK(DSD_DECODE_CLOCK_ANCHOR_FLOOR_S == FLOOR_S);
+    CHECK(DSD_DECODE_CLOCK_ANCHOR_MAX_S == 18000000000LL);
+    /* The ceiling in ns fits, with room for media time on top. */
+    CHECK((uint64_t)DSD_DECODE_CLOCK_ANCHOR_MAX_S <= UINT64_MAX / NS);
+
+    dsd_decode_clock_use_replay(DSD_DECODE_CLOCK_ANCHOR_MAX_S);
+    CHECK(dsd_decode_time() == (time_t)DSD_DECODE_CLOCK_ANCHOR_MAX_S);
+    CHECK(dsd_decode_now_mono_ns() == (uint64_t)DSD_DECODE_CLOCK_ANCHOR_MAX_S * NS);
+
+    dsd_decode_clock_use_replay(DSD_DECODE_CLOCK_ANCHOR_MAX_S + 1);
+    CHECK(dsd_decode_time() == (time_t)DSD_DECODE_CLOCK_ANCHOR_MAX_S);
+    CHECK(dsd_decode_now_mono_ns() == (uint64_t)DSD_DECODE_CLOCK_ANCHOR_MAX_S * NS);
+
+    dsd_decode_clock_use_replay(INT64_MAX);
+    CHECK(dsd_decode_now_mono_ns() == (uint64_t)DSD_DECODE_CLOCK_ANCHOR_MAX_S * NS);
+    dsd_decode_clock_set_media_ns(3 * NS);
+    CHECK(dsd_decode_now_mono_ns() == (uint64_t)DSD_DECODE_CLOCK_ANCHOR_MAX_S * NS + 3 * NS);
+    CHECK(dsd_decode_time() == (time_t)(DSD_DECODE_CLOCK_ANCHOR_MAX_S + 3));
+
+    /* Just below the ceiling is taken as it is. */
+    dsd_decode_clock_use_replay(DSD_DECODE_CLOCK_ANCHOR_MAX_S - 1);
+    CHECK(dsd_decode_time() == (time_t)(DSD_DECODE_CLOCK_ANCHOR_MAX_S - 1));
+
+    dsd_decode_clock_use_system();
+}
+
+/* A replay batch's samples sit evenly across its span: sample i of n at start + i * duration / n, rounded down, exact
+   where the 64-bit product would overflow. */
+static void
+test_batch_media_time(void) {
+    /* 512 samples over 21.333333 ms (a 1024-sample chunk at 48 kHz, say): 41666.666 ns apart. */
+    const uint64_t start = 5000000000ULL;
+    const uint64_t dur = 21333333ULL;
+    CHECK(dsd_decode_clock_batch_media_ns(start, dur, 512U, 0U) == start);
+    CHECK(dsd_decode_clock_batch_media_ns(start, dur, 512U, 1U) == start + 41666ULL);
+    CHECK(dsd_decode_clock_batch_media_ns(start, dur, 512U, 3U) == start + 124999ULL);
+    CHECK(dsd_decode_clock_batch_media_ns(start, dur, 512U, 511U) == start + (dur * 511ULL) / 512ULL);
+    CHECK(dsd_decode_clock_batch_media_ns(start, dur, 512U, 512U) == start + dur);
+    /* Past the batch is held at its end; no count is the span's start. */
+    CHECK(dsd_decode_clock_batch_media_ns(start, dur, 512U, 9999U) == start + dur);
+    CHECK(dsd_decode_clock_batch_media_ns(start, dur, 0U, 7U) == start);
+    /* Monotone across the batch. */
+    uint64_t prev = 0U;
+    for (uint32_t i = 0U; i <= 512U; i++) {
+        const uint64_t t = dsd_decode_clock_batch_media_ns(start, dur, 512U, i);
+        CHECK(t >= prev);
+        prev = t;
+    }
+    /* index * duration would overflow 64 bits here (4e9 * 1e10), the split division does not: exactly half way. */
+    CHECK(dsd_decode_clock_batch_media_ns(0U, 10000000000ULL, 4000000000U, 2000000000U) == 5000000000ULL);
+    CHECK(dsd_decode_clock_batch_media_ns(0U, UINT64_MAX, UINT32_MAX, UINT32_MAX - 1U)
+          == UINT64_MAX - UINT64_MAX / UINT32_MAX);
+    /* The sum saturates. */
+    CHECK(dsd_decode_clock_batch_media_ns(UINT64_MAX - 5U, 100U, 10U, 10U) == UINT64_MAX);
+}
+
 static void
 test_injection(void) {
     dsd_decode_clock_use_test(42 * NS + 500000000ULL);
@@ -207,6 +267,8 @@ int
 main(void) {
     test_system();
     test_replay();
+    test_replay_anchor_clamp();
+    test_batch_media_time();
     test_injection();
     test_concurrent();
     return 0;

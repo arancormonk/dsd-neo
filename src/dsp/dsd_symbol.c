@@ -913,6 +913,28 @@ rtl_symbol_cache_reset_pending(dsd_state* state) {
     rtl_symbol_cache_publish_pending(state);
 }
 
+/* No media span: the cached samples came from a live read, which carries none. */
+static inline void
+rtl_symbol_cache_clear_media(dsd_state* state) {
+    state->rtl_symbol_cache_media_start_ns = 0U;
+    state->rtl_symbol_cache_media_duration_ns = 0U;
+    state->rtl_symbol_cache_media_count = 0U;
+    state->rtl_symbol_cache_media_first_index = 0U;
+}
+
+/* An I/Q replay's sample reaches symbol processing at its own capture time (issue #572): the decode clock's media time
+   moves to it as the cache hands it out, so a decision the decoder takes on it reads the same time whatever batch it
+   came in. A live sample carries no span and moves nothing. */
+static inline void
+rtl_symbol_cache_run_media_to(const dsd_state* state, int pos) {
+    if (state->rtl_symbol_cache_media_count == 0U || pos < 0) {
+        return;
+    }
+    dsd_decode_clock_set_media_ns(dsd_decode_clock_batch_media_ns(
+        state->rtl_symbol_cache_media_start_ns, state->rtl_symbol_cache_media_duration_ns,
+        state->rtl_symbol_cache_media_count, state->rtl_symbol_cache_media_first_index + (uint32_t)pos));
+}
+
 static inline int
 rtl_symbol_cache_pop(dsd_state* state, uint32_t generation, float* sample_out) {
     if (!state || !sample_out || state->rtl_symbol_cache_pos >= state->rtl_symbol_cache_len) {
@@ -922,12 +944,14 @@ rtl_symbol_cache_pop(dsd_state* state, uint32_t generation, float* sample_out) {
         rtl_symbol_cache_reset_pending(state);
         return RTL_SYMBOL_CACHE_RETRY;
     }
-    float sample = state->rtl_symbol_cache[state->rtl_symbol_cache_pos++];
+    const int pos = state->rtl_symbol_cache_pos++;
+    float sample = state->rtl_symbol_cache[pos];
     rtl_symbol_cache_publish_pending(state);
     if (dsd_rtl_stream_metrics_hook_stream_generation() != generation) {
         rtl_symbol_cache_reset_pending(state);
         return RTL_SYMBOL_CACHE_RETRY;
     }
+    rtl_symbol_cache_run_media_to(state, pos);
     *sample_out = sample;
     return RTL_SYMBOL_CACHE_READY;
 }
@@ -963,6 +987,7 @@ rtl_symbol_cache_clear(dsd_state* state) {
     state->rtl_symbol_cache_symbol_rate_hz = 0;
     state->rtl_symbol_cache_levels = 0;
     state->rtl_symbol_cache_generation = 0;
+    rtl_symbol_cache_clear_media(state);
 }
 
 #ifdef DSD_NEO_TEST_HOOKS
@@ -1018,7 +1043,8 @@ dsd_symbol_test_rtl_cache_and_center_contract(int out_values[10]) {
  * first output, not an old one, so the cache keeps it under the batch's own labels and asks the caller to follow them
  * before the first sample is taken (RTL_SYMBOL_CACHE_REFRESH). A batch the stream has moved on from since it was
  * published (a flush the decoder asked for) is still dropped: the pop checks the batch's generation, and the caller's
- * refresh drops a cache whose labels the stream no longer carries.
+ * refresh drops a cache whose labels the stream no longer carries. The batch's media span goes with its samples, so
+ * each one the cache hands out runs the decode clock to its own capture time (rtl_symbol_cache_pop()).
  *
  * A batch of the monitor output is dropped, as a live read's is: that output is read one sample at a time outside the
  * cache, and the refresh tells a move off a direct output by the kind the cache still holds.
@@ -1047,6 +1073,10 @@ rtl_symbol_cache_fill_replay_batch(dsd_state* state, int got, const dsd_rtl_stre
     state->rtl_symbol_cache_symbol_rate_hz = batch_symbol_rate_hz;
     state->rtl_symbol_cache_levels = batch_levels;
     state->rtl_symbol_cache_generation = batch->generation;
+    state->rtl_symbol_cache_media_start_ns = batch->media_start_ns;
+    state->rtl_symbol_cache_media_duration_ns = batch->media_duration_ns;
+    state->rtl_symbol_cache_media_count = batch->output_count;
+    state->rtl_symbol_cache_media_first_index = batch->first_index;
     rtl_symbol_cache_publish_pending(state);
     if (batch->generation != read_generation || batch->output_kind != output_kind
         || batch_channel_profile != channel_profile || batch_symbol_rate_hz != symbol_rate_hz
@@ -1093,6 +1123,7 @@ rtl_symbol_cache_refill(dsd_state* state, int output_kind, int channel_profile, 
     state->rtl_symbol_cache_symbol_rate_hz = symbol_rate_hz;
     state->rtl_symbol_cache_levels = levels;
     state->rtl_symbol_cache_generation = generation ? *generation : fill_generation;
+    rtl_symbol_cache_clear_media(state);
     rtl_symbol_cache_publish_pending(state);
     return rtl_symbol_cache_pop(state, read_generation, sample_out);
 }
@@ -1808,6 +1839,7 @@ symbol_read_sample_rtl(dsd_opts* opts, dsd_state* state, float* sample_out, symb
         dsd_request_shutdown(opts, state);
         return 0;
     }
+    (void)dsd_rtl_stream_metrics_hook_replay_advance_decode_clock();
     opts->rtl_pwr = dsd_rtl_stream_io_hook_return_pwr(state);
     if (!work->rtl_symbol_rate_output && !work->cqpsk_symbol_rate && !work->rtl_fsk_discriminator_output) {
         *sample_out *= opts->rtl_volume_multiplier;

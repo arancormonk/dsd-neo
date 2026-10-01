@@ -108,7 +108,7 @@ target_link_libraries(
 
 target_link_libraries(
     dsd-neo_engine
-    PRIVATE dsd-neo_warnings dsd-neo_feature_lz
+    PRIVATE dsd-neo_warnings dsd-neo_feature_lz dsd-neo_io_iq
 )
 
 install(

@@ -20,6 +20,7 @@
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <iterator>
 #include <memory>
@@ -374,12 +375,22 @@ struct EventCounts {
     uint32_t resets;
 };
 
+/* One batch the decoder read, as its tag tells it: the chunk, and the capture time of its first sample and of its end,
+ * both from the per-sample formula the decoder runs its clock on (dsd_decode_clock_batch_media_ns()). */
+struct BatchMedia {
+    uint64_t chunk_sequence;
+    uint64_t first_ns;
+    uint64_t end_ns;
+};
+
 /* What a leg delivered, and what the pipeline did on the way. */
 struct Signature {
     uint64_t samples = 0U;
     uint64_t fnv = 1469598103934665603ULL;
     std::vector<uint64_t> generation_changes; /* delivered positions where the output generation moved */
     std::vector<uint64_t> batch_starts;       /* delivered position, then media start in ns, of each batch */
+    std::vector<uint64_t> media_at;           /* delivered position, then its capture time in ns, at kMediaPositions */
+    std::vector<BatchMedia> batch_media;
     std::vector<BlockRecord> blocks;
     int discards = 0;        /* blocks the demod discarded */
     uint64_t truncated = 0U; /* output samples a block could not publish */
@@ -428,16 +439,38 @@ leg_stage_hook(int stage, size_t count, void* ctx) {
     }
 }
 
-/* Note where the batch a read of @p got samples took from starts, when it is a new one. */
+/* Delivered positions at which each leg notes the capture time a decoder reaching that sample runs its clock to:
+ * batch edges and insides, the requests' positions, and positions past each event group. */
+static const uint64_t kMediaPositions[] = {0U,    1U,     7U,     511U,   1024U,  1535U,  2048U,  6000U,
+                                           6001U, 10000U, 13000U, 15003U, 17777U, 20000U, 22222U, 23000U};
+
+/* Note where the batch a read of @p got samples took from starts, when it is a new one, and the capture time of each
+ * of kMediaPositions the read delivered. */
 static void
-note_batch_start(Signature* sig, uint64_t* batch_sequence) {
+note_batch_start(Signature* sig, uint64_t* batch_sequence, int got) {
     rtl_stream_replay_batch tag;
-    if (rtl_stream_get_replay_batch(&tag) != 0 || tag.chunk_sequence == *batch_sequence) {
+    if (rtl_stream_get_replay_batch(&tag) != 0) {
+        return;
+    }
+    for (uint64_t position : kMediaPositions) {
+        if (position >= sig->samples && position < sig->samples + (uint64_t)got) {
+            sig->media_at.push_back(position);
+            sig->media_at.push_back(
+                dsd_decode_clock_batch_media_ns(tag.media_start_ns, tag.media_duration_ns, tag.output_count,
+                                                tag.first_index + (uint32_t)(position - sig->samples)));
+        }
+    }
+    if (tag.chunk_sequence == *batch_sequence) {
         return;
     }
     *batch_sequence = tag.chunk_sequence;
     sig->batch_starts.push_back(sig->samples);
     sig->batch_starts.push_back(tag.media_start_ns);
+    sig->batch_media.push_back(
+        BatchMedia{tag.chunk_sequence,
+                   dsd_decode_clock_batch_media_ns(tag.media_start_ns, tag.media_duration_ns, tag.output_count, 0U),
+                   dsd_decode_clock_batch_media_ns(tag.media_start_ns, tag.media_duration_ns, tag.output_count,
+                                                   tag.output_count)});
 }
 
 static int
@@ -470,7 +503,7 @@ read_leg(RtlSdrContext* ctx, const Leg& leg, Signature* sig) {
         }
         generation = now_generation;
         have_generation = 1;
-        note_batch_start(sig, &batch_sequence);
+        note_batch_start(sig, &batch_sequence, got);
         fnv1a_floats(sig, buf.data(), got);
         sig->samples += (uint64_t)got;
         if (!reacquired && sig->samples >= kReacquireAt) {
@@ -563,6 +596,74 @@ expect_blocks_follow_layout(const char* label, const Signature& sig, const std::
     return 0;
 }
 
+/* Capture time a decoder runs its clock to at delivered position @p position, from the capture layout alone: the sample
+ * sits at its place among its chunk's outputs, evenly across the chunk's capture time (the media time a MUTE omitted
+ * included). UINT64_MAX past the last output. */
+static uint64_t
+oracle_media_at(const std::vector<LayoutChunk>& layout, uint64_t position) {
+    uint64_t first = 0U;
+    for (const LayoutChunk& chunk : layout) {
+        const uint64_t count = (chunk.bytes / 2U) / kDecimation;
+        if (position < first + count) {
+            const uint64_t start = media_ns(chunk.media_start);
+            const uint64_t span = media_ns(chunk.media_start + chunk.bytes / 2U) - start;
+            /* (position - first) < count <= 2048 and span < 50 ms: the product stays far inside 64 bits. */
+            return start + ((position - first) * span) / count;
+        }
+        first += count;
+    }
+    return UINT64_MAX;
+}
+
+/* Capture time a MUTE omits at capture byte @p offset: whole ms in the captures here, so exact in ns. */
+static uint64_t
+muted_ns_at(const std::vector<CaptureEvent>& events, uint64_t offset) {
+    uint64_t omitted = 0U;
+    for (const CaptureEvent& event : events) {
+        if (event.kind == DSD_IQ_EVENT_MUTE && event.offset == offset) {
+            omitted += event.value / 2U;
+        }
+    }
+    return media_ns(omitted);
+}
+
+/* The leg's media clock: at each of kMediaPositions it reads the layout's capture time, and from one batch to the next
+ * it moves by exactly what a MUTE between them omitted, nothing where none did. */
+static int
+expect_media_follows_layout(const char* label, const Signature& sig, const std::vector<LayoutChunk>& layout,
+                            const std::vector<CaptureEvent>& events) {
+    int rc = 0;
+    char what[200];
+    for (size_t i = 0; i + 1U < sig.media_at.size(); i += 2U) {
+        DSD_SNPRINTF(what, sizeof(what), "%s: media time at delivered sample %llu", label,
+                     (unsigned long long)sig.media_at[i]);
+        rc |= expect_u64_eq(what, sig.media_at[i + 1U], oracle_media_at(layout, sig.media_at[i]));
+    }
+    DSD_SNPRINTF(what, sizeof(what), "%s: media times noted", label);
+    rc |= expect_u64_eq(what, (uint64_t)(sig.media_at.size() / 2U),
+                        (uint64_t)(sizeof(kMediaPositions) / sizeof(kMediaPositions[0])));
+    uint64_t offset = 0U;
+    size_t next_chunk = 0U;
+    for (size_t i = 0; i < sig.batch_media.size(); i++) {
+        const BatchMedia& batch = sig.batch_media[i];
+        /* The capture byte offset its chunk starts at. */
+        for (; next_chunk + 1U < batch.chunk_sequence && next_chunk < layout.size(); next_chunk++) {
+            offset += layout[next_chunk].bytes;
+        }
+        const uint64_t before = i == 0U ? 0U : sig.batch_media[i - 1U].end_ns;
+        DSD_SNPRINTF(what, sizeof(what),
+                     "%s: media time a batch moves on from the one before (chunk %llu, at byte %llu)", label,
+                     (unsigned long long)batch.chunk_sequence, (unsigned long long)offset);
+        if (batch.first_ns < before) {
+            DSD_FPRINTF(stderr, "FAIL: %s went backwards\n", what);
+            rc = 1;
+            continue;
+        }
+        rc |= expect_u64_eq(what, batch.first_ns - before, muted_ns_at(events, offset));
+    }
+    return rc;
+}
+
 /* One leg on its own: it ended, its requests landed, it applied every event, and it delivered every sample of every
  * chunk, with no block discarded and no output cut short. */
 static int
@@ -599,7 +700,7 @@ expect_leg_complete(const char* capture, const Leg& leg, const Signature& sig, c
 static int
 signatures_equal(const Signature& a, const Signature& b) {
     if (a.samples != b.samples || a.fnv != b.fnv || a.generation_changes != b.generation_changes
-        || a.batch_starts != b.batch_starts || a.blocks.size() != b.blocks.size()) {
+        || a.batch_starts != b.batch_starts || a.media_at != b.media_at || a.blocks.size() != b.blocks.size()) {
         return 0;
     }
     for (size_t i = 0; i < a.blocks.size(); i++) {
@@ -607,17 +708,29 @@ signatures_equal(const Signature& a, const Signature& b) {
             return 0;
         }
     }
+    if (a.batch_media.size() != b.batch_media.size()) {
+        return 0;
+    }
+    for (size_t i = 0; i < a.batch_media.size(); i++) {
+        if (a.batch_media[i].chunk_sequence != b.batch_media[i].chunk_sequence
+            || a.batch_media[i].first_ns != b.batch_media[i].first_ns
+            || a.batch_media[i].end_ns != b.batch_media[i].end_ns) {
+            return 0;
+        }
+    }
     return 1;
 }
 
-/* Replay @p metadata_path (the chunks @p layout, the events @p want_events) with a greedy fast reader, a slow reader
- * that starts late and reads 1, 7 and 512 samples at a time with sleeps between, and a greedy realtime reader, each
- * asking for an FSK reacquire and a symbol profile change at the same delivered positions. Each must get every sample
- * of every chunk, bit for bit the same, with the output generation moving and every batch starting at the same
- * positions, and the demod must take the same blocks. */
+/* Replay @p metadata_path (the chunks @p layout, the events @p events, @p want_events of them applied) with a greedy
+ * fast reader, a slow reader that starts late and reads 1, 7 and 512 samples at a time with sleeps between, and a greedy
+ * realtime reader, each asking for an FSK reacquire and a symbol profile change at the same delivered positions. Each
+ * must get every sample of every chunk, bit for bit the same, with the output generation moving and every batch
+ * starting at the same positions, and the demod must take the same blocks. The media time a decoder runs its clock on
+ * must be the same at the same delivered positions, the layout's, and move by exactly what a MUTE omitted at each
+ * event boundary. */
 static int
 expect_legs_agree(const char* capture, const char* metadata_path, const std::vector<LayoutChunk>& layout,
-                  const EventCounts& want_events) {
+                  const std::vector<CaptureEvent>& events, const EventCounts& want_events) {
     static const size_t kGreedy[] = {512U};
     static const size_t kSlow[] = {1U, 7U, 512U};
     const Leg legs[] = {
@@ -634,6 +747,9 @@ expect_legs_agree(const char* capture, const char* metadata_path, const std::vec
     int differ = 0;
     for (size_t i = 0; i < leg_count; i++) {
         rc |= expect_leg_complete(capture, legs[i], sigs[i], layout, want_events);
+        char label[96];
+        DSD_SNPRINTF(label, sizeof(label), "%s leg %s", capture, legs[i].name);
+        rc |= expect_media_follows_layout(label, sigs[i], layout, events);
         if (i > 0U && !signatures_equal(sigs[i], sigs[0])) {
             DSD_FPRINTF(stderr, "FAIL: %s: leg %s delivered a different stream from leg %s\n", capture, legs[i].name,
                         legs[0].name);
@@ -661,7 +777,8 @@ test_replay_output_does_not_depend_on_the_reader(void) {
     if (make_capture(payload, metadata_path, sizeof(metadata_path)) != 0) {
         return 1;
     }
-    return expect_legs_agree("determinism", metadata_path, capture_layout(payload.size(), std::vector<CaptureEvent>()),
+    const std::vector<CaptureEvent> no_events;
+    return expect_legs_agree("determinism", metadata_path, capture_layout(payload.size(), no_events), no_events,
                              EventCounts{0U, 0U, 0U});
 }
 
@@ -688,7 +805,7 @@ test_replay_events_do_not_depend_on_the_reader(void) {
     if (make_capture_with_events(payload, events, metadata_path, sizeof(metadata_path)) != 0) {
         return 1;
     }
-    return expect_legs_agree("eventful", metadata_path, capture_layout(payload.size(), events),
+    return expect_legs_agree("eventful", metadata_path, capture_layout(payload.size(), events), events,
                              EventCounts{2U, 6U, 2U});
 }
 

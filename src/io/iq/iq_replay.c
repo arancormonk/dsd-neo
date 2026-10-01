@@ -38,6 +38,76 @@ set_error(char* err_buf, size_t err_buf_size, const char* fmt, ...) {
     err_buf[err_buf_size - 1] = '\0';
 }
 
+/* The @p n decimal digits at @p text, or -1 when one of them is not a digit. */
+static int
+utc_field(const char* text, int n) {
+    int value = 0;
+    for (int i = 0; i < n; i++) {
+        if (text[i] < '0' || text[i] > '9') {
+            return -1;
+        }
+        value = value * 10 + (text[i] - '0');
+    }
+    return value;
+}
+
+/* Days from 1970-01-01 to @p y-@p m-@p d in the proleptic Gregorian calendar (H. Hinnant's days_from_civil). */
+static int64_t
+utc_days_from_civil(int64_t y, int m, int d) {
+    y -= m <= 2 ? 1 : 0;
+    const int64_t era = (y >= 0 ? y : y - 399) / 400;
+    const int64_t yoe = y - era * 400;
+    const int64_t doy = (153 * (int64_t)(m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+    const int64_t doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    return era * 146097 + doe - 719468;
+}
+
+static int
+utc_days_in_month(int year, int month) {
+    static const int kDays[12] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+    const int leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+    return month == 2 && leap ? 29 : kDays[month - 1];
+}
+
+/* The separators of YYYY-MM-DDTHH:MM:SSZ in place, at its length. */
+static int
+utc_layout_ok(const char* text) {
+    static const char kLayout[] = "####-##-##T##:##:##Z";
+    if (strlen(text) != sizeof(kLayout) - 1U) {
+        return 0;
+    }
+    for (size_t i = 0; i < sizeof(kLayout) - 1U; i++) {
+        if (kLayout[i] != '#' && text[i] != kLayout[i]) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+int
+dsd_iq_replay_parse_utc_seconds(const char* text, int64_t* out_s) {
+    if (!text || !out_s) {
+        return DSD_IQ_ERR_INVALID_ARG;
+    }
+    if (!utc_layout_ok(text)) {
+        return DSD_IQ_ERR_INVALID_META;
+    }
+    const int year = utc_field(text, 4);
+    const int month = utc_field(text + 5, 2);
+    const int day = utc_field(text + 8, 2);
+    const int hour = utc_field(text + 11, 2);
+    const int minute = utc_field(text + 14, 2);
+    const int second = utc_field(text + 17, 2);
+    if (year < 0 || month < 1 || month > 12 || day < 1 || day > utc_days_in_month(year, month)) {
+        return DSD_IQ_ERR_INVALID_META;
+    }
+    if (hour < 0 || hour > 23 || minute < 0 || minute > 59 || second < 0 || second > 59) {
+        return DSD_IQ_ERR_INVALID_META;
+    }
+    *out_s = utc_days_from_civil(year, month, day) * 86400 + (int64_t)hour * 3600 + (int64_t)minute * 60 + second;
+    return DSD_IQ_OK;
+}
+
 void
 dsd_iq_replay_config_clear(dsd_iq_replay_config* cfg) {
     if (!cfg) {

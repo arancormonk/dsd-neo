@@ -1517,9 +1517,134 @@ test_committed_analog_fixture_sidecars_open(void) {
     return rc;
 }
 
+static int
+expect_utc(const char* text, int want_rc, int64_t want_s) {
+    int64_t got_s = -12345;
+    const int rc = dsd_iq_replay_parse_utc_seconds(text, &got_s);
+    char label[160];
+    DSD_SNPRINTF(label, sizeof(label), "capture_started_utc \"%s\" parse result", text ? text : "(null)");
+    int fail = expect_int(label, rc, want_rc);
+    DSD_SNPRINTF(label, sizeof(label), "capture_started_utc \"%s\" seconds", text ? text : "(null)");
+    fail |= expect_u64(label, (uint64_t)got_s, (uint64_t)(want_rc == DSD_IQ_OK ? want_s : -12345));
+    return fail;
+}
+
+/* Issue #572: an I/Q replay decodes on its capture's clock from the sidecar's capture_started_utc, in the one form the
+   capture writer stamps. Anything else is refused rather than guessed at. */
+static int
+test_capture_started_utc_parses_the_writer_form_only(void) {
+    int rc = 0;
+    rc |= expect_utc("1970-01-01T00:00:00Z", DSD_IQ_OK, 0);
+    rc |= expect_utc("1999-12-31T23:59:59Z", DSD_IQ_OK, 946684799);
+    rc |= expect_utc("2000-01-01T00:00:00Z", DSD_IQ_OK, 946684800);
+    rc |= expect_utc("2024-02-29T23:59:59Z", DSD_IQ_OK, 1709251199);
+    rc |= expect_utc("2026-07-30T00:00:00Z", DSD_IQ_OK, 1785369600);
+    rc |= expect_utc("2026-09-01T06:51:37Z", DSD_IQ_OK, 1788245497);
+    rc |= expect_utc("2100-03-01T00:00:00Z", DSD_IQ_OK, 4107542400);
+    rc |= expect_utc("9999-12-31T23:59:59Z", DSD_IQ_OK, 253402300799);
+    static const char* const kRefused[] = {
+        "",
+        "2026-09-01",
+        "2026-09-01T06:51:37",
+        "2026-09-01T06:51:37+00:00",
+        "2026-09-01T06:51:37.5Z",
+        "2026-09-01 06:51:37Z",
+        "2026-9-01T06:51:37Z0",
+        "2026-13-01T06:51:37Z",
+        "2026-00-01T06:51:37Z",
+        "2026-09-00T06:51:37Z",
+        "2026-09-31T06:51:37Z",
+        "2023-02-29T00:00:00Z",
+        "2100-02-29T00:00:00Z",
+        "2026-09-01T24:00:00Z",
+        "2026-09-01T06:60:37Z",
+        "2026-09-01T06:51:60Z",
+        "2026-09-01T06:5a:37Z",
+        "+026-09-01T06:51:37Z",
+    };
+    for (size_t i = 0; i < sizeof(kRefused) / sizeof(kRefused[0]); i++) {
+        rc |= expect_utc(kRefused[i], DSD_IQ_ERR_INVALID_META, 0);
+    }
+    int64_t out = 7;
+    rc |= expect_int("NULL text", dsd_iq_replay_parse_utc_seconds(NULL, &out), DSD_IQ_ERR_INVALID_ARG);
+    rc |= expect_int("NULL out", dsd_iq_replay_parse_utc_seconds("2026-09-01T06:51:37Z", NULL), DSD_IQ_ERR_INVALID_ARG);
+    rc |= expect_u64("NULL text leaves out alone", (uint64_t)out, 7U);
+    return rc;
+}
+
+/* Every committed fixture's sidecar carries a capture_started_utc the replay can run its decode clock on. */
+static int
+test_committed_fixture_capture_times_parse(void) {
+    static const char* const kFixtures[] = {
+        "am_adjacent_synth",
+        "am_airband_real",
+        "am_tone_synth",
+        "dmr_t3_cc",
+        "dmr_t3_ras_cc",
+        "dmr_voice",
+        "dpmr",
+        "dpmr_synth",
+        "dstar",
+        "edacs",
+        "m17",
+        "nfm_adjacent_synth",
+        "nfm_ctcss_real",
+        "nfm_ctcss_synth_1000",
+        "nfm_ctcss_synth_670",
+        "nfm_ctcss_synth_drop",
+        "nfm_dcs_synth_023i",
+        "nfm_dcs_synth_023n",
+        "nfm_dcs_synth_drop",
+        "nfm_dcs_synth_noisy",
+        "nfm_notone_synth",
+        "nfm_squelch_real_a",
+        "nfm_squelch_real_b",
+        "nfm_tone_synth",
+        "noise_floor",
+        "nxdn48",
+        "nxdn48_attenuated",
+        "nxdn96",
+        "p25p1_c4fm_cc",
+        "p25p1_c4fm_vc",
+        "p25p1_cqpsk_cc",
+        "p25p1_cqpsk_cc_simulcast",
+        "p25p1_cqpsk_vc",
+        "p25p2_cc",
+        "provoice",
+        "ysf",
+    };
+    int rc = 0;
+    for (size_t i = 0; i < sizeof(kFixtures) / sizeof(kFixtures[0]); i++) {
+        char leaf[96];
+        char meta[DSD_TEST_PATH_MAX];
+        DSD_SNPRINTF(leaf, sizeof(leaf), "%s.iq.json", kFixtures[i]);
+        if (path_join(meta, sizeof(meta), DSD_NEO_TEST_IQ_FIXTURE_DIR, leaf) != 0) {
+            return 1;
+        }
+        dsd_iq_replay_config cfg;
+        DSD_MEMSET(&cfg, 0, sizeof(cfg));
+        char err[256] = {0};
+        if (dsd_iq_replay_read_metadata(meta, &cfg, err, sizeof(err)) != DSD_IQ_OK) {
+            DSD_FPRINTF(stderr, "FAIL: fixture %s: %s\n", kFixtures[i], err);
+            rc = 1;
+            continue;
+        }
+        int64_t seconds = 0;
+        if (dsd_iq_replay_parse_utc_seconds(cfg.capture_started_utc, &seconds) != DSD_IQ_OK) {
+            DSD_FPRINTF(stderr, "FAIL: fixture %s: capture_started_utc \"%s\" does not parse\n", kFixtures[i],
+                        cfg.capture_started_utc);
+            rc = 1;
+        }
+        dsd_iq_replay_config_clear(&cfg);
+    }
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
+    rc |= test_capture_started_utc_parses_the_writer_form_only();
+    rc |= test_committed_fixture_capture_times_parse();
     rc |= test_committed_analog_fixture_sidecars_open();
     rc |= test_metadata_round_trip_capture_open_close();
     rc |= test_metadata_v2_events_round_trip();

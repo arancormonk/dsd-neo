@@ -40,6 +40,7 @@
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/dsp/symbol.h>
 #include <dsd-neo/engine/channel_scan.h>
+#include <dsd-neo/engine/engine.h>
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/engine/scan_voice_gate.h>
 #include <dsd-neo/engine/trunk_scan.h>
@@ -373,11 +374,13 @@ ui_reconfigure_output_for_input_policy(dsd_opts* opts, dsd_state* state) {
 }
 
 /* The audio input changed. A tone heard on the old input does not describe the new one, so it
-   goes now rather than when the detector next loses it (issue #522); then the output follows
-   the new input's policy. */
+   goes now rather than when the detector next loses it (issue #522); an I/Q replay's capture
+   clock no longer times what the decoder reads, so decode time is the system's again (issue
+   #572); then the output follows the new input's policy. */
 static int
 ui_input_switched(dsd_opts* opts, dsd_state* state) {
     dsd_analog_rx_reset(state);
+    dsd_engine_decode_clock_leave_replay(opts, state);
     return ui_reconfigure_output_for_input_policy(opts, state);
 }
 

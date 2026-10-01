@@ -38,8 +38,8 @@ rtl_stream_metrics_set_channel_squelch(double mean_power) {
     rtl_stream_set_channel_squelch((float)mean_power);
 }
 
-/* The fields DSP reads of the replay batch tag. The decoder thread calls it while the stream is open, the one thread
- * rtl_stream_get_replay_batch() may be called on. */
+/* The fields DSP reads of the replay batch tag: the labels, and the media span its samples run the decode clock on. The
+ * decoder thread calls it while the stream is open, the one thread rtl_stream_get_replay_batch() may be called on. */
 static int
 rtl_stream_metrics_replay_batch(dsd_rtl_stream_replay_batch* out) {
     rtl_stream_replay_batch tag;
@@ -51,6 +51,10 @@ rtl_stream_metrics_replay_batch(dsd_rtl_stream_replay_batch* out) {
     out->channel_profile = tag.channel_profile;
     out->symbol_rate_hz = tag.symbol_rate_hz;
     out->levels = tag.symbol_levels;
+    out->media_start_ns = tag.media_start_ns;
+    out->media_duration_ns = tag.media_duration_ns;
+    out->output_count = tag.output_count;
+    out->first_index = tag.first_index;
     return 1;
 }
 #endif

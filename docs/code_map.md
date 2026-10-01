@@ -649,7 +649,18 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
     `src/io/radio/tcp_quality_metrics.cpp` (built into `dsd-neo_platform`). Semgrep enforces the split:
     `dsd-neo.no-direct-clock-read` rejects any other clock read in C/C++ outside `src/platform/`, `decode_clock.c`,
     those two sources and `realtime_clock.h`, and `dsd-neo.no-direct-clock-read-js` does the same for the frontend's
-    QML and JavaScript (see `docs/code-quality-guardrails.md`).
+    QML and JavaScript (see `docs/code-quality-guardrails.md`). Under `--iq-replay` the engine selects REPLAY first in
+    the run, before common setup writes its first record (`dsd_engine_decode_clock_enter_replay()`: the sidecar's
+    `capture_started_utc`, parsed by `dsd_iq_replay_parse_utc_seconds()`, then `dsd_state_rebase_decode_timestamps()` in
+    `<dsd-neo/core/init.h>`, the one list of decode stamps `initOpts()`/`initState()` seed with "now"; a sidecar that
+    does not parse fails the run there). It returns to SYSTEM with the same rebase once the replay no longer feeds the
+    decoder: at the end of the run, when app-control stops the stream to restart it (`svc_rtl_stop_locked()`), and on an
+    input switch (`dsd_engine_decode_clock_leave_replay()`). The source switches only while no reader runs, because a
+    REPLAY read is three loads. Each replay sample moves media time to its own capture time as it reaches symbol
+    processing (`dsd_decode_clock_batch_media_ns()` over the batch tag's span): the symbol cache's pop, and the
+    one-sample readers (the analog monitor, M17, EDACS analog) through
+    `dsd_rtl_stream_metrics_hook_replay_advance_decode_clock()`. Tests: `RUNTIME_DECODE_CLOCK`,
+    `RTL_SYMBOL_REPLAY_CLOCK`, `ENGINE_REPLAY_DECODE_CLOCK`.
   - Analog channel contract shared by the CLI, config, app commands, scan rows and the demodulator
     (`include/dsd-neo/runtime/analog_channel.h`, `src/runtime/analog_channel.c`): `dsd_analog_demod` (FM = 0,
     AM = 1), `dsd_rx_family`, per-kind width ranges and defaults (NFM 8000–25000 Hz, default 16000; AM
@@ -711,7 +722,8 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
     on (`output_rate_for_family`, told whether the CQPSK state is a trunk-scan target's own choice, which stands over
     `DSD_NEO_CQPSK` there, issue #583), and what the I/Q replay batch the decoder's last read took its samples from ran
     on (`replay_batch`, `dsd_rtl_stream_replay_batch`: generation, output kind, channel profile, symbol rate and
-    levels; decoder thread only, while the stream is open; issue #572); the engine installs
+    levels, and the media span, output count and first sample's index the decode clock runs on; decoder thread only,
+    while the stream is open; issue #572); the engine installs
     `rtl_stream_request_analog_profile()`, `rtl_stream_request_digital_family_landing()`,
     `rtl_stream_get_analog_profile()`, `rtl_stream_analog_family_active()`, `rtl_stream_family_landing_after_pending()`,
     `rtl_stream_output_rate_for_family()` and `rtl_stream_get_replay_batch()` behind them. Tests:
@@ -1639,7 +1651,10 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   has not seen yet comes back as `RTL_SYMBOL_CACHE_REFRESH`: the caller refreshes the work context, output kind, SPS,
   levels and FSK timing exactly as after a drop, keeps the batch, and takes its first sample next. A monitor-output
   batch, and one the stream flushed after it was published (the pop checks the batch's generation), are still
-  dropped. Test: `RTL_SYMBOL_CACHE_GENERATION`.
+  dropped. The cache keeps the batch's media span with its samples, and each sample it hands out runs the decode
+  clock's media time to that sample's capture time (`rtl_symbol_cache_pop()`), so a decode window reads the same time
+  whatever the batch boundaries; a live read's samples move nothing, and the matched-filter seam's hand-backs never
+  pass through the pop. Tests: `RTL_SYMBOL_CACHE_GENERATION`, `RTL_SYMBOL_REPLAY_CLOCK`.
 - `dsd_symbol.c` owns the open-loop FSK symbol grid. Only the inter-frame sync search moves it, by a whole sample at
   a time, on the first zero crossing latched in the previous symbol — a bang-bang loop on one unfiltered sample
   index, and between frames the only thing tracking the sampling instant across a call. Issue #444 documents how
@@ -2184,11 +2199,13 @@ Notes:
       output kind, channel profile, symbol rate and levels, output rate, media start and duration, output count) of
       the batch the last read took samples from, with their place in it, is what `rtl_stream_get_replay_batch()`
       returns, on the decoder thread while the stream is open. The symbol cache labels what it reads from it, through
-      the runtime metrics hook (see DSP), so it keeps the first batch after a change.
+      the runtime metrics hook (see DSP), so it keeps the first batch after a change, and runs the decode clock on its
+      media span, sample by sample (see Runtime).
     - Lock order: `replay_eof_m`, then `output.ready_m`. The locked sections use the unlocked ring helpers.
 
     Tests: `IO_RTL_REPLAY_DETERMINISM` (greedy fast, slow and realtime readers with the same requests deliver the same
-    stream, the oracle's count; a block's output held unpublished stays out of the decoder's reach, and every read's
+    stream, the oracle's count, and the same media time at fixed delivered positions, which moves by exactly what a
+    MUTE omitted at its boundary; a block's output held unpublished stays out of the decoder's reach, and every read's
     tag describes its samples; bounded stops at each wait; zero-output and empty replays; a reader-start failure at
     the first demand wait), `IO_RTL_REPLAY_EOF_AND_CF32`.
   - I/Q replay events on an idle pipeline (issue #572; "Replay events on an idle pipeline" in `rtl_sdr_fm.cpp`,

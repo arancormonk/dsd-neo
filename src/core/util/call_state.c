@@ -351,11 +351,10 @@ call_state_observation_begins_epoch(const dsd_call_snapshot* current, const dsd_
  *
  * Measured on the decode clock: every non-zero observed_m in the tree comes from
  * dsd_decode_now_mono_s(), and callers that pass 0.0 get the same read through
- * call_state_observed_m(). Its SYSTEM source, which replay still runs on, reads the platform
- * monotonic clock, so under unpaced replay (--iq-replay-rate fast, the default) gaps appear
- * shorter than they were on air and coalescing is correspondingly more eager. Documented in
- * docs/iq-capture-replay.md; use --iq-replay-rate realtime to reproduce live timing. Keep every
- * stamp this window compares on that one clock rather than introducing a second one here.
+ * call_state_observed_m(). Live, that is the platform monotonic clock. Under --iq-replay it is
+ * the capture's clock, run sample by sample as the decoder reaches each one, so the window
+ * measures air time whatever the replay pacing (issue #572). Keep every stamp this window
+ * compares on that one clock rather than introducing a second one here.
  *
  * The constant itself is DSD_CALL_REACQUIRE_GAP_S in <dsd-neo/core/call_state.h>; the event layer
  * needs it to know how long to hold a VOICE_END alert open.

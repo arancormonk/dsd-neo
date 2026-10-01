@@ -12,6 +12,7 @@
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
+#include <dsd-neo/core/init.h>
 #include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
@@ -41,6 +42,8 @@
 #include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/io/control.h>
+#include <dsd-neo/io/iq_replay.h>
+#include <dsd-neo/io/iq_types.h>
 #include <dsd-neo/io/rigctl_client.h>
 #include <dsd-neo/io/udp_input.h>
 #include <dsd-neo/io/udp_socket_connect.h>
@@ -3199,6 +3202,58 @@ dsd_engine_run_dispatch_mode(dsd_opts* opts, dsd_state* state, const dsd_engine_
     return liveScanner(opts, state, hooks, lifecycle_started);
 }
 
+/* The sidecar path of the I/Q replay the run's input names, as the stream opens it: the `iqreplay:` spec's path, else
+   --iq-replay's. NULL when the input is no replay. */
+static const char*
+dsd_engine_replay_sidecar_path(const dsd_opts* opts) {
+    if (!opts->iq_replay_requested || !dsd_opts_audio_in_dev_is_iqreplay_spec(opts->audio_in_dev)) {
+        return NULL;
+    }
+    const char* colon = strchr(opts->audio_in_dev, ':');
+    if (colon && colon[1] != '\0') {
+        return colon + 1;
+    }
+    return opts->iq_replay_path[0] != '\0' ? opts->iq_replay_path : NULL;
+}
+
+int
+dsd_engine_decode_clock_enter_replay(dsd_opts* opts, dsd_state* state) {
+    if (!opts || !state) {
+        return -1;
+    }
+    const char* path = dsd_engine_replay_sidecar_path(opts);
+    if (!path) {
+        return 0;
+    }
+    dsd_iq_replay_config cfg;
+    DSD_MEMSET(&cfg, 0, sizeof(cfg));
+    char err[256] = {0};
+    if (dsd_iq_replay_read_metadata(path, &cfg, err, sizeof(err)) != DSD_IQ_OK) {
+        LOG_ERROR("IQ replay metadata error: %s\n", err[0] ? err : "unknown error");
+        return -1;
+    }
+    int64_t anchor_s = 0;
+    if (dsd_iq_replay_parse_utc_seconds(cfg.capture_started_utc, &anchor_s) != DSD_IQ_OK) {
+        LOG_WARN("IQ replay: capture_started_utc \"%s\" is not YYYY-MM-DDTHH:MM:SSZ; decode times start at "
+                 "2000-01-01T00:00:00Z.\n",
+                 cfg.capture_started_utc);
+        anchor_s = 0;
+    }
+    dsd_iq_replay_config_clear(&cfg);
+    dsd_decode_clock_use_replay(anchor_s);
+    dsd_state_rebase_decode_timestamps(opts, state);
+    return 0;
+}
+
+void
+dsd_engine_decode_clock_leave_replay(dsd_opts* opts, dsd_state* state) {
+    if (dsd_decode_clock_source() != DSD_DECODE_CLOCK_REPLAY) {
+        return;
+    }
+    dsd_decode_clock_use_system();
+    dsd_state_rebase_decode_timestamps(opts, state);
+}
+
 int
 dsd_engine_run_with_lifecycle(dsd_opts* opts, dsd_state* state, const dsd_engine_lifecycle_hooks* hooks) {
     if (!opts || !state) {
@@ -3223,6 +3278,13 @@ dsd_engine_run_with_lifecycle(dsd_opts* opts, dsd_state* state, const dsd_engine
     int lifecycle_started = 0;
     dsd_exitflag_store(0);
 
+    /* An I/Q replay decodes on its capture's clock (issue #572). Selected first, before common setup writes its first
+       record (the P25 SM log's event=init) and before the stream, the watchdog or a frontend reads the clock. */
+    if (dsd_engine_decode_clock_enter_replay(opts, state) != 0) {
+        rc = 1;
+        goto ENGINE_OUT;
+    }
+
     dsd_engine_run_record_start_time_if_debug(state);
     dsd_engine_run_install_hooks();
 
@@ -3241,6 +3303,8 @@ ENGINE_OUT:
         hooks->stop(opts, state, hooks->context);
     }
     dsd_engine_cleanup(opts, state);
+    /* The stream has stopped: the next session's decode time is the system's again. */
+    dsd_engine_decode_clock_leave_replay(opts, state);
     dsd_input_failure failure;
     dsd_input_failure_get(&failure);
     /* A receiver that failed, or an I/Q replay whose capture could not be read (the replay reader latches a file

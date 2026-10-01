@@ -33,11 +33,15 @@ extern "C" {
  * `<dsd-neo/io/rtl_stream_c.h>`, of which these are the fields DSP reads).
  */
 typedef struct dsd_rtl_stream_replay_batch {
-    uint32_t generation; /**< The stream generation it was published under. */
-    int output_kind;     /**< Output kind (dsd_rtl_stream_metrics_hook_output_kind()). */
-    int channel_profile; /**< Channel profile (dsd_rtl_stream_channel_profile). */
-    int symbol_rate_hz;  /**< Symbol rate in symbols/s. */
-    int levels;          /**< Symbol levels. */
+    uint32_t generation;        /**< The stream generation it was published under. */
+    int output_kind;            /**< Output kind (dsd_rtl_stream_metrics_hook_output_kind()). */
+    int channel_profile;        /**< Channel profile (dsd_rtl_stream_channel_profile). */
+    int symbol_rate_hz;         /**< Symbol rate in symbols/s. */
+    int levels;                 /**< Symbol levels. */
+    uint64_t media_start_ns;    /**< Capture time of the batch's first sample, time a MUTE omitted included. */
+    uint64_t media_duration_ns; /**< Capture time the batch spans. */
+    uint32_t output_count;      /**< Samples in the batch. */
+    uint32_t first_index;       /**< Index in the batch of the first sample the last read returned. */
 } dsd_rtl_stream_replay_batch;
 
 typedef struct {
@@ -211,6 +215,18 @@ unsigned int dsd_rtl_stream_metrics_hook_output_rate_for_family(int family, int 
  *         no replay read yet, no hook installed, or a NULL @p out), with @p out zeroed.
  */
 int dsd_rtl_stream_metrics_hook_replay_batch(dsd_rtl_stream_replay_batch* out);
+/**
+ * @brief Run the decode clock's media time to the first sample the decoder's last RTL read returned, while the input is
+ * an I/Q replay.
+ *
+ * For the readers that take one sample at a time (the analog monitor, M17, EDACS analog): the sample's capture time is
+ * the read's batch span at its index (dsd_decode_clock_batch_media_ns()), which dsd_decode_clock_set_media_ns() takes
+ * (issue #572). The symbol cache does the same for each sample it hands out. Call it on the decoder thread right after a
+ * read that returned samples, as dsd_rtl_stream_metrics_hook_replay_batch().
+ *
+ * @return 1 when it set the media time; 0 when there is no replay batch (a live input, or no hook installed).
+ */
+int dsd_rtl_stream_metrics_hook_replay_advance_decode_clock(void);
 int dsd_rtl_stream_metrics_hook_cqpsk_status(int* out_cqpsk_enable, int* out_cqpsk_timing_active);
 int dsd_rtl_stream_metrics_hook_request_cqpsk_reacquire(void);
 int dsd_rtl_stream_metrics_hook_cqpsk_timing_bias(void);

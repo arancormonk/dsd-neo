@@ -790,6 +790,13 @@ struct dsd_state {
     int rtl_symbol_cache_levels;
     uint32_t rtl_symbol_cache_generation;
     int rtl_symbol_cache_published_pending;
+    /* The I/Q replay batch the cached samples come from: the capture time it spans, its sample count, and the batch
+       index of rtl_symbol_cache[0]. Each sample the cache hands out runs the decode clock's media time to its own
+       capture time (issue #572); a count of 0, as after a live read, runs nothing. */
+    uint64_t rtl_symbol_cache_media_start_ns;
+    uint64_t rtl_symbol_cache_media_duration_ns;
+    uint32_t rtl_symbol_cache_media_count;
+    uint32_t rtl_symbol_cache_media_first_index;
     int rtl_fsk_sps_num;
     int rtl_fsk_sps_den;
     int rtl_fsk_sps_accum;

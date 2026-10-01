@@ -85,6 +85,19 @@ int dsd_iq_replay_read_metadata(const char* path, dsd_iq_replay_config* out_cfg,
 int dsd_iq_replay_open(const char* path, dsd_iq_replay_config* out_cfg, dsd_iq_replay_source** out, char* err_buf,
                        size_t err_buf_size);
 /**
+ * @brief Seconds since the Unix epoch of a sidecar's `capture_started_utc`.
+ *
+ * Takes the form the capture writer stamps, `YYYY-MM-DDTHH:MM:SSZ`, and nothing looser. An I/Q replay decodes on the
+ * capture's clock from this instant (issue #572).
+ *
+ * @param text The field's text.
+ * @param out_s [out] The instant; set only on success.
+ * @return DSD_IQ_OK; DSD_IQ_ERR_INVALID_META for text in any other form or out of range; DSD_IQ_ERR_INVALID_ARG for a
+ *         NULL argument.
+ */
+int dsd_iq_replay_parse_utc_seconds(const char* text, int64_t* out_s);
+
+/**
  * @brief Release owned replay config allocations and reset the struct to zero.
  *
  * Only call this on a zero-initialized config or a config returned by a

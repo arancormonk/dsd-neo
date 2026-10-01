@@ -9,9 +9,7 @@
 #include <stdint.h>
 #include <time.h>
 
-#define DSD_DECODE_CLOCK_NS_PER_S       1000000000ULL
-/* 2000-01-01T00:00:00Z */
-#define DSD_DECODE_CLOCK_ANCHOR_FLOOR_S 946684800LL
+#define DSD_DECODE_CLOCK_NS_PER_S 1000000000ULL
 
 static atomic_int g_source = DSD_DECODE_CLOCK_SYSTEM;
 static dsd_atomic_u64 g_anchor_ns = {0U};
@@ -101,9 +99,9 @@ dsd_decode_clock_use_system(void) {
 void
 dsd_decode_clock_use_replay(int64_t anchor_utc_s) {
     int64_t a = anchor_utc_s < DSD_DECODE_CLOCK_ANCHOR_FLOOR_S ? DSD_DECODE_CLOCK_ANCHOR_FLOOR_S : anchor_utc_s;
-    /* Keep anchor_ns inside uint64 range (year ~2554) for absurd inputs. */
-    if (a > 18000000000LL) {
-        a = 18000000000LL;
+    /* Keep anchor_ns inside uint64 range for absurd inputs. */
+    if (a > DSD_DECODE_CLOCK_ANCHOR_MAX_S) {
+        a = DSD_DECODE_CLOCK_ANCHOR_MAX_S;
     }
     dsd_atomic_u64_store_release(&g_media_ns, 0U);
     dsd_atomic_u64_store_release(&g_anchor_ns, (uint64_t)a * DSD_DECODE_CLOCK_NS_PER_S);
@@ -116,6 +114,23 @@ dsd_decode_clock_set_media_ns(uint64_t media_ns) {
     if (media_ns > dsd_atomic_u64_load_relaxed(&g_media_ns)) {
         dsd_atomic_u64_store_release(&g_media_ns, media_ns);
     }
+}
+
+uint64_t
+dsd_decode_clock_batch_media_ns(uint64_t start_ns, uint64_t duration_ns, uint32_t count, uint32_t index) {
+    if (count == 0U) {
+        return start_ns;
+    }
+    if (index > count) {
+        index = count;
+    }
+    /* index * duration / count, split so no product leaves 64 bits: duration = q * count + r with r < count, so
+       index * duration / count = index * q + (index * r) / count exactly, index * q <= duration (index <= count) and
+       index * r < 2^32 * 2^32. */
+    const uint64_t q = duration_ns / count;
+    const uint64_t r = duration_ns % count;
+    const uint64_t offset = q * index + (r * index) / count;
+    return offset > UINT64_MAX - start_ns ? UINT64_MAX : start_ns + offset;
 }
 
 void

@@ -4,6 +4,7 @@
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/engine/channel_scan.h>
+#include <dsd-neo/engine/engine.h>
 #include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <stddef.h>
@@ -48,4 +49,12 @@ dsd_engine_channel_scan_refused_rows(const dsd_opts* opts, const dsd_state* stat
         brief[0] = '\0';
     }
     return 0;
+}
+
+/* Nor an I/Q replay whose decode clock a stream stop would leave (issue #572): ENGINE_REPLAY_DECODE_CLOCK drives the
+   engine's. */
+void
+dsd_engine_decode_clock_leave_replay(dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    (void)state;
 }

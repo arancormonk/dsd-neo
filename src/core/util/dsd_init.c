@@ -26,6 +26,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include "dsd-neo/core/call_state.h"
 #include "dsd-neo/core/dibit.h"
 #include "dsd-neo/core/frontend_types.h"
@@ -129,7 +130,8 @@ init_opts_output_defaults(dsd_opts* opts) {
     opts->frame_log_write_error_reported = 0;
     opts->p25_sm_log_open_error_reported = 0;
     opts->p25_sm_log_write_error_reported = 0;
-    opts->symbol_out_file_creation_time = dsd_decode_time();
+    /* symbol_out_file_creation_time, on the list the engine's replay rebase shares. */
+    dsd_state_rebase_decode_timestamps(opts, NULL);
     opts->symbol_out_file_is_auto = 0;
     opts->mbe_out = 0;
     opts->mbe_outR = 0; //second slot on a TDMA system
@@ -423,6 +425,19 @@ init_opts_trunking_and_filter_defaults(dsd_opts* opts) {
 }
 
 void
+dsd_state_rebase_decode_timestamps(dsd_opts* opts, dsd_state* state) {
+    const time_t now = dsd_decode_time();
+    if (opts) {
+        opts->symbol_out_file_creation_time = now;
+    }
+    if (state) {
+        state->last_cc_sync_time = now;
+        state->last_vc_sync_time = now;
+        state->last_t3_tune_time = now;
+    }
+}
+
+void
 initOpts(dsd_opts* opts) {
     init_opts_display_and_audio_defaults(opts);
     init_opts_output_defaults(opts);
@@ -499,6 +514,10 @@ init_state_core_buffers(dsd_state* state) {
     state->rtl_symbol_cache_levels = 0;
     state->rtl_symbol_cache_generation = 0;
     state->rtl_symbol_cache_published_pending = 0;
+    state->rtl_symbol_cache_media_start_ns = 0U;
+    state->rtl_symbol_cache_media_duration_ns = 0U;
+    state->rtl_symbol_cache_media_count = 0U;
+    state->rtl_symbol_cache_media_first_index = 0U;
     state->rtl_fsk_sps_num = 0;
     state->rtl_fsk_sps_den = 0;
     state->rtl_fsk_sps_accum = 0;
@@ -1051,13 +1070,12 @@ init_state_p25_and_trunk_defaults(dsd_state* state) {
     state->trunk_chan_map_seq = 0;
     state->lcn_freq_count = 0; //number of frequncies imported as an enumerated lcn list
     state->lcn_freq_roll = 0;  //needs reset if sync is found?
-    state->last_cc_sync_time = dsd_decode_time();
-    state->last_vc_sync_time = dsd_decode_time();
+    /* last_cc_sync_time, last_vc_sync_time and last_t3_tune_time, on the list the engine's replay rebase shares. */
+    dsd_state_rebase_decode_timestamps(NULL, state);
     state->rtl_fsk_reacquire_last_sync_time = 0;
     state->rtl_fsk_reacquire_last_sync_m = 0.0;
     state->rtl_fsk_reacquire_gap_start_m = 0.0;
     state->rtl_fsk_reacquire_last_request_m = 0.0;
-    state->last_t3_tune_time = dsd_decode_time();
     state->is_con_plus = 0;
 }
 

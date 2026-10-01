@@ -64,6 +64,7 @@
 
 #ifdef USE_RADIO
 #include <dsd-neo/runtime/rtl_stream_io_hooks.h>
+#include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <math.h>
 #endif
 
@@ -242,6 +243,8 @@ edacs_fill_analog_block_rtl(dsd_opts* opts, dsd_state* state, short* block) {
             dsd_request_shutdown(opts, state);
             return 0;
         }
+        /* An I/Q replay's sample runs the decode clock to its capture time (issue #572). */
+        (void)dsd_rtl_stream_metrics_hook_replay_advance_decode_clock();
         rtl_sample *= opts->rtl_volume_multiplier;
         block[i] = clip_float_to_short(rtl_sample);
     }

@@ -21,6 +21,7 @@
 #include <dsd-neo/core/string_utils.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/engine/channel_scan.h>
+#include <dsd-neo/engine/engine.h>
 #include <dsd-neo/engine/p25_bandplan_export.h>
 #include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/io/control.h>
@@ -1402,7 +1403,9 @@ svc_rtl_restart(dsd_opts* opts, dsd_state* state) {
     return result;
 }
 
-/* Stop and destroy any existing stream context. */
+/* Stop and destroy any existing stream context. An I/Q replay stopped here restarts from the capture's first sample, if
+   at all, so its decode time can no longer follow the capture: the decode clock goes back to the system clock with the
+   stream stopped (issue #572). */
 static void
 svc_rtl_stop_locked(dsd_opts* opts, dsd_state* state) {
     if (state->rtl_ctx) {
@@ -1412,6 +1415,7 @@ svc_rtl_stop_locked(dsd_opts* opts, dsd_state* state) {
     }
     opts->rtl_started = 0;
     opts->rtl_needs_restart = 0;
+    dsd_engine_decode_clock_leave_replay(opts, state);
 }
 
 /* If the radio pipeline is the active input, create and start the stream so changes take effect as soon as the user

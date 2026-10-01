@@ -5203,6 +5203,47 @@ if(DSD_HAS_RADIO AND NOT APPLE AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
     set_tests_properties(ENGINE_REPLAY_READ_ERROR PROPERTIES TIMEOUT 60)
 endif()
 
+# Issue #572: a replay run through the engine decodes on its capture's clock, from the
+# committed fixtures' sidecars, in the CLI's initialization order.
+if(DSD_HAS_RADIO)
+    add_executable(
+        dsd-neo_test_engine_replay_decode_clock
+        engine/test_engine_replay_decode_clock.c
+    )
+    target_include_directories(
+        dsd-neo_test_engine_replay_decode_clock
+        PRIVATE ${PROJECT_SOURCE_DIR}/include
+    )
+    target_compile_definitions(
+        dsd-neo_test_engine_replay_decode_clock
+        PRIVATE
+            "DSD_NEO_TEST_IQ_FIXTURE_DIR=\"${PROJECT_SOURCE_DIR}/tests/fixtures/iq\""
+    )
+    if(NOT APPLE AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
+        target_link_libraries(
+            dsd-neo_test_engine_replay_decode_clock
+            PRIVATE
+                "-Wl,--start-group"
+                dsd-neo_engine
+                dsd-neo_io_radio
+                dsd-neo_io_iq
+                "-Wl,--end-group"
+                ${LIBS}
+                dsd-neo_test_support
+        )
+    else()
+        target_link_libraries(
+            dsd-neo_test_engine_replay_decode_clock
+            PRIVATE dsd-neo_engine ${LIBS} dsd-neo_test_support
+        )
+    endif()
+    add_test(
+        NAME ENGINE_REPLAY_DECODE_CLOCK
+        COMMAND dsd-neo_test_engine_replay_decode_clock
+    )
+    set_tests_properties(ENGINE_REPLAY_DECODE_CLOCK PROPERTIES TIMEOUT 60)
+endif()
+
 if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
     add_executable(
         dsd-neo_test_engine_synced_trunk_scan_tick
@@ -8134,6 +8175,28 @@ if(DSD_HAS_RADIO)
     add_test(
         NAME RTL_SYMBOL_CACHE_GENERATION
         COMMAND dsd-neo_test_rtl_symbol_cache_generation
+    )
+
+    # Issue #572: an I/Q replay's samples run the decode clock as they reach symbol
+    # processing, so a call-state window decides the same whatever the batch sizes.
+    add_executable(
+        dsd-neo_test_rtl_symbol_replay_clock
+        dsp/test_rtl_symbol_replay_clock.c
+        test_support/frame_sync_dsp_stubs.c
+    )
+    target_include_directories(
+        dsd-neo_test_rtl_symbol_replay_clock
+        PRIVATE ${PROJECT_SOURCE_DIR}/include
+    )
+    dsd_neo_link_dsp_test(dsd-neo_test_rtl_symbol_replay_clock
+      dsd-neo_test_call_state_support
+      dsd-neo_test_support
+      ${DSD_NEO_TEST_MATH_LIB}
+      ${LIBSNDFILE_LIBRARIES}
+    )
+    add_test(
+        NAME RTL_SYMBOL_REPLAY_CLOCK
+        COMMAND dsd-neo_test_rtl_symbol_replay_clock
     )
 
     add_executable(
@@ -11158,12 +11221,14 @@ set(_DSD_NEO_DECODE_CLOCK_TEST_TARGETS
     dsd-neo_test_p25_p1_tdu
     # Core, app-control and terminal sources compiled in directly. Some exist only
     # with curses or radio support, hence the TARGET check below.
+    dsd-neo_test_app_control_frontend_metrics
     dsd-neo_test_core_gps_lrrp_crc_gating
     dsd-neo_test_dmr_embedded_gps_position_error
     dsd-neo_test_ui_chooser_navigation
     dsd-neo_test_ui_dsp_display_radio_compile
     dsd-neo_test_ui_menu_dynamic_label
     dsd-neo_test_ui_menu_labels
+    dsd-neo_test_ui_menu_actions
     dsd-neo_test_ui_menu_labels_radio
     dsd-neo_test_ui_menu_render_helpers
     dsd-neo_test_ui_panels_header_footer
