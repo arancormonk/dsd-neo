@@ -646,7 +646,10 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
     auto-PPM, the analog tap's input-pause deadline and backlog skip, UI publish throttles, `ui_msg_expire` toasts, the
     input-level warning cooldown, RadioReference dates and perf. Two sources below runtime in the link order keep the
     platform clocks for their real-time reads: `src/io/iq/iq_capture.c` (`dsd-neo_io_iq`) and
-    `src/io/radio/tcp_quality_metrics.cpp` (built into `dsd-neo_platform`).
+    `src/io/radio/tcp_quality_metrics.cpp` (built into `dsd-neo_platform`). Semgrep enforces the split:
+    `dsd-neo.no-direct-clock-read` rejects any other clock read in C/C++ outside `src/platform/`, `decode_clock.c`,
+    those two sources and `realtime_clock.h`, and `dsd-neo.no-direct-clock-read-js` does the same for the frontend's
+    QML and JavaScript (see `docs/code-quality-guardrails.md`).
   - Analog channel contract shared by the CLI, config, app commands, scan rows and the demodulator
     (`include/dsd-neo/runtime/analog_channel.h`, `src/runtime/analog_channel.c`): `dsd_analog_demod` (FM = 0,
     AM = 1), `dsd_rx_family`, per-kind width ranges and defaults (NFM 8000–25000 Hz, default 16000; AM
