@@ -1205,6 +1205,63 @@ test_seed_without_a_ring_keeps_its_session(void) {
     expect("and only it is the new session's", view.count() == 1 && rows_in_tg_range(view, 9503, 9503) == 1);
 }
 
+/* The first logged row whose talkgroup is @p tg, or -1. */
+int
+row_with_tg(const CallHistoryModel& model, qulonglong tg) {
+    for (int i = 0; i < model.rowCount(); i++) {
+        if (model.data(model.index(i), CallHistoryModel::TgRole).toULongLong() == tg) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+/* A replayed call heard again folds into its logged row wherever that sits, here under 40 newer live rows,
+ * past the newest 32 a live fragment searches. The ring then enriches the call in place (it runs longer, and
+ * turns out encrypted). That update belongs to the same row and must reach it, as the sighting did, also
+ * when the UI was relaunched between the two. */
+void
+test_update_of_a_call_heard_again_reaches_its_row(void) {
+    for (int relaunch = 0; relaunch < 2; relaunch++) {
+        resetStorage();
+        auto model = std::make_unique<CallHistoryModel>();
+        auto ring = std::make_unique<RingFixture>();
+        model->beginSession();
+        ring->commit(0, 9601, 61, kCaptureStart, kCaptureStart + 4);
+        ring->commitBatch(0, 40, 9700, 1000, 1754600000);
+        model->refresh(ring->state);
+        expect("the capture's call and 40 newer live calls are logged",
+               model->count() == 41 && row_with_tg(*model, 9601) == 40);
+
+        model->beginSession();
+        const qlonglong session = model->session();
+        ring = std::make_unique<RingFixture>(); // the capture replayed in the next start's fresh state
+        Event_History* call = ring->commit(0, 9601, 61, kCaptureStart, kCaptureStart + 4);
+        model->refresh(ring->state);
+        int row = row_with_tg(*model, 9601);
+        expect("the call heard again folds into its logged row under the newer ones",
+               model->count() == 41 && row == 40
+                   && model->data(model->index(row), CallHistoryModel::SessionRole).toLongLong() == session);
+
+        if (relaunch != 0) {
+            model.reset(); // destructor flushes the stores
+            model = std::make_unique<CallHistoryModel>();
+            model->refresh(ring->state);
+            expect("a relaunch reading the same ring logs nothing new", model->count() == 41);
+        }
+        call->event_time = kCaptureStart + 9;
+        call->enc = 1U;
+        ring->touchCommitted(0);
+        model->refresh(ring->state);
+        row = row_with_tg(*model, 9601);
+        expect(relaunch != 0 ? "after a relaunch, the call's enrichment reaches its row"
+                             : "the call's enrichment reaches its row",
+               model->count() == 41 && row >= 0
+                   && model->data(model->index(row), CallHistoryModel::DurationSecsRole).toInt() == 9
+                   && model->data(model->index(row), CallHistoryModel::EncRole).toBool());
+    }
+}
+
 } // namespace
 
 int
@@ -1257,6 +1314,7 @@ main(int argc, char** argv) {
     test_identical_notices_heard_again_across_a_relaunch();
     test_new_ring_within_a_session_logs_nothing_twice();
     test_seed_without_a_ring_keeps_its_session();
+    test_update_of_a_call_heard_again_reaches_its_row();
 
     QDir(dataDir).removeRecursively();
     if (g_failures != 0) {

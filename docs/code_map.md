@@ -2630,11 +2630,13 @@ Qt Quick frontend (`src/ui/qt`):
     than the newest 32 rows, and that row joins the running session (a notice heard again promotes a field-for-field
     twin no other notice of its ring has taken, so two identical notices promote two rows, and a new ring within the
     session logs none twice; the seen store keeps the twin each such notice took, so a relaunched UI rebuilds what its
-    ring has taken). So a second replay shows its calls in the new session's views, logs no new row for a call the first
-    replay logged, and a replay after a clear logs them again. A first sighting still merges within the newest 32 rows
-    only: a call the first replay logged as two rows, because newer rows sat between its fragments, stays two rows, and
-    the repeat folds into the newer one. An entry that knows no ring (a row's seed in `load()` when the seen store has
-    lost its entry, or an entry from an older store) is taken to be the reading ring's, so a relaunch never moves a
+    ring has taken). The seen entry also keeps that it was heard again (persisted), so the ring's later updates to that
+    call (its end extending, its crypto verdict) search the whole log too and reach the row it folded into, after a
+    relaunch as well. So a second replay shows its calls in the new session's views, logs no new row for a call the
+    first replay logged, and a replay after a clear logs them again. A first sighting still merges within the newest 32
+    rows only: a call the first replay logged as two rows, because newer rows sat between its fragments, stays two rows,
+    and the repeat folds into the newer one. An entry that knows no ring (a row's seed in `load()` when the seen store
+    has lost its entry, or an entry from an older store) is taken to be the reading ring's, so a relaunch never moves a
     logged row into the running session. A state an embedding host reuses for another run keeps its ring and identity,
     and the rows the earlier run left there stay that session's.
   - Tests: `UI_QT_CALL_HISTORY_MODEL`, `UI_QT_TALKGROUP_LIST_MODEL`, `UI_QT_QML_CALL_LISTS`
