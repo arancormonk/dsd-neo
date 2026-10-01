@@ -656,7 +656,12 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
     setup writes its first record (`dsd_engine_decode_clock_enter_replay()`: the sidecar's `capture_started_utc`, parsed
     by `dsd_iq_replay_parse_utc_seconds()`, then `dsd_state_rebase_decode_timestamps()` in `<dsd-neo/core/init.h>`, the
     one list of decode stamps `initOpts()`/`initState()` seed with "now"; a sidecar that does not parse fails the run
-    there). REPLAY is entered only there, at a run's start, on a state fresh from `initState()`. The clock returns to
+    there). REPLAY is entered only there, at a run's start, on a state fresh from `initState()`, and the engine enforces
+    that: `dsd_state::engine_fresh`, set by `initState()` and cleared by the run once it has made the choice, says no
+    run has used the state. A replay run on a state an earlier run used (the Android service's reuse when a start races
+    `stopSelfLatest()`) stays on SYSTEM with one `LOG_WARN`, since the stamps that run left (such as
+    `slco_sfrag_last`) are on the system clock and no rebase reaches them; its decode times are then not the
+    capture's. The clock returns to
     SYSTEM with the same rebase once the replay no longer feeds the decoder (`dsd_engine_decode_clock_leave_replay()`):
     at the end of the run, when app-control stops the stream to restart it (`svc_rtl_stop_locked()`; the replay it
     restarts runs on SYSTEM, which it logs once at that leave when the input is still the replay), and when the input

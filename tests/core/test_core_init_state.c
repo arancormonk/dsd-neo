@@ -107,6 +107,10 @@ test_init_state_draws_a_ring_identity(void) {
     initState(b);
     if (!a->event_history_s || !b->event_history_s) {
         rc = 41;
+    } else if (a->engine_fresh != 1U) {
+        /* The engine moves the decode clock onto a replay's capture clock only on a state no run has used. */
+        DSD_FPRINTF(stderr, "initState did not mark the state fresh for a run\n");
+        rc = 45;
     } else if (a->event_history_s[0].instance == 0U
                || a->event_history_s[1].instance != a->event_history_s[0].instance) {
         DSD_FPRINTF(stderr, "a ring has no identity, or its slots disagree on it\n");

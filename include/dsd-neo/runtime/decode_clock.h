@@ -34,11 +34,12 @@
  *   time, so REPLAY is entered only at the start of a run, before common setup
  *   and before the stream and the P25 watchdog start, on a state fresh from
  *   initState() whose seeds the engine rebases
- *   (dsd_state_rebase_decode_timestamps()). A host that runs a replay on a state
- *   an earlier run used breaks that precondition: the Android service reuses its
- *   state when a start races the previous run's stopSelfLatest()
- *   (DecoderService.kt), and that replay sees the earlier run's wall stamps ahead
- *   of its now.
+ *   (dsd_state_rebase_decode_timestamps()). The engine enforces that: it enters
+ *   REPLAY only while dsd_state::engine_fresh says no run has used the state. A
+ *   replay run on a state an earlier run used (the Android service reuses its
+ *   state when a start races the previous run's stopSelfLatest(),
+ *   DecoderService.kt) stays on SYSTEM, with one warning, so no stamp the earlier
+ *   run left is ever ahead of now; its decode times are then not the capture's.
  * - Leaving REPLAY for SYSTEM keeps decode-mono time continuous. SYSTEM mono then
  *   reads the platform monotonic clock plus the offset that puts it where the
  *   replay's capture time stood at the switch, so every stamp the replay took goes

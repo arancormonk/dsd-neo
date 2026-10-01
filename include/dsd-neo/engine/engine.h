@@ -49,9 +49,11 @@ void dsd_engine_cleanup(dsd_opts* opts, dsd_state* state);
  * dsd_engine_run_with_lifecycle() calls it first, before common setup writes any record and before the stream and the
  * P25 watchdog read the clock. Does nothing for an input that is no replay.
  *
- * Precondition: @p state is fresh from initState(). Only its init seeds are rebased, so a stamp an earlier run left in
- * a reused state (the Android service reuses its state when a start races the previous run's stopSelfLatest(),
- * DecoderService.kt) stays on the system clock, ahead of the capture's wall time.
+ * Selects REPLAY only on a state fresh from initState() (dsd_state::engine_fresh, which dsd_engine_run_with_lifecycle()
+ * clears once it has called this). Only the init seeds are rebased, so a stamp an earlier run left in a reused state
+ * (the Android service reuses its state when a start races the previous run's stopSelfLatest(), DecoderService.kt)
+ * would sit ahead of the capture's wall time. On such a state the clock stays on SYSTEM, with one warning that the
+ * run's replay timing is not anchored to the capture, and every stamp stays behind now.
  *
  * @return 0 on success or for no replay; -1 when the sidecar does not parse (logged), which fails the run.
  */

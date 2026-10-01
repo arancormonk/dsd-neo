@@ -19,6 +19,9 @@
  *   patch stamped in the first second expires after its TTL and the DMR single-fragment SLCO print is throttled to
  *   one per second from the first second on.
  * - Once the run ends, the decode clock is the system's again, with the init stamps rebased onto it.
+ * - A second run on the state the first one used, as the Android service makes when a start races the previous run's
+ *   stopSelfLatest(), stays on the system clock and says so once: a stamp the earlier run left on the system clock
+ *   (a DMR single-fragment SLCO's) is never ahead of the run's now, so that line is not held back.
  */
 
 #include <dsd-neo/core/init.h>
@@ -80,6 +83,8 @@ typedef struct {
     time_t last_t3_tune_time;
     time_t symbol_out_file_creation_time;
     int floor_checks; /* run the 1970-anchor checks inside the hook */
+    int slco_check;   /* feed one single-fragment SLCO inside the hook */
+    time_t slco_stamp_after;
 } hook_view;
 
 static void
@@ -173,15 +178,24 @@ observe_start(dsd_opts* opts, dsd_state* state, void* context) {
     if (view->floor_checks) {
         check_floor_decisions(opts, state);
     }
+    if (view->slco_check) {
+        uint8_t cach[25];
+        build_single_fragment_cach(cach);
+        const int slot = state->currentslot;
+        state->currentslot = 0;
+        (void)dmr_cach(opts, state, cach);
+        state->currentslot = slot;
+        view->slco_stamp_after = state->slco_sfrag_last[0];
+    }
     /* Seen what it needed: end the run before the decoder reads a sample. */
     dsd_exitflag_store(1);
     return 0;
 }
 
-/* Run the engine on @p fixture with @p extra arguments after the mode, the way the CLI does. */
+/* Configure @p opts and @p state for a replay of @p fixture under @p mode, the way the CLI (or a host's configure step)
+   does. */
 static int
-run_replay(const char* fixture, const char* mode, const char* sm_log, hook_view* view, dsd_opts** out_opts,
-           dsd_state** out_state) {
+bootstrap_replay(const char* fixture, const char* mode, const char* sm_log, dsd_opts* opts, dsd_state* state) {
     char meta[DSD_TEST_PATH_MAX];
     char leaf[96];
     DSD_SNPRINTF(leaf, sizeof(leaf), "%s.iq.json", fixture);
@@ -206,7 +220,18 @@ run_replay(const char* fixture, const char* mode, const char* sm_log, hook_view*
     if (!sm_log) {
         argv[9] = NULL;
     }
+    int boot_rc = 1;
+    if (dsd_runtime_bootstrap(argc, argv, opts, state, NULL, &boot_rc) != DSD_BOOTSTRAP_CONTINUE) {
+        DSD_FPRINTF(stderr, "FAIL: bootstrap did not continue for %s (rc %d)\n", fixture, boot_rc);
+        return -1;
+    }
+    return 0;
+}
 
+/* Run the engine on @p fixture with @p extra arguments after the mode, the way the CLI does. */
+static int
+run_replay(const char* fixture, const char* mode, const char* sm_log, hook_view* view, dsd_opts** out_opts,
+           dsd_state** out_state) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
     *out_opts = opts;
@@ -217,9 +242,7 @@ run_replay(const char* fixture, const char* mode, const char* sm_log, hook_view*
     /* The CLI's order: init stamps its seeds on the system clock before the run. */
     initOpts(opts);
     initState(state);
-    int boot_rc = 1;
-    if (dsd_runtime_bootstrap(argc, argv, opts, state, NULL, &boot_rc) != DSD_BOOTSTRAP_CONTINUE) {
-        DSD_FPRINTF(stderr, "FAIL: bootstrap did not continue for %s (rc %d)\n", fixture, boot_rc);
+    if (bootstrap_replay(fixture, mode, sm_log, opts, state) != 0) {
         return -1;
     }
     const time_t seeded = state->last_vc_sync_time;
@@ -314,6 +337,60 @@ test_1970_anchor_starts_at_the_floor(void) {
     free_run(opts, state);
 }
 
+/* A second run on the state the first one used: the Android service configures and runs its one state again when a
+   start races the previous run's stopSelfLatest(). That state keeps what the earlier run stamped on the system clock,
+   which no rebase reaches, so the run must not move the clock onto the capture's older time. */
+static void
+test_reused_state_stays_on_the_system_clock(void) {
+    hook_view first = {0};
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    int rc = run_replay("p25p1_cqpsk_cc", "-f1", NULL, &first, &opts, &state);
+    check("the first run on a fresh state ended cleanly", rc == 0);
+    check("the first run on a fresh state ran on the capture clock", first.source == DSD_DECODE_CLOCK_REPLAY);
+    if (rc != 0 || !opts || !state) {
+        free_run(opts, state);
+        return;
+    }
+    /* What an earlier live run leaves behind: a single-fragment SLCO stamped 5 s ago on the system clock. */
+    const time_t left = dsd_realtime_time() - 5;
+    state->slco_sfrag_last[0] = left;
+
+    hook_view second = {0};
+    second.slco_check = 1;
+    char out[16384];
+    out[0] = '\0';
+    dsd_test_capture_stderr cap;
+    if (dsd_test_capture_stderr_begin(&cap, "replay_clock_reuse") != 0) {
+        check("stderr capture", 0);
+        free_run(opts, state);
+        return;
+    }
+    rc = bootstrap_replay("p25p1_cqpsk_cc", "-f1", NULL, opts, state);
+    if (rc == 0) {
+        const dsd_engine_lifecycle_hooks hooks = {.start = observe_start, .stop = NULL, .context = &second};
+        rc = dsd_engine_run_with_lifecycle(opts, state, &hooks);
+    }
+    (void)dsd_test_capture_stderr_end(&cap);
+    if (dsd_test_capture_stderr_read(&cap, out, sizeof(out)) != 0) {
+        check("stderr capture read", 0);
+    }
+    check("the run on the reused state ended cleanly", rc == 0);
+    check("the start hook ran once on the reused state", second.calls == 1);
+    check("a replay run on a reused state stays on the system clock", second.source == DSD_DECODE_CLOCK_SYSTEM);
+    check("no stamp the earlier run left is ahead of the reused run's now", second.now >= left);
+    check_time("the single-fragment SLCO is not held back by the earlier run's stamp", second.slco_stamp_after,
+               second.now);
+    const size_t warnings = count_text(out, "reuses a decoder state an earlier run used");
+    if (warnings != 1U) {
+        DSD_FPRINTF(stderr, "FAIL: the reused-state warning printed %zu times, want once\n", warnings);
+        g_failures++;
+    }
+    check("the decode clock is the system's after the reused run",
+          dsd_decode_clock_source() == DSD_DECODE_CLOCK_SYSTEM);
+    free_run(opts, state);
+}
+
 int
 main(void) {
     char dir[DSD_TEST_PATH_MAX];
@@ -323,6 +400,7 @@ main(void) {
     }
     test_capture_clock_from_an_older_capture(dir);
     test_1970_anchor_starts_at_the_floor();
+    test_reused_state_stays_on_the_system_clock();
 
     const char* const files[] = {"sm.log", NULL};
     if (dsd_test_remove_temp_dir(dir, files) != 0) {

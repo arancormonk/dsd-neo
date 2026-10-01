@@ -1868,6 +1868,11 @@ struct dsd_state {
     // Extension slots for module-owned per-state allocations (see core/state_ext.h).
     void* state_ext[DSD_STATE_EXT_MAX];
     dsd_state_ext_cleanup_fn state_ext_cleanup[DSD_STATE_EXT_MAX];
+
+    /* 1 from initState() until an engine run starts on this state, which clears it (dsd_engine_run_with_lifecycle()).
+     * A state an earlier run used keeps that run's decode-domain stamps, which no rebase reaches, so a run moves the
+     * decode clock onto an I/Q replay's capture clock only on a fresh one (dsd_engine_decode_clock_enter_replay()). */
+    uint8_t engine_fresh;
 };
 
 // cppcheck-suppress-end uninitMemberVarNoCtor

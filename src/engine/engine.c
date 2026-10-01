@@ -3232,6 +3232,16 @@ dsd_engine_decode_clock_enter_replay(dsd_opts* opts, dsd_state* state) {
         LOG_ERROR("IQ replay metadata error: %s\n", err[0] ? err : "unknown error");
         return -1;
     }
+    if (!state->engine_fresh) {
+        /* An earlier run on this state left decode-domain stamps on the system clock, and the rebase reaches only the
+           init seeds. Moved onto an older capture's time, the clock would read behind them, and a throttle or timer
+           measured from one (a DMR single-fragment SLCO stamp, say) would hold until the capture caught up. Staying
+           on the system clock keeps every stamp behind now. */
+        dsd_iq_replay_config_clear(&cfg);
+        LOG_WARN("IQ replay: this run reuses a decoder state an earlier run used; replay timing stays on the system "
+                 "clock for this run, and decode times are not anchored to the capture.\n");
+        return 0;
+    }
     int64_t anchor_s = 0;
     if (dsd_iq_replay_parse_utc_seconds(cfg.capture_started_utc, &anchor_s) != DSD_IQ_OK) {
         LOG_WARN("IQ replay: capture_started_utc \"%s\" is not YYYY-MM-DDTHH:MM:SSZ; decode times start at "
@@ -3279,8 +3289,11 @@ dsd_engine_run_with_lifecycle(dsd_opts* opts, dsd_state* state, const dsd_engine
     dsd_exitflag_store(0);
 
     /* An I/Q replay decodes on its capture's clock (issue #572). Selected first, before common setup writes its first
-       record (the P25 SM log's event=init) and before the stream, the watchdog or a frontend reads the clock. */
-    if (dsd_engine_decode_clock_enter_replay(opts, state) != 0) {
+       record (the P25 SM log's event=init) and before the stream, the watchdog or a frontend reads the clock. Only on
+       a state no run has used yet; this run uses it. */
+    const int enter_rc = dsd_engine_decode_clock_enter_replay(opts, state);
+    state->engine_fresh = 0U;
+    if (enter_rc != 0) {
         rc = 1;
         goto ENGINE_OUT;
     }

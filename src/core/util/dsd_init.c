@@ -1294,6 +1294,8 @@ initState(dsd_state* state) {
     init_state_string_and_m17_defaults(state);
     init_state_codec2_and_events(state);
     (void)dsd_call_state_ensure(state);
+    // No engine run has used this state yet (see dsd_state::engine_fresh).
+    state->engine_fresh = 1U;
 
 } //init_state
 
