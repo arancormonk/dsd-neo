@@ -1270,6 +1270,17 @@ test_external_backend_landing_filter_state(void) {
                             16000);
     failed |=
         expect_int_eq("external landing on the same frequency, new width: plan dropped", r.same_freq_plan_dropped, 1);
+    /* What the last external retune landed on stops counting once anything else resets the demod: a controller retune
+       or a stream open. A landing that took no profile applied nothing, so it does not count either. */
+    failed |= expect_int_eq("external landing after a controller retune away: taken", r.retuned_between_taken, 1);
+    failed |= expect_int_eq("external landing after a controller retune away: filters start over",
+                            r.retuned_between_cleared, 1);
+    failed |= expect_int_eq("external landing with no profile queued: nothing taken", r.profileless_taken, 0);
+    failed |= expect_int_eq("external landing after a profile-less landing there: taken", r.after_profileless_taken, 1);
+    failed |= expect_int_eq("external landing after a profile-less landing there: filters start over",
+                            r.after_profileless_cleared, 1);
+    failed |= expect_int_eq("external landing after a stream open: taken", r.reopened_taken, 1);
+    failed |= expect_int_eq("external landing after a stream open: filters start over", r.reopened_cleared, 1);
     return failed;
 }
 

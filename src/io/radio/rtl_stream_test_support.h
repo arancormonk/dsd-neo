@@ -1022,15 +1022,23 @@ typedef struct rtl_stream_test_external_landing_filter_result {
     int new_freq_same_width_taken;   /* frequency C, 12.5 kHz again */
     int new_freq_same_width_cleared; /* likewise */
     int same_freq_width_taken;       /* frequency C again, 16 kHz */
-    int same_freq_width_kept;   /* 1 when that landing left every filter history and pending count as it found them */
-    int same_freq_width_after;  /* demod_state::channel_lpf_width_hz after it */
-    int same_freq_plan_dropped; /* 1 when it dropped the channel plan, so the next block designs 16 kHz */
+    int same_freq_width_kept;    /* 1 when that landing left every filter history and pending count as it found them */
+    int same_freq_width_after;   /* demod_state::channel_lpf_width_hz after it */
+    int same_freq_plan_dropped;  /* 1 when it dropped the channel plan, so the next block designs 16 kHz */
+    int retuned_between_taken;   /* frequency C once more, after a controller retune to X since C's last landing */
+    int retuned_between_cleared; /* 1 when that landing started the filters over: they hold X's samples */
+    int profileless_taken;       /* frequency D with no profile queued: 0, since there is nothing to take */
+    int after_profileless_taken; /* frequency D again, with a profile queued */
+    int after_profileless_cleared; /* 1 when that landing started the filters over */
+    int reopened_taken;            /* frequency D once more, after the stream opened again */
+    int reopened_cleared;          /* 1 when that landing started the filters over */
 } rtl_stream_test_external_landing_filter_result;
 
 /* Open the NFM monitor at 48 kHz, 16 kHz wide, and land NFM retune profiles as an external backend's retunes do
  * (rtl_stream_apply_pending_retune_profile_for_target(), with no controller retune and no finalize): on frequency A,
  * then each over seeded stale filter state, on B with a new width, on C with the width B left, and on C again with
- * only a new width. */
+ * only a new width. Then, each over seeded stale filter state again: C once more after a controller retune to X, D
+ * after a landing on D that had no profile to take, and D once more after the stream opened again. */
 int rtl_stream_test_external_landing_filter_state(rtl_stream_test_external_landing_filter_result* out);
 
 /* An external backend's retune landing against a controller reconfiguration on another thread (issue #583). */

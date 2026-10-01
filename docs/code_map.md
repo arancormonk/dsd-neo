@@ -1750,7 +1750,8 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   a rate change and a retune still start the filters over: the controller's retune through its reset
   (`demod_reset_on_retune()`), and an external backend's landing
   (`rtl_stream_apply_pending_retune_profile_for_target()`, which has no finalize) itself when it lands on another
-  frequency than the last one, whatever its width. Tests:
+  frequency than the last external landing that took a profile, whatever its width. Every finalize (a stream open, a
+  controller retune) forgets that landing, so the next one starts the filters over even on the same frequency. Tests:
   `DSP_CHANNEL_FILTERS`, `DSP_DEMOD_MISC`, `IO_RTL_ANALOG_FAMILY_SWITCH` (`rtl_stream_test_analog_width_continuity()`),
   `IO_RTL_RETUNE_PREPARE` (`rtl_stream_test_external_landing_filter_state()`).
 - Streaming linear front end (issue #572): the half-band cascade and the channel FIR (`simd_hb_decim2_complex()`,

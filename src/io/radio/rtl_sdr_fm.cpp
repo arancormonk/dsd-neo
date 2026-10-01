@@ -4722,6 +4722,12 @@ controller_refresh_analog_channel_for_rate(DemodRetuneResetReason reset_reason, 
     }
 }
 
+/* The target of the last external backend's retune that took its profile
+ * (rtl_stream_apply_pending_retune_profile_for_target()), or 0: before any, and after every finalize
+ * (controller_finalize_rate_chain(), a stream open's or a controller retune's), whose demod reset leaves the filters on
+ * a centre no external landing chose. */
+static std::atomic<uint32_t> g_external_retune_freq_hz{0U};
+
 /* Returns 1 when @p retune_profile asked for an analog channel the demod rate the retune landed on cannot run: the
  * profile is refused (rtl_stream_apply_retune_profile()) and the front end keeps its receive profile, so the retune
  * reports failed. */
@@ -4734,6 +4740,11 @@ controller_finalize_rate_chain(struct controller_state* s, const dsd_opts* opts,
         return 0;
     }
     s->last_applied_freq_hz.store(center_freq_hz, std::memory_order_release);
+    /* The stream opens, or the controller retunes, here: the filters will hold this centre's samples, so the next
+       external landing starts them over whatever frequency it lands on, the last external target included (issue
+       #572). Every stream open runs this finalize, and a controller retune runs it under the reconfigure gate an
+       external landing takes, so the two never interleave. */
+    g_external_retune_freq_hz.store(0U, std::memory_order_release);
     /* Retunes keep the symbol profile the front end is on; only the timing SPS follows the new
      * output rate. Re-deriving it from the option flags here would snap a multi-protocol run back
      * to 4800/4 on every hop, discarding whatever the SPS hunt is parked on. */
@@ -10490,12 +10501,10 @@ rtl_stream_apply_retune_profile(const RtlRetuneProfile* profile, uint32_t center
  * With no finalize there is no retune reset (demod_reset_on_retune()) either, so a landing on another frequency than
  * the last external retune's starts the half-band and channel filters over itself, whatever its width: what they hold
  * is the old channel's (issue #572). A landing on the frequency already tuned (a width or profile change only) keeps
- * them, as a live width edit does. */
-static std::atomic<uint32_t> g_external_retune_freq_hz{0U}; /* the last external retune's target, 0 before any */
-
+ * them, as a live width edit does. Only a landing that took its profile counts as the last one (one with nothing queued
+ * applies nothing), and a finalize since forgets it (g_external_retune_freq_hz). */
 extern "C" void
 rtl_stream_apply_pending_retune_profile_for_target(uint32_t target_freq_hz) {
-    const uint32_t previous_freq_hz = g_external_retune_freq_hz.exchange(target_freq_hz, std::memory_order_acq_rel);
     RtlRetuneProfile profile{};
     if (!rtl_stream_take_pending_retune_profile(&profile, 0U, target_freq_hz)) {
         return;
@@ -10506,6 +10515,8 @@ rtl_stream_apply_pending_retune_profile_for_target(uint32_t target_freq_hz) {
         g_test_external_landing_hook(g_test_external_landing_ctx);
     }
 #endif
+    /* Under the gate, so a controller retune's finalize cannot forget the record between this read and the clear. */
+    const uint32_t previous_freq_hz = g_external_retune_freq_hz.exchange(target_freq_hz, std::memory_order_acq_rel);
     if (previous_freq_hz != target_freq_hz) {
         rtl_demod_clear_filter_histories(&demod);
     }
@@ -14867,6 +14878,23 @@ rtl_stream_test_external_landing_filter_state(rtl_stream_test_external_landing_f
     out->same_freq_width_taken = external_filter_test_step(freq_c, 16000, &unused, &out->same_freq_width_kept);
     out->same_freq_width_after = demod.channel_lpf_width_hz;
     out->same_freq_plan_dropped = family_test_channel_plan_dropped();
+    /* A controller retune to X between two landings on C reset the demod on X: C's next landing finds X's samples. */
+    const uint32_t freq_x = kFamilyTestRetuneHz + 50000U;
+    (void)family_test_finalize_on_pipeline(&controller, &analog_opts, freq_x, NULL);
+    out->retuned_between_taken = external_filter_test_step(freq_c, 16000, &out->retuned_between_cleared, &unused);
+    /* A landing on D with no profile queued applies nothing, so it says nothing about what the filters hold. */
+    const uint32_t freq_d = kFamilyTestRetuneHz + 37500U;
+    rtl_stream_clear_pending_retune_profile();
+    out->profileless_taken = family_test_apply_external_retune(freq_d);
+    out->after_profileless_taken = external_filter_test_step(freq_d, 12500, &out->after_profileless_cleared, &unused);
+    /* A stream that opens again starts on its own centre, whatever an external retune landed before. */
+    if (family_test_seed_open(&analog_opts, 48000, 0) != 0) {
+        rtl_stream_clear_pending_retune_profile();
+        family_test_restore(saved);
+        family_test_release_buffers();
+        return -2;
+    }
+    out->reopened_taken = external_filter_test_step(freq_d, 12500, &out->reopened_cleared, &unused);
     rtl_stream_clear_pending_retune_profile();
     family_test_restore(saved);
     family_test_release_buffers();
