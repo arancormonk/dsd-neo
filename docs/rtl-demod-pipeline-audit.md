@@ -84,9 +84,10 @@ described under [Analog Monitor Path](#analog-monitor-path).
     rewind, a family switch and an FM <-> AM switch run it; a width-only edit
     does not (see Live Switching). Nothing flushes the filters at the end of a
     capture, so its last 1.5 ms or so is never decoded. On a real P25 Phase 2
-    capture the tail each `RESET` drops costs about 4 of 677 syncs over 18
-    voice-channel dwells (`docs/iq-capture-replay.md`, "Replay Pacing And The
-    Decode Clock").
+    capture the tail each `RESET` drops costs about 4 of 677 syncs: frames that
+    straddle a dwell's closing `RESET`, and about one call-opening `MAC_ACTIVE`
+    a run at a dwell's start (`docs/iq-capture-replay.md`, "Replay Pacing And
+    The Decode Clock").
   - Per-block decisions: the stages after the filters still decide per block,
     so `full_demod()` as a whole does not stream: channel power and the squelch
     decision, the squelch envelope, I/Q balance, the AM detector's warm start,

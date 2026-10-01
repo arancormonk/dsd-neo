@@ -480,8 +480,12 @@ intervals):
 A capture of a local P25 Phase 1/2 system (593 s, 36 retunes between the control channel and Phase 2 voice channels),
 replayed with `-f2 -mq -X` and its WACN, system and control channel, without `-T`, over 16 realizations, puts the branch
 at -3.88 +/- 0.18 of 677 Phase 2 syncs, -2.44 +/- 0.75 of 1040 voice frames and +0.19 +/- 0.40 audio errors (equal)
-against the build before the streaming filters. That loss is small and repeatable across the realizations: it is the
-filter tail each `RESET` drops (`docs/iq-capture-replay.md`, "Replay Pacing And The Decode Clock").
+against the build before the streaming filters. That loss is small and repeatable across the realizations, and all of it
+comes from the channel filter's streaming change. A frame that straddles a dwell's closing `RESET` is no longer made
+from the dropped tail and the new channel's first samples (10 error-type frames against 18), and about one
+call-opening `MAC_ACTIVE` a run is missed at a dwell's start (paired -1.9 +/- 0.2). Against `main`, replayed realtime,
+the branch is level or ahead on every count except audio errors, 25 against 24 (`docs/iq-capture-replay.md`, "Replay
+Pacing And The Decode Clock").
 
 A shift must not be a whole multiple of the front end's total decimation (the capture rate over its `demod_rate_hz`, 32
 at 1.536 Msps). Replay anchors the chunk grid and restarts every filter at each event, so a shift of m whole decimations

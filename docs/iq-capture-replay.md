@@ -159,12 +159,26 @@ The last 1.5 ms or so of a capture is never decoded. The front end's filters hol
 samples at 48 kHz on the default 1.536 Msps chain, 67 on a 48 kHz capture), and nothing flushes it when the capture
 ends, so a frame that ends inside those samples is lost: the `edacs` fixture's last message fails its BCH check for
 this reason. A `RESET` drops what the filters held the same way, as a live retune does. On a real capture that is a
-small, steady cost at the end of every dwell: a 593 s P25 Phase 1/2 capture with 36 retunes between the control channel
+small, steady cost at the dwell boundaries: a 593 s P25 Phase 1/2 capture with 36 retunes between the control channel
 and Phase 2 voice channels, replayed under `-f2 -mq -X` without `-T` over 16 realizations (`docs/testing.md`, "Replay
 determinism"), decodes 3.88 +/- 0.18 fewer of its 677 Phase 2 syncs and 2.44 +/- 0.75 fewer of its 1040 voice frames
-than the build before the streaming filters, with audio errors equal (+0.19 +/- 0.40). That is the tail's share: 18
-voice-channel dwells end in a `RESET` and each drops 1.54 ms, and against 7.5 ms bursts 18 x 1.54 / 7.5 is about 3.7
-syncs.
+than the build before the streaming filters, with audio errors equal (+0.19 +/- 0.40). The whole loss comes from the
+channel filter's streaming change, whose held tail is 67 samples, 1.4 ms at 48 kHz; the half-band decimators add
+nothing measurable.
+
+- **At a dwell's end.** Diffing the two decodes at the recorded alignment, the missing lines are almost all frames that
+  straddle a dwell's closing `RESET`, decoded partly from the old channel and partly from the new: `DUID ERR`,
+  `CRC12 ERR`, `R-S ERR` and a few partial `2V`/`4V` frames. The build before made the closing frame from the
+  filters' padded tail and the new channel's first samples. Now the held tail is dropped, so those frames are not
+  produced: 10 such error-type frames against 18.
+- **At a dwell's start.** About one call-opening `MAC_ACTIVE` a run is missed (paired -1.9 +/- 0.2). At the recorded
+  alignment that is TG 50651 at 07:00:49, whose talker alias then prints `TG: UNK`.
+
+Both are the measured cost of dropping the tail at a `RESET`, which is the default: flushing it there would rebuild the
+padded, made-up samples the streaming filters removed. Against `main`, replayed realtime twice (identical runs), the
+branch at the recorded alignment decodes 1039 voice frames, 673 syncs and 307 `MAC_ACTIVE` against 1036, 672 and 305,
+with 10 error-type frames against 15 and 15 unattributed aliases on both. It is level or ahead on every count except
+audio errors, 25 against 24.
 
 File input under `-r` or WAV replay has no capture clock: it decodes on the system clock and is unthrottled (only `.bin`
 symbol-capture replay is paced), so its call gaps, hangtime and staleness windows look shorter than they were on air.
