@@ -283,31 +283,36 @@ void
 CallHistoryModel::beginSession() {
     m_session++;
     m_settings.setValue(QLatin1String(kSessionKey), m_session);
-    /* The new session's ring is a fresh one, and push positions from the old one would
-     * hide its first rows. A clear is bound to its own session, so it has nothing left to cover. */
-    if (m_clear.active) {
+    /* A start usually brings a fresh ring, but not always: an embedding host can run again on the
+     * state its last run used (the Android service reuses it when a start races the previous run's
+     * stopSelfLatest()), and that ring keeps its identity, its rows and its push count. So a clear
+     * that names its ring is kept. It goes on covering that ring's cleared rows if the state was
+     * reused, and the first read of any other ring drops it (settleClear()). A pending clear, or one
+     * that names no ring, would bind to whatever ring comes next and could hide a fresh ring's first
+     * rows, so those are dropped here. */
+    if (m_clear.active && (m_clear.pending || m_clear.ring == 0U)) {
         m_clear = ClearMark();
         saveClear();
     }
-    /* The new ring counts its pushes from zero, and nothing from it has been taken in yet.
-     * So its position is known: a clear before its first read covers none of its rows. That
-     * read can come late. If the previous session heard nothing, both rings sit at the same
-     * commit_rev, and the new one is first read at its first commit, which a clear waiting for
-     * that read would hide. Only a freshly constructed model clears before knowing the ring.
-     * The new ring's identity is not known yet, so a clear before its first read names no ring;
-     * it covers nothing, and that read drops it. If the old ring is read again after this, its
-     * position and identity replace these, and the new ring's identity then drops the mark
-     * (settleClear()). */
-    m_ringPushSeq[0] = 0U;
-    m_ringPushSeq[1] = 0U;
-    m_ringPushSeqRing = 0U;
-    m_ringRead = true;
+    /* For the same reason the last read position stays: it names the ring it was read in, which a
+     * clear before the next read then covers. That is right if the state was reused, and a fresh
+     * ring's first read drops such a clear. Every ring is read at its first tick, even at the
+     * commit_rev the last one stopped at (noteCommitRevs()), so a quiet session does not delay it.
+     * Only a model that has read nothing yet takes the new ring to be at position zero on no ring:
+     * a clear before its first read covers nothing, and that read drops it. */
+    if (!m_ringRead) {
+        m_ringPushSeq[0] = 0U;
+        m_ringPushSeq[1] = 0U;
+        m_ringPushSeqRing = 0U;
+        m_ringRead = true;
+    }
     Q_EMIT sessionChanged();
 }
 
 bool
 CallHistoryModel::clearApplies() const {
-    return m_clear.active && !m_clear.pending && m_clear.session == m_session;
+    // Bound by its ring, whatever the session: a start that reuses the state keeps the ring the clear wiped.
+    return m_clear.active && !m_clear.pending;
 }
 
 void
@@ -326,7 +331,7 @@ CallHistoryModel::saveClear() {
 
 void
 CallHistoryModel::settleClear(const qulonglong pushSeq[2], quint64 ring) {
-    if (!m_clear.active || m_clear.session != m_session) {
+    if (!m_clear.active) {
         return;
     }
     if (m_clear.pending) {
@@ -341,9 +346,10 @@ CallHistoryModel::settleClear(const qulonglong pushSeq[2], quint64 ring) {
     }
     // The mark's position is one in the ring the clear was made on. Any other ring is one the clear never
     // saw, whatever its position: a ring replaced without a start (beginSession()) can already be past the
-    // mark at its first read. A mark that names no ring covers no ring the model reads: one made on a
-    // start's new ring before its first read sits at position zero and covers nothing, and one an older
-    // build wrote belongs to a ring that died with the process an app update replaced.
+    // mark at its first read, and so can a fresh ring after a start that kept the mark. A mark that names
+    // no ring covers no ring the model reads: one made before a model's first read after a start sits at
+    // position zero and covers nothing, and one an older build wrote belongs to a ring that died with the
+    // process an app update replaced.
     if (ring != m_clear.ring) {
         m_clear = ClearMark();
         saveClear();
@@ -843,8 +849,8 @@ CallHistoryModel::refresh(const dsd_state* snapshot, const dsd_opts* opts_snapsh
         return;
     }
     // Only a snapshot that moved says where the ring is. Right after a start the old
-    // session's last snapshot is still the latest, unchanged, and its position is not the
-    // new ring's (beginSession() has set that to zero).
+    // session's last snapshot is still the latest, unchanged, and says nothing new; the
+    // position last read stays, naming the ring it was read in (beginSession()).
     const qulonglong pushSeq[2] = {static_cast<qulonglong>(snapshot->event_history_s[0].push_seq),
                                    static_cast<qulonglong>(snapshot->event_history_s[1].push_seq)};
     // initState() draws one identity for both slots' rings.

@@ -833,10 +833,10 @@ test_clear_without_a_ring_hides_nothing(void) {
     expect("and is dropped", !QSettings().contains(QStringLiteral("callHistory/clear/session")));
 }
 
-/* A clear tapped after a start, before the new ring has been read, covers none of that ring:
- * it counts its pushes from zero, and nothing from it has been taken in. When the previous
- * session heard nothing, both rings sit at the same commit_rev, so the new ring's snapshots look
- * unchanged and are first read at its first commit. That call must still be logged. */
+/* A clear tapped after a quiet start covers none of the new ring's later calls. When the previous
+ * session heard nothing, both rings sit at the same commit_rev, so only the new ring's identity says
+ * its snapshots are new. Its first read must still come before its first commit, which the clear
+ * then leaves alone. That call must be logged, and stay so after a relaunch. */
 void
 test_clear_after_a_quiet_start_keeps_the_next_call(void) {
     resetStorage();
@@ -860,6 +860,135 @@ test_clear_after_a_quiet_start_keeps_the_next_call(void) {
     relaunched.refresh(ring->state);
     expect("the persisted clear does not hide it after a relaunch either",
            relaunched.count() == 2 && rows_in_tg_range(relaunched, 4242, 4242) == 1);
+}
+
+/* A start does not always bring a fresh ring. An embedding host can run again on the state its last run
+ * used (the Android service reuses it when a start races the previous run's stopSelfLatest()), and that
+ * ring keeps its identity, its rows and its push count. A clear bound to that ring must go on covering
+ * the rows it wiped. Here the service committed three calls while no UI was alive. A relaunched UI clears
+ * before its first tick, and that first read binds the clear to them. A start then reuses the state. */
+void
+test_pending_clear_survives_a_start_on_a_reused_ring(void) {
+    resetStorage();
+    RingFixture ring;
+    {
+        CallHistoryModel model;
+        model.beginSession();
+        ring.commit(0, 8101, 1, 1754600000, 1754600004);
+        model.refresh(ring.state);
+        expect("the first session logs its call", model.count() == 1);
+    } // destructor flushes the stores
+    ring.commit(0, 8102, 2, 1754600100, 1754600104);
+    ring.commit(0, 8103, 3, 1754600200, 1754600204);
+    ring.commit(1, 8104, 4, 1754600300, 1754600304);
+    CallHistoryModel relaunched;
+    CallHistoryFilterModel view;
+    view.setSourceModel(&relaunched);
+    relaunched.clearAll();
+    relaunched.refresh(ring.state);
+    expect("the clear before the first read covers what the ring holds", relaunched.count() == 0);
+    relaunched.beginSession(); // the start reuses the state, and so the ring
+    view.setHistorySession(relaunched.session());
+    ring.commit(0, 8105, 5, 1754600400, 1754600404);
+    relaunched.refresh(ring.state);
+    expect("a start on the reused ring keeps its cleared calls cleared",
+           relaunched.count() == 1 && rows_in_tg_range(relaunched, 8101, 8104) == 0);
+    expect("and the session shows only the new run's call", view.count() == 1);
+}
+
+/* The clear, not the seen store, is what keeps a ring's cleared calls cleared across a relaunch: the
+ * store is written later and can lose them. A start that reuses the ring must keep that clear. A fresh
+ * ring after a later start still shows its own first calls, whose push positions the clear covered in
+ * the old ring. */
+void
+test_clear_survives_a_start_on_a_reused_ring_without_the_seen_store(void) {
+    resetStorage();
+    RingFixture ring;
+    {
+        CallHistoryModel model;
+        model.beginSession();
+        ring.commit(0, 8201, 1, 1754600000, 1754600004);
+        ring.commit(0, 8202, 2, 1754600100, 1754600104);
+        ring.commit(1, 8203, 3, 1754600200, 1754600204);
+        model.refresh(ring.state);
+        model.clearAll();
+    } // destructor flushes the stores
+    expect("seen store removed", QFile::remove(seen_store_path()));
+    CallHistoryModel relaunched;
+    CallHistoryFilterModel view;
+    view.setSourceModel(&relaunched);
+    relaunched.refresh(ring.state);
+    expect("the relaunch keeps the ring's cleared calls cleared", relaunched.count() == 0);
+    relaunched.beginSession(); // the start reuses the state, and so the ring
+    view.setHistorySession(relaunched.session());
+    ring.commit(0, 8204, 4, 1754600300, 1754600304);
+    relaunched.refresh(ring.state);
+    expect("a start on the reused ring keeps its cleared calls cleared without the seen store",
+           relaunched.count() == 1 && rows_in_tg_range(relaunched, 8201, 8203) == 0);
+    expect("and the session shows only the new run's call", view.count() == 1);
+
+    relaunched.beginSession();
+    view.setHistorySession(relaunched.session());
+    RingFixture fresh; // the next start's fresh state
+    fresh.commit(0, 8211, 11, 1754600500, 1754600504);
+    fresh.commit(0, 8212, 12, 1754600600, 1754600604);
+    fresh.commit(1, 8213, 13, 1754600700, 1754600704);
+    relaunched.refresh(fresh.state);
+    expect("a fresh ring after a start shows its own first calls", view.count() == 3 && relaunched.count() == 4);
+}
+
+/* A clear tapped after a start, before the ring's first read. When the start reused the state, the ring
+ * the model last read is the one still running, and the clear covers what that read found. Without the
+ * seen store, a relaunch must keep those calls cleared. */
+void
+test_clear_after_a_start_covers_a_reused_ring(void) {
+    resetStorage();
+    RingFixture ring;
+    {
+        CallHistoryModel model;
+        model.beginSession();
+        ring.commit(0, 8301, 1, 1754600000, 1754600004);
+        ring.commit(0, 8302, 2, 1754600100, 1754600104);
+        model.refresh(ring.state);
+        model.beginSession(); // the start reuses the state, and so the ring
+        model.clearAll();
+        ring.commit(0, 8303, 3, 1754600200, 1754600204);
+        model.refresh(ring.state);
+        expect("the reused ring's new call is logged after the clear",
+               model.count() == 1 && rows_in_tg_range(model, 8303, 8303) == 1);
+    } // destructor flushes the stores
+    expect("seen store removed", QFile::remove(seen_store_path()));
+    CallHistoryModel relaunched;
+    relaunched.refresh(ring.state);
+    expect("a relaunch keeps the calls cleared after a start cleared",
+           relaunched.count() == 1 && rows_in_tg_range(relaunched, 8301, 8302) == 0);
+}
+
+/* As above, with the Activity gone right after the start, before any read of the reused ring. The relaunched
+ * UI rejoins the new session, and the clear made in the last one must still cover the ring it was made on. */
+void
+test_clear_survives_a_relaunch_after_a_start_on_a_reused_ring(void) {
+    resetStorage();
+    RingFixture ring;
+    {
+        CallHistoryModel model;
+        model.beginSession();
+        ring.commit(0, 8901, 1, 1754600000, 1754600004);
+        ring.commit(1, 8902, 2, 1754600100, 1754600104);
+        model.refresh(ring.state);
+        model.clearAll();
+        model.beginSession(); // the start reuses the state, and so the ring
+    } // destructor flushes the stores
+    expect("seen store removed", QFile::remove(seen_store_path()));
+    CallHistoryModel relaunched;
+    CallHistoryFilterModel view;
+    view.setSourceModel(&relaunched);
+    view.setHistorySession(relaunched.session());
+    ring.commit(0, 8903, 3, 1754600200, 1754600204);
+    relaunched.refresh(ring.state);
+    expect("a relaunch after a start on the reused ring keeps its cleared calls cleared",
+           relaunched.count() == 1 && rows_in_tg_range(relaunched, 8901, 8902) == 0);
+    expect("and the session shows only the new run's call", view.count() == 1);
 }
 
 /* The monitor's recent calls select the running session's rows by the session that logged
@@ -1303,6 +1432,10 @@ main(int argc, char** argv) {
     test_clear_is_bound_to_its_ring();
     test_clear_without_a_ring_hides_nothing();
     test_clear_after_a_quiet_start_keeps_the_next_call();
+    test_pending_clear_survives_a_start_on_a_reused_ring();
+    test_clear_survives_a_start_on_a_reused_ring_without_the_seen_store();
+    test_clear_after_a_start_covers_a_reused_ring();
+    test_clear_survives_a_relaunch_after_a_start_on_a_reused_ring();
     test_session_view_selects_by_session();
     test_full_log_keeps_the_running_session();
     test_seen_map_keeps_the_running_session();

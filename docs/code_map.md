@@ -2607,18 +2607,24 @@ Qt Quick frontend (`src/ui/qt`):
     (`TalkgroupListModel::historySession`) select the running session's rows; 0 selects the whole log. A UI
     reattaching to a running session (the service survived an Activity restart) takes the session the history kept,
     so it sees the calls its predecessor logged in that session.
-  - Clear (`clearAll()`) names what it wiped by ring position: the current session's push_seq per slot as last read
-    (`callHistory/clear/*`). Whatever the ring takes in after the clear shows, whatever its stamps. A relaunched UI does
-    not ingest the cleared rows again. A start counts as reading the new ring at position zero, so a clear after it
-    covers none of that ring, even when a quiet previous session leaves its first read until its first commit. Only a
-    freshly constructed model clears before reading the ring, and its clear binds to what the first read finds. The
-    position means something only in its own ring, so the mark also names that ring (`Event_History_I::instance`,
-    `callHistory/clear/ring`). It is dropped by `beginSession()`, and by a read of any other ring, whatever its
-    position: a ring replaced without a start can already be past the mark at its first read. A mark that names no ring
-    is dropped at the first read too. Made on a start's new ring before its first read, it sits at position zero and
-    covers nothing; written before marks named their ring, it belongs to a ring that died with the process an app update
-    replaced. The decode-time watermark older builds wrote (`callHistory/clearedThrough`) is removed on load. The rows
-    it cleared had already left the store, and the ring it guarded died with the replaced process.
+  - Clear (`clearAll()`) names what it wiped by ring position: push_seq per slot as last read (`callHistory/clear/*`).
+    Whatever the ring takes in after the clear shows, whatever its stamps. A relaunched UI does not ingest the cleared
+    rows again, even if the seen store lost them. The position means something only in its own ring, so the mark also
+    names that ring (`Event_History_I::instance`, `callHistory/clear/ring`), and the ring, not the session, is the
+    binding. A start usually brings a fresh ring, but an embedding host can reuse the last run's state, ring, rows and
+    push count included (the Android service does when a start races `stopSelfLatest()`). So `beginSession()` keeps a
+    mark that names its ring, and keeps the last read position, which names the ring it was read in. A clear after a
+    start, before the next read, therefore covers what the last read found: a reused ring's cleared rows stay cleared,
+    in the new session and across a relaunch. A read of any other ring drops the mark, whatever its position: a fresh
+    ring after a start, or a ring replaced without one, can already be past the mark at its first read and shows its own
+    first rows. Every ring is read at its first tick, even at the `commit_rev` the last one stopped at, so a quiet
+    previous session does not delay that read. Only a freshly constructed model clears before reading the ring, and its
+    clear binds to what the first read finds. `beginSession()` drops such a pending mark, and a mark that names no ring,
+    since either could bind to a fresh ring and hide its first rows. A mark that names no ring is dropped at the first
+    read too. It comes from a model that had read nothing when a start came, which sits at position zero and covers
+    nothing, or from a build before marks named their ring, whose ring died with the process an app update replaced. The
+    decode-time watermark older builds wrote (`callHistory/clearedThrough`) is removed on load. The rows it cleared had
+    already left the store, and the ring it guarded died with the replaced process.
   - Retention: a full log (1000 rows) gives up the oldest session's oldest row, and the seen map and its store keep
     the newest entries in the same (session, start) order. Ranked by stamps alone, a replay's calls would be trimmed
     as they landed and its ring rows logged again as new calls.
