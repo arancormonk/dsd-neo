@@ -14,6 +14,7 @@
 #include <limits.h>
 #include <limits>
 #include <sstream>
+#include <utility>
 
 namespace dsdneo {
 
@@ -473,7 +474,7 @@ soapy_join_names(const std::vector<std::string>& names, size_t max_chars) {
             break;
         }
         if (!out.empty()) {
-            out += ",";
+            out += ',';
         }
         out += name;
     }
@@ -519,7 +520,7 @@ soapy_parse_settings(const std::string& spec, std::vector<SoapySettingRequest>* 
     }
 
     if (out_requests) {
-        *out_requests = parsed;
+        *out_requests = std::move(parsed);
     }
     return true;
 }
