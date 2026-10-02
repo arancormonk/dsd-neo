@@ -25,7 +25,10 @@
  * between reads, and the capture time the last sample read ends at. It then prints the line the runner drops,
  *   REPLAY JITTER: ...
  * which says what the host injected; that differs between legs by design. A read that returns samples without a
- * replay batch tag (a live input) prints "REPLAY STREAM FAIL:" and the host exits 1.
+ * replay batch tag (a live input) prints "REPLAY STREAM FAIL:" and the host exits 1. When the engine returns, the host
+ * prints the real time the run took, from the real-time monotonic clock around dsd_engine_run_with_lifecycle(),
+ *   REPLAY WALL: wall_ms=W
+ * which the runner checks a realtime leg's pacing against and then drops, since it differs between legs by design.
  *
  * --replay-sink needs a build that replaces the platform audio device at link time (GNU ld --wrap of
  * dsd_audio_open_output, dsd_audio_write, dsd_audio_drain and dsd_audio_close, DSD_NEO_TEST_AUDIO_WRAP; see
@@ -396,6 +399,15 @@ replay_stop(dsd_opts* opts, dsd_state* state, void* context) {
     replay_report();
 }
 
+/* The real time the engine run took, in ms with a ns fraction like media_ms. Timed here rather than by the runner, so
+ * the runner's pacing check does not depend on how finely its own clock reads. */
+static void
+replay_report_wall(uint64_t start_ns, uint64_t end_ns) {
+    const uint64_t wall_ns = end_ns >= start_ns ? end_ns - start_ns : 0U;
+    DSD_FPRINTF(stderr, "REPLAY WALL: wall_ms=%llu.%06llu\n", (unsigned long long)(wall_ns / 1000000U),
+                (unsigned long long)(wall_ns % 1000000U));
+}
+
 /* ---- the asynchronous test sink (DSD_NEO_TEST_AUDIO_WRAP) ---------------------------------------------------- */
 
 #ifdef DSD_NEO_TEST_AUDIO_WRAP
@@ -704,7 +716,9 @@ main(int argc, char** argv) {
         initState(state);
         dsd_engine_lifecycle_hooks hooks = {replay_start, replay_stop, NULL};
         if (dsd_runtime_bootstrap(kept, args, opts, state, NULL, &rc) == DSD_BOOTSTRAP_CONTINUE) {
+            const uint64_t run_start_ns = dsd_realtime_mono_ns();
             rc = dsd_engine_run_with_lifecycle(opts, state, &hooks);
+            replay_report_wall(run_start_ns, dsd_realtime_mono_ns());
             replay_sink_finish();
             if (rc == 0 && g_failed) {
                 rc = 1;

@@ -11848,9 +11848,11 @@ endif()
 # total at most), reads capped at seeded short counts, and, where GNU ld can replace the
 # audio device (--wrap, as CORE_AUDIO_ENSURE_OUTPUT does), an asynchronous sink whose
 # device stalls. It prints the REPLAY STREAM line the runner compares and checks against
-# MIN_FSK/MIN_CQPSK. tests/iq_determinism_check.cmake runs each leg of RUNS, keeps
-# iq_decode_check.cmake's exit-code and sanitizer checks for each, and requires the legs'
-# decoder output to match line for line, capture-time timestamps included.
+# MIN_FSK/MIN_CQPSK, and a REPLAY WALL line with the real time its engine run took,
+# which a realtime leg's pacing check reads. tests/iq_determinism_check.cmake runs each
+# leg of RUNS, keeps iq_decode_check.cmake's exit-code and sanitizer checks for each,
+# and requires the legs' decoder output to match line for line, capture-time
+# timestamps included.
 if(DSD_HAS_RADIO)
     add_executable(dsd-neo_test_replay_jitter engine/replay_jitter.c)
     target_include_directories(
@@ -11960,9 +11962,10 @@ if(DSD_HAS_RADIO)
         ${_nxdn48_retune_min_cqpsk}
         ${_nxdn48_retune_min_total}
     )
-    # This leg runs with SOURCE_DATE_EPOCH set, as in a reproducible build: the runner's
-    # wall clock must not follow it (string(TIMESTAMP) does), or every realtime leg reads
-    # 0 ms of elapsed time and fails the pacing check. The _JITTER leg and the gap leg
+    # This leg runs with SOURCE_DATE_EPOCH set, as in a reproducible build, where
+    # CMake's string(TIMESTAMP) returns that fixed time: the pacing check reads the
+    # host's own REPLAY WALL time, so the setting must not reach it, or every realtime
+    # leg would read 0 ms of elapsed time and fail. The _JITTER leg and the gap leg
     # below keep the plain environment covered.
     set_tests_properties(
         DECODE_IQ_NXDN48_AFTER_RETUNE_AUTO_DETERMINISM_REALTIME
@@ -12047,6 +12050,29 @@ if(DSD_HAS_RADIO)
         0
         11900
         95000
+    )
+
+    # The runner's realtime pacing check reads a leg's wall time from the host's
+    # REPLAY WALL line alone (CMake's own clock reads whole seconds before 3.23, which
+    # made an 85 ms capture's realtime leg 0 ms). Against a stand-in host that prints
+    # a passing leg of a 1 s capture with the REPLAY WALL line each case picks, a
+    # missing line or a line without wall_ms fails the runner, 899 ms fails the 90 %
+    # floor and 900 ms meets it.
+    add_executable(
+        dsd-neo_test_iq_determinism_check_wall
+        engine/test_iq_determinism_check_wall.c
+    )
+    add_test(
+        NAME IQ_DETERMINISM_CHECK_WALL
+        COMMAND
+            ${CMAKE_COMMAND}
+            "-DFAKE_HOST=$<TARGET_FILE:dsd-neo_test_iq_determinism_check_wall>"
+            "-DRUNNER=${CMAKE_CURRENT_SOURCE_DIR}/iq_determinism_check.cmake" -P
+            "${CMAKE_CURRENT_SOURCE_DIR}/cmake/IqDeterminismCheckWall.cmake"
+    )
+    set_tests_properties(
+        IQ_DETERMINISM_CHECK_WALL
+        PROPERTIES LABELS "iq-determinism" TIMEOUT 120
     )
 endif()
 

@@ -31,8 +31,12 @@
 # proves nothing. The host's REPLAY JITTER line must report sleeps=N > 0 on a
 # leg with a jitter part and shortened_reads=N > 0 on one with a short part,
 # and a realtime leg must take at least 90 % of the air time its REPLAY STREAM
-# line reports (media_ms) in wall time. An inert jitter or short-read option,
-# or a replay rate the host ignores, fails the leg.
+# line reports (media_ms) in wall time. The host times its own engine run on
+# the real-time monotonic clock and prints one REPLAY WALL: wall_ms=W line,
+# which every leg must carry; the runner reads no clock of its own, whose
+# resolution (whole seconds before CMake 3.23) would read a short capture's
+# realtime leg as 0 ms. An inert jitter or short-read option, or a replay rate
+# the host ignores, fails the leg.
 #
 # The legs' outputs are compared in memory after this normalization, applied to
 # stdout and stderr separately:
@@ -40,6 +44,7 @@
 #   - these lines are dropped, and nothing else:
 #       "NOTICE: Runtime: N ms"   the decode loop's real-time duration (-Z);
 #       "REPLAY JITTER: ..."      what the host injected, which differs by design;
+#       "REPLAY WALL: ..."        the real time the host's run took;
 #       audio-sink diagnostics ("PulseAudio output stats:", "PortAudio output
 #       stats:", "AAudio input|output stats:", the host's "Replay sink output
 #       stats:"): the device side of a sink, which a stall changes on purpose;
@@ -153,37 +158,6 @@ function(_leg_args leg out_args out_output out_perturbations)
     set(${out_perturbations} "${_perturbations}" PARENT_SCOPE)
 endfunction()
 
-# Wall-clock time in ms: microsecond stamps from CMake 3.23, whole seconds
-# before it (still within a second of the truth for the 90 % check).
-function(_now_ms out)
-    # string(TIMESTAMP) returns the fixed SOURCE_DATE_EPOCH instead of the current
-    # time while that variable is set (reproducible builds), which would read every
-    # elapsed time as 0 ms. Hide it for this one read and put it back exactly, so a
-    # defined-but-empty value stays defined and the decoder child still sees the
-    # environment it was started with.
-    set(_had_sde FALSE)
-    if(DEFINED ENV{SOURCE_DATE_EPOCH})
-        set(_had_sde TRUE)
-        set(_saved_sde "$ENV{SOURCE_DATE_EPOCH}")
-        unset(ENV{SOURCE_DATE_EPOCH})
-    endif()
-    if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.23)
-        string(TIMESTAMP _stamp "%s.%f" UTC)
-    else()
-        string(TIMESTAMP _stamp "%s.000000" UTC)
-    endif()
-    if(_had_sde)
-        set(ENV{SOURCE_DATE_EPOCH} "${_saved_sde}")
-    endif()
-    if(NOT _stamp MATCHES "^([0-9]+)\\.([0-9][0-9][0-9])[0-9]*$")
-        message(
-            FATAL_ERROR
-            "iq_determinism_check: cannot read the time stamp '${_stamp}'"
-        )
-    endif()
-    set(${out} "${CMAKE_MATCH_1}${CMAKE_MATCH_2}" PARENT_SCOPE)
-endfunction()
-
 # One stream's text as a list of normalized lines: decoder lines in order
 # (out_record) and IO-thread lines sorted (out_io). ';', '[' and ']' are swapped
 # for placeholders so that a line stays one list element.
@@ -199,6 +173,7 @@ function(_normalize_stream text out_record out_io)
         if(
             _line MATCHES "^NOTICE: Runtime: "
             OR _line MATCHES "^REPLAY JITTER: "
+            OR _line MATCHES "^REPLAY WALL: "
             OR _line
                 MATCHES
                 "^(PulseAudio output|PortAudio output|AAudio input|AAudio output|Replay sink output) stats: "
@@ -300,7 +275,6 @@ foreach(_leg IN LISTS RUNS)
     math(EXPR _leg_number "${_index} + 1")
     set(_label "#${_leg_number} ${_leg}")
     _leg_args("${_leg}" _leg_extra _leg_output _leg_perturbations)
-    _now_ms(_start_ms)
     execute_process(
         COMMAND
             "${HOST_BIN}" --frontend none ${_mode_args} ${_leg_extra}
@@ -310,8 +284,6 @@ foreach(_leg IN LISTS RUNS)
         ERROR_VARIABLE _err
         TIMEOUT 240
     )
-    _now_ms(_end_ms)
-    math(EXPR _wall_ms "${_end_ms} - ${_start_ms}")
     set(_all "${_out}\n${_err}")
     if(
         "${_all}"
@@ -369,6 +341,23 @@ foreach(_leg IN LISTS RUNS)
     if(_jitter_lines MATCHES " shortened_reads=([0-9]+)")
         set(_shortened "${CMAKE_MATCH_1}")
     endif()
+    # The real time the host's engine run took, which the realtime check below
+    # needs; a host that does not report it fails every leg.
+    string(REGEX MATCHALL "REPLAY WALL: [^\n]*" _wall_lines "${_all}")
+    list(LENGTH _wall_lines _wall_count)
+    if(NOT _wall_count EQUAL 1)
+        message(
+            FATAL_ERROR
+            "iq_determinism_check: leg ${_label}: expected one REPLAY WALL line, found ${_wall_count}\n${_all}"
+        )
+    endif()
+    if(NOT _wall_lines MATCHES "^REPLAY WALL: wall_ms=([0-9]+)(\\.[0-9]+)?$")
+        message(
+            FATAL_ERROR
+            "iq_determinism_check: leg ${_label}: no wall_ms on the host's REPLAY WALL line (${_wall_lines})"
+        )
+    endif()
+    set(_wall_ms "${CMAKE_MATCH_1}")
     list(FIND _leg_perturbations jitter _jitter_at)
     list(FIND _leg_perturbations short _short_at)
     list(FIND _leg_perturbations realtime _realtime_at)

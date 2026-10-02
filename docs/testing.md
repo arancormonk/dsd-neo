@@ -335,6 +335,8 @@ backed up and dropped audio, whose decoder drained a stalled sink, or whose engi
 it prints `REPLAY STREAM: fsk_samples=… cqpsk_symbols=… monitor_samples=… generation_changes=… media_ms=…`, counted
 from the batch tags the decoder read, each output kind in its own unit, and a `REPLAY SINK:` line per stream with an
 FNV-1a of every sample the decoder handed it. A sample read without a tag, or with an unknown kind, fails the host.
+When the engine returns it prints `REPLAY WALL: wall_ms=…`, the real time the engine run took, timed around
+`dsd_engine_run_with_lifecycle()` on the real-time monotonic clock (`dsd_realtime_mono_ns()`).
 
 The runner is `tests/iq_determinism_check.cmake`, registered through
 `dsd_neo_add_iq_determinism_test(name fixture mode runs expected min_fsk min_cqpsk min_total [NOT_EXPECTED regex])`.
@@ -345,16 +347,22 @@ NOT_EXPECTED. A leg that prints `Retune ignored during IQ replay` fails as misco
 and they are outside the guarantee. A leg must also show that its perturbation happened: the host's `REPLAY JITTER`
 line has to report `sleeps` above 0 on a leg with a jitter part and `shortened_reads` above 0 on one with a short part,
 and a realtime leg has to take at least 90 % of its `REPLAY STREAM` `media_ms` in wall time, so an inert option or a
-replay rate the host ignores fails the case instead of comparing two identical fast runs. Every leg's stdout and stderr
+replay rate the host ignores fails the case instead of comparing two identical fast runs. The wall time is the host's
+`REPLAY WALL` `wall_ms`, never a clock the runner reads: CMake's own timestamps read whole seconds before 3.23 (and
+follow `SOURCE_DATE_EPOCH`), which would time the 85 ms `rf_clip` capture's realtime leg at 0 ms. A leg without exactly
+one `REPLAY WALL` line carrying `wall_ms` fails, whatever its rate. `IQ_DETERMINISM_CHECK_WALL`
+(`tests/cmake/IqDeterminismCheckWall.cmake`) holds the runner to that against a stand-in host: a missing line or one
+without `wall_ms` fails, and so does 899 ms for 1000 ms of air time, while 900 ms passes. Every leg's stdout and stderr
 are then compared with the first leg's, line for line, after a normalization kept as small as the measurement allows:
 
 - ANSI colour sequences are removed.
-- Three kinds of line are dropped: `NOTICE: Runtime:` (the decode loop's real-time duration), `REPLAY JITTER:` (what
-  the host injected) and the audio-sink diagnostics (`PulseAudio output stats:` and the other backends', and the
-  host's `Replay sink output stats:`, the device side a stall changes on purpose). The input-level advisories
-  (`WARNING: …` to raise or lower the RF gain or the source volume) are the decoder's own lines and are compared like
-  the rest: their 10 s cooldown runs on decode time (`dsd_input_level_publish()`), so a replay prints each at the same
-  capture time however fast it runs, even where one lands in the middle of a decoder line.
+- Four kinds of line are dropped: `NOTICE: Runtime:` (the decode loop's real-time duration), `REPLAY JITTER:` (what
+  the host injected), `REPLAY WALL:` (the real time the host's run took) and the audio-sink diagnostics
+  (`PulseAudio output stats:` and the other backends', and the host's `Replay sink output stats:`, the device side a
+  stall changes on purpose). The input-level advisories (`WARNING: …` to raise or lower the RF gain or the source
+  volume) are the decoder's own lines and are compared like the rest: their 10 s cooldown runs on decode time
+  (`dsd_input_level_publish()`), so a replay prints each at the same capture time however fast it runs, even where one
+  lands in the middle of a decoder line.
 - Lines the reader, demod or controller threads print would be compared as a sorted set, since where they fall among
   the decoder's lines follows thread timing. The pattern list is empty, by measurement: traced per thread
   (`strace -f -e trace=write`) under every leg kind, everything these legs print comes from the decoder thread.
