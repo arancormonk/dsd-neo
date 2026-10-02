@@ -153,17 +153,21 @@ static_assert(DSD_ANALOG_CHANNEL_GUARD_HZ * 2 == DSD_ANALOG_CHANNEL_TRANSITION_H
               "analog guard must stay half the channel-filter transition");
 static_assert(DSD_CHANNEL_LPF_MAX_TAPS == DSD_ANALOG_CHANNEL_MAX_TAPS,
               "demod_state channel LPF capacity must match the analog validator's tap limit");
-static_assert(sizeof(demod_state::channel_lpf_plan_taps) / sizeof(float) == DSD_ANALOG_CHANNEL_MAX_TAPS,
+static_assert(DSD_DEMOD_BUF_ALIGN == DSD_NEO_ALIGN,
+              "the aligned demod_state buffers meet the alignment assumed of them");
+/* The aligned buffers are declared rounded up to whole alignment blocks (DSD_DEMOD_ALIGNED_FLOATS), so each holds at
+   least its capacity. The capacity constants, not sizeof, bound what is used of them. */
+static_assert(sizeof(demod_state::channel_lpf_plan_taps) / sizeof(float) >= DSD_ANALOG_CHANNEL_MAX_TAPS,
               "channel LPF plan array must hold the analog tap capacity");
-static_assert(sizeof(demod_state::channel_lpf_hist_i) / sizeof(float) == DSD_CHANNEL_LPF_HIST_LEN
-                  && sizeof(demod_state::channel_lpf_hist_q) / sizeof(float) == DSD_CHANNEL_LPF_HIST_LEN,
+static_assert(sizeof(demod_state::channel_lpf_hist_i) / sizeof(float) >= DSD_CHANNEL_LPF_HIST_LEN
+                  && sizeof(demod_state::channel_lpf_hist_q) / sizeof(float) >= DSD_CHANNEL_LPF_HIST_LEN,
               "channel LPF history arrays hold DSD_CHANNEL_LPF_HIST_LEN samples");
 /* The streaming FIR's windows reach pending + c back, pending up to the largest c a plan had and c up to the largest
    c the capacity allows: a tap change without a reset must still find them in the history. */
 static_assert(2 * ((DSD_CHANNEL_LPF_MAX_TAPS - 1) / 2) <= DSD_CHANNEL_LPF_HIST_LEN,
               "channel LPF history must hold pending + c at any two plans' tap counts");
-static_assert(sizeof(demod_state::hb_workbuf) / sizeof(float) == DSD_DEMOD_WORKBUF_LENGTH
-                  && sizeof(demod_state::timing_buf) / sizeof(float) == DSD_DEMOD_WORKBUF_LENGTH,
+static_assert(sizeof(demod_state::hb_workbuf) / sizeof(float) >= DSD_DEMOD_WORKBUF_LENGTH
+                  && sizeof(demod_state::timing_buf) / sizeof(float) >= DSD_DEMOD_WORKBUF_LENGTH,
               "the channel LPF writes either work buffer");
 static_assert(DSD_DEMOD_WORKBUF_LENGTH / 2 >= MAXIMUM_BUF_LENGTH / 2 + (DSD_CHANNEL_LPF_MAX_TAPS - 1) / 2,
               "a channel LPF work buffer holds a maximum block's outputs on a tap shrink");

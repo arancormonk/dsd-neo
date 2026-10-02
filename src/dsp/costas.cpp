@@ -397,8 +397,8 @@ gardner_reinit_state(demod_state* d, ted_state_t* ted, int sps, int is_first_ini
     return 1;
 }
 
-static_assert(sizeof(demod_state::hb_workbuf) / sizeof(float) == DSD_DEMOD_WORKBUF_LENGTH
-                  && sizeof(demod_state::timing_buf) / sizeof(float) == DSD_DEMOD_WORKBUF_LENGTH,
+static_assert(sizeof(demod_state::hb_workbuf) / sizeof(float) >= DSD_DEMOD_WORKBUF_LENGTH
+                  && sizeof(demod_state::timing_buf) / sizeof(float) >= DSD_DEMOD_WORKBUF_LENGTH,
               "the Gardner writes either work buffer up to DSD_DEMOD_WORKBUF_LENGTH floats");
 
 static inline void
