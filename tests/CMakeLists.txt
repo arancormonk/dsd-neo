@@ -71,6 +71,13 @@ if(NOT WIN32)
             WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
         )
         add_test(
+            NAME TOOLS_CHECK_WORKFLOW_DOWNLOAD_PINS
+            COMMAND
+                ${DSD_NEO_BASH_EXECUTABLE}
+                ${PROJECT_SOURCE_DIR}/tests/tools/test_check_workflow_download_pins.sh
+            WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+        )
+        add_test(
             NAME TOOLS_IWYU
             COMMAND
                 ${DSD_NEO_BASH_EXECUTABLE}
