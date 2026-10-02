@@ -34,28 +34,30 @@ widen4_u8_to_f32_bias127_sse2(const unsigned char* src) {
     return _mm_mul_ps(_mm_sub_ps(vals, bias), scale);
 }
 
+/* The sign flip is an integer XOR: viewed as floats the masks are +0.0 and -0.0 lanes, and a compiler allowed to
+   ignore the sign of zero (fast-math) may treat masks that differ only there as equal and merge the cases. */
 static inline __m128
 apply_phase2_sse2(__m128 vals, uint32_t phase) {
     switch (phase & 3U) {
         case 0: {
             __m128 perm = _mm_shuffle_ps(vals, vals, _MM_SHUFFLE(2, 3, 1, 0));
-            __m128 sign = _mm_castsi128_ps(_mm_load_si128(reinterpret_cast<const __m128i*>(kPhase0SignMask)));
-            return _mm_xor_ps(perm, sign);
+            const __m128i sign = _mm_load_si128(reinterpret_cast<const __m128i*>(kPhase0SignMask));
+            return _mm_castsi128_ps(_mm_xor_si128(_mm_castps_si128(perm), sign));
         }
         case 1: {
             __m128 perm = _mm_shuffle_ps(vals, vals, _MM_SHUFFLE(3, 2, 0, 1));
-            __m128 sign = _mm_castsi128_ps(_mm_load_si128(reinterpret_cast<const __m128i*>(kPhase1SignMask)));
-            return _mm_xor_ps(perm, sign);
+            const __m128i sign = _mm_load_si128(reinterpret_cast<const __m128i*>(kPhase1SignMask));
+            return _mm_castsi128_ps(_mm_xor_si128(_mm_castps_si128(perm), sign));
         }
         case 2: {
             __m128 perm = _mm_shuffle_ps(vals, vals, _MM_SHUFFLE(2, 3, 1, 0));
-            __m128 sign = _mm_castsi128_ps(_mm_load_si128(reinterpret_cast<const __m128i*>(kPhase2SignMask)));
-            return _mm_xor_ps(perm, sign);
+            const __m128i sign = _mm_load_si128(reinterpret_cast<const __m128i*>(kPhase2SignMask));
+            return _mm_castsi128_ps(_mm_xor_si128(_mm_castps_si128(perm), sign));
         }
         default: {
             __m128 perm = _mm_shuffle_ps(vals, vals, _MM_SHUFFLE(3, 2, 0, 1));
-            __m128 sign = _mm_castsi128_ps(_mm_load_si128(reinterpret_cast<const __m128i*>(kPhase3SignMask)));
-            return _mm_xor_ps(perm, sign);
+            const __m128i sign = _mm_load_si128(reinterpret_cast<const __m128i*>(kPhase3SignMask));
+            return _mm_castsi128_ps(_mm_xor_si128(_mm_castps_si128(perm), sign));
         }
     }
 }
