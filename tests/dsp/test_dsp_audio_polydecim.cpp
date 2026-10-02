@@ -15,7 +15,6 @@
 
 #include <cmath>
 #include <cstdio>
-#include <cstdlib>
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
 #include <dsd-neo/runtime/mem.h>
@@ -71,7 +70,7 @@ free_demod_state(demod_state* d) {
     }
     dsd_neo_aligned_free(d->post_polydecim_taps);
     dsd_neo_aligned_free(d->post_polydecim_hist);
-    free(d);
+    dsd_neo_aligned_free(d);
 }
 
 int
@@ -89,7 +88,7 @@ main(void) {
     // Build single run to capture outputs
     std::vector<float> iq_pass((size_t)N);
     gen_tone_iq(iq_pass, Fs, f_pass, 0.8);
-    demod_state* d1 = (demod_state*)malloc(sizeof(demod_state));
+    demod_state* d1 = static_cast<demod_state*>(dsd_neo_aligned_malloc(sizeof(demod_state)));
     if (!d1) {
         return 1;
     }
@@ -113,7 +112,7 @@ main(void) {
     // Stopband run
     std::vector<float> iq_stop((size_t)N);
     gen_tone_iq(iq_stop, Fs, f_stop, 0.8);
-    demod_state* d2 = (demod_state*)malloc(sizeof(demod_state));
+    demod_state* d2 = static_cast<demod_state*>(dsd_neo_aligned_malloc(sizeof(demod_state)));
     if (!d2) {
         free_demod_state(d1);
         return 1;

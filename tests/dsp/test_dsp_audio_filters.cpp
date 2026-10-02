@@ -6,10 +6,10 @@
 /* Unit tests: audio_lpf_filter and dc_block_filter behavior. */
 
 #include <cmath>
-#include <cstdlib>
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
 #include <dsd-neo/dsp/sps_filters.h>
+#include <dsd-neo/runtime/mem.h>
 #include <stdio.h>
 #include "dsd-neo/core/safe_api.h"
 
@@ -81,7 +81,7 @@ test_sps_filter_wrappers(void) {
 int
 main(void) {
     // Allocate demod_state on heap
-    demod_state* s = (demod_state*)malloc(sizeof(demod_state));
+    demod_state* s = static_cast<demod_state*>(dsd_neo_aligned_malloc(sizeof(demod_state)));
     if (!s) {
         return 1;
     }
@@ -100,13 +100,13 @@ main(void) {
         audio_lpf_filter(s);
         if (!monotonic_nondecreasing(s->result, s->result_len)) {
             DSD_FPRINTF(stderr, "audio_lpf_filter: not monotonic nondecreasing on step\n");
-            free(s);
+            dsd_neo_aligned_free(s);
             return 1;
         }
         // Final value should approach target (allow some residual)
         if (!(s->result[N - 1] >= 0.9f && s->result[N - 1] <= 1.0f)) {
             DSD_FPRINTF(stderr, "audio_lpf_filter: final=%f not near 1.0\n", s->result[N - 1]);
-            free(s);
+            dsd_neo_aligned_free(s);
             return 1;
         }
     }
@@ -124,23 +124,23 @@ main(void) {
         for (int i = 1; i < N; i++) {
             if (s->result[i] > s->result[i - 1]) {
                 DSD_FPRINTF(stderr, "dc_block_filter: sequence increased at %d\n", i);
-                free(s);
+                dsd_neo_aligned_free(s);
                 return 1;
             }
         }
         float last = s->result[N - 1];
         if (last >= 0.5f) {
             DSD_FPRINTF(stderr, "dc_block_filter: insufficient reduction (last=%f)\n", last);
-            free(s);
+            dsd_neo_aligned_free(s);
             return 1;
         }
     }
 
     if (test_sps_filter_wrappers() != 0) {
-        free(s);
+        dsd_neo_aligned_free(s);
         return 1;
     }
 
-    free(s);
+    dsd_neo_aligned_free(s);
     return 0;
 }

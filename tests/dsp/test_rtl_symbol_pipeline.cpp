@@ -10,10 +10,10 @@
 #include <atomic>
 #include <cmath>
 #include <cstdio>
-#include <cstdlib>
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
 #include <dsd-neo/dsp/fsk_modem.h>
+#include <dsd-neo/runtime/mem.h>
 #include "dsd-neo/core/safe_api.h"
 
 namespace {
@@ -249,7 +249,7 @@ check_cqpsk_squelch_emits_zero_symbols(demod_state* s) {
 
 int
 main(void) {
-    demod_state* s = static_cast<demod_state*>(std::malloc(sizeof(*s)));
+    demod_state* s = static_cast<demod_state*>(dsd_neo_aligned_malloc(sizeof(demod_state)));
     if (!s) {
         return 1;
     }
@@ -260,7 +260,7 @@ main(void) {
     rc |= check_cqpsk_phase_extractor_accuracy(s);
     rc |= check_cqpsk_squelch_emits_zero_symbols(s);
 
-    std::free(s);
+    dsd_neo_aligned_free(s);
     return rc;
 }
 

@@ -10,7 +10,6 @@
 
 #include <cmath>
 #include <cstdint>
-#include <cstdlib>
 #include <dsd-neo/dsp/demod_state.h>
 #include <dsd-neo/dsp/resampler.h>
 #include <dsd-neo/runtime/mem.h>
@@ -57,7 +56,7 @@ expected_out_len_for_block(int in_len, int L, int M) {
 
 static demod_state*
 alloc_demod_state(void) {
-    demod_state* s = (demod_state*)malloc(sizeof(demod_state));
+    demod_state* s = static_cast<demod_state*>(dsd_neo_aligned_malloc(sizeof(demod_state)));
     if (s) {
         DSD_MEMSET(s, 0, sizeof(*s));
     }
@@ -75,7 +74,7 @@ free_demod_state(demod_state* s) {
     if (s->resamp_hist) {
         dsd_neo_aligned_free(s->resamp_hist);
     }
-    free(s);
+    dsd_neo_aligned_free(s);
 }
 
 static int

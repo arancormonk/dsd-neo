@@ -8,10 +8,10 @@
    output, which is what makes a DCS one in normal polarity read as a one (issue #523). */
 
 #include <cmath>
-#include <cstdlib>
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
 #include <dsd-neo/runtime/analog_tones.h>
+#include <dsd-neo/runtime/mem.h>
 #include <stdint.h>
 #include <stdio.h>
 #include "dsd-neo/core/safe_api.h"
@@ -87,7 +87,7 @@ test_sign_convention(demod_state* s) {
 
 int
 main(void) {
-    demod_state* s = (demod_state*)malloc(sizeof(demod_state));
+    demod_state* s = static_cast<demod_state*>(dsd_neo_aligned_malloc(sizeof(demod_state)));
     if (!s) {
         return 1;
     }
@@ -121,13 +121,13 @@ main(void) {
     float expect_rad = (float)atan2(im, re);
     if (s->result_len != N) {
         DSD_FPRINTF(stderr, "FM demod ref: result_len=%d want %d\n", s->result_len, N);
-        free(s);
+        dsd_neo_aligned_free(s);
         return 1;
     }
     // First sample seeds history; steady-state starts at index 1
     if (fabsf(s->result[0]) > 1e-3f) {
         DSD_FPRINTF(stderr, "FM demod ref: result[0]=%f want 0\n", s->result[0]);
-        free(s);
+        dsd_neo_aligned_free(s);
         return 1;
     }
     for (int i = 1; i < s->result_len; i++) {
@@ -135,7 +135,7 @@ main(void) {
         float d = fabsf(v - expect_rad);
         if (d > 0.01f) { // allow small tolerance for native float output
             DSD_FPRINTF(stderr, "FM demod ref: result[%d]=%f expect~%f\n", i, v, expect_rad);
-            free(s);
+            dsd_neo_aligned_free(s);
             return 1;
         }
     }
@@ -164,15 +164,15 @@ main(void) {
         float d = fabsf(v - expect_rad);
         if (d > 1e-4f) {
             DSD_FPRINTF(stderr, "FM demod small-angle: result[%d]=%f expect~%f\n", i, v, expect_rad);
-            free(s);
+            dsd_neo_aligned_free(s);
             return 1;
         }
     }
 
     if (test_sign_convention(s) != 0) {
-        free(s);
+        dsd_neo_aligned_free(s);
         return 1;
     }
-    free(s);
+    dsd_neo_aligned_free(s);
     return 0;
 }

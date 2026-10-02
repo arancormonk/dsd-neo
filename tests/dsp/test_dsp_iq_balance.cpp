@@ -8,9 +8,9 @@
 
 #include <cmath>
 #include <cstdint>
-#include <cstdlib>
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
+#include <dsd-neo/runtime/mem.h>
 #include <stdio.h>
 #include "dsd-neo/core/safe_api.h"
 
@@ -33,7 +33,7 @@ impropriety_ratio(const float* x, int pairs) {
 
 int
 main(void) {
-    demod_state* s = (demod_state*)malloc(sizeof(demod_state));
+    demod_state* s = static_cast<demod_state*>(dsd_neo_aligned_malloc(sizeof(demod_state)));
     if (!s) {
         return 1;
     }
@@ -61,7 +61,7 @@ main(void) {
     double pre = impropriety_ratio(buf, pairs);
     if (pre < 0.01) {
         DSD_FPRINTF(stderr, "IQBAL test: pre impropriety unexpectedly small %.4f\n", pre);
-        free(s);
+        dsd_neo_aligned_free(s);
         return 1;
     }
 
@@ -80,10 +80,10 @@ main(void) {
     double post = impropriety_ratio(s->lowpassed, s->lp_len / 2);
     if (!(post < pre)) {
         DSD_FPRINTF(stderr, "IQBAL test: post impropriety %.4f not reduced from %.4f\n", post, pre);
-        free(s);
+        dsd_neo_aligned_free(s);
         return 1;
     }
 
-    free(s);
+    dsd_neo_aligned_free(s);
     return 0;
 }
