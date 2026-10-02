@@ -1787,6 +1787,10 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
     taps, and `channel_lpf_pending` the outputs held back. A tap-count change without a reset reconciles through
     pending (up to N + c_old - c_new outputs), so the work buffers the filter writes (`hb_workbuf`, `timing_buf`) are
     `DSD_DEMOD_WORKBUF_LENGTH` floats, a maximum block plus 287 complex.
+  - Aligned buffer storage: each `alignas(DSD_DEMOD_BUF_ALIGN)` buffer at the top of `demod_state` is declared as
+    `DSD_DEMOD_ALIGNED_FLOATS` of its capacity, rounded up to whole 64-byte blocks, so no compiler pads between them
+    (MSVC's C4324 is an error under `/WX`); static asserts below the struct hold this. The capacity constants above,
+    not `sizeof`, bound what code uses, and the spare tail is never read.
   - Half-band decimators, with c = (taps - 1) / 2, H = taps - 1 and lt = pending + N (the complex decimator counts
     floats in and out, 2 a sample): a call makes m = (lt - c + 1) / 2 outputs once lt reaches c + 1 and none before,
     output k centred at H - pending + 2k of [history | block], and leaves pending lt - 2m, which is any of 0..c during
