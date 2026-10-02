@@ -7,7 +7,6 @@
  * behavior without requiring a live rigctl server or network service.
  */
 
-#include <arpa/inet.h>
 #include <assert.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
@@ -29,6 +28,7 @@
 #include "dsd-neo/platform/platform.h"
 
 #if !DSD_PLATFORM_WIN_NATIVE
+#include <arpa/inet.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <sys/socket.h>

@@ -325,7 +325,7 @@ test_debug_replay_reopens_and_reprobes(void) {
     char path[DSD_TEST_PATH_MAX];
     int fd = dsd_test_mkstemp(path, sizeof(path), "dsdneo_symbol_replay");
     assert(fd >= 0);
-    FILE* file = fdopen(fd, "wb");
+    FILE* file = dsd_test_fdopen(fd, "wb");
     assert(file != NULL);
     write_soft_header(file);
     write_soft_record(file, 0, 31, 100, -100, -3.0f);

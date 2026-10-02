@@ -183,6 +183,16 @@ dsd_test_rmdir(const char* path) {
 #endif
 }
 
+/** @brief fdopen(), which the Windows CRT spells _fdopen(). */
+static inline FILE*
+dsd_test_fdopen(int fd, const char* mode) {
+#if DSD_PLATFORM_WIN_NATIVE
+    return _fdopen(fd, mode);
+#else
+    return fdopen(fd, mode);
+#endif
+}
+
 /**
  * @brief Remove the files a test left in a temp directory, then the directory itself.
  *
@@ -359,7 +369,7 @@ dsd_test_capture_stderr_read(const dsd_test_capture_stderr* cap, char* buf, size
         errno = EINVAL;
         return -1;
     }
-    buf[0] = '\0';
+    DSD_MEMSET(buf, 0, buf_size);
 
     FILE* f = fopen(cap->path, "rb");
     if (!f) {
@@ -368,8 +378,10 @@ dsd_test_capture_stderr_read(const dsd_test_capture_stderr* cap, char* buf, size
         errno = saved_errno;
         return -1;
     }
-    size_t n = fread(buf, 1U, buf_size - 1U, f);
-    buf[n] = '\0';
+    /* buf was zeroed above, so the bytes read end in a NUL whatever their count: the count, which comes from the
+       file, never indexes the caller's buffer. */
+    const size_t read_count = fread(buf, 1U, buf_size - 1U, f);
+    (void)read_count;
     (void)fclose(f);
     (void)remove(cap->path);
     return 0;

@@ -276,7 +276,7 @@ test_protocol_hangtime_publication(const char* protocol, float configured_hangti
     char path[DSD_TEST_PATH_MAX];
     int fd = dsd_test_mkstemp(path, sizeof(path), "scan-timing");
     assert(fd >= 0);
-    FILE* file = fdopen(fd, "w");
+    FILE* file = dsd_test_fdopen(fd, "w");
     assert(file);
     DSD_FPRINTF(file,
                 "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes\n"

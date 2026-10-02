@@ -4804,6 +4804,7 @@ target_link_libraries(
         dsd-neo_proto_nxdn
         dsd-neo_proto_dmr
         dsd-neo_feature_codec2
+        dsd-neo_test_support
         ${LIBS}
 )
 add_test(
@@ -6596,7 +6597,7 @@ target_include_directories(
 )
 target_link_libraries(
     dsd-neo_test_p25_lcw_src_zero_guard
-    PRIVATE dsd-neo_proto_p25
+    PRIVATE dsd-neo_proto_p25 dsd-neo_test_support
 )
 add_test(
     NAME P25_LCW_SRC_ZERO_GUARD
@@ -10252,6 +10253,10 @@ target_include_directories(
     dsd-neo_test_io_rtl_perf
     PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/io/radio
 )
+target_link_libraries(
+    dsd-neo_test_io_rtl_perf
+    PRIVATE dsd-neo_platform dsd-neo_test_support
+)
 add_test(NAME IO_RTL_PERF COMMAND dsd-neo_test_io_rtl_perf)
 
 add_executable(
@@ -10358,7 +10363,7 @@ target_include_directories(
 )
 target_link_libraries(
     dsd-neo_test_platform_file_compat
-    PRIVATE dsd-neo_platform
+    PRIVATE dsd-neo_platform dsd-neo_test_support
 )
 add_test(NAME PLATFORM_FILE_COMPAT COMMAND dsd-neo_test_platform_file_compat)
 

@@ -20,10 +20,10 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-#include <unistd.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "test_support.h"
 
 #if defined(__GNUC__) && !defined(__cplusplus)
 #pragma GCC diagnostic push
@@ -161,15 +161,6 @@ expect_contains(const char* tag, const char* text, const char* needle) {
     return 0;
 }
 
-#if defined(__GNUC__) && !defined(__clang__) && __GNUC__ >= 13
-/* dup2() returns the descriptor it wrote onto - one the process already owns
- * and must not close - but GCC's analyzer models the return as a freshly opened
- * descriptor and reports the redirect as a leak. GCC 13 is
- * where that check got its name: an older gcc rejects the option below as
- * unknown, which -Werror turns into a build failure. */
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wanalyzer-fd-leak"
-#endif
 static int
 capture_lcw_output(dsd_opts* opts, dsd_state* st, uint8_t lcw[96], char* out, size_t out_sz) {
     if (!out || out_sz == 0) {
@@ -177,46 +168,15 @@ capture_lcw_output(dsd_opts* opts, dsd_state* st, uint8_t lcw[96], char* out, si
     }
     out[0] = '\0';
 
-    FILE* capture = tmpfile();
-    if (!capture) {
-        return -1;
-    }
-
+    dsd_test_capture_stderr cap;
     (void)fflush(stderr);
-    int saved = dup(fileno(stderr));
-    if (saved < 0 || dup2(fileno(capture), fileno(stderr)) < 0) {
-        if (saved >= 0) {
-            (void)close(saved);
-        }
-        (void)fclose(capture);
+    if (dsd_test_capture_stderr_begin(&cap, "p25_lcw_src_zero") != 0) {
         return -1;
     }
-
     p25_lcw(opts, st, lcw, /*irrecoverable_errors*/ 0);
-    (void)fflush(stderr);
-    int restored = dup2(saved, fileno(stderr));
-    (void)close(saved);
-    if (restored < 0) {
-        (void)fclose(capture);
-        return -1;
-    }
-
-    if (fseek(capture, 0, SEEK_SET) != 0) {
-        (void)fclose(capture);
-        return -1;
-    }
-    size_t n = fread(out, 1, out_sz - 1, capture);
-    if (n < out_sz - 1 && ferror(capture) != 0) {
-        (void)fclose(capture);
-        return -1;
-    }
-    out[n] = '\0';
-    (void)fclose(capture);
-    return 0;
+    (void)dsd_test_capture_stderr_end(&cap);
+    return dsd_test_capture_stderr_read(&cap, out, out_sz);
 }
-#if defined(__GNUC__) && !defined(__clang__) && __GNUC__ >= 13
-#pragma GCC diagnostic pop
-#endif
 
 static void
 reset_lcw_state(dsd_state* state) {

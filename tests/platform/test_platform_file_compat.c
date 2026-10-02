@@ -13,8 +13,8 @@
 #include <string.h>
 
 #include "dsd-neo/platform/platform.h"
+#include "test_support.h"
 #if !DSD_PLATFORM_WIN_NATIVE
-#include <sys/stat.h>
 #include <unistd.h>
 #endif
 
@@ -63,7 +63,7 @@ expect_posix_compat_wrappers(void) {
     } else {
         dsd_stat_t st;
         rc |= dsd_stat_path(dir, &st) == 0 && !dsd_stat_is_regular(&st) ? 0 : 1;
-        rc |= rmdir(dir) == 0 ? 0 : 1;
+        rc |= dsd_test_rmdir(dir) == 0 ? 0 : 1;
     }
 
     return rc;
@@ -207,7 +207,7 @@ expect_private_open_reports_the_open(void) {
 
 static int
 write_probe_file(const char* path) {
-    FILE* fp = dsd_fopen_private(path, "w");
+    FILE* fp = dsd_fopen_private(path, "wb");
     if (!fp) {
         return -1;
     }
@@ -223,7 +223,7 @@ expect_existing_regular_file_guards(void) {
     const char* name = "dsd_neo_existing_regular_test.tmp";
     const char* dir_name = "dsd_neo_existing_regular_dir.tmp";
     (void)remove(name);
-    (void)rmdir(dir_name);
+    (void)dsd_test_rmdir(dir_name);
     if (write_probe_file(name) != 0) {
         return 1;
     }
@@ -249,7 +249,7 @@ expect_existing_regular_file_guards(void) {
         rc |= fclose(fp) == 0 ? 0 : 1;
     }
 
-    if (mkdir(dir_name, 0700) != 0) {
+    if (dsd_mkdir(dir_name, 0700) != 0) {
         rc = 1;
     } else {
         errno = 0;
@@ -263,7 +263,7 @@ expect_existing_regular_file_guards(void) {
     }
 
     (void)remove(name);
-    (void)rmdir(dir_name);
+    (void)dsd_test_rmdir(dir_name);
     return rc;
 }
 

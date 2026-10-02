@@ -27,6 +27,7 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "dsd-neo/platform/platform.h"
 
 #ifndef DSD_RUNTIME_HAS_TERMINAL_UI
 #define DSD_RUNTIME_HAS_TERMINAL_UI 1
@@ -120,13 +121,21 @@ dsd_stat_path(const char* path, dsd_stat_t* st) {
         return -1;
     }
     DSD_MEMSET(st, 0, sizeof *st);
+#if DSD_PLATFORM_WIN_NATIVE
+    st->st_mode = _S_IFREG; /* S_IFREG is a non-standard name the strict CRT hides */
+#else
     st->st_mode = S_IFREG;
+#endif
     return 0;
 }
 
 int
 dsd_stat_is_regular(const dsd_stat_t* st) {
+#if DSD_PLATFORM_WIN_NATIVE
+    return st && (st->st_mode & _S_IFMT) == _S_IFREG; /* the Windows CRT has no S_ISREG() */
+#else
     return st && S_ISREG(st->st_mode);
+#endif
 }
 
 int

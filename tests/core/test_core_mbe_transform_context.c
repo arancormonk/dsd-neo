@@ -35,6 +35,7 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "mbe_result_context.h"
+#include "test_support.h"
 
 static int
 expect_eq_int(const char* tag, int got, int want) {
@@ -645,7 +646,7 @@ create_mbe_playback_file(char* path, size_t path_size, const char cookie[4],
         DSD_FPRINTF(stderr, "dsd_mkstemp failed: %s\n", strerror(errno));
         return 1;
     }
-    FILE* f = fdopen(fd, "wb");
+    FILE* f = dsd_test_fdopen(fd, "wb");
     if (!f) {
         DSD_FPRINTF(stderr, "fdopen failed: %s\n", strerror(errno));
         dsd_close(fd);

@@ -2012,7 +2012,7 @@ write_cookie_file(char* path, size_t path_size, const char* prefix, const char c
         DSD_FPRINTF(stderr, "dsd_test_mkstemp failed: %s\n", strerror(errno));
         return 1;
     }
-    FILE* f = fdopen(fd, "wb");
+    FILE* f = dsd_test_fdopen(fd, "wb");
     if (!f) {
         DSD_FPRINTF(stderr, "fdopen failed: %s\n", strerror(errno));
         (void)dsd_close(fd);
@@ -2036,7 +2036,7 @@ write_short_cookie_file(char* path, size_t path_size, const char* prefix) {
         DSD_FPRINTF(stderr, "dsd_test_mkstemp failed: %s\n", strerror(errno));
         return 1;
     }
-    FILE* f = fdopen(fd, "wb");
+    FILE* f = dsd_test_fdopen(fd, "wb");
     if (!f) {
         DSD_FPRINTF(stderr, "fdopen failed: %s\n", strerror(errno));
         (void)dsd_close(fd);

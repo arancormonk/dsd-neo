@@ -18,11 +18,11 @@
 static atomic_int g_flag = 0;
 static atomic_int g_spins = 0;
 
-static void*
+static DSD_THREAD_RETURN_TYPE
 setter_thread(void* arg) {
     (void)arg;
     atomic_store(&g_flag, 1);
-    return NULL;
+    DSD_THREAD_RETURN;
 }
 
 /* Calling it with nothing else runnable must simply return. */

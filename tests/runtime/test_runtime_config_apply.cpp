@@ -52,7 +52,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/types.h>
-#include <unistd.h>
 #if !DSD_PLATFORM_WIN_NATIVE
 #include <dirent.h>
 #endif
@@ -1976,7 +1975,7 @@ test_ui_replay_and_stop_playback_manage_symbol_state(void) {
         return 1;
     }
     const uint8_t bytes[] = {0x01U, 0x02U, 0x03U};
-    ssize_t nwritten = write(fd, bytes, sizeof bytes);
+    ssize_t nwritten = dsd_write(fd, bytes, sizeof bytes);
     (void)dsd_close(fd);
     if (nwritten != (ssize_t)sizeof bytes) {
         DSD_FPRINTF(stderr, "FAIL: write temp symbol replay file\n");
