@@ -38,10 +38,32 @@ target_link_libraries(dsd-neo_test_support INTERFACE dsd-neo_platform)
 # its failure mode was reporting a clean run over an empty analysis. iwyu.sh
 # gets a fake IWYU, since its failure mode was reading a unit that did not
 # compile as clean. Bash only: the scripts themselves are bash, so nothing is
-# lost by skipping them where it is missing.
+# lost by skipping them where it is missing. They need bash 4 or later (mapfile),
+# and macOS ships 3.2 as /bin/bash, so a newer one is preferred where installed;
+# with only an older one they still register, and fail, rather than vanish.
 if(NOT WIN32)
-    find_program(DSD_NEO_BASH_EXECUTABLE bash)
+    find_program(
+        DSD_NEO_BASH_EXECUTABLE
+        bash
+        HINTS /opt/homebrew/bin /usr/local/bin
+    )
     if(DSD_NEO_BASH_EXECUTABLE)
+        execute_process(
+            COMMAND ${DSD_NEO_BASH_EXECUTABLE} -c [[echo "${BASH_VERSINFO[0]}"]]
+            OUTPUT_VARIABLE _dsd_neo_bash_major
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+            ERROR_QUIET
+        )
+        if(
+            NOT _dsd_neo_bash_major MATCHES "^[0-9]+$"
+            OR _dsd_neo_bash_major LESS 4
+        )
+            message(
+                WARNING
+                "${DSD_NEO_BASH_EXECUTABLE} is older than bash 4; the TOOLS_* script tests need bash 4 and will fail"
+            )
+        endif()
+        unset(_dsd_neo_bash_major)
         add_test(
             NAME TOOLS_CI_ARCH_TOOLCHAIN_PULL_RETRY
             COMMAND
@@ -1312,28 +1334,31 @@ target_include_directories(
 target_link_libraries(dsd-neo_test_ysf_frame PRIVATE ${LIBS})
 add_test(NAME YSF_FRAME COMMAND dsd-neo_test_ysf_frame)
 
-add_executable(dsd-neo_test_ysf_dch_decode protocol/ysf/test_ysf_dch_decode.c)
-target_include_directories(
-    dsd-neo_test_ysf_dch_decode
-    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/ysf
-)
-target_link_libraries(
-    dsd-neo_test_ysf_dch_decode
-    PRIVATE
-        "-Wl,--start-group"
-        dsd-neo_proto_ysf
-        ${_DSD_RUNTIME_CLI_PARSE_LIBS}
-        "-Wl,--end-group"
-        ${LIBS}
-)
-target_link_options(
-    dsd-neo_test_ysf_dch_decode
-    PRIVATE
-        -Wl,--wrap=get_dibit_and_analog_signal
-        -Wl,--wrap=processMbeFrame
-        -Wl,--wrap=mbe_processAmbe2450Dataf
-)
-add_test(NAME YSF_DCH_DECODE COMMAND dsd-neo_test_ysf_dch_decode)
+# The DCH path is driven through GNU ld --wrap seams, like the other wrap tests.
+if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
+    add_executable(
+        dsd-neo_test_ysf_dch_decode
+        protocol/ysf/test_ysf_dch_decode.c
+    )
+    target_include_directories(
+        dsd-neo_test_ysf_dch_decode
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/protocol/ysf
+    )
+    target_link_libraries(
+        dsd-neo_test_ysf_dch_decode
+        PRIVATE "-Wl,--start-group" dsd-neo_proto_ysf "-Wl,--end-group" ${LIBS}
+    )
+    target_link_options(
+        dsd-neo_test_ysf_dch_decode
+        PRIVATE
+            -Wl,--wrap=get_dibit_and_analog_signal
+            -Wl,--wrap=processMbeFrame
+            -Wl,--wrap=mbe_processAmbe2450Dataf
+    )
+    add_test(NAME YSF_DCH_DECODE COMMAND dsd-neo_test_ysf_dch_decode)
+endif()
 
 add_executable(
     dsd-neo_test_p25_p2_ysf_sync_dispatch
@@ -1477,17 +1502,29 @@ target_include_directories(
         ${PROJECT_SOURCE_DIR}/include
         ${PROJECT_SOURCE_DIR}/src/protocol/nxdn
 )
-target_link_libraries(
-    dsd-neo_test_nxdn_deperm_primitives
-    PRIVATE
-        "-Wl,--start-group"
-        dsd-neo_proto_nxdn
-        dsd-neo_proto_dmr
-        dsd-neo_proto_p25
-        dsd-neo_core
-        "-Wl,--end-group"
-        ${LIBS}
-)
+if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+    target_link_libraries(
+        dsd-neo_test_nxdn_deperm_primitives
+        PRIVATE
+            "-Wl,--start-group"
+            dsd-neo_proto_nxdn
+            dsd-neo_proto_dmr
+            dsd-neo_proto_p25
+            dsd-neo_core
+            "-Wl,--end-group"
+            ${LIBS}
+    )
+else()
+    target_link_libraries(
+        dsd-neo_test_nxdn_deperm_primitives
+        PRIVATE
+            dsd-neo_proto_nxdn
+            dsd-neo_proto_dmr
+            dsd-neo_proto_p25
+            dsd-neo_core
+            ${LIBS}
+    )
+endif()
 add_test(
     NAME NXDN_DEPERM_PRIMITIVES
     COMMAND dsd-neo_test_nxdn_deperm_primitives
@@ -2309,10 +2346,6 @@ if(DSD_ENABLE_TERMINAL_UI)
             ${PROJECT_SOURCE_DIR}/include
             ${PROJECT_SOURCE_DIR}/src/ui/terminal
             ${CURSES_INCLUDE_DIRS}
-    )
-    target_compile_options(
-        dsd-neo_test_ui_ncurses_printer_helpers
-        PRIVATE -Wno-unused-function
     )
     target_link_libraries(
         dsd-neo_test_ui_ncurses_printer_helpers
@@ -4637,18 +4670,16 @@ target_include_directories(
     SYSTEM
     PRIVATE ${_MBE_TARGET_INCLUDE_DIRS}
 )
+# MBE_STATIC: the test defines its own mbe_floattoshort() instead of linking
+# mbe-neo, so the header must not declare it __declspec(dllimport) on Windows
+# (MSVC rejects defining a dllimport function, C2491).
 target_compile_definitions(
     dsd-neo_test_core_audio2_helpers
-    PRIVATE DSD_AUDIO2_INTERNAL=
+    PRIVATE DSD_AUDIO2_INTERNAL= MBE_STATIC
 )
-target_compile_options(
-    dsd-neo_test_core_audio2_helpers
-    PRIVATE -ffunction-sections -fdata-sections
-)
-target_link_options(dsd-neo_test_core_audio2_helpers PRIVATE -Wl,--gc-sections)
 target_link_libraries(
     dsd-neo_test_core_audio2_helpers
-    PRIVATE dsd-neo_test_call_state_support m
+    PRIVATE dsd-neo_test_call_state_support ${DSD_NEO_TEST_MATH_LIB}
 )
 add_test(NAME CORE_AUDIO2_HELPERS COMMAND dsd-neo_test_core_audio2_helpers)
 
@@ -6354,11 +6385,6 @@ target_link_libraries(
     dsd-neo_test_p25_p1_tsbk_handlers
     PRIVATE dsd-neo_test_call_state_support dsd-neo_test_support dsd-neo_runtime
 )
-target_compile_options(
-    dsd-neo_test_p25_p1_tsbk_handlers
-    PRIVATE -ffunction-sections -fdata-sections
-)
-target_link_options(dsd-neo_test_p25_p1_tsbk_handlers PRIVATE -Wl,--gc-sections)
 add_test(NAME P25_P1_TSBK_HANDLERS COMMAND dsd-neo_test_p25_p1_tsbk_handlers)
 
 # P25 P1 FEC boundaries: Hamming, Golay, RS correction limits
@@ -6386,11 +6412,6 @@ target_include_directories(
     dsd-neo_test_p25_p1_hdu_helpers
     PRIVATE ${PROJECT_SOURCE_DIR}/include
 )
-target_compile_options(
-    dsd-neo_test_p25_p1_hdu_helpers
-    PRIVATE -ffunction-sections -fdata-sections
-)
-target_link_options(dsd-neo_test_p25_p1_hdu_helpers PRIVATE -Wl,--gc-sections)
 add_test(NAME P25_P1_HDU_HELPERS COMMAND dsd-neo_test_p25_p1_hdu_helpers)
 
 # P25 P1 common LDU IMBE/status and Hamming helpers
@@ -6402,11 +6423,6 @@ target_include_directories(
     dsd-neo_test_p25_p1_ldu_helpers
     PRIVATE ${PROJECT_SOURCE_DIR}/include
 )
-target_compile_options(
-    dsd-neo_test_p25_p1_ldu_helpers
-    PRIVATE -ffunction-sections -fdata-sections
-)
-target_link_options(dsd-neo_test_p25_p1_ldu_helpers PRIVATE -Wl,--gc-sections)
 add_test(NAME P25_P1_LDU_HELPERS COMMAND dsd-neo_test_p25_p1_ldu_helpers)
 
 # P25 P1 LDU1 LCW/LSD packing and soft RS reliability helpers
@@ -6419,11 +6435,6 @@ target_include_directories(
     dsd-neo_test_p25_p1_ldu1_helpers
     PRIVATE ${PROJECT_SOURCE_DIR}/include
 )
-target_compile_options(
-    dsd-neo_test_p25_p1_ldu1_helpers
-    PRIVATE -ffunction-sections -fdata-sections
-)
-target_link_options(dsd-neo_test_p25_p1_ldu1_helpers PRIVATE -Wl,--gc-sections)
 add_test(NAME P25_P1_LDU1_HELPERS COMMAND dsd-neo_test_p25_p1_ldu1_helpers)
 
 # P25 P1 LDU2 ESS/LSD packing and soft RS reliability helpers
@@ -6436,11 +6447,6 @@ target_include_directories(
     dsd-neo_test_p25_p1_ldu2_helpers
     PRIVATE ${PROJECT_SOURCE_DIR}/include
 )
-target_compile_options(
-    dsd-neo_test_p25_p1_ldu2_helpers
-    PRIVATE -ffunction-sections -fdata-sections
-)
-target_link_options(dsd-neo_test_p25_p1_ldu2_helpers PRIVATE -Wl,--gc-sections)
 add_test(NAME P25_P1_LDU2_HELPERS COMMAND dsd-neo_test_p25_p1_ldu2_helpers)
 
 # P25 P1 MDPU header, candidate, and CRC assembly helpers
@@ -6452,11 +6458,6 @@ target_include_directories(
     dsd-neo_test_p25_p1_mdpu_helpers
     PRIVATE ${PROJECT_SOURCE_DIR}/include
 )
-target_compile_options(
-    dsd-neo_test_p25_p1_mdpu_helpers
-    PRIVATE -ffunction-sections -fdata-sections
-)
-target_link_options(dsd-neo_test_p25_p1_mdpu_helpers PRIVATE -Wl,--gc-sections)
 target_link_libraries(
     dsd-neo_test_p25_p1_mdpu_helpers
     PRIVATE dsd-neo_proto_p25 dsd-neo_proto_dmr dsd-neo_test_call_state_support
@@ -6750,6 +6751,9 @@ target_include_directories(
     SYSTEM
     PRIVATE ${_MBE_TARGET_INCLUDE_DIRS}
 )
+# The test stubs mbe_initMbeParms() instead of linking mbe-neo; see
+# CORE_AUDIO2_HELPERS for why that needs MBE_STATIC.
+target_compile_definitions(dsd-neo_test_p25_p1_sync_dispatch PRIVATE MBE_STATIC)
 add_test(NAME P25_P1_SYNC_DISPATCH COMMAND dsd-neo_test_p25_p1_sync_dispatch)
 
 # P25 P1 TSBK -> vPDU bridge (Group Voice Channel Grant)
@@ -10171,6 +10175,11 @@ target_link_libraries(
     dsd-neo_test_io_rigctl_control
     PRIVATE ${DSD_NEO_TEST_MATH_LIB}
 )
+# The test stubs the dsd_socket_* layer instead of linking dsd-neo_platform, so
+# the byte-order calls (htons) need Winsock directly on Windows.
+if(WIN32)
+    target_link_libraries(dsd-neo_test_io_rigctl_control PRIVATE ws2_32)
+endif()
 add_test(NAME IO_RIGCTL_CONTROL COMMAND dsd-neo_test_io_rigctl_control)
 
 add_executable(
@@ -10184,6 +10193,11 @@ target_include_directories(
     dsd-neo_test_io_udp_socket_backends
     PRIVATE ${PROJECT_SOURCE_DIR}/include
 )
+# Stubs the dsd_socket_* layer like IO_RIGCTL_CONTROL; the byte-order calls
+# (htonl, htons, ntohl, ntohs) need Winsock directly on Windows.
+if(WIN32)
+    target_link_libraries(dsd-neo_test_io_udp_socket_backends PRIVATE ws2_32)
+endif()
 add_test(
     NAME IO_UDP_SOCKET_BACKENDS
     COMMAND dsd-neo_test_io_udp_socket_backends
@@ -10424,17 +10438,15 @@ if(DSD_AUDIO_BACKEND STREQUAL "pulse")
         dsd-neo_test_platform_audio_pulse_helpers
         platform/test_platform_audio_pulse_helpers.c
     )
+    # The test includes <pulse/channelmap.h> and links libpulse alone, so it
+    # needs the PulseAudio include directory itself: outside /usr/include
+    # (Homebrew on macOS) nothing else on its command line provides it.
     target_include_directories(
         dsd-neo_test_platform_audio_pulse_helpers
-        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/platform
-    )
-    target_compile_options(
-        dsd-neo_test_platform_audio_pulse_helpers
-        PRIVATE -ffunction-sections -fdata-sections
-    )
-    target_link_options(
-        dsd-neo_test_platform_audio_pulse_helpers
-        PRIVATE -Wl,--gc-sections
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/platform
+            ${PULSEAUDIO_INCLUDE_DIRS}
     )
     target_link_libraries(
         dsd-neo_test_platform_audio_pulse_helpers
@@ -11265,7 +11277,9 @@ set(_DSD_NEO_BIT_PACKING_TEST_TARGETS
     dsd-neo_test_ysf_frame
 )
 foreach(_target IN LISTS _DSD_NEO_BIT_PACKING_TEST_TARGETS)
-    target_link_libraries(${_target} PRIVATE dsd-neo_test_bit_packing)
+    if(TARGET ${_target})
+        target_link_libraries(${_target} PRIVATE dsd-neo_test_bit_packing)
+    endif()
 endforeach()
 unset(_DSD_NEO_BIT_PACKING_TEST_TARGETS)
 
