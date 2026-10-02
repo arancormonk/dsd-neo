@@ -1085,6 +1085,82 @@ test_replay_output_tail_available_after_demod_drain(void) {
     return rc;
 }
 
+/* Issue #572: the read that takes a replay's last samples must not end the stream, even when the demod has already
+ * drained by then, as it has in a fast replay and not in a realtime one still pacing. The decoder decodes those samples
+ * after the read, and what it asks the stream meanwhile (whether it is active, the input level, the decode health) must
+ * not depend on that timing. Here the decoder takes one sample of the capture's only block, waits for the demod to
+ * drain, then takes the rest: the stream must stay open until the read after it, which finds the ring empty. */
+static int
+test_replay_last_read_leaves_stream_open(void) {
+    int rc = 0;
+    char metadata_path[DSD_TEST_PATH_MAX];
+    if (make_replay_fixture(metadata_path, sizeof(metadata_path), DSD_IQ_FORMAT_CU8, "post_mute_pre_widen", 1, 65536U)
+        != 0) {
+        return 1;
+    }
+    dsd_input_level_snapshot stale;
+    (void)rtl_stream_get_input_level(&stale); /* with no stream running, this drops a level an earlier replay left */
+
+    std::unique_ptr<dsd_opts> opts;
+    RtlSdrContext* ctx = NULL;
+    if (start_replay_stream(metadata_path, &opts, &ctx) != 0) {
+        stop_and_destroy_stream(ctx);
+        return 1;
+    }
+
+    float first = 0.0f;
+    int got = 0;
+    rc |= expect_int_eq("last read: first read rc", rtl_stream_read(ctx, &first, 1U, &got), 0);
+    rc |= expect_int_eq("last read: first read takes one sample", got, 1);
+
+    rtl_stream_test_replay_state state;
+    DSD_MEMSET(&state, 0, sizeof(state));
+    int drained = 0;
+    for (unsigned int waited = 0U; rc == 0 && waited < 5000U; waited++) {
+        if (dsd_rtl_stream_test_get_replay_state(&state) == 0 && state.replay_demod_drained) {
+            drained = 1;
+            break;
+        }
+        dsd_sleep_ms(1U);
+    }
+    rc |= expect_true("last read: the demod drained with the block's output still in the ring",
+                      drained && state.output_ring_used > 0U);
+
+    std::vector<float> rest(state.output_ring_used + 64U);
+    got = 0;
+    rc |= expect_int_eq("last read: rest rc", rtl_stream_read(ctx, rest.data(), rest.size(), &got), 0);
+    rc |= expect_int_eq("last read: rest takes the ring", got, (int)state.output_ring_used);
+
+    DSD_MEMSET(&state, 0, sizeof(state));
+    rc |= expect_int_eq("last read: state after the last samples", dsd_rtl_stream_test_get_replay_state(&state), 0);
+    rc |= expect_int_eq("last read: ring empty", (int)state.output_ring_used, 0);
+    rc |= expect_int_eq("last read: output not drained yet", state.replay_output_drained, 0);
+    rc |= expect_int_eq("last read: should_exit not set yet", state.should_exit, 0);
+    rc |= expect_int_eq("last read: stream still active", rtl_stream_is_active(), 1);
+    dsd_input_level_snapshot level;
+    DSD_MEMSET(&level, 0, sizeof(level));
+    rc |= expect_int_eq("last read: input level rc", rtl_stream_get_input_level(&level), 0);
+    rc |= expect_true("last read: input level kept", level.sample_count > 0U);
+    rtl_stream_p25p1_ber_update(3, 1);
+    rtl_stream_decode_health health;
+    DSD_MEMSET(&health, 0, sizeof(health));
+    rc |= expect_int_eq("last read: decode health rc", rtl_stream_get_decode_health(&health), 0);
+    rc |= expect_int_eq("last read: decode health taken", health.valid, 1);
+    rc |= expect_int_eq("last read: decode health FEC ok", (int)health.p25p1_fec_ok, 3);
+
+    float after = 0.0f;
+    got = 0;
+    rc |= expect_true("last read: the read after ends the stream", rtl_stream_read(ctx, &after, 1U, &got) != 0);
+    DSD_MEMSET(&state, 0, sizeof(state));
+    rc |= expect_int_eq("last read: state at the end", dsd_rtl_stream_test_get_replay_state(&state), 0);
+    rc |= expect_int_eq("last read: output drained at the end", state.replay_output_drained, 1);
+    rc |= expect_int_eq("last read: should_exit at the end", state.should_exit, 1);
+    rc |= expect_int_eq("last read: stream inactive at the end", rtl_stream_is_active(), 0);
+
+    stop_and_destroy_stream(ctx);
+    return rc;
+}
+
 static int
 test_eventful_replay_applies_scheduled_events(void) {
     int rc = 0;
@@ -3174,6 +3250,7 @@ main(void) {
     rc |= test_cf32_replay_fs4_level_uses_raw_block();
     rc |= test_replay_eof_partial_block_drains_before_exit();
     rc |= test_replay_output_tail_available_after_demod_drain();
+    rc |= test_replay_last_read_leaves_stream_open();
     rc |= test_eventful_replay_applies_scheduled_events();
     rc |= test_eventful_replay_preserves_ppm_reset_reason();
     rc |= test_loop_replay_reapplies_event_timeline();

@@ -8348,7 +8348,13 @@ rtl_stream_replay_wait_for_output(void) {
 /* The decoder's replay read. It never blocks inside a ring read, whose waits know nothing of a replay's end. It reads
  * the end-of-stream facts before it looks at the ring: the demod is reported drained only once it has acknowledged the
  * last chunk, which it does after that chunk's output is in the ring (replay_demod_drain_decide()), so a drained demod
- * seen first means the ring already holds all of it, and an empty ring then is the end. */
+ * seen first means the ring already holds all of it, and an empty ring then is the end.
+ *
+ * Only that empty read ends the stream (output drained, should_exit), never the read that takes the last samples, even
+ * with the end already known. The decoder decodes those samples between the two reads, with the stream still open:
+ * what it asks the stream meanwhile (the input level, the decode health, whether the stream is active) cannot depend
+ * on whether the reader had reached the capture's end by the last read, which a fast replay has and a realtime one,
+ * still pacing, has not. */
 static int
 rtl_stream_read_replay(float* out, size_t count) {
     for (;;) {
@@ -8368,9 +8374,6 @@ rtl_stream_read_replay(float* out, size_t count) {
             if (got > 0) {
                 if (perf_on) {
                     rtl_perf_record_consumer_read(dsd_realtime_mono_ns() - perf_read_start_ns, (size_t)got);
-                }
-                if (finished && ring_used(&output) == 0U) {
-                    rtl_stream_replay_mark_output_drained();
                 }
                 return got;
             }

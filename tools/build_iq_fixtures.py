@@ -286,6 +286,20 @@ DERIVED_NOISE = [
     ("noise_floor", 398, 10.0, 16.0),
 ]
 
+# A capture pinned to the cu8 rails and shorter than one replay chunk (issue #572). Every I/Q
+# pair is the same two rail bytes, so the raw input level reads 100 % CLIP, and the 4,096 pairs
+# (85 ms at 48 kHz, 8 KiB) are the replay's only chunk: the decoder takes all of the front end's
+# output in the replay's last reads, and polls the input level only while it decodes them. A
+# replay that reported its end on the read that took the last samples, rather than on the read
+# after it, cleared the level under the decoder whenever the reader had already reached the
+# capture's end. A fast replay had, a realtime one still pacing had not, so only realtime
+# printed the CLIP advisory. Constant bytes, so the data is the same on every numpy version.
+#
+# name, I/Q pairs, I byte, Q byte
+DERIVED_CLIP = [
+    ("rf_clip", 4096, 0, 255),
+]
+
 # A call heard after a scan retune (issue #572): a scanner sits on an idle channel (the lead-in,
 # receiver noise), retunes, and lands on a channel with a call on air. The sidecar is a version 2
 # capture with the event timeline a real RTL-SDR scan retune records at the boundary: RETUNE, the
@@ -847,6 +861,16 @@ def build_noise(out_dir):
     return total
 
 
+def build_clip(out_dir):
+    """Write the rail-clipped single-chunk fixtures (issue #572; see DERIVED_CLIP)."""
+    total = 0
+    for name, pairs, i_byte, q_byte in DERIVED_CLIP:
+        written = write_capture(out_dir, name, bytes([i_byte, q_byte]) * pairs)
+        total += written
+        print(f"{name:28s} clip    {written // 1024:6d} KiB")
+    return total
+
+
 def read_committed_capture(src_dir, name):
     """Read a committed fixture's cu8 bytes, refusing one that is not an event-free 48 kHz cu8 capture."""
     data_path = os.path.join(src_dir, name + ".iq")
@@ -1253,6 +1277,7 @@ def derived_fixture_names():
         [entry[0] for entry in DERIVED_SIMULCAST]
         + [entry[0] for entry in DERIVED_ATTENUATED]
         + [entry[0] for entry in DERIVED_NOISE]
+        + [entry[0] for entry in DERIVED_CLIP]
         + [entry[0] for entry in DERIVED_RETUNE]
         + [entry[0] for entry in DERIVED_GAP]
         + [DPMR_SYNTH_NAME]
@@ -1303,6 +1328,7 @@ def main():
     if not args.only:
         total += build_derived(args.out)
         total += build_noise(args.out)
+        total += build_clip(args.out)
         total += build_derived_retune(args.out)
         total += build_derived_gap(args.out)
         total += build_dpmr_synth(args.out)

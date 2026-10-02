@@ -2294,6 +2294,12 @@ Notes:
     - The decoder's read never blocks inside a ring read. It loads "drained" before it looks at the ring, copies with
       the non-blocking `ring_read_available_copy()`, which a clear can leave empty-handed, and otherwise waits 10 ms
       at a time on `output.ready`. A reader that left without marking EOF counts as EOF.
+    - Only the decoder's read that finds the ring empty with the end known ends the stream: it marks the output
+      drained, sets `should_exit` and returns -1. The read that takes the last samples returns them and ends nothing,
+      even when the end is already known, so the decoder decodes them with the stream still open. What it asks the
+      stream meanwhile (the input level, the decode health, `rtl_stream_is_active()`, all gated on an open stream)
+      then cannot depend on whether the reader had reached the capture's end by that read, which a fast replay has
+      and a realtime one still pacing has not.
     - A drained demod seen first means the ring already holds all of its output. The demod is reported drained only
       once it has acknowledged the last chunk submitted before EOF, and it acknowledges a chunk only after that
       chunk's output is in the ring. A replay purges its input only at a RESET or loop boundary, on an idle pipeline,
@@ -2305,7 +2311,9 @@ Notes:
     conversion failure mid-replay reported, an `--iq-loop` pass that submits nothing ending the replay, a data file
     cut short under the reader at a chunk's end and inside a cf32 sample), `IO_IQ_METADATA` (the open's and
     `--iq-info`'s format and stage check, the read past a cut, a `data_bytes: 0` capture read to its end),
-    `ENGINE_REPLAY_READ_ERROR` and `ENGINE_REPLAY_TRUNCATED_CAPTURE` (exit status 1).
+    `ENGINE_REPLAY_READ_ERROR` and `ENGINE_REPLAY_TRUNCATED_CAPTURE` (exit status 1),
+    `DECODE_IQ_RF_CLIP_EOF_DETERMINISM` (a one-chunk clipped capture warns of CLIP fast, realtime and with short
+    reads).
   - I/Q replay decoder pacing (issue #572; "Replay decoder pacing" in `rtl_sdr_fm.cpp`). Under `--iq-replay` the
     decoder paces the demod, so the demod's blocks and the decoder's reads and requests interleave the same way fast
     or realtime, however the host is loaded and however the decoder reads:

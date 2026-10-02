@@ -1825,6 +1825,7 @@ test_committed_fixture_capture_times_parse(void) {
         "p25p1_cqpsk_vc",
         "p25p2_cc",
         "provoice",
+        "rf_clip",
         "ysf",
     };
     int rc = 0;

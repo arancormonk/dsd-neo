@@ -420,6 +420,7 @@ lead-in.
 | `DECODE_IQ_NXDN48_AFTER_RETUNE_AUTO_DETERMINISM_STALLED_SINK` | `sink:free;sink:stalled`, only where `--wrap` links |
 | `DECODE_IQ_P25P2_CC_DETERMINISM` (`p25p2_cc`, `-f2`) | `fast;short:19;jitter:23:120` |
 | `DECODE_IQ_NXDN48_GAP_ADVISORY_DETERMINISM` (`nxdn48_gap`, `-fi`) | `fast;realtime;jitter:29:120` |
+| `DECODE_IQ_RF_CLIP_EOF_DETERMINISM` (`rf_clip`, `-f1 -mq`) | `fast;realtime;short:37` |
 
 `DECODE_IQ_P25P2_CC_DETERMINISM` holds the CQPSK path decoding real frames to the same rule: under `-f2` the whole
 2 s capture runs the CQPSK chain (`fsk_samples=0 cqpsk_symbols=11992`, 95,936 of its 96,000 samples), and every leg
@@ -436,6 +437,17 @@ cooldown on real time, before the fix, the fast and jitter legs finished before 
 warning, and the realtime leg printed both, so the case failed at the second warning's line. Four `nxdn48` captures
 played back to back show the same split (one warning fast, two realtime) in 2.3 MB of data where the gap adds none.
 
+`DECODE_IQ_RF_CLIP_EOF_DETERMINISM` holds the end of the stream to it. `rf_clip` (`DERIVED_CLIP` in
+`tools/build_iq_fixtures.py`) is 4,096 I/Q pairs on the cu8 rails (85 ms, 8 KiB), one replay chunk, so the decoder takes
+the front end's whole output in one read and polls the input level only while it decodes that read's samples; its next
+read ends the stream. Every leg must print `RF Level CLIP 100.0%`. The replay used to end the stream on the read that
+took the last samples whenever the reader had already reached the capture's end, which cleared the input level under
+those polls: the fast leg, whose reader is there by then, printed no warning, and the realtime leg, whose reader is
+still pacing, and the short-read leg, whose last read comes later, did. A stream now ends only on the read that finds the
+ring empty (`rtl_stream_read_replay()`). With two reads in a run, a jitter leg, which sleeps after about one read in 64,
+would never sleep. Each leg measured `fsk_samples=0 cqpsk_symbols=402 media_ms=85.333333`; MIN_CQPSK 400 and MIN_TOTAL
+3,200 sit just under it.
+
 On `main` before issue #572 the cases fail. The host needs the replay batch tag, which `main` lacks, so its own
 `dsd-neo` ran the fast and realtime legs through the runner: `fast;fast` and `fast;realtime` both stop at the first
 differing decoder line. Even with the timestamps stripped as well, three fast replays decoded 9, 9 and 13 voice frames
@@ -445,10 +457,10 @@ of the call and one `Src=901` line each, two distinct outputs in three runs, and
 fails `_REALTIME` on a timestamp alone (`03:15:34` against `03:15:36`), and making replay audio output synchronous
 fails `_STALLED_SINK`.
 
-The seven cases under the label take 68 s in `dev-debug` run one after another, the two `nxdn48_after_retune`
+The eight cases under the label take 69 s in `dev-debug` run one after another, the two `nxdn48_after_retune`
 realtime ones 15.6 s each, since a realtime leg takes the capture's 13.7 s of air time,
-`DECODE_IQ_NXDN48_GAP_ADVISORY_DETERMINISM` 20.5 s (its realtime leg takes 18 s), and
-`DECODE_IQ_P25P2_CC_DETERMINISM` 1.3 s. Under `ctest -j 16` they run beside the suite's longest test, and the full
+`DECODE_IQ_NXDN48_GAP_ADVISORY_DETERMINISM` 20.5 s (its realtime leg takes 18 s), `DECODE_IQ_P25P2_CC_DETERMINISM`
+1.3 s and `DECODE_IQ_RF_CLIP_EOF_DETERMINISM` 1.2 s. Under `ctest -j 16` they run beside the suite's longest test, and the full
 suite's wall time does not move (about 55 s). Under `tsan-debug` and `asan-ubsan-debug` they take up to 37 s each.
 
 Repeatable is not the same as representative. Which frames a replay yields depends on where the decoder stands when each

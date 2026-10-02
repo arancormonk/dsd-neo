@@ -12013,6 +12013,27 @@ if(DSD_HAS_RADIO)
         0
         287000
     )
+    # The end of a replay must not reach the decoder before it has decoded the last samples.
+    # rf_clip (DERIVED_CLIP in tools/build_iq_fixtures.py) is 4,096 pairs on the cu8 rails,
+    # one chunk, which the decoder takes in a single read: the CLIP advisory it prints comes
+    # from input-level polls made while it decodes that read's samples, with the next read
+    # the one that ends the stream. Ending the stream on the read that took the last samples
+    # cleared the level under those polls whenever the reader had reached EOF by then, as a
+    # fast replay had and a realtime one still pacing had not: only the realtime and
+    # short-read legs warned. The jitter host sleeps after about one read in 64, so with two
+    # reads a jitter leg would sleep never. Each leg measured fsk_samples=0
+    # cqpsk_symbols=402 media_ms=85.333333; MIN_CQPSK 400 and MIN_TOTAL 3,200 (8 x 400) sit
+    # just under it.
+    dsd_neo_add_iq_determinism_test(
+        DECODE_IQ_RF_CLIP_EOF_DETERMINISM
+        rf_clip
+        "-f1 -mq"
+        "fast;realtime;short:37"
+        "RF Level CLIP 100.0%"
+        0
+        400
+        3200
+    )
     # The CQPSK path decoding real frames: p25p2_cc under -f2 runs the front end's CQPSK
     # chain for the whole capture (fsk_samples=0 cqpsk_symbols=11992 media_ms=2000, so
     # 95,936 of its 96,000 samples), and fast, short-read and jitter legs must decode its

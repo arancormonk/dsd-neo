@@ -133,8 +133,9 @@ So, for one build, configuration and machine, every replay of a capture decodes 
 or idle: the same decoder lines with the same timestamps. Another machine can differ, since the front end's SIMD paths
 agree with each other only to within about 1e-5. `docs/testing.md` ("Replay determinism") describes the cases that hold
 it to that. Lines measured or paced on real time are not part of it: the audio-sink statistics and the decode loop's
-`Runtime:` total. The input-level gain warnings are, since their cooldown runs on decode time. These replays are outside
-it altogether:
+`Runtime:` total. The input-level gain warnings are, since their cooldown runs on decode time, and the stream ends only
+on the decoder's read after the last samples, so the level they read holds while the decoder decodes those samples, fast
+or realtime. These replays are outside it altogether:
 
 - **Trunking (`-T`).** The P25 trunking state machine's watchdog thread checks its hangtime and
   return-to-control-channel timers at a real-time cadence, so where those checks fall among the replayed samples follows
