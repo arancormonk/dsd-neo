@@ -1817,6 +1817,7 @@ test_committed_fixture_capture_times_parse(void) {
         "nxdn48",
         "nxdn48_after_retune",
         "nxdn48_attenuated",
+        "nxdn48_gap",
         "nxdn96",
         "p25p1_c4fm_cc",
         "p25p1_c4fm_vc",
