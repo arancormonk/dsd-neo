@@ -18,7 +18,6 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/talkgroup_policy.h>
-#include <dsd-neo/platform/timing.h>
 #include <dsd-neo/protocol/p25/p25_12.h>
 #include <dsd-neo/protocol/p25/p25_callsign.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
@@ -27,6 +26,7 @@
 #include <dsd-neo/protocol/p25/p25_status_symbol.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25_vpdu.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -96,16 +96,6 @@ recent_activity(dsd_state* state, dsd_recent_activity_entry* entry) {
     }
     *entry = recent.entries[0];
     return entry->notice[0] != '\0';
-}
-
-uint64_t
-dsd_time_monotonic_ns(void) {
-    return 41000000000ULL;
-}
-
-uint64_t
-dsd_time_monotonic_ms(void) {
-    return dsd_time_monotonic_ns() / 1000000U;
 }
 
 void
@@ -1801,6 +1791,7 @@ test_dispatch_gates_mac_and_vendor_handlers(void) {
 int
 main(void) {
     int rc = 0;
+    dsd_decode_clock_use_test(41000000000ULL);
     rc |= test_crc_candidate_selection_and_fallback();
     rc |= test_standard_isp_metadata_logging_and_no_retune();
     rc |= test_standard_osp_data_channel_metadata_and_dispatch();
@@ -1817,6 +1808,7 @@ main(void) {
     rc |= test_mfid90_tdma_data_channel_display_only();
     rc |= test_network_status_state_policy();
     rc |= test_dispatch_gates_mac_and_vendor_handlers();
+    dsd_decode_clock_use_system();
     return rc;
 }
 

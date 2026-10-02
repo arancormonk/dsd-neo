@@ -87,7 +87,7 @@ struct dsd_opts {
     tcp_input_ctx* tcp_in_ctx;         ///< TCP audio input context (cross-platform)
     double rtl_squelch_level;
     double input_warn_db;
-    time_t last_input_warn_time;
+    time_t last_input_warn_time; // decode time of the last input-level warning
     // P25 SM unified follower configuration (CLI values override environment defaults)
     // Values <= 0 mean "unset" and will defer to environment or defaults.
     double p25_vc_grace_s;             // seconds after tune before eligible for VC->CC return

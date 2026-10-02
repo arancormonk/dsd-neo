@@ -647,9 +647,9 @@ typedef struct rtl_stream_test_width_change_result {
     int lpf_enable_after;
     int output_kind_after;
     int analog_family_after;
-    int plan_invalidated; /* the consume dropped the channel-filter plan (taps and width) */
-    int channel_hist_cleared;
-    int hb_hist_cleared;
+    int plan_invalidated;   /* the consume dropped the channel-filter plan (taps and width) */
+    int channel_state_kept; /* 1 when the consume left the (seeded) channel history and pending count as they were */
+    int hb_state_kept;      /* likewise every half-band stage's history and pending count */
     int published_width_hz;
     int published_lpf_on;
     uint32_t generation_before;
@@ -667,6 +667,62 @@ typedef struct rtl_stream_test_width_change_result {
  * demod-thread block boundary, then queue the same width again. */
 int rtl_stream_test_analog_width_change(int rate_hz, int width_before_hz, int width_after_hz,
                                         rtl_stream_test_width_change_result* out);
+
+/* A live width edit on a running NFM monitor, with its blocks run through full_demod(): the half-band cascade, the
+ * channel filter, then a pass-through demodulator, so each block's output is the channel filter's (the I/Q DC blocker,
+ * I/Q balance and the channel squelch are off). */
+typedef struct rtl_stream_test_width_continuity_case {
+    int rate_hz;         /* the demod rate the monitor opens at */
+    int passes;          /* half-band passes ahead of the channel filter (1..10): the input runs at rate_hz << passes */
+    int width_before_hz; /* the NFM width the monitor opens with */
+    int width_after_hz;  /* the width the live request asks for */
+    /* NULL, or the channel plan the blocks before the edit run in place of the opening width's design. At one rate
+       every analog width designs the same tap count (the Blackman transition is fixed), so a seeded plan of another
+       length is what makes the edit change the tap count. */
+    const float* seeded_taps;
+    int seeded_taps_len;
+    const float* iq;        /* interleaved input, the sum of block_sizes complex samples */
+    const int* block_sizes; /* complex samples per block, each at most MAXIMUM_BUF_LENGTH / 2 */
+    int n_blocks;
+    int edit_block; /* the request is queued and consumed at the block boundary before this block */
+    float* out;     /* the channel filter's output over all the blocks, interleaved */
+    int out_cap;    /* floats */
+} rtl_stream_test_width_continuity_case;
+
+typedef struct rtl_stream_test_width_continuity_result {
+    int request_rc;              /* rtl_stream_request_analog_profile() for the new width, while the stream runs */
+    int monitor_after;           /* dsd_demod_analog_monitor_active() once the edit was consumed */
+    int width_after;             /* demod_state::channel_lpf_width_hz, likewise */
+    int plan_dropped;            /* the consume dropped the running plan, so the next block designs the new width's */
+    int channel_state_kept;      /* the consume left the channel history and pending count as they were */
+    int hb_state_kept;           /* likewise every half-band stage's history and pending count */
+    int channel_pending_at_edit; /* demod_state::channel_lpf_pending when the request was queued */
+    int hb_pending_at_edit;      /* the sum of demod_state::hb_pending over the cascade's stages, likewise */
+    int taps_before;             /* the plan's tap count on the last block before the edit */
+    int taps_after;              /* the plan's tap count on the last block */
+    int outputs_before_edit;     /* complex samples the channel filter made before the edit */
+    int outputs;                 /* complex samples it made over all the blocks (in out) */
+    int channel_pending_end;     /* demod_state::channel_lpf_pending after the last block */
+} rtl_stream_test_width_continuity_result;
+
+/* Open the NFM monitor described by @p c, run its blocks with the width edit consumed before c->edit_block, and record
+ * the channel filter's output in c->out. Returns 0, or a negative value when the case is invalid, the open failed or
+ * the output did not fit c->out_cap. */
+int rtl_stream_test_analog_width_continuity(const rtl_stream_test_width_continuity_case* c,
+                                            rtl_stream_test_width_continuity_result* out);
+
+/* The channel squelch's hop count (demod_state::squelch_hits) across a block the front end made no samples for. */
+typedef struct rtl_stream_test_squelch_hop_result {
+    int hits_after_squelched; /* after one block the channel squelch closed on: 1 */
+    int hits_after_empty;     /* after an empty block next: still 1, since that block decided nothing */
+    int empty_marked;         /* demod_state::front_end_empty after the empty block: 1 */
+    int hits_after_open;      /* after a block above the squelch threshold: 0 */
+} rtl_stream_test_squelch_hop_result;
+
+/* Open the NFM monitor at 48 kHz and run three blocks through full_demod() and the squelch hop count the demod thread
+ * runs after it: a tone under a squelch threshold no block reaches, an empty block, and the tone with a threshold every
+ * block passes. */
+int rtl_stream_test_squelch_hop_empty_block(rtl_stream_test_squelch_hop_result* out);
 
 /* With no stream running and @p stale_rate_out_hz left in the published rate mirror by an earlier session, ask for an
  * analog profile (@p kind, @p width_hz) through the live request and through a retune profile. Returns the live
@@ -727,6 +783,7 @@ typedef struct rtl_stream_test_audio_reset_result {
     int channel_hist_cleared;
     int hb_hist_cleared;
     int resamp_hist_cleared;
+    int post_decim_cleared; /* a replay's post-demod decimator back at its start (none allocated counts) */
     float deemph_a_before;
     float deemph_a_after;
     float audio_lpf_alpha_before;
@@ -970,6 +1027,37 @@ int rtl_stream_test_retune_profile_sequence_external(const rtl_stream_test_retun
                                                      int forced_rate_out_hz, uint32_t external_steps,
                                                      rtl_stream_test_retune_landing* out);
 
+/* External backends' retunes landing NFM profiles on a running monitor (issue #572), each over stale filter state. */
+typedef struct rtl_stream_test_external_landing_filter_result {
+    int first_taken;                 /* 1 when the first landing (16 kHz on frequency A) took its profile */
+    int new_freq_width_taken;        /* frequency B, 12.5 kHz */
+    int new_freq_width_cleared;      /* 1 when that landing started the half-band and channel filters over */
+    int new_freq_same_width_taken;   /* frequency C, 12.5 kHz again */
+    int new_freq_same_width_cleared; /* likewise */
+    int same_freq_width_taken;       /* frequency C again, 16 kHz */
+    int same_freq_width_kept;    /* 1 when that landing left every filter history and pending count as it found them */
+    int same_freq_width_after;   /* demod_state::channel_lpf_width_hz after it */
+    int same_freq_plan_dropped;  /* 1 when it dropped the channel plan, so the next block designs 16 kHz */
+    int retuned_between_taken;   /* frequency C once more, after a controller retune to X since C's last landing */
+    int retuned_between_cleared; /* 1 when that landing started the filters over: they hold X's samples */
+    int profileless_taken;       /* frequency D with no profile queued: 0, since there is nothing to take */
+    int after_profileless_taken; /* frequency D again, with a profile queued */
+    int after_profileless_cleared;      /* 1 when that landing started the filters over */
+    int reopened_taken;                 /* frequency D once more, after the stream opened again */
+    int reopened_cleared;               /* 1 when that landing started the filters over */
+    int profileless_away_taken;         /* frequency C with no profile queued, after D's landing: 0 */
+    int back_after_profileless_taken;   /* frequency D again, with a profile queued */
+    int back_after_profileless_cleared; /* 1 when that landing started the filters over: they hold C's samples */
+} rtl_stream_test_external_landing_filter_result;
+
+/* Open the NFM monitor at 48 kHz, 16 kHz wide, and land NFM retune profiles as an external backend's retunes do
+ * (rtl_stream_apply_pending_retune_profile_for_target(), with no controller retune and no finalize): on frequency A,
+ * then each over seeded stale filter state, on B with a new width, on C with the width B left, and on C again with
+ * only a new width. Then, each over seeded stale filter state again: C once more after a controller retune to X, D
+ * after a landing on D that had no profile to take, D once more after the stream opened again, and D after a landing
+ * on C that had no profile to take (D, then C with no profile, then D). */
+int rtl_stream_test_external_landing_filter_state(rtl_stream_test_external_landing_filter_result* out);
+
 /* An external backend's retune landing against a controller reconfiguration on another thread (issue #583). */
 typedef struct rtl_stream_test_external_landing_race_result {
     /* The controller holds its reconfigure gate (controller_enter_reconfigure_gate()) when the landing starts. */
@@ -1092,6 +1180,7 @@ typedef struct rtl_stream_test_replay_state {
     int replay_demod_drained;
     int replay_output_drained;
     int replay_forced_stop;
+    int replay_reader_exited;
     int should_exit;
     uint64_t replay_last_submit_gen;
     uint64_t replay_last_submit_gen_at_eof;
@@ -1104,12 +1193,126 @@ typedef struct rtl_stream_test_replay_state {
     uint32_t replay_event_last_frequency_hz;
     uint64_t replay_event_last_mute_bytes;
     int replay_event_last_reset_reason;
+    uint64_t replay_event_last_reset_purge_requests;  /* input purge requests the last RESET's finalize made (1) */
+    uint32_t replay_event_reset_purge_mismatch_count; /* RESETs whose finalize made any other number (none) */
     uint32_t replay_loop_restart_count;
     uint32_t replay_loop_restart_last_frequency_hz;
+    uint64_t replay_out_written;      /* output batches the demod published, the virtual block 0 included */
+    uint64_t replay_out_acked;        /* ... that the decoder acknowledged */
+    uint64_t replay_output_truncated; /* output samples a replay block could not publish (none should be) */
 } rtl_stream_test_replay_state;
 
 int dsd_rtl_stream_test_get_replay_state(rtl_stream_test_replay_state* out_state);
 int rtl_stream_test_steady_state_watermark_enabled(const char* audio_in_dev);
+
+/* Points of the I/Q replay pipeline a test can stop at (issue #572). Each is reported to the hook that
+ * rtl_stream_test_set_replay_stage_hook() installs, on the thread named, with the count the stage names (0 where it
+ * names none). The reporting thread holds no stream lock, so a hook may wait there for another thread to reach its own
+ * stage. */
+enum {
+    RTL_STREAM_TEST_REPLAY_DEMOD_AFTER_RESERVE = 1,       /* demod: took an input block (count: floats) */
+    RTL_STREAM_TEST_REPLAY_DEMOD_BEFORE_OUTPUT_WRITE = 2, /* demod: about to publish the block's output */
+    RTL_STREAM_TEST_REPLAY_DEMOD_AFTER_OUTPUT_WRITE = 3,  /* demod: published it (count: samples written) */
+    RTL_STREAM_TEST_REPLAY_DEMOD_DRAIN_DECISION = 4,      /* demod: about to decide whether the input is drained */
+    RTL_STREAM_TEST_REPLAY_READER_DRAIN_DECISION = 5,     /* replay reader: input ring empty at EOF, about to decide */
+    RTL_STREAM_TEST_REPLAY_DECODER_OUTPUT_FOUND = 6,      /* decoder: saw output queued, before it copies any */
+    RTL_STREAM_TEST_REPLAY_DECODER_OUTPUT_EMPTY = 7,      /* decoder: found nothing to copy, before its end check */
+    /* replay reader: read the next chunk, about to wait for the demod to take the one before it (count: the next
+       chunk's sequence) */
+    RTL_STREAM_TEST_REPLAY_READER_WAIT_FOR_EMPTY_INPUT = 8,
+    /* replay reader: bumped the submit generation for a chunk it has not committed yet (count: that generation) */
+    RTL_STREAM_TEST_REPLAY_READER_BEFORE_COMMIT = 9,
+    /* replay reader: made its drain decision (count: 1 if it reported the demod drained) */
+    RTL_STREAM_TEST_REPLAY_READER_DRAIN_DECIDED = 10,
+    /* demod: copied a block that wraps the ring end out of the ring and released its input, before processing it
+       (count: floats) */
+    RTL_STREAM_TEST_REPLAY_DEMOD_WRAPPED_RELEASED = 11,
+    /* demod: released the input of a replay block it discards, before acknowledging the block (count: floats) */
+    RTL_STREAM_TEST_REPLAY_DEMOD_DISCARD_RELEASED = 12,
+    /* demod: a block's output is ready, and neither in the output ring nor counted as published yet (count:
+       samples) */
+    RTL_STREAM_TEST_REPLAY_DEMOD_BEFORE_PUBLISH = 13,
+    /* demod: about to wait for the decoder's demand before it starts a block (count: blocks published so far, the
+       virtual block 0 included) */
+    RTL_STREAM_TEST_REPLAY_DEMOD_WAIT_FOR_DEMAND = 14,
+    /* the thread opening a replay: the demod thread runs, and the replay reader is about to start */
+    RTL_STREAM_TEST_REPLAY_READER_START = 15,
+    /* demod: took the input purge flag, before it discards the input ring */
+    RTL_STREAM_TEST_REPLAY_DEMOD_PURGE_TAKEN = 16,
+    /* replay reader: about to wait for the pipeline to go idle before an event (count: the event's DSD_IQ_EVENT_*
+       kind; 0 before a loop rewind) */
+    RTL_STREAM_TEST_REPLAY_READER_EVENT_BOUNDARY = 17,
+    /* replay reader: requested the input purge of a RESET or loop boundary, about to wait for it to be applied */
+    RTL_STREAM_TEST_REPLAY_READER_PURGE_WAIT = 18,
+    /* demod: past its purge check, about to wait for its next input block, where it cannot see a purge flag (count:
+       blocks published so far, the virtual block 0 included) */
+    RTL_STREAM_TEST_REPLAY_DEMOD_INPUT_WAIT = 19,
+};
+
+typedef void (*rtl_stream_test_replay_stage_fn)(int stage, size_t count, void* ctx);
+
+/* Install only while the stream is stopped. NULL removes the hook. */
+void rtl_stream_test_set_replay_stage_hook(rtl_stream_test_replay_stage_fn hook, void* ctx);
+/* Report @p stage to the installed hook. The replay reader in rtl_device.cpp reports its stage through this too. */
+void rtl_stream_test_replay_stage(int stage, size_t count);
+
+/* Blocks the tuner autogain supervisor has counted in this process (demod_autogain_update() past its on/off check). */
+uint64_t rtl_stream_test_autogain_supervised_blocks(void);
+
+/* One block the demod took from an I/Q replay's input ring (issue #572), reported on the demod thread as it takes it.
+ * The chunk fields are what the replay reader attached to the capture chunk the block holds. */
+typedef struct rtl_stream_test_replay_block {
+    uint64_t sequence;       /* the chunk's place in the replay, from 1 */
+    uint64_t submit_gen;     /* the submit generation the chunk was committed under */
+    uint64_t media_start_ns; /* capture time of the chunk's first sample, time a MUTE omitted included */
+    uint64_t media_end_ns;   /* capture time just past its last sample */
+    int have_input_level;    /* the chunk carries an input-level snapshot */
+    size_t float_count;      /* interleaved I/Q floats in the block */
+    const float* p1;         /* the block's floats, in one or two ring segments, valid during the call */
+    size_t n1;
+    const float* p2;
+    size_t n2;
+} rtl_stream_test_replay_block;
+
+typedef void (*rtl_stream_test_replay_block_fn)(const rtl_stream_test_replay_block* block, void* ctx);
+
+/* Install only while the stream is stopped. NULL removes the hook. */
+void rtl_stream_test_set_replay_block_hook(rtl_stream_test_replay_block_fn hook, void* ctx);
+/* The demod discards the I/Q replay block that holds chunk @p sequence instead of processing it, as a controller gate
+ * closing on it would; 0 disarms. Set while no replay runs. */
+void rtl_stream_test_replay_discard_chunk(uint64_t sequence);
+/* Raise the running I/Q replay's forced-stop flag and wake every replay wait, as the replay device's stop does, without
+ * tearing the stream down. */
+void rtl_stream_test_replay_force_stop(void);
+
+/* The next I/Q replay reader fails the read that follows @p after_chunks reads that returned data, with @p code (a
+ * DSD_IQ_ERR_* value) as dsd_iq_replay_read() would. One failure per arming; a negative @p after_chunks disarms it. */
+void rtl_device_test_replay_inject_read_error(int after_chunks, int code);
+/* Each capture read the next I/Q replay reader makes returns at most @p max_bytes, as a source that returns short reads
+ * would; 0 lifts the limit. Set while no replay runs. */
+void rtl_device_test_replay_limit_read(size_t max_bytes);
+/* Once the next I/Q replay reader has converted @p after_chunks chunks, every later chunk's conversion returns
+ * @p produced in place of its samples: -1 as a chunk the converter refuses, 0 as one that holds no whole sample yet. A
+ * negative @p after_chunks disarms it. Set while no replay runs. */
+void rtl_device_test_replay_override_conversion(int after_chunks, int produced);
+/* Nonzero: rtl_device_start_async() refuses to start an I/Q replay reader, as a failed thread create would. */
+void rtl_device_test_replay_fail_start(int fail);
+/* How many times the last replay reader's EOF sequence looked at the input ring while it waited for the ring to
+ * empty. */
+uint64_t rtl_device_test_replay_eof_wait_iterations(void);
+
+/* The last retune reset plan applied to the stream's demodulator (a retune's finalize, a replay RESET, a stream open,
+ * a CQPSK reacquire), with the FLL decision the seed cache left it on. */
+typedef struct rtl_stream_test_reset_plan {
+    char reason[24]; /* the plan's reason: "frequency", "distant-frequency", "fresh-stream", ... */
+    uint32_t previous_center_hz;
+    uint32_t next_center_hz;
+    int reset_retained_fll;  /* the band-edge FLL starts fresh */
+    int restored_cached_fll; /* ... or from the seed cached for the new centre */
+} rtl_stream_test_reset_plan;
+
+/* 0 with the last plan in @p out, -1 when none was applied since the process started. */
+int rtl_stream_test_get_last_reset_plan(rtl_stream_test_reset_plan* out);
 
 #ifdef __cplusplus
 }

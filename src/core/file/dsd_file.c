@@ -44,6 +44,7 @@
 #include <dsd-neo/platform/nonce.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/protocol/p25/p25p1_const.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/rdio_export.h>
@@ -226,7 +227,7 @@ dsd_frame_logf(dsd_opts* opts, const char* format, ...) {
     va_end(args);
     frame_log_sanitize_line(line);
 
-    time_t now = time(NULL);
+    time_t now = dsd_decode_time();
     char timestr[9];
     char datestr[11];
     (void)dsd_format_local_datetime(now, DSD_LOCAL_DATETIME_TIME_COLON, timestr, sizeof timestr);
@@ -547,8 +548,8 @@ openMbeOutFile(dsd_opts* opts, dsd_state* state) {
     //random element of filename, so two files won't overwrite one another
     uint16_t random_number = dsd_nonce_u16();
 
-    (void)dsd_format_local_datetime(time(NULL), DSD_LOCAL_DATETIME_TIME_COMPACT, timestr, sizeof timestr);
-    (void)dsd_format_local_datetime(time(NULL), DSD_LOCAL_DATETIME_DATE_COMPACT, datestr, sizeof datestr);
+    (void)dsd_format_local_datetime(dsd_decode_time(), DSD_LOCAL_DATETIME_TIME_COMPACT, timestr, sizeof timestr);
+    (void)dsd_format_local_datetime(dsd_decode_time(), DSD_LOCAL_DATETIME_DATE_COMPACT, datestr, sizeof datestr);
 
     //phase 1 and provoice
     if (DSD_SYNC_IS_P25P1(state->synctype) || DSD_SYNC_IS_PROVOICE(state->synctype)) {
@@ -602,8 +603,8 @@ openMbeOutFileR(dsd_opts* opts, dsd_state* state) {
     //random element of filename, so two files won't overwrite one another
     uint16_t random_number = dsd_nonce_u16();
 
-    (void)dsd_format_local_datetime(time(NULL), DSD_LOCAL_DATETIME_TIME_COMPACT, timestr, sizeof timestr);
-    (void)dsd_format_local_datetime(time(NULL), DSD_LOCAL_DATETIME_DATE_COMPACT, datestr, sizeof datestr);
+    (void)dsd_format_local_datetime(dsd_decode_time(), DSD_LOCAL_DATETIME_TIME_COMPACT, timestr, sizeof timestr);
+    (void)dsd_format_local_datetime(dsd_decode_time(), DSD_LOCAL_DATETIME_DATE_COMPACT, datestr, sizeof datestr);
 
     //phase 1 and provoice
     if (DSD_SYNC_IS_P25P1(state->synctype) || DSD_SYNC_IS_PROVOICE(state->synctype)) {
@@ -656,8 +657,8 @@ open_wav_file(char* dir, char* temp_filename, size_t temp_filename_size, uint16_
     uint16_t random_number = dsd_nonce_u16();
     char datestr[9];
     char timestr[7];
-    (void)dsd_format_local_datetime(time(NULL), DSD_LOCAL_DATETIME_DATE_COMPACT, datestr, sizeof datestr);
-    (void)dsd_format_local_datetime(time(NULL), DSD_LOCAL_DATETIME_TIME_COMPACT, timestr, sizeof timestr);
+    (void)dsd_format_local_datetime(dsd_decode_time(), DSD_LOCAL_DATETIME_DATE_COMPACT, datestr, sizeof datestr);
+    (void)dsd_format_local_datetime(dsd_decode_time(), DSD_LOCAL_DATETIME_TIME_COMPACT, timestr, sizeof timestr);
 
     int written = 0;
     if (ext == 0) {
@@ -723,7 +724,7 @@ wav_rename_build_metadata(const Event_History* event_item, wav_rename_metadata* 
         return;
     }
 
-    time_t event_time = time(NULL);
+    time_t event_time = dsd_decode_time();
     if (event_item && event_item->event_time > 0) {
         event_time = event_item->event_time;
     }
@@ -902,13 +903,15 @@ closeSymbolOutFile(dsd_opts* opts, dsd_state* state) {
 void
 rotate_symbol_out_file(dsd_opts* opts, dsd_state* state) {
     if (opts->symbol_out_f && opts->symbol_out_file_is_auto == 1) {
-        if ((time(NULL) - opts->symbol_out_file_creation_time) >= 3600) //3600 is one hour in seconds
+        if ((dsd_decode_time() - opts->symbol_out_file_creation_time) >= 3600) //3600 is one hour in seconds
         {
             //basically just lift the close and open from ncurses handler for 'r' and then 'R'
             char timestr[7];
             char datestr[9];
-            (void)dsd_format_local_datetime(time(NULL), DSD_LOCAL_DATETIME_TIME_COMPACT, timestr, sizeof timestr);
-            (void)dsd_format_local_datetime(time(NULL), DSD_LOCAL_DATETIME_DATE_COMPACT, datestr, sizeof datestr);
+            (void)dsd_format_local_datetime(dsd_decode_time(), DSD_LOCAL_DATETIME_TIME_COMPACT, timestr,
+                                            sizeof timestr);
+            (void)dsd_format_local_datetime(dsd_decode_time(), DSD_LOCAL_DATETIME_DATE_COMPACT, datestr,
+                                            sizeof datestr);
             DSD_SNPRINTF(opts->symbol_out_file, sizeof(opts->symbol_out_file), "%s_%s_dibit_capture.bin", datestr,
                          timestr);
             openSymbolOutFile(opts, state);
@@ -920,7 +923,7 @@ rotate_symbol_out_file(dsd_opts* opts, dsd_state* state) {
                          opts->symbol_out_file);
             (void)dsd_event_emit_system_notice(opts, state, 0U, event_str);
 
-            opts->symbol_out_file_creation_time = time(NULL);
+            opts->symbol_out_file_creation_time = dsd_decode_time();
         }
     }
 }

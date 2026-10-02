@@ -1,0 +1,61 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+#
+# include-what-you-use mapping for the C standard library headers, passed by
+# tools/iwyu.sh for every translation unit together with --use_c_headers, when
+# the installed IWYU has that option (0.27 and later).
+#
+# The rule: the project spells a C standard library header the C way
+# (<stdint.h>, <string.h>, <math.h>) in every file, C or C++, and a C++ source
+# may use the <cstdint>-style wrapper for the same header instead. IWYU suggests
+# the C name whenever it asks for one of these headers.
+#
+# Why: the public headers in include/dsd-neo/ and most headers under src/ are
+# compiled by C and C++ translation units alike, and tools/iwyu.sh --strict
+# checks them from both (--check_also). A C translation unit cannot include
+# <cstdint>, so those headers have to name <stdint.h> - and they have to get the
+# same answer from a C++ translation unit, or no spelling passes both. Since
+# IWYU 0.27, C++ mode marks every C header private and maps it to its <cname>
+# wrapper, which tells each shared header to switch to a C++-only include.
+# --use_c_headers turns that off: unqualified names (uint8_t, memcpy, sinf) map
+# to the C header again, and std::-qualified names (std::size_t, std::isfinite)
+# still map to <cname>, which is the only header that declares them.
+#
+# The flag also drops IWYU's own table that lets <cname> stand for <name.h>, so
+# on its own it would ask every C++ source that writes <cmath> and calls sinf()
+# to add <math.h> next to it. The entries below are that table, unchanged from
+# stdlib_c_include_map in IWYU's iwyu_include_picker.cc: public to public, so
+# either spelling satisfies IWYU in C++ and neither is rewritten into the other.
+# That is the behaviour this tree was written against before 0.27, and with it
+# no existing C++ include changes spelling. In a C translation unit the <cname>
+# side never exists, so these entries change nothing there.
+#
+# Keep the list in step with that upstream table when IWYU changes it.
+[
+  { include: ["<assert.h>", public, "<cassert>", public] },
+  { include: ["<complex.h>", public, "<ccomplex>", public] },
+  { include: ["<ctype.h>", public, "<cctype>", public] },
+  { include: ["<errno.h>", public, "<cerrno>", public] },
+  { include: ["<fenv.h>", public, "<cfenv>", public] },
+  { include: ["<float.h>", public, "<cfloat>", public] },
+  { include: ["<inttypes.h>", public, "<cinttypes>", public] },
+  { include: ["<iso646.h>", public, "<ciso646>", public] },
+  { include: ["<limits.h>", public, "<climits>", public] },
+  { include: ["<locale.h>", public, "<clocale>", public] },
+  { include: ["<math.h>", public, "<cmath>", public] },
+  { include: ["<setjmp.h>", public, "<csetjmp>", public] },
+  { include: ["<signal.h>", public, "<csignal>", public] },
+  { include: ["<stdalign.h>", public, "<cstdalign>", public] },
+  { include: ["<stdarg.h>", public, "<cstdarg>", public] },
+  { include: ["<stdbool.h>", public, "<cstdbool>", public] },
+  { include: ["<stddef.h>", public, "<cstddef>", public] },
+  { include: ["<stdint.h>", public, "<cstdint>", public] },
+  { include: ["<stdio.h>", public, "<cstdio>", public] },
+  { include: ["<stdlib.h>", public, "<cstdlib>", public] },
+  { include: ["<string.h>", public, "<cstring>", public] },
+  { include: ["<tgmath.h>", public, "<ctgmath>", public] },
+  { include: ["<time.h>", public, "<ctime>", public] },
+  { include: ["<uchar.h>", public, "<cuchar>", public] },
+  { include: ["<wchar.h>", public, "<cwchar>", public] },
+  { include: ["<wctype.h>", public, "<cwctype>", public] },
+]

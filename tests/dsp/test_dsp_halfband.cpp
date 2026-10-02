@@ -25,15 +25,17 @@ main(void) {
     float in[N];
     float out[N];
     float hist[HB_TAPS - 1] = {0};
+    int pending = 0;
 
     // Constant DC input should pass with ~unity gain
     for (int i = 0; i < N; i++) {
         in[i] = 1.0f;
     }
 
-    int out_len = simd_hb_decim2_real(in, N, out, hist, hb_q15_taps, HB_TAPS);
-    if (out_len != (N >> 1)) {
-        DSD_FPRINTF(stderr, "HB: unexpected out_len=%d (want %d)\n", out_len, N >> 1);
+    // A fresh stream holds back the last c = 7 samples' look-ahead: (64 - 7 + 1) / 2 = 29 outputs, pending 6.
+    int out_len = simd_hb_decim2_real(in, N, out, hist, &pending, hb_q15_taps, HB_TAPS);
+    if (out_len != 29 || pending != 6) {
+        DSD_FPRINTF(stderr, "HB: unexpected out_len=%d pending=%d (want 29, 6)\n", out_len, pending);
         return 1;
     }
     // Skip initial transient due to zeroed history (warm-up ~HB_TAPS)
@@ -44,11 +46,11 @@ main(void) {
         }
     }
 
-    // Run a second block to exercise history maintenance
+    // Run a second block to exercise history maintenance: (6 + 64 - 7 + 1) / 2 = 32 outputs, pending 6 again.
     float out2[N];
-    int out_len2 = simd_hb_decim2_real(in, N, out2, hist, hb_q15_taps, HB_TAPS);
-    if (out_len2 != (N >> 1)) {
-        DSD_FPRINTF(stderr, "HB: second call out_len=%d (want %d)\n", out_len2, N >> 1);
+    int out_len2 = simd_hb_decim2_real(in, N, out2, hist, &pending, hb_q15_taps, HB_TAPS);
+    if (out_len2 != 32 || pending != 6) {
+        DSD_FPRINTF(stderr, "HB: second call out_len=%d pending=%d (want 32, 6)\n", out_len2, pending);
         return 1;
     }
     for (int i = 0; i < out_len2; i++) {

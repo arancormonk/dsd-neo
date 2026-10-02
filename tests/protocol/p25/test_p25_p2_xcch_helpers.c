@@ -8,7 +8,6 @@
 
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
-#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
@@ -21,6 +20,7 @@
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25_vpdu.h>
 #include <dsd-neo/protocol/p25/p25p2_mac_parse.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/p25_p2_audio_ring.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <stdint.h>
@@ -99,6 +99,18 @@ uint64_t
 dsd_time_monotonic_ns(void) {
     g_now_ns += 1000000000ULL;
     return g_now_ns;
+}
+
+/* The decode clock (src/runtime/decode_clock.c) also reads the millisecond and wall clocks. Stubbing them keeps the
+   platform timing object, whose monotonic read this file replaces, out of the link. */
+uint64_t
+dsd_time_monotonic_ms(void) {
+    return dsd_time_monotonic_ns() / 1000000U;
+}
+
+uint64_t
+dsd_time_realtime_ns(void) {
+    return 0ULL;
 }
 
 int
@@ -1284,7 +1296,7 @@ test_facch_active_end_hangtime_and_invalid_slot_guards(void) {
     p25p2_xcch_handle_facch_mac_end(&opts, &state, 2, mac);
     p25p2_xcch_handle_facch_mac_idle(&opts, &state, 2, mac);
     p25p2_xcch_handle_facch_mac_active(&opts, &state, 2, mac);
-    p25p2_xcch_clear_idle_metadata_if_stale(&state, 2, dsd_time_now_monotonic_s(), 1);
+    p25p2_xcch_clear_idle_metadata_if_stale(&state, 2, dsd_decode_now_mono_s(), 1);
     rc |= expect_int("facch invalid no end", g_end_count[0] + g_end_count[1], 0);
     rc |= expect_int("facch invalid no idle", g_idle_count[0] + g_idle_count[1], 0);
     rc |= expect_int("facch invalid no active", g_active_count[0] + g_active_count[1], 0);

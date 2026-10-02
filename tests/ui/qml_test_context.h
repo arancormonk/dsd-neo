@@ -972,13 +972,16 @@ class CommandRecorder : public QObject {
  *
  * Same roles and the same newest-first prepend as CallHistoryModel, with
  * granular insert/reset signals — the screens' scroll behaviour is a reaction to
- * those signals, so a reset-everything stand-in would test nothing.
+ * those signals, so a reset-everything stand-in would test nothing. Rows carry the
+ * decode session they were logged in, as CallHistoryModel's do, and beginSession()
+ * moves it on the way a start does.
  */
 class CallLogStore : public QAbstractListModel {
     Q_OBJECT
     Q_PROPERTY(int count READ count NOTIFY countChanged)
     Q_PROPERTY(QString sessionLabel READ sessionLabel WRITE setSessionLabel NOTIFY sessionLabelChanged)
     Q_PROPERTY(QString sessionUid READ sessionUid WRITE setSessionUid NOTIFY sessionUidChanged)
+    Q_PROPERTY(qlonglong session READ session NOTIFY sessionChanged)
     Q_PROPERTY(QStringList systemLabels READ systemLabels NOTIFY countChanged)
 
   public:
@@ -999,6 +1002,7 @@ class CallLogStore : public QAbstractListModel {
         QString detail;
         QString channel;
         QString sourceName;
+        qint64 session = 0;
     };
 
     int
@@ -1039,6 +1043,18 @@ class CallLogStore : public QAbstractListModel {
         Q_EMIT sessionUidChanged();
     }
 
+    qlonglong
+    session() const {
+        return m_session;
+    }
+
+    /** @brief A start: the rows pushed from here on are the new session's. */
+    Q_INVOKABLE void
+    beginSession() {
+        m_session++;
+        Q_EMIT sessionChanged();
+    }
+
     QStringList
     systemLabels() const {
         return m_rows.isEmpty() ? QStringList() : QStringList{m_systemName};
@@ -1066,6 +1082,7 @@ class CallLogStore : public QAbstractListModel {
             case CallHistoryModel::KindRole: return row.kind;
             case CallHistoryModel::DetailRole: return row.detail;
             case CallHistoryModel::ChannelRole: return row.channel;
+            case CallHistoryModel::SessionRole: return row.session;
             default: return {};
         }
     }
@@ -1086,7 +1103,8 @@ class CallLogStore : public QAbstractListModel {
                 {CallHistoryModel::TimeTextRole, "timeText"},
                 {CallHistoryModel::KindRole, "kind"},
                 {CallHistoryModel::DetailRole, "detail"},
-                {CallHistoryModel::ChannelRole, "channel"}};
+                {CallHistoryModel::ChannelRole, "channel"},
+                {CallHistoryModel::SessionRole, "session"}};
     }
 
     /**
@@ -1103,6 +1121,7 @@ class CallLogStore : public QAbstractListModel {
         row.when = m_clock++;
         row.systemName = m_systemName;
         row.systemUid = m_sessionUid;
+        row.session = m_session;
         row.dayLabel = dayLabel.isEmpty() ? QStringLiteral("TODAY") : dayLabel;
         row.timeText = QStringLiteral("12:%1").arg(m_seq % 60, 2, 10, QLatin1Char('0'));
         beginInsertRows(QModelIndex(), 0, 0);
@@ -1170,6 +1189,26 @@ class CallLogStore : public QAbstractListModel {
         return channel;
     }
 
+    /**
+     * @brief Prepend one clear voice call stamped @p when, as a replay's calls are
+     * stamped with the capture's time.
+     * @return The row's name.
+     */
+    Q_INVOKABLE QString
+    pushAt(qint64 when) {
+        const QString name = push(QStringLiteral("TODAY"));
+        m_rows[0].when = when;
+        const QModelIndex idx = index(0);
+        Q_EMIT dataChanged(idx, idx, {CallHistoryModel::WhenRole});
+        return name;
+    }
+
+    /** @brief The newest row's `when`, 0 with no rows: the stamps are fixed, so a case ages rows against it. */
+    Q_INVOKABLE qint64
+    newestWhen() const {
+        return m_rows.isEmpty() ? 0 : m_rows.first().when;
+    }
+
     /** @brief Prepend @p n calls, oldest first, so the list reads newest-first. */
     Q_INVOKABLE void
     pushMany(int n, const QString& dayLabel) {
@@ -1205,12 +1244,14 @@ class CallLogStore : public QAbstractListModel {
     void countChanged();
     void sessionLabelChanged();
     void sessionUidChanged();
+    void sessionChanged();
 
   private:
     QList<StoreRow> m_rows;
     QString m_systemName = QStringLiteral("Test Site");
     QString m_sessionUid = QStringLiteral("test-system");
     QString m_sessionLabel = QStringLiteral("Test Site");
+    qint64 m_session = 0;
     int m_seq = 0;
     /* Fixed, ascending stamps: nothing here should depend on the wall clock. */
     qint64 m_clock = 1'700'000'000;
@@ -1968,6 +2009,9 @@ class Setup : public QObject {
         metrics[QStringLiteral("siteConfirmed")] = false;
 
         metrics[QStringLiteral("uiMessage")] = QString();
+        // The decode clock's wall-clock now that recent-call ages read: the fixture's decoder is
+        // idle, so it is simply the wall clock the screens used to read.
+        metrics[QStringLiteral("decodeNowMs")] = QDateTime::currentMSecsSinceEpoch();
         metrics[QStringLiteral("audioMuted")] = false;
         metrics[QStringLiteral("heldTg")] = 0;
         metrics[QStringLiteral("carrierLock")] = false;

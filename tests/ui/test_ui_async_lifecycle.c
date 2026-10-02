@@ -15,6 +15,7 @@
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/runtime/control_pump.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/ui/menu_core.h>
 #include <dsd-neo/ui/ncurses.h>
 #include <dsd-neo/ui/ui_async.h>
@@ -53,7 +54,6 @@ static int g_timeout_calls;
 static int g_escdelay_calls;
 static int g_ncurses_open_calls;
 static int g_ncurses_close_calls;
-static int g_rr_panel_shutdown_calls;
 static int g_clearok_calls;
 static int g_ncurses_input_calls;
 static int g_last_menu_key = ERR;
@@ -183,9 +183,7 @@ dsd_terminal_close(void) {
 }
 
 void
-rr_panel_shutdown(void) {
-    g_rr_panel_shutdown_calls++;
-}
+rr_panel_shutdown(void) {}
 
 void
 dsd_terminal_render(dsd_opts* opts, dsd_state* state) {
@@ -204,7 +202,7 @@ dsd_terminal_handle_input(dsd_opts* opts, dsd_state* state, int c) {
 }
 
 uint64_t
-dsd_time_monotonic_ns(void) {
+dsd_realtime_mono_ns(void) {
     return g_time_ns;
 }
 
@@ -362,7 +360,6 @@ test_ui_curses_close_uses_opened_state(void) {
 
     g_ncurses_open_calls = 0;
     g_ncurses_close_calls = 0;
-    g_rr_panel_shutdown_calls = 0;
     dsd_neo_ui_async_test_set_context(&opts, &state);
 
     int curses_opened = dsd_neo_ui_async_test_open_curses_if_needed();

@@ -12,12 +12,12 @@
  * retune-result combinations that can wedge CC return.
  */
 
-#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
@@ -165,7 +165,7 @@ matrix_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps
     g_hooks.last_vc_sps = ted_sps;
 
     if (dsd_trunk_tune_result_is_ok(result)) {
-        double now_m = dsd_time_now_monotonic_s();
+        double now_m = dsd_decode_now_mono_s();
         if (opts) {
             opts->trunk_is_tuned = 1;
         }
@@ -204,7 +204,7 @@ matrix_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, 
     if (dsd_trunk_tune_result_is_ok(result) && state) {
         state->trunk_cc_freq = freq;
         state->last_cc_sync_time = time(NULL);
-        state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
+        state->last_cc_sync_time_m = dsd_decode_now_mono_s();
     }
     return result;
 }
@@ -267,7 +267,7 @@ matrix_expected_cc_sps(const matrix_fixture* fixture, const matrix_mode_case* mo
 
 static void
 matrix_setup_fixture(matrix_fixture* fixture, const matrix_mode_case* mode) {
-    double now_m = dsd_time_now_monotonic_s();
+    double now_m = dsd_decode_now_mono_s();
     DSD_MEMSET(fixture->opts, 0, sizeof(*fixture->opts));
     dsd_state_ext_free_all(fixture->state);
     DSD_MEMSET(fixture->state, 0, sizeof(*fixture->state));
@@ -375,7 +375,7 @@ set_hangtime_started(p25_sm_ctx_t* ctx, double started_m) {
 
 static void
 matrix_age_tuned_timers(matrix_fixture* fixture) {
-    double now_m = dsd_time_now_monotonic_s();
+    double now_m = dsd_decode_now_mono_s();
     double stale_m = now_m - 1.0;
     fixture->ctx.t_tune_m = stale_m;
     fixture->ctx.t_voice_m = stale_m;
@@ -395,7 +395,7 @@ matrix_age_tuned_timers(matrix_fixture* fixture) {
 
 static void
 matrix_stale_cc_timers(matrix_fixture* fixture) {
-    double now_m = dsd_time_now_monotonic_s();
+    double now_m = dsd_decode_now_mono_s();
     fixture->ctx.t_cc_sync_m = now_m - 10.0;
     fixture->state->last_cc_sync_time = time(NULL) - 10;
     fixture->state->last_cc_sync_time_m = now_m - 10.0;
@@ -408,7 +408,7 @@ matrix_mark_cc_reacquired(matrix_fixture* fixture) {
     if (!fixture || !fixture->state) {
         return;
     }
-    double now_m = dsd_time_now_monotonic_s();
+    double now_m = dsd_decode_now_mono_s();
     if (now_m <= fixture->state->last_cc_sync_time_m) {
         now_m = fixture->state->last_cc_sync_time_m + 0.001;
     }
@@ -747,7 +747,7 @@ matrix_run_cc_hunt_case(const matrix_mode_case* mode, dsd_trunk_tune_result firs
     fixture = matrix_reset_fixture(mode);
 
     long candidate = MATRIX_BASE_CC_HZ + 1000000;
-    double now_m = dsd_time_now_monotonic_s();
+    double now_m = dsd_decode_now_mono_s();
     (void)dsd_trunk_cc_candidates_add(fixture->state, candidate, 0, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE);
     fixture->state->last_cc_sync_time = time(NULL) - 10;
     fixture->state->last_cc_sync_time_m = now_m - 10.0;
@@ -788,7 +788,7 @@ matrix_run_cc_hunt_case(const matrix_mode_case* mode, dsd_trunk_tune_result firs
     rc |= matrix_expect(fixture->state->p25_cc_eval_freq == 0, mode->name, "cc-hunt", result_name,
                         "failed/deferred cc hunt does not enter eval");
 
-    fixture->ctx.t_hunt_try_m = dsd_time_now_monotonic_s() - 6.0;
+    fixture->ctx.t_hunt_try_m = dsd_decode_now_mono_s() - 6.0;
     p25_sm_tick_ctx(&fixture->ctx, fixture->opts, fixture->state);
     rc |= matrix_expect(g_hooks.cc_calls == 2, mode->name, "cc-hunt", result_name, "cc hunt retried");
     rc |= matrix_expect(fixture->ctx.state == P25_SM_ON_CC, mode->name, "cc-hunt", result_name,

@@ -161,9 +161,24 @@ float mean_power(const float* samples, int len, int step);
  * Full demodulation pipeline for one block.
  * Applies decimation via half-band cascade and the selected demodulation chain.
  *
+ * A block its front end (the half-band cascade and the channel filter) leaves empty, as a channel-filter warm-up can,
+ * sets result_len to 0 and makes no per-block decision: the squelch gate, the squelch envelope, the channel power and
+ * the CQPSK zero symbols wait for the next block with samples.
+ *
  * @param d Demodulator state (consumes lowpassed, produces result).
  */
 void full_demod(struct demod_state* d);
+
+/**
+ * Return the filter state to a fresh stream's: each half-band stage's history and pending count (its look-ahead and
+ * decimation phase), the channel FIR's history and pending outputs, and a replay's post-demod audio decimator on either
+ * path (the polyphase history and phase; the fallback's one-pole and part-filled group). Every filter's next output is
+ * centred on its next input sample, the decimator's next output comes with the post_downsample-th sample, and what
+ * they held back is dropped. The one filter reset: stream open, retunes and family switches all reset through it.
+ *
+ * @param d Demodulator state; NULL is ignored.
+ */
+void dsd_demod_reset_filter_state(struct demod_state* d);
 
 /**
  * Channel edge (Hz) that the channel low-pass protects for a profile.

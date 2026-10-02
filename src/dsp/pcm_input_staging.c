@@ -6,7 +6,7 @@
 #include "pcm_input_staging.h"
 
 #include <dsd-neo/core/opts.h>
-#include <string.h>
+#include <stddef.h>
 
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/dsp/resampler.h"

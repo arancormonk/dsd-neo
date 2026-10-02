@@ -3,14 +3,17 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/events.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/p25_cqpsk_dibit.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <time.h>
 #include "dsd-neo/core/enc_lockout.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -32,11 +35,117 @@ test_init_opts_clears_trunk_scan_targets_csv(void) {
     return 0;
 }
 
+/* Issue #572: initOpts() and initState() seed their decode-domain "now" stamps through the one rebase list the engine
+   reruns when it moves the decode clock onto a replay's capture clock and back, so each restamps exactly what the other
+   seeds. Driven through the TEST source. */
+static int
+test_init_stamps_and_rebase_share_one_list(void) {
+    static dsd_opts opts;
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!state) {
+        return 30;
+    }
+    const time_t seeded = 1000;
+    const time_t rebased = 5000;
+    dsd_decode_clock_use_test((uint64_t)seeded * 1000000000ULL);
+    initOpts(&opts);
+    initState(state);
+    int rc = 0;
+    if (opts.symbol_out_file_creation_time != seeded || state->last_cc_sync_time != seeded
+        || state->last_vc_sync_time != seeded || state->last_t3_tune_time != seeded) {
+        DSD_FPRINTF(stderr, "init did not seed its decode stamps from the decode clock\n");
+        rc = 31;
+    }
+    state->p25_last_cc_msg_time = 77;
+    state->p25_last_vc_tune_time = 78;
+    dsd_decode_clock_test_set_ns((uint64_t)rebased * 1000000000ULL);
+    dsd_state_rebase_decode_timestamps(&opts, state);
+    if (rc == 0
+        && (opts.symbol_out_file_creation_time != rebased || state->last_cc_sync_time != rebased
+            || state->last_vc_sync_time != rebased || state->last_t3_tune_time != rebased)) {
+        DSD_FPRINTF(stderr, "the rebase missed a stamp init seeds\n");
+        rc = 32;
+    }
+    /* Stamps init leaves unset (0, "never") are decode state, not init's, and stay. */
+    if (rc == 0 && (state->p25_last_cc_msg_time != 77 || state->p25_last_vc_tune_time != 78)) {
+        DSD_FPRINTF(stderr, "the rebase touched a stamp init does not seed\n");
+        rc = 33;
+    }
+    /* Either side alone. */
+    dsd_decode_clock_test_set_ns(9000ULL * 1000000000ULL);
+    dsd_state_rebase_decode_timestamps(NULL, state);
+    dsd_state_rebase_decode_timestamps(NULL, NULL);
+    if (rc == 0 && (state->last_vc_sync_time != 9000 || opts.symbol_out_file_creation_time != rebased)) {
+        DSD_FPRINTF(stderr, "a state-only rebase did not restamp the state alone\n");
+        rc = 34;
+    }
+    dsd_state_rebase_decode_timestamps(&opts, NULL);
+    if (rc == 0 && opts.symbol_out_file_creation_time != 9000) {
+        DSD_FPRINTF(stderr, "an opts-only rebase did not restamp the options\n");
+        rc = 35;
+    }
+    dsd_decode_clock_use_system();
+    freeState(state);
+    free(state);
+    return rc;
+}
+
+/* Each initState() ring has an identity of its own, nonzero and shared by its two slots, and keeps it through a reset
+   of its rows (its push stamps go on counting there). The Qt call history tells by it a capture's rows decoded again
+   in a fresh state from the rows it already read. */
+static int
+test_init_state_draws_a_ring_identity(void) {
+    dsd_state* a = (dsd_state*)calloc(1, sizeof(*a));
+    dsd_state* b = (dsd_state*)calloc(1, sizeof(*b));
+    int rc = 0;
+    if (!a || !b) {
+        free(a);
+        free(b);
+        return 40;
+    }
+    initState(a);
+    initState(b);
+    if (!a->event_history_s || !b->event_history_s) {
+        rc = 41;
+    } else if (a->engine_fresh != 1U) {
+        /* The engine moves the decode clock onto a replay's capture clock only on a state no run has used. */
+        DSD_FPRINTF(stderr, "initState did not mark the state fresh for a run\n");
+        rc = 45;
+    } else if (a->event_history_s[0].instance == 0U
+               || a->event_history_s[1].instance != a->event_history_s[0].instance) {
+        DSD_FPRINTF(stderr, "a ring has no identity, or its slots disagree on it\n");
+        rc = 42;
+    } else if (b->event_history_s[0].instance == a->event_history_s[0].instance) {
+        DSD_FPRINTF(stderr, "two states drew the same ring identity\n");
+        rc = 43;
+    } else {
+        const uint64_t instance = a->event_history_s[0].instance;
+        dsd_event_history_reset(a);
+        if (a->event_history_s[0].instance != instance || a->event_history_s[1].instance != instance) {
+            DSD_FPRINTF(stderr, "a reset of the rows changed the ring's identity\n");
+            rc = 44;
+        }
+    }
+    freeState(a);
+    freeState(b);
+    free(a);
+    free(b);
+    return rc;
+}
+
 int
 main(void) {
+    int ring_rc = test_init_state_draws_a_ring_identity();
+    if (ring_rc != 0) {
+        return ring_rc;
+    }
     int init_opts_rc = test_init_opts_clears_trunk_scan_targets_csv();
     if (init_opts_rc != 0) {
         return init_opts_rc;
+    }
+    int rebase_rc = test_init_stamps_and_rebase_share_one_list();
+    if (rebase_rc != 0) {
+        return rebase_rc;
     }
 
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
@@ -82,6 +191,10 @@ main(void) {
     state->rtl_symbol_cache_levels = 4;
     state->rtl_symbol_cache_generation = 42U;
     state->rtl_symbol_cache_published_pending = 2;
+    state->rtl_symbol_cache_media_start_ns = 123456789ULL;
+    state->rtl_symbol_cache_media_duration_ns = 21333333ULL;
+    state->rtl_symbol_cache_media_count = 512U;
+    state->rtl_symbol_cache_media_first_index = 7U;
     state->rtl_fsk_sps_num = 24000;
     state->rtl_fsk_sps_den = 9600;
     state->rtl_fsk_sps_accum = 4800;
@@ -334,7 +447,9 @@ main(void) {
     if (state->rtl_symbol_cache_pos != 0 || state->rtl_symbol_cache_len != 0 || state->rtl_symbol_cache_output_kind != 0
         || state->rtl_symbol_cache_channel_profile != 0 || state->rtl_symbol_cache_symbol_rate_hz != 0
         || state->rtl_symbol_cache_levels != 0 || state->rtl_symbol_cache_generation != 0U
-        || state->rtl_symbol_cache_published_pending != 0 || state->rtl_fsk_sps_num != 0 || state->rtl_fsk_sps_den != 0
+        || state->rtl_symbol_cache_published_pending != 0 || state->rtl_symbol_cache_media_start_ns != 0U
+        || state->rtl_symbol_cache_media_duration_ns != 0U || state->rtl_symbol_cache_media_count != 0U
+        || state->rtl_symbol_cache_media_first_index != 0U || state->rtl_fsk_sps_num != 0 || state->rtl_fsk_sps_den != 0
         || state->rtl_fsk_sps_accum != 0 || state->p25_cqpsk_dibit_map_idx != DSD_P25_CQPSK_DIBIT_MAP_IDENTITY
         || state->rtl_symbol_cache[0] != 0.0f || state->rtl_symbol_cache[DSD_RTL_SYMBOL_CACHE_CAP - 1] != 0.0f) {
         DSD_FPRINTF(stderr, "initState did not clear RTL symbol cache state\n");

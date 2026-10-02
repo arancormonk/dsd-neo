@@ -58,7 +58,7 @@ enum DSD_ATTR_PACKED { DSD_ENC_LOCKOUT_ALGID_UNKNOWN = -1 };
 typedef struct {
     uint64_t key_epoch; /**< state->enc_lockout_key_epoch at last confirmation */
     uint64_t last_seq;  /**< monotonic confirmation ticket; recency key for eviction */
-    time_t last_seen;   /**< wall clock of last confirmation (UI display only) */
+    time_t last_seen;   /**< decode-clock wall time of last confirmation (UI display only) */
     uint32_t target;    /**< group or private destination id */
     uint32_t hits;      /**< number of lockout confirmations */
     int16_t algid;      /**< last confirmed ALGID, DSD_ENC_LOCKOUT_ALGID_UNKNOWN if none */

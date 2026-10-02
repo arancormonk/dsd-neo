@@ -30,7 +30,6 @@
 #include <limits.h>
 #include <math.h>
 #include <stdint.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -280,14 +279,12 @@ demod_init_common_defaults(struct demod_state* s, int rtl_dsp_bw_hz, struct outp
     s->am_carrier = 0.0f;
     s->am_squelched_samples = 0;
     s->channel_lpf_enable = 0;
-    s->channel_lpf_hist_len = 143;
     s->channel_lpf_profile = DSD_CH_LPF_PROFILE_WIDE;
-    DSD_MEMSET(s->channel_lpf_hist_i, 0, sizeof(s->channel_lpf_hist_i));
-    DSD_MEMSET(s->channel_lpf_hist_q, 0, sizeof(s->channel_lpf_hist_q));
     s->channel_pwr = 0.0f;
     g_channel_pwr.store(0.0f, std::memory_order_relaxed);
     s->channel_squelch_level.store(0.0f, std::memory_order_relaxed);
     s->channel_squelched = 0;
+    s->front_end_empty = 0;
     s->audio_lpf_enable = 0;
     s->audio_lpf_alpha = 0.0f;
     s->audio_lpf_state = 0.0f;
@@ -311,6 +308,11 @@ demod_init_common_defaults(struct demod_state* s, int rtl_dsp_bw_hz, struct outp
     s->post_polydecim_hist_head = 0;
     s->post_polydecim_taps = NULL;
     s->post_polydecim_hist = NULL;
+    /* No decimator state yet: the first block that decimates starts it (its history, phase and the fallback's state
+       are cleared by the filter reset below). */
+    s->post_decim_state_M = 0;
+    s->post_decim_state_rate_out = 0;
+    s->post_decim_state_fallback = 0;
     s->ted_enabled = 0;
     s->ted_gain = 0.0f;
     s->ted_gain_is_set = 0;
@@ -327,10 +329,7 @@ demod_init_common_defaults(struct demod_state* s, int rtl_dsp_bw_hz, struct outp
     s->squelch_env = 1.0f;
     s->squelch_env_attack = 0.125f;
     s->squelch_env_release = 0.03125f;
-    for (int st = 0; st < 10; st++) {
-        DSD_MEMSET(s->hb_hist_i[st], 0, sizeof(s->hb_hist_i[st]));
-        DSD_MEMSET(s->hb_hist_q[st], 0, sizeof(s->hb_hist_q[st]));
-    }
+    dsd_demod_reset_filter_state(s);
     s->lowpassed = s->input_cb_buf;
     s->lp_len = 0;
     s->iqbal_alpha_ema_r = 0.0f;
@@ -1262,16 +1261,7 @@ rtl_demod_reset_audio_monitor_state(struct demod_state* demod) {
 
 void
 rtl_demod_clear_filter_histories(struct demod_state* demod) {
-    if (!demod) {
-        return;
-    }
-    for (int st = 0; st < 10; st++) {
-        DSD_MEMSET(demod->hb_hist_i[st], 0, sizeof(demod->hb_hist_i[st]));
-        DSD_MEMSET(demod->hb_hist_q[st], 0, sizeof(demod->hb_hist_q[st]));
-    }
-    DSD_MEMSET(demod->channel_lpf_hist_i, 0, sizeof(demod->channel_lpf_hist_i));
-    DSD_MEMSET(demod->channel_lpf_hist_q, 0, sizeof(demod->channel_lpf_hist_q));
-    demod->channel_lpf_hist_len = 0;
+    dsd_demod_reset_filter_state(demod);
 }
 
 void
@@ -1316,19 +1306,15 @@ demod_family_switch_reset_loops(struct demod_state* demod) {
     demod->cqpsk_agc_avg = 1.0f;
 }
 
-/* The input corrections and the post-demod decimator an open starts from nothing: the I/Q DC blocker and I/Q balance
- * estimates, and a replay's post-demod decimator (its delay line holds the old family's demodulated samples). */
+/* The input corrections an open starts from nothing: the I/Q DC blocker and I/Q balance estimates. A replay's
+ * post-demod decimator, whose state holds the old family's demodulated samples, starts over with the filters
+ * (rtl_demod_clear_filter_histories()). */
 static void
-demod_family_switch_reset_input_and_decimator(struct demod_state* demod) {
+demod_family_switch_reset_input_corrections(struct demod_state* demod) {
     demod->iq_dc_avg_r = 0.0f;
     demod->iq_dc_avg_i = 0.0f;
     demod->iqbal_alpha_ema_r = 0.0f;
     demod->iqbal_alpha_ema_i = 0.0f;
-    if (demod->post_polydecim_hist && demod->post_polydecim_K > 0) {
-        DSD_MEMSET(demod->post_polydecim_hist, 0, (size_t)demod->post_polydecim_K * sizeof(float));
-    }
-    demod->post_polydecim_hist_head = 0;
-    demod->post_polydecim_phase = 0;
 }
 
 static void
@@ -1341,7 +1327,7 @@ demod_family_switch_reset(struct demod_state* demod) {
     demod->squelch_decim_phase = 0;
     rtl_demod_clear_filter_histories(demod);
     rtl_demod_reset_resampler_state(demod);
-    demod_family_switch_reset_input_and_decimator(demod);
+    demod_family_switch_reset_input_corrections(demod);
     demod_family_switch_reset_loops(demod);
     /* Force a fresh channel-filter plan for the new family. */
     demod->channel_lpf_plan_taps_len = 0;

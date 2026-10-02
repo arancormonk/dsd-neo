@@ -5,11 +5,11 @@
 
 /* P25 traffic-carrier reassignment and stale-update validation regressions. */
 
-#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <math.h>
 #include <stdint.h>
@@ -126,7 +126,7 @@ static void
 note_cc_reacquired(const p25_sm_ctx_t* ctx, dsd_state* state) {
     double decoded_m = ctx->t_cc_tune_m + 0.010;
     if (decoded_m <= 0.0) {
-        decoded_m = dsd_time_now_monotonic_s();
+        decoded_m = dsd_decode_now_mono_s();
     }
     state->last_cc_sync_time = time(NULL);
     state->last_cc_sync_time_m = decoded_m;
@@ -136,7 +136,7 @@ note_cc_reacquired(const p25_sm_ctx_t* ctx, dsd_state* state) {
 
 static void
 age_initial_acquisition(p25_sm_ctx_t* ctx) {
-    const double stale_m = dsd_time_now_monotonic_s() - 1.0;
+    const double stale_m = dsd_decode_now_mono_s() - 1.0;
     ctx->t_tune_m = stale_m;
     for (int slot = 0; slot < 2; slot++) {
         if (ctx->slots[slot].grant_active) {
@@ -226,7 +226,7 @@ test_followup_reuses_retained_carrier(void) {
     init_case(&opts, &state, &ctx);
     p25_sm_event(&ctx, &opts, &state, &grant);
     p25_sm_event(&ctx, &opts, &state, &first);
-    p25_sm_event_t end = p25_sm_ev_end_call_at(0, 4401, 5401, dsd_time_now_monotonic_s());
+    p25_sm_event_t end = p25_sm_ev_end_call_at(0, 4401, 5401, dsd_decode_now_mono_s());
     p25_sm_event(&ctx, &opts, &state, &end);
     rc |= expect_true("transmission end retained carrier",
                       ctx.state == P25_SM_TUNED && p25_sm_hangtime_started_m(&ctx) > 0.0 && g_return_calls == 0);
@@ -262,9 +262,9 @@ test_same_carrier_assignment_restarts_wait_window(void) {
     init_case(&opts, &state, &ctx);
     p25_sm_event(&ctx, &opts, &state, &grant);
     p25_sm_event(&ctx, &opts, &state, &ptt);
-    p25_sm_event_t end = p25_sm_ev_end_call_at(0, 4451, 5451, dsd_time_now_monotonic_s());
+    p25_sm_event_t end = p25_sm_ev_end_call_at(0, 4451, 5451, dsd_decode_now_mono_s());
     p25_sm_event(&ctx, &opts, &state, &end);
-    set_hangtime_started(&ctx, dsd_time_now_monotonic_s() - ctx.config.hangtime_s + 0.01);
+    set_hangtime_started(&ctx, dsd_decode_now_mono_s() - ctx.config.hangtime_s + 0.01);
     const double previous_tune_m = ctx.t_tune_m;
 
     p25_sm_event(&ctx, &opts, &state, &grant);
@@ -303,7 +303,7 @@ test_motorola_talk_complete_tdu_fixture(void) {
     p25_sm_event(&ctx, &opts, &state, &ev);
     rc |= expect_true("fixture first epoch followed", state.p25_sm_mode == DSD_P25_SM_MODE_FOLLOW);
 
-    ev = p25_sm_ev_end_call_at(0, 4601, 5601, dsd_time_now_monotonic_s());
+    ev = p25_sm_ev_end_call_at(0, 4601, 5601, dsd_decode_now_mono_s());
     p25_sm_event(&ctx, &opts, &state, &ev);
     rc |= expect_true("fixture Talk Complete retained carrier",
                       ctx.state == P25_SM_TUNED && ctx.vc_freq_hz == freq && ctx.slots[0].grant_active
@@ -339,9 +339,9 @@ test_p1_source_less_update_validation(void) {
     init_p1_case(&opts, &state, &ctx);
     p25_sm_event(&ctx, &opts, &state, &grant);
     p25_sm_event(&ctx, &opts, &state, &ptt);
-    p25_sm_event_t end = p25_sm_ev_end_call_at(0, 4701, 5701, dsd_time_now_monotonic_s());
+    p25_sm_event_t end = p25_sm_ev_end_call_at(0, 4701, 5701, dsd_decode_now_mono_s());
     p25_sm_event(&ctx, &opts, &state, &end);
-    set_hangtime_started(&ctx, dsd_time_now_monotonic_s() - 3.0);
+    set_hangtime_started(&ctx, dsd_decode_now_mono_s() - 3.0);
     p25_sm_tick_ctx(&ctx, &opts, &state);
     note_cc_reacquired(&ctx, &state);
 
@@ -349,8 +349,8 @@ test_p1_source_less_update_validation(void) {
     rc |= expect_true("P1 fresh source-less update quarantined",
                       g_tune_calls == 1 && ctx.state == P25_SM_ON_CC && ctx.recent_call_ends[0].valid);
 
-    ctx.recent_call_ends[0].end_m = dsd_time_now_monotonic_s() - 2.1;
-    ctx.recent_call_ends[0].last_match_m = dsd_time_now_monotonic_s();
+    ctx.recent_call_ends[0].end_m = dsd_decode_now_mono_s() - 2.1;
+    ctx.recent_call_ends[0].last_match_m = dsd_decode_now_mono_s();
     p25_sm_event(&ctx, &opts, &state, &update);
     rc |= expect_true("P1 validation probe uses logical slot zero", g_tune_calls == 2 && ctx.state == P25_SM_TUNED
                                                                         && ctx.vc_stale_regrant_probe
@@ -384,7 +384,7 @@ test_p1_tdu_preserves_identified_end_source(void) {
     init_p1_case(&opts, &state, &ctx);
     p25_sm_event(&ctx, &opts, &state, &grant);
     p25_sm_event(&ctx, &opts, &state, &ptt);
-    p25_sm_event_t end = p25_sm_ev_end_call_at(0, 4751, 5751, dsd_time_now_monotonic_s());
+    p25_sm_event_t end = p25_sm_ev_end_call_at(0, 4751, 5751, dsd_decode_now_mono_s());
     p25_sm_event(&ctx, &opts, &state, &end);
     const double guard_end_m = ctx.recent_call_ends[0].end_m;
     const double hang_started_m = p25_sm_hangtime_started_m(&ctx);
@@ -398,7 +398,7 @@ test_p1_tdu_preserves_identified_end_source(void) {
                           && fabs(ctx.recent_call_ends[0].end_m - guard_end_m) <= time_epsilon_s
                           && fabs(p25_sm_hangtime_started_m(&ctx) - hang_started_m) <= time_epsilon_s);
 
-    set_hangtime_started(&ctx, dsd_time_now_monotonic_s() - 3.0);
+    set_hangtime_started(&ctx, dsd_decode_now_mono_s() - 3.0);
     p25_sm_tick_ctx(&ctx, &opts, &state);
     note_cc_reacquired(&ctx, &state);
     p25_sm_event_t update = p25_sm_ev_group_grant_update(channel, freq, 4751, 5752, P25_SM_SVC_UNKNOWN);
@@ -423,17 +423,17 @@ test_failed_validation_probe_does_not_loop(void) {
     init_case(&opts, &state, &ctx);
     p25_sm_event(&ctx, &opts, &state, &grant);
     p25_sm_event(&ctx, &opts, &state, &ptt);
-    p25_sm_event_t end = p25_sm_ev_end_call_at(0, 4501, 5501, dsd_time_now_monotonic_s());
+    p25_sm_event_t end = p25_sm_ev_end_call_at(0, 4501, 5501, dsd_decode_now_mono_s());
     p25_sm_event(&ctx, &opts, &state, &end);
-    set_hangtime_started(&ctx, dsd_time_now_monotonic_s() - 3.0);
+    set_hangtime_started(&ctx, dsd_decode_now_mono_s() - 3.0);
     p25_sm_tick_ctx(&ctx, &opts, &state);
     note_cc_reacquired(&ctx, &state);
 
     p25_sm_event(&ctx, &opts, &state, &update);
     rc |= expect_true("fresh ambiguous update quarantined", g_tune_calls == 1 && ctx.state == P25_SM_ON_CC);
 
-    ctx.recent_call_ends[0].end_m = dsd_time_now_monotonic_s() - 2.1;
-    ctx.recent_call_ends[0].last_match_m = dsd_time_now_monotonic_s();
+    ctx.recent_call_ends[0].end_m = dsd_decode_now_mono_s() - 2.1;
+    ctx.recent_call_ends[0].last_match_m = dsd_decode_now_mono_s();
     p25_sm_event(&ctx, &opts, &state, &update);
     rc |= expect_true("single validation probe tuned",
                       g_tune_calls == 2 && ctx.state == P25_SM_TUNED && ctx.vc_stale_regrant_probe == 1);

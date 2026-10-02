@@ -5,7 +5,7 @@
 
 #include <dsd-neo/dsp/sps_filters.h>
 #include <math.h>
-#include <string.h>
+#include <stddef.h>
 #include "dsd-neo/core/safe_api.h"
 #include "m17_rrc_taps.h"
 

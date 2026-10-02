@@ -12,12 +12,12 @@
 
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
-#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -204,7 +204,7 @@ test_call_skip_mutes_slot(dsd_opts* opts, dsd_state* st) {
                                       ota, 123, 456),
                             1);
             for (int blocked = 1; blocked >= 0; --blocked) {
-                const double now = dsd_time_now_monotonic_s();
+                const double now = dsd_decode_now_mono_s();
                 rc |= expect_eq("skip arm current or expired",
                                 dsd_tg_policy_call_skip_arm(st, skipped, 456, 0,
                                                             blocked ? now : now - DSD_TG_CALL_SKIP_QUIET_S - 1.0),

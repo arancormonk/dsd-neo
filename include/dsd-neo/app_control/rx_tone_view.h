@@ -94,7 +94,7 @@ typedef struct {
  * policy fields whenever the arguments are valid. A NULL @p state still gets @c configured_text, read
  * from @p opts alone (no scan row), and returns -1 with nothing else filled: a terminal menu row
  * before the first snapshot reads the policy its own options hold, as its editor opens on it.
- * @p now_m is monotonic seconds, the clock dsd_time_now_monotonic_s() reads: a publication from an
+ * @p now_m is real monotonic seconds, the clock dsd_realtime_mono_s() reads: a publication from an
  * input that has gone quiet past its stale_after_ms deadline (a stdin, UDP or TCP producer that
  * stopped sending, a live radio stream whose source stopped) reads as no carrier, because the
  * decoder, waiting for the next sample, cannot say so itself; the verdict goes with it. Pass 0 to

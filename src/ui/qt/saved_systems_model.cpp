@@ -11,7 +11,6 @@
 #include "site_groups.h"
 
 #include <QByteArray>
-#include <QDateTime>
 #include <QHash>
 #include <QJsonArray>
 #include <QJsonObject>
@@ -30,6 +29,7 @@
 #include <dsd-neo/runtime/log.h>
 #include "decoder_host.h"
 #include "json_store.h"
+#include "realtime_clock.h"
 
 namespace dsd_qt {
 
@@ -56,7 +56,10 @@ bias_tee_from_stored(const QVariant& value) {
 
 } // namespace
 
-SavedSystemsModel::SavedSystemsModel(QObject* parent) : QAbstractListModel(parent) { load(); }
+SavedSystemsModel::SavedSystemsModel(QObject* parent)
+    : QAbstractListModel(parent), m_realtime_now_ms(&realtimeMSecsSinceEpoch) {
+    load();
+}
 
 SavedSystemsModel::~SavedSystemsModel() = default;
 
@@ -494,12 +497,17 @@ SavedSystemsModel::getByUid(const QString& uid) const {
     return get(rowForUid(uid));
 }
 
+qint64
+SavedSystemsModel::realtimeNowMs() const {
+    return m_realtime_now_ms();
+}
+
 void
 SavedSystemsModel::touch(int row) {
     if (row < 0 || row >= m_rows.size()) {
         return;
     }
-    m_rows[row].lastHeard = QDateTime::currentSecsSinceEpoch();
+    m_rows[row].lastHeard = m_realtime_now_ms() / 1000;
     const QModelIndex idx = index(row);
     Q_EMIT dataChanged(idx, idx, {LastHeardRole});
     Q_EMIT mostRecentRowChanged();

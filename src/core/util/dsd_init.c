@@ -17,8 +17,10 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/symbol_timing_debug.h>
 #include <dsd-neo/dsp/sync_calibration.h>
+#include <dsd-neo/platform/nonce.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/analog_channel.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/shutdown.h>
 #include <mbelib-neo/mbelib.h>
@@ -129,7 +131,8 @@ init_opts_output_defaults(dsd_opts* opts) {
     opts->frame_log_write_error_reported = 0;
     opts->p25_sm_log_open_error_reported = 0;
     opts->p25_sm_log_write_error_reported = 0;
-    opts->symbol_out_file_creation_time = time(NULL);
+    /* symbol_out_file_creation_time, on the list the engine's replay rebase shares. */
+    dsd_state_rebase_decode_timestamps(opts, NULL);
     opts->symbol_out_file_is_auto = 0;
     opts->mbe_out = 0;
     opts->mbe_outR = 0; //second slot on a TDMA system
@@ -423,6 +426,19 @@ init_opts_trunking_and_filter_defaults(dsd_opts* opts) {
 }
 
 void
+dsd_state_rebase_decode_timestamps(dsd_opts* opts, dsd_state* state) {
+    const time_t now = dsd_decode_time();
+    if (opts) {
+        opts->symbol_out_file_creation_time = now;
+    }
+    if (state) {
+        state->last_cc_sync_time = now;
+        state->last_vc_sync_time = now;
+        state->last_t3_tune_time = now;
+    }
+}
+
+void
 initOpts(dsd_opts* opts) {
     init_opts_display_and_audio_defaults(opts);
     init_opts_output_defaults(opts);
@@ -499,6 +515,10 @@ init_state_core_buffers(dsd_state* state) {
     state->rtl_symbol_cache_levels = 0;
     state->rtl_symbol_cache_generation = 0;
     state->rtl_symbol_cache_published_pending = 0;
+    state->rtl_symbol_cache_media_start_ns = 0U;
+    state->rtl_symbol_cache_media_duration_ns = 0U;
+    state->rtl_symbol_cache_media_count = 0U;
+    state->rtl_symbol_cache_media_first_index = 0U;
     state->rtl_fsk_sps_num = 0;
     state->rtl_fsk_sps_den = 0;
     state->rtl_fsk_sps_accum = 0;
@@ -1051,13 +1071,12 @@ init_state_p25_and_trunk_defaults(dsd_state* state) {
     state->trunk_chan_map_seq = 0;
     state->lcn_freq_count = 0; //number of frequncies imported as an enumerated lcn list
     state->lcn_freq_roll = 0;  //needs reset if sync is found?
-    state->last_cc_sync_time = time(NULL);
-    state->last_vc_sync_time = time(NULL);
+    /* last_cc_sync_time, last_vc_sync_time and last_t3_tune_time, on the list the engine's replay rebase shares. */
+    dsd_state_rebase_decode_timestamps(NULL, state);
     state->rtl_fsk_reacquire_last_sync_time = 0;
     state->rtl_fsk_reacquire_last_sync_m = 0.0;
     state->rtl_fsk_reacquire_gap_start_m = 0.0;
     state->rtl_fsk_reacquire_last_request_m = 0.0;
-    state->last_t3_tune_time = time(NULL);
     state->is_con_plus = 0;
 }
 
@@ -1242,6 +1261,16 @@ init_state_codec2_and_events(dsd_state* state) {
     for (uint8_t i = 0; i < 2; i++) {
         init_event_history(&state->event_history_s[i], 0, 255);
     }
+    if (state->event_history_s != NULL) {
+        /* The ring's identity (Event_History_I::instance): a replay decoded again in a fresh state pushes the
+           same rows at the same stamps, and only this tells that ring from the one a frontend read before. */
+        uint64_t instance = 0U;
+        while (instance == 0U) {
+            dsd_nonce_fill(&instance, sizeof(instance));
+        }
+        state->event_history_s[0].instance = instance;
+        state->event_history_s[1].instance = instance;
+    }
 
     // Initialize transient UI toast message state
     state->ui_msg[0] = '\0';
@@ -1265,6 +1294,8 @@ initState(dsd_state* state) {
     init_state_string_and_m17_defaults(state);
     init_state_codec2_and_events(state);
     (void)dsd_call_state_ensure(state);
+    // No engine run has used this state yet (see dsd_state::engine_fresh).
+    state->engine_fresh = 1U;
 
 } //init_state
 

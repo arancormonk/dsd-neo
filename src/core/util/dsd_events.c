@@ -14,7 +14,6 @@
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/channel_label.h>
-#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
@@ -26,6 +25,7 @@
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/protocol/edacs/edacs_afs.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -562,7 +562,7 @@ watchdog_event_flush_pending_end_alert(dsd_opts* opts, dsd_state* state, uint8_t
     if (lifecycle == NULL || !lifecycle->end_alert_pending) {
         return;
     }
-    if (!force && dsd_time_now_monotonic_s() < lifecycle->end_alert_due_m) {
+    if (!force && dsd_decode_now_mono_s() < lifecycle->end_alert_due_m) {
         return;
     }
     lifecycle->end_alert_pending = 0U;
@@ -1803,7 +1803,7 @@ watchdog_event_ctx_from_row(const dsd_call_event_render_env* env, const Event_Hi
 // parseable prefix -- a row a protocol staged directly rather than rendering.
 //
 // The displayed string is preferred rather than the stamp because the two are not always the same
-// clock. Every builder renders the prefix from time(NULL), but watchdog_event_current_update_item()
+// clock. Every builder renders the prefix from dsd_decode_time(), but watchdog_event_current_update_item()
 // only stamps event_time when opts->playfiles == 0; under --playfiles over an sdrtrunk recording it
 // is left as the recording's own timestamp instead (dsd_file.c). Formatting the stamp there would
 // rewrite a committed row's visible date and time to a value none of its siblings use, purely
@@ -1907,7 +1907,7 @@ watchdog_event_drop_verdict_held(dsd_call_event_lifecycle* lifecycle, const dsd_
         || watchdog_event_staged_epoch_vouches(&lifecycle->staged_env)) {
         return 0;
     }
-    const double now_m = dsd_time_now_monotonic_s();
+    const double now_m = dsd_decode_now_mono_s();
     if (!lifecycle->drop_hold_pending) {
         lifecycle->drop_hold_pending = 1U;
         lifecycle->drop_hold_due_m = now_m + dsd_call_state_end_reason_reacquire_gap_s(call->end_reason);
@@ -1955,14 +1955,14 @@ watchdog_event_finalize_ended(const dsd_opts* opts, dsd_state* state, uint8_t sl
             // string -- one never classified into a protocol with a builder -- would otherwise beep
             // the end of a transmission the operator never saw.
             lifecycle->end_alert_pending = 1U;
-            // Deliberately the local monotonic clock rather than call->ended_m: the deadline is
+            // Deliberately a fresh decode-clock read rather than call->ended_m: the deadline is
             // only ever compared against this same clock, and ended_m carries whatever timeline
             // the caller supplied. In production the two coincide; keeping both endpoints on one
             // clock means a caller-supplied timeline can never make the alert fire early. The gap
             // is selected by end reason -- the same rule reacquisition applies -- so the alert is
             // not held open past the moment the canonical layer stops accepting a heal.
             lifecycle->end_alert_due_m =
-                dsd_time_now_monotonic_s() + dsd_call_state_end_reason_reacquire_gap_s(call->end_reason);
+                dsd_decode_now_mono_s() + dsd_call_state_end_reason_reacquire_gap_s(call->end_reason);
         }
     } else {
         init_event_history(event_struct, 0, 1);
@@ -2003,7 +2003,7 @@ watchdog_event_current_impl(const dsd_opts* opts, dsd_state* state, uint8_t slot
 
     char timestr[9];
     char datestr[11];
-    time_t now = time(NULL);
+    time_t now = dsd_decode_time();
     (void)dsd_format_local_datetime(now, DSD_LOCAL_DATETIME_TIME_COLON, timestr, sizeof timestr);
     (void)dsd_format_local_datetime(now, DSD_LOCAL_DATETIME_DATE_HYPHEN, datestr, sizeof datestr);
 
@@ -2448,7 +2448,7 @@ watchdog_event_status(dsd_state* state, const char* status_string, uint8_t slot)
     item->source_id = 0;
     item->target_id = 0;
 
-    time_t now = time(NULL);
+    time_t now = dsd_decode_time();
     item->event_time = now;
 
     char timestr[9];
@@ -2520,7 +2520,7 @@ dsd_event_emit_data_notice_impl(dsd_opts* opts, dsd_state* state, uint8_t slot, 
     // question is answered either way, empty label included, so the row says so.
     (void)dsd_channel_label_current(opts, state, item->channel_label, sizeof(item->channel_label));
     item->channel_label_resolved = 1U;
-    item->event_time = time(NULL);
+    item->event_time = dsd_decode_time();
     DSD_SNPRINTF(item->src_str, sizeof(item->src_str), "%s", observation->source_text);
     DSD_SNPRINTF(item->tgt_str, sizeof(item->tgt_str), "%s", observation->target_text);
     if (consume_staged_payload) {
@@ -2607,7 +2607,7 @@ dsd_event_emit_system_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, con
     item->systype = DSD_SYNC_NONE;
     item->subtype = -1;
     item->gi = -1;
-    item->event_time = time(NULL);
+    item->event_time = dsd_decode_time();
 
     char timestr[9];
     char datestr[11];

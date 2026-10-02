@@ -22,8 +22,8 @@
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/dsp/firdes.h>
-#include <dsd-neo/platform/timing.h>
 #include <dsd-neo/runtime/analog_tones.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
@@ -514,7 +514,7 @@ analog_rx_now_ms(void) {
         return g_analog_rx_test_clock();
     }
 #endif
-    return dsd_time_monotonic_ms();
+    return dsd_realtime_mono_ms();
 }
 
 /* The same clock in ns, for the input waits the backlog skip adds up: each is a single sample read, far below a ms. */
@@ -525,7 +525,7 @@ analog_rx_now_ns(void) {
         return g_analog_rx_test_clock() * 1000000U;
     }
 #endif
-    return dsd_time_monotonic_ns();
+    return dsd_realtime_mono_ns();
 }
 
 static analog_rx_session*

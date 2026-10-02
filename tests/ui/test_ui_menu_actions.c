@@ -84,7 +84,6 @@ static PromptCapture g_prompt;
 static char g_picker_kind[32];
 static ChooserCapture g_chooser;
 static char g_status[256];
-static int g_status_calls;
 static dsdneoRuntimeConfig g_cfg;
 static int g_cfg_valid = 1;
 static const char* g_default_config_path = "/tmp/default.toml";
@@ -93,7 +92,6 @@ static int g_snapshot_calls;
 static int g_list_profiles_rc;
 static char g_env_name[128];
 static char g_env_value[128];
-static int g_env_set_calls;
 static int g_env_int_value = 77;
 static double g_env_double_value = 12.5;
 static int g_reparse_calls;
@@ -109,7 +107,6 @@ reset_capture(void) {
     DSD_MEMSET(&g_prompt, 0, sizeof g_prompt);
     DSD_MEMSET(&g_chooser, 0, sizeof g_chooser);
     DSD_MEMSET(g_status, 0, sizeof g_status);
-    g_status_calls = 0;
     DSD_MEMSET(&g_cfg, 0, sizeof g_cfg);
     g_cfg_valid = 1;
     g_default_config_path = "/tmp/default.toml";
@@ -118,7 +115,6 @@ reset_capture(void) {
     g_list_profiles_rc = 0;
     DSD_MEMSET(g_env_name, 0, sizeof g_env_name);
     DSD_MEMSET(g_env_value, 0, sizeof g_env_value);
-    g_env_set_calls = 0;
     g_env_int_value = 77;
     g_env_double_value = 12.5;
     g_reparse_calls = 0;
@@ -375,7 +371,6 @@ ui_statusf(const char* fmt, ...) {
     va_start(ap, fmt);
     (void)DSD_VSNPRINTF(g_status, sizeof g_status, fmt, ap);
     va_end(ap);
-    g_status_calls++;
 }
 
 void
@@ -507,7 +502,6 @@ dsd_setenv(const char* name, const char* value, int overwrite) {
     (void)overwrite;
     DSD_SNPRINTF(g_env_name, sizeof g_env_name, "%s", name ? name : "");
     DSD_SNPRINTF(g_env_value, sizeof g_env_value, "%s", value ? value : "");
-    g_env_set_calls++;
     return 0;
 }
 

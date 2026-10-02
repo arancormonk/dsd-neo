@@ -17,7 +17,6 @@
 
 #include <algorithm>
 #include <atomic>
-#include <chrono>
 #include <cmath>
 #include <condition_variable>
 #include <dsd-neo/core/constants.h>
@@ -46,6 +45,7 @@
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/input_failure.h>
 #include <dsd-neo/runtime/input_ring.h>
@@ -173,7 +173,6 @@ static struct udp_control* g_udp_ctrl = NULL;
 
 /* DSP baseband for RTL path in Hz (derived from opts->rtl_dsp_bw_khz). */
 static int rtl_dsp_bw_hz;
-static short int volume_multiplier;
 static uint16_t port;
 static char udp_control_bindaddr[64] = "127.0.0.1";
 
@@ -324,6 +323,8 @@ struct demod_state demod;
 static struct rtl_device* rtl_device_handle = NULL;
 static struct dongle_state dongle;
 static struct output_state output;
+/* The output ring's capacity in floats (output_init()). */
+static constexpr size_t kOutputRingCapacity = (size_t)(MAXIMUM_BUF_LENGTH * 8);
 static struct controller_state controller;
 
 /* Receive-family requests made live (rtl_stream_request_analog_profile()), counted as each is accepted. A retune
@@ -385,6 +386,9 @@ static struct input_ring_state input_ring;
 static dsd_iq_capture_writer* g_iq_capture_writer = NULL;
 /* Controller can request a ring purge; consumer/demod performs the discard safely. */
 static std::atomic<int> g_ring_purge_pending{0};
+/* Input purges applied in an I/Q replay (replay_note_input_purge_consumed()), whoever took the flag: the replay reader
+ * waits for a boundary's purge by this count (replay_wait_for_input_purge_applied()). */
+static std::atomic<uint64_t> g_ring_purge_done_seq{0U};
 static std::atomic<uint32_t> g_retune_diag_seq{0};
 static std::atomic<uint32_t> g_retune_diag_freq_hz{0};
 static std::atomic<int> g_retune_diag_reason{0};
@@ -409,8 +413,16 @@ static std::atomic<uint32_t> g_replay_event_reset_count{0};
 static std::atomic<uint32_t> g_replay_event_last_frequency_hz{0};
 static std::atomic<uint64_t> g_replay_event_last_mute_bytes{0};
 static std::atomic<int> g_replay_event_last_reset_reason{0};
+/* Input purge requests the last replayed RESET's finalize made (exactly 1 when it is correct), and the RESETs that made
+ * any other number (rtl_replay_on_reset_event()). */
+static std::atomic<uint64_t> g_replay_event_last_reset_purge_requests{0};
+static std::atomic<uint32_t> g_replay_event_reset_purge_mismatch_count{0};
 static std::atomic<uint32_t> g_replay_loop_restart_count{0};
 static std::atomic<uint32_t> g_replay_loop_restart_last_frequency_hz{0};
+/* The centre the demod was last reset on, kept by a replayed RETUNE as it moves last_applied_freq_hz on
+ * (rtl_replay_on_retune_event()), for the RESET that follows to reset from, as the live retune it records did; 0: no
+ * RETUNE since the last RESET or rewind. The replay reader's thread alone uses it. */
+static std::atomic<uint32_t> g_replay_pending_previous_center_hz{0};
 
 static void rtl_stream_consume_demod_profile_request(void);
 static void rtl_stream_clear_demod_profile_request(void);
@@ -651,12 +663,35 @@ struct RtlSdrInternals {
     std::atomic<int> replay_demod_drained{0};
     std::atomic<int> replay_output_drained{0};
     std::atomic<int> replay_forced_stop{0};
+    std::atomic<int> replay_reader_exited{0}; /* the replay reader thread has left, EOF marked or not */
     std::atomic<uint64_t> replay_last_submit_gen{0U};
     std::atomic<uint64_t> replay_last_submit_gen_at_eof{0U};
     std::atomic<uint64_t> replay_last_consume_gen{0U};
+    /* The capture chunk in the input ring: the replay reader writes it before the commit, the demod copies it at reserve
+       (struct rtl_replay_chunk_meta). */
+    struct rtl_replay_chunk_meta replay_chunk{};
+    /* The EOF drain decision (input drained, demod drained) is made under replay_eof_m by the demod and the replay
+       reader alike. Lock order: replay_eof_m, then output.ready_m. */
     dsd_mutex_t replay_eof_m{};
     dsd_cond_t replay_eof_cond{};
-    int replay_eof_sync_inited = 0;
+    int replay_eof_sync_inited = 0; /* replay_eof_m, replay_eof_cond and replay_demand_cond exist */
+
+    /* Decoder pacing (see "Replay decoder pacing"). Output batches the demod published, from 1 (the virtual block 0),
+       and the count the decoder acknowledged; both change under output.ready_m. The demod waits on replay_demand_cond
+       (with output.ready_m), apart from output.space, which every read signals. */
+    std::atomic<uint64_t> replay_out_written{1U};
+    std::atomic<uint64_t> replay_out_acked{0U};
+    dsd_cond_t replay_demand_cond{};
+    /* The tag of the batch in the output ring (the demod writes it as it publishes the batch), the tag the decoder's
+       last read handed out, and how much of the batch in the ring the decoder has taken: all under output.ready_m. */
+    rtl_stream_replay_batch replay_published_batch{};
+    rtl_stream_replay_batch replay_read_batch{};
+    uint32_t replay_batch_taken = 0U;
+    int replay_have_read_batch = 0;
+    int replay_demand_warned = 0; /* demod thread: the long demand wait was logged */
+    /* Output samples a replay block could not publish: none, as an empty ring holds any block's output
+       (demod_publish_replay_output_block()). Counted so a test sees a loss that would otherwise be silent. */
+    std::atomic<uint64_t> replay_output_truncated{0U};
 
     /* Watermark-based flow control for TCP lag resilience */
     struct input_ring_watermark watermark{};
@@ -665,6 +700,69 @@ struct RtlSdrInternals {
 } // namespace
 
 static struct RtlSdrInternals* g_stream = NULL;
+#if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
+/* Installed while the stream is stopped (rtl_stream_test_set_replay_stage_hook()), read by the replay threads. */
+static rtl_stream_test_replay_stage_fn g_test_replay_stage_hook = NULL;
+static void* g_test_replay_stage_ctx = NULL;
+
+extern "C" void
+rtl_stream_test_set_replay_stage_hook(rtl_stream_test_replay_stage_fn hook, void* ctx) {
+    g_test_replay_stage_hook = hook;
+    g_test_replay_stage_ctx = ctx;
+}
+
+extern "C" void
+rtl_stream_test_replay_stage(int stage, size_t count) {
+    if (g_test_replay_stage_hook) {
+        g_test_replay_stage_hook(stage, count, g_test_replay_stage_ctx);
+    }
+}
+
+/* Installed while the stream is stopped (rtl_stream_test_set_replay_block_hook()), called by the demod thread. */
+static rtl_stream_test_replay_block_fn g_test_replay_block_hook = NULL;
+static void* g_test_replay_block_ctx = NULL;
+
+extern "C" void
+rtl_stream_test_set_replay_block_hook(rtl_stream_test_replay_block_fn hook, void* ctx) {
+    g_test_replay_block_hook = hook;
+    g_test_replay_block_ctx = ctx;
+}
+
+/* The chunk whose replay block the demod discards (rtl_stream_test_replay_discard_chunk()); 0: none. */
+static std::atomic<uint64_t> g_test_replay_discard_sequence{0U};
+
+extern "C" void
+rtl_stream_test_replay_discard_chunk(uint64_t sequence) {
+    g_test_replay_discard_sequence.store(sequence, std::memory_order_release);
+}
+
+static void replay_wake_all(void);
+
+extern "C" void
+rtl_stream_test_replay_force_stop(void) {
+    if (g_stream) {
+        g_stream->replay_forced_stop.store(1, std::memory_order_release);
+    }
+    replay_wake_all();
+}
+#endif
+
+/* A replay pipeline stage a test can stop at (RTL_STREAM_TEST_REPLAY_*); nothing outside test builds. */
+#if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
+#define RTL_REPLAY_TEST_STAGE(stage, count) rtl_stream_test_replay_stage((stage), (count))
+#else
+#define RTL_REPLAY_TEST_STAGE(stage, count) ((void)0)
+#endif
+
+#if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
+/* The blocks a replay's demod has published, the virtual block 0 included (0 with no stream): the count of the demod's
+ * stages. */
+static size_t
+replay_test_blocks_published(void) {
+    return g_stream ? (size_t)g_stream->replay_out_written.load(std::memory_order_acquire) : 0U;
+}
+#endif
+
 #if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
 static struct RtlSdrInternals g_cqpsk_toggle_test_stream;
 /* Called by ring_read_available() between its copy and the tail it publishes, with ready_m held. */
@@ -739,17 +837,65 @@ stream_reset_replay_eof_state(struct RtlSdrInternals* s) {
     s->replay_demod_drained.store(0, std::memory_order_release);
     s->replay_output_drained.store(0, std::memory_order_release);
     s->replay_forced_stop.store(0, std::memory_order_release);
+    s->replay_reader_exited.store(0, std::memory_order_release);
     s->replay_last_submit_gen.store(0, std::memory_order_release);
     s->replay_last_submit_gen_at_eof.store(0, std::memory_order_release);
     s->replay_last_consume_gen.store(0, std::memory_order_release);
+    s->replay_chunk = rtl_replay_chunk_meta{};
+    /* The internals are calloc'ed, so the virtual block 0 is set here. */
+    s->replay_out_written.store(1U, std::memory_order_release);
+    s->replay_out_acked.store(0U, std::memory_order_release);
+    s->replay_published_batch = rtl_stream_replay_batch{};
+    s->replay_read_batch = rtl_stream_replay_batch{};
+    s->replay_batch_taken = 0U;
+    s->replay_have_read_batch = 0;
+    s->replay_demand_warned = 0;
+    s->replay_output_truncated.store(0U, std::memory_order_release);
+    g_replay_pending_previous_center_hz.store(0U, std::memory_order_release);
     g_replay_event_retune_count.store(0, std::memory_order_release);
     g_replay_event_mute_count.store(0, std::memory_order_release);
     g_replay_event_reset_count.store(0, std::memory_order_release);
     g_replay_event_last_frequency_hz.store(0, std::memory_order_release);
     g_replay_event_last_mute_bytes.store(0, std::memory_order_release);
     g_replay_event_last_reset_reason.store(0, std::memory_order_release);
+    g_replay_event_last_reset_purge_requests.store(0U, std::memory_order_release);
+    g_replay_event_reset_purge_mismatch_count.store(0U, std::memory_order_release);
     g_replay_loop_restart_count.store(0, std::memory_order_release);
     g_replay_loop_restart_last_frequency_hz.store(0, std::memory_order_release);
+}
+
+/* Wake every thread waiting on a replay condition: the input ring's ready and space, the output ring's ready and
+ * space, the demod's demand condition, and the EOF condition. The EOF sequence and a failure (through
+ * rtl_replay_eof_state::wake_all), a stop, and a start that unwinds use it, so no replay wait sleeps through the change
+ * that ends it. */
+static void
+replay_wake_all(void) {
+    if (input_ring.capacity > 0U) {
+        dsd_mutex_lock(&input_ring.ready_m);
+        dsd_cond_broadcast(&input_ring.ready);
+        dsd_cond_broadcast(&input_ring.space);
+        dsd_mutex_unlock(&input_ring.ready_m);
+    }
+    if (output.buffer) {
+        dsd_mutex_lock(&output.ready_m);
+        dsd_cond_broadcast(&output.ready);
+        dsd_cond_broadcast(&output.space);
+        if (g_stream && g_stream->replay_eof_sync_inited) {
+            dsd_cond_broadcast(&g_stream->replay_demand_cond);
+        }
+        dsd_mutex_unlock(&output.ready_m);
+    }
+    if (g_stream && g_stream->replay_eof_sync_inited) {
+        dsd_mutex_lock(&g_stream->replay_eof_m);
+        dsd_cond_broadcast(&g_stream->replay_eof_cond);
+        dsd_mutex_unlock(&g_stream->replay_eof_m);
+    }
+}
+
+static void
+rtl_replay_wake_all(void* user) {
+    (void)user;
+    replay_wake_all();
 }
 
 static void
@@ -785,29 +931,67 @@ rtl_stream_test_replay_acknowledge_discarded_span(uint64_t submitted_gen, uint64
 }
 #endif
 
+/* The demod's EOF drain decision, after a block or a purge that consumed replay input up to @p consumed_gen: record
+ * the consumption, mark the input drained once EOF was marked and the input ring is empty, and mark the demod drained
+ * once the input is drained and every generation submitted before EOF is acknowledged. The replay reader decides the
+ * same under the same lock (replay_mark_input_drained(), rtl_device.cpp), so neither side can miss what the other
+ * stored last. After a block, @p consumed_gen is the generation of the one chunk the block took, and the demod gets here
+ * only once the block's output is in the ring. A purge acknowledges everything submitted, but a replay purges only at a
+ * RESET or loop boundary, where the reader waits with every chunk already acknowledged. So the demod is reported
+ * drained only once the output of every chunk submitted before EOF is published, and a decoder that reads "drained"
+ * finds all of it already in the ring. */
+static void
+replay_demod_drain_decide(uint64_t consumed_gen) {
+    struct RtlSdrInternals* s = g_stream;
+    if (!s || !s->replay_eof_sync_inited) {
+        return;
+    }
+    int demod_drained_now = 0;
+    dsd_mutex_lock(&s->replay_eof_m);
+    uint64_t consumed_at = replay_acknowledge_consumed_generation(&s->replay_last_consume_gen, consumed_gen);
+    if (!s->replay_demod_drained.load(std::memory_order_acquire)) {
+        int input_drained = s->replay_input_drained.load(std::memory_order_acquire);
+        if (!input_drained && s->replay_input_eof.load(std::memory_order_acquire)
+            && input_ring_used(&input_ring) == 0U) {
+            s->replay_input_drained.store(1, std::memory_order_release);
+            input_drained = 1;
+        }
+        if (input_drained && consumed_at >= s->replay_last_submit_gen_at_eof.load(std::memory_order_acquire)) {
+            s->replay_demod_drained.store(1, std::memory_order_release);
+            demod_drained_now = 1;
+        }
+    }
+    dsd_cond_broadcast(&s->replay_eof_cond);
+    dsd_mutex_unlock(&s->replay_eof_m);
+    /* The acknowledgement can be what an event boundary waits for (rtl_replay_wait_event_boundary(), which waits on the
+       demand condition): a block that published nothing leaves the decoder nothing to acknowledge. */
+    dsd_mutex_lock(&output.ready_m);
+    dsd_cond_broadcast(&s->replay_demand_cond);
+    if (demod_drained_now) {
+        dsd_cond_signal(&output.ready);
+    }
+    dsd_mutex_unlock(&output.ready_m);
+}
+
+/* A replay input purge was applied: acknowledge the input it consumed, then count it applied, which lets the replay
+ * reader go on past its boundary (replay_wait_for_input_purge_applied()). A replay purges only at a RESET or a loop
+ * rewind, on an idle pipeline (rtl_replay_wait_event_boundary()), and the reader commits no chunk until the purge is
+ * counted. So the purge never finds a chunk to discard, and the newest generation submitted, which it acknowledges, is
+ * already acknowledged: none can be pending behind it. */
 static void
 replay_note_input_purge_consumed(void) {
-    if (!stream_is_replay_active() || !g_stream) {
+    struct RtlSdrInternals* s = g_stream;
+    if (!stream_is_replay_active() || !s) {
         return;
     }
-
-    uint64_t submitted_gen = g_stream->replay_last_submit_gen.load(std::memory_order_acquire);
-    uint64_t consumed_gen = replay_acknowledge_consumed_generation(&g_stream->replay_last_consume_gen, submitted_gen);
-    if (!g_stream->replay_input_eof.load(std::memory_order_acquire) || input_ring_used(&input_ring) != 0U) {
+    replay_demod_drain_decide(s->replay_last_submit_gen.load(std::memory_order_acquire));
+    if (!s->replay_eof_sync_inited) {
         return;
     }
-
-    g_stream->replay_input_drained.store(1, std::memory_order_release);
-    uint64_t eof_gen = g_stream->replay_last_submit_gen_at_eof.load(std::memory_order_acquire);
-    if (consumed_gen >= eof_gen && !g_stream->replay_demod_drained.load(std::memory_order_acquire)) {
-        g_stream->replay_demod_drained.store(1, std::memory_order_release);
-        safe_cond_signal(&output.ready, &output.ready_m);
-    }
-    if (g_stream->replay_eof_sync_inited) {
-        dsd_mutex_lock(&g_stream->replay_eof_m);
-        dsd_cond_broadcast(&g_stream->replay_eof_cond);
-        dsd_mutex_unlock(&g_stream->replay_eof_m);
-    }
+    dsd_mutex_lock(&s->replay_eof_m);
+    g_ring_purge_done_seq.fetch_add(1U, std::memory_order_acq_rel);
+    dsd_cond_broadcast(&s->replay_eof_cond);
+    dsd_mutex_unlock(&s->replay_eof_m);
 }
 
 static void rtl_replay_on_retune_event(const dsd_iq_event* event, void* user);
@@ -1861,6 +2045,35 @@ demod_log_post_retune_state(const struct demod_state* s, const DemodRetuneResetP
                 s->ted_state.mu);
 }
 
+#if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
+/* The last reset plan applied to the stream's demodulator (rtl_stream_test_get_last_reset_plan()). */
+static std::mutex g_test_last_reset_plan_mutex;
+static rtl_stream_test_reset_plan g_test_last_reset_plan = {};
+static int g_test_have_last_reset_plan = 0;
+
+static void
+rtl_stream_test_note_reset_plan(const DemodRetuneResetPlan& plan) {
+    std::lock_guard<std::mutex> lock(g_test_last_reset_plan_mutex);
+    DSD_SNPRINTF(g_test_last_reset_plan.reason, sizeof(g_test_last_reset_plan.reason), "%s",
+                 retune_reset_reason_name(plan.reason));
+    g_test_last_reset_plan.previous_center_hz = plan.previous_center_freq_hz;
+    g_test_last_reset_plan.next_center_hz = plan.next_center_freq_hz;
+    g_test_last_reset_plan.reset_retained_fll = plan.reset_retained_fll ? 1 : 0;
+    g_test_last_reset_plan.restored_cached_fll = plan.restore_cached_fll ? 1 : 0;
+    g_test_have_last_reset_plan = 1;
+}
+
+extern "C" int
+rtl_stream_test_get_last_reset_plan(rtl_stream_test_reset_plan* out) {
+    if (!out) {
+        return -1;
+    }
+    std::lock_guard<std::mutex> lock(g_test_last_reset_plan_mutex);
+    *out = g_test_last_reset_plan;
+    return g_test_have_last_reset_plan ? 0 : -1;
+}
+#endif
+
 static DemodRetuneResetPlan
 demod_reset_on_retune(struct demod_state* s, DemodRetuneResetPlan plan) {
     if (!s) {
@@ -1883,6 +2096,11 @@ demod_reset_on_retune(struct demod_state* s, DemodRetuneResetPlan plan) {
     }
     demod_reset_histories_for_output_mode(s);
     demod_log_post_retune_state(s, plan, fll_freq_before);
+#if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
+    if (s == &demod) {
+        rtl_stream_test_note_reset_plan(plan);
+    }
+#endif
     return plan;
 }
 
@@ -2269,6 +2487,8 @@ struct DemodInputSpan {
     int got;
     int direct_input_span;
     float* input_block;
+    int replay; /* an I/Q replay block: chunk holds the capture chunk's metadata */
+    struct rtl_replay_chunk_meta chunk;
 };
 
 struct DemodRetuneDiagBlock {
@@ -2290,9 +2510,10 @@ struct DemodAutogainState {
     int low = 0;
     int manual_target = 180;
     int target_initialized = 0;
-    std::chrono::steady_clock::time_point next_allowed = std::chrono::steady_clock::now();
-    std::chrono::steady_clock::time_point hold_until{};
-    std::chrono::steady_clock::time_point probe_until{};
+    /* Real monotonic ns: tuner gain control is device timing. 0 is unset for the hold and the probe. */
+    uint64_t next_allowed_ns = dsd_realtime_mono_ns();
+    uint64_t hold_until_ns = 0U;
+    uint64_t probe_until_ns = 0U;
     uint32_t last_freq = 0U;
     uint32_t last_reconfigure_seq = 0U;
     int probe_ms = 3000;
@@ -2333,7 +2554,7 @@ demod_wait_for_watermark_if_needed(void) {
         return 0;
     }
     struct input_ring_watermark* wm = &g_stream->watermark;
-    watermark_periodic_adjust(wm, dsd_time_monotonic_ns());
+    watermark_periodic_adjust(wm, dsd_realtime_mono_ns());
     int control_work_pending = 0;
     while (1) {
         if (g_ring_purge_pending.load(std::memory_order_acquire)
@@ -2347,7 +2568,7 @@ demod_wait_for_watermark_if_needed(void) {
             break;
         }
         if (!was_paused) {
-            watermark_on_low_event(wm, dsd_time_monotonic_ns());
+            watermark_on_low_event(wm, dsd_realtime_mono_ns());
         }
         dsd_sleep_ms(5);
         if (demod_should_exit_requested()) {
@@ -2358,7 +2579,7 @@ demod_wait_for_watermark_if_needed(void) {
             control_work_pending = 1;
             break;
         }
-        watermark_periodic_adjust(wm, dsd_time_monotonic_ns());
+        watermark_periodic_adjust(wm, dsd_realtime_mono_ns());
     }
     if (demod_should_exit_requested() || control_work_pending) {
         return 1;
@@ -2373,6 +2594,7 @@ demod_should_pause_before_read(int is_rtltcp_input) {
         return 1;
     }
     if (g_ring_purge_pending.exchange(0, std::memory_order_acq_rel)) {
+        RTL_REPLAY_TEST_STAGE(RTL_STREAM_TEST_REPLAY_DEMOD_PURGE_TAKEN, 0U);
         input_ring_discard_all_consumer(&input_ring);
         replay_note_input_purge_consumed();
         return 1;
@@ -2400,6 +2622,8 @@ demod_input_span_init(DemodInputSpan* span) {
     span->got = 0;
     span->direct_input_span = 0;
     span->input_block = NULL;
+    span->replay = 0;
+    span->chunk = rtl_replay_chunk_meta{};
 }
 
 static void
@@ -2484,6 +2708,30 @@ demod_read_input_block(const struct demod_state* d, DemodInputSpan* span) {
     span->direct_input_span =
         (span->ring_p1 && span->ring_n1 == (size_t)span->got && (!span->ring_p2 || span->ring_n2 == 0)) ? 1 : 0;
     span->reserved_count = (size_t)span->got;
+    span->replay = stream_is_replay_active();
+    if (span->replay && g_stream) {
+        /* In replay the ring holds exactly one capture chunk (the reader commits a chunk only into an empty ring), and
+           this block takes all of it. Its metadata is copied now, before any of it is released: once the ring is
+           empty the reader writes the next chunk's. */
+        span->chunk = g_stream->replay_chunk;
+    }
+    RTL_REPLAY_TEST_STAGE(RTL_STREAM_TEST_REPLAY_DEMOD_AFTER_RESERVE, span->reserved_count);
+#if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
+    if (g_test_replay_block_hook && span->replay) {
+        rtl_stream_test_replay_block block = {};
+        block.sequence = span->chunk.sequence;
+        block.submit_gen = span->chunk.submit_gen;
+        block.media_start_ns = span->chunk.media_start_ns;
+        block.media_end_ns = span->chunk.media_end_ns;
+        block.have_input_level = span->chunk.have_input_level;
+        block.float_count = span->reserved_count;
+        block.p1 = span->ring_p1;
+        block.n1 = span->ring_n1;
+        block.p2 = span->ring_p2;
+        block.n2 = span->ring_n2;
+        g_test_replay_block_hook(&block, g_test_replay_block_ctx);
+    }
+#endif
     return 1;
 }
 
@@ -2499,6 +2747,7 @@ demod_prepare_input_block(struct demod_state* d, DemodInputSpan* span) {
         if (span->got <= 0) {
             return 0;
         }
+        RTL_REPLAY_TEST_STAGE(RTL_STREAM_TEST_REPLAY_DEMOD_WRAPPED_RELEASED, (size_t)span->got);
     }
     span->input_block = span->direct_input_span ? span->ring_p1 : d->input_cb_buf;
     return 1;
@@ -2551,24 +2800,9 @@ demod_log_retune_diag_block(const struct demod_state* d, int got, const DemodRet
 
 static DemodAutogainState&
 demod_autogain_state(void) {
-    static DemodAutogainState state = {0,
-                                       0,
-                                       0,
-                                       0,
-                                       180,
-                                       0,
-                                       std::chrono::steady_clock::now(),
-                                       std::chrono::steady_clock::time_point{},
-                                       std::chrono::steady_clock::time_point{},
-                                       0U,
-                                       0U,
-                                       3000,
-                                       300,
-                                       6.0,
-                                       0.60,
-                                       30,
-                                       2,
-                                       0};
+    static DemodAutogainState state = {
+        0, 0, 0, 0, 180, 0, dsd_realtime_mono_ns(), 0U, 0U, 0U, 0U, 3000, 300, 6.0, 0.60, 30, 2, 0,
+    };
     return state;
 }
 
@@ -2591,11 +2825,11 @@ demod_autogain_reset_window(DemodAutogainState* st, uint32_t current_freq_hz, ui
     st->last_freq = current_freq_hz;
     st->last_reconfigure_seq = current_reconfigure_seq;
     st->blocks = st->high = st->low = 0;
-    st->hold_until = std::chrono::steady_clock::now() + std::chrono::milliseconds(1200);
+    st->hold_until_ns = dsd_realtime_mono_ns() + 1200ULL * 1000000ULL;
     if (st->probe_ms > 0) {
-        st->probe_until = std::chrono::steady_clock::now() + std::chrono::milliseconds(st->probe_ms);
+        st->probe_until_ns = dsd_realtime_mono_ns() + (uint64_t)st->probe_ms * 1000000ULL;
     } else {
-        st->probe_until = std::chrono::steady_clock::time_point{};
+        st->probe_until_ns = 0U;
     }
     st->spec_pass = 0;
 }
@@ -2734,7 +2968,7 @@ demod_autogain_spectral_gate_ok(DemodAutogainState* st, const struct demod_state
 }
 
 static void
-demod_autogain_probe_handle(DemodAutogainState* st, const std::chrono::steady_clock::time_point& now) {
+demod_autogain_probe_handle(DemodAutogainState* st, uint64_t now_ns) {
     if (!st || st->high < 3) {
         return;
     }
@@ -2742,13 +2976,13 @@ demod_autogain_probe_handle(DemodAutogainState* st, const std::chrono::steady_cl
     st->manual_target = demod_autogain_clamp_db10(seed - 50);
     rtl_device_set_gain_nearest(rtl_device_handle, st->manual_target);
     dongle.gain = st->manual_target;
-    st->next_allowed = now + std::chrono::milliseconds(1500);
+    st->next_allowed_ns = now_ns + 1500ULL * 1000000ULL;
     LOG_INFO("AUTOGAIN: exiting probe due to clipping; set ~%d.%d dB.\n", st->manual_target / 10,
              st->manual_target % 10);
 }
 
 static void
-demod_autogain_bootstrap_if_low(DemodAutogainState* st, int is_auto, const std::chrono::steady_clock::time_point& now) {
+demod_autogain_bootstrap_if_low(DemodAutogainState* st, int is_auto, uint64_t now_ns) {
     if (!st || is_auto <= 0 || st->high != 0 || st->low < (st->blocks * 3) / 4) {
         return;
     }
@@ -2756,19 +2990,18 @@ demod_autogain_bootstrap_if_low(DemodAutogainState* st, int is_auto, const std::
     rtl_device_set_gain_nearest(rtl_device_handle, kick);
     dongle.gain = kick;
     st->manual_target = kick;
-    st->next_allowed = now + std::chrono::milliseconds(1500);
+    st->next_allowed_ns = now_ns + 1500ULL * 1000000ULL;
     LOG_INFO("AUTOGAIN: bootstrapping from device auto to ~%d.%d dB due to low input level.\n", kick / 10, kick % 10);
 }
 
 static void
-demod_autogain_adjust_manual(DemodAutogainState* st, const struct demod_state* d,
-                             const std::chrono::steady_clock::time_point& now) {
+demod_autogain_adjust_manual(DemodAutogainState* st, const struct demod_state* d, uint64_t now_ns) {
     if (!st || !d) {
         return;
     }
     int is_auto = rtl_device_is_auto_gain(rtl_device_handle);
     bool changed = false;
-    demod_autogain_bootstrap_if_low(st, is_auto, now);
+    demod_autogain_bootstrap_if_low(st, is_auto, now_ns);
     if (st->high >= 3) {
         st->manual_target = demod_autogain_clamp_db10(st->manual_target - 50);
         changed = true;
@@ -2781,7 +3014,7 @@ demod_autogain_adjust_manual(DemodAutogainState* st, const struct demod_state* d
     }
     rtl_device_set_gain_nearest(rtl_device_handle, st->manual_target);
     dongle.gain = st->manual_target;
-    st->next_allowed = now + std::chrono::milliseconds(1500);
+    st->next_allowed_ns = now_ns + 1500ULL * 1000000ULL;
     st->spec_pass = 0;
     if (is_auto > 0) {
         LOG_INFO("AUTOGAIN: threshold hit; exiting device auto and setting ~%d.%d dB.\n", st->manual_target / 10,
@@ -2797,28 +3030,47 @@ demod_autogain_maybe_adjust(DemodAutogainState* st, const struct demod_state* d)
         return;
     }
     demod_autogain_latch_manual_target(st);
-    auto now = std::chrono::steady_clock::now();
-    bool in_hold = (st->hold_until.time_since_epoch().count() != 0) && (now < st->hold_until);
-    bool in_probe = (st->probe_until.time_since_epoch().count() != 0) && (now < st->probe_until)
-                    && (rtl_device_is_auto_gain(rtl_device_handle) > 0);
-    bool throttled = now < st->next_allowed;
+    const uint64_t now_ns = dsd_realtime_mono_ns();
+    bool in_hold = (st->hold_until_ns != 0U) && (now_ns < st->hold_until_ns);
+    bool in_probe =
+        (st->probe_until_ns != 0U) && (now_ns < st->probe_until_ns) && (rtl_device_is_auto_gain(rtl_device_handle) > 0);
+    bool throttled = now_ns < st->next_allowed_ns;
     if (!in_hold && !throttled) {
         if (in_probe) {
-            demod_autogain_probe_handle(st, now);
+            demod_autogain_probe_handle(st, now_ns);
         } else {
-            demod_autogain_adjust_manual(st, d, now);
+            demod_autogain_adjust_manual(st, d, now_ns);
         }
     }
     st->blocks = st->high = st->low = 0;
 }
 
+#if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
+/* Blocks the tuner autogain supervisor counted (rtl_stream_test_autogain_supervised_blocks()). */
+static std::atomic<uint64_t> g_test_autogain_supervised_blocks{0U};
+
+extern "C" uint64_t
+rtl_stream_test_autogain_supervised_blocks(void) {
+    return g_test_autogain_supervised_blocks.load(std::memory_order_acquire);
+}
+#endif
+
 static void
 demod_autogain_update(const struct demod_state* d, float input_mean_abs, float input_max_abs) {
+    /* An I/Q replay has no tuner gain to adjust, and the supervisor's hold and throttle windows run on real time: under
+     * replay it would only log adjustments on a wall-clock cadence. It stays out of a replay whatever raised the flag
+     * (stream open keeps it down there; a menu toggle or a retune profile can still raise it). */
+    if (stream_is_replay_active()) {
+        return;
+    }
     DemodAutogainState& st = demod_autogain_state();
     demod_autogain_init_once(&st);
     if (!g_tuner_autogain_on.load(std::memory_order_relaxed)) {
         return;
     }
+#if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
+    g_test_autogain_supervised_blocks.fetch_add(1U, std::memory_order_acq_rel);
+#endif
     uint32_t current_freq_hz = load_dongle_frequency();
     uint32_t current_reconfigure_seq = controller.reconfigure_seq.load(std::memory_order_acquire);
     if (st.last_freq != current_freq_hz || st.last_reconfigure_seq != current_reconfigure_seq) {
@@ -2834,10 +3086,10 @@ demod_autogain_update(const struct demod_state* d, float input_mean_abs, float i
     demod_autogain_maybe_adjust(&st, d);
 }
 
+/* Real monotonic ms for the SNR freshness stamps, which auto-PPM compares on the same clock (auto_ppm_now_ms()). */
 static long long
 demod_now_ms(void) {
-    auto now = std::chrono::steady_clock::now();
-    return std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
+    return (long long)dsd_realtime_mono_ms();
 }
 
 static DemodMetricsState&
@@ -3338,13 +3590,13 @@ demod_metrics_process(const struct demod_state* d, int perf_on) {
     if (!demod_metrics_due_for_block(&st, d)) {
         return 0ULL;
     }
-    uint64_t perf_metrics_start_ns = perf_on ? dsd_time_monotonic_ns() : 0ULL;
+    uint64_t perf_metrics_start_ns = perf_on ? dsd_realtime_mono_ns() : 0ULL;
     demod_metrics_capture_views(d);
     demod_metrics_update_snr(d, &st);
     if (!perf_on) {
         return 0ULL;
     }
-    return dsd_time_monotonic_ns() - perf_metrics_start_ns;
+    return dsd_realtime_mono_ns() - perf_metrics_start_ns;
 }
 
 static void
@@ -3352,51 +3604,46 @@ demod_update_replay_drain_state(int replay_active, uint64_t consumed_gen) {
     if (!replay_active || !g_stream) {
         return;
     }
-    uint64_t consumed_at = replay_acknowledge_consumed_generation(&g_stream->replay_last_consume_gen, consumed_gen);
-    if (g_stream->replay_demod_drained.load(std::memory_order_acquire)) {
+    RTL_REPLAY_TEST_STAGE(RTL_STREAM_TEST_REPLAY_DEMOD_DRAIN_DECISION, 0U);
+    replay_demod_drain_decide(consumed_gen);
+}
+
+/* The demod thread is leaving a replay: nothing more reaches the output ring, so report the demod drained. A decoder
+ * that waits for the rest of the stream (a stop arriving after input EOF, before the demod drained) then reads what the
+ * ring holds and ends. */
+static void
+demod_mark_replay_drained_on_exit(void) {
+    if (!stream_is_replay_active() || !g_stream || !g_stream->replay_eof_sync_inited) {
         return;
     }
-    int input_drained = g_stream->replay_input_drained.load(std::memory_order_acquire);
-    if (!input_drained && g_stream->replay_input_eof.load(std::memory_order_acquire)
-        && input_ring_used(&input_ring) == 0U) {
-        g_stream->replay_input_drained.store(1, std::memory_order_release);
-        input_drained = 1;
-        if (g_stream->replay_eof_sync_inited) {
-            dsd_mutex_lock(&g_stream->replay_eof_m);
-            dsd_cond_broadcast(&g_stream->replay_eof_cond);
-            dsd_mutex_unlock(&g_stream->replay_eof_m);
-        }
-    }
-    uint64_t eof_gen = g_stream->replay_last_submit_gen_at_eof.load(std::memory_order_acquire);
-    if (input_drained && consumed_at >= eof_gen) {
-        g_stream->replay_demod_drained.store(1, std::memory_order_release);
-        if (g_stream->replay_eof_sync_inited) {
-            dsd_mutex_lock(&g_stream->replay_eof_m);
-            dsd_cond_broadcast(&g_stream->replay_eof_cond);
-            dsd_mutex_unlock(&g_stream->replay_eof_m);
-        }
-        safe_cond_signal(&output.ready, &output.ready_m);
-    }
+    dsd_mutex_lock(&g_stream->replay_eof_m);
+    g_stream->replay_demod_drained.store(1, std::memory_order_release);
+    dsd_cond_broadcast(&g_stream->replay_eof_cond);
+    dsd_mutex_unlock(&g_stream->replay_eof_m);
+    safe_cond_signal(&output.ready, &output.ready_m);
 }
 
 static void
 demod_discard_iteration_input(DemodInputSpan* span) {
     demod_input_span_commit_reserved(span);
-    if (!stream_is_replay_active() || !g_stream) {
+    if (!span || !span->replay || !g_stream) {
         return;
     }
+    RTL_REPLAY_TEST_STAGE(RTL_STREAM_TEST_REPLAY_DEMOD_DISCARD_RELEASED, (size_t)(span->got > 0 ? span->got : 0));
 
     /* Rewind/RESET boundaries wait for both an empty ring and the submitted
      * generation to be acknowledged. A controller gate can discard the final
      * reserved span, so publish that consumption even though it produced no
-     * demodulated output. */
-    uint64_t submitted_gen = g_stream->replay_last_submit_gen.load(std::memory_order_acquire);
-    demod_update_replay_drain_state(1, submitted_gen);
+     * demodulated output: the generation of the chunk this span holds, never
+     * one the reader numbered after it. */
+    demod_update_replay_drain_state(1, span->chunk.submit_gen);
 }
 
 static void
 demod_maybe_signal_squelch_hop(struct demod_state* d) {
-    if (!d) {
+    /* A block the front end made no samples for decided no squelch: channel_squelched still holds the block before's
+       verdict, which already counted. */
+    if (!d || d->front_end_empty) {
         return;
     }
     if (d->channel_squelch_level.load(std::memory_order_relaxed) > 0.0f && d->channel_squelched) {
@@ -3479,11 +3726,10 @@ demod_write_output_samples_interruptible(struct output_state* o, const float* da
     return written;
 }
 
+/* The block's output as the ring takes it: resampled and scaled as its kind wants. Returns the sample count (0: none)
+ * and points @p out_data at the samples. */
 static size_t
-demod_write_output_block(struct demod_state* d, struct output_state* o) {
-    if (!d || !o) {
-        return 0U;
-    }
+demod_finish_output_block(struct demod_state* d, const float** out_data) {
     if (d->result_len <= 0) {
         return 0U;
     }
@@ -3503,12 +3749,191 @@ demod_write_output_block(struct demod_state* d, struct output_state* o) {
         if (scaled) {
             apply_output_scale(d, d->resamp_outbuf, out_n);
         }
-        return demod_write_output_samples_interruptible(o, d->resamp_outbuf, (size_t)out_n);
+        *out_data = d->resamp_outbuf;
+        return (size_t)out_n;
     }
     if (scaled) {
         apply_output_scale(d, d->result, d->result_len);
     }
-    return demod_write_output_samples_interruptible(o, d->result, (size_t)d->result_len);
+    *out_data = d->result;
+    return (size_t)d->result_len;
+}
+
+static size_t
+demod_write_output_block(struct demod_state* d, struct output_state* o) {
+    if (!d || !o) {
+        return 0U;
+    }
+    const float* data = NULL;
+    const size_t count = demod_finish_output_block(d, &data);
+    return count > 0U ? demod_write_output_samples_interruptible(o, data, count) : 0U;
+}
+
+/* ---------------- Replay decoder pacing (issue #572) ----------------
+ * Under --iq-replay the decoder paces the demod, so how the demod's blocks and the decoder's reads and requests
+ * interleave depends on the capture alone, not on the host's load or on how the decoder reads:
+ * - The demod starts a block only once the decoder waits in rtl_stream_read_replay() on an empty output ring and has
+ *   acknowledged every batch published (replay_out_acked == replay_out_written). The written count starts at 1, a
+ *   virtual block 0, so the first block waits for the decoder's first read.
+ * - It publishes the block's output as one batch in one critical section under output.ready_m: the head store, the
+ *   batch tag, written++ and the broadcast of output.ready. A block with no output publishes nothing, and the demod
+ *   goes on to the next block while the decoder still waits.
+ * - The decoder's empty check, acknowledgement and demand broadcast happen under the same lock.
+ * So the demod never starts a block while the decoder runs: a request, a clear or a snapshot the decoder makes lands at
+ * the start of the next block. Lock order: replay_eof_m, then output.ready_m. */
+
+/* The replay is stopping: a stop, a forced stop (the replay device's stop) or the global exit. */
+static int
+replay_pacing_stopped(const struct RtlSdrInternals* s) {
+    return (dsd_exitflag_load() || s->should_exit.load(std::memory_order_acquire)
+            || s->replay_forced_stop.load(std::memory_order_acquire))
+               ? 1
+               : 0;
+}
+
+/* The demod's wait for the decoder's demand before a block: 1 once the decoder waits on an empty output ring with
+ * every batch acknowledged, 0 when the replay stops. The wait is 10 ms at a time, so it sees a stop that wakes no
+ * condition, and a start that unwinds before any decoder has read returns. It runs outside demod_processing_active, so
+ * a gate waiting for an idle demod (controller_wait_for_demod_idle()) does not wait for it. */
+static int
+demod_wait_for_replay_demand(struct output_state* o) {
+    struct RtlSdrInternals* s = g_stream;
+    if (!s || !s->replay_eof_sync_inited || !o->buffer) {
+        return 1;
+    }
+    RTL_REPLAY_TEST_STAGE(RTL_STREAM_TEST_REPLAY_DEMOD_WAIT_FOR_DEMAND,
+                          (size_t)s->replay_out_written.load(std::memory_order_acquire));
+    const uint64_t wait_start_ns = dsd_realtime_mono_ns();
+    int demand = 0;
+    dsd_mutex_lock(&o->ready_m);
+    for (;;) {
+        if (ring_is_empty(o)
+            && s->replay_out_acked.load(std::memory_order_relaxed)
+                   == s->replay_out_written.load(std::memory_order_relaxed)) {
+            demand = 1;
+            break;
+        }
+        if (replay_pacing_stopped(s)) {
+            break;
+        }
+        (void)dsd_cond_timedwait(&s->replay_demand_cond, &o->ready_m, 10);
+        if (!s->replay_demand_warned && dsd_realtime_mono_ns() - wait_start_ns > 5000000000ULL
+            && rtl_stream_receive_request_outcome(rtl_stream_receive_request_seq()) == RTL_STREAM_RX_REQUEST_PENDING) {
+            s->replay_demand_warned = 1;
+            dsd_mutex_unlock(&o->ready_m);
+            LOG_WARN("IQ replay: the decoder has not asked for more output in 5 s while a receive request is pending; "
+                     "the request lands only once the decoder reads again.\n");
+            dsd_mutex_lock(&o->ready_m);
+        }
+    }
+    dsd_mutex_unlock(&o->ready_m);
+    return demand;
+}
+
+/* ---------------- Replay events on an idle pipeline (issue #572) ----------------
+ * The replay reader applies an event (RETUNE, MUTE, RESET) or a loop rewind only once the pipeline is idle: the input
+ * ring empty, every chunk submitted acknowledged (so its output is published), the output ring empty, and every batch
+ * published acknowledged by the decoder. The decoder then waits for the next block in rtl_stream_read_replay(), and the
+ * demod at its demand or input wait, so the event lands between the same two chunks and the same two decoder reads
+ * whoever reads, and a RESET's drain and gate find empty rings and drop nothing. The wait has no deadline and ends
+ * only on a stop, a forced stop or the global exit. It waits on the demand condition, which the decoder's
+ * acknowledgement and the demod's (replay_demod_drain_decide()) both broadcast. */
+
+/* Under output.ready_m: the pipeline is idle for an event. */
+static int
+replay_pipeline_idle_locked(const struct RtlSdrInternals* s) {
+    return (input_ring_used(&input_ring) == 0U
+            && s->replay_last_consume_gen.load(std::memory_order_acquire)
+                   >= s->replay_last_submit_gen.load(std::memory_order_acquire)
+            && ring_is_empty(&output)
+            && s->replay_out_acked.load(std::memory_order_relaxed)
+                   == s->replay_out_written.load(std::memory_order_relaxed))
+               ? 1
+               : 0;
+}
+
+/* rtl_replay_eof_state::wait_event_boundary: 1 once the pipeline is idle, 0 when the replay stops. */
+static int
+rtl_replay_wait_event_boundary(void* user) {
+    struct RtlSdrInternals* s = static_cast<RtlSdrInternals*>(user);
+    if (!s || !s->replay_eof_sync_inited || !output.buffer) {
+        return 0;
+    }
+    int idle = 0;
+    dsd_mutex_lock(&output.ready_m);
+    for (;;) {
+        if (replay_pipeline_idle_locked(s)) {
+            idle = 1;
+            break;
+        }
+        if (replay_pacing_stopped(s)) {
+            break;
+        }
+        (void)dsd_cond_timedwait(&s->replay_demand_cond, &output.ready_m, 10);
+    }
+    dsd_mutex_unlock(&output.ready_m);
+    return idle;
+}
+
+/* The tag of a replay block's batch, but for its generation and count, which the publication fills in: the chunk it
+ * took and the profile and output it ran on, as the decoder reads them through the published mirrors. */
+static rtl_stream_replay_batch
+demod_replay_batch_tag(const DemodInputSpan* span, const struct output_state* o) {
+    rtl_stream_replay_batch tag = {};
+    tag.chunk_sequence = span->chunk.sequence;
+    tag.output_kind = g_pub_output_kind.load(std::memory_order_relaxed);
+    tag.channel_profile = g_pub_channel_profile.load(std::memory_order_relaxed);
+    tag.symbol_rate_hz = g_pub_symbol_rate.load(std::memory_order_relaxed);
+    tag.symbol_levels = g_pub_symbol_levels.load(std::memory_order_relaxed);
+    tag.output_rate_hz = o->rate.load(std::memory_order_relaxed);
+    tag.media_start_ns = span->chunk.media_start_ns;
+    tag.media_duration_ns = span->chunk.media_end_ns > span->chunk.media_start_ns
+                                ? span->chunk.media_end_ns - span->chunk.media_start_ns
+                                : 0U;
+    return tag;
+}
+
+/* The output ring holds any block's output with room to spare: the largest a block makes is resamp_outbuf, half the
+ * ring, so a replay batch published into the empty ring always goes in whole. */
+static_assert(sizeof(demod_state::resamp_outbuf) / sizeof(float) < kOutputRingCapacity,
+              "a replay block's output must fit the empty output ring");
+static_assert(sizeof(demod_state::result) / sizeof(float) < kOutputRingCapacity,
+              "a replay block's output must fit the empty output ring");
+
+/* Publish a replay block's output as one batch (see "Replay decoder pacing"). The demod started the block on an empty
+ * ring and nothing else writes to it, and an empty ring holds any block's output (the static_asserts above), so it goes
+ * in whole, without waiting for space. What would not fit is counted and logged, never dropped silently. Returns the
+ * samples published. */
+static size_t
+demod_publish_replay_output_block(struct demod_state* d, struct output_state* o, const DemodInputSpan* span) {
+    struct RtlSdrInternals* s = g_stream;
+    if (!d || !o || !o->buffer || !span || !s) {
+        return 0U;
+    }
+    const float* data = NULL;
+    const size_t count = demod_finish_output_block(d, &data);
+    if (count == 0U || demod_output_write_cancelled()) {
+        return 0U;
+    }
+    rtl_stream_replay_batch tag = demod_replay_batch_tag(span, o);
+    RTL_REPLAY_TEST_STAGE(RTL_STREAM_TEST_REPLAY_DEMOD_BEFORE_PUBLISH, count);
+    dsd_mutex_lock(&o->ready_m);
+    const size_t published = demod_copy_output_chunk(o, data, count, ring_free(o));
+    if (published > 0U) {
+        tag.output_generation = g_rtl_output_generation.load(std::memory_order_acquire);
+        tag.output_count = (uint32_t)published;
+        s->replay_published_batch = tag;
+        s->replay_batch_taken = 0U;
+        s->replay_out_written.fetch_add(1U, std::memory_order_acq_rel);
+        dsd_cond_broadcast(&o->ready);
+    }
+    dsd_mutex_unlock(&o->ready_m);
+    if (published < count) {
+        s->replay_output_truncated.fetch_add((uint64_t)(count - published), std::memory_order_acq_rel);
+        LOG_ERROR("IQ replay: %zu of a block's %zu output samples did not fit the output ring and were dropped.\n",
+                  count - published, count);
+    }
+    return published;
 }
 
 static double
@@ -3533,7 +3958,7 @@ demod_perf_log_block(int perf_on, uint64_t perf_output_start_ns, uint64_t perf_f
     if (!perf_on || !d) {
         return;
     }
-    uint64_t perf_output_write_ns = dsd_time_monotonic_ns() - perf_output_start_ns;
+    uint64_t perf_output_write_ns = dsd_realtime_mono_ns() - perf_output_start_ns;
     rtl_perf_record_demod_block(perf_full_demod_ns, perf_metrics_ns, perf_output_write_ns, (size_t)got,
                                 perf_output_samples);
     double snr_db = demod_perf_pick_snr_db(d);
@@ -3554,6 +3979,15 @@ demod_perf_log_block(int perf_on, uint64_t perf_output_start_ns, uint64_t perf_f
     rtl_perf_maybe_log(&snapshot);
 }
 
+#if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
+/* A test asked the demod to discard the replay block holding this span's chunk (rtl_stream_test_replay_discard_chunk()). */
+static int
+demod_test_replay_discard_requested(const DemodInputSpan* span) {
+    const uint64_t sequence = g_test_replay_discard_sequence.load(std::memory_order_acquire);
+    return (sequence != 0U && span->replay && span->chunk.sequence == sequence) ? 1 : 0;
+}
+#endif
+
 static int
 demod_prepare_iteration_input(struct demod_state* d, int is_rtltcp_input, DemodInputSpan* span,
                               DemodRetuneDiagBlock* retune_diag) {
@@ -3563,6 +3997,7 @@ demod_prepare_iteration_input(struct demod_state* d, int is_rtltcp_input, DemodI
     if (demod_should_pause_before_read(is_rtltcp_input)) {
         return 0;
     }
+    RTL_REPLAY_TEST_STAGE(RTL_STREAM_TEST_REPLAY_DEMOD_INPUT_WAIT, replay_test_blocks_published());
     if (!demod_read_input_block(d, span)) {
         return 0;
     }
@@ -3581,6 +4016,13 @@ demod_prepare_iteration_input(struct demod_state* d, int is_rtltcp_input, DemodI
         demod_leave_processing_block(&controller);
         return 0;
     }
+#if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
+    if (demod_test_replay_discard_requested(span)) {
+        demod_discard_iteration_input(span);
+        demod_leave_processing_block(&controller);
+        return 0;
+    }
+#endif
     int input_pairs = 0;
     float input_mean_abs = 0.0f;
     float input_max_abs = 0.0f;
@@ -3614,9 +4056,15 @@ demod_prepare_iteration_processing(const struct demod_state* d, const DemodInput
         return 0;
     }
     *consumed_gen = 0ULL;
-    *replay_active = stream_is_replay_active();
-    if (*replay_active && g_stream) {
-        *consumed_gen = g_stream->replay_last_submit_gen.load(std::memory_order_acquire);
+    *replay_active = span->replay;
+    if (*replay_active) {
+        /* The block starts: it acknowledges its own chunk's generation once its output is written (never one the
+           reader numbered since, which could still be outside the ring), and the chunk's input level is the one the
+           stream reports from now. */
+        *consumed_gen = span->chunk.submit_gen;
+        if (span->chunk.have_input_level) {
+            rtl_stream_input_level_publish(&span->chunk.input_level);
+        }
     }
     return 1;
 }
@@ -3637,6 +4085,19 @@ demod_feed_wideband_spectrum(const struct demod_state* d) {
                                        controller.last_applied_freq_hz.load(std::memory_order_acquire));
 }
 
+/* Hand a block's output to the decoder, unless a retune has the output gated: published as one batch in a paced replay
+ * (@p replay_pull), written into the ring otherwise. Returns the samples it took. */
+static size_t
+demod_emit_output_block(struct demod_state* d, struct output_state* o, const DemodInputSpan* span, int replay_pull) {
+    if (controller.retune_in_progress.load(std::memory_order_acquire)) {
+        return 0U;
+    }
+    RTL_REPLAY_TEST_STAGE(RTL_STREAM_TEST_REPLAY_DEMOD_BEFORE_OUTPUT_WRITE, 0U);
+    const size_t written = replay_pull ? demod_publish_replay_output_block(d, o, span) : demod_write_output_block(d, o);
+    RTL_REPLAY_TEST_STAGE(RTL_STREAM_TEST_REPLAY_DEMOD_AFTER_OUTPUT_WRITE, written);
+    return written;
+}
+
 static DSD_THREAD_RETURN_TYPE
 #if DSD_PLATFORM_WIN_NATIVE
     __stdcall
@@ -3646,7 +4107,12 @@ static DSD_THREAD_RETURN_TYPE
     struct output_state* o = &output;
     maybe_set_thread_realtime_and_affinity("DEMOD");
     const int is_rtltcp_input = (g_stream && radio_source_is_rtltcp(g_stream->opts)) ? 1 : 0;
+    /* An I/Q replay is paced by its decoder (see "Replay decoder pacing"); a live source runs free. */
+    const int replay_pull = stream_is_replay_active();
     while (!demod_should_exit_requested()) {
+        if (replay_pull && !demod_wait_for_replay_demand(o)) {
+            break;
+        }
         DemodInputSpan span = {};
         DemodRetuneDiagBlock retune_diag = {};
         if (!demod_prepare_iteration_input(d, is_rtltcp_input, &span, &retune_diag)) {
@@ -3660,7 +4126,7 @@ static DSD_THREAD_RETURN_TYPE
             continue;
         }
         int perf_on = rtl_perf_enabled();
-        uint64_t perf_full_start_ns = perf_on ? dsd_time_monotonic_ns() : 0ULL;
+        uint64_t perf_full_start_ns = perf_on ? dsd_realtime_mono_ns() : 0ULL;
         rtl_stream_consume_demod_profile_request();
         (void)rtl_stream_consume_fsk_modem_config_pending(d);
         (void)rtl_stream_consume_cqpsk_reacquire_pending(d);
@@ -3674,26 +4140,31 @@ static DSD_THREAD_RETURN_TYPE
         rtl_stream_publish_demod_profile_snapshot();
         rtl_stream_publish_ted_bias();
         rtl_stream_publish_fsk_phase_cfo_snapshot(d);
-        uint64_t perf_full_demod_ns = perf_on ? (dsd_time_monotonic_ns() - perf_full_start_ns) : 0ULL;
+        uint64_t perf_full_demod_ns = perf_on ? (dsd_realtime_mono_ns() - perf_full_start_ns) : 0ULL;
         demod_log_retune_diag_block(d, span.got, &retune_diag);
         demod_input_span_release_direct(d, &span);
         uint64_t perf_metrics_ns = demod_metrics_process(d, perf_on);
         if (d->exit_flag) {
             dsd_exitflag_store(1);
+            if (replay_active) {
+                replay_wake_all();
+            }
         }
         demod_maybe_signal_squelch_hop(d);
-        uint64_t perf_output_start_ns = perf_on ? dsd_time_monotonic_ns() : 0ULL;
-        size_t perf_output_samples =
-            controller.retune_in_progress.load(std::memory_order_acquire) ? 0U : demod_write_output_block(d, o);
-        /* A replay generation is consumed only after its demodulated output is
-         * committed. RESET/rewind boundaries use this generation to avoid
-         * entering the reconfigure gate between DSP processing and the output
-         * write, which would silently discard every pass of a short loop. */
+        uint64_t perf_output_start_ns = perf_on ? dsd_realtime_mono_ns() : 0ULL;
+        size_t perf_output_samples = demod_emit_output_block(d, o, &span, replay_pull);
+        /* A replay chunk's generation is consumed only after its demodulated
+         * output is committed. RESET/rewind boundaries use this generation to
+         * avoid entering the reconfigure gate between DSP processing and the
+         * output write, which would silently discard every pass of a short
+         * loop, and the EOF drain decision uses it so the decoder never takes
+         * the replay for ended while the final block's output is unwritten. */
         demod_update_replay_drain_state(replay_active, consumed_gen);
         demod_perf_log_block(perf_on, perf_output_start_ns, perf_full_demod_ns, perf_metrics_ns, span.got,
                              perf_output_samples, d);
         demod_leave_processing_block(&controller);
     }
+    demod_mark_replay_drained_on_exit();
     DSD_THREAD_RETURN;
 }
 
@@ -4287,6 +4758,12 @@ controller_refresh_analog_channel_for_rate(DemodRetuneResetReason reset_reason, 
     }
 }
 
+/* The target of the last external backend's retune that took its profile
+ * (rtl_stream_apply_pending_retune_profile_for_target()), or 0: before any, after an external landing that took no
+ * profile (the tuner moved all the same), and after every finalize (controller_finalize_rate_chain(), a stream open's
+ * or a controller retune's), whose demod reset leaves the filters on a centre no external landing chose. */
+static std::atomic<uint32_t> g_external_retune_freq_hz{0U};
+
 /* Returns 1 when @p retune_profile asked for an analog channel the demod rate the retune landed on cannot run: the
  * profile is refused (rtl_stream_apply_retune_profile()) and the front end keeps its receive profile, so the retune
  * reports failed. */
@@ -4299,6 +4776,11 @@ controller_finalize_rate_chain(struct controller_state* s, const dsd_opts* opts,
         return 0;
     }
     s->last_applied_freq_hz.store(center_freq_hz, std::memory_order_release);
+    /* The stream opens, or the controller retunes, here: the filters will hold this centre's samples, so the next
+       external landing starts them over whatever frequency it lands on, the last external target included (issue
+       #572). Every stream open runs this finalize, and a controller retune runs it under the reconfigure gate an
+       external landing takes, so the two never interleave. */
+    g_external_retune_freq_hz.store(0U, std::memory_order_release);
     /* Retunes keep the symbol profile the front end is on; only the timing SPS follows the new
      * output rate. Re-deriving it from the option flags here would snap a multi-protocol run back
      * to 4800/4 on every hop, discarding whatever the SPS hunt is parked on. */
@@ -4576,25 +5058,50 @@ controller_apply_reconfigure(struct controller_state* s, uint32_t center_freq_hz
     return apply_rc;
 }
 
+namespace {
+/* Where a replay boundary's input purge starts from (replay_input_purge_mark()). */
+struct ReplayPurgeMark {
+    uint64_t applied;   /* purges applied (g_ring_purge_done_seq) */
+    uint64_t requested; /* purge requests: the input ring's discard generation, which each bumps */
+};
+} // namespace
+
+/* Read before a replay boundary requests its input purge, to wait for that one (replay_wait_for_input_purge_applied()).
+ */
+static ReplayPurgeMark
+replay_input_purge_mark(void) {
+    return ReplayPurgeMark{g_ring_purge_done_seq.load(std::memory_order_acquire),
+                           input_ring_discard_generation(&input_ring)};
+}
+
+/* Wait, with no deadline, for the one input purge a replay boundary requested since @p mark to be applied (issue
+ * #572). The boundary runs on an idle pipeline, so the input ring is empty. Either the replay reader takes the flag
+ * itself, and acknowledges the purge, or the demod took it at the top of its loop, and the reader waits for the count
+ * to move, which the demod does only after it has discarded the input ring. The reader commits the next chunk only
+ * then: a demod that took the flag and had yet to discard would discard that chunk, the first after the boundary. A
+ * demod waiting for input on the empty ring cannot see the flag, which is why the reader may take it. One request per
+ * wait: with two, the demod could still be discarding for the first while the reader took the second. The wait ends
+ * early only on a stop, a forced stop or the global exit, or at once when nothing was requested. */
 static void
-replay_wait_for_input_purge_applied(void) {
-    uint64_t deadline_ns = dsd_time_monotonic_ns() + 100000000ULL;
-    while (g_ring_purge_pending.load(std::memory_order_acquire) && !dsd_exitflag_load()
-           && !(g_stream && g_stream->should_exit.load(std::memory_order_acquire))
-           && dsd_time_monotonic_ns() < deadline_ns) {
-        /* Replay callbacks run on the sole producer after the controller has
-         * waited for demod processing to go idle. If the ring is already
-         * empty, there is no consumer-owned tail to advance and no producer
-         * reservation that can race this acknowledgement. Waking a consumer
-         * blocked on an empty-ring predicate cannot make it observe the purge,
-         * so complete it here instead of paying the full timeout every loop. */
-        if (input_ring_used(&input_ring) == 0U && g_ring_purge_pending.exchange(0, std::memory_order_acq_rel)) {
-            replay_note_input_purge_consumed();
-            break;
-        }
-        safe_cond_signal(&input_ring.ready, &input_ring.ready_m);
-        dsd_sleep_ms(1);
+replay_wait_for_input_purge_applied(ReplayPurgeMark mark) {
+    RTL_REPLAY_TEST_STAGE(RTL_STREAM_TEST_REPLAY_READER_PURGE_WAIT, 0U);
+    struct RtlSdrInternals* s = g_stream;
+    if (!s || !s->replay_eof_sync_inited || input_ring_discard_generation(&input_ring) == mark.requested) {
+        return;
     }
+    dsd_mutex_lock(&s->replay_eof_m);
+    while (!replay_pacing_stopped(s) && g_ring_purge_done_seq.load(std::memory_order_acquire) == mark.applied) {
+        if (g_ring_purge_pending.load(std::memory_order_acquire) && input_ring_used(&input_ring) == 0U
+            && g_ring_purge_pending.exchange(0, std::memory_order_acq_rel)) {
+            dsd_mutex_unlock(&s->replay_eof_m);
+            replay_note_input_purge_consumed();
+            dsd_mutex_lock(&s->replay_eof_m);
+            continue;
+        }
+        /* The demod took the flag and has yet to count the purge (it broadcasts eof_cond when it does). */
+        (void)dsd_cond_timedwait(&s->replay_eof_cond, &s->replay_eof_m, 10);
+    }
+    dsd_mutex_unlock(&s->replay_eof_m);
 }
 
 static void
@@ -4608,6 +5115,13 @@ rtl_replay_on_retune_event(const dsd_iq_event* event, void* user) {
         (event->capture_center_frequency_hz > UINT32_MAX) ? UINT32_MAX : (uint32_t)event->capture_center_frequency_hz;
     store_dongle_frequency(capture_hz);
     store_dongle_rate(event->sample_rate_hz);
+    /* The RESET that follows resets the demod from the centre it was last reset on, as the live retune this RETUNE
+     * records did (its finalize runs with the centre the retune left). A second RETUNE before that RESET keeps the
+     * first one's. */
+    if (g_replay_pending_previous_center_hz.load(std::memory_order_acquire) == 0U) {
+        g_replay_pending_previous_center_hz.store(controller.last_applied_freq_hz.load(std::memory_order_acquire),
+                                                  std::memory_order_release);
+    }
     /* The two inputs the wideband spectrum tap has, kept together with the move.
      * demod_feed_wideband_spectrum() reads load_dongle_rate() for the span and
      * last_applied_freq_hz for the centre, so leaving the centre behind publishes
@@ -4640,22 +5154,38 @@ rtl_replay_on_reset_event(const dsd_iq_event* event, void* user) {
     uint32_t center_hz = (event->center_frequency_hz > UINT32_MAX) ? UINT32_MAX : (uint32_t)event->center_frequency_hz;
     uint32_t capture_hz =
         (event->capture_center_frequency_hz > UINT32_MAX) ? UINT32_MAX : (uint32_t)event->capture_center_frequency_hz;
-    uint32_t previous_center_hz = controller.last_applied_freq_hz.load(std::memory_order_acquire);
+    /* The centre a RETUNE before this RESET left (rtl_replay_on_retune_event()), else the one the demod is on. */
+    const uint32_t pending_previous_hz = g_replay_pending_previous_center_hz.exchange(0U, std::memory_order_acq_rel);
+    uint32_t previous_center_hz = pending_previous_hz != 0U
+                                      ? pending_previous_hz
+                                      : controller.last_applied_freq_hz.load(std::memory_order_acquire);
     int previous_rate_out_hz = demod.rate_out;
     DemodRetuneResetReason reset_reason = retune_reset_reason_from_name(event->reason);
-    /* Replay data before a RESET is already fully demodulated. Preserve that
-     * ordered output before the reconfigure gate clears the ring; otherwise a
-     * short fast-mode loop can continually erase its own output before the
-     * consumer gets scheduled. */
+    /* The reader applies a RESET on an idle pipeline (rtl_replay_wait_event_boundary()), so the decoder has read the
+     * output of every sample before it, and the drain and the reconfigure gate find empty rings: they only invalidate
+     * the output generation. */
     drain_output_on_retune();
     store_dongle_frequency(capture_hz);
     store_dongle_rate(event->sample_rate_hz);
     controller_enter_reconfigure_gate(&controller);
-    controller_request_input_purge();
+    /* The finalize requests the input purge (controller_finalize_rate_chain()), the only request here, so the wait
+     * below waits for that one. */
+    const ReplayPurgeMark purge_mark = replay_input_purge_mark();
     controller_finalize_reconfigure(&controller, g_stream ? g_stream->opts : NULL, center_hz, reset_reason,
                                     previous_center_hz, previous_rate_out_hz, NULL);
+    /* The wait below is right for exactly one request: with none it returns at once, and with two the demod could still
+     * be discarding for the first while the reader took the second, and discard the first chunk after the boundary. A
+     * finalize that makes any other number is reported here rather than left to misplace that chunk unseen. */
+    const uint64_t purge_requests = input_ring_discard_generation(&input_ring) - purge_mark.requested;
+    g_replay_event_last_reset_purge_requests.store(purge_requests, std::memory_order_release);
+    if (purge_requests != 1U) {
+        g_replay_event_reset_purge_mismatch_count.fetch_add(1U, std::memory_order_acq_rel);
+        LOG_ERROR("Replay RESET at %u Hz made %llu input purge requests where its finalize makes exactly 1; the replay "
+                  "may lose or misplace the first chunk after it.\n",
+                  center_hz, (unsigned long long)purge_requests);
+    }
     controller_end_reconfigure(&controller);
-    replay_wait_for_input_purge_applied();
+    replay_wait_for_input_purge_applied(purge_mark);
     g_replay_event_last_reset_reason.store((int)reset_reason, std::memory_order_release);
     g_replay_event_last_frequency_hz.store(center_hz, std::memory_order_release);
     g_replay_event_reset_count.fetch_add(1U, std::memory_order_acq_rel);
@@ -4667,14 +5197,17 @@ rtl_replay_on_loop_restart(const dsd_iq_replay_config* cfg, void* user) {
     if (!cfg) {
         return;
     }
-    /* Rewind is an ordered replay boundary. Let the consumer take the final
-     * output from this pass before restoring the capture's initial settings. */
+    /* Rewind is an ordered replay boundary, applied on an idle pipeline like a RESET: the decoder has read the final
+     * output of this pass before the capture's initial settings come back. */
+    g_replay_pending_previous_center_hz.store(0U, std::memory_order_release);
     drain_output_on_retune();
     controller_enter_reconfigure_gate(&controller);
+    const ReplayPurgeMark purge_mark = replay_input_purge_mark();
     controller_request_input_purge();
+    /* A fresh-stream finalize, which requests no purge of its own. */
     (void)controller_apply_replay_settings(&controller, g_stream ? g_stream->opts : NULL, cfg);
     controller_end_reconfigure(&controller);
-    replay_wait_for_input_purge_applied();
+    replay_wait_for_input_purge_applied(purge_mark);
     g_replay_loop_restart_last_frequency_hz.store(controller.last_applied_freq_hz.load(std::memory_order_acquire),
                                                   std::memory_order_release);
     g_replay_loop_restart_count.fetch_add(1U, std::memory_order_acq_rel);
@@ -5731,7 +6264,7 @@ output_init(struct output_state* s) {
     dsd_cond_init(&s->space);
     dsd_mutex_init(&s->ready_m);
     /* Allocate SPSC ring buffer */
-    s->capacity = (size_t)(MAXIMUM_BUF_LENGTH * 8);
+    s->capacity = kOutputRingCapacity;
     /* Try aligned allocation for better vectorized copies; fall back if unavailable */
     {
         void* mem_ptr = dsd_neo_aligned_malloc(s->capacity * sizeof(float));
@@ -6277,6 +6810,7 @@ stream_prepare_internals(const dsd_opts* opts) {
 
     if (g_stream) {
         if (g_stream->replay_eof_sync_inited) {
+            (void)dsd_cond_destroy(&g_stream->replay_demand_cond);
             (void)dsd_cond_destroy(&g_stream->replay_eof_cond);
             (void)dsd_mutex_destroy(&g_stream->replay_eof_m);
         }
@@ -6313,6 +6847,13 @@ stream_prepare_internals(const dsd_opts* opts) {
         g_stream = NULL;
         return -1;
     }
+    if (dsd_cond_init(&g_stream->replay_demand_cond) != 0) {
+        (void)dsd_cond_destroy(&g_stream->replay_eof_cond);
+        (void)dsd_mutex_destroy(&g_stream->replay_eof_m);
+        free(g_stream);
+        g_stream = NULL;
+        return -1;
+    }
     g_stream->replay_eof_sync_inited = 1;
     stream_reset_replay_eof_state(g_stream);
 
@@ -6327,6 +6868,7 @@ stream_destroy_internals(void) {
         return;
     }
     if (g_stream->replay_eof_sync_inited) {
+        (void)dsd_cond_destroy(&g_stream->replay_demand_cond);
         (void)dsd_cond_destroy(&g_stream->replay_eof_cond);
         (void)dsd_mutex_destroy(&g_stream->replay_eof_m);
     }
@@ -6427,15 +6969,6 @@ stream_open_warn_low_dsp_bw(const dsd_opts* opts) {
     }
 }
 
-static short int
-stream_open_volume_multiplier(const dsd_opts* opts) {
-    int vm = opts ? opts->rtl_volume_multiplier : 1;
-    if (vm < 1 || vm > 3) {
-        vm = 1;
-    }
-    return (short int)vm;
-}
-
 static int
 stream_open_init_pipeline(const dsd_opts* opts, int demod_base_rate_hz) {
     dongle_init(&dongle);
@@ -6449,6 +6982,11 @@ stream_open_init_pipeline(const dsd_opts* opts, int demod_base_rate_hz) {
         LOG_ERROR("Failed to initialize input ring buffer.\n");
         return -1;
     }
+    /* A purge requested and never taken belongs to the stream that requested it: a stop can land between a RESET's or
+       a live retune's request and the demod's or the replay reader's take. Left set, it would discard this stream's
+       first input, a replay's chunk 1. The ring's discard generation starts again at input_ring_init(); the count of
+       purges applied only moves on, and a replay waits on it from a mark it takes before each request. */
+    g_ring_purge_pending.store(0, std::memory_order_release);
     input_ring_enable_space_notify(&input_ring, 0);
     controller_init(&controller);
     rtl_demod_config_from_env_and_opts(&demod, opts);
@@ -6461,8 +6999,9 @@ stream_open_init_pipeline(const dsd_opts* opts, int demod_base_rate_hz) {
 }
 
 static void
-stream_open_enable_default_autogain(const dsd_opts* opts) {
-    if (opts && dsd_opts_audio_in_dev_is_airspy_spec(opts->audio_in_dev)) {
+stream_open_enable_default_autogain(const dsd_opts* opts, RadioSourceKind source_kind) {
+    /* An I/Q replay has no tuner gain to adjust (demod_autogain_update() stays out of it too). */
+    if (source_kind == RADIO_SOURCE_IQ_REPLAY || (opts && dsd_opts_audio_in_dev_is_airspy_spec(opts->audio_in_dev))) {
         g_tuner_autogain_on.store(0);
         return;
     }
@@ -6507,12 +7046,16 @@ stream_open_fill_replay_eof_state(struct rtl_replay_eof_state* eof_state) {
     eof_state->replay_demod_drained = &g_stream->replay_demod_drained;
     eof_state->replay_output_drained = &g_stream->replay_output_drained;
     eof_state->replay_forced_stop = &g_stream->replay_forced_stop;
+    eof_state->replay_reader_exited = &g_stream->replay_reader_exited;
     eof_state->replay_last_submit_gen = &g_stream->replay_last_submit_gen;
     eof_state->replay_last_submit_gen_at_eof = &g_stream->replay_last_submit_gen_at_eof;
     eof_state->replay_last_consume_gen = &g_stream->replay_last_consume_gen;
+    eof_state->chunk = &g_stream->replay_chunk;
     eof_state->eof_m = &g_stream->replay_eof_m;
     eof_state->eof_cond = &g_stream->replay_eof_cond;
     eof_state->on_input_drained = rtl_replay_on_input_drained;
+    eof_state->wake_all = rtl_replay_wake_all;
+    eof_state->wait_event_boundary = rtl_replay_wait_event_boundary;
     eof_state->on_retune_event = rtl_replay_on_retune_event;
     eof_state->on_mute_event = rtl_replay_on_mute_event;
     eof_state->on_reset_event = rtl_replay_on_reset_event;
@@ -7123,14 +7666,14 @@ stream_open_start_replay_pipeline(void) {
     if (g_stream) {
         g_stream->demod_thread_started.store(1, std::memory_order_release);
     }
+    RTL_REPLAY_TEST_STAGE(RTL_STREAM_TEST_REPLAY_READER_START, 0U);
     LOG_INFO("Starting IQ replay reader...\n");
     if (rtl_device_start_async(rtl_device_handle, (uint32_t)ACTUAL_BUF_LENGTH) != 0) {
         LOG_ERROR("Failed to start replay reader thread.\n");
         if (g_stream) {
             g_stream->should_exit.store(1, std::memory_order_release);
         }
-        safe_cond_signal(&input_ring.ready, &input_ring.ready_m);
-        safe_cond_signal(&output.ready, &output.ready_m);
+        replay_wake_all();
         dsd_thread_join(demod.thread);
         if (g_stream) {
             g_stream->demod_thread_started.store(0, std::memory_order_release);
@@ -7204,11 +7747,10 @@ stream_open_configure_pipeline_state(dsd_opts* opts, RadioSourceKind source_kind
 
     rtl_dsp_bw_hz = opts->rtl_dsp_bw_khz * 1000;
     stream_open_warn_low_dsp_bw(opts);
-    volume_multiplier = stream_open_volume_multiplier(opts);
     if (stream_open_init_pipeline(opts, rtl_dsp_bw_hz) != 0) {
         return -1;
     }
-    stream_open_enable_default_autogain(opts);
+    stream_open_enable_default_autogain(opts, source_kind);
     setup_initial_freq_and_rate(opts);
     if (!output.rate) {
         output.rate = demod.rate_out;
@@ -7359,6 +7901,7 @@ dsd_rtl_stream_soft_stop(void) {
     LOG_INFO("soft stopping...\n");
     ControllerRetuneCancellation cancelled_retune = {};
     rtl_stream_bump_output_generation();
+    const int replay_stream = stream_is_replay_active();
     if (g_stream) {
         g_stream->replay_forced_stop.store(1, std::memory_order_release);
         g_stream->should_exit.store(1, std::memory_order_release);
@@ -7366,6 +7909,9 @@ dsd_rtl_stream_soft_stop(void) {
             dsd_opts* mutable_opts = const_cast<dsd_opts*>(g_stream->opts);
             mutable_opts->iq_replay_active = 0;
         }
+    }
+    if (replay_stream) {
+        replay_wake_all();
     }
     if (g_stream) {
         cancelled_retune = controller_detach_queued_manual_retune(&controller);
@@ -7411,10 +7957,10 @@ dsd_rtl_stream_soft_stop(void) {
     return 0;
 }
 
+/* Real monotonic ms: auto-PPM trains the device against live SNR, stamped by demod_now_ms() on the same clock. */
 static uint64_t
 auto_ppm_now_ms(void) {
-    auto now = std::chrono::steady_clock::now();
-    return (uint64_t)std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
+    return dsd_realtime_mono_ms();
 }
 
 static double
@@ -7606,13 +8152,7 @@ rtl_stream_replay_mark_output_drained(void) {
     }
     g_stream->replay_output_drained.store(1, std::memory_order_release);
     g_stream->should_exit.store(1, std::memory_order_release);
-    safe_cond_signal(&input_ring.ready, &input_ring.ready_m);
-    safe_cond_signal(&output.ready, &output.ready_m);
-    if (g_stream->replay_eof_sync_inited) {
-        dsd_mutex_lock(&g_stream->replay_eof_m);
-        dsd_cond_broadcast(&g_stream->replay_eof_cond);
-        dsd_mutex_unlock(&g_stream->replay_eof_m);
-    }
+    replay_wake_all();
 }
 
 static int
@@ -7687,50 +8227,165 @@ rtl_stream_read_live(float* out, size_t count, dsd_opts* opts, const dsd_state* 
     sync_requested_ppm_to_controller(opts);
 
     int perf_on = rtl_perf_enabled();
-    uint64_t perf_read_start_ns = perf_on ? dsd_time_monotonic_ns() : 0ULL;
+    uint64_t perf_read_start_ns = perf_on ? dsd_realtime_mono_ns() : 0ULL;
     int got = rtl_stream_read_live_samples(out, count);
     if (got <= 0) {
         return -1;
     }
     if (perf_on) {
-        rtl_perf_record_consumer_read(dsd_time_monotonic_ns() - perf_read_start_ns, (size_t)got);
+        rtl_perf_record_consumer_read(dsd_realtime_mono_ns() - perf_read_start_ns, (size_t)got);
     }
     return got;
 }
 
+/* The decoder took @p n samples of the batch in the output ring (see "Replay decoder pacing"): the tag
+ * rtl_stream_get_replay_batch() reports from now, with the samples' place in the batch. Called with output.ready_m
+ * held, as the batch's publication was. */
+static void
+replay_note_batch_read_locked(size_t n) {
+    struct RtlSdrInternals* s = g_stream;
+    if (!s) {
+        return;
+    }
+    s->replay_read_batch = s->replay_published_batch;
+    s->replay_read_batch.first_index = s->replay_batch_taken;
+    s->replay_batch_taken += (uint32_t)n;
+    s->replay_have_read_batch = 1;
+}
+
+/* ring_read_available() for the replay read: two memcpy segments instead of a per-sample loop, under ready_m, and
+ * never a wait. It returns 0 when a clear (rtl_stream_clear_output_ring()) emptied the ring after the caller saw it
+ * occupied, so the caller looks again instead of waiting in a read nothing may ever satisfy. It notes what it took of
+ * the ring's batch under the same lock. */
+static int
+ring_read_available_copy(struct output_state* o, float* out, size_t count) {
+    if (!o || !o->buffer || !out || count == 0U) {
+        return 0;
+    }
+    dsd_mutex_lock(&o->ready_m);
+    size_t used = ring_used(o);
+    size_t n = (count < used) ? count : used;
+    if (n > 0U) {
+        size_t t = o->tail.load();
+        size_t to_end = o->capacity - t;
+        size_t first = (n < to_end) ? n : to_end;
+        DSD_MEMCPY(out, o->buffer + t, first * sizeof(float));
+        if (n > first) {
+            DSD_MEMCPY(out + first, o->buffer, (n - first) * sizeof(float));
+        }
+        t += n;
+        if (t >= o->capacity) {
+            t -= o->capacity;
+        }
+        o->tail.store(t);
+        replay_note_batch_read_locked(n);
+        dsd_cond_signal(&o->space);
+    }
+    dsd_mutex_unlock(&o->ready_m);
+    return (int)n;
+}
+
+extern "C" int
+rtl_stream_get_replay_batch(rtl_stream_replay_batch* out) {
+    if (!out) {
+        return -1;
+    }
+    *out = rtl_stream_replay_batch{};
+    if (!g_stream || !output.buffer || !stream_is_replay_active()) {
+        return -1;
+    }
+    dsd_mutex_lock(&output.ready_m);
+    const int have = g_stream->replay_have_read_batch;
+    if (have) {
+        *out = g_stream->replay_read_batch;
+    }
+    dsd_mutex_unlock(&output.ready_m);
+    return have ? 0 : -1;
+}
+
+/* Nothing more will reach the output ring: the demod drained the replay input, or the replay reader left without
+ * marking EOF, which the decoder takes as EOF. */
+static int
+rtl_stream_replay_input_finished(void) {
+    if (!g_stream) {
+        return 1;
+    }
+    if (g_stream->replay_demod_drained.load(std::memory_order_acquire)) {
+        return 1;
+    }
+    return (g_stream->replay_reader_exited.load(std::memory_order_acquire)
+            && !g_stream->replay_input_eof.load(std::memory_order_acquire))
+               ? 1
+               : 0;
+}
+
+static int
+rtl_stream_replay_read_stopped(void) {
+    return (!g_stream || g_stream->replay_forced_stop.load(std::memory_order_acquire) || dsd_exitflag_load()) ? 1 : 0;
+}
+
+/* The decoder waits on the empty output ring (see "Replay decoder pacing"): acknowledge every batch published, wake the
+ * demod for the next block, then wait 10 ms on output.ready for its output or the end of the stream, which a stop also
+ * cuts short. The empty check, the acknowledgement and the demand happen under output.ready_m, the lock the demod
+ * publishes a batch and waits for demand under. This is the one place the decoder asks for output: every decoder read
+ * of a replay comes through rtl_stream_read_replay(). */
+static void
+rtl_stream_replay_wait_for_output(void) {
+    struct RtlSdrInternals* s = g_stream;
+    dsd_mutex_lock(&output.ready_m);
+    if (ring_is_empty(&output)) {
+        if (s && s->replay_eof_sync_inited) {
+            s->replay_out_acked.store(s->replay_out_written.load(std::memory_order_relaxed), std::memory_order_release);
+            dsd_cond_broadcast(&s->replay_demand_cond);
+        }
+        if (!rtl_stream_replay_input_finished() && !rtl_stream_replay_read_stopped()) {
+            (void)dsd_cond_timedwait(&output.ready, &output.ready_m, 10);
+        }
+    }
+    dsd_mutex_unlock(&output.ready_m);
+}
+
+/* The decoder's replay read. It never blocks inside a ring read, whose waits know nothing of a replay's end. It reads
+ * the end-of-stream facts before it looks at the ring: the demod is reported drained only once it has acknowledged the
+ * last chunk, which it does after that chunk's output is in the ring (replay_demod_drain_decide()), so a drained demod
+ * seen first means the ring already holds all of it, and an empty ring then is the end.
+ *
+ * Only that empty read ends the stream (output drained, should_exit), never the read that takes the last samples, even
+ * with the end already known. The decoder decodes those samples between the two reads, with the stream still open:
+ * what it asks the stream meanwhile (the input level, the decode health, whether the stream is active) cannot depend
+ * on whether the reader had reached the capture's end by the last read, which a fast replay has and a realtime one,
+ * still pacing, has not. */
 static int
 rtl_stream_read_replay(float* out, size_t count) {
     for (;;) {
         if (!output.buffer || !g_stream) {
             return -1;
         }
-        if (g_stream->replay_forced_stop.load(std::memory_order_acquire) || dsd_exitflag_load()) {
+        if (rtl_stream_replay_read_stopped()) {
             return -1;
         }
+        const int finished = rtl_stream_replay_input_finished();
         size_t used = ring_used(&output);
-        if (used > 0) {
-            size_t want = (count < used) ? count : used;
+        if (used > 0U) {
+            RTL_REPLAY_TEST_STAGE(RTL_STREAM_TEST_REPLAY_DECODER_OUTPUT_FOUND, used);
             int perf_on = rtl_perf_enabled();
-            uint64_t perf_read_start_ns = perf_on ? dsd_time_monotonic_ns() : 0ULL;
-            int got = ring_read_batch(&output, out, want);
-            if (got <= 0) {
-                return -1;
+            uint64_t perf_read_start_ns = perf_on ? dsd_realtime_mono_ns() : 0ULL;
+            int got = ring_read_available_copy(&output, out, count);
+            if (got > 0) {
+                if (perf_on) {
+                    rtl_perf_record_consumer_read(dsd_realtime_mono_ns() - perf_read_start_ns, (size_t)got);
+                }
+                return got;
             }
-            if (perf_on) {
-                rtl_perf_record_consumer_read(dsd_time_monotonic_ns() - perf_read_start_ns, (size_t)got);
-            }
-            if (g_stream->replay_demod_drained.load(std::memory_order_acquire) && ring_used(&output) == 0U) {
-                rtl_stream_replay_mark_output_drained();
-            }
-            return got;
+            /* A clear emptied the ring since the look above: look again. */
+            continue;
         }
-        if (g_stream->replay_demod_drained.load(std::memory_order_acquire)) {
+        RTL_REPLAY_TEST_STAGE(RTL_STREAM_TEST_REPLAY_DECODER_OUTPUT_EMPTY, 0U);
+        if (finished) {
             rtl_stream_replay_mark_output_drained();
             return -1;
         }
-        dsd_mutex_lock(&output.ready_m);
-        (void)dsd_cond_timedwait(&output.ready, &output.ready_m, 10);
-        dsd_mutex_unlock(&output.ready_m);
+        rtl_stream_replay_wait_for_output();
     }
 }
 
@@ -8946,16 +9601,24 @@ rtl_stream_apply_analog_request(int kind, int width_hz) {
     }
     const int kind_changed = rtl_demod_set_analog_kind(&demod, kind) > 0;
     if (rtl_demod_apply_analog_channel(&demod, kind, width_hz)) {
-        /* Width-only change: the next block designs a new plan and starts from empty filter histories. */
+        /* A new width: the next block designs its plan. The rate is the same, so the half-band and channel histories
+           and their pending counts stay (issue #572): the new taps run over the true past, and while the channel
+           filter stays on the edit neither drops nor repeats a sample. An edit that turns it off (the unset NFM
+           default with channel_lpf_default_enable 0) drops what it held on the next block, and the reverse edit
+           starts it from an empty history. A family switch, a retune and a rate change still start the filters
+           over. */
         demod.channel_lpf_plan_taps_len = 0;
         demod.channel_lpf_plan_width_hz = 0;
-        rtl_demod_clear_filter_histories(&demod);
     }
     if (kind_changed) {
         /* An FM <-> AM switch: the output ring and the resampler hold the old detector's audio (the FM discriminator
            reading an AM carrier, or the reverse), so the new kind starts from neither, and the generation moves so the
-           decoder discards a read of the old audio in flight. A width-only change keeps both: its audio is the same
-           kind's. */
+           decoder discards a read of the old audio in flight. The half-band and channel filters start over too,
+           whatever the width. Their histories hold raw I/Q, the same under either kind (the I/Q DC blocker and I/Q
+           balance run after the channel filter), so this is not for the audio's sake: it keeps the switch landing
+           where a fresh open of the new kind does, as the kind switch's contract says (issue #524). A width-only
+           change keeps all of it: its audio is the same kind's. */
+        rtl_demod_clear_filter_histories(&demod);
         rtl_demod_reset_resampler_state(&demod);
         rtl_stream_clear_output_ring(rtl_stream_active_output(), 1);
     }
@@ -9879,11 +10542,21 @@ rtl_stream_apply_retune_profile(const RtlRetuneProfile* profile, uint32_t center
  * (rtl_stream_design_digital_landing_output(), as a live digital landing on the digital family does), so the front end
  * runs where rtl_stream_output_rate_for_family() predicted, the rate the engine timed the decoder for when it attached
  * the family (issue #583), whichever family it ran here. A profile without a family keeps the output chain the stream
- * runs, as it always has. */
+ * runs, as it always has.
+ *
+ * With no finalize there is no retune reset (demod_reset_on_retune()) either, so a landing on another frequency than
+ * the last external retune's starts the half-band and channel filters over itself, whatever its width: what they hold
+ * is the old channel's (issue #572). A landing on the frequency already tuned (a width or profile change only) keeps
+ * them, as a live width edit does. The record of the last landing (g_external_retune_freq_hz) is set only by a landing
+ * that took its profile. One with nothing queued applies nothing but still moved the tuner, so it forgets the record,
+ * and the next landing starts the filters over wherever it lands; so does a finalize. */
 extern "C" void
 rtl_stream_apply_pending_retune_profile_for_target(uint32_t target_freq_hz) {
     RtlRetuneProfile profile{};
     if (!rtl_stream_take_pending_retune_profile(&profile, 0U, target_freq_hz)) {
+        /* The external backend tuned the device here, so the filters now run on this channel's samples, whatever the
+           record says (a DMR or NXDN voice-channel tune queues no profile; the return to the control channel does). */
+        g_external_retune_freq_hz.store(0U, std::memory_order_release);
         return;
     }
     const int gate = rtl_stream_enter_demod_family_switch_gate();
@@ -9892,6 +10565,11 @@ rtl_stream_apply_pending_retune_profile_for_target(uint32_t target_freq_hz) {
         g_test_external_landing_hook(g_test_external_landing_ctx);
     }
 #endif
+    /* Under the gate, so a controller retune's finalize cannot forget the record between this read and the clear. */
+    const uint32_t previous_freq_hz = g_external_retune_freq_hz.exchange(target_freq_hz, std::memory_order_acq_rel);
+    if (previous_freq_hz != target_freq_hz) {
+        rtl_demod_clear_filter_histories(&demod);
+    }
     rtl_stream_apply_retune_gain_profile(&profile);
     int lands_digital_family = 0;
     (void)rtl_stream_apply_retune_receive_profile(&profile, &lands_digital_family);
@@ -9978,7 +10656,7 @@ static int
 rtl_stream_tune_wait_for_completion(uint32_t request_id, uint32_t requested_freq) {
     int rc = RTL_STREAM_TUNE_OK;
     int completion = RTL_STREAM_TUNE_OK;
-    const uint64_t deadline_ns = dsd_time_monotonic_ns() + 500000000ULL;
+    const uint64_t deadline_ns = dsd_realtime_mono_ns() + 500000000ULL;
     dsd_mutex_lock(&controller.retune_done_m);
     while (controller.retune_complete_id.load(std::memory_order_acquire) < request_id) {
         if (dsd_exitflag_load() || (g_stream && g_stream->should_exit.load(std::memory_order_acquire))) {
@@ -9986,7 +10664,7 @@ rtl_stream_tune_wait_for_completion(uint32_t request_id, uint32_t requested_freq
             rc = RTL_STREAM_TUNE_FAILED;
             break;
         }
-        uint64_t now_ns = dsd_time_monotonic_ns();
+        uint64_t now_ns = dsd_realtime_mono_ns();
         if (now_ns >= deadline_ns) {
             rtl_stream_log_tune_warning(requested_freq, "timeout");
             controller_gate_tune_timeout(&controller, request_id);
@@ -10053,7 +10731,7 @@ rtl_stream_tune_impl(dsd_opts* opts, long int frequency, uint64_t caller_token) 
     }
     if (stream_is_replay_active()) {
         static std::atomic<uint64_t> s_last_notice_ns{0};
-        uint64_t now_ns = dsd_time_monotonic_ns();
+        uint64_t now_ns = dsd_realtime_mono_ns();
         uint64_t prev_ns = s_last_notice_ns.load(std::memory_order_acquire);
         if (now_ns > prev_ns + 1000000000ULL) {
             s_last_notice_ns.store(now_ns, std::memory_order_release);
@@ -11469,9 +12147,10 @@ cqpsk_reacquire_test_init_demod(struct demod_state* test_demod, int active_cqpsk
     test_demod->cqpsk_agc_avg = 0.625f;
     test_demod->hb_hist_i[0][0] = 1.0f;
     test_demod->hb_hist_q[0][0] = -1.0f;
+    test_demod->hb_pending[0] = 4;
     test_demod->channel_lpf_hist_i[0] = 2.0f;
     test_demod->channel_lpf_hist_q[0] = -2.0f;
-    test_demod->channel_lpf_hist_len = 8;
+    test_demod->channel_lpf_pending = 8;
     test_demod->resamp_phase = 5;
     test_demod->resamp_hist_head = 3;
 }
@@ -11494,9 +12173,9 @@ cqpsk_reacquire_test_capture_result(const struct demod_state* test_demod,
     out_result->cqpsk_agc_after = test_demod->cqpsk_agc_avg;
     out_result->resamp_phase_after = test_demod->resamp_phase;
     out_result->histories_cleared =
-        (test_demod->hb_hist_i[0][0] == 0.0f && test_demod->hb_hist_q[0][0] == 0.0f
+        (test_demod->hb_hist_i[0][0] == 0.0f && test_demod->hb_hist_q[0][0] == 0.0f && test_demod->hb_pending[0] == 0
          && test_demod->channel_lpf_hist_i[0] == 0.0f && test_demod->channel_lpf_hist_q[0] == 0.0f
-         && test_demod->channel_lpf_hist_len == 0)
+         && test_demod->channel_lpf_pending == 0)
             ? 1
             : 0;
     out_result->output_kind_after = test_demod->output_kind;
@@ -11855,6 +12534,7 @@ dsd_rtl_stream_test_get_replay_state(rtl_stream_test_replay_state* out_state) {
     out_state->replay_demod_drained = g_stream->replay_demod_drained.load(std::memory_order_acquire);
     out_state->replay_output_drained = g_stream->replay_output_drained.load(std::memory_order_acquire);
     out_state->replay_forced_stop = g_stream->replay_forced_stop.load(std::memory_order_acquire);
+    out_state->replay_reader_exited = g_stream->replay_reader_exited.load(std::memory_order_acquire);
     out_state->should_exit = g_stream->should_exit.load(std::memory_order_acquire);
     out_state->replay_last_submit_gen = g_stream->replay_last_submit_gen.load(std::memory_order_acquire);
     out_state->replay_last_submit_gen_at_eof = g_stream->replay_last_submit_gen_at_eof.load(std::memory_order_acquire);
@@ -11867,9 +12547,16 @@ dsd_rtl_stream_test_get_replay_state(rtl_stream_test_replay_state* out_state) {
     out_state->replay_event_last_frequency_hz = g_replay_event_last_frequency_hz.load(std::memory_order_acquire);
     out_state->replay_event_last_mute_bytes = g_replay_event_last_mute_bytes.load(std::memory_order_acquire);
     out_state->replay_event_last_reset_reason = g_replay_event_last_reset_reason.load(std::memory_order_acquire);
+    out_state->replay_event_last_reset_purge_requests =
+        g_replay_event_last_reset_purge_requests.load(std::memory_order_acquire);
+    out_state->replay_event_reset_purge_mismatch_count =
+        g_replay_event_reset_purge_mismatch_count.load(std::memory_order_acquire);
     out_state->replay_loop_restart_count = g_replay_loop_restart_count.load(std::memory_order_acquire);
     out_state->replay_loop_restart_last_frequency_hz =
         g_replay_loop_restart_last_frequency_hz.load(std::memory_order_acquire);
+    out_state->replay_out_written = g_stream->replay_out_written.load(std::memory_order_acquire);
+    out_state->replay_out_acked = g_stream->replay_out_acked.load(std::memory_order_acquire);
+    out_state->replay_output_truncated = g_stream->replay_output_truncated.load(std::memory_order_acquire);
     return 0;
 }
 
@@ -12020,29 +12707,39 @@ family_test_all_zero(const float* v, size_t n) {
     return 1;
 }
 
+/* The channel filter starts over: its history zero and nothing pending (the seeded state below holds both). */
 static int
 family_test_channel_hist_clear(void) {
-    return family_test_all_zero(demod.channel_lpf_hist_i, DSD_CHANNEL_LPF_MAX_TAPS)
-           && family_test_all_zero(demod.channel_lpf_hist_q, DSD_CHANNEL_LPF_MAX_TAPS);
+    return family_test_all_zero(demod.channel_lpf_hist_i, DSD_CHANNEL_LPF_HIST_LEN)
+           && family_test_all_zero(demod.channel_lpf_hist_q, DSD_CHANNEL_LPF_HIST_LEN)
+           && demod.channel_lpf_pending == 0;
 }
 
+/* The half-band cascade starts over: every stage's history zero and nothing pending (the seeded state below holds
+   both). */
 static int
 family_test_hb_hist_clear(void) {
+    int pending = 0;
+    for (int st = 0; st < 10; st++) {
+        pending |= demod.hb_pending[st];
+    }
     return family_test_all_zero(&demod.hb_hist_i[0][0], sizeof(demod.hb_hist_i) / sizeof(float))
-           && family_test_all_zero(&demod.hb_hist_q[0][0], sizeof(demod.hb_hist_q) / sizeof(float));
+           && family_test_all_zero(&demod.hb_hist_q[0][0], sizeof(demod.hb_hist_q) / sizeof(float)) && pending == 0;
 }
 
 static void
 family_test_seed_stale_filter_histories(void) {
-    for (int k = 0; k < DSD_CHANNEL_LPF_MAX_TAPS; k++) {
+    for (int k = 0; k < DSD_CHANNEL_LPF_HIST_LEN; k++) {
         demod.channel_lpf_hist_i[k] = 1.0f;
         demod.channel_lpf_hist_q[k] = -1.0f;
     }
+    demod.channel_lpf_pending = 9;
     for (int st = 0; st < 10; st++) {
         for (int k = 0; k < HB_TAPS_MAX - 1; k++) {
             demod.hb_hist_i[st][k] = 1.0f;
             demod.hb_hist_q[st][k] = -1.0f;
         }
+        demod.hb_pending[st] = 5;
     }
 }
 
@@ -12050,8 +12747,9 @@ family_test_seed_stale_filter_histories(void) {
  * designs it). */
 static const int kFamilyTestPostDecimTaps = 16;
 
-/* A replay's post-demod decimator part-way through a block: its delay line full of the old family's samples and its
- * head and phase off their start. Only the state a switch has to reset: nothing here runs the decimator. */
+/* A replay's post-demod decimator part-way through a block on either path: the polyphase delay line full of the old
+ * family's samples with its head and phase off their start, and the fallback's one-pole output and part-filled group.
+ * Only the state a switch has to reset: nothing here runs the decimator. */
 static int
 family_test_seed_stale_post_decimator(void) {
     if (!demod.post_polydecim_hist) {
@@ -12067,6 +12765,10 @@ family_test_seed_stale_post_decimator(void) {
     }
     demod.post_polydecim_hist_head = 3;
     demod.post_polydecim_phase = 1;
+    demod.post_fallback_lp_y = 0.5f;
+    demod.post_fallback_lp_valid = 1;
+    demod.post_fallback_box_acc = -1.0f;
+    demod.post_fallback_box_phase = 2;
     return 0;
 }
 
@@ -12095,9 +12797,14 @@ family_test_seed_stale_monitor_state(void) {
     return family_test_seed_stale_post_decimator();
 }
 
-/* No decimator counts as clear: the pipeline allocates one from nothing, head and phase included. */
+/* The fallback's state at its start, and the polyphase decimator's; no polyphase decimator counts as clear for it, since
+   the pipeline allocates one from nothing, head and phase included. */
 static int
 family_test_post_decim_clear(void) {
+    if (fabsf(demod.post_fallback_lp_y) > 1e-12f || demod.post_fallback_lp_valid != 0
+        || fabsf(demod.post_fallback_box_acc) > 1e-12f || demod.post_fallback_box_phase != 0) {
+        return 0;
+    }
     if (!demod.post_polydecim_hist || demod.post_polydecim_K <= 0) {
         return 1;
     }
@@ -13071,6 +13778,7 @@ rtl_stream_test_audio_monitor_retune_kind(int kind, int rate_before_hz, int rate
     out->resamp_hist_cleared = (demod.resamp_hist && demod.resamp_taps_per_phase > 0)
                                    ? family_test_all_zero(demod.resamp_hist, (size_t)demod.resamp_taps_per_phase * 2U)
                                    : 0;
+    out->post_decim_cleared = family_test_post_decim_clear();
     out->deemph_a_after = demod.deemph_a;
     out->audio_lpf_alpha_after = demod.audio_lpf_alpha;
     out->channel_lpf_width_after = demod.channel_lpf_width_hz;
@@ -13290,6 +13998,59 @@ family_test_channel_plan_dropped(void) {
     return (demod.channel_lpf_plan_taps_len == 0 && demod.channel_lpf_plan_width_hz == 0) ? 1 : 0;
 }
 
+namespace {
+/* The filter state a live width edit keeps (issue #572): the channel filter's history and pending count, and every
+ * half-band stage's. */
+struct FamilyTestFilterState {
+    float channel_i[DSD_CHANNEL_LPF_HIST_LEN];
+    float channel_q[DSD_CHANNEL_LPF_HIST_LEN];
+    int channel_pending;
+    float hb_i[sizeof(demod_state::hb_hist_i) / sizeof(float)];
+    float hb_q[sizeof(demod_state::hb_hist_q) / sizeof(float)];
+    int hb_pending[sizeof(demod_state::hb_pending) / sizeof(int)];
+};
+} // namespace
+
+static void
+family_test_snapshot_filter_state(FamilyTestFilterState* st) {
+    DSD_MEMCPY(st->channel_i, demod.channel_lpf_hist_i, sizeof(st->channel_i));
+    DSD_MEMCPY(st->channel_q, demod.channel_lpf_hist_q, sizeof(st->channel_q));
+    st->channel_pending = demod.channel_lpf_pending;
+    DSD_MEMCPY(st->hb_i, demod.hb_hist_i, sizeof(st->hb_i));
+    DSD_MEMCPY(st->hb_q, demod.hb_hist_q, sizeof(st->hb_q));
+    DSD_MEMCPY(st->hb_pending, demod.hb_pending, sizeof(st->hb_pending));
+}
+
+/* Exactly the values held, with the explicit (zero) tolerance float comparisons carry. */
+static int
+family_test_same_floats(const float* a, const float* b, size_t n) {
+    for (size_t i = 0; i < n; i++) {
+        if (!(fabsf(a[i] - b[i]) <= 0.0f)) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int
+family_test_channel_state_same(const FamilyTestFilterState* st) {
+    return family_test_same_floats(st->channel_i, demod.channel_lpf_hist_i, DSD_CHANNEL_LPF_HIST_LEN)
+           && family_test_same_floats(st->channel_q, demod.channel_lpf_hist_q, DSD_CHANNEL_LPF_HIST_LEN)
+           && st->channel_pending == demod.channel_lpf_pending;
+}
+
+static int
+family_test_hb_state_same(const FamilyTestFilterState* st) {
+    const size_t stages = sizeof(st->hb_pending) / sizeof(st->hb_pending[0]);
+    for (size_t i = 0; i < stages; i++) {
+        if (st->hb_pending[i] != demod.hb_pending[i]) {
+            return 0;
+        }
+    }
+    return family_test_same_floats(st->hb_i, &demod.hb_hist_i[0][0], sizeof(st->hb_i) / sizeof(float))
+           && family_test_same_floats(st->hb_q, &demod.hb_hist_q[0][0], sizeof(st->hb_q) / sizeof(float));
+}
+
 /* Queue an NFM width request while the analog stream runs and consume it at one demod-thread block boundary. */
 static int
 family_test_request_width(int width_hz) {
@@ -13324,8 +14085,10 @@ rtl_stream_test_analog_width_change(int rate_hz, int width_before_hz, int width_
     g_stream = &g_cqpsk_toggle_test_stream; /* live: requests queue for the demod thread */
 
     const int width_before = demod.channel_lpf_width_hz;
+    static FamilyTestFilterState seeded;
     family_test_seed_channel_plan();
     family_test_seed_stale_filter_histories();
+    family_test_snapshot_filter_state(&seeded);
     family_test_seed_ring(queued);
     out->used_before = ring_used(&output);
     out->generation_before = rtl_stream_output_generation();
@@ -13337,22 +14100,251 @@ rtl_stream_test_analog_width_change(int rate_hz, int width_before_hz, int width_
     out->output_kind_after = demod.output_kind;
     out->analog_family_after = demod.analog_family;
     out->plan_invalidated = family_test_channel_plan_dropped();
-    out->channel_hist_cleared = family_test_channel_hist_clear();
-    out->hb_hist_cleared = family_test_hb_hist_clear();
+    out->channel_state_kept = family_test_channel_state_same(&seeded);
+    out->hb_state_kept = family_test_hb_state_same(&seeded);
     out->generation_after = rtl_stream_output_generation();
     out->used_after = ring_used(&output);
     (void)rtl_stream_get_analog_profile(NULL, &out->published_width_hz, &out->published_lpf_on);
 
     family_test_seed_channel_plan();
     family_test_seed_stale_filter_histories();
+    family_test_snapshot_filter_state(&seeded);
     out->same_width_rc = family_test_request_width(width_after_hz);
-    out->same_width_kept_histories = !family_test_channel_hist_clear() && !family_test_hb_hist_clear();
+    out->same_width_kept_histories = family_test_channel_state_same(&seeded) && family_test_hb_state_same(&seeded);
     out->same_width_kept_plan = !family_test_channel_plan_dropped();
 
     family_test_restore(saved);
     family_test_release_buffers();
     fsk_reacquire_test_cleanup_output_ring(initialized_output);
     return open_rc == 0 ? 0 : -3;
+}
+
+namespace {
+/* The demod fields the width continuity run changes to see the channel filter's output, put back afterwards. */
+struct ContinuityTestSaved {
+    void (*mode_demod)(struct demod_state*);
+    int downsample_passes;
+    int rate_in;
+    int iq_dc_block_enable;
+    int iqbal_enable;
+    int hb_state_passes;
+    float channel_squelch_level;
+};
+} // namespace
+
+/* No seeded plan, or one the channel filter can run: odd taps, at least 3, within the plan's capacity. */
+static int
+continuity_test_seed_valid(const rtl_stream_test_width_continuity_case* c) {
+    if (!c->seeded_taps) {
+        return c->seeded_taps_len == 0 ? 1 : 0;
+    }
+    return (c->seeded_taps_len >= 3 && c->seeded_taps_len <= DSD_CHANNEL_LPF_MAX_TAPS && (c->seeded_taps_len & 1) == 1)
+               ? 1
+               : 0;
+}
+
+static int
+continuity_test_case_valid(const rtl_stream_test_width_continuity_case* c) {
+    if (!c || c->rate_hz <= 0 || c->passes < 1 || c->passes > 10 || !c->iq || !c->block_sizes || c->n_blocks <= 0) {
+        return 0;
+    }
+    if (!c->out || c->out_cap <= 0 || c->edit_block < 0 || c->edit_block >= c->n_blocks) {
+        return 0;
+    }
+    return continuity_test_seed_valid(c);
+}
+
+/* The open monitor, run through the half-band cascade and the channel filter only: a pass-through demodulator after
+ * them, and no I/Q DC blocker, I/Q balance or channel squelch on the way. The filters start from nothing, on the
+ * seeded plan when the case has one (keyed as the pipeline keys the running width's, so the blocks run it). */
+static ContinuityTestSaved
+continuity_test_prepare(const rtl_stream_test_width_continuity_case* c) {
+    const ContinuityTestSaved saved = {demod.mode_demod,
+                                       demod.downsample_passes,
+                                       demod.rate_in,
+                                       demod.iq_dc_block_enable,
+                                       demod.iqbal_enable,
+                                       demod.hb_state_passes,
+                                       demod.channel_squelch_level.load(std::memory_order_relaxed)};
+    demod.mode_demod = &raw_demod;
+    demod.downsample_passes = c->passes;
+    demod.rate_in = c->rate_hz << c->passes;
+    demod.iq_dc_block_enable = 0;
+    demod.iqbal_enable = 0;
+    demod.channel_squelch_level.store(0.0f, std::memory_order_relaxed);
+    dsd_demod_reset_filter_state(&demod);
+    if (c->seeded_taps) {
+        DSD_MEMCPY(demod.channel_lpf_plan_taps, c->seeded_taps, (size_t)c->seeded_taps_len * sizeof(float));
+        demod.channel_lpf_plan_taps_len = c->seeded_taps_len;
+        demod.channel_lpf_plan_rate_out = demod.rate_out;
+        demod.channel_lpf_plan_profile = demod.channel_lpf_profile;
+        demod.channel_lpf_plan_width_hz = demod.channel_lpf_width_hz;
+    }
+    return saved;
+}
+
+static void
+continuity_test_restore(const ContinuityTestSaved& saved) {
+    demod.mode_demod = saved.mode_demod;
+    demod.downsample_passes = saved.downsample_passes;
+    demod.rate_in = saved.rate_in;
+    demod.iq_dc_block_enable = saved.iq_dc_block_enable;
+    demod.iqbal_enable = saved.iqbal_enable;
+    demod.hb_state_passes = saved.hb_state_passes;
+    demod.channel_squelch_level.store(saved.channel_squelch_level, std::memory_order_relaxed);
+    dsd_demod_reset_filter_state(&demod);
+    demod.channel_lpf_plan_taps_len = 0;
+    demod.channel_lpf_plan_width_hz = 0;
+}
+
+/* The live width request, queued while the stream runs and consumed at one demod-thread block boundary. */
+static void
+continuity_test_edit(const rtl_stream_test_width_continuity_case* c, int written,
+                     rtl_stream_test_width_continuity_result* out) {
+    static FamilyTestFilterState before;
+    family_test_snapshot_filter_state(&before);
+    out->outputs_before_edit = written / 2;
+    out->channel_pending_at_edit = demod.channel_lpf_pending;
+    for (int st = 0; st < c->passes; st++) {
+        out->hb_pending_at_edit += demod.hb_pending[st];
+    }
+    out->request_rc = rtl_stream_request_analog_profile(DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_FM, c->width_after_hz);
+    family_test_demod_thread_boundary();
+    out->monitor_after = dsd_demod_analog_monitor_active(&demod);
+    out->width_after = demod.channel_lpf_width_hz;
+    out->plan_dropped = family_test_channel_plan_dropped();
+    out->channel_state_kept = family_test_channel_state_same(&before);
+    out->hb_state_kept = family_test_hb_state_same(&before);
+}
+
+/* One block through full_demod(), its output appended at @p written (floats). Returns the new count, or -1 when the
+ * block is too large for the input buffer or its output does not fit. */
+static int
+continuity_test_block(const rtl_stream_test_width_continuity_case* c, const float* in, int n, int written) {
+    if (n < 0 || n > MAXIMUM_BUF_LENGTH / 2) {
+        return -1;
+    }
+    if (n > 0) {
+        DSD_MEMCPY(demod.input_cb_buf, in, (size_t)n * 2U * sizeof(float));
+    }
+    demod.lowpassed = demod.input_cb_buf;
+    demod.lp_len = n * 2;
+    full_demod(&demod);
+    if (demod.result_len < 0 || demod.result_len > c->out_cap - written) {
+        return -1;
+    }
+    if (demod.result_len > 0) {
+        DSD_MEMCPY(c->out + written, demod.result, (size_t)demod.result_len * sizeof(float));
+    }
+    return written + demod.result_len;
+}
+
+extern "C" int
+rtl_stream_test_analog_width_continuity(const rtl_stream_test_width_continuity_case* c,
+                                        rtl_stream_test_width_continuity_result* out) {
+    if (!out || !continuity_test_case_valid(c)) {
+        return -1;
+    }
+    *out = {};
+    int initialized_output = 0;
+    if (fsk_reacquire_test_prepare_output_ring(0U, &initialized_output) != 0) {
+        fsk_reacquire_test_cleanup_output_ring(initialized_output);
+        return -2;
+    }
+    const FamilyTestSaved saved = family_test_save();
+    static dsd_opts analog_opts;
+    DSD_MEMSET(&analog_opts, 0, sizeof analog_opts);
+    analog_opts.analog_only = 1;
+    analog_opts.monitor_input_audio = 1;
+    analog_opts.analog_nfm_bandwidth_hz = c->width_before_hz;
+    g_cqpsk_toggle_test_stream.output = &output;
+    g_cqpsk_toggle_test_stream.opts = &analog_opts;
+    g_stream = NULL;
+    int rc = family_test_seed_open(&analog_opts, c->rate_hz, 0) == 0 ? 0 : -3;
+    g_stream = &g_cqpsk_toggle_test_stream; /* live: requests queue for the demod thread */
+    const ContinuityTestSaved demod_saved = continuity_test_prepare(c);
+
+    const float* in = c->iq;
+    int written = 0;
+    for (int b = 0; b < c->n_blocks && rc == 0; b++) {
+        if (b == c->edit_block) {
+            continuity_test_edit(c, written, out);
+        }
+        written = continuity_test_block(c, in, c->block_sizes[b], written);
+        if (written < 0) {
+            rc = -4;
+            break;
+        }
+        in += (size_t)c->block_sizes[b] * 2U;
+        if (b < c->edit_block) {
+            out->taps_before = demod.channel_lpf_plan_taps_len;
+        } else {
+            out->taps_after = demod.channel_lpf_plan_taps_len;
+        }
+    }
+    out->outputs = written > 0 ? written / 2 : 0;
+    out->channel_pending_end = demod.channel_lpf_pending;
+
+    continuity_test_restore(demod_saved);
+    family_test_restore(saved);
+    family_test_release_buffers();
+    fsk_reacquire_test_cleanup_output_ring(initialized_output);
+    return rc;
+}
+
+/* One block of @p pairs complex samples of a low tone through full_demod() and the squelch hop count after it, as the
+ * demod thread runs them. Returns the hop count it leaves. */
+static int
+squelch_hop_test_block(int pairs) {
+    for (int k = 0; k < pairs; k++) {
+        const float phase = 0.0625f * (float)k;
+        const size_t at = (size_t)k * 2U;
+        demod.input_cb_buf[at] = 0.5f * cosf(phase);
+        demod.input_cb_buf[at + 1U] = 0.5f * sinf(phase);
+    }
+    demod.lowpassed = demod.input_cb_buf;
+    demod.lp_len = pairs * 2;
+    full_demod(&demod);
+    demod_maybe_signal_squelch_hop(&demod);
+    return demod.squelch_hits;
+}
+
+extern "C" int
+rtl_stream_test_squelch_hop_empty_block(rtl_stream_test_squelch_hop_result* out) {
+    if (!out) {
+        return -1;
+    }
+    *out = {};
+    const FamilyTestSaved saved = family_test_save();
+    static dsd_opts analog_opts;
+    DSD_MEMSET(&analog_opts, 0, sizeof analog_opts);
+    analog_opts.analog_only = 1;
+    analog_opts.monitor_input_audio = 1;
+    g_cqpsk_toggle_test_stream.output = &output;
+    g_cqpsk_toggle_test_stream.opts = &analog_opts;
+    g_stream = NULL;
+    if (family_test_seed_open(&analog_opts, 48000, 0) != 0) {
+        family_test_restore(saved);
+        family_test_release_buffers();
+        return -2;
+    }
+    const float saved_level = demod.channel_squelch_level.load(std::memory_order_relaxed);
+    const int saved_conseq = demod.conseq_squelch;
+    const int block_pairs = 4096;
+    demod.conseq_squelch = 10;
+    demod.squelch_hits = 0;
+    demod.channel_squelch_level.store(1.0e6f, std::memory_order_relaxed);
+    out->hits_after_squelched = squelch_hop_test_block(block_pairs);
+    out->hits_after_empty = squelch_hop_test_block(0);
+    out->empty_marked = demod.front_end_empty;
+    demod.channel_squelch_level.store(1.0e-12f, std::memory_order_relaxed);
+    out->hits_after_open = squelch_hop_test_block(block_pairs);
+    demod.channel_squelch_level.store(saved_level, std::memory_order_relaxed);
+    demod.conseq_squelch = saved_conseq;
+    demod.squelch_hits = 0;
+    family_test_restore(saved);
+    family_test_release_buffers();
+    return 0;
 }
 
 extern "C" int
@@ -13931,6 +14923,93 @@ rtl_stream_test_retune_profile_sequence_external(const rtl_stream_test_retune_st
         family_test_land_retune_step(&dmr_opts, kFamilyTestRetuneHz + (uint32_t)(i * 12500U), &steps[i],
                                      external_backend, &out[i]);
     }
+    rtl_stream_clear_pending_retune_profile();
+    family_test_restore(saved);
+    family_test_release_buffers();
+    return 0;
+}
+
+/* Queue an NFM retune profile of @p width_hz for @p target_hz and land it as an external backend's retune does. Returns
+ * 1 when the landing took it. */
+static int
+external_filter_test_land(uint32_t target_hz, int width_hz) {
+    rtl_stream_clear_pending_retune_profile();
+    const rtl_stream_retune_analog_profile analog = {DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_FM, width_hz, 0};
+    if (rtl_stream_prepare_retune_analog_profile_for_target(target_hz, &analog) != 0) {
+        return 0;
+    }
+    return family_test_apply_external_retune(target_hz);
+}
+
+/* One landing over seeded stale filter state (and a seeded plan). @p out_cleared says it started the filters over,
+ * @p out_kept that it left the seeded state exactly as it was. Returns 1 when the landing took its profile. */
+static int
+external_filter_test_step(uint32_t target_hz, int width_hz, int* out_cleared, int* out_kept) {
+    static FamilyTestFilterState seeded;
+    family_test_seed_channel_plan();
+    family_test_seed_stale_filter_histories();
+    family_test_snapshot_filter_state(&seeded);
+    const int taken = external_filter_test_land(target_hz, width_hz);
+    *out_cleared = (family_test_channel_hist_clear() && family_test_hb_hist_clear()) ? 1 : 0;
+    *out_kept = (family_test_channel_state_same(&seeded) && family_test_hb_state_same(&seeded)) ? 1 : 0;
+    return taken;
+}
+
+extern "C" int
+rtl_stream_test_external_landing_filter_state(rtl_stream_test_external_landing_filter_result* out) {
+    if (!out) {
+        return -1;
+    }
+    *out = {};
+    const FamilyTestSaved saved = family_test_save();
+    g_stream = NULL;
+    static dsd_opts analog_opts;
+    DSD_MEMSET(&analog_opts, 0, sizeof analog_opts);
+    analog_opts.analog_only = 1;
+    analog_opts.monitor_input_audio = 1;
+    analog_opts.analog_nfm_bandwidth_hz = 16000;
+    g_cqpsk_toggle_test_stream.output = &output;
+    g_cqpsk_toggle_test_stream.opts = &analog_opts;
+    if (family_test_seed_open(&analog_opts, 48000, 0) != 0) {
+        family_test_restore(saved);
+        family_test_release_buffers();
+        return -2;
+    }
+    rtl_stream_clear_demod_profile_request();
+    const uint32_t freq_a = kFamilyTestRetuneHz;
+    const uint32_t freq_b = kFamilyTestRetuneHz + 12500U;
+    const uint32_t freq_c = kFamilyTestRetuneHz + 25000U;
+    int unused = 0;
+    out->first_taken = external_filter_test_land(freq_a, 16000);
+    out->new_freq_width_taken = external_filter_test_step(freq_b, 12500, &out->new_freq_width_cleared, &unused);
+    out->new_freq_same_width_taken =
+        external_filter_test_step(freq_c, 12500, &out->new_freq_same_width_cleared, &unused);
+    out->same_freq_width_taken = external_filter_test_step(freq_c, 16000, &unused, &out->same_freq_width_kept);
+    out->same_freq_width_after = demod.channel_lpf_width_hz;
+    out->same_freq_plan_dropped = family_test_channel_plan_dropped();
+    /* A controller retune to X between two landings on C reset the demod on X: C's next landing finds X's samples. */
+    const uint32_t freq_x = kFamilyTestRetuneHz + 50000U;
+    (void)family_test_finalize_on_pipeline(&controller, &analog_opts, freq_x, NULL);
+    out->retuned_between_taken = external_filter_test_step(freq_c, 16000, &out->retuned_between_cleared, &unused);
+    /* A landing on D with no profile queued applies nothing, so it says nothing about what the filters hold. */
+    const uint32_t freq_d = kFamilyTestRetuneHz + 37500U;
+    rtl_stream_clear_pending_retune_profile();
+    out->profileless_taken = family_test_apply_external_retune(freq_d);
+    out->after_profileless_taken = external_filter_test_step(freq_d, 12500, &out->after_profileless_cleared, &unused);
+    /* A stream that opens again starts on its own centre, whatever an external retune landed before. */
+    if (family_test_seed_open(&analog_opts, 48000, 0) != 0) {
+        rtl_stream_clear_pending_retune_profile();
+        family_test_restore(saved);
+        family_test_release_buffers();
+        return -2;
+    }
+    out->reopened_taken = external_filter_test_step(freq_d, 12500, &out->reopened_cleared, &unused);
+    /* An external retune away to C with no profile queued, then back to D: the filters ran on C's samples in between,
+       though the landing on C applied nothing. */
+    rtl_stream_clear_pending_retune_profile();
+    out->profileless_away_taken = family_test_apply_external_retune(freq_c);
+    out->back_after_profileless_taken =
+        external_filter_test_step(freq_d, 12500, &out->back_after_profileless_cleared, &unused);
     rtl_stream_clear_pending_retune_profile();
     family_test_restore(saved);
     family_test_release_buffers();
@@ -14837,11 +15916,12 @@ rtl_stream_clear_output_ring(struct output_state* outp, int bump_generation) {
     }
 #endif
     /* Clear the entire ring to prevent sample 'lag'. Under ready_m, which a consumer holds from its tail snapshot to
-       its tail store (ring_read_available(), ring_read_batch()), so a read in flight cannot put its old tail back over
-       the cleared indices. A read can also load the generation after the bump above and still reach ready_m before
-       the clear does, copying samples the clear was meant to drop under that generation. Bumping again under ready_m,
-       once the ring is empty, leaves the stream on a generation that only reads made after the clear can load, so the
-       decoder never takes pre-clear samples under the generation it runs on from here. */
+       its tail store (ring_read_available(), ring_read_available_copy(), ring_read_batch()), so a read in flight
+       cannot put its old tail back over the cleared indices. A read can also load the generation after the bump above
+       and still reach ready_m before the clear does, copying samples the clear was meant to drop under that
+       generation. Bumping again under ready_m, once the ring is empty, leaves the stream on a generation that only
+       reads made after the clear can load, so the decoder never takes pre-clear samples under the generation it runs
+       on from here. */
     dsd_mutex_lock(&outp->ready_m);
     ring_clear(outp);
     if (bump_generation) {

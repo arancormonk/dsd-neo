@@ -6,7 +6,6 @@
 #include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/frontend_runtime.h>
 #include <dsd-neo/core/audio.h>
-#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
@@ -23,6 +22,7 @@
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/p25_optional_hooks.h>
 #include <dsd-neo/runtime/rigctl_query_hooks.h>
@@ -164,12 +164,12 @@ release_barrier(void) {
 static DSD_THREAD_RETURN_TYPE
 resume_flush(void* opaque) {
     (void)opaque;
-    const double deadline = dsd_time_now_monotonic_s() + 10.0;
+    const double deadline = dsd_realtime_mono_s() + 10.0;
     /* Neither observation publishes the drain's writes to the watchdog. In the
      * red run, TSan can therefore observe the unguarded store replacement. */
     while (dsd_app_command_test_policy_guard_waits() <= g_flush.baseline
            && dsd_atomic_u64_load_relaxed(&g_flush.drain_done) == 0U) {
-        if (dsd_time_now_monotonic_s() >= deadline) {
+        if (dsd_realtime_mono_s() >= deadline) {
             g_flush.stalled = 1; /* Fixture failure, never evidence of contention. */
             break;
         }

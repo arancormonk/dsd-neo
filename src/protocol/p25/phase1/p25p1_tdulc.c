@@ -17,7 +17,6 @@
  */
 
 #include <dsd-neo/core/dibit.h>
-#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/p25/p25.h>
@@ -30,6 +29,7 @@
 #include <dsd-neo/protocol/p25/p25p1_hdu.h>
 #include <dsd-neo/protocol/p25/p25p1_soft.h>
 #include <dsd-neo/runtime/colors.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <stdint.h>
 #include <stdio.h>
 #include "dsd-neo/core/opts_fwd.h"
@@ -240,8 +240,8 @@ static void
 tdulc_finalize_tail_symbols(dsd_opts* opts, dsd_state* state, int* status_count) {
     read_zeros(opts, state, 20, status_count);
 
-    state->p25_p1_last_tdu_m = dsd_time_now_monotonic_s();
-    state->last_vc_sync_time_m = dsd_time_now_monotonic_s();
+    state->p25_p1_last_tdu_m = dsd_decode_now_mono_s();
+    state->last_vc_sync_time_m = dsd_decode_now_mono_s();
     if (*status_count != 35) {
         DSD_FPRINTF(stderr, "%s", KRED);
         DSD_FPRINTF(stderr, "*** SYNC ERROR\n");

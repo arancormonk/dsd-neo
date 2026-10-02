@@ -14,13 +14,13 @@
  */
 
 #include <dsd-neo/core/call_state.h>
-#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/p25/p25_crypto.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <math.h>
 #include <stdint.h>
@@ -121,13 +121,13 @@ transmit_clear(uint8_t signature_fill, int source) {
     uint8_t signature[P25_SM_PTT_SIGNATURE_BYTES];
     DSD_MEMSET(signature, signature_fill, sizeof(signature));
     (void)p25_sm_emit_ptt_call_metadata(&g_opts, &g_state, 0, TEST_TG, 0, source, 1, P25_SM_SVC_UNKNOWN, signature,
-                                        dsd_time_now_monotonic_s(), 0);
+                                        dsd_decode_now_mono_s(), 0);
     (void)p25_crypto_resolve(&g_opts, &g_state, DSD_P25_CRYPTO_PHASE2, 0, 0x80, 0, 0, TEST_TG);
 }
 
 static void
 end_transmission(int source) {
-    (void)p25_sm_emit_end_call_at(&g_opts, &g_state, 0, TEST_TG, source, dsd_time_now_monotonic_s());
+    (void)p25_sm_emit_end_call_at(&g_opts, &g_state, 0, TEST_TG, source, dsd_decode_now_mono_s());
     p25_crypto_reset_slot(&g_state, 0);
 }
 
@@ -142,7 +142,7 @@ test_same_identity_mac_active_reopens_call(void) {
 
     // Past the post-END retention tail: END repeats and delayed SACCH copies
     // of the ended transmission arrive inside it, a re-keyed talker after it.
-    p25_sm_get_ctx()->slots[0].last_end_m = dsd_time_now_monotonic_s() - 1.1;
+    p25_sm_get_ctx()->slots[0].last_end_m = dsd_decode_now_mono_s() - 1.1;
 
     rc |= expect("same-source ACTIVE accepted",
                  p25_sm_emit_active_call(&g_opts, &g_state, 0, TEST_TG, 0, TEST_SRC, 1, 0x00) > 0);
@@ -166,7 +166,7 @@ test_identity_decode_failure_still_reopens_call(void) {
     // retention of the ended call and must not reopen (covered by
     // P25_P2_ACTIVE_PTT_EPOCH); after it, a live-typed PDU whose identity
     // failed to decode is the next transmission arriving.
-    p25_sm_get_ctx()->slots[0].last_end_m = dsd_time_now_monotonic_s() - 1.1;
+    p25_sm_get_ctx()->slots[0].last_end_m = dsd_decode_now_mono_s() - 1.1;
 
     rc |= expect("anonymous ACTIVE accepted", p25_sm_emit_active(&g_opts, &g_state, 0) > 0);
     rc |= expect("anonymous ACTIVE opens retained assignment", slot0_matches(DSD_CALL_PHASE_ACTIVE, TEST_TG, 0U));
@@ -182,7 +182,7 @@ test_conventional_same_identity_active_reopens_call(void) {
     p25_sm_init_ctx(p25_sm_get_ctx(), &g_opts, &g_state);
 
     (void)p25_sm_emit_ptt_call(&g_opts, &g_state, 0, TEST_TG, 0, TEST_SRC, 1, 0x00);
-    (void)p25_sm_emit_end_call_at(&g_opts, &g_state, 0, TEST_TG, TEST_SRC, dsd_time_now_monotonic_s());
+    (void)p25_sm_emit_end_call_at(&g_opts, &g_state, 0, TEST_TG, TEST_SRC, dsd_decode_now_mono_s());
     const uint64_t ended_epoch = slot0_epoch();
 
     rc |= expect("conventional ACTIVE accepted",
@@ -230,7 +230,7 @@ test_post_end_source_less_ptt_does_not_inherit_talker(void) {
     DSD_MEMSET(signature, 0x44, sizeof(signature));
     rc |= expect("source-less PTT accepted",
                  p25_sm_emit_ptt_call_metadata(&g_opts, &g_state, 0, TEST_TG, 0, 0, 1, P25_SM_SVC_UNKNOWN, signature,
-                                               dsd_time_now_monotonic_s(), 0)
+                                               dsd_decode_now_mono_s(), 0)
                      > 0);
     rc |= expect("source-less PTT does not inherit talker", slot0_matches(DSD_CALL_PHASE_ACTIVE, TEST_TG, 0U));
     return rc;

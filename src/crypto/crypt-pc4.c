@@ -98,7 +98,10 @@ arc4_output(PC4Context* pc4_ctx) {
     if (pc4_ctx->xyz == 0) {
         pc4_ctx->bb = next_rng(pc4_ctx);
     }
-    decal = (uint8_t)(56 - (8 * pc4_ctx->xyz));
+    /* xyz selects one of bb's eight bytes, high byte first, and only ever counts 0..7 (it wraps below).
+     * Masking it here bounds the shift where it is computed, so it stays inside the 64-bit word without
+     * relying on the wrap. */
+    decal = (uint8_t)(56U - (8U * (pc4_ctx->xyz & 7U)));
     rndbyte = (uint8_t)((pc4_ctx->bb >> decal) & 0xffu);
     pc4_ctx->xyz++;
     if (pc4_ctx->xyz == 8) {

@@ -2,11 +2,23 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Summarise a tools/replay_ab.sh run.
 
-Repeats are matched blocks: every build replays the same capture inside the same
-repeat, under the same machine conditions. The comparison that survives the
-pipeline's run-to-run variation is therefore the per-repeat difference, not the
-difference of the means -- on the captures behind issue #444 the within-build
-spread was large enough to reverse a blocked comparison.
+Repeats are matched blocks: every build replays the same realization of the
+capture inside the same repeat. replay_ab.sh makes each repeat its own
+realization by moving every event of the capture a different fraction of a
+symbol later, and records how far in summary.tsv's last column, shift. Replay is
+deterministic (issue #572), so identical repeats would be one draw of the
+capture and pair to an interval far narrower than it supports; realizations
+differ from each other by more than builds do, so the comparison is the
+per-repeat difference, not the difference of the means. Before issue #572 the
+repeats differed by run-to-run variation instead, and on the captures behind
+issue #444 the within-build spread was large enough to reverse a blocked
+comparison. The report names the distinct realizations, and says so when every
+repeat replayed the same one (replay_ab.sh --no-realizations, a capture with no
+events, or one whose events all sit at the end of the data): such an interval
+shows only that replay is deterministic. A repeat whose shifted events landed
+where an earlier repeat's did records that repeat's shift, so it is counted
+once, and the report says when the repeats replayed fewer realizations than
+there are repeats.
 
 Digital runs report errors per decoded voice frame. A build that loses sync
 decodes fewer frames and accrues fewer errors without being better, so the raw
@@ -109,6 +121,42 @@ def load_analog(rows: list[dict[str, str]]) -> dict[str, dict[int, dict[str, obj
                 by_rep = columns.setdefault(analog_key(name, row), defaultdict(dict))
                 by_rep[int(row["rep"])][row["variant"]] = value
     return columns
+
+
+def realizations_text(rows: list[dict[str, str]]) -> str:
+    """The realizations the repeats replayed, from summary.tsv's shift column (input samples replay_ab.sh moved the
+    capture's events by in each repeat), for the report's first line; empty for a summary written before it."""
+    shifts = sorted({int(row["shift"]) for row in rows if row.get("shift", "").isdigit()})
+    if not shifts:
+        return ""
+    if len(shifts) == 1:
+        how = "the capture as recorded" if shifts[0] == 0 else f"events shifted {shifts[0]} input samples"
+        return f"   realizations: 1 ({how})"
+    return f"   realizations: {len(shifts)} (events shifted {shifts[0]} to {shifts[-1]} input samples)"
+
+
+def realization_count(rows: list[dict[str, str]]) -> int:
+    """How many distinct realizations of the capture the repeats replayed; 0 for a summary written before
+    replay_ab.sh recorded the shift. A repeat whose shifted events landed where an earlier repeat's did records that
+    repeat's shift, so it is not counted again."""
+    return len({row["shift"] for row in rows if row.get("shift", "").isdigit()})
+
+
+def print_realization_note(rows: list[dict[str, str]], reps: list[int]) -> None:
+    """Warns when the repeats replayed fewer realizations than there are repeats: with one, a +/- 0.00 interval reads
+    as a resolved difference, and with more, a realization several repeats replayed counts more than once."""
+    count = realization_count(rows)
+    if count == 1 and len(reps) > 1:
+        print("\nnote: every repeat replayed the same realization of the capture (replay_ab.sh --no-realizations, a")
+        print("capture with no events, or one whose events all sit at the end of the bytes replay reads), so the")
+        print("repeats show only that replay is deterministic, and the interval says nothing about how the")
+        print("difference holds across the capture's realizations. Compare across captures, or across")
+        print("realizations of one whose events can move.")
+    elif 1 < count < len(reps):
+        print(f"\nnote: the {len(reps)} repeats replayed only {count} distinct realizations of the capture: some")
+        print("repeats replayed the same event schedule as an earlier repeat (events at the end of the bytes")
+        print("replay reads, or shifts that coincide), so a realization several repeats replayed counts more")
+        print("than once in the interval.")
 
 
 def interval_text(diffs: list[float]) -> str:
@@ -245,20 +293,26 @@ def report_analog(rows: list[dict[str, str]], baseline_arg: str | None) -> int:
     if baseline not in builds:
         raise SystemExit(f"baseline '{baseline}' not present; have: {', '.join(builds)}")
 
-    print(f"repeats: {len(reps)}   baseline: {baseline}   metric: analog\n")
+    print(f"repeats: {len(reps)}   baseline: {baseline}   metric: analog{realizations_text(rows)}\n")
     print_analog_numeric(columns, builds, reps, baseline, probed_frequencies(rows))
     print_analog_labels(columns, builds, reps)
     print_flagged(rows, builds, reps)
     status = print_analog_coverage(analog_coverage(rows), builds, reps)
+    print_realization_note(rows, reps)
 
     print("\nPaired column is the mean per-repeat difference from the baseline with a 95%")
-    print("interval; 'differ' counts the repeats where the two builds disagreed at all. Run")
-    print("the baseline against a copy of itself first: while the front end stays on the")
-    print("monitor path, I/Q replay is sample-deterministic, so that control should read")
-    print("+0.00 +/- 0.00 with 0 differing repeats. The interval needs at least two paired")
-    print("repeats and reads n/a with one. Repeats that exited non-zero or left the monitor")
-    print("path (the host warned of CQPSK symbols) are not measurements of the build: they")
-    print("are left out of every column and counted in a warning above.")
+    print("interval; 'differ' counts the repeats where the two builds disagreed at all.")
+    if realization_count(rows) > 1:
+        print("Each repeat replayed a realization of the capture, the same one in every build,")
+        print("so the interval spans the realizations.")
+    print("Run the baseline against a copy of itself first: I/Q replay is deterministic")
+    print("(issue #572), and both copies replay the same realization in a repeat, so that")
+    print("control must read +0.00 +/- 0.00 with 0 differing repeats, and any spread is a")
+    print("determinism regression to fix first.")
+    print("The interval needs at least two paired repeats and reads n/a with one. Repeats that")
+    print("exited non-zero or left the monitor path (the host warned of CQPSK symbols) are not")
+    print("measurements of the build: they are left out of every column and counted in a")
+    print("warning above.")
     print("Higher is better for tone_snr_db and inband_db, lower for clip, first_audible_ms")
     print("and tone_lock_ms, and lower for a probe that measures an interferer; whether")
     print("audible_ms, rms_dbfs or tone_lock_pct should move depends on the case (a capture")
@@ -295,17 +349,23 @@ def report_digital(path: Path, baseline_arg: str | None) -> int:
     if baseline not in builds:
         raise SystemExit(f"baseline '{baseline}' not present; have: {', '.join(builds)}")
 
-    print(f"repeats: {len(reps)}   baseline: {baseline}\n")
+    rows = read_rows(path)
+    print(f"repeats: {len(reps)}   baseline: {baseline}{realizations_text(rows)}\n")
     print(f"{'build':>24}  {'err/voice':>9} {'median':>7} {'sd':>6}  {'voice':>6}  "
           f"{'paired vs baseline':>20}  {'better':>7}")
     for build in builds:
         print(digital_row(by_rep, reps, build, baseline))
+    print_realization_note(rows, reps)
 
     print("\nPaired column is the mean per-repeat difference in errors per voice frame,")
     print("with a 95% interval (n/a with one paired repeat: the interval needs at least two")
-    print("paired repeats). Negative beats the baseline; an interval spanning 0 means the")
-    print("run did not resolve a difference. Watch the voice column too: a build that")
-    print("decodes noticeably fewer frames is losing sync, whatever its error rate says.")
+    print("paired repeats).")
+    if realization_count(rows) > 1:
+        print("Each repeat replayed a realization of the capture, the same one in every build,")
+        print("so the interval spans the realizations.")
+    print("Negative beats the baseline; an interval spanning 0 means the run did not resolve")
+    print("a difference. Watch the voice column too: a build that decodes noticeably fewer")
+    print("frames is losing sync, whatever its error rate says.")
     return 0
 
 

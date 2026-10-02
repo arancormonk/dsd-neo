@@ -12,11 +12,11 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
-#include <dsd-neo/platform/timing.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_frequency.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/ui/ncurses_internal.h>
 #include <dsd-neo/ui/ui_prims.h>
@@ -37,7 +37,6 @@ static char g_printw_capture[4096];
 static size_t g_printw_capture_len;
 static int g_test_rows = 24;
 static int g_test_cols = 80;
-static uint64_t g_monotonic_ns;
 static int g_percentile_fixture;
 static int g_percentile_len;
 
@@ -105,16 +104,6 @@ assert_capture_lines_fit(int max_cols) {
         col++;
     }
     assert(col <= max_cols);
-}
-
-uint64_t
-dsd_time_monotonic_ns(void) { // NOLINT(misc-use-internal-linkage)
-    return g_monotonic_ns;
-}
-
-uint64_t
-dsd_time_monotonic_ms(void) { // NOLINT(misc-use-internal-linkage)
-    return 0;
 }
 
 const dsdneoRuntimeConfig*
@@ -380,8 +369,9 @@ run_active_vc_cases(void) {
         .channel = 0x123AU,
         .frequency_hz = 853012500L,
     };
-    g_monotonic_ns = UINT64_C(10000000000);
-    const uint64_t now_ms = dsd_time_monotonic_ns() / UINT64_C(1000000);
+    // The recent-activity TTL is judged on the decode clock the entries are stamped on.
+    dsd_decode_clock_use_test(UINT64_C(10000000000));
+    const uint64_t now_ms = dsd_decode_now_mono_ms();
     assert(dsd_recent_activity_publish(&state, 2U, &recent, "TG 123 Ch: 123A slot 1", now_ms) == 1);
     assert(ui_guess_active_vc_freq(&state) == 853012500L);
     assert(dsd_recent_activity_publish(&state, 2U, &recent, "TG 123 Ch: 123A slot 1",
@@ -389,7 +379,7 @@ run_active_vc_cases(void) {
            == 1);
     assert(ui_guess_active_vc_freq(&state) == 0);
     dsd_state_ext_free_all(&state);
-    g_monotonic_ns = 0U;
+    dsd_decode_clock_use_system();
 
     dsd_state* canonical = (dsd_state*)calloc(1U, sizeof(*canonical));
     assert(canonical != NULL);

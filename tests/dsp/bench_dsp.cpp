@@ -43,7 +43,7 @@
 
 #if defined(__x86_64__) || defined(_M_X64)
 extern "C" int simd_hb_decim2_complex_sse2(const float* in, int in_len, float* out, float* hist_i, float* hist_q,
-                                           const float* taps, int taps_len);
+                                           int* pending, const float* taps, int taps_len);
 #endif
 
 extern "C" int
@@ -551,13 +551,16 @@ bench_channel_lpf_taps(const BenchOptions& opts, const char* name, const BenchMe
     std::vector<float> hist_i((size_t)taps_len - 1U, 0.0f);
     std::vector<float> hist_q((size_t)taps_len - 1U, 0.0f);
     std::vector<float> taps(designed, designed + taps_len);
+    int pending = 0;
     fill_noise(&in, seed);
 
+    /* The streaming FIR makes kPairs outputs per call once warm (pending at c), so a call measures kPairs pairs. */
     return run_case(
         opts, name, "pair", (double)kPairs,
         [&]() -> float {
-            simd_fir_complex_apply(in.data(), kInLen, out.data(), hist_i.data(), hist_q.data(), taps.data(), taps_len);
-            return out[0] + out[kInLen - 1] + hist_i[0] + hist_q[0];
+            const int made = simd_fir_complex_apply(in.data(), kPairs, out.data(), kPairs, hist_i.data(), hist_q.data(),
+                                                    taps_len - 1, &pending, taps.data(), taps_len);
+            return out[0] + (made > 0 ? out[(size_t)made * 2U - 1U] : 0.0f) + hist_i[0] + hist_q[0];
         },
         &meta);
 }
@@ -664,16 +667,22 @@ bench_fir(const BenchOptions& opts) {
     std::vector<float> hist_i(kTaps - 1, 0.0f);
     std::vector<float> hist_q(kTaps - 1, 0.0f);
     std::vector<float> taps(kTaps);
+    int pending = 0;
     fill_noise(&in, 0x2468u);
     make_symmetric_taps(&taps);
 
+    /* kPairs outputs per call once warm (pending at c). */
     ran += run_case(opts, "simd_fir_complex_apply", "pair", (double)kPairs, [&]() -> float {
-        simd_fir_complex_apply(in.data(), kInLen, out.data(), hist_i.data(), hist_q.data(), taps.data(), kTaps);
-        return out[0] + out[kInLen - 1] + hist_i[0] + hist_q[0];
+        const int made = simd_fir_complex_apply(in.data(), kPairs, out.data(), kPairs, hist_i.data(), hist_q.data(),
+                                                kTaps - 1, &pending, taps.data(), kTaps);
+        return out[0] + (made > 0 ? out[(size_t)made * 2U - 1U] : 0.0f) + hist_i[0] + hist_q[0];
     });
 
+    /* The half-band cases run streaming at steady state: after the first call, an even block of kPairs makes kPairs / 2
+       outputs (pending at c - 1 or c). */
     std::vector<float> hb15_hist_i(HB_TAPS - 1, 0.0f);
     std::vector<float> hb15_hist_q(HB_TAPS - 1, 0.0f);
+    int hb15_pending = 0;
     BenchMeta hb15_meta;
     hb15_meta.tap_count = HB_TAPS;
     hb15_meta.variant = "fixed";
@@ -681,13 +690,14 @@ bench_fir(const BenchOptions& opts) {
         opts, "simd_hb_decim2_complex_15tap", "pair", (double)kPairs,
         [&]() -> float {
             int got = simd_hb_decim2_complex(in.data(), kInLen, out.data(), hb15_hist_i.data(), hb15_hist_q.data(),
-                                             hb_q15_taps, HB_TAPS);
+                                             &hb15_pending, hb_q15_taps, HB_TAPS);
             return out[0] + out[(got > 0) ? got - 1 : 0] + (float)got;
         },
         &hb15_meta);
 
     std::vector<float> hb31_hist_i(30, 0.0f);
     std::vector<float> hb31_hist_q(30, 0.0f);
+    int hb31_pending = 0;
     BenchMeta hb31_meta;
     hb31_meta.tap_count = 31;
     hb31_meta.variant = "fixed";
@@ -695,7 +705,7 @@ bench_fir(const BenchOptions& opts) {
         opts, "simd_hb_decim2_complex_31tap", "pair", (double)kPairs,
         [&]() -> float {
             int got = simd_hb_decim2_complex(in.data(), kInLen, out.data(), hb31_hist_i.data(), hb31_hist_q.data(),
-                                             hb31_q15_taps, 31);
+                                             &hb31_pending, hb31_q15_taps, 31);
             return out[0] + out[(got > 0) ? got - 1 : 0] + (float)got;
         },
         &hb31_meta);
@@ -708,6 +718,7 @@ bench_fir(const BenchOptions& opts) {
     std::vector<float> cascade_work_b(kCascadeInLen);
     std::vector<float> cascade_hist_i[kCascadeStages];
     std::vector<float> cascade_hist_q[kCascadeStages];
+    int cascade_pending[kCascadeStages] = {0};
     fill_noise(&cascade_in, 0x5A17u);
     for (int stage = 0; stage < kCascadeStages; stage++) {
         const int hist_len = (stage == 0) ? 30 : HB_TAPS - 1;
@@ -727,8 +738,9 @@ bench_fir(const BenchOptions& opts) {
             for (int stage = 0; stage < kCascadeStages; stage++) {
                 const float* stage_taps = (stage == 0) ? hb31_q15_taps : hb_q15_taps;
                 const int taps_len = (stage == 0) ? 31 : HB_TAPS;
-                const int got = simd_hb_decim2_complex(src, in_len, dst, cascade_hist_i[stage].data(),
-                                                       cascade_hist_q[stage].data(), stage_taps, taps_len);
+                const int got =
+                    simd_hb_decim2_complex(src, in_len, dst, cascade_hist_i[stage].data(), cascade_hist_q[stage].data(),
+                                           &cascade_pending[stage], stage_taps, taps_len);
                 src = dst;
                 in_len = got;
                 dst = (dst == cascade_work_a.data()) ? cascade_work_b.data() : cascade_work_a.data();
@@ -740,28 +752,31 @@ bench_fir(const BenchOptions& opts) {
 #if defined(__x86_64__) || defined(_M_X64)
     std::vector<float> sse15_hist_i(HB_TAPS - 1, 0.0f);
     std::vector<float> sse15_hist_q(HB_TAPS - 1, 0.0f);
+    int sse15_pending = 0;
     ran += run_case(
         opts, "simd_hb_decim2_complex_sse2_15tap", "pair", (double)kPairs,
         [&]() -> float {
             int got = simd_hb_decim2_complex_sse2(in.data(), kInLen, out.data(), sse15_hist_i.data(),
-                                                  sse15_hist_q.data(), hb_q15_taps, HB_TAPS);
+                                                  sse15_hist_q.data(), &sse15_pending, hb_q15_taps, HB_TAPS);
             return out[0] + out[(got > 0) ? got - 1 : 0] + (float)got;
         },
         &hb15_meta);
 
     std::vector<float> sse31_hist_i(30, 0.0f);
     std::vector<float> sse31_hist_q(30, 0.0f);
+    int sse31_pending = 0;
     ran += run_case(
         opts, "simd_hb_decim2_complex_sse2_31tap", "pair", (double)kPairs,
         [&]() -> float {
             int got = simd_hb_decim2_complex_sse2(in.data(), kInLen, out.data(), sse31_hist_i.data(),
-                                                  sse31_hist_q.data(), hb31_q15_taps, 31);
+                                                  sse31_hist_q.data(), &sse31_pending, hb31_q15_taps, 31);
             return out[0] + out[(got > 0) ? got - 1 : 0] + (float)got;
         },
         &hb31_meta);
 
     std::vector<float> sse_cascade_hist_i[kCascadeStages];
     std::vector<float> sse_cascade_hist_q[kCascadeStages];
+    int sse_cascade_pending[kCascadeStages] = {0};
     for (int stage = 0; stage < kCascadeStages; stage++) {
         const int hist_len = (stage == 0) ? 30 : HB_TAPS - 1;
         sse_cascade_hist_i[stage].resize((size_t)hist_len, 0.0f);
@@ -777,7 +792,8 @@ bench_fir(const BenchOptions& opts) {
                 const float* stage_taps = (stage == 0) ? hb31_q15_taps : hb_q15_taps;
                 const int taps_len = (stage == 0) ? 31 : HB_TAPS;
                 const int got = simd_hb_decim2_complex_sse2(src, in_len, dst, sse_cascade_hist_i[stage].data(),
-                                                            sse_cascade_hist_q[stage].data(), stage_taps, taps_len);
+                                                            sse_cascade_hist_q[stage].data(),
+                                                            &sse_cascade_pending[stage], stage_taps, taps_len);
                 src = dst;
                 in_len = got;
                 dst = (dst == cascade_work_a.data()) ? cascade_work_b.data() : cascade_work_a.data();
@@ -790,9 +806,11 @@ bench_fir(const BenchOptions& opts) {
     std::vector<float> real_in(kInLen);
     std::vector<float> real_out(kInLen / 2);
     std::vector<float> real_hist(HB_TAPS - 1, 0.0f);
+    int real_pending = 0;
     fill_noise(&real_in, 0x3579u);
     ran += run_case(opts, "simd_hb_decim2_real", "sample", (double)kInLen, [&]() -> float {
-        int got = simd_hb_decim2_real(real_in.data(), kInLen, real_out.data(), real_hist.data(), hb_q15_taps, HB_TAPS);
+        int got = simd_hb_decim2_real(real_in.data(), kInLen, real_out.data(), real_hist.data(), &real_pending,
+                                      hb_q15_taps, HB_TAPS);
         return real_out[0] + real_out[(got > 0) ? got - 1 : 0] + (float)got;
     });
 

@@ -32,7 +32,7 @@ TalkgroupListModel::TalkgroupListModel(QAbstractItemModel* history, QObject* par
     }
     const auto roles = history->roleNames();
     m_tgRole = roles.key("tg", -1);
-    m_whenRole = roles.key("when", -1);
+    m_sessionRole = roles.key("session", -1);
     m_kindRole = roles.key("kind", -1);
     const auto dirty = [this]() { m_heardDirty = true; };
     connect(history, &QAbstractItemModel::rowsInserted, this, dirty);
@@ -86,13 +86,13 @@ TalkgroupListModel::roleNames() const {
 }
 
 void
-TalkgroupListModel::setSinceWhen(qint64 when) {
-    if (when == m_sinceWhen) {
+TalkgroupListModel::setHistorySession(qint64 session) {
+    if (session == m_historySession) {
         return;
     }
-    m_sinceWhen = when;
+    m_historySession = session;
     m_heardDirty = true;
-    Q_EMIT sinceWhenChanged();
+    Q_EMIT historySessionChanged();
 }
 
 void
@@ -199,7 +199,7 @@ TalkgroupListModel::listedRows(const dsd_state* snapshot, QSet<QString>& categor
 
 void
 TalkgroupListModel::appendHeardRows(QVector<Row>& rows, bool allowListedOnly) const {
-    if (m_history == nullptr || m_tgRole < 0 || m_whenRole < 0 || m_kindRole < 0) {
+    if (m_history == nullptr || m_tgRole < 0 || m_sessionRole < 0 || m_kindRole < 0) {
         return;
     }
     const qsizetype listedCount = rows.size();
@@ -207,7 +207,7 @@ TalkgroupListModel::appendHeardRows(QVector<Row>& rows, bool allowListedOnly) co
     for (int i = 0; i < m_history->rowCount(); ++i) {
         const QModelIndex idx = m_history->index(i, 0);
         if (m_history->data(idx, m_kindRole).toInt() != 0
-            || m_history->data(idx, m_whenRole).toLongLong() < m_sinceWhen) {
+            || (m_historySession > 0 && m_history->data(idx, m_sessionRole).toLongLong() != m_historySession)) {
             continue;
         }
         const qulonglong target = m_history->data(idx, m_tgRole).toULongLong();

@@ -10,7 +10,6 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/talkgroup_policy.h>
-#include <dsd-neo/platform/timing.h>
 #include <dsd-neo/protocol/p25/p25.h>
 #include <dsd-neo/protocol/p25/p25_callsign.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
@@ -18,6 +17,7 @@
 #include <dsd-neo/protocol/p25/p25_status_symbol.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25_vpdu.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -362,16 +362,6 @@ dsd_rtl_stream_metrics_hook_p25p1_ber_update(int ok_delta, int err_delta) {
     (void)err_delta;
 }
 
-uint64_t
-dsd_time_monotonic_ns(void) {
-    return 1000000000ULL;
-}
-
-uint64_t
-dsd_time_monotonic_ms(void) {
-    return dsd_time_monotonic_ns() / 1000000U;
-}
-
 static int
 expect_eq_int(const char* tag, int got, int want) {
     if (got != want) {
@@ -383,6 +373,7 @@ expect_eq_int(const char* tag, int got, int want) {
 
 int
 main(void) {
+    dsd_decode_clock_use_test(1000000000ULL);
     build_two_block_stream();
     reset_decode_counters();
 
@@ -436,6 +427,7 @@ main(void) {
     rc |= expect_eq_int("net-sts rejected voice preserves tdma cc hint", state.p25_cc_is_tdma, 1);
     rc |= expect_eq_int("net-sts rejected voice skips wacn", (int)state.p2_wacn, 0);
     rc |= expect_eq_int("net-sts rejected voice skips sysid", (int)state.p2_sysid, 0);
+    dsd_decode_clock_use_system();
     return rc;
 }
 

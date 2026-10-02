@@ -5,7 +5,6 @@
  */
 
 #include <dsd-neo/core/call_state.h>
-#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
@@ -14,6 +13,7 @@
 #include <dsd-neo/protocol/p25/p25_crypto.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25_vpdu.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <dsd-neo/runtime/udp_audio_hooks.h>
 #include <stdint.h>
@@ -211,7 +211,7 @@ main(void) {
     st.p25_p2_audio_ring_count[0] = 1;
     st.p25_p2_audio_ring_count[1] = 0;
     st.p25_p2_last_mac_active[1] = time(NULL);
-    st.p25_p2_last_mac_active_m[1] = dsd_time_now_monotonic_s();
+    st.p25_p2_last_mac_active_m[1] = dsd_decode_now_mono_s();
     g_return_to_cc_called = 0;
 
     process_MAC_VPDU(&opts, &st, 0, P25_MAC_PDU_ACTIVE, MAC);
@@ -271,7 +271,7 @@ main(void) {
     sm->state = P25_SM_TUNED;
     sm->vc_is_tdma = 1;
     sm->vc_freq_hz = 851500000;
-    const double first_ptt_m = dsd_time_now_monotonic_s();
+    const double first_ptt_m = dsd_decode_now_mono_s();
     for (int slot = 0; slot < 2; slot++) {
         sm->slots[slot].grant_active = 1;
         sm->slots[slot].freq_hz = sm->vc_freq_hz;
@@ -352,7 +352,7 @@ main(void) {
     st.p25_p2_audio_allowed[0] = 0;
     st.p25_p2_audio_allowed[1] = 1;
     st.p25_p2_last_mac_active[1] = time(NULL);
-    st.p25_p2_last_mac_active_m[1] = dsd_time_now_monotonic_s();
+    st.p25_p2_last_mac_active_m[1] = dsd_decode_now_mono_s();
     st.voice_counter[0] = 1;
     st.s_l4[0][0] = 321;
     g_return_to_cc_called = 0;

@@ -28,7 +28,6 @@
 #include <dsd-neo/app_control/scan_timing_view.h>
 #include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/call_state.h>
-#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
@@ -39,6 +38,7 @@
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/analog_tones.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
 
@@ -292,7 +292,7 @@ test_lead_slot_keeps_earlier_call_and_quality() {
 
     dsd_call_observation call = dsd_call_observation_data(DSD_SYNC_P25P2_POS, 1U, 4242U, 1202U);
     call.kind = DSD_CALL_KIND_GROUP_VOICE;
-    call.observed_m = dsd_time_now_monotonic_s() - 2.0;
+    call.observed_m = dsd_decode_now_mono_s() - 2.0;
     expect("slot 2 opens first", dsd_call_state_observe(&state, &call, DSD_CALL_BOUNDARY_BEGIN) == 1);
     state.p25_p2_voice_err_hist_len = 50;
     state.p25_p2_voice_err_hist_count[1] = 3;
@@ -315,7 +315,7 @@ test_lead_slot_keeps_earlier_call_and_quality() {
                                                              && model.voiceErrsPerFrame() == 2.0
                                                              && model.slot1VoiceErrsPerFrame() == 5.0);
 
-    expect("earlier slot 2 call ends", dsd_call_state_end(&state, 1U, dsd_time_now_monotonic_s()) == 1);
+    expect("earlier slot 2 call ends", dsd_call_state_end(&state, 1U, dsd_decode_now_mono_s()) == 1);
     model.refresh(&opts, &state);
     expect("remaining slot 1 call takes the headline",
            model.slot1CallState() == 2 && model.slot2CallState() == 3 && model.leadSlot() == 1);
@@ -337,7 +337,7 @@ test_lead_slot_change_alone_notifies() {
      * test is descheduled. Restarting an epoch can then change only the lead. */
     dsd_call_observation call = dsd_call_observation_data(DSD_SYNC_P25P2_POS, 0U, 4242U, 1201U);
     call.kind = DSD_CALL_KIND_GROUP_VOICE;
-    call.observed_m = dsd_time_now_monotonic_s() + 60.0;
+    call.observed_m = dsd_decode_now_mono_s() + 60.0;
     expect("initial lead opens", dsd_call_state_observe(&state, &call, DSD_CALL_BOUNDARY_BEGIN) == 1);
     dsd_call_observation other = call;
     other.slot = 1U;
@@ -603,7 +603,7 @@ test_call_skip_metrics() {
     model.refresh(&opts, &snapshot);
     int changes = 0;
     QObject::connect(&model, &dsd_qt::MetricsModel::controlChanged, [&]() { ++changes; });
-    const double now = dsd_time_now_monotonic_s();
+    const double now = dsd_decode_now_mono_s();
     expect("seed metric skip", dsd_tg_policy_call_skip_arm(&state, 100, 1, 0, now) == 0);
     expect("publish skip snapshot", dsd_tg_policy_copy_snapshot(&snapshot, &state) == 0);
     model.refresh(&opts, &snapshot);
@@ -624,6 +624,48 @@ test_call_skip_metrics() {
     model.clear();
     expect("stopped skips unavailable", model.callSkipCount() == 0);
     freeState(&snapshot);
+    freeState(&state);
+}
+
+/*
+ * The call lines, the call-skip count and decodeNowMs read the decode clock the decoder stamps
+ * their inputs on, so under the TEST source they follow it with the real clock untouched: a call
+ * begun at T reads 7 s old at T + 7.5 s, and a skip armed at T lapses once its quiet window has
+ * passed in decode time.
+ */
+static void
+test_decode_clock_readings() {
+    static dsd_opts opts;
+    static dsd_state state;
+    initOpts(&opts);
+    initState(&state);
+    const uint64_t t0_ns = 1000000000000000000ULL; // 1e9 s: far from any platform clock reading.
+    dsd_decode_clock_use_test(t0_ns);
+    dsd_qt::MetricsModel model;
+    int now_changes = 0;
+    QObject::connect(&model, &dsd_qt::MetricsModel::decodeNowMsChanged, [&]() { ++now_changes; });
+
+    dsd_call_observation call = dsd_call_observation_data(DSD_SYNC_P25P2_POS, 0U, 123U, 456U);
+    call.kind = DSD_CALL_KIND_GROUP_VOICE;
+    // No observed_m: the call store stamps the start from the decode clock.
+    expect("decode-clock call begins", dsd_call_state_observe(&state, &call, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    expect("decode-clock skip armed", dsd_tg_policy_call_skip_arm(&state, 100, 1, 0, dsd_decode_now_mono_s()) == 0);
+
+    dsd_decode_clock_test_set_ns(t0_ns + 7500000000ULL);
+    model.refresh(&opts, &state);
+    expect("call line ages on the decode clock", model.slot1CallSeconds() == 7);
+    expect("skip counted inside its decode-time quiet window", model.callSkipCount() == 1);
+    expect("decodeNowMs is the decode clock's wall time", model.decodeNowMs() == 1000000007500LL);
+    expect("decodeNowMs announces a new decode second", now_changes == 1);
+    model.refresh(&opts, &state);
+    expect("the same decode second stays quiet", now_changes == 1);
+
+    dsd_decode_clock_test_set_ns(t0_ns + static_cast<uint64_t>((DSD_TG_CALL_SKIP_QUIET_S + 1.0) * 1e9));
+    model.refresh(&opts, &state);
+    expect("skip lapses on the decode clock", model.callSkipCount() == 0);
+    expect("decodeNowMs announces the next decode second", now_changes == 2);
+
+    dsd_decode_clock_use_system();
     freeState(&state);
 }
 
@@ -1100,6 +1142,7 @@ int
 main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
     test_options_readiness();
+    test_decode_clock_readings();
     test_temporary_lockout_metrics();
     test_call_skip_metrics();
     test_scan_timing();
@@ -1134,7 +1177,7 @@ main(int argc, char** argv) {
     emergency.has_service_metadata = 1;
     emergency.emergency = 1;
     emergency.priority = 3;
-    emergency.observed_m = dsd_time_now_monotonic_s();
+    emergency.observed_m = dsd_decode_now_mono_s();
     dsd_call_state_observe(&state, &emergency, DSD_CALL_BOUNDARY_BEGIN);
     model.refresh(&opts, &state);
     expect("emergency and priority reach metrics", model.slot1CallEmergency() && model.slot1CallPriority() == 3);

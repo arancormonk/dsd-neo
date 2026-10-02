@@ -5,11 +5,11 @@
 
 #include <dsd-neo/app_control/call_view.h>
 #include <dsd-neo/core/call_state.h>
-#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -309,7 +309,7 @@ app_recent_activity_vc_freq(const dsd_state* state) {
     if (dsd_recent_activity_copy_snapshot(state, &recent) <= 0) {
         return 0;
     }
-    const uint64_t now_ms = (uint64_t)(dsd_time_now_monotonic_s() * 1000.0);
+    const uint64_t now_ms = (uint64_t)(dsd_decode_now_mono_s() * 1000.0);
     for (int i = 0; i < DSD_RECENT_ACTIVITY_COUNT; i++) {
         const dsd_recent_activity_entry* entry = &recent.entries[i];
         if (entry->updated_m_ms != 0U && now_ms >= entry->updated_m_ms

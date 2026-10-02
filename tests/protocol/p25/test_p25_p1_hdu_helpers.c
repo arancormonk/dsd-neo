@@ -25,12 +25,12 @@
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/core/synctype_ids.h"
 #include "dsd-neo/core/talkgroup_policy.h"
-#include "dsd-neo/platform/timing.h"
 #include "dsd-neo/protocol/p25/p25_crypto.h"
 #include "dsd-neo/protocol/p25/p25_lfsr.h"
 #include "dsd-neo/protocol/p25/p25_status_symbol.h"
 #include "dsd-neo/protocol/p25/p25_trunk_sm.h"
 #include "dsd-neo/protocol/p25/p25p1_check_hdu.h"
+#include "dsd-neo/runtime/decode_clock.h"
 #include "dsd-neo/runtime/p25_optional_hooks.h"
 
 #if defined(__GNUC__) && !defined(__cplusplus)
@@ -113,9 +113,6 @@ static int g_push_event_calls;
 static int g_init_event_calls;
 static int g_policy_make_calls;
 static int g_policy_upsert_calls;
-static uint32_t g_last_policy_id;
-static uint8_t g_last_policy_source;
-static dsd_tg_policy_upsert_mode g_last_policy_upsert_mode;
 static const char* g_lookup_label;
 static Event_History_I g_event_history[2];
 static int g_hard_golay_fixed;
@@ -185,11 +182,6 @@ p25_status_accum_ensure_started(dsd_state* state) {
 void
 p25_status_accum_classify(dsd_state* state) {
     (void)state;
-}
-
-uint64_t
-dsd_time_monotonic_ns(void) {
-    return 123456789000ULL;
 }
 
 int
@@ -274,12 +266,9 @@ dsd_tg_policy_make_exact_entry(uint32_t id, const char* mode, const char* name, 
 int
 dsd_tg_policy_upsert_exact(dsd_state* state, const dsd_tg_policy_entry* entry, dsd_tg_policy_upsert_mode mode) {
     (void)state;
+    (void)entry;
+    (void)mode;
     g_policy_upsert_calls++;
-    g_last_policy_upsert_mode = mode;
-    if (entry != NULL) {
-        g_last_policy_id = entry->id_start;
-        g_last_policy_source = entry->source;
-    }
     return 0;
 }
 
@@ -325,9 +314,6 @@ reset_hook_counters(void) {
     g_init_event_calls = 0;
     g_policy_make_calls = 0;
     g_policy_upsert_calls = 0;
-    g_last_policy_id = 0U;
-    g_last_policy_source = 0U;
-    g_last_policy_upsert_mode = 0;
     g_lookup_label = NULL;
     g_resolve_entry_algid = 0;
     g_resolve_entry_keyid = 0;
@@ -778,6 +764,10 @@ test_hdu_encrypted_trunk_lockout_state(void) {
     rc |= expect_int("lockout does not make runtime policy", g_policy_make_calls, 0);
     rc |= expect_int("lockout does not upsert runtime policy", g_policy_upsert_calls, 0);
     rc |= expect_int("lockout logging delegated", g_watchdog_calls, 0);
+    /* With an event log configured, the HDU still writes and stages no event of its own. */
+    rc |= expect_int("lockout writes no event", g_write_event_calls, 0);
+    rc |= expect_int("lockout pushes no event history", g_push_event_calls, 0);
+    rc |= expect_int("lockout resets no event history", g_init_event_calls, 0);
 
     return rc;
 }
@@ -785,6 +775,7 @@ test_hdu_encrypted_trunk_lockout_state(void) {
 int
 main(void) {
     int rc = 0;
+    dsd_decode_clock_use_test(123456789000ULL);
     reset_fec_stubs();
     rc |= test_hdu_extracts_payload_fields();
     rc |= test_hdu_rs_reliability_uses_wire_order();
@@ -795,6 +786,7 @@ main(void) {
     rc |= test_hdu_key_reporting_preserves_user_unmute_and_good_decode_state();
     rc |= test_hdu_nondefinitive_metadata_preserves_prior_tuple();
     rc |= test_hdu_encrypted_trunk_lockout_state();
+    dsd_decode_clock_use_system();
     return rc;
 }
 

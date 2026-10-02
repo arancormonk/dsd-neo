@@ -6,8 +6,8 @@
 /* UI command actions — logging/history domain */
 
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <string.h>
-#include <time.h>
 #include "../command_dispatch.h"
 #include "../services.h"
 #include "dsd-neo/app_control/commands.h"
@@ -67,7 +67,7 @@ ui_handle_eh_reset(dsd_opts* opts, dsd_state* state, const struct dsd_app_comman
     if (state) {
         svc_reset_event_history(state);
         DSD_SNPRINTF(state->ui_msg, sizeof state->ui_msg, "Applied: Event history reset");
-        state->ui_msg_expire = time(NULL) + 3;
+        state->ui_msg_expire = dsd_realtime_time() + 3;
     }
     (void)opts;
     return 1;
@@ -80,7 +80,7 @@ ui_handle_event_log_disable(dsd_opts* opts, dsd_state* state, const struct dsd_a
         svc_disable_event_log(opts);
         if (state) {
             DSD_SNPRINTF(state->ui_msg, sizeof state->ui_msg, "Applied: Event log disabled");
-            state->ui_msg_expire = time(NULL) + 3;
+            state->ui_msg_expire = dsd_realtime_time() + 3;
         }
     }
     return 1;
@@ -100,10 +100,10 @@ ui_handle_event_log_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_c
                 int max_path =
                     (sizeof state->ui_msg > (prefix_len + 1)) ? (int)(sizeof state->ui_msg - prefix_len - 1) : 0;
                 DSD_SNPRINTF(state->ui_msg, sizeof state->ui_msg, "Applied: Event log -> %.*s", max_path, path);
-                state->ui_msg_expire = time(NULL) + 3;
+                state->ui_msg_expire = dsd_realtime_time() + 3;
             } else {
                 DSD_SNPRINTF(state->ui_msg, sizeof state->ui_msg, "Failed: Event log path invalid");
-                state->ui_msg_expire = time(NULL) + 4;
+                state->ui_msg_expire = dsd_realtime_time() + 4;
             }
         }
     }

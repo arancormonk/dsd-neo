@@ -26,6 +26,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/platform/curses_compat.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/radioreference.h>
 #include <dsd-neo/runtime/radioreference_import.h>
 #include <dsd-neo/ui/keymap.h>
@@ -33,7 +34,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -963,7 +963,7 @@ rr_panel_draw_plan(WINDOW* win, int h, int body_w, const dsd_rr_import_plan* pla
  */
 static void
 rr_panel_draw_status(WINDOW* win, int h, int body_w) {
-    (void)ui_status_draw(win, h - 4, 2, body_w, 2, UI_STATUS_FLAG_PREFIX, time(NULL));
+    (void)ui_status_draw(win, h - 4, 2, body_w, 2, UI_STATUS_FLAG_PREFIX, dsd_realtime_time());
 }
 
 static void

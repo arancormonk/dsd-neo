@@ -11,9 +11,10 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
+#include <stddef.h>
 #include <stdint.h>
-#include <time.h>
 #include "../command_dispatch.h"
 #include "../services.h"
 
@@ -80,7 +81,7 @@ ui_handle_scanner_toggle(dsd_opts* opts, dsd_state* state, const struct dsd_app_
         if (state) {
             DSD_SNPRINTF(state->ui_msg, sizeof(state->ui_msg), "%s",
                          "Trunk scan active: conventional scanner unavailable");
-            state->ui_msg_expire = time(NULL) + 3;
+            state->ui_msg_expire = dsd_realtime_time() + 3;
         }
         return 1;
     }

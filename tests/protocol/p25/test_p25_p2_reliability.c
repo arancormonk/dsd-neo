@@ -912,6 +912,7 @@ test_sacchc_dynamic_erasure_success_maps_inverse_slot(void) {
     rc |= expect_int("sacch mac calls", g_sacch_mac_calls, 1);
     rc |= expect_int("sacch mac opcode", g_sacch_mac_last_opcode, 6);
     rc |= expect_int("sacch erasure depth", g_sacch_last_erasures, 12);
+    rc |= expect_int("sacch dynamic erasure retried after the first attempt", g_sacch_calls > 1, 1);
     if (rc == 0) {
         printf("PASS\n");
     } else {

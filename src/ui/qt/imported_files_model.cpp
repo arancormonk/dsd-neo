@@ -10,7 +10,6 @@
 
 #include <QByteArray>
 #include <QChar>
-#include <QDateTime>
 #include <QDir>
 #include <QFile>
 #include <QFileDevice> // IWYU pragma: keep
@@ -34,6 +33,7 @@
 #include "csv_bundle_import.h"
 #include "decoder_host.h"
 #include "json_store.h"
+#include "realtime_clock.h"
 
 namespace dsd_qt {
 
@@ -178,7 +178,7 @@ ImportedFilesModel::registerTalkgroupList(const QString& path) {
     row.path = path;
     row.name = file.fileName();
     row.type = QStringLiteral("group");
-    row.importedAt = QDateTime::currentSecsSinceEpoch();
+    row.importedAt = realtimeSecsSinceEpoch();
     // Unlike a staged import, failure must never delete the engine's active file.
     if (!validate(path, row.type, &row.accepted, &row.skipped)) {
         return false;
@@ -377,7 +377,7 @@ ImportedFilesModel::replaceBundle(int replaceRow, const CsvBundleImport& bundle,
     next[replaceRow].accepted = accepted;
     next[replaceRow].skipped = skipped;
     next[replaceRow].bundleRoot = bundle.root.isEmpty() ? previous.bundleRoot : bundle.root;
-    next[replaceRow].importedAt = QDateTime::currentSecsSinceEpoch();
+    next[replaceRow].importedAt = realtimeSecsSinceEpoch();
     next[replaceRow].origin.clear();
     if (!saveRows(next)) {
         if (writePrivateCsv(previous.path, backup)) {
@@ -420,7 +420,7 @@ ImportedFilesModel::adoptStoredFile(const QString& path, const QString& type, co
         row.name = origin.value("name").toString();
     }
     row.type = type;
-    row.importedAt = QDateTime::currentSecsSinceEpoch();
+    row.importedAt = realtimeSecsSinceEpoch();
     row.accepted = accepted;
     row.skipped = skipped;
     row.origin = origin.value(QStringLiteral("origin")).toString();
@@ -495,7 +495,7 @@ QVariantMap
 ImportedFilesModel::commitReplacedRow(int row, int accepted, int skipped, bool keepProvenance) {
     auto next = m_rows;
     Row& stored = next[row];
-    stored.importedAt = QDateTime::currentSecsSinceEpoch();
+    stored.importedAt = realtimeSecsSinceEpoch();
     stored.accepted = accepted;
     stored.skipped = skipped;
     if (!keepProvenance) {

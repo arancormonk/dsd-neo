@@ -45,14 +45,17 @@ main(void) {
 
     full_demod(s);
 
-    // Expect 2:1 complex decimation (elements halved)
-    if (s->result_len != pairs) {
-        DSD_FPRINTF(stderr, "HB complex: result_len=%d want %d\n", s->result_len, pairs);
+    // Expect 2:1 complex decimation of what the first (31-tap, c = 15) stage can centre: a fresh stream holds back the
+    // last c samples' look-ahead, so 128 pairs make (128 - 15 + 1) / 2 = 57 pairs.
+    const int want_pairs = (pairs - 15 + 1) / 2;
+    if (s->result_len != want_pairs * 2) {
+        DSD_FPRINTF(stderr, "HB complex: result_len=%d want %d\n", s->result_len, want_pairs * 2);
         free(s);
         return 1;
     }
-    // After warmup (~HB_TAPS), DC should be preserved within a few LSBs
-    for (int k = 16; k < (s->result_len / 2) - 8; k++) {
+    // From the first output whose 31-tap window lies wholly in the block (2k - 15 >= 0) to the last, DC is preserved
+    // within a few LSBs: no output reads past the block, so no tail is excluded.
+    for (int k = 8; k < s->result_len / 2; k++) {
         float I = s->result[(size_t)(2 * k) + 0];
         float Q = s->result[(size_t)(2 * k) + 1];
         if (!approx_eq(I, 0.25f, 1e-3f) || !approx_eq(Q, -0.125f, 1e-3f)) {

@@ -5,8 +5,8 @@
 
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/crypto/dmr_keystream.h>
+#include <stddef.h>
 #include <stdint.h>
-#include <string.h>
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "md2ii.h"

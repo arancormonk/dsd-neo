@@ -16,6 +16,17 @@
  *
  * This model is the store alone: every view that shows it binds through its own
  * CallHistoryFilterModel, so one screen's search or pills never filter another.
+ *
+ * Identity, and order across sessions, never come from the rows' stamps. Those are
+ * decode time, which in a replay is the capture's time, days or years before any live
+ * row. A decode session (beginSession()) tags each row it logs. Clear wipes the
+ * session's ring by its push order. A full log gives up the oldest session's rows
+ * first, and only within one session the oldest start. A capture replayed in a
+ * fresh state pushes the same rows at the same stamps into a new ring, told apart by
+ * the ring's identity (Event_History_I::instance): those calls are heard again, and
+ * each folds into a logged row it overlaps, which joins the running session. (A first
+ * sighting merges only within the newest rows, so a call the first replay split in
+ * two stays two rows.)
  */
 
 #ifndef DSD_NEO_SRC_UI_QT_CALL_HISTORY_MODEL_H_
@@ -26,6 +37,7 @@
 #include <QJsonArray>
 #include <QList>
 #include <QObject>
+#include <QSet>
 #include <QSettings>
 #include <QString>
 #include <QStringList>
@@ -43,6 +55,7 @@ class CallHistoryModel : public QAbstractListModel {
     Q_PROPERTY(int count READ count NOTIFY countChanged)
     Q_PROPERTY(QString sessionLabel READ sessionLabel WRITE setSessionLabel NOTIFY sessionLabelChanged)
     Q_PROPERTY(QString sessionUid READ sessionUid WRITE setSessionUid NOTIFY sessionUidChanged)
+    Q_PROPERTY(qlonglong session READ session NOTIFY sessionChanged)
     Q_PROPERTY(QStringList systemLabels READ systemLabels NOTIFY countChanged)
 
   public:
@@ -56,12 +69,13 @@ class CallHistoryModel : public QAbstractListModel {
         DurationSecsRole, // -1 when unknown
         SystemNameRole,
         SystemUidRole,
-        DayLabelRole,  // "TODAY" / "YESTERDAY" / "MON 3 AUG" — drives list sections
-        TimeTextRole,  // "12:04"
-        KindRole,      // RowKind: voice call or data/control notice
-        DetailRole,    // notice payload: decoded text message or GPS string
-        ChannelRole,   // scan channel the row was heard on (-Y row name or trunk-scan target id), else empty
-        SourceNameRole // resolved source label, falling back to the OTA source text
+        DayLabelRole,   // "TODAY" / "YESTERDAY" / "MON 3 AUG" — drives list sections
+        TimeTextRole,   // "12:04"
+        KindRole,       // RowKind: voice call or data/control notice
+        DetailRole,     // notice payload: decoded text message or GPS string
+        ChannelRole,    // scan channel the row was heard on (-Y row name or trunk-scan target id), else empty
+        SourceNameRole, // resolved source label, falling back to the OTA source text
+        SessionRole     // decode session that logged the row, or last extended it (see session())
     };
 
     /** @brief What a row logs; pinned values because rows persist as JSON. */
@@ -102,6 +116,32 @@ class CallHistoryModel : public QAbstractListModel {
 
     void setSessionUid(const QString& uid);
 
+    /**
+     * @brief Identity of the decode session the history is logging.
+     *
+     * Every row carries the session that logged it, or that last extended it with a
+     * later fragment. The views of "this session" (the monitor's recent calls, the heard
+     * talkgroups) select on it rather than on the rows' stamps, which in a replay are the
+     * capture's time. Persisted, so a relaunched UI reattaching to the running session keeps it.
+     * 0 until the first beginSession(); only moves forward.
+     */
+    qlonglong
+    session() const {
+        return m_session;
+    }
+
+    /**
+     * @brief Begin a new decode session.
+     *
+     * The UI calls this on every start. A replay start or an input change is a start,
+     * and so is the first start after the process starts. Ingest the previous session's
+     * tail first (UiController::flushHistory()), or it would be logged under the new session.
+     * The start usually brings a fresh ring, but an embedding host can reuse the last run's
+     * state, ring included. So a clear that names its ring is kept: it goes on covering that
+     * ring, and the first read of any other ring drops it. The last read position stays too.
+     */
+    Q_INVOKABLE void beginSession();
+
     /** @brief Distinct system names present in the log, for the filter pill. */
     QStringList systemLabels() const;
 
@@ -119,12 +159,26 @@ class CallHistoryModel : public QAbstractListModel {
      */
     void refresh(const dsd_state* snapshot, const dsd_opts* opts_snapshot = nullptr);
 
+    /**
+     * @brief Empty the log, and keep the rows the session's ring still holds out of it.
+     *
+     * Those rows are named by the ring position (push_seq per slot) this model last read, in
+     * the current session, and by that ring's identity (Event_History_I::instance). Everything the
+     * ring takes in after that is shown, whatever its stamps, and so is every row of another ring.
+     * Persisted, so a relaunched UI does not ingest the cleared rows again. It holds across a start
+     * that reuses the ring, in any session, and goes at the first read of another ring. A clear
+     * after a start, before the next read, covers what the last read found, in the ring it was read
+     * in: a reused ring's rows stay cleared, and a fresh ring's first read drops the clear. Only a
+     * freshly constructed model (a relaunched UI clearing before its first tick) has not read the
+     * ring; its clear covers what the first read finds, or nothing if a start comes first.
+     */
     Q_INVOKABLE void clearAll();
 
   Q_SIGNALS:
     void countChanged();
     void sessionLabelChanged();
     void sessionUidChanged();
+    void sessionChanged();
 
   public:
     /** @brief One logged call or notice. Public only so file-local helpers can build one. */
@@ -159,6 +213,9 @@ class CallHistoryModel : public QAbstractListModel {
          * and unlike its stamps, which merges may still refine. */
         int slot = 0;
         qulonglong seq = 0;
+        /* The decode session that logged the row, or last extended it (session()). Rows from
+         * stores written before sessions existed read 0. */
+        qint64 session = 0;
     };
 
   private:
@@ -180,46 +237,83 @@ class CallHistoryModel : public QAbstractListModel {
         bool emergency = false;
         bool enc = false;
         QString sourceName;
+        /* The session the ring row was last read in. The map keeps the newest sessions'
+         * entries, not the newest stamps: a replay's rows are older than live ones. */
+        qint64 session = 0;
+        /* The ring it was read from (Event_History_I::instance); 0 in stores written before
+         * rings had one. The key alone cannot tell a row read again from a new ring's row that
+         * repeats its push stamp and content, as a capture replayed in a fresh state does. */
+        quint64 ring = 0;
+        /* For a notice heard again: the logged notice (by keyFor()) it took as its twin, else empty.
+         * Persisted, so a relaunched model knows the twins its ring has taken (m_noticeTwinsTaken). */
+        QString twin;
     };
 
-    /** @brief A ring row worth ingesting: brand new, or a seen row that advanced. */
+    /**
+     * @brief What Clear wiped: ring @c ring's rows up to @c pushSeq per slot.
+     *
+     * Named by push position rather than by stamps, because a ring's pushes are ordered and its
+     * stamps are not (a replay's are the capture's). @c pending until the ring position is known.
+     * The position means something only in its own ring (Event_History_I::instance; initState()
+     * draws one for both slots), so @c ring names it, and the ring is the binding: a start that
+     * reuses the ring keeps the mark. 0 names no ring: pending, a model that had read nothing when
+     * a start came (at position zero, which covers nothing), or a mark an older build wrote.
+     * @c session is the session the clear was made in, kept for reference only.
+     */
+    struct ClearMark {
+        bool active = false;
+        qint64 session = 0;
+        bool pending = false;
+        qulonglong pushSeq[2] = {0U, 0U};
+        quint64 ring = 0U;
+    };
+
+    /** @brief A ring row worth ingesting: brand new, heard again in a new ring, or a seen row that advanced. */
     struct FreshRow {
         Row row;
         bool isUpdate = false;
+        bool again = false;
     };
 
     /** @brief noteSeen() verdicts. */
-    enum SeenVerdict { SeenUnchanged = 0, SeenNew = 1, SeenAdvanced = 2 };
+    enum SeenVerdict { SeenUnchanged = 0, SeenNew = 1, SeenAdvanced = 2, SeenAgain = 3 };
 
     static QString keyFor(const Row& row);
 
     /**
-     * @brief Record what was just read from a ring row and say what to do with it.
-     * @return SeenNew for a first sighting, SeenAdvanced when a voice row already
-     *         ingested has since learned something, SeenUnchanged otherwise.
+     * @brief Record what was just read from a ring row of ring @p ring and say what to do with it.
+     * @return SeenNew for a first sighting, SeenAgain when the key was read from another ring (a
+     *         call heard again: the same capture decoded in a new ring), SeenAdvanced when a voice
+     *         row already ingested has since learned something, SeenUnchanged otherwise.
      */
-    int noteSeen(const QString& key, qint64 when, qint64 end, qulonglong src, bool emergency, bool enc, bool voice,
-                 const QString& sourceName);
+    int noteSeen(const QString& key, quint64 ring, qint64 when, qint64 end, qulonglong src, bool emergency, bool enc,
+                 bool voice, const QString& sourceName);
 
     /** @brief Scan the flagged slots' rings for rows not seen before, or seen but advanced. */
     QList<FreshRow> collectFresh(const dsd_state* snapshot, const bool scan[2], const QString& systemUid);
 
     /**
-     * @brief Absorb @p row into a recent same-target row when the two overlap
-     *        within the merge window; the merged row spans both fragments.
+     * @brief Absorb @p row into a same-target row among the newest @p scanRows when the two
+     *        overlap within the merge window; the merged row spans both fragments.
      * @return Index of the row it merged into, or -1 when it is a new call.
      */
-    int tryMerge(const Row& row);
+    int tryMerge(const Row& row, int scanRows);
+
+    /** @brief The logged notice @p row repeats field for field, not yet taken by another notice of the ring, or -1. */
+    int findRepeatedNotice(const Row& row) const;
 
     /**
      * @brief Merge @p row into the log or insert it at its sorted position.
      *
-     * An update (a seen ring row that advanced) may only refine an existing row;
-     * if its row cannot be found it is dropped, never inserted as a duplicate.
+     * An update (a seen ring row that advanced) may only refine an existing row, which it
+     * looks for through the whole log; if its row cannot be found it is dropped, never
+     * inserted as a duplicate. A row heard @p again merges into the call it repeats wherever
+     * that call sits in the log, and that call joins the running session. A first sighting
+     * merges only within the newest rows.
      *
      * @return true when a new row was inserted (the count changed).
      */
-    bool ingestRow(const Row& row, bool isUpdate);
+    bool ingestRow(const Row& row, bool isUpdate, bool again);
 
     void load();
     void scheduleSave();
@@ -237,23 +331,54 @@ class CallHistoryModel : public QAbstractListModel {
     void onSaveFinished();
     QJsonArray rowsToJson() const;
     QJsonArray seenToJson() const;
+    /** @brief Record each slot's commit_rev and ring; @p scan marks the slots a ring walk could find something new in.
+        Returns whether either slot moved. */
+    bool noteCommitRevs(const dsd_state* snapshot, bool scan[2]);
+    /** @brief Rebuild m_noticeTwinsTaken for the rings now read, from the twins their seen entries record. */
+    void restoreNoticeTwinsTaken();
+    /** @brief Trim m_rows to kMaxRows, oldest session's oldest row first; returns whether any row went. */
+    bool trimToCapacity();
     /** @brief Bound m_seen once it is well past what the ring could resurrect. */
     void pruneSeen();
     /** @brief Arm m_dayTimer for the next local midnight. */
     void scheduleDayRollover();
+    /** @brief Whether the clear mark covers rows of the ring being read (settleClear() has bound or dropped it). */
+    bool clearApplies() const;
+    /** @brief Settle the clear mark against ring @p ring read at @p pushSeq: bind a pending one, drop one made on
+        another ring. */
+    void settleClear(const qulonglong pushSeq[2], quint64 ring);
+    void saveClear();
+    /** @brief Restore the session and the clear mark; retire the timestamp watermark older builds wrote. */
+    void loadSessionState();
 
     QList<Row> m_rows; // newest first
     QHash<QString, SeenState> m_seen;
     QString m_sessionLabel;
     QString m_sessionUid;
-    /* Rows starting at or before this stamp were cleared by the user; persisted so
-     * the still-populated ring cannot resurrect them after an Activity restart. */
-    qint64 m_clearedThrough = 0;
+    qint64 m_session = 0;
+    /* Persisted so the still-populated ring cannot resurrect cleared rows after an
+     * Activity restart. */
+    ClearMark m_clear;
+    /* The ring position (push_seq per slot) the last refresh read; valid once m_ringRead. */
+    qulonglong m_ringPushSeq[2] = {0U, 0U};
+    /* The ring that position is in (Event_History_I::instance); 0 when a start came before any read. */
+    quint64 m_ringPushSeqRing = 0U;
+    bool m_ringRead = false;
     /* Committed-rows change counter per slot (Event_History_I::commit_rev). The
      * staged row re-renders at the poll rate while a call is up, bumping only
      * `revision`; gating the 2x254-row rescan on this instead keeps the idle and
      * live-call ticks free of ring walks that cannot find anything. */
     quint64 m_commitRev[2] = {0U, 0U};
+    /* The ring (Event_History_I::instance) each slot was last read from. A new ring walks even at the
+     * commit_rev the last one stopped at: a capture replayed in a fresh state reaches the same count. */
+    quint64 m_ringInstance[2] = {0U, 0U};
+    /* The logged notices (by keyFor()) that a notice heard again from the ring being read has taken as its
+     * twin. Two identical notices, the same delivery logged twice, then promote two rows, even read in two
+     * ticks or across a relaunch. A notice whose twin no notice of this ring has taken dedups onto it,
+     * wherever its session: a new ring within the session repeats the session's own notices. Rebuilt when
+     * the ring changes, a relaunched model's first read included, from the twins the seen entries of that
+     * ring record (SeenState::twin). */
+    QSet<QString> m_noticeTwinsTaken;
     bool m_seeded = false;
     QTimer m_saveTimer;
     QThreadPool m_savePool;

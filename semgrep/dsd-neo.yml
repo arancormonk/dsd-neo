@@ -605,6 +605,117 @@ rules:
       - pattern: '#include "pffft.h"'
       - pattern: '#include <pffft.h>'
 
+  # Every clock read names its domain. The decode clock (dsd_decode_*) serves
+  # decode decisions and decoded-output timestamps and follows the capture
+  # during an I/Q replay; dsd_realtime_* serves waits, timeouts, pacing, UI
+  # throttles and perf. A raw platform read is neither, so nothing says which
+  # clock a replay should give it. Declarations are not matched (a prototype
+  # is not a call), and neither are members or methods named time.
+  - id: dsd-neo.no-direct-clock-read
+    languages: [c, cpp]
+    severity: ERROR
+    message: >-
+      Direct clock read. Read time through <dsd-neo/runtime/decode_clock.h> so the call names its domain:
+      dsd_decode_time() and dsd_decode_now_*() for decode decisions, decoded-output timestamps and anything compared
+      with a decoded stamp; dsd_realtime_*() for sleeps, waits, timeouts, pacing, UI throttles and perf. A raw read
+      stays on the wall clock during an I/Q replay, so a decode decision made on it changes from run to run. Qt
+      frontend code that needs Qt's own real-time clock goes through src/ui/qt/realtime_clock.h.
+    paths:
+      include:
+        - /android/**
+        - /apps/**
+        - /include/**
+        - /src/**
+      exclude:
+        - /android/third_party/**
+        - /src/third_party/**
+        # The implementation layer beneath runtime (timing_* clocks, threading_* condvar deadlines, the nonce seed,
+        # the AAudio reopen backoff). It cannot link runtime and holds no decode state.
+        - /src/platform/**
+        # The decode clock itself, where both domains map onto the platform clocks.
+        - /src/runtime/decode_clock.c
+        # dsd-neo_io_iq links only platform and runtime links it, so it cannot reach runtime; its reads are real time.
+        - /src/io/iq/iq_capture.c
+        # Compiled into dsd-neo_platform, below runtime; its one read is the rtl_tcp watchdog's real-time window.
+        - /src/io/radio/tcp_quality_metrics.cpp
+        # The one Qt real-time helper; the rest of src/ui/qt reads Qt's clock through it.
+        - /src/ui/qt/realtime_clock.h
+    pattern-either:
+      # C library and POSIX clocks. These match the free function only: dsd_decode_time(), strftime() and a member
+      # named time are other identifiers.
+      - pattern: time(...)
+      - pattern: std::time(...)
+      - pattern: ::time(...)
+      - pattern: clock_gettime(...)
+      - pattern: gettimeofday(...)
+      - pattern: timespec_get(...)
+      # Windows and Apple clocks.
+      - pattern: QueryPerformanceCounter(...)
+      - pattern: GetTickCount(...)
+      - pattern: GetTickCount64(...)
+      - pattern: GetSystemTimeAsFileTime(...)
+      - pattern: GetSystemTimePreciseAsFileTime(...)
+      - pattern: mach_absolute_time(...)
+      # The platform reads that the two domains wrap, and the removed seconds helpers in case one comes back.
+      - pattern: dsd_time_monotonic_ns(...)
+      - pattern: dsd_time_monotonic_ms(...)
+      - pattern: dsd_time_realtime_ns(...)
+      - pattern: dsd_time_deadline_ns(...)
+      - pattern: dsd_time_now_monotonic_s(...)
+      - pattern: dsd_time_now_realtime_s(...)
+      # std::chrono clocks, qualified or brought in by a using-directive. Durations stay allowed.
+      - patterns:
+          - pattern-either:
+              - pattern: std::chrono::$CLOCK::now()
+              - pattern: chrono::$CLOCK::now()
+              - pattern: $CLOCK::now()
+          - metavariable-regex:
+              metavariable: $CLOCK
+              regex: ^(steady_clock|system_clock|high_resolution_clock|utc_clock|tai_clock|gps_clock|file_clock)$
+      # Qt clocks. Converting a stored stamp (QDateTime::fromMSecsSinceEpoch) stays allowed.
+      - patterns:
+          - pattern: QDateTime::$NOW(...)
+          - metavariable-regex:
+              metavariable: $NOW
+              regex: ^current
+      - pattern: QDate::currentDate(...)
+      - pattern: QTime::currentTime(...)
+      - pattern: QDeadlineTimer::current(...)
+      - pattern: '#include <QElapsedTimer>'
+      - pattern: '#include <QtCore/QElapsedTimer>'
+      - pattern: QElapsedTimer $TIMER;
+      - pattern: QElapsedTimer $TIMER = $INIT;
+      - pattern: QElapsedTimer(...)
+      - pattern: new QElapsedTimer(...)
+      - pattern: QElapsedTimer::$FN(...)
+
+  # The same rule for the Qt frontend's JavaScript. Semgrep has no QML parser, so
+  # this is a text match over .qml and .js alike, and a comment or string that
+  # spells one of these calls is flagged too. dsd-neo.js holds its fixtures; a
+  # .qml fixture cannot run under semgrep --test, which feeds a file of unknown
+  # extension to this config's YAML rule as well.
+  - id: dsd-neo.no-direct-clock-read-js
+    languages: [generic]
+    severity: ERROR
+    message: >-
+      Direct JavaScript clock read. QML and .js code take "now" from C++ so the read names its domain:
+      metrics.decodeNowMs for anything compared with a decoded stamp (a call's age), and a model's real-time helper
+      such as savedSystems.realtimeNowMs() for the viewer's own moments. Formatting a stored stamp with
+      new Date(stamp) is fine.
+    paths:
+      include:
+        - /apps/**/*.js
+        - /apps/**/*.qml
+        - /src/**/*.js
+        - /src/**/*.qml
+      exclude:
+        - /src/third_party/**
+    pattern-either:
+      - pattern-regex: '\bDate\s*\.\s*now\s*\('
+      # Date() and new Date() with no argument read the clock; new Date(stamp) only converts.
+      - pattern-regex: '\bDate\s*\(\s*\)'
+      - pattern-regex: '\bnew\s+Date\b(?!\s*\()'
+
   - id: dsd-neo.github-actions.no-untrusted-context-in-run
     languages: [yaml]
     severity: ERROR

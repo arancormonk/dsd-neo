@@ -12,6 +12,7 @@
 #include <dsd-neo/platform/curses_compat.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/ui/menu_core.h>
 #include <dsd-neo/ui/ncurses.h>
 #include <dsd-neo/ui/ui_async.h>
@@ -137,7 +138,7 @@ ui_draw_frame(const dsd_opts* osnap) {
 
 static void
 ui_draw_if_needed(const dsd_opts* osnap, uint64_t* last_draw_ns, uint64_t frame_ns) {
-    uint64_t now_ns = dsd_time_monotonic_ns();
+    uint64_t now_ns = dsd_realtime_mono_ns();
     uint64_t dt_ns = now_ns - *last_draw_ns;
     if (!(dsd_app_frontend_redraw_consume() || dt_ns >= frame_ns)) {
         return;
@@ -210,7 +211,7 @@ static DSD_THREAD_RETURN_TYPE
     // Initialize ncurses lifecycle in UI thread
     int curses_opened = ui_open_curses_if_needed();
 
-    uint64_t last_draw_ns = dsd_time_monotonic_ns();
+    uint64_t last_draw_ns = dsd_realtime_mono_ns();
     const uint64_t frame_ns = 66ULL * 1000ULL * 1000ULL; // ~15 FPS cap
 
     while (!atomic_load(&g_ui_stop)) {

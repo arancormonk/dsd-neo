@@ -19,10 +19,10 @@
 #include <dsd-neo/protocol/p25/p25_status_symbol.h>
 #include <dsd-neo/protocol/p25/p25p1_check_ldu.h>
 #include <dsd-neo/protocol/p25/p25p1_ldu.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-#include <time.h>
 
 #include "dsd-neo/core/opts.h"
 #include "dsd-neo/core/opts_fwd.h"
@@ -73,7 +73,6 @@ p25p1_hamming_rs_symbol_reliability(const P25P1SoftDibit* symbol) {
 static int g_hard_rs_result;
 static int g_soft_rs_result;
 static int g_lsd_soft_result;
-static int g_lfsr128_calls;
 static int g_watchdog_calls;
 static int g_write_event_calls;
 static int g_push_event_calls;
@@ -122,15 +121,9 @@ p25_lsd_fec_16x8_soft(uint8_t* bits16, const int16_t llr16[16]) {
     return g_lsd_soft_result;
 }
 
-uint64_t
-dsd_time_monotonic_ns(void) {
-    return 42000000000ULL;
-}
-
 void
 LFSR128(dsd_state* state) {
     (void)state;
-    g_lfsr128_calls++;
 }
 
 int
@@ -357,7 +350,6 @@ reset_hook_counters(void) {
     g_hard_rs_result = 0;
     g_soft_rs_result = 0;
     g_lsd_soft_result = 1;
-    g_lfsr128_calls = 0;
     g_watchdog_calls = 0;
     g_write_event_calls = 0;
     g_push_event_calls = 0;
@@ -588,7 +580,7 @@ test_ldu2_hold_hysteresis_refreshes_only_recent_activity(void) {
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
     opts.trunk_hangtime = 0.0;
-    state.last_vc_sync_time = time(NULL);
+    state.last_vc_sync_time = dsd_decode_time();
     state.last_vc_sync_time_m = 17.0;
 
     ldu2_refresh_hold_hysteresis(&opts, &state);
@@ -597,7 +589,7 @@ test_ldu2_hold_hysteresis_refreshes_only_recent_activity(void) {
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
     opts.trunk_hangtime = 1.0;
-    state.last_vc_sync_time = time(NULL) - 10;
+    state.last_vc_sync_time = dsd_decode_time() - 10;
     state.last_vc_sync_time_m = 19.0;
 
     ldu2_refresh_hold_hysteresis(&opts, &state);
@@ -933,6 +925,10 @@ test_ldu2_encrypted_trunk_lockout_state(void) {
     rc |= expect_int("lockout does not make runtime policy", g_policy_make_calls, 0);
     rc |= expect_int("lockout does not upsert runtime policy", g_policy_upsert_calls, 0);
     rc |= expect_int("lockout logging delegated", g_watchdog_calls, 0);
+    /* With an event log configured, the LDU2 still writes and stages no event of its own. */
+    rc |= expect_int("lockout writes no event", g_write_event_calls, 0);
+    rc |= expect_int("lockout pushes no event history", g_push_event_calls, 0);
+    rc |= expect_int("lockout resets no event history", g_init_event_calls, 0);
 
     reset_hook_counters();
     state.p25_sm_force_release = 0;
@@ -947,6 +943,7 @@ test_ldu2_encrypted_trunk_lockout_state(void) {
 int
 main(void) {
     int rc = 0;
+    dsd_decode_clock_use_test(42000000000ULL);
     rc |= test_ldu2_extracts_ess_fields();
     rc |= test_lsd_corrected_byte();
     rc |= test_ldu2_rs_reliability_uses_wire_order();
@@ -962,6 +959,7 @@ main(void) {
     rc |= test_ldu2_key_reporting_preserves_user_unmute();
     rc |= test_ldu2_lsd_alias_begin_clamps_length();
     rc |= test_ldu2_encrypted_trunk_lockout_state();
+    dsd_decode_clock_use_system();
     return rc;
 }
 

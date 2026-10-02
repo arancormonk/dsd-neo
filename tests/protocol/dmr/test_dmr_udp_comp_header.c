@@ -39,7 +39,6 @@ static unsigned int g_lip_calls;
 static unsigned int g_datacall_calls;
 static uint32_t g_datacall_src;
 static uint32_t g_datacall_dst;
-static uint8_t g_datacall_slot;
 static dsd_event_category g_datacall_category;
 static char g_datacall_text[512];
 static char g_datacall_gps[256];
@@ -50,7 +49,6 @@ reset_spies(void) {
     g_datacall_calls = 0;
     g_datacall_src = 0;
     g_datacall_dst = 0;
-    g_datacall_slot = 0;
     g_datacall_category = DSD_EVENT_CATEGORY_UNKNOWN;
     DSD_MEMSET(g_datacall_text, 0, sizeof(g_datacall_text));
     DSD_MEMSET(g_datacall_gps, 0, sizeof(g_datacall_gps));
@@ -98,7 +96,7 @@ dsd_event_emit_data_notice_classified(dsd_opts* opts, dsd_state* state, uint8_t 
     g_datacall_calls++;
     g_datacall_src = observation->ota_source_id;
     g_datacall_dst = observation->ota_target_id;
-    g_datacall_slot = slot;
+    (void)slot;
     g_datacall_category = category;
     DSD_SNPRINTF(g_datacall_text, sizeof(g_datacall_text), "%s", notice ? notice : "");
     return 0;

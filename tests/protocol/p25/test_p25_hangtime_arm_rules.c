@@ -23,7 +23,6 @@
  *    material is not penalized at all.
  */
 
-#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
@@ -33,6 +32,7 @@
 #include <dsd-neo/protocol/p25/p25_crypto.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <math.h>
 #include <stdint.h>
@@ -149,7 +149,7 @@ transmit(int slot, int tg, int source, uint8_t signature_fill) {
     uint8_t signature[P25_SM_PTT_SIGNATURE_BYTES];
     DSD_MEMSET(signature, signature_fill, sizeof(signature));
     (void)p25_sm_emit_ptt_call_metadata(&g_opts, &g_state, slot, tg, 0, source, 1, P25_SM_SVC_UNKNOWN, signature,
-                                        dsd_time_now_monotonic_s(), 0);
+                                        dsd_decode_now_mono_s(), 0);
 }
 
 static void
@@ -201,7 +201,7 @@ test_p1_identity_wait_rearms_hangtime(void) {
 
     /* Most of the window has gone by when the next over keys up, and its first
      * voice frames carry no decoded identity yet. */
-    const double stale_m = dsd_time_now_monotonic_s() - ((double)g_opts.trunk_hangtime - 0.1);
+    const double stale_m = dsd_decode_now_mono_s() - ((double)g_opts.trunk_hangtime - 0.1);
     set_hangtime_started(ctx, stale_m);
     p25_sm_event_t identity_less = p25_sm_ev_active(0);
     p25_sm_event(ctx, &g_opts, &g_state, &identity_less);
@@ -294,7 +294,7 @@ test_pending_classification_outranks_hangtime(void) {
     /* Followed clear call on slot 0, then its END arms the countdown. */
     transmit(0, CLEAR_TG, CLEAR_SRC, 0x11U);
     (void)p25_crypto_resolve(&g_opts, &g_state, DSD_P25_CRYPTO_PHASE2, 0, 0x80, 0, 0, CLEAR_TG);
-    (void)p25_sm_emit_end_call_at(&g_opts, &g_state, 0, CLEAR_TG, CLEAR_SRC, dsd_time_now_monotonic_s());
+    (void)p25_sm_emit_end_call_at(&g_opts, &g_state, 0, CLEAR_TG, CLEAR_SRC, dsd_decode_now_mono_s());
     p25_crypto_reset_slot(&g_state, 0);
     rc |= expect("clear END arms hangtime", p25_sm_hangtime_started_m(ctx) > 0.0);
 
@@ -308,7 +308,7 @@ test_pending_classification_outranks_hangtime(void) {
      * and, just as importantly, leaves the countdown alone: cancelling it on a
      * start the SM is not following is what let the site's repeats hold the
      * carrier for the life of the encrypted call. */
-    const double armed_m = dsd_time_now_monotonic_s() - 0.25;
+    const double armed_m = dsd_decode_now_mono_s() - 0.25;
     set_hangtime_started(ctx, armed_m);
     for (int repeat = 0; repeat < 3; repeat++) {
         (void)p25_sm_emit_active_call(&g_opts, &g_state, 1, ENC_TG, 0, ENC_SRC, 1, P25_SM_SVC_UNKNOWN);
@@ -318,12 +318,12 @@ test_pending_classification_outranks_hangtime(void) {
     }
 
     /* The hangtime elapses while the classification budget still runs. */
-    set_hangtime_started(ctx, dsd_time_now_monotonic_s() - ((double)g_opts.trunk_hangtime + 0.5));
+    set_hangtime_started(ctx, dsd_decode_now_mono_s() - ((double)g_opts.trunk_hangtime + 0.5));
     p25_sm_tick_ctx(ctx, &g_opts, &g_state);
     rc |= expect("classification in flight holds the carrier", g_opts.trunk_is_tuned == 1);
 
     /* Once the budget lapses the carrier goes back, so nothing is held open. */
-    ctx->slots[1].crypto_attempt_m = dsd_time_now_monotonic_s() - (ctx->config.grant_timeout_s + 0.5);
+    ctx->slots[1].crypto_attempt_m = dsd_decode_now_mono_s() - (ctx->config.grant_timeout_s + 0.5);
     ctx->t_tune_m = ctx->slots[1].crypto_attempt_m;
     ctx->slots[1].last_grant_m = ctx->slots[1].crypto_attempt_m;
     p25_sm_tick_ctx(ctx, &g_opts, &g_state);
@@ -350,7 +350,7 @@ test_lockout_enabled_mid_call_arms_once(void) {
        still waiting for its first voice -- one of those outranks the countdown
        until its acquisition window closes, which is a different rule. */
     transmit(0, CLEAR_TG, CLEAR_SRC, 0x11U);
-    (void)p25_sm_emit_end_call_at(&g_opts, &g_state, 0, CLEAR_TG, CLEAR_SRC, dsd_time_now_monotonic_s());
+    (void)p25_sm_emit_end_call_at(&g_opts, &g_state, 0, CLEAR_TG, CLEAR_SRC, dsd_decode_now_mono_s());
 
     /* Follow mode accepts the encrypted call and keeps its assignment. */
     grant_slot1(ENC_TG, ENC_SRC, 0x40);
@@ -380,7 +380,7 @@ test_lockout_enabled_mid_call_arms_once(void) {
     }
 
     /* So the deadline actually arrives. */
-    set_hangtime_started(ctx, dsd_time_now_monotonic_s() - ((double)g_opts.trunk_hangtime + 0.5));
+    set_hangtime_started(ctx, dsd_decode_now_mono_s() - ((double)g_opts.trunk_hangtime + 0.5));
     p25_sm_tick_ctx(ctx, &g_opts, &g_state);
     rc |= expect("countdown releases the carrier", g_opts.trunk_is_tuned == 0);
     return rc;
@@ -408,7 +408,7 @@ test_reprobe_still_answers_to_grant_timeout(void) {
     resolve_enc_blocked();
     rc |= expect("enc slot classifies BLOCKED", g_state.p25_crypto_state[1] == DSD_P25_CRYPTO_BLOCKED);
 
-    (void)p25_sm_emit_end_call_at(&g_opts, &g_state, 0, CLEAR_TG, CLEAR_SRC, dsd_time_now_monotonic_s());
+    (void)p25_sm_emit_end_call_at(&g_opts, &g_state, 0, CLEAR_TG, CLEAR_SRC, dsd_decode_now_mono_s());
     p25_crypto_reset_slot(&g_state, 0);
     const double armed_m = p25_sm_hangtime_started_m(ctx);
     rc |= expect("clear END arms hangtime", armed_m > 0.0);
@@ -420,11 +420,11 @@ test_reprobe_still_answers_to_grant_timeout(void) {
 
     /* No voice follows. The 30s hangtime is nowhere near expiring, so only the
      * grant timeout can end this. */
-    const double timed_out_m = dsd_time_now_monotonic_s() - (ctx->config.grant_timeout_s + 0.5);
+    const double timed_out_m = dsd_decode_now_mono_s() - (ctx->config.grant_timeout_s + 0.5);
     ctx->t_tune_m = timed_out_m;
     ctx->slots[1].last_grant_m = timed_out_m;
     rc |= expect("hangtime is nowhere near expiry",
-                 (dsd_time_now_monotonic_s() - p25_sm_hangtime_started_m(ctx)) < (double)g_opts.trunk_hangtime);
+                 (dsd_decode_now_mono_s() - p25_sm_hangtime_started_m(ctx)) < (double)g_opts.trunk_hangtime);
     p25_sm_tick_ctx(ctx, &g_opts, &g_state);
     rc |= expect("reprobe without voice gives the carrier up", g_opts.trunk_is_tuned == 0);
     return rc;
@@ -446,7 +446,7 @@ test_reprobe_does_not_outrank_the_countdown(void) {
     transmit(0, CLEAR_TG, CLEAR_SRC, 0x11U);
     (void)p25_crypto_resolve(&g_opts, &g_state, DSD_P25_CRYPTO_PHASE2, 0, 0x80, 0, 0, CLEAR_TG);
     p25_sm_note_encrypted_call_typed(&g_opts, &g_state, ENC_TG, 1, ENC_ALGID, ENC_KEYID);
-    (void)p25_sm_emit_end_call_at(&g_opts, &g_state, 0, CLEAR_TG, CLEAR_SRC, dsd_time_now_monotonic_s());
+    (void)p25_sm_emit_end_call_at(&g_opts, &g_state, 0, CLEAR_TG, CLEAR_SRC, dsd_decode_now_mono_s());
     p25_crypto_reset_slot(&g_state, 0);
     rc |= expect("clear END starts the countdown", p25_sm_hangtime_started_m(ctx) > 0.0);
 
@@ -458,9 +458,9 @@ test_reprobe_does_not_outrank_the_countdown(void) {
 
     /* Age the countdown out while every acquisition stamp stays fresh: only the
        reprobe's own window could still be holding the carrier. */
-    ctx->slots[0].last_followed_m = dsd_time_now_monotonic_s() - ((double)g_opts.trunk_hangtime + 0.5);
+    ctx->slots[0].last_followed_m = dsd_decode_now_mono_s() - ((double)g_opts.trunk_hangtime + 0.5);
     rc |= expect("reprobe acquisition window is still open",
-                 (dsd_time_now_monotonic_s() - ctx->slots[1].last_grant_m) < ctx->config.grant_timeout_s);
+                 (dsd_decode_now_mono_s() - ctx->slots[1].last_grant_m) < ctx->config.grant_timeout_s);
     p25_sm_tick_ctx(ctx, &g_opts, &g_state);
     rc |= expect("reprobe does not hold the carrier past the hangtime", g_opts.trunk_is_tuned == 0);
     return rc;
@@ -484,7 +484,7 @@ test_reprobe_on_the_countdown_slot_keeps_it(void) {
     grant_slot1(CLEAR_TG, CLEAR_SRC, 0x00);
     transmit(1, CLEAR_TG, CLEAR_SRC, 0x11U);
     (void)p25_crypto_resolve(&g_opts, &g_state, DSD_P25_CRYPTO_PHASE2, 0, 0x80, 0, 0, CLEAR_TG);
-    (void)p25_sm_emit_end_call_at(&g_opts, &g_state, 1, CLEAR_TG, CLEAR_SRC, dsd_time_now_monotonic_s());
+    (void)p25_sm_emit_end_call_at(&g_opts, &g_state, 1, CLEAR_TG, CLEAR_SRC, dsd_decode_now_mono_s());
     p25_crypto_reset_slot(&g_state, 1);
     const double armed_m = p25_sm_hangtime_started_m(ctx);
     rc |= expect("clear END starts the countdown on slot 1",
@@ -599,7 +599,7 @@ test_stale_epoch_entry_is_not_a_reprobe(void) {
                  dsd_enc_lockout_lookup(&g_state, (uint32_t)ENC_TG, 1, NULL) == 1
                      && dsd_enc_lockout_entry_active(&g_state, (uint32_t)ENC_TG, 1) == 0);
 
-    (void)p25_sm_emit_end_call_at(&g_opts, &g_state, 0, CLEAR_TG, CLEAR_SRC, dsd_time_now_monotonic_s());
+    (void)p25_sm_emit_end_call_at(&g_opts, &g_state, 0, CLEAR_TG, CLEAR_SRC, dsd_decode_now_mono_s());
     p25_crypto_reset_slot(&g_state, 0);
     rc |= expect("clear END arms hangtime", p25_sm_hangtime_started_m(ctx) > 0.0);
 
@@ -651,7 +651,7 @@ test_patch_clear_key_release_is_not_a_reprobe(void) {
     p25_sm_note_encrypted_call_typed(&g_opts, &g_state, ENC_TG, 1, ENC_ALGID, ENC_KEYID);
     rc |= expect("enc target locks out", dsd_enc_lockout_lookup(&g_state, (uint32_t)ENC_TG, 1, NULL) == 1);
 
-    (void)p25_sm_emit_end_call_at(&g_opts, &g_state, 0, CLEAR_TG, CLEAR_SRC, dsd_time_now_monotonic_s());
+    (void)p25_sm_emit_end_call_at(&g_opts, &g_state, 0, CLEAR_TG, CLEAR_SRC, dsd_decode_now_mono_s());
     p25_crypto_reset_slot(&g_state, 0);
     rc |= expect("clear END arms hangtime", p25_sm_hangtime_started_m(ctx) > 0.0);
 
@@ -690,7 +690,7 @@ test_mac_release_stamps_the_countdown(void) {
     /* Over 1 ends with an explicit END, stamping the countdown. */
     transmit(0, CLEAR_TG, CLEAR_SRC, 0x11U);
     (void)p25_crypto_resolve(&g_opts, &g_state, DSD_P25_CRYPTO_PHASE2, 0, 0x80, 0, 0, CLEAR_TG);
-    (void)p25_sm_emit_end_call_at(&g_opts, &g_state, 0, CLEAR_TG, CLEAR_SRC, dsd_time_now_monotonic_s());
+    (void)p25_sm_emit_end_call_at(&g_opts, &g_state, 0, CLEAR_TG, CLEAR_SRC, dsd_decode_now_mono_s());
     rc |= expect("over 1 END starts the countdown", p25_sm_hangtime_started_m(ctx) > 0.0);
 
     /* Age over 1 out entirely -- including the retention-tail stamps that
@@ -706,10 +706,10 @@ test_mac_release_stamps_the_countdown(void) {
     rc |= expect("over 2 is followed", ctx->slots[0].voice_active == 1);
     rc |= expect("followed voice suspends the countdown", p25_sm_hangtime_started_m(ctx) <= 0.0);
 
-    p25_sm_emit_mac_release(&g_opts, &g_state, 0, dsd_time_now_monotonic_s());
+    p25_sm_emit_mac_release(&g_opts, &g_state, 0, dsd_decode_now_mono_s());
     const double started_m = p25_sm_hangtime_started_m(ctx);
     rc |= expect("MAC_RELEASE starts the countdown from its own end, not over 1's",
-                 started_m > 0.0 && (dsd_time_now_monotonic_s() - started_m) < (double)g_opts.trunk_hangtime);
+                 started_m > 0.0 && (dsd_decode_now_mono_s() - started_m) < (double)g_opts.trunk_hangtime);
 
     p25_sm_tick_ctx(ctx, &g_opts, &g_state);
     rc |= expect("MAC_RELEASE leaves the hangtime bridge intact", g_opts.trunk_is_tuned == 1);
@@ -734,13 +734,13 @@ test_short_noisy_call_hold(void) {
         for (int i = 0; i < count; ++i) {
             g_state.p25_p1_voice_err_hist[i] = 10;
         }
-        (void)p25_sm_emit_end_call_at(&g_opts, &g_state, 0, CLEAR_TG, CLEAR_SRC, dsd_time_now_monotonic_s());
-        set_hangtime_started(ctx, dsd_time_now_monotonic_s() - 15.0);
+        (void)p25_sm_emit_end_call_at(&g_opts, &g_state, 0, CLEAR_TG, CLEAR_SRC, dsd_decode_now_mono_s());
+        set_hangtime_started(ctx, dsd_decode_now_mono_s() - 15.0);
         p25_sm_tick_ctx(ctx, &g_opts, &g_state);
         rc |= expect(count ? "short noisy call gets error hold" : "empty ring does not extend hold",
                      g_opts.trunk_is_tuned == (count != 0));
         if (count) {
-            set_hangtime_started(ctx, dsd_time_now_monotonic_s() - 35.0);
+            set_hangtime_started(ctx, dsd_decode_now_mono_s() - 35.0);
             p25_sm_tick_ctx(ctx, &g_opts, &g_state);
             rc |= expect("noisy call releases after extended deadline", g_opts.trunk_is_tuned == 0);
         }

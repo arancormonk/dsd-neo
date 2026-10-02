@@ -41,7 +41,6 @@ const dsdneoRuntimeConfig* dsd_neo_get_config(void);
 void p25_test_p1_pdu_data_decode(const unsigned char* input, int len);
 
 static int g_datacall_count;
-static int g_history_count;
 static uint32_t g_datacall_src;
 static uint32_t g_datacall_dst;
 static dsd_event_category g_datacall_category;
@@ -77,7 +76,6 @@ watchdog_event_history(dsd_opts* opts, dsd_state* state, uint8_t slot) {
     (void)opts;
     (void)state;
     (void)slot;
-    g_history_count++;
 }
 
 void
@@ -94,7 +92,6 @@ dsd_event_sync_slot(dsd_opts* opts, dsd_state* state, uint8_t slot) {
     (void)opts;
     (void)state;
     (void)slot;
-    g_history_count++;
 }
 
 void
@@ -219,7 +216,6 @@ expect_contains(const char* label, const char* got, const char* needle) {
 static void
 reset_watchdog_counters(void) {
     g_datacall_count = 0;
-    g_history_count = 0;
     g_datacall_src = 0;
     g_datacall_dst = 0;
     g_datacall_text[0] = '\0';

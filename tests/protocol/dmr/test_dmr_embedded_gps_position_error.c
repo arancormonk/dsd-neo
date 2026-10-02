@@ -443,6 +443,7 @@ test_nxdn_gps_report_paths(const dsd_opts* opts, dsd_state* st) {
     rc |= expect_i("nxdn-watchdog-calls", g_watchdog_calls, 1);
     rc |= expect_u32("nxdn-watchdog-src", g_watchdog_src, 1234U);
     rc |= expect_u32("nxdn-watchdog-dst", g_watchdog_dst, 5678U);
+    rc |= expect_u32("nxdn-watchdog-slot", g_watchdog_slot, 0U);
     rc |= expect_u32("nxdn-source-reset", st->dmr_lrrp_source[0], 0U);
     rc |= expect_u32("nxdn-target-reset", st->dmr_lrrp_target[0], 0U);
 

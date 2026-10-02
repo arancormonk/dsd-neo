@@ -21,7 +21,6 @@
 
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/audio_filters.h>
-#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/input_level.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
@@ -38,6 +37,7 @@
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/net_audio_input_hooks.h>
@@ -50,7 +50,6 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-#include <time.h>
 #include "dsd-neo/core/dibit.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -796,7 +795,11 @@ enum {
 enum {
     RTL_SYMBOL_CACHE_EMPTY = 0,
     RTL_SYMBOL_CACHE_READY = 1,
+    /* The cache dropped what it held: the stream or its profile changed under it. */
     RTL_SYMBOL_CACHE_RETRY = 2,
+    /* The cache holds an I/Q replay's first batch after a change, labelled with what it ran on, which the caller's
+       work context has yet to follow (rtl_symbol_cache_fill_replay_batch()). */
+    RTL_SYMBOL_CACHE_REFRESH = 3,
 };
 
 static inline int
@@ -815,6 +818,21 @@ rtl_fsk_discriminator_output_active(int output_kind) {
     return output_kind == RTL_STREAM_OUTPUT_FSK_DISCRIMINATOR_LOCAL;
 }
 
+/* The profile labels the symbol cache compares, from what the front end publishes: a direct output's channel profile,
+   symbol rate and levels (2, or 4 for anything else), and none for the monitor output. */
+static inline void
+rtl_symbol_profile_labels(int direct, int* channel_profile, int* symbol_rate_hz, int* levels) {
+    if (!direct) {
+        *channel_profile = 0;
+        *symbol_rate_hz = 0;
+        *levels = 4;
+        return;
+    }
+    if (*levels != 2) {
+        *levels = 4;
+    }
+}
+
 static inline int
 rtl_symbol_current_profile(int* output_kind, int* channel_profile, int* symbol_rate_hz, int* levels,
                            uint32_t* generation) {
@@ -825,27 +843,15 @@ rtl_symbol_current_profile(int* output_kind, int* channel_profile, int* symbol_r
     if (generation) {
         *generation = dsd_rtl_stream_metrics_hook_stream_generation();
     }
-    if (!rtl_direct_output_active(current_output_kind)) {
-        if (channel_profile) {
-            *channel_profile = 0;
-        }
-        if (symbol_rate_hz) {
-            *symbol_rate_hz = 0;
-        }
-        if (levels) {
-            *levels = 4;
-        }
-        return 0;
-    }
-
+    const int direct = rtl_direct_output_active(current_output_kind);
     int current_symbol_rate_hz = 0;
     int current_levels = 4;
     int current_channel_profile = 0;
-    (void)dsd_rtl_stream_metrics_hook_symbol_profile(&current_symbol_rate_hz, &current_levels,
-                                                     &current_channel_profile);
-    if (current_levels != 2) {
-        current_levels = 4;
+    if (direct) {
+        (void)dsd_rtl_stream_metrics_hook_symbol_profile(&current_symbol_rate_hz, &current_levels,
+                                                         &current_channel_profile);
     }
+    rtl_symbol_profile_labels(direct, &current_channel_profile, &current_symbol_rate_hz, &current_levels);
     if (channel_profile) {
         *channel_profile = current_channel_profile;
     }
@@ -855,7 +861,7 @@ rtl_symbol_current_profile(int* output_kind, int* channel_profile, int* symbol_r
     if (levels) {
         *levels = current_levels;
     }
-    return 1;
+    return direct;
 }
 
 static inline void
@@ -907,6 +913,28 @@ rtl_symbol_cache_reset_pending(dsd_state* state) {
     rtl_symbol_cache_publish_pending(state);
 }
 
+/* No media span: the cached samples came from a live read, which carries none. */
+static inline void
+rtl_symbol_cache_clear_media(dsd_state* state) {
+    state->rtl_symbol_cache_media_start_ns = 0U;
+    state->rtl_symbol_cache_media_duration_ns = 0U;
+    state->rtl_symbol_cache_media_count = 0U;
+    state->rtl_symbol_cache_media_first_index = 0U;
+}
+
+/* An I/Q replay's sample reaches symbol processing at its own capture time (issue #572): the decode clock's media time
+   moves to it as the cache hands it out, so a decision the decoder takes on it reads the same time whatever batch it
+   came in. A live sample carries no span and moves nothing. */
+static inline void
+rtl_symbol_cache_run_media_to(const dsd_state* state, int pos) {
+    if (state->rtl_symbol_cache_media_count == 0U || pos < 0) {
+        return;
+    }
+    dsd_decode_clock_set_media_ns(dsd_decode_clock_batch_media_ns(
+        state->rtl_symbol_cache_media_start_ns, state->rtl_symbol_cache_media_duration_ns,
+        state->rtl_symbol_cache_media_count, state->rtl_symbol_cache_media_first_index + (uint32_t)pos));
+}
+
 static inline int
 rtl_symbol_cache_pop(dsd_state* state, uint32_t generation, float* sample_out) {
     if (!state || !sample_out || state->rtl_symbol_cache_pos >= state->rtl_symbol_cache_len) {
@@ -916,12 +944,14 @@ rtl_symbol_cache_pop(dsd_state* state, uint32_t generation, float* sample_out) {
         rtl_symbol_cache_reset_pending(state);
         return RTL_SYMBOL_CACHE_RETRY;
     }
-    float sample = state->rtl_symbol_cache[state->rtl_symbol_cache_pos++];
+    const int pos = state->rtl_symbol_cache_pos++;
+    float sample = state->rtl_symbol_cache[pos];
     rtl_symbol_cache_publish_pending(state);
     if (dsd_rtl_stream_metrics_hook_stream_generation() != generation) {
         rtl_symbol_cache_reset_pending(state);
         return RTL_SYMBOL_CACHE_RETRY;
     }
+    rtl_symbol_cache_run_media_to(state, pos);
     *sample_out = sample;
     return RTL_SYMBOL_CACHE_READY;
 }
@@ -957,6 +987,7 @@ rtl_symbol_cache_clear(dsd_state* state) {
     state->rtl_symbol_cache_symbol_rate_hz = 0;
     state->rtl_symbol_cache_levels = 0;
     state->rtl_symbol_cache_generation = 0;
+    rtl_symbol_cache_clear_media(state);
 }
 
 #ifdef DSD_NEO_TEST_HOOKS
@@ -1003,6 +1034,58 @@ dsd_symbol_test_rtl_cache_and_center_contract(int out_values[10]) {
 }
 #endif
 
+/*
+ * An I/Q replay's read hands out samples of one demod block's batch, published with the stream generation and the
+ * profile the block ran on (dsd_rtl_stream_metrics_hook_replay_batch()). The decoder paces the demod, so a RESET, a
+ * profile the SPS hunt asked for and a CQPSK toggle all land while the decoder waits in that read, and the first batch
+ * after each always carries labels the caller has not seen. Labelled with what the caller saw before the read, it would
+ * be dropped every time: at once for a new generation, at the next refresh for a new profile. It is the new stream's
+ * first output, not an old one, so the cache keeps it under the batch's own labels and asks the caller to follow them
+ * before the first sample is taken (RTL_SYMBOL_CACHE_REFRESH). A batch the stream has moved on from since it was
+ * published (a flush the decoder asked for) is still dropped: the pop checks the batch's generation, and the caller's
+ * refresh drops a cache whose labels the stream no longer carries. The batch's media span goes with its samples, so
+ * each one the cache hands out runs the decode clock to its own capture time (rtl_symbol_cache_pop()).
+ *
+ * A batch of the monitor output is dropped, as a live read's is: that output is read one sample at a time outside the
+ * cache, and the refresh tells a move off a direct output by the kind the cache still holds.
+ */
+static int
+rtl_symbol_cache_fill_replay_batch(dsd_state* state, int got, const dsd_rtl_stream_replay_batch* batch, int output_kind,
+                                   int channel_profile, int symbol_rate_hz, int levels, uint32_t* generation,
+                                   uint32_t read_generation, float* sample_out) {
+    const int direct = rtl_direct_output_active(batch->output_kind);
+    if (!direct) {
+        if (generation) {
+            *generation = batch->generation;
+        }
+        rtl_symbol_cache_reset_pending(state);
+        return RTL_SYMBOL_CACHE_RETRY;
+    }
+    int batch_channel_profile = batch->channel_profile;
+    int batch_symbol_rate_hz = batch->symbol_rate_hz;
+    int batch_levels = batch->levels;
+    rtl_symbol_profile_labels(direct, &batch_channel_profile, &batch_symbol_rate_hz, &batch_levels);
+
+    state->rtl_symbol_cache_len = got;
+    state->rtl_symbol_cache_pos = 0;
+    state->rtl_symbol_cache_output_kind = batch->output_kind;
+    state->rtl_symbol_cache_channel_profile = batch_channel_profile;
+    state->rtl_symbol_cache_symbol_rate_hz = batch_symbol_rate_hz;
+    state->rtl_symbol_cache_levels = batch_levels;
+    state->rtl_symbol_cache_generation = batch->generation;
+    state->rtl_symbol_cache_media_start_ns = batch->media_start_ns;
+    state->rtl_symbol_cache_media_duration_ns = batch->media_duration_ns;
+    state->rtl_symbol_cache_media_count = batch->output_count;
+    state->rtl_symbol_cache_media_first_index = batch->first_index;
+    rtl_symbol_cache_publish_pending(state);
+    if (batch->generation != read_generation || batch->output_kind != output_kind
+        || batch_channel_profile != channel_profile || batch_symbol_rate_hz != symbol_rate_hz
+        || batch_levels != levels) {
+        return RTL_SYMBOL_CACHE_REFRESH;
+    }
+    return rtl_symbol_cache_pop(state, batch->generation, sample_out);
+}
+
 static int
 rtl_symbol_cache_refill(dsd_state* state, int output_kind, int channel_profile, int symbol_rate_hz, int levels,
                         uint32_t* generation, uint32_t expected_generation, float* sample_out) {
@@ -1016,6 +1099,14 @@ rtl_symbol_cache_refill(dsd_state* state, int output_kind, int channel_profile, 
         got = DSD_RTL_SYMBOL_CACHE_CAP;
     }
 
+    dsd_rtl_stream_replay_batch batch;
+    if (dsd_rtl_stream_metrics_hook_replay_batch(&batch) == 1) {
+        return rtl_symbol_cache_fill_replay_batch(state, got, &batch, output_kind, channel_profile, symbol_rate_hz,
+                                                  levels, generation, read_generation, sample_out);
+    }
+
+    /* A live read carries no labels. A generation that moved while it waited may have flushed what it returned, so the
+       batch is dropped; a profile that moved is only seen at the next refresh, which drops the rest. */
     uint32_t fill_generation = dsd_rtl_stream_metrics_hook_stream_generation();
     if (fill_generation != read_generation) {
         if (generation) {
@@ -1032,6 +1123,7 @@ rtl_symbol_cache_refill(dsd_state* state, int output_kind, int channel_profile, 
     state->rtl_symbol_cache_symbol_rate_hz = symbol_rate_hz;
     state->rtl_symbol_cache_levels = levels;
     state->rtl_symbol_cache_generation = generation ? *generation : fill_generation;
+    rtl_symbol_cache_clear_media(state);
     rtl_symbol_cache_publish_pending(state);
     return rtl_symbol_cache_pop(state, read_generation, sample_out);
 }
@@ -1259,12 +1351,12 @@ symbol_stamp_unsynced_carrier(const dsd_opts* opts, dsd_state* state) {
         return;
     }
     if (opts->trunk_enable != 1) {
-        state->last_cc_sync_time = time(NULL);
-        state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
+        state->last_cc_sync_time = dsd_decode_time();
+        state->last_cc_sync_time_m = dsd_decode_now_mono_s();
     }
     if (!(opts->trunk_enable == 1 && opts->trunk_is_tuned == 1)) {
-        state->last_vc_sync_time = time(NULL);
-        state->last_vc_sync_time_m = dsd_time_now_monotonic_s();
+        state->last_vc_sync_time = dsd_decode_time();
+        state->last_vc_sync_time_m = dsd_decode_now_mono_s();
     }
 }
 
@@ -1693,6 +1785,18 @@ symbol_apply_rtl_fsk_discriminator_timing(const dsd_opts* opts, dsd_state* state
     state->symbolCenter = dsd_opts_symbol_center(state->samplesPerSymbol);
 }
 
+/* The refresh a cache take that is not READY asks for: after a RETRY, which dropped the cache, or a REFRESH, which kept
+   an I/Q replay's first batch after a change. The work context follows the stream either way. A REFRESH's cache already
+   carries the stream's labels, so the refresh finds no change in it to report; the change is reported all the same,
+   and the timing and slicer then reset exactly as after a RETRY. */
+static inline void
+symbol_refresh_rtl_profile_after_take(dsd_state* state, symbol_work_ctx* work, int cache_status) {
+    (void)symbol_refresh_rtl_profile(state, work);
+    if (cache_status == RTL_SYMBOL_CACHE_REFRESH) {
+        work->rtl_profile_changed = 1;
+    }
+}
+
 static inline int
 symbol_read_cached_rtl_sample(dsd_opts* opts, dsd_state* state, float* sample_out, symbol_work_ctx* work) {
     for (;;) {
@@ -1702,12 +1806,12 @@ symbol_read_cached_rtl_sample(dsd_opts* opts, dsd_state* state, float* sample_ou
         if (cache_status == RTL_SYMBOL_CACHE_READY) {
             return 1;
         }
-        if (cache_status != RTL_SYMBOL_CACHE_RETRY) {
+        if (cache_status != RTL_SYMBOL_CACHE_RETRY && cache_status != RTL_SYMBOL_CACHE_REFRESH) {
             dsd_request_shutdown(opts, state);
             return 0;
         }
         work->rtl_span_restart = 1;
-        symbol_refresh_rtl_profile(state, work);
+        symbol_refresh_rtl_profile_after_take(state, work, cache_status);
         if (!work->rtl_fsk_discriminator_output) {
             return 0;
         }
@@ -1735,6 +1839,7 @@ symbol_read_sample_rtl(dsd_opts* opts, dsd_state* state, float* sample_out, symb
         dsd_request_shutdown(opts, state);
         return 0;
     }
+    (void)dsd_rtl_stream_metrics_hook_replay_advance_decode_clock();
     opts->rtl_pwr = dsd_rtl_stream_io_hook_return_pwr(state);
     if (!work->rtl_symbol_rate_output && !work->cqpsk_symbol_rate && !work->rtl_fsk_discriminator_output) {
         *sample_out *= opts->rtl_volume_multiplier;
@@ -1935,12 +2040,12 @@ symbol_try_rtl_symbol_rate_fast_path(dsd_opts* opts, dsd_state* state, symbol_wo
         if (cache_status == RTL_SYMBOL_CACHE_READY) {
             break;
         }
-        if (cache_status != RTL_SYMBOL_CACHE_RETRY) {
+        if (cache_status != RTL_SYMBOL_CACHE_RETRY && cache_status != RTL_SYMBOL_CACHE_REFRESH) {
             dsd_request_shutdown(opts, state);
             return -1;
         }
 
-        (void)symbol_refresh_rtl_profile(state, work);
+        symbol_refresh_rtl_profile_after_take(state, work, cache_status);
         if (!work->rtl_symbol_rate_output) {
             break;
         }

@@ -235,7 +235,9 @@ UiController::tick() {
     const bool live = sessionIsLive();
     // Once this session has supplied its first redraw, age its held deadlines on
     // every UI tick. Input can stall without another redraw; scan countdowns and
-    // the short sync hold must still expire. Keep the startup admission gate.
+    // the short sync hold must still expire. The countdowns age on the decode clock
+    // the engine stamped them with, so in a replay they freeze while samples stop;
+    // the sync hold is real time and expires either way. Keep the startup admission gate.
     if (!redraw && !(live && m_metrics && m_metrics->optionsKnown())) {
         return;
     }

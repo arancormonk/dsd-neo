@@ -35,9 +35,10 @@ target_link_libraries(dsd-neo_test_support INTERFACE dsd-neo_platform)
 # Shell tools under tools/ run CI on our behalf; the ones with retry or give-up
 # logic get a bash-driven test that fakes the program they wrap, and
 # gcc_fanalyzer.sh one that drives the real compiler over a seeded defect, since
-# its failure mode was reporting a clean run over an empty analysis. Bash only:
-# the scripts themselves are bash, so nothing is lost by skipping them where it
-# is missing.
+# its failure mode was reporting a clean run over an empty analysis. iwyu.sh
+# gets a fake IWYU, since its failure mode was reading a unit that did not
+# compile as clean. Bash only: the scripts themselves are bash, so nothing is
+# lost by skipping them where it is missing.
 if(NOT WIN32)
     find_program(DSD_NEO_BASH_EXECUTABLE bash)
     if(DSD_NEO_BASH_EXECUTABLE)
@@ -70,6 +71,20 @@ if(NOT WIN32)
             WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
         )
         add_test(
+            NAME TOOLS_CHECK_WORKFLOW_DOWNLOAD_PINS
+            COMMAND
+                ${DSD_NEO_BASH_EXECUTABLE}
+                ${PROJECT_SOURCE_DIR}/tests/tools/test_check_workflow_download_pins.sh
+            WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+        )
+        add_test(
+            NAME TOOLS_IWYU
+            COMMAND
+                ${DSD_NEO_BASH_EXECUTABLE}
+                ${PROJECT_SOURCE_DIR}/tests/tools/test_iwyu.sh
+            WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+        )
+        add_test(
             NAME TOOLS_INSTALL_LINUX_PACKAGE_FAILURE
             COMMAND
                 ${DSD_NEO_BASH_EXECUTABLE}
@@ -78,6 +93,19 @@ if(NOT WIN32)
         )
     endif()
 endif()
+
+# The decode clock alone, for tests that compile protocol, core, app-control or
+# terminal sources directly instead of linking dsd-neo_runtime.
+add_library(
+    dsd-neo_test_decode_clock
+    STATIC
+    ${PROJECT_SOURCE_DIR}/src/runtime/decode_clock.c
+)
+target_include_directories(
+    dsd-neo_test_decode_clock
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(dsd-neo_test_decode_clock PUBLIC dsd-neo_platform)
 
 add_library(
     dsd-neo_test_call_state_support
@@ -90,7 +118,11 @@ target_include_directories(
     dsd-neo_test_call_state_support
     PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/core/util
 )
-target_link_libraries(dsd-neo_test_call_state_support PUBLIC dsd-neo_platform)
+# call_state.c stamps call and recent-activity times from the decode clock.
+target_link_libraries(
+    dsd-neo_test_call_state_support
+    PUBLIC dsd-neo_test_decode_clock dsd-neo_platform
+)
 target_compile_definitions(
     dsd-neo_test_call_state_support
     PRIVATE DSD_NEO_TEST_HOOKS
@@ -1781,6 +1813,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
     ${PROJECT_SOURCE_DIR}/src/core/util/key_set.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/decode_clock.c
     ${PROJECT_SOURCE_DIR}/src/runtime/decode_mode.c
     ${PROJECT_SOURCE_DIR}/src/runtime/trunk_scan_hooks.c
 )
@@ -3038,6 +3071,7 @@ if(DSD_ENABLE_QT_UI)
         dsd-neo_test_ui_qt_call_history_model
         ui/test_ui_qt_call_history_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_filter.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
     )
     target_include_directories(
@@ -4982,17 +5016,6 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
         dsd-neo_test_engine_no_carrier_reset
         PRIVATE DSD_NEO_TEST_RTL_WRAP=1
     )
-    # The time() wrapper that injects the -Y wall clock requires a Unix time symbol.
-    if(NOT WIN32)
-        target_compile_definitions(
-            dsd-neo_test_engine_no_carrier_reset
-            PRIVATE DSD_NEO_TEST_TIME_WRAP=1
-        )
-        target_link_libraries(
-            dsd-neo_test_engine_no_carrier_reset
-            PRIVATE "-Wl,--wrap=time"
-        )
-    endif()
     target_link_libraries(
         dsd-neo_test_engine_no_carrier_reset
         PRIVATE
@@ -5164,6 +5187,88 @@ if(DSD_HAS_RTLSDR AND NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
     )
 endif()
 
+# An I/Q replay whose capture read fails, through the engine (issue #572): the replay
+# ends by itself with exit code 1. The capture read is wrapped, so the radio archive
+# links as it ships.
+if(DSD_HAS_RADIO AND NOT APPLE AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
+    add_executable(
+        dsd-neo_test_engine_replay_read_error
+        engine/test_engine_replay_read_error.c
+    )
+    target_include_directories(
+        dsd-neo_test_engine_replay_read_error
+        PRIVATE ${PROJECT_SOURCE_DIR}/include
+    )
+    target_link_libraries(
+        dsd-neo_test_engine_replay_read_error
+        PRIVATE
+            "-Wl,--start-group"
+            dsd-neo_engine
+            dsd-neo_io_radio
+            dsd-neo_io_iq
+            "-Wl,--end-group"
+            "-Wl,--wrap=dsd_iq_replay_read"
+            ${LIBS}
+            dsd-neo_test_support
+    )
+    add_test(
+        NAME ENGINE_REPLAY_READ_ERROR
+        COMMAND dsd-neo_test_engine_replay_read_error
+    )
+    # The same replay, with its data file cut short under it instead: the real
+    # read reports that as the read error, and the run exits 1.
+    add_test(
+        NAME ENGINE_REPLAY_TRUNCATED_CAPTURE
+        COMMAND dsd-neo_test_engine_replay_read_error truncate
+    )
+    set_tests_properties(
+        ENGINE_REPLAY_READ_ERROR
+        ENGINE_REPLAY_TRUNCATED_CAPTURE
+        PROPERTIES TIMEOUT 60
+    )
+endif()
+
+# Issue #572: a replay run through the engine decodes on its capture's clock, from the
+# committed fixtures' sidecars, in the CLI's initialization order.
+if(DSD_HAS_RADIO)
+    add_executable(
+        dsd-neo_test_engine_replay_decode_clock
+        engine/test_engine_replay_decode_clock.c
+    )
+    target_include_directories(
+        dsd-neo_test_engine_replay_decode_clock
+        PRIVATE ${PROJECT_SOURCE_DIR}/include
+    )
+    target_compile_definitions(
+        dsd-neo_test_engine_replay_decode_clock
+        PRIVATE
+            "DSD_NEO_TEST_IQ_FIXTURE_DIR=\"${PROJECT_SOURCE_DIR}/tests/fixtures/iq\""
+    )
+    if(NOT APPLE AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
+        target_link_libraries(
+            dsd-neo_test_engine_replay_decode_clock
+            PRIVATE
+                "-Wl,--start-group"
+                dsd-neo_engine
+                dsd-neo_io_radio
+                dsd-neo_io_iq
+                "-Wl,--end-group"
+                ${LIBS}
+                dsd-neo_test_support
+        )
+    else()
+        target_link_libraries(
+            dsd-neo_test_engine_replay_decode_clock
+            PRIVATE dsd-neo_engine ${LIBS} dsd-neo_test_support
+        )
+    endif()
+    add_test(
+        NAME ENGINE_REPLAY_DECODE_CLOCK
+        COMMAND dsd-neo_test_engine_replay_decode_clock
+    )
+    set_tests_properties(ENGINE_REPLAY_DECODE_CLOCK PROPERTIES TIMEOUT 60)
+endif()
+
 if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
     add_executable(
         dsd-neo_test_engine_synced_trunk_scan_tick
@@ -5187,35 +5292,28 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
         NAME ENGINE_SYNCED_TRUNK_SCAN_TICK
         COMMAND dsd-neo_test_engine_synced_trunk_scan_tick
     )
-    # The time() wrapper below requires a Unix time symbol.
-    if(NOT WIN32)
-        add_executable(
-            dsd-neo_test_engine_scan_timing
-            engine/test_engine_scan_timing.c
-            ${PROJECT_SOURCE_DIR}/src/app_control/scan_timing_view.c
-        )
-        target_include_directories(
-            dsd-neo_test_engine_scan_timing
-            PRIVATE ${PROJECT_SOURCE_DIR}/include
-        )
-        target_link_libraries(
-            dsd-neo_test_engine_scan_timing
-            PRIVATE
-                "-Wl,--wrap=getFrameSync"
-                "-Wl,--wrap=dsd_engine_scan_tune_to_freq"
-                "-Wl,--wrap=SetFreq"
-                "-Wl,--wrap=time"
-                "-Wl,--start-group"
-                dsd-neo_engine
-                "-Wl,--end-group"
-                ${LIBS}
-                dsd-neo_test_support
-        )
-        add_test(
-            NAME ENGINE_SCAN_TIMING
-            COMMAND dsd-neo_test_engine_scan_timing
-        )
-    endif()
+    add_executable(
+        dsd-neo_test_engine_scan_timing
+        engine/test_engine_scan_timing.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/scan_timing_view.c
+    )
+    target_include_directories(
+        dsd-neo_test_engine_scan_timing
+        PRIVATE ${PROJECT_SOURCE_DIR}/include
+    )
+    target_link_libraries(
+        dsd-neo_test_engine_scan_timing
+        PRIVATE
+            "-Wl,--wrap=getFrameSync"
+            "-Wl,--wrap=dsd_engine_scan_tune_to_freq"
+            "-Wl,--wrap=SetFreq"
+            "-Wl,--start-group"
+            dsd-neo_engine
+            "-Wl,--end-group"
+            ${LIBS}
+            dsd-neo_test_support
+    )
+    add_test(NAME ENGINE_SCAN_TIMING COMMAND dsd-neo_test_engine_scan_timing)
 endif()
 
 add_executable(
@@ -5223,6 +5321,7 @@ add_executable(
     engine/test_engine_trunk_retune_regression.c
     ${PROJECT_SOURCE_DIR}/src/engine/trunk_tuning.c
     ${PROJECT_SOURCE_DIR}/src/runtime/decode_mode.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/decode_clock.c
 )
 target_include_directories(
     dsd-neo_test_engine_trunk_retune_regression
@@ -5230,7 +5329,7 @@ target_include_directories(
 )
 target_link_libraries(
     dsd-neo_test_engine_trunk_retune_regression
-    PRIVATE dsd-neo_feature_radio
+    PRIVATE dsd-neo_feature_radio dsd-neo_platform
 )
 target_sources(
     dsd-neo_test_engine_trunk_retune_regression
@@ -7433,11 +7532,16 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
             dsd-neo_proto_dmr
             dsd-neo_core
             "-Wl,--end-group"
+            dsd-neo_test_support
     )
 else()
     target_link_libraries(
         dsd-neo_test_p25_sm_unified_core
-        PRIVATE dsd-neo_proto_p25 dsd-neo_proto_dmr dsd-neo_core
+        PRIVATE
+            dsd-neo_proto_p25
+            dsd-neo_proto_dmr
+            dsd-neo_core
+            dsd-neo_test_support
     )
 endif()
 add_test(NAME P25_SM_UNIFIED_CORE COMMAND dsd-neo_test_p25_sm_unified_core)
@@ -7901,6 +8005,56 @@ endif()
 dsd_neo_link_dsp_test(dsd-neo_test_dsp_simd_fir)
 add_test(NAME DSP_SIMD_FIR COMMAND dsd-neo_test_dsp_simd_fir)
 
+add_executable(
+    dsd-neo_test_dsp_fir_segmentation
+    dsp/test_dsp_fir_segmentation.cpp
+)
+target_include_directories(
+    dsd-neo_test_dsp_fir_segmentation
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src
+)
+if(_dsd_neo_dsp_sources MATCHES "simd_fir_avx2\\.cpp")
+    target_compile_definitions(
+        dsd-neo_test_dsp_fir_segmentation
+        PRIVATE DSD_NEO_TEST_HAVE_AVX2_IMPL=1
+    )
+endif()
+dsd_neo_link_dsp_test(dsd-neo_test_dsp_fir_segmentation)
+add_test(NAME DSP_FIR_SEGMENTATION COMMAND dsd-neo_test_dsp_fir_segmentation)
+
+add_executable(
+    dsd-neo_test_dsp_demod_segmentation
+    dsp/test_dsp_demod_segmentation.cpp
+)
+target_include_directories(
+    dsd-neo_test_dsp_demod_segmentation
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+dsd_neo_link_dsp_test(dsd-neo_test_dsp_demod_segmentation)
+add_test(
+    NAME DSP_DEMOD_SEGMENTATION
+    COMMAND dsd-neo_test_dsp_demod_segmentation
+)
+
+# The post-demod audio decimator (polyphase and its fallback) streams across
+# blocks; the private test-support DSP build forces the fallback (issue #572).
+add_executable(
+    dsd-neo_test_dsp_audio_decim_segmentation
+    dsp/test_dsp_audio_decim_segmentation.cpp
+)
+target_include_directories(
+    dsd-neo_test_dsp_audio_decim_segmentation
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/dsp
+)
+target_link_libraries(
+    dsd-neo_test_dsp_audio_decim_segmentation
+    PRIVATE dsd-neo_dsp_private_test_support ${DSD_NEO_TEST_MATH_LIB}
+)
+add_test(
+    NAME DSP_AUDIO_DECIM_SEGMENTATION
+    COMMAND dsd-neo_test_dsp_audio_decim_segmentation
+)
+
 add_executable(dsd-neo_bench_dsp EXCLUDE_FROM_ALL dsp/bench_dsp.cpp)
 target_include_directories(
     dsd-neo_bench_dsp
@@ -8096,6 +8250,28 @@ if(DSD_HAS_RADIO)
     add_test(
         NAME RTL_SYMBOL_CACHE_GENERATION
         COMMAND dsd-neo_test_rtl_symbol_cache_generation
+    )
+
+    # Issue #572: an I/Q replay's samples run the decode clock as they reach symbol
+    # processing, so a call-state window decides the same whatever the batch sizes.
+    add_executable(
+        dsd-neo_test_rtl_symbol_replay_clock
+        dsp/test_rtl_symbol_replay_clock.c
+        test_support/frame_sync_dsp_stubs.c
+    )
+    target_include_directories(
+        dsd-neo_test_rtl_symbol_replay_clock
+        PRIVATE ${PROJECT_SOURCE_DIR}/include
+    )
+    dsd_neo_link_dsp_test(dsd-neo_test_rtl_symbol_replay_clock
+      dsd-neo_test_call_state_support
+      dsd-neo_test_support
+      ${DSD_NEO_TEST_MATH_LIB}
+      ${LIBSNDFILE_LIBRARIES}
+    )
+    add_test(
+        NAME RTL_SYMBOL_REPLAY_CLOCK
+        COMMAND dsd-neo_test_rtl_symbol_replay_clock
     )
 
     add_executable(
@@ -10056,7 +10232,7 @@ target_compile_definitions(
         dsd_fopen_private=test_dsd_fopen_private
         dsd_fileno=test_dsd_fileno
         dsd_fstat=test_dsd_fstat
-        dsd_time_monotonic_ns=test_dsd_time_monotonic_ns
+        dsd_realtime_mono_ns=test_dsd_realtime_mono_ns
 )
 target_include_directories(
     dsd-neo_test_io_rtl_perf
@@ -10424,6 +10600,7 @@ if(DSD_HAS_RADIO)
         dsd-neo_test_io_rtl_wideband_spectrum
         io/test_io_rtl_wideband_spectrum.cpp
         ${PROJECT_SOURCE_DIR}/src/io/radio/rtl_wideband_spectrum.cpp
+        ${PROJECT_SOURCE_DIR}/src/runtime/decode_clock.c
         # The Hann window the tap uses comes from the project's own window
         # builder; firdes.cpp is pure math over <math.h>, so compiling it here
         # keeps this test standalone rather than linking the whole DSP library.
@@ -10648,6 +10825,37 @@ if(DSD_HAS_RADIO)
         NAME IO_RTL_REPLAY_EOF_AND_CF32
         COMMAND dsd-neo_test_io_rtl_replay_eof_and_cf32
     )
+
+    add_executable(
+        dsd-neo_test_io_rtl_replay_determinism
+        io/test_io_rtl_replay_determinism.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_io_rtl_replay_determinism
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/io/radio
+            ${PROJECT_SOURCE_DIR}/tests/test_support
+    )
+    target_link_libraries(
+        dsd-neo_test_io_rtl_replay_determinism
+        PRIVATE
+            dsd-neo_io_radio_private_test_support
+            dsd-neo_io_iq
+            dsd-neo_core
+            dsd-neo_test_support
+    )
+    if(DSD_HAS_RTLSDR)
+        target_link_libraries(
+            dsd-neo_test_io_rtl_replay_determinism
+            PRIVATE ${RTLSDR_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT}
+        )
+    endif()
+    add_test(
+        NAME IO_RTL_REPLAY_DETERMINISM
+        COMMAND dsd-neo_test_io_rtl_replay_determinism
+    )
+    set_tests_properties(IO_RTL_REPLAY_DETERMINISM PROPERTIES TIMEOUT 120)
 
     add_executable(
         dsd-neo_test_io_rtl_preopened_fd
@@ -11061,6 +11269,56 @@ foreach(_target IN LISTS _DSD_NEO_BIT_PACKING_TEST_TARGETS)
 endforeach()
 unset(_DSD_NEO_BIT_PACKING_TEST_TARGETS)
 
+# Protocol code reads time through the decode clock (src/runtime/decode_clock.c).
+# These tests compile protocol sources directly without dsd-neo_runtime.
+set(_DSD_NEO_DECODE_CLOCK_TEST_TARGETS
+    dsd-neo_test_dmr_bs_sync_times
+    dsd-neo_test_dmr_locn_time_fallback
+    dsd-neo_test_dmr_lrrp_crc_gating
+    dsd-neo_test_dmr_lrrp_empty_payload_type
+    dsd-neo_test_dmr_lrrp_event_crc_gating
+    dsd-neo_test_dmr_lrrp_ip_udp_lengths
+    dsd-neo_test_dmr_lrrp_position_token_precedence
+    dsd-neo_test_dmr_lrrp_response_token_lengths
+    dsd-neo_test_dmr_lrrp_resync_prefix
+    dsd-neo_test_dmr_lrrp_time_fallback
+    dsd-neo_test_dmr_lrrp_time_valid
+    dsd-neo_test_dmr_lrrp_token_alignment
+    dsd-neo_test_dmr_lrrp_wrapped_document
+    dsd-neo_test_dmr_ms_data
+    dsd-neo_test_dmr_pdu_utf16_text
+    dsd-neo_test_dmr_tms_utf16le
+    dsd-neo_test_dmr_udp_comp_header
+    dsd-neo_test_nxdn_frame_routing
+    dsd-neo_test_p25_p1_hdu_helpers
+    dsd-neo_test_p25_p1_ldu1_helpers
+    dsd-neo_test_p25_p1_ldu2_helpers
+    dsd-neo_test_p25_p1_tdu
+    # Core, app-control and terminal sources compiled in directly. Some exist only
+    # with curses or radio support, hence the TARGET check below.
+    dsd-neo_test_app_control_frontend_metrics
+    dsd-neo_test_core_gps_lrrp_crc_gating
+    dsd-neo_test_dmr_embedded_gps_position_error
+    dsd-neo_test_ui_chooser_navigation
+    dsd-neo_test_ui_dsp_display_radio_compile
+    dsd-neo_test_ui_menu_dynamic_label
+    dsd-neo_test_ui_menu_labels
+    dsd-neo_test_ui_menu_actions
+    dsd-neo_test_ui_menu_labels_radio
+    dsd-neo_test_ui_menu_render_helpers
+    dsd-neo_test_ui_panels_header_footer
+    dsd-neo_test_ui_prims_status_gamma
+    dsd-neo_test_ui_prompt_cursor
+    dsd-neo_test_ui_prompt_secret
+    dsd-neo_test_ui_prompt_validation
+)
+foreach(_target IN LISTS _DSD_NEO_DECODE_CLOCK_TEST_TARGETS)
+    if(TARGET ${_target})
+        target_link_libraries(${_target} PRIVATE dsd-neo_test_decode_clock)
+    endif()
+endforeach()
+unset(_DSD_NEO_DECODE_CLOCK_TEST_TARGETS)
+
 # ---------------------------------------------------------------------------
 # Full-chain modulation decode regression tests
 #
@@ -11142,16 +11400,25 @@ if(DSD_HAS_RADIO)
         -f1
         "Group Voice Channel User"
     )
+    # The CQPSK fixtures run the front end's CQPSK chain only with -mq after the preset:
+    # -f1 sets C4FM modulation, and the last of -f1 and -mq wins, so "-f1" alone (as these
+    # cases were first registered) and "-mq -f1" both demodulate them on the FSK
+    # discriminator path (REPLAY STREAM cqpsk_symbols=0). Under "-f1 -mq" each reads
+    # about 9,590 CQPSK symbols and no FSK samples. The clean CC decodes the same either
+    # way (18 implicit grants, no irrecoverable header error, against 17 and 1); the voice
+    # capture improves to 8 grants, 51 audio errors and 5 header errors (from 7, 84 and
+    # 147) and the simulcast one to 18 grants and the site identity 41 times (from 3 and
+    # none).
     dsd_neo_add_iq_decode_test(
         DECODE_IQ_P25P1_CQPSK_CC
         p25p1_cqpsk_cc
-        -f1
+        "-f1 -mq"
         "WACN: 92065; SYS: 0D5"
     )
     dsd_neo_add_iq_decode_test(
         DECODE_IQ_P25P1_CQPSK_VOICE
         p25p1_cqpsk_vc
-        -f1
+        "-f1 -mq"
         "Group Voice Channel User"
     )
     # Issue #400: the same capture under -fa, where the SPS hunt is live. P25p1 syncs arrive
@@ -11173,8 +11440,22 @@ if(DSD_HAS_RADIO)
     # same real payload its -f1 sibling above asserts, which is the thing a hunt that holds
     # the profile is supposed to deliver. Both halves hold across dev-debug, asan-ubsan-debug
     # and tsan-debug.
+    #
+    # Under -fa the modulation vote never picks CQPSK on this capture, so the hunt above runs
+    # the FSK discriminator path (cqpsk_symbols=0); the _UNLOCKED case keeps that unlocked
+    # hunt and its negative half. The case itself runs "-fa -mq", the -fa protocol set on the
+    # CQPSK chain (8 grants, 52 audio errors, 5 header errors). The -mq lock lets the hunt
+    # rotate only among profiles with the same timing, which it does without the
+    # "SPS hunt: trying" line, so the negative half there guards against a timing change.
     dsd_neo_add_iq_decode_test(
         DECODE_IQ_P25P1_CQPSK_VOICE_AUTO_HUNT
+        p25p1_cqpsk_vc
+        "-fa -mq"
+        "Group Voice Channel User"
+        "SPS hunt: trying"
+    )
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_P25P1_CQPSK_VOICE_AUTO_HUNT_UNLOCKED
         p25p1_cqpsk_vc
         -fa
         "Group Voice Channel User"
@@ -11186,7 +11467,7 @@ if(DSD_HAS_RADIO)
     dsd_neo_add_iq_decode_test(
         DECODE_IQ_P25P1_CQPSK_SIMULCAST_CC
         p25p1_cqpsk_cc_simulcast
-        -f1
+        "-f1 -mq"
         "Group Voice Channel Grant Update - Implicit"
     )
     dsd_neo_add_iq_decode_test(DECODE_IQ_P25P2_CC p25p2_cc -f2 "P25p2 SACCH")
@@ -11216,6 +11497,39 @@ if(DSD_HAS_RADIO)
     )
     dsd_neo_add_iq_decode_test(DECODE_IQ_NXDN48 nxdn48 -fi "Src=901")
     dsd_neo_add_iq_decode_test(DECODE_IQ_NXDN96 nxdn96 -fn "RAN 00")
+    # A call after a scan retune (issue #572): 7.5 s of noise_floor on one channel, the RETUNE, MUTE,
+    # RESET and MUTE a real scan retune records, then all of nxdn48 on the next channel
+    # (DERIVED_RETUNE in tools/build_iq_fixtures.py). -fi holds the receiver on NXDN48, so whatever
+    # the SPS hunt would do, this is the control: the eventful replay path decodes the call at 48 kHz.
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_NXDN48_AFTER_RETUNE
+        nxdn48_after_retune
+        -fi
+        "Src=901"
+    )
+    # --iq-info reads the fixture's version 2 sidecar, counts its event timeline and finds it
+    # replayable, with no warning. It prints and exits before the --iq-replay the helper adds runs.
+    dsd_neo_add_iq_decode_test(
+        IQ_INFO_NXDN48_AFTER_RETUNE
+        nxdn48_after_retune
+        "--iq-info \"${_DSD_NEO_IQ_FIXTURE_DIR}/nxdn48_after_retune.iq.json\""
+        "Format: +dsd-neo-iq v2.*Contains retunes: +yes \\(1 retune events\\).*Event timeline: +4 event\\(s\\).*Replay compatible: +yes"
+        "WARNING"
+    )
+    # The same call under -fa: the SPS hunt has to land on 20 sps after the RESET by itself. The 7.5 s
+    # lead-in sits mid-plateau (6.7-8.1 s) of the lead-ins whose hunt reaches the RESET after the same five
+    # steps; the iq-determinism cases (Replay determinism, below) require every replay of it to decode
+    # identically.
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_NXDN48_AFTER_RETUNE_AUTO
+        nxdn48_after_retune
+        -fa
+        "Src=901"
+    )
+    set_tests_properties(
+        DECODE_IQ_NXDN48_AFTER_RETUNE_AUTO
+        PROPERTIES LABELS "iq-decode;iq-determinism" TIMEOUT 600
+    )
     # dPMR modulated from the CCH reference vectors, the only dPMR signal in the tree
     # whose content is known rather than guessed (#407). Every CCH CRC-7 in it passes,
     # so this is what a working integrity check has to be validated against. The voice
@@ -11525,6 +11839,241 @@ if(DSD_HAS_RADIO)
     )
     add_test(NAME ENGINE_RESTART COMMAND dsd-neo_test_engine_restart)
     set_tests_properties(ENGINE_RESTART PROPERTIES TIMEOUT 240)
+endif()
+
+# Replay determinism (issue #572). Under --iq-replay the decoder paces the front end and
+# the decode clock follows the capture, so every replay of a capture must decode the
+# same way. dsd-neo_test_replay_jitter runs the real engine on the arguments dsd-neo
+# would get and perturbs only the decoder's side: seeded sleeps after its reads (1.5 s
+# total at most), reads capped at seeded short counts, and, where GNU ld can replace the
+# audio device (--wrap, as CORE_AUDIO_ENSURE_OUTPUT does), an asynchronous sink whose
+# device stalls. It prints the REPLAY STREAM line the runner compares and checks against
+# MIN_FSK/MIN_CQPSK, and a REPLAY WALL line with the real time its engine run took,
+# which a realtime leg's pacing check reads. tests/iq_determinism_check.cmake runs each
+# leg of RUNS, keeps iq_decode_check.cmake's exit-code and sanitizer checks for each,
+# and requires the legs' decoder output to match line for line, capture-time
+# timestamps included.
+if(DSD_HAS_RADIO)
+    add_executable(dsd-neo_test_replay_jitter engine/replay_jitter.c)
+    target_include_directories(
+        dsd-neo_test_replay_jitter
+        PRIVATE ${PROJECT_SOURCE_DIR}/include
+    )
+    target_link_libraries(
+        dsd-neo_test_replay_jitter
+        PRIVATE dsd-neo_engine dsd-neo_io_radio ${LIBS}
+    )
+    set(_DSD_NEO_REPLAY_SINK_WRAP OFF)
+    if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
+        set(_DSD_NEO_REPLAY_SINK_WRAP ON)
+        target_compile_definitions(
+            dsd-neo_test_replay_jitter
+            PRIVATE DSD_NEO_TEST_AUDIO_WRAP
+        )
+        target_link_options(
+            dsd-neo_test_replay_jitter
+            PRIVATE
+                "LINKER:--wrap=dsd_audio_open_output"
+                "LINKER:--wrap=dsd_audio_write"
+                "LINKER:--wrap=dsd_audio_drain"
+                "LINKER:--wrap=dsd_audio_close"
+        )
+    endif()
+
+    # dsd_neo_add_iq_determinism_test(name fixture mode runs expected min_fsk min_cqpsk
+    #                                 min_total [NOT_EXPECTED regex])
+    # runs is the ;-list of legs (see iq_determinism_check.cmake for the leg grammar).
+    # min_total floors FSK samples + 8 x CQPSK symbols, which no hunt split moves.
+    function(
+        dsd_neo_add_iq_determinism_test
+        test_name
+        fixture
+        mode
+        runs
+        expected
+        min_fsk
+        min_cqpsk
+        min_total
+    )
+        cmake_parse_arguments(PARSE_ARGV 8 _det "" "NOT_EXPECTED" "")
+        set(_not_expected_arg)
+        if(DEFINED _det_NOT_EXPECTED)
+            set(_not_expected_arg "-DNOT_EXPECTED=${_det_NOT_EXPECTED}")
+        endif()
+        add_test(
+            NAME ${test_name}
+            COMMAND
+                ${CMAKE_COMMAND}
+                "-DHOST_BIN=$<TARGET_FILE:dsd-neo_test_replay_jitter>"
+                "-DMODE=${mode}"
+                "-DFIXTURE=${_DSD_NEO_IQ_FIXTURE_DIR}/${fixture}.iq.json"
+                "-DRUNS=${runs}" "-DEXPECTED=${expected}" "-DMIN_FSK=${min_fsk}"
+                "-DMIN_CQPSK=${min_cqpsk}" "-DMIN_TOTAL=${min_total}"
+                ${_not_expected_arg} -P
+                "${CMAKE_CURRENT_SOURCE_DIR}/iq_determinism_check.cmake"
+        )
+        set_tests_properties(
+            ${test_name}
+            PROPERTIES LABELS "iq-decode;iq-determinism" TIMEOUT 600
+        )
+    endfunction()
+
+    # nxdn48_after_retune under -fa: the SPS hunt, the RETUNE/MUTE/RESET/MUTE group and the
+    # call after it. Two fast replays, two with seeded sleeps after reads and one with short
+    # reads must match the first. Each leg measured fsk_samples=582330 cqpsk_symbols=8189
+    # generation_changes=3 media_ms=13679.666666 (13.5 s of samples plus the two MUTEs): the
+    # hunt runs the front end on its CQPSK path (6000 symbols/s, 8 samples each) for 1.37 s,
+    # so the legs cross output kinds and generations, and the FSK samples and CQPSK symbols
+    # together cover all but 158 of the capture's 648,000 samples. The verbatim REPLAY
+    # STREAM comparison already catches a leg that reads less than the others; the floors
+    # catch every leg reading too little, and are sized to survive a legitimate change to
+    # the hunt's visit and credit accounting. One CQPSK dwell is a fixed 3 passes x 1800 =
+    # 5,400 symbols (DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS); the other ~2.8k of the 8,189
+    # come from that accounting. MIN_CQPSK 5,000 sits just under one dwell, so it still
+    # proves the hunt dwelt on the CQPSK path. The FSK count moves the other way:
+    # 648,000 - 158 - 8 x cqpsk_symbols. MIN_FSK 535,000 is the measured 582,330 less one
+    # more full CQPSK dwell (5,400 x 8 = 43,200 samples, leaving 539,130) and a little
+    # more, and it still holds 83 % of the capture to the FSK path. The two together,
+    # 582,330 + 8 x 8,189 = 647,842 front-end samples, do not depend on that split at all,
+    # so MIN_TOTAL 647,000 holds every leg to all but 1,000 of the capture's 648,000.
+    set(_nxdn48_retune_min_fsk 535000)
+    set(_nxdn48_retune_min_cqpsk 5000)
+    set(_nxdn48_retune_min_total 647000)
+    dsd_neo_add_iq_determinism_test(
+        DECODE_IQ_NXDN48_AFTER_RETUNE_AUTO_DETERMINISM
+        nxdn48_after_retune
+        -fa
+        "fast;fast;jitter:7:120;jitter:11:120;short:13"
+        "Src=901"
+        ${_nxdn48_retune_min_fsk}
+        ${_nxdn48_retune_min_cqpsk}
+        ${_nxdn48_retune_min_total}
+    )
+    # Paced at the capture's own rate the decoder reads the same stream: realtime must
+    # match fast, with and without seeded sleeps on top. Each realtime leg takes the
+    # capture's 13.7 s of air time.
+    dsd_neo_add_iq_determinism_test(
+        DECODE_IQ_NXDN48_AFTER_RETUNE_AUTO_DETERMINISM_REALTIME
+        nxdn48_after_retune
+        -fa
+        "fast;realtime"
+        "Src=901"
+        ${_nxdn48_retune_min_fsk}
+        ${_nxdn48_retune_min_cqpsk}
+        ${_nxdn48_retune_min_total}
+    )
+    # This leg runs with SOURCE_DATE_EPOCH set, as in a reproducible build, where
+    # CMake's string(TIMESTAMP) returns that fixed time: the pacing check reads the
+    # host's own REPLAY WALL time, so the setting must not reach it, or every realtime
+    # leg would read 0 ms of elapsed time and fail. The _JITTER leg and the gap leg
+    # below keep the plain environment covered.
+    set_tests_properties(
+        DECODE_IQ_NXDN48_AFTER_RETUNE_AUTO_DETERMINISM_REALTIME
+        PROPERTIES ENVIRONMENT "SOURCE_DATE_EPOCH=1700000000"
+    )
+    dsd_neo_add_iq_determinism_test(
+        DECODE_IQ_NXDN48_AFTER_RETUNE_AUTO_DETERMINISM_REALTIME_JITTER
+        nxdn48_after_retune
+        -fa
+        "fast;realtime+jitter:17:120"
+        "Src=901"
+        ${_nxdn48_retune_min_fsk}
+        ${_nxdn48_retune_min_cqpsk}
+        ${_nxdn48_retune_min_total}
+    )
+    # Audio output is real time: a sink whose device stops taking audio must not reach
+    # back into the decoder. Against a sink that takes everything, a stalled one (which
+    # must back up and drop, or the host fails the leg) leaves the decoder's lines and
+    # the audio it handed over (REPLAY SINK) unchanged.
+    if(_DSD_NEO_REPLAY_SINK_WRAP)
+        dsd_neo_add_iq_determinism_test(
+            DECODE_IQ_NXDN48_AFTER_RETUNE_AUTO_DETERMINISM_STALLED_SINK
+            nxdn48_after_retune
+            -fa
+            "sink:free;sink:stalled"
+            "Src=901"
+            ${_nxdn48_retune_min_fsk}
+            ${_nxdn48_retune_min_cqpsk}
+            ${_nxdn48_retune_min_total}
+        )
+    endif()
+    # The input-level advisories are decoder lines too, compared like the rest: their 10 s
+    # cooldown runs on decode time (dsd_input_level_publish()), so a replay prints each at the
+    # same capture time however fast it runs. nxdn48_gap (DERIVED_GAP in
+    # tools/build_iq_fixtures.py) is a sidecar on nxdn48's data, RF HOT throughout, with a
+    # 12 s capture gap (a MUTE) 4 s in: every leg warns 3 s into the capture and again 17 s
+    # in, after the gap, and decodes the call between the two. On real time a fast leg
+    # finished before the cooldown ran out and printed only the first. Each leg measured
+    # fsk_samples=287933 cqpsk_symbols=0 media_ms=18000 (all but 67 of the capture's 288,000
+    # samples, plus the gap); the floors sit just under that.
+    dsd_neo_add_iq_determinism_test(
+        DECODE_IQ_NXDN48_GAP_ADVISORY_DETERMINISM
+        nxdn48_gap
+        -fi
+        "fast;realtime;jitter:29:120"
+        "RF Level HOT.*Src=901.*RF Level HOT"
+        287000
+        0
+        287000
+    )
+    # The end of a replay must not reach the decoder before it has decoded the last samples.
+    # rf_clip (DERIVED_CLIP in tools/build_iq_fixtures.py) is 4,096 pairs on the cu8 rails,
+    # one chunk, which the decoder takes in a single read: the CLIP advisory it prints comes
+    # from input-level polls made while it decodes that read's samples, with the next read
+    # the one that ends the stream. Ending the stream on the read that took the last samples
+    # cleared the level under those polls whenever the reader had reached EOF by then, as a
+    # fast replay had and a realtime one still pacing had not: only the realtime and
+    # short-read legs warned. The jitter host sleeps after about one read in 64, so with two
+    # reads a jitter leg would sleep never. Each leg measured fsk_samples=0
+    # cqpsk_symbols=402 media_ms=85.333333; MIN_CQPSK 400 and MIN_TOTAL 3,200 (8 x 400) sit
+    # just under it.
+    dsd_neo_add_iq_determinism_test(
+        DECODE_IQ_RF_CLIP_EOF_DETERMINISM
+        rf_clip
+        "-f1 -mq"
+        "fast;realtime;short:37"
+        "RF Level CLIP 100.0%"
+        0
+        400
+        3200
+    )
+    # The CQPSK path decoding real frames: p25p2_cc under -f2 runs the front end's CQPSK
+    # chain for the whole capture (fsk_samples=0 cqpsk_symbols=11992 media_ms=2000, so
+    # 95,936 of its 96,000 samples), and fast, short-read and jitter legs must decode its
+    # SACCH the same way. MIN_CQPSK 11,900 and MIN_TOTAL 95,000 sit just under that.
+    dsd_neo_add_iq_determinism_test(
+        DECODE_IQ_P25P2_CC_DETERMINISM
+        p25p2_cc
+        -f2
+        "fast;short:19;jitter:23:120"
+        "P25p2 SACCH"
+        0
+        11900
+        95000
+    )
+
+    # The runner's realtime pacing check reads a leg's wall time from the host's
+    # REPLAY WALL line alone (CMake's own clock reads whole seconds before 3.23, which
+    # made an 85 ms capture's realtime leg 0 ms). Against a stand-in host that prints
+    # a passing leg of a 1 s capture with the REPLAY WALL line each case picks, a
+    # missing line or a line without wall_ms fails the runner, 899 ms fails the 90 %
+    # floor and 900 ms meets it.
+    add_executable(
+        dsd-neo_test_iq_determinism_check_wall
+        engine/test_iq_determinism_check_wall.c
+    )
+    add_test(
+        NAME IQ_DETERMINISM_CHECK_WALL
+        COMMAND
+            ${CMAKE_COMMAND}
+            "-DFAKE_HOST=$<TARGET_FILE:dsd-neo_test_iq_determinism_check_wall>"
+            "-DRUNNER=${CMAKE_CURRENT_SOURCE_DIR}/iq_determinism_check.cmake" -P
+            "${CMAKE_CURRENT_SOURCE_DIR}/cmake/IqDeterminismCheckWall.cmake"
+    )
+    set_tests_properties(
+        IQ_DETERMINISM_CHECK_WALL
+        PROPERTIES LABELS "iq-determinism" TIMEOUT 120
+    )
 endif()
 
 if(DSD_HAS_RADIO)
@@ -12427,6 +12976,22 @@ if(Python3_Interpreter_FOUND)
                 ENVIRONMENT "DSD_TEST_BASH=${DSD_NEO_BASH_EXECUTABLE}"
                 TIMEOUT 120
         )
+        # Each repeat replays its own realization of the capture: a sidecar copy with
+        # every event shifted by s_r input samples (issue #572).
+        add_test(
+            NAME TOOLS_REPLAY_AB_REALIZATIONS
+            COMMAND
+                ${Python3_EXECUTABLE}
+                ${PROJECT_SOURCE_DIR}/tests/tools/test_replay_ab_report.py
+                ReplayAbRealizations
+            WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+        )
+        set_tests_properties(
+            TOOLS_REPLAY_AB_REALIZATIONS
+            PROPERTIES
+                ENVIRONMENT "DSD_TEST_BASH=${DSD_NEO_BASH_EXECUTABLE}"
+                TIMEOUT 120
+        )
     endif()
 endif()
 
@@ -12600,6 +13165,7 @@ configure_file(
 add_executable(
     dsd-neo_test_io_airspy_source
     io/test_io_airspy_source.cpp
+    io/airspy_sdk_double.cpp
     ${PROJECT_SOURCE_DIR}/src/io/radio/airspy_source.cpp
 )
 target_include_directories(
@@ -12646,6 +13212,7 @@ if(DSD_HAS_AIRSPY)
     add_executable(
         dsd-neo_test_io_rtl_stream_start_failure
         io/test_io_airspy_source.cpp
+        io/airspy_sdk_double.cpp
         ${PROJECT_SOURCE_DIR}/src/io/radio/airspy_source.cpp
     )
     target_include_directories(
@@ -12740,3 +13307,14 @@ if(
         PROPERTIES TIMEOUT 120
     )
 endif()
+
+add_executable(
+    dsd-neo_test_runtime_decode_clock
+    runtime/test_runtime_decode_clock.c
+)
+target_include_directories(
+    dsd-neo_test_runtime_decode_clock
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(dsd-neo_test_runtime_decode_clock PRIVATE dsd-neo_runtime)
+add_test(NAME RUNTIME_DECODE_CLOCK COMMAND dsd-neo_test_runtime_decode_clock)

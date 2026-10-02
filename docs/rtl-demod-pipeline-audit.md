@@ -61,6 +61,39 @@ described under [Analog Monitor Path](#analog-monitor-path).
   - P25 Phase 2 CQPSK: 8 SPS at 48 kHz, 4 SPS at 24 kHz.
 - FSK discriminator output uses `getSymbol()` sample-domain timing. That path
   needs capture bandwidth wide enough to avoid shaving deviation energy.
+- The half-band decimators and the channel LPF stream (issue #572): each
+  carries its look-ahead from one block to the next, as a `pending` count of
+  inputs taken but not yet filtered past with the newest inputs in its history,
+  and the half-band its decimation phase too, so their output does not depend on
+  where the blocks are cut. The call contracts are in
+  `<dsd-neo/dsp/simd_fir.h>`: the channel FIR counts complex samples, the
+  complex half-band floats (two a sample), the real half-band samples; an
+  invalid call, or an output capacity below what the call would make, returns
+  -1 and touches nothing.
+  - Latency: a filter emits an output only once it holds the c = (taps - 1) / 2
+    samples after it. On the default 1.536 Msps chain that is about 74 samples,
+    1.54 ms, at 48 kHz: about 7 in the five-pass cascade and 67 in the 135-tap
+    channel filter.
+  - Capacity: the channel history holds 287 complex samples whatever the taps,
+    so a tap-count change reconciles through `pending` without a reset, making
+    up to N + c_old - c_new outputs from N inputs; the work buffers it writes
+    hold a maximum block plus 287. A half-band call makes at most (N + 1) / 2.
+  - Reset: `dsd_demod_reset_filter_state()` is the one reset, zeroed histories
+    and `pending` 0, so each filter's next output is centred on its next input
+    and what it held is dropped. An open, a retune, a replay `RESET` or loop
+    rewind, a family switch and an FM <-> AM switch run it; a width-only edit
+    does not (see Live Switching). Nothing flushes the filters at the end of a
+    capture, so its last 1.5 ms or so is never decoded. On a real P25 Phase 2
+    capture the tail each `RESET` drops costs about 4 of 677 syncs: frames that
+    straddle a dwell's closing `RESET`, and about one call-opening `MAC_ACTIVE`
+    a run at a dwell's start (`docs/iq-capture-replay.md`, "Replay Pacing And
+    The Decode Clock").
+  - Per-block decisions: the stages after the filters still decide per block,
+    so `full_demod()` as a whole does not stream: channel power and the squelch
+    decision, the squelch envelope, I/Q balance, the AM detector's warm start,
+    CQPSK's adaptive Gardner gain, the rounding of a squelched block's
+    zero-symbol count, the metrics, and the block a profile request is consumed
+    on. `docs/code_map.md` ("Streaming linear front end") has the rest.
 
 ## Analog Monitor Path
 
@@ -72,9 +105,9 @@ switching do not apply to it, and it keeps the fixed WIDE/FM path. The State
 Hygiene rules key on the output kind, so they cover every monitor stream, the
 M17 encoder's included.
 
-Per block: half-band decimation, channel LPF, carrier squelch, FM
-discrimination, de-emphasis, optional audio LPF, DC block, and the squelch
-envelope.
+Per block: half-band decimation, channel LPF (both streaming across blocks,
+see Filter And Rate Guardrails), carrier squelch, FM discrimination,
+de-emphasis, optional audio LPF, DC block, and the squelch envelope.
 
 `-fM` (native AM, issue #524) is the same family with the AM kind: the envelope
 detector (`dsd_am_demod`) takes the discriminator's place, and the chain runs
@@ -346,8 +379,8 @@ floor moves with the width (about 3 dB per halving).
   finalized, so they follow the rate the device actually delivers. At unforced
   rates this is bit-identical.
 - A retune on any `AUDIO_MONITOR` stream resets the de-emphasis, DC, audio-LPF
-  and squelch-envelope state and the channel, half-band and resampler histories
-  to their fresh-open values.
+  and squelch-envelope state, the channel, half-band and resampler histories
+  and a replay's post-demod decimator to their fresh-open values.
 - When a retune leaves the stream on a different demod rate (a device that
   settles on another rate than it delivered before), the analog channel is
   resolved again for that rate: the unset default moves between the 16 kHz
@@ -386,9 +419,15 @@ dropped: the analog family has no symbol clock, and a digital family lands on
 the symbol profile queued after it, never on an older one (a CQPSK toggle
 drained in the same pass of the command queue as the mode change):
 
-- width-only change: new filter plan from empty channel and half-band
-  histories, with the output ring, the generation and the monitor audio state
-  left alone (a request for the width already running changes nothing);
+- width-only change: a new filter plan, the channel and half-band histories
+  and pending counts kept (issue #572), so the new taps run over the true past
+  and no sample is lost or repeated at the edit, with the output ring, the
+  generation and the monitor audio state left alone (a request for the width
+  already running changes nothing). The exception is an NFM edit between an
+  explicit width and the unset default when `channel_lpf_default_enable` is 0
+  (`DSD_NEO_CHANNEL_LPF=0`, or `rate_in` below 20 kHz): it turns the channel
+  filter off, whose bypass drops the pending samples, or on, over a zeroed
+  history;
 - analog <-> digital: the new family's fresh-open defaults (output kind,
   demodulator, de-emphasis, channel filter, resampler), carrier and timing loops
   restarted as on an open (Costas, band-edge FLL, Gardner TED), the I/Q DC and
@@ -447,11 +486,14 @@ drained in the same pass of the command queue as the mode change):
   landing at a forced 78,125 Hz runs 16 samples per symbol, not 10);
 - FM <-> AM: the detector and de-emphasis swap with a monitor-state reset (the
   AM carrier estimate included) and the I/Q DC estimate starts over (AM leaves
-  it where FM had it); a changed width also redesigns the channel filter from
-  empty histories. The output ring and the resampler history hold the old
-  detector's audio, so the switch clears the ring with a generation bump and
-  resets the resampler, as a family switch does, and the decoder drops the
-  monitor block it had part-collected; a width-only change keeps all three.
+  it where FM had it); the channel and half-band filters start over from empty
+  histories whatever the width, so the switch lands where a fresh open of the
+  new kind does (the raw I/Q they hold is the same under either kind), and a
+  changed width redesigns the channel filter. The output ring and the resampler
+  history hold the old detector's audio, so the switch clears the ring with a
+  generation bump and resets the resampler, as a family switch does, and the
+  decoder drops the monitor block it had part-collected; a width-only change
+  keeps all three.
 
 The decoder keeps reading the output ring while the demod thread clears it for a
 switch. A read holds the ring's `ready_m` from its tail snapshot to its tail
@@ -555,6 +597,13 @@ discriminator output unchanged, at 48 kHz and through the 24 kHz resampler.
   design at forced rates, that unrealizable widths fail rather than clamp, and
   that the width reported for the legacy WIDE plan is the passband that plan
   has, the 63-tap fallback included.
+- `DSP_FIR_SEGMENTATION` holds every backend's channel FIR and half-band
+  decimators to the streaming contract (issue #572): their count formulas, a
+  double-precision reference and their own whole-stream output over many block
+  splits, tap switches, invalid calls, capacity and exact-size buffers, and the
+  pipeline's reset rules. `DSP_DEMOD_SEGMENTATION` runs `full_demod()` over the
+  1.536 Msps chain with the per-block stages held still and requires every
+  split to give what one block does.
 - `RUNTIME_ANALOG_CHANNEL` covers the width ranges, parser and validator text
   across DSP rates.
 - `IO_RTL_DEMOD_CONFIG` covers the analog enable rule at 12/16/24/48 kHz, the

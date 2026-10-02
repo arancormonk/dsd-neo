@@ -92,8 +92,8 @@
  * bound stays meaningful if the chunk period is ever raised above it. */
 enum {
     DSD_AAUDIO_CONCEAL_MAX_CHUNKS = ((DSD_AAUDIO_CONCEAL_MAX_MS / DSD_AAUDIO_OUTPUT_CHUNK_MS) > 0)
-                                        ? (DSD_AAUDIO_CONCEAL_MAX_MS / DSD_AAUDIO_OUTPUT_CHUNK_MS)
-                                        : 1
+        ? (DSD_AAUDIO_CONCEAL_MAX_MS / DSD_AAUDIO_OUTPUT_CHUNK_MS)
+        : 1
 };
 
 /*============================================================================

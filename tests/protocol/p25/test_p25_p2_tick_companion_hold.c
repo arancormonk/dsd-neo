@@ -17,12 +17,12 @@
  * which the idle-companion case below exercises.
  */
 
-#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -113,7 +113,7 @@ test_crypto_timeout_holds_through_companion_gap(void) {
     static dsd_opts opts;
     static dsd_state state;
     p25_sm_ctx_t* ctx = NULL;
-    const double now_m = dsd_time_now_monotonic_s();
+    const double now_m = dsd_decode_now_mono_s();
     int rc = 0;
 
     setup_clear_gap_on_slot0(&opts, &state, &ctx, now_m);
@@ -135,7 +135,7 @@ test_crypto_timeout_holds_through_companion_gap(void) {
                     DSD_P25_CRYPTO_UNKNOWN);
     rc |= expect_eq("crypto timeout in gap: stale assignment cleared", ctx->slots[1].grant_active, 0);
 
-    age_clear_gap_past_hangtime(ctx, dsd_time_now_monotonic_s());
+    age_clear_gap_past_hangtime(ctx, dsd_decode_now_mono_s());
     p25_sm_tick_ctx(ctx, &opts, &state);
     rc |= expect_eq("crypto timeout past gap: released to cc", g_return_to_cc_called, 1);
 
@@ -150,7 +150,7 @@ test_timeouts_still_release_without_companion_history(void) {
     static dsd_opts opts;
     static dsd_state state;
     p25_sm_ctx_t* ctx = NULL;
-    const double now_m = dsd_time_now_monotonic_s();
+    const double now_m = dsd_decode_now_mono_s();
     int rc = 0;
 
     setup_clear_gap_on_slot0(&opts, &state, &ctx, now_m);

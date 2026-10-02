@@ -18,11 +18,11 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/crypto/aes.h>
 #include <dsd-neo/crypto/des.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-#include <time.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -213,18 +213,6 @@ dsd_rigctl_query_hook_get_current_freq_hz(const dsd_opts* opts) {
     return 0;
 }
 
-uint64_t
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-dsd_time_monotonic_ns(void) {
-    return 1000000000ULL;
-}
-
-uint64_t
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-dsd_time_monotonic_ms(void) {
-    return dsd_time_monotonic_ns() / 1000000U;
-}
-
 static dsd_trunk_tune_result
 nxdn_hook_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
     (void)request_id;
@@ -324,7 +312,7 @@ nxdn_setup_fixture(const nxdn_case* test_case) {
     g_state.p25_cc_freq = 935000000L;
     g_state.trunk_cc_freq = 935000000L;
     g_state.lastsynctype = DSD_SYNC_NXDN_POS;
-    g_state.last_vc_sync_time = time(NULL) - 4;
+    g_state.last_vc_sync_time = dsd_decode_time() - 4;
     g_state.nxdn_rcn = test_case->use_dfa ? 1 : 0;
 
     if (test_case->path == NXDN_MATRIX_TYPE_C) {
@@ -412,7 +400,7 @@ nxdn_apply_no_tune_guard(nxdn_case* test_case, nxdn_guard_kind guard) {
                 g_state.trunk_chan_map[test_case->scch_rep2] = 0;
             }
             break;
-        case NXDN_GUARD_SCCH_RECENT_ACTIVE: g_state.last_vc_sync_time = time(NULL); break;
+        case NXDN_GUARD_SCCH_RECENT_ACTIVE: g_state.last_vc_sync_time = dsd_decode_time(); break;
         case NXDN_GUARD_SCCH_REPEATER_ZERO:
             test_case->scch_rep1 = 0U;
             g_state.trunk_chan_map[nxdn_case_map_channel(test_case)] = 0;
@@ -478,7 +466,7 @@ nxdn_run_duplicate_no_tune_case(void) {
     g_tune_result = DSD_TRUNK_TUNE_RESULT_OK;
     nxdn_setup_fixture(&duplicate);
     g_opts.trunk_is_tuned = 1;
-    g_state.last_vc_sync_time = time(NULL);
+    g_state.last_vc_sync_time = dsd_decode_time();
     g_state.p25_vc_freq[0] = duplicate.expected_freq;
     g_state.trunk_vc_freq[0] = duplicate.expected_freq;
 
@@ -541,7 +529,7 @@ nxdn_run_hold_match_retune_case(void) {
     nxdn_setup_fixture(&hold);
     g_opts.trunk_is_tuned = 1;
     g_state.tg_hold = hold.target;
-    g_state.last_vc_sync_time = time(NULL);
+    g_state.last_vc_sync_time = dsd_decode_time();
     g_state.p25_vc_freq[0] = existing_freq;
     g_state.trunk_vc_freq[0] = existing_freq;
     nxdn_install_hooks();
@@ -564,7 +552,7 @@ nxdn_run_scch_termination_case(void) {
         "type-d-scch-termination", NXDN_MATRIX_TYPE_D, 0U, 0U, 0U, 0U, 0U, 0, 0, 0, 31U, 3U, 1400U, 935000000L,
     };
     nxdn_setup_fixture(&termination);
-    g_state.last_vc_sync_time = time(NULL);
+    g_state.last_vc_sync_time = dsd_decode_time();
     const dsd_call_observation observation = {
         .protocol = DSD_SYNC_NXDN_POS,
         .slot = 0U,
@@ -591,7 +579,7 @@ nxdn_run_scch_busy_enrich_case(void) {
         "type-d-scch-busy-enrich", NXDN_MATRIX_TYPE_D, 0U, 0U, 0U, 0U, 0U, 0, 0, 0, 6U, 3U, 1400U, 938012500L,
     };
     nxdn_setup_fixture(&busy);
-    g_state.last_vc_sync_time = time(NULL);
+    g_state.last_vc_sync_time = dsd_decode_time();
     const dsd_call_observation observation = {
         .protocol = DSD_SYNC_NXDN_POS,
         .slot = 0U,
@@ -624,7 +612,7 @@ nxdn_run_scch_identity_context_case(void) {
         "type-d-scch-identity-context", NXDN_MATRIX_TYPE_D, 0U, 0U, 0U, 0U, 0U, 0, 0, 0, 0, 0, 0, 0,
     };
     nxdn_setup_fixture(&context);
-    g_state.last_vc_sync_time = time(NULL);
+    g_state.last_vc_sync_time = dsd_decode_time();
     dsd_call_observation observation = {
         .protocol = DSD_SYNC_NXDN_POS,
         .slot = 0U,
@@ -705,6 +693,7 @@ nxdn_run_scch_identity_context_case(void) {
 int
 main(void) {
     int rc = 0;
+    dsd_decode_clock_use_test(1000000000000ULL);
     static const nxdn_case cases[] = {
         {"type-c-group-normal-map", NXDN_MATRIX_TYPE_C, 0x04U, 1U, 2100U, 1100U, 16U, 0, 0, 0, 0, 0, 0, 936012500L},
         {"type-c-private-normal-map", NXDN_MATRIX_TYPE_C, 0x04U, 4U, 9002U, 9001U, 17U, 0, 0, 0, 0, 0, 0, 936512500L},
@@ -765,6 +754,7 @@ main(void) {
     rc |= nxdn_run_scch_identity_context_case();
 
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+    dsd_decode_clock_use_system();
     if (rc == 0) {
         printf("NXDN_GRANT_TUNE_MATRIX: OK\n");
     }

@@ -18,7 +18,6 @@
 #include <dsd-neo/core/bit_packing.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/constants.h>
-#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/gps.h>
@@ -38,6 +37,7 @@
 #include <dsd-neo/protocol/nxdn/nxdn_lfsr.h>
 #include <dsd-neo/protocol/nxdn/nxdn_trunk_diag.h>
 #include <dsd-neo/protocol/p25/p25_frequency.h>
+#include <dsd-neo/runtime/decode_clock.h>
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/safe_api.h>
@@ -371,7 +371,7 @@ nxdn_element_handle_dst_info(dsd_opts* opts, dsd_state* state, const uint8_t* el
 
 static void
 nxdn_element_mark_control_sync(const dsd_opts* opts, dsd_state* state) {
-    state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
+    state->last_cc_sync_time_m = dsd_decode_now_mono_s();
     nxdn_anchor_control_channel_from_current_tuner(opts, state, 1);
 }
 
@@ -1622,7 +1622,7 @@ nxdn_vcall_assgn_apply_tune(dsd_opts* opts, dsd_state* state, const struct nxdn_
 
 void
 NXDN_decode_VCALL_ASSGN(dsd_opts* opts, dsd_state* state, const uint8_t* Message) {
-    const time_t now = time(NULL);
+    const time_t now = dsd_decode_time();
     struct nxdn_vcall_assgn_info info;
     nxdn_vcall_assgn_parse(state, Message, &info);
     nxdn_vcall_assgn_print(state, &info);
@@ -2567,7 +2567,7 @@ nxdn_scch_prepare_type_d(dsd_state* state, const struct nxdn_scch_info* info) {
     }
     state->nxdn_last_ran = info->area;
     state->last_cc_sync_time = info->now;
-    state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
+    state->last_cc_sync_time_m = dsd_decode_now_mono_s();
 }
 
 static void
@@ -2857,7 +2857,7 @@ nxdn_scch_handle_info1(dsd_opts* opts, dsd_state* state, const struct nxdn_scch_
 //can also (mostly) be decoded seperately, except an enc IV
 void
 NXDN_decode_scch(dsd_opts* opts, dsd_state* state, const uint8_t* Message, uint8_t direction) {
-    const time_t now = time(NULL);
+    const time_t now = dsd_decode_time();
     struct nxdn_scch_info info;
     nxdn_scch_parse(Message, direction, now, &info);
 

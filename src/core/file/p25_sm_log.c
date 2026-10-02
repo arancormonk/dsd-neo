@@ -7,6 +7,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/log.h>
 #include <limits.h>
 #include <stdarg.h>
@@ -107,7 +108,7 @@ dsd_p25_sm_logf(dsd_opts* opts, const char* format, ...) {
     va_end(args);
     p25_sm_log_sanitize_line(line);
 
-    time_t now = time(NULL);
+    time_t now = dsd_decode_time();
     char timestr[9];
     char datestr[11];
     (void)dsd_format_local_datetime(now, DSD_LOCAL_DATETIME_TIME_COLON, timestr, sizeof timestr);

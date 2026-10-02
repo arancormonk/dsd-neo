@@ -8,7 +8,6 @@
 #include <dsd-neo/core/channel_mode.h>
 #include <dsd-neo/core/csv_import.h>
 #include <dsd-neo/core/dmr_key_map.h>
-#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/scan_profile.h>
@@ -21,6 +20,7 @@
 #include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/analog_channel.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
 #ifdef USE_RADIO
@@ -300,9 +300,9 @@ enum {
 static double
 trunk_scan_now_m(void) {
 #if defined(DSD_TRUNK_SCAN_TEST_CLOCK)
-    return g_trunk_scan_now_override ? g_trunk_scan_now_m : dsd_time_now_monotonic_s();
+    return g_trunk_scan_now_override ? g_trunk_scan_now_m : dsd_decode_now_mono_s();
 #else
-    return dsd_time_now_monotonic_s();
+    return dsd_decode_now_mono_s();
 #endif
 }
 
@@ -2260,7 +2260,7 @@ trunk_scan_apply_target_opts(dsd_opts* opts, const dsd_trunk_scan_coord* coord, 
 
 static void
 trunk_scan_seed_target_state(dsd_state* state, const dsd_trunk_scan_target* target, double now_m) {
-    state->last_cc_sync_time = time(NULL);
+    state->last_cc_sync_time = dsd_decode_time();
     state->last_cc_sync_time_m = now_m;
     state->last_vc_sync_time = 0;
     state->last_vc_sync_time_m = 0.0;

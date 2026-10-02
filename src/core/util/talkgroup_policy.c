@@ -5,7 +5,6 @@
 
 #include <ctype.h>
 #include <dsd-neo/core/csv_import.h>
-#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
@@ -17,6 +16,7 @@
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/platform.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -666,7 +666,7 @@ tg_policy_call_skip_blocking(const dsd_state* state, uint32_t id) {
     if (dsd_tg_policy_call_skip_empty(state)) {
         return 0;
     }
-    return dsd_tg_policy_call_skip_active(state, id, dsd_time_now_monotonic_s());
+    return dsd_tg_policy_call_skip_active(state, id, dsd_decode_now_mono_s());
 }
 
 int

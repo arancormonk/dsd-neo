@@ -40,6 +40,7 @@
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/runtime/colors.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/frame_sync_hooks.h>
@@ -54,7 +55,6 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
-#include "dsd-neo/platform/timing.h"
 #include "frame_sync_internal.h"
 #include "frame_sync_level.h"
 #ifdef DSD_NEO_TEST_HOOKS
@@ -208,8 +208,28 @@ static atomic_int g_vote_gfsk = 0;
 static atomic_int g_ham_c4fm_recent = 24;
 static atomic_int g_ham_qpsk_recent = 24;
 static atomic_int g_ham_gfsk_recent = 24;
-static atomic_int g_qpsk_dwell_enter_ms = 0;
+/* The decode-mono ms the current CQPSK dwell began at (qpsk_dwell_arm()), 0 while none is armed. Unsigned and full
+   width: under a replay the decode clock reads capture time, far past INT_MAX ms, and the dwell checks subtract it
+   unsigned (frame_sync_in_qpsk_dwell()). */
+static dsd_atomic_u64 g_qpsk_dwell_enter_ms = {0};
 static dsd_atomic_u64 g_frame_sync_ui_last_publish_ms = {0};
+
+static void
+qpsk_dwell_arm(void) {
+    dsd_atomic_u64_store_release(&g_qpsk_dwell_enter_ms, dsd_decode_now_mono_ms());
+}
+
+static void
+qpsk_dwell_disarm(void) {
+    dsd_atomic_u64_store_release(&g_qpsk_dwell_enter_ms, 0U);
+}
+
+/* Inside the 2 s CQPSK dwell: on CQPSK, armed, and less than 2 s of decode time since it was armed. */
+static int
+frame_sync_in_qpsk_dwell(const dsd_state* state) {
+    const uint64_t dwell_enter_ms = dsd_atomic_u64_load_acquire(&g_qpsk_dwell_enter_ms);
+    return (state->rf_mod == 1 && dwell_enter_ms != 0U && dsd_decode_now_mono_ms() - dwell_enter_ms < 2000U) ? 1 : 0;
+}
 
 enum { DSD_FRAME_SYNC_UI_PUBLISH_INTERVAL_MS = 50 };
 
@@ -219,7 +239,7 @@ frame_sync_publish_ui_throttled(const dsd_opts* opts, const dsd_state* state) {
         return;
     }
 
-    const uint64_t now_ms = dsd_time_monotonic_ms();
+    const uint64_t now_ms = dsd_realtime_mono_ms();
     const uint64_t last_ms = dsd_atomic_u64_load_relaxed(&g_frame_sync_ui_last_publish_ms);
     if (last_ms != 0 && (now_ms - last_ms) < DSD_FRAME_SYNC_UI_PUBLISH_INTERVAL_MS) {
         return;
@@ -248,8 +268,8 @@ p25p2_note_sync_activity(dsd_opts* opts, dsd_state* state) {
         return;
     }
 
-    const time_t now = time(NULL);
-    const double nowm = dsd_time_now_monotonic_s();
+    const time_t now = dsd_decode_time();
+    const double nowm = dsd_decode_now_mono_s();
     state->last_cc_sync_time = now;
     state->last_cc_sync_time_m = nowm;
 }
@@ -262,7 +282,7 @@ dsd_frame_sync_reset_mod_state(void) {
     atomic_store(&g_ham_c4fm_recent, 24);
     atomic_store(&g_ham_qpsk_recent, 24);
     atomic_store(&g_ham_gfsk_recent, 24);
-    atomic_store(&g_qpsk_dwell_enter_ms, 0);
+    qpsk_dwell_disarm();
 }
 
 /*
@@ -278,7 +298,7 @@ printFrameSync(const dsd_opts* opts, const dsd_state* state, const char* framety
     UNUSED3(state, offset, modulation);
 
     char timestr[9];
-    (void)dsd_format_local_datetime(time(NULL), DSD_LOCAL_DATETIME_TIME_COLON, timestr, sizeof timestr);
+    (void)dsd_format_local_datetime(dsd_decode_time(), DSD_LOCAL_DATETIME_TIME_COLON, timestr, sizeof timestr);
     if (opts->verbose > 0) {
         DSD_FPRINTF(stderr, "%s ", timestr);
         DSD_FPRINTF(stderr, "Sync: %s ", frametype);
@@ -1991,9 +2011,7 @@ frame_sync_bias_want_mod_with_snr(const dsd_opts* opts, const dsd_state* state, 
 
     const double kQpskOffsetDb = 6.0;
     double normalized_delta = (snr_q - kQpskOffsetDb) - snr_c;
-    uint32_t now_ms = (uint32_t)dsd_time_monotonic_ms();
-    uint32_t dwell_enter_ms = (uint32_t)atomic_load(&g_qpsk_dwell_enter_ms);
-    int in_qpsk_dwell = (state->rf_mod == 1 && dwell_enter_ms != 0 && (uint32_t)(now_ms - dwell_enter_ms) < 2000U);
+    int in_qpsk_dwell = frame_sync_in_qpsk_dwell(state);
     if (normalized_delta >= 2.0) {
         return 1;
     }
@@ -2139,10 +2157,7 @@ frame_sync_update_mod_votes(int want_mod) {
 
 static int
 frame_sync_decide_mod_switch(const dsd_state* state, int want_mod) {
-    uint32_t now_ms = (uint32_t)dsd_time_monotonic_ms();
-    uint32_t dwell_enter_ms = (uint32_t)atomic_load(&g_qpsk_dwell_enter_ms);
-    int in_qpsk_dwell2 = (state->rf_mod == 1 && dwell_enter_ms != 0 && (uint32_t)(now_ms - dwell_enter_ms) < 2000U);
-    int req_c4_votes = (state->rf_mod == 1) ? (in_qpsk_dwell2 ? 5 : 3) : 2;
+    int req_c4_votes = (state->rf_mod == 1) ? (frame_sync_in_qpsk_dwell(state) ? 5 : 3) : 2;
     int vote_qpsk = atomic_load(&g_vote_qpsk);
     int vote_gfsk = atomic_load(&g_vote_gfsk);
     int vote_c4fm = atomic_load(&g_vote_c4fm);
@@ -2164,9 +2179,9 @@ frame_sync_apply_mod_switch(const dsd_opts* opts, dsd_state* state, int do_switc
         return;
     }
     if (do_switch == 1) {
-        atomic_store(&g_qpsk_dwell_enter_ms, (int)(uint32_t)dsd_time_monotonic_ms());
+        qpsk_dwell_arm();
     } else if (state->rf_mod == 1) {
-        atomic_store(&g_qpsk_dwell_enter_ms, 0);
+        qpsk_dwell_disarm();
     }
     state->rf_mod = do_switch;
 #ifdef USE_RADIO
@@ -2214,7 +2229,7 @@ dsd_frame_sync_test_set_recent_hamming(int ham_c4fm, int ham_qpsk, int ham_gfsk)
 
 int
 dsd_frame_sync_test_qpsk_dwell_armed(void) {
-    return atomic_load(&g_qpsk_dwell_enter_ms) != 0;
+    return dsd_atomic_u64_load_acquire(&g_qpsk_dwell_enter_ms) != 0U;
 }
 
 void
@@ -3132,7 +3147,7 @@ frame_sync_normalize_profile_modulation(dsd_state* state, int normalize, int mod
     }
     dsd_frame_sync_reset_mod_state();
     if (normalize && modulation == 1) {
-        atomic_store(&g_qpsk_dwell_enter_ms, (int)(uint32_t)dsd_time_monotonic_ms());
+        qpsk_dwell_arm();
     }
 }
 
@@ -3460,7 +3475,7 @@ frame_sync_maybe_probe_p25p1_cqpsk(const dsd_opts* opts, dsd_state* state, int p
     state->rf_mod = probe_qpsk;
     state->p25_p1_mod_probe_active = 1;
     if (probe_qpsk) {
-        atomic_store(&g_qpsk_dwell_enter_ms, (int)(uint32_t)dsd_time_monotonic_ms());
+        qpsk_dwell_arm();
     }
 #ifdef USE_RADIO
     rtl_maybe_apply_active_demod_profile(opts, state);
@@ -3566,7 +3581,7 @@ frame_sync_no_sync_try_p25_release(dsd_opts* opts, dsd_state* state, time_t now)
     if (!(opts->trunk_enable == 1 && opts->trunk_is_tuned == 1)) {
         return;
     }
-    double fallback_nowm = dsd_time_now_monotonic_s();
+    double fallback_nowm = dsd_decode_now_mono_s();
     double dt = frame_sync_elapsed_seconds(fallback_nowm, now, state->last_vc_sync_time_m, state->last_vc_sync_time);
     double dt_since_tune =
         frame_sync_elapsed_seconds(fallback_nowm, now, state->p25_last_vc_tune_time_m, state->p25_last_vc_tune_time);
@@ -3634,7 +3649,7 @@ int
 dsd_frame_sync_test_handle_no_sync_timeout(dsd_opts* opts, dsd_state* state, int synctest_pos) {
     frame_sync_runtime_ctx rt = {0};
     rt.synctest_pos = synctest_pos;
-    return frame_sync_handle_no_sync_timeout(opts, state, &rt, time(NULL));
+    return frame_sync_handle_no_sync_timeout(opts, state, &rt, dsd_decode_time());
 }
 #endif
 
@@ -3678,8 +3693,8 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
         return -1;
     }
 
-    const time_t now = time(NULL);
-    const double nowm = dsd_time_now_monotonic_s();
+    const time_t now = dsd_decode_time();
+    const double nowm = dsd_decode_now_mono_s();
     frame_sync_maybe_tick_p25_trunk_sm(opts, state, now);
     frame_sync_apply_cli_mod_lock(opts, state);
     frame_sync_sps_hunt_note_handler_consumption(state);

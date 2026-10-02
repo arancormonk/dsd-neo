@@ -28,6 +28,7 @@
 #include "call_history_merge.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "json_store.h"
+#include "realtime_clock.h"
 
 namespace dsd_qt {
 
@@ -37,18 +38,42 @@ constexpr const char kStoreFileName[] = "call_history.json";
 constexpr const char kSeenStoreFileName[] = "call_history_seen.json";
 constexpr const char kSessionUidKey[] = "callHistory/sessionUid";
 constexpr const char kSessionLabelKey[] = "callHistory/sessionLabel";
-constexpr const char kClearedThroughKey[] = "callHistory/clearedThrough";
+constexpr const char kSessionKey[] = "callHistory/session";
+/* The clear mark: callHistory/clear/{session,pending,pushSeq0,pushSeq1,ring}, absent when none applies. */
+constexpr const char kClearGroup[] = "callHistory/clear";
+constexpr const char kClearSessionKey[] = "callHistory/clear/session";
+constexpr const char kClearPendingKey[] = "callHistory/clear/pending";
+constexpr const char kClearPushSeqKey[2][32] = {"callHistory/clear/pushSeq0", "callHistory/clear/pushSeq1"};
+/* Absent in a mark written before marks named their ring, which then reads 0. */
+constexpr const char kClearRingKey[] = "callHistory/clear/ring";
+/* Older builds persisted Clear as a decode-time watermark; read once to retire it. */
+constexpr const char kLegacyClearedThroughKey[] = "callHistory/clearedThrough";
 constexpr int kMaxRows = 1000;
 /* Bound on the persisted seen map. The ring holds at most DSD_EVENT_HISTORY_LEN-1
  * rows per slot, so anything beyond the newest ~4x that can no longer be
  * re-ingested and is dead weight in the store. */
 constexpr int kMaxSeenEntries = 2048;
 constexpr int kSaveDelayMs = 3000;
+/* How far down the log a live fragment looks for the call it continues: fragments arrive while
+ * their call is among the newest rows. */
+constexpr int kMergeScanRows = 32;
 
 /** @brief End of a logged row on the shared timeline; unknown durations count as 0. */
 qint64
 row_end_secs(const CallHistoryModel::Row& row) {
     return row.when + qMax(row.durationSecs, 0);
+}
+
+/**
+ * @brief Whether a (session, start) pair is older in retention order than another.
+ *
+ * What a full log gives up first, and what the seen map forgets first: the oldest session,
+ * then within it the oldest start. The stamps alone cannot order the log. A replay's calls
+ * are stamped with the capture's time, and ranking by them would drop the session running now.
+ */
+bool
+retained_older(qint64 session, qint64 when, qint64 otherSession, qint64 otherWhen) {
+    return session != otherSession ? session < otherSession : when < otherWhen;
 }
 
 /**
@@ -66,11 +91,18 @@ seen_key(int slot, qulonglong seq, qint64 when, qulonglong tg, int kind) {
     return QStringLiteral("%1|%2|%3|%4|%5").arg(slot).arg(seq).arg(when).arg(tg).arg(kind);
 }
 
-/** @brief "TODAY" / "YESTERDAY" / "MON 3 AUG" for the list's day sections. */
+/**
+ * @brief "TODAY" / "YESTERDAY" / "MON 3 AUG" for the list's day sections.
+ *
+ * A deliberate real-time exception to the rule that decoded stamps are compared on the decode
+ * clock. The log spans sessions, and its sections name the viewer's calendar day, retired by the
+ * real midnight timer (scheduleDayRollover()). On the decode clock a week-old replay's calls would
+ * read "TODAY" and the labels would never roll over on time.
+ */
 QString
 day_label(qint64 when) {
     const QDate day = QDateTime::fromSecsSinceEpoch(when).date();
-    const QDate today = QDate::currentDate();
+    const QDate today = realtimeCurrentDate();
     if (day == today) {
         return QStringLiteral("TODAY");
     }
@@ -88,9 +120,10 @@ CallHistoryModel::CallHistoryModel(QObject* parent) : QAbstractListModel(parent)
      * pressed. Without the persisted label those rows would be attributed to "". */
     m_sessionLabel = m_settings.value(QLatin1String(kSessionLabelKey)).toString();
     m_sessionUid = m_settings.value(QLatin1String(kSessionUidKey)).toString();
-    /* Restored for the same reason: Clear must survive an Activity restart while
-     * the service's ring still holds the cleared rows. */
-    m_clearedThrough = m_settings.value(QLatin1String(kClearedThroughKey)).toLongLong();
+    /* Restored for the same reason: the relaunched UI rejoins the running session, and
+     * Clear must survive an Activity restart while the service's ring still holds the
+     * cleared rows. */
+    loadSessionState();
     m_saveTimer.setSingleShot(true);
     m_saveTimer.setInterval(kSaveDelayMs);
     connect(&m_saveTimer, &QTimer::timeout, this, [this]() { startAsyncSave(); });
@@ -112,9 +145,31 @@ CallHistoryModel::CallHistoryModel(QObject* parent) : QAbstractListModel(parent)
 }
 
 void
+CallHistoryModel::loadSessionState() {
+    m_session = qMax<qint64>(m_settings.value(QLatin1String(kSessionKey)).toLongLong(), 0);
+    m_clear.active = m_settings.contains(QLatin1String(kClearSessionKey));
+    if (m_clear.active) {
+        m_clear.session = m_settings.value(QLatin1String(kClearSessionKey)).toLongLong();
+        m_clear.pending = m_settings.value(QLatin1String(kClearPendingKey)).toBool();
+        for (int slot = 0; slot < 2; slot++) {
+            m_clear.pushSeq[slot] = m_settings.value(QLatin1String(kClearPushSeqKey[slot])).toULongLong();
+        }
+        m_clear.ring = m_settings.value(QLatin1String(kClearRingKey)).toULongLong();
+    }
+    /* A build that stamped Clear with the decode time left this watermark. Nothing it guarded
+     * is left. The log rows it cleared were deleted from the store, and the ring rows it held
+     * back died with the process an app update replaces. Carried over, it would hide every
+     * later call stamped before it, such as a replay of an older capture. So it is removed,
+     * not converted: a clear mark names positions in a running ring, and none of its is running. */
+    if (m_settings.contains(QLatin1String(kLegacyClearedThroughKey))) {
+        m_settings.remove(QLatin1String(kLegacyClearedThroughKey));
+    }
+}
+
+void
 CallHistoryModel::scheduleDayRollover() {
-    const QDateTime now = QDateTime::currentDateTime();
-    const QDateTime nextMidnight = QDate::currentDate().addDays(1).startOfDay();
+    const QDateTime now = realtimeCurrentDateTime();
+    const QDateTime nextMidnight = realtimeCurrentDate().addDays(1).startOfDay();
     /* A second past the boundary, so a coarse timer that fires marginally early
      * cannot re-derive the very labels it was meant to retire. */
     m_dayTimer.start(static_cast<int>(qMin<qint64>(now.msecsTo(nextMidnight) + 1000, 86400000)));
@@ -167,6 +222,7 @@ row_role_value(const CallHistoryModel::Row& row, int role) {
         case CallHistoryModel::KindRole: return row.kind;
         case CallHistoryModel::DetailRole: return row.detail;
         case CallHistoryModel::ChannelRole: return row.channel;
+        case CallHistoryModel::SessionRole: return row.session;
         default: return row_identity_value(row, role);
     }
 }
@@ -199,6 +255,7 @@ CallHistoryModel::roleNames() const {
     roles.insert(KindRole, QByteArrayLiteral("kind"));
     roles.insert(DetailRole, QByteArrayLiteral("detail"));
     roles.insert(ChannelRole, QByteArrayLiteral("channel"));
+    roles.insert(SessionRole, QByteArrayLiteral("session"));
     return roles;
 }
 
@@ -220,6 +277,83 @@ CallHistoryModel::setSessionUid(const QString& uid) {
     m_sessionUid = uid;
     m_settings.setValue(QLatin1String(kSessionUidKey), uid);
     Q_EMIT sessionUidChanged();
+}
+
+void
+CallHistoryModel::beginSession() {
+    m_session++;
+    m_settings.setValue(QLatin1String(kSessionKey), m_session);
+    /* A start usually brings a fresh ring, but not always: an embedding host can run again on the
+     * state its last run used (the Android service reuses it when a start races the previous run's
+     * stopSelfLatest()), and that ring keeps its identity, its rows and its push count. So a clear
+     * that names its ring is kept. It goes on covering that ring's cleared rows if the state was
+     * reused, and the first read of any other ring drops it (settleClear()). A pending clear, or one
+     * that names no ring, would bind to whatever ring comes next and could hide a fresh ring's first
+     * rows, so those are dropped here. */
+    if (m_clear.active && (m_clear.pending || m_clear.ring == 0U)) {
+        m_clear = ClearMark();
+        saveClear();
+    }
+    /* For the same reason the last read position stays: it names the ring it was read in, which a
+     * clear before the next read then covers. That is right if the state was reused, and a fresh
+     * ring's first read drops such a clear. Every ring is read at its first tick, even at the
+     * commit_rev the last one stopped at (noteCommitRevs()), so a quiet session does not delay it.
+     * Only a model that has read nothing yet takes the new ring to be at position zero on no ring:
+     * a clear before its first read covers nothing, and that read drops it. */
+    if (!m_ringRead) {
+        m_ringPushSeq[0] = 0U;
+        m_ringPushSeq[1] = 0U;
+        m_ringPushSeqRing = 0U;
+        m_ringRead = true;
+    }
+    Q_EMIT sessionChanged();
+}
+
+bool
+CallHistoryModel::clearApplies() const {
+    // Bound by its ring, whatever the session: a start that reuses the state keeps the ring the clear wiped.
+    return m_clear.active && !m_clear.pending;
+}
+
+void
+CallHistoryModel::saveClear() {
+    m_settings.remove(QLatin1String(kClearGroup));
+    if (!m_clear.active) {
+        return;
+    }
+    m_settings.setValue(QLatin1String(kClearSessionKey), m_clear.session);
+    m_settings.setValue(QLatin1String(kClearPendingKey), m_clear.pending);
+    for (int slot = 0; slot < 2; slot++) {
+        m_settings.setValue(QLatin1String(kClearPushSeqKey[slot]), m_clear.pushSeq[slot]);
+    }
+    m_settings.setValue(QLatin1String(kClearRingKey), static_cast<qulonglong>(m_clear.ring));
+}
+
+void
+CallHistoryModel::settleClear(const qulonglong pushSeq[2], quint64 ring) {
+    if (!m_clear.active) {
+        return;
+    }
+    if (m_clear.pending) {
+        // Cleared before this model had read the ring, as a relaunched UI can: what the
+        // ring holds at the first read is what was wiped.
+        m_clear.pending = false;
+        m_clear.pushSeq[0] = pushSeq[0];
+        m_clear.pushSeq[1] = pushSeq[1];
+        m_clear.ring = ring;
+        saveClear();
+        return;
+    }
+    // The mark's position is one in the ring the clear was made on. Any other ring is one the clear never
+    // saw, whatever its position: a ring replaced without a start (beginSession()) can already be past the
+    // mark at its first read, and so can a fresh ring after a start that kept the mark. A mark that names
+    // no ring covers no ring the model reads: one made before a model's first read after a start sits at
+    // position zero and covers nothing, and one an older build wrote belongs to a ring that died with the
+    // process an app update replaced.
+    if (ring != m_clear.ring) {
+        m_clear = ClearMark();
+        saveClear();
+    }
 }
 
 QStringList
@@ -346,13 +480,30 @@ row_from_item(const Event_History* item, const QString& sessionLabel, const QStr
 } // namespace
 
 int
-CallHistoryModel::noteSeen(const QString& key, qint64 when, qint64 end, qulonglong src, bool emergency, bool enc,
-                           bool voice, const QString& sourceName) {
+CallHistoryModel::noteSeen(const QString& key, quint64 ring, qint64 when, qint64 end, qulonglong src, bool emergency,
+                           bool enc, bool voice, const QString& sourceName) {
     auto seen = m_seen.find(key);
     if (seen == m_seen.end()) {
-        m_seen.insert(key, SeenState{when, end, src, emergency, enc, sourceName});
+        m_seen.insert(key, SeenState{when, end, src, emergency, enc, sourceName, m_session, ring, QString()});
         return SeenNew;
     }
+    if (seen->ring == 0U) {
+        // An entry that does not know its ring: a single-fragment row's own entry, seeded by load() when the
+        // seen store has lost it, or one from a store written before rings had an identity. It is taken to be
+        // the reading ring's, as every entry was before: the row stays in the session that logged it,
+        // never moved into the running one. A capture replayed again across such an entry is not known
+        // as heard again.
+        seen->ring = ring;
+    } else if (seen->ring != ring) {
+        // Another ring's row at the same push stamp, with the same start, target and kind: the same
+        // capture decoded again in a fresh state, which pushes the same rows at the same stamps. It is a
+        // call heard again, not the entry's own row read again, so it is taken in as the live path takes
+        // a call heard again. A state an embedding host reuses keeps its ring, and the rows an earlier run
+        // left in it stay this entry's (Event_History_I::instance).
+        *seen = SeenState{when, end, src, emergency, enc, sourceName, m_session, ring, QString()};
+        return SeenAgain;
+    }
+    seen->session = qMax(seen->session, m_session);
     // Seen is not final: the core merges a reacquired segment into its committed
     // row in place — the end extends, src fills 0 -> real, the crypto verdict can
     // flip on — and the key does not change when it does. Re-read the row as an
@@ -381,11 +532,13 @@ CallHistoryModel::noteSeen(const QString& key, qint64 when, qint64 end, qulonglo
 QList<CallHistoryModel::FreshRow>
 CallHistoryModel::collectFresh(const dsd_state* snapshot, const bool scan[2], const QString& systemUid) {
     QList<FreshRow> fresh;
+    const bool cleared = clearApplies();
     for (int slot = 0; slot < 2; slot++) {
         if (!scan[slot]) {
             continue;
         }
         const qulonglong pushSeq = static_cast<qulonglong>(snapshot->event_history_s[slot].push_seq);
+        const quint64 ring = static_cast<quint64>(snapshot->event_history_s[slot].instance);
         // Index 0 is the still-active staged row; only committed rows are finished
         // calls that belong in a log.
         for (int idx = 1; idx < DSD_EVENT_HISTORY_LEN; idx++) {
@@ -394,31 +547,33 @@ CallHistoryModel::collectFresh(const dsd_state* snapshot, const bool scan[2], co
             if (kind < 0) {
                 continue;
             }
-            const qint64 start = static_cast<qint64>(item->event_start_time);
-            const qint64 end = static_cast<qint64>(item->event_time);
-            const qint64 when = (start > 0) ? start : end;
-            if (qMax(when, end) <= m_clearedThrough) {
-                // Cleared by the user; the ring still holds the row (and will until
-                // the session ends), so it must stay invisible even after m_seen is
-                // rebuilt by a relaunched UI. Judged by the row's end, not its
-                // start: a call still airing when Clear was tapped commits later
-                // and is new activity, not part of what was wiped.
-                continue;
-            }
-            const bool voice = kind == KindVoice;
-            const qulonglong src = static_cast<qulonglong>(item->source_id);
             // The push stamp this row was committed at — its stable ring identity.
             const qulonglong seq =
                 pushSeq >= static_cast<qulonglong>(idx - 1) ? pushSeq - static_cast<qulonglong>(idx - 1) : 0ULL;
+            if (cleared && seq <= m_clear.pushSeq[slot]) {
+                // Cleared by the user. The ring still holds the row until the session ends,
+                // so it must stay hidden even after a relaunched UI rebuilds m_seen. Judged by
+                // push order, never by stamps. Whatever the ring takes in after the clear is
+                // new, however old its stamps (a replay's are the capture's). A call still
+                // airing when Clear was tapped commits later, and so it is new activity.
+                continue;
+            }
+            const qint64 start = static_cast<qint64>(item->event_start_time);
+            const qint64 end = static_cast<qint64>(item->event_time);
+            const qint64 when = (start > 0) ? start : end;
+            const bool voice = kind == KindVoice;
+            const qulonglong src = static_cast<qulonglong>(item->source_id);
             // Must match keyFor() on the equivalent Row, or a relaunched UI would
             // re-ingest every row its predecessor already logged.
             const QString key = seen_key(slot, seq, when, item->target_id, kind);
-            const int verdict = noteSeen(key, when, end, src, item->emergency != 0U, item->enc != 0U, voice,
+            const int verdict = noteSeen(key, ring, when, end, src, item->emergency != 0U, item->enc != 0U, voice,
                                          QString::fromUtf8(item->s_name[0] ? item->s_name : item->src_str));
             if (verdict == SeenUnchanged) {
                 continue;
             }
-            fresh.append(FreshRow{row_from_item(item, m_sessionLabel, systemUid, slot, seq), verdict == SeenAdvanced});
+            Row row = row_from_item(item, m_sessionLabel, systemUid, slot, seq);
+            row.session = m_session;
+            fresh.append(FreshRow{row, verdict == SeenAdvanced, verdict == SeenAgain});
         }
     }
     return fresh;
@@ -490,13 +645,13 @@ merge_source_label(CallHistoryModel::Row& existing, const CallHistoryModel::Row&
 } // namespace
 
 int
-CallHistoryModel::tryMerge(const Row& row) {
+CallHistoryModel::tryMerge(const Row& row, int scanRows) {
     if (row.kind != KindVoice) {
         // Notices are discrete deliveries: two SMS a second apart are two
         // messages, never fragments of one.
         return -1;
     }
-    for (int i = 0; i < m_rows.size() && i < 32; i++) {
+    for (int i = 0; i < m_rows.size() && i < scanRows; i++) {
         Row& existing = m_rows[i];
         if (!rows_mergeable(existing, row)) {
             continue;
@@ -513,7 +668,24 @@ CallHistoryModel::tryMerge(const Row& row) {
         if (existing.src == 0) {
             existing.src = row.src;
         }
+        // A call heard again in a later session is part of that session too: its views show
+        // the merged row, and a full log keeps it as that session's.
+        existing.session = qMax(existing.session, row.session);
         return i;
+    }
+    return -1;
+}
+
+int
+CallHistoryModel::findRepeatedNotice(const Row& row) const {
+    for (int i = 0; i < m_rows.size(); i++) {
+        const Row& existing = m_rows.at(i);
+        if (existing.kind == KindNotice && existing.when == row.when && existing.tg == row.tg && existing.src == row.src
+            && existing.name == row.name && existing.detail == row.detail && existing.systemName == row.systemName
+            && existing.systemUid == row.systemUid && existing.channel == row.channel
+            && !m_noticeTwinsTaken.contains(keyFor(existing))) {
+            return i;
+        }
     }
     return -1;
 }
@@ -529,14 +701,24 @@ CallHistoryModel::keyFor(const Row& row) {
 }
 
 bool
-CallHistoryModel::ingestRow(const Row& row, bool isUpdate) {
+CallHistoryModel::ingestRow(const Row& row, bool isUpdate, bool again) {
     // Coalesce fragments into the call they belong to, with granular model
     // signals: a merge is a dataChanged on the absorbing row, a new call inserts
     // at its sorted (newest-first) position. Never a reset — delegates and the
     // reader's scroll position survive every ingest.
-    static const QVector<int> mergeRoles = {WhenRole,         SrcRole,      SourceNameRole, EncRole,
-                                            DurationSecsRole, DayLabelRole, TimeTextRole,   EmergencyRole};
-    const int merged = tryMerge(row);
+    static const QVector<int> mergeRoles = {WhenRole,     SrcRole,      SourceNameRole, EncRole,    DurationSecsRole,
+                                            DayLabelRole, TimeTextRole, EmergencyRole,  SessionRole};
+    // A call heard again overlaps the logged call it repeats, which the merge folds it into as it
+    // folds any overlapping fragment, so that row joins the running session and no new row is logged.
+    // Only the search reaches further: a replay's calls sort by the capture's stamps, anywhere in the
+    // log, where a live fragment's call is among the newest rows. An update (its end extending, its
+    // source learned, its crypto verdict) searches as far, or it would miss a replayed call's row under
+    // newer ones, whether it was a first sighting or heard again. Newest first, so a live update still
+    // lands on the row the newest rows hold for it. A first sighting still searches the newest rows only,
+    // so a call the first replay logged as two rows, its fragments landing apart under newer rows, stays
+    // two, and the repeat folds into the newer of them.
+    const bool wholeLog = again || isUpdate;
+    const int merged = tryMerge(row, wholeLog ? static_cast<int>(m_rows.size()) : kMergeScanRows);
     if (merged >= 0) {
         const QModelIndex idx = index(merged);
         Q_EMIT dataChanged(idx, idx, mergeRoles);
@@ -554,11 +736,29 @@ CallHistoryModel::ingestRow(const Row& row, bool isUpdate) {
         }
         return false;
     }
+    if (again && !isUpdate && row.kind == KindNotice) {
+        // Notices never merge, but one decoded again is the same delivery, not a second one: the logged
+        // notice joins the running session.
+        const int repeated = findRepeatedNotice(row);
+        if (repeated >= 0) {
+            const QString twin = keyFor(m_rows.at(repeated));
+            m_noticeTwinsTaken.insert(twin);
+            // Kept on the notice's own seen entry, which the seen store persists: a relaunched model rebuilds
+            // the ring's taken twins from it, and its next identical notice then promotes the other twin.
+            const auto seen = m_seen.find(keyFor(row));
+            if (seen != m_seen.end()) {
+                seen->twin = twin;
+            }
+            m_rows[repeated].session = qMax(m_rows.at(repeated).session, row.session);
+            const QModelIndex idx = index(repeated);
+            Q_EMIT dataChanged(idx, idx, {SessionRole});
+            return false;
+        }
+    }
     if (isUpdate) {
         // A seen row that advanced refines a call this model already logged; if
-        // its row cannot be found (absorbed and trimmed, or deeper than the merge
-        // scan), inserting it would mint the duplicate the seen map exists to
-        // prevent. Drop it instead.
+        // its row cannot be found (trimmed, or cleared), inserting it would mint
+        // the duplicate the seen map exists to prevent. Drop it instead.
         return false;
     }
     int pos = 0;
@@ -571,28 +771,95 @@ CallHistoryModel::ingestRow(const Row& row, bool isUpdate) {
     return true;
 }
 
+bool
+CallHistoryModel::noteCommitRevs(const dsd_state* snapshot, bool scan[2]) {
+    // Gated on commit_rev, not revision: an active call re-renders its staged row
+    // at the poll rate, and each render bumps revision without there being
+    // anything new below index 0. Only actual commits, merges and enrichment move
+    // commit_rev, so the ring walk runs exactly when it can find something.
+    // A new ring (Event_History_I::instance) is walked whatever its commit_rev: a capture replayed in a
+    // fresh state can be read first at the very count the last ring stopped at.
+    bool anyChanged = false;
+    bool ringChanged = false;
+    for (int slot = 0; slot < 2; slot++) {
+        const quint64 commitRev = static_cast<quint64>(snapshot->event_history_s[slot].commit_rev);
+        const quint64 ring = static_cast<quint64>(snapshot->event_history_s[slot].instance);
+        ringChanged = ringChanged || ring != m_ringInstance[slot];
+        scan[slot] = !m_seeded || commitRev != m_commitRev[slot] || ring != m_ringInstance[slot];
+        m_commitRev[slot] = commitRev;
+        m_ringInstance[slot] = ring;
+        anyChanged = anyChanged || scan[slot];
+    }
+    if (ringChanged) {
+        // The twins notices heard again have taken belong to the ring that heard them.
+        restoreNoticeTwinsTaken();
+    }
+    m_seeded = true;
+    return anyChanged;
+}
+
+void
+CallHistoryModel::restoreNoticeTwinsTaken() {
+    // A new ring has taken none yet. A ring read before, by this model or by the one a relaunch replaced,
+    // has taken exactly the twins its notices' seen entries record: an entry read again from another ring
+    // starts over with no twin.
+    m_noticeTwinsTaken.clear();
+    for (const SeenState& state : m_seen) {
+        if (!state.twin.isEmpty() && state.ring != 0U
+            && (state.ring == m_ringInstance[0] || state.ring == m_ringInstance[1])) {
+            m_noticeTwinsTaken.insert(state.twin);
+        }
+    }
+}
+
+bool
+CallHistoryModel::trimToCapacity() {
+    // Trimmed rows keep their seen entry: the ring may still hold them, and
+    // forgetting the key would re-ingest (and re-trim) each one every tick. The
+    // map itself is bounded by pruneSeen() instead.
+    bool trimmed = false;
+    while (m_rows.size() > kMaxRows) {
+        // The oldest session's oldest row, not the bottom of the list. A replay's calls
+        // sort below every live one by their stamps, and trimming the bottom would drop
+        // them as they land.
+        int victim = static_cast<int>(m_rows.size()) - 1;
+        for (int i = victim - 1; i >= 0; i--) {
+            const Row& row = m_rows.at(i);
+            const Row& oldest = m_rows.at(victim);
+            if (retained_older(row.session, row.when, oldest.session, oldest.when)) {
+                victim = i;
+            }
+        }
+        beginRemoveRows(QModelIndex(), victim, victim);
+        m_rows.removeAt(victim);
+        endRemoveRows();
+        trimmed = true;
+    }
+    return trimmed;
+}
+
 void
 CallHistoryModel::refresh(const dsd_state* snapshot, const dsd_opts* opts_snapshot) {
     if (snapshot == nullptr || snapshot->event_history_s == nullptr) {
         return;
     }
 
-    // Gated on commit_rev, not revision: an active call re-renders its staged row
-    // at the poll rate, and each render bumps revision without there being
-    // anything new below index 0. Only actual commits, merges and enrichment move
-    // commit_rev, so the ring walk runs exactly when it can find something.
     bool scan[2];
-    bool anyChanged = false;
-    for (int slot = 0; slot < 2; slot++) {
-        const quint64 commitRev = static_cast<quint64>(snapshot->event_history_s[slot].commit_rev);
-        scan[slot] = !m_seeded || commitRev != m_commitRev[slot];
-        m_commitRev[slot] = commitRev;
-        anyChanged = anyChanged || scan[slot];
-    }
-    m_seeded = true;
-    if (!anyChanged) {
+    if (!noteCommitRevs(snapshot, scan)) {
         return;
     }
+    // Only a snapshot that moved says where the ring is. Right after a start the old
+    // session's last snapshot is still the latest, unchanged, and says nothing new; the
+    // position last read stays, naming the ring it was read in (beginSession()).
+    const qulonglong pushSeq[2] = {static_cast<qulonglong>(snapshot->event_history_s[0].push_seq),
+                                   static_cast<qulonglong>(snapshot->event_history_s[1].push_seq)};
+    // initState() draws one identity for both slots' rings.
+    const quint64 ring = static_cast<quint64>(snapshot->event_history_s[0].instance);
+    m_ringPushSeq[0] = pushSeq[0];
+    m_ringPushSeq[1] = pushSeq[1];
+    m_ringPushSeqRing = ring;
+    m_ringRead = true;
+    settleClear(pushSeq, ring);
 
     // The effective options cover scans started from a saved system's extra
     // arguments as well as the list UI. Unknown options cannot establish identity.
@@ -605,18 +872,9 @@ CallHistoryModel::refresh(const dsd_state* snapshot, const dsd_opts* opts_snapsh
 
     bool rowsChanged = false;
     for (const FreshRow& item : fresh) {
-        rowsChanged = ingestRow(item.row, item.isUpdate) || rowsChanged;
+        rowsChanged = ingestRow(item.row, item.isUpdate, item.again) || rowsChanged;
     }
-    // Trimmed rows keep their seen entry: the ring may still hold them, and
-    // forgetting the key would re-ingest (and re-trim) each one every tick. The
-    // map itself is bounded below instead.
-    while (m_rows.size() > kMaxRows) {
-        const int last = static_cast<int>(m_rows.size()) - 1;
-        beginRemoveRows(QModelIndex(), last, last);
-        m_rows.removeLast();
-        endRemoveRows();
-        rowsChanged = true;
-    }
+    rowsChanged = trimToCapacity() || rowsChanged;
     pruneSeen();
     if (rowsChanged) {
         Q_EMIT countChanged();
@@ -627,20 +885,22 @@ CallHistoryModel::refresh(const dsd_state* snapshot, const dsd_opts* opts_snapsh
 void
 CallHistoryModel::pruneSeen() {
     // Drop the oldest entries once the map is well past what the ring could
-    // still resurrect (at most 254 committed rows per slot). Oldest-first by the
-    // stamp inside the value, so keys stay opaque.
+    // still resurrect (at most 254 committed rows per slot). Oldest-first in
+    // retention order (session, then stamp) from the value, so keys stay opaque.
+    // By the stamp alone, a replay's entries would go first and its ring rows
+    // would come back as new calls on the next scan.
     if (m_seen.size() <= static_cast<qsizetype>(kMaxSeenEntries) * 2) {
         return;
     }
-    QList<qint64> stamps;
+    QList<QPair<qint64, qint64>> stamps;
     stamps.reserve(m_seen.size());
     for (const SeenState& state : m_seen) {
-        stamps.append(state.when);
+        stamps.append(qMakePair(state.session, state.when));
     }
     std::sort(stamps.begin(), stamps.end());
-    const qint64 cutoff = stamps.at(stamps.size() - kMaxSeenEntries);
+    const QPair<qint64, qint64> cutoff = stamps.at(stamps.size() - kMaxSeenEntries);
     for (auto it = m_seen.begin(); it != m_seen.end();) {
-        if (it->when < cutoff) {
+        if (retained_older(it->session, it->when, cutoff.first, cutoff.second)) {
             it = m_seen.erase(it);
         } else {
             ++it;
@@ -654,15 +914,23 @@ CallHistoryModel::clearAll() {
     m_rows.clear();
     // m_seen deliberately survives: the ring still holds the rows just cleared, and
     // forgetting the keys would let the next tick re-ingest every one of them.
-    // m_seen alone is not enough, though — it is in-memory only, and a relaunched
-    // UI rebuilds it from the (now empty) persisted log while the service's ring
-    // still holds every cleared row. The persisted watermark is what keeps a clear
-    // effective across an Activity restart.
-    m_clearedThrough = QDateTime::currentSecsSinceEpoch();
-    m_settings.setValue(QLatin1String(kClearedThroughKey), m_clearedThrough);
+    // m_seen alone is not enough, though. Its store is written later, on the worker,
+    // and is bounded. A relaunched UI can rebuild it without the cleared rows while the
+    // service's ring still holds every one. The persisted clear mark is what keeps a
+    // clear effective across an Activity restart. It names the cleared rows by this
+    // session's ring position, never by a stamp or a clock reading. A replay's rows are
+    // stamped with the capture's time, and a watermark would hide every later call
+    // stamped before it.
+    m_clear.active = true;
+    m_clear.session = m_session;
+    m_clear.pending = !m_ringRead;
+    m_clear.pushSeq[0] = m_ringRead ? m_ringPushSeq[0] : 0U;
+    m_clear.pushSeq[1] = m_ringRead ? m_ringPushSeq[1] : 0U;
+    m_clear.ring = m_ringRead ? m_ringPushSeqRing : 0U;
+    saveClear();
     endResetModel();
     Q_EMIT countChanged();
-    // The watermark above is what makes the clear durable (QSettings writes it
+    // The mark above is what makes the clear durable (QSettings writes it
     // through); the emptied stores can follow on the worker without a stall here.
     startAsyncSave();
 }
@@ -701,6 +969,10 @@ CallHistoryModel::load() {
                                 ? obj.value(QLatin1String("srcNameSeq")).toVariant().toULongLong()
                                 : row.seq;
         row.sourceNameSlot = obj.value(QLatin1String("srcNameSlot")).toInt(row.slot);
+        row.session = obj.value(QLatin1String("session")).toVariant().toLongLong();
+        // Rows carry their session with them, so the session numbering can never fall back
+        // onto rows already in the log, even if the settings that hold it were lost.
+        m_session = qMax(m_session, row.session);
         rows.append(row);
     }
     beginResetModel();
@@ -708,9 +980,15 @@ CallHistoryModel::load() {
     // Oldest first through the same merge the ingest path uses, so a log written
     // before fragment-coalescing existed collapses on its first load.
     for (auto it = rows.crbegin(); it != rows.crend(); ++it) {
+        // A row does not keep the ring it was read from, so its seed knows none (ring 0). The persisted
+        // seen store below replaces it with the real entry; should the store have lost that, the next read
+        // takes the seed to be the reading ring's (noteSeen()) and leaves the row in its session. That holds
+        // for a row of one fragment only. A merged row keeps one fragment's slot and seq but the earliest
+        // fragment's start, so its seed's key is no ring row's, and a merged call whose seen entries were
+        // evicted or lost is logged again as new rows, one per fragment.
         m_seen.insert(keyFor(*it), SeenState{it->when, it->when + qMax(it->durationSecs, 0), it->src, it->emergency,
-                                             it->enc, it->sourceName});
-        if (tryMerge(*it) < 0) {
+                                             it->enc, it->sourceName, it->session, 0U, QString()});
+        if (tryMerge(*it, kMergeScanRows) < 0) {
             m_rows.prepend(*it);
         }
     }
@@ -736,6 +1014,14 @@ CallHistoryModel::load() {
         state.enc = obj.value(QLatin1String("enc")).toBool();
         state.emergency = obj.value(QLatin1String("em")).toBool();
         state.sourceName = obj.value(QLatin1String("srcName")).toString();
+        state.session = obj.value(QLatin1String("session")).toVariant().toLongLong();
+        // Hex text: a nonce can use all 64 bits, more than a JSON number holds exactly.
+        bool ringOk = false;
+        state.ring = obj.value(QLatin1String("ring")).toString().toULongLong(&ringOk, 16);
+        if (!ringOk) {
+            state.ring = 0U;
+        }
+        state.twin = obj.value(QLatin1String("twin")).toString();
         m_seen.insert(key, state);
     }
     endResetModel();
@@ -778,6 +1064,7 @@ CallHistoryModel::rowsToJson() const {
         }
         obj.insert(QLatin1String("slot"), row.slot);
         obj.insert(QLatin1String("seq"), static_cast<qint64>(row.seq));
+        obj.insert(QLatin1String("session"), row.session);
         array.append(obj);
     }
     return array;
@@ -786,7 +1073,8 @@ CallHistoryModel::rowsToJson() const {
 QJsonArray
 CallHistoryModel::seenToJson() const {
     // Newest first and capped: the seen map only has to outlive what the ring can
-    // still resurrect, not the whole persisted log.
+    // still resurrect, not the whole persisted log. Newest in retention order, so the
+    // running session's entries, which are all the ring can resurrect, are the ones kept.
     QList<QPair<QString, SeenState>> entries;
     entries.reserve(m_seen.size());
     for (auto it = m_seen.cbegin(); it != m_seen.cend(); ++it) {
@@ -794,7 +1082,7 @@ CallHistoryModel::seenToJson() const {
     }
     std::sort(entries.begin(), entries.end(),
               [](const QPair<QString, SeenState>& a, const QPair<QString, SeenState>& b) {
-                  return a.second.when > b.second.when;
+                  return retained_older(b.second.session, b.second.when, a.second.session, a.second.when);
               });
     QJsonArray seenArray;
     for (qsizetype i = 0; i < entries.size() && i < kMaxSeenEntries; i++) {
@@ -808,6 +1096,11 @@ CallHistoryModel::seenToJson() const {
         obj.insert(QLatin1String("enc"), state.enc);
         if (state.emergency) {
             obj.insert(QLatin1String("em"), true);
+        }
+        obj.insert(QLatin1String("session"), state.session);
+        obj.insert(QLatin1String("ring"), QString::number(state.ring, 16));
+        if (!state.twin.isEmpty()) {
+            obj.insert(QLatin1String("twin"), state.twin);
         }
         seenArray.append(obj);
     }

@@ -8,8 +8,9 @@
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/runtime/decode_clock.h>
+#include <stddef.h>
 #include <stdint.h>
-#include <time.h>
 #include "../command_dispatch.h"
 #include "dsd-neo/app_control/commands.h"
 #include "dsd-neo/core/opts_fwd.h"
@@ -32,7 +33,7 @@ ui_handle_toggle_mute(dsd_opts* opts, dsd_state* state, const struct dsd_app_com
     }
     if (state) {
         DSD_SNPRINTF(state->ui_msg, sizeof state->ui_msg, "%s", msg);
-        state->ui_msg_expire = time(NULL) + 3;
+        state->ui_msg_expire = dsd_realtime_time() + 3;
     }
     return 1;
 }
@@ -170,7 +171,7 @@ ui_handle_input_vol_cycle(dsd_opts* opts, dsd_state* state, const struct dsd_app
         }
         if (state) {
             DSD_SNPRINTF(state->ui_msg, sizeof state->ui_msg, "RTL Monitor Gain: %dX", opts->rtl_volume_multiplier);
-            state->ui_msg_expire = time(NULL) + 2;
+            state->ui_msg_expire = dsd_realtime_time() + 2;
         }
     } else {
         if (opts->input_volume_multiplier == 1 || opts->input_volume_multiplier == 2) {
@@ -180,7 +181,7 @@ ui_handle_input_vol_cycle(dsd_opts* opts, dsd_state* state, const struct dsd_app
         }
         if (state) {
             DSD_SNPRINTF(state->ui_msg, sizeof state->ui_msg, "Input Volume: %dX", opts->input_volume_multiplier);
-            state->ui_msg_expire = time(NULL) + 2;
+            state->ui_msg_expire = dsd_realtime_time() + 2;
         }
     }
     return 1;

@@ -13,7 +13,6 @@
 #include <dsd-neo/core/ambe_interleave.h>
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/dibit.h>
-#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
@@ -29,6 +28,7 @@
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/runtime/colors.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/shutdown.h>
@@ -547,8 +547,8 @@ run_dmr_bs_slot_vc6_post_voice(dsd_opts* opts, dsd_state* state, const dmr_bs_ct
 static void
 update_dmr_bs_sync_times_if_tuned(const dsd_opts* opts, dsd_state* state) {
     if (opts->trunk_is_tuned == 1) {
-        time_t now = time(NULL);
-        double nowm = dsd_time_now_monotonic_s();
+        time_t now = dsd_decode_time();
+        double nowm = dsd_decode_now_mono_s();
         state->last_vc_sync_time = now;
         state->last_vc_sync_time_m = nowm;
         state->last_cc_sync_time = now;
@@ -697,7 +697,8 @@ static void
 init_dmr_bs_bootstrap_ctx(dmr_bs_bootstrap_ctx* ctx) {
     DSD_MEMSET(ctx, 0, sizeof(*ctx));
     ctx->sync_okay = 1;
-    (void)dsd_format_local_datetime(time(NULL), DSD_LOCAL_DATETIME_TIME_COLON, ctx->timestr, sizeof ctx->timestr);
+    (void)dsd_format_local_datetime(dsd_decode_time(), DSD_LOCAL_DATETIME_TIME_COLON, ctx->timestr,
+                                    sizeof ctx->timestr);
 }
 
 static void
@@ -814,8 +815,8 @@ process_dmr_bs_bootstrap_voice_if_open(dsd_opts* opts, dsd_state* state, dmr_bs_
     }
 
     if (opts->trunk_is_tuned == 1) {
-        state->last_vc_sync_time = time(NULL);
-        state->last_vc_sync_time_m = dsd_time_now_monotonic_s();
+        state->last_vc_sync_time = dsd_decode_time();
+        state->last_vc_sync_time_m = dsd_decode_now_mono_s();
     }
 
     if (ctx->internalslot == 1 && opts->floating_point == 1 && opts->pulse_digi_rate_out == 8000) {
@@ -829,7 +830,8 @@ process_dmr_bs_bootstrap_voice_if_open(dsd_opts* opts, dsd_state* state, dmr_bs_
 
 static dmr_bs_action DSD_ATTR_USED
 process_dmr_bs_iteration(dsd_opts* opts, dsd_state* state, dmr_bs_ctx* ctx) {
-    (void)dsd_format_local_datetime(time(NULL), DSD_LOCAL_DATETIME_TIME_COLON, ctx->timestr, sizeof ctx->timestr);
+    (void)dsd_format_local_datetime(dsd_decode_time(), DSD_LOCAL_DATETIME_TIME_COLON, ctx->timestr,
+                                    sizeof ctx->timestr);
     reset_dmr_bs_loop_buffers(ctx);
 
     if (!collect_dmr_bs_cach_and_tact(opts, state, ctx)) {

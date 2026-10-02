@@ -10,11 +10,11 @@
  */
 
 #include <dsd-neo/core/call_state.h>
-#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -172,7 +172,7 @@ init_retained_p1_call(dsd_opts* opts, dsd_state* state, int tg, int src) {
     if (!p25_sm_emit_active_call(opts, state, 0, tg, 0, src, 1, 0)) {
         return 0;
     }
-    if (!p25_sm_emit_end_call_at(opts, state, 0, tg, src, dsd_time_now_monotonic_s())) {
+    if (!p25_sm_emit_end_call_at(opts, state, 0, tg, src, dsd_decode_now_mono_s())) {
         return 0;
     }
     return sm->state == P25_SM_TUNED && sm->slots[0].grant_active && !sm->slots[0].voice_active;

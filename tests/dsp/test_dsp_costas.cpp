@@ -24,8 +24,10 @@
 #include <dsd-neo/dsp/ted.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/config.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <vector>
 
 #include "dsd-neo/core/safe_api.h"
 
@@ -924,6 +926,228 @@ test_gardner_oversized_sps_disables_output(void) {
 }
 
 /*
+ * Test: Gardner timing recovery carries its state across blocks of any size
+ * (issue #572).
+ *
+ * A stream in one call and the same stream cut into 1-, 2- and 3-pair blocks
+ * must give the same symbols and leave the same loop state: a short block's
+ * samples go through the delay line and mu like any others, and a symbol the
+ * last block owed comes out of the next one. Warm runs give the detector the
+ * first kGardnerWarmPairs in one block and cut the rest; cold runs cut the
+ * stream from a fresh detector, whose first 1-pair block must initialise it,
+ * and which must emit nothing before a symbol's samples have arrived.
+ *
+ * Each block is fed from an exact-size heap buffer, from hb_workbuf and from
+ * timing_buf. timing_buf is where the channel filter leaves a block after an
+ * odd half-band pass count (the 1.536 Msps RTL chain's five), and the
+ * detector must not write a symbol over a sample it has not read yet.
+ *
+ * The loop is scalar and runs the same operations in the same order however
+ * the stream is cut, so it is bit-exact across splits: the tolerance is 0.
+ */
+static const int kGardnerSps = 5;
+static const int kGardnerStreamPairs = 1000;
+static const int kGardnerWarmPairs = 400;
+static const float kGardnerSplitTol = 0.0f;
+
+namespace {
+enum gardner_feed { GARDNER_FEED_HEAP = 0, GARDNER_FEED_HB_WORKBUF = 1, GARDNER_FEED_TIMING_BUF = 2 };
+} // namespace
+
+static const char*
+gardner_feed_name(int feed) {
+    switch (feed) {
+        case GARDNER_FEED_HEAP: return "heap";
+        case GARDNER_FEED_HB_WORKBUF: return "hb_workbuf";
+        default: return "timing_buf";
+    }
+}
+
+/* Diagonal QPSK symbols, linearly interpolated, sampled on a clock 0.04% slow with a fractional start so mu and omega
+ * both move. */
+static std::vector<float>
+gardner_split_stream(void) {
+    const int n_syms = kGardnerStreamPairs / kGardnerSps + 3;
+    std::vector<float> sym_r((size_t)n_syms);
+    std::vector<float> sym_j((size_t)n_syms);
+    uint32_t lcg = 0x2468ACE1u;
+    for (int k = 0; k < n_syms; k++) {
+        lcg = lcg * 1664525u + 1013904223u;
+        sym_r[(size_t)k] = (lcg & 0x10000u) ? 0.7f : -0.7f;
+        sym_j[(size_t)k] = (lcg & 0x20000u) ? 0.7f : -0.7f;
+    }
+    std::vector<float> iq((size_t)kGardnerStreamPairs * 2);
+    for (int n = 0; n < kGardnerStreamPairs; n++) {
+        const double t = ((double)n + 0.37) * 1.0004 / (double)kGardnerSps;
+        const int k = (int)floor(t);
+        const float f = (float)(t - (double)k);
+        iq[(size_t)n * 2] = (1.0f - f) * sym_r[(size_t)k] + f * sym_r[(size_t)k + 1];
+        iq[(size_t)n * 2 + 1] = (1.0f - f) * sym_j[(size_t)k] + f * sym_j[(size_t)k + 1];
+    }
+    return iq;
+}
+
+static demod_state*
+gardner_split_state(void) {
+    demod_state* s = alloc_state();
+    if (s) {
+        s->cqpsk_enable = 1;
+        s->ted_sps = kGardnerSps;
+        s->rate_out = 4800 * kGardnerSps; /* P25p1: below the adaptive gain's symbol rate, so the gain holds */
+        s->ted_gain = 0.025f;
+    }
+    return s;
+}
+
+/* One block through op25_gardner_cc() from the given feed; appends its symbols and returns how many it made. */
+static int
+gardner_feed_block(demod_state* s, const float* iq, int pairs, int feed, std::vector<float>* syms) {
+    std::vector<float> heap;
+    float* in = NULL;
+    if (feed == GARDNER_FEED_HEAP) {
+        heap.assign(iq, iq + (size_t)pairs * 2);
+        in = heap.data();
+    } else {
+        in = (feed == GARDNER_FEED_HB_WORKBUF) ? s->hb_workbuf : s->timing_buf;
+        DSD_MEMCPY(in, iq, (size_t)pairs * 2 * sizeof(float));
+    }
+    s->lowpassed = in;
+    s->lp_len = pairs * 2;
+    op25_gardner_cc(s);
+    if (s->lp_len > 0) {
+        syms->insert(syms->end(), s->lowpassed, s->lowpassed + s->lp_len);
+    }
+    return s->lp_len / 2;
+}
+
+static int
+gardner_split_matches(const char* label, const std::vector<float>& want, const ted_state_t* want_ted,
+                      const std::vector<float>& got, const ted_state_t* got_ted) {
+    if (got.size() != want.size()) {
+        DSD_FPRINTF(stderr, "GARDNER SPLIT %s: %zu symbols, want %zu\n", label, got.size() / 2, want.size() / 2);
+        return 1;
+    }
+    float max_dev = 0.0f;
+    for (size_t k = 0; k < want.size(); k++) {
+        const float dev = fabsf(got[k] - want[k]);
+        if (!(dev <= max_dev)) {
+            max_dev = dev;
+        }
+    }
+    const float mu_dev = fabsf(got_ted->mu - want_ted->mu);
+    const float omega_dev = fabsf(got_ted->omega - want_ted->omega);
+    const float last_dev = fabsf(got_ted->last_r - want_ted->last_r) + fabsf(got_ted->last_j - want_ted->last_j);
+    const float lock_dev = fabsf(got_ted->lock_accum - want_ted->lock_accum);
+    printf("GARDNER SPLIT %s: %zu symbols, max dev %g\n", label, want.size() / 2, (double)max_dev);
+    if (!(max_dev <= kGardnerSplitTol) || !(mu_dev <= kGardnerSplitTol) || !(omega_dev <= kGardnerSplitTol)
+        || !(last_dev <= kGardnerSplitTol) || !(lock_dev <= kGardnerSplitTol) || got_ted->dl_index != want_ted->dl_index
+        || got_ted->lock_count != want_ted->lock_count) {
+        DSD_FPRINTF(
+            stderr,
+            "GARDNER SPLIT %s: max dev %g, state mu %g/%g omega %g/%g last dev %g lock %g/%g (%d/%d) dl %d/%d\n", label,
+            (double)max_dev, (double)got_ted->mu, (double)want_ted->mu, (double)got_ted->omega, (double)want_ted->omega,
+            (double)last_dev, (double)got_ted->lock_accum, (double)want_ted->lock_accum, got_ted->lock_count,
+            want_ted->lock_count, got_ted->dl_index, want_ted->dl_index);
+        return 1;
+    }
+    return 0;
+}
+
+/* Cold, 1-pair blocks: the first block initialises the detector and takes its sample, and no block emits before a
+ * symbol's samples are in (mu starts at sps, so the first symbol comes with the sps-th sample). */
+static int
+gardner_cold_start_ok(const char* label, const demod_state* s, int block, int made) {
+    const ted_state_t* ted = &s->ted_state;
+    if (block == 0
+        && (ted->twice_sps < 2 || ted->sps != kGardnerSps || fabsf(ted->omega_mid - (float)kGardnerSps) > 1e-6f
+            || fabsf(ted->mu - (float)(kGardnerSps - 1)) > 1e-6f)) {
+        DSD_FPRINTF(stderr, "GARDNER SPLIT %s: first block left twice_sps=%d sps=%d omega_mid=%f mu=%f\n", label,
+                    ted->twice_sps, ted->sps, (double)ted->omega_mid, (double)ted->mu);
+        return 1;
+    }
+    if (block < kGardnerSps - 1 && made != 0) {
+        DSD_FPRINTF(stderr, "GARDNER SPLIT %s: block %d made %d symbols before a symbol's samples were in\n", label,
+                    block, made);
+        return 1;
+    }
+    return 0;
+}
+
+static int
+test_gardner_short_blocks_match_whole_stream(void) {
+    dsd_unsetenv("DSD_NEO_TED_GAIN");
+    dsd_neo_config_init();
+
+    const std::vector<float> stream = gardner_split_stream();
+
+    struct split_pattern {
+        const char* name;
+        int sizes[9];
+        int count;
+    };
+
+    static const split_pattern patterns[] = {
+        {"1-pair", {1}, 1},
+        {"2-pair", {2}, 1},
+        {"3-pair", {3}, 1},
+        {"1/3/2 mix", {1, 3, 2, 2, 1, 3, 3, 1, 2}, 9},
+    };
+
+    /* The reference: the whole stream in one call. */
+    demod_state* ref = gardner_split_state();
+    if (!ref) {
+        DSD_FPRINTF(stderr, "state alloc failed\n");
+        return 1;
+    }
+    std::vector<float> want;
+    gardner_feed_block(ref, stream.data(), kGardnerStreamPairs, GARDNER_FEED_HEAP, &want);
+    const ted_state_t want_ted = ref->ted_state;
+    free(ref);
+    if (want.size() < static_cast<size_t>(2) * 150U) {
+        DSD_FPRINTF(stderr, "GARDNER SPLIT: whole stream made only %zu symbols\n", want.size() / 2);
+        return 1;
+    }
+
+    int failures = 0;
+    for (int warm = 1; warm >= 0; warm--) {
+        for (const split_pattern& p : patterns) {
+            for (int feed = GARDNER_FEED_HEAP; feed <= GARDNER_FEED_TIMING_BUF; feed++) {
+                char label[96];
+                DSD_SNPRINTF(label, sizeof(label), "%s %s from %s", warm ? "warm" : "cold", p.name,
+                             gardner_feed_name(feed));
+                demod_state* s = gardner_split_state();
+                if (!s) {
+                    DSD_FPRINTF(stderr, "state alloc failed\n");
+                    return 1;
+                }
+                std::vector<float> got;
+                int off = 0;
+                if (warm) {
+                    gardner_feed_block(s, stream.data(), kGardnerWarmPairs, feed, &got);
+                    off = kGardnerWarmPairs;
+                }
+                int cold_bad = 0;
+                for (int block = 0; off < kGardnerStreamPairs; block++) {
+                    int pairs = p.sizes[block % p.count];
+                    if (pairs > kGardnerStreamPairs - off) {
+                        pairs = kGardnerStreamPairs - off;
+                    }
+                    const int made = gardner_feed_block(s, stream.data() + (size_t)off * 2, pairs, feed, &got);
+                    if (!warm && p.sizes[0] == 1 && p.count == 1 && !cold_bad) {
+                        cold_bad = gardner_cold_start_ok(label, s, block, made);
+                    }
+                    off += pairs;
+                }
+                failures += cold_bad;
+                failures += gardner_split_matches(label, want, &want_ted, got, &s->ted_state);
+                free(s);
+            }
+        }
+    }
+    return failures ? 1 : 0;
+}
+
+/*
  * Test: FLL band-edge block initializes lazily and processes an IQ block in
  * place while preserving a bounded loop state.
  */
@@ -967,6 +1191,66 @@ test_fll_band_edge_processes_block(void) {
     }
 
     free(s);
+    return 0;
+}
+
+/*
+ * Test: an initialized FLL whose tap count or delay index is outside the range the
+ * mirrored delay line is indexed with is designed afresh rather than run.
+ *
+ * Every writer keeps 3 <= n_taps <= FLL_BAND_EDGE_MAX_TAPS and 0 <= delay_idx < n_taps,
+ * so these states are corrupt. The first two cases come first because the block is
+ * short enough that running them unchecked still stays inside the delay arrays (the
+ * third would write before delay_r); what tells checked from unchecked is whether the
+ * filter was redesigned (11 taps at sps 5) and the index wrapped within it.
+ */
+static int
+test_fll_band_edge_redesigns_inconsistent_delay_line(void) {
+    const int pairs = 16;
+    static float buf[pairs * 2];
+
+    struct {
+        const char* name;
+        int n_taps;
+        int delay_idx;
+    } const cases[] = {
+        {"delay index at the tap count", 11, 11},
+        {"no taps", 0, 0},
+        {"negative delay index", 11, -1},
+        {"tap count above the delay line", 49, 0},
+    };
+
+    for (const auto& c : cases) {
+        for (int k = 0; k < pairs; k++) {
+            const float phase = 0.11f * (float)k;
+            buf[(size_t)k * 2] = cosf(phase);
+            buf[(size_t)k * 2 + 1] = sinf(phase);
+        }
+        demod_state* s = alloc_state();
+        if (!s) {
+            DSD_FPRINTF(stderr, "alloc failed\n");
+            return 1;
+        }
+        s->cqpsk_enable = 1;
+        s->lowpassed = buf;
+        s->lp_len = pairs * 2;
+        s->ted_sps = 5;
+        s->rate_out = 24000;
+
+        op25_fll_band_edge_cc(s);
+        dsd_fll_band_edge_state_t* f = &s->fll_band_edge_state;
+        f->n_taps = c.n_taps;
+        f->delay_idx = c.delay_idx;
+        op25_fll_band_edge_cc(s);
+
+        if (f->n_taps != 11 || f->delay_idx != pairs % 11 || !std::isfinite(f->freq)) {
+            DSD_FPRINTF(stderr, "FLL INCONSISTENT (%s): taps=%d delay=%d (want 11 and %d) freq=%f\n", c.name, f->n_taps,
+                        f->delay_idx, pairs % 11, f->freq);
+            free(s);
+            return 1;
+        }
+        free(s);
+    }
     return 0;
 }
 
@@ -1024,6 +1308,12 @@ main(void) {
         return 1;
     }
     if (test_fll_band_edge_processes_block() != 0) {
+        return 1;
+    }
+    if (test_fll_band_edge_redesigns_inconsistent_delay_line() != 0) {
+        return 1;
+    }
+    if (test_gardner_short_blocks_match_whole_stream() != 0) {
         return 1;
     }
     return 0;

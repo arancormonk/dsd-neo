@@ -4,13 +4,13 @@
  */
 
 #include <dsd-neo/platform/atomic_compat.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stddef.h>
 #include <stdint.h>
 
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
-#include "dsd-neo/platform/timing.h"
 
 static dsd_trunk_tuning_hooks g_trunk_tuning_hooks = {0};
 static dsd_atomic_u64 g_trunk_tuning_generation = {1U};
@@ -29,6 +29,10 @@ typedef enum {
 
 typedef struct {
     uint64_t request_id;
+    /* Decode-mono time the request's result was published or completed at (dsd_trunk_tuning_request_publish(),
+       dsd_trunk_tuning_request_complete()), 0 before. Read through dsd_trunk_tuning_request_status()'s out_completed_m:
+       the trunk scan's visit timer (trunk_scan_arm_visit()), the P25 and DMR trunk state machines' control channel
+       acquisition and grace windows, and the engine's no-carrier return all start from it. */
     uint64_t completed_m_ns;
     dsd_trunk_tune_result result;
     dsd_trunk_tuning_request_state state;
@@ -207,7 +211,7 @@ dsd_trunk_tuning_request_publish(uint64_t request_id, dsd_trunk_tune_result resu
         return;
     }
     record->result = result;
-    record->completed_m_ns = dsd_time_monotonic_ns();
+    record->completed_m_ns = dsd_decode_now_mono_ns();
     record->backend_complete = 1;
     if (dsd_trunk_tune_result_is_complete(result)) {
         if (record->owner_ready) {
@@ -261,7 +265,7 @@ dsd_trunk_tuning_request_complete(uint64_t request_id, dsd_trunk_tune_result res
 
     if (!record->backend_complete) {
         record->result = result;
-        record->completed_m_ns = dsd_time_monotonic_ns();
+        record->completed_m_ns = dsd_decode_now_mono_ns();
         record->backend_complete = 1;
         if (dsd_trunk_tune_result_is_complete(result)) {
             dsd_trunk_tuning_finish_success_locked(record);

@@ -14,8 +14,8 @@
 #include <dsd-neo/ui/ncurses_p25_display.h>
 #include <dsd-neo/ui/ncurses_trunk_display.h>
 #include <dsd-neo/ui/ui_prims.h>
+#include <stddef.h>
 #include <stdint.h>
-#include <string.h>
 
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"

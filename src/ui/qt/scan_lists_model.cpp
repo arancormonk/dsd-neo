@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <QByteArray>
-#include <QDateTime>
 #include <QFile>
 #include <QHash>
 #include <QJsonArray>
@@ -15,6 +14,7 @@
 #include <initializer_list>
 #include <utility>
 #include "json_store.h"
+#include "realtime_clock.h"
 #include "scan_lists_model.h"
 
 namespace dsd_qt {
@@ -212,7 +212,7 @@ ScanListsModel::remove(int row) {
 
 void
 ScanListsModel::touch(int row) {
-    update(row, {{"lastHeard", QDateTime::currentSecsSinceEpoch()}});
+    update(row, {{"lastHeard", realtimeSecsSinceEpoch()}});
 }
 
 QStringList

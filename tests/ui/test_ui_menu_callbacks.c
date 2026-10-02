@@ -63,10 +63,8 @@ static int g_env_set_calls;
 static int g_env_unset_calls;
 static char g_env_int_name[128];
 static int g_env_int_value;
-static int g_env_int_calls;
 static char g_env_double_name[128];
 static double g_env_double_value;
-static int g_env_double_calls;
 static int g_reparse_calls;
 static const char* g_env_get_value;
 static int g_config_load_rc;
@@ -225,14 +223,12 @@ void
 env_set_int(const char* name, int v) {
     DSD_SNPRINTF(g_env_int_name, sizeof g_env_int_name, "%s", name ? name : "");
     g_env_int_value = v;
-    g_env_int_calls++;
 }
 
 void
 env_set_double(const char* name, double v) {
     DSD_SNPRINTF(g_env_double_name, sizeof g_env_double_name, "%s", name ? name : "");
     g_env_double_value = v;
-    g_env_double_calls++;
 }
 
 int
@@ -335,10 +331,8 @@ reset_capture(void) {
     g_env_unset_calls = 0;
     DSD_MEMSET(g_env_int_name, 0, sizeof g_env_int_name);
     g_env_int_value = 0;
-    g_env_int_calls = 0;
     DSD_MEMSET(g_env_double_name, 0, sizeof g_env_double_name);
     g_env_double_value = 0.0;
-    g_env_double_calls = 0;
     g_reparse_calls = 0;
     g_env_get_value = NULL;
     g_config_load_rc = 0;
@@ -1063,6 +1057,7 @@ test_env_editor_and_protocol_callbacks(void) {
     g_prompt.str_cb(g_prompt.user, "new");
     rc |= expect_str("env set name", g_env_name, "DSD_NEO_TEST_VALUE");
     rc |= expect_str("env set value", g_env_value, "new");
+    rc |= expect_int("env set sets once", g_env_set_calls, 1);
     rc |= expect_int("env set reparse", g_reparse_calls, 1);
 
     reset_capture();
@@ -1073,6 +1068,7 @@ test_env_editor_and_protocol_callbacks(void) {
     cb_env_edit_value(clear, "");
     rc |= expect_str("env clear name", g_env_name, "DSD_NEO_CLEAR_ME");
     rc |= expect_int("env clear calls unset", g_env_unset_calls, 1);
+    rc |= expect_int("env clear does not set an empty value", g_env_set_calls, 0);
     rc |= expect_int("env clear reparses", g_reparse_calls, 1);
 
     reset_capture();

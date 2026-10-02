@@ -37,7 +37,6 @@
 static int g_device_count = 0;
 static int g_device_count_calls = 0;
 static int g_usb_strings_calls = 0;
-static int g_rtl_create_calls = 0;
 static int g_fake_rtl_context = 0;
 
 // GNU ld --wrap entry points must keep the reserved __wrap_* symbol names.
@@ -61,7 +60,6 @@ __wrap_rtlsdr_get_device_usb_strings(uint32_t index, char* manufact, char* produ
 int
 __wrap_rtl_stream_create(dsd_opts* opts, RtlSdrContext** out_ctx) {
     (void)opts;
-    g_rtl_create_calls++;
     *out_ctx = (RtlSdrContext*)&g_fake_rtl_context;
     return 0;
 }
@@ -116,7 +114,6 @@ run_local_rtl_setup(int* out_rc, int* out_in_type, int* out_dev_index) {
 
     g_device_count_calls = 0;
     g_usb_strings_calls = 0;
-    g_rtl_create_calls = 0;
     /* A rejected run leaves the shutdown flag raised for the next one. */
     dsd_exitflag_store(0);
 

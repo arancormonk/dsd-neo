@@ -20,7 +20,6 @@
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/csv_validate.h>
 #include <dsd-neo/core/dibit.h>
-#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
@@ -41,6 +40,7 @@
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/dsp/symbol.h>
 #include <dsd-neo/engine/channel_scan.h>
+#include <dsd-neo/engine/engine.h>
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/engine/scan_voice_gate.h>
 #include <dsd-neo/engine/trunk_scan.h>
@@ -61,6 +61,7 @@
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/call_alert.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/freq_parse.h>
@@ -81,7 +82,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 #include "command_dispatch.h"
 #include "commands_internal.h"
 #include "key_commands.h"
@@ -361,7 +361,7 @@ ui_set_toast(dsd_state* state, int ttl_s, const char* fmt, ...) {
     va_start(ap, fmt);
     (void)DSD_VSNPRINTF(state->ui_msg, sizeof state->ui_msg, fmt, ap);
     va_end(ap);
-    state->ui_msg_expire = time(NULL) + ttl_s;
+    state->ui_msg_expire = dsd_realtime_time() + ttl_s;
 }
 
 static int
@@ -373,12 +373,20 @@ ui_reconfigure_output_for_input_policy(dsd_opts* opts, dsd_state* state) {
     return 0;
 }
 
-/* The audio input changed. A tone heard on the old input does not describe the new one, so it
-   goes now rather than when the detector next loses it (issue #522); then the output follows
-   the new input's policy. */
+/* The decoder left its input. A tone heard on it does not describe the next one, so it goes now
+   rather than when the detector next loses it (issue #522), and an I/Q replay's capture clock no
+   longer times what the decoder reads, so decode time is the system's again (issue #572). */
+static void
+ui_input_left(dsd_opts* opts, dsd_state* state) {
+    dsd_analog_rx_reset(state);
+    dsd_engine_decode_clock_leave_replay(opts, state);
+}
+
+/* The audio input changed: the old one is left (ui_input_left()), then the output follows the
+   new input's policy. */
 static int
 ui_input_switched(dsd_opts* opts, dsd_state* state) {
-    dsd_analog_rx_reset(state);
+    ui_input_left(opts, state);
     return ui_reconfigure_output_for_input_policy(opts, state);
 }
 
@@ -577,7 +585,7 @@ apply_cmd_key_hytera_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_
     ui_cmd_reset_key_mute_state(opts, state);
     DSD_SNPRINTF(state->ui_msg, sizeof state->ui_msg, "Hytera key loaded (%s)",
                  (state->M == 1) ? "forced" : "not forced");
-    state->ui_msg_expire = time(NULL) + 5;
+    state->ui_msg_expire = dsd_realtime_time() + 5;
     DSD_SECURE_ZERO(&p, sizeof p);
     return 1;
 }
@@ -665,7 +673,9 @@ apply_cmd_key_management_stream_keys(const dsd_opts* opts, dsd_state* state, con
 
     for (size_t i = 0U; i < sizeof entries / sizeof entries[0]; i++) {
         if (entries[i].cmd_id == c->id) {
-            char s[256];
+            /* Zeroed up front: an empty payload copies nothing, and the wipe below covers the whole buffer either
+             * way, so it should never be handed bytes nothing wrote. */
+            char s[256] = {0};
             if (ui_cmd_copy_payload_string(c, s, entries[i].payload_cap)) {
                 entries[i].fn(state, s, opts->show_keys);
                 dsd_enc_lockout_bump_key_epoch(state);
@@ -2559,7 +2569,7 @@ current_cc_freq(const dsd_state* state) {
 
 static void
 reset_call_tracking(dsd_opts* opts, dsd_state* state, int clear_trunk_vc) {
-    const double ended_m = dsd_time_now_monotonic_s();
+    const double ended_m = dsd_decode_now_mono_s();
     for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
         if (dsd_call_state_end(state, (uint8_t)slot, ended_m) > 0) {
             dsd_event_sync_slot(opts, state, (uint8_t)slot);
@@ -2677,9 +2687,9 @@ request_manual_tune(dsd_opts* opts, dsd_state* state, long int freq, int p25_cc_
 
 static void
 mark_cc_sync(dsd_state* state, int include_monotonic) {
-    state->last_cc_sync_time = time(NULL);
+    state->last_cc_sync_time = dsd_decode_time();
     if (include_monotonic) {
-        state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
+        state->last_cc_sync_time_m = dsd_decode_now_mono_s();
     }
 }
 
@@ -3872,7 +3882,7 @@ ui_cmd_handle_p25_ga_toggle(dsd_opts* opts, dsd_state* state, const struct dsd_a
     if (state) {
         DSD_SNPRINTF(state->ui_msg, sizeof state->ui_msg, "P25 Group Affiliation: %s",
                      opts->frontend_display.show_p25_group_affiliations ? "On" : "Off");
-        state->ui_msg_expire = time(NULL) + 3;
+        state->ui_msg_expire = dsd_realtime_time() + 3;
     }
     return 1;
 }
@@ -5614,7 +5624,7 @@ apply_cmd_skip_slot(dsd_opts* opts, dsd_state* state, const struct dsd_app_comma
     const unsigned int tg = (uint32_t)target;
     const int fallback = call.kind == DSD_CALL_KIND_PRIVATE_VOICE || !DSD_SYNC_IS_P25(call.protocol);
     const int arm_rc =
-        dsd_tg_policy_call_skip_arm(state, tg, (uint32_t)call.ota_source_id, fallback, dsd_time_now_monotonic_s());
+        dsd_tg_policy_call_skip_arm(state, tg, (uint32_t)call.ota_source_id, fallback, dsd_decode_now_mono_s());
     if (arm_rc != 0) {
         ui_set_toast(state, 4, "Could not skip TG %u", tg);
         return UI_CMD_APPLY_FAILED;
@@ -5655,7 +5665,7 @@ apply_cmd_provoice_mode_toggle(dsd_opts* opts, dsd_state* state) {
     state->p25_cc_freq = 0;
     state->trunk_cc_freq = 0;
     opts->trunk_is_tuned = 0;
-    const double ended_m = dsd_time_now_monotonic_s();
+    const double ended_m = dsd_decode_now_mono_s();
     for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
         if (dsd_call_state_end(state, (uint8_t)slot, ended_m) > 0) {
             dsd_event_sync_slot(opts, state, (uint8_t)slot);
@@ -5841,8 +5851,8 @@ ui_cmd_handle_symcap_save(dsd_opts* opts, dsd_state* state, const struct dsd_app
     (void)c;
     char timestr[7];
     char datestr[9];
-    (void)dsd_format_local_datetime(time(NULL), DSD_LOCAL_DATETIME_TIME_COMPACT, timestr, sizeof timestr);
-    (void)dsd_format_local_datetime(time(NULL), DSD_LOCAL_DATETIME_DATE_COMPACT, datestr, sizeof datestr);
+    (void)dsd_format_local_datetime(dsd_decode_time(), DSD_LOCAL_DATETIME_TIME_COMPACT, timestr, sizeof timestr);
+    (void)dsd_format_local_datetime(dsd_decode_time(), DSD_LOCAL_DATETIME_DATE_COMPACT, datestr, sizeof datestr);
     DSD_SNPRINTF(opts->symbol_out_file, sizeof opts->symbol_out_file, "%s_%s_dibit_capture.bin", datestr, timestr);
     openSymbolOutFile(opts, state);
     if (state && state->event_history_s) {
@@ -5851,7 +5861,7 @@ ui_cmd_handle_symcap_save(dsd_opts* opts, dsd_state* state, const struct dsd_app
         (void)dsd_event_emit_system_notice(opts, state, 0U, event_str);
         dsd_event_sync_slot(opts, state, 0);
     }
-    opts->symbol_out_file_creation_time = time(NULL);
+    opts->symbol_out_file_creation_time = dsd_decode_time();
     opts->symbol_out_file_is_auto = 1;
     return 1;
 }
@@ -5943,8 +5953,8 @@ ui_cmd_handle_stop_playback(dsd_opts* opts, dsd_state* state, const struct dsd_a
         opts->audio_in_type = AUDIO_IN_PULSE;
         if (openAudioInput(opts) != 0) {
             LOG_ERROR("UI: failed to open PulseAudio input\n");
-            /* The playback is gone either way; its tone goes with it (issue #522). */
-            dsd_analog_rx_reset(state);
+            /* The playback is gone either way: its tone and a replay's capture clock go with it. */
+            ui_input_left(opts, state);
         } else {
             (void)ui_input_switched(opts, state);
         }
@@ -6544,17 +6554,19 @@ ui_cfg_note_refused_row(int radio_rc) {
 }
 #endif
 
-/* A config apply that moved the input is an input switch like the commands that make one, and
-   one that changed the decode mode a decode-mode change: either way the tone heard before it
-   goes (issue #522). Out of the analog monitor nothing else forgets it before the row can come
-   back, since no monitor block need arrive in between. An unrelated settings change keeps it,
-   including the mode every runtime apply restates. */
+/* A config apply that moved the input is an input switch like the commands that make one
+   (ui_input_left(): the tone heard before it goes, issue #522, and so does an I/Q replay's
+   capture clock, issue #572), and one that changed the decode mode a decode-mode change, which
+   forgets the tone too. Out of the analog monitor nothing else forgets it before the row can
+   come back, since no monitor block need arrive in between. An unrelated settings change keeps
+   it, including the mode every runtime apply restates. */
 static void
-cfg_forget_rx_tone_on_boundary(const dsd_opts* opts, dsd_state* state, int old_audio_in_type,
-                               const char* old_audio_in_dev, dsdneoUserDecodeMode old_decode_mode) {
+cfg_forget_rx_tone_on_boundary(dsd_opts* opts, dsd_state* state, int old_audio_in_type, const char* old_audio_in_dev,
+                               dsdneoUserDecodeMode old_decode_mode) {
     if (opts->audio_in_type != old_audio_in_type
-        || strncmp(old_audio_in_dev, opts->audio_in_dev, sizeof opts->audio_in_dev) != 0
-        || dsd_infer_decode_mode_preset_exact(opts) != old_decode_mode) {
+        || strncmp(old_audio_in_dev, opts->audio_in_dev, sizeof opts->audio_in_dev) != 0) {
+        ui_input_left(opts, state);
+    } else if (dsd_infer_decode_mode_preset_exact(opts) != old_decode_mode) {
         dsd_analog_rx_reset(state);
     }
 }
@@ -7195,12 +7207,12 @@ dsd_app_drain_cmds(dsd_opts* opts, dsd_state* state) {
         // After applying a command, publish updated snapshots so the UI can
         // render consistent opts/state without racing live structures.
         if (opts && state && opts->scanner_mode == 1 && opts->trunk_scan_enabled != 1) {
-            const double now_m = dsd_time_now_monotonic_s();
+            const double now_m = dsd_decode_now_mono_s();
             // Controls can change visits or hold state inside a long input wait.
             // Refresh the gate and its publication before exposing that command.
             dsd_scan_voice_gate_tick(opts, state, 0, now_m);
             dsd_engine_scan_visit_tick(opts, state, now_m);
-            dsd_engine_scan_y_timing_tick(opts, state, now_m, dsd_time_now_realtime_s());
+            dsd_engine_scan_y_timing_tick(opts, state, now_m, dsd_decode_now_realtime_s());
         }
         dsd_telemetry_publish_opts_snapshot(opts);
         if (state) {

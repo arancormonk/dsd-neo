@@ -1963,6 +1963,8 @@ m17_str_read_block_rtl(dsd_opts* opts, dsd_state* state, size_t nsam, int dec, f
                 dsd_request_shutdown(opts, state);
                 return M17_STR_READ_STOP;
             }
+            /* An I/Q replay's sample runs the decode clock to its capture time (issue #572). */
+            (void)dsd_rtl_stream_metrics_hook_replay_advance_decode_clock();
         }
         *sample *= opts->rtl_volume_multiplier;
         out[i] = clip_output ? m17_clip_float_to_short(*sample) : (short)*sample;

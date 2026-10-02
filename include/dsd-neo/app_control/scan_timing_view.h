@@ -65,9 +65,9 @@ typedef struct {
 /**
  * @brief Fill @p out from the published scan timing.
  *
- * Zeroes @p out first. @p now_m is monotonic seconds, the clock the decoder stamps the
- * deadlines from. Returns 1 when there is something to show (@c active), 0 when the row
- * should be left blank, and -1 for invalid arguments.
+ * Zeroes @p out first. @p now_m is decode-clock monotonic seconds (dsd_decode_now_mono_s()), the
+ * clock the decoder stamps the deadlines from. Returns 1 when there is something to show
+ * (@c active), 0 when the row should be left blank, and -1 for invalid arguments.
  */
 int dsd_app_scan_timing_view(const dsd_opts* opts, const dsd_state* state, double now_m, dsd_app_scan_timing* out);
 

@@ -29,7 +29,7 @@ class CallHistoryFilterModel : public QSortFilterProxyModel {
     Q_PROPERTY(QString filterText READ filterText WRITE setFilterText NOTIFY filterChanged)
     Q_PROPERTY(QString filterSystem READ filterSystem WRITE setFilterSystem NOTIFY filterChanged)
     Q_PROPERTY(int filterKind READ filterKind WRITE setFilterKind NOTIFY filterChanged)
-    Q_PROPERTY(qlonglong minWhen READ minWhen WRITE setMinWhen NOTIFY filterChanged)
+    Q_PROPERTY(qlonglong historySession READ historySession WRITE setHistorySession NOTIFY filterChanged)
 
   public:
     explicit CallHistoryFilterModel(QObject* parent = nullptr);
@@ -63,17 +63,19 @@ class CallHistoryFilterModel : public QSortFilterProxyModel {
     void setFilterKind(int kind);
 
     /**
-     * @brief Oldest row (start time, epoch seconds) the view shows; 0 = no bound.
+     * @brief The decode session whose rows the view shows (CallHistoryModel::session()); 0 = every row.
      *
-     * The monitor's recent-calls pane sets this to the session start so a fresh
+     * The monitor's recent-calls pane sets this to the running session, so a fresh
      * session does not open onto days of persisted history as though it were live.
+     * It selects by the session that logged a row, not by the row's stamps. A replay's
+     * calls are stamped with the capture's time, and a start-time bound would hide them.
      */
     qlonglong
-    minWhen() const {
-        return m_minWhen;
+    historySession() const {
+        return m_historySession;
     }
 
-    void setMinWhen(qlonglong when);
+    void setHistorySession(qlonglong session);
 
   Q_SIGNALS:
     void countChanged();
@@ -107,7 +109,7 @@ class CallHistoryFilterModel : public QSortFilterProxyModel {
     QString m_filterText;
     QString m_filterSystem;
     int m_filterKind = 0;
-    qlonglong m_minWhen = 0;
+    qlonglong m_historySession = 0;
 };
 
 } // namespace dsd_qt

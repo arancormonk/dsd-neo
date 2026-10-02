@@ -9,7 +9,7 @@
 #include <dsd-neo/io/tcp_input.h>
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/runtime/log.h>
-#include <stdio.h>
+#include <stddef.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "services.h"

@@ -17,6 +17,7 @@
 #include <dsd-neo/crypto/aes.h>
 #include <dsd-neo/crypto/des.h>
 #include <dsd-neo/dsp/frame_sync.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
@@ -281,18 +282,6 @@ long int
 dsd_rigctl_query_hook_get_current_freq_hz(const dsd_opts* opts) {
     (void)opts;
     return g_current_rigctl_freq;
-}
-
-uint64_t
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-dsd_time_monotonic_ns(void) {
-    return 0ULL;
-}
-
-uint64_t
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-dsd_time_monotonic_ms(void) {
-    return dsd_time_monotonic_ns() / 1000000U;
 }
 
 dsd_trunk_tune_result
@@ -1885,6 +1874,7 @@ test_assignment_group_grant_anchors_tunes_and_loads_scrambler(void) {
     NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
 
     int rc = 0;
+    rc |= expect_int("assignment-group-quiet-calls", g_channel_to_frequency_quiet_calls, 1);
     rc |= expect_int("assignment-group-quiet-channel", g_channel_to_frequency_quiet_channel, channel);
     rc |= expect_int("assignment-group-channel", g_channel_to_frequency_channel, channel);
     rc |= expect_int("assignment-group-tune-calls", g_tune_freq_calls, 1);
@@ -1981,6 +1971,7 @@ int
 main(void) {
     int rc = 0;
 
+    dsd_decode_clock_use_test(1000000000000ULL);
     rc |= test_decode_guards_and_unknown_dispatch();
     rc |= test_sacch_full_decode_crc_gate_and_reset();
     rc |= test_disc_trunk_return_clears_call_state();
@@ -2009,6 +2000,7 @@ main(void) {
     rc |= test_arib_tx_release_uses_shifted_fields_and_clears_call();
     rc |= test_assignment_group_grant_anchors_tunes_and_loads_scrambler();
     rc |= test_assignment_data_gate_and_duplicate_release();
+    dsd_decode_clock_use_system();
 
     if (rc == 0) {
         printf("NXDN_ELEMENT_BOUNDS: OK\n");

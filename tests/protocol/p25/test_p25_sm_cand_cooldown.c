@@ -7,10 +7,10 @@
  * cooled down and skipped on the next hunt in favor of another candidate. */
 
 #include <assert.h>
-#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <math.h>
@@ -71,7 +71,7 @@ main(void) {
     (void)dsd_trunk_cc_candidates_add(&st, A, 0, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE);
     (void)dsd_trunk_cc_candidates_add(&st, B, 0, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE);
     // Force CC hunt
-    st.last_cc_sync_time_m = dsd_time_now_monotonic_s() - 10.0;
+    st.last_cc_sync_time_m = dsd_decode_now_mono_s() - 10.0;
 
     // First tick: should tune to A
     g_last_tuned_cc = 0;
@@ -80,7 +80,7 @@ main(void) {
 
     // Simulate evaluation window expiry with no CC activity to trigger cooldown for A
     st.p25_cc_eval_freq = A;
-    st.p25_cc_eval_start_m = dsd_time_now_monotonic_s() - 5.0;
+    st.p25_cc_eval_start_m = dsd_decode_now_mono_s() - 5.0;
     st.last_cc_sync_time_m = 0.0; // no CC activity
 
     // Next tick: cooldown applied; next hunt should pick B
@@ -95,7 +95,7 @@ main(void) {
     (void)dsd_trunk_cc_candidates_add(&st2, B, 0, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE);
 
     p25_sm_ctx_t* ctx = p25_sm_get_ctx();
-    double pending_m = dsd_time_now_monotonic_s() - 2.5;
+    double pending_m = dsd_decode_now_mono_s() - 2.5;
     ctx->state = P25_SM_ON_CC;
     ctx->config.cc_grace_s = 5.0;
     ctx->t_cc_sync_m = pending_m;
@@ -120,7 +120,7 @@ main(void) {
     ctx = p25_sm_get_ctx();
     ctx->config.cc_grace_s = 5.0;
     st_return.p25_cc_eval_freq = A;
-    const double return_tune_m = dsd_time_now_monotonic_s() - 4.0;
+    const double return_tune_m = dsd_decode_now_mono_s() - 4.0;
     st_return.p25_last_cc_msg_time_m = return_tune_m - 0.25;
     assert(p25_sm_restart_pending_cc_acquisition(ctx, &o_return, &st_return, return_tune_m, "test-return") == 1);
     assert(fabs(st_return.p25_cc_eval_start_m - ctx->t_cc_tune_m) <= timestamp_epsilon_s);
@@ -138,7 +138,7 @@ main(void) {
     assert(st_return.p25_cc_eval_freq == A);
     assert(return_candidates->cool_until[0] == 0.0);
 
-    const double decoded_return_m = dsd_time_now_monotonic_s();
+    const double decoded_return_m = dsd_decode_now_mono_s();
     st_return.last_cc_sync_time_m = decoded_return_m;
     st_return.p25_last_cc_msg_time_m = decoded_return_m;
     p25_sm_tick_ctx(ctx, &o_return, &st_return);
@@ -157,7 +157,7 @@ main(void) {
     ctx = p25_sm_get_ctx();
     ctx->config.cc_grace_s = 5.0;
     st_return_timeout.p25_cc_eval_freq = A;
-    const double expired_return_m = dsd_time_now_monotonic_s() - 5.5;
+    const double expired_return_m = dsd_decode_now_mono_s() - 5.5;
     st_return_timeout.p25_last_cc_msg_time_m = expired_return_m - 0.25;
     assert(p25_sm_restart_pending_cc_acquisition(ctx, &o_return_timeout, &st_return_timeout, expired_return_m,
                                                  "test-return-timeout")
@@ -169,7 +169,7 @@ main(void) {
     g_last_tuned_cc = 0;
     p25_sm_tick_ctx(ctx, &o_return_timeout, &st_return_timeout);
     assert(g_last_tuned_cc == B);
-    assert(expired_candidates->cool_until[0] > dsd_time_now_monotonic_s());
+    assert(expired_candidates->cool_until[0] > dsd_decode_now_mono_s());
     assert(st_return_timeout.p25_cc_eval_freq == B);
     assert(ctx->cc_acquisition_origin == P25_SM_CC_ACQUISITION_HUNT_PROBE);
 
@@ -179,7 +179,7 @@ main(void) {
     init_basic(&o3, &st3);
     (void)dsd_trunk_cc_candidates_add(&st3, A, 0, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE);
     (void)dsd_trunk_cc_candidates_add(&st3, B, 0, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE);
-    st3.last_cc_sync_time_m = dsd_time_now_monotonic_s() - 10.0;
+    st3.last_cc_sync_time_m = dsd_decode_now_mono_s() - 10.0;
     dsd_trunk_tuning_hooks pending_hooks = {0};
     pending_hooks.tune_to_cc_request = trunk_tune_to_cc;
     dsd_trunk_tuning_hooks_set(pending_hooks);
@@ -216,7 +216,7 @@ main(void) {
     assert(fabs(st3.p25_cc_eval_start_m - ctx->t_cc_tune_m) <= timestamp_epsilon_s);
 
     // Only the post-completion acquisition window can fail A and advance to B.
-    pending_m = dsd_time_now_monotonic_s() - 2.5;
+    pending_m = dsd_decode_now_mono_s() - 2.5;
     ctx->t_cc_sync_m = pending_m;
     ctx->t_cc_tune_m = pending_m;
     st3.last_cc_sync_time_m = pending_m;
@@ -229,7 +229,7 @@ main(void) {
     // replacement target.
     uint64_t failed_request = ctx->cc_tune_request_id;
     assert(failed_request != 0U);
-    const double stale_decoded_m = dsd_time_now_monotonic_s() - 10.0;
+    const double stale_decoded_m = dsd_decode_now_mono_s() - 10.0;
     st3.p25_last_cc_msg_time_m = stale_decoded_m;
     g_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_DEFERRED;
     dsd_trunk_tuning_request_publish(failed_request, DSD_TRUNK_TUNE_RESULT_FAILED);

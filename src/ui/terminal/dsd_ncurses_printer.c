@@ -27,7 +27,6 @@
 #include <dsd-neo/app_control/squelch_view.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/channel_label.h>
-#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
@@ -42,6 +41,7 @@
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/analog_tones.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/unicode.h>
 #include <dsd-neo/ui/menu_core.h>
@@ -1122,7 +1122,7 @@ ui_format_scan_timing_row(const dsd_opts* opts, const dsd_state* state, double n
 static void
 ui_render_scan_timing_row(const dsd_opts* opts, const dsd_state* state) {
     char line[192];
-    int len = ui_format_scan_timing_row(opts, state, dsd_time_now_monotonic_s(), line, sizeof(line));
+    int len = ui_format_scan_timing_row(opts, state, dsd_decode_now_mono_s(), line, sizeof(line));
     if (len <= 0) {
         return;
     }
@@ -1642,7 +1642,7 @@ ui_render_p25_affiliations_panel(const dsd_opts* opts, dsd_state* state) {
     // Compose a recent-first list of up to 20 RIDs
     int idxs[256];
     int n = 0;
-    time_t now = time(NULL);
+    time_t now = dsd_decode_time();
     for (int i = 0; i < 256; i++) {
         if (state->p25_aff_rid[i] != 0) {
             idxs[n++] = i;
@@ -1690,7 +1690,7 @@ ui_render_p25_group_affiliations_panel(const dsd_opts* opts, dsd_state* state) {
     ui_print_header("P25 Group Affiliation");
     int idxs[512];
     int n = 0;
-    time_t now = time(NULL);
+    time_t now = dsd_decode_time();
     for (int i = 0; i < 512; i++) {
         if (state->p25_ga_rid[i] != 0 && state->p25_ga_tg[i] != 0) {
             idxs[n++] = i;
@@ -2375,7 +2375,7 @@ ui_render_active_channel_list(const dsd_opts* opts, const dsd_state* state, unsi
     if (dsd_recent_activity_copy_snapshot(state, &recent) <= 0) {
         return;
     }
-    const uint64_t now_ms = (uint64_t)(dsd_time_now_monotonic_s() * 1000.0);
+    const uint64_t now_ms = (uint64_t)(dsd_decode_now_mono_s() * 1000.0);
     for (unsigned int i = 0; i < max_channels; i++) {
         const char* text = recent.entries[i].notice;
         if (text[0] == '\0') {
@@ -2646,7 +2646,7 @@ ui_render_edacs_lcn_row(const dsd_opts* opts, const dsd_state* state, int lcn,
     }
 
     const dsd_recent_activity_entry* entry = recent != NULL ? &recent->entries[lcn] : NULL;
-    const uint64_t now_ms = (uint64_t)(dsd_time_now_monotonic_s() * 1000.0);
+    const uint64_t now_ms = (uint64_t)(dsd_decode_now_mono_s() * 1000.0);
     if (entry != NULL && entry->notice[0] != '\0'
         && (entry->updated_m_ms == 0U || now_ms < entry->updated_m_ms
             || now_ms - entry->updated_m_ms <= DSD_RECENT_ACTIVITY_TTL_MS)) {
@@ -3454,7 +3454,7 @@ ui_format_rx_tone_line(const dsd_opts* opts, const dsd_state* state, double now_
 static void
 ui_render_call_info_rx_tone_line(const dsd_opts* opts, const dsd_state* state) {
     char line[64];
-    if (ui_format_rx_tone_line(opts, state, dsd_time_now_monotonic_s(), line, sizeof(line)) <= 0) {
+    if (ui_format_rx_tone_line(opts, state, dsd_realtime_mono_s(), line, sizeof(line)) <= 0) {
         return;
     }
     printw("| ");
@@ -3497,7 +3497,7 @@ ui_format_tone_filter_line(const dsd_opts* opts, const dsd_state* state, double 
 static void
 ui_render_call_info_tone_filter_line(const dsd_opts* opts, const dsd_state* state) {
     char line[192];
-    if (ui_format_tone_filter_line(opts, state, dsd_time_now_monotonic_s(), line, sizeof(line)) <= 0) {
+    if (ui_format_tone_filter_line(opts, state, dsd_realtime_mono_s(), line, sizeof(line)) <= 0) {
         return;
     }
     printw("| ");

@@ -19,12 +19,13 @@
 #elif defined(__GNUC__) || defined(__clang__)
 #include <cpuid.h>
 
-static inline unsigned long long
+/* XGETBV through the compiler's builtin, the one _xgetbv() in <immintrin.h> wraps, as MSVC's _xgetbv() is used below.
+ * Called directly so this header does not pull every intrinsic header into the units that include it. GCC and clang
+ * only expose it to code built for the XSAVE feature, which those units are not, so this wrapper alone is. That is
+ * safe because the caller executes it only after CPUID has reported OSXSAVE. */
+__attribute__((target("xsave"))) static inline unsigned long long
 dsd_neo_xgetbv(unsigned int xcr) {
-    unsigned int eax = 0;
-    unsigned int edx = 0;
-    __asm__ __volatile__("xgetbv" : "=a"(eax), "=d"(edx) : "c"(xcr));
-    return ((unsigned long long)edx << 32) | eax;
+    return __builtin_ia32_xgetbv(xcr);
 }
 #endif
 

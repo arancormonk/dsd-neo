@@ -28,8 +28,8 @@
 #include <limits.h>
 #include <math.h>
 #include <mbelib-neo/mbelib.h>
+#include <stddef.h>
 #include <stdint.h>
-#include <string.h>
 #include <sys/types.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"

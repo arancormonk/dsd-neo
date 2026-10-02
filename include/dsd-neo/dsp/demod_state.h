@@ -39,6 +39,29 @@
  * DSD_ANALOG_CHANNEL_MAX_TAPS in demod_pipeline.cpp. */
 #define DSD_CHANNEL_LPF_MAX_TAPS 288
 
+/* Channel LPF history, in complex samples: the streaming FIR (simd_fir_complex_apply()) keeps the newest this many
+ * input samples. Its windows reach pending + c samples back, with pending at most the largest c (143, for the
+ * largest odd tap count) and c at most that too, so a tap change without a reset always finds its history. */
+#define DSD_CHANNEL_LPF_HIST_LEN (DSD_CHANNEL_LPF_MAX_TAPS - 1)
+
+/* The channel LPF's output work buffers (hb_workbuf, timing_buf), in floats: a call makes at most N + 143 complex
+ * outputs for N in (N + c_old - c_new on a tap shrink), and N is at most MAXIMUM_BUF_LENGTH / 2 complex. */
+#define DSD_DEMOD_WORKBUF_LENGTH (MAXIMUM_BUF_LENGTH + 2 * DSD_CHANNEL_LPF_HIST_LEN)
+
+/* The alignment of demod_state's aligned work buffers, in bytes: DSD_NEO_ALIGN (runtime/mem.h), which the SIMD kernels
+ * assume of them. */
+#define DSD_DEMOD_BUF_ALIGN      64
+
+/* Floats in one DSD_DEMOD_BUF_ALIGN-byte block, as an int so the capacities below round in the int arithmetic they are
+ * written in. */
+#define DSD_DEMOD_BLOCK_FLOATS   (DSD_DEMOD_BUF_ALIGN / (int)sizeof(float))
+
+/* The floats an aligned buffer of n floats is declared with: n rounded up to whole DSD_DEMOD_BUF_ALIGN-byte blocks, so
+ * the buffer ends where the next one's alignment starts and the struct needs no padding between them. The capacity is
+ * still n; the spare tail past it is never read. */
+#define DSD_DEMOD_ALIGNED_FLOATS(n)                                                                                    \
+    ((((n) + DSD_DEMOD_BLOCK_FLOATS - 1) / DSD_DEMOD_BLOCK_FLOATS) * DSD_DEMOD_BLOCK_FLOATS)
+
 /* Channel LPF profile ids */
 enum DSD_ATTR_PACKED {
     DSD_CH_LPF_PROFILE_WIDE = 0,
@@ -76,18 +99,20 @@ struct demod_state {
     demod_state() noexcept { DSD_MEMSET(this, 0, sizeof(*this)); }
 #endif
 
-    /* Large aligned buffers first to minimize padding */
-    alignas(64) float hb_i_buf[MAXIMUM_BUF_LENGTH / 2];
-    alignas(64) float hb_q_buf[MAXIMUM_BUF_LENGTH / 2];
-    alignas(64) float hb_i_out[MAXIMUM_BUF_LENGTH / 2];
-    alignas(64) float hb_q_out[MAXIMUM_BUF_LENGTH / 2];
-    alignas(64) float input_cb_buf[MAXIMUM_BUF_LENGTH];
-    alignas(64) float result[MAXIMUM_BUF_LENGTH];
-    alignas(64) float timing_buf[MAXIMUM_BUF_LENGTH];
-    alignas(64) float resamp_outbuf[MAXIMUM_BUF_LENGTH * 4];
-    alignas(64) float channel_lpf_hist_i[DSD_CHANNEL_LPF_MAX_TAPS]; /* symmetric FIR history (taps - 1) */
-    alignas(64) float channel_lpf_hist_q[DSD_CHANNEL_LPF_MAX_TAPS];
-    alignas(64) float channel_lpf_plan_taps[DSD_CHANNEL_LPF_MAX_TAPS];
+    /* Large aligned buffers first to minimize padding. Each is declared as DSD_DEMOD_ALIGNED_FLOATS of its capacity, so
+       none needs padding before the next (static-asserted below the struct). */
+    alignas(DSD_DEMOD_BUF_ALIGN) float hb_i_buf[DSD_DEMOD_ALIGNED_FLOATS(MAXIMUM_BUF_LENGTH / 2)];
+    alignas(DSD_DEMOD_BUF_ALIGN) float hb_q_buf[DSD_DEMOD_ALIGNED_FLOATS(MAXIMUM_BUF_LENGTH / 2)];
+    alignas(DSD_DEMOD_BUF_ALIGN) float hb_i_out[DSD_DEMOD_ALIGNED_FLOATS(MAXIMUM_BUF_LENGTH / 2)];
+    alignas(DSD_DEMOD_BUF_ALIGN) float hb_q_out[DSD_DEMOD_ALIGNED_FLOATS(MAXIMUM_BUF_LENGTH / 2)];
+    alignas(DSD_DEMOD_BUF_ALIGN) float input_cb_buf[DSD_DEMOD_ALIGNED_FLOATS(MAXIMUM_BUF_LENGTH)];
+    alignas(DSD_DEMOD_BUF_ALIGN) float result[DSD_DEMOD_ALIGNED_FLOATS(MAXIMUM_BUF_LENGTH)];
+    alignas(DSD_DEMOD_BUF_ALIGN) float timing_buf[DSD_DEMOD_ALIGNED_FLOATS(DSD_DEMOD_WORKBUF_LENGTH)];
+    alignas(DSD_DEMOD_BUF_ALIGN) float resamp_outbuf[DSD_DEMOD_ALIGNED_FLOATS(MAXIMUM_BUF_LENGTH * 4)];
+    /* Streaming FIR history, DSD_CHANNEL_LPF_HIST_LEN complex samples, newest right-aligned */
+    alignas(DSD_DEMOD_BUF_ALIGN) float channel_lpf_hist_i[DSD_DEMOD_ALIGNED_FLOATS(DSD_CHANNEL_LPF_HIST_LEN)];
+    alignas(DSD_DEMOD_BUF_ALIGN) float channel_lpf_hist_q[DSD_DEMOD_ALIGNED_FLOATS(DSD_CHANNEL_LPF_HIST_LEN)];
+    alignas(DSD_DEMOD_BUF_ALIGN) float channel_lpf_plan_taps[DSD_DEMOD_ALIGNED_FLOATS(DSD_CHANNEL_LPF_MAX_TAPS)];
 
     /* Pointers and 64-bit items next */
     dsd_thread_t thread;
@@ -158,20 +183,31 @@ struct demod_state {
     int dc_block;
     float dc_avg;
     /* Half-band decimator */
-    float hb_workbuf[MAXIMUM_BUF_LENGTH];
+    float hb_workbuf[DSD_DEMOD_WORKBUF_LENGTH];
     float hb_hist_i[10][HB_TAPS_MAX - 1];
     float hb_hist_q[10][HB_TAPS_MAX - 1];
+    /* Per stage: input samples taken but not yet decimated past (simd_hb_decim2_complex()), the look-ahead and the
+       decimation phase in one count. 0 after a reset (dsd_demod_reset_filter_state()), so the stage's next output is
+       centred on its next input. */
+    int hb_pending[10];
+    /* The downsample_passes the half-band state above belongs to: the cascade starts over when the count changes,
+       since writers of the count (rate setup, restore_capture_rate_settings()) do not reset it. */
+    int hb_state_passes;
 
     /* Fixed channel low-pass (post-HB) to bound noise bandwidth at higher Fs.
-     * At 48 kHz with 1200 Hz transition, Blackman needs 135 taps (hist = 134).
+     * At 48 kHz with 1200 Hz transition, Blackman needs 135 taps.
      * Digital profiles cap the design at 144 taps; the analog family may use
-     * the full DSD_CHANNEL_LPF_MAX_TAPS. */
+     * the full DSD_CHANNEL_LPF_MAX_TAPS. The history is DSD_CHANNEL_LPF_HIST_LEN
+     * samples whatever the taps. */
     int channel_lpf_enable; /* gate */
     /* The historical enable rule (DSD_NEO_CHANNEL_LPF, else a 20 kHz rate_in) as decided when the stream was
        configured. The unset analog default and a switch back to digital restore it; an explicit analog width
        overrides it. */
     int channel_lpf_default_enable;
-    int channel_lpf_hist_len;
+    /* Channel FIR outputs held back for look-ahead (simd_fir_complex_apply()). 0 after a reset
+       (dsd_demod_reset_filter_state()), so the first output is centred on the first new sample; above 0 exactly when
+       the filter took samples since. */
+    int channel_lpf_pending;
     int channel_lpf_profile;       /* see DSD_CH_LPF_PROFILE_* */
     int channel_lpf_plan_rate_out; /* cached rate for channel_lpf_plan_taps */
     int channel_lpf_plan_profile;  /* cached profile for channel_lpf_plan_taps */
@@ -206,6 +242,9 @@ struct demod_state {
      * (config apply, menus) while the demod thread reads it per block. */
     std::atomic<float> channel_squelch_level;
     int channel_squelched; /* 1 if squelched this block, 0 otherwise */
+    /* 1 when full_demod()'s front end made no samples this block (a filter warm-up, or nothing in): the block decided
+       nothing, so channel_squelched and the other per-block decisions still hold the last block's. */
+    int front_end_empty;
 
     /* Polyphase rational resampler (L/M) */
     int resamp_enabled;
@@ -293,6 +332,18 @@ struct demod_state {
     int post_polydecim_K;         /* taps per phase (phase==1), e.g., 16 */
     int post_polydecim_hist_head; /* head index into circular history [0..K-1] */
     int post_polydecim_phase;     /* sample phase accumulator [0..M-1] */
+    /* Its fallback, run when the polyphase allocation fails: a one-pole low-pass, then the mean of each M samples. Its
+       state carries across blocks as the polyphase decimator's does, so neither depends on where the blocks are cut;
+       dsd_demod_reset_filter_state() clears both. */
+    float post_fallback_lp_y;    /* the one-pole's last output */
+    int post_fallback_lp_valid;  /* 1 once post_fallback_lp_y holds an output; 0 starts it from the next sample */
+    float post_fallback_box_acc; /* sum of the part-filled group */
+    int post_fallback_box_phase; /* samples in the part-filled group [0..M-1] */
+    /* What the decimator state above belongs to: the factor (0 = none yet), the rate_out and the path (1 = the
+       fallback) of the block that last ran it. A block with another of any starts the stage over. */
+    int post_decim_state_M;
+    int post_decim_state_rate_out;
+    int post_decim_state_fallback;
 
     /* Costas diagnostics (updated per block) */
     int costas_err_avg_q14;     /* average smoothed |err| scaled to Q14 for UI/metrics */
@@ -302,6 +353,26 @@ struct demod_state {
 };
 
 // NOLINTEND(clang-analyzer-optin.performance.Padding)
+
+/* The aligned buffers fill whole alignment blocks, so each starts right where the one before it ends: no compiler pads
+ * between them (MSVC warns C4324 when one does). */
+static_assert(sizeof(demod_state::hb_i_buf) % DSD_DEMOD_BUF_ALIGN == 0, "hb_i_buf must fill whole alignment blocks");
+static_assert(sizeof(demod_state::hb_q_buf) % DSD_DEMOD_BUF_ALIGN == 0, "hb_q_buf must fill whole alignment blocks");
+static_assert(sizeof(demod_state::hb_i_out) % DSD_DEMOD_BUF_ALIGN == 0, "hb_i_out must fill whole alignment blocks");
+static_assert(sizeof(demod_state::hb_q_out) % DSD_DEMOD_BUF_ALIGN == 0, "hb_q_out must fill whole alignment blocks");
+static_assert(sizeof(demod_state::input_cb_buf) % DSD_DEMOD_BUF_ALIGN == 0,
+              "input_cb_buf must fill whole alignment blocks");
+static_assert(sizeof(demod_state::result) % DSD_DEMOD_BUF_ALIGN == 0, "result must fill whole alignment blocks");
+static_assert(sizeof(demod_state::timing_buf) % DSD_DEMOD_BUF_ALIGN == 0,
+              "timing_buf must fill whole alignment blocks");
+static_assert(sizeof(demod_state::resamp_outbuf) % DSD_DEMOD_BUF_ALIGN == 0,
+              "resamp_outbuf must fill whole alignment blocks");
+static_assert(sizeof(demod_state::channel_lpf_hist_i) % DSD_DEMOD_BUF_ALIGN == 0,
+              "channel_lpf_hist_i must fill whole alignment blocks");
+static_assert(sizeof(demod_state::channel_lpf_hist_q) % DSD_DEMOD_BUF_ALIGN == 0,
+              "channel_lpf_hist_q must fill whole alignment blocks");
+static_assert(sizeof(demod_state::channel_lpf_plan_taps) % DSD_DEMOD_BUF_ALIGN == 0,
+              "channel_lpf_plan_taps must fill whole alignment blocks");
 
 /*
  * Whether the analog family's monitor audio, on the analog channel, is what the demodulator produces. The width-driven

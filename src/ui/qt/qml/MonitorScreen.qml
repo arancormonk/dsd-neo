@@ -80,9 +80,9 @@ Item {
     }
 
     // Ticks the recent-calls age labels ("now", "1m", "2h") once a minute:
-    // Util.shortAge reads the clock, which is not a binding dependency, so
-    // without this a row's age freezes at whatever it said when its delegate
-    // was created. Same device as HomeScreen's heardTick.
+    // metrics.decodeNowMs is read live but only announces a change while the
+    // decoder publishes, so without this a row's age freezes at whatever it said
+    // when the decoder last spoke. Same device as HomeScreen's heardTick.
     property int ageTick: 0
 
     Timer {
@@ -1123,9 +1123,9 @@ Item {
                                 meta.push(model.channel);
                             return meta.join(" · ");
                         }
-                        // ageTick forces the minute-by-minute refresh; shortAge reads
-                        // the clock, which is not a binding dependency by itself.
-                        rightText: (screen.ageTick, Util.shortAge(model.when))
+                        // Aged on the decode clock the row's when is stamped on. ageTick
+                        // forces the minute-by-minute refresh while the decoder is quiet.
+                        rightText: (screen.ageTick, Util.shortAge(model.when, metrics.decodeNowMs))
                         enc: model.enc
                         emergency: model.emergency
                     }

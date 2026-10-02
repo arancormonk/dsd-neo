@@ -10,9 +10,9 @@
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/csv_import.h>
 #include <dsd-neo/core/dibit.h>
-#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
+#include <dsd-neo/core/init.h>
 #include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
@@ -42,6 +42,8 @@
 #include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/io/control.h>
+#include <dsd-neo/io/iq_replay.h>
+#include <dsd-neo/io/iq_types.h>
 #include <dsd-neo/io/rigctl_client.h>
 #include <dsd-neo/io/udp_input.h>
 #include <dsd-neo/io/udp_socket_connect.h>
@@ -67,6 +69,7 @@
 #include <dsd-neo/runtime/cli.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/control_pump.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/input_failure.h>
 #include <dsd-neo/runtime/input_spec.h>
@@ -253,7 +256,7 @@ maybe_request_rtl_fsk_reacquire_on_no_sync(const dsd_opts* opts, dsd_state* stat
         return;
     }
 
-    double nowm = dsd_time_now_monotonic_s();
+    double nowm = dsd_decode_now_mono_s();
     time_t latest_sync_time = max_time_t(state->last_cc_sync_time, state->last_vc_sync_time);
     double latest_sync_m = max_double(state->last_cc_sync_time_m, state->last_vc_sync_time_m);
 
@@ -1461,7 +1464,7 @@ no_carrier_scanner_step_is_due(const dsd_opts* opts, const dsd_state* state, tim
      * can outlast it: sync refreshes the hangtime anchor for as long as a repeater transmits, and
      * the voice gate holds for as long as media keeps arriving. Opt-in, so with the cap off this
      * is a no-op and the rules below decide alone. */
-    if (dsd_engine_scan_visit_expired(opts, state, dsd_time_now_monotonic_s())) {
+    if (dsd_engine_scan_visit_expired(opts, state, dsd_decode_now_mono_s())) {
         return 1;
     }
     const int tone_gate = dsd_scan_analog_tone_gate(opts, state);
@@ -1494,7 +1497,7 @@ no_carrier_scanner_step_is_due(const dsd_opts* opts, const dsd_state* state, tim
         return 0;
     }
     if (dsd_scan_voice_gate_owns_step(opts, state)) {
-        return dsd_scan_voice_gate_should_step(opts, state, dsd_time_now_monotonic_s());
+        return dsd_scan_voice_gate_should_step(opts, state, dsd_decode_now_mono_s());
     }
     return (now - state->last_cc_sync_time) > opts->trunk_hangtime;
 }
@@ -1508,7 +1511,7 @@ no_carrier_rearm_abandoned_scan(const dsd_opts* opts, dsd_state* state, time_t n
      * every decoded frame until a tune succeeds. Reopen its windows so decoding can resume
      * and another attempt waits an interval, including when no tuner is available. */
     state->last_cc_sync_time = now;
-    state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
+    state->last_cc_sync_time_m = dsd_decode_now_mono_s();
     dsd_scan_voice_gate_note_retune(state, state->last_cc_sync_time_m);
 }
 
@@ -1569,7 +1572,7 @@ no_carrier_step_scanner_mode_if_needed(dsd_opts* opts, dsd_state* state, time_t 
         dsd_analog_rx_reset(state);
     }
     state->last_cc_sync_time = now;
-    state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
+    state->last_cc_sync_time_m = dsd_decode_now_mono_s();
     dsd_scan_voice_gate_note_retune(state, state->last_cc_sync_time_m);
     // A zero entry parks on the current frequency rather than retuning, so it is not a hop.
     return freq != 0;
@@ -1581,7 +1584,7 @@ no_carrier_is_cc_return_due(const dsd_opts* opts, const dsd_state* state, time_t
         return 0;
     }
     if (dsd_trunk_p25_recovery_allowed(opts, state)
-        && p25_sm_vc_reacquire_hold_active(p25_sm_get_ctx(), opts, state, dsd_time_now_monotonic_s())) {
+        && p25_sm_vc_reacquire_hold_active(p25_sm_get_ctx(), opts, state, dsd_decode_now_mono_s())) {
         return 0;
     }
 
@@ -1748,7 +1751,7 @@ no_carrier_sync_helper_tune_cache(const dsd_opts* opts, const dsd_state* state, 
 // the old frequency cannot be reacquired here no matter what the next epoch looks like.
 static void
 no_carrier_clear_voice_tune_state(dsd_opts* opts, dsd_state* state, dsd_call_end_reason reason) {
-    const double ended_m = dsd_time_now_monotonic_s();
+    const double ended_m = dsd_decode_now_mono_s();
     for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
         if (dsd_call_state_end_ex(state, (uint8_t)slot, ended_m, reason) > 0) {
             dsd_event_sync_slot(opts, state, (uint8_t)slot);
@@ -1820,7 +1823,7 @@ no_carrier_try_helper_return_to_cc(dsd_opts* opts, dsd_state* state, long cc, in
         double completed_m = 0.0;
         (void)dsd_trunk_tuning_request_status(tune_request_id, &completed_m);
         if (completed_m <= 0.0) {
-            completed_m = dsd_time_now_monotonic_s();
+            completed_m = dsd_decode_now_mono_s();
         }
         (void)p25_sm_restart_pending_cc_acquisition(p25_sm_get_ctx(), opts, state, completed_m, "no-carrier");
     }
@@ -2082,7 +2085,7 @@ no_carrier_return_to_control_channel_if_needed(dsd_opts* opts, dsd_state* state,
             accepted_cc_return = 1;
             state->edacs_tuned_lcn = -1;
             state->last_cc_sync_time = now;
-            state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
+            state->last_cc_sync_time_m = dsd_decode_now_mono_s();
             if (p25_return) {
                 no_carrier_apply_p25_cc_symbolrate(opts, state);
             }
@@ -2529,7 +2532,7 @@ no_carrier_reset_m17_and_sample_buffers(dsd_state* state) {
 
 static void
 no_carrier_run(dsd_opts* opts, dsd_state* state, int guard_held) {
-    const time_t now = time(NULL);
+    const time_t now = dsd_decode_time();
 
     if (opts->scanner_mode == 1 && opts->trunk_scan_enabled != 1 && dsd_channel_modes_present(state)) {
         /* Typed rows use tracked tunes, bypassing the legacy scan caches. */
@@ -2578,7 +2581,7 @@ dsd_engine_no_carrier_locked(dsd_opts* opts, dsd_state* state) {
 
 void
 dsd_engine_reset_no_carrier_state(dsd_opts* opts, dsd_state* state) {
-    const time_t now = time(NULL);
+    const time_t now = dsd_decode_time();
     no_carrier_clear_stale_p25_return_hints_after_generic_activity(opts, state);
     no_carrier_reset_dibit_and_dmr_buffers(state);
     no_carrier_close_mbe_outputs_if_needed(opts, state);
@@ -2699,7 +2702,7 @@ live_scanner_emit_start_log_if_enabled(const dsd_opts* opts, dsd_state* state) {
     if (opts->event_out_file[0] == 0) {
         return;
     }
-    time_t now = time(NULL);
+    time_t now = dsd_decode_time();
     char timestr[9];
     char datestr[11];
     char event_string[2000];
@@ -2742,16 +2745,16 @@ live_scanner_process_synced_frames(dsd_opts* opts, dsd_state* state, dsd_engine_
         p25_sm_tick_guard_leave();
         dsd_trunk_scan_hook_tick(opts, state);
         if (opts->scanner_mode == 1 && opts->scan_voice_only == 1) {
-            dsd_scan_voice_gate_tick(opts, state, frame_dispatchable, dsd_time_now_monotonic_s());
-            if (dsd_scan_voice_gate_should_step(opts, state, dsd_time_now_monotonic_s())) {
+            dsd_scan_voice_gate_tick(opts, state, frame_dispatchable, dsd_decode_now_mono_s());
+            if (dsd_scan_voice_gate_should_step(opts, state, dsd_decode_now_mono_s())) {
                 state->synctype = DSD_SYNC_NONE;
                 break;
             }
         }
         /* A busy legacy -Y row can keep syncing indefinitely. Maintain the visit clock
          * independently of the voice gate and return to noCarrier() when it expires. */
-        dsd_engine_scan_visit_tick(opts, state, dsd_time_now_monotonic_s());
-        if (dsd_engine_scan_visit_expired(opts, state, dsd_time_now_monotonic_s())) {
+        dsd_engine_scan_visit_tick(opts, state, dsd_decode_now_mono_s());
+        if (dsd_engine_scan_visit_expired(opts, state, dsd_decode_now_mono_s())) {
             /* noCarrier() owns the hop, and it only runs once this loop exits. Dropping sync is how
              * the voice-gate escape above hands control back, and the cap needs the same door: a
              * row that keeps syncing would otherwise never let the outer loop reach the step. */
@@ -2764,7 +2767,7 @@ live_scanner_process_synced_frames(dsd_opts* opts, dsd_state* state, dsd_engine_
         }
         /* Refresh after controls, even with the voice gate off: continuous sync
          * keeps moving the legacy hangtime anchor throughout this inner loop. */
-        dsd_engine_scan_y_timing_tick(opts, state, dsd_time_now_monotonic_s(), dsd_time_now_realtime_s());
+        dsd_engine_scan_y_timing_tick(opts, state, dsd_decode_now_mono_s(), dsd_decode_now_realtime_s());
         if (frame_tune_generation) {
             *frame_tune_generation = dsd_trunk_tuning_generation();
         }
@@ -2790,24 +2793,24 @@ live_scanner_main_loop(dsd_opts* opts, dsd_state* state) {
             p25_sm_tick_guard_leave();
         }
         dsd_trunk_scan_hook_tick(opts, state);
-        dsd_scan_voice_gate_tick(opts, state, 0, dsd_time_now_monotonic_s());
-        dsd_engine_scan_visit_tick(opts, state, dsd_time_now_monotonic_s());
+        dsd_scan_voice_gate_tick(opts, state, 0, dsd_decode_now_mono_s());
+        dsd_engine_scan_visit_tick(opts, state, dsd_decode_now_mono_s());
         dsd_runtime_pump_controls(opts, state);
 
         if (dsd_engine_channel_scan_pending(opts, state)) {
-            dsd_engine_scan_y_timing_tick(opts, state, dsd_time_now_monotonic_s(), dsd_time_now_realtime_s());
+            dsd_engine_scan_y_timing_tick(opts, state, dsd_decode_now_mono_s(), dsd_decode_now_realtime_s());
             dsd_sleep_ms(1);
             continue;
         }
         noCarrier(opts, state);
         if (dsd_engine_channel_scan_pending(opts, state)) {
-            dsd_engine_scan_y_timing_tick(opts, state, dsd_time_now_monotonic_s(), dsd_time_now_realtime_s());
+            dsd_engine_scan_y_timing_tick(opts, state, dsd_decode_now_mono_s(), dsd_decode_now_realtime_s());
             dsd_sleep_ms(1);
             continue;
         }
         /* noCarrier and pending-row commits can replace the visit anchors. Publish
          * the incoming visit before getFrameSync starts emitting its snapshots. */
-        dsd_engine_scan_y_timing_tick(opts, state, dsd_time_now_monotonic_s(), dsd_time_now_realtime_s());
+        dsd_engine_scan_y_timing_tick(opts, state, dsd_decode_now_mono_s(), dsd_decode_now_realtime_s());
         frame_tune_generation = dsd_trunk_tuning_generation();
         state->synctype = getFrameSync(opts, state);
         (void)dsd_engine_slicer_thresholds_refresh(state, &threshold_cache);
@@ -2951,7 +2954,7 @@ dsd_engine_cleanup_print_stats(dsd_state* state) {
     if (state->debug_mode == 1) {
         const uint64_t* start_ms = DSD_STATE_EXT_GET_AS(uint64_t, state, DSD_STATE_EXT_ENGINE_START_MS);
         if (start_ms) {
-            uint64_t elapsed_ms = dsd_time_monotonic_ms() - *start_ms;
+            uint64_t elapsed_ms = dsd_realtime_mono_ms() - *start_ms;
             LOG_INFO("NOTICE: Runtime: %llu ms\n", (unsigned long long)elapsed_ms);
         }
     }
@@ -3028,7 +3031,7 @@ dsd_engine_run_record_start_time_if_debug(dsd_state* state) {
     }
     uint64_t* start_ms = (uint64_t*)malloc(sizeof(*start_ms));
     if (start_ms) {
-        *start_ms = dsd_time_monotonic_ms();
+        *start_ms = dsd_realtime_mono_ms();
         (void)dsd_state_ext_set(state, DSD_STATE_EXT_ENGINE_START_MS, start_ms, free);
     }
 }
@@ -3199,6 +3202,70 @@ dsd_engine_run_dispatch_mode(dsd_opts* opts, dsd_state* state, const dsd_engine_
     return liveScanner(opts, state, hooks, lifecycle_started);
 }
 
+/* The sidecar path of the I/Q replay the run's input names, as the stream opens it: the `iqreplay:` spec's path, else
+   --iq-replay's. NULL when the input is no replay. */
+static const char*
+dsd_engine_replay_sidecar_path(const dsd_opts* opts) {
+    if (!opts->iq_replay_requested || !dsd_opts_audio_in_dev_is_iqreplay_spec(opts->audio_in_dev)) {
+        return NULL;
+    }
+    const char* colon = strchr(opts->audio_in_dev, ':');
+    if (colon && colon[1] != '\0') {
+        return colon + 1;
+    }
+    return opts->iq_replay_path[0] != '\0' ? opts->iq_replay_path : NULL;
+}
+
+int
+dsd_engine_decode_clock_enter_replay(dsd_opts* opts, dsd_state* state) {
+    if (!opts || !state) {
+        return -1;
+    }
+    const char* path = dsd_engine_replay_sidecar_path(opts);
+    if (!path) {
+        return 0;
+    }
+    dsd_iq_replay_config cfg;
+    DSD_MEMSET(&cfg, 0, sizeof(cfg));
+    char err[256] = {0};
+    if (dsd_iq_replay_read_metadata(path, &cfg, err, sizeof(err)) != DSD_IQ_OK) {
+        LOG_ERROR("IQ replay metadata error: %s\n", err[0] ? err : "unknown error");
+        return -1;
+    }
+    if (!state->engine_fresh) {
+        /* An earlier run on this state left decode-domain stamps on the system clock, and the rebase reaches only the
+           init seeds. Moved onto an older capture's time, the clock would read behind them, and a throttle or timer
+           measured from one (a DMR single-fragment SLCO stamp, say) would hold until the capture caught up. The system
+           clock only moves forward, so staying on it keeps behind now every stamp a run took on it. (An earlier replay
+           of a capture stamped ahead of this device's clock leaves stamps at the capture's later time; no clock choice
+           here moves them.) */
+        dsd_iq_replay_config_clear(&cfg);
+        LOG_WARN("IQ replay: this run reuses a decoder state an earlier run used; replay timing stays on the system "
+                 "clock for this run, and decode times are not anchored to the capture.\n");
+        return 0;
+    }
+    int64_t anchor_s = 0;
+    if (dsd_iq_replay_parse_utc_seconds(cfg.capture_started_utc, &anchor_s) != DSD_IQ_OK) {
+        LOG_WARN("IQ replay: capture_started_utc \"%s\" is not YYYY-MM-DDTHH:MM:SSZ; decode times start at "
+                 "2000-01-01T00:00:00Z.\n",
+                 cfg.capture_started_utc);
+        anchor_s = 0;
+    }
+    dsd_iq_replay_config_clear(&cfg);
+    dsd_decode_clock_use_replay(anchor_s);
+    dsd_state_rebase_decode_timestamps(opts, state);
+    return 0;
+}
+
+void
+dsd_engine_decode_clock_leave_replay(dsd_opts* opts, dsd_state* state) {
+    if (dsd_decode_clock_source() != DSD_DECODE_CLOCK_REPLAY) {
+        return;
+    }
+    dsd_decode_clock_use_system();
+    dsd_state_rebase_decode_timestamps(opts, state);
+}
+
 int
 dsd_engine_run_with_lifecycle(dsd_opts* opts, dsd_state* state, const dsd_engine_lifecycle_hooks* hooks) {
     if (!opts || !state) {
@@ -3223,6 +3290,16 @@ dsd_engine_run_with_lifecycle(dsd_opts* opts, dsd_state* state, const dsd_engine
     int lifecycle_started = 0;
     dsd_exitflag_store(0);
 
+    /* An I/Q replay decodes on its capture's clock (issue #572). Selected first, before common setup writes its first
+       record (the P25 SM log's event=init) and before the stream, the watchdog or a frontend reads the clock. Only on
+       a state no run has used yet; this run uses it. */
+    const int enter_rc = dsd_engine_decode_clock_enter_replay(opts, state);
+    state->engine_fresh = 0U;
+    if (enter_rc != 0) {
+        rc = 1;
+        goto ENGINE_OUT;
+    }
+
     dsd_engine_run_record_start_time_if_debug(state);
     dsd_engine_run_install_hooks();
 
@@ -3241,9 +3318,14 @@ ENGINE_OUT:
         hooks->stop(opts, state, hooks->context);
     }
     dsd_engine_cleanup(opts, state);
+    /* The stream has stopped: the next session's decode time is the system's again. */
+    dsd_engine_decode_clock_leave_replay(opts, state);
     dsd_input_failure failure;
     dsd_input_failure_get(&failure);
-    if (failure.kind == DSD_INPUT_FAILURE_DEVICE) {
+    /* A receiver that failed, or an I/Q replay whose capture could not be read (the replay reader latches a file
+       failure, then ends the stream like its EOF), turns the normal end into a failure exit. */
+    if (failure.kind == DSD_INPUT_FAILURE_DEVICE
+        || (failure.kind == DSD_INPUT_FAILURE_FILE && opts->iq_replay_requested)) {
         rc = 1;
     }
     return rc;

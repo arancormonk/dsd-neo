@@ -10,6 +10,8 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/engine/engine.h>
+#include <dsd-neo/io/iq_capture.h>
+#include <dsd-neo/io/iq_types.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/runtime/analog_channel.h>
@@ -17,6 +19,7 @@
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/input_failure.h>
 #include <math.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -647,6 +650,50 @@ test_soapy_setup_normalizes_args_and_tuning(void) {
     return test_rc;
 }
 
+/* A small cu8 capture with its sidecar in @p dir; @p out_metadata_path receives the sidecar's path. */
+static int
+write_replay_capture(const char* dir, char* out_metadata_path, size_t out_metadata_path_size) {
+    char data_path[DSD_TEST_PATH_MAX];
+    if (dsd_test_path_join(data_path, sizeof(data_path), dir, "capture.iq") != 0
+        || dsd_test_path_join(out_metadata_path, out_metadata_path_size, dir, "capture.iq.json") != 0) {
+        return -1;
+    }
+    dsd_iq_capture_config cfg;
+    DSD_MEMSET(&cfg, 0, sizeof(cfg));
+    DSD_SNPRINTF(cfg.data_path, sizeof(cfg.data_path), "%s", data_path);
+    DSD_SNPRINTF(cfg.metadata_path, sizeof(cfg.metadata_path), "%s", out_metadata_path);
+    cfg.format = DSD_IQ_FORMAT_CU8;
+    DSD_SNPRINTF(cfg.capture_stage, sizeof(cfg.capture_stage), "%s", "post_mute_pre_widen");
+    cfg.sample_rate_hz = 1536000U;
+    cfg.center_frequency_hz = 851375000ULL;
+    cfg.capture_center_frequency_hz = 851759000ULL;
+    cfg.rtl_dsp_bw_khz = 48;
+    cfg.base_decimation = 32U;
+    cfg.post_downsample = 1U;
+    cfg.demod_rate_hz = 48000U;
+    cfg.fs4_shift_enabled = 1;
+    cfg.combine_rotate_enabled = 1;
+    cfg.muted_bytes_excluded = 1;
+    DSD_SNPRINTF(cfg.source_backend, sizeof(cfg.source_backend), "%s", "rtl");
+    DSD_SNPRINTF(cfg.source_args, sizeof(cfg.source_args), "%s", "dev=0");
+    dsd_iq_capture_writer* writer = NULL;
+    char err[256] = {0};
+    if (dsd_iq_capture_open(&cfg, &writer, err, sizeof(err)) != DSD_IQ_OK || !writer) {
+        DSD_FPRINTF(stderr, "could not open the capture writer: %s\n", err[0] ? err : "unknown");
+        return -1;
+    }
+    static uint8_t payload[4096];
+    DSD_MEMSET(payload, 128, sizeof(payload));
+    if (dsd_iq_capture_submit(writer, payload, sizeof(payload)) != DSD_IQ_OK) {
+        dsd_iq_capture_abort(writer);
+        return -1;
+    }
+    dsd_iq_capture_final_stats stats;
+    DSD_MEMSET(&stats, 0, sizeof(stats));
+    dsd_iq_capture_close(writer, &stats);
+    return 0;
+}
+
 static int
 test_iq_replay_guard_and_requested_setup(void) {
     dsd_opts* opts = NULL;
@@ -660,10 +707,36 @@ test_iq_replay_guard_and_requested_setup(void) {
     int test_rc = expect_true("direct iqreplay rejected", rc != 0);
     free_test_runtime(opts, state);
 
-    if (init_test_runtime(&opts, &state) != 0) {
+    /* Issue #572: the engine reads a requested replay's sidecar first, for the capture clock, so a capture whose
+       sidecar does not parse fails the run there. */
+    char dir[DSD_TEST_PATH_MAX];
+    if (!dsd_test_mkdtemp(dir, sizeof(dir), "dsdneo_run_setup_replay")) {
         return 1;
     }
-    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "iqreplay:/tmp/capture.iq");
+    const char* const files[] = {"capture.iq", "capture.iq.json", NULL};
+    char missing_path[DSD_TEST_PATH_MAX];
+    char metadata_path[DSD_TEST_PATH_MAX];
+    if (dsd_test_path_join(missing_path, sizeof(missing_path), dir, "missing.iq.json") != 0
+        || write_replay_capture(dir, metadata_path, sizeof(metadata_path)) != 0) {
+        (void)dsd_test_remove_temp_dir(dir, files);
+        return 1;
+    }
+
+    if (init_test_runtime(&opts, &state) != 0) {
+        (void)dsd_test_remove_temp_dir(dir, files);
+        return 1;
+    }
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "iqreplay:%s", missing_path);
+    opts->iq_replay_requested = 1;
+    rc = dsd_engine_run_with_lifecycle(opts, state, NULL);
+    test_rc |= expect_true("requested iqreplay without a sidecar fails", rc == 1);
+    free_test_runtime(opts, state);
+
+    if (init_test_runtime(&opts, &state) != 0) {
+        (void)dsd_test_remove_temp_dir(dir, files);
+        return 1;
+    }
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "iqreplay:%s", metadata_path);
     opts->iq_replay_requested = 1;
     rc = dsd_engine_run_with_lifecycle(opts, state, NULL);
     test_rc |= expect_true("requested iqreplay accepted", rc == 0);
@@ -671,6 +744,10 @@ test_iq_replay_guard_and_requested_setup(void) {
                                                            && opts->audio_in_type == AUDIO_IN_RTL);
 
     free_test_runtime(opts, state);
+    if (dsd_test_remove_temp_dir(dir, files) != 0) {
+        DSD_FPRINTF(stderr, "could not remove %s\n", dir);
+        test_rc = 1;
+    }
     return test_rc;
 }
 

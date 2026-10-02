@@ -9,7 +9,6 @@
 #include <dsd-neo/core/csv_import.h>
 #include <dsd-neo/core/csv_validate.h>
 #include <dsd-neo/core/dmr_key_map.h>
-#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/key_set.h>
@@ -43,6 +42,7 @@
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
@@ -378,7 +378,7 @@ dsd_engine_release_tuned_call_state(dsd_opts* opts, dsd_state* state) {
     if (!opts || !state) {
         return;
     }
-    const double ended_m = dsd_time_now_monotonic_s();
+    const double ended_m = dsd_decode_now_mono_s();
     for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
         if (dsd_call_state_end_ex(state, (uint8_t)slot, ended_m, DSD_CALL_END_EXPLICIT) > 0) {
             g_explicit_call_ends++;
@@ -5698,21 +5698,30 @@ test_scan_tick_skips_rotation_when_p25_guard_busy(void) {
         test_rc = 1;
     }
 
+    /* Each tick asks for the guard once: the busy tick must have asked and been refused, so that what held the
+       rotation back is the guard and not some other early return. */
+    const int enters_before = g_p25_tick_guard_enter_calls;
     g_p25_tick_guard_available = 0;
     trunk_scan_test_set_now(0.26);
     dsd_engine_trunk_scan_tick(&opts, &state);
-    if (dsd_engine_trunk_scan_active_index(&state) != 0 || g_p25_tick_guard_leave_calls != 0) {
-        DSD_FPRINTF(stderr, "scan rotated or left guard while P25 guard busy active=%zu leaves=%d\n",
-                    dsd_engine_trunk_scan_active_index(&state), g_p25_tick_guard_leave_calls);
+    if (dsd_engine_trunk_scan_active_index(&state) != 0 || g_p25_tick_guard_leave_calls != 0
+        || g_p25_tick_guard_enter_calls != enters_before + 1) {
+        DSD_FPRINTF(stderr,
+                    "scan rotated, left the guard or did not ask for it while P25 guard busy active=%zu "
+                    "leaves=%d enters=%d\n",
+                    dsd_engine_trunk_scan_active_index(&state), g_p25_tick_guard_leave_calls,
+                    g_p25_tick_guard_enter_calls - enters_before);
         test_rc = 1;
     }
 
     g_p25_tick_guard_available = 1;
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 1 || g_p25_tick_guard_depth != 0
-        || g_p25_tick_guard_leave_calls != 1) {
-        DSD_FPRINTF(stderr, "scan did not rotate cleanly after P25 guard released active=%zu depth=%d leaves=%d\n",
-                    dsd_engine_trunk_scan_active_index(&state), g_p25_tick_guard_depth, g_p25_tick_guard_leave_calls);
+        || g_p25_tick_guard_leave_calls != 1 || g_p25_tick_guard_enter_calls != enters_before + 2) {
+        DSD_FPRINTF(stderr,
+                    "scan did not rotate cleanly after P25 guard released active=%zu depth=%d leaves=%d enters=%d\n",
+                    dsd_engine_trunk_scan_active_index(&state), g_p25_tick_guard_depth, g_p25_tick_guard_leave_calls,
+                    g_p25_tick_guard_enter_calls - enters_before);
         test_rc = 1;
     }
 

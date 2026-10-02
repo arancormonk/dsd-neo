@@ -2,8 +2,8 @@
 #include <dsd-neo/fec/ReedSolomon.hpp>
 #include <dsd-neo/protocol/p25/p25p1_check_ldu.h>
 #include <dsd-neo/protocol/p25/p25p1_soft.h>
+#include <stddef.h>
 #include <stdint.h>
-#include <string.h>
 #include "dsd-neo/core/safe_api.h"
 
 namespace {

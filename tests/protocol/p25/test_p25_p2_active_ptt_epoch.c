@@ -17,7 +17,6 @@
  */
 
 #include <dsd-neo/core/call_state.h>
-#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
@@ -25,6 +24,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/p25/p25_crypto.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -166,7 +166,7 @@ mac_ptt(uint8_t sig_fill) {
     uint8_t signature[P25_SM_PTT_SIGNATURE_BYTES];
     DSD_MEMSET(signature, sig_fill, sizeof(signature));
     (void)p25_sm_emit_ptt_call_metadata(&g_opts, &g_state, 0, TEST_TG, 0, TEST_SRC, 1, P25_SM_SVC_UNKNOWN, signature,
-                                        dsd_time_now_monotonic_s(), 0);
+                                        dsd_decode_now_mono_s(), 0);
 }
 
 static void
@@ -202,7 +202,7 @@ test_active_then_ptt_lockout_single_row(void) {
     mac_ptt(0x33U);
     resolve_ess();
     event_ticks();
-    (void)p25_sm_emit_end_call_at(&g_opts, &g_state, 0, TEST_TG, TEST_SRC, dsd_time_now_monotonic_s());
+    (void)p25_sm_emit_end_call_at(&g_opts, &g_state, 0, TEST_TG, TEST_SRC, dsd_decode_now_mono_s());
     p25_crypto_reset_slot(&g_state, 0);
     event_ticks();
 
@@ -254,7 +254,7 @@ test_ptt_without_active_lockout_single_row(void) {
     resolve_ess();
     event_ticks();
 
-    (void)p25_sm_emit_end_call_at(&g_opts, &g_state, 0, TEST_TG, TEST_SRC, dsd_time_now_monotonic_s());
+    (void)p25_sm_emit_end_call_at(&g_opts, &g_state, 0, TEST_TG, TEST_SRC, dsd_decode_now_mono_s());
     p25_crypto_reset_slot(&g_state, 0);
     event_ticks();
 
@@ -277,7 +277,7 @@ test_post_end_active_repeat_does_not_reopen(void) {
     mac_ptt(0x77U);
     (void)p25_sm_emit_active_call(&g_opts, &g_state, 0, TEST_TG, 0, TEST_SRC, 1, 0x00);
     event_ticks();
-    (void)p25_sm_emit_end_call_at(&g_opts, &g_state, 0, TEST_TG, TEST_SRC, dsd_time_now_monotonic_s());
+    (void)p25_sm_emit_end_call_at(&g_opts, &g_state, 0, TEST_TG, TEST_SRC, dsd_decode_now_mono_s());
     event_ticks();
     const uint64_t ended_epoch = slot0_epoch();
 
@@ -291,10 +291,10 @@ test_post_end_active_repeat_does_not_reopen(void) {
     uint8_t sig[P25_SM_PTT_SIGNATURE_BYTES];
     DSD_MEMSET(sig, 0x88, sizeof(sig));
     (void)p25_sm_emit_ptt_call_metadata(&g_opts, &g_state, 0, TEST_TG, 0, TEST_SRC + 7, 1, P25_SM_SVC_UNKNOWN, sig,
-                                        dsd_time_now_monotonic_s(), 0);
+                                        dsd_decode_now_mono_s(), 0);
     (void)p25_sm_emit_active_call(&g_opts, &g_state, 0, TEST_TG, 0, TEST_SRC + 7, 1, 0x00);
     event_ticks();
-    (void)p25_sm_emit_end_call_at(&g_opts, &g_state, 0, TEST_TG, TEST_SRC + 7, dsd_time_now_monotonic_s());
+    (void)p25_sm_emit_end_call_at(&g_opts, &g_state, 0, TEST_TG, TEST_SRC + 7, dsd_decode_now_mono_s());
     event_ticks();
 
     rc |= expect("two transmissions commit two rows", committed_event_count() == 2);
@@ -316,7 +316,7 @@ test_post_end_ptt_repeat_does_not_reopen(void) {
     mac_ptt(0xC3U);
     (void)p25_sm_emit_active_call(&g_opts, &g_state, 0, TEST_TG, 0, TEST_SRC, 1, 0x00);
     event_ticks();
-    (void)p25_sm_emit_end_call_at(&g_opts, &g_state, 0, TEST_TG, TEST_SRC, dsd_time_now_monotonic_s());
+    (void)p25_sm_emit_end_call_at(&g_opts, &g_state, 0, TEST_TG, TEST_SRC, dsd_decode_now_mono_s());
     event_ticks();
     const uint64_t ended_epoch = slot0_epoch();
 
@@ -331,10 +331,10 @@ test_post_end_ptt_repeat_does_not_reopen(void) {
     uint8_t sig[P25_SM_PTT_SIGNATURE_BYTES];
     DSD_MEMSET(sig, 0xD4, sizeof(sig));
     (void)p25_sm_emit_ptt_call_metadata(&g_opts, &g_state, 0, TEST_TG, 0, TEST_SRC + 7, 1, P25_SM_SVC_UNKNOWN, sig,
-                                        dsd_time_now_monotonic_s(), 0);
+                                        dsd_decode_now_mono_s(), 0);
     event_ticks();
     rc |= expect("fresh-signature PTT reopens", slot0_phase_is(DSD_CALL_PHASE_ACTIVE));
-    (void)p25_sm_emit_end_call_at(&g_opts, &g_state, 0, TEST_TG, TEST_SRC + 7, dsd_time_now_monotonic_s());
+    (void)p25_sm_emit_end_call_at(&g_opts, &g_state, 0, TEST_TG, TEST_SRC + 7, dsd_decode_now_mono_s());
     event_ticks();
 
     rc |= expect("two transmissions commit two rows", committed_event_count() == 2);
@@ -356,7 +356,7 @@ test_post_end_identityless_active_does_not_reopen(void) {
     mac_ptt(0xE5U);
     (void)p25_sm_emit_active_call(&g_opts, &g_state, 0, TEST_TG, 0, TEST_SRC, 1, 0x00);
     event_ticks();
-    (void)p25_sm_emit_end_call_at(&g_opts, &g_state, 0, TEST_TG, TEST_SRC, dsd_time_now_monotonic_s());
+    (void)p25_sm_emit_end_call_at(&g_opts, &g_state, 0, TEST_TG, TEST_SRC, dsd_decode_now_mono_s());
     event_ticks();
     const uint64_t ended_epoch = slot0_epoch();
 
@@ -384,12 +384,12 @@ test_placeholder_end_src_keeps_tail_guard(void) {
     mac_ptt(0xB1U);
     (void)p25_sm_emit_active_call(&g_opts, &g_state, 0, TEST_TG, 0, TEST_SRC, 1, 0x00);
     event_ticks();
-    (void)p25_sm_emit_end_call_at(&g_opts, &g_state, 0, TEST_TG, 0xFFFFFF, dsd_time_now_monotonic_s());
+    (void)p25_sm_emit_end_call_at(&g_opts, &g_state, 0, TEST_TG, 0xFFFFFF, dsd_decode_now_mono_s());
     event_ticks();
     const uint64_t ended_epoch = slot0_epoch();
 
     rc |= expect("placeholder END records the real talker",
-                 p25_sm_voice_user_repeats_recent_end(0, TEST_TG, TEST_SRC, dsd_time_now_monotonic_s()) == 1);
+                 p25_sm_voice_user_repeats_recent_end(0, TEST_TG, TEST_SRC, dsd_decode_now_mono_s()) == 1);
 
     /* Delayed SACCH copy still naming the completed talker. */
     (void)p25_sm_emit_active_call(&g_opts, &g_state, 0, TEST_TG, 0, TEST_SRC, 1, 0x00);
@@ -413,7 +413,7 @@ test_late_first_ptt_folds_into_continuous_epoch(void) {
     event_ticks();
 
     p25_sm_ctx_t* ctx = p25_sm_get_ctx();
-    const double t0 = dsd_time_now_monotonic_s();
+    const double t0 = dsd_decode_now_mono_s();
     p25_sm_event_t ev = p25_sm_ev_active_call(0, TEST_TG, 0, TEST_SRC, 1, 0x00);
     ev.observed_m = t0;
     p25_sm_event(ctx, &g_opts, &g_state, &ev);
@@ -446,7 +446,7 @@ test_late_first_ptt_folds_into_continuous_epoch(void) {
     tune_grant(0x00);
     event_ticks();
     ctx = p25_sm_get_ctx();
-    const double t1 = dsd_time_now_monotonic_s();
+    const double t1 = dsd_decode_now_mono_s();
     ev = p25_sm_ev_active_call(0, TEST_TG, 0, TEST_SRC, 1, 0x00);
     ev.observed_m = t1;
     p25_sm_event(ctx, &g_opts, &g_state, &ev);
@@ -472,7 +472,7 @@ test_post_end_changed_source_reopens(void) {
 
     mac_ptt(0x99U);
     event_ticks();
-    (void)p25_sm_emit_end_call_at(&g_opts, &g_state, 0, TEST_TG, TEST_SRC, dsd_time_now_monotonic_s());
+    (void)p25_sm_emit_end_call_at(&g_opts, &g_state, 0, TEST_TG, TEST_SRC, dsd_decode_now_mono_s());
     event_ticks();
     const uint64_t ended_epoch = slot0_epoch();
 
@@ -495,10 +495,10 @@ test_repeat_helper_windows(void) {
 
     mac_ptt(0xABU);
     event_ticks();
-    (void)p25_sm_emit_end_call_at(&g_opts, &g_state, 0, TEST_TG, TEST_SRC, dsd_time_now_monotonic_s());
+    (void)p25_sm_emit_end_call_at(&g_opts, &g_state, 0, TEST_TG, TEST_SRC, dsd_decode_now_mono_s());
     event_ticks();
 
-    const double now_m = dsd_time_now_monotonic_s();
+    const double now_m = dsd_decode_now_mono_s();
     rc |= expect("helper: same identity in tail repeats",
                  p25_sm_voice_user_repeats_recent_end(0, TEST_TG, TEST_SRC, now_m) == 1);
     rc |= expect("helper: source-less copy in tail repeats",

@@ -26,6 +26,7 @@
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/radioreference.h>
 #include <dsd-neo/runtime/radioreference_generate.h>
 #include <dsd-neo/runtime/radioreference_import.h>
@@ -34,7 +35,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 
 /* ---- Tunables ----------------------------------------------------------- */
 
@@ -1479,7 +1479,7 @@ rr_refresh_touch_provenance(const RrWizardCore* w) {
      * path is what a [trunking] config reference points at. */
     DSD_STRNCPY(prov.site_label, w->refresh.site_label, sizeof prov.site_label - 1U);
     prov.site_label[sizeof prov.site_label - 1U] = '\0';
-    prov.imported_at = (long long)time(NULL);
+    prov.imported_at = (long long)dsd_realtime_time();
     (void)dsd_rr_provenance_write(w->refresh.path, &prov);
 }
 
@@ -2534,7 +2534,7 @@ rr_import_fill_provenance(const RrWizardCore* w, const char* kind, dsd_rr_proven
     /* Display text for the browser's site column, and what the file stem was
      * built from. The identity stays site_ids. */
     DSD_STRNCPY(p->site_label, w->plan.site_label, sizeof(p->site_label) - 1);
-    p->imported_at = (long long)time(NULL);
+    p->imported_at = (long long)dsd_realtime_time();
     /* The re-apply recipe: what this import did, so the Imported Systems browser
      * can re-apply the system later without another fetch. Both halves of one
      * import carry the same recipe - it describes the system, not the file. */

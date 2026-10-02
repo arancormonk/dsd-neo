@@ -12,7 +12,6 @@
 
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
-#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
@@ -25,11 +24,11 @@
 #include <dsd-neo/protocol/p25/p25_xcch.h>
 #include <dsd-neo/protocol/p25/p25p2_mac_parse.h>
 #include <dsd-neo/runtime/colors.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/p25_p2_audio_ring.h>
 #include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <time.h>
 #include "../p25_trunk_sm_internal.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -514,14 +513,14 @@ p25p2_xcch_handle_sacch_mac_signal(dsd_opts* opts, dsd_state* state, unsigned lo
 static void
 p25p2_xcch_handle_sacch_mac_ptt(dsd_opts* opts, dsd_state* state, uint8_t slot, int mac_offset, int res,
                                 const unsigned long long int smac[24]) {
-    const double ptt_observed_m = dsd_time_now_monotonic_s();
+    const double ptt_observed_m = dsd_decode_now_mono_s();
     uint8_t signature[P25_SM_PTT_SIGNATURE_BYTES];
     p25p2_xcch_ptt_signature(smac, signature);
 
     DSD_FPRINTF(stderr, " MAC_PTT ");
     DSD_FPRINTF(stderr, "%s", KGRN);
 
-    state->p25_p2_last_mac_active[slot] = time(NULL);
+    state->p25_p2_last_mac_active[slot] = dsd_decode_time();
     state->p25_p2_last_mac_active_m[slot] = ptt_observed_m;
 
     if (!p25_sm_emit_ptt_call_metadata(opts, state, slot, p25p2_xcch_tg_from_mac(smac), 0,
@@ -545,7 +544,7 @@ p25p2_xcch_handle_sacch_mac_ptt(dsd_opts* opts, dsd_state* state, uint8_t slot, 
 
 static void
 p25p2_xcch_handle_sacch_mac_end(dsd_opts* opts, dsd_state* state, uint8_t slot, const unsigned long long int smac[24]) {
-    const double end_observed_m = dsd_time_now_monotonic_s();
+    const double end_observed_m = dsd_decode_now_mono_s();
     const int tg = p25p2_xcch_tg_from_mac(smac);
     const int src = (int)p25p2_xcch_src_from_mac(smac);
 
@@ -557,7 +556,7 @@ p25p2_xcch_handle_sacch_mac_end(dsd_opts* opts, dsd_state* state, uint8_t slot, 
         DSD_FPRINTF(stderr, "%s", KNRM);
         return;
     }
-    state->p25_p2_last_end_ptt[slot] = time(NULL);
+    state->p25_p2_last_end_ptt[slot] = dsd_decode_time();
     p25p2_xcch_handle_end_slot(opts, state, slot, 1);
     p25p2_xcch_set_slot_audio_allowed(opts, state, slot, 0);
 
@@ -566,7 +565,7 @@ p25p2_xcch_handle_sacch_mac_end(dsd_opts* opts, dsd_state* state, uint8_t slot, 
 
 static void
 p25p2_xcch_handle_sacch_mac_idle(dsd_opts* opts, dsd_state* state, uint8_t slot, unsigned long long int smac[24]) {
-    double idle_observed_m = dsd_time_now_monotonic_s();
+    double idle_observed_m = dsd_decode_now_mono_s();
 
     dsd_p25p2_flush_partial_audio_slot(opts, state, slot);
     p25p2_xcch_set_slot_burst(state, slot, 24);
@@ -599,8 +598,8 @@ p25p2_xcch_handle_sacch_mac_active(dsd_opts* opts, dsd_state* state, uint8_t slo
     DSD_FPRINTF(stderr, "%s", KYEL);
     process_MAC_VPDU(opts, state, 1, P25_MAC_PDU_ACTIVE, smac);
 
-    state->p25_p2_last_mac_active[slot] = time(NULL);
-    state->p25_p2_last_mac_active_m[slot] = dsd_time_now_monotonic_s();
+    state->p25_p2_last_mac_active[slot] = dsd_decode_time();
+    state->p25_p2_last_mac_active_m[slot] = dsd_decode_now_mono_s();
 
     DSD_FPRINTF(stderr, "%s", KNRM);
 
@@ -631,14 +630,14 @@ p25p2_xcch_handle_sacch_mac_hangtime(dsd_opts* opts, dsd_state* state, unsigned 
 static void
 p25p2_xcch_handle_facch_mac_ptt(dsd_opts* opts, dsd_state* state, uint8_t slot, int mac_offset, int res,
                                 const unsigned long long int fmac[24]) {
-    const double ptt_observed_m = dsd_time_now_monotonic_s();
+    const double ptt_observed_m = dsd_decode_now_mono_s();
     uint8_t signature[P25_SM_PTT_SIGNATURE_BYTES];
     p25p2_xcch_ptt_signature(fmac, signature);
 
     DSD_FPRINTF(stderr, " MAC_PTT  ");
     DSD_FPRINTF(stderr, "%s", KGRN);
 
-    state->p25_p2_last_mac_active[slot] = time(NULL);
+    state->p25_p2_last_mac_active[slot] = dsd_decode_time();
     state->p25_p2_last_mac_active_m[slot] = ptt_observed_m;
 
     if (!p25_sm_emit_ptt_call_metadata(opts, state, slot, p25p2_xcch_tg_from_mac(fmac), 0,
@@ -662,7 +661,7 @@ p25p2_xcch_handle_facch_mac_end(dsd_opts* opts, dsd_state* state, uint8_t slot, 
     if (!p25p2_xcch_slot_valid(slot)) {
         return;
     }
-    const double end_observed_m = dsd_time_now_monotonic_s();
+    const double end_observed_m = dsd_decode_now_mono_s();
     const int tg = p25p2_xcch_tg_from_mac(fmac);
     const int src = (int)p25p2_xcch_src_from_mac(fmac);
 
@@ -692,7 +691,7 @@ p25p2_xcch_handle_facch_mac_idle(dsd_opts* opts, dsd_state* state, uint8_t slot,
         return;
     }
 
-    double idle_observed_m = dsd_time_now_monotonic_s();
+    double idle_observed_m = dsd_decode_now_mono_s();
 
     dsd_p25p2_flush_partial_audio_slot(opts, state, slot);
     p25p2_xcch_reset_idle_slot_facch(state, slot);

@@ -138,6 +138,7 @@ main(void) {
     assert(dsd_net_audio_input_hook_tcp_read_sample(ctx, &s) == 1);
     assert(g_tcp_read_calls == 1);
     assert(g_last_tcp_ctx == ctx);
+    assert(g_last_out == &s);
     assert(s == (int16_t)123);
 
     dsd_opts* opts = (dsd_opts*)calloc(1, 1);
@@ -157,6 +158,7 @@ main(void) {
     assert(dsd_net_audio_input_hook_udp_read_sample(opts, &s) == 1);
     assert(g_udp_read_calls == 1);
     assert(g_last_udp_opts == opts);
+    assert(g_last_out == &s);
     assert(s == (int16_t)-7);
 
     free(opts);

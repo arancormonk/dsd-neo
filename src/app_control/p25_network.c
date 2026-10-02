@@ -4,6 +4,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 
 /* Stable insertion into a small index list keeps equal timestamps deterministic. */
@@ -79,7 +80,7 @@ dsd_app_p25_patches(const dsd_state* state, dsd_app_p25_patch* out, int capacity
     if (!state || !out || capacity <= 0) {
         return 0;
     }
-    const time_t now = time(NULL);
+    const time_t now = dsd_decode_time();
     int indices[8];
     time_t times[8];
     int n = 0;

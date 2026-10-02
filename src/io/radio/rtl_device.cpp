@@ -14,6 +14,7 @@
 
 #include <dsd-neo/core/airspy_config.h>
 #include <dsd-neo/core/input_level.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/input_failure.h>
 
 #include <algorithm>
@@ -36,6 +37,7 @@
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/input_ring.h>
+#include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/rt_sched.h>
 #include <errno.h>
 #include <iterator>
@@ -63,6 +65,9 @@ struct airspy_source;
 #include "rtl_replay_device.h"
 #include "rtl_stream_shared.hpp"
 #include "soapy_profile.h"
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+#include "rtl_stream_test_support.h"
+#endif
 
 #if defined(_MSC_VER) && DSD_PLATFORM_WIN_NATIVE
 #include <excpt.h>
@@ -320,6 +325,9 @@ struct rtl_device {
     uint64_t replay_initial_capture_center_frequency_hz = 0U;
     dsd_iq_replay_source* replay_src = nullptr;
     uint64_t replay_float_elements_written = 0U;
+    /* A capture read that failed after part of a chunk was read: replay_read_exact() hands over that part and returns
+       the failure on its next call. Replay reader thread only. */
+    int replay_deferred_read_rc = 0;
     /* SoapySDR backend */
     SoapySDR::Device* soapy_dev = nullptr;
     SoapySDR::Stream* soapy_stream = nullptr;
@@ -871,7 +879,7 @@ rtl_u8_perf_begin(const struct rtl_device* s) {
     rtl_u8_perf_state perf = {};
     perf.enabled = rtl_perf_enabled();
     if (perf.enabled) {
-        perf.start_ns = dsd_time_monotonic_ns();
+        perf.start_ns = dsd_realtime_mono_ns();
         perf.drops_before = s->input_ring->producer_drops.load(std::memory_order_relaxed);
     }
     return perf;
@@ -884,7 +892,7 @@ rtl_u8_perf_end(const struct rtl_device* s, const rtl_u8_perf_state* perf, size_
     }
     uint64_t drops_after = s->input_ring->producer_drops.load(std::memory_order_relaxed);
     uint64_t drops_delta = (drops_after >= perf->drops_before) ? (drops_after - perf->drops_before) : 0ULL;
-    rtl_perf_record_ingest(dsd_time_monotonic_ns() - perf->start_ns, done, drops_delta);
+    rtl_perf_record_ingest(dsd_realtime_mono_ns() - perf->start_ns, done, drops_delta);
 }
 
 static inline int
@@ -1285,7 +1293,7 @@ soapy_write_cf32_to_ring(struct rtl_device* s, const float* src, size_t num_elem
         return 0;
     }
     int perf_on = rtl_perf_enabled();
-    uint64_t perf_t0 = perf_on ? dsd_time_monotonic_ns() : 0ULL;
+    uint64_t perf_t0 = perf_on ? dsd_realtime_mono_ns() : 0ULL;
     uint64_t perf_drops_before = perf_on ? s->input_ring->producer_drops.load(std::memory_order_relaxed) : 0ULL;
     size_t need = num_elems * 2;
     size_t done = 0;
@@ -1316,7 +1324,7 @@ soapy_write_cf32_to_ring(struct rtl_device* s, const float* src, size_t num_elem
     if (perf_on) {
         uint64_t drops_after = s->input_ring->producer_drops.load(std::memory_order_relaxed);
         uint64_t drops_delta = (drops_after >= perf_drops_before) ? (drops_after - perf_drops_before) : 0ULL;
-        rtl_perf_record_ingest(dsd_time_monotonic_ns() - perf_t0, done, drops_delta);
+        rtl_perf_record_ingest(dsd_realtime_mono_ns() - perf_t0, done, drops_delta);
     }
     return done / 2;
 }
@@ -1328,7 +1336,7 @@ soapy_write_cs16_to_ring(struct rtl_device* s, const int16_t* src, size_t num_el
         return 0;
     }
     int perf_on = rtl_perf_enabled();
-    uint64_t perf_t0 = perf_on ? dsd_time_monotonic_ns() : 0ULL;
+    uint64_t perf_t0 = perf_on ? dsd_realtime_mono_ns() : 0ULL;
     uint64_t perf_drops_before = perf_on ? s->input_ring->producer_drops.load(std::memory_order_relaxed) : 0ULL;
     const float scale = 1.0f / 32768.0f;
     size_t need = num_elems * 2;
@@ -1360,10 +1368,163 @@ soapy_write_cs16_to_ring(struct rtl_device* s, const int16_t* src, size_t num_el
     if (perf_on) {
         uint64_t drops_after = s->input_ring->producer_drops.load(std::memory_order_relaxed);
         uint64_t drops_delta = (drops_after >= perf_drops_before) ? (drops_after - perf_drops_before) : 0ULL;
-        rtl_perf_record_ingest(dsd_time_monotonic_ns() - perf_t0, done, drops_delta);
+        rtl_perf_record_ingest(dsd_realtime_mono_ns() - perf_t0, done, drops_delta);
     }
     return done / 2;
 }
+#endif
+
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+/* Replay reader seams (rtl_stream_test_support.h), set while no replay runs. */
+static std::atomic<int> g_test_replay_read_error_after{-1};
+static std::atomic<int> g_test_replay_read_error_code{0};
+static std::atomic<int> g_test_replay_reads_with_data{0};
+static std::atomic<int> g_test_replay_fail_start{0};
+static std::atomic<uint64_t> g_test_replay_eof_wait_iterations{0U};
+static std::atomic<size_t> g_test_replay_read_limit{0U};
+static std::atomic<int> g_test_replay_convert_after{-1};
+static std::atomic<int> g_test_replay_convert_result{0};
+static std::atomic<int> g_test_replay_conversions{0};
+
+extern "C" void
+rtl_device_test_replay_inject_read_error(int after_chunks, int code) {
+    g_test_replay_reads_with_data.store(0, std::memory_order_relaxed);
+    g_test_replay_read_error_code.store(code, std::memory_order_relaxed);
+    g_test_replay_read_error_after.store(after_chunks, std::memory_order_release);
+}
+
+extern "C" void
+rtl_device_test_replay_limit_read(size_t max_bytes) {
+    g_test_replay_read_limit.store(max_bytes, std::memory_order_release);
+}
+
+extern "C" void
+rtl_device_test_replay_override_conversion(int after_chunks, int produced) {
+    g_test_replay_conversions.store(0, std::memory_order_relaxed);
+    g_test_replay_convert_result.store(produced, std::memory_order_relaxed);
+    g_test_replay_convert_after.store(after_chunks, std::memory_order_release);
+}
+
+/* A chunk conversion's result, or the one a test put in its place once its first chunks were converted. */
+static int
+replay_test_override_conversion(int produced) {
+    const int after = g_test_replay_convert_after.load(std::memory_order_acquire);
+    if (after < 0 || g_test_replay_conversions.fetch_add(1, std::memory_order_acq_rel) < after) {
+        return produced;
+    }
+    return g_test_replay_convert_result.load(std::memory_order_relaxed);
+}
+
+extern "C" void
+rtl_device_test_replay_fail_start(int fail) {
+    g_test_replay_fail_start.store(fail ? 1 : 0, std::memory_order_release);
+}
+
+extern "C" uint64_t
+rtl_device_test_replay_eof_wait_iterations(void) {
+    return g_test_replay_eof_wait_iterations.load(std::memory_order_acquire);
+}
+
+/* Takes the injected read error when it is due: at most one per arming. */
+static int
+replay_test_take_injected_read_error(int* out_code) {
+    int after = g_test_replay_read_error_after.load(std::memory_order_acquire);
+    if (after < 0 || g_test_replay_reads_with_data.load(std::memory_order_relaxed) < after) {
+        return 0;
+    }
+    if (!g_test_replay_read_error_after.compare_exchange_strong(after, -1, std::memory_order_acq_rel)) {
+        return 0;
+    }
+    *out_code = g_test_replay_read_error_code.load(std::memory_order_relaxed);
+    return 1;
+}
+#endif
+
+/* dsd_iq_replay_read(), or the error a test injected in its place. */
+static int
+replay_read_capture(struct rtl_device* s, uint8_t* raw_block, size_t read_limit, size_t* out_bytes) {
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+    int injected = DSD_IQ_OK;
+    if (replay_test_take_injected_read_error(&injected)) {
+        *out_bytes = 0U;
+        return injected;
+    }
+    const size_t test_limit = g_test_replay_read_limit.load(std::memory_order_acquire);
+    if (test_limit > 0U && read_limit > test_limit) {
+        read_limit = test_limit;
+    }
+#endif
+    int rc = dsd_iq_replay_read(s->replay_src, raw_block, read_limit, out_bytes);
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+    if (rc == DSD_IQ_OK && *out_bytes > 0U) {
+        g_test_replay_reads_with_data.fetch_add(1, std::memory_order_relaxed);
+    }
+#endif
+    return rc;
+}
+
+/* Read the next @p limit bytes of the capture, looping over short reads until they are all read or the capture ends,
+ * so a chunk is whole: a cf32 read that stopped inside a complex sample would otherwise be skipped as unaligned, and
+ * every read after it would stay off the sample grid. A read that fails after part of the chunk was read hands over
+ * that part (the replay ends after the samples already read) and reports the failure on the next call. A chunk the
+ * capture's end or a failure cut short ends on its last whole complex sample: nothing can complete a part of one, and
+ * a cf32 chunk holding one could not be converted at all. */
+static int
+replay_read_exact(struct rtl_device* s, uint8_t* raw_block, size_t limit, size_t* out_bytes) {
+    *out_bytes = 0U;
+    if (s->replay_deferred_read_rc != DSD_IQ_OK) {
+        int rc = s->replay_deferred_read_rc;
+        s->replay_deferred_read_rc = DSD_IQ_OK;
+        return rc;
+    }
+    int failure_rc = DSD_IQ_OK;
+    while (*out_bytes < limit) {
+        size_t got = 0U;
+        int rc = replay_read_capture(s, raw_block + *out_bytes, limit - *out_bytes, &got);
+        if (rc != DSD_IQ_OK) {
+            failure_rc = rc;
+            break;
+        }
+        if (got == 0U) {
+            break;
+        }
+        *out_bytes += got;
+    }
+    if (*out_bytes < limit) {
+        const size_t align = dsd_iq_sample_format_alignment_bytes(s->replay_cfg.format);
+        if (align > 0U) {
+            *out_bytes -= *out_bytes % align;
+        }
+    }
+    if (failure_rc != DSD_IQ_OK) {
+        if (*out_bytes == 0U) {
+            return failure_rc;
+        }
+        s->replay_deferred_read_rc = failure_rc;
+    }
+    return DSD_IQ_OK;
+}
+
+static inline void
+replay_test_note_eof_wait(void) {
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+    g_test_replay_eof_wait_iterations.fetch_add(1U, std::memory_order_relaxed);
+#endif
+}
+
+static inline void
+replay_test_reset_eof_wait(void) {
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+    g_test_replay_eof_wait_iterations.store(0U, std::memory_order_relaxed);
+#endif
+}
+
+/* A replay reader stage a test can stop at (RTL_STREAM_TEST_REPLAY_*). Outside test builds the stage names do not
+ * exist, and only the count is evaluated. */
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+#define REPLAY_TEST_READER_STAGE(stage, count) rtl_stream_test_replay_stage((stage), (count))
+#else
+#define REPLAY_TEST_READER_STAGE(stage, count) ((void)(count))
 #endif
 
 static inline int
@@ -1396,38 +1557,43 @@ replay_signal_input_waiters(struct rtl_device* s) {
     dsd_mutex_unlock(&s->input_ring->ready_m);
 }
 
+/* Wake every thread waiting on a replay condition: through the stream (replay_eof.wake_all, which reaches both rings
+ * and the EOF condition), else the input ring's waiters and the EOF condition. */
+static void
+replay_device_wake_all(struct rtl_device* s) {
+    if (!s) {
+        return;
+    }
+    if (s->replay_has_eof_state && s->replay_eof.wake_all) {
+        s->replay_eof.wake_all(s->replay_eof.eof_user);
+        return;
+    }
+    replay_signal_input_waiters(s);
+    if (s->replay_has_eof_state && s->replay_eof.eof_cond && s->replay_eof.eof_m) {
+        dsd_mutex_lock(s->replay_eof.eof_m);
+        dsd_cond_broadcast(s->replay_eof.eof_cond);
+        dsd_mutex_unlock(s->replay_eof.eof_m);
+    }
+}
+
+/* Sleep on the input ring's space condition, which each demod commit signals, until the demod has taken everything in
+ * the input ring: 50 ms timed waits with no deadline, which also see a stop request. Returns 1 once the ring is empty, 0
+ * on a stop. The EOF sequence counts its looks at the ring for a test (@p note_eof_wait). */
 static int
-replay_wait_for_ring_progress(struct rtl_device* s, size_t needed_free, uint64_t deadline_ns, int have_deadline) {
-    if (!s || !s->input_ring) {
+replay_wait_for_empty_input_ring(struct rtl_device* s, int note_eof_wait) {
+    struct input_ring_state* ring = s->input_ring;
+    if (!ring || ring->capacity == 0U) {
         return 0;
     }
-    struct input_ring_state* ring = s->input_ring;
-
-    for (;;) {
-        if (replay_forced_stop_requested(s)) {
-            return 0;
+    dsd_mutex_lock(&ring->ready_m);
+    while (!replay_forced_stop_requested(s) && input_ring_used(ring) > 0U) {
+        if (note_eof_wait) {
+            replay_test_note_eof_wait();
         }
-        if (input_ring_free(ring) >= needed_free) {
-            return 1;
-        }
-
-        dsd_mutex_lock(&ring->ready_m);
-        while (!replay_forced_stop_requested(s) && input_ring_free(ring) < needed_free) {
-            uint64_t wait_deadline = deadline_ns;
-            if (!have_deadline) {
-                wait_deadline = dsd_time_monotonic_ns() + 50000000ULL;
-            } else if (dsd_time_monotonic_ns() >= deadline_ns) {
-                dsd_mutex_unlock(&ring->ready_m);
-                return 0;
-            }
-            int rc = dsd_cond_timedwait_monotonic(&ring->space, &ring->ready_m, wait_deadline);
-            if (have_deadline && rc == ETIMEDOUT && dsd_time_monotonic_ns() >= deadline_ns) {
-                dsd_mutex_unlock(&ring->ready_m);
-                return 0;
-            }
-        }
-        dsd_mutex_unlock(&ring->ready_m);
+        (void)dsd_cond_timedwait_monotonic(&ring->space, &ring->ready_m, dsd_realtime_mono_ns() + 50000000ULL);
     }
+    dsd_mutex_unlock(&ring->ready_m);
+    return replay_forced_stop_requested(s) ? 0 : 1;
 }
 
 static int
@@ -1446,8 +1612,13 @@ replay_event_boundary_drained(struct rtl_device* s) {
     return (input_ring_used(ring) == 0U && generation_drained) ? 1 : 0;
 }
 
+/* The input half of an event boundary on its own: 50 ms timed waits until the demod has taken and acknowledged every
+ * chunk. This is the no-stream path, for a replay device whose EOF state carries no wait_event_boundary. The stream
+ * always installs one (stream_open_fill_replay_eof_state() in rtl_sdr_fm.cpp), so a stream's replay never comes here.
+ * It stays as the device's own boundary rule, which replay_event_boundary_drained() states and IO_RTL_RETUNE_PREPARE
+ * checks through rtl_device_test_replay_event_boundary_drained(). */
 static int
-replay_wait_for_event_boundary_drain(struct rtl_device* s) {
+replay_wait_for_input_boundary_drain(struct rtl_device* s) {
     if (!s || !s->input_ring || s->input_ring->capacity == 0U) {
         return 1;
     }
@@ -1465,11 +1636,24 @@ replay_wait_for_event_boundary_drain(struct rtl_device* s) {
         replay_signal_input_waiters(s);
         dsd_mutex_lock(&ring->ready_m);
         if (!replay_forced_stop_requested(s) && !replay_event_boundary_drained(s)) {
-            uint64_t wait_deadline = dsd_time_monotonic_ns() + 50000000ULL;
+            uint64_t wait_deadline = dsd_realtime_mono_ns() + 50000000ULL;
             (void)dsd_cond_timedwait_monotonic(&ring->space, &ring->ready_m, wait_deadline);
         }
         dsd_mutex_unlock(&ring->ready_m);
     }
+}
+
+/* Wait, with no deadline, until the pipeline is idle before the event of kind @p event_kind (0: a loop rewind) is applied
+ * (issue #572): the stream's wait_event_boundary, which also waits for the decoder to read and acknowledge every batch
+ * published, so the event lands between the same two chunks however the decoder is scheduled and nothing it has not
+ * read is cleared. Returns 1 once idle, 0 on a stop. */
+static int
+replay_wait_for_event_boundary_drain(struct rtl_device* s, int event_kind) {
+    REPLAY_TEST_READER_STAGE(RTL_STREAM_TEST_REPLAY_READER_EVENT_BOUNDARY, (size_t)event_kind);
+    if (!s || !s->replay_has_eof_state || !s->replay_eof.wait_event_boundary) {
+        return replay_wait_for_input_boundary_drain(s);
+    }
+    return (s->replay_eof.wait_event_boundary(s->replay_eof.eof_user) && !replay_forced_stop_requested(s)) ? 1 : 0;
 }
 
 #ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
@@ -1499,12 +1683,12 @@ replay_wait_until(struct rtl_device* s, uint64_t deadline_ns) {
     if (!s || !s->input_ring) {
         return 0;
     }
-    if (dsd_time_monotonic_ns() >= deadline_ns) {
+    if (dsd_realtime_mono_ns() >= deadline_ns) {
         return 1;
     }
     dsd_mutex_lock(&s->input_ring->ready_m);
     while (!replay_forced_stop_requested(s)) {
-        uint64_t now_ns = dsd_time_monotonic_ns();
+        uint64_t now_ns = dsd_realtime_mono_ns();
         if (now_ns >= deadline_ns) {
             dsd_mutex_unlock(&s->input_ring->ready_m);
             return 1;
@@ -1533,38 +1717,65 @@ replay_wait_for_enqueue_deadline(struct rtl_device* s, uint64_t complex_written,
     return replay_wait_until(s, deadline_ns);
 }
 
-static size_t
-replay_clamp_enqueue_chunk(size_t remaining_f32, size_t free_sp) {
-    size_t chunk = remaining_f32;
-    if (chunk > free_sp) {
-        chunk = free_sp;
+/* Capture time of @p complex_samples at the replay's sample rate, in ns, rounded down. Replay refuses events that change
+ * the rate, so the one rate times the whole capture. */
+static uint64_t
+replay_media_ns(const struct rtl_device* s, uint64_t complex_samples) {
+    const uint64_t rate = s->replay_cfg.sample_rate_hz;
+    if (rate == 0U) {
+        return 0U;
     }
-    if (chunk & 1U) {
-        chunk--;
-    }
-    return chunk;
+    return (complex_samples / rate) * 1000000000ULL + ((complex_samples % rate) * 1000000000ULL) / rate;
 }
 
-static int replay_enqueue_f32_no_drop(struct rtl_device* s, const float* src, size_t float_count,
-                                      uint64_t* complex_written, uint64_t start_ns, int realtime);
+namespace {
+
+/* The failure code of a replay step that failed outside the capture file: an input ring that would not take a whole
+ * chunk, an event boundary the pipeline gave up on without a stop, or a missing source, buffer or ring. No
+ * DSD_IQ_ERR_* has its value, so replay_report_failure() can name the pipeline instead of the read; the session's input
+ * failure latch still gets DSD_IQ_ERR_INVALID_ARG for it, as before. */
+const int kReplayPipelineFailureRc = -1000;
+/* The failure code of a chunk the reader read whole but could not convert to samples, which
+ * replay_report_failure() names with the capture's format and stage. */
+const int kReplayConvertFailureRc = -1001;
+
+/* What one pass of the replay reader loop (replay_thread_process_block()) leaves the reader to do. */
+enum replay_step {
+    REPLAY_STEP_CONTINUE = 0, /* read on */
+    REPLAY_STEP_STOP = 1,     /* a stop was requested: leave now */
+    REPLAY_STEP_EOF_DONE = 2, /* the capture ended and does not loop: drain what was delivered, then leave */
+    REPLAY_STEP_FAILED = 3,   /* the replay cannot go on: report it, drain what was delivered, then leave */
+};
+
+} // namespace
+
+/* A step that could not complete: a requested stop, else a failure with @p rc. */
+static replay_step
+replay_step_stopped_or_failed(const struct rtl_device* s, int* out_failure_rc, int rc) {
+    if (replay_forced_stop_requested(s)) {
+        return REPLAY_STEP_STOP;
+    }
+    if (out_failure_rc) {
+        *out_failure_rc = rc;
+    }
+    return REPLAY_STEP_FAILED;
+}
+
 static int replay_dispatch_pending_events(struct rtl_device* s, uint32_t* event_cursor, uint64_t data_offset,
                                           int* phase, int* have_carry, uint8_t* carry_byte, uint64_t* complex_written);
 static size_t replay_next_read_limit(const struct rtl_device* s, uint64_t data_offset, uint32_t event_cursor,
                                      size_t block_size);
-static int replay_handle_empty_read(struct rtl_device* s, uint64_t* complex_written, uint64_t* start_ns, int realtime,
-                                    int* phase, int* have_carry, uint8_t* carry_byte, uint64_t* data_offset,
-                                    uint32_t* event_cursor);
 static int replay_convert_block_to_f32(const struct rtl_device* s, const uint8_t* raw_block, size_t out_bytes,
                                        float* f32_block, size_t f32_cap, int* phase, int* have_carry,
                                        uint8_t* carry_byte, dsd_input_level_cu8_moments* moments);
 
 static inline int
 replay_submit_chunk_inputs_valid(const struct rtl_device* s, const float* src, const size_t* out_grant_f32,
-                                 const uint64_t* complex_written, size_t chunk_f32) {
+                                 const struct rtl_replay_chunk_meta* meta, size_t chunk_f32) {
     if (!s || !s->input_ring) {
         return 0;
     }
-    if (!src || !out_grant_f32 || !complex_written) {
+    if (!src || !out_grant_f32 || !meta) {
         return 0;
     }
     if (chunk_f32 == 0U) {
@@ -1586,12 +1797,13 @@ replay_reserve_even_segments(struct input_ring_state* ring, size_t chunk_f32, fl
     return *first + *second;
 }
 
-static inline void
+/* Number the next chunk: bump the submit generation and return the chunk's. */
+static inline uint64_t
 replay_record_submit_generation(struct rtl_device* s) {
     if (!s || !s->replay_has_eof_state || !s->replay_eof.replay_last_submit_gen) {
-        return;
+        return 0U;
     }
-    (void)s->replay_eof.replay_last_submit_gen->fetch_add(1ULL, std::memory_order_release);
+    return s->replay_eof.replay_last_submit_gen->fetch_add(1ULL, std::memory_order_release) + 1ULL;
 }
 
 static inline void
@@ -1606,10 +1818,13 @@ replay_commit_or_drop_reserved(struct input_ring_state* ring, uint64_t discard_g
     input_ring_commit(ring, grant);
 }
 
+/* Copy one whole chunk into the input ring, number it and commit it. Its metadata, generation included, reaches the
+ * stream's chunk slot before the commit makes the chunk visible to the demod. The reservation must take the whole chunk
+ * (an empty ring always grants it); a shorter one fails. */
 static int
-replay_reserve_and_submit_chunk(struct rtl_device* s, const float* src, size_t src_off, size_t chunk_f32,
-                                size_t* out_grant_f32, uint64_t* complex_written) {
-    if (!replay_submit_chunk_inputs_valid(s, src, out_grant_f32, complex_written, chunk_f32)) {
+replay_reserve_and_submit_chunk(struct rtl_device* s, const float* src, size_t chunk_f32,
+                                struct rtl_replay_chunk_meta* meta, size_t* out_grant_f32) {
+    if (!replay_submit_chunk_inputs_valid(s, src, out_grant_f32, meta, chunk_f32)) {
         return -1;
     }
     struct input_ring_state* ring = s->input_ring;
@@ -1618,23 +1833,24 @@ replay_reserve_and_submit_chunk(struct rtl_device* s, const float* src, size_t s
     size_t first = 0U;
     size_t second = 0U;
     size_t grant = replay_reserve_even_segments(ring, chunk_f32, &p1, &first, &p2, &second);
-    if (grant == 0U) {
-        *out_grant_f32 = 0U;
-        return 0;
+    *out_grant_f32 = grant;
+    if (grant != chunk_f32) {
+        return -1;
     }
 
     if (first > 0U) {
-        DSD_MEMCPY(p1, src + src_off, first * sizeof(float));
+        DSD_MEMCPY(p1, src, first * sizeof(float));
     }
     if (second > 0U) {
-        DSD_MEMCPY(p2, src + src_off + first, second * sizeof(float));
+        DSD_MEMCPY(p2, src + first, second * sizeof(float));
     }
 
-    replay_record_submit_generation(s);
+    meta->submit_gen = replay_record_submit_generation(s);
+    if (s->replay_has_eof_state && s->replay_eof.chunk) {
+        *s->replay_eof.chunk = *meta;
+    }
+    REPLAY_TEST_READER_STAGE(RTL_STREAM_TEST_REPLAY_READER_BEFORE_COMMIT, (size_t)meta->submit_gen);
     replay_commit_or_drop_reserved(ring, discard_generation, grant);
-
-    *out_grant_f32 = grant;
-    *complex_written += grant / 2U;
     return 0;
 }
 
@@ -1648,10 +1864,18 @@ struct replay_thread_io_state {
     uint64_t* data_offset;
     uint32_t* event_cursor;
     uint64_t* start_ns;
+    uint64_t* timeline_samples; /* capture samples handed over or omitted so far (the media timeline); a loop goes on */
+    uint64_t* chunk_sequence;   /* chunks submitted so far */
+    uint64_t* pass_start_sequence; /* chunk_sequence when this pass over the capture began: at the start, or a rewind */
     int realtime;
+    /* What REPLAY_STEP_FAILED failed on: the capture file's DSD_IQ_* error, or kReplayPipelineFailureRc for a failure
+       outside it. */
+    int failure_rc;
 };
 
 } // namespace
+
+static replay_step replay_handle_empty_read(struct rtl_device* s, replay_thread_io_state* io);
 
 static inline int
 replay_thread_process_inputs_valid(const struct rtl_device* s, const uint8_t* raw_block, const float* f32_block,
@@ -1665,56 +1889,92 @@ replay_thread_process_inputs_valid(const struct rtl_device* s, const uint8_t* ra
     if (!io->complex_written || !io->data_offset || !io->event_cursor || !io->start_ns) {
         return 0;
     }
+    if (!io->timeline_samples || !io->chunk_sequence || !io->pass_start_sequence) {
+        return 0;
+    }
     return 1;
 }
 
-static inline int
+/* Hand one capture chunk to the demod whole (issue #572): wait for its realtime deadline, then, with no deadline, for
+ * the demod to take the chunk before it (an empty input ring), then commit all of it at once with its sequence, submit
+ * generation and media span. The demod's next block is exactly this chunk, and the reader reads and converts the next
+ * one while the demod works on this. */
+static int
+replay_submit_whole_chunk(struct rtl_device* s, const float* src, size_t float_count, replay_thread_io_state* io,
+                          struct rtl_replay_chunk_meta* chunk) {
+    if (!replay_wait_for_enqueue_deadline(s, *io->complex_written, *io->start_ns, io->realtime)) {
+        return -1;
+    }
+    REPLAY_TEST_READER_STAGE(RTL_STREAM_TEST_REPLAY_READER_WAIT_FOR_EMPTY_INPUT, (size_t)(*io->chunk_sequence + 1U));
+    if (!replay_wait_for_empty_input_ring(s, 0)) {
+        return -1;
+    }
+    const uint64_t complex_count = (uint64_t)(float_count / 2U);
+    chunk->sequence = *io->chunk_sequence + 1U;
+    chunk->media_start_ns = replay_media_ns(s, *io->timeline_samples);
+    chunk->media_end_ns = replay_media_ns(s, *io->timeline_samples + complex_count);
+    size_t grant = 0U;
+    if (replay_reserve_and_submit_chunk(s, src, float_count, chunk, &grant) != 0) {
+        return -1;
+    }
+    *io->chunk_sequence = chunk->sequence;
+    *io->complex_written += complex_count;
+    *io->timeline_samples += complex_count;
+    return 0;
+}
+
+/* Read the next chunk of the capture. At its end, rewind a looping replay (CONTINUE with no bytes) or report the end
+ * (EOF_DONE); a read the source refuses is a failure. */
+static inline replay_step
 replay_thread_read_or_handle_empty(struct rtl_device* s, uint8_t* raw_block, size_t read_limit,
                                    replay_thread_io_state* io, size_t* out_bytes) {
     if (!s || !raw_block || !io || !io->data_offset || !io->complex_written || !io->start_ns || !io->phase
         || !io->have_carry || !io->carry_byte || !io->event_cursor || !out_bytes) {
-        return 0;
+        if (io) {
+            io->failure_rc = kReplayPipelineFailureRc;
+        }
+        return REPLAY_STEP_FAILED;
     }
     *out_bytes = 0U;
-    int rc = dsd_iq_replay_read(s->replay_src, raw_block, read_limit, out_bytes);
+    int rc = replay_read_exact(s, raw_block, read_limit, out_bytes);
     if (rc != DSD_IQ_OK) {
-        return 0;
+        io->failure_rc = rc;
+        return REPLAY_STEP_FAILED;
     }
     if (*out_bytes == 0U) {
-        if (!replay_handle_empty_read(s, io->complex_written, io->start_ns, io->realtime, io->phase, io->have_carry,
-                                      io->carry_byte, io->data_offset, io->event_cursor)) {
-            return 0;
-        }
-        return 2;
+        return replay_handle_empty_read(s, io);
     }
     *io->data_offset += (uint64_t)(*out_bytes);
-    return 1;
+    return REPLAY_STEP_CONTINUE;
 }
 
-static int
+static replay_step
 replay_thread_process_block(struct rtl_device* s, uint8_t* raw_block, size_t raw_block_bytes, float* f32_block,
                             replay_thread_io_state* io) {
     if (!replay_thread_process_inputs_valid(s, raw_block, f32_block, io)) {
-        return 0;
+        if (io) {
+            io->failure_rc = kReplayPipelineFailureRc;
+        }
+        return REPLAY_STEP_FAILED;
     }
 
+    const uint64_t complex_written_before_events = *io->complex_written;
     if (!replay_dispatch_pending_events(s, io->event_cursor, *io->data_offset, io->phase, io->have_carry,
                                         io->carry_byte, io->complex_written)) {
-        return 0;
+        return replay_step_stopped_or_failed(s, &io->failure_rc, kReplayPipelineFailureRc);
     }
+    /* Capture time an event omits (a MUTE) passes on the media timeline as it does on the realtime schedule. */
+    *io->timeline_samples += *io->complex_written - complex_written_before_events;
 
     size_t read_limit = replay_next_read_limit(s, *io->data_offset, *io->event_cursor, raw_block_bytes);
     if (read_limit == 0U) {
-        return 2;
+        return REPLAY_STEP_CONTINUE;
     }
 
     size_t out_bytes = 0U;
-    int read_status = replay_thread_read_or_handle_empty(s, raw_block, read_limit, io, &out_bytes);
-    if (read_status == 0) {
-        return 0;
-    }
-    if (read_status == 2) {
-        return 2;
+    replay_step read_step = replay_thread_read_or_handle_empty(s, raw_block, read_limit, io, &out_bytes);
+    if (read_step != REPLAY_STEP_CONTINUE || out_bytes == 0U) {
+        return read_step;
     }
 
     dsd_input_level_snapshot input_level;
@@ -1729,65 +1989,35 @@ replay_thread_process_block(struct rtl_device* s, uint8_t* raw_block, size_t raw
 
     int produced = replay_convert_block_to_f32(s, raw_block, out_bytes, f32_block, raw_block_bytes, io->phase,
                                                io->have_carry, io->carry_byte, is_cu8 ? &moments : NULL);
-    if (produced <= 0) {
-        return 2;
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+    produced = replay_test_override_conversion(produced);
+#endif
+    if (produced < 0) {
+        /* The open refuses every format and stage the converters cannot handle, so a chunk they refuse is a read the
+           replay cannot complete: it ends after the samples already delivered, with the failure reported, rather than
+           going on without the chunk. */
+        return replay_step_stopped_or_failed(s, &io->failure_rc, kReplayConvertFailureRc);
+    }
+    if (produced == 0) {
+        /* No whole sample yet: a one-byte cu8 chunk stays in the carry for the next. */
+        return REPLAY_STEP_CONTINUE;
     }
     if (is_cu8) {
         have_input_level =
             dsd_input_level_cu8_moments_finalize(&moments, rtl_u8_input_level_source(s), &input_level) == 0;
     }
+
+    /* The chunk's input level travels with it: the demod publishes it when it starts the chunk's block. */
+    struct rtl_replay_chunk_meta chunk;
+    DSD_MEMSET(&chunk, 0, sizeof(chunk));
     if (have_input_level) {
-        rtl_stream_input_level_publish(&input_level);
+        chunk.have_input_level = 1;
+        chunk.input_level = input_level;
     }
-
-    if (replay_enqueue_f32_no_drop(s, f32_block, (size_t)produced, io->complex_written, *io->start_ns, io->realtime)
-        != 0) {
-        return 0;
+    if (replay_submit_whole_chunk(s, f32_block, (size_t)produced, io, &chunk) != 0) {
+        return replay_step_stopped_or_failed(s, &io->failure_rc, kReplayPipelineFailureRc);
     }
-    return 1;
-}
-
-static int
-replay_enqueue_f32_no_drop(struct rtl_device* s, const float* src, size_t float_count, uint64_t* complex_written,
-                           uint64_t start_ns, int realtime) {
-    if (!s || !s->input_ring || !src || !complex_written) {
-        return -1;
-    }
-
-    const struct input_ring_state* ring = s->input_ring;
-    size_t done = 0;
-    while (done < float_count) {
-        if (replay_forced_stop_requested(s)) {
-            return -1;
-        }
-
-        if (!replay_wait_for_enqueue_deadline(s, *complex_written, start_ns, realtime)) {
-            return -1;
-        }
-
-        size_t free_sp = input_ring_free(ring);
-        if (free_sp < 2U) {
-            if (!replay_wait_for_ring_progress(s, 2U, 0, 0)) {
-                return -1;
-            }
-            continue;
-        }
-
-        size_t chunk = replay_clamp_enqueue_chunk(float_count - done, free_sp);
-        if (chunk == 0U) {
-            continue;
-        }
-
-        size_t grant = 0U;
-        if (replay_reserve_and_submit_chunk(s, src, done, chunk, &grant, complex_written) != 0) {
-            return -1;
-        }
-        if (grant == 0U) {
-            continue;
-        }
-        done += grant;
-    }
-    return 0;
+    return REPLAY_STEP_CONTINUE;
 }
 
 static int
@@ -2055,11 +2285,33 @@ replay_restore_initial_state(struct rtl_device* s) {
     }
 }
 
+/* The EOF drain decision is made under eof_m on every side: here, and by the demod (demod_update_replay_drain_state(),
+ * replay_note_input_purge_consumed() in rtl_sdr_fm.cpp). Each side stores what it knows and loads what the other
+ * stored in one critical section, so whichever side decides second sees the other's store, and the wakeup cannot be
+ * lost between them. */
+static inline void
+replay_eof_lock(struct rtl_device* s) {
+    if (s->replay_eof.eof_m) {
+        dsd_mutex_lock(s->replay_eof.eof_m);
+    }
+}
+
+static inline void
+replay_eof_broadcast_and_unlock(struct rtl_device* s) {
+    if (s->replay_eof.eof_m) {
+        if (s->replay_eof.eof_cond) {
+            dsd_cond_broadcast(s->replay_eof.eof_cond);
+        }
+        dsd_mutex_unlock(s->replay_eof.eof_m);
+    }
+}
+
 static void
 replay_mark_input_eof(struct rtl_device* s) {
     if (!s || !s->replay_has_eof_state) {
         return;
     }
+    replay_eof_lock(s);
     if (s->replay_eof.replay_last_submit_gen && s->replay_eof.replay_last_submit_gen_at_eof) {
         uint64_t last_gen = s->replay_eof.replay_last_submit_gen->load(std::memory_order_acquire);
         s->replay_eof.replay_last_submit_gen_at_eof->store(last_gen, std::memory_order_release);
@@ -2067,78 +2319,63 @@ replay_mark_input_eof(struct rtl_device* s) {
     if (s->replay_eof.replay_input_eof) {
         s->replay_eof.replay_input_eof->store(1, std::memory_order_release);
     }
-    replay_signal_input_waiters(s);
-    if (s->replay_eof.eof_cond && s->replay_eof.eof_m) {
-        dsd_mutex_lock(s->replay_eof.eof_m);
-        dsd_cond_broadcast(s->replay_eof.eof_cond);
-        dsd_mutex_unlock(s->replay_eof.eof_m);
+    replay_eof_broadcast_and_unlock(s);
+    replay_device_wake_all(s);
+}
+
+/* The input ring is empty at EOF: mark the input drained, and the demod drained too once it has acknowledged every
+ * generation submitted before EOF. The demod decides the same thing after each block; whichever decides second marks
+ * it. */
+static void
+replay_mark_input_drained(struct rtl_device* s) {
+    REPLAY_TEST_READER_STAGE(RTL_STREAM_TEST_REPLAY_READER_DRAIN_DECISION, 0U);
+    int demod_drained_now = 0;
+    replay_eof_lock(s);
+    if (s->replay_eof.replay_input_drained) {
+        s->replay_eof.replay_input_drained->store(1, std::memory_order_release);
+    }
+    if (s->replay_eof.replay_demod_drained && s->replay_eof.replay_last_consume_gen
+        && s->replay_eof.replay_last_submit_gen_at_eof
+        && !s->replay_eof.replay_demod_drained->load(std::memory_order_acquire)) {
+        uint64_t consumed_gen = s->replay_eof.replay_last_consume_gen->load(std::memory_order_acquire);
+        uint64_t eof_gen = s->replay_eof.replay_last_submit_gen_at_eof->load(std::memory_order_acquire);
+        if (consumed_gen >= eof_gen) {
+            s->replay_eof.replay_demod_drained->store(1, std::memory_order_release);
+            demod_drained_now = 1;
+        }
+    }
+    replay_eof_broadcast_and_unlock(s);
+    REPLAY_TEST_READER_STAGE(RTL_STREAM_TEST_REPLAY_READER_DRAIN_DECIDED, (size_t)demod_drained_now);
+    if (s->replay_eof.on_input_drained) {
+        s->replay_eof.on_input_drained(s->replay_eof.eof_user);
     }
 }
 
+/* A 50 ms timed wait for the demod to drain, which also sees a stop request (the demod thread marks itself drained
+ * when it leaves). */
 static void
 replay_wait_for_demod_drain(struct rtl_device* s) {
-    if (!s || !s->replay_has_eof_state || !s->replay_eof.eof_m || !s->replay_eof.eof_cond) {
+    if (!s->replay_eof.eof_m || !s->replay_eof.eof_cond || !s->replay_eof.replay_demod_drained) {
         return;
     }
     dsd_mutex_lock(s->replay_eof.eof_m);
-    while (!replay_forced_stop_requested(s)
-           && !(s->replay_eof.replay_demod_drained
-                && s->replay_eof.replay_demod_drained->load(std::memory_order_acquire))) {
-        if (s->replay_eof.replay_forced_stop && s->replay_eof.replay_forced_stop->load(std::memory_order_acquire)) {
-            break;
-        }
-        if (s->replay_eof.stream_exit_flag && s->replay_eof.stream_exit_flag->load(std::memory_order_acquire)) {
-            break;
-        }
-        dsd_cond_wait(s->replay_eof.eof_cond, s->replay_eof.eof_m);
+    while (!replay_forced_stop_requested(s) && !s->replay_eof.replay_demod_drained->load(std::memory_order_acquire)) {
+        (void)dsd_cond_timedwait(s->replay_eof.eof_cond, s->replay_eof.eof_m, 50U);
     }
     dsd_mutex_unlock(s->replay_eof.eof_m);
 }
 
-static void
-replay_maybe_mark_demod_drained(struct rtl_device* s) {
-    if (!s || !s->replay_has_eof_state || !s->replay_eof.replay_input_drained || !s->replay_eof.replay_demod_drained
-        || !s->replay_eof.replay_last_consume_gen || !s->replay_eof.replay_last_submit_gen_at_eof) {
-        return;
-    }
-    if (!s->replay_eof.replay_input_drained->load(std::memory_order_acquire)) {
-        return;
-    }
-    if (s->replay_eof.replay_demod_drained->load(std::memory_order_acquire)) {
-        return;
-    }
-    uint64_t consumed_gen = s->replay_eof.replay_last_consume_gen->load(std::memory_order_acquire);
-    uint64_t eof_gen = s->replay_eof.replay_last_submit_gen_at_eof->load(std::memory_order_acquire);
-    if (consumed_gen < eof_gen) {
-        return;
-    }
-    s->replay_eof.replay_demod_drained->store(1, std::memory_order_release);
-    if (s->replay_eof.eof_cond && s->replay_eof.eof_m) {
-        dsd_mutex_lock(s->replay_eof.eof_m);
-        dsd_cond_broadcast(s->replay_eof.eof_cond);
-        dsd_mutex_unlock(s->replay_eof.eof_m);
-    }
-}
-
+/* End the replay input: mark EOF, wait for the demod to take what was delivered and drain it, so the decoder reads
+ * every sample and then learns the stream ended. The end of the capture and a failure to read it both end this way. */
 static void
 replay_handle_eof_sequence(struct rtl_device* s) {
-    if (!s || !s->input_ring) {
+    if (!s || !s->replay_has_eof_state) {
         return;
     }
-
     replay_mark_input_eof(s);
-    while (!replay_forced_stop_requested(s) && input_ring_used(s->input_ring) > 0U) {
-        (void)replay_wait_for_ring_progress(s, 1U, 0, 0);
-    }
-
-    if (!replay_forced_stop_requested(s) && s->replay_has_eof_state) {
-        if (s->replay_eof.replay_input_drained) {
-            s->replay_eof.replay_input_drained->store(1, std::memory_order_release);
-        }
-        if (s->replay_eof.on_input_drained) {
-            s->replay_eof.on_input_drained(s->replay_eof.eof_user);
-        }
-        replay_maybe_mark_demod_drained(s);
+    (void)replay_wait_for_empty_input_ring(s, 1);
+    if (!replay_forced_stop_requested(s)) {
+        replay_mark_input_drained(s);
     }
     replay_wait_for_demod_drain(s);
 }
@@ -2152,7 +2389,9 @@ replay_dispatch_pending_events(struct rtl_device* s, uint32_t* event_cursor, uin
     while (*event_cursor < s->replay_cfg.event_count
            && s->replay_cfg.events[*event_cursor].byte_offset <= data_offset) {
         const dsd_iq_event* event = &s->replay_cfg.events[*event_cursor];
-        if (event->kind == DSD_IQ_EVENT_RESET && !replay_wait_for_event_boundary_drain(s)) {
+        /* Every event waits for an idle pipeline, even one at the offset of the event before it (the wait then returns
+           at once). */
+        if (!replay_wait_for_event_boundary_drain(s, (int)event->kind)) {
             return 0;
         }
         replay_dispatch_event(s, event, phase, have_carry, carry_byte, complex_written);
@@ -2176,39 +2415,53 @@ replay_next_read_limit(const struct rtl_device* s, uint64_t data_offset, uint32_
     return read_limit;
 }
 
-static int
-replay_handle_empty_read(struct rtl_device* s, uint64_t* complex_written, uint64_t* start_ns, int realtime, int* phase,
-                         int* have_carry, uint8_t* carry_byte, uint64_t* data_offset, uint32_t* event_cursor) {
-    if (!s || !complex_written || !start_ns || !phase || !have_carry || !carry_byte || !data_offset || !event_cursor) {
-        return 0;
+/* The capture's end on this pass: the replay's end, or, under --iq-loop, a rewind (CONTINUE, the next pass begun).
+ * The reader's io state is checked whole before this (replay_thread_process_inputs_valid()). */
+static replay_step
+replay_handle_empty_read(struct rtl_device* s, replay_thread_io_state* io) {
+    if (!s || !io) {
+        if (io) {
+            io->failure_rc = kReplayPipelineFailureRc;
+        }
+        return REPLAY_STEP_FAILED;
     }
-    if (!replay_wait_for_timeline_position(s, *complex_written, *start_ns, realtime)) {
-        return 0;
+    if (!replay_wait_for_timeline_position(s, *io->complex_written, *io->start_ns, io->realtime)) {
+        return replay_step_stopped_or_failed(s, &io->failure_rc, kReplayPipelineFailureRc);
     }
     if (!s->replay_cfg.loop) {
-        replay_handle_eof_sequence(s);
-        return 0;
+        return REPLAY_STEP_EOF_DONE;
+    }
+    if (*io->chunk_sequence == *io->pass_start_sequence) {
+        /* A pass that handed the demod no chunk hands it none the next time either: a rewind would only spin through
+           the boundary, the reconfigure gate and a full finalize, pass after pass, with nothing reaching the decoder.
+           The replay ends here instead, as one without --iq-loop ends at the capture's end. */
+        LOG_WARN("IQ replay: a pass over the capture delivered no samples to the demodulator; --iq-loop does not "
+                 "rewind it, and the replay ends.\n");
+        return REPLAY_STEP_EOF_DONE;
     }
     /* A rewind is a replay timeline boundary just like RESET. Do not restore
      * the initial capture state while the demodulator still owns samples from
-     * the completed pass; the reconfigure callback would otherwise purge that
-     * work and a short fast-mode capture could loop without ever publishing
-     * output. */
-    if (!replay_wait_for_event_boundary_drain(s)) {
-        return 0;
+     * the completed pass, or the decoder has not read their output; the
+     * reconfigure callback would otherwise purge that work and a short
+     * fast-mode capture could loop without ever publishing output. */
+    if (!replay_wait_for_event_boundary_drain(s, 0)) {
+        return replay_step_stopped_or_failed(s, &io->failure_rc, kReplayPipelineFailureRc);
     }
-    if (dsd_iq_replay_rewind(s->replay_src) != DSD_IQ_OK) {
-        return 0;
+    int rewind_rc = dsd_iq_replay_rewind(s->replay_src);
+    if (rewind_rc != DSD_IQ_OK) {
+        io->failure_rc = rewind_rc;
+        return REPLAY_STEP_FAILED;
     }
     replay_restore_initial_state(s);
-    *phase = 0;
-    *have_carry = 0;
-    *carry_byte = 0;
-    *complex_written = 0;
-    *data_offset = 0;
-    *event_cursor = 0;
-    *start_ns = dsd_time_monotonic_ns();
-    return 1;
+    *io->phase = 0;
+    *io->have_carry = 0;
+    *io->carry_byte = 0;
+    *io->complex_written = 0;
+    *io->data_offset = 0;
+    *io->event_cursor = 0;
+    *io->start_ns = dsd_realtime_mono_ns();
+    *io->pass_start_sequence = *io->chunk_sequence;
+    return REPLAY_STEP_CONTINUE;
 }
 
 static int
@@ -2292,29 +2545,16 @@ rtl_device_test_replay_convert_block(const rtl_device_test_replay_convert_block_
 }
 #endif
 
-static DSD_THREAD_RETURN_TYPE
-#if DSD_PLATFORM_WIN_NATIVE
-    __stdcall
-#endif
-    replay_thread_fn(void* arg) {
-    struct rtl_device* s = static_cast<rtl_device*>(arg);
-    if (!s || !s->replay_src || !s->input_ring) {
-        if (s) {
-            s->run.store(0, std::memory_order_release);
-        }
-        DSD_THREAD_RETURN;
-    }
-
-    maybe_set_thread_realtime_and_affinity("DONGLE");
-
+/* Read the capture into the input ring until the reader has to stop, and say why it stopped. */
+static replay_step
+replay_thread_read_capture(struct rtl_device* s, int* out_failure_rc) {
     const size_t raw_block_bytes = 65536U;
     uint8_t* raw_block = static_cast<uint8_t*>(malloc(raw_block_bytes));
     float* f32_block = static_cast<float*>(malloc(raw_block_bytes * sizeof(float)));
+    replay_step step = REPLAY_STEP_CONTINUE;
     if (!raw_block || !f32_block) {
-        free(raw_block);
-        free(f32_block);
-        s->run.store(0, std::memory_order_release);
-        DSD_THREAD_RETURN;
+        *out_failure_rc = DSD_IQ_ERR_ALLOC;
+        step = REPLAY_STEP_FAILED;
     }
 
     int phase = 0;
@@ -2323,25 +2563,95 @@ static DSD_THREAD_RETURN_TYPE
     uint64_t complex_written = 0;
     uint64_t data_offset = 0;
     uint32_t event_cursor = 0;
-    uint64_t start_ns = dsd_time_monotonic_ns();
+    uint64_t start_ns = dsd_realtime_mono_ns();
+    uint64_t timeline_samples = 0;
+    uint64_t chunk_sequence = 0;
+    uint64_t pass_start_sequence = 0;
     int realtime = s->replay_cfg.realtime ? 1 : 0;
+    s->replay_deferred_read_rc = DSD_IQ_OK;
 
-    while (!replay_forced_stop_requested(s)) {
-        replay_thread_io_state io = {&phase,       &have_carry,   &carry_byte, &complex_written,
-                                     &data_offset, &event_cursor, &start_ns,   realtime};
-        int step = replay_thread_process_block(s, raw_block, raw_block_bytes, f32_block, &io);
-        if (step == 0) {
+    while (step == REPLAY_STEP_CONTINUE) {
+        if (replay_forced_stop_requested(s)) {
+            step = REPLAY_STEP_STOP;
             break;
         }
-        if (step == 2) {
-            continue;
+        replay_thread_io_state io = {&phase,          &have_carry,          &carry_byte, &complex_written,
+                                     &data_offset,    &event_cursor,        &start_ns,   &timeline_samples,
+                                     &chunk_sequence, &pass_start_sequence, realtime,    DSD_IQ_OK};
+        step = replay_thread_process_block(s, raw_block, raw_block_bytes, f32_block, &io);
+        if (step == REPLAY_STEP_FAILED) {
+            *out_failure_rc = io.failure_rc;
         }
     }
 
     free(f32_block);
     free(raw_block);
+    return step;
+}
+
+/* The replay cannot go on: say why, and latch it as the session's file input failure, for which
+ * dsd_engine_run_with_lifecycle() returns 1 once the replay ends. */
+static void
+replay_report_failure(const struct rtl_device* s, int rc) {
+    if (rc == DSD_IQ_ERR_ALLOC) {
+        LOG_ERROR("IQ replay: no memory for the capture read buffers (rc=%d); the replay ends.\n", rc);
+    } else if (rc == kReplayConvertFailureRc) {
+        LOG_ERROR("IQ replay: a capture chunk could not be converted to samples (sample_format '%s', capture_stage "
+                  "'%s'); the replay ends after the samples already delivered.\n",
+                  dsd_iq_sample_format_name(s->replay_cfg.format), s->replay_cfg.capture_stage);
+        rc = DSD_IQ_ERR_UNSUPPORTED_FMT;
+    } else if (rc == kReplayPipelineFailureRc) {
+        LOG_ERROR("IQ replay: the capture could not be handed on to the demodulator (no replay source or input ring "
+                  "to start from, an input ring that would not take a whole chunk, or an event boundary the pipeline "
+                  "gave up on); the replay ends after the samples already delivered.\n");
+        rc = DSD_IQ_ERR_INVALID_ARG;
+    } else {
+        LOG_ERROR("IQ replay: reading the capture failed (rc=%d); the replay ends after the samples already read.\n",
+                  rc);
+    }
+    dsd_input_failure_report(DSD_INPUT_FAILURE_FILE, rc);
+}
+
+static DSD_THREAD_RETURN_TYPE
+#if DSD_PLATFORM_WIN_NATIVE
+    __stdcall
+#endif
+    replay_thread_fn(void* arg) {
+    struct rtl_device* s = static_cast<rtl_device*>(arg);
+    if (!s) {
+        DSD_THREAD_RETURN;
+    }
+
+    maybe_set_thread_realtime_and_affinity("DONGLE");
+    replay_test_reset_eof_wait();
+
+    int failure_rc = kReplayPipelineFailureRc;
+    replay_step step =
+        (s->replay_src && s->input_ring) ? replay_thread_read_capture(s, &failure_rc) : REPLAY_STEP_FAILED;
+    if (step == REPLAY_STEP_FAILED) {
+        replay_report_failure(s, failure_rc);
+    }
+    if (step == REPLAY_STEP_EOF_DONE || step == REPLAY_STEP_FAILED) {
+        replay_handle_eof_sequence(s);
+    }
+
+    if (s->replay_has_eof_state && s->replay_eof.replay_reader_exited) {
+        s->replay_eof.replay_reader_exited->store(1, std::memory_order_release);
+    }
     s->run.store(0, std::memory_order_release);
+    replay_device_wake_all(s);
     DSD_THREAD_RETURN;
+}
+
+/* Start the replay reader thread; a test can make the start fail as a failed thread create does. */
+static int
+replay_start_reader_thread(struct rtl_device* dev) {
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+    if (g_test_replay_fail_start.load(std::memory_order_acquire)) {
+        return EAGAIN;
+    }
+#endif
+    return dsd_thread_create(&dev->thread, replay_thread_fn, dev);
 }
 
 /**
@@ -3125,7 +3435,7 @@ soapy_handle_read_result(struct rtl_device* dev, int ret) {
     }
     if (ret == SOAPY_SDR_OVERFLOW) {
         dev->soapy_overflow_count++;
-        uint64_t now_ns = dsd_time_monotonic_ns();
+        uint64_t now_ns = dsd_realtime_mono_ns();
         if ((now_ns - dev->soapy_last_overflow_log_ns) > 1000000000ULL) {
             DSD_FPRINTF(stderr, "SoapySDR: RX overflow count=%llu.\n", (unsigned long long)dev->soapy_overflow_count);
             dev->soapy_last_overflow_log_ns = now_ns;
@@ -3324,8 +3634,6 @@ airspy_receive(void* context, const float* samples, size_t pairs, uint64_t dropp
 }
 
 #ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
-#include "rtl_stream_test_support.h"
-
 extern "C" int
 rtl_device_test_airspy_ingest(const rtl_device_test_airspy_request* request, float* output, size_t* output_count,
                               uint64_t* dropped) {
@@ -3618,7 +3926,7 @@ rtl_tcp_init_adaptive_state(struct rtl_device* s, const dsdneoRuntimeConfig* cfg
     st->prev_drops = s->input_ring ? s->input_ring->producer_drops.load() : 0ULL;
     st->prev_rdto = s->input_ring ? s->input_ring->read_timeouts.load() : 0ULL;
     st->prev_res_full = s->reserve_full_events;
-    st->auto_last_ns = dsd_time_monotonic_ns();
+    st->auto_last_ns = dsd_realtime_mono_ns();
     st->timeout_limit = cfg ? cfg->tcp_max_timeouts : 3;
     st->consec_timeouts = 0;
 }
@@ -3828,7 +4136,7 @@ rtl_tcp_watchdog_allows_processing(struct rtl_device* s, int r) {
     if (!s) {
         return 0;
     }
-    uint64_t recv_ns = dsd_time_monotonic_ns();
+    uint64_t recv_ns = dsd_realtime_mono_ns();
     if (!rtl_tcp_metrics_record_recv_device(s, (uint32_t)r, recv_ns)) {
         return 1;
     }
@@ -4190,7 +4498,7 @@ rtl_tcp_autotune_if_due(struct rtl_device* s, struct rtl_tcp_loop_state* st, uin
 
 static inline void
 rtl_tcp_periodic_maintenance(struct rtl_device* s, struct rtl_tcp_loop_state* st) {
-    uint64_t now_ns = dsd_time_monotonic_ns();
+    uint64_t now_ns = dsd_realtime_mono_ns();
     rtl_tcp_print_stats_if_due(s, now_ns);
     rtl_tcp_autotune_if_due(s, st, now_ns);
 }
@@ -5264,7 +5572,7 @@ rtl_device_create_tcp(const char* host, int port, struct input_ring_state* input
         const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
         if (cfg && cfg->tcp_stats_enable) {
             dev->stats_enabled = 1;
-            dev->stats_last_ns = dsd_time_monotonic_ns();
+            dev->stats_last_ns = dsd_realtime_mono_ns();
             DSD_FPRINTF(stderr, "rtl_tcp: stats enabled.\n");
         }
     }
@@ -5625,12 +5933,7 @@ rtl_device_signal_replay_forced_stop(struct rtl_device* dev) {
     if (dev->replay_has_eof_state && dev->replay_eof.replay_forced_stop) {
         dev->replay_eof.replay_forced_stop->store(1, std::memory_order_release);
     }
-    replay_signal_input_waiters(dev);
-    if (dev->replay_has_eof_state && dev->replay_eof.eof_cond && dev->replay_eof.eof_m) {
-        dsd_mutex_lock(dev->replay_eof.eof_m);
-        dsd_cond_broadcast(dev->replay_eof.eof_cond);
-        dsd_mutex_unlock(dev->replay_eof.eof_m);
-    }
+    replay_device_wake_all(dev);
 }
 
 static void
@@ -6527,7 +6830,7 @@ rtl_device_start_async(struct rtl_device* dev, uint32_t buf_len) {
             return -1;
         }
         dev->run.store(1, std::memory_order_release);
-        r = dsd_thread_create(&dev->thread, replay_thread_fn, dev);
+        r = replay_start_reader_thread(dev);
     } else if (dev->backend == RTL_BACKEND_SOAPY) {
         if (!dev->soapy_dev) {
             dev->thread_started = 0;
@@ -6572,12 +6875,7 @@ rtl_device_stop_async(struct rtl_device* dev) {
         if (dev->replay_has_eof_state && dev->replay_eof.replay_forced_stop) {
             dev->replay_eof.replay_forced_stop->store(1, std::memory_order_release);
         }
-        replay_signal_input_waiters(dev);
-        if (dev->replay_has_eof_state && dev->replay_eof.eof_cond && dev->replay_eof.eof_m) {
-            dsd_mutex_lock(dev->replay_eof.eof_m);
-            dsd_cond_broadcast(dev->replay_eof.eof_cond);
-            dsd_mutex_unlock(dev->replay_eof.eof_m);
-        }
+        replay_device_wake_all(dev);
     } else if (dev->backend == RTL_BACKEND_SOAPY || dev->backend == RTL_BACKEND_AIRSPY) {
         dev->run.store(0);
     } else {

@@ -27,6 +27,7 @@ static int skip_calls;
 static int skipped_dibits;
 static int str_calls;
 static int brt_calls;
+static int confirm_reset_calls;
 
 static void
 reset_calls(void) {
@@ -36,12 +37,12 @@ reset_calls(void) {
     skipped_dibits = 0;
     str_calls = 0;
     brt_calls = 0;
+    confirm_reset_calls = 0;
 }
 
 /* What the stubbed frame decoders report back: 1 = validated something, 0 = proved nothing. */
 static int g_frame_validated = 1;
 static int g_confirmed = 1;
-static int confirm_reset_calls;
 
 void
 m17_confirm_reset(dsd_state* state) {
@@ -241,6 +242,8 @@ test_eot_dispatch(void) {
     assert(pkt_calls == 0);
     assert(str_calls == 0);
     assert(lastsynctype == DSD_SYNC_NONE);
+    /* ...and then forgets the transmission's proof, so the next carrier has to earn its own (#399). */
+    assert(confirm_reset_calls == 1);
 
     lastsynctype = dispatch_one(DSD_SYNC_M17_EOT_NEG);
     assert(skip_calls == 1);
@@ -249,6 +252,7 @@ test_eot_dispatch(void) {
     assert(pkt_calls == 0);
     assert(str_calls == 0);
     assert(lastsynctype == DSD_SYNC_NONE);
+    assert(confirm_reset_calls == 1);
 }
 
 static void

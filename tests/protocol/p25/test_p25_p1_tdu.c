@@ -16,13 +16,12 @@
 #include <dsd-neo/protocol/p25/p25_crypto.h>
 #include <dsd-neo/protocol/p25/p25_status_symbol.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
-#include <stdint.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <stdio.h>
 
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
-#include "dsd-neo/platform/timing.h"
 
 static int g_read_zeros_calls;
 static unsigned int g_read_zeros_length;
@@ -46,11 +45,6 @@ float_close(float got, float want, float epsilon) {
 }
 
 void read_zeros(dsd_opts* opts, dsd_state* state, unsigned int length, int* status_count);
-
-uint64_t
-dsd_time_monotonic_ns(void) {
-    return 1234500000000ULL;
-}
 
 void
 read_zeros(dsd_opts* opts, dsd_state* state, unsigned int length, int* status_count) {
@@ -216,8 +210,10 @@ test_tdu_preserves_gain_when_integer_output_and_reports_sync_mismatch(void) {
 
 int
 main(void) {
+    dsd_decode_clock_use_test(1234500000000ULL);
     test_tdu_resets_call_crypto_state_and_restores_float_gain();
     test_tdu_preserves_gain_when_integer_output_and_reports_sync_mismatch();
+    dsd_decode_clock_use_system();
     printf("P25_P1_TDU: OK\n");
     return 0;
 }

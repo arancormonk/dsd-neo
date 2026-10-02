@@ -12,6 +12,7 @@
  */
 
 #include <curses.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/ui/ui_prims.h>
 #include <string.h>
 #include <time.h>
@@ -361,7 +362,7 @@ ui_draw_menu(WINDOW* win, const NcMenuItem* items, size_t n, int hi, int* top_io
     if (top_io) {
         *top_io = top;
     }
-    time_t now = time(NULL);
+    time_t now = dsd_realtime_time();
     ui_menu_draw_item_rows(win, &layout, items, n, hi, top, ctx);
     ui_menu_draw_footer_lines(win, &layout, hi_pos, vis_total);
     ui_menu_draw_status_line(win, &layout, now);

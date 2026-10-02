@@ -28,13 +28,13 @@
 
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dibit.h>
-#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/protocol/nxdn/nxdn.h>
+#include <dsd-neo/runtime/decode_clock.h>
 
 #include <dsd-neo/protocol/nxdn/nxdn_deperm.h>
 #include <dsd-neo/protocol/nxdn/nxdn_lfsr.h>
@@ -42,7 +42,6 @@
 #include <dsd-neo/runtime/colors.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <time.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -274,8 +273,8 @@ nxdn_apply_lich_profile(dsd_state* state, nxdn_frame_ctx* ctx) {
  */
 static void
 nxdn_mark_carrier_sync_active(dsd_state* state) {
-    state->last_cc_sync_time = time(NULL);
-    state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
+    state->last_cc_sync_time = dsd_decode_time();
+    state->last_cc_sync_time_m = dsd_decode_now_mono_s();
 }
 
 static void
@@ -422,7 +421,7 @@ nxdn_apply_limazulu_voice_tweak(const dsd_opts* opts, dsd_state* state, const nx
         nxdn_cipher_force(state, 0x1);
     }
 
-    state->last_cc_sync_time = time(NULL) + 2;
+    state->last_cc_sync_time = dsd_decode_time() + 2;
 }
 #else
 static void
@@ -560,8 +559,8 @@ nxdn_process_voice_and_mbe(dsd_opts* opts, dsd_state* state, const nxdn_frame_ct
         if ((opts->mbe_out_dir[0] != 0) && (opts->mbe_out_f == NULL)) {
             openMbeOutFile(opts, state);
         }
-        state->last_vc_sync_time = time(NULL);
-        state->last_vc_sync_time_m = dsd_time_now_monotonic_s();
+        state->last_vc_sync_time = dsd_decode_time();
+        state->last_vc_sync_time_m = dsd_decode_now_mono_s();
         if (state->M == 1 && dsd_key_scalar_present(state, 0)) {
             nxdn_cipher_force(state, 0x1);
         }
@@ -573,7 +572,7 @@ nxdn_process_voice_and_mbe(dsd_opts* opts, dsd_state* state, const nxdn_frame_ct
         return;
     }
     const dsd_nxdn_variant variant = dsd_frame_sync_active_nxdn_variant(opts, state);
-    if (variant == DSD_NXDN_VARIANT_96 && (time(NULL) - state->last_vc_sync_time) > 1) {
+    if (variant == DSD_NXDN_VARIANT_96 && (dsd_decode_time() - state->last_vc_sync_time) > 1) {
         closeMbeOutFile(opts, state);
     }
     if (variant == DSD_NXDN_VARIANT_48) {
@@ -656,7 +655,7 @@ nxdn_frame(dsd_opts* opts, dsd_state* state) {
         if (opts->scanner_mode == 1) {
             /* Hold the scanner a little past this frame so the gap to the next one does
              * not read as loss of signal. */
-            state->last_cc_sync_time = time(NULL) + 2;
+            state->last_cc_sync_time = dsd_decode_time() + 2;
         }
     }
 

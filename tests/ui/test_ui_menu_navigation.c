@@ -572,8 +572,18 @@ main(void) {
     assert(g_chooser_render_calls == 1);
     g_chooser_active = 0;
 
+    g_rr_panel_active = 1;
+    assert(ui_menu_handle_key(KEY_UP, opts, state) == 1);
+    assert(g_rr_panel_key_calls == 1);
+    ui_menu_tick(opts, state);
+    assert(g_rr_panel_render_calls == 1);
+    g_rr_panel_active = 0;
+
+    assert(g_rr_panel_close_calls == 0);
     assert(ui_menu_handle_key(KEY_LEFT, opts, state) == 1);
     assert(ui_menu_is_open() == 0);
+    /* Closing the menu closes the RadioReference panel with it. */
+    assert(g_rr_panel_close_calls == 1);
 
     /* Status rows and separators are drawn but never highlighted or activated. */
     g_fixture = 3;

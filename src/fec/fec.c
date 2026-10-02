@@ -17,7 +17,7 @@
 
 #include <dsd-neo/fec/block_codes.h>
 #include <stdbool.h>
-#include <string.h>
+#include <stddef.h>
 #include "dsd-neo/core/safe_api.h"
 
 static unsigned char Hamming_7_4_m_corr[8]; //!< single bit error correction by syndrome index

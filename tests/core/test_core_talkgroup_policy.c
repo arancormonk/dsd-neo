@@ -4,7 +4,6 @@
  */
 
 #include <dsd-neo/core/csv_import.h>
-#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
@@ -16,6 +15,7 @@
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/scan_options.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -849,9 +849,9 @@ test_reload_group_file(void) {
     rc |= expect_true("seed temporary avoid before reload", dsd_tg_policy_session_avoid_add(st, 100) == 0);
     generation_before = policy_generation(st);
     rc |= expect_true("seed call skip before reload",
-                      dsd_tg_policy_call_skip_arm(st, 100, 1, 0, dsd_time_now_monotonic_s()) == 0);
+                      dsd_tg_policy_call_skip_arm(st, 100, 1, 0, dsd_decode_now_mono_s()) == 0);
     rc |= expect_true("reload success", dsd_tg_policy_reload_group_file(opts, st) == 0);
-    rc |= expect_true("reload clears skips", dsd_tg_policy_call_skip_count(st, dsd_time_now_monotonic_s()) == 0);
+    rc |= expect_true("reload clears skips", dsd_tg_policy_call_skip_count(st, dsd_decode_now_mono_s()) == 0);
     rc |= expect_true("reload clears temporary avoids", !dsd_tg_policy_session_avoid_contains(st, 100));
     rc |= expect_true("reload replaced policy rows", policy_count(st) == 2u);
     generation_after = policy_generation(st);
@@ -1454,7 +1454,7 @@ test_call_skips(void) {
                                                          && dsd_tg_policy_call_skip_empty(NULL));
     rc |= expect_true("skip invalid arguments", dsd_tg_policy_call_skip_arm(NULL, 123, 1, 0, base) == 1
                                                     && dsd_tg_policy_call_skip_arm(state, 0, 1, 0, base) == 1);
-    rc |= expect_true("arm skip", dsd_tg_policy_call_skip_arm(state, 123, 1, 0, dsd_time_now_monotonic_s()) == 0);
+    rc |= expect_true("arm skip", dsd_tg_policy_call_skip_arm(state, 123, 1, 0, dsd_decode_now_mono_s()) == 0);
     rc |= expect_true("armed skip ledger nonempty", !dsd_tg_policy_call_skip_empty(state));
     dsd_tg_policy_decision decision;
     rc |= expect_true("skip blocks all policy outputs",
@@ -1495,7 +1495,7 @@ test_call_skips(void) {
                                                        && !dsd_tg_policy_call_skip_active(state, 123, base));
     rc |= expect_true("unarmed touch stays absent", dsd_tg_policy_call_skip_touch(state, 456, base) == 0);
     rc |= expect_true("arm expired entry for evaluator",
-                      dsd_tg_policy_call_skip_arm(state, 123, 1, 0, dsd_time_now_monotonic_s() - quiet - 1.0) == 0
+                      dsd_tg_policy_call_skip_arm(state, 123, 1, 0, dsd_decode_now_mono_s() - quiet - 1.0) == 0
                           && dsd_tg_policy_evaluate_group_call(opts, state, 123, 1, 0, 0, &decision) == 0
                           && decision.tune_allowed && decision.audio_allowed && decision.record_allowed
                           && decision.stream_allowed);
@@ -1534,7 +1534,7 @@ test_call_skips(void) {
     rc |= expect_true("snapshot reuse copies clear", dsd_tg_policy_copy_snapshot(snapshot, state) == 0
                                                          && dsd_tg_policy_call_skip_count(snapshot, base + 10.0) == 0);
     rc |= expect_true("skip coexists with avoid",
-                      dsd_tg_policy_call_skip_arm(state, 123, 1, 0, dsd_time_now_monotonic_s()) == 0
+                      dsd_tg_policy_call_skip_arm(state, 123, 1, 0, dsd_decode_now_mono_s()) == 0
                           && dsd_tg_policy_session_avoid_add(state, 123) == 0
                           && dsd_tg_policy_evaluate_group_call(opts, state, 123, 1, 0, 0, &decision) == 0
                           && (decision.block_reasons & DSD_TG_POLICY_BLOCK_SESSION_AVOID)
@@ -1577,7 +1577,7 @@ test_ota_final_blocks(void) {
     rc |= expect_true("ota seed blocked sg", dsd_tg_policy_append_exact(state, &entry) == 0);
     rc |= expect_true("ota seed avoided sg", dsd_tg_policy_session_avoid_add(state, 9002) == 0);
     rc |= expect_true("ota seed skipped sg",
-                      dsd_tg_policy_call_skip_arm(state, 9003, 1, 0, dsd_time_now_monotonic_s()) == 0);
+                      dsd_tg_policy_call_skip_arm(state, 9003, 1, 0, dsd_decode_now_mono_s()) == 0);
     (void)dsd_enc_lockout_note(state, 9004, 1, 0x84, 4);
 
     dsd_tg_policy_decision decision;

@@ -29,6 +29,9 @@
 #include <stdio.h>
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/dsp/fsk_modem.h"
+#ifdef DSD_NEO_TEST_HOOKS
+#include "demod_pipeline_test_support.h"
+#endif
 
 #ifndef DSD_NEO_RESTRICT
 #if defined(_MSC_VER)
@@ -150,10 +153,24 @@ static_assert(DSD_ANALOG_CHANNEL_GUARD_HZ * 2 == DSD_ANALOG_CHANNEL_TRANSITION_H
               "analog guard must stay half the channel-filter transition");
 static_assert(DSD_CHANNEL_LPF_MAX_TAPS == DSD_ANALOG_CHANNEL_MAX_TAPS,
               "demod_state channel LPF capacity must match the analog validator's tap limit");
-static_assert(sizeof(demod_state::channel_lpf_plan_taps) / sizeof(float) == DSD_ANALOG_CHANNEL_MAX_TAPS,
+static_assert(DSD_DEMOD_BUF_ALIGN == DSD_NEO_ALIGN,
+              "the aligned demod_state buffers meet the alignment assumed of them");
+/* The aligned buffers are declared rounded up to whole alignment blocks (DSD_DEMOD_ALIGNED_FLOATS), so each holds at
+   least its capacity. The capacity constants, not sizeof, bound what is used of them. */
+static_assert(sizeof(demod_state::channel_lpf_plan_taps) / sizeof(float) >= DSD_ANALOG_CHANNEL_MAX_TAPS,
               "channel LPF plan array must hold the analog tap capacity");
-static_assert(sizeof(demod_state::channel_lpf_hist_i) / sizeof(float) >= DSD_ANALOG_CHANNEL_MAX_TAPS - 1,
-              "channel LPF history must hold taps - 1 samples at analog capacity");
+static_assert(sizeof(demod_state::channel_lpf_hist_i) / sizeof(float) >= DSD_CHANNEL_LPF_HIST_LEN
+                  && sizeof(demod_state::channel_lpf_hist_q) / sizeof(float) >= DSD_CHANNEL_LPF_HIST_LEN,
+              "channel LPF history arrays hold DSD_CHANNEL_LPF_HIST_LEN samples");
+/* The streaming FIR's windows reach pending + c back, pending up to the largest c a plan had and c up to the largest
+   c the capacity allows: a tap change without a reset must still find them in the history. */
+static_assert(2 * ((DSD_CHANNEL_LPF_MAX_TAPS - 1) / 2) <= DSD_CHANNEL_LPF_HIST_LEN,
+              "channel LPF history must hold pending + c at any two plans' tap counts");
+static_assert(sizeof(demod_state::hb_workbuf) / sizeof(float) >= DSD_DEMOD_WORKBUF_LENGTH
+                  && sizeof(demod_state::timing_buf) / sizeof(float) >= DSD_DEMOD_WORKBUF_LENGTH,
+              "the channel LPF writes either work buffer");
+static_assert(DSD_DEMOD_WORKBUF_LENGTH / 2 >= MAXIMUM_BUF_LENGTH / 2 + (DSD_CHANNEL_LPF_MAX_TAPS - 1) / 2,
+              "a channel LPF work buffer holds a maximum block's outputs on a tap shrink");
 static_assert(kChannelLpfTaps <= DSD_CHANNEL_LPF_MAX_TAPS, "digital channel LPF cap exceeds the plan array");
 static_assert(DSD_ANALOG_DEMOD_FM == 0, "a zeroed demod_state must mean the FM analog demodulator");
 /* Protected channel edges: the highest frequency each profile's channel LPF is
@@ -345,8 +362,23 @@ audio_polydecim_release(struct demod_state* d) {
     }
 }
 
+#ifdef DSD_NEO_TEST_HOOKS
+/* While set (dsd_demod_test_fail_post_polydecim_alloc()), the decimator's allocation fails. */
+static int g_post_polydecim_test_fail_alloc = 0;
+
+extern "C" void
+dsd_demod_test_fail_post_polydecim_alloc(int fail) {
+    g_post_polydecim_test_fail_alloc = fail ? 1 : 0;
+}
+#endif
+
 static int
 audio_polydecim_allocate(struct demod_state* d, int K) {
+#ifdef DSD_NEO_TEST_HOOKS
+    if (g_post_polydecim_test_fail_alloc) {
+        return 0;
+    }
+#endif
     d->post_polydecim_taps = static_cast<float*>(dsd_neo_aligned_malloc((size_t)K * sizeof(float)));
     d->post_polydecim_hist = static_cast<float*>(dsd_neo_aligned_malloc((size_t)K * sizeof(float)));
     if (!d->post_polydecim_taps || !d->post_polydecim_hist) {
@@ -461,6 +493,21 @@ audio_polydecim_process(struct demod_state* d, const float* in, int in_len, floa
     return out_len;
 }
 
+/* The post-demod decimator starts over on either path: the polyphase history and phase, and the fallback's one-pole and
+   part-filled group, so the next output comes with the M-th sample from here and holds nothing from before. */
+static void
+post_decim_reset_state(struct demod_state* d) {
+    if (d->post_polydecim_hist && d->post_polydecim_K > 0) {
+        DSD_MEMSET(d->post_polydecim_hist, 0, (size_t)d->post_polydecim_K * sizeof(float));
+    }
+    d->post_polydecim_hist_head = 0;
+    d->post_polydecim_phase = 0;
+    d->post_fallback_lp_y = 0.0f;
+    d->post_fallback_lp_valid = 0;
+    d->post_fallback_box_acc = 0.0f;
+    d->post_fallback_box_phase = 0;
+}
+
 /* ---------------- Fixed channel LPF (complex, no decimation) ----------------- */
 
 int
@@ -573,6 +620,35 @@ dsd_channel_lpf_legacy_wide_width_hz(int rate_hz) {
     return width_hz > 0.0 ? (int)lround(width_hz) : 0;
 }
 
+/* The channel FIR starts over: no history, no pending outputs, so its next output is centred on its next input. */
+static void
+channel_lpf_reset_state(struct demod_state* d) {
+    DSD_MEMSET(d->channel_lpf_hist_i, 0, sizeof(d->channel_lpf_hist_i));
+    DSD_MEMSET(d->channel_lpf_hist_q, 0, sizeof(d->channel_lpf_hist_q));
+    d->channel_lpf_pending = 0;
+}
+
+/* The half-band cascade starts over: no history and nothing pending in any stage, so each stage's next output is centred
+   on its next input sample. */
+static void
+halfband_reset_state(struct demod_state* d) {
+    for (int st = 0; st < 10; st++) {
+        DSD_MEMSET(d->hb_hist_i[st], 0, sizeof(d->hb_hist_i[st]));
+        DSD_MEMSET(d->hb_hist_q[st], 0, sizeof(d->hb_hist_q[st]));
+    }
+    DSD_MEMSET(d->hb_pending, 0, sizeof(d->hb_pending));
+}
+
+void
+dsd_demod_reset_filter_state(struct demod_state* d) {
+    if (!d) {
+        return;
+    }
+    halfband_reset_state(d);
+    channel_lpf_reset_state(d);
+    post_decim_reset_state(d);
+}
+
 /**
  * @brief Ensure channel LPF taps are generated for this demodulator state.
  *
@@ -580,6 +656,10 @@ dsd_channel_lpf_legacy_wide_width_hz(int rate_hz) {
  * Keeps absolute cutoffs in Hz constant across sample rates and avoids global
  * per-block profile dispatch. The plan is cached by (rate_out, profile, width): the analog
  * family's width-driven design when it has a width, the profile design otherwise.
+ *
+ * A plan for another rate_out than the previous one starts the channel over, since its history holds samples at the
+ * old rate. A width or profile change at the same rate keeps the history and pending outputs: the streaming FIR
+ * reconciles a new tap count through pending.
  */
 static void
 channel_lpf_ensure_plan(struct demod_state* d) {
@@ -600,6 +680,10 @@ channel_lpf_ensure_plan(struct demod_state* d) {
         return;
     }
 
+    if (d->channel_lpf_plan_rate_out > 0 && d->channel_lpf_plan_rate_out != rate_out) {
+        channel_lpf_reset_state(d);
+    }
+
     int taps_len = 0;
     if (width_hz > 0) {
         taps_len =
@@ -616,35 +700,84 @@ channel_lpf_ensure_plan(struct demod_state* d) {
     d->channel_lpf_plan_taps_len = taps_len;
 }
 
+/* A block the channel filter does not run on (the filter off, or no plan for the width) passes unfiltered and breaks
+   the stream the filter was on: what it held back is dropped and its next block starts over. pending is above 0
+   exactly when the filter took samples since its last reset, so only the first such block clears. */
+static void
+channel_lpf_bypass(struct demod_state* d) {
+    if (d->channel_lpf_pending != 0) {
+        channel_lpf_reset_state(d);
+    }
+}
+
+/*
+ * The channel FIR, streaming: a block makes the outputs whose look-ahead it completes, max(0, pending + N - c), each
+ * centred on its own input sample, so the output does not depend on where the blocks are cut. The first c samples
+ * after a reset make no output yet (about 1.4 ms at 48 kHz with 135 taps), and a block can make none at all.
+ */
 static void
 channel_lpf_apply(struct demod_state* d) {
-    if (!d || !d->channel_lpf_enable || d->lp_len < 2) {
+    if (!d) {
+        return;
+    }
+    if (!d->channel_lpf_enable) {
+        channel_lpf_bypass(d);
         return;
     }
 
     channel_lpf_ensure_plan(d);
     const float* taps = d->channel_lpf_plan_taps;
-    int taps_len = d->channel_lpf_plan_taps_len;
-    if (!taps || taps_len < 3) {
+    const int taps_len = d->channel_lpf_plan_taps_len;
+    if (taps_len < 3 || !d->lowpassed || d->lp_len < 0) {
+        channel_lpf_bypass(d);
         return;
     }
 
-    const int hist_len = taps_len - 1;
     const int N = d->lp_len >> 1; /* complex samples */
-    if (hist_len > d->channel_lpf_hist_len) {
-        d->channel_lpf_hist_len = hist_len;
-    }
-
     const float* in = assume_aligned_ptr(d->lowpassed, DSD_NEO_ALIGN);
     float* out = (d->lowpassed == d->hb_workbuf) ? d->timing_buf : d->hb_workbuf;
     float* hi = assume_aligned_ptr(d->channel_lpf_hist_i, DSD_NEO_ALIGN);
     float* hq = assume_aligned_ptr(d->channel_lpf_hist_q, DSD_NEO_ALIGN);
+    const int out_cap = DSD_DEMOD_WORKBUF_LENGTH / 2;
 
     /* Use SIMD-dispatched complex symmetric FIR */
-    simd_fir_complex_apply(in, d->lp_len, out, hi, hq, taps, taps_len);
+    const int made = simd_fir_complex_apply(in, N, out, out_cap, hi, hq, DSD_CHANNEL_LPF_HIST_LEN,
+                                            &d->channel_lpf_pending, taps, taps_len);
+    if (made < 0) {
+        /* Not reachable: a plan has odd taps within the capacity, pending stays within the history (the static
+           asserts above), and a block fits the work buffer. Should it happen, the block passes unfiltered and the
+           filter starts over. */
+        channel_lpf_reset_state(d);
+        return;
+    }
 
     d->lowpassed = out;
-    d->lp_len = N << 1;
+    d->lp_len = made << 1;
+}
+
+/*
+ * The mean of each step consecutive samples, in place: output k overwrites sample k, which the loop has read by then.
+ * *acc and *phase hold the group a call leaves part-filled (its sum and its sample count, 0..step-1), and the next call
+ * completes it, so the output does not depend on where the blocks are cut. A group sums from 0 in sample order, as a
+ * whole block would. Returns the outputs made.
+ */
+static int
+boxcar_decimate_stream(float* signal, int len, int step, float* acc, int* phase) {
+    float sum = *acc;
+    int count = *phase;
+    int out_len = 0;
+    for (int i = 0; i < len; i++) {
+        sum += signal[i];
+        if (++count < step) {
+            continue;
+        }
+        signal[out_len++] = sum / (float)step;
+        sum = 0.0f;
+        count = 0;
+    }
+    *acc = sum;
+    *phase = count;
+    return out_len;
 }
 
 /**
@@ -659,23 +792,19 @@ channel_lpf_apply(struct demod_state* d) {
  */
 int
 low_pass_simple(float* signal2, int len, int step) {
-    int i, i2;
     if (step <= 0) {
         return len;
     }
-    for (i = 0; i + (step - 1) < len; i += step) {
-        float sum = 0.0f;
-        for (i2 = 0; i2 < step; i2++) {
-            sum += signal2[i + i2];
-        }
-        // Normalize by step with rounding. Writes output at i/step index.
-        float val = sum / (float)step;
-        signal2[i / step] = val;
+    if (len <= 0) {
+        return len / step;
     }
+    /* One block on its own: a trailing part-filled group is dropped. */
+    float acc = 0.0f;
+    int phase = 0;
+    const int out_len = boxcar_decimate_stream(signal2, len, step, &acc, &phase);
     /* Duplicate the final sample to provide one-sample lookahead for callers
 	   that expect at least one extra element. Only do this when there is
 	   capacity (i.e., out_len < len) to avoid writing past the end. */
-    int out_len = len / step;
     if (out_len > 0 && out_len < len) {
         signal2[out_len] = signal2[out_len - 1];
     }
@@ -880,11 +1009,15 @@ dsd_demod_iq_balance_active(const struct demod_state* d) {
  */
 void
 raw_demod(struct demod_state* fm) {
+    /* The channel FIR can make up to 143 complex samples more than a maximum block on a tap shrink (its work buffers
+       hold them); result holds MAXIMUM_BUF_LENGTH floats. */
+    const int capacity = (int)(sizeof(fm->result) / sizeof(fm->result[0]));
+    const int n = fm->lp_len < capacity ? fm->lp_len : capacity;
     int i;
-    for (i = 0; i < fm->lp_len; i++) {
+    for (i = 0; i < n; i++) {
         fm->result[i] = fm->lowpassed[i];
     }
-    fm->result_len = fm->lp_len;
+    fm->result_len = n;
 }
 
 /**
@@ -1188,19 +1321,40 @@ iq_dc_block(struct demod_state* d) {
 
 /**
  * @brief Apply stage-wise half-band decimation for complex baseband.
+ *
+ * Streaming: each stage carries its look-ahead and decimation phase in hb_pending, so the cascade's output does not
+ * depend on where the blocks are cut. A stage makes at most (N + 1) / 2 outputs for N in, so every stage after the first
+ * fits the block's own buffer, which it writes in turn with hb_workbuf.
  */
 static void
 full_demod_apply_halfband_decimation(struct demod_state* d) {
-    if (!d || d->downsample_passes <= 0) {
+    if (!d) {
         return;
     }
-    int in_len = d->lp_len;
+    if (d->hb_state_passes != d->downsample_passes) {
+        /* Another cascade: its stages run at other rates, so what the old one held is not their past. */
+        halfband_reset_state(d);
+        d->hb_state_passes = d->downsample_passes;
+    }
+    if (d->downsample_passes <= 0) {
+        return;
+    }
+    /* Whole complex samples: a stray trailing float was never a sample. */
+    int in_len = d->lp_len > 0 ? (d->lp_len & ~1) : 0;
     float* src = d->lowpassed;
     float* dst = d->hb_workbuf;
     for (int i = 0; i < d->downsample_passes; i++) {
         const float* taps = (i == 0) ? hb31_q15_taps : hb_q15_taps;
         int taps_len = (i == 0) ? 31 : HB_TAPS;
-        int out_len = simd_hb_decim2_complex(src, in_len, dst, d->hb_hist_i[i], d->hb_hist_q[i], taps, taps_len);
+        int out_len = simd_hb_decim2_complex(src, in_len, dst, d->hb_hist_i[i], d->hb_hist_q[i], &d->hb_pending[i],
+                                             taps, taps_len);
+        if (out_len < 0) {
+            /* Not reachable: fixed odd taps, pending kept within 0..c by the decimator and a reset, and whole samples.
+               Should it happen, the cascade starts over and the block makes no samples. */
+            halfband_reset_state(d);
+            d->lp_len = 0;
+            return;
+        }
         src = dst;
         in_len = out_len;
         dst = (src == d->hb_workbuf) ? d->lowpassed : d->hb_workbuf;
@@ -1209,9 +1363,22 @@ full_demod_apply_halfband_decimation(struct demod_state* d) {
     d->lp_len = in_len;
 }
 
+/* The half-band cascade and the channel filter made no samples (a filter warm-up, or nothing in): the block has no
+   output, and the per-block decisions after this point (squelch gate, envelope, CQPSK zero symbols) wait for one with
+   samples. */
+static int
+full_demod_front_end_empty(struct demod_state* d) {
+    if (d->lowpassed && d->lp_len >= 2) {
+        d->front_end_empty = 0;
+        return 0;
+    }
+    d->result_len = 0;
+    d->front_end_empty = 1;
+    return 1;
+}
+
 static void
 full_demod_update_channel_state(struct demod_state* d) {
-    channel_lpf_apply(d);
     if (d->lowpassed && d->lp_len >= 2) {
         int n = (d->lp_len > 512) ? 512 : d->lp_len;
         d->channel_pwr = mean_power(d->lowpassed, n, 1);
@@ -1475,19 +1642,30 @@ full_demod_run_output_demod(struct demod_state* d) {
     }
 }
 
+/* A block that runs the post-demod decimator with another factor, rate_out or path than the block before (the factor
+   and rate a replay's rate chain sets, the path the polyphase allocation decides) starts it over: its state holds
+   samples at the old rate, or belongs to the other path. */
 static void
-full_demod_apply_post_audio_decimation(struct demod_state* d) {
-    if (d->cqpsk_enable || d->post_downsample <= 1) {
+post_decim_track_state_key(struct demod_state* d, int decim) {
+    const int fallback = d->post_polydecim_enabled ? 0 : 1;
+    if (d->post_decim_state_M == decim && d->post_decim_state_rate_out == d->rate_out
+        && d->post_decim_state_fallback == fallback) {
         return;
     }
-    int decim = d->post_downsample;
-    audio_polydecim_ensure(d, decim);
-    if (d->post_polydecim_enabled) {
-        int out_n = audio_polydecim_process(d, d->result, d->result_len, d->timing_buf);
-        if (out_n > 0) {
-            DSD_MEMCPY(d->result, d->timing_buf, (size_t)out_n * sizeof(float));
-            d->result_len = out_n;
-        }
+    post_decim_reset_state(d);
+    d->post_decim_state_M = decim;
+    d->post_decim_state_rate_out = d->rate_out;
+    d->post_decim_state_fallback = fallback;
+}
+
+/* The fallback when the polyphase decimator cannot be allocated: a one-pole low-pass, then the mean of each decim
+   samples. Both carry their state across blocks: the one-pole starts from the first sample after a reset and then runs
+   on, and a group a block leaves part-filled is completed by the next one. */
+static void
+post_decim_run_fallback(struct demod_state* d, int decim) {
+    const int n = d->result_len > 0 ? d->result_len : 0;
+    if (n == 0) {
+        d->result_len = 0;
         return;
     }
     int Fs = (d->rate_out > 0) ? d->rate_out : 48000;
@@ -1502,13 +1680,40 @@ full_demod_apply_post_audio_decimation(struct demod_state* d) {
         a = 1.0;
     }
     float alpha_f = clamp_float((float)a, 0.0f, 1.0f);
-    float y = (d->result_len > 0) ? d->result[0] : 0.0f;
-    for (int k = 0; k < d->result_len; k++) {
+    float y = d->post_fallback_lp_y;
+    if (!d->post_fallback_lp_valid) {
+        y = d->result[0];
+        d->post_fallback_lp_valid = 1;
+    }
+    for (int k = 0; k < n; k++) {
         float x = d->result[k];
         y += (x - y) * alpha_f;
         d->result[k] = y;
     }
-    d->result_len = low_pass_simple(d->result, d->result_len, decim);
+    d->post_fallback_lp_y = y;
+    d->result_len = boxcar_decimate_stream(d->result, n, decim, &d->post_fallback_box_acc, &d->post_fallback_box_phase);
+}
+
+/* Decimate the audio by post_downsample, streaming on either path: the block publishes the outputs its samples
+   complete, 0 included (a block shorter than what the next output still needs makes none and its samples wait in the
+   decimator's state), so the output does not depend on where the blocks are cut. */
+static void
+full_demod_apply_post_audio_decimation(struct demod_state* d) {
+    if (d->cqpsk_enable || d->post_downsample <= 1) {
+        return;
+    }
+    const int decim = d->post_downsample;
+    audio_polydecim_ensure(d, decim);
+    post_decim_track_state_key(d, decim);
+    if (d->post_polydecim_enabled) {
+        const int out_n = audio_polydecim_process(d, d->result, d->result_len, d->timing_buf);
+        if (out_n > 0) {
+            DSD_MEMCPY(d->result, d->timing_buf, (size_t)out_n * sizeof(float));
+        }
+        d->result_len = out_n > 0 ? out_n : 0;
+        return;
+    }
+    post_decim_run_fallback(d, decim);
 }
 
 static void
@@ -1549,6 +1754,10 @@ full_demod_apply_squelch_envelope(struct demod_state* d) {
 void
 full_demod(struct demod_state* d) {
     full_demod_apply_halfband_decimation(d);
+    channel_lpf_apply(d);
+    if (full_demod_front_end_empty(d)) {
+        return;
+    }
     full_demod_update_channel_state(d);
     if (full_demod_emit_zero_cqpsk_symbols(d)) {
         return;

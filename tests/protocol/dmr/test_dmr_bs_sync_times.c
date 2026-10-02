@@ -19,9 +19,9 @@
 #include <dsd-neo/crypto/dmr_keystream.h>
 #include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/platform/file_compat.h>
-#include <dsd-neo/platform/timing.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/shutdown.h>
@@ -54,21 +54,15 @@ static unsigned int g_history_calls[2];
 static unsigned int g_current_calls[2];
 static unsigned int g_data_sync_calls;
 static uint8_t g_data_sync_reliability[144];
-static unsigned int g_data_burst_calls;
-static uint8_t g_data_burst_last;
 static unsigned int g_debug_dump_calls;
 static uint8_t g_debug_dump_last_slot;
 static uint8_t g_debug_dump_last_type;
 static unsigned int g_cach_calls;
 static unsigned int g_reset_blocks_calls;
-static unsigned int g_alg_refresh_calls;
 static unsigned int g_alg_reset_calls;
 static unsigned int g_refresh_error_calls;
-static unsigned int g_hytera_refresh_calls;
 static unsigned int g_late_entry_calls;
 static uint8_t g_late_entry_last_vc;
-static unsigned int g_sbrc_calls;
-static uint8_t g_sbrc_last_power;
 static unsigned int g_sm_voice_sync_calls;
 static unsigned int g_sm_voice_sync_calls_at_first_mbe;
 static int g_sm_voice_sync_last_slot;
@@ -100,21 +94,15 @@ reset_spies(void) {
     g_current_calls[1] = 0;
     g_data_sync_calls = 0;
     DSD_MEMSET(g_data_sync_reliability, 0, sizeof(g_data_sync_reliability));
-    g_data_burst_calls = 0;
-    g_data_burst_last = 0;
     g_debug_dump_calls = 0;
     g_debug_dump_last_slot = 0xFFU;
     g_debug_dump_last_type = 0;
     g_cach_calls = 0;
     g_reset_blocks_calls = 0;
-    g_alg_refresh_calls = 0;
     g_alg_reset_calls = 0;
     g_refresh_error_calls = 0;
-    g_hytera_refresh_calls = 0;
     g_late_entry_calls = 0;
     g_late_entry_last_vc = 0;
-    g_sbrc_calls = 0;
-    g_sbrc_last_power = 0;
     g_sm_voice_sync_calls = 0;
     g_sm_voice_sync_calls_at_first_mbe = 0;
     g_sm_voice_sync_last_slot = -1;
@@ -236,11 +224,6 @@ bool
 QR_16_7_6_decode(unsigned char* rxBits) {
     (void)rxBits;
     return true;
-}
-
-uint64_t
-dsd_time_monotonic_ns(void) {
-    return 1234567890ULL;
 }
 
 void
@@ -367,8 +350,7 @@ dmr_data_burst_handler(dsd_opts* opts, dsd_state* state, uint8_t info[196], uint
     (void)state;
     (void)info;
     (void)reliab98;
-    g_data_burst_calls++;
-    g_data_burst_last = databurst;
+    (void)databurst;
 }
 
 void
@@ -400,7 +382,6 @@ void
 dmr_alg_refresh(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
-    g_alg_refresh_calls++;
 }
 
 void
@@ -420,7 +401,6 @@ dmr_refresh_algids_on_error(dsd_opts* opts, dsd_state* state) {
 void
 hytera_enhanced_alg_refresh(dsd_state* state) {
     (void)state;
-    g_hytera_refresh_calls++;
 }
 
 void
@@ -440,8 +420,7 @@ void
 dmr_sbrc(dsd_opts* opts, dsd_state* state, uint8_t power) {
     (void)opts;
     (void)state;
-    g_sbrc_calls++;
-    g_sbrc_last_power = power;
+    (void)power;
 }
 
 void
@@ -550,6 +529,7 @@ test_bs_slot2_voice_routes_right_channel_and_post_skip_hooks(void) {
     assert(g_open_right_calls == 1U);
     assert(g_open_left_calls == 0U);
     assert(g_close_right_calls == 1U);
+    assert(g_close_left_calls == 0U);
     assert(g_process_mbe_calls == 3U);
     assert(g_play_fs3_calls == 1U);
     assert(g_play_ss3_calls == 0U);
@@ -745,6 +725,7 @@ test_continuous_voice_yields_at_burst_boundary(void) {
 
 int
 main(void) {
+    dsd_decode_clock_use_test(1234567890ULL);
     test_continuous_voice_yields_at_burst_boundary();
     test_bs_voice_sync_refreshes_when_trunk_tuned();
     test_bs_slot2_voice_routes_right_channel_and_post_skip_hooks();
@@ -753,6 +734,7 @@ main(void) {
     test_bs_confidence_reject_resets_slot_without_voice_decode();
     test_bs_voice_gate_closed_skips_decode_but_keeps_loop_hooks();
     test_bs_bootstrap_prefetched_voice_runs_first_frame_path();
+    dsd_decode_clock_use_system();
     printf("DMR BS sync times: OK\n");
     return 0;
 }

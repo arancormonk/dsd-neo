@@ -91,6 +91,16 @@ for var in \
   fi
 done
 
+# The jobs that run in the Arch image name it inline, because a container image
+# cannot read the env file, so each copy has to equal ARCHLINUX_BASE_DEVEL_IMAGE.
+inline_arch_images=$(
+  rg -n -o 'archlinux:base-devel@sha256:[0-9a-f]+' .github/workflows --glob '*.y*ml' |
+    grep -vF ":${ARCHLINUX_BASE_DEVEL_IMAGE:-}" ||
+    true
+)
+report_violation "Inline archlinux:base-devel image differs from ARCHLINUX_BASE_DEVEL_IMAGE in tools/ci-dependency-pins.env:" \
+  "$inline_arch_images"
+
 for var in CMAKE_LINUX_X86_64_SHA256 CMAKE_LINUX_AARCH64_SHA256; do
   value=${!var:-}
   if [[ ! "$value" =~ ^[0-9a-f]{64}$ ]]; then

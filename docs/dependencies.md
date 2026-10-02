@@ -89,6 +89,19 @@ CI and local quality tools are tracked through:
 Hashed Python requirements are used where Python tooling is installed in CI.
 GitHub Actions are pinned to immutable commit SHAs by policy.
 
+The C/C++ quality jobs run in the pinned Arch Linux image
+(`ARCHLINUX_BASE_DEVEL_IMAGE`) through `tools/ci_arch_toolchain.sh`, which takes
+clang, clang-tidy, clang-format and scan-build from the Arch repositories at run
+time (check the LLVM major with `clang --version` in the image) and builds
+include-what-you-use from `IWYU_SHA`. IWYU compiles against the LLVM it is built
+with and each IWYU commit supports one LLVM major, so when Arch moves to a new
+LLVM major, move `IWYU_SHA` to a commit built for it in the same change, along
+with the image digest. The three inline `archlinux:base-devel@sha256:` copies in
+`.github/workflows/linux-ci.yaml` (a container image cannot read the env file)
+must move together with `ARCHLINUX_BASE_DEVEL_IMAGE` in
+`tools/ci-dependency-pins.env`; `tools/check_workflow_download_pins.sh` fails
+when any of them differs.
+
 ## Monitoring
 
 The project monitors dependencies through:

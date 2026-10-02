@@ -38,6 +38,76 @@ set_error(char* err_buf, size_t err_buf_size, const char* fmt, ...) {
     err_buf[err_buf_size - 1] = '\0';
 }
 
+/* The @p n decimal digits at @p text, or -1 when one of them is not a digit. */
+static int
+utc_field(const char* text, int n) {
+    int value = 0;
+    for (int i = 0; i < n; i++) {
+        if (text[i] < '0' || text[i] > '9') {
+            return -1;
+        }
+        value = value * 10 + (text[i] - '0');
+    }
+    return value;
+}
+
+/* Days from 1970-01-01 to @p y-@p m-@p d in the proleptic Gregorian calendar (H. Hinnant's days_from_civil). */
+static int64_t
+utc_days_from_civil(int64_t y, int m, int d) {
+    y -= m <= 2 ? 1 : 0;
+    const int64_t era = (y >= 0 ? y : y - 399) / 400;
+    const int64_t yoe = y - era * 400;
+    const int64_t doy = (153 * (int64_t)(m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+    const int64_t doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    return era * 146097 + doe - 719468;
+}
+
+static int
+utc_days_in_month(int year, int month) {
+    static const int kDays[12] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+    const int leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+    return month == 2 && leap ? 29 : kDays[month - 1];
+}
+
+/* The separators of YYYY-MM-DDTHH:MM:SSZ in place, at its length. */
+static int
+utc_layout_ok(const char* text) {
+    static const char kLayout[] = "####-##-##T##:##:##Z";
+    if (strlen(text) != sizeof(kLayout) - 1U) {
+        return 0;
+    }
+    for (size_t i = 0; i < sizeof(kLayout) - 1U; i++) {
+        if (kLayout[i] != '#' && text[i] != kLayout[i]) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+int
+dsd_iq_replay_parse_utc_seconds(const char* text, int64_t* out_s) {
+    if (!text || !out_s) {
+        return DSD_IQ_ERR_INVALID_ARG;
+    }
+    if (!utc_layout_ok(text)) {
+        return DSD_IQ_ERR_INVALID_META;
+    }
+    const int year = utc_field(text, 4);
+    const int month = utc_field(text + 5, 2);
+    const int day = utc_field(text + 8, 2);
+    const int hour = utc_field(text + 11, 2);
+    const int minute = utc_field(text + 14, 2);
+    const int second = utc_field(text + 17, 2);
+    if (year < 0 || month < 1 || month > 12 || day < 1 || day > utc_days_in_month(year, month)) {
+        return DSD_IQ_ERR_INVALID_META;
+    }
+    if (hour < 0 || hour > 23 || minute < 0 || minute > 59 || second < 0 || second > 59) {
+        return DSD_IQ_ERR_INVALID_META;
+    }
+    *out_s = utc_days_from_civil(year, month, day) * 86400 + (int64_t)hour * 3600 + (int64_t)minute * 60 + second;
+    return DSD_IQ_OK;
+}
+
 void
 dsd_iq_replay_config_clear(dsd_iq_replay_config* cfg) {
     if (!cfg) {
@@ -728,6 +798,30 @@ validate_replay_semantics(const dsd_iq_replay_config* cfg, char* err_buf, size_t
         return DSD_IQ_ERR_UNSUPPORTED_FMT;
     }
     return DSD_IQ_OK;
+}
+
+/* The sample format and capture stage pairs a replay can convert to the demodulator's float input, as the replay
+ * reader's converters do (replay_convert_block_to_f32() in rtl_device.cpp): cu8 at either capture stage, and cf32 only
+ * as the driver delivered it, before the input ring. A cs16 capture parses, and --iq-info describes it, but nothing
+ * converts it. */
+static int
+validate_replay_convertible(const dsd_iq_replay_config* cfg, char* err_buf, size_t err_buf_size) {
+    if (cfg->format == DSD_IQ_FORMAT_CU8) {
+        return DSD_IQ_OK;
+    }
+    if (cfg->format == DSD_IQ_FORMAT_CF32) {
+        if (strcmp(cfg->capture_stage, "post_driver_cf32_pre_ring") == 0) {
+            return DSD_IQ_OK;
+        }
+        set_error(err_buf, err_buf_size,
+                  "replay cannot convert sample_format 'cf32' at capture_stage '%s' (cf32 replays only from "
+                  "'post_driver_cf32_pre_ring')",
+                  cfg->capture_stage);
+        return DSD_IQ_ERR_UNSUPPORTED_FMT;
+    }
+    set_error(err_buf, err_buf_size, "replay cannot convert sample_format '%s' (replay accepts cu8 and cf32)",
+              dsd_iq_sample_format_name(cfg->format));
+    return DSD_IQ_ERR_UNSUPPORTED_FMT;
 }
 
 static int
@@ -1972,6 +2066,11 @@ dsd_iq_replay_open(const char* path, dsd_iq_replay_config* out_cfg, dsd_iq_repla
     if (rc != DSD_IQ_OK) {
         return rc;
     }
+    rc = validate_replay_convertible(&cfg, err_buf, err_buf_size);
+    if (rc != DSD_IQ_OK) {
+        dsd_iq_replay_config_clear(&cfg);
+        return rc;
+    }
 
     uint64_t actual_size = 0;
     if (file_size_u64(cfg.data_path, &actual_size) != DSD_IQ_OK) {
@@ -2041,7 +2140,11 @@ dsd_iq_replay_read(dsd_iq_replay_source* src, void* out, size_t max_bytes, size_
         max_bytes = (size_t)src->remaining_bytes;
     }
     size_t n = fread(out, 1, max_bytes, src->fp);
-    if (n == 0 && ferror(src->fp)) {
+    if (n == 0) {
+        /* Capture bytes remain: the open measured them, and remaining_bytes counts what is left. A read that gets none
+           failed (ferror()), or found the end of a file cut short after the open, which is a read error too, not the
+           capture's end. A capture whose data_bytes is 0 counts the file's size at the open, so a healthy file never
+           runs out before it. */
         return DSD_IQ_ERR_IO;
     }
     src->remaining_bytes -= (uint64_t)n;
@@ -2161,7 +2264,7 @@ dsd_iq_info_print(const dsd_iq_replay_config* cfg, const char* display_path, uin
     }
     char compat_err[256] = {0};
     int replay_compatible =
-        (effective > 0
+        (effective > 0 && validate_replay_convertible(cfg, compat_err, sizeof(compat_err)) == DSD_IQ_OK
          && validate_replay_events_metadata(cfg, effective, 1, 1, compat_err, sizeof(compat_err)) == DSD_IQ_OK);
 
     dsd_iq_info_print_summary(cfg, display_path, actual_file_size, effective, replay_compatible, out);

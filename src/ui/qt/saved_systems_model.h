@@ -117,6 +117,14 @@ class SavedSystemsModel : public QAbstractListModel {
     Q_INVOKABLE void touch(int row);
 
     /**
+     * @brief The real clock lastHeard is stamped from, in ms since the Unix epoch.
+     *
+     * For QML that ages lastHeard ("Last listened 2 minutes ago"): the age of the viewer's own
+     * listening is real time, and reading it here keeps the stamp and the age on one clock.
+     */
+    Q_INVOKABLE qint64 realtimeNowMs() const;
+
+    /**
      * @brief Row most recently heard, or 0 when the list is non-empty but unheard.
      *
      * A NOTIFY property, not an invokable: the home screen's featured play button
@@ -207,6 +215,9 @@ class SavedSystemsModel : public QAbstractListModel {
     bool saveRows(const QList<Row>& rows) const;
 
     QList<Row> m_rows;
+    /* The one real clock, in ms since the Unix epoch, that touch() stamps lastHeard from and realtimeNowMs() ages it
+       against. */
+    qint64 (*m_realtime_now_ms)();
 };
 
 } // namespace dsd_qt

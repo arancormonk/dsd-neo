@@ -290,6 +290,56 @@ rtl_stream_set_channel_squelch(float level) {
     g_last_channel_squelch = level;
 }
 
+static int g_replay_batch_calls;
+static int g_replay_batch_result;
+
+/* A tag whose fields all differ, so each is seen to reach its own field of the runtime batch. */
+int
+rtl_stream_get_replay_batch(rtl_stream_replay_batch* out) {
+    ++g_replay_batch_calls;
+    assert(out != NULL);
+    *out = (rtl_stream_replay_batch){0};
+    out->chunk_sequence = 7U;
+    out->output_generation = 654321U;
+    out->output_kind = 2;
+    out->channel_profile = 5;
+    out->symbol_rate_hz = 6000;
+    out->symbol_levels = 2;
+    out->output_rate_hz = 24000;
+    out->media_start_ns = 1234567890123ULL;
+    out->media_duration_ns = 21333333ULL;
+    out->output_count = 99U;
+    out->first_index = 17U;
+    return g_replay_batch_result;
+}
+
+/* The replay batch the decoder's last read took its samples from reaches DSP with the fields it labels a symbol cache
+ * with and the media span it runs the decode clock on; no replay batch is none. Called with the engine's table
+ * installed. */
+static void
+test_replay_batch_hook(void) {
+    dsd_rtl_stream_replay_batch batch = {0};
+    g_replay_batch_result = 0;
+    assert(dsd_rtl_stream_metrics_hook_replay_batch(&batch) == 1);
+    assert(g_replay_batch_calls == 1);
+    assert(batch.generation == 654321U);
+    assert(batch.output_kind == 2);
+    assert(batch.channel_profile == 5);
+    assert(batch.symbol_rate_hz == 6000);
+    assert(batch.levels == 2);
+    assert(batch.media_start_ns == 1234567890123ULL);
+    assert(batch.media_duration_ns == 21333333ULL);
+    assert(batch.output_count == 99U);
+    assert(batch.first_index == 17U);
+    g_replay_batch_result = -1;
+    assert(dsd_rtl_stream_metrics_hook_replay_batch(&batch) == 0);
+    assert(g_replay_batch_calls == 2);
+    assert(batch.generation == 0U && batch.output_kind == 0 && batch.channel_profile == 0);
+    assert(batch.symbol_rate_hz == 0 && batch.levels == 0);
+    assert(batch.media_start_ns == 0U && batch.media_duration_ns == 0U && batch.output_count == 0U);
+    assert(batch.first_index == 0U);
+}
+
 int
 main(void) {
     dsd_rtl_stream_metrics_hooks_set(NULL);
@@ -426,6 +476,8 @@ main(void) {
     assert(dsd_rtl_stream_metrics_hook_set_channel_squelch(1e-6) == 0);
     assert(g_channel_squelch_calls == 1);
     assert(fabsf(g_last_channel_squelch - 1e-6f) < 1e-12f);
+
+    test_replay_batch_hook();
 
     dsd_rtl_stream_metrics_hooks_set(NULL);
     return 0;

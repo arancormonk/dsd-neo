@@ -10,6 +10,7 @@
 #include <stdint.h>
 
 #include <dsd-neo/runtime/analog_channel.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 
 static int g_output_rate_calls = 0;
@@ -393,6 +394,98 @@ test_digital_family_landing_hook(void) {
     dsd_rtl_stream_metrics_hooks_set(NULL);
 }
 
+/* A replay batch hook that fills its output even when it reports no batch. */
+static int g_replay_batch_result = 0;
+static int g_replay_batch_calls = 0;
+
+static uint32_t g_replay_batch_first_index = 0U;
+
+static int
+fake_replay_batch(dsd_rtl_stream_replay_batch* out) {
+    ++g_replay_batch_calls;
+    out->generation = 77U;
+    out->output_kind = 1;
+    out->channel_profile = 2;
+    out->symbol_rate_hz = 4800;
+    out->levels = 4;
+    out->media_start_ns = 9000000000ULL;
+    out->media_duration_ns = 21333333ULL;
+    out->output_count = 512U;
+    out->first_index = g_replay_batch_first_index;
+    return g_replay_batch_result;
+}
+
+/* The I/Q replay batch the decoder's last read took its samples from: none with no RTL front end installed, forwarded
+ * when its hook reports one, and none, with nothing left in the output, whenever the hook reports anything else. */
+static void
+test_replay_batch_hook(void) {
+    dsd_rtl_stream_replay_batch batch = {.generation = 9U, .output_kind = 9, .levels = 9};
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    assert(dsd_rtl_stream_metrics_hook_replay_batch(&batch) == 0);
+    assert(batch.generation == 0U && batch.output_kind == 0 && batch.channel_profile == 0);
+    assert(batch.symbol_rate_hz == 0 && batch.levels == 0);
+    assert(dsd_rtl_stream_metrics_hook_replay_batch(NULL) == 0);
+
+    dsd_rtl_stream_metrics_hooks hooks = {0};
+    hooks.replay_batch = fake_replay_batch;
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+    g_replay_batch_result = 1;
+    assert(dsd_rtl_stream_metrics_hook_replay_batch(&batch) == 1);
+    assert(batch.generation == 77U && batch.output_kind == 1 && batch.channel_profile == 2);
+    assert(batch.symbol_rate_hz == 4800 && batch.levels == 4);
+    assert(batch.media_start_ns == 9000000000ULL && batch.media_duration_ns == 21333333ULL);
+    assert(batch.output_count == 512U && batch.first_index == 0U);
+    const int results[] = {0, -1, 2};
+    for (size_t i = 0; i < sizeof(results) / sizeof(results[0]); i++) {
+        g_replay_batch_result = results[i];
+        assert(dsd_rtl_stream_metrics_hook_replay_batch(&batch) == 0);
+        assert(batch.generation == 0U && batch.output_kind == 0 && batch.channel_profile == 0);
+        assert(batch.symbol_rate_hz == 0 && batch.levels == 0);
+        assert(batch.media_start_ns == 0U && batch.media_duration_ns == 0U);
+        assert(batch.output_count == 0U && batch.first_index == 0U);
+    }
+    /* A NULL output never reaches the hook. */
+    assert(dsd_rtl_stream_metrics_hook_replay_batch(NULL) == 0);
+    assert(g_replay_batch_calls == 4);
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+}
+
+/* Issue #572: a reader that takes one replay sample at a time runs the decode clock's media time to that sample's
+ * capture time, the read's batch span at its index; a live read (no batch) runs nothing. */
+static void
+test_replay_advance_decode_clock(void) {
+    const int64_t anchor_s = 1788245497LL;
+    const uint64_t anchor_ns = (uint64_t)anchor_s * 1000000000ULL;
+    dsd_decode_clock_use_replay(anchor_s);
+
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    assert(dsd_rtl_stream_metrics_hook_replay_advance_decode_clock() == 0);
+    assert(dsd_decode_now_mono_ns() == anchor_ns);
+
+    dsd_rtl_stream_metrics_hooks hooks = {0};
+    hooks.replay_batch = fake_replay_batch;
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+    g_replay_batch_result = 0;
+    assert(dsd_rtl_stream_metrics_hook_replay_advance_decode_clock() == 0);
+    assert(dsd_decode_now_mono_ns() == anchor_ns);
+
+    g_replay_batch_result = 1;
+    g_replay_batch_first_index = 0U;
+    assert(dsd_rtl_stream_metrics_hook_replay_advance_decode_clock() == 1);
+    assert(dsd_decode_now_mono_ns() == anchor_ns + 9000000000ULL);
+    g_replay_batch_first_index = 3U;
+    assert(dsd_rtl_stream_metrics_hook_replay_advance_decode_clock() == 1);
+    assert(dsd_decode_now_mono_ns() == anchor_ns + 9000000000ULL + (21333333ULL * 3ULL) / 512ULL);
+    g_replay_batch_first_index = 511U;
+    assert(dsd_rtl_stream_metrics_hook_replay_advance_decode_clock() == 1);
+    assert(dsd_decode_now_mono_ns() == anchor_ns + 9000000000ULL + (21333333ULL * 511ULL) / 512ULL);
+
+    g_replay_batch_first_index = 0U;
+    g_replay_batch_result = 0;
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    dsd_decode_clock_use_system();
+}
+
 int
 main(void) {
     /*
@@ -405,6 +498,8 @@ main(void) {
     test_family_hooks();
     test_family_landing_after_pending_hook();
     test_digital_family_landing_hook();
+    test_replay_batch_hook();
+    test_replay_advance_decode_clock();
 
     // Default behavior with hooks unset.
     dsd_rtl_stream_metrics_hooks_set(NULL);

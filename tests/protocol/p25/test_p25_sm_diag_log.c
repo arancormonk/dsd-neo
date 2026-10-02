@@ -10,12 +10,12 @@
  * hooks so the log records can be checked without radio hardware.
  */
 
-#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #ifdef USE_RADIO
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #endif
@@ -59,7 +59,7 @@ diag_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, 
         state->p25_vc_freq[0] = freq;
         state->trunk_vc_freq[0] = freq;
         state->last_vc_sync_time = time(NULL);
-        state->last_vc_sync_time_m = dsd_time_now_monotonic_s();
+        state->last_vc_sync_time_m = dsd_decode_now_mono_s();
     }
     return DSD_TRUNK_TUNE_RESULT_OK;
 }
@@ -85,7 +85,7 @@ diag_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, ui
     if (state) {
         state->trunk_cc_freq = freq;
         state->last_cc_sync_time = time(NULL);
-        state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
+        state->last_cc_sync_time_m = dsd_decode_now_mono_s();
     }
     return DSD_TRUNK_TUNE_RESULT_OK;
 }
@@ -225,14 +225,14 @@ main(void) {
     p25_sm_event(&ctx, &opts, &state, &grant);
     p25_sm_release(&ctx, &opts, &state, "diag-release");
 #ifdef USE_RADIO
-    const double reacquire_tune_m = dsd_time_now_monotonic_s() - 2.5;
+    const double reacquire_tune_m = dsd_decode_now_mono_s() - 2.5;
     ctx.t_cc_sync_m = reacquire_tune_m;
     ctx.t_cc_tune_m = reacquire_tune_m;
     state.last_cc_sync_time_m = reacquire_tune_m;
     state.p25_last_cc_msg_time_m = reacquire_tune_m - 0.25;
     p25_sm_note_cc_no_sync_pass(&ctx, &opts, &state);
     p25_sm_tick_ctx(&ctx, &opts, &state);
-    state.last_cc_sync_time_m = dsd_time_now_monotonic_s() + 0.001;
+    state.last_cc_sync_time_m = dsd_decode_now_mono_s() + 0.001;
     state.p25_last_cc_msg_time_m = state.last_cc_sync_time_m;
     p25_sm_tick_ctx(&ctx, &opts, &state);
 
@@ -240,7 +240,7 @@ main(void) {
     state.p25_vc_cqpsk_pref = 1;
     p25_sm_event_t vc_grant = p25_sm_ev_group_grant((2 << 12) | 10, 0, 2345, 6789, 0);
     p25_sm_event(&ctx, &opts, &state, &vc_grant);
-    ctx.t_tune_m = dsd_time_now_monotonic_s() - 1.5;
+    ctx.t_tune_m = dsd_decode_now_mono_s() - 1.5;
     ctx.slots[0].last_grant_m = ctx.t_tune_m;
     state.p25_last_vc_tune_time_m = ctx.t_tune_m;
     p25_sm_note_vc_no_sync_pass(&ctx, &opts, &state);
@@ -250,17 +250,17 @@ main(void) {
     p25_sm_event(&ctx, &opts, &state, &vc_active);
     p25_sm_release(&ctx, &opts, &state, "diag-vc-release");
 
-    state.last_cc_sync_time_m = dsd_time_now_monotonic_s() + 0.001;
+    state.last_cc_sync_time_m = dsd_decode_now_mono_s() + 0.001;
     state.p25_last_cc_msg_time_m = state.last_cc_sync_time_m;
     p25_sm_tick_ctx(&ctx, &opts, &state);
     vc_grant.src = 6790;
     p25_sm_event(&ctx, &opts, &state, &vc_grant);
-    ctx.t_tune_m = dsd_time_now_monotonic_s() - 0.9;
+    ctx.t_tune_m = dsd_decode_now_mono_s() - 0.9;
     state.p25_last_vc_tune_time_m = ctx.t_tune_m;
     p25_sm_tick_ctx(&ctx, &opts, &state);
     state.p25_sm_force_release = 1;
     p25_sm_release(&ctx, &opts, &state, "frame-sync-no-sync");
-    ctx.t_vc_reacquire_m = dsd_time_now_monotonic_s() - 1.0;
+    ctx.t_vc_reacquire_m = dsd_decode_now_mono_s() - 1.0;
     state.p25_sm_force_release = 1;
     p25_sm_release(&ctx, &opts, &state, "frame-sync-no-sync");
 #endif
@@ -286,7 +286,7 @@ main(void) {
     const uint8_t ptt_signature[P25_SM_PTT_SIGNATURE_BYTES] = {
         0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x99, 0x80, 0x12, 0x34, 0x00, 0x1A, 0x85, 0x09, 0x29,
     };
-    const double ptt_m = dsd_time_now_monotonic_s() - 1.0;
+    const double ptt_m = dsd_decode_now_mono_s() - 1.0;
     p25_sm_event_t slot0_ptt = p25_sm_ev_ptt_call(0, 2345, 0, 6789, 1, 0);
     DSD_MEMCPY(slot0_ptt.ptt_signature, ptt_signature, sizeof(slot0_ptt.ptt_signature));
     slot0_ptt.ptt_signature_valid = 1;
@@ -312,7 +312,7 @@ main(void) {
     hunt_opts.p25_prefer_candidates = 1;
     hunt_state.p25_cc_freq = 851000000;
     hunt_state.trunk_cc_freq = 851000000;
-    hunt_state.last_cc_sync_time_m = dsd_time_now_monotonic_s() - 10.0;
+    hunt_state.last_cc_sync_time_m = dsd_decode_now_mono_s() - 10.0;
     (void)dsd_trunk_cc_candidates_add(&hunt_state, 852000000, 0, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE);
     p25_sm_ctx_t hunt_ctx;
     p25_sm_init_ctx(&hunt_ctx, &hunt_opts, &hunt_state);

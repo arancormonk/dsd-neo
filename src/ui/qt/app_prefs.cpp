@@ -5,10 +5,10 @@
 
 #include "app_prefs.h"
 
-#include <QDateTime>
 #include <QLatin1String>
 #include <QVariant>
 #include <cmath>
+#include "realtime_clock.h"
 
 namespace dsd_qt {
 
@@ -108,7 +108,7 @@ AppPrefs::armLocationExpiry() {
     expireLocation();
     const qint64 at = m_settings.value(QStringLiteral("location/lastFixAt"), 0).toLongLong();
     if (at > 0) {
-        const qint64 remaining = 24LL * 60 * 60 * 1000 - (QDateTime::currentMSecsSinceEpoch() - at);
+        const qint64 remaining = 24LL * 60 * 60 * 1000 - (realtimeMSecsSinceEpoch() - at);
         m_locationExpiry.start(static_cast<int>(qMax<qint64>(1, remaining)));
     }
 }
@@ -118,7 +118,7 @@ AppPrefs::armLocationExpiry() {
 void
 AppPrefs::expireLocation() const {
     const qint64 at = m_settings.value(QStringLiteral("location/lastFixAt"), 0).toLongLong();
-    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    const qint64 now = realtimeMSecsSinceEpoch();
     if (at > 0 && at <= now && now - at < 24LL * 60 * 60 * 1000) {
         return;
     }

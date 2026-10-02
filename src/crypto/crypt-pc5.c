@@ -95,7 +95,10 @@ pc5_arc4_output(PC5Context* ctx) {
     if (ctx->xyz == 0) {
         ctx->bb = pc5_next_rng(ctx);
     }
-    decal = (uint8_t)(56 - (8 * ctx->xyz));
+    /* xyz selects one of bb's eight bytes, high byte first, and only ever counts 0..7 (it wraps below).
+     * Masking it here bounds the shift where it is computed, so it stays inside the 64-bit word without
+     * relying on the wrap. */
+    decal = (uint8_t)(56U - (8U * (ctx->xyz & 7U)));
     rndbyte = (uint8_t)((ctx->bb >> decal) & 0xffu);
     ctx->xyz++;
     if (ctx->xyz == 8) {

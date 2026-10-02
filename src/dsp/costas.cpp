@@ -299,7 +299,7 @@ struct gardner_loop_context_t {
     float* iq_in;
     float* iq_out;
     float* dl;
-    int buf_len;
+    int out_cap; /* floats iq_out holds */
     int nc;
     int i;
     int o;
@@ -397,13 +397,21 @@ gardner_reinit_state(demod_state* d, ted_state_t* ted, int sps, int is_first_ini
     return 1;
 }
 
+static_assert(sizeof(demod_state::hb_workbuf) / sizeof(float) >= DSD_DEMOD_WORKBUF_LENGTH
+                  && sizeof(demod_state::timing_buf) / sizeof(float) >= DSD_DEMOD_WORKBUF_LENGTH,
+              "the Gardner writes either work buffer up to DSD_DEMOD_WORKBUF_LENGTH floats");
+
 static inline void
 gardner_init_loop_context(demod_state* d, ted_state_t* ted, float gain_mu, float gain_omega,
                           gardner_loop_context_t* ctx) {
     ctx->iq_in = d->lowpassed;
-    ctx->iq_out = d->timing_buf;
+    /* The symbols go to the work buffer the samples are not in: a symbol the last block owed is written before this
+       block's first sample is read, so writing over the input would overwrite that sample. The channel filter leaves
+       its output in timing_buf after an odd half-band pass count. The buffer's capacity bounds the symbols, not the
+       block's length: a one-pair block that pays an owed symbol must still read its sample. */
+    ctx->iq_out = (d->lowpassed == d->timing_buf) ? d->hb_workbuf : d->timing_buf;
+    ctx->out_cap = DSD_DEMOD_WORKBUF_LENGTH;
     ctx->dl = ted->dl;
-    ctx->buf_len = d->lp_len;
     ctx->nc = d->lp_len >> 1;
     ctx->i = 0;
     ctx->o = 0;
@@ -632,13 +640,21 @@ costas_commit_loop(dsd_costas_loop_state_t* c, const costas_loop_context_t* ctx)
     c->error_smooth = ctx->error_smooth;
 }
 
+/* The sample loop indexes the mirrored delay line at delay_idx and delay_idx + n_taps, so it needs the filter's tap
+ * count within [3, FLL_BAND_EDGE_MAX_TAPS] and delay_idx within [0, n_taps). Every writer of the persisted state keeps
+ * that, so a state outside it is corrupt rather than reachable; it is designed afresh instead of being indexed. */
+static inline int
+fll_delay_line_consistent(const dsd_fll_band_edge_state_t* f) {
+    return f->n_taps >= 3 && f->n_taps <= FLL_BAND_EDGE_MAX_TAPS && f->delay_idx >= 0 && f->delay_idx < f->n_taps;
+}
+
 static inline int
 fll_need_reinit(const dsd_fll_band_edge_state_t* f, int sps, int* is_first_init) {
     const int first_init = !f->initialized;
     if (is_first_init) {
         *is_first_init = first_init;
     }
-    if (first_init) {
+    if (first_init || !fll_delay_line_consistent(f)) {
         return 1;
     }
     return (f->sps > 0 && f->sps != sps) ? 1 : 0;
@@ -658,6 +674,8 @@ fll_configure_loop_params(dsd_fll_band_edge_state_t* f, int sps) {
 
 static inline void
 fll_reinit_state(const demod_state* d, dsd_fll_band_edge_state_t* f, int sps, int is_first_init) {
+    /* Read before the redesign overwrites the state: it names the trigger in the debug log. */
+    const int inconsistent = !is_first_init && !fll_delay_line_consistent(f);
     const float excess_bw = 0.2f;
     const int filter_size = 2 * sps + 1;
     fll_band_edge_design_filter(f, sps, excess_bw, filter_size);
@@ -675,6 +693,9 @@ fll_reinit_state(const demod_state* d, dsd_fll_band_edge_state_t* f, int sps, in
         const float freq_hz = f->freq * (sample_rate / kTwoPi);
         if (is_first_init) {
             DSD_FPRINTF(stderr, "[FLL] init: sps=%d filter_size=%d loop_bw=%.6f\n", sps, filter_size, f->loop_bw);
+        } else if (inconsistent) {
+            DSD_FPRINTF(stderr, "[FLL] inconsistent_state: sps=%d filter_size=%d freq=%.1fHz (preserved)\n", sps,
+                        filter_size, freq_hz);
         } else {
             DSD_FPRINTF(stderr, "[FLL] sps_change: sps=%d filter_size=%d freq=%.1fHz (preserved)\n", sps, filter_size,
                         freq_hz);
@@ -800,6 +821,12 @@ fll_commit_loop(dsd_fll_band_edge_state_t* f, const fll_loop_context_t* ctx) {
  *   - NO NCO rotation applied to input samples
  *   - NO phase error computation or Costas tracking
  *   - Output is raw symbols, not carrier-corrected
+ *
+ * Blocks (issue #572): every block, however short, runs through the state kept
+ * in ted_state (mu, omega, the delay line, the last symbol). A symbol comes out
+ * once mu has run down and one more sample is in, which may be in the next
+ * block, so a stream gives the same symbols however it is cut; a block can make
+ * none. Only the adaptive gain is decided per block.
  */
 extern "C" void
 op25_gardner_cc(struct demod_state* d) {
@@ -808,10 +835,6 @@ op25_gardner_cc(struct demod_state* d) {
     }
 
     ted_state_t* ted = &d->ted_state;
-    if ((d->lp_len >> 1) < 4) {
-        return;
-    }
-
     const int sps = d->ted_sps > 0 ? d->ted_sps : 5;
     float omega = ted->omega;
     int is_first_init = 0;
@@ -827,7 +850,7 @@ op25_gardner_cc(struct demod_state* d) {
     gardner_init_loop_context(d, ted, gain_mu, gain_omega, &ctx);
     ctx.omega = omega;
 
-    while (ctx.o < ctx.buf_len && ctx.i < ctx.nc) {
+    while (ctx.o < ctx.out_cap && ctx.i < ctx.nc) {
         if (!gardner_consume_until_ready(&ctx)) {
             break;
         }

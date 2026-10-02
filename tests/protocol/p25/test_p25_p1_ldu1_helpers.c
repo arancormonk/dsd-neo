@@ -16,14 +16,13 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
-#include <dsd-neo/platform/timing.h>
 #include <dsd-neo/protocol/p25/p25_lcw.h>
 #include <dsd-neo/protocol/p25/p25p1_check_ldu.h>
 #include <dsd-neo/protocol/p25/p25p1_ldu.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-#include <time.h>
 
 #include "dsd-neo/core/dibit.h"
 #include "dsd-neo/core/opts_fwd.h"
@@ -92,11 +91,6 @@ p25p1_hamming_rs_symbol_reliability(const P25P1SoftDibit* symbol) {
         }
     }
     return (uint8_t)min_reliability;
-}
-
-uint64_t
-dsd_time_monotonic_ns(void) {
-    return 43000000000ULL;
 }
 
 int
@@ -529,7 +523,7 @@ test_ldu1_hold_hysteresis_refreshes_only_recent_activity(void) {
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
     opts.trunk_hangtime = 0.0;
-    state.last_vc_sync_time = time(NULL);
+    state.last_vc_sync_time = dsd_decode_time();
     state.last_vc_sync_time_m = 17.0;
 
     p25p1_ldu1_refresh_vc_hysteresis(&opts, &state);
@@ -538,7 +532,7 @@ test_ldu1_hold_hysteresis_refreshes_only_recent_activity(void) {
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
     opts.trunk_hangtime = 1.0;
-    state.last_vc_sync_time = time(NULL) - 10;
+    state.last_vc_sync_time = dsd_decode_time() - 10;
     state.last_vc_sync_time_m = 19.0;
 
     p25p1_ldu1_refresh_vc_hysteresis(&opts, &state);
@@ -764,6 +758,7 @@ test_ldu1_softid_alias_state(void) {
 int
 main(void) {
     int rc = 0;
+    dsd_decode_clock_use_test(43000000000ULL);
     rc |= test_ldu1_unpack_lc_fields();
     rc |= test_ldu1_build_lcw_buffers();
     rc |= test_lsd_corrected_byte();
@@ -776,6 +771,7 @@ main(void) {
     rc |= test_ldu1_collect_lsd_stores_soft_bits_and_counters();
     rc |= test_ldu1_lsd_correction_respects_encryption();
     rc |= test_ldu1_softid_alias_state();
+    dsd_decode_clock_use_system();
     return rc;
 }
 

@@ -30,6 +30,7 @@
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <math.h>
 #include <stdint.h>
@@ -64,7 +65,7 @@ throttle_symbol_bin_replay(const dsd_opts* opts, dsd_state* state) {
         return;
     }
 
-    uint64_t now_ns = dsd_time_monotonic_ns();
+    uint64_t now_ns = dsd_realtime_mono_ns();
     uint64_t deadline_ns = state->symbol_replay_next_deadline_ns;
     if (deadline_ns == 0ULL) {
         state->symbol_replay_next_deadline_ns = now_ns + period_ns;

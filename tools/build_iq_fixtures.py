@@ -37,6 +37,7 @@ Usage:
 
 import argparse
 import hashlib
+import json
 import math
 import os
 import subprocess
@@ -285,6 +286,63 @@ DERIVED_NOISE = [
     ("noise_floor", 398, 10.0, 16.0),
 ]
 
+# A capture pinned to the cu8 rails and shorter than one replay chunk (issue #572). Every I/Q
+# pair is the same two rail bytes, so the raw input level reads 100 % CLIP, and the 4,096 pairs
+# (85 ms at 48 kHz, 8 KiB) are the replay's only chunk: the decoder takes all of the front end's
+# output in the replay's last reads, and polls the input level only while it decodes them. A
+# replay that reported its end on the read that took the last samples, rather than on the read
+# after it, cleared the level under the decoder whenever the reader had already reached the
+# capture's end. A fast replay had, a realtime one still pacing had not, so only realtime
+# printed the CLIP advisory. Constant bytes, so the data is the same on every numpy version.
+#
+# name, I/Q pairs, I byte, Q byte
+DERIVED_CLIP = [
+    ("rf_clip", 4096, 0, 255),
+]
+
+# A call heard after a scan retune (issue #572): a scanner sits on an idle channel (the lead-in,
+# receiver noise), retunes, and lands on a channel with a call on air. The sidecar is a version 2
+# capture with the event timeline a real RTL-SDR scan retune records at the boundary: RETUNE, the
+# samples muted while the tuner settles, RESET as the front end starts over, and the post-reset
+# mute. Muted bytes are left out of the data file (muted_bytes_excluded), so the call's bytes
+# follow the lead-in's directly and the MUTE events only advance the media clock. The mute lengths
+# are a real 1.536 Msps scan capture's (475,136 and 76,800 bytes at base_decimation 32) scaled to
+# 48 kHz. Both pieces are committed 48 kHz cu8 fixtures, concatenated byte for byte rather than
+# requantized.
+#
+# The lead-in length was chosen by a sweep under -fa (1.5-9.5 s in 0.5 s steps, then 6.0-9.0 s in
+# 0.1 s steps). Whether -fa catches the call depends on where the SPS hunt is when the call starts.
+# Lead-ins of 6.7-8.1 s all reach the RESET after the same five hunt steps (20, 5, 8, 10 and 10 sps,
+# one whole rotation) and decode the call alike. At 8.4 s and most lengths past it, the hunt reaches
+# 2400 baud just before the RESET, its dwell runs out early in the call, and -fa misses it. 7.5 s
+# keeps 0.5 s either side inside the band, so the fixture pins the decode rather than one hunt phase.
+#
+# name, lead-in fixture, lead-in s, lead-in centre Hz, call fixture, call centre Hz
+DERIVED_RETUNE = [
+    ("nxdn48_after_retune", "noise_floor", 7.5, 467087500, "nxdn48", 467756250),
+]
+RETUNE_MUTE_BYTES = 14848
+RESET_MUTE_BYTES = 2400
+# A fixed start after 2000-01-01, where the decode clock stops flooring the anchor: replays of
+# the fixture read the capture's own time, the same in every run.
+RETUNE_CAPTURE_STARTED_UTC = "2026-01-01T00:00:00Z"
+
+# A call with a gap in its capture (issue #572): the samples stop for longer than the input-level
+# warning's 10 s cooldown, then go on, as a driver overflow that drops them leaves a capture. The gap
+# is one MUTE event. Muted bytes are left out of the data file (muted_bytes_excluded), so the data
+# is the source fixture's bytes unchanged and only the media clock, and with it the decode clock,
+# moves through the gap. The fixture is a sidecar alone: its data_file names the source's data, which
+# replay resolves beside the sidecar, so it adds no data bytes. nxdn48 is normalized near full scale,
+# RF HOT throughout, so the decoder warns before the gap (3 s in) and again after it (17 s in). The
+# cooldown runs out at 13 s, so the gap, which ends at 16 s, clears it by 3 s, and the second warning
+# falls 4 s past it. Every replay, fast or realtime, must print both warnings at the same capture time.
+#
+# name, source fixture, gap start s, gap length s, MUTE reason
+DERIVED_GAP = [
+    ("nxdn48_gap", "nxdn48", 4.0, 12.0, "driver_overflow"),
+]
+GAP_CAPTURE_STARTED_UTC = "2026-07-30T00:00:00Z"
+
 # A dPMR signal synthesized from the CCH reference vectors (issue #407).
 #
 # The one off-air dPMR recording available to this project carries no recoverable
@@ -363,14 +421,14 @@ ANALOG_SYNTH_NOISE_SIGMA = 0.05
 
 METADATA_TEMPLATE = """{{
   "format": "dsd-neo-iq",
-  "version": 1,
+  "version": {version},
   "sample_format": "cu8",
   "iq_order": "IQ",
   "endianness": "none",
   "capture_stage": "post_mute_pre_widen",
   "sample_rate_hz": {sample_rate},
-  "center_frequency_hz": 851375000,
-  "capture_center_frequency_hz": 851375000,
+  "center_frequency_hz": {center_frequency_hz},
+  "capture_center_frequency_hz": {capture_center_frequency_hz},
   "ppm": 0,
   "tuner_gain_tenth_db": 270,
   "rtl_dsp_bw_khz": {bw_khz},
@@ -381,19 +439,34 @@ METADATA_TEMPLATE = """{{
   "fs4_shift_enabled": false,
   "combine_rotate_enabled": false,
   "muted_bytes_excluded": true,
-  "contains_retunes": false,
-  "capture_retune_count": 0,
+  "contains_retunes": {contains_retunes},
+  "capture_retune_count": {capture_retune_count},
   "source_backend": "rtl",
   "source_args": "fixture",
-  "capture_started_utc": "1970-01-01T00:00:00Z",
+  "capture_started_utc": "{capture_started_utc}",
   "data_file": "{data_file}",
   "data_bytes": {data_bytes},
   "capture_drops": 0,
   "capture_drop_blocks": 0,
   "input_ring_drops": 0,
-  "notes": "generated by tools/build_iq_fixtures.py"
+  "notes": "generated by tools/build_iq_fixtures.py"{events}
 }}
 """
+
+# The sidecar fields write_capture() lets a fixture set; these defaults write the version 1
+# sidecar every fixture without events has.
+SIDECAR_DEFAULTS = {
+    "version": 1,
+    "center_frequency_hz": 851375000,
+    "capture_center_frequency_hz": 851375000,
+    "contains_retunes": False,
+    "capture_retune_count": 0,
+    "capture_started_utc": "1970-01-01T00:00:00Z",
+    "events": (),
+}
+
+# The replay reader's cu8 alignment: one I/Q pair (src/io/iq/iq_replay.c).
+CU8_ALIGN_BYTES = 2
 
 
 def verify_sha256(key, path):
@@ -638,22 +711,122 @@ def to_cu8(samples, headroom=0.9, normalize=True):
     return np.clip(np.round(interleaved * 127.5 + 127.5), 0, 255).astype(np.uint8)
 
 
-def write_fixture(out_dir, name, samples, normalize=True):
-    payload = to_cu8(samples, normalize=normalize)
-    data_name = name + ".iq"
-    data_path = os.path.join(out_dir, data_name)
-    with open(data_path, "wb") as handle:
-        handle.write(payload.tobytes())
+def check_replay_events(fields, data_bytes):
+    """Refuse a sidecar the replay reader would reject, with the reader's own rules.
+
+    The rules are validate_replay_events_metadata() and the event parser in
+    src/io/iq/iq_replay.c, for a cu8 capture of this script's sample rate.
+    """
+    events = fields["events"]
+    if events and fields["version"] != 2:
+        raise ValueError("events require metadata version 2")
+    previous_offset = 0
+    retunes = 0
+    retune_needs_reset = False
+    for index, event in enumerate(events):
+        kind = event["kind"]
+        offset = event["byte_offset"]
+        reason = event["reason"]
+        if not isinstance(reason, str) or any(ord(ch) < 0x20 for ch in reason):
+            raise ValueError(f"event {index}: reason must be a string without control characters")
+        if offset < previous_offset:
+            raise ValueError(f"event {index}: events are not sorted by byte_offset")
+        previous_offset = offset
+        if offset > data_bytes:
+            raise ValueError(f"event {index}: byte_offset {offset} exceeds data_bytes {data_bytes}")
+        if offset % CU8_ALIGN_BYTES:
+            raise ValueError(f"event {index}: byte_offset {offset} is not aligned to an I/Q pair")
+        if kind == "MUTE":
+            duration = event["duration_bytes"]
+            if duration <= 0 or duration % CU8_ALIGN_BYTES:
+                raise ValueError(f"event {index}: MUTE duration_bytes must be positive and pair-aligned")
+            continue
+        if kind not in ("RETUNE", "RESET"):
+            raise ValueError(f"event {index}: unsupported kind {kind!r}")
+        if not event["center_frequency_hz"] or not event["capture_center_frequency_hz"]:
+            raise ValueError(f"event {index}: {kind} needs non-zero centre frequencies")
+        if event["sample_rate_hz"] != SAMPLE_RATE_HZ:
+            raise ValueError(f"event {index}: replay does not support a sample-rate change")
+        if kind == "RETUNE":
+            if retune_needs_reset:
+                raise ValueError(f"event {index}: RETUNE before the previous RETUNE's RESET")
+            retunes += 1
+            retune_needs_reset = True
+        else:
+            retune_needs_reset = False
+    if retune_needs_reset:
+        raise ValueError("the last RETUNE has no RESET after it")
+    if fields["capture_retune_count"] != retunes:
+        raise ValueError(f"capture_retune_count {fields['capture_retune_count']} != {retunes} RETUNE events")
+    if fields["contains_retunes"] != (retunes > 0):
+        raise ValueError("contains_retunes must be true exactly when there are RETUNE events")
+
+
+def format_events(events):
+    """The sidecar's events array in the capture writer's layout (src/io/iq/iq_capture.c), or ""."""
+    if not events:
+        return ""
+    blocks = []
+    for event in events:
+        lines = [f'"kind": {json.dumps(event["kind"])}', f'"byte_offset": {event["byte_offset"]}']
+        if event["kind"] == "MUTE":
+            lines.append(f'"duration_bytes": {event["duration_bytes"]}')
+        else:
+            lines.append(f'"center_frequency_hz": {event["center_frequency_hz"]}')
+            lines.append(f'"capture_center_frequency_hz": {event["capture_center_frequency_hz"]}')
+            lines.append(f'"sample_rate_hz": {event["sample_rate_hz"]}')
+        lines.append(f'"reason": {json.dumps(event["reason"])}')
+        blocks.append("    {\n" + ",\n".join("      " + line for line in lines) + "\n    }")
+    return ',\n  "events": [\n' + ",\n".join(blocks) + "\n  ]"
+
+
+def write_capture(out_dir, name, payload, data_file=None, **sidecar):
+    """Write a cu8 payload and its sidecar; keywords override SIDECAR_DEFAULTS.
+
+    With data_file, a path relative to out_dir that already holds the payload byte for byte, only the
+    sidecar is written, and it names that file: the fixture shares the data and adds none. Returns the
+    data bytes written (0 for a shared file).
+    """
+    unknown = sorted(set(sidecar) - set(SIDECAR_DEFAULTS))
+    if unknown:
+        raise TypeError(f"write_capture: unknown sidecar field(s) {', '.join(unknown)}")
+    fields = dict(SIDECAR_DEFAULTS, **sidecar)
+    payload = bytes(payload)
+    if len(payload) % CU8_ALIGN_BYTES:
+        raise ValueError(f"{name}: {len(payload)} bytes is not a whole number of I/Q pairs")
+    check_replay_events(fields, len(payload))
+    written = len(payload)
+    if data_file is None:
+        data_name = name + ".iq"
+        with open(os.path.join(out_dir, data_name), "wb") as handle:
+            handle.write(payload)
+    else:
+        data_name = data_file
+        with open(os.path.join(out_dir, data_name), "rb") as handle:
+            if handle.read() != payload:
+                raise ValueError(f"{name}: {data_name} does not hold the payload the sidecar describes")
+        written = 0
     metadata = METADATA_TEMPLATE.format(
+        version=fields["version"],
         sample_rate=SAMPLE_RATE_HZ,
+        center_frequency_hz=fields["center_frequency_hz"],
+        capture_center_frequency_hz=fields["capture_center_frequency_hz"],
         bw_khz=DSP_BW_KHZ,
         demod_rate=SAMPLE_RATE_HZ,
+        contains_retunes="true" if fields["contains_retunes"] else "false",
+        capture_retune_count=fields["capture_retune_count"],
+        capture_started_utc=fields["capture_started_utc"],
         data_file=data_name,
         data_bytes=len(payload),
+        events=format_events(fields["events"]),
     )
-    with open(data_path + ".json", "w", encoding="utf-8") as handle:
+    with open(os.path.join(out_dir, name + ".iq.json"), "w", encoding="utf-8") as handle:
         handle.write(metadata)
-    return len(payload)
+    return written
+
+
+def write_fixture(out_dir, name, samples, normalize=True):
+    return write_capture(out_dir, name, to_cu8(samples, normalize=normalize).tobytes())
 
 
 def load_cu8_fixture(path):
@@ -685,6 +858,136 @@ def build_noise(out_dir):
         written = write_fixture(out_dir, name, samples, normalize=False)
         total += written
         print(f"{name:28s} noise   {written // 1024:6d} KiB")
+    return total
+
+
+def build_clip(out_dir):
+    """Write the rail-clipped single-chunk fixtures (issue #572; see DERIVED_CLIP)."""
+    total = 0
+    for name, pairs, i_byte, q_byte in DERIVED_CLIP:
+        written = write_capture(out_dir, name, bytes([i_byte, q_byte]) * pairs)
+        total += written
+        print(f"{name:28s} clip    {written // 1024:6d} KiB")
+    return total
+
+
+def read_committed_capture(src_dir, name):
+    """Read a committed fixture's cu8 bytes, refusing one that is not an event-free 48 kHz cu8 capture."""
+    data_path = os.path.join(src_dir, name + ".iq")
+    with open(data_path + ".json", encoding="utf-8") as handle:
+        metadata = json.load(handle)
+    with open(data_path, "rb") as handle:
+        payload = handle.read()
+    if (
+        metadata.get("sample_format") != "cu8"
+        or metadata.get("sample_rate_hz") != SAMPLE_RATE_HZ
+        or metadata.get("base_decimation") != 1
+        or metadata.get("events")
+    ):
+        raise ValueError(f"{name}: not an event-free {SAMPLE_RATE_HZ} Hz cu8 capture at base_decimation 1")
+    if metadata.get("data_bytes") != len(payload):
+        raise ValueError(f"{name}: data_bytes {metadata.get('data_bytes')} != file size {len(payload)}")
+    return payload
+
+
+def build_retune_fixture(
+    out_dir,
+    src_dir,
+    name,
+    lead_s,
+    lead_fixture,
+    lead_center_hz,
+    call_fixture,
+    call_center_hz,
+    capture_started_utc=RETUNE_CAPTURE_STARTED_UTC,
+):
+    """Write name: the first lead_s seconds of lead_fixture, a scan retune, then all of call_fixture.
+
+    The sources are committed fixtures read from src_dir; their bytes are concatenated as they
+    are, so nothing is requantized. The sidecar starts on lead_center_hz and the RETUNE/RESET
+    pair at the boundary moves it to call_center_hz (see DERIVED_RETUNE). Importable, so a
+    lead-in sweep can write candidates into a scratch directory. Returns the bytes written.
+    """
+    if name in (lead_fixture, call_fixture):
+        raise ValueError(f"{name}: would overwrite its own source")
+    lead = read_committed_capture(src_dir, lead_fixture)
+    call = read_committed_capture(src_dir, call_fixture)
+    lead_bytes = round(lead_s * SAMPLE_RATE_HZ) * CU8_ALIGN_BYTES
+    if lead_bytes <= 0 or lead_bytes > len(lead):
+        raise ValueError(f"{name}: a {lead_s} s lead-in needs {lead_bytes} bytes and {lead_fixture} has {len(lead)}")
+    landing = {
+        "byte_offset": lead_bytes,
+        "center_frequency_hz": call_center_hz,
+        "capture_center_frequency_hz": call_center_hz,
+        "sample_rate_hz": SAMPLE_RATE_HZ,
+        "reason": "frequency",
+    }
+    events = (
+        dict(landing, kind="RETUNE"),
+        {"kind": "MUTE", "byte_offset": lead_bytes, "duration_bytes": RETUNE_MUTE_BYTES, "reason": "retune_mute"},
+        dict(landing, kind="RESET"),
+        {"kind": "MUTE", "byte_offset": lead_bytes, "duration_bytes": RESET_MUTE_BYTES, "reason": "retune_mute"},
+    )
+    return write_capture(
+        out_dir,
+        name,
+        lead[:lead_bytes] + call,
+        version=2,
+        center_frequency_hz=lead_center_hz,
+        capture_center_frequency_hz=lead_center_hz,
+        contains_retunes=True,
+        capture_retune_count=1,
+        capture_started_utc=capture_started_utc,
+        events=events,
+    )
+
+
+def build_derived_retune(out_dir):
+    """Write the scan-retune fixtures (issue #572) from the committed fixtures in out_dir."""
+    total = 0
+    for name, lead_fixture, lead_s, lead_center_hz, call_fixture, call_center_hz in DERIVED_RETUNE:
+        written = build_retune_fixture(
+            out_dir, out_dir, name, lead_s, lead_fixture, lead_center_hz, call_fixture, call_center_hz
+        )
+        total += written
+        print(f"{name:28s} retune  {written // 1024:6d} KiB")
+    return total
+
+
+def build_gap_fixture(out_dir, src_dir, name, source, gap_at_s, gap_s, reason):
+    """Write name: all of source, a committed fixture read from src_dir, with a gap_s MUTE at gap_at_s.
+
+    Only the version 2 sidecar is written. Its data_file names the source's data file, relative to
+    out_dir, and its one MUTE event moves only the media clock (see DERIVED_GAP). Returns the data
+    bytes written, 0.
+    """
+    if name == source:
+        raise ValueError(f"{name}: would overwrite its own source")
+    payload = read_committed_capture(src_dir, source)
+    gap_at = round(gap_at_s * SAMPLE_RATE_HZ) * CU8_ALIGN_BYTES
+    gap_bytes = round(gap_s * SAMPLE_RATE_HZ) * CU8_ALIGN_BYTES
+    if gap_at <= 0 or gap_at >= len(payload):
+        raise ValueError(f"{name}: a gap at {gap_at_s} s needs samples on both sides of byte {gap_at}")
+    event = {"kind": "MUTE", "byte_offset": gap_at, "duration_bytes": gap_bytes, "reason": reason}
+    data_file = os.path.relpath(os.path.join(src_dir, source + ".iq"), out_dir)
+    return write_capture(
+        out_dir,
+        name,
+        payload,
+        data_file=data_file,
+        version=2,
+        capture_started_utc=GAP_CAPTURE_STARTED_UTC,
+        events=(event,),
+    )
+
+
+def build_derived_gap(out_dir):
+    """Write the capture-gap fixtures (issue #572) from the committed fixtures in out_dir."""
+    total = 0
+    for name, source, gap_at_s, gap_s, reason in DERIVED_GAP:
+        written = build_gap_fixture(out_dir, out_dir, name, source, gap_at_s, gap_s, reason)
+        total += written
+        print(f"{name:28s} gap     sidecar on {source}.iq")
     return total
 
 
@@ -974,6 +1277,9 @@ def derived_fixture_names():
         [entry[0] for entry in DERIVED_SIMULCAST]
         + [entry[0] for entry in DERIVED_ATTENUATED]
         + [entry[0] for entry in DERIVED_NOISE]
+        + [entry[0] for entry in DERIVED_CLIP]
+        + [entry[0] for entry in DERIVED_RETUNE]
+        + [entry[0] for entry in DERIVED_GAP]
         + [DPMR_SYNTH_NAME]
         + [entry[0] for entry in NFM_SYNTH]
         + [entry[0] for entry in AM_SYNTH]
@@ -1022,6 +1328,9 @@ def main():
     if not args.only:
         total += build_derived(args.out)
         total += build_noise(args.out)
+        total += build_clip(args.out)
+        total += build_derived_retune(args.out)
+        total += build_derived_gap(args.out)
         total += build_dpmr_synth(args.out)
         total += build_nfm_synth(args.out)
         total += build_am_synth(args.out)

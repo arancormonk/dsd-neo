@@ -218,6 +218,12 @@ typedef struct Event_History_I {
     // `revision`, so a consumer that mirrors committed rows only (the Qt call
     // history) can skip rescanning the ring while this is unchanged.
     uint64_t commit_rev;
+    // Which ring this is: a nonzero nonce drawn once, when initState() allocates the ring, and shared by
+    // its two slots. A state an embedding host reuses for another run keeps it, and its push_seq goes on
+    // counting; a new state draws another. A frontend that keys its mirror on push stamps tells by it the
+    // rows it already read from a new ring that repeats their stamps and content, as a capture replayed in
+    // a fresh state does.
+    uint64_t instance;
     // Decoder-thread scratch consumed by next data notice; snapshots incidental, no dirty marks; frontends never render
     Event_History_Staged staged;
 } Event_History_I;
@@ -523,7 +529,7 @@ struct dsd_analog_rx_publication {
      * input-rate change, carrier hangover, stream pause), so a reader can tell a new reception
      * from the one it last saw. */
     uint32_t generation;
-    /** Monotonic ms (dsd_time_monotonic_ms()) after which this publication no longer describes
+    /** Real monotonic ms (dsd_realtime_mono_ms()) after which this publication no longer describes
      * the channel if the tap has not run again since. Set only on input that may pause: stdin,
      * UDP and TCP, whose producer may stop sending between transmissions, and live RTL-family
      * radio streams, which stop when their source does (an rtl_tcp server that went away, a
@@ -790,6 +796,13 @@ struct dsd_state {
     int rtl_symbol_cache_levels;
     uint32_t rtl_symbol_cache_generation;
     int rtl_symbol_cache_published_pending;
+    /* The I/Q replay batch the cached samples come from: the capture time it spans, its sample count, and the batch
+       index of rtl_symbol_cache[0]. Each sample the cache hands out runs the decode clock's media time to its own
+       capture time (issue #572); a count of 0, as after a live read, runs nothing. */
+    uint64_t rtl_symbol_cache_media_start_ns;
+    uint64_t rtl_symbol_cache_media_duration_ns;
+    uint32_t rtl_symbol_cache_media_count;
+    uint32_t rtl_symbol_cache_media_first_index;
     int rtl_fsk_sps_num;
     int rtl_fsk_sps_den;
     int rtl_fsk_sps_accum;
@@ -1798,6 +1811,7 @@ struct dsd_state {
 
     // Advisory-only input level health for ncurses/status snapshots.
     dsd_input_level_snapshot input_level;
+    // Decode time of the last input-level warning, which its cooldown runs against (dsd_input_level_publish()).
     time_t input_level_last_toast_time;
     dsd_input_level_status input_level_last_toast_status;
     dsd_input_level_source input_level_last_toast_source;
@@ -1855,6 +1869,11 @@ struct dsd_state {
     // Extension slots for module-owned per-state allocations (see core/state_ext.h).
     void* state_ext[DSD_STATE_EXT_MAX];
     dsd_state_ext_cleanup_fn state_ext_cleanup[DSD_STATE_EXT_MAX];
+
+    /* 1 from initState() until an engine run starts on this state, which clears it (dsd_engine_run_with_lifecycle()).
+     * A state an earlier run used keeps that run's decode-domain stamps, which no rebase reaches, so a run moves the
+     * decode clock onto an I/Q replay's capture clock only on a fresh one (dsd_engine_decode_clock_enter_replay()). */
+    uint8_t engine_fresh;
 };
 
 // cppcheck-suppress-end uninitMemberVarNoCtor

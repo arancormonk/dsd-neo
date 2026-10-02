@@ -11,6 +11,7 @@
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/rdio_export.h>
 #include <errno.h>
@@ -568,7 +569,7 @@ dsd_rdio_meta_fields_from_event(const Event_History* event, dsd_rdio_meta_fields
     if (!out) {
         return;
     }
-    out->start_time = time(NULL);
+    out->start_time = dsd_decode_time();
     out->talkgroup = 0;
     out->source = 0;
     out->freq_hz = 0;
@@ -701,7 +702,7 @@ dsd_rdio_write_trunk_recorder_meta(const dsd_opts* opts, const Event_History_I* 
         return -1;
     }
     if (fields.start_time <= 0) {
-        fields.start_time = time(NULL);
+        fields.start_time = dsd_decode_time();
     }
 
     unsigned int duration_s = dsd_rdio_wav_duration_s(wav_path);

@@ -22,11 +22,11 @@
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/radioreference.h>
 #include <stdint.h>
 #include <stdlib.h>
-#include <time.h>
 
 #ifdef USE_CURL
 #include <curl/curl.h>
@@ -529,7 +529,7 @@ rr_execute(dsd_rr_client* client, const dsd_rr_auth* auth, rr_method method, lon
      */
     if (rc == 0 && method == RR_M_USER_DATA) {
         const dsd_rr_user_info* info = (const dsd_rr_user_info*)sink;
-        if (rr_subscription_expired(info->sub_expire, (long long)time(NULL))) {
+        if (rr_subscription_expired(info->sub_expire, (long long)dsd_realtime_time())) {
             err->status = DSD_RR_ERR_SUBSCRIPTION;
             rr_copy_field(err->detail, sizeof(err->detail), info->sub_expire);
             rc = -1;

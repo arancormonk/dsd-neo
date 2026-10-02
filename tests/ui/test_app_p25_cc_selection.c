@@ -5,7 +5,6 @@
 #include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/frontend_runtime.h>
 #include <dsd-neo/core/call_state.h>
-#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
@@ -20,6 +19,7 @@
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25_vpdu.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
@@ -190,7 +190,7 @@ acquire_cc(dsd_opts* opts, dsd_state* state) {
     state->p2_rfssid = 2;
     state->p2_siteid = 3;
     state->synctype = state->lastsynctype = DSD_SYNC_P25P1_POS;
-    state->p25_last_cc_msg_time_m = dsd_time_now_monotonic_s() + 0.001;
+    state->p25_last_cc_msg_time_m = dsd_decode_now_mono_s() + 0.001;
     p25_sm_event_t sync = {0};
     sync.type = P25_SM_EV_CC_SYNC;
     p25_sm_event(p25_sm_get_ctx(), opts, state, &sync);
@@ -295,7 +295,7 @@ test_pending(dsd_opts* opts, dsd_state* state, int early, int fail) {
     }
     if (!early) {
         assert(!dsd_trunk_tuning_frame_is_current(dsd_trunk_tuning_generation()));
-        ctx->t_cc_sync_m = dsd_time_now_monotonic_s() - 100.0;
+        ctx->t_cc_sync_m = dsd_decode_now_mono_s() - 100.0;
         p25_sm_tick_ctx(ctx, opts, state);
         assert(ctx->cc_tune_pending && cc_calls == 1);
         dsd_trunk_tuning_request_publish(request, fail ? DSD_TRUNK_TUNE_RESULT_FAILED : DSD_TRUNK_TUNE_RESULT_OK);

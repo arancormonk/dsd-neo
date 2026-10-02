@@ -9,6 +9,7 @@
 
 #include <dsd-neo/core/bit_packing.h>
 #include <dsd-neo/core/key_presence.h>
+#include <dsd-neo/runtime/decode_clock.h>
 
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/constants.h>
@@ -23,7 +24,6 @@
 #include <dsd-neo/runtime/colors.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <time.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -598,7 +598,7 @@ dmr_sbrc_handle_standard_payload(dsd_opts* opts, dsd_state* state, const dmr_sbr
         /* Attributed to the received slot; the EMB color code is not in scope
          * here, so the notice carries no CC clause. */
         dmr_rc_notify_command(opts, state, data->slot_idx, data->slot_idx, (uint8_t)(data->sbrc_hex >> 7),
-                              /*have_cc*/ 0, 0U, time(NULL));
+                              /*have_cc*/ 0, 0U, dsd_decode_time());
         return;
     }
 

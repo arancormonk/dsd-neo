@@ -35,6 +35,7 @@
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/input_failure.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/scan_mode.h>
@@ -56,10 +57,14 @@
 #include <sys/socket.h>
 #endif
 
+/* LOG_INFO lines saying an I/Q replay restarted on the system clock (svc_rtl_stop_locked()). */
+static int g_replay_restart_notices;
+
 void
 dsd_neo_log_write(dsd_neo_log_level_t level, const char* format, ...) {
-    (void)level;
-    (void)format;
+    if (level == LOG_LEVEL_INFO && format && strstr(format, "IQ replay restarted mid-run") != NULL) {
+        g_replay_restart_notices++;
+    }
 }
 
 FILE*
@@ -932,6 +937,45 @@ test_rtl_restart_quiesces_p25_retunes(void) {
     rc |= expect_int("start failure destroys replacement", g_rtl_destroy_calls, 1);
     rc |= expect_int("start failure clears replacement context", state.rtl_ctx == NULL, 1);
 
+    reset_rtl_restart_stubs();
+    return rc;
+}
+
+/* A restart that leaves an I/Q replay's decode clock while the input is still that replay replays it on the system
+ * clock, which is logged once, at the leave (issue #572). No notice when the clock is not the replay's, or when the
+ * input is no longer the replay. The engine's leave is a stub here, so the source stays REPLAY between restarts. */
+static int
+test_replay_restart_notice(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.iq_replay_requested = 1;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "%s", "iqreplay:capture.iq.json");
+    reset_rtl_restart_stubs();
+    g_rtl_create_result = 0;
+    g_rtl_start_result = 0;
+
+    g_replay_restart_notices = 0;
+    dsd_decode_clock_use_replay(1788245497LL);
+    int rc = expect_int("replay restart starts", svc_rtl_restart_locked(&opts, &state), 0);
+    rc |= expect_int("replay restart: one notice", g_replay_restart_notices, 1);
+
+    g_replay_restart_notices = 0;
+    opts.iq_replay_requested = 0;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "%s", "rtl:0:851.0125M");
+    rc |= expect_int("restart onto another input starts", svc_rtl_restart_locked(&opts, &state), 0);
+    rc |= expect_int("restart onto another input: no notice", g_replay_restart_notices, 0);
+
+    g_replay_restart_notices = 0;
+    opts.iq_replay_requested = 1;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "%s", "iqreplay:capture.iq.json");
+    dsd_decode_clock_use_system();
+    rc |= expect_int("replay restart on the system clock starts", svc_rtl_restart_locked(&opts, &state), 0);
+    rc |= expect_int("replay restart on the system clock: no notice", g_replay_restart_notices, 0);
+
+    state.rtl_ctx = NULL;
     reset_rtl_restart_stubs();
     return rc;
 }
@@ -2366,6 +2410,7 @@ main(void) {
 #ifdef USE_RADIO
     rc |= test_rtl_restart_quiesces_p25_retunes();
     rc |= test_locked_restarts();
+    rc |= test_replay_restart_notice();
     rc |= test_describe_start_failure();
     rc |= test_describe_monitor_return_refusal();
     rc |= test_airspy_input_analog_width();

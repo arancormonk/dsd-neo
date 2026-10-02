@@ -6,7 +6,6 @@
 #include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/channel_mode.h>
-#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/key_set.h>
@@ -18,6 +17,7 @@
 #include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/engine/channel_scan.h>
+#include <dsd-neo/engine/engine.h>
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/engine/scan_voice_gate.h>
 #include <dsd-neo/engine/trunk_scan.h>
@@ -26,12 +26,15 @@
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/platform/sockets.h>
+#include <dsd-neo/platform/timing.h>
+#include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/scan_mode.h>
@@ -44,6 +47,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <time.h>
 
 #ifndef M_PI
@@ -267,12 +271,6 @@ static long int g_rigctl_setfreq_freq = 0;
 // The -B requests the legacy rigctl leg makes (issue #589); the peer takes each one.
 static int g_rigctl_setmod_calls = 0;
 static int g_rigctl_setmod_bw = 0;
-
-#ifdef DSD_NEO_TEST_TIME_WRAP
-// The wall clock time() reads, which the -Y hangtime rule compares (engine.c no_carrier_run()): 0 leaves the real one,
-// any other value is the second a case injects.
-static time_t g_test_wall = 0;
-#endif
 
 // GNU ld --wrap entry points must keep the reserved __wrap_* symbol names.
 // NOLINTBEGIN(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
@@ -722,22 +720,6 @@ __wrap_SetModulation(dsd_socket_t sockfd, int bandwidth) {
     return true;
 }
 
-#ifdef DSD_NEO_TEST_TIME_WRAP
-time_t __real_time(time_t* result);
-time_t __wrap_time(time_t* result);
-
-time_t
-__wrap_time(time_t* result) {
-    if (!g_test_wall) {
-        return __real_time(result);
-    }
-    if (result) {
-        *result = g_test_wall;
-    }
-    return g_test_wall;
-}
-#endif
-
 // NOLINTEND(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
 #endif
 
@@ -882,7 +864,7 @@ test_typed_scan_tune_boundaries(void) {
     const dsd_call_observation call = {.protocol = DSD_SYNC_NXDN_POS,
                                        .kind = DSD_CALL_KIND_GROUP_VOICE,
                                        .ota_target_id = 1201,
-                                       .observed_m = dsd_time_now_monotonic_s()};
+                                       .observed_m = dsd_decode_now_mono_s()};
     rc |= expect_true("seed outgoing typed call", dsd_call_state_observe(state, &call, DSD_CALL_BOUNDARY_BEGIN) == 1);
     noCarrier(opts, state);
     const uint64_t pending = dsd_trunk_tuning_pending_request();
@@ -1143,7 +1125,7 @@ test_visit_cap_scanner_hops(void) {
     // Legacy hangtime mode: the -t 10 deadline is 10 s away, so nothing but the cap can move the
     // rotation. The visit is 5 s old against a 2 s cap, and the call open on the outgoing row has
     // to close as an explicit release rather than a sync loss -- the frequency moved under it.
-    double now_m = dsd_time_now_monotonic_s();
+    double now_m = dsd_decode_now_mono_s();
     state->last_cc_sync_time = time(NULL);
     seed_visit_anchor(state, now_m - 5.0);
     dsd_call_observation capped_call = {0};
@@ -1179,7 +1161,7 @@ test_visit_cap_scanner_hops(void) {
     opts->scan_voice_hold_ms = 2000;
     state->lcn_freq_roll = 1;
     state->last_cc_sync_time = time(NULL);
-    now_m = dsd_time_now_monotonic_s();
+    now_m = dsd_decode_now_mono_s();
     seed_visit_anchor(state, now_m - 5.0);
     dsd_call_observation live_call = {0};
     live_call.protocol = DSD_SYNC_NXDN_POS;
@@ -1194,8 +1176,8 @@ test_visit_cap_scanner_hops(void) {
     rc |= expect_true("visit-cap-gate-seeds-media", dsd_call_state_update_media(state, 0U, 1, now_m - 0.4) == 1
                                                         && dsd_call_state_update_media(state, 0U, 1, now_m) == 1);
     dsd_scan_voice_gate_tick(opts, state, 1, now_m);
-    rc |= expect_true("visit-cap-gate-holds",
-                      dsd_scan_voice_gate_should_step(opts, state, dsd_time_now_monotonic_s()) == 0);
+    rc |=
+        expect_true("visit-cap-gate-holds", dsd_scan_voice_gate_should_step(opts, state, dsd_decode_now_mono_s()) == 0);
     g_rtl_tune_calls = 0;
     noCarrier(opts, state);
     rc |= expect_true("visit-cap-gate-retuned", g_rtl_tune_calls > 0 && g_rtl_tune_freq == 953012500U);
@@ -1208,7 +1190,7 @@ test_visit_cap_scanner_hops(void) {
     state->lcn_freq_roll = 2;
     state->last_cc_sync_time = time(NULL);
     const time_t held_dwell_anchor = state->last_cc_sync_time;
-    now_m = dsd_time_now_monotonic_s();
+    now_m = dsd_decode_now_mono_s();
     seed_visit_anchor(state, now_m - 5.0);
     g_rtl_tune_calls = 0;
     noCarrier(opts, state);
@@ -1222,7 +1204,7 @@ test_visit_cap_scanner_hops(void) {
     opts->scan_max_visit_ms = 0;
     state->lcn_freq_roll = 2;
     state->last_cc_sync_time = time(NULL);
-    now_m = dsd_time_now_monotonic_s();
+    now_m = dsd_decode_now_mono_s();
     seed_visit_anchor(state, now_m - 600.0);
     g_rtl_tune_calls = 0;
     noCarrier(opts, state);
@@ -1240,7 +1222,7 @@ test_visit_cap_scanner_hops(void) {
     state->lcn_freq_count = 1;
     state->lcn_freq_roll = 0;
     state->last_cc_sync_time = time(NULL);
-    now_m = dsd_time_now_monotonic_s();
+    now_m = dsd_decode_now_mono_s();
     seed_visit_anchor(state, now_m - 5.0);
     g_rtl_tune_calls = 0;
     noCarrier(opts, state);
@@ -1248,7 +1230,7 @@ test_visit_cap_scanner_hops(void) {
 
     // Requirement 5 is a re-arm, not a freeze: the loop's tick slides the anchor while the rotation
     // has nowhere to go, so handing it a second row does not hop the instant that row appears.
-    dsd_engine_scan_visit_tick(opts, state, dsd_time_now_monotonic_s());
+    dsd_engine_scan_visit_tick(opts, state, dsd_decode_now_mono_s());
     state->trunk_lcn_freq[1] = 956012500;
     state->lcn_freq_count = 2;
     g_rtl_tune_calls = 0;
@@ -1262,7 +1244,7 @@ test_visit_cap_scanner_hops(void) {
     rc |= expect_true("visit-cap-avoid-set", dsd_state_trunk_lcn_avoid_set(state, 1U, 1) == 0);
     state->lcn_freq_roll = 1;
     state->last_cc_sync_time = time(NULL);
-    now_m = dsd_time_now_monotonic_s();
+    now_m = dsd_decode_now_mono_s();
     seed_visit_anchor(state, now_m - 5.0);
     g_rtl_tune_calls = 0;
     noCarrier(opts, state);
@@ -1279,7 +1261,7 @@ test_visit_cap_scanner_hops(void) {
         for (size_t i = 0; i < sizeof failed_tunes / sizeof failed_tunes[0]; i++) {
             state->lcn_freq_roll = 0;
             state->trunk_lcn_freq[0] = 958012500;
-            now_m = dsd_time_now_monotonic_s();
+            now_m = dsd_decode_now_mono_s();
             seed_visit_anchor(state, now_m - 5.0);
             state->scan_voice_gate_sync_m = gate ? now_m - 4.0 : -1.0;
             state->last_cc_sync_time = time(NULL) - (gate ? 11 : 0);
@@ -1288,9 +1270,9 @@ test_visit_cap_scanner_hops(void) {
             noCarrier(opts, state);
             rc |= expect_true("abandoned-scan-attempted", g_rtl_tune_calls == 1 && state->lcn_freq_roll == 0);
             rc |= expect_true("abandoned-scan-cap-rearmed",
-                              !dsd_engine_scan_visit_expired(opts, state, dsd_time_now_monotonic_s()));
+                              !dsd_engine_scan_visit_expired(opts, state, dsd_decode_now_mono_s()));
             rc |= expect_true("abandoned-scan-gate-rearmed",
-                              !dsd_scan_voice_gate_should_step(opts, state, dsd_time_now_monotonic_s()));
+                              !dsd_scan_voice_gate_should_step(opts, state, dsd_decode_now_mono_s()));
             noCarrier(opts, state);
             rc |= expect_true("abandoned-scan-no-immediate-retry", g_rtl_tune_calls == 1);
         }
@@ -1298,7 +1280,7 @@ test_visit_cap_scanner_hops(void) {
     // Recovery remains possible once the fresh interval expires.
     opts->scan_max_visit_ms = 1000;
     opts->scan_voice_only = 0;
-    seed_visit_anchor(state, dsd_time_now_monotonic_s() - 2.0);
+    seed_visit_anchor(state, dsd_decode_now_mono_s() - 2.0);
     g_rtl_tune_result = RTL_STREAM_TUNE_OK;
     noCarrier(opts, state);
     rc |= expect_true("abandoned-scan-recovers", g_rtl_tune_calls == 2 && state->lcn_freq_roll == 1);
@@ -2265,7 +2247,7 @@ test_typed_scan_am_default_width_skipped_without_the_stream(void) {
 static void
 stamp_monitor_carrier(dsd_state* state) {
     state->last_cc_sync_time = time(NULL);
-    state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
+    state->last_cc_sync_time_m = dsd_decode_now_mono_s();
 }
 
 /* The monitor stamps carrier activity whatever audio_out says (DSP_SYMBOL_REPLAY proves the stamp with audio_out = 0);
@@ -2314,8 +2296,8 @@ typed_scan_analog_row_holds_on_carrier(dsd_scan_mode mode) {
     const int tunes_before = g_rtl_tune_calls;
     for (int pass = 0; pass < 4; pass++) {
         stamp_monitor_carrier(state);
-        seed_visit_anchor(state, dsd_time_now_monotonic_s() - 5.0);
-        dsd_engine_scan_visit_tick(opts, state, dsd_time_now_monotonic_s());
+        seed_visit_anchor(state, dsd_decode_now_mono_s() - 5.0);
+        dsd_engine_scan_visit_tick(opts, state, dsd_decode_now_mono_s());
         noCarrier(opts, state);
     }
     rc |= expect_true("carrier holds the analog row past -t",
@@ -2323,7 +2305,7 @@ typed_scan_analog_row_holds_on_carrier(dsd_scan_mode mode) {
 
     /* The carrier stops: -t after the last stamp the rotation moves on. */
     state->last_cc_sync_time = time(NULL) - 2;
-    dsd_engine_scan_visit_tick(opts, state, dsd_time_now_monotonic_s());
+    dsd_engine_scan_visit_tick(opts, state, dsd_decode_now_mono_s());
     noCarrier(opts, state);
     rc |= expect_true("analog row steps -t after the carrier",
                       state->lcn_freq_roll == 2 && g_rtl_tune_freq == 461500000U);
@@ -2335,7 +2317,7 @@ typed_scan_analog_row_holds_on_carrier(dsd_scan_mode mode) {
     noCarrier(opts, state);
     rc |= expect_true("analog row again", state->lcn_freq_roll == 1 && opts->scan_max_visit_ms == 1000);
     stamp_monitor_carrier(state);
-    seed_visit_anchor(state, dsd_time_now_monotonic_s() - 5.0);
+    seed_visit_anchor(state, dsd_decode_now_mono_s() - 5.0);
     noCarrier(opts, state);
     rc |= expect_true("visit cap ends a carrier-held analog row",
                       state->lcn_freq_roll == 2 && g_rtl_tune_freq == 461500000U);
@@ -2660,7 +2642,7 @@ typed_scan_same_frequency_case(const char* stage, dsd_scan_mode mode, int tone_f
         rc |= expect_true("same-frequency: rejected traffic stays",
                           state->lcn_freq_roll == 1 && state->analog_rx.generation == generation
                               && state->analog_rx.gate == DSD_ANALOG_TONE_GATE_REJECTED);
-        dsd_engine_scan_y_timing_tick(opts, state, dsd_time_now_monotonic_s(), (double)time(NULL));
+        dsd_engine_scan_y_timing_tick(opts, state, dsd_decode_now_mono_s(), (double)time(NULL));
         rc |= expect_true("same-frequency: Carrier with no timer",
                           state->scan_timing.reason == (uint8_t)DSD_SCAN_STAY_CARRIER
                               && state->scan_timing.deadline_m < 0.0);
@@ -2782,7 +2764,7 @@ test_typed_scan_am_row_ignores_the_tone_filter(void) {
         noCarrier(opts, state);
     }
     rc |= expect_true("the carrier holds the am row", state->lcn_freq_roll == 1 && g_rtl_tune_freq == 118300000U);
-    dsd_engine_scan_y_timing_tick(opts, state, dsd_time_now_monotonic_s(), (double)time(NULL));
+    dsd_engine_scan_y_timing_tick(opts, state, dsd_decode_now_mono_s(), (double)time(NULL));
     rc |= expect_true("am row reads Carrier", state->scan_timing.reason == (uint8_t)DSD_SCAN_STAY_CARRIER);
 
     dsd_engine_channel_scan_leave(opts, state);
@@ -2944,7 +2926,7 @@ test_tone_rejection_steps_the_legacy_scan(void) {
     state->last_cc_sync_time = time(NULL);
     noCarrier(opts, state);
     rc |= expect_true("tone-check-holds", state->lcn_freq_roll == 0);
-    dsd_engine_scan_y_timing_tick(opts, state, dsd_time_now_monotonic_s(), (double)time(NULL));
+    dsd_engine_scan_y_timing_tick(opts, state, dsd_decode_now_mono_s(), (double)time(NULL));
     rc |= expect_true("tone-check-reason", state->scan_timing.reason == (uint8_t)DSD_SCAN_STAY_TONE_PENDING);
     /* The check holds the row by its verdict alone, since it stamps no hangtime anchor: a pass with -t long run out
        keeps the row too. */
@@ -2953,7 +2935,7 @@ test_tone_rejection_steps_the_legacy_scan(void) {
     noCarrier(opts, state);
     rc |= expect_true("tone-check-holds-past-t", g_rigctl_setfreq_calls == 0 && state->lcn_freq_roll == 0);
     seed_tone_gate(state, DSD_ANALOG_TONE_GATE_ALLOWED);
-    dsd_engine_scan_y_timing_tick(opts, state, dsd_time_now_monotonic_s(), (double)time(NULL));
+    dsd_engine_scan_y_timing_tick(opts, state, dsd_decode_now_mono_s(), (double)time(NULL));
     rc |= expect_true("allowed-carrier-reason", state->scan_timing.reason == (uint8_t)DSD_SCAN_STAY_CARRIER);
 
     seed_tone_gate(state, DSD_ANALOG_TONE_GATE_REJECTED);
@@ -3028,7 +3010,7 @@ test_tone_rejection_stays_on_a_single_row(void) {
                                                         && state->analog_rx.generation == generation);
     /* It stays for as long as the carrier lasts: "Carrier", with no timer, rather than a hangtime countdown that the
        carrier no longer restarts and that never steps. */
-    dsd_engine_scan_y_timing_tick(opts, state, dsd_time_now_monotonic_s(), (double)time(NULL));
+    dsd_engine_scan_y_timing_tick(opts, state, dsd_decode_now_mono_s(), (double)time(NULL));
     rc |= expect_true("single-row-reads-carrier", state->scan_timing.reason == (uint8_t)DSD_SCAN_STAY_CARRIER
                                                       && state->scan_timing.deadline_m < 0.0);
 
@@ -3057,6 +3039,262 @@ test_tone_rejection_stays_on_a_single_row(void) {
     return rc;
 }
 #endif
+
+/* The TEST decode clock at @p ms past a fixed origin (5000 s); the real clocks are left alone. */
+static void
+decode_clock_at_ms(uint64_t ms) {
+    dsd_decode_clock_use_test((5000ULL * 1000ULL + ms) * 1000000ULL);
+}
+
+#if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
+/*
+ * The FSK no-sync reacquire watchdog is a decode decision, so it runs on the decode clock: a replay reaches the same
+ * request at the same capture time however fast it is read. Driven through the TEST decode clock with no real time
+ * passing: the gap that opened at decode +0 requests a reacquire at +11 s, not at +9 s, and the 0.75 s cooldown after
+ * it is on the decode clock too: held at +11.5 s, the next request at +11.8 s.
+ */
+static int
+test_fsk_reacquire_watchdog_runs_on_the_decode_clock(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    dsd_rtl_stream_metrics_hooks hooks = {.output_kind = fake_rtl_fsk_output_kind};
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+    opts->audio_in_type = AUDIO_IN_RTL;
+    state->rtl_ctx = (struct RtlSdrContext*)state;
+    decode_clock_at_ms(0U);
+    const time_t t0 = dsd_decode_time();
+    const double t0_m = dsd_decode_now_mono_s();
+    state->lastsynctype = DSD_SYNC_NONE;
+    state->last_cc_sync_time = t0;
+    state->last_cc_sync_time_m = t0_m;
+    state->last_vc_sync_time = 0;
+    state->last_vc_sync_time_m = 0.0;
+    state->rtl_fsk_reacquire_last_sync_time = t0;
+    state->rtl_fsk_reacquire_last_sync_m = t0_m;
+    state->rtl_fsk_reacquire_gap_start_m = t0_m;
+    state->rtl_fsk_reacquire_last_request_m = 0.0;
+    g_rtl_fsk_reacquire_requests = 0;
+
+    noCarrier(opts, state);
+    rc |= expect_true("decode-clock fsk watchdog: none as the gap opens", g_rtl_fsk_reacquire_requests == 0);
+    decode_clock_at_ms(9000U);
+    noCarrier(opts, state);
+    rc |= expect_true("decode-clock fsk watchdog: none at +9 s", g_rtl_fsk_reacquire_requests == 0);
+    decode_clock_at_ms(11000U);
+    noCarrier(opts, state);
+    rc |= expect_true("decode-clock fsk watchdog: requests at +11 s",
+                      g_rtl_fsk_reacquire_requests == 1
+                          && fabs(state->rtl_fsk_reacquire_last_request_m - (t0_m + 11.0)) < 1e-6);
+    decode_clock_at_ms(11500U);
+    noCarrier(opts, state);
+    rc |= expect_true("decode-clock fsk watchdog: cooldown holds at +11.5 s", g_rtl_fsk_reacquire_requests == 1);
+    decode_clock_at_ms(11800U);
+    noCarrier(opts, state);
+    rc |= expect_true("decode-clock fsk watchdog: cooldown over at +11.8 s", g_rtl_fsk_reacquire_requests == 2);
+
+    dsd_decode_clock_use_system();
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+/*
+ * Issue #572: a replay left mid-run (an app-control restart or input switch, through
+ * dsd_engine_decode_clock_leave_replay()) puts the decode clock back on the system clock without moving decode-mono
+ * time back to the platform clock's origin, so the watchdog's stamps from the replay go on ageing. The gap that opened
+ * at capture +0 requested a reacquire at +11 s on the replay's clock; right after the leave its 0.75 s cooldown still
+ * holds, and 0.8 s of real time later it is over and the next request goes out. A clock that fell back to the
+ * platform origin would leave both stamps ~1.8e9 s in the future, and the watchdog would never request again.
+ */
+static int
+test_fsk_reacquire_cooldown_runs_across_a_replay_leave(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    dsd_rtl_stream_metrics_hooks hooks = {.output_kind = fake_rtl_fsk_output_kind};
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+    opts->audio_in_type = AUDIO_IN_RTL;
+    state->rtl_ctx = (struct RtlSdrContext*)state;
+    dsd_decode_clock_use_replay(1788245497LL); /* 2026-09-01T06:51:37Z */
+    const double t0_m = dsd_decode_now_mono_s();
+    state->lastsynctype = DSD_SYNC_NONE;
+    state->last_cc_sync_time = dsd_decode_time();
+    state->last_cc_sync_time_m = t0_m;
+    state->last_vc_sync_time = 0;
+    state->last_vc_sync_time_m = 0.0;
+    /* Ahead of every wall stamp the leave's rebase writes (2100-01-01), so the restamped sync stamps do not read as a
+       new sync that restarts the gap: this case is about the cooldown. */
+    state->rtl_fsk_reacquire_last_sync_time = (time_t)4102444800LL;
+    state->rtl_fsk_reacquire_last_sync_m = t0_m;
+    state->rtl_fsk_reacquire_gap_start_m = t0_m;
+    state->rtl_fsk_reacquire_last_request_m = 0.0;
+    g_rtl_fsk_reacquire_requests = 0;
+
+    noCarrier(opts, state);
+    rc |= expect_true("replay leave fsk watchdog: none as the gap opens", g_rtl_fsk_reacquire_requests == 0);
+    dsd_decode_clock_set_media_ns(11ULL * 1000000000ULL);
+    noCarrier(opts, state);
+    rc |= expect_true("replay leave fsk watchdog: requests at capture +11 s", g_rtl_fsk_reacquire_requests == 1);
+
+    dsd_engine_decode_clock_leave_replay(opts, state);
+    rc |= expect_true("replay leave fsk watchdog: the decode clock is the system's",
+                      dsd_decode_clock_source() == DSD_DECODE_CLOCK_SYSTEM);
+    const double since_request = dsd_decode_now_mono_s() - state->rtl_fsk_reacquire_last_request_m;
+    rc |= expect_true("replay leave fsk watchdog: the request is not in the future", since_request >= 0.0);
+    rc |= expect_true("replay leave fsk watchdog: and was just now", since_request < 0.5);
+    noCarrier(opts, state);
+    rc |= expect_true("replay leave fsk watchdog: cooldown holds right after the leave",
+                      g_rtl_fsk_reacquire_requests == 1);
+    dsd_sleep_ms(800U);
+    noCarrier(opts, state);
+    rc |= expect_true("replay leave fsk watchdog: cooldown over 0.8 s after the leave",
+                      g_rtl_fsk_reacquire_requests == 2);
+
+    dsd_decode_clock_use_system();
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    free_test_runtime(opts, state);
+    return rc;
+}
+#endif
+
+/* The manufacturer and branding a Hytera XPT control channel leaves on the state. */
+static void
+seed_xpt_identity(dsd_state* state) {
+    state->dmr_mfid = 0x68;
+    DSD_SNPRINTF(state->dmr_branding, sizeof state->dmr_branding, "%s", "  Hytera");
+    DSD_SNPRINTF(state->dmr_branding_sub, sizeof state->dmr_branding_sub, "%s", "XPT ");
+}
+
+static int
+xpt_identity_intact(const dsd_state* state) {
+    return state->dmr_mfid == 0x68 && strcmp(state->dmr_branding, "  Hytera") == 0
+           && strcmp(state->dmr_branding_sub, "XPT ") == 0;
+}
+
+static void
+put_bits(uint8_t* bits, size_t at, uint32_t value, size_t width) {
+    for (size_t i = 0; i < width; i++) {
+        bits[at + i] = (uint8_t)((value >> (width - 1U - i)) & 1U);
+    }
+}
+
+/*
+ * Decode a standard group Preamble CSBK (opcode 61, feature set 0) to target 0x123456 from source 0x0ABCDE. Returns
+ * the address width it printed: 24 as the standard reads it, 16 as an XPT site's short addresses read it (the low 16
+ * bits of each: 0x3456, 0xBCDE), or 0 when neither line appeared.
+ */
+static int
+preamble_csbk_address_bits(dsd_opts* opts, dsd_state* state) {
+    uint8_t bits[256] = {0};
+    uint8_t bytes[48] = {0};
+    bytes[0] = 0x3DU;
+    bytes[1] = 0x00U;
+    put_bits(bits, 0U, bytes[0], 8U);
+    put_bits(bits, 8U, bytes[1], 8U);
+    bits[17] = 1U;
+    put_bits(bits, 32U, 0x123456U, 24U);
+    put_bits(bits, 56U, 0x0ABCDEU, 24U);
+    dsd_test_capture_stderr cap;
+    if (dsd_test_capture_stderr_begin(&cap, "preamble-csbk") != 0) {
+        return -1;
+    }
+    dmr_cspdu(opts, state, bits, bytes, 1U, 0U);
+    (void)dsd_test_capture_stderr_end(&cap);
+    char log[4096];
+    if (dsd_test_capture_stderr_read(&cap, log, sizeof log) != 0) {
+        return -1;
+    }
+    if (strstr(log, "Source: 703710 - Target: 1193046") != NULL) {
+        return 24;
+    }
+    if (strstr(log, "Source: 48350 - Target: 13398") != NULL) {
+        return 16;
+    }
+    return 0;
+}
+
+/*
+ * The DMR stale-follow clear is a decode decision: a control channel quiet for more than 10 s of decode time forgets
+ * the manufacturer and branding it announced, so a replay forgets them at the same capture time however fast it is
+ * read. Driven through the TEST decode clock with no real time passing, on a trunked setup that follows no voice
+ * channel (nothing to preserve): the XPT identity stands at decode +10 s and is gone at +11 s, after which a standard
+ * Preamble CSBK reads 24-bit addresses instead of XPT's 16-bit ones.
+ */
+static int
+test_dmr_stale_follow_clear_runs_on_the_decode_clock(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    opts->trunk_enable = 1;
+    opts->trunk_is_tuned = 0;
+    decode_clock_at_ms(0U);
+    seed_xpt_identity(state);
+    rc |=
+        expect_true("stale-follow: an XPT site reads 16-bit addresses", preamble_csbk_address_bits(opts, state) == 16);
+    state->last_cc_sync_time = dsd_decode_time();
+    state->last_cc_sync_time_m = dsd_decode_now_mono_s();
+    state->last_vc_sync_time = 0;
+    state->last_vc_sync_time_m = 0.0;
+
+    decode_clock_at_ms(10000U);
+    noCarrier(opts, state);
+    rc |= expect_true("stale-follow: +10 s keeps the XPT identity", xpt_identity_intact(state));
+    decode_clock_at_ms(11000U);
+    noCarrier(opts, state);
+    rc |= expect_true("stale-follow: +11 s clears manufacturer and branding",
+                      state->dmr_mfid == -1 && state->dmr_branding[0] == '\0' && state->dmr_branding_sub[0] == '\0');
+    rc |= expect_true("stale-follow: then a Preamble CSBK reads 24-bit addresses",
+                      preamble_csbk_address_bits(opts, state) == 24);
+
+    dsd_decode_clock_use_system();
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+/*
+ * The conventional control for the case above: without trunking, noCarrier() drops the branding at every pass
+ * whatever the clock says, while the manufacturer id still waits out more than 10 s of decode time since the last
+ * control-channel sync.
+ */
+static int
+test_dmr_mfid_clear_runs_on_the_decode_clock_without_trunking(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    opts->trunk_enable = 0;
+    decode_clock_at_ms(0U);
+    seed_xpt_identity(state);
+    state->last_cc_sync_time = dsd_decode_time();
+    state->last_cc_sync_time_m = dsd_decode_now_mono_s();
+
+    noCarrier(opts, state);
+    rc |= expect_true("conventional: branding cleared at every pass",
+                      state->dmr_branding[0] == '\0' && state->dmr_branding_sub[0] == '\0');
+    rc |= expect_true("conventional: manufacturer kept at +0 s", state->dmr_mfid == 0x68);
+    decode_clock_at_ms(10000U);
+    noCarrier(opts, state);
+    rc |= expect_true("conventional: manufacturer kept at +10 s", state->dmr_mfid == 0x68);
+    decode_clock_at_ms(11000U);
+    noCarrier(opts, state);
+    rc |= expect_true("conventional: manufacturer cleared at +11 s", state->dmr_mfid == -1);
+
+    dsd_decode_clock_use_system();
+    free_test_runtime(opts, state);
+    return rc;
+}
 
 /*
  * The received tone (issue #522) has to survive noCarrier(): in analog mode it runs on every
@@ -3158,7 +3396,7 @@ seed_tone_rejection_ended(dsd_opts* opts, dsd_state* state) {
     feed_rx_tone(opts, state, 30);
     int rc = expect_true("ended: rejected on air", state->analog_rx.gate == DSD_ANALOG_TONE_GATE_REJECTED);
     state->last_cc_sync_time = time(NULL);
-    state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
+    state->last_cc_sync_time_m = dsd_decode_now_mono_s();
     feed_rx_silence_until_closed(opts, state);
     rc |= expect_true("ended: carrier gone, rejection kept for the scanner",
                       state->analog_rx.carrier_open == 0 && state->analog_rx.gate == DSD_ANALOG_TONE_GATE_PENDING
@@ -3269,7 +3507,7 @@ test_tone_check_holds_the_legacy_scan_while_the_verdict_is_pending(void) {
     opts->trunk_hangtime = 1;
     g_rigctl_setfreq_ok = 1;
     state->last_cc_sync_time = time(NULL) - 2;
-    state->last_cc_sync_time_m = dsd_time_now_monotonic_s() - 2.0;
+    state->last_cc_sync_time_m = dsd_decode_now_mono_s() - 2.0;
     feed_low_rate_tone_partial(opts, state, 320);
     rc |= expect_true("low rate: carrier heard 128 ms in, still checked, no activity",
                       dsd_scan_analog_tone_gate(opts, state) == DSD_ANALOG_TONE_GATE_PENDING
@@ -3279,14 +3517,14 @@ test_tone_check_holds_the_legacy_scan_while_the_verdict_is_pending(void) {
     rc |= expect_true("low rate: the tone check holds the row past -t",
                       g_rigctl_setfreq_calls == 0 && state->lcn_freq_roll == 1
                           && dsd_scan_analog_tone_gate(opts, state) == DSD_ANALOG_TONE_GATE_PENDING);
-    dsd_engine_scan_y_timing_tick(opts, state, dsd_time_now_monotonic_s(), (double)time(NULL));
+    dsd_engine_scan_y_timing_tick(opts, state, dsd_decode_now_mono_s(), (double)time(NULL));
     rc |= expect_true("low rate: Tone check, nothing counting down",
                       state->scan_timing.reason == (uint8_t)DSD_SCAN_STAY_TONE_PENDING
                           && state->scan_timing.deadline_m < 0.0);
 
     /* The per-visit cap outranks the check, as it does every other reason to stay: a visit 5 s old against 1 s. */
     opts->scan_max_visit_ms = 1000;
-    dsd_scan_voice_gate_note_retune(state, dsd_time_now_monotonic_s() - 5.0);
+    dsd_scan_voice_gate_note_retune(state, dsd_decode_now_mono_s() - 5.0);
     state->scan_visit_roll_seen = state->lcn_freq_roll;
     noCarrier(opts, state);
     rc |= expect_true("low rate: the visit cap ends a tone check",
@@ -3348,7 +3586,7 @@ test_allowed_traffic_holds_the_legacy_scan_before_its_block_ends(void) {
     g_rigctl_setfreq_ok = 1;
     /* The row landed 3 s ago, and the check stamped nothing since: -t has run out. */
     state->last_cc_sync_time = time(NULL) - 3;
-    state->last_cc_sync_time_m = dsd_time_now_monotonic_s() - 3.0;
+    state->last_cc_sync_time_m = dsd_decode_now_mono_s() - 3.0;
     const unsigned int offset = feed_tone_until_allowed_mid_block(opts, state);
     rc |= expect_true("mid-block: allowed part-way through a block",
                       offset > 0U && offset < 960U
@@ -3358,14 +3596,13 @@ test_allowed_traffic_holds_the_legacy_scan_before_its_block_ends(void) {
     noCarrier(opts, state);
     rc |= expect_true("mid-block: the allowed traffic holds the row past -t",
                       g_rigctl_setfreq_calls == 0 && state->lcn_freq_roll == 1);
-    dsd_engine_scan_y_timing_tick(opts, state, dsd_time_now_monotonic_s(), (double)time(NULL));
+    dsd_engine_scan_y_timing_tick(opts, state, dsd_decode_now_mono_s(), (double)time(NULL));
     rc |= expect_true("mid-block: Carrier", state->scan_timing.reason == (uint8_t)DSD_SCAN_STAY_CARRIER);
     g_rigctl_setfreq_ok = 0;
     free_test_runtime(opts, state);
     return rc;
 }
 
-#ifdef DSD_NEO_TEST_TIME_WRAP
 /* Feed @p blocks 20 ms blocks at 48 kHz of a tone at @p hz, or of silence (a closed squelch) for 0, through the tap.
    Nothing here stamps the -Y hangtime anchor: the monitor's stamp at each block's end is proven through the real
    monitor block by DSP_SYMBOL_REPLAY (only traffic the policy passes stamps), and the case below sets the anchor to
@@ -3383,18 +3620,24 @@ feed_tap_blocks(dsd_opts* opts, dsd_state* state, int blocks, double hz) {
     }
 }
 
-/* Run a -Y pass with the injected wall clock at @p wall; whether it stepped off the row on air. */
+/* Hold the decode clock (wall and monotonic alike) at @p second. */
+static void
+decode_clock_at_s(time_t second) {
+    dsd_decode_clock_use_test((uint64_t)second * 1000000000ULL);
+}
+
+/* Run a -Y pass with the decode clock at @p wall; whether it stepped off the row on air. */
 static int
 legacy_scan_pass_steps_at(dsd_opts* opts, dsd_state* state, time_t wall) {
-    g_test_wall = wall;
+    decode_clock_at_s(wall);
     g_rigctl_setfreq_calls = 0;
     noCarrier(opts, state);
     return g_rigctl_setfreq_calls > 0;
 }
 
 /*
- * The -Y step rule against the hangtime anchor the monitor leaves (issue #527), which this case sets itself, on a wall
- * clock it injects (time() is what the rule compares whole seconds of). A carrier the tone policy is still checking is
+ * The -Y step rule against the hangtime anchor the monitor leaves (issue #527), which this case sets itself, on the
+ * decode clock it holds (the rule compares whole decode seconds). A carrier the tone policy is still checking is
  * no activity, so the monitor stamps no anchor for it (DSP_SYMBOL_REPLAY): it holds the legacy -Y row while it lasts,
  * under "Tone check" with nothing counting down, and short no-tone bursts under an allow list -- kerchunks, noise --
  * each end before a verdict and leave the anchor where the row's landing put it. With a burst in every second of -t,
@@ -3415,17 +3658,18 @@ test_tone_check_leaves_no_hangtime_tail(void) {
     rc |= expect_true("no tail: allow 100.0", dsd_tone_set_parse("100.0", &opts->analog_tone_set, NULL, 0) == 0);
     opts->trunk_hangtime = 2;
     g_rigctl_setfreq_ok = 1;
-    const time_t landed = time(NULL);
+    decode_clock_at_ms(0U);
+    const time_t landed = dsd_decode_time();
     state->last_cc_sync_time = landed;
     for (int burst = 0; burst <= 2; burst++) {
         const time_t now = landed + burst;
-        g_test_wall = now;
+        decode_clock_at_s(now);
         feed_tap_blocks(opts, state, 15, 1000.0);
         rc |= expect_true("no tail: a burst is checked",
                           dsd_scan_analog_tone_gate(opts, state) == DSD_ANALOG_TONE_GATE_PENDING);
         rc |= expect_true("no tail: the check holds the row",
                           !legacy_scan_pass_steps_at(opts, state, now) && state->lcn_freq_roll == 1);
-        dsd_engine_scan_y_timing_tick(opts, state, dsd_time_now_monotonic_s(), (double)now);
+        dsd_engine_scan_y_timing_tick(opts, state, dsd_decode_now_mono_s(), (double)now);
         rc |= expect_true("no tail: Tone check, nothing counting down",
                           state->scan_timing.reason == (uint8_t)DSD_SCAN_STAY_TONE_PENDING
                               && state->scan_timing.deadline_m < 0.0);
@@ -3439,7 +3683,7 @@ test_tone_check_leaves_no_hangtime_tail(void) {
     rc |= expect_true("no tail: the pass once -t since the landing has run out steps",
                       legacy_scan_pass_steps_at(opts, state, landed + 3) && g_rigctl_setfreq_freq == 972012500
                           && state->lcn_freq_roll == 2);
-    g_test_wall = 0;
+    dsd_decode_clock_use_system();
     free_test_runtime(opts, state);
 
     /* The listed tone: checked, then allowed and stamped by its last block; once it ends, the row waits out -t. */
@@ -3450,8 +3694,8 @@ test_tone_check_leaves_no_hangtime_tail(void) {
     rc |= expect_true("tail: allow 100.0", dsd_tone_set_parse("100.0", &opts->analog_tone_set, NULL, 0) == 0);
     opts->trunk_hangtime = 2;
     g_rigctl_setfreq_ok = 1;
-    const time_t heard = time(NULL);
-    g_test_wall = heard;
+    decode_clock_at_ms(0U);
+    const time_t heard = dsd_decode_time();
     /* The row landed 10 s ago: -t has run out, and the check stamps nothing. */
     state->last_cc_sync_time = heard - 10;
     feed_tap_blocks(opts, state, 30, 100.0);
@@ -3462,7 +3706,7 @@ test_tone_check_leaves_no_hangtime_tail(void) {
     rc |= expect_true("tail: ended", state->analog_rx.carrier_open == 0 && state->analog_rx.gate_rejected_ended == 0);
     rc |= expect_true("tail: the row waits out -t",
                       !legacy_scan_pass_steps_at(opts, state, heard + 2) && state->lcn_freq_roll == 1);
-    const double now_m = dsd_time_now_monotonic_s();
+    const double now_m = dsd_decode_now_mono_s();
     dsd_engine_scan_y_timing_tick(opts, state, now_m, (double)(heard + 2));
     rc |= expect_true("tail: Hangtime, its last second counting down",
                       state->scan_timing.reason == (uint8_t)DSD_SCAN_STAY_HANGTIME
@@ -3470,12 +3714,11 @@ test_tone_check_leaves_no_hangtime_tail(void) {
     rc |= expect_true("tail: the pass once -t has run out steps", legacy_scan_pass_steps_at(opts, state, heard + 3)
                                                                       && g_rigctl_setfreq_freq == 974012500
                                                                       && state->lcn_freq_roll == 2);
-    g_test_wall = 0;
+    dsd_decode_clock_use_system();
     g_rigctl_setfreq_ok = 0;
     free_test_runtime(opts, state);
     return rc;
 }
-#endif
 #endif
 
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
@@ -3683,7 +3926,7 @@ main(void) {
     // noCarrier return that runs later in the same no-sync cycle. This hold is
     // state-machine-owned and does not refresh the voice-sync timestamp.
     const int saved_audio_in_type = opts->audio_in_type;
-    const double recovery_now_m = dsd_time_now_monotonic_s();
+    const double recovery_now_m = dsd_decode_now_mono_s();
     opts->audio_in_type = AUDIO_IN_RTL;
     opts->trunk_is_tuned = 1;
     state->p25_cc_freq = 851000000;
@@ -4045,7 +4288,7 @@ main(void) {
 
     // An IDLE row: synced frames, no voice media. The hangtime (10 s, deadline 1 s old)
     // would keep parking here, but the qualify window (1 s, synced 5 s ago) has lapsed.
-    double gate_now_m = dsd_time_now_monotonic_s();
+    double gate_now_m = dsd_decode_now_mono_s();
     state->last_cc_sync_time = time(NULL) - 1;
     dsd_scan_voice_gate_note_retune(state, gate_now_m - 5.0);
     dsd_scan_voice_gate_tick(opts, state, 1, gate_now_m - 5.0);
@@ -4059,8 +4302,8 @@ main(void) {
     gate_idle_call.observed_m = gate_now_m - 5.0;
     rc |= expect_true("voice-gate-idle-seeds-call",
                       dsd_call_state_observe(state, &gate_idle_call, DSD_CALL_BOUNDARY_BEGIN) == 1);
-    rc |= expect_true("voice-gate-idle-due",
-                      dsd_scan_voice_gate_should_step(opts, state, dsd_time_now_monotonic_s()) != 0);
+    rc |=
+        expect_true("voice-gate-idle-due", dsd_scan_voice_gate_should_step(opts, state, dsd_decode_now_mono_s()) != 0);
     g_rtl_tune_calls = 0;
     noCarrier(opts, state);
     dsd_call_snapshot gate_idle_snapshot;
@@ -4070,7 +4313,7 @@ main(void) {
     rc |= expect_true("voice-gate-idle-ends-call", gate_idle_snapshot.phase == DSD_CALL_PHASE_ENDED);
     rc |= expect_true("voice-gate-idle-ends-call-explicitly",
                       gate_idle_snapshot.end_reason == (uint8_t)DSD_CALL_END_EXPLICIT);
-    gate_now_m = dsd_time_now_monotonic_s();
+    gate_now_m = dsd_decode_now_mono_s();
     rc |= expect_true("voice-gate-idle-resets-sync", state->scan_voice_gate_sync_m < 0.0);
     rc |= expect_true("voice-gate-idle-resets-voice", state->scan_voice_gate_voice_m < 0.0);
     rc |= expect_true("voice-gate-idle-restamps-arrive", fabs(state->scan_voice_gate_arrive_m - gate_now_m) < 5.0);
@@ -4083,7 +4326,7 @@ main(void) {
     opts->scan_voice_hold_ms = 5000;
     state->lcn_freq_roll = 1;
     state->last_cc_sync_time = time(NULL) - 11;
-    gate_now_m = dsd_time_now_monotonic_s();
+    gate_now_m = dsd_decode_now_mono_s();
     dsd_scan_voice_gate_note_retune(state, gate_now_m - 3.0);
     dsd_call_observation gate_voice_call = {0};
     gate_voice_call.protocol = DSD_SYNC_NXDN_POS;
@@ -4105,7 +4348,7 @@ main(void) {
     rc |= expect_true("voice-gate-sync-remains-unset", state->scan_voice_gate_sync_m < 0.0);
     rc |= expect_true("voice-gate-retained-media-arms", state->scan_voice_gate_voice_m > 0.0);
     rc |= expect_true("voice-gate-voice-holds",
-                      dsd_scan_voice_gate_should_step(opts, state, dsd_time_now_monotonic_s()) == 0);
+                      dsd_scan_voice_gate_should_step(opts, state, dsd_decode_now_mono_s()) == 0);
     const time_t voice_hold_deadline = state->last_cc_sync_time;
     g_rtl_tune_calls = 0;
     noCarrier(opts, state);
@@ -4130,18 +4373,18 @@ main(void) {
     // Gate on but never synced this visit: the gate abstains and the hangtime rule steps.
     // The voice epoch above is retired first so its media cannot hold the visit instead.
     opts->scan_voice_only = 1;
-    gate_now_m = dsd_time_now_monotonic_s();
+    gate_now_m = dsd_decode_now_mono_s();
     // The voice epoch above is already ended by the earlier noCarrier passes; retiring it
     // again is a no-op so its media cannot hold the visit instead.
     (void)dsd_call_state_end_ex(state, 0U, gate_now_m, DSD_CALL_END_EXPLICIT);
     state->lcn_freq_roll = 2;
 
     state->last_cc_sync_time = time(NULL) - 11;
-    gate_now_m = dsd_time_now_monotonic_s();
+    gate_now_m = dsd_decode_now_mono_s();
     dsd_scan_voice_gate_note_retune(state, gate_now_m);
     dsd_scan_voice_gate_tick(opts, state, 0, gate_now_m);
     rc |= expect_true("voice-gate-unsynced-abstains",
-                      dsd_scan_voice_gate_should_step(opts, state, dsd_time_now_monotonic_s()) == 0);
+                      dsd_scan_voice_gate_should_step(opts, state, dsd_decode_now_mono_s()) == 0);
     g_rtl_tune_calls = 0;
     noCarrier(opts, state);
     rc |= expect_true("voice-gate-unsynced-retuned", g_rtl_tune_calls > 0 && g_rtl_tune_freq == 949012500U);
@@ -4151,11 +4394,11 @@ main(void) {
     state->lcn_freq_roll = 3;
     state->last_cc_sync_time = time(NULL) - 11;
     state->lcn_scan_hold = 1;
-    gate_now_m = dsd_time_now_monotonic_s();
+    gate_now_m = dsd_decode_now_mono_s();
     dsd_scan_voice_gate_note_retune(state, gate_now_m - 5.0);
     dsd_scan_voice_gate_tick(opts, state, 1, gate_now_m - 5.0);
-    rc |= expect_true("voice-gate-hold-due",
-                      dsd_scan_voice_gate_should_step(opts, state, dsd_time_now_monotonic_s()) == 0);
+    rc |=
+        expect_true("voice-gate-hold-due", dsd_scan_voice_gate_should_step(opts, state, dsd_decode_now_mono_s()) == 0);
     const time_t operator_hold_deadline = state->last_cc_sync_time;
     g_rtl_tune_calls = 0;
     noCarrier(opts, state);
@@ -5067,7 +5310,7 @@ main(void) {
     opts->audio_in_type = AUDIO_IN_RTL;
     state->rtl_ctx = (struct RtlSdrContext*)state;
     state->lastsynctype = DSD_SYNC_YSF_POS;
-    state->rtl_fsk_reacquire_gap_start_m = dsd_time_now_monotonic_s() - 1.0;
+    state->rtl_fsk_reacquire_gap_start_m = dsd_decode_now_mono_s() - 1.0;
     state->rtl_fsk_reacquire_last_sync_m = state->rtl_fsk_reacquire_gap_start_m - 1.0;
     state->rtl_fsk_reacquire_last_sync_time = time(NULL) - 2;
     double old_reacquire_sync_m = state->rtl_fsk_reacquire_last_sync_m;
@@ -5079,7 +5322,7 @@ main(void) {
                       state->rtl_fsk_reacquire_last_sync_m > old_reacquire_sync_m);
 #if defined(DSD_NEO_TEST_RTL_WRAP)
     g_rtl_fsk_reacquire_requests = 0;
-    double reacquire_now_m = dsd_time_now_monotonic_s();
+    double reacquire_now_m = dsd_decode_now_mono_s();
     time_t reacquire_now = time(NULL);
     state->lastsynctype = DSD_SYNC_NONE;
     state->last_cc_sync_time = reacquire_now - 1;
@@ -5096,7 +5339,7 @@ main(void) {
     rc |= expect_true("rtl-fsk-short-nosync-gap-does-not-reacquire", g_rtl_fsk_reacquire_requests == 0);
 
     g_rtl_fsk_reacquire_requests = 0;
-    reacquire_now_m = dsd_time_now_monotonic_s();
+    reacquire_now_m = dsd_decode_now_mono_s();
     reacquire_now = time(NULL);
     state->lastsynctype = DSD_SYNC_NONE;
     state->last_cc_sync_time = reacquire_now - 11;
@@ -5199,6 +5442,8 @@ main(void) {
     free_test_runtime(opts, state);
 
     rc |= test_rx_tone_survives_no_carrier();
+    rc |= test_dmr_stale_follow_clear_runs_on_the_decode_clock();
+    rc |= test_dmr_mfid_clear_runs_on_the_decode_clock_without_trunking();
 #ifdef DSD_NEO_TEST_RTL_WRAP
     rc |= test_rx_tone_rigctl_scan_step();
     rc |= test_rigctl_reconnect_forgets_the_legacy_tune_cache();
@@ -5207,9 +5452,7 @@ main(void) {
     rc |= test_tone_rejection_that_ended_steps_the_legacy_scan();
     rc |= test_tone_check_holds_the_legacy_scan_while_the_verdict_is_pending();
     rc |= test_allowed_traffic_holds_the_legacy_scan_before_its_block_ends();
-#ifdef DSD_NEO_TEST_TIME_WRAP
     rc |= test_tone_check_leaves_no_hangtime_tail();
-#endif
 #endif
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
     rc |= test_rx_tone_resets_on_legacy_scan_step();
@@ -5245,6 +5488,8 @@ main(void) {
     rc |= test_typed_scan_analog_rows_hold_on_carrier();
     rc |= test_trunk_cache_with_mode_metadata();
     rc |= test_dmr_explicit_return_destination();
+    rc |= test_fsk_reacquire_watchdog_runs_on_the_decode_clock();
+    rc |= test_fsk_reacquire_cooldown_runs_across_a_replay_leave();
 #endif
 
     if (rc == 0) {

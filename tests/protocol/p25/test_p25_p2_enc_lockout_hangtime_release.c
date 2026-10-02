@@ -14,13 +14,13 @@
  * followed call ended.
  */
 
-#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/p25/p25_crypto.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <math.h>
 #include <stdint.h>
@@ -115,7 +115,7 @@ transmit(int slot, int tg, int source, uint8_t signature_fill) {
     uint8_t signature[P25_SM_PTT_SIGNATURE_BYTES];
     DSD_MEMSET(signature, signature_fill, sizeof(signature));
     (void)p25_sm_emit_ptt_call_metadata(&g_opts, &g_state, slot, tg, 0, source, 1, P25_SM_SVC_UNKNOWN, signature,
-                                        dsd_time_now_monotonic_s(), 0);
+                                        dsd_decode_now_mono_s(), 0);
 }
 
 static void
@@ -140,7 +140,7 @@ backdate(double stamp_m, double by_s) {
  */
 static void
 restamp_companion_stop_now(int slot) {
-    p25_sm_get_ctx()->slots[slot].last_stop_m = dsd_time_now_monotonic_s();
+    p25_sm_get_ctx()->slots[slot].last_stop_m = dsd_decode_now_mono_s();
 }
 
 /*
@@ -189,7 +189,7 @@ test_enc_signaling_does_not_starve_hangtime_release(void) {
 
     /* Clear call ends; the locked-out slot holds no grant, so the hangtime
      * countdown arms. */
-    (void)p25_sm_emit_end_call_at(&g_opts, &g_state, 0, CLEAR_TG, CLEAR_SRC, dsd_time_now_monotonic_s());
+    (void)p25_sm_emit_end_call_at(&g_opts, &g_state, 0, CLEAR_TG, CLEAR_SRC, dsd_decode_now_mono_s());
     p25_crypto_reset_slot(&g_state, 0);
     const double armed_m = p25_sm_hangtime_started_m(ctx);
     rc |= expect("clear END arms hangtime", armed_m > 0.0);
@@ -258,7 +258,7 @@ test_enc_relock_hold_arms_hangtime_for_ended_companion(void) {
      * pending, so the END cannot arm the countdown. */
     grant_companion(ENC_TG, ENC_SRC, 0x00);
     rc |= expect("clear-claiming grant update re-admits probe", ctx->slots[1].grant_active == 1);
-    (void)p25_sm_emit_end_call_at(&g_opts, &g_state, 0, CLEAR_TG, CLEAR_SRC, dsd_time_now_monotonic_s());
+    (void)p25_sm_emit_end_call_at(&g_opts, &g_state, 0, CLEAR_TG, CLEAR_SRC, dsd_decode_now_mono_s());
     p25_crypto_reset_slot(&g_state, 0);
 
     /* The countdown is not something the END had to remember to arm: it is

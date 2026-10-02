@@ -10,6 +10,7 @@
 
 #include <curses.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/ui/panels.h>
 #include <dsd-neo/ui/ui_prims.h>
 #include <time.h>
@@ -23,7 +24,7 @@ ui_panel_footer_status_render(const dsd_opts* opts, dsd_state* state) {
         return;
     }
     // Transient toast message (e.g., mute toggled)
-    time_t now = time(NULL);
+    time_t now = dsd_realtime_time();
     if (state->ui_msg[0] != '\0' && state->ui_msg_expire > now) {
 #ifdef PRETTY_COLORS
         // Preserve current color pair to avoid forcing default/white after toast

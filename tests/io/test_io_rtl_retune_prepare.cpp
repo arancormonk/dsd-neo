@@ -223,8 +223,9 @@ expected_audio_lpf_alpha(int rate_hz, int cutoff_hz) {
 
 /*
  * A retune on the analog monitor starts from clean filter state: de-emphasis,
- * DC, audio-LPF and squelch-envelope state and the channel/half-band/resampler
- * histories all return to their fresh-open values, and the rate-dependent
+ * DC, audio-LPF and squelch-envelope state, the channel/half-band/resampler
+ * histories and a replay's post-demod decimator all return to their fresh-open
+ * values (the decimator through dsd_demod_reset_filter_state()), and the rate-dependent
  * coefficients follow the output rate the device actually settled on.
  */
 static int
@@ -240,6 +241,7 @@ test_audio_monitor_retune_reset(void) {
     failed |= expect_int_eq("channel LPF history cleared", r.channel_hist_cleared, 1);
     failed |= expect_int_eq("half-band history cleared", r.hb_hist_cleared, 1);
     failed |= expect_int_eq("resampler history cleared", r.resamp_hist_cleared, 1);
+    failed |= expect_int_eq("post-demod decimator cleared", r.post_decim_cleared, 1);
     failed |=
         expect_double_near("deemph seeded for 48 kHz", r.deemph_a_before, expected_deemph_alpha(48000, 75e-6), 1e-9);
     failed |= expect_double_near("deemph follows the forced 78125 Hz rate", r.deemph_a_after,
@@ -258,6 +260,7 @@ test_audio_monitor_retune_reset(void) {
     failed |=
         expect_float_bits_equal("same-rate audio LPF unchanged", r.audio_lpf_alpha_after, r.audio_lpf_alpha_before);
     failed |= expect_int_eq("same-ratio resampler history cleared", r.resamp_hist_cleared, 1);
+    failed |= expect_int_eq("same-rate post-demod decimator cleared", r.post_decim_cleared, 1);
     failed |= expect_double_near("same-rate deemph state reset", r.deemph_avg, 0.0, kResetTolerance);
     failed |= expect_double_near("same-rate squelch envelope reopened", r.squelch_env, 1.0, kResetTolerance);
     return failed;
@@ -283,6 +286,7 @@ test_am_monitor_retune(void) {
     failed |= expect_double_near("AM retune squelch envelope reopened", r.squelch_env, 1.0, kResetTolerance);
     failed |= expect_int_eq("AM retune channel history cleared", r.channel_hist_cleared, 1);
     failed |= expect_int_eq("AM retune half-band history cleared", r.hb_hist_cleared, 1);
+    failed |= expect_int_eq("AM retune post-demod decimator cleared", r.post_decim_cleared, 1);
     failed |= expect_int_eq("AM retune keeps the AM detector", r.demod_is_am, 1);
     failed |= expect_int_eq("AM retune keeps the AM kind", r.analog_kind, DSD_ANALOG_DEMOD_AM);
     failed |= expect_int_eq("AM retune keeps de-emphasis off", r.deemph_after, 0);
@@ -1239,6 +1243,50 @@ test_external_backend_landing_waits_for_reconfiguration(void) {
                             DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR);
     failed |= expect_int_eq("reconfiguration during an external landing: output rate", r.arriving_output_rate, 48000);
     failed |= expect_int_eq("external landing race: the gate is open again", r.gate_open_after, 1);
+    return failed;
+}
+
+/* An external backend's retune (a rigctl peer that tuned an RTL input) has no finalize, so no retune reset of the
+ * stream's own: its landing starts the half-band and channel filters over itself whenever it lands on a new frequency,
+ * whatever the width, since what they hold is the old channel's. A landing on the frequency already tuned that only
+ * changes the width is a live width edit, seamless (issue #572): the filter state stays and only the plan is
+ * redesigned. */
+static int
+test_external_backend_landing_filter_state(void) {
+    rtl_stream_test_external_landing_filter_result r;
+    DSD_MEMSET(&r, 0, sizeof r);
+    int failed = expect_int_eq("external landing filter hook", rtl_stream_test_external_landing_filter_state(&r), 0);
+    failed |= expect_int_eq("external landing on A: taken", r.first_taken, 1);
+    failed |= expect_int_eq("external landing on a new frequency with a new width: taken", r.new_freq_width_taken, 1);
+    failed |= expect_int_eq("external landing on a new frequency with a new width: filters start over",
+                            r.new_freq_width_cleared, 1);
+    failed |= expect_int_eq("external landing on a new frequency, same width: taken", r.new_freq_same_width_taken, 1);
+    failed |= expect_int_eq("external landing on a new frequency, same width: filters start over",
+                            r.new_freq_same_width_cleared, 1);
+    failed |= expect_int_eq("external landing on the same frequency, new width: taken", r.same_freq_width_taken, 1);
+    failed |= expect_int_eq("external landing on the same frequency, new width: filter state kept",
+                            r.same_freq_width_kept, 1);
+    failed |= expect_int_eq("external landing on the same frequency, new width: width applied", r.same_freq_width_after,
+                            16000);
+    failed |=
+        expect_int_eq("external landing on the same frequency, new width: plan dropped", r.same_freq_plan_dropped, 1);
+    /* What the last external retune landed on stops counting once anything else resets the demod: a controller retune
+       or a stream open. A landing that took no profile applied nothing, so it does not count either. */
+    failed |= expect_int_eq("external landing after a controller retune away: taken", r.retuned_between_taken, 1);
+    failed |= expect_int_eq("external landing after a controller retune away: filters start over",
+                            r.retuned_between_cleared, 1);
+    failed |= expect_int_eq("external landing with no profile queued: nothing taken", r.profileless_taken, 0);
+    failed |= expect_int_eq("external landing after a profile-less landing there: taken", r.after_profileless_taken, 1);
+    failed |= expect_int_eq("external landing after a profile-less landing there: filters start over",
+                            r.after_profileless_cleared, 1);
+    failed |= expect_int_eq("external landing after a stream open: taken", r.reopened_taken, 1);
+    failed |= expect_int_eq("external landing after a stream open: filters start over", r.reopened_cleared, 1);
+    /* D, then C with no profile, then D: the landing on C applied nothing, but the filters ran on C's samples since. */
+    failed |= expect_int_eq("external landing away with no profile queued: nothing taken", r.profileless_away_taken, 0);
+    failed |= expect_int_eq("external landing back after a profile-less landing away: taken",
+                            r.back_after_profileless_taken, 1);
+    failed |= expect_int_eq("external landing back after a profile-less landing away: filters start over",
+                            r.back_after_profileless_cleared, 1);
     return failed;
 }
 
@@ -2309,6 +2357,7 @@ main(void) {
     failed |= test_digital_family_lands_where_timed_on_a_digital_front_end();
     failed |= test_external_backend_retune_lands_where_timed();
     failed |= test_external_backend_landing_waits_for_reconfiguration();
+    failed |= test_external_backend_landing_filter_state();
     failed |= test_family_landing_after_pending();
     failed |= test_live_republish_lands_where_it_was_timed();
 

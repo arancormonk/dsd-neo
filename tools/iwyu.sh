@@ -285,6 +285,38 @@ if qt_units and not qt_mapping.is_file():
     print(f"iwyu: NOTE: {qt_units} Qt translation unit(s) analyzed without "
           f"{qt_mapping.name}; expect private-header suggestions.")
 
+# Shared C headers are compiled as C and as C++, and IWYU 0.27 in C++ mode asks
+# for <cstdint> where C needs <stdint.h>. --use_c_headers plus this mapping give
+# both one answer; tools/iwyu-c-headers.imp states the rule. The option exists
+# only in IWYU 0.27 and later (released 0.24 to 0.26 reject it as an unknown
+# argument, which would fail every unit), and those older releases already keep
+# C headers on their C names. So the option and the mapping, which only
+# compensates for the option, are passed together and only when the installed
+# IWYU lists the option in its --help. Unlike the Qt mapping the file is not
+# optional once the option is passed: the flag without it gives C++ sources
+# different advice than the rule, so a missing file stops the run rather than
+# changing it.
+c_headers_mapping = root / "tools" / "iwyu-c-headers.imp"
+
+
+def iwyu_supports_c_headers():
+    try:
+        proc = subprocess.run(
+            ["include-what-you-use", "--help"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return False
+    return "--use_c_headers" in proc.stdout
+
+
+use_c_headers = iwyu_supports_c_headers()
+if use_c_headers and not c_headers_mapping.is_file():
+    raise SystemExit(f"iwyu: {c_headers_mapping} not found; it is required for every translation unit.")
+
 if not selected_entries:
     print("No translation units left for IWYU analysis.")
     raise SystemExit(0)
@@ -295,7 +327,13 @@ print(
 )
 
 suggest_add_remove = re.compile(r"should (add|remove) these lines:", re.IGNORECASE)
-hard_error = re.compile(r"(^|\\s)(fatal error:|error:)", re.IGNORECASE)
+# A clang error as the compiler inside IWYU prints one: "file:line:col: error:"
+# or "fatal error:" after a location (which need not be a path, as in
+# "<command line>:1:12:"), or the driver's bare "error:". Anchored to the start
+# of a line, so the word in an IWYU symbol comment ("// for error::code"), an
+# include path, or a source line quoted under a caret (indented) is not one.
+# This heredoc is quoted: the backslashes here reach Python as written.
+compile_error = re.compile(r"^(?:\S.*?:\d+(?::\d+)?: )?(?:fatal )?error: ", re.MULTILINE)
 
 
 def run_iwyu(rel, entry):
@@ -306,6 +344,7 @@ def run_iwyu(rel, entry):
             "output": "No compile command tokens found for this entry.",
             "fatal": True,
             "suggested": False,
+            "compile_failed": False,
         }
 
     cmd = list(tokens)
@@ -314,6 +353,9 @@ def run_iwyu(rel, entry):
         compiler_index = 1
     cmd[compiler_index] = "include-what-you-use"
     cmd.append("-fno-color-diagnostics")
+    if use_c_headers:
+        # Every unit, C and C++ alike: see tools/iwyu-c-headers.imp for the rule.
+        cmd.extend(["-Xiwyu", "--use_c_headers", "-Xiwyu", f"--mapping_file={c_headers_mapping}"])
     if qt_mapping.is_file() and compiles_against_qt(entry):
         cmd.extend(["-Xiwyu", f"--mapping_file={qt_mapping}"])
     if strict:
@@ -351,14 +393,18 @@ def run_iwyu(rel, entry):
             "output": f"Failed to execute IWYU command: {exc}",
             "fatal": True,
             "suggested": False,
+            "compile_failed": False,
         }
 
     output = proc.stdout or ""
     suggested = bool(suggest_add_remove.search(output))
-    has_error_text = bool(hard_error.search(output))
+    # IWYU 0.27 exits 0 after a compile error such as a -Werror diagnostic and
+    # goes on to analyse what it parsed, so the exit status cannot say whether
+    # the unit compiled; only the diagnostics can.
+    compile_failed = bool(compile_error.search(output))
 
     # IWYU may return non-zero when suggestions exist. Treat that as non-fatal in non-strict mode.
-    fatal = has_error_text or (proc.returncode != 0 and not suggested)
+    fatal = compile_failed or (proc.returncode != 0 and not suggested)
     if strict and suggested:
         fatal = True
 
@@ -367,6 +413,7 @@ def run_iwyu(rel, entry):
         "output": output.strip(),
         "fatal": fatal,
         "suggested": suggested,
+        "compile_failed": compile_failed,
     }
 
 
@@ -380,17 +427,22 @@ results.sort(key=lambda r: r["rel"])
 
 fatal_count = 0
 suggest_count = 0
+compile_error_count = 0
 for result in results:
     print(f"\n===== IWYU: {result['rel']} =====")
     if result["output"]:
         print(result["output"])
+    if result["compile_failed"]:
+        compile_error_count += 1
+        print(f"iwyu: ERROR: {result['rel']} did not compile under IWYU's clang; see the errors above.")
     if result["fatal"]:
         fatal_count += 1
     if result["suggested"]:
         suggest_count += 1
 
 print(
-    f"\nIWYU summary: analyzed={len(results)} suggested={suggest_count} fatal={fatal_count}"
+    f"\nIWYU summary: analyzed={len(results)} suggested={suggest_count} "
+    f"compile_errors={compile_error_count} fatal={fatal_count}"
 )
 
 if fatal_count > 0:

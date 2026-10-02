@@ -36,8 +36,8 @@
 */
 
 #include <dsd-neo/crypto/aes.h>
+#include <stddef.h>
 #include <stdint.h>
-#include <string.h>
 #include "dsd-neo/core/safe_api.h"
 
 #define AES_BLOCKLEN        16

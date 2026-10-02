@@ -5,43 +5,24 @@
 
 /**
  * @file
- * @brief Lightweight monotonic time helpers for state-machine timing.
+ * @brief Helpers to stamp CC/VC sync times on `dsd_state`.
  *
- * Provides monotonic time in seconds and helpers to stamp/clear CC/VC sync
- * times on `dsd_state`.
+ * Both stamps read the decode clock (`<dsd-neo/runtime/decode_clock.h>`).
  */
 
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_CORE_DSD_TIME_H_H
 #define DSD_NEO_INCLUDE_DSD_NEO_CORE_DSD_TIME_H_H
 
 #include <dsd-neo/core/state_fwd.h>
-#include <dsd-neo/platform/timing.h> // IWYU pragma: keep
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-/**
- * @brief Return monotonic time in seconds.
- */
-static inline double
-dsd_time_now_monotonic_s(void) {
-    return (double)dsd_time_monotonic_ns() / 1e9;
-}
-
-/**
- * @brief Return wall-clock time in seconds, on the same epoch as time(NULL) but with
- * sub-second precision, for converting a time_t anchor into a monotonic deadline.
- */
-static inline double
-dsd_time_now_realtime_s(void) {
-    return (double)dsd_time_realtime_ns() / 1e9;
-}
-
-/** @brief Stamp current time as control-channel sync (monotonic + wall clock). */
+/** @brief Stamp the decode clock's current time as control-channel sync (monotonic + wall clock). */
 void dsd_mark_cc_sync(dsd_state* state);
 
-/** @brief Stamp current time as voice-channel sync (monotonic + wall clock). */
+/** @brief Stamp the decode clock's current time as voice-channel sync (monotonic + wall clock). */
 void dsd_mark_vc_sync(dsd_state* state);
 
 #ifdef __cplusplus

@@ -277,7 +277,7 @@ Item {
                             width: parent.width
                             // heardTick forces the minute-by-minute refresh.
                             objectName: "savedSystemMeta"
-                            text: ((card.encKeyType.length > 0 || card.keyCsvPath.length > 0) ? qsTr("key configured") + " · " : "") + (screen.heardTick, Util.heardText(card.lastHeard))
+                            text: ((card.encKeyType.length > 0 || card.keyCsvPath.length > 0) ? qsTr("key configured") + " · " : "") + (screen.heardTick, Util.heardText(card.lastHeard, savedSystems.realtimeNowMs()))
                             font.family: Theme.sans
                             font.pixelSize: Theme.fontSize(13)
                             color: Theme.textSecondary

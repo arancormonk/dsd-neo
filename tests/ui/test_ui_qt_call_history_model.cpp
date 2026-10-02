@@ -10,7 +10,11 @@
  * merge; an alias-only row must not be dropped; an in-place reacquisition merge
  * (end extends, enc flips) must update the logged row, not duplicate it; the
  * ring walk must be gated on commit_rev, not on staged-row renders; and a
- * relaunched model must not re-ingest rows its predecessor already logged. */
+ * relaunched model must not re-ingest rows its predecessor already logged.
+ * Clear, the session views and retention go by session and ring order, never by
+ * stamps: calls ingested after a clear show however old their stamps (a replay's
+ * are the capture's), a relaunch keeps cleared calls cleared, a new session starts
+ * fresh, and a full log or seen map gives up the oldest session first. */
 
 #include <QByteArray>
 #include <QChar>
@@ -44,10 +48,12 @@
 #include "../test_support/qt_test_paths.h"
 #include "json_store.h"
 
+#include "call_history_filter.h"
 #include "call_history_model.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
+using dsd_qt::CallHistoryFilterModel;
 using dsd_qt::CallHistoryModel;
 
 namespace {
@@ -72,18 +78,23 @@ resetStorage(void) {
     settings.sync();
 }
 
-/* A minimal decoder state: the model only reads event_history_s. */
+/* A minimal decoder state: the model only reads event_history_s. Each fixture is a new ring, with
+ * an identity of its own as initState() draws one; a run on a reused state keeps reading the same
+ * fixture. */
 struct RingFixture {
     dsd_state* state;
     Event_History_I* rings;
 
     RingFixture() {
+        static uint64_t nextInstance = 0x5EED0000ULL;
+        nextInstance++;
         state = static_cast<dsd_state*>(calloc(1, sizeof(dsd_state)));
         rings = static_cast<Event_History_I*>(calloc(2, sizeof(Event_History_I)));
         state->event_history_s = rings;
         for (int slot = 0; slot < 2; slot++) {
             rings[slot].revision = 1U;
             rings[slot].commit_rev = 1U;
+            rings[slot].instance = nextInstance;
         }
     }
 
@@ -128,6 +139,31 @@ struct RingFixture {
         DSD_SNPRINTF(item->event_string, sizeof(item->event_string), "%s", event_string);
         DSD_SNPRINTF(item->channel_label, sizeof(item->channel_label), "%s", channel_label);
         return item;
+    }
+
+    /**
+     * Commit @p count calls at once, as that many commit() calls would, oldest first:
+     * talkgroups from @p tg up, sources from @p src up, starts 10 s apart from @p start.
+     * One shift instead of one per row, for filling a log.
+     */
+    void
+    commitBatch(int slot, int count, uint32_t tg, uint32_t src, time_t start) {
+        Event_History_I* ring = &rings[slot];
+        DSD_MEMMOVE(&ring->Event_History_Items[1 + count], &ring->Event_History_Items[1],
+                    sizeof(Event_History) * (DSD_EVENT_HISTORY_LEN - 1 - count));
+        for (int i = 0; i < count; i++) {
+            // Index 1 holds the newest commit.
+            Event_History* item = &ring->Event_History_Items[count - i];
+            DSD_MEMSET(item, 0, sizeof(*item));
+            item->category = DSD_EVENT_CATEGORY_VOICE;
+            item->target_id = tg + static_cast<uint32_t>(i);
+            item->source_id = src + static_cast<uint32_t>(i);
+            item->event_start_time = start + 10 * i;
+            item->event_time = start + 10 * i + 4;
+        }
+        ring->push_seq += static_cast<uint64_t>(count);
+        ring->commit_rev++;
+        ring->revision++;
     }
 
     /** A staged-row render: bumps revision only, exactly like the core. */
@@ -604,6 +640,838 @@ test_source_label_provenance_survives_merged_span_and_relaunch(void) {
                       == QStringLiteral("Enriched alias"));
 }
 
+/* Logged rows whose talkgroup lies in [lo, hi]. */
+int
+rows_in_tg_range(const QAbstractItemModel& model, qulonglong lo, qulonglong hi) {
+    int n = 0;
+    for (int i = 0; i < model.rowCount(); i++) {
+        const qulonglong tg = model.data(model.index(i, 0), CallHistoryModel::TgRole).toULongLong();
+        n += (tg >= lo && tg <= hi) ? 1 : 0;
+    }
+    return n;
+}
+
+QString
+seen_store_path(void) {
+    return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + QLatin1String("/call_history_seen.json");
+}
+
+/* A 2010 capture's start: a replay's calls carry the capture's time, years before any live call. */
+constexpr time_t kCaptureStart = 1262304000;
+
+/* Clear wipes what the ring held when it was tapped, by the ring's push order. A call the ring
+ * takes in after the clear shows however old its stamps are. A replay's calls carry the
+ * capture's time, and a watermark at the clear's decode time hid every one of them. */
+void
+test_clear_shows_later_calls_whatever_their_stamps(void) {
+    resetStorage();
+    RingFixture ring;
+    CallHistoryModel model;
+    ring.commit(0, 5001, 100, 1754501000, 1754501004);
+    ring.commit(1, 5002, 101, 1754501010, 1754501014);
+    model.refresh(ring.state);
+    expect("live calls land before the clear", model.count() == 2);
+    model.clearAll();
+    expect("clear empties the log", model.count() == 0);
+    ring.touchCommitted(0);
+    model.refresh(ring.state);
+    expect("calls the ring still holds stay cleared", model.count() == 0);
+
+    ring.commit(0, 5003, 200, kCaptureStart, kCaptureStart + 5);
+    ring.commit(1, 5004, 201, kCaptureStart + 10, kCaptureStart + 12);
+    model.refresh(ring.state);
+    expect("calls ingested after a clear show whatever their stamps", model.count() == 2);
+    expect("the cleared calls stay cleared", rows_in_tg_range(model, 5001, 5002) == 0);
+}
+
+/* Clear has to hold across an Activity restart while the service's ring still holds the
+ * cleared calls. The seen store goes before each relaunch, so only the clear's own persisted
+ * record can tell the relaunched model which of the ring's rows were wiped. */
+void
+test_clear_survives_a_relaunch(void) {
+    resetStorage();
+    RingFixture ring;
+    {
+        CallHistoryModel model;
+        ring.commit(0, 6001, 100, 1754502000, 1754502004);
+        ring.commit(1, 6002, 101, 1754502010, 1754502014);
+        model.refresh(ring.state);
+        model.clearAll();
+    } // destructor flushes the stores
+    expect("seen store removed", QFile::remove(seen_store_path()));
+    {
+        CallHistoryModel relaunched;
+        expect("the relaunched log is still empty", relaunched.count() == 0);
+        relaunched.refresh(ring.state);
+        expect("a relaunch keeps the ring's cleared calls cleared", relaunched.count() == 0);
+        ring.commit(0, 6003, 102, kCaptureStart, kCaptureStart + 4);
+        relaunched.refresh(ring.state);
+        expect("a call ingested after the clear shows after a relaunch, whatever its stamps",
+               relaunched.count() == 1 && rows_in_tg_range(relaunched, 6003, 6003) == 1);
+    }
+    // A relaunched UI can clear before its first tick has read the ring. The clear then
+    // covers what that first read finds, and nothing the ring takes in after it.
+    expect("seen store removed again", QFile::remove(seen_store_path()));
+    {
+        CallHistoryModel relaunched;
+        expect("the post-clear call was kept", relaunched.count() == 1);
+        relaunched.clearAll();
+        relaunched.refresh(ring.state);
+        expect("a clear before the first read covers what the ring holds", relaunched.count() == 0);
+        ring.commit(1, 6004, 103, kCaptureStart + 20, kCaptureStart + 24);
+        relaunched.refresh(ring.state);
+        expect("and shows what the ring takes in after it",
+               relaunched.count() == 1 && rows_in_tg_range(relaunched, 6004, 6004) == 1);
+    }
+}
+
+/* Older builds persisted Clear as a decode-time watermark and hid every later call stamped
+ * before it. Loading retires it: the rows it cleared left the store at the clear, and the ring
+ * it guarded did not outlive the process an app update replaces. */
+void
+test_legacy_clear_watermark_is_retired(void) {
+    resetStorage();
+    {
+        QSettings settings;
+        settings.setValue(QStringLiteral("callHistory/clearedThrough"), static_cast<qlonglong>(4102444800LL));
+        settings.sync();
+    }
+    RingFixture ring;
+    CallHistoryModel model;
+    expect("the legacy watermark is gone after the first load",
+           !QSettings().contains(QStringLiteral("callHistory/clearedThrough")));
+    ring.commit(0, 8001, 100, 1754504000, 1754504004);
+    model.refresh(ring.state);
+    expect("a legacy watermark no longer hides calls by their stamps", model.count() == 1);
+}
+
+/* A start begins a new session, whose ring counts its pushes from zero again. A clear made in
+ * the previous session must not reach it: the new ring's first calls sit at push positions the
+ * clear covered in the old one. */
+void
+test_new_session_starts_fresh(void) {
+    resetStorage();
+    auto ring = std::make_unique<RingFixture>();
+    CallHistoryModel model;
+    for (uint32_t i = 0; i < 4; i++) {
+        ring->commit(0, 7001 + i, 100 + i, 1754503000 + 10 * i, 1754503004 + 10 * i);
+    }
+    model.refresh(ring->state);
+    model.clearAll();
+    const qlonglong clearedIn = model.session();
+
+    // The next session's ring has already passed the clear's push position when it is first read.
+    ring = std::make_unique<RingFixture>();
+    model.beginSession();
+    expect("a start moves the session on", model.session() == clearedIn + 1);
+    for (uint32_t i = 0; i < 6; i++) {
+        ring->commit(0, 7101 + i, 200 + i, kCaptureStart + 10 * i, kCaptureStart + 4 + 10 * i);
+    }
+    model.refresh(ring->state);
+    expect("the new session's first calls show although the old clear covered their push positions",
+           model.count() == 6);
+    expect("rows carry the session that logged them",
+           model.count() == 6
+               && model.data(model.index(0), CallHistoryModel::SessionRole).toLongLong() == model.session());
+    {
+        CallHistoryModel relaunched;
+        expect("the session survives a relaunch", relaunched.session() == model.session());
+    }
+
+    // A ring replaced without a start, here at a position below the clear's: its identity says the
+    // clear never saw it (test_clear_is_bound_to_its_ring covers one already past the position).
+    model.clearAll();
+    ring = std::make_unique<RingFixture>();
+    ring->commit(0, 7201, 300, kCaptureStart + 100, kCaptureStart + 104);
+    model.refresh(ring->state);
+    expect("a clear does not reach a ring whose position fell below it", model.count() == 1);
+}
+
+/* A clear covers the ring it was made on, named by its identity (Event_History_I::instance). A ring
+ * replaced without a start may already sit past the clear's push position at its first read, and a
+ * position alone cannot tell it from the cleared ring: all its calls are new. */
+void
+test_clear_is_bound_to_its_ring(void) {
+    resetStorage();
+    auto ring = std::make_unique<RingFixture>();
+    CallHistoryModel model;
+    for (uint32_t i = 0; i < 4; i++) {
+        ring->commit(0, 7301 + i, 100 + i, 1754503000 + 10 * i, 1754503004 + 10 * i);
+    }
+    model.refresh(ring->state);
+    expect("the four calls land before the clear", model.count() == 4);
+    model.clearAll();
+    ring = std::make_unique<RingFixture>(); // a replacement ring, no beginSession()
+    for (uint32_t i = 0; i < 6; i++) {
+        ring->commit(0, 7401 + i, 200 + i, kCaptureStart + 10 * i, kCaptureStart + 4 + 10 * i);
+    }
+    model.refresh(ring->state);
+    expect("a clear does not reach a replacement ring already past its position", model.count() == 6);
+}
+
+/* A clear mark written before marks named their ring cannot say which ring it covers. Its ring died with
+ * the process an app update replaced, so it hides nothing: every call the first read finds shows. */
+void
+test_clear_without_a_ring_hides_nothing(void) {
+    resetStorage();
+    {
+        QSettings settings;
+        settings.setValue(QStringLiteral("callHistory/session"), 1);
+        settings.setValue(QStringLiteral("callHistory/clear/session"), 1);
+        settings.setValue(QStringLiteral("callHistory/clear/pending"), false);
+        settings.setValue(QStringLiteral("callHistory/clear/pushSeq0"), 4);
+        settings.setValue(QStringLiteral("callHistory/clear/pushSeq1"), 0);
+        settings.sync();
+    }
+    RingFixture ring;
+    CallHistoryModel model;
+    for (uint32_t i = 0; i < 6; i++) {
+        ring.commit(0, 7501 + i, 300 + i, kCaptureStart + 10 * i, kCaptureStart + 4 + 10 * i);
+    }
+    model.refresh(ring.state);
+    expect("a clear mark that names no ring hides none of a ring's calls", model.count() == 6);
+    expect("and is dropped", !QSettings().contains(QStringLiteral("callHistory/clear/session")));
+}
+
+/* A clear tapped after a quiet start covers none of the new ring's later calls. When the previous
+ * session heard nothing, both rings sit at the same commit_rev, so only the new ring's identity says
+ * its snapshots are new. Its first read must still come before its first commit, which the clear
+ * then leaves alone. That call must be logged, and stay so after a relaunch. */
+void
+test_clear_after_a_quiet_start_keeps_the_next_call(void) {
+    resetStorage();
+    auto ring = std::make_unique<RingFixture>();
+    {
+        CallHistoryModel model;
+        model.beginSession();
+        model.refresh(ring->state); // a session that heard nothing
+        model.beginSession();
+        ring = std::make_unique<RingFixture>(); // the next session's fresh ring, at the same commit_rev
+        model.refresh(ring->state);
+        model.clearAll();
+        ring->commit(0, 4242, 1, kCaptureStart, kCaptureStart + 4);
+        model.refresh(ring->state);
+        expect("the first call after a clear in a session that started quiet is logged", model.count() == 1);
+        ring->commit(0, 4243, 1, kCaptureStart + 10, kCaptureStart + 14);
+        model.refresh(ring->state);
+        expect("and so is the next", model.count() == 2);
+    }
+    CallHistoryModel relaunched;
+    relaunched.refresh(ring->state);
+    expect("the persisted clear does not hide it after a relaunch either",
+           relaunched.count() == 2 && rows_in_tg_range(relaunched, 4242, 4242) == 1);
+}
+
+/* A start does not always bring a fresh ring. An embedding host can run again on the state its last run
+ * used (the Android service reuses it when a start races the previous run's stopSelfLatest()), and that
+ * ring keeps its identity, its rows and its push count. A clear bound to that ring must go on covering
+ * the rows it wiped. Here the service committed three calls while no UI was alive. A relaunched UI clears
+ * before its first tick, and that first read binds the clear to them. A start then reuses the state. */
+void
+test_pending_clear_survives_a_start_on_a_reused_ring(void) {
+    resetStorage();
+    RingFixture ring;
+    {
+        CallHistoryModel model;
+        model.beginSession();
+        ring.commit(0, 8101, 1, 1754600000, 1754600004);
+        model.refresh(ring.state);
+        expect("the first session logs its call", model.count() == 1);
+    } // destructor flushes the stores
+    ring.commit(0, 8102, 2, 1754600100, 1754600104);
+    ring.commit(0, 8103, 3, 1754600200, 1754600204);
+    ring.commit(1, 8104, 4, 1754600300, 1754600304);
+    CallHistoryModel relaunched;
+    CallHistoryFilterModel view;
+    view.setSourceModel(&relaunched);
+    relaunched.clearAll();
+    relaunched.refresh(ring.state);
+    expect("the clear before the first read covers what the ring holds", relaunched.count() == 0);
+    relaunched.beginSession(); // the start reuses the state, and so the ring
+    view.setHistorySession(relaunched.session());
+    ring.commit(0, 8105, 5, 1754600400, 1754600404);
+    relaunched.refresh(ring.state);
+    expect("a start on the reused ring keeps its cleared calls cleared",
+           relaunched.count() == 1 && rows_in_tg_range(relaunched, 8101, 8104) == 0);
+    expect("and the session shows only the new run's call", view.count() == 1);
+}
+
+/* The clear, not the seen store, is what keeps a ring's cleared calls cleared across a relaunch: the
+ * store is written later and can lose them. A start that reuses the ring must keep that clear. A fresh
+ * ring after a later start still shows its own first calls, whose push positions the clear covered in
+ * the old ring. */
+void
+test_clear_survives_a_start_on_a_reused_ring_without_the_seen_store(void) {
+    resetStorage();
+    RingFixture ring;
+    {
+        CallHistoryModel model;
+        model.beginSession();
+        ring.commit(0, 8201, 1, 1754600000, 1754600004);
+        ring.commit(0, 8202, 2, 1754600100, 1754600104);
+        ring.commit(1, 8203, 3, 1754600200, 1754600204);
+        model.refresh(ring.state);
+        model.clearAll();
+    } // destructor flushes the stores
+    expect("seen store removed", QFile::remove(seen_store_path()));
+    CallHistoryModel relaunched;
+    CallHistoryFilterModel view;
+    view.setSourceModel(&relaunched);
+    relaunched.refresh(ring.state);
+    expect("the relaunch keeps the ring's cleared calls cleared", relaunched.count() == 0);
+    relaunched.beginSession(); // the start reuses the state, and so the ring
+    view.setHistorySession(relaunched.session());
+    ring.commit(0, 8204, 4, 1754600300, 1754600304);
+    relaunched.refresh(ring.state);
+    expect("a start on the reused ring keeps its cleared calls cleared without the seen store",
+           relaunched.count() == 1 && rows_in_tg_range(relaunched, 8201, 8203) == 0);
+    expect("and the session shows only the new run's call", view.count() == 1);
+
+    relaunched.beginSession();
+    view.setHistorySession(relaunched.session());
+    RingFixture fresh; // the next start's fresh state
+    fresh.commit(0, 8211, 11, 1754600500, 1754600504);
+    fresh.commit(0, 8212, 12, 1754600600, 1754600604);
+    fresh.commit(1, 8213, 13, 1754600700, 1754600704);
+    relaunched.refresh(fresh.state);
+    expect("a fresh ring after a start shows its own first calls", view.count() == 3 && relaunched.count() == 4);
+}
+
+/* A clear tapped after a start, before the ring's first read. When the start reused the state, the ring
+ * the model last read is the one still running, and the clear covers what that read found. Without the
+ * seen store, a relaunch must keep those calls cleared. */
+void
+test_clear_after_a_start_covers_a_reused_ring(void) {
+    resetStorage();
+    RingFixture ring;
+    {
+        CallHistoryModel model;
+        model.beginSession();
+        ring.commit(0, 8301, 1, 1754600000, 1754600004);
+        ring.commit(0, 8302, 2, 1754600100, 1754600104);
+        model.refresh(ring.state);
+        model.beginSession(); // the start reuses the state, and so the ring
+        model.clearAll();
+        ring.commit(0, 8303, 3, 1754600200, 1754600204);
+        model.refresh(ring.state);
+        expect("the reused ring's new call is logged after the clear",
+               model.count() == 1 && rows_in_tg_range(model, 8303, 8303) == 1);
+    } // destructor flushes the stores
+    expect("seen store removed", QFile::remove(seen_store_path()));
+    CallHistoryModel relaunched;
+    relaunched.refresh(ring.state);
+    expect("a relaunch keeps the calls cleared after a start cleared",
+           relaunched.count() == 1 && rows_in_tg_range(relaunched, 8301, 8302) == 0);
+}
+
+/* As above, with the Activity gone right after the start, before any read of the reused ring. The relaunched
+ * UI rejoins the new session, and the clear made in the last one must still cover the ring it was made on. */
+void
+test_clear_survives_a_relaunch_after_a_start_on_a_reused_ring(void) {
+    resetStorage();
+    RingFixture ring;
+    {
+        CallHistoryModel model;
+        model.beginSession();
+        ring.commit(0, 8901, 1, 1754600000, 1754600004);
+        ring.commit(1, 8902, 2, 1754600100, 1754600104);
+        model.refresh(ring.state);
+        model.clearAll();
+        model.beginSession(); // the start reuses the state, and so the ring
+    } // destructor flushes the stores
+    expect("seen store removed", QFile::remove(seen_store_path()));
+    CallHistoryModel relaunched;
+    CallHistoryFilterModel view;
+    view.setSourceModel(&relaunched);
+    view.setHistorySession(relaunched.session());
+    ring.commit(0, 8903, 3, 1754600200, 1754600204);
+    relaunched.refresh(ring.state);
+    expect("a relaunch after a start on the reused ring keeps its cleared calls cleared",
+           relaunched.count() == 1 && rows_in_tg_range(relaunched, 8901, 8902) == 0);
+    expect("and the session shows only the new run's call", view.count() == 1);
+}
+
+/* The monitor's recent calls select the running session's rows by the session that logged
+ * them. A replayed call shows whatever its stamps, a call from before the start does not, and
+ * a call heard again after the start joins the session through the merge. */
+void
+test_session_view_selects_by_session(void) {
+    resetStorage();
+    RingFixture ring;
+    CallHistoryModel model;
+    CallHistoryFilterModel view;
+    view.setSourceModel(&model);
+    ring.commit(0, 9001, 500, 1754505000, 1754505004);
+    ring.commit(0, 9002, 501, 1754505010, 1754505014);
+    model.refresh(ring.state);
+    model.beginSession();
+    view.setHistorySession(model.session());
+    expect("the previous session's calls are not the new session's", view.count() == 0);
+
+    // TG 9002's unit keys up again 2 s after its last call: the same conversation.
+    ring.commit(0, 9002, 501, 1754505016, 1754505020);
+    ring.commit(1, 9003, 502, kCaptureStart, kCaptureStart + 4);
+    model.refresh(ring.state);
+    expect("the merged call joins the session", model.count() == 3 && rows_in_tg_range(view, 9002, 9002) == 1);
+    expect("a replayed call shows whatever its stamps", rows_in_tg_range(view, 9003, 9003) == 1);
+    expect("and nothing else from before the start", view.count() == 2);
+    view.setHistorySession(0);
+    expect("no session selected shows the whole log", view.count() == 3);
+}
+
+/* Fill the log with @p batches x 250 live calls from one session, 125 per slot per tick. */
+void
+fill_live_session(CallHistoryModel& model, RingFixture& ring, int batches, uint32_t tg) {
+    for (int b = 0; b < batches; b++) {
+        const time_t start = 1754600000 + static_cast<time_t>(b) * 5000;
+        ring.commitBatch(0, 125, tg + static_cast<uint32_t>(b) * 250U, 1000, start);
+        ring.commitBatch(1, 125, tg + static_cast<uint32_t>(b) * 250U + 125U, 2000, start + 2500);
+        model.refresh(ring.state);
+    }
+}
+
+/* A full log (1000 rows) gives up the oldest session's calls first, not the oldest stamps. A
+ * replay's calls sort below every live one, and trimming the bottom dropped them as they landed. */
+void
+test_full_log_keeps_the_running_session(void) {
+    resetStorage();
+    auto ring = std::make_unique<RingFixture>();
+    CallHistoryModel model;
+    fill_live_session(model, *ring, 4, 10000);
+    expect("the previous session fills the log", model.count() == 1000);
+    model.beginSession();
+    ring = std::make_unique<RingFixture>();
+    ring->commit(0, 20001, 1, kCaptureStart, kCaptureStart + 4);
+    ring->commit(1, 20002, 2, kCaptureStart + 10, kCaptureStart + 14);
+    model.refresh(ring->state);
+    expect("a full log keeps the running session's calls",
+           model.count() == 1000 && rows_in_tg_range(model, 20001, 20002) == 2);
+    expect("and gives up the previous session's oldest",
+           rows_in_tg_range(model, 10000, 10001) == 0 && rows_in_tg_range(model, 10002, 10002) == 1);
+}
+
+/* The seen map keeps the newest sessions' entries, not the newest stamps. Ranked by stamps, a
+ * replay's entries went first once the map passed its bound (4096), and the ring rows they stand
+ * for came back as new calls on the next scan. */
+void
+test_seen_map_keeps_the_running_session(void) {
+    resetStorage();
+    auto ring = std::make_unique<RingFixture>();
+    CallHistoryModel model;
+    fill_live_session(model, *ring, 16, 40000);
+    model.beginSession();
+    ring = std::make_unique<RingFixture>();
+    ring->commitBatch(0, 100, 30000, 3000, kCaptureStart);
+    model.refresh(ring->state);
+    expect("the replay's calls land", rows_in_tg_range(model, 30000, 30099) == 100);
+    // The next commit on that slot makes the scan re-read its ring.
+    ring->commit(0, 30100, 3100, kCaptureStart + 2000, kCaptureStart + 2004);
+    model.refresh(ring->state);
+    expect("past the seen bound the replay's ring rows are not taken in again",
+           rows_in_tg_range(model, 30000, 30100) == 101);
+}
+
+/* The persisted seen store keeps the newest 2048 entries in the same order. Fragments a merge
+ * absorbed are known only there, so a relaunched model that lost the replay's would log each
+ * one again as a call of its own. */
+void
+test_seen_store_keeps_the_running_session(void) {
+    resetStorage();
+    auto ring = std::make_unique<RingFixture>();
+    {
+        CallHistoryModel model;
+        fill_live_session(model, *ring, 9, 50000);
+        model.clearAll();
+        model.beginSession();
+        ring = std::make_unique<RingFixture>();
+        // One replayed call in two fragments, merged into one row...
+        ring->commit(0, 31000, 777, kCaptureStart, kCaptureStart + 4);
+        model.refresh(ring->state);
+        ring->commit(0, 31000, 777, kCaptureStart + 6, kCaptureStart + 10);
+        model.refresh(ring->state);
+        expect("the fragments merge", model.count() == 1);
+        // ...then later calls from the capture push it below the rows a merge looks at.
+        ring->commitBatch(1, 40, 31001, 4000, kCaptureStart + 600);
+        model.refresh(ring->state);
+        expect("the replay is logged", model.count() == 41);
+    }
+    CallHistoryModel relaunched;
+    relaunched.refresh(ring->state);
+    expect("a relaunch does not log an absorbed fragment again",
+           relaunched.count() == 41 && rows_in_tg_range(relaunched, 31000, 31000) == 1);
+}
+
+/* One replay of a capture: two calls, the second in two fragments the merge folds together, and a
+ * data notice, committed in the ring's order. A capture replayed in a fresh state pushes exactly these
+ * rows at exactly these push stamps again. */
+void
+replay_capture(RingFixture& ring) {
+    ring.commit(0, 9301, 41, kCaptureStart, kCaptureStart + 4);
+    ring.commit(0, 9302, 42, kCaptureStart + 30, kCaptureStart + 34);
+    ring.commit(0, 9302, 42, kCaptureStart + 36, kCaptureStart + 40);
+    ring.commitNotice(1, kCaptureStart + 50, "2010-01-01 00:00:50 SMS from 42");
+}
+
+/* Logged rows whose session is @p session. */
+int
+rows_in_session(const CallHistoryModel& model, qlonglong session) {
+    int n = 0;
+    for (int i = 0; i < model.rowCount(); i++) {
+        n += model.data(model.index(i), CallHistoryModel::SessionRole).toLongLong() == session ? 1 : 0;
+    }
+    return n;
+}
+
+/* The same capture replayed in two sessions. The second replay's fresh state pushes the same rows at
+ * the same push stamps, with the same starts and targets, so it reads exactly as the first did, and at
+ * the same commit_rev. Those calls are heard again: they belong to the second session's views. The log
+ * keeps one row for each, as it does for any fragment that overlaps a logged call, and that row joins
+ * the running session. */
+void
+test_replay_heard_again_in_a_new_session(void) {
+    resetStorage();
+    CallHistoryModel model;
+    CallHistoryFilterModel view;
+    view.setSourceModel(&model);
+    auto ring = std::make_unique<RingFixture>();
+    model.beginSession();
+    replay_capture(*ring);
+    model.refresh(ring->state);
+    view.setHistorySession(model.session());
+    expect("the first replay logs two calls and a notice", model.count() == 3 && view.count() == 3);
+
+    model.beginSession();
+    view.setHistorySession(model.session());
+    ring = std::make_unique<RingFixture>(); // the next start's fresh state
+    replay_capture(*ring);
+    model.refresh(ring->state);
+    expect("a replayed capture's calls show in the next session's views", view.count() == 3);
+    expect("the log keeps one row per call and notice", model.count() == 3);
+    expect("each logged row joins the session that heard it again", rows_in_session(model, model.session()) == 3);
+    expect("the calls are the replay's",
+           rows_in_tg_range(view, 9301, 9301) == 1 && rows_in_tg_range(view, 9302, 9302) == 1);
+
+    // Read again in the same ring, they are no new sighting.
+    ring->touchCommitted(0);
+    model.refresh(ring->state);
+    expect("rereading the ring changes nothing", model.count() == 3 && view.count() == 3);
+}
+
+/* Clear, then the same capture replayed in the next session: the calls show again, in the log and in
+ * the session's views, although the seen map still holds the cleared ring's keys. */
+void
+test_replay_heard_again_after_a_clear(void) {
+    resetStorage();
+    CallHistoryModel model;
+    CallHistoryFilterModel view;
+    view.setSourceModel(&model);
+    auto ring = std::make_unique<RingFixture>();
+    model.beginSession();
+    replay_capture(*ring);
+    model.refresh(ring->state);
+    model.clearAll();
+    expect("the clear empties the log", model.count() == 0);
+
+    model.beginSession();
+    view.setHistorySession(model.session());
+    ring = std::make_unique<RingFixture>();
+    replay_capture(*ring);
+    model.refresh(ring->state);
+    expect("the replayed calls are logged again after a clear", model.count() == 3);
+    expect("and show in the session's views", view.count() == 3);
+
+    // A relaunched UI reattaching to that ring logs nothing twice.
+    CallHistoryModel relaunched;
+    relaunched.refresh(ring->state);
+    expect("a relaunch reading the same ring logs nothing twice", relaunched.count() == 3);
+}
+
+/* An embedding host can run again on the state its last run used (the Android service reuses it when
+ * a start races the previous run's stopSelfLatest()). That ring keeps its identity and the rows the
+ * last run pushed, and goes on counting its pushes. Its old rows are the last session's, read again;
+ * only what the new run pushes is the new session's. Across a relaunch too, so the ring a seen entry
+ * was read from has to survive the seen store. */
+void
+test_reused_ring_keeps_the_last_sessions_rows(void) {
+    resetStorage();
+    RingFixture ring;
+    {
+        CallHistoryModel model;
+        model.beginSession();
+        replay_capture(ring);
+        model.refresh(ring.state);
+        expect("the first run's calls are logged", model.count() == 3);
+    } // destructor flushes the stores
+    CallHistoryModel relaunched;
+    CallHistoryFilterModel view;
+    view.setSourceModel(&relaunched);
+    relaunched.beginSession();
+    view.setHistorySession(relaunched.session());
+    ring.commit(0, 9401, 43, kCaptureStart + 600, kCaptureStart + 604);
+    relaunched.refresh(ring.state);
+    expect("the reused ring's new call is logged", relaunched.count() == 4);
+    expect("and only it is the new session's", view.count() == 1 && rows_in_tg_range(view, 9401, 9401) == 1);
+}
+
+/* Two identical notices in one second (the same SMS delivered twice) are two rows. Replayed again,
+ * both are heard again, and each promotes a twin of its own, so the new session shows both. */
+void
+test_identical_notices_heard_again_both_join_the_session(void) {
+    resetStorage();
+    CallHistoryModel model;
+    CallHistoryFilterModel view;
+    view.setSourceModel(&model);
+    auto ring = std::make_unique<RingFixture>();
+    model.beginSession();
+    ring->commitNotice(1, kCaptureStart + 70, "2010-01-01 00:01:10 SMS from 44");
+    ring->commitNotice(1, kCaptureStart + 70, "2010-01-01 00:01:10 SMS from 44");
+    model.refresh(ring->state);
+    expect("two identical notices log two rows", model.count() == 2);
+
+    model.beginSession();
+    view.setHistorySession(model.session());
+    ring = std::make_unique<RingFixture>();
+    ring->commitNotice(1, kCaptureStart + 70, "2010-01-01 00:01:10 SMS from 44");
+    ring->commitNotice(1, kCaptureStart + 70, "2010-01-01 00:01:10 SMS from 44");
+    model.refresh(ring->state);
+    expect("both identical notices heard again show in the new session", view.count() == 2);
+    expect("and the log keeps two rows", model.count() == 2);
+
+    // Read in two ticks, the second notice still finds the twin the first one left.
+    model.beginSession();
+    view.setHistorySession(model.session());
+    ring = std::make_unique<RingFixture>();
+    ring->commitNotice(1, kCaptureStart + 70, "2010-01-01 00:01:10 SMS from 44");
+    model.refresh(ring->state);
+    ring->commitNotice(1, kCaptureStart + 70, "2010-01-01 00:01:10 SMS from 44");
+    model.refresh(ring->state);
+    expect("both show when read in two ticks", view.count() == 2 && model.count() == 2);
+}
+
+/* The same two identical notices replayed again, with the UI relaunched between the two deliveries (an
+ * Activity restart while the service decodes). The relaunched model must still know which twin the first
+ * delivery took, or the second takes it again and the other logged notice never joins the session. */
+void
+test_identical_notices_heard_again_across_a_relaunch(void) {
+    resetStorage();
+    auto ring = std::make_unique<RingFixture>();
+    {
+        CallHistoryModel model;
+        model.beginSession();
+        ring->commitNotice(1, kCaptureStart + 70, "2010-01-01 00:01:10 SMS from 44");
+        ring->commitNotice(1, kCaptureStart + 70, "2010-01-01 00:01:10 SMS from 44");
+        model.refresh(ring->state);
+        expect("two identical notices log two rows", model.count() == 2);
+
+        model.beginSession();
+        ring = std::make_unique<RingFixture>();
+        ring->commitNotice(1, kCaptureStart + 70, "2010-01-01 00:01:10 SMS from 44");
+        model.refresh(ring->state);
+        expect("the first delivery heard again joins the session", rows_in_session(model, model.session()) == 1);
+    } // destructor flushes the stores
+    CallHistoryModel relaunched;
+    CallHistoryFilterModel view;
+    view.setSourceModel(&relaunched);
+    view.setHistorySession(relaunched.session());
+    relaunched.refresh(ring->state);
+    expect("the reattached ring's first delivery logs nothing new", relaunched.count() == 2 && view.count() == 1);
+    ring->commitNotice(1, kCaptureStart + 70, "2010-01-01 00:01:10 SMS from 44");
+    relaunched.refresh(ring->state);
+    expect("both identical notices heard again show in the session across a relaunch", view.count() == 2);
+    expect("and the log keeps two rows across a relaunch", relaunched.count() == 2);
+}
+
+/* A new ring within one session, with no start between (a state set up again without a start): its rows
+ * repeat the session's own. A notice heard again that way finds its twin already in the session and
+ * logs nothing new, as a call heard again does. */
+void
+test_new_ring_within_a_session_logs_nothing_twice(void) {
+    resetStorage();
+    CallHistoryModel model;
+    CallHistoryFilterModel view;
+    view.setSourceModel(&model);
+    auto ring = std::make_unique<RingFixture>();
+    model.beginSession();
+    view.setHistorySession(model.session());
+    replay_capture(*ring);
+    ring->commitNotice(1, kCaptureStart + 70, "2010-01-01 00:01:10 SMS from 44");
+    ring->commitNotice(1, kCaptureStart + 70, "2010-01-01 00:01:10 SMS from 44");
+    model.refresh(ring->state);
+    expect("the session logs two calls and three notices", model.count() == 5 && view.count() == 5);
+
+    ring = std::make_unique<RingFixture>(); // a new ring, no beginSession()
+    replay_capture(*ring);
+    ring->commitNotice(1, kCaptureStart + 70, "2010-01-01 00:01:10 SMS from 44");
+    ring->commitNotice(1, kCaptureStart + 70, "2010-01-01 00:01:10 SMS from 44");
+    model.refresh(ring->state);
+    expect("a new ring in the same session logs no duplicate", model.count() == 5 && view.count() == 5);
+}
+
+/* A row's seed in load() knows no ring. When the seen store has lost the row's entry, a relaunched
+ * UI reading the state's ring again (a reused state, after a start) must leave the row in the session
+ * that logged it: only what the new run pushes is the new session's. */
+void
+test_seed_without_a_ring_keeps_its_session(void) {
+    resetStorage();
+    RingFixture ring;
+    {
+        CallHistoryModel model;
+        model.beginSession();
+        ring.commit(0, 9501, 51, kCaptureStart, kCaptureStart + 4);
+        ring.commit(0, 9502, 52, kCaptureStart + 30, kCaptureStart + 34);
+        model.refresh(ring.state);
+        expect("the first run's calls are logged", model.count() == 2);
+    } // destructor flushes the stores
+    expect("seen store removed", QFile::remove(seen_store_path()));
+    CallHistoryModel relaunched;
+    CallHistoryFilterModel view;
+    view.setSourceModel(&relaunched);
+    relaunched.beginSession();
+    view.setHistorySession(relaunched.session());
+    ring.commit(0, 9503, 53, kCaptureStart + 600, kCaptureStart + 604);
+    relaunched.refresh(ring.state);
+    expect("the reused ring's new call is logged", relaunched.count() == 3);
+    expect("and only it is the new session's", view.count() == 1 && rows_in_tg_range(view, 9503, 9503) == 1);
+}
+
+/* The first logged row whose talkgroup is @p tg, or -1. */
+int
+row_with_tg(const CallHistoryModel& model, qulonglong tg) {
+    for (int i = 0; i < model.rowCount(); i++) {
+        if (model.data(model.index(i), CallHistoryModel::TgRole).toULongLong() == tg) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+/* A replayed call heard again folds into its logged row wherever that sits, here under 40 newer live rows,
+ * past the newest 32 a live fragment searches. The ring then enriches the call in place (it runs longer, and
+ * turns out encrypted). That update belongs to the same row and must reach it, as the sighting did, also
+ * when the UI was relaunched between the two. */
+void
+test_update_of_a_call_heard_again_reaches_its_row(void) {
+    for (int relaunch = 0; relaunch < 2; relaunch++) {
+        resetStorage();
+        auto model = std::make_unique<CallHistoryModel>();
+        auto ring = std::make_unique<RingFixture>();
+        model->beginSession();
+        ring->commit(0, 9601, 61, kCaptureStart, kCaptureStart + 4);
+        ring->commitBatch(0, 40, 9700, 1000, 1754600000);
+        model->refresh(ring->state);
+        expect("the capture's call and 40 newer live calls are logged",
+               model->count() == 41 && row_with_tg(*model, 9601) == 40);
+
+        model->beginSession();
+        const qlonglong session = model->session();
+        ring = std::make_unique<RingFixture>(); // the capture replayed in the next start's fresh state
+        Event_History* call = ring->commit(0, 9601, 61, kCaptureStart, kCaptureStart + 4);
+        model->refresh(ring->state);
+        int row = row_with_tg(*model, 9601);
+        expect("the call heard again folds into its logged row under the newer ones",
+               model->count() == 41 && row == 40
+                   && model->data(model->index(row), CallHistoryModel::SessionRole).toLongLong() == session);
+
+        if (relaunch != 0) {
+            model.reset(); // destructor flushes the stores
+            model = std::make_unique<CallHistoryModel>();
+            model->refresh(ring->state);
+            expect("a relaunch reading the same ring logs nothing new", model->count() == 41);
+        }
+        call->event_time = kCaptureStart + 9;
+        call->enc = 1U;
+        ring->touchCommitted(0);
+        model->refresh(ring->state);
+        row = row_with_tg(*model, 9601);
+        expect(relaunch != 0 ? "after a relaunch, the call's enrichment reaches its row"
+                             : "the call's enrichment reaches its row",
+               model->count() == 41 && row >= 0
+                   && model->data(model->index(row), CallHistoryModel::DurationSecsRole).toInt() == 9
+                   && model->data(model->index(row), CallHistoryModel::EncRole).toBool());
+    }
+}
+
+/* An old capture replayed for the first time sorts by the capture's stamps, below every newer live row, here
+ * 40 of them, past the newest 32 a first sighting searches. That is where its call is logged. The ring then
+ * enriches the call in place (it runs longer, learns its source, turns out encrypted), and the update must
+ * reach that row, as an update of a live row reaches its own, also after a relaunch between the two. */
+void
+test_update_of_a_replayed_call_under_newer_rows_reaches_its_row(void) {
+    for (int relaunch = 0; relaunch < 2; relaunch++) {
+        resetStorage();
+        auto model = std::make_unique<CallHistoryModel>();
+        RingFixture live;
+        model->beginSession();
+        live.commitBatch(0, 40, 9700, 1000, 1754600000);
+        model->refresh(live.state);
+        model->beginSession();
+        RingFixture capture; // the replay's fresh state
+        Event_History* call = capture.commit(0, 9801, 0, kCaptureStart, kCaptureStart + 4);
+        model->refresh(capture.state);
+        expect("a replayed call is logged below the 40 newer live calls",
+               model->count() == 41 && row_with_tg(*model, 9801) == 40);
+
+        if (relaunch != 0) {
+            model.reset(); // destructor flushes the stores
+            model = std::make_unique<CallHistoryModel>();
+            model->refresh(capture.state);
+            expect("a relaunch reading the replay's ring logs nothing new", model->count() == 41);
+        }
+        call->event_time = kCaptureStart + 9;
+        call->source_id = 71;
+        call->enc = 1U;
+        capture.touchCommitted(0);
+        model->refresh(capture.state);
+        const int row = row_with_tg(*model, 9801);
+        expect(relaunch != 0 ? "after a relaunch, the replayed call's enrichment reaches its row"
+                             : "the replayed call's enrichment reaches its row",
+               model->count() == 41 && row >= 0
+                   && model->data(model->index(row), CallHistoryModel::DurationSecsRole).toInt() == 9
+                   && model->data(model->index(row), CallHistoryModel::SrcRole).toULongLong() == 71U
+                   && model->data(model->index(row), CallHistoryModel::EncRole).toBool());
+    }
+}
+
+/* The control: an update of a live call still lands on that call's row, the newest one it merges with, and
+ * not on an older row of the same talkgroup and source further down that it would also merge with. Here that
+ * older row is a long call that spans the newer one, with 40 other calls between them in the log. */
+void
+test_update_of_a_live_call_keeps_landing_on_its_row(void) {
+    resetStorage();
+    RingFixture ring;
+    CallHistoryModel model;
+    model.beginSession();
+    ring.commit(0, 9901, 81, 1754700000, 1754700200); // a 200 s call
+    model.refresh(ring.state);
+    for (uint32_t i = 0; i < 40; i++) {
+        ring.commit(1, 9910 + i, 82 + i, 1754700001 + i, 1754700003 + i);
+    }
+    model.refresh(ring.state);
+    Event_History* call = ring.commit(0, 9901, 81, 1754700100, 1754700104);
+    model.refresh(ring.state);
+    expect("the later call of the same talkgroup is a row of its own above the long one",
+           model.count() == 42 && rows_in_tg_range(model, 9901, 9901) == 2 && row_with_tg(model, 9901) == 0);
+
+    call->event_time = 1754700110;
+    call->enc = 1U;
+    ring.touchCommitted(0);
+    model.refresh(ring.state);
+    const int top = row_with_tg(model, 9901);
+    int older = -1;
+    for (int i = top + 1; i < model.rowCount(); i++) {
+        if (model.data(model.index(i), CallHistoryModel::TgRole).toULongLong() == 9901U) {
+            older = i;
+        }
+    }
+    expect("the live update lands on its own row",
+           model.count() == 42 && top == 0
+               && model.data(model.index(top), CallHistoryModel::DurationSecsRole).toInt() == 10
+               && model.data(model.index(top), CallHistoryModel::EncRole).toBool());
+    expect("and leaves the older row of the same talkgroup alone",
+           older > top && model.data(model.index(older), CallHistoryModel::DurationSecsRole).toInt() == 200
+               && !model.data(model.index(older), CallHistoryModel::EncRole).toBool());
+}
+
 } // namespace
 
 int
@@ -638,6 +1506,31 @@ main(int argc, char** argv) {
     test_reacquisition_merge_updates_in_place();
     test_ring_walk_gated_on_commit_rev();
     test_relaunch_does_not_reingest();
+    test_clear_shows_later_calls_whatever_their_stamps();
+    test_clear_survives_a_relaunch();
+    test_legacy_clear_watermark_is_retired();
+    test_new_session_starts_fresh();
+    test_clear_is_bound_to_its_ring();
+    test_clear_without_a_ring_hides_nothing();
+    test_clear_after_a_quiet_start_keeps_the_next_call();
+    test_pending_clear_survives_a_start_on_a_reused_ring();
+    test_clear_survives_a_start_on_a_reused_ring_without_the_seen_store();
+    test_clear_after_a_start_covers_a_reused_ring();
+    test_clear_survives_a_relaunch_after_a_start_on_a_reused_ring();
+    test_session_view_selects_by_session();
+    test_full_log_keeps_the_running_session();
+    test_seen_map_keeps_the_running_session();
+    test_seen_store_keeps_the_running_session();
+    test_replay_heard_again_in_a_new_session();
+    test_replay_heard_again_after_a_clear();
+    test_reused_ring_keeps_the_last_sessions_rows();
+    test_identical_notices_heard_again_both_join_the_session();
+    test_identical_notices_heard_again_across_a_relaunch();
+    test_new_ring_within_a_session_logs_nothing_twice();
+    test_seed_without_a_ring_keeps_its_session();
+    test_update_of_a_call_heard_again_reaches_its_row();
+    test_update_of_a_replayed_call_under_newer_rows_reaches_its_row();
+    test_update_of_a_live_call_keeps_landing_on_its_row();
 
     QDir(dataDir).removeRecursively();
     if (g_failures != 0) {

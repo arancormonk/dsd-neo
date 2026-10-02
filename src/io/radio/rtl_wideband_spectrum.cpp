@@ -31,7 +31,7 @@
 #include <atomic>
 #include <dsd-neo/core/wideband_spectrum.h>
 #include <dsd-neo/io/rtl_stream_c.h>
-#include <dsd-neo/platform/timing.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <stdint.h>
 
 #include "rtl_fft_cache.h"
@@ -148,7 +148,7 @@ rtl_wideband_spectrum_maybe_update(const float* iq_interleaved, int len_interlea
         return;
     }
 
-    const uint64_t now_ns = dsd_time_monotonic_ns();
+    const uint64_t now_ns = dsd_realtime_mono_ns();
     if (g_wb_last_publish_ns != 0 && (now_ns - g_wb_last_publish_ns) < kWbSpecMinPeriodNs) {
         return;
     }

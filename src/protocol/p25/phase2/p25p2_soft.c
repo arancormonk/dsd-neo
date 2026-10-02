@@ -9,8 +9,8 @@
 
 #include <dsd-neo/protocol/p25/p25p2_soft.h>
 #include <dsd-neo/runtime/config.h>
+#include <stddef.h>
 #include <stdint.h>
-#include <stdio.h>
 
 /* Import LLR buffers from p25p2_frame.c */
 extern int16_t p2llr[1400];

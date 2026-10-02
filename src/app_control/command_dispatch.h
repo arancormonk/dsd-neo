@@ -26,8 +26,8 @@ extern "C" {
  * exact size of a larger structured payload. Every byte is repeated in 128 slots. */
 enum {
     DSD_APP_CMD_STRUCT_DATA_MAX = sizeof(dsdneoUserConfig) > sizeof(dsd_app_rr_apply_payload)
-                                      ? sizeof(dsdneoUserConfig)
-                                      : sizeof(dsd_app_rr_apply_payload),
+        ? sizeof(dsdneoUserConfig)
+        : sizeof(dsd_app_rr_apply_payload),
     DSD_APP_CMD_DISPATCH_DATA_MAX = DSD_APP_CMD_STRUCT_DATA_MAX > 16384 ? DSD_APP_CMD_STRUCT_DATA_MAX : 16384
 };
 

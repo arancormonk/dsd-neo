@@ -13,13 +13,13 @@
  */
 
 #include <dsd-neo/core/call_state.h>
-#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/p25/p25_crypto.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -305,7 +305,7 @@ test_stale_same_key_ess_opens_conventional_call(void) {
     const uint64_t ended_epoch = slot0_epoch();
     rc |= expect("stale fixture lockout recorded", g_state.p25_p1_lockout_epoch.valid != 0U);
 
-    g_state.p25_p1_lockout_epoch.recorded_m = dsd_time_now_monotonic_s() - 1.1;
+    g_state.p25_p1_lockout_epoch.recorded_m = dsd_decode_now_mono_s() - 1.1;
     (void)p25_crypto_resolve(&g_opts, &g_state, DSD_P25_CRYPTO_PHASE1, 0, TEST_ALGID, TEST_KEYID, 0x7777ULL, TEST_TG);
 
     dsd_call_snapshot call;
@@ -336,7 +336,7 @@ test_lockout_ess_window_slides_with_repeats(void) {
     // Four repeats, each 0.9 s after the previous one. Total elapsed since the
     // lockout is 3.6 s, far past the 1.0 s window, yet no gap ever exceeds it.
     for (int i = 0; i < 4; i++) {
-        g_state.p25_p1_lockout_epoch.recorded_m = dsd_time_now_monotonic_s() - 0.9;
+        g_state.p25_p1_lockout_epoch.recorded_m = dsd_decode_now_mono_s() - 0.9;
         (void)p25_crypto_resolve(&g_opts, &g_state, DSD_P25_CRYPTO_PHASE1, 0, TEST_ALGID, TEST_KEYID,
                                  0x2000ULL + (unsigned long long)i, TEST_TG);
         event_ticks();
