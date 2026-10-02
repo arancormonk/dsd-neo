@@ -382,6 +382,12 @@ rules:
           - metavariable-regex:
               metavariable: $MODE
               regex: '^"[wa]'
+          # The null device already exists, so silencing a stream with it creates
+          # nothing. Semgrep 1.179.0 started parsing both arms of the #if that
+          # picks "NUL" or "/dev/null", which surfaced these.
+          - metavariable-regex:
+              metavariable: $PATH
+              regex: '^(?!"(/dev/null|NUL)"$)'
       - pattern: creat(...)
       - pattern: mktemp(...)
       - pattern: tmpnam(...)
