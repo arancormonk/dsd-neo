@@ -95,7 +95,8 @@ Notes:
 - `frequency_hz` must be between 100000 (100 kHz) and 6000000000 (6 GHz) — the range any supported front end can
   reach. A row outside it (including `0`) is skipped with a warning, and its slot in the LCN list below is left at 0 so
   later rows keep their LCN numbers. This is what tells a channel map apart from a decimal key list, which has the same
-  `number,number` shape.
+  `number,number` shape. On Windows, where the value is read into a 32-bit `long`, the ceiling is 2147483647
+  (about 2.147 GHz).
 - Optional headers after the two required columns are matched case-insensitively, with surrounding whitespace
   trimmed: `name`, `mode`, `keys_hex_csv`, `keys_dec_csv`, `single_key_hex`, `single_key_dec`, and `options` (`relevant_CLI_switches`). They may appear in
   any order, including after column 16. Unrecognized columns are ignored. The first `name` column wins; duplicate
@@ -482,7 +483,7 @@ Columns:
 |--------|----------|----------|
 | `id` | Yes | Unique short name shown in the terminal status row and Call Info, as the `[id]` prefix on event-history rows, `-J` log lines and the rdio `talkgroup_tag` fallback, and in log messages. Empty or too-long IDs are rejected. |
 | `type` | Yes | One of `p25-trunk`, `p25-conventional`, `dmr-trunk`, `dmr-conventional`, `nxdn-trunk` (NXDN96, 12.5 kHz), `nxdn48-trunk` (NXDN48, 6.25 kHz), `nxdn-conventional` (NXDN96, 12.5 kHz), `nxdn48-conventional` (NXDN48, 6.25 kHz), `nfm-conventional` (one analog NFM channel) or `am-conventional` (one analog AM channel); see [Analog rows](#analog-rows). Exact case. |
-| `frequency_hz` | Yes | Decimal Hz only. Normal 64-bit builds accept `1..4294967295`; 32-bit builds may reject values above `LONG_MAX`. Do not use `K`/`M`/`G` suffixes in CSV. |
+| `frequency_hz` | Yes | Decimal Hz only. Builds with a 64-bit `long` (Linux, macOS, Android) accept `1..4294967295`; Windows builds, whose `long` is 32-bit, and other 32-bit targets reject values above `LONG_MAX` (2147483647). Do not use `K`/`M`/`G` suffixes in CSV. |
 | `chan_csv` | No | Optional channel-map path for trunk targets (`p25-trunk`, `dmr-trunk`, `nxdn-trunk`, `nxdn48-trunk`). Paths are resolved relative to this CSV. Leave empty for conventional DMR, P25, both conventional NXDN types and the analog types. |
 | `dwell_ms` | No | Per-target idle dwell (`250..600000`). Empty uses `--trunk-scan-dwell-ms` or `[trunk_scan] idle_dwell_ms`. |
 | `activity_hold_ms` | No | Per-target conventional DMR/P25/NXDN (NXDN96 and NXDN48) activity hold (`250..600000`), and an analog target's hold after its carrier drops. Empty uses `--trunk-scan-activity-hold-ms` or `[trunk_scan] activity_hold_ms`. P25 holds from allowed voice starts, not PDU data; `-e` has no effect on P25 conventional holds. |

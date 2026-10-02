@@ -480,8 +480,10 @@ csvGroupImport(const dsd_opts* opts, dsd_state* state) {
  * low end sits under any HF-capable SoapySDR device, the high end above the
  * 6 GHz ceiling of the widest-tuning ones (LimeSDR, B210, HackRF). It is not a
  * band plan -- it only rejects numbers that cannot be radio frequencies at all,
- * including the 0 a blank column parses to. Long is 32-bit on the MSVC presets,
- * so the comparison is done in long long or the upper bound would not fit.
+ * including the 0 a blank column parses to. The value is parsed into a long,
+ * which is 32-bit on Windows: there a row above LONG_MAX (about 2.147 GHz)
+ * already fails the parse and is skipped, and the comparison is done in long
+ * long because the upper bound itself does not fit.
  */
 #define CSV_CHAN_FREQ_MIN_HZ 100000LL
 #define CSV_CHAN_FREQ_MAX_HZ 6000000000LL
