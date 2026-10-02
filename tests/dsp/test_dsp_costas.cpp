@@ -1217,6 +1217,7 @@ test_fll_band_edge_redesigns_inconsistent_delay_line(void) {
         {"delay index at the tap count", 11, 11},
         {"no taps", 0, 0},
         {"negative delay index", 11, -1},
+        {"tap count above the delay line", 49, 0},
     };
 
     for (const auto& c : cases) {

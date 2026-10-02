@@ -674,6 +674,8 @@ fll_configure_loop_params(dsd_fll_band_edge_state_t* f, int sps) {
 
 static inline void
 fll_reinit_state(const demod_state* d, dsd_fll_band_edge_state_t* f, int sps, int is_first_init) {
+    /* Read before the redesign overwrites the state: it names the trigger in the debug log. */
+    const int inconsistent = !is_first_init && !fll_delay_line_consistent(f);
     const float excess_bw = 0.2f;
     const int filter_size = 2 * sps + 1;
     fll_band_edge_design_filter(f, sps, excess_bw, filter_size);
@@ -691,6 +693,9 @@ fll_reinit_state(const demod_state* d, dsd_fll_band_edge_state_t* f, int sps, in
         const float freq_hz = f->freq * (sample_rate / kTwoPi);
         if (is_first_init) {
             DSD_FPRINTF(stderr, "[FLL] init: sps=%d filter_size=%d loop_bw=%.6f\n", sps, filter_size, f->loop_bw);
+        } else if (inconsistent) {
+            DSD_FPRINTF(stderr, "[FLL] inconsistent_state: sps=%d filter_size=%d freq=%.1fHz (preserved)\n", sps,
+                        filter_size, freq_hz);
         } else {
             DSD_FPRINTF(stderr, "[FLL] sps_change: sps=%d filter_size=%d freq=%.1fHz (preserved)\n", sps, filter_size,
                         freq_hz);
