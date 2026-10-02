@@ -52,12 +52,15 @@
  * assume of them. */
 #define DSD_DEMOD_BUF_ALIGN      64
 
+/* Floats in one DSD_DEMOD_BUF_ALIGN-byte block, as an int so the capacities below round in the int arithmetic they are
+ * written in. */
+#define DSD_DEMOD_BLOCK_FLOATS   (DSD_DEMOD_BUF_ALIGN / (int)sizeof(float))
+
 /* The floats an aligned buffer of n floats is declared with: n rounded up to whole DSD_DEMOD_BUF_ALIGN-byte blocks, so
  * the buffer ends where the next one's alignment starts and the struct needs no padding between them. The capacity is
  * still n; the spare tail past it is never read. */
 #define DSD_DEMOD_ALIGNED_FLOATS(n)                                                                                    \
-    ((((n) + DSD_DEMOD_BUF_ALIGN / sizeof(float) - 1) / (DSD_DEMOD_BUF_ALIGN / sizeof(float)))                         \
-     * (DSD_DEMOD_BUF_ALIGN / sizeof(float)))
+    ((((n) + DSD_DEMOD_BLOCK_FLOATS - 1) / DSD_DEMOD_BLOCK_FLOATS) * DSD_DEMOD_BLOCK_FLOATS)
 
 /* Channel LPF profile ids */
 enum DSD_ATTR_PACKED {
