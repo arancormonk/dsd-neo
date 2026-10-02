@@ -23,6 +23,20 @@ else()
     target_compile_options(dsd-neo_test_assertions INTERFACE -UNDEBUG)
 endif()
 
+# A Debug-CRT assertion or abort() opens a modal dialog on Windows, and a test
+# that hits one waits for a click until CTest's timeout. Every MSVC test
+# executable reports them on stderr instead; see test_support/win_crt_report.c.
+# Executables only: link_libraries() below also reaches the test support
+# libraries, and a second copy of the initializer there would be a duplicate
+# definition in every executable that links one.
+if(MSVC)
+    target_sources(
+        dsd-neo_test_assertions
+        INTERFACE
+            "$<$<STREQUAL:$<TARGET_PROPERTY:TYPE>,EXECUTABLE>:${CMAKE_CURRENT_SOURCE_DIR}/test_support/win_crt_report.c>"
+    )
+endif()
+
 link_libraries(dsd-neo_warnings dsd-neo_test_assertions)
 
 add_library(dsd-neo_test_support INTERFACE)
