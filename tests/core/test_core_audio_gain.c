@@ -455,6 +455,18 @@ test_manual_and_float_autogain_helpers(void) {
     rc |= expect_int_eq("analog gain short negative", short_samples[1], -400);
     rc |= expect_int_eq("analog gain short zero", short_samples[2], 0);
 
+    /* The default 50% is 2.5x, so any sample past +/-13107 leaves the int16 range; it must
+       saturate like agsm() does, not wrap through an out-of-range conversion. */
+    opts.audio_gainA = 50.0f;
+    short loud_samples[6] = {20000, -20000, 13107, 13108, -13108, 32767};
+    analog_gain(&opts, &state, loud_samples, 6);
+    rc |= expect_int_eq("analog gain saturates positive", loud_samples[0], 32767);
+    rc |= expect_int_eq("analog gain saturates negative", loud_samples[1], -32768);
+    rc |= expect_int_eq("analog gain largest in range", loud_samples[2], 32767);
+    rc |= expect_int_eq("analog gain first past the top", loud_samples[3], 32767);
+    rc |= expect_int_eq("analog gain first past the bottom", loud_samples[4], -32768);
+    rc |= expect_int_eq("analog gain full scale", loud_samples[5], 32767);
+
     opts.audio_gainA = 50.0f;
     opts.audio_in_type = AUDIO_IN_RTL;
     float rtl_samples[2] = {0.1f, -0.2f};
