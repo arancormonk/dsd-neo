@@ -1429,7 +1429,8 @@ each platform a release ships for:
 |---|---|---|
 | `backend-matrix (both, arm64)` | `dev-debug`, native arm64 runner | the aarch64 AppImage; unsigned `char`; the NEON SIMD paths |
 | `android shape (arm64, headless, forced radio pipeline)` | the Android option set on arm64 | the Android ABI's instruction set (not Bionic) |
-| `Linux • RelWithDebInfo • ctest (x86-64-v3, fast-math)` | `perf-bench` with `-march=x86-64-v3` | optimized, fast-math code generation like the shipped builds, with AVX2/FMA |
+| `Linux • RelWithDebInfo • ctest (x86-64-v3, fast-math)` | `perf-bench` with `-march=x86-64-v3`, GCC | optimized, fast-math code generation like the shipped builds, with AVX2/FMA |
+| `Linux • RelWithDebInfo • ctest (x86-64-v3, fast-math, clang)` | the same with Clang | the macOS release toolchain's fast-math code generation; `-Wnan-infinity-disabled` makes a NaN or infinity test left in fast-math code a build error (see "Fast-math and non-finite values" in `docs/code_map.md`) |
 | `macOS • Debug • ctest (arm64)` | `dev-debug`, AppleClang | the DMG; libc++, ld64 and BSD libc |
 | `Windows • Debug • ctest (MSVC x64)` | `win-msvc-debug` with Ninja | the ZIP; MSVC, the debug CRT and 32-bit `long` |
 

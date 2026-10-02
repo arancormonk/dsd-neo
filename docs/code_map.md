@@ -474,7 +474,38 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
     elsewhere; `none` → `audio_null.c` discard/silence backend; `aaudio` → Android). Exactly one
     backend translation unit is compiled per build; the shared last-error store lives in
     `src/platform/audio_error_internal.h`
+  - Fast-math-proof value checks: `dsd_fp_opaque_f()`/`dsd_fp_opaque_d()` in
+    `include/dsd-neo/platform/fp_opaque.h` hide a value's origin from the optimizer (a round trip through a volatile
+    object, one store and one load) before an IEEE translation unit tests it for NaN or infinity, so Clang's link-time
+    inlining into a fast-math caller cannot fold the test away. See "Fast-math and non-finite values" below.
 - Build files: `src/platform/CMakeLists.txt`
+
+### Fast-math and non-finite values
+
+The release presets build with `DSD_ENABLE_FAST_MATH` (`-ffast-math`, `/fp:fast` on MSVC), which lets the compiler
+assume no value is NaN or infinite: `std::isnan()`, `std::isfinite()`, `x != x` and NaN-catching comparisons fold to
+constants, and Clang also folds an integer bit test on a float it computed or received as an argument. A global
+`-fno-finite-math-only` measured a 3.4% DSP slowdown, so the rule is per site:
+
+- Code that must reject NaN or infinity and is not on a per-sample path (configuration and CLI parsing, device control,
+  per-block metrics, the terminal and Qt UIs) is built with IEEE semantics: `set_source_files_properties(... PROPERTIES
+  COMPILE_OPTIONS "-fno-fast-math")` with an `elseif(MSVC)` `/fp:precise` branch, as in `src/runtime/CMakeLists.txt`.
+  A source compiled directly into a test from `tests/CMakeLists.txt` does not inherit that directory-scoped property.
+- A hot file keeps fast-math and moves its check into a small IEEE translation unit called off the per-sample path
+  (`frames/dsd_dibit_reliability.c`, `io/radio/rtl_finite.cpp`); a by-value argument goes through `dsd_fp_opaque_*()`
+  first.
+- Per-sample loops validate on bits loaded from memory, which no floating-point assumption reaches: external float
+  samples are sanitized where they enter -- SoapySDR CF32 reads and cf32 replays through `bound_cf32_to_f32()` and
+  `bound_rotate90_cf32_to_f32_phase()` (`include/dsd-neo/dsp/simd_widen.h`, SIMD with runtime AVX2 dispatch), which
+  turn any component that is NaN, infinite or at least 2^60 into 0, and soft symbol files in `src/dsp/dsd_symbol.c` --
+  and the Costas and Gardner loops check each sample where they load it (`src/dsp/costas.cpp`).
+- Arithmetic whose exact rounding is a contract keeps it explicitly: the decode clock's `ns / 1e9` (`decode_clock.c`
+  is IEEE), and the fallback decimator's block-split-invariant running sum (`#pragma clang fp reassociate(off)`).
+- Tests that feed NaN or infinity, or check results with `std::isnan()`, compile their own sources with IEEE
+  semantics (the block near the top of `tests/CMakeLists.txt`), leaving the code under test on the build's flags.
+
+The `Linux • RelWithDebInfo • ctest (x86-64-v3, fast-math, clang)` check enforces the first point: with `-Werror`, Clang's
+`-Wnan-infinity-disabled` makes any NaN or infinity test left in fast-math code a build error.
 
 ## Core
 
