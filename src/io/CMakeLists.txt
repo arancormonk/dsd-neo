@@ -28,6 +28,7 @@ if(DSD_HAS_RADIO)
             radio/rtl_auto_ppm.cpp
             radio/rtl_device.cpp
             radio/rtl_demod_config.cpp
+            radio/rtl_finite.cpp
             radio/rtl_metrics.cpp
             radio/rtl_perf.cpp
             radio/rtl_stream.cpp
@@ -60,6 +61,28 @@ if(DSD_HAS_RADIO)
     )
 
     target_link_libraries(dsd-neo_io_radio PRIVATE dsd-neo_warnings)
+
+    # Soapy setting validation rejects NaN and infinite numbers once per setting;
+    # keep IEEE semantics there even when the global fast-math option is on.
+    # The auto-PPM controller and rtl_finite.cpp (the out-of-line isfinite()
+    # behind the cold checks in rtl_device.cpp, rtl_metrics.cpp and
+    # rtl_sdr_fm.cpp, which keep fast-math for their sample loops) do the same;
+    # none of them runs per sample.
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        set_source_files_properties(
+            radio/soapy_profile.cpp
+            radio/rtl_auto_ppm.cpp
+            radio/rtl_finite.cpp
+            PROPERTIES COMPILE_OPTIONS "-fno-fast-math"
+        )
+    elseif(MSVC)
+        set_source_files_properties(
+            radio/soapy_profile.cpp
+            radio/rtl_auto_ppm.cpp
+            radio/rtl_finite.cpp
+            PROPERTIES COMPILE_OPTIONS "/fp:precise"
+        )
+    endif()
 
     if(BUILD_TESTING)
         # Keep radio/device test seams out of the installed production archive.

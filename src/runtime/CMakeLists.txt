@@ -66,6 +66,35 @@ target_sources(
         ${CMAKE_CURRENT_BINARY_DIR}/radioreference/rr_app_key.c
 )
 
+# The decode clock's nanosecond-to-second conversions must stay correctly rounded
+# divisions: fast-math turns `ns / 1e9` into a multiply by an inexact 1e-9, which
+# puts every seconds stamp a rounding step off. It is not on a per-sample path.
+if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+    set_source_files_properties(
+        decode_clock.c
+        PROPERTIES COMPILE_OPTIONS "-fno-fast-math"
+    )
+elseif(MSVC)
+    set_source_files_properties(
+        decode_clock.c
+        PROPERTIES COMPILE_OPTIONS "/fp:precise"
+    )
+endif()
+
+# The one-shot DMR Tier III calculator reads frequencies from a user file and
+# must reject "+nan" and "+inf" before rounding them; it runs once per command.
+if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+    set_source_files_properties(
+        cli/oneshot_dmr_t3.c
+        PROPERTIES COMPILE_OPTIONS "-fno-fast-math"
+    )
+elseif(MSVC)
+    set_source_files_properties(
+        cli/oneshot_dmr_t3.c
+        PROPERTIES COMPILE_OPTIONS "/fp:precise"
+    )
+endif()
+
 # The SOAP parser uses NaN for missing coordinates and checks decimal overflow;
 # config parsing/comparisons and input-level metrics also check nonfinite values.
 # Preserve IEEE semantics even when the global fast-math option is enabled.
@@ -75,12 +104,38 @@ if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
         radioreference/rr_soap.c
         PROPERTIES COMPILE_OPTIONS "-fno-fast-math"
     )
+elseif(MSVC)
+    set_source_files_properties(
+        input_level.c
+        radioreference/rr_soap.c
+        PROPERTIES COMPILE_OPTIONS "/fp:precise"
+    )
 endif()
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     set_source_files_properties(
         config.cpp
         config_user.cpp
         PROPERTIES COMPILE_OPTIONS "-fno-fast-math"
+    )
+elseif(MSVC)
+    set_source_files_properties(
+        config.cpp
+        config_user.cpp
+        PROPERTIES COMPILE_OPTIONS "/fp:precise"
+    )
+endif()
+
+# Airspy input specs carry a squelch figure that must reject "nan"/"inf"; this is
+# parsed once per input spec, never per sample.
+if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+    set_source_files_properties(
+        airspy_config.c
+        PROPERTIES COMPILE_OPTIONS "-fno-fast-math"
+    )
+elseif(MSVC)
+    set_source_files_properties(
+        airspy_config.c
+        PROPERTIES COMPILE_OPTIONS "/fp:precise"
     )
 endif()
 

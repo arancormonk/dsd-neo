@@ -5,6 +5,7 @@
 
 #include <dsd-neo/dsp/snr_estimator.h>
 
+#include <cmath>
 #include <cstdint>
 #include <stdio.h>
 #include "dsd-neo/core/safe_api.h"
@@ -87,6 +88,59 @@ expect_invalid_for_insufficient_data(void) {
     return 0;
 }
 
+/* NaN and infinity from their bit patterns, so the global fast-math option has no NAN or INFINITY literal to warn on. */
+float
+float_from_bits(uint32_t bits) {
+    float value = 0.0f;
+    DSD_MEMCPY(&value, &bits, sizeof value);
+    return value;
+}
+
+int
+expect_nonfinite_samples_dropped(void) {
+    float samples[kSamples];
+    fill_four_level_discriminator(samples);
+    double clean = dsd_snr_estimate_c4fm_real_db(samples, kSamples, kSps, 1, 7.0);
+
+    /* A cf32 capture or a Soapy CF32 stream can carry NaN and infinite samples into the discriminator. Without the
+     * filter they reach std::nth_element(), whose ordering they break. */
+    for (int i = 0; i < kSamples; i += 13) {
+        samples[i] = float_from_bits(0x7fc00000U);
+    }
+    for (int i = 5; i < kSamples; i += 17) {
+        samples[i] = float_from_bits(0x7f800000U);
+    }
+    for (int i = 9; i < kSamples; i += 19) {
+        samples[i] = float_from_bits(0xff800000U);
+    }
+    double dirty = dsd_snr_estimate_c4fm_real_db(samples, kSamples, kSps, 1, 7.0);
+    /* This source keeps IEEE semantics in fast-math builds, so the finiteness test below is a real one. */
+    if (!std::isfinite(clean) || !std::isfinite(dirty) || !(std::fabs(dirty - clean) < 1.0)) {
+        DSD_FPRINTF(stderr, "non-finite samples estimator clean=%.3f dirty=%.3f\n", clean, dirty);
+        return 1;
+    }
+    return 0;
+}
+
+int
+expect_invalid_for_nonfinite_bias(void) {
+    float samples[kSamples];
+    fill_four_level_discriminator(samples);
+    double nan_bias = 0.0;
+    double inf_bias = 0.0;
+    const uint64_t nan_bits = 0x7ff8000000000000ULL;
+    const uint64_t inf_bits = 0x7ff0000000000000ULL;
+    DSD_MEMCPY(&nan_bias, &nan_bits, sizeof nan_bias);
+    DSD_MEMCPY(&inf_bias, &inf_bits, sizeof inf_bias);
+    double nan_snr = dsd_snr_estimate_c4fm_real_db(samples, kSamples, kSps, 1, nan_bias);
+    double inf_snr = dsd_snr_estimate_gfsk_real_db(samples, kSamples, kSps, 1, inf_bias);
+    if (!std::isfinite(nan_snr) || !std::isfinite(inf_snr) || !(nan_snr <= -50.0 && inf_snr <= -50.0)) {
+        DSD_FPRINTF(stderr, "non-finite bias estimator nan=%.3f inf=%.3f\n", nan_snr, inf_snr);
+        return 1;
+    }
+    return 0;
+}
+
 } // namespace
 
 int
@@ -95,6 +149,8 @@ main(void) {
     rc |= expect_good_four_level_estimate();
     rc |= expect_good_binary_estimate();
     rc |= expect_invalid_for_insufficient_data();
+    rc |= expect_nonfinite_samples_dropped();
+    rc |= expect_invalid_for_nonfinite_bias();
     if (rc == 0) {
         printf("DSP_SNR_ESTIMATOR: OK\n");
     }

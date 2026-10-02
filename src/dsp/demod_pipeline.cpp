@@ -755,6 +755,10 @@ channel_lpf_apply(struct demod_state* d) {
     d->lp_len = made << 1;
 }
 
+#if defined(_MSC_VER) && !defined(__clang__)
+/* MSVC: the same written order under /fp:fast (see the Clang pragma below). */
+#pragma float_control(precise, on, push)
+#endif
 /*
  * The mean of each step consecutive samples, in place: output k overwrites sample k, which the loop has read by then.
  * *acc and *phase hold the group a call leaves part-filled (its sum and its sample count, 0..step-1), and the next call
@@ -763,6 +767,12 @@ channel_lpf_apply(struct demod_state* d) {
  */
 static int
 boxcar_decimate_stream(float* signal, int len, int step, float* acc, int* phase) {
+#if defined(__clang__)
+    /* Each group's sum must round the same however the input is split into blocks. Under fast-math Clang reassociates
+       the running sum across unrolled iterations, which groups the samples by where a block starts. Only the
+       allocation-failure fallback decimator runs this, so keeping the written order costs nothing. */
+#pragma clang fp reassociate(off)
+#endif
     float sum = *acc;
     int count = *phase;
     int out_len = 0;
@@ -779,6 +789,9 @@ boxcar_decimate_stream(float* signal, int len, int step, float* acc, int* phase)
     *phase = count;
     return out_len;
 }
+#if defined(_MSC_VER) && !defined(__clang__)
+#pragma float_control(pop)
+#endif
 
 /**
  * @brief Boxcar low-pass and decimate by step (no wraparound).

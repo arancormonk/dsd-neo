@@ -72,6 +72,7 @@
 #include "dsd-neo/dsp/fsk_modem.h"
 #include "dsd-neo/platform/platform.h"
 #include "rtl_auto_ppm.h"
+#include "rtl_finite.h"
 #include "rtl_perf.h"
 #include "rtl_ppm_request.h"
 #include "rtl_replay_device.h"
@@ -1650,11 +1651,11 @@ fll_retune_seed_cache_clear(void) {
 
 static void
 fll_retune_seed_cache_store(uint32_t center_freq_hz, int rate_out_hz, float normalized_freq) {
-    if (center_freq_hz == 0U || rate_out_hz <= 0 || !std::isfinite(normalized_freq)) {
+    if (center_freq_hz == 0U || rate_out_hz <= 0 || !dsd::io::radio::rtl_is_finite(normalized_freq)) {
         return;
     }
     const float offset_hz = normalized_freq * ((float)rate_out_hz / 6.28318530717958647692f);
-    if (!std::isfinite(offset_hz)) {
+    if (!dsd::io::radio::rtl_is_finite(offset_hz)) {
         return;
     }
 
@@ -1682,12 +1683,12 @@ fll_retune_seed_cache_lookup(uint32_t center_freq_hz, int rate_out_hz, float* ou
         return 0;
     }
     for (FllRetuneSeed& seed : controller.fll_retune_seeds) {
-        if (seed.center_freq_hz != center_freq_hz || !std::isfinite(seed.offset_hz)) {
+        if (seed.center_freq_hz != center_freq_hz || !dsd::io::radio::rtl_is_finite(seed.offset_hz)) {
             continue;
         }
         *out_normalized_freq = seed.offset_hz * (6.28318530717958647692f / (float)rate_out_hz);
         seed.last_used = ++controller.fll_retune_seed_clock;
-        return std::isfinite(*out_normalized_freq) ? 1 : 0;
+        return dsd::io::radio::rtl_is_finite(*out_normalized_freq) ? 1 : 0;
     }
     return 0;
 }
@@ -3181,6 +3182,10 @@ demod_snr_qpsk_publish(const struct demod_state* d, double ratio, DemodSnrUpdate
     double snr_raw = 10.0 * log10(ratio);
     double bias = dsd_snr_bias_evm_db(d->rate_out, d->ted_sps, d->channel_lpf_profile);
     double snr = snr_raw - bias;
+    /* A NaN or infinite I/Q sample makes the ratio non-finite; publishing it would leave the EMA stuck there. */
+    if (!dsd::io::radio::rtl_is_finite(snr)) {
+        return;
+    }
     double ema = g_snr_ema_qpsk.load(std::memory_order_relaxed);
     ema = (ema < -50.0) ? snr : (0.5 * ema + 0.5 * snr);
     g_snr_ema_qpsk.store(ema, std::memory_order_relaxed);
@@ -3192,7 +3197,7 @@ demod_snr_qpsk_publish(const struct demod_state* d, double ratio, DemodSnrUpdate
 
 static int
 demod_snr_valid(double snr_db) {
-    return std::isfinite(snr_db) && snr_db > -50.0;
+    return dsd::io::radio::rtl_is_finite(snr_db) && snr_db > -50.0;
 }
 
 static void
@@ -3496,7 +3501,7 @@ demod_snr_fallback_c4fm(DemodMetricsState* st, const DemodSnrUpdateFlags* flags)
         return;
     }
     double fb = rtl_stream_estimate_snr_c4fm_eye();
-    if (fb > -50.0) {
+    if (demod_snr_valid(fb)) {
         double prev = g_snr_c4fm_db.load(std::memory_order_relaxed);
         double blended = (prev < -50.0) ? fb : (0.8 * prev + 0.2 * fb);
         g_snr_c4fm_db.store(blended, std::memory_order_relaxed);
@@ -3519,7 +3524,7 @@ demod_snr_fallback_qpsk(DemodMetricsState* st, const DemodSnrUpdateFlags* flags)
         return;
     }
     double fb = rtl_stream_estimate_snr_qpsk_const();
-    if (fb > -50.0) {
+    if (demod_snr_valid(fb)) {
         double prev = g_snr_qpsk_db.load(std::memory_order_relaxed);
         double alpha = (prev < -50.0) ? 1.0 : 0.5;
         double blended = alpha * fb + (1.0 - alpha) * prev;
@@ -3543,7 +3548,7 @@ demod_snr_fallback_gfsk(DemodMetricsState* st, const DemodSnrUpdateFlags* flags)
         return;
     }
     double fb = rtl_stream_estimate_snr_gfsk_eye();
-    if (fb > -50.0) {
+    if (demod_snr_valid(fb)) {
         double prev = g_snr_gfsk_db.load(std::memory_order_relaxed);
         double blended = (prev < -50.0) ? fb : (0.8 * prev + 0.2 * fb);
         g_snr_gfsk_db.store(blended, std::memory_order_relaxed);
@@ -4474,13 +4479,13 @@ rtl_stream_publish_fsk_phase_cfo_snapshot(const struct demod_state* d) {
     }
 
     double dc_rad_per_sample = (double)d->fsk_modem_state.dc_est;
-    if (!std::isfinite(dc_rad_per_sample)) {
+    if (!dsd::io::radio::rtl_is_finite(dc_rad_per_sample)) {
         rtl_stream_invalidate_fsk_phase_cfo_snapshot();
         return;
     }
 
     double cfo_hz = dsd::io::radio::rtl_auto_ppm_fsk_dc_est_to_cfo_hz(dc_rad_per_sample, d->rate_out);
-    if (!std::isfinite(cfo_hz)) {
+    if (!dsd::io::radio::rtl_is_finite(cfo_hz)) {
         rtl_stream_invalidate_fsk_phase_cfo_snapshot();
         return;
     }
@@ -8037,7 +8042,7 @@ auto_ppm_fsk_phase_cfo_hz(double* out_cfo_hz) {
         return 0;
     }
     double cfo_hz = g_fsk_phase_cfo_hz.load(std::memory_order_relaxed);
-    if (!std::isfinite(cfo_hz)) {
+    if (!dsd::io::radio::rtl_is_finite(cfo_hz)) {
         return 0;
     }
 
@@ -11686,6 +11691,44 @@ rtl_stream_test_fsk_snr_sps(int rate_out_hz, int symbol_rate_hz, int stale_ted_s
     return demod_snr_output_samples_per_symbol(&d);
 }
 
+/* Publish one C4FM SNR figure and one QPSK error ratio, report which of them reached the SNR atomics, and restore
+ * those atomics: the publish gate must keep NaN and infinity out of the EMA. */
+extern "C" int
+rtl_stream_test_snr_publish(double c4fm_snr_db, double qpsk_ratio, int* out_c4fm_published, int* out_qpsk_published) {
+    if (!out_c4fm_published || !out_qpsk_published) {
+        return -1;
+    }
+    const double prev_c4fm_ema = g_snr_ema_c4fm.load(std::memory_order_relaxed);
+    const double prev_c4fm_db = g_snr_c4fm_db.load(std::memory_order_relaxed);
+    const int prev_c4fm_src = g_snr_c4fm_src.load(std::memory_order_relaxed);
+    const long long prev_c4fm_ms = g_snr_c4fm_last_ms.load(std::memory_order_relaxed);
+    const double prev_qpsk_ema = g_snr_ema_qpsk.load(std::memory_order_relaxed);
+    const double prev_qpsk_db = g_snr_qpsk_db.load(std::memory_order_relaxed);
+    const int prev_qpsk_src = g_snr_qpsk_src.load(std::memory_order_relaxed);
+    const long long prev_qpsk_ms = g_snr_qpsk_last_ms.load(std::memory_order_relaxed);
+
+    static demod_state d;
+    DSD_MEMSET(&d, 0, sizeof(d));
+    d.rate_out = 48000;
+    d.ted_sps = 10;
+    d.channel_lpf_profile = DSD_CH_LPF_PROFILE_P25_CQPSK;
+    DemodSnrUpdateFlags flags = {false, false, false};
+    demod_snr_publish_c4fm_direct(c4fm_snr_db, &flags);
+    demod_snr_qpsk_publish(&d, qpsk_ratio, &flags);
+    *out_c4fm_published = flags.c4fm_updated ? 1 : 0;
+    *out_qpsk_published = flags.qpsk_updated ? 1 : 0;
+
+    g_snr_ema_c4fm.store(prev_c4fm_ema, std::memory_order_relaxed);
+    g_snr_c4fm_db.store(prev_c4fm_db, std::memory_order_relaxed);
+    g_snr_c4fm_src.store(prev_c4fm_src, std::memory_order_relaxed);
+    g_snr_c4fm_last_ms.store(prev_c4fm_ms, std::memory_order_relaxed);
+    g_snr_ema_qpsk.store(prev_qpsk_ema, std::memory_order_relaxed);
+    g_snr_qpsk_db.store(prev_qpsk_db, std::memory_order_relaxed);
+    g_snr_qpsk_src.store(prev_qpsk_src, std::memory_order_relaxed);
+    g_snr_qpsk_last_ms.store(prev_qpsk_ms, std::memory_order_relaxed);
+    return 0;
+}
+
 extern "C" int
 rtl_stream_test_direct_output_rate_after_open_update(int output_kind, int rate_out_hz, int resamp_target_hz,
                                                      unsigned int* out_rate_hz, int* out_resamp_enabled) {
@@ -12307,6 +12350,30 @@ rtl_stream_test_fll_retune_cache_round_trip(rtl_stream_test_fll_retune_cache_res
     out_result->vc_restore_used_cache = plan.restore_cached_fll ? 1 : 0;
     out_result->vc_restore_fll_after = test_demod.fll_band_edge_state.freq;
     out_result->expected_vc_fll = vc_fll_freq;
+    fll_retune_seed_cache_clear();
+    return 0;
+}
+
+/* Leave a voice channel whose FLL sits at leaving_fll_freq, hop to the control channel and back, and report whether
+ * the return restored a cached FLL seed for the voice channel. A non-finite FLL must never be cached. */
+extern "C" int
+rtl_stream_test_fll_retune_cache_stores(float leaving_fll_freq, int* out_restored) {
+    if (!out_restored) {
+        return -1;
+    }
+    *out_restored = 0;
+    fll_retune_seed_cache_clear();
+
+    static struct demod_state test_demod;
+    cqpsk_reacquire_test_init_demod(&test_demod, 1, 4800, 10);
+    test_demod.rate_out = 48000;
+    test_demod.fll_band_edge_state.freq = leaving_fll_freq;
+    DemodRetuneResetPlan plan =
+        demod_retune_reset_plan(DemodRetuneResetReason::FrequencyRetune, 769668750U, 770418750U, 48000, 48000);
+    plan = demod_reset_on_retune(&test_demod, plan);
+    plan = demod_retune_reset_plan(DemodRetuneResetReason::FrequencyRetune, 770418750U, 769668750U, 48000, 48000);
+    plan = demod_reset_on_retune(&test_demod, plan);
+    *out_restored = plan.restore_cached_fll ? 1 : 0;
     fll_retune_seed_cache_clear();
     return 0;
 }

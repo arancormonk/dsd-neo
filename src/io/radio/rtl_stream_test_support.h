@@ -139,6 +139,8 @@ int rtl_stream_test_rx_request_outcomes(rtl_stream_test_rx_request_result* out);
 int rtl_stream_test_fsk_cfo_snapshot(double dc_rad_per_sample, int rate_out_hz, double* out_cfo_hz,
                                      int* out_after_generation_bump_available, int* out_after_reset_available);
 int rtl_stream_test_fsk_snr_sps(int rate_out_hz, int symbol_rate_hz, int stale_ted_sps);
+int rtl_stream_test_snr_publish(double c4fm_snr_db, double qpsk_ratio, int* out_c4fm_published,
+                                int* out_qpsk_published);
 int rtl_stream_test_direct_output_rate_after_open_update(int output_kind, int rate_out_hz, int resamp_target_hz,
                                                          unsigned int* out_rate_hz, int* out_resamp_enabled);
 
@@ -225,6 +227,7 @@ typedef struct rtl_stream_test_fll_retune_cache_result {
 } rtl_stream_test_fll_retune_cache_result;
 
 int rtl_stream_test_fll_retune_cache_round_trip(rtl_stream_test_fll_retune_cache_result* out_result);
+int rtl_stream_test_fll_retune_cache_stores(float leaving_fll_freq, int* out_restored);
 int rtl_stream_test_retune_profile_request_binding(int* out_first_profile, int* out_second_profile,
                                                    uint32_t* out_first_freq_hz, uint32_t* out_second_freq_hz,
                                                    uint32_t* out_first_request_id, uint32_t* out_second_request_id);

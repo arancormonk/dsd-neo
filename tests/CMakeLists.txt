@@ -39,6 +39,55 @@ endif()
 
 link_libraries(dsd-neo_warnings dsd-neo_test_assertions)
 
+# These tests feed NaN or infinite values to the code under test, or check its
+# output with std::isnan()/isfinite(). In fast-math builds (perf-bench and the
+# optimized CI jobs) those values are undefined in a translation unit and the
+# checks fold away, so the tests' own sources keep IEEE semantics; the
+# production code they exercise keeps the build's flags. The decode-clock test
+# is here because its bounds must round like decode_clock.c, which divides
+# ns / 1e9 exactly where fast-math would multiply by an inexact 1e-9, and the
+# audio2 test because its mono-mixer stub divides by a slot count, which Clang
+# turns into an approximate reciprocal under fast-math.
+if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+    set_source_files_properties(
+        core/test_core_audio2_helpers.c
+        core/test_core_audio_gain.c
+        core/test_core_init_state.c
+        dsp/test_dsp_am_demod.cpp
+        dsp/test_dsp_analog_ctcss.c
+        dsp/test_dsp_audio_filters.cpp
+        dsp/test_dsp_costas.cpp
+        dsp/test_dsp_demod_segmentation.cpp
+        dsp/test_dsp_firdes.c
+        dsp/test_dsp_simd_widen.cpp
+        dsp/test_dsp_snr_estimator.cpp
+        dsp/test_dsp_symbol_replay.c
+        io/test_io_input_level_metrics.c
+        io/test_io_rtl_replay_eof_and_cf32.cpp
+        runtime/test_runtime_decode_clock.c
+        PROPERTIES COMPILE_OPTIONS "-fno-fast-math"
+    )
+elseif(MSVC)
+    set_source_files_properties(
+        core/test_core_audio2_helpers.c
+        core/test_core_audio_gain.c
+        core/test_core_init_state.c
+        dsp/test_dsp_am_demod.cpp
+        dsp/test_dsp_analog_ctcss.c
+        dsp/test_dsp_audio_filters.cpp
+        dsp/test_dsp_costas.cpp
+        dsp/test_dsp_demod_segmentation.cpp
+        dsp/test_dsp_firdes.c
+        dsp/test_dsp_simd_widen.cpp
+        dsp/test_dsp_snr_estimator.cpp
+        dsp/test_dsp_symbol_replay.c
+        io/test_io_input_level_metrics.c
+        io/test_io_rtl_replay_eof_and_cf32.cpp
+        runtime/test_runtime_decode_clock.c
+        PROPERTIES COMPILE_OPTIONS "/fp:precise"
+    )
+endif()
+
 add_library(dsd-neo_test_support INTERFACE)
 target_include_directories(
     dsd-neo_test_support
@@ -2635,11 +2684,13 @@ if(DSD_ENABLE_TERMINAL_UI)
         dsd-neo_test_ui_snr_meter
         PRIVATE DSD_NEO_TEST_HOOKS PRETTY_COLORS
     )
-    if(DSD_ENABLE_FAST_MATH)
-        target_compile_definitions(
-            dsd-neo_test_ui_snr_meter
-            PRIVATE DSD_NEO_FAST_MATH=1
-        )
+    # ncurses_snr.c is compiled here directly, so it does not inherit the
+    # src/ui/terminal property that keeps its NaN check effective in fast-math
+    # builds; the test's NAN inputs need IEEE semantics as well.
+    if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(dsd-neo_test_ui_snr_meter PRIVATE -fno-fast-math)
+    elseif(MSVC)
+        target_compile_options(dsd-neo_test_ui_snr_meter PRIVATE /fp:precise)
     endif()
     target_link_libraries(
         dsd-neo_test_ui_snr_meter
@@ -2720,10 +2771,15 @@ if(DSD_ENABLE_TERMINAL_UI)
             dsd-neo_test_ui_snr_meter_pdc_wide_no_api
             PRIVATE DSD_NEO_TEST_HOOKS DSD_USE_PDCURSES PDC_WIDE PRETTY_COLORS
         )
-        if(DSD_ENABLE_FAST_MATH)
-            target_compile_definitions(
+        if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+            target_compile_options(
                 dsd-neo_test_ui_snr_meter_pdc_wide_no_api
-                PRIVATE DSD_NEO_FAST_MATH=1
+                PRIVATE -fno-fast-math
+            )
+        elseif(MSVC)
+            target_compile_options(
+                dsd-neo_test_ui_snr_meter_pdc_wide_no_api
+                PRIVATE /fp:precise
             )
         endif()
         target_link_libraries(
@@ -2991,6 +3047,17 @@ target_include_directories(
     dsd-neo_test_ui_qt_spectrum_math
     PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/qt
 )
+# spectrum_math.h takes the floating-point mode of whatever includes it, and
+# dsd-neo_ui_qt keeps IEEE semantics; so does this test, whose bad-frame cases
+# would otherwise check a NaN guard fast-math has compiled out.
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(
+        dsd-neo_test_ui_qt_spectrum_math
+        PRIVATE -fno-fast-math
+    )
+elseif(MSVC)
+    target_compile_options(dsd-neo_test_ui_qt_spectrum_math PRIVATE /fp:precise)
+endif()
 add_test(NAME UI_QT_SPECTRUM_MATH COMMAND dsd-neo_test_ui_qt_spectrum_math)
 
 # The persistence layer itself (json_store atomic writes, the saved-systems
@@ -4486,6 +4553,36 @@ target_link_libraries(
 )
 add_test(NAME CORE_SCAN_PROFILE COMMAND dsd-neo_test_core_scan_profile)
 
+# dsd_parse_double_strict() must refuse NaN and infinities; it is header-only, so
+# the test keeps the IEEE semantics its NaN-rejecting callers are built with.
+add_executable(
+    dsd-neo_test_core_parse_double_strict
+    core/test_core_parse_double_strict.c
+)
+target_include_directories(
+    dsd-neo_test_core_parse_double_strict
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_core_parse_double_strict
+    PRIVATE ${DSD_NEO_TEST_MATH_LIB}
+)
+if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(
+        dsd-neo_test_core_parse_double_strict
+        PRIVATE -fno-fast-math
+    )
+elseif(MSVC)
+    target_compile_options(
+        dsd-neo_test_core_parse_double_strict
+        PRIVATE /fp:precise
+    )
+endif()
+add_test(
+    NAME CORE_PARSE_DOUBLE_STRICT
+    COMMAND dsd-neo_test_core_parse_double_strict
+)
+
 add_executable(dsd-neo_test_core_csv_validate core/test_core_csv_validate.c)
 target_include_directories(
     dsd-neo_test_core_csv_validate
@@ -5742,6 +5839,16 @@ target_link_libraries(
     dsd-neo_test_runtime_config_env
     PRIVATE dsd-neo_runtime dsd-neo_test_support
 )
+# Keep the NaN assertions effective in fast-math builds too: config.cpp already
+# keeps IEEE semantics, and the test's own std::isnan() checks need them as well.
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(
+        dsd-neo_test_runtime_config_env
+        PRIVATE -fno-fast-math
+    )
+elseif(MSVC)
+    target_compile_options(dsd-neo_test_runtime_config_env PRIVATE /fp:precise)
+endif()
 add_test(NAME RUNTIME_CONFIG_ENV COMMAND dsd-neo_test_runtime_config_env)
 
 add_executable(
@@ -8083,6 +8190,19 @@ if(_dsd_neo_dsp_sources MATCHES "simd_fir_avx2\\.cpp")
     )
 endif()
 dsd_neo_link_dsp_test(dsd-neo_test_dsp_fir_segmentation)
+# The test fences each buffer with NaN and checks the fences with std::isnan(),
+# which fast-math would fold to false; the FIR code under test keeps its flags.
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(
+        dsd-neo_test_dsp_fir_segmentation
+        PRIVATE -fno-fast-math
+    )
+elseif(MSVC)
+    target_compile_options(
+        dsd-neo_test_dsp_fir_segmentation
+        PRIVATE /fp:precise
+    )
+endif()
 add_test(NAME DSP_FIR_SEGMENTATION COMMAND dsd-neo_test_dsp_fir_segmentation)
 
 add_executable(
@@ -9841,8 +9961,26 @@ add_executable(
     dsd-neo_test_dibit_two_level_reliability
     core/test_dibit_two_level_reliability.c
     ${PROJECT_SOURCE_DIR}/src/core/frames/dsd_dibit.c
+    ${PROJECT_SOURCE_DIR}/src/core/frames/dsd_dibit_reliability.c
     test_support/call_state_stubs.c
 )
+# dsd_dibit_reliability.c is compiled here directly, so it does not inherit the
+# src/core property that keeps its NaN rejection effective in fast-math builds.
+# The test's NAN and INFINITY inputs need IEEE semantics too; dsd_dibit.c keeps
+# the global flags, as in the library.
+if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+    set_source_files_properties(
+        core/test_dibit_two_level_reliability.c
+        ${PROJECT_SOURCE_DIR}/src/core/frames/dsd_dibit_reliability.c
+        PROPERTIES COMPILE_OPTIONS "-fno-fast-math;-fno-math-errno"
+    )
+elseif(MSVC)
+    set_source_files_properties(
+        core/test_dibit_two_level_reliability.c
+        ${PROJECT_SOURCE_DIR}/src/core/frames/dsd_dibit_reliability.c
+        PROPERTIES COMPILE_OPTIONS "/fp:precise"
+    )
+endif()
 target_include_directories(
     dsd-neo_test_dibit_two_level_reliability
     PRIVATE ${PROJECT_SOURCE_DIR}/include
@@ -10398,6 +10536,13 @@ target_include_directories(
     dsd-neo_test_io_soapy_profile
     PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/io/radio
 )
+# soapy_profile.cpp is compiled here directly, so it does not inherit the
+# src/io property that keeps its NaN rejection effective in fast-math builds.
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(dsd-neo_test_io_soapy_profile PRIVATE -fno-fast-math)
+elseif(MSVC)
+    target_compile_options(dsd-neo_test_io_soapy_profile PRIVATE /fp:precise)
+endif()
 add_test(NAME IO_SOAPY_PROFILE COMMAND dsd-neo_test_io_soapy_profile)
 
 add_executable(

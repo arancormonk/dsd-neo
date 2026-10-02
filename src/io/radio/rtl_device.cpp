@@ -61,6 +61,7 @@
 #include "airspy_source.h"
 struct airspy_source;
 #include "rtl_capture_phase.h"
+#include "rtl_finite.h"
 #include "rtl_perf.h"
 #include "rtl_replay_device.h"
 #include "rtl_stream_shared.hpp"
@@ -3043,7 +3044,7 @@ soapy_arg_info_has_numeric_range(const SoapySDR::ArgInfo& info) {
     const double minimum = info.range.minimum();
     const double maximum = info.range.maximum();
     const double step = info.range.step();
-    if (!std::isfinite(minimum) || !std::isfinite(maximum) || maximum < minimum) {
+    if (!dsd::io::radio::rtl_is_finite(minimum) || !dsd::io::radio::rtl_is_finite(maximum) || maximum < minimum) {
         return false;
     }
     /* Soapy's default empty Range is 0..0; no separate presence flag is exposed. */

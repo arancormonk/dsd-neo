@@ -96,6 +96,21 @@ if(_dsd_neo_dsp_target_arch MATCHES "aarch64|arm64|ARM64")
     target_sources(dsd-neo_dsp PRIVATE simd_widen_neon.cpp)
 endif()
 
+# The SNR estimator drops NaN and infinite samples and rejects a non-finite bias.
+# It runs once per demod block (metrics, not the sample path), and measures no
+# slower with IEEE semantics, so keep them even when global fast-math is on.
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    set_source_files_properties(
+        snr_estimator.cpp
+        PROPERTIES COMPILE_OPTIONS "-fno-fast-math"
+    )
+elseif(MSVC)
+    set_source_files_properties(
+        snr_estimator.cpp
+        PROPERTIES COMPILE_OPTIONS "/fp:precise"
+    )
+endif()
+
 target_include_directories(
     dsd-neo_dsp
     PUBLIC ${PROJECT_SOURCE_DIR}/include

@@ -8,6 +8,7 @@
  */
 
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/platform/fp_opaque.h>
 #include <dsd-neo/runtime/unicode.h>
 #include <dsd-neo/ui/ncurses_snr.h>
 #if defined(DSD_USE_PDCURSES) && defined(DSD_HAS_PDCURSES_WIDE_API) && !defined(PDC_WIDE)
@@ -138,6 +139,7 @@ static const char* const snr_block_glyphs[SNR_METER_BARS] = {"▁", "▂", "▃"
 
 static int
 snr_meter_bar_count(double snr_db) {
+    snr_db = dsd_fp_opaque_d(snr_db); /* keep the NaN test when LTO inlines this into fast-math code */
     if (!isfinite(snr_db) || snr_db <= -50.0) {
         return 0;
     }
