@@ -870,16 +870,19 @@ test_exact_buffers(const Backend& backend, const Filter& filter) {
                         break;
                     }
                 }
-                for (int k = 0; fenced && k < pad; k++) {
+                bool wrote_outside = false;
+                for (int k = 0; fenced && !wrote_outside && k < pad; k++) {
                     const std::vector<float>* bufs[] = {&in_buf, &out_buf, &hi_buf, &hq_buf};
                     for (const std::vector<float>* buf : bufs) {
                         if (!std::isnan((*buf)[(size_t)k]) || !std::isnan((*buf)[buf->size() - 1U - (size_t)k])) {
-                            DSD_FPRINTF(stderr, "  FAIL: %s: wrote outside a buffer\n", what);
-                            rc = 1;
-                            k = pad;
+                            wrote_outside = true;
                             break;
                         }
                     }
+                }
+                if (wrote_outside) {
+                    DSD_FPRINTF(stderr, "  FAIL: %s: wrote outside a buffer\n", what);
+                    rc = 1;
                 }
             }
         }
