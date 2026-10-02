@@ -28,6 +28,7 @@
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
+#include <limits.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -885,6 +886,54 @@ test_backend_tune_updates_center_freq_cache(void) {
     free(opts);
 }
 
+/* Every tuner backend carries the frequency as uint32_t, so where long is 64-bit a trunk tune past 4294967295 Hz would
+ * wrap to an unrelated channel (4294967296 + 851000000 lands on 851000000). The voice, control-channel and scan
+ * entry points all fail it before rigctl or the RTL stream is asked, and the cached centre stays where it was;
+ * 4294967295 Hz itself still tunes. */
+static void
+test_backend_tune_refuses_past_the_tuner_limit(void) {
+#if LONG_MAX > 4294967295L
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* state = calloc(1, sizeof(*state));
+    assert(opts && state);
+    const long int past = 5145967296L;
+
+    opts->audio_in_type = AUDIO_IN_PULSE;
+    opts->use_rigctl = 1;
+    opts->rtlsdr_center_freq = 111111100U;
+    g_setfreq_result = true;
+    const int setfreq_before = g_setfreq_calls;
+    assert(dsd_engine_trunk_tune_to_freq_request(opts, state, past, 0, 0U) == DSD_TRUNK_TUNE_RESULT_FAILED);
+    assert(dsd_engine_trunk_tune_to_cc_request(opts, state, past, 0, 0U) == DSD_TRUNK_TUNE_RESULT_FAILED);
+    assert(dsd_engine_scan_tune_to_freq(opts, state, past, 0, NULL) == DSD_TRUNK_TUNE_RESULT_FAILED);
+    assert(g_setfreq_calls == setfreq_before);
+    assert(opts->rtlsdr_center_freq == 111111100U);
+    assert(opts->trunk_is_tuned == 0);
+    assert(state->trunk_vc_freq[0] == 0);
+
+#ifdef USE_RADIO
+    opts->use_rigctl = 0;
+    opts->audio_in_type = AUDIO_IN_RTL;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    g_rtl_last_applied_freq = 0U;
+    const int rtl_before = g_rtl_tune_calls;
+    assert(dsd_engine_trunk_tune_to_freq_request(opts, state, past, 0, 0U) == DSD_TRUNK_TUNE_RESULT_FAILED);
+    assert(dsd_engine_trunk_tune_to_cc_request(opts, state, past, 0, 0U) == DSD_TRUNK_TUNE_RESULT_FAILED);
+    assert(dsd_engine_scan_tune_to_freq(opts, state, past, 0, NULL) == DSD_TRUNK_TUNE_RESULT_FAILED);
+    assert(g_rtl_tune_calls == rtl_before);
+    assert(opts->rtlsdr_center_freq == 111111100U);
+
+    assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 4294967295L, 0, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(g_rtl_tune_calls == rtl_before + 1);
+    assert(opts->rtlsdr_center_freq == 4294967295U);
+    rtl_stream_clear_pending_retune_profile();
+#endif
+    free(state);
+    free(opts);
+#endif
+}
+
 #ifdef USE_RADIO
 /* A -Y row tuned with the RTL front end set up for @p freq_hz from the AM monitor's WIDE channel, with nothing queued
    for its retune unless @p stale_symbol_profile queues a P25 C4FM symbol profile for the same target first. Returns the
@@ -1297,6 +1346,7 @@ main(void) {
     dsd_decode_clock_use_test(1234500000000ULL);
 
     test_backend_tune_updates_center_freq_cache();
+    test_backend_tune_refuses_past_the_tuner_limit();
 #ifdef USE_RADIO
     test_analog_scan_row_queues_analog_profile();
 #endif

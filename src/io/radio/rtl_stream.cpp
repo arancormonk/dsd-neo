@@ -25,8 +25,8 @@ extern "C" {
 int dsd_rtl_stream_open(dsd_opts* opts);
 int dsd_rtl_stream_read(float* out, size_t count, dsd_opts* opts, const dsd_state* state);
 uint32_t rtl_stream_output_generation(void);
-int dsd_rtl_stream_tune(dsd_opts* opts, long int frequency);
-int dsd_rtl_stream_tune_tagged(dsd_opts* opts, long int frequency, uint64_t request_id);
+int dsd_rtl_stream_tune(dsd_opts* opts, uint32_t frequency);
+int dsd_rtl_stream_tune_tagged(dsd_opts* opts, uint32_t frequency, uint64_t request_id);
 int dsd_rtl_stream_soft_stop(void);
 void dsd_rtl_stream_register_requested_ppm_opts(dsd_opts* active_opts, dsd_opts* caller_opts);
 void dsd_rtl_stream_unregister_requested_ppm_opts(dsd_opts* active_opts, dsd_opts* caller_opts);
@@ -129,7 +129,7 @@ RtlSdrOrchestrator::tune(uint32_t center_freq_hz) {
     if (!opts_) {
         return -2;
     }
-    int rc = dsd_rtl_stream_tune(opts_, (long int)center_freq_hz);
+    int rc = dsd_rtl_stream_tune(opts_, center_freq_hz);
     if (rc != 0) {
         return rc;
     }
@@ -147,7 +147,7 @@ RtlSdrOrchestrator::tune_tagged(uint32_t center_freq_hz, uint64_t request_id) {
     if (request_id == 0U) {
         return RTL_STREAM_TUNE_FAILED;
     }
-    return dsd_rtl_stream_tune_tagged(opts_, (long int)center_freq_hz, request_id);
+    return dsd_rtl_stream_tune_tagged(opts_, center_freq_hz, request_id);
 }
 
 /**

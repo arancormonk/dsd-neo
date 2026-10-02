@@ -142,8 +142,10 @@ write_text_file(const char* path, const char* text) {
     return 0;
 }
 
+/* Replace occurrence @p nth (0 for the first) of @p from in the sidecar at @p metadata_path with @p to; -1 when there is
+   no such occurrence. */
 static int
-rewrite_as_historical_two_pass_capture(const char* metadata_path) {
+rewrite_sidecar_text_nth(const char* metadata_path, const char* from, const char* to, unsigned nth) {
     FILE* fp = dsd_fopen_private(metadata_path, "rb");
     if (!fp) {
         return -1;
@@ -164,13 +166,27 @@ rewrite_as_historical_two_pass_capture(const char* metadata_path) {
     }
     std::fclose(fp);
 
-    const std::string combined = "\"combine_rotate_enabled\": true";
-    size_t pos = metadata.find(combined);
+    const std::string needle = from;
+    size_t pos = metadata.find(needle);
+    for (unsigned i = 0; i < nth && pos != std::string::npos; i++) {
+        pos = metadata.find(needle, pos + needle.size());
+    }
     if (pos == std::string::npos) {
         return -1;
     }
-    metadata.replace(pos, combined.size(), "\"combine_rotate_enabled\": false");
+    metadata.replace(pos, needle.size(), to);
     return write_bytes_file(metadata_path, reinterpret_cast<const uint8_t*>(metadata.data()), metadata.size());
+}
+
+/* Replace the first @p from in the sidecar at @p metadata_path with @p to; -1 when it is not there. */
+static int
+rewrite_sidecar_text(const char* metadata_path, const char* from, const char* to) {
+    return rewrite_sidecar_text_nth(metadata_path, from, to, 0U);
+}
+
+static int
+rewrite_as_historical_two_pass_capture(const char* metadata_path) {
+    return rewrite_sidecar_text(metadata_path, "\"combine_rotate_enabled\": true", "\"combine_rotate_enabled\": false");
 }
 
 static void
@@ -2987,6 +3003,62 @@ test_replay_refuses_a_capture_it_cannot_convert(void) {
     return rc;
 }
 
+/* The sidecar carries every centre in 64 bits and the tuner path in 32, so a centre past 4294967295 Hz would wrap to an
+ * unrelated one (4294967296 + 851375000 lands on 851375000) and replay as if captured there. That holds for the
+ * logical and the capture centre the replay starts on, and for those a RETUNE or RESET event moves to later in the
+ * capture. Each start is refused instead, as an unreadable sidecar is, and leaves nothing behind. */
+static int
+test_replay_refuses_a_centre_past_the_tuner_limit(void) {
+    struct {
+        const char* label;
+        const char* from;
+        const char* to;
+        int eventful;
+        unsigned nth;
+    } const cases[] = {
+        {"centre past the tuner limit", "\"center_frequency_hz\": 851375000,", "\"center_frequency_hz\": 5146342296,",
+         0, 0U},
+        {"capture centre past the tuner limit", "\"capture_center_frequency_hz\": 851759000,",
+         "\"capture_center_frequency_hz\": 5146726296,", 0, 0U},
+        {"RETUNE centre past the tuner limit", "\"center_frequency_hz\": 851500000,",
+         "\"center_frequency_hz\": 5146467296,", 1, 0U},
+        {"RETUNE capture centre past the tuner limit", "\"capture_center_frequency_hz\": 851884000,",
+         "\"capture_center_frequency_hz\": 5146851296,", 1, 0U},
+        {"RESET centre past the tuner limit", "\"center_frequency_hz\": 851500000,",
+         "\"center_frequency_hz\": 5146467296,", 1, 1U},
+        {"RESET capture centre past the tuner limit", "\"capture_center_frequency_hz\": 851884000,",
+         "\"capture_center_frequency_hz\": 5146851296,", 1, 1U},
+    };
+
+    int rc = 0;
+    for (const auto& c : cases) {
+        char metadata_path[DSD_TEST_PATH_MAX];
+        const int made = c.eventful ? make_eventful_replay_fixture(metadata_path, sizeof(metadata_path), 16384U)
+                                    : make_replay_fixture(metadata_path, sizeof(metadata_path), DSD_IQ_FORMAT_CU8,
+                                                          "post_mute_pre_widen", 1, kReplayChunkBytes);
+        if (made != 0 || rewrite_sidecar_text_nth(metadata_path, c.from, c.to, c.nth) != 0) {
+            DSD_FPRINTF(stderr, "FAIL: %s: could not make the replay fixture\n", c.label);
+            rc = 1;
+            continue;
+        }
+        std::unique_ptr<dsd_opts> opts;
+        RtlSdrContext* ctx = NULL;
+        const int refused = start_replay_stream_quietly(metadata_path, 0, &opts, &ctx) != 0;
+        if (!refused) {
+            uint32_t applied_hz = 0U;
+            (void)rtl_stream_get_last_applied_freq(&applied_hz);
+            DSD_FPRINTF(stderr, "  %s: the replay started, tuner centre %u Hz\n", c.label, (unsigned)applied_hz);
+            stop_and_destroy_stream(ctx);
+        }
+        char what[128];
+        DSD_SNPRINTF(what, sizeof(what), "%s: the replay start is refused", c.label);
+        rc |= expect_true(what, refused);
+        DSD_SNPRINTF(what, sizeof(what), "%s: no stream resources left", c.label);
+        rc |= expect_true(what, rtl_stream_test_has_resources() == 0);
+    }
+    return rc;
+}
+
 /* Issue #572: a chunk the reader cannot convert ends the replay as a failed read does, after the chunks already
  * delivered, with the failure reported (dsd_engine_run_with_lifecycle() then returns 1). The open refuses every
  * capture the converter cannot handle, so the conversion failure is injected: the third of four chunks. It used to be
@@ -3256,6 +3328,7 @@ main(void) {
     rc |= test_cf32_replay_short_reads_stay_aligned();
     rc |= test_replay_read_failure_mid_chunk_delivers_what_was_read();
     rc |= test_replay_refuses_a_capture_it_cannot_convert();
+    rc |= test_replay_refuses_a_centre_past_the_tuner_limit();
     rc |= test_replay_conversion_failure_ends_with_the_failure();
     rc |= test_loop_pass_that_submits_nothing_ends();
     rc |= test_replay_of_a_data_file_cut_short();

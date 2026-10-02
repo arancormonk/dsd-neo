@@ -8,10 +8,12 @@
  * @brief DMR TIII LCN calculator one-shot utility.
  */
 
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/runtime/cli.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/path_policy.h>
+#include <errno.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -95,20 +97,20 @@ line_parse_frequency_hz(char* line, long* hz_out) {
     }
 
     char* end = start;
+    errno = 0;
     double val = strtod(start, &end);
-    if (end == start) {
+    if (end == start || errno != 0) {
         return 0;
     }
 
-    long hz = (long)llround(val);
-    if (val < 1e5) {
-        hz = (long)llround(val * 1000000.0);
-    }
-    if (hz <= 0) {
+    /* Values under 1e5 are MHz. Bounded before rounding: llround() of a value past long long's range is unspecified,
+       and the result becomes a trunk frequency, so it must also fit DSD_TRUNK_FREQ_MAX_HZ. */
+    const double hz = (val < 1e5) ? val * 1000000.0 : val;
+    if (!(hz >= 0.5 && hz <= (double)DSD_TRUNK_FREQ_MAX_HZ)) {
         return 0;
     }
 
-    *hz_out = hz;
+    *hz_out = (long)llround(hz);
     return 1;
 }
 

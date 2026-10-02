@@ -88,6 +88,15 @@ expect_eq_long(const char* tag, long got, long want) {
 }
 
 static int
+expect_eq_ll(const char* tag, long long got, long long want) {
+    if (got != want) {
+        DSD_FPRINTF(stderr, "%s: got %lld want %lld\n", tag, got, want);
+        return 1;
+    }
+    return 0;
+}
+
+static int
 expect_eq_str(const char* tag, const char* got, const char* want) {
     if (strcmp(got, want) != 0) {
         DSD_FPRINTF(stderr, "%s: got '%s' want '%s'\n", tag, got, want);
@@ -294,6 +303,62 @@ main(void) {
         st.p25_iden_fdma[1].chan_spac = 100;
         rc |= expect_eq_long("verbose computed p25", process_channel_to_freq(&opts, &st, 0x1002),
                              851000000 + 2 * 100 * 125);
+    }
+
+    /* A computed channel must land in 1..2147483647 Hz (DSD_TRUNK_FREQ_MAX_HZ) on every platform. The IDEN base is a
+     * 32-bit over-the-air field in 5 Hz units, so base * 5 overflowed a 32-bit long (Windows) past about 2.147 GHz,
+     * and where long is 64-bit a result above 4.29 GHz was later wrapped by the uint32_t tuner path. A channel past the
+     * ceiling is refused with a trace failure and never cached; the highest one under it, and an ordinary 851 MHz
+     * channel, still compute. */
+    {
+        static dsd_state cs;
+        DSD_MEMSET(&cs, 0, sizeof(cs));
+        p25_freq_trace_t trace;
+
+        cs.p25_iden_fdma[1].populated = 1;
+        cs.p25_iden_fdma[1].chan_type = 1;
+        cs.p25_iden_fdma[1].base_freq = 436207616L; /* * 5 = 2181038080 Hz, past the ceiling */
+        cs.p25_iden_fdma[1].chan_spac = 100;
+        rc |= expect_eq_long("past ceiling refused", process_channel_to_freq_trace(NULL, &cs, 0x1000, &trace), 0);
+        rc |= expect_eq_str("past ceiling failure", trace.failure, "freq-out-of-range");
+        rc |= expect_eq_long("past ceiling trace freq", trace.freq_hz, 0);
+        /* The trace keeps the base in Hz even though it does not fit a 32-bit long. */
+        rc |= expect_eq_ll("past ceiling trace base", (long long)trace.base_hz, 2181038080LL);
+        rc |= expect_eq_long("past ceiling not cached", cs.trunk_chan_map[0x1000], 0);
+        rc |= expect_eq_int("past ceiling map untouched", (int)cs.trunk_chan_map_used_count, 0);
+
+        cs.p25_iden_fdma[2].populated = 1;
+        cs.p25_iden_fdma[2].chan_type = 1;
+        cs.p25_iden_fdma[2].base_freq = 429496729L; /* * 5 = 2147483645 Hz, the last 5 Hz step under the ceiling */
+        cs.p25_iden_fdma[2].chan_spac = 100;
+        rc |= expect_eq_long("ceiling channel computed", process_channel_to_freq_trace(NULL, &cs, 0x2000, &trace),
+                             2147483645L);
+        rc |= expect_eq_str("ceiling channel no failure", trace.failure, "");
+        rc |= expect_eq_long("ceiling channel cached", cs.trunk_chan_map[0x2000], 2147483645L);
+        /* One 12.5 kHz step above it crosses the ceiling. */
+        rc |= expect_eq_long("ceiling step past refused", process_channel_to_freq_trace(NULL, &cs, 0x2001, &trace), 0);
+        rc |= expect_eq_str("ceiling step past failure", trace.failure, "freq-out-of-range");
+        rc |= expect_eq_long("ceiling step past not cached", cs.trunk_chan_map[0x2001], 0);
+
+        /* Where long is 32-bit, the IDEN parsers store a raw base of 2^31 or more negative: 0xFFFFFFFF arrives as -1.
+         * With 100 steps of 12.5 kHz that would compute 1249995 Hz, a plausible channel, so it is refused instead. */
+        cs.p25_iden_fdma[4].populated = 1;
+        cs.p25_iden_fdma[4].chan_type = 1;
+        cs.p25_iden_fdma[4].base_freq = -1L;
+        cs.p25_iden_fdma[4].chan_spac = 100;
+        rc |=
+            expect_eq_long("negative stored base refused", process_channel_to_freq_trace(NULL, &cs, 0x4064, &trace), 0);
+        rc |= expect_eq_str("negative stored base failure", trace.failure, "freq-out-of-range");
+        rc |= expect_eq_long("negative stored base not cached", cs.trunk_chan_map[0x4064], 0);
+
+        cs.p25_iden_fdma[3].populated = 1;
+        cs.p25_iden_fdma[3].chan_type = 1;
+        cs.p25_iden_fdma[3].base_freq = 851000000L / 5L;
+        cs.p25_iden_fdma[3].chan_spac = 100;
+        rc |= expect_eq_long("851 MHz channel computed", process_channel_to_freq_trace(NULL, &cs, 0x300A, &trace),
+                             851000000L + 10L * 100L * 125L);
+        rc |= expect_eq_str("851 MHz channel no failure", trace.failure, "");
+        rc |= expect_eq_ll("851 MHz channel trace base", (long long)trace.base_hz, 851000000LL);
     }
 
     // NXDN channel mapping uses the same module and should cover DFA/cache/no-map paths.

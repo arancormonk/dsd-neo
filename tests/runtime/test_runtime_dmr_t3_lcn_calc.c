@@ -6,6 +6,7 @@
 #include <assert.h>
 #include <stdio.h>
 
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/cli.h>
@@ -74,6 +75,40 @@ test_invalid_signed_numeric_prefixes_are_skipped(void) {
     remove(path);
 }
 
+/* A row is a trunk frequency, so it must fit 1..2147483647 Hz (DSD_TRUNK_FREQ_MAX_HZ). Infinities, NaN, a value
+ * strtod() overflows on, and 3000 (MHz, so 3 GHz) are each skipped, leaving no frequency; the ceiling itself, in Hz,
+ * still makes a one-row map. Each row carries an LCN column: a row with no digit at all is skipped before its
+ * frequency is parsed, so without one the infinity and NaN rows would never reach the range check. */
+static void
+test_rows_outside_the_trunk_range_are_skipped(void) {
+    static const char* const kSkipped[] = {
+        "site,freq,lcn\nA,+inf,1\n",       "site,freq,lcn\nA,-inf,1\n", "site,freq,lcn\nA,+nan,1\n",
+        "site,freq,lcn\nA,1e400,1\n",      "site,freq,lcn\nA,3000,1\n", "site,freq,lcn\nA,5000000000,1\n",
+        "site,freq,lcn\nA,2147483648,1\n",
+    };
+    char path[DSD_TEST_PATH_MAX];
+    int failures = 0;
+
+    for (size_t i = 0; i < sizeof kSkipped / sizeof kSkipped[0]; i++) {
+        clear_dmr_t3_env();
+        dsd_neo_config_init();
+        write_temp_csv(path, kSkipped[i]);
+        const int rc = dsd_cli_calc_dmr_t3_lcn_from_csv(path);
+        remove(path);
+        if (rc != 2) {
+            DSD_FPRINTF(stderr, "FAIL: row %zu (%s) gave %d, want 2 (no frequency)\n", i, kSkipped[i], rc);
+            failures++;
+        }
+    }
+    assert(failures == 0);
+
+    clear_dmr_t3_env();
+    dsd_neo_config_init();
+    write_temp_csv(path, "site,freq,lcn\nA,2147483647,1\n");
+    assert(dsd_cli_calc_dmr_t3_lcn_from_csv(path) == 0);
+    remove(path);
+}
+
 static void
 test_single_frequency_uses_default_start_lcn(void) {
     char path[DSD_TEST_PATH_MAX];
@@ -129,6 +164,7 @@ main(void) {
     test_missing_file_fails();
     test_empty_csv_fails();
     test_invalid_signed_numeric_prefixes_are_skipped();
+    test_rows_outside_the_trunk_range_are_skipped();
     test_single_frequency_uses_default_start_lcn();
     test_unsorted_duplicates_infer_step();
     test_too_small_spacing_without_configured_step_fails();

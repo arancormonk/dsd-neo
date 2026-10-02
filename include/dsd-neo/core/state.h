@@ -37,6 +37,12 @@
  * truncated to 63 characters plus the terminator. */
 #define DSD_CHANNEL_LABEL_SIZE 64
 
+/* The highest frequency, in Hz, a trunking channel is stored or tuned at, the same on every platform: the largest value
+ * a 32-bit long holds (long is 32-bit on Windows, and trunk frequencies are stored as long), which also fits the
+ * uint32_t tuner path. No trunking band comes near it. A channel-map row, an over-the-air channel computation or a
+ * cached control channel past it is refused rather than stored or tuned. */
+#define DSD_TRUNK_FREQ_MAX_HZ  2147483647L
+
 enum DSD_ATTR_PACKED {
     DSD_P25_P2_AUDIO_RING_DEPTH = 4,
     DSD_P25_MAC_FRAGMENT_MAX_OCTETS = 256,

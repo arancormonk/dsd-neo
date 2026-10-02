@@ -92,11 +92,10 @@ Optional column:
 Notes:
 
 - `frequency_hz` is parsed as an integer (no `K/M/G` suffixes).
-- `frequency_hz` must be between 100000 (100 kHz) and 6000000000 (6 GHz) — the range any supported front end can
-  reach. A row outside it (including `0`) is skipped with a warning, and its slot in the LCN list below is left at 0 so
-  later rows keep their LCN numbers. This is what tells a channel map apart from a decimal key list, which has the same
-  `number,number` shape. On Windows, where the value is read into a 32-bit `long`, the ceiling is 2147483647
-  (about 2.147 GHz).
+- `frequency_hz` must be between 100000 (100 kHz) and 2147483647 (about 2.147 GHz) on every platform — the highest
+  frequency a trunk channel is stored and tuned at, far above any trunking band. A row outside it (including `0`) is
+  skipped with a warning, and its slot in the LCN list below is left at 0 so later rows keep their LCN numbers. This is
+  what tells a channel map apart from a decimal key list, which has the same `number,number` shape.
 - Optional headers after the two required columns are matched case-insensitively, with surrounding whitespace
   trimmed: `name`, `mode`, `keys_hex_csv`, `keys_dec_csv`, `single_key_hex`, `single_key_dec`, and `options` (`relevant_CLI_switches`). They may appear in
   any order, including after column 16. Unrecognized columns are ignored. The first `name` column wins; duplicate

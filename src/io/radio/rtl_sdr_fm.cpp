@@ -6891,6 +6891,38 @@ extern "C" int rtl_stream_get_auto_ppm(void);
 /* Option B: Perform a short auto-PPM pre-training window at startup before returning control,
    so trunking/hunt logic begins after a stable PPM lock when possible. */
 
+/* The metadata carries every frequency in 64 bits, the tuner path in 32: a centre past 4294967295 Hz, at the start or
+   in a RETUNE or RESET event, would wrap to an unrelated centre and replay as if captured there. Returns 0 when every
+   centre fits, otherwise logs the first that does not and returns -1, so the replay is refused before it starts. */
+static int
+replay_config_check_tuner_frequencies(const dsd_iq_replay_config* cfg) {
+    if (cfg->center_frequency_hz > UINT32_MAX) {
+        LOG_ERROR("IQ replay metadata error: center_frequency_hz %llu is past the tuner limit of 4294967295 Hz\n",
+                  (unsigned long long)cfg->center_frequency_hz);
+        return -1;
+    }
+    if (cfg->capture_center_frequency_hz > UINT32_MAX) {
+        LOG_ERROR(
+            "IQ replay metadata error: capture_center_frequency_hz %llu is past the tuner limit of 4294967295 Hz\n",
+            (unsigned long long)cfg->capture_center_frequency_hz);
+        return -1;
+    }
+    for (uint32_t i = 0; i < cfg->event_count && cfg->events; i++) {
+        const dsd_iq_event* ev = &cfg->events[i];
+        if (ev->kind != DSD_IQ_EVENT_RETUNE && ev->kind != DSD_IQ_EVENT_RESET) {
+            continue;
+        }
+        if (ev->center_frequency_hz > UINT32_MAX || ev->capture_center_frequency_hz > UINT32_MAX) {
+            LOG_ERROR("IQ replay metadata error: event %u (center_frequency_hz %llu, capture_center_frequency_hz %llu) "
+                      "is past the tuner limit of 4294967295 Hz\n",
+                      (unsigned)i, (unsigned long long)ev->center_frequency_hz,
+                      (unsigned long long)ev->capture_center_frequency_hz);
+            return -1;
+        }
+    }
+    return 0;
+}
+
 static int
 stream_open_prepare_replay_config(dsd_opts* opts, RadioSourceKind source_kind, dsd_iq_replay_config* replay_cfg,
                                   int* replay_cfg_loaded) {
@@ -6912,9 +6944,15 @@ stream_open_prepare_replay_config(dsd_opts* opts, RadioSourceKind source_kind, d
         LOG_ERROR("IQ replay metadata error: %s\n", err_buf[0] ? err_buf : "unknown error");
         return -1;
     }
+    /* From here the parsed metadata may own allocations (its event list), so the caller clears it whether or not the
+       replay goes on to start. */
+    *replay_cfg_loaded = 1;
     replay_cfg->loop = opts->iq_replay_loop ? 1 : 0;
     replay_cfg->realtime = (opts->iq_replay_rate_mode == DSD_IQ_REPLAY_RATE_REALTIME) ? 1 : 0;
-    opts->rtlsdr_center_freq = (long int)replay_cfg->center_frequency_hz;
+    if (replay_config_check_tuner_frequencies(replay_cfg) != 0) {
+        return -1;
+    }
+    opts->rtlsdr_center_freq = (uint32_t)replay_cfg->center_frequency_hz;
     opts->rtlsdr_ppm_error = replay_cfg->ppm;
     if (replay_cfg->tuner_gain_tenth_db > 0) {
         opts->rtl_gain_value = replay_cfg->tuner_gain_tenth_db / 10;
@@ -6922,7 +6960,6 @@ stream_open_prepare_replay_config(dsd_opts* opts, RadioSourceKind source_kind, d
     if (replay_cfg->rtl_dsp_bw_khz > 0) {
         opts->rtl_dsp_bw_khz = replay_cfg->rtl_dsp_bw_khz;
     }
-    *replay_cfg_loaded = 1;
     return 0;
 }
 
@@ -10716,7 +10753,7 @@ rtl_stream_tune_reconcile_applied_frequency(dsd_opts* opts, uint32_t requested_f
              reason ? reason : "applied-state");
     rtl_stream_store_capture_frequency_for_center(applied_freq);
     if (opts) {
-        opts->rtlsdr_center_freq = (long int)applied_freq;
+        opts->rtlsdr_center_freq = applied_freq;
     }
 }
 
@@ -10730,7 +10767,7 @@ rtl_stream_tune_reconcile_result(dsd_opts* opts, uint32_t requested_freq, int rc
 }
 
 static int
-rtl_stream_tune_impl(dsd_opts* opts, long int frequency, uint64_t caller_token) {
+rtl_stream_tune_impl(dsd_opts* opts, uint32_t frequency, uint64_t caller_token) {
     if (!opts) {
         return RTL_STREAM_TUNE_FAILED;
     }
@@ -10745,13 +10782,13 @@ rtl_stream_tune_impl(dsd_opts* opts, long int frequency, uint64_t caller_token) 
         return RTL_STREAM_TUNE_DEFERRED;
     }
     if (auto_ppm_should_freeze_retunes() && dsd_rtl_stream_auto_ppm_training_active()) {
-        rtl_stream_log_tune_warning((uint32_t)frequency, "auto_ppm_training");
+        rtl_stream_log_tune_warning(frequency, "auto_ppm_training");
         return RTL_STREAM_TUNE_DEFERRED;
     }
     if (opts->payload == 1) {
-        LOG_INFO("\nTuning to %ld Hz.", frequency);
+        LOG_INFO("\nTuning to %u Hz.", frequency);
     }
-    uint32_t requested_freq = (uint32_t)frequency;
+    uint32_t requested_freq = frequency;
 
     /* Enqueue retune, coalescing with any already-pending request so completion IDs
      * stay aligned with the number of retunes the controller will actually execute. */
@@ -10773,12 +10810,12 @@ rtl_stream_tune_impl(dsd_opts* opts, long int frequency, uint64_t caller_token) 
 }
 
 extern "C" int
-dsd_rtl_stream_tune(dsd_opts* opts, long int frequency) {
+dsd_rtl_stream_tune(dsd_opts* opts, uint32_t frequency) {
     return rtl_stream_tune_impl(opts, frequency, 0U);
 }
 
 extern "C" int
-dsd_rtl_stream_tune_tagged(dsd_opts* opts, long int frequency, uint64_t request_id) {
+dsd_rtl_stream_tune_tagged(dsd_opts* opts, uint32_t frequency, uint64_t request_id) {
     if (request_id == 0U) {
         return RTL_STREAM_TUNE_FAILED;
     }
@@ -11082,7 +11119,7 @@ dsd_rtl_stream_test_tune_failure_reconciles_applied(uint32_t requested_freq_hz, 
         controller.last_applied_freq_hz.store(outer_applied_freq_hz, std::memory_order_release);
         return -2;
     }
-    opts->rtlsdr_center_freq = (long int)requested_freq_hz;
+    opts->rtlsdr_center_freq = requested_freq_hz;
     controller.last_applied_freq_hz.store(applied_freq_hz, std::memory_order_release);
     dongle.offset_tuning = 0;
     controller.edge = 0;

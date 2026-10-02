@@ -1083,6 +1083,21 @@ test_get_current_freq_parses_first_line_and_errors(void) {
     reset_stubs();
     push_response("RPRT 1");
     assert(GetCurrentFreq(102) == 0L);
+
+    /* A reading strtol() cannot hold is unknown (0), not the LONG_MAX it clamps to, which where long is 32-bit
+     * (Windows) is itself a plausible 2147483647 Hz; a negative reading is no frequency either. */
+    reset_stubs();
+    push_response("99999999999999999999\n");
+    assert(GetCurrentFreq(102) == 0L);
+    reset_stubs();
+    push_response("-851037500\n");
+    assert(GetCurrentFreq(102) == 0L);
+#if LONG_MAX < 4294967295LL
+    /* One past a 32-bit long already overflows there. */
+    reset_stubs();
+    push_response("2147483648\n");
+    assert(GetCurrentFreq(102) == 0L);
+#endif
     return 0;
 }
 
@@ -1121,6 +1136,47 @@ test_io_control_set_freq_validation_and_rigctl_dispatch(void) {
     opts.rigctl_sockfd = DSD_INVALID_SOCKET;
     assert(io_control_set_freq(&opts, &state, 851075000L) == -1);
     assert(g_command_count == 0);
+    return 0;
+}
+
+/* The tuner path carries a uint32_t, so where long is 64-bit a frequency past 4294967295 Hz would wrap to an unrelated
+ * channel: it is refused before either backend is asked, and the cached centre stays where it was. 4294967295 Hz
+ * itself still reaches the backend. */
+static int
+test_io_control_set_freq_refuses_past_the_tuner_limit(void) {
+#if LONG_MAX > 4294967295L
+    static dsd_opts opts;
+    static dsd_state state;
+
+    reset_stubs();
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.use_rigctl = 1;
+    opts.rigctl_sockfd = 104;
+    opts.setmod_bw = 12500;
+    opts.rtlsdr_center_freq = 851000000U;
+    push_response("RPRT 0\n");
+    push_response("RPRT 0\n");
+    /* 4294967296 + 851000000 wraps to 851000000 as a uint32_t. */
+    assert(io_control_set_freq(&opts, &state, 5145967296L) == -1);
+    assert(g_command_count == 0);
+    assert(opts.rtlsdr_center_freq == 851000000U);
+
+    reset_stubs();
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.rtlsdr_center_freq = 851000000U;
+    state.rtl_ctx = (RtlSdrContext*)&state;
+    assert(io_control_set_freq(&opts, &state, 4294967296L) == -1);
+    assert(io_control_set_freq(&opts, &state, 5145967296L) == -1);
+    assert(g_rtl_tune_calls == 0);
+    assert(opts.rtlsdr_center_freq == 851000000U);
+
+    assert(io_control_set_freq(&opts, &state, 4294967295L) == RTL_STREAM_TUNE_OK);
+    assert(g_rtl_tune_calls == 1);
+    assert(g_rtl_tune_freq == 4294967295U);
+    assert(opts.rtlsdr_center_freq == 4294967295U);
+#endif
     return 0;
 }
 
@@ -1225,6 +1281,7 @@ main(void) {
     rc |= test_full_size_replies_stay_in_bounds();
     rc |= test_get_current_freq_parses_first_line_and_errors();
     rc |= test_io_control_set_freq_validation_and_rigctl_dispatch();
+    rc |= test_io_control_set_freq_refuses_past_the_tuner_limit();
     rc |= test_io_control_set_freq_rejects_missing_rtl_context();
     rc |= test_io_control_set_freq_propagates_rtl_deferred();
     rc |= test_io_control_set_freq_caches_applied_rtl_frequency();

@@ -2341,7 +2341,7 @@ p25_grant_log_freq(dsd_opts* opts, const dsd_state* state, const p25_sm_ctx_t* c
     }
     p25_sm_diagf(opts, state, ctx, "grant_freq",
                  "ch=0x%04X freq=%ld source=%s failure=%s iden=%d type=%d tdma=%d denom=%d step=%d cached=%d "
-                 "ambiguous=%d base=%ld spacing=%ld tg=%d src=%d dst=%d svc=0x%02X provenance=%s",
+                 "ambiguous=%d base=%lld spacing=%lld tg=%d src=%d dst=%d svc=0x%02X provenance=%s",
                  ev->channel & 0xFFFF, freq, freq_trace->source, freq_trace->failure[0] ? freq_trace->failure : "none",
                  freq_trace->iden, freq_trace->chan_type, freq_trace->use_tdma, freq_trace->denom, freq_trace->step,
                  freq_trace->cached, freq_trace->ambiguous, freq_trace->base_hz, freq_trace->spacing_hz, ev->tg,

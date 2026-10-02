@@ -33,8 +33,8 @@ typedef struct {
     int step;
     int ambiguous;
     int cached;
-    long base_hz;
-    long spacing_hz;
+    long long base_hz; /* the IDEN base in Hz; 64-bit, since the 32-bit field in 5 Hz units overflows a 32-bit long */
+    long long spacing_hz; /* the IDEN channel spacing in Hz */
     long freq_hz;
     char source[32];
     char failure[64];

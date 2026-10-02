@@ -10,7 +10,6 @@
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/protocol/nxdn/nxdn_lfsr.h>
 #include <errno.h>
-#include <limits.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/types.h>
@@ -382,7 +381,7 @@ test_chan_rejects_a_key_list(void) {
 }
 
 /* The bounds are generous on purpose -- they reject numbers that cannot be
- * radio frequencies at all, not frequencies outside a band plan. */
+ * trunk channel frequencies at all, not frequencies outside a band plan. */
 static int
 test_chan_frequency_bounds(void) {
     char tmpl[] = "dsd-neo-test-validate-chan-bounds-XXXXXX";
@@ -390,19 +389,13 @@ test_chan_frequency_bounds(void) {
                              "1,0\n"          /* a blank column parses to this */
                              "2,99999\n"      /* just under the floor */
                              "3,100000\n"     /* the floor itself: HF, kept */
-                             "4,6000000000\n" /* the ceiling: 6 GHz, kept */
-                             "5,6000000001\n" /* past any front end's reach */
+                             "4,2147483647\n" /* the ceiling, the same on every platform: kept */
+                             "5,2147483648\n" /* one past it: refused, not stored or tuned */
                              "6,851000000\n")
         != 0) {
         return 1;
     }
-    /* The frequency is parsed into a long, so where long is 32-bit (Windows) the 6 GHz row
-     * fails the parse and is skipped along with the out-of-range rows. */
-#if LONG_MAX < 6000000000LL
-    const unsigned want_accepted = 2U;
-#else
     const unsigned want_accepted = 3U;
-#endif
     dsd_csv_validation v = {0U, 0U, 0U};
     int failed = 0;
     if (dsd_csv_validate_chan_file(tmpl, &v) != 0) {

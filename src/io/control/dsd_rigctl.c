@@ -23,6 +23,7 @@
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/log.h>
+#include <errno.h>
 #include <limits.h>
 #if !DSD_PLATFORM_WIN_NATIVE
 #include <netinet/in.h>
@@ -184,8 +185,11 @@ GetCurrentFreq(dsd_socket_t sockfd) {
     if (token == NULL) {
         return 0;
     }
+    /* strtol() clamps an overflow to LONG_MAX, which on Windows (32-bit long) is itself a frequency; a reading that
+       does not fit is unknown, not 2147483647 Hz. */
+    errno = 0;
     freq = strtol(token, &ptr, 10);
-    if (ptr == token) {
+    if (ptr == token || errno != 0 || freq < 0) {
         return 0;
     }
     return freq;
@@ -636,6 +640,12 @@ set_rtl_frequency(dsd_opts* opts, dsd_state* state, uint32_t requested_freq, uin
 int
 io_control_set_freq(dsd_opts* opts, dsd_state* state, long int freq) {
     if (!opts || freq <= 0) {
+        return -1;
+    }
+    /* The tuner path carries a uint32_t: a frequency past it (possible where long is 64-bit) would wrap to an unrelated
+       channel, so it is refused instead. */
+    if ((long long)freq > (long long)UINT32_MAX) {
+        LOG_ERROR("io_control: %ld Hz is past the tuner limit of 4294967295 Hz; not tuning\n", freq);
         return -1;
     }
     uint32_t applied_freq = (uint32_t)freq;

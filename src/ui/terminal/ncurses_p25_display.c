@@ -42,9 +42,16 @@ ui_iden_entry_is_usable(const p25_iden_entry_t* entry) {
     return entry && entry->populated && entry->base_freq != 0 && entry->chan_spac != 0;
 }
 
+/* Computed in 64 bits like process_channel_to_freq(), and 0 (no channel) for a stored base at or below 0 or a result
+   outside 1..DSD_TRUNK_FREQ_MAX_HZ: the base is a 32-bit over-the-air field in 5 Hz units, so base * 5 overflows a 32-bit
+   long, and where long is 32-bit a raw base of 2^31 or more is stored negative. */
 static long int
 ui_iden_entry_calc_freq(const p25_iden_entry_t* entry, int step) {
-    return (entry->base_freq * 5) + ((long)step * entry->chan_spac * 125);
+    if (entry->base_freq <= 0) {
+        return 0;
+    }
+    const long long freq_hz = ((long long)entry->base_freq * 5LL) + ((long long)step * entry->chan_spac * 125LL);
+    return (freq_hz > 0 && freq_hz <= DSD_TRUNK_FREQ_MAX_HZ) ? (long int)freq_hz : 0;
 }
 
 static int
@@ -69,7 +76,8 @@ ui_iden_entry_matches(const p25_iden_entry_t* entry, int raw, int denom, long in
     if (denom <= 0) {
         denom = 1;
     }
-    return ui_iden_entry_calc_freq(entry, raw / denom) == freq;
+    const long int calc = ui_iden_entry_calc_freq(entry, raw / denom);
+    return calc != 0 && calc == freq;
 }
 
 static int
@@ -202,7 +210,7 @@ ui_p25_iden_trust_str(int trust) {
 
 static void
 ui_p25_print_iden_line(int id, const p25_iden_entry_t* entry, int has_other_class, const char* mode_base) {
-    double base_mhz = (double)(entry->base_freq * 5) / 1000000.0;
+    double base_mhz = (double)entry->base_freq * 5.0 / 1000000.0;
     double spac_mhz = (double)(entry->chan_spac * 125) / 1000000.0;
     const char* trust_str = ui_p25_iden_trust_str(entry->trust);
     const char* mode_tag = has_other_class ? ((mode_base[0] == 'F') ? "FDMA[F/T]" : "TDMA[F/T]") : mode_base;

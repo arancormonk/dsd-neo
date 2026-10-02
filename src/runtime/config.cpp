@@ -14,6 +14,7 @@
 #include <atomic>
 #include <cmath>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/dsp/costas.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/config.h>
@@ -792,9 +793,11 @@ config_init_input_and_dmr_t3(dsdneoRuntimeConfig& c) {
     if (env_is_set(t3ccf)) {
         double v = 0.0;
         if (env_parse_double_strict(t3ccf, &v)) {
-            long hz = (v < 1e5) ? (long)std::llround(v * 1000000.0) : (long)std::llround(v);
-            if (hz > 0) {
-                c.dmr_t3_cc_freq_hz = hz;
+            /* Values under 1e5 are MHz. Bounded before rounding: llround() of a value past long long's range is
+               unspecified, and the result is a trunk frequency, so it must also fit DSD_TRUNK_FREQ_MAX_HZ. */
+            const double hz = (v < 1e5) ? v * 1000000.0 : v;
+            if (hz >= 0.5 && hz <= (double)DSD_TRUNK_FREQ_MAX_HZ) {
+                c.dmr_t3_cc_freq_hz = (long)std::llround(hz);
                 c.dmr_t3_cc_freq_is_set = 1;
             }
         }

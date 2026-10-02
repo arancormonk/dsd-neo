@@ -596,6 +596,66 @@ test_channel_import_rejects_malformed_rows_without_reusing_previous_channel(void
     return failed;
 }
 
+/* The trunk ceiling is the largest value a 32-bit long holds, so a channel map means the same on Windows as anywhere
+ * else, and it fits the uint32_t tuner path. */
+_Static_assert(DSD_TRUNK_FREQ_MAX_HZ == 2147483647L, "the trunk ceiling is the 32-bit long maximum on every platform");
+
+/* A channel-map row past 2147483647 Hz (DSD_TRUNK_FREQ_MAX_HZ) is refused on every platform: it is not stored in
+ * trunk_chan_map, and its LCN slot holds 0 so the rows after it keep their LCN numbers. The ceiling itself is kept.
+ * Where long is 64-bit such rows used to be stored up to 6 GHz, and a tune past 4294967295 Hz then wrapped in the
+ * uint32_t tuner path. */
+static int
+test_channel_import_refuses_rows_past_the_trunk_ceiling(void) {
+    int failed = 0;
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    char tmpl[] = "dsd-neo-test-channel-ceiling-XXXXXX";
+
+    if (!opts || !state) {
+        free(opts);
+        free_test_state(state);
+        return 1;
+    }
+    const int fd = dsd_mkstemp(tmpl);
+    if (fd < 0) {
+        free(opts);
+        free_test_state(state);
+        return 1;
+    }
+    (void)dsd_close(fd);
+
+    if (write_text_file(tmpl, "channel,freq\n"
+                              "1,2147483647\n"
+                              "2,2147483648\n"
+                              "3,5000000000\n"
+                              "4,851000000\n")
+        != 0) {
+        (void)remove(tmpl);
+        free(opts);
+        free_test_state(state);
+        return 1;
+    }
+
+    DSD_SNPRINTF(opts->chan_in_file, sizeof(opts->chan_in_file), "%s", tmpl);
+    failed |= fixture_check(csvChanImport(opts, state) == 0, "ceiling channel import succeeds");
+    failed |= fixture_check(state->trunk_chan_map[1] == 2147483647L, "the ceiling row is stored");
+    failed |= fixture_check(state->trunk_chan_map[2] == 0L, "one past the ceiling is not stored");
+    failed |= fixture_check(state->trunk_chan_map[3] == 0L, "a 5 GHz row is not stored");
+    failed |= fixture_check(state->trunk_chan_map[4] == 851000000L, "the row after them is stored");
+    failed |= fixture_check(state->trunk_chan_map_used_count == 2U && state->trunk_chan_map_used[0] == 1U
+                                && state->trunk_chan_map_used[1] == 4U,
+                            "only the in-range rows are mapped");
+    failed |= fixture_check(state->lcn_freq_count == 4 && state->trunk_lcn_freq[0] == 2147483647L
+                                && state->trunk_lcn_freq[1] == 0L && state->trunk_lcn_freq[2] == 0L
+                                && state->trunk_lcn_freq[3] == 851000000L,
+                            "refused rows hold 0 in their LCN slots");
+
+    failed |= remove_fixture(tmpl);
+    free(opts);
+    free_test_state(state);
+    return failed;
+}
+
 static int
 test_channel_import_extends_past_26_entries(void) {
     int failed = 0;
@@ -2883,6 +2943,9 @@ main(void) {
         return 1;
     }
     if (test_channel_import_rejects_malformed_rows_without_reusing_previous_channel() != 0) {
+        return 1;
+    }
+    if (test_channel_import_refuses_rows_past_the_trunk_ceiling() != 0) {
         return 1;
     }
     if (test_channel_import_extends_past_26_entries() != 0) {

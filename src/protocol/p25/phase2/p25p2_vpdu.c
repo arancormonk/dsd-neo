@@ -2686,8 +2686,8 @@ p25p2_vpdu_iter_block_29(p25p2_vpdu_ctx* ctx) {
         DSD_FPRINTF(stderr, "\n Identifier Update UHF/VHF\n");
         DSD_FPRINTF(stderr,
                     "  Channel Identifier [%01X] BW [%01X] Transmit Offset [%04X]\n  Channel Spacing [%03X] Base "
-                    "Frequency [%08lX] [%09ld]",
-                    state->p25_chan_iden, bw_vu, trans_off, chan_spac, base_freq, base_freq * 5);
+                    "Frequency [%08lX] [%09lld]",
+                    state->p25_chan_iden, bw_vu, trans_off, chan_spac, base_freq, (long long)base_freq * 5);
     }
 
     if (len_b < 0) {
@@ -2747,8 +2747,8 @@ p25p2_vpdu_iter_block_30(p25p2_vpdu_ctx* ctx) {
         DSD_FPRINTF(stderr, "\n Identifier Update (8.3.1.23)\n");
         DSD_FPRINTF(stderr,
                     "  Channel Identifier [%01X] BW [%01X] Transmit Offset [%04X]\n  Channel Spacing [%03X] Base "
-                    "Frequency [%08lX] [%09ld]",
-                    state->p25_chan_iden, bw, trans_off, chan_spac, base_freq, base_freq * 5);
+                    "Frequency [%08lX] [%09lld]",
+                    state->p25_chan_iden, bw, trans_off, chan_spac, base_freq, (long long)base_freq * 5);
     }
 
     if (len_b < 0) {
@@ -2808,8 +2808,8 @@ p25p2_vpdu_iter_block_31(p25p2_vpdu_ctx* ctx) {
         DSD_FPRINTF(stderr, "\n Identifier Update for TDMA - Abbreviated\n");
         DSD_FPRINTF(stderr,
                     "  Channel Identifier [%01X] Channel Type [%01X] Transmit Offset [%04X]\n  Channel Spacing [%03X] "
-                    "Base Frequency [%08lX] [%09ld]",
-                    state->p25_chan_iden, chan_type, trans_off, chan_spac, base_freq, base_freq * 5);
+                    "Base Frequency [%08lX] [%09lld]",
+                    state->p25_chan_iden, chan_type, trans_off, chan_spac, base_freq, (long long)base_freq * 5);
     }
 
     if (len_b < 0) {
@@ -2874,8 +2874,8 @@ p25p2_vpdu_iter_block_32(p25p2_vpdu_ctx* ctx) {
         DSD_FPRINTF(stderr, "\n Identifier Update for TDMA - Extended\n");
         DSD_FPRINTF(stderr,
                     "  Channel Identifier [%01X] Channel Type [%01X] Transmit Offset [%04X]\n  Channel Spacing [%03X] "
-                    "Base Frequency [%08lX] [%09ld]",
-                    state->p25_chan_iden, chan_type, trans_off, chan_spac, base_freq, base_freq * 5);
+                    "Base Frequency [%08lX] [%09lld]",
+                    state->p25_chan_iden, chan_type, trans_off, chan_spac, base_freq, (long long)base_freq * 5);
         DSD_FPRINTF(stderr, "\n  WACN [%04X] SYSID [%04X]", lwacn, lsysid);
     }
 

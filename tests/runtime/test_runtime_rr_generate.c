@@ -701,6 +701,49 @@ test_chan_p25_ranking(void) {
     expect("no control freq", dsd_rr_site_control_freq_hz(&site) == 0);
 }
 
+/* A site frequency past 2147483647 Hz (DSD_TRUNK_FREQ_MAX_HZ, the trunk ceiling on every platform) is one the
+ * channel-map importer refuses, so it is not generated: not as the control channel, not as the first frequency a
+ * repeater list picks, and not as a map row. The ceiling itself is kept. */
+static void
+test_chan_p25_drops_frequencies_past_the_trunk_ceiling(void) {
+    dsd_rr_site_freq freqs[3];
+    freq_set(&freqs[0], 1, 2147483648LL, "d", NULL); /* one past the ceiling, marked as the control channel */
+    freq_set(&freqs[1], 2, 851500000LL, "a", NULL);
+    freq_set(&freqs[2], 3, 2147483647LL, "", NULL); /* the ceiling itself */
+    dsd_rr_site site;
+    site_init(&site, freqs, 3U);
+
+    expect("past-ceiling control skipped", dsd_rr_site_control_freq_hz(&site) == 851500000LL);
+    expect("past-ceiling first freq skipped", dsd_rr_site_first_freq_hz(&site) == 851500000LL);
+
+    char* text = NULL;
+    size_t len = 0;
+    dsd_rr_warning_list warnings;
+    DSD_MEMSET(&warnings, 0, sizeof(warnings));
+    expect("past-ceiling map generated",
+           dsd_rr_generate_chan_csv(DSD_RR_PROTO_P25, &site, 1U, &text, &len, &warnings) == 0);
+    expect_str("past-ceiling map rows", text,
+               "ChannelNumber(dec),frequency(Hz) (generated from RadioReference; do not delete this line)\n"
+               "1,851500000\n"
+               "2,2147483647\n");
+    expect("past-ceiling skip warned", warned(&warnings, "no usable value"));
+    if (text != NULL) {
+        dsd_csv_validation v;
+        DSD_MEMSET(&v, 0, sizeof(v));
+        if (validate_generated(text, 0, &v) == 0) {
+            expect_counts("past-ceiling map imports whole", &v, 2U, 0U);
+        }
+    }
+    free(text);
+    dsd_rr_warning_list_free(&warnings);
+
+    /* With nothing else usable, the site has no control channel at all. */
+    freq_set(&freqs[1], 2, 6000000000LL, "a", NULL);
+    freq_set(&freqs[2], 3, 4294967296LL, "", NULL);
+    expect("no usable control", dsd_rr_site_control_freq_hz(&site) == 0);
+    expect("no usable first freq", dsd_rr_site_first_freq_hz(&site) == 0);
+}
+
 static void
 test_chan_p25_identifiers(void) {
     /* A real 16-bit (iden << 12) | chan grant identifier is emitted verbatim,
@@ -1486,6 +1529,7 @@ main(void) {
     test_group_csv();
     test_group_csv_fixture();
     test_chan_p25_ranking();
+    test_chan_p25_drops_frequencies_past_the_trunk_ceiling();
     test_chan_p25_identifiers();
     test_chan_p25_full_list();
     test_chan_p25_fixture();
