@@ -24,9 +24,16 @@ jobs:
   # guard — and it has to do that on the pull request, not on the push that
   # follows it. Every variant runs ctest as well as building, because a
   # radio-off *test* failure is invisible to a build-only job.
+  #
+  # The arm64 leg reruns the `both` variant on a native arm64 runner: it is the
+  # only leg where `char` is unsigned and the only one that executes the NEON
+  # SIMD paths, and it backs the aarch64 AppImage, which is built under QEMU
+  # with tests off. An entry without `runner`/`name_suffix` reads them as empty,
+  # so the x86_64 check names stay exactly as branch protection lists them.
   backend-matrix:
-    name: backend-matrix (${{ matrix.variant }})
-    runs-on: ubuntu-latest
+    name: backend-matrix (${{ matrix.variant }}${{ matrix.name_suffix }})
+    runs-on: ${{ matrix.runner || 'ubuntu-latest' }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -76,6 +83,17 @@ jobs:
             soapy_enabled: OFF
             soapy_available: OFF
             radio_available: ON
+          - variant: both
+            name_suffix: ", arm64"
+            runner: ubuntu-24.04-arm
+            cmake_flags: -DDSD_ENABLE_RTLSDR=ON -DDSD_REQUIRE_RTLSDR=ON -DDSD_ENABLE_SOAPYSDR=ON -DDSD_REQUIRE_SOAPYSDR=ON -DDSD_ENABLE_AIRSPY=ON -DDSD_REQUIRE_AIRSPY=ON
+            airspy_enabled: ON
+            airspy_available: ON
+            rtl_enabled: ON
+            rtl_available: ON
+            soapy_enabled: ON
+            soapy_available: ON
+            radio_available: ON
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -123,11 +141,24 @@ jobs:
           cmake --build --preset dev-debug -j
 
       - name: Test (${{ matrix.variant }})
-        run: ctest --preset dev-debug --output-on-failure
+        run: |
+          ctest --preset dev-debug -N | tail -n 1
+          ctest --preset dev-debug --output-on-failure
 
+  # The arm64 entry is the Android ABI's instruction set with the Android option
+  # set; a missing name_suffix keeps the x86_64 check name unchanged.
   android-shape-host:
-    name: android shape (headless, forced radio pipeline)
-    runs-on: ubuntu-latest
+    name: android shape (${{ matrix.name_prefix }}headless, forced radio pipeline)
+    runs-on: ${{ matrix.runner || 'ubuntu-latest' }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+          - arch: arm64
+            name_prefix: "arm64, "
+            runner: ubuntu-24.04-arm
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -193,7 +224,9 @@ jobs:
         run: cmake --build --preset dev-debug -j
 
       - name: Test (android shape)
-        run: ctest --preset dev-debug --output-on-failure
+        run: |
+          ctest --preset dev-debug -N | tail -n 1
+          ctest --preset dev-debug --output-on-failure
 
   build-linux:
     runs-on: ubuntu-latest
