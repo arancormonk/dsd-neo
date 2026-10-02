@@ -228,6 +228,72 @@ jobs:
           ctest --preset dev-debug -N | tail -n 1
           ctest --preset dev-debug --output-on-failure
 
+  # Every other ctest job is a -O0 Debug build, but what ships is optimized with
+  # fast-math. This one runs the suite at -O2 with fast-math and AVX2/FMA code
+  # generation, so FMA contraction, auto-vectorization and optimizer-exposed
+  # undefined behaviour reach a test before a user. x86-64-v3 because every
+  # hosted x86_64 runner has it; AVX-512 (v4) is not guaranteed, so the v4 job
+  # below only links.
+  optimized-v3-ctest:
+    name: Linux • RelWithDebInfo • ctest (x86-64-v3, fast-math)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # A runner without the ISA would SIGILL in the first test and read as a
+      # test failure; fail here with the reason instead.
+      - name: Require an x86-64-v3 runner
+        run: |
+          set -euo pipefail
+          /lib64/ld-linux-x86-64.so.2 --help | grep -F 'x86-64-v3 (supported'
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cmake ninja-build pkg-config git \
+            libsndfile1-dev libpulse-dev libncurses-dev \
+            libusb-1.0-0-dev libfftw3-dev libblas-dev liblapack-dev gfortran \
+            libcodec2-dev librtlsdr-dev libsoapysdr-dev libairspy-dev libcurl4-openssl-dev libexpat1-dev
+
+      - name: Build and install mbelib-neo
+        run: |
+          set -euxo pipefail
+          source tools/ci-dependency-pins.env
+          tools/fetch-pinned-git.sh https://github.com/arancormonk/mbelib-neo "$MBELIB_NEO_SHA" /tmp/mbelib-neo
+          cmake -S /tmp/mbelib-neo -B /tmp/mbelib-neo/build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON \
+            -DCMAKE_INSTALL_PREFIX="$HOME/.local"
+          cmake --build /tmp/mbelib-neo/build -j
+          cmake --install /tmp/mbelib-neo/build
+
+      - name: Prepare local dependency environment
+        run: |
+          {
+            echo "PKG_CONFIG_PATH=$HOME/.local/lib/pkgconfig:$HOME/.local/lib64/pkgconfig:${PKG_CONFIG_PATH:-}"
+            echo "CMAKE_PREFIX_PATH=$HOME/.local:${CMAKE_PREFIX_PATH:-}"
+            echo "LD_LIBRARY_PATH=$HOME/.local/lib:$HOME/.local/lib64:${LD_LIBRARY_PATH:-}"
+          } >> "$GITHUB_ENV"
+
+      # perf-bench is RelWithDebInfo (-O2) with tests and fast-math on, LTO and
+      # -march=native off; the ISA level is pinned here instead.
+      - name: Configure (perf-bench, x86-64-v3)
+        run: |
+          cmake --preset perf-bench -G Ninja \
+            -DCMAKE_C_FLAGS=-march=x86-64-v3 \
+            -DCMAKE_CXX_FLAGS=-march=x86-64-v3 \
+            -DDSD_REQUIRE_RTLSDR=ON -DDSD_REQUIRE_SOAPYSDR=ON -DDSD_REQUIRE_AIRSPY=ON
+
+      - name: Build (perf-bench, x86-64-v3)
+        run: cmake --build --preset perf-bench -j
+
+      - name: Test (perf-bench, x86-64-v3)
+        run: |
+          ctest --preset perf-bench -N | tail -n 1
+          ctest --preset perf-bench --output-on-failure
+
   build-linux:
     runs-on: ubuntu-latest
     steps:
