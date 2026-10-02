@@ -21,6 +21,8 @@ extern "C" uint32_t widen_rotate90_u8_to_f32_bias127_phase_sse2(const unsigned c
 extern "C" uint32_t widen_rotate90_u8_to_f32_bias127_phase_moments_sse2(const unsigned char* src, float* dst,
                                                                         uint32_t len, uint32_t phase,
                                                                         dsd_input_level_cu8_moments* moments);
+extern "C" void bound_cf32_to_f32_sse2(const void* src, float* dst, size_t pairs);
+extern "C" uint32_t bound_rotate90_cf32_to_f32_phase_sse2(const void* src, float* dst, size_t pairs, uint32_t phase);
 #if defined(DSD_NEO_TEST_HAVE_AVX2_IMPL)
 #include "dsp/simd_x86_cpu.h"
 extern "C" void widen_u8_to_f32_bias127_moments_avx2(const unsigned char* src, float* dst, uint32_t len,
@@ -28,6 +30,8 @@ extern "C" void widen_u8_to_f32_bias127_moments_avx2(const unsigned char* src, f
 extern "C" uint32_t widen_rotate90_u8_to_f32_bias127_phase_moments_avx2(const unsigned char* src, float* dst,
                                                                         uint32_t len, uint32_t phase,
                                                                         dsd_input_level_cu8_moments* moments);
+extern "C" void bound_cf32_to_f32_avx2(const void* src, float* dst, size_t pairs);
+extern "C" uint32_t bound_rotate90_cf32_to_f32_phase_avx2(const void* src, float* dst, size_t pairs, uint32_t phase);
 #endif
 #endif
 
@@ -39,6 +43,8 @@ extern "C" uint32_t widen_rotate90_u8_to_f32_bias127_phase_neon(const unsigned c
 extern "C" uint32_t widen_rotate90_u8_to_f32_bias127_phase_moments_neon(const unsigned char* src, float* dst,
                                                                         uint32_t len, uint32_t phase,
                                                                         dsd_input_level_cu8_moments* moments);
+extern "C" void bound_cf32_to_f32_neon(const void* src, float* dst, size_t pairs);
+extern "C" uint32_t bound_rotate90_cf32_to_f32_phase_neon(const void* src, float* dst, size_t pairs, uint32_t phase);
 #endif
 
 extern "C" void dsd_test_widen_u8_to_f32_bias127_moments_scalar(const unsigned char* src, float* dst, uint32_t len,
@@ -48,6 +54,9 @@ extern "C" uint32_t dsd_test_widen_rotate90_u8_to_f32_bias127_phase_scalar(const
 extern "C" uint32_t
 dsd_test_widen_rotate90_u8_to_f32_bias127_phase_moments_scalar(const unsigned char* src, float* dst, uint32_t len,
                                                                uint32_t phase, dsd_input_level_cu8_moments* moments);
+extern "C" void dsd_test_bound_cf32_to_f32_scalar(const void* src, float* dst, size_t pairs);
+extern "C" uint32_t dsd_test_bound_rotate90_cf32_to_f32_phase_scalar(const void* src, float* dst, size_t pairs,
+                                                                     uint32_t phase);
 
 static int
 arrays_close(const float* a, const float* b, int n, float tol) {
@@ -270,6 +279,144 @@ test_rotate_widen_backend(const char* name, widen_backend_fn fn) {
     return 0;
 }
 
+using bound_cf32_backend_fn = void (*)(const void*, float*, size_t);
+using bound_rot_cf32_backend_fn = uint32_t (*)(const void*, float*, size_t, uint32_t);
+
+/* Components an external cf32 source can hold, as bits. Out of range: NaNs, infinities, magnitudes of 1e30 and of
+ * 2^60, the bound. In range at the edges: the largest magnitude below 2^60, -0.0 and denormals. And ordinary values. */
+static const uint32_t kCf32ComponentBits[] = {
+    0x7FC00000u, /* NaN */
+    0xFFC00001u, /* a negative NaN with a payload */
+    0x7F800000u, /* +Inf */
+    0xFF800000u, /* -Inf */
+    0x7149F2CAu, /* 1e30 */
+    0xF149F2CAu, /* -1e30 */
+    0x5D800000u, /* 2^60 */
+    0xDD800000u, /* -2^60 */
+    0x5D7FFFFFu, /* just below 2^60 */
+    0xDD7FFFFFu, /* just above -2^60 */
+    0x80000000u, /* -0.0 */
+    0x00000001u, /* the smallest denormal */
+    0x807FFFFFu, /* the largest negative denormal */
+    0x3F000000u, /* 0.5 */
+    0xBF400000u, /* -0.75 */
+};
+
+/* The component as it should enter: 0 when it is out of range. */
+static uint32_t
+cf32_expected_component_bits(uint32_t bits) {
+    return ((bits & 0x7FFFFFFFu) < 0x5D800000u) ? bits : 0U;
+}
+
+/*
+ * The bounded cf32 copy, plain and rotated, against its definition, bit for bit: every out-of-range component enters
+ * as +0.0 and every other one as it was, sample k rotated at fs/4 phase start + k (swap and sign flip), for 0..41
+ * samples (odd counts included), sources at four misalignments, destinations at three, and every start phase. Inputs
+ * with many, no and one out-of-range components make the plain copy's rare fix-up pass run, stay idle and find a lone
+ * one, which tests each backend's out-of-range flag at the bound. The floats around the destination stay untouched. Bits are compared, never floats, so the check holds under
+ * fast-math.
+ */
+static int
+test_bound_cf32_backend(const char* name, bound_cf32_backend_fn plain, bound_rot_cf32_backend_fn rotated) {
+    enum { kMaxPairs = 41, kGuard = 8 };
+
+    const uint32_t sign = 0x80000000u;
+    const uint32_t sentinel = 0xA5A5A5A5u;
+    uint32_t in[2U * kMaxPairs];
+    /* The inputs: every third component special; only in-range values; and in-range values with a lone NaN, 2^60,
+       -2^60 or -Inf, each in a different lane, inside the vector body for most lengths (a lone one alone sets the
+       plain copy's out-of-range flag). */
+    const uint32_t lone_bits[] = {0x7FC00000u, 0x5D800000u, 0xDD800000u, 0xFF800000u};
+    for (int pattern = 0; pattern < 6; pattern++) {
+        uint32_t seed = 0x2468ACE1u;
+        for (size_t k = 0; k < sizeof(in) / sizeof(in[0]); k++) {
+            seed = seed * 1664525u + 1013904223u;
+            const uint32_t ordinary = 0x3E000000u | (seed & 0x80FFFFFFu); /* small, either sign */
+            const uint32_t special = kCf32ComponentBits[(k / 3U) % (sizeof(kCf32ComponentBits) / sizeof(uint32_t))];
+            in[k] = (k % 3U == 0U && (pattern == 0 || cf32_expected_component_bits(special) == special)) ? special
+                                                                                                         : ordinary;
+        }
+        if (pattern >= 2) {
+            in[37U + 5U * (size_t)(pattern - 2)] = lone_bits[pattern - 2];
+        }
+        unsigned char src_buf[8U * kMaxPairs + 16U];
+        alignas(32) uint32_t dst_buf[2U * kMaxPairs + 2U * kGuard];
+        const size_t src_offsets[] = {0U, 1U, 4U, 13U};
+        const size_t dst_offsets[] = {0U, 1U, 2U};
+        for (size_t src_off : src_offsets) {
+            for (size_t dst_off : dst_offsets) {
+                for (size_t pairs = 0; pairs <= kMaxPairs; pairs++) {
+                    for (int rotate = 0; rotate <= 1; rotate++) {
+                        for (uint32_t phase = 0; phase < 4U; phase++) {
+                            DSD_MEMCPY(src_buf + src_off, in, pairs * 8U);
+                            for (uint32_t& word : dst_buf) {
+                                word = sentinel;
+                            }
+                            float dst_floats[sizeof(dst_buf) / sizeof(dst_buf[0])];
+                            DSD_MEMCPY(dst_floats, dst_buf, sizeof(dst_buf));
+                            float* dst = dst_floats + kGuard + dst_off;
+                            uint32_t next = (phase + (uint32_t)pairs) & 3U;
+                            if (rotate) {
+                                /* Other phase bits are ignored. */
+                                next = rotated(src_buf + src_off, dst, pairs, phase | 0xFFFFFFFCu);
+                            } else {
+                                plain(src_buf + src_off, dst, pairs);
+                            }
+                            DSD_MEMCPY(dst_buf, dst_floats, sizeof(dst_buf));
+                            if (next != ((phase + (uint32_t)pairs) & 3U)) {
+                                DSD_FPRINTF(stderr, "%s: %zu samples from phase %u ended at phase %u\n", name, pairs,
+                                            phase, next);
+                                return 1;
+                            }
+                            for (size_t k = 0; k < pairs; k++) {
+                                const uint32_t i_bits = cf32_expected_component_bits(in[k * 2U]);
+                                const uint32_t q_bits = cf32_expected_component_bits(in[k * 2U + 1U]);
+                                uint32_t want[2] = {i_bits, q_bits};
+                                switch (rotate ? ((phase + (uint32_t)k) & 3U) : 0U) {
+                                    case 1:
+                                        want[0] = q_bits ^ sign;
+                                        want[1] = i_bits;
+                                        break;
+                                    case 2:
+                                        want[0] = i_bits ^ sign;
+                                        want[1] = q_bits ^ sign;
+                                        break;
+                                    case 3:
+                                        want[0] = q_bits;
+                                        want[1] = i_bits ^ sign;
+                                        break;
+                                    default: break;
+                                }
+                                for (size_t c = 0; c < 2U; c++) {
+                                    const uint32_t got = dst_buf[kGuard + dst_off + k * 2U + c];
+                                    if (got != want[c]) {
+                                        DSD_FPRINTF(stderr,
+                                                    "%s (input %d, %s, %zu samples, phase %u, src +%zu, dst +%zu): "
+                                                    "component %zu (bits 0x%08X) entered as 0x%08X, not 0x%08X\n",
+                                                    name, pattern, rotate ? "rotated" : "plain", pairs, phase, src_off,
+                                                    dst_off, k * 2U + c, (unsigned)in[k * 2U + c], (unsigned)got,
+                                                    (unsigned)want[c]);
+                                        return 1;
+                                    }
+                                }
+                            }
+                            for (size_t w = 0; w < sizeof(dst_buf) / sizeof(dst_buf[0]); w++) {
+                                const int inside = w >= kGuard + dst_off && w < kGuard + dst_off + pairs * 2U;
+                                if (!inside && dst_buf[w] != sentinel) {
+                                    DSD_FPRINTF(stderr, "%s: %zu samples at dst +%zu wrote float %zu outside them\n",
+                                                name, pairs, dst_off, w);
+                                    return 1;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return 0;
+}
+
 int
 main(void) {
     /*
@@ -472,6 +619,34 @@ main(void) {
         || test_rotated_moments_backend("SIMD rotate+widen+moments NEON",
                                         widen_rotate90_u8_to_f32_bias127_phase_moments_neon)
                != 0) {
+        return 1;
+    }
+#endif
+
+    if (test_bound_cf32_backend("bounded cf32 copy scalar", dsd_test_bound_cf32_to_f32_scalar,
+                                dsd_test_bound_rotate90_cf32_to_f32_phase_scalar)
+            != 0
+        || test_bound_cf32_backend("bounded cf32 copy dispatch", bound_cf32_to_f32, bound_rotate90_cf32_to_f32_phase)
+               != 0) {
+        return 1;
+    }
+#if defined(__x86_64__) || defined(_M_X64)
+    if (test_bound_cf32_backend("bounded cf32 copy SSE2", bound_cf32_to_f32_sse2, bound_rotate90_cf32_to_f32_phase_sse2)
+        != 0) {
+        return 1;
+    }
+#if defined(DSD_NEO_TEST_HAVE_AVX2_IMPL)
+    if (dsd_neo_cpu_has_avx2_with_os_support()
+        && test_bound_cf32_backend("bounded cf32 copy AVX2", bound_cf32_to_f32_avx2,
+                                   bound_rotate90_cf32_to_f32_phase_avx2)
+               != 0) {
+        return 1;
+    }
+#endif
+#endif
+#if defined(__aarch64__) || defined(__arm64) || defined(_M_ARM64) || defined(_M_ARM64EC)
+    if (test_bound_cf32_backend("bounded cf32 copy NEON", bound_cf32_to_f32_neon, bound_rotate90_cf32_to_f32_phase_neon)
+        != 0) {
         return 1;
     }
 #endif

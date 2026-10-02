@@ -4,6 +4,7 @@
  */
 
 #include <cstdint>
+#include <stddef.h>
 #include "dsd-neo/core/input_level.h"
 #include "dsd-neo/core/safe_api.h"
 
@@ -34,12 +35,28 @@ widen_rotate90_u8_to_f32_bias127_phase_moments_avx2(const unsigned char* src, fl
     (void)moments;
     return phase & 3U;
 }
+
+extern "C" void
+bound_cf32_to_f32_avx2(const void* src, float* dst, size_t pairs) {
+    (void)src;
+    (void)dst;
+    (void)pairs;
+}
+
+extern "C" uint32_t
+bound_rotate90_cf32_to_f32_phase_avx2(const void* src, float* dst, size_t pairs, uint32_t phase) {
+    (void)src;
+    (void)dst;
+    (void)pairs;
+    return phase & 3U;
+}
 #else
 
 #include <emmintrin.h>
 #include <immintrin.h>
 #include <mmintrin.h>
 #include <xmmintrin.h>
+#include "simd_widen_internal.h"
 
 // NOLINTBEGIN(portability-simd-intrinsics)
 
@@ -338,6 +355,85 @@ widen_rotate90_u8_to_f32_bias127_phase_moments_avx2(const unsigned char* src, fl
     (void)dsd_input_level_cu8_moments_merge(moments, &local);
     _mm256_zeroupper();
     return cur_phase;
+}
+
+namespace {
+
+/* The bounded cf32 copy's period kernel (simd_widen_internal.h): one 32-byte vector. */
+struct cf32_period_avx2 {
+    using period_copy = cf32_periods_flagged;
+
+    static inline __m256i
+    bound(__m256i v) {
+        const __m256i magnitude = _mm256_and_si256(v, _mm256_set1_epi32(static_cast<int>(kCf32MagnitudeMask)));
+        const __m256i largest = _mm256_set1_epi32(static_cast<int>(kCf32MagnitudeLargestBits));
+        return _mm256_andnot_si256(_mm256_cmpgt_epi32(magnitude, largest), v);
+    }
+
+    template <bool kRotate>
+    static inline void
+    copy(float* dst, const unsigned char* src) {
+        __m256i v = bound(_mm256_loadu_si256(reinterpret_cast<const __m256i*>(src)));
+        if (kRotate) {
+            const __m256i signs = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(kCf32PeriodSigns));
+            v = _mm256_xor_si256(_mm256_shuffle_epi32(v, _MM_SHUFFLE(2, 3, 1, 0)), signs);
+        }
+        _mm256_storeu_si256(reinterpret_cast<__m256i*>(dst), v);
+    }
+
+    /* Shifted left one bit, a component loses its sign and its magnitude keeps its order as an unsigned value: the
+       largest of them reaches 2^60's, doubled, exactly when some component is out of range. Four periods a pass, into
+       four maxima, keep the check off the copy's critical path. */
+    static inline bool
+    copy_periods_flagged(float* dst, const unsigned char* src, size_t periods) {
+        /* Written out, not as loops over arrays: GCC -O2 keeps such arrays in memory. */
+        __m256i top0 = _mm256_setzero_si256();
+        __m256i top1 = _mm256_setzero_si256();
+        __m256i top2 = _mm256_setzero_si256();
+        __m256i top3 = _mm256_setzero_si256();
+        size_t k = 0U;
+        for (; k + 4U <= periods; k += 4U) {
+            const unsigned char* in = src + (k * 32U);
+            float* out = dst + (k * 8U);
+            const __m256i a = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(in));
+            const __m256i b = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(in + 32));
+            const __m256i c = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(in + 64));
+            const __m256i d = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(in + 96));
+            _mm256_storeu_si256(reinterpret_cast<__m256i*>(out), a);
+            _mm256_storeu_si256(reinterpret_cast<__m256i*>(out + 8), b);
+            _mm256_storeu_si256(reinterpret_cast<__m256i*>(out + 16), c);
+            _mm256_storeu_si256(reinterpret_cast<__m256i*>(out + 24), d);
+            top0 = _mm256_max_epu32(top0, _mm256_slli_epi32(a, 1));
+            top1 = _mm256_max_epu32(top1, _mm256_slli_epi32(b, 1));
+            top2 = _mm256_max_epu32(top2, _mm256_slli_epi32(c, 1));
+            top3 = _mm256_max_epu32(top3, _mm256_slli_epi32(d, 1));
+        }
+        for (; k < periods; k++) {
+            const __m256i a = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(src + (k * 32U)));
+            _mm256_storeu_si256(reinterpret_cast<__m256i*>(dst + (k * 8U)), a);
+            top0 = _mm256_max_epu32(top0, _mm256_slli_epi32(a, 1));
+        }
+        const __m256i largest = _mm256_max_epu32(_mm256_max_epu32(top0, top1), _mm256_max_epu32(top2, top3));
+        const __m256i limit = _mm256_set1_epi32(static_cast<int>(kCf32MagnitudeLimitBits << 1));
+        /* largest >= limit, unsigned. */
+        const __m256i over = _mm256_cmpeq_epi32(_mm256_max_epu32(largest, limit), largest);
+        return _mm256_testz_si256(over, over) == 0;
+    }
+};
+
+} /* namespace */
+
+extern "C" void
+bound_cf32_to_f32_avx2(const void* src, float* dst, size_t pairs) {
+    (void)cf32_copy_bounded<cf32_period_avx2>(dst, src, pairs, false, 0U);
+    _mm256_zeroupper();
+}
+
+extern "C" uint32_t
+bound_rotate90_cf32_to_f32_phase_avx2(const void* src, float* dst, size_t pairs, uint32_t phase) {
+    const uint32_t next_phase = cf32_copy_bounded<cf32_period_avx2>(dst, src, pairs, true, phase);
+    _mm256_zeroupper();
+    return next_phase;
 }
 
 // NOLINTEND(portability-simd-intrinsics)

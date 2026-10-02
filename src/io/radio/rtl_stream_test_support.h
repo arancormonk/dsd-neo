@@ -156,6 +156,20 @@ typedef struct {
 
 int rtl_device_test_airspy_ingest(const rtl_device_test_airspy_request* request, float* output, size_t* output_count,
                                   uint64_t* dropped);
+
+typedef struct {
+    const float* samples; /* the driver's CF32 buffer: pairs complex samples, I then Q */
+    size_t pairs;
+    size_t capacity;
+    size_t start;
+    int fs4_shift;
+    int start_phase;
+} rtl_device_test_soapy_cf32_request;
+
+/* Returns 1, and leaves the outputs alone, when the build has no SoapySDR. */
+int rtl_device_test_soapy_cf32_ingest(const rtl_device_test_soapy_cf32_request* request, float* output,
+                                      size_t* output_count, int* out_phase);
+
 int rtl_stream_test_passes_for_actual_rate(uint32_t actual_rate_hz, int rate_in_hz);
 int rtl_stream_test_digital_resample_chain(int output_kind, int rate_out_hz, int resamp_target_hz, int symbol_rate_hz,
                                            int digital_resample_mode, int capture_rate_device_forced,

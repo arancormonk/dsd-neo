@@ -26,6 +26,13 @@ dsd_two_level_symbol_reliability(const dsd_opts* opts, const dsd_state* state, f
         return 0U;
     }
 
+    /* A replayed symbol whose stored amplitude was unusable stands in as 0, which is no confidence only when the
+     * thresholds centre on 0. Its bit is an erasure whatever they are. */
+    if ((opts->audio_in_type == AUDIO_IN_SYMBOL_BIN || opts->audio_in_type == AUDIO_IN_SYMBOL_FLT)
+        && state->symbol_replay_symbol_unusable) {
+        return 0U;
+    }
+
     /* A legacy symbol capture keeps only the decided bit, which replay turns back into an ideal four-level
      * amplitude (dsd_symbol_level_from_dibit()). Those amplitudes are not confidences, so the bit keeps a hard
      * decision's weight. The soft capture format records the measured symbol and is used as it is. */

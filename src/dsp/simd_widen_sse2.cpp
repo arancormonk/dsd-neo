@@ -6,9 +6,11 @@
 #include <cstdint>
 #include <emmintrin.h>
 #include <mmintrin.h>
+#include <stddef.h>
 #include <xmmintrin.h>
 #include "dsd-neo/core/input_level.h"
 #include "dsd-neo/core/safe_api.h"
+#include "simd_widen_internal.h"
 
 // NOLINTBEGIN(portability-simd-intrinsics)
 
@@ -265,6 +267,93 @@ widen_rotate90_u8_to_f32_bias127_phase_moments_sse2(const unsigned char* src, fl
 
     (void)dsd_input_level_cu8_moments_merge(moments, &local);
     return cur_phase;
+}
+
+namespace {
+
+/* The bounded cf32 copy's period kernel (simd_widen_internal.h): two 16-byte vectors. */
+struct cf32_period_sse2 {
+    using period_copy = cf32_periods_flagged;
+
+    static inline __m128i
+    bound(__m128i v) {
+        const __m128i magnitude = _mm_and_si128(v, _mm_set1_epi32(static_cast<int>(kCf32MagnitudeMask)));
+        /* The and-not form spares SSE2 a register copy. */
+        const __m128i largest = _mm_set1_epi32(static_cast<int>(kCf32MagnitudeLargestBits));
+        return _mm_andnot_si128(_mm_cmpgt_epi32(magnitude, largest), v);
+    }
+
+    template <bool kRotate>
+    static inline void
+    copy(float* dst, const unsigned char* src) {
+        __m128i lo = bound(_mm_loadu_si128(reinterpret_cast<const __m128i*>(src)));
+        __m128i hi = bound(_mm_loadu_si128(reinterpret_cast<const __m128i*>(src + 16)));
+        if (kRotate) {
+            const __m128i lo_signs = _mm_loadu_si128(reinterpret_cast<const __m128i*>(kCf32PeriodSigns));
+            const __m128i hi_signs = _mm_loadu_si128(reinterpret_cast<const __m128i*>(kCf32PeriodSigns + 4));
+            lo = _mm_xor_si128(_mm_shuffle_epi32(lo, _MM_SHUFFLE(2, 3, 1, 0)), lo_signs);
+            hi = _mm_xor_si128(_mm_shuffle_epi32(hi, _MM_SHUFFLE(2, 3, 1, 0)), hi_signs);
+        }
+        _mm_storeu_si128(reinterpret_cast<__m128i*>(dst), lo);
+        _mm_storeu_si128(reinterpret_cast<__m128i*>(dst + 4), hi);
+    }
+
+    /* SSE2 has no 32-bit maximum, so the 16-bit one tracks each magnitude's top half: with the bottom half masked off,
+       a magnitude reaches 2^60 (0x5D800000) exactly when its top half reaches 0x5D80. Two periods a pass, into four
+       maxima, keep the check off the copy's critical path. */
+    static inline bool
+    copy_periods_flagged(float* dst, const unsigned char* src, size_t periods) {
+        /* Written out, not as loops over arrays: GCC -O2 keeps such arrays in memory. */
+        const __m128i top_half = _mm_set1_epi32(0x7FFF0000);
+        __m128i top0 = _mm_setzero_si128();
+        __m128i top1 = _mm_setzero_si128();
+        __m128i top2 = _mm_setzero_si128();
+        __m128i top3 = _mm_setzero_si128();
+        size_t k = 0U;
+        for (; k + 2U <= periods; k += 2U) {
+            const unsigned char* in = src + (k * 32U);
+            float* out = dst + (k * 8U);
+            const __m128i a = _mm_loadu_si128(reinterpret_cast<const __m128i*>(in));
+            const __m128i b = _mm_loadu_si128(reinterpret_cast<const __m128i*>(in + 16));
+            const __m128i c = _mm_loadu_si128(reinterpret_cast<const __m128i*>(in + 32));
+            const __m128i d = _mm_loadu_si128(reinterpret_cast<const __m128i*>(in + 48));
+            _mm_storeu_si128(reinterpret_cast<__m128i*>(out), a);
+            _mm_storeu_si128(reinterpret_cast<__m128i*>(out + 4), b);
+            _mm_storeu_si128(reinterpret_cast<__m128i*>(out + 8), c);
+            _mm_storeu_si128(reinterpret_cast<__m128i*>(out + 12), d);
+            top0 = _mm_max_epi16(top0, _mm_and_si128(a, top_half));
+            top1 = _mm_max_epi16(top1, _mm_and_si128(b, top_half));
+            top2 = _mm_max_epi16(top2, _mm_and_si128(c, top_half));
+            top3 = _mm_max_epi16(top3, _mm_and_si128(d, top_half));
+        }
+        if (k < periods) {
+            const unsigned char* in = src + (k * 32U);
+            float* out = dst + (k * 8U);
+            const __m128i a = _mm_loadu_si128(reinterpret_cast<const __m128i*>(in));
+            const __m128i b = _mm_loadu_si128(reinterpret_cast<const __m128i*>(in + 16));
+            _mm_storeu_si128(reinterpret_cast<__m128i*>(out), a);
+            _mm_storeu_si128(reinterpret_cast<__m128i*>(out + 4), b);
+            top0 = _mm_max_epi16(top0, _mm_and_si128(a, top_half));
+            top1 = _mm_max_epi16(top1, _mm_and_si128(b, top_half));
+        }
+        const __m128i largest = _mm_max_epi16(_mm_max_epi16(top0, top1), _mm_max_epi16(top2, top3));
+        /* The bottom halves are 0 in both, so only a top half can compare greater. */
+        const __m128i over =
+            _mm_cmpgt_epi16(largest, _mm_set1_epi32(static_cast<int>(kCf32MagnitudeLargestBits & 0x7FFF0000u)));
+        return _mm_movemask_epi8(over) != 0;
+    }
+};
+
+} /* namespace */
+
+extern "C" void
+bound_cf32_to_f32_sse2(const void* src, float* dst, size_t pairs) {
+    (void)cf32_copy_bounded<cf32_period_sse2>(dst, src, pairs, false, 0U);
+}
+
+extern "C" uint32_t
+bound_rotate90_cf32_to_f32_phase_sse2(const void* src, float* dst, size_t pairs, uint32_t phase) {
+    return cf32_copy_bounded<cf32_period_sse2>(dst, src, pairs, true, phase);
 }
 
 // NOLINTEND(portability-simd-intrinsics)

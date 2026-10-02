@@ -2755,6 +2755,199 @@ test_cf32_replay_short_reads_stay_aligned(void) {
     return rc;
 }
 
+/*
+ * External cf32 samples enter the decoder bounded. A cf32 source (a SoapySDR driver's CF32 buffer, a cf32 capture)
+ * can hold Inf, NaN or absurdly large components, and one of them poisons every IIR stage downstream until the next
+ * retune. Each component of magnitude 2^60 or more, or not a number, enters as 0, in its place; every other one enters
+ * as written, rotated by fs/4 when the source says so. The checks compare bits: the fast-math build folds isfinite().
+ */
+static const uint32_t kCf32OutOfRangeBits[] = {
+    0x7FC00000u, /* NaN */
+    0xFFC00001u, /* a negative NaN with a payload */
+    0x7F800000u, /* +Inf */
+    0xFF800000u, /* -Inf */
+    0x7149F2CAu, /* 1e30 */
+    0xF149F2CAu, /* -1e30 */
+    0x5D800000u, /* 2^60, the bound */
+};
+/* In range at the edges: the largest magnitude below 2^60 either side, -0.0 and the smallest denormal. */
+static const uint32_t kCf32EdgeInRangeBits[] = {0x5D7FFFFFu, 0xDD7FFFFFu, 0x80000000u, 0x00000001u};
+
+/* @p complex_count (at least 28) samples of a slow tone with the values above spread over both components, every fs/4
+ * phase and the source's last, partial fs/4 period. */
+static std::vector<uint32_t>
+make_cf32_bits_with_out_of_range(size_t complex_count) {
+    std::vector<uint32_t> bits(complex_count * 2U);
+    for (size_t i = 0; i < complex_count; i++) {
+        const float t = static_cast<float>(i) * 0.03125f;
+        const float pair[2] = {0.5f * std::cos(t), 0.5f * std::sin(t)};
+        DSD_MEMCPY(&bits[i * 2U], pair, sizeof(pair));
+    }
+    size_t pos = 1U;
+    for (uint32_t value : kCf32OutOfRangeBits) {
+        bits[pos] = value;
+        pos += 5U;
+    }
+    for (uint32_t value : kCf32EdgeInRangeBits) {
+        bits[pos] = value;
+        pos += 3U;
+    }
+    bits[pos] = kCf32OutOfRangeBits[0]; /* both components of one sample */
+    bits[pos + 1U] = kCf32OutOfRangeBits[2];
+    bits[bits.size() - 1U] = kCf32OutOfRangeBits[3];
+    bits[bits.size() - 4U] = kCf32OutOfRangeBits[4];
+    return bits;
+}
+
+/* The component as it should enter: 0 when out of range. */
+static uint32_t
+expected_cf32_component_bits(uint32_t bits) {
+    return ((bits & 0x7FFFFFFFu) < 0x5D800000u) ? bits : 0U;
+}
+
+/* Compare the floats @p got with @p input entered bounded, sample k rotated at fs/4 phase @p start_phase + k when
+ * @p fs4 is set. On bits, a rotation by a multiple of 90 degrees swaps the components and flips their signs. */
+static int
+expect_cf32_entered_bounded(const char* label, const std::vector<uint32_t>& input, const float* got, size_t got_count,
+                            int fs4, int start_phase) {
+    if (got_count != input.size()) {
+        DSD_FPRINTF(stderr, "FAIL: %s: %zu floats entered for the source's %zu\n", label, got_count, input.size());
+        return 1;
+    }
+    const uint32_t sign = 0x80000000u;
+    for (size_t k = 0; k < input.size() / 2U; k++) {
+        const uint32_t i_bits = expected_cf32_component_bits(input[k * 2U]);
+        const uint32_t q_bits = expected_cf32_component_bits(input[k * 2U + 1U]);
+        uint32_t want[2] = {i_bits, q_bits};
+        switch (fs4 ? ((start_phase + (int)k) & 3) : 0) {
+            case 1:
+                want[0] = q_bits ^ sign;
+                want[1] = i_bits;
+                break;
+            case 2:
+                want[0] = i_bits ^ sign;
+                want[1] = q_bits ^ sign;
+                break;
+            case 3:
+                want[0] = q_bits;
+                want[1] = i_bits ^ sign;
+                break;
+            default: break;
+        }
+        uint32_t have[2] = {0U, 0U};
+        DSD_MEMCPY(have, got + k * 2U, sizeof(have));
+        for (size_t c = 0; c < 2U; c++) {
+            if (have[c] != want[c]) {
+                DSD_FPRINTF(stderr, "FAIL: %s: float %zu (source bits 0x%08X) entered as 0x%08X, not 0x%08X\n", label,
+                            k * 2U + c, (unsigned)input[k * 2U + c], (unsigned)have[c], (unsigned)want[c]);
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+/* A cf32 capture of @p payload_bits as written, with the fs/4 shift on or off. */
+static int
+make_cf32_bits_replay_fixture(char* out_metadata_path, size_t out_metadata_path_size,
+                              const std::vector<uint32_t>& payload_bits, int fs4_shift_enabled) {
+    char temp_dir[DSD_TEST_PATH_MAX];
+    if (!dsd_test_mkdtemp(temp_dir, sizeof(temp_dir), "dsdneo_replay_bounded_cf32")) {
+        DSD_FPRINTF(stderr, "FAIL: could not create bounded CF32 fixture directory\n");
+        return 1;
+    }
+    track_fixture_dir(temp_dir, "bounded.iq", "bounded.iq.json");
+
+    char data_path[DSD_TEST_PATH_MAX];
+    char metadata_path[DSD_TEST_PATH_MAX];
+    if (dsd_test_path_join(data_path, sizeof(data_path), temp_dir, "bounded.iq") != 0
+        || dsd_test_path_join(metadata_path, sizeof(metadata_path), temp_dir, "bounded.iq.json") != 0) {
+        return 1;
+    }
+
+    dsd_iq_capture_config cfg;
+    fill_capture_cfg(&cfg, data_path, metadata_path, DSD_IQ_FORMAT_CF32, "post_driver_cf32_pre_ring",
+                     fs4_shift_enabled);
+    dsd_iq_capture_writer* writer = NULL;
+    char err_buf[256] = {0};
+    if (dsd_iq_capture_open(&cfg, &writer, err_buf, sizeof(err_buf)) != DSD_IQ_OK || !writer) {
+        DSD_FPRINTF(stderr, "FAIL: could not open bounded CF32 capture writer: %s\n", err_buf[0] ? err_buf : "unknown");
+        return 1;
+    }
+    if (dsd_iq_capture_submit(writer, payload_bits.data(), payload_bits.size() * sizeof(uint32_t)) != DSD_IQ_OK) {
+        dsd_iq_capture_abort(writer);
+        return 1;
+    }
+    dsd_iq_capture_final_stats stats;
+    DSD_MEMSET(&stats, 0, sizeof(stats));
+    dsd_iq_capture_close(writer, &stats);
+    if (DSD_SNPRINTF(out_metadata_path, out_metadata_path_size, "%s", metadata_path) >= (int)out_metadata_path_size) {
+        return 1;
+    }
+    return 0;
+}
+
+/* A cf32 capture holding NaN, +-Inf and +-1e30 components amid ordinary samples hands the demod those components as
+ * 0 and the rest as captured (rotated by fs/4 when the capture was shifted). They used to reach it as they were. */
+static int
+test_cf32_replay_enters_bounded(int fs4_shift_enabled) {
+    const char* label = fs4_shift_enabled ? "bounded cf32 replay (fs/4)" : "bounded cf32 replay";
+    const std::vector<uint32_t> payload = make_cf32_bits_with_out_of_range(2047U);
+    char metadata_path[DSD_TEST_PATH_MAX];
+    if (make_cf32_bits_replay_fixture(metadata_path, sizeof(metadata_path), payload, fs4_shift_enabled) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: %s: could not make the fixture\n", label);
+        return 1;
+    }
+
+    BlockLog& log = fresh_hook_context<BlockLog>();
+    log.keep_samples = 1;
+    rtl_stream_test_set_replay_block_hook(block_log_hook, &log);
+    std::unique_ptr<dsd_opts> opts;
+    RtlSdrContext* ctx = NULL;
+    if (start_replay_stream(metadata_path, &opts, &ctx) != 0) {
+        rtl_stream_test_set_replay_block_hook(NULL, NULL);
+        stop_and_destroy_stream(ctx);
+        return 1;
+    }
+    uint64_t delivered = 0U;
+    int rescued = 0;
+    int rc = read_replay_to_end(ctx, 5000U, label, &delivered, &rescued);
+    finish_replay(ctx, rescued);
+    rtl_stream_test_set_replay_block_hook(NULL, NULL);
+
+    rc |= expect_cf32_entered_bounded(label, payload, log.samples.data(), log.samples.size(), fs4_shift_enabled, 0);
+    return rc;
+}
+
+/* The same through a SoapySDR CF32 read, into a ring that wraps mid-read, from every fs/4 phase. */
+static int
+test_soapy_cf32_read_enters_bounded(void) {
+    const std::vector<uint32_t> payload = make_cf32_bits_with_out_of_range(29U);
+    std::vector<float> samples(payload.size());
+    DSD_MEMCPY(samples.data(), payload.data(), payload.size() * sizeof(uint32_t));
+    int rc = 0;
+    for (int fs4 = 0; fs4 <= 1; fs4++) {
+        for (int start_phase = 0; start_phase < 4; start_phase++) {
+            char label[96];
+            DSD_SNPRINTF(label, sizeof(label), "bounded Soapy CF32 read (fs/4 %s, phase %d)", fs4 ? "on" : "off",
+                         start_phase);
+            rtl_device_test_soapy_cf32_request request{samples.data(), payload.size() / 2U, 64U, 54U, fs4, start_phase};
+            std::vector<float> output(payload.size() + 8U);
+            size_t count = output.size();
+            int phase = -1;
+            const int hook_rc = rtl_device_test_soapy_cf32_ingest(&request, output.data(), &count, &phase);
+            if (hook_rc == 1) {
+                DSD_FPRINTF(stderr, "SKIP: bounded Soapy CF32 read: no SoapySDR in this build\n");
+                return rc;
+            }
+            rc |= expect_int_eq(label, hook_rc, 0);
+            rc |= expect_cf32_entered_bounded(label, payload, output.data(), count, fs4, start_phase);
+            rc |= expect_int_eq(label, phase, fs4 ? ((start_phase + (int)(payload.size() / 2U)) & 3) : start_phase);
+        }
+    }
+    return rc;
+}
+
 /* Replay @p metadata_path with every capture read limited to @p read_bytes, and with the read after @p error_after
  * reads that returned data replaced by one that returns @p error_code and no bytes. The demod's blocks go to @p log,
  * the samples the decoder read to @p delivered, and the input failure the replay reported (DSD_INPUT_FAILURE_NONE
@@ -3326,6 +3519,9 @@ main(void) {
     rc |= test_replay_discarded_block_acknowledges_its_own_chunk();
     rc |= test_replay_multi_chunk_eof_delivers_final_block();
     rc |= test_cf32_replay_short_reads_stay_aligned();
+    rc |= test_cf32_replay_enters_bounded(0);
+    rc |= test_cf32_replay_enters_bounded(1);
+    rc |= test_soapy_cf32_read_enters_bounded();
     rc |= test_replay_read_failure_mid_chunk_delivers_what_was_read();
     rc |= test_replay_refuses_a_capture_it_cannot_convert();
     rc |= test_replay_refuses_a_centre_past_the_tuner_limit();

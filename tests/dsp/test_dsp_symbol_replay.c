@@ -205,18 +205,25 @@ write_soft_header(FILE* file) {
     assert(fwrite(header, 1, sizeof(header), file) == sizeof(header));
 }
 
+/* A soft record whose symbol is @p raw_symbol, the float's bits. */
 static void
-write_soft_record(FILE* file, uint8_t dibit, uint8_t reliability, int16_t llr0, int16_t llr1, float symbol) {
+write_soft_record_bits(FILE* file, uint8_t dibit, uint8_t reliability, int16_t llr0, int16_t llr1,
+                       uint32_t raw_symbol) {
     unsigned char record[DSD_SYMBOL_CAPTURE_SOFT_RECORD_SIZE];
-    uint32_t raw_symbol = 0;
     DSD_MEMSET(record, 0, sizeof(record));
     record[0] = dibit;
     record[1] = reliability;
     put_le_i16(record + 2, llr0);
     put_le_i16(record + 4, llr1);
-    DSD_MEMCPY(&raw_symbol, &symbol, sizeof(raw_symbol));
     put_le_u32(record + 6, raw_symbol);
     assert(fwrite(record, 1, sizeof(record), file) == sizeof(record));
+}
+
+static void
+write_soft_record(FILE* file, uint8_t dibit, uint8_t reliability, int16_t llr0, int16_t llr1, float symbol) {
+    uint32_t raw_symbol = 0;
+    DSD_MEMCPY(&raw_symbol, &symbol, sizeof(raw_symbol));
+    write_soft_record_bits(file, dibit, reliability, llr0, llr1, raw_symbol);
 }
 
 static void
@@ -477,6 +484,150 @@ test_float_symbol_replay_eof_sets_exitflag(void) {
 
     fclose(opts.symbolfile);
     opts.symbolfile = NULL;
+}
+
+/* The bits of the float at @p value. The symbol checks below compare bits: the fast-math build folds isfinite(). */
+static uint32_t
+stored_float_bits(const float* value) {
+    uint32_t bits = 0;
+    DSD_MEMCPY(&bits, value, sizeof(bits));
+    return bits;
+}
+
+/* Stored symbols a file can hold that the reader must not hand on: NaNs, infinities and magnitudes past its bound. */
+static const uint32_t kUnusableSymbolBits[] = {
+    0x7FC00000u, /* NaN */
+    0xFFC00001u, /* a negative NaN with a payload */
+    0x7F800000u, /* +Inf */
+    0xFF800000u, /* -Inf */
+    0x7149F2CAu, /* 1e30 */
+    0xF149F2CAu, /* -1e30 */
+};
+
+/*
+ * A symbol file is external data. A soft record whose stored symbol is Inf, NaN or 2^31 or more in magnitude still
+ * decides its dibit, with the record's soft metrics, and its symbol reads as 0, marked unusable: an amplitude with no
+ * information must add no confidence of its own, and 0 alone is a confident bit against off-centre thresholds. The symbol used to go on as stored, into the level statistics and the (int)lrintf() of
+ * get_dibit_and_analog_signal(), which has no defined result for such a value. The records around it read as written.
+ */
+static void
+test_soft_symbol_replay_bounds_stored_symbols(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_symbol_replay_fixture(&opts, &state);
+    opts.symbolfile = tmpfile();
+    assert(opts.symbolfile != NULL);
+    write_soft_header(opts.symbolfile);
+
+    const size_t bad_count = sizeof(kUnusableSymbolBits) / sizeof(kUnusableSymbolBits[0]);
+    const uint32_t past_bound[] = {0x4F000000u, 0xCF000000u}; /* +-2^31 */
+    const uint32_t below_bound = 0x4EFFFFFFu;                 /* the largest float below 2^31 */
+    for (size_t i = 0; i < bad_count; i++) {
+        write_soft_record_bits(opts.symbolfile, (uint8_t)(i & 3U), (uint8_t)(10U + i), (int16_t)(100 + (int)i),
+                               (int16_t)(-100 - (int)i), kUnusableSymbolBits[i]);
+        write_soft_record(opts.symbolfile, (uint8_t)((i + 1U) & 3U), 200, 7, -7, 2.5f);
+    }
+    write_soft_record_bits(opts.symbolfile, 1, 30, 1, -1, past_bound[0]);
+    write_soft_record_bits(opts.symbolfile, 2, 31, 2, -2, past_bound[1]);
+    write_soft_record_bits(opts.symbolfile, 3, 32, 3, -3, below_bound);
+    rewind(opts.symbolfile);
+    g_cleanup_calls = 0;
+    exitflag = 0;
+
+    for (size_t i = 0; i < bad_count + 1U; i++) {
+        const int unusable = i < bad_count;
+        for (int pass = 0; pass < (unusable ? 2 : 3); pass++) {
+            float symbol = getSymbol(&opts, &state, 0);
+            uint8_t dibit = 0;
+            uint32_t want = 0;
+            if (unusable && pass == 0) {
+                dibit = (uint8_t)(i & 3U);
+                want = 0x00000000u; /* +0.0 */
+                assert(state.symbol_replay_soft.reliability == (uint8_t)(10U + i));
+                assert(state.symbol_replay_soft.llr[0] == (int16_t)(100 + (int)i));
+                assert(state.symbol_replay_soft.llr[1] == (int16_t)(-100 - (int)i));
+            } else if (unusable) {
+                dibit = (uint8_t)((i + 1U) & 3U);
+                float written = 2.5f;
+                want = stored_float_bits(&written);
+            } else if (pass < 2) {
+                dibit = (uint8_t)(pass + 1);
+                want = 0x00000000u; /* +0.0: past the bound */
+            } else {
+                dibit = 3;
+                want = below_bound;
+            }
+            if (stored_float_bits(&symbol) != want || stored_float_bits(&state.symbol_replay_soft_symbol) != want) {
+                DSD_FPRINTF(stderr, "FAIL: soft record %zu/%d read as 0x%08X (stored 0x%08X), not 0x%08X\n", i, pass,
+                            (unsigned)stored_float_bits(&symbol),
+                            (unsigned)stored_float_bits(&state.symbol_replay_soft_symbol), (unsigned)want);
+                assert(0);
+            }
+            assert(state.symbolc == dibit);
+            assert(state.symbol_replay_has_soft == 1);
+            const int marked = (unusable && pass == 0) || (!unusable && pass < 2);
+            assert(state.symbol_replay_symbol_unusable == marked);
+        }
+    }
+    assert(state.symbol_replay_soft_records == 2U * bad_count + 3U);
+    assert(g_cleanup_calls == 0);
+
+    fclose(opts.symbolfile);
+    opts.symbolfile = NULL;
+}
+
+/* A float symbol file's unusable symbol (Inf, NaN, or 2^17 or more, which the reader's x10000 would carry past 2^31)
+ * reads as 0, in its place, marked unusable; the symbols around it read scaled as written. It used to go on as Inf or
+ * NaN. */
+static void
+test_float_symbol_replay_bounds_stored_symbols(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_symbol_replay_fixture(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_SYMBOL_FLT;
+    opts.symbolfile = tmpfile();
+    assert(opts.symbolfile != NULL);
+
+    const size_t bad_count = sizeof(kUnusableSymbolBits) / sizeof(kUnusableSymbolBits[0]);
+    const float quarter = 0.25f;
+    uint32_t quarter_bits = stored_float_bits(&quarter);
+    for (size_t i = 0; i < bad_count; i++) {
+        assert(fwrite(&kUnusableSymbolBits[i], sizeof(uint32_t), 1, opts.symbolfile) == 1);
+        assert(fwrite(&quarter_bits, sizeof(uint32_t), 1, opts.symbolfile) == 1);
+    }
+    const uint32_t edges[] = {0x48000000u, 0xC8000000u, 0x47FFFFFFu}; /* +-2^17, the largest float below 2^17 */
+    assert(fwrite(edges, sizeof(edges[0]), sizeof(edges) / sizeof(edges[0]), opts.symbolfile)
+           == sizeof(edges) / sizeof(edges[0]));
+    rewind(opts.symbolfile);
+    g_cleanup_calls = 0;
+    exitflag = 0;
+
+    const float scaled_quarter = 0.25f * 10000.0f;
+    const float edge_scaled = 131071.9921875f * 10000.0f;
+    for (size_t i = 0; i < 2U * bad_count + 3U; i++) {
+        float symbol = getSymbol(&opts, &state, 0);
+        uint32_t want = 0U; /* every unusable symbol reads as +0 */
+        int marked = 1;
+        if (i < 2U * bad_count && (i & 1U)) {
+            want = stored_float_bits(&scaled_quarter);
+            marked = 0;
+        } else if (i == 2U * bad_count + 2U) {
+            want = stored_float_bits(&edge_scaled);
+            marked = 0;
+        }
+        if (stored_float_bits(&symbol) != want || state.symbol_replay_symbol_unusable != marked) {
+            DSD_FPRINTF(stderr, "FAIL: float symbol %zu read as 0x%08X (unusable %d), not 0x%08X (unusable %d)\n", i,
+                        (unsigned)stored_float_bits(&symbol), state.symbol_replay_symbol_unusable, (unsigned)want,
+                        marked);
+            assert(0);
+        }
+    }
+    assert(state.symbolcnt == 2U * bad_count + 3U);
+    assert(g_cleanup_calls == 0);
+
+    fclose(opts.symbolfile);
+    opts.symbolfile = NULL;
+    exitflag = 0;
 }
 
 static void
@@ -3560,6 +3711,8 @@ main(void) {
     test_soft_header_without_record_cleans_up_at_eof();
     test_float_symbol_replay_scales_values();
     test_float_symbol_replay_eof_sets_exitflag();
+    test_soft_symbol_replay_bounds_stored_symbols();
+    test_float_symbol_replay_bounds_stored_symbols();
     test_symbol_helper_window_sync_and_timing_contracts();
     test_symbol_helper_analog_i16_conversion_contract();
     test_symbol_matched_filter_uses_active_nxdn_variant();

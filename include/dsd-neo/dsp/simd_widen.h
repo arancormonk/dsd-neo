@@ -8,14 +8,16 @@
  * @brief u8 IQ widening and optional 90° IQ rotation API.
  *
  * Exposes wrappers that convert RTL-SDR unsigned 8-bit I/Q samples to
- * normalized float baseband in [-1.0, 1.0] with optional 90° rotation.
- * The current implementation is scalar.
+ * normalized float baseband in [-1.0, 1.0] with optional 90° rotation,
+ * and the bounded copy, with the same optional rotation, that external
+ * CF32 samples enter the decoder through.
  */
 #ifndef DSD_NEO_SIMD_WIDEN_H
 #define DSD_NEO_SIMD_WIDEN_H
 
 #include <dsd-neo/core/input_level.h>
 
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -88,6 +90,32 @@ uint32_t widen_rotate90_u8_to_f32_bias127_phase(const unsigned char* src, float*
  */
 uint32_t widen_rotate90_u8_to_f32_bias127_phase_moments(const unsigned char* src, float* dst, uint32_t len,
                                                         uint32_t phase, dsd_input_level_cu8_moments* moments);
+
+/**
+ * @brief Copy external CF32 I/Q into the decoder, every component bounded.
+ *
+ * For samples from a source nothing has checked (a SoapySDR driver's CF32 buffer, a cf32 I/Q replay): each component
+ * that is Inf, NaN or at least 2^60 in magnitude enters as +0.0f, every other one bit for bit. The test runs on the
+ * component's bits, so it holds under fast-math, and a replaced component never reaches a floating-point operation.
+ * @param src `pairs` complex samples, I then Q, at any alignment.
+ * @param dst Destination, `2 * pairs` floats; must not overlap @p src.
+ * @param pairs Number of complex samples.
+ */
+void bound_cf32_to_f32(const void* src, float* dst, size_t pairs);
+
+/**
+ * @brief bound_cf32_to_f32() with the `j^n` (fs/4) rotation from an explicit phase.
+ *
+ * Sample n is rotated at phase `(phase + n) & 3` as widen_rotate90_u8_to_f32_bias127_phase() rotates it (phase 0
+ * leaves it, 1 gives (-Q, I), 2 (-I, -Q), 3 (Q, -I)), after it is bounded; the rotation works on the bits, so the
+ * output is bit-identical to rotating the bounded floats.
+ * @param src `pairs` complex samples, I then Q, at any alignment.
+ * @param dst Destination, `2 * pairs` floats; must not overlap @p src.
+ * @param pairs Number of complex samples.
+ * @param phase Rotation phase of the first sample in [0, 3]; other bits are ignored.
+ * @return Rotation phase for the sample after the last.
+ */
+uint32_t bound_rotate90_cf32_to_f32_phase(const void* src, float* dst, size_t pairs, uint32_t phase);
 
 #ifdef __cplusplus
 }

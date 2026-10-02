@@ -788,6 +788,9 @@ struct dsd_state {
     uint8_t symbol_replay_has_soft;       /* current replay record supplied soft metrics */
     dsd_dibit_soft_t symbol_replay_soft;
     float symbol_replay_soft_symbol;
+    /* The symbol the replay reader (soft capture or float symbol file) just gave had no usable stored amplitude
+       (NaN, infinite, out of range, or past the end) and stands in as 0: an erasure, whatever the thresholds. */
+    uint8_t symbol_replay_symbol_unusable;
     unsigned int symbol_replay_soft_records;
     unsigned int symbol_capture_soft_records;
 
