@@ -40,8 +40,28 @@ cat > "$WORK/bin/include-what-you-use" << 'FAKE'
 set -euo pipefail
 unit=""
 error_flag=0
+# IWYU 0.26 and earlier do not list --use_c_headers (added in 0.27) and reject
+# it as an unrecognized option. FAKE_IWYU_ARGS_LOG records each unit's options.
+for arg in "$@"; do
+  if [[ "$arg" == "--help" ]]; then
+    echo "   --mapping_file=<filename>: gives iwyu a mapping file."
+    if [[ "${FAKE_IWYU_HAS_C_HEADERS:-1}" == 1 ]]; then
+      echo "   --use_c_headers: suggest C standard library headers in C++ mode"
+    fi
+    exit 0
+  fi
+done
+if [[ -n "${FAKE_IWYU_ARGS_LOG:-}" ]]; then
+  printf '%s\n' "$*" >> "$FAKE_IWYU_ARGS_LOG"
+fi
 for arg in "$@"; do
   case "$arg" in
+    --use_c_headers)
+      if [[ "${FAKE_IWYU_HAS_C_HEADERS:-1}" != 1 ]]; then
+        echo "error: unknown argument: '--use_c_headers'" >&2
+        exit 1
+      fi
+      ;;
     *.c) unit=$(basename "$arg") ;;
     --error=1) error_flag=1 ;;
   esac
@@ -209,6 +229,35 @@ fi
 if ! grep -qE "IWYU summary: analyzed=1 suggested=0 compile_errors=0 fatal=0" "$WORK/clean.out"; then
   fail "clean.c (--strict): the summary was not clean"
 fi
+
+# --use_c_headers exists only in IWYU 0.27 and later. A fake whose --help lists
+# it is passed the option and the C-headers mapping; one that does not is passed
+# neither and the unit analyses clean instead of failing on an unknown option.
+for has in 1 0; do
+  log="$WORK/args_$has.log"
+  : > "$log"
+  rc=0
+  (cd "$REPO" && FAKE_IWYU_HAS_C_HEADERS=$has FAKE_IWYU_ARGS_LOG="$log" PATH="$WORK/bin:$PATH" \
+    "$ROOT_DIR/tools/iwyu.sh" --jobs 1 --strict -- clean.c) > "$WORK/headers_$has.out" 2>&1 || rc=$?
+  if [[ $rc -ne 0 ]]; then
+    fail "clean.c (--strict, c-headers support=$has): the run failed"
+    cat "$WORK/headers_$has.out" >&2
+  fi
+  if [[ ! -s "$log" ]]; then
+    fail "clean.c (c-headers support=$has): the fake was never run on the unit"
+  fi
+  if [[ $has -eq 1 ]]; then
+    grep -qF -- "--use_c_headers" "$log" || fail "an IWYU that lists --use_c_headers was not passed it"
+    grep -qF -- "iwyu-c-headers.imp" "$log" || fail "an IWYU that lists --use_c_headers was not passed the C-headers mapping"
+  else
+    if grep -qF -- "--use_c_headers" "$log"; then
+      fail "an IWYU without --use_c_headers was passed it"
+    fi
+    if grep -qF -- "iwyu-c-headers.imp" "$log"; then
+      fail "an IWYU without --use_c_headers was passed the C-headers mapping"
+    fi
+  fi
+done
 
 # One run over everything: each failing unit is counted once, in its own class.
 run_case all --strict

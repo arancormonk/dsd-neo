@@ -287,11 +287,34 @@ if qt_units and not qt_mapping.is_file():
 
 # Shared C headers are compiled as C and as C++, and IWYU 0.27 in C++ mode asks
 # for <cstdint> where C needs <stdint.h>. --use_c_headers plus this mapping give
-# both one answer; tools/iwyu-c-headers.imp states the rule. Unlike the Qt
-# mapping it is not optional: the flag without it gives C++ sources different
-# advice than the rule, so a missing file stops the run rather than changing it.
+# both one answer; tools/iwyu-c-headers.imp states the rule. The option exists
+# only in IWYU 0.27 and later (released 0.24 to 0.26 reject it as an unknown
+# argument, which would fail every unit), and those older releases already keep
+# C headers on their C names. So the option and the mapping, which only
+# compensates for the option, are passed together and only when the installed
+# IWYU lists the option in its --help. Unlike the Qt mapping the file is not
+# optional once the option is passed: the flag without it gives C++ sources
+# different advice than the rule, so a missing file stops the run rather than
+# changing it.
 c_headers_mapping = root / "tools" / "iwyu-c-headers.imp"
-if not c_headers_mapping.is_file():
+
+
+def iwyu_supports_c_headers():
+    try:
+        proc = subprocess.run(
+            ["include-what-you-use", "--help"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return False
+    return "--use_c_headers" in proc.stdout
+
+
+use_c_headers = iwyu_supports_c_headers()
+if use_c_headers and not c_headers_mapping.is_file():
     raise SystemExit(f"iwyu: {c_headers_mapping} not found; it is required for every translation unit.")
 
 if not selected_entries:
@@ -330,8 +353,9 @@ def run_iwyu(rel, entry):
         compiler_index = 1
     cmd[compiler_index] = "include-what-you-use"
     cmd.append("-fno-color-diagnostics")
-    # Every unit, C and C++ alike: see tools/iwyu-c-headers.imp for the rule.
-    cmd.extend(["-Xiwyu", "--use_c_headers", "-Xiwyu", f"--mapping_file={c_headers_mapping}"])
+    if use_c_headers:
+        # Every unit, C and C++ alike: see tools/iwyu-c-headers.imp for the rule.
+        cmd.extend(["-Xiwyu", "--use_c_headers", "-Xiwyu", f"--mapping_file={c_headers_mapping}"])
     if qt_mapping.is_file() and compiles_against_qt(entry):
         cmd.extend(["-Xiwyu", f"--mapping_file={qt_mapping}"])
     if strict:

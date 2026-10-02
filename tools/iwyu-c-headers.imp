@@ -2,7 +2,8 @@
 # Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
 #
 # include-what-you-use mapping for the C standard library headers, passed by
-# tools/iwyu.sh for every translation unit together with --use_c_headers.
+# tools/iwyu.sh for every translation unit together with --use_c_headers, when
+# the installed IWYU has that option (0.27 and later).
 #
 # The rule: the project spells a C standard library header the C way
 # (<stdint.h>, <string.h>, <math.h>) in every file, C or C++, and a C++ source
