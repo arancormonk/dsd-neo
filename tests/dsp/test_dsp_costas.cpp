@@ -43,6 +43,37 @@ alloc_state(void) {
     return s;
 }
 
+/* Floats are written and checked through their bits, in memory: a fast-math build of this test may fold
+ * std::isfinite() to true and treat an Inf or NaN float value as impossible, but it cannot do either to stored bits. */
+static const uint32_t kBitsQuietNan = 0x7FC00000u;
+static const uint32_t kBitsPosInf = 0x7F800000u;
+static const uint32_t kBitsNegInf = 0xFF800000u;
+static const uint32_t kBitsTwoPow60 = 0x5D800000u;      /* 2^60: the smallest magnitude the loops reject */
+static const uint32_t kBitsBelowTwoPow60 = 0x5D7FFFFFu; /* the largest float below 2^60 */
+static const uint32_t kBitsOneE30 = 0x7149F2CAu;        /* 1e30 */
+
+static void
+store_float_bits(float* dst, uint32_t bits) {
+    DSD_MEMCPY(dst, &bits, sizeof(bits));
+}
+
+static int
+stored_float_is_finite(const float* value) {
+    uint32_t bits = 0;
+    DSD_MEMCPY(&bits, value, sizeof(bits));
+    return (bits & 0x7F800000u) != 0x7F800000u;
+}
+
+static int
+stored_floats_are_finite(const float* values, size_t count) {
+    for (size_t k = 0; k < count; k++) {
+        if (!stored_float_is_finite(&values[k])) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
 static void
 run_cqpsk_chain(demod_state* s) {
     if (!s || !s->cqpsk_enable) {
@@ -892,6 +923,165 @@ test_costas_nonfinite_sample_is_rejected(void) {
     return 0;
 }
 
+static demod_state*
+costas_guard_state(float* buf, int pairs) {
+    demod_state* s = alloc_state();
+    if (s) {
+        s->lowpassed = buf;
+        s->lp_len = pairs * 2;
+        s->cqpsk_enable = 1;
+        s->costas_state.initialized = 1;
+        s->costas_state.phase = 0.2f;
+        s->costas_state.freq = 0.01f;
+        s->costas_state.alpha = 0.04f;
+        s->costas_state.beta = 0.0002f;
+        s->costas_state.max_freq = 1.0f;
+        s->costas_state.min_freq = -1.0f;
+    }
+    return s;
+}
+
+static int
+costas_guard_states_match(const char* label, const demod_state* got, const demod_state* want) {
+    const dsd_costas_loop_state_t* g = &got->costas_state;
+    const dsd_costas_loop_state_t* w = &want->costas_state;
+    if (!stored_float_is_finite(&g->phase) || !stored_float_is_finite(&g->freq) || !stored_float_is_finite(&g->error)
+        || !stored_float_is_finite(&g->error_smooth)) {
+        DSD_FPRINTF(stderr, "COSTAS GUARD %s: loop state is not finite\n", label);
+        return 1;
+    }
+    if (!(fabsf(g->phase - w->phase) <= 0.0f) || !(fabsf(g->freq - w->freq) <= 0.0f)
+        || !(fabsf(g->error - w->error) <= 0.0f) || !(fabsf(g->error_smooth - w->error_smooth) <= 0.0f)
+        || got->costas_err_avg_q14 != want->costas_err_avg_q14
+        || got->costas_err_raw_avg_q14 != want->costas_err_raw_avg_q14
+        || got->costas_conf_avg_q14 != want->costas_conf_avg_q14
+        || got->costas_zero_conf_pct != want->costas_zero_conf_pct) {
+        DSD_FPRINTF(
+            stderr, "COSTAS GUARD %s: phase %f/%f freq %f/%f err %f/%f smooth %f/%f metrics %d/%d %d/%d %d/%d %d/%d\n",
+            label, (double)g->phase, (double)w->phase, (double)g->freq, (double)w->freq, (double)g->error,
+            (double)w->error, (double)g->error_smooth, (double)w->error_smooth, got->costas_err_avg_q14,
+            want->costas_err_avg_q14, got->costas_err_raw_avg_q14, want->costas_err_raw_avg_q14,
+            got->costas_conf_avg_q14, want->costas_conf_avg_q14, got->costas_zero_conf_pct, want->costas_zero_conf_pct);
+        return 1;
+    }
+    return 0;
+}
+
+/*
+ * Test: a Costas sample with a NaN, an infinite or a 2^60-or-larger component,
+ * amid good ones, goes out as 0 and moves the loop exactly as a zero sample
+ * would (no training, error smoothing restarted), and the largest float below
+ * 2^60 is still normalized.
+ */
+static int
+test_costas_out_of_range_samples_act_as_zero(void) {
+    enum { kPairs = 7 };
+
+    static const float good[kPairs * 2] = {0.6f, 0.6f, 0.0f, 0.5f, 0.5f, 0.0f, 0.0f,
+                                           0.5f, 0.5f, 0.0f, 0.5f, 0.0f, 0.6f, -0.6f};
+    static float buf[kPairs * 2];
+    static float ref[kPairs * 2];
+    DSD_MEMCPY(buf, good, sizeof(buf));
+    DSD_MEMCPY(ref, good, sizeof(ref));
+    /* Pairs 1 to 4, (NaN, 0.5), (0.5, -Inf), (2^60, 0.5) and (0.5, 1e30), are out of range; pair 5,
+     * (0.5, -(2^60 - ulp)), is in. The reference zeroes pairs 1 to 4. */
+    store_float_bits(&buf[2], kBitsQuietNan);
+    store_float_bits(&buf[5], kBitsNegInf);
+    store_float_bits(&buf[6], kBitsTwoPow60);
+    store_float_bits(&buf[9], kBitsOneE30);
+    store_float_bits(&buf[11], kBitsBelowTwoPow60 | 0x80000000u);
+    store_float_bits(&ref[11], kBitsBelowTwoPow60 | 0x80000000u);
+    for (int k = 2; k < 10; k++) {
+        ref[k] = 0.0f;
+    }
+
+    demod_state* s = costas_guard_state(buf, kPairs);
+    demod_state* r = costas_guard_state(ref, kPairs);
+    if (!s || !r) {
+        DSD_FPRINTF(stderr, "alloc failed\n");
+        dsd_neo_aligned_free(s);
+        dsd_neo_aligned_free(r);
+        return 1;
+    }
+    op25_costas_loop_cc(s);
+    op25_costas_loop_cc(r);
+
+    int rc = costas_guard_states_match("mixed block", s, r);
+    if (!stored_floats_are_finite(buf, sizeof(buf) / sizeof(buf[0]))) {
+        DSD_FPRINTF(stderr, "COSTAS GUARD: output is not finite\n");
+        rc = 1;
+    }
+    for (int k = 2; k < 10 && rc == 0; k++) {
+        if (fabsf(buf[k]) > 0.0f) {
+            DSD_FPRINTF(stderr, "COSTAS GUARD: rejected output [%d] = %f, want 0\n", k, (double)buf[k]);
+            rc = 1;
+        }
+    }
+    for (int k = 0; k < kPairs * 2 && rc == 0; k++) {
+        if (!(fabsf(buf[k] - ref[k]) <= 0.0f)) {
+            DSD_FPRINTF(stderr, "COSTAS GUARD: output [%d] = %f, zero-sample reference %f\n", k, (double)buf[k],
+                        (double)ref[k]);
+            rc = 1;
+        }
+    }
+    const float mag5 = sqrtf(buf[10] * buf[10] + buf[11] * buf[11]);
+    if (rc == 0 && !(fabsf(mag5 - 0.85f * 0.85f) <= 1.0e-4f)) {
+        DSD_FPRINTF(stderr, "COSTAS GUARD: in-range pair 5 magnitude %f, want %f\n", (double)mag5, 0.85 * 0.85);
+        rc = 1;
+    }
+    if (rc == 0 && s->costas_zero_conf_pct != 57) { /* 4 of 7 */
+        DSD_FPRINTF(stderr, "COSTAS GUARD: zero-confidence %d%%, want 57%%\n", s->costas_zero_conf_pct);
+        rc = 1;
+    }
+
+    dsd_neo_aligned_free(s);
+    dsd_neo_aligned_free(r);
+    return rc;
+}
+
+/*
+ * Test: a non-finite persisted Costas phase or smoothed error restarts at 0,
+ * exactly as a loop whose state holds 0 there.
+ */
+static int
+test_costas_nonfinite_state_restarts_at_zero(void) {
+    static const uint32_t phase_bits[2] = {kBitsQuietNan, kBitsNegInf};
+    static const uint32_t smooth_bits[2] = {kBitsPosInf, kBitsQuietNan};
+    int rc = 0;
+    for (int v = 0; v < 2 && rc == 0; v++) {
+        static float buf[4];
+        static float ref[4];
+        static const float in[4] = {0.5f, 0.45f, -0.4f, 0.55f};
+        DSD_MEMCPY(buf, in, sizeof(buf));
+        DSD_MEMCPY(ref, in, sizeof(ref));
+        demod_state* s = costas_guard_state(buf, 2);
+        demod_state* r = costas_guard_state(ref, 2);
+        if (!s || !r) {
+            DSD_FPRINTF(stderr, "alloc failed\n");
+            dsd_neo_aligned_free(s);
+            dsd_neo_aligned_free(r);
+            return 1;
+        }
+        store_float_bits(&s->costas_state.phase, phase_bits[v]);
+        store_float_bits(&s->costas_state.error_smooth, smooth_bits[v]);
+        r->costas_state.phase = 0.0f;
+        r->costas_state.error_smooth = 0.0f;
+        op25_costas_loop_cc(s);
+        op25_costas_loop_cc(r);
+        rc = costas_guard_states_match(v == 0 ? "NaN phase, Inf smooth" : "-Inf phase, NaN smooth", s, r);
+        for (int k = 0; k < 4 && rc == 0; k++) {
+            if (!stored_float_is_finite(&buf[k]) || !(fabsf(buf[k] - ref[k]) <= 0.0f)) {
+                DSD_FPRINTF(stderr, "COSTAS GUARD: state variant %d output [%d] = %f, want %f\n", v, k, (double)buf[k],
+                            (double)ref[k]);
+                rc = 1;
+            }
+        }
+        dsd_neo_aligned_free(s);
+        dsd_neo_aligned_free(r);
+    }
+    return rc;
+}
+
 /*
  * Test: Gardner refuses SPS values that would overrun the fixed MMSE delay
  * line and reports no output symbols.
@@ -1149,6 +1339,61 @@ test_gardner_short_blocks_match_whole_stream(void) {
 }
 
 /*
+ * Test: Gardner takes a NaN, an infinite or a 2^60-or-larger sample
+ * component as 0: the symbols and the timing state match those of the same
+ * stream with those components zeroed, and stay finite.
+ */
+static int
+test_gardner_out_of_range_samples_enter_as_zero(void) {
+    dsd_unsetenv("DSD_NEO_TED_GAIN");
+    dsd_neo_config_init();
+
+    std::vector<float> stream = gardner_split_stream();
+    std::vector<float> zeroed = stream;
+
+    static const struct {
+        int index; /* float index into the interleaved stream */
+        uint32_t bits;
+    } kBad[] = {
+        {200, kBitsQuietNan}, {203, kBitsPosInf},   {500, kBitsNegInf},
+        {501, kBitsQuietNan}, {802, kBitsTwoPow60}, {1201, kBitsOneE30 | 0x80000000u},
+    };
+
+    for (const auto& bad : kBad) {
+        store_float_bits(&stream[(size_t)bad.index], bad.bits);
+        zeroed[(size_t)bad.index] = 0.0f;
+    }
+
+    demod_state* s = gardner_split_state();
+    demod_state* r = gardner_split_state();
+    if (!s || !r) {
+        DSD_FPRINTF(stderr, "state alloc failed\n");
+        dsd_neo_aligned_free(s);
+        dsd_neo_aligned_free(r);
+        return 1;
+    }
+    std::vector<float> got;
+    std::vector<float> want;
+    gardner_feed_block(s, stream.data(), kGardnerStreamPairs, GARDNER_FEED_HEAP, &got);
+    gardner_feed_block(r, zeroed.data(), kGardnerStreamPairs, GARDNER_FEED_HEAP, &want);
+
+    int rc = 0;
+    const ted_state_t* ted = &s->ted_state;
+    if (got.empty() || !stored_floats_are_finite(got.data(), got.size()) || !stored_float_is_finite(&ted->mu)
+        || !stored_float_is_finite(&ted->omega) || !stored_float_is_finite(&ted->last_r)
+        || !stored_float_is_finite(&ted->last_j) || !stored_float_is_finite(&ted->lock_accum)) {
+        DSD_FPRINTF(stderr, "GARDNER GUARD: %zu symbols or the timing state not finite\n", got.size() / 2);
+        rc = 1;
+    }
+    if (rc == 0) {
+        rc = gardner_split_matches("out-of-range samples", want, &r->ted_state, got, ted);
+    }
+    dsd_neo_aligned_free(s);
+    dsd_neo_aligned_free(r);
+    return rc;
+}
+
+/*
  * Test: FLL band-edge block initializes lazily and processes an IQ block in
  * place while preserving a bounded loop state.
  */
@@ -1305,6 +1550,12 @@ main(void) {
     if (test_costas_nonfinite_sample_is_rejected() != 0) {
         return 1;
     }
+    if (test_costas_out_of_range_samples_act_as_zero() != 0) {
+        return 1;
+    }
+    if (test_costas_nonfinite_state_restarts_at_zero() != 0) {
+        return 1;
+    }
     if (test_gardner_oversized_sps_disables_output() != 0) {
         return 1;
     }
@@ -1315,6 +1566,9 @@ main(void) {
         return 1;
     }
     if (test_gardner_short_blocks_match_whole_stream() != 0) {
+        return 1;
+    }
+    if (test_gardner_out_of_range_samples_enter_as_zero() != 0) {
         return 1;
     }
     return 0;
