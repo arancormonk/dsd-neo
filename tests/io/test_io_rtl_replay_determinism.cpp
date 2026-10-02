@@ -24,6 +24,7 @@
 #include <dsd-neo/runtime/exitflag.h>
 #include <iterator>
 #include <memory>
+#include <new>
 #include <numeric>
 #include <string>
 #include <vector>
@@ -33,6 +34,19 @@
 #include "dsd-neo/io/rtl_stream_fwd.h"
 #include "rtl_stream_test_support.h"
 #include "test_support.h"
+
+/* A replay hook's context, in static storage. The stream keeps the pointer a test installs a hook with
+ * (rtl_stream_test_set_replay_stage_hook(), rtl_stream_test_set_replay_block_hook()) in a global until the hook is
+ * cleared, so the context must not live in the test's stack frame. Each call ends the T the last caller had and builds
+ * a new one in its place, so a test starts from a fresh context whatever ran before it; a test uses one T at a time. */
+template <typename T>
+static T&
+fresh_hook_context(void) {
+    static T ctx;
+    ctx.~T();
+    ::new (static_cast<void*>(&ctx)) T();
+    return ctx;
+}
 
 static int
 expect_true(const char* label, int cond) {
@@ -577,7 +591,7 @@ read_leg(RtlSdrContext* ctx, const Leg& leg, Signature* sig) {
 
 static int
 run_leg(const char* metadata_path, const Leg& leg, Signature* sig) {
-    LegObserver observer;
+    LegObserver& observer = fresh_hook_context<LegObserver>();
     rtl_stream_test_set_replay_block_hook(leg_block_hook, &observer);
     rtl_stream_test_set_replay_stage_hook(leg_stage_hook, &observer);
     std::unique_ptr<dsd_opts> opts;
@@ -998,7 +1012,7 @@ test_replay_publishes_a_block_whole_with_its_tag(void) {
     if (make_capture(tone_and_noise_payload(chunks * kChunkBytes / 2U), metadata_path, sizeof(metadata_path)) != 0) {
         return 1;
     }
-    PublishWindow window;
+    PublishWindow& window = fresh_hook_context<PublishWindow>();
     rtl_stream_test_set_replay_stage_hook(publish_window_stage, &window);
     std::unique_ptr<dsd_opts> opts;
     RtlSdrContext* ctx = NULL;
@@ -1137,7 +1151,7 @@ test_replay_demand_waits_stop_in_bounded_time(void) {
             DSD_SNPRINTF(label, sizeof(label), "%s, %s",
                          reads ? "awaiting an acknowledgement" : "before the first read",
                          global_exit ? "global exit" : "soft stop");
-            Pacing pacing;
+            Pacing& pacing = fresh_hook_context<Pacing>();
             std::unique_ptr<dsd_opts> opts;
             RtlSdrContext* ctx = NULL;
             if (start_paced_replay(label, &pacing, reads, &opts, &ctx) != 0) {
@@ -1211,7 +1225,7 @@ test_replay_decoder_wait_stops_in_bounded_time(void) {
     int rc = 0;
     for (int global_exit = 0; global_exit <= 1; global_exit++) {
         const char* label = global_exit ? "decoder wait, global exit" : "decoder wait, forced stop";
-        Pacing pacing;
+        Pacing& pacing = fresh_hook_context<Pacing>();
         pacing.hold_block.store(2, std::memory_order_release);
         std::unique_ptr<dsd_opts> opts;
         RtlSdrContext* ctx = NULL;
@@ -1273,7 +1287,7 @@ test_replay_without_output_ends(void) {
         if (make_capture(tone_and_noise_payload(complex_samples), metadata_path, sizeof(metadata_path)) != 0) {
             return 1;
         }
-        Pacing pacing;
+        Pacing& pacing = fresh_hook_context<Pacing>();
         rtl_stream_test_set_replay_stage_hook(pacing_stage, &pacing);
         std::unique_ptr<dsd_opts> opts;
         RtlSdrContext* ctx = NULL;
@@ -1355,7 +1369,7 @@ test_replay_reader_start_failure_at_the_first_demand_wait(void) {
     if (rtl_stream_create(opts.get(), &start.ctx) != 0 || !start.ctx) {
         return expect_true("reader start failure: rtl_stream_create", 0);
     }
-    Pacing pacing;
+    Pacing& pacing = fresh_hook_context<Pacing>();
     rtl_stream_test_set_replay_stage_hook(pacing_stage, &pacing);
     rtl_device_test_replay_fail_start(1);
     int rc = 0;
@@ -1508,7 +1522,7 @@ test_replay_boundary_waits_for_a_stalled_decoder(void) {
         if (rewind) {
             layout = capture_layout(one_chunk.size(), std::vector<CaptureEvent>());
         }
-        DecoderStall stall;
+        DecoderStall& stall = fresh_hook_context<DecoderStall>();
         rtl_stream_test_set_replay_stage_hook(decoder_stall_stage, &stall);
         std::unique_ptr<dsd_opts> opts;
         RtlSdrContext* ctx = NULL;
@@ -1608,8 +1622,8 @@ test_replay_purge_the_demod_takes_keeps_the_next_chunk(void) {
     if (make_retune_capture(3U, &layout, metadata_path, sizeof(metadata_path)) != 0) {
         return 1;
     }
-    PurgeRace race;
-    LegObserver observer;
+    PurgeRace& race = fresh_hook_context<PurgeRace>();
+    LegObserver& observer = fresh_hook_context<LegObserver>();
     rtl_stream_test_set_replay_stage_hook(purge_race_stage, &race);
     rtl_stream_test_set_replay_block_hook(leg_block_hook, &observer);
     std::unique_ptr<dsd_opts> opts;
@@ -1698,7 +1712,7 @@ test_replay_purge_a_stop_left_does_not_reach_the_next_replay(void) {
         return 1;
     }
     int rc = 0;
-    StalePurge sp;
+    StalePurge& sp = fresh_hook_context<StalePurge>();
     rtl_stream_test_set_replay_stage_hook(stale_purge_stage, &sp);
     std::unique_ptr<dsd_opts> opts;
     RtlSdrContext* ctx = NULL;
@@ -1716,7 +1730,7 @@ test_replay_purge_a_stop_left_does_not_reach_the_next_replay(void) {
     rc |= expect_u64_eq("stale purge, replay 1: purge flags the demod took", (uint64_t)sp.purges_taken[0].load(), 0U);
 
     sp.session.store(2, std::memory_order_release);
-    LegObserver observer;
+    LegObserver& observer = fresh_hook_context<LegObserver>();
     rtl_stream_test_set_replay_block_hook(leg_block_hook, &observer);
     rtl_stream_test_replay_state state;
     DSD_MEMSET(&state, 0, sizeof(state));
@@ -1793,7 +1807,7 @@ test_replay_reset_after_a_retune_resets_from_the_old_centre(void) {
     if (make_retune_capture(3U, &layout, metadata_path, sizeof(metadata_path)) != 0) {
         return 1;
     }
-    ResetPlans plans;
+    ResetPlans& plans = fresh_hook_context<ResetPlans>();
     rtl_stream_test_set_replay_stage_hook(reset_plan_stage, &plans);
     std::unique_ptr<dsd_opts> opts;
     RtlSdrContext* ctx = NULL;
@@ -1860,7 +1874,7 @@ test_replay_event_boundary_waits_stop_in_bounded_time(void) {
             if (made != 0) {
                 return 1;
             }
-            BoundaryWait wait;
+            BoundaryWait& wait = fresh_hook_context<BoundaryWait>();
             rtl_stream_test_set_replay_stage_hook(boundary_wait_stage, &wait);
             std::unique_ptr<dsd_opts> opts;
             RtlSdrContext* ctx = NULL;

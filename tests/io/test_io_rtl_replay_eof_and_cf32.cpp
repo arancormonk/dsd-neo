@@ -22,6 +22,7 @@
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/input_failure.h>
 #include <memory>
+#include <new>
 #include <string>
 #include <vector>
 #include "dsd-neo/core/input_level.h"
@@ -39,6 +40,19 @@ expect_int_eq(const char* label, int got, int want) {
         return 1;
     }
     return 0;
+}
+
+/* A replay hook's context, in static storage. The stream keeps the pointer a test installs a hook with
+ * (rtl_stream_test_set_replay_stage_hook(), rtl_stream_test_set_replay_block_hook()) in a global until the hook is
+ * cleared, so the context must not live in the test's stack frame. Each call ends the T the last caller had and builds
+ * a new one in its place, so a test starts from a fresh context whatever ran before it; a test uses one T at a time. */
+template <typename T>
+static T&
+fresh_hook_context(void) {
+    static T ctx;
+    ctx.~T();
+    ::new (static_cast<void*>(&ctx)) T();
+    return ctx;
 }
 
 static int
@@ -847,7 +861,7 @@ test_cu8_replay_publishes_raw_input_level(void) {
 
     std::unique_ptr<dsd_opts> opts;
     RtlSdrContext* ctx = NULL;
-    FirstBlockLevel first;
+    FirstBlockLevel& first = fresh_hook_context<FirstBlockLevel>();
     rc |= start_level_replay(metadata_path, &first, &opts, &ctx);
     if (rc != 0) {
         stop_and_destroy_stream(ctx);
@@ -893,7 +907,7 @@ test_cu8_replay_legacy_fs4_level_uses_raw_block(void) {
 
     std::unique_ptr<dsd_opts> opts;
     RtlSdrContext* ctx = NULL;
-    FirstBlockLevel first;
+    FirstBlockLevel& first = fresh_hook_context<FirstBlockLevel>();
     rc |= start_level_replay(metadata_path, &first, &opts, &ctx);
     if (rc != 0) {
         stop_and_destroy_stream(ctx);
@@ -937,7 +951,7 @@ test_cf32_replay_fs4_level_uses_raw_block(void) {
 
     std::unique_ptr<dsd_opts> opts;
     RtlSdrContext* ctx = NULL;
-    FirstBlockLevel first;
+    FirstBlockLevel& first = fresh_hook_context<FirstBlockLevel>();
     rc |= start_level_replay(metadata_path, &first, &opts, &ctx);
     if (rc != 0) {
         stop_and_destroy_stream(ctx);
@@ -1691,7 +1705,7 @@ test_replay_eof_drain_delivers_final_block(void) {
     }
 
     for (int rep = 0; rep < 20; rep++) {
-        EofDrainRace race;
+        EofDrainRace& race = fresh_hook_context<EofDrainRace>();
         race.reserve_delay_ms.store((rep & 1) ? 5 : 0, std::memory_order_relaxed);
         rtl_stream_test_set_replay_stage_hook(eof_drain_race_stage, &race);
 
@@ -1767,7 +1781,7 @@ test_replay_read_survives_clear_at_eof(void) {
         return 1;
     }
 
-    ClearAtEof clear;
+    ClearAtEof& clear = fresh_hook_context<ClearAtEof>();
     rtl_stream_test_set_replay_stage_hook(clear_at_eof_stage, &clear);
     std::unique_ptr<dsd_opts> opts;
     RtlSdrContext* ctx = NULL;
@@ -1941,7 +1955,7 @@ test_replay_eof_wait_does_not_spin(void) {
         return 1;
     }
 
-    SlowLastBlock slow;
+    SlowLastBlock& slow = fresh_hook_context<SlowLastBlock>();
     rtl_stream_test_set_replay_stage_hook(slow_last_block_stage, &slow);
     std::unique_ptr<dsd_opts> opts;
     RtlSdrContext* ctx = NULL;
@@ -2120,8 +2134,8 @@ test_replay_blocks_follow_capture_chunks(int realtime) {
         position += kCu8ChunkFloats / 2U;
     }
 
-    BlockLog log;
-    ChunkFraming framing;
+    BlockLog& log = fresh_hook_context<BlockLog>();
+    ChunkFraming& framing = fresh_hook_context<ChunkFraming>();
     rtl_stream_test_set_replay_block_hook(block_log_hook, &log);
     rtl_stream_test_set_replay_stage_hook(chunk_framing_stage, &framing);
     std::unique_ptr<dsd_opts> opts;
@@ -2305,7 +2319,7 @@ test_replay_demod_never_acknowledges_an_unread_chunk(void) {
         return 1;
     }
 
-    AckWindow window;
+    AckWindow& window = fresh_hook_context<AckWindow>();
     window.chunks = chunks;
     rtl_stream_test_set_replay_stage_hook(ack_window_stage, &window);
     std::unique_ptr<dsd_opts> opts;
@@ -2369,7 +2383,7 @@ static int
 run_early_release_window(const char* label, const char* metadata_path, int stage, uint64_t chunks,
                          uint64_t released_sequence) {
     int rc = 0;
-    EarlyReleaseWindow window;
+    EarlyReleaseWindow& window = fresh_hook_context<EarlyReleaseWindow>();
     window.stage = stage;
     rtl_stream_test_set_replay_block_hook(early_release_block_hook, &window);
     rtl_stream_test_set_replay_stage_hook(early_release_stage, &window);
@@ -2529,7 +2543,7 @@ test_replay_multi_chunk_eof_delivers_final_block(void) {
     }
 
     for (int rep = 0; rep < 5; rep++) {
-        FinalBlockHold hold;
+        FinalBlockHold& hold = fresh_hook_context<FinalBlockHold>();
         hold.total_floats = chunks * kCu8ChunkFloats;
         rtl_stream_test_set_replay_stage_hook(final_block_hold_stage, &hold);
         std::unique_ptr<dsd_opts> opts;
@@ -2598,7 +2612,7 @@ test_loop_replay_media_time_runs_on(void) {
         return 1;
     }
 
-    LoopBlocks loop;
+    LoopBlocks& loop = fresh_hook_context<LoopBlocks>();
     rtl_stream_test_set_replay_block_hook(loop_blocks_hook, &loop);
     std::unique_ptr<dsd_opts> opts;
     RtlSdrContext* ctx = NULL;
@@ -2688,7 +2702,7 @@ test_cf32_replay_short_reads_stay_aligned(void) {
         chunks.push_back(ExpectedChunk{std::min(kCf32ChunkFloats, float_count - start), start / 2U});
     }
 
-    BlockLog log;
+    BlockLog& log = fresh_hook_context<BlockLog>();
     log.keep_samples = 1;
     rtl_stream_test_set_replay_block_hook(block_log_hook, &log);
     rtl_device_test_replay_limit_read(4092U); /* each read stops half a complex sample short of 4 KiB */
@@ -2793,7 +2807,7 @@ test_replay_read_failure_mid_chunk_delivers_what_was_read(void) {
         return 1;
     }
     {
-        BlockLog log;
+        BlockLog& log = fresh_hook_context<BlockLog>();
         uint64_t delivered = 0U;
         dsd_input_failure failure;
         rc |= replay_with_failed_read("read failure mid-chunk", metadata_path, cu8_read_bytes, 3, DSD_IQ_ERR_IO, &log,
@@ -2813,7 +2827,7 @@ test_replay_read_failure_mid_chunk_delivers_what_was_read(void) {
         return 1;
     }
     {
-        BlockLog log;
+        BlockLog& log = fresh_hook_context<BlockLog>();
         log.keep_samples = 1;
         uint64_t delivered = 0U;
         dsd_input_failure failure;
@@ -2836,7 +2850,7 @@ test_replay_read_failure_mid_chunk_delivers_what_was_read(void) {
         return 1;
     }
     {
-        BlockLog log;
+        BlockLog& log = fresh_hook_context<BlockLog>();
         log.keep_samples = 1;
         uint64_t delivered = 0U;
         dsd_input_failure failure;
@@ -2987,7 +3001,7 @@ test_replay_conversion_failure_ends_with_the_failure(void) {
         return 1;
     }
     dsd_input_failure_clear();
-    BlockLog log;
+    BlockLog& log = fresh_hook_context<BlockLog>();
     rtl_stream_test_set_replay_block_hook(block_log_hook, &log);
     rtl_device_test_replay_override_conversion(2, -1);
     std::unique_ptr<dsd_opts> opts;
@@ -3073,7 +3087,7 @@ test_replay_of_a_data_file_cut_short(void) {
         if (made != 0) {
             return 1;
         }
-        FileCut cut;
+        FileCut& cut = fresh_hook_context<FileCut>();
         cut.data_path = metadata_path;
         cut.data_path.resize(cut.data_path.size() - std::strlen(".json"));
         cut.at_chunk = 2U;
@@ -3089,7 +3103,7 @@ test_replay_of_a_data_file_cut_short(void) {
         }
 
         dsd_input_failure_clear();
-        BlockLog log;
+        BlockLog& log = fresh_hook_context<BlockLog>();
         log.keep_samples = cf32;
         rtl_stream_test_set_replay_block_hook(block_log_hook, &log);
         rtl_stream_test_set_replay_stage_hook(file_cut_stage, &cut);
@@ -3145,7 +3159,7 @@ test_loop_pass_that_submits_nothing_ends(void) {
         const char* label = passes_delivered ? "loop, second pass submits nothing" : "loop, first pass submits nothing";
         char what[160];
         dsd_input_failure_clear();
-        BlockLog log;
+        BlockLog& log = fresh_hook_context<BlockLog>();
         rtl_stream_test_set_replay_block_hook(block_log_hook, &log);
         rtl_device_test_replay_override_conversion(passes_delivered, 0);
         std::unique_ptr<dsd_opts> opts;
