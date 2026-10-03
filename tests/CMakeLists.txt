@@ -109,9 +109,10 @@ target_link_libraries(dsd-neo_test_support INTERFACE dsd-neo_platform)
 # its failure mode was reporting a clean run over an empty analysis. iwyu.sh
 # gets a fake IWYU, since its failure mode was reading a unit that did not
 # compile as clean. Bash only: the scripts themselves are bash, so nothing is
-# lost by skipping them where it is missing. They need bash 4 or later (mapfile),
-# and macOS ships 3.2 as /bin/bash, so a newer one is preferred where installed;
-# with only an older one they still register, and fail, rather than vanish.
+# lost by skipping them where it is missing. They need bash 4.4 or later (mapfile
+# -d, and empty arrays under set -u in tools/ci_changed_files.sh), and macOS ships
+# 3.2 as /bin/bash, so a newer one is preferred where installed; with only an
+# older one they still register, and fail, rather than vanish.
 if(NOT WIN32)
     find_program(
         DSD_NEO_BASH_EXECUTABLE
@@ -120,21 +121,23 @@ if(NOT WIN32)
     )
     if(DSD_NEO_BASH_EXECUTABLE)
         execute_process(
-            COMMAND ${DSD_NEO_BASH_EXECUTABLE} -c [[echo "${BASH_VERSINFO[0]}"]]
-            OUTPUT_VARIABLE _dsd_neo_bash_major
+            COMMAND
+                ${DSD_NEO_BASH_EXECUTABLE} -c
+                [[echo "${BASH_VERSINFO[0]}.${BASH_VERSINFO[1]}"]]
+            OUTPUT_VARIABLE _dsd_neo_bash_version
             OUTPUT_STRIP_TRAILING_WHITESPACE
             ERROR_QUIET
         )
         if(
-            NOT _dsd_neo_bash_major MATCHES "^[0-9]+$"
-            OR _dsd_neo_bash_major LESS 4
+            NOT _dsd_neo_bash_version MATCHES "^[0-9]+\\.[0-9]+$"
+            OR _dsd_neo_bash_version VERSION_LESS 4.4
         )
             message(
                 WARNING
-                "${DSD_NEO_BASH_EXECUTABLE} is older than bash 4; the TOOLS_* script tests need bash 4 and will fail"
+                "${DSD_NEO_BASH_EXECUTABLE} is older than bash 4.4; the TOOLS_* script tests need bash 4.4 and will fail"
             )
         endif()
-        unset(_dsd_neo_bash_major)
+        unset(_dsd_neo_bash_version)
         add_test(
             NAME TOOLS_CI_ARCH_TOOLCHAIN_PULL_RETRY
             COMMAND
@@ -147,6 +150,13 @@ if(NOT WIN32)
             COMMAND
                 ${DSD_NEO_BASH_EXECUTABLE}
                 ${PROJECT_SOURCE_DIR}/tests/tools/test_ci_changed_files_header_expansion.sh
+            WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+        )
+        add_test(
+            NAME TOOLS_CI_CHANGED_FILES_PATHS
+            COMMAND
+                ${DSD_NEO_BASH_EXECUTABLE}
+                ${PROJECT_SOURCE_DIR}/tests/tools/test_ci_changed_files_paths.sh
             WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
         )
         add_test(

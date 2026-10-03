@@ -7,6 +7,13 @@ set -euo pipefail
 # (capped per tree and language) for the slower analyzers, and to every includer
 # for IWYU, whose verdict depends on the header's types and is cheap to run.
 
+# Needs bash 4.4: `mapfile -d` reads git's NUL-separated names, and expanding an
+# empty array under `set -u` is an error before 4.4.
+if ((BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 4))); then
+  echo "ci-changed-files: needs bash 4.4 or later (this is ${BASH_VERSION})" >&2
+  exit 2
+fi
+
 ROOT_DIR=$(git rev-parse --show-toplevel 2> /dev/null || pwd)
 cd "$ROOT_DIR"
 
@@ -173,10 +180,24 @@ limit_includers() {
 
 mkdir -p "$OUT_DIR"
 
-mapfile -t changed_paths < <(
-  git diff --name-only --diff-filter=ACMR "${BASE_REF}...${HEAD_REF}" ||
-    git diff --name-only --diff-filter=ACMR "$BASE_REF" "$HEAD_REF"
-)
+# The raw diff goes through a private temporary file outside the checkout: anything
+# under the checkout comes from the pull request, which could put a symlink to
+# /dev/null where the diff is written and empty the lists.
+DIFF_RAW=$(mktemp "${TMPDIR:-/tmp}/ci-changed-files.XXXXXX")
+trap 'rm -f "$DIFF_RAW"' EXIT
+
+# Read the paths changed between BASE_REF and HEAD_REF, raw (-z): git otherwise
+# quotes a name with non-ASCII bytes, quotes or tabs, and a quoted name matches no
+# pattern below and fails the existence check, so it dropped out of every list. A
+# diff that fails ends the run, because an empty list reads as "nothing changed" and
+# would let every job that consumes it skip its work and pass.
+if ! git diff -z --name-only --diff-filter=ACMR "${BASE_REF}...${HEAD_REF}" > "$DIFF_RAW"; then
+  if ! git diff -z --name-only --diff-filter=ACMR "$BASE_REF" "$HEAD_REF" > "$DIFF_RAW"; then
+    echo "ci-changed-files: git diff between ${BASE_REF} and ${HEAD_REF} failed" >&2
+    exit 1
+  fi
+fi
+mapfile -d '' -t changed_paths < "$DIFF_RAW"
 
 if [[ ${#changed_paths[@]} -eq 0 ]]; then
   write_list "$OUT_DIR/changed_paths.txt"
