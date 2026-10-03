@@ -27,6 +27,7 @@ target_sources(
         symbol_profile.c
         tcp_audio_connect.c
         telemetry_hooks_install.c
+        telemetry_observers.c
         ui_history.c
         ui_opts_snapshot.c
         ui_snapshot.c

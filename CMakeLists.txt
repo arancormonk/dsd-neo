@@ -82,6 +82,15 @@ option(
 option(DSD_ENABLE_SOAPYSDR "Enable SoapySDR backend support" ON)
 option(DSD_ENABLE_TERMINAL_UI "Enable ncurses/PDCurses terminal frontend" ON)
 option(DSD_ENABLE_QT_UI "Enable the Qt Quick frontend (src/ui/qt)" OFF)
+# The third-party TCP JSON control/telemetry API is desktop-only; Android does
+# not build or link it.
+option(DSD_ENABLE_API "Enable the third-party TCP JSON control/telemetry API" ON)
+if(ANDROID)
+    set(DSD_ENABLE_API
+        OFF
+        CACHE BOOL "" FORCE
+    )
+endif()
 set(DSD_SOAPYSDR_MIN_VERSION "0.8.1")
 option(
     DSD_REQUIRE_RTLSDR
@@ -585,6 +594,13 @@ find_package(OpenSSL 3.0 REQUIRED)
 # and 2.2 follows TIA-102.BABA-1 for AMBE 2450 erasures and repeats with
 # deterministic mute noise.
 set(_DSD_MBE_REQUIRED_VERSION 2.2)
+# Honor the per-user install prefix the README documents for mbelib-neo
+# (~/.local on Linux/macOS) so a native desktop configure does not need an
+# explicit -DCMAKE_PREFIX_PATH. Skipped for Android/cross builds, where the
+# host's ~/.local would be the wrong architecture.
+if(NOT ANDROID AND NOT CMAKE_CROSSCOMPILING AND DEFINED ENV{HOME})
+    list(PREPEND CMAKE_PREFIX_PATH "$ENV{HOME}/.local")
+endif()
 find_package(mbe-neo ${_DSD_MBE_REQUIRED_VERSION} CONFIG REQUIRED)
 if(ANDROID AND TARGET mbe_neo::mbe_static)
     # Every shared library an Android app uses has to be bundled into the APK
@@ -1348,6 +1364,9 @@ add_subdirectory(src/fec)
 add_subdirectory(src/third_party)
 add_subdirectory(src/engine)
 add_subdirectory(src/app_control)
+if(DSD_ENABLE_API)
+    add_subdirectory(src/api)
+endif()
 add_subdirectory(src/ui)
 add_subdirectory(apps)
 # Android app shell (Qt Quick frontend + JNI lifecycle glue).

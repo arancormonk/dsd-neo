@@ -1,0 +1,248 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+/*
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ */
+
+/*
+ * Completeness guard for the JSON command table: every DSD_APP_CMD_* the rest
+ * of the tree can submit must have exactly one named entry in the catalog.
+ */
+
+#include <assert.h>
+#include <dsd-neo/api/json.h>
+#include <dsd-neo/app_control/commands.h>
+#include <stdio.h>
+#include <string.h>
+
+#include "api_internal.h"
+
+static const int k_all_ids[] = {
+    DSD_APP_CMD_TOGGLE_MUTE,
+    DSD_APP_CMD_TOGGLE_COMPACT,
+    DSD_APP_CMD_HISTORY_CYCLE,
+    DSD_APP_CMD_SLOT1_TOGGLE,
+    DSD_APP_CMD_SLOT2_TOGGLE,
+    DSD_APP_CMD_SLOT_PREF_CYCLE,
+    DSD_APP_CMD_GAIN_DELTA,
+    DSD_APP_CMD_AGAIN_DELTA,
+    DSD_APP_CMD_TRUNK_TOGGLE,
+    DSD_APP_CMD_SCANNER_TOGGLE,
+    DSD_APP_CMD_PAYLOAD_TOGGLE,
+    DSD_APP_CMD_P25_GA_TOGGLE,
+    DSD_APP_CMD_TG_HOLD_TOGGLE,
+    DSD_APP_CMD_LPF_TOGGLE,
+    DSD_APP_CMD_HPF_TOGGLE,
+    DSD_APP_CMD_PBF_TOGGLE,
+    DSD_APP_CMD_HPF_D_TOGGLE,
+    DSD_APP_CMD_AGGR_SYNC_TOGGLE,
+    DSD_APP_CMD_CALL_ALERT_TOGGLE,
+    DSD_APP_CMD_CALL_ALERT_EVENTS_SET,
+    DSD_APP_CMD_CONST_TOGGLE,
+    DSD_APP_CMD_CONST_NORM_TOGGLE,
+    DSD_APP_CMD_CONST_GATE_DELTA,
+    DSD_APP_CMD_EYE_TOGGLE,
+    DSD_APP_CMD_EYE_UNICODE_TOGGLE,
+    DSD_APP_CMD_EYE_COLOR_TOGGLE,
+    DSD_APP_CMD_FSK_HIST_TOGGLE,
+    DSD_APP_CMD_SPECTRUM_TOGGLE,
+    DSD_APP_CMD_SPEC_SIZE_DELTA,
+    DSD_APP_CMD_INPUT_VOL_CYCLE,
+    DSD_APP_CMD_EH_NEXT,
+    DSD_APP_CMD_EH_PREV,
+    DSD_APP_CMD_EH_TOGGLE_SLOT,
+    DSD_APP_CMD_PPM_DELTA,
+    DSD_APP_CMD_INVERT_TOGGLE,
+    DSD_APP_CMD_MOD_TOGGLE,
+    DSD_APP_CMD_DMR_RESET,
+    DSD_APP_CMD_GAIN_SET,
+    DSD_APP_CMD_AGAIN_SET,
+    DSD_APP_CMD_INPUT_WARN_DB_SET,
+    DSD_APP_CMD_INPUT_MONITOR_TOGGLE,
+    DSD_APP_CMD_COSINE_FILTER_TOGGLE,
+    DSD_APP_CMD_TCP_CONNECT_AUDIO,
+    DSD_APP_CMD_RIGCTL_CONNECT,
+    DSD_APP_CMD_RETURN_CC,
+    DSD_APP_CMD_CHANNEL_CYCLE,
+    DSD_APP_CMD_SYMCAP_SAVE,
+    DSD_APP_CMD_SYMCAP_STOP,
+    DSD_APP_CMD_REPLAY_LAST,
+    DSD_APP_CMD_WAV_START,
+    DSD_APP_CMD_WAV_STOP,
+    DSD_APP_CMD_STOP_PLAYBACK,
+    DSD_APP_CMD_TRUNK_WLIST_TOGGLE,
+    DSD_APP_CMD_TRUNK_PRIV_TOGGLE,
+    DSD_APP_CMD_TRUNK_DATA_TOGGLE,
+    DSD_APP_CMD_TRUNK_ENC_TOGGLE,
+    DSD_APP_CMD_WAV_TOGGLE,
+    DSD_APP_CMD_ENC_LOCKOUT_CLEAR,
+    DSD_APP_CMD_SCAN_HOLD_TOGGLE,
+    DSD_APP_CMD_SCAN_AVOID,
+    DSD_APP_CMD_SCAN_AVOID_CLEAR,
+    DSD_APP_CMD_QUIT,
+    DSD_APP_CMD_FORCE_PRIV_TOGGLE,
+    DSD_APP_CMD_FORCE_RC4_TOGGLE,
+    DSD_APP_CMD_TRUNK_GROUP_TOGGLE,
+    DSD_APP_CMD_SIM_NOCAR,
+    DSD_APP_CMD_MOD_P2_TOGGLE,
+    DSD_APP_CMD_LOCKOUT_SLOT,
+    DSD_APP_CMD_M17_TX_TOGGLE,
+    DSD_APP_CMD_PROVOICE_ESK_TOGGLE,
+    DSD_APP_CMD_PROVOICE_MODE_TOGGLE,
+    DSD_APP_CMD_SKIP_SLOT,
+    DSD_APP_CMD_UI_MSG_CLEAR,
+    DSD_APP_CMD_EH_RESET,
+    DSD_APP_CMD_EVENT_LOG_DISABLE,
+    DSD_APP_CMD_EVENT_LOG_SET,
+    DSD_APP_CMD_LCW_RETUNE_TOGGLE,
+    DSD_APP_CMD_P25_CC_CAND_TOGGLE,
+    DSD_APP_CMD_REVERSE_MUTE_TOGGLE,
+    DSD_APP_CMD_DMR_LE_TOGGLE,
+    DSD_APP_CMD_ALL_MUTES_TOGGLE,
+    DSD_APP_CMD_INV_X2_TOGGLE,
+    DSD_APP_CMD_INV_DMR_TOGGLE,
+    DSD_APP_CMD_INV_DPMR_TOGGLE,
+    DSD_APP_CMD_INV_M17_TOGGLE,
+    DSD_APP_CMD_WAV_STATIC_OPEN,
+    DSD_APP_CMD_WAV_RAW_OPEN,
+    DSD_APP_CMD_DSP_OUT_SET,
+    DSD_APP_CMD_SYMCAP_OPEN,
+    DSD_APP_CMD_SYMBOL_IN_OPEN,
+    DSD_APP_CMD_INPUT_WAV_SET,
+    DSD_APP_CMD_INPUT_SYM_STREAM_SET,
+    DSD_APP_CMD_INPUT_SET_PULSE,
+    DSD_APP_CMD_UDP_OUT_CFG,
+    DSD_APP_CMD_TCP_CONNECT_AUDIO_CFG,
+    DSD_APP_CMD_RIGCTL_CONNECT_CFG,
+    DSD_APP_CMD_UDP_INPUT_CFG,
+    DSD_APP_CMD_RTL_ENABLE_INPUT,
+    DSD_APP_CMD_RTL_RESTART,
+    DSD_APP_CMD_RTL_SET_DEV,
+    DSD_APP_CMD_RTL_SET_FREQ,
+    DSD_APP_CMD_RTL_SET_GAIN,
+    DSD_APP_CMD_RTL_SET_PPM,
+    DSD_APP_CMD_RTL_SET_BW,
+    DSD_APP_CMD_RTL_SET_SQL_DB,
+    DSD_APP_CMD_RTL_SET_VOL_MULT,
+    DSD_APP_CMD_RTL_SET_BIAS_TEE,
+    DSD_APP_CMD_RTLTCP_SET_AUTOTUNE,
+    DSD_APP_CMD_RTL_SET_AUTO_PPM,
+    DSD_APP_CMD_MANUAL_TUNE,
+    DSD_APP_CMD_TUNER_RELEASE,
+    DSD_APP_CMD_MOD_SET,
+    DSD_APP_CMD_DECODE_MODE_SET,
+    DSD_APP_CMD_TRUNK_SET,
+    DSD_APP_CMD_AIRSPY_SET,
+    DSD_APP_CMD_AIRSPY_ENABLE_INPUT,
+    DSD_APP_CMD_RIGCTL_SET_MOD_BW,
+    DSD_APP_CMD_TG_HOLD_SET,
+    DSD_APP_CMD_HANGTIME_SET,
+    DSD_APP_CMD_SLOT_PREF_SET,
+    DSD_APP_CMD_SLOTS_ONOFF_SET,
+    DSD_APP_CMD_SCAN_VOICE_ONLY_SET,
+    DSD_APP_CMD_SCAN_VOICE_QUALIFY_MS_SET,
+    DSD_APP_CMD_SCAN_VOICE_HOLD_MS_SET,
+    DSD_APP_CMD_NFM_BANDWIDTH_SET,
+    DSD_APP_CMD_AM_BANDWIDTH_SET,
+    DSD_APP_CMD_TONE_FILTER_SET,
+    DSD_APP_CMD_PULSE_OUT_SET,
+    DSD_APP_CMD_PULSE_IN_SET,
+    DSD_APP_CMD_INPUT_VOL_SET,
+    DSD_APP_CMD_LRRP_SET_HOME,
+    DSD_APP_CMD_LRRP_SET_DSDP,
+    DSD_APP_CMD_LRRP_SET_CUSTOM,
+    DSD_APP_CMD_LRRP_DISABLE,
+    DSD_APP_CMD_IMPORT_CHANNEL_MAP,
+    DSD_APP_CMD_IMPORT_GROUP_LIST,
+    DSD_APP_CMD_IMPORT_KEYS_DEC,
+    DSD_APP_CMD_IMPORT_KEYS_HEX,
+    DSD_APP_CMD_IMPORT_CHANNEL_MAP_CLEAR,
+    DSD_APP_CMD_IMPORT_GROUP_LIST_CLEAR,
+    DSD_APP_CMD_IMPORT_KEYS_CLEAR,
+    DSD_APP_CMD_IMPORT_P25_BANDPLAN,
+    DSD_APP_CMD_EXPORT_P25_BANDPLAN,
+    DSD_APP_CMD_RR_APPLY_IMPORT,
+    DSD_APP_CMD_RR_ACCOUNT_SET,
+    DSD_APP_CMD_IMPORT_SRC_LIST,
+    DSD_APP_CMD_IMPORT_SRC_LIST_CLEAR,
+    DSD_APP_CMD_P25_P2_PARAMS_SET,
+    DSD_APP_CMD_TG_LISTEN_SET,
+    DSD_APP_CMD_TG_LISTEN_SET_ALL,
+    DSD_APP_CMD_TG_ROW_SET,
+    DSD_APP_CMD_TG_ROW_REMOVE,
+    DSD_APP_CMD_TG_LIST_EXPORT,
+    DSD_APP_CMD_TG_SELECTION_SET,
+    DSD_APP_CMD_TG_LOCKOUT_PERSIST_SET,
+    DSD_APP_CMD_TG_SESSION_AVOID_CLEAR,
+    DSD_APP_CMD_UI_SHOW_DSP_PANEL_TOGGLE,
+    DSD_APP_CMD_UI_SHOW_P25_METRICS_TOGGLE,
+    DSD_APP_CMD_UI_SHOW_P25_AFFIL_TOGGLE,
+    DSD_APP_CMD_UI_SHOW_P25_NEIGHBORS_TOGGLE,
+    DSD_APP_CMD_UI_SHOW_P25_IDEN_TOGGLE,
+    DSD_APP_CMD_UI_SHOW_P25_CCC_TOGGLE,
+    DSD_APP_CMD_UI_SHOW_CHANNELS_TOGGLE,
+    DSD_APP_CMD_UI_SHOW_P25_CALLSIGN_TOGGLE,
+    DSD_APP_CMD_KEY_BASIC_SET,
+    DSD_APP_CMD_KEY_SCRAMBLER_SET,
+    DSD_APP_CMD_KEY_RC4DES_SET,
+    DSD_APP_CMD_KEY_HYTERA_SET,
+    DSD_APP_CMD_KEY_AES_SET,
+    DSD_APP_CMD_KEY_TYT_AP_SET,
+    DSD_APP_CMD_KEY_RETEVIS_RC2_SET,
+    DSD_APP_CMD_KEY_TYT_EP_SET,
+    DSD_APP_CMD_KEY_KEN_SCR_SET,
+    DSD_APP_CMD_KEY_ANYTONE_BP_SET,
+    DSD_APP_CMD_KEY_XOR_SET,
+    DSD_APP_CMD_M17_USER_DATA_SET,
+    DSD_APP_CMD_KEY_DIRECT_SET,
+    DSD_APP_CMD_FORCE_KEY_SET,
+    DSD_APP_CMD_DECRYPTION_APPLY,
+    DSD_APP_CMD_DSP_OP,
+    DSD_APP_CMD_CONFIG_APPLY,
+    DSD_APP_CMD_CONFIG_METADATA_SET,
+};
+
+static int
+id_present(const dsd_json_node* catalog, int id, const char** name_out) {
+    for (size_t i = 0; i < catalog->count; i++) {
+        const dsd_json_node* entry = catalog->items[i];
+        int64_t entry_id = 0;
+        if (dsd_json_as_i64(dsd_json_obj_get(entry, "id"), &entry_id) == 0 && entry_id == id) {
+            if (name_out != NULL) {
+                *name_out = dsd_json_as_str(dsd_json_obj_get(entry, "name"));
+            }
+            return 1;
+        }
+    }
+    return 0;
+}
+
+int
+main(void) {
+    dsd_json_buf catalog;
+    dsd_json_buf_init(&catalog);
+    assert(dsd_api_command_catalog(&catalog) == 0);
+    assert(catalog.data != NULL);
+
+    dsd_json_node* root = NULL;
+    char err[64] = "";
+    assert(dsd_json_parse(catalog.data, &root, err, sizeof err) == 0);
+    assert(root->type == DSD_JSON_ARRAY);
+
+    const size_t expected = sizeof k_all_ids / sizeof k_all_ids[0];
+    assert((size_t)dsd_api_command_count_total() == expected);
+    assert(root->count == expected);
+
+    for (size_t i = 0; i < expected; i++) {
+        const char* name = NULL;
+        if (!id_present(root, k_all_ids[i], &name)) {
+            fprintf(stderr, "missing catalog entry for command id %d\n", k_all_ids[i]);
+            assert(0);
+        }
+        assert(name != NULL && name[0] != '\0');
+    }
+
+    dsd_json_free(root);
+    dsd_json_buf_free(&catalog);
+    printf("api command table complete (%zu commands)\n", expected);
+    return 0;
+}
