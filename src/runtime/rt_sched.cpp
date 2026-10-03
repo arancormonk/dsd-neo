@@ -16,7 +16,6 @@
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/rt_sched.h>
-#include <errno.h>
 #include <string.h>
 
 static const char*
@@ -105,8 +104,9 @@ maybe_set_thread_realtime_and_affinity(const char* role) {
 
     int priority = resolve_role_rt_priority(cfg, role);
 
-    if (dsd_thread_set_realtime_priority(priority) != 0) {
-        int err = errno;
+    /* The wrappers return their errno value, as pthread calls do; they do not set errno. */
+    int err = dsd_thread_set_realtime_priority(priority);
+    if (err != 0) {
         LOG_WARN("WARNING: Failed to set %s thread to realtime priority (needs elevated privileges). errno=%d (%s)\n",
                  label, err, strerror(err));
     } else {
@@ -115,8 +115,8 @@ maybe_set_thread_realtime_and_affinity(const char* role) {
 
     int cpu = resolve_role_cpu_affinity(cfg, role);
     if (cpu >= 0) {
-        if (dsd_thread_set_affinity(cpu) != 0) {
-            int err = errno;
+        err = dsd_thread_set_affinity(cpu);
+        if (err != 0) {
             LOG_WARN("WARNING: Failed to set CPU affinity for %s thread to CPU %d. errno=%d (%s)\n", label, cpu, err,
                      strerror(err));
         } else {

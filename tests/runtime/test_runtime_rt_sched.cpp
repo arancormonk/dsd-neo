@@ -33,6 +33,7 @@ static int g_affinity_rc = 0;
 static int g_rt_errno = EPERM;
 static int g_affinity_errno = EINVAL;
 static int g_log_counts[4];
+static char g_warn_text[512];
 
 extern "C" const dsdneoRuntimeConfig*
 dsd_neo_get_config(void) {
@@ -68,6 +69,10 @@ dsd_neo_log_write(dsd_neo_log_level_t level, const char* format, ...) {
     }
     va_list ap;
     va_start(ap, format);
+    if (level == LOG_LEVEL_WARN) {
+        const size_t used = strlen(g_warn_text);
+        DSD_VSNPRINTF(g_warn_text + used, sizeof(g_warn_text) - used, format, ap);
+    }
     va_end(ap);
 }
 
@@ -85,6 +90,7 @@ reset_state(void) {
     g_rt_errno = EPERM;
     g_affinity_errno = EINVAL;
     DSD_MEMSET(g_log_counts, 0, sizeof(g_log_counts));
+    DSD_MEMSET(g_warn_text, 0, sizeof(g_warn_text));
 }
 
 static void
@@ -163,6 +169,12 @@ test_public_call_success_and_failure_paths(void) {
     assert(g_affinity_calls == 1);
     assert(g_last_cpu == 2);
     assert(g_log_counts[LOG_LEVEL_WARN] == 2);
+    /* Each warning names the code its wrapper returned, not the unrelated value the stubs leave in errno. */
+    char expected[128];
+    DSD_SNPRINTF(expected, sizeof(expected), "elevated privileges). errno=%d (", EINVAL);
+    assert(strstr(g_warn_text, expected) != nullptr);
+    DSD_SNPRINTF(expected, sizeof(expected), "to CPU 2. errno=%d (", EPERM);
+    assert(strstr(g_warn_text, expected) != nullptr);
 
     reset_state();
     enable_config();
