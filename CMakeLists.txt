@@ -480,6 +480,18 @@ if(DSD_ENABLE_WARNINGS)
                 /wd4459 # declaration hides global declaration
                 /wd4127 # conditional expression is constant
         )
+        # MSVC 19.44 (VS 2022 17.14) reports C5287 (operands are different enum types)
+        # for C enumerators even after both are cast to int, the cast that silences it
+        # on later compilers, which keep the check. Not wrapped in
+        # $<COMPILE_LANGUAGE:C>: Visual Studio generators evaluate that as CXX for
+        # every source of a target that has C++ sources.
+        if(
+            CMAKE_C_COMPILER_ID STREQUAL "MSVC"
+            AND CMAKE_C_COMPILER_VERSION VERSION_GREATER_EQUAL 19.44
+            AND CMAKE_C_COMPILER_VERSION VERSION_LESS 19.50
+        )
+            target_compile_options(dsd-neo_warnings INTERFACE /wd5287)
+        endif()
     endif()
     if(DSD_WARNINGS_AS_ERRORS)
         if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
