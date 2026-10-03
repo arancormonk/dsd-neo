@@ -18,7 +18,10 @@
 #include <dsd-neo/dsp/ted.h>
 #include <dsd-neo/io/rtl_metrics.h>
 #include <dsd-neo/io/rtl_stream_c.h>
+#include <dsd-neo/runtime/config.h>
+#include <mutex>
 #include <stddef.h>
+#include <stdint.h>
 
 #include "rtl_fft_cache.h"
 #include "rtl_finite.h"
@@ -47,6 +50,23 @@ static std::atomic<double> g_fll_band_edge_freq_rad{0.0}; /* FLL band-edge NCO f
 
 /* Supervisory tuner autogain gate (0/1), controlled via env/UI. */
 std::atomic<int> g_tuner_autogain_on{0};
+/* Counts the explicit settings (rtl_stream_set_tuner_autogain()), so a retune profile built before one knows it is
+   older than the setting in force. An explicit setting and a retune's landing (rtl_stream_land_retune_autogain()) each
+   read and write the flag and the count under g_tuner_autogain_mutex, so a landing cannot check the count, lose the
+   race to a newer setting and then write its older value over it. */
+std::atomic<uint32_t> g_tuner_autogain_set_seq{0U};
+static std::mutex g_tuner_autogain_mutex;
+/* The last explicit setting (-1: none yet) and the environment default (DSD_NEO_TUNER_AUTOGAIN) when it was made: a
+   stream open (rtl_stream_open_tuner_autogain()) keeps the explicit setting until the default changes, as the
+   terminal's toggle changes it while no stream runs. Under g_tuner_autogain_mutex. */
+static int g_tuner_autogain_requested = -1;
+static int g_tuner_autogain_requested_env = -1;
+
+static int
+tuner_autogain_env_default(void) {
+    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+    return (cfg && cfg->tuner_autogain_enable) ? 1 : 0;
+}
 
 /* Auto-PPM status. */
 std::atomic<int> g_auto_ppm_enabled{0};
@@ -546,6 +566,51 @@ rtl_stream_get_tuner_autogain(void) {
 /** @brief Enable or disable supervisory tuner auto-gain (atomic flag). */
 extern "C" void
 rtl_stream_set_tuner_autogain(int onoff) {
+    const int env_default = tuner_autogain_env_default();
+    std::lock_guard<std::mutex> lock(g_tuner_autogain_mutex);
+    g_tuner_autogain_on.store(onoff ? 1 : 0, std::memory_order_relaxed);
+    g_tuner_autogain_set_seq.fetch_add(1U, std::memory_order_acq_rel);
+    g_tuner_autogain_requested = onoff ? 1 : 0;
+    g_tuner_autogain_requested_env = env_default;
+}
+
+extern "C" void
+rtl_stream_enforce_tuner_autogain(int onoff) {
+    std::lock_guard<std::mutex> lock(g_tuner_autogain_mutex);
+    g_tuner_autogain_on.store(onoff ? 1 : 0, std::memory_order_relaxed);
+    g_tuner_autogain_set_seq.fetch_add(1U, std::memory_order_acq_rel);
+}
+
+void
+rtl_stream_open_tuner_autogain(int capable) {
+    const int env_default = tuner_autogain_env_default();
+    std::lock_guard<std::mutex> lock(g_tuner_autogain_mutex);
+    if (!capable) {
+        g_tuner_autogain_on.store(0, std::memory_order_relaxed);
+        return;
+    }
+    if (g_tuner_autogain_requested >= 0 && g_tuner_autogain_requested_env == env_default) {
+        g_tuner_autogain_on.store(g_tuner_autogain_requested, std::memory_order_relaxed);
+        return;
+    }
+    g_tuner_autogain_requested = -1;
+    g_tuner_autogain_on.store(env_default, std::memory_order_relaxed);
+}
+
+extern "C" void
+rtl_stream_test_reset_tuner_autogain(void) {
+    std::lock_guard<std::mutex> lock(g_tuner_autogain_mutex);
+    g_tuner_autogain_requested = -1;
+    g_tuner_autogain_requested_env = -1;
+    g_tuner_autogain_on.store(0, std::memory_order_relaxed);
+}
+
+void
+rtl_stream_land_retune_autogain(int onoff, int only_if_current, uint32_t seq) {
+    std::lock_guard<std::mutex> lock(g_tuner_autogain_mutex);
+    if (only_if_current && seq != g_tuner_autogain_set_seq.load(std::memory_order_acquire)) {
+        return;
+    }
     g_tuner_autogain_on.store(onoff ? 1 : 0, std::memory_order_relaxed);
 }
 

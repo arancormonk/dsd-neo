@@ -14,6 +14,7 @@
 #include <atomic>
 #include <cmath>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/parse.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/dsp/costas.h>
 #include <dsd-neo/platform/posix_compat.h>
@@ -360,10 +361,16 @@ env_is_set(const char* v) {
     return v && v[0] != '\0';
 }
 
+/* A whole boolean word (on/off, 1/0, true/false, yes/no) decides first; otherwise the first character does, as it
+   always has (`y...`, `t...`, `n...`, `f...`). The first character alone cannot tell "on" from "off". */
 static int
 env_is_truthy(const char* v) {
     if (!env_is_set(v)) {
         return 0;
+    }
+    int word = 0;
+    if (dsd_parse_bool_strict(v, &word) == 0) {
+        return word == 1;
     }
     return (v[0] == '1' || v[0] == 'y' || v[0] == 'Y' || v[0] == 't' || v[0] == 'T');
 }
@@ -372,6 +379,10 @@ static int
 env_is_falsey(const char* v) {
     if (!env_is_set(v)) {
         return 0;
+    }
+    int word = 0;
+    if (dsd_parse_bool_strict(v, &word) == 0) {
+        return word == 0;
     }
     return (v[0] == '0' || v[0] == 'n' || v[0] == 'N' || v[0] == 'f' || v[0] == 'F');
 }

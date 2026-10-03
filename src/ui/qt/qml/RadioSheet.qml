@@ -49,7 +49,12 @@ ModalSheet {
 
     // What each control steps from and displays.
     readonly property bool airspyActive: metrics.airspy !== undefined && metrics.airspy.gain_mode !== undefined
-    readonly property int gainDb: isNaN(pendingGain) ? metrics.tunerGainDb : pendingGain
+    // Under --trunk-scan a target can carry its own rtl_gain. While it is on air the
+    // reading is the target's, and the buttons edit the configured gain beneath it,
+    // the one every other target runs and the scan restores at each switch.
+    readonly property bool gainRowOverride: metrics.tunerGainRowOverride === true
+    readonly property int baseGainDb: gainRowOverride ? metrics.configuredTunerGainDb : metrics.tunerGainDb
+    readonly property int gainDb: isNaN(pendingGain) ? baseGainDb : pendingGain
     readonly property int ppm: isNaN(pendingPpm) ? metrics.ppm : pendingPpm
     // A scan row or target can carry its own squelch (--squelch-db). While it is on
     // air the readout is the row's, and the buttons edit the configured default
@@ -197,6 +202,11 @@ ModalSheet {
         // Android the service may have been driven from elsewhere since.
         forgetRequests();
         visible = true;
+    }
+
+    /** A tuner gain as the panel prints it: 0 is the tuner's automatic gain. */
+    function gainText(db) {
+        return db <= 0 ? qsTr("auto") : db + " dB";
     }
 
     /** A squelch reading as the panel prints it. */
@@ -411,7 +421,7 @@ ModalSheet {
                 objectName: "radioGainValue"
                 width: parent.width - 116
                 anchors.verticalCenter: parent.verticalCenter
-                text: sheet.autoGain ? qsTr("auto") : sheet.gainDb + " dB"
+                text: sheet.gainRowOverride ? sheet.gainText(metrics.tunerGainDb) : sheet.gainText(sheet.gainDb)
                 color: Theme.textPrimary
                 font.family: Theme.mono
                 font.pixelSize: Theme.fontSize(14)
@@ -429,6 +439,41 @@ ModalSheet {
                 text: "+"
                 accessibleName: qsTr("Increase Gain")
                 onClicked: sheet.stepGain(1)
+            }
+        }
+        // Shown only while the parked trunk-scan target runs its own gain: says the
+        // target owns the reading above, and which default the buttons are changing.
+        Row {
+            objectName: "radioGainRowNote"
+            visible: sheet.gainRowOverride
+            spacing: 8
+            Rectangle {
+                objectName: "radioGainRowBadge"
+                implicitWidth: gainRowBadge.implicitWidth + 14
+                implicitHeight: Math.max(20, gainRowBadge.implicitHeight + 8)
+                anchors.verticalCenter: parent.verticalCenter
+                radius: 5
+                color: "transparent"
+                border.width: 1
+                border.color: Theme.controlBorder
+
+                Text {
+                    id: gainRowBadge
+                    anchors.centerIn: parent
+                    text: qsTr("target")
+                    font.family: Theme.mono
+                    font.pixelSize: Theme.fontSize(10)
+                    font.letterSpacing: 1
+                    color: Theme.cyan
+                }
+            }
+            Text {
+                objectName: "radioGainDefault"
+                anchors.verticalCenter: parent.verticalCenter
+                text: qsTr("default %1").arg(sheet.gainText(sheet.gainDb))
+                color: Theme.textSecondary
+                font.family: Theme.mono
+                font.pixelSize: Theme.fontSize(12)
             }
         }
     }

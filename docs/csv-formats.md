@@ -488,7 +488,7 @@ Columns:
 | `activity_hold_ms` | No | Per-target conventional DMR/P25/NXDN (NXDN96 and NXDN48) activity hold (`250..600000`), and an analog target's hold after its carrier drops. Empty uses `--trunk-scan-activity-hold-ms` or `[trunk_scan] activity_hold_ms`. P25 holds from allowed voice starts, not PDU data; `-e` has no effect on P25 conventional holds. |
 | `notes` | No | Ignored. Use for local notes. |
 | `modulation` | No | Per-target demod hint. Empty preserves global/default handling. `auto` uses target defaults and overrides global `-m` locks for that target. Both P25 types accept `auto`, `c4fm`, `cqpsk`; DMR and both NXDN rates accept `auto`, `gfsk`. An analog (`nfm-conventional`, `am-conventional`) target takes none. |
-| `rtl_gain` | No | Per-target RTL-family tuner gain. Empty uses the global/default gain. `0` or `auto` requests device automatic gain. `1..49` requests manual dB gain. Ignored for non-RTL retuning paths. |
+| `rtl_gain` | No | Per-target RTL-family tuner gain. Empty uses the configured gain, including one set live during the scan. `0` or `auto` requests device automatic gain. `1..49` requests manual dB gain. Ignored for non-RTL retuning paths. |
 | `keys_hex_csv` | No | Per-target hex key file (`-K` format), resolved relative to this CSV. A row may fill both key columns; they load into one per-target key set. Empty uses the global keys. |
 | `keys_dec_csv` | No | Per-target decimal key file (`-k` format), resolved relative to this CSV. Empty uses the global keys. |
 | `single_key_dec` | No | Embedded `-b` Motorola Basic Privacy key number (`0..255`). Explicit `0` is present and overrides the global key. May be combined with `single_key_hex`, but not either key-file column. |

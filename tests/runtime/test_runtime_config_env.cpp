@@ -1606,6 +1606,41 @@ test_tcp_misc_env(void) {
     return 0;
 }
 
+/* "on" and "off" share a first letter, so the env switches must read them as whole words: DSD_NEO_RTL_AGC=off used to
+   leave the AGC on and DSD_NEO_TUNER_AUTOGAIN=on left autogain off. Older single-letter spellings keep working. */
+static int
+test_env_on_off_words(void) {
+    static const struct {
+        const char* value;
+        int enabled;
+    } k_cases[] = {
+        {"off", 0},  {"OFF", 0},   {"on", 1}, {"On", 1}, {"yes", 1}, {"no", 0},
+        {"true", 1}, {"false", 0}, {"1", 1},  {"0", 0},  {"y", 1},   {"f", 0},
+    };
+
+    for (size_t i = 0; i < sizeof(k_cases) / sizeof(k_cases[0]); i++) {
+        unset_all_runtime_env();
+        setenv("DSD_NEO_RTL_AGC", k_cases[i].value, 1);
+        setenv("DSD_NEO_TUNER_AUTOGAIN", k_cases[i].value, 1);
+        dsd_neo_config_init();
+        const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+        int rc = expect(cfg != NULL, 1500, "cfg NULL");
+        if (rc != 0) {
+            return rc;
+        }
+        rc = expect_int_eq(cfg->rtl_agc_enable, k_cases[i].enabled, 1501, k_cases[i].value);
+        if (rc != 0) {
+            return rc;
+        }
+        rc = expect_int_eq(cfg->tuner_autogain_enable, k_cases[i].enabled, 1502, k_cases[i].value);
+        if (rc != 0) {
+            return rc;
+        }
+    }
+    unset_all_runtime_env();
+    return 0;
+}
+
 static int
 test_rtl_misc_env(void) {
     setenv("DSD_NEO_RTL_AGC", "0", 1);
@@ -2474,6 +2509,10 @@ main(void) {
         return rc;
     }
     rc = test_dmr_t3_heur_apply();
+    if (rc != 0) {
+        return rc;
+    }
+    rc = test_env_on_off_words();
     if (rc != 0) {
         return rc;
     }

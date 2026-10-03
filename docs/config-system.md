@@ -284,7 +284,7 @@ small subset is exposed as config keys for convenience (for example
 | `pulse_input` | STRING | Deprecated read alias for `pulse_source` | (empty) |
 | `rtl_device` | INT (0-255) | RTL-SDR device index | `0` |
 | `rtl_freq` | FREQ | RTL-SDR frequency; saving during trunking or scanning records the accepted tune target, not the startup frequency | `851.375M` |
-| `rtl_gain` | INT (0-49) | RTL-SDR gain in dB | `0` |
+| `rtl_gain` | INT (0-49) | RTL-SDR gain in dB; `0` is AGC, which a save writes and a load applies like any other gain (an omitted key keeps the gain running). Loading a config applies its gain even when its `[input]` is otherwise the input that runs: the input restarts on the new gain at the frequency and DSP bandwidth it runs (a SoapySDR `[input]` too, whose spec names no gain; its own frequency and bandwidth wait for an `[input]` that reopens the device) | `0` |
 | `rtl_ppm` | INT (-1000-1000) | Frequency correction | `0` |
 | `rtl_bw_khz` | INT (4-48) | DSP bandwidth | `48` |
 | `rtl_sql` | INT (-100-0) | Squelch threshold in dB; `0` switches squelch off (a disabled squelch is saved as `0`). The default a scan row's `--squelch-db` overrides and every row without one inherits; a save during a row override writes this default, not the row's value | `0` |
@@ -789,8 +789,10 @@ Config/CLI interaction:
 3. One-shot commands (`--dump-config-template`, `--validate-config`,
    `--list-profiles`, `--print-config`) execute and exit immediately.
    Before `--print-config` renders, Soapy shorthand input specs are normalized
-   into `soapy_args` plus shared `rtl_*` tuning keys. Explicit `soapy_settings`
-   values are rendered under their normalized key.
+   into `soapy_args` plus shared `rtl_*` tuning keys, and an `rtl:`/`rtltcp:`
+   spec's tuning is read into the `rtl_*` keys as the engine reads it when the
+   input opens. Explicit `soapy_settings` values are rendered under their
+   normalized key.
 4. If no CLI args and no config is loaded, the interactive bootstrap wizard runs.
 5. When a config is loaded: interactive bootstrap is skipped unless
    `--interactive-setup` is specified.

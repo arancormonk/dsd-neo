@@ -17,7 +17,8 @@ Friendly, practical overview of the `dsd-neo` command line. This covers what you
 - RTL‑SDR strings: `-i rtl:dev:freq:gain:ppm:bw:sql:vol[:bias=on|off]` or `-i rtltcp:host:port:freq:gain:ppm:bw:sql:vol[:bias=on|off]`
 - Soapy selection: `-i soapy`, `-i soapy:driver=airspy[,serial=...]`, or `-i soapy[:args]:freq[:gain[:ppm[:bw[:sql[:vol]]]]]` (discover args with `SoapySDRUtil --find`)
 - RTL retune control: `--rtl-udp-control <port>` binds to loopback by default; use
-  `--rtl-udp-control-bind <ipv4>` for explicit remote exposure (see `docs/udp-control.md`)
+  `--rtl-udp-control-bind <ipv4>` for explicit remote exposure (see `docs/udp-control.md`). It stays off under
+  `--trunk-scan`, which owns the tuner.
 - M17 encode: `-fZ -M M17:CAN:SRC:DST[:RATE[:VOX]]`, `-fP`, `-fB`
 - Keys: `-b`, `-H '<hex...>'`, `-R`, `-1`, `-2`, `-! '<hex...>'`, `-@ '<hex...>'`, `-5 '<hex...>'`, `-9`, `-A`, `-S bits:hex[:offset[:step]]`, `-k keys.csv`, `-K keys_hex.csv`, `--dmr-baofeng-pc5 <hex>`, `--dmr-csi-ee72 <hex>`, `--dmr-vertex-ks-csv <file>`, `--dmr-tg-key-csv <file>`, `--dmr-force-algid <hex>`, `--show-keys`, `-4`, `-0`, `-3`
 - Tools: `--calc-lcn file`, `--calc-cc-freq 451.2375`, `--calc-cc-lcn 50`, `--calc-step 12500`, `--calc-start-lcn 1`, `--auto-ppm`, `--auto-ppm-snr 6`, `--rtltcp-autotune`, `--rdio-mode off|dirwatch|api|both`
@@ -51,7 +52,9 @@ Tip: If you run with no arguments and no config is loaded, `dsd-neo` starts the 
 - Config path precedence: explicit `--config /path/to/config.ini` or a positional `*.ini` > `DSD_NEO_CONFIG` > default path for bare `--config`.
 - Explicit config paths may be absolute, relative, or use `~`/environment expansion; include paths are resolved relative to the containing config file.
 - `--interactive-setup` runs the wizard even when a config exists.
-- `--print-config` prints the effective config as INI after all env/CLI overrides.
+- `--print-config` prints the effective config as INI after all env/CLI overrides. An `rtl:`/`rtltcp:` input spec's
+  tuning (frequency, gain, PPM, DSP bandwidth, squelch, volume) is read into the `rtl_*` keys first, as the engine reads
+  it when the input opens.
 - In Soapy mode, shorthand `-i soapy[:args]:freq[:gain[:ppm[:bw[:sql[:vol]]]]]` is normalized first, so output shows
   `soapy_args` plus shared `rtl_*` tuning keys.
 - When config is enabled, the final settings are autosaved on exit. Explicit `--profile NAME` runs disable autosave for
@@ -340,7 +343,8 @@ Notes
 ## Levels & Audio
 
 - `-g <num>` Digital output gain. `0` = auto; `1` ≈ 2%; `50` = 100%
-- `-n <num>` Analog output gain (0–100%)
+- `-n <num>` Analog output gain, `0`–`100` (default `50`; `0` = auto). The menu's Analog gain... prompt and the `*` /
+  `/` keys work over the same 0–100 range.
 - `-nm` Enable the DMR single-slot mono decoder without changing the active decode preset.
 - `-z <0|1|2>` TDMA slot preference (0 = slot 1, 1 = slot 2, 2 = auto)
 - `-8` Monitor the source audio (helpful when mixing analog/digital)
@@ -1296,7 +1300,10 @@ cache file. Direct frequency changes are disabled during `--trunk-scan`, whose t
 
 ## RTL‑SDR details (`-i rtl` / `-i rtltcp`)
 
-- Fields: `dev` (device index), `freq` (Hz/MHz), `gain` (0–49), `ppm`, `bw` (kHz: 4, 6, 8, 12, 16, 24, 48), `sql` (negative = threshold in dB, `0` = off, positive = linear mean power), `vol` (monitor gain, 0–3; typical 1–3), optional `bias[=on|off]`.
+- Fields: `dev` (device index), `freq` (Hz/MHz), `gain` (0–49), `ppm`, `bw` (kHz: 4, 6, 8, 12, 16, 24, 48), `sql` (negative = threshold in dB, `0` = off, positive = linear mean power), `vol` (monitor gain, 0–3; typical 1–3), optional `bias[=on|off]`. `bias` alone (or `b`) turns the bias tee on; a value
+  is one whole word: `on`/`off`, `1`/`0`, `true`/`false` or `yes`/`no` (any case). A value or trailing option it cannot
+  read is ignored with a warning and leaves the bias tee as it was; the startup `RTL #N:` line ends in `BIAS=on` when
+  it is on.
 - A `sql` value that is not a number leaves the squelch as it was rather than switching it off. A disabled squelch is
   reported as `off` everywhere it is shown — the startup banner, the terminal input line, the DSP panel — so it is
   never mistaken for a threshold gating at the −120 dB display floor.
@@ -1542,7 +1549,10 @@ RTL‑SDR driver options
 
 Tuner autogain (experimental)
 
-- `DSD_NEO_TUNER_AUTOGAIN=1` — enable automatic tuner gain adjustment
+- `DSD_NEO_TUNER_AUTOGAIN=1` — enable automatic tuner gain adjustment. It is the default each stream opens with
+  (before its workers run, also under a manual gain, where the supervisor walks that gain); a Tuner autogain toggle
+  made since replaces it for later stream restarts until the default itself changes. An I/Q replay or an Airspy opens
+  with it off.
 - `DSD_NEO_TUNER_AUTOGAIN_PROBE_MS=<ms>` — probe interval
 - `DSD_NEO_TUNER_AUTOGAIN_SEED_DB=<dB>` — initial gain seed
 - `DSD_NEO_TUNER_AUTOGAIN_SPEC_SNR_DB=<dB>` — spectrum SNR threshold

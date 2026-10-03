@@ -457,6 +457,10 @@ bootstrap_handle_print_config(const bootstrap_cli_args* args, dsd_opts* opts, co
     }
     int soapy_tuning_applied = 0;
     (void)dsd_normalize_soapy_input_spec(opts, &soapy_tuning_applied);
+    /* An RTL-SDR or rtl_tcp spec sets its tuning when the input opens, which --print-config comes before: read it now,
+       as the engine will, or the export reports the option defaults instead of the spec's gain, frequency and the rest
+       (issue #518 follow-up). */
+    (void)dsd_rtl_input_spec_apply(opts);
     dsdneoUserConfig eff;
     dsd_snapshot_opts_to_user_config(opts, state, &eff);
     dsd_user_config_render_ini(&eff, stdout);

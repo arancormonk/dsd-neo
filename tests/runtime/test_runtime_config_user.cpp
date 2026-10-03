@@ -1487,6 +1487,83 @@ test_snapshot_roundtrip_zero_rtl_ppm(void) {
     return rc;
 }
 
+/* Issue #518 follow-up: AGC is gain 0, which a save used to leave out and a load could not tell from an omitted key, so
+ * a saved AGC session reloaded on whatever gain was running. 0 is now written and read back as a setting; an omitted
+ * key still keeps the running gain. */
+static int
+test_snapshot_roundtrip_agc_rtl_gain(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_opts_and_state(opts, state);
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "soapy:driver=rtlsdr");
+    opts.rtlsdr_center_freq = 155340000U;
+    opts.rtl_gain_value = 0;
+    opts.rtl_dsp_bw_khz = 12;
+    opts.rtl_volume_multiplier = 2;
+
+    dsdneoUserConfig snap;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    int rc = 0;
+    if (!snap.rtl_gain_is_set || snap.rtl_gain != 0) {
+        DSD_FPRINTF(stderr, "snapshot AGC gain should be explicit, got is_set=%d gain=%d\n", snap.rtl_gain_is_set,
+                    snap.rtl_gain);
+        rc |= 1;
+    }
+    char rendered[4096];
+    if (render_config_to_buffer(&snap, rendered, sizeof rendered) != 0) {
+        return 1;
+    }
+    rc |= expect_contains("rendered AGC gain", rendered, "rtl_gain = 0\n");
+
+    char path[DSD_TEST_PATH_MAX];
+    if (write_temp_config(rendered, path, sizeof path) != 0) {
+        return 1;
+    }
+    dsdneoUserConfig cfg_reload;
+    if (dsd_user_config_load(path, &cfg_reload) != 0) {
+        DSD_FPRINTF(stderr, "dsd_user_config_load failed for rendered AGC config %s\n", path);
+        (void)remove(path);
+        return 1;
+    }
+    (void)remove(path);
+    if (!cfg_reload.rtl_gain_is_set || cfg_reload.rtl_gain != 0) {
+        DSD_FPRINTF(stderr, "reloaded AGC gain should stay explicit, got is_set=%d gain=%d\n",
+                    cfg_reload.rtl_gain_is_set, cfg_reload.rtl_gain);
+        rc |= 1;
+    }
+    static dsd_opts opts_reload;
+    static dsd_state state_reload;
+    reset_opts_and_state(opts_reload, state_reload);
+    opts_reload.rtl_gain_value = 30;
+    dsd_apply_user_config_to_opts(&cfg_reload, &opts_reload, &state_reload);
+    if (opts_reload.rtl_gain_value != 0) {
+        DSD_FPRINTF(stderr, "reloaded AGC gain should replace the running gain, got %d\n", opts_reload.rtl_gain_value);
+        rc |= 1;
+    }
+
+    /* An RTL-SDR [input] puts the gain in the spec it builds. */
+    dsdneoUserConfig rtl_cfg = cfg_reload;
+    rtl_cfg.input_source = DSDCFG_INPUT_RTL;
+    rtl_cfg.rtl_device = 0;
+    DSD_SNPRINTF(rtl_cfg.rtl_freq, sizeof rtl_cfg.rtl_freq, "%s", "155.34M");
+    char spec[256];
+    opts_reload.rtl_gain_value = 30;
+    if (dsd_user_config_radio_input_spec(&rtl_cfg, &opts_reload, spec, sizeof spec) != 0
+        || strncmp(spec, "rtl:0:155.34M:0:", strlen("rtl:0:155.34M:0:")) != 0) {
+        DSD_FPRINTF(stderr, "AGC RTL spec should carry gain 0, got %s\n", spec);
+        rc |= 1;
+    }
+    /* Omitted, the running gain stays. */
+    rtl_cfg.rtl_gain_is_set = 0;
+    rtl_cfg.rtl_gain = 0;
+    if (dsd_user_config_radio_input_spec(&rtl_cfg, &opts_reload, spec, sizeof spec) != 0
+        || strncmp(spec, "rtl:0:155.34M:30:", strlen("rtl:0:155.34M:30:")) != 0) {
+        DSD_FPRINTF(stderr, "omitted gain should keep the running gain, got %s\n", spec);
+        rc |= 1;
+    }
+    return rc;
+}
+
 static int
 test_snapshot_rtl_and_rtltcp_device_specs(void) {
     static dsd_opts opts;
@@ -4030,6 +4107,7 @@ main(void) {
     rc |= test_snapshot_digital_resample_mode();
     rc |= test_snapshot_roundtrip_soapy_args();
     rc |= test_snapshot_roundtrip_zero_rtl_ppm();
+    rc |= test_snapshot_roundtrip_agc_rtl_gain();
     rc |= test_snapshot_rtl_and_rtltcp_device_specs();
     rc |= test_snapshot_disabled_squelch_roundtrips_as_off();
     rc |= test_load_and_apply_rtltcp_regression();

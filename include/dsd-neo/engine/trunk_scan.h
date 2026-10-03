@@ -207,7 +207,33 @@ int dsd_engine_scan_runs_configured_am_width(const dsd_opts* opts, const dsd_sta
  * counts as hearing them: its targets are judged when the scan starts. Read-only; 0 when @p opts or @p state is NULL.
  */
 int dsd_engine_scan_hears_tones(const dsd_opts* opts, const dsd_state* state);
+/**
+ * @brief The tuner autogain a target without its own manual gain runs: the session's at scan start, or the latest
+ * live edit (dsd_engine_trunk_scan_set_configured_autogain()). Returns 1 with @p out_on set, 0 when no trunk scan runs
+ * or the value was never known (@p out_on 0).
+ */
 int dsd_engine_trunk_scan_saved_tuner_autogain(const dsd_state* state, int* out_on);
+/**
+ * @brief Make @p gain the tuner gain the trunk scan restores at every target switch and at shutdown (issue #518
+ * follow-up: a live gain edit used to be put back to the scan-start value at the next switch).
+ *
+ * The configured gain is what targets without an rtl_gain column run; a target with its own keeps it while it is on
+ * air, as a row's --squelch-db overrides the configured squelch. Publishes the result for the frontends. Decoder
+ * thread, with the P25 SM tick guard held: the watchdog's control-channel returns read the configured gain and
+ * autogain through the retune gain profile under it.
+ *
+ * @return 1 when the gain is in force now (written to opts->rtl_gain_value), 0 when the parked target's own rtl_gain
+ *         overrides it (@p opts unchanged), -1 when no trunk scan runs (nothing changed).
+ */
+int dsd_engine_trunk_scan_set_configured_gain(dsd_opts* opts, dsd_state* state, int gain);
+/**
+ * @brief Make @p on the tuner autogain the trunk scan restores at every retune (the same rule as the configured gain).
+ * Decoder thread, with the P25 SM tick guard held.
+ *
+ * @return 1 when it is in force now (the gain in force is AGC; the caller applies it to the stream), 0 when a manual
+ *         gain suspends it (every trunk-scan retune forces the supervisor off then), -1 when no trunk scan runs.
+ */
+int dsd_engine_trunk_scan_set_configured_autogain(const dsd_opts* opts, dsd_state* state, int on);
 int dsd_engine_trunk_scan_active_p25_cqpsk_request(const dsd_state* state, int* out_enable);
 /**
  * @brief Symbol rate of the parked four-level GFSK scan target, or 0 when there is none.

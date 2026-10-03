@@ -34,6 +34,25 @@ dsd_engine_scan_runs_configured_am_width(const dsd_opts* opts, const dsd_state* 
     return 0;
 }
 
+/* Nor a trunk scan holding a configured tuner gain (issue #518 follow-up): the gain service writes dsd_opts as it does
+   with no scan. ENGINE_TRUNK_SCAN and APP_COMMAND_QUEUE drive the coordinator's. */
+int
+dsd_engine_trunk_scan_set_configured_gain(dsd_opts* opts, dsd_state* state, int gain) {
+    (void)opts;
+    (void)state;
+    (void)gain;
+    return -1;
+}
+
+int
+dsd_engine_trunk_scan_saved_tuner_autogain(const dsd_state* state, int* out_on) {
+    (void)state;
+    if (out_on) {
+        *out_on = 0;
+    }
+    return 0;
+}
+
 /* Nor a channel map whose row widths a front end refuses: the width rules run in the engine, which ENGINE_CHANNEL_SCAN
    and APP_COMMAND_QUEUE drive. */
 int

@@ -1425,6 +1425,21 @@ svc_rtl_stop_locked(dsd_opts* opts, dsd_state* state) {
     }
 }
 
+/* A stream opens with the operator's last tuner autogain setting or the environment default. Under --trunk-scan the
+   scan's configured setting rules instead, as every retune's gain profile applies it: off under a manual gain, the
+   configured one under AGC (issue #518 follow-up), so a restart leaves the supervisor as the gain readout says. It is
+   enforced for the scan only (rtl_stream_enforce_tuner_autogain()), never recorded as the operator's setting. Airspy
+   runs no supervisor. */
+static void
+svc_apply_scan_autogain(const dsd_opts* opts, const dsd_state* state) {
+    int configured = 0;
+    if (dsd_opts_audio_in_dev_is_airspy_spec(opts->audio_in_dev)
+        || !dsd_engine_trunk_scan_saved_tuner_autogain(state, &configured)) {
+        return;
+    }
+    rtl_stream_enforce_tuner_autogain(opts->rtl_gain_value > 0 ? 0 : configured);
+}
+
 /* If the radio pipeline is the active input, create and start the stream so changes take effect as soon as the user
    confirms the setting; nothing to start otherwise. Returns 0 then, or when the stream started. */
 static int
@@ -1443,6 +1458,7 @@ svc_rtl_start_locked(dsd_opts* opts, dsd_state* state) {
     opts->rtl_started = 1;
     opts->rtl_needs_restart = 0;
     ++g_svc_rtl_starts;
+    svc_apply_scan_autogain(opts, state);
     return 0;
 }
 
@@ -1733,7 +1749,19 @@ svc_rtl_set_gain(dsd_opts* opts, dsd_state* state, int value) {
     if (value > 49) {
         value = 49;
     }
-    opts->rtl_gain_value = value;
+    /* Under --trunk-scan the edit is the configured gain every target without its own rtl_gain runs and the scan puts
+       back at each switch; while the parked target's own rtl_gain is on air nothing on the device changes. The P25
+       watchdog's control-channel returns read that gain through the retune profile under the P25 SM tick guard, so it
+       changes under the guard; the restart below takes the guard itself. */
+    p25_sm_tick_guard_enter();
+    const int scan = dsd_engine_trunk_scan_set_configured_gain(opts, state, value);
+    if (scan < 0) {
+        opts->rtl_gain_value = value;
+    }
+    p25_sm_tick_guard_leave();
+    if (scan == 0) {
+        return 0;
+    }
     /* Manual gain change requires reopen to apply */
     opts->rtl_needs_restart = 1;
     if (opts->audio_in_type == AUDIO_IN_RTL) {

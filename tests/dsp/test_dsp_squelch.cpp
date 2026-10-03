@@ -8,6 +8,7 @@
  * continues to produce output (zeros) to maintain UI responsiveness. */
 
 #include <atomic>
+#include <cmath>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
@@ -58,6 +59,84 @@ row_thresholds_gate_a_fixed_channel(demod_state* s) {
         }
     }
     return 0;
+}
+
+/* A demod state running the AM monitor (dsd_demod_am_active()). */
+static void
+make_am_monitor(demod_state* s) {
+    s->mode_demod = &dsd_am_demod;
+    s->analog_family = 1;
+    s->output_kind = DSD_DEMOD_OUTPUT_AUDIO_MONITOR;
+    s->cqpsk_enable = 0;
+    s->channel_lpf_profile = DSD_CH_LPF_PROFILE_WIDE;
+    s->rate_out = 48000;
+}
+
+/* Fill @p pairs complex samples of a carrier at 0 Hz with amplitude @p a and phase @p phi, plus a receiver DC offset
+   (@p dc_i, @p dc_q). */
+static void
+fill_carrier(float* buf, int pairs, double a, double phi, double dc_i, double dc_q) {
+    for (int n = 0; n < pairs; n++) {
+        buf[(size_t)(2 * n) + 0] = (float)(a * cos(phi) + dc_i);
+        buf[(size_t)(2 * n) + 1] = (float)(a * sin(phi) + dc_q);
+    }
+}
+
+/* Issue #518 follow-up: an AM carrier sits at 0 Hz. mean_power() pooled I and Q and took their common mean out, so a
+   steady carrier read A²(1 - sin 2φ)/4 -- nothing at φ = 45° -- and the squelch chopped the channel as the carrier's
+   phase drifted. On the AM monitor the carrier's power reads A²/2 at every phase, and a receiver DC offset is measured
+   with it, as the vector sum (the AM detector sees the same sum); off AM nothing changes. */
+static int
+am_carrier_power_is_phase_independent(demod_state* s) {
+    const int pairs = 256;
+    static float buf[(size_t)256 * 2];
+    const double a = 0.1;
+    const double want = a * a / 2.0;
+    int rc = 0;
+    for (int k = 0; k < 16; k++) {
+        const double phi = (double)k * (M_PI / 8.0);
+        fill_carrier(buf, pairs, a, phi, 0.0, 0.0);
+        DSD_MEMSET(s, 0, sizeof(*s));
+        make_am_monitor(s);
+        s->lowpassed = buf;
+        s->lp_len = pairs * 2;
+        s->channel_squelch_level.store((float)dsd_squelch_level_from_sql(-40.0), std::memory_order_relaxed);
+        full_demod(s);
+        if (fabs((double)s->channel_pwr - want) > 1e-6 * want + 1e-12 || s->channel_squelched) {
+            DSD_FPRINTF(stderr, "squelch: AM carrier at phase %.3f read %.6g (want %.6g), squelched=%d\n", phi,
+                        s->channel_pwr, want, s->channel_squelched);
+            rc = 1;
+        }
+    }
+    /* Carrier C plus receiver DC D: the vector sum |C + D|²/2, phase-dependent; opposite phasors cancel. */
+    const double phi = 0.3;
+    const double dc_i = 0.02;
+    const double dc_q = -0.01;
+    fill_carrier(buf, pairs, a, phi, dc_i, dc_q);
+    DSD_MEMSET(s, 0, sizeof(*s));
+    make_am_monitor(s);
+    s->lowpassed = buf;
+    s->lp_len = pairs * 2;
+    full_demod(s);
+    const double si = a * cos(phi) + dc_i;
+    const double sq = a * sin(phi) + dc_q;
+    const double want_sum = (si * si + sq * sq) / 2.0;
+    if (fabs((double)s->channel_pwr - want_sum) > 1e-6 * want_sum) {
+        DSD_FPRINTF(stderr, "squelch: AM carrier plus DC read %.6g (want %.6g)\n", s->channel_pwr, want_sum);
+        rc = 1;
+    }
+    /* Off AM the pooled measurement is unchanged: the same 45° carrier still reads as no power on the FM monitor. */
+    fill_carrier(buf, pairs, a, M_PI / 4.0, 0.0, 0.0);
+    DSD_MEMSET(s, 0, sizeof(*s));
+    s->mode_demod = &raw_demod;
+    s->lowpassed = buf;
+    s->lp_len = pairs * 2;
+    full_demod(s);
+    if (fabs((double)s->channel_pwr) > 1e-9) {
+        DSD_FPRINTF(stderr, "squelch: non-AM measurement changed: %.6g\n", s->channel_pwr);
+        rc = 1;
+    }
+    return rc;
 }
 
 int
@@ -123,6 +202,11 @@ main(void) {
     }
 
     if (row_thresholds_gate_a_fixed_channel(s) != 0) {
+        dsd_neo_aligned_free(s);
+        return 1;
+    }
+
+    if (am_carrier_power_is_phase_independent(s) != 0) {
         dsd_neo_aligned_free(s);
         return 1;
     }

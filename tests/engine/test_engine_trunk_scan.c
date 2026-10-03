@@ -5664,6 +5664,168 @@ test_per_target_rtl_gain_overrides_and_restores_global_default(void) {
     return test_rc;
 }
 
+/* A live gain edit is the configured gain the scan restores at every switch and at shutdown (issue #518 follow-up: it
+ * used to snap back to the scan-start value at the next switch). A target with its own rtl_gain keeps it while it is on
+ * air, and the published readout says so. */
+static int
+test_live_gain_edit_becomes_scan_default(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static const char header[] = "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,rtl_gain\n";
+    if (make_temp_dir(dir, sizeof dir) != 0
+        || write_targets_file_with_header(dir, header,
+                                          "strong,p25-trunk,851000000,,250,,strong,10\n"
+                                          "default,dmr-trunk,452000000,,250,,default\n"
+                                          "auto,dmr-conventional,461000000,,250,,auto,auto\n",
+                                          target_path, sizeof target_path)
+               != 0) {
+        cleanup_paths(dir, NULL, NULL);
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    opts.rtl_gain_value = 22;
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0 || opts.rtl_gain_value != 10
+        || state.trunk_scan_configured_gain != 22 || state.trunk_scan_gain_override != 1U) {
+        DSD_FPRINTF(stderr, "live gain init mismatch gain=%d configured=%d override=%u err=%s\n", opts.rtl_gain_value,
+                    (int)state.trunk_scan_configured_gain, (unsigned)state.trunk_scan_gain_override, err);
+        test_rc = 1;
+    }
+
+    /* Edited while the target with its own gain is parked: the default changes, the device keeps the target's. */
+    int rc = dsd_engine_trunk_scan_set_configured_gain(&opts, &state, 30);
+    if (rc != 0 || opts.rtl_gain_value != 10 || state.trunk_scan_configured_gain != 30) {
+        DSD_FPRINTF(stderr, "overridden edit rc=%d gain=%d configured=%d\n", rc, opts.rtl_gain_value,
+                    (int)state.trunk_scan_configured_gain);
+        test_rc = 1;
+    }
+
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 1 || opts.rtl_gain_value != 30
+        || state.trunk_scan_gain_override != 0U) {
+        DSD_FPRINTF(stderr, "inheriting target did not run the edited gain active=%zu gain=%d override=%u\n",
+                    dsd_engine_trunk_scan_active_index(&state), opts.rtl_gain_value,
+                    (unsigned)state.trunk_scan_gain_override);
+        test_rc = 1;
+    }
+
+    /* Edited while an inheriting target is parked: in force at once, and kept across a full rotation. */
+    rc = dsd_engine_trunk_scan_set_configured_gain(&opts, &state, 18);
+    if (rc != 1 || opts.rtl_gain_value != 18) {
+        DSD_FPRINTF(stderr, "in-force edit rc=%d gain=%d\n", rc, opts.rtl_gain_value);
+        test_rc = 1;
+    }
+    trunk_scan_test_set_now(0.52);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    trunk_scan_test_set_now(0.78);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 0 || opts.rtl_gain_value != 10) {
+        DSD_FPRINTF(stderr, "rotation back to the gain-10 target active=%zu gain=%d\n",
+                    dsd_engine_trunk_scan_active_index(&state), opts.rtl_gain_value);
+        test_rc = 1;
+    }
+    trunk_scan_test_set_now(1.04);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 1 || opts.rtl_gain_value != 18) {
+        DSD_FPRINTF(stderr, "edited gain lost on revisit active=%zu gain=%d\n",
+                    dsd_engine_trunk_scan_active_index(&state), opts.rtl_gain_value);
+        test_rc = 1;
+    }
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    if (opts.rtl_gain_value != 18 || state.trunk_scan_target_count != 0U) {
+        DSD_FPRINTF(stderr, "shutdown did not keep the edited gain=%d\n", opts.rtl_gain_value);
+        test_rc = 1;
+    }
+    if (dsd_engine_trunk_scan_set_configured_gain(&opts, &state, 5) != -1 || opts.rtl_gain_value != 18) {
+        DSD_FPRINTF(stderr, "setter after shutdown touched the gain=%d\n", opts.rtl_gain_value);
+        test_rc = 1;
+    }
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* The tuner autogain toggle under trunk scan edits the setting the scan restores at every retune (the gain profile
+ * reads it), and says whether a manual gain in force suspends it. */
+static int
+test_live_autogain_edit_becomes_scan_default(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static const char header[] = "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,rtl_gain\n";
+    if (make_temp_dir(dir, sizeof dir) != 0
+        || write_targets_file_with_header(dir, header,
+                                          "agc,dmr-trunk,452000000,,250,,agc\n"
+                                          "manual,p25-trunk,851000000,,250,,manual,10\n",
+                                          target_path, sizeof target_path)
+               != 0) {
+        cleanup_paths(dir, NULL, NULL);
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    opts.rtl_gain_value = 0;
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0) {
+        DSD_FPRINTF(stderr, "autogain init failed: %s\n", err);
+        test_rc = 1;
+    }
+#ifdef USE_RADIO
+    int on = -1;
+    /* The scan-start setting comes from the stream (this test's stub reports it on). */
+    if (!dsd_engine_trunk_scan_saved_tuner_autogain(&state, &on) || on != 1
+        || state.trunk_scan_configured_autogain != 1U) {
+        DSD_FPRINTF(stderr, "scan-start autogain not captured on=%d\n", on);
+        test_rc = 1;
+    }
+#endif
+    if (dsd_engine_trunk_scan_set_configured_autogain(&opts, &state, 0) != 1) {
+        DSD_FPRINTF(stderr, "autogain edit under AGC was not in force\n");
+        test_rc = 1;
+    }
+    int configured = -1;
+    if (!dsd_engine_trunk_scan_saved_tuner_autogain(&state, &configured) || configured != 0
+        || state.trunk_scan_configured_autogain != 0U) {
+        DSD_FPRINTF(stderr, "autogain edit not kept configured=%d\n", configured);
+        test_rc = 1;
+    }
+
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (opts.rtl_gain_value != 10 || dsd_engine_trunk_scan_set_configured_autogain(&opts, &state, 1) != 0) {
+        DSD_FPRINTF(stderr, "manual-gain target did not suspend the autogain edit gain=%d\n", opts.rtl_gain_value);
+        test_rc = 1;
+    }
+    trunk_scan_test_set_now(0.52);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    configured = -1;
+    if (opts.rtl_gain_value != 0 || !dsd_engine_trunk_scan_saved_tuner_autogain(&state, &configured)
+        || configured != 1) {
+        DSD_FPRINTF(stderr, "autogain edit lost across a switch gain=%d configured=%d\n", opts.rtl_gain_value,
+                    configured);
+        test_rc = 1;
+    }
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
 static int
 test_scan_tick_skips_rotation_when_p25_guard_busy(void) {
     char dir[DSD_TEST_PATH_MAX];
@@ -12211,6 +12373,8 @@ main(void) {
     rc |= run_with_default_tune_hook(test_per_target_modulation_overrides_global_lock);
     rc |= run_with_default_tune_hook(test_active_p25_cqpsk_request_tracks_target_modulation);
     rc |= run_with_default_tune_hook(test_per_target_rtl_gain_overrides_and_restores_global_default);
+    rc |= run_with_default_tune_hook(test_live_gain_edit_becomes_scan_default);
+    rc |= run_with_default_tune_hook(test_live_autogain_edit_becomes_scan_default);
     rc |= run_with_default_tune_hook(test_scan_tick_skips_rotation_when_p25_guard_busy);
     rc |= run_with_default_tune_hook(test_scan_control_unavailable_without_coordinator);
     rc |= run_with_default_tune_hook(test_scan_hold_pauses_rotation_and_release_restarts_dwell);

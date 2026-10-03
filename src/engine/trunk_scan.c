@@ -274,9 +274,12 @@ typedef struct {
     int saved_mod_p25p2_c4fm;
     int saved_mod_p25p2_profile_lock;
     int saved_mod_cli_lock;
-    int saved_rtl_gain_value;
-    int saved_tuner_autogain_on;
-    int saved_tuner_autogain_is_set;
+    /* The tuner gain and autogain a target without its own rtl_gain runs, restored at every switch and at shutdown:
+     * the session's at scan start, then whatever the operator sets live (dsd_engine_trunk_scan_set_configured_gain()),
+     * which used to be put back to the scan-start value at the next switch. */
+    int configured_rtl_gain_value;
+    int configured_tuner_autogain_on;
+    int configured_tuner_autogain_is_set;
     uint64_t last_trunk_chan_map_seq;
     /* The DSP rate the analog targets were last checked at, or TRUNK_SCAN_ANALOG_CHECK_DEFERRED, and the configured NFM
      * and AM widths a target without its own runs (issue #526). */
@@ -1996,6 +1999,13 @@ trunk_scan_get(const dsd_state* state) {
 _Static_assert(sizeof(((dsd_trunk_scan_target*)0)->id) <= DSD_CHANNEL_LABEL_SIZE,
                "a trunk scan target id must fit the published channel label");
 
+/* Whether the parked target runs a tuner gain of its own (its rtl_gain column), which a configured gain does not
+   reach while it is on air. */
+static int
+trunk_scan_active_target_sets_gain(const dsd_trunk_scan_coord* coord) {
+    return coord && coord->active < coord->count && coord->targets[coord->active].target.rtl_gain_is_set;
+}
+
 /* Take the published label back down. The coordinator is not the owner of dsd_state, so the
  * sites that detach it -- shutdown, and initState for a fresh run -- clear the publication;
  * trunk_scan_free() gets no state pointer and cannot. */
@@ -2010,6 +2020,9 @@ trunk_scan_clear_published_target(dsd_state* state) {
     state->trunk_scan_hold = 0U;
     state->trunk_scan_active_avoided = 0U;
     state->trunk_scan_avoided_count = 0U;
+    state->trunk_scan_configured_gain = 0;
+    state->trunk_scan_gain_override = 0U;
+    state->trunk_scan_configured_autogain = 0U;
     dsd_scan_timing_clear(state);
 }
 
@@ -2040,6 +2053,9 @@ trunk_scan_publish_active_target(dsd_state* state, const dsd_trunk_scan_coord* c
     state->trunk_scan_hold = coord->hold_active ? 1U : 0U;
     state->trunk_scan_active_avoided = coord->targets[coord->active].avoided ? 1U : 0U;
     state->trunk_scan_avoided_count = (uint16_t)(avoided > UINT16_MAX ? UINT16_MAX : avoided);
+    state->trunk_scan_configured_gain = (int16_t)coord->configured_rtl_gain_value;
+    state->trunk_scan_gain_override = trunk_scan_active_target_sets_gain(coord) ? 1U : 0U;
+    state->trunk_scan_configured_autogain = coord->configured_tuner_autogain_on ? 1U : 0U;
 }
 
 // A user purge clears the live ledger; every parked target keeps its own copy,
@@ -2215,7 +2231,7 @@ trunk_scan_restore_saved_mod_gain_opts(dsd_opts* opts, const dsd_trunk_scan_coor
     opts->mod_p25p2_c4fm = coord->saved_mod_p25p2_c4fm;
     opts->mod_p25p2_profile_lock = coord->saved_mod_p25p2_profile_lock;
     opts->mod_cli_lock = coord->saved_mod_cli_lock;
-    opts->rtl_gain_value = coord->saved_rtl_gain_value;
+    opts->rtl_gain_value = coord->configured_rtl_gain_value;
 }
 
 static void
@@ -2240,7 +2256,7 @@ trunk_scan_apply_target_opts(dsd_opts* opts, const dsd_trunk_scan_coord* coord, 
     if (!opts || !coord || !target) {
         return;
     }
-    opts->rtl_gain_value = coord->saved_rtl_gain_value;
+    opts->rtl_gain_value = coord->configured_rtl_gain_value;
     trunk_scan_apply_target_mod_opts(opts, target);
     trunk_scan_apply_target_gain_opts(opts, target);
     opts->trunk_is_tuned = 0;
@@ -3120,10 +3136,10 @@ trunk_scan_capture_saved_opts(dsd_trunk_scan_coord* coord, const dsd_opts* opts)
     coord->saved_mod_p25p2_c4fm = opts->mod_p25p2_c4fm;
     coord->saved_mod_p25p2_profile_lock = opts->mod_p25p2_profile_lock;
     coord->saved_mod_cli_lock = opts->mod_cli_lock;
-    coord->saved_rtl_gain_value = opts->rtl_gain_value;
+    coord->configured_rtl_gain_value = opts->rtl_gain_value;
 #ifdef USE_RADIO
-    coord->saved_tuner_autogain_on = rtl_stream_get_tuner_autogain() ? 1 : 0;
-    coord->saved_tuner_autogain_is_set = 1;
+    coord->configured_tuner_autogain_on = rtl_stream_get_tuner_autogain() ? 1 : 0;
+    coord->configured_tuner_autogain_is_set = 1;
 #endif
 }
 
@@ -4411,11 +4427,40 @@ dsd_engine_trunk_scan_saved_tuner_autogain(const dsd_state* state, int* out_on) 
     if (out_on) {
         *out_on = 0;
     }
-    if (!coord || !coord->saved_tuner_autogain_is_set) {
+    if (!coord || !coord->configured_tuner_autogain_is_set) {
         return 0;
     }
     if (out_on) {
-        *out_on = coord->saved_tuner_autogain_on ? 1 : 0;
+        *out_on = coord->configured_tuner_autogain_on ? 1 : 0;
     }
     return 1;
+}
+
+int
+dsd_engine_trunk_scan_set_configured_gain(dsd_opts* opts, dsd_state* state, int gain) {
+    dsd_trunk_scan_coord* coord = trunk_scan_get(state);
+    if (!opts || !coord) {
+        return -1;
+    }
+    coord->configured_rtl_gain_value = gain;
+    const int in_force = trunk_scan_active_target_sets_gain(coord) ? 0 : 1;
+    if (in_force) {
+        opts->rtl_gain_value = gain;
+    }
+    trunk_scan_publish_active_target(state, coord);
+    return in_force;
+}
+
+int
+dsd_engine_trunk_scan_set_configured_autogain(const dsd_opts* opts, dsd_state* state, int on) {
+    dsd_trunk_scan_coord* coord = trunk_scan_get(state);
+    if (!opts || !coord) {
+        return -1;
+    }
+    coord->configured_tuner_autogain_on = on ? 1 : 0;
+    coord->configured_tuner_autogain_is_set = 1;
+    trunk_scan_publish_active_target(state, coord);
+    /* A retune forces the supervisor off under a manual gain (the scan's gain profile), so the setting is in force only
+       while the gain in force is AGC. */
+    return opts->rtl_gain_value > 0 ? 0 : 1;
 }
