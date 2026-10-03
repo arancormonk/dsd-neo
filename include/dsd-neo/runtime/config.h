@@ -555,6 +555,7 @@ typedef struct dsdneoUserConfig {
     int rtl_device;
     char rtl_freq[64];
     int rtl_gain;
+    int rtl_gain_is_set; /* distinguish explicit 0 (AGC) from omitted; see dsd_user_config_rtl_gain_is_set() */
     int rtl_ppm;
     int rtl_ppm_is_set; /* distinguish explicit 0 from omitted */
     int rtl_bw_khz;
@@ -760,6 +761,15 @@ void dsd_apply_user_config_to_opts(const dsdneoUserConfig* cfg, dsd_opts* opts, 
  *         sets a non-radio input (or on bad arguments).
  */
 int dsd_user_config_radio_input_spec(const dsdneoUserConfig* cfg, const dsd_opts* opts, char* out, size_t out_size);
+
+/**
+ * @brief Whether @p cfg names a tuner gain: an `rtl_gain` key that was read (0 included, which is AGC), or a nonzero
+ * gain set in code. An omitted gain leaves the gain the session runs.
+ */
+static inline int
+dsd_user_config_rtl_gain_is_set(const dsdneoUserConfig* cfg) {
+    return cfg && (cfg->rtl_gain_is_set || cfg->rtl_gain != 0);
+}
 
 /**
  * @brief Apply config defaults before CLI parsing without activating file-rate timing yet.

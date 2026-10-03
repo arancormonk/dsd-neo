@@ -273,7 +273,9 @@ apply_input_rtl_keys(dsdneoUserConfig* cfg, const char* key_lc, const char* val,
     } else if (strcmp(key_lc, "rtl_freq") == 0) {
         copy_text_value(cfg->rtl_freq, sizeof cfg->rtl_freq, val);
     } else if (strcmp(key_lc, "rtl_gain") == 0) {
-        (void)apply_integer_setting(val, 22, mode, &cfg->rtl_gain);
+        if (apply_integer_setting(val, 22, mode, &cfg->rtl_gain)) {
+            cfg->rtl_gain_is_set = 1;
+        }
     } else if (strcmp(key_lc, "rtl_ppm") == 0) {
         if (apply_integer_setting(val, 0, mode, &cfg->rtl_ppm)) {
             cfg->rtl_ppm_is_set = 1;

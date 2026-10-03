@@ -2983,7 +2983,7 @@ apply_cfg_rtl_common(dsd_opts* opts, const dsdneoUserConfig* cfg) {
      * omitted", so this applies unconditionally — as the startup loader does. */
     opts->rtl_squelch_level = dsd_squelch_level_from_sql((double)cfg->rtl_sql);
     rtl_stream_set_channel_squelch((float)opts->rtl_squelch_level);
-    if (cfg->rtl_gain) {
+    if (dsd_user_config_rtl_gain_is_set(cfg)) {
         opts->rtl_gain_value = cfg->rtl_gain;
     }
     if (cfg->rtl_volume) {
@@ -2998,7 +2998,8 @@ apply_cfg_rtl_common(dsd_opts* opts, const dsdneoUserConfig* cfg) {
 static int
 apply_cfg_stage_scan_gain(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg, const ui_cfg_rollback* before,
                           int* prev) {
-    if (!cfg->rtl_gain || opts->trunk_scan_enabled != 1 || state->trunk_scan_target_count == 0U) {
+    if (!dsd_user_config_rtl_gain_is_set(cfg) || opts->trunk_scan_enabled != 1
+        || state->trunk_scan_target_count == 0U) {
         return 0;
     }
     *prev = state->trunk_scan_configured_gain;

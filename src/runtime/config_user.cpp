@@ -360,7 +360,7 @@ snapshot_copy_optional_token(char* const* tokens, size_t token_count, size_t ind
 
 static void
 snapshot_parse_rtl_tuning_tokens(char* const* tokens, size_t token_count, size_t gain_index, dsdneoUserConfig* cfg) {
-    snapshot_parse_optional_int_token(tokens, token_count, gain_index, &cfg->rtl_gain, NULL);
+    snapshot_parse_optional_int_token(tokens, token_count, gain_index, &cfg->rtl_gain, &cfg->rtl_gain_is_set);
     snapshot_parse_optional_int_token(tokens, token_count, gain_index + 1, &cfg->rtl_ppm, &cfg->rtl_ppm_is_set);
     snapshot_parse_optional_int_token(tokens, token_count, gain_index + 2, &cfg->rtl_bw_khz, NULL);
     snapshot_parse_optional_int_token(tokens, token_count, gain_index + 3, &cfg->rtl_sql, NULL);
@@ -388,7 +388,7 @@ apply_shared_radio_tuning_from_config(const dsdneoUserConfig* cfg, dsd_opts* opt
         opts->rtlsdr_center_freq = dsd_parse_freq_hz(cfg->rtl_freq);
     }
 
-    int gain = cfg->rtl_gain ? cfg->rtl_gain : opts->rtl_gain_value;
+    int gain = dsd_user_config_rtl_gain_is_set(cfg) ? cfg->rtl_gain : opts->rtl_gain_value;
     int ppm = resolve_configured_rtl_ppm(cfg, opts);
     int bw = cfg->rtl_bw_khz ? cfg->rtl_bw_khz : opts->rtl_dsp_bw_khz;
     int sql = cfg->rtl_sql;
@@ -468,6 +468,8 @@ snapshot_apply_live_rtl_values(const dsd_opts* opts, const dsd_state* state, dsd
     cfg->rtl_gain = (state && opts->trunk_scan_enabled == 1 && state->trunk_scan_target_count > 0U)
                         ? (int)state->trunk_scan_configured_gain
                         : opts->rtl_gain_value;
+    /* A session always runs a gain; AGC is 0, which the save writes rather than omits. */
+    cfg->rtl_gain_is_set = 1;
     cfg->rtl_ppm = opts->rtlsdr_ppm_error;
     cfg->rtl_ppm_is_set = 1;
     cfg->rtl_bw_khz = opts->rtl_dsp_bw_khz;
@@ -851,7 +853,7 @@ render_input_rtl_common(FILE* out, const dsdneoUserConfig* cfg, int include_auto
     if (cfg->rtl_freq[0]) {
         DSD_FPRINTF(out, "rtl_freq = \"%s\"\n", cfg->rtl_freq);
     }
-    if (cfg->rtl_gain) {
+    if (dsd_user_config_rtl_gain_is_set(cfg)) {
         DSD_FPRINTF(out, "rtl_gain = %d\n", cfg->rtl_gain);
     }
     if (cfg->rtl_ppm_is_set) {
@@ -1219,7 +1221,7 @@ resolve_rtl_spec_values(const dsdneoUserConfig* cfg, const dsd_opts* opts, int* 
     if (!cfg || !opts || !gain || !ppm || !bw || !sql || !vol) {
         return;
     }
-    *gain = cfg->rtl_gain ? cfg->rtl_gain : opts->rtl_gain_value;
+    *gain = dsd_user_config_rtl_gain_is_set(cfg) ? cfg->rtl_gain : opts->rtl_gain_value;
     *ppm = resolve_configured_rtl_ppm(cfg, opts);
     *bw = cfg->rtl_bw_khz ? cfg->rtl_bw_khz : opts->rtl_dsp_bw_khz;
     *sql = cfg->rtl_sql;
