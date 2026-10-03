@@ -52,7 +52,9 @@ Tip: If you run with no arguments and no config is loaded, `dsd-neo` starts the 
 - Config path precedence: explicit `--config /path/to/config.ini` or a positional `*.ini` > `DSD_NEO_CONFIG` > default path for bare `--config`.
 - Explicit config paths may be absolute, relative, or use `~`/environment expansion; include paths are resolved relative to the containing config file.
 - `--interactive-setup` runs the wizard even when a config exists.
-- `--print-config` prints the effective config as INI after all env/CLI overrides.
+- `--print-config` prints the effective config as INI after all env/CLI overrides. An `rtl:`/`rtltcp:` input spec's
+  tuning (frequency, gain, PPM, DSP bandwidth, squelch, volume) is read into the `rtl_*` keys first, as the engine reads
+  it when the input opens.
 - In Soapy mode, shorthand `-i soapy[:args]:freq[:gain[:ppm[:bw[:sql[:vol]]]]]` is normalized first, so output shows
   `soapy_args` plus shared `rtl_*` tuning keys.
 - When config is enabled, the final settings are autosaved on exit. Explicit `--profile NAME` runs disable autosave for

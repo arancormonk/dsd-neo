@@ -4,10 +4,12 @@
  */
 
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/parse.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/freq_parse.h>
 #include <dsd-neo/runtime/input_spec.h>
+#include <dsd-neo/runtime/log.h>
 #include <errno.h>
 #include <limits.h>
 #include <stdint.h>
@@ -334,4 +336,208 @@ dsd_normalize_soapy_input_spec(dsd_opts* opts, int* out_tuning_applied) {
         *out_tuning_applied = 1;
     }
     return 0;
+}
+
+/* RTL-SDR and rtl_tcp specs ------------------------------------------------------------------------------------------
+ * The parsing the engine used when the input opened, kept as it was (a number with trailing text keeps its leading
+ * digits, as strtol() reads it), now shared with --print-config. */
+
+static int
+rtl_spec_parse_int(const char* token, int* out) {
+    if (!token || !out || token[0] == '\0') {
+        return -1;
+    }
+    errno = 0;
+    char* end = NULL;
+    const long value = strtol(token, &end, 10);
+    if (errno != 0 || end == token || value < INT_MIN || value > INT_MAX) {
+        return -1;
+    }
+    *out = (int)value;
+    return 0;
+}
+
+static int
+rtl_spec_parse_double(const char* token, double* out) {
+    if (!token || !out || token[0] == '\0') {
+        return -1;
+    }
+    errno = 0;
+    char* end = NULL;
+    const double value = strtod(token, &end);
+    if (errno != 0 || end == token) {
+        return -1;
+    }
+    *out = value;
+    return 0;
+}
+
+/* A frequency field: Hz, or a number with a k, M or G suffix; 0 when it does not parse. */
+static double
+rtl_spec_parse_freq(const char* s) {
+    const size_t len = strlen(s);
+    if (len == 0) {
+        return 0.0;
+    }
+    double factor = 1.0;
+    switch (s[len - 1]) {
+        case 'g':
+        case 'G': factor = 1e9; break;
+        case 'm':
+        case 'M': factor = 1e6; break;
+        case 'k':
+        case 'K': factor = 1e3; break;
+        default: {
+            double value = 0.0;
+            return rtl_spec_parse_double(s, &value) == 0 ? value : 0.0;
+        }
+    }
+    if (len == 1) {
+        return 0.0;
+    }
+    char unitless[1024];
+    if (len >= sizeof(unitless)) {
+        return 0.0;
+    }
+    DSD_MEMCPY(unitless, s, len - 1);
+    unitless[len - 1] = '\0';
+    double value = 0.0;
+    if (rtl_spec_parse_double(unitless, &value) != 0) {
+        return 0.0;
+    }
+    return value * factor;
+}
+
+int
+dsd_rtl_spec_bw_khz_or_default(const char* token) {
+    int bw = 0;
+    if (!token || rtl_spec_parse_int(token, &bw) != 0) {
+        return 48;
+    }
+    if (bw == 4 || bw == 6 || bw == 8 || bw == 12 || bw == 16 || bw == 24 || bw == 48) {
+        return bw;
+    }
+    return 48;
+}
+
+/* A field that is not a number says nothing about the squelch: switching it off for one would be a setting the user
+   never asked for. */
+static double
+rtl_spec_parse_sql(const char* token, double fallback) {
+    double sq_val = 0.0;
+    if (!token || rtl_spec_parse_double(token, &sq_val) != 0) {
+        return fallback;
+    }
+    return dsd_squelch_level_from_sql(sq_val);
+}
+
+/* A trailing token: `bias` or `b` alone (or with an empty value) turns the bias tee on, and `bias=<value>` /
+   `b=<value>` sets it from a whole boolean word (on/off, 1/0, true/false, yes/no). The bias tee puts DC on the antenna
+   port, so a value or token it cannot read changes nothing and says so. */
+static void
+rtl_spec_apply_bias_token(dsd_opts* opts, const char* token) {
+    const char* eq = strchr(token, '=');
+    const size_t name_len = eq ? (size_t)(eq - token) : strlen(token);
+    const int is_bias = (name_len == 4 && strncmp(token, "bias", 4) == 0) || (name_len == 1 && token[0] == 'b');
+    if (!is_bias) {
+        LOG_WARN("WARNING: Ignoring unknown RTL input option '%s' (expected bias[=on|off])\n", token);
+        return;
+    }
+    if (!eq || eq[1] == '\0') {
+        opts->rtl_bias_tee = 1;
+        return;
+    }
+    int on = 0;
+    if (dsd_parse_bool_strict(eq + 1, &on) != 0) {
+        LOG_WARN("WARNING: Ignoring bias value '%s' (expected on/off, 1/0, true/false or yes/no); bias tee left %s\n",
+                 eq + 1, opts->rtl_bias_tee ? "on" : "off");
+        return;
+    }
+    opts->rtl_bias_tee = on;
+}
+
+/* The tuning fields after the device or endpoint, in order. Returns 1 when all six were there (bias tokens may
+   follow), 0 when the spec stopped early. */
+static int
+rtl_spec_apply_tuning_tokens(dsd_opts* opts, char** saveptr) {
+    const char* curr = dsd_strtok_r(NULL, ":", saveptr);
+    if (!curr) {
+        return 0;
+    }
+    opts->rtlsdr_center_freq = (uint32_t)rtl_spec_parse_freq(curr);
+
+    int parsed = 0;
+    curr = dsd_strtok_r(NULL, ":", saveptr);
+    if (!curr) {
+        return 0;
+    }
+    if (rtl_spec_parse_int(curr, &parsed) == 0) {
+        opts->rtl_gain_value = parsed;
+    }
+    curr = dsd_strtok_r(NULL, ":", saveptr);
+    if (!curr) {
+        return 0;
+    }
+    if (rtl_spec_parse_int(curr, &parsed) == 0) {
+        opts->rtlsdr_ppm_error = parsed;
+    }
+    curr = dsd_strtok_r(NULL, ":", saveptr);
+    if (!curr) {
+        return 0;
+    }
+    opts->rtl_dsp_bw_khz = dsd_rtl_spec_bw_khz_or_default(curr);
+    curr = dsd_strtok_r(NULL, ":", saveptr);
+    if (!curr) {
+        return 0;
+    }
+    opts->rtl_squelch_level = rtl_spec_parse_sql(curr, opts->rtl_squelch_level);
+    curr = dsd_strtok_r(NULL, ":", saveptr);
+    if (!curr) {
+        return 0;
+    }
+    if (rtl_spec_parse_int(curr, &parsed) == 0) {
+        opts->rtl_volume_multiplier = parsed;
+    }
+    return 1;
+}
+
+int
+dsd_rtl_input_spec_apply(dsd_opts* opts) {
+    if (!opts) {
+        return -1;
+    }
+    const int rtltcp = dsd_opts_audio_in_dev_is_rtltcp_spec(opts->audio_in_dev);
+    if (!rtltcp && !dsd_opts_audio_in_dev_is_rtl_spec(opts->audio_in_dev)) {
+        return 0;
+    }
+    /* The 1023 characters the engine has always read a spec to (dsd_engine_setup_rtl_spec_bw_khz() too). */
+    char inbuf[1024];
+    DSD_SNPRINTF(inbuf, sizeof inbuf, "%s", opts->audio_in_dev);
+    char* saveptr = NULL;
+    if (dsd_strtok_r(inbuf, ":", &saveptr) == NULL) {
+        return 1;
+    }
+    const char* curr = dsd_strtok_r(NULL, ":", &saveptr);
+    if (!curr) {
+        return 1;
+    }
+    int parsed = 0;
+    if (rtltcp) {
+        DSD_SNPRINTF(opts->rtltcp_hostname, sizeof opts->rtltcp_hostname, "%s", curr);
+        curr = dsd_strtok_r(NULL, ":", &saveptr);
+        if (!curr) {
+            return 1;
+        }
+        if (rtl_spec_parse_int(curr, &parsed) == 0) {
+            opts->rtltcp_portno = parsed;
+        }
+    } else if (rtl_spec_parse_int(curr, &parsed) == 0) {
+        opts->rtl_dev_index = parsed;
+    }
+    if (rtl_spec_apply_tuning_tokens(opts, &saveptr)) {
+        while ((curr = dsd_strtok_r(NULL, ":", &saveptr)) != NULL) {
+            rtl_spec_apply_bias_token(opts, curr);
+        }
+    }
+    return 1;
 }

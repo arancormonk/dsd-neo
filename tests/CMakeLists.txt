@@ -6409,6 +6409,36 @@ set_tests_properties(
         PASS_REGULAR_EXPRESSION [=[digital_resample = "off"]=]
 )
 
+# Issue #518 follow-up: --print-config comes before the engine reads an RTL-SDR or
+# rtl_tcp spec, so it exported the option defaults (rtl_gain = 0, which a load now
+# applies as AGC) instead of the spec's tuning. It reads the spec first now.
+add_test(
+    NAME RUNTIME_BOOTSTRAP_PRINT_CONFIG_RTL_SPEC
+    COMMAND
+        $<TARGET_FILE:dsd-neo> --no-config -i rtl:0:155.34M:30:5:24:-40:3
+        --print-config
+)
+set_tests_properties(
+    RUNTIME_BOOTSTRAP_PRINT_CONFIG_RTL_SPEC
+    PROPERTIES
+        WORKING_DIRECTORY "${_DSD_BOOTSTRAP_FIXTURE_DIR}"
+        PASS_REGULAR_EXPRESSION
+            [=[rtl_freq = "155340000"[^[]*rtl_gain = 30[^[]*rtl_ppm = 5[^[]*rtl_bw_khz = 24[^[]*rtl_sql = -40[^[]*rtl_volume = 3]=]
+)
+add_test(
+    NAME RUNTIME_BOOTSTRAP_PRINT_CONFIG_RTLTCP_SPEC
+    COMMAND
+        $<TARGET_FILE:dsd-neo> --no-config -i
+        rtltcp:radio.local:1235:851.0125M:12:-2:16:-50:1 --print-config
+)
+set_tests_properties(
+    RUNTIME_BOOTSTRAP_PRINT_CONFIG_RTLTCP_SPEC
+    PROPERTIES
+        WORKING_DIRECTORY "${_DSD_BOOTSTRAP_FIXTURE_DIR}"
+        PASS_REGULAR_EXPRESSION
+            [=[rtltcp_port = 1235[^[]*rtl_freq = "851012500"[^[]*rtl_gain = 12[^[]*rtl_ppm = -2[^[]*rtl_bw_khz = 16[^[]*rtl_sql = -50[^[]*rtl_volume = 1]=]
+)
+
 add_test(
     NAME RUNTIME_BOOTSTRAP_LIST_PROFILES
     COMMAND $<TARGET_FILE:dsd-neo> --config "profiles.ini" --list-profiles

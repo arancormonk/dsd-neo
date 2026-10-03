@@ -44,6 +44,28 @@ extern "C" {
  */
 int dsd_normalize_soapy_input_spec(dsd_opts* opts, int* out_tuning_applied);
 
+/**
+ * @brief Read an RTL-SDR or rtl_tcp input spec into the options it sets.
+ *
+ * `rtl:dev:freq:gain:ppm:bw:sql:vol[:bias[=on|off]]` sets the device index, and
+ * `rtltcp:host:port:freq:gain:ppm:bw:sql:vol[:bias[=on|off]]` the host and port, then the tuning fields in order:
+ * the frequency (Hz, or with a k/M/G suffix), the tuner gain, the PPM, the DSP bandwidth (4, 6, 8, 12, 16, 24 or 48
+ * kHz; anything else reads as 48), the squelch (dsd_squelch_level_from_sql(); a field that is not a number leaves it),
+ * the monitor volume and, after all of those, `bias` tokens. A spec that stops early sets what it has; a number that
+ * does not parse leaves its option. The engine reads the spec this way when the input opens, and --print-config before
+ * that, so both report the same settings.
+ *
+ * @return 1 when @p opts holds such a spec and it was read, 0 for any other input (nothing changed), -1 on bad
+ *         arguments.
+ */
+int dsd_rtl_input_spec_apply(dsd_opts* opts);
+
+/**
+ * @brief The DSP bandwidth a spec's bandwidth field @p token names, in kHz: 4, 6, 8, 12, 16, 24 or 48, and 48 for
+ * anything else (NULL included), as dsd_rtl_input_spec_apply() reads it.
+ */
+int dsd_rtl_spec_bw_khz_or_default(const char* token);
+
 #ifdef __cplusplus
 }
 #endif

@@ -782,7 +782,9 @@ The `Linux • RelWithDebInfo • ctest (x86-64-v3, fast-math, clang)` check enf
     map, a scanner toggle), never again for the same policy still unheard.
     `dsd_user_config_radio_input_spec()` returns the radio input spec (`rtl`, `rtltcp`, `soapy` or
     `airspy`) an `[input]` builds without applying it, so a live config apply can tell whether it reopens the device and
-    what then sets the rate. Tests: `RUNTIME_CLI_PARSE`, `CONFIG_VALIDATION`, `CONFIG_TEMPLATE`, `RUNTIME_CONFIG_USER`,
+    what then sets the rate. `dsd_rtl_input_spec_apply()` (`runtime/input_spec.h`) reads an `rtl:`/`rtltcp:` spec's
+    device or endpoint, tuning and `bias` tokens into the options: the engine reads the spec with it when the input
+    opens, and `--print-config` before that, so the export carries the spec's tuning rather than the option defaults. Tests: `RUNTIME_CLI_PARSE`, `CONFIG_VALIDATION`, `CONFIG_TEMPLATE`, `RUNTIME_CONFIG_USER`,
     and for the tone filter's "no effect" line `ENGINE_RUN_SETUP` (a config file's `-Y` list, one without rows
     included), `APP_COMMAND_QUEUE` (a running session, a channel map imported into a `-Y` scan included) and
     `ENGINE_TRUNK_SCAN`.

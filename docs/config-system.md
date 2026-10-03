@@ -789,8 +789,10 @@ Config/CLI interaction:
 3. One-shot commands (`--dump-config-template`, `--validate-config`,
    `--list-profiles`, `--print-config`) execute and exit immediately.
    Before `--print-config` renders, Soapy shorthand input specs are normalized
-   into `soapy_args` plus shared `rtl_*` tuning keys. Explicit `soapy_settings`
-   values are rendered under their normalized key.
+   into `soapy_args` plus shared `rtl_*` tuning keys, and an `rtl:`/`rtltcp:`
+   spec's tuning is read into the `rtl_*` keys as the engine reads it when the
+   input opens. Explicit `soapy_settings` values are rendered under their
+   normalized key.
 4. If no CLI args and no config is loaded, the interactive bootstrap wizard runs.
 5. When a config is loaded: interactive bootstrap is skipped unless
    `--interactive-setup` is specified.

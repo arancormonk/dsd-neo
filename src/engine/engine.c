@@ -16,7 +16,6 @@
 #include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
-#include <dsd-neo/core/parse.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/source_alias.h>
@@ -155,22 +154,6 @@ dsd_parse_int_arg(const char* token, int* out) {
         return -1;
     }
     *out = (int)value;
-    return 0;
-}
-
-static int
-dsd_parse_double_arg(const char* token, double* out) {
-    if (!token || !out || token[0] == '\0') {
-        return -1;
-    }
-
-    errno = 0;
-    char* end = NULL;
-    double value = strtod(token, &end);
-    if (errno != 0 || end == token) {
-        return -1;
-    }
-    *out = value;
     return 0;
 }
 
@@ -493,48 +476,6 @@ dsd_engine_signal_handler(int sgnl) {
     dsd_exitflag_store(1);
 }
 
-static double
-atofs(const char* s) {
-    size_t len = strlen(s);
-    if (len == 0) {
-        return 0.0;
-    }
-
-    double value = 0.0;
-
-    char last = s[len - 1];
-    double factor = 1.0;
-
-    switch (last) {
-        case 'g':
-        case 'G': factor = 1e9; break;
-        case 'm':
-        case 'M': factor = 1e6; break;
-        case 'k':
-        case 'K': factor = 1e3; break;
-        default:
-            if (dsd_parse_double_arg(s, &value) != 0) {
-                return 0.0;
-            }
-            return value;
-    }
-
-    if (len == 1) {
-        return 0.0;
-    }
-
-    char unitless[1024];
-    if (len >= sizeof(unitless)) {
-        return 0.0;
-    }
-    DSD_MEMCPY(unitless, s, len - 1);
-    unitless[len - 1] = '\0';
-    if (dsd_parse_double_arg(unitless, &value) != 0) {
-        return 0.0;
-    }
-    return value * factor;
-}
-
 static void
 dsd_engine_setup_copy_spec(char* dst, size_t dst_size, const char* src) {
     if (!dst || dst_size == 0 || !src) {
@@ -555,61 +496,6 @@ dsd_engine_setup_parse_int_token(const char* token, int* out) {
     }
     *out = parsed;
     return 0;
-}
-
-static int
-dsd_engine_setup_parse_bw_token_or_default(const char* token) {
-    int bw = 0;
-    if (token && dsd_parse_int_arg(token, &bw) != 0) {
-        bw = 0;
-    }
-    if (bw == 4 || bw == 6 || bw == 8 || bw == 12 || bw == 16 || bw == 24 || bw == 48) {
-        return bw;
-    }
-    return 48;
-}
-
-static double
-dsd_engine_setup_parse_sql_token_or_default(const char* token, double fallback) {
-    if (!token) {
-        return fallback;
-    }
-    double sq_val = 0.0;
-    if (dsd_parse_double_arg(token, &sq_val) != 0) {
-        /* A token that is not a number says nothing about the squelch. Treating a
-         * failed parse as the zero left in sq_val switched the squelch off, which
-         * is a setting the user never asked for. */
-        return fallback;
-    }
-    return dsd_squelch_level_from_sql(sq_val);
-}
-
-/* A trailing token of an rtl:/rtltcp: spec: `bias` or `b` alone (or with an empty value) turns the bias tee on, and
-   `bias=<value>` / `b=<value>` sets it from a whole boolean word (on/off, 1/0, true/false, yes/no). The bias tee puts DC
-   on the antenna port, so a value or token it cannot read changes nothing and says so. */
-static void
-dsd_engine_setup_parse_bias_token(dsd_opts* opts, const char* token) {
-    if (!token) {
-        return;
-    }
-    const char* eq = strchr(token, '=');
-    const size_t name_len = eq ? (size_t)(eq - token) : strlen(token);
-    const int is_bias = (name_len == 4 && strncmp(token, "bias", 4) == 0) || (name_len == 1 && token[0] == 'b');
-    if (!is_bias) {
-        LOG_WARN("WARNING: Ignoring unknown RTL input option '%s' (expected bias[=on|off])\n", token);
-        return;
-    }
-    if (!eq || eq[1] == '\0') {
-        opts->rtl_bias_tee = 1;
-        return;
-    }
-    int on = 0;
-    if (dsd_parse_bool_strict(eq + 1, &on) != 0) {
-        LOG_WARN("WARNING: Ignoring bias value '%s' (expected on/off, 1/0, true/false or yes/no); bias tee left %s\n",
-                 eq + 1, opts->rtl_bias_tee ? "on" : "off");
-        return;
-    }
-    opts->rtl_bias_tee = on;
 }
 
 static int
@@ -784,81 +670,13 @@ dsd_engine_setup_enable_iq_replay_if_selected(dsd_opts* opts) {
     opts->iq_replay_active = 1;
 }
 
-static int
-dsd_engine_setup_parse_rtltcp_tuning_tokens(dsd_opts* opts, char** saveptr) {
-    const char* curr = dsd_strtok_r(NULL, ":", saveptr);
-    if (!curr) {
-        return 0;
-    }
-    opts->rtlsdr_center_freq = (uint32_t)atofs(curr);
-
-    curr = dsd_strtok_r(NULL, ":", saveptr);
-    if (!curr) {
-        return 0;
-    }
-    int parsed = 0;
-    if (dsd_engine_setup_parse_int_token(curr, &parsed) == 0) {
-        opts->rtl_gain_value = parsed;
-    }
-
-    curr = dsd_strtok_r(NULL, ":", saveptr);
-    if (!curr) {
-        return 0;
-    }
-    if (dsd_engine_setup_parse_int_token(curr, &parsed) == 0) {
-        opts->rtlsdr_ppm_error = parsed;
-    }
-
-    curr = dsd_strtok_r(NULL, ":", saveptr);
-    if (!curr) {
-        return 0;
-    }
-    opts->rtl_dsp_bw_khz = dsd_engine_setup_parse_bw_token_or_default(curr);
-
-    curr = dsd_strtok_r(NULL, ":", saveptr);
-    if (!curr) {
-        return 0;
-    }
-    opts->rtl_squelch_level = dsd_engine_setup_parse_sql_token_or_default(curr, opts->rtl_squelch_level);
-
-    curr = dsd_strtok_r(NULL, ":", saveptr);
-    if (!curr) {
-        return 0;
-    }
-    if (dsd_engine_setup_parse_int_token(curr, &parsed) == 0) {
-        opts->rtl_volume_multiplier = parsed;
-    }
-    return 1;
-}
-
 static void
 dsd_engine_setup_parse_rtltcp_input(dsd_opts* opts) {
     if (!dsd_opts_audio_in_dev_is_rtltcp_spec(opts->audio_in_dev)) {
         return;
     }
     LOG_INFO("NOTICE: RTL_TCP Input: ");
-    char* saveptr = NULL;
-    char inbuf[1024];
-    dsd_engine_setup_copy_spec(inbuf, sizeof(inbuf), opts->audio_in_dev);
-
-    if (dsd_strtok_r(inbuf, ":", &saveptr) != NULL) {
-        const char* curr = dsd_strtok_r(NULL, ":", &saveptr);
-        if (curr != NULL) {
-            DSD_STRNCPY(opts->rtltcp_hostname, curr, 1023);
-        }
-        curr = dsd_strtok_r(NULL, ":", &saveptr);
-        if (curr != NULL) {
-            int parsed = 0;
-            if (dsd_engine_setup_parse_int_token(curr, &parsed) == 0) {
-                opts->rtltcp_portno = parsed;
-            }
-        }
-        if (dsd_engine_setup_parse_rtltcp_tuning_tokens(opts, &saveptr)) {
-            while ((curr = dsd_strtok_r(NULL, ":", &saveptr)) != NULL) {
-                dsd_engine_setup_parse_bias_token(opts, curr);
-            }
-        }
-    }
+    (void)dsd_rtl_input_spec_apply(opts);
 
     if (opts->rtltcp_portno == 0) {
         opts->rtltcp_portno = 1234;
@@ -902,65 +720,6 @@ dsd_engine_setup_parse_soapy_input(dsd_opts* opts) {
 }
 
 #ifdef USE_RTLSDR
-static int
-dsd_engine_setup_parse_rtl_spec_tokens(dsd_opts* opts, char** saveptr) {
-    const char* curr = dsd_strtok_r(NULL, ":", saveptr);
-    if (!curr) {
-        return 0;
-    }
-    int parsed = 0;
-    if (dsd_engine_setup_parse_int_token(curr, &parsed) == 0) {
-        opts->rtl_dev_index = parsed;
-    }
-
-    curr = dsd_strtok_r(NULL, ":", saveptr);
-    if (!curr) {
-        return 0;
-    }
-    opts->rtlsdr_center_freq = (uint32_t)atofs(curr);
-
-    curr = dsd_strtok_r(NULL, ":", saveptr);
-    if (!curr) {
-        return 0;
-    }
-    if (dsd_engine_setup_parse_int_token(curr, &parsed) == 0) {
-        opts->rtl_gain_value = parsed;
-    }
-
-    curr = dsd_strtok_r(NULL, ":", saveptr);
-    if (!curr) {
-        return 0;
-    }
-    if (dsd_engine_setup_parse_int_token(curr, &parsed) == 0) {
-        opts->rtlsdr_ppm_error = parsed;
-    }
-
-    curr = dsd_strtok_r(NULL, ":", saveptr);
-    if (!curr) {
-        return 0;
-    }
-    opts->rtl_dsp_bw_khz = dsd_engine_setup_parse_bw_token_or_default(curr);
-
-    curr = dsd_strtok_r(NULL, ":", saveptr);
-    if (!curr) {
-        return 0;
-    }
-    opts->rtl_squelch_level = dsd_engine_setup_parse_sql_token_or_default(curr, opts->rtl_squelch_level);
-
-    curr = dsd_strtok_r(NULL, ":", saveptr);
-    if (!curr) {
-        return 0;
-    }
-    if (dsd_engine_setup_parse_int_token(curr, &parsed) == 0) {
-        opts->rtl_volume_multiplier = parsed;
-    }
-
-    while ((curr = dsd_strtok_r(NULL, ":", saveptr)) != NULL) {
-        dsd_engine_setup_parse_bias_token(opts, curr);
-    }
-    return 1;
-}
-
 static void
 dsd_engine_setup_update_rtl_spec_with_selected_index(dsd_opts* opts) {
     if (strncmp(opts->audio_in_dev, "rtl:", 4) != 0) {
@@ -1035,12 +794,7 @@ dsd_engine_setup_configure_local_rtl(dsd_opts* opts, dsd_state* state, char* ven
     UNUSED(state);
 #ifdef USE_RTLSDR
     LOG_INFO("NOTICE: RTL Input: ");
-    char* saveptr = NULL;
-    char inbuf[1024];
-    dsd_engine_setup_copy_spec(inbuf, sizeof(inbuf), opts->audio_in_dev);
-    if (dsd_strtok_r(inbuf, ":", &saveptr) != NULL) {
-        (void)dsd_engine_setup_parse_rtl_spec_tokens(opts, &saveptr);
-    }
+    (void)dsd_rtl_input_spec_apply(opts);
 
     int device_count = dsd_engine_setup_enumerate_rtl_devices(opts, vendor, product, serial);
     if (device_count <= 0) {
@@ -1197,9 +951,9 @@ dsd_engine_setup_open_audio_paths(dsd_opts* opts, dsd_state* state) {
     return 0;
 }
 
-/* The DSP bandwidth an RTL-SDR spec ("rtl:dev:freq:gain:ppm:bw:...") sets, read the way
- * dsd_engine_setup_parse_rtl_spec_tokens() reads its sixth field, but without looking for a device; @p fallback (the
- * bandwidth the options already hold) when the spec leaves the field out. */
+/* The DSP bandwidth an RTL-SDR spec ("rtl:dev:freq:gain:ppm:bw:...") sets, read the way dsd_rtl_input_spec_apply()
+ * reads its sixth field, but without looking for a device; @p fallback (the bandwidth the options already hold) when
+ * the spec leaves the field out. */
 static int
 dsd_engine_setup_rtl_spec_bw_khz(const char* spec, int fallback) {
     char inbuf[1024];
@@ -1209,7 +963,7 @@ dsd_engine_setup_rtl_spec_bw_khz(const char* spec, int fallback) {
     for (int field = 1; curr && field <= 5; field++) {
         curr = dsd_strtok_r(NULL, ":", &saveptr);
     }
-    return curr ? dsd_engine_setup_parse_bw_token_or_default(curr) : fallback;
+    return curr ? dsd_rtl_spec_bw_khz_or_default(curr) : fallback;
 }
 
 /*
