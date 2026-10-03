@@ -63,6 +63,7 @@ if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
         core/test_core_init_state.c
         dsp/test_dsp_am_demod.cpp
         dsp/test_dsp_analog_ctcss.c
+        dsp/test_dsp_analog_voice.c
         dsp/test_dsp_audio_filters.cpp
         dsp/test_dsp_costas.cpp
         dsp/test_dsp_demod_segmentation.cpp
@@ -82,6 +83,7 @@ elseif(MSVC)
         core/test_core_init_state.c
         dsp/test_dsp_am_demod.cpp
         dsp/test_dsp_analog_ctcss.c
+        dsp/test_dsp_analog_voice.c
         dsp/test_dsp_audio_filters.cpp
         dsp/test_dsp_costas.cpp
         dsp/test_dsp_demod_segmentation.cpp
@@ -944,6 +946,12 @@ dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_core_file_io
   HEADERS_PUBLIC_CORE_FILE_IO
   dsd-neo/core/file_io.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_dsp_analog_voice
+  HEADERS_PUBLIC_DSP_ANALOG_VOICE
+  dsd-neo/dsp/analog_voice.h
   C
 )
 dsd_neo_add_public_header_smoke_test(
@@ -4677,6 +4685,19 @@ add_test(
     NAME CORE_PARSE_DOUBLE_STRICT
     COMMAND dsd-neo_test_core_parse_double_strict
 )
+
+# Voice band-pass and AGC for the analog monitor (issue #518): every response bound
+# comes from tools/design_voice_filters.py.
+add_executable(dsd-neo_test_dsp_analog_voice dsp/test_dsp_analog_voice.c)
+target_include_directories(
+    dsd-neo_test_dsp_analog_voice
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_dsp_analog_voice
+    PRIVATE dsd-neo_dsp ${DSD_NEO_TEST_MATH_LIB}
+)
+add_test(NAME DSP_ANALOG_VOICE COMMAND dsd-neo_test_dsp_analog_voice)
 
 add_executable(
     dsd-neo_test_core_parse_bool_strict

@@ -32,6 +32,7 @@ target_sources(
         analog_ctcss.c
         analog_dcs.c
         analog_tone_policy.c
+        analog_voice.c
 )
 
 set(_dsd_neo_dsp_target_arch "${CMAKE_SYSTEM_PROCESSOR}")
@@ -107,6 +108,23 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
 elseif(MSVC)
     set_source_files_properties(
         snr_estimator.cpp
+        PROPERTIES COMPILE_OPTIONS "/fp:precise"
+    )
+endif()
+
+# The analog voice band-pass and AGC (issue #518) turn NaN and infinite samples
+# into silence and keep them out of their filter and envelope state, which
+# fast-math would fold away. They run a few multiply-adds per audio sample, so
+# IEEE semantics cost nothing measurable.
+set(_dsd_neo_dsp_ieee_c_sources analog_voice.c)
+if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+    set_source_files_properties(
+        ${_dsd_neo_dsp_ieee_c_sources}
+        PROPERTIES COMPILE_OPTIONS "-fno-fast-math;-fno-math-errno"
+    )
+elseif(MSVC)
+    set_source_files_properties(
+        ${_dsd_neo_dsp_ieee_c_sources}
         PROPERTIES COMPILE_OPTIONS "/fp:precise"
     )
 endif()
