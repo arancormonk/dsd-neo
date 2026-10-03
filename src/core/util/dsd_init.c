@@ -105,7 +105,7 @@ init_opts_output_defaults(dsd_opts* opts) {
     opts->mbe_out_fR = NULL; //second slot on a TDMA system
     opts->audio_gain = 0;
     opts->audio_gainR = 0;
-    opts->audio_gainA = 50.0f; //scale of 1 - 100
+    opts->audio_gainA = 0.0f; //0 = auto (the analog AGC); 1 - 100 fixed, 50 = reference level
     opts->audio_out = 1;
     opts->wav_out_file[0] = 0;
     opts->wav_out_fileR[0] = 0;
@@ -397,9 +397,9 @@ init_opts_trunking_and_filter_defaults(dsd_opts* opts) {
     opts->slot1_on = 1;
     opts->slot2_on = 1;
 
-    //enable filter options
+    //filter options (-v 0x9): the analog voice band-pass and the digital high-pass on
     opts->use_lpf = 0;
-    opts->use_hpf = 1;
+    opts->use_hpf = 0;
     opts->use_pbf = 1;
     opts->use_hpf_d = 1;
 

@@ -6,13 +6,13 @@
 /* No-op decoder-side link stubs shared by the frame-sync DSP tests. */
 
 #include <dsd-neo/core/audio.h>
-#include <dsd-neo/core/audio_filters.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/frame.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/time_format.h>
+#include <dsd-neo/dsp/analog_audio.h>
 #include <dsd-neo/io/rigctl_client.h>
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/runtime/shutdown.h>
@@ -84,39 +84,28 @@ pwr_to_dB(double mean_power) {
     return 0.0;
 }
 
-void
-lpf_f(dsd_state* state, float* input, int len) {
-    (void)state;
-    (void)input;
-    (void)len;
-}
-
-void
-hpf_f(dsd_state* state, float* input, int len) {
-    (void)state;
-    (void)input;
-    (void)len;
-}
-
-void
-pbf_f(dsd_state* state, float* input, int len) {
-    (void)state;
-    (void)input;
-    (void)len;
-}
-
-void
-analog_gain_f(const dsd_opts* opts, dsd_state* state, float* input, int len) {
+int
+dsd_analog_audio_process_f(const dsd_opts* opts, dsd_state* state, dsd_analog_audio_chain chain, float* buf, size_t n,
+                           dsd_analog_audio_source source, int rate_hz, unsigned int flags) {
     (void)opts;
     (void)state;
-    (void)input;
-    (void)len;
+    (void)chain;
+    (void)buf;
+    (void)n;
+    (void)source;
+    (void)rate_hz;
+    (void)flags;
+    return 0;
 }
 
 void
-agsm_f(dsd_opts* opts, dsd_state* state, float* input, int len) {
+dsd_analog_audio_block_begin(const dsd_opts* opts, dsd_state* state, dsd_analog_audio_chain chain) {
     (void)opts;
     (void)state;
-    (void)input;
-    (void)len;
+    (void)chain;
+}
+
+void
+dsd_analog_audio_note_reception(const dsd_state* state) {
+    (void)state;
 }

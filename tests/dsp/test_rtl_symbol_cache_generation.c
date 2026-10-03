@@ -5,13 +5,13 @@
 
 #include <assert.h>
 #include <dsd-neo/core/audio.h>
-#include <dsd-neo/core/audio_filters.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/dsp/analog_audio.h>
 #include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/dsp/symbol.h>
@@ -113,46 +113,37 @@ pwr_to_dB(double mean_power) {
     return 0.0;
 }
 
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-lpf_f(dsd_state* state, float* input, int len) {
-    (void)state;
-    (void)input;
-    (void)len;
-}
+/* The source each block reached the monitor's audio chain with: the -8 source monitor under digital decoding reads
+   the FSK discriminator output, the analog monitor its audio. */
+static int g_chain_last_source = -1;
 
-void
+int
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-hpf_f(dsd_state* state, float* input, int len) {
-    (void)state;
-    (void)input;
-    (void)len;
-}
-
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-pbf_f(dsd_state* state, float* input, int len) {
-    (void)state;
-    (void)input;
-    (void)len;
-}
-
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-analog_gain_f(const dsd_opts* opts, dsd_state* state, float* input, int len) {
+dsd_analog_audio_process_f(const dsd_opts* opts, dsd_state* state, dsd_analog_audio_chain chain, float* buf, size_t n,
+                           dsd_analog_audio_source source, int rate_hz, unsigned int flags) {
     (void)opts;
     (void)state;
-    (void)input;
-    (void)len;
+    (void)chain;
+    (void)buf;
+    (void)n;
+    (void)rate_hz;
+    (void)flags;
+    g_chain_last_source = (int)source;
+    return 0;
 }
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-agsm_f(dsd_opts* opts, dsd_state* state, float* input, int len) {
+dsd_analog_audio_block_begin(const dsd_opts* opts, dsd_state* state, dsd_analog_audio_chain chain) {
     (void)opts;
     (void)state;
-    (void)input;
-    (void)len;
+    (void)chain;
+}
+
+void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+dsd_analog_audio_note_reception(const dsd_state* state) {
+    (void)state;
 }
 
 /* The analog monitor blocks getSymbol() played (through the UDP analog hook): how many, and the first one's samples. */
@@ -167,6 +158,7 @@ reset_analog_block_capture(void) {
     g_first_analog_block_samples = 0;
     g_first_analog_block_min = 0;
     g_first_analog_block_max = 0;
+    g_chain_last_source = -1;
 }
 
 static void
@@ -453,6 +445,8 @@ test_analog_block_follows_family_switch(dsd_opts* opts, dsd_state* state, void* 
     assert(g_first_analog_block_samples == 960U);
     assert(g_first_analog_block_min == -2000);
     assert(g_first_analog_block_max == -2000);
+    /* Its gain stage takes it as monitor audio (issue #518). */
+    assert(g_chain_last_source == DSD_ANALOG_AUDIO_SOURCE_RTL_MONITOR);
     assert(g_cleanup_calls == 0);
 
     /* Analog -> digital, with the source monitor (-8) still playing the block. The monitor collects its audio. */
@@ -493,6 +487,9 @@ test_analog_block_follows_family_switch(dsd_opts* opts, dsd_state* state, void* 
     assert(g_first_analog_block_samples == 960U);
     assert(g_first_analog_block_min >= 1000);
     assert(g_first_analog_block_max <= 1003);
+    /* ... and the gain stage takes it as FSK discriminator output (+/-30000), not monitor audio: scaled as monitor
+       audio, the -8 source monitor clipped every sample (issue #518). */
+    assert(g_chain_last_source == DSD_ANALOG_AUDIO_SOURCE_RTL_FSK);
     assert(g_cleanup_calls == 0);
 }
 

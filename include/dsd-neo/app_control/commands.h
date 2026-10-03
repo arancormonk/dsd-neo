@@ -28,7 +28,7 @@ enum dsd_app_command_id {
     DSD_APP_CMD_SLOT_PREF_CYCLE = 12,
 
     DSD_APP_CMD_GAIN_DELTA = 20,  // payload: int32_t delta (+1/-1)
-    DSD_APP_CMD_AGAIN_DELTA = 21, // payload: int32_t delta (+1/-1) for analog gain
+    DSD_APP_CMD_AGAIN_DELTA = 21, // payload: int32_t delta (+1/-1) for analog gain; from auto it steps from 50
 
     DSD_APP_CMD_TRUNK_TOGGLE = 30,
     DSD_APP_CMD_SCANNER_TOGGLE = 31,
@@ -69,7 +69,7 @@ enum dsd_app_command_id {
     DSD_APP_CMD_MOD_TOGGLE = 102,
     DSD_APP_CMD_DMR_RESET = 103,
     DSD_APP_CMD_GAIN_SET = 104,          // payload: int32_t (0..50)
-    DSD_APP_CMD_AGAIN_SET = 105,         // payload: int32_t (0..100)
+    DSD_APP_CMD_AGAIN_SET = 105,         // payload: int32_t (0 = auto, 1..100)
     DSD_APP_CMD_INPUT_WARN_DB_SET = 106, // payload: double
     DSD_APP_CMD_INPUT_MONITOR_TOGGLE = 107,
     DSD_APP_CMD_COSINE_FILTER_TOGGLE = 108,

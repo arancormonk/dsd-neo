@@ -28,6 +28,8 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/crypto/aes.h>
 #include <dsd-neo/crypto/ecdsa.h>
+#include <dsd-neo/dsp/analog_audio.h>
+#include <dsd-neo/dsp/analog_voice.h>
 #include <dsd-neo/fec/viterbi.h>
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/file_compat.h>
@@ -1734,6 +1736,9 @@ typedef struct {
     uint8_t m17_ip_packed[54];
     uint64_t monitored_call_epoch;
     int new_lsf;
+    /* The microphone chain at codec2's 8 kHz (m17_str_voice_chain()). */
+    dsd_voice_bandpass voice_bandpass;
+    dsd_voice_agc voice_agc;
 } m17_str_ctx;
 
 typedef struct {
@@ -2098,37 +2103,72 @@ m17_str_update_input_power(m17_str_ctx* ctx) {
     }
 }
 
+/* One codec2 frame of microphone audio at 8 kHz, all @p nsam samples of it (160 at 3200 bit/s, 320 at 1600): the voice
+   band-pass (`use_pbf`), the legacy 960 Hz filters, then, with the gain on auto, the voice AGC referenced to PCM input;
+   an explicit -n keeps analog_gain()'s 0..5x. The filters and the AGC carry their state from piece to piece, so the
+   frame is processed as one run whatever its length. */
+static void
+m17_voice_filter_piece(const dsd_opts* opts, dsd_state* state, dsd_voice_bandpass* bandpass, float* tmp, size_t len) {
+    if (opts->use_pbf == 1) {
+        dsd_voice_bandpass_process(bandpass, tmp, len);
+    }
+    if (opts->use_lpf == 1) {
+        lpf_f(state, tmp, (int)len);
+    }
+    if (opts->use_hpf == 1) {
+        hpf_f(state, tmp, (int)len);
+    }
+}
+
+static void
+m17_voice_store_piece(const float* tmp, short* out, size_t len) {
+    for (size_t i = 0; i < len; i++) {
+        const float v = tmp[i];
+        if (v >= 32767.0f) {
+            out[i] = 32767;
+        } else if (v <= -32768.0f) {
+            out[i] = -32768;
+        } else {
+            out[i] = (short)lrintf(v);
+        }
+    }
+}
+
+void
+m17_voice_chain_process(const dsd_opts* opts, dsd_state* state, dsd_voice_bandpass* bandpass, dsd_voice_agc* agc,
+                        short* voice, size_t nsam) {
+    if (!opts || !state || !bandpass || !agc || !voice) {
+        return;
+    }
+    const int is_auto = dsd_analog_gain_is_auto(opts->audio_gainA);
+    float tmp[160];
+    for (size_t done = 0; done < nsam;) {
+        const size_t len = (nsam - done) < 160U ? (nsam - done) : 160U;
+        for (size_t i = 0; i < len; i++) {
+            tmp[i] = (float)voice[done + i];
+        }
+        m17_voice_filter_piece(opts, state, bandpass, tmp, len);
+        if (is_auto) {
+            dsd_voice_agc_process(agc, tmp, len, 1);
+        }
+        m17_voice_store_piece(tmp, voice + done, len);
+        done += len;
+    }
+    if (!is_auto) {
+        analog_gain(opts, state, voice, (int)nsam);
+    }
+}
+
+static void
+m17_str_voice_chain(m17_str_ctx* ctx, short* voice) {
+    m17_voice_chain_process(ctx->opts, ctx->state, &ctx->voice_bandpass, &ctx->voice_agc, voice, ctx->nsam);
+}
+
 static void
 m17_str_apply_filters_and_gain(m17_str_ctx* ctx) {
-    if (ctx->opts->use_lpf == 1) {
-        lpf(ctx->state, ctx->voice1, 160);
-        if (ctx->st == 2) {
-            lpf(ctx->state, ctx->voice2, 160);
-        }
-    }
-    if (ctx->opts->use_hpf == 1) {
-        dsd_hpf(ctx->state, ctx->voice1, 160);
-        if (ctx->st == 2) {
-            dsd_hpf(ctx->state, ctx->voice2, 160);
-        }
-    }
-    if (ctx->opts->use_pbf == 1) {
-        pbf(ctx->state, ctx->voice1, 160);
-        if (ctx->st == 2) {
-            pbf(ctx->state, ctx->voice2, 160);
-        }
-    }
-
-    if (ctx->opts->audio_gainA > 0.0f) {
-        analog_gain(ctx->opts, ctx->state, ctx->voice1, 160);
-        if (ctx->st == 2) {
-            analog_gain(ctx->opts, ctx->state, ctx->voice2, 160);
-        }
-    } else {
-        agsm(ctx->opts, ctx->state, ctx->voice1, 160);
-        if (ctx->st == 2) {
-            agsm(ctx->opts, ctx->state, ctx->voice2, 160);
-        }
+    m17_str_voice_chain(ctx, ctx->voice1);
+    if (ctx->st == 2) {
+        m17_str_voice_chain(ctx, ctx->voice2);
     }
 }
 
@@ -2426,6 +2466,8 @@ m17_str_init(m17_str_ctx* ctx, dsd_opts* opts, dsd_state* state) {
     ctx->sql_hit = 11;
     ctx->eot_out = 1;
     ctx->new_lsf = 1;
+    (void)dsd_voice_bandpass_design(&ctx->voice_bandpass, DSD_VOICE_BAND_FM, 8000);
+    (void)dsd_voice_agc_init(&ctx->voice_agc, 8000, dsd_analog_audio_source_gain(DSD_ANALOG_AUDIO_SOURCE_PCM16));
 
     DSD_MEMSET(mem, 0, M17_RRC_RECOMMENDED_TAPS * sizeof(float));
     DSD_MEMSET(ctx->nil, 0, sizeof(ctx->nil));

@@ -1027,8 +1027,8 @@ build/dev-debug/tests/dsd-neo_test_analog_replay --frontend none -fA --iq-replay
 
 The host removes its own `--analog-*` options (either `--opt VALUE` or `--opt=VALUE`) before the rest reach the CLI
 parser; any other `--analog-*` argument goes to `dsd-neo` unchanged, so the prefix stays free for real options. Each
-audio block is scored as delivered, 20 ms at the monitor's rate, with one gain for the whole block: the default
-fixed gain, or with `-n 0` the per-block AGC.
+audio block is scored as delivered, 20 ms at the monitor's rate, after the voice band-pass and the gain stage: the
+AGC by default, or a fixed gain with `-n N`.
 
 | Option | Measures |
 | --- | --- |
@@ -1069,28 +1069,33 @@ two cases with their own limits, not a comparison between runs. Measured on the 
 
 | Case | Fixture | Measured (default monitor filters) | Bounds |
 | --- | --- | --- | --- |
-| `DECODE_IQ_ANALOG_NFM_TONE` | `nfm_tone_synth` | tone SNR 25.9 dB, in-band 30.5 dB, RMS -46.0 dBFS, audible 1500 of 1500 ms from 0 ms, no clipping; a 1 kHz probe reads 0.00 dBc | SNR ≥ 20, captured and audible ≥ 1400 ms, first audible ≤ 100 ms, in-band ≥ 24, RMS -52 to -40 dBFS, clip 0, 1 kHz probe within ±1 dBc |
-| `DECODE_IQ_ANALOG_NFM_ADJACENT` | `nfm_adjacent_synth` | tone SNR 25.8 dB; 12.5 kHz probe -64.9 dBc | SNR ≥ 20, captured ≥ 1400 ms, 12.5 kHz ≤ -40 dBc |
-| `DECODE_IQ_ANALOG_NFM_TONE_8K` | `nfm_tone_synth`, `--nfm-bandwidth-hz 8000` | tone SNR 17.0 dB (the 8 kHz channel trims the 3 kHz-deviation sidebands), in-band 28.5 dB, RMS -46.0 dBFS, 1 kHz tone -46.1 dBFS; 12.5 kHz probe -80.4 dBc | `NFM_TONE`'s bounds with SNR ≥ 12, the 1 kHz tone at -47.5 to -44.5 dBFS, and 12.5 kHz ≤ -72 dBc (the default width reads -66.7) |
-| `DECODE_IQ_ANALOG_NFM_TONE_16K` | `nfm_tone_synth`, `--nfm-bandwidth-hz 16000` | measures the same as the default: tone SNR 25.9 dB, in-band 30.5 dB, 1 kHz tone -46.0 dBFS | `NFM_TONE`'s bounds with SNR ≥ 25 and in-band ≥ 30, which neither other width meets together, and the 1 kHz tone at -47.5 to -44.5 dBFS |
-| `DECODE_IQ_ANALOG_NFM_TONE_25K` | `nfm_tone_synth`, `--nfm-bandwidth-hz=25000` | tone SNR 23.6 dB (more receiver noise in the wider channel), in-band 30.4 dB, RMS -46.0 dBFS, 1 kHz tone -46.0 dBFS; 12.5 kHz probe -48.9 dBc | `NFM_TONE`'s bounds with SNR ≥ 18, the 1 kHz tone at -47.5 to -44.5 dBFS, and 12.5 kHz ≥ -58 dBc (the default width reads -66.7) |
-| `DECODE_IQ_ANALOG_NFM_BW_8K` | `nfm_adjacent_synth`, `--nfm-bandwidth-hz 8000` | tone SNR 17.0 dB; 12.5 kHz probe -79.5 dBc | SNR ≥ 12, captured ≥ 1400 ms, 12.5 kHz ≤ -72 dBc (the default width reads -64.9) |
-| `DECODE_IQ_ANALOG_NFM_BW_25K` | `nfm_adjacent_synth`, `--nfm-bandwidth-hz 25000` | the neighbour is in the passband: 12.5 kHz probe -8.2 dBc, tone SNR -3.5 dB (the beat counts as noise), tone level -46.0 dBFS | captured ≥ 1400 ms, 12.5 kHz ≥ -20 dBc, 1 kHz level -48 to -44 dBFS |
-| `DECODE_IQ_SCAN_NFM_TONE` | `nfm_adjacent_synth` through an `nfm` map row with `--nfm-bandwidth-hz 12500` on a `-fa` session (`--analog-scan-row 0`) | tone SNR 27.2 dB; 12.5 kHz probe -81.3 dBc (the same row without a width: 25.8 dB, -64.9 dBc) | row banner with `width 12.5 kHz (row)`, SNR ≥ 20, captured ≥ 1400 ms, 12.5 kHz ≤ -72 dBc |
-| `DECODE_IQ_SCAN_AM_TONE` | `am_tone_synth` through an `am` map row with `--am-bandwidth-hz 8333` on a `-fa` session (`--analog-scan-row 0`) | tone SNR 21.8 dB, in-band 25.2 dB, RMS -45.2 dBFS, audible 1500 of 1500 ms from 0 ms, no clipping (the wider channel lets in more noise than `-fM`'s 6 kHz default, 24.4 dB and 35.4 dB); the FM monitor finds no tone there, so the tone is the AM detector's | row banner with `width 8.333 kHz (row)`, SNR ≥ 18, captured and audible ≥ 1400 ms, in-band ≥ 22, RMS -50 to -40 dBFS, clip 0 |
-| `DECODE_IQ_SCAN_AM_WIDTH` | `am_adjacent_synth` through an `am` map row with `--am-bandwidth-hz 20000` (`--analog-scan-row 1`) | 8333 Hz probe +13.0 dBc (row 0's 8.333 kHz: -71.7 dBc; `-fM`'s 6 kHz default: -72.2 dBc) | row banner with `width 20 kHz (row)`, captured ≥ 1400 ms, 8333 Hz ≥ 0 dBc, which fails if the row's width does not apply |
+| `DECODE_IQ_ANALOG_NFM_TONE` | `nfm_tone_synth` | tone SNR 37.5 dB, in-band 52.3 dB, RMS -13.2 dBFS at the AGC's -10 dBFS peak, audible 1500 of 1500 ms from 0 ms, no clipping; a 1 kHz probe reads 0.00 dBc | SNR ≥ 30, captured and audible ≥ 1400 ms, first audible ≤ 100 ms, in-band ≥ 45, RMS -14.5 to -12 dBFS and peak ≤ -9.5 dBFS (the window `AM_TONE` shares), clip 0, 1 kHz probe within ±1 dBc |
+| `DECODE_IQ_ANALOG_NFM_TONE_FIXED50` | `nfm_tone_synth`, `-n 50` | RMS -15.9 dBFS, peak -12.4 dBFS: the fixed gain's calibration (the reference signal at -12 dBFS peak, -15 dBFS RMS) | RMS -16.9 to -14.9 dBFS, captured ≥ 1400 ms, clip 0 |
+| `DECODE_IQ_ANALOG_NFM_ADJACENT` | `nfm_adjacent_synth`, `-v 0 -n 50` | tone SNR 36.6 dB; 12.5 kHz probe -76.6 dBc | SNR ≥ 30, captured ≥ 1400 ms, 12.5 kHz ≤ -40 dBc |
+| `DECODE_IQ_ANALOG_NFM_TONE_8K` | `nfm_tone_synth`, `-v 0 -n 50 --nfm-bandwidth-hz 8000` | tone SNR 28.0 dB (the 8 kHz channel trims the 3 kHz-deviation sidebands), in-band 40.8 dB, RMS -15.9 dBFS, 1 kHz tone -15.9 dBFS; 12.5 kHz probe -92.8 dBc | SNR ≥ 22, in-band ≥ 36, captured and audible ≥ 1400 ms, first audible ≤ 100 ms, RMS -22 to -10 dBFS, clip 0, the 1 kHz tone at -17.5 to -14.5 dBFS, and 12.5 kHz ≤ -86 dBc (the default width reads -78.4) |
+| `DECODE_IQ_ANALOG_NFM_TONE_16K` | `nfm_tone_synth`, `-v 0 -n 50 --nfm-bandwidth-hz 16000` | measures the same as the default: tone SNR 36.8 dB, in-band 42.7 dB, 1 kHz tone -15.9 dBFS | `NFM_TONE_8K`'s level bounds with SNR ≥ 36, which neither other width meets, and in-band ≥ 40 |
+| `DECODE_IQ_ANALOG_NFM_TONE_25K` | `nfm_tone_synth`, `-v 0 -n 50 --nfm-bandwidth-hz=25000` | tone SNR 35.0 dB (more receiver noise in the wider channel), in-band 42.6 dB, RMS -15.9 dBFS, 1 kHz tone -15.9 dBFS; 12.5 kHz probe -60.6 dBc | `NFM_TONE_8K`'s level bounds with SNR ≥ 30, in-band ≥ 36, and 12.5 kHz ≥ -70 dBc (the default width reads -78.4) |
+| `DECODE_IQ_ANALOG_NFM_BW_8K` | `nfm_adjacent_synth`, `-v 0 -n 50 --nfm-bandwidth-hz 8000` | tone SNR 28.0 dB; 12.5 kHz probe -92.6 dBc | SNR ≥ 22, captured ≥ 1400 ms, 12.5 kHz ≤ -86 dBc (the default width reads -76.6) |
+| `DECODE_IQ_ANALOG_NFM_BW_25K` | `nfm_adjacent_synth`, `-v 0 -n 50 --nfm-bandwidth-hz 25000` | the neighbour is in the passband: 12.5 kHz probe -19.9 dBc, tone SNR 8.2 dB (the beat counts as noise), tone level -15.9 dBFS | captured ≥ 1400 ms, 12.5 kHz ≥ -30 dBc, 1 kHz level -18 to -14 dBFS |
+| `DECODE_IQ_SCAN_NFM_TONE` | `nfm_adjacent_synth` through an `nfm` map row with `--nfm-bandwidth-hz 12500` on a `-fa -v 0 -n 50` session (`--analog-scan-row 0`) | tone SNR 37.4 dB; 12.5 kHz probe -97.3 dBc (the same row without a width: 36.6 dB, -76.6 dBc) | row banner with `width 12.5 kHz (row)`, SNR ≥ 30, captured ≥ 1400 ms, 12.5 kHz ≤ -86 dBc |
+| `DECODE_IQ_SCAN_AM_TONE` | `am_tone_synth` through an `am` map row with `--am-bandwidth-hz 8333` on a `-fa` session (`--analog-scan-row 0`) | tone SNR 31.6 dB, in-band 43.0 dB, RMS -13.5 dBFS, audible 1500 of 1500 ms from 0 ms, no clipping (the wider channel lets in more noise than `-fM`'s 6 kHz default, 31.7 dB and 50.4 dB); the FM monitor finds no tone there, so the tone is the AM detector's | row banner with `width 8.333 kHz (row)`, SNR ≥ 25, captured and audible ≥ 1400 ms, in-band ≥ 36, `NFM_TONE`'s level window, clip 0 |
+| `DECODE_IQ_SCAN_AM_WIDTH` | `am_adjacent_synth` through an `am` map row with `--am-bandwidth-hz 20000` (`--analog-scan-row 1`), `-v 0 -n 50` | 8333 Hz probe +0.3 dBc (row 0's 8.333 kHz: -93.2 dBc; `-fM`'s 6 kHz default: -103.5 dBc) | row banner with `width 20 kHz (row)`, captured ≥ 1400 ms, 8333 Hz ≥ -10 dBc, which fails if the row's width does not apply |
 | `DECODE_IQ_SCAN_AM_SQUELCH_STEADY_CARRIER` | `am_airband_real` through an `am` map row with `--squelch-db -20` (the carrier reads about -13 dB) | captured 7980 of 8000 ms: the carrier, measured whole, holds the gate open throughout (the pooled-mean measurement, which reads an 0 Hz carrier as A²(1 - sin 2φ)/4, let 5940 ms through, chopped; at -18 dB 4580 ms, at -16 dB 2720 ms) | captured ≥ 7800 ms |
 | `DECODE_IQ_ANALOG_SILENT_STREAM_TIME` | `nfm_tone_synth` under `-fi` (monitor off) | total 1500 ms, no audio at all | audible 0 ms, total 1400 to 1600 ms |
-| `DECODE_IQ_ANALOG_NFM_REAL_CTCSS_SMOKE` | `nfm_ctcss_real` | captured and audible 6000 ms, in-band -1.0 dB, RMS -54.5 dBFS | captured ≥ 5800, audible ≥ 4500, in-band ≥ -4, RMS ≤ -44 dBFS |
-| `DECODE_IQ_ANALOG_NFM_REAL_SQUELCH_A_SMOKE` | `nfm_squelch_real_a` | captured 4000 ms, audible 1460 ms from 460 ms, in-band 8.0 dB | captured ≥ 3900, audible ≥ 900, first audible 250 to 1000 ms, in-band ≥ 4 |
-| `DECODE_IQ_ANALOG_NFM_REAL_SQUELCH_B_SMOKE` | `nfm_squelch_real_b` | captured 4000 ms, audible 2980 ms, in-band 9.6 dB | captured ≥ 3900, audible ≥ 2000, in-band ≥ 5 |
+| `DECODE_IQ_ANALOG_NFM_REAL_CTCSS_SMOKE` | `nfm_ctcss_real`, `-n 50`, audible from -40 dBFS | captured 6000 ms, audible 4200 ms, in-band 18.4 dB, RMS -32.8 dBFS | captured ≥ 5800, audible ≥ 3500, in-band ≥ 14, RMS ≤ -25 dBFS |
+| `DECODE_IQ_ANALOG_NFM_REAL_SQUELCH_A_SMOKE` | `nfm_squelch_real_a`, `-n 50`, audible from -40 dBFS | captured 4000 ms, audible 1700 ms from 460 ms, in-band 23.7 dB | captured ≥ 3900, audible ≥ 1200, first audible 250 to 1000 ms, in-band ≥ 18 |
+| `DECODE_IQ_ANALOG_NFM_REAL_SQUELCH_B_SMOKE` | `nfm_squelch_real_b`, `-n 50`, audible from -40 dBFS | captured 4000 ms, audible 3100 ms, in-band 25.5 dB | captured ≥ 3900, audible ≥ 2500, in-band ≥ 20 |
+| `DECODE_IQ_ANALOG_PARITY_NFM_REAL` | `nfm_ctcss_real` under `-fA` (default chain) | RMS -23.9 dBFS, no clipping: the level `dmr_voice` decodes to (-24.9 dBFS RMS) within 1 dB | captured ≥ 5800, RMS -27.9 to -21.9 dBFS (DMR voice ±3 dB), clip 0 |
+| `DECODE_IQ_ANALOG_PARITY_AM_REAL` | `am_airband_real` under `-fM` (default chain) | RMS -23.9 dBFS, no clipping | captured ≥ 7800, `PARITY_NFM_REAL`'s window, clip 0 |
+| `DECODE_IQ_ANALOG_SOURCE_MONITOR_FIXED` | `p25p1_c4fm_vc` under `-fs -8 -n 50` (the source monitor during digital decoding) | captured 3000 ms, peak -9.9 dBFS, no clipping (main: 141440 clipped samples, -0.03 dBFS RMS) | captured ≥ 2900, peak ≤ -6 dBFS, clip 0 |
 | `DECODE_IQ_ANALOG_NO_MOD_AUTO_SWITCH` | `am_airband_real` under `-fA` (monitor path only, not AM reception) | total and captured 8000 ms, no CQPSK symbols (before the fix: total 751 ms, captured 0 to 20 ms, CQPSK warning) | captured ≥ 7800 ms, total 7800 to 8200 ms |
 | `DECODE_IQ_ANALOG_REAL_CTCSS_1514` | `nfm_ctcss_real` | tone 151.4, first lock at 300 ms, locked 88.67% | tone lock ≤ 400 ms; tone 151.4 and no other tone logged |
 | `DECODE_IQ_ANALOG_REAL_CTCSS_NOFALSE_SQUELCH_A`, `_B`, `_AM` | `nfm_squelch_real_a`, `nfm_squelch_real_b`, `am_airband_real` | `none` verdict, no tone, locked 0.00% | `none` logged, `tone=NA`, 0.00% locked, no tone logged |
-| `DECODE_IQ_ANALOG_AM_TONE` | `am_tone_synth` under `-fM` | tone SNR 24.4 dB, in-band 35.4 dB, RMS -45.2 dBFS, audible 1500 of 1500 ms from 0 ms, no clipping; a 1 kHz probe reads 0.00 dBc | SNR ≥ 18, captured and audible ≥ 1400 ms, first audible ≤ 100 ms, in-band ≥ 28, RMS -50 to -40 dBFS, clip 0, 1 kHz probe within ±1 dBc |
-| `DECODE_IQ_ANALOG_AM_ADJ_6K` | `am_adjacent_synth` under `-fM` (6 kHz default) | tone SNR 24.2 dB; 8333 Hz probe -72.2 dBc | SNR ≥ 18, captured ≥ 1400 ms, 8333 Hz ≤ -40 dBc |
-| `DECODE_IQ_ANALOG_AM_ADJ_20K` | `am_adjacent_synth` under `-fM --am-bandwidth-hz 20000` | 8333 Hz probe +13.0 dBc (tone SNR -13.1 dB: the beat dominates) | captured ≥ 1400 ms, 8333 Hz ≥ 0 dBc |
-| `DECODE_IQ_ANALOG_AM_REAL` | `am_airband_real` under `-fM` | captured 8000 ms, audible 1120 ms, in-band 14.6 dB (-2.4 under `-fA`), RMS -53.7 dBFS, no clipping | captured ≥ 7800, audible ≥ 800, in-band ≥ 10, RMS -60 to -48 dBFS, clip 0; no `Received tone:` logged |
+| `DECODE_IQ_ANALOG_AM_TONE` | `am_tone_synth` under `-fM` | tone SNR 31.7 dB, in-band 50.4 dB, RMS -13.5 dBFS at the AGC's -10 dBFS peak, audible 1500 of 1500 ms from 0 ms, no clipping; a 1 kHz probe reads 0.00 dBc | SNR ≥ 25, captured and audible ≥ 1400 ms, first audible ≤ 100 ms, in-band ≥ 40, `NFM_TONE`'s level window, clip 0, 1 kHz probe within ±1 dBc |
+| `DECODE_IQ_ANALOG_AM_TONE_FIXED50` | `am_tone_synth` under `-fM -n 50` | RMS -15.0 dBFS, peak -11.5 dBFS | RMS -16 to -14 dBFS, captured ≥ 1400 ms, clip 0 |
+| `DECODE_IQ_ANALOG_AM_ADJ_6K` | `am_adjacent_synth` under `-fM -v 0 -n 50` (6 kHz default) | tone SNR 31.9 dB; 8333 Hz probe -103.5 dBc | SNR ≥ 25, captured ≥ 1400 ms, 8333 Hz ≤ -40 dBc |
+| `DECODE_IQ_ANALOG_AM_ADJ_20K` | `am_adjacent_synth` under `-fM -v 0 -n 50 --am-bandwidth-hz 20000` | 8333 Hz probe +0.3 dBc (tone SNR -0.4 dB: the beat dominates) | captured ≥ 1400 ms, 8333 Hz ≥ -10 dBc |
+| `DECODE_IQ_ANALOG_AM_REAL` | `am_airband_real` under `-fM -n 50`, audible from -40 dBFS | captured 8000 ms, audible 5720 ms, in-band 34.4 dB, RMS -18.6 dBFS, no clipping | captured ≥ 7800, audible ≥ 4500, in-band ≥ 28, RMS -24 to -13 dBFS, clip 0; no `Received tone:` logged |
 | `DECODE_IQ_ANALOG_POLICY_ALLOW_MATCH` | `nfm_ctcss_synth_1000`, `--tone-allow 100.0` | first audible 280 ms (the tone locks at 300 ms, within the read that crosses it), audible 1720 of 2000 ms; `Tone filter: allowed (CTCSS 100.0 Hz)` | first audible 100 to 400 ms, audible ≥ 1600, total ≥ 1900; no `rejected` or `pending` line |
 | `DECODE_IQ_ANALOG_POLICY_ALLOW_NOTONE` | `nfm_notone_synth`, `--tone-allow 100.0` | audible 0 of 2000 ms; `Tone filter: rejected (no tone)` | audible 0, total 1900 to 2100 ms; no `allowed` line |
 | `DECODE_IQ_ANALOG_POLICY_BLOCK_NOTONE` | `nfm_notone_synth`, `--tone-block 100.0` | first audible 800 ms (the window's end), audible 1200 ms; `Tone filter: allowed (no tone)` | first audible 780 to 860 ms, audible ≥ 1100, total ≥ 1900; no `rejected` line |
@@ -1129,36 +1134,35 @@ a missed bound), the named `ANALOG AUDIO FAIL:` line, an `ANALOG METRIC:` line (
 
 | Case | Run | Must fail on |
 | --- | --- | --- |
-| `DECODE_IQ_ANALOG_NEG_ADJACENT_UNFILTERED` | `DECODE_IQ_ANALOG_NFM_ADJACENT`'s 12.5 kHz bound with `DSD_NEO_CHANNEL_LPF=0`, options spelled `--opt=VALUE` | the probe's measured level: about -8 dBc against -40 (-64.9 with the channel filter); "not measured" does not count |
+| `DECODE_IQ_ANALOG_NEG_ADJACENT_UNFILTERED` | `DECODE_IQ_ANALOG_NFM_ADJACENT`'s 12.5 kHz bound with `DSD_NEO_CHANNEL_LPF=0`, options spelled `--opt=VALUE` | the probe's measured level: about -20 dBc against -40 (-76.6 with the channel filter); "not measured" does not count |
 | `DECODE_IQ_ANALOG_NEG_AUDIBLE_NOT_SILENT` | the silence pattern (`--analog-max-audible-ms 0`, `--analog-min-total-ms 1400`) on `nfm_tone_synth` | audible ms, while the stream-time bound holds |
-| `DECODE_IQ_ANALOG_NEG_TONE_SNR` | a 60 dB tone SNR floor on `nfm_tone_synth` (25.9 dB) | tone SNR |
+| `DECODE_IQ_ANALOG_NEG_TONE_SNR` | a 60 dB tone SNR floor on `nfm_tone_synth` (37.5 dB) | tone SNR |
 | `DECODE_IQ_ANALOG_NEG_TONE_NOT_MEASURED` | an SNR bound without `--analog-expect-tone-hz` | tone SNR "not measured" |
 | `DECODE_IQ_ANALOG_NEG_BAD_BOUND` | a malformed bound value | exit status 2 before the replay starts |
 | `DECODE_IQ_ANALOG_NEG_MISSING_VALUE` | a host option as the last argument, with no value | exit status 2 and "needs a value" before the replay starts |
 | `DECODE_IQ_ANALOG_NEG_TONE_LOCK_MS` | a 50 ms tone-lock bound on `nfm_ctcss_synth_1000` (300 ms) | tone lock ms, on the measured value |
 | `DECODE_IQ_ANALOG_NEG_TONE_LOCK_NOT_MEASURED` | a 400 ms tone-lock bound on `nfm_notone_synth`, where no tone locks | tone lock ms "not measured" |
-| `DECODE_IQ_ANALOG_NEG_AM_TONE_THROUGH_FM` | `DECODE_IQ_ANALOG_AM_TONE`'s 18 dB tone SNR floor on `am_tone_synth` under `-fA` (the FM monitor) | tone SNR, measured at -39.7 dB: the AM case's tone is the AM detector's |
+| `DECODE_IQ_ANALOG_NEG_AM_TONE_THROUGH_FM` | `DECODE_IQ_ANALOG_AM_TONE`'s 25 dB tone SNR floor on `am_tone_synth` under `-fA` (the FM monitor) | tone SNR, measured at -21.4 dB: the AM case's tone is the AM detector's |
+| `DECODE_IQ_ANALOG_NEG_PARITY_FIXED` | `DECODE_IQ_ANALOG_PARITY_NFM_REAL`'s window on `nfm_ctcss_real` at `-n 50` | RMS, measured at -32.8 dBFS: the parity holds only with the AGC |
 
 When a later change adds a bound or a new kind of check to the host, add a negative control beside it.
 
-A few things about these numbers. The default monitor chain puts a first-order 8 kHz high-pass (`pbf_f`) and a
-960 Hz high-pass after the discriminator, then a fixed gain: at the default `-n 50`, `analog_gain_f()` multiplies by
-12000 (4800 x 50/100 x 5). The per-block AGC (`agsm_f()`, which aims each block's peak at 4800 and caps its gain at
-6000x) runs only with `-n 0`. Replay runs the live 1/pi discriminator output scale, so the default chain's audio sits
-near -46 dBFS, as it does live; with `-n 0` the same tone comes out at -52.1 dBFS, 6 dB lower, because the cap is
-reached. At that level the default audible threshold (-50 dBFS) sits too close to the FM cases' audio, so they count
-blocks from -60 dBFS (`--analog-audible-dbfs -60`). The fixed gain is also why clipping can happen at all, and why FM
-quieting shows as level: receiver noise (`noise_floor` under `-fA`) measures -33.2 dBFS RMS against -54.5 dBFS for
-`nfm_ctcss_real`. The high-passes bring 1 kHz out about 18 dB lower, relative to 8 kHz and up, than it went in,
-so the default chain's in-band ratio says more about those filters than about the demodulator: receiver noise
-measures -0.6 dB, no better than `nfm_ctcss_real`, whose speech deviation is small (0.2-0.6 kHz RMS) against a
-channel CNR of roughly 20 dB. That is why its smoke case bounds the level instead. With the filters off (`-v 0`) the
-same fixtures measure a tone SNR of 36.8 dB and an in-band ratio of 42.7 dB on `nfm_tone_synth`, 8.7, 15.8 and
-17.8 dB in-band on the three real excerpts, and 6.9 dB on receiver noise. Use `-v 0` when the question is what the
-demodulator did.
+A few things about these numbers. Since issue #518 the default monitor chain is the voice band-pass (300-3400 Hz,
+`-v 0x9`; its FM high-pass takes every CTCSS tone 40 dB down and a DCS signal about 32 dB) and the analog AGC (`-n 0`), which takes a
+steady tone's peaks to -10 dBFS and real speech to about the level digital voice decodes to: `dmr_voice` plays at
+-24.9 dBFS RMS, `nfm_ctcss_real` and `am_airband_real` at -23.9 dBFS each, where the old chain played them at -44.6
+and -53.7 dBFS. Its gain depends on the signal, so a case that measures the excerpt rather than the AGC pins the fixed
+reference gain, `-n 50`, which takes 1 kHz at 3 kHz deviation, or AM at 50%, to -12 dBFS peak (-15 dBFS RMS) live and
+in replay alike; the smoke cases count audible blocks from -40 dBFS there, where the speech stands clear of the quiet
+carrier between words. At the fixed gain FM quieting shows as level: receiver noise (`noise_floor` under `-fA`)
+measures -12.8 dBFS RMS against -32.8 dBFS for `nfm_ctcss_real`, whose speech deviation is small (0.2-0.6 kHz RMS)
+against a channel CNR of roughly 20 dB; under the AGC both sit near the target (-21.1 and -23.9 dBFS). The band-pass's
+3.4 kHz low-pass takes 12.5 kHz 54 dB down, so the cases that measure the channel filter (its width, a neighbour) run
+with the voice filters off and the fixed gain (`-v 0 -n 50`). Use `-v 0` when the question is what the demodulator did:
+it measures a tone SNR of 36.8 dB and an in-band ratio of 42.7 dB on `nfm_tone_synth` at the default width.
 
-The 12.5 kHz probe on `nfm_adjacent_synth` reads -64.9 dBc, against -66.7 dBc on `nfm_tone_synth`, which has no
-interferer: at the default channel width it measures the floor, so its bound catches a channel filter that lets the
+The 12.5 kHz probe on `nfm_adjacent_synth` reads -76.6 dBc (`-v 0 -n 50`), against -78.4 dBc on `nfm_tone_synth`,
+which has no interferer: at the default channel width it measures the floor, so its bound catches a channel filter that lets the
 neighbour through, not finer changes. The probe itself reads a real line at its true level: in
 `DECODE_IQ_ANALOG_NFM_TONE` a probe on the 1 kHz tone agrees with the least-squares tone fit to 0.00 dB, and a -6 dB
 carrier inside the passband (5 kHz up, a variant fixture that is not committed) measured -5.9 dBc at 5 kHz.
@@ -1696,7 +1700,8 @@ name. Per-variant flags or settings within one build go in a wrapper script per 
 name. The example compares main with a branch and, on the branch, the land-mobile de-emphasis (`DSD_NEO_DEEMPH=nfm`)
 with the default. A channel-width variant is the same kind of wrapper passing `--nfm-bandwidth-hz`
 (`printf '#!/bin/sh\nexec /tmp/ab/analog_replay.branch --nfm-bandwidth-hz 12500 "$@"\n' > /tmp/ab/nfm_12k5`), or
-`--am-bandwidth-hz` under `-fM`; an AGC variant passes `-n 0`, since the default gain is fixed. AM has no main-branch
+`--am-bandwidth-hz` under `-fM`; a fixed-gain variant passes `-n 50`, since the default gain is the AGC (issue #518),
+which brings every block's peaks to the same level and so hides level differences between builds. AM has no main-branch
 baseline before #524: its variants are paired against the branch's default width, and the FM monitor cases (`-fA` on
 the NFM excerpts and on `am_airband_real`) are paired against main to show them unchanged. A design constant with no
 runtime setting, such as the AM carrier time constant (`DSD_AM_CARRIER_TAU_MS`), is varied with temporary builds that
@@ -1716,7 +1721,7 @@ tools/replay_ab.sh --metric analog --capture tests/fixtures/iq/nfm_ctcss_real.iq
 tools/replay_ab_report.py /tmp/ab/ctcss/summary.tsv --baseline analog_replay.main
 ```
 
-`-v 0` takes the monitor's fixed voice filters out of the measurement (see
+`-v 0` takes the monitor's voice filters out of the measurement (see
 [Analog monitor audio checks](#analog-monitor-audio-checks)); leave it out when the question is what a listener gets.
 The 12.5 kHz probe there reads the neighbour channel's leakage as `probe_dbfs`, over about 75 Hz around 12.5 kHz in
 each 20 ms block, no finer.
@@ -1750,6 +1755,10 @@ request:
   and the bit order, which the synthetic fixtures cannot check).
 - [ ] Tone filtering: allowed traffic opens within the detection window, rejected and untoned traffic stays silent,
   and nothing leaks at the start of a rejected transmission (#527).
+- [ ] Level and AGC (#518), with the defaults (`-n 0`, `-v 0x9`): NFM, AM and digital voice at matching loudness in a
+  mixed scan; no pumping in pauses (hiss does not swell between words); a squelch tail or key-up noise does not leave
+  the next transmission quiet; AM static does not duck the speech after it for seconds; a 151.4 Hz CTCSS tone is
+  inaudible; and the `-8` source monitor under digital decoding plays without clipping.
 - [ ] The A/B report agrees with what was heard; where it does not, say which one the pull request relies on.
 
 ## Regression Test Requirement

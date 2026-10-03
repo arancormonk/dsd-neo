@@ -143,13 +143,15 @@ test_audio_filter_helpers(void) {
     hpf_f(&state, hpf_float, 4);
     assert(hpf_float[1] > 0.0f);
 
+    /* pbf()/pbf_f() are pass-through shims since issue #518 (the monitor's voice band-pass is
+       dsd_analog_audio_process_f()'s): they leave every sample as it was. */
     short pbf_samples[] = {0, 12000, 0, -12000};
     pbf(&state, pbf_samples, 4);
-    assert(pbf_samples[1] != 0);
+    assert(pbf_samples[0] == 0 && pbf_samples[1] == 12000 && pbf_samples[2] == 0 && pbf_samples[3] == -12000);
 
     float pbf_float[] = {0.0f, 12000.0f, 0.0f, -12000.0f};
     pbf_f(&state, pbf_float, 4);
-    assert(fabsf(pbf_float[1]) > 0.0f);
+    assert(fabsf(pbf_float[1] - 12000.0f) < 1e-6f && fabsf(pbf_float[3] + 12000.0f) < 1e-6f);
 
     init_audio_filters(&state, 48000);
     state.HRCFilterL.coef = 1.0f;

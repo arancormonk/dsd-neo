@@ -21,6 +21,7 @@
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/m17_udp_hooks.h>
 #include <dsd-neo/runtime/udp_audio_hooks.h>
+#include <math.h>
 #include <sndfile.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -28,6 +29,7 @@
 #include <string.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "dsd-neo/dsp/analog_voice.h"
 #include "dsd-neo/platform/sockets.h"
 #include "dsd-neo/protocol/m17/m17_parse.h"
 #include "dsd-neo/protocol/m17/m17_tables.h"
@@ -2297,6 +2299,61 @@ test_unconfirmed_stream_publishes_no_call(void) {
     return err;
 }
 
+/* Issue #518: the stream encoder's microphone chain covers the whole codec2 frame, 320 samples at 1600 bit/s as well as
+   160 at 3200, so the second half of a 1600 frame is filtered and gained like the first and the AGC counts time in the
+   samples it actually ran. A steady 1 kHz tone 20 dB under the PCM reference settles at the AGC's boost limit (18 dB
+   over unity) in both halves of the last frame, at either length. */
+static int
+voice_chain_settled_peaks(size_t nsam, double* first_half, double* second_half) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+    opts.use_pbf = 1;
+    opts.audio_gainA = 0.0f;
+    dsd_voice_bandpass bandpass;
+    dsd_voice_agc agc;
+    (void)dsd_voice_bandpass_design(&bandpass, DSD_VOICE_BAND_FM, 8000);
+    (void)dsd_voice_agc_init(&agc, 8000, 1.0);
+    short voice[320];
+    double phase = 0.0;
+    const size_t frames = (size_t)(3 * 8000) / nsam;
+    for (size_t f = 0; f < frames; f++) {
+        for (size_t i = 0; i < nsam; i++) {
+            voice[i] = (short)lrint(823.1 * sin(phase));
+            phase += 2.0 * 3.14159265358979323846 * 1000.0 / 8000.0;
+        }
+        m17_voice_chain_process(&opts, &state, &bandpass, &agc, voice, nsam);
+    }
+    *first_half = 0.0;
+    *second_half = 0.0;
+    for (size_t i = 0; i < nsam; i++) {
+        const double a = fabs((double)voice[i]);
+        double* half = i < nsam / 2 ? first_half : second_half;
+        *half = a > *half ? a : *half;
+    }
+    return 0;
+}
+
+static int
+test_stream_voice_chain_covers_the_whole_frame(void) {
+    int err = 0;
+    const size_t lengths[] = {160U, 320U};
+    const double want = 823.1 * pow(10.0, DSD_VOICE_AGC_MAX_BOOST_DB / 20.0);
+    for (size_t l = 0; l < sizeof lengths / sizeof lengths[0]; l++) {
+        double first = 0.0;
+        double second = 0.0;
+        (void)voice_chain_settled_peaks(lengths[l], &first, &second);
+        const int ok = fabs(20.0 * log10(first / want)) < 0.5 && fabs(20.0 * log10(second / want)) < 0.5;
+        if (!ok) {
+            DSD_FPRINTF(stderr, "voice chain at %zu samples: halves peak %.1f / %.1f, want %.1f\n", lengths[l], first,
+                        second, want);
+        }
+        err |= expect_int("voice chain covers the whole frame", ok, 1);
+    }
+    return err;
+}
+
 int
 main(void) {
     int err = 0;
@@ -2317,6 +2374,7 @@ main(void) {
     err |= test_stream_voice_replaces_foreign_active_call();
     err |= test_lsf_crc_confirms_the_transmission();
     err |= test_unconfirmed_stream_publishes_no_call();
+    err |= test_stream_voice_chain_covers_the_whole_frame();
 #ifdef USE_CODEC2
     err |= test_stream_voice_3200_dispatch_routes_pair_audio_to_udp();
     err |= test_stream_voice_1600_dispatch_routes_single_audio_to_udp();

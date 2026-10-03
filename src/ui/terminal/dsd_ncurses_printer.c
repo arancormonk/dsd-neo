@@ -34,6 +34,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/dsp/analog_audio.h>
 #include <dsd-neo/protocol/edacs/edacs_afs.h>
 #include <dsd-neo/protocol/m17/m17_parse.h>
 #include <dsd-neo/protocol/p25/p25_callsign.h>
@@ -536,34 +537,32 @@ ui_render_pulse_digital_output(const dsd_opts* opts, const dsd_state* state) {
     }
 }
 
+/* The analog monitor's filters: the 960 Hz low-pass and high-pass, then the voice band-pass. */
 static void
-ui_render_pulse_analog_output(const dsd_opts* opts) {
+ui_print_analog_filters(const dsd_opts* opts) {
+    printw("F: |%s|%s|%s|", opts->use_lpf == 1 ? "LP" : "  ", opts->use_hpf == 1 ? "HP" : "  ",
+           opts->use_pbf == 1 ? "VB" : "  ");
+}
+
+/* The analog monitor's gain: auto with what the AGC applies over the reference level, or the fixed -n setting. */
+static void
+ui_print_analog_gain(const dsd_opts* opts, const dsd_state* state) {
+    if (dsd_analog_gain_is_auto(opts->audio_gainA)) {
+        printw("G: Auto (%+.1f dB) (/|*) ", state ? (double)state->aout_gainA : 0.0);
+    } else {
+        printw("G: %02.0f%% (/|*) Manual ", opts->audio_gainA);
+    }
+}
+
+static void
+ui_render_pulse_analog_output(const dsd_opts* opts, const dsd_state* state) {
     if (opts->audio_out_type == 0 && (opts->frame_provoice == 1 || opts->monitor_input_audio == 1)) {
-        printw("| Pulse Analog Output: %i kHz; %i Ch; G: %02.0f%% (/|*) ", opts->pulse_raw_rate_out / 1000,
-               opts->pulse_raw_out_channels, opts->audio_gainA);
-        if (opts->audio_gainA == 0.0f) {
-            printw("Auto   ");
-        } else {
-            printw("Manual ");
-        }
+        printw("| Pulse Analog Output: %i kHz; %i Ch; ", opts->pulse_raw_rate_out / 1000, opts->pulse_raw_out_channels);
+        ui_print_analog_gain(opts, state);
         if (opts->audio_in_type != AUDIO_IN_RTL) {
             printw("PWR: %.1f dB; ", pwr_to_dB(opts->rtl_pwr));
         }
-        if (opts->use_lpf == 1) {
-            printw("F: |LP|");
-        } else {
-            printw("F: |  |");
-        }
-        if (opts->use_hpf == 1) {
-            printw("HP|");
-        } else {
-            printw("  |");
-        }
-        if (opts->use_pbf == 1) {
-            printw("PB|");
-        } else {
-            printw("  |");
-        }
+        ui_print_analog_filters(opts);
         if (opts->pa_output_idx[0] != 0) {
             printw(" D: %s;", opts->pa_output_idx);
         }
@@ -594,31 +593,12 @@ ui_render_udp_output(const dsd_opts* opts, const dsd_state* state) {
         printw(" \n");
         if (opts->udp_sockfdA != 0) //Analog Output on udp port +2
         {
-            printw("| UDP Analog Output: %s:%d; 48 kHz 1 Ch; G: %02.0f%% (/|*) ", opts->udp_hostname,
-                   opts->udp_portno + 2, opts->audio_gainA);
-            if (opts->audio_gainA == 0.0f) {
-                printw("A ");
-            } else {
-                printw("M ");
-            }
+            printw("| UDP Analog Output: %s:%d; 48 kHz 1 Ch; ", opts->udp_hostname, opts->udp_portno + 2);
+            ui_print_analog_gain(opts, state);
             if (opts->audio_in_type != AUDIO_IN_RTL) {
                 printw("PWR: %.1f dB; ", pwr_to_dB(opts->rtl_pwr));
             }
-            if (opts->use_lpf == 1) {
-                printw("F: |LP|");
-            } else {
-                printw("F: |  |");
-            }
-            if (opts->use_hpf == 1) {
-                printw("HP|");
-            } else {
-                printw("  |");
-            }
-            if (opts->use_pbf == 1) {
-                printw("PB|");
-            } else {
-                printw("  |");
-            }
+            ui_print_analog_filters(opts);
             printw(" \n");
         }
     }
@@ -627,7 +607,7 @@ ui_render_udp_output(const dsd_opts* opts, const dsd_state* state) {
 static void
 ui_render_audio_output_block(const dsd_opts* opts, const dsd_state* state) {
     ui_render_pulse_digital_output(opts, state);
-    ui_render_pulse_analog_output(opts);
+    ui_render_pulse_analog_output(opts, state);
     ui_render_udp_output(opts, state);
 }
 
@@ -644,23 +624,13 @@ ui_render_m17_encoder_status(const dsd_opts* opts, const dsd_state* state) {
         if (state->m17_vox == 1) {
             printw(" Vox Mode;");
         }
-        printw(" Input Gain (/|*): %02.0f%% ", opts->audio_gainA);
+        if (dsd_analog_gain_is_auto(opts->audio_gainA)) {
+            printw(" Input Gain (/|*): Auto ");
+        } else {
+            printw(" Input Gain (/|*): %02.0f%% ", opts->audio_gainA);
+        }
 
-        if (opts->use_lpf == 1) {
-            printw("F: |LP|");
-        } else {
-            printw("F: |  |");
-        }
-        if (opts->use_hpf == 1) {
-            printw("HP|");
-        } else {
-            printw("  |");
-        }
-        if (opts->use_pbf == 1) {
-            printw("PB|");
-        } else {
-            printw("  |");
-        }
+        ui_print_analog_filters(opts);
         if (opts->audio_in_type != AUDIO_IN_RTL && state->m17_vox == 1) {
             /* Measured power then threshold: the first is always a reading, the
              * second says "off" when it is not gating. A scan row can override the

@@ -2513,14 +2513,18 @@ cli_report_short_opt_error(int c, int argc, char** argv) {
                 return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
             float ga = (float)parsed_ga;                                                                               \
-            if (ga < 0.0f) {                                                                                           \
+            /* 0 (anything under 1) is auto, the analog AGC; 1..100 is a fixed gain, 50 the reference level. */        \
+            if (!(ga >= 1.0f)) {                                                                                       \
                 ga = 0.0f;                                                                                             \
             } else if (ga > 100.0f) {                                                                                  \
                 ga = 100.0f;                                                                                           \
             }                                                                                                          \
             opts->audio_gainA = ga;                                                                                    \
-            LOG_INFO("NOTICE: Analog Audio Out Gain set to %.1f;\n", ga);                                              \
-            /* 0.0 means auto; analog_gain/agsm will derive the effective coefficient. */                              \
+            if (ga > 0.0f) {                                                                                           \
+                LOG_INFO("NOTICE: Analog Audio Out Gain set to %.1f;\n", ga);                                          \
+            } else {                                                                                                   \
+                LOG_INFO("NOTICE: Analog Audio Out Gain set to auto;\n");                                              \
+            }                                                                                                          \
             break;                                                                                                     \
         }                                                                                                              \
         case 'w':                                                                                                      \
@@ -2579,7 +2583,7 @@ cli_report_short_opt_error(int c, int argc, char** argv) {
             dsd_key_apply_mute_policy(opts, state);                                                                    \
             break;                                                                                                     \
         case 'v': {                                                                                                    \
-            /* Filtering bitmap (PBF/LPF/HPF/HPFD) -- accepts hex or dec */                                            \
+            /* Filtering bitmap: 1 voice band-pass, 2 LPF 960 Hz, 4 HPF 960 Hz, 8 digital HPF -- hex or dec */         \
             unsigned long bm = 0;                                                                                      \
             if (!cli_parse_ulong_option("-v", optarg, 0, &bm, out_exit_rc)) {                                          \
                 return DSD_PARSE_ERROR;                                                                                \
@@ -2588,8 +2592,8 @@ cli_report_short_opt_error(int c, int argc, char** argv) {
             opts->use_lpf = (bm & 0x2) ? 1 : 0;                                                                        \
             opts->use_hpf = (bm & 0x4) ? 1 : 0;                                                                        \
             opts->use_hpf_d = (bm & 0x8) ? 1 : 0;                                                                      \
-            LOG_INFO("NOTICE: Filters: PBF=%d LPF=%d HPF=%d HPFD=%d\n", opts->use_pbf, opts->use_lpf, opts->use_hpf,   \
-                     opts->use_hpf_d);                                                                                 \
+            LOG_INFO("NOTICE: Filters: voice band-pass=%d LPF 960 Hz=%d HPF 960 Hz=%d digital HPF=%d\n",               \
+                     opts->use_pbf, opts->use_lpf, opts->use_hpf, opts->use_hpf_d);                                    \
             break;                                                                                                     \
         }                                                                                                              \
         case 'f': {                                                                                                    \

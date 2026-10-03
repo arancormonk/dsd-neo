@@ -15,6 +15,8 @@ static int s_cleanup_calls = 0;
  * here so a renumbering fails the build, not a frontend. */
 _Static_assert(DSD_STATE_EXT_DSP_ANALOG_RX == 9, "DSP analog receive owns state_ext slot 9");
 _Static_assert((int)DSD_STATE_EXT_DSP_ANALOG_RX < (int)DSD_STATE_EXT_MAX, "slot 9 is inside the table");
+_Static_assert(DSD_STATE_EXT_DSP_ANALOG_AUDIO == 10, "DSP analog audio owns state_ext slot 10");
+_Static_assert((int)DSD_STATE_EXT_DSP_ANALOG_AUDIO < (int)DSD_STATE_EXT_MAX, "slot 10 is inside the table");
 
 static void
 test_cleanup_free(void* ptr) {

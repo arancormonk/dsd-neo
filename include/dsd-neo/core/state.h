@@ -247,21 +247,6 @@ typedef struct {
 
 } HPFilter;
 
-typedef struct {
-    LPFilter lpf;
-    HPFilter hpf;
-    float out_in;
-} PBFilter;
-
-typedef struct {
-    float alpha;
-    float beta;
-
-    float vin[3];
-    float vout[3];
-
-} NOTCHFilter;
-
 //end new filters
 
 /**
@@ -1175,8 +1160,6 @@ struct dsd_state {
     //new audio filter structs
     LPFilter RCFilter;
     HPFilter HRCFilter;
-    PBFilter PBF;
-    NOTCHFilter NF;
     LPFilter RCFilterL;
     HPFilter HRCFilterL;
     LPFilter RCFilterR;

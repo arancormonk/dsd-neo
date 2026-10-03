@@ -206,7 +206,8 @@ dsd-neo -fM --iq-replay tests/fixtures/iq/am_airband_real.iq.json --iq-replay-ra
 - AM needs a capture whose sidecar has `post_downsample` 1 (every committed fixture has): one that decimates after the
   demodulator would run the AM channel filter at a multiple of the demod rate, so the stream start refuses it with
   `...; AM needs a capture with post_downsample 1`. FM replays such a capture as before.
-- The power squelch and the monitor's voice filters (`-v`) apply as they do live; `-o null` discards the audio.
+- The power squelch, the monitor's voice filters (`-v`) and its gain stage (`-n`, the AGC by default) apply as they do
+  live; `-o null` discards the audio.
 - The monitor plays a replayed signal at the level it plays at live: replay runs the FM discriminator output scale a
   live stream runs (1/pi). Before, replayed FM monitor audio came out pi times (9.9 dB) louder than live.
 - Use `realtime` pacing to listen. `fast` replay delivers the same samples and is right for scoring.

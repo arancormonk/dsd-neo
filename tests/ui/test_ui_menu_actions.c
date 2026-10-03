@@ -1767,7 +1767,7 @@ test_additional_prompt_and_toggle_actions(void) {
 
     reset_capture();
     io_set_gain_ana(&ctx);
-    rc |= expect_str("analog gain prompt", g_prompt.title, "Analog output gain (0..100)");
+    rc |= expect_str("analog gain prompt", g_prompt.title, "Analog output gain (0 = auto, 1..100)");
 
     reset_capture();
     io_toggle_monitor(NULL);

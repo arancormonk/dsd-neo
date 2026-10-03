@@ -166,10 +166,12 @@ without de-emphasis and without the I/Q DC blocker or I/Q balance.
   The same typed row can therefore decode slightly differently under `-fA` and
   `-fM`; the `-fA` side predates AM and is left as it was.
 - Measured on the deterministic fixtures through the replay host: a 1 kHz tone at
-  50% depth with noise 30 dB below the carrier reads 24.4 dB tone SNR and
-  35.4 dB in-band ratio (`DECODE_IQ_ANALOG_AM_TONE`); an unmodulated neighbour
-  8.333 kHz up at -6 dB beats at -72.2 dBc through the default 6 kHz channel and
-  +13.0 dBc through a 20 kHz one (`DECODE_IQ_ANALOG_AM_ADJ_6K`/`_20K`). The
+  50% depth with noise 30 dB below the carrier reads 31.7 dB tone SNR and
+  50.4 dB in-band ratio through the default monitor chain
+  (`DECODE_IQ_ANALOG_AM_TONE`); with the voice filters off at the fixed gain
+  (`-v 0 -n 50`), an unmodulated neighbour 8.333 kHz up at -6 dB beats at
+  -103.5 dBc through the default 6 kHz channel and +0.3 dBc through a 20 kHz
+  one (`DECODE_IQ_ANALOG_AM_ADJ_6K`/`_20K`). The
   detector alone keeps the 0.125 tone level within 0.05% from carrier 0.01 to
   1.0 and at 1/pi of each, THD -62 dB (`DSP_AM_DEMOD`).
 - Paired replays of `am_airband_real` (`tools/replay_ab.sh --metric analog`, 12
@@ -180,7 +182,8 @@ without de-emphasis and without the I/Q DC blocker or I/Q balance.
   in-band ratio as a channel filter should and leaves the level alone (within
   0.02 dB): 39.3 dB at 5 kHz (which also trims the top of the voice band: 120 ms
   less audible), 27.2, 26.8 and 26.6 dB at 8, 10 and 20 kHz. The per-block AGC
-  (`-n 0`) lowers the level by 6.0 dB, as it does for FM. The FM monitor is
+  of the time (`-n 0`; issue #518 replaced it, see Monitor Gain Stage) lowered
+  the level by 6.0 dB, as it did for FM. The FM monitor is
   unchanged against main on `nfm_ctcss_real`, `nfm_tone_synth` and
   `am_airband_real` under `-fA` (every column +0.00, no differing repeat).
 - The carrier time constant was paired at 25 and 100 ms against the 50 ms
@@ -591,6 +594,23 @@ also opens a replay on an output scale of 0 and of 0.5, as a process that never
 ran a live stream or an earlier session leaves it, and expects the replay to run
 1/pi from either (`rtl_stream_test_replay_output_scale()`).
 
+### Monitor Gain Stage
+
+Downstream of the front end, the decoder runs the monitor audio through the
+voice band-pass and a gain stage (`dsd_analog_audio_process_f()`, issue #518;
+`docs/code_map.md` has the chain). The gain stage scales each source's reference
+signal to -12 dBFS peak at `-n 50`: FM at 3 kHz deviation and AM at 50% both
+reach the decoder at 0.125 (FM after the 1/pi output scale above, AM from the
+detector's 0.25 gain), 0.25 after the default `vol` of 2, and take a gain of
+32924. The FSK discriminator output a digital front end delivers (+/-30000,
+read by the `-8` source monitor and EDACS analog voice) takes 8231/30000 instead:
+scaled as monitor audio it used to clip every sample. The default `-n 0` is a
+per-sample AGC that brings FM and AM speech to the level digital voice plays at.
+The FM and AM tone fixtures measure -15.9 and -15.0 dBFS RMS at `-n 50`
+(`DECODE_IQ_ANALOG_NFM_TONE_FIXED50`, `_AM_TONE_FIXED50`), and real NFM and AM
+speech -23.9 dBFS each under the AGC, against -24.9 for DMR voice
+(`DECODE_IQ_ANALOG_PARITY_*`).
+
 ## Regression Coverage
 
 - `IO_RTL_DEMOD_CONFIG` validates the full mode matrix at 48 kHz and key 24 kHz
@@ -676,12 +696,13 @@ ran a live stream or an earlier session leaves it, and expects the replay to run
   input the stream opens as an RTL-SDR whatever its device string;
   `IO_RTL_DEMOD_CONFIG` the stream-start refusal's fix on a forced rate. `DECODE_IQ_ANALOG_NFM_TONE_8K`,
   `_16K` and `_25K` show the 1 kHz tone keeping its level through each width
-  (-46.0 dBFS, bounded to -47.5..-44.5 dBFS; the explicit 16 kHz measuring the
-  same as the default) and, at 8 and 25 kHz, a demodulator noise level at
-  12.5 kHz the default does not reach (-80.4 and -48.9 dBc against -66.7),
-  `DECODE_IQ_ANALOG_NFM_BW_8K`
-  and `_25K` that the neighbour 12.5 kHz away is rejected at 8 kHz (-79.5 dBc)
-  and inside the passband at 25 kHz (-8.2 dBc), and
+  with the voice filters off at the fixed gain (`-v 0 -n 50`: -15.9 dBFS,
+  bounded to -17.5..-14.5 dBFS; the explicit 16 kHz measuring the same as the
+  default) and, at 8 and 25 kHz, a demodulator noise level at 12.5 kHz the
+  default does not reach (-92.8 and -60.6 dBc against -78.4),
+  `DECODE_IQ_ANALOG_NFM_BW_8K` and `_25K` that the neighbour 12.5 kHz away is
+  rejected at 8 kHz (-92.6 dBc against -76.6 at the default) and inside the
+  passband at 25 kHz (-19.9 dBc), and
   `DECODE_IQ_ANALOG_CTCSS_1000_NFM_8K` and `_NFM_25K` that received-tone
   detection (issue #522) still reports the 100.0 Hz tone through both widths.
 - AM (issue #524): `DSP_AM_DEMOD` holds the detector to its level, distortion,

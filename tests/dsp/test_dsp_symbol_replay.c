@@ -9,13 +9,13 @@
 #include <assert.h>
 #include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/audio.h>
-#include <dsd-neo/core/audio_filters.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/dsp/analog_audio.h>
 #include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/dsp/sps_filters.h>
@@ -111,63 +111,54 @@ pwr_to_dB(double mean_power) {
     return 0.0;
 }
 
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-lpf_f(dsd_state* state, float* input, int len) {
-    (void)state;
-    (void)input;
-    (void)len;
-}
+/* The monitor's audio chain (voice band-pass and gain stage), stubbed to do to a sub-audible tone what the real
+   band-pass does: take it out. It records what reached it first, so a test can prove the received-tone tap read the
+   block before this chain and left it untouched, and the flags and source each block arrived with. */
+static float g_chain_seen[960];
+static int g_chain_seen_len = 0;
+static int g_chain_removes_tone = 0;
+static int g_chain_calls = 0;
+static unsigned int g_chain_last_flags = 0U;
+static int g_chain_last_source = -1;
+static int g_chain_last_rate_hz = 0;
 
-/* The voice high-pass, stubbed to do to a sub-audible tone what the real 960 Hz one does:
-   take it out. It records what reached it first, so a test can prove the received-tone tap
-   read the block before this filter and left it untouched. */
-static float g_hpf_seen[960];
-static int g_hpf_seen_len = 0;
-static int g_hpf_removes_tone = 0;
-
-void
+int
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-hpf_f(dsd_state* state, float* input, int len) {
-    (void)state;
-    g_hpf_seen_len = 0;
-    if (!input || len <= 0) {
-        return;
-    }
-    const int n = len < (int)(sizeof(g_hpf_seen) / sizeof(g_hpf_seen[0]))
-                      ? len
-                      : (int)(sizeof(g_hpf_seen) / sizeof(g_hpf_seen[0]));
-    DSD_MEMCPY(g_hpf_seen, input, (size_t)n * sizeof(float));
-    g_hpf_seen_len = n;
-    if (g_hpf_removes_tone) {
-        DSD_MEMSET(input, 0, (size_t)len * sizeof(float));
-    }
-}
-
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-pbf_f(dsd_state* state, float* input, int len) {
-    (void)state;
-    (void)input;
-    (void)len;
-}
-
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-analog_gain_f(const dsd_opts* opts, dsd_state* state, float* input, int len) {
+dsd_analog_audio_process_f(const dsd_opts* opts, dsd_state* state, dsd_analog_audio_chain chain, float* buf, size_t n,
+                           dsd_analog_audio_source source, int rate_hz, unsigned int flags) {
     (void)opts;
     (void)state;
-    (void)input;
-    (void)len;
+    (void)chain;
+    g_chain_calls++;
+    g_chain_last_flags = flags;
+    g_chain_last_source = (int)source;
+    g_chain_last_rate_hz = rate_hz;
+    g_chain_seen_len = 0;
+    if (!buf || n == 0U) {
+        return 0;
+    }
+    const size_t cap = sizeof(g_chain_seen) / sizeof(g_chain_seen[0]);
+    const size_t keep = n < cap ? n : cap;
+    DSD_MEMCPY(g_chain_seen, buf, keep * sizeof(float));
+    g_chain_seen_len = (int)keep;
+    if (g_chain_removes_tone) {
+        DSD_MEMSET(buf, 0, n * sizeof(float));
+    }
+    return 0;
 }
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-agsm_f(dsd_opts* opts, dsd_state* state, float* input, int len) {
+dsd_analog_audio_block_begin(const dsd_opts* opts, dsd_state* state, dsd_analog_audio_chain chain) {
     (void)opts;
     (void)state;
-    (void)input;
-    (void)len;
+    (void)chain;
+}
+
+void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+dsd_analog_audio_note_reception(const dsd_state* state) {
+    (void)state;
 }
 
 static void
@@ -844,7 +835,7 @@ init_analog_monitor_fixture(dsd_opts* opts, dsd_state* state) {
     opts->rtl_pwr = 1.0;
     opts->rtl_squelch_level = 0.0;
     opts->audio_gainA = 1.0f;
-    g_hpf_removes_tone = 1;
+    g_chain_removes_tone = 1;
 }
 
 static double g_tone_phase = 0.0;
@@ -886,8 +877,8 @@ feed_tone_blocks(dsd_opts* opts, dsd_state* state, int blocks) {
     for (int b = 0; b < blocks; b++) {
         fill_tone_block(block, 960U, 100.0, 3000.0);
         assert(dsd_symbol_test_finalize_unsynced_analog_block(opts, state, block, 960U) == 960U);
-        assert(g_hpf_seen_len == 960);
-        assert(same_sample_bits(g_hpf_seen, block, 960));
+        assert(g_chain_seen_len == 960);
+        assert(same_sample_bits(g_chain_seen, block, 960));
     }
 }
 
@@ -3698,6 +3689,80 @@ test_tone_policy_check_is_no_scan_activity(void) {
     dsd_state_ext_free_all(&state);
 }
 
+/* One 20 ms block through the unsynced finalize step: whether the sink played it must be exactly whether the monitor's
+   audio chain got it with DSD_ANALOG_AUDIO_PLAYING, and @p want_discard whether it got DSD_ANALOG_AUDIO_DISCARD (the
+   sink never asks for DSD_ANALOG_AUDIO_RESET: the chain starts over at a new reception by itself). */
+static void
+expect_chain_block(dsd_opts* opts, dsd_state* state, int want_played, int want_discard) {
+    const int played_before = g_monitor_blocks;
+    const int calls_before = g_chain_calls;
+    feed_tone_blocks(opts, state, 1);
+    const int played = g_monitor_blocks > played_before;
+    assert(g_chain_calls == calls_before + 1);
+    assert(played == want_played);
+    assert(((g_chain_last_flags & DSD_ANALOG_AUDIO_PLAYING) != 0U) == want_played);
+    assert(((g_chain_last_flags & DSD_ANALOG_AUDIO_DISCARD) != 0U) == want_discard);
+    assert((g_chain_last_flags & DSD_ANALOG_AUDIO_RESET) == 0U);
+}
+
+/* Issue #518: the monitor's gain stage adapts to exactly the audio that plays. The chain gets the PLAYING flag for a
+   block the sink plays and not for one it holds back -- the squelch closed, the output off, a retune unresolved, the
+   tone policy still checking -- and DISCARD for a block that straddles a retune, whose samples are partly the old
+   channel's. It always gets the raw block (the tap reads it first, test_rx_tone_tap_reads_raw_block_before_voice_filters)
+   with its source and rate. */
+static void
+test_chain_playing_follows_the_sink(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    install_fake_rtl_hooks(1);
+    init_analog_monitor_fixture(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    start_monitor_capture(&opts);
+    dsd_trunk_tuning_requests_reset();
+
+    expect_chain_block(&opts, &state, 1, 0);
+    assert(g_chain_last_rate_hz == 48000);
+#ifdef USE_RADIO
+    /* (A build without radio support has no RTL input, and treats every input as PCM.) */
+    assert(g_chain_last_source == DSD_ANALOG_AUDIO_SOURCE_RTL_MONITOR);
+#endif
+    /* The squelch closed over the block (the RTL path reads its power with the sample: held at 1.0 here). */
+    opts.rtl_squelch_level = 2.0;
+    expect_chain_block(&opts, &state, 0, 0);
+    opts.rtl_squelch_level = 0.0;
+    expect_chain_block(&opts, &state, 1, 0);
+    /* Output off (-o null or a muted UI): nothing plays, so nothing adapts. */
+    opts.audio_out = 0;
+    expect_chain_block(&opts, &state, 0, 0);
+    opts.audio_out = 1;
+    /* A retune in flight, then landed: the block that straddles its completion is dropped from the chain. */
+    const uint64_t request = dsd_trunk_tuning_request_begin();
+    expect_chain_block(&opts, &state, 0, 0);
+    dsd_trunk_tuning_request_complete(request, DSD_TRUNK_TUNE_RESULT_OK);
+    expect_chain_block(&opts, &state, 0, 1);
+    expect_chain_block(&opts, &state, 1, 0);
+    /* A retune nobody announced (a new stream generation): the same. */
+    g_fake_rtl_generation++;
+    expect_chain_block(&opts, &state, 0, 1);
+    expect_chain_block(&opts, &state, 1, 0);
+    dsd_trunk_tuning_requests_reset();
+
+    /* PCM input: the PCM source at the input's rate; the tone policy still checking holds the AGC too. */
+    install_fake_rtl_hooks(0);
+    opts.audio_in_type = AUDIO_IN_WAV;
+    opts.wav_sample_rate = 48000;
+    /* The switch of input is a boundary the tap reads as a new reception: that block is dropped from the chain too. */
+    expect_chain_block(&opts, &state, 0, 1);
+    expect_chain_block(&opts, &state, 1, 0);
+    assert(g_chain_last_source == DSD_ANALOG_AUDIO_SOURCE_PCM16 && g_chain_last_rate_hz == 48000);
+    set_tone_policy(&opts, DSD_TONE_FILTER_ALLOW, "100.0");
+    expect_chain_block(&opts, &state, 0, 0);
+    assert(state.analog_rx.gate == DSD_ANALOG_TONE_GATE_PENDING);
+    opts.analog_tone_filter = DSD_TONE_FILTER_OFF;
+    dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
+    dsd_state_ext_free_all(&state);
+}
+
 int
 main(void) {
     exitflag = 0;
@@ -3758,6 +3823,7 @@ main(void) {
     test_tone_policy_no_tone_rejection_names_a_later_tone();
     test_tone_policy_rejection_outlives_its_carrier();
     test_tone_policy_check_is_no_scan_activity();
+    test_chain_playing_follows_the_sink();
     return 0;
 }
 

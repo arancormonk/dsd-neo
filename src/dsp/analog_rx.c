@@ -20,6 +20,7 @@
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/dsp/analog_audio.h>
 #include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/dsp/firdes.h>
 #include <dsd-neo/runtime/analog_tones.h>
@@ -1027,6 +1028,8 @@ dsd_analog_rx_reset(dsd_state* state) {
         /* Nor may what a live input still holds, which arrived before the boundary too. */
         analog_rx_arm_backlog_skip(session);
     }
+    /* The monitor's audio chain starts over on the new reception too, whether or not this tap runs (issue #518). */
+    dsd_analog_audio_note_reception(state);
     analog_rx_forget(state);
 }
 

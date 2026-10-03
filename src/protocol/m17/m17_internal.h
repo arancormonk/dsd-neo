@@ -9,6 +9,7 @@
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/dsp/analog_voice.h>
 
 #include <stddef.h>
 #include <stdint.h>
@@ -57,6 +58,9 @@ uint16_t m17_attach_lsf_crc(uint8_t* m17_lsf, uint8_t* lsf_packed);
 void m17_sync_monitored_tx_call(const dsd_opts* opts, dsd_state* state, uint64_t dst, uint64_t src,
                                 const char* dst_text, const char* src_text, uint8_t can, uint64_t* active_epoch);
 void m17_end_monitored_tx_call(const dsd_opts* opts, dsd_state* state, uint64_t* active_epoch);
+/* The stream encoder's microphone chain over one codec2 frame of @p nsam samples at 8 kHz (m17.c). */
+void m17_voice_chain_process(const dsd_opts* opts, dsd_state* state, dsd_voice_bandpass* bandpass, dsd_voice_agc* agc,
+                             short* voice, size_t nsam);
 
 int m17_decode_pkt_should_report_encrypted(const dsd_state* state, uint32_t protocol);
 int m17_pkt_ptr_clamped(int pbc_count);

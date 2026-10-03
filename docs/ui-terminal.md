@@ -114,10 +114,10 @@ Main Menu
 │   ├── P25 Phase 2 modulation lock [Off]        M
 │   ├── CQPSK path [On]                              (RTL-SDR input only)
 │   ├── Audio filters
-│   │   ├── Low-pass filter [Off]                V
-│   │   ├── High-pass filter [Off]               B
-│   │   ├── Pulse-shaping band-pass [Off]        N
-│   │   ├── Digital high-pass filter [Off]       H
+│   │   ├── Low-pass filter (960 Hz) [Off]       V
+│   │   ├── High-pass filter (960 Hz) [Off]      B
+│   │   ├── Voice band-pass [On]                 N
+│   │   ├── Digital high-pass filter [On]        H
 │   │   └── Cosine filter [On]
 │   ├── Per-protocol inversion
 │   │   ├── Invert X2-TDMA [Off]
@@ -216,7 +216,7 @@ Main Menu
 │   │   ├── Pulse output device...
 │   │   └── UDP output...
 │   ├── Digital gain... [auto]                   + -
-│   ├── Analog gain... [50]                      * /
+│   ├── Analog gain... [auto]                    * /
 │   ├── Source audio monitor [Off]
 │   ├── Deemphasis [Off]
 │   ├── Audio low-pass... [Off]
@@ -510,7 +510,7 @@ expires independently of **Save user TG lockouts**. See [Skip lifetimes](cli.md#
 | `1` / `2` | Toggle synth/playback for slot 1 / slot 2 |
 | `3` | Cycle TDMA slot preference (slot 1 / slot 2 / auto) |
 | `+` / `-` | Digital gain up/down |
-| `*` / `/` | Analog gain up/down (0–100) |
+| `*` / `/` | Analog gain up/down (1–100; from auto they start at 50, and below 1 is auto again) |
 | `v` | Cycle the input volume multiplier (non-RTL inputs) or the RTL monitor gain (RTL input) |
 | `4` | Toggle force privacy key over identifiers |
 | `6` | Toggle force RC4 key over missing PI/LE identifiers |
@@ -519,9 +519,9 @@ expires independently of **Save user TG lockouts**. See [Skip lifetimes](cli.md#
 
 | Key | Action |
 |---|---|
-| `V` | Toggle low-pass filter |
-| `B` | Toggle high-pass filter |
-| `N` | Toggle pulse-shaping band-pass filter |
+| `V` | Toggle the analog 960 Hz low-pass filter |
+| `B` | Toggle the analog 960 Hz high-pass filter |
+| `N` | Toggle the analog voice band-pass (300-3400 Hz; takes CTCSS and DCS signalling out) |
 | `H` | Toggle digital high-pass filter |
 
 ### Visualizers (RTL input builds)

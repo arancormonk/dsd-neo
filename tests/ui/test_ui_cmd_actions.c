@@ -246,7 +246,22 @@ test_audio_actions(void) {
     rc |= expect_true("analog gain delta keeps a fractional -n", fabsf(opts.audio_gainA - 38.5f) < 1e-6f);
     cmd = cmd_i32(DSD_APP_CMD_AGAIN_DELTA, -90);
     dispatch_one(dsd_app_actions_audio, &opts, &state, &cmd);
-    rc |= expect_true("analog gain delta clamps low", fabsf(opts.audio_gainA) < 1e-6f);
+    rc |= expect_true("analog gain delta below 1 goes to auto", fabsf(opts.audio_gainA) < 1e-6f);
+    /* 0 is auto (the AGC): a step from it starts at the reference setting, 50. */
+    cmd = cmd_i32(DSD_APP_CMD_AGAIN_DELTA, 1);
+    dispatch_one(dsd_app_actions_audio, &opts, &state, &cmd);
+    rc |= expect_true("analog gain step up from auto starts at 50", fabsf(opts.audio_gainA - 51.0f) < 1e-6f);
+    opts.audio_gainA = 0.0f;
+    cmd = cmd_i32(DSD_APP_CMD_AGAIN_DELTA, -1);
+    dispatch_one(dsd_app_actions_audio, &opts, &state, &cmd);
+    rc |= expect_true("analog gain step down from auto starts at 50", fabsf(opts.audio_gainA - 49.0f) < 1e-6f);
+    opts.audio_gainA = 1.0f;
+    cmd = cmd_i32(DSD_APP_CMD_AGAIN_DELTA, -1);
+    dispatch_one(dsd_app_actions_audio, &opts, &state, &cmd);
+    rc |= expect_true("analog gain step down from 1 goes to auto", fabsf(opts.audio_gainA) < 1e-6f);
+    cmd = cmd_i32(DSD_APP_CMD_AGAIN_SET, 0);
+    dispatch_one(dsd_app_actions_audio, &opts, &state, &cmd);
+    rc |= expect_true("analog gain set 0 is auto", fabsf(opts.audio_gainA) < 1e-6f);
     cmd = cmd_i32(DSD_APP_CMD_AGAIN_SET, -9);
     dispatch_one(dsd_app_actions_audio, &opts, &state, &cmd);
     rc |= expect_true("analog gain set clamps low", fabsf(opts.audio_gainA) < 1e-6f);

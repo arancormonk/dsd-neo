@@ -303,9 +303,9 @@ test_decoder_labels(void) {
     opts.use_hpf = 0;
     opts.use_pbf = 1;
     opts.use_hpf_d = 0;
-    rc |= expect_str("lpf on", lbl_lpf(&ctx, b, sizeof(b)), "Low-pass filter [On]");
-    rc |= expect_str("hpf off", lbl_hpf(&ctx, b, sizeof(b)), "High-pass filter [Off]");
-    rc |= expect_str("pbf on", lbl_pbf(&ctx, b, sizeof(b)), "Pulse-shaping band-pass [On]");
+    rc |= expect_str("lpf on", lbl_lpf(&ctx, b, sizeof(b)), "Low-pass filter (960 Hz) [On]");
+    rc |= expect_str("hpf off", lbl_hpf(&ctx, b, sizeof(b)), "High-pass filter (960 Hz) [Off]");
+    rc |= expect_str("pbf on", lbl_pbf(&ctx, b, sizeof(b)), "Voice band-pass [On]");
     rc |= expect_str("hpf digital off", lbl_hpf_d(&ctx, b, sizeof(b)), "Digital high-pass filter [Off]");
     /* The M17 row can disable the effective filter while the configured value
      * shown by this toggle remains enabled. */
@@ -621,6 +621,10 @@ test_input_and_audio_labels(void) {
     opts.audio_gain = 12.0f;
     rc |= expect_str("digital gain set", lbl_gain_dig(&ctx, b, sizeof(b)), "Digital gain... [12]");
     rc |= expect_str("analog gain", lbl_gain_ana(&ctx, b, sizeof(b)), "Analog gain... [50]");
+    /* 0 is auto, the analog AGC (the default since issue #518). */
+    opts.audio_gainA = 0.0f;
+    rc |= expect_str("analog gain auto", lbl_gain_ana(&ctx, b, sizeof(b)), "Analog gain... [auto]");
+    opts.audio_gainA = 50.0f;
 
     opts.audio_in_type = AUDIO_IN_TCP;
     opts.tcp_in_ctx = (tcp_input_ctx*)0x1;
