@@ -1388,6 +1388,17 @@ handle on a file before removing it, including one the code under test hands
 back from an open the test expects it to refuse: the native Windows CRT cannot
 remove an open file.
 
+Keep large objects off the stack. A Windows main thread gets a 1 MiB stack where
+Linux gives 8 MiB, so a test that declares a `dsd_state`, an `Event_History_I`
+(3.7 MB) or another multi-megabyte object as a local crashes only on Windows,
+which CTest reports as a segfault. Make such a local `static` and clear it before
+use. GCC and Clang build every test with `-Wframe-larger-than=786432`, so a frame
+over 768 KiB fails the Linux build instead.
+
+Production writes CSV, INI and group files in text mode, so on Windows their
+lines end in CRLF. Compare such a file's contents after reading it in text mode
+(`"r"`), and binary output, such as an MBE recording, byte for byte (`"rb"`).
+
 To check the whole suite, run it against an empty directory, which must still
 be empty afterwards. That does not catch a file a test creates by a relative
 path, which lands in its working directory: `build/dev-debug/tests` for most

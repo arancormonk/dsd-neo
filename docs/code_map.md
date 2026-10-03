@@ -469,7 +469,14 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
     platform in `file_compat_posix.c` and `file_compat_win32.c`
   - Private file opens: `dsd_fopen_private()` creates a written file owner-only; `dsd_fopen_private_ex()` also says
     whether it opened the path, which for a write mode creates or empties it before the stream over the descriptor is
-    made, so an open whose `fdopen()` fails still reports the file it emptied (issue #578: the I/Q capture writer)
+    made, so an open whose `fdopen()` fails still reports the file it emptied (issue #578: the I/Q capture writer).
+    Open raw bytes with a `b` mode: on Windows a text-mode stream writes every LF as CRLF
+  - Win32 wrappers keep the POSIX contract callers rely on: errno values, never raw `GetLastError()` codes (the
+    thread scheduling and condition calls map them; affinity and realtime priority return ENOSYS where the platform
+    has no such control), ENOENT for a missing file from `dsd_fopen_existing_regular_file()`, and temp files
+    (`dsd_mkstemp()`, `dsd_mkdtemp()`, `dsd_fopen_private_temp_for_replace()`) named from `dsd_nonce_fill()` with a
+    retry when the name is taken (`src/platform/win32_temp_name_internal.h`), never the CRT's `_mktemp_s()`, which
+    gives 26 names per template and reuses one as soon as its file is gone
   - Audio backends: selected by `DSD_AUDIO_BACKEND` (`auto` → PortAudio on Windows, PulseAudio
     elsewhere; `none` → `audio_null.c` discard/silence backend; `aaudio` → Android). Exactly one
     backend translation unit is compiled per build; the shared last-error store lives in
@@ -646,6 +653,9 @@ The `Linux • RelWithDebInfo • ctest (x86-64-v3, fast-math, clang)` check enf
 - Responsibilities:
   - Config system (schema, expansion, user config), logging, memory helpers, rings, worker pools, RT scheduling
   - CLI parsing and interactive/bootstrap helpers (`include/dsd-neo/runtime/cli.h`)
+  - UTF-8 output (`include/dsd-neo/runtime/unicode.h`): on Windows the first `dsd_unicode_init_locale()` switches the
+    console's code pages to UTF-8 and registers `dsd_unicode_restore_console()` with `atexit()`, so the shell gets its
+    own code pages back when dsd-neo exits
   - Hook interfaces that let DSP/protocol code publish state without depending on UI internals
   - Decode clock (`include/dsd-neo/runtime/decode_clock.h`, `src/runtime/decode_clock.c`): an injectable clock for
     decode decisions and decoded-output timestamps (`dsd_decode_time()`, `dsd_decode_now_mono_{s,ms,ns}()`,
