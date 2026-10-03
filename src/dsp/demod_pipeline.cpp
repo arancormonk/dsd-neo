@@ -1390,11 +1390,27 @@ full_demod_front_end_empty(struct demod_state* d) {
     return 1;
 }
 
+/* Mean of the squares of @p len interleaved I/Q floats: Σ(I²+Q²) over the complex samples divided by 2N, the scale
+   mean_power() reads for a signal with no DC. */
+static float
+mean_square_iq(const float* samples, int len) {
+    double p = 0.0;
+    for (int i = 0; i < len; i++) {
+        const double s = (double)samples[i];
+        p += s * s;
+    }
+    return len > 0 ? (float)(p / (double)len) : 0.0f;
+}
+
 static void
 full_demod_update_channel_state(struct demod_state* d) {
     if (d->lowpassed && d->lp_len >= 2) {
         int n = (d->lp_len > 512) ? 512 : d->lp_len;
-        d->channel_pwr = mean_power(d->lowpassed, n, 1);
+        /* mean_power() pools I and Q and takes their common mean out. An AM carrier sits at 0 Hz, so that mean is the
+           carrier itself and what is left swings with its phase, A²(1 - sin 2φ)/4, down to nothing: the squelch chopped
+           an AM channel as the carrier drifted. On AM the carrier is the signal, so its power is measured whole (the IQ
+           DC block, which runs after this, is bypassed on AM for the same reason). */
+        d->channel_pwr = dsd_demod_am_active(d) ? mean_square_iq(d->lowpassed, n) : mean_power(d->lowpassed, n, 1);
     }
     const float squelch_level = d->channel_squelch_level.load(std::memory_order_relaxed);
     if (d->lowpassed && d->lp_len > 0 && squelch_level > 0.0f && d->channel_pwr < squelch_level) {

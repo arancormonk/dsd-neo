@@ -12930,6 +12930,26 @@ if(DSD_HAS_RADIO)
         "Scan row applied: 1 am; width 20 kHz \\(row\\).*ANALOG AUDIO OK"
         "${_analog_off_path}"
     )
+    # Issue #518 follow-up: an AM carrier sits at 0 Hz, and the squelch measured it with
+    # mean_power()'s pooled I/Q mean removed, which reads A^2(1 - sin 2phi)/4 and drops
+    # to nothing as the carrier's phase drifts. am_airband_real's carrier runs through
+    # the whole 8 s excerpt at about -13 dB channel power: under an am row's
+    # --squelch-db -20 the old measurement let 5940 ms of it through, chopped; the
+    # carrier measured whole holds the gate open for all of it (7980 ms).
+    set(_scan_am_sql_csv
+        "${CMAKE_CURRENT_BINARY_DIR}/scan_mode_am_squelch_rows.csv"
+    )
+    file(
+        WRITE "${_scan_am_sql_csv}"
+        "channel,frequency_hz,mode,options\n1,118300000,am,--squelch-db -20\n"
+    )
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_SCAN_AM_SQUELCH_STEADY_CARRIER
+        am_airband_real
+        "-fa -C ${_scan_am_sql_csv} --analog-scan-row 0 --analog-min-captured-ms 7800"
+        ""
+        "${_analog_off_path}"
+    )
 
     # Negative controls: bounds that must NOT hold, run through
     # analog_replay_fail_check.cmake, which requires the host's exit code (1 for a

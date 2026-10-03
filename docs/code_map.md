@@ -1786,6 +1786,10 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   monitor on its own channel (`dsd_demod_analog_monitor_active()`). A typed digital scan row's profile on an AM session
   is FM-demodulated instead, as under `-fA` (`full_demod_run_output_demod()`), with the carrier estimate left alone;
   the AM session runs no de-emphasis, so, unlike under `-fA`, the row's discriminator output is not de-emphasized.
+  While `dsd_demod_am_active()` the squelch's channel power is the plain mean square of the I/Q floats, the carrier
+  measured whole (receiver DC included, as a vector sum), not `mean_power()`'s pooled-mean removal, which reads an
+  0 Hz carrier as A²(1 - sin 2φ)/4 and so chopped an AM channel's squelch as the carrier's phase drifted (issue #518
+  follow-up, `DSP_SQUELCH`). FM and digital keep `mean_power()`.
   `dsd_demod_iq_dc_block_active()` is the I/Q DC blocker's gate (enabled, and not under AM), which `iq_dc_block()`
   uses; `dsd_demod_iq_balance_active()` is I/Q balance's (enabled, CQPSK off, and not under AM), which
   `full_demod_apply_iq_balance()` uses. `am_carrier` is a float in a scanned header, so `tools/semgrep_float_fields.py` regenerated the semgrep
