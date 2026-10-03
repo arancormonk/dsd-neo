@@ -201,6 +201,10 @@ dsd_cli_usage_section_radio_and_encoder(void) {
     printf("      --rtltcp-autotune      Enable RTL-TCP adaptive networking (buffer/recv tuning)\n");
     printf("      --rtl-udp-control <port>  Enable external RTL retune control on 127.0.0.1:<port>\n");
     printf("      --rtl-udp-control-bind <ipv4>  Bind RTL retune control to this numeric IPv4 address\n");
+    printf("      --api <port>           Enable the third-party TCP JSON control/telemetry API on 127.0.0.1:<port>\n");
+    printf("      --api-bind <ipv4>      Bind the API to this numeric IPv4 address (token required off-loopback)\n");
+    printf("      --api-token <secret>   Require this shared-secret token on API connections\n");
+    printf("      --api-token-file <p>   Read the API token from this file (newline trimmed)\n");
     printf("      --iq-capture <path>    Write I/Q capture data + metadata sidecar\n");
     printf("                             (.iq is added when <path> has no extension)\n");
     printf("      --iq-capture-format <fmt>  Capture format (cu8|cf32)\n");

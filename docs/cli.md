@@ -1477,6 +1477,14 @@ Out-of-range decimal keys are rejected without changing the installed key.
 
 These environment variables provide fine‑grained control for power users.
 
+Control/telemetry API
+
+- `DSD_NEO_API_PORT=<port>` — enable the TCP JSON API (same as `--api`); `0` disables
+- `DSD_NEO_API_BIND=<ipv4>` — bind address; a non‑loopback bind requires a token
+- `DSD_NEO_API_TOKEN=<secret>` — shared-secret token for API connections
+- `DSD_NEO_API_TOKEN_FILE=<path>` — read the token from a file
+- Full protocol, telemetry and command reference: [docs/api.md](api.md)
+
 Auto‑PPM (RTL‑SDR)
 
 - `DSD_NEO_AUTO_PPM=1` — enable carrier/error-based drift correction with spectrum fallback

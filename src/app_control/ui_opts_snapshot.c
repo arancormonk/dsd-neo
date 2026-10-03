@@ -5,6 +5,7 @@
 
 #include <dsd-neo/app_control/notification_status.h>
 #include <dsd-neo/app_control/snapshot.h>
+#include <dsd-neo/app_control/telemetry_observers.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/threading.h>
@@ -48,6 +49,8 @@ dsd_app_telemetry_publish_opts_snapshot(const dsd_opts* opts) {
     ensure_opts_mu_init();
     dsd_mutex_lock(&g_opts_mu);
     DSD_MEMCPY(&g_pub_opts, opts, sizeof(dsd_opts));
+    /* The API shared secret must never reach a snapshot consumer. */
+    DSD_SECURE_ZERO(g_pub_opts.api_token, sizeof g_pub_opts.api_token);
     g_pub_opts_seq++;
     g_have_opts = 1;
     dsd_mutex_unlock(&g_opts_mu);
@@ -55,6 +58,7 @@ dsd_app_telemetry_publish_opts_snapshot(const dsd_opts* opts) {
        publisher takes its own, and nesting the two would put a lock-order edge between
        the snapshot path and a JNI poll. */
     dsd_app_notification_publish_opts(opts);
+    dsd_app_telemetry_notify_opts(opts);
 }
 
 const dsd_opts*

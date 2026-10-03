@@ -2,6 +2,9 @@
 /build/
 /vcpkg_installed/
 
+# API shared-secret token files (never commit these)
+*.token
+
 # Tool caches
 /.cache/
 /.ccache/
