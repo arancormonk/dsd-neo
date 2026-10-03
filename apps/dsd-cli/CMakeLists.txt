@@ -47,6 +47,22 @@ if(BUILD_TESTING)
             DSD_NEO_CLI_SMOKE_MODE=invalid-option -P
             ${PROJECT_SOURCE_DIR}/tests/cmake/RunCliSmoke.cmake
     )
+
+    add_test(
+        NAME CLI_INVALID_SHORT_OPTION_SMOKE
+        COMMAND
+            ${CMAKE_COMMAND} -D DSD_NEO_CLI=$<TARGET_FILE:dsd-neo> -D
+            DSD_NEO_CLI_SMOKE_MODE=invalid-short-option -P
+            ${PROJECT_SOURCE_DIR}/tests/cmake/RunCliSmoke.cmake
+    )
+
+    add_test(
+        NAME CLI_MISSING_ARGUMENT_SMOKE
+        COMMAND
+            ${CMAKE_COMMAND} -D DSD_NEO_CLI=$<TARGET_FILE:dsd-neo> -D
+            DSD_NEO_CLI_SMOKE_MODE=missing-argument -P
+            ${PROJECT_SOURCE_DIR}/tests/cmake/RunCliSmoke.cmake
+    )
 endif()
 
 ## Fast-math now configured globally when enabled

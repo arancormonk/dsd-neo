@@ -24,6 +24,7 @@
 #include <dsd-neo/dsp/ted.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/mem.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -33,13 +34,44 @@
 
 static demod_state*
 alloc_state(void) {
-    demod_state* s = (demod_state*)malloc(sizeof(demod_state));
+    demod_state* s = static_cast<demod_state*>(dsd_neo_aligned_malloc(sizeof(demod_state)));
     if (s) {
         DSD_MEMSET(s, 0, sizeof(*s));
         /* Initialize TED state */
         ted_init_state(&s->ted_state);
     }
     return s;
+}
+
+/* Floats are written and checked through their bits, in memory: a fast-math build of this test may fold
+ * std::isfinite() to true and treat an Inf or NaN float value as impossible, but it cannot do either to stored bits. */
+static const uint32_t kBitsQuietNan = 0x7FC00000u;
+static const uint32_t kBitsPosInf = 0x7F800000u;
+static const uint32_t kBitsNegInf = 0xFF800000u;
+static const uint32_t kBitsTwoPow60 = 0x5D800000u;      /* 2^60: the smallest magnitude the loops reject */
+static const uint32_t kBitsBelowTwoPow60 = 0x5D7FFFFFu; /* the largest float below 2^60 */
+static const uint32_t kBitsOneE30 = 0x7149F2CAu;        /* 1e30 */
+
+static void
+store_float_bits(float* dst, uint32_t bits) {
+    DSD_MEMCPY(dst, &bits, sizeof(bits));
+}
+
+static int
+stored_float_is_finite(const float* value) {
+    uint32_t bits = 0;
+    DSD_MEMCPY(&bits, value, sizeof(bits));
+    return (bits & 0x7F800000u) != 0x7F800000u;
+}
+
+static int
+stored_floats_are_finite(const float* values, size_t count) {
+    for (size_t k = 0; k < count; k++) {
+        if (!stored_float_is_finite(&values[k])) {
+            return 0;
+        }
+    }
+    return 1;
 }
 
 static void
@@ -105,7 +137,7 @@ test_basic_passthrough(void) {
     if (out_pairs < 1) {
         DSD_FPRINTF(stderr, "BASIC: no output symbols produced (lp_len=%d)\n", s->lp_len);
         free(buf);
-        free(s);
+        dsd_neo_aligned_free(s);
         return 1;
     }
 
@@ -113,7 +145,7 @@ test_basic_passthrough(void) {
     if (!s->costas_state.initialized) {
         DSD_FPRINTF(stderr, "BASIC: Costas loop not initialized\n");
         free(buf);
-        free(s);
+        dsd_neo_aligned_free(s);
         return 1;
     }
 
@@ -128,12 +160,12 @@ test_basic_passthrough(void) {
     if (avg_mag < 0.01f || avg_mag > 5.0f) {
         DSD_FPRINTF(stderr, "BASIC: output magnitude out of range (avg_mag=%f)\n", avg_mag);
         free(buf);
-        free(s);
+        dsd_neo_aligned_free(s);
         return 1;
     }
 
     free(buf);
-    free(s);
+    dsd_neo_aligned_free(s);
     return 0;
 }
 
@@ -195,7 +227,7 @@ test_cfo_tracking(void) {
     }
 
     free(buf);
-    free(s);
+    dsd_neo_aligned_free(s);
     return 0;
 }
 
@@ -226,12 +258,12 @@ test_disabled_when_not_cqpsk(void) {
     for (int i = 0; i < 100; i++) {
         if (buf[i] < ref[i] || ref[i] < buf[i]) {
             DSD_FPRINTF(stderr, "DISABLED: buffer modified when cqpsk_enable=0\n");
-            free(s);
+            dsd_neo_aligned_free(s);
             return 1;
         }
     }
 
-    free(s);
+    dsd_neo_aligned_free(s);
     return 0;
 }
 
@@ -279,7 +311,7 @@ test_diff_phasor_correctness(void) {
     float ang0 = atan2f(buf[1], buf[0]);
     if (fabsf(ang0) > 0.1f) {
         DSD_FPRINTF(stderr, "DIFF: sample 0 angle wrong (ang=%f, expected ~0)\n", ang0);
-        free(s);
+        dsd_neo_aligned_free(s);
         return 1;
     }
 
@@ -288,11 +320,11 @@ test_diff_phasor_correctness(void) {
     float target1 = 1.5708f; /* pi/2 */
     if (fabsf(ang1 - target1) > 0.1f) {
         DSD_FPRINTF(stderr, "DIFF: sample 1 angle wrong (ang=%f, expected ~90°)\n", ang1);
-        free(s);
+        dsd_neo_aligned_free(s);
         return 1;
     }
 
-    free(s);
+    dsd_neo_aligned_free(s);
     return 0;
 }
 
@@ -340,7 +372,7 @@ test_costas_normalizes_reliable_magnitude(void) {
         float mag = sqrtf(I * I + Q * Q);
         if (fabsf(mag - target) > 0.0001f) {
             DSD_FPRINTF(stderr, "COSTAS NORM: sample %d magnitude %f expected %f\n", k, mag, target);
-            free(s);
+            dsd_neo_aligned_free(s);
             return 1;
         }
     }
@@ -348,11 +380,11 @@ test_costas_normalizes_reliable_magnitude(void) {
     float ang1 = atan2f(buf[3], buf[2]);
     if (fabsf(ang1 - 1.5708f) > 0.1f) {
         DSD_FPRINTF(stderr, "COSTAS NORM: sample 1 phase changed unexpectedly (ang=%f)\n", ang1);
-        free(s);
+        dsd_neo_aligned_free(s);
         return 1;
     }
 
-    free(s);
+    dsd_neo_aligned_free(s);
     return 0;
 }
 
@@ -390,7 +422,7 @@ test_costas_deep_fade_does_not_boost_or_train(void) {
         float mag = sqrtf(I * I + Q * Q);
         if (mag > 0.05f) {
             DSD_FPRINTF(stderr, "COSTAS FADE: sample %d magnitude %f was boosted\n", k, mag);
-            free(s);
+            dsd_neo_aligned_free(s);
             return 1;
         }
     }
@@ -399,18 +431,18 @@ test_costas_deep_fade_does_not_boost_or_train(void) {
         || fabsf(s->costas_state.error_smooth) > 1.0e-7f) {
         DSD_FPRINTF(stderr, "COSTAS FADE: loop trained on deep fade phase=%f freq=%f smooth=%f\n",
                     s->costas_state.phase, s->costas_state.freq, s->costas_state.error_smooth);
-        free(s);
+        dsd_neo_aligned_free(s);
         return 1;
     }
     if (s->costas_err_avg_q14 != 0 || s->costas_err_raw_avg_q14 != 0 || s->costas_conf_avg_q14 != 0
         || s->costas_zero_conf_pct != 100) {
         DSD_FPRINTF(stderr, "COSTAS FADE: metrics smooth=%d raw=%d conf=%d zero=%d\n", s->costas_err_avg_q14,
                     s->costas_err_raw_avg_q14, s->costas_conf_avg_q14, s->costas_zero_conf_pct);
-        free(s);
+        dsd_neo_aligned_free(s);
         return 1;
     }
 
-    free(s);
+    dsd_neo_aligned_free(s);
     return 0;
 }
 
@@ -440,7 +472,7 @@ run_single_costas_update(float mag, float* out_freq) {
     if (out_freq) {
         *out_freq = s->costas_state.freq;
     }
-    free(s);
+    dsd_neo_aligned_free(s);
     return phase;
 }
 
@@ -515,7 +547,7 @@ test_costas_smooths_error_step(void) {
         DSD_FPRINTF(stderr, "COSTAS SMOOTH: err=%f smooth=%f freq=%f phase=%f expected err=%f freq=%f phase=%f\n",
                     s->costas_state.error, s->costas_state.error_smooth, s->costas_state.freq, s->costas_state.phase,
                     expected_error, expected_freq, expected_phase);
-        free(s);
+        dsd_neo_aligned_free(s);
         return 1;
     }
     int expected_raw_q14 = (int)lrintf(fabsf(raw_error) * 16384.0f);
@@ -525,11 +557,11 @@ test_costas_smooths_error_step(void) {
         DSD_FPRINTF(stderr, "COSTAS SMOOTH: metrics smooth=%d raw=%d conf=%d zero=%d expected smooth=%d raw=%d\n",
                     s->costas_err_avg_q14, s->costas_err_raw_avg_q14, s->costas_conf_avg_q14, s->costas_zero_conf_pct,
                     expected_smooth_q14, expected_raw_q14);
-        free(s);
+        dsd_neo_aligned_free(s);
         return 1;
     }
 
-    free(s);
+    dsd_neo_aligned_free(s);
     return 0;
 }
 
@@ -578,11 +610,11 @@ test_costas_adapts_smoothing_for_phase_kick(void) {
                     "COSTAS ADAPT: err=%f smooth=%f freq=%f phase=%f expected err=%f freq=%f phase=%f fixed=%f\n",
                     s->costas_state.error, s->costas_state.error_smooth, s->costas_state.freq, s->costas_state.phase,
                     expected_error, expected_freq, expected_phase, fixed_error);
-        free(s);
+        dsd_neo_aligned_free(s);
         return 1;
     }
 
-    free(s);
+    dsd_neo_aligned_free(s);
     return 0;
 }
 
@@ -627,7 +659,7 @@ test_ted_initialization(void) {
     if (s->ted_state.omega != 0.0f) {
         DSD_FPRINTF(stderr, "TED: omega should start at 0 before call\n");
         free(buf);
-        free(s);
+        dsd_neo_aligned_free(s);
         return 1;
     }
 
@@ -637,19 +669,19 @@ test_ted_initialization(void) {
     if (s->ted_state.omega < 1.0f) {
         DSD_FPRINTF(stderr, "TED: omega not initialized after call (omega=%f)\n", s->ted_state.omega);
         free(buf);
-        free(s);
+        dsd_neo_aligned_free(s);
         return 1;
     }
 
     if (s->ted_state.twice_sps < 2) {
         DSD_FPRINTF(stderr, "TED: twice_sps not initialized (twice_sps=%d)\n", s->ted_state.twice_sps);
         free(buf);
-        free(s);
+        dsd_neo_aligned_free(s);
         return 1;
     }
 
     free(buf);
-    free(s);
+    dsd_neo_aligned_free(s);
     return 0;
 }
 
@@ -697,12 +729,12 @@ test_gardner_omega_absolute_clamp_p25p2(void) {
     if (omega_delta > 0.0021f) {
         DSD_FPRINTF(stderr, "GARDNER: omega delta %f exceeds OP25 absolute clamp\n", omega_delta);
         free(buf);
-        free(s);
+        dsd_neo_aligned_free(s);
         return 1;
     }
 
     free(buf);
-    free(s);
+    dsd_neo_aligned_free(s);
     return 0;
 }
 
@@ -745,12 +777,12 @@ expect_p25p2_tracking_gain_after_lock(const char* label, float ted_gain, int ted
     if (fabsf(s->ted_effective_gain - expected_gain) > 0.0001f) {
         DSD_FPRINTF(stderr, "%s: got effective TED gain %.6f want %.6f\n", label, s->ted_effective_gain, expected_gain);
         free(buf);
-        free(s);
+        dsd_neo_aligned_free(s);
         return 1;
     }
 
     free(buf);
-    free(s);
+    dsd_neo_aligned_free(s);
     return 0;
 }
 
@@ -795,11 +827,11 @@ test_diff_phasor_short_block_preserves_state(void) {
     if (buf[0] != 0.25f || buf[1] != -0.5f || s->cqpsk_diff_prev_r != 0.4f || s->cqpsk_diff_prev_j != -0.7f) {
         DSD_FPRINTF(stderr, "DIFF GUARD: short block changed buf=(%f,%f) prev=(%f,%f)\n", buf[0], buf[1],
                     s->cqpsk_diff_prev_r, s->cqpsk_diff_prev_j);
-        free(s);
+        dsd_neo_aligned_free(s);
         return 1;
     }
 
-    free(s);
+    dsd_neo_aligned_free(s);
     return 0;
 }
 
@@ -831,7 +863,7 @@ test_costas_clamps_initial_phase_and_frequency(void) {
         || !std::isfinite(buf[0]) || !std::isfinite(buf[1])) {
         DSD_FPRINTF(stderr, "COSTAS CLAMP: high clamp phase=%f freq=%f out=(%f,%f)\n", s->costas_state.phase,
                     s->costas_state.freq, buf[0], buf[1]);
-        free(s);
+        dsd_neo_aligned_free(s);
         return 1;
     }
 
@@ -845,11 +877,11 @@ test_costas_clamps_initial_phase_and_frequency(void) {
 
     if (fabsf(s->costas_state.phase + (float)(M_PI / 2.0)) > 0.001f || s->costas_state.freq != -1.0f) {
         DSD_FPRINTF(stderr, "COSTAS CLAMP: low clamp phase=%f freq=%f\n", s->costas_state.phase, s->costas_state.freq);
-        free(s);
+        dsd_neo_aligned_free(s);
         return 1;
     }
 
-    free(s);
+    dsd_neo_aligned_free(s);
     return 0;
 }
 
@@ -883,12 +915,171 @@ test_costas_nonfinite_sample_is_rejected(void) {
         DSD_FPRINTF(stderr, "COSTAS NONFINITE: out=(%f,%f) err=%f smooth=%f conf=%d zero=%d\n", buf[0], buf[1],
                     s->costas_state.error, s->costas_state.error_smooth, s->costas_conf_avg_q14,
                     s->costas_zero_conf_pct);
-        free(s);
+        dsd_neo_aligned_free(s);
         return 1;
     }
 
-    free(s);
+    dsd_neo_aligned_free(s);
     return 0;
+}
+
+static demod_state*
+costas_guard_state(float* buf, int pairs) {
+    demod_state* s = alloc_state();
+    if (s) {
+        s->lowpassed = buf;
+        s->lp_len = pairs * 2;
+        s->cqpsk_enable = 1;
+        s->costas_state.initialized = 1;
+        s->costas_state.phase = 0.2f;
+        s->costas_state.freq = 0.01f;
+        s->costas_state.alpha = 0.04f;
+        s->costas_state.beta = 0.0002f;
+        s->costas_state.max_freq = 1.0f;
+        s->costas_state.min_freq = -1.0f;
+    }
+    return s;
+}
+
+static int
+costas_guard_states_match(const char* label, const demod_state* got, const demod_state* want) {
+    const dsd_costas_loop_state_t* g = &got->costas_state;
+    const dsd_costas_loop_state_t* w = &want->costas_state;
+    if (!stored_float_is_finite(&g->phase) || !stored_float_is_finite(&g->freq) || !stored_float_is_finite(&g->error)
+        || !stored_float_is_finite(&g->error_smooth)) {
+        DSD_FPRINTF(stderr, "COSTAS GUARD %s: loop state is not finite\n", label);
+        return 1;
+    }
+    if (!(fabsf(g->phase - w->phase) <= 0.0f) || !(fabsf(g->freq - w->freq) <= 0.0f)
+        || !(fabsf(g->error - w->error) <= 0.0f) || !(fabsf(g->error_smooth - w->error_smooth) <= 0.0f)
+        || got->costas_err_avg_q14 != want->costas_err_avg_q14
+        || got->costas_err_raw_avg_q14 != want->costas_err_raw_avg_q14
+        || got->costas_conf_avg_q14 != want->costas_conf_avg_q14
+        || got->costas_zero_conf_pct != want->costas_zero_conf_pct) {
+        DSD_FPRINTF(
+            stderr, "COSTAS GUARD %s: phase %f/%f freq %f/%f err %f/%f smooth %f/%f metrics %d/%d %d/%d %d/%d %d/%d\n",
+            label, (double)g->phase, (double)w->phase, (double)g->freq, (double)w->freq, (double)g->error,
+            (double)w->error, (double)g->error_smooth, (double)w->error_smooth, got->costas_err_avg_q14,
+            want->costas_err_avg_q14, got->costas_err_raw_avg_q14, want->costas_err_raw_avg_q14,
+            got->costas_conf_avg_q14, want->costas_conf_avg_q14, got->costas_zero_conf_pct, want->costas_zero_conf_pct);
+        return 1;
+    }
+    return 0;
+}
+
+/*
+ * Test: a Costas sample with a NaN, an infinite or a 2^60-or-larger component,
+ * amid good ones, goes out as 0 and moves the loop exactly as a zero sample
+ * would (no training, error smoothing restarted), and the largest float below
+ * 2^60 is still normalized.
+ */
+static int
+test_costas_out_of_range_samples_act_as_zero(void) {
+    enum { kPairs = 7 };
+
+    static const float good[kPairs * 2] = {0.6f, 0.6f, 0.0f, 0.5f, 0.5f, 0.0f, 0.0f,
+                                           0.5f, 0.5f, 0.0f, 0.5f, 0.0f, 0.6f, -0.6f};
+    static float buf[kPairs * 2];
+    static float ref[kPairs * 2];
+    DSD_MEMCPY(buf, good, sizeof(buf));
+    DSD_MEMCPY(ref, good, sizeof(ref));
+    /* Pairs 1 to 4, (NaN, 0.5), (0.5, -Inf), (2^60, 0.5) and (0.5, 1e30), are out of range; pair 5,
+     * (0.5, -(2^60 - ulp)), is in. The reference zeroes pairs 1 to 4. */
+    store_float_bits(&buf[2], kBitsQuietNan);
+    store_float_bits(&buf[5], kBitsNegInf);
+    store_float_bits(&buf[6], kBitsTwoPow60);
+    store_float_bits(&buf[9], kBitsOneE30);
+    store_float_bits(&buf[11], kBitsBelowTwoPow60 | 0x80000000u);
+    store_float_bits(&ref[11], kBitsBelowTwoPow60 | 0x80000000u);
+    for (int k = 2; k < 10; k++) {
+        ref[k] = 0.0f;
+    }
+
+    demod_state* s = costas_guard_state(buf, kPairs);
+    demod_state* r = costas_guard_state(ref, kPairs);
+    if (!s || !r) {
+        DSD_FPRINTF(stderr, "alloc failed\n");
+        dsd_neo_aligned_free(s);
+        dsd_neo_aligned_free(r);
+        return 1;
+    }
+    op25_costas_loop_cc(s);
+    op25_costas_loop_cc(r);
+
+    int rc = costas_guard_states_match("mixed block", s, r);
+    if (!stored_floats_are_finite(buf, sizeof(buf) / sizeof(buf[0]))) {
+        DSD_FPRINTF(stderr, "COSTAS GUARD: output is not finite\n");
+        rc = 1;
+    }
+    for (int k = 2; k < 10 && rc == 0; k++) {
+        if (fabsf(buf[k]) > 0.0f) {
+            DSD_FPRINTF(stderr, "COSTAS GUARD: rejected output [%d] = %f, want 0\n", k, (double)buf[k]);
+            rc = 1;
+        }
+    }
+    for (int k = 0; k < kPairs * 2 && rc == 0; k++) {
+        if (!(fabsf(buf[k] - ref[k]) <= 0.0f)) {
+            DSD_FPRINTF(stderr, "COSTAS GUARD: output [%d] = %f, zero-sample reference %f\n", k, (double)buf[k],
+                        (double)ref[k]);
+            rc = 1;
+        }
+    }
+    const float mag5 = sqrtf(buf[10] * buf[10] + buf[11] * buf[11]);
+    if (rc == 0 && !(fabsf(mag5 - 0.85f * 0.85f) <= 1.0e-4f)) {
+        DSD_FPRINTF(stderr, "COSTAS GUARD: in-range pair 5 magnitude %f, want %f\n", (double)mag5, 0.85 * 0.85);
+        rc = 1;
+    }
+    if (rc == 0 && s->costas_zero_conf_pct != 57) { /* 4 of 7 */
+        DSD_FPRINTF(stderr, "COSTAS GUARD: zero-confidence %d%%, want 57%%\n", s->costas_zero_conf_pct);
+        rc = 1;
+    }
+
+    dsd_neo_aligned_free(s);
+    dsd_neo_aligned_free(r);
+    return rc;
+}
+
+/*
+ * Test: a non-finite persisted Costas phase or smoothed error restarts at 0,
+ * exactly as a loop whose state holds 0 there.
+ */
+static int
+test_costas_nonfinite_state_restarts_at_zero(void) {
+    static const uint32_t phase_bits[2] = {kBitsQuietNan, kBitsNegInf};
+    static const uint32_t smooth_bits[2] = {kBitsPosInf, kBitsQuietNan};
+    int rc = 0;
+    for (int v = 0; v < 2 && rc == 0; v++) {
+        static float buf[4];
+        static float ref[4];
+        static const float in[4] = {0.5f, 0.45f, -0.4f, 0.55f};
+        DSD_MEMCPY(buf, in, sizeof(buf));
+        DSD_MEMCPY(ref, in, sizeof(ref));
+        demod_state* s = costas_guard_state(buf, 2);
+        demod_state* r = costas_guard_state(ref, 2);
+        if (!s || !r) {
+            DSD_FPRINTF(stderr, "alloc failed\n");
+            dsd_neo_aligned_free(s);
+            dsd_neo_aligned_free(r);
+            return 1;
+        }
+        store_float_bits(&s->costas_state.phase, phase_bits[v]);
+        store_float_bits(&s->costas_state.error_smooth, smooth_bits[v]);
+        r->costas_state.phase = 0.0f;
+        r->costas_state.error_smooth = 0.0f;
+        op25_costas_loop_cc(s);
+        op25_costas_loop_cc(r);
+        rc = costas_guard_states_match(v == 0 ? "NaN phase, Inf smooth" : "-Inf phase, NaN smooth", s, r);
+        for (int k = 0; k < 4 && rc == 0; k++) {
+            if (!stored_float_is_finite(&buf[k]) || !(fabsf(buf[k] - ref[k]) <= 0.0f)) {
+                DSD_FPRINTF(stderr, "COSTAS GUARD: state variant %d output [%d] = %f, want %f\n", v, k, (double)buf[k],
+                            (double)ref[k]);
+                rc = 1;
+            }
+        }
+        dsd_neo_aligned_free(s);
+        dsd_neo_aligned_free(r);
+    }
+    return rc;
 }
 
 /*
@@ -917,11 +1108,11 @@ test_gardner_oversized_sps_disables_output(void) {
     if (s->lp_len != 0 || s->ted_state.twice_sps != 0 || s->ted_state.omega_mid != 200.0f) {
         DSD_FPRINTF(stderr, "GARDNER OVERSIZE: lp_len=%d twice_sps=%d omega_mid=%f\n", s->lp_len,
                     s->ted_state.twice_sps, s->ted_state.omega_mid);
-        free(s);
+        dsd_neo_aligned_free(s);
         return 1;
     }
 
-    free(s);
+    dsd_neo_aligned_free(s);
     return 0;
 }
 
@@ -1140,11 +1331,66 @@ test_gardner_short_blocks_match_whole_stream(void) {
                 }
                 failures += cold_bad;
                 failures += gardner_split_matches(label, want, &want_ted, got, &s->ted_state);
-                free(s);
+                dsd_neo_aligned_free(s);
             }
         }
     }
     return failures ? 1 : 0;
+}
+
+/*
+ * Test: Gardner takes a NaN, an infinite or a 2^60-or-larger sample
+ * component as 0: the symbols and the timing state match those of the same
+ * stream with those components zeroed, and stay finite.
+ */
+static int
+test_gardner_out_of_range_samples_enter_as_zero(void) {
+    dsd_unsetenv("DSD_NEO_TED_GAIN");
+    dsd_neo_config_init();
+
+    std::vector<float> stream = gardner_split_stream();
+    std::vector<float> zeroed = stream;
+
+    static const struct {
+        int index; /* float index into the interleaved stream */
+        uint32_t bits;
+    } kBad[] = {
+        {200, kBitsQuietNan}, {203, kBitsPosInf},   {500, kBitsNegInf},
+        {501, kBitsQuietNan}, {802, kBitsTwoPow60}, {1201, kBitsOneE30 | 0x80000000u},
+    };
+
+    for (const auto& bad : kBad) {
+        store_float_bits(&stream[(size_t)bad.index], bad.bits);
+        zeroed[(size_t)bad.index] = 0.0f;
+    }
+
+    demod_state* s = gardner_split_state();
+    demod_state* r = gardner_split_state();
+    if (!s || !r) {
+        DSD_FPRINTF(stderr, "state alloc failed\n");
+        dsd_neo_aligned_free(s);
+        dsd_neo_aligned_free(r);
+        return 1;
+    }
+    std::vector<float> got;
+    std::vector<float> want;
+    gardner_feed_block(s, stream.data(), kGardnerStreamPairs, GARDNER_FEED_HEAP, &got);
+    gardner_feed_block(r, zeroed.data(), kGardnerStreamPairs, GARDNER_FEED_HEAP, &want);
+
+    int rc = 0;
+    const ted_state_t* ted = &s->ted_state;
+    if (got.empty() || !stored_floats_are_finite(got.data(), got.size()) || !stored_float_is_finite(&ted->mu)
+        || !stored_float_is_finite(&ted->omega) || !stored_float_is_finite(&ted->last_r)
+        || !stored_float_is_finite(&ted->last_j) || !stored_float_is_finite(&ted->lock_accum)) {
+        DSD_FPRINTF(stderr, "GARDNER GUARD: %zu symbols or the timing state not finite\n", got.size() / 2);
+        rc = 1;
+    }
+    if (rc == 0) {
+        rc = gardner_split_matches("out-of-range samples", want, &r->ted_state, got, ted);
+    }
+    dsd_neo_aligned_free(s);
+    dsd_neo_aligned_free(r);
+    return rc;
 }
 
 /*
@@ -1181,16 +1427,16 @@ test_fll_band_edge_processes_block(void) {
         DSD_FPRINTF(stderr, "FLL PROCESS: initialized=%d sps=%d taps=%d delay=%d/%d phase=%f freq=%f min=%f max=%f\n",
                     f->initialized, f->sps, f->n_taps, f->delay_idx, expected_delay, f->phase, f->freq, f->min_freq,
                     f->max_freq);
-        free(s);
+        dsd_neo_aligned_free(s);
         return 1;
     }
     if (f->delay_r[0] == 0.0f && f->delay_i[0] == 0.0f) {
         DSD_FPRINTF(stderr, "FLL PROCESS: delay line was not populated\n");
-        free(s);
+        dsd_neo_aligned_free(s);
         return 1;
     }
 
-    free(s);
+    dsd_neo_aligned_free(s);
     return 0;
 }
 
@@ -1246,10 +1492,10 @@ test_fll_band_edge_redesigns_inconsistent_delay_line(void) {
         if (f->n_taps != 11 || f->delay_idx != pairs % 11 || !std::isfinite(f->freq)) {
             DSD_FPRINTF(stderr, "FLL INCONSISTENT (%s): taps=%d delay=%d (want 11 and %d) freq=%f\n", c.name, f->n_taps,
                         f->delay_idx, pairs % 11, f->freq);
-            free(s);
+            dsd_neo_aligned_free(s);
             return 1;
         }
-        free(s);
+        dsd_neo_aligned_free(s);
     }
     return 0;
 }
@@ -1304,6 +1550,12 @@ main(void) {
     if (test_costas_nonfinite_sample_is_rejected() != 0) {
         return 1;
     }
+    if (test_costas_out_of_range_samples_act_as_zero() != 0) {
+        return 1;
+    }
+    if (test_costas_nonfinite_state_restarts_at_zero() != 0) {
+        return 1;
+    }
     if (test_gardner_oversized_sps_disables_output() != 0) {
         return 1;
     }
@@ -1314,6 +1566,9 @@ main(void) {
         return 1;
     }
     if (test_gardner_short_blocks_match_whole_stream() != 0) {
+        return 1;
+    }
+    if (test_gardner_out_of_range_samples_enter_as_zero() != 0) {
         return 1;
     }
     return 0;

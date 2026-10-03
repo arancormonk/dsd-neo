@@ -15,9 +15,10 @@ set -euo pipefail
 
 ROOT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd)
 
+# shellcheck source=tests/tools/missing_tool.sh
+source "$(dirname -- "$0")/missing_tool.sh"
 if ! command -v git > /dev/null 2>&1 || ! command -v python3 > /dev/null 2>&1; then
-  echo "SKIP: git or python3 not available"
-  exit 0
+  missing_tool "git or python3 not available"
 fi
 
 WORK=$(mktemp -d)

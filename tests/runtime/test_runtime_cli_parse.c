@@ -8012,22 +8012,28 @@ test_tone_filter_warns_on_scan_lists(void) {
     char with_blank[256];
     char with_am[256];
     char header_only[256];
-    if (test_create_temp_ini_with_contents("channel,frequency_hz\n1,154430000\n2,155475000\n", untyped, sizeof untyped)
-            != 0
-        || test_create_temp_ini_with_contents("channel,frequency_hz,mode\n1,461000000,dmr\n2,851012500,p25\n", digital,
-                                              sizeof digital)
-               != 0
-        || test_create_temp_ini_with_contents("channel,frequency_hz,mode\n1,461000000,dmr\n2,154430000,nfm\n", with_nfm,
-                                              sizeof with_nfm)
-               != 0
-        || test_create_temp_ini_with_contents("channel,frequency_hz,mode\n1,461000000,dmr\n2,154430000,\n", with_blank,
-                                              sizeof with_blank)
-               != 0
-        || test_create_temp_ini_with_contents("channel,frequency_hz,mode\n1,461000000,dmr\n2,118300000,am\n", with_am,
-                                              sizeof with_am)
-               != 0
-        || test_create_temp_ini_with_contents("channel,frequency_hz,mode\n", header_only, sizeof header_only) != 0) {
-        return 1;
+
+    const struct {
+        char* path;
+        const char* contents;
+    } lists[] = {
+        {untyped, "channel,frequency_hz\n1,154430000\n2,155475000\n"},
+        {digital, "channel,frequency_hz,mode\n1,461000000,dmr\n2,851012500,p25\n"},
+        {with_nfm, "channel,frequency_hz,mode\n1,461000000,dmr\n2,154430000,nfm\n"},
+        {with_blank, "channel,frequency_hz,mode\n1,461000000,dmr\n2,154430000,\n"},
+        {with_am, "channel,frequency_hz,mode\n1,461000000,dmr\n2,118300000,am\n"},
+        {header_only, "channel,frequency_hz,mode\n"},
+    };
+
+    for (size_t i = 0; i < sizeof lists / sizeof lists[0]; i++) {
+        if (test_create_temp_ini_with_contents(lists[i].contents, lists[i].path, sizeof untyped) != 0) {
+            /* Remove the lists already made, so later tests do not trip over them. */
+            DSD_FPRINTF(stderr, "failed to create temp scan list %zu\n", i);
+            for (size_t made = 0; made < i; made++) {
+                (void)remove(lists[made].path);
+            }
+            return 1;
+        }
     }
 
     const struct {
@@ -8073,12 +8079,9 @@ test_tone_filter_warns_on_scan_lists(void) {
         }
         free_tone_parse(&p);
     }
-    (void)remove(untyped);
-    (void)remove(digital);
-    (void)remove(with_nfm);
-    (void)remove(with_blank);
-    (void)remove(with_am);
-    (void)remove(header_only);
+    for (size_t i = 0; i < sizeof lists / sizeof lists[0]; i++) {
+        (void)remove(lists[i].path);
+    }
     return test_rc;
 }
 

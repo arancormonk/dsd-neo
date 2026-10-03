@@ -72,6 +72,7 @@
 #include "dsd-neo/dsp/fsk_modem.h"
 #include "dsd-neo/platform/platform.h"
 #include "rtl_auto_ppm.h"
+#include "rtl_finite.h"
 #include "rtl_perf.h"
 #include "rtl_ppm_request.h"
 #include "rtl_replay_device.h"
@@ -1650,11 +1651,11 @@ fll_retune_seed_cache_clear(void) {
 
 static void
 fll_retune_seed_cache_store(uint32_t center_freq_hz, int rate_out_hz, float normalized_freq) {
-    if (center_freq_hz == 0U || rate_out_hz <= 0 || !std::isfinite(normalized_freq)) {
+    if (center_freq_hz == 0U || rate_out_hz <= 0 || !dsd::io::radio::rtl_is_finite(normalized_freq)) {
         return;
     }
     const float offset_hz = normalized_freq * ((float)rate_out_hz / 6.28318530717958647692f);
-    if (!std::isfinite(offset_hz)) {
+    if (!dsd::io::radio::rtl_is_finite(offset_hz)) {
         return;
     }
 
@@ -1682,12 +1683,12 @@ fll_retune_seed_cache_lookup(uint32_t center_freq_hz, int rate_out_hz, float* ou
         return 0;
     }
     for (FllRetuneSeed& seed : controller.fll_retune_seeds) {
-        if (seed.center_freq_hz != center_freq_hz || !std::isfinite(seed.offset_hz)) {
+        if (seed.center_freq_hz != center_freq_hz || !dsd::io::radio::rtl_is_finite(seed.offset_hz)) {
             continue;
         }
         *out_normalized_freq = seed.offset_hz * (6.28318530717958647692f / (float)rate_out_hz);
         seed.last_used = ++controller.fll_retune_seed_clock;
-        return std::isfinite(*out_normalized_freq) ? 1 : 0;
+        return dsd::io::radio::rtl_is_finite(*out_normalized_freq) ? 1 : 0;
     }
     return 0;
 }
@@ -3181,6 +3182,10 @@ demod_snr_qpsk_publish(const struct demod_state* d, double ratio, DemodSnrUpdate
     double snr_raw = 10.0 * log10(ratio);
     double bias = dsd_snr_bias_evm_db(d->rate_out, d->ted_sps, d->channel_lpf_profile);
     double snr = snr_raw - bias;
+    /* A NaN or infinite I/Q sample makes the ratio non-finite; publishing it would leave the EMA stuck there. */
+    if (!dsd::io::radio::rtl_is_finite(snr)) {
+        return;
+    }
     double ema = g_snr_ema_qpsk.load(std::memory_order_relaxed);
     ema = (ema < -50.0) ? snr : (0.5 * ema + 0.5 * snr);
     g_snr_ema_qpsk.store(ema, std::memory_order_relaxed);
@@ -3192,7 +3197,7 @@ demod_snr_qpsk_publish(const struct demod_state* d, double ratio, DemodSnrUpdate
 
 static int
 demod_snr_valid(double snr_db) {
-    return std::isfinite(snr_db) && snr_db > -50.0;
+    return dsd::io::radio::rtl_is_finite(snr_db) && snr_db > -50.0;
 }
 
 static void
@@ -3496,7 +3501,7 @@ demod_snr_fallback_c4fm(DemodMetricsState* st, const DemodSnrUpdateFlags* flags)
         return;
     }
     double fb = rtl_stream_estimate_snr_c4fm_eye();
-    if (fb > -50.0) {
+    if (demod_snr_valid(fb)) {
         double prev = g_snr_c4fm_db.load(std::memory_order_relaxed);
         double blended = (prev < -50.0) ? fb : (0.8 * prev + 0.2 * fb);
         g_snr_c4fm_db.store(blended, std::memory_order_relaxed);
@@ -3519,7 +3524,7 @@ demod_snr_fallback_qpsk(DemodMetricsState* st, const DemodSnrUpdateFlags* flags)
         return;
     }
     double fb = rtl_stream_estimate_snr_qpsk_const();
-    if (fb > -50.0) {
+    if (demod_snr_valid(fb)) {
         double prev = g_snr_qpsk_db.load(std::memory_order_relaxed);
         double alpha = (prev < -50.0) ? 1.0 : 0.5;
         double blended = alpha * fb + (1.0 - alpha) * prev;
@@ -3543,7 +3548,7 @@ demod_snr_fallback_gfsk(DemodMetricsState* st, const DemodSnrUpdateFlags* flags)
         return;
     }
     double fb = rtl_stream_estimate_snr_gfsk_eye();
-    if (fb > -50.0) {
+    if (demod_snr_valid(fb)) {
         double prev = g_snr_gfsk_db.load(std::memory_order_relaxed);
         double blended = (prev < -50.0) ? fb : (0.8 * prev + 0.2 * fb);
         g_snr_gfsk_db.store(blended, std::memory_order_relaxed);
@@ -4474,13 +4479,13 @@ rtl_stream_publish_fsk_phase_cfo_snapshot(const struct demod_state* d) {
     }
 
     double dc_rad_per_sample = (double)d->fsk_modem_state.dc_est;
-    if (!std::isfinite(dc_rad_per_sample)) {
+    if (!dsd::io::radio::rtl_is_finite(dc_rad_per_sample)) {
         rtl_stream_invalidate_fsk_phase_cfo_snapshot();
         return;
     }
 
     double cfo_hz = dsd::io::radio::rtl_auto_ppm_fsk_dc_est_to_cfo_hz(dc_rad_per_sample, d->rate_out);
-    if (!std::isfinite(cfo_hz)) {
+    if (!dsd::io::radio::rtl_is_finite(cfo_hz)) {
         rtl_stream_invalidate_fsk_phase_cfo_snapshot();
         return;
     }
@@ -6886,6 +6891,38 @@ extern "C" int rtl_stream_get_auto_ppm(void);
 /* Option B: Perform a short auto-PPM pre-training window at startup before returning control,
    so trunking/hunt logic begins after a stable PPM lock when possible. */
 
+/* The metadata carries every frequency in 64 bits, the tuner path in 32: a centre past 4294967295 Hz, at the start or
+   in a RETUNE or RESET event, would wrap to an unrelated centre and replay as if captured there. Returns 0 when every
+   centre fits, otherwise logs the first that does not and returns -1, so the replay is refused before it starts. */
+static int
+replay_config_check_tuner_frequencies(const dsd_iq_replay_config* cfg) {
+    if (cfg->center_frequency_hz > UINT32_MAX) {
+        LOG_ERROR("IQ replay metadata error: center_frequency_hz %llu is past the tuner limit of 4294967295 Hz\n",
+                  (unsigned long long)cfg->center_frequency_hz);
+        return -1;
+    }
+    if (cfg->capture_center_frequency_hz > UINT32_MAX) {
+        LOG_ERROR(
+            "IQ replay metadata error: capture_center_frequency_hz %llu is past the tuner limit of 4294967295 Hz\n",
+            (unsigned long long)cfg->capture_center_frequency_hz);
+        return -1;
+    }
+    for (uint32_t i = 0; i < cfg->event_count && cfg->events; i++) {
+        const dsd_iq_event* ev = &cfg->events[i];
+        if (ev->kind != DSD_IQ_EVENT_RETUNE && ev->kind != DSD_IQ_EVENT_RESET) {
+            continue;
+        }
+        if (ev->center_frequency_hz > UINT32_MAX || ev->capture_center_frequency_hz > UINT32_MAX) {
+            LOG_ERROR("IQ replay metadata error: event %u (center_frequency_hz %llu, capture_center_frequency_hz %llu) "
+                      "is past the tuner limit of 4294967295 Hz\n",
+                      (unsigned)i, (unsigned long long)ev->center_frequency_hz,
+                      (unsigned long long)ev->capture_center_frequency_hz);
+            return -1;
+        }
+    }
+    return 0;
+}
+
 static int
 stream_open_prepare_replay_config(dsd_opts* opts, RadioSourceKind source_kind, dsd_iq_replay_config* replay_cfg,
                                   int* replay_cfg_loaded) {
@@ -6907,9 +6944,15 @@ stream_open_prepare_replay_config(dsd_opts* opts, RadioSourceKind source_kind, d
         LOG_ERROR("IQ replay metadata error: %s\n", err_buf[0] ? err_buf : "unknown error");
         return -1;
     }
+    /* From here the parsed metadata may own allocations (its event list), so the caller clears it whether or not the
+       replay goes on to start. */
+    *replay_cfg_loaded = 1;
     replay_cfg->loop = opts->iq_replay_loop ? 1 : 0;
     replay_cfg->realtime = (opts->iq_replay_rate_mode == DSD_IQ_REPLAY_RATE_REALTIME) ? 1 : 0;
-    opts->rtlsdr_center_freq = (long int)replay_cfg->center_frequency_hz;
+    if (replay_config_check_tuner_frequencies(replay_cfg) != 0) {
+        return -1;
+    }
+    opts->rtlsdr_center_freq = (uint32_t)replay_cfg->center_frequency_hz;
     opts->rtlsdr_ppm_error = replay_cfg->ppm;
     if (replay_cfg->tuner_gain_tenth_db > 0) {
         opts->rtl_gain_value = replay_cfg->tuner_gain_tenth_db / 10;
@@ -6917,7 +6960,6 @@ stream_open_prepare_replay_config(dsd_opts* opts, RadioSourceKind source_kind, d
     if (replay_cfg->rtl_dsp_bw_khz > 0) {
         opts->rtl_dsp_bw_khz = replay_cfg->rtl_dsp_bw_khz;
     }
-    *replay_cfg_loaded = 1;
     return 0;
 }
 
@@ -8037,7 +8079,7 @@ auto_ppm_fsk_phase_cfo_hz(double* out_cfo_hz) {
         return 0;
     }
     double cfo_hz = g_fsk_phase_cfo_hz.load(std::memory_order_relaxed);
-    if (!std::isfinite(cfo_hz)) {
+    if (!dsd::io::radio::rtl_is_finite(cfo_hz)) {
         return 0;
     }
 
@@ -10711,7 +10753,7 @@ rtl_stream_tune_reconcile_applied_frequency(dsd_opts* opts, uint32_t requested_f
              reason ? reason : "applied-state");
     rtl_stream_store_capture_frequency_for_center(applied_freq);
     if (opts) {
-        opts->rtlsdr_center_freq = (long int)applied_freq;
+        opts->rtlsdr_center_freq = applied_freq;
     }
 }
 
@@ -10725,7 +10767,7 @@ rtl_stream_tune_reconcile_result(dsd_opts* opts, uint32_t requested_freq, int rc
 }
 
 static int
-rtl_stream_tune_impl(dsd_opts* opts, long int frequency, uint64_t caller_token) {
+rtl_stream_tune_impl(dsd_opts* opts, uint32_t frequency, uint64_t caller_token) {
     if (!opts) {
         return RTL_STREAM_TUNE_FAILED;
     }
@@ -10740,13 +10782,13 @@ rtl_stream_tune_impl(dsd_opts* opts, long int frequency, uint64_t caller_token) 
         return RTL_STREAM_TUNE_DEFERRED;
     }
     if (auto_ppm_should_freeze_retunes() && dsd_rtl_stream_auto_ppm_training_active()) {
-        rtl_stream_log_tune_warning((uint32_t)frequency, "auto_ppm_training");
+        rtl_stream_log_tune_warning(frequency, "auto_ppm_training");
         return RTL_STREAM_TUNE_DEFERRED;
     }
     if (opts->payload == 1) {
-        LOG_INFO("\nTuning to %ld Hz.", frequency);
+        LOG_INFO("\nTuning to %u Hz.", frequency);
     }
-    uint32_t requested_freq = (uint32_t)frequency;
+    uint32_t requested_freq = frequency;
 
     /* Enqueue retune, coalescing with any already-pending request so completion IDs
      * stay aligned with the number of retunes the controller will actually execute. */
@@ -10768,12 +10810,12 @@ rtl_stream_tune_impl(dsd_opts* opts, long int frequency, uint64_t caller_token) 
 }
 
 extern "C" int
-dsd_rtl_stream_tune(dsd_opts* opts, long int frequency) {
+dsd_rtl_stream_tune(dsd_opts* opts, uint32_t frequency) {
     return rtl_stream_tune_impl(opts, frequency, 0U);
 }
 
 extern "C" int
-dsd_rtl_stream_tune_tagged(dsd_opts* opts, long int frequency, uint64_t request_id) {
+dsd_rtl_stream_tune_tagged(dsd_opts* opts, uint32_t frequency, uint64_t request_id) {
     if (request_id == 0U) {
         return RTL_STREAM_TUNE_FAILED;
     }
@@ -11077,7 +11119,7 @@ dsd_rtl_stream_test_tune_failure_reconciles_applied(uint32_t requested_freq_hz, 
         controller.last_applied_freq_hz.store(outer_applied_freq_hz, std::memory_order_release);
         return -2;
     }
-    opts->rtlsdr_center_freq = (long int)requested_freq_hz;
+    opts->rtlsdr_center_freq = requested_freq_hz;
     controller.last_applied_freq_hz.store(applied_freq_hz, std::memory_order_release);
     dongle.offset_tuning = 0;
     controller.edge = 0;
@@ -11684,6 +11726,44 @@ rtl_stream_test_fsk_snr_sps(int rate_out_hz, int symbol_rate_hz, int stale_ted_s
     d.symbol_rate_hz = symbol_rate_hz;
     d.ted_sps = stale_ted_sps;
     return demod_snr_output_samples_per_symbol(&d);
+}
+
+/* Publish one C4FM SNR figure and one QPSK error ratio, report which of them reached the SNR atomics, and restore
+ * those atomics: the publish gate must keep NaN and infinity out of the EMA. */
+extern "C" int
+rtl_stream_test_snr_publish(double c4fm_snr_db, double qpsk_ratio, int* out_c4fm_published, int* out_qpsk_published) {
+    if (!out_c4fm_published || !out_qpsk_published) {
+        return -1;
+    }
+    const double prev_c4fm_ema = g_snr_ema_c4fm.load(std::memory_order_relaxed);
+    const double prev_c4fm_db = g_snr_c4fm_db.load(std::memory_order_relaxed);
+    const int prev_c4fm_src = g_snr_c4fm_src.load(std::memory_order_relaxed);
+    const long long prev_c4fm_ms = g_snr_c4fm_last_ms.load(std::memory_order_relaxed);
+    const double prev_qpsk_ema = g_snr_ema_qpsk.load(std::memory_order_relaxed);
+    const double prev_qpsk_db = g_snr_qpsk_db.load(std::memory_order_relaxed);
+    const int prev_qpsk_src = g_snr_qpsk_src.load(std::memory_order_relaxed);
+    const long long prev_qpsk_ms = g_snr_qpsk_last_ms.load(std::memory_order_relaxed);
+
+    static demod_state d;
+    DSD_MEMSET(&d, 0, sizeof(d));
+    d.rate_out = 48000;
+    d.ted_sps = 10;
+    d.channel_lpf_profile = DSD_CH_LPF_PROFILE_P25_CQPSK;
+    DemodSnrUpdateFlags flags = {false, false, false};
+    demod_snr_publish_c4fm_direct(c4fm_snr_db, &flags);
+    demod_snr_qpsk_publish(&d, qpsk_ratio, &flags);
+    *out_c4fm_published = flags.c4fm_updated ? 1 : 0;
+    *out_qpsk_published = flags.qpsk_updated ? 1 : 0;
+
+    g_snr_ema_c4fm.store(prev_c4fm_ema, std::memory_order_relaxed);
+    g_snr_c4fm_db.store(prev_c4fm_db, std::memory_order_relaxed);
+    g_snr_c4fm_src.store(prev_c4fm_src, std::memory_order_relaxed);
+    g_snr_c4fm_last_ms.store(prev_c4fm_ms, std::memory_order_relaxed);
+    g_snr_ema_qpsk.store(prev_qpsk_ema, std::memory_order_relaxed);
+    g_snr_qpsk_db.store(prev_qpsk_db, std::memory_order_relaxed);
+    g_snr_qpsk_src.store(prev_qpsk_src, std::memory_order_relaxed);
+    g_snr_qpsk_last_ms.store(prev_qpsk_ms, std::memory_order_relaxed);
+    return 0;
 }
 
 extern "C" int
@@ -12307,6 +12387,30 @@ rtl_stream_test_fll_retune_cache_round_trip(rtl_stream_test_fll_retune_cache_res
     out_result->vc_restore_used_cache = plan.restore_cached_fll ? 1 : 0;
     out_result->vc_restore_fll_after = test_demod.fll_band_edge_state.freq;
     out_result->expected_vc_fll = vc_fll_freq;
+    fll_retune_seed_cache_clear();
+    return 0;
+}
+
+/* Leave a voice channel whose FLL sits at leaving_fll_freq, hop to the control channel and back, and report whether
+ * the return restored a cached FLL seed for the voice channel. A non-finite FLL must never be cached. */
+extern "C" int
+rtl_stream_test_fll_retune_cache_stores(float leaving_fll_freq, int* out_restored) {
+    if (!out_restored) {
+        return -1;
+    }
+    *out_restored = 0;
+    fll_retune_seed_cache_clear();
+
+    static struct demod_state test_demod;
+    cqpsk_reacquire_test_init_demod(&test_demod, 1, 4800, 10);
+    test_demod.rate_out = 48000;
+    test_demod.fll_band_edge_state.freq = leaving_fll_freq;
+    DemodRetuneResetPlan plan =
+        demod_retune_reset_plan(DemodRetuneResetReason::FrequencyRetune, 769668750U, 770418750U, 48000, 48000);
+    plan = demod_reset_on_retune(&test_demod, plan);
+    plan = demod_retune_reset_plan(DemodRetuneResetReason::FrequencyRetune, 770418750U, 769668750U, 48000, 48000);
+    plan = demod_reset_on_retune(&test_demod, plan);
+    *out_restored = plan.restore_cached_fll ? 1 : 0;
     fll_retune_seed_cache_clear();
     return 0;
 }

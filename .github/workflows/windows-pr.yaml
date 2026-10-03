@@ -1,0 +1,227 @@
+name: windows-pr
+
+# A job an `if:` skips still reports a check run under its name, as a success. In a
+# workflow that a push or a dispatch can also start, a skipped run of a required
+# pull-request job on a pull request's head commit could stand in for the real
+# one, so the required jobs that only make sense on a pull request live here, in a
+# workflow that nothing else starts, and carry no event condition.
+#
+# windows-ci keeps the push, tag and dispatch jobs (the MSVC ZIP), and
+# windows-ctest-seed is the push/dispatch twin of the Debug ctest job that
+# writes the vcpkg cache.
+
+on:
+  pull_request:
+    branches: [main, master]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-native-msvc:
+    runs-on: windows-latest
+    permissions:
+      actions: read
+      contents: read
+      packages: read
+    env:
+      # Use a release-only triplet to avoid building debug variants of vcpkg deps.
+      VCPKG_DEFAULT_TRIPLET: x64-windows-dynamic-release
+      VCPKG_TARGET_TRIPLET: x64-windows-dynamic-release
+      VCPKG_OVERLAY_TRIPLETS: ${{ github.workspace }}\vcpkg-triplets
+      # Pull requests may restore existing vcpkg binaries but must not write new cache entries.
+      VCPKG_EXE: ${{ github.workspace }}/vcpkg/vcpkg.exe
+      VCPKG_NUGET_FEED: https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json
+      VCPKG_NUGET_USER: ${{ github.repository_owner }}
+      VCPKG_BINARY_SOURCES: "clear;nuget,https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json,read"
+      # Enable sccache GitHub Actions backend.
+      SCCACHE_GHA_ENABLED: "true"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Run sccache-cache
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba
+
+      - name: Initialize sccache
+        shell: pwsh
+        run: |
+          & $env:SCCACHE_PATH --version
+          & $env:SCCACHE_PATH --zero-stats
+
+      - name: Setup MSVC environment
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756
+
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2
+        with:
+          # run-vcpkg v11.6 requires a full 40-char SHA1.
+          # Keep this in sync with vcpkg.json's builtin-baseline.
+          vcpkgGitCommitId: "9e593bb18ea69cc5095e012465dcd675a822ed0d"
+
+      - name: Configure vcpkg binary cache
+        shell: pwsh
+        env:
+          VCPKG_NUGET_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $nuget = (& $env:VCPKG_EXE fetch nuget | Select-Object -Last 1)
+          if (-not $nuget) { throw "vcpkg fetch nuget did not return a path" }
+
+          & $nuget sources add `
+            -Source "$env:VCPKG_NUGET_FEED" `
+            -StorePasswordInClearText `
+            -Name GitHubPackages `
+            -UserName "$env:VCPKG_NUGET_USER" `
+            -Password "$env:VCPKG_NUGET_TOKEN" `
+            -NonInteractive
+
+      - name: Install vcpkg dependencies (MSVC)
+        shell: pwsh
+        run: >-
+          vcpkg install
+          --triplet $env:VCPKG_DEFAULT_TRIPLET
+          --overlay-triplets "$env:GITHUB_WORKSPACE\\vcpkg-triplets"
+          --x-manifest-root "$env:GITHUB_WORKSPACE"
+
+      - name: Configure (MSVC Release)
+        shell: pwsh
+        # Use Ninja generator (override preset) so CMAKE_*_COMPILER_LAUNCHER works with sccache
+        run: |
+          cmake --preset win-msvc-release -G Ninja `
+            -DCMAKE_C_COMPILER_LAUNCHER=sccache `
+            -DCMAKE_CXX_COMPILER_LAUNCHER=sccache `
+            -DDSD_REQUIRE_RTLSDR=ON `
+            -DDSD_REQUIRE_AIRSPY=ON `
+            -DDSD_REQUIRE_SOAPYSDR=ON
+
+      - name: Build (MSVC Release)
+        shell: pwsh
+        run: cmake --build --preset win-msvc-release
+
+      - name: Verify release hardening (MSVC)
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem -Path 'build/win-msvc-release/apps/dsd-cli' -Recurse -Filter 'dsd-neo.exe' |
+            Select-Object -First 1
+          if ($null -eq $exe) { throw "dsd-neo.exe not found under build/win-msvc-release/apps/dsd-cli" }
+          ./tools/check_release_hardening.ps1 $exe.FullName
+
+      - name: Show sccache stats
+        shell: pwsh
+        run: |
+          & $env:SCCACHE_PATH --show-stats
+
+  # Debug build plus the full ctest suite under MSVC and the debug CRT. The
+  # release jobs build with tests off, so without this job no test ever ran on
+  # Windows. Pull requests may restore vcpkg binaries but never write them;
+  # windows-ctest-seed writes them.
+  test-msvc-debug:
+    name: Windows • Debug • ctest (MSVC x64)
+    runs-on: windows-latest
+    timeout-minutes: 180
+    permissions:
+      actions: read
+      contents: read
+      packages: read
+    env:
+      # The win-msvc-debug preset's triplet: debug and release variants, so the
+      # Debug build links the debug CRT end to end.
+      VCPKG_DEFAULT_TRIPLET: x64-windows-dynamic
+      VCPKG_TARGET_TRIPLET: x64-windows-dynamic
+      VCPKG_OVERLAY_TRIPLETS: ${{ github.workspace }}\vcpkg-triplets
+      VCPKG_EXE: ${{ github.workspace }}/vcpkg/vcpkg.exe
+      VCPKG_NUGET_FEED: https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json
+      VCPKG_NUGET_USER: ${{ github.repository_owner }}
+      VCPKG_BINARY_SOURCES: "clear;nuget,https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json,read"
+      SCCACHE_GHA_ENABLED: "true"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Run sccache-cache
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba
+
+      - name: Initialize sccache
+        shell: pwsh
+        run: |
+          & $env:SCCACHE_PATH --version
+          & $env:SCCACHE_PATH --zero-stats
+
+      - name: Setup MSVC environment
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756
+
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2
+        with:
+          # run-vcpkg v11.6 requires a full 40-char SHA1.
+          # Keep this in sync with vcpkg.json's builtin-baseline.
+          vcpkgGitCommitId: "9e593bb18ea69cc5095e012465dcd675a822ed0d"
+
+      - name: Configure vcpkg binary cache
+        shell: pwsh
+        env:
+          VCPKG_NUGET_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $nuget = (& $env:VCPKG_EXE fetch nuget | Select-Object -Last 1)
+          if (-not $nuget) { throw "vcpkg fetch nuget did not return a path" }
+
+          & $nuget sources add `
+            -Source "$env:VCPKG_NUGET_FEED" `
+            -StorePasswordInClearText `
+            -Name GitHubPackages `
+            -UserName "$env:VCPKG_NUGET_USER" `
+            -Password "$env:VCPKG_NUGET_TOKEN" `
+            -NonInteractive
+
+      - name: Install vcpkg dependencies (MSVC Debug)
+        shell: pwsh
+        run: >-
+          vcpkg install
+          --triplet $env:VCPKG_DEFAULT_TRIPLET
+          --overlay-triplets "$env:GITHUB_WORKSPACE\\vcpkg-triplets"
+          --x-manifest-root "$env:GITHUB_WORKSPACE"
+
+      # Ninja instead of the preset's Visual Studio generator so sccache can wrap
+      # the compiler. /Z7 (CMP0141 "Embedded") because sccache cannot cache /Zi.
+      # vcpkg's per-executable applocal DLL copy is off: hundreds of test
+      # executables share one output directory, and the win-msvc-debug test
+      # preset puts the triplet's debug/bin on PATH instead.
+      - name: Configure (MSVC Debug)
+        shell: pwsh
+        run: |
+          cmake --preset win-msvc-debug -G Ninja `
+            -DCMAKE_C_COMPILER_LAUNCHER=sccache `
+            -DCMAKE_CXX_COMPILER_LAUNCHER=sccache `
+            -DCMAKE_POLICY_DEFAULT_CMP0141=NEW `
+            -DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded `
+            -DVCPKG_APPLOCAL_DEPS=OFF `
+            -DDSD_REQUIRE_RTLSDR=ON `
+            -DDSD_REQUIRE_AIRSPY=ON `
+            -DDSD_REQUIRE_SOAPYSDR=ON
+
+      # -k 0 keeps going past a failed target, so one run reports every compile
+      # error on a platform that is not reproduced locally.
+      - name: Build (MSVC Debug)
+        shell: pwsh
+        run: cmake --build --preset win-msvc-debug -- -k 0
+
+      - name: Test (MSVC Debug)
+        shell: pwsh
+        env:
+          # A test whose tool is missing fails here instead of skipping.
+          DSD_NEO_REQUIRE_TEST_TOOLS: "1"
+        run: |
+          ctest --preset win-msvc-debug -N | Select-Object -Last 1
+          ctest --preset win-msvc-debug --output-on-failure
+
+      - name: Show sccache stats
+        if: always()
+        shell: pwsh
+        run: |
+          & $env:SCCACHE_PATH --show-stats

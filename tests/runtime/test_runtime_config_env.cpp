@@ -1440,6 +1440,42 @@ test_dmr_t3_tools_env(void) {
     }
     unsetenv("DSD_NEO_DMR_T3_STEP_HZ");
     unsetenv("DSD_NEO_DMR_T3_CC_FREQ");
+
+    /* The control channel is a trunk frequency, so it must fit 1..2147483647 Hz (DSD_TRUNK_FREQ_MAX_HZ) on every
+     * platform, in Hz or in MHz (values under 1e5). One past it is not set; MHz still converts, and the ceiling itself
+     * is kept. */
+    struct t3_cc_freq_case {
+        const char* text;
+        int is_set;
+        long hz;
+    };
+
+    static const t3_cc_freq_case kT3CcFreqCases[] = {
+        {"3000", 0, 0L},                /* 3 GHz in MHz */
+        {"5000000000", 0, 0L},          /* 5 GHz in Hz, which a 64-bit long holds */
+        {"2147483648", 0, 0L},          /* one past the ceiling */
+        {"2147483647", 1, 2147483647L}, /* the ceiling itself */
+        {"851.0125", 1, 851012500L},
+    };
+    int code = 1276;
+    for (const t3_cc_freq_case& tc : kT3CcFreqCases) {
+        setenv("DSD_NEO_DMR_T3_CC_FREQ", tc.text, 1);
+        dsd_neo_config_init();
+        cfg = dsd_neo_get_config();
+        char name[96];
+        DSD_SNPRINTF(name, sizeof name, "dmr_t3_cc_freq_is_set for \"%s\"", tc.text);
+        rc = expect_int_eq(cfg->dmr_t3_cc_freq_is_set, tc.is_set, code, name);
+        if (rc != 0) {
+            return rc;
+        }
+        DSD_SNPRINTF(name, sizeof name, "dmr_t3_cc_freq_hz for \"%s\"", tc.text);
+        rc = expect_long_eq(cfg->dmr_t3_cc_freq_hz, tc.hz, code + 1, name);
+        if (rc != 0) {
+            return rc;
+        }
+        code += 2;
+    }
+    unsetenv("DSD_NEO_DMR_T3_CC_FREQ");
     return 0;
 }
 

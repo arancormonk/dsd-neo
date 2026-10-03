@@ -401,9 +401,17 @@
       "configuration": "Debug"
     },
     {
+      "name": "perf-bench",
+      "configurePreset": "perf-bench",
+      "configuration": "RelWithDebInfo"
+    },
+    {
       "name": "win-msvc-debug",
       "configurePreset": "win-msvc-debug",
-      "configuration": "Debug"
+      "configuration": "Debug",
+      "environment": {
+        "PATH": "${sourceDir}/vcpkg_installed/x64-windows-dynamic/debug/bin;$penv{PATH}"
+      }
     }
   ]
 }

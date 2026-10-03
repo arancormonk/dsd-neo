@@ -12,9 +12,10 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/platform/platform.h"
+#include "test_support.h"
 #if !DSD_PLATFORM_WIN_NATIVE
-#include <sys/stat.h>
 #include <unistd.h>
 #endif
 
@@ -34,12 +35,18 @@ expect_posix_compat_wrappers(void) {
         return 1;
     }
     rc |= fclose(fp) == 0 ? 0 : 1;
+    errno = 0;
     int fd = dsd_open_serial_write(name);
+#if DSD_PLATFORM_WIN_NATIVE
+    /* Serial control is not supported on Windows: any valid path is refused as such. */
+    rc |= fd == -1 && errno == ENOSYS ? 0 : 1;
+#else
     if (fd < 0) {
         rc = 1;
     } else {
         rc |= dsd_close(fd) == 0 ? 0 : 1;
     }
+#endif
     (void)remove(name);
 
     void* ptr = dsd_aligned_alloc(sizeof(void*), 64);
@@ -63,9 +70,126 @@ expect_posix_compat_wrappers(void) {
     } else {
         dsd_stat_t st;
         rc |= dsd_stat_path(dir, &st) == 0 && !dsd_stat_is_regular(&st) ? 0 : 1;
-        rc |= rmdir(dir) == 0 ? 0 : 1;
+        rc |= dsd_test_rmdir(dir) == 0 ? 0 : 1;
     }
 
+    return rc;
+}
+
+/* Temp names must be unpredictable and never reused while a file holds them, as POSIX mkstemp() gives. Windows'
+ * _mktemp_s() gave one letter plus the process ID: 26 names per template, and a name back as soon as its file was
+ * removed or renamed, so a second temp file renamed to the same target collided. */
+enum { kManyTempNames = 40 };
+
+static int
+expect_many_unique_temp_files(void) {
+    int rc = 0;
+    static char names[kManyTempNames][64];
+    int made = 0;
+    for (int i = 0; i < kManyTempNames; i++) {
+        DSD_SNPRINTF(names[i], sizeof names[i], "%s", "dsd_neo_mkstemp_many_XXXXXX");
+        int fd = dsd_mkstemp(names[i]);
+        if (fd < 0) {
+            rc = 1;
+            break;
+        }
+        rc |= dsd_close(fd) == 0 ? 0 : 1;
+        made++;
+    }
+    for (int i = 0; i < made; i++) {
+        for (int j = i + 1; j < made; j++) {
+            rc |= strcmp(names[i], names[j]) != 0 ? 0 : 1;
+        }
+    }
+    for (int i = 0; i < made; i++) {
+        (void)remove(names[i]);
+    }
+
+    made = 0;
+    for (int i = 0; i < kManyTempNames; i++) {
+        DSD_SNPRINTF(names[i], sizeof names[i], "%s", "dsd_neo_mkdtemp_many_XXXXXX");
+        if (!dsd_mkdtemp(names[i])) {
+            rc = 1;
+            break;
+        }
+        made++;
+    }
+    for (int i = 0; i < made; i++) {
+        rc |= dsd_test_rmdir(names[i]) == 0 ? 0 : 1;
+    }
+
+    static FILE* streams[kManyTempNames];
+    static char tmp_names[kManyTempNames][96];
+    made = 0;
+    for (int i = 0; i < kManyTempNames; i++) {
+        streams[i] =
+            dsd_fopen_private_temp_for_replace("dsd_neo_replace_many.csv", tmp_names[i], sizeof tmp_names[i], "w");
+        if (!streams[i]) {
+            rc = 1;
+            break;
+        }
+        made++;
+    }
+    for (int i = 0; i < made; i++) {
+        rc |= fclose(streams[i]) == 0 ? 0 : 1;
+        (void)remove(tmp_names[i]);
+    }
+    return rc;
+}
+
+static int
+expect_temp_name_not_reused_after_rename(void) {
+    int rc = 0;
+    char renamed[2][80] = {{0}};
+    for (int round = 0; round < 2; round++) {
+        char tmpl[64] = "dsd_neo_mkstemp_rename_XXXXXX";
+        int fd = dsd_mkstemp(tmpl);
+        if (fd < 0) {
+            rc = 1;
+            continue;
+        }
+        rc |= dsd_close(fd) == 0 ? 0 : 1;
+        DSD_SNPRINTF(renamed[round], sizeof renamed[round], "%s.ini", tmpl);
+        if (rename(tmpl, renamed[round]) != 0) {
+            rc = 1;
+            (void)remove(tmpl);
+            renamed[round][0] = '\0';
+        }
+    }
+    for (int round = 0; round < 2; round++) {
+        if (renamed[round][0] != '\0') {
+            (void)remove(renamed[round]);
+        }
+    }
+    return rc;
+}
+
+/* -1 is the usual "no descriptor" value. POSIX answers it with EBADF; the Windows CRT treats it as a caller bug and ends
+ * the process from its invalid-parameter handler, so the wrappers must answer it before the CRT sees it. */
+static int
+expect_negative_descriptor_wrappers(void) {
+    int rc = 0;
+    char buf[1] = {0};
+    dsd_stat_t st;
+
+    errno = 0;
+    rc |= dsd_isatty(-1) == 0 && errno == EBADF ? 0 : 1;
+    errno = 0;
+    rc |= dsd_dup(-1) == -1 && errno == EBADF ? 0 : 1;
+    errno = 0;
+    rc |= dsd_dup2(-1, 0) == -1 && errno == EBADF ? 0 : 1;
+    errno = 0;
+    rc |= dsd_dup2(0, -1) == -1 && errno == EBADF ? 0 : 1;
+    errno = 0;
+    rc |= dsd_close(-1) == -1 && errno == EBADF ? 0 : 1;
+    errno = 0;
+    rc |= dsd_fsync(-1) == -1 && errno == EBADF ? 0 : 1;
+    errno = 0;
+    rc |= dsd_fstat(-1, &st) == -1 && errno == EBADF ? 0 : 1;
+    errno = 0;
+    rc |= dsd_read(-1, buf, sizeof(buf)) == -1 && errno == EBADF ? 0 : 1;
+    errno = 0;
+    rc |= dsd_write(-1, buf, sizeof(buf)) == -1 && errno == EBADF ? 0 : 1;
     return rc;
 }
 
@@ -207,7 +331,7 @@ expect_private_open_reports_the_open(void) {
 
 static int
 write_probe_file(const char* path) {
-    FILE* fp = dsd_fopen_private(path, "w");
+    FILE* fp = dsd_fopen_private(path, "wb");
     if (!fp) {
         return -1;
     }
@@ -223,7 +347,7 @@ expect_existing_regular_file_guards(void) {
     const char* name = "dsd_neo_existing_regular_test.tmp";
     const char* dir_name = "dsd_neo_existing_regular_dir.tmp";
     (void)remove(name);
-    (void)rmdir(dir_name);
+    (void)dsd_test_rmdir(dir_name);
     if (write_probe_file(name) != 0) {
         return 1;
     }
@@ -239,6 +363,11 @@ expect_existing_regular_file_guards(void) {
     rc |= dsd_fopen_existing_regular_file(name, "w") == NULL && errno == EINVAL ? 0 : 1;
     errno = 0;
     rc |= dsd_fopen_existing_regular_file(name, "r+") == NULL && errno == EINVAL ? 0 : 1;
+    /* A missing file is ENOENT on every platform; callers create the file on that answer and refuse anything else. */
+    const char* missing = "dsd_neo_existing_regular_missing.tmp";
+    (void)remove(missing);
+    errno = 0;
+    rc |= dsd_fopen_existing_regular_file(missing, "r") == NULL && errno == ENOENT ? 0 : 1;
 
     FILE* fp = dsd_fopen_existing_regular_file(name, "rb");
     if (!fp) {
@@ -249,7 +378,7 @@ expect_existing_regular_file_guards(void) {
         rc |= fclose(fp) == 0 ? 0 : 1;
     }
 
-    if (mkdir(dir_name, 0700) != 0) {
+    if (dsd_mkdir(dir_name, 0700) != 0) {
         rc = 1;
     } else {
         errno = 0;
@@ -263,7 +392,7 @@ expect_existing_regular_file_guards(void) {
     }
 
     (void)remove(name);
-    (void)rmdir(dir_name);
+    (void)dsd_test_rmdir(dir_name);
     return rc;
 }
 
@@ -504,7 +633,10 @@ int
 main(void) {
     int rc = 0;
     rc |= expect_posix_compat_wrappers();
+    rc |= expect_many_unique_temp_files();
+    rc |= expect_temp_name_not_reused_after_rename();
     rc |= expect_descriptor_wrappers();
+    rc |= expect_negative_descriptor_wrappers();
     rc |= expect_private_open_modes_and_read_fallback();
     rc |= expect_private_open_reports_the_open();
     rc |= expect_existing_regular_file_guards();

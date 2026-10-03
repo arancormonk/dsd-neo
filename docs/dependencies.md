@@ -96,11 +96,18 @@ time (check the LLVM major with `clang --version` in the image) and builds
 include-what-you-use from `IWYU_SHA`. IWYU compiles against the LLVM it is built
 with and each IWYU commit supports one LLVM major, so when Arch moves to a new
 LLVM major, move `IWYU_SHA` to a commit built for it in the same change, along
-with the image digest. The three inline `archlinux:base-devel@sha256:` copies in
+with the image digest. The inline `archlinux:base-devel@sha256:` copies in
 `.github/workflows/linux-ci.yaml` (a container image cannot read the env file)
 must move together with `ARCHLINUX_BASE_DEVEL_IMAGE` in
 `tools/ci-dependency-pins.env`; `tools/check_workflow_download_pins.sh` fails
 when any of them differs.
+
+`KOTLIN_COMPILER_VERSION` and `KOTLIN_COMPILER_SHA256` pin the Kotlin compiler
+that the arm64 ctest legs download for `ANDROID_LOCATION_JVM`, since their runner
+image ships Java but no Kotlin. Move both together, taking the digest from the
+release's `kotlin-compiler-<version>.zip.sha256` and checking it against the
+downloaded archive; `tools/check_workflow_download_pins.sh` fails if a workflow
+unpacks the compiler without checking it against `KOTLIN_COMPILER_SHA256`.
 
 ## Monitoring
 

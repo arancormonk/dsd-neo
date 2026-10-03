@@ -15,14 +15,6 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 
-#if defined(DSD_NEO_FAST_MATH) || defined(__FAST_MATH__) || defined(_M_FP_FAST)
-#define DSD_NEO_TEST_FAST_MATH 1
-#elif defined(__FINITE_MATH_ONLY__) && (__FINITE_MATH_ONLY__ != 0)
-#define DSD_NEO_TEST_FAST_MATH 1
-#else
-#define DSD_NEO_TEST_FAST_MATH 0
-#endif
-
 struct render_capture {
     char out[128];
     size_t len;
@@ -183,9 +175,9 @@ main(void) {
     assert(dsd_ncurses_snr_use_unicode_for_test(1, 1) == 1);
 #endif
 
-#if !DSD_NEO_TEST_FAST_MATH
     assert(dsd_ncurses_snr_meter_bar_count_for_test(NAN) == 0);
-#endif
+    assert(dsd_ncurses_snr_meter_bar_count_for_test(INFINITY) == 0);
+    assert(dsd_ncurses_snr_meter_bar_count_for_test(-INFINITY) == 0);
     assert_bars(-50.0, 0);
     assert_bars(-20.0, 1);
     assert_bars(-15.0, 1);
@@ -196,9 +188,8 @@ main(void) {
     assert_bars(30.0, 5);
     assert_bars(60.0, 5);
 
-#if !DSD_NEO_TEST_FAST_MATH
     assert_ascii(NAN, "         ");
-#endif
+    assert_ascii(INFINITY, "         ");
     assert_ascii(-50.0, "         ");
     assert_ascii(-15.0, "|        ");
     assert_ascii(-6.0, "| |      ");

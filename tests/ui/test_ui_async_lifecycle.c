@@ -211,12 +211,19 @@ dsd_sleep_ms(unsigned int ms) {
     (void)ms;
 }
 
+/* PDCurses (Windows) has no set_escdelay(), and dsd_curses_set_escdelay() skips it there. */
+#if defined(DSD_USE_PDCURSES)
+enum { kEscdelayCallsPerConfigure = 0 };
+#else
+enum { kEscdelayCallsPerConfigure = 1 };
+
 int
 set_escdelay(int delay) {
     (void)delay;
     g_escdelay_calls++;
     return 0;
 }
+#endif
 
 int
 keypad(WINDOW* win, bool bf) {
@@ -232,6 +239,14 @@ wtimeout(WINDOW* win, int delay) {
     (void)delay;
     g_timeout_calls++;
 }
+
+#if defined(DSD_USE_PDCURSES)
+/* PDCurses (Windows) implements timeout() as a function; ncurses defines it as wtimeout() on stdscr. */
+void
+timeout(int delay) {
+    wtimeout(stdscr, delay);
+}
+#endif
 
 int
 wgetch(WINDOW* win) {
@@ -446,7 +461,7 @@ test_ui_single_frame_snapshot_input_and_draw_helpers(void) {
     stdscr = (WINDOW*)0x1;
     g_getch_value = 'a';
     dsd_neo_ui_async_test_process_input_frame(&opts);
-    rc |= expect_int("configure escdelay once", g_escdelay_calls, 1);
+    rc |= expect_int("configure escdelay once", g_escdelay_calls, kEscdelayCallsPerConfigure);
     rc |= expect_int("configure keypad once", g_keypad_calls, 1);
     rc |= expect_int("configure timeout once", g_timeout_calls, 1);
     rc |= expect_int("normal input delivered", g_ncurses_input_calls, 1);
@@ -454,7 +469,7 @@ test_ui_single_frame_snapshot_input_and_draw_helpers(void) {
 
     g_getch_value = KEY_RESIZE;
     dsd_neo_ui_async_test_process_input_frame(&opts);
-    rc |= expect_int("configure not repeated", g_escdelay_calls, 1);
+    rc |= expect_int("configure not repeated", g_escdelay_calls, kEscdelayCallsPerConfigure);
     rc |= expect_int("resize clearok", g_clearok_calls, 1);
 
     uint64_t last_draw_ns = 100U;

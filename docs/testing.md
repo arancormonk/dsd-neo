@@ -1388,6 +1388,17 @@ handle on a file before removing it, including one the code under test hands
 back from an open the test expects it to refuse: the native Windows CRT cannot
 remove an open file.
 
+Keep large objects off the stack. A Windows main thread gets a 1 MiB stack where
+Linux gives 8 MiB, so a test that declares a `dsd_state`, an `Event_History_I`
+(3.7 MB) or another multi-megabyte object as a local crashes only on Windows,
+which CTest reports as a segfault. Make such a local `static` and clear it before
+use. GCC and Clang build every test with `-Wframe-larger-than=786432`, so a frame
+over 768 KiB fails the Linux build instead.
+
+Production writes CSV, INI and group files in text mode, so on Windows their
+lines end in CRLF. Compare such a file's contents after reading it in text mode
+(`"r"`), and binary output, such as an MBE recording, byte for byte (`"rb"`).
+
 To check the whole suite, run it against an empty directory, which must still
 be empty afterwards. That does not catch a file a test creates by a relative
 path, which lands in its working directory: `build/dev-debug/tests` for most
@@ -1417,10 +1428,56 @@ secret scanning, OSV scanning, repository guardrails for secret redaction and
 workflow source/download pinning, fuzz smoke tests, and install/package
 validation run where their workflows declare those events. Dependency review is
 PR-only, release tag validation is tag-only, and extended fuzzing is scheduled
-or manually dispatched. The backend matrix builds and tests all four
-SDR-backend combinations — `both`, `rtl_only`, `soapy_only` and `neither` — on
-pull requests as well as pushes, so the radio-off build is proven before a merge
-rather than after one.
+or manually dispatched. The backend matrix builds and tests all five
+SDR-backend combinations — `both`, `rtl_only`, `soapy_only`, `airspy_only` and
+`neither` — on pull requests as well as pushes, so the radio-off build is proven
+before a merge rather than after one.
+
+The full ctest suite also runs, as a required check on every pull request, on
+each platform a release ships for:
+
+| Check | Configuration | Covers |
+|---|---|---|
+| `backend-matrix (both, arm64)` | `dev-debug`, native arm64 runner | the aarch64 AppImage; unsigned `char`; the NEON SIMD paths |
+| `android shape (arm64, headless, forced radio pipeline)` | the Android option set on arm64 | the Android ABI's instruction set (not Bionic) |
+| `Linux • RelWithDebInfo • ctest (x86-64-v3, fast-math)` | `perf-bench` with `-march=x86-64-v3`, GCC | optimized, fast-math code generation like the shipped builds, with AVX2/FMA |
+| `Linux • RelWithDebInfo • ctest (x86-64-v3, fast-math, clang)` | the same with Clang | the macOS release toolchain's fast-math code generation; `-Wnan-infinity-disabled` makes a NaN or infinity test left in fast-math code a build error (see "Fast-math and non-finite values" in `docs/code_map.md`) |
+| `macOS • Debug • ctest (arm64)` | `dev-debug`, AppleClang | the DMG; libc++, ld64 and BSD libc |
+| `Windows • Debug • ctest (MSVC x64)` | `win-msvc-debug` with Ninja | the ZIP; MSVC, the debug CRT and 32-bit `long` |
+
+Tests that need GNU ld `--wrap` seams register only on Linux, and the `TOOLS_*`
+script tests only where bash is (not Windows), so the macOS and Windows suites
+are smaller than the Linux one; each job prints its registered test count before
+running.
+
+Some tests drive an external tool: two `TOOLS_*` tests need ripgrep,
+`TOOLS_GCC_FANALYZER` needs GNU GCC's analyzer under the name `gcc`,
+`TOOLS_IWYU` needs git and Python, and `ANDROID_LOCATION_JVM` needs Java and the
+Kotlin compiler. Without its tool such a test skips, and passes, on a developer
+machine. Every CI job that runs the suite sets `DSD_NEO_REQUIRE_TEST_TOOLS=1`,
+which turns that skip into a failure, and installs what its runner image lacks:
+ripgrep everywhere, Homebrew's GCC as `gcc` for the macOS test step, Java and
+Kotlin in the Clang container, and the pinned Kotlin compiler
+(`KOTLIN_COMPILER_VERSION` and `KOTLIN_COMPILER_SHA256` in
+`tools/ci-dependency-pins.env`) on the arm64 legs.
+
+A job skipped by an `if:` still reports its check, as a success. A required job
+that only runs on pull requests therefore lives in a workflow that only pull
+requests start (`windows-pr`, `macos-pr`, `guardrails-pr`), with no event
+condition. In a workflow that a push or a dispatch can also start, a skipped run
+on a pull request's head commit could stand in for the real one.
+
+The Windows Debug job's vcpkg dependencies come from a binary cache that pull
+requests only read. A change to the dependency set (`vcpkg.json`, the overlay
+ports or the baseline) builds them from source on every pull-request run until
+the push-side twin has run once: `Windows • Debug • ctest (MSVC x64, cache
+seed)` in `windows-ctest-seed`. Dispatch `windows-ctest-seed` on the branch to
+seed it.
+
+To run the Windows suite locally, configure and build the `win-msvc-debug`
+preset and run `ctest --preset win-msvc-debug`; the test preset puts the vcpkg
+debug DLLs on `PATH`. A Debug-CRT assertion or `abort()` in a test is reported on
+stderr rather than in a dialog (`tests/test_support/win_crt_report.c`).
 
 ## Decode-Quality A/B on Real Captures
 

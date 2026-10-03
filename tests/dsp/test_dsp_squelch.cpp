@@ -8,10 +8,10 @@
  * continues to produce output (zeros) to maintain UI responsiveness. */
 
 #include <atomic>
-#include <cstdlib>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
+#include <dsd-neo/runtime/mem.h>
 #include <stdio.h>
 #include "dsd-neo/core/safe_api.h"
 
@@ -62,7 +62,7 @@ row_thresholds_gate_a_fixed_channel(demod_state* s) {
 
 int
 main(void) {
-    demod_state* s = (demod_state*)malloc(sizeof(demod_state));
+    demod_state* s = static_cast<demod_state*>(dsd_neo_aligned_malloc(sizeof(demod_state)));
     if (!s) {
         return 1;
     }
@@ -86,20 +86,20 @@ main(void) {
     full_demod(s);
     if (!s->channel_squelched) {
         DSD_FPRINTF(stderr, "squelch: below threshold but channel_squelched not set\n");
-        free(s);
+        dsd_neo_aligned_free(s);
         return 1;
     }
     // With continuous flow model, result_len should be > 0 (pipeline continues with zeros)
     if (s->result_len <= 0) {
         DSD_FPRINTF(stderr, "squelch: below threshold but result_len=%d (expected >0 for continuous flow)\n",
                     s->result_len);
-        free(s);
+        dsd_neo_aligned_free(s);
         return 1;
     }
     // Verify output is all zeros when squelched
     if (!all_zero(s->result, s->result_len)) {
         DSD_FPRINTF(stderr, "squelch: below threshold but result contains non-zero samples\n");
-        free(s);
+        dsd_neo_aligned_free(s);
         return 1;
     }
 
@@ -118,15 +118,15 @@ main(void) {
     if (s->channel_squelched) {
         DSD_FPRINTF(stderr, "squelch: above threshold but channel_squelched is set (pwr=%.6f, thr=%.6f)\n",
                     s->channel_pwr, s->channel_squelch_level.load(std::memory_order_relaxed));
-        free(s);
+        dsd_neo_aligned_free(s);
         return 1;
     }
 
     if (row_thresholds_gate_a_fixed_channel(s) != 0) {
-        free(s);
+        dsd_neo_aligned_free(s);
         return 1;
     }
 
-    free(s);
+    dsd_neo_aligned_free(s);
     return 0;
 }

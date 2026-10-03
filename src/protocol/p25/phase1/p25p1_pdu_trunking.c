@@ -457,8 +457,8 @@ p25_handle_mbt_tdma_iden_foreign_system(const uint8_t* mpdu_byte) {
 
     DSD_FPRINTF(stderr, "%s", KYEL);
     DSD_FPRINTF(stderr, "\n TDMA Identifier Update MBT - foreign system, not applied\n");
-    DSD_FPRINTF(stderr, "  IDEN [%X] Type [%X] Base Freq [%ld] (%ld Hz) TX Offset [%d] Spacing [%d]", iden, chan_type,
-                base_freq, base_freq * 5, trans_off, chan_spac);
+    DSD_FPRINTF(stderr, "  IDEN [%X] Type [%X] Base Freq [%ld] (%lld Hz) TX Offset [%d] Spacing [%d]", iden, chan_type,
+                base_freq, (long long)base_freq * 5, trans_off, chan_spac);
     DSD_FPRINTF(stderr, "\n  Foreign WACN [%05lX] SYSID [%03X] - ignored for current IDEN tables", lwacn, lsysid);
 }
 

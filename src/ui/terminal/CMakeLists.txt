@@ -34,6 +34,24 @@ target_sources(
         menus/menu_defs.c
 )
 
+# The SNR meter treats a NaN or infinite reading as no signal, and the menu's
+# environment readers reject "nan"/"inf" through dsd_parse_double_strict(); both
+# run once per redraw or edit, so they keep IEEE semantics even when global
+# fast-math is on.
+if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+    set_source_files_properties(
+        ncurses_snr.c
+        menu_env.c
+        PROPERTIES COMPILE_OPTIONS "-fno-fast-math"
+    )
+elseif(MSVC)
+    set_source_files_properties(
+        ncurses_snr.c
+        menu_env.c
+        PROPERTIES COMPILE_OPTIONS "/fp:precise"
+    )
+endif()
+
 target_include_directories(
     dsd-neo_ui_terminal
     PUBLIC ${PROJECT_SOURCE_DIR}/include ${CURSES_INCLUDE_DIRS}

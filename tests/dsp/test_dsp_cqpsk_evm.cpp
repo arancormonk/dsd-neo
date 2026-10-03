@@ -29,6 +29,7 @@
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
 #include <dsd-neo/dsp/ted.h>
+#include <dsd-neo/runtime/mem.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -165,7 +166,7 @@ synthesize_lsm(int sps, double noise_sigma) {
 
 demod_state*
 make_state(int sps) {
-    demod_state* s = (demod_state*)malloc(sizeof(demod_state));
+    demod_state* s = static_cast<demod_state*>(dsd_neo_aligned_malloc(sizeof(demod_state)));
     if (!s) {
         return nullptr;
     }
@@ -234,7 +235,7 @@ run_chain_evm(const Waveform& wf, int sps, double* evm_out, int* symbols_out) {
         }
     }
 
-    free(s);
+    dsd_neo_aligned_free(s);
     if (n_meas <= 0 || ref_acc <= 0.0) {
         return 1;
     }

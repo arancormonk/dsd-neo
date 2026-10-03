@@ -190,7 +190,9 @@ dsd_parse_double_strict(const char* text, double min_value, double max_value, do
     errno = 0;
     char* end = NULL;
     double value = strtod(text, &end);
-    if (errno != 0 || end == text || !end || *end != '\0' || value < min_value || value > max_value) {
+    /* The range test is written so "nan" fails it as well: every comparison with NaN is false. That holds only where
+       IEEE semantics do -- a caller that must reject NaN cannot be compiled with fast-math. */
+    if (errno != 0 || end == text || !end || *end != '\0' || !(value >= min_value && value <= max_value)) {
         return -1;
     }
 

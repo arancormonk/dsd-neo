@@ -7,6 +7,7 @@
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
 #include <errno.h>
+#include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <time.h>
@@ -148,13 +149,29 @@ test_threading_wrapper_contracts(void) {
     rc |= expect_int("thread_create macro rejects null function", dsd_thread_create(&thread, null_fn, NULL), EINVAL);
 #endif
 
+    /* Both wrappers answer with 0 or an errno value, never a raw OS error, and ENOSYS where the platform lacks the
+     * control. */
     int prio_rc = dsd_thread_set_realtime_priority(-1000);
+#if DSD_PLATFORM_LINUX || DSD_PLATFORM_MACOS || DSD_PLATFORM_WIN_NATIVE
     rc |=
         expect_true("realtime priority wrapper returns status", prio_rc == 0 || prio_rc == EPERM || prio_rc == EINVAL);
+#else
+    rc |= expect_int("realtime priority is unsupported", prio_rc, ENOSYS);
+#endif
 
+#if (DSD_PLATFORM_LINUX && !defined(__ANDROID__)) || DSD_PLATFORM_WIN_NATIVE
     int affinity_rc = dsd_thread_set_affinity(0);
     rc |= expect_true("affinity wrapper returns status",
                       affinity_rc == 0 || affinity_rc == EINVAL || affinity_rc == EPERM || affinity_rc == ESRCH);
+    rc |= expect_int("affinity rejects a negative index", dsd_thread_set_affinity(-1), EINVAL);
+    rc |= expect_int("affinity rejects an index past the CPU set", dsd_thread_set_affinity(INT_MAX), EINVAL);
+#if DSD_PLATFORM_WIN_NATIVE
+    rc |= expect_int("affinity rejects an index past the mask width",
+                     dsd_thread_set_affinity((int)(sizeof(DWORD_PTR) * CHAR_BIT)), EINVAL);
+#endif
+#else
+    rc |= expect_int("affinity is unsupported", dsd_thread_set_affinity(0), ENOSYS);
+#endif
 
     return rc;
 }

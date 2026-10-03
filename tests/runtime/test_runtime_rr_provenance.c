@@ -431,8 +431,8 @@ expect_recipe_malformed_values_fail(void) {
     rc |= dsd_rr_provenance_read(csv, &got) == -1 ? 0 : 1;
 
     /* But a frequency that simply does not fit an int is NOT malformed: the
-       writer emits %lld from a long long and rr_generate accepts sites up to
-       6 GHz, so an int-ranged reader would reject a sidecar this build wrote -
+       writer emits %lld from a long long and earlier builds generated sites up
+       to 6 GHz, so an int-ranged reader would reject a sidecar one of them wrote -
        and a rejected sidecar drops the system out of the browser, the CSV picker
        and refresh, taking kind/sid/system_name down with it. */
     rc |= write_sidecar_text(rr, "kind = chan\nsid = 4242\nsystem_name = High Band\nprotocol = p25\n"

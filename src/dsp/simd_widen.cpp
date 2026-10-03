@@ -15,9 +15,14 @@
 #include <dsd-neo/core/input_level.h>
 #include <dsd-neo/dsp/simd_widen.h>
 
+#include <algorithm>
 #include <atomic>
+#include <iterator>
+#include <stddef.h>
 #include <stdint.h>
 
+#include "dsd-neo/core/safe_api.h"
+#include "simd_widen_internal.h"
 #include "simd_x86_cpu.h"
 
 static inline void
@@ -46,6 +51,8 @@ using widen_rot_phase_fn = uint32_t (*)(const unsigned char*, float*, uint32_t, 
 using widen_moments_fn = void (*)(const unsigned char*, float*, uint32_t, dsd_input_level_cu8_moments*);
 using widen_rot_phase_moments_fn = uint32_t (*)(const unsigned char*, float*, uint32_t, uint32_t,
                                                 dsd_input_level_cu8_moments*);
+using bound_cf32_fn = void (*)(const void*, float*, size_t);
+using bound_rot_cf32_fn = uint32_t (*)(const void*, float*, size_t, uint32_t);
 
 #if defined(__x86_64__) || defined(_M_X64)
 extern "C" void widen_u8_to_f32_bias127_moments_sse2(const unsigned char* src, float* dst, uint32_t len,
@@ -55,6 +62,8 @@ extern "C" uint32_t widen_rotate90_u8_to_f32_bias127_phase_sse2(const unsigned c
 extern "C" uint32_t widen_rotate90_u8_to_f32_bias127_phase_moments_sse2(const unsigned char* src, float* dst,
                                                                         uint32_t len, uint32_t phase,
                                                                         dsd_input_level_cu8_moments* moments);
+extern "C" void bound_cf32_to_f32_sse2(const void* src, float* dst, size_t pairs);
+extern "C" uint32_t bound_rotate90_cf32_to_f32_phase_sse2(const void* src, float* dst, size_t pairs, uint32_t phase);
 #if defined(DSD_NEO_DSP_HAVE_AVX2_IMPL) && DSD_NEO_X86_AVX2_RUNTIME_PROBE_SUPPORTED
 extern "C" void widen_u8_to_f32_bias127_moments_avx2(const unsigned char* src, float* dst, uint32_t len,
                                                      dsd_input_level_cu8_moments* moments);
@@ -63,6 +72,8 @@ extern "C" uint32_t widen_rotate90_u8_to_f32_bias127_phase_avx2(const unsigned c
 extern "C" uint32_t widen_rotate90_u8_to_f32_bias127_phase_moments_avx2(const unsigned char* src, float* dst,
                                                                         uint32_t len, uint32_t phase,
                                                                         dsd_input_level_cu8_moments* moments);
+extern "C" void bound_cf32_to_f32_avx2(const void* src, float* dst, size_t pairs);
+extern "C" uint32_t bound_rotate90_cf32_to_f32_phase_avx2(const void* src, float* dst, size_t pairs, uint32_t phase);
 #endif
 #endif
 
@@ -74,6 +85,8 @@ extern "C" uint32_t widen_rotate90_u8_to_f32_bias127_phase_neon(const unsigned c
 extern "C" uint32_t widen_rotate90_u8_to_f32_bias127_phase_moments_neon(const unsigned char* src, float* dst,
                                                                         uint32_t len, uint32_t phase,
                                                                         dsd_input_level_cu8_moments* moments);
+extern "C" void bound_cf32_to_f32_neon(const void* src, float* dst, size_t pairs);
+extern "C" uint32_t bound_rotate90_cf32_to_f32_phase_neon(const void* src, float* dst, size_t pairs, uint32_t phase);
 #endif
 
 static void widen_u8_to_f32_bias127_moments_scalar(const unsigned char* src, float* dst, uint32_t len,
@@ -83,11 +96,15 @@ static uint32_t widen_rotate90_u8_to_f32_bias127_phase_scalar(const unsigned cha
 static uint32_t widen_rotate90_u8_to_f32_bias127_phase_moments_scalar(const unsigned char* src, float* dst,
                                                                       uint32_t len, uint32_t phase,
                                                                       dsd_input_level_cu8_moments* moments);
+static void bound_cf32_to_f32_scalar(const void* src, float* dst, size_t pairs);
+static uint32_t bound_rotate90_cf32_to_f32_phase_scalar(const void* src, float* dst, size_t pairs, uint32_t phase);
 
 static widen_rot_phase_fn g_widen_rot_phase_impl = widen_rotate90_u8_to_f32_bias127_phase_scalar;
 static widen_moments_fn g_widen_moments_impl = widen_u8_to_f32_bias127_moments_scalar;
 static widen_rot_phase_moments_fn g_widen_rot_phase_moments_impl =
     widen_rotate90_u8_to_f32_bias127_phase_moments_scalar;
+static bound_cf32_fn g_bound_cf32_impl = bound_cf32_to_f32_scalar;
+static bound_rot_cf32_fn g_bound_rot_cf32_impl = bound_rotate90_cf32_to_f32_phase_scalar;
 static std::atomic<int> g_widen_init_done{0};
 
 static void
@@ -106,17 +123,23 @@ simd_widen_init_dispatch(void) {
         g_widen_rot_phase_impl = widen_rotate90_u8_to_f32_bias127_phase_avx2;
         g_widen_moments_impl = widen_u8_to_f32_bias127_moments_avx2;
         g_widen_rot_phase_moments_impl = widen_rotate90_u8_to_f32_bias127_phase_moments_avx2;
+        g_bound_cf32_impl = bound_cf32_to_f32_avx2;
+        g_bound_rot_cf32_impl = bound_rotate90_cf32_to_f32_phase_avx2;
     } else
 #endif
     {
         g_widen_rot_phase_impl = widen_rotate90_u8_to_f32_bias127_phase_sse2;
         g_widen_moments_impl = widen_u8_to_f32_bias127_moments_sse2;
         g_widen_rot_phase_moments_impl = widen_rotate90_u8_to_f32_bias127_phase_moments_sse2;
+        g_bound_cf32_impl = bound_cf32_to_f32_sse2;
+        g_bound_rot_cf32_impl = bound_rotate90_cf32_to_f32_phase_sse2;
     }
 #elif defined(__aarch64__) || defined(__arm64) || defined(_M_ARM64) || defined(_M_ARM64EC)
     g_widen_rot_phase_impl = widen_rotate90_u8_to_f32_bias127_phase_neon;
     g_widen_moments_impl = widen_u8_to_f32_bias127_moments_neon;
     g_widen_rot_phase_moments_impl = widen_rotate90_u8_to_f32_bias127_phase_moments_neon;
+    g_bound_cf32_impl = bound_cf32_to_f32_neon;
+    g_bound_rot_cf32_impl = bound_rotate90_cf32_to_f32_phase_neon;
 #endif
 
     g_widen_init_done.store(2, std::memory_order_release);
@@ -203,6 +226,49 @@ widen_rotate90_u8_to_f32_bias127_phase_scalar(const unsigned char* src, float* d
     return widen_rotate90_u8_to_f32_bias127_phase_moments_scalar(src, dst, len, phase, nullptr);
 }
 
+namespace {
+/* The bounded cf32 copy's period kernel for targets with no SIMD backend. Scalar code gains nothing from checking
+   apart: the periods go in bounded, and nothing is left to report. */
+struct cf32_period_scalar {
+    using period_copy = cf32_periods_bounded;
+
+    template <bool kRotate>
+    static inline void
+    copy(float* dst, const unsigned char* src) {
+        uint32_t lanes[8];
+        DSD_MEMCPY(lanes, src, sizeof(lanes));
+        std::transform(std::begin(lanes), std::end(lanes), std::begin(lanes),
+                       [](uint32_t bits) { return cf32_bound_bits(bits); });
+        if (kRotate) {
+            uint32_t out[8] = {lanes[0], lanes[1], lanes[3], lanes[2], lanes[4], lanes[5], lanes[7], lanes[6]};
+            for (size_t k = 0U; k < 8U; k++) {
+                out[k] ^= kCf32PeriodSigns[k];
+            }
+            DSD_MEMCPY(dst, out, sizeof(out));
+        } else {
+            DSD_MEMCPY(dst, lanes, sizeof(lanes));
+        }
+    }
+
+    static inline void
+    copy_periods(float* dst, const unsigned char* src, size_t periods) {
+        for (size_t k = 0U; k < periods; k++) {
+            copy<false>(dst + (k * 8U), src + (k * 32U));
+        }
+    }
+};
+} /* namespace */
+
+static void
+bound_cf32_to_f32_scalar(const void* src, float* dst, size_t pairs) {
+    (void)cf32_copy_bounded<cf32_period_scalar>(dst, src, pairs, false, 0U);
+}
+
+static uint32_t
+bound_rotate90_cf32_to_f32_phase_scalar(const void* src, float* dst, size_t pairs, uint32_t phase) {
+    return cf32_copy_bounded<cf32_period_scalar>(dst, src, pairs, true, phase);
+}
+
 #ifdef DSD_NEO_TEST_HOOKS
 extern "C" void
 dsd_test_widen_u8_to_f32_bias127_moments_scalar(const unsigned char* src, float* dst, uint32_t len,
@@ -220,6 +286,16 @@ extern "C" uint32_t
 dsd_test_widen_rotate90_u8_to_f32_bias127_phase_moments_scalar(const unsigned char* src, float* dst, uint32_t len,
                                                                uint32_t phase, dsd_input_level_cu8_moments* moments) {
     return widen_rotate90_u8_to_f32_bias127_phase_moments_scalar(src, dst, len, phase, moments);
+}
+
+extern "C" void
+dsd_test_bound_cf32_to_f32_scalar(const void* src, float* dst, size_t pairs) {
+    bound_cf32_to_f32_scalar(src, dst, pairs);
+}
+
+extern "C" uint32_t
+dsd_test_bound_rotate90_cf32_to_f32_phase_scalar(const void* src, float* dst, size_t pairs, uint32_t phase) {
+    return bound_rotate90_cf32_to_f32_phase_scalar(src, dst, pairs, phase);
 }
 #endif
 
@@ -247,4 +323,20 @@ widen_rotate90_u8_to_f32_bias127_phase_moments(const unsigned char* src, float* 
         simd_widen_init_dispatch();
     }
     return g_widen_rot_phase_moments_impl(src, dst, len, phase, moments);
+}
+
+void
+bound_cf32_to_f32(const void* src, float* dst, size_t pairs) {
+    if (g_widen_init_done.load(std::memory_order_acquire) != 2) {
+        simd_widen_init_dispatch();
+    }
+    g_bound_cf32_impl(src, dst, pairs);
+}
+
+uint32_t
+bound_rotate90_cf32_to_f32_phase(const void* src, float* dst, size_t pairs, uint32_t phase) {
+    if (g_widen_init_done.load(std::memory_order_acquire) != 2) {
+        simd_widen_init_dispatch();
+    }
+    return g_bound_rot_cf32_impl(src, dst, pairs, phase);
 }

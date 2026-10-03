@@ -614,6 +614,7 @@ init_state_sync_and_stream_defaults(dsd_state* state) {
     state->symbol_replay_soft.llr[0] = 0;
     state->symbol_replay_soft.llr[1] = 0;
     state->symbol_replay_soft_symbol = 0.0f;
+    state->symbol_replay_symbol_unusable = 0;
     state->symbol_replay_soft_records = 0;
     state->symbol_capture_soft_records = 0;
     state->rf_mod = 0;

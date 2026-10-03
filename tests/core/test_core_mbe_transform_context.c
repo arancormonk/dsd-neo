@@ -35,6 +35,7 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "mbe_result_context.h"
+#include "test_support.h"
 
 static int
 expect_eq_int(const char* tag, int got, int want) {
@@ -645,7 +646,7 @@ create_mbe_playback_file(char* path, size_t path_size, const char cookie[4],
         DSD_FPRINTF(stderr, "dsd_mkstemp failed: %s\n", strerror(errno));
         return 1;
     }
-    FILE* f = fdopen(fd, "wb");
+    FILE* f = dsd_test_fdopen(fd, "wb");
     if (!f) {
         DSD_FPRINTF(stderr, "fdopen failed: %s\n", strerror(errno));
         dsd_close(fd);
@@ -1865,7 +1866,7 @@ test_process_mbe_frame_dstar_header_voice_decodes_as_ambe2400(void) {
                                       sizeof(ref_err_str[f]), &result);
         rc |= expect_eq_int("dstar-route reference processes", ret >= 0, 1);
     }
-    static const float silence[160];
+    static const float silence[160] = {0.0f};
     rc |= expect_eq_int("dstar-route reference is not silence", audio_frames_differ(ref_audio[1], silence), 1);
 
     mbe_initMbeParms(&ref_cur, &ref_prev, &ref_prev_enhanced);
@@ -3129,7 +3130,7 @@ test_process_mbe_frame_soft_provoice_matches_hard(void) {
     }
     rc |= run_provoice_frame(clean, NULL, &hard_run);
     rc |= run_provoice_frame(NULL, soft, &soft_run);
-    static const float silence[160];
+    static const float silence[160] = {0.0f};
     rc |= expect_eq_int("soft-provoice clean frame needs no correction", hard_run.errs2, 0);
     rc |= expect_eq_int("soft-provoice clean frame is not silence", provoice_audio_differs(hard_run.audio, silence), 1);
     rc |= expect_provoice_runs_equal("soft-provoice clean", &soft_run, &hard_run);
@@ -3459,7 +3460,7 @@ test_process_mbe_frame_soft_dstar_matches_hard(void) {
     }
     rc |= run_dstar_frame(clean, NULL, &hard_run);
     rc |= run_dstar_frame(NULL, soft, &soft_run);
-    static const float silence[160];
+    static const float silence[160] = {0.0f};
     rc |= expect_eq_int("soft-dstar clean frame needs no correction", hard_run.errs2, 0);
     rc |= expect_eq_int("soft-dstar clean frame is not silence", audio_frames_differ(hard_run.audio, silence), 1);
     rc |= expect_dstar_runs_equal("soft-dstar clean", &soft_run, &hard_run);

@@ -10,6 +10,15 @@ find_package(
 
 add_library(dsd-neo_ui_qt STATIC)
 
+# The UI rejects NaN and infinite values (spectrum auto-range, saved preferences,
+# scan targets, session arguments) and none of it is DSP-bound, so it keeps IEEE
+# semantics even when the global fast-math option is on.
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(dsd-neo_ui_qt PRIVATE -fno-fast-math)
+elseif(MSVC)
+    target_compile_options(dsd-neo_ui_qt PRIVATE /fp:precise)
+endif()
+
 target_sources(
     dsd-neo_ui_qt
     PRIVATE

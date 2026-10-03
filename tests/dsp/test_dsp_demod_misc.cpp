@@ -6,10 +6,10 @@
 /* Unit tests for remaining demod helpers: deemph_filter, low_pass_real, and dsd_fm_demod plumbing. */
 
 #include <cmath>
-#include <cstdlib>
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
 #include <dsd-neo/runtime/analog_channel.h>
+#include <dsd-neo/runtime/mem.h>
 #include <stdio.h>
 #include "dsd-neo/core/safe_api.h"
 
@@ -218,14 +218,14 @@ test_channel_lpf_protected_edge(void) {
 
 int
 main(void) {
-    demod_state* s = (demod_state*)malloc(sizeof(demod_state));
+    demod_state* s = static_cast<demod_state*>(dsd_neo_aligned_malloc(sizeof(demod_state)));
     if (!s) {
         return 1;
     }
     DSD_MEMSET(s, 0, sizeof(*s));
 
     if (!test_channel_lpf_protected_edge()) {
-        free(s);
+        dsd_neo_aligned_free(s);
         return 1;
     }
 
@@ -241,12 +241,12 @@ main(void) {
         deemph_filter(s);
         if (!monotonic_nondecreasing(s->result, N)) {
             DSD_FPRINTF(stderr, "deemph_filter: non-monotonic step response\n");
-            free(s);
+            dsd_neo_aligned_free(s);
             return 1;
         }
         if (!approx_eq(s->result[N - 1], 1.0f, 1e-4f)) {
             DSD_FPRINTF(stderr, "deemph_filter: final=%f not near 1.0\n", s->result[N - 1]);
-            free(s);
+            dsd_neo_aligned_free(s);
             return 1;
         }
     }
@@ -265,13 +265,13 @@ main(void) {
         low_pass_real(s);
         if (s->result_len != N / 2) {
             DSD_FPRINTF(stderr, "low_pass_real: result_len=%d want %d\n", s->result_len, N / 2);
-            free(s);
+            dsd_neo_aligned_free(s);
             return 1;
         }
         for (int i = 0; i < s->result_len; i++) {
             if (!approx_eq(s->result[i], 0.5f, 1e-4f)) {
                 DSD_FPRINTF(stderr, "low_pass_real: out[%d]=%f not ~0.5\n", i, s->result[i]);
-                free(s);
+                dsd_neo_aligned_free(s);
                 return 1;
             }
         }
@@ -289,7 +289,7 @@ main(void) {
         dsd_fm_demod(s);
         if (s->result_len != 3) {
             DSD_FPRINTF(stderr, "dsd_fm_demod: result_len=%d want 3\n", s->result_len);
-            free(s);
+            dsd_neo_aligned_free(s);
             return 1;
         }
         /* With the first sample seeded from history the delta is zero, and
@@ -297,29 +297,29 @@ main(void) {
         const float pi_2 = 1.5707963f;
         if (fabsf(s->result[0]) > 0.01f) {
             DSD_FPRINTF(stderr, "dsd_fm_demod: result[0]=%f want ~0\n", s->result[0]);
-            free(s);
+            dsd_neo_aligned_free(s);
             return 1;
         }
         for (int i = 1; i < s->result_len; i++) {
             float expect = pi_2;
             if (fabsf(s->result[i] - expect) > 0.01f) {
                 DSD_FPRINTF(stderr, "dsd_fm_demod: result[%d]=%f want ~%f\n", i, s->result[i], expect);
-                free(s);
+                dsd_neo_aligned_free(s);
                 return 1;
             }
         }
     }
 
     if (check_channel_lpf_protected_edges(s) != 0) {
-        free(s);
+        dsd_neo_aligned_free(s);
         return 1;
     }
 
     if (check_analog_protected_edges(s) != 0 || check_analog_plan_cache(s) != 0) {
-        free(s);
+        dsd_neo_aligned_free(s);
         return 1;
     }
 
-    free(s);
+    dsd_neo_aligned_free(s);
     return 0;
 }

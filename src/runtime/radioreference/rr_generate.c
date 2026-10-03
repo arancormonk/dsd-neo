@@ -22,6 +22,7 @@
 #include "rr_internal.h"
 
 #include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/radioreference.h>
 #include <dsd-neo/runtime/radioreference_generate.h>
@@ -56,7 +57,7 @@
 
 /* csv_chan_freq_plausible(): anything outside this is dropped by the importer. */
 #define RR_FREQ_MIN_HZ        100000LL
-#define RR_FREQ_MAX_HZ        6000000000LL
+#define RR_FREQ_MAX_HZ        ((long long)DSD_TRUNK_FREQ_MAX_HZ)
 
 /* EDACS indexes the runtime's scan list as lcn - 1 with lcn < 26, so only the
  * first 25 slots are reachable for EDACS. The list itself is heap-backed and

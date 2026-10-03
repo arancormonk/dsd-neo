@@ -469,12 +469,50 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
     platform in `file_compat_posix.c` and `file_compat_win32.c`
   - Private file opens: `dsd_fopen_private()` creates a written file owner-only; `dsd_fopen_private_ex()` also says
     whether it opened the path, which for a write mode creates or empties it before the stream over the descriptor is
-    made, so an open whose `fdopen()` fails still reports the file it emptied (issue #578: the I/Q capture writer)
+    made, so an open whose `fdopen()` fails still reports the file it emptied (issue #578: the I/Q capture writer).
+    Open raw bytes with a `b` mode: on Windows a text-mode stream writes every LF as CRLF
+  - Win32 wrappers keep the POSIX contract callers rely on: errno values, never raw `GetLastError()` codes (the
+    thread scheduling and condition calls map them; affinity and realtime priority return ENOSYS where the platform
+    has no such control), ENOENT for a missing file from `dsd_fopen_existing_regular_file()`, and temp files
+    (`dsd_mkstemp()`, `dsd_mkdtemp()`, `dsd_fopen_private_temp_for_replace()`) named from `dsd_nonce_fill()` with a
+    retry when the name is taken (`src/platform/win32_temp_name_internal.h`), never the CRT's `_mktemp_s()`, which
+    gives 26 names per template and reuses one as soon as its file is gone
   - Audio backends: selected by `DSD_AUDIO_BACKEND` (`auto` → PortAudio on Windows, PulseAudio
     elsewhere; `none` → `audio_null.c` discard/silence backend; `aaudio` → Android). Exactly one
     backend translation unit is compiled per build; the shared last-error store lives in
     `src/platform/audio_error_internal.h`
+  - Fast-math-proof value checks: `dsd_fp_opaque_f()`/`dsd_fp_opaque_d()` in
+    `include/dsd-neo/platform/fp_opaque.h` hide a value's origin from the optimizer (a round trip through a volatile
+    object, one store and one load) before an IEEE translation unit tests it for NaN or infinity, so Clang's link-time
+    inlining into a fast-math caller cannot fold the test away. See "Fast-math and non-finite values" below.
 - Build files: `src/platform/CMakeLists.txt`
+
+### Fast-math and non-finite values
+
+The release presets build with `DSD_ENABLE_FAST_MATH` (`-ffast-math`, `/fp:fast` on MSVC), which lets the compiler
+assume no value is NaN or infinite: `std::isnan()`, `std::isfinite()`, `x != x` and NaN-catching comparisons fold to
+constants, and Clang also folds an integer bit test on a float it computed or received as an argument. A global
+`-fno-finite-math-only` measured a 3.4% DSP slowdown, so the rule is per site:
+
+- Code that must reject NaN or infinity and is not on a per-sample path (configuration and CLI parsing, device control,
+  per-block metrics, the terminal and Qt UIs) is built with IEEE semantics: `set_source_files_properties(... PROPERTIES
+  COMPILE_OPTIONS "-fno-fast-math")` with an `elseif(MSVC)` `/fp:precise` branch, as in `src/runtime/CMakeLists.txt`.
+  A source compiled directly into a test from `tests/CMakeLists.txt` does not inherit that directory-scoped property.
+- A hot file keeps fast-math and moves its check into a small IEEE translation unit called off the per-sample path
+  (`frames/dsd_dibit_reliability.c`, `io/radio/rtl_finite.cpp`); a by-value argument goes through `dsd_fp_opaque_*()`
+  first.
+- Per-sample loops validate on bits loaded from memory, which no floating-point assumption reaches: external float
+  samples are sanitized where they enter -- SoapySDR CF32 reads and cf32 replays through `bound_cf32_to_f32()` and
+  `bound_rotate90_cf32_to_f32_phase()` (`include/dsd-neo/dsp/simd_widen.h`, SIMD with runtime AVX2 dispatch), which
+  turn any component that is NaN, infinite or at least 2^60 into 0, and soft symbol files in `src/dsp/dsd_symbol.c` --
+  and the Costas and Gardner loops check each sample where they load it (`src/dsp/costas.cpp`).
+- Arithmetic whose exact rounding is a contract keeps it explicitly: the decode clock's `ns / 1e9` (`decode_clock.c`
+  is IEEE), and the fallback decimator's block-split-invariant running sum (`#pragma clang fp reassociate(off)`).
+- Tests that feed NaN or infinity, or check results with `std::isnan()`, compile their own sources with IEEE
+  semantics (the block near the top of `tests/CMakeLists.txt`), leaving the code under test on the build's flags.
+
+The `Linux • RelWithDebInfo • ctest (x86-64-v3, fast-math, clang)` check enforces the first point: with `-Werror`, Clang's
+`-Wnan-infinity-disabled` makes any NaN or infinity test left in fast-math code a build error.
 
 ## Core
 
@@ -615,6 +653,9 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
 - Responsibilities:
   - Config system (schema, expansion, user config), logging, memory helpers, rings, worker pools, RT scheduling
   - CLI parsing and interactive/bootstrap helpers (`include/dsd-neo/runtime/cli.h`)
+  - UTF-8 output (`include/dsd-neo/runtime/unicode.h`): on Windows the first `dsd_unicode_init_locale()` switches the
+    console's code pages to UTF-8 and registers `dsd_unicode_restore_console()` with `atexit()`, so the shell gets its
+    own code pages back when dsd-neo exits
   - Hook interfaces that let DSP/protocol code publish state without depending on UI internals
   - Decode clock (`include/dsd-neo/runtime/decode_clock.h`, `src/runtime/decode_clock.c`): an injectable clock for
     decode decisions and decoded-output timestamps (`dsd_decode_time()`, `dsd_decode_now_mono_{s,ms,ns}()`,

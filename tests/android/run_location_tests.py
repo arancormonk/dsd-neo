@@ -32,12 +32,14 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--require-tools", action="store_true")
     args = parser.parse_args()
+    # CI jobs that run the suite set DSD_NEO_REQUIRE_TEST_TOOLS=1, so a missing compiler fails there instead of skipping.
+    require_tools = args.require_tools or os.environ.get("DSD_NEO_REQUIRE_TEST_TOOLS") == "1"
     java = shutil.which("java")
     kotlinc = shutil.which("kotlinc")
     cached = cached_compiler() if not kotlinc else None
     if not java or (not kotlinc and not cached):
         print("Location JVM tests need Java and kotlinc, or the Kotlin compiler in the Gradle cache.")
-        return 1 if args.require_tools else 77
+        return 1 if require_tools else 77
     here = Path(__file__).resolve().parent
     source = here.parents[1] / "android/package/src/io/github/arancormonk/dsdneo/LocationSupport.kt"
     files = [source, here / "LocationGeocodeQueueTest.kt", here / "LocationSupportTest.kt", *sorted((here / "stubs").glob("*.kt"))]

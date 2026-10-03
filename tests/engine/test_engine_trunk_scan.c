@@ -31,7 +31,6 @@
 #include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/platform/file_compat.h>
-#include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
@@ -54,7 +53,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
 #include "test_support.h"
 #include "trunk_scan_internal.h"
 #include "trunk_scan_test_support.h"
@@ -622,15 +620,9 @@ cleanup_paths(const char* dir, const char* targets, const char* chan) {
     if (chan) {
         (void)remove(chan);
     }
-#if DSD_PLATFORM_WIN_NATIVE
     if (dir) {
-        (void)_rmdir(dir);
+        (void)dsd_test_rmdir(dir);
     }
-#else
-    if (dir) {
-        (void)rmdir(dir);
-    }
-#endif
 }
 
 static int

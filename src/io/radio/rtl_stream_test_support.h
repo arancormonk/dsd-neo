@@ -139,6 +139,8 @@ int rtl_stream_test_rx_request_outcomes(rtl_stream_test_rx_request_result* out);
 int rtl_stream_test_fsk_cfo_snapshot(double dc_rad_per_sample, int rate_out_hz, double* out_cfo_hz,
                                      int* out_after_generation_bump_available, int* out_after_reset_available);
 int rtl_stream_test_fsk_snr_sps(int rate_out_hz, int symbol_rate_hz, int stale_ted_sps);
+int rtl_stream_test_snr_publish(double c4fm_snr_db, double qpsk_ratio, int* out_c4fm_published,
+                                int* out_qpsk_published);
 int rtl_stream_test_direct_output_rate_after_open_update(int output_kind, int rate_out_hz, int resamp_target_hz,
                                                          unsigned int* out_rate_hz, int* out_resamp_enabled);
 
@@ -154,6 +156,20 @@ typedef struct {
 
 int rtl_device_test_airspy_ingest(const rtl_device_test_airspy_request* request, float* output, size_t* output_count,
                                   uint64_t* dropped);
+
+typedef struct {
+    const float* samples; /* the driver's CF32 buffer: pairs complex samples, I then Q */
+    size_t pairs;
+    size_t capacity;
+    size_t start;
+    int fs4_shift;
+    int start_phase;
+} rtl_device_test_soapy_cf32_request;
+
+/* Returns 1, and leaves the outputs alone, when the build has no SoapySDR. */
+int rtl_device_test_soapy_cf32_ingest(const rtl_device_test_soapy_cf32_request* request, float* output,
+                                      size_t* output_count, int* out_phase);
+
 int rtl_stream_test_passes_for_actual_rate(uint32_t actual_rate_hz, int rate_in_hz);
 int rtl_stream_test_digital_resample_chain(int output_kind, int rate_out_hz, int resamp_target_hz, int symbol_rate_hz,
                                            int digital_resample_mode, int capture_rate_device_forced,
@@ -225,6 +241,7 @@ typedef struct rtl_stream_test_fll_retune_cache_result {
 } rtl_stream_test_fll_retune_cache_result;
 
 int rtl_stream_test_fll_retune_cache_round_trip(rtl_stream_test_fll_retune_cache_result* out_result);
+int rtl_stream_test_fll_retune_cache_stores(float leaving_fll_freq, int* out_restored);
 int rtl_stream_test_retune_profile_request_binding(int* out_first_profile, int* out_second_profile,
                                                    uint32_t* out_first_freq_hz, uint32_t* out_second_freq_hz,
                                                    uint32_t* out_first_request_id, uint32_t* out_second_request_id);

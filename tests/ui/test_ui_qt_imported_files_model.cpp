@@ -43,6 +43,7 @@
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/runtime/scan_options.h>
 #include <initializer_list>
 #include <qflags.h>
@@ -1524,6 +1525,9 @@ test_example_targets() {
     }
     opts->trunk_scan_enabled = 1;
     opts->use_rigctl = 1;
+    /* No rigctl peer: the retune fails as it does without one. A zeroed socket field would be descriptor 0, and a
+       retune would write its command to stdin and then wait on stdin for the reply. */
+    opts->rigctl_sockfd = DSD_INVALID_SOCKET;
     opts->rtl_dsp_bw_khz = 48;
     opts->scan_max_visit_ms = 40000;
     DSD_SNPRINTF(opts->trunk_scan_targets_csv, sizeof opts->trunk_scan_targets_csv, "%s", path.toUtf8().constData());

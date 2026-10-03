@@ -23,7 +23,78 @@ else()
     target_compile_options(dsd-neo_test_assertions INTERFACE -UNDEBUG)
 endif()
 
+# A Debug-CRT assertion or abort() opens a modal dialog on Windows, and a test
+# that hits one waits for a click until CTest's timeout. Every MSVC test
+# executable reports them on stderr instead; see test_support/win_crt_report.c.
+# Executables only: link_libraries() below also reaches the test support
+# libraries, and a second copy of the initializer there would be a duplicate
+# definition in every executable that links one.
+if(MSVC)
+    target_sources(
+        dsd-neo_test_assertions
+        INTERFACE
+            "$<$<STREQUAL:$<TARGET_PROPERTY:TYPE>,EXECUTABLE>:${CMAKE_CURRENT_SOURCE_DIR}/test_support/win_crt_report.c>"
+    )
+endif()
+
 link_libraries(dsd-neo_warnings dsd-neo_test_assertions)
+
+# A Windows main thread gets a 1 MiB stack where Linux gives 8 MiB, so a test
+# with a multi-megabyte local overflows only on Windows (CTest reports it as a
+# segfault). GCC and Clang reject any test stack frame over 768 KiB, which leaves
+# the rest of that megabyte for the calls beneath it.
+if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+    add_compile_options(-Wframe-larger-than=786432)
+endif()
+
+# These tests feed NaN or infinite values to the code under test, or check its
+# output with std::isnan()/isfinite(). In fast-math builds (perf-bench and the
+# optimized CI jobs) those values are undefined in a translation unit and the
+# checks fold away, so the tests' own sources keep IEEE semantics; the
+# production code they exercise keeps the build's flags. The decode-clock test
+# is here because its bounds must round like decode_clock.c, which divides
+# ns / 1e9 exactly where fast-math would multiply by an inexact 1e-9, and the
+# audio2 test because its mono-mixer stub divides by a slot count, which Clang
+# turns into an approximate reciprocal under fast-math.
+if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+    set_source_files_properties(
+        core/test_core_audio2_helpers.c
+        core/test_core_audio_gain.c
+        core/test_core_init_state.c
+        dsp/test_dsp_am_demod.cpp
+        dsp/test_dsp_analog_ctcss.c
+        dsp/test_dsp_audio_filters.cpp
+        dsp/test_dsp_costas.cpp
+        dsp/test_dsp_demod_segmentation.cpp
+        dsp/test_dsp_firdes.c
+        dsp/test_dsp_simd_widen.cpp
+        dsp/test_dsp_snr_estimator.cpp
+        dsp/test_dsp_symbol_replay.c
+        io/test_io_input_level_metrics.c
+        io/test_io_rtl_replay_eof_and_cf32.cpp
+        runtime/test_runtime_decode_clock.c
+        PROPERTIES COMPILE_OPTIONS "-fno-fast-math"
+    )
+elseif(MSVC)
+    set_source_files_properties(
+        core/test_core_audio2_helpers.c
+        core/test_core_audio_gain.c
+        core/test_core_init_state.c
+        dsp/test_dsp_am_demod.cpp
+        dsp/test_dsp_analog_ctcss.c
+        dsp/test_dsp_audio_filters.cpp
+        dsp/test_dsp_costas.cpp
+        dsp/test_dsp_demod_segmentation.cpp
+        dsp/test_dsp_firdes.c
+        dsp/test_dsp_simd_widen.cpp
+        dsp/test_dsp_snr_estimator.cpp
+        dsp/test_dsp_symbol_replay.c
+        io/test_io_input_level_metrics.c
+        io/test_io_rtl_replay_eof_and_cf32.cpp
+        runtime/test_runtime_decode_clock.c
+        PROPERTIES COMPILE_OPTIONS "/fp:precise"
+    )
+endif()
 
 add_library(dsd-neo_test_support INTERFACE)
 target_include_directories(
@@ -38,10 +109,32 @@ target_link_libraries(dsd-neo_test_support INTERFACE dsd-neo_platform)
 # its failure mode was reporting a clean run over an empty analysis. iwyu.sh
 # gets a fake IWYU, since its failure mode was reading a unit that did not
 # compile as clean. Bash only: the scripts themselves are bash, so nothing is
-# lost by skipping them where it is missing.
+# lost by skipping them where it is missing. They need bash 4 or later (mapfile),
+# and macOS ships 3.2 as /bin/bash, so a newer one is preferred where installed;
+# with only an older one they still register, and fail, rather than vanish.
 if(NOT WIN32)
-    find_program(DSD_NEO_BASH_EXECUTABLE bash)
+    find_program(
+        DSD_NEO_BASH_EXECUTABLE
+        bash
+        HINTS /opt/homebrew/bin /usr/local/bin
+    )
     if(DSD_NEO_BASH_EXECUTABLE)
+        execute_process(
+            COMMAND ${DSD_NEO_BASH_EXECUTABLE} -c [[echo "${BASH_VERSINFO[0]}"]]
+            OUTPUT_VARIABLE _dsd_neo_bash_major
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+            ERROR_QUIET
+        )
+        if(
+            NOT _dsd_neo_bash_major MATCHES "^[0-9]+$"
+            OR _dsd_neo_bash_major LESS 4
+        )
+            message(
+                WARNING
+                "${DSD_NEO_BASH_EXECUTABLE} is older than bash 4; the TOOLS_* script tests need bash 4 and will fail"
+            )
+        endif()
+        unset(_dsd_neo_bash_major)
         add_test(
             NAME TOOLS_CI_ARCH_TOOLCHAIN_PULL_RETRY
             COMMAND
@@ -112,7 +205,6 @@ add_library(
     STATIC
     ${PROJECT_SOURCE_DIR}/src/core/util/call_state.c
     ${PROJECT_SOURCE_DIR}/src/runtime/state_ext.c
-    ${PROJECT_SOURCE_DIR}/tests/test_support/event_sync_stub.c
 )
 target_include_directories(
     dsd-neo_test_call_state_support
@@ -126,6 +218,18 @@ target_link_libraries(
 target_compile_definitions(
     dsd-neo_test_call_state_support
     PRIVATE DSD_NEO_TEST_HOOKS
+)
+
+# call_state.c calls dsd_event_sync_slot(). Tests that link it without dsd-neo_core's
+# event code link this no-op; one linking both would define the function twice.
+add_library(
+    dsd-neo_test_event_sync_stub
+    STATIC
+    ${PROJECT_SOURCE_DIR}/tests/test_support/event_sync_stub.c
+)
+target_include_directories(
+    dsd-neo_test_event_sync_stub
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
 )
 
 add_library(
@@ -1312,28 +1416,31 @@ target_include_directories(
 target_link_libraries(dsd-neo_test_ysf_frame PRIVATE ${LIBS})
 add_test(NAME YSF_FRAME COMMAND dsd-neo_test_ysf_frame)
 
-add_executable(dsd-neo_test_ysf_dch_decode protocol/ysf/test_ysf_dch_decode.c)
-target_include_directories(
-    dsd-neo_test_ysf_dch_decode
-    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/ysf
-)
-target_link_libraries(
-    dsd-neo_test_ysf_dch_decode
-    PRIVATE
-        "-Wl,--start-group"
-        dsd-neo_proto_ysf
-        ${_DSD_RUNTIME_CLI_PARSE_LIBS}
-        "-Wl,--end-group"
-        ${LIBS}
-)
-target_link_options(
-    dsd-neo_test_ysf_dch_decode
-    PRIVATE
-        -Wl,--wrap=get_dibit_and_analog_signal
-        -Wl,--wrap=processMbeFrame
-        -Wl,--wrap=mbe_processAmbe2450Dataf
-)
-add_test(NAME YSF_DCH_DECODE COMMAND dsd-neo_test_ysf_dch_decode)
+# The DCH path is driven through GNU ld --wrap seams, like the other wrap tests.
+if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
+    add_executable(
+        dsd-neo_test_ysf_dch_decode
+        protocol/ysf/test_ysf_dch_decode.c
+    )
+    target_include_directories(
+        dsd-neo_test_ysf_dch_decode
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/protocol/ysf
+    )
+    target_link_libraries(
+        dsd-neo_test_ysf_dch_decode
+        PRIVATE "-Wl,--start-group" dsd-neo_proto_ysf "-Wl,--end-group" ${LIBS}
+    )
+    target_link_options(
+        dsd-neo_test_ysf_dch_decode
+        PRIVATE
+            -Wl,--wrap=get_dibit_and_analog_signal
+            -Wl,--wrap=processMbeFrame
+            -Wl,--wrap=mbe_processAmbe2450Dataf
+    )
+    add_test(NAME YSF_DCH_DECODE COMMAND dsd-neo_test_ysf_dch_decode)
+endif()
 
 add_executable(
     dsd-neo_test_p25_p2_ysf_sync_dispatch
@@ -1477,17 +1584,29 @@ target_include_directories(
         ${PROJECT_SOURCE_DIR}/include
         ${PROJECT_SOURCE_DIR}/src/protocol/nxdn
 )
-target_link_libraries(
-    dsd-neo_test_nxdn_deperm_primitives
-    PRIVATE
-        "-Wl,--start-group"
-        dsd-neo_proto_nxdn
-        dsd-neo_proto_dmr
-        dsd-neo_proto_p25
-        dsd-neo_core
-        "-Wl,--end-group"
-        ${LIBS}
-)
+if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+    target_link_libraries(
+        dsd-neo_test_nxdn_deperm_primitives
+        PRIVATE
+            "-Wl,--start-group"
+            dsd-neo_proto_nxdn
+            dsd-neo_proto_dmr
+            dsd-neo_proto_p25
+            dsd-neo_core
+            "-Wl,--end-group"
+            ${LIBS}
+    )
+else()
+    target_link_libraries(
+        dsd-neo_test_nxdn_deperm_primitives
+        PRIVATE
+            dsd-neo_proto_nxdn
+            dsd-neo_proto_dmr
+            dsd-neo_proto_p25
+            dsd-neo_core
+            ${LIBS}
+    )
+endif()
 add_test(
     NAME NXDN_DEPERM_PRIMITIVES
     COMMAND dsd-neo_test_nxdn_deperm_primitives
@@ -1543,6 +1662,7 @@ target_link_libraries(
     PRIVATE
         dsd-neo_proto_nxdn
         dsd-neo_test_call_state_support
+        dsd-neo_test_event_sync_stub
         dsd-neo_test_support
 )
 add_test(NAME NXDN_ELEMENT_BOUNDS COMMAND dsd-neo_test_nxdn_element_bounds)
@@ -1675,6 +1795,23 @@ add_test(
 )
 
 add_executable(
+    dsd-neo_test_runtime_unicode_console_restore
+    runtime/test_runtime_unicode_console_restore.c
+)
+target_include_directories(
+    dsd-neo_test_runtime_unicode_console_restore
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_runtime_unicode_console_restore
+    PRIVATE dsd-neo_runtime
+)
+add_test(
+    NAME RUNTIME_UNICODE_CONSOLE_RESTORE
+    COMMAND dsd-neo_test_runtime_unicode_console_restore
+)
+
+add_executable(
     dsd-neo_test_runtime_unicode_put_scalar
     runtime/test_runtime_unicode_put_scalar.c
 )
@@ -1797,7 +1934,17 @@ if(DSD_ENABLE_TERMINAL_UI)
         PRIVATE
             ${PROJECT_SOURCE_DIR}/include
             ${PROJECT_SOURCE_DIR}/src/ui/terminal
+            ${CURSES_INCLUDE_DIRS}
     )
+    # The curses calls this test stubs are declared __declspec(dllimport) by the
+    # DLL build of PDCurses (Windows), and MSVC rejects defining one (C2491);
+    # CURSES_LIBRARY declares them as the library's own, as for the menu tests.
+    if(MSVC)
+        target_compile_definitions(
+            dsd-neo_test_ui_async_lifecycle
+            PRIVATE CURSES_LIBRARY
+        )
+    endif()
     add_test(NAME UI_ASYNC_LIFECYCLE COMMAND dsd-neo_test_ui_async_lifecycle)
 endif()
 
@@ -1968,6 +2115,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         PRIVATE
             ${PROJECT_SOURCE_DIR}/include
             ${PROJECT_SOURCE_DIR}/src/ui/terminal
+            ${CURSES_INCLUDE_DIRS}
     )
     target_compile_definitions(
         dsd-neo_test_ui_menu_tree_audit
@@ -2070,6 +2218,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         PRIVATE
             ${PROJECT_SOURCE_DIR}/include
             ${PROJECT_SOURCE_DIR}/src/ui/terminal
+            ${CURSES_INCLUDE_DIRS}
     )
     add_test(NAME UI_MENU_DEFS COMMAND dsd-neo_test_ui_menu_defs)
 
@@ -2094,6 +2243,12 @@ if(DSD_ENABLE_TERMINAL_UI)
         dsd-neo_test_ui_panels_header_footer
         PRIVATE ${CURSES_LIBRARIES}
     )
+    if(MSVC)
+        target_compile_definitions(
+            dsd-neo_test_ui_panels_header_footer
+            PRIVATE CURSES_LIBRARY
+        )
+    endif()
     add_test(
         NAME UI_PANELS_HEADER_FOOTER
         COMMAND dsd-neo_test_ui_panels_header_footer
@@ -2254,6 +2409,12 @@ if(DSD_ENABLE_TERMINAL_UI)
         dsd-neo_test_ui_ncurses_trunk_display_helpers
         PRIVATE ${CURSES_LIBRARIES}
     )
+    if(MSVC)
+        target_compile_definitions(
+            dsd-neo_test_ui_ncurses_trunk_display_helpers
+            PRIVATE CURSES_LIBRARY
+        )
+    endif()
     add_test(
         NAME UI_NCURSES_TRUNK_DISPLAY_HELPERS
         COMMAND dsd-neo_test_ui_ncurses_trunk_display_helpers
@@ -2280,6 +2441,12 @@ if(DSD_ENABLE_TERMINAL_UI)
         dsd-neo_test_ui_ncurses_p25_display_helpers
         PRIVATE dsd-neo_test_call_state_support ${CURSES_LIBRARIES}
     )
+    if(MSVC)
+        target_compile_definitions(
+            dsd-neo_test_ui_ncurses_p25_display_helpers
+            PRIVATE CURSES_LIBRARY
+        )
+    endif()
     add_test(
         NAME UI_NCURSES_P25_DISPLAY_HELPERS
         COMMAND dsd-neo_test_ui_ncurses_p25_display_helpers
@@ -2310,10 +2477,6 @@ if(DSD_ENABLE_TERMINAL_UI)
             ${PROJECT_SOURCE_DIR}/src/ui/terminal
             ${CURSES_INCLUDE_DIRS}
     )
-    target_compile_options(
-        dsd-neo_test_ui_ncurses_printer_helpers
-        PRIVATE -Wno-unused-function
-    )
     target_link_libraries(
         dsd-neo_test_ui_ncurses_printer_helpers
         PRIVATE
@@ -2321,6 +2484,12 @@ if(DSD_ENABLE_TERMINAL_UI)
             ${CURSES_LIBRARIES}
             ${DSD_NEO_TEST_MATH_LIB}
     )
+    if(MSVC)
+        target_compile_definitions(
+            dsd-neo_test_ui_ncurses_printer_helpers
+            PRIVATE CURSES_LIBRARY
+        )
+    endif()
     add_test(
         NAME UI_NCURSES_PRINTER_HELPERS
         COMMAND dsd-neo_test_ui_ncurses_printer_helpers
@@ -2337,6 +2506,7 @@ if(DSD_ENABLE_TERMINAL_UI)
             ${PROJECT_SOURCE_DIR}/include
             ${PROJECT_SOURCE_DIR}/src/app_control
             ${PROJECT_SOURCE_DIR}/src/ui/terminal
+            ${CURSES_INCLUDE_DIRS}
     )
     add_test(NAME UI_MENU_CALLBACKS COMMAND dsd-neo_test_ui_menu_callbacks)
 
@@ -2356,6 +2526,7 @@ if(DSD_ENABLE_TERMINAL_UI)
             ${PROJECT_SOURCE_DIR}/include
             ${PROJECT_SOURCE_DIR}/src/app_control
             ${PROJECT_SOURCE_DIR}/src/ui/terminal
+            ${CURSES_INCLUDE_DIRS}
     )
     # USE_RADIO so the RTL rows (squelch among them) are compiled and testable.
     target_compile_definitions(dsd-neo_test_ui_menu_actions PRIVATE USE_RADIO)
@@ -2493,6 +2664,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         PRIVATE
             ${PROJECT_SOURCE_DIR}/include
             ${PROJECT_SOURCE_DIR}/src/ui/terminal
+            ${CURSES_INCLUDE_DIRS}
             ${_PUBLIC_INCLUDES}
     )
     target_link_libraries(
@@ -2523,6 +2695,12 @@ if(DSD_ENABLE_TERMINAL_UI)
         dsd-neo_test_ui_prims_status_gamma
         PRIVATE ${DSD_NEO_TEST_MATH_LIB}
     )
+    if(MSVC)
+        target_compile_definitions(
+            dsd-neo_test_ui_prims_status_gamma
+            PRIVATE CURSES_LIBRARY
+        )
+    endif()
     add_test(
         NAME UI_PRIMS_STATUS_GAMMA
         COMMAND dsd-neo_test_ui_prims_status_gamma
@@ -2544,11 +2722,13 @@ if(DSD_ENABLE_TERMINAL_UI)
         dsd-neo_test_ui_snr_meter
         PRIVATE DSD_NEO_TEST_HOOKS PRETTY_COLORS
     )
-    if(DSD_ENABLE_FAST_MATH)
-        target_compile_definitions(
-            dsd-neo_test_ui_snr_meter
-            PRIVATE DSD_NEO_FAST_MATH=1
-        )
+    # ncurses_snr.c is compiled here directly, so it does not inherit the
+    # src/ui/terminal property that keeps its NaN check effective in fast-math
+    # builds; the test's NAN inputs need IEEE semantics as well.
+    if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(dsd-neo_test_ui_snr_meter PRIVATE -fno-fast-math)
+    elseif(MSVC)
+        target_compile_options(dsd-neo_test_ui_snr_meter PRIVATE /fp:precise)
     endif()
     target_link_libraries(
         dsd-neo_test_ui_snr_meter
@@ -2629,10 +2809,15 @@ if(DSD_ENABLE_TERMINAL_UI)
             dsd-neo_test_ui_snr_meter_pdc_wide_no_api
             PRIVATE DSD_NEO_TEST_HOOKS DSD_USE_PDCURSES PDC_WIDE PRETTY_COLORS
         )
-        if(DSD_ENABLE_FAST_MATH)
-            target_compile_definitions(
+        if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+            target_compile_options(
                 dsd-neo_test_ui_snr_meter_pdc_wide_no_api
-                PRIVATE DSD_NEO_FAST_MATH=1
+                PRIVATE -fno-fast-math
+            )
+        elseif(MSVC)
+            target_compile_options(
+                dsd-neo_test_ui_snr_meter_pdc_wide_no_api
+                PRIVATE /fp:precise
             )
         endif()
         target_link_libraries(
@@ -2900,6 +3085,17 @@ target_include_directories(
     dsd-neo_test_ui_qt_spectrum_math
     PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/qt
 )
+# spectrum_math.h takes the floating-point mode of whatever includes it, and
+# dsd-neo_ui_qt keeps IEEE semantics; so does this test, whose bad-frame cases
+# would otherwise check a NaN guard fast-math has compiled out.
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(
+        dsd-neo_test_ui_qt_spectrum_math
+        PRIVATE -fno-fast-math
+    )
+elseif(MSVC)
+    target_compile_options(dsd-neo_test_ui_qt_spectrum_math PRIVATE /fp:precise)
+endif()
 add_test(NAME UI_QT_SPECTRUM_MATH COMMAND dsd-neo_test_ui_qt_spectrum_math)
 
 # The persistence layer itself (json_store atomic writes, the saved-systems
@@ -4395,6 +4591,36 @@ target_link_libraries(
 )
 add_test(NAME CORE_SCAN_PROFILE COMMAND dsd-neo_test_core_scan_profile)
 
+# dsd_parse_double_strict() must refuse NaN and infinities; it is header-only, so
+# the test keeps the IEEE semantics its NaN-rejecting callers are built with.
+add_executable(
+    dsd-neo_test_core_parse_double_strict
+    core/test_core_parse_double_strict.c
+)
+target_include_directories(
+    dsd-neo_test_core_parse_double_strict
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_core_parse_double_strict
+    PRIVATE ${DSD_NEO_TEST_MATH_LIB}
+)
+if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(
+        dsd-neo_test_core_parse_double_strict
+        PRIVATE -fno-fast-math
+    )
+elseif(MSVC)
+    target_compile_options(
+        dsd-neo_test_core_parse_double_strict
+        PRIVATE /fp:precise
+    )
+endif()
+add_test(
+    NAME CORE_PARSE_DOUBLE_STRICT
+    COMMAND dsd-neo_test_core_parse_double_strict
+)
+
 add_executable(dsd-neo_test_core_csv_validate core/test_core_csv_validate.c)
 target_include_directories(
     dsd-neo_test_core_csv_validate
@@ -4637,18 +4863,16 @@ target_include_directories(
     SYSTEM
     PRIVATE ${_MBE_TARGET_INCLUDE_DIRS}
 )
+# MBE_STATIC: the test defines its own mbe_floattoshort() instead of linking
+# mbe-neo, so the header must not declare it __declspec(dllimport) on Windows
+# (MSVC rejects defining a dllimport function, C2491).
 target_compile_definitions(
     dsd-neo_test_core_audio2_helpers
-    PRIVATE DSD_AUDIO2_INTERNAL=
+    PRIVATE DSD_AUDIO2_INTERNAL= MBE_STATIC
 )
-target_compile_options(
-    dsd-neo_test_core_audio2_helpers
-    PRIVATE -ffunction-sections -fdata-sections
-)
-target_link_options(dsd-neo_test_core_audio2_helpers PRIVATE -Wl,--gc-sections)
 target_link_libraries(
     dsd-neo_test_core_audio2_helpers
-    PRIVATE dsd-neo_test_call_state_support m
+    PRIVATE dsd-neo_test_call_state_support ${DSD_NEO_TEST_MATH_LIB}
 )
 add_test(NAME CORE_AUDIO2_HELPERS COMMAND dsd-neo_test_core_audio2_helpers)
 
@@ -4773,6 +4997,7 @@ target_link_libraries(
         dsd-neo_proto_nxdn
         dsd-neo_proto_dmr
         dsd-neo_feature_codec2
+        dsd-neo_test_support
         ${LIBS}
 )
 add_test(
@@ -5355,7 +5580,11 @@ target_include_directories(
 )
 target_link_libraries(
     dsd-neo_test_engine_channel_scan
-    PRIVATE dsd-neo_runtime dsd-neo_test_call_state_support dsd-neo_test_support
+    PRIVATE
+        dsd-neo_runtime
+        dsd-neo_test_call_state_support
+        dsd-neo_test_event_sync_stub
+        dsd-neo_test_support
 )
 target_compile_definitions(
     dsd-neo_test_engine_channel_scan
@@ -5424,7 +5653,11 @@ target_compile_definitions(
 )
 target_link_libraries(
     dsd-neo_test_engine_trunk_scan
-    PRIVATE dsd-neo_runtime dsd-neo_test_call_state_support dsd-neo_test_support
+    PRIVATE
+        dsd-neo_runtime
+        dsd-neo_test_call_state_support
+        dsd-neo_test_event_sync_stub
+        dsd-neo_test_support
 )
 add_test(NAME ENGINE_TRUNK_SCAN COMMAND dsd-neo_test_engine_trunk_scan)
 
@@ -5652,6 +5885,16 @@ target_link_libraries(
     dsd-neo_test_runtime_config_env
     PRIVATE dsd-neo_runtime dsd-neo_test_support
 )
+# Keep the NaN assertions effective in fast-math builds too: config.cpp already
+# keeps IEEE semantics, and the test's own std::isnan() checks need them as well.
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(
+        dsd-neo_test_runtime_config_env
+        PRIVATE -fno-fast-math
+    )
+elseif(MSVC)
+    target_compile_options(dsd-neo_test_runtime_config_env PRIVATE /fp:precise)
+endif()
 add_test(NAME RUNTIME_CONFIG_ENV COMMAND dsd-neo_test_runtime_config_env)
 
 add_executable(
@@ -6354,11 +6597,6 @@ target_link_libraries(
     dsd-neo_test_p25_p1_tsbk_handlers
     PRIVATE dsd-neo_test_call_state_support dsd-neo_test_support dsd-neo_runtime
 )
-target_compile_options(
-    dsd-neo_test_p25_p1_tsbk_handlers
-    PRIVATE -ffunction-sections -fdata-sections
-)
-target_link_options(dsd-neo_test_p25_p1_tsbk_handlers PRIVATE -Wl,--gc-sections)
 add_test(NAME P25_P1_TSBK_HANDLERS COMMAND dsd-neo_test_p25_p1_tsbk_handlers)
 
 # P25 P1 FEC boundaries: Hamming, Golay, RS correction limits
@@ -6386,11 +6624,6 @@ target_include_directories(
     dsd-neo_test_p25_p1_hdu_helpers
     PRIVATE ${PROJECT_SOURCE_DIR}/include
 )
-target_compile_options(
-    dsd-neo_test_p25_p1_hdu_helpers
-    PRIVATE -ffunction-sections -fdata-sections
-)
-target_link_options(dsd-neo_test_p25_p1_hdu_helpers PRIVATE -Wl,--gc-sections)
 add_test(NAME P25_P1_HDU_HELPERS COMMAND dsd-neo_test_p25_p1_hdu_helpers)
 
 # P25 P1 common LDU IMBE/status and Hamming helpers
@@ -6402,11 +6635,6 @@ target_include_directories(
     dsd-neo_test_p25_p1_ldu_helpers
     PRIVATE ${PROJECT_SOURCE_DIR}/include
 )
-target_compile_options(
-    dsd-neo_test_p25_p1_ldu_helpers
-    PRIVATE -ffunction-sections -fdata-sections
-)
-target_link_options(dsd-neo_test_p25_p1_ldu_helpers PRIVATE -Wl,--gc-sections)
 add_test(NAME P25_P1_LDU_HELPERS COMMAND dsd-neo_test_p25_p1_ldu_helpers)
 
 # P25 P1 LDU1 LCW/LSD packing and soft RS reliability helpers
@@ -6419,11 +6647,6 @@ target_include_directories(
     dsd-neo_test_p25_p1_ldu1_helpers
     PRIVATE ${PROJECT_SOURCE_DIR}/include
 )
-target_compile_options(
-    dsd-neo_test_p25_p1_ldu1_helpers
-    PRIVATE -ffunction-sections -fdata-sections
-)
-target_link_options(dsd-neo_test_p25_p1_ldu1_helpers PRIVATE -Wl,--gc-sections)
 add_test(NAME P25_P1_LDU1_HELPERS COMMAND dsd-neo_test_p25_p1_ldu1_helpers)
 
 # P25 P1 LDU2 ESS/LSD packing and soft RS reliability helpers
@@ -6436,11 +6659,6 @@ target_include_directories(
     dsd-neo_test_p25_p1_ldu2_helpers
     PRIVATE ${PROJECT_SOURCE_DIR}/include
 )
-target_compile_options(
-    dsd-neo_test_p25_p1_ldu2_helpers
-    PRIVATE -ffunction-sections -fdata-sections
-)
-target_link_options(dsd-neo_test_p25_p1_ldu2_helpers PRIVATE -Wl,--gc-sections)
 add_test(NAME P25_P1_LDU2_HELPERS COMMAND dsd-neo_test_p25_p1_ldu2_helpers)
 
 # P25 P1 MDPU header, candidate, and CRC assembly helpers
@@ -6452,11 +6670,6 @@ target_include_directories(
     dsd-neo_test_p25_p1_mdpu_helpers
     PRIVATE ${PROJECT_SOURCE_DIR}/include
 )
-target_compile_options(
-    dsd-neo_test_p25_p1_mdpu_helpers
-    PRIVATE -ffunction-sections -fdata-sections
-)
-target_link_options(dsd-neo_test_p25_p1_mdpu_helpers PRIVATE -Wl,--gc-sections)
 target_link_libraries(
     dsd-neo_test_p25_p1_mdpu_helpers
     PRIVATE dsd-neo_proto_p25 dsd-neo_proto_dmr dsd-neo_test_call_state_support
@@ -6595,7 +6808,7 @@ target_include_directories(
 )
 target_link_libraries(
     dsd-neo_test_p25_lcw_src_zero_guard
-    PRIVATE dsd-neo_proto_p25
+    PRIVATE dsd-neo_proto_p25 dsd-neo_test_support
 )
 add_test(
     NAME P25_LCW_SRC_ZERO_GUARD
@@ -6750,6 +6963,9 @@ target_include_directories(
     SYSTEM
     PRIVATE ${_MBE_TARGET_INCLUDE_DIRS}
 )
+# The test stubs mbe_initMbeParms() instead of linking mbe-neo; see
+# CORE_AUDIO2_HELPERS for why that needs MBE_STATIC.
+target_compile_definitions(dsd-neo_test_p25_p1_sync_dispatch PRIVATE MBE_STATIC)
 add_test(NAME P25_P1_SYNC_DISPATCH COMMAND dsd-neo_test_p25_p1_sync_dispatch)
 
 # P25 P1 TSBK -> vPDU bridge (Group Voice Channel Grant)
@@ -7658,7 +7874,11 @@ target_include_directories(
 )
 target_link_libraries(
     dsd-neo_test_dmr_t3_sm_clamp
-    PRIVATE dsd-neo_test_call_state_support dsd-neo_platform dsd-neo_runtime
+    PRIVATE
+        dsd-neo_test_call_state_support
+        dsd-neo_test_event_sync_stub
+        dsd-neo_platform
+        dsd-neo_runtime
 )
 add_test(NAME DMR_T3_SM_CLAMP COMMAND dsd-neo_test_dmr_t3_sm_clamp)
 
@@ -7678,7 +7898,11 @@ target_include_directories(
 )
 target_link_libraries(
     dsd-neo_test_dmr_t3_sm_release
-    PRIVATE dsd-neo_test_call_state_support dsd-neo_platform dsd-neo_runtime
+    PRIVATE
+        dsd-neo_test_call_state_support
+        dsd-neo_test_event_sync_stub
+        dsd-neo_platform
+        dsd-neo_runtime
 )
 add_test(NAME DMR_T3_SM_RELEASE COMMAND dsd-neo_test_dmr_t3_sm_release)
 
@@ -7698,7 +7922,11 @@ target_include_directories(
 )
 target_link_libraries(
     dsd-neo_test_dmr_t3_sm_return_to_cc_matrix
-    PRIVATE dsd-neo_test_call_state_support dsd-neo_platform dsd-neo_runtime
+    PRIVATE
+        dsd-neo_test_call_state_support
+        dsd-neo_test_event_sync_stub
+        dsd-neo_platform
+        dsd-neo_runtime
 )
 add_test(
     NAME DMR_T3_SM_RETURN_TO_CC_MATRIX
@@ -7722,7 +7950,11 @@ target_include_directories(
 )
 target_link_libraries(
     dsd-neo_test_dmr_t3_shim
-    PRIVATE dsd-neo_test_call_state_support dsd-neo_platform dsd-neo_runtime
+    PRIVATE
+        dsd-neo_test_call_state_support
+        dsd-neo_test_event_sync_stub
+        dsd-neo_platform
+        dsd-neo_runtime
 )
 add_test(NAME DMR_T3_SHIM COMMAND dsd-neo_test_dmr_t3_shim)
 
@@ -7751,6 +7983,7 @@ target_link_libraries(
     dsd-neo_test_dmr_t3_cmove
     PRIVATE
         dsd-neo_test_call_state_support
+        dsd-neo_test_event_sync_stub
         dsd-neo_platform
         dsd-neo_runtime
         ${DSD_NEO_TEST_MATH_LIB}
@@ -7782,6 +8015,7 @@ target_link_libraries(
     dsd-neo_test_dmr_t3_force_release
     PRIVATE
         dsd-neo_test_call_state_support
+        dsd-neo_test_event_sync_stub
         dsd-neo_platform
         dsd-neo_runtime
         ${DSD_NEO_TEST_MATH_LIB}
@@ -7813,6 +8047,7 @@ target_link_libraries(
     dsd-neo_test_dmr_t3_move_release
     PRIVATE
         dsd-neo_test_call_state_support
+        dsd-neo_test_event_sync_stub
         dsd-neo_platform
         dsd-neo_runtime
         ${DSD_NEO_TEST_MATH_LIB}
@@ -7844,6 +8079,7 @@ target_link_libraries(
     dsd-neo_test_dmr_t3_ann_wd_tscc
     PRIVATE
         dsd-neo_test_call_state_support
+        dsd-neo_test_event_sync_stub
         dsd-neo_platform
         dsd-neo_runtime
         ${DSD_NEO_TEST_MATH_LIB}
@@ -8020,6 +8256,19 @@ if(_dsd_neo_dsp_sources MATCHES "simd_fir_avx2\\.cpp")
     )
 endif()
 dsd_neo_link_dsp_test(dsd-neo_test_dsp_fir_segmentation)
+# The test fences each buffer with NaN and checks the fences with std::isnan(),
+# which fast-math would fold to false; the FIR code under test keeps its flags.
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(
+        dsd-neo_test_dsp_fir_segmentation
+        PRIVATE -fno-fast-math
+    )
+elseif(MSVC)
+    target_compile_options(
+        dsd-neo_test_dsp_fir_segmentation
+        PRIVATE /fp:precise
+    )
+endif()
 add_test(NAME DSP_FIR_SEGMENTATION COMMAND dsd-neo_test_dsp_fir_segmentation)
 
 add_executable(
@@ -9778,8 +10027,26 @@ add_executable(
     dsd-neo_test_dibit_two_level_reliability
     core/test_dibit_two_level_reliability.c
     ${PROJECT_SOURCE_DIR}/src/core/frames/dsd_dibit.c
+    ${PROJECT_SOURCE_DIR}/src/core/frames/dsd_dibit_reliability.c
     test_support/call_state_stubs.c
 )
+# dsd_dibit_reliability.c is compiled here directly, so it does not inherit the
+# src/core property that keeps its NaN rejection effective in fast-math builds.
+# The test's NAN and INFINITY inputs need IEEE semantics too; dsd_dibit.c keeps
+# the global flags, as in the library.
+if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+    set_source_files_properties(
+        core/test_dibit_two_level_reliability.c
+        ${PROJECT_SOURCE_DIR}/src/core/frames/dsd_dibit_reliability.c
+        PROPERTIES COMPILE_OPTIONS "-fno-fast-math;-fno-math-errno"
+    )
+elseif(MSVC)
+    set_source_files_properties(
+        core/test_dibit_two_level_reliability.c
+        ${PROJECT_SOURCE_DIR}/src/core/frames/dsd_dibit_reliability.c
+        PROPERTIES COMPILE_OPTIONS "/fp:precise"
+    )
+endif()
 target_include_directories(
     dsd-neo_test_dibit_two_level_reliability
     PRIVATE ${PROJECT_SOURCE_DIR}/include
@@ -10171,6 +10438,11 @@ target_link_libraries(
     dsd-neo_test_io_rigctl_control
     PRIVATE ${DSD_NEO_TEST_MATH_LIB}
 )
+# The test stubs the dsd_socket_* layer instead of linking dsd-neo_platform, so
+# the byte-order calls (htons) need Winsock directly on Windows.
+if(WIN32)
+    target_link_libraries(dsd-neo_test_io_rigctl_control PRIVATE ws2_32)
+endif()
 add_test(NAME IO_RIGCTL_CONTROL COMMAND dsd-neo_test_io_rigctl_control)
 
 add_executable(
@@ -10184,6 +10456,11 @@ target_include_directories(
     dsd-neo_test_io_udp_socket_backends
     PRIVATE ${PROJECT_SOURCE_DIR}/include
 )
+# Stubs the dsd_socket_* layer like IO_RIGCTL_CONTROL; the byte-order calls
+# (htonl, htons, ntohl, ntohs) need Winsock directly on Windows.
+if(WIN32)
+    target_link_libraries(dsd-neo_test_io_udp_socket_backends PRIVATE ws2_32)
+endif()
 add_test(
     NAME IO_UDP_SOCKET_BACKENDS
     COMMAND dsd-neo_test_io_udp_socket_backends
@@ -10237,6 +10514,10 @@ target_compile_definitions(
 target_include_directories(
     dsd-neo_test_io_rtl_perf
     PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/io/radio
+)
+target_link_libraries(
+    dsd-neo_test_io_rtl_perf
+    PRIVATE dsd-neo_platform dsd-neo_test_support
 )
 add_test(NAME IO_RTL_PERF COMMAND dsd-neo_test_io_rtl_perf)
 
@@ -10321,6 +10602,13 @@ target_include_directories(
     dsd-neo_test_io_soapy_profile
     PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/io/radio
 )
+# soapy_profile.cpp is compiled here directly, so it does not inherit the
+# src/io property that keeps its NaN rejection effective in fast-math builds.
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(dsd-neo_test_io_soapy_profile PRIVATE -fno-fast-math)
+elseif(MSVC)
+    target_compile_options(dsd-neo_test_io_soapy_profile PRIVATE /fp:precise)
+endif()
 add_test(NAME IO_SOAPY_PROFILE COMMAND dsd-neo_test_io_soapy_profile)
 
 add_executable(
@@ -10344,7 +10632,7 @@ target_include_directories(
 )
 target_link_libraries(
     dsd-neo_test_platform_file_compat
-    PRIVATE dsd-neo_platform
+    PRIVATE dsd-neo_platform dsd-neo_test_support
 )
 add_test(NAME PLATFORM_FILE_COMPAT COMMAND dsd-neo_test_platform_file_compat)
 
@@ -10424,17 +10712,15 @@ if(DSD_AUDIO_BACKEND STREQUAL "pulse")
         dsd-neo_test_platform_audio_pulse_helpers
         platform/test_platform_audio_pulse_helpers.c
     )
+    # The test includes <pulse/channelmap.h> and links libpulse alone, so it
+    # needs the PulseAudio include directory itself: outside /usr/include
+    # (Homebrew on macOS) nothing else on its command line provides it.
     target_include_directories(
         dsd-neo_test_platform_audio_pulse_helpers
-        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/platform
-    )
-    target_compile_options(
-        dsd-neo_test_platform_audio_pulse_helpers
-        PRIVATE -ffunction-sections -fdata-sections
-    )
-    target_link_options(
-        dsd-neo_test_platform_audio_pulse_helpers
-        PRIVATE -Wl,--gc-sections
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/platform
+            ${PULSEAUDIO_INCLUDE_DIRS}
     )
     target_link_libraries(
         dsd-neo_test_platform_audio_pulse_helpers
@@ -10600,7 +10886,6 @@ if(DSD_HAS_RADIO)
         dsd-neo_test_io_rtl_wideband_spectrum
         io/test_io_rtl_wideband_spectrum.cpp
         ${PROJECT_SOURCE_DIR}/src/io/radio/rtl_wideband_spectrum.cpp
-        ${PROJECT_SOURCE_DIR}/src/runtime/decode_clock.c
         # The Hann window the tap uses comes from the project's own window
         # builder; firdes.cpp is pure math over <math.h>, so compiling it here
         # keeps this test standalone rather than linking the whole DSP library.
@@ -11265,7 +11550,9 @@ set(_DSD_NEO_BIT_PACKING_TEST_TARGETS
     dsd-neo_test_ysf_frame
 )
 foreach(_target IN LISTS _DSD_NEO_BIT_PACKING_TEST_TARGETS)
-    target_link_libraries(${_target} PRIVATE dsd-neo_test_bit_packing)
+    if(TARGET ${_target})
+        target_link_libraries(${_target} PRIVATE dsd-neo_test_bit_packing)
+    endif()
 endforeach()
 unset(_DSD_NEO_BIT_PACKING_TEST_TARGETS)
 
@@ -13318,3 +13605,39 @@ target_include_directories(
 )
 target_link_libraries(dsd-neo_test_runtime_decode_clock PRIVATE dsd-neo_runtime)
 add_test(NAME RUNTIME_DECODE_CLOCK COMMAND dsd-neo_test_runtime_decode_clock)
+
+# Windows builds the terminal UI against vcpkg's PDCurses, whose include
+# directory dsd-neo_ui_terminal receives as a system directory through
+# PDCurses::PDCurses (MSVC: -external:I, its warnings off). A test that names
+# ${CURSES_INCLUDE_DIRS} itself takes it the same way. Otherwise the Windows
+# SDK's MOUSE_MOVED, which redefines PDCurses' when <windows.h> follows
+# <curses.h> as in ui_async.c, is a C4005 that /WX makes an error in a test
+# build of a source the library compiles cleanly.
+if(WIN32 AND CURSES_INCLUDE_DIRS)
+    get_property(_dsd_neo_test_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
+    foreach(_dsd_neo_test_target IN LISTS _dsd_neo_test_targets)
+        get_target_property(_dsd_neo_test_type ${_dsd_neo_test_target} TYPE)
+        if(_dsd_neo_test_type STREQUAL "INTERFACE_LIBRARY")
+            continue()
+        endif()
+        get_target_property(
+            _dsd_neo_test_includes
+            ${_dsd_neo_test_target}
+            INCLUDE_DIRECTORIES
+        )
+        foreach(_dsd_neo_curses_dir IN LISTS CURSES_INCLUDE_DIRS)
+            if(_dsd_neo_curses_dir IN_LIST _dsd_neo_test_includes)
+                target_include_directories(
+                    ${_dsd_neo_test_target}
+                    SYSTEM
+                    PRIVATE ${_dsd_neo_curses_dir}
+                )
+            endif()
+        endforeach()
+    endforeach()
+    unset(_dsd_neo_test_targets)
+    unset(_dsd_neo_test_target)
+    unset(_dsd_neo_test_type)
+    unset(_dsd_neo_test_includes)
+    unset(_dsd_neo_curses_dir)
+endif()

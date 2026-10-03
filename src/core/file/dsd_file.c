@@ -578,7 +578,8 @@ openMbeOutFile(dsd_opts* opts, dsd_state* state) {
 
     DSD_SNPRINTF(opts->mbe_out_path, sizeof opts->mbe_out_path, "%s%s", opts->mbe_out_dir, opts->mbe_out_file);
 
-    opts->mbe_out_f = dsd_fopen_private(opts->mbe_out_path, "w");
+    /* Binary: MBE frames are raw bytes, which a text-mode stream on Windows would rewrite (LF to CRLF). */
+    opts->mbe_out_f = dsd_fopen_private(opts->mbe_out_path, "wb");
     if (opts->mbe_out_f == NULL) {
         LOG_ERROR("\nError, couldn't open %s for slot 1\n", opts->mbe_out_path);
     } else {
@@ -633,7 +634,7 @@ openMbeOutFileR(dsd_opts* opts, dsd_state* state) {
 
     DSD_SNPRINTF(opts->mbe_out_path, sizeof opts->mbe_out_path, "%s%s", opts->mbe_out_dir, opts->mbe_out_fileR);
 
-    opts->mbe_out_fR = dsd_fopen_private(opts->mbe_out_path, "w");
+    opts->mbe_out_fR = dsd_fopen_private(opts->mbe_out_path, "wb");
     if (opts->mbe_out_fR == NULL) {
         LOG_ERROR("\nError, couldn't open %s for slot 2\n", opts->mbe_out_path);
     } else {
@@ -776,7 +777,7 @@ wav_file_get_size_or_negative(const char* filename) {
         return -1;
     }
 
-    FILE* file = dsd_fopen_existing_regular_file(filename, "r");
+    FILE* file = dsd_fopen_existing_regular_file(filename, "rb");
     if (file == NULL) {
         return -1;
     }

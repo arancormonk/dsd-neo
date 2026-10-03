@@ -61,6 +61,7 @@
 #include "airspy_source.h"
 struct airspy_source;
 #include "rtl_capture_phase.h"
+#include "rtl_finite.h"
 #include "rtl_perf.h"
 #include "rtl_replay_device.h"
 #include "rtl_stream_shared.hpp"
@@ -1211,6 +1212,23 @@ rtl_apply_j4_rotation(float in_i, float in_q, int phase, float* out_i, float* ou
     }
 }
 
+/*
+ * A SoapySDR driver's CF32 buffer and a cf32 I/Q replay hand the decoder floats nothing has checked, and one Inf or NaN
+ * among them poisons every IIR stage downstream until the next retune, so every component enters bounded: Inf, NaN and
+ * magnitudes of 2^60 or more as 0 (bound_cf32_to_f32() in <dsd-neo/dsp/simd_widen.h>). With @p apply_rot set and
+ * @p phase given, sample k is also rotated at fs/4 phase *phase + k, as rtl_apply_j4_rotation() rotates it, and *phase
+ * is advanced past them. Airspy skips it: libairspy converts 12-bit ADC integers, which are always finite.
+ */
+static inline void
+rtl_cf32_copy_bounded(float* dst, const void* src, size_t elem_count, int apply_rot, int* phase) {
+    if (apply_rot && phase) {
+        *phase = static_cast<int>(
+            bound_rotate90_cf32_to_f32_phase(src, dst, elem_count, static_cast<uint32_t>(*phase) & 3U));
+    } else {
+        bound_cf32_to_f32(src, dst, elem_count);
+    }
+}
+
 static inline size_t
 soapy_reserve_even_ring_segments(struct input_ring_state* ring, size_t need, float** p1, size_t* w1, float** p2,
                                  size_t* w2) {
@@ -1248,8 +1266,14 @@ soapy_finalize_generation(struct input_ring_state* ring, uint64_t discard_genera
     return 0;
 }
 
+/* Copies one ring segment. With @p bounded set (a SoapySDR driver's CF32 buffer), every component enters bounded, as
+ * rtl_cf32_copy_bounded() describes; Airspy's samples, converted from ADC integers, are copied as they are. */
 static inline void
-soapy_copy_cf32_samples(float* dst, const float* src, size_t elem_count, int apply_rot, int* phase) {
+soapy_copy_cf32_samples(float* dst, const float* src, size_t elem_count, int apply_rot, int* phase, int bounded) {
+    if (bounded) {
+        rtl_cf32_copy_bounded(dst, src, elem_count, apply_rot, phase);
+        return;
+    }
     if (!dst || !src || elem_count == 0U) {
         return;
     }
@@ -1288,7 +1312,7 @@ soapy_copy_cs16_samples(float* dst, const int16_t* src_iq, size_t elem_count, fl
 #endif
 
 static size_t
-soapy_write_cf32_to_ring(struct rtl_device* s, const float* src, size_t num_elems, int apply_rot) {
+soapy_write_cf32_to_ring(struct rtl_device* s, const float* src, size_t num_elems, int apply_rot, int bounded) {
     if (!s || !s->input_ring || !src || num_elems == 0) {
         return 0;
     }
@@ -1309,9 +1333,9 @@ soapy_write_cf32_to_ring(struct rtl_device* s, const float* src, size_t num_elem
             break;
         }
         size_t src_idx = done / 2U;
-        soapy_copy_cf32_samples(p1, src + src_idx * 2, w1 / 2U, apply_rot, &phase);
+        soapy_copy_cf32_samples(p1, src + src_idx * 2, w1 / 2U, apply_rot, &phase, bounded);
         src_idx += w1 / 2U;
-        soapy_copy_cf32_samples(p2, src + src_idx * 2, w2 / 2U, apply_rot, &phase);
+        soapy_copy_cf32_samples(p2, src + src_idx * 2, w2 / 2U, apply_rot, &phase, bounded);
         if (soapy_finalize_generation(s->input_ring, discard_generation, produced)) {
             break;
         }
@@ -2093,21 +2117,8 @@ replay_convert_cf32_to_f32(const struct rtl_device* s, const uint8_t* in, size_t
         return -1;
     }
 
-    if (s->replay_cfg.fs4_shift_enabled) {
-        int phase = *io_phase & 3;
-        for (size_t i = 0; i < complex_count; i++) {
-            float in_i = 0.0f;
-            float in_q = 0.0f;
-            DSD_MEMCPY(&in_i, in + (i * 8U) + 0U, sizeof(float));
-            DSD_MEMCPY(&in_q, in + (i * 8U) + 4U, sizeof(float));
-            rtl_apply_j4_rotation(in_i, in_q, phase, &out_f32[i * 2U + 0U], &out_f32[i * 2U + 1U]);
-            phase = (phase + 1) & 3;
-        }
-        *io_phase = phase;
-    } else {
-        DSD_MEMCPY(out_f32, in, float_count * sizeof(float));
-    }
-
+    /* A capture file is external data: every component enters bounded, rotated or not. */
+    rtl_cf32_copy_bounded(out_f32, in, complex_count, s->replay_cfg.fs4_shift_enabled, io_phase);
     return (int)float_count;
 }
 
@@ -3043,7 +3054,7 @@ soapy_arg_info_has_numeric_range(const SoapySDR::ArgInfo& info) {
     const double minimum = info.range.minimum();
     const double maximum = info.range.maximum();
     const double step = info.range.step();
-    if (!std::isfinite(minimum) || !std::isfinite(maximum) || maximum < minimum) {
+    if (!dsd::io::radio::rtl_is_finite(minimum) || !dsd::io::radio::rtl_is_finite(maximum) || maximum < minimum) {
         return false;
     }
     /* Soapy's default empty Range is 0..0; no separate presence flag is exposed. */
@@ -3509,7 +3520,7 @@ soapy_submit_samples(struct rtl_device* dev, size_t drop_elems, size_t kept_elem
         const std::complex<float>* src = cf32_buf.data() + drop_elems;
         rtl_submit_capture_bytes(dev, src, kept_elems * sizeof(std::complex<float>));
         rtl_publish_cf32_input_level(reinterpret_cast<const float*>(src), kept_elems * 2U);
-        (void)soapy_write_cf32_to_ring(dev, reinterpret_cast<const float*>(src), kept_elems, apply_rot);
+        (void)soapy_write_cf32_to_ring(dev, reinterpret_cast<const float*>(src), kept_elems, apply_rot, 1);
         return;
     }
     const int16_t* src = cs16_buf.data() + (drop_elems * 2U);
@@ -3630,7 +3641,7 @@ airspy_receive(void* context, const float* samples, size_t pairs, uint64_t dropp
     }
     rtl_submit_capture_bytes(dev, samples, pairs * 2U * sizeof(float));
     rtl_publish_cf32_input_level_source(samples, pairs * 2U, DSD_INPUT_LEVEL_SOURCE_AIRSPY_CF32);
-    (void)soapy_write_cf32_to_ring(dev, samples, pairs, 0);
+    (void)soapy_write_cf32_to_ring(dev, samples, pairs, 0, 0);
 }
 
 #ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
@@ -3663,6 +3674,54 @@ rtl_device_test_airspy_ingest(const rtl_device_test_airspy_request* request, flo
     input_ring_destroy(&ring);
     return 0;
 }
+
+#ifdef USE_SOAPYSDR
+/* One SoapySDR CF32 read through soapy_submit_samples() into a fresh input ring. */
+extern "C" int
+rtl_device_test_soapy_cf32_ingest(const rtl_device_test_soapy_cf32_request* request, float* output,
+                                  size_t* output_count, int* out_phase) {
+    if (!request || !request->samples || !output || !output_count || !out_phase
+        || request->start >= request->capacity) {
+        return -1;
+    }
+    input_ring_state ring{};
+    if (input_ring_init(&ring, request->capacity) != 0) {
+        return -1;
+    }
+    ring.head.store(request->start);
+    ring.tail.store(request->start);
+    rtl_device dev{};
+    dev.backend = RTL_BACKEND_SOAPY;
+    dev.soapy_format = SOAPY_FMT_CF32;
+    dev.input_ring = &ring;
+    dev.rot_phase = request->start_phase & 3;
+    std::vector<std::complex<float>> cf32_buf(request->pairs);
+    const std::vector<int16_t> cs16_buf;
+    DSD_MEMCPY(cf32_buf.data(), request->samples, request->pairs * 2U * sizeof(float));
+    soapy_submit_samples(&dev, 0U, request->pairs, cf32_buf, cs16_buf, request->fs4_shift ? 1 : 0);
+    size_t count = std::min(input_ring_used(&ring), *output_count);
+    for (size_t i = 0; i < count; ++i) {
+        output[i] = ring.buffer[(request->start + i) % ring.capacity];
+    }
+    *output_count = count;
+    *out_phase = dev.rot_phase;
+    input_ring_destroy(&ring);
+    return 0;
+}
+#else
+/* The build has no SoapySDR: there is no read to replay, so the outputs are not touched and the hook returns 1. */
+extern "C" int
+rtl_device_test_soapy_cf32_ingest(const rtl_device_test_soapy_cf32_request* request, float* output,
+                                  size_t* output_count, int* out_phase) {
+    (void)output;
+    (void)output_count;
+    (void)out_phase;
+    if (!request || !request->samples || request->start >= request->capacity) {
+        return -1;
+    }
+    return 1;
+}
+#endif
 #endif
 
 static DSD_THREAD_RETURN_TYPE

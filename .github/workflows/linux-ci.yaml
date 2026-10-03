@@ -24,9 +24,16 @@ jobs:
   # guard — and it has to do that on the pull request, not on the push that
   # follows it. Every variant runs ctest as well as building, because a
   # radio-off *test* failure is invisible to a build-only job.
+  #
+  # The arm64 leg reruns the `both` variant on a native arm64 runner: it is the
+  # only leg where `char` is unsigned and the only one that executes the NEON
+  # SIMD paths, and it backs the aarch64 AppImage, which is built under QEMU
+  # with tests off. An entry without `runner`/`name_suffix` reads them as empty,
+  # so the x86_64 check names stay exactly as branch protection lists them.
   backend-matrix:
-    name: backend-matrix (${{ matrix.variant }})
-    runs-on: ubuntu-latest
+    name: backend-matrix (${{ matrix.variant }}${{ matrix.name_suffix }})
+    runs-on: ${{ matrix.runner || 'ubuntu-latest' }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -76,6 +83,17 @@ jobs:
             soapy_enabled: OFF
             soapy_available: OFF
             radio_available: ON
+          - variant: both
+            name_suffix: ", arm64"
+            runner: ubuntu-24.04-arm
+            cmake_flags: -DDSD_ENABLE_RTLSDR=ON -DDSD_REQUIRE_RTLSDR=ON -DDSD_ENABLE_SOAPYSDR=ON -DDSD_REQUIRE_SOAPYSDR=ON -DDSD_ENABLE_AIRSPY=ON -DDSD_REQUIRE_AIRSPY=ON
+            airspy_enabled: ON
+            airspy_available: ON
+            rtl_enabled: ON
+            rtl_available: ON
+            soapy_enabled: ON
+            soapy_available: ON
+            radio_available: ON
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -84,10 +102,27 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            build-essential cmake ninja-build pkg-config git \
+            build-essential cmake ninja-build pkg-config git ripgrep \
             libsndfile1-dev libpulse-dev libncurses-dev \
             libusb-1.0-0-dev libfftw3-dev libblas-dev liblapack-dev gfortran \
             libcodec2-dev librtlsdr-dev libsoapysdr-dev libairspy-dev libcurl4-openssl-dev libexpat1-dev
+
+      # ANDROID_LOCATION_JVM compiles Kotlin. The x86-64 runner image has Java and
+      # kotlinc; the arm64 one has only Java, so the pinned compiler is fetched
+      # wherever kotlinc is missing.
+      - name: Install the Kotlin compiler where the image lacks it
+        run: |
+          set -euo pipefail
+          if command -v kotlinc > /dev/null 2>&1; then
+            exit 0
+          fi
+          source tools/ci-dependency-pins.env
+          sudo apt-get install -y --no-install-recommends unzip
+          curl -fsSL -o "$RUNNER_TEMP/kotlin-compiler.zip" \
+            "https://github.com/JetBrains/kotlin/releases/download/v${KOTLIN_COMPILER_VERSION}/kotlin-compiler-${KOTLIN_COMPILER_VERSION}.zip"
+          echo "${KOTLIN_COMPILER_SHA256}  ${RUNNER_TEMP}/kotlin-compiler.zip" | sha256sum -c -
+          unzip -q "$RUNNER_TEMP/kotlin-compiler.zip" -d "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/kotlinc/bin" >> "$GITHUB_PATH"
 
       - name: Build and install mbelib-neo
         run: |
@@ -123,11 +158,27 @@ jobs:
           cmake --build --preset dev-debug -j
 
       - name: Test (${{ matrix.variant }})
-        run: ctest --preset dev-debug --output-on-failure
+        env:
+          # A test whose tool is missing fails here instead of skipping.
+          DSD_NEO_REQUIRE_TEST_TOOLS: "1"
+        run: |
+          ctest --preset dev-debug -N | tail -n 1
+          ctest --preset dev-debug --output-on-failure
 
+  # The arm64 entry is the Android ABI's instruction set with the Android option
+  # set; a missing name_suffix keeps the x86_64 check name unchanged.
   android-shape-host:
-    name: android shape (headless, forced radio pipeline)
-    runs-on: ubuntu-latest
+    name: android shape (${{ matrix.name_prefix }}headless, forced radio pipeline)
+    runs-on: ${{ matrix.runner || 'ubuntu-latest' }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+          - arch: arm64
+            name_prefix: "arm64, "
+            runner: ubuntu-24.04-arm
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -141,8 +192,25 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            build-essential cmake ninja-build pkg-config git \
+            build-essential cmake ninja-build pkg-config git ripgrep \
             libsndfile1-dev libssl-dev
+
+      # ANDROID_LOCATION_JVM compiles Kotlin. The x86-64 runner image has Java and
+      # kotlinc; the arm64 one has only Java, so the pinned compiler is fetched
+      # wherever kotlinc is missing.
+      - name: Install the Kotlin compiler where the image lacks it
+        run: |
+          set -euo pipefail
+          if command -v kotlinc > /dev/null 2>&1; then
+            exit 0
+          fi
+          source tools/ci-dependency-pins.env
+          sudo apt-get install -y --no-install-recommends unzip
+          curl -fsSL -o "$RUNNER_TEMP/kotlin-compiler.zip" \
+            "https://github.com/JetBrains/kotlin/releases/download/v${KOTLIN_COMPILER_VERSION}/kotlin-compiler-${KOTLIN_COMPILER_VERSION}.zip"
+          echo "${KOTLIN_COMPILER_SHA256}  ${RUNNER_TEMP}/kotlin-compiler.zip" | sha256sum -c -
+          unzip -q "$RUNNER_TEMP/kotlin-compiler.zip" -d "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/kotlinc/bin" >> "$GITHUB_PATH"
 
       - name: Build and install mbelib-neo
         run: |
@@ -193,7 +261,166 @@ jobs:
         run: cmake --build --preset dev-debug -j
 
       - name: Test (android shape)
-        run: ctest --preset dev-debug --output-on-failure
+        env:
+          # A test whose tool is missing fails here instead of skipping.
+          DSD_NEO_REQUIRE_TEST_TOOLS: "1"
+        run: |
+          ctest --preset dev-debug -N | tail -n 1
+          ctest --preset dev-debug --output-on-failure
+
+  # Every other ctest job is a -O0 Debug build, but what ships is optimized with
+  # fast-math. This one runs the suite at -O2 with fast-math and AVX2/FMA code
+  # generation, so FMA contraction, auto-vectorization and optimizer-exposed
+  # undefined behaviour reach a test before a user. x86-64-v3 because every
+  # hosted x86_64 runner has it; AVX-512 (v4) is not guaranteed, so the v4 job
+  # below only links.
+  optimized-v3-ctest:
+    name: Linux • RelWithDebInfo • ctest (x86-64-v3, fast-math)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # A runner without the ISA would SIGILL in the first test and read as a
+      # test failure; fail here with the reason instead.
+      - name: Require an x86-64-v3 runner
+        run: |
+          set -euo pipefail
+          /lib64/ld-linux-x86-64.so.2 --help | grep -F 'x86-64-v3 (supported'
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cmake ninja-build pkg-config git ripgrep \
+            libsndfile1-dev libpulse-dev libncurses-dev \
+            libusb-1.0-0-dev libfftw3-dev libblas-dev liblapack-dev gfortran \
+            libcodec2-dev librtlsdr-dev libsoapysdr-dev libairspy-dev libcurl4-openssl-dev libexpat1-dev
+
+      - name: Build and install mbelib-neo
+        run: |
+          set -euxo pipefail
+          source tools/ci-dependency-pins.env
+          tools/fetch-pinned-git.sh https://github.com/arancormonk/mbelib-neo "$MBELIB_NEO_SHA" /tmp/mbelib-neo
+          cmake -S /tmp/mbelib-neo -B /tmp/mbelib-neo/build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON \
+            -DCMAKE_INSTALL_PREFIX="$HOME/.local"
+          cmake --build /tmp/mbelib-neo/build -j
+          cmake --install /tmp/mbelib-neo/build
+
+      - name: Prepare local dependency environment
+        run: |
+          {
+            echo "PKG_CONFIG_PATH=$HOME/.local/lib/pkgconfig:$HOME/.local/lib64/pkgconfig:${PKG_CONFIG_PATH:-}"
+            echo "CMAKE_PREFIX_PATH=$HOME/.local:${CMAKE_PREFIX_PATH:-}"
+            echo "LD_LIBRARY_PATH=$HOME/.local/lib:$HOME/.local/lib64:${LD_LIBRARY_PATH:-}"
+          } >> "$GITHUB_ENV"
+
+      # perf-bench is RelWithDebInfo (-O2) with tests and fast-math on, LTO and
+      # -march=native off; the ISA level is pinned here instead.
+      - name: Configure (perf-bench, x86-64-v3)
+        run: |
+          cmake --preset perf-bench -G Ninja \
+            -DCMAKE_C_FLAGS=-march=x86-64-v3 \
+            -DCMAKE_CXX_FLAGS=-march=x86-64-v3 \
+            -DDSD_REQUIRE_RTLSDR=ON -DDSD_REQUIRE_SOAPYSDR=ON -DDSD_REQUIRE_AIRSPY=ON
+
+      - name: Build (perf-bench, x86-64-v3)
+        run: cmake --build --preset perf-bench -j
+
+      - name: Test (perf-bench, x86-64-v3)
+        env:
+          # A test whose tool is missing fails here instead of skipping.
+          DSD_NEO_REQUIRE_TEST_TOOLS: "1"
+        run: |
+          ctest --preset perf-bench -N | tail -n 1
+          ctest --preset perf-bench --output-on-failure
+
+  # The same suite built by Clang, the toolchain of the macOS DMG, which treats
+  # fast-math more aggressively than GCC: it folds bit tests on floats it computed
+  # or took as arguments, turns divisions into approximate reciprocals and
+  # reassociates loop sums. With -Werror, -Wnan-infinity-disabled also makes any
+  # NaN or infinity test left in fast-math code a build error, so a dead guard
+  # cannot land. That diagnostic needs a current Clang (Ubuntu 24.04's default
+  # Clang 18 lacks it), hence the Arch container the v4 job below also uses, and
+  # a probe that fails the job if the compiler stops enforcing it.
+  optimized-v3-ctest-clang:
+    name: Linux • RelWithDebInfo • ctest (x86-64-v3, fast-math, clang)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    container:
+      image: archlinux:base-devel@sha256:51dd3d24f7fba779e7c471caeee7804c50e8c134ad948e19685a1c83a42facc3
+    defaults:
+      run:
+        shell: bash
+    env:
+      CC: clang
+      CXX: clang++
+    steps:
+      - name: Install build dependencies
+        run: |
+          pacman -Syu --noconfirm --needed \
+            clang cmake ninja git pkgconf python ripgrep jdk-openjdk kotlin \
+            libsndfile libpulse ncurses libusb fftw blas lapack gcc-fortran \
+            codec2 rtl-sdr soapysdr airspy curl expat
+
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Mark workspace as safe
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      # A runner without the ISA would SIGILL in the first test and read as a
+      # test failure; fail here with the reason instead.
+      - name: Require an x86-64-v3 runner
+        run: |
+          set -euo pipefail
+          /usr/lib/ld-linux-x86-64.so.2 --help | grep -F 'x86-64-v3 (supported'
+
+      # The job exists to enforce -Wnan-infinity-disabled; fail if this Clang
+      # accepts a NaN test under fast-math instead of passing without checking.
+      - name: Require Clang to reject NaN tests under fast-math
+        run: |
+          set -euo pipefail
+          clang --version
+          printf 'int probe(double x) { return __builtin_isnan(x); }\n' > "$RUNNER_TEMP/nan_probe.c"
+          if clang -ffast-math -Werror -c "$RUNNER_TEMP/nan_probe.c" -o "$RUNNER_TEMP/nan_probe.o"; then
+            echo "::error::this Clang does not diagnose NaN tests under fast-math (-Wnan-infinity-disabled)" >&2
+            exit 1
+          fi
+
+      - name: Build and install mbelib-neo
+        run: |
+          set -euxo pipefail
+          source tools/ci-dependency-pins.env
+          tools/fetch-pinned-git.sh https://github.com/arancormonk/mbelib-neo "$MBELIB_NEO_SHA" /tmp/mbelib-neo
+          cmake -S /tmp/mbelib-neo -B /tmp/mbelib-neo/build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON \
+            -DCMAKE_INSTALL_PREFIX=/usr/local
+          cmake --build /tmp/mbelib-neo/build -j
+          cmake --install /tmp/mbelib-neo/build
+          ldconfig
+
+      - name: Configure (perf-bench, x86-64-v3, clang)
+        run: |
+          cmake --preset perf-bench -G Ninja \
+            -DCMAKE_C_FLAGS=-march=x86-64-v3 \
+            -DCMAKE_CXX_FLAGS=-march=x86-64-v3 \
+            -DDSD_REQUIRE_RTLSDR=ON -DDSD_REQUIRE_SOAPYSDR=ON -DDSD_REQUIRE_AIRSPY=ON
+
+      - name: Build (perf-bench, x86-64-v3, clang)
+        run: cmake --build --preset perf-bench -j
+
+      - name: Test (perf-bench, x86-64-v3, clang)
+        env:
+          # A test whose tool is missing fails here instead of skipping.
+          DSD_NEO_REQUIRE_TEST_TOOLS: "1"
+        run: |
+          ctest --preset perf-bench -N | tail -n 1
+          ctest --preset perf-bench --output-on-failure
 
   build-linux:
     runs-on: ubuntu-latest
@@ -1106,7 +1333,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            build-essential clang cmake ninja-build pkg-config git ccache \
+            build-essential clang cmake ninja-build pkg-config git ccache ripgrep \
             libsndfile1-dev libpulse-dev libncurses-dev \
             libusb-1.0-0-dev libfftw3-dev libblas-dev liblapack-dev \
             gfortran libcurl4-openssl-dev libexpat1-dev
@@ -1242,6 +1469,9 @@ jobs:
         run: cmake --build --preset ${{ matrix.preset }} --parallel
 
       - name: Test (${{ matrix.preset }})
+        env:
+          # A test whose tool is missing fails here instead of skipping.
+          DSD_NEO_REQUIRE_TEST_TOOLS: "1"
         run: |
           set -euxo pipefail
           if [[ "${{ matrix.name }}" == "tsan" ]]; then

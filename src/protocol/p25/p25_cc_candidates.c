@@ -18,6 +18,7 @@
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
+#include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -130,8 +131,11 @@ p25_cc_parse_cache_line(char* line, long* out_freq_hz) {
         return 0;
     }
 
+    /* strtol() clamps an overflow to LONG_MAX, which on Windows is itself a plausible frequency; reject it, and
+       anything past the trunk ceiling, rather than load a control channel nobody cached. */
+    errno = 0;
     long freq_hz = strtol(p, &end, 10);
-    if (end == p || freq_hz <= 0) {
+    if (end == p || errno != 0 || freq_hz <= 0 || freq_hz > DSD_TRUNK_FREQ_MAX_HZ) {
         return 0;
     }
 

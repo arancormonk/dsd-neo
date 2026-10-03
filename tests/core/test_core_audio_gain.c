@@ -155,27 +155,34 @@ create_temp_file_fd(const char* prefix, char* out_path, size_t out_path_sz) {
     return fd;
 }
 
+/* A private temp file named with @p suffix and holding @p data: written and closed under its mkstemp name first,
+ * then renamed, because Windows refuses to rename a file that is still open. Returns 0, or 1 after reporting why. */
 static int
-create_temp_file_with_suffix(const char* prefix, const char* suffix, char* out_path, size_t out_path_sz) {
+create_temp_file_with_suffix(const char* prefix, const char* suffix, const void* data, size_t len, char* out_path,
+                             size_t out_path_sz) {
     char base_path[DSD_AUDIO_TEST_PATH_MAX] = {0};
     int fd = create_temp_file_fd(prefix, base_path, sizeof base_path);
     if (fd < 0) {
-        return -1;
+        return 1;
+    }
+    const int written = dsd_write(fd, data, len) == (ssize_t)len;
+    if (dsd_close(fd) != 0 || !written) {
+        DSD_FPRINTF(stderr, "FAIL: write temp file for %s\n", prefix);
+        (void)remove(base_path);
+        return 1;
     }
 
     if (DSD_SNPRINTF(out_path, out_path_sz, "%s%s", base_path, suffix) >= (int)out_path_sz) {
         DSD_FPRINTF(stderr, "FAIL: suffixed temp path too long for %s\n", prefix);
-        (void)dsd_close(fd);
         (void)remove(base_path);
-        return -1;
+        return 1;
     }
     if (rename(base_path, out_path) != 0) {
         DSD_FPRINTF(stderr, "FAIL: rename temp file to %s failed: %s\n", out_path, strerror(errno));
-        (void)dsd_close(fd);
         (void)remove(base_path);
-        return -1;
+        return 1;
     }
-    return fd;
+    return 0;
 }
 
 static int
@@ -447,6 +454,18 @@ test_manual_and_float_autogain_helpers(void) {
     rc |= expect_int_eq("analog gain short positive", short_samples[0], 200);
     rc |= expect_int_eq("analog gain short negative", short_samples[1], -400);
     rc |= expect_int_eq("analog gain short zero", short_samples[2], 0);
+
+    /* The default 50% is 2.5x, so any sample past +/-13107 leaves the int16 range; it must
+       saturate like agsm() does, not wrap through an out-of-range conversion. */
+    opts.audio_gainA = 50.0f;
+    short loud_samples[6] = {20000, -20000, 13107, 13108, -13108, 32767};
+    analog_gain(&opts, &state, loud_samples, 6);
+    rc |= expect_int_eq("analog gain saturates positive", loud_samples[0], 32767);
+    rc |= expect_int_eq("analog gain saturates negative", loud_samples[1], -32768);
+    rc |= expect_int_eq("analog gain largest in range", loud_samples[2], 32767);
+    rc |= expect_int_eq("analog gain first past the top", loud_samples[3], 32767);
+    rc |= expect_int_eq("analog gain first past the bottom", loud_samples[4], -32768);
+    rc |= expect_int_eq("analog gain full scale", loud_samples[5], 32767);
 
     opts.audio_gainA = 50.0f;
     opts.audio_in_type = AUDIO_IN_RTL;
@@ -1108,18 +1127,10 @@ test_open_audio_in_device_bin_symbol_file_resets_replay_state(void) {
     DSD_MEMSET(&state, 0, sizeof state);
 
     char path[DSD_AUDIO_TEST_PATH_MAX] = {0};
-    int fd = create_temp_file_with_suffix("dsdneo_audio_symbols", ".bin", path, sizeof path);
-    if (fd < 0) {
-        return 1;
-    }
     const unsigned char payload[4] = {0x02, 0x03, 0x01, 0x00};
-    if (dsd_write(fd, payload, sizeof payload) != (ssize_t)sizeof payload) {
-        DSD_FPRINTF(stderr, "FAIL: write bin symbol payload\n");
-        (void)dsd_close(fd);
-        (void)remove(path);
+    if (create_temp_file_with_suffix("dsdneo_audio_symbols", ".bin", payload, sizeof payload, path, sizeof path) != 0) {
         return 1;
     }
-    (void)dsd_close(fd);
 
     opts.audio_in_type = AUDIO_IN_PULSE;
     opts.wav_sample_rate = 48000;
@@ -1155,18 +1166,10 @@ test_open_audio_in_device_float_symbol_file_preserves_soft_metadata(void) {
     DSD_MEMSET(&state, 0, sizeof state);
 
     char path[DSD_AUDIO_TEST_PATH_MAX] = {0};
-    int fd = create_temp_file_with_suffix("dsdneo_audio_symbols", ".raw", path, sizeof path);
-    if (fd < 0) {
-        return 1;
-    }
     const float payload[2] = {1.0f, -1.0f};
-    if (dsd_write(fd, payload, sizeof payload) != (ssize_t)sizeof payload) {
-        DSD_FPRINTF(stderr, "FAIL: write raw symbol payload\n");
-        (void)dsd_close(fd);
-        (void)remove(path);
+    if (create_temp_file_with_suffix("dsdneo_audio_symbols", ".raw", payload, sizeof payload, path, sizeof path) != 0) {
         return 1;
     }
-    (void)dsd_close(fd);
 
     opts.audio_in_type = AUDIO_IN_PULSE;
     opts.wav_sample_rate = 48000;

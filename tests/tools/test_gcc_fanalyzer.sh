@@ -13,13 +13,13 @@ set -euo pipefail
 
 ROOT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd)
 
+# shellcheck source=tests/tools/missing_tool.sh
+source "$(dirname -- "$0")/missing_tool.sh"
 if ! command -v gcc > /dev/null 2>&1 || ! command -v python3 > /dev/null 2>&1; then
-  echo "SKIP: gcc or python3 not available"
-  exit 0
+  missing_tool "gcc or python3 not available"
 fi
 if ! gcc -fanalyzer -S -o /dev/null -x c /dev/null > /dev/null 2>&1; then
-  echo "SKIP: this gcc does not support -fanalyzer"
-  exit 0
+  missing_tool "this gcc does not support -fanalyzer"
 fi
 
 WORK=$(mktemp -d)

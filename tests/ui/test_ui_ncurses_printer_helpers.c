@@ -691,6 +691,9 @@ dsd_channel_lpf_legacy_wide_width_hz(int rate_hz) {
     return 0;
 }
 
+#if defined(DSD_USE_PDCURSES)
+#include "pdcurses_macro_stubs.h"
+#endif
 #include "../../src/ui/terminal/dsd_ncurses_printer.c"
 #include "dsd-neo/app_control/frontend.h"
 #include "dsd-neo/core/input_level.h"

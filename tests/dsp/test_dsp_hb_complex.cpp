@@ -5,9 +5,9 @@
 
 /* Unit test: complex half-band decimator path via full_demod (DC preservation and decimation). */
 
-#include <cstdlib>
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
+#include <dsd-neo/runtime/mem.h>
 #include <stdio.h>
 #include "dsd-neo/core/safe_api.h"
 
@@ -22,7 +22,7 @@ approx_eq(float a, float b, float tol) {
 
 int
 main(void) {
-    demod_state* s = (demod_state*)malloc(sizeof(demod_state));
+    demod_state* s = static_cast<demod_state*>(dsd_neo_aligned_malloc(sizeof(demod_state)));
     if (!s) {
         return 1;
     }
@@ -50,7 +50,7 @@ main(void) {
     const int want_pairs = (pairs - 15 + 1) / 2;
     if (s->result_len != want_pairs * 2) {
         DSD_FPRINTF(stderr, "HB complex: result_len=%d want %d\n", s->result_len, want_pairs * 2);
-        free(s);
+        dsd_neo_aligned_free(s);
         return 1;
     }
     // From the first output whose 31-tap window lies wholly in the block (2k - 15 >= 0) to the last, DC is preserved
@@ -60,11 +60,11 @@ main(void) {
         float Q = s->result[(size_t)(2 * k) + 1];
         if (!approx_eq(I, 0.25f, 1e-3f) || !approx_eq(Q, -0.125f, 1e-3f)) {
             DSD_FPRINTF(stderr, "HB complex: sample %d=(%f,%f) deviates from DC\n", k, I, Q);
-            free(s);
+            dsd_neo_aligned_free(s);
             return 1;
         }
     }
 
-    free(s);
+    dsd_neo_aligned_free(s);
     return 0;
 }

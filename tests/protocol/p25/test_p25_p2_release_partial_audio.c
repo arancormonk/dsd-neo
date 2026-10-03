@@ -51,6 +51,20 @@ record_end_order(char step) {
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
+closeMbeOutFile(dsd_opts* opts, dsd_state* state) {
+    (void)state;
+    opts->mbe_out_f = NULL;
+}
+
+void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+closeMbeOutFileR(dsd_opts* opts, dsd_state* state) {
+    (void)state;
+    opts->mbe_out_fR = NULL;
+}
+
+void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 dsd_event_sync_slot(dsd_opts* opts, dsd_state* state, uint8_t slot) {
     (void)opts;
     (void)state;

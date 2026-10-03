@@ -101,7 +101,7 @@ inline_arch_images=$(
 report_violation "Inline archlinux:base-devel image differs from ARCHLINUX_BASE_DEVEL_IMAGE in tools/ci-dependency-pins.env:" \
   "$inline_arch_images"
 
-for var in CMAKE_LINUX_X86_64_SHA256 CMAKE_LINUX_AARCH64_SHA256; do
+for var in CMAKE_LINUX_X86_64_SHA256 CMAKE_LINUX_AARCH64_SHA256 KOTLIN_COMPILER_SHA256; do
   value=${!var:-}
   if [[ ! "$value" =~ ^[0-9a-f]{64}$ ]]; then
     echo "${var} must be a SHA256 digest; got '${value}'." >&2
@@ -114,5 +114,14 @@ if rg -q 'cmake-[0-9][^[:space:]]+-linux-[^[:space:]]+[.]sh' .github/workflows/l
   echo "CMake installer download in linux-appimage workflow must be verified with sha256sum -c - before execution." >&2
   failed=1
 fi
+
+# A workflow that downloads the Kotlin compiler must check the archive against
+# KOTLIN_COMPILER_SHA256 with sha256sum -c - before it unpacks and runs it.
+while IFS= read -r workflow; do
+  if ! rg -q 'KOTLIN_COMPILER_SHA256[^|]*[|][[:space:]]*sha256sum[[:space:]]+-c[[:space:]]+-' "$workflow"; then
+    echo "Kotlin compiler download in $workflow must be verified against KOTLIN_COMPILER_SHA256 with sha256sum -c -." >&2
+    failed=1
+  fi
+done < <(rg -l 'kotlin-compiler-' .github/workflows --glob '*.y*ml' || true)
 
 exit "$failed"

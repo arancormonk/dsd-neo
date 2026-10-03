@@ -10,9 +10,23 @@
 #if DSD_PLATFORM_WIN_NATIVE
 
 #include <errno.h>
+#include <limits.h>
 #include <process.h>
 
 int dsd_thread_create_impl(dsd_thread_t* thread, void* arg, dsd_thread_fn func);
+
+/* The wrappers report errno values, as their POSIX counterparts do. Map the Windows error a failed call left behind to
+ * the nearest one; anything without a closer match is reported as an invalid request. */
+static int
+dsd_win32_thread_errno(DWORD err) {
+    switch (err) {
+        case ERROR_TIMEOUT: return ETIMEDOUT;
+        case ERROR_ACCESS_DENIED: return EPERM;
+        case ERROR_NOT_ENOUGH_MEMORY:
+        case ERROR_OUTOFMEMORY: return ENOMEM;
+        default: return EINVAL;
+    }
+}
 
 /*============================================================================
  * Thread Functions
@@ -106,8 +120,12 @@ dsd_cond_init(dsd_cond_t* cond) {
 
 int
 dsd_cond_destroy(dsd_cond_t* cond) {
-    /* Windows condition variables don't need explicit destruction */
-    (void)cond;
+    if (!cond) {
+        return EINVAL;
+    }
+    /* A Windows condition variable holds no resource to release. Leave it as InitializeConditionVariable() leaves a new
+       one, so a destroyed variable is in a defined state. */
+    InitializeConditionVariable(cond);
     return 0;
 }
 
@@ -117,7 +135,7 @@ dsd_cond_wait(dsd_cond_t* cond, dsd_mutex_t* mutex) {
         return EINVAL;
     }
     if (!SleepConditionVariableCS(cond, mutex, INFINITE)) {
-        return GetLastError();
+        return dsd_win32_thread_errno(GetLastError());
     }
     return 0;
 }
@@ -128,11 +146,7 @@ dsd_cond_timedwait(dsd_cond_t* cond, dsd_mutex_t* mutex, unsigned int timeout_ms
         return EINVAL;
     }
     if (!SleepConditionVariableCS(cond, mutex, timeout_ms)) {
-        DWORD err = GetLastError();
-        if (err == ERROR_TIMEOUT) {
-            return ETIMEDOUT;
-        }
-        return err;
+        return dsd_win32_thread_errno(GetLastError());
     }
     return 0;
 }
@@ -160,11 +174,7 @@ dsd_cond_timedwait_monotonic(dsd_cond_t* cond, dsd_mutex_t* mutex, uint64_t dead
     DWORD timeout_ms = (DWORD)wait_ms_u64;
 
     if (!SleepConditionVariableCS(cond, mutex, timeout_ms)) {
-        DWORD err = GetLastError();
-        if (err == ERROR_TIMEOUT) {
-            return ETIMEDOUT;
-        }
-        return (int)err;
+        return dsd_win32_thread_errno(GetLastError());
     }
     return 0;
 }
@@ -216,20 +226,21 @@ dsd_thread_set_realtime_priority(int priority) {
     }
 
     if (!SetThreadPriority(GetCurrentThread(), win_priority)) {
-        return GetLastError();
+        return dsd_win32_thread_errno(GetLastError());
     }
     return 0;
 }
 
 int
 dsd_thread_set_affinity(int cpu_index) {
-    if (cpu_index < 0) {
+    /* A thread's affinity mask holds one bit per CPU of its processor group; shifting past it is undefined. */
+    if (cpu_index < 0 || cpu_index >= (int)(sizeof(DWORD_PTR) * CHAR_BIT)) {
         return EINVAL;
     }
 
     DWORD_PTR mask = (DWORD_PTR)1 << cpu_index;
     if (SetThreadAffinityMask(GetCurrentThread(), mask) == 0) {
-        return GetLastError();
+        return dsd_win32_thread_errno(GetLastError());
     }
     return 0;
 }

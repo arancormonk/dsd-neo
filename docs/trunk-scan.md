@@ -97,8 +97,9 @@ Target list limits and validation:
 - Every data row must contain the seven fields above.
 - The header may have optional columns after `notes`, but the first seven header names must match the required prefix.
   Recognized optional columns are matched by header name; missing trailing optional data fields are treated as empty.
-- Frequency values must be at least `1`. Normal 64-bit builds accept values up to `4294967295`; 32-bit builds may reject
-  values above `LONG_MAX`.
+- Frequency values must be at least `1`. Builds with a 64-bit `long` (Linux, macOS, Android) accept values up to
+  `4294967295`; Windows builds, whose `long` is 32-bit, and other 32-bit targets reject values above `LONG_MAX`
+  (2147483647).
 - Duplicate `id` values are rejected.
 - Duplicate `(type, frequency_hz)` pairs are rejected.
 - A duplicated key header is rejected. An unloadable key path fails the whole import like a bad `-K`/`-k`; a malformed

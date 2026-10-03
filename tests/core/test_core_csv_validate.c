@@ -381,7 +381,7 @@ test_chan_rejects_a_key_list(void) {
 }
 
 /* The bounds are generous on purpose -- they reject numbers that cannot be
- * radio frequencies at all, not frequencies outside a band plan. */
+ * trunk channel frequencies at all, not frequencies outside a band plan. */
 static int
 test_chan_frequency_bounds(void) {
     char tmpl[] = "dsd-neo-test-validate-chan-bounds-XXXXXX";
@@ -389,19 +389,20 @@ test_chan_frequency_bounds(void) {
                              "1,0\n"          /* a blank column parses to this */
                              "2,99999\n"      /* just under the floor */
                              "3,100000\n"     /* the floor itself: HF, kept */
-                             "4,6000000000\n" /* the ceiling: 6 GHz, kept */
-                             "5,6000000001\n" /* past any front end's reach */
+                             "4,2147483647\n" /* the ceiling, the same on every platform: kept */
+                             "5,2147483648\n" /* one past it: refused, not stored or tuned */
                              "6,851000000\n")
         != 0) {
         return 1;
     }
+    const unsigned want_accepted = 3U;
     dsd_csv_validation v = {0U, 0U, 0U};
     int failed = 0;
     if (dsd_csv_validate_chan_file(tmpl, &v) != 0) {
         DSD_FPRINTF(stderr, "chan validate failed on the bounds file\n");
         failed = 1;
     }
-    if (v.accepted != 3U || v.skipped != 3U || v.total != 6U) {
+    if (v.accepted != want_accepted || v.skipped != 6U - want_accepted || v.total != 6U) {
         DSD_FPRINTF(stderr, "chan bounds counts wrong: accepted=%u skipped=%u total=%u\n", v.accepted, v.skipped,
                     v.total);
         failed = 1;

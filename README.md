@@ -315,7 +315,10 @@ These are CMake cache options (set at configure time via `-D...`).
 ## CI Backend Policy
 
 - CI treats backend availability as a build contract, not a best-effort option.
-- Linux CI runs a backend matrix for `both`, `soapy_only`, `rtl_only`, and `neither`.
+- Linux CI runs a backend matrix for `both`, `soapy_only`, `rtl_only`, `airspy_only`, and `neither`, plus `both` again
+  on a native arm64 runner.
+- Every pull request runs the full ctest suite on Linux x86_64 and arm64, macOS arm64 and Windows x64 (MSVC), and on an
+  optimized x86-64-v3 fast-math Linux build with GCC and with Clang; see "Continuous Integration" in `docs/testing.md`.
 - Linux CI also builds and tests the Android configuration on the host (no audio library, no terminal UI, no SDR
   library, no Codec2, radio pipeline forced on), and `android-ci` cross-compiles the arm64 CLI and the APK on every pull
   request, then signs and publishes the APK from `main` and release tags.

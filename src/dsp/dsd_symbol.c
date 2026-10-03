@@ -152,6 +152,24 @@ probe_symbol_replay_format(dsd_opts* opts, dsd_state* state) {
     return 0;
 }
 
+/*
+ * A float read from a symbol file is external data, so the reader checks it on the bits it read, before they become a
+ * float: the global fast-math option folds isfinite() and x != x to constants. A symbol enters only when its magnitude
+ * after the reader's scaling is below 2^31, so it is finite and every integer conversion of it downstream is defined
+ * ((int)lrintf(symbol) in get_dibit_and_analog_signal(); lrintf()'s long is 32 bits on Windows). Real symbols sit
+ * orders of magnitude below either bound, so only an Inf, a NaN or an absurdly large value fails.
+ */
+#define SYMBOL_FILE_MAGNITUDE_MASK  0x7FFFFFFFu
+/* A soft record holds the decoder's own symbol: below 2^31. */
+#define SYMBOL_FILE_SOFT_LIMIT_BITS 0x4F000000u
+/* A float symbol file is scaled by 10000 on the way in: below 2^17, as 2^17 * 10000 is below 2^31. */
+#define SYMBOL_FILE_FLT_LIMIT_BITS  0x48000000u
+
+static int
+symbol_file_bits_in_range(uint32_t bits, uint32_t limit_bits) {
+    return (bits & SYMBOL_FILE_MAGNITUDE_MASK) < limit_bits;
+}
+
 static int
 read_soft_symbol_record(dsd_opts* opts, dsd_state* state, float* symbol_out) {
     unsigned char record[DSD_SYMBOL_CAPTURE_SOFT_RECORD_SIZE];
@@ -167,7 +185,16 @@ read_soft_symbol_record(dsd_opts* opts, dsd_state* state, float* symbol_out) {
     state->symbol_replay_soft.llr[0] = read_le_i16(record + 2);
     state->symbol_replay_soft.llr[1] = read_le_i16(record + 4);
     uint32_t raw_symbol = read_le_u32(record + 6);
-    DSD_MEMCPY(symbol_out, &raw_symbol, sizeof(raw_symbol));
+    if (symbol_file_bits_in_range(raw_symbol, SYMBOL_FILE_SOFT_LIMIT_BITS)) {
+        DSD_MEMCPY(symbol_out, &raw_symbol, sizeof(raw_symbol));
+        state->symbol_replay_symbol_unusable = 0;
+    } else {
+        /* The record's dibit and soft metrics still decide it. The amplitude carries no information: it enters as 0,
+           and is marked so that two-level reliability gives the bit no confidence, as 0 alone does only when the
+           thresholds centre on it. */
+        *symbol_out = 0.0f;
+        state->symbol_replay_symbol_unusable = 1;
+    }
     state->symbol_replay_soft_symbol = *symbol_out;
     state->symbol_replay_has_soft = 1;
     state->symbol_replay_soft_records++;
@@ -2153,6 +2180,7 @@ symbol_process_symbol_bin_input(dsd_opts* opts, dsd_state* state, float* symbol_
             if (c != EOF) {
                 state->symbolc = c & 3;
                 state->symbol_replay_has_soft = 0;
+                state->symbol_replay_symbol_unusable = 0;
                 *symbol_out = dsd_symbol_level_from_dibit((uint8_t)state->symbolc);
                 read_ok = 1;
             }
@@ -2194,17 +2222,28 @@ symbol_process_symbol_bin_input(dsd_opts* opts, dsd_state* state, float* symbol_
 }
 
 static inline int
-symbol_process_symbol_flt_input(dsd_opts* opts, float* symbol_out) {
-    float float_symbol = 0.0f;
-    size_t read_count = fread(&float_symbol, sizeof(float), 1, opts->symbolfile);
+symbol_process_symbol_flt_input(dsd_opts* opts, dsd_state* state, float* symbol_out) {
+    uint32_t raw_symbol = 0U;
+    size_t read_count = fread(&raw_symbol, sizeof(raw_symbol), 1, opts->symbolfile);
     if (read_count != 1) {
         dsd_exitflag_store(1);
         *symbol_out = 0.0f;
+        state->symbol_replay_symbol_unusable = 1;
         return 1;
     }
     if (feof(opts->symbolfile)) {
         dsd_exitflag_store(1);
     }
+    /* An unusable symbol reads as 0, the symbol this reader gives when it has none, and in its place, so the symbols
+       after it keep their positions. It is marked as an erasure: 0 is no confidence only when the thresholds centre
+       on it. */
+    state->symbol_replay_symbol_unusable = 0;
+    if (!symbol_file_bits_in_range(raw_symbol, SYMBOL_FILE_FLT_LIMIT_BITS)) {
+        raw_symbol = 0U;
+        state->symbol_replay_symbol_unusable = 1;
+    }
+    float float_symbol = 0.0f;
+    DSD_MEMCPY(&float_symbol, &raw_symbol, sizeof(float_symbol));
     *symbol_out = float_symbol * 10000.0f;
     return 1;
 }
@@ -2409,7 +2448,7 @@ symbol_apply_replay_overrides(dsd_opts* opts, dsd_state* state, float* symbol) {
         (void)symbol_process_symbol_bin_input(opts, state, symbol);
     }
     if (opts->audio_in_type == AUDIO_IN_SYMBOL_FLT) {
-        (void)symbol_process_symbol_flt_input(opts, symbol);
+        (void)symbol_process_symbol_flt_input(opts, state, symbol);
     }
 }
 

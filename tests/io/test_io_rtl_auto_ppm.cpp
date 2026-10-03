@@ -77,6 +77,57 @@ make_request_state(int pending, int ppm, uint32_t request_id) {
     return state;
 }
 
+/* NaN and infinity from their bit patterns, so the global fast-math option has no NAN or INFINITY literal to warn on. */
+static double
+nonfinite_double(uint64_t bits) {
+    double value = 0.0;
+    DSD_MEMCPY(&value, &bits, sizeof value);
+    return value;
+}
+
+static const uint64_t kNonFiniteBits[] = {0x7ff8000000000000ULL, 0x7ff0000000000000ULL, 0xfff0000000000000ULL};
+
+static int
+test_select_estimate_rejects_nonfinite_cfo(void) {
+    int rc = 0;
+    for (uint64_t bits : kNonFiniteBits) {
+        RtlAutoPpmSignalMetrics carrier = {};
+        carrier.cqpsk_enable = 1;
+        carrier.tracking_enable = 1;
+        carrier.carrier_lock = 1;
+        carrier.nco_cfo_hz = nonfinite_double(bits);
+        rc |= expect_int_eq("non-finite cqpsk nco has no estimate", static_cast<int>(select_estimate(carrier).source),
+                            static_cast<int>(RtlAutoPpmSource::None));
+
+        RtlAutoPpmSignalMetrics phase = {};
+        phase.tracking_enable = 1;
+        phase.phase_cfo_hz = nonfinite_double(bits);
+        rc |= expect_int_eq("non-finite tracked phase has no estimate", static_cast<int>(select_estimate(phase).source),
+                            static_cast<int>(RtlAutoPpmSource::None));
+    }
+    return rc;
+}
+
+static int
+test_nonfinite_estimate_never_applies(void) {
+    int rc = 0;
+    const uint32_t freq_hz = 851000000U;
+    for (uint64_t bits : kNonFiniteBits) {
+        RtlAutoPpmController controller;
+        RtlAutoPpmConfig config = {};
+        controller.reset(0, freq_hz);
+        RtlAutoPpmInputs inputs = make_inputs(0, 0, freq_hz, 0.0, RtlAutoPpmSource::CarrierTotal);
+        inputs.estimate.error_hz = nonfinite_double(bits);
+        RtlAutoPpmUpdate update = controller.update(config, inputs);
+        rc |= expect_int_eq("non-finite residual does not apply at once", update.apply_ppm, 0);
+        inputs.now_ms = 4000;
+        update = controller.update(config, inputs);
+        rc |= expect_int_eq("non-finite residual does not apply after observation", update.apply_ppm, 0);
+        rc |= expect_int_eq("non-finite residual keeps the ppm", update.new_ppm, 0);
+    }
+    return rc;
+}
+
 static int
 test_select_estimate_accepts_large_finite_cqpsk_nco(void) {
     int rc = 0;
@@ -697,6 +748,8 @@ int
 main(void) {
     int rc = 0;
     rc |= test_select_estimate_accepts_large_finite_cqpsk_nco();
+    rc |= test_select_estimate_rejects_nonfinite_cfo();
+    rc |= test_nonfinite_estimate_never_applies();
     rc |= test_select_estimate_prefers_cqpsk_nco_after_lock();
     rc |= test_select_estimate_rejects_cqpsk_without_lock();
     rc |= test_select_estimate_prefers_non_cqpsk_phase_tracking();

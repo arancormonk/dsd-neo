@@ -190,10 +190,20 @@ analog_gain(const dsd_opts* opts, dsd_state* state, short* input, int len) {
     int i;
     UNUSED(state);
 
-    float gain = (opts->audio_gainA / 100.0f) * 5.0f; //scale 0x - 5x
+    /* 0% to 100% maps to 0x to 5x. One multiply by a literal, so fast-math has no division to turn into an inexact
+       reciprocal; 0.05f rounds up, so a whole-number setting never lands a step low under the truncating cast. */
+    float gain = opts->audio_gainA * 0.05f;
 
+    /* Saturate to int16 as agsm() does: above 1x a loud sample leaves the range, and converting it to short would
+       wrap it to the opposite polarity. */
     for (i = 0; i < len; i++) {
-        input[i] = (short)(input[i] * gain);
+        float scaled = (float)input[i] * gain;
+        if (scaled > 32767.0f) {
+            scaled = 32767.0f;
+        } else if (scaled < -32768.0f) {
+            scaled = -32768.0f;
+        }
+        input[i] = (short)scaled;
     }
 }
 
@@ -252,8 +262,8 @@ analog_gain_f(const dsd_opts* opts, dsd_state* state, float* input, int len) {
     // All other input types (WAV, Pulse, TCP, etc.) produce PCM16-scale samples.
     float base_scale = (opts->audio_in_type == AUDIO_IN_RTL) ? 4800.0f : 1.0f;
 
-    // User gain: 0% to 100% maps to 0x to 5x
-    float user_gain = (opts->audio_gainA / 100.0f) * 5.0f;
+    // User gain: 0% to 100% maps to 0x to 5x, written as in analog_gain() above.
+    float user_gain = opts->audio_gainA * 0.05f;
     float gain = base_scale * user_gain;
 
     for (i = 0; i < len; i++) {

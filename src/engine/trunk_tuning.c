@@ -684,6 +684,12 @@ dsd_engine_tune_rtl(dsd_opts* opts, dsd_state* state, long int freq, uint64_t re
 
 static dsd_trunk_tune_result
 dsd_engine_tune_with_backend(dsd_opts* opts, dsd_state* state, long int freq, uint64_t request_id) {
+    /* Every backend below carries the frequency as uint32_t; one past it (possible where long is 64-bit) would wrap to
+       an unrelated channel, so the tune fails instead. The callers have already refused freq <= 0. */
+    if ((long long)freq > (long long)UINT32_MAX) {
+        DSD_FPRINTF(stderr, "Trunk tune to %ld Hz refused: past the tuner limit of 4294967295 Hz.\n", freq);
+        return DSD_TRUNK_TUNE_RESULT_FAILED;
+    }
     const int conventional_scan = dsd_engine_conventional_scan_active(opts);
     if (opts->use_rigctl == 1) {
         if (!dsd_engine_tune_rigctl(opts, state, freq)) {

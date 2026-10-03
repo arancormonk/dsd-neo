@@ -40,6 +40,9 @@ static int g_block_glyphs_supported = 0;
 static char g_cached_locale[128] = {0};
 #if DSD_PLATFORM_WIN_NATIVE
 static unsigned int g_cached_console_cp = 0;
+/* Code pages the console had before dsd_unicode_init_locale() switched it to UTF-8; 0 when it was not switched. */
+static UINT g_saved_console_output_cp = 0;
+static UINT g_saved_console_input_cp = 0;
 #endif
 
 static int
@@ -211,6 +214,26 @@ locale_is_utf8(void) {
     return 0;
 }
 
+#if DSD_PLATFORM_WIN_NATIVE
+/* Prefer UTF-8 console code pages on native Windows terminals (best effort). The console belongs to the shell that
+ * started us and keeps its code pages after we exit, so remember what it had and put that back at exit. Without a
+ * console both getters return 0 and nothing changes. */
+static void
+unicode_switch_console_to_utf8_locked(void) {
+    const UINT output_cp = GetConsoleOutputCP();
+    const UINT input_cp = GetConsoleCP();
+    if (output_cp != 0 && output_cp != CP_UTF8 && SetConsoleOutputCP(CP_UTF8)) {
+        g_saved_console_output_cp = output_cp;
+    }
+    if (input_cp != 0 && input_cp != CP_UTF8 && SetConsoleCP(CP_UTF8)) {
+        g_saved_console_input_cp = input_cp;
+    }
+    if (g_saved_console_output_cp != 0 || g_saved_console_input_cp != 0) {
+        (void)atexit(dsd_unicode_restore_console);
+    }
+}
+#endif
+
 static void
 unicode_init_locale_locked(void) {
     if (g_locale_inited) {
@@ -226,9 +249,7 @@ unicode_init_locale_locked(void) {
     }
 
 #if DSD_PLATFORM_WIN_NATIVE
-    /* Prefer UTF-8 console code pages on native Windows terminals (best effort). */
-    SetConsoleOutputCP(CP_UTF8);
-    SetConsoleCP(CP_UTF8);
+    unicode_switch_console_to_utf8_locked();
 #endif
 
     if (locale_is_utf8()) {
@@ -249,6 +270,23 @@ unicode_init_locale_locked(void) {
 
     /* Locale/codepage changes can affect support detection; recompute on next query. */
     g_unicode_cached = 0;
+}
+
+void
+dsd_unicode_restore_console(void) {
+#if DSD_PLATFORM_WIN_NATIVE
+    const std::lock_guard<std::mutex> lock(g_unicode_mutex);
+    if (g_saved_console_output_cp != 0) {
+        (void)SetConsoleOutputCP(g_saved_console_output_cp);
+        g_saved_console_output_cp = 0;
+    }
+    if (g_saved_console_input_cp != 0) {
+        (void)SetConsoleCP(g_saved_console_input_cp);
+        g_saved_console_input_cp = 0;
+    }
+    /* Support detection follows the console code page; recompute on the next query. */
+    g_unicode_cached = 0;
+#endif
 }
 
 void

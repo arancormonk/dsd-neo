@@ -151,6 +151,13 @@ set_escdelay(int size) {
     return 0;
 }
 
+/* PDCurses (Windows) has no set_escdelay(), and dsd_curses_set_escdelay() skips it there. */
+#if defined(DSD_USE_PDCURSES)
+enum { kExpectedEscdelay = 0 };
+#else
+enum { kExpectedEscdelay = 25 };
+#endif
+
 int
 wgetch(WINDOW* win) {
     (void)win;
@@ -258,7 +265,7 @@ test_non_tty_stderr_is_not_suppressed(void) {
 
     assert(g_unicode_init_calls == 1);
     assert(g_initscr_calls == 1);
-    assert(g_escdelay_value == 25);
+    assert(g_escdelay_value == kExpectedEscdelay);
     assert(g_use_default_colors_calls == 1);
     assert(g_assume_default_colors_calls == 1);
     assert(g_init_pair_calls > 0);

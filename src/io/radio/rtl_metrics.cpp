@@ -21,6 +21,7 @@
 #include <stddef.h>
 
 #include "rtl_fft_cache.h"
+#include "rtl_finite.h"
 #include "rtl_spectrum_kernels.h"
 #include "rtl_stream_shared.hpp"
 
@@ -101,7 +102,7 @@ cqpsk_loop_lock_heuristic(float total_freq_rad, int out_rate_hz) {
     float costas_err = (float)demod.costas_err_avg_q14 / 16384.0f;
     float fll_abs = fabsf(demod.fll_band_edge_state.freq);
     float fll_limit = fabsf(demod.fll_band_edge_state.max_freq);
-    if (!std::isfinite(fll_limit) || fll_limit <= 0.0f) {
+    if (!dsd::io::radio::rtl_is_finite(fll_limit) || fll_limit <= 0.0f) {
         fll_limit = 1.0f;
     }
     float fll_lock_limit = fll_limit * 0.95f;

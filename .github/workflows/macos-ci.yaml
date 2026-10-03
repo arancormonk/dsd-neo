@@ -20,11 +20,15 @@ permissions:
   contents: read
 
 jobs:
-  build-portable-dmg:
+  # Debug build plus the full ctest suite on the shipped macOS architecture. The
+  # DMG jobs build Release with tests off, so without this job no test ever ran
+  # against AppleClang, libc++, ld64 or BSD libc. Runs on push as well, so main
+  # keeps a warm ccache for pull requests.
+  test-debug-arm64:
+    name: macOS • Debug • ctest (arm64)
     runs-on: macos-latest
-    if: github.event_name == 'pull_request'
+    timeout-minutes: 45
     permissions:
-      actions: read
       contents: read
     env:
       HOMEBREW_NO_AUTO_UPDATE: "1"
@@ -34,7 +38,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 0
+          persist-credentials: false
       - name: Compute dependency SHAs (for cache key)
         id: dep-shas
         shell: bash
@@ -92,7 +96,10 @@ jobs:
         run: |
           set -euxo pipefail
           # Many deps we build from source (cached) to align with Linux/Windows flows
-          brew install cmake ninja pkg-config ccache \
+          # bash: the TOOLS_* ctest cases need bash >= 4; /bin/bash is 3.2.
+          # ripgrep and gcc: two of them need rg, and TOOLS_GCC_FANALYZER needs GNU
+          # GCC's analyzer; each prints SKIP and passes without its tool.
+          brew install cmake ninja pkg-config ccache bash ripgrep gcc \
             libsndfile pulseaudio fftw libusb ncurses soapysdr airspy
           # Prefer Homebrew packages when available
           brew install codec2 rtl-sdr || true
@@ -118,16 +125,16 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ env.CCACHE_DIR }}
-          key: ccache-${{ runner.os }}-${{ github.sha }}
+          key: ccache-debug-${{ runner.os }}-${{ github.sha }}
           restore-keys: |
-            ccache-${{ runner.os }}-
+            ccache-debug-${{ runner.os }}-
 
       - name: Initialize ccache
         shell: bash
         run: |
           ccache --version
           ccache --zero-stats
-          ccache --set-config=max_size=500M
+          ccache --set-config=max_size=300M
           ccache --set-config=compression=true
 
       - name: Build and install mbelib-neo (required, cached)
@@ -232,44 +239,46 @@ jobs:
           pkg-config --modversion libpulse || true
           pkg-config --modversion sndfile || true
 
-      - name: Configure (Release preset)
+      - name: Configure (dev-debug)
         shell: bash
         run: |
-          # No curses overrides on purpose: this is the discovery path a user
-          # gets, and pinning it here is what kept issue #339 out of CI.
-          cmake --preset dev-release -G Ninja \
-            -DDSD_ENABLE_LTO=OFF -DCMAKE_OSX_ARCHITECTURES=arm64 \
-            -DDSD_REQUIRE_RTLSDR=ON -DDSD_REQUIRE_SOAPYSDR=ON -DDSD_REQUIRE_AIRSPY=ON \
-            -DBUILD_TESTING=OFF
+          cmake --preset dev-debug -G Ninja \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DDSD_REQUIRE_RTLSDR=ON -DDSD_REQUIRE_SOAPYSDR=ON -DDSD_REQUIRE_AIRSPY=ON
 
-      - name: Verify curses selection
+      # -k 0 keeps going past a failed target, so one run reports every compile
+      # error on a platform that is not reproduced locally.
+      - name: Build (dev-debug)
         shell: bash
-        run: |
-          set -euo pipefail
-          # Discovery is unpinned here on purpose, so assert the outcome: the
-          # portable DMG is built against Homebrew's wide ncurses, and a silent
-          # downgrade to the SDK's narrow curses must not pass unnoticed.
-          lib=$(sed -n 's/^CURSES_NCURSES_LIBRARY:[A-Z]*=//p' build/dev-release/CMakeCache.txt)
-          echo "CURSES_NCURSES_LIBRARY=$lib"
-          case "$lib" in
-            *ncursesw*) ;;
-            *) echo "ERROR: expected a wide ncurses, got '$lib'" >&2; exit 1 ;;
-          esac
+        run: cmake --build --preset dev-debug -j -- -k 0
 
-      - name: Build
+      # macOS's gcc is AppleClang. TOOLS_GCC_FANALYZER runs GNU GCC's analyzer
+      # through a bare gcc, so the test step finds Homebrew's GCC under that
+      # name; the build above keeps the AppleClang that configure recorded.
+      - name: Put GNU GCC on PATH as gcc for the test step
         shell: bash
         run: |
-          cmake --build --preset dev-release -j
+          set -euxo pipefail
+          gnu_gcc=$(find "$(brew --prefix gcc)/bin" -maxdepth 1 -name 'gcc-[0-9]*' | sort -V | tail -n 1)
+          "$gnu_gcc" --version
+          mkdir -p "$RUNNER_TEMP/gnu-gcc"
+          ln -sf "$gnu_gcc" "$RUNNER_TEMP/gnu-gcc/gcc"
 
-      - name: Smoke test - show CLI help
+      - name: Test (dev-debug)
         shell: bash
+        env:
+          # A test whose tool is missing fails here instead of skipping.
+          DSD_NEO_REQUIRE_TEST_TOOLS: "1"
         run: |
-          ./build/dev-release/apps/dsd-cli/dsd-neo -h || true
+          export PATH="$RUNNER_TEMP/gnu-gcc:$PATH"
+          gcc --version | head -n 1
+          ctest --preset dev-debug -N | tail -n 1
+          ctest --preset dev-debug --output-on-failure
 
-      - name: Verify release hardening
+      - name: Show ccache stats
+        if: always()
         shell: bash
-        run: |
-          tools/check_release_hardening.sh build/dev-release/apps/dsd-cli/dsd-neo build/dev-release
+        run: ccache --show-stats
 
   package-portable-dmg:
     name: Package portable DMG

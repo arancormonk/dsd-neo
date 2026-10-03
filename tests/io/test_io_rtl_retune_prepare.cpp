@@ -20,6 +20,19 @@
 #include "dsd-neo/core/safe_api.h"
 #include "rtl_stream_test_support.h"
 
+/* NaN and infinity built from their bit patterns: the global fast-math option warns on NAN and INFINITY, and these
+ * cases check that the stream's own guards reject the values whatever the build mode. */
+static double
+nonfinite_double(uint64_t bits) {
+    double value = 0.0;
+    DSD_MEMCPY(&value, &bits, sizeof value);
+    return value;
+}
+
+static const uint64_t kQuietNanBits = 0x7ff8000000000000ULL;
+static const uint64_t kPosInfBits = 0x7ff0000000000000ULL;
+static const uint64_t kNegInfBits = 0xfff0000000000000ULL;
+
 extern "C" uint64_t rtl_device_test_coalesce_capture_mute_duration(uint64_t* pending_bytes, uint64_t duration_bytes,
                                                                    size_t alignment);
 extern "C" int rtl_device_test_complete_fragmented_capture_discard(int byte_count, unsigned int partial_byte_count);
@@ -1724,6 +1737,17 @@ main(void) {
         -static_cast<double>(static_cast<float>(fsk_dc_rad_per_sample)) * 48000.0 / 6.28318530717958647692, 1e-6);
     failed |= expect_int_eq("fsk cfo snapshot generation bump invalidates estimate", fsk_cfo_after_generation_bump, 0);
     failed |= expect_int_eq("fsk cfo snapshot reset invalidates estimate", fsk_cfo_after_reset, 0);
+    {
+        const uint64_t bad_dc[] = {kQuietNanBits, kPosInfBits, kNegInfBits};
+        for (uint64_t bits : bad_dc) {
+            double bad_cfo_hz = 0.0;
+            int bad_after_bump = -1;
+            int bad_after_reset = -1;
+            rc = rtl_stream_test_fsk_cfo_snapshot(nonfinite_double(bits), 48000, &bad_cfo_hz, &bad_after_bump,
+                                                  &bad_after_reset);
+            failed |= expect_int_eq("fsk cfo snapshot rejects a non-finite dc estimate", rc, -2);
+        }
+    }
 
     int request_rc = -1;
     int consumed = -1;
@@ -1832,6 +1856,43 @@ main(void) {
     failed |= expect_int_eq("return to VC restores VC-specific FLL", fll_cache.vc_restore_used_cache, 1);
     failed |= expect_double_near("return to VC uses prior VC FLL", fll_cache.vc_restore_fll_after,
                                  fll_cache.expected_vc_fll, 1e-7);
+
+    {
+        int restored = -1;
+        rc = rtl_stream_test_fll_retune_cache_stores(-0.0625f, &restored);
+        failed |= expect_int_eq("finite FLL cache helper rc", rc, 0);
+        failed |= expect_int_eq("finite FLL seed is cached", restored, 1);
+        const uint64_t bad_freq[] = {kQuietNanBits, kPosInfBits, kNegInfBits};
+        for (uint64_t bits : bad_freq) {
+            restored = -1;
+            rc = rtl_stream_test_fll_retune_cache_stores(static_cast<float>(nonfinite_double(bits)), &restored);
+            failed |= expect_int_eq("non-finite FLL cache helper rc", rc, 0);
+            failed |= expect_int_eq("non-finite FLL seed is not cached", restored, 0);
+        }
+        restored = -1;
+        rc = rtl_stream_test_fll_retune_cache_stores(1.0e38f, &restored);
+        failed |= expect_int_eq("overflowing FLL cache helper rc", rc, 0);
+        failed |= expect_int_eq("FLL seed whose offset overflows is not cached", restored, 0);
+    }
+
+    {
+        int c4fm_published = -1;
+        int qpsk_published = -1;
+        rc = rtl_stream_test_snr_publish(12.0, 100.0, &c4fm_published, &qpsk_published);
+        failed |= expect_int_eq("finite snr publish helper rc", rc, 0);
+        failed |= expect_int_eq("finite c4fm snr is published", c4fm_published, 1);
+        failed |= expect_int_eq("finite qpsk ratio is published", qpsk_published, 1);
+        const uint64_t bad_snr[] = {kQuietNanBits, kPosInfBits, kNegInfBits};
+        for (uint64_t bits : bad_snr) {
+            c4fm_published = -1;
+            qpsk_published = -1;
+            rc = rtl_stream_test_snr_publish(nonfinite_double(bits), nonfinite_double(bits), &c4fm_published,
+                                             &qpsk_published);
+            failed |= expect_int_eq("non-finite snr publish helper rc", rc, 0);
+            failed |= expect_int_eq("non-finite c4fm snr is not published", c4fm_published, 0);
+            failed |= expect_int_eq("non-finite qpsk ratio is not published", qpsk_published, 0);
+        }
+    }
 
     cqpsk_reacquire = {};
     rc = rtl_stream_test_cqpsk_reacquire(0, 4800, 10, 9U, 4, &cqpsk_reacquire);

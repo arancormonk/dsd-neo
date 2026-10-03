@@ -22,6 +22,7 @@ target_sources(
         vocoder/dsd_mbe_purge.c
         frames/dsd_frame.c
         frames/dsd_dibit.c
+        frames/dsd_dibit_reliability.c
         time/dsd_time.c
         time/dsd_time_state.c
         util/dsd_misc.c
@@ -48,6 +49,22 @@ target_sources(
         file/p25_sm_log.c
         gps/dsd_gps.c
 )
+
+# The two-level reliability rejects NaN and infinite symbols, which fast-math would
+# fold away. It runs per voice symbol, so keep math-errno off as well: lrintf()
+# then stays an inline conversion, and the arithmetic compiles as it does under
+# fast-math.
+if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+    set_source_files_properties(
+        frames/dsd_dibit_reliability.c
+        PROPERTIES COMPILE_OPTIONS "-fno-fast-math;-fno-math-errno"
+    )
+elseif(MSVC)
+    set_source_files_properties(
+        frames/dsd_dibit_reliability.c
+        PROPERTIES COMPILE_OPTIONS "/fp:precise"
+    )
+endif()
 
 target_include_directories(
     dsd-neo_core

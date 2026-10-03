@@ -158,6 +158,24 @@ main(void) {
     state->symbol_replay_format = DSD_SYMBOL_REPLAY_FORMAT_UNKNOWN;
     rc |= expect_reliability("float symbol file", opts, state, 1.0f, 85);
 
+    /* A replayed symbol whose stored amplitude was unusable (NaN, infinite or out of range) stands in as 0. Against
+     * thresholds that do not centre on 0, 0 alone is a confident bit, so the reader marks the symbol and its bit is
+     * an erasure: no confidence, whatever the thresholds. */
+    set_thresholds(state, 10000.0f, 12000.0f, 14000.0f);
+    opts->audio_in_type = AUDIO_IN_SYMBOL_BIN;
+    state->symbol_replay_format = DSD_SYMBOL_REPLAY_FORMAT_SOFT;
+    state->symbol_replay_symbol_unusable = 0;
+    rc |= expect_reliability("soft capture, a real 0 off-centre", opts, state, 0.0f, 255);
+    state->symbol_replay_symbol_unusable = 1;
+    rc |= expect_reliability("soft capture, an unusable symbol off-centre", opts, state, 0.0f, 0);
+    set_thresholds(state, -1.0f, 1.0f, 3.0f);
+    rc |= expect_reliability("soft capture, an unusable symbol between the thresholds", opts, state, 0.0f, 0);
+    opts->audio_in_type = AUDIO_IN_SYMBOL_FLT;
+    state->symbol_replay_format = DSD_SYMBOL_REPLAY_FORMAT_UNKNOWN;
+    rc |= expect_reliability("float symbol file, an unusable symbol", opts, state, 0.0f, 0);
+    state->symbol_replay_symbol_unusable = 0;
+    rc |= expect_reliability("float symbol file, a real 0", opts, state, 0.0f, 128);
+
     free(opts);
     free(state);
     if (rc == 0) {

@@ -4,6 +4,7 @@
  */
 
 #include <dsd-neo/dsp/snr_estimator.h>
+#include <dsd-neo/platform/fp_opaque.h>
 
 #include <algorithm>
 #include <array>
@@ -203,6 +204,7 @@ template <typename EstimateFn>
 double
 estimate_best_phase_db(const float* samples, int sample_count, int samples_per_symbol, int phase_window, double bias_db,
                        EstimateFn estimate_fn) {
+    bias_db = dsd_fp_opaque_d(bias_db); /* keep the NaN test when LTO inlines this into fast-math code */
     if (!samples || sample_count <= 64 || !valid_sps(samples_per_symbol) || !std::isfinite(bias_db)) {
         return kInvalidSnrDb;
     }

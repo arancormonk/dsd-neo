@@ -2139,6 +2139,31 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
     return parse_rc;
 }
 
+/*
+ * getopt's own diagnostics depend on the C library -- glibc says "invalid option", musl "unrecognized option", the
+ * BSDs "illegal option" -- and the Windows getopt prints none, so the option string starts with ':' to silence them
+ * and this reports the error the same way everywhere. That ':' also makes getopt return ':' rather than '?' for an
+ * option whose argument is missing.
+ */
+static void
+cli_report_short_opt_error(int c, int argc, char** argv) {
+    if (c == ':') {
+        LOG_ERROR("Option -%c requires an argument\n", optopt);
+        return;
+    }
+    /* A token the long-option pass did not recognize reaches getopt as "--name", which it reads as option '-'.
+     * getopt has not finished that element, so it is still argv[optind]. */
+    if (optopt == '-' && optind > 0 && optind < argc && argv[optind] != NULL && strncmp(argv[optind], "--", 2) == 0) {
+        LOG_ERROR("Unrecognized option '%s'\n", argv[optind]);
+        return;
+    }
+    if (optopt > ' ' && optopt < 0x7f) {
+        LOG_ERROR("Unrecognized option '-%c'\n", optopt);
+        return;
+    }
+    LOG_ERROR("Unrecognized option\n");
+}
+
 // Short-option getopt loop migrated to runtime
 // clang-format off
 #define DSD_PARSE_SHORT_OPTS_SWITCH_BLOCK()                                                                            \
@@ -3078,6 +3103,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
             LOG_INFO("NOTICE: Force Privacy Key priority enabled\n");                                                  \
             break;                                                                                                     \
         default:                                                                                                       \
+            cli_report_short_opt_error(c, argc, argv);                                                                 \
             dsd_cli_usage();                                                                                           \
             cli_set_exit_rc(out_exit_rc, 1);                                                                           \
             return DSD_PARSE_ERROR;                                                                                    \
@@ -3129,7 +3155,7 @@ dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state, in
     int cli_manual_timing_center = 0;
     int cli_dmr_mono_override_seen = 0;
     while ((c = getopt(argc, argv,
-                       "~yhaepPqs:t:v:z:i:o:d:c:g:n:w:B:C:R:f:m:x:A:S:M:G:D:L:V:U:YK:b:H:X:Q:WrlZTF@:!:01:2:345:6:7:_:"
+                       ":~yhaepPqs:t:v:z:i:o:d:c:g:n:w:B:C:R:f:m:x:A:S:M:G:D:L:V:U:YK:b:H:X:Q:WrlZTF@:!:01:2:345:6:7:_:"
                        "89:Ek:I:J:O^Nj"))
            != -1) {
         DSD_PARSE_SHORT_OPTS_SWITCH_BLOCK();

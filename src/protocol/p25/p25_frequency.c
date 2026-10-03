@@ -225,12 +225,12 @@ p25_freq_trace_set_cached(p25_freq_trace_t* trace, long freq) {
 
 static void
 p25_freq_trace_set_computed(p25_freq_trace_t* trace, const dsd_state* state, int iden, int mode, int use_tdma_denom,
-                            int denom, long base, long spac, long freq) {
+                            int denom, long long base, long long spac, long freq) {
     if (!trace) {
         return;
     }
-    trace->base_hz = base * 5L;
-    trace->spacing_hz = spac * 125L;
+    trace->base_hz = base * 5LL;
+    trace->spacing_hz = spac * 125LL;
     trace->freq_hz = freq;
     if (mode == P25_FREQ_MODE_AUTO && state->p25_chan_tdma_explicit[iden] == 0 && state->p25_sys_is_tdma == 1
         && !use_tdma_denom && denom == 2) {
@@ -308,16 +308,29 @@ p25_channel_to_freq_impl(const dsd_opts* opts, dsd_state* state, int channel, in
         return 0;
     }
 
-    long base = entry->base_freq;
-    long spac = entry->chan_spac;
-    freq = (base * 5) + (step * spac * 125);
+    /* In 64 bits: the IDEN base is a 32-bit over-the-air field in 5 Hz units, so base * 5 alone overflows a 32-bit long
+       (Windows) once it passes about 2.147 GHz. A result outside 1..DSD_TRUNK_FREQ_MAX_HZ names no tunable channel. A
+       stored base at or below 0 is one too: where long is 32-bit, a raw base of 2^31 or more (past 10 GHz) is stored
+       negative, and a channel offset could otherwise lift it to a small, plausible frequency. */
+    const long long base = entry->base_freq;
+    const long long spac = entry->chan_spac;
+    const long long freq_hz = (base * 5LL) + ((long long)step * spac * 125LL);
+    if (base <= 0 || freq_hz <= 0 || freq_hz > DSD_TRUNK_FREQ_MAX_HZ) {
+        DSD_FPRINTF(stderr, "\n  P25 FREQ: iden=%d ch=0x%04X computes %lld Hz, outside 1..%ld Hz; refusing tune", iden,
+                    chan16, freq_hz, DSD_TRUNK_FREQ_MAX_HZ);
+        p25_freq_trace_set_computed(trace, state, iden, mode, use_tdma_denom, denom, base, spac, 0);
+        p25_freq_trace_set_failure(trace, "freq-out-of-range");
+        return 0;
+    }
+    freq = (long int)freq_hz;
     p25_freq_trace_set_computed(trace, state, iden, mode, use_tdma_denom, denom, base, spac, freq);
     DSD_FPRINTF(stderr, "\n  P25 FREQ: iden=%d type=%d ch=0x%04X -> %.6lf MHz", iden, type, chan16,
                 (double)freq / 1000000.0);
     if (opts && opts->verbose > 1) {
-        DSD_FPRINTF(stderr, " (base5=%ldHz spac125=%ldHz denom=%d step=%d)", base * 5L, spac * 125L, denom, step);
+        DSD_FPRINTF(stderr, " (base5=%lldHz spac125=%lldHz denom=%d step=%d)", base * 5LL, spac * 125LL, denom, step);
     }
-    if (freq != 0 && !ambiguous) {
+    /* freq is in 1..DSD_TRUNK_FREQ_MAX_HZ here (checked above), so only an ambiguous IDEN slot keeps it uncached. */
+    if (!ambiguous) {
         dsd_state_set_trunk_chan_freq(state, chan16, freq);
     }
     return freq;

@@ -476,20 +476,18 @@ csvGroupImport(const dsd_opts* opts, dsd_state* state) {
  * doc's own example row `2,70` became a channel at 70 Hz, which the trunking SM
  * would then try to tune.
  *
- * The range is what the front ends can actually reach, generously bounded: the
- * low end sits under any HF-capable SoapySDR device, the high end above the
- * 6 GHz ceiling of the widest-tuning ones (LimeSDR, B210, HackRF). It is not a
- * band plan -- it only rejects numbers that cannot be radio frequencies at all,
- * including the 0 a blank column parses to. Long is 32-bit on the MSVC presets,
- * so the comparison is done in long long or the upper bound would not fit.
+ * The low end sits under any HF-capable SoapySDR device; the high end is
+ * DSD_TRUNK_FREQ_MAX_HZ, the highest frequency a trunk channel is stored and
+ * tuned at on every platform, far above any trunking band. It is not a band
+ * plan -- it only rejects numbers that cannot be trunk channel frequencies,
+ * including the 0 a blank column parses to. A row past the ceiling is refused
+ * here rather than stored, so it can never reach a tuner that would wrap it.
  */
-#define CSV_CHAN_FREQ_MIN_HZ 100000LL
-#define CSV_CHAN_FREQ_MAX_HZ 6000000000LL
+#define CSV_CHAN_FREQ_MIN_HZ 100000L
 
 static int
 csv_chan_freq_plausible(long int freq) {
-    const long long hz = (long long)freq;
-    return hz >= CSV_CHAN_FREQ_MIN_HZ && hz <= CSV_CHAN_FREQ_MAX_HZ;
+    return freq >= CSV_CHAN_FREQ_MIN_HZ && freq <= DSD_TRUNK_FREQ_MAX_HZ;
 }
 
 /*

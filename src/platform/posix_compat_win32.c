@@ -8,6 +8,7 @@
 #if DSD_PLATFORM_WIN_NATIVE
 
 #include <direct.h>
+#include <dsd-neo/platform/nonce.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <io.h>
@@ -16,6 +17,8 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <windows.h>
+
+#include "win32_temp_name_internal.h"
 
 #if DSD_COMPILER_MSVC
 /* Minimal getopt(3) implementation for MSVC builds. */
@@ -172,7 +175,11 @@ dsd_mkdir(const char* path, int mode) {
 
 int
 dsd_open_serial_write(const char* path) {
-    (void)path;
+    if (!path || path[0] == '\0') {
+        errno = EINVAL;
+        return -1;
+    }
+    /* Serial control is not supported on Windows: openSerial() reports that and never opens a port. */
     errno = ENOSYS;
     return -1;
 }
@@ -185,6 +192,33 @@ dsd_aligned_alloc(size_t alignment, size_t size) {
 void
 dsd_aligned_free(void* ptr) {
     _aligned_free(ptr);
+}
+
+/* Names to try before reporting EEXIST: a collision among 36^6 names is already rare. */
+#define DSD_WIN32_TEMP_NAME_ATTEMPTS 100
+
+/* Overwrite the six characters at suffix with a fresh draw of [a-z0-9]; Windows file names ignore case. */
+static void
+dsd_win32_temp_name_fill(char* suffix) {
+    static const char kChars[] = "abcdefghijklmnopqrstuvwxyz0123456789";
+    unsigned char draw[6];
+    dsd_nonce_fill(draw, sizeof draw);
+    for (size_t i = 0; i < sizeof draw; i++) {
+        suffix[i] = kChars[draw[i] % (sizeof kChars - 1U)];
+    }
+}
+
+int
+dsd_win32_temp_open(char* path, char* suffix, int flags) {
+    for (int attempt = 0; attempt < DSD_WIN32_TEMP_NAME_ATTEMPTS; attempt++) {
+        dsd_win32_temp_name_fill(suffix);
+        int fd = _open(path, flags | _O_CREAT | _O_EXCL, _S_IREAD | _S_IWRITE);
+        if (fd >= 0 || errno != EEXIST) {
+            return fd;
+        }
+    }
+    errno = EEXIST;
+    return -1;
 }
 
 int
@@ -206,14 +240,7 @@ dsd_mkstemp(char* tmpl) {
         return -1;
     }
 
-    /* _mktemp_s modifies the template in place */
-    if (_mktemp_s(tmpl, len + 1) != 0) {
-        return -1;
-    }
-
-    /* Open the file with exclusive access */
-    int fd = _open(tmpl, _O_CREAT | _O_EXCL | _O_RDWR | _O_BINARY, _S_IREAD | _S_IWRITE);
-    return fd;
+    return dsd_win32_temp_open(tmpl, tmpl + len - 6, _O_RDWR | _O_BINARY);
 }
 
 char*
@@ -235,17 +262,18 @@ dsd_mkdtemp(char* tmpl) {
         return NULL;
     }
 
-    /* _mktemp_s modifies the template in place */
-    if (_mktemp_s(tmpl, len + 1) != 0) {
-        return NULL;
+    /* _mkdir fails with EEXIST on a name already taken; draw another one then. */
+    for (int attempt = 0; attempt < DSD_WIN32_TEMP_NAME_ATTEMPTS; attempt++) {
+        dsd_win32_temp_name_fill(tmpl + len - 6);
+        if (_mkdir(tmpl) == 0) {
+            return tmpl;
+        }
+        if (errno != EEXIST) {
+            return NULL;
+        }
     }
-
-    /* Create the directory */
-    if (_mkdir(tmpl) != 0) {
-        return NULL;
-    }
-
-    return tmpl;
+    errno = EEXIST;
+    return NULL;
 }
 
 #endif /* DSD_PLATFORM_WIN_NATIVE */

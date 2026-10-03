@@ -20,6 +20,7 @@
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/ui/ncurses_internal.h>
 #include <dsd-neo/ui/ui_prims.h>
+#include <limits.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -285,6 +286,9 @@ WINDOW* stdscr;
         (x) = g_test_cols;                                                                                             \
     } while (0)
 
+#if defined(DSD_USE_PDCURSES)
+#include "pdcurses_macro_stubs.h"
+#endif
 #include "../../src/ui/terminal/ncurses_p25_display.c"
 #include "dsd-neo/core/opts.h"
 #include "dsd-neo/core/opts_fwd.h"
@@ -341,6 +345,34 @@ run_iden_match_cases(void) {
     state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
     assert(ui_is_iden_channel(&state, tdma_ch, tdma_freq) == 0);
     assert(ui_is_iden_channel(NULL, tdma_ch, tdma_freq) == 0);
+
+    /* The display computes a channel as process_channel_to_freq() does: in 64 bits, since base * 5 overflows a 32-bit
+     * long past about 2.147 GHz, and only inside 1..2147483647 Hz (DSD_TRUNK_FREQ_MAX_HZ). An IDEN whose channel lands
+     * past the ceiling names no channel, so it never claims one; the last 5 Hz step under it still does. */
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.synctype = DSD_SYNC_P25P1_POS;
+    set_fdma_iden(&state, 5, 436207616, 100, 1); /* * 5 = 2181038080 Hz */
+    const int past_ch = 5 << 12;
+    /* Every frequency a long holds on every platform, the ceiling included, misses the past-ceiling channel. */
+    assert(ui_is_iden_channel(&state, past_ch, DSD_TRUNK_FREQ_MAX_HZ) == 0);
+    iden = -1;
+    assert(ui_match_iden_channel(&state, past_ch, DSD_TRUNK_FREQ_MAX_HZ, &iden) == 0);
+    assert(iden == -1);
+#if LONG_MAX > 2147483647L
+    /* Where long is 64-bit, the frequency the IDEN would have computed misses it too. */
+    assert(ui_is_iden_channel(&state, past_ch, 2181038080L) == 0);
+    iden = -1;
+    assert(ui_match_iden_channel(&state, past_ch, 2181038080L, &iden) == 0);
+    assert(iden == -1);
+#endif
+    set_fdma_iden(&state, 6, 429496729, 100, 1); /* * 5 = 2147483645 Hz */
+    assert(ui_is_iden_channel(&state, 6 << 12, 2147483645L) == 1);
+
+    /* A channel the display cannot compute is no channel either, so an unknown (0) frequency never matches it. A
+     * negative stored base is one (where long is 32-bit, a raw base of 2^31 or more arrives that way), even when its
+     * channel offset would bring the sum to 0 Hz or above. */
+    set_fdma_iden(&state, 7, -25, 1, 1); /* -125 Hz + 1 step * 125 Hz = 0 Hz */
+    assert(ui_is_iden_channel(&state, (7 << 12) | 1, 0L) == 0);
 
     return 0;
 }

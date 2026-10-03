@@ -37,6 +37,12 @@
  * truncated to 63 characters plus the terminator. */
 #define DSD_CHANNEL_LABEL_SIZE 64
 
+/* The highest frequency, in Hz, a trunking channel is stored or tuned at, the same on every platform: the largest value
+ * a 32-bit long holds (long is 32-bit on Windows, and trunk frequencies are stored as long), which also fits the
+ * uint32_t tuner path. No trunking band comes near it. A channel-map row, an over-the-air channel computation or a
+ * cached control channel past it is refused rather than stored or tuned. */
+#define DSD_TRUNK_FREQ_MAX_HZ  2147483647L
+
 enum DSD_ATTR_PACKED {
     DSD_P25_P2_AUDIO_RING_DEPTH = 4,
     DSD_P25_MAC_FRAGMENT_MAX_OCTETS = 256,
@@ -782,6 +788,9 @@ struct dsd_state {
     uint8_t symbol_replay_has_soft;       /* current replay record supplied soft metrics */
     dsd_dibit_soft_t symbol_replay_soft;
     float symbol_replay_soft_symbol;
+    /* The symbol the replay reader (soft capture or float symbol file) just gave had no usable stored amplitude
+       (NaN, infinite, out of range, or past the end) and stands in as 0: an erasure, whatever the thresholds. */
+    uint8_t symbol_replay_symbol_unusable;
     unsigned int symbol_replay_soft_records;
     unsigned int symbol_capture_soft_records;
 

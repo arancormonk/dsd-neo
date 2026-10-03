@@ -197,9 +197,10 @@ rr_provenance_assign(dsd_rr_provenance* out, const char* key, const char* value)
     }
     if (strcmp(key, "tune_hz") == 0) {
         /* Parsed at the writer's width, not an int's. rr_provenance_emit() prints
-           %lld from a long long and rr_generate.c accepts sites up to
-           RR_FREQ_MAX_HZ (6 GHz), so an int-ranged parse would make this reader
-           reject a sidecar it wrote itself - and a rejected sidecar is not
+           %lld from a long long, and builds before rr_generate.c capped sites at
+           DSD_TRUNK_FREQ_MAX_HZ wrote them up to 6 GHz, so an int-ranged parse
+           would make this reader reject a sidecar such a build wrote - and a
+           rejected sidecar is not
            "no recipe", it drops the file out of the Imported Systems browser,
            out of the CSV picker and out of refresh entirely. Same uint64 parser
            imported_at uses, for the same "no long-long strict parser" reason.

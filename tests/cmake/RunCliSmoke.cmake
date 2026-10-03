@@ -19,11 +19,22 @@ if(DSD_NEO_CLI_SMOKE_MODE STREQUAL "help")
     set(_want_stdout_regex "Usage: dsd-neo \\[options\\].*Decoder options:")
     set(_want_stderr_regex "")
 elseif(DSD_NEO_CLI_SMOKE_MODE STREQUAL "invalid-option")
+    # The CLI words these errors itself: each C library's getopt says something
+    # different, and the Windows one says nothing.
     set(_args "--definitely-not-an-option")
     set(_want_rc 1)
     set(_want_stdout_regex "Usage: dsd-neo \\[options\\]")
-    # glibc getopt reports "invalid option", musl reports "unrecognized option".
-    set(_want_stderr_regex "invalid option|unrecognized option")
+    set(_want_stderr_regex "Unrecognized option '--definitely-not-an-option'")
+elseif(DSD_NEO_CLI_SMOKE_MODE STREQUAL "invalid-short-option")
+    set(_args "-u")
+    set(_want_rc 1)
+    set(_want_stdout_regex "Usage: dsd-neo \\[options\\]")
+    set(_want_stderr_regex "Unrecognized option '-u'")
+elseif(DSD_NEO_CLI_SMOKE_MODE STREQUAL "missing-argument")
+    set(_args "-o")
+    set(_want_rc 1)
+    set(_want_stdout_regex "Usage: dsd-neo \\[options\\]")
+    set(_want_stderr_regex "Option -o requires an argument")
 elseif(DSD_NEO_CLI_SMOKE_MODE STREQUAL "nfm-width-rate-refused")
     # Issue #525: an explicit NFM width the rtl_tcp input's 24 kHz DSP
     # bandwidth cannot filter is refused before the device opens, with the

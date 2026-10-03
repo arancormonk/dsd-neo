@@ -5,9 +5,9 @@
 
 /* Unit test: complex IQ DC block (reduces DC bias on I and Q). */
 
-#include <cstdlib>
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
+#include <dsd-neo/runtime/mem.h>
 #include <stdio.h>
 #include "dsd-neo/core/safe_api.h"
 
@@ -24,7 +24,7 @@ mean_of(const float* x, int n, int step) {
 
 int
 main(void) {
-    demod_state* s = (demod_state*)malloc(sizeof(demod_state));
+    demod_state* s = static_cast<demod_state*>(dsd_neo_aligned_malloc(sizeof(demod_state)));
     if (!s) {
         return 1;
     }
@@ -57,15 +57,15 @@ main(void) {
 
     if (!(pre_I > 0.09 && pre_Q < -0.04)) {
         DSD_FPRINTF(stderr, "IQ DC pre means unexpected: I=%.2f Q=%.2f\n", pre_I, pre_Q);
-        free(s);
+        dsd_neo_aligned_free(s);
         return 1;
     }
     if (!(post_I > -0.005 && post_I < 0.005 && post_Q > -0.005 && post_Q < 0.005)) {
         DSD_FPRINTF(stderr, "IQ DC block insufficient: post I=%.2f Q=%.2f\n", post_I, post_Q);
-        free(s);
+        dsd_neo_aligned_free(s);
         return 1;
     }
 
-    free(s);
+    dsd_neo_aligned_free(s);
     return 0;
 }

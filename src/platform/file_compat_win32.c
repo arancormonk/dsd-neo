@@ -15,6 +15,22 @@
 #include <sys/stat.h>
 #include <windows.h>
 
+#include "win32_temp_name_internal.h"
+
+/*
+ * The CRT treats a negative descriptor as a caller bug: it raises the invalid-parameter handler, which ends the
+ * process. POSIX reports EBADF instead, and -1 is the usual "no descriptor" value, so the descriptor wrappers answer it
+ * the POSIX way before the CRT sees it.
+ */
+static int
+dsd_fd_is_negative(int fd) {
+    if (fd < 0) {
+        errno = EBADF;
+        return 1;
+    }
+    return 0;
+}
+
 int
 dsd_fileno(FILE* fp) {
     return fp ? _fileno(fp) : -1;
@@ -22,32 +38,54 @@ dsd_fileno(FILE* fp) {
 
 int
 dsd_isatty(int fd) {
+    if (dsd_fd_is_negative(fd)) {
+        return 0;
+    }
     return _isatty(fd);
 }
 
 int
 dsd_dup(int oldfd) {
+    if (dsd_fd_is_negative(oldfd)) {
+        return -1;
+    }
     return _dup(oldfd);
 }
 
 int
 dsd_dup2(int oldfd, int newfd) {
-    return _dup2(oldfd, newfd);
+    if (dsd_fd_is_negative(oldfd) || dsd_fd_is_negative(newfd)) {
+        return -1;
+    }
+    /* _dup2 returns 0 on success; POSIX dup2 returns the new descriptor. */
+    if (_dup2(oldfd, newfd) != 0) {
+        return -1;
+    }
+    return newfd;
 }
 
 int
 dsd_close(int fd) {
+    if (dsd_fd_is_negative(fd)) {
+        return -1;
+    }
     return _close(fd);
 }
 
 int
 dsd_fsync(int fd) {
+    if (dsd_fd_is_negative(fd)) {
+        return -1;
+    }
     /* _commit is Windows equivalent of fsync */
     return _commit(fd);
 }
 
 int
 dsd_fstat(int fd, dsd_stat_t* st) {
+    if (dsd_fd_is_negative(fd)) {
+        return -1;
+    }
     return _fstat(fd, st);
 }
 
@@ -146,8 +184,19 @@ dsd_existing_regular_mode_flags(const char* mode, int* out_flags) {
 static int
 dsd_existing_regular_attrs_ok(const char* path) {
     DWORD attrs = GetFileAttributesA(path);
-    if (attrs == INVALID_FILE_ATTRIBUTES || (attrs & FILE_ATTRIBUTE_DIRECTORY) != 0
-        || (attrs & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
+    if (attrs == INVALID_FILE_ATTRIBUTES) {
+        /* Report a missing file as open() does on POSIX: callers tell "not there yet" (ENOENT) from "unusable". */
+        DWORD err = GetLastError();
+        if (err == ERROR_FILE_NOT_FOUND || err == ERROR_PATH_NOT_FOUND) {
+            errno = ENOENT;
+        } else if (err == ERROR_ACCESS_DENIED) {
+            errno = EACCES;
+        } else {
+            errno = EINVAL;
+        }
+        return -1;
+    }
+    if ((attrs & FILE_ATTRIBUTE_DIRECTORY) != 0 || (attrs & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
         errno = EINVAL;
         return -1;
     }
@@ -216,18 +265,13 @@ dsd_fopen_private_temp_for_replace(const char* final_path, char* tmp_path, size_
         errno = ENAMETOOLONG;
         return NULL;
     }
-    if (_mktemp_s(tmp_path, tmp_path_size) != 0) {
-        errno = EEXIST;
-        return NULL;
-    }
 
     int flags = dsd_private_open_flags(mode);
     if (flags < 0) {
         return NULL;
     }
-    flags |= _O_EXCL;
 
-    int fd = _open(tmp_path, flags, _S_IREAD | _S_IWRITE);
+    int fd = dsd_win32_temp_open(tmp_path, tmp_path + n - 6, flags);
     if (fd < 0) {
         return NULL;
     }
@@ -405,11 +449,17 @@ dsd_dir_list(const char* dir, dsd_dir_list_cb cb, void* user) {
 
 ssize_t
 dsd_read(int fd, void* buf, size_t count) {
+    if (dsd_fd_is_negative(fd)) {
+        return -1;
+    }
     return (ssize_t)_read(fd, buf, (unsigned int)count);
 }
 
 ssize_t
 dsd_write(int fd, const void* buf, size_t count) {
+    if (dsd_fd_is_negative(fd)) {
+        return -1;
+    }
     return (ssize_t)_write(fd, buf, (unsigned int)count);
 }
 
