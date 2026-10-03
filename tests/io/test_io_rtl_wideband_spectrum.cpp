@@ -20,8 +20,18 @@
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/wideband_spectrum.h>
 #include <dsd-neo/io/rtl_stream_c.h>
+#include <dsd-neo/runtime/decode_clock.h>
 
 #include "rtl_wideband_spectrum.h"
+
+/* The tap throttles on dsd_realtime_mono_ns(). This test supplies that clock and nothing advances it, so a block
+ * offered right after a publish is throttled however long the runner takes between the two calls; a stall past the
+ * 66 ms period on a busy runner used to let the block through and fail the throttle case. */
+extern "C" uint64_t
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+dsd_realtime_mono_ns(void) {
+    return 1000000000ULL;
+}
 
 namespace {
 
