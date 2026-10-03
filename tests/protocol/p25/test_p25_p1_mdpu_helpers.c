@@ -192,6 +192,15 @@ expect_u8(const char* tag, uint8_t got, uint8_t want) {
 }
 
 static int
+expect_u32(const char* tag, uint32_t got, uint32_t want) {
+    if (got != want) {
+        DSD_FPRINTF(stderr, "%s: got 0x%08X want 0x%08X\n", tag, (unsigned int)got, (unsigned int)want);
+        return 1;
+    }
+    return 0;
+}
+
+static int
 seed_active_voice_call(dsd_state* state, uint32_t target, uint32_t source) {
     const dsd_call_observation observation = {
         .protocol = DSD_SYNC_P25P1_POS,
@@ -549,8 +558,8 @@ test_rate34_crc_bit_packing(void) {
     p25_mpdu_compute_rate34_crc(&ctx, &extracted, &computed);
 
     int rc = 0;
-    rc |= expect_int("rate34 crc extracted", (int)extracted, (int)0xE81FFD89U);
-    rc |= expect_int("rate34 crc computed", (int)computed, (int)0xE81FFD89U);
+    rc |= expect_u32("rate34 crc extracted", extracted, 0xE81FFD89U);
+    rc |= expect_u32("rate34 crc computed", computed, 0xE81FFD89U);
     rc |= expect_int("rate34 crc ok", ctx.err[1], 0);
     return rc;
 }
