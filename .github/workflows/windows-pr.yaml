@@ -6,6 +6,7 @@ name: windows-pr
 # one, so the required jobs that only make sense on a pull request live here, in a
 # workflow that nothing else starts, and carry no event condition.
 #
+# windows-ci keeps the push, tag and dispatch jobs (the MSVC ZIP), and
 # windows-ctest-seed is the push/dispatch twin of the Debug ctest job that
 # writes the vcpkg cache.
 
@@ -21,6 +22,100 @@ permissions:
   contents: read
 
 jobs:
+  build-native-msvc:
+    runs-on: windows-latest
+    permissions:
+      actions: read
+      contents: read
+      packages: read
+    env:
+      # Use a release-only triplet to avoid building debug variants of vcpkg deps.
+      VCPKG_DEFAULT_TRIPLET: x64-windows-dynamic-release
+      VCPKG_TARGET_TRIPLET: x64-windows-dynamic-release
+      VCPKG_OVERLAY_TRIPLETS: ${{ github.workspace }}\vcpkg-triplets
+      # Pull requests may restore existing vcpkg binaries but must not write new cache entries.
+      VCPKG_EXE: ${{ github.workspace }}/vcpkg/vcpkg.exe
+      VCPKG_NUGET_FEED: https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json
+      VCPKG_NUGET_USER: ${{ github.repository_owner }}
+      VCPKG_BINARY_SOURCES: "clear;nuget,https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json,read"
+      # Enable sccache GitHub Actions backend.
+      SCCACHE_GHA_ENABLED: "true"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Run sccache-cache
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba
+
+      - name: Initialize sccache
+        shell: pwsh
+        run: |
+          & $env:SCCACHE_PATH --version
+          & $env:SCCACHE_PATH --zero-stats
+
+      - name: Setup MSVC environment
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756
+
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2
+        with:
+          # run-vcpkg v11.6 requires a full 40-char SHA1.
+          # Keep this in sync with vcpkg.json's builtin-baseline.
+          vcpkgGitCommitId: "9e593bb18ea69cc5095e012465dcd675a822ed0d"
+
+      - name: Configure vcpkg binary cache
+        shell: pwsh
+        env:
+          VCPKG_NUGET_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $nuget = (& $env:VCPKG_EXE fetch nuget | Select-Object -Last 1)
+          if (-not $nuget) { throw "vcpkg fetch nuget did not return a path" }
+
+          & $nuget sources add `
+            -Source "$env:VCPKG_NUGET_FEED" `
+            -StorePasswordInClearText `
+            -Name GitHubPackages `
+            -UserName "$env:VCPKG_NUGET_USER" `
+            -Password "$env:VCPKG_NUGET_TOKEN" `
+            -NonInteractive
+
+      - name: Install vcpkg dependencies (MSVC)
+        shell: pwsh
+        run: >-
+          vcpkg install
+          --triplet $env:VCPKG_DEFAULT_TRIPLET
+          --overlay-triplets "$env:GITHUB_WORKSPACE\\vcpkg-triplets"
+          --x-manifest-root "$env:GITHUB_WORKSPACE"
+
+      - name: Configure (MSVC Release)
+        shell: pwsh
+        # Use Ninja generator (override preset) so CMAKE_*_COMPILER_LAUNCHER works with sccache
+        run: |
+          cmake --preset win-msvc-release -G Ninja `
+            -DCMAKE_C_COMPILER_LAUNCHER=sccache `
+            -DCMAKE_CXX_COMPILER_LAUNCHER=sccache `
+            -DDSD_REQUIRE_RTLSDR=ON `
+            -DDSD_REQUIRE_AIRSPY=ON `
+            -DDSD_REQUIRE_SOAPYSDR=ON
+
+      - name: Build (MSVC Release)
+        shell: pwsh
+        run: cmake --build --preset win-msvc-release
+
+      - name: Verify release hardening (MSVC)
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem -Path 'build/win-msvc-release/apps/dsd-cli' -Recurse -Filter 'dsd-neo.exe' |
+            Select-Object -First 1
+          if ($null -eq $exe) { throw "dsd-neo.exe not found under build/win-msvc-release/apps/dsd-cli" }
+          ./tools/check_release_hardening.ps1 $exe.FullName
+
+      - name: Show sccache stats
+        shell: pwsh
+        run: |
+          & $env:SCCACHE_PATH --show-stats
+
   # Debug build plus the full ctest suite under MSVC and the debug CRT. The
   # release jobs build with tests off, so without this job no test ever ran on
   # Windows. Pull requests may restore vcpkg binaries but never write them;

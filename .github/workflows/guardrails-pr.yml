@@ -1,0 +1,33 @@
+name: guardrails-pr
+
+# A job an `if:` skips still reports a check run under its name, as a success. In a
+# workflow that a push or a dispatch can also start, a skipped run of a required
+# pull-request job on a pull request's head commit could stand in for the real
+# one, so the required jobs that only make sense on a pull request live here, in a
+# workflow that nothing else starts, and carry no event condition.
+#
+# guardrails keeps every check that also runs on push, dispatch or schedule.
+
+on:
+  pull_request:
+    branches: [main, master]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  dependency-review:
+    name: dependency review
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Review dependency changes
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: moderate
+          comment-summary-in-pr: always
