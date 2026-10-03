@@ -139,6 +139,16 @@ target-list CSV (P25 trunk/conventional, DMR trunk/conventional, NXDN96/NXDN48 t
   `dsd_engine_trunk_scan_active_dmr_ctx()`, `dsd_engine_trunk_scan_active_chan_csv()`,
   `dsd_engine_trunk_scan_active_gfsk_symbol_rate()`, `dsd_engine_trunk_scan_active_p25_cqpsk_request()`,
   `dsd_engine_trunk_scan_saved_tuner_autogain()`, and `dsd_engine_trunk_scan_target_count()`.
+- Configured tuner gain and autogain: the coordinator owns the gain and autogain a target without its own `rtl_gain`
+  runs, captured at scan start. The gain is restored at every switch and at shutdown; the autogain is applied by every
+  retune's gain profile and, through app-control, after every stream start, but not kept past the scan or saved. A
+  profile stamps `g_tuner_autogain_set_seq`, which every `rtl_stream_set_tuner_autogain()` bumps, so an AGC retune
+  that lands after a newer explicit setting (one still in flight past its timeout) leaves that setting in force.
+  App-control's gain service, the tuner
+  autogain toggle and a config's `[input]` gain edit them through `dsd_engine_trunk_scan_set_configured_gain()` and
+  `dsd_engine_trunk_scan_set_configured_autogain()` (1 in force now, 0 shadowed by the parked target's own gain, -1 no
+  scan), and the coordinator publishes `trunk_scan_configured_gain`, `trunk_scan_gain_override` and
+  `trunk_scan_configured_autogain` beside the parked target for the frontends and the config save.
 - Conventional activity reports: `dsd_engine_trunk_scan_dmr_conventional_activity()`,
   `dsd_engine_trunk_scan_nxdn_conventional_activity()`, and `dsd_engine_trunk_scan_p25_conventional_activity()`,
   reached from protocol code through the runtime hooks.
@@ -1356,6 +1366,11 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   panel lays those out as its whole-dB stepper reading, a `row` badge and `default X`, and uses `squelchReadout` as the
   reading's accessible name. It reads the row's value from `dsd_scan_mode_row_options()`, so it is also right on the
   decoder thread while a command has the scope suspended. Test: `APP_CONTROL_SQUELCH_VIEW`.
+  `include/dsd-neo/app_control/rtl_gain_view.h` and `src/app_control/rtl_gain_view.c` do the same for the tuner gain
+  under `--trunk-scan` (issue #518 follow-up): the configured gain the controls edit and a save writes, the parked
+  target's own `rtl_gain` while it overrides it, the terminal's `Gain... [20] (target: 10)` and Tuner autogain rows,
+  the edit toasts, and Qt's `configuredTunerGainDb`/`tunerGainRowOverride` (a `target` badge and `default X` on the
+  radio panel). Test: `APP_CONTROL_RTL_GAIN_VIEW`.
   `include/dsd-neo/app_control/rx_tone_view.h` and `src/app_control/rx_tone_view.c` fold `dsd_state::analog_rx` into the
   received-tone text (issues #522, #523): hidden unless `dsd_analog_tone_detection_active()` says the tap listens
   (decided from the options and the RTL output kind, not from INACTIVE in the publication, so a reset does not blink the
@@ -1771,6 +1786,10 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   monitor on its own channel (`dsd_demod_analog_monitor_active()`). A typed digital scan row's profile on an AM session
   is FM-demodulated instead, as under `-fA` (`full_demod_run_output_demod()`), with the carrier estimate left alone;
   the AM session runs no de-emphasis, so, unlike under `-fA`, the row's discriminator output is not de-emphasized.
+  While `dsd_demod_am_active()` the squelch's channel power is the plain mean square of the I/Q floats, the carrier
+  measured whole (receiver DC included, as a vector sum), not `mean_power()`'s pooled-mean removal, which reads an
+  0 Hz carrier as A²(1 - sin 2φ)/4 and so chopped an AM channel's squelch as the carrier's phase drifted (issue #518
+  follow-up, `DSP_SQUELCH`). FM and digital keep `mean_power()`.
   `dsd_demod_iq_dc_block_active()` is the I/Q DC blocker's gate (enabled, and not under AM), which `iq_dc_block()`
   uses; `dsd_demod_iq_balance_active()` is I/Q balance's (enabled, CQPSK off, and not under AM), which
   `full_demod_apply_iq_balance()` uses. `am_carrier` is a float in a scanned header, so `tools/semgrep_float_fields.py` regenerated the semgrep

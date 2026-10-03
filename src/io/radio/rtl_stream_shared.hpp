@@ -27,6 +27,10 @@ extern std::atomic<double> g_snr_qpsk_db;
 extern std::atomic<double> g_snr_gfsk_db;
 
 extern std::atomic<int> g_tuner_autogain_on;
+extern std::atomic<uint32_t> g_tuner_autogain_set_seq;
+/* A retune landing's autogain: written unconditionally, or with @p only_if_current only when no explicit setting
+   (rtl_stream_set_tuner_autogain()) came after @p seq; the check and the write are one step under the setter's lock. */
+void rtl_stream_land_retune_autogain(int onoff, int only_if_current, uint32_t seq);
 
 extern std::atomic<int> g_auto_ppm_enabled;
 extern std::atomic<int> g_auto_ppm_user_en;

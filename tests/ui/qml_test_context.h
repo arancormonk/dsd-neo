@@ -2134,6 +2134,8 @@ class Setup : public QObject {
         metrics[QStringLiteral("decodeMode")] = 1;
         metrics[QStringLiteral("modulation")] = 0;
         metrics[QStringLiteral("tunerGainDb")] = 30;
+        metrics[QStringLiteral("configuredTunerGainDb")] = 30;
+        metrics[QStringLiteral("tunerGainRowOverride")] = false;
         metrics[QStringLiteral("squelchDb")] = -120.0;
         metrics[QStringLiteral("squelchOff")] = false;
         // #521: a scan row's own squelch. 0 is off in these two, as in rtl_sql.

@@ -21,6 +21,7 @@ target_sources(
         notification_status.c
         rigctl_connect.c
         rr_import_apply.c
+        rtl_gain_view.c
         rx_tone_view.c
         scan_timing_view.c
         squelch_view.c

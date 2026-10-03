@@ -1958,6 +1958,22 @@ main(void) {
     failed |= expect_int_eq("retune gain profile keeps autogain-is-set", autogain_is_set, 1);
     failed |= expect_int_eq("retune gain profile keeps autogain off", autogain_on, 0);
 
+    /* Issue #518 follow-up: a trunk-scan retune under AGC that lands after an explicit autogain setting (the operator's
+     * toggle while it was in flight past its timeout) leaves that newer setting in force; without one it applies its
+     * own, and under a manual gain it turns the supervisor off whenever it lands. */
+    int landed = -1;
+    failed |= expect_int_eq("autogain landing rc", rtl_stream_test_retune_autogain_landing(0, 1, 0, 0, &landed), 0);
+    failed |= expect_int_eq("auto-gain retune applies its own autogain", landed, 1);
+    failed |= expect_int_eq("autogain landing rc after toggle",
+                            rtl_stream_test_retune_autogain_landing(0, 1, 1, 0, &landed), 0);
+    failed |= expect_int_eq("auto-gain retune keeps a newer toggle", landed, 0);
+    failed |= expect_int_eq("autogain landing rc after toggle on",
+                            rtl_stream_test_retune_autogain_landing(0, 0, 1, 1, &landed), 0);
+    failed |= expect_int_eq("auto-gain retune keeps a newer toggle on", landed, 1);
+    failed |= expect_int_eq("manual landing rc", rtl_stream_test_retune_autogain_landing(1, 0, 1, 1, &landed), 0);
+    failed |= expect_int_eq("manual-gain retune still turns the supervisor off", landed, 0);
+    rtl_stream_set_tuner_autogain(0);
+
     /*
      * USB apply/readback checks keep retry behavior explicit: apply failures are
      * retried, readback failures are retried only when verification is enabled,

@@ -10,6 +10,7 @@
 #include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/history.h>
 #include <dsd-neo/app_control/rr_import_apply.h>
+#include <dsd-neo/app_control/rtl_gain_view.h>
 #include <dsd-neo/app_control/rx_tone_view.h>
 #include <dsd-neo/app_control/squelch_view.h>
 #include <dsd-neo/core/airspy_config.h>
@@ -769,12 +770,35 @@ apply_dsp_op_iq_and_ted(const dsd_app_dsp_payload* p) {
     }
 }
 
+/* The tuner autogain toggle. Under --trunk-scan it flips the configured setting the scan puts back at every retune,
+   not the stream's: each retune forces the supervisor off under a manual gain, so reading the stream there would always
+   see Off and the toggle could never turn it off again. The stream changes only while the setting is in force. */
 static int
-apply_dsp_op_frontend_gain(const dsd_app_dsp_payload* p) {
+apply_dsp_op_frontend_gain(const dsd_app_dsp_payload* p, const dsd_opts* opts, dsd_state* state) {
     if (!p) {
         return 0;
     }
     if (p->op == DSD_APP_DSP_OP_TUNER_AUTOGAIN_TOGGLE) {
+        int configured = 0;
+        /* The P25 watchdog's control-channel returns read the configured setting under the P25 SM tick guard, so the
+           read, the change and the stream write it implies are one step under it. */
+        p25_sm_tick_guard_enter();
+        const int scan = opts && state && dsd_engine_trunk_scan_saved_tuner_autogain(state, &configured);
+        if (scan) {
+            const int on = configured ? 0 : 1;
+            if (dsd_engine_trunk_scan_set_configured_autogain(opts, state, on) == 1) {
+                rtl_stream_set_tuner_autogain(on);
+            }
+        }
+        p25_sm_tick_guard_leave();
+        if (scan) {
+            dsd_app_rtl_gain_view view;
+            char notice[96];
+            (void)dsd_app_rtl_gain_view_get(opts, state, &view);
+            (void)dsd_app_rtl_autogain_view_edit_notice(&view, notice, sizeof notice);
+            ui_set_toast(state, 3, "%s", notice);
+            return 1;
+        }
         int on = rtl_stream_get_tuner_autogain();
         rtl_stream_set_tuner_autogain(on ? 0 : 1);
         return 1;
@@ -783,7 +807,7 @@ apply_dsp_op_frontend_gain(const dsd_app_dsp_payload* p) {
 }
 
 static void
-apply_dsp_op(const dsd_app_dsp_payload* p, const dsd_opts* opts) {
+apply_dsp_op(const dsd_app_dsp_payload* p, const dsd_opts* opts, dsd_state* state) {
     if (!p) {
         return;
     }
@@ -793,7 +817,7 @@ apply_dsp_op(const dsd_app_dsp_payload* p, const dsd_opts* opts) {
     if (apply_dsp_op_iq_and_ted(p)) {
         return;
     }
-    (void)apply_dsp_op_frontend_gain(p);
+    (void)apply_dsp_op_frontend_gain(p, opts, state);
 }
 #endif
 
@@ -1693,7 +1717,11 @@ ui_cmd_handle_rtl_set_gain(dsd_opts* opts, dsd_state* state, const struct dsd_ap
         int rc = svc_rtl_set_gain(opts, state, v);
         result = ui_cmd_apply_status_from_service_rc(rc);
         if (rc == 0) {
-            ui_set_toast(state, 3, "Applied: RTL gain -> %d", opts->rtl_gain_value);
+            dsd_app_rtl_gain_view view;
+            char notice[96];
+            (void)dsd_app_rtl_gain_view_get(opts, state, &view);
+            (void)dsd_app_rtl_gain_view_edit_notice(&view, notice, sizeof notice);
+            ui_set_toast(state, 3, "%s", notice);
         } else if (ui_rc_is_not_supported(rc)) {
             ui_set_toast(state, 3, "Unsupported: gain control not available on active backend");
         } else {
@@ -2543,7 +2571,7 @@ apply_cmd_io_and_import(dsd_opts* opts, dsd_state* state, const struct dsd_app_c
 
 #ifdef USE_RADIO
 static int
-apply_cmd_dsp(const struct dsd_app_command* c, const dsd_opts* opts) {
+apply_cmd_dsp(const struct dsd_app_command* c, const dsd_opts* opts, dsd_state* state) {
     if (!c || c->id != DSD_APP_CMD_DSP_OP) {
         return 0;
     }
@@ -2555,7 +2583,7 @@ apply_cmd_dsp(const struct dsd_app_command* c, const dsd_opts* opts) {
         && p.op == DSD_APP_DSP_OP_TUNER_AUTOGAIN_TOGGLE) {
         return UI_CMD_APPLY_UNSUPPORTED;
     }
-    apply_dsp_op(&p, opts);
+    apply_dsp_op(&p, opts, state);
     return 1;
 }
 #endif
@@ -2963,6 +2991,36 @@ apply_cfg_rtl_common(dsd_opts* opts, const dsdneoUserConfig* cfg) {
     }
 }
 
+/* A config's gain under --trunk-scan is the configured gain the scan puts back at each switch, like a live edit: taken
+   before the reopen, with the gain in force left at the parked target's own rtl_gain (@p before's) when it overrides,
+   so the device reopens on the gain the target runs. Returns 1 with the configured gain it replaced in @p prev when
+   it took the config's gain, for apply_cfg_settle_scan_gain(). Caller holds the P25 SM tick guard. */
+static int
+apply_cfg_stage_scan_gain(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg, const ui_cfg_rollback* before,
+                          int* prev) {
+    if (!cfg->rtl_gain || opts->trunk_scan_enabled != 1 || state->trunk_scan_target_count == 0U) {
+        return 0;
+    }
+    *prev = state->trunk_scan_configured_gain;
+    if (dsd_engine_trunk_scan_set_configured_gain(opts, state, cfg->rtl_gain) == 0) {
+        opts->rtl_gain_value = before->input.rtl_gain_value;
+    }
+    return 1;
+}
+
+/* An apply that ui_cfg_settle_reopen() rolled back (@p settled -1 with an input running before, which it put back) puts
+   back the configured gain apply_cfg_stage_scan_gain() replaced. An apply it kept -- the reopened input runs, or it
+   started with none running before, refused the scan row (1) or failed (-1), and the config stays applied -- keeps
+   the config's. Returns @p settled. */
+static int
+apply_cfg_settle_scan_gain(dsd_opts* opts, dsd_state* state, const ui_cfg_rollback* before, int staged, int prev,
+                           int settled) {
+    if (staged && settled < 0 && before->input.running) {
+        (void)dsd_engine_trunk_scan_set_configured_gain(opts, state, prev);
+    }
+    return settled;
+}
+
 /* A config's RTL-family [input] that builds a spec other than the RTL-family input's (@p before, the input the apply
    found) reopens the device with the config's tuning, or opens it when no stream ran. Returns what
    ui_cfg_settle_reopen() makes of the stream's start: -1 when it failed, or ran but refused the scan row on air (the
@@ -2999,7 +3057,10 @@ apply_cfg_rtl_hot_restart(dsd_opts* opts, dsd_state* state, const dsdneoUserConf
         apply_cfg_rtl_common(opts, cfg);
         opts->rtltcp_enabled = 0;
     }
-    return ui_cfg_settle_reopen(opts, state, svc_rtl_restart_locked(opts, state), before);
+    int prev_gain = 0;
+    const int staged = apply_cfg_stage_scan_gain(opts, state, cfg, before, &prev_gain);
+    return apply_cfg_settle_scan_gain(opts, state, before, staged, prev_gain,
+                                      ui_cfg_settle_reopen(opts, state, svc_rtl_restart_locked(opts, state), before));
 }
 #endif
 
@@ -6698,7 +6759,7 @@ apply_cmd_unscoped(dsd_opts* opts, dsd_state* state, const struct dsd_app_comman
         return r;
     }
 #ifdef USE_RADIO
-    r = apply_cmd_dsp(c, opts);
+    r = apply_cmd_dsp(c, opts, state);
     if (r) {
         return r;
     }

@@ -221,6 +221,9 @@ struct RtlRetuneProfile {
     int tuner_gain_is_auto = 0;
     int tuner_autogain_is_set = 0;
     int tuner_autogain_on = 0;
+    /* g_tuner_autogain_set_seq when the gain profile was copied in: an explicit autogain setting made after it is
+       newer than tuner_autogain_on. */
+    uint32_t tuner_autogain_seq = 0U;
     uint32_t request_id = 0U;
     uint32_t target_freq_hz = 0U;
 };
@@ -10095,6 +10098,7 @@ rtl_stream_copy_retune_gain_profile(RtlRetuneProfile* profile, const rtl_stream_
     profile->tuner_gain_is_auto = gain_profile->tuner_gain_is_auto ? 1 : 0;
     profile->tuner_autogain_is_set = gain_profile->tuner_autogain_is_set ? 1 : 0;
     profile->tuner_autogain_on = gain_profile->tuner_autogain_on ? 1 : 0;
+    profile->tuner_autogain_seq = g_tuner_autogain_set_seq.load(std::memory_order_acquire);
 }
 
 static int
@@ -10220,11 +10224,17 @@ rtl_stream_clear_pending_retune_profile(void) {
     rtl_stream_clear_retune_profile(&g_pending_retune_profile);
 }
 
+/* A trunk-scan retune's profile carries the autogain its target runs, taken when the retune was asked for. Under a
+   manual gain that is off, whenever the retune lands. Under AGC it is the configured setting of that moment, so a
+   retune that lands after an explicit setting (the operator's toggle, a restart's) -- one still in flight past its
+   timeout -- leaves that newer setting in force rather than putting the older one back (issue #518 follow-up). */
 static void
 rtl_stream_restore_retune_autogain(const RtlRetuneProfile* profile) {
-    if (profile && profile->tuner_autogain_is_set) {
-        g_tuner_autogain_on.store(profile->tuner_autogain_on ? 1 : 0, std::memory_order_relaxed);
+    if (!profile || !profile->tuner_autogain_is_set) {
+        return;
     }
+    rtl_stream_land_retune_autogain(profile->tuner_autogain_on, profile->tuner_gain_is_auto,
+                                    profile->tuner_autogain_seq);
 }
 
 static int
@@ -12583,6 +12593,37 @@ rtl_stream_test_tagged_retune_ownership(uint64_t owner_token, uint64_t contender
                                                            completion_found, *out_completion_result, terminal_result)
                ? 0
                : -3;
+}
+
+/* A trunk-scan retune profile built with autogain @p profile_autogain_on under a manual (@p manual_gain) or automatic
+   gain, an explicit setting @p explicit_on made after it when @p explicit_after, then the profile's landing: the
+   supervisor flag the landing leaves in @p out_autogain_on. */
+extern "C" int
+rtl_stream_test_retune_autogain_landing(int manual_gain, int profile_autogain_on, int explicit_after, int explicit_on,
+                                        int* out_autogain_on) {
+    if (!out_autogain_on) {
+        return -1;
+    }
+    rtl_stream_clear_pending_retune_profile();
+    rtl_stream_retune_gain_profile gain_profile{};
+    gain_profile.tuner_gain_is_set = 1;
+    gain_profile.tuner_gain_tenth_db = manual_gain ? 270 : 0;
+    gain_profile.tuner_gain_is_auto = manual_gain ? 0 : 1;
+    gain_profile.tuner_autogain_is_set = 1;
+    gain_profile.tuner_autogain_on = profile_autogain_on ? 1 : 0;
+    rtl_stream_set_tuner_autogain(profile_autogain_on ? 0 : 1);
+    rtl_stream_prepare_retune_profile_for_target_with_gain(855000000U, 0, 4800, 2, RTL_STREAM_CHANNEL_PROFILE_P25_C4FM,
+                                                           10, 0, &gain_profile);
+    if (explicit_after) {
+        rtl_stream_set_tuner_autogain(explicit_on);
+    }
+    RtlRetuneProfile profile{};
+    if (!rtl_stream_take_pending_retune_profile(&profile, 0U, 855000000U)) {
+        return -2;
+    }
+    rtl_stream_restore_retune_autogain(&profile);
+    *out_autogain_on = rtl_stream_get_tuner_autogain();
+    return 0;
 }
 
 extern "C" int

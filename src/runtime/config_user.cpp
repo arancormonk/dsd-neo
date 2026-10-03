@@ -463,7 +463,11 @@ snapshot_apply_live_rtl_values(const dsd_opts* opts, const dsd_state* state, dsd
         return;
     }
 
-    cfg->rtl_gain = opts->rtl_gain_value;
+    /* Under --trunk-scan the gain in force may be the parked target's own rtl_gain; the save writes the configured gain
+       beneath it, which the coordinator publishes (issue #518 follow-up). */
+    cfg->rtl_gain = (state && opts->trunk_scan_enabled == 1 && state->trunk_scan_target_count > 0U)
+                        ? (int)state->trunk_scan_configured_gain
+                        : opts->rtl_gain_value;
     cfg->rtl_ppm = opts->rtlsdr_ppm_error;
     cfg->rtl_ppm_is_set = 1;
     cfg->rtl_bw_khz = opts->rtl_dsp_bw_khz;

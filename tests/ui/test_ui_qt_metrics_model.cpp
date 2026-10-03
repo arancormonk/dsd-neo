@@ -1256,7 +1256,25 @@ main(int argc, char** argv) {
      * asked for. Squelch is stored as mean power and must reach QML as decibels,
      * or a -120 dB threshold renders as 0. */
     expect("gain is reported", model.tunerGainDb() == 30);
+    expect("without a trunk scan the buttons edit the gain in force", model.configuredTunerGainDb() == 30);
+    expect("without a trunk scan no target overrides the gain", !model.tunerGainRowOverride());
     expect("squelch is reported in dB", std::fabs(model.squelchDb() - (-120.0)) < 0.5);
+
+    /* Issue #518 follow-up: under --trunk-scan the buttons edit the configured gain the coordinator publishes, and a
+     * parked target with its own rtl_gain is flagged, from the same app_control view the terminal uses. */
+    opts.trunk_scan_enabled = 1;
+    state.trunk_scan_target_count = 2U;
+    state.trunk_scan_configured_gain = 20;
+    state.trunk_scan_gain_override = 1U;
+    model.refresh(&opts, &state);
+    expect("the target's own gain is the reading", model.tunerGainDb() == 30);
+    expect("the configured gain is what the buttons edit", model.configuredTunerGainDb() == 20);
+    expect("the target's override is flagged", model.tunerGainRowOverride());
+    opts.trunk_scan_enabled = 0;
+    state.trunk_scan_target_count = 0U;
+    state.trunk_scan_configured_gain = 0;
+    state.trunk_scan_gain_override = 0U;
+    model.refresh(&opts, &state);
 
     /* A threshold at the display floor is still a threshold. Only a level that
      * gates nothing is off, and the panel has to be able to tell them apart --

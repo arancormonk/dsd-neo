@@ -22,6 +22,7 @@
 bool io_rtl_active(const void* ctx);
 bool trunk_enabled(const void* ctx);
 bool scan_rotation_active(const void* ctx);
+bool rtl_freq_offered(const void* ctx);
 bool provoice_active(const void* ctx);
 bool const_view_active(const void* ctx);
 bool eye_view_active(const void* ctx);

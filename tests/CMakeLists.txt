@@ -817,6 +817,19 @@ dsd_neo_add_public_header_smoke_test(
   dsd-neo/app_control/squelch_view.h
   CXX
 )
+# The shared tuner gain readout under --trunk-scan (issue #518 follow-up).
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_rtl_gain_view
+  HEADERS_PUBLIC_APP_CONTROL_RTL_GAIN_VIEW
+  dsd-neo/app_control/rtl_gain_view.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_rtl_gain_view_cxx
+  HEADERS_PUBLIC_APP_CONTROL_RTL_GAIN_VIEW_CXX
+  dsd-neo/app_control/rtl_gain_view.h
+  CXX
+)
 # Issue #525: the shared analog channel width readout.
 dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_app_control_analog_width_view
@@ -1994,7 +2007,7 @@ target_include_directories(
 )
 target_link_libraries(
     dsd-neo_test_app_control_actions
-    PRIVATE dsd-neo_test_call_state_support
+    PRIVATE dsd-neo_test_call_state_support ${DSD_NEO_TEST_MATH_LIB}
 )
 target_sources(
     dsd-neo_test_app_control_actions
@@ -2080,6 +2093,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         ui/test_ui_menu_labels.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_labels.c
         ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/rtl_gain_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/rx_tone_view.c
         ${PROJECT_SOURCE_DIR}/src/runtime/analog_tones.c
         ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_metrics_hooks.c
@@ -2103,6 +2117,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_labels.c
         ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
         ${PROJECT_SOURCE_DIR}/src/app_control/analog_width_view.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/rtl_gain_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/rx_tone_view.c
         ${PROJECT_SOURCE_DIR}/src/runtime/analog_channel.c
         ${PROJECT_SOURCE_DIR}/src/runtime/analog_tones.c
@@ -2361,6 +2376,22 @@ add_test(
     COMMAND dsd-neo_test_app_control_squelch_view
 )
 
+# Issue #518 follow-up: the configured tuner gain under --trunk-scan, "(target: X)" while the
+# parked target's own rtl_gain overrides it.
+add_executable(
+    dsd-neo_test_app_control_rtl_gain_view
+    ui/test_app_control_rtl_gain_view.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/rtl_gain_view.c
+)
+target_link_libraries(
+    dsd-neo_test_app_control_rtl_gain_view
+    PRIVATE dsd-neo_core dsd-neo_runtime
+)
+add_test(
+    NAME APP_CONTROL_RTL_GAIN_VIEW
+    COMMAND dsd-neo_test_app_control_rtl_gain_view
+)
+
 # The received-tone text every frontend shows (issue #522), and the configured policy kept
 # apart from it.
 add_executable(
@@ -2539,6 +2570,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         ui/test_ui_menu_actions.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_actions.c
         ${PROJECT_SOURCE_DIR}/src/app_control/analog_width_view.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/rtl_gain_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/rx_tone_view.c
         ${PROJECT_SOURCE_DIR}/src/runtime/analog_channel.c
         ${PROJECT_SOURCE_DIR}/src/runtime/analog_tones.c
@@ -3223,6 +3255,7 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/app_control/analog_width_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/call_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/p25_metrics.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/rtl_gain_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/squelch_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/rx_tone_view.c
     )
@@ -4643,6 +4676,19 @@ endif()
 add_test(
     NAME CORE_PARSE_DOUBLE_STRICT
     COMMAND dsd-neo_test_core_parse_double_strict
+)
+
+add_executable(
+    dsd-neo_test_core_parse_bool_strict
+    core/test_core_parse_bool_strict.c
+)
+target_include_directories(
+    dsd-neo_test_core_parse_bool_strict
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+add_test(
+    NAME CORE_PARSE_BOOL_STRICT
+    COMMAND dsd-neo_test_core_parse_bool_strict
 )
 
 add_executable(dsd-neo_test_core_csv_validate core/test_core_csv_validate.c)
@@ -12882,6 +12928,26 @@ if(DSD_HAS_RADIO)
         am_adjacent_synth
         "-fa -C ${_scan_am_csv} --analog-scan-row 1 --analog-expect-tone-hz 1000 --analog-min-captured-ms 1400 --analog-probe-min-dbc 8333:0"
         "Scan row applied: 1 am; width 20 kHz \\(row\\).*ANALOG AUDIO OK"
+        "${_analog_off_path}"
+    )
+    # Issue #518 follow-up: an AM carrier sits at 0 Hz, and the squelch measured it with
+    # mean_power()'s pooled I/Q mean removed, which reads A^2(1 - sin 2phi)/4 and drops
+    # to nothing as the carrier's phase drifts. am_airband_real's carrier runs through
+    # the whole 8 s excerpt at about -13 dB channel power: under an am row's
+    # --squelch-db -20 the old measurement let 5940 ms of it through, chopped; the
+    # carrier measured whole holds the gate open for all of it (7980 ms).
+    set(_scan_am_sql_csv
+        "${CMAKE_CURRENT_BINARY_DIR}/scan_mode_am_squelch_rows.csv"
+    )
+    file(
+        WRITE "${_scan_am_sql_csv}"
+        "channel,frequency_hz,mode,options\n1,118300000,am,--squelch-db -20\n"
+    )
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_SCAN_AM_SQUELCH_STEADY_CARRIER
+        am_airband_real
+        "-fa -C ${_scan_am_sql_csv} --analog-scan-row 0 --analog-min-captured-ms 7800"
+        ""
         "${_analog_off_path}"
     )
 
