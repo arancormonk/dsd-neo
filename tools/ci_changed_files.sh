@@ -104,14 +104,21 @@ if ! git rev-parse --verify "$HEAD_REF^{commit}" > /dev/null 2>&1; then
   exit 2
 fi
 
+# Write each list to a fresh file and rename it into place. The default output
+# directory is inside the checkout, so a pull request can put a symlink (to
+# /dev/null, say) where a list goes; the rename replaces the link instead of
+# writing through it, and the jobs read the list this script wrote.
 write_list() {
   local path="$1"
   shift
-  mkdir -p "$(dirname "$path")"
-  : > "$path"
+  local dir tmp
+  dir=$(dirname "$path")
+  mkdir -p "$dir"
+  tmp=$(mktemp "$dir/.list.XXXXXX")
   if [[ $# -gt 0 ]]; then
-    printf '%s\n' "$@" > "$path"
+    printf '%s\n' "$@" > "$tmp"
   fi
+  mv -f "$tmp" "$path"
 }
 
 sort_unique_array() {

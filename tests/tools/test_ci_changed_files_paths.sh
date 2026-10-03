@@ -3,12 +3,15 @@
 # Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
 #
 # tools/ci_changed_files.sh decides which files the pull-request jobs check, and a
-# job whose list comes back empty skips its work and passes. Two ways the list
+# job whose list comes back empty skips its work and passes. Three ways the list
 # came back wrong:
 #  - git quotes a name with non-ASCII bytes, a quote or a tab unless asked for raw
 #    (-z) output, and a quoted name matched no pattern and failed the existence
 #    check, so the file dropped out of every list;
-#  - a git diff that failed came back as an empty list with exit status 0.
+#  - a git diff that failed came back as an empty list with exit status 0;
+#  - the lists were written to .ci/changed-files/ inside the checkout by
+#    following any symlink the pull request had committed there, so a link to
+#    /dev/null emptied a list (clang-format then checked nothing).
 # This builds a throwaway repository and checks each case.
 set -euo pipefail
 
@@ -54,6 +57,26 @@ mapfile -t expected < <(printf '%s\n' "${odd[@]}" | sort -u)
 [[ "${semgrep_targets[*]}" == "${expected[*]}" ]] || fail "semgrep_targets: ${semgrep_targets[*]}"
 grep -qx 'format_files=3' "$WORK/odd.out" || fail "format_files count: $(cat "$WORK/odd.out")"
 echo "PASS raw names with non-ASCII, quote and tab"
+
+# Planted symlinks in the default output directory do not empty the lists.
+git checkout -q --detach "$base"
+mkdir -p .ci/changed-files
+for list in format_files.txt semgrep_targets.txt; do
+  ln -s /dev/null ".ci/changed-files/$list"
+done
+printf 'int planted;\n' > src/core/base.c
+git add -A
+git commit -q -m "plant links"
+planted=$(git rev-parse HEAD)
+GITHUB_OUTPUT="$WORK/planted.out" bash "$SCRIPT" --base "$base" --head "$planted" \
+  --no-header-expansion > /dev/null
+for list in format_files.txt semgrep_targets.txt; do
+  [[ ! -L ".ci/changed-files/$list" ]] || fail "$list is still a symlink"
+  grep -qx 'src/core/base.c' ".ci/changed-files/$list" || fail "$list lost src/core/base.c"
+done
+echo "PASS symlinks planted in the output directory do not empty the lists"
+git checkout -q -f --detach "$base"
+git clean -q -fdx
 
 # A diff that fails fails the helper. Both commits resolve, so it gets past its ref
 # checks, but git diff rejects an invalid diff setting.
