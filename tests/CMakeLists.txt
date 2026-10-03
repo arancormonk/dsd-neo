@@ -39,6 +39,14 @@ endif()
 
 link_libraries(dsd-neo_warnings dsd-neo_test_assertions)
 
+# A Windows main thread gets a 1 MiB stack where Linux gives 8 MiB, so a test
+# with a multi-megabyte local overflows only on Windows (CTest reports it as a
+# segfault). GCC and Clang reject any test stack frame over 768 KiB, which leaves
+# the rest of that megabyte for the calls beneath it.
+if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+    add_compile_options(-Wframe-larger-than=786432)
+endif()
+
 # These tests feed NaN or infinite values to the code under test, or check its
 # output with std::isnan()/isfinite(). In fast-math builds (perf-bench and the
 # optimized CI jobs) those values are undefined in a translation unit and the

@@ -2481,7 +2481,7 @@ test_close_and_rename_wav_preserves_nonempty_event_file(void) {
     if (wav) {
         rc |= expect_true("close rename wrote pcm samples", write_wav_test_samples(wav));
 
-        Event_History_I history;
+        static Event_History_I history;
         DSD_MEMSET(&history, 0, sizeof history);
         Event_History* item = &history.Event_History_Items[0];
         item->event_time = (time_t)1700000000;
@@ -2531,7 +2531,7 @@ test_close_and_rename_wav_numeric_and_failure_paths(void) {
     if (wav) {
         rc |= expect_true("numeric rename wrote pcm samples", write_wav_test_samples(wav));
 
-        Event_History_I history;
+        static Event_History_I history;
         DSD_MEMSET(&history, 0, sizeof history);
         Event_History* item = &history.Event_History_Items[0];
         item->event_time = (time_t)1700001000;
@@ -2594,7 +2594,7 @@ test_close_and_rename_wav_exports_rdio_sidecar(void) {
         rc |= expect_true("rdio rename wrote pcm samples", write_wav_test_samples(wav));
 
         static dsd_opts opts;
-        Event_History_I history;
+        static Event_History_I history;
         DSD_MEMSET(&opts, 0, sizeof opts);
         DSD_MEMSET(&history, 0, sizeof history);
         opts.rdio_mode = DSD_RDIO_MODE_DIRWATCH;

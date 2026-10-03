@@ -918,7 +918,7 @@ test_duration_rejects_invalid_wav_format_values(void) {
     };
 
     static dsd_opts opts;
-    Event_History_I hist;
+    static Event_History_I hist;
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&hist, 0, sizeof(hist));
     opts.rdio_mode = DSD_RDIO_MODE_DIRWATCH;
@@ -989,7 +989,7 @@ test_duration_uses_zero_for_missing_or_truncated_wav(void) {
     };
 
     static dsd_opts opts;
-    Event_History_I hist;
+    static Event_History_I hist;
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&hist, 0, sizeof(hist));
     opts.rdio_mode = DSD_RDIO_MODE_DIRWATCH;
@@ -1064,7 +1064,7 @@ test_export_guards_and_invalid_mode_are_noops(void) {
     }
 
     static dsd_opts opts;
-    Event_History_I hist;
+    static Event_History_I hist;
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&hist, 0, sizeof(hist));
     opts.rdio_mode = 99;
@@ -1122,7 +1122,7 @@ test_missing_talkgroup_rejects_sidecar(void) {
     }
 
     static dsd_opts opts;
-    Event_History_I hist;
+    static Event_History_I hist;
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&hist, 0, sizeof(hist));
     opts.rdio_mode = DSD_RDIO_MODE_DIRWATCH;
@@ -1168,7 +1168,7 @@ test_sidecar_escapes_strings_and_tgt_fallback(void) {
     }
 
     static dsd_opts opts;
-    Event_History_I hist;
+    static Event_History_I hist;
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&hist, 0, sizeof(hist));
     opts.rdio_mode = DSD_RDIO_MODE_DIRWATCH;
@@ -1256,7 +1256,7 @@ test_sidecar_private_fallback_and_malformed_wav_duration(void) {
     }
 
     static dsd_opts opts;
-    Event_History_I hist;
+    static Event_History_I hist;
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&hist, 0, sizeof(hist));
     opts.rdio_mode = DSD_RDIO_MODE_DIRWATCH;
@@ -1330,7 +1330,7 @@ test_sidecar_channel_label_fallback(void) {
     }
 
     static dsd_opts opts;
-    Event_History_I hist;
+    static Event_History_I hist;
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&hist, 0, sizeof(hist));
     opts.rdio_mode = DSD_RDIO_MODE_DIRWATCH;
