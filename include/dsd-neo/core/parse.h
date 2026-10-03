@@ -237,4 +237,50 @@ dsd_parse_binary_u32_n(const char* bits, size_t bit_count, uint32_t* out) {
     return 0;
 }
 
+/* Whether @p text equals @p word, ignoring ASCII case. @p word is lowercase. */
+static inline int
+dsd_parse_ascii_word_equals(const char* text, const char* word) {
+    size_t i = 0;
+    for (; word[i] != '\0'; i++) {
+        char c = text[i];
+        if (c >= 'A' && c <= 'Z') {
+            c = (char)(c - 'A' + 'a');
+        }
+        if (c != word[i]) {
+            return 0;
+        }
+    }
+    return text[i] == '\0';
+}
+
+/**
+ * @brief Parse a whole boolean word, ignoring ASCII case.
+ *
+ * Accepts `1`/`0`, `true`/`false`, `yes`/`no` and `on`/`off`, and nothing else: no surrounding spaces, no prefixes
+ * (`onx`), no other numbers.
+ *
+ * @return 0 with `*out` set to 1 or 0; -1 when @p text is not one of those words (`*out` unchanged).
+ */
+static inline int
+dsd_parse_bool_strict(const char* text, int* out) {
+    static const char* const k_true_words[] = {"1", "true", "yes", "on"};
+    static const char* const k_false_words[] = {"0", "false", "no", "off"};
+    if (!text || !out) {
+        return -1;
+    }
+    for (size_t i = 0; i < sizeof(k_true_words) / sizeof(k_true_words[0]); i++) {
+        if (dsd_parse_ascii_word_equals(text, k_true_words[i])) {
+            *out = 1;
+            return 0;
+        }
+    }
+    for (size_t i = 0; i < sizeof(k_false_words) / sizeof(k_false_words[0]); i++) {
+        if (dsd_parse_ascii_word_equals(text, k_false_words[i])) {
+            *out = 0;
+            return 0;
+        }
+    }
+    return -1;
+}
+
 #endif /* DSD_NEO_INCLUDE_DSD_NEO_CORE_PARSE_H */

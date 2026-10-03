@@ -16,6 +16,7 @@
 #include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/parse.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/source_alias.h>
@@ -583,21 +584,30 @@ dsd_engine_setup_parse_sql_token_or_default(const char* token, double fallback) 
     return dsd_squelch_level_from_sql(sq_val);
 }
 
+/* A trailing token of an rtl:/rtltcp: spec: `bias` or `b` alone (or with an empty value) turns the bias tee on, and
+   `bias=<value>` / `b=<value>` sets it from a whole boolean word (on/off, 1/0, true/false, yes/no). The bias tee puts DC
+   on the antenna port, so a value or token it cannot read changes nothing and says so. */
 static void
 dsd_engine_setup_parse_bias_token(dsd_opts* opts, const char* token) {
     if (!token) {
         return;
     }
-    if (strncmp(token, "bias", 4) != 0 && strncmp(token, "b", 1) != 0) {
+    const char* eq = strchr(token, '=');
+    const size_t name_len = eq ? (size_t)(eq - token) : strlen(token);
+    const int is_bias = (name_len == 4 && strncmp(token, "bias", 4) == 0) || (name_len == 1 && token[0] == 'b');
+    if (!is_bias) {
+        LOG_WARN("WARNING: Ignoring unknown RTL input option '%s' (expected bias[=on|off])\n", token);
         return;
     }
-    const char* val = strchr(token, '=');
-    int on = 1;
-    if (val && *(val + 1)) {
-        val++;
-        if (*val == '0' || *val == 'n' || *val == 'N' || *val == 'o' || *val == 'O' || *val == 'f' || *val == 'F') {
-            on = 0;
-        }
+    if (!eq || eq[1] == '\0') {
+        opts->rtl_bias_tee = 1;
+        return;
+    }
+    int on = 0;
+    if (dsd_parse_bool_strict(eq + 1, &on) != 0) {
+        LOG_WARN("WARNING: Ignoring bias value '%s' (expected on/off, 1/0, true/false or yes/no); bias tee left %s\n",
+                 eq + 1, opts->rtl_bias_tee ? "on" : "off");
+        return;
     }
     opts->rtl_bias_tee = on;
 }

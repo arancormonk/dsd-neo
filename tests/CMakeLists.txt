@@ -4645,6 +4645,19 @@ add_test(
     COMMAND dsd-neo_test_core_parse_double_strict
 )
 
+add_executable(
+    dsd-neo_test_core_parse_bool_strict
+    core/test_core_parse_bool_strict.c
+)
+target_include_directories(
+    dsd-neo_test_core_parse_bool_strict
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+add_test(
+    NAME CORE_PARSE_BOOL_STRICT
+    COMMAND dsd-neo_test_core_parse_bool_strict
+)
+
 add_executable(dsd-neo_test_core_csv_validate core/test_core_csv_validate.c)
 target_include_directories(
     dsd-neo_test_core_csv_validate

@@ -537,6 +537,47 @@ test_rtltcp_tuning_tokens_and_bias(void) {
     return test_rc;
 }
 
+/* The bias tee puts DC on the antenna port. Every documented spelling of the trailing token must do what it says
+ * (`bias=on` read as off before), and a value or token the parser cannot read must change nothing. Full-length specs
+ * so the parser actually reaches the token. */
+static int
+test_rtltcp_bias_spellings(void) {
+    static const struct {
+        const char* token;
+        int before;
+        int after;
+    } k_cases[] = {
+        {"bias=on", 0, 1},    {"bias=ON", 0, 1},   {"bias", 0, 1},       {"b", 0, 1},       {"bias=", 0, 1},
+        {"bias=1", 0, 1},     {"bias=true", 0, 1}, {"bias=yes", 0, 1},   {"b=on", 0, 1},    {"bias=off", 1, 0},
+        {"bias=Off", 1, 0},   {"bias=0", 1, 0},    {"bias=false", 1, 0}, {"bias=no", 1, 0}, {"bias=bogus", 0, 0},
+        {"bias=bogus", 1, 1}, {"bias=onx", 0, 0},  {"bias=2", 1, 1},     {"bogus", 0, 0},   {"bogus", 1, 1},
+        {"biased", 0, 0},
+    };
+
+    int test_rc = 0;
+    for (size_t i = 0; i < sizeof(k_cases) / sizeof(k_cases[0]); i++) {
+        dsd_opts* opts = NULL;
+        dsd_state* state = NULL;
+        if (init_test_runtime(&opts, &state) != 0) {
+            return 1;
+        }
+        DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev,
+                     "rtltcp:radio.local:1234:769.00625M:28:3:24:-47:2:%s", k_cases[i].token);
+        opts->rtl_bias_tee = k_cases[i].before;
+        char log[8192];
+        int rc = -1;
+        test_rc |= run_lifecycle_capturing_banner(opts, state, log, sizeof log, &rc);
+        char tag[96];
+        DSD_SNPRINTF(tag, sizeof tag, "bias token '%s' from %d", k_cases[i].token, k_cases[i].before);
+        test_rc |= expect_true(tag, rc == 0 && opts->rtl_bias_tee == k_cases[i].after);
+        if (k_cases[i].before == k_cases[i].after) {
+            test_rc |= expect_contains(tag, log, "WARNING: Ignoring");
+        }
+        free_test_runtime(opts, state);
+    }
+    return test_rc;
+}
+
 static int
 test_rtltcp_invalid_and_partial_tuning_tokens(void) {
     dsd_opts* opts = NULL;
@@ -914,6 +955,7 @@ main(void) {
     rc |= test_unavailable_radio_inputs_are_rejected();
 #endif
     rc |= test_rtltcp_tuning_tokens_and_bias();
+    rc |= test_rtltcp_bias_spellings();
     rc |= test_rtltcp_invalid_and_partial_tuning_tokens();
     rc |= test_soapy_setup_normalizes_args_and_tuning();
     rc |= test_iq_replay_guard_and_requested_setup();
