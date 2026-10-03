@@ -15,9 +15,10 @@
 # the tests/ includer still lands in analysis_tus and every includer in iwyu_tus.
 set -euo pipefail
 
+# shellcheck source=tests/tools/missing_tool.sh
+source "$(dirname -- "$0")/missing_tool.sh"
 if ! command -v rg > /dev/null 2>&1; then
-  echo "SKIP: rg not found; header include expansion needs it" >&2
-  exit 0
+  missing_tool "rg not found; header include expansion needs it"
 fi
 
 ROOT_DIR=$(git rev-parse --show-toplevel)

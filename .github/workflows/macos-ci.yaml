@@ -97,7 +97,9 @@ jobs:
           set -euxo pipefail
           # Many deps we build from source (cached) to align with Linux/Windows flows
           # bash: the TOOLS_* ctest cases need bash >= 4; /bin/bash is 3.2.
-          brew install cmake ninja pkg-config ccache bash \
+          # ripgrep and gcc: two of them need rg, and TOOLS_GCC_FANALYZER needs GNU
+          # GCC's analyzer; each prints SKIP and passes without its tool.
+          brew install cmake ninja pkg-config ccache bash ripgrep gcc \
             libsndfile pulseaudio fftw libusb ncurses soapysdr airspy
           # Prefer Homebrew packages when available
           brew install codec2 rtl-sdr || true
@@ -250,9 +252,26 @@ jobs:
         shell: bash
         run: cmake --build --preset dev-debug -j -- -k 0
 
-      - name: Test (dev-debug)
+      # macOS's gcc is AppleClang. TOOLS_GCC_FANALYZER runs GNU GCC's analyzer
+      # through a bare gcc, so the test step finds Homebrew's GCC under that
+      # name; the build above keeps the AppleClang that configure recorded.
+      - name: Put GNU GCC on PATH as gcc for the test step
         shell: bash
         run: |
+          set -euxo pipefail
+          gnu_gcc=$(find "$(brew --prefix gcc)/bin" -maxdepth 1 -name 'gcc-[0-9]*' | sort -V | tail -n 1)
+          "$gnu_gcc" --version
+          mkdir -p "$RUNNER_TEMP/gnu-gcc"
+          ln -sf "$gnu_gcc" "$RUNNER_TEMP/gnu-gcc/gcc"
+
+      - name: Test (dev-debug)
+        shell: bash
+        env:
+          # A test whose tool is missing fails here instead of skipping.
+          DSD_NEO_REQUIRE_TEST_TOOLS: "1"
+        run: |
+          export PATH="$RUNNER_TEMP/gnu-gcc:$PATH"
+          gcc --version | head -n 1
           ctest --preset dev-debug -N | tail -n 1
           ctest --preset dev-debug --output-on-failure
 

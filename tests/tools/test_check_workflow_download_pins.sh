@@ -12,9 +12,10 @@ set -euo pipefail
 
 ROOT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd)
 
+# shellcheck source=tests/tools/missing_tool.sh
+source "$(dirname -- "$0")/missing_tool.sh"
 if ! command -v git > /dev/null 2>&1 || ! command -v rg > /dev/null 2>&1; then
-  echo "SKIP: git or ripgrep not available"
-  exit 0
+  missing_tool "git or ripgrep not available"
 fi
 
 WORK=$(mktemp -d)
@@ -80,6 +81,40 @@ fi
 run_case lone "$other"
 if [[ $rc -eq 0 ]]; then
   fail "a single drifted inline digest passed"
+fi
+
+# run_kotlin_case NAME CHECK_LINE: a workflow that downloads the Kotlin compiler,
+# followed by CHECK_LINE; the verdict is left in rc.
+run_kotlin_case() {
+  local name="$1" check="$2"
+  {
+    echo "jobs:"
+    echo "  job0:"
+    echo "    steps:"
+    echo "      - run: |"
+    # shellcheck disable=SC2016 # the workflow, not this test, expands these
+    echo '          curl -fsSL -o kotlin.zip "https://github.com/JetBrains/kotlin/releases/download/v${KOTLIN_COMPILER_VERSION}/kotlin-compiler-${KOTLIN_COMPILER_VERSION}.zip"'
+    echo "          $check"
+    echo "          unzip -q kotlin.zip"
+  } > "$REPO/.github/workflows/ci.yaml"
+  rc=0
+  (cd "$REPO" && ./tools/check_workflow_download_pins.sh) > "$WORK/$name.out" 2>&1 || rc=$?
+}
+
+# shellcheck disable=SC2016 # the workflow, not this test, expands these
+run_kotlin_case kotlin_verified 'echo "${KOTLIN_COMPILER_SHA256}  kotlin.zip" | sha256sum -c -'
+if [[ $rc -ne 0 ]]; then
+  fail "a Kotlin download verified against KOTLIN_COMPILER_SHA256 failed the check"
+  cat "$WORK/kotlin_verified.out" >&2
+fi
+
+run_kotlin_case kotlin_unverified 'true'
+if [[ $rc -eq 0 ]]; then
+  fail "an unverified Kotlin download passed"
+fi
+if ! grep -qF "Kotlin compiler download in .github/workflows/ci.yaml must be verified" "$WORK/kotlin_unverified.out"; then
+  fail "the unverified Kotlin download was not reported"
+  cat "$WORK/kotlin_unverified.out" >&2
 fi
 
 if [[ $failures -ne 0 ]]; then

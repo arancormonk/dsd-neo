@@ -1438,6 +1438,17 @@ script tests only where bash is (not Windows), so the macOS and Windows suites
 are smaller than the Linux one; each job prints its registered test count before
 running.
 
+Some tests drive an external tool: two `TOOLS_*` tests need ripgrep,
+`TOOLS_GCC_FANALYZER` needs GNU GCC's analyzer under the name `gcc`,
+`TOOLS_IWYU` needs git and Python, and `ANDROID_LOCATION_JVM` needs Java and the
+Kotlin compiler. Without its tool such a test skips, and passes, on a developer
+machine. Every CI job that runs the suite sets `DSD_NEO_REQUIRE_TEST_TOOLS=1`,
+which turns that skip into a failure, and installs what its runner image lacks:
+ripgrep everywhere, Homebrew's GCC as `gcc` for the macOS test step, Java and
+Kotlin in the Clang container, and the pinned Kotlin compiler
+(`KOTLIN_COMPILER_VERSION` and `KOTLIN_COMPILER_SHA256` in
+`tools/ci-dependency-pins.env`) on the arm64 legs.
+
 A job skipped by an `if:` still reports its check, as a success. A required job
 that only runs on pull requests therefore lives in a workflow that only pull
 requests start (`windows-pr`, `macos-pr`, `guardrails-pr`), with no event

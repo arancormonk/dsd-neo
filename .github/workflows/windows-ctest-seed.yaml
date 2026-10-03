@@ -120,6 +120,9 @@ jobs:
 
       - name: Test (MSVC Debug)
         shell: pwsh
+        env:
+          # A test whose tool is missing fails here instead of skipping.
+          DSD_NEO_REQUIRE_TEST_TOOLS: "1"
         run: |
           ctest --preset win-msvc-debug -N | Select-Object -Last 1
           ctest --preset win-msvc-debug --output-on-failure
