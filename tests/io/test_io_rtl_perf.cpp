@@ -18,8 +18,10 @@
 #include "rtl_perf.h"
 #include "test_support.h"
 
-/* The logger's stream is a real file the test reads back by name: the logger
- * closes it on shutdown, and the final row is only checked after that. Each open
+/* The logger's stream is a real file the test reads back by name, without
+ * flushing it for the logger: the header and every row must reach the file as
+ * they are written. The logger closes it on shutdown, and the final row is only
+ * checked after that. Each open
  * gets a fresh private temp file, created owner-only by dsd_test_mkstemp() and
  * opened through that descriptor, never by name, so nothing here creates a file
  * with default permissions. reset_fixture() and main() remove it. */
@@ -156,14 +158,12 @@ test_csv_logging_aggregates_and_resets(void) {
     snapshot.carrier_lock = 1;
 
     rtl_perf_maybe_log(&snapshot);
-    fflush(g_csv_file);
     std::string before_interval = read_csv_capture();
     assert(before_interval.find("rtltcp") == std::string::npos);
     assert(before_interval.find("time_ms,source,rate_hz") != std::string::npos);
 
     g_now_ns = 100001000ULL;
     rtl_perf_maybe_log(&snapshot);
-    fflush(g_csv_file);
     std::string first_log = read_csv_capture();
     assert(first_log.find(",rtltcp,48000,2,10,20,30,40,50,6,2,27,4,24,1,29,31,17,19,23,1,41,37,7.250,-12.500,1\n")
            != std::string::npos);
@@ -186,7 +186,6 @@ test_existing_file_skips_header(void) {
     (void)dsd_setenv("DSD_NEO_RTL_PERF_CSV", "1", 1);
     (void)dsd_setenv("DSD_NEO_RTL_PERF_INTERVAL_MS", "60001", 1);
     assert(rtl_perf_enabled() == 1);
-    fflush(g_csv_file);
     std::string output = read_csv_capture();
     assert(output.find("time_ms,source") == std::string::npos);
 }

@@ -105,10 +105,12 @@ init_locked(void) {
     if (dsd_fstat(dsd_fileno(f), &st) == 0) {
         needs_header = (st.st_size <= 0) ? 1 : 0;
     }
+    /* Every row is flushed as it is written, so the header is too. setvbuf() would have to come before the header,
+     * and MSVC's CRT rejects _IOLBF with a zero size (a debug assertion, then termination). */
     if (needs_header) {
         write_header(f);
+        fflush(f);
     }
-    setvbuf(f, nullptr, _IOLBF, 0);
 
     g_perf_file = f;
     g_perf_interval_ns = parse_interval_ns();
