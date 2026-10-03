@@ -12621,13 +12621,13 @@ if(DSD_HAS_RADIO)
     set(_analog_off_path "CQPSK symbols instead of monitor samples")
 
     # 1 kHz at 3 kHz deviation through the default monitor chain: 25.9 dB tone SNR,
-    # 30.5 dB in-band ratio, -36.1 dBFS at the fixed default gain, audible from the
+    # 30.5 dB in-band ratio, -46.0 dBFS at the fixed default gain, audible from the
     # first block, no clipping. The probe on the tone itself must agree with the fit
     # (0.00 dBc measured), which shows the probe reads a real line at its level.
     dsd_neo_add_analog_replay_test(
         DECODE_IQ_ANALOG_NFM_TONE
         nfm_tone_synth
-        "-fA --analog-expect-tone-hz 1000 --analog-min-snr-db 20 --analog-min-captured-ms 1400 --analog-min-audible-ms 1400 --analog-max-first-audible-ms 100 --analog-min-inband-db 24 --analog-min-rms-dbfs -42 --analog-max-rms-dbfs -30 --analog-max-clip 0 --analog-probe-min-dbc 1000:-1 --analog-probe-max-dbc 1000:1"
+        "-fA --analog-expect-tone-hz 1000 --analog-min-snr-db 20 --analog-min-captured-ms 1400 --analog-min-audible-ms 1400 --analog-max-first-audible-ms 100 --analog-min-inband-db 24 --analog-min-rms-dbfs -52 --analog-max-rms-dbfs -40 --analog-max-clip 0 --analog-probe-min-dbc 1000:-1 --analog-probe-max-dbc 1000:1"
         ""
         "${_analog_off_path}"
     )
@@ -12645,8 +12645,8 @@ if(DSD_HAS_RADIO)
     # Issue #525: --nfm-bandwidth-hz changes the channel filter a listener hears
     # through. The same 1 kHz tone through an 8 kHz, an explicit 16 kHz and a 25 kHz
     # channel, each held to NFM_TONE's bounds with its own SNR and in-band floors,
-    # and to the tone's absolute level: -36.1 dBFS at every width (-36.14 at 8 kHz),
-    # bounded to -37.5..-34.5 dBFS, so a width that costs the tone 1.5 dB fails. The
+    # and to the tone's absolute level: -46.0 dBFS at every width (-46.08 at 8 kHz),
+    # bounded to -47.5..-44.5 dBFS, so a width that costs the tone 1.5 dB fails. The
     # 1 kHz probe's +/-1 dBc is NFM_TONE's self-check of the probe (it is measured
     # against the fit of the same tone, so it reads 0.00 dBc at any level), not a
     # level bound. 8 kHz trims the 3 kHz-deviation signal's outer sidebands (tone SNR
@@ -12659,7 +12659,7 @@ if(DSD_HAS_RADIO)
     # -66.7 dBc at the default. Each bound is one the default fails, so a run that
     # dropped the width would not pass.
     set(_analog_tone_bounds
-        "--analog-expect-tone-hz 1000 --analog-min-captured-ms 1400 --analog-min-audible-ms 1400 --analog-max-first-audible-ms 100 --analog-min-rms-dbfs -42 --analog-max-rms-dbfs -30 --analog-max-clip 0 --analog-probe-min-dbc 1000:-1 --analog-probe-max-dbc 1000:1 --analog-probe-min-dbfs 1000:-37.5 --analog-probe-max-dbfs 1000:-34.5"
+        "--analog-expect-tone-hz 1000 --analog-min-captured-ms 1400 --analog-min-audible-ms 1400 --analog-max-first-audible-ms 100 --analog-min-rms-dbfs -52 --analog-max-rms-dbfs -40 --analog-max-clip 0 --analog-probe-min-dbc 1000:-1 --analog-probe-max-dbc 1000:1 --analog-probe-min-dbfs 1000:-47.5 --analog-probe-max-dbfs 1000:-44.5"
     )
     dsd_neo_add_analog_replay_test(
         DECODE_IQ_ANALOG_NFM_TONE_8K
@@ -12687,7 +12687,7 @@ if(DSD_HAS_RADIO)
     # -64.9) and the tone keeps a 17.0 dB SNR; at 25 kHz the neighbour sits inside the
     # passband and reads -8.2 dBc, so each case's neighbour bound is one the default
     # width and the other case break. At 25 kHz the beat counts against the tone SNR
-    # (-3.5 dB), so that case pins the tone's level instead: -36.1 dBFS, the same as
+    # (-3.5 dB), so that case pins the tone's level instead: -46.0 dBFS, the same as
     # at every other width.
     dsd_neo_add_analog_replay_test(
         DECODE_IQ_ANALOG_NFM_BW_8K
@@ -12699,7 +12699,7 @@ if(DSD_HAS_RADIO)
     dsd_neo_add_analog_replay_test(
         DECODE_IQ_ANALOG_NFM_BW_25K
         nfm_adjacent_synth
-        "-fA --nfm-bandwidth-hz 25000 --analog-expect-tone-hz 1000 --analog-min-captured-ms 1400 --analog-probe-min-dbc 12500:-20 --analog-probe-min-dbfs 1000:-38 --analog-probe-max-dbfs 1000:-34"
+        "-fA --nfm-bandwidth-hz 25000 --analog-expect-tone-hz 1000 --analog-min-captured-ms 1400 --analog-probe-min-dbc 12500:-20 --analog-probe-min-dbfs 1000:-48 --analog-probe-max-dbfs 1000:-44"
         ""
         "${_analog_off_path}"
     )
@@ -12733,26 +12733,28 @@ if(DSD_HAS_RADIO)
     # Off-air smoke baselines: the monitor delivers the whole excerpt and it keeps its
     # measured audible time, onset and spectral shape. On nfm_ctcss_real the in-band
     # ratio is no better than receiver noise (small speech deviation), so that case
-    # tells the two apart by FM quieting instead: the channel measures -44.6 dBFS RMS,
-    # open-squelch noise (noise_floor) -23.3 dBFS.
+    # tells the two apart by FM quieting instead: the channel measures -54.5 dBFS RMS,
+    # open-squelch noise (noise_floor) -33.2 dBFS. Replay runs the live 1/pi output
+    # scale, so the FM cases' audible level is -60 dBFS: the default -50 sat 10 dB
+    # closer to their audio than it did before replay took that scale.
     dsd_neo_add_analog_replay_test(
         DECODE_IQ_ANALOG_NFM_REAL_CTCSS_SMOKE
         nfm_ctcss_real
-        "-fA --analog-min-captured-ms 5800 --analog-min-audible-ms 4500 --analog-min-inband-db -4 --analog-max-rms-dbfs -34"
+        "-fA --analog-audible-dbfs -60 --analog-min-captured-ms 5800 --analog-min-audible-ms 4500 --analog-min-inband-db -4 --analog-max-rms-dbfs -44"
         ""
         "${_analog_off_path}"
     )
     dsd_neo_add_analog_replay_test(
         DECODE_IQ_ANALOG_NFM_REAL_SQUELCH_A_SMOKE
         nfm_squelch_real_a
-        "-fA --analog-min-captured-ms 3900 --analog-min-audible-ms 900 --analog-min-first-audible-ms 250 --analog-max-first-audible-ms 1000 --analog-min-inband-db 4"
+        "-fA --analog-audible-dbfs -60 --analog-min-captured-ms 3900 --analog-min-audible-ms 900 --analog-min-first-audible-ms 250 --analog-max-first-audible-ms 1000 --analog-min-inband-db 4"
         ""
         "${_analog_off_path}"
     )
     dsd_neo_add_analog_replay_test(
         DECODE_IQ_ANALOG_NFM_REAL_SQUELCH_B_SMOKE
         nfm_squelch_real_b
-        "-fA --analog-min-captured-ms 3900 --analog-min-audible-ms 2000 --analog-min-inband-db 5"
+        "-fA --analog-audible-dbfs -60 --analog-min-captured-ms 3900 --analog-min-audible-ms 2000 --analog-min-inband-db 5"
         ""
         "${_analog_off_path}"
     )
@@ -12815,35 +12817,35 @@ if(DSD_HAS_RADIO)
     dsd_neo_add_analog_replay_test(
         DECODE_IQ_ANALOG_POLICY_ALLOW_MATCH
         nfm_ctcss_synth_1000
-        "-fA --tone-allow 100.0 --analog-min-first-audible-ms 100 --analog-max-first-audible-ms 400 --analog-min-audible-ms 1600 --analog-min-total-ms 1900"
+        "-fA --analog-audible-dbfs -60 --tone-allow 100.0 --analog-min-first-audible-ms 100 --analog-max-first-audible-ms 400 --analog-min-audible-ms 1600 --analog-min-total-ms 1900"
         "Tone filter: allowed [(]CTCSS 100[.]0 Hz[)].*ANALOG AUDIO OK"
         "Tone filter: (rejected|pending)|${_analog_off_path}"
     )
     dsd_neo_add_analog_replay_test(
         DECODE_IQ_ANALOG_POLICY_ALLOW_NOTONE
         nfm_notone_synth
-        "-fA --tone-allow 100.0 --analog-max-audible-ms 0 --analog-min-total-ms 1900 --analog-max-total-ms 2100"
+        "-fA --analog-audible-dbfs -60 --tone-allow 100.0 --analog-max-audible-ms 0 --analog-min-total-ms 1900 --analog-max-total-ms 2100"
         "Tone filter: rejected [(]no tone[)].*ANALOG AUDIO OK"
         "Tone filter: allowed|${_analog_off_path}"
     )
     dsd_neo_add_analog_replay_test(
         DECODE_IQ_ANALOG_POLICY_BLOCK_NOTONE
         nfm_notone_synth
-        "-fA --tone-block 100.0 --analog-min-first-audible-ms 780 --analog-max-first-audible-ms 860 --analog-min-audible-ms 1100 --analog-min-total-ms 1900"
+        "-fA --analog-audible-dbfs -60 --tone-block 100.0 --analog-min-first-audible-ms 780 --analog-max-first-audible-ms 860 --analog-min-audible-ms 1100 --analog-min-total-ms 1900"
         "Tone filter: allowed [(]no tone[)].*ANALOG AUDIO OK"
         "Tone filter: rejected|${_analog_off_path}"
     )
     dsd_neo_add_analog_replay_test(
         DECODE_IQ_ANALOG_POLICY_BLOCK_DCS
         nfm_dcs_synth_023n
-        "-fA --tone-block D023N --analog-max-audible-ms 0 --analog-min-total-ms 1900 --analog-max-total-ms 2100"
+        "-fA --analog-audible-dbfs -60 --tone-block D023N --analog-max-audible-ms 0 --analog-min-total-ms 1900 --analog-max-total-ms 2100"
         "Tone filter: rejected [(]DCS D023N / D047I[)].*ANALOG AUDIO OK"
         "Tone filter: allowed|${_analog_off_path}"
     )
     dsd_neo_add_analog_replay_test(
         DECODE_IQ_ANALOG_POLICY_ALLOW_DCS_ALIAS
         nfm_dcs_synth_023i
-        "-fA --tone-allow D023I --analog-max-first-audible-ms 600 --analog-min-audible-ms 1300 --analog-min-total-ms 1900"
+        "-fA --analog-audible-dbfs -60 --tone-allow D023I --analog-max-first-audible-ms 600 --analog-min-audible-ms 1300 --analog-min-total-ms 1900"
         "Tone filter: allowed [(]DCS D047N / D023I[)].*ANALOG AUDIO OK"
         "Tone filter: rejected|${_analog_off_path}"
     )
@@ -12854,7 +12856,7 @@ if(DSD_HAS_RADIO)
     dsd_neo_add_analog_replay_test(
         DECODE_IQ_ANALOG_REAL_CTCSS_POLICY
         nfm_ctcss_real
-        "-fA --tone-allow 151.4 --analog-min-first-audible-ms 100 --analog-max-first-audible-ms 400 --analog-min-audible-ms 4500 --analog-min-total-ms 5800"
+        "-fA --analog-audible-dbfs -60 --tone-allow 151.4 --analog-min-first-audible-ms 100 --analog-max-first-audible-ms 400 --analog-min-audible-ms 4500 --analog-min-total-ms 5800"
         "Tone filter: allowed [(]CTCSS 151[.]4 Hz[)].*ANALOG AUDIO OK"
         "Tone filter: rejected|${_analog_off_path}"
     )
@@ -12888,9 +12890,10 @@ if(DSD_HAS_RADIO)
     # Native AM (issue #524). am_tone_synth is a 1 kHz tone at 50% depth on a 0 Hz
     # carrier with noise 30 dB down across the band: through -fM it measures 24.4 dB
     # tone SNR, 35.4 dB in-band ratio and -45.2 dBFS RMS (the detector's 0.25 x depth,
-    # unscaled in replay), audible from the first block, unclipped; the probe on the
-    # tone agrees with the fit. The FM monitor finds no tone on it (see the negative
-    # control below), so the level comes from the AM detector.
+    # which the monitor's 1/pi output scale leaves alone), audible from the first
+    # block, unclipped; the probe on the tone agrees with the fit. The FM monitor finds
+    # no tone on it (see the negative control below), so the level comes from the AM
+    # detector.
     dsd_neo_add_analog_replay_test(
         DECODE_IQ_ANALOG_AM_TONE
         am_tone_synth
@@ -13045,7 +13048,7 @@ if(DSD_HAS_RADIO)
     dsd_neo_add_analog_replay_fail_test(
         DECODE_IQ_ANALOG_NEG_AUDIBLE_NOT_SILENT
         nfm_tone_synth
-        "-fA --analog-max-audible-ms 0 --analog-min-total-ms 1400"
+        "-fA --analog-audible-dbfs -60 --analog-max-audible-ms 0 --analog-min-total-ms 1400"
         "ANALOG AUDIO FAIL: audible ms [0-9.]+ [(]limit 0[.]00[)]"
         ""
         "ANALOG AUDIO FAIL: total ms"

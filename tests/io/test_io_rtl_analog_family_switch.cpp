@@ -590,10 +590,10 @@ test_fm_am_kind_switch(void) {
     return rc;
 }
 
-/* AM normalises its own level to the carrier, so the output scale a live stream runs (1/pi, which turns FM
- * discriminator radians into audio) is not applied to it, and AM monitor audio is the same live and in I/Q replay,
- * which runs no scale; FM monitor audio is scaled, and digital discriminator output is not. Checked through the output
- * block the demod thread writes, at 48 kHz and at 24 kHz, where the monitor is resampled to 48 kHz. */
+/* AM normalises its own level to the carrier, so the monitor's output scale (1/pi, which turns FM discriminator
+ * radians into audio) is not applied to it; FM monitor audio is scaled, and digital discriminator output is not.
+ * Checked through the output block the demod thread writes, at 48 kHz and at 24 kHz, where the monitor is resampled to
+ * 48 kHz. */
 static int
 expect_output_gain(const char* label, const dsd_opts* opts, int rate_hz, int want_am, float want_gain) {
     rtl_stream_test_output_scale_result r;
@@ -638,6 +638,29 @@ test_monitor_output_scale(void) {
     rc |= expect_output_gain("FM @48k is scaled", &fm, 48000, 0, live);
     rc |= expect_output_gain("FM @24k is scaled", &fm, 24000, 0, live);
     rc |= expect_output_gain("DMR discriminator is not scaled", &dmr, 48000, 0, 1.0f);
+    return rc;
+}
+
+/* An I/Q replay runs the output scale a live stream runs, whatever it finds: 0 in a process that never ran a live
+ * stream (the CLI's --iq-replay, the replay tests), where replayed FM monitor audio used to come out pi times (9.9 dB)
+ * louder than the same signal live, or what an earlier session left. */
+static int
+test_replay_output_scale(void) {
+    static dsd_opts fm;
+    DSD_MEMSET(&fm, 0, sizeof fm);
+    fm.analog_only = 1;
+    fm.monitor_input_audio = 1;
+    fm.analog_demod = DSD_ANALOG_DEMOD_FM;
+    const float presets[] = {0.0f, 0.5f};
+    int rc = 0;
+    for (size_t i = 0; i < sizeof presets / sizeof presets[0]; i++) {
+        float scale = -1.0f;
+        char name[96];
+        DSD_SNPRINTF(name, sizeof name, "replay output scale from %.1f: applied", (double)presets[i]);
+        rc |= expect_int(name, rtl_stream_test_replay_output_scale(&fm, presets[i], &scale), 0);
+        DSD_SNPRINTF(name, sizeof name, "replay output scale from %.1f: the live 1/pi", (double)presets[i]);
+        rc |= expect_int(name, std::fabs(scale - 0.318309886f) < 1e-6f ? 1 : 0, 1);
+    }
     return rc;
 }
 
@@ -2089,6 +2112,7 @@ main(void) {
     rc |= run_am_case(cases[0], 24000, 20000);
     rc |= test_fm_am_kind_switch();
     rc |= test_monitor_output_scale();
+    rc |= test_replay_output_scale();
     rc |= test_am_monitor_keeps_detector_under_symbol_profiles();
     rc |= test_typed_row_retune_after_scan_leave_keeps_the_monitor();
     rc |= test_digital_scan_leave_keeps_the_session_profile();

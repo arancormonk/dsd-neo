@@ -1591,8 +1591,8 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
     else keeps the verdict, so a dropout's silence alone never ends a lock or makes one. Deciding by the sample that
     closes a hop instead would let a carrier that keeps dropping out keep a stopped tone for good, once its openings
     missed every hop's end; this way each opening makes the two hops that read it count, and a dropout the hangover
-    allows leaves at most three hops in a row without one. Every threshold is a ratio, so the RTL live (~1/pi), replay
-    and int16 PCM scales read the same.
+    allows leaves at most three hops in a row without one. Every threshold is a ratio, so the RTL (~1/pi, live and
+    replay) and int16 PCM scales read the same.
   - `src/dsp/analog_dcs.c` is the DCS detector (issue #523), the first row of the table, so its lock outranks a CTCSS
     one. It undoes the front end's known 10 Hz DC blocker (`DSD_ANALOG_RX_DC_CORNER_HZ`) and puts a 0.5 Hz pole in its
     place, integrates each bit (the NRZ matched filter) at bit ends recovered by square-law timing recovery (the edge
@@ -2058,7 +2058,8 @@ Notes:
     the CQPSK-off profiles via `rtl_stream_test_am_monitor_symbol_profiles()`, the DSP menu's return from CQPSK to the
     FM or AM monitor, taken and refused where it lands, via `rtl_stream_test_monitor_return_from_cqpsk()`, and the live
     output scale through `demod_write_output_block()` via `rtl_stream_test_monitor_output_scale()`: 1/pi for FM, none
-    for AM or digital output), `IO_RTL_RETUNE_PREPARE` (`rtl_stream_test_audio_monitor_retune_kind()`).
+    for AM or digital output; IQ replay runs 1/pi whatever an earlier session left, via
+    `rtl_stream_test_replay_output_scale()`), `IO_RTL_RETUNE_PREPARE` (`rtl_stream_test_audio_monitor_retune_kind()`).
   - The monitor's legacy `low_pass_real()` stage (`rate_in` to `rate_out2`) passes audio through: a live open sets both
     to the DSP bandwidth, and IQ replay (`controller_apply_replay_settings()`) sets `rate_out2` to the `rate_in` it
     takes from the capture, so only the rational resampler converts `rate_out` to the output rate. Test:

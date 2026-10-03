@@ -2384,9 +2384,10 @@ retune_settle_should_discard(const struct demod_state* d, float mean_abs, float 
     return 1;
 }
 
-/* The output scale a live stream runs (optimal_settings()): discriminator radians into roughly [-1, 1]. I/Q replay
-   never sets one (0, unscaled). */
-static const float kLiveDiscriminatorOutputScale = (float)(1.0 / M_PI);
+/* The FM monitor's output scale: discriminator radians into roughly [-1, 1]. A live stream sets it in
+   optimal_settings() and an I/Q replay in controller_apply_replay_settings(), so replayed monitor audio comes out at the
+   level the same signal plays at live. */
+static const float kMonitorDiscriminatorOutputScale = (float)(1.0 / M_PI);
 
 /* Apply a single gain factor to the final demod block before handing it to consumers. */
 static inline void
@@ -4294,7 +4295,7 @@ optimal_settings(int freq, int rate) {
     }
     uint32_t capture_freq_hz = capture_frequency_for_rate((int64_t)freq, capture_rate_hz);
     /* Normalize discriminator radians into roughly [-1,1] for float pipeline. */
-    dm->output_scale = kLiveDiscriminatorOutputScale;
+    dm->output_scale = kMonitorDiscriminatorOutputScale;
     /* Update the effective discriminator output sample rate based on current settings.
        HB cascade reduces by (1<<downsample_passes). Apply optional post_downsample on audio. */
     dm->rate_out = demod_output_rate_for_capture_rate(capture_rate_hz);
@@ -5357,6 +5358,10 @@ controller_apply_replay_settings(struct controller_state* s, const dsd_opts* opt
     demod.rate_out = (int)cfg->demod_rate_hz;
     /* The capture file dictates the rate chain, exactly like a device with a fixed rate grid. */
     demod.capture_rate_device_forced = 1;
+    /* The scale a live stream runs, set on every open rather than inherited: left at 0 (a process that never ran a
+       live stream) replayed FM monitor audio pi times (9.9 dB) louder than the same signal live; left at whatever an
+       earlier session set, it depended on what ran before. */
+    demod.output_scale = kMonitorDiscriminatorOutputScale;
 
     uint32_t center_hz =
         (uint32_t)((cfg->center_frequency_hz > 0) ? cfg->center_frequency_hz : cfg->capture_center_frequency_hz);
@@ -14600,13 +14605,13 @@ rtl_stream_test_monitor_output_scale(const dsd_opts* opts, int rate_hz, rtl_stre
     out->demod_is_am = dsd_demod_am_active(&demod);
     out->output_kind = demod.output_kind;
     out->resampled = demod.resamp_enabled;
-    out->live_scale = kLiveDiscriminatorOutputScale;
+    out->live_scale = kMonitorDiscriminatorOutputScale;
 
     static float unscaled[MAXIMUM_BUF_LENGTH * 4];
     static float scaled[MAXIMUM_BUF_LENGTH * 4];
     const int cap = (int)(sizeof unscaled / sizeof unscaled[0]);
     out->unscaled_samples = output_scale_test_write_block(0.0f, unscaled, cap);
-    out->scaled_samples = output_scale_test_write_block(kLiveDiscriminatorOutputScale, scaled, cap);
+    out->scaled_samples = output_scale_test_write_block(kMonitorDiscriminatorOutputScale, scaled, cap);
     if (out->unscaled_samples <= 0 || out->scaled_samples != out->unscaled_samples) {
         rc = -1;
     } else {
@@ -14625,6 +14630,39 @@ rtl_stream_test_monitor_output_scale(const dsd_opts* opts, int rate_hz, rtl_stre
     family_test_restore(saved);
     family_test_release_buffers();
     fsk_reacquire_test_cleanup_output_ring(initialized_output);
+    return rc == 0 ? 0 : -3;
+}
+
+extern "C" int
+rtl_stream_test_replay_output_scale(const dsd_opts* opts, float preset_scale, float* out_scale) {
+    if (!opts || !out_scale) {
+        return -1;
+    }
+    *out_scale = -1.0f;
+    const FamilyTestSaved saved = family_test_save();
+    const CaptureSettingsSnapshot capture = capture_settings_snapshot();
+    const float prev_output_scale = demod.output_scale;
+    g_stream = NULL;
+    int rc = family_test_seed_open(opts, 48000, 0);
+    /* What a replay finds: 0 when no live stream ran in the process, or what an earlier session left. */
+    demod.output_scale = preset_scale;
+    dsd_iq_replay_config cfg;
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.sample_rate_hz = 1536000U;
+    cfg.center_frequency_hz = kFamilyTestCenterHz;
+    cfg.capture_center_frequency_hz = kFamilyTestCenterHz;
+    cfg.base_decimation = 32U;
+    cfg.post_downsample = 1U;
+    cfg.demod_rate_hz = 48000U;
+    if (rc == 0 && controller_apply_replay_settings(&controller, opts, &cfg) != 0) {
+        rc = -1;
+    }
+    *out_scale = demod.output_scale;
+
+    demod.output_scale = prev_output_scale;
+    restore_capture_settings(&capture);
+    family_test_restore(saved);
+    family_test_release_buffers();
     return rc == 0 ? 0 : -3;
 }
 

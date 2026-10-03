@@ -558,25 +558,30 @@ leaving analog.
 
 ### Output Scale
 
-Live radio sets `output_scale = 1/pi` in `optimal_settings()`; IQ replay never
-calls it. `output_scale` belongs to the process-wide demod state and nothing
-resets it, so a replay in a process that has not run a live stream (the CLI's
-`--iq-replay`, the replay tests) leaves the discriminator output unscaled, and
-replayed FM monitor audio is about pi times louder than live; a replay opened
-after a live session in the same process keeps the 1/pi that session set. The
-scale applies to monitor audio only: `demod_write_output_block()` skips it for
-FSK discriminator and CQPSK symbol output, so digital decoding and the digital
-`DECODE_IQ_*` baselines do not depend on it. The analog replay checks
-(`DECODE_IQ_ANALOG_*`) do: their level bounds (RMS, peak and audible thresholds
-in dBFS) were measured at the replay scale. Ratio-based audio metrics are
-invariant to it, so it is left as is. The AM detector normalises its own level
-and is exempt (`dsd_demod_am_active()`), so AM monitor audio is the same live
-and in replay; the `DECODE_IQ_ANALOG_AM_*` level bounds hold on both.
+Live radio sets `output_scale = 1/pi` in `optimal_settings()`, and IQ replay
+sets the same value on every open (`controller_apply_replay_settings()`), so a
+replayed signal reaches the monitor at the level it reaches it live.
+`output_scale` belongs to the process-wide demod state, and before replay set
+it, a replay in a process that had not run a live stream (the CLI's
+`--iq-replay`, the replay tests) left the discriminator output unscaled, pi
+times (9.9 dB) louder than live, while one opened after a live session kept the
+1/pi that session set. The scale applies to monitor audio only:
+`demod_write_output_block()` skips it for FSK discriminator and CQPSK symbol
+output, so digital decoding and the digital `DECODE_IQ_*` baselines do not
+depend on it. The analog replay checks (`DECODE_IQ_ANALOG_*`) do: their level
+bounds (RMS, peak and audible thresholds in dBFS) are measured at the live
+scale. Ratio-based audio metrics are invariant to it. The AM detector
+normalises its own level and is exempt (`dsd_demod_am_active()`), so AM monitor
+audio is the same live and in replay; the `DECODE_IQ_ANALOG_AM_*` level bounds
+hold on both.
 `IO_RTL_ANALOG_FAMILY_SWITCH` holds that exemption on the live path, which replay
 never exercises: it writes one block through `demod_write_output_block()` with
 the live scale and without (`rtl_stream_test_monitor_output_scale()`), and
 expects FM monitor audio scaled by 1/pi and AM monitor audio and digital
-discriminator output unchanged, at 48 kHz and through the 24 kHz resampler.
+discriminator output unchanged, at 48 kHz and through the 24 kHz resampler. It
+also opens a replay on an output scale of 0 and of 0.5, as a process that never
+ran a live stream or an earlier session leaves it, and expects the replay to run
+1/pi from either (`rtl_stream_test_replay_output_scale()`).
 
 ## Regression Coverage
 
@@ -663,7 +668,7 @@ discriminator output unchanged, at 48 kHz and through the 24 kHz resampler.
   input the stream opens as an RTL-SDR whatever its device string;
   `IO_RTL_DEMOD_CONFIG` the stream-start refusal's fix on a forced rate. `DECODE_IQ_ANALOG_NFM_TONE_8K`,
   `_16K` and `_25K` show the 1 kHz tone keeping its level through each width
-  (-36.1 dBFS, bounded to -37.5..-34.5 dBFS; the explicit 16 kHz measuring the
+  (-46.0 dBFS, bounded to -47.5..-44.5 dBFS; the explicit 16 kHz measuring the
   same as the default) and, at 8 and 25 kHz, a demodulator noise level at
   12.5 kHz the default does not reach (-80.4 and -48.9 dBc against -66.7),
   `DECODE_IQ_ANALOG_NFM_BW_8K`
@@ -719,10 +724,6 @@ ctest --preset dev-debug --output-on-failure
   signals once representative captures are available.
 - Any future change to channel LPF cutoffs, default RTL DSP bandwidth, CQPSK
   loop gains, or FSK normalization must update the mode matrix tests first.
-- The live (1/pi) versus cold-start replay (unscaled) analog output scale
-  difference is documented above and left in place; aligning it moves replayed
-  monitor audio levels, so the analog replay checks' dBFS bounds would need new
-  baselines (digital output never takes the scale).
 - The forced-rate analog channel filter (Airspy 2.5 MS/s -> 78,125 Hz) needs a
   hardware listen check.
 - AM (issue #524): the 50 ms carrier time constant and the 0.25 gain are design
