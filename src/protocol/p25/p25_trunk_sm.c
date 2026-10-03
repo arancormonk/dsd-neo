@@ -43,12 +43,6 @@
 #include "dsd-neo/platform/platform.h"
 #include "p25_trunk_sm_internal.h"
 
-#if !defined(_MSC_VER)
-extern void closeMbeOutFile(dsd_opts* opts, dsd_state* state) DSD_ATTR_WEAK;
-extern void closeMbeOutFileR(dsd_opts* opts, dsd_state* state) DSD_ATTR_WEAK;
-extern void dsd_p25p2_flush_partial_audio_slot(dsd_opts* opts, dsd_state* state, int slot) DSD_ATTR_WEAK;
-#endif
-
 static int do_release(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reason, int recover_stale_ctx);
 static void p25_sm_diagf(dsd_opts* opts, const dsd_state* state, const p25_sm_ctx_t* ctx, const char* event,
                          const char* format, ...) DSD_ATTR_FORMAT(printf, 5, 6);
@@ -2937,11 +2931,6 @@ p25_voice_flush_partial_audio(const p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state
     if (!ctx->vc_is_tdma) {
         return;
     }
-#if !defined(_MSC_VER)
-    if (dsd_p25p2_flush_partial_audio_slot == NULL) {
-        return;
-    }
-#endif
     dsd_p25p2_flush_partial_audio_slot(opts, state, slot);
 }
 
@@ -2951,20 +2940,12 @@ p25_voice_close_slot_output(dsd_opts* opts, dsd_state* state, int slot) {
         return;
     }
     if (slot == 0) {
-        if (opts->mbe_out_f != NULL
-#if !defined(_MSC_VER)
-            && closeMbeOutFile != NULL
-#endif
-        ) {
+        if (opts->mbe_out_f != NULL) {
             closeMbeOutFile(opts, state);
         }
         return;
     }
-    if (opts->mbe_out_fR != NULL
-#if !defined(_MSC_VER)
-        && closeMbeOutFileR != NULL
-#endif
-    ) {
+    if (opts->mbe_out_fR != NULL) {
         closeMbeOutFileR(opts, state);
     }
 }

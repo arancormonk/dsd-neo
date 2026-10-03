@@ -45,6 +45,12 @@ void openMbeOutFile(dsd_opts* opts, dsd_state* state);
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 void openMbeOutFileR(dsd_opts* opts, dsd_state* state);
 // NOLINTNEXTLINE(misc-use-internal-linkage)
+void closeMbeOutFile(dsd_opts* opts, dsd_state* state);
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+void closeMbeOutFileR(dsd_opts* opts, dsd_state* state);
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+void dsd_p25p2_flush_partial_audio_slot(dsd_opts* opts, dsd_state* state, int slot);
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 void rotate_symbol_out_file(dsd_opts* opts, dsd_state* state);
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 void watchdog_event_history(dsd_opts* opts, dsd_state* state, uint8_t slot);
@@ -105,6 +111,25 @@ dsd_format_local_datetime(time_t timestamp, dsd_local_datetime_format format, ch
     }
     DSD_SNPRINTF(out, out_size, "%s", "00:00:00");
     return 1;
+}
+
+void
+closeMbeOutFile(dsd_opts* opts, dsd_state* state) {
+    (void)state;
+    opts->mbe_out_f = NULL;
+}
+
+void
+closeMbeOutFileR(dsd_opts* opts, dsd_state* state) {
+    (void)state;
+    opts->mbe_out_fR = NULL;
+}
+
+void
+dsd_p25p2_flush_partial_audio_slot(dsd_opts* opts, dsd_state* state, int slot) {
+    (void)opts;
+    (void)state;
+    (void)slot;
 }
 
 void
