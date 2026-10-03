@@ -4944,10 +4944,12 @@ test_export_disposal(void) {
     return rc;
 }
 
+/* Group files are text: production writes them in text mode, so lines end in CRLF on Windows. Reading in text mode
+ * compares the lines every platform writes, and leaves the LF fixtures the tests seed unchanged. */
 static int
 expect_file_bytes(const char* path, const char* expected) {
     char contents[1024] = {0};
-    FILE* file = dsd_fopen_existing_regular_file(path, "rb");
+    FILE* file = dsd_fopen_existing_regular_file(path, "r");
     if (!file) {
         return 1;
     }
