@@ -1841,6 +1841,12 @@ struct dsd_state {
     uint8_t trunk_scan_hold;           /**< 1 = --trunk-scan dwell paused on the active target */
     uint8_t trunk_scan_active_avoided; /**< 1 = the parked target is itself avoided (fallback) */
     uint16_t trunk_scan_avoided_count; /**< Avoided --trunk-scan targets */
+    /* The tuner gain a --trunk-scan target without its own rtl_gain runs, which the gain controls edit and a save
+     * writes, and whether the parked target's own rtl_gain overrides it; written by the coordinator beside the trio
+     * above. Valid while trunk_scan_target_count > 0. */
+    int16_t trunk_scan_configured_gain;     /**< dB in driver units; 0 = AGC */
+    uint8_t trunk_scan_gain_override;       /**< 1 = the parked target runs its own rtl_gain */
+    uint8_t trunk_scan_configured_autogain; /**< 1 = the configured tuner autogain is on */
     /* Voice-gated scan (issue #381): per-visit gate memory for -Y. Arrive/sync/voice
      * anchors are monotonic seconds (-1 = unset this visit); roll_seen restarts the
      * visit on external lcn_freq_roll changes; hold_seen is lcn_scan_hold as of the

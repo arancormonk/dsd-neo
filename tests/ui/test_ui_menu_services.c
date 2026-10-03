@@ -582,6 +582,12 @@ rtl_stream_request_ppm(dsd_opts* opts, int ppm) {
     return 0;
 }
 
+/* A restart under a trunk scan puts its configured tuner autogain on the stream (issue #518 follow-up); none runs here. */
+void
+rtl_stream_set_tuner_autogain(int onoff) {
+    (void)onoff;
+}
+
 void
 rtl_stream_set_channel_squelch(float level) {
     (void)level;

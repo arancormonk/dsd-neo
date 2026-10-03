@@ -28,6 +28,7 @@
 #include <dsd-neo/app_control/analog_width_view.h>
 #include <dsd-neo/app_control/call_view.h>
 #include <dsd-neo/app_control/frontend.h>
+#include <dsd-neo/app_control/rtl_gain_view.h>
 #include <dsd-neo/app_control/rx_tone_view.h>
 #include <dsd-neo/app_control/scan_timing_view.h>
 #include <dsd-neo/app_control/squelch_view.h>
@@ -813,6 +814,7 @@ MetricsModel::fillDecoderView(View& next, const dsd_opts* opts_snapshot, const d
      * never applied, and publishing them would put three plausible tuner
      * readings on screen for a session that has no tuner. */
     next.tuner_gain_db = next.radio_input ? opts_snapshot->rtl_gain_value : 0;
+    fillTunerGain(next, opts_snapshot, snapshot);
     /* rtl_squelch_level is a mean-power threshold, not decibels — the same
      * conversion the engine's own status line uses. Publishing the raw value
      * would put "0" on screen for a squelch of -120 dB. A level that gates
@@ -822,6 +824,16 @@ MetricsModel::fillDecoderView(View& next, const dsd_opts* opts_snapshot, const d
     next.squelch_off = next.radio_input && dsd_squelch_is_off(opts_snapshot->rtl_squelch_level);
     next.ppm = next.radio_input ? opts_snapshot->rtlsdr_ppm_error : 0;
     fillSquelchOverride(next, opts_snapshot, snapshot);
+}
+
+/* Under --trunk-scan the buttons edit the configured gain beneath a target's own rtl_gain, as the terminal's Gain... row
+ * does, from the same app_control view (issue #518 follow-up). */
+void
+MetricsModel::fillTunerGain(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot) {
+    dsd_app_rtl_gain_view gain{};
+    const bool gain_view = next.radio_input && dsd_app_rtl_gain_view_get(opts_snapshot, snapshot, &gain) == 0;
+    next.tuner_gain_configured_db = gain_view ? gain.configured_gain : next.tuner_gain_db;
+    next.tuner_gain_row_override = gain_view && gain.row_override != 0U;
 }
 
 /* Issue #521: the configured/effective pair, the off decisions, the row badge and the readout

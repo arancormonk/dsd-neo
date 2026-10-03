@@ -18,7 +18,9 @@
 #include <dsd-neo/dsp/ted.h>
 #include <dsd-neo/io/rtl_metrics.h>
 #include <dsd-neo/io/rtl_stream_c.h>
+#include <mutex>
 #include <stddef.h>
+#include <stdint.h>
 
 #include "rtl_fft_cache.h"
 #include "rtl_finite.h"
@@ -47,6 +49,12 @@ static std::atomic<double> g_fll_band_edge_freq_rad{0.0}; /* FLL band-edge NCO f
 
 /* Supervisory tuner autogain gate (0/1), controlled via env/UI. */
 std::atomic<int> g_tuner_autogain_on{0};
+/* Counts the explicit settings (rtl_stream_set_tuner_autogain()), so a retune profile built before one knows it is
+   older than the setting in force. An explicit setting and a retune's landing (rtl_stream_land_retune_autogain()) each
+   read and write the flag and the count under g_tuner_autogain_mutex, so a landing cannot check the count, lose the
+   race to a newer setting and then write its older value over it. */
+std::atomic<uint32_t> g_tuner_autogain_set_seq{0U};
+static std::mutex g_tuner_autogain_mutex;
 
 /* Auto-PPM status. */
 std::atomic<int> g_auto_ppm_enabled{0};
@@ -546,6 +554,17 @@ rtl_stream_get_tuner_autogain(void) {
 /** @brief Enable or disable supervisory tuner auto-gain (atomic flag). */
 extern "C" void
 rtl_stream_set_tuner_autogain(int onoff) {
+    std::lock_guard<std::mutex> lock(g_tuner_autogain_mutex);
+    g_tuner_autogain_on.store(onoff ? 1 : 0, std::memory_order_relaxed);
+    g_tuner_autogain_set_seq.fetch_add(1U, std::memory_order_acq_rel);
+}
+
+void
+rtl_stream_land_retune_autogain(int onoff, int only_if_current, uint32_t seq) {
+    std::lock_guard<std::mutex> lock(g_tuner_autogain_mutex);
+    if (only_if_current && seq != g_tuner_autogain_set_seq.load(std::memory_order_acquire)) {
+        return;
+    }
     g_tuner_autogain_on.store(onoff ? 1 : 0, std::memory_order_relaxed);
 }
 

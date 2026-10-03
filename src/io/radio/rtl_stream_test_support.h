@@ -254,6 +254,8 @@ int rtl_stream_test_tagged_retune_ownership(uint64_t owner_token, uint64_t conte
 int dsd_rtl_stream_test_retune_without_controller_rejected(void);
 int rtl_stream_test_retune_profile_gain_binding(int* out_gain_is_set, int* out_gain_tenth_db, int* out_gain_is_auto,
                                                 int* out_autogain_is_set, int* out_autogain_on);
+int rtl_stream_test_retune_autogain_landing(int manual_gain, int profile_autogain_on, int explicit_after,
+                                            int explicit_on, int* out_autogain_on);
 
 typedef struct rtl_stream_test_finalize_profile_result {
     int symbol_rate_hz;

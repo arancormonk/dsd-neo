@@ -77,7 +77,7 @@ Main Menu
 │   ├── Invert signal [Off]                      i
 │   └── RTL-SDR                                   (RTL-SDR input only)
 │       ├── Frequency... [769.768750 MHz]
-│       ├── Gain... [AGC]
+│       ├── Gain... [AGC]                        ([20] (target: 10) when a trunk-scan target has its own gain)
 │       ├── PPM correction... [0]                { }
 │       ├── DSP bandwidth... [48 kHz]
 │       ├── NFM bandwidth... [default]           (-fA, or a width set, on a radio input)

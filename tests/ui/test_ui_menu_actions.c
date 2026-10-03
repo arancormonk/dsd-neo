@@ -1474,6 +1474,26 @@ test_additional_prompt_and_toggle_actions(void) {
     act_set_input_warn(NULL);
     rc |= expect_int("input warn env fallback", g_prompt.initial_double == 12.5, 1);
 
+    /* The gain prompt offers the configured gain the row shows first; under --trunk-scan that is not a parked target's
+     * own rtl_gain, which accepting the prompt unchanged would otherwise make the default (issue #518 follow-up). */
+    reset_capture();
+    opts.rtl_gain_value = 22;
+    rtl_set_gain(&ctx);
+    rc |= expect_str("rtl gain prompt", g_prompt.title, "Gain (0=AGC, 0..49)");
+    rc |= expect_int("rtl gain prompt offers the gain in force", g_prompt.initial_int, 22);
+    reset_capture();
+    opts.trunk_scan_enabled = 1;
+    state.trunk_scan_target_count = 2U;
+    state.trunk_scan_configured_gain = 30;
+    state.trunk_scan_gain_override = 1U;
+    opts.rtl_gain_value = 10;
+    rtl_set_gain(&ctx);
+    rc |= expect_int("rtl gain prompt offers the configured gain, not the target's", g_prompt.initial_int, 30);
+    opts.trunk_scan_enabled = 0;
+    state.trunk_scan_target_count = 0U;
+    state.trunk_scan_configured_gain = 0;
+    state.trunk_scan_gain_override = 0U;
+
     /* The squelch row has to be able to express "off". The prompt offered
      * pwr_to_dB() of a disabled squelch, which is -120: retyping what was shown
      * would have turned a squelch that was off into a real threshold. */

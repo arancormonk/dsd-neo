@@ -817,6 +817,19 @@ dsd_neo_add_public_header_smoke_test(
   dsd-neo/app_control/squelch_view.h
   CXX
 )
+# The shared tuner gain readout under --trunk-scan (issue #518 follow-up).
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_rtl_gain_view
+  HEADERS_PUBLIC_APP_CONTROL_RTL_GAIN_VIEW
+  dsd-neo/app_control/rtl_gain_view.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_rtl_gain_view_cxx
+  HEADERS_PUBLIC_APP_CONTROL_RTL_GAIN_VIEW_CXX
+  dsd-neo/app_control/rtl_gain_view.h
+  CXX
+)
 # Issue #525: the shared analog channel width readout.
 dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_app_control_analog_width_view
@@ -2080,6 +2093,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         ui/test_ui_menu_labels.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_labels.c
         ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/rtl_gain_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/rx_tone_view.c
         ${PROJECT_SOURCE_DIR}/src/runtime/analog_tones.c
         ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_metrics_hooks.c
@@ -2103,6 +2117,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_labels.c
         ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
         ${PROJECT_SOURCE_DIR}/src/app_control/analog_width_view.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/rtl_gain_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/rx_tone_view.c
         ${PROJECT_SOURCE_DIR}/src/runtime/analog_channel.c
         ${PROJECT_SOURCE_DIR}/src/runtime/analog_tones.c
@@ -2361,6 +2376,22 @@ add_test(
     COMMAND dsd-neo_test_app_control_squelch_view
 )
 
+# Issue #518 follow-up: the configured tuner gain under --trunk-scan, "(target: X)" while the
+# parked target's own rtl_gain overrides it.
+add_executable(
+    dsd-neo_test_app_control_rtl_gain_view
+    ui/test_app_control_rtl_gain_view.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/rtl_gain_view.c
+)
+target_link_libraries(
+    dsd-neo_test_app_control_rtl_gain_view
+    PRIVATE dsd-neo_core dsd-neo_runtime
+)
+add_test(
+    NAME APP_CONTROL_RTL_GAIN_VIEW
+    COMMAND dsd-neo_test_app_control_rtl_gain_view
+)
+
 # The received-tone text every frontend shows (issue #522), and the configured policy kept
 # apart from it.
 add_executable(
@@ -2539,6 +2570,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         ui/test_ui_menu_actions.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_actions.c
         ${PROJECT_SOURCE_DIR}/src/app_control/analog_width_view.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/rtl_gain_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/rx_tone_view.c
         ${PROJECT_SOURCE_DIR}/src/runtime/analog_channel.c
         ${PROJECT_SOURCE_DIR}/src/runtime/analog_tones.c
@@ -3223,6 +3255,7 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/app_control/analog_width_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/call_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/p25_metrics.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/rtl_gain_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/squelch_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/rx_tone_view.c
     )

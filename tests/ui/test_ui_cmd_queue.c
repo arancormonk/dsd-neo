@@ -30,6 +30,7 @@
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/engine/engine.h>
+#include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/io/rtl_stream_fwd.h>
 #include <dsd-neo/platform/atomic_compat.h>
@@ -5263,6 +5264,7 @@ static int g_config_rtl_create_kind = -1;
 static int g_config_rtl_create_width_hz = -1;
 /* The DSP bandwidth the last create was handed. */
 static int g_config_rtl_create_bw_khz = -1;
+static int g_config_rtl_create_gain = -1;
 /* Starts made, and how many of the next ones fail. A start that fails on options that run the analog family records
    a refusal of their width at g_config_rtl_refuse_rate_hz when that is above 0, as the stream's analog channel check
    does at the rate the device delivered (rtl_stream_start_analog_refusal()); otherwise it fails for a device reason and
@@ -5360,6 +5362,7 @@ __wrap_rtl_stream_create(dsd_opts* opts, RtlSdrContext** out_ctx) {
     g_config_rtl_create_kind = opts ? opts->analog_demod : -1;
     g_config_rtl_create_width_hz = opts ? dsd_opts_analog_width_hz(opts) : -1;
     g_config_rtl_create_bw_khz = opts ? opts->rtl_dsp_bw_khz : -1;
+    g_config_rtl_create_gain = opts ? opts->rtl_gain_value : -1;
     g_config_rtl_create_capture = opts ? opts->iq_capture_requested : -1;
     g_config_rtl_captures += g_config_rtl_create_capture == 1;
     g_config_rtl_opened_capture = 0;
@@ -5640,6 +5643,137 @@ test_rtl_bandwidth_held_to_am_width(void) {
 #endif
 
 /* --- Issue #521: squelch edits beneath a row or target that overrides it --- */
+
+#if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
+static dsd_trunk_tune_result
+gain_scan_tune_to_cc_ok(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
+    (void)opts;
+    (void)ted_sps;
+    (void)request_id;
+    if (state) {
+        state->trunk_cc_freq = freq;
+    }
+    return DSD_TRUNK_TUNE_RESULT_OK;
+}
+
+/* Issue #518 follow-up: under --trunk-scan the gain and tuner-autogain controls edit the configured gain the scan puts
+ * back at every target switch. A live edit used to be reverted to the scan-start gain at the next switch; one made while
+ * a target with its own rtl_gain is parked says that target overrides it. The real coordinator and command path run
+ * over the wrapped RTL stream, with every retune landing at once. */
+static int
+test_rtl_gain_commands_edit_the_trunk_scan_default(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_test_context(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.audio_out_type = 9;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "rtl:0:851000000:22:0:48:0:2");
+    opts.rtl_gain_value = 22;
+    opts.trunk_scan_enabled = 1;
+    g_config_rtl_open_ok = 1;
+    g_config_rtl_fail_starts = 0;
+    state.rtl_ctx = (RtlSdrContext*)g_config_rtl_ctx;
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){.tune_to_cc_request = gain_scan_tune_to_cc_ok});
+
+    char dir[DSD_TEST_PATH_MAX];
+    char csv[DSD_TEST_PATH_MAX];
+    int rc = expect_true("gain scan dir", dsd_test_mkdtemp(dir, sizeof dir, "dsdneo_gain_scan") != NULL);
+    rc |= expect_int("gain scan csv path", dsd_test_path_join(csv, sizeof csv, dir, "targets.csv"), 0);
+    static const char k_targets[] = "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,rtl_gain\n"
+                                    "own,p25-trunk,851000000,,3000,,own gain,10\n"
+                                    "inherit,dmr-trunk,452000000,,3000,,inherits\n";
+    rc |= write_file_bytes(csv, k_targets, sizeof k_targets - 1U);
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", csv);
+    char err[256] = {0};
+    const int init_rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
+    if (init_rc != 0) {
+        DSD_FPRINTF(stderr, "gain scan init: %s\n", err);
+    }
+    rc |= expect_int("gain scan init", init_rc, 0);
+    rc |= expect_int("parked on the target with its own gain", opts.rtl_gain_value, 10);
+
+    rc |= expect_true("shadowed gain queued", post_i32(DSD_APP_CMD_RTL_SET_GAIN, 30) > 0);
+    rc |= expect_int("shadowed gain drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("shadowed gain keeps the target's", opts.rtl_gain_value, 10);
+    rc |= expect_str("shadowed gain toast", state.ui_msg, "Default RTL gain -> 30; this channel overrides it (10)");
+    dsdneoUserConfig saved;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &saved);
+    rc |= expect_int("save writes the configured gain", saved.rtl_gain, 30);
+
+    rc |= expect_int("advance", dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_ADVANCE), 0);
+    rc |= expect_int("the inheriting target runs the edited gain", opts.rtl_gain_value, 30);
+
+    /* A stream opens with the environment's autogain default; the restart puts the scan's configured one back. */
+    int before = -1;
+    rc |= expect_int("configured autogain known", dsd_engine_trunk_scan_saved_tuner_autogain(&state, &before), 1);
+    rtl_stream_set_tuner_autogain(!before);
+    rc |= expect_true("agc gain queued", post_i32(DSD_APP_CMD_RTL_SET_GAIN, 0) > 0);
+    rc |= expect_int("agc gain drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("agc gain in force", opts.rtl_gain_value, 0);
+    rc |= expect_str("agc gain toast", state.ui_msg, "Applied: RTL gain -> AGC");
+    rc |= expect_int("the restart applies the configured autogain", rtl_stream_get_tuner_autogain(), before);
+
+    /* The autogain toggle flips the configured setting both ways rather than reading the stream, which a retune under
+       a manual gain always leaves off; under AGC the stream follows it. */
+    const dsd_app_dsp_payload toggle = {.op = DSD_APP_DSP_OP_TUNER_AUTOGAIN_TOGGLE};
+    for (int i = 0; i < 2; i++) {
+        rc |= expect_true("autogain toggle queued",
+                          dsd_app_command_submit(DSD_APP_CMD_DSP_OP, &toggle, sizeof toggle) > 0);
+        rc |= expect_int("autogain toggle drained", dsd_app_drain_cmds(&opts, &state), 1);
+        int now = -1;
+        (void)dsd_engine_trunk_scan_saved_tuner_autogain(&state, &now);
+        const int want = (i == 0) ? !before : before;
+        rc |= expect_int("autogain toggle flips the configured setting", now, want);
+        rc |= expect_str("autogain toggle toast", state.ui_msg,
+                         want ? "Applied: tuner autogain -> On" : "Applied: tuner autogain -> Off");
+        rc |= expect_int("autogain toggle reaches the stream under AGC", rtl_stream_get_tuner_autogain(), want);
+    }
+
+    rc |= expect_int("advance away", dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_ADVANCE), 0);
+    rc |= expect_int("own gain again", opts.rtl_gain_value, 10);
+
+    /* A config's gain is the configured gain too: while the target's own gain is parked the device reopens on the
+       target's, and a restart under a manual gain leaves the supervisor off. */
+    dsdneoUserConfig cfg = {0};
+    cfg.has_input = 1;
+    cfg.input_source = DSDCFG_INPUT_RTL;
+    cfg.rtl_device = 0;
+    DSD_SNPRINTF(cfg.rtl_freq, sizeof(cfg.rtl_freq), "851.0125M");
+    cfg.rtl_gain = 30;
+    cfg.rtl_bw_khz = 48;
+    cfg.rtl_volume = 2;
+    g_config_rtl_create_gain = -1;
+    rtl_stream_set_tuner_autogain(1);
+    rc |= expect_true("gain config queued", dsd_app_command_apply_config(&cfg) > 0);
+    rc |= expect_int("gain config drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("config keeps the target's gain in force", opts.rtl_gain_value, 10);
+    rc |= expect_int("config reopens on the target's gain", g_config_rtl_create_gain, 10);
+    rc |= expect_int("config sets the configured gain", state.trunk_scan_configured_gain, 30);
+    rc |= expect_int("manual gain reopen leaves autogain off", rtl_stream_get_tuner_autogain(), 0);
+
+    /* A rolled-back config puts the configured gain back. */
+    DSD_SNPRINTF(cfg.rtl_freq, sizeof(cfg.rtl_freq), "851.025M");
+    cfg.rtl_gain = 35;
+    g_config_rtl_fail_starts = 1;
+    rc |= expect_true("failing config queued", dsd_app_command_apply_config(&cfg) > 0);
+    rc |= expect_int("failing config drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("rolled-back config keeps the configured gain", state.trunk_scan_configured_gain, 30);
+    rc |= expect_int("rolled-back config keeps the target's gain", opts.rtl_gain_value, 10);
+    g_config_rtl_fail_starts = 0;
+
+    rc |= expect_int("advance back", dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_ADVANCE), 0);
+    rc |= expect_int("the config's gain reaches the inheriting target", opts.rtl_gain_value, 30);
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    rc |= expect_int("shutdown keeps the configured gain", opts.rtl_gain_value, 30);
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+    state.rtl_ctx = NULL;
+    g_config_rtl_open_ok = 0;
+    (void)remove(csv);
+    (void)dsd_test_rmdir(dir);
+    return rc;
+}
+#endif
 
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
 /* The level the RTL demodulator was last handed, by the scan scope (runtime hook) or by a
@@ -14372,6 +14506,7 @@ main(void) {
     rc |= test_nfm_bandwidth_set_on_pcm_input();
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
     dsd_neo_log_set_tap(record_capture_log, NULL);
+    rc |= test_rtl_gain_commands_edit_the_trunk_scan_default();
     rc |= test_config_rtl_restart_under_policy_guard();
     rc |= test_rtl_bandwidth_held_to_am_width();
     rc |= test_squelch_commands_edit_the_configured_default();

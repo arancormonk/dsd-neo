@@ -219,6 +219,8 @@ class MetricsModel : public QObject {
     Q_PROPERTY(int modulation READ modulation NOTIFY controlChanged)
     Q_PROPERTY(QVariantMap airspy READ airspy NOTIFY controlChanged)
     Q_PROPERTY(int tunerGainDb READ tunerGainDb NOTIFY controlChanged)
+    Q_PROPERTY(int configuredTunerGainDb READ configuredTunerGainDb NOTIFY controlChanged)
+    Q_PROPERTY(bool tunerGainRowOverride READ tunerGainRowOverride NOTIFY controlChanged)
     Q_PROPERTY(double squelchDb READ squelchDb NOTIFY controlChanged)
     Q_PROPERTY(bool squelchOff READ squelchOff NOTIFY controlChanged)
     /* #521: a scan row's --squelch-db. rtl_sql convention: 0 is off, otherwise dB; the off
@@ -659,6 +661,21 @@ class MetricsModel : public QObject {
     int
     tunerGainDb() const {
         return m_view.tuner_gain_db;
+    }
+
+    /**
+     * @brief The tuner gain the panel's buttons edit (issue #518 follow-up): under --trunk-scan the configured gain every
+     * target without its own rtl_gain runs and the scan restores at each switch; otherwise tunerGainDb().
+     */
+    int
+    configuredTunerGainDb() const {
+        return m_view.tuner_gain_configured_db;
+    }
+
+    /** @brief Whether the parked trunk-scan target runs its own rtl_gain, so tunerGainDb() is the target's. */
+    bool
+    tunerGainRowOverride() const {
+        return m_view.tuner_gain_row_override;
     }
 
     double
@@ -1554,6 +1571,8 @@ class MetricsModel : public QObject {
         QVariantList decryption_slots;
         int modulation = 0;
         int tuner_gain_db = 0;
+        int tuner_gain_configured_db = 0;
+        bool tuner_gain_row_override = false;
         int ppm = 0;
         int enc_lockout_count = 0;
         int scan_avoid_count = 0;
@@ -1708,8 +1727,10 @@ class MetricsModel : public QObject {
         bool
         radioControlsEqual(const View& other) const {
             return modulation == other.modulation && tuner_gain_db == other.tuner_gain_db
-                   && squelch_db == other.squelch_db && squelch_off == other.squelch_off && ppm == other.ppm
-                   && airspy == other.airspy && squelchOverrideEquals(other)
+                   && tuner_gain_configured_db == other.tuner_gain_configured_db
+                   && tuner_gain_row_override == other.tuner_gain_row_override && squelch_db == other.squelch_db
+                   && squelch_off == other.squelch_off && ppm == other.ppm && airspy == other.airspy
+                   && squelchOverrideEquals(other)
                    && analog_bandwidth_configured_hz == other.analog_bandwidth_configured_hz
                    && nfm_bandwidth_configured_hz == other.nfm_bandwidth_configured_hz
                    && am_bandwidth_configured_hz == other.am_bandwidth_configured_hz;
@@ -1760,6 +1781,7 @@ class MetricsModel : public QObject {
     /** @brief Fill in sync state and the live decoder/front-end settings. */
     void fillDecoderView(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot, double now_m);
     /** @brief The configured/effective squelch pair and the row badge (#521). */
+    static void fillTunerGain(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot);
     static void fillSquelchOverride(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot);
     /** @brief The analog channel width in force and the configured one (#525), and the analog (nfm or am) scan row on
      * air (#526). */

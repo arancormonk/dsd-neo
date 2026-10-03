@@ -66,7 +66,7 @@ Column behavior:
 | `activity_hold_ms` | No | Conventional DMR/P25/NXDN (NXDN96 and NXDN48) activity hold for this target, and an analog target's hold after its carrier drops. Empty uses the CLI/config default. Valid range: `250..600000`. |
 | `notes` | No | Ignored by DSD-neo. Use it for local notes. |
 | `modulation` | No | Demod hint for this target. Empty preserves global/default handling. `auto` uses target defaults even when a global `-m` lock is set. Both P25 types accept `auto`, `c4fm`, `cqpsk`; DMR and both NXDN rates accept `auto`, `gfsk`. An analog (`nfm-conventional`, `am-conventional`) target takes none. |
-| `rtl_gain` | No | RTL-family tuner gain for this target. Empty uses the global/default gain. `0` or `auto` requests device automatic gain. `1..49` requests manual dB gain. |
+| `rtl_gain` | No | RTL-family tuner gain for this target. Empty uses the configured gain, including one set live during the scan. `0` or `auto` requests device automatic gain. `1..49` requests manual dB gain. |
 | `keys_hex_csv` | No | Per-target hex key file (`-K` format), resolved relative to the target CSV. Parking the target installs its set; leaving it restores the global keys. A row may fill both key columns; they load into one set. Empty uses the global keys. An analog target decrypts nothing and rejects this and the other key columns. |
 | `keys_dec_csv` | No | Per-target decimal key file (`-k` format), resolved relative to the target CSV. Empty uses the global keys. |
 | `single_key_dec` | No | Embedded `-b` Motorola Basic Privacy key number (`0..255`). Explicit `0` is an active override. It may be combined with `single_key_hex`, but not either key-file column. |
@@ -362,7 +362,14 @@ During scanning:
   key imports and clears edit the globals underneath the parked target, so they survive the next hop; the
   encrypted-lockout ledger is per target, so switches never invalidate it.
 - A target `rtl_gain` value is applied at the retune boundary. Manual per-target gain temporarily suspends supervisory
-  tuner autogain; `auto` and global-auto targets restore the saved autogain setting.
+  tuner autogain; `auto` and global-auto targets restore the configured autogain setting.
+- The configured gain is the one targets with an empty `rtl_gain` run. A gain set live (the Gain... menu row, the Qt
+  radio panel, or a loaded config whose `[input]` reopens the radio) changes it: every later switch and stream restart
+  run it, the end of the scan keeps it, and a save writes it. The Tuner autogain toggle likewise sets the autogain
+  every later retune and stream restart of the scan applies under AGC; it is not saved, and it lasts only while the
+  scan runs. While the parked target has its own `rtl_gain`, that gain stays in
+  force: the edit takes effect when an inheriting target is on air, the toast says `Default RTL gain -> 20; this channel
+  overrides it (10)`, and the menu row reads `Gain... [20] (target: 10)`.
 - P25, DMR, and NXDN trunk targets stay parked while their trunking state machine is following an active call
   (NXDN stays parked while following an active grant and returns to its control channel at hangtime/release).
   The protocol's hangtime and release rules decide when call following ends; audio silence alone does not start

@@ -12,6 +12,7 @@
 #include <dsd-neo/app_control/analog_width_view.h>
 #include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/frontend.h>
+#include <dsd-neo/app_control/rtl_gain_view.h>
 #include <dsd-neo/app_control/rx_tone_view.h>
 #include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/core/analog_tone.h>
@@ -1551,7 +1552,10 @@ rtl_set_freq(void* v) {
 void
 rtl_set_gain(void* v) {
     UiCtx* c = (UiCtx*)v;
-    ui_prompt_open_int_async("Gain (0=AGC, 0..49)", c->opts->rtl_gain_value, cb_rtl_gain, c);
+    /* The prompt edits the configured gain the row shows first, not a trunk-scan target's own (issue #518 follow-up). */
+    dsd_app_rtl_gain_view view;
+    const int start = dsd_app_rtl_gain_view_get(c->opts, c->state, &view) == 0 ? view.configured_gain : 0;
+    ui_prompt_open_int_async("Gain (0=AGC, 0..49)", start, cb_rtl_gain, c);
 }
 
 void

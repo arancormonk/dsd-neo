@@ -12,6 +12,7 @@
 #include <dsd-neo/app_control/analog_width_view.h>
 #include <dsd-neo/app_control/frontend.h>
 #include <dsd-neo/app_control/history.h>
+#include <dsd-neo/app_control/rtl_gain_view.h>
 #include <dsd-neo/app_control/rx_tone_view.h>
 #include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/core/enc_lockout.h>
@@ -1377,12 +1378,12 @@ lbl_rtl_freq(const void* v, char* b, size_t n) {
 const char*
 lbl_rtl_gain(const void* v, char* b, size_t n) {
     const UiCtx* c = (const UiCtx*)v;
-    const int gain = (c && c->opts) ? c->opts->rtl_gain_value : 0;
-    if (gain == 0) {
+    dsd_app_rtl_gain_view view;
+    if (!c || dsd_app_rtl_gain_view_get(c->opts, c->state, &view) != 0) {
         DSD_SNPRINTF(b, n, "Gain... [AGC]");
-    } else {
-        DSD_SNPRINTF(b, n, "Gain... [%d]", gain);
+        return b;
     }
+    (void)dsd_app_rtl_gain_view_label(&view, b, n);
     return b;
 }
 
@@ -1470,6 +1471,11 @@ lbl_rtl_tuner_autogain(const void* v, char* b, size_t n) {
     if (c && c->state && c->state->rtl_ctx) {
         dsd_frontend_metrics metrics = menu_frontend_metrics(v);
         on = metrics.tuner_autogain;
+    }
+    dsd_app_rtl_gain_view view;
+    if (c && dsd_app_rtl_gain_view_get(c->opts, c->state, &view) == 0) {
+        (void)dsd_app_rtl_autogain_view_label(&view, on, b, n);
+        return b;
     }
     DSD_SNPRINTF(b, n, "Tuner autogain [%s]", onoff(on));
     return b;
