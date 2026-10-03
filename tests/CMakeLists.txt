@@ -197,7 +197,6 @@ add_library(
     STATIC
     ${PROJECT_SOURCE_DIR}/src/core/util/call_state.c
     ${PROJECT_SOURCE_DIR}/src/runtime/state_ext.c
-    ${PROJECT_SOURCE_DIR}/tests/test_support/event_sync_stub.c
 )
 target_include_directories(
     dsd-neo_test_call_state_support
@@ -211,6 +210,18 @@ target_link_libraries(
 target_compile_definitions(
     dsd-neo_test_call_state_support
     PRIVATE DSD_NEO_TEST_HOOKS
+)
+
+# call_state.c calls dsd_event_sync_slot(). Tests that link it without dsd-neo_core's
+# event code link this no-op; one linking both would define the function twice.
+add_library(
+    dsd-neo_test_event_sync_stub
+    STATIC
+    ${PROJECT_SOURCE_DIR}/tests/test_support/event_sync_stub.c
+)
+target_include_directories(
+    dsd-neo_test_event_sync_stub
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
 )
 
 add_library(
@@ -1643,6 +1654,7 @@ target_link_libraries(
     PRIVATE
         dsd-neo_proto_nxdn
         dsd-neo_test_call_state_support
+        dsd-neo_test_event_sync_stub
         dsd-neo_test_support
 )
 add_test(NAME NXDN_ELEMENT_BOUNDS COMMAND dsd-neo_test_nxdn_element_bounds)
@@ -5543,7 +5555,11 @@ target_include_directories(
 )
 target_link_libraries(
     dsd-neo_test_engine_channel_scan
-    PRIVATE dsd-neo_runtime dsd-neo_test_call_state_support dsd-neo_test_support
+    PRIVATE
+        dsd-neo_runtime
+        dsd-neo_test_call_state_support
+        dsd-neo_test_event_sync_stub
+        dsd-neo_test_support
 )
 target_compile_definitions(
     dsd-neo_test_engine_channel_scan
@@ -5612,7 +5628,11 @@ target_compile_definitions(
 )
 target_link_libraries(
     dsd-neo_test_engine_trunk_scan
-    PRIVATE dsd-neo_runtime dsd-neo_test_call_state_support dsd-neo_test_support
+    PRIVATE
+        dsd-neo_runtime
+        dsd-neo_test_call_state_support
+        dsd-neo_test_event_sync_stub
+        dsd-neo_test_support
 )
 add_test(NAME ENGINE_TRUNK_SCAN COMMAND dsd-neo_test_engine_trunk_scan)
 
@@ -7829,7 +7849,11 @@ target_include_directories(
 )
 target_link_libraries(
     dsd-neo_test_dmr_t3_sm_clamp
-    PRIVATE dsd-neo_test_call_state_support dsd-neo_platform dsd-neo_runtime
+    PRIVATE
+        dsd-neo_test_call_state_support
+        dsd-neo_test_event_sync_stub
+        dsd-neo_platform
+        dsd-neo_runtime
 )
 add_test(NAME DMR_T3_SM_CLAMP COMMAND dsd-neo_test_dmr_t3_sm_clamp)
 
@@ -7849,7 +7873,11 @@ target_include_directories(
 )
 target_link_libraries(
     dsd-neo_test_dmr_t3_sm_release
-    PRIVATE dsd-neo_test_call_state_support dsd-neo_platform dsd-neo_runtime
+    PRIVATE
+        dsd-neo_test_call_state_support
+        dsd-neo_test_event_sync_stub
+        dsd-neo_platform
+        dsd-neo_runtime
 )
 add_test(NAME DMR_T3_SM_RELEASE COMMAND dsd-neo_test_dmr_t3_sm_release)
 
@@ -7869,7 +7897,11 @@ target_include_directories(
 )
 target_link_libraries(
     dsd-neo_test_dmr_t3_sm_return_to_cc_matrix
-    PRIVATE dsd-neo_test_call_state_support dsd-neo_platform dsd-neo_runtime
+    PRIVATE
+        dsd-neo_test_call_state_support
+        dsd-neo_test_event_sync_stub
+        dsd-neo_platform
+        dsd-neo_runtime
 )
 add_test(
     NAME DMR_T3_SM_RETURN_TO_CC_MATRIX
@@ -7893,7 +7925,11 @@ target_include_directories(
 )
 target_link_libraries(
     dsd-neo_test_dmr_t3_shim
-    PRIVATE dsd-neo_test_call_state_support dsd-neo_platform dsd-neo_runtime
+    PRIVATE
+        dsd-neo_test_call_state_support
+        dsd-neo_test_event_sync_stub
+        dsd-neo_platform
+        dsd-neo_runtime
 )
 add_test(NAME DMR_T3_SHIM COMMAND dsd-neo_test_dmr_t3_shim)
 
@@ -7922,6 +7958,7 @@ target_link_libraries(
     dsd-neo_test_dmr_t3_cmove
     PRIVATE
         dsd-neo_test_call_state_support
+        dsd-neo_test_event_sync_stub
         dsd-neo_platform
         dsd-neo_runtime
         ${DSD_NEO_TEST_MATH_LIB}
@@ -7953,6 +7990,7 @@ target_link_libraries(
     dsd-neo_test_dmr_t3_force_release
     PRIVATE
         dsd-neo_test_call_state_support
+        dsd-neo_test_event_sync_stub
         dsd-neo_platform
         dsd-neo_runtime
         ${DSD_NEO_TEST_MATH_LIB}
@@ -7984,6 +8022,7 @@ target_link_libraries(
     dsd-neo_test_dmr_t3_move_release
     PRIVATE
         dsd-neo_test_call_state_support
+        dsd-neo_test_event_sync_stub
         dsd-neo_platform
         dsd-neo_runtime
         ${DSD_NEO_TEST_MATH_LIB}
@@ -8015,6 +8054,7 @@ target_link_libraries(
     dsd-neo_test_dmr_t3_ann_wd_tscc
     PRIVATE
         dsd-neo_test_call_state_support
+        dsd-neo_test_event_sync_stub
         dsd-neo_platform
         dsd-neo_runtime
         ${DSD_NEO_TEST_MATH_LIB}
