@@ -285,6 +285,9 @@ WINDOW* stdscr;
         (x) = g_test_cols;                                                                                             \
     } while (0)
 
+#if defined(DSD_USE_PDCURSES)
+#include "pdcurses_macro_stubs.h"
+#endif
 #include "../../src/ui/terminal/ncurses_p25_display.c"
 #include "dsd-neo/core/opts.h"
 #include "dsd-neo/core/opts_fwd.h"

@@ -12,6 +12,12 @@
 #include <stdint.h>
 #include <string.h>
 
+#if defined(DSD_USE_PDCURSES)
+/* The stubs below pass stdscr to the w* calls this test stubs. PDCurses' import library exports its data only through
+ * __imp_ entries, which CURSES_LIBRARY bypasses, so the test defines it as the P25 and printer helper tests do. */
+WINDOW* stdscr;
+#include "pdcurses_macro_stubs.h"
+#endif
 #include "../../src/ui/terminal/ncurses_trunk_display.c"
 #include "dsd-neo/core/opts.h"
 #include "dsd-neo/core/opts_fwd.h"

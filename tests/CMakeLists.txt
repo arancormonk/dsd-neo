@@ -1834,7 +1834,17 @@ if(DSD_ENABLE_TERMINAL_UI)
         PRIVATE
             ${PROJECT_SOURCE_DIR}/include
             ${PROJECT_SOURCE_DIR}/src/ui/terminal
+            ${CURSES_INCLUDE_DIRS}
     )
+    # The curses calls this test stubs are declared __declspec(dllimport) by the
+    # DLL build of PDCurses (Windows), and MSVC rejects defining one (C2491);
+    # CURSES_LIBRARY declares them as the library's own, as for the menu tests.
+    if(MSVC)
+        target_compile_definitions(
+            dsd-neo_test_ui_async_lifecycle
+            PRIVATE CURSES_LIBRARY
+        )
+    endif()
     add_test(NAME UI_ASYNC_LIFECYCLE COMMAND dsd-neo_test_ui_async_lifecycle)
 endif()
 
@@ -2005,6 +2015,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         PRIVATE
             ${PROJECT_SOURCE_DIR}/include
             ${PROJECT_SOURCE_DIR}/src/ui/terminal
+            ${CURSES_INCLUDE_DIRS}
     )
     target_compile_definitions(
         dsd-neo_test_ui_menu_tree_audit
@@ -2107,6 +2118,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         PRIVATE
             ${PROJECT_SOURCE_DIR}/include
             ${PROJECT_SOURCE_DIR}/src/ui/terminal
+            ${CURSES_INCLUDE_DIRS}
     )
     add_test(NAME UI_MENU_DEFS COMMAND dsd-neo_test_ui_menu_defs)
 
@@ -2131,6 +2143,12 @@ if(DSD_ENABLE_TERMINAL_UI)
         dsd-neo_test_ui_panels_header_footer
         PRIVATE ${CURSES_LIBRARIES}
     )
+    if(MSVC)
+        target_compile_definitions(
+            dsd-neo_test_ui_panels_header_footer
+            PRIVATE CURSES_LIBRARY
+        )
+    endif()
     add_test(
         NAME UI_PANELS_HEADER_FOOTER
         COMMAND dsd-neo_test_ui_panels_header_footer
@@ -2291,6 +2309,12 @@ if(DSD_ENABLE_TERMINAL_UI)
         dsd-neo_test_ui_ncurses_trunk_display_helpers
         PRIVATE ${CURSES_LIBRARIES}
     )
+    if(MSVC)
+        target_compile_definitions(
+            dsd-neo_test_ui_ncurses_trunk_display_helpers
+            PRIVATE CURSES_LIBRARY
+        )
+    endif()
     add_test(
         NAME UI_NCURSES_TRUNK_DISPLAY_HELPERS
         COMMAND dsd-neo_test_ui_ncurses_trunk_display_helpers
@@ -2317,6 +2341,12 @@ if(DSD_ENABLE_TERMINAL_UI)
         dsd-neo_test_ui_ncurses_p25_display_helpers
         PRIVATE dsd-neo_test_call_state_support ${CURSES_LIBRARIES}
     )
+    if(MSVC)
+        target_compile_definitions(
+            dsd-neo_test_ui_ncurses_p25_display_helpers
+            PRIVATE CURSES_LIBRARY
+        )
+    endif()
     add_test(
         NAME UI_NCURSES_P25_DISPLAY_HELPERS
         COMMAND dsd-neo_test_ui_ncurses_p25_display_helpers
@@ -2354,6 +2384,12 @@ if(DSD_ENABLE_TERMINAL_UI)
             ${CURSES_LIBRARIES}
             ${DSD_NEO_TEST_MATH_LIB}
     )
+    if(MSVC)
+        target_compile_definitions(
+            dsd-neo_test_ui_ncurses_printer_helpers
+            PRIVATE CURSES_LIBRARY
+        )
+    endif()
     add_test(
         NAME UI_NCURSES_PRINTER_HELPERS
         COMMAND dsd-neo_test_ui_ncurses_printer_helpers
@@ -2370,6 +2406,7 @@ if(DSD_ENABLE_TERMINAL_UI)
             ${PROJECT_SOURCE_DIR}/include
             ${PROJECT_SOURCE_DIR}/src/app_control
             ${PROJECT_SOURCE_DIR}/src/ui/terminal
+            ${CURSES_INCLUDE_DIRS}
     )
     add_test(NAME UI_MENU_CALLBACKS COMMAND dsd-neo_test_ui_menu_callbacks)
 
@@ -2389,6 +2426,7 @@ if(DSD_ENABLE_TERMINAL_UI)
             ${PROJECT_SOURCE_DIR}/include
             ${PROJECT_SOURCE_DIR}/src/app_control
             ${PROJECT_SOURCE_DIR}/src/ui/terminal
+            ${CURSES_INCLUDE_DIRS}
     )
     # USE_RADIO so the RTL rows (squelch among them) are compiled and testable.
     target_compile_definitions(dsd-neo_test_ui_menu_actions PRIVATE USE_RADIO)
@@ -2556,6 +2594,12 @@ if(DSD_ENABLE_TERMINAL_UI)
         dsd-neo_test_ui_prims_status_gamma
         PRIVATE ${DSD_NEO_TEST_MATH_LIB}
     )
+    if(MSVC)
+        target_compile_definitions(
+            dsd-neo_test_ui_prims_status_gamma
+            PRIVATE CURSES_LIBRARY
+        )
+    endif()
     add_test(
         NAME UI_PRIMS_STATUS_GAMMA
         COMMAND dsd-neo_test_ui_prims_status_gamma
@@ -13337,3 +13381,39 @@ target_include_directories(
 )
 target_link_libraries(dsd-neo_test_runtime_decode_clock PRIVATE dsd-neo_runtime)
 add_test(NAME RUNTIME_DECODE_CLOCK COMMAND dsd-neo_test_runtime_decode_clock)
+
+# Windows builds the terminal UI against vcpkg's PDCurses, whose include
+# directory dsd-neo_ui_terminal receives as a system directory through
+# PDCurses::PDCurses (MSVC: -external:I, its warnings off). A test that names
+# ${CURSES_INCLUDE_DIRS} itself takes it the same way. Otherwise the Windows
+# SDK's MOUSE_MOVED, which redefines PDCurses' when <windows.h> follows
+# <curses.h> as in ui_async.c, is a C4005 that /WX makes an error in a test
+# build of a source the library compiles cleanly.
+if(WIN32 AND CURSES_INCLUDE_DIRS)
+    get_property(_dsd_neo_test_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
+    foreach(_dsd_neo_test_target IN LISTS _dsd_neo_test_targets)
+        get_target_property(_dsd_neo_test_type ${_dsd_neo_test_target} TYPE)
+        if(_dsd_neo_test_type STREQUAL "INTERFACE_LIBRARY")
+            continue()
+        endif()
+        get_target_property(
+            _dsd_neo_test_includes
+            ${_dsd_neo_test_target}
+            INCLUDE_DIRECTORIES
+        )
+        foreach(_dsd_neo_curses_dir IN LISTS CURSES_INCLUDE_DIRS)
+            if(_dsd_neo_curses_dir IN_LIST _dsd_neo_test_includes)
+                target_include_directories(
+                    ${_dsd_neo_test_target}
+                    SYSTEM
+                    PRIVATE ${_dsd_neo_curses_dir}
+                )
+            endif()
+        endforeach()
+    endforeach()
+    unset(_dsd_neo_test_targets)
+    unset(_dsd_neo_test_target)
+    unset(_dsd_neo_test_type)
+    unset(_dsd_neo_test_includes)
+    unset(_dsd_neo_curses_dir)
+endif()

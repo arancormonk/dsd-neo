@@ -21,6 +21,14 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 
+/* attron() and attroff() take NCURSES_ATTR_T under ncurses and chtype under PDCurses (Windows); the stubs follow the
+ * selected curses. */
+#if defined(DSD_USE_PDCURSES)
+typedef chtype stub_attr_t;
+#else
+typedef NCURSES_ATTR_T stub_attr_t;
+#endif
+
 const char GIT_TAG[] = "test-tag";
 const char GIT_HASH[] = "test-hash";
 
@@ -28,8 +36,8 @@ static int g_attron_calls;
 static int g_attroff_calls;
 static int g_hr_calls;
 static int g_printw_calls;
-static int g_last_attron;
-static int g_last_attroff;
+static stub_attr_t g_last_attron;
+static stub_attr_t g_last_attroff;
 static char g_last_printw[256];
 
 static void
@@ -44,14 +52,14 @@ reset_calls(void) {
 }
 
 int
-attron(int attrs) { // NOLINT(misc-use-internal-linkage)
+attron(stub_attr_t attrs) { // NOLINT(misc-use-internal-linkage)
     g_attron_calls++;
     g_last_attron = attrs;
     return 0;
 }
 
 int
-attroff(int attrs) { // NOLINT(misc-use-internal-linkage)
+attroff(stub_attr_t attrs) { // NOLINT(misc-use-internal-linkage)
     g_attroff_calls++;
     g_last_attroff = attrs;
     return 0;
