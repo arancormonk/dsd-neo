@@ -1043,6 +1043,14 @@ int rtl_stream_get_tuner_autogain(void);
  * @param onoff Non-zero to enable; zero to disable.
  */
 void rtl_stream_set_tuner_autogain(int onoff);
+/**
+ * @brief Put the supervisory tuner autogain flag in force for a scan, without making it the operator's setting.
+ *
+ * Like rtl_stream_set_tuner_autogain() for the stream (and for a retune profile built before it), but a later stream
+ * open keeps the operator's last explicit setting, or the environment default, rather than this: a trunk scan's
+ * configured autogain, or the off it forces under a manual gain, lasts only while the scan runs.
+ */
+void rtl_stream_enforce_tuner_autogain(int onoff);
 
 /**
  * @brief Get auto PPM status and last measurements.

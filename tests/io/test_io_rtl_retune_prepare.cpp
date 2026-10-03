@@ -1974,6 +1974,47 @@ main(void) {
     failed |= expect_int_eq("manual-gain retune still turns the supervisor off", landed, 0);
     rtl_stream_set_tuner_autogain(0);
 
+    /* Issue #518 follow-up: the supervisor's on/off is set when the stream opens, before its workers run. Its first
+     * block no longer loads the environment default over a setting made since; an explicit setting survives a reopen
+     * until the default changes (the terminal toggles it while no stream runs); a source it cannot drive opens off. */
+    (void)dsd_setenv("DSD_NEO_TUNER_AUTOGAIN", "1", 1);
+    dsd_neo_config_init();
+    int flag = -1;
+    failed |= expect_int_eq("first block rc", rtl_stream_test_autogain_first_block_keeps_flag(0, &flag), 0);
+    failed |= expect_int_eq("first block keeps an explicit off", flag, 0);
+    rtl_stream_test_reset_tuner_autogain();
+    failed |= expect_int_eq("open rc", rtl_stream_test_open_tuner_autogain(1, &flag), 0);
+    failed |= expect_int_eq("open takes the environment default", flag, 1);
+    rtl_stream_set_tuner_autogain(0);
+    failed |= expect_int_eq("reopen rc", rtl_stream_test_open_tuner_autogain(1, &flag), 0);
+    failed |= expect_int_eq("reopen keeps the explicit off", flag, 0);
+    failed |= expect_int_eq("replay open rc", rtl_stream_test_open_tuner_autogain(0, &flag), 0);
+    failed |= expect_int_eq("a replay or Airspy opens off", flag, 0);
+    rtl_stream_set_tuner_autogain(1);
+    (void)rtl_stream_test_open_tuner_autogain(0, &flag);
+    failed |= expect_int_eq("back on a tuner rc", rtl_stream_test_open_tuner_autogain(1, &flag), 0);
+    failed |= expect_int_eq("back on a tuner the explicit on returns", flag, 1);
+    (void)dsd_setenv("DSD_NEO_TUNER_AUTOGAIN", "0", 1);
+    dsd_neo_config_init();
+    failed |= expect_int_eq("changed default rc", rtl_stream_test_open_tuner_autogain(1, &flag), 0);
+    failed |= expect_int_eq("a changed default replaces the explicit setting", flag, 0);
+    /* A scan's enforcement is not the operator's setting: the next open goes back to the default or to the operator's
+     * last explicit setting. */
+    rtl_stream_test_reset_tuner_autogain();
+    (void)dsd_setenv("DSD_NEO_TUNER_AUTOGAIN", "1", 1);
+    dsd_neo_config_init();
+    rtl_stream_enforce_tuner_autogain(0);
+    failed |= expect_int_eq("enforced off is in force", rtl_stream_get_tuner_autogain(), 0);
+    (void)rtl_stream_test_open_tuner_autogain(1, &flag);
+    failed |= expect_int_eq("an open after the scan's off takes the default", flag, 1);
+    rtl_stream_set_tuner_autogain(0);
+    rtl_stream_enforce_tuner_autogain(1);
+    (void)rtl_stream_test_open_tuner_autogain(1, &flag);
+    failed |= expect_int_eq("an open after the scan's on keeps the operator's off", flag, 0);
+    (void)dsd_unsetenv("DSD_NEO_TUNER_AUTOGAIN");
+    dsd_neo_config_init();
+    rtl_stream_test_reset_tuner_autogain();
+
     /*
      * USB apply/readback checks keep retry behavior explicit: apply failures are
      * retried, readback failures are retried only when verification is enabled,

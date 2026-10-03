@@ -143,7 +143,10 @@ target-list CSV (P25 trunk/conventional, DMR trunk/conventional, NXDN96/NXDN48 t
   runs, captured at scan start. The gain is restored at every switch and at shutdown; the autogain is applied by every
   retune's gain profile and, through app-control, after every stream start, but not kept past the scan or saved. A
   profile stamps `g_tuner_autogain_set_seq`, which every `rtl_stream_set_tuner_autogain()` bumps, so an AGC retune
-  that lands after a newer explicit setting (one still in flight past its timeout) leaves that setting in force.
+  that lands after a newer explicit setting (one still in flight past its timeout) leaves that setting in force. The
+  flag itself is set when a stream opens, before its workers run (`rtl_stream_open_tuner_autogain()`: the last explicit
+  setting, or `DSD_NEO_TUNER_AUTOGAIN` when there is none or it changed since; off on a replay or an Airspy); the
+  supervisor no longer loads it on its first block.
   App-control's gain service, the tuner
   autogain toggle and a config's `[input]` gain edit them through `dsd_engine_trunk_scan_set_configured_gain()` and
   `dsd_engine_trunk_scan_set_configured_autogain()` (1 in force now, 0 shadowed by the parked target's own gain, -1 no

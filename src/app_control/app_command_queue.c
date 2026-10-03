@@ -787,7 +787,8 @@ apply_dsp_op_frontend_gain(const dsd_app_dsp_payload* p, const dsd_opts* opts, d
         if (scan) {
             const int on = configured ? 0 : 1;
             if (dsd_engine_trunk_scan_set_configured_autogain(opts, state, on) == 1) {
-                rtl_stream_set_tuner_autogain(on);
+                /* The scan's setting, which lasts while the scan runs: not the operator's for later opens. */
+                rtl_stream_enforce_tuner_autogain(on);
             }
         }
         p25_sm_tick_guard_leave();

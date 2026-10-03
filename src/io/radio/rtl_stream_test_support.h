@@ -256,6 +256,9 @@ int rtl_stream_test_retune_profile_gain_binding(int* out_gain_is_set, int* out_g
                                                 int* out_autogain_is_set, int* out_autogain_on);
 int rtl_stream_test_retune_autogain_landing(int manual_gain, int profile_autogain_on, int explicit_after,
                                             int explicit_on, int* out_autogain_on);
+int rtl_stream_test_autogain_first_block_keeps_flag(int flag, int* out_autogain_on);
+int rtl_stream_test_open_tuner_autogain(int capable, int* out_autogain_on);
+void rtl_stream_test_reset_tuner_autogain(void);
 
 typedef struct rtl_stream_test_finalize_profile_result {
     int symbol_rate_hz;

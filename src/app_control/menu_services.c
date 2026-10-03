@@ -1425,9 +1425,11 @@ svc_rtl_stop_locked(dsd_opts* opts, dsd_state* state) {
     }
 }
 
-/* A stream opens with the environment's tuner autogain default. Under --trunk-scan the scan's configured setting rules
-   instead, as every retune's gain profile applies it: off under a manual gain, the configured one under AGC (issue #518
-   follow-up), so a restart leaves the supervisor as the gain readout says. Airspy runs no supervisor. */
+/* A stream opens with the operator's last tuner autogain setting or the environment default. Under --trunk-scan the
+   scan's configured setting rules instead, as every retune's gain profile applies it: off under a manual gain, the
+   configured one under AGC (issue #518 follow-up), so a restart leaves the supervisor as the gain readout says. It is
+   enforced for the scan only (rtl_stream_enforce_tuner_autogain()), never recorded as the operator's setting. Airspy
+   runs no supervisor. */
 static void
 svc_apply_scan_autogain(const dsd_opts* opts, const dsd_state* state) {
     int configured = 0;
@@ -1435,7 +1437,7 @@ svc_apply_scan_autogain(const dsd_opts* opts, const dsd_state* state) {
         || !dsd_engine_trunk_scan_saved_tuner_autogain(state, &configured)) {
         return;
     }
-    rtl_stream_set_tuner_autogain(opts->rtl_gain_value > 0 ? 0 : configured);
+    rtl_stream_enforce_tuner_autogain(opts->rtl_gain_value > 0 ? 0 : configured);
 }
 
 /* If the radio pipeline is the active input, create and start the stream so changes take effect as soon as the user

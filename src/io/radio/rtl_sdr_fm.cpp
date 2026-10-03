@@ -2843,9 +2843,10 @@ demod_autogain_init_once(DemodAutogainState* st) {
     if (!st || st->initialized) {
         return;
     }
+    /* The on/off flag is the stream open's (stream_open_enable_default_autogain()); loading it here, on the first
+       block, overwrote any setting made between the open and that block. */
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
     if (cfg) {
-        g_tuner_autogain_on.store(cfg->tuner_autogain_enable ? 1 : 0, std::memory_order_relaxed);
         st->probe_ms = cfg->tuner_autogain_probe_ms;
         st->seed_gain_db10 = (int)lrint(cfg->tuner_autogain_seed_db * 10.0);
         st->spec_snr_db = cfg->tuner_autogain_spec_snr_db;
@@ -7043,20 +7044,15 @@ stream_open_init_pipeline(const dsd_opts* opts, int demod_base_rate_hz) {
     return 0;
 }
 
+/* The supervisor's on/off for the stream about to start, set before its workers run, so nothing a worker does first
+   (the supervisor used to load its environment default on the first block it saw) writes over a setting made since.
+   An I/Q replay has no tuner gain to adjust (demod_autogain_update() stays out of it too), nor does an Airspy here. The
+   environment default holds under a manual gain too, where the supervisor walks the manual gain. */
 static void
 stream_open_enable_default_autogain(const dsd_opts* opts, RadioSourceKind source_kind) {
-    /* An I/Q replay has no tuner gain to adjust (demod_autogain_update() stays out of it too). */
-    if (source_kind == RADIO_SOURCE_IQ_REPLAY || (opts && dsd_opts_audio_in_dev_is_airspy_spec(opts->audio_in_dev))) {
-        g_tuner_autogain_on.store(0);
-        return;
-    }
-    if (!opts || opts->rtl_gain_value > 0) {
-        return;
-    }
-    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
-    if (cfg && cfg->tuner_autogain_enable) {
-        g_tuner_autogain_on.store(1, std::memory_order_relaxed);
-    }
+    const int capable =
+        !(source_kind == RADIO_SOURCE_IQ_REPLAY || (opts && dsd_opts_audio_in_dev_is_airspy_spec(opts->audio_in_dev)));
+    rtl_stream_open_tuner_autogain(capable);
 }
 
 static int
@@ -12593,6 +12589,35 @@ rtl_stream_test_tagged_retune_ownership(uint64_t owner_token, uint64_t contender
                                                            completion_found, *out_completion_result, terminal_result)
                ? 0
                : -3;
+}
+
+/* The supervisor's first-block initialisation run again (its once-per-process state reset) after the flag was set to
+   @p flag: the flag it leaves in @p out_autogain_on. */
+extern "C" int
+rtl_stream_test_autogain_first_block_keeps_flag(int flag, int* out_autogain_on) {
+    if (!out_autogain_on) {
+        return -1;
+    }
+    DemodAutogainState& st = demod_autogain_state();
+    const int was_initialized = st.initialized;
+    st.initialized = 0;
+    g_tuner_autogain_on.store(flag ? 1 : 0, std::memory_order_relaxed);
+    demod_autogain_init_once(&st);
+    *out_autogain_on = g_tuner_autogain_on.load(std::memory_order_relaxed);
+    st.initialized = was_initialized ? 1 : st.initialized;
+    return 0;
+}
+
+/* rtl_stream_open_tuner_autogain() for a source that can (@p capable) or cannot run the supervisor: the flag it leaves
+   in @p out_autogain_on. */
+extern "C" int
+rtl_stream_test_open_tuner_autogain(int capable, int* out_autogain_on) {
+    if (!out_autogain_on) {
+        return -1;
+    }
+    rtl_stream_open_tuner_autogain(capable);
+    *out_autogain_on = rtl_stream_get_tuner_autogain();
+    return 0;
 }
 
 /* A trunk-scan retune profile built with autogain @p profile_autogain_on under a manual (@p manual_gain) or automatic

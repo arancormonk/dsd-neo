@@ -1547,7 +1547,10 @@ RTL‑SDR driver options
 
 Tuner autogain (experimental)
 
-- `DSD_NEO_TUNER_AUTOGAIN=1` — enable automatic tuner gain adjustment
+- `DSD_NEO_TUNER_AUTOGAIN=1` — enable automatic tuner gain adjustment. It is the default each stream opens with
+  (before its workers run, also under a manual gain, where the supervisor walks that gain); a Tuner autogain toggle
+  made since replaces it for later stream restarts until the default itself changes. An I/Q replay or an Airspy opens
+  with it off.
 - `DSD_NEO_TUNER_AUTOGAIN_PROBE_MS=<ms>` — probe interval
 - `DSD_NEO_TUNER_AUTOGAIN_SEED_DB=<dB>` — initial gain seed
 - `DSD_NEO_TUNER_AUTOGAIN_SPEC_SNR_DB=<dB>` — spectrum SNR threshold
