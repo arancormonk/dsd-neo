@@ -274,6 +274,11 @@ expect_existing_regular_file_guards(void) {
     rc |= dsd_fopen_existing_regular_file(name, "w") == NULL && errno == EINVAL ? 0 : 1;
     errno = 0;
     rc |= dsd_fopen_existing_regular_file(name, "r+") == NULL && errno == EINVAL ? 0 : 1;
+    /* A missing file is ENOENT on every platform; callers create the file on that answer and refuse anything else. */
+    const char* missing = "dsd_neo_existing_regular_missing.tmp";
+    (void)remove(missing);
+    errno = 0;
+    rc |= dsd_fopen_existing_regular_file(missing, "r") == NULL && errno == ENOENT ? 0 : 1;
 
     FILE* fp = dsd_fopen_existing_regular_file(name, "rb");
     if (!fp) {

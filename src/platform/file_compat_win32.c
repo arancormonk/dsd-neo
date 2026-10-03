@@ -182,8 +182,19 @@ dsd_existing_regular_mode_flags(const char* mode, int* out_flags) {
 static int
 dsd_existing_regular_attrs_ok(const char* path) {
     DWORD attrs = GetFileAttributesA(path);
-    if (attrs == INVALID_FILE_ATTRIBUTES || (attrs & FILE_ATTRIBUTE_DIRECTORY) != 0
-        || (attrs & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
+    if (attrs == INVALID_FILE_ATTRIBUTES) {
+        /* Report a missing file as open() does on POSIX: callers tell "not there yet" (ENOENT) from "unusable". */
+        DWORD err = GetLastError();
+        if (err == ERROR_FILE_NOT_FOUND || err == ERROR_PATH_NOT_FOUND) {
+            errno = ENOENT;
+        } else if (err == ERROR_ACCESS_DENIED) {
+            errno = EACCES;
+        } else {
+            errno = EINVAL;
+        }
+        return -1;
+    }
+    if ((attrs & FILE_ATTRIBUTE_DIRECTORY) != 0 || (attrs & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
         errno = EINVAL;
         return -1;
     }
