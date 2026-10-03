@@ -2627,6 +2627,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         PRIVATE
             ${PROJECT_SOURCE_DIR}/include
             ${PROJECT_SOURCE_DIR}/src/ui/terminal
+            ${CURSES_INCLUDE_DIRS}
             ${_PUBLIC_INCLUDES}
     )
     target_link_libraries(
