@@ -213,6 +213,33 @@ read_file_bytes_prefix(const char* path, unsigned char* out, size_t want) {
     return 0;
 }
 
+/* A frame as saveAmbe2450Data() writes it: the error count, six packed bytes, then the final bit. It holds LF, CR and
+ * Ctrl-Z, which a text-mode stream on Windows would expand (LF to CRLF) or read as end of file. */
+static const unsigned char kBinaryProbeFrame[8] = {0x0A, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0xFF, 0x01};
+
+static void
+binary_probe_ambe_bits(char* ambe_d) {
+    for (int byte = 0; byte < 6; byte++) {
+        for (int bit = 0; bit < 8; bit++) {
+            ambe_d[(byte * 8) + bit] = (char)((kBinaryProbeFrame[1 + byte] >> (7 - bit)) & 1U);
+        }
+    }
+    ambe_d[48] = (char)kBinaryProbeFrame[7];
+}
+
+/* The MBE file holds exactly its four-byte header and the probe frame, byte for byte. */
+static int
+expect_mbe_file_bytes(const char* label, const char* path, const char* header) {
+    unsigned char bytes[12];
+    size_t got = 0;
+    if (read_file_exact(path, bytes, sizeof bytes, &got) != 0) {
+        return 1;
+    }
+    int ok = got == sizeof bytes && memcmp(bytes, header, 4) == 0
+             && memcmp(bytes + 4, kBinaryProbeFrame, sizeof kBinaryProbeFrame) == 0;
+    return expect_true(label, ok);
+}
+
 static long
 file_size_or_negative(const char* path) {
     FILE* f = fopen(path, "rb");
@@ -1903,6 +1930,12 @@ test_open_mbe_out_file_creates_slot_files_and_closes(void) {
 
         openMbeOutFile(&opts, &state);
         rc |= expect_int("slot1 open flag", opts.mbe_out, 1);
+        char probe_bits[49];
+        binary_probe_ambe_bits(probe_bits);
+        state.errs2 = kBinaryProbeFrame[0];
+        if (opts.mbe_out_f) {
+            saveAmbe2450Data(&opts, &state, probe_bits);
+        }
         rc |= expect_true("slot1 file handle opened", opts.mbe_out_f != NULL);
         rc |= expect_true("slot1 filename suffix", has_suffix(opts.mbe_out_file, slot1_cases[i].suffix));
         rc |= expect_true("slot1 path contains filename", strstr(opts.mbe_out_path, opts.mbe_out_file) != NULL);
@@ -1913,12 +1946,7 @@ test_open_mbe_out_file_creates_slot_files_and_closes(void) {
         rc |= expect_int("slot1 close clears flag", opts.mbe_out, 0);
         rc |= expect_true("slot1 close clears handle", opts.mbe_out_f == NULL);
 
-        char header[8];
-        if (read_file_prefix(opts.mbe_out_path, header, sizeof header) != 0) {
-            rc = 1;
-        } else {
-            rc |= expect_true("slot1 header", strcmp(header, slot1_cases[i].header) == 0);
-        }
+        rc |= expect_mbe_file_bytes("slot1 header and binary frame", opts.mbe_out_path, slot1_cases[i].header);
         (void)remove(opts.mbe_out_path);
     }
 
@@ -1933,6 +1961,12 @@ test_open_mbe_out_file_creates_slot_files_and_closes(void) {
 
     openMbeOutFileR(&opts, &state);
     rc |= expect_int("slot2 open flag", opts.mbe_outR, 1);
+    char probe_bits[49];
+    binary_probe_ambe_bits(probe_bits);
+    state.errs2R = kBinaryProbeFrame[0];
+    if (opts.mbe_out_fR) {
+        saveAmbe2450DataR(&opts, &state, probe_bits);
+    }
     rc |= expect_true("slot2 file handle opened", opts.mbe_out_fR != NULL);
     rc |= expect_true("slot2 filename suffix", has_suffix(opts.mbe_out_fileR, "_S2.amb"));
     rc |= expect_true("slot2 path contains filename", strstr(opts.mbe_out_path, opts.mbe_out_fileR) != NULL);
@@ -1943,12 +1977,7 @@ test_open_mbe_out_file_creates_slot_files_and_closes(void) {
     rc |= expect_int("slot2 close clears flag", opts.mbe_outR, 0);
     rc |= expect_true("slot2 close clears handle", opts.mbe_out_fR == NULL);
 
-    char header[8];
-    if (read_file_prefix(opts.mbe_out_path, header, sizeof header) != 0) {
-        rc = 1;
-    } else {
-        rc |= expect_true("slot2 header", strcmp(header, ".amb") == 0);
-    }
+    rc |= expect_mbe_file_bytes("slot2 header and binary frame", opts.mbe_out_path, ".amb");
     (void)remove(opts.mbe_out_path);
     (void)remove_dir(dir);
     return rc;
