@@ -76,7 +76,7 @@ Main Menu
 │   ├── Low-input warning... [-40.0 dBFS]
 │   ├── Invert signal [Off]                      i
 │   └── RTL-SDR                                   (RTL-SDR input only)
-│       ├── Frequency... [769.768750 MHz]
+│       ├── Frequency... [769.768750 MHz]        (hidden under --trunk-scan, which owns the tuner)
 │       ├── Gain... [AGC]                        ([20] (target: 10) when a trunk-scan target has its own gain)
 │       ├── PPM correction... [0]                { }
 │       ├── DSP bandwidth... [48 kHz]

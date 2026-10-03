@@ -200,6 +200,17 @@ test_predicates(void) {
     rc |= expect_int("scan rotation trunk scan", scan_rotation_active(&ctx), 1);
     opts.trunk_scan_enabled = 0;
 
+    /* The frequency row is hidden while --trunk-scan owns the tuner, which refuses a manual tune; -Y and plain
+       sessions keep it. */
+    rc |= expect_int("frequency row null ctx", rtl_freq_offered(NULL), 1);
+    rc |= expect_int("frequency row plain session", rtl_freq_offered(&ctx), 1);
+    opts.scanner_mode = 1;
+    rc |= expect_int("frequency row under -Y", rtl_freq_offered(&ctx), 1);
+    opts.scanner_mode = 0;
+    opts.trunk_scan_enabled = 1;
+    rc |= expect_int("frequency row hidden under trunk scan", rtl_freq_offered(&ctx), 0);
+    opts.trunk_scan_enabled = 0;
+
     rc |= expect_int("provoice predicate null ctx", provoice_active(NULL), 0);
     rc |= expect_int("provoice predicate off", provoice_active(&ctx), 0);
     opts.frame_provoice = 1;

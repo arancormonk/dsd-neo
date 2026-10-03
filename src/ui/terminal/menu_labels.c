@@ -90,6 +90,14 @@ scan_rotation_active(const void* ctx) {
     return c->opts->scanner_mode == 1 || c->opts->trunk_scan_enabled == 1;
 }
 
+/* The frequency row tunes the receiver by hand, which --trunk-scan refuses: its coordinator owns the tuner and would
+   undo a manual tune at the next dwell. The row is hidden there rather than opening a prompt whose answer is refused. */
+bool
+rtl_freq_offered(const void* ctx) {
+    const UiCtx* c = (const UiCtx*)ctx;
+    return !(c && c->opts && c->opts->trunk_scan_enabled == 1);
+}
+
 bool
 provoice_active(const void* ctx) {
     const UiCtx* c = (const UiCtx*)ctx;

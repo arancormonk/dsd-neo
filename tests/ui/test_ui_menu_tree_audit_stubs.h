@@ -347,6 +347,7 @@
     X(is_not_qpsk)                                                                                                     \
     X(is_ted_allowed)                                                                                                  \
     X(provoice_active)                                                                                                 \
+    X(rtl_freq_offered)                                                                                                \
     X(rr_feature_available)                                                                                            \
     X(rr_imports_available_and_feature)                                                                                \
     X(rr_key_prompt_offered_and_feature)                                                                               \
