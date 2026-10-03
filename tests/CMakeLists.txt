@@ -160,6 +160,20 @@ if(NOT WIN32)
             WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
         )
         add_test(
+            NAME TOOLS_PUSH_CHANGED_FILES
+            COMMAND
+                ${DSD_NEO_BASH_EXECUTABLE}
+                ${PROJECT_SOURCE_DIR}/tests/tools/test_push_changed_files.sh
+            WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+        )
+        add_test(
+            NAME TOOLS_PRE_PUSH_PATHS
+            COMMAND
+                ${DSD_NEO_BASH_EXECUTABLE}
+                ${PROJECT_SOURCE_DIR}/tests/tools/test_pre_push_paths.sh
+            WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+        )
+        add_test(
             NAME TOOLS_CHECK_RUNNER
             COMMAND
                 ${DSD_NEO_BASH_EXECUTABLE}

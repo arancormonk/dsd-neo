@@ -30,6 +30,10 @@ Run the smallest useful set before opening a PR, then broaden it when the change
 
 - Normal C/C++ changes: `cmake --build --preset dev-debug -j` and `ctest --preset dev-debug --output-on-failure`.
 - Normal pre-push check: `tools/preflight_ci.sh` (concurrent lanes sized to the machine, every failure reported at the end; `DSD_HOOK_SERIAL=1` for one-at-a-time streaming output).
+  The hook checks the files `tools/push_changed_files.sh` lists for each pushed ref. When the remote's commit is
+  not in the clone it compares with the remote's default branch, and when no comparison works the push fails
+  instead of going out unchecked. CI's pull-request jobs take their files from `tools/ci_changed_files.sh` the same
+  way: names stay raw (`git diff -z`), and a diff that fails fails the job.
 - Broad or high-risk changes: `tools/quality_preflight.sh`.
 - Sanitizer-sensitive code: `ctest --preset asan-ubsan-debug --output-on-failure` after configuring/building the matching preset.
 - Threading changes: `ctest --preset tsan-debug --output-on-failure` where the affected tests are supported by TSan.

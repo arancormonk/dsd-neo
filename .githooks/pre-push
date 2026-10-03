@@ -36,81 +36,12 @@ fi
 
 zeros="0000000000000000000000000000000000000000"
 
-remote_head_ref=$(git symbolic-ref -q "refs/remotes/${remote_name}/HEAD" 2> /dev/null || true)
-if [[ -z "$remote_head_ref" ]]; then
-  if git show-ref --verify --quiet "refs/remotes/${remote_name}/main"; then
-    remote_head_ref="refs/remotes/${remote_name}/main"
-  elif git show-ref --verify --quiet "refs/remotes/${remote_name}/master"; then
-    remote_head_ref="refs/remotes/${remote_name}/master"
-  fi
-fi
-
-resolve_new_ref_base() {
-  local base=""
-  for base in \
-    "$remote_head_ref" \
-    "refs/remotes/${remote_name}/main" \
-    "refs/remotes/${remote_name}/master"; do
-    if [[ -n "$base" ]] && git show-ref --verify --quiet "$base"; then
-      printf '%s\n' "$base"
-      return 0
-    fi
-  done
-  return 1
-}
-
-remote_tracking_refs=()
-mapfile -t remote_tracking_refs < <(
-  git for-each-ref --format='%(refname)' "refs/remotes/${remote_name}" 2> /dev/null || true
-)
-
-select_best_remote_merge_base() {
-  local local_sha="$1"
-  local ref=""
-  local merge_base=""
-  local distance=""
-  local best_base=""
-  local best_distance=""
-
-  for ref in "${remote_tracking_refs[@]}"; do
-    merge_base=$(git merge-base "$local_sha" "$ref" 2> /dev/null || true)
-    if [[ -z "$merge_base" ]]; then
-      continue
-    fi
-    distance=$(git rev-list --count "${merge_base}..${local_sha}" 2> /dev/null || true)
-    if [[ -z "$distance" ]]; then
-      continue
-    fi
-    if [[ -z "$best_base" || "$distance" -lt "$best_distance" ]]; then
-      best_base="$merge_base"
-      best_distance="$distance"
-    fi
-  done
-
-  if [[ -n "$best_base" ]]; then
-    printf '%s\n' "$best_base"
-    return 0
-  fi
-  return 1
-}
-
-new_ref_diff_files_fallback() {
-  local local_ref="$1"
-  local local_sha="$2"
-  local fallback_base=""
-  local empty_tree=""
-
-  fallback_base=$(select_best_remote_merge_base "$local_sha" || true)
-  if [[ -n "$fallback_base" ]]; then
-    echo "pre-push: using merge-base fallback for ${local_ref} (no remote default branch found)." >&2
-    git diff --name-only --diff-filter=ACMR "${fallback_base}..${local_sha}" || true
-    return 0
-  fi
-
-  empty_tree=$(git hash-object -t tree /dev/null)
-  echo "pre-push: using empty-tree fallback for ${local_ref} (no remote default branch or merge-base found)." >&2
-  git diff --name-only --diff-filter=ACMR "${empty_tree}" "${local_sha}^{tree}" || true
-}
+# tools/push_changed_files.sh lists each pushed ref's changed paths, raw and
+# NUL-separated, and fails rather than report "nothing changed" when it cannot
+# compute them; the list goes through a private temporary file outside the
+# checkout.
+push_paths_file=$(mktemp "${TMPDIR:-/tmp}/dsd-neo-pre-push-paths.XXXXXX")
+trap 'rm -f "$push_paths_file"' EXIT
 
 head_sha=$(git rev-parse -q --verify HEAD 2> /dev/null || true)
 
@@ -127,22 +58,28 @@ while read -r local_ref local_sha _remote_ref remote_sha; do
     continue
   fi
 
-  if [[ "$remote_sha" == "$zeros" ]]; then
-    # New branch/ref: compare against remote default branch when possible.
-    base_ref=$(resolve_new_ref_base || true)
-    if [[ -n "$base_ref" ]]; then
-      mapfile -t diff_files < <(git diff --name-only --diff-filter=ACMR "${base_ref}...${local_sha}" || true)
-    else
-      mapfile -t diff_files < <(new_ref_diff_files_fallback "${local_ref}" "${local_sha}")
-    fi
-  else
-    mapfile -t diff_files < <(git diff --name-only --diff-filter=ACMR "${remote_sha}...${local_sha}" || true)
+  if ! tools/push_changed_files.sh "$remote_name" "$local_ref" "$local_sha" "$remote_sha" > "$push_paths_file"; then
+    echo "pre-push: could not list the files ${local_ref} changes; not pushing unchecked." >&2
+    exit 1
   fi
+  mapfile -d '' -t diff_files < "$push_paths_file"
+  # The checks below handle paths one per line, so a name with a newline in it
+  # would split into two paths that do not exist: skipped with a warning for a
+  # ref that is not checked out, or a misleading "local deletions" failure for
+  # the one that is.
+  for p in "${diff_files[@]}"; do
+    if [[ "$p" == *$'\n'* ]]; then
+      printf 'pre-push: %s changes a path with a newline in it, which the checks cannot handle: %q\n' "$local_ref" "$p" >&2
+      exit 1
+    fi
+  done
   changed_paths+=("${diff_files[@]}")
   if [[ -n "$head_sha" && "$local_sha" == "$head_sha" ]]; then
     head_changed_paths+=("${diff_files[@]}")
   fi
 done
+# The check runner sets its own EXIT trap, so remove the list now.
+rm -f "$push_paths_file"
 
 if [[ ${#changed_paths[@]} -eq 0 ]]; then
   exit 0
