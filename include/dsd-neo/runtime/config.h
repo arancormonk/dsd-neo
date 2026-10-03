@@ -748,6 +748,20 @@ int dsd_user_config_load(const char* path, dsdneoUserConfig* cfg);
 int dsd_user_config_save_atomic(const char* path, const dsdneoUserConfig* cfg);
 
 /**
+ * @brief Apply a single user-config key/value pair in memory.
+ *
+ * The same `[section] key = value` mapping the INI loader uses, exposed so
+ * embedders (the JSON API) can build a @ref dsdneoUserConfig from structured
+ * input without a file. Section and key are matched case-insensitively; an
+ * unknown section or key is ignored (the INI mapper reports nothing back).
+ * @p cfg is normally zeroed first, since applying a key only changes the fields
+ * it owns.
+ *
+ * @return 1 when @p cfg, @p section and @p key are valid handles, 0 otherwise.
+ */
+int dsd_user_config_apply_key(dsdneoUserConfig* cfg, const char* section, const char* key, const char* value);
+
+/**
  * @brief Apply config-derived defaults to opts/state before env + CLI precedence.
  *
  * @param cfg User config to apply.

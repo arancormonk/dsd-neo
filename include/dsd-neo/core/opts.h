@@ -183,6 +183,8 @@ struct dsd_opts {
        and dsd_opts_reset_pcm_input_state()): what the PCM noise squelch learned belongs to one stream (issue #628). */
     uint32_t pcm_input_generation;
     int rtl_udp_port;
+    /* Third-party TCP JSON API listening port; 0 disables the server. */
+    int api_port;
     /* Base DSP bandwidth for RTL path in kHz (4,6,8,12,16,24,48). Influences capture rate planning.
        Not the hardware tuner IF bandwidth. */
     int rtl_dsp_bw_khz;
@@ -369,6 +371,9 @@ struct dsd_opts {
     char rigctlhostname[1024];
     char rdio_api_url[1024];
     char rtl_udp_bindaddr[64];
+    char api_bindaddr[64];
+    char api_token[256];
+    char api_token_file[1024];
     char udp_hostname[1024];
     char udp_in_bindaddr[1024];
     char m17_hostname[1024];

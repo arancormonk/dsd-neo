@@ -797,6 +797,26 @@ apply_section_key(dsdneoUserConfig* cfg, const char* section, const char* key_lc
     }
 }
 
+extern "C" int
+dsd_user_config_apply_key(dsdneoUserConfig* cfg, const char* section, const char* key, const char* value) {
+    if (cfg == nullptr || section == nullptr || key == nullptr) {
+        return 0;
+    }
+    if (value == nullptr) {
+        value = "";
+    }
+    char section_lc[64];
+    char key_lc[64];
+    DSD_SNPRINTF(section_lc, sizeof section_lc, "%s", section);
+    DSD_SNPRINTF(key_lc, sizeof key_lc, "%s", key);
+    user_config_lowercase_ascii(section_lc);
+    user_config_lowercase_ascii(key_lc);
+    user_config_trim_ascii_whitespace(section_lc);
+    user_config_trim_ascii_whitespace(key_lc);
+    apply_section_key(cfg, section_lc, key_lc, value, USER_CFG_PARSE_MODE_BASE);
+    return 1;
+}
+
 // INI loader ------------------------------------------------------------------
 
 /* Forward declarations for include processing */

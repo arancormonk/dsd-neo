@@ -832,6 +832,74 @@ cli_parse_airspy_option(int argc, char** argv, int i, dsd_opts* opts) {
             rtl_udp_control_cli_bindaddr = bind_arg;                                                                   \
             continue;                                                                                                  \
         }                                                                                                              \
+        if (strcmp(argv[i], "--api") == 0) {                                                                           \
+            if (i + 1 >= argc) {                                                                                       \
+                LOG_ERROR("--api requires a port value\n");                                                            \
+                cli_set_exit_rc(out_exit_rc, 1);                                                                       \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            api_cli_port = DSD_PARSE_ARGS_NEXT_ARG();                                                                  \
+            arg_advance = 2;                                                                                           \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strncmp(argv[i], "--api=", 6) == 0) {                                                                      \
+            api_cli_port = argv[i] + 6;                                                                                \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--api-bind") == 0) {                                                                      \
+            if (i + 1 >= argc) {                                                                                       \
+                LOG_ERROR("--api-bind requires a numeric IPv4 address\n");                                             \
+                cli_set_exit_rc(out_exit_rc, 1);                                                                       \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            const char* bind_arg = DSD_PARSE_ARGS_NEXT_ARG();                                                          \
+            if (!cli_is_numeric_ipv4_address(bind_arg)) {                                                              \
+                LOG_ERROR("Invalid --api-bind value \"%s\" (expected numeric IPv4 address)\n", bind_arg);              \
+                cli_set_exit_rc(out_exit_rc, 1);                                                                       \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            api_cli_bind = bind_arg;                                                                                   \
+            arg_advance = 2;                                                                                           \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strncmp(argv[i], "--api-bind=", 11) == 0) {                                                                \
+            const char* bind_arg = argv[i] + 11;                                                                       \
+            if (!cli_is_numeric_ipv4_address(bind_arg)) {                                                              \
+                LOG_ERROR("Invalid --api-bind value \"%s\" (expected numeric IPv4 address)\n", bind_arg);              \
+                cli_set_exit_rc(out_exit_rc, 1);                                                                       \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            api_cli_bind = bind_arg;                                                                                   \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--api-token") == 0) {                                                                     \
+            if (i + 1 >= argc) {                                                                                       \
+                LOG_ERROR("--api-token requires a value\n");                                                           \
+                cli_set_exit_rc(out_exit_rc, 1);                                                                       \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            api_cli_token = DSD_PARSE_ARGS_NEXT_ARG();                                                                 \
+            arg_advance = 2;                                                                                           \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strncmp(argv[i], "--api-token=", 12) == 0) {                                                               \
+            api_cli_token = argv[i] + 12;                                                                              \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--api-token-file") == 0) {                                                                \
+            if (i + 1 >= argc) {                                                                                       \
+                LOG_ERROR("--api-token-file requires a path\n");                                                       \
+                cli_set_exit_rc(out_exit_rc, 1);                                                                       \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            api_cli_token_file = DSD_PARSE_ARGS_NEXT_ARG();                                                            \
+            arg_advance = 2;                                                                                           \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strncmp(argv[i], "--api-token-file=", 17) == 0) {                                                          \
+            api_cli_token_file = argv[i] + 17;                                                                         \
+            continue;                                                                                                  \
+        }                                                                                                              \
         if (strcmp(argv[i], "--iq-capture") == 0) {                                                                    \
             if (i + 1 >= argc) {                                                                                       \
                 LOG_ERROR("--iq-capture requires a path value\n");                                                     \
@@ -1727,6 +1795,28 @@ cli_parse_airspy_option(int argc, char** argv, int i, dsd_opts* opts) {
         opts->rtl_udp_bindaddr[sizeof opts->rtl_udp_bindaddr - 1] = '\0';                                              \
     }                                                                                                                  \
                                                                                                                        \
+    if (api_cli_port) {                                                                                                \
+        unsigned long parsed_api_port = 0;                                                                             \
+        if (!cli_parse_decimal_u32(api_cli_port, &parsed_api_port) || parsed_api_port > 65535UL) {                     \
+            LOG_ERROR("Invalid --api value \"%s\" (expected port 0..65535)\n", api_cli_port);                          \
+            cli_set_exit_rc(out_exit_rc, 1);                                                                           \
+            return DSD_PARSE_ERROR;                                                                                    \
+        }                                                                                                              \
+        opts->api_port = (int)parsed_api_port;                                                                         \
+    }                                                                                                                  \
+    if (api_cli_bind) {                                                                                                \
+        DSD_SNPRINTF(opts->api_bindaddr, sizeof opts->api_bindaddr, "%s", api_cli_bind);                               \
+        opts->api_bindaddr[sizeof opts->api_bindaddr - 1] = '\0';                                                      \
+    }                                                                                                                  \
+    if (api_cli_token) {                                                                                               \
+        DSD_SNPRINTF(opts->api_token, sizeof opts->api_token, "%s", api_cli_token);                                    \
+        opts->api_token[sizeof opts->api_token - 1] = '\0';                                                            \
+    }                                                                                                                  \
+    if (api_cli_token_file) {                                                                                          \
+        DSD_SNPRINTF(opts->api_token_file, sizeof opts->api_token_file, "%s", api_cli_token_file);                     \
+        opts->api_token_file[sizeof opts->api_token_file - 1] = '\0';                                                  \
+    }                                                                                                                  \
+                                                                                                                       \
     if (frontend_cli) {                                                                                                \
         dsd_frontend_kind frontend = DSD_FRONTEND_NONE;                                                                \
         if (!cli_parse_frontend_kind(frontend_cli, &frontend)) {                                                       \
@@ -2117,6 +2207,10 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
     int lrrp_extra_ports_cli_seen = 0;
     unsigned long rtl_udp_control_cli_port = 0;
     const char* rtl_udp_control_cli_bindaddr = NULL;
+    const char* api_cli_port = NULL;
+    const char* api_cli_bind = NULL;
+    const char* api_cli_token = NULL;
+    const char* api_cli_token_file = NULL;
     int trunk_scan_cli_seen = 0;
     int chan_csv_cli_seen = 0;
     int p25_bandplan_cli_seen = 0;

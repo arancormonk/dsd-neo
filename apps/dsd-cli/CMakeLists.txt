@@ -8,6 +8,13 @@ target_link_libraries(
     PRIVATE dsd-neo_engine dsd-neo_feature_rtlsdr dsd-neo_feature_codec2 ${LIBS}
 )
 
+if(DSD_ENABLE_API)
+    target_compile_definitions(dsd-neo PRIVATE DSD_CLI_HAS_API=1)
+    target_link_libraries(dsd-neo PRIVATE dsd-neo_api)
+else()
+    target_compile_definitions(dsd-neo PRIVATE DSD_CLI_HAS_API=0)
+endif()
+
 if(DSD_ENABLE_TERMINAL_UI)
     target_compile_definitions(dsd-neo PRIVATE DSD_CLI_HAS_TERMINAL_UI=1)
     target_include_directories(

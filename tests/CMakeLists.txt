@@ -3984,6 +3984,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/synctype.c
     ${PROJECT_SOURCE_DIR}/src/app_control/call_view.c
     ${PROJECT_SOURCE_DIR}/src/app_control/notification_status.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/telemetry_observers.c
     ${PROJECT_SOURCE_DIR}/src/app_control/ui_snapshot.c
     ${PROJECT_SOURCE_DIR}/src/runtime/trunk_cc_candidates.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
@@ -4015,6 +4016,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/app_control/ui_opts_snapshot.c
     ${PROJECT_SOURCE_DIR}/src/app_control/call_view.c
     ${PROJECT_SOURCE_DIR}/src/app_control/notification_status.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/telemetry_observers.c
     ${PROJECT_SOURCE_DIR}/src/core/util/synctype.c
 )
 target_include_directories(
@@ -14654,6 +14656,29 @@ target_include_directories(
 )
 target_link_libraries(dsd-neo_test_runtime_decode_clock PRIVATE dsd-neo_runtime)
 add_test(NAME RUNTIME_DECODE_CLOCK COMMAND dsd-neo_test_runtime_decode_clock)
+
+if(DSD_ENABLE_API)
+    set(_dsd_neo_api_test_deps dsd-neo_api dsd-neo_engine dsd-neo_feature_rtlsdr dsd-neo_feature_codec2 ${LIBS})
+
+    add_executable(dsd-neo_test_api_json api/test_json.c)
+    target_include_directories(dsd-neo_test_api_json PRIVATE ${PROJECT_SOURCE_DIR}/include)
+    target_link_libraries(dsd-neo_test_api_json PRIVATE ${_dsd_neo_api_test_deps})
+    add_test(NAME API_JSON COMMAND dsd-neo_test_api_json)
+
+    add_executable(dsd-neo_test_api_commands api/test_commands.c)
+    target_include_directories(
+        dsd-neo_test_api_commands
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/api
+    )
+    target_link_libraries(dsd-neo_test_api_commands PRIVATE ${_dsd_neo_api_test_deps})
+    add_test(NAME API_COMMANDS COMMAND dsd-neo_test_api_commands)
+
+    add_executable(dsd-neo_test_api_server api/test_server.c)
+    target_include_directories(dsd-neo_test_api_server PRIVATE ${PROJECT_SOURCE_DIR}/include)
+    target_link_libraries(dsd-neo_test_api_server PRIVATE ${_dsd_neo_api_test_deps})
+    add_test(NAME API_SERVER COMMAND dsd-neo_test_api_server)
+    set_tests_properties(API_SERVER PROPERTIES TIMEOUT 60)
+endif()
 
 # Windows builds the terminal UI against vcpkg's PDCurses, whose include
 # directory dsd-neo_ui_terminal receives as a system directory through
