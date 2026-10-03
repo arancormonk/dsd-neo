@@ -1994,7 +1994,7 @@ target_include_directories(
 )
 target_link_libraries(
     dsd-neo_test_app_control_actions
-    PRIVATE dsd-neo_test_call_state_support
+    PRIVATE dsd-neo_test_call_state_support ${DSD_NEO_TEST_MATH_LIB}
 )
 target_sources(
     dsd-neo_test_app_control_actions

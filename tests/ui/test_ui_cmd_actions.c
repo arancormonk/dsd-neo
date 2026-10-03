@@ -16,6 +16,7 @@
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/runtime/scan_mode.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -226,19 +227,35 @@ test_audio_actions(void) {
     rc |= expect_int("zero gain keeps playback gain default left", state.aout_gain, 25);
     rc |= expect_int("zero gain keeps playback gain default right", state.aout_gainR, 25);
 
-    opts.audio_gainA = 49;
+    /* Analog gain is 0..100 everywhere (-n, the menu prompt, the * and / keys): a keypress from -n 100 used to land
+       on 50 (issue #518 follow-up). */
+    opts.audio_gainA = 100.0f;
+    cmd = cmd_i32(DSD_APP_CMD_AGAIN_DELTA, 1);
+    dispatch_one(dsd_app_actions_audio, &opts, &state, &cmd);
+    rc |= expect_true("analog gain delta keeps 100 at the top", fabsf(opts.audio_gainA - 100.0f) < 1e-6f);
+    cmd = cmd_i32(DSD_APP_CMD_AGAIN_DELTA, -1);
+    dispatch_one(dsd_app_actions_audio, &opts, &state, &cmd);
+    rc |= expect_true("analog gain delta steps down from 100", fabsf(opts.audio_gainA - 99.0f) < 1e-6f);
+    opts.audio_gainA = 97.0f;
     cmd = cmd_i32(DSD_APP_CMD_AGAIN_DELTA, 7);
     dispatch_one(dsd_app_actions_audio, &opts, &state, &cmd);
-    rc |= expect_int("analog gain delta clamps high", opts.audio_gainA, 50);
+    rc |= expect_true("analog gain delta clamps high", fabsf(opts.audio_gainA - 100.0f) < 1e-6f);
+    opts.audio_gainA = 37.5f;
+    cmd = cmd_i32(DSD_APP_CMD_AGAIN_DELTA, 1);
+    dispatch_one(dsd_app_actions_audio, &opts, &state, &cmd);
+    rc |= expect_true("analog gain delta keeps a fractional -n", fabsf(opts.audio_gainA - 38.5f) < 1e-6f);
     cmd = cmd_i32(DSD_APP_CMD_AGAIN_DELTA, -90);
     dispatch_one(dsd_app_actions_audio, &opts, &state, &cmd);
-    rc |= expect_int("analog gain delta clamps low", opts.audio_gainA, 0);
+    rc |= expect_true("analog gain delta clamps low", fabsf(opts.audio_gainA) < 1e-6f);
     cmd = cmd_i32(DSD_APP_CMD_AGAIN_SET, -9);
     dispatch_one(dsd_app_actions_audio, &opts, &state, &cmd);
-    rc |= expect_int("analog gain set clamps low", opts.audio_gainA, 0);
-    cmd = cmd_i32(DSD_APP_CMD_AGAIN_SET, 60);
+    rc |= expect_true("analog gain set clamps low", fabsf(opts.audio_gainA) < 1e-6f);
+    cmd = cmd_i32(DSD_APP_CMD_AGAIN_SET, 80);
     dispatch_one(dsd_app_actions_audio, &opts, &state, &cmd);
-    rc |= expect_int("analog gain set clamps high", opts.audio_gainA, 50);
+    rc |= expect_true("analog gain set accepts 80", fabsf(opts.audio_gainA - 80.0f) < 1e-6f);
+    cmd = cmd_i32(DSD_APP_CMD_AGAIN_SET, 150);
+    dispatch_one(dsd_app_actions_audio, &opts, &state, &cmd);
+    rc |= expect_true("analog gain set clamps high", fabsf(opts.audio_gainA - 100.0f) < 1e-6f);
 
     cmd = cmd_double(DSD_APP_CMD_INPUT_WARN_DB_SET, 12.5);
     dispatch_one(dsd_app_actions_audio, &opts, &state, &cmd);

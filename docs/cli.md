@@ -340,7 +340,8 @@ Notes
 ## Levels & Audio
 
 - `-g <num>` Digital output gain. `0` = auto; `1` ≈ 2%; `50` = 100%
-- `-n <num>` Analog output gain (0–100%)
+- `-n <num>` Analog output gain, `0`–`100` (default `50`; `0` = auto). The menu's Analog gain... prompt and the `*` /
+  `/` keys work over the same 0–100 range.
 - `-nm` Enable the DMR single-slot mono decoder without changing the active decode preset.
 - `-z <0|1|2>` TDMA slot preference (0 = slot 1, 1 = slot 2, 2 = auto)
 - `-8` Monitor the source audio (helpful when mixing analog/digital)

@@ -69,6 +69,18 @@ ui_handle_gain_delta(dsd_opts* opts, dsd_state* state, const struct dsd_app_comm
     return 1;
 }
 
+/* Analog output gain is 0..100 (-n, the menu prompt and the * and / keys alike): 0..100% maps to 0x..5x. */
+static float
+clamp_analog_gain(float g) {
+    if (!(g > 0.0f)) {
+        return 0.0f;
+    }
+    if (g > 100.0f) {
+        return 100.0f;
+    }
+    return g;
+}
+
 static int
 ui_handle_again_delta(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     (void)state;
@@ -76,14 +88,8 @@ ui_handle_again_delta(dsd_opts* opts, dsd_state* state, const struct dsd_app_com
     if (c->n >= (int)sizeof(int32_t)) {
         DSD_MEMCPY(&d, c->data, sizeof(int32_t));
     }
-    int g = opts->audio_gainA + d;
-    if (g < 0) {
-        g = 0;
-    }
-    if (g > 50) {
-        g = 50;
-    }
-    opts->audio_gainA = g;
+    /* In float, so a fractional -n value moves by the step instead of being truncated first. */
+    opts->audio_gainA = clamp_analog_gain(opts->audio_gainA + (float)d);
     return 1;
 }
 
@@ -117,13 +123,7 @@ ui_handle_again_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_comma
     if (c->n >= (int)sizeof(int32_t)) {
         DSD_MEMCPY(&g, c->data, sizeof g);
     }
-    if (g < 0) {
-        g = 0;
-    }
-    if (g > 50) {
-        g = 50;
-    }
-    opts->audio_gainA = g;
+    opts->audio_gainA = clamp_analog_gain((float)g);
     return 1;
 }
 

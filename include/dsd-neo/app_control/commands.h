@@ -69,7 +69,7 @@ enum dsd_app_command_id {
     DSD_APP_CMD_MOD_TOGGLE = 102,
     DSD_APP_CMD_DMR_RESET = 103,
     DSD_APP_CMD_GAIN_SET = 104,          // payload: int32_t (0..50)
-    DSD_APP_CMD_AGAIN_SET = 105,         // payload: int32_t (0..50)
+    DSD_APP_CMD_AGAIN_SET = 105,         // payload: int32_t (0..100)
     DSD_APP_CMD_INPUT_WARN_DB_SET = 106, // payload: double
     DSD_APP_CMD_INPUT_MONITOR_TOGGLE = 107,
     DSD_APP_CMD_COSINE_FILTER_TOGGLE = 108,

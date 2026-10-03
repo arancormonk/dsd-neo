@@ -510,7 +510,7 @@ expires independently of **Save user TG lockouts**. See [Skip lifetimes](cli.md#
 | `1` / `2` | Toggle synth/playback for slot 1 / slot 2 |
 | `3` | Cycle TDMA slot preference (slot 1 / slot 2 / auto) |
 | `+` / `-` | Digital gain up/down |
-| `*` / `/` | Analog gain up/down |
+| `*` / `/` | Analog gain up/down (0–100) |
 | `v` | Cycle the input volume multiplier (non-RTL inputs) or the RTL monitor gain (RTL input) |
 | `4` | Toggle force privacy key over identifiers |
 | `6` | Toggle force RC4 key over missing PI/LE identifiers |
