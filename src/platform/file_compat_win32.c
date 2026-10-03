@@ -15,6 +15,8 @@
 #include <sys/stat.h>
 #include <windows.h>
 
+#include "win32_temp_name_internal.h"
+
 /*
  * The CRT treats a negative descriptor as a caller bug: it raises the invalid-parameter handler, which ends the
  * process. POSIX reports EBADF instead, and -1 is the usual "no descriptor" value, so the descriptor wrappers answer it
@@ -263,18 +265,13 @@ dsd_fopen_private_temp_for_replace(const char* final_path, char* tmp_path, size_
         errno = ENAMETOOLONG;
         return NULL;
     }
-    if (_mktemp_s(tmp_path, tmp_path_size) != 0) {
-        errno = EEXIST;
-        return NULL;
-    }
 
     int flags = dsd_private_open_flags(mode);
     if (flags < 0) {
         return NULL;
     }
-    flags |= _O_EXCL;
 
-    int fd = _open(tmp_path, flags, _S_IREAD | _S_IWRITE);
+    int fd = dsd_win32_temp_open(tmp_path, tmp_path + n - 6, flags);
     if (fd < 0) {
         return NULL;
     }
