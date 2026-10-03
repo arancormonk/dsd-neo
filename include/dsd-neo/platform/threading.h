@@ -232,7 +232,8 @@ int dsd_cond_broadcast(dsd_cond_t* cond);
  * @brief Attempt to set realtime priority for current thread.
  *
  * @param priority  Priority level (platform-specific interpretation).
- * @return 0 on success, non-zero on failure (may require elevated privileges).
+ * @return 0 on success, or an errno value on failure: EPERM without the privileges it needs, and ENOSYS where the
+ *         platform has no realtime scheduling. Windows errors are mapped to errno values too.
  */
 int dsd_thread_set_realtime_priority(int priority);
 
@@ -240,7 +241,8 @@ int dsd_thread_set_realtime_priority(int priority);
  * @brief Set CPU affinity for current thread.
  *
  * @param cpu_index     CPU core index to pin to.
- * @return 0 on success, non-zero on failure or if unsupported.
+ * @return 0 on success, or an errno value: EINVAL for an index the platform cannot express or the thread may not use,
+ *         and ENOSYS where the platform has no CPU pinning (macOS, Android, other POSIX systems).
  */
 int dsd_thread_set_affinity(int cpu_index);
 
