@@ -5265,6 +5265,7 @@ static int g_config_rtl_create_width_hz = -1;
 /* The DSP bandwidth the last create was handed. */
 static int g_config_rtl_create_bw_khz = -1;
 static int g_config_rtl_create_gain = -1;
+static long g_config_rtl_create_freq = -1;
 /* Starts made, and how many of the next ones fail. A start that fails on options that run the analog family records
    a refusal of their width at g_config_rtl_refuse_rate_hz when that is above 0, as the stream's analog channel check
    does at the rate the device delivered (rtl_stream_start_analog_refusal()); otherwise it fails for a device reason and
@@ -5363,6 +5364,7 @@ __wrap_rtl_stream_create(dsd_opts* opts, RtlSdrContext** out_ctx) {
     g_config_rtl_create_width_hz = opts ? dsd_opts_analog_width_hz(opts) : -1;
     g_config_rtl_create_bw_khz = opts ? opts->rtl_dsp_bw_khz : -1;
     g_config_rtl_create_gain = opts ? opts->rtl_gain_value : -1;
+    g_config_rtl_create_freq = opts ? (long)opts->rtlsdr_center_freq : -1;
     g_config_rtl_create_capture = opts ? opts->iq_capture_requested : -1;
     g_config_rtl_captures += g_config_rtl_create_capture == 1;
     g_config_rtl_opened_capture = 0;
@@ -5654,6 +5656,113 @@ gain_scan_tune_to_cc_ok(dsd_opts* opts, dsd_state* state, long int freq, int ted
         state->trunk_cc_freq = freq;
     }
     return DSD_TRUNK_TUNE_RESULT_OK;
+}
+
+/* Issue #518 follow-up: a config whose [input] spec is the running input's still sets its gain. A live gain edit does
+ * not rewrite the spec, so reloading the config the session started from used to leave the edited gain running; and a
+ * SoapySDR spec carries no gain, so a gain-only change wrote the options without reopening the device. */
+static int
+test_config_gain_applies_when_the_spec_is_unchanged(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_test_context(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.audio_out_type = 9;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "rtl:0:851375000:22:0:24:0:2");
+    opts.rtl_gain_value = 30; /* edited live; the spec still says 22 */
+    opts.rtl_dsp_bw_khz = 24;
+    opts.rtl_volume_multiplier = 2;
+    g_config_rtl_open_ok = 1;
+    g_config_rtl_fail_starts = 0;
+    state.rtl_ctx = (RtlSdrContext*)g_config_rtl_ctx;
+
+    dsdneoUserConfig cfg = {0};
+    cfg.has_input = 1;
+    cfg.input_source = DSDCFG_INPUT_RTL;
+    cfg.rtl_device = 0;
+    DSD_SNPRINTF(cfg.rtl_freq, sizeof(cfg.rtl_freq), "851375000");
+    cfg.rtl_gain = 22;
+    cfg.rtl_gain_is_set = 1;
+    cfg.rtl_ppm_is_set = 1;
+    cfg.rtl_bw_khz = 24;
+    cfg.rtl_volume = 2;
+    g_config_rtl_creates = 0;
+    g_config_rtl_create_gain = -1;
+    int rc = expect_true("same-spec config queued", dsd_app_command_apply_config(&cfg) > 0);
+    rc |= expect_int("same-spec config drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_str("same-spec config keeps the spec", opts.audio_in_dev, "rtl:0:851375000:22:0:24:0:2");
+    rc |= expect_int("same-spec config sets its gain", opts.rtl_gain_value, 22);
+    rc |= expect_int("same-spec config reopens on its gain", g_config_rtl_create_gain, 22);
+
+    /* The same gain again reopens nothing. */
+    g_config_rtl_creates = 0;
+    rc |= expect_true("unchanged config queued", dsd_app_command_apply_config(&cfg) > 0);
+    rc |= expect_int("unchanged config drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("unchanged gain reopens nothing", g_config_rtl_creates, 0);
+
+    /* A SoapySDR spec has no gain in it: a gain-only change still reopens the device on it. The device keeps the
+       frequency and DSP bandwidth it runs (a scanner may own the frequency, and a new rate would need a reopen's width
+       checks), whatever frequency and bandwidth the config was saved with. */
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "soapy:driver=rtlsdr");
+    opts.rtl_gain_value = 30;
+    opts.rtlsdr_center_freq = 852000000U;
+    dsdneoUserConfig soapy = cfg;
+    soapy.input_source = DSDCFG_INPUT_SOAPY;
+    DSD_SNPRINTF(soapy.soapy_args, sizeof(soapy.soapy_args), "driver=rtlsdr");
+    soapy.rtl_gain = 15;
+    soapy.rtl_bw_khz = 48;
+    g_config_rtl_creates = 0;
+    g_config_rtl_create_gain = -1;
+    g_config_rtl_create_freq = -1;
+    rc |= expect_true("soapy gain config queued", dsd_app_command_apply_config(&soapy) > 0);
+    rc |= expect_int("soapy gain config drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_str("soapy gain config keeps the spec", opts.audio_in_dev, "soapy:driver=rtlsdr");
+    rc |= expect_int("soapy gain config sets its gain", opts.rtl_gain_value, 15);
+    rc |= expect_int("soapy gain config reopens the device on it", g_config_rtl_create_gain, 15);
+    rc |= expect_true("soapy gain config keeps the running frequency",
+                      opts.rtlsdr_center_freq == 852000000U && g_config_rtl_create_freq == 852000000L);
+    rc |= expect_int("soapy gain config keeps the running DSP bandwidth", opts.rtl_dsp_bw_khz, 24);
+
+    state.rtl_ctx = NULL;
+    g_config_rtl_open_ok = 0;
+    freeState(&state);
+    return rc;
+}
+
+/* Issue #518 follow-up: a config that restarts the running input for its gain alone (its [input] builds no spec of its
+ * own here: no rtl_freq) reopens the stream on the analog width it runs, so the width is held to the running rate
+ * before anything is torn down, as any reopen holds it. An AM width the running DSP bandwidth cannot filter refuses
+ * the whole config with the input left running. */
+static int
+test_config_gain_restart_holds_the_running_width(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_decode_mode_context(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "rtl:0:118100000:22:0:6:0:1");
+    (void)dsd_apply_decode_mode_preset(DSDCFG_MODE_AM, DSD_DECODE_PRESET_PROFILE_CLI, &opts, &state);
+    opts.rtl_dsp_bw_khz = 6; /* below the 8 kHz the AM default needs */
+    opts.rtl_gain_value = 22;
+    g_config_rtl_open_ok = 1;
+    /* No stream context: the check holds the width to the DSP bandwidth, as RTL_SET_BW's test does. */
+    state.rtl_ctx = NULL;
+
+    dsdneoUserConfig cfg = {0};
+    cfg.has_input = 1;
+    cfg.input_source = DSDCFG_INPUT_RTL;
+    cfg.rtl_gain = 30;
+    cfg.rtl_gain_is_set = 1;
+    g_config_rtl_creates = 0;
+    state.ui_msg[0] = '\0';
+    int rc = expect_true("gain-only config queued", dsd_app_command_apply_config(&cfg) > 0);
+    rc |= expect_int("gain-only config drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("gain-only config tears nothing down", g_config_rtl_creates, 0);
+    rc |= expect_int("gain-only config leaves the gain", opts.rtl_gain_value, 22);
+    rc |= expect_true("gain-only config says why", strstr(state.ui_msg, "Config not applied:") != NULL);
+    state.rtl_ctx = NULL;
+    g_config_rtl_open_ok = 0;
+    freeState(&state);
+    return rc;
 }
 
 /* Issue #518 follow-up: under --trunk-scan the gain and tuner-autogain controls edit the configured gain the scan puts
@@ -14507,6 +14616,8 @@ main(void) {
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
     dsd_neo_log_set_tap(record_capture_log, NULL);
     rc |= test_rtl_gain_commands_edit_the_trunk_scan_default();
+    rc |= test_config_gain_applies_when_the_spec_is_unchanged();
+    rc |= test_config_gain_restart_holds_the_running_width();
     rc |= test_config_rtl_restart_under_policy_guard();
     rc |= test_rtl_bandwidth_held_to_am_width();
     rc |= test_squelch_commands_edit_the_configured_default();

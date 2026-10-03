@@ -3022,6 +3022,32 @@ apply_cfg_settle_scan_gain(dsd_opts* opts, dsd_state* state, const ui_cfg_rollba
     return settled;
 }
 
+/* A config whose [input] spec is the running input's reopens nothing for a new spec, but the gain it names still has to
+   be the gain the input runs: a live gain edit does not rewrite the spec, and a SoapySDR spec carries no gain at all,
+   so the spec alone cannot tell the gain changed. The gain is taken as a reopen takes it (under --trunk-scan as the
+   configured gain, a parked target's own gain left in force), and the input restarts when the gain in force changed,
+   with a reopen's rollback. An Airspy's gains are its own settings. Caller holds the P25 SM tick guard. */
+static int
+apply_cfg_rtl_live_gain(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg, const ui_cfg_rollback* before) {
+    /* The input keeps the frequency and DSP bandwidth it runs: a scanner may own the frequency (a config saved on
+       another channel must not detune it), and a new DSP rate would want the width checks a reopen gets
+       (cfg_radio_reopen() calls this restart one at the running rate). A SoapySDR config's own frequency and
+       bandwidth, which its spec cannot carry, wait for an [input] that reopens the device. */
+    opts->rtlsdr_center_freq = before->input.rtlsdr_center_freq;
+    opts->rtl_dsp_bw_khz = before->input.rtl_dsp_bw_khz;
+    if (!dsd_user_config_rtl_gain_is_set(cfg) || cfg->input_source == DSDCFG_INPUT_AIRSPY) {
+        return 0;
+    }
+    opts->rtl_gain_value = cfg->rtl_gain;
+    int prev_gain = 0;
+    const int staged = apply_cfg_stage_scan_gain(opts, state, cfg, before, &prev_gain);
+    if (opts->rtl_gain_value == before->input.rtl_gain_value) {
+        return 0;
+    }
+    return apply_cfg_settle_scan_gain(opts, state, before, staged, prev_gain,
+                                      ui_cfg_settle_reopen(opts, state, svc_rtl_restart_locked(opts, state), before));
+}
+
 /* A config's RTL-family [input] that builds a spec other than the RTL-family input's (@p before, the input the apply
    found) reopens the device with the config's tuning, or opens it when no stream ran. Returns what
    ui_cfg_settle_reopen() makes of the stream's start: -1 when it failed, or ran but refused the scan row on air (the
@@ -3034,9 +3060,11 @@ apply_cfg_rtl_hot_restart(dsd_opts* opts, dsd_state* state, const dsdneoUserConf
     if (!cfg->has_input
         || (cfg->input_source != DSDCFG_INPUT_RTL && cfg->input_source != DSDCFG_INPUT_RTLTCP
             && cfg->input_source != DSDCFG_INPUT_SOAPY && cfg->input_source != DSDCFG_INPUT_AIRSPY)
-        || before->input.audio_in_type != AUDIO_IN_RTL || opts->audio_in_type != AUDIO_IN_RTL
-        || strncmp(old_audio_in_dev, opts->audio_in_dev, sizeof opts->audio_in_dev) == 0) {
+        || before->input.audio_in_type != AUDIO_IN_RTL || opts->audio_in_type != AUDIO_IN_RTL) {
         return 0;
+    }
+    if (strncmp(old_audio_in_dev, opts->audio_in_dev, sizeof opts->audio_in_dev) == 0) {
+        return apply_cfg_rtl_live_gain(opts, state, cfg, before);
     }
 
     if (cfg->input_source == DSDCFG_INPUT_RTL) {
@@ -6254,7 +6282,8 @@ typedef enum {
     CFG_REOPEN_NONE = 0,        /* nothing reopens: the running device and its rate stay */
     CFG_REOPEN_AT_RTL_BW,       /* an RTL-SDR or rtl_tcp device, at its DSP bandwidth */
     CFG_REOPEN_AT_DEVICE_RATE,  /* a SoapySDR or Airspy device, at the rate the device delivers */
-    CFG_REOPEN_AT_RUNNING_RATE, /* the running Airspy, for its monitor volume alone: at the rate it runs now */
+    CFG_REOPEN_AT_RUNNING_RATE, /* the running device at the rate it runs now: an Airspy for its monitor volume
+                                   alone, or any device for a new gain under the same spec */
 } cfg_reopen_kind;
 
 /*
@@ -6268,8 +6297,25 @@ typedef enum {
  * (dsd_engine_setup_check_analog_width() for an RTL-SDR or rtl_tcp spec, the stream start's own check for every radio
  * input).
  */
+/* Whether a config whose [input] spec is the running input's restarts it for its gain (apply_cfg_rtl_live_gain()): it
+   names a gain, the input is not an Airspy (whose gains are its own settings), and the gain it puts in force differs
+   from the running one. Under --trunk-scan a parked target's own gain stays in force, so nothing restarts then. */
+static int
+cfg_gain_restarts_running_input(const dsd_opts* opts, const dsd_state* state, const dsdneoUserConfig* cfg) {
+    if (!cfg->has_input || !dsd_user_config_rtl_gain_is_set(cfg)
+        || (cfg->input_source != DSDCFG_INPUT_RTL && cfg->input_source != DSDCFG_INPUT_RTLTCP
+            && cfg->input_source != DSDCFG_INPUT_SOAPY)) {
+        return 0;
+    }
+    if (state && opts->trunk_scan_enabled == 1 && state->trunk_scan_target_count > 0U
+        && state->trunk_scan_gain_override) {
+        return 0;
+    }
+    return cfg->rtl_gain != opts->rtl_gain_value;
+}
+
 static cfg_reopen_kind
-cfg_radio_reopen(const dsd_opts* opts, const dsdneoUserConfig* cfg) {
+cfg_radio_reopen(const dsd_opts* opts, const dsd_state* state, const dsdneoUserConfig* cfg) {
     char spec[sizeof opts->audio_in_dev];
     if (opts->audio_in_type != AUDIO_IN_RTL) {
         return CFG_REOPEN_NONE;
@@ -6293,9 +6339,12 @@ cfg_radio_reopen(const dsd_opts* opts, const dsdneoUserConfig* cfg) {
                    ? CFG_REOPEN_AT_DEVICE_RATE
                    : CFG_REOPEN_AT_RUNNING_RATE;
     }
+    /* A config that builds no spec (an [input] without rtl_freq, say) leaves the running one, as one that builds the
+       same spec does: either way the input restarts for a new gain alone, at the rate it runs
+       (apply_cfg_rtl_live_gain()). */
     if (dsd_user_config_radio_input_spec(cfg, opts, spec, sizeof spec) != 0
         || strncmp(spec, opts->audio_in_dev, sizeof opts->audio_in_dev) == 0) {
-        return CFG_REOPEN_NONE;
+        return cfg_gain_restarts_running_input(opts, state, cfg) ? CFG_REOPEN_AT_RUNNING_RATE : CFG_REOPEN_NONE;
     }
     return (cfg->input_source == DSDCFG_INPUT_RTL || cfg->input_source == DSDCFG_INPUT_RTLTCP)
                ? CFG_REOPEN_AT_RTL_BW
@@ -6337,7 +6386,7 @@ cfg_check_scan_row_width(const dsd_opts* opts, dsd_state* state, const dsdneoUse
         return UI_CMD_APPLY_COMPLETED;
     }
     const int kind = row->channel_bw_kind == DSD_ANALOG_DEMOD_AM ? DSD_ANALOG_DEMOD_AM : DSD_ANALOG_DEMOD_FM;
-    const cfg_reopen_kind reopen = cfg_radio_reopen(opts, cfg);
+    const cfg_reopen_kind reopen = cfg_radio_reopen(opts, state, cfg);
     char why[128];
     int rc = 0;
     if (reopen == CFG_REOPEN_AT_RTL_BW) {
@@ -6364,7 +6413,7 @@ cfg_check_scan_row_width(const dsd_opts* opts, dsd_state* state, const dsdneoUse
 static int
 cfg_check_held_analog_width(const dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg, int kind, int width_hz,
                             int opens_anew) {
-    const cfg_reopen_kind reopen = cfg_radio_reopen(opts, cfg);
+    const cfg_reopen_kind reopen = cfg_radio_reopen(opts, state, cfg);
     if (reopen == CFG_REOPEN_AT_DEVICE_RATE) {
         /* No rate to hold it to before the device opens, but the rules every rate shares still apply. */
         char why[128];
@@ -6440,7 +6489,7 @@ cfg_check_receive_family(const dsd_opts* opts, dsd_state* state, const dsdneoUse
            (the apply runs inside a scan row's suspended scope), at the rate it runs now, even where the config leaves
            the width as it was and a typed digital row on air runs none (issue #578). */
         const int opens_anew = !dsd_opts_is_analog_family(opts) || opts->analog_demod != kind
-                               || cfg_radio_reopen(opts, cfg) == CFG_REOPEN_AT_RUNNING_RATE;
+                               || cfg_radio_reopen(opts, state, cfg) == CFG_REOPEN_AT_RUNNING_RATE;
         return cfg_check_held_analog_width(opts, state, cfg, kind, width_hz, opens_anew);
     }
     if (!cfg->has_mode || opts->analog_only || opts->analog_nfm_bandwidth_hz != 0
