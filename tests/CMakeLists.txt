@@ -1787,6 +1787,23 @@ add_test(
 )
 
 add_executable(
+    dsd-neo_test_runtime_unicode_console_restore
+    runtime/test_runtime_unicode_console_restore.c
+)
+target_include_directories(
+    dsd-neo_test_runtime_unicode_console_restore
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_runtime_unicode_console_restore
+    PRIVATE dsd-neo_runtime
+)
+add_test(
+    NAME RUNTIME_UNICODE_CONSOLE_RESTORE
+    COMMAND dsd-neo_test_runtime_unicode_console_restore
+)
+
+add_executable(
     dsd-neo_test_runtime_unicode_put_scalar
     runtime/test_runtime_unicode_put_scalar.c
 )

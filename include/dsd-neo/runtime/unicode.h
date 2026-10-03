@@ -53,9 +53,19 @@ dsd_unicode_fput_scalar(uint32_t scalar, FILE* stream) {
  * @brief Best-effort initialization to make UTF-8 output usable.
  *
  * Attempts to select a UTF-8 locale (LC_CTYPE) and, on native Windows, set the
- * console code page to UTF-8. Safe to call multiple times.
+ * console code page to UTF-8. Safe to call multiple times. On Windows the first
+ * call that switches the console registers dsd_unicode_restore_console() with
+ * atexit(), so the shell gets its own code pages back when the process exits.
  */
 void dsd_unicode_init_locale(void);
+
+/**
+ * @brief Put back the console code pages dsd_unicode_init_locale() replaced.
+ *
+ * Native Windows only; a no-op elsewhere, and once the code pages are restored.
+ * Runs at exit on its own; call it earlier only to hand the console back sooner.
+ */
+void dsd_unicode_restore_console(void);
 
 /** @brief Convenience helper to pick Unicode or ASCII string based on support. */
 const char* dsd_unicode_or_ascii(const char* unicode_str, const char* ascii_str);
