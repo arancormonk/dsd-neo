@@ -20,6 +20,9 @@ Notes:
 - To expose the unauthenticated listener beyond the local machine, pass an explicit numeric IPv4 bind address, for
   example `--rtl-udp-control 9911 --rtl-udp-control-bind 0.0.0.0`.
 - Port `0` disables the listener.
+- Under `--trunk-scan` the listener stays closed, with a startup warning: the trunk-scan coordinator owns the tuner
+  and refuses manual tuning, and a datagram would retune the receiver under the parked target. Plain `-T` trunking and
+  `-Y` scanning still accept UDP retunes.
 - There is no authentication. Do not bind to `0.0.0.0` or a LAN address unless the host firewall and network are
   trusted.
 

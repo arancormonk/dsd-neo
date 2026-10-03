@@ -3068,6 +3068,15 @@ dsd_engine_run_common_setup(dsd_opts* opts, dsd_state* state, int* early_exit) {
         LOG_ERROR("Trunk scan cannot be combined with conventional -Y scanner mode.\n");
         return -1;
     }
+    /* The UDP retune listener tunes the front end directly, behind the trunk-scan coordinator, which owns the tuner and
+       refuses a manual tune: a datagram would move the receiver under the parked target and record another channel's
+       traffic into that target's state. */
+    if (opts->trunk_scan_enabled == 1 && opts->rtl_udp_port != 0) {
+        LOG_WARN(
+            "WARNING: --rtl-udp-control is off under --trunk-scan, which owns the tuner; UDP port %d not opened.\n",
+            opts->rtl_udp_port);
+        opts->rtl_udp_port = 0;
+    }
     if (import_trunking_csvs_if_needed(opts, state) != 0) {
         return -1;
     }

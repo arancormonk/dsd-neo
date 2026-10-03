@@ -17,7 +17,8 @@ Friendly, practical overview of the `dsd-neo` command line. This covers what you
 - RTL‑SDR strings: `-i rtl:dev:freq:gain:ppm:bw:sql:vol[:bias=on|off]` or `-i rtltcp:host:port:freq:gain:ppm:bw:sql:vol[:bias=on|off]`
 - Soapy selection: `-i soapy`, `-i soapy:driver=airspy[,serial=...]`, or `-i soapy[:args]:freq[:gain[:ppm[:bw[:sql[:vol]]]]]` (discover args with `SoapySDRUtil --find`)
 - RTL retune control: `--rtl-udp-control <port>` binds to loopback by default; use
-  `--rtl-udp-control-bind <ipv4>` for explicit remote exposure (see `docs/udp-control.md`)
+  `--rtl-udp-control-bind <ipv4>` for explicit remote exposure (see `docs/udp-control.md`). It stays off under
+  `--trunk-scan`, which owns the tuner.
 - M17 encode: `-fZ -M M17:CAN:SRC:DST[:RATE[:VOX]]`, `-fP`, `-fB`
 - Keys: `-b`, `-H '<hex...>'`, `-R`, `-1`, `-2`, `-! '<hex...>'`, `-@ '<hex...>'`, `-5 '<hex...>'`, `-9`, `-A`, `-S bits:hex[:offset[:step]]`, `-k keys.csv`, `-K keys_hex.csv`, `--dmr-baofeng-pc5 <hex>`, `--dmr-csi-ee72 <hex>`, `--dmr-vertex-ks-csv <file>`, `--dmr-tg-key-csv <file>`, `--dmr-force-algid <hex>`, `--show-keys`, `-4`, `-0`, `-3`
 - Tools: `--calc-lcn file`, `--calc-cc-freq 451.2375`, `--calc-cc-lcn 50`, `--calc-step 12500`, `--calc-start-lcn 1`, `--auto-ppm`, `--auto-ppm-snr 6`, `--rtltcp-autotune`, `--rdio-mode off|dirwatch|api|both`

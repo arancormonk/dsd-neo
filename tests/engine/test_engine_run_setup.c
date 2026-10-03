@@ -578,6 +578,36 @@ test_rtltcp_bias_spellings(void) {
     return test_rc;
 }
 
+/* --rtl-udp-control tunes the front end behind the trunk-scan coordinator, which owns the tuner: under --trunk-scan the
+ * listener stays closed and the user is told why. Other sessions keep it. */
+static int
+test_trunk_scan_turns_off_rtl_udp_control(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    opts->trunk_scan_enabled = 1;
+    opts->rtl_udp_port = 9911;
+    char log[8192];
+    int rc = 0;
+    int test_rc = run_lifecycle_capturing_banner(opts, state, log, sizeof log, &rc);
+    /* The run itself fails later (no targets CSV); the listener decision comes first. */
+    test_rc |= expect_true("trunk scan closes the udp retune port", opts->rtl_udp_port == 0);
+    test_rc |= expect_contains("trunk scan udp warning", log, "--rtl-udp-control is off under --trunk-scan");
+    free_test_runtime(opts, state);
+
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    opts->rtl_udp_port = 9911;
+    test_rc |= run_lifecycle_capturing_banner(opts, state, log, sizeof log, &rc);
+    test_rc |= expect_true("plain session keeps the udp retune port", opts->rtl_udp_port == 9911);
+    test_rc |= expect_omits("plain session has no udp warning", log, "--rtl-udp-control is off");
+    free_test_runtime(opts, state);
+    return test_rc;
+}
+
 static int
 test_rtltcp_invalid_and_partial_tuning_tokens(void) {
     dsd_opts* opts = NULL;
@@ -956,6 +986,7 @@ main(void) {
 #endif
     rc |= test_rtltcp_tuning_tokens_and_bias();
     rc |= test_rtltcp_bias_spellings();
+    rc |= test_trunk_scan_turns_off_rtl_udp_control();
     rc |= test_rtltcp_invalid_and_partial_tuning_tokens();
     rc |= test_soapy_setup_normalizes_args_and_tuning();
     rc |= test_iq_replay_guard_and_requested_setup();
