@@ -15,6 +15,20 @@
 #include <sys/stat.h>
 #include <windows.h>
 
+/*
+ * The CRT treats a negative descriptor as a caller bug: it raises the invalid-parameter handler, which ends the
+ * process. POSIX reports EBADF instead, and -1 is the usual "no descriptor" value, so the descriptor wrappers answer it
+ * the POSIX way before the CRT sees it.
+ */
+static int
+dsd_fd_is_negative(int fd) {
+    if (fd < 0) {
+        errno = EBADF;
+        return 1;
+    }
+    return 0;
+}
+
 int
 dsd_fileno(FILE* fp) {
     return fp ? _fileno(fp) : -1;
@@ -22,32 +36,54 @@ dsd_fileno(FILE* fp) {
 
 int
 dsd_isatty(int fd) {
+    if (dsd_fd_is_negative(fd)) {
+        return 0;
+    }
     return _isatty(fd);
 }
 
 int
 dsd_dup(int oldfd) {
+    if (dsd_fd_is_negative(oldfd)) {
+        return -1;
+    }
     return _dup(oldfd);
 }
 
 int
 dsd_dup2(int oldfd, int newfd) {
-    return _dup2(oldfd, newfd);
+    if (dsd_fd_is_negative(oldfd) || dsd_fd_is_negative(newfd)) {
+        return -1;
+    }
+    /* _dup2 returns 0 on success; POSIX dup2 returns the new descriptor. */
+    if (_dup2(oldfd, newfd) != 0) {
+        return -1;
+    }
+    return newfd;
 }
 
 int
 dsd_close(int fd) {
+    if (dsd_fd_is_negative(fd)) {
+        return -1;
+    }
     return _close(fd);
 }
 
 int
 dsd_fsync(int fd) {
+    if (dsd_fd_is_negative(fd)) {
+        return -1;
+    }
     /* _commit is Windows equivalent of fsync */
     return _commit(fd);
 }
 
 int
 dsd_fstat(int fd, dsd_stat_t* st) {
+    if (dsd_fd_is_negative(fd)) {
+        return -1;
+    }
     return _fstat(fd, st);
 }
 
@@ -405,11 +441,17 @@ dsd_dir_list(const char* dir, dsd_dir_list_cb cb, void* user) {
 
 ssize_t
 dsd_read(int fd, void* buf, size_t count) {
+    if (dsd_fd_is_negative(fd)) {
+        return -1;
+    }
     return (ssize_t)_read(fd, buf, (unsigned int)count);
 }
 
 ssize_t
 dsd_write(int fd, const void* buf, size_t count) {
+    if (dsd_fd_is_negative(fd)) {
+        return -1;
+    }
     return (ssize_t)_write(fd, buf, (unsigned int)count);
 }
 

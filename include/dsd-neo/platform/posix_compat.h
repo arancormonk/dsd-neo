@@ -94,6 +94,9 @@ int dsd_mkdir(const char* path, int mode);
 /**
  * @brief Open a serial/control device for write-only output.
  *
+ * A NULL or empty path fails with errno EINVAL on every platform. Serial control is not supported on Windows, so there
+ * any other path fails with errno ENOSYS.
+ *
  * @param path Device path selected by the user.
  * @return File descriptor on success, -1 on error.
  */

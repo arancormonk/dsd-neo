@@ -172,7 +172,11 @@ dsd_mkdir(const char* path, int mode) {
 
 int
 dsd_open_serial_write(const char* path) {
-    (void)path;
+    if (!path || path[0] == '\0') {
+        errno = EINVAL;
+        return -1;
+    }
+    /* Serial control is not supported on Windows: openSerial() reports that and never opens a port. */
     errno = ENOSYS;
     return -1;
 }

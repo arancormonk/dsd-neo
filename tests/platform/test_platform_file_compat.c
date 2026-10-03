@@ -34,12 +34,18 @@ expect_posix_compat_wrappers(void) {
         return 1;
     }
     rc |= fclose(fp) == 0 ? 0 : 1;
+    errno = 0;
     int fd = dsd_open_serial_write(name);
+#if DSD_PLATFORM_WIN_NATIVE
+    /* Serial control is not supported on Windows: any valid path is refused as such. */
+    rc |= fd == -1 && errno == ENOSYS ? 0 : 1;
+#else
     if (fd < 0) {
         rc = 1;
     } else {
         rc |= dsd_close(fd) == 0 ? 0 : 1;
     }
+#endif
     (void)remove(name);
 
     void* ptr = dsd_aligned_alloc(sizeof(void*), 64);
@@ -66,6 +72,35 @@ expect_posix_compat_wrappers(void) {
         rc |= dsd_test_rmdir(dir) == 0 ? 0 : 1;
     }
 
+    return rc;
+}
+
+/* -1 is the usual "no descriptor" value. POSIX answers it with EBADF; the Windows CRT treats it as a caller bug and ends
+ * the process from its invalid-parameter handler, so the wrappers must answer it before the CRT sees it. */
+static int
+expect_negative_descriptor_wrappers(void) {
+    int rc = 0;
+    char buf[1] = {0};
+    dsd_stat_t st;
+
+    errno = 0;
+    rc |= dsd_isatty(-1) == 0 && errno == EBADF ? 0 : 1;
+    errno = 0;
+    rc |= dsd_dup(-1) == -1 && errno == EBADF ? 0 : 1;
+    errno = 0;
+    rc |= dsd_dup2(-1, 0) == -1 && errno == EBADF ? 0 : 1;
+    errno = 0;
+    rc |= dsd_dup2(0, -1) == -1 && errno == EBADF ? 0 : 1;
+    errno = 0;
+    rc |= dsd_close(-1) == -1 && errno == EBADF ? 0 : 1;
+    errno = 0;
+    rc |= dsd_fsync(-1) == -1 && errno == EBADF ? 0 : 1;
+    errno = 0;
+    rc |= dsd_fstat(-1, &st) == -1 && errno == EBADF ? 0 : 1;
+    errno = 0;
+    rc |= dsd_read(-1, buf, sizeof(buf)) == -1 && errno == EBADF ? 0 : 1;
+    errno = 0;
+    rc |= dsd_write(-1, buf, sizeof(buf)) == -1 && errno == EBADF ? 0 : 1;
     return rc;
 }
 
@@ -505,6 +540,7 @@ main(void) {
     int rc = 0;
     rc |= expect_posix_compat_wrappers();
     rc |= expect_descriptor_wrappers();
+    rc |= expect_negative_descriptor_wrappers();
     rc |= expect_private_open_modes_and_read_fallback();
     rc |= expect_private_open_reports_the_open();
     rc |= expect_existing_regular_file_guards();

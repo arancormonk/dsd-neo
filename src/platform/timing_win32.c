@@ -8,6 +8,7 @@
 
 #if DSD_PLATFORM_WIN_NATIVE
 
+#include <errno.h>
 #include <windows.h>
 
 /* Cached QPC frequency */
@@ -65,19 +66,31 @@ dsd_time_realtime_ns(void) {
 int
 dsd_localtime(const time_t* t, struct tm* out) {
     if (!t || !out) {
+        errno = EINVAL;
         return -1;
     }
     *out = (struct tm){0};
-    return localtime_s(out, t) == 0 ? 0 : -1;
+    /* localtime_s returns its error, EINVAL for every failure it reports, rather than setting errno for POSIX callers. */
+    if (localtime_s(out, t) != 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    return 0;
 }
 
 int
 dsd_gmtime(const time_t* t, struct tm* out) {
     if (!t || !out) {
+        errno = EINVAL;
         return -1;
     }
     *out = (struct tm){0};
-    return gmtime_s(out, t) == 0 ? 0 : -1;
+    /* gmtime_s returns its error, EINVAL for every failure it reports, rather than setting errno for POSIX callers. */
+    if (gmtime_s(out, t) != 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    return 0;
 }
 
 void

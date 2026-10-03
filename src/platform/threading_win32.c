@@ -106,8 +106,12 @@ dsd_cond_init(dsd_cond_t* cond) {
 
 int
 dsd_cond_destroy(dsd_cond_t* cond) {
-    /* Windows condition variables don't need explicit destruction */
-    (void)cond;
+    if (!cond) {
+        return EINVAL;
+    }
+    /* A Windows condition variable holds no resource to release. Leave it as InitializeConditionVariable() leaves a new
+       one, so a destroyed variable is in a defined state. */
+    InitializeConditionVariable(cond);
     return 0;
 }
 
