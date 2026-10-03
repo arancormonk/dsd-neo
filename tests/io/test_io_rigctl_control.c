@@ -19,6 +19,7 @@
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/log.h>
 #include <limits.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <string.h>
 
@@ -62,7 +63,9 @@ static dsdneoRuntimeConfig g_config;
 static void
 reset_stubs(void) {
     DSD_MEMSET(g_commands, 0, sizeof(g_commands));
-    DSD_MEMSET(g_responses, 0, sizeof(g_responses));
+    for (size_t i = 0; i < MAX_RESPONSES; i++) {
+        g_responses[i] = NULL;
+    }
     g_command_count = 0;
     g_response_count = 0;
     g_response_index = 0;

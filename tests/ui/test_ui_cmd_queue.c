@@ -5015,9 +5015,9 @@ test_temporary_lockout_commands(uint8_t slot) {
 
     // Export uses the same canonical writer even when its source snapshot has avoids.
     union {
-        max_align_t alignment;
         unsigned char bytes[1200];
-    } storage = {0};
+        dsd_app_tg_export_payload alignment; /* MSVC's C <stddef.h> has no max_align_t. */
+    } storage = {{0}};
 
     dsd_app_tg_export_payload* export = (dsd_app_tg_export_payload*)storage.bytes;
     dsd_tg_policy_table_version(&state, &export->policy_context, &export->policy_generation);
@@ -5174,9 +5174,9 @@ test_skip_commands(uint8_t slot) {
     rc |= expect_int("export seed skip", dsd_tg_policy_call_skip_arm(&state, 123, 1, 0, dsd_decode_now_mono_s()), 0);
 
     union {
-        max_align_t alignment;
         unsigned char bytes[1200];
-    } storage = {0};
+        dsd_app_tg_export_payload alignment; /* MSVC's C <stddef.h> has no max_align_t. */
+    } storage = {{0}};
 
     dsd_app_tg_export_payload* export = (dsd_app_tg_export_payload*)storage.bytes;
     dsd_tg_policy_table_version(&state, &export->policy_context, &export->policy_generation);
