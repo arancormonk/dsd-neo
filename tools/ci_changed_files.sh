@@ -7,6 +7,13 @@ set -euo pipefail
 # (capped per tree and language) for the slower analyzers, and to every includer
 # for IWYU, whose verdict depends on the header's types and is cheap to run.
 
+# Needs bash 4.4: `mapfile -d` reads git's NUL-separated names, and expanding an
+# empty array under `set -u` is an error before 4.4.
+if ((BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 4))); then
+  echo "ci-changed-files: needs bash 4.4 or later (this is ${BASH_VERSION})" >&2
+  exit 2
+fi
+
 ROOT_DIR=$(git rev-parse --show-toplevel 2> /dev/null || pwd)
 cd "$ROOT_DIR"
 
@@ -97,14 +104,27 @@ if ! git rev-parse --verify "$HEAD_REF^{commit}" > /dev/null 2>&1; then
   exit 2
 fi
 
+# Write each list to a fresh file and rename it into place. The default output
+# directory is inside the checkout, so a pull request can put a symlink (to
+# /dev/null, say) where a list goes; the rename replaces the link instead of
+# writing through it, and the jobs read the list this script wrote. A directory
+# there (or a link to one) would take the file inside it and leave the path
+# reading as an empty list, so that fails instead.
 write_list() {
   local path="$1"
   shift
-  mkdir -p "$(dirname "$path")"
-  : > "$path"
-  if [[ $# -gt 0 ]]; then
-    printf '%s\n' "$@" > "$path"
+  local dir tmp
+  if [[ -d "$path" ]]; then
+    echo "ci-changed-files: ${path} is a directory; refusing to write the list there" >&2
+    exit 1
   fi
+  dir=$(dirname "$path")
+  mkdir -p "$dir"
+  tmp=$(mktemp "$dir/.list.XXXXXX")
+  if [[ $# -gt 0 ]]; then
+    printf '%s\n' "$@" > "$tmp"
+  fi
+  mv -f "$tmp" "$path"
 }
 
 sort_unique_array() {
@@ -173,10 +193,34 @@ limit_includers() {
 
 mkdir -p "$OUT_DIR"
 
-mapfile -t changed_paths < <(
-  git diff --name-only --diff-filter=ACMR "${BASE_REF}...${HEAD_REF}" ||
-    git diff --name-only --diff-filter=ACMR "$BASE_REF" "$HEAD_REF"
-)
+# The raw diff goes through a private temporary file outside the checkout: anything
+# under the checkout comes from the pull request, which could put a symlink to
+# /dev/null where the diff is written and empty the lists.
+DIFF_RAW=$(mktemp "${TMPDIR:-/tmp}/ci-changed-files.XXXXXX")
+trap 'rm -f "$DIFF_RAW"' EXIT
+
+# Read the paths changed between BASE_REF and HEAD_REF, raw (-z): git otherwise
+# quotes a name with non-ASCII bytes, quotes or tabs, and a quoted name matches no
+# pattern below and fails the existence check, so it dropped out of every list. A
+# diff that fails ends the run, because an empty list reads as "nothing changed" and
+# would let every job that consumes it skip its work and pass.
+if ! git diff -z --name-only --diff-filter=ACMR "${BASE_REF}...${HEAD_REF}" > "$DIFF_RAW"; then
+  if ! git diff -z --name-only --diff-filter=ACMR "$BASE_REF" "$HEAD_REF" > "$DIFF_RAW"; then
+    echo "ci-changed-files: git diff between ${BASE_REF} and ${HEAD_REF} failed" >&2
+    exit 1
+  fi
+fi
+mapfile -d '' -t changed_paths < "$DIFF_RAW"
+
+# The lists are one path per line, so a name with a newline in it cannot be
+# listed; it would split into two paths that do not exist and drop out. Fail
+# rather than report fewer changes.
+for p in "${changed_paths[@]}"; do
+  if [[ "$p" == *$'\n'* ]]; then
+    printf 'ci-changed-files: a changed path contains a newline, which the line-based lists cannot hold: %q\n' "$p" >&2
+    exit 1
+  fi
+done
 
 if [[ ${#changed_paths[@]} -eq 0 ]]; then
   write_list "$OUT_DIR/changed_paths.txt"
