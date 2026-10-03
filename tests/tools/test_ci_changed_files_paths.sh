@@ -11,7 +11,10 @@
 #  - a git diff that failed came back as an empty list with exit status 0;
 #  - the lists were written to .ci/changed-files/ inside the checkout by
 #    following any symlink the pull request had committed there, so a link to
-#    /dev/null emptied a list (clang-format then checked nothing).
+#    /dev/null emptied a list (clang-format then checked nothing); and a
+#    directory there must fail rather than swallow the list.
+# A name with a newline in it cannot be carried by the line-based lists, so the
+# helper must fail on it rather than drop it.
 # This builds a throwaway repository and checks each case.
 set -euo pipefail
 
@@ -75,6 +78,47 @@ for list in format_files.txt semgrep_targets.txt; do
   grep -qx 'src/core/base.c' ".ci/changed-files/$list" || fail "$list lost src/core/base.c"
 done
 echo "PASS symlinks planted in the output directory do not empty the lists"
+git checkout -q -f --detach "$base"
+git clean -q -fdx
+
+# A directory, or a link to one, where a list goes fails the helper: the rename
+# would put the list inside it, and the path would read as an empty list.
+expect_refused() {
+  local label="$1"
+  local head="$2"
+  if GITHUB_OUTPUT="$WORK/refused.out" bash "$SCRIPT" --base "$base" --head "$head" \
+    --no-header-expansion > /dev/null 2> "$WORK/refused.err"; then
+    fail "$label: exited 0"
+  fi
+  [[ ! -s "$WORK/refused.out" ]] || fail "$label: outputs written: $(cat "$WORK/refused.out")"
+  echo "PASS $label"
+}
+mkdir -p .ci/changed-files/format_files.txt
+printf 'x\n' > .ci/changed-files/format_files.txt/keep
+printf 'int dir_case;\n' > src/core/base.c
+git add -A
+git commit -q -m "directory at a list path"
+expect_refused "a directory at a list path fails the helper" "$(git rev-parse HEAD)"
+grep -q 'is a directory' "$WORK/refused.err" || fail "directory not reported: $(cat "$WORK/refused.err")"
+git checkout -q -f --detach "$base"
+git clean -q -fdx
+mkdir -p .ci/changed-files elsewhere
+printf 'x\n' > elsewhere/keep
+ln -s ../../elsewhere .ci/changed-files/format_files.txt
+printf 'int dir_link_case;\n' > src/core/base.c
+git add -A
+git commit -q -m "link to a directory at a list path"
+expect_refused "a link to a directory at a list path fails the helper" "$(git rev-parse HEAD)"
+git checkout -q -f --detach "$base"
+git clean -q -fdx
+
+# A changed name with a newline in it fails the helper.
+newline_name="src/core/line"$'\n'"break.c"
+printf 'int newline;\n' > "$newline_name"
+git add -A
+git commit -q -m "newline name"
+expect_refused "a changed name with a newline fails the helper" "$(git rev-parse HEAD)"
+grep -q 'contains a newline' "$WORK/refused.err" || fail "newline not reported: $(cat "$WORK/refused.err")"
 git checkout -q -f --detach "$base"
 git clean -q -fdx
 

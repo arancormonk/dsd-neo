@@ -107,11 +107,17 @@ fi
 # Write each list to a fresh file and rename it into place. The default output
 # directory is inside the checkout, so a pull request can put a symlink (to
 # /dev/null, say) where a list goes; the rename replaces the link instead of
-# writing through it, and the jobs read the list this script wrote.
+# writing through it, and the jobs read the list this script wrote. A directory
+# there (or a link to one) would take the file inside it and leave the path
+# reading as an empty list, so that fails instead.
 write_list() {
   local path="$1"
   shift
   local dir tmp
+  if [[ -d "$path" ]]; then
+    echo "ci-changed-files: ${path} is a directory; refusing to write the list there" >&2
+    exit 1
+  fi
   dir=$(dirname "$path")
   mkdir -p "$dir"
   tmp=$(mktemp "$dir/.list.XXXXXX")
@@ -205,6 +211,16 @@ if ! git diff -z --name-only --diff-filter=ACMR "${BASE_REF}...${HEAD_REF}" > "$
   fi
 fi
 mapfile -d '' -t changed_paths < "$DIFF_RAW"
+
+# The lists are one path per line, so a name with a newline in it cannot be
+# listed; it would split into two paths that do not exist and drop out. Fail
+# rather than report fewer changes.
+for p in "${changed_paths[@]}"; do
+  if [[ "$p" == *$'\n'* ]]; then
+    printf 'ci-changed-files: a changed path contains a newline, which the line-based lists cannot hold: %q\n' "$p" >&2
+    exit 1
+  fi
+done
 
 if [[ ${#changed_paths[@]} -eq 0 ]]; then
   write_list "$OUT_DIR/changed_paths.txt"
