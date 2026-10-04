@@ -11,7 +11,7 @@ Friendly, practical overview of the `dsd-neo` command line. This covers what you
 - IQ capture/replay: `--iq-capture <path>`, `--iq-capture-format cu8|cf32`, `--iq-capture-max-mb <n>`, `--iq-replay <path>`, `--iq-replay-rate fast|realtime`, `--iq-loop`, `--iq-info <path>`
 - Levels/Audio: `-g 0|1..50`, `-n 0|1..100`, `-nm`, `-8`, `-V 0|1|2|3`, `-z 0|1|2`, `-y`, `-v 0x9`
 - Modes: `-fa | -fs | -fr | -f1 | -f2 | -fd | -fx | -fy | -fz | -fU | -fi | -fn | -fp | -fh | -fH | -fe | -fE | -fm | -fA | -fM`
-- Analog: `-fA` (NFM monitor), `--nfm-bandwidth-hz <Hz>` (8000..25000, default 16000); `-fM` (native AM, radio/I/Q inputs only), `--am-bandwidth-hz <Hz>` (5000..20000, default 6000); `--tone-allow <list>` / `--tone-block <list>` / `--no-tone-filter` (CTCSS/DCS receive policy on the FM monitor, e.g. `67.0/100.0/D023N`); see [Analog reception](#analog-reception--fa--fm) and [Tone filter](#tone-filter-ctcssdcs-receive-policy)
+- Analog: `-fA` (NFM monitor), `--nfm-bandwidth-hz <Hz>` (8000..25000, default 16000); `-fM` (native AM, radio/I/Q inputs only), `--am-bandwidth-hz <Hz>` (5000..20000, default 6000); `--tone-allow <list>` / `--tone-block <list>` / `--no-tone-filter` (CTCSS/DCS receive policy on the FM monitor, e.g. `67.0/100.0/D023N`); `--squelch auto[+N]` (open N dB over each analog channel's learned noise floor, radio inputs); see [Analog reception](#analog-reception--fa--fm), [Tone filter](#tone-filter-ctcssdcs-receive-policy) and [Auto squelch](#auto-squelch---squelch-auto)
 - Inversions/filtering: `-xx`, `-xr`, `-xd`, `-xz`, `-l`, `-q`
 - Trunking/scan: `-T`, `-Y`, `--trunk-scan targets.csv` (P25/DMR/NXDN96/NXDN48 trunk and conventional targets and analog NFM and AM conventional targets; each type selects its decoder class), `-C chan.csv`, `-G group.csv`, `--src-csv src.csv`, `--p25-bandplan plan.csv`, `--p25-bandplan-export plan.csv`, `-W`, `-E`, `-p`, `-e`, `-I 1234`, `-U 4532`, `-B 12000`, `-t 1`, `--enc-lockout|--enc-follow`, `--tg-lockout-session|--tg-lockout-persist`, `--scan-voice-only`, `--scan-voice-qualify-ms <ms>`, `--scan-voice-hold-ms <ms>`, `--scan-max-visit-ms <ms>`
 - RTL‑SDR strings: `-i rtl:dev:freq:gain:ppm:bw:sql:vol[:bias=on|off]` or `-i rtltcp:host:port:freq:gain:ppm:bw:sql:vol[:bias=on|off]`
@@ -73,10 +73,12 @@ Tip: If you run with no arguments and no config is loaded, `dsd-neo` starts the 
   - `rtl:dev:freq:gain:ppm:bw:sql:vol[:bias[=on|off]]`
   - Examples: `rtl:0:851.375M:22:-2:24:0:2`, `rtl:1:450M:0:0:12:0:2`
   - `sql` is a power squelch in dB and is **off** when set to `0`, which is what the examples above use. The startup
-    banner and the terminal input line say so (`SQ=off`, `SQL: off`). Give a negative value (`-60`) to gate on power.
-    A `-Y` channel-map row or `--trunk-scan` target can replace it while that row is on air with `--squelch-db <dB>`
-    in its `options` column (whole dB, `-100..0`, `0` = off, omitted = inherit this value); see
-    `docs/csv-formats.md`.
+    banner and the terminal input line say so (`SQ=off`, `SQL: off`). Give a negative value (`-60`) to gate on power,
+    or `auto` / `auto+N` for the [auto squelch](#auto-squelch---squelch-auto), which opens N dB over each analog
+    channel's own noise floor whatever the receiver. `--squelch <setting>` sets the same thing on any radio input and
+    wins over the spec. A `-Y` channel-map row or `--trunk-scan` target can replace it while that row is on air with
+    `--squelch-db <dB>` or `--squelch <setting>` in its `options` column (whole dB, `-100..0`, `0` = off, `auto[+N]` on
+    analog rows, omitted = inherit this value); see `docs/csv-formats.md`.
 - RTL‑TCP: `-i rtltcp[:host:port[:freq:gain:ppm:bw:sql:vol[:bias[=on|off]]]]`
 - SoapySDR: `-i soapy[:args[:freq[:gain[:ppm[:bw[:sql[:vol]]]]]]]`
 - TCP raw PCM16LE input (mono): `-i tcp[:host:port]` (bare `tcp` connects to `localhost:7355`; sample rate uses `-s`, default 48000)
@@ -663,7 +665,44 @@ whichever row is on air, rather than accepted and that row skipped at every visi
   `-fA` audio sounds the same; `DSD_NEO_DEEMPH=nfm` selects the 750 us land-mobile curve (212 Hz corner).
 - The channel squelch measures power after the channel filter, so the noise it sees scales with the width: halving
   the width lowers the noise power by about 3 dB. Re-check a squelch threshold (`sql`, `rtl_sql`) after changing the
-  width.
+  width. The auto squelch (below) needs no re-check: it rescales its floor with the filter.
+
+### Auto squelch (`--squelch auto`)
+
+A fixed squelch threshold belongs to one receiver: the dongle, antenna, gain and channel width set the noise floor,
+so a level that keeps noise out on one setup opens on noise, or chops weak traffic, on another. `--squelch auto[+N]`
+opens the analog monitor N dB over the noise floor the demodulator learns on each channel (whole dB, 3 to 30; `auto`
+alone is `auto+10`), so one setting suits every receiver and every channel of a scan.
+
+- `--squelch <setting>` takes the squelch grammar: `off` or `0`, a negative level in dB (`-60`), a positive linear mean
+  power (the legacy `sql` form), or `auto[+N]`. It works with `--iq-replay`, which has no spec field, and wins over the
+  `sql` field of an `rtl:`, `rtltcp:`, `soapy:` or Airspy spec (which takes `auto[+N]` too), which wins over
+  `[input] rtl_sql_mode` and `rtl_sql_margin_db` in a config (`docs/config-system.md`). The terminal's
+  `Squelch...` row and the Qt/Android radio panel's `dB | Auto` choice set it live.
+- Learning. The demodulator classes each 40 ms window of the channel-filtered I/Q as noise, carrier or undecided from
+  its envelope and phase statistics, and takes the floor from noise windows only (5 of the last 8). Until it has one
+  (`learning`) only carrier windows open, so landing in the middle of a transmission plays it. A carrier is never
+  learned as the floor: a channel with no noise windows (a continuous carrier or a birdie) stays learning and plays,
+  as with the squelch off; lock it out, or let `--scan-max-visit-ms` move a scan on.
+- Gating. With a floor, the gate opens on a 20 ms stretch at the floor plus the margin and closes 3 dB lower or on a
+  noise window. It is decided per sample and travels with the audio, so the edges fall on the right samples whatever
+  the read sizes: the monitor ramps in over 5 ms and out over 10 ms to exact silence, and the analog AGC holds while
+  the gate is closed. The floor follows the noise down quickly and up at 1 dB a second, and is learned again after
+  5 s of noise more than 6 dB over it, or a window 20 dB under it.
+- Per channel. Floors are kept for each frequency, tuner gain, tuner AGC state, bias tee, device and channel rate for
+  30 minutes, so a scan coming back to a channel picks its floor up again; a channel within 5 MHz seeds a new channel's
+  floor until three noise windows confirm it.
+- Where it runs: the analog monitors (`-fA`, `-fM`, `nfm` and `am` scan rows, `nfm-conventional` and
+  `am-conventional` targets) on a radio input (RTL-SDR, rtl_tcp, SoapySDR, Airspy, `--iq-replay`). On a digital
+  channel it is off: CRC and FEC already decide what is traffic there, and a control channel never shows its noise. On
+  audio input (PCM, WAV, TCP, UDP) it is off and the engine says so at startup, since FM noise plays louder than voice
+  there. The M17 encoder and EDACS analog voice run without a squelch under it (EDACS keeps its release watchdog).
+- What it shows: the terminal input line reads `SQL: auto +10 dB (floor -78.3 dB)`, `(learning)`, `(off: no radio
+  input)`, `(off on digital)`, or in the rare front end it has no plan for `(off: no channel plan)`; the startup
+  banner `SQ=auto+10dB`; the DSP panel and the Qt/Android radio panel the same.
+- Scans: a row or target's own `--squelch auto[+N]` (`nfm` and `am` rows, `nfm-conventional` and `am-conventional`
+  targets) replaces the default while it is on air, as `--squelch-db` does. Under the auto squelch an analog row's
+  noise no longer holds the scan, so the open-squelch warning does not apply to it. See `docs/csv-formats.md`.
 
 ### Native AM (`-fM`)
 
@@ -1317,17 +1356,18 @@ cache file. Direct frequency changes are disabled during `--trunk-scan`, whose t
 
 ## RTL‑SDR details (`-i rtl` / `-i rtltcp`)
 
-- Fields: `dev` (device index), `freq` (Hz/MHz), `gain` (0–49), `ppm`, `bw` (kHz: 4, 6, 8, 12, 16, 24, 48), `sql` (negative = threshold in dB, `0` = off, positive = linear mean power), `vol` (monitor gain, 0–3; typical 1–3), optional `bias[=on|off]`. `bias` alone (or `b`) turns the bias tee on; a value
+- Fields: `dev` (device index), `freq` (Hz/MHz), `gain` (0–49), `ppm`, `bw` (kHz: 4, 6, 8, 12, 16, 24, 48), `sql` (negative = threshold in dB, `0` = off, positive = linear mean power, `auto[+N]` = the [auto squelch](#auto-squelch---squelch-auto)), `vol` (monitor gain, 0–3; typical 1–3), optional `bias[=on|off]`. `bias` alone (or `b`) turns the bias tee on; a value
   is one whole word: `on`/`off`, `1`/`0`, `true`/`false` or `yes`/`no` (any case). A value or trailing option it cannot
   read is ignored with a warning and leaves the bias tee as it was; the startup `RTL #N:` line ends in `BIAS=on` when
   it is on.
-- A `sql` value that is not a number leaves the squelch as it was rather than switching it off. A disabled squelch is
-  reported as `off` everywhere it is shown — the startup banner, the terminal input line, the DSP panel — so it is
-  never mistaken for a threshold gating at the −120 dB display floor.
-- A scan row or target may carry its own `--squelch-db`. It uses these same dB units but only the
-  negative and `0` forms: the linear positive form is refused there. While the row is on air it replaces this
-  threshold; leaving it, or stopping the scan, restores this one. The squelch menu and Qt panel still edit this
-  configured value, and a save writes it, never the row's.
+- A `sql` value that is neither a number nor `auto[+N]` leaves the squelch as it was rather than switching it off. A
+  disabled squelch is reported as `off` everywhere it is shown — the startup banner, the terminal input line, the DSP
+  panel — so it is never mistaken for a threshold gating at the −120 dB display floor.
+- `--squelch <setting>` wins over `sql`, and `sql` over the config's `rtl_sql` keys.
+- A scan row or target may carry its own `--squelch-db`, or `--squelch` (the same option). It uses these same dB units
+  but only the negative and `0` forms, plus `auto[+N]` on analog rows: the linear positive form is refused there. While
+  the row is on air it replaces this setting; leaving it, or stopping the scan, restores this one. The squelch menu and
+  Qt panel still edit this configured value, and a save writes it, never the row's.
 - For DMR data/LRRP on direct RTL input, use `bw=48` when possible, or at least `bw=24`; lower basebands may still decode voice but corrupt data PDUs.
 - Note: For EDACS analog voice follow, `sql <= 0` now uses a bounded fallback watchdog to avoid indefinite VC hold when no release marker is detected.
 - RTL USB, RTL-TCP, SoapySDR, and IQ replay digital decode run in the symbol domain. The digital decoder receives one

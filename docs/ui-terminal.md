@@ -82,7 +82,7 @@ Main Menu
 │       ├── DSP bandwidth... [48 kHz]
 │       ├── NFM bandwidth... [default]           (-fA, or a width set, on a radio input)
 │       ├── AM bandwidth... [default]            (-fM, a width set, or a rate below the default, on a radio input)
-│       ├── Squelch (dB)...
+│       ├── Squelch... [off]                     (a level in dB, off, or auto[+N])
 │       ├── Volume multiplier... [1]             v
 │       ├── Tuner autogain [On]
 │       ├── Bias tee [Off]
@@ -390,6 +390,9 @@ carrier/Costas, NCO, and timing-recovery state for the active OP25-style chain.
 
 For RTL-family inputs, the optional DSP panel also shows `Squelch`, which compares post-channel-filter power against the
 configured SQL threshold. This is an advanced squelch diagnostic and is separate from the raw `RF Level` health line.
+Under the [auto squelch](cli.md#auto-squelch---squelch-auto) it shows the gate, the channel power and the setting with
+its floor: `Squelch: Open ch:-58.2 dB sql:auto +10 dB (floor -78.3 dB)` (`Closed` between transmissions, `Off` where
+the auto squelch does not run).
 
 ## Input Level Health
 
@@ -405,27 +408,31 @@ samples measured before demodulation. The line is advisory only; DSD-neo never c
 filtering automatically.
 
 The default RTL input line shows the SQL threshold, reading `off` when the squelch is disabled, but does not
-duplicate channel power. While a scan row or target overrides the squelch with `--squelch-db`, the line shows the
-row's threshold first and the configured default beside it: `SQL: -60.0 dB (row; default -80.0 dB)`. The
-`Squelch (dB)...` prompt always offers and edits that configured default; if a row is overriding it, the change
-takes effect when the scanner leaves the row, and the toast says so
+duplicate channel power. Under the auto squelch it shows the margin and what the squelch is doing: `SQL: auto +10 dB
+(floor -78.3 dB)`, `(learning)` until it has a floor, or why it is off here: `(off: no radio input)`, `(off on
+digital)`. While a scan row or target overrides the squelch with `--squelch-db` or `--squelch`, the line shows the
+row's setting first and the configured default beside it: `SQL: -60.0 dB (row; default -80.0 dB)`, `SQL: auto +6 dB
+(floor -81.0 dB; row; default -60.0 dB)`. The `Squelch...` row is labelled with the configured setting
+(`Squelch... [auto +10 dB]`) and its prompt takes a level in dB, `off`, or `auto` / `auto+N` (N from 3 to 30 dB over
+the floor), opening on the setting in force (`-60.0`, `off`, `auto+10`). It always edits that configured default; if a
+row is overriding it, the change takes effect when the scanner leaves the row, and the toast says so
 (`Default squelch -75.0 dB; this channel overrides it (-60.0 dB)`). The M17 VOX `SQL:` field on a non-RTL input
 reads the same way after the measured power, and the DSP panel's `Squelch` line marks a row's threshold with
 `(row)`. Enable the DSP panel when you
 need to inspect post-channel-filter squelch power. `RF Level` and `Squelch` are measured at different stages and are not
 expected to match exactly.
 
-While a scan row or target is on air that can take a "this channel" edit (issue #518), the `Squelch (dB)...`,
-`NFM bandwidth...`, `AM bandwidth...`, `Gain...` and `Tone filter...` rows open a chooser before their prompt:
-`All channels (default)...` goes on to the prompt above, which edits the configured default; `This channel
-(county-p25)...` prompts on what the row runs now (whole dB from -100 to 0 for the squelch, 0 = off; the width in Hz;
-the gain, 0 = AGC; a tone picker and list) and changes that row alone for the rest of the session; `This channel: use
-the default` (offered when the row's list sets the setting) makes it follow the configured default, and `This channel:
-back to the list value` (offered while it runs an edit) drops the edit. The edit goes to the row named when the chooser
-opened, at once if it is on air and from its next visit otherwise (`This channel (county-p25): squelch -55 dB for this
-session`, `... from its next visit`). A width row is offered only under a row of its kind, and the gain only for a
-`--trunk-scan` target on an RTL-family input other than an Airspy. Edits end when the scan does (under `-Y`, when the
-scanner leaves or the channel map changes) and are never saved. See [Live per-channel
+While a scan row or target is on air that can take a "this channel" edit (issue #518), the `Squelch...`, `NFM
+bandwidth...`, `AM bandwidth...`, `Gain...` and `Tone filter...` rows open a chooser before their prompt: `All channels
+(default)...` goes on to the prompt above, which edits the configured default; `This channel (county-p25)...` prompts on
+what the row runs now (whole dB from -100 to 0 for the squelch, 0 = off, or `auto[+N]` on an `nfm` or `am` row; the
+width in Hz; the gain, 0 = AGC; a tone picker and list) and changes that row alone for the rest of the session; `This
+channel: use the default` (offered when the row's list sets the setting) makes it follow the configured default, and
+`This channel: back to the list value` (offered while it runs an edit) drops the edit. The edit goes to the row named
+when the chooser opened, at once if it is on air and from its next visit otherwise (`This channel (county-p25): squelch
+-55 dB for this session`, `... from its next visit`). A width row is offered only under a row of its kind, and the gain
+only for a `--trunk-scan` target on an RTL-family input other than an Airspy. Edits end when the scan does (under `-Y`,
+when the scanner leaves or the channel map changes) and are never saved. See [Live per-channel
 edits](trunk-scan.md#runtime-behavior).
 
 `DSP-BW:` on the RTL input line is the DSP bandwidth, the demodulator's sample rate that `DSP bandwidth...` sets. Under

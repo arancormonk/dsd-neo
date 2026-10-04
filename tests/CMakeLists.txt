@@ -2164,10 +2164,15 @@ if(DSD_ENABLE_TERMINAL_UI)
             ${PROJECT_SOURCE_DIR}/src/ui/terminal
             ${CURSES_INCLUDE_DIRS}
     )
-    target_link_libraries(dsd-neo_test_ui_menu_labels PRIVATE ${DSD_NEO_TEST_MATH_LIB})
+    target_link_libraries(
+        dsd-neo_test_ui_menu_labels
+        PRIVATE ${DSD_NEO_TEST_MATH_LIB}
+    )
     target_sources(
         dsd-neo_test_ui_menu_labels
-        PRIVATE test_support/scan_mode_label_stubs.c test_support/squelch_format_stubs.c
+        PRIVATE
+            test_support/scan_mode_label_stubs.c
+            test_support/squelch_format_stubs.c
     )
     add_test(NAME UI_MENU_LABELS COMMAND dsd-neo_test_ui_menu_labels)
 
@@ -2193,14 +2198,19 @@ if(DSD_ENABLE_TERMINAL_UI)
             ${PROJECT_SOURCE_DIR}/src/ui/terminal
             ${CURSES_INCLUDE_DIRS}
     )
-    target_link_libraries(dsd-neo_test_ui_menu_labels_radio PRIVATE ${DSD_NEO_TEST_MATH_LIB})
+    target_link_libraries(
+        dsd-neo_test_ui_menu_labels_radio
+        PRIVATE ${DSD_NEO_TEST_MATH_LIB}
+    )
     target_compile_definitions(
         dsd-neo_test_ui_menu_labels_radio
         PRIVATE USE_RADIO
     )
     target_sources(
         dsd-neo_test_ui_menu_labels_radio
-        PRIVATE test_support/scan_mode_label_stubs.c test_support/squelch_format_stubs.c
+        PRIVATE
+            test_support/scan_mode_label_stubs.c
+            test_support/squelch_format_stubs.c
     )
     add_test(
         NAME UI_MENU_LABELS_RADIO
@@ -8660,7 +8670,10 @@ target_link_libraries(
     dsd-neo_test_dsp_squelch_auto_demod
     PRIVATE dsd-neo_dsp_private_test_support ${DSD_NEO_TEST_MATH_LIB}
 )
-add_test(NAME DSP_SQUELCH_AUTO_DEMOD COMMAND dsd-neo_test_dsp_squelch_auto_demod)
+add_test(
+    NAME DSP_SQUELCH_AUTO_DEMOD
+    COMMAND dsd-neo_test_dsp_squelch_auto_demod
+)
 
 add_executable(dsd-neo_test_dsp_squelch dsp/test_dsp_squelch.cpp)
 target_include_directories(
@@ -12589,6 +12602,30 @@ if(DSD_HAS_RADIO)
     # must back up and drop, or the host fails the leg) leaves the decoder's lines and
     # the audio it handed over (REPLAY SINK) unchanged.
     if(_DSD_NEO_REPLAY_SINK_WRAP)
+        # The auto squelch gates the analog monitor sample by sample (issue #518): fast,
+        # jittered and realtime replays must hand the sink the same audio, gated at the
+        # same samples (the burst's 280 ms, 14 writes of 960). The monitor reads one
+        # sample at a time, so there is no read for a short-read leg to cut, and 280 ms
+        # of audio cannot back up a stalled sink; the NXDN case below covers that.
+        foreach(
+            _sql_case
+            IN
+            ITEMS "NFM;nfm_burst_synth;-fA" "AM;am_burst_synth;-fM"
+        )
+            list(GET _sql_case 0 _sql_kind)
+            list(GET _sql_case 1 _sql_fixture)
+            list(GET _sql_case 2 _sql_mode)
+            dsd_neo_add_iq_determinism_test(
+                DECODE_IQ_ANALOG_SQL_AUTO_${_sql_kind}_DETERMINISM
+                ${_sql_fixture}
+                "${_sql_mode} --squelch auto"
+                "sink:free;sink:free+jitter:7:120;sink:free+jitter:11:120;sink:free+realtime"
+                "monitor_samples=359[0-9][0-9] .*REPLAY SINK: stream=0 rate=48000 channels=1 async=1 writes=1[2-6] "
+                0
+                0
+                0
+            )
+        endforeach()
         dsd_neo_add_iq_determinism_test(
             DECODE_IQ_NXDN48_AFTER_RETUNE_AUTO_DETERMINISM_STALLED_SINK
             nxdn48_after_retune
@@ -13270,6 +13307,117 @@ if(DSD_HAS_RADIO)
         "${_analog_off_path}"
     )
 
+    # The auto squelch (issue #518): a margin over the noise floor the demodulator
+    # learns on each channel, so one setting suits every receiver. nfm_burst_synth and
+    # am_burst_synth (SQUELCH_BURST in tools/build_iq_fixtures.py) hold receiver noise
+    # for 0.3 s, a carrier with the 1 kHz test tone from 0.30 to 0.55 s, then noise to
+    # 0.75 s. Under --squelch auto (+10 dB) the gate learns the floor from the opening
+    # windows, opens 20 ms into the carrier and closes within a window of its end: 320 ms
+    # to the first audible block and 280 ms audible, measured through FM and AM alike.
+    # The _HOT twins replay the same capture 10 dB hotter (--analog-iq-gain-db 10, noise
+    # and carrier alike, as a receiver with more gain records them) and are held to the
+    # same bounds; they measure the same. DECODE_IQ_ANALOG_NEG_SQL_LEVEL_HOT shows a fixed
+    # threshold does not carry over.
+    set(_sql_auto_burst_bounds
+        "--analog-audible-dbfs -40 --analog-min-total-ms 700 --analog-max-total-ms 800 --analog-min-first-audible-ms 300 --analog-max-first-audible-ms 360 --analog-min-audible-ms 240 --analog-max-audible-ms 320 --analog-max-clip 0"
+    )
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_SQL_AUTO_NFM_BURST
+        nfm_burst_synth
+        "-fA --squelch auto ${_sql_auto_burst_bounds}"
+        ""
+        "${_analog_off_path}"
+    )
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_SQL_AUTO_NFM_BURST_HOT
+        nfm_burst_synth
+        "-fA --squelch auto --analog-iq-gain-db 10 ${_sql_auto_burst_bounds}"
+        "capture scaled by [+]10[.]0 dB, 0 of 72000 bytes clipped.*ANALOG AUDIO OK"
+        "${_analog_off_path}"
+    )
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_SQL_AUTO_AM_BURST
+        am_burst_synth
+        "-fM --squelch auto ${_sql_auto_burst_bounds}"
+        ""
+        "${_analog_off_path}"
+    )
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_SQL_AUTO_AM_BURST_HOT
+        am_burst_synth
+        "-fM --squelch auto --analog-iq-gain-db 10 ${_sql_auto_burst_bounds}"
+        "capture scaled by [+]10[.]0 dB, 0 of 72000 bytes clipped.*ANALOG AUDIO OK"
+        "${_analog_off_path}"
+    )
+    # The margin is over the floor: each burst's carrier stands about 20 dB above its
+    # channel's noise (it still opens at +20 dB and not at +21, or +22 on AM), so under a
+    # 30 dB margin it never opens, at either level. The silence pattern pairs the
+    # never-audible bound with stream time.
+    set(_sql_auto_silent "--analog-max-audible-ms 0 --analog-min-total-ms 700")
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_SQL_AUTO_NFM_MARGIN
+        nfm_burst_synth
+        "-fA --squelch auto+30 ${_sql_auto_silent}"
+        ""
+        "${_analog_off_path}"
+    )
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_SQL_AUTO_AM_MARGIN_HOT
+        am_burst_synth
+        "-fM --squelch auto+30 --analog-iq-gain-db 10 ${_sql_auto_silent}"
+        ""
+        "${_analog_off_path}"
+    )
+    # Ten seconds of receiver noise (noise_floor) never open it, through FM or AM.
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_SQL_AUTO_NOISE_FLOOR
+        noise_floor
+        "-fA --squelch auto --analog-max-audible-ms 0 --analog-min-total-ms 9900"
+        ""
+        "${_analog_off_path}"
+    )
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_SQL_AUTO_AM_NOISE_FLOOR
+        noise_floor
+        "-fM --squelch auto --analog-max-audible-ms 0 --analog-min-total-ms 9900"
+        ""
+        "${_analog_off_path}"
+    )
+    # A carrier is never learned as the floor: the real excerpts hold their carrier
+    # throughout, and auto plays them whole after its first 40 ms window (5940 of the
+    # 6000 ms of nfm_ctcss_real, 7940 of am_airband_real's 8000), within 60 ms of the
+    # audible time with the squelch off (4200 and 5720 ms at -40 dBFS).
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_SQL_AUTO_NFM_REAL_CARRIER
+        nfm_ctcss_real
+        "-fA -n 50 --squelch auto --analog-audible-dbfs -40 --analog-min-captured-ms 5900 --analog-min-audible-ms 4100 --analog-max-first-audible-ms 100"
+        ""
+        "${_analog_off_path}"
+    )
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_SQL_AUTO_AM_REAL_CARRIER
+        am_airband_real
+        "-fM -n 50 --squelch auto --analog-audible-dbfs -40 --analog-min-captured-ms 7900 --analog-min-audible-ms 5600 --analog-max-first-audible-ms 100"
+        ""
+        "${_analog_off_path}"
+    )
+    # A -Y map row's own --squelch auto on a digital (-fa) session: the row's nfm class
+    # and its auto squelch apply, and the burst gates as under -fA.
+    set(_scan_sql_auto_csv
+        "${CMAKE_CURRENT_BINARY_DIR}/scan_mode_sql_auto_row.csv"
+    )
+    file(
+        WRITE "${_scan_sql_auto_csv}"
+        "channel,frequency_hz,mode,options\n1,150000000,nfm,--squelch auto\n"
+    )
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_SCAN_SQL_AUTO_ROW
+        nfm_burst_synth
+        "-fa -C ${_scan_sql_auto_csv} --analog-scan-row 0 ${_sql_auto_burst_bounds}"
+        "Scan row applied: 0 nfm; width 16 kHz; squelch auto [+]10 dB [(]row[)].*ANALOG AUDIO OK"
+        "${_analog_off_path}"
+    )
+
     # Negative controls: bounds that must NOT hold, run through
     # analog_replay_fail_check.cmake, which requires the host's exit code (1 for a
     # missed bound), the named ANALOG AUDIO FAIL line and no ANALOG AUDIO OK. Without
@@ -13385,6 +13533,25 @@ if(DSD_HAS_RADIO)
         nfm_ctcss_real
         "-fA -n 50 ${_analog_speech_parity}"
         "ANALOG AUDIO FAIL: RMS dBFS -[0-9]+[.][0-9]+ [(]limit -27[.]90[)]"
+    )
+    # The auto squelch's burst bounds under a fixed threshold, on the hot copy: -35 dB
+    # sits 2.5 dB over the burst's noise at its own level (the gate opens on noise at
+    # -38 dB and below) and 7.5 dB under the hot copy's, so there it opens on noise from
+    # the first block and plays the whole replay (740 ms).
+    dsd_neo_add_analog_replay_fail_test(
+        DECODE_IQ_ANALOG_NEG_SQL_LEVEL_HOT
+        nfm_burst_synth
+        "-fA --squelch -35 --analog-iq-gain-db 10 ${_sql_auto_burst_bounds}"
+        "ANALOG AUDIO FAIL: first audible ms 0[.]00 [(]limit 300[.]00[)]"
+    )
+    # A gain that would clip the copy stops the host before the replay (exit 2):
+    # noise_floor's 16 LSB noise is already a fifth of full scale.
+    dsd_neo_add_analog_replay_fail_test(
+        DECODE_IQ_ANALOG_NEG_IQ_GAIN_CLIPS
+        noise_floor
+        "-fA --analog-iq-gain-db 10"
+        "--analog-iq-gain-db [+]10[.]0 clips the capture"
+        2
     )
     # A malformed bound stops the host before the replay (exit 2), rather than being
     # dropped or handed to the CLI parser.

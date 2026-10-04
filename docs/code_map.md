@@ -809,8 +809,26 @@ The `Linux • RelWithDebInfo • ctest (x86-64-v3, fast-math, clang)` check enf
     while the stream is open; issue #572); the engine installs
     `rtl_stream_request_analog_profile()`, `rtl_stream_request_digital_family_landing()`,
     `rtl_stream_get_analog_profile()`, `rtl_stream_analog_family_active()`, `rtl_stream_family_landing_after_pending()`,
-    `rtl_stream_output_rate_for_family()` and `rtl_stream_get_replay_batch()` behind them. Tests:
-    `RUNTIME_RTL_STREAM_METRICS_HOOKS`, `ENGINE_RTL_STREAM_METRICS_HOOKS_INSTALL`.
+    `rtl_stream_output_rate_for_family()` and `rtl_stream_get_replay_batch()` behind them. It also hands the
+    demodulator a whole squelch setting (`set_channel_squelch_setting`, `rtl_stream_set_channel_squelch_setting()`;
+    issue #518 follow-up), which a scan scope's push uses for every setting, levels included; a table without it falls
+    back to the level call, with an AUTO setting off. Tests: `RUNTIME_RTL_STREAM_METRICS_HOOKS`, `ENGINE_RTL_STREAM_METRICS_HOOKS_INSTALL`.
+  - Squelch setting (`include/dsd-neo/runtime/squelch.h`, `src/runtime/squelch.c`, issue #518 follow-up): a
+    `dsd_squelch_setting` (`<dsd-neo/core/power.h>`: mode LEVEL or AUTO, the AUTO margin in whole dB 3..30, the LEVEL
+    threshold in mean-power units) and its one grammar, `off | 0 | <negative dB> | <positive linear> | auto[+N]`
+    (`dsd_squelch_setting_parse()`, `dsd_squelch_setting_format()`), which `--squelch`, the `sql` field of every radio
+    spec (`dsd_squelch_spec_field_apply()`, which leaves the setting alone once `--squelch` set it:
+    `dsd_opts::rtl_squelch_cli_set`) and the terminal prompt share; scan rows (`scan_options.c`, `--squelch` sharing
+    `--squelch-db`'s option bit) take whole dB, `off`, and `auto[+N]` on analog rows only. `dsd_opts` holds it as `rtl_squelch_mode`, `rtl_squelch_margin_db` and `rtl_squelch_level` (the
+    level kept beneath an AUTO setting, for a switch back), the config as `[input] rtl_sql_mode`, `rtl_sql_margin_db`
+    and `rtl_sql`. `dsd_squelch_setting_resolve()` says why AUTO runs or is off (no radio input, a digital channel),
+    for the views and the startup notice. The decoder's comparisons go through `dsd_squelch_dynamic_in_force()`,
+    `dsd_squelch_level_in_force()`, `dsd_squelch_level_open()` and `dsd_squelch_gate_open()` (DSP, below).
+    `dsd_squelch_publish_status()` copies the stream's auto status (the RTL IO hook `squelch_status`,
+    `rtl_stream_get_squelch_status()`) into int-only `dsd_state::squelch_auto_*` fields inside the snapshot range,
+    the floor in centi-dB on `rtl_squelch_level`'s scale; the frame sync's throttled UI publish calls it. Tests:
+    `RUNTIME_SQUELCH`, `RUNTIME_CLI_PARSE`, `INPUT_SPEC`, `RUNTIME_CONFIG_USER`, `RUNTIME_SCAN_OPTIONS`,
+    `ENGINE_IO_HOOKS_INSTALL`.
   - Sub-audible signalling tables and text (`include/dsd-neo/runtime/analog_tones.h`, `src/runtime/analog_tones.c`):
     the standard 50-tone CTCSS table and 150.0 Hz in tenths of a hertz, index lookup and the
     `100.0` / `CTCSS 100.0 Hz` formatters (issue #522). Runtime owns it because the frontends format these values and
@@ -1377,7 +1395,18 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   `configuredSquelchOff`/`effectiveSquelchOff`, `squelchRowOverride` and `squelchReadout` all come from it. The Qt radio
   panel lays those out as its whole-dB stepper reading, a `row` badge and `default X`, and uses `squelchReadout` as the
   reading's accessible name. It reads the row's value from `dsd_scan_mode_row_options()`, so it is also right on the
-  decoder thread while a command has the scope suspended. Test: `APP_CONTROL_SQUELCH_VIEW`.
+  decoder thread while a command has the scope suspended. The auto squelch (issue #518 follow-up) adds whether each
+  setting is AUTO and its margin, why AUTO is off here, and what the stream shows (`dsd_state::squelch_auto_*`:
+  running, learning, plan, gate, floor): `auto +10 dB (floor -78.3 dB)`, `(learning)`, `(off: no radio input)`,
+  `(off on digital)`, `(off: no channel plan)`, and the row form `auto +6 dB (floor -81.0 dB; row; default -60.0 dB)`.
+  `dsd_app_squelch_view_auto_status()` is that status alone (Qt's `squelchAutoStatus`, the line under the reading),
+  `dsd_app_squelch_view_configured_text()` the default as the terminal prompt opens on it (`auto+10`, `-60.0`, `off`);
+  Qt's `configuredSquelchAuto`/`effectiveSquelchAuto` and their margins drive the radio panel's `dB | Auto` choice,
+  whose buttons step the margin in Auto. `DSD_APP_CMD_RTL_SET_SQL_SETTING` (`dsd_app_squelch_setting_payload`,
+  `svc_rtl_set_sql_setting()`) sets a whole setting on the configured default as `RTL_SET_SQL_DB` sets a level, and a
+  scan row edit carries `squelch_mode`/`squelch_margin_db` (AUTO on an nfm or am row only). Tests:
+  `APP_CONTROL_SQUELCH_VIEW`, `APP_COMMAND_QUEUE`, `UI_MENU_CALLBACKS`, `UI_MENU_LABELS_RADIO`,
+  `UI_QT_METRICS_MODEL`, `UI_QT_QML_CALL_LISTS` (`tst_radio_squelch_auto.qml`).
   `include/dsd-neo/app_control/rtl_gain_view.h` and `src/app_control/rtl_gain_view.c` do the same for the tuner gain
   under `--trunk-scan` (issue #518 follow-up): the configured gain the controls edit and a save writes, the parked
   target's own `rtl_gain` while it overrides it, the terminal's `Gain... [20] (target: 10)` and Tuner autogain rows,
@@ -3092,7 +3121,10 @@ External dependencies (resolved via CMake):
   configured default itself, or the demod may still hold the row's. After an enter that found the scope suspended,
   the `options` call that completes the row pushes unconditionally for the same reason. `dsd_scan_mode_prepare` and
   `scan_scope_apply` never push.
-  `RTL_SET_SQL_DB` is not a scoped command: `svc_rtl_set_sql_db()` edits the configured default through
+  `RTL_SET_SQL_DB` is not a scoped command, nor is `RTL_SET_SQL_SETTING` (the auto squelch's whole setting,
+  `svc_rtl_set_sql_setting()` through `dsd_scan_mode_set_configured_squelch_setting()`; `svc_rtl_push_squelch()`
+  hands the demod a level through `rtl_stream_set_channel_squelch()` and an AUTO setting whole):
+  `svc_rtl_set_sql_db()` edits the configured default through
   `dsd_scan_mode_set_configured_squelch()`, which touches no acquisition setting (so a squelch nudge can never read
   as a decoder change that ends the call) and leaves `dsd_opts` and the demod on the row's value while a row
   overrides it. `AIRSPY_SET` and `RTL_ENABLE_INPUT`/`AIRSPY_ENABLE_INPUT` rewrite no squelch and stay unscoped, so

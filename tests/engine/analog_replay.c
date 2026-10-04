@@ -48,6 +48,12 @@
  * conventional scanner commits a row: its declared class, then its own options (an nfm row's --nfm-bandwidth-hz and
  * --squelch-db included), so the replay opens the front end with the row's receive family and width. I/Q replay
  * cannot retune, so one row is all a run can visit; the host prints "Scan row applied: ..." before the replay.
+ *
+ * --analog-iq-gain-db DB replays a copy of the --iq-replay capture with every sample scaled by DB about the cu8
+ * midpoint: the same air, noise included, as a receiver with that much more (or less) gain would have recorded it. The
+ * auto squelch's cases replay one burst at two levels this way and hold both to the same bounds, with no second
+ * fixture committed. The copy and its sidecar go to a private temporary directory the host removes when it exits; it
+ * refuses a gain that would clip more than one byte in a thousand, which would no longer be the same signal.
  */
 
 #include <dsd-neo/core/channel_mode.h>
@@ -61,6 +67,7 @@
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/engine/engine.h>
 #include <dsd-neo/io/rtl_stream_c.h>
+#include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/bootstrap.h>
@@ -68,6 +75,7 @@
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
+#include <dsd-neo/runtime/squelch.h>
 #include <dsd-neo/runtime/udp_audio_hooks.h>
 #include <math.h>
 #include <stdint.h>
@@ -75,6 +83,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "../test_support/test_support.h"
 #include "dsd-neo/io/rtl_stream_fwd.h"
 
 #define ANALOG_MAX_PROBES      8
@@ -173,6 +182,8 @@ static analog_tone_track g_tone;
 static int g_failed;
 /* The -C map row to enter before the replay (--analog-scan-row); unset runs no scan row. */
 static analog_limit g_scan_row;
+/* The gain the replayed copy of the capture is scaled by (--analog-iq-gain-db); unset replays the capture itself. */
+static analog_limit g_iq_gain_db;
 
 /* ---- argument handling ---------------------------------------------------------------------------------------- */
 
@@ -201,6 +212,7 @@ static const analog_scalar_arg k_scalar_args[] = {
     {"--analog-audible-dbfs", &g_limits.audible_dbfs, -ANALOG_DB_LIMIT, 0.0},
     {"--analog-max-tone-lock-ms", &g_limits.max_tone_lock_ms, 0.0, 1e9},
     {"--analog-scan-row", &g_scan_row, 0.0, 65535.0},
+    {"--analog-iq-gain-db", &g_iq_gain_db, -40.0, 40.0},
 };
 
 static const char* const k_probe_limit_args[PROBE_LIMIT_COUNT] = {
@@ -236,6 +248,7 @@ analog_usage(void) {
                 "  --analog-probe-{min,max}-dbc HZ:DB   probe level relative to the expected tone\n"
                 "  --analog-probe-{min,max}-dbfs HZ:DB  probe level relative to full scale\n"
                 "  --analog-scan-row ROW             enter row ROW of the -C channel map before the replay\n"
+                "  --analog-iq-gain-db DB            replay a copy of the capture scaled by DB (a hotter receiver)\n"
                 "Other --analog-* arguments go to dsd-neo unchanged.\n");
 }
 
@@ -391,6 +404,214 @@ analog_split_args(int argc, char** argv, char** out, int* out_count) {
     out[kept] = NULL;
     *out_count = kept;
     return 0;
+}
+
+/* ---- scaled replay (--analog-iq-gain-db) ---------------------------------------------------------------------- */
+
+#define ANALOG_SCALED_DATA    "scaled.iq"
+#define ANALOG_SCALED_META    "scaled.iq.json"
+#define ANALOG_SIDECAR_MAX    65536L
+#define ANALOG_CU8_MIDPOINT   127.5
+/* Clipped bytes the copy may hold, per byte: a few noise peaks, never the signal. */
+#define ANALOG_MAX_CLIP_SHARE 1e-3
+
+static char g_scaled_dir[DSD_TEST_PATH_MAX];
+static char g_scaled_meta[DSD_TEST_PATH_MAX];
+static char g_scaled_arg[DSD_TEST_PATH_MAX + 16];
+
+/* The whole of a regular file, NUL-terminated, in a malloc'd buffer; NULL when it cannot be read or exceeds limit. */
+static unsigned char*
+analog_read_file(const char* path, long limit, size_t* out_len) {
+    FILE* fp = dsd_fopen_existing_regular_file(path, "rb");
+    if (fp == NULL) {
+        return NULL;
+    }
+    unsigned char* buf = NULL;
+    long size = -1;
+    if (fseek(fp, 0, SEEK_END) == 0) {
+        size = ftell(fp);
+    }
+    if (size >= 0 && size <= limit && fseek(fp, 0, SEEK_SET) == 0) {
+        buf = (unsigned char*)malloc((size_t)size + 1U);
+        if (buf != NULL && fread(buf, 1, (size_t)size, fp) != (size_t)size) {
+            free(buf);
+            buf = NULL;
+        }
+    }
+    (void)fclose(fp);
+    if (buf != NULL) {
+        buf[size] = '\0';
+        *out_len = (size_t)size;
+    }
+    return buf;
+}
+
+/* Writes len bytes to name inside the scaled copy's directory; 0, or -1. */
+static int
+analog_write_scaled(const char* name, const void* data, size_t len) {
+    char path[DSD_TEST_PATH_MAX];
+    if (dsd_test_path_join(path, sizeof(path), g_scaled_dir, name) != 0) {
+        return -1;
+    }
+    FILE* fp = dsd_fopen_private(path, "wb");
+    if (fp == NULL) {
+        return -1;
+    }
+    const int ok = fwrite(data, 1, len, fp) == len;
+    return (fclose(fp) == 0 && ok) ? 0 : -1;
+}
+
+/* The data_file value of a sidecar: where its text starts and how long it is. The capture writer and the fixture
+ * builder write it without escapes, and a value with one is refused rather than misread. */
+static int
+analog_sidecar_data_file(const char* json, size_t* start, size_t* len) {
+    const char* key = strstr(json, "\"data_file\"");
+    if (key == NULL) {
+        return -1;
+    }
+    const char* p = key + strlen("\"data_file\"");
+    while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') {
+        p++;
+    }
+    if (*p++ != ':') {
+        return -1;
+    }
+    while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') {
+        p++;
+    }
+    if (*p++ != '"') {
+        return -1;
+    }
+    const char* end = p;
+    while (*end != '\0' && *end != '"' && *end != '\\') {
+        end++;
+    }
+    if (*end != '"' || end == p) {
+        return -1;
+    }
+    *start = (size_t)(p - json);
+    *len = (size_t)(end - p);
+    return 0;
+}
+
+/* The path the sidecar's data_file names: absolute as written, otherwise beside the sidecar. */
+static int
+analog_sidecar_data_path(const char* meta_path, const char* data_file, size_t data_len, char* out, size_t cap) {
+    char name[DSD_TEST_PATH_MAX];
+    if (data_len >= sizeof(name)) {
+        return -1;
+    }
+    DSD_MEMCPY(name, data_file, data_len);
+    name[data_len] = '\0';
+    const char* slash = strrchr(meta_path, '/');
+    const char* bslash = strrchr(meta_path, '\\');
+    const char* base = (bslash != NULL && (slash == NULL || bslash > slash)) ? bslash : slash;
+    if (name[0] == '/' || name[0] == '\\' || (name[0] != '\0' && name[1] == ':') || base == NULL) {
+        const int n = DSD_SNPRINTF(out, cap, "%s", name);
+        return (n < 0 || (size_t)n >= cap) ? -1 : 0;
+    }
+    const int n = DSD_SNPRINTF(out, cap, "%.*s%s", (int)(base - meta_path + 1), meta_path, name);
+    return (n < 0 || (size_t)n >= cap) ? -1 : 0;
+}
+
+/* Scales every cu8 byte by gain about the midpoint, rounding and saturating as an 8-bit converter would. Returns the
+ * bytes that saturated. */
+static size_t
+analog_scale_cu8(unsigned char* data, size_t len, double gain) {
+    size_t clipped = 0U;
+    for (size_t i = 0; i < len; i++) {
+        const double v = floor((((double)data[i] - ANALOG_CU8_MIDPOINT) * gain) + ANALOG_CU8_MIDPOINT + 0.5);
+        if (v < 0.0 || v > 255.0) {
+            clipped++;
+        }
+        data[i] = (unsigned char)(v < 0.0 ? 0.0 : (v > 255.0 ? 255.0 : v));
+    }
+    return clipped;
+}
+
+/* Writes the scaled copy of the capture meta_path names, with a sidecar naming it; 0, or -1 with a message. */
+static int
+analog_make_scaled_copy(const char* meta_path, double gain_db) {
+    size_t json_len = 0U;
+    unsigned char* json = analog_read_file(meta_path, ANALOG_SIDECAR_MAX, &json_len);
+    size_t start = 0U;
+    size_t len = 0U;
+    char data_path[DSD_TEST_PATH_MAX];
+    unsigned char* data = NULL;
+    size_t data_len = 0U;
+    int rc = -1;
+    if (json == NULL || analog_sidecar_data_file((const char*)json, &start, &len) != 0
+        || analog_sidecar_data_path(meta_path, (const char*)json + start, len, data_path, sizeof(data_path)) != 0
+        || (data = analog_read_file(data_path, 1L << 30, &data_len)) == NULL
+        || dsd_test_mkdtemp(g_scaled_dir, sizeof(g_scaled_dir), "dsdneo_analog_iq") == NULL) {
+        DSD_FPRINTF(stderr, "analog replay: --analog-iq-gain-db cannot copy the capture '%s'\n", meta_path);
+        g_scaled_dir[0] = '\0';
+        goto done;
+    }
+    const size_t clipped = analog_scale_cu8(data, data_len, pow(10.0, gain_db / 20.0));
+    DSD_FPRINTF(stderr, "analog replay: capture scaled by %+.1f dB, %zu of %zu bytes clipped\n", gain_db, clipped,
+                data_len);
+    if ((double)clipped > ANALOG_MAX_CLIP_SHARE * (double)data_len) {
+        DSD_FPRINTF(stderr, "analog replay: --analog-iq-gain-db %+.1f clips the capture; use a smaller gain\n",
+                    gain_db);
+        goto done;
+    }
+    /* The sidecar as it was, its data_file naming the copy beside it. */
+    const size_t name_len = strlen(ANALOG_SCALED_DATA);
+    const size_t meta_len = json_len - len + name_len;
+    char* meta = (char*)malloc(meta_len);
+    if (meta == NULL) {
+        goto done;
+    }
+    DSD_MEMCPY(meta, json, start);
+    DSD_MEMCPY(meta + start, ANALOG_SCALED_DATA, name_len);
+    DSD_MEMCPY(meta + start + name_len, json + start + len, json_len - start - len);
+    if (analog_write_scaled(ANALOG_SCALED_DATA, data, data_len) == 0
+        && analog_write_scaled(ANALOG_SCALED_META, meta, meta_len) == 0
+        && dsd_test_path_join(g_scaled_meta, sizeof(g_scaled_meta), g_scaled_dir, ANALOG_SCALED_META) == 0) {
+        rc = 0;
+    } else {
+        DSD_FPRINTF(stderr, "analog replay: --analog-iq-gain-db cannot write the scaled copy\n");
+    }
+    free(meta);
+done:
+    free(data);
+    free(json);
+    return rc;
+}
+
+/* Points the --iq-replay argument at a scaled copy of its capture (--analog-iq-gain-db); 0, or -1. */
+static int
+analog_replay_scaled(char** args, int count) {
+    static const char k_flag[] = "--iq-replay";
+    for (int i = 1; i < count; i++) {
+        if (strcmp(args[i], k_flag) == 0 && i + 1 < count) {
+            if (analog_make_scaled_copy(args[i + 1], g_iq_gain_db.value) != 0) {
+                return -1;
+            }
+            args[i + 1] = g_scaled_meta;
+            return 0;
+        }
+        if (strncmp(args[i], k_flag, sizeof(k_flag) - 1U) == 0 && args[i][sizeof(k_flag) - 1U] == '=') {
+            if (analog_make_scaled_copy(args[i] + sizeof(k_flag), g_iq_gain_db.value) != 0) {
+                return -1;
+            }
+            DSD_SNPRINTF(g_scaled_arg, sizeof(g_scaled_arg), "%s=%s", k_flag, g_scaled_meta);
+            args[i] = g_scaled_arg;
+            return 0;
+        }
+    }
+    DSD_FPRINTF(stderr, "analog replay: --analog-iq-gain-db needs an --iq-replay capture\n");
+    return -1;
+}
+
+/* Removes the scaled copy, if one was made. */
+static void
+analog_remove_scaled(void) {
+    static const char* const k_files[] = {ANALOG_SCALED_DATA, ANALOG_SCALED_META, NULL};
+    if (g_scaled_dir[0] != '\0' && dsd_test_remove_temp_dir(g_scaled_dir, k_files) != 0) {
+        DSD_FPRINTF(stderr, "analog replay: could not remove %s\n", g_scaled_dir);
+    }
 }
 
 /* ---- capture -------------------------------------------------------------------------------------------------- */
@@ -914,8 +1135,13 @@ analog_enter_scan_row(dsd_opts* opts, dsd_state* state, double requested) {
         (void)dsd_analog_width_format(dsd_analog_width_effective_hz(opts->analog_demod, dsd_opts_analog_width_hz(opts)),
                                       width, sizeof width);
     }
-    DSD_FPRINTF(stderr, "Scan row applied: %d %s; width %s%s\n", row, dsd_scan_mode_name(mode), width,
-                (dsd_scan_mode_option_fields(state) & DSD_SCAN_OPT_BANDWIDTH) ? " (row)" : "");
+    char squelch[DSD_SQUELCH_TEXT_SIZE];
+    const dsd_squelch_setting setting = dsd_squelch_setting_of_opts(opts);
+    (void)dsd_squelch_setting_format(&setting, squelch, sizeof squelch);
+    const uint32_t fields = dsd_scan_mode_option_fields(state);
+    DSD_FPRINTF(stderr, "Scan row applied: %d %s; width %s%s; squelch %s%s\n", row, dsd_scan_mode_name(mode), width,
+                (fields & DSD_SCAN_OPT_BANDWIDTH) ? " (row)" : "", squelch,
+                (fields & DSD_SCAN_OPT_SQUELCH) ? " (row)" : "");
     return 0;
 }
 
@@ -936,7 +1162,9 @@ main(int argc, char** argv) {
     g_totals.first_audible_ms = -1.0;
     g_tone.first_lock_ms = -1.0;
     int kept = 0;
-    if (analog_split_args(argc, argv, args, &kept) != 0) {
+    if (analog_split_args(argc, argv, args, &kept) != 0
+        || (g_iq_gain_db.set && analog_replay_scaled(args, kept) != 0)) {
+        analog_remove_scaled();
         free((void*)args);
         return 2;
     }
@@ -964,5 +1192,6 @@ main(int argc, char** argv) {
     free(state);
     free(opts);
     free((void*)args);
+    analog_remove_scaled();
     return rc;
 }

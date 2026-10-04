@@ -8,4 +8,4 @@ site-nxdn48,nxdn48-trunk,461556250,nxdn_chan_map.csv,3000,,NXDN48 Type-C control
 field-nxdn,nxdn-conventional,461550000,,1500,1200,one-frequency NXDN96 channel,gfsk,,,,,,
 field-nxdn48,nxdn48-conventional,461556250,,1500,1200,one-frequency NXDN48 (6.25 kHz) conventional channel,gfsk,,,,,,
 fire-nfm,nfm-conventional,154430000,,2000,3000,analog NFM channel held on carrier; the options cell carries its width and squelch and a CTCSS/DCS tone filter,,,,,,--nfm-bandwidth-hz 12500 --squelch-db -60 --tone-allow 156.7/D023N,
-tower-am,am-conventional,118300000,,2000,3000,analog AM airband channel held on carrier; the options cell carries its width and squelch,,,,,,--am-bandwidth-hz 8333 --squelch-db -55,
+tower-am,am-conventional,118300000,,2000,3000,analog AM airband channel held on carrier; the options cell carries its width and an auto squelch 6 dB over its noise floor,,,,,,--am-bandwidth-hz 8333 --squelch auto+6,
