@@ -317,6 +317,32 @@ Item {
             compare(findChild(sheet, "radioSquelchMode").model.length, 2, "an am row has no noise squelch");
         }
 
+        // A noise setting that runs as auto -- the default on the AM monitor on
+        // its own, an am row that inherits it -- shows and steps as Auto.
+        function test_noise_where_it_runs_as_auto_steps_as_auto() {
+            testContext.setMetric("squelchNoiseOffered", false);
+            setNoise(true, true, 12, "as auto: floor -78.3 dB");
+            var mode = findChild(sheet, "radioSquelchMode");
+            compare(mode.model.length, 2);
+            compare(mode.currentIndex, 1, "the AM monitor runs it as auto");
+            compare(findChild(sheet, "radioSquelchValue").text, "auto +12 dB");
+            findChild(sheet, "radioSquelchUp").clicked();
+            compare(testContext.squelchAutoCalls(), 1);
+            compare(testContext.squelchNoiseCalls(), 0, "never the refused noise squelch");
+            compare(testContext.lastSquelchMarginDb(), 13);
+            sheet.forgetRequests();
+            testContext.setMetric("squelchNoiseOffered", true);
+            // An am row inheriting a noise default.
+            onAir(true, squelchField | widthField);
+            findChild(sheet, "radioScope").selected(1);
+            verify(!sheet.rowNfm);
+            compare(findChild(sheet, "radioSquelchMode").currentIndex, 1);
+            findChild(sheet, "radioSquelchUp").clicked();
+            var edit = testContext.lastScanRowEdit();
+            compare(edit.value.squelchMode, commands.squelchModeAuto);
+            compare(edit.value.squelchMarginDb, 13);
+        }
+
         function test_preview_summary_names_a_noise_squelch() {
             compare(Util.squelchSummary(0, 9, true), "Squelch: noise +9 dB")
             compare(Util.squelchSummary(0, 9, false), "Squelch: auto +9 dB")

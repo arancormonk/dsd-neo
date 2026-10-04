@@ -117,10 +117,17 @@ ModalSheet {
     // quiets by its margin: an nfm row takes it, and so does the default unless
     // the session is the AM monitor on its own, which refuses it.
     readonly property bool squelchNoiseOffered: rowSquelch ? rowNfm : metrics.squelchNoiseOffered === true
+    // A noise setting where the noise squelch cannot run -- an am row that
+    // inherits it, the AM monitor on its own -- runs as auto, and the panel
+    // shows and steps it as Auto.
+    readonly property bool baseSquelchNoiseAsAuto: rowSquelch
+        ? (!rowNfm && metrics.effectiveSquelchNoise === true)
+        : (!squelchNoiseOffered && metrics.configuredSquelchNoise === true)
     readonly property bool baseSquelchAuto: squelchAutoOffered
-        && (rowSquelch ? metrics.effectiveSquelchAuto === true : metrics.configuredSquelchAuto === true)
+        && ((rowSquelch ? metrics.effectiveSquelchAuto === true : metrics.configuredSquelchAuto === true)
+            || baseSquelchNoiseAsAuto)
     readonly property bool baseSquelchNoise: rowSquelch ? (rowNfm && metrics.effectiveSquelchNoise === true)
-        : metrics.configuredSquelchNoise === true
+        : (squelchNoiseOffered && metrics.configuredSquelchNoise === true)
     readonly property int baseSquelchMargin: rowSquelch ? metrics.effectiveSquelchMarginDb
         : metrics.configuredSquelchMarginDb
     readonly property bool squelchAuto: !isNaN(pendingSquelchMargin) ? pendingSquelchMode === commands.squelchModeAuto
