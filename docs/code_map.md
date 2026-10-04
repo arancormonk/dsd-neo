@@ -811,7 +811,7 @@ The `Linux • RelWithDebInfo • ctest (x86-64-v3, fast-math, clang)` check enf
     `rtl_stream_output_rate_for_family()` and `rtl_stream_get_replay_batch()` behind them. Tests:
     `RUNTIME_RTL_STREAM_METRICS_HOOKS`, `ENGINE_RTL_STREAM_METRICS_HOOKS_INSTALL`.
   - Sub-audible signalling tables and text (`include/dsd-neo/runtime/analog_tones.h`, `src/runtime/analog_tones.c`):
-    the standard 50-tone CTCSS table in tenths of a hertz (150.0 Hz deliberately absent), index lookup and the
+    the standard 50-tone CTCSS table and 150.0 Hz in tenths of a hertz, index lookup and the
     `100.0` / `CTCSS 100.0 Hz` formatters (issue #522). Runtime owns it because the frontends format these values and
     the receive policy parses them, and neither may depend on DSP. It also holds `dsd_analog_monitor_tap_active()`, the
     one answer to "does the receive tap run": the analog monitor of either kind, FM or AM, on PCM input, or on an RTL
@@ -1560,14 +1560,16 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
     read.
   - `src/dsp/analog_ctcss.c` is the CTCSS detector: one continuously running phasor per table tone, 50 ms sub-blocks
     with absolute phase in a 250 ms window, one hop per sub-block. Each hop fits every bin's sub-block phases (a
-    pulse-pair estimate refined by weighted least squares), snaps the fine estimate to the table within +/-0.8 Hz,
+    pulse-pair estimate refined by weighted least squares), snaps the fine estimate to the table within the tone's gate
+    (`ctcss_gate_hz()`: +/-0.8 Hz, or half the distance to its nearest neighbour where that is less -- 0.7 Hz for 150.0
+    and 151.4 Hz, 1.4 Hz apart -- so no estimate is within two gates, and one midway between two snaps to neither),
     rejects aliases (an estimate more than 5 Hz from its bin) and scores rho, the share of the sub-audible band energy
     the tone explains. A tone locks after two consecutive hops qualify it (rho >= 0.35, an estimate within 0.5 Hz of the
     table value, at least 1e-5 (-50 dB) of the raw input's full-band power, which no folded voice-band residue reaches
     and every tone the tests lock exceeds by 24 dB or more, a phase fit whose reduced chi-square against the band's
     own noise stays under 6, estimates within 0.5 Hz of each other, and less than 0.08 of phase-locked second and
     third harmonic power: a voice fundamental has harmonics, a tone does not). It holds while its own bin's estimate,
-    re-measured every hop, stays within the 0.8 Hz snap gate and the newest 100 ms keep rho >= 0.15 at the locked
+    re-measured every hop, stays within the tone's snap gate and the newest 100 ms keep rho >= 0.15 at the locked
     frequency and the same -50 dB of the full band; it is lost after four failing hops or at once on a reverse burst
     (a >100 degree phase jump between strong sub-blocks, which catches the 180 degree burst and the 120 and 240 degree
     variants). The jump is measured against the locked frequency as it stood two hops earlier: a 120 or 240 degree step
@@ -1588,7 +1590,7 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
     measures its newest 600 and 400 ms (`ctcss_step_late()`), over no more than has closed since the last reset or
     loss (`fresh`), so a lost tone is never in them and neither runs before 400 ms have. They apply the same tests with
     rho down to 0.25 (noise alone puts about 1/116 of the band into a bin over 400 ms) and one more: the newest 250 ms
-    must still carry the tone at that rho, within the 0.8 Hz gate, which keeps a voice that held a pitch near a table
+    must still carry the tone at that rho, within its snap gate, which keeps a voice that held a pitch near a table
     tone for most of a longer window and then moved on from locking. Two agreeing hops lock, as for the 250 ms window.
     On its own the 250 ms window passed the 700 ms ceiling on about one start in 125,000 at 0 dB (the slowest after
     1,128 ms), when noise kept every pair of its hops from qualifying the tone; the longer windows average that noise
