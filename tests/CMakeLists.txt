@@ -8467,6 +8467,13 @@ target_include_directories(
 dsd_neo_link_dsp_test(dsd-neo_test_dsp_nfm_noise_squelch ${DSD_NEO_TEST_MATH_LIB})
 add_test(NAME DSP_NFM_NOISE_SQUELCH COMMAND dsd-neo_test_dsp_nfm_noise_squelch)
 set_tests_properties(DSP_NFM_NOISE_SQUELCH PROPERTIES TIMEOUT 300)
+# The strong-modulation sweep on its own: full-deviation tones in 5 Hz steps on five
+# plans, minutes under the sanitizers.
+add_test(
+    NAME DSP_NFM_NOISE_SQUELCH_SWEEP
+    COMMAND dsd-neo_test_dsp_nfm_noise_squelch --sweep
+)
+set_tests_properties(DSP_NFM_NOISE_SQUELCH_SWEEP PROPERTIES TIMEOUT 600)
 
 # DCS detection (issue #523) through the pure analog receive core, in sample time: every
 # supported code in both polarities through the receiver's DC block and de-emphasis at two

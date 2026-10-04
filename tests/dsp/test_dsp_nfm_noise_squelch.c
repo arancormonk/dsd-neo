@@ -319,8 +319,9 @@ runner_percentile(const runner* r, int skip, double pct) {
 
 /* ------------------------------------------------------------------------------------------------------- tests */
 
-/* The band: 3.8 kHz to the taps' -1 dB point less 800 Hz (under 0.45 fs), at least 1200 Hz of it, in 500 Hz sub-bands,
-   at most nine. 8 and 10 kHz channels have none: the auto squelch runs for them. */
+/* The band: 3.8 kHz to the taps' -1 dB point less 800 Hz (under 0.45 fs), at least 1200 Hz of it, in 300 Hz sub-bands,
+   at most fifteen, and the K - 1 staggered between them. 8 and 10 kHz channels have none: the auto squelch runs for
+   them. */
 static void
 test_band_rule(void) {
     static channel ch;
@@ -337,12 +338,14 @@ test_band_rule(void) {
     assert(ch.plan.edge_hz > 6250.0 && ch.plan.edge_hz < 6460.0);
     assert(fabs(ch.plan.lo_hz - 3800.0) < 1e-9);
     assert(fabs(ch.plan.hi_hz - (ch.plan.edge_hz - 800.0)) < 1e-9);
-    assert(ch.plan.sub_bands == 3);
+    assert(ch.plan.sub_bands == (int)floor((ch.plan.hi_hz - 3800.0) / 300.0));
+    assert(ch.plan.bands == (2 * ch.plan.sub_bands) - 1);
 
     channel_make(&ch, 48000, 16000, NULL, 0);
-    assert(ch.plan.valid && ch.plan.sub_bands == (int)floor((ch.plan.hi_hz - 3800.0) / 500.0));
+    assert(ch.plan.valid && ch.plan.sub_bands == (int)floor((ch.plan.hi_hz - 3800.0) / 300.0));
     channel_make(&ch, 48000, 25000, NULL, 0);
     assert(ch.plan.valid && ch.plan.sub_bands == DSD_NOISE_SQUELCH_MAX_SUB_BANDS);
+    assert(ch.plan.bands == DSD_NOISE_SQUELCH_MAX_BANDS);
 
     /* No channel filter: the band runs to 0.45 fs. */
     channel_make(&ch, 48000, 0, NULL, 0);
@@ -351,12 +354,13 @@ test_band_rule(void) {
     assert(!ch.plan.valid);
     /* At 12 kHz the edge guard binds first: fs/2 - 800 Hz. */
     channel_make(&ch, 12000, 0, NULL, 0);
-    assert(ch.plan.valid && fabs(ch.plan.hi_hz - 5200.0) < 1e-9 && ch.plan.sub_bands == 2);
+    assert(ch.plan.valid && fabs(ch.plan.hi_hz - 5200.0) < 1e-9 && ch.plan.sub_bands == 4 && ch.plan.bands == 7);
     printf("band rule: ok\n");
 }
 
-/* Each sub-band's biquads are the Butterworth band-pass of prototype order 4: |H|^2 = 1 / (1 + ((W^2 - W0^2) /
-   (W B))^8) on the pre-warped frequency W = 2 fs tan(pi f / fs), W0^2 = W1 W2 and B = W2 - W1 for its edges. */
+/* Each band-pass's biquads are the Butterworth band-pass of prototype order 4: |H|^2 = 1 / (1 + ((W^2 - W0^2) /
+   (W B))^8) on the pre-warped frequency W = 2 fs tan(pi f / fs), W0^2 = W1 W2 and B = W2 - W1 for its edges: the K
+   sub-bands, then the staggered set, each shifted half a sub-band up. */
 static void
 test_band_pass_response(void) {
     static channel ch;
@@ -364,8 +368,9 @@ test_band_pass_response(void) {
     const double fs = 48000.0;
     const double step = (ch.plan.hi_hz - ch.plan.lo_hz) / (double)ch.plan.sub_bands;
     double worst = 0.0;
-    for (int k = 0; k < ch.plan.sub_bands; k++) {
-        const double f1 = ch.plan.lo_hz + (step * (double)k);
+    for (int k = 0; k < ch.plan.bands; k++) {
+        const int sub = ch.plan.sub_bands;
+        const double f1 = ch.plan.lo_hz + (step * (k < sub ? (double)k : (double)(k - sub) + 0.5));
         const double w1 = 2.0 * fs * tan(M_PI * f1 / fs);
         const double w2 = 2.0 * fs * tan(M_PI * (f1 + step) / fs);
         for (int i = 1; i < 400; i++) {
@@ -402,16 +407,16 @@ test_calibration(void) {
     channel_make(&ch, 48000, 12500, hb_q15_taps, HB_TAPS);
     channel_make(&again, 48000, 12500, hb_q15_taps, HB_TAPS);
     assert(ch.plan.valid && dsd_noise_squelch_plan_equal(&ch.plan, &again.plan));
-    for (int k = 0; k < DSD_NOISE_SQUELCH_MAX_SUB_BANDS; k++) {
+    for (int k = 0; k < DSD_NOISE_SQUELCH_MAX_BANDS; k++) {
         assert(same_double(ch.plan.p_ref[k], again.plan.p_ref[k]));
     }
 
     static source s;
     source_init(&s, &ch, 0x51C0FFEEULL);
     source_noise_only(&s);
-    double s1[DSD_NOISE_SQUELCH_MAX_SUB_BANDS][DSD_NOISE_SQUELCH_SECTIONS];
-    double s2[DSD_NOISE_SQUELCH_MAX_SUB_BANDS][DSD_NOISE_SQUELCH_SECTIONS];
-    double e[DSD_NOISE_SQUELCH_MAX_SUB_BANDS];
+    double s1[DSD_NOISE_SQUELCH_MAX_BANDS][DSD_NOISE_SQUELCH_SECTIONS];
+    double s2[DSD_NOISE_SQUELCH_MAX_BANDS][DSD_NOISE_SQUELCH_SECTIONS];
+    double e[DSD_NOISE_SQUELCH_MAX_BANDS];
     DSD_MEMSET(s1, 0, sizeof(s1));
     DSD_MEMSET(s2, 0, sizeof(s2));
     DSD_MEMSET(e, 0, sizeof(e));
@@ -423,7 +428,7 @@ test_calibration(void) {
     while (n_done < total + settle) {
         source_run(&s, iq, d, CHUNK);
         for (int i = 0; i < CHUNK; i++, n_done++) {
-            for (int k = 0; k < ch.plan.sub_bands; k++) {
+            for (int k = 0; k < ch.plan.bands; k++) {
                 double y = (double)d[i];
                 for (int q = 0; q < DSD_NOISE_SQUELCH_SECTIONS; q++) {
                     const dsd_noise_squelch_biquad* b = &ch.plan.section[k][q];
@@ -440,14 +445,16 @@ test_calibration(void) {
     }
     double worst = 0.0;
     double sum = 0.0;
-    for (int k = 0; k < ch.plan.sub_bands; k++) {
+    for (int k = 0; k < ch.plan.bands; k++) {
         const double p = e[k] / (double)(n_done - settle);
-        sum += p;
+        if (k < ch.plan.sub_bands) {
+            sum += p;
+        }
         const double err = fabs(db(ch.plan.p_ref[k] / p));
         worst = err > worst ? err : worst;
     }
     const double sum_err = fabs(db(ch.plan.p_ref_sum / sum));
-    printf("calibration: worst sub-band %.3f dB, whole band %.3f dB from 60 s of noise\n", worst, sum_err);
+    printf("calibration: worst band-pass %.3f dB, whole band %.3f dB from 60 s of noise\n", worst, sum_err);
     assert(worst < 0.6);
     assert(sum_err < 0.3);
 }
@@ -542,39 +549,62 @@ test_quieting_follows_cnr(void) {
     }
 }
 
-/* A strong carrier carrying a tone anywhere in 300-3000 Hz at the width's rated deviation, at every offset its Carson
-   bandwidth allows, opens the gate at the highest threshold and never closes it: its harmonics fall in the band as
-   lines, and the best sub-band stays clear of them. */
+/* A strong carrier carrying a tone anywhere in 300-3000 Hz at the width's rated deviation, centred and at every offset
+   its Carson bandwidth leaves inside the channel (the tone's own: a lower tone leaves more room), opens the gate at the
+   highest threshold and never closes it: the tone's harmonics fall in the band as lines, and the best sub-band stays
+   clear of them. 11.2 kHz is the narrowest width with a band (1200 Hz of it); 12.4 kHz behind the half-band at
+   39062 Hz is a plan 300 Hz sub-bands without the staggered set miss by 1 dB; 11.8 kHz at 62500 Hz and 13 kHz at
+   46875 Hz, both behind it, are where the design gate reads its lowest (590 and 520 Hz tones at their Carson edges).
+   Tones run in 5 Hz steps under 800 Hz, where their
+   harmonics crowd the band, and 25 Hz steps above (a 1475 Hz tone at +1525 Hz fills an 11.2 kHz channel exactly). Its
+   own CTest case (DSP_NFM_NOISE_SQUELCH_SWEEP, `--sweep`): it is the slow part. */
 static void
 test_strong_modulation_never_closes(void) {
-    static const int widths[] = {12500, 16000, 25000};
-    for (size_t w = 0; w < sizeof widths / sizeof widths[0]; w++) {
+    static const struct {
+        int rate;
+        int width;
+        int hb;
+    } plans[] = {
+        {48000, 11200, 0}, {62500, 11800, 1}, {39062, 12400, 1}, {46875, 13000, 1}, {48000, 25000, 0},
+    };
+
+    for (size_t w = 0; w < sizeof plans / sizeof plans[0]; w++) {
         static channel ch;
-        channel_make(&ch, 48000, widths[w], NULL, 0);
-        const double dev = rated_deviation_hz((double)widths[w]);
-        const double room = ((double)widths[w] / 2.0) - dev - 3000.0;
-        const double offsets[3] = {0.0, room, -room};
-        const int n_offsets = room > 1.0 ? 3 : 1;
+        channel_make(&ch, plans[w].rate, plans[w].width, plans[w].hb ? hb_q15_taps : NULL, plans[w].hb ? HB_TAPS : 0);
+        assert(ch.plan.valid);
+        const double dev = rated_deviation_hz((double)plans[w].width);
         double worst = 1e9;
-        for (int o = 0; o < n_offsets; o++) {
-            for (int tone = 300; tone <= 3000; tone += 100) {
+        double worst_tone = 0.0;
+        double worst_offset = 0.0;
+        for (int tone = 300; tone <= 3000; tone += tone < 800 ? 5 : 25) {
+            const double room = ((double)plans[w].width / 2.0) - dev - (double)tone;
+            const double offsets[5] = {0.0, room, -room, room / 2.0, -room / 2.0};
+            const int n_offsets = room > 1.0 ? 5 : 1;
+            for (int o = 0; o < n_offsets; o++) {
                 static runner r;
                 runner_init(&r, &ch, DSD_SQUELCH_MARGIN_MAX_DB);
                 static source s;
                 source_init(&s, &ch, 0x70E5ULL + (uint64_t)tone + (uint64_t)o * 7919U);
                 source_fm(&s, 60.0, offsets[o], (double)tone, dev);
                 runner_mark(&r);
-                runner_feed(&r, &s, 48000 / 4);
+                runner_feed(&r, &s, plans[w].rate / 5);
                 assert(r.first_open >= 0);
                 assert(r.first_closed < 0);
                 for (int k = 1; k < r.windows; k++) {
-                    worst = r.q[k] < worst ? r.q[k] : worst;
+                    if (r.q[k] < worst) {
+                        worst = r.q[k];
+                        worst_tone = (double)tone;
+                        worst_offset = offsets[o];
+                    }
                 }
             }
         }
-        printf("strong modulation %d Hz (deviation %.0f Hz): never closed at N = 30, lowest Q %.1f dB\n", widths[w],
-               dev, worst);
-        assert(worst >= 33.0);
+        printf(
+            "strong modulation %d Hz at %d Hz%s (deviation %.0f Hz): never closed at N = 30, lowest Q %.1f dB (%.0f Hz "
+            "tone at %+.0f Hz)\n",
+            plans[w].width, plans[w].rate, plans[w].hb ? " behind the half-band" : "", dev, worst, worst_tone,
+            worst_offset);
+        assert(worst >= 36.0);
     }
 }
 
@@ -757,14 +787,18 @@ test_zeros_and_no_plan(void) {
 }
 
 int
-main(void) {
+main(int argc, char** argv) {
+    if (argc > 1 && strcmp(argv[1], "--sweep") == 0) {
+        test_strong_modulation_never_closes();
+        printf("DSP_NFM_NOISE_SQUELCH_SWEEP: OK\n");
+        return 0;
+    }
     test_band_rule();
     test_band_pass_response();
     test_calibration();
     test_noise_never_opens();
     test_level_independence();
     test_quieting_follows_cnr();
-    test_strong_modulation_never_closes();
     test_hysteresis();
     test_first_window_flags();
     test_block_cuts();

@@ -21,11 +21,11 @@ static const double k_band_lo_hz = 3800.0;
 static const double k_edge_guard_hz = 800.0;
 static const double k_nyquist_fraction = 0.45;
 static const double k_min_band_hz = 1200.0;
-static const double k_sub_band_hz = 500.0;
+static const double k_sub_band_hz = 300.0;
 /* The channel taps' edge: the first 10 Hz step 1 dB under their DC gain (10^(-1/20)). */
 static const double k_edge_step_hz = 10.0;
 static const double k_edge_ratio = 0.89125093813374556;
-/* Q = max(Q_sum, Q_max - 4 dB); the gate closes 3 dB under N, and never above 1.5 dB (noise reads about 0 dB). */
+/* Q = max(Q_sum, Q_max - 4 dB); the gate closes 3 dB under N, and never under 1.5 dB (noise reads about 0 dB). */
 static const double k_guard_db = 4.0;
 static const double k_hysteresis_db = 3.0;
 static const double k_close_floor_db = 1.5;
@@ -287,9 +287,9 @@ nsq_calibrate(dsd_noise_squelch_plan* plan, const float* taps, int taps_len, con
     const int fill = src.taps_len + src.hb_len;
     const int settle = (int)(k_settle_s * (double)plan->rate_hz);
     const int measured = (int)(k_calibration_s * (double)plan->rate_hz);
-    double s1[DSD_NOISE_SQUELCH_MAX_SUB_BANDS][DSD_NOISE_SQUELCH_SECTIONS];
-    double s2[DSD_NOISE_SQUELCH_MAX_SUB_BANDS][DSD_NOISE_SQUELCH_SECTIONS];
-    double energy[DSD_NOISE_SQUELCH_MAX_SUB_BANDS];
+    double s1[DSD_NOISE_SQUELCH_MAX_BANDS][DSD_NOISE_SQUELCH_SECTIONS];
+    double s2[DSD_NOISE_SQUELCH_MAX_BANDS][DSD_NOISE_SQUELCH_SECTIONS];
+    double energy[DSD_NOISE_SQUELCH_MAX_BANDS];
     DSD_MEMSET(s1, 0, sizeof(s1));
     DSD_MEMSET(s2, 0, sizeof(s2));
     DSD_MEMSET(energy, 0, sizeof(energy));
@@ -302,7 +302,7 @@ nsq_calibrate(dsd_noise_squelch_plan* plan, const float* taps, int taps_len, con
             continue;
         }
         const double x = atan2(step.im, step.re);
-        for (int k = 0; k < plan->sub_bands; k++) {
+        for (int k = 0; k < plan->bands; k++) {
             const double y = nsq_sub_band_run(plan, s1[k], s2[k], k, x);
             if (n >= fill + settle) {
                 energy[k] += y * y;
@@ -310,9 +310,11 @@ nsq_calibrate(dsd_noise_squelch_plan* plan, const float* taps, int taps_len, con
         }
     }
     plan->p_ref_sum = 0.0;
-    for (int k = 0; k < plan->sub_bands; k++) {
+    for (int k = 0; k < plan->bands; k++) {
         plan->p_ref[k] = energy[k] / (double)measured;
-        plan->p_ref_sum += plan->p_ref[k];
+        if (k < plan->sub_bands) {
+            plan->p_ref_sum += plan->p_ref[k];
+        }
     }
 }
 
@@ -355,10 +357,17 @@ dsd_noise_squelch_plan_design(dsd_noise_squelch_plan* out, const float* taps, in
     out->lo_hz = k_band_lo_hz;
     out->hi_hz = hi;
     out->sub_bands = k_count;
+    out->bands = (2 * k_count) - 1;
     const double step = width / (double)k_count;
     for (int k = 0; k < k_count; k++) {
         const double f1 = k_band_lo_hz + (step * (double)k);
         nsq_design_band_pass(f1, f1 + step, fs, out->section[k]);
+    }
+    /* The staggered set: each a sub-band shifted by half its width, so a line on a boundary of the first set sits
+       inside one of these. */
+    for (int k = 0; k + 1 < k_count; k++) {
+        const double f1 = k_band_lo_hz + (step * ((double)k + 0.5));
+        nsq_design_band_pass(f1, f1 + step, fs, out->section[k_count + k]);
     }
     nsq_calibrate(out, taps, taps_len, hb_taps, hb_len);
     if (!(out->p_ref_sum > k_min_power)) {
@@ -383,11 +392,11 @@ dsd_noise_squelch_plan_equal(const dsd_noise_squelch_plan* a, const dsd_noise_sq
     if (!a->valid) {
         return 1;
     }
-    if (a->rate_hz != b->rate_hz || a->sub_bands != b->sub_bands || !nsq_same(a->lo_hz, b->lo_hz)
-        || !nsq_same(a->hi_hz, b->hi_hz)) {
+    if (a->rate_hz != b->rate_hz || a->sub_bands != b->sub_bands || a->bands != b->bands
+        || !nsq_same(a->lo_hz, b->lo_hz) || !nsq_same(a->hi_hz, b->hi_hz)) {
         return 0;
     }
-    for (int k = 0; k < a->sub_bands; k++) {
+    for (int k = 0; k < a->bands; k++) {
         if (!nsq_same(a->p_ref[k], b->p_ref[k])) {
             return 0;
         }
@@ -470,8 +479,10 @@ dsd_noise_squelch_quieting_db(const dsd_noise_squelch_plan* plan, const double* 
     }
     double sum = 0.0;
     double best = -k_q_cap_db;
-    for (int k = 0; k < plan->sub_bands; k++) {
-        sum += p[k];
+    for (int k = 0; k < plan->bands; k++) {
+        if (k < plan->sub_bands) {
+            sum += p[k];
+        }
         const double q = nsq_ratio_db(plan->p_ref[k], p[k]);
         if (q > best) {
             best = q;
@@ -484,7 +495,7 @@ dsd_noise_squelch_quieting_db(const dsd_noise_squelch_plan* plan, const double* 
 
 static void
 nsq_flush_state(dsd_noise_squelch* t) {
-    for (int k = 0; k < t->plan.sub_bands; k++) {
+    for (int k = 0; k < t->plan.bands; k++) {
         for (int s = 0; s < DSD_NOISE_SQUELCH_SECTIONS; s++) {
             if (fabs(t->s1[k][s]) < k_state_flush) {
                 t->s1[k][s] = 0.0;
@@ -501,8 +512,8 @@ static void
 nsq_close_half(dsd_noise_squelch* t) {
     if (t->have_prev) {
         const double n = t->prev_n + t->half_n;
-        double p[DSD_NOISE_SQUELCH_MAX_SUB_BANDS];
-        for (int k = 0; k < t->plan.sub_bands; k++) {
+        double p[DSD_NOISE_SQUELCH_MAX_BANDS];
+        for (int k = 0; k < t->plan.bands; k++) {
             p[k] = (t->prev_e[k] + t->half_e[k]) / n;
         }
         const double q = dsd_noise_squelch_quieting_db(&t->plan, p, (t->prev_iq + t->half_iq) / n);
@@ -542,7 +553,7 @@ dsd_noise_squelch_process(dsd_noise_squelch* t, const float* disc, const float* 
             flags[i] = t->gate_open ? 0U : (uint8_t)DSD_SQUELCH_FLAG_CLOSED;
         }
         const double x = (double)disc[i];
-        for (int k = 0; k < t->plan.sub_bands; k++) {
+        for (int k = 0; k < t->plan.bands; k++) {
             const double y = nsq_sub_band_run(&t->plan, t->s1[k], t->s2[k], k, x);
             t->half_e[k] += y * y;
         }
