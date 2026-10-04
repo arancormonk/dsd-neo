@@ -35,6 +35,7 @@ target_sources(
         analog_voice.c
         analog_audio.c
         squelch_floor.c
+        nfm_noise_squelch.c
 )
 
 set(_dsd_neo_dsp_target_arch "${CMAKE_SYSTEM_PROCESSOR}")
@@ -120,8 +121,14 @@ endif()
 # IEEE semantics cost nothing measurable. The auto squelch's floor tracker
 # promises the same gate for the same samples however they are cut into blocks;
 # fast-math could reassociate its running window sums across a vectorised loop,
-# making them depend on where a block starts.
-set(_dsd_neo_dsp_ieee_c_sources analog_voice.c analog_audio.c squelch_floor.c)
+# making them depend on where a block starts. The NFM noise squelch makes the
+# same promise for its band-pass and window sums.
+set(_dsd_neo_dsp_ieee_c_sources
+    analog_voice.c
+    analog_audio.c
+    squelch_floor.c
+    nfm_noise_squelch.c
+)
 if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
     set_source_files_properties(
         ${_dsd_neo_dsp_ieee_c_sources}

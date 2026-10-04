@@ -72,6 +72,7 @@ if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
         dsp/test_dsp_simd_widen.cpp
         dsp/test_dsp_snr_estimator.cpp
         dsp/test_dsp_squelch_floor.c
+        dsp/test_dsp_nfm_noise_squelch.c
         dsp/test_dsp_symbol_replay.c
         io/test_io_input_level_metrics.c
         io/test_io_rtl_replay_eof_and_cf32.cpp
@@ -96,6 +97,7 @@ elseif(MSVC)
         dsp/test_dsp_simd_widen.cpp
         dsp/test_dsp_snr_estimator.cpp
         dsp/test_dsp_squelch_floor.c
+        dsp/test_dsp_nfm_noise_squelch.c
         dsp/test_dsp_symbol_replay.c
         io/test_io_input_level_metrics.c
         io/test_io_rtl_replay_eof_and_cf32.cpp
@@ -1002,6 +1004,18 @@ dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_dsp_squelch_floor_cxx
   HEADERS_PUBLIC_DSP_SQUELCH_FLOOR_CXX
   dsd-neo/dsp/squelch_floor.h
+  CXX
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_dsp_nfm_noise_squelch
+  HEADERS_PUBLIC_DSP_NFM_NOISE_SQUELCH
+  dsd-neo/dsp/nfm_noise_squelch.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_dsp_nfm_noise_squelch_cxx
+  HEADERS_PUBLIC_DSP_NFM_NOISE_SQUELCH_CXX
+  dsd-neo/dsp/nfm_noise_squelch.h
   CXX
 )
 dsd_neo_add_public_header_smoke_test(
@@ -8437,6 +8451,19 @@ target_include_directories(
 dsd_neo_link_dsp_test(dsd-neo_test_dsp_squelch_floor ${DSD_NEO_TEST_MATH_LIB})
 add_test(NAME DSP_SQUELCH_FLOOR COMMAND dsd-neo_test_dsp_squelch_floor)
 set_tests_properties(DSP_SQUELCH_FLOOR PROPERTIES TIMEOUT 300)
+
+# The NFM noise squelch (issue #518 follow-up): the band rule and its sub-bands'
+# Butterworth response, the calibration, noise that never opens the gate, quieting
+# that follows the CNR and not the level, strong tones that never close it, the
+# hysteresis, the flags' timing, and the same flags whatever the block cuts.
+add_executable(dsd-neo_test_dsp_nfm_noise_squelch dsp/test_dsp_nfm_noise_squelch.c)
+target_include_directories(
+    dsd-neo_test_dsp_nfm_noise_squelch
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/tests/dsp
+)
+dsd_neo_link_dsp_test(dsd-neo_test_dsp_nfm_noise_squelch ${DSD_NEO_TEST_MATH_LIB})
+add_test(NAME DSP_NFM_NOISE_SQUELCH COMMAND dsd-neo_test_dsp_nfm_noise_squelch)
+set_tests_properties(DSP_NFM_NOISE_SQUELCH PROPERTIES TIMEOUT 300)
 
 # DCS detection (issue #523) through the pure analog receive core, in sample time: every
 # supported code in both polarities through the receiver's DC block and de-emphasis at two
