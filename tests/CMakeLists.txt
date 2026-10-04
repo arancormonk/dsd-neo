@@ -71,6 +71,7 @@ if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
         dsp/test_dsp_firdes.c
         dsp/test_dsp_simd_widen.cpp
         dsp/test_dsp_snr_estimator.cpp
+        dsp/test_dsp_squelch_floor.c
         dsp/test_dsp_symbol_replay.c
         io/test_io_input_level_metrics.c
         io/test_io_rtl_replay_eof_and_cf32.cpp
@@ -92,6 +93,7 @@ elseif(MSVC)
         dsp/test_dsp_firdes.c
         dsp/test_dsp_simd_widen.cpp
         dsp/test_dsp_snr_estimator.cpp
+        dsp/test_dsp_squelch_floor.c
         dsp/test_dsp_symbol_replay.c
         io/test_io_input_level_metrics.c
         io/test_io_rtl_replay_eof_and_cf32.cpp
@@ -985,6 +987,18 @@ dsd_neo_add_public_header_smoke_test(
   HEADERS_PUBLIC_DSP_ANALOG_VOICE
   dsd-neo/dsp/analog_voice.h
   C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_dsp_squelch_floor
+  HEADERS_PUBLIC_DSP_SQUELCH_FLOOR
+  dsd-neo/dsp/squelch_floor.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_dsp_squelch_floor_cxx
+  HEADERS_PUBLIC_DSP_SQUELCH_FLOOR_CXX
+  dsd-neo/dsp/squelch_floor.h
+  CXX
 )
 dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_core_utf16
@@ -8359,6 +8373,19 @@ target_include_directories(
 dsd_neo_link_dsp_test(dsd-neo_test_dsp_analog_ctcss ${DSD_NEO_TEST_MATH_LIB})
 add_test(NAME DSP_ANALOG_CTCSS COMMAND dsd-neo_test_dsp_analog_ctcss)
 set_tests_properties(DSP_ANALOG_CTCSS PROPERTIES TIMEOUT 300)
+
+# The auto squelch's classifier, floor and gate (issue #518 follow-up): plan constants
+# against the design model, noise and carriers, learning, no false opens on noise at
+# every margin, floor tracking and relearning, seeding, the per-channel cache, and the
+# same flags whatever the block cuts.
+add_executable(dsd-neo_test_dsp_squelch_floor dsp/test_dsp_squelch_floor.c)
+target_include_directories(
+    dsd-neo_test_dsp_squelch_floor
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/tests/dsp
+)
+dsd_neo_link_dsp_test(dsd-neo_test_dsp_squelch_floor ${DSD_NEO_TEST_MATH_LIB})
+add_test(NAME DSP_SQUELCH_FLOOR COMMAND dsd-neo_test_dsp_squelch_floor)
+set_tests_properties(DSP_SQUELCH_FLOOR PROPERTIES TIMEOUT 300)
 
 # DCS detection (issue #523) through the pure analog receive core, in sample time: every
 # supported code in both polarities through the receiver's DC block and de-emphasis at two

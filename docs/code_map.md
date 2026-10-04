@@ -520,7 +520,8 @@ constants, and Clang also folds an integer bit test on a float it computed or re
   turn any component that is NaN, infinite or at least 2^60 into 0, and soft symbol files in `src/dsp/dsd_symbol.c` --
   and the Costas and Gardner loops check each sample where they load it (`src/dsp/costas.cpp`).
 - Arithmetic whose exact rounding is a contract keeps it explicitly: the decode clock's `ns / 1e9` (`decode_clock.c`
-  is IEEE), and the fallback decimator's block-split-invariant running sum (`#pragma clang fp reassociate(off)`).
+  is IEEE), the fallback decimator's block-split-invariant running sum (`#pragma clang fp reassociate(off)`), and the
+  auto squelch's window sums, which must not depend on where a block starts (`squelch_floor.c` is IEEE).
 - Tests that feed NaN or infinity, or check results with `std::isnan()`, compile their own sources with IEEE
   semantics (the block near the top of `tests/CMakeLists.txt`), leaving the code under test on the build's flags.
 
@@ -1798,6 +1799,20 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   (`test_stream_voice_chain_covers_the_whole_frame`, `test_stream_voice_chain_onepoles_run_at_8k`,
   `test_encoder_rtl_input_reaches_pcm_scale`), `EDACS_GRANT_TUNE_MATRIX` (`rtl-unclipped`), the `DECODE_IQ_ANALOG_*`
   level, parity and fixed-gain cases.
+- The auto squelch's core (issue #518 follow-up) is `src/dsp/squelch_floor.c` (`<dsd-neo/dsp/squelch_floor.h>`), pure
+  and on the channel-filtered I/Q at the channel rate (before any post-decimation). A plan
+  (`dsd_squelch_floor_plan_design()`) turns the channel taps and the half-band stage ahead of them into the
+  classifier's constants: the coherence lag L from the taps' autocorrelation, and the noise's N_eff and coherence bias
+  beta from the noise autocorrelation through both stages, the model `tools/squelch_model.py` fixed the thresholds with
+  (`docs/testing.md` "Auto squelch classifier"). Each sample-exact 40 ms window is NOISE, CARRIER or UNDECIDED; the floor
+  is learned from NOISE windows only (5 of the last 8), tracked down fast and up at 1 dB/s, and relearned on a sustained
+  shift or a collapse, so carrier power never becomes floor and a channel with no noise windows stays learning, its
+  carrier windows open. The gate opens on a 20 ms sub-window at floor plus margin and closes 3 dB lower or on a NOISE
+  window; each sample's flag (`DSD_SQUELCH_FLAG_CLOSED`) is the gate before that sample's decision, so flags, floor and
+  state are bit-identical however the samples are cut into blocks. The per-channel cache keeps floors as a noise density
+  (floor over the plan's noise gain) keyed by the values that set the noise (frequency, tuner gain, tuner AGC, bias tee,
+  device, channel rate, capture chain), stale after 30 minutes of sample time; a neighbour within 5 MHz seeds a floor
+  provisionally. Tests: `DSP_SQUELCH_FLOOR`.
   The block (`dsd_state::analog_out_f`) collects unsynced samples in a digital session too, monitored or not (the
   CQPSK symbol-rate output excepted). `dsd_symbol_analog_block_reset()` (`<dsd-neo/dsp/symbol.h>`, decoder thread)
   drops a part-collected block; app-control and the channel-scan leave call it when the receive family changes. On an
