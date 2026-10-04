@@ -22,6 +22,9 @@ struct output_state {
        switch) and read by the decoder and UI threads through dsd_rtl_stream_output_rate(). */
     std::atomic<int> rate{0};
     float* buffer = nullptr;
+    /* One flag byte per sample, at the sample's position (the auto squelch's DSD_SQUELCH_FLAG_CLOSED; 0 is open):
+       written with the samples before the head that publishes both, and read with them. NULL: every sample open. */
+    uint8_t* flags = nullptr;
     size_t capacity = 0;
     std::atomic<size_t> head{0U};
     std::atomic<size_t> tail{0U};

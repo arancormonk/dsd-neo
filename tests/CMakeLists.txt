@@ -8622,6 +8622,23 @@ target_include_directories(
 dsd_neo_link_dsp_test(dsd-neo_test_dsp_iq_dc_block)
 add_test(NAME DSP_IQ_DC_BLOCK COMMAND dsd-neo_test_dsp_iq_dc_block)
 
+# The auto squelch inside full_demod() (issue #518 follow-up): the tracker on the channel
+# filter's plan, flags instead of zeroing, the AM detector, the post-decimator and the
+# resampler carrying the flags, and the same flags whatever the block cuts.
+add_executable(
+    dsd-neo_test_dsp_squelch_auto_demod
+    dsp/test_dsp_squelch_auto_demod.cpp
+)
+target_include_directories(
+    dsd-neo_test_dsp_squelch_auto_demod
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/dsp
+)
+target_link_libraries(
+    dsd-neo_test_dsp_squelch_auto_demod
+    PRIVATE dsd-neo_dsp_private_test_support ${DSD_NEO_TEST_MATH_LIB}
+)
+add_test(NAME DSP_SQUELCH_AUTO_DEMOD COMMAND dsd-neo_test_dsp_squelch_auto_demod)
+
 add_executable(dsd-neo_test_dsp_squelch dsp/test_dsp_squelch.cpp)
 target_include_directories(
     dsd-neo_test_dsp_squelch
@@ -11227,6 +11244,31 @@ if(DSD_HAS_RADIO)
     add_test(
         NAME IO_RTL_RETUNE_PREPARE
         COMMAND dsd-neo_test_io_rtl_retune_prepare
+    )
+
+    # The auto squelch's plumbing in the RTL stream (issue #518 follow-up): setting, context,
+    # flags through the output ring with the samples, status.
+    add_executable(
+        dsd-neo_test_io_rtl_squelch_plumbing
+        io/test_io_rtl_squelch_plumbing.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_io_rtl_squelch_plumbing
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/io/radio
+    )
+    target_link_libraries(
+        dsd-neo_test_io_rtl_squelch_plumbing
+        PRIVATE dsd-neo_io_radio_private_test_support dsd-neo_core
+    )
+    if(DSD_HAS_RTLSDR)
+        target_link_libraries(
+            dsd-neo_test_io_rtl_squelch_plumbing
+            PRIVATE ${RTLSDR_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT}
+        )
+    endif()
+    add_test(
+        NAME IO_RTL_SQUELCH_PLUMBING
+        COMMAND dsd-neo_test_io_rtl_squelch_plumbing
     )
 
     add_executable(

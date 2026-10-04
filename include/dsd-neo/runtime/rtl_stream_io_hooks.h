@@ -17,6 +17,7 @@
 
 #include <dsd-neo/core/state_fwd.h>
 #include <stddef.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -25,11 +26,21 @@ extern "C" {
 typedef struct {
     int (*read)(void* rtl_ctx, float* out, size_t count, int* out_got);
     double (*return_pwr)(const void* rtl_ctx);
+    /* read with each sample's auto squelch flag (DSD_SQUELCH_FLAG_CLOSED or 0). Optional: without it,
+       dsd_rtl_stream_io_hook_read_ex() reads through read and reports every sample open. */
+    int (*read_ex)(void* rtl_ctx, float* out, uint8_t* flags, size_t count, int* out_got);
 } dsd_rtl_stream_io_hooks;
 
 void dsd_rtl_stream_io_hooks_set(dsd_rtl_stream_io_hooks hooks);
 
 int dsd_rtl_stream_io_hook_read(dsd_state* state, float* out, size_t count, int* out_got);
+
+/**
+ * @brief dsd_rtl_stream_io_hook_read() with one flag byte per sample read into @p flags (issue #518 follow-up): the
+ * auto squelch's per-sample gate (DSD_SQUELCH_FLAG_CLOSED when closed). Through read_ex when installed, otherwise
+ * through read with every flag 0 (open). @p flags may be NULL.
+ */
+int dsd_rtl_stream_io_hook_read_ex(dsd_state* state, float* out, uint8_t* flags, size_t count, int* out_got);
 double dsd_rtl_stream_io_hook_return_pwr(const dsd_state* state);
 
 #ifdef __cplusplus

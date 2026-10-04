@@ -110,6 +110,17 @@ void resamp_design(struct demod_state* s, int L, int M);
  */
 int resamp_process_block(struct demod_state* s, const float* in, int in_len, float* out);
 
+/**
+ * @brief resamp_process_block() with the auto squelch's per-sample flags (issue #518 follow-up).
+ *
+ * Each output takes the flag of the input at or just before its filter's centre, half the taps per phase back (a
+ * passthrough copies them). @p in_flags and @p out_flags may be NULL, and then this is resamp_process_block().
+ *
+ * @return Number of output samples written, with as many flags.
+ */
+int resamp_process_block_flags(struct demod_state* s, const float* in, const uint8_t* in_flags, int in_len, float* out,
+                               uint8_t* out_flags);
+
 #ifdef __cplusplus
 }
 #endif

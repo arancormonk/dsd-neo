@@ -1812,7 +1812,16 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   state are bit-identical however the samples are cut into blocks. The per-channel cache keeps floors as a noise density
   (floor over the plan's noise gain) keyed by the values that set the noise (frequency, tuner gain, tuner AGC, bias tee,
   device, channel rate, capture chain), stale after 30 minutes of sample time; a neighbour within 5 MHz seeds a floor
-  provisionally. Tests: `DSP_SQUELCH_FLOOR`.
+  provisionally. Inside `full_demod()` (`squelch_auto_run()`) the tracker runs on an AUTO setting on the analog
+  monitor (`dsd_demod_analog_monitor_active()`), with a plan for the channel filter in force, the half-band stage
+  ahead of it (`hb31` for one pass, `hb15` for more) and the channel rate (`rate_out` x `post_downsample`), and nothing
+  is zeroed: the level gate and the AM detector's squelched-block branch stand aside, the flags land in
+  `result_flags`, and the post-decimator, `low_pass_real()` and the resampler (`resamp_process_block_flags()`) carry
+  them, each output taking the flag of its input at or just before the filter's centre (K/2 back, a group's middle
+  sample, `low_pass_real()`'s last input). The AM detector reads them (`am_demod_flagged()`): a closed sample is
+  silence and holds the carrier estimate, and the estimate restarts from the open run on reopening after the hold or
+  when it is 3 dB off. The tracker takes its context from `demod_state::squelch_context` (the IO layer's) and keeps
+  the per-channel cache in `demod_state`. Tests: `DSP_SQUELCH_FLOOR`, `DSP_SQUELCH_AUTO_DEMOD`.
   The block (`dsd_state::analog_out_f`) collects unsynced samples in a digital session too, monitored or not (the
   CQPSK symbol-rate output excepted). `dsd_symbol_analog_block_reset()` (`<dsd-neo/dsp/symbol.h>`, decoder thread)
   drops a part-collected block; app-control and the channel-scan leave call it when the receive family changes. On an
@@ -2380,6 +2389,18 @@ Notes:
     read that loaded the first bump can still reach the ring before the clear and take samples the clear drops, and
     the second bump keeps the stream from running on the generation that read carried them under.
     Tests: `RUNTIME_RINGS`, `IO_RTL_ANALOG_FAMILY_SWITCH`.
+  - The output ring carries a flag byte per sample beside its float (`output_state::flags`): the auto squelch's
+    per-sample gate (issue #518 follow-up). The demod writes a block's flags at its samples' positions before the head
+    store that publishes both (`demod_copy_output_chunk()`; a block without flags writes them open), and the readers
+    copy them under the same cursors. `dsd_rtl_stream_read_ex()` / `rtl_stream_read_ex()` and the runtime hook
+    `dsd_rtl_stream_io_hook_read_ex()` hand them to the decoder; a host that installs only `read` gets them all open.
+    Tests: `IO_RTL_SQUELCH_PLUMBING`, `ENGINE_IO_HOOKS_INSTALL`.
+  - The squelch setting reaches the demod thread through `g_squelch_auto_word` (mode and margin) beside the existing
+    `channel_squelch_level`; `rtl_stream_set_channel_squelch_setting()` orders the two stores so no block runs
+    ungated between them, and the demod thread copies both into `demod_state` before each block
+    (`demod_take_squelch_setting()`), with the floor's context (applied frequency, tuner gain as applied, tuner
+    autogain, bias tee, device hash, channel rate, capture chain). After the block it publishes the tracker's status
+    (`rtl_stream_get_squelch_status()`).
   - I/Q replay framing (issue #572; `replay_thread_process_block()` in `rtl_device.cpp`, `demod_read_input_block()`
     in `rtl_sdr_fm.cpp`). Each demod block is exactly one capture chunk:
     - The reader reads a chunk whole with `replay_read_exact()`: 64 KiB, or up to the next event or the end, looping

@@ -183,6 +183,9 @@ int dsd_squelch_floor_plan_equal(const dsd_squelch_floor_plan* a, const dsd_sque
 /** @brief Start over: LEARNING, gate closed, windows empty; the plan and margin stay. */
 void dsd_squelch_floor_reset(dsd_squelch_floor* t);
 
+/** @brief A gap in the samples: empty the windows and the lag history; the floor and the gate stay. */
+void dsd_squelch_floor_restart_windows(dsd_squelch_floor* t);
+
 /**
  * @brief Take @p plan. A plan that classifies differently starts the windows over; a floor already learned is kept,
  * rescaled by the ratio of the plans' noise gains (a width or kind change at the same context).

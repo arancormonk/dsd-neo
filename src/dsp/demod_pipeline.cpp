@@ -13,6 +13,7 @@
 
 #include <atomic>
 #include <climits>
+#include <dsd-neo/core/power.h>
 #include <dsd-neo/dsp/costas.h>
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
@@ -20,12 +21,14 @@
 #include <dsd-neo/dsp/halfband.h>
 #include <dsd-neo/dsp/math_utils.h>
 #include <dsd-neo/dsp/simd_fir.h>
+#include <dsd-neo/dsp/squelch_floor.h>
 #include <dsd-neo/dsp/ted.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/mem.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <math.h>
+#include <stdint.h>
 #include <stdio.h>
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/dsp/fsk_modem.h"
@@ -506,6 +509,9 @@ post_decim_reset_state(struct demod_state* d) {
     d->post_fallback_lp_valid = 0;
     d->post_fallback_box_acc = 0.0f;
     d->post_fallback_box_phase = 0;
+    DSD_MEMSET(d->post_flag_hist, DSD_SQUELCH_FLAG_CLOSED, sizeof(d->post_flag_hist));
+    d->post_flag_head = 0;
+    d->post_fallback_mid_flag = DSD_SQUELCH_FLAG_CLOSED;
 }
 
 /* ---------------- Fixed channel LPF (complex, no decimation) ----------------- */
@@ -840,12 +846,19 @@ low_pass_real(struct demod_state* s) {
         decim = 1;
     }
     float recip = 1.0f / (float)decim;
+    /* The auto squelch's flags: an output takes its last input's (every stream sets rate_out2 to rate_in, where this
+       stage passes each sample through). */
+    uint8_t* flags = s->result_flags_active ? s->result_flags : NULL;
     while (i < s->result_len) {
         s->now_lpr += r[i];
+        const uint8_t flag = flags ? flags[i] : 0U;
         i++;
         s->prev_lpr_index += slow;
         if (s->prev_lpr_index < fast) {
             continue;
+        }
+        if (flags) {
+            flags[i2] = flag;
         }
         r[i2] = s->now_lpr * recip;
         s->prev_lpr_index -= fast;
@@ -950,6 +963,63 @@ am_block_mean_magnitude(const float* iq, int pairs) {
     return pairs > 0 ? (float)(sum / (double)pairs) : 0.0f;
 }
 
+/* The mean magnitude of the open run of samples starting at @p first (up to the next closed one): the carrier a
+   transmission the auto squelch has just opened on starts from. */
+static float
+am_open_run_mean_magnitude(const float* iq, const uint8_t* flags, int first, int pairs) {
+    double sum = 0.0;
+    int count = 0;
+    for (int n = first; n < pairs && (flags[n] & DSD_SQUELCH_FLAG_CLOSED) == 0U; n++) {
+        const double i = (double)iq[(size_t)(n << 1) + 0];
+        const double q = (double)iq[(size_t)(n << 1) + 1];
+        sum += sqrt(i * i + q * q);
+        count++;
+    }
+    return count > 0 ? (float)(sum / (double)count) : 0.0f;
+}
+
+/* An estimate this far (3 dB) from what the channel carries on reopening is not that carrier's: the gate closes a
+   sub-window after the carrier leaves, and the estimate follows the noise until it does. */
+static const float kAmReseedRatio = 1.41421356f;
+
+/* The AM detector under the auto squelch, which gates per sample (result_flags): a closed sample is silence and leaves
+   the carrier estimate where it was, as a squelched block does under the level squelch, and counts into the closed
+   run. The first open sample after a run past the hold, or after any closed run when the estimate is 3 dB off the open
+   run's mean magnitude, starts the estimate afresh from that open run. */
+static void
+am_demod_flagged(struct demod_state* fm, int pairs) {
+    const float* iq = assume_aligned_ptr(fm->lowpassed, DSD_NEO_ALIGN);
+    float* out = assume_aligned_ptr(fm->result, DSD_NEO_ALIGN);
+    const uint8_t* flags = fm->result_flags;
+    float carrier = fm->am_carrier;
+    const float alpha = am_carrier_alpha(fm);
+    for (int n = 0; n < pairs; n++) {
+        if ((flags[n] & DSD_SQUELCH_FLAG_CLOSED) != 0U) {
+            out[n] = 0.0f;
+            am_note_squelched_block(fm, 1);
+            continue;
+        }
+        if (fm->am_squelched_samples > 0) {
+            const float run = am_open_run_mean_magnitude(iq, flags, n, pairs);
+            if (am_squelch_ended_transmission(fm) || carrier > run * kAmReseedRatio || run > carrier * kAmReseedRatio) {
+                carrier = run;
+            }
+            fm->am_squelched_samples = 0;
+        }
+        if (!(carrier >= kAmCarrierFloor)) {
+            carrier = am_open_run_mean_magnitude(iq, flags, n, pairs);
+        }
+        const float i = iq[(size_t)(n << 1) + 0];
+        const float q = iq[(size_t)(n << 1) + 1];
+        const float a = sqrtf(i * i + q * q);
+        out[n] = carrier >= kAmCarrierFloor
+                     ? kAmOutputGain * clamp_float((a / carrier) - 1.0f, -kAmEnvelopeClamp, kAmEnvelopeClamp)
+                     : 0.0f;
+        carrier += alpha * (a - carrier);
+    }
+    fm->am_carrier = carrier;
+}
+
 /**
  * @brief AM envelope detector on interleaved low-passed I/Q (issue #524).
  *
@@ -964,6 +1034,10 @@ dsd_am_demod(struct demod_state* fm) {
     }
     float* out = assume_aligned_ptr(fm->result, DSD_NEO_ALIGN);
     fm->result_len = pairs;
+    if (fm->result_flags_active) {
+        am_demod_flagged(fm, pairs);
+        return;
+    }
     if (fm->channel_squelched) {
         /* The squelch zeroed the block. A zero envelope would read as -0.25 under the held carrier estimate; the block
            is silence instead, and the estimate stays for the audio the squelch lets through next, unless the squelch
@@ -1403,6 +1477,109 @@ mean_square_iq(const float* samples, int len) {
     return len > 0 ? (float)(p / (double)len) : 0.0f;
 }
 
+/* ---------------- The auto squelch (issue #518 follow-up) ---------------- */
+
+/* The rate the channel-filtered I/Q runs at: the demod rate before any post-decimation. */
+static int
+squelch_channel_rate_hz(const struct demod_state* d) {
+    if (d->rate_out <= 0) {
+        return 0;
+    }
+    return d->rate_out * (d->post_downsample > 1 ? d->post_downsample : 1);
+}
+
+/* An AUTO setting runs on the analog monitor only; a digital channel never shows its noise. */
+static int
+squelch_auto_wanted(const struct demod_state* d) {
+    return d->squelch_mode == DSD_SQUELCH_MODE_AUTO && dsd_demod_analog_monitor_active(d);
+}
+
+/* The tracker's plan follows the channel filter in force, the half-band stage ahead of it and the channel rate. */
+static void
+squelch_floor_ensure_plan(struct demod_state* d) {
+    const int filtered = d->channel_lpf_enable && d->channel_lpf_plan_taps_len >= 3;
+    const int taps_len = filtered ? d->channel_lpf_plan_taps_len : 0;
+    const int hb_taps = d->downsample_passes <= 0 ? 0 : (d->downsample_passes == 1 ? 31 : HB_TAPS);
+    const int rate = squelch_channel_rate_hz(d);
+    const int rate_out = filtered ? d->channel_lpf_plan_rate_out : 0;
+    const int profile = filtered ? d->channel_lpf_plan_profile : 0;
+    const int width_hz = filtered ? d->channel_lpf_plan_width_hz : 0;
+    if (d->squelch_plan_set && d->squelch_plan_rate_hz == rate && d->squelch_plan_taps_len == taps_len
+        && d->squelch_plan_hb_taps == hb_taps && d->squelch_plan_rate_out == rate_out
+        && d->squelch_plan_profile == profile && d->squelch_plan_width_hz == width_hz) {
+        return;
+    }
+    const float* hb = hb_taps == 31 ? hb31_q15_taps : (hb_taps > 0 ? hb_q15_taps : NULL);
+    dsd_squelch_floor_plan plan;
+    /* A plan that cannot be designed is not valid, and the tracker then keeps the gate open. */
+    (void)dsd_squelch_floor_plan_design(&plan, taps_len > 0 ? d->channel_lpf_plan_taps : NULL, taps_len, hb, hb_taps,
+                                        rate);
+    dsd_squelch_floor_set_plan(&d->squelch_floor, &plan);
+    d->squelch_plan_rate_hz = rate;
+    d->squelch_plan_taps_len = taps_len;
+    d->squelch_plan_hb_taps = hb_taps;
+    d->squelch_plan_rate_out = rate_out;
+    d->squelch_plan_profile = profile;
+    d->squelch_plan_width_hz = width_hz;
+    d->squelch_plan_set = 1;
+}
+
+/* The flag histories of the post-decimator and the resampler start over, closed: their next outputs map to samples of
+   the channel just taken, not to flags left from before. */
+static void
+squelch_flag_histories_reset(struct demod_state* d) {
+    DSD_MEMSET(d->post_flag_hist, DSD_SQUELCH_FLAG_CLOSED, sizeof(d->post_flag_hist));
+    d->post_fallback_mid_flag = DSD_SQUELCH_FLAG_CLOSED;
+    DSD_MEMSET(d->resamp_flag_hist, DSD_SQUELCH_FLAG_CLOSED, sizeof(d->resamp_flag_hist));
+}
+
+/* The tracker takes the context it runs in: a gap since it last ran starts its windows over, and a new context moves
+   the floor (remembered for the context left, seeded from the cache for the one taken, or learned). */
+static void
+squelch_auto_take_context(struct demod_state* d) {
+    dsd_squelch_floor* t = &d->squelch_floor;
+    const int same =
+        d->squelch_context_applied_set && dsd_squelch_floor_key_equal(&d->squelch_context_applied, &d->squelch_context);
+    if (d->squelch_auto_ran && same) {
+        return;
+    }
+    if (same) {
+        dsd_squelch_floor_restart_windows(t);
+    } else {
+        dsd_squelch_floor_change_context(t, &d->squelch_cache,
+                                         d->squelch_context_applied_set ? &d->squelch_context_applied : NULL,
+                                         &d->squelch_context);
+    }
+    squelch_flag_histories_reset(d);
+    d->squelch_context_applied = d->squelch_context;
+    d->squelch_context_applied_set = 1;
+}
+
+/* Run the tracker over the block's channel samples, one flag per sample into result_flags. Nothing is zeroed. */
+static void
+squelch_auto_run(struct demod_state* d) {
+    dsd_squelch_floor* t = &d->squelch_floor;
+    squelch_floor_ensure_plan(d);
+    int margin = d->squelch_margin_db;
+    if (margin < DSD_SQUELCH_MARGIN_MIN_DB) {
+        margin = DSD_SQUELCH_MARGIN_MIN_DB;
+    } else if (margin > DSD_SQUELCH_MARGIN_MAX_DB) {
+        margin = DSD_SQUELCH_MARGIN_MAX_DB;
+    }
+    if (t->margin_db != margin) {
+        dsd_squelch_floor_set_margin(t, margin);
+    }
+    squelch_auto_take_context(d);
+    d->squelch_auto_ran = 1;
+    const int pairs = d->lp_len >> 1;
+    dsd_squelch_floor_process(t, d->lowpassed, pairs, d->result_flags);
+    const int rate = squelch_channel_rate_hz(d);
+    if (rate > 0) {
+        dsd_squelch_floor_cache_advance(&d->squelch_cache, (double)pairs / (double)rate);
+    }
+    d->result_flags_active = 1;
+}
+
 static void
 full_demod_update_channel_state(struct demod_state* d) {
     if (d->lowpassed && d->lp_len >= 2) {
@@ -1413,6 +1590,15 @@ full_demod_update_channel_state(struct demod_state* d) {
            DC block, which runs after this, is bypassed on AM for the same reason). */
         d->channel_pwr = dsd_demod_am_active(d) ? mean_square_iq(d->lowpassed, n) : mean_power(d->lowpassed, n, 1);
     }
+    if (squelch_auto_wanted(d)) {
+        /* The auto squelch gates per sample at the decoder's sink: the block runs whole, and the level gate is off. */
+        squelch_auto_run(d);
+        d->channel_squelched = 0;
+        d->squelch_gate_open = 1;
+        return;
+    }
+    d->squelch_auto_ran = 0;
+    d->result_flags_active = 0;
     const float squelch_level = d->channel_squelch_level.load(std::memory_order_relaxed);
     if (d->lowpassed && d->lp_len > 0 && squelch_level > 0.0f && d->channel_pwr < squelch_level) {
         d->channel_squelched = 1;
@@ -1724,6 +1910,51 @@ post_decim_run_fallback(struct demod_state* d, int decim) {
     d->result_len = boxcar_decimate_stream(d->result, n, decim, &d->post_fallback_box_acc, &d->post_fallback_box_phase);
 }
 
+/* The auto squelch's flags through the polyphase decimator, in place, before it runs (from its phase): each output
+   takes the flag of the input at or just before its filter's centre, K/2 samples back. */
+static void
+post_decim_map_flags_polyphase(struct demod_state* d, int in_len) {
+    if (!d->post_polydecim_enabled || !d->post_polydecim_taps || !d->post_polydecim_hist || in_len <= 0) {
+        return;
+    }
+    const int M = d->post_polydecim_M;
+    const int delay = d->post_polydecim_K / 2 < 31 ? d->post_polydecim_K / 2 : 31;
+    uint8_t* flags = d->result_flags;
+    int phase = d->post_polydecim_phase;
+    int head = d->post_flag_head;
+    int out_len = 0;
+    for (int n = 0; n < in_len; n++) {
+        d->post_flag_hist[head] = flags[n];
+        head = (head + 1) & 31;
+        if (++phase < M) {
+            continue;
+        }
+        phase -= M;
+        flags[out_len++] = d->post_flag_hist[(head + 31 - delay) & 31];
+    }
+    d->post_flag_head = head;
+}
+
+/* The same through the fallback, before it runs: each group's output takes the flag of the group's middle sample. */
+static void
+post_decim_map_flags_fallback(struct demod_state* d, int in_len, int decim) {
+    uint8_t* flags = d->result_flags;
+    int count = d->post_fallback_box_phase;
+    uint8_t mid = d->post_fallback_mid_flag;
+    int out_len = 0;
+    for (int n = 0; n < in_len; n++) {
+        if (count == (decim - 1) / 2) {
+            mid = flags[n];
+        }
+        if (++count < decim) {
+            continue;
+        }
+        flags[out_len++] = mid;
+        count = 0;
+    }
+    d->post_fallback_mid_flag = mid;
+}
+
 /* Decimate the audio by post_downsample, streaming on either path: the block publishes the outputs its samples
    complete, 0 included (a block shorter than what the next output still needs makes none and its samples wait in the
    decimator's state), so the output does not depend on where the blocks are cut. */
@@ -1736,12 +1967,18 @@ full_demod_apply_post_audio_decimation(struct demod_state* d) {
     audio_polydecim_ensure(d, decim);
     post_decim_track_state_key(d, decim);
     if (d->post_polydecim_enabled) {
+        if (d->result_flags_active) {
+            post_decim_map_flags_polyphase(d, d->result_len);
+        }
         const int out_n = audio_polydecim_process(d, d->result, d->result_len, d->timing_buf);
         if (out_n > 0) {
             DSD_MEMCPY(d->result, d->timing_buf, (size_t)out_n * sizeof(float));
         }
         d->result_len = out_n > 0 ? out_n : 0;
         return;
+    }
+    if (d->result_flags_active && d->result_len > 0) {
+        post_decim_map_flags_fallback(d, d->result_len, decim);
     }
     post_decim_run_fallback(d, decim);
 }

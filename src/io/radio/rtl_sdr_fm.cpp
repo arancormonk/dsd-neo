@@ -32,6 +32,7 @@
 #include <dsd-neo/dsp/resampler.h>
 #include <dsd-neo/dsp/snr_bias.h>
 #include <dsd-neo/dsp/snr_estimator.h>
+#include <dsd-neo/dsp/squelch_floor.h>
 #include <dsd-neo/dsp/ted.h>
 #include <dsd-neo/io/iq_capture.h>
 #include <dsd-neo/io/iq_replay.h>
@@ -330,6 +331,32 @@ static struct output_state output;
 /* The output ring's capacity in floats (output_init()). */
 static constexpr size_t kOutputRingCapacity = (size_t)(MAXIMUM_BUF_LENGTH * 8);
 static struct controller_state controller;
+
+/* The auto squelch (issue #518 follow-up). The setting a control thread pushes (rtl_stream_set_channel_squelch_setting())
+ * and the demod thread copies into demod_state before each block: the dsd_squelch_mode in bits 0-7, the margin in dB in
+ * bits 8-15. A LEVEL threshold stays in demod_state::channel_squelch_level: a switch to AUTO stores this word before it
+ * zeroes the level, and a switch to LEVEL stores the level before this word, so no block runs between the two
+ * ungated. */
+static std::atomic<uint32_t> g_squelch_auto_word{0U};
+/* The parts of the floor's context the demod thread does not hold itself: the tuner gain as last applied (tenths of a
+ * dB, AUTO_GAIN under the tuner's AGC), the bias tee, and the device (a hash of its spec, at open). */
+static std::atomic<int> g_squelch_tuner_gain{AUTO_GAIN};
+static std::atomic<int> g_squelch_bias_tee{0};
+static std::atomic<uint32_t> g_squelch_device_hash{0U};
+/* What the tracker publishes after each block, for display (rtl_stream_get_squelch_status()). */
+static std::atomic<int> g_squelch_status_active{0};
+static std::atomic<int> g_squelch_status_state{0};
+static std::atomic<int> g_squelch_status_gate_open{1};
+static std::atomic<int> g_squelch_status_plan_valid{0};
+static std::atomic<float> g_squelch_status_floor{0.0f};
+static std::atomic<float> g_squelch_status_window_power{0.0f};
+
+/* The dongle's gain as applied, published for the auto squelch's context. */
+static void
+dongle_note_gain(int gain_tenth_db) {
+    dongle.gain = gain_tenth_db;
+    g_squelch_tuner_gain.store(gain_tenth_db, std::memory_order_relaxed);
+}
 
 /* Receive-family requests made live (rtl_stream_request_analog_profile()), counted as each is accepted. A retune
  * profile records the count when a family is attached to it (rtl_stream_prepare_retune_analog_profile_for_target()),
@@ -780,7 +807,7 @@ static void* g_test_output_clear_pause_ctx = NULL;
  * (rtl_stream_clear_output_ring()) also takes. Otherwise a clear landing between the snapshot and the store would be
  * undone by the store: the old tail over the reset head reads as a ring nearly full of the old stream's samples. */
 static int
-ring_read_available(struct output_state* o, float* out, size_t count) {
+ring_read_available(struct output_state* o, float* out, uint8_t* flags, size_t count) {
     if (!o || !o->buffer || !out || count == 0 || ring_is_empty(o)) {
         return 0;
     }
@@ -789,6 +816,9 @@ ring_read_available(struct output_state* o, float* out, size_t count) {
     size_t tail = o->tail.load();
     const size_t head = o->head.load();
     while (got < count && tail != head) {
+        if (flags) {
+            flags[got] = o->flags ? o->flags[tail] : 0U;
+        }
         out[got++] = o->buffer[tail];
         tail++;
         if (tail >= o->capacity) {
@@ -1837,7 +1867,11 @@ rtl_stream_set_bias_tee(int on) {
     if (!rtl_device_handle) {
         return -1;
     }
-    return rtl_device_set_bias_tee(rtl_device_handle, on ? 1 : 0);
+    const int rc = rtl_device_set_bias_tee(rtl_device_handle, on ? 1 : 0);
+    if (rc == 0) {
+        g_squelch_bias_tee.store(on ? 1 : 0, std::memory_order_relaxed);
+    }
+    return rc;
 }
 
 /* Export applied tuner gain for UI without exposing internals. */
@@ -3005,7 +3039,7 @@ demod_autogain_probe_handle(DemodAutogainState* st, uint64_t now_ns) {
     int seed = demod_autogain_clamp_db10(st->seed_gain_db10);
     st->manual_target = demod_autogain_clamp_db10(seed - 50);
     rtl_device_set_gain_nearest(rtl_device_handle, st->manual_target);
-    dongle.gain = st->manual_target;
+    dongle_note_gain(st->manual_target);
     st->next_allowed_ns = now_ns + 1500ULL * 1000000ULL;
     LOG_INFO("AUTOGAIN: exiting probe due to clipping; set ~%d.%d dB.\n", st->manual_target / 10,
              st->manual_target % 10);
@@ -3018,7 +3052,7 @@ demod_autogain_bootstrap_if_low(DemodAutogainState* st, int is_auto, uint64_t no
     }
     int kick = demod_autogain_clamp_db10(st->seed_gain_db10);
     rtl_device_set_gain_nearest(rtl_device_handle, kick);
-    dongle.gain = kick;
+    dongle_note_gain(kick);
     st->manual_target = kick;
     st->next_allowed_ns = now_ns + 1500ULL * 1000000ULL;
     LOG_INFO("AUTOGAIN: bootstrapping from device auto to ~%d.%d dB due to low input level.\n", kick / 10, kick % 10);
@@ -3043,7 +3077,7 @@ demod_autogain_adjust_manual(DemodAutogainState* st, const struct demod_state* d
         return;
     }
     rtl_device_set_gain_nearest(rtl_device_handle, st->manual_target);
-    dongle.gain = st->manual_target;
+    dongle_note_gain(st->manual_target);
     st->next_allowed_ns = now_ns + 1500ULL * 1000000ULL;
     st->spec_pass = 0;
     if (is_auto > 0) {
@@ -3711,13 +3745,28 @@ demod_wait_for_output_space(struct output_state* o) {
     return 1;
 }
 
+/* The flags of @p count samples into the ring's flag buffer at @p at: copied, or open when the block has none. */
+static void
+demod_copy_output_flags(struct output_state* o, size_t at, const uint8_t* flags, size_t count) {
+    if (!o->flags || count == 0U) {
+        return;
+    }
+    if (flags) {
+        DSD_MEMCPY(o->flags + at, flags, count * sizeof(uint8_t));
+    } else {
+        DSD_MEMSET(o->flags + at, 0, count * sizeof(uint8_t));
+    }
+}
+
+/* Samples and their flags go in at the same positions, before the head that publishes both. */
 static size_t
-demod_copy_output_chunk(struct output_state* o, const float* data, size_t count, size_t free_sp) {
+demod_copy_output_chunk(struct output_state* o, const float* data, const uint8_t* flags, size_t count, size_t free_sp) {
     size_t write_now = (count < free_sp) ? count : free_sp;
     size_t h = o->head.load();
     size_t to_end = o->capacity - h;
     if (to_end >= write_now) {
         DSD_MEMCPY(o->buffer + h, data, write_now * sizeof(float));
+        demod_copy_output_flags(o, h, flags, write_now);
         h += write_now;
         if (h >= o->capacity) {
             h = 0U;
@@ -3727,15 +3776,18 @@ demod_copy_output_chunk(struct output_state* o, const float* data, size_t count,
     }
     if (to_end > 0U) {
         DSD_MEMCPY(o->buffer + h, data, to_end * sizeof(float));
+        demod_copy_output_flags(o, h, flags, to_end);
     }
     size_t remaining = write_now - to_end;
     DSD_MEMCPY(o->buffer, data + to_end, remaining * sizeof(float));
+    demod_copy_output_flags(o, 0U, flags ? flags + to_end : NULL, remaining);
     o->head.store(remaining);
     return write_now;
 }
 
 static size_t
-demod_write_output_samples_interruptible(struct output_state* o, const float* data, size_t count) {
+demod_write_output_samples_interruptible(struct output_state* o, const float* data, const uint8_t* flags,
+                                         size_t count) {
     if (!o || !o->buffer || !data || count == 0U) {
         return 0U;
     }
@@ -3749,8 +3801,11 @@ demod_write_output_samples_interruptible(struct output_state* o, const float* da
             }
             continue;
         }
-        size_t write_now = demod_copy_output_chunk(o, data, count, free_sp);
+        size_t write_now = demod_copy_output_chunk(o, data, flags, count, free_sp);
         data += write_now;
+        if (flags) {
+            flags += write_now;
+        }
         count -= write_now;
         written += write_now;
     }
@@ -3761,12 +3816,14 @@ demod_write_output_samples_interruptible(struct output_state* o, const float* da
 }
 
 /* The block's output as the ring takes it: resampled and scaled as its kind wants. Returns the sample count (0: none)
- * and points @p out_data at the samples. */
+ * and points @p out_data at the samples and @p out_flags at their auto squelch flags (NULL: the block has none). */
 static size_t
-demod_finish_output_block(struct demod_state* d, const float** out_data) {
+demod_finish_output_block(struct demod_state* d, const float** out_data, const uint8_t** out_flags) {
+    *out_flags = NULL;
     if (d->result_len <= 0) {
         return 0U;
     }
+    const int flagged = d->result_flags_active;
     /* Digital streams carry discriminator/symbol values, not audio, so the monitor output
      * scale must not be applied to them. CQPSK output is symbol-rate and never resampled. */
     const int digital_output =
@@ -3776,7 +3833,8 @@ demod_finish_output_block(struct demod_state* d, const float** out_data) {
        radians into audio and would only shrink it. */
     const int scaled = !digital_output && !dsd_demod_am_active(d);
     if (resample) {
-        int out_n = resamp_process_block(d, d->result, d->result_len, d->resamp_outbuf);
+        int out_n = resamp_process_block_flags(d, d->result, flagged ? d->result_flags : NULL, d->result_len,
+                                               d->resamp_outbuf, flagged ? d->resamp_outflags : NULL);
         if (out_n <= 0) {
             return 0U;
         }
@@ -3784,12 +3842,14 @@ demod_finish_output_block(struct demod_state* d, const float** out_data) {
             apply_output_scale(d, d->resamp_outbuf, out_n);
         }
         *out_data = d->resamp_outbuf;
+        *out_flags = flagged ? d->resamp_outflags : NULL;
         return (size_t)out_n;
     }
     if (scaled) {
         apply_output_scale(d, d->result, d->result_len);
     }
     *out_data = d->result;
+    *out_flags = flagged ? d->result_flags : NULL;
     return (size_t)d->result_len;
 }
 
@@ -3799,8 +3859,9 @@ demod_write_output_block(struct demod_state* d, struct output_state* o) {
         return 0U;
     }
     const float* data = NULL;
-    const size_t count = demod_finish_output_block(d, &data);
-    return count > 0U ? demod_write_output_samples_interruptible(o, data, count) : 0U;
+    const uint8_t* flags = NULL;
+    const size_t count = demod_finish_output_block(d, &data, &flags);
+    return count > 0U ? demod_write_output_samples_interruptible(o, data, flags, count) : 0U;
 }
 
 /* ---------------- Replay decoder pacing (issue #572) ----------------
@@ -3945,14 +4006,15 @@ demod_publish_replay_output_block(struct demod_state* d, struct output_state* o,
         return 0U;
     }
     const float* data = NULL;
-    const size_t count = demod_finish_output_block(d, &data);
+    const uint8_t* flags = NULL;
+    const size_t count = demod_finish_output_block(d, &data, &flags);
     if (count == 0U || demod_output_write_cancelled()) {
         return 0U;
     }
     rtl_stream_replay_batch tag = demod_replay_batch_tag(span, o);
     RTL_REPLAY_TEST_STAGE(RTL_STREAM_TEST_REPLAY_DEMOD_BEFORE_PUBLISH, count);
     dsd_mutex_lock(&o->ready_m);
-    const size_t published = demod_copy_output_chunk(o, data, count, ring_free(o));
+    const size_t published = demod_copy_output_chunk(o, data, flags, count, ring_free(o));
     if (published > 0U) {
         tag.output_generation = g_rtl_output_generation.load(std::memory_order_acquire);
         tag.output_count = (uint32_t)published;
@@ -4119,6 +4181,42 @@ demod_feed_wideband_spectrum(const struct demod_state* d) {
                                        controller.last_applied_freq_hz.load(std::memory_order_acquire));
 }
 
+/* The demod thread, before a block: the squelch setting, and for an AUTO setting the context the floor belongs to. */
+static void
+demod_take_squelch_setting(struct demod_state* d) {
+    const uint32_t word = g_squelch_auto_word.load(std::memory_order_acquire);
+    d->squelch_mode = (int)(word & 0xFFU);
+    d->squelch_margin_db = (int)((word >> 8) & 0xFFU);
+    if (d->squelch_mode != DSD_SQUELCH_MODE_AUTO) {
+        return;
+    }
+    const int post = d->post_downsample > 1 ? d->post_downsample : 1;
+    dsd_squelch_floor_key key;
+    DSD_MEMSET(&key, 0, sizeof key);
+    key.freq_hz = (int64_t)controller.last_applied_freq_hz.load(std::memory_order_acquire);
+    key.gain = g_squelch_tuner_gain.load(std::memory_order_relaxed);
+    key.tuner_agc = g_tuner_autogain_on.load(std::memory_order_relaxed) ? 1 : 0;
+    key.bias = g_squelch_bias_tee.load(std::memory_order_relaxed);
+    key.device = g_squelch_device_hash.load(std::memory_order_relaxed);
+    key.rate_hz = d->rate_out > 0 ? d->rate_out * post : 0;
+    key.chain = (stream_is_replay_active() ? 1 : 0) | (d->downsample_passes << 1) | (post << 8);
+    d->squelch_context = key;
+}
+
+/* The demod thread, after a block: what the auto squelch's tracker shows. */
+static void
+demod_publish_squelch_status(const struct demod_state* d) {
+    dsd_squelch_floor_status st;
+    dsd_squelch_floor_get_status(&d->squelch_floor, &st);
+    const int active = d->result_flags_active ? 1 : 0;
+    g_squelch_status_active.store(active, std::memory_order_relaxed);
+    g_squelch_status_state.store(st.state, std::memory_order_relaxed);
+    g_squelch_status_gate_open.store(active ? st.gate_open : 1, std::memory_order_relaxed);
+    g_squelch_status_plan_valid.store(d->squelch_floor.plan.valid ? 1 : 0, std::memory_order_relaxed);
+    g_squelch_status_floor.store((float)st.floor_power, std::memory_order_relaxed);
+    g_squelch_status_window_power.store((float)st.window_power, std::memory_order_relaxed);
+}
+
 /* Hand a block's output to the decoder, unless a retune has the output gated: published as one batch in a paced replay
  * (@p replay_pull), written into the ring otherwise. Returns the samples it took. */
 static size_t
@@ -4169,8 +4267,10 @@ static DSD_THREAD_RETURN_TYPE
             (void)rtl_stream_consume_fsk_modem_reset_pending(d);
         }
         demod_feed_wideband_spectrum(d);
+        demod_take_squelch_setting(d);
         full_demod(d);
         g_channel_pwr.store(d->channel_pwr, std::memory_order_relaxed);
+        demod_publish_squelch_status(d);
         rtl_stream_publish_demod_profile_snapshot();
         rtl_stream_publish_ted_bias();
         rtl_stream_publish_fsk_phase_cfo_snapshot(d);
@@ -6282,6 +6382,7 @@ dongle_init(struct dongle_state* s) {
     s->freq.store(0, std::memory_order_relaxed);
     s->rate.store((uint32_t)rtl_dsp_bw_hz, std::memory_order_relaxed);
     s->gain = AUTO_GAIN; // tenths of a dB
+    g_squelch_tuner_gain.store(AUTO_GAIN, std::memory_order_relaxed);
     s->ppm_error.store(0, std::memory_order_relaxed);
     s->mute = 0;
     s->direct_sampling = 0;
@@ -6313,6 +6414,17 @@ output_init(struct output_state* s) {
         }
         s->buffer = static_cast<float*>(mem_ptr);
     }
+    {
+        void* flags_ptr = dsd_neo_aligned_malloc(s->capacity * sizeof(uint8_t));
+        if (!flags_ptr) {
+            LOG_ERROR("Failed to allocate output ring flags (%zu samples).\n", s->capacity);
+            dsd_neo_aligned_free(s->buffer);
+            s->buffer = NULL;
+            return;
+        }
+        s->flags = static_cast<uint8_t*>(flags_ptr);
+        DSD_MEMSET(s->flags, 0, s->capacity * sizeof(uint8_t));
+    }
     s->head.store(0);
     s->tail.store(0);
     /* Metrics */
@@ -6333,6 +6445,10 @@ output_cleanup(struct output_state* s) {
     if (s->buffer) {
         dsd_neo_aligned_free(s->buffer);
         s->buffer = NULL;
+    }
+    if (s->flags) {
+        dsd_neo_aligned_free(s->flags);
+        s->flags = NULL;
     }
 }
 
@@ -6432,7 +6548,7 @@ setup_initial_freq_and_rate(dsd_opts* opts) {
         DSD_SNPRINTF(udp_control_bindaddr, sizeof udp_control_bindaddr, "%s", "127.0.0.1");
     }
     if (opts->rtl_gain_value > 0) {
-        dongle.gain = opts->rtl_gain_value * 10;
+        dongle_note_gain(opts->rtl_gain_value * 10);
     }
 }
 
@@ -7044,8 +7160,20 @@ stream_open_warn_low_dsp_bw(const dsd_opts* opts) {
     }
 }
 
+/* FNV-1a of the input spec: the device part of the auto squelch's floor context. */
+static uint32_t
+squelch_device_hash(const char* spec) {
+    uint32_t h = 2166136261U;
+    for (const char* c = spec ? spec : ""; *c != '\0'; c++) {
+        h ^= (uint32_t)(unsigned char)*c;
+        h *= 16777619U;
+    }
+    return h;
+}
+
 static int
 stream_open_init_pipeline(const dsd_opts* opts, int demod_base_rate_hz) {
+    g_squelch_device_hash.store(squelch_device_hash(opts ? opts->audio_in_dev : NULL), std::memory_order_relaxed);
     dongle_init(&dongle);
     rtl_demod_init_for_mode(&demod, &output, opts, demod_base_rate_hz);
     output_init(&output);
@@ -7309,11 +7437,13 @@ stream_open_apply_if_gains_config(const char* gains) {
 
 static void
 stream_open_apply_bias_tee(const dsd_opts* opts) {
+    g_squelch_bias_tee.store(0, std::memory_order_relaxed);
     if (!opts || !opts->rtl_bias_tee) {
         return;
     }
     int rc = rtl_device_set_bias_tee(rtl_device_handle, 1);
     log_unsupported_control_if_needed("Bias tee control", rc);
+    g_squelch_bias_tee.store(rc == 0 ? 1 : 0, std::memory_order_relaxed);
 }
 
 static void
@@ -8226,8 +8356,8 @@ rtl_stream_replay_mark_output_drained(void) {
 }
 
 static int
-rtl_stream_read_live_available(struct controller_state* s, struct output_state* outp, float* out, size_t count,
-                               int* out_gated) {
+rtl_stream_read_live_available(struct controller_state* s, struct output_state* outp, float* out, uint8_t* flags,
+                               size_t count, int* out_gated) {
     if (!s || !outp || !out_gated) {
         return -1;
     }
@@ -8240,7 +8370,7 @@ rtl_stream_read_live_available(struct controller_state* s, struct output_state* 
     s->live_output_read_active.fetch_add(1, std::memory_order_acq_rel);
     uint32_t generation_before = g_rtl_output_generation.load(std::memory_order_acquire);
     *out_gated = s->timeout_gate_request_id.load(std::memory_order_acquire) != 0U;
-    int got = *out_gated ? 0 : ring_read_available(outp, out, count);
+    int got = *out_gated ? 0 : ring_read_available(outp, out, flags, count);
     uint32_t generation_after = g_rtl_output_generation.load(std::memory_order_acquire);
     *out_gated = s->timeout_gate_request_id.load(std::memory_order_acquire) != 0U;
     if (*out_gated || generation_after != generation_before) {
@@ -8259,7 +8389,7 @@ rtl_stream_read_live_available(struct controller_state* s, struct output_state* 
 }
 
 static int
-rtl_stream_read_live_samples(float* out, size_t count) {
+rtl_stream_read_live_samples(float* out, uint8_t* flags, size_t count) {
     for (;;) {
         if (!output.buffer || dsd_exitflag_load()
             || (g_stream && g_stream->should_exit.load(std::memory_order_acquire))) {
@@ -8267,7 +8397,7 @@ rtl_stream_read_live_samples(float* out, size_t count) {
         }
 
         int gated = 0;
-        int got = rtl_stream_read_live_available(&controller, &output, out, count, &gated);
+        int got = rtl_stream_read_live_available(&controller, &output, out, flags, count, &gated);
         if (got != 0) {
             return got;
         }
@@ -8291,14 +8421,14 @@ rtl_stream_read_live_samples(float* out, size_t count) {
 }
 
 static int
-rtl_stream_read_live(float* out, size_t count, dsd_opts* opts, const dsd_state* state) {
+rtl_stream_read_live(float* out, uint8_t* flags, size_t count, dsd_opts* opts, const dsd_state* state) {
     sync_requested_ppm_after_failed_apply(opts);
     auto_ppm_maybe_adjust(opts, state);
     sync_requested_ppm_to_controller(opts);
 
     int perf_on = rtl_perf_enabled();
     uint64_t perf_read_start_ns = perf_on ? dsd_realtime_mono_ns() : 0ULL;
-    int got = rtl_stream_read_live_samples(out, count);
+    int got = rtl_stream_read_live_samples(out, flags, count);
     if (got <= 0) {
         return -1;
     }
@@ -8327,8 +8457,25 @@ replay_note_batch_read_locked(size_t n) {
  * never a wait. It returns 0 when a clear (rtl_stream_clear_output_ring()) emptied the ring after the caller saw it
  * occupied, so the caller looks again instead of waiting in a read nothing may ever satisfy. It notes what it took of
  * the ring's batch under the same lock. */
+/* The ring's flags for @p n samples from @p t into @p flags, in the same two segments as the samples (open when the ring
+ * has no flag buffer). */
+static void
+ring_copy_flags(const struct output_state* o, size_t t, size_t first, size_t n, uint8_t* flags) {
+    if (!flags) {
+        return;
+    }
+    if (!o->flags) {
+        DSD_MEMSET(flags, 0, n * sizeof(uint8_t));
+        return;
+    }
+    DSD_MEMCPY(flags, o->flags + t, first * sizeof(uint8_t));
+    if (n > first) {
+        DSD_MEMCPY(flags + first, o->flags, (n - first) * sizeof(uint8_t));
+    }
+}
+
 static int
-ring_read_available_copy(struct output_state* o, float* out, size_t count) {
+ring_read_available_copy(struct output_state* o, float* out, uint8_t* flags, size_t count) {
     if (!o || !o->buffer || !out || count == 0U) {
         return 0;
     }
@@ -8343,6 +8490,7 @@ ring_read_available_copy(struct output_state* o, float* out, size_t count) {
         if (n > first) {
             DSD_MEMCPY(out + first, o->buffer, (n - first) * sizeof(float));
         }
+        ring_copy_flags(o, t, first, n, flags);
         t += n;
         if (t >= o->capacity) {
             t -= o->capacity;
@@ -8426,7 +8574,7 @@ rtl_stream_replay_wait_for_output(void) {
  * on whether the reader had reached the capture's end by the last read, which a fast replay has and a realtime one,
  * still pacing, has not. */
 static int
-rtl_stream_read_replay(float* out, size_t count) {
+rtl_stream_read_replay(float* out, uint8_t* flags, size_t count) {
     for (;;) {
         if (!output.buffer || !g_stream) {
             return -1;
@@ -8440,7 +8588,7 @@ rtl_stream_read_replay(float* out, size_t count) {
             RTL_REPLAY_TEST_STAGE(RTL_STREAM_TEST_REPLAY_DECODER_OUTPUT_FOUND, used);
             int perf_on = rtl_perf_enabled();
             uint64_t perf_read_start_ns = perf_on ? dsd_realtime_mono_ns() : 0ULL;
-            int got = ring_read_available_copy(&output, out, count);
+            int got = ring_read_available_copy(&output, out, flags, count);
             if (got > 0) {
                 if (perf_on) {
                     rtl_perf_record_consumer_read(dsd_realtime_mono_ns() - perf_read_start_ns, (size_t)got);
@@ -8460,17 +8608,17 @@ rtl_stream_read_replay(float* out, size_t count) {
 }
 
 /**
- * @brief Batched consumer API: read up to count samples with fewer wakeups/locks.
- * Applies volume scaling.
+ * @brief Batched consumer API: read up to count samples with fewer wakeups/locks, and each sample's auto squelch flag.
  *
  * @param out   Destination buffer for audio samples.
+ * @param flags Destination for one flag byte per sample (DSD_SQUELCH_FLAG_CLOSED), or NULL.
  * @param count Maximum number of samples to read.
  * @param opts  Decoder options (must not be NULL; used for runtime PPM changes).
  * @param state Decoder state (unused).
  * @return Number of samples read (>=1), 0 if count==0, or -1 on exit.
  */
 extern "C" int
-dsd_rtl_stream_read(float* out, size_t count, dsd_opts* opts, const dsd_state* state) {
+dsd_rtl_stream_read_ex(float* out, uint8_t* flags, size_t count, dsd_opts* opts, const dsd_state* state) {
     if (count == 0) {
         return 0;
     }
@@ -8485,9 +8633,15 @@ dsd_rtl_stream_read(float* out, size_t count, dsd_opts* opts, const dsd_state* s
         return -1;
     }
     if (!replay_active) {
-        return rtl_stream_read_live(out, count, opts, state);
+        return rtl_stream_read_live(out, flags, count, opts, state);
     }
-    return rtl_stream_read_replay(out, count);
+    return rtl_stream_read_replay(out, flags, count);
+}
+
+/* dsd_rtl_stream_read_ex() without the flags. */
+extern "C" int
+dsd_rtl_stream_read(float* out, size_t count, dsd_opts* opts, const dsd_state* state) {
+    return dsd_rtl_stream_read_ex(out, NULL, count, opts, state);
 }
 
 extern "C" int
@@ -10266,7 +10420,7 @@ static int
 rtl_stream_apply_auto_retune_gain(void) {
     int rc = rtl_device_set_gain(rtl_device_handle, AUTO_GAIN);
     if (rc == 0) {
-        dongle.gain = AUTO_GAIN;
+        dongle_note_gain(AUTO_GAIN);
     }
     return rc;
 }
@@ -10276,7 +10430,7 @@ rtl_stream_apply_manual_retune_gain(int tuner_gain_tenth_db) {
     int rc = rtl_device_set_gain_nearest(rtl_device_handle, tuner_gain_tenth_db);
     if (rc == 0) {
         int applied = rtl_device_get_tuner_gain(rtl_device_handle);
-        dongle.gain = applied >= 0 ? applied : tuner_gain_tenth_db;
+        dongle_note_gain(applied >= 0 ? applied : tuner_gain_tenth_db);
     }
     return rc;
 }
@@ -11089,7 +11243,7 @@ rtl_stream_test_tune_timeout_read_gate(size_t queued_samples, int* out_read_whil
     *out_generation_after_gate = rtl_stream_output_generation();
     float sample = 0.0f;
     int gated = 0;
-    *out_read_while_pending = rtl_stream_read_live_available(&test_controller, &test_output, &sample, 1U, &gated);
+    *out_read_while_pending = rtl_stream_read_live_available(&test_controller, &test_output, &sample, NULL, 1U, &gated);
     *out_used_while_pending = ring_used(&test_output);
 
     controller_signal_manual_retune_complete(&test_controller, RTL_STREAM_TUNE_FAILED);
@@ -11101,7 +11255,7 @@ rtl_stream_test_tune_timeout_read_gate(size_t queued_samples, int* out_read_whil
     test_output.head.store(1U, std::memory_order_release);
     int gated_after_failure = 0;
     *out_read_after_failed_completion =
-        rtl_stream_read_live_available(&test_controller, &test_output, &sample, 1U, &gated_after_failure);
+        rtl_stream_read_live_available(&test_controller, &test_output, &sample, NULL, 1U, &gated_after_failure);
 
     /* A later timed-out request can install a fresh gate. Its successful
      * controller boundary reopens reads for replacement output. */
@@ -11112,7 +11266,7 @@ rtl_stream_test_tune_timeout_read_gate(size_t queued_samples, int* out_read_whil
     controller_signal_manual_retune_complete(&test_controller, RTL_STREAM_TUNE_OK);
     int gated_after_recovery = 0;
     *out_read_after_recovery =
-        rtl_stream_read_live_available(&test_controller, &test_output, &sample, 1U, &gated_after_recovery);
+        rtl_stream_read_live_available(&test_controller, &test_output, &sample, NULL, 1U, &gated_after_recovery);
 
     controller_cleanup(&test_controller);
     output_cleanup(&test_output);
@@ -13499,7 +13653,7 @@ static DSD_THREAD_RETURN_TYPE
     ReadRaceContext* ctx = static_cast<ReadRaceContext*>(arg);
     float samples[16];
     int gated = 0;
-    ctx->read_got.store(rtl_stream_read_live_available(&controller, &output, samples, 16U, &gated),
+    ctx->read_got.store(rtl_stream_read_live_available(&controller, &output, samples, NULL, 16U, &gated),
                         std::memory_order_release);
     DSD_THREAD_RETURN;
 }
@@ -13624,7 +13778,7 @@ rtl_stream_test_live_read_during_family_switch_clear(rtl_stream_test_clear_race_
         float samples[16];
         int gated = 0;
         out->read_generation = rtl_stream_output_generation();
-        out->read_got = rtl_stream_read_live_available(&controller, &output, samples, 16U, &gated);
+        out->read_got = rtl_stream_read_live_available(&controller, &output, samples, NULL, 16U, &gated);
         out->switch_done_during_read = ctx->switch_done.load(std::memory_order_acquire);
     }
     ctx->release.store(1, std::memory_order_release);
@@ -14609,6 +14763,163 @@ output_scale_test_write_block(float output_scale, float* got, int cap) {
     demod.result_len = n;
     (void)demod_write_output_block(&demod, &output);
     return ring_read_batch(&output, got, (size_t)cap);
+}
+
+/* One block of @p n samples with the flags @p flag_of gives (NULL: none) through demod_write_output_block() into the
+ * ring at @p at, read back through @p replay_read or the live read; 1 when samples and flags come out as they went in
+ * (no flags reading open). */
+static int
+squelch_test_ring_round_trip(size_t at, int n, int with_flags, int replay_read) {
+    ring_clear(&output);
+    output.tail.store(at);
+    output.head.store(at);
+    demod.resamp_enabled = 0;
+    demod.output_kind = DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR; /* no output scale: the samples go in as they are */
+    for (int i = 0; i < n; i++) {
+        demod.result[i] = (float)i + 0.5f;
+        demod.result_flags[i] = ((i / 7) % 2) ? (uint8_t)DSD_SQUELCH_FLAG_CLOSED : (uint8_t)0U;
+    }
+    demod.result_len = n;
+    demod.result_flags_active = with_flags;
+    if (demod_write_output_block(&demod, &output) != (size_t)n) {
+        return 0;
+    }
+    static float got[1024];
+    static uint8_t flags[1024];
+    DSD_MEMSET(flags, 0xEE, sizeof flags);
+    const int read = replay_read ? ring_read_available_copy(&output, got, flags, (size_t)n)
+                                 : ring_read_available(&output, got, flags, (size_t)n);
+    if (read != n) {
+        return 0;
+    }
+    for (int i = 0; i < n; i++) {
+        const uint8_t want = with_flags ? demod.result_flags[i] : (uint8_t)0U;
+        if (fabsf(got[i] - ((float)i + 0.5f)) > 1e-6f || flags[i] != want) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+extern "C" int
+rtl_stream_test_squelch_plumbing(void) {
+    int initialized_output = 0;
+    if (fsk_reacquire_test_prepare_output_ring(0U, &initialized_output) != 0) {
+        fsk_reacquire_test_cleanup_output_ring(initialized_output);
+        return -1;
+    }
+    const uint32_t saved_word = g_squelch_auto_word.load(std::memory_order_relaxed);
+    const float saved_level = demod.channel_squelch_level.load(std::memory_order_relaxed);
+    const uint32_t saved_freq = controller.last_applied_freq_hz.load(std::memory_order_relaxed);
+    const int saved_gain = dongle.gain;
+    const int saved_bias = g_squelch_bias_tee.load(std::memory_order_relaxed);
+    const int saved_rate_out = demod.rate_out;
+    const int saved_post = demod.post_downsample;
+    const int saved_kind = demod.output_kind;
+    const int saved_resamp = demod.resamp_enabled;
+    int failed = 0;
+
+    dsd_squelch_setting auto6 = {DSD_SQUELCH_MODE_AUTO, 0.0, 6};
+    demod.channel_squelch_level.store(1e-6f, std::memory_order_relaxed);
+    rtl_stream_set_channel_squelch_setting(&auto6);
+    demod_take_squelch_setting(&demod);
+    if (demod.squelch_mode != DSD_SQUELCH_MODE_AUTO || demod.squelch_margin_db != 6) {
+        failed = failed ? failed : 1;
+    }
+    if (demod.channel_squelch_level.load(std::memory_order_relaxed) > 0.0f) {
+        failed = failed ? failed : 2;
+    }
+    dsd_squelch_setting auto99 = {DSD_SQUELCH_MODE_AUTO, 0.0, 99};
+    rtl_stream_set_channel_squelch_setting(&auto99);
+    demod_take_squelch_setting(&demod);
+    if (demod.squelch_margin_db != DSD_SQUELCH_MARGIN_MAX_DB) {
+        failed = failed ? failed : 3;
+    }
+
+    /* The context, while AUTO. */
+    controller.last_applied_freq_hz.store(162475000U, std::memory_order_relaxed);
+    dongle_note_gain(372);
+    g_squelch_bias_tee.store(1, std::memory_order_relaxed);
+    demod.rate_out = 12000;
+    demod.post_downsample = 2;
+    demod_take_squelch_setting(&demod);
+    if (demod.squelch_context.freq_hz != 162475000 || demod.squelch_context.gain != 372) {
+        failed = failed ? failed : 5;
+    }
+    if (demod.squelch_context.bias != 1) {
+        failed = failed ? failed : 6;
+    }
+    if (demod.squelch_context.rate_hz != 24000) {
+        failed = failed ? failed : 7;
+    }
+
+    dsd_squelch_setting level = {DSD_SQUELCH_MODE_LEVEL, 2e-6, 10};
+    rtl_stream_set_channel_squelch_setting(&level);
+    demod_take_squelch_setting(&demod);
+    if (demod.squelch_mode != DSD_SQUELCH_MODE_LEVEL
+        || fabsf(demod.channel_squelch_level.load(std::memory_order_relaxed) - 2e-6f) > 1e-12f) {
+        failed = failed ? failed : 4;
+    }
+
+    /* The ring, across its wrap. */
+    const size_t near_end = output.capacity - 100U;
+    if (!squelch_test_ring_round_trip(near_end, 300, 1, 0)) {
+        failed = failed ? failed : 8;
+    }
+    if (!squelch_test_ring_round_trip(near_end, 300, 1, 1)) {
+        failed = failed ? failed : 9;
+    }
+    if (!squelch_test_ring_round_trip(near_end, 300, 0, 0)) {
+        failed = failed ? failed : 10;
+    }
+    {
+        ring_clear(&output);
+        demod.result_len = 5;
+        demod.result_flags_active = 1;
+        for (int i = 0; i < 5; i++) {
+            demod.result[i] = 1.0f + (float)i;
+        }
+        float got[5] = {0};
+        if (demod_write_output_block(&demod, &output) != 5U || ring_read_available(&output, got, NULL, 5U) != 5
+            || fabsf(got[4] - 5.0f) > 1e-6f) {
+            failed = failed ? failed : 11;
+        }
+    }
+
+    /* The status. */
+    demod.result_flags_active = 1;
+    demod.squelch_floor.state = DSD_SQUELCH_FLOOR_KNOWN;
+    demod.squelch_floor.floor_power = 1e-5;
+    demod.squelch_floor.window_power = 3e-5;
+    demod.squelch_floor.gate_open = 0;
+    demod.squelch_floor.plan.valid = 1;
+    demod_publish_squelch_status(&demod);
+    rtl_stream_squelch_status st;
+    if (rtl_stream_get_squelch_status(&st) != 0 || !st.active || st.state != DSD_SQUELCH_FLOOR_KNOWN
+        || st.gate_open != 0 || !st.plan_valid || fabs(st.floor_power - 1e-5) > 1e-9
+        || rtl_stream_get_squelch_status(NULL) != -1) {
+        failed = failed ? failed : 12;
+    }
+    demod.result_flags_active = 0;
+    demod_publish_squelch_status(&demod);
+    if (rtl_stream_get_squelch_status(&st) != 0 || st.active || st.gate_open != 1) {
+        failed = failed ? failed : 12;
+    }
+
+    DSD_MEMSET(&demod.squelch_floor, 0, sizeof(demod.squelch_floor));
+    demod.result_len = 0;
+    demod.rate_out = saved_rate_out;
+    demod.post_downsample = saved_post;
+    demod.output_kind = saved_kind;
+    demod.resamp_enabled = saved_resamp;
+    dongle_note_gain(saved_gain);
+    g_squelch_bias_tee.store(saved_bias, std::memory_order_relaxed);
+    controller.last_applied_freq_hz.store(saved_freq, std::memory_order_relaxed);
+    demod.channel_squelch_level.store(saved_level, std::memory_order_relaxed);
+    g_squelch_auto_word.store(saved_word, std::memory_order_relaxed);
+    ring_clear(&output);
+    fsk_reacquire_test_cleanup_output_ring(initialized_output);
+    return failed;
 }
 
 extern "C" int
@@ -16116,7 +16427,40 @@ dsd_rtl_stream_return_pwr(void) {
  */
 extern "C" void
 rtl_stream_set_channel_squelch(float level) {
+    /* The level before the word that makes it the one in force (see g_squelch_auto_word). */
     demod.channel_squelch_level.store(level, std::memory_order_relaxed);
+    g_squelch_auto_word.store((uint32_t)DSD_SQUELCH_MODE_LEVEL, std::memory_order_release);
+}
+
+extern "C" void
+rtl_stream_set_channel_squelch_setting(const dsd_squelch_setting* setting) {
+    if (!setting || setting->mode != DSD_SQUELCH_MODE_AUTO) {
+        rtl_stream_set_channel_squelch(setting ? (float)setting->level : 0.0f);
+        return;
+    }
+    int margin = setting->margin_db;
+    if (margin < DSD_SQUELCH_MARGIN_MIN_DB) {
+        margin = DSD_SQUELCH_MARGIN_MIN_DB;
+    } else if (margin > DSD_SQUELCH_MARGIN_MAX_DB) {
+        margin = DSD_SQUELCH_MARGIN_MAX_DB;
+    }
+    /* The word before the level it puts out of force (see g_squelch_auto_word). */
+    g_squelch_auto_word.store((uint32_t)DSD_SQUELCH_MODE_AUTO | ((uint32_t)margin << 8), std::memory_order_release);
+    demod.channel_squelch_level.store(0.0f, std::memory_order_relaxed);
+}
+
+extern "C" int
+rtl_stream_get_squelch_status(rtl_stream_squelch_status* out) {
+    if (!out) {
+        return -1;
+    }
+    out->active = g_squelch_status_active.load(std::memory_order_relaxed);
+    out->state = g_squelch_status_state.load(std::memory_order_relaxed);
+    out->gate_open = g_squelch_status_gate_open.load(std::memory_order_relaxed);
+    out->plan_valid = g_squelch_status_plan_valid.load(std::memory_order_relaxed);
+    out->floor_power = (double)g_squelch_status_floor.load(std::memory_order_relaxed);
+    out->window_power = (double)g_squelch_status_window_power.load(std::memory_order_relaxed);
+    return 0;
 }
 
 /**

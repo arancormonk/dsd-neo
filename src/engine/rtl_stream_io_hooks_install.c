@@ -5,6 +5,7 @@
 
 #include <dsd-neo/runtime/rtl_stream_io_hooks.h>
 #include <stddef.h>
+#include <stdint.h>
 
 #include "dsd-neo/io/rtl_stream_fwd.h"
 #include "engine_hooks_install.h"
@@ -15,6 +16,11 @@
 static int
 rtl_stream_io_read(void* rtl_ctx, float* out, size_t count, int* out_got) {
     return rtl_stream_read((RtlSdrContext*)rtl_ctx, out, count, out_got);
+}
+
+static int
+rtl_stream_io_read_ex(void* rtl_ctx, float* out, uint8_t* flags, size_t count, int* out_got) {
+    return rtl_stream_read_ex((RtlSdrContext*)rtl_ctx, out, flags, count, out_got);
 }
 
 static double
@@ -29,6 +35,7 @@ dsd_engine_rtl_stream_io_hooks_install(void) {
 #ifdef USE_RADIO
     hooks.read = rtl_stream_io_read;
     hooks.return_pwr = rtl_stream_io_return_pwr;
+    hooks.read_ex = rtl_stream_io_read_ex;
 #endif
     dsd_rtl_stream_io_hooks_set(hooks);
 }

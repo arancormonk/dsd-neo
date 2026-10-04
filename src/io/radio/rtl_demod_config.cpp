@@ -19,6 +19,7 @@
 #include <dsd-neo/dsp/demod_state.h>
 #include <dsd-neo/dsp/math_utils.h>
 #include <dsd-neo/dsp/resampler.h>
+#include <dsd-neo/dsp/squelch_floor.h>
 #include <dsd-neo/dsp/ted.h>
 #include <dsd-neo/io/rtl_demod_config.h>
 #include <dsd-neo/runtime/analog_channel.h>
@@ -1274,6 +1275,9 @@ rtl_demod_reset_resampler_state(struct demod_state* demod) {
     if (demod->resamp_hist && demod->resamp_taps_per_phase > 0) {
         DSD_MEMSET(demod->resamp_hist, 0, (size_t)demod->resamp_taps_per_phase * 2U * sizeof(float));
     }
+    /* Its outputs' flags start over with it, closed until real inputs reach the filter's centre. */
+    DSD_MEMSET(demod->resamp_flag_hist, DSD_SQUELCH_FLAG_CLOSED, sizeof(demod->resamp_flag_hist));
+    demod->resamp_flag_head = 0;
 }
 
 /* A fresh open starts the carrier and timing loops from nothing: Costas and the band-edge FLL at zero frequency and

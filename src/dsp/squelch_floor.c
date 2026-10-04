@@ -236,6 +236,13 @@ dsd_squelch_floor_reset(dsd_squelch_floor* t) {
 }
 
 void
+dsd_squelch_floor_restart_windows(dsd_squelch_floor* t) {
+    if (t) {
+        sqf_restart_windows(t);
+    }
+}
+
+void
 dsd_squelch_floor_set_margin(dsd_squelch_floor* t, int margin_db) {
     if (!t) {
         return;

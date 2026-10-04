@@ -15,6 +15,7 @@
 #define DSD_NEO_INCLUDE_DSD_NEO_DSP_DEMOD_STATE_H_
 
 #include <dsd-neo/platform/platform.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 #include <atomic>
@@ -22,6 +23,7 @@
 #endif
 #include <dsd-neo/dsp/costas.h>
 #include <dsd-neo/dsp/fsk_modem.h>
+#include <dsd-neo/dsp/squelch_floor.h>
 #include <dsd-neo/dsp/ted.h>
 #include <dsd-neo/platform/threading.h>
 
@@ -113,6 +115,10 @@ struct demod_state {
     alignas(DSD_DEMOD_BUF_ALIGN) float channel_lpf_hist_i[DSD_DEMOD_ALIGNED_FLOATS(DSD_CHANNEL_LPF_HIST_LEN)];
     alignas(DSD_DEMOD_BUF_ALIGN) float channel_lpf_hist_q[DSD_DEMOD_ALIGNED_FLOATS(DSD_CHANNEL_LPF_HIST_LEN)];
     alignas(DSD_DEMOD_BUF_ALIGN) float channel_lpf_plan_taps[DSD_DEMOD_ALIGNED_FLOATS(DSD_CHANNEL_LPF_MAX_TAPS)];
+    /* The auto squelch's per-sample gate flags (DSD_SQUELCH_FLAG_CLOSED), parallel to result and to resamp_outbuf.
+       Valid only while result_flags_active; otherwise every sample is open. */
+    alignas(DSD_DEMOD_BUF_ALIGN) uint8_t result_flags[MAXIMUM_BUF_LENGTH];
+    alignas(DSD_DEMOD_BUF_ALIGN) uint8_t resamp_outflags[MAXIMUM_BUF_LENGTH * 4];
 
     /* Pointers and 64-bit items next */
     dsd_thread_t thread;
@@ -246,6 +252,40 @@ struct demod_state {
        nothing, so channel_squelched and the other per-block decisions still hold the last block's. */
     int front_end_empty;
 
+    /* The auto squelch (floor-relative, issue #518 follow-up). The IO layer copies the setting (squelch_mode,
+       squelch_margin_db) and the context (what sets the channel's noise) in before each full_demod(), on the demod
+       thread; the DSP reads and writes everything here as plain fields. While it runs (an AUTO setting on the analog
+       monitor) the block is never zeroed: the tracker flags each channel sample, the flags travel with the samples
+       through the post-decimator and the resampler (result_flags, resamp_outflags) to the output ring, and the decoder
+       mutes at its sink. */
+    int squelch_mode;      /* dsd_squelch_mode */
+    int squelch_margin_db; /* AUTO: the margin over the floor */
+    dsd_squelch_floor_key squelch_context;
+    /* 1 when this block's result_flags hold the tracker's flags. */
+    int result_flags_active;
+    /* 1 when the previous block ran the tracker, and the context it ran in. */
+    int squelch_auto_ran;
+    int squelch_context_applied_set;
+    dsd_squelch_floor_key squelch_context_applied;
+    /* What the tracker's plan was designed for: the channel rate, the channel filter's plan and the half-band stage
+       ahead of it (0 none, else its tap count). */
+    int squelch_plan_rate_hz;
+    int squelch_plan_rate_out;
+    int squelch_plan_profile;
+    int squelch_plan_width_hz;
+    int squelch_plan_taps_len;
+    int squelch_plan_hb_taps;
+    int squelch_plan_set;
+    dsd_squelch_floor squelch_floor;
+    dsd_squelch_floor_cache squelch_cache;
+    /* The flags of the post-decimator's and the resampler's last inputs: each output takes the flag of the input at or
+       just before its filter's centre, half the filter's length back. */
+    uint8_t post_flag_hist[32];
+    int post_flag_head;
+    uint8_t post_fallback_mid_flag; /* the fallback's part-filled group: the flag of its middle sample */
+    uint8_t resamp_flag_hist[32];
+    int resamp_flag_head;
+
     /* Polyphase rational resampler (L/M) */
     int resamp_enabled;
     /* Whether the digital FSK discriminator stream may pass through the resampler:
@@ -373,6 +413,10 @@ static_assert(sizeof(demod_state::channel_lpf_hist_q) % DSD_DEMOD_BUF_ALIGN == 0
               "channel_lpf_hist_q must fill whole alignment blocks");
 static_assert(sizeof(demod_state::channel_lpf_plan_taps) % DSD_DEMOD_BUF_ALIGN == 0,
               "channel_lpf_plan_taps must fill whole alignment blocks");
+static_assert(sizeof(demod_state::result_flags) % DSD_DEMOD_BUF_ALIGN == 0,
+              "result_flags must fill whole alignment blocks");
+static_assert(sizeof(demod_state::resamp_outflags) % DSD_DEMOD_BUF_ALIGN == 0,
+              "resamp_outflags must fill whole alignment blocks");
 
 /*
  * Whether the analog family's monitor audio, on the analog channel, is what the demodulator produces. The width-driven
