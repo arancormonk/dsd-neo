@@ -245,7 +245,10 @@ edacs_fill_analog_block_rtl(dsd_opts* opts, dsd_state* state, short* block) {
         }
         /* An I/Q replay's sample runs the decode clock to its capture time (issue #572). */
         (void)dsd_rtl_stream_metrics_hook_replay_advance_decode_clock();
-        rtl_sample *= opts->rtl_volume_multiplier;
+        /* EDACS keeps the stream on the digital family, so this is the FSK discriminator output, which the modem
+           scales to a +/-30000 peak: it fits int16 as it is. The monitor's volume trim is not applied (nor is it to
+           any FSK direct output, symbol_read_sample_rtl()): doubled, the upper half of the waveform clipped before the
+           analog audio chain could filter and gain it (issue #616). The chain's RTL FSK source gain sets the level. */
         block[i] = clip_float_to_short(rtl_sample);
     }
     return 1;

@@ -1766,9 +1766,10 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   playing, rolled back 250 ms when the gate closes). The source gain takes each source's reference signal to -12 dBFS
   peak: RTL monitor audio after the `vol` trim (0.25 at the default 2: 1 kHz at 3 kHz deviation after the 1/pi output
   scale, or AM at 50%) by 32924, the RTL FSK discriminator output (+/-30000: the -8 source monitor under digital
-  decoding, told by `rtl_symbol_cache_output_kind`, and EDACS on RTL) by 8231/30000, PCM by 1. Each chain (monitor,
-  EDACS) keeps its band-pass and AGC in `DSD_STATE_EXT_DSP_ANALOG_AUDIO`, allocated on first use (the fixed gain alone
-  if that fails), and starts over on `DSD_ANALOG_AUDIO_RESET` and on a change of source, rate or band. A block that
+  decoding, told by `rtl_symbol_cache_output_kind`, and EDACS on RTL, which, like the symbol path, reads it with no
+  `vol` trim) by 8231/30000, PCM by 1. Each chain (monitor, EDACS) keeps its band-pass and AGC in
+  `DSD_STATE_EXT_DSP_ANALOG_AUDIO`, allocated on first use (the fixed gain alone if that fails), and starts over on
+  `DSD_ANALOG_AUDIO_RESET` and on a change of source, rate or band. A block that
   fills across a new reception -- a new RTL stream generation (RTL input), trunk-tuning generation or a boundary
   `dsd_analog_rx_reset()` announces (`dsd_analog_audio_note_reception()`: a scan row commit, a reconnect, the legacy
   `-Y` rigctl retune, which moves neither generation) -- is partly the channel before it: the caller notes when a block
@@ -1789,7 +1790,8 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   non-finite-sample guards. The published `dsd_state::aout_gainA` is the gain applied, in dB over the `-n 50` gain,
   which the terminal shows as `G: Auto (+x dB)`. Tests: `DSP_ANALOG_VOICE`, `DSP_ANALOG_AUDIO`, `DSP_SYMBOL_REPLAY`
   (`test_chain_playing_follows_the_sink`), `RTL_SYMBOL_CACHE_GENERATION` (source routing), `M17_STATE_DISPATCH`
-  (`test_stream_voice_chain_covers_the_whole_frame`), the `DECODE_IQ_ANALOG_*` level, parity and fixed-gain cases.
+  (`test_stream_voice_chain_covers_the_whole_frame`), `EDACS_GRANT_TUNE_MATRIX` (`rtl-unclipped`), the
+  `DECODE_IQ_ANALOG_*` level, parity and fixed-gain cases.
   The block (`dsd_state::analog_out_f`) collects unsynced samples in a digital session too, monitored or not (the
   CQPSK symbol-rate output excepted). `dsd_symbol_analog_block_reset()` (`<dsd-neo/dsp/symbol.h>`, decoder thread)
   drops a part-collected block; app-control and the channel-scan leave call it when the receive family changes. On an
