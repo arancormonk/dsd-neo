@@ -1408,7 +1408,7 @@ M17 `-M` details
 
 - `CAN` 0–15 (default 7; values > 15 clamp to 15)
 - `SRC`/`DST` up to 9 UPPER base40 chars (` ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-/.`)
-- `INPUT_RATE` default 48000; use multiples of 8000 up to 48000
+- `INPUT_RATE` default 48000; a multiple of 8000 up to 48000 (any other value warns and uses 48000)
 - `VOX` enable with `1` (default `0`)
 
 Examples
