@@ -14,6 +14,7 @@
 #include <dsd-neo/app_control/frontend.h>
 #include <dsd-neo/app_control/rtl_gain_view.h>
 #include <dsd-neo/app_control/rx_tone_view.h>
+#include <dsd-neo/app_control/scan_row_view.h>
 #include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/constants.h>
@@ -25,9 +26,11 @@
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/analog_channel.h>
+#include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/scan_mode.h>
+#include <dsd-neo/runtime/scan_row_edit.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -38,6 +41,7 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/runtime/call_alert.h"
+#include "dsd-neo/runtime/scan_options.h"
 #include "dsd-neo/ui/menu_core.h"
 #include "menu_callbacks.h"
 #include "menu_env.h"
@@ -658,6 +662,240 @@ act_set_audio_lpf(void* v) {
     ui_prompt_open_int_async("Audio LPF cutoff Hz (0=off)", def, cb_audio_lpf, v);
 }
 
+// ---- "This channel" session edits (issue #518) ----
+
+/* While a scan row is on air and takes a session edit of a row's setting, the squelch, width, gain and tone rows open
+   this chooser first: the configured default (the row's own prompt, as with no scan), this channel's own value for the
+   rest of the session, this channel following the default (offered when its list sets one), or back to the list value
+   (offered when it runs an edit). The edit goes to the row named when the chooser opened, whatever the scan has moved
+   on to since; the command refuses it when that scan has ended. One chooser at a time, so one static context. */
+enum { SCOPE_CHOICE_DEFAULT, SCOPE_CHOICE_SET, SCOPE_CHOICE_INHERIT, SCOPE_CHOICE_RESET, SCOPE_CHOICE_MAX };
+
+typedef struct {
+    uint32_t field;
+    void (*open_default)(void*);
+    dsd_app_scan_row_view view;
+    int count;
+    int actions[SCOPE_CHOICE_MAX];
+    char text[SCOPE_CHOICE_MAX][96];
+    const char* items[SCOPE_CHOICE_MAX];
+    /* The tone policy the this-channel list prompt is open for. */
+    int tone_mode;
+    /* What the row ran when the chooser opened, which its prompts open on whatever the scan has moved on to since: its
+       own options (has_row 0 for none) and the settings in force then. */
+    int has_row;
+    dsd_scan_option_values row;
+    double squelch_level;
+    int width_hz;
+    int gain_db;
+    int tone_filter;
+    dsd_tone_set tone_set;
+} scope_chooser_ctx;
+
+static scope_chooser_ctx g_scope;
+
+static const char* const k_scope_tone_choices[] = {"Off", "Allow list...", "Block list..."};
+
+/* The row options the captured row ran when the chooser opened (its own values, its session edit included). */
+static const dsd_scan_option_values*
+scope_row_options(void) {
+    return g_scope.has_row ? &g_scope.row : NULL;
+}
+
+static void
+scope_submit(int action, const dsd_app_scan_row_edit_payload* values) {
+    dsd_app_scan_row_edit_payload p;
+    if (dsd_app_scan_row_view_payload(&g_scope.view, g_scope.field, action, &p) != 0) {
+        return;
+    }
+    if (values) {
+        p.squelch_db = values->squelch_db;
+        p.width_hz = values->width_hz;
+        p.tone_mode = values->tone_mode;
+        p.gain_db = values->gain_db;
+        DSD_SNPRINTF(p.tone_list, sizeof p.tone_list, "%s", values->tone_list);
+    }
+    (void)dsd_app_command_scan_row_edit(&p);
+}
+
+static void
+cb_scope_squelch(void* u, int ok, int db) {
+    UNUSED(u);
+    if (ok) {
+        dsd_app_scan_row_edit_payload values = {0};
+        values.squelch_db = db;
+        scope_submit(DSD_SCAN_ROW_EDIT_SET, &values);
+    }
+}
+
+static void
+cb_scope_width(void* u, int ok, int hz) {
+    UNUSED(u);
+    if (ok) {
+        dsd_app_scan_row_edit_payload values = {0};
+        values.width_hz = hz;
+        scope_submit(DSD_SCAN_ROW_EDIT_SET, &values);
+    }
+}
+
+static void
+cb_scope_gain(void* u, int ok, int db) {
+    UNUSED(u);
+    if (ok) {
+        dsd_app_scan_row_edit_payload values = {0};
+        values.gain_db = db;
+        scope_submit(DSD_SCAN_ROW_EDIT_SET, &values);
+    }
+}
+
+static void
+cb_scope_tone_list(void* u, const char* text) {
+    UNUSED(u);
+    if (text) {
+        dsd_app_scan_row_edit_payload values = {0};
+        values.tone_mode = g_scope.tone_mode;
+        DSD_SNPRINTF(values.tone_list, sizeof values.tone_list, "%s", text);
+        scope_submit(DSD_SCAN_ROW_EDIT_SET, &values);
+    }
+}
+
+static void
+chooser_done_scope_tone(void* u, int sel) {
+    if (sel == DSD_TONE_FILTER_OFF) {
+        /* Off keeps the list the row ran, as the configured policy's off does: allow or block takes it up again. */
+        dsd_app_scan_row_edit_payload values = {0};
+        values.tone_mode = DSD_TONE_FILTER_OFF;
+        (void)dsd_tone_set_format(&g_scope.tone_set, values.tone_list, sizeof values.tone_list);
+        scope_submit(DSD_SCAN_ROW_EDIT_SET, &values);
+        return;
+    }
+    if (sel != DSD_TONE_FILTER_ALLOW && sel != DSD_TONE_FILTER_BLOCK) {
+        return;
+    }
+    g_scope.tone_mode = sel;
+    /* The list the row ran when the chooser opened, its own or the configured one it followed. */
+    char list[DSD_APP_TONE_FILTER_LIST_SIZE] = {0};
+    (void)dsd_tone_set_format(&g_scope.tone_set, list, sizeof list);
+    ui_prompt_open_string_async(sel == DSD_TONE_FILTER_ALLOW ? "Allow on this channel (/ between, e.g. 67.0/D023N)"
+                                                             : "Block on this channel (/ between, e.g. 67.0/D023N)",
+                                list, sizeof list, cb_scope_tone_list, u);
+}
+
+static void
+scope_open_squelch(void* u, const dsd_scan_option_values* row) {
+    int db = 0;
+    if (row && (row->present & DSD_SCAN_OPT_SQUELCH)) {
+        db = row->squelch_db;
+    } else if (!dsd_squelch_is_off(g_scope.squelch_level)) {
+        db = (int)pwr_to_dB(g_scope.squelch_level);
+    }
+    ui_prompt_open_int_async("Squelch on this channel (dB, -100..0; 0 = off)", db, cb_scope_squelch, u);
+}
+
+static void
+scope_open_width(void* u, const dsd_scan_option_values* row) {
+    const int kind = dsd_scan_mode_analog_kind((dsd_scan_mode)g_scope.view.mode);
+    int hz = (row && (row->present & DSD_SCAN_OPT_BANDWIDTH)) ? row->channel_bw_hz : g_scope.width_hz;
+    if (hz <= 0) {
+        hz = dsd_analog_width_default_hz(kind);
+    }
+    ui_prompt_open_int_async(kind == DSD_ANALOG_DEMOD_AM ? "AM bandwidth Hz on this channel (5000..20000)"
+                                                         : "NFM bandwidth Hz on this channel (8000..25000)",
+                             hz, cb_scope_width, u);
+}
+
+static void
+scope_open_tone(void* u) {
+    const int at = (g_scope.tone_filter >= DSD_TONE_FILTER_OFF && g_scope.tone_filter <= DSD_TONE_FILTER_BLOCK)
+                       ? g_scope.tone_filter
+                       : DSD_TONE_FILTER_OFF;
+    ui_chooser_start_at("Tone filter on this channel", k_scope_tone_choices, 3, at, chooser_done_scope_tone, u);
+}
+
+/* This channel's own value: a prompt opened on what it runs now. */
+static void
+scope_open_set(void* u) {
+    const dsd_scan_option_values* row = scope_row_options();
+    switch (g_scope.field) {
+        case DSD_SCAN_ROW_FIELD_SQUELCH: scope_open_squelch(u, row); return;
+        case DSD_SCAN_ROW_FIELD_WIDTH: scope_open_width(u, row); return;
+        case DSD_SCAN_ROW_FIELD_GAIN:
+            ui_prompt_open_int_async("Gain on this channel (0=AGC, 0..49)", g_scope.gain_db, cb_scope_gain, u);
+            return;
+        case DSD_SCAN_ROW_FIELD_TONE: scope_open_tone(u); return;
+        default: return;
+    }
+}
+
+static void
+chooser_done_scope(void* u, int sel) {
+    if (sel < 0 || sel >= g_scope.count) {
+        return;
+    }
+    switch (g_scope.actions[sel]) {
+        case SCOPE_CHOICE_DEFAULT: g_scope.open_default(u); return;
+        case SCOPE_CHOICE_SET: scope_open_set(u); return;
+        case SCOPE_CHOICE_INHERIT: scope_submit(DSD_SCAN_ROW_EDIT_INHERIT, NULL); return;
+        default: scope_submit(DSD_SCAN_ROW_EDIT_RESET, NULL); return;
+    }
+}
+
+static char*
+scope_add(int action) {
+    const int i = g_scope.count++;
+    g_scope.actions[i] = action;
+    g_scope.items[i] = g_scope.text[i];
+    return g_scope.text[i];
+}
+
+/* Open the scope chooser for @p field under the title @p title when the scan row on air takes a session edit of it
+   (and, for a width, runs the demodulator @p kind is the width of; -1 for any field but the width); otherwise open
+   @p open_default, the row's own prompt, at once. */
+/* What the row on air runs now, captured with it (one snapshot pair, so they agree). */
+static void
+scope_capture(const dsd_opts* opts, const dsd_state* state) {
+    const dsd_scan_option_values* row = dsd_scan_mode_row_options(state);
+    g_scope.has_row = row != NULL;
+    if (row) {
+        g_scope.row = *row;
+    }
+    if (opts) {
+        g_scope.squelch_level = opts->rtl_squelch_level;
+        g_scope.width_hz = dsd_opts_analog_width_hz(opts);
+        g_scope.gain_db = opts->rtl_gain_value;
+        g_scope.tone_filter = opts->analog_tone_filter;
+        g_scope.tone_set = opts->analog_tone_set;
+    }
+}
+
+static void
+scope_or_default(void* v, uint32_t field, int kind, const char* title, void (*open_default)(void*)) {
+    const dsd_opts* opts = dsd_app_get_latest_opts_snapshot();
+    const dsd_state* state = dsd_app_get_latest_snapshot();
+    dsd_app_scan_row_view view;
+    (void)dsd_app_scan_row_view_get(opts, state, &view);
+    if (!dsd_app_scan_row_view_offers(&view, field)
+        || (kind >= 0 && dsd_scan_mode_analog_kind((dsd_scan_mode)view.mode) != kind)) {
+        open_default(v);
+        return;
+    }
+    DSD_MEMSET(&g_scope, 0, sizeof g_scope);
+    g_scope.field = field;
+    g_scope.open_default = open_default;
+    g_scope.view = view;
+    scope_capture(opts, state);
+    DSD_SNPRINTF(scope_add(SCOPE_CHOICE_DEFAULT), sizeof g_scope.text[0], "%s", "All channels (default)...");
+    DSD_SNPRINTF(scope_add(SCOPE_CHOICE_SET), sizeof g_scope.text[0], "This channel (%s)...", view.label);
+    if (view.listed & field) {
+        DSD_SNPRINTF(scope_add(SCOPE_CHOICE_INHERIT), sizeof g_scope.text[0], "%s", "This channel: use the default");
+    }
+    if (view.edited & field) {
+        DSD_SNPRINTF(scope_add(SCOPE_CHOICE_RESET), sizeof g_scope.text[0], "%s",
+                     "This channel: back to the list value");
+    }
+    ui_chooser_start_at(title, g_scope.items, g_scope.count, 0, chooser_done_scope, v);
+}
+
 // ---- Tone filter (issue #527): the live editor of the configured CTCSS/DCS receive policy ----
 
 /* Picker rows: the three modes in dsd_tone_filter_mode order, so a mode's row index is the mode it sets, then off with
@@ -718,13 +956,18 @@ chooser_done_tone_filter(void* u, int sel) {
                                 setting.list, sizeof setting.list, cb_tone_filter_list, u);
 }
 
-void
-act_tone_filter(void* v) {
+static void
+act_tone_filter_default(void* v) {
     dsd_app_tone_filter_setting setting;
     tone_filter_configured((const UiCtx*)v, &setting);
     const int at = (setting.mode >= 0 && setting.mode < TONE_FILTER_CHOICE_CLEAR) ? setting.mode : 0;
     ui_chooser_start_at("Tone filter", k_tone_filter_choices, (int)TONE_FILTER_CHOICE_COUNT, at,
                         chooser_done_tone_filter, v);
+}
+
+void
+act_tone_filter(void* v) {
+    scope_or_default(v, DSD_SCAN_ROW_FIELD_TONE, -1, "Tone filter", act_tone_filter_default);
 }
 
 void
@@ -1549,13 +1792,18 @@ rtl_set_freq(void* v) {
     ui_prompt_open_int_async("Frequency (Hz)", (int)c->opts->rtlsdr_center_freq, cb_rtl_freq, c);
 }
 
-void
-rtl_set_gain(void* v) {
+static void
+rtl_set_gain_default(void* v) {
     UiCtx* c = (UiCtx*)v;
     /* The prompt edits the configured gain the row shows first, not a trunk-scan target's own (issue #518 follow-up). */
     dsd_app_rtl_gain_view view;
     const int start = dsd_app_rtl_gain_view_get(c->opts, c->state, &view) == 0 ? view.configured_gain : 0;
     ui_prompt_open_int_async("Gain (0=AGC, 0..49)", start, cb_rtl_gain, c);
+}
+
+void
+rtl_set_gain(void* v) {
+    scope_or_default(v, DSD_SCAN_ROW_FIELD_GAIN, -1, "Gain", rtl_set_gain_default);
 }
 
 void
@@ -1591,8 +1839,8 @@ cb_rtl_am_bw(void* u, int ok, int hz) {
     }
 }
 
-void
-rtl_set_nfm_bw(void* v) {
+static void
+rtl_set_nfm_bw_default(void* v) {
     UiCtx* c = (UiCtx*)v;
     /* The command edits the configured width: an nfm scan row that sets its own (issue #526) keeps it, so offer the
        configured width rather than the row's. */
@@ -1602,7 +1850,12 @@ rtl_set_nfm_bw(void* v) {
 }
 
 void
-rtl_set_am_bw(void* v) {
+rtl_set_nfm_bw(void* v) {
+    scope_or_default(v, DSD_SCAN_ROW_FIELD_WIDTH, DSD_ANALOG_DEMOD_FM, "NFM bandwidth", rtl_set_nfm_bw_default);
+}
+
+static void
+rtl_set_am_bw_default(void* v) {
     UiCtx* c = (UiCtx*)v;
     /* The command edits the configured width, as the NFM row's does. */
     const int configured_hz =
@@ -1611,7 +1864,12 @@ rtl_set_am_bw(void* v) {
 }
 
 void
-rtl_set_sql(void* v) {
+rtl_set_am_bw(void* v) {
+    scope_or_default(v, DSD_SCAN_ROW_FIELD_WIDTH, DSD_ANALOG_DEMOD_AM, "AM bandwidth", rtl_set_am_bw_default);
+}
+
+static void
+rtl_set_sql_default(void* v) {
     UiCtx* c = (UiCtx*)v;
     /* Offer 0 for a squelch that is off rather than pwr_to_dB()'s -120 floor:
      * accepting the value shown must not turn a disabled squelch into a real
@@ -1622,6 +1880,11 @@ rtl_set_sql(void* v) {
     const double level = configured ? configured->rtl_squelch_level : c->opts->rtl_squelch_level;
     const double shown = dsd_squelch_is_off(level) ? 0.0 : pwr_to_dB(level);
     ui_prompt_open_double_async("Squelch (dB; 0 = off)", shown, cb_rtl_sql, c);
+}
+
+void
+rtl_set_sql(void* v) {
+    scope_or_default(v, DSD_SCAN_ROW_FIELD_SQUELCH, -1, "Squelch", rtl_set_sql_default);
 }
 
 void

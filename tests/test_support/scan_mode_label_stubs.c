@@ -69,6 +69,39 @@ dsd_test_scan_labels_tone_policy(int mode, const dsd_tone_set* set) {
 }
 
 void
+dsd_test_scan_labels_scan_row(int scanner, uint32_t session, int row, uint32_t editable, uint32_t listed,
+                              uint32_t edited, const char* target_id) {
+    snapshot_state.scan_row_scanner = (uint8_t)scanner;
+    snapshot_state.scan_row_session = session;
+    snapshot_state.scan_row_index = row;
+    snapshot_state.scan_row_editable = (uint8_t)editable;
+    snapshot_state.scan_row_listed = (uint8_t)listed;
+    snapshot_state.scan_row_edited = (uint8_t)edited;
+    DSD_SNPRINTF(snapshot_state.trunk_scan_active_id, sizeof snapshot_state.trunk_scan_active_id, "%s",
+                 target_id ? target_id : "");
+    snapshot_opts.trunk_scan_enabled = scanner == 1 ? 1 : 0;
+    snapshot_opts.scanner_mode = scanner == 2 ? 1 : 0;
+}
+
+void
+dsd_test_scan_labels_rtl_gain(int gain) {
+    snapshot_opts.rtl_gain_value = gain;
+}
+
+void
+dsd_test_scan_labels_scope_seq(uint32_t opts_seq, uint32_t state_seq) {
+    snapshot_opts.scan_row_scope_seq = opts_seq;
+    snapshot_state.scan_row_scope_seq = state_seq;
+}
+
+/* The row class the scope holds: the stubbed active class. */
+dsd_scan_mode
+dsd_scan_mode_row(const dsd_state* state) {
+    assert(state == &snapshot_state || state == NULL);
+    return state ? active_mode : DSD_SCAN_MODE_INHERIT;
+}
+
+void
 dsd_test_scan_labels_set(int available, dsd_scan_mode mode) {
     snapshots_available = available;
     active_mode = mode;
