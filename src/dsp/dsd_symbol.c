@@ -42,6 +42,7 @@
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/net_audio_input_hooks.h>
 #include <dsd-neo/runtime/shutdown.h>
+#include <dsd-neo/runtime/squelch.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <dsd-neo/runtime/udp_audio_hooks.h>
 #include <fcntl.h>
@@ -270,6 +271,8 @@ clamp_symbol_center_to_margin(int* center, int samples_per_symbol) {
 
 typedef struct {
     float sample;
+    /* The sample's auto squelch flag (DSD_SQUELCH_FLAG_CLOSED; 0 open), as the RTL stream read it with the sample. */
+    uint8_t sample_flag;
     float sum;
     int count;
     int symbol_span;
@@ -1305,7 +1308,8 @@ symbol_write_unsynced_raw_wav(dsd_opts* opts, dsd_state* state, unsigned int ana
  * local stream and the UDP analog socket mute together; the -6 raw WAV, written above, is not gated. */
 static inline int
 symbol_unsynced_audio_allowed(const dsd_opts* opts, const dsd_state* state) {
-    if (!(opts->rtl_pwr > opts->rtl_squelch_level) || opts->monitor_input_audio != 1 || state->carrier != 0
+    /* Under the auto squelch the level gate is off and each sample carries its own gate (symbol_apply_sink_gate()). */
+    if (!dsd_squelch_level_open(opts) || opts->monitor_input_audio != 1 || state->carrier != 0
         || opts->audio_out != 1) {
         return 0;
     }
@@ -1350,7 +1354,7 @@ symbol_unsynced_carrier_active(const dsd_opts* opts, const dsd_state* state) {
         return dsd_analog_rx_carrier_open_now(opts, state)
                && dsd_analog_tone_gate_passes(dsd_analog_tone_gate_in_force(opts, state));
     }
-    return opts->audio_out == 1 && opts->rtl_pwr > opts->rtl_squelch_level && dsd_trunk_tuning_pending_request() == 0U;
+    return opts->audio_out == 1 && dsd_squelch_level_open(opts) && dsd_trunk_tuning_pending_request() == 0U;
 }
 
 /* Stamp carrier activity: the -Y hangtime anchor and, off a tuned trunked voice channel, the voice anchor. */
@@ -1426,10 +1430,67 @@ symbol_process_unsynced_audio(const dsd_opts* opts, dsd_state* state, unsigned i
                                      symbol_analog_audio_source(opts, state), symbol_analog_audio_rate_hz(opts), flags);
 }
 
+/* Whether sample @p i of the block plays under the auto squelch: the block's gate and the sample's own. */
+static inline int
+symbol_sample_heard(const dsd_opts* opts, const dsd_state* state, unsigned int i, int allowed) {
+    return allowed && dsd_squelch_gate_open(opts, state->analog_out_flags[i]);
+}
+
+/* The audio chain under the auto squelch (issue #518 follow-up), which gates per sample: each run of samples that play,
+   or do not, goes through with its own playing flag, so the AGC adapts to exactly the samples heard, holds while the
+   gate is closed and rolls back on the close edge, whatever the block. A block that straddles a boundary is dropped
+   whole, as symbol_process_unsynced_audio() drops it. */
+static void
+symbol_process_unsynced_audio_runs(const dsd_opts* opts, dsd_state* state, unsigned int analog_block, int allowed) {
+    const dsd_analog_audio_source source = symbol_analog_audio_source(opts, state);
+    const int rate_hz = symbol_analog_audio_rate_hz(opts);
+    if (dsd_analog_rx_block_straddles_boundary(opts, state)) {
+        (void)dsd_analog_audio_process_f(opts, state, DSD_ANALOG_AUDIO_CHAIN_MONITOR, state->analog_out_f, analog_block,
+                                         source, rate_hz, DSD_ANALOG_AUDIO_DISCARD);
+        state->analog_sink_gain = 0.0f;
+        return;
+    }
+    unsigned int start = 0U;
+    while (start < analog_block) {
+        const int heard = symbol_sample_heard(opts, state, start, allowed);
+        unsigned int end = start + 1U;
+        while (end < analog_block && symbol_sample_heard(opts, state, end, allowed) == heard) {
+            end++;
+        }
+        (void)dsd_analog_audio_process_f(opts, state, DSD_ANALOG_AUDIO_CHAIN_MONITOR, state->analog_out_f + start,
+                                         end - start, source, rate_hz, heard ? DSD_ANALOG_AUDIO_PLAYING : 0U);
+        start = end;
+    }
+}
+
+/* The monitor sink under the auto squelch: after every filter, each sample's gain ramps toward 1 while it is heard and
+   toward 0 while not (5 ms up, 10 ms down, in samples), so a closed stretch is exact silence and no edge clicks.
+   Returns 1 when any sample of the block is heard at all, which the block is written for. */
+static int
+symbol_apply_sink_gate(const dsd_opts* opts, dsd_state* state, unsigned int analog_block, int allowed) {
+    const double rate = (double)symbol_analog_audio_rate_hz(opts);
+    const float up = (float)(1.0 / (rate * 0.005));
+    const float down = (float)(1.0 / (rate * 0.010));
+    float gain = state->analog_sink_gain;
+    int any = 0;
+    for (unsigned int i = 0; i < analog_block; i++) {
+        if (symbol_sample_heard(opts, state, i, allowed)) {
+            gain = fminf(1.0f, gain + up);
+        } else {
+            gain = fmaxf(0.0f, gain - down);
+        }
+        state->analog_out_f[i] *= gain;
+        any |= gain > 0.0f;
+    }
+    state->analog_sink_gain = gain;
+    return any;
+}
+
 static inline void
 symbol_reset_analog_buffers(dsd_state* state) {
     DSD_MEMSET(state->analog_out_f, 0, sizeof(state->analog_out_f));
     DSD_MEMSET(state->analog_out, 0, sizeof(state->analog_out));
+    DSD_MEMSET(state->analog_out_flags, 0, sizeof(state->analog_out_flags));
     state->analog_sample_counter = 0;
     /* The next block starts at its first sample for received-tone detection too (issue #522), also when this drops
        one part-way through: dsd_symbol_analog_block_reset() and a receive-family switch landing. */
@@ -1451,12 +1512,19 @@ symbol_finalize_unsynced_analog_block(dsd_opts* opts, dsd_state* state, unsigned
     /* Received-tone detection (issue #522) reads the rest of the block here, while it is still
        raw: the voice band-pass below runs in place and takes every CTCSS tone 40 dB down (and a
        DCS signal about 32 dB). It only reads, so the audio that follows is unchanged. */
-    dsd_analog_rx_tap(opts, state, state->analog_out_f, analog_block);
+    dsd_analog_rx_tap_flags(opts, state, state->analog_out_f, state->analog_out_flags, analog_block);
     /* One gate decision for the block, taken after the tap and before the gain stage, so the
-       AGC adapts to exactly the audio that plays. */
+       AGC adapts to exactly the audio that plays. Under the auto squelch each sample's own gate
+       joins it. */
     const int allowed = symbol_unsynced_audio_allowed(opts, state);
-    symbol_process_unsynced_audio(opts, state, analog_block, allowed);
-    symbol_output_unsynced_analog(opts, state, analog_block, allowed);
+    if (dsd_squelch_dynamic_in_force(opts)) {
+        symbol_process_unsynced_audio_runs(opts, state, analog_block, allowed);
+        const int heard = symbol_apply_sink_gate(opts, state, analog_block, allowed);
+        symbol_output_unsynced_analog(opts, state, analog_block, heard);
+    } else {
+        symbol_process_unsynced_audio(opts, state, analog_block, allowed);
+        symbol_output_unsynced_analog(opts, state, analog_block, allowed);
+    }
     symbol_reset_analog_buffers(state);
 }
 
@@ -1476,10 +1544,28 @@ dsd_symbol_test_finalize_unsynced_analog_block(dsd_opts* opts, dsd_state* state,
     symbol_finalize_unsynced_analog_block(opts, state, n);
     return n;
 }
+
+unsigned int
+dsd_symbol_test_finalize_unsynced_analog_block_flags(dsd_opts* opts, dsd_state* state, const float* input,
+                                                     const uint8_t* flags, unsigned int count) {
+    if (!opts || !state || !input || !flags) {
+        return 0U;
+    }
+    const unsigned int cap = (unsigned int)(sizeof(state->analog_out_flags) / sizeof(state->analog_out_flags[0]));
+    const unsigned int n = count < cap ? count : cap;
+    for (unsigned int i = 0; i < n; i++) {
+        state->analog_out_f[i] = input[i];
+        state->analog_out_flags[i] = flags[i];
+    }
+    state->analog_sample_counter = (int)n;
+    symbol_finalize_unsynced_analog_block(opts, state, n);
+    return n;
+}
 #endif
 
 static inline void
-symbol_process_unsynced_analog(dsd_opts* opts, dsd_state* state, unsigned int analog_out_cap, float sample) {
+symbol_process_unsynced_analog(dsd_opts* opts, dsd_state* state, unsigned int analog_out_cap, float sample,
+                               uint8_t flag) {
     unsigned int analog_block = symbol_analog_block_size(opts, state, analog_out_cap);
     if (analog_block == 0) {
         return;
@@ -1487,12 +1573,14 @@ symbol_process_unsynced_analog(dsd_opts* opts, dsd_state* state, unsigned int an
     if ((unsigned int)state->analog_sample_counter >= analog_block) {
         state->analog_sample_counter = (int)analog_block - 1;
     }
+    state->analog_out_flags[state->analog_sample_counter] = flag;
     state->analog_out_f[state->analog_sample_counter++] = sample;
     /* Received-tone detection (issue #522) reads the raw block as it fills, so its verdicts keep
        pace with the input however long the block is: 960 samples are 384 ms at 2500 Hz. Every
        sample is offered, the one that completes the block too, so detection that starts on
        that sample hears only it and not the block that began before it. */
-    dsd_analog_rx_tap_partial(opts, state, state->analog_out_f, (unsigned int)state->analog_sample_counter);
+    dsd_analog_rx_tap_partial_flags(opts, state, state->analog_out_f, state->analog_out_flags,
+                                    (unsigned int)state->analog_sample_counter);
     if ((unsigned int)state->analog_sample_counter == analog_block) {
         symbol_finalize_unsynced_analog_block(opts, state, analog_block);
     }
@@ -1505,7 +1593,16 @@ dsd_symbol_test_push_unsynced_analog_sample(dsd_opts* opts, dsd_state* state, fl
         return;
     }
     const unsigned int cap = (unsigned int)(sizeof(state->analog_out) / sizeof(state->analog_out[0]));
-    symbol_process_unsynced_analog(opts, state, cap, sample);
+    symbol_process_unsynced_analog(opts, state, cap, sample, 0U);
+}
+
+void
+dsd_symbol_test_push_unsynced_analog_sample_flag(dsd_opts* opts, dsd_state* state, float sample, uint8_t flag) {
+    if (!opts || !state) {
+        return;
+    }
+    const unsigned int cap = (unsigned int)(sizeof(state->analog_out) / sizeof(state->analog_out[0]));
+    symbol_process_unsynced_analog(opts, state, cap, sample, flag);
 }
 #endif
 
@@ -1562,7 +1659,7 @@ symbol_process_analog_capture(dsd_opts* opts, dsd_state* state, const symbol_wor
         dsd_analog_audio_block_begin(opts, state, DSD_ANALOG_AUDIO_CHAIN_MONITOR);
     }
     if (have_sync == 0) {
-        symbol_process_unsynced_analog(opts, state, work->analog_out_cap, work->sample);
+        symbol_process_unsynced_analog(opts, state, work->analog_out_cap, work->sample, work->sample_flag);
     } else if (have_sync == 1) {
         symbol_process_synced_analog(opts, state, work->analog_out_cap, work->sample);
     }
@@ -1901,7 +1998,7 @@ symbol_read_sample_rtl(dsd_opts* opts, dsd_state* state, float* sample_out, symb
         return 1;
     }
     int got = 0;
-    if (dsd_rtl_stream_io_hook_read(state, sample_out, 1, &got) < 0 || got != 1) {
+    if (dsd_rtl_stream_io_hook_read_ex(state, sample_out, &work->sample_flag, 1, &got) < 0 || got != 1) {
         dsd_request_shutdown(opts, state);
         return 0;
     }
@@ -2022,6 +2119,7 @@ symbol_read_sample_udp(dsd_opts* opts, dsd_state* state, float* sample_out) {
 /* The next sample from the input itself. */
 static int
 symbol_read_live_sample(dsd_opts* opts, dsd_state* state, symbol_work_ctx* work) {
+    work->sample_flag = 0U;
     if (opts->audio_in_type == AUDIO_IN_PULSE) {
         return symbol_read_sample_pulse(opts, &work->sample);
     }

@@ -45,6 +45,7 @@
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/shutdown.h>
+#include <dsd-neo/runtime/squelch.h>
 #include <dsd-neo/runtime/telemetry.h>
 #include <limits.h>
 #include <math.h>
@@ -2633,7 +2634,8 @@ frame_sync_should_skip_snr_or_power_gate(const dsd_opts* opts, const dsd_state* 
         }
     }
 #endif
-    if (opts->audio_in_type == AUDIO_IN_RTL && opts->rtl_pwr < opts->rtl_squelch_level && active_modulation == 2) {
+    if (opts->audio_in_type == AUDIO_IN_RTL && opts->rtl_pwr < dsd_squelch_level_in_force(opts)
+        && active_modulation == 2) {
         return 1;
     }
     return 0;

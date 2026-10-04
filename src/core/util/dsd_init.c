@@ -191,6 +191,8 @@ init_opts_decoder_and_input_defaults(dsd_opts* opts) {
     opts->rtl_dev_index = 0;  //choose which device we want by index number
     opts->rtl_gain_value = 0; //mid value, 0 - AGC - 0 to 49 acceptable values
     opts->rtl_squelch_level = dB_to_pwr(-110);
+    opts->rtl_squelch_mode = DSD_SQUELCH_MODE_LEVEL;
+    opts->rtl_squelch_margin_db = DSD_SQUELCH_MARGIN_DEFAULT_DB;
     opts->rtl_volume_multiplier =
         2; //sample multiplier; This multiplies the sample value to produce a higher 'inlvl' for the demodulator
     // Generic input volume for non-RTL inputs (Pulse/WAV/TCP/UDP)

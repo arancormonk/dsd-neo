@@ -719,6 +719,10 @@ struct dsd_state {
     float analog_out_f[960]; // float buffer for analog monitor path
     short analog_out[960];   // int16 buffer for analog monitor output
     int analog_sample_counter;
+    /* The auto squelch's gate flag for each sample of analog_out_f (DSD_SQUELCH_FLAG_CLOSED, 0 open), as the RTL stream
+       read it with the sample, and the monitor sink's gain, which ramps between closed and open samples. */
+    uint8_t analog_out_flags[960];
+    float analog_sink_gain;
     //new stereo float sample storage
     float f_l[160];     //single sample left
     float f_r[160];     //single sample right

@@ -1821,7 +1821,20 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   sample, `low_pass_real()`'s last input). The AM detector reads them (`am_demod_flagged()`): a closed sample is
   silence and holds the carrier estimate, and the estimate restarts from the open run on reopening after the hold or
   when it is 3 dB off. The tracker takes its context from `demod_state::squelch_context` (the IO layer's) and keeps
-  the per-channel cache in `demod_state`. Tests: `DSP_SQUELCH_FLOOR`, `DSP_SQUELCH_AUTO_DEMOD`.
+  the per-channel cache in `demod_state`. On the decoder side (`dsd_symbol.c`) the monitor reads each RTL sample with
+  its flag (`dsd_rtl_stream_io_hook_read_ex()`) into `dsd_state::analog_out_flags`, beside `analog_out_f`. Under the
+  auto squelch (`dsd_squelch_dynamic_in_force()`: an AUTO setting on an RTL-family input) the block gate's level
+  comparison is off, the audio chain runs each run of heard and unheard samples with its own playing flag
+  (`symbol_process_unsynced_audio_runs()`: the AGC adapts to exactly what is heard and rolls back at the close), and
+  the sink ramps each sample in over 5 ms and out over 10 ms after every filter (`symbol_apply_sink_gate()`), so a
+  closed stretch is exact silence and a block with nothing heard is not written. The receive tap reads the flags too
+  (`dsd_analog_rx_tap_flags()`): a read is a carrier when any of its samples is open
+  (`DSD_ANALOG_RX_SQUELCH_CARRIER`, with no energy floor), so a silent carrier holds the scan row. Every other squelch
+  comparison goes through `<dsd-neo/runtime/squelch.h>` (`dsd_squelch_level_in_force()`, `dsd_squelch_level_open()`,
+  `dsd_squelch_gate_open()`): AUTO turns the level comparison off on PCM input, digital decoding (the GFSK sync skip),
+  the M17 encoder and EDACS analog voice, which falls back to its no-squelch release watchdog. Tests:
+  `DSP_SQUELCH_FLOOR`, `DSP_SQUELCH_AUTO_DEMOD`, `DSP_SYMBOL_REPLAY` (`test_auto_squelch_gates_each_sample`),
+  `RUNTIME_SQUELCH`, `FRAME_SYNC_INTERNAL_HELPERS`.
   The block (`dsd_state::analog_out_f`) collects unsynced samples in a digital session too, monitored or not (the
   CQPSK symbol-rate output excepted). `dsd_symbol_analog_block_reset()` (`<dsd-neo/dsp/symbol.h>`, decoder thread)
   drops a part-collected block; app-control and the channel-scan leave call it when the receive family changes. On an

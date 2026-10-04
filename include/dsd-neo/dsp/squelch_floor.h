@@ -38,15 +38,13 @@
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_DSP_SQUELCH_FLOOR_H_
 #define DSD_NEO_INCLUDE_DSD_NEO_DSP_SQUELCH_FLOOR_H_
 
+#include <dsd-neo/core/power.h>
 #include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-/** @brief Per-sample gate flag bit: the floor-relative squelch had the gate closed for this sample. */
-enum { DSD_SQUELCH_FLAG_CLOSED = 0x01 };
 
 enum {
     /** Longest coherence lag a plan may use. */

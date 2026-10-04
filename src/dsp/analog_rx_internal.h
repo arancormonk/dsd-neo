@@ -401,6 +401,17 @@ typedef struct {
  */
 #define DSD_ANALOG_RX_FLOOR_MEAN_SQUARE 1e-9
 
+/**
+ * @brief What the caller's squelch says about a block (the cores' squelch_open): closed; open, with the carrier also
+ * needing the block above DSD_ANALOG_RX_FLOOR_MEAN_SQUARE (the level squelch, PCM); or open by the auto squelch's
+ * per-sample gate, which tells a carrier from noise itself, so a silent carrier holds too (issue #518 follow-up).
+ */
+enum {
+    DSD_ANALOG_RX_SQUELCH_CLOSED = 0,
+    DSD_ANALOG_RX_SQUELCH_OPEN = 1,
+    DSD_ANALOG_RX_SQUELCH_CARRIER = 2,
+};
+
 /** @brief Zero the core; the first processed block designs the front end for its rate. */
 void dsd_analog_rx_core_init(dsd_analog_rx_core* core);
 
@@ -411,8 +422,8 @@ void dsd_analog_rx_core_reset(dsd_analog_rx_core* core);
  * @brief Feed one block of raw monitor audio.
  *
  * @param rate_hz      Input rate; a change redesigns the front end and resets every detector.
- * @param squelch_open 0 when the caller's squelch reads the block closed; the block is then
- *                     treated as no carrier whatever its level.
+ * @param squelch_open DSD_ANALOG_RX_SQUELCH_CLOSED when the caller's squelch reads the block closed (the block is then
+ *                     treated as no carrier whatever its level), _OPEN or _CARRIER.
  * @return 1 when the front end is running at this rate, 0 when the rate is unusable.
  */
 int dsd_analog_rx_core_process(dsd_analog_rx_core* core, const float* block, int count, int rate_hz, int squelch_open);

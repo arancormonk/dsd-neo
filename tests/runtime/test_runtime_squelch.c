@@ -10,6 +10,7 @@
  */
 
 #include <assert.h>
+#include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/runtime/squelch.h>
@@ -173,9 +174,44 @@ test_resolve(void) {
     assert(dsd_squelch_setting_resolve(&a10, 0, 0, NULL) == DSD_SQUELCH_RESOLVED_NO_RADIO);
 }
 
+/* The gate helpers the decoder's squelch comparisons go through. */
+static void
+test_gate_helpers(void) {
+    static dsd_opts opts;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.rtl_squelch_mode = DSD_SQUELCH_MODE_LEVEL;
+    opts.rtl_squelch_level = 1e-6;
+    opts.rtl_pwr = 2e-6;
+    assert(!dsd_squelch_dynamic_in_force(&opts));
+    assert(fabs(dsd_squelch_level_in_force(&opts) - 1e-6) <= 1e-18);
+    assert(dsd_squelch_level_open(&opts));
+    /* Under LEVEL the flags mean nothing. */
+    assert(dsd_squelch_gate_open(&opts, 0U) && dsd_squelch_gate_open(&opts, DSD_SQUELCH_FLAG_CLOSED));
+    opts.rtl_pwr = 5e-7;
+    assert(!dsd_squelch_level_open(&opts) && !dsd_squelch_gate_open(&opts, 0U));
+
+    /* AUTO on radio input: the flags decide, and the level is off whatever it holds. */
+    opts.rtl_squelch_mode = DSD_SQUELCH_MODE_AUTO;
+    assert(dsd_squelch_dynamic_in_force(&opts));
+    assert(dsd_squelch_level_in_force(&opts) <= 0.0 && dsd_squelch_level_open(&opts));
+    assert(dsd_squelch_gate_open(&opts, 0U) && !dsd_squelch_gate_open(&opts, DSD_SQUELCH_FLAG_CLOSED));
+    assert(!dsd_squelch_gate_open(&opts, (uint8_t)(DSD_SQUELCH_FLAG_CLOSED | 0x80U)));
+
+    /* AUTO on any other input resolves to off: no flags, no level. */
+    opts.audio_in_type = AUDIO_IN_WAV;
+    assert(!dsd_squelch_dynamic_in_force(&opts));
+    assert(dsd_squelch_level_in_force(&opts) <= 0.0 && dsd_squelch_level_open(&opts));
+    assert(dsd_squelch_gate_open(&opts, DSD_SQUELCH_FLAG_CLOSED));
+
+    assert(!dsd_squelch_dynamic_in_force(NULL) && dsd_squelch_level_in_force(NULL) <= 0.0);
+    assert(!dsd_squelch_level_open(NULL) && !dsd_squelch_gate_open(NULL, 0U));
+}
+
 int
 main(void) {
     test_grammar();
+    test_gate_helpers();
     test_format();
     test_predicates_and_equality();
     test_resolve();

@@ -620,9 +620,10 @@ analog_capture_blast(const dsd_opts* opts, dsd_state* state, size_t nbytes, cons
     analog_note_tone(state, block_start_ms + block_ms, block_ms);
 }
 
+/* The decoder's reads, flagged (the monitor's, with the auto squelch's gate) or not, counted alike. */
 static int
-analog_counting_read(void* rtl_ctx, float* out, size_t count, int* out_got) {
-    int rc = rtl_stream_read((RtlSdrContext*)rtl_ctx, out, count, out_got);
+analog_counting_read_ex(void* rtl_ctx, float* out, uint8_t* flags, size_t count, int* out_got) {
+    int rc = rtl_stream_read_ex((RtlSdrContext*)rtl_ctx, out, flags, count, out_got);
     if (rc >= 0 && out_got != NULL && *out_got > 0) {
         analog_note_rate(dsd_rtl_stream_metrics_hook_output_rate_hz());
         if (g_totals.rate_hz > 0U) {
@@ -637,6 +638,11 @@ analog_counting_read(void* rtl_ctx, float* out, size_t count, int* out_got) {
         }
     }
     return rc;
+}
+
+static int
+analog_counting_read(void* rtl_ctx, float* out, size_t count, int* out_got) {
+    return analog_counting_read_ex(rtl_ctx, out, NULL, count, out_got);
 }
 
 static double
@@ -656,6 +662,7 @@ analog_start(dsd_opts* opts, dsd_state* state, void* context) {
     dsd_udp_audio_hooks_set(audio);
     dsd_rtl_stream_io_hooks io = {0};
     io.read = analog_counting_read;
+    io.read_ex = analog_counting_read_ex;
     io.return_pwr = analog_return_pwr;
     dsd_rtl_stream_io_hooks_set(io);
     return 0;

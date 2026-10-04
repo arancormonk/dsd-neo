@@ -5,6 +5,7 @@
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -21,10 +22,15 @@ unsigned int dsd_symbol_test_convert_analog_block_to_i16(const float* input, sho
    power, raw WAV, the received-tone tap, the voice filters and the monitor output. */
 unsigned int dsd_symbol_test_finalize_unsynced_analog_block(dsd_opts* opts, dsd_state* state, const float* input,
                                                             unsigned int count);
+/* The same with each sample's auto squelch flag (DSD_SQUELCH_FLAG_CLOSED; 0 open), as the RTL stream reads them. */
+unsigned int dsd_symbol_test_finalize_unsynced_analog_block_flags(dsd_opts* opts, dsd_state* state, const float* input,
+                                                                  const uint8_t* flags, unsigned int count);
 /* Hand the unsynced analog path one input sample, as getSymbol() does for each sample it reads
    while there is no sync: the sample joins the block being assembled, which is finalized when
    full. */
 void dsd_symbol_test_push_unsynced_analog_sample(dsd_opts* opts, dsd_state* state, float sample);
+/* The same with the sample's auto squelch flag, as the RTL stream reads it (DSD_SQUELCH_FLAG_CLOSED; 0 open). */
+void dsd_symbol_test_push_unsynced_analog_sample_flag(dsd_opts* opts, dsd_state* state, float sample, uint8_t flag);
 /* Call @p sync in place of the unsynced raw WAV's sync to disk after each block: a slow disk's fsync,
    without the disk. NULL restores sf_write_sync(). */
 void dsd_symbol_test_set_raw_wav_sync(void (*sync)(void));

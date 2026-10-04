@@ -6,12 +6,14 @@
 /* The RTL squelch setting's grammar, text and resolution (issue #518 follow-up). */
 
 #include <ctype.h>
+#include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/runtime/squelch.h>
 #include <errno.h>
 #include <math.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -237,4 +239,30 @@ dsd_squelch_setting_resolve(const dsd_squelch_setting* configured, int radio_inp
         *out = resolved;
     }
     return why;
+}
+
+int
+dsd_squelch_dynamic_in_force(const dsd_opts* opts) {
+    return dsd_opts_input_is_radio(opts) && opts->rtl_squelch_mode == DSD_SQUELCH_MODE_AUTO;
+}
+
+double
+dsd_squelch_level_in_force(const dsd_opts* opts) {
+    if (!opts || opts->rtl_squelch_mode == DSD_SQUELCH_MODE_AUTO) {
+        return 0.0;
+    }
+    return opts->rtl_squelch_level;
+}
+
+int
+dsd_squelch_level_open(const dsd_opts* opts) {
+    return opts && opts->rtl_pwr > dsd_squelch_level_in_force(opts);
+}
+
+int
+dsd_squelch_gate_open(const dsd_opts* opts, uint8_t flag) {
+    if (dsd_squelch_dynamic_in_force(opts)) {
+        return (flag & (uint8_t)DSD_SQUELCH_FLAG_CLOSED) == 0U;
+    }
+    return dsd_squelch_level_open(opts);
 }

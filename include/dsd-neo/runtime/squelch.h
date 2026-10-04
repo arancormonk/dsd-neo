@@ -25,8 +25,10 @@
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_SQUELCH_H_
 #define DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_SQUELCH_H_
 
+#include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/power.h>
 #include <stddef.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -84,6 +86,25 @@ int dsd_squelch_setting_format(const dsd_squelch_setting* s, char* out, size_t o
  */
 int dsd_squelch_setting_resolve(const dsd_squelch_setting* configured, int radio_input, int digital,
                                 dsd_squelch_setting* out);
+
+/**
+ * @brief Whether the auto squelch gates @p opts's monitor per sample: an AUTO setting on an RTL-family input (`rtl:`,
+ * `rtltcp:`, `soapy:`, Airspy, I/Q replay). Each sample then carries its gate (the RTL stream's flags), and the level
+ * comparisons are off. Elsewhere AUTO resolves to off.
+ */
+int dsd_squelch_dynamic_in_force(const dsd_opts* opts);
+
+/** @brief The level the level comparisons use: rtl_squelch_level under LEVEL, 0 (off) under AUTO. 0 for NULL. */
+double dsd_squelch_level_in_force(const dsd_opts* opts);
+
+/** @brief Whether the level squelch is open: rtl_pwr above the level in force (always, under AUTO). */
+int dsd_squelch_level_open(const dsd_opts* opts);
+
+/**
+ * @brief Whether a monitor sample carrying @p flag is heard by the squelch: its own flag (DSD_SQUELCH_FLAG_CLOSED)
+ * under the auto squelch (dsd_squelch_dynamic_in_force()), the level squelch otherwise.
+ */
+int dsd_squelch_gate_open(const dsd_opts* opts, uint8_t flag);
 
 #ifdef __cplusplus
 }

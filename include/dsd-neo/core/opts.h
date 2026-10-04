@@ -86,6 +86,11 @@ struct dsd_opts {
     unsigned long long udp_in_drops;   // dropped samples due to ring overflow
     tcp_input_ctx* tcp_in_ctx;         ///< TCP audio input context (cross-platform)
     double rtl_squelch_level;
+    /* The squelch's mode (dsd_squelch_mode, core/power.h) and, under AUTO, its margin over the floor the demodulator
+       learns, in whole dB. LEVEL gates at rtl_squelch_level; under AUTO rtl_squelch_level keeps the last level for a
+       switch back. Gate through the runtime/squelch.h helpers, never by comparing rtl_pwr to rtl_squelch_level. */
+    int rtl_squelch_mode;
+    int rtl_squelch_margin_db;
     double input_warn_db;
     time_t last_input_warn_time; // decode time of the last input-level warning
     // P25 SM unified follower configuration (CLI values override environment defaults)

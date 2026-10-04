@@ -32,6 +32,12 @@ typedef enum {
     DSD_SQUELCH_MODE_AUTO = 1,
 } dsd_squelch_mode;
 
+/**
+ * @brief The per-sample gate flag an AUTO squelch attaches to each monitor sample: set when the gate was closed for it.
+ * 0 is open, so a buffer of zeros (and every sample under LEVEL) reads open.
+ */
+enum { DSD_SQUELCH_FLAG_CLOSED = 0x01 };
+
 /** @brief The margin an AUTO squelch opens above the noise floor, in whole dB. */
 enum {
     DSD_SQUELCH_MARGIN_MIN_DB = 3,

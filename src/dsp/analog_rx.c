@@ -27,6 +27,7 @@
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
+#include <dsd-neo/runtime/squelch.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <math.h>
 #include <stddef.h>
@@ -333,7 +334,8 @@ core_track_carrier(dsd_analog_rx_core* core, const float* block, int count, int 
     }
     /* The carrier is kept at every rate, one the front end cannot use included: the scanners hold an analog row on it
        (issue #526), whether or not the detectors can hear anything below the voice band there. */
-    *out_carrier_now = squelch_open && core_mean_square(block, count) > DSD_ANALOG_RX_FLOOR_MEAN_SQUARE;
+    *out_carrier_now = squelch_open == DSD_ANALOG_RX_SQUELCH_CARRIER
+                       || (squelch_open && core_mean_square(block, count) > DSD_ANALOG_RX_FLOOR_MEAN_SQUARE);
     return core_update_carrier(core, *out_carrier_now, count);
 }
 
@@ -955,25 +957,33 @@ analog_rx_log_unusable_rate(analog_rx_session* session, int rate_hz) {
 }
 
 /*
- * Whether the squelch is open over these samples. RTL input compares the receiver power, which
- * the stream keeps current. PCM input has no receiver power: dsd_input_level_publish() sets
- * opts->rtl_pwr from the level of each whole monitor block once the block is complete, which is
- * after the tap has read most of it. So on PCM each read is judged on its own level, the same
- * measurement and the same dB-to-power step; for a read that is the whole block, exactly the
- * value opts->rtl_pwr is about to hold.
+ * Whether the squelch is open over these samples (DSD_ANALOG_RX_SQUELCH_*). Under the auto squelch each sample carries
+ * its gate (@p flags; NULL reads them all open): the read is open, as a carrier, when any of its samples is. RTL input
+ * otherwise compares the receiver power, which the stream keeps current. PCM input has no receiver power:
+ * dsd_input_level_publish() sets opts->rtl_pwr from the level of each whole monitor block once the block is complete,
+ * which is after the tap has read most of it. So on PCM each read is judged on its own level, the same measurement and
+ * the same dB-to-power step; for a read that is the whole block, exactly the value opts->rtl_pwr is about to hold.
  */
 static int
-analog_rx_squelch_open(const dsd_opts* opts, const float* samples, unsigned int count) {
+analog_rx_squelch_open(const dsd_opts* opts, const float* samples, const uint8_t* flags, unsigned int count) {
+    if (dsd_squelch_dynamic_in_force(opts)) {
+        for (unsigned int i = 0; i < count; i++) {
+            if (!flags || dsd_squelch_gate_open(opts, flags[i])) {
+                return DSD_ANALOG_RX_SQUELCH_CARRIER;
+            }
+        }
+        return DSD_ANALOG_RX_SQUELCH_CLOSED;
+    }
     if (opts->audio_in_type == AUDIO_IN_RTL) {
-        return opts->rtl_pwr > opts->rtl_squelch_level;
+        return dsd_squelch_level_open(opts) ? DSD_ANALOG_RX_SQUELCH_OPEN : DSD_ANALOG_RX_SQUELCH_CLOSED;
     }
     dsd_input_level_snapshot level;
     if (dsd_input_level_metrics_from_pcm_f32_i16_scale(samples, count, 1U, DSD_INPUT_LEVEL_SOURCE_PCM, &level) != 0) {
-        return opts->rtl_pwr > opts->rtl_squelch_level;
+        return dsd_squelch_level_open(opts) ? DSD_ANALOG_RX_SQUELCH_OPEN : DSD_ANALOG_RX_SQUELCH_CLOSED;
     }
     /* rms_dbfs never exceeds 0 dBFS, full scale, which is a mean power of 1. */
     const double power = (level.rms_dbfs < 0.0) ? dsd_squelch_level_from_sql(level.rms_dbfs) : 1.0;
-    return power > opts->rtl_squelch_level;
+    return power > dsd_squelch_level_in_force(opts) ? DSD_ANALOG_RX_SQUELCH_OPEN : DSD_ANALOG_RX_SQUELCH_CLOSED;
 }
 
 /* Forget the received tone: every detector's state and the publication. */
@@ -1096,7 +1106,7 @@ analog_rx_note_detecting(const dsd_opts* opts, analog_rx_session* session) {
 /* Hand the tap @p count consecutive raw samples of the monitor block: the carrier and the boundaries on the analog
    monitor of either kind, and the detectors on the FM monitor. */
 static void
-analog_rx_read(const dsd_opts* opts, dsd_state* state, const float* samples, unsigned int count) {
+analog_rx_read(const dsd_opts* opts, dsd_state* state, const float* samples, const uint8_t* flags, unsigned int count) {
     /* The same question the scanners' carrier and the monitor output ask (runtime/analog_tones.h), and on the FM
        monitor every frontend's row, so the row is on screen exactly while the detectors listen. */
     if (!dsd_analog_monitor_tap_active(opts)) {
@@ -1127,7 +1137,7 @@ analog_rx_read(const dsd_opts* opts, dsd_state* state, const float* samples, uns
         analog_rx_publish_skipped(opts, state, session, rate_hz);
         return;
     }
-    const int squelch_open = analog_rx_squelch_open(opts, samples, count);
+    const int squelch_open = analog_rx_squelch_open(opts, samples, flags, count);
     if (!session->detecting) {
         dsd_analog_rx_core_track_carrier(&session->core, samples, (int)count, rate_hz, squelch_open);
     } else if (!dsd_analog_rx_core_process(&session->core, samples, (int)count, rate_hz, squelch_open)) {
@@ -1152,6 +1162,12 @@ analog_rx_block_start(const analog_rx_session* session, unsigned int filled) {
 
 void
 dsd_analog_rx_tap_partial(const dsd_opts* opts, dsd_state* state, const float* block, unsigned int filled) {
+    dsd_analog_rx_tap_partial_flags(opts, state, block, NULL, filled);
+}
+
+void
+dsd_analog_rx_tap_partial_flags(const dsd_opts* opts, dsd_state* state, const float* block, const uint8_t* flags,
+                                unsigned int filled) {
     if (!opts || !state || !block || filled == 0U) {
         return;
     }
@@ -1182,12 +1198,18 @@ dsd_analog_rx_tap_partial(const dsd_opts* opts, dsd_state* state, const float* b
     if (filled - start < analog_rx_read_samples(analog_rx_rate_hz(opts))) {
         return;
     }
-    analog_rx_read(opts, state, block + start, filled - start);
+    analog_rx_read(opts, state, block + start, flags ? flags + start : NULL, filled - start);
     session->block_taken = filled;
 }
 
 void
 dsd_analog_rx_tap(const dsd_opts* opts, dsd_state* state, const float* block, unsigned int count) {
+    dsd_analog_rx_tap_flags(opts, state, block, NULL, count);
+}
+
+void
+dsd_analog_rx_tap_flags(const dsd_opts* opts, dsd_state* state, const float* block, const uint8_t* flags,
+                        unsigned int count) {
     if (!opts || !state || !block || count == 0U) {
         return;
     }
@@ -1198,7 +1220,7 @@ dsd_analog_rx_tap(const dsd_opts* opts, dsd_state* state, const float* block, un
         session->block_taken = 0U;
     }
     if (start < count) {
-        analog_rx_read(opts, state, block + start, count - start);
+        analog_rx_read(opts, state, block + start, flags ? flags + start : NULL, count - start);
     }
 }
 
