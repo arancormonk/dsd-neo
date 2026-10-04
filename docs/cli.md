@@ -689,9 +689,10 @@ alone is `auto+10`), so one setting suits every receiver and every channel of a 
   the read sizes: the monitor ramps in over 5 ms and out over 10 ms to exact silence, and the analog AGC holds while
   the gate is closed. The floor follows the noise down quickly and up at 1 dB a second, and is learned again after
   5 s of noise more than 6 dB over it, or a window 20 dB under it.
-- Per channel. Floors are kept for each frequency, tuner gain, tuner AGC state, bias tee, device and channel rate for
-  30 minutes, so a scan coming back to a channel picks its floor up again; a channel within 5 MHz seeds a new channel's
-  floor until three noise windows confirm it.
+- Per channel. Floors are kept for each frequency, tuner gain (an Airspy's gain settings), tuner AGC state, bias tee,
+  device and channel rate for 30 minutes of received time, digital and fixed-level time included, so a scan coming
+  back to a channel picks its floor up again; a channel within 5 MHz seeds a new channel's floor until three noise
+  windows confirm it. A stream restart or retune starts the windows over and keeps the floor of the same channel.
 - Where it runs: the analog monitors (`-fA`, `-fM`, `nfm` and `am` scan rows, `nfm-conventional` and
   `am-conventional` targets) on a radio input (RTL-SDR, rtl_tcp, SoapySDR, Airspy, `--iq-replay`). On a digital
   channel it is off: CRC and FEC already decide what is traffic there, and a control channel never shows its noise. On

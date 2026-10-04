@@ -3,6 +3,7 @@
 
 import QtQuick
 import QtTest
+import "../../../src/ui/qt/qml/Util.js" as Util
 
 // The auto squelch (issue #518 follow-up): the Radio sheet chooses between a
 // threshold in dB and a margin over the noise floor the demodulator learns. In
@@ -38,6 +39,7 @@ Item {
         function cleanup() {
             onAir(false, 0);
             setAuto(false, false, 0, "");
+            testContext.setMetric("configuredSquelchLevelOff", false);
             testContext.setMetric("squelchRowOverride", false);
             testContext.setMetric("configuredSquelchDb", -120.0);
             testContext.setMetric("effectiveSquelchDb", -120.0);
@@ -53,12 +55,13 @@ Item {
             testContext.setHostRunning(false);
         }
 
-        // The configured and in-force settings' auto flags, one margin for both, and the status of the one in force.
+        // The configured and in-force settings' auto flags, one margin for both (a level keeps its margin), and the
+        // status of the one in force.
         function setAuto(configured, effective, margin, status) {
             testContext.setMetric("configuredSquelchAuto", configured);
-            testContext.setMetric("configuredSquelchMarginDb", configured ? margin : 0);
+            testContext.setMetric("configuredSquelchMarginDb", margin);
             testContext.setMetric("effectiveSquelchAuto", effective);
-            testContext.setMetric("effectiveSquelchMarginDb", effective ? margin : 0);
+            testContext.setMetric("effectiveSquelchMarginDb", margin);
             testContext.setMetric("squelchAutoStatus", status);
             tryVerify(function () {
                 return metrics.configuredSquelchAuto === configured && metrics.squelchAutoStatus === status;
@@ -145,17 +148,34 @@ Item {
             testContext.setMetric("configuredSquelchDb", -70.0);
             setAuto(true, true, 10, "learning");
             findChild(sheet, "radioSquelchMode").selected(0);
-            compare(testContext.squelchCalls(), 1);
-            compare(testContext.lastSquelchDb(), -70);
+            // The engine puts back the level it kept, as stored; no dB value is sent for it.
+            compare(testContext.restoreSquelchCalls(), 1);
+            compare(testContext.squelchCalls(), 0);
             compare(findChild(sheet, "radioSquelchValue").text, "-70 dB");
             compare(findChild(sheet, "radioSquelchMode").currentIndex, 0);
             sheet.forgetRequests();
-            // Off beneath the auto squelch comes back as off, which the engine spells 0.
+            // Off beneath the auto squelch reads off until the engine's reading arrives.
             testContext.setMetric("configuredSquelchDb", 0.0);
-            tryVerify(function () { return metrics.configuredSquelchDb === 0.0 });
+            testContext.setMetric("configuredSquelchLevelOff", true);
+            tryVerify(function () { return metrics.configuredSquelchLevelOff === true });
             findChild(sheet, "radioSquelchMode").selected(0);
-            compare(testContext.lastSquelchDb(), 0);
+            compare(testContext.restoreSquelchCalls(), 2);
             compare(findChild(sheet, "radioSquelchValue").text, "off");
+            sheet.forgetRequests();
+            // A legacy full-scale level also reads 0 dB, and it gates everything: it is not off.
+            testContext.setMetric("configuredSquelchLevelOff", false);
+            tryVerify(function () { return metrics.configuredSquelchLevelOff === false });
+            findChild(sheet, "radioSquelchMode").selected(0);
+            compare(testContext.restoreSquelchCalls(), 3);
+            compare(testContext.squelchCalls(), 0, "never sent as 0 dB, which means off");
+            compare(findChild(sheet, "radioSquelchValue").text, "0 dB");
+        }
+
+        function test_auto_starts_from_the_margin_a_level_kept() {
+            // auto+6, then dB: the level setting keeps the margin, and Auto starts from it again.
+            setAuto(false, false, 6, "");
+            findChild(sheet, "radioSquelchMode").selected(1);
+            compare(testContext.lastSquelchMarginDb(), 6);
         }
 
         function test_row_auto_reads_first_and_names_a_level_default() {
@@ -196,6 +216,21 @@ Item {
             edit = testContext.lastScanRowEdit();
             compare(edit.value.squelchDb, -55);
             verify(edit.value.squelchMode === undefined, "a level edit names no mode");
+            // A legacy full-scale default beneath it is not off for the row either: -1 dB, the row's nearest.
+            sheet.forgetRequests();
+            mode.selected(1);
+            testContext.setMetric("effectiveSquelchDb", 0.0);
+            tryVerify(function () { return metrics.effectiveSquelchDb === 0.0 });
+            mode.selected(0);
+            compare(testContext.lastScanRowEdit().value.squelchDb, -1);
+        }
+
+        // The channel-map review and the target preview name a row's own auto squelch by its margin.
+        function test_preview_summary_names_an_auto_squelch() {
+            compare(Util.squelchSummary(0, 6), "Squelch: auto +6 dB")
+            compare(Util.squelchSummary(-60, undefined), "Squelch: -60 dB")
+            compare(Util.squelchSummary(0, undefined), "Squelch: off")
+            compare(Util.squelchSummary(undefined, undefined), "Squelch: inherit")
         }
 
         function test_this_channel_on_a_digital_row_is_a_level() {

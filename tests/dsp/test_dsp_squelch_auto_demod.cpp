@@ -324,6 +324,49 @@ context_moves_the_floor(void) {
     if (s->squelch_floor.samples > 10U) {
         rc |= fail("windows ran on across a spell under the level squelch");
     }
+    /* A stream reset part-way through a window (a reopen, a retune back to the same channel, a replay's RESET) keeps
+       the floor and starts the windows over: no window holds samples from both sides of it. */
+    (void)run_block(s, iq.data(), 700);
+    dsd_demod_reset_filter_state(s);
+    /* Long enough for the restarted channel filter to fill its look-ahead and hand the tracker samples. */
+    (void)run_block(s, &iq[1400], 300);
+    if (s->squelch_floor.state == DSD_SQUELCH_FLOOR_LEARNING) {
+        rc |= fail("a stream reset at the same context lost the floor");
+    }
+    if (s->squelch_floor.samples == 0U || s->squelch_floor.samples > 300U) {
+        rc |= fail("windows ran on across a stream reset");
+    }
+    dsd_neo_aligned_free(s);
+    return rc;
+}
+
+/* The per-channel floors age with the stream in every mode: under the level squelch and off the analog monitor (a
+   digital channel) the cache's clock runs on, so a floor cached before is stale when its channel comes back. */
+int
+cache_ages_in_every_mode(void) {
+    const int rate = 24000;
+    demod_state* s = new_monitor(0, rate, 1, 12500);
+    if (!s) {
+        return fail("alloc");
+    }
+    const std::vector<float> iq = make_signal(rate, 1.0, 0.0, 0.0, 0, 0xA6EULL);
+    int rc = 0;
+    s->squelch_mode = DSD_SQUELCH_MODE_LEVEL;
+    for (int at = 0; at < rate / 2; at += 1000) {
+        (void)run_block(s, &iq[(size_t)at * 2U], 1000);
+    }
+    s->squelch_mode = DSD_SQUELCH_MODE_AUTO;
+    s->analog_family = 0;
+    s->output_kind = DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR;
+    for (int at = rate / 2; at < rate; at += 1000) {
+        (void)run_block(s, &iq[(size_t)at * 2U], 1000);
+    }
+    /* The clock counts the channel filter's output, which starts its look-ahead behind the input. */
+    if (s->squelch_auto_ran || s->squelch_cache.clock_s > 1.0 + 1e-9 || s->squelch_cache.clock_s < 0.99) {
+        DSD_FPRINTF(stderr, "squelch auto demod: the cache clock read %.6f s after 1 s of level and digital blocks\n",
+                    s->squelch_cache.clock_s);
+        rc |= 1;
+    }
     dsd_neo_aligned_free(s);
     return rc;
 }
@@ -497,6 +540,32 @@ resampler_maps_flags(void) {
         if (len_a != len_b || memcmp(flags_a, flags_b, (size_t)len_a) != 0) {
             rc |= fail("resampler flags depend on the block cuts");
         }
+        /* ...and one sample a call: when decimating, many calls make no output, and their samples' flags must still
+           enter the history. */
+        demod_state* c = static_cast<demod_state*>(dsd_neo_aligned_malloc(sizeof(demod_state)));
+        if (!c) {
+            dsd_neo_aligned_free(a);
+            dsd_neo_aligned_free(b);
+            return fail("alloc");
+        }
+        DSD_MEMSET(c, 0, sizeof(*c));
+        if (L != M) {
+            resamp_design(c, L, M);
+        }
+        static float out_c[(size_t)MAXIMUM_BUF_LENGTH];
+        static uint8_t flags_c[(size_t)MAXIMUM_BUF_LENGTH];
+        int len_c = 0;
+        for (int at = 0; at < n; at++) {
+            len_c += resamp_process_block_flags(c, &in[(size_t)at], &in_flags[(size_t)at], 1, out_c + len_c,
+                                                flags_c + len_c);
+        }
+        if (len_a != len_c || memcmp(flags_a, flags_c, (size_t)len_a) != 0) {
+            DSD_FPRINTF(stderr, "squelch auto demod: resampler %d/%d flags differ one sample a call\n", L, M);
+            rc |= 1;
+        }
+        dsd_neo_aligned_free(c->resamp_taps);
+        dsd_neo_aligned_free(c->resamp_hist);
+        dsd_neo_aligned_free(c);
         /* The rule: the same recurrence, the flag K/2 back (closed before the first input). */
         std::vector<uint8_t> want;
         if (L == M) {
@@ -614,6 +683,7 @@ main(void) {
     rc |= fm_flags_follow_the_tracker();
     rc |= plan_follows_the_channel();
     rc |= context_moves_the_floor();
+    rc |= cache_ages_in_every_mode();
     rc |= am_detector_follows_the_flags();
     rc |= post_decimation_maps_flags(0);
     rc |= post_decimation_maps_flags(1);

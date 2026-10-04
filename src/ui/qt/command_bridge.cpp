@@ -32,6 +32,7 @@
 #include <dsd-neo/app_control/history.h>
 #include <dsd-neo/app_control/scan_row_view.h>
 #include <dsd-neo/app_control/snapshot.h>
+#include <dsd-neo/app_control/squelch_view.h>
 #include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
@@ -299,6 +300,19 @@ CommandBridge::setSquelchAuto(int marginDb) const {
     dsd_app_squelch_setting_payload payload = {};
     payload.mode = DSD_SQUELCH_MODE_AUTO;
     payload.margin_db = marginDb;
+    return accepted(dsd_app_command_submit(DSD_APP_CMD_RTL_SET_SQL_SETTING, &payload, sizeof payload));
+}
+
+bool
+// cppcheck-suppress functionStatic -- Q_INVOKABLE members cannot be static (Qt meta-object)
+CommandBridge::restoreSquelchLevel() const {
+    dsd_app_squelch_view view{};
+    if (dsd_app_squelch_view_get(dsd_app_get_latest_opts_snapshot(), dsd_app_get_latest_snapshot(), &view) != 0) {
+        return false;
+    }
+    dsd_app_squelch_setting_payload payload = {};
+    payload.mode = DSD_SQUELCH_MODE_LEVEL;
+    payload.level = view.configured_level;
     return accepted(dsd_app_command_submit(DSD_APP_CMD_RTL_SET_SQL_SETTING, &payload, sizeof payload));
 }
 

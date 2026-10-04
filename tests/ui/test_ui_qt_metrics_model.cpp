@@ -1422,8 +1422,12 @@ main(int argc, char** argv) {
     model.refresh(&opts, &state);
     expect("leaving the row clears the badge", !model.squelchRowOverride());
     expect("leaving the row restores the default", std::fabs(model.effectiveSquelchDb() - (-80.0)) < 1e-6);
-    expect("a level is not auto", !model.configuredSquelchAuto() && !model.effectiveSquelchAuto()
-                                      && model.configuredSquelchMarginDb() == 0 && model.squelchAutoStatus().isEmpty());
+    opts.rtl_squelch_margin_db = 7;
+    model.refresh(&opts, &state);
+    expect("a level is not auto",
+           !model.configuredSquelchAuto() && !model.effectiveSquelchAuto() && model.squelchAutoStatus().isEmpty());
+    expect("a level keeps the margin Auto starts from again", model.configuredSquelchMarginDb() == 7);
+    expect("the level beneath is a threshold", !model.configuredSquelchLevelOff());
 
     /* The auto squelch (issue #518 follow-up): whether each setting is AUTO, its margin and what the one in force
      * shows come from the same view, and the level beneath it stays what dB goes back to. */
@@ -1436,6 +1440,12 @@ main(int argc, char** argv) {
     expect("its margin on both sides",
            model.configuredSquelchMarginDb() == 12 && model.effectiveSquelchMarginDb() == 12);
     expect("the level beneath it stays readable", std::fabs(model.configuredSquelchDb() - (-80.0)) < 1e-6);
+    expect("the level beneath it is not off", !model.configuredSquelchLevelOff());
+    opts.rtl_squelch_level = 0.0;
+    model.refresh(&opts, &state);
+    expect("an off level beneath auto reads off there, not in the setting",
+           model.configuredSquelchLevelOff() && !model.configuredSquelchOff());
+    opts.rtl_squelch_level = dsd_squelch_level_from_sql(-80.0);
     expect("auto is off on a digital session", model.squelchAutoStatus() == QStringLiteral("off on digital"));
     expect("the readout is the terminal's", model.squelchReadout() == QStringLiteral("auto +12 dB (off on digital)"));
     opts.analog_only = 1;

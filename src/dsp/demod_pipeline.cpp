@@ -653,6 +653,9 @@ dsd_demod_reset_filter_state(struct demod_state* d) {
     halfband_reset_state(d);
     channel_lpf_reset_state(d);
     post_decim_reset_state(d);
+    /* The auto squelch's next block takes its context afresh: at the same context it keeps the floor and starts its
+       windows (and the coherence history) over, so none spans the reset; at another it moves the floor. */
+    d->squelch_auto_ran = 0;
 }
 
 /**
@@ -1598,17 +1601,23 @@ squelch_auto_run(struct demod_state* d) {
     }
     squelch_auto_take_context(d);
     d->squelch_auto_ran = 1;
-    const int pairs = d->lp_len >> 1;
-    dsd_squelch_floor_process(t, d->lowpassed, pairs, d->result_flags);
-    const int rate = squelch_channel_rate_hz(d);
-    if (rate > 0) {
-        dsd_squelch_floor_cache_advance(&d->squelch_cache, (double)pairs / (double)rate);
-    }
+    dsd_squelch_floor_process(t, d->lowpassed, d->lp_len >> 1, d->result_flags);
     d->result_flags_active = 1;
+}
+
+/* The per-channel floors age with the stream's sample time in every mode, digital and level squelch included, so a
+   floor cached before an hour on other traffic is stale when its channel comes back. */
+static void
+squelch_cache_age(struct demod_state* d) {
+    const int rate = squelch_channel_rate_hz(d);
+    if (rate > 0 && d->lowpassed && d->lp_len >= 2) {
+        dsd_squelch_floor_cache_advance(&d->squelch_cache, (double)(d->lp_len >> 1) / (double)rate);
+    }
 }
 
 static void
 full_demod_update_channel_state(struct demod_state* d) {
+    squelch_cache_age(d);
     if (d->lowpassed && d->lp_len >= 2) {
         int n = (d->lp_len > 512) ? 512 : d->lp_len;
         /* mean_power() pools I and Q and takes their common mean out. An AM carrier sits at 0 Hz, so that mean is the
@@ -1626,7 +1635,10 @@ full_demod_update_channel_state(struct demod_state* d) {
     }
     d->squelch_auto_ran = 0;
     d->result_flags_active = 0;
-    const float squelch_level = d->channel_squelch_level.load(std::memory_order_relaxed);
+    /* The level gate runs under a LEVEL setting only: an AUTO one off the analog monitor is off, whatever level the
+       stream still holds from before it. */
+    const float squelch_level =
+        d->squelch_mode == DSD_SQUELCH_MODE_LEVEL ? d->channel_squelch_level.load(std::memory_order_relaxed) : 0.0f;
     if (d->lowpassed && d->lp_len > 0 && squelch_level > 0.0f && d->channel_pwr < squelch_level) {
         d->channel_squelched = 1;
         d->squelch_gate_open = 0;

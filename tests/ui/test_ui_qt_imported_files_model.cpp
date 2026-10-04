@@ -738,9 +738,10 @@ test_channel_review_bandwidth() {
     TestHost host;
     dsd_qt::ImportedFilesModel model(&host);
     QFile file(source.filePath("nfm.csv"));
-    const QByteArray bytes = "channel,frequency_hz,mode,options\n1,154430000,nfm,--nfm-bandwidth-hz 12500\n"
-                             "2,155100000,nfm,\n3,461000000,dmr,\n4,118300000,am,--am-bandwidth-hz 8333\n"
-                             "5,121500000,AM,\n";
+    const QByteArray bytes =
+        "channel,frequency_hz,mode,options\n1,154430000,nfm,--nfm-bandwidth-hz 12500\n"
+        "2,155100000,nfm,--squelch auto+8\n3,461000000,dmr,\n4,118300000,am,--am-bandwidth-hz 8333\n"
+        "5,121500000,AM,\n";
     expect("write nfm map", file.open(QIODevice::WriteOnly) && file.write(bytes) == bytes.size());
     file.close();
     const auto result = model.importFile(source.filePath("nfm.csv"), "Nfm.csv", "chan");
@@ -761,6 +762,10 @@ test_channel_review_bandwidth() {
                rows[3].toMap().value("bandwidthHz").toInt() == 8333 && rows[3].toMap().value("mode") == "am");
         expect("an inheriting am row carries none, in the canonical spelling",
                !rows[4].toMap().value("bandwidthHz").isValid() && rows[4].toMap().value("mode") == "am");
+        /* Issue #518 follow-up: a row's own auto squelch reaches the review as its margin; a level carries none. */
+        expect("reports the row's own auto squelch",
+               rows[1].toMap().value("squelchMarginDb").toInt() == 8 && rows[1].toMap().value("squelchDb").isValid());
+        expect("a row without an auto squelch carries no margin", !rows[0].toMap().value("squelchMarginDb").isValid());
     }
     model.remove(row);
 }
@@ -839,6 +844,7 @@ test_channel_bundle() {
                profile.value("keySource").toInt() == 2 && profile.value("mappings").toInt() == 1);
         /* #521: the row's own squelch reaches the review; an inheriting row carries none. */
         expect("row review reports the row squelch", profile.value("squelchDb").toInt() == -60);
+        expect("a level squelch carries no auto margin", !profile.value("squelchMarginDb").isValid());
         expect("row review never contains key material",
                !QJsonDocument::fromVariant(profile).toJson().contains("ABCDE"));
     }
@@ -1502,9 +1508,9 @@ test_example_targets() {
                && rows[9].toMap().value("type") == "am-conventional");
     if (rows.size() == 10) {
         expect("previews the nfm target's own width", rows[8].toMap().value("bandwidthHz").toInt() == 12500);
-        expect("previews the am target's own width and squelch",
+        expect("previews the am target's own width and auto squelch",
                rows[9].toMap().value("bandwidthHz").toInt() == 8333
-                   && rows[9].toMap().value("squelchDb").toInt() == -55);
+                   && rows[9].toMap().value("squelchMarginDb").toInt() == 6);
         expect("an analog target previews no modulation", rows[9].toMap().value("modulation").toString().isEmpty());
         expect("a digital target previews no width", !rows[0].toMap().value("bandwidthHz").isValid());
         /* Issue #527: the nfm target's own tone policy previews as its mode and displayed list; the am and digital

@@ -527,11 +527,21 @@ ModalSheet {
             requestSquelchAuto(squelchMargin);
             return;
         }
+        var levelOff = metrics.configuredSquelchLevelOff === true;
         var db = rowSquelch ? metrics.effectiveSquelchDb : metrics.configuredSquelchDb;
-        // A row's own level is whole dB down to -100, the options cell's range.
-        if (rowSquelch && db < 0)
-            db = Math.max(-100, db);
-        requestSquelchDb(db >= 0 ? 0 : db);
+        if (rowSquelch) {
+            // A row's own level is whole dB from -100 to -1 (0 is off there),
+            // so a legacy full-scale default comes back as -1 dB.
+            requestSquelchDb(levelOff ? 0 : Math.min(-1, Math.max(-100, Math.round(db))));
+            return;
+        }
+        // The default gets its level back exactly as stored: a legacy linear
+        // full-scale threshold reads 0 dB, which sent as dB would mean off.
+        // The pending reading says what comes back until the engine's arrives.
+        pendingSquelchMargin = NaN;
+        pendingSquelch = levelOff ? 0 : Math.min(db, -0.001);
+        squelchTtl.restart();
+        commands.restoreSquelchLevel();
     }
 
     Timer {

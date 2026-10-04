@@ -187,6 +187,12 @@ class CommandBridge : public QObject {
      */
     Q_INVOKABLE bool setSquelchAuto(int marginDb) const;
 
+    /**
+     * @brief Put the configured default back on the level it kept beneath an auto squelch, exactly as stored (a legacy
+     * linear threshold included, which a whole-dB reading cannot carry).
+     */
+    Q_INVOKABLE bool restoreSquelchLevel() const;
+
     /** @brief Set the dongle's crystal correction, in parts per million. */
     Q_INVOKABLE bool setPpm(int ppm) const;
 

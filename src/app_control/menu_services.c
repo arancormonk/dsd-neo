@@ -1928,6 +1928,9 @@ svc_rtl_set_sql_setting(dsd_opts* opts, const dsd_state* state, const dsd_squelc
         && (setting->margin_db < DSD_SQUELCH_MARGIN_MIN_DB || setting->margin_db > DSD_SQUELCH_MARGIN_MAX_DB)) {
         return -1;
     }
+    if (setting->mode != DSD_SQUELCH_MODE_AUTO && !isfinite(setting->level)) {
+        return -1;
+    }
     const dsd_squelch_setting stored = setting->mode == DSD_SQUELCH_MODE_AUTO
                                            ? dsd_squelch_setting_auto(setting->margin_db)
                                            : dsd_squelch_setting_of_level(setting->level);

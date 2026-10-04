@@ -1401,8 +1401,11 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   `(off on digital)`, `(off: no channel plan)`, and the row form `auto +6 dB (floor -81.0 dB; row; default -60.0 dB)`.
   `dsd_app_squelch_view_auto_status()` is that status alone (Qt's `squelchAutoStatus`, the line under the reading),
   `dsd_app_squelch_view_configured_text()` the default as the terminal prompt opens on it (`auto+10`, `-60.0`, `off`);
-  Qt's `configuredSquelchAuto`/`effectiveSquelchAuto` and their margins drive the radio panel's `dB | Auto` choice,
-  whose buttons step the margin in Auto. `DSD_APP_CMD_RTL_SET_SQL_SETTING` (`dsd_app_squelch_setting_payload`,
+  Qt's `configuredSquelchAuto`/`effectiveSquelchAuto` and their margins (kept under a level setting) drive the radio
+  panel's `dB | Auto` choice, whose buttons step the margin in Auto; dB puts the default back on the level it kept
+  (`CommandBridge::restoreSquelchLevel()`, the stored level whole, a legacy linear one included;
+  `configuredSquelchLevelOff` says whether it is off). The channel-map review and target preview carry a row's own
+  auto squelch as `squelch_margin_db` (`dsd_csv_channel_profile`, `dsd_app_scan_csv_target`; Qt `squelchMarginDb`). `DSD_APP_CMD_RTL_SET_SQL_SETTING` (`dsd_app_squelch_setting_payload`,
   `svc_rtl_set_sql_setting()`) sets a whole setting on the configured default as `RTL_SET_SQL_DB` sets a level, and a
   scan row edit carries `squelch_mode`/`squelch_margin_db` (AUTO on an nfm or am row only). Tests:
   `APP_CONTROL_SQUELCH_VIEW`, `APP_COMMAND_QUEUE`, `UI_MENU_CALLBACKS`, `UI_MENU_LABELS_RADIO`,
@@ -1840,14 +1843,17 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   window; each sample's flag (`DSD_SQUELCH_FLAG_CLOSED`) is the gate before that sample's decision, so flags, floor and
   state are bit-identical however the samples are cut into blocks. The per-channel cache keeps floors as a noise density
   (floor over the plan's noise gain) keyed by the values that set the noise (frequency, tuner gain, tuner AGC, bias tee,
-  device, channel rate, capture chain), stale after 30 minutes of sample time; a neighbour within 5 MHz seeds a floor
-  provisionally. Inside `full_demod()` (`squelch_auto_run()`) the tracker runs on an AUTO setting on the analog
+  device, channel rate, capture chain), stale after 30 minutes of sample time, which every block counts in every mode
+  (`squelch_cache_age()`, level squelch and digital included); a neighbour within 5 MHz seeds a floor provisionally.
+  `dsd_demod_reset_filter_state()` (stream open, retunes, family switches, a replay's RESET) makes the next block take
+  its context afresh: at the same context it keeps the floor and starts the windows and coherence history over. Inside `full_demod()` (`squelch_auto_run()`) the tracker runs on an AUTO setting on the analog
   monitor (`dsd_demod_analog_monitor_active()`), with a plan for the channel filter in force, the half-band stage
   ahead of it (`hb31` for one pass, `hb15` for more) and the channel rate (`rate_out` x `post_downsample`), and nothing
   is zeroed: the level gate and the AM detector's squelched-block branch stand aside, the flags land in
   `result_flags`, and the post-decimator, `low_pass_real()` and the resampler (`resamp_process_block_flags()`) carry
   them, each output taking the flag of its input at or just before the filter's centre (K/2 back, a group's middle
-  sample, `low_pass_real()`'s last input). The AM detector reads them (`am_demod_flagged()`): a closed sample is
+  sample, `low_pass_real()`'s last input; the resampler takes every input into its flag history, a call that makes no
+  output included). The AM detector reads them (`am_demod_flagged()`): a closed sample is
   silence and holds the carrier estimate, and the estimate restarts from the open run on reopening after the hold or
   when it is 3 dB off. The tracker takes its context from `demod_state::squelch_context` (the IO layer's) and keeps
   the per-channel cache in `demod_state`. On the decoder side (`dsd_symbol.c`) the monitor reads each RTL sample with
@@ -2438,10 +2444,13 @@ Notes:
     `dsd_rtl_stream_io_hook_read_ex()` hand them to the decoder; a host that installs only `read` gets them all open.
     Tests: `IO_RTL_SQUELCH_PLUMBING`, `ENGINE_IO_HOOKS_INSTALL`.
   - The squelch setting reaches the demod thread through `g_squelch_auto_word` (mode and margin) beside the existing
-    `channel_squelch_level`; `rtl_stream_set_channel_squelch_setting()` orders the two stores so no block runs
-    ungated between them, and the demod thread copies both into `demod_state` before each block
-    (`demod_take_squelch_setting()`), with the floor's context (applied frequency, tuner gain as applied, tuner
-    autogain, bias tee, device hash, channel rate, capture chain). After the block it publishes the tracker's status
+    `channel_squelch_level`, which the level gate reads under a LEVEL word only. A switch to AUTO stores the word
+    alone and leaves the level, so a block that took the old LEVEL word still gates on it; a switch to LEVEL stores the
+    level before the word (`rtl_stream_set_channel_squelch_setting()`), so no block runs ungated between them. The
+    demod thread copies the word into `demod_state` before each block (`demod_take_squelch_setting()`), with the
+    floor's context (applied frequency, tuner gain as applied, tuner autogain, bias tee, device hash, channel rate,
+    capture chain; on an Airspy a hash of its own gain controls as applied, at open and by
+    `rtl_stream_airspy_controls()`, stands for the tuner gain). After the block it publishes the tracker's status
     (`rtl_stream_get_squelch_status()`).
   - I/Q replay framing (issue #572; `replay_thread_process_block()` in `rtl_device.cpp`, `demod_read_input_block()`
     in `rtl_sdr_fm.cpp`). Each demod block is exactly one capture chunk:

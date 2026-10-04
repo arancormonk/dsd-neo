@@ -239,6 +239,8 @@ class MetricsModel : public QObject {
     Q_PROPERTY(bool effectiveSquelchAuto READ effectiveSquelchAuto NOTIFY controlChanged)
     Q_PROPERTY(int effectiveSquelchMarginDb READ effectiveSquelchMarginDb NOTIFY controlChanged)
     Q_PROPERTY(QString squelchAutoStatus READ squelchAutoStatus NOTIFY controlChanged)
+    /* Whether the level the configured default keeps (beneath an auto squelch too) gates nothing. */
+    Q_PROPERTY(bool configuredSquelchLevelOff READ configuredSquelchLevelOff NOTIFY controlChanged)
     /* Issue #518: the scan row on air for the "this channel" editors -- whether there is one, its name, and the
      * session-edit fields (DSD_SCAN_ROW_FIELD_*) it can take, runs an edit of and sets in its list, from the
      * app-control scan row view. */
@@ -826,10 +828,19 @@ class MetricsModel : public QObject {
         return m_view.configured_squelch_auto;
     }
 
-    /** @brief The configured auto squelch's margin over the learned floor, in whole dB (3..30). */
+    /** @brief The configured margin over the learned floor, in whole dB (3..30); a level setting keeps the last one. */
     int
     configuredSquelchMarginDb() const {
         return m_view.configured_squelch_margin_db;
+    }
+
+    /**
+     * @brief Whether the level the configured default keeps gates nothing: what dB goes back to from Auto. Unlike
+     * configuredSquelchOff() it is read under an auto squelch too.
+     */
+    bool
+    configuredSquelchLevelOff() const {
+        return m_view.configured_squelch_level_off;
     }
 
     /** @brief Whether the setting in force on the row on air is the auto squelch. */
@@ -1687,6 +1698,7 @@ class MetricsModel : public QObject {
         bool tuner_gain_row_override = false;
         bool configured_squelch_auto = false;
         bool effective_squelch_auto = false;
+        bool configured_squelch_level_off = false;
         int ppm = 0;
         int enc_lockout_count = 0;
         int scan_avoid_count = 0;
@@ -1880,6 +1892,7 @@ class MetricsModel : public QObject {
                    && configured_squelch_margin_db == other.configured_squelch_margin_db
                    && effective_squelch_auto == other.effective_squelch_auto
                    && effective_squelch_margin_db == other.effective_squelch_margin_db
+                   && configured_squelch_level_off == other.configured_squelch_level_off
                    && squelch_auto_status == other.squelch_auto_status;
         }
 

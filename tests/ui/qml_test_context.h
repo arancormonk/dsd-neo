@@ -740,6 +740,12 @@ class CommandRecorder : public QObject {
     }
 
     Q_INVOKABLE bool
+    restoreSquelchLevel() {
+        m_restore_squelch_calls++;
+        return true;
+    }
+
+    Q_INVOKABLE bool
     setPpm(int ppm) {
         m_last_ppm = ppm;
         return true;
@@ -834,6 +840,7 @@ class CommandRecorder : public QObject {
         m_squelch_calls = 0;
         m_last_squelch_margin_db = 0;
         m_squelch_auto_calls = 0;
+        m_restore_squelch_calls = 0;
         m_last_nfm_bandwidth_hz = -1;
         m_nfm_bandwidth_calls = 0;
         m_last_modulation = -1;
@@ -918,6 +925,11 @@ class CommandRecorder : public QObject {
     int
     squelchAutoCalls() const {
         return m_squelch_auto_calls;
+    }
+
+    int
+    restoreSquelchCalls() const {
+        return m_restore_squelch_calls;
     }
 
     int
@@ -1097,6 +1109,7 @@ class CommandRecorder : public QObject {
     int m_squelch_calls = 0;
     int m_last_squelch_margin_db = 0;
     int m_squelch_auto_calls = 0;
+    int m_restore_squelch_calls = 0;
     int m_last_nfm_bandwidth_hz = -1;
     int m_nfm_bandwidth_calls = 0;
     int m_last_modulation = -1;
@@ -1958,6 +1971,12 @@ class Setup : public QObject {
         return (m_commands != nullptr) ? m_commands->squelchAutoCalls() : -1;
     }
 
+    /** @brief How many times the Radio sheet asked for the configured level back from Auto. */
+    Q_INVOKABLE int
+    restoreSquelchCalls() const {
+        return (m_commands != nullptr) ? m_commands->restoreSquelchCalls() : -1;
+    }
+
     /** @brief The last NFM channel width the Radio sheet asked for (issue #525), and how many times it asked. */
     Q_INVOKABLE int
     lastNfmBandwidthHz() const {
@@ -2337,13 +2356,14 @@ class Setup : public QObject {
         metrics[QStringLiteral("effectiveSquelchOff")] = false;
         metrics[QStringLiteral("squelchRowOverride")] = false;
         metrics[QStringLiteral("squelchReadout")] = QStringLiteral("-120.0 dB");
-        // The auto squelch: whether each setting is AUTO, its margin (0 under a level), and the status of the one in
-        // force ("" under a level).
+        // The auto squelch: whether each setting is AUTO, its margin (kept under a level; 0 here, which the sheet
+        // reads as the default), and the status of the one in force ("" under a level).
         metrics[QStringLiteral("configuredSquelchAuto")] = false;
         metrics[QStringLiteral("configuredSquelchMarginDb")] = 0;
         metrics[QStringLiteral("effectiveSquelchAuto")] = false;
         metrics[QStringLiteral("effectiveSquelchMarginDb")] = 0;
         metrics[QStringLiteral("squelchAutoStatus")] = QString();
+        metrics[QStringLiteral("configuredSquelchLevelOff")] = false;
         // #525: the analog channel width in force (0 outside the analog preset and on PCM input),
         // whether the DSP rate bounds it, the configured width the control edits (0 = default),
         // the widest width the running stream's DSP rate filters (0 = not known), and the

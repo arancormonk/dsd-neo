@@ -335,9 +335,10 @@ static struct controller_state controller;
 
 /* The auto squelch (issue #518 follow-up). The setting a control thread pushes (rtl_stream_set_channel_squelch_setting())
  * and the demod thread copies into demod_state before each block: the dsd_squelch_mode in bits 0-7, the margin in dB in
- * bits 8-15. A LEVEL threshold stays in demod_state::channel_squelch_level: a switch to AUTO stores this word before it
- * zeroes the level, and a switch to LEVEL stores the level before this word, so no block runs between the two
- * ungated. */
+ * bits 8-15. A LEVEL threshold stays in demod_state::channel_squelch_level, which the level gate reads only under a LEVEL
+ * word. A switch to AUTO stores this word alone and leaves the level as it was, so a block that took the old LEVEL word
+ * still gates on the old level; a switch to LEVEL stores the level before this word (release; the demod thread's acquire
+ * load then sees it), so a block that took the new word gates on the new level. No block runs ungated between them. */
 static std::atomic<uint32_t> g_squelch_auto_word{0U};
 /* The parts of the floor's context the demod thread does not hold itself: the tuner gain as last applied (tenths of a
  * dB, AUTO_GAIN under the tuner's AGC), the bias tee, and the device (a hash of its spec, at open). */
@@ -352,11 +353,34 @@ static std::atomic<int> g_squelch_status_plan_valid{0};
 static std::atomic<float> g_squelch_status_floor{0.0f};
 static std::atomic<float> g_squelch_status_window_power{0.0f};
 
+/* An Airspy's own gain controls as applied (mode, sensitivity, linearity and manual gains, AGCs, bias tee), hashed: on
+ * an Airspy they stand for the tuner gain in the auto squelch's context, which the RTL holders above do not follow. 0
+ * off an Airspy. */
+static std::atomic<uint32_t> g_squelch_airspy_gain{0U};
+
 /* The dongle's gain as applied, published for the auto squelch's context. */
 static void
 dongle_note_gain(int gain_tenth_db) {
     dongle.gain = gain_tenth_db;
     g_squelch_tuner_gain.store(gain_tenth_db, std::memory_order_relaxed);
+}
+
+/* An Airspy's controls as applied (@p config), or none (NULL), for the auto squelch's context. A value hash, so the
+ * same settings again find the floor learned under them. */
+static void
+squelch_note_airspy_controls(const dsd_airspy_config* config) {
+    if (!config) {
+        g_squelch_airspy_gain.store(0U, std::memory_order_relaxed);
+        return;
+    }
+    const int fields[] = {config->gain_mode, config->sensitivity_gain, config->linearity_gain,
+                          config->lna_gain,  config->mixer_gain,       config->vga_gain,
+                          config->lna_agc,   config->mixer_agc,        config->bias_tee};
+    uint32_t hash = 2166136261U;
+    for (const int field : fields) {
+        hash = (hash ^ (uint32_t)field) * 16777619U;
+    }
+    g_squelch_airspy_gain.store(hash != 0U ? hash : 1U, std::memory_order_relaxed);
 }
 
 /* Receive-family requests made live (rtl_stream_request_analog_profile()), counted as each is accepted. A retune
@@ -4195,7 +4219,8 @@ demod_take_squelch_setting(struct demod_state* d) {
     dsd_squelch_floor_key key;
     DSD_MEMSET(&key, 0, sizeof key);
     key.freq_hz = (int64_t)controller.last_applied_freq_hz.load(std::memory_order_acquire);
-    key.gain = g_squelch_tuner_gain.load(std::memory_order_relaxed);
+    const uint32_t airspy_gain = g_squelch_airspy_gain.load(std::memory_order_relaxed);
+    key.gain = airspy_gain != 0U ? (int)airspy_gain : g_squelch_tuner_gain.load(std::memory_order_relaxed);
     key.tuner_agc = g_tuner_autogain_on.load(std::memory_order_relaxed) ? 1 : 0;
     key.bias = g_squelch_bias_tee.load(std::memory_order_relaxed);
     key.device = g_squelch_device_hash.load(std::memory_order_relaxed);
@@ -7377,6 +7402,7 @@ stream_open_open_device(RadioSourceKind source_kind, const dsd_opts* opts, const
     if (rc != 0) {
         return rc;
     }
+    squelch_note_airspy_controls(source_kind == RADIO_SOURCE_AIRSPY ? &opts->airspy : NULL);
     if (g_stream) {
         g_stream->device = rtl_device_handle;
     }
@@ -10862,7 +10888,11 @@ rtl_stream_backend_name(void) {
 
 extern "C" int
 rtl_stream_airspy_controls(const dsd_airspy_config* config) {
-    return rtl_device_handle ? rtl_device_airspy_controls(rtl_device_handle, config) : -1;
+    const int rc = rtl_device_handle ? rtl_device_airspy_controls(rtl_device_handle, config) : -1;
+    if (rc == 0) {
+        squelch_note_airspy_controls(config);
+    }
+    return rc;
 }
 
 extern "C" int
@@ -14818,7 +14848,8 @@ squelch_test_setting_checks(void) {
     if (demod.squelch_mode != DSD_SQUELCH_MODE_AUTO || demod.squelch_margin_db != 6) {
         return 1;
     }
-    if (demod.channel_squelch_level.load(std::memory_order_relaxed) > 0.0f) {
+    /* The level stays: a block that took the LEVEL word before the switch still gates on it. */
+    if (fabsf(demod.channel_squelch_level.load(std::memory_order_relaxed) - 1e-6f) > 1e-12f) {
         return 2;
     }
     dsd_squelch_setting auto99 = {DSD_SQUELCH_MODE_AUTO, 0.0, 99};
@@ -14842,6 +14873,26 @@ squelch_test_setting_checks(void) {
     }
     if (demod.squelch_context.rate_hz != 24000) {
         return 7;
+    }
+    /* An Airspy's own gain controls stand for the tuner gain: a change moves the context, the same settings again
+       find it, and off an Airspy the tuner gain is back. */
+    dsd_airspy_config airspy;
+    dsd_airspy_config_defaults(&airspy);
+    squelch_note_airspy_controls(&airspy);
+    demod_take_squelch_setting(&demod);
+    const int airspy_a = demod.squelch_context.gain;
+    airspy.sensitivity_gain = 15;
+    squelch_note_airspy_controls(&airspy);
+    demod_take_squelch_setting(&demod);
+    const int airspy_b = demod.squelch_context.gain;
+    airspy.sensitivity_gain = 10;
+    squelch_note_airspy_controls(&airspy);
+    demod_take_squelch_setting(&demod);
+    const int airspy_again = demod.squelch_context.gain;
+    squelch_note_airspy_controls(NULL);
+    demod_take_squelch_setting(&demod);
+    if (airspy_a == airspy_b || airspy_again != airspy_a || airspy_a == 372 || demod.squelch_context.gain != 372) {
+        return 13;
     }
     dsd_squelch_setting level = {DSD_SQUELCH_MODE_LEVEL, 2e-6, 10};
     rtl_stream_set_channel_squelch_setting(&level);
@@ -14915,6 +14966,7 @@ rtl_stream_test_squelch_plumbing(void) {
     const uint32_t saved_freq = controller.last_applied_freq_hz.load(std::memory_order_relaxed);
     const int saved_gain = dongle.gain;
     const int saved_bias = g_squelch_bias_tee.load(std::memory_order_relaxed);
+    const uint32_t saved_airspy = g_squelch_airspy_gain.load(std::memory_order_relaxed);
     const int saved_rate_out = demod.rate_out;
     const int saved_post = demod.post_downsample;
     const int saved_kind = demod.output_kind;
@@ -14937,6 +14989,7 @@ rtl_stream_test_squelch_plumbing(void) {
     demod.resamp_enabled = saved_resamp;
     dongle_note_gain(saved_gain);
     g_squelch_bias_tee.store(saved_bias, std::memory_order_relaxed);
+    g_squelch_airspy_gain.store(saved_airspy, std::memory_order_relaxed);
     controller.last_applied_freq_hz.store(saved_freq, std::memory_order_relaxed);
     demod.channel_squelch_level.store(saved_level, std::memory_order_relaxed);
     g_squelch_auto_word.store(saved_word, std::memory_order_relaxed);
@@ -16467,9 +16520,8 @@ rtl_stream_set_channel_squelch_setting(const dsd_squelch_setting* setting) {
     } else if (margin > DSD_SQUELCH_MARGIN_MAX_DB) {
         margin = DSD_SQUELCH_MARGIN_MAX_DB;
     }
-    /* The word before the level it puts out of force (see g_squelch_auto_word). */
+    /* The word alone: the level stays for a block that took the LEVEL word before this store (see g_squelch_auto_word). */
     g_squelch_auto_word.store((uint32_t)DSD_SQUELCH_MODE_AUTO | ((uint32_t)margin << 8), std::memory_order_release);
-    demod.channel_squelch_level.store(0.0f, std::memory_order_relaxed);
 }
 
 extern "C" int

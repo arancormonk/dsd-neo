@@ -870,6 +870,7 @@ MetricsModel::fillSquelchOverride(View& next, const dsd_opts* opts_snapshot, con
         next.effective_squelch_auto = false;
         next.configured_squelch_margin_db = 0;
         next.effective_squelch_margin_db = 0;
+        next.configured_squelch_level_off = false;
         next.squelch_auto_status.clear();
         return;
     }
@@ -883,8 +884,10 @@ MetricsModel::fillSquelchOverride(View& next, const dsd_opts* opts_snapshot, con
     next.squelch_readout = QString::fromUtf8(readout);
     next.configured_squelch_auto = squelch.configured_auto != 0U;
     next.effective_squelch_auto = squelch.effective_auto != 0U;
-    next.configured_squelch_margin_db = squelch.configured_auto ? squelch.configured_margin_db : 0;
-    next.effective_squelch_margin_db = squelch.effective_auto ? squelch.effective_margin_db : 0;
+    /* A level setting keeps the margin it had, which Auto starts from again. */
+    next.configured_squelch_margin_db = squelch.configured_margin_db;
+    next.effective_squelch_margin_db = squelch.effective_margin_db;
+    next.configured_squelch_level_off = dsd_squelch_is_off(squelch.configured_level);
     char status[40];
     (void)dsd_app_squelch_view_auto_status(&squelch, status, sizeof status);
     next.squelch_auto_status = QString::fromUtf8(status);

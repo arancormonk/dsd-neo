@@ -438,13 +438,15 @@ resamp_process_block_flags(struct demod_state* s, const float* in, const uint8_t
         s->resamp_enabled && s->resamp_taps && s->resamp_hist && s->resamp_L >= 1 && s->resamp_M >= 1 ? 1 : 0;
     const int phase = s->resamp_phase;
     const int out_len = resamp_process_block(s, in, in_len, out);
-    if (out_len <= 0) {
+    if (out_len < 0) {
         return out_len;
     }
     if (!resampling) {
-        DSD_MEMCPY(out_flags, in_flags, (size_t)in_len * sizeof(uint8_t));
+        DSD_MEMCPY(out_flags, in_flags, (size_t)out_len * sizeof(uint8_t));
         return out_len;
     }
+    /* Every input the resampler consumed enters the flag history, in a block that made no output too, or the flags
+       would depend on how the stream was cut into blocks. */
     const int mapped = resamp_map_flags(s, phase, in_flags, in_len, out_flags);
     if (mapped != out_len) {
         /* Not reachable: the resampler ran the same recurrence. Should it not have (it fell back to a copy), each
