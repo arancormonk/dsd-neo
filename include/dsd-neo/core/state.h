@@ -1881,14 +1881,16 @@ struct dsd_state {
      * (dsd_squelch_publish_status()): whether one runs (an AUTO or NOISE setting on the analog monitor), whether that is
      * the noise squelch (0: the floor tracker, under AUTO or as NOISE's stand-in), the tracker's floor's state
      * (dsd_squelch_floor_state), whether the gate is open, whether the channel plan could be designed (0: the gate
-     * stays open), the floor in hundredths of a dB on rtl_squelch_level's scale (0 while learning), and the noise
-     * squelch's quieting in hundredths of a dB. Rides the vertex_ks_count..ui_msg range. */
+     * stays open), the floor in hundredths of a dB on rtl_squelch_level's scale (0 while learning), whether the noise
+     * squelch has measured a window yet, and its quieting in hundredths of a dB. Rides the vertex_ks_count..ui_msg
+     * range. */
     uint8_t squelch_auto_active;
     uint8_t squelch_auto_state;
     uint8_t squelch_auto_gate_open;
     uint8_t squelch_auto_plan_valid;
     int32_t squelch_auto_floor_cdb;
     uint8_t squelch_noise_active;
+    uint8_t squelch_noise_measured;
     int32_t squelch_noise_quieting_cdb;
 
     // Transient UI message (shown briefly in ncurses printer)

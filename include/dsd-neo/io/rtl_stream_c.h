@@ -861,7 +861,8 @@ void rtl_stream_set_channel_squelch_setting(const dsd_squelch_setting* setting);
 typedef struct {
     int active;          /**< 1 when the last block ran a dynamic squelch (AUTO or NOISE on the analog monitor) */
     int noise;           /**< 1 when that was the noise squelch; 0 when the tracker ran (AUTO, or NOISE as AUTO) */
-    double quieting_db;  /**< the noise squelch's last window's quieting (0 unless noise) */
+    int quieting_valid;  /**< 1 once the noise squelch has measured a window since it started (else still starting) */
+    double quieting_db;  /**< the noise squelch's last window's quieting (0 until quieting_valid) */
     int state;           /**< the tracker's dsd_squelch_floor_state */
     int gate_open;       /**< the gate at the end of the last block (1 when not active) */
     int plan_valid;      /**< 0 when the channel plan could not be designed (the gate then stays open) */

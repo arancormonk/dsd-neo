@@ -27,7 +27,8 @@ extern "C" {
 typedef struct {
     int active;          /**< 1 when the stream's last block ran a dynamic squelch */
     int noise;           /**< 1 when that was the noise squelch, 0 when the floor tracker ran */
-    double quieting_db;  /**< the noise squelch's last window's quieting (0 unless noise) */
+    int quieting_valid;  /**< 1 once the noise squelch has measured a window since it started */
+    double quieting_db;  /**< the noise squelch's last window's quieting (0 until quieting_valid) */
     int state;           /**< dsd_squelch_floor_state */
     int gate_open;       /**< the gate at the end of that block */
     int plan_valid;      /**< 0 when the channel plan could not be designed */

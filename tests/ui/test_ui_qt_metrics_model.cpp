@@ -1461,6 +1461,7 @@ main(int argc, char** argv) {
     /* The noise squelch: its flags, its quieting while it runs, and no Noise offered on the AM monitor on its own. */
     opts.rtl_squelch_mode = DSD_SQUELCH_MODE_NOISE;
     state.squelch_noise_active = 1;
+    state.squelch_noise_measured = 1;
     state.squelch_noise_quieting_cdb = 2310;
     model.refresh(&opts, &state);
     expect("a noise default is noise on both sides", model.configuredSquelchNoise() && model.effectiveSquelchNoise());
@@ -1470,6 +1471,7 @@ main(int argc, char** argv) {
     expect("the FM monitor offers Noise", model.squelchNoiseOffered());
     opts.analog_demod = DSD_ANALOG_DEMOD_AM;
     state.squelch_noise_active = 0;
+    state.squelch_noise_measured = 0;
     model.refresh(&opts, &state);
     expect("the AM monitor offers no Noise", !model.squelchNoiseOffered());
     expect("a noise setting on AM runs as auto",

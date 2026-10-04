@@ -59,8 +59,9 @@ typedef struct {
     uint8_t auto_gate_open;   /**< Running, and the gate is open. */
     double auto_floor_db;     /**< Running with a floor: it, on rtl_squelch_level's dB scale. */
     uint8_t noise_running;    /**< The stream runs the noise squelch (dsd_state::squelch_noise_active). */
+    uint8_t noise_measured;   /**< Running, and it has measured a window since it started. */
     uint8_t noise_gate_open;  /**< Running, and its gate is open. */
-    double noise_quieting_db; /**< Running: its last window's quieting. */
+    double noise_quieting_db; /**< Measured: its last window's quieting. */
 } dsd_app_squelch_view;
 
 /**

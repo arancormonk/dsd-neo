@@ -167,13 +167,20 @@ main(void) {
     state->squelch_auto_active = 1;
     state->squelch_noise_active = 1;
     state->squelch_auto_gate_open = 1;
+    /* Running, but no window measured yet: still starting. */
+    assert(dsd_app_squelch_view_get(opts, state, &view) == 0);
+    assert(view.noise_running && !view.noise_measured && !view.noise_as_auto);
+    expect_auto_status(&view, "starting");
+    state->squelch_noise_measured = 1;
     state->squelch_noise_quieting_cdb = 2349;
     assert(dsd_app_squelch_view_get(opts, state, &view) == 0);
-    assert(view.noise_running && view.noise_gate_open && !view.auto_running && !view.auto_gate_open);
+    assert(view.noise_running && view.noise_measured && view.noise_gate_open && !view.auto_running
+           && !view.auto_gate_open);
     assert(fabs(view.noise_quieting_db - 23.49) < 1e-9);
     expect_text(&view, "noise +12 dB (quieting 23 dB)", "Applied: RTL squelch -> noise +12 dB");
     expect_auto_status(&view, "quieting 23 dB");
     state->squelch_noise_active = 0;
+    state->squelch_noise_measured = 0;
     assert(dsd_app_squelch_view_get(opts, state, &view) == 0);
     assert(view.noise_as_auto && view.auto_running && view.auto_gate_open && !view.noise_gate_open);
     expect_text(&view, "noise +12 dB (as auto: floor -78.3 dB)", "Applied: RTL squelch -> noise +12 dB");

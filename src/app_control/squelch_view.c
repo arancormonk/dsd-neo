@@ -35,6 +35,7 @@ squelch_view_resolution(const dsd_opts* opts, const dsd_app_squelch_view* view) 
 static void
 squelch_view_fill_running(const dsd_state* state, dsd_app_squelch_view* out) {
     out->noise_running = state->squelch_noise_active ? 1U : 0U;
+    out->noise_measured = out->noise_running && state->squelch_noise_measured ? 1U : 0U;
     out->noise_gate_open = out->noise_running && state->squelch_auto_gate_open ? 1U : 0U;
     out->noise_quieting_db = (double)state->squelch_noise_quieting_cdb / 100.0;
     out->auto_running = state->squelch_auto_active && !out->noise_running ? 1U : 0U;
@@ -157,7 +158,7 @@ dsd_app_squelch_view_dynamic_status(const dsd_app_squelch_view* view, char* out,
         squelch_view_tracker_status(view, tracker, sizeof tracker);
         DSD_SNPRINTF(out, out_size, "as auto: %s", tracker);
     } else if (view->effective_noise) {
-        if (view->noise_running) {
+        if (view->noise_measured) {
             DSD_SNPRINTF(out, out_size, "quieting %.0f dB", view->noise_quieting_db);
         } else {
             DSD_SNPRINTF(out, out_size, "%s", "starting");

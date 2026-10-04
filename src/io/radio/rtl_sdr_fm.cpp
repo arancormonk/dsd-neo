@@ -353,6 +353,7 @@ static std::atomic<uint32_t> g_squelch_device_hash{0U};
  * state, or the noise squelch's quieting when it ran. */
 static std::atomic<int> g_squelch_status_active{0};
 static std::atomic<int> g_squelch_status_noise{0};
+static std::atomic<int> g_squelch_status_quieting_valid{0};
 static std::atomic<float> g_squelch_status_quieting{0.0f};
 static std::atomic<int> g_squelch_status_state{0};
 static std::atomic<int> g_squelch_status_gate_open{1};
@@ -4249,8 +4250,11 @@ demod_publish_squelch_status(const struct demod_state* d) {
         gate_open = ns.gate_open;
     }
     g_squelch_status_active.store(active, std::memory_order_relaxed);
+    /* A reading exists once the noise squelch has closed a window since it started; before that it is starting. */
+    const int measured = noise && ns.windows > 0U ? 1 : 0;
     g_squelch_status_noise.store(noise, std::memory_order_relaxed);
-    g_squelch_status_quieting.store(noise ? (float)ns.quieting_db : 0.0f, std::memory_order_relaxed);
+    g_squelch_status_quieting_valid.store(measured, std::memory_order_relaxed);
+    g_squelch_status_quieting.store(measured ? (float)ns.quieting_db : 0.0f, std::memory_order_relaxed);
     g_squelch_status_state.store(st.state, std::memory_order_relaxed);
     g_squelch_status_gate_open.store(gate_open, std::memory_order_relaxed);
     g_squelch_status_plan_valid.store((noise ? d->noise_squelch.plan.valid : d->squelch_floor.plan.valid) ? 1 : 0,
@@ -15000,10 +15004,15 @@ squelch_test_noise_status_checks(void) {
     demod.noise_squelch.plan.valid = 1;
     demod.noise_squelch.gate_open = 1;
     demod.noise_squelch.quieting_db = 23.5;
+    /* No window closed yet: running, but no reading. */
     demod_publish_squelch_status(&demod);
     rtl_stream_squelch_status st;
-    const int failed = rtl_stream_get_squelch_status(&st) != 0 || !st.active || !st.noise || st.gate_open != 1
-                       || !st.plan_valid || fabs(st.quieting_db - 23.5) > 1e-4;
+    int failed = rtl_stream_get_squelch_status(&st) != 0 || !st.active || !st.noise || st.quieting_valid
+                 || fabs(st.quieting_db) > 1e-12;
+    demod.noise_squelch.windows = 1U;
+    demod_publish_squelch_status(&demod);
+    failed |= rtl_stream_get_squelch_status(&st) != 0 || !st.active || !st.noise || st.gate_open != 1 || !st.plan_valid
+              || !st.quieting_valid || fabs(st.quieting_db - 23.5) > 1e-4;
     demod.squelch_noise_ran = 0;
     DSD_MEMSET(&demod.noise_squelch, 0, sizeof(demod.noise_squelch));
     demod.result_flags_active = 0;
@@ -16594,6 +16603,7 @@ rtl_stream_get_squelch_status(rtl_stream_squelch_status* out) {
     }
     out->active = g_squelch_status_active.load(std::memory_order_relaxed);
     out->noise = g_squelch_status_noise.load(std::memory_order_relaxed);
+    out->quieting_valid = g_squelch_status_quieting_valid.load(std::memory_order_relaxed);
     out->quieting_db = (double)g_squelch_status_quieting.load(std::memory_order_relaxed);
     out->state = g_squelch_status_state.load(std::memory_order_relaxed);
     out->gate_open = g_squelch_status_gate_open.load(std::memory_order_relaxed);
