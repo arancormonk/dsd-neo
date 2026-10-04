@@ -8,6 +8,8 @@
 # a 1 s capture (media_ms=1000) and whatever REPLAY WALL line the case gives it.
 # A host that leaves the line out, or prints it without wall_ms, must fail the
 # case; 899 ms of wall time must fail the 90 % floor and 900 ms must meet it.
+# The demod thread's advisory that the decoder has not asked for output in 5 s
+# is a wall-clock line too: printed on one leg only, it must not fail the case.
 #
 # Expected -D inputs: FAKE_HOST, RUNNER.
 
@@ -75,6 +77,11 @@ _check_case(
 )
 _check_case(
     wall_ms=900.000000
+    TRUE
+    "iq_determinism_check: 2 legs decoded identically"
+)
+_check_case(
+    "wall_ms=900.000000 --fake-stall"
     TRUE
     "iq_determinism_check: 2 legs decoded identically"
 )

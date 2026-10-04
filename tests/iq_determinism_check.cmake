@@ -170,10 +170,17 @@ function(_normalize_stream text out_record out_io)
     set(_record)
     set(_io)
     foreach(_line IN LISTS _lines)
+        # Wall-clock lines: the run's timings, and the demod thread's advisory
+        # that the decoder has not asked for output in 5 s of real time (a slow
+        # host, a sanitizer build) -- they say how fast a leg ran, not what it
+        # decoded.
         if(
             _line MATCHES "^NOTICE: Runtime: "
             OR _line MATCHES "^REPLAY JITTER: "
             OR _line MATCHES "^REPLAY WALL: "
+            OR _line
+                MATCHES
+                "^IQ replay: the decoder has not asked for more output in 5 s "
             OR _line
                 MATCHES
                 "^(PulseAudio output|PortAudio output|AAudio input|AAudio output|Replay sink output) stats: "

@@ -9,7 +9,9 @@
  * takes the host arguments the runner passes and reads only "--fake-wall VALUE", which the test hands over through the
  * runner's MODE. It prints what a passing leg of a 1 s capture prints, a decoded "Src=901", the REPLAY STREAM line
  * (media_ms=1000.000000) and the REPLAY JITTER line, and then "REPLAY WALL: VALUE", or no REPLAY WALL line at all for
- * VALUE "omit". So the test sets exactly what the runner reads a realtime leg's wall time from.
+ * VALUE "omit". So the test sets exactly what the runner reads a realtime leg's wall time from. With "--fake-stall" its
+ * realtime leg also prints the demod thread's advisory that the decoder has not asked for output in 5 s, as a slow host
+ * does on one leg and not another.
  */
 
 #include <stdio.h>
@@ -18,9 +20,17 @@
 int
 main(int argc, char** argv) {
     const char* wall = NULL;
-    for (int i = 1; i + 1 < argc; i++) {
-        if (strcmp(argv[i], "--fake-wall") == 0) {
+    int stall = 0;
+    int realtime = 0;
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--fake-stall") == 0) {
+            stall = 1;
+        }
+        if (i + 1 < argc && strcmp(argv[i], "--fake-wall") == 0) {
             wall = argv[i + 1];
+        }
+        if (i + 1 < argc && strcmp(argv[i], "--iq-replay-rate") == 0 && strcmp(argv[i + 1], "realtime") == 0) {
+            realtime = 1;
         }
     }
     if (wall == NULL) {
@@ -28,6 +38,11 @@ main(int argc, char** argv) {
         return 2;
     }
     (void)fputs("fake decode Src=901\n", stdout);
+    if (stall && realtime) {
+        (void)fputs("IQ replay: the decoder has not asked for more output in 5 s while a receive request is pending; "
+                    "the request lands only once the decoder reads again.\n",
+                    stderr);
+    }
     (void)fputs("REPLAY STREAM: fsk_samples=48000 cqpsk_symbols=0 monitor_samples=0 generation_changes=0 "
                 "media_ms=1000.000000\n",
                 stderr);
