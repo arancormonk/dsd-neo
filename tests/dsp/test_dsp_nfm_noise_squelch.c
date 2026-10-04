@@ -736,9 +736,10 @@ test_quieting_follows_cnr(void) {
     }
 }
 
-/* A strong carrier carrying a tone anywhere in 300-3000 Hz at the width's rated deviation, centred and at every offset
-   its Carson bandwidth leaves inside the channel (the tone's own: a lower tone leaves more room), opens the gate at the
-   highest threshold and never closes it: the tone's harmonics fall in the band as lines, and the best sub-band stays
+/* A strong carrier carrying a tone anywhere in 300-3000 Hz at the width's rated deviation, centred and at the furthest
+   offset its Carson bandwidth leaves inside the channel either way (the tone's own: a lower tone leaves more room;
+   every lowest reading the design gate and this sweep found sits at that edge), opens the gate at the highest
+   threshold and never closes it: the tone's harmonics fall in the band as lines, and the best sub-band stays
    clear of them. 11.2 kHz is the narrowest width with a band (1200 Hz of it); 12.4 kHz behind the half-band at
    39062 Hz is a plan 300 Hz sub-bands without the staggered set miss by 1 dB; 11.8 kHz at 62500 Hz and 13 kHz at
    46875 Hz, both behind it, are where the design gate reads its lowest (590 and 520 Hz tones at their Carson edges).
@@ -765,8 +766,8 @@ test_strong_modulation_never_closes(void) {
         double worst_offset = 0.0;
         for (int tone = 300; tone <= 3000; tone += tone < 800 ? 5 : 25) {
             const double room = ((double)plans[w].width / 2.0) - dev - (double)tone;
-            const double offsets[5] = {0.0, room, -room, room / 2.0, -room / 2.0};
-            const int n_offsets = room > 1.0 ? 5 : 1;
+            const double offsets[3] = {0.0, room, -room};
+            const int n_offsets = room > 1.0 ? 3 : 1;
             for (int o = 0; o < n_offsets; o++) {
                 static runner r;
                 runner_init(&r, &ch, DSD_SQUELCH_MARGIN_MAX_DB);
