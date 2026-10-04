@@ -16,23 +16,34 @@ tone's 2nd and 3rd harmonics land above voice as discrete lines -- and those cap
 Candidates (all on the band B = [3.8 kHz, hi], hi = min(edge - 800 Hz, 0.45 fs), edge the channel taps' -1 dB point,
 Butterworth band-passes of prototype order 4, 40 ms windows taken every 20 ms):
   single      one band-pass over B: Q of the whole band.
-  split-max   B cut into K equal sub-bands (K = floor(|B| / 500 Hz), 1..9): Q of the best-quieted sub-band. A line
-              lands in one sub-band and the others still show the carrier's quieting, but the best of K noisy readings
-              sits above 0 dB on noise.
-  split-guardG the same sub-bands: Q = max(Q_sum, Q_max - G dB), Q_sum from the sub-bands' summed powers (the whole
-              band, as tight on noise as `single`) and Q_max the best sub-band's (it only wins when one sub-band is
-              clearly quieter than the whole band: a strong carrier with a line elsewhere); G = 3 or 4.
-  high1200    the first plan's band, [hi - 1200 Hz, hi], one band-pass (for comparison).
+  high1200    the first plan's band, [hi - 1200 Hz, hi], one band-pass.
+  sW-max      B cut into K equal sub-bands of about W Hz (K = floor(|B| / W), held to a maximum): Q of the best-quieted
+              sub-band. A line lands in one sub-band and the others still show the carrier's quieting, but the best of
+              K noisy readings sits above 0 dB on noise.
+  sW-guardG   the same sub-bands: Q = max(Q_sum, Q_max - G dB), Q_sum from the sub-bands' summed powers (the whole band,
+              as tight on noise as `single`) and Q_max the best sub-band's (it only wins when one sub-band is clearly
+              quieter than the whole band: a strong carrier with a line elsewhere).
+  W is 500 Hz (at most 9 sub-bands), 300 Hz (at most 15), 300 Hz staggered (`s300x`: a second set shifted by half a
+  sub-band, so a line on one set's boundary sits inside the other's) or 250 Hz (at most 18).
 
-The chosen design (src/dsp/nfm_noise_squelch.c) is split-guard4: every plan with a band passes the gate, and the
-4 dB guard keeps the best of nine noisy sub-band readings under the whole band's on noise.
+The chosen design (src/dsp/nfm_noise_squelch.c) is s300x-guard5: every plan with a band passes the gate. 500 Hz
+sub-bands leave too few on the narrowest channels: at 11.2 kHz (two sub-bands) a tone whose harmonic lands on their
+boundary, off-frequency to its Carson edge, holds Q under 30 dB. 300 Hz sub-bands alone still let a low tone's
+harmonics sit on a boundary in every clear sub-band; the staggered set puts each such line inside a band-pass of the
+other set. 250 Hz sub-bands narrow the gap too, but the finer tone grid finds tones (550-630 Hz on 11.3-12 kHz channels)
+that hold them at the margin, and their eighteen noisy readings open the gate on noise more often. Of the staggered
+guards, 4 dB leaves the most wanted margin, and noise still opens the gate at N = 3 no more often than the whole band's
+reading alone does; 5 and 6 dB only lower noise's loudest window.
 
 Gate (per plan, for the chosen candidate): a band of at least 1200 Hz fits (8 and 10 kHz channels have none, and run
-the auto squelch); wanted modulation -- a tone sweep 300-3000 Hz at the plan's rated deviation at every offset its
-Carson bandwidth allows, and real NFM speech at rated deviation -- keeps the 1st-percentile Q at least MARGIN_DB above
-the highest threshold offered; noise reaches the lowest threshold in at most FALSE_OPEN_TARGET of evaluations. The
-report also lists stress cases outside the gate (a carrier 1 kHz off centre past its Carson bandwidth, 1.5x rated
-deviation) and the real captures themselves.
+the auto squelch); wanted modulation -- a tone sweep 300-3000 Hz (5 Hz steps under 800 Hz, where a tone's
+harmonics crowd the band, 25 Hz above) at the plan's rated deviation, centred and at every offset the tone's own Carson
+bandwidth leaves inside the channel, and real NFM speech at rated deviation -- keeps the 1st-percentile Q at least
+MARGIN_DB above the highest threshold offered; noise reaches the lowest threshold in at most FALSE_OPEN_TARGET of
+evaluations. The plans are every NFM width, unset default and rate chain
+tools/squelch_model.py runs, and custom widths (CUSTOM_WIDTHS_HZ) on every chain at CUSTOM_MIN_RATE_HZ or above. The
+report also lists stress cases outside the gate (a carrier 1 kHz past its tone's Carson edge, 1.5x rated deviation) and
+the real captures as recorded (their receiver noise and neighbours included) through each plan of 12.5 kHz or wider.
 
 Plans come from tools/squelch_model.py (its tap harness and rate chains), FM only: AM has no discriminator.
 
@@ -62,12 +73,20 @@ EDGE_STEP_HZ = 10.0
 EDGE_GUARD_HZ = 800.0
 BAND_LO_HZ = 3800.0
 MIN_BAND_HZ = 1200.0
-SUB_BAND_HZ = 500.0
-MAX_SUB_BANDS = 9
+SUB_BAND_HZ = 300.0
+MAX_SUB_BANDS = 15
+# Sub-band variants the gate compares: (name, sub-band width, most sub-bands, staggered). A staggered variant adds a
+# second set of sub-bands shifted by half a sub-band, so a line on a boundary of one set sits inside one of the other.
+SUB_VARIANTS = (
+    ("s500", 500.0, 9, False),
+    ("s300", 300.0, 15, False),
+    ("s300x", 300.0, 15, True),
+    ("s250", 250.0, 18, False),
+)
 NYQUIST_FRACTION = 0.45
 ORDER = 4
 HIGH_BAND_HZ = 1200.0
-GUARDS_DB = (3.0, 4.0)
+GUARDS_DB = (4.0, 5.0, 6.0)
 HALF_PER_S = 50  # 20 ms halves; a window is two of them
 N_MIN_DB = 3
 N_MAX_DB = 30
@@ -77,10 +96,17 @@ CLOSE_FLOOR_DB = 1.5
 MARGIN_DB = 6.0
 FALSE_OPEN_TARGET = 1e-4
 THRESHOLDS_DB = (3, 4, 5, 6, 10)
-CHOSEN = "split-guard4"
-CANDIDATES = ("single", "split-max", "split-guard3", "split-guard4", "high1200")
-TONES_HZ = tuple(float(f) for f in range(300, 3001, 100))
-OFFSETS_HZ = (0.0, 500.0, -500.0, 1000.0, -1000.0, 2500.0, -2500.0)
+CHOSEN = "s300x-guard4"
+CANDIDATES = (
+    "single",
+    "high1200",
+    *(f"{v[0]}-max" for v in SUB_VARIANTS),
+    *(f"{v[0]}-guard{g:.0f}" for v in SUB_VARIANTS for g in GUARDS_DB),
+)
+TONES_HZ = (*(float(f) for f in range(300, 800, 5)), *(float(f) for f in range(800, 3001, 25)))
+# Custom widths (any whole Hz from 8000 to 25000 runs): a fine grid where the band first fits, a coarse one above.
+CUSTOM_WIDTHS_HZ = (*range(11000, 12500, 100), *range(13000, 25001, 1000))
+CUSTOM_MIN_RATE_HZ = 24000
 STRESS_OFFSET_HZ = 1000.0
 STRESS_DEVIATION = 1.5
 CNRS_DB = (-3.0, 0.0, 3.0, 6.0, 8.0, 10.0, 12.0, 15.0, 20.0, 30.0)
@@ -121,8 +147,8 @@ def plan_band(taps: np.ndarray, fs: float) -> tuple[float, float, float] | None:
     return BAND_LO_HZ, hi, edge
 
 
-def sub_band_count(lo: float, hi: float) -> int:
-    return max(1, min(MAX_SUB_BANDS, int((hi - lo) // SUB_BAND_HZ)))
+def sub_band_count(lo: float, hi: float, sub_hz: float = SUB_BAND_HZ, most: int = MAX_SUB_BANDS) -> int:
+    return max(1, min(most, int((hi - lo) // sub_hz)))
 
 
 # --------------------------------------------------------------------------------------------- signal helpers
@@ -152,7 +178,7 @@ def hb_noise(rng: np.random.Generator, count: int, hb: np.ndarray | None) -> np.
 
 def half_bounds(fs: int, count: int) -> np.ndarray:
     """Sample-exact 20 ms boundaries floor(k fs / 50) inside count samples."""
-    k = np.arange(0, count * HALF_PER_S // fs + 1, dtype=np.int64)
+    k = np.arange(0, count * HALF_PER_S // fs + 2, dtype=np.int64)
     b = (k * fs) // HALF_PER_S
     return b[b <= count]
 
@@ -160,6 +186,18 @@ def half_bounds(fs: int, count: int) -> np.ndarray:
 def half_sums(y: np.ndarray, bounds: np.ndarray) -> np.ndarray:
     c = np.concatenate(([0.0], np.cumsum(y.astype(np.float64) ** 2)))
     return c[bounds[1:]] - c[bounds[:-1]]
+
+
+_RAW_CACHE: dict = {}
+
+
+def raw_capture_at_rate(name: str, fs: int) -> np.ndarray:
+    """A real capture as recorded (its neighbours and receiver noise included), at fs."""
+    key = (name, fs)
+    if key not in _RAW_CACHE:
+        iq, rate = sm.load_cu8(name)
+        _RAW_CACHE[key] = (iq if rate == fs else sm.resample(iq, rate, fs, trim_s=0.0)).astype(np.complex64)
+    return _RAW_CACHE[key]
 
 
 class Plan:
@@ -174,12 +212,18 @@ class Plan:
         self.settle = int(SETTLE_S * self.fs)
         self.band = plan_band(self.taps, self.fs)
         self.filters: dict[str, list] = {}
+        self.primary: dict[str, int] = {}
         if self.band is not None:
             lo, hi, _ = self.band
-            k = sub_band_count(lo, hi)
-            step = (hi - lo) / k
-            subs = [self.bp(lo + i * step, lo + (i + 1) * step) for i in range(k)]
-            self.filters = {"single": [self.bp(lo, hi)], "subs": subs}
+            self.filters = {"single": [self.bp(lo, hi)]}
+            for name, sub_hz, most, staggered in SUB_VARIANTS:
+                k = sub_band_count(lo, hi, sub_hz, most)
+                step = (hi - lo) / k
+                group = [self.bp(lo + i * step, lo + (i + 1) * step) for i in range(k)]
+                if staggered:
+                    group += [self.bp(lo + (i + 0.5) * step, lo + (i + 1.5) * step) for i in range(k - 1)]
+                self.filters[name] = group
+                self.primary[name] = k
             if hi - HIGH_BAND_HZ >= BAND_LO_HZ - 200.0:
                 self.filters["high1200"] = [self.bp(hi - HIGH_BAND_HZ, hi)]
         rng = np.random.default_rng(sm.job_seed("noise_sq_pch", self.key))
@@ -210,8 +254,7 @@ class Plan:
         out["_n"] = np.diff(bounds).astype(np.float64)
         return out
 
-    @staticmethod
-    def window_q(h: dict, refs: dict) -> dict[str, np.ndarray]:
+    def window_q(self, h: dict, refs: dict) -> dict[str, np.ndarray]:
         """Each candidate's Q for every 40 ms window (two consecutive halves), one per 20 ms."""
         n = h["_n"][1:] + h["_n"][:-1]
 
@@ -221,14 +264,16 @@ class Plan:
         q = {}
         p_single = pw(h["single"])[0]
         q["single"] = 10.0 * np.log10(refs["single"][0] / np.maximum(p_single, 1e-30))
-        p_subs = pw(h["subs"])
-        r_subs = np.asarray(refs["subs"])[:, None]
-        q_each = 10.0 * np.log10(r_subs / np.maximum(p_subs, 1e-30))
-        q_max = np.max(q_each, axis=0)
-        q_sum = 10.0 * np.log10(np.sum(r_subs) / np.maximum(np.sum(p_subs, axis=0), 1e-30))
-        q["split-max"] = q_max
-        for g in GUARDS_DB:
-            q[f"split-guard{g:.0f}"] = np.maximum(q_sum, q_max - g)
+        for name, _sub_hz, _most, _staggered in SUB_VARIANTS:
+            p_subs = pw(h[name])
+            r_subs = np.asarray(refs[name])[:, None]
+            q_each = 10.0 * np.log10(r_subs / np.maximum(p_subs, 1e-30))
+            q_max = np.max(q_each, axis=0)
+            k = self.primary[name]
+            q_sum = 10.0 * np.log10(np.sum(r_subs[:k]) / np.maximum(np.sum(p_subs[:k], axis=0), 1e-30))
+            q[f"{name}-max"] = q_max
+            for g in GUARDS_DB:
+                q[f"{name}-guard{g:.0f}"] = np.maximum(q_sum, q_max - g)
         if "high1200" in h:
             q["high1200"] = 10.0 * np.log10(refs["high1200"][0] / np.maximum(pw(h["high1200"])[0], 1e-30))
         return q
@@ -264,7 +309,7 @@ def run_plan(job: dict) -> dict:
         )
         return out
     lo, hi, edge = plan.band
-    out.update({"band": [lo, hi], "edge_hz": edge, "sub_bands": len(plan.filters["subs"])})
+    out.update({"band": [lo, hi], "edge_hz": edge, "sub_bands": plan.primary[CHOSEN.split("-")[0]]})
 
     # P_ref: a 2 s calibration through the half-band and the channel taps, as the C code runs it; one without the
     # half-band for comparison; and the references the long run measures.
@@ -284,7 +329,7 @@ def run_plan(job: dict) -> dict:
         for name in plan.filters:
             long_sum[name] = long_sum.get(name, 0.0) + np.sum(h[name], axis=1)
         long_n += float(np.sum(h["_n"]))
-        for c, q in Plan.window_q(h, refs).items():
+        for c, q in plan.window_q(h, refs).items():
             qn[c].append(q)
     long_ref = {name: (long_sum[name] / long_n).tolist() for name in plan.filters}
     out["pref_error_db"] = {
@@ -295,7 +340,7 @@ def run_plan(job: dict) -> dict:
     }
     tilt_q = {}
     for t in (1.0, -1.0):
-        q = Plan.window_q(plan.halves(plan.demod(None, int(10.0 * fs), 0.0, ("tilt", t), tilt=t)), refs)
+        q = plan.window_q(plan.halves(plan.demod(None, int(10.0 * fs), 0.0, ("tilt", t), tilt=t)), refs)
         tilt_q["lp" if t > 0 else "hp"] = {c: float(np.median(v)) for c, v in q.items()}
     for c in CANDIDATES:
         if not qn[c]:
@@ -312,7 +357,7 @@ def run_plan(job: dict) -> dict:
         }
 
     def measure(kind: str, label: str, d: np.ndarray):
-        for c, q in Plan.window_q(plan.halves(d), refs).items():
+        for c, q in plan.window_q(plan.halves(d), refs).items():
             out["candidates"][c]["mod"].setdefault(kind, {})[label] = {
                 "p1": float(np.percentile(q, 1)),
                 "min": float(np.min(q)),
@@ -326,9 +371,11 @@ def run_plan(job: dict) -> dict:
         return np.exp(1j * (2.0 * math.pi * np.cumsum(offset + audio_dev_hz) / fs))
 
     half = width / 2.0
-    gate_offsets = [o for o in OFFSETS_HZ if abs(o) + deviation + sm.VOICE_TOP_HZ <= half + 1e-9]
-    for off in gate_offsets:
-        for f in TONES_HZ:
+    for f in TONES_HZ:
+        # Every offset the tone's Carson bandwidth leaves inside the channel: its edge, half way there, and centred.
+        room = half - deviation - f
+        offsets = [0.0] + ([room, -room, room / 2.0, -room / 2.0] if room > 1.0 else [])
+        for off in offsets:
             sig = fm(deviation * np.sin(2.0 * math.pi * f * t), off)
             measure(
                 "gate",
@@ -344,14 +391,15 @@ def run_plan(job: dict) -> dict:
             plan.demod(fm(deviation * audio, 0.0), speech_n, NOISE_FREE_CNR_DB, ("speech", name)),
         )
     for f in (300.0, 1000.0, 2000.0, 3000.0):
-        for off in (STRESS_OFFSET_HZ, -STRESS_OFFSET_HZ):
-            if off not in gate_offsets:
-                sig = fm(deviation * np.sin(2.0 * math.pi * f * t), off)
-                measure(
-                    "stress",
-                    f"tone {f:.0f} Hz at {off:+.0f} Hz",
-                    plan.demod(sig, tone_n, NOISE_FREE_CNR_DB, ("stress", off, f)),
-                )
+        # 1 kHz past the tone's Carson edge either way.
+        past = half - deviation - f + STRESS_OFFSET_HZ
+        for off in (past, -past):
+            sig = fm(deviation * np.sin(2.0 * math.pi * f * t), off)
+            measure(
+                "stress",
+                f"tone {f:.0f} Hz at {off:+.0f} Hz",
+                plan.demod(sig, tone_n, NOISE_FREE_CNR_DB, ("stress", off, f)),
+            )
         sig = fm(STRESS_DEVIATION * deviation * np.sin(2.0 * math.pi * f * t), 0.0)
         measure(
             "stress",
@@ -366,8 +414,7 @@ def run_plan(job: dict) -> dict:
         )
     if width >= 2.0 * sm.REAL_CHANNEL_HALF_HZ:
         for name in sm.REAL_FM:
-            iq = sm.source_at_rate(name, "iq", fs).astype(np.complex64)
-            measure("real", name, disc(sm.channel_filter(iq, plan.taps)))
+            measure("real", name, disc(sm.channel_filter(raw_capture_at_rate(name, fs), plan.taps)))
     out["seconds"] = time.time() - t0
     return out
 
@@ -524,7 +571,7 @@ def report(results: list[dict], members: dict, out_dir: Path, started: float, mo
         lines.append(f"- {r['width']} Hz at {r['fs']} Hz: " + "; ".join(members[r["key"]]))
     text = "\n".join(lines) + "\n"
     (out_dir / "noise_squelch_report.md").write_text(text)
-    (out_dir / "noise_squelch_results.json").write_text(json.dumps({"results": results}, indent=1))
+    (out_dir / "noise_squelch_results.json").write_text(json.dumps({"results": results, "members": members}, indent=1))
     return text
 
 
@@ -548,6 +595,33 @@ def unique_jobs(combos: list[dict], hb_taps: dict, mode: str) -> tuple[list[dict
     return sorted(jobs.values(), key=lambda j: -j["fs"]), members
 
 
+def custom_jobs(plans: list, harness_plans: dict, hb_taps: dict, mode: str, jobs: list, members: dict) -> None:
+    """The custom widths (CUSTOM_WIDTHS_HZ) on every chain without post-decimation at CUSTOM_MIN_RATE_HZ or above."""
+    known = {j["key"] for j in jobs}
+    for plan in plans:
+        if plan.post_downsample != 1 or plan.rate_out < CUSTOM_MIN_RATE_HZ:
+            continue
+        for width in CUSTOM_WIDTHS_HZ:
+            rec = harness_plans.get((plan.rate_out, width, sm.FM_KIND))
+            if not rec or not rec["realizable"]:
+                continue
+            key = f"{plan.channel_rate}:{plan.hb}:{sm.taps_key(np.asarray(rec['taps']))}:{width}"
+            members.setdefault(key, []).append(f"NFM {width} (custom) on {plan.name}")
+            if key in known:
+                continue
+            known.add(key)
+            jobs.append(
+                {
+                    "key": key,
+                    "taps": np.asarray(rec["taps"]).tolist(),
+                    "hb": None if hb_taps.get(plan.hb) is None else np.asarray(hb_taps[plan.hb]).tolist(),
+                    "fs": plan.channel_rate,
+                    "width": width,
+                    "mode": mode,
+                }
+            )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=(__doc__ or "").split("\n", 1)[0])
     parser.add_argument("--quick", action="store_true", help="30 s of noise per plan and short tones (a smoke run)")
@@ -564,13 +638,18 @@ def main(argv: list[str] | None = None) -> int:
     plans = sm.rate_plans()
     requests = {(p.rate_out, w, sm.FM_KIND) for p in plans for w in (*sm.NFM_WIDTHS_HZ, sm.NFM_WIDTH_DEFAULT_HZ, 0)}
     requests |= {(p.rate_out, w, sm.AM_KIND) for p in plans for w in sm.AM_WIDTHS_HZ}
+    requests |= {
+        (p.rate_out, w, sm.FM_KIND) for p in plans for w in CUSTOM_WIDTHS_HZ if p.rate_out >= CUSTOM_MIN_RATE_HZ
+    }
     header, harness_plans = sm.run_harness(exe, sorted(requests))
     hb_taps = {name: np.asarray(header[name], dtype=np.float64) for name in ("hb15", "hb31")}
     combos = [c for c in sm.build_combos(plans, harness_plans, hb_taps) if c["runs"] and c["config"].kind == sm.FM_KIND]
     jobs, members = unique_jobs(combos, hb_taps, mode)
+    custom_jobs(plans, harness_plans, hb_taps, mode, jobs, members)
+    jobs.sort(key=lambda j: -j["fs"])
     if args.only:
         jobs = [j for j in jobs if args.only in j["key"]]
-    print(f"{len(combos)} NFM combinations, {len(jobs)} distinct plans", flush=True)
+    print(f"{len(combos)} NFM combinations and the custom widths: {len(jobs)} distinct plans", flush=True)
     sm.real_sources()  # loaded once, before the workers fork
     results = []
     with ProcessPoolExecutor(max_workers=max(1, args.jobs)) as pool:
