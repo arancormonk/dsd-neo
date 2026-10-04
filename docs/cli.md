@@ -1138,6 +1138,10 @@ is delayed.
 - Conventional scan mode: `-Y` (not trunking; scans for sync on the row's decoder class or the global decoders). The
   later of `-T`/`-Y` wins. For NXDN the hold is refreshed
   only by frames whose content passed a CRC, so an open squelch on an empty channel no longer parks the scan.
+- Live per-channel edits: while a `-Y` typed channel map or a `--trunk-scan` list runs, the row on air's squelch,
+  channel width and tone policy, and a trunk-scan target's tuner gain, can be changed for the rest of the session from
+  the terminal's and Qt/Android's "this channel" editors, without touching the list or the configured defaults; see
+  [Live per-channel edits](trunk-scan.md#runtime-behavior).
   A channel map with a `name` column (see `docs/csv-formats.md`) names the row being listened to in the Scan Mode
   row, in Call Info, and on the event history rows recorded while it is tuned. A map can load a per-row key set from
   `keys_hex_csv`/`keys_dec_csv`, or embed `-b`/`-H` equivalents in `single_key_dec`/`single_key_hex`; leaving `-Y`

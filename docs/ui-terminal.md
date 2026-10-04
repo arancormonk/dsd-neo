@@ -415,6 +415,19 @@ reads the same way after the measured power, and the DSP panel's `Squelch` line 
 need to inspect post-channel-filter squelch power. `RF Level` and `Squelch` are measured at different stages and are not
 expected to match exactly.
 
+While a scan row or target is on air that can take a "this channel" edit (issue #518), the `Squelch (dB)...`,
+`NFM bandwidth...`, `AM bandwidth...`, `Gain...` and `Tone filter...` rows open a chooser before their prompt:
+`All channels (default)...` goes on to the prompt above, which edits the configured default; `This channel
+(county-p25)...` prompts on what the row runs now (whole dB from -100 to 0 for the squelch, 0 = off; the width in Hz;
+the gain, 0 = AGC; a tone picker and list) and changes that row alone for the rest of the session; `This channel: use
+the default` (offered when the row's list sets the setting) makes it follow the configured default, and `This channel:
+back to the list value` (offered while it runs an edit) drops the edit. The edit goes to the row named when the chooser
+opened, at once if it is on air and from its next visit otherwise (`This channel (county-p25): squelch -55 dB for this
+session`, `... from its next visit`). A width row is offered only under a row of its kind, and the gain only for a
+`--trunk-scan` target on an RTL-family input other than an Airspy. Edits end when the scan does (under `-Y`, when the
+scanner leaves or the channel map changes) and are never saved. See [Live per-channel
+edits](trunk-scan.md#runtime-behavior).
+
 `DSP-BW:` on the RTL input line is the DSP bandwidth, the demodulator's sample rate that `DSP bandwidth...` sets. Under
 `-fA` (or `-fM`, reading `Analog: AM ...;`) the line also shows the analog channel width in force beside it, `Analog:
 NFM 12.5 kHz;`: the width the front end reports while a running stream runs the analog monitor, otherwise the configured

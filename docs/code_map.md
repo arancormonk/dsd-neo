@@ -3110,6 +3110,64 @@ External dependencies (resolved via CMake):
   included, an am row, rows sharing the frequency on air), `ENGINE_TRUNK_SCAN` (a target refused its width included, an
   am target, a same-frequency target of another type), `UI_QT_IMPORTED_FILES`, `UI_QT_SCAN_LIST_ROUNDTRIP` and
   `UI_QT_QML_CALL_LISTS` (previews).
+- Session edits ("this channel", issue #518): while a scan runs, the operator can change the squelch, channel width and
+  tone policy a row runs, and a `--trunk-scan` target's tuner gain, for the rest of the session without touching the
+  list or the configured defaults. Runtime `scan_row_edit` (`<dsd-neo/runtime/scan_row_edit.h>`, pure data) holds one
+  row's edits, each field none, set or inherited (follow the configured default whatever the list says);
+  `dsd_scan_row_edit_apply()` lays them over a row's options and `dsd_scan_row_edit_gain()` over a target's list gain,
+  and the fields a class takes come from the options grammar (`dsd_scan_options_fields_for_mode()`). The trunk-scan
+  coordinator keeps each target's edit in its runtime (`dsd_trunk_scan_target_runtime::edit`) and every reader of a
+  target's options goes through `trunk_scan_target_values()` (the profile's values, a live decryption change included,
+  with the edit over them) and `trunk_scan_target_gain()`: the scope installed at a switch, a rollback and a decryption
+  change, the width checks and skips, the configured-width rule and the tone-rejection alternates. The `-Y` channel scan
+  keeps `{row, edit}` pairs in its own extension, which a leave frees (a map change leaves first), and reads rows
+  through `channel_scan_row_values()` (`dsd_engine_channel_scan_row_values()` for `trunk_scan.c`'s configured-width
+  rule); an edit moves `edits_epoch`, which restages a tune staged before it (`channel_scan_staged_stale()`), and the
+  staged row's merged values are what its tune's rigctl leg reads. `dsd_engine_trunk_scan_edit_target()` and
+  `dsd_engine_channel_scan_edit_row()` name the row by a scan session number (`dsd_scan_row_edit_new_session()`, new for
+  every coordinator and `-Y` scan) and the target id or `-Y` row, never the tune generation, which moves on every
+  retune: an edit to the row on air (its scope in force) applies at once and says whether app-control must publish the
+  width (the width in force moved, or whether the row sets one of its own did, which is what a rigctl peer's request
+  follows: `dsd_scan_row_edit_width_request_differs()`) or reopen the stream for the gain, with the previous edit for
+  `..._restore_...()` should that fail, which puts back only the field it names (`dsd_scan_row_edit_take_fields()`) so
+  an edit of another field made since stays; any other row runs it from its next visit. A width the published DSP rate
+  cannot filter is refused; the trunk change runs under the P25 SM tick guard (try-enter, BUSY), and a width or gain
+  edit of the parked target while its retune is in flight is BUSY too (the retune lands the width it queued, and only a
+  request app-control makes itself can be rolled back). `dsd_state::scan_row_*` (in the `vertex_ks_count..ui_msg`
+  snapshot range) publishes the row on air, the fields it can take, sets in its list and runs an edit of;
+  `dsd_scan_mode_options()` stamps `dsd_opts::scan_row_scope_seq` and `dsd_state::scan_row_scope_seq` alike at every
+  install, so a frontend reading the two snapshots, published one after the other, can tell whether the options it
+  starts an editor from are this row's (`dsd_app_scan_row_view::opts_match`, required by
+  `dsd_app_scan_row_view_offers()`, the Qt context and Qt's `scanRowSynced`); a Qt width step on the row starts from
+  that snapshot's width setting (`analogBandwidthSettingHz`), never the live front-end reading. App-control's
+  `DSD_APP_CMD_SCAN_ROW_EDIT` (`src/app_control/scan_row_edit.c`) applies one edit and its follow-up, and rolls back
+  that field when the follow-up fails:
+  - the RTL front end's width request, when the width in force moved (`svc_publish_row_analog_width()`, marked
+    `svc_monitor_refusal::row_edit`). A refusal where it lands goes through `dsd_app_scan_row_edit_settle_refusal()`,
+    never the configured width. The row's width goes back to the edit the front end ran the width it kept under: the
+    newest baseline of the run of requests it has not all run (`svc_row_width_request_not_run()`) that ran that width,
+    else the oldest, as the configured width's first baseline does. When the edit put back follows a default that
+    changed meanwhile, the settle asks the front end for that width once (`reconcile`, never chased again). A later
+    width edit of the row that stands without a request of its own (stored for its next visit, applied without
+    moving the width in force, or one the front end queued nothing for: `svc_publish_row_analog_width()` returns 1
+    only for a request queued) leaves the refusal nothing to put back;
+  - a rigctl peer's passband on audio input (`dsd_engine_scan_rigctl_apply_modulation()`, strict where a tune's `-B`
+    is best-effort, and reading the scope in force, `dsd_scan_mode_row_options()`, never a `-Y` tune staged since);
+  - the stream restart for a gain. One P25 SM tick guard hold covers the reopen and, when it fails, the gain's rollback
+    (`dsd_engine_trunk_scan_restore_target_edit_locked()`) and `svc_rtl_restart_recovery_locked()`, which starts the
+    input again without reopening an I/Q capture over its recording.
+
+  The trunk restore otherwise waits for the tick guard rather than give up. `<dsd-neo/app_control/scan_row_view.h>` is
+  what every frontend asks (row on air, fields, label, payload) and how they word the outcome. The terminal's squelch,
+  width, gain and tone rows open a scope chooser through it (`scope_or_default()` in `menu_actions.c`); Qt's Radio and
+  Tone filter sheets offer "All channels | This channel" (`MetricsModel::scanRow*`,
+  `CommandBridge::scanRowContext()`/`editScanRow()`), holding in "This channel" a control the row takes no edit of, and
+  an Airspy's device panel, and taking the choice only once the metrics show the row the context names; rows are told
+  apart by `scanRowKey` (scanner, session, row), not by name. Tests: `RUNTIME_SCAN_ROW_EDIT`, `ENGINE_TRUNK_SCAN`
+  (`test_target_edit_*`), `ENGINE_CHANNEL_SCAN` (`test_row_session_edits`), `ENGINE_TRUNK_RETUNE_REGRESSION`
+  (`test_rigctl_live_edit_apply_is_strict`), `APP_COMMAND_QUEUE` (`test_scan_row_edit_commands_*`),
+  `APP_CONTROL_SCAN_ROW_EDIT`, `APP_CONTROL_SCAN_ROW_VIEW`, `UI_MENU_ACTIONS` (`test_scan_row_scope_chooser`),
+  `UI_QT_METRICS_MODEL`, `UI_QT_CONTROLLER` and `UI_QT_QML_CALL_LISTS` (`tst_scan_row_edits.qml`).
 - Adding a row option: add the `DSD_SCAN_OPT_*` bit (reserved values only), a `dsd_scan_option_values` field and a
   `specifications[]` row with its setter in `runtime/scan_options.c` (use `ANY_MODES` only for options that mean the
   same on every class); add a `scan_option_appliers[]` row in `runtime/scan_mode.c`; if it lands in `dsd_opts`, add
@@ -3119,7 +3177,9 @@ External dependencies (resolved via CMake):
   acquisition). If the value also lives in hardware, push it through a runtime hook from the scope's entry points
   (the `options` call that completes a row, `leave`, and always after `resume`), never from `enter` alone or
   `prepare`. Saves and editors read the configured view, and an editor that must not disturb acquisition edits the
-  configured baseline directly, as `dsd_scan_mode_set_configured_squelch()` does, rather than suspending the scope.
+  configured baseline directly, as `dsd_scan_mode_set_configured_squelch()` does, rather than suspending the scope. An
+  option the operator should be able to change for "this channel" also needs a `DSD_SCAN_ROW_FIELD_*` field in
+  `runtime/scan_row_edit.c` (the value, `dsd_scan_row_edit_apply()`, its check) and a frontend control.
   Frontends get their decisions and text from an app_control view. For previews, add the field to
   `dsd_csv_channel_profile` (filled by `csv_describe_channel_profile()`) and `dsd_app_scan_csv_target` (filled by
   `trunk_scan_document.cpp`'s `describe()`), publish it from `ImportedFilesModel`'s `appendChannelProfile()` and
