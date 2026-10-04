@@ -293,7 +293,7 @@ test_block_carrier_drop_and_retune(void) {
    tone, at the window's end, under both lists, and never rejected or passed as a value before then. */
 static void
 test_unknown_value_is_no_tone(void) {
-    dsd_analog_rx_publication unknown_tone = rx_ctcss(1500); /* 150.0 Hz: outside the standard set */
+    dsd_analog_rx_publication unknown_tone = rx_ctcss(1610); /* 161.0 Hz: on no table */
     dsd_analog_rx_publication unknown_code = rx_dcs(0023, 0);
     unknown_code.dcs_code = 0777; /* no standard code */
     const dsd_analog_rx_publication unknown[] = {unknown_tone, unknown_code};

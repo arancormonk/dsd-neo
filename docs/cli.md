@@ -743,17 +743,21 @@ for a CTCSS (PL) tone and reports what it hears. Detection only reports: it neve
 tone setting, and it runs with `-o null` too. Muting by tone is the separate
 [tone filter](#tone-filter-ctcssdcs-receive-policy).
 
-- Supported tones: the standard 50-tone EIA/TIA table, 67.0-254.1 Hz (67.0, 69.3, 71.9 ... 250.3, 254.1). A tone is
-  confirmed only from estimates within 0.5 Hz of a table value, and a confirmed tone is held only while it stays within
-  0.8 Hz of it. 150.0 Hz is not supported and is never reported as 151.4 Hz; any other frequency within the sub-audible
-  band, such as 68.2 Hz, reads as no tone rather than as its nearest neighbour, and a confirmed tone that moves off the
-  table is dropped within about half a second. Near 0 dB in-band a noisy estimate can still confirm a neighbour for
-  200-260 ms before the same check drops it: over two hours of a continuous 0 dB carrier in offline seed sweeps, 68.2 Hz
-  read as 67.0 or 69.3 Hz about ten times an hour and 161.0 or 166.7 Hz as a neighbour two or three times an hour, while
-  150.0 Hz never did; from 3 dB up 68.2 and 161.0 Hz never did. DCS (DPL) signalling does not read as a CTCSS tone: in
-  the tests no DCS code did on a clean signal, nor did the codes nearest to a table tone at 10 or 0 dB in-band. Nor
-  does a steady tone in the voice band, such as a 2300 Hz test tone alone on a clean carrier: a tone is confirmed only
-  while it carries at least 1/100,000 (-50 dB) of the input's total power, far above what the decimating front end
+- Supported tones: the standard 50-tone EIA/TIA table, 67.0-254.1 Hz (67.0, 69.3, 71.9 ... 250.3, 254.1), and 150.0 Hz,
+  which many radios offer as a 51st. A tone is confirmed only from estimates within 0.5 Hz of a table value, and a
+  confirmed tone is held only while it stays within 0.8 Hz of it -- 0.7 Hz for 150.0 and 151.4 Hz, which sit 1.4 Hz
+  apart, so no estimate is ever within reach of both. Any other frequency within the sub-audible band, such as 68.2 Hz,
+  reads as no tone rather than as its nearest neighbour, and a confirmed tone that moves off the table is dropped within
+  about half a second. Near 0 dB in-band a noisy estimate can still confirm a neighbour for 200-260 ms before the same
+  check drops it: over two hours of a continuous 0 dB carrier in offline seed sweeps, 68.2 Hz read as 67.0 or 69.3 Hz
+  about ten times an hour and 161.0 or 166.7 Hz as a neighbour two or three times an hour; from 3 dB up 68.2 and 161.0
+  Hz never did. 150.0 and 151.4 Hz never read as each other on their values over two hours of 0 dB carrier; a radio 0.35
+  Hz off toward the other one did, 20 to 30 times an hour for 200 ms. At the start of a transmission the other tone of
+  the pair can be named for up to 200 ms before the right one takes over: at 0 dB, about once in 5,000 starts on the
+  table value and once in 100 for a radio 0.35 Hz off toward the other. DCS (DPL) signalling does not read as a CTCSS
+  tone: in the tests no DCS code did on a clean signal, nor did the codes nearest to a table tone at 10 or 0 dB in-band.
+  Nor does a steady tone in the voice band, such as a 2300 Hz test tone alone on a clean carrier: a tone is confirmed
+  only while it carries at least 1/100,000 (-50 dB) of the input's total power, far above what the decimating front end
   folds down from the voice band and far below any real CTCSS tone.
 - Transmitter tone error: a tone slightly off its table value still reads as that value. Over 10,000 seeded starts
   each, tones 0.2 and 0.35 Hz off were confirmed within 400 ms at 10 dB in-band tone-to-noise on all starts and on all
@@ -984,9 +988,10 @@ setting, shown apart from what is received, and it is off by default: then the o
   `[analog] tone_filter = off|allow|block` and `tone_list` (see `docs/config-system.md`); a `-Y` channel-map row or
   `--trunk-scan` target of mode `nfm` takes the same three options for itself, and an `am` one refuses them (see
   [scoped row options](csv-formats.md#scoped-row-options)).
-- `<list>` is standard CTCSS tones and DCS codes separated by `/`, such as `67.0/100.0/D023N`: a tone as `100` or
-  `100.0`, a code as `D` and three octal digits with `N` or `I` (any case; a bare `D023` is `D023N`). Commas are refused
-  (`use / between entries, not commas`), as are a tone or code outside the standard sets (150.0 Hz included), an empty
+- `<list>` is standard CTCSS tones (the [supported tones](#received-tone-ctcss-on-the-analog-monitor), 150.0 Hz
+  included) and DCS codes separated by `/`, such as `67.0/100.0/D023N`: a tone as `100` or `100.0`, a code as `D` and
+  three octal digits with `N` or `I` (any case; a bare `D023` is `D023N`). Commas are refused
+  (`use / between entries, not commas`), as are a tone or code outside those sets (161.0 Hz, say), an empty
   entry, an empty list and a signal listed twice. A code is matched by its signal, so both spellings of it work: a
   listed `D023I` matches a received `DCS D047N / D023I`, and listing `D023N` and `D047I` together is refused as the same
   signal twice. The polarity is part of the signal: on a source whose audio is inverted (see

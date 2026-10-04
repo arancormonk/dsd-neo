@@ -107,11 +107,11 @@ test_states_and_formats(void) {
     publish(state, 1, DSD_ANALOG_TONE_STATE_NONE, 0, 0);
     assert_view(&opts, state, DSD_APP_RX_TONE_NONE, "none");
 
-    /* A publication this build cannot name is never shown as a value: 150.0 Hz is not a
+    /* A publication this build cannot name is never shown as a value: 161.0 Hz is not a
        supported tone, and a DCS code must be a supported one under the canonical name of its
        alias class -- the detector never publishes 000, 340 (a rotation of 023) or D023I (the
        signal of D047N). Each still reads as a carrier under evaluation, not as a value. */
-    publish(state, 1, DSD_ANALOG_TONE_STATE_LOCKED, DSD_ANALOG_TONE_KIND_CTCSS, 1500);
+    publish(state, 1, DSD_ANALOG_TONE_STATE_LOCKED, DSD_ANALOG_TONE_KIND_CTCSS, 1610);
     assert_view(&opts, state, DSD_APP_RX_TONE_DETECTING, "detecting");
     publish(state, 1, DSD_ANALOG_TONE_STATE_LOCKED, DSD_ANALOG_TONE_KIND_DCS, 0);
     assert_view(&opts, state, DSD_APP_RX_TONE_DETECTING, "detecting");

@@ -356,12 +356,12 @@ check_loss_contract(const char* what, double* times, int count) {
 static void
 test_every_tone_locks_within_bound(void) {
     static const double snrs[] = {10.0, 0.0};
-    static double times[DSD_CTCSS_TONE_COUNT * RATE_COUNT];
+    static double times[SYNTH_LEGACY_CTCSS_COUNT * RATE_COUNT];
     for (int si = 0; si < 2; si++) {
         int count = 0;
         for (int ri = 0; ri < RATE_COUNT; ri++) {
-            for (int k = 0; k < DSD_CTCSS_TONE_COUNT; k++) {
-                const double hz = (double)dsd_ctcss_tone_tenths(k) / 10.0;
+            for (int k = 0; k < SYNTH_LEGACY_CTCSS_COUNT; k++) {
+                const double hz = (double)synth_legacy_ctcss_tenths(k) / 10.0;
                 const uint64_t seed = 1000003ULL * (uint64_t)(k + 1) + (uint64_t)ri * 7919ULL + (uint64_t)si;
                 const double t = lock_time_ms(k_rates[ri], hz, snrs[si], seed, (k * 7) % 50);
                 if (t < 0.0 || t > (double)LOCK_BOUND_MS) {
@@ -405,13 +405,13 @@ test_off_nominal_tones_lock(void) {
         {0.0, 0.0, 100, LOCK_BOUND_MS},
     };
 
-    static double times[DSD_CTCSS_TONE_COUNT * RATE_COUNT];
+    static double times[SYNTH_LEGACY_CTCSS_COUNT * RATE_COUNT];
     for (size_t row = 0; row < sizeof(rows) / sizeof(rows[0]); row++) {
         int count = 0;
         int within = 0;
         for (int ri = 0; ri < RATE_COUNT; ri++) {
-            for (int k = 0; k < DSD_CTCSS_TONE_COUNT; k++) {
-                const int tenths = dsd_ctcss_tone_tenths(k);
+            for (int k = 0; k < SYNTH_LEGACY_CTCSS_COUNT; k++) {
+                const int tenths = synth_legacy_ctcss_tenths(k);
                 const double sign = (k + ri) % 2 == 0 ? 1.0 : -1.0;
                 const double hz = ((double)tenths / 10.0) + (sign * rows[row].offset_hz);
                 const uint64_t seed = (3000017ULL * (uint64_t)(k + 1)) + ((uint64_t)ri * 7919ULL) + (uint64_t)row;
@@ -431,6 +431,81 @@ test_off_nominal_tones_lock(void) {
                      rows[row].offset_hz, rows[row].snr_db, (100 * within) / count, LOCK_BOUND_MS);
         check_lock_contract(what, times, count);
         assert(100 * within >= rows[row].min_within_bound_pct * count);
+    }
+}
+
+/*
+ * 150.0 Hz (issue #518 follow-up), the tone many radios offer as a 51st, 1.4 Hz below 151.4: at
+ * every rate, at +10, +3 and 0 dB in-band, on seeds of its own, it locks on 150.0 within the lock
+ * contract and never reads as anything else (lock_time_as_ms() asserts that). Prints p50/p95/worst
+ * for the PR evidence.
+ */
+static void
+test_tone_150_locks_within_bound(void) {
+    static const double snrs[] = {10.0, 3.0, 0.0};
+
+    enum { SEEDS = 20 };
+
+    static double times[RATE_COUNT * SEEDS];
+    for (int si = 0; si < 3; si++) {
+        int count = 0;
+        for (int ri = 0; ri < RATE_COUNT; ri++) {
+            for (int n = 0; n < SEEDS; n++) {
+                const uint64_t seed = (15000001ULL * (uint64_t)(n + 1)) + ((uint64_t)ri * 7919ULL) + (uint64_t)si;
+                const double t = lock_time_as_ms(k_rates[ri], 150.0, 1500, snrs[si], seed, (n * 7) % 50,
+                                                 (double)DSD_ANALOG_CTCSS_LOCK_CEILING_MS + 50.0);
+                if (t < 0.0 || t > (double)DSD_ANALOG_CTCSS_LOCK_CEILING_MS) {
+                    DSD_FPRINTF(stderr, "slow 150.0 Hz lock: fs=%d snr=%.0f -> %.0f ms\n", k_rates[ri], snrs[si], t);
+                }
+                assert(t >= 0.0 && t <= (double)DSD_ANALOG_CTCSS_LOCK_CEILING_MS);
+                times[count++] = t;
+            }
+        }
+        char what[64];
+        DSD_SNPRINTF(what, sizeof(what), "CTCSS 150.0 Hz lock at %+.0f dB in-band", snrs[si]);
+        check_lock_contract(what, times, count);
+    }
+}
+
+/*
+ * 150.0 and 151.4 Hz, the closest pair in the table: each, on its value and 0.2 or 0.35 Hz either
+ * side (an encoder's error, toward the other tone included), at +10, +3 and 0 dB in-band, at 8 and
+ * 48 kHz, over 3 s, locks nothing but itself on these seeds, and from 3 dB up, or within 0.2 Hz of
+ * its value, it does lock. Each tone's gate is 0.7 Hz, half the distance between them
+ * (ctcss_gate_hz()). Not never: at a tone's start, and near 0 dB with a tone set toward the other,
+ * the other can be named for a few hops; docs/testing.md has the long-run rates.
+ */
+static void
+test_150_and_151_4_never_cross(void) {
+    static const int tones[] = {1500, 1514};
+    static const double offsets[] = {0.0, 0.2, -0.2, 0.35, -0.35};
+    static const double snrs[] = {10.0, 3.0, 0.0};
+    static const int rates[] = {8000, 48000};
+    for (int ti = 0; ti < 2; ti++) {
+        for (int oi = 0; oi < 5; oi++) {
+            for (int si = 0; si < 3; si++) {
+                for (int ri = 0; ri < 2; ri++) {
+                    for (int n = 0; n < 2; n++) {
+                        const int fs = rates[ri];
+                        const double hz = ((double)tones[ti] / 10.0) + offsets[oi];
+                        dsd_analog_rx_core_init(&g_core);
+                        signal_src src;
+                        signal_init(&src, fs, 1514001ULL + (uint64_t)(((((ti * 5) + oi) * 3 + si) * 2 + ri) * 2 + n),
+                                    hz, snrs[si]);
+                        src.tone_on = 0;
+                        const run_result r = run_signal(&g_core, &src, ms_to_samples(fs, 3000.0), fs / 50, tones[ti]);
+                        if (r.first_wrong >= 0 || r.first_lock < 0) {
+                            DSD_FPRINTF(stderr, "150.0/151.4: fs=%d hz=%.2f snr=%.0f wrong=%lld lock=%lld\n", fs, hz,
+                                        snrs[si], (long long)r.first_wrong, (long long)r.first_lock);
+                        }
+                        assert(r.first_wrong < 0);
+                        if (snrs[si] >= 3.0 || fabs(offsets[oi]) <= 0.2 + 1e-9) {
+                            assert(r.first_lock >= 0);
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -469,7 +544,7 @@ test_late_onsets_lock_within_ceiling(void) {
         while (k_rates[ri] != onsets[i].fs) {
             ri++;
         }
-        const int k = dsd_ctcss_tone_index(onsets[i].tenths);
+        const int k = synth_legacy_ctcss_index(onsets[i].tenths);
         assert(k >= 0);
         const int s = onsets[i].set;
         const double sign = (k + ri + s) % 2 == 0 ? 1.0 : -1.0;
@@ -503,8 +578,9 @@ test_adjacent_low_tones_are_distinguished(void) {
 }
 
 /*
- * Off-table tones lock nothing over these 3 s runs, down to 0 dB in-band. 150.0 Hz sits 1.4 Hz
- * from 151.4; 68.2, 161.0 and 166.7 Hz sit 1.1-1.2 Hz from the table tone on either side, where
+ * Off-table tones lock nothing over these 3 s runs, down to 0 dB in-band. 152.6 Hz sits 1.2 Hz
+ * above 151.4, whose gate is 0.7 Hz now that 150.0 Hz sits 1.4 Hz below it; 68.2, 161.0 and
+ * 166.7 Hz sit 1.1-1.2 Hz from the table tone on either side, where
  * a 0 dB estimate strays past the 0.8 Hz snap gate on several percent of hops but only rarely
  * past the 0.5 Hz one a lock needs -- rarely, not never: over two hours of a 0 dB carrier,
  * 68.2 Hz reads as a neighbour for about 200 ms some ten times an hour (docs/testing.md), and
@@ -513,7 +589,7 @@ test_adjacent_low_tones_are_distinguished(void) {
  */
 static void
 test_unsupported_frequencies_never_lock(void) {
-    static const double freqs[] = {150.0, 68.2, 161.0, 166.7};
+    static const double freqs[] = {152.6, 68.2, 161.0, 166.7};
     static const double snrs[] = {60.0, 10.0, 3.0, 0.0};
     for (int f = 0; f < 4; f++) {
         for (int s = 0; s < 4; s++) {
@@ -592,8 +668,9 @@ test_voice_band_tones_never_lock(void) {
         const int fs = rates[ri];
         const double out = decimated_rate(fs);
         for (int k = 1; k <= 4; k++) {
-            for (int t = 0; t < DSD_CTCSS_TONE_COUNT; t += (k == 1) ? 1 : 5) {
-                const double tone = (double)dsd_ctcss_tone_tenths(t) / 10.0;
+            /* The legacy table, then 150.0 Hz (t == SYNTH_LEGACY_CTCSS_COUNT). */
+            for (int t = 0; t <= SYNTH_LEGACY_CTCSS_COUNT; t += (k == 1) ? 1 : 5) {
+                const double tone = t < SYNTH_LEGACY_CTCSS_COUNT ? (double)synth_legacy_ctcss_tenths(t) / 10.0 : 150.0;
                 for (int side = -1; side <= 1; side += 2) {
                     const double hz = ((double)k * out) + ((double)side * tone);
                     if (hz > 300.0 && hz < ((double)fs / 2.0) - 10.0) {
@@ -708,6 +785,122 @@ test_lock_follows_a_tone_off_the_table(void) {
                 }
                 assert(lost_ms <= (double)MOVED_OFF_BOUND_MS);
                 /* The one lock of the run was the real tone; the off-table one never locks. */
+                assert(r.locks == 1 && r.first_wrong < 0);
+                assert(r.final_state == DSD_ANALOG_TONE_STATE_NONE);
+            }
+        }
+    }
+}
+
+/*
+ * The snap: the nearest tone whose gate holds the estimate, the gate's edge included. 150.0 and
+ * 151.4 Hz get 0.7 Hz, half the distance between them, and an estimate midway, where their gates
+ * meet, snaps to neither however its distances round; every other tone keeps 0.8 Hz.
+ */
+static void
+test_snap_gates(void) {
+    const int i1000 = dsd_ctcss_tone_index(1000);
+    const int i1500 = dsd_ctcss_tone_index(1500);
+    const int i1514 = dsd_ctcss_tone_index(1514);
+    assert(i1000 >= 0 && i1500 >= 0 && i1514 == i1500 + 1);
+    assert(dsd_analog_ctcss_snap_index(150.0) == i1500);
+    assert(dsd_analog_ctcss_snap_index(150.69) == i1500);
+    assert(dsd_analog_ctcss_snap_index(150.7) == -1);
+    assert(dsd_analog_ctcss_snap_index(150.71) == i1514);
+    assert(dsd_analog_ctcss_snap_index(149.3) == i1500);
+    assert(dsd_analog_ctcss_snap_index(149.29) == -1);
+    assert(dsd_analog_ctcss_snap_index(152.1) == i1514);
+    assert(dsd_analog_ctcss_snap_index(152.11) == -1);
+    assert(dsd_analog_ctcss_snap_index(100.8) == i1000);
+    assert(dsd_analog_ctcss_snap_index(99.2) == i1000);
+    assert(dsd_analog_ctcss_snap_index(100.81) == -1);
+}
+
+/*
+ * 150.0 Hz stops (the loss and burst sweeps run the 50 tones they were pinned on): at every rate,
+ * at +10 and 0 dB in-band on seeds of its own, it is dropped within the loss contract once it stops
+ * under a live carrier and nothing locks again, and a 180 degree reverse burst at +10 dB ends the
+ * lock within BURST_LOSS_BOUND_MS.
+ */
+static void
+test_tone_150_loss_and_burst(void) {
+    enum { SEEDS = 10 };
+
+    static const double snrs[] = {10.0, 0.0};
+    static double times[RATE_COUNT * SEEDS];
+    for (int si = 0; si < 2; si++) {
+        int count = 0;
+        for (int ri = 0; ri < RATE_COUNT; ri++) {
+            for (int n = 0; n < SEEDS; n++) {
+                const int fs = k_rates[ri];
+                dsd_analog_rx_core_init(&g_core);
+                signal_src src;
+                signal_init(&src, fs, 1500771ULL + (uint64_t)(n * 31 + ri) + (uint64_t)si * 104729ULL, 150.0, snrs[si]);
+                src.tone_on = 0;
+                src.tone_off = ms_to_samples(fs, 1000.0 + (double)((n * 11) % 50));
+                const run_result r =
+                    run_signal(&g_core, &src, src.tone_off + ms_to_samples(fs, 800.0), fs / 1000, 1500);
+                assert(r.first_lock >= 0 && r.first_lock < src.tone_off);
+                assert(r.first_unlocked > src.tone_off);
+                assert(r.locks == 1 && r.first_wrong < 0 && r.final_state == DSD_ANALOG_TONE_STATE_NONE);
+                times[count++] = samples_to_ms(fs, r.first_unlocked - src.tone_off);
+            }
+        }
+        char what[64];
+        DSD_SNPRINTF(what, sizeof(what), "CTCSS 150.0 Hz loss after it stops at %+.0f dB in-band", snrs[si]);
+        check_loss_contract(what, times, count);
+    }
+    int count = 0;
+    for (int ri = 0; ri < RATE_COUNT; ri++) {
+        for (int n = 0; n < SEEDS; n++) {
+            const int fs = k_rates[ri];
+            dsd_analog_rx_core_init(&g_core);
+            signal_src src;
+            signal_init(&src, fs, 1500881ULL + (uint64_t)(n * 13 + ri), 150.0, 10.0);
+            src.tone_on = 0;
+            src.flip_at = ms_to_samples(fs, 1000.0 + (double)((n * 17) % 50));
+            src.flip_rad = M_PI;
+            const run_result r = run_signal(&g_core, &src, src.flip_at + ms_to_samples(fs, 180.0), fs / 1000, 1500);
+            assert(r.first_lock >= 0 && r.first_lock < src.flip_at);
+            assert(r.first_unlocked > src.flip_at);
+            const double loss_ms = samples_to_ms(fs, r.first_unlocked - src.flip_at);
+            assert(loss_ms <= (double)BURST_LOSS_BOUND_MS);
+            times[count++] = loss_ms;
+        }
+    }
+    check_loss_contract("CTCSS 150.0 Hz loss on a 180 degree reverse burst", times, count);
+}
+
+/*
+ * 150.0 and 151.4 Hz hold within 0.7 Hz of their value, half the distance between them, not the
+ * 0.8 Hz every other tone gets (ctcss_gate_hz()): a locked one that moves to within 0.8 Hz of it
+ * but nearer the other tone -- 150.76 and 150.64 Hz -- is dropped as a tone moved off the table
+ * is, and the other, whose 0.5 Hz acquisition gate the new frequency misses, never locks.
+ */
+static void
+test_150_and_151_4_hold_only_their_own_side(void) {
+    static const double moves[][2] = {{150.0, 150.76}, {151.4, 150.64}};
+    static const double snrs[] = {60.0, 20.0};
+    for (int m = 0; m < 2; m++) {
+        for (int s = 0; s < 2; s++) {
+            for (int ri = 0; ri < RATE_COUNT; ri++) {
+                const int fs = k_rates[ri];
+                dsd_analog_rx_core_init(&g_core);
+                signal_src src;
+                signal_init(&src, fs, 7272ULL + (uint64_t)(m * 7 + s * 3 + ri), moves[m][0], snrs[s]);
+                src.tone_on = 0;
+                src.move_at = ms_to_samples(fs, 1000.0 + (double)(13 * m));
+                src.move_hz = moves[m][1];
+                const run_result r = run_signal(&g_core, &src, src.move_at + ms_to_samples(fs, 2000.0), fs / 1000,
+                                                (int)lround(moves[m][0] * 10.0));
+                assert(r.first_lock >= 0 && r.first_lock < src.move_at);
+                assert(r.first_unlocked > src.move_at);
+                const double lost_ms = samples_to_ms(fs, r.first_unlocked - src.move_at);
+                if (lost_ms > (double)MOVED_OFF_BOUND_MS || r.first_wrong >= 0) {
+                    DSD_FPRINTF(stderr, "held past the gate: fs=%d %.2f->%.2f -> %.0f ms, wrong=%lld\n", fs,
+                                moves[m][0], moves[m][1], lost_ms, (long long)r.first_wrong);
+                }
+                assert(lost_ms <= (double)MOVED_OFF_BOUND_MS);
                 assert(r.locks == 1 && r.first_wrong < 0);
                 assert(r.final_state == DSD_ANALOG_TONE_STATE_NONE);
             }
@@ -968,9 +1161,9 @@ test_speech_that_moved_on_never_locks(void) {
  */
 static void
 test_tone_under_voice_locks(void) {
-    double times[DSD_CTCSS_TONE_COUNT];
-    for (int k = 0; k < DSD_CTCSS_TONE_COUNT; k++) {
-        const double hz = (double)dsd_ctcss_tone_tenths(k) / 10.0;
+    double times[SYNTH_LEGACY_CTCSS_COUNT];
+    for (int k = 0; k < SYNTH_LEGACY_CTCSS_COUNT; k++) {
+        const double hz = (double)synth_legacy_ctcss_tenths(k) / 10.0;
         dsd_analog_rx_core_init(&g_core);
         signal_src src;
         signal_init(&src, 48000, 55555ULL + (uint64_t)k, hz, 30.0);
@@ -993,7 +1186,7 @@ test_tone_under_voice_locks(void) {
         assert(r.locks == 1 && r.first_unlocked < 0);
         assert(r.final_state == DSD_ANALOG_TONE_STATE_LOCKED);
     }
-    check_lock_contract("CTCSS lock under voice 10 dB above the tone", times, DSD_CTCSS_TONE_COUNT);
+    check_lock_contract("CTCSS lock under voice 10 dB above the tone", times, SYNTH_LEGACY_CTCSS_COUNT);
 }
 
 /*
@@ -1017,14 +1210,14 @@ test_tone_loss_within_bound(void) {
         {0.0, 97, 500},
     };
 
-    static double times[RATE_COUNT * DSD_CTCSS_TONE_COUNT];
+    static double times[RATE_COUNT * SYNTH_LEGACY_CTCSS_COUNT];
     for (size_t row = 0; row < sizeof(rows) / sizeof(rows[0]); row++) {
         int count = 0;
         int within = 0;
         for (int ri = 0; ri < RATE_COUNT; ri++) {
-            for (int k = 0; k < DSD_CTCSS_TONE_COUNT; k++) {
+            for (int k = 0; k < SYNTH_LEGACY_CTCSS_COUNT; k++) {
                 const int fs = k_rates[ri];
-                const double hz = (double)dsd_ctcss_tone_tenths(k) / 10.0;
+                const double hz = (double)synth_legacy_ctcss_tenths(k) / 10.0;
                 dsd_analog_rx_core_init(&g_core);
                 signal_src src;
                 signal_init(&src, fs, 90210ULL + (uint64_t)(k * 31 + ri) + (uint64_t)row * 104729ULL, hz,
@@ -1079,8 +1272,8 @@ test_tone_stop_under_a_flickering_carrier(void) {
         for (int pi = 0; pi < PERIOD_COUNT; pi++) {
             for (int oi = 0; oi < OFFSETS; oi++) {
                 const int fs = k_rates[ri];
-                const int k = (ri * 17 + pi * 7 + oi * 3) % DSD_CTCSS_TONE_COUNT;
-                const double hz = (double)dsd_ctcss_tone_tenths(k) / 10.0;
+                const int k = (ri * 17 + pi * 7 + oi * 3) % SYNTH_LEGACY_CTCSS_COUNT;
+                const double hz = (double)synth_legacy_ctcss_tenths(k) / 10.0;
                 /* 1 ms blocks, and the 20 ms blocks an RTL stream delivers, alternately. */
                 const int block = (oi % 2 == 0) ? fs / 1000 : fs / 50;
                 dsd_analog_rx_core_init(&g_core);
@@ -1134,13 +1327,13 @@ test_tone_stop_under_a_flickering_carrier(void) {
 static void
 test_reverse_burst_drops_fast(void) {
     static const int steps_deg[] = {180, 120, 240};
-    static double times[RATE_COUNT * DSD_CTCSS_TONE_COUNT];
+    static double times[RATE_COUNT * SYNTH_LEGACY_CTCSS_COUNT];
     for (size_t v = 0; v < sizeof(steps_deg) / sizeof(steps_deg[0]); v++) {
         int count = 0;
         for (int ri = 0; ri < RATE_COUNT; ri++) {
-            for (int k = 0; k < DSD_CTCSS_TONE_COUNT; k++) {
+            for (int k = 0; k < SYNTH_LEGACY_CTCSS_COUNT; k++) {
                 const int fs = k_rates[ri];
-                const double hz = (double)dsd_ctcss_tone_tenths(k) / 10.0;
+                const double hz = (double)synth_legacy_ctcss_tenths(k) / 10.0;
                 dsd_analog_rx_core_init(&g_core);
                 signal_src src;
                 signal_init(&src, fs, 8675309ULL + (uint64_t)(k * 13 + ri) + ((uint64_t)v * 7001ULL), hz, 10.0);
@@ -1287,11 +1480,12 @@ test_reverse_burst_inside_the_lock_subblock(void) {
     for (int row = 0; row < 2; row++) {
         burst_at_lock acc = {0, 0, 0, 0, 0};
         for (size_t v = 0; v < sizeof(steps_deg) / sizeof(steps_deg[0]); v++) {
-            for (int k = 0; k < DSD_CTCSS_TONE_COUNT; k++) {
+            for (int k = 0; k < SYNTH_LEGACY_CTCSS_COUNT; k++) {
                 for (int off = -1; off <= 1; off++) {
-                    const int tenths = dsd_ctcss_tone_tenths(k);
+                    const int tenths = synth_legacy_ctcss_tenths(k);
                     const double hz = ((double)tenths / 10.0) + (0.15 * (double)off);
-                    const double lead_hz = (double)dsd_ctcss_tone_tenths((k + 25) % DSD_CTCSS_TONE_COUNT) / 10.0;
+                    const double lead_hz =
+                        (double)synth_legacy_ctcss_tenths((k + 25) % SYNTH_LEGACY_CTCSS_COUNT) / 10.0;
                     const uint64_t seed =
                         (1000003ULL * (uint64_t)(k + 1)) + (7919ULL * (uint64_t)(off + 3)) + ((uint64_t)v * 104729ULL);
                     run_burst_at_lock(&acc, seed, lead_hz, row == 0 ? 0 : 20, hz, tenths,
@@ -1323,14 +1517,14 @@ test_reverse_burst_inside_the_lock_subblock(void) {
  */
 static void
 test_reverse_burst_at_0db_ends_the_lock(void) {
-    static double caught[RATE_COUNT * DSD_CTCSS_TONE_COUNT];
+    static double caught[RATE_COUNT * SYNTH_LEGACY_CTCSS_COUNT];
     int count = 0;
     int within = 0;
     int missed = 0;
     for (int ri = 0; ri < RATE_COUNT; ri++) {
-        for (int k = 0; k < DSD_CTCSS_TONE_COUNT; k++) {
+        for (int k = 0; k < SYNTH_LEGACY_CTCSS_COUNT; k++) {
             const int fs = k_rates[ri];
-            const double hz = (double)dsd_ctcss_tone_tenths(k) / 10.0;
+            const double hz = (double)synth_legacy_ctcss_tenths(k) / 10.0;
             dsd_analog_rx_core_init(&g_core);
             signal_src src;
             signal_init(&src, fs, 8675309ULL + (uint64_t)(k * 13 + ri) + 104729ULL, hz, 0.0);
@@ -1379,7 +1573,7 @@ test_lock_holds_at_0db(void) {
     for (int ri = 0; ri < RATE_COUNT; ri++) {
         const int fs = k_rates[ri];
         const int k = 4 + (ri * 13);
-        const double hz = (double)dsd_ctcss_tone_tenths(k) / 10.0;
+        const double hz = (double)synth_legacy_ctcss_tenths(k) / 10.0;
         dsd_analog_rx_core_init(&g_core);
         signal_src src;
         signal_init(&src, fs, 7700001ULL + (uint64_t)(ri * 131), hz, 0.0);
@@ -1396,8 +1590,8 @@ test_lock_holds_at_0db(void) {
 static void
 test_scale_invariance(void) {
     static const double scales[] = {1.0, 1.0 / M_PI, 32768.0};
-    for (int k = 0; k < DSD_CTCSS_TONE_COUNT; k += 5) {
-        const double hz = (double)dsd_ctcss_tone_tenths(k) / 10.0;
+    for (int k = 0; k < SYNTH_LEGACY_CTCSS_COUNT; k += 5) {
+        const double hz = (double)synth_legacy_ctcss_tenths(k) / 10.0;
         int64_t first_lock[3];
         for (int si = 0; si < 3; si++) {
             dsd_analog_rx_core_init(&g_core);
@@ -1596,6 +1790,11 @@ main(void) {
     test_lock_holds_at_0db();
     test_every_tone_locks_within_bound();
     test_off_nominal_tones_lock();
+    test_tone_150_locks_within_bound();
+    test_150_and_151_4_never_cross();
+    test_150_and_151_4_hold_only_their_own_side();
+    test_snap_gates();
+    test_tone_150_loss_and_burst();
     test_late_onsets_lock_within_ceiling();
     test_speech_and_noise_never_lock();
     test_speech_that_moved_on_never_locks();

@@ -2635,7 +2635,7 @@ test_tone_policy_roundtrip(void) {
     /* A refused list, and a list policy without a list, apply as off. */
     static const char* const off[] = {"[analog]\ntone_filter = allow\ntone_list = 100.0,67.0\n",
                                       "[analog]\ntone_filter = block\n",
-                                      "[analog]\ntone_filter = allow\ntone_list = 150.0\n"};
+                                      "[analog]\ntone_filter = allow\ntone_list = 161.0\n"};
     for (const char* ini : off) {
         opts.analog_tone_filter = DSD_TONE_FILTER_BLOCK;
         if (load_am_config_text(ini, &cfg) != 0) {

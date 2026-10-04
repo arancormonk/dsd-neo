@@ -14,8 +14,9 @@
  *   1. estimates the offset from the bin from the slope of the sub-block phases -- a coarse
  *      pulse-pair estimate, refined by a magnitude-weighted least-squares fit -- which is what
  *      separates 67.0 from 69.3 Hz inside 250 ms where plain Goertzel bins cannot,
- *   2. snaps the fine estimate to the table within +/-0.8 Hz (150.0 Hz is 1.4 Hz from 151.4
- *      and so never snaps), and
+ *   2. snaps the fine estimate to the table within the tone's gate: +/-0.8 Hz, or half the
+ *      distance to its nearest neighbour where that is less (150.0 and 151.4 Hz, 1.4 Hz apart,
+ *      get 0.7 Hz each), so no estimate is ever within the gates of two tones, and
  *   3. measures rho, the share of the sub-audible band energy the tone explains, with the
  *      window made coherent at the fine estimate,
  *
@@ -29,7 +30,7 @@
  *
  * Hysteresis, in level and in frequency: a tone locks after two consecutive hops qualify it
  * with estimates within 0.5 Hz of each other and of the table value; it holds while its own
- * bin's estimate stays within the 0.8 Hz snap gate and the newest 100 ms still carry
+ * bin's estimate stays within the tone's snap gate and the newest 100 ms still carry
  * rho >= 0.15 at the locked frequency (and the same -50 dB of the full band), and is lost
  * after four failing hops or at once on a reverse burst (the transmitter's end-of-message
  * phase flip). The frequency check on every held hop is what keeps an off-table tone that one
@@ -70,8 +71,11 @@ static const double k_acquire_rho = 0.35;
 static const double k_late_acquire_rho = 0.25;
 static const double k_hold_rho = 0.15;
 /* The snap gate: a locked tone holds while its own bin's fine estimate stays this close to the
-   table value. */
+   table value. A tone whose nearest neighbour is closer than twice this gets half that distance
+   instead (ctcss_gate_hz()). */
 static const double k_snap_hz = 0.8;
+/* Estimates this close are the same distance from two tones (snap ties). */
+static const double k_snap_tie_hz = 1e-9;
 /* Frequency hysteresis: a tone only locks from estimates this close to the table value. At
    0 dB in-band the 250 ms estimate scatters by about 0.19 Hz (RMS), so an off-table tone such
    as 68.2 Hz, 1.1 Hz from 69.3, reaches the 0.8 Hz snap gate on several percent of hops but
@@ -238,19 +242,52 @@ ctcss_configure(void* ctx, double rate_hz) {
     ctcss_reset(det);
 }
 
-/** @brief Nearest table tone within the snap gate, or -1. */
+/**
+ * @brief The snap and hold gate of table tone @p k: k_snap_hz, or half the distance to its nearest
+ * neighbour where that is less, so the gates of two tones never overlap. Only 150.0 and 151.4 Hz,
+ * 1.4 Hz apart, get less than k_snap_hz: 0.7 Hz each (the next closest pair, 67.0 and 69.3 Hz, is
+ * 2.3 Hz apart).
+ */
+static double
+ctcss_gate_hz(int k) {
+    double gate = k_snap_hz;
+    if (k > 0) {
+        gate = fmin(gate, 0.5 * (ctcss_tone_hz(k) - ctcss_tone_hz(k - 1)));
+    }
+    if (k + 1 < DSD_CTCSS_TONE_COUNT) {
+        gate = fmin(gate, 0.5 * (ctcss_tone_hz(k + 1) - ctcss_tone_hz(k)));
+    }
+    return gate;
+}
+
+/** @brief Nearest table tone whose gate holds @p hz, or -1: also -1 for an estimate the same distance
+ *  from two tones (the midpoint where 150.0 and 151.4 Hz's gates meet), which says neither. A gate's
+ *  edge counts as inside within k_snap_tie_hz, so where two gates meet both tones are compared, and
+ *  the tie found, whatever the rounding of their distances and gates. */
 static int
 ctcss_snap(double hz) {
     int best = -1;
-    double best_err = k_snap_hz;
+    double best_err = 0.0;
+    int tied = 0;
     for (int k = 0; k < DSD_CTCSS_TONE_COUNT; k++) {
         const double err = fabs(hz - ctcss_tone_hz(k));
-        if (err <= best_err) {
+        if (err > ctcss_gate_hz(k) + k_snap_tie_hz) {
+            continue;
+        }
+        if (best < 0 || err < best_err - k_snap_tie_hz) {
             best_err = err;
             best = k;
+            tied = 0;
+        } else if (fabs(err - best_err) <= k_snap_tie_hz) {
+            tied = 1;
         }
     }
-    return best;
+    return tied ? -1 : best;
+}
+
+int
+dsd_analog_ctcss_snap_index(double hz) {
+    return ctcss_snap(hz);
 }
 
 /** @brief Coarse per-sub-block phase advance: the magnitude-weighted pulse-pair estimate. */
@@ -701,7 +738,8 @@ static int
 ctcss_late_still_present(const dsd_analog_ctcss* det, const dsd_analog_ctcss_hop* hop) {
     dsd_analog_ctcss_hop newest;
     ctcss_measure_bin(det, DSD_ANALOG_CTCSS_WINDOW, hop->snapped, &newest);
-    return newest.rho >= k_late_acquire_rho && fabs(newest.est_hz - ctcss_tone_hz(hop->snapped)) <= k_snap_hz;
+    return newest.rho >= k_late_acquire_rho
+           && fabs(newest.est_hz - ctcss_tone_hz(hop->snapped)) <= ctcss_gate_hz(hop->snapped);
 }
 
 /* Measure one late window, the newest @p span sub-blocks, and say whether it qualifies a tone. */
@@ -782,7 +820,7 @@ ctcss_step_locked(dsd_analog_ctcss* det, dsd_analog_ctcss_hop* hop) {
        noisy pair of hops would keep reporting its neighbour for as long as it stayed coherent. */
     dsd_analog_ctcss_hop own;
     ctcss_measure_bin(det, DSD_ANALOG_CTCSS_WINDOW, det->locked, &own);
-    const int on_tone = fabs(own.est_hz - ctcss_tone_hz(det->locked)) <= k_snap_hz;
+    const int on_tone = fabs(own.est_hz - ctcss_tone_hz(det->locked)) <= ctcss_gate_hz(det->locked);
     const double advance = ctcss_advance_for(det, det->locked, det->locked_hz);
     hop->recent_rho = ctcss_rho(det, DSD_ANALOG_CTCSS_WINDOW, det->locked, advance, DSD_ANALOG_CTCSS_WINDOW - 2, 2);
     const int above_residue =

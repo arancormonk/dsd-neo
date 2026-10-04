@@ -17,18 +17,19 @@
 #include <string.h>
 
 /*
- * The standard 50-tone EIA/TIA CTCSS table in tenths of a hertz, ascending. 150.0 Hz is the
- * tone some radios offer as a 51st; it is left out on purpose, because it sits 1.4 Hz from
- * 151.4 Hz and a detector that snapped it to the table would name the wrong tone.
+ * The standard 50-tone EIA/TIA CTCSS table in tenths of a hertz, ascending, with 150.0 Hz, the
+ * tone many radios offer as a 51st, in its place between 146.2 and 151.4 Hz. It sits 1.4 Hz from
+ * 151.4 Hz, closer than any other two tones; the detector keeps the two apart with gates of half
+ * that distance (src/dsp/analog_ctcss.c).
  */
 static const uint16_t k_ctcss_tones_tenths[] = {
     670,  693,  719,  744,  770,  797,  825,  854,  885,  915,  948,  974,  1000, 1035, 1072, 1109, 1148,
-    1188, 1230, 1273, 1318, 1365, 1413, 1462, 1514, 1567, 1598, 1622, 1655, 1679, 1713, 1738, 1773, 1799,
-    1835, 1862, 1899, 1928, 1966, 1995, 2035, 2065, 2107, 2181, 2257, 2291, 2336, 2418, 2503, 2541,
+    1188, 1230, 1273, 1318, 1365, 1413, 1462, 1500, 1514, 1567, 1598, 1622, 1655, 1679, 1713, 1738, 1773,
+    1799, 1835, 1862, 1899, 1928, 1966, 1995, 2035, 2065, 2107, 2181, 2257, 2291, 2336, 2418, 2503, 2541,
 };
 
 _Static_assert(sizeof(k_ctcss_tones_tenths) / sizeof(k_ctcss_tones_tenths[0]) == DSD_CTCSS_TONE_COUNT,
-               "the CTCSS table holds exactly the standard 50 tones");
+               "the CTCSS table holds the standard 50 tones and 150.0 Hz");
 
 int
 dsd_ctcss_tone_count(void) {
@@ -321,7 +322,7 @@ dsd_dcs_format_label(int code, int inverted, char* buf, size_t buf_size) {
 /* DCS bit (2 * index + polarity) of the set's words, as core/analog_tone.h lays them out. */
 enum { TONE_SET_WORD_BITS = 64, TONE_SET_DCS_BITS = 2 * DSD_DCS_CODE_COUNT };
 
-_Static_assert((int)DSD_CTCSS_TONE_COUNT <= (int)TONE_SET_WORD_BITS, "every standard tone has a bit");
+_Static_assert((int)DSD_CTCSS_TONE_COUNT <= (int)TONE_SET_WORD_BITS, "every supported tone has a bit");
 _Static_assert(TONE_SET_DCS_BITS <= (int)(sizeof(((dsd_tone_set*)0)->dcs) * 8U), "every code spelling has a bit");
 
 /* U+2026 HORIZONTAL ELLIPSIS, before the count of entries a display text leaves out. */

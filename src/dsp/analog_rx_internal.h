@@ -460,6 +460,10 @@ int dsd_analog_subaudible_fe_process(dsd_analog_subaudible_fe* fe, const float* 
 /** @brief The CTCSS evaluator's last hop, for tests. */
 const dsd_analog_ctcss_hop* dsd_analog_ctcss_last_hop(const dsd_analog_ctcss* det);
 
+/** @brief The table index a fine estimate of @p hz snaps to, or -1 (the nearest tone whose gate holds it; none
+ *  midway between two whose gates meet), for tests. */
+int dsd_analog_ctcss_snap_index(double hz);
+
 /**
  * @brief Test hook: replace the monotonic clock the tap reads to tell a paused live stream input.
  *

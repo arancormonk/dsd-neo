@@ -771,7 +771,7 @@ option_starts_switch(const char* text) {
 }
 
 /* Whether @p text, a field of the file's own columns, can only be the rest of a tone list a comma cut off: one run of
- * '/'-separated entries with no space in it ("67.0", "100/D023N", "d047i/150.0"), the first a standard CTCSS tone or
+ * '/'-separated entries with no space in it ("67.0", "100/D023N", "d047i/161.0"), the first a supported CTCSS tone or
  * DCS code, alone or followed by a row option's switch, the rest of the options cell the same comma cut off
  * ("67.0 --squelch-db -60"). A column's own text is left alone: a value no list takes (an RTL gain) and anything else
  * with a space in it, such as a name that starts with a number or a code ("100 Main St", "D023 Repeater"). */

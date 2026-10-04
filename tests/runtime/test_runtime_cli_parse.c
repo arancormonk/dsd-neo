@@ -7988,7 +7988,7 @@ test_tone_filter_options_refused(void) {
         const char* why;
     } cases[] = {
         {{"--tone-allow", "100.0,67.0"}, 2, "--tone-allow: use / between entries, not commas"},
-        {{"--tone-block", "67.0/150.0"}, 2, "--tone-block: entry 2 is not a standard CTCSS tone or DCS code"},
+        {{"--tone-block", "67.0/161.0"}, 2, "--tone-block: entry 2 is not a standard CTCSS tone or DCS code"},
         {{"--tone-allow=D023N/D047I"}, 1, "--tone-allow: entry 2 is the same DCS signal as entry 1 (D023N)"},
         {{"--tone-allow="}, 1, "--tone-allow: the list is empty"},
         {{"--tone-block"}, 1, "--tone-block requires a '/'-separated list"},
@@ -8005,7 +8005,7 @@ test_tone_filter_options_refused(void) {
             free_tone_parse(&p);
             return 1;
         }
-        if (p.rc != DSD_PARSE_ERROR || p.exit_rc != 1 || !strstr(p.output, cases[i].why) || strstr(p.output, "150.0")
+        if (p.rc != DSD_PARSE_ERROR || p.exit_rc != 1 || !strstr(p.output, cases[i].why) || strstr(p.output, "161.0")
             || strstr(p.output, "D047I")) {
             DSD_FPRINTF(stderr, "tone refusal %zu: rc=%d exit_rc=%d stderr=\"%s\", want \"%s\"\n", i, p.rc, p.exit_rc,
                         p.output, cases[i].why);

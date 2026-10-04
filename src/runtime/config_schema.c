@@ -168,8 +168,8 @@ static const dsdcfg_schema_entry_t s_schema[] = {
      "tone_list tone or code, block mutes it; off (the default) keeps tone_list. The received tone is shown apart",
      "off", "off|allow|block", DSDCFG_TYPE_ENUM, 0, 0},
     {"analog", "tone_list",
-     "Tones and codes for tone_filter: '/'-separated standard CTCSS tones and DCS codes, e.g. 67.0/100.0/D023N "
-     "(a bare D023 is D023N; commas are refused)",
+     "Tones and codes for tone_filter: '/'-separated standard CTCSS tones (150.0 too) and DCS codes, e.g. "
+     "67.0/100.0/D023N (a bare D023 is D023N; commas are refused)",
      "", NULL, DSDCFG_TYPE_STRING, 0, 0},
 };
 

@@ -5,8 +5,8 @@
 
 /*
  * The CTCSS table and its text (issue #522). The table is pinned value by value against the
- * published EIA/TIA 50-tone list, so a transposed digit cannot hide behind a count check, and
- * 150.0 Hz is pinned absent: a detector that snapped it would report 151.4 Hz.
+ * published EIA/TIA 50-tone list and 150.0 Hz, the tone many radios offer as a 51st (issue #518
+ * follow-up), so a transposed digit cannot hide behind a count check.
  */
 
 #include <assert.h>
@@ -33,11 +33,11 @@ _Static_assert(RTL_STREAM_OUTPUT_AUDIO_MONITOR == 0, "analog_tones.c mirrors the
 
 static const int k_expected_tenths[] = {
     670,  693,  719,  744,  770,  797,  825,  854,  885,  915,  948,  974,  1000, 1035, 1072, 1109, 1148,
-    1188, 1230, 1273, 1318, 1365, 1413, 1462, 1514, 1567, 1598, 1622, 1655, 1679, 1713, 1738, 1773, 1799,
-    1835, 1862, 1899, 1928, 1966, 1995, 2035, 2065, 2107, 2181, 2257, 2291, 2336, 2418, 2503, 2541,
+    1188, 1230, 1273, 1318, 1365, 1413, 1462, 1500, 1514, 1567, 1598, 1622, 1655, 1679, 1713, 1738, 1773,
+    1799, 1835, 1862, 1899, 1928, 1966, 1995, 2035, 2065, 2107, 2181, 2257, 2291, 2336, 2418, 2503, 2541,
 };
 _Static_assert((int)(sizeof(k_expected_tenths) / sizeof(k_expected_tenths[0])) == DSD_CTCSS_TONE_COUNT,
-               "the expected table lists every standard tone");
+               "the expected table lists every supported tone");
 
 static void
 test_table(void) {
@@ -54,15 +54,17 @@ test_table(void) {
     assert(dsd_ctcss_tone_tenths(0) == 670);
     assert(dsd_ctcss_tone_tenths(DSD_CTCSS_TONE_COUNT - 1) == 2541);
 
-    /* Not supported: 150.0 (the would-be 51st tone), 68.2 (between 67.0 and 69.3), and the
-       values either side of the table. */
-    assert(dsd_ctcss_tone_index(1500) == -1);
+    /* 150.0 Hz sits in its place, before 151.4 Hz. */
+    assert(dsd_ctcss_tone_index(1500) == 24);
+    assert(dsd_ctcss_tone_index(1514) == 25);
+    /* Not supported: 68.2 (between 67.0 and 69.3), 161.0 (on no table), and the values either side
+       of the table. */
     assert(dsd_ctcss_tone_index(682) == -1);
+    assert(dsd_ctcss_tone_index(1610) == -1);
     assert(dsd_ctcss_tone_index(669) == -1);
     assert(dsd_ctcss_tone_index(2542) == -1);
     assert(dsd_ctcss_tone_index(0) == -1);
     assert(dsd_ctcss_tone_index(-670) == -1);
-    assert(dsd_ctcss_tone_index(1514) == 24);
 }
 
 static void
@@ -714,8 +716,8 @@ test_tone_list_refusals(void) {
     parse_fails("100.0//D023N", "entry 2 is empty");
     parse_fails("/100.0", "entry 1 is empty");
     parse_fails("100.0/", "entry 2 is empty");
-    /* 150.0 is not in the standard table, nor is 68.2; 100.00 and 1000 are not tone spellings. */
-    parse_fails("67.0/150.0", "entry 2 is not a standard CTCSS tone or DCS code");
+    /* 161.0 is on no table, nor is 68.2; 100.00 and 1000 are not tone spellings. */
+    parse_fails("67.0/161.0", "entry 2 is not a standard CTCSS tone or DCS code");
     parse_fails("68.2", "entry 1 is not a standard CTCSS tone or DCS code");
     parse_fails("100.00", "entry 1 is not a standard CTCSS tone or DCS code");
     parse_fails("1000", "entry 1 is not a standard CTCSS tone or DCS code");
@@ -945,7 +947,7 @@ test_tone_filter_check(void) {
                        "block needs a list of CTCSS tones or DCS codes, e.g. 67.0/100.0/D023N");
     /* The parser's refusals, for off as well: an edit never stores a list it cannot read back. */
     filter_check_fails(DSD_TONE_FILTER_ALLOW, "100.0,67.0", "use / between entries, not commas");
-    filter_check_fails(DSD_TONE_FILTER_OFF, "100.0/150.0", "entry 2 is not a standard CTCSS tone or DCS code");
+    filter_check_fails(DSD_TONE_FILTER_OFF, "100.0/161.0", "entry 2 is not a standard CTCSS tone or DCS code");
     filter_check_fails(DSD_TONE_FILTER_BLOCK, "D023N/D047I", "entry 2 is the same DCS signal as entry 1 (D023N)");
     /* Diagnostics name the entry, never its text. */
     filter_check_fails(DSD_TONE_FILTER_ALLOW, "100.0/xyzzy", "entry 2 is not a standard CTCSS tone or DCS code");
