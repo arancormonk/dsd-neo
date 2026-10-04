@@ -33,6 +33,16 @@ db(double ratio) {
     return 10.0 * log10(ratio);
 }
 
+/* The same double, bit for bit. */
+static int
+same_double(double a, double b) {
+    uint64_t ua = 0U;
+    uint64_t ub = 0U;
+    DSD_MEMCPY(&ua, &a, sizeof ua);
+    DSD_MEMCPY(&ub, &b, sizeof ub);
+    return ua == ub;
+}
+
 static double
 rated_deviation_hz(double width_hz) {
     const double a = (width_hz / 2.0) - 3000.0;
@@ -392,7 +402,9 @@ test_calibration(void) {
     channel_make(&ch, 48000, 12500, hb_q15_taps, HB_TAPS);
     channel_make(&again, 48000, 12500, hb_q15_taps, HB_TAPS);
     assert(ch.plan.valid && dsd_noise_squelch_plan_equal(&ch.plan, &again.plan));
-    assert(memcmp(ch.plan.p_ref, again.plan.p_ref, sizeof(ch.plan.p_ref)) == 0);
+    for (int k = 0; k < DSD_NOISE_SQUELCH_MAX_SUB_BANDS; k++) {
+        assert(same_double(ch.plan.p_ref[k], again.plan.p_ref[k]));
+    }
 
     static source s;
     source_init(&s, &ch, 0x51C0FFEEULL);
@@ -478,7 +490,7 @@ test_level_independence(void) {
     static channel ch;
     channel_make(&ch, 48000, 12500, NULL, 0);
     static const double scales[] = {0.01, 1.0, 100.0};
-    double q_ref[64];
+    double q_ref[64] = {0};
     int n_ref = 0;
     for (size_t k = 0; k < sizeof scales / sizeof scales[0]; k++) {
         static runner r;
@@ -699,7 +711,7 @@ test_block_cuts(void) {
     }
     assert(memcmp(whole, cut, sizeof whole) == 0);
     assert(a.windows == b.windows && a.gate_open == b.gate_open);
-    assert(memcmp(&a.quieting_db, &b.quieting_db, sizeof a.quieting_db) == 0);
+    assert(same_double(a.quieting_db, b.quieting_db));
     int transitions = 0;
     for (int i = 1; i < TOTAL; i++) {
         transitions += whole[i] != whole[i - 1];
