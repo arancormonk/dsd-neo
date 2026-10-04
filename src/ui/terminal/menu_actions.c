@@ -815,7 +815,10 @@ scope_open_squelch(void* u, const dsd_scan_option_values* row) {
             DSD_SNPRINTF(text, sizeof text, "%d", row->squelch_db);
         }
     } else if (dsd_squelch_mode_is_dynamic(g_scope.squelch_mode)) {
-        DSD_SNPRINTF(text, sizeof text, "%s+%d", g_scope.squelch_mode == DSD_SQUELCH_MODE_NOISE ? "noise" : "auto",
+        /* An am row runs an inherited noise default as auto, and refuses noise of its own: offer what it runs. */
+        const int am = dsd_scan_mode_analog_kind((dsd_scan_mode)g_scope.view.mode) == DSD_ANALOG_DEMOD_AM;
+        const int noise = g_scope.squelch_mode == DSD_SQUELCH_MODE_NOISE && !am;
+        DSD_SNPRINTF(text, sizeof text, "%s+%d", noise ? "noise" : "auto",
                      dsd_squelch_setting_auto(g_scope.squelch_margin_db).margin_db);
     } else if (dsd_squelch_is_off(g_scope.squelch_level)) {
         DSD_SNPRINTF(text, sizeof text, "%s", "off");

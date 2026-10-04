@@ -2527,6 +2527,37 @@ test_scan_row_scope_chooser(void) {
     g_chooser.on_done(g_chooser.user, 4);
     rc |= expect_int("cancelled scope posts nothing", g_cmd.calls + g_prompt.calls, 0);
 
+    /* A row that follows a noise default opens on it; an am row runs that default as auto and refuses noise of its
+       own, so it opens on auto+N, and taking or changing the number posts auto. */
+    dsd_scan_option_values follows = {0};
+    dsd_test_scan_labels_row_options(&follows);
+    dsd_test_scan_labels_squelch(DSD_SQUELCH_MODE_NOISE, 12, 0.0);
+    reset_capture();
+    rtl_set_sql(&ctx);
+    g_chooser.on_done(g_chooser.user, 1);
+    rc |= expect_str("an nfm row opens on the noise default", g_prompt.prefill, "noise+12");
+    dsd_test_scan_labels_set(1, DSD_SCAN_MODE_AM);
+    reset_capture();
+    rtl_set_sql(&ctx);
+    g_chooser.on_done(g_chooser.user, 1);
+    rc |= expect_str("an am row opens on the noise default as auto", g_prompt.prefill, "auto+12");
+    g_prompt.str_cb(g_prompt.user, g_prompt.prefill);
+    p = cmd_scan_row_edit();
+    rc |= expect_int("an am row takes the prefill as auto",
+                     p.action == DSD_SCAN_ROW_EDIT_SET && p.squelch_mode == DSD_SQUELCH_MODE_AUTO
+                         && p.squelch_margin_db == 12 && p.mode == DSD_SCAN_MODE_AM,
+                     1);
+    reset_capture();
+    rtl_set_sql(&ctx);
+    g_chooser.on_done(g_chooser.user, 1);
+    g_prompt.str_cb(g_prompt.user, "auto+14");
+    p = cmd_scan_row_edit();
+    rc |= expect_int("an am row's changed margin stays auto",
+                     p.squelch_mode == DSD_SQUELCH_MODE_AUTO && p.squelch_margin_db == 14, 1);
+    dsd_test_scan_labels_squelch(DSD_SQUELCH_MODE_LEVEL, 0, 0.0);
+    dsd_test_scan_labels_set(1, DSD_SCAN_MODE_NFM);
+    dsd_test_scan_labels_row_options(&row);
+
     /* The NFM width: no edit running, so no reset row; the AM width row is the other demodulator's. */
     reset_capture();
     rtl_set_nfm_bw(&ctx);

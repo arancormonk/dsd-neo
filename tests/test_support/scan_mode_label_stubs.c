@@ -89,6 +89,13 @@ dsd_test_scan_labels_rtl_gain(int gain) {
 }
 
 void
+dsd_test_scan_labels_squelch(int mode, int margin_db, double level) {
+    snapshot_opts.rtl_squelch_mode = mode;
+    snapshot_opts.rtl_squelch_margin_db = margin_db;
+    snapshot_opts.rtl_squelch_level = level;
+}
+
+void
 dsd_test_scan_labels_scope_seq(uint32_t opts_seq, uint32_t state_seq) {
     snapshot_opts.scan_row_scope_seq = opts_seq;
     snapshot_state.scan_row_scope_seq = state_seq;

@@ -24,6 +24,8 @@ void dsd_test_scan_labels_scan_row(int scanner, uint32_t session, int row, uint3
                                    uint32_t edited, const char* target_id);
 /* The effective tuner gain the published options snapshot carries. */
 void dsd_test_scan_labels_rtl_gain(int gain);
+/* The configured squelch the published options snapshot carries (dsd_squelch_mode, margin, level). */
+void dsd_test_scan_labels_squelch(int mode, int margin_db, double level);
 /* The row scope stamps the published options and state snapshots carry (dsd_opts/dsd_state::scan_row_scope_seq):
  * equal unless a case reads the pair between the decoder's two publishes. */
 void dsd_test_scan_labels_scope_seq(uint32_t opts_seq, uint32_t state_seq);
