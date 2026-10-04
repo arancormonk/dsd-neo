@@ -16,18 +16,24 @@
 #include <dsd-neo/runtime/squelch.h>
 #include <stddef.h>
 
-/* Under a dynamic setting in force: why it is off here, how it runs, and what the tracker or the noise squelch shows. */
-static void
-squelch_view_fill_dynamic(const dsd_opts* opts, const dsd_state* state, dsd_app_squelch_view* out) {
+/* Why a dynamic setting in force runs as it does here (dsd_squelch_resolution). */
+static uint8_t
+squelch_view_resolution(const dsd_opts* opts, const dsd_app_squelch_view* view) {
     if (!dsd_opts_input_is_radio(opts)) {
-        out->auto_resolution = DSD_SQUELCH_RESOLVED_NO_RADIO;
-    } else if (!dsd_opts_is_analog_family(opts)) {
-        out->auto_resolution = DSD_SQUELCH_RESOLVED_DIGITAL;
-    } else if (out->effective_noise && opts->analog_demod == DSD_ANALOG_DEMOD_AM) {
-        out->auto_resolution = DSD_SQUELCH_RESOLVED_AM_AUTO;
-    } else {
-        out->auto_resolution = DSD_SQUELCH_RESOLVED_AS_SET;
+        return DSD_SQUELCH_RESOLVED_NO_RADIO;
     }
+    if (!dsd_opts_is_analog_family(opts)) {
+        return DSD_SQUELCH_RESOLVED_DIGITAL;
+    }
+    if (view->effective_noise && opts->analog_demod == DSD_ANALOG_DEMOD_AM) {
+        return DSD_SQUELCH_RESOLVED_AM_AUTO;
+    }
+    return DSD_SQUELCH_RESOLVED_AS_SET;
+}
+
+/* What the stream shows: the noise squelch's gate and quieting when it runs, else the floor tracker's state. */
+static void
+squelch_view_fill_running(const dsd_state* state, dsd_app_squelch_view* out) {
     out->noise_running = state->squelch_noise_active ? 1U : 0U;
     out->noise_gate_open = out->noise_running && state->squelch_auto_gate_open ? 1U : 0U;
     out->noise_quieting_db = (double)state->squelch_noise_quieting_cdb / 100.0;
@@ -36,6 +42,13 @@ squelch_view_fill_dynamic(const dsd_opts* opts, const dsd_state* state, dsd_app_
     out->auto_plan_valid = out->auto_running && state->squelch_auto_plan_valid ? 1U : 0U;
     out->auto_gate_open = out->auto_running && state->squelch_auto_gate_open ? 1U : 0U;
     out->auto_floor_db = (double)state->squelch_auto_floor_cdb / 100.0;
+}
+
+/* Under a dynamic setting in force: why it is off here, how it runs, and what the tracker or the noise squelch shows. */
+static void
+squelch_view_fill_dynamic(const dsd_opts* opts, const dsd_state* state, dsd_app_squelch_view* out) {
+    out->auto_resolution = squelch_view_resolution(opts, out);
+    squelch_view_fill_running(state, out);
     out->noise_as_auto =
         out->effective_noise && (out->auto_resolution == DSD_SQUELCH_RESOLVED_AM_AUTO || out->auto_running) ? 1U : 0U;
     const int off_here =

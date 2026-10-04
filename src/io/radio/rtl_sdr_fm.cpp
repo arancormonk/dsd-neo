@@ -14910,8 +14910,22 @@ squelch_test_setting_checks(void) {
     if (airspy_a == airspy_b || airspy_again != airspy_a || airspy_a == 372 || demod.squelch_context.gain != 372) {
         return 13;
     }
-    /* NOISE: its own word with its quieting, the level left as it was, and the context taken (its stand-in, the
-       tracker, needs it). */
+    dsd_squelch_setting level = {DSD_SQUELCH_MODE_LEVEL, 2e-6, 10};
+    rtl_stream_set_channel_squelch_setting(&level);
+    demod_take_squelch_setting(&demod);
+    if (demod.squelch_mode != DSD_SQUELCH_MODE_LEVEL
+        || fabsf(demod.channel_squelch_level.load(std::memory_order_relaxed) - 2e-6f) > 1e-12f) {
+        return 4;
+    }
+    return 0;
+}
+
+/* NOISE reaches the demod as its own word with its quieting, the level left as it was, and the context taken (its
+   stand-in, the tracker, needs it). */
+static int
+squelch_test_noise_setting_checks(void) {
+    demod.channel_squelch_level.store(1e-6f, std::memory_order_relaxed);
+    controller.last_applied_freq_hz.store(162475000U, std::memory_order_relaxed);
     dsd_squelch_setting noise14 = {DSD_SQUELCH_MODE_NOISE, 0.0, 14};
     demod.squelch_context.freq_hz = 0;
     rtl_stream_set_channel_squelch_setting(&noise14);
@@ -14920,13 +14934,6 @@ squelch_test_setting_checks(void) {
         || demod.squelch_context.freq_hz != 162475000
         || fabsf(demod.channel_squelch_level.load(std::memory_order_relaxed) - 1e-6f) > 1e-12f) {
         return 14;
-    }
-    dsd_squelch_setting level = {DSD_SQUELCH_MODE_LEVEL, 2e-6, 10};
-    rtl_stream_set_channel_squelch_setting(&level);
-    demod_take_squelch_setting(&demod);
-    if (demod.squelch_mode != DSD_SQUELCH_MODE_LEVEL
-        || fabsf(demod.channel_squelch_level.load(std::memory_order_relaxed) - 2e-6f) > 1e-12f) {
-        return 4;
     }
     return 0;
 }
@@ -14976,26 +14983,32 @@ squelch_test_status_checks(void) {
     if (st.noise || fabs(st.quieting_db) > 1e-12) {
         return 12;
     }
-    /* The noise squelch ran: its gate and quieting, not the tracker's. */
-    demod.squelch_noise_ran = 1;
-    demod.noise_squelch.plan.valid = 1;
-    demod.noise_squelch.gate_open = 1;
-    demod.noise_squelch.quieting_db = 23.5;
-    demod_publish_squelch_status(&demod);
-    if (rtl_stream_get_squelch_status(&st) != 0 || !st.active || !st.noise || st.gate_open != 1 || !st.plan_valid
-        || fabs(st.quieting_db - 23.5) > 1e-4) {
-        return 15;
-    }
-    demod.squelch_noise_ran = 0;
-    demod.noise_squelch.plan.valid = 0;
-    demod.noise_squelch.gate_open = 0;
-    demod.noise_squelch.quieting_db = 0.0;
     demod.result_flags_active = 0;
     demod_publish_squelch_status(&demod);
     if (rtl_stream_get_squelch_status(&st) != 0 || st.active || st.noise || st.gate_open != 1) {
         return 12;
     }
     return 0;
+}
+
+/* The status while the noise squelch runs: its gate and quieting, not the tracker's. */
+static int
+squelch_test_noise_status_checks(void) {
+    demod.result_flags_active = 1;
+    demod.squelch_floor.gate_open = 0;
+    demod.squelch_noise_ran = 1;
+    demod.noise_squelch.plan.valid = 1;
+    demod.noise_squelch.gate_open = 1;
+    demod.noise_squelch.quieting_db = 23.5;
+    demod_publish_squelch_status(&demod);
+    rtl_stream_squelch_status st;
+    const int failed = rtl_stream_get_squelch_status(&st) != 0 || !st.active || !st.noise || st.gate_open != 1
+                       || !st.plan_valid || fabs(st.quieting_db - 23.5) > 1e-4;
+    demod.squelch_noise_ran = 0;
+    DSD_MEMSET(&demod.noise_squelch, 0, sizeof(demod.noise_squelch));
+    demod.result_flags_active = 0;
+    demod_publish_squelch_status(&demod);
+    return failed ? 15 : 0;
 }
 
 extern "C" int
@@ -15018,10 +15031,16 @@ rtl_stream_test_squelch_plumbing(void) {
 
     int failed = squelch_test_setting_checks();
     if (!failed) {
+        failed = squelch_test_noise_setting_checks();
+    }
+    if (!failed) {
         failed = squelch_test_ring_checks();
     }
     if (!failed) {
         failed = squelch_test_status_checks();
+    }
+    if (!failed) {
+        failed = squelch_test_noise_status_checks();
     }
 
     DSD_MEMSET(&demod.squelch_floor, 0, sizeof(demod.squelch_floor));
