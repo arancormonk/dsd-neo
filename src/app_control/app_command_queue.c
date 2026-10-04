@@ -12,6 +12,7 @@
 #include <dsd-neo/app_control/rr_import_apply.h>
 #include <dsd-neo/app_control/rtl_gain_view.h>
 #include <dsd-neo/app_control/rx_tone_view.h>
+#include <dsd-neo/app_control/scan_row_view.h>
 #include <dsd-neo/app_control/squelch_view.h>
 #include <dsd-neo/core/airspy_config.h>
 #include <dsd-neo/core/analog_tone.h>
@@ -86,6 +87,7 @@
 #include "command_dispatch.h"
 #include "commands_internal.h"
 #include "key_commands.h"
+#include "scan_row_edit.h"
 #include "services.h"
 
 #define DSD_APP_CMD_Q_CAP 128
@@ -2128,12 +2130,28 @@ ui_cmd_handle_tone_filter_set(dsd_opts* opts, dsd_state* state, const struct dsd
     return UI_CMD_APPLY_COMPLETED;
 }
 
+/* A session edit of the scan row on air ("this channel", issue #518): scan_row_edit.c applies it and words the toast. */
+static int
+ui_cmd_handle_scan_row_edit(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    char notice[DSD_APP_SCAN_ROW_NOTICE_SIZE];
+    int ttl_s = 3;
+    const int rc = dsd_app_apply_scan_row_edit(opts, state, c, notice, sizeof notice, &ttl_s);
+    if (notice[0]) {
+        ui_set_toast(state, ttl_s, "%s", notice);
+    }
+    if (rc == DSD_APP_SCAN_ROW_EDIT_BAD_PAYLOAD) {
+        return UI_CMD_APPLY_INVALID_PAYLOAD;
+    }
+    return rc == DSD_APP_SCAN_ROW_EDIT_DONE ? UI_CMD_APPLY_COMPLETED : UI_CMD_APPLY_FAILED;
+}
+
 static int
 apply_cmd_io_and_import_runtime_a(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     static const struct dsd_app_command_handler_entry k_handlers[] = {
         {DSD_APP_CMD_NFM_BANDWIDTH_SET, ui_cmd_handle_nfm_bandwidth_set},
         {DSD_APP_CMD_AM_BANDWIDTH_SET, ui_cmd_handle_am_bandwidth_set},
         {DSD_APP_CMD_TONE_FILTER_SET, ui_cmd_handle_tone_filter_set},
+        {DSD_APP_CMD_SCAN_ROW_EDIT, ui_cmd_handle_scan_row_edit},
         {DSD_APP_CMD_RIGCTL_SET_MOD_BW, ui_cmd_handle_rigctl_set_mod_bw},
         {DSD_APP_CMD_TG_HOLD_SET, ui_cmd_handle_tg_hold_set},
         {DSD_APP_CMD_HANGTIME_SET, ui_cmd_handle_hangtime_set},
@@ -3763,6 +3781,15 @@ dsd_app_command_set_tone_filter(int32_t mode, const char* list) {
 }
 
 int
+dsd_app_command_scan_row_edit(const dsd_app_scan_row_edit_payload* payload) {
+    if (!payload || memchr(payload->target_id, '\0', sizeof payload->target_id) == NULL
+        || memchr(payload->tone_list, '\0', sizeof payload->tone_list) == NULL) {
+        return DSD_APP_COMMAND_SUBMIT_REJECTED;
+    }
+    return dsd_app_command_submit(DSD_APP_CMD_SCAN_ROW_EDIT, payload, sizeof(*payload));
+}
+
+int
 dsd_app_command_set_tone_filter_mode(int32_t mode) {
     dsd_app_tone_filter_payload payload;
     DSD_MEMSET(&payload, 0, sizeof payload);
@@ -3802,6 +3829,7 @@ static const struct ui_cmd_payload_min_size_rule k_ui_cmd_payload_min_size_rules
     {DSD_APP_CMD_TG_SELECTION_SET, sizeof(dsd_app_tg_selection_payload)},
     {DSD_APP_CMD_KEY_DIRECT_SET, sizeof(dsd_app_key_direct_payload)},
     {DSD_APP_CMD_DECRYPTION_APPLY, sizeof(dsd_app_decryption_payload)},
+    {DSD_APP_CMD_SCAN_ROW_EDIT, sizeof(dsd_app_scan_row_edit_payload)},
     {DSD_APP_CMD_FORCE_KEY_SET, sizeof(int32_t)},
     {DSD_APP_CMD_TG_HOLD_TOGGLE, sizeof(uint8_t)},
     {DSD_APP_CMD_CALL_ALERT_EVENTS_SET, sizeof(uint8_t)},
@@ -7194,6 +7222,21 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     return result;
 }
 
+/* A "this channel" width edit's request (not a scan leave's): its edit goes back, never the configured width (issue
+ * #518). Returns 1 when the refusal was the edit's and is settled. */
+static int
+ui_settle_refused_row_edit(dsd_opts* opts, dsd_state* state, const svc_monitor_refusal* refusal) {
+    char row_notice[DSD_APP_SCAN_ROW_NOTICE_SIZE];
+    if (refusal->scan_leave
+        || !dsd_app_scan_row_edit_settle_refusal(opts, state, refusal, row_notice, sizeof row_notice)) {
+        return 0;
+    }
+    ui_set_toast(state, 5, "%s", row_notice);
+    dsd_telemetry_publish_opts_snapshot(opts);
+    dsd_telemetry_publish_snapshot(state);
+    return 1;
+}
+
 /*
  * An analog monitor request the demod thread refused where it landed (a retune moved the demod rate after its width was
  * checked) is not in force, so the decoder follows what the front end kept, the toast says why, and frontends see it at
@@ -7249,6 +7292,9 @@ ui_settle_receive_requests(dsd_opts* opts, dsd_state* state) {
        monitor request (one would have taken the record over), so the front end has made the switch no more than
        before, and it stays armed. */
     if (ui_scan_leave_left_to_later(opts, state, &refusal)) {
+        return;
+    }
+    if (ui_settle_refused_row_edit(opts, state, &refusal)) {
         return;
     }
     int changed = 0;
@@ -7344,6 +7390,11 @@ dsd_app_command_test_policy_guard_waits(void) {
 int
 dsd_app_command_test_last_failed(void) {
     return g_test_last_result == UI_CMD_APPLY_FAILED;
+}
+
+int
+dsd_app_command_test_last_invalid_payload(void) {
+    return g_test_last_result == UI_CMD_APPLY_INVALID_PAYLOAD;
 }
 
 static int

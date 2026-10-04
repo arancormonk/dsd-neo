@@ -10,6 +10,7 @@
 #include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/frontend_runtime.h>
 #include <dsd-neo/app_control/rx_tone_view.h>
+#include <dsd-neo/app_control/scan_row_view.h>
 #include <dsd-neo/core/airspy_config.h>
 #include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/audio.h>
@@ -52,6 +53,7 @@
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
+#include <dsd-neo/runtime/scan_row_edit.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <errno.h>
@@ -8309,6 +8311,96 @@ test_refused_width_under_a_scan_row_keeps_the_configured_width(void) {
 }
 
 /*
+ * Issue #518: a "this channel" width edit applied on air asks the front end for the row's new width
+ * (svc_publish_row_analog_width()). Refused where it lands, the request is the row edit's to settle
+ * (dsd_app_scan_row_edit_settle_refusal()): the target goes back to the width it ran before, and the configured width
+ * stays as it was, even where it equals the width refused, which the configured-width path would have rolled back.
+ */
+static int
+test_refused_row_width_request_puts_the_edit_back(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    int rc = 0;
+    init_nfm_session(&opts, &state, (RtlSdrContext*)fake_ctx);
+    opts.analog_nfm_bandwidth_hz = 20000;
+    opts.trunk_scan_enabled = 1;
+    g_fake_request_rate_hz = 48000;
+    char dir[DSD_TEST_PATH_MAX];
+    char csv[DSD_TEST_PATH_MAX];
+    rc |= expect_true("row width dir", dsd_test_mkdtemp(dir, sizeof dir, "dsdneo_row_width") != NULL);
+    rc |= expect_int("row width csv", dsd_test_path_join(csv, sizeof csv, dir, "targets.csv"), 0);
+    static const char k_targets[] = "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,options\n"
+                                    "fire,nfm-conventional,154430000,,3000,,,--nfm-bandwidth-hz 12500\n";
+    rc |= write_file_bytes(csv, k_targets, sizeof k_targets - 1U);
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", csv);
+    char err[256] = {0};
+    (void)dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
+    rc |= expect_int("row width: target on air", state.scan_row_scanner == DSD_SCAN_ROW_SCANNER_TRUNK_SCAN, 1);
+    rc |= expect_int("row width: its own width", opts.analog_nfm_bandwidth_hz, 12500);
+
+    dsd_app_scan_row_view view;
+    (void)dsd_app_scan_row_view_get(&opts, &state, &view);
+    dsd_app_scan_row_edit_payload p;
+    rc |= expect_int("row width: payload",
+                     dsd_app_scan_row_view_payload(&view, DSD_SCAN_ROW_FIELD_WIDTH, DSD_SCAN_ROW_EDIT_SET, &p), 0);
+    p.width_hz = 20000;
+    reset_rx_family_wrap();
+    rc |= expect_true("row width: edit queued", dsd_app_command_scan_row_edit(&p) > 0);
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_int("row width: edit in force", opts.analog_nfm_bandwidth_hz, 20000);
+    rc |= expect_int("row width: asked for 20 kHz", g_analog_req_calls == 1 && g_analog_req_width_hz == 20000, 1);
+
+    demod_thread_refuses_analog_keeping(1, 12500);
+    state.ui_msg[0] = '\0';
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_int("row width: the edit is put back", opts.analog_nfm_bandwidth_hz, 12500);
+    rc |= expect_int("row width: configured width untouched",
+                     dsd_scan_mode_configured_analog_width(&opts, &state, DSD_ANALOG_DEMOD_FM), 20000);
+    rc |= expect_int("row width: the row's refusal reported",
+                     strncmp(state.ui_msg, "Refused: this channel's NFM bandwidth: ", 39) == 0, 1);
+    rc |= expect_int("row width: no edit left", state.scan_row_edited, 0);
+
+    /* The row follows the configured 20 kHz, then asks for 25 kHz of its own; the configured default moves to 16 kHz
+       while that request is out, which the row's own width keeps from the front end. The front end refuses 25 kHz
+       keeping 20 kHz: the row follows the default again, now 16 kHz, so the settle asks the front end for it. */
+    rc |= expect_int("row width: inherit payload",
+                     dsd_app_scan_row_view_payload(&view, DSD_SCAN_ROW_FIELD_WIDTH, DSD_SCAN_ROW_EDIT_INHERIT, &p), 0);
+    rc |= expect_true("row width: inherit queued", dsd_app_command_scan_row_edit(&p) > 0);
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_int("row width: follows the default", opts.analog_nfm_bandwidth_hz, 20000);
+    demod_thread_lands(0);
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_int("row width: own payload",
+                     dsd_app_scan_row_view_payload(&view, DSD_SCAN_ROW_FIELD_WIDTH, DSD_SCAN_ROW_EDIT_SET, &p), 0);
+    p.width_hz = 25000;
+    rc |= expect_true("row width: 25 kHz queued", dsd_app_command_scan_row_edit(&p) > 0);
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_int("row width: asked for 25 kHz", g_analog_req_width_hz, 25000);
+    rc |= expect_int("row width: default queued", dsd_app_command_set_i32(DSD_APP_CMD_NFM_BANDWIDTH_SET, 16000),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_int("row width: the row's own width stays in force", opts.analog_nfm_bandwidth_hz, 25000);
+    const int requests_before = g_analog_req_calls;
+    demod_thread_refuses_analog_keeping(1, 20000);
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_int("row width: back on the default", opts.analog_nfm_bandwidth_hz, 16000);
+    rc |= expect_int("row width: the default stays",
+                     dsd_scan_mode_configured_analog_width(&opts, &state, DSD_ANALOG_DEMOD_FM), 16000);
+    rc |= expect_int("row width: asked for the default once",
+                     g_analog_req_calls == requests_before + 1 && g_analog_req_width_hz == 16000, 1);
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    (void)remove(csv);
+    (void)dsd_test_rmdir(dir);
+    g_fake_request_rate_hz = 0;
+    opts.analog_nfm_bandwidth_hz = 0;
+    state.rtl_ctx = NULL;
+    freeState(&state);
+    return rc;
+}
+
+/*
  * Issue #526: an nfm scan row's own --nfm-bandwidth-hz runs over the configured width while the row is on air. The width
  * command still edits the configured width, without suspending the row: the row keeps its width, the front end is asked
  * for nothing, and the toast says the row overrides the edit. A row without a width of its own, and the row's leave, put
@@ -14607,9 +14699,194 @@ test_am_bandwidth_set_validates(void) {
     return rc;
 }
 
+/* --- Issue #518: "this channel" session edits (DSD_APP_CMD_SCAN_ROW_EDIT) --- */
+
+#if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
+/* Submit a session edit of the row @p view names and drain it. */
+static int
+submit_scan_row_edit(dsd_opts* opts, dsd_state* state, const dsd_app_scan_row_view* view, uint32_t field, int action,
+                     const dsd_app_scan_row_edit_payload* values, const char* tag) {
+    dsd_app_scan_row_edit_payload p;
+    int rc = expect_int(tag, dsd_app_scan_row_view_payload(view, field, action, &p), 0);
+    if (values) {
+        p.squelch_db = values->squelch_db;
+        p.width_hz = values->width_hz;
+        p.tone_mode = values->tone_mode;
+        p.gain_db = values->gain_db;
+        DSD_SNPRINTF(p.tone_list, sizeof p.tone_list, "%s", values->tone_list);
+    }
+    state->ui_msg[0] = '\0';
+    rc |= expect_true(tag, dsd_app_command_scan_row_edit(&p) > 0);
+    rc |= expect_int(tag, dsd_app_drain_cmds(opts, state), 1);
+    return rc;
+}
+
+/* Under --trunk-scan: a squelch and a gain edit of the parked target run at once (the gain through a stream restart),
+   a restart that fails puts the previous gain back, an editor opened on the target before the rotation stores its edit
+   for the next visit, an editor from an earlier scan is refused, and a save keeps writing the configured gain. */
+static int
+test_scan_row_edit_commands_under_trunk_scan(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_test_context(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.audio_out_type = 9;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "rtl:0:851000000:22:0:48:0:2");
+    opts.rtl_gain_value = 22;
+    opts.trunk_scan_enabled = 1;
+    opts.rtl_squelch_level = dsd_squelch_level_from_sql(-80.0);
+    g_config_rtl_open_ok = 1;
+    g_config_rtl_fail_starts = 0;
+    state.rtl_ctx = (RtlSdrContext*)g_config_rtl_ctx;
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){.tune_to_cc_request = gain_scan_tune_to_cc_ok});
+
+    char dir[DSD_TEST_PATH_MAX];
+    char csv[DSD_TEST_PATH_MAX];
+    int rc = expect_true("row edit dir", dsd_test_mkdtemp(dir, sizeof dir, "dsdneo_row_edit") != NULL);
+    rc |= expect_int("row edit csv path", dsd_test_path_join(csv, sizeof csv, dir, "targets.csv"), 0);
+    static const char k_targets[] = "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,rtl_gain,options\n"
+                                    "own,p25-trunk,851000000,,3000,,own gain,10,--squelch-db -60\n"
+                                    "inherit,dmr-trunk,452000000,,3000,,inherits,,\n";
+    rc |= write_file_bytes(csv, k_targets, sizeof k_targets - 1U);
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", csv);
+    char err[256] = {0};
+    const int init_rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
+    if (init_rc != 0) {
+        DSD_FPRINTF(stderr, "row edit scan init: %s\n", err);
+    }
+    rc |= expect_int("row edit scan init", init_rc, 0);
+
+    dsd_app_scan_row_view view;
+    rc |= expect_int("row view", dsd_app_scan_row_view_get(&opts, &state, &view), 0);
+    rc |= expect_int("row on air", view.active, 1);
+    rc |= expect_str("row label", view.label, "own");
+    rc |= expect_int("row offers squelch and gain",
+                     dsd_app_scan_row_view_offers(&view, DSD_SCAN_ROW_FIELD_SQUELCH)
+                         && dsd_app_scan_row_view_offers(&view, DSD_SCAN_ROW_FIELD_GAIN)
+                         && !dsd_app_scan_row_view_offers(&view, DSD_SCAN_ROW_FIELD_WIDTH),
+                     1);
+
+    dsd_app_scan_row_edit_payload values = {0};
+    values.squelch_db = -45;
+    rc |= submit_scan_row_edit(&opts, &state, &view, DSD_SCAN_ROW_FIELD_SQUELCH, DSD_SCAN_ROW_EDIT_SET, &values,
+                               "squelch edit");
+    rc |= expect_str("squelch edit toast", state.ui_msg, "This channel (own): squelch -45 dB for this session");
+    rc |=
+        expect_true("squelch edit in force", fabs(opts.rtl_squelch_level - dsd_squelch_level_from_sql(-45.0)) < 1e-12);
+
+    const int starts_before = g_config_rtl_starts;
+    values.gain_db = 20;
+    rc |= submit_scan_row_edit(&opts, &state, &view, DSD_SCAN_ROW_FIELD_GAIN, DSD_SCAN_ROW_EDIT_SET, &values,
+                               "gain edit");
+    rc |= expect_str("gain edit toast", state.ui_msg, "This channel (own): RTL gain 20 dB for this session");
+    rc |= expect_int("gain edit in force", opts.rtl_gain_value, 20);
+    rc |= expect_true("gain edit restarted the stream", g_config_rtl_starts > starts_before);
+    rc |= expect_int("configured gain untouched", state.trunk_scan_configured_gain, 22);
+
+    /* The restart fails with an I/Q capture on: the previous gain is put back, and the input that ran starts again on
+       it without the capture, whose reopen would write over what it recorded. */
+    opts.iq_capture_requested = 1;
+    DSD_SNPRINTF(opts.iq_capture_path, sizeof opts.iq_capture_path, "%s", "cap.iq");
+    g_config_rtl_creates = 0;
+    g_config_rtl_captures = 0;
+    g_config_rtl_fail_starts = 1;
+    values.gain_db = 30;
+    rc |= submit_scan_row_edit(&opts, &state, &view, DSD_SCAN_ROW_FIELD_GAIN, DSD_SCAN_ROW_EDIT_SET, &values,
+                               "failed gain edit");
+    g_config_rtl_fail_starts = 0;
+    rc |= expect_true("failed gain edit toast", strncmp(state.ui_msg, "Failed: this channel's RTL gain", 31) == 0);
+    rc |= expect_int("failed gain edit puts the previous gain back", opts.rtl_gain_value, 20);
+    rc |= expect_int("the recovery start opened no capture",
+                     g_config_rtl_creates == 2 && g_config_rtl_captures == 1 && g_config_rtl_create_capture == 0
+                         && g_config_rtl_create_gain == 20 && state.rtl_ctx != NULL,
+                     1);
+    rc |= expect_int("the capture stays off", opts.iq_capture_requested, 0);
+
+    /* The editor stays open across a rotation: its edit waits for the target's next visit. */
+    rc |= expect_int("advance", dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_ADVANCE), 0);
+    rc |= expect_int("inheriting target runs the configured gain", opts.rtl_gain_value, 22);
+    rc |= submit_scan_row_edit(&opts, &state, &view, DSD_SCAN_ROW_FIELD_SQUELCH, DSD_SCAN_ROW_EDIT_INHERIT, NULL,
+                               "stored inherit");
+    rc |= expect_str("stored inherit toast", state.ui_msg,
+                     "This channel (own): squelch follows the default from its next visit");
+    rc |= expect_true("stored inherit leaves the parked target alone",
+                      fabs(opts.rtl_squelch_level - dsd_squelch_level_from_sql(-80.0)) < 1e-12);
+
+    /* An editor from another scan session. */
+    dsd_app_scan_row_view stale = view;
+    stale.session++;
+    values.squelch_db = -50;
+    rc |= submit_scan_row_edit(&opts, &state, &stale, DSD_SCAN_ROW_FIELD_SQUELCH, DSD_SCAN_ROW_EDIT_SET, &values,
+                               "stale edit");
+    rc |= expect_str("stale edit toast", state.ui_msg, "Refused: the scan changed; nothing applied");
+
+    dsdneoUserConfig saved;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &saved);
+    rc |= expect_int("save writes the configured gain", saved.rtl_gain, 22);
+
+    rc |= expect_int("back to own", dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_ADVANCE), 0);
+    rc |= expect_int("own runs its edited gain", opts.rtl_gain_value, 20);
+    rc |= expect_true("own follows the default squelch",
+                      fabs(opts.rtl_squelch_level - dsd_squelch_level_from_sql(-80.0)) < 1e-12);
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+    (void)remove(csv);
+    (void)dsd_test_rmdir(dir);
+    state.rtl_ctx = NULL;
+    freeState(&state);
+    return rc;
+}
+
+#endif
+
+/* With no scan running, an edit is refused for either scanner and changes nothing; a payload whose strings are not
+   terminated is rejected at submit, and one with an unknown action is a malformed command. */
+static int
+test_scan_row_edit_commands_without_a_scan(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_test_context(&opts, &state);
+    opts.rtl_squelch_level = dsd_squelch_level_from_sql(-80.0);
+    dsd_app_scan_row_edit_payload p = {0};
+    p.session = 7U;
+    p.scanner = DSD_SCAN_ROW_SCANNER_CHANNEL_SCAN;
+    p.row = 1;
+    p.field = (int32_t)DSD_SCAN_ROW_FIELD_SQUELCH;
+    p.action = DSD_SCAN_ROW_EDIT_SET;
+    p.squelch_db = -50;
+    int rc = expect_true("-Y edit queued", dsd_app_command_scan_row_edit(&p) > 0);
+    rc |= expect_int("-Y edit drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_str("-Y edit refused", state.ui_msg, "Refused: no scan is running");
+    p.scanner = DSD_SCAN_ROW_SCANNER_TRUNK_SCAN;
+    DSD_SNPRINTF(p.target_id, sizeof p.target_id, "%s", "county");
+    rc |= expect_true("trunk edit queued", dsd_app_command_scan_row_edit(&p) > 0);
+    rc |= expect_int("trunk edit drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_str("trunk edit refused", state.ui_msg, "Refused: no scan is running");
+    rc |= expect_true("nothing changed", fabs(opts.rtl_squelch_level - dsd_squelch_level_from_sql(-80.0)) < 1e-12);
+
+    dsd_app_scan_row_edit_payload unterminated = p;
+    DSD_MEMSET(unterminated.target_id, 'x', sizeof unterminated.target_id);
+    rc |= expect_int("unterminated payload rejected", dsd_app_command_scan_row_edit(&unterminated),
+                     DSD_APP_COMMAND_SUBMIT_REJECTED);
+    rc |= expect_int("NULL payload rejected", dsd_app_command_scan_row_edit(NULL), DSD_APP_COMMAND_SUBMIT_REJECTED);
+    p.action = 9;
+    state.ui_msg[0] = '\0';
+    rc |= expect_true("bad action queued", dsd_app_command_scan_row_edit(&p) > 0);
+    rc |= expect_int("bad action drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("bad action is a malformed command", dsd_app_command_test_last_invalid_payload(), 1);
+    rc |= expect_str("bad action leaves no toast", state.ui_msg, "");
+    freeState(&state);
+    return rc;
+}
+
 int
 main(void) {
     int rc = test_session_queue_cancellation();
+    rc |= test_scan_row_edit_commands_without_a_scan();
+#if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
+    rc |= test_scan_row_edit_commands_under_trunk_scan();
+#endif
     rc |= test_config_refuses_scanner_under_trunk_scan();
     rc |= test_config_keeps_trunk_scan_lifecycle();
     rc |= test_nfm_bandwidth_set_on_pcm_input();
@@ -14652,6 +14929,7 @@ main(void) {
     rc |= test_nfm_width_edit_keeps_live_acquisition();
     rc |= test_nfm_bandwidth_set_under_a_width_row();
     rc |= test_refused_width_under_a_scan_row_keeps_the_configured_width();
+    rc |= test_refused_row_width_request_puts_the_edit_back();
     rc |= test_decode_mode_analog_under_a_row_holds_the_nfm_width();
     rc |= test_config_apply_holds_nfm_width_to_the_front_end();
     rc |= test_config_apply_width_under_scan_rows();

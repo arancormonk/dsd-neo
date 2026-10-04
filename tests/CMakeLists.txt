@@ -854,6 +854,18 @@ dsd_neo_add_public_header_smoke_test(
   CXX
 )
 dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_scan_row_view
+  HEADERS_PUBLIC_APP_CONTROL_SCAN_ROW_VIEW
+  dsd-neo/app_control/scan_row_view.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_scan_row_view_cxx
+  HEADERS_PUBLIC_APP_CONTROL_SCAN_ROW_VIEW_CXX
+  dsd-neo/app_control/scan_row_view.h
+  CXX
+)
+dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_app_control_rx_tone_view
   HEADERS_PUBLIC_APP_CONTROL_RX_TONE_VIEW
   dsd-neo/app_control/rx_tone_view.h
@@ -2442,6 +2454,47 @@ target_link_libraries(
 add_test(
     NAME APP_CONTROL_ANALOG_WIDTH_VIEW
     COMMAND dsd-neo_test_app_control_analog_width_view
+)
+
+# Issue #518: the scan row on air as the "this channel" editors see it.
+add_executable(
+    dsd-neo_test_app_control_scan_row_view
+    ui/test_app_control_scan_row_view.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/scan_row_view.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/analog_width_view.c
+)
+target_link_libraries(
+    dsd-neo_test_app_control_scan_row_view
+    PRIVATE dsd-neo_core dsd-neo_runtime
+)
+add_test(
+    NAME APP_CONTROL_SCAN_ROW_VIEW
+    COMMAND dsd-neo_test_app_control_scan_row_view
+)
+
+# Issue #518: DSD_APP_CMD_SCAN_ROW_EDIT's follow-ups and rollbacks, over stubbed engine and receiver services.
+add_executable(
+    dsd-neo_test_app_control_scan_row_edit
+    ui/test_app_control_scan_row_edit.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/scan_row_edit.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/scan_row_view.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/analog_width_view.c
+)
+target_include_directories(
+    dsd-neo_test_app_control_scan_row_edit
+    PRIVATE ${PROJECT_SOURCE_DIR}/src/app_control
+)
+target_compile_definitions(
+    dsd-neo_test_app_control_scan_row_edit
+    PRIVATE USE_RADIO
+)
+target_link_libraries(
+    dsd-neo_test_app_control_scan_row_edit
+    PRIVATE dsd-neo_core dsd-neo_runtime
+)
+add_test(
+    NAME APP_CONTROL_SCAN_ROW_EDIT
+    COMMAND dsd-neo_test_app_control_scan_row_edit
 )
 
 add_executable(
