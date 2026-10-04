@@ -78,6 +78,7 @@
 #include "diagnostics_log.h"
 #include "imported_files_model.h"
 #include "p25_network_model.h" // WP-F2
+#include "qml_gc_policy.h"
 #include "qml_spectrum_stub.h"
 #include "saved_systems_model.h"
 #include "scan_list_starter.h"
@@ -1491,6 +1492,10 @@ class Setup : public QObject {
     Q_OBJECT
 
   public:
+    /* QUICK_TEST_MAIN_WITH_SETUP builds this object before the application and every engine, which
+     * is when the collector policy has to be in place. */
+    Setup() { dsd_qt::applyQmlGcPolicy(); }
+
     ~Setup() override { dsd_state_ext_free_all(m_talkgroup_state.get()); }
 
     Q_INVOKABLE bool

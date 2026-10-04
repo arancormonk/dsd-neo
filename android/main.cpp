@@ -16,10 +16,12 @@
 #include <QQmlApplicationEngine>
 
 #include "decoder_host_android.h"
+#include "qml_gc_policy.h"
 #include "qt_ui.h"
 
 int
 main(int argc, char* argv[]) {
+    dsd_qt::applyQmlGcPolicy();
     dsd_qt::ui_apply_style();
 
     QGuiApplication app(argc, argv);

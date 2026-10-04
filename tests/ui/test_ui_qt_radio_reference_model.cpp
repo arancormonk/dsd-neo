@@ -55,6 +55,7 @@
 #include "app_prefs.h"
 #include "decoder_host.h"
 #include "imported_files_model.h"
+#include "qml_gc_policy.h"
 #include "radio_reference_model.h"
 
 #ifndef DSD_NEO_TEST_RR_FIXTURE_DIR
@@ -1213,6 +1214,7 @@ test_destroy_with_requests_in_flight(void) {
 
 int
 main(int argc, char** argv) {
+    dsd_qt::applyQmlGcPolicy();
     QGuiApplication app(argc, argv);
     QCoreApplication::setOrganizationName(QStringLiteral("dsd-neo-test"));
     QCoreApplication::setApplicationName(

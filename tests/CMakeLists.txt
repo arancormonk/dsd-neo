@@ -3541,6 +3541,20 @@ if(DSD_ENABLE_QT_UI)
         COMMAND dsd-neo_test_ui_qt_scan_list_targets
     )
 
+    # The QML collector policy every process that builds a QML engine applies
+    # before the first one exists (Android main, the QML suites, the C++ tests
+    # that load production QML).
+    add_executable(
+        dsd-neo_test_ui_qt_qml_gc_policy
+        ui/test_ui_qt_qml_gc_policy.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_ui_qt_qml_gc_policy
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/qt
+    )
+    target_link_libraries(dsd-neo_test_ui_qt_qml_gc_policy PRIVATE Qt6::Core)
+    add_test(NAME UI_QT_QML_GC_POLICY COMMAND dsd-neo_test_ui_qt_qml_gc_policy)
+
     # The imported-files layer behind the CSV pickers: DecoderHost's desktop
     # importDocument() copy/unique-ify/replace semantics and the library model
     # the wizard and the imports screen share.

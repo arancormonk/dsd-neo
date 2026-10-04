@@ -55,6 +55,7 @@
 #include "diagnostics_log.h"
 #include "metrics_model.h"
 #include "p25_network_model.h"
+#include "qml_gc_policy.h"
 #include "session_args.h"
 #include "talkgroup_list_model.h"
 #include "ui_controller.h"
@@ -613,6 +614,7 @@ test_zero_bounds() {
 
 int
 main(int argc, char** argv) {
+    dsd_qt::applyQmlGcPolicy();
     QGuiApplication app(argc, argv);
     QCoreApplication::setOrganizationName("dsd-neo-test");
     QCoreApplication::setApplicationName("dsd-neo-controller");

@@ -1350,6 +1350,15 @@ ctest --preset dev-debug -L qml --output-on-failure
 It carries its own headless environment (offscreen platform, software renderer)
 in the CTest registration, so it needs no window server and no GPU.
 
+The QML suites, and the C++ cases that load a production screen (`UI_QT_CONTROLLER`,
+`UI_QT_RADIO_REFERENCE`), run the QML collector to completion, as the app does: each calls
+`dsd_qt::applyQmlGcPolicy()` (`src/ui/qt/qml_gc_policy.h`) before its first engine exists.
+`UI_QT_QML_GC_POLICY` pins the rule. With Qt's incremental collector, Qt 6.11.2 crashed the suites in
+`QQmlConnections::connectSignalsToMethods()` whenever the host was busy, for example under a parallel
+`ctest` with other builds running. A test that builds its own `QQmlEngine` calls the policy first. To
+watch the incremental collector again, set `QV4_GC_TIMELIMIT` to a slice length in milliseconds
+(Qt's default is 5): the policy keeps any integer it finds.
+
 #### Build-time constants that gate a branch
 
 `DSD_RR_APP_KEY` bakes the RadioReference application key into a generated C
