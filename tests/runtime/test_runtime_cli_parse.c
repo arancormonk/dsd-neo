@@ -8339,6 +8339,8 @@ test_squelch_option(void) {
         {"--squelch", "auto", 0.0, DSD_SQUELCH_MODE_AUTO, 10},
         {"--squelch", "auto+6", 0.0, DSD_SQUELCH_MODE_AUTO, 6},
         {"--squelch=AUTO+30", NULL, 0.0, DSD_SQUELCH_MODE_AUTO, 30},
+        {"--squelch", "noise", 0.0, DSD_SQUELCH_MODE_NOISE, 10},
+        {"--squelch=noise+14", NULL, 0.0, DSD_SQUELCH_MODE_NOISE, 14},
         {"--squelch=-60", NULL, -60.0, DSD_SQUELCH_MODE_LEVEL, 0},
         {"--squelch", "-47.5", -47.5, DSD_SQUELCH_MODE_LEVEL, 0},
         {"--squelch", "off", 0.0, DSD_SQUELCH_MODE_LEVEL, 0},
@@ -8349,11 +8351,9 @@ test_squelch_option(void) {
         const char* argv2;
         const char* why;
     } bad[] = {
-        {"--squelch", "noise", "noise squelch is not available"},
-        {"--squelch", "auto+2", "3 to 30"},
-        {"--squelch=SECRET", NULL, "expected off"},
-        {"--squelch", "auto+SECRET", "auto+N"},
-        {"--squelch", NULL, "--squelch requires a setting"},
+        {"--squelch", "noise+31", "3 to 30"},   {"--squelch", "noise+SECRET", "noise+N"},
+        {"--squelch", "auto+2", "3 to 30"},     {"--squelch=SECRET", NULL, "expected off"},
+        {"--squelch", "auto+SECRET", "auto+N"}, {"--squelch", NULL, "--squelch requires a setting"},
     };
 
     int test_rc = 0;
@@ -8370,7 +8370,7 @@ test_squelch_option(void) {
             return 1;
         }
         int ok = rc == DSD_PARSE_CONTINUE && opts->rtl_squelch_cli_set == 1 && opts->rtl_squelch_mode == good[i].mode;
-        if (good[i].mode == DSD_SQUELCH_MODE_AUTO) {
+        if (dsd_squelch_mode_is_dynamic(good[i].mode)) {
             ok = ok && opts->rtl_squelch_margin_db == good[i].margin;
         } else if (good[i].db < 0.0) {
             const double want = dsd_squelch_level_from_sql(good[i].db);

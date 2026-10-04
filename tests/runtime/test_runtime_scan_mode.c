@@ -487,9 +487,17 @@ test_auto_squelch_row_and_default(void) {
     row.squelch_margin_db = 8;
     assert(dsd_scan_mode_options(o, s, &row) == 0);
     assert(g_setting_pushes == 2 && g_setting_pushed.margin_db == 8);
+    /* The noise squelch at the same N is another setting: once, as NOISE. */
+    row.squelch_mode = DSD_SQUELCH_MODE_NOISE;
+    assert(dsd_scan_mode_options(o, s, &row) == 0);
+    assert(o->rtl_squelch_mode == DSD_SQUELCH_MODE_NOISE && o->rtl_squelch_margin_db == 8);
+    assert(g_setting_pushes == 3 && g_setting_pushed.mode == DSD_SQUELCH_MODE_NOISE && g_setting_pushed.margin_db == 8);
+    assert(dsd_scan_mode_options(o, s, &row) == 0);
+    assert(g_setting_pushes == 3);
+    row.squelch_mode = DSD_SQUELCH_MODE_AUTO;
     /* A row that inherits hands the demod the configured level. */
     assert(dsd_scan_mode_options(o, s, NULL) == 0);
-    assert(o->rtl_squelch_mode == DSD_SQUELCH_MODE_LEVEL && g_setting_pushes == 3);
+    assert(o->rtl_squelch_mode == DSD_SQUELCH_MODE_LEVEL && g_setting_pushes == 4);
     assert(g_setting_pushed.mode == DSD_SQUELCH_MODE_LEVEL && level_is(g_setting_pushed.level, configured));
 
     /* An AUTO default beneath an inheriting row is in force at once; beneath a row's own squelch it waits. */
@@ -510,6 +518,10 @@ test_auto_squelch_row_and_default(void) {
     dsd_scan_mode_leave(o, s);
     assert(o->rtl_squelch_mode == DSD_SQUELCH_MODE_AUTO && o->rtl_squelch_margin_db == 12);
     assert(g_setting_pushes == pushes + 1 && g_setting_pushed.mode == DSD_SQUELCH_MODE_AUTO);
+    /* A NOISE default is stored as NOISE. */
+    const dsd_squelch_setting noise9 = dsd_squelch_setting_noise(9);
+    assert(dsd_scan_mode_set_configured_squelch_setting(o, s, &noise9) == 1);
+    assert(o->rtl_squelch_mode == DSD_SQUELCH_MODE_NOISE && o->rtl_squelch_margin_db == 9);
     /* The level setter is the LEVEL setting. */
     assert(dsd_scan_mode_set_configured_squelch(o, s, configured) == 1);
     assert(o->rtl_squelch_mode == DSD_SQUELCH_MODE_LEVEL && level_is(o->rtl_squelch_level, configured));

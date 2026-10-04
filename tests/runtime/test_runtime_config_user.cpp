@@ -1823,6 +1823,71 @@ test_auto_squelch_keys_roundtrip(void) {
     return rc;
 }
 
+/* rtl_sql_mode = noise (issue #518 follow-up): loaded, carried into an rtl: spec as noise+N over the level, applied
+ * straight to opts on SoapySDR, saved back from the session, and rendered. */
+static int
+test_noise_squelch_keys_roundtrip(void) {
+    static const char* ini = "[input]\n"
+                             "source = \"rtl\"\n"
+                             "rtl_freq = \"162.475M\"\n"
+                             "rtl_sql = -50\n"
+                             "rtl_sql_mode = \"noise\"\n"
+                             "rtl_sql_margin_db = 14\n";
+    char path[DSD_TEST_PATH_MAX];
+    if (write_temp_config(ini, path, sizeof path) != 0) {
+        return 1;
+    }
+    dsdneoUserConfig cfg;
+    int rc = 0;
+    if (dsd_user_config_load(path, &cfg) != 0 || cfg.rtl_sql_mode != DSD_SQUELCH_MODE_NOISE
+        || cfg.rtl_sql_margin_db != 14) {
+        DSD_FPRINTF(stderr, "noise squelch keys not loaded (mode %d margin %d)\n", cfg.rtl_sql_mode,
+                    cfg.rtl_sql_margin_db);
+        (void)remove(path);
+        return 1;
+    }
+    (void)remove(path);
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_opts_and_state(opts, state);
+    dsd_apply_user_config_to_opts(&cfg, &opts, &state);
+    if (strstr(opts.audio_in_dev, ":noise+14:") == NULL) {
+        DSD_FPRINTF(stderr, "rtl spec without the noise squelch: %s\n", opts.audio_in_dev);
+        rc |= 1;
+    }
+    (void)dsd_rtl_input_spec_apply(&opts);
+    if (opts.rtl_squelch_mode != DSD_SQUELCH_MODE_NOISE || opts.rtl_squelch_margin_db != 14
+        || fabs(opts.rtl_squelch_level - pow(10.0, -5.0)) > 1e-12) {
+        DSD_FPRINTF(stderr, "rtl load of noise+14 over -50: mode %d margin %d level %g\n", opts.rtl_squelch_mode,
+                    opts.rtl_squelch_margin_db, opts.rtl_squelch_level);
+        rc |= 1;
+    }
+
+    reset_opts_and_state(opts, state);
+    dsdneoUserConfig soapy = cfg;
+    soapy.input_source = DSDCFG_INPUT_SOAPY;
+    DSD_SNPRINTF(soapy.soapy_args, sizeof soapy.soapy_args, "%s", "driver=test");
+    dsd_apply_user_config_to_opts(&soapy, &opts, &state);
+    if (opts.rtl_squelch_mode != DSD_SQUELCH_MODE_NOISE || opts.rtl_squelch_margin_db != 14) {
+        DSD_FPRINTF(stderr, "soapy apply of noise+14: mode %d margin %d\n", opts.rtl_squelch_mode,
+                    opts.rtl_squelch_margin_db);
+        rc |= 1;
+    }
+
+    dsdneoUserConfig snap;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    char text[8192];
+    if (snap.rtl_sql_mode != DSD_SQUELCH_MODE_NOISE || snap.rtl_sql_margin_db != 14
+        || render_config_to_buffer(&snap, text, sizeof text) != 0) {
+        DSD_FPRINTF(stderr, "snapshot of noise+14: mode %d margin %d\n", snap.rtl_sql_mode, snap.rtl_sql_margin_db);
+        return 1;
+    }
+    rc |= expect_contains("noise render", text, "rtl_sql_mode = \"noise\"");
+    rc |= expect_contains("noise render", text, "rtl_sql_margin_db = 14");
+    return rc;
+}
+
 static int
 test_load_and_apply_rtltcp_regression(void) {
     static const char* ini = "[input]\n"
@@ -4228,6 +4293,7 @@ main(void) {
     rc |= test_snapshot_rtl_and_rtltcp_device_specs();
     rc |= test_snapshot_disabled_squelch_roundtrips_as_off();
     rc |= test_auto_squelch_keys_roundtrip();
+    rc |= test_noise_squelch_keys_roundtrip();
     rc |= test_load_and_apply_rtltcp_regression();
     rc |= test_snapshot_roundtrip();
     rc |= test_apply_demod_lock();

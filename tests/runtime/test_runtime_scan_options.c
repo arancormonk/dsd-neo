@@ -64,8 +64,9 @@ count_file_spans(void* context, const char* option, const char* path, size_t off
 }
 
 /* --squelch on a row or target (issue #518 follow-up): the squelch grammar, stored as --squelch-db stores it for a level
- * (whole dB, off as 0) and as a mode and margin for auto, which only an analog row takes. It shares --squelch-db's
- * option: a row names one squelch. The diagnostic names the option and never echoes the value. */
+ * (whole dB, off as 0) and as a mode and margin for auto, which only an analog row takes, and noise, which only an nfm
+ * row takes. It shares --squelch-db's option: a row names one squelch. The diagnostic names the option and never
+ * echoes the value. */
 static void
 check_squelch_setting_option(void) {
     dsd_scan_options parsed;
@@ -85,9 +86,16 @@ check_squelch_setting_option(void) {
     assert(dsd_scan_options_parse("--squelch -60 --strict-crc", DSD_SCAN_MODE_DMR, 1, &parsed, error, sizeof(error))
            == 0);
 
-    const char* rejected_everywhere[] = {"--squelch auto+2", "--squelch auto+31", "--squelch noise",
+    assert(dsd_scan_options_parse("--squelch noise+14", DSD_SCAN_MODE_NFM, 0, &parsed, error, sizeof(error)) == 0);
+    assert(parsed.values.present == DSD_SCAN_OPT_SQUELCH && parsed.values.squelch_mode == DSD_SQUELCH_MODE_NOISE);
+    assert(parsed.values.squelch_margin_db == 14 && parsed.values.squelch_db == 0);
+    assert(dsd_scan_options_parse("--squelch=noise", DSD_SCAN_MODE_NFM, 1, &parsed, error, sizeof(error)) == 0);
+    assert(parsed.values.squelch_mode == DSD_SQUELCH_MODE_NOISE
+           && parsed.values.squelch_margin_db == DSD_SQUELCH_MARGIN_DEFAULT_DB);
+
+    const char* rejected_everywhere[] = {"--squelch auto+2", "--squelch auto+31", "--squelch noise+2",
                                          "--squelch -60.5",  "--squelch 5",       "--squelch SENSITIVE",
-                                         "--squelch -101"};
+                                         "--squelch -101",   "--squelch noisy"};
     for (size_t i = 0; i < sizeof(rejected_everywhere) / sizeof(rejected_everywhere[0]); i++) {
         DSD_MEMSET(&parsed, 0, sizeof(parsed));
         assert(dsd_scan_options_parse(rejected_everywhere[i], DSD_SCAN_MODE_NFM, 0, &parsed, error, sizeof(error)) < 0);
@@ -96,7 +104,15 @@ check_squelch_setting_option(void) {
     }
     /* auto on a digital row: its channel never shows its noise. */
     assert(dsd_scan_options_parse("--squelch auto", DSD_SCAN_MODE_DMR, 1, &parsed, error, sizeof(error)) < 0);
-    assert(strstr(error, "auto on nfm and am rows only") != NULL);
+    assert(strstr(error, "auto[+N] (nfm and am rows)") != NULL);
+    /* noise on an am or digital row: no discriminator to quiet. */
+    assert(dsd_scan_options_parse("--squelch noise", DSD_SCAN_MODE_AM, 1, &parsed, error, sizeof(error)) < 0);
+    assert(strstr(error, "noise[+N] (nfm rows)") != NULL);
+    assert(dsd_scan_options_parse("--squelch noise+8", DSD_SCAN_MODE_P25, 0, &parsed, error, sizeof(error)) < 0);
+    assert(
+        dsd_scan_options_parse("--squelch noise --squelch-db -60", DSD_SCAN_MODE_NFM, 0, &parsed, error, sizeof(error))
+        < 0);
+    assert(strstr(error, "duplicate option") != NULL);
     /* One squelch per row, whichever spellings. */
     assert(
         dsd_scan_options_parse("--squelch auto --squelch-db -60", DSD_SCAN_MODE_NFM, 0, &parsed, error, sizeof(error))

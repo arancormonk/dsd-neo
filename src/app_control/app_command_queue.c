@@ -3051,13 +3051,13 @@ apply_cfg_rtl_common(dsd_opts* opts, const dsdneoUserConfig* cfg) {
      * Unlike the sibling keys below, 0 is a real value here rather than "key
      * omitted", so this applies unconditionally — as the startup loader does. */
     opts->rtl_squelch_level = dsd_squelch_level_from_sql((double)cfg->rtl_sql);
-    /* The mode beside it: rtl_sql_mode = auto puts rtl_sql_margin_db over the learned floor in force (issue #518
-       follow-up), the level kept beneath for a switch back. */
+    /* The mode beside it: rtl_sql_mode = auto or noise puts rtl_sql_margin_db (over the learned floor, or of FM
+       quieting) in force (issue #518 follow-up), the level kept beneath for a switch back. */
     opts->rtl_squelch_mode = DSD_SQUELCH_MODE_LEVEL;
-    if (cfg->rtl_sql_mode == DSD_SQUELCH_MODE_AUTO) {
-        const dsd_squelch_setting auto_squelch = dsd_squelch_setting_auto(
-            cfg->rtl_sql_margin_db > 0 ? cfg->rtl_sql_margin_db : DSD_SQUELCH_MARGIN_DEFAULT_DB);
-        dsd_squelch_setting_store(opts, &auto_squelch);
+    if (dsd_squelch_mode_is_dynamic(cfg->rtl_sql_mode)) {
+        const dsd_squelch_setting dynamic = dsd_squelch_setting_dynamic(
+            cfg->rtl_sql_mode, cfg->rtl_sql_margin_db > 0 ? cfg->rtl_sql_margin_db : DSD_SQUELCH_MARGIN_DEFAULT_DB);
+        dsd_squelch_setting_store(opts, &dynamic);
     }
     svc_rtl_push_squelch(opts);
     if (dsd_user_config_rtl_gain_is_set(cfg)) {

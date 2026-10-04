@@ -5,8 +5,8 @@
 
 /*
  * The squelch setting's grammar, text and resolution (issue #518 follow-up): off, a level in dB or as a linear power,
- * and auto with a margin; noise refused until it exists; AUTO resolving to off without a radio input or on a digital
- * channel.
+ * auto with a margin and noise with a threshold; the dynamic settings resolving to off without a radio input or on a
+ * digital channel, and NOISE to AUTO on an AM channel.
  */
 
 #include <assert.h>
@@ -29,7 +29,7 @@ parses_to(const char* text, int mode, double level, int margin_db) {
         assert(0);
     }
     assert(s.mode == mode);
-    if (mode == DSD_SQUELCH_MODE_AUTO) {
+    if (dsd_squelch_mode_is_dynamic(mode)) {
         assert(s.margin_db == margin_db);
     } else if (level <= 0.0) {
         assert(dsd_squelch_is_off(s.level));
@@ -74,8 +74,17 @@ test_grammar(void) {
     refused("auto-6", "auto+N");
     refused("auto+6dB", "auto+N");
     refused("auto+6.5", "auto+N");
-    refused("noise", "noise squelch is not available");
-    refused("noise+10", "noise squelch is not available");
+    parses_to("noise", DSD_SQUELCH_MODE_NOISE, 0.0, DSD_SQUELCH_MARGIN_DEFAULT_DB);
+    parses_to(" Noise + 12 ", DSD_SQUELCH_MODE_NOISE, 0.0, 12);
+    parses_to("NOISE+3", DSD_SQUELCH_MODE_NOISE, 0.0, 3);
+    parses_to("noise+30", DSD_SQUELCH_MODE_NOISE, 0.0, 30);
+    refused("noise+2", "noise threshold");
+    refused("noise+31", "3 to 30");
+    refused("noise+", "noise+N");
+    refused("noise10", "noise+N");
+    refused("noise-10", "noise+N");
+    refused("noisy", "expected off");
+    refused("noise3", "noise+N");
     refused("", "empty");
     refused("   ", "empty");
     refused("loud", "expected off");
@@ -85,6 +94,8 @@ test_grammar(void) {
     assert(dsd_squelch_setting_parse("SECRET", &untouched, err_text, sizeof err_text) == -1);
     assert(err_text[0] != '\0' && !strstr(err_text, "SECRET"));
     assert(dsd_squelch_setting_parse("auto+SECRET", &untouched, err_text, sizeof err_text) == -1);
+    assert(err_text[0] != '\0' && !strstr(err_text, "SECRET"));
+    assert(dsd_squelch_setting_parse("noise+SECRET", &untouched, err_text, sizeof err_text) == -1);
     assert(err_text[0] != '\0' && !strstr(err_text, "SECRET"));
     refused("-", "expected off");
     refused("-60dB", "expected off");
@@ -125,6 +136,10 @@ test_format(void) {
     formats_as(&s, "auto +10 dB");
     s = dsd_squelch_setting_auto(99);
     formats_as(&s, "auto +30 dB");
+    s = dsd_squelch_setting_noise(12);
+    formats_as(&s, "noise +12 dB");
+    s = dsd_squelch_setting_noise(0);
+    formats_as(&s, "noise +3 dB");
     char out[DSD_SQUELCH_TEXT_SIZE];
     assert(dsd_squelch_setting_format(NULL, out, sizeof out) == -1 && out[0] == '\0');
     assert(dsd_squelch_setting_format(&s, NULL, 4U) == -1);
@@ -135,6 +150,9 @@ test_format(void) {
     assert(dsd_squelch_setting_format(&s, out, sizeof out) == 0);
     char trimmed[DSD_SQUELCH_TEXT_SIZE];
     DSD_SNPRINTF(trimmed, sizeof trimmed, "auto+%d", s.margin_db);
+    assert(dsd_squelch_setting_parse(trimmed, &back, NULL, 0U) == 0 && dsd_squelch_setting_equal(&s, &back));
+    s = dsd_squelch_setting_noise(14);
+    DSD_SNPRINTF(trimmed, sizeof trimmed, "noise+%d", s.margin_db);
     assert(dsd_squelch_setting_parse(trimmed, &back, NULL, 0U) == 0 && dsd_squelch_setting_equal(&s, &back));
 }
 
@@ -157,6 +175,18 @@ test_predicates_and_equality(void) {
     assert(!dsd_squelch_setting_equal(&a10, &a6) && !dsd_squelch_setting_equal(&a10, &lvl));
     assert(!dsd_squelch_setting_equal(&a10, NULL));
     assert(dsd_squelch_setting_auto(1).margin_db == DSD_SQUELCH_MARGIN_MIN_DB);
+
+    /* NOISE is dynamic, never off, and differs from AUTO at the same N. */
+    const dsd_squelch_setting n10 = dsd_squelch_setting_noise(10);
+    const dsd_squelch_setting n10b = dsd_squelch_setting_dynamic(DSD_SQUELCH_MODE_NOISE, 10);
+    assert(dsd_squelch_setting_is_dynamic(&n10) && !dsd_squelch_setting_is_off(&n10));
+    assert(dsd_squelch_setting_equal(&n10, &n10b) && !dsd_squelch_setting_equal(&n10, &a10));
+    assert(dsd_squelch_setting_noise(99).margin_db == DSD_SQUELCH_MARGIN_MAX_DB);
+    assert(dsd_squelch_setting_dynamic(DSD_SQUELCH_MODE_AUTO, 6).mode == DSD_SQUELCH_MODE_AUTO);
+    assert(dsd_squelch_setting_dynamic(DSD_SQUELCH_MODE_LEVEL, 6).mode == DSD_SQUELCH_MODE_AUTO);
+    assert(dsd_squelch_mode_is_dynamic(DSD_SQUELCH_MODE_NOISE) && !dsd_squelch_mode_is_dynamic(DSD_SQUELCH_MODE_LEVEL));
+    assert(dsd_squelch_mode_or_level(DSD_SQUELCH_MODE_NOISE) == DSD_SQUELCH_MODE_NOISE);
+    assert(dsd_squelch_mode_or_level(7) == DSD_SQUELCH_MODE_LEVEL);
 }
 
 static void
@@ -164,18 +194,32 @@ test_resolve(void) {
     const dsd_squelch_setting a10 = dsd_squelch_setting_auto(10);
     const dsd_squelch_setting lvl = dsd_squelch_setting_of_level(1e-6);
     dsd_squelch_setting out;
-    assert(dsd_squelch_setting_resolve(&a10, 1, 0, &out) == DSD_SQUELCH_RESOLVED_AS_SET);
+    assert(dsd_squelch_setting_resolve(&a10, 1, 0, 0, &out) == DSD_SQUELCH_RESOLVED_AS_SET);
     assert(dsd_squelch_setting_equal(&out, &a10));
-    assert(dsd_squelch_setting_resolve(&a10, 0, 0, &out) == DSD_SQUELCH_RESOLVED_NO_RADIO);
+    assert(dsd_squelch_setting_resolve(&a10, 1, 0, 1, &out) == DSD_SQUELCH_RESOLVED_AS_SET);
+    assert(dsd_squelch_setting_equal(&out, &a10));
+    assert(dsd_squelch_setting_resolve(&a10, 0, 0, 0, &out) == DSD_SQUELCH_RESOLVED_NO_RADIO);
     assert(dsd_squelch_setting_is_off(&out) && !dsd_squelch_setting_is_dynamic(&out));
-    assert(dsd_squelch_setting_resolve(&a10, 1, 1, &out) == DSD_SQUELCH_RESOLVED_DIGITAL);
+    assert(dsd_squelch_setting_resolve(&a10, 1, 1, 0, &out) == DSD_SQUELCH_RESOLVED_DIGITAL);
     assert(dsd_squelch_setting_is_off(&out));
     /* A level runs as written anywhere, digital and audio input included. */
-    assert(dsd_squelch_setting_resolve(&lvl, 0, 1, &out) == DSD_SQUELCH_RESOLVED_AS_SET);
+    assert(dsd_squelch_setting_resolve(&lvl, 0, 1, 1, &out) == DSD_SQUELCH_RESOLVED_AS_SET);
     assert(dsd_squelch_setting_equal(&out, &lvl));
-    assert(dsd_squelch_setting_resolve(NULL, 1, 0, &out) == DSD_SQUELCH_RESOLVED_AS_SET);
+    assert(dsd_squelch_setting_resolve(NULL, 1, 0, 0, &out) == DSD_SQUELCH_RESOLVED_AS_SET);
     assert(dsd_squelch_setting_is_off(&out));
-    assert(dsd_squelch_setting_resolve(&a10, 0, 0, NULL) == DSD_SQUELCH_RESOLVED_NO_RADIO);
+    assert(dsd_squelch_setting_resolve(&a10, 0, 0, 0, NULL) == DSD_SQUELCH_RESOLVED_NO_RADIO);
+
+    /* NOISE runs on FM, as AUTO with the same N on AM, and off where AUTO is. */
+    const dsd_squelch_setting n12 = dsd_squelch_setting_noise(12);
+    const dsd_squelch_setting a12 = dsd_squelch_setting_auto(12);
+    assert(dsd_squelch_setting_resolve(&n12, 1, 0, 0, &out) == DSD_SQUELCH_RESOLVED_AS_SET);
+    assert(dsd_squelch_setting_equal(&out, &n12));
+    assert(dsd_squelch_setting_resolve(&n12, 1, 0, 1, &out) == DSD_SQUELCH_RESOLVED_AM_AUTO);
+    assert(dsd_squelch_setting_equal(&out, &a12));
+    assert(dsd_squelch_setting_resolve(&n12, 0, 0, 1, &out) == DSD_SQUELCH_RESOLVED_NO_RADIO);
+    assert(dsd_squelch_setting_is_off(&out));
+    assert(dsd_squelch_setting_resolve(&n12, 1, 1, 0, &out) == DSD_SQUELCH_RESOLVED_DIGITAL);
+    assert(dsd_squelch_setting_is_off(&out));
 }
 
 /* The gate helpers the decoder's squelch comparisons go through. */
@@ -202,11 +246,19 @@ test_gate_helpers(void) {
     assert(dsd_squelch_gate_open(&opts, 0U) && !dsd_squelch_gate_open(&opts, DSD_SQUELCH_FLAG_CLOSED));
     assert(!dsd_squelch_gate_open(&opts, (uint8_t)(DSD_SQUELCH_FLAG_CLOSED | 0x80U)));
 
-    /* AUTO on any other input resolves to off: no flags, no level. */
+    /* NOISE gates the same way. */
+    opts.rtl_squelch_mode = DSD_SQUELCH_MODE_NOISE;
+    assert(dsd_squelch_dynamic_in_force(&opts));
+    assert(dsd_squelch_level_in_force(&opts) <= 0.0 && dsd_squelch_level_open(&opts));
+    assert(dsd_squelch_gate_open(&opts, 0U) && !dsd_squelch_gate_open(&opts, DSD_SQUELCH_FLAG_CLOSED));
+
+    /* A dynamic setting on any other input resolves to off: no flags, no level. */
     opts.audio_in_type = AUDIO_IN_WAV;
     assert(!dsd_squelch_dynamic_in_force(&opts));
     assert(dsd_squelch_level_in_force(&opts) <= 0.0 && dsd_squelch_level_open(&opts));
     assert(dsd_squelch_gate_open(&opts, DSD_SQUELCH_FLAG_CLOSED));
+    opts.rtl_squelch_mode = DSD_SQUELCH_MODE_AUTO;
+    assert(!dsd_squelch_dynamic_in_force(&opts) && dsd_squelch_gate_open(&opts, DSD_SQUELCH_FLAG_CLOSED));
 
     assert(!dsd_squelch_dynamic_in_force(NULL) && dsd_squelch_level_in_force(NULL) <= 0.0);
     assert(!dsd_squelch_level_open(NULL) && !dsd_squelch_gate_open(NULL, 0U));
@@ -235,6 +287,14 @@ test_opts_store_and_spec_field(void) {
     back = dsd_squelch_setting_of_opts(NULL);
     assert(dsd_squelch_setting_is_off(&back));
 
+    const dsd_squelch_setting noise14 = dsd_squelch_setting_noise(14);
+    dsd_squelch_setting_store(&opts, &noise14);
+    assert(opts.rtl_squelch_mode == DSD_SQUELCH_MODE_NOISE && opts.rtl_squelch_margin_db == 14);
+    back = dsd_squelch_setting_of_opts(&opts);
+    assert(dsd_squelch_setting_equal(&back, &noise14));
+    assert(dsd_squelch_spec_field_apply(&opts, "noise+9") == 0 && opts.rtl_squelch_mode == DSD_SQUELCH_MODE_NOISE
+           && opts.rtl_squelch_margin_db == 9);
+
     assert(dsd_squelch_spec_field_apply(&opts, "auto+8") == 0 && opts.rtl_squelch_mode == DSD_SQUELCH_MODE_AUTO);
     assert(dsd_squelch_spec_field_apply(&opts, "loud") == -1 && opts.rtl_squelch_margin_db == 8);
     assert(dsd_squelch_spec_field_apply(&opts, NULL) == -1 && dsd_squelch_spec_field_apply(NULL, "off") == -1);
@@ -252,6 +312,8 @@ test_level_finite(void) {
     s.level = INFINITY;
     assert(!dsd_squelch_setting_level_finite(&s));
     s.mode = DSD_SQUELCH_MODE_AUTO;
+    assert(dsd_squelch_setting_level_finite(&s));
+    s.mode = DSD_SQUELCH_MODE_NOISE;
     assert(dsd_squelch_setting_level_finite(&s));
     assert(!dsd_squelch_setting_level_finite(NULL));
 }

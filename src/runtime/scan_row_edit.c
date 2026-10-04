@@ -84,6 +84,12 @@ scan_row_edit_tone_valid(const dsd_scan_row_edit_value* value, char* err, size_t
     return 1;
 }
 
+/* Whether @p margin_db is a dynamic squelch's margin or threshold; a level edit carries none, or the one it last had. */
+static int
+scan_row_edit_margin_valid(int margin_db) {
+    return margin_db >= DSD_SQUELCH_MARGIN_MIN_DB && margin_db <= DSD_SQUELCH_MARGIN_MAX_DB;
+}
+
 int
 dsd_scan_row_edit_value_valid(unsigned int mode, uint32_t field, const dsd_scan_row_edit_value* value, char* err,
                               size_t err_size) {
@@ -96,9 +102,17 @@ dsd_scan_row_edit_value_valid(unsigned int mode, uint32_t field, const dsd_scan_
                 if (dsd_scan_mode_analog_kind((dsd_scan_mode)mode) < 0) {
                     return scan_row_edit_reason(err, err_size, "auto squelch works on nfm and am channels only");
                 }
-                if (value->squelch_margin_db < DSD_SQUELCH_MARGIN_MIN_DB
-                    || value->squelch_margin_db > DSD_SQUELCH_MARGIN_MAX_DB) {
+                if (!scan_row_edit_margin_valid(value->squelch_margin_db)) {
                     return scan_row_edit_reason(err, err_size, "auto squelch takes a margin of 3 to 30 dB");
+                }
+                return 1;
+            }
+            if (value->squelch_mode == DSD_SQUELCH_MODE_NOISE) {
+                if (dsd_scan_mode_analog_kind((dsd_scan_mode)mode) != DSD_ANALOG_DEMOD_FM) {
+                    return scan_row_edit_reason(err, err_size, "noise squelch works on nfm channels only");
+                }
+                if (!scan_row_edit_margin_valid(value->squelch_margin_db)) {
+                    return scan_row_edit_reason(err, err_size, "noise squelch takes 3 to 30 dB of quieting");
                 }
                 return 1;
             }
@@ -115,12 +129,6 @@ dsd_scan_row_edit_value_valid(unsigned int mode, uint32_t field, const dsd_scan_
             return 1;
         default: return scan_row_edit_reason(err, err_size, "unknown field");
     }
-}
-
-/* Whether @p margin_db is an auto squelch margin; a level edit carries none, or the one it last had. */
-static int
-scan_row_edit_margin_valid(int margin_db) {
-    return margin_db >= DSD_SQUELCH_MARGIN_MIN_DB && margin_db <= DSD_SQUELCH_MARGIN_MAX_DB;
 }
 
 static void
@@ -232,13 +240,12 @@ dsd_scan_row_edit_apply(const dsd_scan_option_values* row, const dsd_scan_row_ed
     }
     if (edit->set & DSD_SCAN_ROW_FIELD_SQUELCH) {
         out->present |= DSD_SCAN_OPT_SQUELCH;
-        out->squelch_mode =
-            edit->value.squelch_mode == DSD_SQUELCH_MODE_AUTO ? DSD_SQUELCH_MODE_AUTO : DSD_SQUELCH_MODE_LEVEL;
-        /* A level edit without a margin keeps the row's own (its list's auto margin), as the setting keeps one. */
+        out->squelch_mode = dsd_squelch_mode_or_level(edit->value.squelch_mode);
+        /* A level edit without a margin keeps the row's own (its list's dynamic margin), as the setting keeps one. */
         if (scan_row_edit_margin_valid(edit->value.squelch_margin_db)) {
             out->squelch_margin_db = edit->value.squelch_margin_db;
         }
-        out->squelch_db = out->squelch_mode == DSD_SQUELCH_MODE_AUTO ? 0 : edit->value.squelch_db;
+        out->squelch_db = dsd_squelch_mode_is_dynamic(out->squelch_mode) ? 0 : edit->value.squelch_db;
     } else if (edit->inherit & DSD_SCAN_ROW_FIELD_SQUELCH) {
         out->present &= ~(uint32_t)DSD_SCAN_OPT_SQUELCH;
     }

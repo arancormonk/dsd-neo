@@ -494,13 +494,13 @@ cli_parse_analog_width_option(const char* option_name, int kind, const char* in,
     return 1;
 }
 
-/* --squelch <setting> (issue #518 follow-up): the squelch grammar (off, a level in dB or as a linear power, auto[+N]).
- * It wins over an input spec's sql field, which is read later (dsd_squelch_spec_field_apply()). The refusal names the
- * grammar, never the text. */
+/* --squelch <setting> (issue #518 follow-up): the squelch grammar (off, a level in dB or as a linear power, auto[+N],
+ * noise[+N]). It wins over an input spec's sql field, which is read later (dsd_squelch_spec_field_apply()). The refusal
+ * names the grammar, never the text. */
 static int
 cli_parse_squelch_option(const char* in, dsd_opts* opts, int* out_exit_rc) {
     if (!in) {
-        LOG_ERROR("--squelch requires a setting: off, a level in dB, or auto[+N]\n");
+        LOG_ERROR("--squelch requires a setting: off, a level in dB, auto[+N] or noise[+N]\n");
         cli_set_exit_rc(out_exit_rc, 1);
         return 0;
     }

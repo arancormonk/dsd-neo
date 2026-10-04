@@ -753,8 +753,9 @@ scan_option_apply_group(dsd_opts* opts, dsd_state* state, const dsd_scan_option_
 static void
 scan_option_apply_squelch(dsd_opts* opts, dsd_state* state, const dsd_scan_option_values* values) {
     (void)state;
-    if (values->squelch_mode == DSD_SQUELCH_MODE_AUTO) {
-        const dsd_squelch_setting setting = dsd_squelch_setting_auto(values->squelch_margin_db);
+    if (dsd_squelch_mode_is_dynamic(values->squelch_mode)) {
+        const dsd_squelch_setting setting =
+            dsd_squelch_setting_dynamic(values->squelch_mode, values->squelch_margin_db);
         dsd_squelch_setting_store(opts, &setting);
         return;
     }
@@ -1131,8 +1132,8 @@ dsd_scan_mode_set_configured_squelch_setting(dsd_opts* opts, const dsd_state* st
     scan_scope* scope = state ? scan_scope_get(state) : NULL;
     /* Suspended or absent, dsd_opts holds the configured values and resume recaptures them. */
     if (scope && !scope->suspended) {
-        if (setting->mode == DSD_SQUELCH_MODE_AUTO) {
-            scope->configured.rtl_squelch_mode = DSD_SQUELCH_MODE_AUTO;
+        if (dsd_squelch_mode_is_dynamic(setting->mode)) {
+            scope->configured.rtl_squelch_mode = setting->mode;
             scope->configured.rtl_squelch_margin_db = setting->margin_db;
         } else {
             scope->configured.rtl_squelch_mode = DSD_SQUELCH_MODE_LEVEL;

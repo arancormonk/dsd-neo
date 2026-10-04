@@ -198,7 +198,7 @@ parse_soapy_optional_front(char* tok[SOFTY_TOK_MAX], size_t n, size_t* cur, int*
     return 0;
 }
 
-/* The squelch field in the squelch grammar (off, a level, auto[+N]): @p out points at its text. */
+/* The squelch field in the squelch grammar (off, a level, auto[+N], noise[+N]): @p out points at its text. */
 static int
 parse_optional_squelch_at(char* tok[SOFTY_TOK_MAX], size_t n, size_t* cur, const char** out) {
     if (!tok || !cur || !out || *cur >= n) {
@@ -466,7 +466,7 @@ rtl_spec_apply_tuning_tokens(dsd_opts* opts, char** saveptr) {
     if (!curr) {
         return 0;
     }
-    /* The squelch grammar (off, a level, auto[+N]); a field that is not a squelch says nothing about it, and
+    /* The squelch grammar (off, a level, auto[+N], noise[+N]); a field that is not a squelch says nothing about it, and
        --squelch wins over the spec. */
     (void)dsd_squelch_spec_field_apply(opts, curr);
     curr = dsd_strtok_r(NULL, ":", saveptr);

@@ -18,6 +18,7 @@
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/input_failure.h>
+#include <dsd-neo/runtime/squelch.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -957,6 +958,65 @@ test_config_channel_map_weighs_the_tone_filter(void) {
     return test_rc;
 }
 
+/*
+ * --squelch noise needs FM (issue #518 follow-up): on the AM monitor (-fM, no scan) a --squelch noise is refused, a
+ * noise setting that came from an input spec or the config runs as auto with the same N and says so, the FM monitor
+ * takes it as set, and without a radio input it is off and says so.
+ */
+static int
+test_noise_squelch_needs_fm(void) {
+    static const struct {
+        int am;
+        int cli;
+        const char* dev; /* NULL: no radio input */
+        int ok;
+        const char* says;
+        const char* omits;
+    } cases[] = {
+        {1, 1, "soapy:driver=test:118.1M:7:0:24", 0, "--squelch noise needs an FM channel", NULL},
+        {1, 0, "soapy:driver=test:118.1M:7:0:24:noise+12:2", 1, "runs auto+12dB", "--squelch noise needs an FM"},
+        {0, 1, "soapy:driver=test:162.475M:7:0:24", 1, "SQ=noise+12dB", "--squelch noise needs an FM"},
+        {0, 1, NULL, 1, "--squelch noise needs a radio input", "--squelch noise needs an FM"},
+    };
+
+    int test_rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        dsd_opts* opts = NULL;
+        dsd_state* state = NULL;
+        if (init_test_runtime(&opts, &state) != 0) {
+            return 1;
+        }
+        if (cases[i].dev) {
+            DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", cases[i].dev);
+        }
+        opts->analog_only = 1;
+        opts->analog_demod = cases[i].am ? DSD_ANALOG_DEMOD_AM : DSD_ANALOG_DEMOD_FM;
+        if (cases[i].cli) {
+            const dsd_squelch_setting noise = dsd_squelch_setting_noise(12);
+            dsd_squelch_setting_store(opts, &noise);
+            opts->rtl_squelch_cli_set = 1;
+        }
+        char banner[8192] = {0};
+        int rc = 0;
+        if (run_lifecycle_capturing_banner(opts, state, banner, sizeof banner, &rc) != 0) {
+            free_test_runtime(opts, state);
+            return 1;
+        }
+        char tag[64];
+        DSD_SNPRINTF(tag, sizeof tag, "noise squelch case %zu", i);
+        test_rc |= expect_true(tag, (rc == 0) == (cases[i].ok != 0));
+        test_rc |= expect_contains(tag, banner, cases[i].says);
+        if (cases[i].omits) {
+            test_rc |= expect_omits(tag, banner, cases[i].omits);
+        }
+        /* The setting stays as written: the demodulator resolves it per channel. */
+        test_rc |=
+            expect_true(tag, opts->rtl_squelch_mode == DSD_SQUELCH_MODE_NOISE && opts->rtl_squelch_margin_db == 12);
+        free_test_runtime(opts, state);
+    }
+    return test_rc;
+}
+
 #ifdef DSD_NEO_TEST_RIGCTL_WRAP
 static int
 note_rigctl_rebinds_at_start(dsd_opts* opts, dsd_state* state, void* context) {
@@ -1028,6 +1088,7 @@ main(void) {
 #endif
     rc |= test_receiver_failure_is_not_successful_completion();
     rc |= test_config_channel_map_weighs_the_tone_filter();
+    rc |= test_noise_squelch_needs_fm();
 
     if (rc == 0) {
         printf("ENGINE_RUN_SETUP: OK\n");

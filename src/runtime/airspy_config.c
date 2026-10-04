@@ -184,8 +184,8 @@ parse_airspy_squelch(const char* text, airspy_tuning* tuning) {
         tuning->squelch = dsd_squelch_setting_of_level(dsd_squelch_level_from_sql(sql));
         return;
     }
-    /* Otherwise one of the squelch grammar's words: off, auto[+N]. A number the grammar takes here is one out of
-       that span. */
+    /* Otherwise one of the squelch grammar's words: off, auto[+N], noise[+N]. A number the grammar takes here is one
+       out of that span. */
     dsd_squelch_setting setting;
     if (dsd_squelch_setting_parse(text, &setting, NULL, 0U) != 0
         || (setting.mode == DSD_SQUELCH_MODE_LEVEL && !dsd_squelch_setting_is_off(&setting))) {

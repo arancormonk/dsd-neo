@@ -691,11 +691,12 @@ dsd_engine_setup_parse_rtltcp_input(dsd_opts* opts) {
     opts->audio_in_type = AUDIO_IN_RTL;
 }
 
-/* The squelch for a startup notice: a level as dsd_squelch_format() writes it, or auto+NdB. */
+/* The squelch for a startup notice: a level as dsd_squelch_format() writes it, or auto+NdB, noise+NdB. */
 static void
 dsd_engine_squelch_notice_text(const dsd_opts* opts, char* out, size_t out_size) {
-    if (opts->rtl_squelch_mode == DSD_SQUELCH_MODE_AUTO) {
-        DSD_SNPRINTF(out, out_size, "auto+%ddB", opts->rtl_squelch_margin_db);
+    if (dsd_squelch_mode_is_dynamic(opts->rtl_squelch_mode)) {
+        DSD_SNPRINTF(out, out_size, "%s+%ddB", opts->rtl_squelch_mode == DSD_SQUELCH_MODE_NOISE ? "noise" : "auto",
+                     opts->rtl_squelch_margin_db);
         return;
     }
     (void)dsd_squelch_format(opts->rtl_squelch_level, "dB", out, out_size);
@@ -1009,6 +1010,37 @@ dsd_engine_setup_check_analog_width(const dsd_opts* opts) {
     return -1;
 }
 
+/*
+ * The dynamic squelches need a radio input: elsewhere they are off, and say so. The noise squelch needs FM as well: on
+ * the AM monitor (-fM, no scan) a --squelch noise is refused, and a noise setting from an input spec or the config runs
+ * as auto with the same N. A scan's AM rows inherit a noise default as auto without a word: each row resolves its own.
+ */
+static int
+dsd_engine_setup_check_noise_squelch(const dsd_opts* opts) {
+    const int mode = opts->rtl_squelch_mode;
+    if (!dsd_squelch_mode_is_dynamic(mode)) {
+        return 0;
+    }
+    if (!dsd_opts_input_is_radio(opts)) {
+        LOG_WARN("WARNING: --squelch %s needs a radio input (rtl:, rtltcp:, soapy:, airspy or --iq-replay); the "
+                 "squelch is off on this input.\n",
+                 mode == DSD_SQUELCH_MODE_NOISE ? "noise" : "auto");
+        return 0;
+    }
+    const int am_monitor = dsd_opts_is_analog_family(opts) && opts->analog_demod == DSD_ANALOG_DEMOD_AM
+                           && opts->scanner_mode != 1 && opts->trunk_scan_enabled != 1;
+    if (mode != DSD_SQUELCH_MODE_NOISE || !am_monitor) {
+        return 0;
+    }
+    if (opts->rtl_squelch_cli_set) {
+        LOG_ERROR("--squelch noise needs an FM channel and -fM is AM: use --squelch auto[+N] or a level.\n");
+        return -1;
+    }
+    LOG_INFO("NOTICE: The noise squelch needs an FM channel; this AM channel runs auto+%ddB.\n",
+             opts->rtl_squelch_margin_db);
+    return 0;
+}
+
 static int
 dsd_engine_setup_io(dsd_opts* opts, dsd_state* state) {
     if (!opts || !state) {
@@ -1044,10 +1076,8 @@ dsd_engine_setup_io(dsd_opts* opts, dsd_state* state) {
         return -1;
     }
     dsd_engine_setup_parse_pulse_input(opts);
-    if (opts->rtl_squelch_mode == DSD_SQUELCH_MODE_AUTO && !dsd_opts_input_is_radio(opts)) {
-        LOG_WARN(
-            "WARNING: --squelch auto needs a radio input (rtl:, rtltcp:, soapy:, airspy or --iq-replay); the squelch "
-            "is off on this input.\n");
+    if (dsd_engine_setup_check_noise_squelch(opts) != 0) {
+        return -1;
     }
     if (dsd_engine_setup_parse_udp_output(opts, state) != 0) {
         return -1;

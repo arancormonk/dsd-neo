@@ -332,7 +332,7 @@ static int
 expect_squelch(const char* label, const dsd_opts* opts, int mode, double level, int margin) {
     const int level_ok = fabs(opts->rtl_squelch_level - level) <= 1e-12 + (1e-9 * fabs(level));
     if (opts->rtl_squelch_mode != mode || !level_ok
-        || (mode == DSD_SQUELCH_MODE_AUTO && opts->rtl_squelch_margin_db != margin)) {
+        || (dsd_squelch_mode_is_dynamic(mode) && opts->rtl_squelch_margin_db != margin)) {
         DSD_FPRINTF(stderr, "%s: mode=%d level=%g margin=%d, want mode=%d level=%g margin=%d\n", label,
                     opts->rtl_squelch_mode, opts->rtl_squelch_level, opts->rtl_squelch_margin_db, mode, level, margin);
         return 1;
@@ -359,10 +359,15 @@ test_spec_squelch_grammar(void) {
     DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "rtl:0:162.475M:30:-2:48:off:2");
     (void)dsd_rtl_input_spec_apply(opts);
     rc |= expect_squelch("rtl: off", opts, DSD_SQUELCH_MODE_LEVEL, 0.0, 0);
-    /* Not a squelch: nothing changes. */
-    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "rtl:0:162.475M:30:-2:48:noise:2");
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "rtl:0:162.475M:30:-2:48:noise+14:2");
     (void)dsd_rtl_input_spec_apply(opts);
-    rc |= expect_squelch("rtl: noise", opts, DSD_SQUELCH_MODE_LEVEL, 0.0, 0);
+    rc |= expect_squelch("rtl: noise+14", opts, DSD_SQUELCH_MODE_NOISE, 0.0, 14);
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "rtl:0:162.475M:30:-2:48:off:2");
+    (void)dsd_rtl_input_spec_apply(opts);
+    /* Not a squelch: nothing changes. */
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "rtl:0:162.475M:30:-2:48:loud:2");
+    (void)dsd_rtl_input_spec_apply(opts);
+    rc |= expect_squelch("rtl: loud", opts, DSD_SQUELCH_MODE_LEVEL, 0.0, 0);
     /* --squelch wins. */
     opts->rtl_squelch_cli_set = 1;
     opts->rtl_squelch_mode = DSD_SQUELCH_MODE_AUTO;
