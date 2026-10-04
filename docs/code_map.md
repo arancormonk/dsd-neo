@@ -3324,6 +3324,18 @@ Qt's `session_args.cpp` validates saved string key types and emits discrete argv
 `SessionArgsBuilder::build` returns only non-secret validation metadata. Its `start` operation resolves retained
 keys and sends the arguments directly to `DecoderHost` in C++, returning only validation and acceptance status.
 
+### QML garbage collector
+
+Every process that builds a QML engine calls `dsd_qt::applyQmlGcPolicy()` (`src/ui/qt/qml_gc_policy.h`)
+before the first engine exists: `android/main.cpp`, the Qt Quick Test `Setup`, and the C++ tests that load
+production QML. It sets `QV4_GC_TIMELIMIT=0`, so each collection runs to completion instead of in Qt's
+default 5 ms time slices. Qt 6.11.2's incremental collector can free a QML object's function storage while the
+object is still being created. A `Connections` element's `function onX()` handler then crashes
+`QQmlConnections::connectSignalsToMethods()`. A Qt build with qtdeclarative 42c76d7acd (QTBUG-148459) skips
+the handler instead, without any error. On Qt 6.11.2 under load, the session-tools suite crashed 14 runs in 24
+with the default slices and none in 24 with the policy. The policy keeps a `QV4_GC_TIMELIMIT` that Qt parses as
+an integer.
+
 ### Qt QML editing convention
 
 Preserve each file's existing QML formatting and use focused manual edits. Do not

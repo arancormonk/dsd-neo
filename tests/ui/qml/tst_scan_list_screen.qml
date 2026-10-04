@@ -1075,11 +1075,21 @@ Item {
             return message;
         }
 
+        function scrollEditorToBottom() {
+            // A geometry change queues Qt.callLater(screen.revealFocus), which scrolls back to the
+            // focused name field. Let a queued reveal run first: run after the scroll, it takes
+            // the Save buttons off screen and the click lands on nothing (seen on a busy host).
+            wait(0);
+            var scroll = control("scanListScroll");
+            var bottom = scroll.contentHeight - scroll.height;
+            scroll.contentY = bottom;
+            renderEditor();
+            fuzzyCompare(scroll.contentY, bottom, 0.5, "The editor stays scrolled to its Save buttons");
+        }
+
         function test_failed_save_keeps_message_in_view(data) {
             prepareFailedValidation(data);
-            var scroll = control("scanListScroll");
-            scroll.contentY = scroll.contentHeight - scroll.height;
-            renderEditor();
+            scrollEditorToBottom();
             var save = control(data.button);
             mouseClick(save, save.width / 2, save.height / 2);
             verifyFailedValidation(data);
@@ -1121,9 +1131,7 @@ Item {
             testContext.setPrefs("appearance", data.appearance);
             data.override = false;
             prepareFailedValidation(data);
-            var scroll = control("scanListScroll");
-            scroll.contentY = scroll.contentHeight - scroll.height;
-            renderEditor();
+            scrollEditorToBottom();
             var save = control("scanSave");
             mouseClick(save, save.width / 2, save.height / 2);
             verifyFailedValidation(data);
@@ -1164,10 +1172,11 @@ Item {
 
         function test_repeated_validation_reveals_message(data) {
             prepareFailedValidation(data);
-            var scroll = control("scanListScroll");
             for (var i = 0; i < 2; ++i) {
-                scroll.contentY = scroll.contentHeight - scroll.height;
-                renderEditor();
+                scrollEditorToBottom();
+                // Out of view before validating, so the reveal below is validation's own.
+                var field = control(data.override ? "scanTuner_gainDb" : "scanListName");
+                verify(!insideVisibleArea(field), "The invalid field starts out of view");
                 control("validateScanDraft").Accessible.pressAction();
                 verifyFailedValidation(data);
             }
