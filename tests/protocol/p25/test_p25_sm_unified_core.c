@@ -409,6 +409,35 @@ test_inband_zero_source_preserves_grant_identity(void) {
     return 0;
 }
 
+// A decode instant far from any platform clock reading (1e9 s), so a window that read the platform
+// clock instead of the decode clock could not land on the expected side of its boundary.
+#define P25_TEST_DECODE_T0_NS 1000000000000000000ULL
+
+static void
+decode_clock_at_ms(uint64_t offset_ms) {
+    dsd_decode_clock_test_set_ns(P25_TEST_DECODE_T0_NS + (offset_ms * 1000000ULL));
+}
+
+// Two events sent back to back stamp the system clock at one reading on a coarse clock (a
+// virtualised CI runner), so a test that orders two event stamps runs on the test decode clock and
+// moves it on between those events (issue #619).
+static uint64_t g_decode_step_ms;
+
+static void
+decode_clock_step(void) {
+    g_decode_step_ms += 1U;
+    decode_clock_at_ms(g_decode_step_ms);
+}
+
+static int
+run_on_test_decode_clock(int (*test)(void)) {
+    g_decode_step_ms = 0U;
+    dsd_decode_clock_use_test(P25_TEST_DECODE_T0_NS);
+    const int rc = test();
+    dsd_decode_clock_use_system();
+    return rc;
+}
+
 static int
 test_same_identity_ptt_starts_new_epoch_after_missed_end(void) {
     reset_test_state();
@@ -427,6 +456,7 @@ test_same_identity_ptt_starts_new_epoch_after_missed_end(void) {
     }
 
     const double first_start_m = ctx.slots[0].last_start_m;
+    decode_clock_step();
     ev = p25_sm_ev_ptt_call(0, 1000, 0, 123, 1, P25_SM_SVC_UNKNOWN);
     p25_sm_event(&ctx, &g_opts, &g_state, &ev);
     if (ctx.slots[0].last_start_m <= first_start_m || ctx.slots[0].voice_active
@@ -752,15 +782,6 @@ conventional_ptt_payload(int payload[180], int facch, int encrypted) {
     for (int i = 0; i < 12; i++) {
         payload[data_bits + i] = (crc[facch][encrypted] >> (11 - i)) & 1;
     }
-}
-
-// A decode instant far from any platform clock reading (1e9 s), so a window that read the platform
-// clock instead of the decode clock could not land on the expected side of its boundary.
-#define P25_TEST_DECODE_T0_NS 1000000000000000000ULL
-
-static void
-decode_clock_at_ms(uint64_t offset_ms) {
-    dsd_decode_clock_test_set_ns(P25_TEST_DECODE_T0_NS + (offset_ms * 1000000ULL));
 }
 
 // The PTT retransmission window (1 s) measures from the observation time the real XCCH MAC_PTT
@@ -1778,6 +1799,7 @@ test_p1_pending_identity_restarts_crypto_without_hdu(void) {
         return 1;
     }
 
+    decode_clock_step();
     ev = p25_sm_ev_active(0);
     p25_sm_event(&ctx, &g_opts, &g_state, &ev);
     if (ctx.slots[0].voice_active || !g_state.p25_p1_identity_pending
@@ -2196,6 +2218,7 @@ test_tdma_idle_ends_voice_with_newer_grant(void) {
     p25_sm_event(&ctx, &g_opts, &g_state, &ev);
 
     const double idle_observed_m = ctx.slots[0].last_grant_m;
+    decode_clock_step();
     ev = p25_sm_ev_group_grant_update(0x1234, 851500000, 1000, 123, 0);
     p25_sm_event(&ctx, &g_opts, &g_state, &ev);
     const double newer_grant_m = ctx.slots[0].last_grant_m;
@@ -3018,6 +3041,7 @@ test_tdma_facch_double_end_release(void) {
     ev = p25_sm_ev_facch_end_call_at(0, 1000, 123, first_m);
     p25_sm_event(&ctx, &g_opts, &g_state, &ev);
 
+    decode_clock_step();
     ev = p25_sm_ev_group_grant(0x1235, 851500000, 2000, 456, 0);
     p25_sm_event(&ctx, &g_opts, &g_state, &ev);
     if (!ctx.slots[1].grant_active || ctx.slots[1].last_grant_m <= first_m) {
@@ -3336,7 +3360,7 @@ main(void) {
     fail += test_private_ptt_preserves_grant_identity();
     fail += test_authoritative_group_replaces_private_identity();
     fail += test_inband_zero_source_preserves_grant_identity();
-    fail += test_same_identity_ptt_starts_new_epoch_after_missed_end();
+    fail += run_on_test_decode_clock(test_same_identity_ptt_starts_new_epoch_after_missed_end);
     fail += test_raw_ptt_retransmissions_coalesce_history();
     fail += test_raw_ptt_signature_changes_open_epochs();
     fail += test_raw_ptt_boundary_invalidation();
@@ -3358,7 +3382,7 @@ main(void) {
     fail += test_p1_clear_conflict_restarts_deadline();
     fail += test_p1_grant_hdu_conflict_survives_first_active();
     fail += test_p1_follow_mode_preserves_grant_conflict_deadline();
-    fail += test_p1_pending_identity_restarts_crypto_without_hdu();
+    fail += run_on_test_decode_clock(test_p1_pending_identity_restarts_crypto_without_hdu);
     fail += test_identified_followup_without_service_restarts_crypto_pending();
     fail += test_missed_end_identity_change_without_service_restarts_crypto_pending();
     fail += test_conventional_end_is_follower_noop();
@@ -3368,7 +3392,7 @@ main(void) {
     fail += test_conventional_unknown_service_stays_unconfirmed();
     fail += test_end_clears_voice();
     fail += test_tdma_boundaries_only_hang_after_last_assigned_voice();
-    fail += test_tdma_idle_ends_voice_with_newer_grant();
+    fail += run_on_test_decode_clock(test_tdma_idle_ends_voice_with_newer_grant);
     fail += test_anonymous_followup_restarts_crypto_pending();
     fail += test_source_less_duplicate_grant_republishes_crypto();
     fail += test_unassigned_companion_start_is_rejected();
@@ -3383,7 +3407,7 @@ main(void) {
     fail += test_tdma_enc_lockout_slot_does_not_block_release();
     fail += test_tdma_single_slot_end_retains_carrier();
     fail += test_tdma_end_identity_and_order_guards();
-    fail += test_tdma_facch_double_end_release();
+    fail += run_on_test_decode_clock(test_tdma_facch_double_end_release);
     fail += test_tdma_facch_double_end_release_placeholder_src();
     fail += test_tdma_facch_double_end_window_runs_on_the_decode_clock();
     fail += test_identityless_reentry_mac_end_identities_run_on_the_decode_clock();

@@ -1349,6 +1349,10 @@ dsd_decode_clock_use_system(); /* on every return path */
 - Time moves only when the test moves it. A loop that waits for decode time to pass steps the clock itself, as the P25
   call-skip case in `P25_P2_FRAME_LOCKOUT_SM` does, 100 ms a voice burst. Unstepped, it never ends on TEST, and on
   SYSTEM it sits out the whole window in real time.
+- A case that orders two stamps, such as a stop and the start that follows it, runs on TEST and steps between the two
+  events. On SYSTEM, two events sent back to back can land in one reading of a coarse clock (a virtualised CI runner),
+  so a strict comparison fails now and then: `P25_SM_UNIFIED_CORE` runs such cases through
+  `run_on_test_decode_clock()` and steps with `decode_clock_step()` (issue #619).
 - The source is process-wide, so put it back with `dsd_decode_clock_use_system()` on every return path, failures
   included, or the next case in the binary inherits it. Leaving TEST carries no value into SYSTEM. Leaving REPLAY does:
   SYSTEM's monotonic reads then go on from the replay's capture time for the rest of the process, so a case that runs
