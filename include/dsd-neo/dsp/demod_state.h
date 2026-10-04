@@ -267,6 +267,8 @@ struct demod_state {
     int squelch_auto_ran;
     int squelch_context_applied_set;
     dsd_squelch_floor_key squelch_context_applied;
+    /* The floor cache's clock when the tracker last ran: its floor ages from there while it does not. */
+    double squelch_floor_active_s;
     /* What the tracker's plan was designed for: the channel rate, the channel filter's plan and the half-band stage
        ahead of it (0 none, else its tap count). */
     int squelch_plan_rate_hz;

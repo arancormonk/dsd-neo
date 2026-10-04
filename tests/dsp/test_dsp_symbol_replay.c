@@ -3852,6 +3852,20 @@ test_auto_squelch_gates_each_sample(void) {
     assert(g_chain_runs == 2 && g_chain_run_len[0] == 480U && g_chain_run_flags[0] == DSD_ANALOG_AUDIO_PLAYING);
     assert(g_chain_run_len[1] == 480U && g_chain_run_flags[1] == 0U);
 
+    /* The block gate wins over the per-sample one: a block it rejects (digital sync here; a muted output, a retune
+       still landing and the tone policy alike) plays nothing, not even the fade out of the open block before it. */
+    feed_flagged_block(&opts, &state, 1000.0f, 960U, 960U);
+    const int written_open = g_monitor_blocks;
+    state.carrier = 1;
+    feed_flagged_block(&opts, &state, 1000.0f, 960U, 960U);
+    assert(g_monitor_blocks == written_open);
+    state.carrier = 0;
+    /* After it the gate opens from silence: the 5 ms ramp, not the old gain. */
+    feed_flagged_block(&opts, &state, 1000.0f, 960U, 960U);
+    assert(g_monitor_blocks == written_open + 1);
+    DSD_MEMCPY(out, g_played, sizeof out);
+    assert(out[0] > 0 && out[0] < 10);
+
     /* Closed past the hangover, so nothing before carries over: then a silent carrier, zero audio with every sample
        open. The tap holds the row on it. */
     for (int b = 0; b < 15; b++) {

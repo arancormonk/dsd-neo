@@ -117,13 +117,22 @@ dsd_scan_row_edit_value_valid(unsigned int mode, uint32_t field, const dsd_scan_
     }
 }
 
+/* Whether @p margin_db is an auto squelch margin; a level edit carries none, or the one it last had. */
+static int
+scan_row_edit_margin_valid(int margin_db) {
+    return margin_db >= DSD_SQUELCH_MARGIN_MIN_DB && margin_db <= DSD_SQUELCH_MARGIN_MAX_DB;
+}
+
 static void
 scan_row_edit_copy_value(dsd_scan_row_edit_value* dst, uint32_t field, const dsd_scan_row_edit_value* src) {
     switch (field) {
         case DSD_SCAN_ROW_FIELD_SQUELCH:
             dst->squelch_db = src->squelch_db;
             dst->squelch_mode = src->squelch_mode;
-            dst->squelch_margin_db = src->squelch_margin_db;
+            /* A level without a margin keeps the one the field had, which Auto starts from again. */
+            if (scan_row_edit_margin_valid(src->squelch_margin_db)) {
+                dst->squelch_margin_db = src->squelch_margin_db;
+            }
             break;
         case DSD_SCAN_ROW_FIELD_WIDTH: dst->width_hz = src->width_hz; break;
         case DSD_SCAN_ROW_FIELD_TONE:
@@ -225,7 +234,10 @@ dsd_scan_row_edit_apply(const dsd_scan_option_values* row, const dsd_scan_row_ed
         out->present |= DSD_SCAN_OPT_SQUELCH;
         out->squelch_mode =
             edit->value.squelch_mode == DSD_SQUELCH_MODE_AUTO ? DSD_SQUELCH_MODE_AUTO : DSD_SQUELCH_MODE_LEVEL;
-        out->squelch_margin_db = edit->value.squelch_margin_db;
+        /* A level edit without a margin keeps the row's own (its list's auto margin), as the setting keeps one. */
+        if (scan_row_edit_margin_valid(edit->value.squelch_margin_db)) {
+            out->squelch_margin_db = edit->value.squelch_margin_db;
+        }
         out->squelch_db = out->squelch_mode == DSD_SQUELCH_MODE_AUTO ? 0 : edit->value.squelch_db;
     } else if (edit->inherit & DSD_SCAN_ROW_FIELD_SQUELCH) {
         out->present &= ~(uint32_t)DSD_SCAN_OPT_SQUELCH;

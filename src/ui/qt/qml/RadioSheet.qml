@@ -485,8 +485,10 @@ ModalSheet {
         pendingSquelchMargin = NaN;
         pendingSquelch = db;
         squelchTtl.restart();
+        // A row keeps its margin through a level, for a switch back to Auto.
         if (rowSquelch)
-            rowEdit(commands.scanRowFieldSquelch, commands.scanRowEditSet, {"squelchDb": Math.round(db)});
+            rowEdit(commands.scanRowFieldSquelch, commands.scanRowEditSet,
+                {"squelchDb": Math.round(db), "squelchMarginDb": squelchMargin});
         else
             commands.setSquelchDb(db);
     }

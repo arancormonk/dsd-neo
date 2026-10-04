@@ -53,6 +53,8 @@ enum {
     DSD_SQUELCH_FLOOR_LEARN_NEED = 5,
     /** Entries in the per-channel floor cache. */
     DSD_SQUELCH_FLOOR_CACHE_SIZE = 256,
+    /** Seconds of sample time after which a floor is stale: a cached one, or one its tracker kept without running. */
+    DSD_SQUELCH_FLOOR_STALE_S = 1800,
 };
 
 /** @brief How far the floor is known (dsd_squelch_floor::state). */

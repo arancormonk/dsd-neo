@@ -117,6 +117,17 @@ new_monitor(int am, int rate_out, int post_downsample, int width_hz) {
     return s;
 }
 
+/* Frees a demod from new_monitor() with what full_demod() allocated for it (the post-decimator's taps and history). */
+void
+free_monitor(demod_state* s) {
+    if (!s) {
+        return;
+    }
+    dsd_neo_aligned_free(s->post_polydecim_taps);
+    dsd_neo_aligned_free(s->post_polydecim_hist);
+    dsd_neo_aligned_free(s);
+}
+
 struct Block {
     std::vector<float> lowpassed; /* the channel filter's output */
     std::vector<float> result;
@@ -229,7 +240,7 @@ fm_flags_follow_the_tracker(void) {
     if (s->result_flags_active) {
         rc |= fail("flags off the analog monitor");
     }
-    dsd_neo_aligned_free(s);
+    free_monitor(s);
     return rc;
 }
 
@@ -283,7 +294,7 @@ plan_follows_the_channel(void) {
     if (!dsd_squelch_floor_plan_equal(&want, &s->squelch_floor.plan)) {
         rc |= fail("no channel filter, but the plan has taps");
     }
-    dsd_neo_aligned_free(s);
+    free_monitor(s);
     return rc;
 }
 
@@ -336,7 +347,7 @@ context_moves_the_floor(void) {
     if (s->squelch_floor.samples == 0U || s->squelch_floor.samples > 300U) {
         rc |= fail("windows ran on across a stream reset");
     }
-    dsd_neo_aligned_free(s);
+    free_monitor(s);
     return rc;
 }
 
@@ -367,7 +378,52 @@ cache_ages_in_every_mode(void) {
                     s->squelch_cache.clock_s);
         rc |= 1;
     }
-    dsd_neo_aligned_free(s);
+    free_monitor(s);
+    return rc;
+}
+
+/* The floor a tracker kept through a spell without running ages like a cached one: back on its channel after more than
+   the staleness under the level squelch, it is learned again; back on another channel, it is not stored for its own
+   with a fresh stamp. A short spell keeps it. */
+int
+idle_floor_goes_stale(void) {
+    const int rate = 24000;
+    const std::vector<float> iq = make_signal(rate, 1.0, 0.0, 0.0, 0, 0x57A1EULL);
+    int rc = 0;
+    for (int other_channel = 0; other_channel < 2; other_channel++) {
+        for (int long_spell = 0; long_spell < 2; long_spell++) {
+            demod_state* s = new_monitor(0, rate, 1, 12500);
+            if (!s) {
+                return fail("alloc");
+            }
+            for (int at = 0; at < rate; at += 1000) {
+                (void)run_block(s, &iq[(size_t)at * 2U], 1000);
+            }
+            if (s->squelch_floor.state != DSD_SQUELCH_FLOOR_KNOWN) {
+                rc |= fail("no floor learned before the spell");
+            }
+            /* The spell: level-squelch blocks, then the time it lasted (as that many blocks would count it). */
+            s->squelch_mode = DSD_SQUELCH_MODE_LEVEL;
+            (void)run_block(s, iq.data(), 1000);
+            dsd_squelch_floor_cache_advance(&s->squelch_cache,
+                                            long_spell ? (double)DSD_SQUELCH_FLOOR_STALE_S + 60.0 : 600.0);
+            s->squelch_mode = DSD_SQUELCH_MODE_AUTO;
+            if (other_channel) {
+                s->squelch_context.freq_hz = 172475000;
+                (void)run_block(s, iq.data(), 1000);
+                s->squelch_context.freq_hz = 162475000;
+            }
+            (void)run_block(s, iq.data(), 10);
+            const int kept = s->squelch_floor.state != DSD_SQUELCH_FLOOR_LEARNING;
+            if (kept == long_spell) {
+                DSD_FPRINTF(stderr, "squelch auto demod: after a %s spell%s the floor was %s\n",
+                            long_spell ? "long" : "short", other_channel ? " via another channel" : "",
+                            kept ? "kept" : "lost");
+                rc |= 1;
+            }
+            free_monitor(s);
+        }
+    }
     return rc;
 }
 
@@ -418,7 +474,7 @@ am_detector_follows_the_flags(void) {
         DSD_FPRINTF(stderr, "squelch auto demod: AM onsets %d, onset peak %.3f\n", onsets, (double)worst_onset);
         rc |= 1;
     }
-    dsd_neo_aligned_free(s);
+    free_monitor(s);
     return rc;
 }
 
@@ -489,7 +545,7 @@ post_decimation_maps_flags(int fallback) {
                     fallback ? "fallback" : "polyphase", got.size(), want.size(), transitions);
         rc |= 1;
     }
-    dsd_neo_aligned_free(s);
+    free_monitor(s);
     dsd_demod_test_fail_post_polydecim_alloc(0);
     return rc;
 }
@@ -641,7 +697,7 @@ low_pass_real_maps_flags(void) {
         acc -= rate;
         want.push_back(inputs[n]);
     }
-    dsd_neo_aligned_free(s);
+    free_monitor(s);
     return got == want ? 0 : fail("low_pass_real() flags");
 }
 
@@ -663,7 +719,7 @@ flags_do_not_depend_on_block_cuts(void) {
             Block b = run_block(s, &iq[(size_t)at * 2U], pairs);
             runs[v].insert(runs[v].end(), b.flags.begin(), b.flags.end());
         }
-        dsd_neo_aligned_free(s);
+        free_monitor(s);
     }
     int transitions = 0;
     for (size_t k = 1; k < runs[0].size(); k++) {
@@ -684,6 +740,7 @@ main(void) {
     rc |= plan_follows_the_channel();
     rc |= context_moves_the_floor();
     rc |= cache_ages_in_every_mode();
+    rc |= idle_floor_goes_stale();
     rc |= am_detector_follows_the_flags();
     rc |= post_decimation_maps_flags(0);
     rc |= post_decimation_maps_flags(1);

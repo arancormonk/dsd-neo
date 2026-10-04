@@ -1407,7 +1407,8 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   `configuredSquelchLevelOff` says whether it is off). The channel-map review and target preview carry a row's own
   auto squelch as `squelch_margin_db` (`dsd_csv_channel_profile`, `dsd_app_scan_csv_target`; Qt `squelchMarginDb`). `DSD_APP_CMD_RTL_SET_SQL_SETTING` (`dsd_app_squelch_setting_payload`,
   `svc_rtl_set_sql_setting()`) sets a whole setting on the configured default as `RTL_SET_SQL_DB` sets a level, and a
-  scan row edit carries `squelch_mode`/`squelch_margin_db` (AUTO on an nfm or am row only). Tests:
+  scan row edit carries `squelch_mode`/`squelch_margin_db` (AUTO on an nfm or am row only; a level edit without a
+  margin keeps the one the row had, its list's or the last edited, for a switch back to Auto). Tests:
   `APP_CONTROL_SQUELCH_VIEW`, `APP_COMMAND_QUEUE`, `UI_MENU_CALLBACKS`, `UI_MENU_LABELS_RADIO`,
   `UI_QT_METRICS_MODEL`, `UI_QT_QML_CALL_LISTS` (`tst_radio_squelch_auto.qml`).
   `include/dsd-neo/app_control/rtl_gain_view.h` and `src/app_control/rtl_gain_view.c` do the same for the tuner gain
@@ -1846,7 +1847,9 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   device, channel rate, capture chain), stale after 30 minutes of sample time, which every block counts in every mode
   (`squelch_cache_age()`, level squelch and digital included); a neighbour within 5 MHz seeds a floor provisionally.
   `dsd_demod_reset_filter_state()` (stream open, retunes, family switches, a replay's RESET) makes the next block take
-  its context afresh: at the same context it keeps the floor and starts the windows and coherence history over. Inside `full_demod()` (`squelch_auto_run()`) the tracker runs on an AUTO setting on the analog
+  its context afresh: at the same context it keeps the floor and starts the windows and coherence history over. A
+  floor the tracker kept through a spell without running ages the same way (`demod_state::squelch_floor_active_s`):
+  past `DSD_SQUELCH_FLOOR_STALE_S` it is learned again, neither kept nor stored for its channel with a fresh stamp. Inside `full_demod()` (`squelch_auto_run()`) the tracker runs on an AUTO setting on the analog
   monitor (`dsd_demod_analog_monitor_active()`), with a plan for the channel filter in force, the half-band stage
   ahead of it (`hb31` for one pass, `hb15` for more) and the channel rate (`rate_out` x `post_downsample`), and nothing
   is zeroed: the level gate and the AM detector's squelched-block branch stand aside, the flags land in
@@ -1862,7 +1865,9 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   comparison is off, the audio chain runs each run of heard and unheard samples with its own playing flag
   (`symbol_process_unsynced_audio_runs()`: the AGC adapts to exactly what is heard and rolls back at the close), and
   the sink ramps each sample in over 5 ms and out over 10 ms after every filter (`symbol_apply_sink_gate()`), so a
-  closed stretch is exact silence and a block with nothing heard is not written. The receive tap reads the flags too
+  closed stretch is exact silence and a block with nothing heard is not written. A block the block gate rejects (a
+  muted output, digital sync, a retune still landing, the tone policy) plays nothing, not even a fade, and the next
+  open sample ramps in from silence. The receive tap reads the flags too
   (`dsd_analog_rx_tap_flags()`): a read is a carrier when any of its samples is open
   (`DSD_ANALOG_RX_SQUELCH_CARRIER`, with no energy floor), so a silent carrier holds the scan row. Every other squelch
   comparison goes through `<dsd-neo/runtime/squelch.h>` (`dsd_squelch_level_in_force()`, `dsd_squelch_level_open()`,

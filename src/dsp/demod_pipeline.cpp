@@ -1564,7 +1564,9 @@ squelch_flag_histories_reset(struct demod_state* d) {
 }
 
 /* The tracker takes the context it runs in: a gap since it last ran starts its windows over, and a new context moves
-   the floor (remembered for the context left, seeded from the cache for the one taken, or learned). */
+   the floor (remembered for the context left, seeded from the cache for the one taken, or learned). A floor kept
+   through a gap ages like a cached one: past DSD_SQUELCH_FLOOR_STALE_S of sample time (the level squelch, digital
+   traffic) it is learned again, neither kept nor stored for its channel with a fresh stamp. */
 static void
 squelch_auto_take_context(struct demod_state* d) {
     dsd_squelch_floor* t = &d->squelch_floor;
@@ -1572,6 +1574,10 @@ squelch_auto_take_context(struct demod_state* d) {
         d->squelch_context_applied_set && dsd_squelch_floor_key_equal(&d->squelch_context_applied, &d->squelch_context);
     if (d->squelch_auto_ran && same) {
         return;
+    }
+    if (d->squelch_context_applied_set
+        && d->squelch_cache.clock_s - d->squelch_floor_active_s > (double)DSD_SQUELCH_FLOOR_STALE_S) {
+        dsd_squelch_floor_reset(t);
     }
     if (same) {
         dsd_squelch_floor_restart_windows(t);
@@ -1602,6 +1608,7 @@ squelch_auto_run(struct demod_state* d) {
     squelch_auto_take_context(d);
     d->squelch_auto_ran = 1;
     dsd_squelch_floor_process(t, d->lowpassed, d->lp_len >> 1, d->result_flags);
+    d->squelch_floor_active_s = d->squelch_cache.clock_s;
     d->result_flags_active = 1;
 }
 

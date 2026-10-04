@@ -1468,6 +1468,12 @@ symbol_process_unsynced_audio_runs(const dsd_opts* opts, dsd_state* state, unsig
    Returns 1 when any sample of the block is heard at all, which the block is written for. */
 static int
 symbol_apply_sink_gate(const dsd_opts* opts, dsd_state* state, unsigned int analog_block, int allowed) {
+    if (!allowed) {
+        /* The block gate rejected the whole block (a muted output, digital sync, a retune still landing, the tone
+           policy): none of it plays, not even a fade, as under a level squelch, and the next open sample ramps in. */
+        state->analog_sink_gain = 0.0f;
+        return 0;
+    }
     const double rate = (double)symbol_analog_audio_rate_hz(opts);
     const float up = (float)(1.0 / (rate * 0.005));
     const float down = (float)(1.0 / (rate * 0.010));

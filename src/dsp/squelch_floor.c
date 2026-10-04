@@ -45,7 +45,7 @@ enum { SQF_SEED_AGREE = 3, SQF_SHIFT_WINDOWS = 125 };
 
 static const double k_collapse_ratio = 0.01;
 /* Cache: entries older than 30 minutes of sample time are stale; a neighbour is within 5 MHz. */
-static const double k_cache_stale_s = 1800.0;
+static const double k_cache_stale_s = (double)DSD_SQUELCH_FLOOR_STALE_S;
 static const int64_t k_cache_neighbour_hz = 5000000;
 /* Relative tolerance for plans that classify the same way. */
 static const double k_plan_same = 1e-12;
