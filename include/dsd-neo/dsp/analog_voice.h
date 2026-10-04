@@ -30,6 +30,8 @@ typedef enum {
     DSD_VOICE_BAND_FM = 0,
     /** 4th-order Butterworth high-pass at 200 Hz (AM carries no sub-audible signalling), then the same low-pass. */
     DSD_VOICE_BAND_AM = 1,
+    /** The 3400 Hz low-pass alone: an anti-alias filter ahead of keeping one sample in N to reach 8 kHz. */
+    DSD_VOICE_BAND_LOWPASS = 2,
 } dsd_voice_band_kind;
 
 /** One second-order section in transposed direct form II, coefficients normalised to a0 = 1. */

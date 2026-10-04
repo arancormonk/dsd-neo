@@ -100,7 +100,7 @@ design_elliptic_highpass(dsd_voice_bandpass* bp, int rate_hz) {
 
 int
 dsd_voice_bandpass_design(dsd_voice_bandpass* bp, dsd_voice_band_kind kind, int rate_hz) {
-    if (!bp || (kind != DSD_VOICE_BAND_FM && kind != DSD_VOICE_BAND_AM)) {
+    if (!bp || (kind != DSD_VOICE_BAND_FM && kind != DSD_VOICE_BAND_AM && kind != DSD_VOICE_BAND_LOWPASS)) {
         return -1;
     }
     DSD_MEMSET(bp, 0, sizeof *bp);
@@ -114,7 +114,7 @@ dsd_voice_bandpass_design(dsd_voice_bandpass* bp, dsd_voice_band_kind kind, int 
         if (k_fm_hp_edge_hz < limit) {
             (void)design_elliptic_highpass(bp, rate_hz);
         }
-    } else if (k_am_hp_hz < limit) {
+    } else if (kind == DSD_VOICE_BAND_AM && k_am_hp_hz < limit) {
         for (int i = 0; i < 2; i++) {
             rbj_section(&bp->sec[bp->sections++], 1, k_am_hp_hz, k_butterworth4_q[i], rate_hz);
         }

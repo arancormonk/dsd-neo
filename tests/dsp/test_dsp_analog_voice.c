@@ -210,8 +210,10 @@ test_process_matches_design(void) {
         int fs;
         double hz;
     } cases[] = {
-        {DSD_VOICE_BAND_FM, 48000, 1000.0}, {DSD_VOICE_BAND_FM, 48000, 151.4}, {DSD_VOICE_BAND_FM, 8000, 254.1},
-        {DSD_VOICE_BAND_FM, 22050, 3000.0}, {DSD_VOICE_BAND_AM, 48000, 300.0}, {DSD_VOICE_BAND_AM, 8000, 1000.0},
+        {DSD_VOICE_BAND_FM, 48000, 1000.0},      {DSD_VOICE_BAND_FM, 48000, 151.4},
+        {DSD_VOICE_BAND_FM, 8000, 254.1},        {DSD_VOICE_BAND_FM, 22050, 3000.0},
+        {DSD_VOICE_BAND_AM, 48000, 300.0},       {DSD_VOICE_BAND_AM, 8000, 1000.0},
+        {DSD_VOICE_BAND_LOWPASS, 48000, 1000.0}, {DSD_VOICE_BAND_LOWPASS, 48000, 7000.0},
     };
 
     for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
@@ -336,6 +338,31 @@ test_bandpass_reset_and_nonfinite(void) {
         same &= same_bits(&with_bad[i], &clean[j++], 1);
     }
     CHECK(same, "a non-finite sample changed the filter state");
+}
+
+/* The low-pass kind is the band-pass's 3400 Hz low-pass alone: a bilinear Butterworth prewarped to its corner, so its
+   response is 1 / (1 + (tan(pi f / fs) / tan(pi 3400 / fs))^8) at every rate that keeps it. */
+static void
+test_lowpass_kind(void) {
+    for (size_t r = 0; r < sizeof k_rates / sizeof k_rates[0]; r++) {
+        const int fs = k_rates[r];
+        dsd_voice_bandpass bp;
+        CHECK(dsd_voice_bandpass_design(&bp, DSD_VOICE_BAND_LOWPASS, fs) == 0 && bp.sections == 2,
+              "low-pass at %d Hz: %d sections", fs, bp.sections);
+        const double hz[] = {300.0, 1000.0, 3400.0, 3900.0, 7000.0, 12000.0};
+        for (size_t i = 0; i < sizeof hz / sizeof hz[0]; i++) {
+            if (hz[i] >= 0.5 * (double)fs) {
+                continue;
+            }
+            const double ratio = tan(M_PI * hz[i] / (double)fs) / tan(M_PI * 3400.0 / (double)fs);
+            const double want = -10.0 * log10(1.0 + pow(ratio, 8.0));
+            const double got = dsd_voice_bandpass_gain_db(&bp, hz[i]);
+            CHECK(fabs(got - want) < 1e-6, "low-pass at %d Hz, %.0f Hz: %.6f dB, want %.6f", fs, hz[i], got, want);
+        }
+    }
+    dsd_voice_bandpass bp;
+    CHECK(dsd_voice_bandpass_design(&bp, DSD_VOICE_BAND_LOWPASS, 7000) == 0 && bp.sections == 0,
+          "low-pass at 7 kHz: %d sections", bp.sections);
 }
 
 /* ---- legacy one-pole filters ---- */
@@ -863,6 +890,7 @@ main(void) {
     test_stability();
     test_section_skip_and_passthrough();
     test_bandpass_reset_and_nonfinite();
+    test_lowpass_kind();
     test_onepole();
     test_shaped_dcs_rejection();
     test_bandpass_partition_invariance();

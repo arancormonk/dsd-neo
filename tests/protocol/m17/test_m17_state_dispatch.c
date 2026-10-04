@@ -21,6 +21,10 @@
 #include <dsd-neo/protocol/m17/m17.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/m17_udp_hooks.h>
+#include <dsd-neo/runtime/net_audio_input_hooks.h>
+#ifdef USE_RADIO
+#include <dsd-neo/runtime/rtl_stream_io_hooks.h>
+#endif
 #include <dsd-neo/runtime/udp_audio_hooks.h>
 #include <math.h>
 #include <sndfile.h>
@@ -2420,6 +2424,162 @@ test_stream_voice_chain_onepoles_run_at_8k(void) {
     return expect_int("voice chain one-poles run at 8 kHz", ok, 1);
 }
 
+/* A tone the fake inputs below deliver, one sample per read at g_tone_rate_hz. */
+static double g_tone_hz;
+static double g_tone_amplitude;
+static double g_tone_phase;
+static int g_tone_rate_hz;
+
+static double
+next_tone_sample(void) {
+    const double v = g_tone_amplitude * sin(g_tone_phase);
+    g_tone_phase += 2.0 * 3.14159265358979323846 * g_tone_hz / (double)g_tone_rate_hz;
+    return v;
+}
+
+static void
+start_tone(double hz, double amplitude, int rate_hz) {
+    g_tone_hz = hz;
+    g_tone_amplitude = amplitude;
+    g_tone_phase = 0.0;
+    g_tone_rate_hz = rate_hz;
+}
+
+static int
+fake_udp_tone_read(dsd_opts* opts, int16_t* out) {
+    (void)opts;
+    if (out == NULL) {
+        return 0;
+    }
+    *out = (int16_t)lrint(next_tone_sample());
+    return 1;
+}
+
+/* The last frame encoder_read_db() read, for the saturation checks. */
+static short g_encoder_frame[160];
+
+/* Read 10 codec2 frames through the encoder's own input setup (m17_encoder_input_init() at @p rate_hz) and reader, and
+   return the last frame's level in dB over @p ref, with its peak in @p peak. */
+static double
+encoder_read_db(dsd_opts* opts, dsd_state* state, int rate_hz, double ref, double* peak) {
+    m17_encoder_input in;
+    m17_encoder_input_init(&in, rate_hz);
+    short out[160];
+    int ok = 1;
+    for (int b = 0; b < 10; b++) {
+        ok &= m17_encoder_read_block(opts, state, &in, out, 160U) == 1;
+    }
+    *peak = 0.0;
+    for (size_t i = 0; i < 160U; i++) {
+        const double a = fabs((double)out[i]);
+        *peak = a > *peak ? a : *peak;
+    }
+    DSD_MEMCPY(g_encoder_frame, out, sizeof g_encoder_frame);
+    return ok ? amplitude_db(out, 160U, ref) : 999.0;
+}
+
+static double
+encoder_udp_tone_db(double hz, double amplitude, int rate_hz, int volume, double* peak) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+    opts.audio_in_type = AUDIO_IN_UDP;
+    opts.input_volume_multiplier = volume;
+    start_tone(hz, amplitude, rate_hz);
+    dsd_net_audio_input_hooks_set((dsd_net_audio_input_hooks){.udp_read_sample = fake_udp_tone_read});
+    const double level = encoder_read_db(&opts, &state, rate_hz, amplitude, peak);
+    dsd_net_audio_input_hooks_set((dsd_net_audio_input_hooks){0});
+    return level;
+}
+
+/* Issue #618: every encoder input keeps one sample in INPUT_RATE / 8000, low-passed first. A PCM microphone at 48 kHz
+   passes 1 kHz whole and takes a 7 kHz tone, which used to fold onto 1 kHz at full level, more than 20 dB down; at
+   8 kHz nothing is filtered; a hot input saturates at full scale instead of wrapping. */
+static int
+test_encoder_pcm_input_is_anti_aliased(void) {
+    double peak = 0.0;
+    const double passed = encoder_udp_tone_db(1000.0, 8000.0, 48000, 1, &peak);
+    const double aliased = encoder_udp_tone_db(7000.0, 8000.0, 48000, 1, &peak);
+    const double native = encoder_udp_tone_db(1000.0, 8000.0, 8000, 1, &peak);
+    double hot_peak = 0.0;
+    (void)encoder_udp_tone_db(1000.0, 8000.0, 48000, 8, &hot_peak);
+    const int ok = fabs(passed) < 0.2 && aliased < -20.0 && fabs(native) < 0.05 && hot_peak >= 32767.0;
+    if (!ok) {
+        DSD_FPRINTF(stderr,
+                    "encoder PCM input: 1 kHz %.2f dB, 7 kHz alias %.2f dB, 8 kHz input %.2f dB, hot peak %.0f\n",
+                    passed, aliased, native, hot_peak);
+    }
+    return expect_int("encoder PCM input anti-aliased", ok, 1);
+}
+
+#ifdef USE_RADIO
+static int
+fake_rtl_tone_read(void* rtl_ctx, float* out, size_t count, int* out_got) {
+    (void)rtl_ctx;
+    if (out == NULL || out_got == NULL || count != 1U) {
+        return -1;
+    }
+    out[0] = (float)next_tone_sample();
+    *out_got = 1;
+    return 0;
+}
+
+static double
+fake_rtl_return_pwr(const void* rtl_ctx) {
+    (void)rtl_ctx;
+    return 0.0;
+}
+
+/* The level, in dB over the -12 dBFS reference peak, of a @p hz tone the RTL monitor delivers at 48 kHz with
+   @p amplitude, after the encoder's RTL input took it to 8 kHz at vol @p volume. */
+static double
+encoder_rtl_tone_db(double hz, double amplitude, int volume) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static int token;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.rtl_volume_multiplier = volume;
+    state.rtl_ctx = (struct RtlSdrContext*)&token;
+    start_tone(hz, amplitude, 48000);
+    dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){
+        .read = fake_rtl_tone_read,
+        .return_pwr = fake_rtl_return_pwr,
+    });
+    double peak = 0.0;
+    const double level = encoder_read_db(&opts, &state, 48000, 8231.0, &peak);
+    dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){0});
+    return level;
+}
+
+/* Issue #618: the encoder's RTL input reaches codec2 at PCM scale. The monitor's normalised samples (1 kHz at 3 kHz
+   deviation reads 0.125, 0.25 after the default vol 2) were converted to short as they stood, so every one rounded to 0
+   and codec2 encoded silence; the RTL monitor gain now takes that reference to -12 dBFS peak. The RTL input is
+   low-passed before one sample in six is kept too. */
+static int
+test_encoder_rtl_input_reaches_pcm_scale(void) {
+    const double reference = encoder_rtl_tone_db(1000.0, 0.125, 2);
+    const double aliased = encoder_rtl_tone_db(7000.0, 0.125, 2);
+    /* Full deviation at the top vol trim takes the reference far past int16 (0.5 x 3 x 32924): only the reader's
+       saturating conversion keeps it there, at full scale in both polarities, where a plain cast would wrap. */
+    (void)encoder_rtl_tone_db(1000.0, 0.5, 3);
+    short lo = 0;
+    short hi = 0;
+    for (size_t i = 0; i < 160U; i++) {
+        lo = g_encoder_frame[i] < lo ? g_encoder_frame[i] : lo;
+        hi = g_encoder_frame[i] > hi ? g_encoder_frame[i] : hi;
+    }
+    const int ok = fabs(reference) < 0.2 && aliased < -20.0 && hi == 32767 && lo == -32768;
+    if (!ok) {
+        DSD_FPRINTF(stderr, "encoder RTL input: 1 kHz reference %.2f dB, 7 kHz alias %.2f dB, hot %d..%d\n", reference,
+                    aliased, lo, hi);
+    }
+    return expect_int("encoder RTL input reaches PCM scale, anti-aliased, saturating", ok, 1);
+}
+#endif
+
 int
 main(void) {
     int err = 0;
@@ -2442,6 +2602,10 @@ main(void) {
     err |= test_unconfirmed_stream_publishes_no_call();
     err |= test_stream_voice_chain_covers_the_whole_frame();
     err |= test_stream_voice_chain_onepoles_run_at_8k();
+    err |= test_encoder_pcm_input_is_anti_aliased();
+#ifdef USE_RADIO
+    err |= test_encoder_rtl_input_reaches_pcm_scale();
+#endif
 #ifdef USE_CODEC2
     err |= test_stream_voice_3200_dispatch_routes_pair_audio_to_udp();
     err |= test_stream_voice_1600_dispatch_routes_single_audio_to_udp();
