@@ -18,7 +18,6 @@
 #include <sndfile.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 #include <sys/types.h>
 
@@ -247,59 +246,6 @@ read_short_file_samples(const char* path, short* out, size_t out_count) {
 }
 
 static int
-test_agsm_applies_gain_to_entire_block(void) {
-    static dsd_opts opts = {0};
-    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
-    if (!state) {
-        DSD_FPRINTF(stderr, "FAIL: alloc state\n");
-        return 1;
-    }
-
-    short in[64];
-    for (int i = 0; i < 64; i++) {
-        in[i] = 1000;
-    }
-
-    agsm(&opts, state, in, 64);
-
-    int rc = 0;
-    /* nom/max = 4.8, clamped to 3.0 -> all samples should scale to 3000 */
-    for (int i = 0; i < 64; i++) {
-        char label[64];
-        DSD_SNPRINTF(label, sizeof label, "agsm scales sample %d", i);
-        rc |= expect_int_eq(label, in[i], 3000);
-    }
-    rc |= expect_float_close("agsm stores applied gain", state->aout_gainA, 3.0f, 1e-6f);
-
-    free(state);
-    return rc;
-}
-
-static int
-test_agsm_handles_silence_without_invalid_values(void) {
-    static dsd_opts opts = {0};
-    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
-    if (!state) {
-        DSD_FPRINTF(stderr, "FAIL: alloc state\n");
-        return 1;
-    }
-
-    short in[32] = {0};
-    agsm(&opts, state, in, 32);
-
-    int rc = 0;
-    for (int i = 0; i < 32; i++) {
-        char label[64];
-        DSD_SNPRINTF(label, sizeof label, "agsm keeps silent sample %d", i);
-        rc |= expect_int_eq(label, in[i], 0);
-    }
-    rc |= expect_true("agsm gain state is finite", isfinite(state->aout_gainA) ? 1 : 0);
-
-    free(state);
-    return rc;
-}
-
-static int
 test_audio_apply_gain_f32_multiplies_block(void) {
     float in[4] = {1.0f, -2.0f, 0.5f, 0.0f};
     audio_apply_gain_f32(in, 4, 2.5f);
@@ -443,7 +389,7 @@ test_upsample_repeats_into_selected_slot_buffer(void) {
 }
 
 static int
-test_manual_and_float_autogain_helpers(void) {
+test_manual_analog_gain_helper(void) {
     static dsd_opts opts = {0};
     static dsd_state state = {0};
     int rc = 0;
@@ -455,8 +401,8 @@ test_manual_and_float_autogain_helpers(void) {
     rc |= expect_int_eq("analog gain short negative", short_samples[1], -400);
     rc |= expect_int_eq("analog gain short zero", short_samples[2], 0);
 
-    /* The default 50% is 2.5x, so any sample past +/-13107 leaves the int16 range; it must
-       saturate like agsm() does, not wrap through an out-of-range conversion. */
+    /* 50% is 2.5x, so any sample past +/-13107 leaves the int16 range; it must saturate,
+       not wrap through an out-of-range conversion. */
     opts.audio_gainA = 50.0f;
     short loud_samples[6] = {20000, -20000, 13107, 13108, -13108, 32767};
     analog_gain(&opts, &state, loud_samples, 6);
@@ -467,29 +413,6 @@ test_manual_and_float_autogain_helpers(void) {
     rc |= expect_int_eq("analog gain first past the bottom", loud_samples[4], -32768);
     rc |= expect_int_eq("analog gain full scale", loud_samples[5], 32767);
 
-    opts.audio_gainA = 50.0f;
-    opts.audio_in_type = AUDIO_IN_RTL;
-    float rtl_samples[2] = {0.1f, -0.2f};
-    analog_gain_f(&opts, &state, rtl_samples, 2);
-    rc |= expect_float_close("analog gain rtl positive", rtl_samples[0], 1200.0f, 1e-3f);
-    rc |= expect_float_close("analog gain rtl negative", rtl_samples[1], -2400.0f, 1e-3f);
-
-    opts.audio_in_type = AUDIO_IN_WAV;
-    float wav_samples[2] = {100.0f, -200.0f};
-    analog_gain_f(&opts, &state, wav_samples, 2);
-    rc |= expect_float_close("analog gain wav positive", wav_samples[0], 250.0f, 1e-3f);
-    rc |= expect_float_close("analog gain wav negative", wav_samples[1], -500.0f, 1e-3f);
-
-    float auto_samples[2] = {1.0f, -0.5f};
-    agsm_f(&opts, &state, auto_samples, 2);
-    rc |= expect_float_close("agsm_f positive", auto_samples[0], 4800.0f, 1e-3f);
-    rc |= expect_float_close("agsm_f negative", auto_samples[1], -2400.0f, 1e-3f);
-    rc |= expect_float_close("agsm_f stores gain", state.aout_gainA, 4800.0f, 1e-3f);
-
-    float quiet_samples[2] = {0.0f, 0.0f};
-    agsm_f(&opts, &state, quiet_samples, 2);
-    rc |= expect_float_close("agsm_f keeps silence", quiet_samples[0], 0.0f, 1e-6f);
-    rc |= expect_float_close("agsm_f caps silent gain", state.aout_gainA, 6000.0f, 1e-3f);
     return rc;
 }
 
@@ -549,7 +472,7 @@ test_process_audio_native_left_clamps_and_tracks_output(void) {
     rc |= expect_int_eq("left mirror negative", state.s_l[1], -32768);
     rc |= expect_int_eq("left native index", state.audio_out_idx, 160);
     rc |= expect_int_eq("left native long index", state.audio_out_idx2, 160);
-    rc |= expect_true("left output pointer advanced", state.audio_out_buf_p == state.audio_out_buf + 160);
+    rc |= expect_true("left output pointer advanced", state.audio_out_buf_p == out + 160);
     rc |= expect_float_close("left manual gain unchanged", state.aout_gain, 2.0f, 1e-6f);
     return rc;
 }
@@ -586,7 +509,7 @@ test_process_audio_native_right_clamps_and_tracks_output(void) {
     rc |= expect_int_eq("right mirror negative", state.s_r[1], -32768);
     rc |= expect_int_eq("right native index", state.audio_out_idxR, 160);
     rc |= expect_int_eq("right native long index", state.audio_out_idx2R, 160);
-    rc |= expect_true("right output pointer advanced", state.audio_out_buf_pR == state.audio_out_bufR + 160);
+    rc |= expect_true("right output pointer advanced", state.audio_out_buf_pR == out + 160);
     rc |= expect_float_close("right manual gain unchanged", state.aout_gainR, 3.0f, 1e-6f);
     return rc;
 }
@@ -666,7 +589,7 @@ test_process_audio_right_auto_gain_tracks_peak_history(void) {
     rc |= expect_true("right auto gain wraps history pointer", state.aout_max_buf_pR == state.aout_max_bufR);
     rc |= expect_int_eq("right auto gain output index", state.audio_out_idxR, 160);
     rc |= expect_int_eq("right auto gain long output index", state.audio_out_idx2R, 160);
-    rc |= expect_true("right auto gain output pointer advanced", state.audio_out_buf_pR == state.audio_out_bufR + 160);
+    rc |= expect_true("right auto gain output pointer advanced", state.audio_out_buf_pR == out + 160);
     return rc;
 }
 
@@ -704,9 +627,8 @@ test_process_audio_upsampled_left_clamps_and_tracks_output(void) {
     rc |= expect_int_eq("left upsample mirror negative", state.s_lu[6], -32768);
     rc |= expect_int_eq("left upsample index", state.audio_out_idx, 960);
     rc |= expect_int_eq("left upsample long index", state.audio_out_idx2, 960);
-    rc |= expect_true("left upsample output pointer advanced", state.audio_out_buf_p == state.audio_out_buf + 960);
-    rc |= expect_true("left upsample float pointer advanced",
-                      state.audio_out_float_buf_p == state.audio_out_float_buf + 960);
+    rc |= expect_true("left upsample output pointer advanced", state.audio_out_buf_p == out + 960);
+    rc |= expect_true("left upsample float pointer advanced", state.audio_out_float_buf_p == out_float + 960);
     return rc;
 }
 
@@ -746,9 +668,8 @@ test_process_audio_upsampled_right_clamps_and_tracks_output(void) {
     rc |= expect_int_eq("right upsample mirror negative", state.s_ru[6], -32768);
     rc |= expect_int_eq("right upsample index", state.audio_out_idxR, 960);
     rc |= expect_int_eq("right upsample long index", state.audio_out_idx2R, 960);
-    rc |= expect_true("right upsample output pointer advanced", state.audio_out_buf_pR == state.audio_out_bufR + 960);
-    rc |= expect_true("right upsample float pointer advanced",
-                      state.audio_out_float_buf_pR == state.audio_out_float_bufR + 960);
+    rc |= expect_true("right upsample output pointer advanced", state.audio_out_buf_pR == out + 960);
+    rc |= expect_true("right upsample float pointer advanced", state.audio_out_float_buf_pR == out_float + 960);
     return rc;
 }
 
@@ -783,8 +704,8 @@ test_play_synthesized_voice_slot_off_clears_pending_output(void) {
         DSD_SNPRINTF(label, sizeof label, "slot-off clears float %d", i);
         rc |= expect_float_close(label, out_float[i], 0.0f, 1e-6f);
     }
-    rc |= expect_true("slot-off short pointer reset", state.audio_out_buf_p == state.audio_out_buf + 100);
-    rc |= expect_true("slot-off float pointer reset", state.audio_out_float_buf_p == state.audio_out_float_buf + 100);
+    rc |= expect_true("slot-off short pointer reset", state.audio_out_buf_p == out + 100);
+    rc |= expect_true("slot-off float pointer reset", state.audio_out_float_buf_p == out_float + 100);
     rc |= expect_int_eq("slot-off index reset", state.audio_out_idx, 0);
     rc |= expect_int_eq("slot-off long index reset", state.audio_out_idx2, 0);
     return rc;
@@ -1257,13 +1178,11 @@ test_async_output_policy_keeps_file_replays_synchronous(void) {
 int
 main(void) {
     int rc = 0;
-    rc |= test_agsm_applies_gain_to_entire_block();
-    rc |= test_agsm_handles_silence_without_invalid_values();
     rc |= test_audio_apply_gain_f32_multiplies_block();
     rc |= test_audio_mono_to_stereo_duplicates_samples();
     rc |= test_audio_mix_helpers_apply_channel_gates();
     rc |= test_upsample_repeats_into_selected_slot_buffer();
-    rc |= test_manual_and_float_autogain_helpers();
+    rc |= test_manual_analog_gain_helper();
     rc |= test_agf_scales_nonzero_float_block_and_updates_slot_gain();
     rc |= test_process_audio_native_left_clamps_and_tracks_output();
     rc |= test_process_audio_native_right_clamps_and_tracks_output();

@@ -25,7 +25,6 @@
  *-----------------------------------------------------------------------------*/
 
 #include <dsd-neo/core/audio.h>
-#include <dsd-neo/core/audio_filters.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dibit.h>
@@ -38,6 +37,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/core/time_format.h>
+#include <dsd-neo/dsp/analog_audio.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/file_compat.h>
@@ -358,32 +358,39 @@ edacs_reset_digitize_overflow(dsd_state* state) {
     }
 }
 
-static void
-edacs_process_analog_triplet(dsd_opts* opts, dsd_state* state, short* analog1, short* analog2, short* analog3) {
-    if (opts->use_lpf == 1) {
-        lpf(state, analog1, 960);
-        lpf(state, analog2, 960);
-        lpf(state, analog3, 960);
-    }
-    if (opts->use_hpf == 1) {
-        dsd_hpf(state, analog1, 960);
-        dsd_hpf(state, analog2, 960);
-        dsd_hpf(state, analog3, 960);
-    }
-    if (opts->use_pbf == 1) {
-        pbf(state, analog1, 960);
-        pbf(state, analog2, 960);
-        pbf(state, analog3, 960);
-    }
+static int edacs_analog_call_muted(const dsd_opts* opts, const dsd_state* state);
 
-    if (opts->audio_gainA > 0.0f) {
-        analog_gain(opts, state, analog1, 960);
-        analog_gain(opts, state, analog2, 960);
-        analog_gain(opts, state, analog3, 960);
-    } else {
-        agsm(opts, state, analog1, 960);
-        agsm(opts, state, analog2, 960);
-        agsm(opts, state, analog3, 960);
+/* The rate EDACS analog voice arrives at: the RTL stream's output rate, or the PCM input's. */
+static int
+edacs_analog_rate_hz(const dsd_opts* opts) {
+#ifdef USE_RADIO
+    if (opts->audio_in_type == AUDIO_IN_RTL) {
+        const unsigned int rtl_rate = dsd_rtl_stream_metrics_hook_output_rate_hz();
+        if (rtl_rate > 0U) {
+            return (int)rtl_rate;
+        }
+    }
+#endif
+    const int rate = dsd_opts_current_input_timing_rate(opts);
+    return rate > 0 ? rate : 48000;
+}
+
+/* The analog voice chain (voice band-pass, legacy filters, then a fixed gain or the AGC) over the three blocks in
+   order. The symbol register is built from the raw first block before this, so decoding never sees the filters. On an
+   RTL input EDACS reads the FSK discriminator output; a call the talkgroup gate mutes does not move the AGC, and
+   @p first_of_call starts the chain over for another channel's call. */
+static void
+edacs_process_analog_triplet(const dsd_opts* opts, dsd_state* state, short* analog1, short* analog2, short* analog3,
+                             int first_of_call) {
+    const dsd_analog_audio_source source =
+        opts->audio_in_type == AUDIO_IN_RTL ? DSD_ANALOG_AUDIO_SOURCE_RTL_FSK : DSD_ANALOG_AUDIO_SOURCE_PCM16;
+    const int rate_hz = edacs_analog_rate_hz(opts);
+    const unsigned int flags = edacs_analog_call_muted(opts, state) ? 0U : DSD_ANALOG_AUDIO_PLAYING;
+    short* blocks[3] = {analog1, analog2, analog3};
+    for (int i = 0; i < 3; i++) {
+        const unsigned int reset = (first_of_call && i == 0) ? DSD_ANALOG_AUDIO_RESET : 0U;
+        (void)dsd_analog_audio_process_s(opts, state, DSD_ANALOG_AUDIO_CHAIN_EDACS, blocks[i], 960U, source, rate_hz,
+                                         flags | reset);
     }
 }
 
@@ -744,7 +751,11 @@ edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
         LOG_WARN("edacs_analog: SQL disabled (<=0). Enabling %.0fs fallback release watchdog.\n", no_sql_watchdog_s);
     }
 
+    int first_of_call = 1;
     while (!dsd_exitflag_load() && count > 0) {
+        /* The audio chain notes the reception the triplet begins in, so a retune landing while it is collected drops
+           all three blocks rather than play the old channel's samples (dsd_analog_audio_process_f()). */
+        dsd_analog_audio_block_begin(opts, state, DSD_ANALOG_AUDIO_CHAIN_EDACS);
         if (!edacs_collect_analog_triplet(opts, state, analog1, analog2, analog3, &pwr)) {
             return;
         }
@@ -752,7 +763,8 @@ edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
         unsigned long long int sr = edacs_build_symbol_register(opts, state, analog1);
 
         edacs_reset_digitize_overflow(state);
-        edacs_process_analog_triplet(opts, state, analog1, analog2, analog3);
+        edacs_process_analog_triplet(opts, state, analog1, analog2, analog3, first_of_call);
+        first_of_call = 0;
         edacs_emit_analog_audio(opts, state, analog1, analog2, analog3);
         (void)dsd_call_state_update_media(state, 0U, 1, 0.0);
 

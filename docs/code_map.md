@@ -541,6 +541,11 @@ The `Linux • RelWithDebInfo • ctest (x86-64-v3, fast-math, clang)` check enf
   duplicate into a link error. It is the only filter in that header that is prefixed: codec2 exports none of
   the others (`lpf`, `lpf_f`, `hpf_f`, `hpf_dL`, `hpf_dR`, `pbf`), so renaming them would break out-of-tree
   callers for no benefit. Out-of-tree callers of `hpf()` need updating
+- API note: `pbf()`/`pbf_f()` are pass-through shims since issue #518. The one-pole 8 kHz high-pass and 12 kHz
+  low-pass they ran was the analog monitor's default voice filter and took 1 kHz 18 dB down; the monitor's voice
+  band-pass is now `dsd_analog_audio_process_f()`'s (`<dsd-neo/dsp/analog_audio.h>`). They stay so out-of-tree callers
+  still link. `agsm()`, `agsm_f()` and `analog_gain_f()` are gone; `analog_gain()` stays as the M17 encoder's fixed
+  input gain.
 - API note: `<dsd-neo/core/channel_label.h>`'s `dsd_channel_label_current()` resolves the one label a frontend
   should show for the channel being listened to: the active `--trunk-scan` target id, else the name of the `-Y`
   scan-list row the receiver is parked on; `dsd_channel_label_current_source()` says which of the two it is, so a
@@ -564,9 +569,10 @@ The `Linux • RelWithDebInfo • ctest (x86-64-v3, fast-math, clang)` check enf
   direction the export uses. Every core CSV importer shares its token helpers through the module-private
   `src/core/file/csv_parse_internal.h`; the channel map's key column accepts decimal, `0x` hex and `<iden>-<chan>`
   spellings there.
-- State extension slots (`<dsd-neo/core/state_ext.h>`): engine owns 0, 1, 3 and 7; core 2, 4, 5, 8, 10 and 11;
-  runtime 6; DSP 9 (`DSD_STATE_EXT_DSP_ANALOG_RX`, taken from the core range as runtime took 6 from the engine's), the
-  analog receive working state. `CORE_STATE_EXT` pins slot 9.
+- State extension slots (`<dsd-neo/core/state_ext.h>`): engine owns 0, 1, 3 and 7; core 2, 4, 5, 8 and 11;
+  runtime 6; DSP 9 and 10 (taken from the core range as runtime took 6 from the engine's): 9 is
+  `DSD_STATE_EXT_DSP_ANALOG_RX`, the analog receive working state, and 10 `DSD_STATE_EXT_DSP_ANALOG_AUDIO`, the analog
+  monitor's audio chains. `CORE_STATE_EXT` pins both.
 - API note: `dsd_state::analog_rx` (`dsd_analog_rx_publication` in `<dsd-neo/core/state.h>`, issues #522 and #523) is
   the received-tone publication every frontend reads: int-only (`carrier_open`, `tone_kind`, `tone_state`,
   `ctcss_tenths_hz`, `dcs_code` (the code as its value, 023 octal = 19) and `dcs_inverted` for a DCS lock,
@@ -1491,8 +1497,8 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   `symbol_process_unsynced_analog()` offers the tap the block after every sample it adds, the one that completes the
   block included (`dsd_analog_rx_tap_partial()`), and the tap reads what is waiting once
   `DSD_ANALOG_RX_TAP_READ_MS` (20 ms) of input, at the input's current rate, has built up;
-  `symbol_finalize_unsynced_analog_block()` hands it the rest after the raw WAV write and before
-  `symbol_apply_unsynced_filters()`, whose in-place `hpf_f` (960 Hz) and `pbf_f` would remove every CTCSS tone. The
+  `symbol_finalize_unsynced_analog_block()` hands it the rest after the raw WAV write and before the audio chain
+  (`symbol_process_unsynced_audio()`), whose in-place voice band-pass takes every CTCSS tone 40 dB down. The
   block is 20 ms on RTL but 960 samples on PCM at any rate (384 ms at 2500 Hz), and read only at block ends the
   publication would trail the sample-time contract by up to a block. One decoder-thread tap covers RTL and PCM, sees
   only live (not seam-replayed) samples, only reads the block, and runs whatever `audio_out` says.
@@ -1591,8 +1597,8 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
     else keeps the verdict, so a dropout's silence alone never ends a lock or makes one. Deciding by the sample that
     closes a hop instead would let a carrier that keeps dropping out keep a stopped tone for good, once its openings
     missed every hop's end; this way each opening makes the two hops that read it count, and a dropout the hangover
-    allows leaves at most three hops in a row without one. Every threshold is a ratio, so the RTL live (~1/pi), replay
-    and int16 PCM scales read the same.
+    allows leaves at most three hops in a row without one. Every threshold is a ratio, so the RTL (~1/pi, live and
+    replay) and int16 PCM scales read the same.
   - `src/dsp/analog_dcs.c` is the DCS detector (issue #523), the first row of the table, so its lock outranks a CTCSS
     one. It undoes the front end's known 10 Hz DC blocker (`DSD_ANALOG_RX_DC_CORNER_HZ`) and puts a 0.5 Hz pole in its
     place, integrates each bit (the NRZ matched filter) at bit ends recovered by square-law timing recovery (the edge
@@ -1744,11 +1750,46 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   sensitive that is; the comment above `symbol_adjust_timing_nxdn()` records the five ways of damping it that were
   A/B'd on real captures and measured worse, so change it only with `tools/replay_ab.sh` evidence
   (`docs/testing.md`). The CQPSK path does not use any of this: it has a real timing loop in `costas.cpp`.
-- The analog monitor's audible output leaves `dsd_symbol.c` in `symbol_output_unsynced_analog()`, after the voice
-  filters and the gain stage (`symbol_apply_unsynced_filters()`: a fixed `analog_gain_f()` gain for any `-n`
-  above 0, 12000x for RTL/I-Q input at the default 50 and 2.5x for PCM inputs, and the per-block `agsm_f()` AGC only
-  at `-n 0`) and only while the squelch gate is open; for `audio_out_type == 8` it goes through `dsd_udp_audio_hook_blast_analog()` with a byte count of int16
-  mono samples.
+- The analog monitor's audible output leaves `dsd_symbol.c` in `symbol_output_unsynced_analog()`, after the audio
+  chain (`symbol_process_unsynced_audio()`, below) and only while the gate is open; for `audio_out_type == 8` it goes
+  through `dsd_udp_audio_hook_blast_analog()` with a byte count of int16 mono samples.
+- The analog audio chain (issue #518) is `src/dsp/analog_audio.c` (`<dsd-neo/dsp/analog_audio.h>`) over the pure cores
+  in `src/dsp/analog_voice.c` (`<dsd-neo/dsp/analog_voice.h>`): the voice band-pass (`use_pbf`, `-v 0x1`; FM: a
+  6th-order elliptic high-pass at 300 Hz that takes every CTCSS tone, and all else below 254.1 Hz, 40 dB down (a DCS
+  signal shaped below 300 Hz, as transmitters send it, about 32 dB, since its skirt reaches past 254 Hz), AM: a
+  Butterworth high-pass at 200 Hz; both a 3400 Hz Butterworth low-pass; `tools/design_voice_filters.py` derives the
+  prototype and every bound `DSP_ANALOG_VOICE` holds), the legacy 960 Hz one-pole low-pass and high-pass (`-v 0x2`,
+  `0x4`; the chain's own copies at its rate, not `dsd_state`'s `RCFilter`/`HRCFilter`), then the gain stage: `-n N` is
+  the source gain x N / 50, `-n 0` (the default) the AGC, a causal per-sample peak-envelope recurrence with no added
+  latency whose output depends only on the sample and playing-flag sequence (500 ms hold, 20 dB/s or 3 dB/s release by
+  where the input level sits, at most 18 dB over the reference gain, frozen under -36 dB of the reference and while not
+  playing, rolled back 250 ms when the gate closes). The source gain takes each source's reference signal to -12 dBFS
+  peak: RTL monitor audio after the `vol` trim (0.25 at the default 2: 1 kHz at 3 kHz deviation after the 1/pi output
+  scale, or AM at 50%) by 32924, the RTL FSK discriminator output (+/-30000: the -8 source monitor under digital
+  decoding, told by `rtl_symbol_cache_output_kind`, and EDACS on RTL) by 8231/30000, PCM by 1. Each chain (monitor,
+  EDACS) keeps its band-pass and AGC in `DSD_STATE_EXT_DSP_ANALOG_AUDIO`, allocated on first use (the fixed gain alone
+  if that fails), and starts over on `DSD_ANALOG_AUDIO_RESET` and on a change of source, rate or band. A block that
+  fills across a new reception -- a new RTL stream generation (RTL input), trunk-tuning generation or a boundary
+  `dsd_analog_rx_reset()` announces (`dsd_analog_audio_note_reception()`: a scan row commit, a reconnect, the legacy
+  `-Y` rigctl retune, which moves neither generation) -- is partly the channel before it: the caller notes when a block
+  starts filling (`dsd_analog_audio_block_begin()`; EDACS once for its three blocks), and the chain drops a block whose
+  reception moved since, silence out, whichever path collected it (the -8 source monitor's block too, where no tap
+  tracks the boundary), and starts over on the next one, which a block collected wholly after the boundary does at once.
+  The monitor chain runs the AM band whenever the monitor runs AM, a receiver ahead of PCM input (an AM scan row on
+  rigctl) included; EDACS and the FSK output always run FM. `symbol_finalize_unsynced_analog_block()` takes the block's
+  gate decision once, after the tap (`symbol_unsynced_audio_allowed()`, which has no side effects), and hands it to the
+  chain as the playing flag and to the sink, so the AGC adapts to exactly the audio that plays; a block that straddles a
+  retune or reset (`dsd_analog_rx_block_straddles_boundary()`), partly the old channel's and never played, goes in with
+  `DSD_ANALOG_AUDIO_DISCARD`: the chain neither filters it nor counts it, turns it into silence, and starts over with
+  the next block, so the old channel leaves nothing in the new one's filters. EDACS runs the EDACS chain with the
+  talkgroup gate as its playing flag and a reset per call, after the symbol register is read from the raw block. The M17
+  encoder keeps its own band-pass and AGC at 8 kHz in its stream context and runs them over the whole codec2 frame, 160
+  samples at 3200 bit/s and 320 at 1600 (`m17_voice_chain_process()`; an explicit `-n` keeps `analog_gain()`). The
+  analog_voice and analog_audio sources keep IEEE semantics under fast-math, which would fold away their
+  non-finite-sample guards. The published `dsd_state::aout_gainA` is the gain applied, in dB over the `-n 50` gain,
+  which the terminal shows as `G: Auto (+x dB)`. Tests: `DSP_ANALOG_VOICE`, `DSP_ANALOG_AUDIO`, `DSP_SYMBOL_REPLAY`
+  (`test_chain_playing_follows_the_sink`), `RTL_SYMBOL_CACHE_GENERATION` (source routing), `M17_STATE_DISPATCH`
+  (`test_stream_voice_chain_covers_the_whole_frame`), the `DECODE_IQ_ANALOG_*` level, parity and fixed-gain cases.
   The block (`dsd_state::analog_out_f`) collects unsynced samples in a digital session too, monitored or not (the
   CQPSK symbol-rate output excepted). `dsd_symbol_analog_block_reset()` (`<dsd-neo/dsp/symbol.h>`, decoder thread)
   drops a part-collected block; app-control and the channel-scan leave call it when the receive family changes. On an
@@ -2057,8 +2098,11 @@ Notes:
     same stream, live FM <-> AM against fresh opens via `rtl_stream_test_analog_kind_switch()`, at the same width too,
     the CQPSK-off profiles via `rtl_stream_test_am_monitor_symbol_profiles()`, the DSP menu's return from CQPSK to the
     FM or AM monitor, taken and refused where it lands, via `rtl_stream_test_monitor_return_from_cqpsk()`, and the live
-    output scale through `demod_write_output_block()` via `rtl_stream_test_monitor_output_scale()`: 1/pi for FM, none
-    for AM or digital output), `IO_RTL_RETUNE_PREPARE` (`rtl_stream_test_audio_monitor_retune_kind()`).
+    output scale through `demod_write_output_block()` via `rtl_stream_test_monitor_output_scale()`: 1/pi x rate / 48000
+    for FM at the rate the discriminator runs at (rate_out x post_downsample, which a fixed-grid device forces), so a
+    deviation plays at one level whatever the demod rate, none for AM or digital output; IQ replay runs
+    the live scale whatever an earlier session left, via
+    `rtl_stream_test_replay_output_scale()`), `IO_RTL_RETUNE_PREPARE` (`rtl_stream_test_audio_monitor_retune_kind()`).
   - The monitor's legacy `low_pass_real()` stage (`rate_in` to `rate_out2`) passes audio through: a live open sets both
     to the DSP bandwidth, and IQ replay (`controller_apply_replay_settings()`) sets `rate_out2` to the `rate_in` it
     takes from the capture, so only the rational resampler converts `rate_out` to the output rate. Test:

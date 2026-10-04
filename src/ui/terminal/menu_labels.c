@@ -19,6 +19,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/dsp/analog_audio.h>
 #include <dsd-neo/io/tcp_input.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/runtime/analog_channel.h>
@@ -311,21 +312,21 @@ lbl_p25p2_mod_lock(const void* v, char* b, size_t n) {
 const char*
 lbl_lpf(const void* v, char* b, size_t n) {
     const UiCtx* c = (const UiCtx*)v;
-    DSD_SNPRINTF(b, n, "Low-pass filter [%s]", onoff(c && c->opts && c->opts->use_lpf));
+    DSD_SNPRINTF(b, n, "Low-pass filter (960 Hz) [%s]", onoff(c && c->opts && c->opts->use_lpf));
     return b;
 }
 
 const char*
 lbl_hpf(const void* v, char* b, size_t n) {
     const UiCtx* c = (const UiCtx*)v;
-    DSD_SNPRINTF(b, n, "High-pass filter [%s]", onoff(c && c->opts && c->opts->use_hpf));
+    DSD_SNPRINTF(b, n, "High-pass filter (960 Hz) [%s]", onoff(c && c->opts && c->opts->use_hpf));
     return b;
 }
 
 const char*
 lbl_pbf(const void* v, char* b, size_t n) {
     const UiCtx* c = (const UiCtx*)v;
-    DSD_SNPRINTF(b, n, "Pulse-shaping band-pass [%s]", onoff(c && c->opts && c->opts->use_pbf));
+    DSD_SNPRINTF(b, n, "Voice band-pass [%s]", onoff(c && c->opts && c->opts->use_pbf));
     return b;
 }
 
@@ -892,7 +893,11 @@ const char*
 lbl_gain_ana(const void* v, char* b, size_t n) {
     const UiCtx* c = (const UiCtx*)v;
     const float g = (c && c->opts) ? c->opts->audio_gainA : 0.0f;
-    DSD_SNPRINTF(b, n, "Analog gain... [%d]", (int)g);
+    if (dsd_analog_gain_is_auto(g)) {
+        DSD_SNPRINTF(b, n, "Analog gain... [auto]");
+    } else {
+        DSD_SNPRINTF(b, n, "Analog gain... [%d]", (int)g);
+    }
     return b;
 }
 

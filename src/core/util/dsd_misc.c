@@ -369,69 +369,6 @@ HPFilter_Update(HPFilter* filter, float v_in) {
     return (filter->v_out[0]);
 }
 
-/********************************************************************************************************
- *                              BAND PASS FILTER
-********************************************************************************************************/
-
-static void
-PBFilter_Init(PBFilter* filter, float HPF_cutoffFreqHz, float LPF_cutoffFreqHz, float sampleTimeS) {
-
-    LPFilter_Init(&filter->lpf, LPF_cutoffFreqHz, sampleTimeS);
-    HPFilter_Init(&filter->hpf, HPF_cutoffFreqHz, sampleTimeS);
-
-    filter->out_in = 0.0;
-}
-
-static float
-PBFilter_Update(PBFilter* filter, float v_in) {
-
-    filter->out_in = HPFilter_Update(&filter->hpf, v_in);
-
-    filter->out_in = LPFilter_Update(&filter->lpf, filter->out_in);
-
-    return (filter->out_in);
-}
-
-/********************************************************************************************************
- *                              NOTCH FILTER
-********************************************************************************************************/
-
-static void
-NOTCHFilter_Init(NOTCHFilter* filter, float centerFreqHz, float notchWidthHz, float sampleTimeS) {
-
-    //filter frequency to angular (rad/s)
-    float w0_rps = 2.0 * PI * centerFreqHz;
-    float ww_rps = 2.0 * PI * notchWidthHz;
-
-    //pre warp center frequency
-    float w0_pw_rps = (2.0 / sampleTimeS) * tanf(0.5 * w0_rps * sampleTimeS);
-
-    //computing filter coefficients
-
-    filter->alpha = 4.0 + w0_rps * w0_pw_rps * sampleTimeS * sampleTimeS;
-    filter->beta = 2.0 * ww_rps * sampleTimeS;
-
-    //clearing input and output  buffers
-
-    for (uint8_t n = 0; n < 3; n++) {
-        filter->vin[n] = 0;
-        filter->vout[n] = 0;
-    }
-}
-
-static float
-clamp_cutoff(float hz, float sample_rate_hz, float frac_nyq) {
-    if (hz < 0.0f) {
-        return 0.0f;
-    }
-    float nyq = 0.5f * sample_rate_hz;
-    float max_hz = nyq * frac_nyq;
-    if (max_hz <= 0.0f) {
-        return hz;
-    }
-    return (hz > max_hz) ? max_hz : hz;
-}
-
 void
 init_audio_filters(dsd_state* state, int sample_rate_hz) {
     float analog_Fs = (sample_rate_hz > 0) ? (float)sample_rate_hz : 48000.0f;
@@ -449,17 +386,6 @@ init_audio_filters(dsd_state* state, int sample_rate_hz) {
     HPFilter_Init(&state->HRCFilterL, 960.0f, digital_Ts);
     LPFilter_Init(&state->RCFilterR, 960.0f, digital_Ts);
     HPFilter_Init(&state->HRCFilterR, 960.0f, digital_Ts);
-
-    //NOTE: PBFilter_init also inits a LPF and HPF, but on another set of filters, might be worth
-    //testing just using the PBFilter by itself and see how it does without the hpf used
-
-    //passband filter working (seems to be), notch filter unsure which values to use, doesn't have any appreciable affect when used as is
-    float hpf_cut = clamp_cutoff(8000.0f, analog_Fs, 0.9f);
-    float lpf_cut = clamp_cutoff(12000.0f, analog_Fs, 0.9f);
-    PBFilter_Init(&state->PBF, hpf_cut, lpf_cut, analog_Ts);
-    float notch_center = clamp_cutoff(1000.0f, analog_Fs, 0.9f);
-    float notch_width = clamp_cutoff(4000.0f, analog_Fs, 0.9f);
-    NOTCHFilter_Init(&state->NF, notch_center, notch_width, analog_Ts);
 }
 
 //FUNCTIONS for handing use of above filters
@@ -529,22 +455,21 @@ hpf_dR(dsd_state* state, short* input, int len) {
     }
 }
 
-// PBF short path
+/* The old "PBF" pair, a one-pole 8 kHz high-pass and 12 kHz low-pass that the monitor ran as its voice filter and
+   that took 1 kHz 18 dB down (issue #518). The monitor's voice band-pass is now dsd_analog_audio_process_f()'s; these
+   stay as pass-through shims so out-of-tree callers still link. */
 void
 pbf(dsd_state* state, short* input, int len) {
-    int i;
-    for (i = 0; i < len; i++) {
-        input[i] = (short)PBFilter_Update(&state->PBF, (float)input[i]);
-    }
+    (void)state;
+    (void)input;
+    (void)len;
 }
 
-// PBF float path for analog monitor
 void
 pbf_f(dsd_state* state, float* input, int len) {
-    int i;
-    for (i = 0; i < len; i++) {
-        input[i] = PBFilter_Update(&state->PBF, input[i]);
-    }
+    (void)state;
+    (void)input;
+    (void)len;
 }
 
 /*

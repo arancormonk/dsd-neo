@@ -138,52 +138,8 @@ agf(const dsd_opts* opts, dsd_state* state, float samp[160], int slot) {
     }
 }
 
-// Automatic gain for PCM16 mono paths (analog and selected digital modes).
-void
-agsm(dsd_opts* opts, dsd_state* state, short* input, int len) {
-    UNUSED(opts);
-
-    if (!input || len <= 0 || !state) {
-        return;
-    }
-
-    /* Target level for the analog monitor path (PCM16 scale). */
-    const float nom = 4800.0f;
-    float max_abs = 0.0f;
-    for (int i = 0; i < len; i++) {
-        float v = fabsf((float)input[i]);
-        if (v > max_abs) {
-            max_abs = v;
-        }
-    }
-
-    /* Avoid divide-by-zero on silence and keep behavior stable. */
-    if (max_abs < 1e-6f) {
-        max_abs = 1e-6f;
-    }
-
-    float coeff = fabsf(nom / max_abs);
-
-    /* Keep coefficient in a conservative range to limit pumping/noise lift. */
-    if (coeff > 3.0f) {
-        coeff = 3.0f;
-    }
-
-    /* Apply gain over the full block with explicit int16 saturation. */
-    for (int i = 0; i < len; i++) {
-        float scaled = (float)input[i] * coeff;
-        if (scaled > 32767.0f) {
-            scaled = 32767.0f;
-        } else if (scaled < -32768.0f) {
-            scaled = -32768.0f;
-        }
-        input[i] = (short)scaled;
-    }
-
-    state->aout_gainA = coeff; //store for internal use
-}
-
-// Manual analog gain control; uses a simple scalar derived from opts.
+// Manual analog gain for the M17 encoder's microphone input (-n N, N > 0): 0..100% maps to 0x..5x. The analog monitor's
+// gain stage, fixed or automatic, is dsd_analog_audio_process_f().
 void
 analog_gain(const dsd_opts* opts, dsd_state* state, short* input, int len) {
 
@@ -194,8 +150,8 @@ analog_gain(const dsd_opts* opts, dsd_state* state, short* input, int len) {
        reciprocal; 0.05f rounds up, so a whole-number setting never lands a step low under the truncating cast. */
     float gain = opts->audio_gainA * 0.05f;
 
-    /* Saturate to int16 as agsm() does: above 1x a loud sample leaves the range, and converting it to short would
-       wrap it to the opposite polarity. */
+    /* Saturate to int16: above 1x a loud sample leaves the range, and converting it to short would wrap it to the
+       opposite polarity. */
     for (i = 0; i < len; i++) {
         float scaled = (float)input[i] * gain;
         if (scaled > 32767.0f) {
@@ -204,69 +160,5 @@ analog_gain(const dsd_opts* opts, dsd_state* state, short* input, int len) {
             scaled = -32768.0f;
         }
         input[i] = (short)scaled;
-    }
-}
-
-// Automatic gain for float mono paths (analog monitor).
-// Native float version avoids repeated short<->float conversions.
-// Input is expected to be normalized ~[-1, 1] from the RTL demodulator.
-// Output should be scaled to int16 range for PulseAudio playback.
-void
-agsm_f(dsd_opts* opts, dsd_state* state, float* input, int len) {
-    int i;
-
-    UNUSED(opts);
-
-    float coeff = 0.0f;  //gain coefficient
-    float max = 0.0f;    //the highest sample value
-    float nom = 4800.0f; //target output level (int16 scale)
-
-    // Find max absolute value
-    for (i = 0; i < len; i++) {
-        if (fabsf(input[i]) > max) {
-            max = fabsf(input[i]);
-        }
-    }
-
-    // Avoid division by zero
-    if (max < 1e-6f) {
-        max = 1e-6f;
-    }
-
-    coeff = fabsf(nom / max);
-
-    // For normalized float input ~[-1,1], we need higher gain to reach int16 levels.
-    // Cap at 6000 to prevent extreme amplification on very quiet signals.
-    if (coeff > 6000.0f) {
-        coeff = 6000.0f;
-    }
-
-    // Apply the coefficient to bring the max value to our desired maximum value
-    for (i = 0; i < len; i++) {
-        input[i] *= coeff;
-    }
-
-    state->aout_gainA = coeff; //store for internal use
-}
-
-// Manual analog gain control for float paths.
-// Input may be normalized ~[-1, 1] (RTL) or PCM16-scale (WAV/other inputs).
-// Uses audio_in_type to determine if base scaling is needed.
-void
-analog_gain_f(const dsd_opts* opts, dsd_state* state, float* input, int len) {
-
-    int i;
-    UNUSED(state);
-
-    // RTL input (type 3) produces normalized [-1,1] samples and needs base scaling.
-    // All other input types (WAV, Pulse, TCP, etc.) produce PCM16-scale samples.
-    float base_scale = (opts->audio_in_type == AUDIO_IN_RTL) ? 4800.0f : 1.0f;
-
-    // User gain: 0% to 100% maps to 0x to 5x, written as in analog_gain() above.
-    float user_gain = opts->audio_gainA * 0.05f;
-    float gain = base_scale * user_gain;
-
-    for (i = 0; i < len; i++) {
-        input[i] *= gain;
     }
 }

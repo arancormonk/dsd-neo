@@ -901,8 +901,9 @@ dsd_fm_demod(struct demod_state* fm) {
 }
 
 /* AM envelope detector (issue #524): output = kAmOutputGain x clamp(|z| / C - 1, +/-kAmEnvelopeClamp). The gain puts
-   100% modulation at 0.25, where live FM sits at about 6 kHz deviation, so the downstream voice filters and AGC see the
-   level they see for FM. Below kAmCarrierFloor there is no carrier to normalise by. */
+   100% modulation at 0.25, where FM monitor audio sits at about 6 kHz deviation once the 1/pi output scale (live and
+   I/Q replay) turns discriminator radians into audio, so the downstream voice filters and AGC see the level they see
+   for FM. Below kAmCarrierFloor there is no carrier to normalise by. */
 static const float kAmOutputGain = 0.25f;
 static const float kAmEnvelopeClamp = 2.0f;
 static const float kAmCarrierFloor = 1e-9f;

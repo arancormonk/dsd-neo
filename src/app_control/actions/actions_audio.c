@@ -8,6 +8,7 @@
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/dsp/analog_audio.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -69,10 +70,11 @@ ui_handle_gain_delta(dsd_opts* opts, dsd_state* state, const struct dsd_app_comm
     return 1;
 }
 
-/* Analog output gain is 0..100 (-n, the menu prompt and the * and / keys alike): 0..100% maps to 0x..5x. */
+/* Analog output gain (-n, the menu prompt and the * and / keys alike): 0 is auto (the AGC), 1..100 a fixed gain, 50
+   the reference level. Anything under 1 is auto. */
 static float
 clamp_analog_gain(float g) {
-    if (!(g > 0.0f)) {
+    if (!(g >= 1.0f)) {
         return 0.0f;
     }
     if (g > 100.0f) {
@@ -88,8 +90,10 @@ ui_handle_again_delta(dsd_opts* opts, dsd_state* state, const struct dsd_app_com
     if (c->n >= (int)sizeof(int32_t)) {
         DSD_MEMCPY(&d, c->data, sizeof(int32_t));
     }
-    /* In float, so a fractional -n value moves by the step instead of being truncated first. */
-    opts->audio_gainA = clamp_analog_gain(opts->audio_gainA + (float)d);
+    /* From auto a step starts at the reference setting; a step below 1 goes back to auto. In float, so a fractional
+       -n value moves by the step instead of being truncated first. */
+    const float from = dsd_analog_gain_is_auto(opts->audio_gainA) ? 50.0f : opts->audio_gainA;
+    opts->audio_gainA = clamp_analog_gain(from + (float)d);
     return 1;
 }
 

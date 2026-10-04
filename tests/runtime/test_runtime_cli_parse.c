@@ -26,6 +26,7 @@
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/rdio_export.h>
 #include <inttypes.h>
+#include <math.h>
 #include <sndfile.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -285,6 +286,66 @@ test_frontend_terminal_option_sets_terminal_kind(void) {
     freeState(state);
     free(opts);
     free(state);
+    return test_rc;
+}
+
+/* Issue #518: the analog monitor defaults to the AGC (-n 0) and the voice band-pass plus the digital high-pass
+   (-v 0x9); -n takes 1..100 as a fixed gain and anything under 1 as auto. */
+static int
+parse_analog_gain(const char* value, float* out) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return -1;
+    }
+    initOpts(opts);
+    initState(state);
+    char arg0[] = "dsd-neo";
+    char arg1[] = "-n";
+    char arg2[32];
+    DSD_SNPRINTF(arg2, sizeof arg2, "%s", value);
+    char* argv[] = {arg0, arg1, arg2, NULL};
+    int argc_effective = 0;
+    int exit_rc = 0;
+    const int rc = dsd_parse_args(3, argv, opts, state, &argc_effective, &exit_rc);
+    *out = opts->audio_gainA;
+    freeState(state);
+    free(opts);
+    free(state);
+    return rc == DSD_PARSE_CONTINUE ? 0 : -1;
+}
+
+static int
+test_analog_monitor_defaults_and_gain(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    if (!opts) {
+        return 1;
+    }
+    initOpts(opts);
+    int test_rc = 0;
+    if (!(fabsf(opts->audio_gainA) < 1e-6f) || opts->use_pbf != 1 || opts->use_lpf != 0 || opts->use_hpf != 0
+        || opts->use_hpf_d != 1) {
+        DSD_FPRINTF(stderr, "analog defaults: gain=%.1f pbf=%d lpf=%d hpf=%d hpfd=%d, want auto and -v 0x9\n",
+                    (double)opts->audio_gainA, opts->use_pbf, opts->use_lpf, opts->use_hpf, opts->use_hpf_d);
+        test_rc = 1;
+    }
+    free(opts);
+
+    const struct {
+        const char* value;
+        float want;
+    } cases[] = {{"0", 0.0f},     {"0.5", 0.0f}, {"-4", 0.0f},   {"1", 1.0f},
+                 {"37.5", 37.5f}, {"50", 50.0f}, {"150", 100.0f}};
+
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        float got = -1.0f;
+        if (parse_analog_gain(cases[i].value, &got) != 0 || !(fabsf(got - cases[i].want) < 1e-6f)) {
+            DSD_FPRINTF(stderr, "-n %s: gain %.2f, want %.2f\n", cases[i].value, (double)got, (double)cases[i].want);
+            test_rc = 1;
+        }
+    }
     return test_rc;
 }
 
@@ -9008,6 +9069,7 @@ main(void) {
     rc |= test_invalid_option_returns_error_and_does_not_exit();
     rc |= test_unknown_option_returns_error_and_does_not_exit();
     rc |= test_frontend_terminal_option_sets_terminal_kind();
+    rc |= test_analog_monitor_defaults_and_gain();
     rc |= test_N_short_option_enables_terminal_frontend();
     rc |= test_frontend_native_alias_selects_equivalent_headless_frontend();
     rc |= test_compatibility_short_options_use_current_facilities();

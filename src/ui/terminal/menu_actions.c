@@ -1105,7 +1105,7 @@ io_set_gain_dig(void* vctx) {
 void
 io_set_gain_ana(void* vctx) {
     UiCtx* c = (UiCtx*)vctx;
-    ui_prompt_open_double_async("Analog output gain (0..100)", c->opts->audio_gainA, cb_gain_ana, c);
+    ui_prompt_open_double_async("Analog output gain (0 = auto, 1..100)", c->opts->audio_gainA, cb_gain_ana, c);
 }
 
 void

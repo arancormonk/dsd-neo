@@ -115,14 +115,9 @@ void dsd_play_synthesized_voice(dsd_opts* opts, dsd_state* state);
 
 /** @brief Apply float-domain gain to 160-sample block for given slot. */
 void agf(const dsd_opts* opts, dsd_state* state, float samp[160], int slot); // float gain control
-/** @brief Apply short-domain gain to buffer of given length. */
-void agsm(dsd_opts* opts, dsd_state* state, short* input, int len); // short gain control
-/** @brief Apply float-domain auto gain control for analog monitor path. */
-void agsm_f(dsd_opts* opts, dsd_state* state, float* input, int len); // float gain control for analog
-/** @brief Apply manual analog gain to short buffer. */
+/** @brief Apply the manual analog gain (`-n`, 0..100% as 0x..5x) to a short buffer: the M17 encoder's fixed input gain.
+ *  The analog monitor's gain stage is dsd_analog_audio_process_f() (<dsd-neo/dsp/analog_audio.h>). */
 void analog_gain(const dsd_opts* opts, dsd_state* state, short* input, int len); // manual gain for analog paths
-/** @brief Apply manual analog gain to float buffer. */
-void analog_gain_f(const dsd_opts* opts, dsd_state* state, float* input, int len); // float manual gain for analog
 
 /** @brief Multiply float buffer by gain factor in-place. */
 void audio_apply_gain_f32(float* buf, size_t n, float gain);

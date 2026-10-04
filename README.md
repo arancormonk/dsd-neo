@@ -396,7 +396,7 @@ Common options:
 
 - See the friendly CLI guide: [docs/cli.md](docs/cli.md)
   - Or run `dsd-neo -h` for quick usage in your terminal.
-  - Digital/analog output gain: `-g <float>` (digital; `0` = auto, `1` ≈ 2%, `50` = 100%) and `-n <float>` (analog 0–100%).
+  - Digital/analog output gain: `-g <float>` (digital; `0` = auto, `1` ≈ 2%, `50` = 100%) and `-n <float>` (analog; `0` = auto, the default; `1`–`100` fixed, `50` = reference level).
   - Single-tuner trunk scan workflow: `docs/trunk-scan.md`
   - CSV formats (channel maps, trunk scan targets, group lists, source ID lists, key lists): `docs/csv-formats.md` (examples in `examples/`)
 

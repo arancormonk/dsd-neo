@@ -20,11 +20,11 @@
  */
 
 #include <dsd-neo/core/audio.h>
-#include <dsd-neo/core/audio_filters.h>
 #include <dsd-neo/core/input_level.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/dsp/analog_audio.h>
 #include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/dsp/sps_filters.h>
@@ -1295,24 +1295,6 @@ symbol_write_unsynced_raw_wav(dsd_opts* opts, dsd_state* state, unsigned int ana
     }
 }
 
-static inline void
-symbol_apply_unsynced_filters(dsd_opts* opts, dsd_state* state, unsigned int analog_block) {
-    if (opts->use_lpf == 1) {
-        lpf_f(state, state->analog_out_f, (int)analog_block);
-    }
-    if (opts->use_hpf == 1) {
-        hpf_f(state, state->analog_out_f, (int)analog_block);
-    }
-    if (opts->use_pbf == 1) {
-        pbf_f(state, state->analog_out_f, (int)analog_block);
-    }
-    if (opts->audio_gainA > 0.0f) {
-        analog_gain_f(opts, state, state->analog_out_f, (int)analog_block);
-    } else {
-        agsm_f(opts, state, state->analog_out_f, (int)analog_block);
-    }
-}
-
 /* The monitor gate: the squelch open over the block, the monitor on, no digital carrier flagged and audio out on.
  * Nothing plays while a retune is unresolved (dsd_trunk_tuning_pending_request()): in flight, when the front end still
  * delivers the channel being left, or failed after the scanner had moved on, when it delivers a channel other than the
@@ -1388,11 +1370,60 @@ symbol_stamp_unsynced_carrier(const dsd_opts* opts, dsd_state* state) {
 }
 
 static inline void
-symbol_output_unsynced_analog(const dsd_opts* opts, dsd_state* state, unsigned int analog_block) {
-    if (symbol_unsynced_audio_allowed(opts, state)) {
+symbol_output_unsynced_analog(const dsd_opts* opts, dsd_state* state, unsigned int analog_block, int allowed) {
+    if (allowed) {
         symbol_write_unsynced_audio(opts, state, analog_block);
     }
     symbol_stamp_unsynced_carrier(opts, state);
+}
+
+/* What the block's samples are, for the gain that takes the reference signal to the reference level: on an RTL input,
+   the FSK discriminator output when the symbol cache holds that kind (the -8 source monitor under digital decoding;
+   symbol_refresh_rtl_profile() empties the block when the output moves), else monitor audio; PCM otherwise. */
+static inline dsd_analog_audio_source
+symbol_analog_audio_source(const dsd_opts* opts, const dsd_state* state) {
+#ifdef USE_RADIO
+    if (opts->audio_in_type == AUDIO_IN_RTL) {
+        return state->rtl_symbol_cache_output_kind == RTL_STREAM_OUTPUT_FSK_DISCRIMINATOR_LOCAL
+                   ? DSD_ANALOG_AUDIO_SOURCE_RTL_FSK
+                   : DSD_ANALOG_AUDIO_SOURCE_RTL_MONITOR;
+    }
+#else
+    (void)opts;
+    (void)state;
+#endif
+    return DSD_ANALOG_AUDIO_SOURCE_PCM16;
+}
+
+/* The rate the block runs at, as received-tone detection reads it. */
+static inline int
+symbol_analog_audio_rate_hz(const dsd_opts* opts) {
+#ifdef USE_RADIO
+    if (opts->audio_in_type == AUDIO_IN_RTL) {
+        const unsigned int rtl_rate = dsd_rtl_stream_metrics_hook_output_rate_hz();
+        if (rtl_rate > 0U) {
+            return (int)rtl_rate;
+        }
+    }
+#endif
+    const int rate = dsd_opts_current_input_timing_rate(opts);
+    return rate > 0 ? rate : 48000;
+}
+
+/* The monitor's voice band-pass, legacy filters and gain stage (dsd_analog_audio_process_f()). The filters run whether
+   or not the block plays, so they hold no stale history when it does; the AGC adapts only to a block that plays. A
+   block that straddles a retune or reset, which never plays, is partly the old channel's: the chain drops it rather
+   than filter it into the state the next channel starts from, and starts over with the next block (it also starts over
+   at a new stream or tuning generation by itself, which covers the -8 source monitor, where no tap tracks the
+   boundary). */
+static inline void
+symbol_process_unsynced_audio(const dsd_opts* opts, dsd_state* state, unsigned int analog_block, int allowed) {
+    unsigned int flags = allowed ? DSD_ANALOG_AUDIO_PLAYING : 0U;
+    if (dsd_analog_rx_block_straddles_boundary(opts, state)) {
+        flags = DSD_ANALOG_AUDIO_DISCARD;
+    }
+    (void)dsd_analog_audio_process_f(opts, state, DSD_ANALOG_AUDIO_CHAIN_MONITOR, state->analog_out_f, analog_block,
+                                     symbol_analog_audio_source(opts, state), symbol_analog_audio_rate_hz(opts), flags);
 }
 
 static inline void
@@ -1418,11 +1449,14 @@ symbol_finalize_unsynced_analog_block(dsd_opts* opts, dsd_state* state, unsigned
     symbol_update_unsynced_input_power(opts, state, analog_block);
     symbol_write_unsynced_raw_wav(opts, state, analog_block);
     /* Received-tone detection (issue #522) reads the rest of the block here, while it is still
-       raw: the voice filters below run in place, and hpf_f alone takes out everything a CTCSS
-       tone lives in. It only reads, so the audio that follows is unchanged. */
+       raw: the voice band-pass below runs in place and takes every CTCSS tone 40 dB down (and a
+       DCS signal about 32 dB). It only reads, so the audio that follows is unchanged. */
     dsd_analog_rx_tap(opts, state, state->analog_out_f, analog_block);
-    symbol_apply_unsynced_filters(opts, state, analog_block);
-    symbol_output_unsynced_analog(opts, state, analog_block);
+    /* One gate decision for the block, taken after the tap and before the gain stage, so the
+       AGC adapts to exactly the audio that plays. */
+    const int allowed = symbol_unsynced_audio_allowed(opts, state);
+    symbol_process_unsynced_audio(opts, state, analog_block, allowed);
+    symbol_output_unsynced_analog(opts, state, analog_block, allowed);
     symbol_reset_analog_buffers(state);
 }
 
@@ -1522,6 +1556,11 @@ symbol_process_analog_capture(dsd_opts* opts, dsd_state* state, const symbol_wor
         return;
     }
 #endif
+    if (state->analog_sample_counter == 0) {
+        /* A block starts filling: the audio chain notes the reception it begins in, so a block that runs across a
+           retune is told from one wholly after it (dsd_analog_audio_process_f()). */
+        dsd_analog_audio_block_begin(opts, state, DSD_ANALOG_AUDIO_CHAIN_MONITOR);
+    }
     if (have_sync == 0) {
         symbol_process_unsynced_analog(opts, state, work->analog_out_cap, work->sample);
     } else if (have_sync == 1) {

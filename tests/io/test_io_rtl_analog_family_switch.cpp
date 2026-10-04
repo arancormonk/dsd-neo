@@ -590,28 +590,38 @@ test_fm_am_kind_switch(void) {
     return rc;
 }
 
-/* AM normalises its own level to the carrier, so the output scale a live stream runs (1/pi, which turns FM
- * discriminator radians into audio) is not applied to it, and AM monitor audio is the same live and in I/Q replay,
- * which runs no scale; FM monitor audio is scaled, and digital discriminator output is not. Checked through the output
- * block the demod thread writes, at 48 kHz and at 24 kHz, where the monitor is resampled to 48 kHz. */
+/* AM normalises its own level to the carrier, so the monitor's output scale (1/pi, which turns FM discriminator
+ * radians into audio) is not applied to it; FM monitor audio is scaled, and digital discriminator output is not.
+ * Checked through the output block the demod thread writes, at 48 kHz and at 24 kHz, where the monitor is resampled to
+ * 48 kHz. The FM scale follows the rate the discriminator runs at: its output is the phase step per sample, so at 24 kHz
+ * a deviation reads twice the radians it reads at 48 kHz, and the scale halves to play it at the same level (issue
+ * #518). */
 static int
-expect_output_gain(const char* label, const dsd_opts* opts, int rate_hz, int want_am, float want_gain) {
+expect_output_gain_at(const char* label, const dsd_opts* opts, int rate_hz, int forced_rate_hz, int want_am,
+                      float want_gain) {
     rtl_stream_test_output_scale_result r;
     DSD_MEMSET(&r, 0, sizeof r);
     char name[160];
-    int rc = expect_int(label, rtl_stream_test_monitor_output_scale(opts, rate_hz, &r), 0);
+    int rc = expect_int(label, rtl_stream_test_monitor_output_scale(opts, rate_hz, forced_rate_hz, &r), 0);
     DSD_SNPRINTF(name, sizeof name, "%s: AM detector", label);
     rc |= expect_int(name, r.demod_is_am, want_am);
     DSD_SNPRINTF(name, sizeof name, "%s: the ring took the block", label);
     rc |= expect_int(name, r.unscaled_samples > 0 && r.scaled_samples == r.unscaled_samples, 1);
-    DSD_SNPRINTF(name, sizeof name, "%s: resampled at 24 kHz", label);
-    rc |= expect_int(name, r.resampled, rate_hz == 24000 && r.output_kind == RTL_STREAM_OUTPUT_AUDIO_MONITOR ? 1 : 0);
+    DSD_SNPRINTF(name, sizeof name, "%s: resampled off 48 kHz", label);
+    const int demod_rate_hz = forced_rate_hz > 0 ? forced_rate_hz : rate_hz;
+    rc |= expect_int(name, r.resampled,
+                     demod_rate_hz != 48000 && r.output_kind == RTL_STREAM_OUTPUT_AUDIO_MONITOR ? 1 : 0);
     if (std::fabs(r.gain - want_gain) > 1e-4f) {
         std::fprintf(stderr, "%s: live output scale gave gain %.6f, want %.6f\n", label, (double)r.gain,
                      (double)want_gain);
         rc = 1;
     }
     return rc;
+}
+
+static int
+expect_output_gain(const char* label, const dsd_opts* opts, int rate_hz, int want_am, float want_gain) {
+    return expect_output_gain_at(label, opts, rate_hz, 0, want_am, want_gain);
 }
 
 static int
@@ -630,14 +640,41 @@ test_monitor_output_scale(void) {
     dmr.mod_c4fm = 1;
     rtl_stream_test_output_scale_result r;
     DSD_MEMSET(&r, 0, sizeof r);
-    int rc = expect_int("output scale: probe", rtl_stream_test_monitor_output_scale(&fm, 48000, &r), 0);
+    int rc = expect_int("output scale: probe", rtl_stream_test_monitor_output_scale(&fm, 48000, 0, &r), 0);
     const float live = r.live_scale;
     rc |= expect_int("output scale: the live scale is 1/pi", std::fabs(live - 0.318309886f) < 1e-6f ? 1 : 0, 1);
     rc |= expect_output_gain("AM @48k is exempt", &am, 48000, 1, 1.0f);
     rc |= expect_output_gain("AM @24k is exempt", &am, 24000, 1, 1.0f);
     rc |= expect_output_gain("FM @48k is scaled", &fm, 48000, 0, live);
-    rc |= expect_output_gain("FM @24k is scaled", &fm, 24000, 0, live);
+    rc |= expect_output_gain("FM @24k is scaled to the 48 kHz level", &fm, 24000, 0, live * 0.5f);
+    /* A device that forces its own rate (an Airspy at 2.5 MS/s: 78,125 Hz) runs the discriminator at that rate, not
+       the 48 kHz asked for, and the scale follows it. */
+    rc |= expect_output_gain_at("FM on a forced 78125 Hz is scaled to the 48 kHz level", &fm, 48000, 78125, 0,
+                                live * (78125.0f / 48000.0f));
     rc |= expect_output_gain("DMR discriminator is not scaled", &dmr, 48000, 0, 1.0f);
+    return rc;
+}
+
+/* An I/Q replay runs the output scale a live stream runs, whatever it finds: 0 in a process that never ran a live
+ * stream (the CLI's --iq-replay, the replay tests), where replayed FM monitor audio used to come out pi times (9.9 dB)
+ * louder than the same signal live, or what an earlier session left. */
+static int
+test_replay_output_scale(void) {
+    static dsd_opts fm;
+    DSD_MEMSET(&fm, 0, sizeof fm);
+    fm.analog_only = 1;
+    fm.monitor_input_audio = 1;
+    fm.analog_demod = DSD_ANALOG_DEMOD_FM;
+    const float presets[] = {0.0f, 0.5f};
+    int rc = 0;
+    for (size_t i = 0; i < sizeof presets / sizeof presets[0]; i++) {
+        float scale = -1.0f;
+        char name[96];
+        DSD_SNPRINTF(name, sizeof name, "replay output scale from %.1f: applied", (double)presets[i]);
+        rc |= expect_int(name, rtl_stream_test_replay_output_scale(&fm, presets[i], &scale), 0);
+        DSD_SNPRINTF(name, sizeof name, "replay output scale from %.1f: the live 1/pi", (double)presets[i]);
+        rc |= expect_int(name, std::fabs(scale - 0.318309886f) < 1e-6f ? 1 : 0, 1);
+    }
     return rc;
 }
 
@@ -2089,6 +2126,7 @@ main(void) {
     rc |= run_am_case(cases[0], 24000, 20000);
     rc |= test_fm_am_kind_switch();
     rc |= test_monitor_output_scale();
+    rc |= test_replay_output_scale();
     rc |= test_am_monitor_keeps_detector_under_symbol_profiles();
     rc |= test_typed_row_retune_after_scan_leave_keeps_the_monitor();
     rc |= test_digital_scan_leave_keeps_the_session_profile();
