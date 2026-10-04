@@ -50,7 +50,8 @@
  * cannot retune, so one row is all a run can visit; the host prints "Scan row applied: ..." before the replay.
  *
  * --analog-iq-gain-db DB replays a copy of the --iq-replay capture with every sample scaled by DB about the cu8
- * midpoint: the same air, noise included, as a receiver with that much more (or less) gain would have recorded it. The
+ * midpoint: the same air, noise included, as a receiver with that much more (or less) gain would have recorded it.
+ * It works on the committed fixtures (tests/fixtures/iq) only, which it opens by their directory entries there. The
  * auto squelch's cases replay one burst at two levels this way and hold both to the same bounds, with no second
  * fixture committed. The copy and its sidecar go to a private temporary directory the host removes when it exits; it
  * refuses a gain that would clip more than one byte in a thousand, which would no longer be the same signal.
@@ -69,6 +70,7 @@
 #include <dsd-neo/engine/engine.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/platform/platform.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/bootstrap.h>
@@ -495,24 +497,133 @@ analog_sidecar_data_file(const char* json, size_t* start, size_t* len) {
     return 0;
 }
 
-/* The path the sidecar's data_file names: absolute as written, otherwise beside the sidecar. */
+#ifndef DSD_NEO_TEST_IQ_FIXTURE_DIR
+#error "DSD_NEO_TEST_IQ_FIXTURE_DIR names the committed I/Q fixtures (tests/CMakeLists.txt)"
+#endif
+
+/* A committed fixture looked up by name in the listing of tests/fixtures/iq. */
+typedef struct {
+    const char* wanted;
+    size_t wanted_len;
+    char* out;
+    size_t cap;
+    int found;
+} analog_fixture_lookup;
+
 static int
-analog_sidecar_data_path(const char* meta_path, const char* data_file, size_t data_len, char* out, size_t cap) {
-    char name[DSD_TEST_PATH_MAX];
-    if (data_len >= sizeof(name)) {
+analog_fixture_lookup_entry(const char* name, void* user) {
+    analog_fixture_lookup* look = (analog_fixture_lookup*)user;
+    /* File names compare as the platform does: without case on Windows. */
+#if DSD_PLATFORM_WIN_NATIVE
+    const int differs = _strnicmp(name, look->wanted, look->wanted_len) != 0;
+#else
+    const int differs = strncmp(name, look->wanted, look->wanted_len) != 0;
+#endif
+    if (strlen(name) != look->wanted_len || differs) {
+        return 0;
+    }
+    /* The path is built from the directory entry, so nothing from the command line or a sidecar names a file. */
+    const int n = DSD_SNPRINTF(look->out, look->cap, "%s/%s", DSD_NEO_TEST_IQ_FIXTURE_DIR, name);
+    look->found = n > 0 && (size_t)n < look->cap;
+    return 1;
+}
+
+/* The path of the committed fixture file called [name, name + len): a bare file name in tests/fixtures/iq, found in
+   that directory's listing. 0, or -1 when there is none. */
+static int
+analog_fixture_path(const char* name, size_t len, char* out, size_t cap) {
+    analog_fixture_lookup look = {name, len, out, cap, 0};
+    if (len == 0U || memchr(name, '/', len) != NULL || memchr(name, '\\', len) != NULL
+        || dsd_dir_list(DSD_NEO_TEST_IQ_FIXTURE_DIR, analog_fixture_lookup_entry, &look) != 0) {
         return -1;
     }
-    DSD_MEMCPY(name, data_file, data_len);
-    name[data_len] = '\0';
-    const char* slash = strrchr(meta_path, '/');
-    const char* bslash = strrchr(meta_path, '\\');
-    const char* base = (bslash != NULL && (slash == NULL || bslash > slash)) ? bslash : slash;
-    if (name[0] == '/' || name[0] == '\\' || (name[0] != '\0' && name[1] == ':') || base == NULL) {
-        const int n = DSD_SNPRINTF(out, cap, "%s", name);
-        return (n < 0 || (size_t)n >= cap) ? -1 : 0;
+    return look.found ? 0 : -1;
+}
+
+#if DSD_PLATFORM_WIN_NATIVE
+/* Windows: _fullpath() resolves a path lexically (drive-relative, rooted on the current drive, UNC, "." and "..")
+   without touching the file system; separators then read '/', and paths compare without case. 0, or -1. */
+static int
+analog_absolute_path(const char* path, char* out, size_t cap) {
+    if (_fullpath(out, path, cap) == NULL) {
+        return -1;
     }
-    const int n = DSD_SNPRINTF(out, cap, "%.*s%s", (int)(base - meta_path + 1), meta_path, name);
-    return (n < 0 || (size_t)n >= cap) ? -1 : 0;
+    for (char* c = out; *c != '\0'; c++) {
+        *c = (*c == '\\') ? '/' : *c;
+    }
+    return 0;
+}
+
+static int
+analog_same_path(const char* a, const char* b) {
+    return _stricmp(a, b) == 0;
+}
+#else
+/* POSIX: @p path made absolute against the working directory and normalised lexically ("." and empty segments
+   dropped, ".." taking the one before it), without asking the file system about it. 0, or -1. */
+static int
+analog_absolute_path(const char* path, char* out, size_t cap) {
+    char joined[DSD_TEST_PATH_MAX * 2];
+    char cwd[DSD_TEST_PATH_MAX] = "";
+    if (cap == 0U || (path[0] != '/' && dsd_test_getcwd(cwd, sizeof cwd) == NULL)) {
+        return -1;
+    }
+    const int n = DSD_SNPRINTF(joined, sizeof joined, "%s/%s", path[0] == '/' ? "" : cwd, path);
+    if (n < 0 || (size_t)n >= sizeof joined) {
+        return -1;
+    }
+    size_t used = 0U;
+    for (const char* seg = joined; *seg != '\0'; seg += strspn(seg, "/")) {
+        const size_t seg_len = strcspn(seg, "/");
+        if (seg_len == 2U && seg[0] == '.' && seg[1] == '.') {
+            while (used > 0U && out[used - 1U] != '/') {
+                used--;
+            }
+            used -= used > 0U ? 1U : 0U;
+        } else if (seg_len > 0U && !(seg_len == 1U && seg[0] == '.')) {
+            if (used + seg_len + 2U > cap) {
+                return -1;
+            }
+            out[used++] = '/';
+            DSD_MEMCPY(out + used, seg, seg_len);
+            used += seg_len;
+        }
+        seg += seg_len;
+    }
+    out[used] = '\0';
+    return 0;
+}
+
+static int
+analog_same_path(const char* a, const char* b) {
+    return strcmp(a, b) == 0;
+}
+#endif
+
+/* The fixture @p meta_path names: the scaled copy works on the committed fixtures only, so the sidecar's directory,
+   both made absolute without touching the file system, must be tests/fixtures/iq, and the sidecar is opened by its
+   directory entry there. 0, or -1. */
+static int
+analog_fixture_sidecar_path(const char* meta_path, char* out, size_t cap) {
+    char full[DSD_TEST_PATH_MAX * 2];
+    char fixtures[DSD_TEST_PATH_MAX * 2];
+    if (analog_absolute_path(meta_path, full, sizeof full) != 0
+        || analog_absolute_path(DSD_NEO_TEST_IQ_FIXTURE_DIR, fixtures, sizeof fixtures) != 0) {
+        return -1;
+    }
+    char* slash = strrchr(full, '/');
+    if (slash == NULL || slash[1] == '\0') {
+        return -1;
+    }
+    *slash = '\0';
+    const size_t fixtures_len = strlen(fixtures);
+    if (fixtures_len > 1U && fixtures[fixtures_len - 1U] == '/') {
+        fixtures[fixtures_len - 1U] = '\0';
+    }
+    if (!analog_same_path(full, fixtures)) {
+        return -1;
+    }
+    return analog_fixture_path(slash + 1, strlen(slash + 1), out, cap);
 }
 
 /* Scales every cu8 byte by gain about the midpoint, rounding and saturating as an 8-bit converter would. Returns the
@@ -540,14 +651,20 @@ typedef struct {
     size_t data_len;
 } analog_capture;
 
-/* Reads the capture meta_path names; 0, or -1 (what was read stays for analog_capture_free()). */
+/* Reads the committed capture meta_path names and the data file its sidecar names beside it; 0, or -1 (what was read
+   stays for analog_capture_free()). */
 static int
 analog_capture_load(const char* meta_path, analog_capture* cap) {
+    char sidecar_path[DSD_TEST_PATH_MAX];
     char data_path[DSD_TEST_PATH_MAX];
-    cap->json = analog_read_file(meta_path, ANALOG_SIDECAR_MAX, &cap->json_len);
+    if (analog_fixture_sidecar_path(meta_path, sidecar_path, sizeof(sidecar_path)) != 0) {
+        DSD_FPRINTF(stderr, "analog replay: --analog-iq-gain-db scales the committed fixtures (%s) only\n",
+                    DSD_NEO_TEST_IQ_FIXTURE_DIR);
+        return -1;
+    }
+    cap->json = analog_read_file(sidecar_path, ANALOG_SIDECAR_MAX, &cap->json_len);
     if (cap->json == NULL || analog_sidecar_data_file((const char*)cap->json, &cap->name_at, &cap->name_len) != 0
-        || analog_sidecar_data_path(meta_path, (const char*)cap->json + cap->name_at, cap->name_len, data_path,
-                                    sizeof(data_path))
+        || analog_fixture_path((const char*)cap->json + cap->name_at, cap->name_len, data_path, sizeof(data_path))
                != 0) {
         return -1;
     }

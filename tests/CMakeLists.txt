@@ -76,6 +76,8 @@ if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
         io/test_io_input_level_metrics.c
         io/test_io_rtl_replay_eof_and_cf32.cpp
         runtime/test_runtime_decode_clock.c
+        runtime/test_runtime_squelch.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/squelch.c
         PROPERTIES COMPILE_OPTIONS "-fno-fast-math"
     )
 elseif(MSVC)
@@ -98,6 +100,8 @@ elseif(MSVC)
         io/test_io_input_level_metrics.c
         io/test_io_rtl_replay_eof_and_cf32.cpp
         runtime/test_runtime_decode_clock.c
+        runtime/test_runtime_squelch.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/squelch.c
         PROPERTIES COMPILE_OPTIONS "/fp:precise"
     )
 endif()
@@ -12834,6 +12838,12 @@ if(DSD_HAS_RADIO)
         dsd-neo_test_analog_replay
         PRIVATE ${PROJECT_SOURCE_DIR}/include
     )
+    # --analog-iq-gain-db reads the committed fixtures only, from this directory.
+    target_compile_definitions(
+        dsd-neo_test_analog_replay
+        PRIVATE
+            "DSD_NEO_TEST_IQ_FIXTURE_DIR=\"${PROJECT_SOURCE_DIR}/tests/fixtures/iq\""
+    )
     target_link_libraries(
         dsd-neo_test_analog_replay
         PRIVATE dsd-neo_engine dsd-neo_io_radio ${LIBS} ${DSD_NEO_TEST_MATH_LIB}
@@ -13335,6 +13345,67 @@ if(DSD_HAS_RADIO)
         "capture scaled by [+]10[.]0 dB, 0 of 72000 bytes clipped.*ANALOG AUDIO OK"
         "${_analog_off_path}"
     )
+    # The same with the capture named relative to the working directory (the repository
+    # root, as when replaying by hand): the scaled copy takes a committed fixture
+    # however its path is spelled.
+    add_test(
+        NAME DECODE_IQ_ANALOG_SQL_AUTO_NFM_BURST_HOT_RELATIVE
+        COMMAND
+            ${CMAKE_COMMAND}
+            "-DDSD_BIN=$<TARGET_FILE:dsd-neo_test_analog_replay>"
+            "-DMODE=-fA --squelch auto --analog-iq-gain-db 10 ${_sql_auto_burst_bounds}"
+            "-DFIXTURE=tests/fixtures/iq/nfm_burst_synth.iq.json"
+            "-DEXPECTED=capture scaled by [+]10[.]0 dB, 0 of 72000 bytes clipped.*ANALOG AUDIO OK"
+            "-DNOT_EXPECTED=${_analog_off_path}" -P
+            "${CMAKE_CURRENT_SOURCE_DIR}/iq_decode_check.cmake"
+    )
+    set_tests_properties(
+        DECODE_IQ_ANALOG_SQL_AUTO_NFM_BURST_HOT_RELATIVE
+        PROPERTIES
+            LABELS "iq-decode;analog"
+            TIMEOUT 120
+            WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+    )
+    # Windows: a drive-relative path ("D:tests/...") resolves against the working
+    # directory on that drive.
+    if(WIN32)
+        string(SUBSTRING "${PROJECT_SOURCE_DIR}" 0 2 _dsd_neo_source_drive)
+        add_test(
+            NAME DECODE_IQ_ANALOG_SQL_AUTO_NFM_BURST_HOT_DRIVE_RELATIVE
+            COMMAND
+                ${CMAKE_COMMAND}
+                "-DDSD_BIN=$<TARGET_FILE:dsd-neo_test_analog_replay>"
+                "-DMODE=-fA --squelch auto --analog-iq-gain-db 10 ${_sql_auto_burst_bounds}"
+                "-DFIXTURE=${_dsd_neo_source_drive}tests/fixtures/iq/nfm_burst_synth.iq.json"
+                "-DEXPECTED=capture scaled by [+]10[.]0 dB, 0 of 72000 bytes clipped.*ANALOG AUDIO OK"
+                "-DNOT_EXPECTED=${_analog_off_path}" -P
+                "${CMAKE_CURRENT_SOURCE_DIR}/iq_decode_check.cmake"
+        )
+        set_tests_properties(
+            DECODE_IQ_ANALOG_SQL_AUTO_NFM_BURST_HOT_DRIVE_RELATIVE
+            PROPERTIES
+                LABELS "iq-decode;analog"
+                TIMEOUT 120
+                WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+        )
+        # File names are case-insensitive there: a capture named in other case is the
+        # same committed fixture.
+        add_test(
+            NAME DECODE_IQ_ANALOG_SQL_AUTO_NFM_BURST_HOT_OTHER_CASE
+            COMMAND
+                ${CMAKE_COMMAND}
+                "-DDSD_BIN=$<TARGET_FILE:dsd-neo_test_analog_replay>"
+                "-DMODE=-fA --squelch auto --analog-iq-gain-db 10 ${_sql_auto_burst_bounds}"
+                "-DFIXTURE=${PROJECT_SOURCE_DIR}/tests/fixtures/iq/NFM_BURST_SYNTH.IQ.JSON"
+                "-DEXPECTED=capture scaled by [+]10[.]0 dB, 0 of 72000 bytes clipped.*ANALOG AUDIO OK"
+                "-DNOT_EXPECTED=${_analog_off_path}" -P
+                "${CMAKE_CURRENT_SOURCE_DIR}/iq_decode_check.cmake"
+        )
+        set_tests_properties(
+            DECODE_IQ_ANALOG_SQL_AUTO_NFM_BURST_HOT_OTHER_CASE
+            PROPERTIES LABELS "iq-decode;analog" TIMEOUT 120
+        )
+    endif()
     dsd_neo_add_analog_replay_test(
         DECODE_IQ_ANALOG_SQL_AUTO_AM_BURST
         am_burst_synth
@@ -13551,6 +13622,15 @@ if(DSD_HAS_RADIO)
         noise_floor
         "-fA --analog-iq-gain-db 10"
         "--analog-iq-gain-db [+]10[.]0 clips the capture"
+        2
+    )
+    # It scales the committed fixtures only: a capture named anywhere else (here the
+    # first --iq-replay, ahead of the case's own) is refused before anything is read.
+    dsd_neo_add_analog_replay_fail_test(
+        DECODE_IQ_ANALOG_NEG_IQ_GAIN_NOT_A_FIXTURE
+        nfm_burst_synth
+        "-fA --analog-iq-gain-db 10 --iq-replay ${CMAKE_CURRENT_BINARY_DIR}/nfm_burst_synth.iq.json"
+        "scales the committed fixtures [(].*[)] only"
         2
     )
     # A malformed bound stops the host before the replay (exit 2), rather than being

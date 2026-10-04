@@ -12,6 +12,7 @@
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/platform/fp_opaque.h>
 #include <dsd-neo/runtime/rtl_stream_io_hooks.h>
 #include <dsd-neo/runtime/squelch.h>
 #include <errno.h>
@@ -188,7 +189,8 @@ squelch_parse_level(const char* start, size_t len, dsd_squelch_setting* out, cha
         errno = 0;
         value = strtod(number, &end);
     }
-    if (len >= sizeof number || errno != 0 || !end || end == number || *end != '\0' || !isfinite(value)) {
+    if (len >= sizeof number || errno != 0 || !end || end == number || *end != '\0'
+        || !isfinite(dsd_fp_opaque_d(value))) {
         return squelch_reason(err, err_size, "expected off, a level in dB (negative), a linear power or auto[+N]");
     }
     *out = dsd_squelch_setting_of_level(dsd_squelch_level_from_sql(value));
@@ -220,6 +222,15 @@ dsd_squelch_setting_parse(const char* text, dsd_squelch_setting* out, char* err,
         return squelch_reason(err, err_size, "the noise squelch is not available; use auto[+N] or a level in dB");
     }
     return squelch_parse_level(start, len, out, err, err_size);
+}
+
+int
+dsd_squelch_setting_level_finite(const dsd_squelch_setting* s) {
+    if (!s) {
+        return 0;
+    }
+    /* IEEE here (src/runtime/CMakeLists.txt); the round trip keeps the test when LTO inlines this into fast-math code. */
+    return s->mode == DSD_SQUELCH_MODE_AUTO || isfinite(dsd_fp_opaque_d(s->level));
 }
 
 int

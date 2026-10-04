@@ -293,9 +293,11 @@ test_plan_constants(void) {
         channel ch;
         channel_make(&ch, ref->rate, ref->width, ref->hb15 ? hb_q15_taps : NULL, ref->hb15 ? HB_TAPS : 0);
         const dsd_squelch_floor_plan* p = &ch.plan;
+        /* 1e-6: the channel taps come from the DSP designer, which a fast-math build rounds differently (rho moved
+           by 1e-8 there); a wrong plan constant is off by far more. */
         const int ok = ch.taps_len == ref->taps && p->lag == ref->lag && p->rate_hz == ref->rate
-                       && fabs(p->rho_lag - ref->rho) <= 1e-9 && near_rel(p->neff, ref->neff40, 1e-9)
-                       && fabs(p->beta - ref->beta) <= 1e-9 && near_rel(p->sqrt_neff * p->sqrt_neff, p->neff, 1e-12);
+                       && fabs(p->rho_lag - ref->rho) <= 1e-6 && near_rel(p->neff, ref->neff40, 1e-6)
+                       && fabs(p->beta - ref->beta) <= 1e-6 && near_rel(p->sqrt_neff * p->sqrt_neff, p->neff, 1e-12);
         if (!ok) {
             DSD_FPRINTF(stderr, "%s: taps %d lag %d rho %.12f neff %.9f beta %.12f\n", ref->name, ch.taps_len, p->lag,
                         p->rho_lag, p->neff, p->beta);

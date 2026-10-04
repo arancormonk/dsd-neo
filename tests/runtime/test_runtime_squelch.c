@@ -90,6 +90,8 @@ test_grammar(void) {
     refused("-60dB", "expected off");
     refused("1e999", "expected off");
     refused("nan", "expected off");
+    refused("inf", "expected off");
+    refused("-inf", "expected off");
     char err[16];
     dsd_squelch_setting s;
     assert(dsd_squelch_setting_parse(NULL, &s, err, sizeof err) == -1);
@@ -240,9 +242,24 @@ test_opts_store_and_spec_field(void) {
     assert(dsd_squelch_spec_field_apply(&opts, "-60") == 1 && opts.rtl_squelch_mode == DSD_SQUELCH_MODE_AUTO);
 }
 
+/* A frontend's level must be a finite number; an AUTO setting's level is not in force. */
+static void
+test_level_finite(void) {
+    dsd_squelch_setting s = dsd_squelch_setting_of_level(1e-6);
+    assert(dsd_squelch_setting_level_finite(&s));
+    s.level = NAN;
+    assert(!dsd_squelch_setting_level_finite(&s));
+    s.level = INFINITY;
+    assert(!dsd_squelch_setting_level_finite(&s));
+    s.mode = DSD_SQUELCH_MODE_AUTO;
+    assert(dsd_squelch_setting_level_finite(&s));
+    assert(!dsd_squelch_setting_level_finite(NULL));
+}
+
 int
 main(void) {
     test_grammar();
+    test_level_finite();
     test_opts_store_and_spec_field();
     test_gate_helpers();
     test_format();

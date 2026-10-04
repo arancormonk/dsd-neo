@@ -80,6 +80,10 @@ int dsd_squelch_setting_parse(const char* text, dsd_squelch_setting* out, char* 
  */
 int dsd_squelch_setting_format(const dsd_squelch_setting* s, char* out, size_t out_size);
 
+/** @brief Whether @p s's level is a finite number, as a frontend's request must be: 1 for an AUTO setting, whose level
+ * is not in force; 0 for NULL. Built with IEEE semantics, so it holds in a fast-math build. */
+int dsd_squelch_setting_level_finite(const dsd_squelch_setting* s);
+
 /**
  * @brief The setting that runs for @p configured on a session or row with @p radio_input (an RTL-family input) and
  * @p digital (a digital mode or row): AUTO resolves to off without a radio input or on a digital channel, and every
