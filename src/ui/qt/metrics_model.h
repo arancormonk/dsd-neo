@@ -105,6 +105,7 @@ class MetricsModel : public QObject {
     Q_PROPERTY(bool analogBandwidthDspLimited READ analogBandwidthDspLimited NOTIFY tunerChanged)
     Q_PROPERTY(int analogBandwidthMaxHz READ analogBandwidthMaxHz NOTIFY tunerChanged)
     Q_PROPERTY(int analogBandwidthConfiguredHz READ analogBandwidthConfiguredHz NOTIFY controlChanged)
+    Q_PROPERTY(int analogBandwidthSettingHz READ analogBandwidthSettingHz NOTIFY controlChanged)
     Q_PROPERTY(int nfmBandwidthConfiguredHz READ nfmBandwidthConfiguredHz NOTIFY controlChanged)
     Q_PROPERTY(int amBandwidthConfiguredHz READ amBandwidthConfiguredHz NOTIFY controlChanged)
     Q_PROPERTY(bool nfmBandwidthOffered READ nfmBandwidthOffered NOTIFY tunerChanged)
@@ -231,6 +232,20 @@ class MetricsModel : public QObject {
     Q_PROPERTY(bool effectiveSquelchOff READ effectiveSquelchOff NOTIFY controlChanged)
     Q_PROPERTY(bool squelchRowOverride READ squelchRowOverride NOTIFY controlChanged)
     Q_PROPERTY(QString squelchReadout READ squelchReadout NOTIFY controlChanged)
+    /* Issue #518: the scan row on air for the "this channel" editors -- whether there is one, its name, and the
+     * session-edit fields (DSD_SCAN_ROW_FIELD_*) it can take, runs an edit of and sets in its list, from the
+     * app-control scan row view. */
+    Q_PROPERTY(bool scanRowActive READ scanRowActive NOTIFY controlChanged)
+    Q_PROPERTY(QString scanRowLabel READ scanRowLabel NOTIFY controlChanged)
+    /* Which row it is ("scanner:session:row"), for a sheet that must notice another row coming on air: two rows can
+     * share a name. Empty with none. */
+    Q_PROPERTY(QString scanRowKey READ scanRowKey NOTIFY controlChanged)
+    Q_PROPERTY(int scanRowEditable READ scanRowEditable NOTIFY controlChanged)
+    Q_PROPERTY(int scanRowEdited READ scanRowEdited NOTIFY controlChanged)
+    Q_PROPERTY(int scanRowListed READ scanRowListed NOTIFY controlChanged)
+    /* Whether the values read alongside the row on air (gain, squelch, width) are that row's: the options and state
+     * snapshots were taken under the same row scope (dsd_app_scan_row_view::opts_match). */
+    Q_PROPERTY(bool scanRowSynced READ scanRowSynced NOTIFY controlChanged)
     Q_PROPERTY(int ppm READ ppm NOTIFY controlChanged)
     Q_PROPERTY(QString uiMessage READ uiMessage NOTIFY uiMessageChanged)
     /* The decode clock's wall-clock now, for QML that ages or cuts off decoded stamps. */
@@ -477,6 +492,17 @@ class MetricsModel : public QObject {
     }
 
     /**
+     * @brief The channel width setting in force in the options snapshot (dsd_opts_analog_width_hz()), 0 for the kind's
+     * default: a scan row's own while one is on air. Issue #518: what a "this channel" width step starts from, read
+     * from the same snapshots as the row's identity (scanRowSynced), never from the live front-end reading, which can
+     * already be the next row's.
+     */
+    int
+    analogBandwidthSettingHz() const {
+        return m_view.analog_bandwidth_setting_hz;
+    }
+
+    /**
      * @brief The configured NFM channel width in Hz, 0 for the default, whichever preset runs
      * (dsd_app_analog_width_setting_hz()).
      *
@@ -676,6 +702,48 @@ class MetricsModel : public QObject {
     bool
     tunerGainRowOverride() const {
         return m_view.tuner_gain_row_override;
+    }
+
+    /** @brief Whether a scan row is on air that the "this channel" editors can edit (issue #518). */
+    bool
+    scanRowActive() const {
+        return m_view.scan_row_active;
+    }
+
+    /** @brief The name the editors give the row on air: a trunk target's id, a -Y row's name or "Ch N (F MHz)". */
+    QString
+    scanRowLabel() const {
+        return m_view.scan_row_label;
+    }
+
+    /** @brief The row on air's identity, "scanner:session:row"; empty with none. */
+    QString
+    scanRowKey() const {
+        return m_view.scan_row_key;
+    }
+
+    /** @brief The session-edit fields (DSD_SCAN_ROW_FIELD_*) the row on air can take. */
+    int
+    scanRowEditable() const {
+        return m_view.scan_row_editable;
+    }
+
+    /** @brief The fields the row on air runs a session edit of. */
+    int
+    scanRowEdited() const {
+        return m_view.scan_row_edited;
+    }
+
+    /** @brief The fields the row on air's list row sets itself. */
+    int
+    scanRowListed() const {
+        return m_view.scan_row_listed;
+    }
+
+    /** @brief Whether the readings beside the row on air are that row's (one row scope in both snapshots). */
+    bool
+    scanRowSynced() const {
+        return m_view.scan_row_synced;
     }
 
     double
@@ -1552,6 +1620,7 @@ class MetricsModel : public QObject {
         int channel_bandwidth_hz = 0;
         int analog_bandwidth_hz = 0;
         int analog_bandwidth_configured_hz = 0;
+        int analog_bandwidth_setting_hz = 0;
         int nfm_bandwidth_configured_hz = 0;
         int am_bandwidth_configured_hz = 0;
         int analog_bandwidth_max_hz = 0;
@@ -1637,6 +1706,14 @@ class MetricsModel : public QObject {
         bool tone_filter_row_override = false;
         int tone_filter_configured_mode = 0;
         QString tone_filter_configured_list;
+        /* #518: the scan row on air for the "this channel" editors. */
+        bool scan_row_active = false;
+        QString scan_row_label;
+        QString scan_row_key;
+        int scan_row_editable = 0;
+        int scan_row_edited = 0;
+        int scan_row_listed = 0;
+        bool scan_row_synced = false;
 
         /* Exact comparison is right for the two doubles: they are carried through
          * unmodified from the metrics boundary, so "unchanged" means the identical
@@ -1732,8 +1809,17 @@ class MetricsModel : public QObject {
                    && squelch_off == other.squelch_off && ppm == other.ppm && airspy == other.airspy
                    && squelchOverrideEquals(other)
                    && analog_bandwidth_configured_hz == other.analog_bandwidth_configured_hz
+                   && analog_bandwidth_setting_hz == other.analog_bandwidth_setting_hz
                    && nfm_bandwidth_configured_hz == other.nfm_bandwidth_configured_hz
-                   && am_bandwidth_configured_hz == other.am_bandwidth_configured_hz;
+                   && am_bandwidth_configured_hz == other.am_bandwidth_configured_hz && scanRowEquals(other);
+        }
+
+        bool
+        scanRowEquals(const View& other) const {
+            return scan_row_active == other.scan_row_active && scan_row_label == other.scan_row_label
+                   && scan_row_key == other.scan_row_key && scan_row_editable == other.scan_row_editable
+                   && scan_row_edited == other.scan_row_edited && scan_row_listed == other.scan_row_listed
+                   && scan_row_synced == other.scan_row_synced;
         }
 
         /* The configured/effective pair is whole-dB configuration, not a measurement, so a
@@ -1783,6 +1869,7 @@ class MetricsModel : public QObject {
     /** @brief The configured/effective squelch pair and the row badge (#521). */
     static void fillTunerGain(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot);
     static void fillSquelchOverride(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot);
+    static void fillScanRow(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot);
     /** @brief The analog channel width in force and the configured one (#525), and the analog (nfm or am) scan row on
      * air (#526). */
     static void fillAnalogChannel(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot,

@@ -29,8 +29,39 @@ class DecryptionProfileProvider;
 
 class CommandBridge : public QObject {
     Q_OBJECT
+    /* Issue #518: the session-edit fields and actions (runtime/scan_row_edit.h) "this channel" editors pass to
+     * editScanRow(), and test against metrics.scanRowEditable / scanRowEdited / scanRowListed. */
+    Q_PROPERTY(int scanRowFieldSquelch READ scanRowFieldSquelch CONSTANT)
+    Q_PROPERTY(int scanRowFieldWidth READ scanRowFieldWidth CONSTANT)
+    Q_PROPERTY(int scanRowFieldTone READ scanRowFieldTone CONSTANT)
+    Q_PROPERTY(int scanRowFieldGain READ scanRowFieldGain CONSTANT)
+    Q_PROPERTY(int scanRowEditSet READ scanRowEditSet CONSTANT)
+    Q_PROPERTY(int scanRowEditInherit READ scanRowEditInherit CONSTANT)
+    Q_PROPERTY(int scanRowEditReset READ scanRowEditReset CONSTANT)
 
   public:
+    static int scanRowFieldSquelch();
+    static int scanRowFieldWidth();
+    static int scanRowFieldTone();
+    static int scanRowFieldGain();
+    static int scanRowEditSet();
+    static int scanRowEditInherit();
+    static int scanRowEditReset();
+
+    /**
+     * @brief The scan row on air, captured when a "this channel" editor opens (issue #518): active, scanner, session,
+     * row, mode, target and label. An edit names it, so it reaches that row however the scan has moved on since, and is
+     * refused once that scan has ended. Empty-handed ({active: false}) with no row on air.
+     */
+    Q_INVOKABLE QVariantMap scanRowContext() const;
+    /**
+     * @brief Submit a session edit of one @p field (a scanRowField*) of the row @p context names, with @p action (a
+     * scanRowEdit*). For SET, @p value carries the field's value: squelchDb (whole dB, -100..0; 0 = off), widthHz,
+     * toneMode with toneList, or gainDb (0 = AGC). Returns whether it was queued; the decoder refuses what the row
+     * cannot take, with a message.
+     */
+    Q_INVOKABLE bool editScanRow(const QVariantMap& context, int field, int action, const QVariantMap& value) const;
+
     void
     setDecryptionProfiles(DecryptionProfileProvider* profiles) {
         m_profiles = profiles;

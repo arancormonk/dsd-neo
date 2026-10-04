@@ -30,6 +30,7 @@
 #include <dsd-neo/app_control/frontend.h>
 #include <dsd-neo/app_control/rtl_gain_view.h>
 #include <dsd-neo/app_control/rx_tone_view.h>
+#include <dsd-neo/app_control/scan_row_view.h>
 #include <dsd-neo/app_control/scan_timing_view.h>
 #include <dsd-neo/app_control/squelch_view.h>
 #include <dsd-neo/core/audio.h>
@@ -824,6 +825,22 @@ MetricsModel::fillDecoderView(View& next, const dsd_opts* opts_snapshot, const d
     next.squelch_off = next.radio_input && dsd_squelch_is_off(opts_snapshot->rtl_squelch_level);
     next.ppm = next.radio_input ? opts_snapshot->rtlsdr_ppm_error : 0;
     fillSquelchOverride(next, opts_snapshot, snapshot);
+    fillScanRow(next, opts_snapshot, snapshot);
+}
+
+/* Issue #518: the scan row on air as every frontend's "this channel" editor sees it (the app-control scan row view). */
+void
+MetricsModel::fillScanRow(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot) {
+    dsd_app_scan_row_view row{};
+    (void)dsd_app_scan_row_view_get(opts_snapshot, snapshot, &row);
+    next.scan_row_active = row.active != 0;
+    next.scan_row_label = row.active ? QString::fromUtf8(row.label) : QString();
+    next.scan_row_key =
+        row.active ? QStringLiteral("%1:%2:%3").arg(row.scanner).arg(row.session).arg(row.row) : QString();
+    next.scan_row_editable = row.active ? static_cast<int>(row.editable) : 0;
+    next.scan_row_edited = row.active ? static_cast<int>(row.edited) : 0;
+    next.scan_row_listed = row.active ? static_cast<int>(row.listed) : 0;
+    next.scan_row_synced = row.active && row.opts_match != 0;
 }
 
 /* Under --trunk-scan the buttons edit the configured gain beneath a target's own rtl_gain, as the terminal's Gain... row
@@ -872,6 +889,7 @@ MetricsModel::fillAnalogChannel(View& next, const dsd_opts* opts_snapshot, const
     /* The view leaves the width and the flag at 0 outside the analog preset, with no analog scan row on air, and the
      * bound at 0 off a radio. */
     next.analog_bandwidth_configured_hz = view.configured_hz;
+    next.analog_bandwidth_setting_hz = opts_snapshot ? dsd_opts_analog_width_hz(opts_snapshot) : 0;
     next.nfm_bandwidth_configured_hz =
         dsd_scan_mode_configured_analog_width(opts_snapshot, snapshot, DSD_ANALOG_DEMOD_FM);
     next.am_bandwidth_configured_hz =
