@@ -866,10 +866,12 @@ typedef struct rtl_stream_test_output_scale_result {
     float gain;           /* least-squares gain from the unscaled output to the scaled one */
 } rtl_stream_test_output_scale_result;
 
-/* Open @p opts at @p rate_hz and write one block of demodulated samples through the output block the demod thread
- * writes (demod_write_output_block()), once with no output scale and once with the scale the monitor runs: gain says
- * what that scale did to the audio the ring took (1 when the output is exempt). */
-int rtl_stream_test_monitor_output_scale(const dsd_opts* opts, int rate_hz, rtl_stream_test_output_scale_result* out);
+/* Open @p opts at @p rate_hz (with @p forced_rate_out_hz > 0, on a device that settles on that demod rate instead) and
+ * write one block of demodulated samples through the output block the demod thread writes
+ * (demod_write_output_block()), once with no output scale and once with the scale the monitor runs: gain says what
+ * that scale did to the audio the ring took (1 when the output is exempt). */
+int rtl_stream_test_monitor_output_scale(const dsd_opts* opts, int rate_hz, int forced_rate_out_hz,
+                                         rtl_stream_test_output_scale_result* out);
 
 /* Open @p opts at 48 kHz, leave @p preset_scale as the output scale an I/Q replay finds (0 in a process that never ran
  * a live stream, or what an earlier session set), and apply a replay capture's settings (1.536 Msps, base decimation

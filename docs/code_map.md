@@ -2057,8 +2057,10 @@ Notes:
     same stream, live FM <-> AM against fresh opens via `rtl_stream_test_analog_kind_switch()`, at the same width too,
     the CQPSK-off profiles via `rtl_stream_test_am_monitor_symbol_profiles()`, the DSP menu's return from CQPSK to the
     FM or AM monitor, taken and refused where it lands, via `rtl_stream_test_monitor_return_from_cqpsk()`, and the live
-    output scale through `demod_write_output_block()` via `rtl_stream_test_monitor_output_scale()`: 1/pi for FM, none
-    for AM or digital output; IQ replay runs 1/pi whatever an earlier session left, via
+    output scale through `demod_write_output_block()` via `rtl_stream_test_monitor_output_scale()`: 1/pi x rate / 48000
+    for FM at the rate the discriminator runs at (rate_out x post_downsample, which a fixed-grid device forces), so a
+    deviation plays at one level whatever the demod rate, none for AM or digital output; IQ replay runs
+    the live scale whatever an earlier session left, via
     `rtl_stream_test_replay_output_scale()`), `IO_RTL_RETUNE_PREPARE` (`rtl_stream_test_audio_monitor_retune_kind()`).
   - The monitor's legacy `low_pass_real()` stage (`rate_in` to `rate_out2`) passes audio through: a live open sets both
     to the DSP bandwidth, and IQ replay (`controller_apply_replay_settings()`) sets `rate_out2` to the `rate_in` it

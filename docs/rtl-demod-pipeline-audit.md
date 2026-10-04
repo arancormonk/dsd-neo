@@ -565,7 +565,14 @@ replayed signal reaches the monitor at the level it reaches it live.
 it, a replay in a process that had not run a live stream (the CLI's
 `--iq-replay`, the replay tests) left the discriminator output unscaled, pi
 times (9.9 dB) louder than live, while one opened after a live session kept the
-1/pi that session set. The scale applies to monitor audio only:
+1/pi that session set. 1/pi is the scale at a 48 kHz demod rate: the
+discriminator's output is the phase step per sample, 2 pi f_dev / rate, so the
+applied scale is 1/pi x rate / 48000 (`monitor_output_scale()`), at the rate
+the discriminator actually runs at (rate_out x post_downsample, the rate a
+device delivers: a fixed-grid device such as an Airspy at 2.5 MS/s forces
+78,125 Hz while rate_in keeps the requested bandwidth), and a given deviation
+plays at one level whatever the rate (before, 6 dB louder at 24 kHz and 4.2 dB
+quieter at the Airspy's 78,125 Hz). The scale applies to monitor audio only:
 `demod_write_output_block()` skips it for FSK discriminator and CQPSK symbol
 output, so digital decoding and the digital `DECODE_IQ_*` baselines do not
 depend on it. The analog replay checks (`DECODE_IQ_ANALOG_*`) do: their level
@@ -577,8 +584,9 @@ hold on both.
 `IO_RTL_ANALOG_FAMILY_SWITCH` holds that exemption on the live path, which replay
 never exercises: it writes one block through `demod_write_output_block()` with
 the live scale and without (`rtl_stream_test_monitor_output_scale()`), and
-expects FM monitor audio scaled by 1/pi and AM monitor audio and digital
-discriminator output unchanged, at 48 kHz and through the 24 kHz resampler. It
+expects FM monitor audio scaled by 1/pi at 48 kHz, by 1/(2 pi) at 24 kHz and by
+1/pi x 78125/48000 on a device forced to 78,125 Hz, and AM monitor audio and
+digital discriminator output unchanged. It
 also opens a replay on an output scale of 0 and of 0.5, as a process that never
 ran a live stream or an earlier session leaves it, and expects the replay to run
 1/pi from either (`rtl_stream_test_replay_output_scale()`).

@@ -2389,17 +2389,41 @@ retune_settle_should_discard(const struct demod_state* d, float mean_abs, float 
    level the same signal plays at live. */
 static const float kMonitorDiscriminatorOutputScale = (float)(1.0 / M_PI);
 
+/* The demod rate the monitor's output scale is calibrated at. */
+static const float kMonitorScaleReferenceRateHz = 48000.0f;
+
+/* The rate the discriminator runs at: the demod rate before any post-decimation (rate_out x post_downsample). It is the
+   rate a device delivers, which a device with a fixed rate grid forces away from the requested DSP bandwidth (rate_in
+   stays the request there: an Airspy at 2.5 MS/s runs at 78,125 Hz). */
+static inline int
+monitor_discriminator_rate_hz(const struct demod_state* d) {
+    if (d->rate_out > 0) {
+        return d->rate_out * (d->post_downsample > 1 ? d->post_downsample : 1);
+    }
+    return d->rate_in;
+}
+
+/* The FM monitor's gain for this stream: the output scale at the reference rate, scaled by the rate the discriminator
+   runs at. Its output is the phase step per sample, 2 pi f_dev / rate, so without this a given deviation played 6 dB
+   louder at a 24 kHz DSP bandwidth than at 48 kHz, and 4.2 dB quieter at the 78,125 Hz an Airspy at 2.5 MS/s forces.
+   Resampling to the output rate afterwards changes the sample spacing, not the amplitude. */
+static inline float
+monitor_output_scale(const struct demod_state* d) {
+    const int rate_hz = monitor_discriminator_rate_hz(d);
+    if (rate_hz <= 0) {
+        return d->output_scale;
+    }
+    return d->output_scale * ((float)rate_hz / kMonitorScaleReferenceRateHz);
+}
+
 /* Apply a single gain factor to the final demod block before handing it to consumers. */
 static inline void
 apply_output_scale(const struct demod_state* d, float* buf, int len) {
     if (!d || !buf || len <= 0) {
         return;
     }
-    float s = d->output_scale;
-    if (s == 0.0f) {
-        return;
-    }
-    if (s == 1.0f) {
+    const float s = monitor_output_scale(d);
+    if (!(s > 0.0f) || fabsf(s - 1.0f) < 1e-9f) {
         return;
     }
     for (int i = 0; i < len; i++) {
@@ -14588,7 +14612,8 @@ output_scale_test_write_block(float output_scale, float* got, int cap) {
 }
 
 extern "C" int
-rtl_stream_test_monitor_output_scale(const dsd_opts* opts, int rate_hz, rtl_stream_test_output_scale_result* out) {
+rtl_stream_test_monitor_output_scale(const dsd_opts* opts, int rate_hz, int forced_rate_out_hz,
+                                     rtl_stream_test_output_scale_result* out) {
     if (!opts || !out || rate_hz <= 0) {
         return -1;
     }
@@ -14601,7 +14626,7 @@ rtl_stream_test_monitor_output_scale(const dsd_opts* opts, int rate_hz, rtl_stre
     const FamilyTestSaved saved = family_test_save();
     const float prev_output_scale = demod.output_scale;
     g_stream = NULL;
-    int rc = family_test_seed_open(opts, rate_hz, 0);
+    int rc = family_test_seed_open(opts, rate_hz, forced_rate_out_hz);
     out->demod_is_am = dsd_demod_am_active(&demod);
     out->output_kind = demod.output_kind;
     out->resampled = demod.resamp_enabled;
