@@ -1815,6 +1815,8 @@ nfm_warning_rows_visit(dsd_opts* opts, dsd_state* state, int visits) {
  * once per map and DSP rate, a width on an input with no demodulator for it or a width the running DSP rate cannot
  * filter. Digital rows and well-set nfm rows say nothing. */
 static const char* g_nfm_warning_input_dev = "";
+/* 1: the configured squelch is the auto squelch (its level stays configured_sql_db, for a switch back). */
+static int g_nfm_warning_auto = 0;
 
 static int
 nfm_row_warnings(int audio_in_type, int dsp_rate_hz, double configured_sql_db) {
@@ -1822,6 +1824,10 @@ nfm_row_warnings(int audio_in_type, int dsp_rate_hz, double configured_sql_db) {
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
     assert(opts && state);
     nfm_warning_rows_setup(opts, state, audio_in_type, configured_sql_db);
+    if (g_nfm_warning_auto) {
+        opts->rtl_squelch_mode = DSD_SQUELCH_MODE_AUTO;
+        opts->rtl_squelch_margin_db = DSD_SQUELCH_MARGIN_DEFAULT_DB;
+    }
     DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", g_nfm_warning_input_dev);
     g_scan_dsp_rate_hz = dsp_rate_hz;
     nfm_warning_rows_visit(opts, state, 8);
@@ -1868,6 +1874,16 @@ test_nfm_row_warnings_once_per_row(void) {
     assert(nfm_row_warnings(AUDIO_IN_WAV, 0, -60.0) == 2);
     assert(strstr(g_analog_warning_rows[1], "Scan channel 1 (150.000000 MHz): --nfm-bandwidth-hz 20000 has no effect"));
     assert(g_squelch_warnings == 1 && strstr(g_squelch_warning_rows[0], "Scan channel 3 "));
+    /* The auto squelch closes on noise on a radio input, whatever level it keeps beneath it (issue #518 follow-up):
+       row 4 inherits it and is quiet even with the unset -110 dB level, and only row 2's own off warns. On audio
+       input auto is off, so row 4 holds on noise there, and the warning names the auto squelch as a fix. */
+    g_nfm_warning_auto = 1;
+    assert(nfm_row_warnings(AUDIO_IN_RTL, 48000, -110.0) == 1);
+    assert(strstr(g_analog_warning_rows[0], "Scan channel 2 "));
+    assert(strstr(g_analog_warning_rows[0], "--squelch auto"));
+    assert(nfm_row_warnings(AUDIO_IN_WAV, 0, -60.0) == 3);
+    assert(strstr(g_analog_warning_rows[2], "Scan channel 4 ") || strstr(g_analog_warning_rows[1], "Scan channel 4 "));
+    g_nfm_warning_auto = 0;
 }
 
 /* The width checks follow the DSP rate a width must fit. An RTL stream that has published none yet leaves them to a

@@ -266,3 +266,41 @@ dsd_squelch_gate_open(const dsd_opts* opts, uint8_t flag) {
     }
     return dsd_squelch_level_open(opts);
 }
+
+dsd_squelch_setting
+dsd_squelch_setting_of_opts(const dsd_opts* opts) {
+    if (!opts) {
+        return dsd_squelch_setting_of_level(0.0);
+    }
+    if (opts->rtl_squelch_mode == DSD_SQUELCH_MODE_AUTO) {
+        return dsd_squelch_setting_auto(opts->rtl_squelch_margin_db);
+    }
+    return dsd_squelch_setting_of_level(opts->rtl_squelch_level);
+}
+
+void
+dsd_squelch_setting_store(dsd_opts* opts, const dsd_squelch_setting* setting) {
+    if (!opts || !setting) {
+        return;
+    }
+    if (setting->mode == DSD_SQUELCH_MODE_AUTO) {
+        opts->rtl_squelch_mode = DSD_SQUELCH_MODE_AUTO;
+        opts->rtl_squelch_margin_db = squelch_clamp_margin(setting->margin_db);
+        return;
+    }
+    opts->rtl_squelch_mode = DSD_SQUELCH_MODE_LEVEL;
+    opts->rtl_squelch_level = setting->level > 0.0 ? setting->level : 0.0;
+}
+
+int
+dsd_squelch_spec_field_apply(dsd_opts* opts, const char* text) {
+    dsd_squelch_setting setting;
+    if (!opts || !text || dsd_squelch_setting_parse(text, &setting, NULL, 0U) != 0) {
+        return -1;
+    }
+    if (opts->rtl_squelch_cli_set) {
+        return 1;
+    }
+    dsd_squelch_setting_store(opts, &setting);
+    return 0;
+}

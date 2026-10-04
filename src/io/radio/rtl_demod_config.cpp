@@ -27,6 +27,7 @@
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/mem.h>
 #include <dsd-neo/runtime/ring.h>
+#include <dsd-neo/runtime/squelch.h>
 #include <dsd-neo/runtime/worker_pool.h>
 #include <limits.h>
 #include <math.h>
@@ -550,7 +551,8 @@ demod_note_am_input_bypasses(const struct demod_state* demod) {
 
 static void
 demod_finalize_runtime_profile(struct demod_state* demod, const dsd_opts* opts) {
-    demod->channel_squelch_level.store((float)opts->rtl_squelch_level, std::memory_order_relaxed);
+    /* The level the level gate uses: off under the auto squelch, which gates per sample. */
+    demod->channel_squelch_level.store((float)dsd_squelch_level_in_force(opts), std::memory_order_relaxed);
     if (demod->output_kind == DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR) {
         demod->ted_enabled = 0;
     }

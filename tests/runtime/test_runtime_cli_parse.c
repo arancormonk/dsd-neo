@@ -9,6 +9,7 @@
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/power.h>
 #include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/crypto/dmr_keystream.h>
@@ -8298,6 +8299,110 @@ test_nfm_bandwidth_rejects_invalid_values(void) {
     return test_rc;
 }
 
+/* --squelch <setting> (issue #518 follow-up): the squelch grammar in both long-option spellings, marking the squelch as
+ * the command line's so an input spec's sql field leaves it; a refusal names the grammar and never repeats the text. */
+static int
+run_squelch_option(const char* argv1, const char* argv2, dsd_opts* opts, int* rc, int* exit_rc, char* output,
+                   size_t output_size) {
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!state) {
+        return -1;
+    }
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    initOpts(opts);
+    initState(state);
+    char arg0[] = "dsd-neo";
+    char arg1[64];
+    char arg2[32];
+    DSD_SNPRINTF(arg1, sizeof arg1, "%s", argv1);
+    if (argv2) {
+        DSD_SNPRINTF(arg2, sizeof arg2, "%s", argv2);
+    }
+    char* argv[] = {arg0, arg1, argv2 ? arg2 : NULL, NULL};
+    int argc_effective = 0;
+    *exit_rc = 0;
+    *rc = parse_args_capture_stderr(argv2 ? 3 : 2, argv, opts, state, &argc_effective, exit_rc, output, output_size);
+    freeState(state);
+    free(state);
+    return 0;
+}
+
+static int
+test_squelch_option(void) {
+    static const struct {
+        const char* argv1;
+        const char* argv2;
+        int mode;
+        double db; /* LEVEL: the threshold in dB, 0 = off */
+        int margin;
+    } good[] = {
+        {"--squelch", "auto", DSD_SQUELCH_MODE_AUTO, 0.0, 10},
+        {"--squelch", "auto+6", DSD_SQUELCH_MODE_AUTO, 0.0, 6},
+        {"--squelch=AUTO+30", NULL, DSD_SQUELCH_MODE_AUTO, 0.0, 30},
+        {"--squelch=-60", NULL, DSD_SQUELCH_MODE_LEVEL, -60.0, 0},
+        {"--squelch", "-47.5", DSD_SQUELCH_MODE_LEVEL, -47.5, 0},
+        {"--squelch", "off", DSD_SQUELCH_MODE_LEVEL, 0.0, 0},
+    };
+
+    static const struct {
+        const char* argv1;
+        const char* argv2;
+        const char* why;
+    } bad[] = {
+        {"--squelch", "noise", "noise squelch is not available"},
+        {"--squelch", "auto+2", "3 to 30"},
+        {"--squelch=SECRET", NULL, "expected off"},
+        {"--squelch", "auto+SECRET", "auto+N"},
+        {"--squelch", NULL, "--squelch requires a setting"},
+    };
+
+    int test_rc = 0;
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    if (!opts) {
+        return 1;
+    }
+    char output[4096];
+    for (size_t i = 0; i < sizeof good / sizeof good[0]; i++) {
+        int rc = 0;
+        int exit_rc = 0;
+        if (run_squelch_option(good[i].argv1, good[i].argv2, opts, &rc, &exit_rc, output, sizeof output) != 0) {
+            free(opts);
+            return 1;
+        }
+        int ok = rc == DSD_PARSE_CONTINUE && opts->rtl_squelch_cli_set == 1 && opts->rtl_squelch_mode == good[i].mode;
+        if (good[i].mode == DSD_SQUELCH_MODE_AUTO) {
+            ok = ok && opts->rtl_squelch_margin_db == good[i].margin;
+        } else if (good[i].db < 0.0) {
+            const double want = dsd_squelch_level_from_sql(good[i].db);
+            ok = ok && fabs(opts->rtl_squelch_level - want) <= 1e-9 * want;
+        } else {
+            ok = ok && dsd_squelch_is_off(opts->rtl_squelch_level);
+        }
+        if (!ok) {
+            DSD_FPRINTF(stderr, "%s %s: rc=%d mode=%d level=%g margin=%d cli=%d\n", good[i].argv1,
+                        good[i].argv2 ? good[i].argv2 : "", rc, opts->rtl_squelch_mode, opts->rtl_squelch_level,
+                        opts->rtl_squelch_margin_db, opts->rtl_squelch_cli_set);
+            test_rc = 1;
+        }
+    }
+    for (size_t i = 0; i < sizeof bad / sizeof bad[0]; i++) {
+        int rc = 0;
+        int exit_rc = 0;
+        if (run_squelch_option(bad[i].argv1, bad[i].argv2, opts, &rc, &exit_rc, output, sizeof output) != 0) {
+            free(opts);
+            return 1;
+        }
+        if (rc != DSD_PARSE_ERROR || exit_rc != 1 || opts->rtl_squelch_cli_set || !strstr(output, bad[i].why)
+            || strstr(output, "SECRET")) {
+            DSD_FPRINTF(stderr, "%s %s: expected a refusal naming \"%s\", got rc=%d exit_rc=%d \"%s\"\n", bad[i].argv1,
+                        bad[i].argv2 ? bad[i].argv2 : "", bad[i].why, rc, exit_rc, output);
+            test_rc = 1;
+        }
+    }
+    free(opts);
+    return test_rc;
+}
+
 /* The NFM width is the radio front end's channel filter: on PCM input (the default Pulse source,
  * a file, UDP or TCP audio) it cannot act, so the flag parses and says so. Radio inputs do not
  * warn; I/Q replay has its own case below, in the radio builds where --iq-replay parses. */
@@ -9131,6 +9236,7 @@ main(void) {
     rc |= test_scan_max_visit_boundary_and_off_values_parse();
     rc |= test_scan_max_visit_warns_without_scan_mode();
     rc |= test_bootstrap_inherited_trunk_scan_preserves_max_visit_override();
+    rc |= test_squelch_option();
     rc |= test_nfm_bandwidth_long_option_parses();
     rc |= test_nfm_bandwidth_rejects_invalid_values();
     rc |= test_tone_filter_options_parse();

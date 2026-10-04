@@ -208,9 +208,40 @@ test_gate_helpers(void) {
     assert(!dsd_squelch_level_open(NULL) && !dsd_squelch_gate_open(NULL, 0U));
 }
 
+/* The setting in dsd_opts, and an input spec's field under --squelch. */
+static void
+test_opts_store_and_spec_field(void) {
+    static dsd_opts opts;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    opts.rtl_squelch_level = 1e-6;
+    const dsd_squelch_setting auto6 = dsd_squelch_setting_auto(6);
+    dsd_squelch_setting_store(&opts, &auto6);
+    assert(opts.rtl_squelch_mode == DSD_SQUELCH_MODE_AUTO && opts.rtl_squelch_margin_db == 6);
+    /* The level stays, for a switch back. */
+    assert(fabs(opts.rtl_squelch_level - 1e-6) <= 1e-18);
+    dsd_squelch_setting back = dsd_squelch_setting_of_opts(&opts);
+    assert(dsd_squelch_setting_equal(&back, &auto6));
+    const dsd_squelch_setting level = dsd_squelch_setting_of_level(2e-6);
+    dsd_squelch_setting_store(&opts, &level);
+    back = dsd_squelch_setting_of_opts(&opts);
+    assert(opts.rtl_squelch_mode == DSD_SQUELCH_MODE_LEVEL && dsd_squelch_setting_equal(&back, &level));
+    assert(opts.rtl_squelch_margin_db == 6);
+    dsd_squelch_setting_store(&opts, NULL);
+    dsd_squelch_setting_store(NULL, &level);
+    back = dsd_squelch_setting_of_opts(NULL);
+    assert(dsd_squelch_setting_is_off(&back));
+
+    assert(dsd_squelch_spec_field_apply(&opts, "auto+8") == 0 && opts.rtl_squelch_mode == DSD_SQUELCH_MODE_AUTO);
+    assert(dsd_squelch_spec_field_apply(&opts, "loud") == -1 && opts.rtl_squelch_margin_db == 8);
+    assert(dsd_squelch_spec_field_apply(&opts, NULL) == -1 && dsd_squelch_spec_field_apply(NULL, "off") == -1);
+    opts.rtl_squelch_cli_set = 1;
+    assert(dsd_squelch_spec_field_apply(&opts, "-60") == 1 && opts.rtl_squelch_mode == DSD_SQUELCH_MODE_AUTO);
+}
+
 int
 main(void) {
     test_grammar();
+    test_opts_store_and_spec_field();
     test_gate_helpers();
     test_format();
     test_predicates_and_equality();

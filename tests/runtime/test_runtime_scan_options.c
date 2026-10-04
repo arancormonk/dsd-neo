@@ -3,6 +3,7 @@
 
 #include <assert.h>
 #include <dsd-neo/core/analog_tone.h>
+#include <dsd-neo/core/power.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/analog_tones.h>
@@ -60,6 +61,50 @@ count_file_spans(void* context, const char* option, const char* path, size_t off
     (void)whole;
     ++*(size_t*)context;
     return 0;
+}
+
+/* --squelch on a row or target (issue #518 follow-up): the squelch grammar, stored as --squelch-db stores it for a level
+ * (whole dB, off as 0) and as a mode and margin for auto, which only an analog row takes. It shares --squelch-db's
+ * option: a row names one squelch. The diagnostic names the option and never echoes the value. */
+static void
+check_squelch_setting_option(void) {
+    dsd_scan_options parsed;
+    char error[128];
+    DSD_MEMSET(&parsed, 0, sizeof(parsed));
+    assert(dsd_scan_options_parse("--squelch auto+6", DSD_SCAN_MODE_NFM, 0, &parsed, error, sizeof(error)) == 0);
+    assert(parsed.values.present == DSD_SCAN_OPT_SQUELCH && parsed.values.squelch_mode == DSD_SQUELCH_MODE_AUTO);
+    assert(parsed.values.squelch_margin_db == 6 && parsed.values.squelch_db == 0);
+    assert(dsd_scan_options_parse("--squelch=auto", DSD_SCAN_MODE_AM, 1, &parsed, error, sizeof(error)) == 0);
+    assert(parsed.values.squelch_mode == DSD_SQUELCH_MODE_AUTO
+           && parsed.values.squelch_margin_db == DSD_SQUELCH_MARGIN_DEFAULT_DB);
+    assert(dsd_scan_options_parse("--squelch -60", DSD_SCAN_MODE_DMR, 1, &parsed, error, sizeof(error)) == 0);
+    assert(parsed.values.squelch_mode == DSD_SQUELCH_MODE_LEVEL && parsed.values.squelch_db == -60);
+    assert(dsd_scan_options_parse("--squelch off", DSD_SCAN_MODE_P25, 0, &parsed, error, sizeof(error)) == 0);
+    assert(parsed.values.present == DSD_SCAN_OPT_SQUELCH && parsed.values.squelch_mode == DSD_SQUELCH_MODE_LEVEL
+           && parsed.values.squelch_db == 0);
+    assert(dsd_scan_options_parse("--squelch -60 --strict-crc", DSD_SCAN_MODE_DMR, 1, &parsed, error, sizeof(error))
+           == 0);
+
+    const char* rejected_everywhere[] = {"--squelch auto+2", "--squelch auto+31", "--squelch noise",
+                                         "--squelch -60.5",  "--squelch 5",       "--squelch SENSITIVE",
+                                         "--squelch -101"};
+    for (size_t i = 0; i < sizeof(rejected_everywhere) / sizeof(rejected_everywhere[0]); i++) {
+        DSD_MEMSET(&parsed, 0, sizeof(parsed));
+        assert(dsd_scan_options_parse(rejected_everywhere[i], DSD_SCAN_MODE_NFM, 0, &parsed, error, sizeof(error)) < 0);
+        assert(parsed.values.present == 0 && strncmp(error, "--squelch: ", 11) == 0);
+        assert(strstr(error, "SENSITIVE") == NULL);
+    }
+    /* auto on a digital row: its channel never shows its noise. */
+    assert(dsd_scan_options_parse("--squelch auto", DSD_SCAN_MODE_DMR, 1, &parsed, error, sizeof(error)) < 0);
+    assert(strstr(error, "auto on nfm and am rows only") != NULL);
+    /* One squelch per row, whichever spellings. */
+    assert(
+        dsd_scan_options_parse("--squelch auto --squelch-db -60", DSD_SCAN_MODE_NFM, 0, &parsed, error, sizeof(error))
+        < 0);
+    assert(strstr(error, "duplicate option") != NULL);
+    assert(
+        dsd_scan_options_parse("--squelch-db -60 --squelch auto+6", DSD_SCAN_MODE_NFM, 0, &parsed, error, sizeof(error))
+        < 0);
 }
 
 /* The row squelch uses the rtl_sql contract: whole dB from -100 to 0, 0 switches it off, and
@@ -678,6 +723,7 @@ main(void) {
     check_tone_list_split();
     check_file_spans();
     check_squelch_option();
+    check_squelch_setting_option();
     check_nfm_row_accepts_analog_options();
     check_analog_rows_reject_digital_options();
     check_nfm_bandwidth_option_contract();

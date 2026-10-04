@@ -6,6 +6,7 @@
 #define DSD_NEO_RUNTIME_SCAN_MODE_H
 #include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/power.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
@@ -56,6 +57,10 @@ typedef struct {
      * policy (DSD_SCAN_OPT_TONE) lands here. Row policy, so second (8-byte aligned) and out of the comparison. */
     dsd_tone_set analog_tone_set;
     int analog_tone_filter;
+    /** dsd_opts::rtl_squelch_mode and rtl_squelch_margin_db (issue #518 follow-up): with rtl_squelch_level, the squelch
+     * setting. Row policy, out of the comparison. */
+    int rtl_squelch_mode;
+    int rtl_squelch_margin_db;
     int force_key;
     int aggressive_framesync;
     int dmr_crc_relaxed_default;
@@ -224,6 +229,10 @@ const dsd_scan_option_values* dsd_scan_mode_row_options(const dsd_state* state);
  * thread with the live state, never with a frontend snapshot (dsd_app_get_latest_snapshot()): it
  * would edit the snapshot's scope copy while frontends read it, and the live scope would not change. */
 int dsd_scan_mode_set_configured_squelch(dsd_opts* opts, const dsd_state* state, double level);
+/** dsd_scan_mode_set_configured_squelch() for a whole setting (a LEVEL threshold or an AUTO margin, runtime/squelch.h):
+ * the same contract. */
+int dsd_scan_mode_set_configured_squelch_setting(dsd_opts* opts, const dsd_state* state,
+                                                 const dsd_squelch_setting* setting);
 /** Edit the configured NFM channel width (dsd_opts::analog_nfm_bandwidth_hz, Hz, 0 = the default) without
  * suspending the scope, as the squelch setter does, so no acquisition a row has made is compared or reset (issue #526).
  * Without a scope, or while one is suspended, dsd_opts holds the configured values and takes the width. Under a live

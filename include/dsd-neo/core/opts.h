@@ -91,6 +91,8 @@ struct dsd_opts {
        switch back. Gate through the runtime/squelch.h helpers, never by comparing rtl_pwr to rtl_squelch_level. */
     int rtl_squelch_mode;
     int rtl_squelch_margin_db;
+    /* 1 once --squelch set the squelch: an input spec's sql field then leaves it (dsd_squelch_spec_field_apply()). */
+    int rtl_squelch_cli_set;
     double input_warn_db;
     time_t last_input_warn_time; // decode time of the last input-level warning
     // P25 SM unified follower configuration (CLI values override environment defaults)

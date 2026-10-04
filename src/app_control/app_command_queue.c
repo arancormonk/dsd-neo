@@ -71,6 +71,7 @@
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
+#include <dsd-neo/runtime/squelch.h>
 #include <dsd-neo/runtime/telemetry.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
@@ -1181,6 +1182,8 @@ typedef struct {
     int rtlsdr_ppm_error;
     int rtl_auto_ppm;
     double rtl_squelch_level;
+    int rtl_squelch_mode;
+    int rtl_squelch_margin_db;
     int rtl_volume_multiplier;
     int digital_resample_mode;
     dsd_airspy_config airspy;
@@ -1215,6 +1218,8 @@ ui_capture_radio_input(const dsd_opts* opts, const dsd_state* state, ui_radio_in
     out->rtlsdr_ppm_error = opts->rtlsdr_ppm_error;
     out->rtl_auto_ppm = opts->rtl_auto_ppm;
     out->rtl_squelch_level = opts->rtl_squelch_level;
+    out->rtl_squelch_mode = opts->rtl_squelch_mode;
+    out->rtl_squelch_margin_db = opts->rtl_squelch_margin_db;
     out->rtl_volume_multiplier = opts->rtl_volume_multiplier;
     out->digital_resample_mode = opts->digital_resample_mode;
     out->airspy = opts->airspy;
@@ -1244,6 +1249,8 @@ ui_restore_radio_input(dsd_opts* opts, const ui_radio_input* in) {
     opts->rtlsdr_ppm_error = in->rtlsdr_ppm_error;
     opts->rtl_auto_ppm = in->rtl_auto_ppm;
     opts->rtl_squelch_level = in->rtl_squelch_level;
+    opts->rtl_squelch_mode = in->rtl_squelch_mode;
+    opts->rtl_squelch_margin_db = in->rtl_squelch_margin_db;
     opts->rtl_volume_multiplier = in->rtl_volume_multiplier;
     opts->digital_resample_mode = in->digital_resample_mode;
     opts->airspy = in->airspy;
@@ -3001,7 +3008,15 @@ apply_cfg_rtl_common(dsd_opts* opts, const dsdneoUserConfig* cfg) {
      * Unlike the sibling keys below, 0 is a real value here rather than "key
      * omitted", so this applies unconditionally — as the startup loader does. */
     opts->rtl_squelch_level = dsd_squelch_level_from_sql((double)cfg->rtl_sql);
-    rtl_stream_set_channel_squelch((float)opts->rtl_squelch_level);
+    /* The mode beside it: rtl_sql_mode = auto puts rtl_sql_margin_db over the learned floor in force (issue #518
+       follow-up), the level kept beneath for a switch back. */
+    opts->rtl_squelch_mode = DSD_SQUELCH_MODE_LEVEL;
+    if (cfg->rtl_sql_mode == DSD_SQUELCH_MODE_AUTO) {
+        const dsd_squelch_setting auto_squelch = dsd_squelch_setting_auto(
+            cfg->rtl_sql_margin_db > 0 ? cfg->rtl_sql_margin_db : DSD_SQUELCH_MARGIN_DEFAULT_DB);
+        dsd_squelch_setting_store(opts, &auto_squelch);
+    }
+    svc_rtl_push_squelch(opts);
     if (dsd_user_config_rtl_gain_is_set(cfg)) {
         opts->rtl_gain_value = cfg->rtl_gain;
     }
@@ -3411,8 +3426,8 @@ apply_cfg_radio_input(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* 
     /* The Airspy path compares the settings the config asks for with the ones the Airspy runs. */
     opts->airspy = in->airspy;
     DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", in->audio_in_dev);
-    const svc_airspy_tuning tuning = {in->rtlsdr_center_freq, in->rtl_dsp_bw_khz, in->rtl_squelch_level,
-                                      in->rtl_volume_multiplier};
+    const svc_airspy_tuning tuning = {in->rtlsdr_center_freq,    in->rtl_dsp_bw_khz,   in->rtl_squelch_level,
+                                      in->rtl_volume_multiplier, in->rtl_squelch_mode, in->rtl_squelch_margin_db};
     int rc = 0;
     if (!state->rtl_ctx
         || svc_airspy_settings_reopen(&in->airspy, &cfg->airspy, tuning.bandwidth, opts->rtl_dsp_bw_khz, tuning.volume,

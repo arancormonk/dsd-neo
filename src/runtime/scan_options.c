@@ -3,11 +3,13 @@
 
 #include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/parse.h>
+#include <dsd-neo/core/power.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
+#include <dsd-neo/runtime/squelch.h>
 #include <errno.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -77,6 +79,8 @@ static int option_set_max_visit(const scan_option_spec* spec, const char* argume
                                 dsd_scan_options* parsed);
 static int option_set_squelch(const scan_option_spec* spec, const char* argument, unsigned int mode,
                               dsd_scan_options* parsed);
+static int option_set_squelch_setting(const scan_option_spec* spec, const char* argument, unsigned int mode,
+                                      dsd_scan_options* parsed);
 static int option_set_bandwidth(const scan_option_spec* spec, const char* argument, unsigned int mode,
                                 dsd_scan_options* parsed);
 static int option_set_tone(const scan_option_spec* spec, const char* argument, unsigned int mode,
@@ -84,7 +88,9 @@ static int option_set_tone(const scan_option_spec* spec, const char* argument, u
 static int option_set_path(const scan_option_spec* spec, const char* argument, unsigned int mode,
                            dsd_scan_options* parsed);
 
-#define SQUELCH_HINT   "expects whole dB from -100 to 0 (0 = off)"
+#define SQUELCH_HINT "expects whole dB from -100 to 0 (0 = off)"
+#define SQUELCH_SETTING_HINT                                                                                           \
+    "expects off, whole dB from -100 to 0, or auto[+N] (N from 3 to 30; auto on nfm and am rows only)"
 #define OPTION_TEXT(x) #x
 #define OPTION_HZ(x)   OPTION_TEXT(x)
 #define NFM_BANDWIDTH_HINT                                                                                             \
@@ -126,6 +132,10 @@ static const scan_option_spec specifications[] = {
     /* Squelch is a receiver setting, so it is legal on every class and target type, trunked
      * control channels included (issue #521). Units and range are rtl_sql's. */
     {"--squelch-db", DSD_SCAN_OPT_SQUELCH, ANY_MODES, 1, 0, 0, 1, SQUELCH_HINT, option_set_squelch},
+    /* The same option in the squelch grammar (issue #518 follow-up): a level in whole dB, off, or auto[+N], a margin over
+     * the floor the demodulator learns for the channel, which only the analog monitor shows. One squelch per row:
+     * naming both spellings is a duplicate. */
+    {"--squelch", DSD_SCAN_OPT_SQUELCH, ANY_MODES, 1, 0, 0, 1, SQUELCH_SETTING_HINT, option_set_squelch_setting},
     /* The channel width of the analog demodulator the row runs (issue #526), spelled per kind and
      * in whole Hz; a row carries one width, and each spelling is its own class's only. */
     {"--nfm-bandwidth-hz", DSD_SCAN_OPT_BANDWIDTH, NFM, 1, 0, 0, 0, NFM_BANDWIDTH_HINT, option_set_bandwidth},
@@ -402,7 +412,33 @@ option_set_squelch(const scan_option_spec* spec, const char* argument, unsigned 
         return -1;
     }
     parsed->values.squelch_db = db;
+    parsed->values.squelch_mode = DSD_SQUELCH_MODE_LEVEL;
     return 0;
+}
+
+/* --squelch: auto[+N] on an analog row, else what --squelch-db takes (off is 0). */
+static int
+option_set_squelch_setting(const scan_option_spec* spec, const char* argument, unsigned int mode,
+                           dsd_scan_options* parsed) {
+    dsd_squelch_setting setting;
+    if (dsd_squelch_setting_parse(argument, &setting, NULL, 0U) != 0) {
+        return -1;
+    }
+    if (setting.mode == DSD_SQUELCH_MODE_AUTO) {
+        if (dsd_scan_mode_analog_kind((dsd_scan_mode)mode) < 0) {
+            return -1;
+        }
+        parsed->values.squelch_db = 0;
+        parsed->values.squelch_mode = DSD_SQUELCH_MODE_AUTO;
+        parsed->values.squelch_margin_db = setting.margin_db;
+        return 0;
+    }
+    if (dsd_squelch_setting_is_off(&setting)) {
+        parsed->values.squelch_db = 0;
+        parsed->values.squelch_mode = DSD_SQUELCH_MODE_LEVEL;
+        return 0;
+    }
+    return option_set_squelch(spec, argument, mode, parsed);
 }
 
 /* The width's range is the kind's -- the demodulator of the one class the spelling is legal on -- and

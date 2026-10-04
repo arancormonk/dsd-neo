@@ -87,6 +87,23 @@ int dsd_squelch_setting_format(const dsd_squelch_setting* s, char* out, size_t o
 int dsd_squelch_setting_resolve(const dsd_squelch_setting* configured, int radio_input, int digital,
                                 dsd_squelch_setting* out);
 
+/** @brief The setting @p opts holds (rtl_squelch_mode, rtl_squelch_level, rtl_squelch_margin_db); off for NULL. */
+dsd_squelch_setting dsd_squelch_setting_of_opts(const dsd_opts* opts);
+
+/**
+ * @brief Store @p setting in @p opts: its mode, and under LEVEL its level, under AUTO its margin (the level stays, for a
+ * switch back). Nothing is pushed to the receiver.
+ */
+void dsd_squelch_setting_store(dsd_opts* opts, const dsd_squelch_setting* setting);
+
+/**
+ * @brief Apply an input spec's `sql` field (`rtl:`, `rtltcp:`, `soapy:`, Airspy) in the squelch grammar.
+ *
+ * @return 0 when it set the squelch, 1 when `--squelch` already did (the command line wins), -1 when the field does not
+ * read as a setting (nothing changes: a field that is not a squelch says nothing about it).
+ */
+int dsd_squelch_spec_field_apply(dsd_opts* opts, const char* text);
+
 /**
  * @brief Whether the auto squelch gates @p opts's monitor per sample: an AUTO setting on an RTL-family input (`rtl:`,
  * `rtltcp:`, `soapy:`, Airspy, I/Q replay). Each sample then carries its gate (the RTL stream's flags), and the level

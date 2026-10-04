@@ -40,6 +40,7 @@
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
+#include <dsd-neo/runtime/squelch.h>
 #include <math.h>
 #include <stdarg.h>
 #include <stdint.h>
@@ -1569,6 +1570,8 @@ svc_airspy_restore_tuning(dsd_opts* opts, const svc_airspy_tuning* tuning) {
     opts->rtlsdr_center_freq = tuning->frequency;
     opts->rtl_dsp_bw_khz = tuning->bandwidth;
     opts->rtl_squelch_level = tuning->squelch;
+    opts->rtl_squelch_mode = tuning->squelch_mode;
+    opts->rtl_squelch_margin_db = tuning->squelch_margin_db;
     opts->rtl_volume_multiplier = tuning->volume;
 }
 
@@ -1619,10 +1622,14 @@ svc_airspy_reopen_locked(dsd_opts* opts, dsd_state* state, const dsd_airspy_conf
     return rc;
 }
 
-/* Squelch is a linear power level; differences below this are the same threshold. */
+/* Squelch is a linear power level; differences below this are the same threshold. The mode and the AUTO margin are part
+   of the setting too. */
 static int
-svc_airspy_squelch_changed(double previous, double current) {
-    return fabs(previous - current) > 1e-12;
+svc_airspy_squelch_changed(const svc_airspy_tuning* previous, const dsd_opts* current) {
+    return fabs(previous->squelch - current->rtl_squelch_level) > 1e-12
+           || previous->squelch_mode != current->rtl_squelch_mode
+           || (current->rtl_squelch_mode == DSD_SQUELCH_MODE_AUTO
+               && previous->squelch_margin_db != current->rtl_squelch_margin_db);
 }
 
 /* In-place path: native controls first, then the shared tuning the stream did not reopen for. */
@@ -1651,8 +1658,8 @@ svc_airspy_apply_live(dsd_opts* opts, dsd_state* state, const dsd_airspy_config*
             return rc;
         }
     }
-    if (svc_airspy_squelch_changed(previous_tuning->squelch, opts->rtl_squelch_level)) {
-        rtl_stream_set_channel_squelch((float)opts->rtl_squelch_level);
+    if (svc_airspy_squelch_changed(previous_tuning, opts)) {
+        svc_rtl_push_squelch(opts);
     }
     return 0;
 }
@@ -1701,8 +1708,8 @@ svc_airspy_apply(dsd_opts* opts, dsd_state* state, const dsd_airspy_config* conf
     if (!opts) {
         return -1;
     }
-    const svc_airspy_tuning tuning = {opts->rtlsdr_center_freq, opts->rtl_dsp_bw_khz, opts->rtl_squelch_level,
-                                      opts->rtl_volume_multiplier};
+    const svc_airspy_tuning tuning = {opts->rtlsdr_center_freq,    opts->rtl_dsp_bw_khz,   opts->rtl_squelch_level,
+                                      opts->rtl_volume_multiplier, opts->rtl_squelch_mode, opts->rtl_squelch_margin_db};
     return svc_airspy_apply_config_impl(opts, state, config, &tuning, 0, out_capture_stopped);
 }
 
@@ -1906,10 +1913,23 @@ svc_rtl_set_sql_db(dsd_opts* opts, const dsd_state* state, double dB) {
      * squelch (--squelch-db) keeps its own threshold, in dsd_opts and in the demod, until the
      * scanner leaves it. */
     if (dsd_scan_mode_set_configured_squelch(opts, state, level) == 1) {
-        /* Sync the demod state for channel-based squelching */
-        rtl_stream_set_channel_squelch((float)opts->rtl_squelch_level);
+        /* Sync the demod state for channel-based squelching: a level, in place of an auto squelch too. */
+        svc_rtl_push_squelch(opts);
     }
     return 0;
+}
+
+void
+svc_rtl_push_squelch(const dsd_opts* opts) {
+    if (!opts) {
+        return;
+    }
+    if (opts->rtl_squelch_mode == DSD_SQUELCH_MODE_AUTO) {
+        const dsd_squelch_setting squelch = dsd_squelch_setting_of_opts(opts);
+        rtl_stream_set_channel_squelch_setting(&squelch);
+        return;
+    }
+    rtl_stream_set_channel_squelch((float)opts->rtl_squelch_level);
 }
 
 int

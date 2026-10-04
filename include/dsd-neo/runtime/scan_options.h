@@ -66,8 +66,12 @@ typedef struct {
     int hold_ms;
     /** 0 = explicit per-row disable */
     int max_visit_ms;
-    /** Whole dB from -100 to 0 in the rtl_sql convention; 0 = explicit per-row off. */
+    /** Whole dB from -100 to 0 in the rtl_sql convention; 0 = explicit per-row off. The LEVEL value. */
     int squelch_db;
+    /** The row's squelch mode (dsd_squelch_mode): LEVEL (squelch_db, --squelch-db or --squelch <dB>) or AUTO
+     * (--squelch auto[+N], nfm and am rows and targets only), whose margin is squelch_margin_db. */
+    int squelch_mode;
+    int squelch_margin_db;
     /** Full RF channel width in Hz for the row's analog demodulator (runtime/analog_channel.h ranges). */
     int channel_bw_hz;
     /** The analog demodulator (dsd_analog_demod) channel_bw_hz is a width of: DSD_ANALOG_DEMOD_FM for

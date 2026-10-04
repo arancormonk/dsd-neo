@@ -208,6 +208,24 @@ main(int argc, char** argv) {
     CHECK(dsd_normalize_airspy_input_spec(&opts) == 0 && opts.rtl_dsp_bw_khz == 24 && opts.rtl_volume_multiplier == 3
           && dsd_squelch_is_off(opts.rtl_squelch_level));
 
+    /* The squelch field takes the squelch grammar's words too (issue #518 follow-up): auto[+N] keeps the level for a
+       switch back, off is off, a number out of the dB span still warns, and --squelch wins over the field. */
+    opts.rtl_squelch_level = 1e-6;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "airspy:851.375M:24:auto+6:2");
+    CHECK(dsd_normalize_airspy_input_spec(&opts) == 0 && opts.rtl_squelch_mode == DSD_SQUELCH_MODE_AUTO
+          && opts.rtl_squelch_margin_db == 6 && fabs(opts.rtl_squelch_level - 1e-6) < 1e-15);
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "airspy:851.375M:24:off:2");
+    CHECK(dsd_normalize_airspy_input_spec(&opts) == 0 && opts.rtl_squelch_mode == DSD_SQUELCH_MODE_LEVEL
+          && dsd_squelch_is_off(opts.rtl_squelch_level));
+    last_warning[0] = '\0';
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "airspy:851.375M:24:500:2");
+    CHECK(dsd_normalize_airspy_input_spec(&opts) == 0 && strstr(last_warning, "squelch") != NULL
+          && dsd_squelch_is_off(opts.rtl_squelch_level));
+    opts.rtl_squelch_cli_set = 1;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "airspy:851.375M:24:auto:2");
+    CHECK(dsd_normalize_airspy_input_spec(&opts) == 0 && opts.rtl_squelch_mode == DSD_SQUELCH_MODE_LEVEL);
+    opts.rtl_squelch_cli_set = 0;
+
     DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "airspy:serial=0123456789abcdef:851.375M");
     CHECK(dsd_normalize_airspy_input_spec(&opts) == 0);
     CHECK(opts.audio_in_type == AUDIO_IN_RTL && opts.rtlsdr_center_freq == 851375000);

@@ -2067,6 +2067,7 @@ target_sources(
     dsd-neo_test_app_control_actions
     PRIVATE
         ${PROJECT_SOURCE_DIR}/src/runtime/scan_mode.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/squelch.c
         ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_metrics_hooks.c
 )
 
@@ -6169,6 +6170,7 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
             "-Wl,--wrap=rtl_stream_stop"
             "-Wl,--wrap=rtl_stream_destroy"
             "-Wl,--wrap=rtl_stream_set_channel_squelch"
+            "-Wl,--wrap=rtl_stream_set_channel_squelch_setting"
             "-Wl,--wrap=rtl_stream_output_rate"
     )
 else()

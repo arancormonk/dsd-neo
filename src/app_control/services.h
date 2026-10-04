@@ -756,11 +756,21 @@ int svc_airspy_reopen_locked(dsd_opts* opts, dsd_state* state, const dsd_airspy_
  */
 int svc_airspy_apply(dsd_opts* opts, dsd_state* state, const dsd_airspy_config* config, int* out_capture_stopped);
 
+/**
+ * @brief Hand the RTL demodulator the squelch @p opts holds: a level through rtl_stream_set_channel_squelch(), as every
+ * level push always has, or an auto squelch whole (rtl_stream_set_channel_squelch_setting(), issue #518 follow-up).
+ */
+void svc_rtl_push_squelch(const dsd_opts* opts);
+
 typedef struct {
     uint32_t frequency;
     int bandwidth;
     double squelch;
     int volume;
+    /* The squelch's mode and AUTO margin beside its level (dsd_opts::rtl_squelch_mode, rtl_squelch_margin_db); zeros
+       are a level squelch. */
+    int squelch_mode;
+    int squelch_margin_db;
 } svc_airspy_tuning;
 
 /** Apply native settings and shared tuning together; restore prior tuning on failure.

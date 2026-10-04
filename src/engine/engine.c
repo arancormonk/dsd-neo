@@ -691,6 +691,16 @@ dsd_engine_setup_parse_rtltcp_input(dsd_opts* opts) {
     opts->audio_in_type = AUDIO_IN_RTL;
 }
 
+/* The squelch for a startup notice: a level as dsd_squelch_format() writes it, or auto+NdB. */
+static void
+dsd_engine_squelch_notice_text(const dsd_opts* opts, char* out, size_t out_size) {
+    if (opts->rtl_squelch_mode == DSD_SQUELCH_MODE_AUTO) {
+        DSD_SNPRINTF(out, out_size, "auto+%ddB", opts->rtl_squelch_margin_db);
+        return;
+    }
+    (void)dsd_squelch_format(opts->rtl_squelch_level, "dB", out, out_size);
+}
+
 static void
 dsd_engine_setup_parse_soapy_input(dsd_opts* opts) {
     if (!dsd_opts_audio_in_dev_is_soapy_spec(opts->audio_in_dev)) {
@@ -710,7 +720,7 @@ dsd_engine_setup_parse_soapy_input(dsd_opts* opts) {
     }
     if (tuning_applied) {
         char sql[24];
-        (void)dsd_squelch_format(opts->rtl_squelch_level, "dB", sql, sizeof sql);
+        dsd_engine_squelch_notice_text(opts, sql, sizeof sql);
         LOG_INFO("NOTICE: SoapySDR tuning: Freq=%u Gain=%d PPM=%d DSP-BW=%dkHz SQ=%s VOL=%d\n",
                  opts->rtlsdr_center_freq, opts->rtl_gain_value, opts->rtlsdr_ppm_error, opts->rtl_dsp_bw_khz, sql,
                  opts->rtl_volume_multiplier);
@@ -812,7 +822,7 @@ dsd_engine_setup_configure_local_rtl(dsd_opts* opts, dsd_state* state, char* ven
         opts->rtl_volume_multiplier = 1;
     }
     char sql[24];
-    (void)dsd_squelch_format(opts->rtl_squelch_level, "dB", sql, sizeof sql);
+    dsd_engine_squelch_notice_text(opts, sql, sizeof sql);
     LOG_INFO("NOTICE: RTL #%d: Freq=%d Gain=%d PPM=%d DSP-BW=%dkHz SQ=%s VOL=%d%s\n", opts->rtl_dev_index,
              opts->rtlsdr_center_freq, opts->rtl_gain_value, opts->rtlsdr_ppm_error, opts->rtl_dsp_bw_khz, sql,
              opts->rtl_volume_multiplier, opts->rtl_bias_tee ? " BIAS=on" : "");
@@ -1034,6 +1044,11 @@ dsd_engine_setup_io(dsd_opts* opts, dsd_state* state) {
         return -1;
     }
     dsd_engine_setup_parse_pulse_input(opts);
+    if (opts->rtl_squelch_mode == DSD_SQUELCH_MODE_AUTO && !dsd_opts_input_is_radio(opts)) {
+        LOG_WARN(
+            "WARNING: --squelch auto needs a radio input (rtl:, rtltcp:, soapy:, airspy or --iq-replay); the squelch "
+            "is off on this input.\n");
+    }
     if (dsd_engine_setup_parse_udp_output(opts, state) != 0) {
         return -1;
     }

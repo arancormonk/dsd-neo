@@ -8,6 +8,7 @@
  */
 
 #include <dsd-neo/core/analog_tone.h>
+#include <dsd-neo/core/power.h>
 #include <dsd-neo/runtime/airspy_config.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/analog_tones.h>
@@ -266,6 +267,17 @@ apply_input_source_keys(dsdneoUserConfig* cfg, const char* key_lc, const char* v
     }
 }
 
+/* rtl_sql_mode: level (rtl_sql's threshold) or auto (rtl_sql_margin_db over the learned floor). Anything else keeps
+   what was there; the validator reports it. */
+static void
+apply_rtl_sql_mode(const char* val, dsdneoUserConfig* cfg) {
+    if (dsd_strcasecmp(val, "auto") == 0) {
+        cfg->rtl_sql_mode = DSD_SQUELCH_MODE_AUTO;
+    } else if (dsd_strcasecmp(val, "level") == 0) {
+        cfg->rtl_sql_mode = DSD_SQUELCH_MODE_LEVEL;
+    }
+}
+
 static int
 apply_input_rtl_keys(dsdneoUserConfig* cfg, const char* key_lc, const char* val, user_cfg_parse_mode_t mode) {
     if (strcmp(key_lc, "rtl_device") == 0) {
@@ -284,6 +296,10 @@ apply_input_rtl_keys(dsdneoUserConfig* cfg, const char* key_lc, const char* val,
         (void)apply_integer_setting(val, 12, mode, &cfg->rtl_bw_khz);
     } else if (strcmp(key_lc, "rtl_sql") == 0) {
         (void)apply_integer_setting(val, 0, mode, &cfg->rtl_sql);
+    } else if (strcmp(key_lc, "rtl_sql_mode") == 0) {
+        apply_rtl_sql_mode(val, cfg);
+    } else if (strcmp(key_lc, "rtl_sql_margin_db") == 0) {
+        (void)apply_integer_setting(val, DSD_SQUELCH_MARGIN_DEFAULT_DB, mode, &cfg->rtl_sql_margin_db);
     } else if (strcmp(key_lc, "rtl_volume") == 0) {
         (void)apply_integer_setting(val, 1, mode, &cfg->rtl_volume);
     } else if (strcmp(key_lc, "auto_ppm") == 0 || strcmp(key_lc, "rtl_auto_ppm") == 0) {

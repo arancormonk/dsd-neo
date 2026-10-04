@@ -588,9 +588,22 @@ rtl_stream_enforce_tuner_autogain(int onoff) {
     (void)onoff;
 }
 
+/* The squelch the services hand the demod: a level, or an auto squelch whole (issue #518 follow-up). */
+static int g_squelch_level_pushes;
+static float g_squelch_level_pushed;
+static int g_squelch_setting_pushes;
+static dsd_squelch_setting g_squelch_setting_pushed;
+
 void
 rtl_stream_set_channel_squelch(float level) {
-    (void)level;
+    g_squelch_level_pushes++;
+    g_squelch_level_pushed = level;
+}
+
+void
+rtl_stream_set_channel_squelch_setting(const dsd_squelch_setting* setting) {
+    g_squelch_setting_pushes++;
+    g_squelch_setting_pushed = *setting;
 }
 
 int
@@ -1012,7 +1025,7 @@ test_locked_restarts(void) {
         opts.iq_capture_requested = 1;
         dsd_airspy_config next = opts.airspy;
         next.sample_rate = 2500000;
-        const svc_airspy_tuning tuning = {851000000, 12, 0.0, 2};
+        const svc_airspy_tuning tuning = {851000000, 12, 0.0, 2, DSD_SQUELCH_MODE_LEVEL, 0};
         const int result = locked ? svc_airspy_apply_config_locked(&opts, &state, &next, &tuning)
                                   : svc_airspy_apply_config(&opts, &state, &next, &tuning);
         rc |= expect_int("Airspy reopen reports start failure", result, -1);
@@ -1397,6 +1410,26 @@ test_rtl_service_option_contracts(void) {
     rc |= expect_double("rtl squelch zero switches off", opts.rtl_squelch_level, 0.0);
     rc |= expect_int("rtl squelch accepts positive", svc_rtl_set_sql_db(&opts, &state, 3.0), 0);
     rc |= expect_double("rtl squelch positive switches off", opts.rtl_squelch_level, 0.0);
+    /* A level from the menu puts a level squelch in force in place of an auto one, and the demod hears the whole
+       setting (issue #518 follow-up). */
+    opts.rtl_squelch_mode = DSD_SQUELCH_MODE_AUTO;
+    opts.rtl_squelch_margin_db = 6;
+    g_squelch_setting_pushes = 0;
+    g_squelch_level_pushes = 0;
+    rc |= expect_int("rtl squelch level over auto", svc_rtl_set_sql_db(&opts, &state, -60.0), 0);
+    rc |= expect_int("rtl squelch level over auto: mode", opts.rtl_squelch_mode, DSD_SQUELCH_MODE_LEVEL);
+    rc |= expect_int("rtl squelch level over auto: pushed", g_squelch_level_pushes, 1);
+    rc |= expect_double("rtl squelch level over auto: pushed level", (double)g_squelch_level_pushed, 1e-6);
+    /* svc_rtl_push_squelch(): a level as a level, an auto squelch whole. */
+    opts.rtl_squelch_mode = DSD_SQUELCH_MODE_AUTO;
+    svc_rtl_push_squelch(&opts);
+    rc |= expect_int("auto squelch pushed whole", g_squelch_setting_pushes, 1);
+    rc |= expect_int("auto squelch pushed margin", g_squelch_setting_pushed.margin_db, 6);
+    rc |= expect_int("auto squelch pushed no level", g_squelch_level_pushes, 1);
+    opts.rtl_squelch_mode = DSD_SQUELCH_MODE_LEVEL;
+    svc_rtl_push_squelch(&opts);
+    rc |= expect_int("level squelch pushed as a level", g_squelch_level_pushes, 2);
+    svc_rtl_push_squelch(NULL);
     rc |= expect_int("rtl volume invalid defaults", svc_rtl_set_volume_mult(&opts, -1), 0);
     rc |= expect_int("rtl volume default stored", opts.rtl_volume_multiplier, 1);
     rc |= expect_int("rtl volume valid stored", svc_rtl_set_volume_mult(&opts, 3), 0);

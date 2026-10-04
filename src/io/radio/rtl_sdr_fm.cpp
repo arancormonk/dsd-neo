@@ -56,6 +56,7 @@
 #include <dsd-neo/runtime/ring.h>
 #include <dsd-neo/runtime/rt_sched.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
+#include <dsd-neo/runtime/squelch.h>
 #include <dsd-neo/runtime/threading.h>
 #include <dsd-neo/runtime/unicode.h>
 #include <limits.h>
@@ -7193,6 +7194,11 @@ stream_open_init_pipeline(const dsd_opts* opts, int demod_base_rate_hz) {
     input_ring_enable_space_notify(&input_ring, 0);
     controller_init(&controller);
     rtl_demod_config_from_env_and_opts(&demod, opts);
+    /* The squelch the session opens with, whole: a level, or the auto squelch's margin. */
+    {
+        const dsd_squelch_setting squelch = dsd_squelch_setting_of_opts(opts);
+        rtl_stream_set_channel_squelch_setting(&squelch);
+    }
     rtl_demod_select_defaults_for_mode(&demod, opts, &output);
     if (stream_prepare_internals(opts) != 0) {
         LOG_ERROR("Failed to initialize RTL stream internals.\n");
