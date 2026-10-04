@@ -1388,29 +1388,30 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   decode clock's monotonic time, the clock the deadline was stamped on, which is what keeps the terminal row, the Qt
   panel and the Android app from drifting on what "suspended" or "hold" means. Tests: `APP_CONTROL_CALL_VIEW`,
   `APP_CONTROL_SCAN_TIMING_VIEW`, and the terminal goldens in `UI_NCURSES_PRINTER_HELPERS`.
-  `include/dsd-neo/app_control/squelch_view.h` and `src/app_control/squelch_view.c` (issue
-  #521) pair the squelch in force with the configured default, say whether a scan row overrides it and whether each
-  level is off: the terminal SQL field and M17 VOX field (`-60.0 dB (row; default -80.0 dB)`), the DSP panel's `(row)`
-  mark, the shadowed-edit toast, and Qt's `configuredSquelchDb`/`effectiveSquelchDb`,
-  `configuredSquelchOff`/`effectiveSquelchOff`, `squelchRowOverride` and `squelchReadout` all come from it. The Qt radio
-  panel lays those out as its whole-dB stepper reading, a `row` badge and `default X`, and uses `squelchReadout` as the
-  reading's accessible name. It reads the row's value from `dsd_scan_mode_row_options()`, so it is also right on the
-  decoder thread while a command has the scope suspended. The auto squelch (issue #518 follow-up) adds whether each
-  setting is AUTO and its margin, why AUTO is off here, and what the stream shows (`dsd_state::squelch_auto_*`:
-  running, learning, plan, gate, floor): `auto +10 dB (floor -78.3 dB)`, `(learning)`, `(off: no radio input)`,
-  `(off on digital)`, `(off: no channel plan)`, and the row form `auto +6 dB (floor -81.0 dB; row; default -60.0 dB)`.
-  `dsd_app_squelch_view_auto_status()` is that status alone (Qt's `squelchAutoStatus`, the line under the reading),
-  `dsd_app_squelch_view_configured_text()` the default as the terminal prompt opens on it (`auto+10`, `-60.0`, `off`);
-  Qt's `configuredSquelchAuto`/`effectiveSquelchAuto` and their margins (kept under a level setting) drive the radio
-  panel's `dB | Auto` choice, whose buttons step the margin in Auto; dB puts the default back on the level it kept
-  (`CommandBridge::restoreSquelchLevel()`, the stored level whole, a legacy linear one included;
-  `configuredSquelchLevelOff` says whether it is off). The channel-map review and target preview carry a row's own
-  auto squelch as `squelch_margin_db` (`dsd_csv_channel_profile`, `dsd_app_scan_csv_target`; Qt `squelchMarginDb`). `DSD_APP_CMD_RTL_SET_SQL_SETTING` (`dsd_app_squelch_setting_payload`,
-  `svc_rtl_set_sql_setting()`) sets a whole setting on the configured default as `RTL_SET_SQL_DB` sets a level, and a
-  scan row edit carries `squelch_mode`/`squelch_margin_db` (AUTO on an nfm or am row only; a level edit without a
+  `include/dsd-neo/app_control/squelch_view.h` and `src/app_control/squelch_view.c` (issue #521) pair the squelch in
+  force with the configured default, say whether a scan row overrides it and whether each level is off: the terminal SQL
+  field and M17 VOX field (`-60.0 dB (row; default -80.0 dB)`), the DSP panel's `(row)` mark, the shadowed-edit toast,
+  and Qt's `configuredSquelchDb`/`effectiveSquelchDb`, `configuredSquelchOff`/`effectiveSquelchOff`,
+  `squelchRowOverride` and `squelchReadout` all come from it. The Qt radio panel lays those out as its whole-dB stepper
+  reading, a `row` badge and `default X`, and uses `squelchReadout` as the reading's accessible name. It reads the row's
+  value from `dsd_scan_mode_row_options()`, so it is also right on the decoder thread while a command has the scope
+  suspended. The auto squelch (issue #518 follow-up) adds whether each setting is AUTO and its margin, why AUTO is off
+  here, and what the stream shows (`dsd_state::squelch_auto_*`: running, learning, plan, gate, floor): `auto +10 dB
+  (floor -78.3 dB)`, `(learning)`, `(off: no radio input)`, `(off on digital)`, `(off: no channel plan)`, and the row
+  form `auto +6 dB (floor -81.0 dB; row; default -60.0 dB)`. `dsd_app_squelch_view_auto_status()` is that status alone
+  (Qt's `squelchAutoStatus`, the line under the reading), `dsd_app_squelch_view_configured_text()` the default as the
+  terminal prompt opens on it (`auto+10`, `-60.0`, `off`); Qt's `configuredSquelchAuto`/`effectiveSquelchAuto` and their
+  margins (kept under a level setting) drive the radio panel's `dB | Auto` choice, whose buttons step the margin in
+  Auto; dB puts the default back on the level it kept (`CommandBridge::restoreSquelchLevel()`, the stored level whole, a
+  legacy linear one included; `configuredSquelchLevelOff` says whether it is off). The channel-map review and target
+  preview carry a row's own auto squelch as `squelch_margin_db` (`dsd_csv_channel_profile`, `dsd_app_scan_csv_target`;
+  Qt `squelchMarginDb`). `DSD_APP_CMD_RTL_SET_SQL_SETTING` (`dsd_app_squelch_setting_payload`,
+  `svc_rtl_set_sql_setting()`) sets a whole setting on the configured default as `RTL_SET_SQL_DB` sets a level (it
+  coalesces only with a queued request of the same mode, so an AUTO request's margin and a LEVEL one's level both land),
+  and a scan row edit carries `squelch_mode`/`squelch_margin_db` (AUTO on an nfm or am row only; a level edit without a
   margin keeps the one the row had, its list's or the last edited, for a switch back to Auto). Tests:
-  `APP_CONTROL_SQUELCH_VIEW`, `APP_COMMAND_QUEUE`, `UI_MENU_CALLBACKS`, `UI_MENU_LABELS_RADIO`,
-  `UI_QT_METRICS_MODEL`, `UI_QT_QML_CALL_LISTS` (`tst_radio_squelch_auto.qml`).
+  `APP_CONTROL_SQUELCH_VIEW`, `APP_COMMAND_QUEUE`, `UI_MENU_CALLBACKS`, `UI_MENU_LABELS_RADIO`, `UI_QT_METRICS_MODEL`,
+  `UI_QT_QML_CALL_LISTS` (`tst_radio_squelch_auto.qml`).
   `include/dsd-neo/app_control/rtl_gain_view.h` and `src/app_control/rtl_gain_view.c` do the same for the tuner gain
   under `--trunk-scan` (issue #518 follow-up): the configured gain the controls edit and a save writes, the parked
   target's own `rtl_gain` while it overrides it, the terminal's `Gain... [20] (target: 10)` and Tuner autogain rows,

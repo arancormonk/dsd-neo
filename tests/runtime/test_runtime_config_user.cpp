@@ -19,6 +19,7 @@
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
+#include <dsd-neo/runtime/input_spec.h>
 #include <dsd-neo/runtime/rdio_export.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
@@ -1737,6 +1738,32 @@ test_auto_squelch_keys_roundtrip(void) {
     dsd_apply_user_config_to_opts(&cfg, &opts, &state);
     if (strstr(opts.audio_in_dev, ":auto+6:") == NULL) {
         DSD_FPRINTF(stderr, "rtl spec without the auto squelch: %s\n", opts.audio_in_dev);
+        rc |= 1;
+    }
+    /* The spec's auto+6 carries no level: rtl_sql is the level beneath it, through the engine's reading of the spec and
+       back out in a save. */
+    (void)dsd_rtl_input_spec_apply(&opts);
+    if (opts.rtl_squelch_mode != DSD_SQUELCH_MODE_AUTO || opts.rtl_squelch_margin_db != 6
+        || fabs(opts.rtl_squelch_level - pow(10.0, -5.0)) > 1e-12) {
+        DSD_FPRINTF(stderr, "rtl load of auto+6 over -50: mode %d margin %d level %g\n", opts.rtl_squelch_mode,
+                    opts.rtl_squelch_margin_db, opts.rtl_squelch_level);
+        rc |= 1;
+    }
+    {
+        dsdneoUserConfig saved;
+        dsd_snapshot_opts_to_user_config(&opts, &state, &saved);
+        if (saved.rtl_sql != -50 || saved.rtl_sql_mode != DSD_SQUELCH_MODE_AUTO) {
+            DSD_FPRINTF(stderr, "rtl load then save: sql %d mode %d\n", saved.rtl_sql, saved.rtl_sql_mode);
+            rc |= 1;
+        }
+    }
+    /* --squelch keeps the level it set. */
+    reset_opts_and_state(opts, state);
+    opts.rtl_squelch_cli_set = 1;
+    opts.rtl_squelch_level = pow(10.0, -7.0);
+    dsd_apply_user_config_to_opts(&cfg, &opts, &state);
+    if (fabs(opts.rtl_squelch_level - pow(10.0, -7.0)) > 1e-15) {
+        DSD_FPRINTF(stderr, "a config's rtl_sql replaced the --squelch level: %g\n", opts.rtl_squelch_level);
         rc |= 1;
     }
 

@@ -211,10 +211,12 @@ Item {
             compare(testContext.squelchAutoCalls(), 0, "the default was not touched");
             findChild(sheet, "radioSquelchUp").clicked();
             compare(testContext.lastScanRowEdit().value.squelchMarginDb, 11);
-            // Back to dB: the row's level, within its whole-dB range.
+            // Back to dB: the row's level, within its whole-dB range, and the margin just asked for (no snapshot has
+            // brought it back yet), which the row keeps for a switch back to Auto.
             mode.selected(0);
             edit = testContext.lastScanRowEdit();
             compare(edit.value.squelchDb, -55);
+            compare(edit.value.squelchMarginDb, 11);
             verify(edit.value.squelchMode === undefined, "a level edit names no mode");
             // A legacy full-scale default beneath it is not off for the row either: -1 dB, the row's nearest.
             sheet.forgetRequests();

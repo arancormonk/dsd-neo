@@ -482,13 +482,16 @@ ModalSheet {
 
     /** Ask for a level squelch of @p db (0 = off), on the row or the default. */
     function requestSquelchDb(db) {
+        // The margin the panel shows, an Auto request still outstanding
+        // included, read before that request is let go.
+        var margin = squelchMargin;
         pendingSquelchMargin = NaN;
         pendingSquelch = db;
         squelchTtl.restart();
         // A row keeps its margin through a level, for a switch back to Auto.
         if (rowSquelch)
             rowEdit(commands.scanRowFieldSquelch, commands.scanRowEditSet,
-                {"squelchDb": Math.round(db), "squelchMarginDb": squelchMargin});
+                {"squelchDb": Math.round(db), "squelchMarginDb": margin});
         else
             commands.setSquelchDb(db);
     }

@@ -1329,11 +1329,22 @@ dsd_user_config_radio_input_spec(const dsdneoUserConfig* cfg, const dsd_opts* op
     }
 }
 
+/* An rtl: or rtltcp: spec's sql field under rtl_sql_mode = auto is auto+N, which carries no level: rtl_sql, the level
+   beneath the auto squelch, is applied here instead (as the shared tuning does for SoapySDR and Airspy), so a switch
+   back to a level and a save find it. --squelch keeps the level it set. */
+static void
+apply_rtl_sql_level_beneath_auto(const dsdneoUserConfig* cfg, dsd_opts* opts) {
+    if (cfg->rtl_sql_mode == DSD_SQUELCH_MODE_AUTO && !opts->rtl_squelch_cli_set) {
+        opts->rtl_squelch_level = dsd_squelch_level_from_sql((double)cfg->rtl_sql);
+    }
+}
+
 static void
 apply_input_source_rtl(const dsdneoUserConfig* cfg, dsd_opts* opts) {
     char spec[sizeof opts->audio_in_dev];
     if (format_rtl_input_spec(cfg, opts, spec, sizeof spec) == 0) {
         DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", spec);
+        apply_rtl_sql_level_beneath_auto(cfg, opts);
     }
 }
 
@@ -1342,6 +1353,7 @@ apply_input_source_rtltcp(const dsdneoUserConfig* cfg, dsd_opts* opts) {
     char spec[sizeof opts->audio_in_dev];
     if (format_rtltcp_input_spec(cfg, opts, spec, sizeof spec) == 0) {
         DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", spec);
+        apply_rtl_sql_level_beneath_auto(cfg, opts);
     }
 }
 

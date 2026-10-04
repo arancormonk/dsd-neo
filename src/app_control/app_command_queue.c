@@ -332,6 +332,27 @@ ui_cmd_find_pending_tail_unlocked(int cmd_id) {
     return g_q[tail_idx].id == cmd_id ? &g_q[tail_idx] : NULL;
 }
 
+/* Whether a setter may overwrite the command queued at the tail (the same command). The squelch setting coalesces only
+   with a request of the same mode: an AUTO request sets a margin and a LEVEL one a level that the other leaves alone,
+   so replacing one with the other would drop what the first kept. */
+static int
+ui_cmd_coalesces_with(const struct dsd_app_command* pending, int cmd_id, const void* payload, size_t payload_sz) {
+    if (!pending) {
+        return 0;
+    }
+    if (cmd_id != DSD_APP_CMD_RTL_SET_SQL_SETTING) {
+        return 1;
+    }
+    dsd_app_squelch_setting_payload queued;
+    dsd_app_squelch_setting_payload next;
+    if (!payload || pending->n != sizeof queued || payload_sz != sizeof next) {
+        return 0;
+    }
+    DSD_MEMCPY(&queued, pending->data, sizeof queued);
+    DSD_MEMCPY(&next, payload, sizeof next);
+    return queued.mode == next.mode;
+}
+
 static void
 ui_cmd_store_payload(struct dsd_app_command* c, int cmd_id, const void* payload, size_t payload_sz) {
     // Erase before overwrite, including coalescing to a shorter rejected payload.
@@ -3491,7 +3512,7 @@ dsd_app_command_submit(int cmd_id, const void* payload, size_t payload_sz) {
     }
     if (ui_cmd_is_coalescible_setter(cmd_id)) {
         struct dsd_app_command* pending = ui_cmd_find_pending_tail_unlocked(cmd_id);
-        if (pending) {
+        if (ui_cmd_coalesces_with(pending, cmd_id, payload, payload_sz)) {
             ui_cmd_store_payload(pending, cmd_id, payload, payload_sz);
             dsd_mutex_unlock(&g_mu);
             return DSD_APP_COMMAND_SUBMIT_COALESCED;

@@ -59,9 +59,11 @@
 #include <dsd-neo/runtime/squelch.h>
 #include <dsd-neo/runtime/threading.h>
 #include <dsd-neo/runtime/unicode.h>
+#include <iterator>
 #include <limits.h>
 #include <memory>
 #include <mutex>
+#include <numeric>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -376,10 +378,8 @@ squelch_note_airspy_controls(const dsd_airspy_config* config) {
     const int fields[] = {config->gain_mode, config->sensitivity_gain, config->linearity_gain,
                           config->lna_gain,  config->mixer_gain,       config->vga_gain,
                           config->lna_agc,   config->mixer_agc,        config->bias_tee};
-    uint32_t hash = 2166136261U;
-    for (const int field : fields) {
-        hash = (hash ^ (uint32_t)field) * 16777619U;
-    }
+    const uint32_t hash = std::accumulate(std::begin(fields), std::end(fields), 2166136261U,
+                                          [](uint32_t h, int field) { return (h ^ (uint32_t)field) * 16777619U; });
     g_squelch_airspy_gain.store(hash != 0U ? hash : 1U, std::memory_order_relaxed);
 }
 

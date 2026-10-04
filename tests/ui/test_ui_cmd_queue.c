@@ -5993,6 +5993,33 @@ test_squelch_setting_command(void) {
     rc |= expect_squelch_db("level demod value", g_cmd_squelch_pushed, -50.0);
     rc |= expect_str("level toast", state.ui_msg, "Applied: RTL squelch -> -50.0 dB");
 
+    /* Requests of the two modes queued before one drain both apply, in order, so each keeps what it sets (the margin,
+       the level); two of one mode coalesce to the later. */
+    rc |= expect_int("auto then level: auto", submit_squelch_setting(DSD_SQUELCH_MODE_AUTO, 9, 0.0),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("auto then level: level apart",
+                     submit_squelch_setting(DSD_SQUELCH_MODE_LEVEL, 0, dsd_squelch_level_from_sql(-45.0)),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("auto then level drained", dsd_app_drain_cmds(&opts, &state), 2);
+    rc |= expect_true("level in force, the margin kept",
+                      opts.rtl_squelch_mode == DSD_SQUELCH_MODE_LEVEL && opts.rtl_squelch_margin_db == 9);
+    rc |= expect_squelch_db("the level", opts.rtl_squelch_level, -45.0);
+    rc |= expect_int("level then auto: level",
+                     submit_squelch_setting(DSD_SQUELCH_MODE_LEVEL, 0, dsd_squelch_level_from_sql(-40.0)),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("level then auto: auto apart", submit_squelch_setting(DSD_SQUELCH_MODE_AUTO, 7, 0.0),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("level then auto drained", dsd_app_drain_cmds(&opts, &state), 2);
+    rc |=
+        expect_true("auto in force", opts.rtl_squelch_mode == DSD_SQUELCH_MODE_AUTO && opts.rtl_squelch_margin_db == 7);
+    rc |= expect_squelch_db("the level kept beneath", opts.rtl_squelch_level, -40.0);
+    rc |=
+        expect_int("auto again", submit_squelch_setting(DSD_SQUELCH_MODE_AUTO, 11, 0.0), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("one mode coalesces", submit_squelch_setting(DSD_SQUELCH_MODE_AUTO, 12, 0.0),
+                     DSD_APP_COMMAND_SUBMIT_COALESCED);
+    rc |= expect_int("coalesced drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("the later margin", opts.rtl_squelch_margin_db, 12);
+
     /* Beneath a row's own squelch: the default moves, the row stays in force and the demod hears nothing. */
     rc |= expect_int("row entered", dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_DMR), 0);
     dsd_scan_option_values row = {0};
