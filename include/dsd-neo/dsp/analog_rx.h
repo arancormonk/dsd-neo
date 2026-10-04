@@ -82,8 +82,13 @@ enum { DSD_ANALOG_RX_TAP_READ_MS = 20 };
  * meets those too. Near 0 dB in-band an off-table tone can lock a table neighbour for 200-260 ms
  * before the detector drops it: over two hours of continuous carrier at 0 dB, 68.2 Hz read as
  * 67.0 or 69.3 Hz about ten times an hour and 161.0 and 166.7 Hz as a neighbour two or three
- * times an hour, while 150.0 Hz never read as 151.4 Hz and from +3 dB up 68.2 and 161.0 Hz
- * never locked. A voice whose fundamental holds on a table tone can lock that tone (talk-off):
+ * times an hour, and from +3 dB up 68.2 and 161.0 Hz never locked. 150.0 and 151.4 Hz, 1.4 Hz
+ * apart, never read as each other on their values over two hours of 0 dB carrier, but a tone set
+ * 0.35 Hz toward the other did, 20 to 30 times an hour for 200 ms. At a tone's start, while the
+ * window still holds the noise before it, the estimate leans toward the nearer bin: the other
+ * tone of the pair was named for at most 200 ms (mostly 100-150 ms) before the right one took
+ * over, on about one start in 5,000 at 0 dB on the table value, one in 1,400 set 0.2 Hz toward
+ * the other, and one in 100 set 0.35 Hz toward it (up to one in 400 at +10 dB). A voice whose fundamental holds on a table tone can lock that tone (talk-off):
  * under transmitter-filtered speech 10 dB above the tone, twice in 50,000 onsets a voice holding
  * 254.1 Hz locked it for 150-250 ms, once in place of the real tone, and over two hours of
  * seeded speech with no tone the unfiltered speech model locked a tone three times (233.6, 241.8

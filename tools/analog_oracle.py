@@ -8,7 +8,8 @@ the fixture with numpy (brick-wall channel filter, phase-difference discriminato
 
   CTCSS  takes one zero-padded, Hann-windowed FFT of the whole excerpt's sub-audible band
          and accepts its strongest line only when it stands clear of everything else in
-         60-260 Hz and lies within 0.5% of exactly one tone of the 50-tone EIA table;
+         60-260 Hz and lies within 0.5% of exactly one tone of the 50-tone EIA table or
+         150.0 Hz (a line within 0.5% of both 150.0 and 151.4 Hz names neither);
   DCS    low-passes the discriminator to 300 Hz, slices it at 134.4 bit/s at sixteen bit
          phases and both polarities, and checks every 23-bit window against its own
          Golay (23,12) encoder and the DCS word layout, accepting a code only when it
@@ -61,10 +62,11 @@ CTCSS_MIN_PROMINENCE_DB = 10.0
 CTCSS_MIN_FLOOR_DB = 20.0
 POWER_FLOOR = 1e-30
 
-# The 50-tone EIA table (Hz). 150.0 Hz is deliberately absent.
+# The 50-tone EIA table and 150.0 Hz, the tone many radios offer as a 51st (Hz). A line within tolerance of two
+# tones (150.0 and 151.4 Hz, 1.4 Hz apart) matches both, and so names neither.
 CTCSS_TONES = (
     67.0, 69.3, 71.9, 74.4, 77.0, 79.7, 82.5, 85.4, 88.5, 91.5, 94.8, 97.4, 100.0, 103.5, 107.2, 110.9, 114.8,
-    118.8, 123.0, 127.3, 131.8, 136.5, 141.3, 146.2, 151.4, 156.7, 159.8, 162.2, 165.5, 167.9, 171.3, 173.8,
+    118.8, 123.0, 127.3, 131.8, 136.5, 141.3, 146.2, 150.0, 151.4, 156.7, 159.8, 162.2, 165.5, 167.9, 171.3, 173.8,
     177.3, 179.9, 183.5, 186.2, 189.9, 192.8, 196.6, 199.5, 203.5, 206.5, 210.7, 218.1, 225.7, 229.1, 233.6,
     241.8, 250.3, 254.1,
 )
@@ -157,8 +159,7 @@ def ctcss_label(freq_hz, rate_hz):
         result["why"] = "no line stands clear of the sub-audible band"
     elif len(matches) != 1:
         result["label"] = None
-        near_150 = abs(peak_hz - 150.0) <= CTCSS_TOLERANCE * 150.0
-        result["why"] = "150.0 Hz is not an EIA tone" if near_150 else "line matches no EIA tone"
+        result["why"] = "line between two tones" if matches else "line matches no tone"
     else:
         result["label"] = f"{matches[0]:.1f}"
     return result
@@ -356,14 +357,15 @@ def self_test():
     inverted = {dcs_code_of(rotate(word ^ 0x7FFFFF, k)) for k in range(DCS_WORD_BITS)} - {None}
     check("the inverted D023 word reads as 047", 0o47 in inverted)
     check("the DCS table holds 104 codes", len(set(DCS_CODES)) == 104)
-    check("the CTCSS table holds 50 tones without 150.0", len(CTCSS_TONES) == 50 and 150.0 not in CTCSS_TONES)
+    check("the CTCSS table holds the 50 EIA tones and 150.0", len(CTCSS_TONES) == 51 and 150.0 in CTCSS_TONES)
 
     rate = 48000.0
     count = int(4 * rate)
     rng = np.random.default_rng(518)
     cases = [
         ("CTCSS 151.4 Hz under speech", 500.0 * np.sin(2 * math.pi * 151.4 * np.arange(count) / rate), "151.4", None),
-        ("CTCSS 150.0 Hz (not in the table)", 500.0 * np.sin(2 * math.pi * 150.0 * np.arange(count) / rate), None, None),
+        ("CTCSS 150.0 Hz", 500.0 * np.sin(2 * math.pi * 150.0 * np.arange(count) / rate), "150.0", None),
+        ("161.0 Hz (not in the table)", 500.0 * np.sin(2 * math.pi * 161.0 * np.arange(count) / rate), None, None),
         ("D023N under speech", dcs_waveform(0o23, count, rate), None, "D023N"),
         ("D023I under speech", dcs_waveform(0o23, count, rate, inverted=True), None, "D023I"),
         ("speech alone", np.zeros(count), None, None),

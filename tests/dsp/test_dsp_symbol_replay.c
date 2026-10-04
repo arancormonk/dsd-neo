@@ -1707,9 +1707,9 @@ test_rx_tone_logs_on_change_only(void) {
     assert(rx_tone_locked_on_100(&state));
     assert(g_rx_tone_100_lines == 3 && g_rx_tone_lines == 3);
 
-    /* The tone gives way to 150.0 Hz, on no table, under the same carrier: 2 s of it say
+    /* The tone gives way to 161.0 Hz, on no table, under the same carrier: 2 s of it say
        "none" once. */
-    feed_blocks_at(&opts, &state, 100, 150.0);
+    feed_blocks_at(&opts, &state, 100, 161.0);
     assert(state.analog_rx.tone_state == DSD_ANALOG_TONE_STATE_NONE && state.analog_rx.carrier_open == 1);
     assert(g_rx_tone_none_lines == 1 && g_rx_tone_100_lines == 3 && g_rx_tone_lines == 4);
     dsd_state_ext_free_all(&state);

@@ -2846,7 +2846,7 @@ test_nfm_channel_map_tone_lists(void) {
          "row 2: --tone-allow: use / between entries, not commas"},
         {"channel,frequency_hz,mode,options,single_key_dec\n1,154430000,nfm,--tone-block D023N,d047i\n",
          "row 2: --tone-block: use / between entries, not commas"},
-        {"channel,frequency_hz,name,mode,options\n1,154430000,Fire,nfm,--tone-allow 67.0/150.0\n",
+        {"channel,frequency_hz,name,mode,options\n1,154430000,Fire,nfm,--tone-allow 67.0/161.0\n",
          "row 2: --tone-allow: entry 2 is not a standard CTCSS tone or DCS code"},
         {"channel,frequency_hz,name,mode,options\n1,154430000,Fire,nfm,--tone-allow 100.0/D023N/D047I\n",
          "row 2: --tone-allow: entry 3 is the same DCS signal as entry 2 (D023N)"},
@@ -2864,7 +2864,7 @@ test_nfm_channel_map_tone_lists(void) {
     for (size_t i = 0; i < sizeof(refused) / sizeof(refused[0]); i++) {
         rc |= expect_import_refused(path, refused[i].body, refused[i].diagnostic);
         const int imported = import_channel_map_text(path, refused[i].body, log, sizeof log);
-        if (imported == CHANNEL_MAP_NOT_IMPORTED || strstr(log, "SECRET") || strstr(log, "150.0")
+        if (imported == CHANNEL_MAP_NOT_IMPORTED || strstr(log, "SECRET") || strstr(log, "161.0")
             || strstr(log, "D047I")) {
             DSD_FPRINTF(stderr, "tone refusal %zu echoed the row or was not imported: %s\n", i, log);
             rc = 1;

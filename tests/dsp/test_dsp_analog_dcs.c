@@ -1358,19 +1358,20 @@ test_other_code_words_never_lock(void) {
 }
 
 /* No CTCSS tone is a DCS code: every table tone, clean and at 10 dB, at 8 and 48 kHz, for 3 s,
-   never locks the DCS detector, not even for a moment (the CTCSS detector names it). */
+   never locks the DCS detector, not even for a moment (the CTCSS detector names it). The legacy
+   table's tones on their pinned seeds, then 150.0 Hz (t == SYNTH_LEGACY_CTCSS_COUNT) on its own. */
 static void
 test_ctcss_tones_never_lock(void) {
     static const int rates[] = {8000, 48000};
     for (int ri = 0; ri < 2; ri++) {
-        for (int t = 0; t < DSD_CTCSS_TONE_COUNT; t++) {
+        for (int t = 0; t <= SYNTH_LEGACY_CTCSS_COUNT; t++) {
             for (int clean = 0; clean < 2; clean++) {
                 dsd_analog_rx_core_init(&g_core);
                 dcs_src src;
                 src_init(&src, (double)rates[ri], 3000ULL + (uint64_t)(t * 4 + ri * 2 + clean), 0023, 0,
                          clean ? 200.0 : 10.0, 75.0);
                 src.send = SEND_TONE;
-                src.tone_hz = (double)dsd_ctcss_tone_tenths(t) / 10.0;
+                src.tone_hz = t < SYNTH_LEGACY_CTCSS_COUNT ? (double)synth_legacy_ctcss_tenths(t) / 10.0 : 150.0;
                 const run_result r = run_signal(&src, ms_to_samples((double)rates[ri], 3000.0), rates[ri] / 50, -1, -1);
                 assert(r.dcs_locks == 0);
                 assert(g_core.dcs.state != DSD_ANALOG_TONE_STATE_LOCKED);

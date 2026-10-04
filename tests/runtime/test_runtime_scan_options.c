@@ -606,7 +606,9 @@ check_tone_list_split(void) {
         {"--tone-allow 100.0", NULL, 1, NULL},
         {"--tone-allow 100.0", "30", 0, NULL},
         {"--tone-allow 100.0", "Fire", 0, NULL},
-        {"--tone-allow 100.0", "150.0", 0, NULL},
+        {"--tone-allow 100.0", "161.0", 0, NULL},
+        /* 150.0 Hz is a tone (issue #518 follow-up): a column that reads as one is the list's rest. */
+        {"--tone-allow 100.0", "150.0", 0, "--tone-allow: use / between entries, not commas"},
         /* A name that starts with a tone or code but has a space in it is the column's own. */
         {"--tone-allow 100.0", "100 Main St", 0, NULL},
         {"--tone-allow 100.0", "67 Fire", 0, NULL},
@@ -622,7 +624,7 @@ check_tone_list_split(void) {
          "--tone-allow: use / between entries, not commas"},
         {"--tone-allow 100.0", "d047i  --no-tone-filter", 0, "--tone-allow: use / between entries, not commas"},
         /* One run of entries with no space in it can only be the list's rest, a nonstandard later entry included. */
-        {"--tone-allow 100.0", "67.0/150.0", 0, "--tone-allow: use / between entries, not commas"},
+        {"--tone-allow 100.0", "67.0/161.0", 0, "--tone-allow: use / between entries, not commas"},
         {"--tone-allow 100.0", "67.0 \r\n", 0, "--tone-allow: use / between entries, not commas"},
         {"--tone-allow 100.0 --squelch-db -60", "67.0", 1, NULL},
         {"--no-tone-filter", "67.0", 1, NULL},

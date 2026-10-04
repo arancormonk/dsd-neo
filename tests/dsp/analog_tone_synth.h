@@ -25,6 +25,37 @@
 #define M_PI 3.14159265358979323846
 #endif
 
+/*
+ * The 50-tone table the detector sweeps were pinned on, before 150.0 Hz joined the CTCSS table
+ * (issue #518 follow-up). The sweeps iterate it by its own indices, so every seed, onset and tone
+ * choice they derive from an index -- and every share and time pinned on those -- reproduces
+ * exactly; 150.0 Hz has tests of its own.
+ */
+enum { SYNTH_LEGACY_CTCSS_COUNT = 50 };
+
+static const int k_synth_legacy_ctcss_tenths[SYNTH_LEGACY_CTCSS_COUNT] = {
+    670,  693,  719,  744,  770,  797,  825,  854,  885,  915,  948,  974,  1000, 1035, 1072, 1109, 1148,
+    1188, 1230, 1273, 1318, 1365, 1413, 1462, 1514, 1567, 1598, 1622, 1655, 1679, 1713, 1738, 1773, 1799,
+    1835, 1862, 1899, 1928, 1966, 1995, 2035, 2065, 2107, 2181, 2257, 2291, 2336, 2418, 2503, 2541,
+};
+
+/** @brief Legacy table tone @p k in tenths of a hertz, or -1 out of range. */
+static inline int
+synth_legacy_ctcss_tenths(int k) {
+    return (k >= 0 && k < SYNTH_LEGACY_CTCSS_COUNT) ? k_synth_legacy_ctcss_tenths[k] : -1;
+}
+
+/** @brief Legacy table index of @p tenths, or -1. */
+static inline int
+synth_legacy_ctcss_index(int tenths) {
+    for (int k = 0; k < SYNTH_LEGACY_CTCSS_COUNT; k++) {
+        if (k_synth_legacy_ctcss_tenths[k] == tenths) {
+            return k;
+        }
+    }
+    return -1;
+}
+
 /** @brief xorshift64* generator: tests must not share process-global rand() state. */
 typedef struct {
     uint64_t s;

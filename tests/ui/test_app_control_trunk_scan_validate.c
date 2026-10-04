@@ -237,7 +237,7 @@ test_nfm_target_tone_lists(const char* path) {
          "row 2: --tone-block: use / between entries, not commas"},
         {NULL, "fire,nfm-conventional,154430000,,1500,2000,,\"--tone-allow 100.0,67.0\"\n",
          "row 2: --tone-allow: use / between entries, not commas"},
-        {NULL, "fire,nfm-conventional,154430000,,1500,2000,,--tone-allow 67.0/150.0\n",
+        {NULL, "fire,nfm-conventional,154430000,,1500,2000,,--tone-allow 67.0/161.0\n",
          "row 2: --tone-allow: entry 2 is not a standard CTCSS tone or DCS code"},
         {NULL, "dmr,dmr-conventional,461000000,,1500,1200,,--tone-allow 100.0\n",
          "row 2: --tone-allow: needs mode nfm"},
@@ -255,7 +255,7 @@ test_nfm_target_tone_lists(const char* path) {
             write_targets(path, bad[i].row);
         }
         assert(dsd_app_trunk_scan_validate_targets_csv(path, &count, err, sizeof err) != 0);
-        if (!strstr(err, bad[i].reason) || strstr(err, "150.0") || strstr(err, "p25_bandplan")) {
+        if (!strstr(err, bad[i].reason) || strstr(err, "161.0") || strstr(err, "p25_bandplan")) {
             DSD_FPRINTF(stderr, "want '%s', got '%s'\n", bad[i].reason, err);
             assert(0);
         }

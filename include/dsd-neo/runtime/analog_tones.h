@@ -7,9 +7,12 @@
  * @file
  * @brief Sub-audible signalling tables and text shared by the detectors, the views and the policy.
  *
- * CTCSS (issue #522): the standard 50-tone EIA/TIA table, 67.0-254.1 Hz, held in tenths of a
- * hertz so every consumer compares integers. 150.0 Hz is deliberately not in the table: it is
- * 1.4 Hz from 151.4 Hz, and a detector that snapped it would report the wrong tone.
+ * CTCSS (issue #522): the standard 50-tone EIA/TIA table, 67.0-254.1 Hz, and 150.0 Hz, the tone
+ * many radios offer as a 51st (issue #518 follow-up), held in tenths of a hertz so every consumer
+ * compares integers. 150.0 Hz sits 1.4 Hz from 151.4 Hz, the closest pair in the table: the
+ * detector gives each of the two a snap and hold gate of half that distance, so no estimate is
+ * within reach of both (src/dsp/analog_ctcss.c). A noisy estimate, or a radio set well off its
+ * tone toward the other, can still name the other for a few hops (<dsd-neo/dsp/analog_rx.h>).
  *
  * DCS (issue #523): the standard 104-code set (023 ... 754), each code a 9-bit value written as
  * three octal digits and held as that value (023 octal = 19). A code's 23-bit word is the Golay
@@ -57,8 +60,8 @@
 extern "C" {
 #endif
 
-/** @brief Number of supported CTCSS tones (the standard 50-tone table). */
-enum { DSD_CTCSS_TONE_COUNT = 50 };
+/** @brief Number of supported CTCSS tones (the standard 50-tone table and 150.0 Hz). */
+enum { DSD_CTCSS_TONE_COUNT = 51 };
 
 /** @brief Longest text dsd_ctcss_format_label() writes, terminator included ("CTCSS 254.1 Hz"). */
 enum { DSD_CTCSS_LABEL_SIZE = 24 };
@@ -78,7 +81,7 @@ int dsd_ctcss_tone_tenths(int index);
 /**
  * @brief Table index of the supported tone @p tenths_hz.
  *
- * @return The index, or -1 when @p tenths_hz is not a supported tone (150.0 Hz included).
+ * @return The index, or -1 when @p tenths_hz is not a supported tone.
  */
 int dsd_ctcss_tone_index(int tenths_hz);
 
