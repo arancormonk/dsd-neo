@@ -128,6 +128,10 @@ int dsd_scan_options_visit_files(const char* text, void* context, dsd_scan_optio
 int dsd_scan_options_tone_list_split(const char* options, const char* next, int next_past_header, char* error,
                                      size_t error_size);
 
+/** The DSD_SCAN_OPT_* fields a row of class @p mode (dsd_scan_mode) may set in its `options` cell: the fields of every
+ * switch dsd_scan_options_parse() takes on that class, the conventional-only ones only when @p conventional. */
+uint32_t dsd_scan_options_fields_for_mode(unsigned int mode, int conventional);
+
 /** Hold a row's channel width (DSD_SCAN_OPT_BANDWIDTH) to the DSP rate it would run at, for the
  * demodulator its class @p mode uses. Returns 0 when the row carries no width, @p rate_hz is not known
  * (<= 0) or the width fits; otherwise -1 with dsd_analog_width_check()'s message, which names the width,

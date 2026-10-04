@@ -500,6 +500,12 @@ dsd_neo_add_public_header_smoke_test(
   CXX
 )
 dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_runtime_scan_row_edit
+  HEADERS_PUBLIC_RUNTIME_SCAN_ROW_EDIT
+  dsd-neo/runtime/scan_row_edit.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_runtime_bootstrap
   HEADERS_PUBLIC_RUNTIME_BOOTSTRAP
   dsd-neo/runtime/bootstrap.h
@@ -5930,6 +5936,16 @@ add_executable(
 )
 target_link_libraries(dsd-neo_test_runtime_scan_options PRIVATE dsd-neo_runtime)
 add_test(NAME RUNTIME_SCAN_OPTIONS COMMAND dsd-neo_test_runtime_scan_options)
+
+add_executable(
+    dsd-neo_test_runtime_scan_row_edit
+    runtime/test_runtime_scan_row_edit.c
+)
+target_link_libraries(
+    dsd-neo_test_runtime_scan_row_edit
+    PRIVATE dsd-neo_runtime
+)
+add_test(NAME RUNTIME_SCAN_ROW_EDIT COMMAND dsd-neo_test_runtime_scan_row_edit)
 
 add_executable(dsd-neo_test_scan_mode_replay engine/scan_mode_replay.c)
 target_link_libraries(

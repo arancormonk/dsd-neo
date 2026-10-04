@@ -571,6 +571,21 @@ option_mode_allowed(const scan_option_spec* spec, unsigned int mode, int convent
     return 0;
 }
 
+uint32_t
+dsd_scan_options_fields_for_mode(unsigned int mode, int conventional) {
+    uint32_t fields = 0U;
+    if (mode > DSD_SCAN_MODE_LAST) {
+        return 0U;
+    }
+    for (size_t i = 0; i < sizeof(specifications) / sizeof(specifications[0]); i++) {
+        const scan_option_spec* spec = &specifications[i];
+        if ((spec->modes & MODE_BIT(mode)) && (!spec->conventional || conventional)) {
+            fields |= spec->field;
+        }
+    }
+    return fields;
+}
+
 static int
 option_read(const char** cursor, unsigned int mode, int conventional, dsd_scan_options* parsed,
             scan_force_options* forces, char* error, size_t error_size) {
