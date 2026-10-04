@@ -21,9 +21,7 @@
 #include <dsd-neo/runtime/mem.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
 #include <vector>
-#include "demod_pipeline_test_support.h"
 #include "dsd-neo/core/safe_api.h"
 
 #ifndef M_PI

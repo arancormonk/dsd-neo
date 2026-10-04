@@ -13,6 +13,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/platform/fp_opaque.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/rtl_stream_io_hooks.h>
 #include <dsd-neo/runtime/squelch.h>
 #include <errno.h>
