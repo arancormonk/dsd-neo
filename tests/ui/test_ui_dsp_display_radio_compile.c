@@ -7,6 +7,7 @@
 
 #include <dsd-neo/app_control/squelch_view.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/power.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <stddef.h>
 
@@ -33,6 +34,20 @@ dsd_app_squelch_view_get(const dsd_opts* opts, const dsd_state* state, dsd_app_s
     (void)opts;
     (void)state;
     (void)out;
+    return -1;
+}
+
+double
+pwr_to_dB(double mean_power) {
+    (void)mean_power;
+    return -120.0;
+}
+
+int
+dsd_app_squelch_view_format(const dsd_app_squelch_view* view, char* out, size_t out_size) {
+    (void)view;
+    (void)out;
+    (void)out_size;
     return -1;
 }
 

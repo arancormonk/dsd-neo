@@ -16,10 +16,12 @@
 #include <dsd-neo/app_control/rx_tone_view.h>
 #include <dsd-neo/app_control/scan_row_view.h>
 #include <dsd-neo/app_control/snapshot.h>
+#include <dsd-neo/app_control/squelch_view.h>
 #include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/parse.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/talkgroup_policy.h>
@@ -31,6 +33,7 @@
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_row_edit.h>
+#include <dsd-neo/runtime/squelch.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -686,6 +689,8 @@ typedef struct {
     int has_row;
     dsd_scan_option_values row;
     double squelch_level;
+    int squelch_mode;
+    int squelch_margin_db;
     int width_hz;
     int gain_db;
     int tone_filter;
@@ -710,6 +715,8 @@ scope_submit(int action, const dsd_app_scan_row_edit_payload* values) {
     }
     if (values) {
         p.squelch_db = values->squelch_db;
+        p.squelch_mode = values->squelch_mode;
+        p.squelch_margin_db = values->squelch_margin_db;
         p.width_hz = values->width_hz;
         p.tone_mode = values->tone_mode;
         p.gain_db = values->gain_db;
@@ -718,14 +725,29 @@ scope_submit(int action, const dsd_app_scan_row_edit_payload* values) {
     (void)dsd_app_command_scan_row_edit(&p);
 }
 
+/* This channel's squelch as typed: whole dB from -100 to 0 (0 or off = off), or auto[+N], which the engine holds to an
+   nfm or am row. A refusal says why, never what was typed. */
 static void
-cb_scope_squelch(void* u, int ok, int db) {
+cb_scope_squelch(void* u, const char* text) {
     UNUSED(u);
-    if (ok) {
-        dsd_app_scan_row_edit_payload values = {0};
-        values.squelch_db = db;
-        scope_submit(DSD_SCAN_ROW_EDIT_SET, &values);
+    if (!text) {
+        return;
     }
+    dsd_app_scan_row_edit_payload values = {0};
+    dsd_squelch_setting setting;
+    char why[96];
+    int db = 0;
+    if (dsd_parse_int_strict(text, 10, -100, 0, &db) == 0) {
+        values.squelch_db = db;
+    } else if (dsd_squelch_setting_parse(text, &setting, why, sizeof why) == 0
+               && (setting.mode == DSD_SQUELCH_MODE_AUTO || dsd_squelch_setting_is_off(&setting))) {
+        values.squelch_mode = setting.mode;
+        values.squelch_margin_db = setting.mode == DSD_SQUELCH_MODE_AUTO ? setting.margin_db : 0;
+    } else {
+        ui_statusf("Squelch on this channel: whole dB from -100 to 0, off, or auto[+N]");
+        return;
+    }
+    scope_submit(DSD_SCAN_ROW_EDIT_SET, &values);
 }
 
 static void
@@ -783,13 +805,23 @@ chooser_done_scope_tone(void* u, int sel) {
 
 static void
 scope_open_squelch(void* u, const dsd_scan_option_values* row) {
-    int db = 0;
+    /* What the row runs: its own squelch, or the default it follows. */
+    char text[DSD_SQUELCH_TEXT_SIZE];
     if (row && (row->present & DSD_SCAN_OPT_SQUELCH)) {
-        db = row->squelch_db;
-    } else if (!dsd_squelch_is_off(g_scope.squelch_level)) {
-        db = (int)pwr_to_dB(g_scope.squelch_level);
+        if (row->squelch_mode == DSD_SQUELCH_MODE_AUTO) {
+            DSD_SNPRINTF(text, sizeof text, "auto+%d", row->squelch_margin_db);
+        } else {
+            DSD_SNPRINTF(text, sizeof text, "%d", row->squelch_db);
+        }
+    } else if (g_scope.squelch_mode == DSD_SQUELCH_MODE_AUTO) {
+        DSD_SNPRINTF(text, sizeof text, "auto+%d", dsd_squelch_setting_auto(g_scope.squelch_margin_db).margin_db);
+    } else if (dsd_squelch_is_off(g_scope.squelch_level)) {
+        DSD_SNPRINTF(text, sizeof text, "%s", "off");
+    } else {
+        DSD_SNPRINTF(text, sizeof text, "%d", (int)pwr_to_dB(g_scope.squelch_level));
     }
-    ui_prompt_open_int_async("Squelch on this channel (dB, -100..0; 0 = off)", db, cb_scope_squelch, u);
+    ui_prompt_open_string_async("Squelch on this channel (dB -100..0, off, or auto[+N])", text, sizeof text,
+                                cb_scope_squelch, u);
 }
 
 static void
@@ -861,6 +893,8 @@ scope_capture(const dsd_opts* opts, const dsd_state* state) {
     }
     if (opts) {
         g_scope.squelch_level = opts->rtl_squelch_level;
+        g_scope.squelch_mode = opts->rtl_squelch_mode;
+        g_scope.squelch_margin_db = opts->rtl_squelch_margin_db;
         g_scope.width_hz = dsd_opts_analog_width_hz(opts);
         g_scope.gain_db = opts->rtl_gain_value;
         g_scope.tone_filter = opts->analog_tone_filter;
@@ -1871,15 +1905,15 @@ rtl_set_am_bw(void* v) {
 static void
 rtl_set_sql_default(void* v) {
     UiCtx* c = (UiCtx*)v;
-    /* Offer 0 for a squelch that is off rather than pwr_to_dB()'s -120 floor:
-     * accepting the value shown must not turn a disabled squelch into a real
-     * threshold. 0 is also how the `sql` CLI field and rtl_sql spell "off". */
-    /* The command edits the configured default: a scan row overriding the squelch (issue #521)
-     * keeps its own threshold, so offer the default rather than the row's value. */
-    const dsd_scan_settings* configured = dsd_scan_mode_configured_view(dsd_app_get_latest_snapshot());
-    const double level = configured ? configured->rtl_squelch_level : c->opts->rtl_squelch_level;
-    const double shown = dsd_squelch_is_off(level) ? 0.0 : pwr_to_dB(level);
-    ui_prompt_open_double_async("Squelch (dB; 0 = off)", shown, cb_rtl_sql, c);
+    /* The configured default, as the squelch grammar reads it back: "off" for a squelch that is off rather than
+     * pwr_to_dB()'s -120 floor, so accepting what is shown never turns a disabled squelch into a real threshold, and
+     * "auto+10" for the auto squelch (issue #518 follow-up). The command edits the configured default: a scan row
+     * overriding the squelch (issue #521) keeps its own, so offer the default rather than the row's value. */
+    dsd_app_squelch_view view;
+    char text[DSD_SQUELCH_TEXT_SIZE];
+    (void)dsd_app_squelch_view_get(c->opts, dsd_app_get_latest_snapshot(), &view);
+    (void)dsd_app_squelch_view_configured_text(&view, text, sizeof text);
+    ui_prompt_open_string_async("Squelch (dB, off, or auto[+N])", text, sizeof text, cb_rtl_sql_text, c);
 }
 
 void

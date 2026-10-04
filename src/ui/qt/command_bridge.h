@@ -38,6 +38,13 @@ class CommandBridge : public QObject {
     Q_PROPERTY(int scanRowEditSet READ scanRowEditSet CONSTANT)
     Q_PROPERTY(int scanRowEditInherit READ scanRowEditInherit CONSTANT)
     Q_PROPERTY(int scanRowEditReset READ scanRowEditReset CONSTANT)
+    /* The squelch modes a row edit names (core/power.h dsd_squelch_mode) and the auto squelch's margin range, in
+     * whole dB over the learned floor (issue #518 follow-up). */
+    Q_PROPERTY(int squelchModeLevel READ squelchModeLevel CONSTANT)
+    Q_PROPERTY(int squelchModeAuto READ squelchModeAuto CONSTANT)
+    Q_PROPERTY(int squelchMarginMinDb READ squelchMarginMinDb CONSTANT)
+    Q_PROPERTY(int squelchMarginMaxDb READ squelchMarginMaxDb CONSTANT)
+    Q_PROPERTY(int squelchMarginDefaultDb READ squelchMarginDefaultDb CONSTANT)
 
   public:
     static int scanRowFieldSquelch();
@@ -47,6 +54,11 @@ class CommandBridge : public QObject {
     static int scanRowEditSet();
     static int scanRowEditInherit();
     static int scanRowEditReset();
+    static int squelchModeLevel();
+    static int squelchModeAuto();
+    static int squelchMarginMinDb();
+    static int squelchMarginMaxDb();
+    static int squelchMarginDefaultDb();
 
     /**
      * @brief The scan row on air, captured when a "this channel" editor opens (issue #518): active, scanner, session,
@@ -56,8 +68,9 @@ class CommandBridge : public QObject {
     Q_INVOKABLE QVariantMap scanRowContext() const;
     /**
      * @brief Submit a session edit of one @p field (a scanRowField*) of the row @p context names, with @p action (a
-     * scanRowEdit*). For SET, @p value carries the field's value: squelchDb (whole dB, -100..0; 0 = off), widthHz,
-     * toneMode with toneList, or gainDb (0 = AGC). Returns whether it was queued; the decoder refuses what the row
+     * scanRowEdit*). For SET, @p value carries the field's value: squelchDb (whole dB, -100..0; 0 = off) or
+     * squelchMode squelchModeAuto with squelchMarginDb (an nfm or am row's auto squelch), widthHz, toneMode with
+     * toneList, or gainDb (0 = AGC). Returns whether it was queued; the decoder refuses what the row
      * cannot take, with a message.
      */
     Q_INVOKABLE bool editScanRow(const QVariantMap& context, int field, int action, const QVariantMap& value) const;
@@ -167,6 +180,12 @@ class CommandBridge : public QObject {
 
     /** @brief Set the RTL power squelch threshold, in dB. */
     Q_INVOKABLE bool setSquelchDb(double db) const;
+
+    /**
+     * @brief Set the auto squelch: open @p marginDb (squelchMarginMinDb..squelchMarginMaxDb) over the noise floor
+     * the demodulator learns on each channel. Like setSquelchDb() it edits the configured default.
+     */
+    Q_INVOKABLE bool setSquelchAuto(int marginDb) const;
 
     /** @brief Set the dongle's crystal correction, in parts per million. */
     Q_INVOKABLE bool setPpm(int ppm) const;

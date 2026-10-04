@@ -17,6 +17,7 @@
 
 #include <dsd-neo/core/airspy_config.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/power.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
@@ -829,6 +830,12 @@ int svc_rtl_set_bandwidth_locked(dsd_opts* opts, dsd_state* state, int khz, char
  * the live state, never with a frontend snapshot (dsd_app_get_latest_snapshot()).
  */
 int svc_rtl_set_sql_db(dsd_opts* opts, const dsd_state* state, double dB);
+/**
+ * @brief Set the configured squelch to a whole setting (issue #518 follow-up): a level, or the auto squelch with its
+ * margin. As svc_rtl_set_sql_db(), a scan row's own squelch stays in force until the scanner leaves it. Returns 0, or
+ * -1 for NULL arguments or a margin outside 3..30.
+ */
+int svc_rtl_set_sql_setting(dsd_opts* opts, const dsd_state* state, const dsd_squelch_setting* setting);
 /** @brief Set RTL monitor/non-symbol gain multiplier (clamped to 0–3). */
 int svc_rtl_set_volume_mult(dsd_opts* opts, int mult);
 /** @brief Toggle RTL bias tee (applied live when stream active). */

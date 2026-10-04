@@ -34,6 +34,7 @@
 #include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/power.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/runtime/scan_row_edit.h>
 #include <stdint.h>
@@ -290,6 +291,18 @@ CommandBridge::setSquelchDb(double db) const {
 }
 
 bool
+// cppcheck-suppress functionStatic -- Q_INVOKABLE members cannot be static (Qt meta-object)
+CommandBridge::setSquelchAuto(int marginDb) const {
+    if (marginDb < DSD_SQUELCH_MARGIN_MIN_DB || marginDb > DSD_SQUELCH_MARGIN_MAX_DB) {
+        return false;
+    }
+    dsd_app_squelch_setting_payload payload = {};
+    payload.mode = DSD_SQUELCH_MODE_AUTO;
+    payload.margin_db = marginDb;
+    return accepted(dsd_app_command_submit(DSD_APP_CMD_RTL_SET_SQL_SETTING, &payload, sizeof payload));
+}
+
+bool
 CommandBridge::setNfmBandwidthHz(int hz) const {
     return accepted(dsd_app_command_set_i32(DSD_APP_CMD_NFM_BANDWIDTH_SET, static_cast<int32_t>(hz)));
 }
@@ -518,6 +531,31 @@ CommandBridge::scanRowEditReset() {
     return DSD_SCAN_ROW_EDIT_RESET;
 }
 
+int
+CommandBridge::squelchModeLevel() {
+    return DSD_SQUELCH_MODE_LEVEL;
+}
+
+int
+CommandBridge::squelchModeAuto() {
+    return DSD_SQUELCH_MODE_AUTO;
+}
+
+int
+CommandBridge::squelchMarginMinDb() {
+    return DSD_SQUELCH_MARGIN_MIN_DB;
+}
+
+int
+CommandBridge::squelchMarginMaxDb() {
+    return DSD_SQUELCH_MARGIN_MAX_DB;
+}
+
+int
+CommandBridge::squelchMarginDefaultDb() {
+    return DSD_SQUELCH_MARGIN_DEFAULT_DB;
+}
+
 QVariantMap
 // cppcheck-suppress functionStatic -- Q_INVOKABLE members cannot be static (Qt meta-object)
 CommandBridge::scanRowContext() const {
@@ -558,6 +596,8 @@ CommandBridge::editScanRow(const QVariantMap& context, int field, int action, co
     payload.field = field;
     payload.action = action;
     payload.squelch_db = value.value("squelchDb").toInt();
+    payload.squelch_mode = value.value("squelchMode", static_cast<int>(DSD_SQUELCH_MODE_LEVEL)).toInt();
+    payload.squelch_margin_db = value.value("squelchMarginDb").toInt();
     payload.width_hz = value.value("widthHz").toInt();
     payload.tone_mode = value.value("toneMode").toInt();
     payload.gain_db = value.value("gainDb").toInt();

@@ -11,6 +11,7 @@
 #include <dsd-neo/io/udp_socket_connect.h>
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/runtime/rtl_stream_io_hooks.h>
+#include <dsd-neo/runtime/squelch.h>
 #include <dsd-neo/runtime/udp_audio_hooks.h>
 #include <stddef.h>
 
@@ -93,6 +94,17 @@ rtl_stream_read_ex(RtlSdrContext* ctx, float* out, uint8_t* flags, size_t count,
         *out_got = (count > 0U) ? 1 : 0;
     }
     return 5;
+}
+
+int
+rtl_stream_get_squelch_status(rtl_stream_squelch_status* out) {
+    out->active = 1;
+    out->state = 1;
+    out->gate_open = 0;
+    out->plan_valid = 1;
+    out->floor_power = 2e-6;
+    out->window_power = 3e-6;
+    return 0;
 }
 
 double
@@ -201,8 +213,21 @@ test_rtl_stream_io_installer(void) {
     assert(g_rtl_read_ex_calls == 1 && g_rtl_read_calls == 1);
     assert(g_last_rtl_count == 2U && got == 1 && sample == 4.5f && flag == 1U);
 
+    /* The auto squelch's status reaches the runtime table, and dsd_state through the publication. */
+    dsd_rtl_squelch_status status;
+    assert(dsd_rtl_stream_io_hook_squelch_status(&state, &status) == 0);
+    assert(status.active == 1 && status.state == 1 && status.gate_open == 0 && status.plan_valid == 1);
+    assert(status.floor_power > 1.9e-6 && status.floor_power < 2.1e-6);
+    dsd_squelch_publish_status(&state);
+    assert(state.squelch_auto_active == 1U && state.squelch_auto_state == 1U && state.squelch_auto_gate_open == 0U);
+    /* 2e-6 / 2 = 1e-6: -60 dB. */
+    assert(state.squelch_auto_floor_cdb == -6000);
+
     /* A host that installs read alone: read_ex reads through it, every flag open. */
     dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){.read = rtl_stream_io_test_read});
+    assert(dsd_rtl_stream_io_hook_squelch_status(&state, &status) == -1 && status.active == 0);
+    dsd_squelch_publish_status(&state);
+    assert(state.squelch_auto_active == 0U && state.squelch_auto_floor_cdb == 0);
     flag = 7U;
     got = 0;
     assert(dsd_rtl_stream_io_hook_read_ex(&state, &sample, &flag, 1U, &got) == 7);

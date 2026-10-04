@@ -9,6 +9,8 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/core/state.h>
+#include <dsd-neo/runtime/rtl_stream_io_hooks.h>
 #include <dsd-neo/runtime/squelch.h>
 #include <errno.h>
 #include <math.h>
@@ -303,4 +305,20 @@ dsd_squelch_spec_field_apply(dsd_opts* opts, const char* text) {
     }
     dsd_squelch_setting_store(opts, &setting);
     return 0;
+}
+
+void
+dsd_squelch_publish_status(dsd_state* state) {
+    if (!state) {
+        return;
+    }
+    dsd_rtl_squelch_status st;
+    (void)dsd_rtl_stream_io_hook_squelch_status(state, &st);
+    state->squelch_auto_active = st.active ? 1U : 0U;
+    state->squelch_auto_state = (uint8_t)(st.state >= 0 && st.state <= 255 ? st.state : 0);
+    state->squelch_auto_gate_open = st.gate_open ? 1U : 0U;
+    state->squelch_auto_plan_valid = st.plan_valid ? 1U : 0U;
+    /* The level squelch compares the channel power, half the mean |z|^2 of the channel samples. */
+    const double floor_level = st.floor_power / 2.0;
+    state->squelch_auto_floor_cdb = floor_level > 1e-30 ? (int32_t)lround(1000.0 * log10(floor_level)) : 0;
 }

@@ -16,6 +16,7 @@
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
+#include <dsd-neo/runtime/squelch.h>
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -33,6 +34,14 @@ expect_text(const dsd_app_squelch_view* view, const char* readout, const char* n
     assert(strcmp(out, readout) == 0);
     assert(dsd_app_squelch_view_edit_notice(view, out, sizeof out) == 0);
     assert(strcmp(out, notice) == 0);
+}
+
+/* The auto squelch's status on its own, as a frontend that lays it out on a line of its own reads it. */
+static void
+expect_auto_status(const dsd_app_squelch_view* view, const char* status) {
+    char out[40];
+    assert(dsd_app_squelch_view_auto_status(view, out, sizeof out) == 0);
+    assert(strcmp(out, status) == 0);
 }
 
 int
@@ -108,6 +117,79 @@ main(void) {
     assert(!view.configured_off && !view.effective_off);
     assert(fabs(dsd_app_squelch_db_or_off(view.configured_level)) < 1e-12);
     expect_text(&view, "0.0 dB", "Applied: RTL squelch -> 0.0 dB");
+
+    /* The auto squelch (issue #518 follow-up): its margin, what it shows in force, and why it is off where it is. */
+    opts->rtl_squelch_level = dsd_squelch_level_from_sql(-80.0);
+    opts->rtl_squelch_mode = DSD_SQUELCH_MODE_AUTO;
+    opts->rtl_squelch_margin_db = 10;
+    assert(dsd_app_squelch_view_get(opts, state, &view) == 0);
+    assert(view.effective_auto && view.configured_auto && view.effective_off);
+    expect_text(&view, "auto +10 dB (off: no radio input)", "Applied: RTL squelch -> auto +10 dB");
+    expect_auto_status(&view, "off: no radio input");
+    opts->audio_in_type = AUDIO_IN_RTL;
+    assert(dsd_app_squelch_view_get(opts, state, &view) == 0);
+    expect_text(&view, "auto +10 dB (off on digital)", "Applied: RTL squelch -> auto +10 dB");
+    expect_auto_status(&view, "off on digital");
+    opts->analog_only = 1;
+    opts->monitor_input_audio = 1;
+    opts->frame_dmr = 0;
+    assert(dsd_app_squelch_view_get(opts, state, &view) == 0);
+    assert(!view.effective_off && !view.auto_running);
+    expect_text(&view, "auto +10 dB (learning)", "Applied: RTL squelch -> auto +10 dB");
+    expect_auto_status(&view, "learning");
+    state->squelch_auto_active = 1;
+    state->squelch_auto_plan_valid = 1;
+    state->squelch_auto_state = 1;
+    state->squelch_auto_floor_cdb = -7830;
+    assert(dsd_app_squelch_view_get(opts, state, &view) == 0);
+    assert(view.auto_running && !view.auto_learning && fabs(view.auto_floor_db - (-78.3)) < 1e-9);
+    expect_text(&view, "auto +10 dB (floor -78.3 dB)", "Applied: RTL squelch -> auto +10 dB");
+    expect_auto_status(&view, "floor -78.3 dB");
+    state->squelch_auto_plan_valid = 0;
+    assert(dsd_app_squelch_view_get(opts, state, &view) == 0);
+    assert(view.effective_off);
+    expect_text(&view, "auto +10 dB (off: no channel plan)", "Applied: RTL squelch -> auto +10 dB");
+    expect_auto_status(&view, "off: no channel plan");
+    state->squelch_auto_plan_valid = 1;
+    char text[24];
+    assert(dsd_app_squelch_view_configured_text(&view, text, sizeof text) == 0 && strcmp(text, "auto+10") == 0);
+
+    /* A row's own auto under a level default, and a row's level under an auto default. */
+    opts->rtl_squelch_mode = DSD_SQUELCH_MODE_LEVEL;
+    assert(dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_NFM) == 0);
+    row.squelch_db = 0;
+    row.squelch_mode = DSD_SQUELCH_MODE_AUTO;
+    row.squelch_margin_db = 6;
+    assert(dsd_scan_mode_options(opts, state, &row) == 0);
+    state->squelch_auto_floor_cdb = -8100;
+    assert(dsd_app_squelch_view_get(opts, state, &view) == 0);
+    assert(view.row_override && view.effective_auto && !view.configured_auto);
+    expect_text(&view, "auto +6 dB (floor -81.0 dB; row; default -80.0 dB)",
+                "Default squelch -80.0 dB; this channel overrides it (auto +6 dB)");
+    expect_auto_status(&view, "floor -81.0 dB");
+    assert(dsd_app_squelch_view_configured_text(&view, text, sizeof text) == 0 && strcmp(text, "-80.0") == 0);
+    dsd_scan_mode_leave(opts, state);
+    const dsd_squelch_setting auto8 = dsd_squelch_setting_auto(8);
+    assert(dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_NFM) == 0);
+    row.squelch_mode = DSD_SQUELCH_MODE_LEVEL;
+    row.squelch_db = -60;
+    assert(dsd_scan_mode_options(opts, state, &row) == 0);
+    assert(dsd_scan_mode_set_configured_squelch_setting(opts, state, &auto8) == 0);
+    assert(dsd_app_squelch_view_get(opts, state, &view) == 0);
+    expect_text(&view, "-60.0 dB (row; default auto +8 dB)",
+                "Default squelch auto +8 dB; this channel overrides it (-60.0 dB)");
+    /* A level in force shows no auto status, whatever the default beneath it. */
+    expect_auto_status(&view, "");
+    dsd_scan_mode_leave(opts, state);
+    opts->rtl_squelch_level = 0.0;
+    opts->rtl_squelch_mode = DSD_SQUELCH_MODE_LEVEL;
+    assert(dsd_app_squelch_view_get(opts, state, &view) == 0);
+    assert(dsd_app_squelch_view_configured_text(&view, text, sizeof text) == 0 && strcmp(text, "off") == 0);
+    assert(dsd_app_squelch_view_configured_text(NULL, text, sizeof text) == -1 && text[0] == '\0');
+    text[0] = 'x';
+    assert(dsd_app_squelch_view_auto_status(NULL, text, sizeof text) == -1 && text[0] == '\0');
+    assert(dsd_app_squelch_view_auto_status(&view, NULL, sizeof text) == -1);
+    assert(dsd_app_squelch_view_auto_status(&view, text, 0) == -1);
 
     char out[8];
     assert(dsd_app_squelch_view_get(NULL, state, &view) == -1 && !view.row_override);

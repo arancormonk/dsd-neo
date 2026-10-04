@@ -235,7 +235,7 @@ frame_sync_in_qpsk_dwell(const dsd_state* state) {
 enum { DSD_FRAME_SYNC_UI_PUBLISH_INTERVAL_MS = 50 };
 
 static void
-frame_sync_publish_ui_throttled(const dsd_opts* opts, const dsd_state* state) {
+frame_sync_publish_ui_throttled(const dsd_opts* opts, dsd_state* state) {
     if (!dsd_telemetry_is_active()) {
         return;
     }
@@ -247,6 +247,8 @@ frame_sync_publish_ui_throttled(const dsd_opts* opts, const dsd_state* state) {
     }
 
     dsd_atomic_u64_store_relaxed(&g_frame_sync_ui_last_publish_ms, now_ms);
+    /* The auto squelch's floor and state, as the stream shows them now (issue #518 follow-up). */
+    dsd_squelch_publish_status(state);
     dsd_telemetry_publish_both_and_redraw(opts, state);
 }
 

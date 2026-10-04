@@ -1877,6 +1877,16 @@ struct dsd_state {
     /* Received sub-audible tone (issue #522), published by the analog tap for every frontend.
      * Rides the vertex_ks_count..ui_msg range; see dsd_analog_rx_publication. */
     dsd_analog_rx_publication analog_rx;
+    /* The auto squelch (issue #518 follow-up) as the RTL stream last showed it, for every frontend
+     * (dsd_squelch_publish_status()): whether the floor tracker runs (an AUTO setting on the analog monitor), its floor's
+     * state (dsd_squelch_floor_state), whether its gate is open, whether the channel plan could be designed (0: the gate
+     * stays open), and the floor in hundredths of a dB on rtl_squelch_level's scale (0 while learning). Rides the
+     * vertex_ks_count..ui_msg range. */
+    uint8_t squelch_auto_active;
+    uint8_t squelch_auto_state;
+    uint8_t squelch_auto_gate_open;
+    uint8_t squelch_auto_plan_valid;
+    int32_t squelch_auto_floor_cdb;
 
     // Transient UI message (shown briefly in ncurses printer)
     char ui_msg[128];

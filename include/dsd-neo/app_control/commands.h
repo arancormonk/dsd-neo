@@ -187,6 +187,9 @@ enum dsd_app_command_id {
     DSD_APP_CMD_TRUNK_SET = 496,  // payload: int32_t on(0/1)
     DSD_APP_CMD_AIRSPY_SET = 497, // payload: dsd_app_airspy_setting_payload
     DSD_APP_CMD_AIRSPY_ENABLE_INPUT = 498,
+    // The whole squelch setting (issue #518 follow-up): a level, or the auto squelch with its margin over the floor
+    // the demodulator learns. Edits the configured default, as RTL_SET_SQL_DB does.
+    DSD_APP_CMD_RTL_SET_SQL_SETTING = 499, // payload: dsd_app_squelch_setting_payload
 
     // Rigctl / tuning params
     DSD_APP_CMD_RIGCTL_SET_MOD_BW = 500, // payload: int32_t hz
@@ -315,6 +318,14 @@ enum dsd_app_command_id {
     DSD_APP_CMD_CONFIG_APPLY = 710,       // payload: dsdneoUserConfig (see runtime/config.h)
     DSD_APP_CMD_CONFIG_METADATA_SET = 711 // payload: dsd_app_config_metadata_payload
 };
+
+/* DSD_APP_CMD_RTL_SET_SQL_SETTING: mode is dsd_squelch_mode (core/power.h); level the LEVEL threshold in mean-power
+   units (0 = off), margin_db the AUTO margin in whole dB (3..30). */
+typedef struct {
+    int32_t mode;
+    int32_t margin_db;
+    double level;
+} dsd_app_squelch_setting_payload;
 
 /* A single edit is merged into decoder-owned settings, avoiding stale snapshot writes. */
 typedef struct {
@@ -539,6 +550,8 @@ typedef struct {
     int32_t width_hz;
     int32_t tone_mode;
     int32_t gain_db;
+    int32_t squelch_mode;      /* dsd_squelch_mode: LEVEL (squelch_db) or AUTO (squelch_margin_db, nfm and am rows) */
+    int32_t squelch_margin_db; /* AUTO: 3..30 dB over the learned floor */
     char target_id[64];
     char tone_list[DSD_APP_TONE_FILTER_LIST_SIZE];
 } dsd_app_scan_row_edit_payload;

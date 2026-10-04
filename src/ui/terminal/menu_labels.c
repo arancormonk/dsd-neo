@@ -15,6 +15,7 @@
 #include <dsd-neo/app_control/rtl_gain_view.h>
 #include <dsd-neo/app_control/rx_tone_view.h>
 #include <dsd-neo/app_control/snapshot.h>
+#include <dsd-neo/app_control/squelch_view.h>
 #include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
@@ -28,6 +29,7 @@
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/radioreference.h>
 #include <dsd-neo/runtime/scan_mode.h>
+#include <dsd-neo/runtime/squelch.h>
 #include <stdint.h>
 #include <string.h>
 #include "dsd-neo/core/opts_fwd.h"
@@ -1447,6 +1449,28 @@ const char*
 lbl_rtl_vol(const void* v, char* b, size_t n) {
     const UiCtx* c = (const UiCtx*)v;
     DSD_SNPRINTF(b, n, "Volume multiplier... [%d]", (c && c->opts) ? c->opts->rtl_volume_multiplier : 0);
+    return b;
+}
+
+/* The configured squelch the row edits: "Squelch... [-60.0 dB]", "[off]", "[auto +10 dB]" (issue #518 follow-up). A
+   scan row's own squelch is what the readouts show; this row edits the default beneath it. */
+const char*
+lbl_rtl_sql(const void* v, char* b, size_t n) {
+    const UiCtx* c = (const UiCtx*)v;
+    char text[DSD_SQUELCH_TEXT_SIZE] = "off";
+    if (c && c->opts) {
+        dsd_app_squelch_view view;
+        if (dsd_app_squelch_view_get(c->opts, dsd_app_get_latest_snapshot(), &view) == 0) {
+            const dsd_squelch_setting setting = view.configured_auto
+                                                    ? dsd_squelch_setting_auto(view.configured_margin_db)
+                                                    : dsd_squelch_setting_of_level(view.configured_level);
+            (void)dsd_squelch_setting_format(&setting, text, sizeof text);
+        } else {
+            const dsd_squelch_setting setting = dsd_squelch_setting_of_opts(c->opts);
+            (void)dsd_squelch_setting_format(&setting, text, sizeof text);
+        }
+    }
+    DSD_SNPRINTF(b, n, "Squelch... [%s]", text);
     return b;
 }
 

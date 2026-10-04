@@ -10,6 +10,7 @@
 #include <dsd-neo/app_control/frontend.h>
 #include <dsd-neo/app_control/history.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/power.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/dsp/demod_pipeline.h>
@@ -348,6 +349,22 @@ test_radio_tuning_labels(void) {
     rc |= expect_str("am bandwidth null ctx", lbl_rtl_am_bw(NULL, b, sizeof(b)), "AM bandwidth... [default]");
     rc |= expect_str("rtl volume", lbl_rtl_vol(&ctx, b, sizeof(b)), "Volume multiplier... [2]");
     rc |= expect_str("rtl frequency null ctx", lbl_rtl_freq(NULL, b, sizeof(b)), "Frequency... [0.000000 MHz]");
+    /* The squelch row names the configured setting it edits (issue #518 follow-up). */
+    opts.rtl_squelch_level = 0.0;
+    rc |= expect_str("rtl squelch off", lbl_rtl_sql(&ctx, b, sizeof(b)), "Squelch... [off]");
+    opts.rtl_squelch_level = dsd_squelch_level_from_sql(-60.0);
+    rc |= expect_str("rtl squelch level", lbl_rtl_sql(&ctx, b, sizeof(b)), "Squelch... [-60.0 dB]");
+    opts.rtl_squelch_mode = DSD_SQUELCH_MODE_AUTO;
+    opts.rtl_squelch_margin_db = 10;
+    rc |= expect_str("rtl squelch auto", lbl_rtl_sql(&ctx, b, sizeof(b)), "Squelch... [auto +10 dB]");
+    /* Under a scan row, the default beneath it. */
+    configured.rtl_squelch_mode = DSD_SQUELCH_MODE_LEVEL;
+    configured.rtl_squelch_level = dsd_squelch_level_from_sql(-80.0);
+    dsd_test_scan_labels_configured(&configured);
+    rc |= expect_str("rtl squelch under a row", lbl_rtl_sql(&ctx, b, sizeof(b)), "Squelch... [-80.0 dB]");
+    dsd_test_scan_labels_configured(NULL);
+    opts.rtl_squelch_mode = DSD_SQUELCH_MODE_LEVEL;
+    rc |= expect_str("rtl squelch null ctx", lbl_rtl_sql(NULL, b, sizeof(b)), "Squelch... [off]");
 
     return rc;
 }

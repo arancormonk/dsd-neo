@@ -290,6 +290,7 @@ static const int k_ui_cmd_coalescible_setter_ids[] = {
     DSD_APP_CMD_RTL_SET_PPM,
     DSD_APP_CMD_RTL_SET_BW,
     DSD_APP_CMD_RTL_SET_SQL_DB,
+    DSD_APP_CMD_RTL_SET_SQL_SETTING,
     DSD_APP_CMD_RTL_SET_VOL_MULT,
     DSD_APP_CMD_HANGTIME_SET,
     DSD_APP_CMD_MOD_SET,
@@ -1836,6 +1837,22 @@ ui_cmd_handle_rtl_set_bw(dsd_opts* opts, dsd_state* state, const struct dsd_app_
     return ui_cmd_apply_status_from_service_rc(rc);
 }
 
+/* The squelch edit's toast, for either command: the setting stored, and whether a scan row still wins. */
+static void
+ui_cmd_toast_squelch_edit(dsd_opts* opts, dsd_state* state, int rc) {
+    if (rc == 0) {
+        dsd_app_squelch_view view;
+        char notice[96];
+        (void)dsd_app_squelch_view_get(opts, state, &view);
+        (void)dsd_app_squelch_view_edit_notice(&view, notice, sizeof notice);
+        ui_set_toast(state, 3, "%s", notice);
+    } else if (ui_rc_is_not_supported(rc)) {
+        ui_set_toast(state, 3, "Unsupported: squelch control not available on active backend");
+    } else {
+        ui_set_toast(state, 4, "Failed: RTL squelch update");
+    }
+}
+
 static int
 ui_cmd_handle_rtl_set_sql_db(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     double d = 0.0;
@@ -1843,24 +1860,28 @@ ui_cmd_handle_rtl_set_sql_db(dsd_opts* opts, dsd_state* state, const struct dsd_
     if (state && ui_cmd_parse_double_payload(c, &d)) {
         int rc = svc_rtl_set_sql_db(opts, state, d);
         result = ui_cmd_apply_status_from_service_rc(rc);
-        if (rc == 0) {
-            /* Report the threshold that was stored rather than the number that was
-             * asked for: a request of 0 dB switches the squelch off, and echoing
-             * "0.0 dB" would describe a gate at full scale instead. The command edits
-             * the configured default, so when a scan row overrides the squelch the
-             * notice says the row still wins. */
-            dsd_app_squelch_view view;
-            char notice[96];
-            (void)dsd_app_squelch_view_get(opts, state, &view);
-            (void)dsd_app_squelch_view_edit_notice(&view, notice, sizeof notice);
-            ui_set_toast(state, 3, "%s", notice);
-        } else if (ui_rc_is_not_supported(rc)) {
-            ui_set_toast(state, 3, "Unsupported: squelch control not available on active backend");
-        } else {
-            ui_set_toast(state, 4, "Failed: RTL squelch update");
-        }
+        /* Report the threshold that was stored rather than the number that was asked for: a request of 0 dB switches
+           the squelch off, and echoing "0.0 dB" would describe a gate at full scale instead. The command edits the
+           configured default, so when a scan row overrides the squelch the notice says the row still wins. */
+        ui_cmd_toast_squelch_edit(opts, state, rc);
     }
     return result;
+}
+
+static int
+ui_cmd_handle_rtl_set_sql_setting(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    dsd_app_squelch_setting_payload payload;
+    if (!state || c->n != sizeof payload) {
+        return UI_CMD_APPLY_COMPLETED;
+    }
+    DSD_MEMCPY(&payload, c->data, sizeof payload);
+    dsd_squelch_setting setting;
+    setting.mode = payload.mode == DSD_SQUELCH_MODE_AUTO ? DSD_SQUELCH_MODE_AUTO : DSD_SQUELCH_MODE_LEVEL;
+    setting.margin_db = payload.margin_db;
+    setting.level = payload.level;
+    const int rc = svc_rtl_set_sql_setting(opts, state, &setting);
+    ui_cmd_toast_squelch_edit(opts, state, rc);
+    return ui_cmd_apply_status_from_service_rc(rc);
 }
 
 static int
@@ -1886,6 +1907,7 @@ apply_cmd_io_and_import_rtl_c(dsd_opts* opts, dsd_state* state, const struct dsd
     static const struct dsd_app_command_handler_entry k_handlers[] = {
         {DSD_APP_CMD_RTL_SET_BW, ui_cmd_handle_rtl_set_bw},
         {DSD_APP_CMD_RTL_SET_SQL_DB, ui_cmd_handle_rtl_set_sql_db},
+        {DSD_APP_CMD_RTL_SET_SQL_SETTING, ui_cmd_handle_rtl_set_sql_setting},
         {DSD_APP_CMD_RTL_SET_VOL_MULT, ui_cmd_handle_rtl_set_vol_mult},
     };
     if (!opts || !c) {
@@ -3864,6 +3886,7 @@ static const struct ui_cmd_payload_min_size_rule k_ui_cmd_payload_min_size_rules
     {DSD_APP_CMD_KEY_RC4DES_SET, sizeof(uint64_t)},
     {DSD_APP_CMD_INPUT_WARN_DB_SET, sizeof(double)},
     {DSD_APP_CMD_RTL_SET_SQL_DB, sizeof(double)},
+    {DSD_APP_CMD_RTL_SET_SQL_SETTING, sizeof(dsd_app_squelch_setting_payload)},
     {DSD_APP_CMD_HANGTIME_SET, sizeof(double)},
     {DSD_APP_CMD_CONST_GATE_DELTA, sizeof(float)},
     {DSD_APP_CMD_UDP_OUT_CFG, sizeof(dsd_app_endpoint_payload)},

@@ -1422,6 +1422,45 @@ main(int argc, char** argv) {
     model.refresh(&opts, &state);
     expect("leaving the row clears the badge", !model.squelchRowOverride());
     expect("leaving the row restores the default", std::fabs(model.effectiveSquelchDb() - (-80.0)) < 1e-6);
+    expect("a level is not auto", !model.configuredSquelchAuto() && !model.effectiveSquelchAuto()
+                                      && model.configuredSquelchMarginDb() == 0 && model.squelchAutoStatus().isEmpty());
+
+    /* The auto squelch (issue #518 follow-up): whether each setting is AUTO, its margin and what the one in force
+     * shows come from the same view, and the level beneath it stays what dB goes back to. */
+    opts.rtl_squelch_mode = DSD_SQUELCH_MODE_AUTO;
+    opts.rtl_squelch_margin_db = 12;
+    const int saved_analog_only = opts.analog_only;
+    opts.analog_only = 0;
+    model.refresh(&opts, &state);
+    expect("an auto default is auto on both sides", model.configuredSquelchAuto() && model.effectiveSquelchAuto());
+    expect("its margin on both sides",
+           model.configuredSquelchMarginDb() == 12 && model.effectiveSquelchMarginDb() == 12);
+    expect("the level beneath it stays readable", std::fabs(model.configuredSquelchDb() - (-80.0)) < 1e-6);
+    expect("auto is off on a digital session", model.squelchAutoStatus() == QStringLiteral("off on digital"));
+    expect("the readout is the terminal's", model.squelchReadout() == QStringLiteral("auto +12 dB (off on digital)"));
+    opts.analog_only = 1;
+    state.squelch_auto_active = 1;
+    state.squelch_auto_plan_valid = 1;
+    state.squelch_auto_state = 1;
+    state.squelch_auto_floor_cdb = -7830;
+    model.refresh(&opts, &state);
+    expect("an analog session shows the floor", model.squelchAutoStatus() == QStringLiteral("floor -78.3 dB"));
+    state.squelch_auto_floor_cdb = -7900;
+    model.refresh(&opts, &state);
+    expect("a moving floor reaches the panel", model.squelchAutoStatus() == QStringLiteral("floor -79.0 dB"));
+    opts.audio_in_type = AUDIO_IN_WAV;
+    model.refresh(&opts, &state);
+    expect("non-radio input publishes no auto squelch",
+           !model.configuredSquelchAuto() && model.squelchAutoStatus().isEmpty());
+    opts.audio_in_type = AUDIO_IN_RTL;
+    state.squelch_auto_active = 0;
+    state.squelch_auto_plan_valid = 0;
+    state.squelch_auto_state = 0;
+    state.squelch_auto_floor_cdb = 0;
+    opts.analog_only = saved_analog_only;
+    opts.rtl_squelch_mode = DSD_SQUELCH_MODE_LEVEL;
+    opts.rtl_squelch_margin_db = DSD_SQUELCH_MARGIN_DEFAULT_DB;
+    model.refresh(&opts, &state);
 
     /* Every flag combination must mean the same thing inside a scope. */
     for (int flags = 0; flags < 8; flags++) {

@@ -2068,6 +2068,7 @@ target_sources(
     PRIVATE
         ${PROJECT_SOURCE_DIR}/src/runtime/scan_mode.c
         ${PROJECT_SOURCE_DIR}/src/runtime/squelch.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_io_hooks.c
         ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_metrics_hooks.c
 )
 
@@ -2150,8 +2151,11 @@ if(DSD_ENABLE_TERMINAL_UI)
         ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
         ${PROJECT_SOURCE_DIR}/src/app_control/rtl_gain_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/rx_tone_view.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/squelch_view.c
         ${PROJECT_SOURCE_DIR}/src/runtime/analog_tones.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_io_hooks.c
         ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_metrics_hooks.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/squelch.c
     )
     target_include_directories(
         dsd-neo_test_ui_menu_labels
@@ -2160,9 +2164,10 @@ if(DSD_ENABLE_TERMINAL_UI)
             ${PROJECT_SOURCE_DIR}/src/ui/terminal
             ${CURSES_INCLUDE_DIRS}
     )
+    target_link_libraries(dsd-neo_test_ui_menu_labels PRIVATE ${DSD_NEO_TEST_MATH_LIB})
     target_sources(
         dsd-neo_test_ui_menu_labels
-        PRIVATE test_support/scan_mode_label_stubs.c
+        PRIVATE test_support/scan_mode_label_stubs.c test_support/squelch_format_stubs.c
     )
     add_test(NAME UI_MENU_LABELS COMMAND dsd-neo_test_ui_menu_labels)
 
@@ -2174,9 +2179,12 @@ if(DSD_ENABLE_TERMINAL_UI)
         ${PROJECT_SOURCE_DIR}/src/app_control/analog_width_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/rtl_gain_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/rx_tone_view.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/squelch_view.c
         ${PROJECT_SOURCE_DIR}/src/runtime/analog_channel.c
         ${PROJECT_SOURCE_DIR}/src/runtime/analog_tones.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_io_hooks.c
         ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_metrics_hooks.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/squelch.c
     )
     target_include_directories(
         dsd-neo_test_ui_menu_labels_radio
@@ -2185,13 +2193,14 @@ if(DSD_ENABLE_TERMINAL_UI)
             ${PROJECT_SOURCE_DIR}/src/ui/terminal
             ${CURSES_INCLUDE_DIRS}
     )
+    target_link_libraries(dsd-neo_test_ui_menu_labels_radio PRIVATE ${DSD_NEO_TEST_MATH_LIB})
     target_compile_definitions(
         dsd-neo_test_ui_menu_labels_radio
         PRIVATE USE_RADIO
     )
     target_sources(
         dsd-neo_test_ui_menu_labels_radio
-        PRIVATE test_support/scan_mode_label_stubs.c
+        PRIVATE test_support/scan_mode_label_stubs.c test_support/squelch_format_stubs.c
     )
     add_test(
         NAME UI_MENU_LABELS_RADIO
@@ -2615,7 +2624,9 @@ if(DSD_ENABLE_TERMINAL_UI)
         ${PROJECT_SOURCE_DIR}/src/app_control/rx_tone_view.c
         ${PROJECT_SOURCE_DIR}/src/runtime/analog_channel.c
         ${PROJECT_SOURCE_DIR}/src/runtime/analog_tones.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_io_hooks.c
         ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_metrics_hooks.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/squelch.c
     )
     target_compile_definitions(
         dsd-neo_test_ui_ncurses_printer_helpers
@@ -2650,6 +2661,8 @@ if(DSD_ENABLE_TERMINAL_UI)
         dsd-neo_test_ui_menu_callbacks
         ui/test_ui_menu_callbacks.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_callbacks.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_io_hooks.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/squelch.c
     )
     target_include_directories(
         dsd-neo_test_ui_menu_callbacks
@@ -2658,6 +2671,10 @@ if(DSD_ENABLE_TERMINAL_UI)
             ${PROJECT_SOURCE_DIR}/src/app_control
             ${PROJECT_SOURCE_DIR}/src/ui/terminal
             ${CURSES_INCLUDE_DIRS}
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_menu_callbacks
+        PRIVATE ${DSD_NEO_TEST_MATH_LIB}
     )
     add_test(NAME UI_MENU_CALLBACKS COMMAND dsd-neo_test_ui_menu_callbacks)
 
@@ -2669,9 +2686,12 @@ if(DSD_ENABLE_TERMINAL_UI)
         ${PROJECT_SOURCE_DIR}/src/app_control/analog_width_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/rtl_gain_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/rx_tone_view.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/squelch_view.c
         ${PROJECT_SOURCE_DIR}/src/runtime/analog_channel.c
         ${PROJECT_SOURCE_DIR}/src/runtime/analog_tones.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_io_hooks.c
         ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_metrics_hooks.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/squelch.c
     )
     target_include_directories(
         dsd-neo_test_ui_menu_actions
@@ -6289,6 +6309,7 @@ if(
             "LINKER:--wrap=rtl_stream_stop"
             "LINKER:--wrap=rtl_stream_destroy"
             "LINKER:--wrap=rtl_stream_set_channel_squelch"
+            "LINKER:--wrap=rtl_stream_set_channel_squelch_setting"
             "LINKER:--wrap=rtl_stream_check_analog_profile"
             "LINKER:--wrap=rtl_stream_request_analog_profile"
             "LINKER:--wrap=rtl_stream_request_demod_profile"

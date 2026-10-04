@@ -27,6 +27,7 @@
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/power.h>
+#include <dsd-neo/core/state_fwd.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -103,6 +104,13 @@ void dsd_squelch_setting_store(dsd_opts* opts, const dsd_squelch_setting* settin
  * read as a setting (nothing changes: a field that is not a squelch says nothing about it).
  */
 int dsd_squelch_spec_field_apply(dsd_opts* opts, const char* text);
+
+/**
+ * @brief Publish the auto squelch's status into @p state for the frontends (dsd_state::squelch_auto_*), from the RTL
+ * stream's (dsd_rtl_stream_io_hook_squelch_status()); without a stream it reads as not running. The floor goes on
+ * rtl_squelch_level's scale (half the mean |z|^2: the channel power the level squelch compares), in hundredths of a dB.
+ */
+void dsd_squelch_publish_status(dsd_state* state);
 
 /**
  * @brief Whether the auto squelch gates @p opts's monitor per sample: an AUTO setting on an RTL-family input (`rtl:`,

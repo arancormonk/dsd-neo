@@ -7,6 +7,7 @@
 #include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/power.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -123,7 +124,9 @@ dsd_app_scan_row_value_text(uint32_t field, const dsd_scan_row_edit_value* value
     }
     switch (field) {
         case DSD_SCAN_ROW_FIELD_SQUELCH:
-            if (value->squelch_db == 0) {
+            if (value->squelch_mode == DSD_SQUELCH_MODE_AUTO) {
+                DSD_SNPRINTF(out, out_size, "auto +%d dB", value->squelch_margin_db);
+            } else if (value->squelch_db == 0) {
                 DSD_SNPRINTF(out, out_size, "%s", "off");
             } else {
                 DSD_SNPRINTF(out, out_size, "%d dB", value->squelch_db);

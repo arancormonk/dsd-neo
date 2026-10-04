@@ -5908,6 +5908,18 @@ __wrap_rtl_stream_set_channel_squelch(float level) {
     record_cmd_squelch_push((double)level);
 }
 
+/* An auto squelch reaches the demod whole (issue #518 follow-up). */
+static int g_cmd_squelch_setting_pushes;
+static dsd_squelch_setting g_cmd_squelch_setting_pushed;
+
+void __wrap_rtl_stream_set_channel_squelch_setting(const dsd_squelch_setting* setting);
+
+void
+__wrap_rtl_stream_set_channel_squelch_setting(const dsd_squelch_setting* setting) {
+    g_cmd_squelch_setting_pushes++;
+    g_cmd_squelch_setting_pushed = *setting;
+}
+
 // NOLINTEND(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp,misc-use-internal-linkage)
 
 /* The demod keeps a float, so a command's push is compared at float precision. */
@@ -5934,6 +5946,81 @@ init_squelch_row_context(dsd_opts* opts, dsd_state* state) {
     dsd_rtl_stream_metrics_hooks_set(&hooks);
     g_cmd_squelch_pushes = 0;
     g_cmd_squelch_pushed = -1.0;
+}
+
+static int
+submit_squelch_setting(int mode, int margin_db, double level) {
+    dsd_app_squelch_setting_payload payload;
+    DSD_MEMSET(&payload, 0, sizeof payload);
+    payload.mode = mode;
+    payload.margin_db = margin_db;
+    payload.level = level;
+    return dsd_app_command_submit(DSD_APP_CMD_RTL_SET_SQL_SETTING, &payload, sizeof payload);
+}
+
+/* DSD_APP_CMD_RTL_SET_SQL_SETTING (issue #518 follow-up): the whole setting as the configured default. An auto squelch
+ * reaches the demod whole, a level as a level, a margin out of range is refused, and under a row's own squelch the
+ * edit waits beneath it and the save writes it. */
+static int
+test_squelch_setting_command(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_squelch_row_context(&opts, &state);
+    g_cmd_squelch_setting_pushes = 0;
+    int rc = expect_true("auto queued", submit_squelch_setting(DSD_SQUELCH_MODE_AUTO, 6, 0.0) > 0);
+    rc |= expect_int("auto drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |=
+        expect_true("auto in force", opts.rtl_squelch_mode == DSD_SQUELCH_MODE_AUTO && opts.rtl_squelch_margin_db == 6);
+    rc |= expect_squelch_db("auto keeps the level", opts.rtl_squelch_level, -80.0);
+    rc |= expect_true("auto pushed whole", g_cmd_squelch_setting_pushes == 1
+                                               && g_cmd_squelch_setting_pushed.mode == DSD_SQUELCH_MODE_AUTO
+                                               && g_cmd_squelch_setting_pushed.margin_db == 6);
+    rc |= expect_str("auto toast", state.ui_msg, "Applied: RTL squelch -> auto +6 dB");
+
+    rc |= expect_true("bad margin queued", submit_squelch_setting(DSD_SQUELCH_MODE_AUTO, 2, 0.0) > 0);
+    rc |= expect_int("bad margin drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("bad margin refused", opts.rtl_squelch_margin_db, 6);
+    rc |= expect_str("bad margin toast", state.ui_msg, "Failed: RTL squelch update");
+
+    g_cmd_squelch_pushes = 0;
+    rc |= expect_true("level queued",
+                      submit_squelch_setting(DSD_SQUELCH_MODE_LEVEL, 0, dsd_squelch_level_from_sql(-50.0)) > 0);
+    rc |= expect_int("level drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_true("level in force", opts.rtl_squelch_mode == DSD_SQUELCH_MODE_LEVEL);
+    rc |= expect_squelch_db("level stored", opts.rtl_squelch_level, -50.0);
+    rc |= expect_true("level pushed as a level", g_cmd_squelch_pushes == 1 && g_cmd_squelch_setting_pushes == 1);
+    rc |= expect_squelch_db("level demod value", g_cmd_squelch_pushed, -50.0);
+    rc |= expect_str("level toast", state.ui_msg, "Applied: RTL squelch -> -50.0 dB");
+
+    /* Beneath a row's own squelch: the default moves, the row stays in force and the demod hears nothing. */
+    rc |= expect_int("row entered", dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_DMR), 0);
+    dsd_scan_option_values row = {0};
+    row.present = DSD_SCAN_OPT_SQUELCH;
+    row.squelch_db = -60;
+    rc |= expect_int("row installed", dsd_scan_mode_options(&opts, &state, &row), 0);
+    g_cmd_squelch_setting_pushes = 0;
+    g_cmd_squelch_pushes = 0;
+    rc |= expect_true("shadowed auto queued", submit_squelch_setting(DSD_SQUELCH_MODE_AUTO, 8, 0.0) > 0);
+    rc |= expect_int("shadowed auto drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_true("shadowed auto keeps the row", opts.rtl_squelch_mode == DSD_SQUELCH_MODE_LEVEL);
+    rc |= expect_squelch_db("shadowed auto keeps the row level", opts.rtl_squelch_level, -60.0);
+    rc |= expect_true("shadowed auto edits the default",
+                      dsd_scan_mode_configured_view(&state)->rtl_squelch_mode == DSD_SQUELCH_MODE_AUTO
+                          && dsd_scan_mode_configured_view(&state)->rtl_squelch_margin_db == 8);
+    rc |= expect_true("shadowed auto leaves the demod alone",
+                      g_cmd_squelch_setting_pushes == 0 && g_cmd_squelch_pushes == 0);
+    rc |= expect_str("shadowed auto toast", state.ui_msg,
+                     "Default squelch auto +8 dB; this channel overrides it (-60.0 dB)");
+    dsdneoUserConfig saved;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &saved);
+    rc |= expect_true("save writes the auto default",
+                      saved.rtl_sql_mode == DSD_SQUELCH_MODE_AUTO && saved.rtl_sql_margin_db == 8);
+    dsd_scan_mode_leave(&opts, &state);
+    rc |= expect_true("leave puts the auto default in force",
+                      opts.rtl_squelch_mode == DSD_SQUELCH_MODE_AUTO && g_cmd_squelch_setting_pushes == 0);
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    dsd_state_ext_free_all(&state);
+    return rc;
 }
 
 /* Every squelch editor edits the configured default, never the row's value; the row keeps its
@@ -14898,6 +14985,7 @@ main(void) {
     rc |= test_config_rtl_restart_under_policy_guard();
     rc |= test_rtl_bandwidth_held_to_am_width();
     rc |= test_squelch_commands_edit_the_configured_default();
+    rc |= test_squelch_setting_command();
     rc |= test_squelch_edit_keeps_live_acquisition();
 #endif
 #ifdef DSD_NEO_TEST_AUDIO_ENSURE_WRAP

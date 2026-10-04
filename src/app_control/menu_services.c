@@ -1919,6 +1919,24 @@ svc_rtl_set_sql_db(dsd_opts* opts, const dsd_state* state, double dB) {
     return 0;
 }
 
+int
+svc_rtl_set_sql_setting(dsd_opts* opts, const dsd_state* state, const dsd_squelch_setting* setting) {
+    if (!opts || !setting) {
+        return -1;
+    }
+    if (setting->mode == DSD_SQUELCH_MODE_AUTO
+        && (setting->margin_db < DSD_SQUELCH_MARGIN_MIN_DB || setting->margin_db > DSD_SQUELCH_MARGIN_MAX_DB)) {
+        return -1;
+    }
+    const dsd_squelch_setting stored = setting->mode == DSD_SQUELCH_MODE_AUTO
+                                           ? dsd_squelch_setting_auto(setting->margin_db)
+                                           : dsd_squelch_setting_of_level(setting->level);
+    if (dsd_scan_mode_set_configured_squelch_setting(opts, state, &stored) == 1) {
+        svc_rtl_push_squelch(opts);
+    }
+    return 0;
+}
+
 void
 svc_rtl_push_squelch(const dsd_opts* opts) {
     if (!opts) {

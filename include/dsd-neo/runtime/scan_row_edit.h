@@ -43,8 +43,12 @@ typedef enum {
 
 /** The values a set field runs. Each is meaningful only while its field is set. */
 typedef struct {
-    /** Whole dB from -100 to 0 in the rtl_sql convention; 0 = off. */
+    /** Whole dB from -100 to 0 in the rtl_sql convention; 0 = off. A level squelch's. */
     int squelch_db;
+    /** The squelch's mode (dsd_squelch_mode): LEVEL (squelch_db) or AUTO, a margin of squelch_margin_db (3..30) over the
+     * floor the demodulator learns, which an nfm or am row alone takes (issue #518 follow-up). */
+    int squelch_mode;
+    int squelch_margin_db;
     /** Full RF channel width in Hz, of the analog demodulator the row's class runs (runtime/analog_channel.h ranges). */
     int width_hz;
     /** dsd_tone_filter_mode, with its list (empty for OFF). */

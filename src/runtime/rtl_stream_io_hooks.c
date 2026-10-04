@@ -64,3 +64,15 @@ dsd_rtl_stream_io_hook_return_pwr(const dsd_state* state) {
 
     return g_rtl_stream_io_hooks.return_pwr((const void*)state->rtl_ctx);
 }
+
+int
+dsd_rtl_stream_io_hook_squelch_status(const dsd_state* state, dsd_rtl_squelch_status* out) {
+    if (!out) {
+        return -1;
+    }
+    DSD_MEMSET(out, 0, sizeof(*out));
+    if (!state || !state->rtl_ctx || !g_rtl_stream_io_hooks.squelch_status) {
+        return -1;
+    }
+    return g_rtl_stream_io_hooks.squelch_status((const void*)state->rtl_ctx, out);
+}
