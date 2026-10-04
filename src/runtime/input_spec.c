@@ -10,6 +10,7 @@
 #include <dsd-neo/runtime/freq_parse.h>
 #include <dsd-neo/runtime/input_spec.h>
 #include <dsd-neo/runtime/log.h>
+#include <dsd-neo/runtime/squelch.h>
 #include <errno.h>
 #include <limits.h>
 #include <stdint.h>
@@ -57,21 +58,6 @@ parse_int_strict(const char* tok, int* out) {
         return -1;
     }
     *out = (int)v;
-    return 0;
-}
-
-static int
-parse_double_strict(const char* tok, double* out) {
-    if (!tok || !out || tok[0] == '\0') {
-        return -1;
-    }
-    errno = 0;
-    char* end = NULL;
-    double v = strtod(tok, &end);
-    if (errno != 0 || end == tok || *end != '\0') {
-        return -1;
-    }
-    *out = v;
     return 0;
 }
 
@@ -183,18 +169,6 @@ parse_optional_int_at(char* tok[SOFTY_TOK_MAX], size_t n, size_t* cur, int* out)
 }
 
 static int
-parse_optional_double_at(char* tok[SOFTY_TOK_MAX], size_t n, size_t* cur, double* out) {
-    if (!tok || !cur || !out || *cur >= n) {
-        return 0;
-    }
-    if (parse_double_strict(tok[*cur], out) != 0) {
-        return -1;
-    }
-    (*cur)++;
-    return 1;
-}
-
-static int
 parse_soapy_optional_front(char* tok[SOFTY_TOK_MAX], size_t n, size_t* cur, int* gain, int* ppm, int* bw) {
     int iv = 0;
     int rc = parse_optional_int_at(tok, n, cur, &iv);
@@ -224,15 +198,26 @@ parse_soapy_optional_front(char* tok[SOFTY_TOK_MAX], size_t n, size_t* cur, int*
     return 0;
 }
 
+/* The squelch field in the squelch grammar (off, a level, auto[+N]): @p out points at its text. */
 static int
-parse_soapy_optional_tail(char* tok[SOFTY_TOK_MAX], size_t n, size_t* cur, double* sql, int* vol) {
-    double dv = 0.0;
-    int rc = parse_optional_double_at(tok, n, cur, &dv);
-    if (rc < 0) {
+parse_optional_squelch_at(char* tok[SOFTY_TOK_MAX], size_t n, size_t* cur, const char** out) {
+    if (!tok || !cur || !out || *cur >= n) {
+        return 0;
+    }
+    dsd_squelch_setting setting;
+    if (dsd_squelch_setting_parse(tok[*cur], &setting, NULL, 0U) != 0) {
         return -1;
     }
-    if (rc > 0) {
-        *sql = dsd_squelch_level_from_sql(dv);
+    *out = tok[*cur];
+    (*cur)++;
+    return 1;
+}
+
+static int
+parse_soapy_optional_tail(char* tok[SOFTY_TOK_MAX], size_t n, size_t* cur, const char** sql, int* vol) {
+    int rc = parse_optional_squelch_at(tok, n, cur, sql);
+    if (rc < 0) {
+        return -1;
     }
 
     int iv = 0;
@@ -249,7 +234,7 @@ parse_soapy_optional_tail(char* tok[SOFTY_TOK_MAX], size_t n, size_t* cur, doubl
 
 static int
 parse_soapy_optional_tokens(char* tok[SOFTY_TOK_MAX], size_t n, size_t start_idx, int* gain, int* ppm, int* bw,
-                            double* sql, int* vol) {
+                            const char** sql, int* vol) {
     if (!tok || !gain || !ppm || !bw || !sql || !vol) {
         return -1;
     }
@@ -311,7 +296,7 @@ dsd_normalize_soapy_input_spec(dsd_opts* opts, int* out_tuning_applied) {
     int gain = opts->rtl_gain_value;
     int ppm = opts->rtlsdr_ppm_error;
     int bw = opts->rtl_dsp_bw_khz;
-    double sql = opts->rtl_squelch_level;
+    const char* sql = NULL;
     int vol = opts->rtl_volume_multiplier;
     if (parse_soapy_optional_tokens(tok, n, idx + 1, &gain, &ppm, &bw, &sql, &vol) != 0) {
         restore_opaque_soapy_args(opts, tail_copy);
@@ -322,7 +307,9 @@ dsd_normalize_soapy_input_spec(dsd_opts* opts, int* out_tuning_applied) {
     opts->rtl_gain_value = gain;
     opts->rtlsdr_ppm_error = ppm;
     opts->rtl_dsp_bw_khz = bw;
-    opts->rtl_squelch_level = sql;
+    if (sql) {
+        (void)dsd_squelch_spec_field_apply(opts, sql);
+    }
     opts->rtl_volume_multiplier = vol;
 
     if (arg_tokens > 0) {
@@ -420,17 +407,6 @@ dsd_rtl_spec_bw_khz_or_default(const char* token) {
     return 48;
 }
 
-/* A field that is not a number says nothing about the squelch: switching it off for one would be a setting the user
-   never asked for. */
-static double
-rtl_spec_parse_sql(const char* token, double fallback) {
-    double sq_val = 0.0;
-    if (!token || rtl_spec_parse_double(token, &sq_val) != 0) {
-        return fallback;
-    }
-    return dsd_squelch_level_from_sql(sq_val);
-}
-
 /* A trailing token: `bias` or `b` alone (or with an empty value) turns the bias tee on, and `bias=<value>` /
    `b=<value>` sets it from a whole boolean word (on/off, 1/0, true/false, yes/no). The bias tee puts DC on the antenna
    port, so a value or token it cannot read changes nothing and says so. */
@@ -490,7 +466,9 @@ rtl_spec_apply_tuning_tokens(dsd_opts* opts, char** saveptr) {
     if (!curr) {
         return 0;
     }
-    opts->rtl_squelch_level = rtl_spec_parse_sql(curr, opts->rtl_squelch_level);
+    /* The squelch grammar (off, a level, auto[+N]); a field that is not a squelch says nothing about it, and
+       --squelch wins over the spec. */
+    (void)dsd_squelch_spec_field_apply(opts, curr);
     curr = dsd_strtok_r(NULL, ":", saveptr);
     if (!curr) {
         return 0;

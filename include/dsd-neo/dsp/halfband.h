@@ -18,6 +18,11 @@
  */
 #define HB_TAPS 15
 
+/* C linkage: C sources (tests among them) read these tables, and MSVC decorates C++ variable names. */
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /**
  * Symmetric half-band coefficients normalized to unity DC gain.
  *
@@ -28,5 +33,9 @@ extern const float hb_q15_taps[HB_TAPS];
 
 /* Higher-order half-band prototype used by the first decimation stage. */
 extern const float hb31_q15_taps[31];
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* DSD_NEO_INCLUDE_DSD_NEO_DSP_HALFBAND_H_ */

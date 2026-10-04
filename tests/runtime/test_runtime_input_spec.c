@@ -4,6 +4,7 @@
  */
 
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/power.h>
 #include <dsd-neo/runtime/input_spec.h>
 #include <math.h>
 #include <stdio.h>
@@ -324,9 +325,76 @@ test_soapy_invalid_tuning_field_fallback(void) {
     return 0;
 }
 
+/* The sql field in the squelch grammar (issue #518 follow-up): auto[+N] in an rtl:, rtltcp: or soapy: spec sets the
+ * auto squelch and keeps the level for a switch back; off and a level set LEVEL; --squelch (rtl_squelch_cli_set) wins
+ * over the field; a field that is not a squelch leaves the setting alone. */
+static int
+expect_squelch(const char* label, const dsd_opts* opts, int mode, double level, int margin) {
+    const int level_ok = fabs(opts->rtl_squelch_level - level) <= 1e-12 + (1e-9 * fabs(level));
+    if (opts->rtl_squelch_mode != mode || !level_ok
+        || (mode == DSD_SQUELCH_MODE_AUTO && opts->rtl_squelch_margin_db != margin)) {
+        DSD_FPRINTF(stderr, "%s: mode=%d level=%g margin=%d, want mode=%d level=%g margin=%d\n", label,
+                    opts->rtl_squelch_mode, opts->rtl_squelch_level, opts->rtl_squelch_margin_db, mode, level, margin);
+        return 1;
+    }
+    return 0;
+}
+
+static int
+test_spec_squelch_grammar(void) {
+    int rc = 0;
+    dsd_opts* opts = alloc_seeded_opts();
+    if (!opts) {
+        return 1;
+    }
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "rtl:0:162.475M:30:-2:48:auto+6:2");
+    (void)dsd_rtl_input_spec_apply(opts);
+    rc |= expect_squelch("rtl: auto+6", opts, DSD_SQUELCH_MODE_AUTO, 0.25, 6);
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "rtl:0:162.475M:30:-2:48:-60:2");
+    (void)dsd_rtl_input_spec_apply(opts);
+    rc |= expect_squelch("rtl: -60", opts, DSD_SQUELCH_MODE_LEVEL, 1e-6, 0);
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "rtltcp:127.0.0.1:1234:162.475M:30:-2:48:auto:2");
+    (void)dsd_rtl_input_spec_apply(opts);
+    rc |= expect_squelch("rtltcp: auto", opts, DSD_SQUELCH_MODE_AUTO, 1e-6, DSD_SQUELCH_MARGIN_DEFAULT_DB);
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "rtl:0:162.475M:30:-2:48:off:2");
+    (void)dsd_rtl_input_spec_apply(opts);
+    rc |= expect_squelch("rtl: off", opts, DSD_SQUELCH_MODE_LEVEL, 0.0, 0);
+    /* Not a squelch: nothing changes. */
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "rtl:0:162.475M:30:-2:48:noise:2");
+    (void)dsd_rtl_input_spec_apply(opts);
+    rc |= expect_squelch("rtl: noise", opts, DSD_SQUELCH_MODE_LEVEL, 0.0, 0);
+    /* --squelch wins. */
+    opts->rtl_squelch_cli_set = 1;
+    opts->rtl_squelch_mode = DSD_SQUELCH_MODE_AUTO;
+    opts->rtl_squelch_margin_db = 12;
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "rtl:0:162.475M:30:-2:48:-60:2");
+    (void)dsd_rtl_input_spec_apply(opts);
+    rc |= expect_squelch("rtl: -60 under --squelch", opts, DSD_SQUELCH_MODE_AUTO, 0.0, 12);
+    free(opts);
+
+    /* soapy: the same field, and the spec still parses as tuning with it. */
+    dsd_opts* soapy = alloc_seeded_opts();
+    if (!soapy) {
+        return 1;
+    }
+    DSD_SNPRINTF(soapy->audio_in_dev, sizeof soapy->audio_in_dev, "%s",
+                 "soapy:driver=rtlsdr:162.475M:30:-2:48:auto+8:2");
+    int applied = 0;
+    if (dsd_normalize_soapy_input_spec(soapy, &applied) != 0 || applied != 1
+        || strcmp(soapy->audio_in_dev, "soapy:driver=rtlsdr") != 0 || soapy->rtl_volume_multiplier != 2) {
+        DSD_FPRINTF(stderr, "soapy auto+8: applied=%d dev=%s vol=%d\n", applied, soapy->audio_in_dev,
+                    soapy->rtl_volume_multiplier);
+        rc = 1;
+    }
+    rc |= expect_squelch("soapy: auto+8", soapy, DSD_SQUELCH_MODE_AUTO, 0.25, 8);
+    free(soapy);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
+    rc |= test_spec_squelch_grammar();
     rc |= test_non_soapy_noop();
     rc |= test_soapy_args_only_noop();
     rc |= test_soapy_args_with_full_tuning();

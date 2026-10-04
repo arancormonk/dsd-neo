@@ -12,6 +12,7 @@
 #include <dsd-neo/app_control/scan_row_view.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/power.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -66,6 +67,8 @@ scan_row_edit_value(const dsd_app_scan_row_edit_payload* p, dsd_scan_row_edit_va
                     size_t why_size) {
     DSD_MEMSET(value, 0, sizeof(*value));
     value->squelch_db = p->squelch_db;
+    value->squelch_mode = p->squelch_mode == DSD_SQUELCH_MODE_AUTO ? DSD_SQUELCH_MODE_AUTO : DSD_SQUELCH_MODE_LEVEL;
+    value->squelch_margin_db = p->squelch_margin_db;
     value->width_hz = p->width_hz;
     value->gain_db = p->gain_db;
     value->tone_filter = p->tone_mode;

@@ -50,6 +50,7 @@
 #include <dsd-neo/runtime/net_audio_input_hooks.h>
 #include <dsd-neo/runtime/rigctl_query_hooks.h>
 #include <dsd-neo/runtime/shutdown.h>
+#include <dsd-neo/runtime/squelch.h>
 #include <dsd-neo/runtime/telemetry.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <dsd-neo/runtime/udp_audio_hooks.h>
@@ -744,8 +745,8 @@ edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
     DSD_MEMSET(analog2, 0, sizeof(analog2));
     DSD_MEMSET(analog3, 0, sizeof(analog3));
 
-    double pwr = opts->rtl_squelch_level + 1e-3; // small offset for initial loop phase
-    double sql = opts->rtl_squelch_level;
+    double sql = dsd_squelch_level_in_force(opts); // AUTO is off here: EDACS reads the FSK output, not the monitor
+    double pwr = sql + 1e-3;                       // small offset for initial loop phase
     const int sql_disabled = (sql <= 0.0);
     const double no_sql_watchdog_s = edacs_no_sql_watchdog_window(opts->trunk_hangtime);
 

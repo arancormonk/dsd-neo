@@ -22,6 +22,7 @@
 
 #include <dsd-neo/core/input_level.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/power.h>
 #include <dsd-neo/io/rtl_stream_fwd.h>
 
 #ifdef __cplusplus
@@ -224,6 +225,12 @@ int rtl_stream_get_requested_ppm(const dsd_opts* opts);
  * @return 0 on success; otherwise <0 on error (e.g., shutdown).
  */
 int rtl_stream_read(RtlSdrContext* ctx, float* out, size_t count, int* out_got);
+/**
+ * @brief rtl_stream_read() with each sample's auto squelch flag (issue #518 follow-up).
+ * @param flags One byte per sample read (DSD_SQUELCH_FLAG_CLOSED when the auto squelch had the gate closed for it; 0
+ * otherwise, and for every sample of any other setting), or NULL.
+ */
+int rtl_stream_read_ex(RtlSdrContext* ctx, float* out, uint8_t* flags, size_t count, int* out_got);
 /**
  * @brief Get the current output sample rate in Hz.
  * @param ctx Stream context.
@@ -841,6 +848,26 @@ double rtl_stream_return_pwr(const RtlSdrContext* ctx);
  * @param level Linear power threshold (same units as rtl_squelch_level).
  */
 void rtl_stream_set_channel_squelch(float level);
+
+/**
+ * @brief Set the channel squelch from a whole setting (issue #518 follow-up): a LEVEL setting as
+ * rtl_stream_set_channel_squelch(), an AUTO one by its margin over the floor the demodulator learns. AUTO gates the
+ * analog monitor per sample (rtl_stream_read_ex()'s flags) and nothing else.
+ */
+void rtl_stream_set_channel_squelch_setting(const dsd_squelch_setting* setting);
+
+/** @brief What the auto squelch shows (rtl_stream_get_squelch_status()). */
+typedef struct {
+    int active;          /**< 1 when the last block ran the tracker (an AUTO setting on the analog monitor) */
+    int state;           /**< dsd_squelch_floor_state */
+    int gate_open;       /**< the gate at the end of the last block (1 when not active) */
+    int plan_valid;      /**< 0 when the channel plan could not be designed (the gate then stays open) */
+    double floor_power;  /**< the floor, mean |z|^2 (0 while learning) */
+    double window_power; /**< the last 40 ms window's mean |z|^2 */
+} rtl_stream_squelch_status;
+
+/** @brief Fill @p out with the auto squelch's status; 0, or -1 for NULL. */
+int rtl_stream_get_squelch_status(rtl_stream_squelch_status* out);
 
 /**
  * @brief Enable or disable RTL-SDR bias tee at runtime.

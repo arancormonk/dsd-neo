@@ -155,7 +155,8 @@ dsd_cli_usage_section_radio_and_encoder(void) {
     printf("                   Note: This is the DSP baseband used to derive capture rate;\n");
     printf("                         it is NOT the tuner IF filter.\n");
     printf("  sq   <val>    RTL-SDR Squelch Threshold (Optional)\n");
-    printf("                 (Negative = dB; 0 = off; Positive = linear mean power)\n");
+    printf("                 (Negative = dB; 0 or off = off; Positive = linear mean power;\n");
+    printf("                  auto[+N] = N dB over the learned noise floor, see --squelch)\n");
     printf("  vol  <num>    RTL-SDR Sample 'Volume' Multiplier (default = 2)(1,2,3)\n");
     printf("  bias[=on|off] Enable 5V bias tee on compatible dongles (default off)\n");
     printf(" Example: dsd-neo -fs -i rtl -C cap_plus_channel.csv -T\n");
@@ -253,6 +254,11 @@ dsd_cli_usage_section_decode(void) {
     printf("                               shown apart; a scanner moves on from rejected traffic.\n");
     printf("      --tone-block <list>      Mute analog FM traffic carrying a listed tone or code; hear the rest.\n");
     printf("      --no-tone-filter         No tone filter (the default): ordinary carrier squelch.\n");
+    printf(
+        "      --squelch <setting>      Radio squelch: off, a level in dB (-60), or auto[+N] (3..30, default 10):\n");
+    printf("                               open N dB above the noise floor each analog channel learns, the same\n");
+    printf("                               whatever the dongle, gain or antenna. Wins over the input spec's sql\n");
+    printf("                               field; works with --iq-replay. auto is off on digital channels and PCM.\n");
     printf("  -fM           Native AM receiver (IQ inputs: RTL-SDR, rtl_tcp, SoapySDR, Airspy, --iq-replay)\n");
     printf("      --am-bandwidth-hz <Hz>   AM channel-filter width, the full RF passband in whole Hz (5000..20000;\n");
     printf("                               default 6000). Not the tuner or audio bandwidth; it must fit the DSP\n");

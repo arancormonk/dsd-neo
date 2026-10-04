@@ -593,6 +593,16 @@ __wrap_rtl_stream_set_channel_squelch(float level) {
     return 0;
 }
 
+/* The auto squelch reaches the demod whole (issue #518 follow-up). */
+static int g_wrap_squelch_setting_calls = 0;
+static dsd_squelch_setting g_wrap_last_squelch_setting = {0, 0.0, 0};
+
+void
+__wrap_rtl_stream_set_channel_squelch_setting(const dsd_squelch_setting* setting) {
+    g_wrap_squelch_setting_calls++;
+    g_wrap_last_squelch_setting = *setting;
+}
+
 /* Read back off the context after a restart. Wrapped because the real one walks
  * into the fake context, which is not an RtlSdrContext. */
 uint32_t
@@ -652,6 +662,30 @@ test_config_reapply_converts_rtl_squelch_from_db(void) {
     rc |= expect_true("config re-apply of rtl_sql 0 switches squelch off", opts->rtl_squelch_level == 0.0);
     rc |= expect_float_near("config re-apply of rtl_sql 0 opens the demod gate", g_wrap_last_channel_squelch, 0.0f,
                             1e-9f);
+
+    /* rtl_sql_mode = auto puts the margin over the learned floor in force, whole, and keeps rtl_sql beneath it for a
+       switch back; level again pushes the level. */
+    cfg.rtl_sql = -50;
+    cfg.rtl_sql_mode = DSD_SQUELCH_MODE_AUTO;
+    cfg.rtl_sql_margin_db = 6;
+    DSD_SNPRINTF(cfg.rtl_freq, sizeof cfg.rtl_freq, "%s", "462.125M");
+    g_wrap_squelch_setting_calls = 0;
+    dsd_app_command_submit(DSD_APP_CMD_CONFIG_APPLY, &cfg, sizeof cfg);
+    (void)dsd_app_drain_cmds(opts, state);
+    rc |= expect_true("config re-apply of auto: opts", opts->rtl_squelch_mode == DSD_SQUELCH_MODE_AUTO
+                                                           && opts->rtl_squelch_margin_db == 6
+                                                           && fabs(opts->rtl_squelch_level - 1e-5) < 1e-12);
+    rc |= expect_true("config re-apply of auto: pushed whole",
+                      g_wrap_squelch_setting_calls >= 1 && g_wrap_last_squelch_setting.mode == DSD_SQUELCH_MODE_AUTO
+                          && g_wrap_last_squelch_setting.margin_db == 6);
+    cfg.rtl_sql_mode = DSD_SQUELCH_MODE_LEVEL;
+    DSD_SNPRINTF(cfg.rtl_freq, sizeof cfg.rtl_freq, "%s", "463.125M");
+    g_wrap_last_channel_squelch = -1.0f;
+    dsd_app_command_submit(DSD_APP_CMD_CONFIG_APPLY, &cfg, sizeof cfg);
+    (void)dsd_app_drain_cmds(opts, state);
+    rc |= expect_true("config re-apply of level after auto", opts->rtl_squelch_mode == DSD_SQUELCH_MODE_LEVEL);
+    rc |= expect_float_near("config re-apply of level after auto pushes the level", g_wrap_last_channel_squelch,
+                            (float)pow(10.0, -5.0), 1e-9f);
 
     free_test_runtime(&runtime);
     return rc;

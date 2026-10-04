@@ -198,8 +198,9 @@ static const NcMenuItem RTL_MENU_ITEMS[] = {
              "bandwidth.",
      .on_select = rtl_set_am_bw},
     {.id = "rtl.sql",
-     .label = "Squelch (dB)...",
-     .help = "Post-filter squelch threshold in dB; more negative opens more; 0 switches squelch off.",
+     .label_fn = lbl_rtl_sql,
+     .help = "Squelch: a threshold in dB (more negative opens more; 0 or off switches it off), or auto[+N] (N dB "
+             "over each analog channel's learned noise floor, 3..30, default 10; radio inputs only).",
      .on_select = rtl_set_sql},
     /* 'v' is here as well as on Input > Input volume: the key drives whichever of the
        two multipliers matches the live input type, and on RTL that is this row. */

@@ -83,6 +83,9 @@ void cb_rtl_gain(void* u, int ok, int g);
 void cb_rtl_ppm(void* u, int ok, int p);
 void cb_rtl_bw(void* u, int ok, int bw);
 void cb_rtl_sql(void* u, int ok, double dB);
+/* The squelch setting as typed (off, a level in dB, auto[+N]): DSD_APP_CMD_RTL_SET_SQL_SETTING, or the grammar's refusal
+   on the status line (never the text). */
+void cb_rtl_sql_text(void* u, const char* text);
 void cb_rtl_vol(void* u, int ok, int m);
 
 // ---- DSP/Env callbacks ----

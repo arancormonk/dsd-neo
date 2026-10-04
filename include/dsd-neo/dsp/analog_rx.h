@@ -27,6 +27,7 @@
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -281,6 +282,18 @@ void dsd_analog_rx_tap(const dsd_opts* opts, dsd_state* state, const float* bloc
  * dsd_analog_rx_tap().
  */
 void dsd_analog_rx_tap_partial(const dsd_opts* opts, dsd_state* state, const float* block, unsigned int filled);
+
+/**
+ * @brief dsd_analog_rx_tap() with each sample's auto squelch flag (@p flags, parallel to @p block; NULL reads every
+ * sample open). Under the auto squelch (dsd_squelch_dynamic_in_force()) a read's carrier is the flags': open when any
+ * of its samples is, a silent carrier included, since the squelch's own classifier tells a carrier from noise.
+ */
+void dsd_analog_rx_tap_flags(const dsd_opts* opts, dsd_state* state, const float* block, const uint8_t* flags,
+                             unsigned int count);
+
+/** @brief dsd_analog_rx_tap_partial() with the flags, as dsd_analog_rx_tap_flags(). */
+void dsd_analog_rx_tap_partial_flags(const dsd_opts* opts, dsd_state* state, const float* block, const uint8_t* flags,
+                                     unsigned int filled);
 
 /**
  * @brief Note that the symbol path emptied its monitor block.

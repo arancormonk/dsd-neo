@@ -5,6 +5,7 @@
 
 #include "dsd-neo/core/input_level.h"
 
+#include <dsd-neo/core/power.h>
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/decode_clock.h>
@@ -102,6 +103,20 @@ dsd_rtl_stream_metrics_hook_set_channel_squelch(double mean_power) {
         return 0;
     }
     return -1;
+}
+
+int
+dsd_rtl_stream_metrics_hook_set_channel_squelch_setting(const dsd_squelch_setting* setting) {
+    if (!setting) {
+        return -1;
+    }
+    if (g_rtl_stream_metrics_hooks.set_channel_squelch_setting) {
+        g_rtl_stream_metrics_hooks.set_channel_squelch_setting(setting);
+        return 0;
+    }
+    /* A threshold alone: an AUTO setting is off there. */
+    return dsd_rtl_stream_metrics_hook_set_channel_squelch(setting->mode == DSD_SQUELCH_MODE_AUTO ? 0.0
+                                                                                                  : setting->level);
 }
 
 int

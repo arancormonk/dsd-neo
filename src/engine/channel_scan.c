@@ -33,6 +33,7 @@
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
 #include <dsd-neo/runtime/scan_row_edit.h>
+#include <dsd-neo/runtime/squelch.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -496,18 +497,34 @@ channel_scan_check_rows(const dsd_opts* opts, dsd_state* state, channel_scan* sc
     channel_scan_warn_rows_width(opts, state, dsp_rate_hz, same_rate ? configured_changed : 0U);
 }
 
-/* The squelch an analog row runs with: its own, else the configured one. Off, or at -100 dB and below, holds the row
- * on noise: every block re-arms its carrier hold, so only the visit cap or a manual advance or avoid moves on. The
- * -100 dB comparison allows for the rounding of the level's power. */
+/* The squelch an analog row runs with: its own, else the configured one. */
+static dsd_squelch_setting
+channel_scan_analog_squelch(const dsd_opts* opts, const dsd_state* state, const dsd_scan_option_values* row) {
+    if (row && (row->present & DSD_SCAN_OPT_SQUELCH)) {
+        return row->squelch_mode == DSD_SQUELCH_MODE_AUTO
+                   ? dsd_squelch_setting_auto(row->squelch_margin_db)
+                   : dsd_squelch_setting_of_level(dsd_squelch_level_from_sql((double)row->squelch_db));
+    }
+    const dsd_scan_settings* configured = dsd_scan_mode_configured_view(state);
+    if (configured) {
+        return configured->rtl_squelch_mode == DSD_SQUELCH_MODE_AUTO
+                   ? dsd_squelch_setting_auto(configured->rtl_squelch_margin_db)
+                   : dsd_squelch_setting_of_level(configured->rtl_squelch_level);
+    }
+    return dsd_squelch_setting_of_opts(opts);
+}
+
+/* Whether that squelch holds the row on noise: off, or at -100 dB and below, every block re-arms its carrier hold, so
+ * only the visit cap or a manual advance or avoid moves on. The -100 dB comparison allows for the rounding of the
+ * level's power. The auto squelch closes on noise on a radio input; elsewhere it is off (issue #518 follow-up). */
 static int
 channel_scan_analog_squelch_open(const dsd_opts* opts, const dsd_state* state, const dsd_scan_option_values* row) {
-    const dsd_scan_settings* configured = dsd_scan_mode_configured_view(state);
-    double level = configured ? configured->rtl_squelch_level : opts->rtl_squelch_level;
-    if (row && (row->present & DSD_SCAN_OPT_SQUELCH)) {
-        level = dsd_squelch_level_from_sql((double)row->squelch_db);
+    const dsd_squelch_setting squelch = channel_scan_analog_squelch(opts, state, row);
+    if (squelch.mode == DSD_SQUELCH_MODE_AUTO) {
+        return !dsd_opts_input_is_radio(opts);
     }
     const double floor_level = dsd_squelch_level_from_sql(-100.0);
-    return dsd_squelch_is_off(level) || level <= floor_level * (1.0 + 1e-9);
+    return dsd_squelch_is_off(squelch.level) || squelch.level <= floor_level * (1.0 + 1e-9);
 }
 
 void
@@ -528,10 +545,10 @@ dsd_engine_scan_warn_analog_squelch(const dsd_opts* opts, const dsd_state* state
     if (!opts || !state || !label || !channel_scan_analog_squelch_open(opts, state, row)) {
         return 0;
     }
-    LOG_WARN(
-        "WARNING: %s: the analog channel's squelch is off or at -100 dB or below, so noise holds it on air until "
-        "--scan-max-visit-ms or a manual advance or avoid moves on; give it --squelch-db or set a squelch level.\n",
-        label);
+    LOG_WARN("WARNING: %s: the analog channel's squelch is off or at -100 dB or below, so noise holds it on air until "
+             "--scan-max-visit-ms or a manual advance or avoid moves on; give it --squelch auto (on a radio input) or "
+             "--squelch-db, or set a squelch.\n",
+             label);
     return 1;
 }
 

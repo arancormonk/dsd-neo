@@ -7,6 +7,7 @@
 
 #include <assert.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/power.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -2676,6 +2677,11 @@ test_active_profile_metrics_power_gate_and_votes(void) {
     assert(frame_sync_active_profile_modulation(&opts, &state) == 2);
     assert(frame_sync_active_profile_snr_db(&opts, &state) == 103.0);
     assert(frame_sync_should_skip_snr_or_power_gate(&opts, &state) == 1);
+    /* The auto squelch is off on a digital channel (issue #518 follow-up): it never skips a GFSK sync, whatever the
+       level left behind from a level setting. */
+    opts.rtl_squelch_mode = DSD_SQUELCH_MODE_AUTO;
+    assert(frame_sync_should_skip_snr_or_power_gate(&opts, &state) == 0);
+    opts.rtl_squelch_mode = DSD_SQUELCH_MODE_LEVEL;
 
     opts.mod_cli_lock = 1;
     opts.mod_qpsk = 1;

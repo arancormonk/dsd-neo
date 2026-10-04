@@ -34,6 +34,7 @@
 #include <dsd-neo/runtime/path_policy.h>
 #include <dsd-neo/runtime/rdio_export.h>
 #include <dsd-neo/runtime/scan_mode.h>
+#include <dsd-neo/runtime/squelch.h>
 #include <errno.h>
 #include <limits.h>
 #include <stdint.h>
@@ -378,6 +379,12 @@ resolve_configured_rtl_ppm(const dsdneoUserConfig* cfg, const dsd_opts* opts) {
     return opts ? opts->rtlsdr_ppm_error : 0;
 }
 
+/* The AUTO margin rtl_sql_margin_db names: 0 (unset) is the default. */
+static int
+user_config_sql_margin_db(const dsdneoUserConfig* cfg) {
+    return cfg->rtl_sql_margin_db > 0 ? cfg->rtl_sql_margin_db : DSD_SQUELCH_MARGIN_DEFAULT_DB;
+}
+
 static void
 apply_shared_radio_tuning_from_config(const dsdneoUserConfig* cfg, dsd_opts* opts) {
     if (!cfg || !opts) {
@@ -401,7 +408,13 @@ apply_shared_radio_tuning_from_config(const dsdneoUserConfig* cfg, dsd_opts* opt
     opts->rtl_gain_value = gain;
     opts->rtlsdr_ppm_error = ppm;
     opts->rtl_dsp_bw_khz = bw;
+    /* rtl_sql is the level under either mode, kept for a switch back from auto. */
     opts->rtl_squelch_level = dsd_squelch_level_from_sql((double)sql);
+    opts->rtl_squelch_mode = DSD_SQUELCH_MODE_LEVEL;
+    if (cfg->rtl_sql_mode == DSD_SQUELCH_MODE_AUTO) {
+        const dsd_squelch_setting setting = dsd_squelch_setting_auto(user_config_sql_margin_db(cfg));
+        dsd_squelch_setting_store(opts, &setting);
+    }
     opts->rtl_volume_multiplier = vol;
 }
 
@@ -481,6 +494,9 @@ snapshot_apply_live_rtl_values(const dsd_opts* opts, const dsd_state* state, dsd
     const dsd_scan_settings* configured = dsd_scan_mode_configured_view(state);
     const double squelch = configured ? configured->rtl_squelch_level : opts->rtl_squelch_level;
     cfg->rtl_sql = dsd_squelch_is_off(squelch) ? 0 : (int)local_pwr_to_dB(squelch);
+    /* The mode and margin the same way; the level above stays the level under auto. */
+    cfg->rtl_sql_mode = configured ? configured->rtl_squelch_mode : opts->rtl_squelch_mode;
+    cfg->rtl_sql_margin_db = configured ? configured->rtl_squelch_margin_db : opts->rtl_squelch_margin_db;
     cfg->rtl_volume = opts->rtl_volume_multiplier;
     if (opts->rtlsdr_center_freq > 0) {
         DSD_SNPRINTF(cfg->rtl_freq, sizeof cfg->rtl_freq, "%u", opts->rtlsdr_center_freq);
@@ -863,6 +879,10 @@ render_input_rtl_common(FILE* out, const dsdneoUserConfig* cfg, int include_auto
         DSD_FPRINTF(out, "rtl_bw_khz = %d\n", cfg->rtl_bw_khz);
     }
     DSD_FPRINTF(out, "rtl_sql = %d\n", cfg->rtl_sql);
+    if (cfg->rtl_sql_mode == DSD_SQUELCH_MODE_AUTO) {
+        DSD_FPRINTF(out, "rtl_sql_mode = \"auto\"\n");
+        DSD_FPRINTF(out, "rtl_sql_margin_db = %d\n", user_config_sql_margin_db(cfg));
+    }
     if (cfg->rtl_volume) {
         DSD_FPRINTF(out, "rtl_volume = %d\n", cfg->rtl_volume);
     }
@@ -1215,16 +1235,26 @@ dsd_user_config_render_ini(const dsdneoUserConfig* cfg, FILE* stream) {
 
 // Mapping helpers -------------------------------------------------------------
 
+/* The spec's sql field: auto+N under rtl_sql_mode = auto, else rtl_sql's whole dB. */
 static void
-resolve_rtl_spec_values(const dsdneoUserConfig* cfg, const dsd_opts* opts, int* gain, int* ppm, int* bw, int* sql,
-                        int* vol) {
+format_rtl_sql_field(const dsdneoUserConfig* cfg, char* out, size_t out_size) {
+    if (cfg->rtl_sql_mode == DSD_SQUELCH_MODE_AUTO) {
+        DSD_SNPRINTF(out, out_size, "auto+%d", user_config_sql_margin_db(cfg));
+    } else {
+        DSD_SNPRINTF(out, out_size, "%d", cfg->rtl_sql);
+    }
+}
+
+static void
+resolve_rtl_spec_values(const dsdneoUserConfig* cfg, const dsd_opts* opts, int* gain, int* ppm, int* bw, char* sql,
+                        size_t sql_size, int* vol) {
     if (!cfg || !opts || !gain || !ppm || !bw || !sql || !vol) {
         return;
     }
     *gain = dsd_user_config_rtl_gain_is_set(cfg) ? cfg->rtl_gain : opts->rtl_gain_value;
     *ppm = resolve_configured_rtl_ppm(cfg, opts);
     *bw = cfg->rtl_bw_khz ? cfg->rtl_bw_khz : opts->rtl_dsp_bw_khz;
-    *sql = cfg->rtl_sql;
+    format_rtl_sql_field(cfg, sql, sql_size);
     *vol = cfg->rtl_volume ? cfg->rtl_volume : opts->rtl_volume_multiplier;
 }
 
@@ -1245,10 +1275,10 @@ format_rtl_input_spec(const dsdneoUserConfig* cfg, const dsd_opts* opts, char* o
     int gain = 0;
     int ppm = 0;
     int bw = 0;
-    int sql = 0;
+    char sql[16];
     int vol = 0;
-    resolve_rtl_spec_values(cfg, opts, &gain, &ppm, &bw, &sql, &vol);
-    DSD_SNPRINTF(out, out_size, "rtl:%d:%s:%d:%d:%d:%d:%d", cfg->rtl_device, cfg->rtl_freq, gain, ppm, bw, sql, vol);
+    resolve_rtl_spec_values(cfg, opts, &gain, &ppm, &bw, sql, sizeof sql, &vol);
+    DSD_SNPRINTF(out, out_size, "rtl:%d:%s:%d:%d:%d:%s:%d", cfg->rtl_device, cfg->rtl_freq, gain, ppm, bw, sql, vol);
     return 0;
 }
 
@@ -1265,10 +1295,10 @@ format_rtltcp_input_spec(const dsdneoUserConfig* cfg, const dsd_opts* opts, char
     int gain = 0;
     int ppm = 0;
     int bw = 0;
-    int sql = 0;
+    char sql[16];
     int vol = 0;
-    resolve_rtl_spec_values(cfg, opts, &gain, &ppm, &bw, &sql, &vol);
-    DSD_SNPRINTF(out, out_size, "rtltcp:%s:%d:%s:%d:%d:%d:%d:%d", cfg->rtltcp_host,
+    resolve_rtl_spec_values(cfg, opts, &gain, &ppm, &bw, sql, sizeof sql, &vol);
+    DSD_SNPRINTF(out, out_size, "rtltcp:%s:%d:%s:%d:%d:%d:%s:%d", cfg->rtltcp_host,
                  cfg->rtltcp_port ? cfg->rtltcp_port : 1234, cfg->rtl_freq, gain, ppm, bw, sql, vol);
     return 0;
 }
@@ -1299,11 +1329,22 @@ dsd_user_config_radio_input_spec(const dsdneoUserConfig* cfg, const dsd_opts* op
     }
 }
 
+/* An rtl: or rtltcp: spec's sql field under rtl_sql_mode = auto is auto+N, which carries no level: rtl_sql, the level
+   beneath the auto squelch, is applied here instead (as the shared tuning does for SoapySDR and Airspy), so a switch
+   back to a level and a save find it. --squelch keeps the level it set. */
+static void
+apply_rtl_sql_level_beneath_auto(const dsdneoUserConfig* cfg, dsd_opts* opts) {
+    if (cfg->rtl_sql_mode == DSD_SQUELCH_MODE_AUTO && !opts->rtl_squelch_cli_set) {
+        opts->rtl_squelch_level = dsd_squelch_level_from_sql((double)cfg->rtl_sql);
+    }
+}
+
 static void
 apply_input_source_rtl(const dsdneoUserConfig* cfg, dsd_opts* opts) {
     char spec[sizeof opts->audio_in_dev];
     if (format_rtl_input_spec(cfg, opts, spec, sizeof spec) == 0) {
         DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", spec);
+        apply_rtl_sql_level_beneath_auto(cfg, opts);
     }
 }
 
@@ -1312,6 +1353,7 @@ apply_input_source_rtltcp(const dsdneoUserConfig* cfg, dsd_opts* opts) {
     char spec[sizeof opts->audio_in_dev];
     if (format_rtltcp_input_spec(cfg, opts, spec, sizeof spec) == 0) {
         DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", spec);
+        apply_rtl_sql_level_beneath_auto(cfg, opts);
     }
 }
 

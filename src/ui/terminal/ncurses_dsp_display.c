@@ -12,6 +12,7 @@
 #include <dsd-neo/app_control/squelch_view.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/power.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/ui/ncurses_dsp_display.h>
 #include <dsd-neo/ui/ui_prims.h>
@@ -65,7 +66,16 @@ dsp_status_print_squelch(const dsd_opts* opts, const dsd_state* state) {
     }
     /* The threshold in force, marked when a scan row or target set it (issue #521). */
     dsd_app_squelch_view view;
-    const int row_override = dsd_app_squelch_view_get(opts, state, &view) == 0 && view.row_override;
+    const int view_ok = dsd_app_squelch_view_get(opts, state, &view) == 0;
+    const int row_override = view_ok && view.row_override;
+    if (view_ok && view.effective_auto) {
+        /* The auto squelch's gate, the channel power and the setting with what it shows (issue #518 follow-up). */
+        char text[72];
+        (void)dsd_app_squelch_view_format(&view, text, sizeof text);
+        const char* gate = view.effective_off ? "Off" : (view.auto_gate_open ? "Open" : "Closed");
+        ui_print_kv_line("Squelch", "%s ch:%.1f dB sql:%s", gate, pwr_to_dB(opts->rtl_pwr), text);
+        return;
+    }
     char status[72];
     if (ui_dsp_format_squelch_status(opts->rtl_pwr, opts->rtl_squelch_level, row_override, status, sizeof(status))
         == 0) {

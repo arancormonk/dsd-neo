@@ -873,6 +873,18 @@ typedef struct rtl_stream_test_output_scale_result {
 int rtl_stream_test_monitor_output_scale(const dsd_opts* opts, int rate_hz, int forced_rate_out_hz,
                                          rtl_stream_test_output_scale_result* out);
 
+/* The auto squelch's plumbing in the IO layer (issue #518 follow-up). Returns 0, or the number of the first check that
+ * failed:
+ *   1-4  the setting: AUTO with its margin (clamped) reaches demod_state with the level gate off, LEVEL puts the level
+ *        back in force;
+ *   5-7  the context the demod thread builds: the applied frequency, the tuner gain as applied, the bias tee and the
+ *        channel rate;
+ *   8-11 the output ring: a block's samples and flags go in at the same positions across the ring's wrap and come out
+ *        together through the live and the replay reads; a block with no flags reads open, not the flags left from
+ *        before; a read without flags takes the samples alone;
+ *   12   the status the demod thread publishes. */
+int rtl_stream_test_squelch_plumbing(void);
+
 /* Open @p opts at 48 kHz, leave @p preset_scale as the output scale an I/Q replay finds (0 in a process that never ran
  * a live stream, or what an earlier session set), and apply a replay capture's settings (1.536 Msps, base decimation
  * 32, 48 kHz demod rate) as a replay open does: @p out_scale receives the output scale the replay then runs. */

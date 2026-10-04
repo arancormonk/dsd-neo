@@ -406,6 +406,25 @@ ANALOG_DCS_SYNTH = [
     # The code stops at 1.2 s with no turn-off tone while the carrier and the voice carry on.
     ("nfm_dcs_synth_drop", 5233023, 2.0, 0o023, False, 1.2, 0),
 ]
+# Synthetic squelch bursts for the auto squelch (issue #518), deterministic from the seed: receiver noise alone for
+# 0.3 s, then a carrier keyed for 0.25 s (2 ms raised-cosine ramps), then noise again until 0.75 s, so the squelch learns
+# the floor before the carrier comes and has to close after it. nfm_burst_synth carries the 1 kHz test tone at 3 kHz
+# deviation, am_burst_synth the same tone at 50% depth. The noise is complex Gaussian at 3 LSB a component; the carrier
+# sits 16 dB (FM) or 12 dB (AM, whose 50% peaks reach 1.5 times the carrier) over the noise power of the whole 48 kHz
+# span, about 20 dB over the noise in each default channel. Neither is normalised: the analog replay host's
+# --analog-iq-gain-db replays each 10 dB hotter, the same air as a receiver with more gain hears it, and both copies stay
+# within the cu8 rails.
+#
+# name, seed, kind ("fm" or "am"), carrier dB over the noise across the span
+SQUELCH_BURST = [
+    ("nfm_burst_synth", 5311, "fm", 16.0),
+    ("am_burst_synth", 5312, "am", 12.0),
+]
+SQUELCH_BURST_DURATION_S = 0.75
+SQUELCH_BURST_KEY_S = 0.30
+SQUELCH_BURST_UNKEY_S = 0.55
+SQUELCH_BURST_RAMP_S = 0.002
+SQUELCH_BURST_NOISE_LSB = 3.0
 DCS_BAUD = 134.4
 DCS_WORD_BITS = 23
 # Golay (23,12) generator x^11 + x^10 + x^6 + x^5 + x^4 + x^2 + 1, bit i the coefficient of x^i.
@@ -1196,6 +1215,35 @@ def build_analog_synth(out_dir):
     return total
 
 
+def squelch_burst_samples(seed, kind, carrier_db):
+    """Noise, a keyed carrier with the test tone (FM or AM), noise again; see SQUELCH_BURST."""
+    count = int(round(SQUELCH_BURST_DURATION_S * SAMPLE_RATE_HZ))
+    t = np.arange(count) / SAMPLE_RATE_HZ
+    key = np.minimum(t - SQUELCH_BURST_KEY_S, SQUELCH_BURST_UNKEY_S - t) / SQUELCH_BURST_RAMP_S
+    envelope = 0.5 - 0.5 * np.cos(math.pi * np.clip(key, 0.0, 1.0))
+    if kind == "fm":
+        beta = NFM_SYNTH_DEVIATION_HZ / NFM_SYNTH_TONE_HZ
+        carrier = np.exp(1j * beta * np.sin(2.0 * math.pi * NFM_SYNTH_TONE_HZ * t))
+    else:
+        carrier = (1.0 + AM_SYNTH_DEPTH * np.cos(2.0 * math.pi * AM_SYNTH_TONE_HZ * t)).astype(np.complex128)
+    sigma = SQUELCH_BURST_NOISE_LSB / 127.5
+    amplitude = math.sqrt(2.0 * sigma * sigma * 10.0 ** (carrier_db / 10.0))
+    rng = np.random.default_rng(seed)
+    noise = rng.normal(0.0, sigma, count) + 1j * rng.normal(0.0, sigma, count)
+    return amplitude * envelope * carrier + noise
+
+
+def build_squelch_burst(out_dir):
+    """Write the auto squelch's burst fixtures (issue #518) at their own level, unnormalised."""
+    total = 0
+    for name, seed, kind, carrier_db in SQUELCH_BURST:
+        samples = squelch_burst_samples(seed, kind, carrier_db)
+        written = write_capture(out_dir, name, to_cu8(samples, headroom=1.0, normalize=False).tobytes())
+        total += written
+        print(f"{name:28s} synth   {written // 1024:6d} KiB")
+    return total
+
+
 def build_derived(out_dir):
     total = 0
     for name, source, delay_samples, amp2, cfo_hz, phase2 in DERIVED_SIMULCAST:
@@ -1285,6 +1333,7 @@ def derived_fixture_names():
         + [entry[0] for entry in AM_SYNTH]
         + [entry[0] for entry in ANALOG_CTCSS_SYNTH]
         + [entry[0] for entry in ANALOG_DCS_SYNTH]
+        + [entry[0] for entry in SQUELCH_BURST]
     )
 
 
@@ -1335,6 +1384,7 @@ def main():
         total += build_nfm_synth(args.out)
         total += build_am_synth(args.out)
         total += build_analog_synth(args.out)
+        total += build_squelch_burst(args.out)
     else:
         for name in derived_fixture_names():
             if name in args.only:

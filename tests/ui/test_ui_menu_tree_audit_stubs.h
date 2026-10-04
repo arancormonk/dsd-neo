@@ -290,6 +290,7 @@
     X(lbl_rtl_ppm)                                                                                                     \
     X(lbl_rtl_rtltcp_autotune)                                                                                         \
     X(lbl_rtl_tuner_autogain)                                                                                          \
+    X(lbl_rtl_sql)                                                                                                     \
     X(lbl_rtl_vol)                                                                                                     \
     X(lbl_scan)                                                                                                        \
     X(lbl_scan_avoid_clear)                                                                                            \

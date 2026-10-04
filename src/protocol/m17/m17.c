@@ -46,6 +46,7 @@
 #include <dsd-neo/runtime/rtl_stream_io_hooks.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/shutdown.h>
+#include <dsd-neo/runtime/squelch.h>
 #include <dsd-neo/runtime/telemetry.h>
 #include <dsd-neo/runtime/udp_audio_hooks.h>
 #include <math.h>
@@ -2240,7 +2241,7 @@ m17_str_pack_voice_bits(m17_str_frame_ctx* frame) {
 
 static void
 m17_str_update_vox_and_eot(m17_str_ctx* ctx) {
-    if (ctx->opts->rtl_pwr > ctx->opts->rtl_squelch_level) {
+    if (dsd_squelch_level_open(ctx->opts)) {
         ctx->sql_hit = 0;
     } else {
         ctx->sql_hit++;

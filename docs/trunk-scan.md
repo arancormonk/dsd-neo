@@ -45,14 +45,15 @@ site-nxdn48,nxdn48-trunk,461556250,nxdn_chan_map.csv,3000,,NXDN48 Type-C control
 field-nxdn,nxdn-conventional,461550000,,1500,1200,one-frequency NXDN96,gfsk,,,
 field-nxdn48,nxdn48-conventional,461556250,,1500,1200,one-frequency NXDN48 (6.25 kHz),gfsk,,,
 fire-nfm,nfm-conventional,154430000,,2000,3000,analog NFM channel,,,--nfm-bandwidth-hz 12500 --squelch-db -60,
-tower-am,am-conventional,118300000,,2000,3000,analog AM airband channel,,,--am-bandwidth-hz 8333 --squelch-db -55,
+tower-am,am-conventional,118300000,,2000,3000,analog AM airband channel,,,--am-bandwidth-hz 8333 --squelch auto+6,
 ```
 
 The repository includes a starter file at `examples/trunk_scan_targets.csv`. Companion paths in these examples
 refer to files in `examples/`; replace the illustrative frequencies, keys and band plan with your system's values.
 Omitted scoped settings inherit the outer CLI/configuration; the DMR conventional example uses
 `--no-force-key` to disable inherited privacy forcing without changing other settings, and the P25 conventional
-example sets its own squelch with `--squelch-db -55` while every other target keeps the configured one.
+example sets its own squelch with `--squelch-db -55` while every other target keeps the configured one; the AM
+target runs the [auto squelch](cli.md#auto-squelch---squelch-auto), 6 dB over the noise floor it learns there.
 
 Column behavior:
 
@@ -382,15 +383,16 @@ During scanning:
   default. The edit goes to the target named when the editor opened: on air it applies at once (a squelch reaches the
   demodulator; a width reaches the front end or, on audio input, the rigctl peer that demodulates it, which is asked for
   the target's own passband, or for `-B` once it follows the default; a gain applies through a stream restart), and the
-  toast says `This channel (county-p25): squelch -55 dB for this session`. If the scan has moved on meanwhile, the edit
-  waits for that target's next visit (`... from its next visit`), and one from a scan that has since ended is refused
-  (`Refused: the scan changed; nothing applied`). A width or gain edit made while the target's retune is still landing
-  answers `Busy: the scan is retuning; try again`. A width the running DSP rate cannot filter is refused, as is a field
-  the target's type does not take. A width the front end or the peer then refuses, and a gain whose restart fails, put
-  that setting back alone (an edit of another setting made since stays), the configured defaults untouched; a failed
-  restart starts the input again without an I/Q capture, which would write over its recording. Every later visit keeps
-  the edit, it ends with the scan, and nothing is written to the target file or saved by Config->Save. On audio input
-  with a rigctl peer the width editors are not offered yet (they need a radio input; issue #621).
+  toast says `This channel (county-p25): squelch -55 dB for this session`; an analog target's squelch edit can also be
+  the auto squelch (`auto+N` at the terminal prompt, `Auto` on the Radio sheet). If the scan has moved on meanwhile, the
+  edit waits for that target's next visit (`... from its next visit`), and one from a scan that has since ended is
+  refused (`Refused: the scan changed; nothing applied`). A width or gain edit made while the target's retune is still
+  landing answers `Busy: the scan is retuning; try again`. A width the running DSP rate cannot filter is refused, as is
+  a field the target's type does not take. A width the front end or the peer then refuses, and a gain whose restart
+  fails, put that setting back alone (an edit of another setting made since stays), the configured defaults untouched; a
+  failed restart starts the input again without an I/Q capture, which would write over its recording. Every later visit
+  keeps the edit, it ends with the scan, and nothing is written to the target file or saved by Config->Save. On audio
+  input with a rigctl peer the width editors are not offered yet (they need a radio input; issue #621).
 - P25, DMR, and NXDN trunk targets stay parked while their trunking state machine is following an active call
   (NXDN stays parked while following an active grant and returns to its control channel at hangtime/release).
   The protocol's hangtime and release rules decide when call following ends; audio silence alone does not start
@@ -539,8 +541,12 @@ no symbol profile is applied over the monitor. Everything below applies to both 
   open and `Activity hold` for the tail. No decoded frame, header or voice verdict is involved, and digital activity
   reports never claim an analog target.
 - **Squelch matters.** Set a threshold with the target's `--squelch-db`, `[input] rtl_sql` or the `sql` field of
-  `-i rtl:`. With the squelch off, or at -100 dB or below, noise holds the target until the per-visit cap or a
-  manual advance or avoid moves on, and scan start warns about it once.
+  `-i rtl:`, or let the [auto squelch](cli.md#auto-squelch---squelch-auto) (`--squelch auto[+N]`, the target's own or
+  the configured one) open a margin over the noise floor it learns on each target, which needs no threshold per
+  receiver and closes on noise. With the squelch off, or at -100 dB or below, noise holds the target until the
+  per-visit cap or a manual advance or avoid moves on, and scan start warns about it once; so it does for the auto
+  squelch on audio input, where it is off. A target whose carrier never stops (a birdie, a continuous broadcast) gives
+  the auto squelch no noise to learn from and holds as an open squelch would; lock it out or cap its visit.
 - **Width.** `--nfm-bandwidth-hz <Hz>` in the `options` column sets an `nfm-conventional` target's NFM channel width
   (whole Hz, `8000..25000`), and `--am-bandwidth-hz <Hz>` an `am-conventional` target's AM channel width (whole Hz,
   `5000..20000`, for example `8333` for 8.33 kHz airband spacing); without one the configured width of the target's
@@ -615,8 +621,8 @@ no symbol profile is applied over the monitor. Everything below applies to both 
   while a carrier holds the target. The voice gate never applies to an analog target, so a global `--scan-voice-only`
   does not block one, and voice-gate switches are rejected in its `options`.
 - **What it refuses.** An analog target takes no `modulation`, `chan_csv`, `p25_bandplan_csv` or key column, and its
-  `options` accept only `--scan-max-visit-ms`, `--squelch-db`, the width option of its own kind and, on an
-  `nfm-conventional` target, the tone filter ([details](csv-formats.md#analog-rows)). Live decryption changes are
+  `options` accept only `--scan-max-visit-ms`, `--squelch-db` or `--squelch`, the width option of its own kind and, on
+  an `nfm-conventional` target, the tone filter ([details](csv-formats.md#analog-rows)). Live decryption changes are
   refused while it is parked. `nfm-trunk` and `am-trunk` are refused with `analog targets are conventional only`, and
   `nfm`, `am` or the analog FM spellings (`fm-conventional`, ...) with a hint naming the conventional type to use.
 
@@ -683,7 +689,9 @@ configuration while a target is parked records the configured global, not the pa
 
 `--squelch-db <dB>` is accepted on every target type as well. It sets the squelch while the target is
 parked: whole dB from `-100` to `0`, the units of `[input] rtl_sql`, where `0` switches the squelch off for that
-target and omitting the switch inherits the configured default. Advancing to the next target, a failed retune that
+target and omitting the switch inherits the configured default. `--squelch <setting>` is the same option in the
+squelch grammar: `off`, a level, or on `nfm-conventional` and `am-conventional` targets `auto[+N]`; an auto squelch
+inherited by a digital target is off there. Advancing to the next target, a failed retune that
 rolls back to the original, and shutdown each restore the right value: the incoming target's own, the original
 target's own, or the configured default. On an RTL-family input the threshold gates the demodulator; on a
 `p25-trunk`, `dmr-trunk` or `nxdn*-trunk` target that includes the control channel, so a threshold above the control

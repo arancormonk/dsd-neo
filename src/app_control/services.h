@@ -17,6 +17,7 @@
 
 #include <dsd-neo/core/airspy_config.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/power.h> // IWYU pragma: keep (dsd_squelch_setting in svc_rtl_set_sql_setting())
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
@@ -756,11 +757,21 @@ int svc_airspy_reopen_locked(dsd_opts* opts, dsd_state* state, const dsd_airspy_
  */
 int svc_airspy_apply(dsd_opts* opts, dsd_state* state, const dsd_airspy_config* config, int* out_capture_stopped);
 
+/**
+ * @brief Hand the RTL demodulator the squelch @p opts holds: a level through rtl_stream_set_channel_squelch(), as every
+ * level push always has, or an auto squelch whole (rtl_stream_set_channel_squelch_setting(), issue #518 follow-up).
+ */
+void svc_rtl_push_squelch(const dsd_opts* opts);
+
 typedef struct {
     uint32_t frequency;
     int bandwidth;
     double squelch;
     int volume;
+    /* The squelch's mode and AUTO margin beside its level (dsd_opts::rtl_squelch_mode, rtl_squelch_margin_db); zeros
+       are a level squelch. */
+    int squelch_mode;
+    int squelch_margin_db;
 } svc_airspy_tuning;
 
 /** Apply native settings and shared tuning together; restore prior tuning on failure.
@@ -819,6 +830,12 @@ int svc_rtl_set_bandwidth_locked(dsd_opts* opts, dsd_state* state, int khz, char
  * the live state, never with a frontend snapshot (dsd_app_get_latest_snapshot()).
  */
 int svc_rtl_set_sql_db(dsd_opts* opts, const dsd_state* state, double dB);
+/**
+ * @brief Set the configured squelch to a whole setting (issue #518 follow-up): a level, or the auto squelch with its
+ * margin. As svc_rtl_set_sql_db(), a scan row's own squelch stays in force until the scanner leaves it. Returns 0, or
+ * -1 for NULL arguments or a margin outside 3..30.
+ */
+int svc_rtl_set_sql_setting(dsd_opts* opts, const dsd_state* state, const dsd_squelch_setting* setting);
 /** @brief Set RTL monitor/non-symbol gain multiplier (clamped to 0–3). */
 int svc_rtl_set_volume_mult(dsd_opts* opts, int mult);
 /** @brief Toggle RTL bias tee (applied live when stream active). */

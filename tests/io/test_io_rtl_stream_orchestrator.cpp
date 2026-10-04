@@ -96,8 +96,9 @@ dsd_rtl_stream_open(dsd_opts* opts) {
 }
 
 extern "C" int
-dsd_rtl_stream_read(float* out, size_t count, dsd_opts* opts, const dsd_state* state) {
+dsd_rtl_stream_read_ex(float* out, uint8_t* flags, size_t count, dsd_opts* opts, const dsd_state* state) {
     (void)out;
+    (void)flags;
     (void)state;
     g_stub.read_calls++;
     g_stub.last_open_opts = opts;

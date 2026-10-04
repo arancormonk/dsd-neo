@@ -1067,7 +1067,8 @@ AGC by default, or a fixed gain with `-n N`.
 | `--analog-probe-hz HZ` | Level at `HZ` (Hann-windowed Goertzel), repeatable up to 8 frequencies: `dbfs`, and `dbc` against the expected tone. |
 | `--analog-probe-{min,max}-{dbc,dbfs} HZ:DB` | Bounds on a probe's level; each also adds the probe. |
 | `--analog-max-tone-lock-ms MS` | Upper bound on `tone_lock_ms`, the stream time of the first received-tone lock. Fails as not measured when no tone locked. |
-| `--analog-scan-row ROW` | Enter row `ROW` of the `-C` channel map before the replay, the way the conventional scanner commits it (its class, then its own options), and print `Scan row applied: ROW <class>; width <W>` with `(row)` when the row sets the width. I/Q replay cannot retune, so one row is all a run visits (issue #526). |
+| `--analog-scan-row ROW` | Enter row `ROW` of the `-C` channel map before the replay, the way the conventional scanner commits it (its class, then its own options), and print `Scan row applied: ROW <class>; width <W>; squelch <S>`, each with `(row)` when the row sets it. I/Q replay cannot retune, so one row is all a run visits (issue #526). |
+| `--analog-iq-gain-db DB` | Replay a copy of the capture with every sample scaled by `DB` about the cu8 midpoint: the same air, noise included, as a receiver with that much more (or less) gain records it. It works on the committed fixtures only (`tests/fixtures/iq`, opened by their directory entries there, never by a path from the command line or a sidecar). The copy goes to a private temporary directory the host removes at exit, and the host prints `capture scaled by +10.0 dB, N of M bytes clipped`; it stops (exit 2) when more than one byte in a thousand would clip, or when the capture is not a committed fixture. The auto squelch's `_HOT` cases use it, so a hotter receiver costs no committed fixture. |
 
 A case that expects silence (a muted or rejected transmission) pairs `--analog-max-audible-ms 0` with
 `--analog-min-total-ms`: silence alone is also what a replay that stalled or never started produces.
@@ -1209,6 +1210,8 @@ carrier inside the passband (5 kHz up, a variant fixture that is not committed) 
 | `nfm_dcs_synth_023i` | synthetic, seed 5231023 | the same with D023 in inverted polarity, the signal of D047N |
 | `nfm_dcs_synth_noisy` | synthetic, seed 5232023 | the same with D023N's word two bits wrong in every repetition: no code |
 | `nfm_dcs_synth_drop` | synthetic, seed 5233023 | 2 s: D023N that stops at 1.2 s, with no turn-off tone, while the carrier and voice carry on |
+| `nfm_burst_synth` | synthetic, seed 5311 | 0.75 s: complex noise at 3 LSB a component, the 1 kHz test tone at 3 kHz deviation keyed from 0.30 to 0.55 s (2 ms ramps) 16 dB over the noise across 48 kHz, unnormalised so a +10 dB copy stays within the cu8 rails (auto squelch) |
+| `am_burst_synth` | synthetic, seed 5312 | the same with 1 kHz at 50% AM depth on a carrier 12 dB over the noise |
 
 `tools/build_iq_fixtures.py` pins each zip's SHA-256, reads the WAV members sample-exact (u8 centred on 127.5),
 shifts each wanted carrier to 0 Hz by an offset measured over the excerpt (`ANALOG_EXCERPTS` documents each), and
@@ -1221,8 +1224,74 @@ The whole analog effort (issue #518) stays within 5 MB of new fixture bytes. The
 (`nfm_ctcss_synth_drop` runs 2.5 s: after its tone stops at 1.2 s it still has to lose the tone and reach the no-tone
 verdict), 3.8 MB in all, which leaves about 1.2 MB. A 48 kHz cu8 fixture takes 96 kB a second, so keep each later
 synthetic fixture to 2 s (192 kB) or less. The two AM synthetics of #524 (1.5 s each) take 0.29 MB and the four DCS
-synthetics of #523 0.77 MB (the no-code case reuses `nfm_notone_synth`), 4.86 MB in all, which leaves 0.14 MB. A pull
-request that adds analog fixtures states the running total.
+synthetics of #523 0.77 MB (the no-code case reuses `nfm_notone_synth`), 4.86 MB in all, which leaves 0.14 MB. The
+auto squelch's two burst synthetics (0.75 s each) take 0.14 MB (4,992,000 bytes in all), which spends the budget: its
+hotter-receiver twins add nothing, since the analog replay host scales a copy at run time (`--analog-iq-gain-db`), and
+its noise and real-carrier cases reuse `noise_floor` and the excerpts. A pull request that adds analog fixtures states
+the running total.
+
+#### Auto squelch classifier (design gate)
+
+The floor-relative squelch (`--squelch auto[+N]`, issue #518) learns a channel's noise floor from windows it classes as
+noise, so it needs a classifier that tells "noise only" from "carrier present" on the channel-filtered complex baseband
+the demodulator sees, at every channel plan the analog monitor runs. `tools/squelch_model.py` (numpy/scipy, offline;
+CI does not run it) decided its design before any C was written. It builds the plans from the repository itself:
+`tools/squelch_model_taps.cpp`, compiled against a configured build tree's static libraries, prints the taps
+`full_demod()` designs and the half-band taps, and a numpy port of `dsd_firdes_low_pass()` cross-checks every designed
+plan. 420 combinations of NFM 8-25 kHz, unset NFM (with `DSD_NEO_CHANNEL_LPF` unset, `=1` and `=0`) and AM 5-20 kHz
+over 30 rate chains (the RTL DSP bandwidths, the rates Airspy, Airspy Mini and SDDC devices force, and I/Q replay with
+and without post-decimation) leave 253 that run and 196 distinct filters. Signals: channel-filtered complex Gaussian
+noise, FM (dead carrier, tones, real speech from the NFM excerpts) at half and full rated deviation, AM (dead carrier,
+tones, real airband speech) at 30, 60 and 100% depth, each at 0, +/-1 and +/-2.5 kHz offset, at 0 to 20 dB CNR. The
+targets per window are: noise read as carrier at most 1e-4, a 6 dB carrier missed at most 1%, a carrier of 6 dB or more
+read as noise (it would raise the floor) at most 1e-4, noise left undecided at most 25%.
+
+The planned classifier (20 ms windows; envelope CV^2 and phase coherence C at a lag from the taps' autocorrelation;
+fixed thresholds) met every target on 162 of the 196 filters: narrow plans (under about 400 effective samples per
+window) missed 1-5% of 6 dB carriers, among them the fading real capture and AM with full-depth tones, and the
+unfiltered NFM default at the 4 kHz RTL rate read noise as carrier 3.4-3.9 times in 10,000. The scheme the auto
+squelch uses passes 195: 40 ms windows; coherence measured against its expected value on noise, beta = (pi/4)
+rho_n(L) 2F1(1/2, 1/2; 2; rho_n(L)^2), with rho_n the noise autocorrelation through the channel taps and the last
+half-band stage; and both features normalised by the window's effective sample count N_eff = N / sum rho_n(m)^2,
+X = (CV^2 - 1) sqrt(N_eff) and Y = |mean(u_k conj(u_{k-L})) - beta| sqrt(N_eff). A window is a carrier when X <= -7.0
+or Y >= 3.3, and noise when X >= -3.8 and Y <= 2.1. Worst cases over the 195: noise read as carrier 1.0e-4 per window
+(about 10 events, so about +/-32%), a 6 dB carrier missed 1.1%, no carrier of 6 dB or more read as noise (0.4% at
+3 dB), noise left undecided at most 3.7%. The one plan that misses its target, unset NFM with `DSD_NEO_CHANNEL_LPF=1`
+forcing the legacy filter on at the 8 kHz RTL rate, misses 1.1% of 6 dB carriers; it is accepted as marginal. The
+model does not cover spurs or adjacent channels: a steady tone inside the channel is a carrier to the coherence test,
+and with these thresholds a birdie from -12 dB (widest plans) to -3.6 dB (narrowest) against the noise reads as one.
+`python3 tools/squelch_model.py` reproduces the report (`build/squelch_model/report.md`) in about 25 minutes on 8
+workers; `--quick` takes about a minute.
+
+#### Auto squelch replay cases
+
+The `DECODE_IQ_ANALOG_SQL_AUTO_*` cases replay `nfm_burst_synth` and `am_burst_synth` (noise, a carrier from 0.30 to
+0.55 s, noise) under `--squelch auto` and hold each to one set of bounds: first audible block at 300-360 ms, 240-320
+ms audible at -40 dBFS, stream time 700-800 ms, no clipping. Both measure 320 ms and 280 ms through FM and AM: the
+floor is learned from the opening windows, the gate opens 20 ms into the carrier and closes within a window of its end.
+
+| Case | What it pins |
+| --- | --- |
+| `_NFM_BURST`, `_AM_BURST` | The gate's edges on a burst after learned noise. |
+| `_NFM_BURST_HOT`, `_AM_BURST_HOT` | The same capture 10 dB hotter (`--analog-iq-gain-db 10`, 0 bytes clipped), the same bounds and measurements: the setting follows the floor, not the receiver. |
+| `_NFM_MARGIN`, `_AM_MARGIN_HOT` | Each carrier stands about 20 dB over its channel's noise (it still opens at `auto+20` and not at `auto+21`, `+22` on AM); under `auto+30` nothing is audible at either level. |
+| `_NOISE_FLOOR`, `_AM_NOISE_FLOOR` | Ten seconds of receiver noise (`noise_floor`) never open it. Its 16 LSB noise cannot be scaled 10 dB without clipping, so it has no hot twin. |
+| `_NFM_REAL_CARRIER`, `_AM_REAL_CARRIER` | A carrier is never learned as floor: `nfm_ctcss_real` and `am_airband_real` hold their carrier throughout and play whole after the first 40 ms window (5940 of 6000 ms, 7940 of 8000), within 60 ms of their audible time with the squelch off. |
+| `DECODE_IQ_SCAN_SQL_AUTO_ROW` | A `-Y` row's own `--squelch auto` on a digital (`-fa`) session gates the burst as `-fA` does. |
+| `DECODE_IQ_ANALOG_NEG_SQL_LEVEL_HOT` | The burst bounds under a fixed `-35 dB` on the hot copy fail: that level sits 2.5 dB over the burst's noise at its own level and 7.5 dB under the hot copy's, which opens on noise from the first block (740 ms audible). |
+| `DECODE_IQ_ANALOG_NEG_IQ_GAIN_CLIPS` | A gain that would clip the copy stops the host (exit 2). |
+| `DECODE_IQ_ANALOG_SQL_AUTO_{NFM,AM}_DETERMINISM` | Fast, jittered and realtime replays hand the sink the same gated audio (the replay sink's hash, 14 writes of 960). GNU `--wrap` builds only, like the other sink cases; the monitor reads one sample at a time, so there is no short-read leg, and 280 ms of audio cannot back up a stalled sink. |
+
+What each case can catch was checked by mutation. A tracker that never learns a floor passes the burst cases (while
+learning, the gate opens on carrier windows only, which is what lets a scan land mid-transmission) and fails both
+margin cases. A sink that ignores the per-sample flags fails every FM case and both determinism cases; the AM cases
+still pass, because the AM detector writes silence for a closed sample itself (`am_demod_flagged()`: its output,
+the envelope over the held carrier, means nothing without a carrier), so on AM they pin the detector's handling of
+the flags instead. Level mode cannot be held to these bounds on replay at all: it gates each demod block whole on the
+power of its first samples, as it did before the auto squelch, and a replay's demod block is one 64 KiB capture chunk,
+683 ms at 48 kHz. Both chunks of the 0.75 s burst start on noise, so a fixed threshold that keeps that noise out never
+plays the carrier; on a 2 s version (carrier from 0.5 to 1.5 s) a fixed `-20 dB` plays from 683 ms to the end. The
+auto squelch's per-sample gate opens 20 ms into the carrier and closes within a window of its end.
 
 #### Tone and code labels
 

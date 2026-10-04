@@ -19,6 +19,7 @@
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
+#include <dsd-neo/runtime/input_spec.h>
 #include <dsd-neo/runtime/rdio_export.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
@@ -1703,6 +1704,122 @@ test_snapshot_disabled_squelch_roundtrips_as_off(void) {
         rc |= 1;
     }
 
+    return rc;
+}
+
+/* [input] rtl_sql_mode / rtl_sql_margin_db (issue #518 follow-up): loaded, carried into an rtl: spec as auto+N (the
+ * level stays in rtl_sql), applied straight to opts on SoapySDR, saved back from the session, and rendered. */
+static int
+test_auto_squelch_keys_roundtrip(void) {
+    static const char* ini = "[input]\n"
+                             "source = \"rtl\"\n"
+                             "rtl_freq = \"162.475M\"\n"
+                             "rtl_sql = -50\n"
+                             "rtl_sql_mode = \"auto\"\n"
+                             "rtl_sql_margin_db = 6\n";
+    char path[DSD_TEST_PATH_MAX];
+    if (write_temp_config(ini, path, sizeof path) != 0) {
+        return 1;
+    }
+    dsdneoUserConfig cfg;
+    int rc = 0;
+    if (dsd_user_config_load(path, &cfg) != 0 || cfg.rtl_sql_mode != DSD_SQUELCH_MODE_AUTO || cfg.rtl_sql_margin_db != 6
+        || cfg.rtl_sql != -50) {
+        DSD_FPRINTF(stderr, "auto squelch keys not loaded (mode %d margin %d sql %d)\n", cfg.rtl_sql_mode,
+                    cfg.rtl_sql_margin_db, cfg.rtl_sql);
+        (void)remove(path);
+        return 1;
+    }
+    (void)remove(path);
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_opts_and_state(opts, state);
+    dsd_apply_user_config_to_opts(&cfg, &opts, &state);
+    if (strstr(opts.audio_in_dev, ":auto+6:") == NULL) {
+        DSD_FPRINTF(stderr, "rtl spec without the auto squelch: %s\n", opts.audio_in_dev);
+        rc |= 1;
+    }
+    /* The spec's auto+6 carries no level: rtl_sql is the level beneath it, through the engine's reading of the spec and
+       back out in a save. */
+    (void)dsd_rtl_input_spec_apply(&opts);
+    if (opts.rtl_squelch_mode != DSD_SQUELCH_MODE_AUTO || opts.rtl_squelch_margin_db != 6
+        || fabs(opts.rtl_squelch_level - pow(10.0, -5.0)) > 1e-12) {
+        DSD_FPRINTF(stderr, "rtl load of auto+6 over -50: mode %d margin %d level %g\n", opts.rtl_squelch_mode,
+                    opts.rtl_squelch_margin_db, opts.rtl_squelch_level);
+        rc |= 1;
+    }
+    {
+        dsdneoUserConfig saved;
+        dsd_snapshot_opts_to_user_config(&opts, &state, &saved);
+        if (saved.rtl_sql != -50 || saved.rtl_sql_mode != DSD_SQUELCH_MODE_AUTO) {
+            DSD_FPRINTF(stderr, "rtl load then save: sql %d mode %d\n", saved.rtl_sql, saved.rtl_sql_mode);
+            rc |= 1;
+        }
+    }
+    /* --squelch keeps the level it set. */
+    reset_opts_and_state(opts, state);
+    opts.rtl_squelch_cli_set = 1;
+    opts.rtl_squelch_level = pow(10.0, -7.0);
+    dsd_apply_user_config_to_opts(&cfg, &opts, &state);
+    if (fabs(opts.rtl_squelch_level - pow(10.0, -7.0)) > 1e-15) {
+        DSD_FPRINTF(stderr, "a config's rtl_sql replaced the --squelch level: %g\n", opts.rtl_squelch_level);
+        rc |= 1;
+    }
+
+    /* SoapySDR: straight to opts. The level stays for a switch back. */
+    reset_opts_and_state(opts, state);
+    dsdneoUserConfig soapy = cfg;
+    soapy.input_source = DSDCFG_INPUT_SOAPY;
+    DSD_SNPRINTF(soapy.soapy_args, sizeof soapy.soapy_args, "%s", "driver=test");
+    dsd_apply_user_config_to_opts(&soapy, &opts, &state);
+    if (opts.rtl_squelch_mode != DSD_SQUELCH_MODE_AUTO || opts.rtl_squelch_margin_db != 6
+        || fabs(opts.rtl_squelch_level - pow(10.0, -5.0)) > 1e-12) {
+        DSD_FPRINTF(stderr, "soapy apply of auto+6: mode %d margin %d level %g\n", opts.rtl_squelch_mode,
+                    opts.rtl_squelch_margin_db, opts.rtl_squelch_level);
+        rc |= 1;
+    }
+    /* level, and an unset margin, read as the defaults. */
+    soapy.rtl_sql_mode = DSD_SQUELCH_MODE_LEVEL;
+    dsd_apply_user_config_to_opts(&soapy, &opts, &state);
+    if (opts.rtl_squelch_mode != DSD_SQUELCH_MODE_LEVEL) {
+        DSD_FPRINTF(stderr, "soapy apply of level kept auto\n");
+        rc |= 1;
+    }
+    soapy.rtl_sql_mode = DSD_SQUELCH_MODE_AUTO;
+    soapy.rtl_sql_margin_db = 0;
+    dsd_apply_user_config_to_opts(&soapy, &opts, &state);
+    if (opts.rtl_squelch_margin_db != DSD_SQUELCH_MARGIN_DEFAULT_DB) {
+        DSD_FPRINTF(stderr, "an unset margin read %d\n", opts.rtl_squelch_margin_db);
+        rc |= 1;
+    }
+
+    /* The save takes the session's setting and renders both keys; a level setting renders neither. */
+    reset_opts_and_state(opts, state);
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl:0:162.475M:22:-2:24:auto+6:2");
+    opts.rtlsdr_center_freq = 162475000U;
+    opts.rtl_squelch_level = pow(10.0, -5.0);
+    opts.rtl_squelch_mode = DSD_SQUELCH_MODE_AUTO;
+    opts.rtl_squelch_margin_db = 6;
+    dsdneoUserConfig snap;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    char text[8192];
+    if (snap.rtl_sql_mode != DSD_SQUELCH_MODE_AUTO || snap.rtl_sql_margin_db != 6 || snap.rtl_sql != -50
+        || render_config_to_buffer(&snap, text, sizeof text) != 0) {
+        DSD_FPRINTF(stderr, "snapshot of auto+6: mode %d margin %d sql %d\n", snap.rtl_sql_mode, snap.rtl_sql_margin_db,
+                    snap.rtl_sql);
+        return 1;
+    }
+    rc |= expect_contains("auto render", text, "rtl_sql_mode = \"auto\"");
+    rc |= expect_contains("auto render", text, "rtl_sql_margin_db = 6");
+    rc |= expect_contains("auto render", text, "rtl_sql = -50");
+    opts.rtl_squelch_mode = DSD_SQUELCH_MODE_LEVEL;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    if (render_config_to_buffer(&snap, text, sizeof text) != 0 || strstr(text, "rtl_sql_mode") != NULL
+        || strstr(text, "rtl_sql_margin_db") != NULL) {
+        DSD_FPRINTF(stderr, "a level setting rendered the auto keys:\n%s\n", text);
+        rc |= 1;
+    }
     return rc;
 }
 
@@ -4110,6 +4227,7 @@ main(void) {
     rc |= test_snapshot_roundtrip_agc_rtl_gain();
     rc |= test_snapshot_rtl_and_rtltcp_device_specs();
     rc |= test_snapshot_disabled_squelch_roundtrips_as_off();
+    rc |= test_auto_squelch_keys_roundtrip();
     rc |= test_load_and_apply_rtltcp_regression();
     rc |= test_snapshot_roundtrip();
     rc |= test_apply_demod_lock();

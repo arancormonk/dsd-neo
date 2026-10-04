@@ -18,6 +18,7 @@
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
+#include <dsd-neo/runtime/squelch.h>
 #include <math.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -435,6 +436,89 @@ settings_identical(const dsd_scan_settings* a, const dsd_scan_settings* b) {
     const size_t row_end = offsetof(dsd_scan_settings, frame_dstar);
     return dsd_scan_settings_equal(a, b, 1) && level_is(a->rtl_squelch_level, b->rtl_squelch_level)
            && memcmp((const char*)a + row_begin, (const char*)b + row_begin, row_end - row_begin) == 0;
+}
+
+/* The auto squelch (issue #518 follow-up) travels the same way as a row level: a row's auto[+N] replaces the configured
+ * setting while the row is on air, the demod hears the whole setting once per change, a configured AUTO is restored
+ * at leave, and none of it is acquisition. */
+static int g_setting_pushes;
+static dsd_squelch_setting g_setting_pushed;
+
+static void
+record_setting_push(const dsd_squelch_setting* setting) {
+    g_setting_pushes++;
+    g_setting_pushed = *setting;
+}
+
+static void
+test_auto_squelch_row_and_default(void) {
+    dsd_opts* o = (dsd_opts*)calloc(1, sizeof(*o));
+    dsd_state* s = (dsd_state*)calloc(1, sizeof(*s));
+    assert(o && s);
+    o->wav_sample_rate = 48000;
+    o->audio_in_type = AUDIO_IN_RTL;
+    o->rtl_dsp_bw_khz = 48;
+    const double configured = dsd_squelch_level_from_sql(-80.0);
+    o->rtl_squelch_level = configured;
+    o->rtl_squelch_mode = DSD_SQUELCH_MODE_LEVEL;
+    o->rtl_squelch_margin_db = DSD_SQUELCH_MARGIN_DEFAULT_DB;
+    const dsd_rtl_stream_metrics_hooks hooks = {.set_channel_squelch_setting = record_setting_push};
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+    g_setting_pushes = 0;
+
+    assert(dsd_scan_mode_enter(o, s, DSD_SCAN_MODE_NFM) == 0);
+    dsd_scan_option_values row = {0};
+    row.present = DSD_SCAN_OPT_SQUELCH;
+    row.squelch_mode = DSD_SQUELCH_MODE_AUTO;
+    row.squelch_margin_db = 6;
+    dsd_scan_settings before;
+    dsd_scan_settings_capture(o, s, &before);
+    assert(dsd_scan_mode_options(o, s, &row) == 0);
+    assert(o->rtl_squelch_mode == DSD_SQUELCH_MODE_AUTO && o->rtl_squelch_margin_db == 6);
+    /* The level stays, for a switch back. */
+    assert(level_is(o->rtl_squelch_level, configured));
+    assert(g_setting_pushes == 1 && g_setting_pushed.mode == DSD_SQUELCH_MODE_AUTO && g_setting_pushed.margin_db == 6);
+    dsd_scan_settings after;
+    dsd_scan_settings_capture(o, s, &after);
+    assert(dsd_scan_settings_equal(&before, &after, 1) && after.rtl_squelch_mode == DSD_SQUELCH_MODE_AUTO);
+    /* The same setting again: nothing. Another margin: once. */
+    assert(dsd_scan_mode_options(o, s, &row) == 0);
+    assert(g_setting_pushes == 1);
+    row.squelch_margin_db = 8;
+    assert(dsd_scan_mode_options(o, s, &row) == 0);
+    assert(g_setting_pushes == 2 && g_setting_pushed.margin_db == 8);
+    /* A row that inherits hands the demod the configured level. */
+    assert(dsd_scan_mode_options(o, s, NULL) == 0);
+    assert(o->rtl_squelch_mode == DSD_SQUELCH_MODE_LEVEL && g_setting_pushes == 3);
+    assert(g_setting_pushed.mode == DSD_SQUELCH_MODE_LEVEL && level_is(g_setting_pushed.level, configured));
+
+    /* An AUTO default beneath an inheriting row is in force at once; beneath a row's own squelch it waits. */
+    const dsd_squelch_setting auto10 = dsd_squelch_setting_auto(10);
+    assert(dsd_scan_mode_set_configured_squelch_setting(o, s, &auto10) == 1);
+    assert(o->rtl_squelch_mode == DSD_SQUELCH_MODE_AUTO && o->rtl_squelch_margin_db == 10);
+    assert(dsd_scan_mode_configured_view(s)->rtl_squelch_mode == DSD_SQUELCH_MODE_AUTO);
+    row.squelch_mode = DSD_SQUELCH_MODE_LEVEL;
+    row.squelch_db = -60;
+    assert(dsd_scan_mode_options(o, s, &row) == 0);
+    assert(o->rtl_squelch_mode == DSD_SQUELCH_MODE_LEVEL && level_is(o->rtl_squelch_level, 1e-6));
+    const dsd_squelch_setting auto12 = dsd_squelch_setting_auto(12);
+    assert(dsd_scan_mode_set_configured_squelch_setting(o, s, &auto12) == 0);
+    assert(o->rtl_squelch_mode == DSD_SQUELCH_MODE_LEVEL);
+    assert(dsd_scan_mode_configured_view(s)->rtl_squelch_margin_db == 12);
+    /* Leaving restores the configured AUTO and tells the demod. */
+    const int pushes = g_setting_pushes;
+    dsd_scan_mode_leave(o, s);
+    assert(o->rtl_squelch_mode == DSD_SQUELCH_MODE_AUTO && o->rtl_squelch_margin_db == 12);
+    assert(g_setting_pushes == pushes + 1 && g_setting_pushed.mode == DSD_SQUELCH_MODE_AUTO);
+    /* The level setter is the LEVEL setting. */
+    assert(dsd_scan_mode_set_configured_squelch(o, s, configured) == 1);
+    assert(o->rtl_squelch_mode == DSD_SQUELCH_MODE_LEVEL && level_is(o->rtl_squelch_level, configured));
+    assert(dsd_scan_mode_set_configured_squelch_setting(o, s, NULL) == -1);
+
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    dsd_state_ext_free_all(s);
+    free(o);
+    free(s);
 }
 
 /* A row squelch is policy carried beside the acquisition settings: an omitted value inherits,
@@ -1544,6 +1628,7 @@ main(void) {
     test_row_option_edits_are_not_acquisition_changes();
     test_max_visit_row_override_scope();
     test_squelch_row_override_scope();
+    test_auto_squelch_row_and_default();
     test_tone_row_override_scope();
     test_configured_tone_policy_edit();
     test_configured_squelch_edit();

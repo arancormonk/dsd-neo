@@ -8,6 +8,7 @@
 
 #include <assert.h>
 #include <dsd-neo/core/analog_tone.h>
+#include <dsd-neo/core/power.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/analog_tones.h>
@@ -135,6 +136,39 @@ test_change_transitions(void) {
     assert(dsd_scan_row_edit_change(NULL, DSD_SCAN_ROW_FIELD_SQUELCH, DSD_SCAN_ROW_EDIT_RESET, NULL) == -1);
     assert(edit.set == before.set && edit.inherit == before.inherit);
     assert(dsd_scan_row_edit_fields_edited(NULL) == 0U);
+}
+
+/* An auto squelch margin outlives a level: a level edit without one keeps the margin the row's list gave, or the last
+   one edited, so a switch back to Auto starts from it (issue #518 follow-up). */
+static void
+test_level_keeps_the_auto_margin(void) {
+    const dsd_scan_option_values row = parse_row("--squelch auto+6", DSD_SCAN_MODE_NFM);
+    assert(row.squelch_mode == DSD_SQUELCH_MODE_AUTO && row.squelch_margin_db == 6);
+    dsd_scan_row_edit edit;
+    DSD_MEMSET(&edit, 0, sizeof edit);
+    dsd_scan_row_edit_value v;
+    DSD_MEMSET(&v, 0, sizeof v);
+    v.squelch_mode = DSD_SQUELCH_MODE_LEVEL;
+    v.squelch_db = -55;
+    assert(dsd_scan_row_edit_change(&edit, DSD_SCAN_ROW_FIELD_SQUELCH, DSD_SCAN_ROW_EDIT_SET, &v) == 0);
+    dsd_scan_option_values out;
+    dsd_scan_row_edit_apply(&row, &edit, DSD_SCAN_MODE_NFM, &out);
+    assert(out.squelch_mode == DSD_SQUELCH_MODE_LEVEL && out.squelch_db == -55 && out.squelch_margin_db == 6);
+    /* An edited margin, then a level: the edited margin stays. */
+    v.squelch_mode = DSD_SQUELCH_MODE_AUTO;
+    v.squelch_margin_db = 8;
+    assert(dsd_scan_row_edit_change(&edit, DSD_SCAN_ROW_FIELD_SQUELCH, DSD_SCAN_ROW_EDIT_SET, &v) == 0);
+    v.squelch_mode = DSD_SQUELCH_MODE_LEVEL;
+    v.squelch_margin_db = 0;
+    assert(dsd_scan_row_edit_change(&edit, DSD_SCAN_ROW_FIELD_SQUELCH, DSD_SCAN_ROW_EDIT_SET, &v) == 0);
+    assert(edit.value.squelch_margin_db == 8);
+    dsd_scan_row_edit_apply(&row, &edit, DSD_SCAN_MODE_NFM, &out);
+    assert(out.squelch_mode == DSD_SQUELCH_MODE_LEVEL && out.squelch_margin_db == 8);
+    /* A level that names a margin takes it. */
+    v.squelch_margin_db = 12;
+    assert(dsd_scan_row_edit_change(&edit, DSD_SCAN_ROW_FIELD_SQUELCH, DSD_SCAN_ROW_EDIT_SET, &v) == 0);
+    dsd_scan_row_edit_apply(&row, &edit, DSD_SCAN_MODE_NFM, &out);
+    assert(out.squelch_margin_db == 12);
 }
 
 /* An edit lays over the row's own options: a set field takes the edit's value and its option bit, an inherited one
@@ -278,6 +312,7 @@ main(void) {
     test_value_checks();
     test_change_transitions();
     test_apply_over_the_row();
+    test_level_keeps_the_auto_margin();
     test_gain();
     test_take_fields();
     test_width_request_differs();

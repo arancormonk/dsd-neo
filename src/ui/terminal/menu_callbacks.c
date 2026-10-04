@@ -15,10 +15,12 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/parse.h>
+#include <dsd-neo/core/power.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/squelch.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1091,6 +1093,26 @@ cb_rtl_sql(void* u, int ok, double dB) {
         double v = dB;
         (void)dsd_app_command_set_double(DSD_APP_CMD_RTL_SET_SQL_DB, v);
     }
+}
+
+void
+cb_rtl_sql_text(void* u, const char* text) {
+    const UiCtx* c = mutable_ui_ctx_from_callback(u);
+    if (!c || !text) {
+        return;
+    }
+    dsd_squelch_setting setting;
+    char why[96];
+    if (dsd_squelch_setting_parse(text, &setting, why, sizeof why) != 0) {
+        ui_statusf("Squelch: %s", why);
+        return;
+    }
+    dsd_app_squelch_setting_payload payload;
+    DSD_MEMSET(&payload, 0, sizeof payload);
+    payload.mode = setting.mode;
+    payload.margin_db = setting.margin_db;
+    payload.level = setting.level;
+    (void)dsd_app_command_submit(DSD_APP_CMD_RTL_SET_SQL_SETTING, &payload, sizeof payload);
 }
 
 void

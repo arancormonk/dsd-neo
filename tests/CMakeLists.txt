@@ -71,10 +71,13 @@ if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
         dsp/test_dsp_firdes.c
         dsp/test_dsp_simd_widen.cpp
         dsp/test_dsp_snr_estimator.cpp
+        dsp/test_dsp_squelch_floor.c
         dsp/test_dsp_symbol_replay.c
         io/test_io_input_level_metrics.c
         io/test_io_rtl_replay_eof_and_cf32.cpp
         runtime/test_runtime_decode_clock.c
+        runtime/test_runtime_squelch.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/squelch.c
         PROPERTIES COMPILE_OPTIONS "-fno-fast-math"
     )
 elseif(MSVC)
@@ -92,10 +95,13 @@ elseif(MSVC)
         dsp/test_dsp_firdes.c
         dsp/test_dsp_simd_widen.cpp
         dsp/test_dsp_snr_estimator.cpp
+        dsp/test_dsp_squelch_floor.c
         dsp/test_dsp_symbol_replay.c
         io/test_io_input_level_metrics.c
         io/test_io_rtl_replay_eof_and_cf32.cpp
         runtime/test_runtime_decode_clock.c
+        runtime/test_runtime_squelch.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/squelch.c
         PROPERTIES COMPILE_OPTIONS "/fp:precise"
     )
 endif()
@@ -504,6 +510,18 @@ dsd_neo_add_public_header_smoke_test(
   HEADERS_PUBLIC_RUNTIME_SCAN_ROW_EDIT
   dsd-neo/runtime/scan_row_edit.h
   C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_runtime_squelch
+  HEADERS_PUBLIC_RUNTIME_SQUELCH
+  dsd-neo/runtime/squelch.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_runtime_squelch_cxx
+  HEADERS_PUBLIC_RUNTIME_SQUELCH_CXX
+  dsd-neo/runtime/squelch.h
+  CXX
 )
 dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_runtime_bootstrap
@@ -973,6 +991,18 @@ dsd_neo_add_public_header_smoke_test(
   HEADERS_PUBLIC_DSP_ANALOG_VOICE
   dsd-neo/dsp/analog_voice.h
   C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_dsp_squelch_floor
+  HEADERS_PUBLIC_DSP_SQUELCH_FLOOR
+  dsd-neo/dsp/squelch_floor.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_dsp_squelch_floor_cxx
+  HEADERS_PUBLIC_DSP_SQUELCH_FLOOR_CXX
+  dsd-neo/dsp/squelch_floor.h
+  CXX
 )
 dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_core_utf16
@@ -2041,6 +2071,8 @@ target_sources(
     dsd-neo_test_app_control_actions
     PRIVATE
         ${PROJECT_SOURCE_DIR}/src/runtime/scan_mode.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/squelch.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_io_hooks.c
         ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_metrics_hooks.c
 )
 
@@ -2123,8 +2155,11 @@ if(DSD_ENABLE_TERMINAL_UI)
         ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
         ${PROJECT_SOURCE_DIR}/src/app_control/rtl_gain_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/rx_tone_view.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/squelch_view.c
         ${PROJECT_SOURCE_DIR}/src/runtime/analog_tones.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_io_hooks.c
         ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_metrics_hooks.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/squelch.c
     )
     target_include_directories(
         dsd-neo_test_ui_menu_labels
@@ -2133,9 +2168,15 @@ if(DSD_ENABLE_TERMINAL_UI)
             ${PROJECT_SOURCE_DIR}/src/ui/terminal
             ${CURSES_INCLUDE_DIRS}
     )
+    target_link_libraries(
+        dsd-neo_test_ui_menu_labels
+        PRIVATE ${DSD_NEO_TEST_MATH_LIB}
+    )
     target_sources(
         dsd-neo_test_ui_menu_labels
-        PRIVATE test_support/scan_mode_label_stubs.c
+        PRIVATE
+            test_support/scan_mode_label_stubs.c
+            test_support/squelch_format_stubs.c
     )
     add_test(NAME UI_MENU_LABELS COMMAND dsd-neo_test_ui_menu_labels)
 
@@ -2147,9 +2188,12 @@ if(DSD_ENABLE_TERMINAL_UI)
         ${PROJECT_SOURCE_DIR}/src/app_control/analog_width_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/rtl_gain_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/rx_tone_view.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/squelch_view.c
         ${PROJECT_SOURCE_DIR}/src/runtime/analog_channel.c
         ${PROJECT_SOURCE_DIR}/src/runtime/analog_tones.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_io_hooks.c
         ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_metrics_hooks.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/squelch.c
     )
     target_include_directories(
         dsd-neo_test_ui_menu_labels_radio
@@ -2158,13 +2202,19 @@ if(DSD_ENABLE_TERMINAL_UI)
             ${PROJECT_SOURCE_DIR}/src/ui/terminal
             ${CURSES_INCLUDE_DIRS}
     )
+    target_link_libraries(
+        dsd-neo_test_ui_menu_labels_radio
+        PRIVATE ${DSD_NEO_TEST_MATH_LIB}
+    )
     target_compile_definitions(
         dsd-neo_test_ui_menu_labels_radio
         PRIVATE USE_RADIO
     )
     target_sources(
         dsd-neo_test_ui_menu_labels_radio
-        PRIVATE test_support/scan_mode_label_stubs.c
+        PRIVATE
+            test_support/scan_mode_label_stubs.c
+            test_support/squelch_format_stubs.c
     )
     add_test(
         NAME UI_MENU_LABELS_RADIO
@@ -2588,7 +2638,9 @@ if(DSD_ENABLE_TERMINAL_UI)
         ${PROJECT_SOURCE_DIR}/src/app_control/rx_tone_view.c
         ${PROJECT_SOURCE_DIR}/src/runtime/analog_channel.c
         ${PROJECT_SOURCE_DIR}/src/runtime/analog_tones.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_io_hooks.c
         ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_metrics_hooks.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/squelch.c
     )
     target_compile_definitions(
         dsd-neo_test_ui_ncurses_printer_helpers
@@ -2623,6 +2675,8 @@ if(DSD_ENABLE_TERMINAL_UI)
         dsd-neo_test_ui_menu_callbacks
         ui/test_ui_menu_callbacks.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_callbacks.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_io_hooks.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/squelch.c
     )
     target_include_directories(
         dsd-neo_test_ui_menu_callbacks
@@ -2631,6 +2685,10 @@ if(DSD_ENABLE_TERMINAL_UI)
             ${PROJECT_SOURCE_DIR}/src/app_control
             ${PROJECT_SOURCE_DIR}/src/ui/terminal
             ${CURSES_INCLUDE_DIRS}
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_menu_callbacks
+        PRIVATE ${DSD_NEO_TEST_MATH_LIB}
     )
     add_test(NAME UI_MENU_CALLBACKS COMMAND dsd-neo_test_ui_menu_callbacks)
 
@@ -2642,9 +2700,12 @@ if(DSD_ENABLE_TERMINAL_UI)
         ${PROJECT_SOURCE_DIR}/src/app_control/analog_width_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/rtl_gain_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/rx_tone_view.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/squelch_view.c
         ${PROJECT_SOURCE_DIR}/src/runtime/analog_channel.c
         ${PROJECT_SOURCE_DIR}/src/runtime/analog_tones.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_io_hooks.c
         ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_metrics_hooks.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/squelch.c
     )
     target_include_directories(
         dsd-neo_test_ui_menu_actions
@@ -6002,6 +6063,11 @@ target_link_libraries(
 )
 add_test(NAME RUNTIME_SCAN_ROW_EDIT COMMAND dsd-neo_test_runtime_scan_row_edit)
 
+# Issue #518 follow-up: the squelch setting's grammar, text and resolution.
+add_executable(dsd-neo_test_runtime_squelch runtime/test_runtime_squelch.c)
+target_link_libraries(dsd-neo_test_runtime_squelch PRIVATE dsd-neo_runtime)
+add_test(NAME RUNTIME_SQUELCH COMMAND dsd-neo_test_runtime_squelch)
+
 add_executable(dsd-neo_test_scan_mode_replay engine/scan_mode_replay.c)
 target_link_libraries(
     dsd-neo_test_scan_mode_replay
@@ -6138,6 +6204,7 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
             "-Wl,--wrap=rtl_stream_stop"
             "-Wl,--wrap=rtl_stream_destroy"
             "-Wl,--wrap=rtl_stream_set_channel_squelch"
+            "-Wl,--wrap=rtl_stream_set_channel_squelch_setting"
             "-Wl,--wrap=rtl_stream_output_rate"
     )
 else()
@@ -6256,6 +6323,7 @@ if(
             "LINKER:--wrap=rtl_stream_stop"
             "LINKER:--wrap=rtl_stream_destroy"
             "LINKER:--wrap=rtl_stream_set_channel_squelch"
+            "LINKER:--wrap=rtl_stream_set_channel_squelch_setting"
             "LINKER:--wrap=rtl_stream_check_analog_profile"
             "LINKER:--wrap=rtl_stream_request_analog_profile"
             "LINKER:--wrap=rtl_stream_request_demod_profile"
@@ -8343,6 +8411,19 @@ dsd_neo_link_dsp_test(dsd-neo_test_dsp_analog_ctcss ${DSD_NEO_TEST_MATH_LIB})
 add_test(NAME DSP_ANALOG_CTCSS COMMAND dsd-neo_test_dsp_analog_ctcss)
 set_tests_properties(DSP_ANALOG_CTCSS PROPERTIES TIMEOUT 300)
 
+# The auto squelch's classifier, floor and gate (issue #518 follow-up): plan constants
+# against the design model, noise and carriers, learning, no false opens on noise at
+# every margin, floor tracking and relearning, seeding, the per-channel cache, and the
+# same flags whatever the block cuts.
+add_executable(dsd-neo_test_dsp_squelch_floor dsp/test_dsp_squelch_floor.c)
+target_include_directories(
+    dsd-neo_test_dsp_squelch_floor
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/tests/dsp
+)
+dsd_neo_link_dsp_test(dsd-neo_test_dsp_squelch_floor ${DSD_NEO_TEST_MATH_LIB})
+add_test(NAME DSP_SQUELCH_FLOOR COMMAND dsd-neo_test_dsp_squelch_floor)
+set_tests_properties(DSP_SQUELCH_FLOOR PROPERTIES TIMEOUT 300)
+
 # DCS detection (issue #523) through the pure analog receive core, in sample time: every
 # supported code in both polarities through the receiver's DC block and de-emphasis at two
 # SNRs, the alias rule, hold under bit errors, loss on a stop and on the turn-off tone, and
@@ -8577,6 +8658,26 @@ target_include_directories(
 )
 dsd_neo_link_dsp_test(dsd-neo_test_dsp_iq_dc_block)
 add_test(NAME DSP_IQ_DC_BLOCK COMMAND dsd-neo_test_dsp_iq_dc_block)
+
+# The auto squelch inside full_demod() (issue #518 follow-up): the tracker on the channel
+# filter's plan, flags instead of zeroing, the AM detector, the post-decimator and the
+# resampler carrying the flags, and the same flags whatever the block cuts.
+add_executable(
+    dsd-neo_test_dsp_squelch_auto_demod
+    dsp/test_dsp_squelch_auto_demod.cpp
+)
+target_include_directories(
+    dsd-neo_test_dsp_squelch_auto_demod
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/dsp
+)
+target_link_libraries(
+    dsd-neo_test_dsp_squelch_auto_demod
+    PRIVATE dsd-neo_dsp_private_test_support ${DSD_NEO_TEST_MATH_LIB}
+)
+add_test(
+    NAME DSP_SQUELCH_AUTO_DEMOD
+    COMMAND dsd-neo_test_dsp_squelch_auto_demod
+)
 
 add_executable(dsd-neo_test_dsp_squelch dsp/test_dsp_squelch.cpp)
 target_include_directories(
@@ -11185,6 +11286,31 @@ if(DSD_HAS_RADIO)
         COMMAND dsd-neo_test_io_rtl_retune_prepare
     )
 
+    # The auto squelch's plumbing in the RTL stream (issue #518 follow-up): setting, context,
+    # flags through the output ring with the samples, status.
+    add_executable(
+        dsd-neo_test_io_rtl_squelch_plumbing
+        io/test_io_rtl_squelch_plumbing.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_io_rtl_squelch_plumbing
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/io/radio
+    )
+    target_link_libraries(
+        dsd-neo_test_io_rtl_squelch_plumbing
+        PRIVATE dsd-neo_io_radio_private_test_support dsd-neo_core
+    )
+    if(DSD_HAS_RTLSDR)
+        target_link_libraries(
+            dsd-neo_test_io_rtl_squelch_plumbing
+            PRIVATE ${RTLSDR_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT}
+        )
+    endif()
+    add_test(
+        NAME IO_RTL_SQUELCH_PLUMBING
+        COMMAND dsd-neo_test_io_rtl_squelch_plumbing
+    )
+
     add_executable(
         dsd-neo_test_io_rtl_analog_family_switch
         io/test_io_rtl_analog_family_switch.cpp
@@ -12480,6 +12606,30 @@ if(DSD_HAS_RADIO)
     # must back up and drop, or the host fails the leg) leaves the decoder's lines and
     # the audio it handed over (REPLAY SINK) unchanged.
     if(_DSD_NEO_REPLAY_SINK_WRAP)
+        # The auto squelch gates the analog monitor sample by sample (issue #518): fast,
+        # jittered and realtime replays must hand the sink the same audio, gated at the
+        # same samples (the burst's 280 ms, 14 writes of 960). The monitor reads one
+        # sample at a time, so there is no read for a short-read leg to cut, and 280 ms
+        # of audio cannot back up a stalled sink; the NXDN case below covers that.
+        foreach(
+            _sql_case
+            IN
+            ITEMS "NFM;nfm_burst_synth;-fA" "AM;am_burst_synth;-fM"
+        )
+            list(GET _sql_case 0 _sql_kind)
+            list(GET _sql_case 1 _sql_fixture)
+            list(GET _sql_case 2 _sql_mode)
+            dsd_neo_add_iq_determinism_test(
+                DECODE_IQ_ANALOG_SQL_AUTO_${_sql_kind}_DETERMINISM
+                ${_sql_fixture}
+                "${_sql_mode} --squelch auto"
+                "sink:free;sink:free+jitter:7:120;sink:free+jitter:11:120;sink:free+realtime"
+                "monitor_samples=359[0-9][0-9] .*REPLAY SINK: stream=0 rate=48000 channels=1 async=1 writes=1[2-6] "
+                0
+                0
+                0
+            )
+        endforeach()
         dsd_neo_add_iq_determinism_test(
             DECODE_IQ_NXDN48_AFTER_RETUNE_AUTO_DETERMINISM_STALLED_SINK
             nxdn48_after_retune
@@ -12687,6 +12837,12 @@ if(DSD_HAS_RADIO)
     target_include_directories(
         dsd-neo_test_analog_replay
         PRIVATE ${PROJECT_SOURCE_DIR}/include
+    )
+    # --analog-iq-gain-db reads the committed fixtures only, from this directory.
+    target_compile_definitions(
+        dsd-neo_test_analog_replay
+        PRIVATE
+            "DSD_NEO_TEST_IQ_FIXTURE_DIR=\"${PROJECT_SOURCE_DIR}/tests/fixtures/iq\""
     )
     target_link_libraries(
         dsd-neo_test_analog_replay
@@ -13161,6 +13317,178 @@ if(DSD_HAS_RADIO)
         "${_analog_off_path}"
     )
 
+    # The auto squelch (issue #518): a margin over the noise floor the demodulator
+    # learns on each channel, so one setting suits every receiver. nfm_burst_synth and
+    # am_burst_synth (SQUELCH_BURST in tools/build_iq_fixtures.py) hold receiver noise
+    # for 0.3 s, a carrier with the 1 kHz test tone from 0.30 to 0.55 s, then noise to
+    # 0.75 s. Under --squelch auto (+10 dB) the gate learns the floor from the opening
+    # windows, opens 20 ms into the carrier and closes within a window of its end: 320 ms
+    # to the first audible block and 280 ms audible, measured through FM and AM alike.
+    # The _HOT twins replay the same capture 10 dB hotter (--analog-iq-gain-db 10, noise
+    # and carrier alike, as a receiver with more gain records them) and are held to the
+    # same bounds; they measure the same. DECODE_IQ_ANALOG_NEG_SQL_LEVEL_HOT shows a fixed
+    # threshold does not carry over.
+    set(_sql_auto_burst_bounds
+        "--analog-audible-dbfs -40 --analog-min-total-ms 700 --analog-max-total-ms 800 --analog-min-first-audible-ms 300 --analog-max-first-audible-ms 360 --analog-min-audible-ms 240 --analog-max-audible-ms 320 --analog-max-clip 0"
+    )
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_SQL_AUTO_NFM_BURST
+        nfm_burst_synth
+        "-fA --squelch auto ${_sql_auto_burst_bounds}"
+        ""
+        "${_analog_off_path}"
+    )
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_SQL_AUTO_NFM_BURST_HOT
+        nfm_burst_synth
+        "-fA --squelch auto --analog-iq-gain-db 10 ${_sql_auto_burst_bounds}"
+        "capture scaled by [+]10[.]0 dB, 0 of 72000 bytes clipped.*ANALOG AUDIO OK"
+        "${_analog_off_path}"
+    )
+    # The same with the capture named relative to the working directory (the repository
+    # root, as when replaying by hand): the scaled copy takes a committed fixture
+    # however its path is spelled.
+    add_test(
+        NAME DECODE_IQ_ANALOG_SQL_AUTO_NFM_BURST_HOT_RELATIVE
+        COMMAND
+            ${CMAKE_COMMAND}
+            "-DDSD_BIN=$<TARGET_FILE:dsd-neo_test_analog_replay>"
+            "-DMODE=-fA --squelch auto --analog-iq-gain-db 10 ${_sql_auto_burst_bounds}"
+            "-DFIXTURE=tests/fixtures/iq/nfm_burst_synth.iq.json"
+            "-DEXPECTED=capture scaled by [+]10[.]0 dB, 0 of 72000 bytes clipped.*ANALOG AUDIO OK"
+            "-DNOT_EXPECTED=${_analog_off_path}" -P
+            "${CMAKE_CURRENT_SOURCE_DIR}/iq_decode_check.cmake"
+    )
+    set_tests_properties(
+        DECODE_IQ_ANALOG_SQL_AUTO_NFM_BURST_HOT_RELATIVE
+        PROPERTIES
+            LABELS "iq-decode;analog"
+            TIMEOUT 120
+            WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+    )
+    # Windows: a drive-relative path ("D:tests/...") resolves against the working
+    # directory on that drive.
+    if(WIN32)
+        string(SUBSTRING "${PROJECT_SOURCE_DIR}" 0 2 _dsd_neo_source_drive)
+        add_test(
+            NAME DECODE_IQ_ANALOG_SQL_AUTO_NFM_BURST_HOT_DRIVE_RELATIVE
+            COMMAND
+                ${CMAKE_COMMAND}
+                "-DDSD_BIN=$<TARGET_FILE:dsd-neo_test_analog_replay>"
+                "-DMODE=-fA --squelch auto --analog-iq-gain-db 10 ${_sql_auto_burst_bounds}"
+                "-DFIXTURE=${_dsd_neo_source_drive}tests/fixtures/iq/nfm_burst_synth.iq.json"
+                "-DEXPECTED=capture scaled by [+]10[.]0 dB, 0 of 72000 bytes clipped.*ANALOG AUDIO OK"
+                "-DNOT_EXPECTED=${_analog_off_path}" -P
+                "${CMAKE_CURRENT_SOURCE_DIR}/iq_decode_check.cmake"
+        )
+        set_tests_properties(
+            DECODE_IQ_ANALOG_SQL_AUTO_NFM_BURST_HOT_DRIVE_RELATIVE
+            PROPERTIES
+                LABELS "iq-decode;analog"
+                TIMEOUT 120
+                WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+        )
+        # File names are case-insensitive there: a capture named in other case is the
+        # same committed fixture.
+        add_test(
+            NAME DECODE_IQ_ANALOG_SQL_AUTO_NFM_BURST_HOT_OTHER_CASE
+            COMMAND
+                ${CMAKE_COMMAND}
+                "-DDSD_BIN=$<TARGET_FILE:dsd-neo_test_analog_replay>"
+                "-DMODE=-fA --squelch auto --analog-iq-gain-db 10 ${_sql_auto_burst_bounds}"
+                "-DFIXTURE=${PROJECT_SOURCE_DIR}/tests/fixtures/iq/NFM_BURST_SYNTH.IQ.JSON"
+                "-DEXPECTED=capture scaled by [+]10[.]0 dB, 0 of 72000 bytes clipped.*ANALOG AUDIO OK"
+                "-DNOT_EXPECTED=${_analog_off_path}" -P
+                "${CMAKE_CURRENT_SOURCE_DIR}/iq_decode_check.cmake"
+        )
+        set_tests_properties(
+            DECODE_IQ_ANALOG_SQL_AUTO_NFM_BURST_HOT_OTHER_CASE
+            PROPERTIES LABELS "iq-decode;analog" TIMEOUT 120
+        )
+    endif()
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_SQL_AUTO_AM_BURST
+        am_burst_synth
+        "-fM --squelch auto ${_sql_auto_burst_bounds}"
+        ""
+        "${_analog_off_path}"
+    )
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_SQL_AUTO_AM_BURST_HOT
+        am_burst_synth
+        "-fM --squelch auto --analog-iq-gain-db 10 ${_sql_auto_burst_bounds}"
+        "capture scaled by [+]10[.]0 dB, 0 of 72000 bytes clipped.*ANALOG AUDIO OK"
+        "${_analog_off_path}"
+    )
+    # The margin is over the floor: each burst's carrier stands about 20 dB above its
+    # channel's noise (it still opens at +20 dB and not at +21, or +22 on AM), so under a
+    # 30 dB margin it never opens, at either level. The silence pattern pairs the
+    # never-audible bound with stream time.
+    set(_sql_auto_silent "--analog-max-audible-ms 0 --analog-min-total-ms 700")
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_SQL_AUTO_NFM_MARGIN
+        nfm_burst_synth
+        "-fA --squelch auto+30 ${_sql_auto_silent}"
+        ""
+        "${_analog_off_path}"
+    )
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_SQL_AUTO_AM_MARGIN_HOT
+        am_burst_synth
+        "-fM --squelch auto+30 --analog-iq-gain-db 10 ${_sql_auto_silent}"
+        ""
+        "${_analog_off_path}"
+    )
+    # Ten seconds of receiver noise (noise_floor) never open it, through FM or AM.
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_SQL_AUTO_NOISE_FLOOR
+        noise_floor
+        "-fA --squelch auto --analog-max-audible-ms 0 --analog-min-total-ms 9900"
+        ""
+        "${_analog_off_path}"
+    )
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_SQL_AUTO_AM_NOISE_FLOOR
+        noise_floor
+        "-fM --squelch auto --analog-max-audible-ms 0 --analog-min-total-ms 9900"
+        ""
+        "${_analog_off_path}"
+    )
+    # A carrier is never learned as the floor: the real excerpts hold their carrier
+    # throughout, and auto plays them whole after its first 40 ms window (5940 of the
+    # 6000 ms of nfm_ctcss_real, 7940 of am_airband_real's 8000), within 60 ms of the
+    # audible time with the squelch off (4200 and 5720 ms at -40 dBFS).
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_SQL_AUTO_NFM_REAL_CARRIER
+        nfm_ctcss_real
+        "-fA -n 50 --squelch auto --analog-audible-dbfs -40 --analog-min-captured-ms 5900 --analog-min-audible-ms 4100 --analog-max-first-audible-ms 100"
+        ""
+        "${_analog_off_path}"
+    )
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_SQL_AUTO_AM_REAL_CARRIER
+        am_airband_real
+        "-fM -n 50 --squelch auto --analog-audible-dbfs -40 --analog-min-captured-ms 7900 --analog-min-audible-ms 5600 --analog-max-first-audible-ms 100"
+        ""
+        "${_analog_off_path}"
+    )
+    # A -Y map row's own --squelch auto on a digital (-fa) session: the row's nfm class
+    # and its auto squelch apply, and the burst gates as under -fA.
+    set(_scan_sql_auto_csv
+        "${CMAKE_CURRENT_BINARY_DIR}/scan_mode_sql_auto_row.csv"
+    )
+    file(
+        WRITE "${_scan_sql_auto_csv}"
+        "channel,frequency_hz,mode,options\n1,150000000,nfm,--squelch auto\n"
+    )
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_SCAN_SQL_AUTO_ROW
+        nfm_burst_synth
+        "-fa -C ${_scan_sql_auto_csv} --analog-scan-row 0 ${_sql_auto_burst_bounds}"
+        "Scan row applied: 0 nfm; width 16 kHz; squelch auto [+]10 dB [(]row[)].*ANALOG AUDIO OK"
+        "${_analog_off_path}"
+    )
+
     # Negative controls: bounds that must NOT hold, run through
     # analog_replay_fail_check.cmake, which requires the host's exit code (1 for a
     # missed bound), the named ANALOG AUDIO FAIL line and no ANALOG AUDIO OK. Without
@@ -13276,6 +13604,34 @@ if(DSD_HAS_RADIO)
         nfm_ctcss_real
         "-fA -n 50 ${_analog_speech_parity}"
         "ANALOG AUDIO FAIL: RMS dBFS -[0-9]+[.][0-9]+ [(]limit -27[.]90[)]"
+    )
+    # The auto squelch's burst bounds under a fixed threshold, on the hot copy: -35 dB
+    # sits 2.5 dB over the burst's noise at its own level (the gate opens on noise at
+    # -38 dB and below) and 7.5 dB under the hot copy's, so there it opens on noise from
+    # the first block and plays the whole replay (740 ms).
+    dsd_neo_add_analog_replay_fail_test(
+        DECODE_IQ_ANALOG_NEG_SQL_LEVEL_HOT
+        nfm_burst_synth
+        "-fA --squelch -35 --analog-iq-gain-db 10 ${_sql_auto_burst_bounds}"
+        "ANALOG AUDIO FAIL: first audible ms 0[.]00 [(]limit 300[.]00[)]"
+    )
+    # A gain that would clip the copy stops the host before the replay (exit 2):
+    # noise_floor's 16 LSB noise is already a fifth of full scale.
+    dsd_neo_add_analog_replay_fail_test(
+        DECODE_IQ_ANALOG_NEG_IQ_GAIN_CLIPS
+        noise_floor
+        "-fA --analog-iq-gain-db 10"
+        "--analog-iq-gain-db [+]10[.]0 clips the capture"
+        2
+    )
+    # It scales the committed fixtures only: a capture named anywhere else (here the
+    # first --iq-replay, ahead of the case's own) is refused before anything is read.
+    dsd_neo_add_analog_replay_fail_test(
+        DECODE_IQ_ANALOG_NEG_IQ_GAIN_NOT_A_FIXTURE
+        nfm_burst_synth
+        "-fA --analog-iq-gain-db 10 --iq-replay ${CMAKE_CURRENT_BINARY_DIR}/nfm_burst_synth.iq.json"
+        "scales the committed fixtures [(].*[)] only"
+        2
     )
     # A malformed bound stops the host before the replay (exit 2), rather than being
     # dropped or handed to the CLI parser.

@@ -58,6 +58,7 @@
 #include <QtQuickTest>
 #include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/power.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -326,6 +327,12 @@ class CommandRecorder : public QObject {
     Q_PROPERTY(int scanRowEditSet READ scanRowEditSet CONSTANT)
     Q_PROPERTY(int scanRowEditInherit READ scanRowEditInherit CONSTANT)
     Q_PROPERTY(int scanRowEditReset READ scanRowEditReset CONSTANT)
+    /* The squelch modes and the auto squelch's margin range, as CommandBridge publishes them. */
+    Q_PROPERTY(int squelchModeLevel READ squelchModeLevel CONSTANT)
+    Q_PROPERTY(int squelchModeAuto READ squelchModeAuto CONSTANT)
+    Q_PROPERTY(int squelchMarginMinDb READ squelchMarginMinDb CONSTANT)
+    Q_PROPERTY(int squelchMarginMaxDb READ squelchMarginMaxDb CONSTANT)
+    Q_PROPERTY(int squelchMarginDefaultDb READ squelchMarginDefaultDb CONSTANT)
     quint64 m_next_key_request = 1;
     QString m_last_key_request;
     QVariantList m_last_selection;
@@ -364,6 +371,31 @@ class CommandRecorder : public QObject {
     static int
     scanRowEditReset() {
         return DSD_SCAN_ROW_EDIT_RESET;
+    }
+
+    static int
+    squelchModeLevel() {
+        return DSD_SQUELCH_MODE_LEVEL;
+    }
+
+    static int
+    squelchModeAuto() {
+        return DSD_SQUELCH_MODE_AUTO;
+    }
+
+    static int
+    squelchMarginMinDb() {
+        return DSD_SQUELCH_MARGIN_MIN_DB;
+    }
+
+    static int
+    squelchMarginMaxDb() {
+        return DSD_SQUELCH_MARGIN_MAX_DB;
+    }
+
+    static int
+    squelchMarginDefaultDb() {
+        return DSD_SQUELCH_MARGIN_DEFAULT_DB;
     }
 
     /* The row on air an editor captures (setScanRowContext()), and the session edits it then sends. */
@@ -696,6 +728,23 @@ class CommandRecorder : public QObject {
         return true;
     }
 
+    /* Refuses a margin out of range, as CommandBridge does. */
+    Q_INVOKABLE bool
+    setSquelchAuto(int marginDb) {
+        if (marginDb < DSD_SQUELCH_MARGIN_MIN_DB || marginDb > DSD_SQUELCH_MARGIN_MAX_DB) {
+            return false;
+        }
+        m_last_squelch_margin_db = marginDb;
+        m_squelch_auto_calls++;
+        return true;
+    }
+
+    Q_INVOKABLE bool
+    restoreSquelchLevel() {
+        m_restore_squelch_calls++;
+        return true;
+    }
+
     Q_INVOKABLE bool
     setPpm(int ppm) {
         m_last_ppm = ppm;
@@ -789,6 +838,9 @@ class CommandRecorder : public QObject {
         m_last_gain_db = -1;
         m_last_squelch_db = 0.0;
         m_squelch_calls = 0;
+        m_last_squelch_margin_db = 0;
+        m_squelch_auto_calls = 0;
+        m_restore_squelch_calls = 0;
         m_last_nfm_bandwidth_hz = -1;
         m_nfm_bandwidth_calls = 0;
         m_last_modulation = -1;
@@ -863,6 +915,21 @@ class CommandRecorder : public QObject {
     Q_INVOKABLE int
     squelchCalls() const {
         return m_squelch_calls;
+    }
+
+    int
+    lastSquelchMarginDb() const {
+        return m_last_squelch_margin_db;
+    }
+
+    int
+    squelchAutoCalls() const {
+        return m_squelch_auto_calls;
+    }
+
+    int
+    restoreSquelchCalls() const {
+        return m_restore_squelch_calls;
     }
 
     int
@@ -1040,6 +1107,9 @@ class CommandRecorder : public QObject {
     int m_last_gain_db = -1;
     double m_last_squelch_db = 0.0;
     int m_squelch_calls = 0;
+    int m_last_squelch_margin_db = 0;
+    int m_squelch_auto_calls = 0;
+    int m_restore_squelch_calls = 0;
     int m_last_nfm_bandwidth_hz = -1;
     int m_nfm_bandwidth_calls = 0;
     int m_last_modulation = -1;
@@ -1890,6 +1960,23 @@ class Setup : public QObject {
         return (m_commands != nullptr) ? m_commands->squelchCalls() : -1;
     }
 
+    /** @brief The last auto squelch margin the Radio sheet asked for, and how many times it asked. */
+    Q_INVOKABLE int
+    lastSquelchMarginDb() const {
+        return (m_commands != nullptr) ? m_commands->lastSquelchMarginDb() : -1;
+    }
+
+    Q_INVOKABLE int
+    squelchAutoCalls() const {
+        return (m_commands != nullptr) ? m_commands->squelchAutoCalls() : -1;
+    }
+
+    /** @brief How many times the Radio sheet asked for the configured level back from Auto. */
+    Q_INVOKABLE int
+    restoreSquelchCalls() const {
+        return (m_commands != nullptr) ? m_commands->restoreSquelchCalls() : -1;
+    }
+
     /** @brief The last NFM channel width the Radio sheet asked for (issue #525), and how many times it asked. */
     Q_INVOKABLE int
     lastNfmBandwidthHz() const {
@@ -2269,6 +2356,14 @@ class Setup : public QObject {
         metrics[QStringLiteral("effectiveSquelchOff")] = false;
         metrics[QStringLiteral("squelchRowOverride")] = false;
         metrics[QStringLiteral("squelchReadout")] = QStringLiteral("-120.0 dB");
+        // The auto squelch: whether each setting is AUTO, its margin (kept under a level; 0 here, which the sheet
+        // reads as the default), and the status of the one in force ("" under a level).
+        metrics[QStringLiteral("configuredSquelchAuto")] = false;
+        metrics[QStringLiteral("configuredSquelchMarginDb")] = 0;
+        metrics[QStringLiteral("effectiveSquelchAuto")] = false;
+        metrics[QStringLiteral("effectiveSquelchMarginDb")] = 0;
+        metrics[QStringLiteral("squelchAutoStatus")] = QString();
+        metrics[QStringLiteral("configuredSquelchLevelOff")] = false;
         // #525: the analog channel width in force (0 outside the analog preset and on PCM input),
         // whether the DSP rate bounds it, the configured width the control edits (0 = default),
         // the widest width the running stream's DSP rate filters (0 = not known), and the

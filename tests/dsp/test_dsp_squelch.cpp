@@ -201,6 +201,32 @@ main(void) {
         return 1;
     }
 
+    /* Under an AUTO setting off the analog monitor the level gate is off, whatever level the stream still holds from
+       the LEVEL setting before it: a switch to AUTO leaves that level in place for blocks that took the LEVEL word. */
+    for (int n = 0; n < pairs; n++) {
+        buf[(size_t)(2 * n) + 0] = 0.01f;
+        buf[(size_t)(2 * n) + 1] = -0.01f;
+    }
+    s->lowpassed = buf;
+    s->lp_len = pairs * 2;
+    s->channel_squelch_level = 0.001f;
+    s->squelch_mode = DSD_SQUELCH_MODE_AUTO;
+    full_demod(s);
+    if (s->channel_squelched || all_zero(s->result, s->result_len)) {
+        DSD_FPRINTF(stderr, "squelch: an AUTO setting off the monitor still gated on the level\n");
+        dsd_neo_aligned_free(s);
+        return 1;
+    }
+    s->squelch_mode = DSD_SQUELCH_MODE_LEVEL;
+    s->lowpassed = buf;
+    s->lp_len = pairs * 2;
+    full_demod(s);
+    if (!s->channel_squelched) {
+        DSD_FPRINTF(stderr, "squelch: back under LEVEL the level no longer gates\n");
+        dsd_neo_aligned_free(s);
+        return 1;
+    }
+
     if (row_thresholds_gate_a_fixed_channel(s) != 0) {
         dsd_neo_aligned_free(s);
         return 1;

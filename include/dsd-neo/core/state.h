@@ -719,6 +719,10 @@ struct dsd_state {
     float analog_out_f[960]; // float buffer for analog monitor path
     short analog_out[960];   // int16 buffer for analog monitor output
     int analog_sample_counter;
+    /* The auto squelch's gate flag for each sample of analog_out_f (DSD_SQUELCH_FLAG_CLOSED, 0 open), as the RTL stream
+       read it with the sample, and the monitor sink's gain, which ramps between closed and open samples. */
+    uint8_t analog_out_flags[960];
+    float analog_sink_gain;
     //new stereo float sample storage
     float f_l[160];     //single sample left
     float f_r[160];     //single sample right
@@ -1873,6 +1877,16 @@ struct dsd_state {
     /* Received sub-audible tone (issue #522), published by the analog tap for every frontend.
      * Rides the vertex_ks_count..ui_msg range; see dsd_analog_rx_publication. */
     dsd_analog_rx_publication analog_rx;
+    /* The auto squelch (issue #518 follow-up) as the RTL stream last showed it, for every frontend
+     * (dsd_squelch_publish_status()): whether the floor tracker runs (an AUTO setting on the analog monitor), its floor's
+     * state (dsd_squelch_floor_state), whether its gate is open, whether the channel plan could be designed (0: the gate
+     * stays open), and the floor in hundredths of a dB on rtl_squelch_level's scale (0 while learning). Rides the
+     * vertex_ks_count..ui_msg range. */
+    uint8_t squelch_auto_active;
+    uint8_t squelch_auto_state;
+    uint8_t squelch_auto_gate_open;
+    uint8_t squelch_auto_plan_valid;
+    int32_t squelch_auto_floor_cdb;
 
     // Transient UI message (shown briefly in ncurses printer)
     char ui_msg[128];

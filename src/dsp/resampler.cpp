@@ -10,6 +10,7 @@
  * Simplified scalar upfirdn implementation used by the FM audio path.
  */
 
+#include <dsd-neo/core/power.h>
 #include <dsd-neo/dsp/demod_state.h>
 #include <dsd-neo/dsp/resampler.h>
 #include <dsd-neo/runtime/mem.h>
@@ -399,6 +400,62 @@ resamp_design(struct demod_state* s, int L, int M) {
     dsd_resampler_state state = demod_resampler_state_copy_in(s);
     (void)dsd_resampler_design(&state, L, M);
     demod_resampler_state_copy_out(s, &state);
+    /* A new resampler's outputs map to no input before its first: their flags start closed. */
+    DSD_MEMSET(s->resamp_flag_hist, DSD_SQUELCH_FLAG_CLOSED, sizeof(s->resamp_flag_hist));
+    s->resamp_flag_head = 0;
+}
+
+/* The flags of a resampled block, from the resampler's phase before it ran: the same recurrence that emits its outputs,
+   each output taking the flag K/2 inputs back. Returns the outputs mapped. */
+static int
+resamp_map_flags(struct demod_state* s, int phase, const uint8_t* in_flags, int in_len, uint8_t* out_flags) {
+    const int L = s->resamp_L;
+    const int M = s->resamp_M;
+    const int delay = s->resamp_taps_per_phase / 2 < 31 ? s->resamp_taps_per_phase / 2 : 31;
+    int head = s->resamp_flag_head;
+    int out_len = 0;
+    for (int n = 0; n < in_len; n++) {
+        s->resamp_flag_hist[head] = in_flags[n];
+        head = (head + 1) & 31;
+        const uint8_t flag = s->resamp_flag_hist[(head + 31 - delay) & 31];
+        while (phase < L) {
+            out_flags[out_len++] = flag;
+            phase += M;
+        }
+        phase -= L;
+    }
+    s->resamp_flag_head = head;
+    return out_len;
+}
+
+int
+resamp_process_block_flags(struct demod_state* s, const float* in, const uint8_t* in_flags, int in_len, float* out,
+                           uint8_t* out_flags) {
+    if (!s || !in_flags || !out_flags || in_len <= 0) {
+        return resamp_process_block(s, in, in_len, out);
+    }
+    const int resampling =
+        s->resamp_enabled && s->resamp_taps && s->resamp_hist && s->resamp_L >= 1 && s->resamp_M >= 1 ? 1 : 0;
+    const int phase = s->resamp_phase;
+    const int out_len = resamp_process_block(s, in, in_len, out);
+    if (out_len < 0) {
+        return out_len;
+    }
+    if (!resampling) {
+        DSD_MEMCPY(out_flags, in_flags, (size_t)out_len * sizeof(uint8_t));
+        return out_len;
+    }
+    /* Every input the resampler consumed enters the flag history, in a block that made no output too, or the flags
+       would depend on how the stream was cut into blocks. */
+    const int mapped = resamp_map_flags(s, phase, in_flags, in_len, out_flags);
+    if (mapped != out_len) {
+        /* Not reachable: the resampler ran the same recurrence. Should it not have (it fell back to a copy), each
+           output takes the flag at its place in the block. */
+        for (int k = 0; k < out_len; k++) {
+            out_flags[k] = in_flags[(int)(((int64_t)k * in_len) / out_len)];
+        }
+    }
+    return out_len;
 }
 
 int

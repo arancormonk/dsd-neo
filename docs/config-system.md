@@ -287,7 +287,9 @@ small subset is exposed as config keys for convenience (for example
 | `rtl_gain` | INT (0-49) | RTL-SDR gain in dB; `0` is AGC, which a save writes and a load applies like any other gain (an omitted key keeps the gain running). Loading a config applies its gain even when its `[input]` is otherwise the input that runs: the input restarts on the new gain at the frequency and DSP bandwidth it runs (a SoapySDR `[input]` too, whose spec names no gain; its own frequency and bandwidth wait for an `[input]` that reopens the device) | `0` |
 | `rtl_ppm` | INT (-1000-1000) | Frequency correction | `0` |
 | `rtl_bw_khz` | INT (4-48) | DSP bandwidth | `48` |
-| `rtl_sql` | INT (-100-0) | Squelch threshold in dB; `0` switches squelch off (a disabled squelch is saved as `0`). The default a scan row's `--squelch-db` overrides and every row without one inherits; a save during a row override writes this default, not the row's value | `0` |
+| `rtl_sql` | INT (-100-0) | Squelch threshold in dB; `0` switches squelch off (a disabled squelch is saved as `0`). The default a scan row's `--squelch-db` overrides and every row without one inherits; a save during a row override writes this default, not the row's value. Under `rtl_sql_mode = auto` it is kept as the level a switch back to `level` returns to | `0` |
+| `rtl_sql_mode` | ENUM (`level`, `auto`) | `level` gates on `rtl_sql`; `auto` is the [auto squelch](cli.md#auto-squelch---squelch-auto), which opens `rtl_sql_margin_db` over the noise floor the demodulator learns on each analog channel (radio inputs; off on digital channels and audio input). Written only when it is `auto`; `--squelch` and a spec's `sql` field win over it | `level` |
+| `rtl_sql_margin_db` | INT (3-30) | The auto squelch's margin over the learned noise floor, in dB; written with `rtl_sql_mode = auto` | `10` |
 | `rtl_volume` | INT (1-3) | RTL monitor/non-symbol gain multiplier | `2` |
 | `auto_ppm` | BOOL | Enable carrier/error-based RTL auto-PPM correction | `false` |
 | `rtl_auto_ppm` | BOOL | Deprecated read alias for `auto_ppm` | `false` |

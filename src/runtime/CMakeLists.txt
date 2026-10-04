@@ -16,6 +16,7 @@ target_sources(
         scan_mode.c
         scan_options.c
         scan_row_edit.c
+        squelch.c
         config_expand.c
         control_pump.c
         freq_parse.c
@@ -127,15 +128,18 @@ elseif(MSVC)
 endif()
 
 # Airspy input specs carry a squelch figure that must reject "nan"/"inf"; this is
-# parsed once per input spec, never per sample.
+# parsed once per input spec, never per sample. The squelch grammar (squelch.c) does
+# the same for --squelch, every spec's sql field and a frontend's setting.
 if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
     set_source_files_properties(
         airspy_config.c
+        squelch.c
         PROPERTIES COMPILE_OPTIONS "-fno-fast-math"
     )
 elseif(MSVC)
     set_source_files_properties(
         airspy_config.c
+        squelch.c
         PROPERTIES COMPILE_OPTIONS "/fp:precise"
     )
 endif()

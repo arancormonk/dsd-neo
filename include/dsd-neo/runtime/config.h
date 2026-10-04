@@ -560,6 +560,10 @@ typedef struct dsdneoUserConfig {
     int rtl_ppm_is_set; /* distinguish explicit 0 from omitted */
     int rtl_bw_khz;
     int rtl_sql;
+    /* rtl_sql_mode (dsd_squelch_mode: 0 level, 1 auto) and rtl_sql_margin_db (the AUTO margin, 3..30; 0 reads as the
+       default 10). rtl_sql keeps the level either way. */
+    int rtl_sql_mode;
+    int rtl_sql_margin_db;
     int rtl_volume;   /* monitor/non-symbol gain; does not scale symbol streams */
     int rtl_auto_ppm; /* bool */
     char rtltcp_host[128];

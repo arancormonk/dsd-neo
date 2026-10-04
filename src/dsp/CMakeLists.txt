@@ -34,6 +34,7 @@ target_sources(
         analog_tone_policy.c
         analog_voice.c
         analog_audio.c
+        squelch_floor.c
 )
 
 set(_dsd_neo_dsp_target_arch "${CMAKE_SYSTEM_PROCESSOR}")
@@ -116,8 +117,11 @@ endif()
 # The analog voice band-pass and AGC (issue #518) turn NaN and infinite samples
 # into silence and keep them out of their filter and envelope state, which
 # fast-math would fold away. They run a few multiply-adds per audio sample, so
-# IEEE semantics cost nothing measurable.
-set(_dsd_neo_dsp_ieee_c_sources analog_voice.c analog_audio.c)
+# IEEE semantics cost nothing measurable. The auto squelch's floor tracker
+# promises the same gate for the same samples however they are cut into blocks;
+# fast-math could reassociate its running window sums across a vectorised loop,
+# making them depend on where a block starts.
+set(_dsd_neo_dsp_ieee_c_sources analog_voice.c analog_audio.c squelch_floor.c)
 if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
     set_source_files_properties(
         ${_dsd_neo_dsp_ieee_c_sources}

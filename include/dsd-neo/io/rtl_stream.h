@@ -73,6 +73,12 @@ class RtlSdrOrchestrator {
      */
     int read(float* out, size_t count, int& out_got);
 
+    /**
+     * @brief read() with each sample's auto squelch flag.
+     * @param flags One byte per sample read (DSD_SQUELCH_FLAG_CLOSED or 0), or nullptr.
+     */
+    int read(float* out, uint8_t* flags, size_t count, int& out_got);
+
   private:
     // Non-copyable to avoid accidental shared lifecycle
     RtlSdrOrchestrator(const RtlSdrOrchestrator&) = delete;

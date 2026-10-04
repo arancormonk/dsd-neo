@@ -18,7 +18,7 @@
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
-#include <math.h>
+#include <dsd-neo/runtime/squelch.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -41,7 +41,7 @@ typedef struct {
     dsdneoUserDecodeMode configured_mode;
     int suspended;
     dsd_scan_option_values options;
-    double squelch_entered_from;
+    dsd_squelch_setting squelch_entered_from;
     scan_squelch_pending squelch_pending;
     /* The landing decision the row's symbol timing used (issue #583): 1 when the row was timed for the output rate the
      * digital family lands on, 0 when for the live rate. Set by every timing of the row, and held at 1 by the row's
@@ -185,6 +185,8 @@ dsd_scan_settings_capture(const dsd_opts* opts, const dsd_state* state, dsd_scan
     }
     DSD_MEMSET(out, 0, sizeof(*out));
     out->rtl_squelch_level = opts->rtl_squelch_level;
+    out->rtl_squelch_mode = opts->rtl_squelch_mode;
+    out->rtl_squelch_margin_db = opts->rtl_squelch_margin_db;
     out->analog_tone_set = opts->analog_tone_set;
     out->analog_tone_filter = opts->analog_tone_filter;
     out->force_key = state->M;
@@ -250,6 +252,8 @@ _Static_assert(sizeof(((dsd_scan_settings*)0)->group_in_file) == sizeof(((dsd_op
 static void
 scan_settings_restore_row_opts(const dsd_scan_settings* saved, dsd_opts* opts) {
     opts->rtl_squelch_level = saved->rtl_squelch_level;
+    opts->rtl_squelch_mode = saved->rtl_squelch_mode;
+    opts->rtl_squelch_margin_db = saved->rtl_squelch_margin_db;
     opts->analog_tone_set = saved->analog_tone_set;
     opts->analog_tone_filter = saved->analog_tone_filter;
     opts->aggressive_framesync = saved->aggressive_framesync;
@@ -272,6 +276,8 @@ scan_settings_restore_row_opts(const dsd_scan_settings* saved, dsd_opts* opts) {
 static void
 scan_settings_copy_row_opts(dsd_scan_settings* dst, const dsd_scan_settings* src) {
     dst->rtl_squelch_level = src->rtl_squelch_level;
+    dst->rtl_squelch_mode = src->rtl_squelch_mode;
+    dst->rtl_squelch_margin_db = src->rtl_squelch_margin_db;
     dst->analog_tone_set = src->analog_tone_set;
     dst->analog_tone_filter = src->analog_tone_filter;
     dst->force_key = src->force_key;
@@ -747,7 +753,13 @@ scan_option_apply_group(dsd_opts* opts, dsd_state* state, const dsd_scan_option_
 static void
 scan_option_apply_squelch(dsd_opts* opts, dsd_state* state, const dsd_scan_option_values* values) {
     (void)state;
+    if (values->squelch_mode == DSD_SQUELCH_MODE_AUTO) {
+        const dsd_squelch_setting setting = dsd_squelch_setting_auto(values->squelch_margin_db);
+        dsd_squelch_setting_store(opts, &setting);
+        return;
+    }
     /* The rtl_sql conversion every other squelch entry point uses: 0 is off. */
+    opts->rtl_squelch_mode = DSD_SQUELCH_MODE_LEVEL;
     opts->rtl_squelch_level = dsd_squelch_level_from_sql((double)values->squelch_db);
 }
 
@@ -804,10 +816,11 @@ scan_options_apply(dsd_opts* opts, dsd_state* state, const dsd_scan_option_value
 }
 
 /* Squelch levels are mean powers spanning many decades (-100 dB is 1e-10), so "changed" is a
- * relative test; off (0.0) differs from every real threshold. */
+ * relative test (dsd_squelch_setting_equal()); off (0.0) differs from every real threshold, and AUTO from every level. */
 static int
-scan_squelch_changed(double before, double after) {
-    return fabs(after - before) > 1e-9 * fmax(fabs(before), fabs(after));
+scan_squelch_changed(const dsd_squelch_setting* before, const dsd_opts* opts) {
+    const dsd_squelch_setting after = dsd_squelch_setting_of_opts(opts);
+    return !dsd_squelch_setting_equal(before, &after);
 }
 
 /* Hand the RTL demodulator the squelch now in force. Only the scope's entry points call this:
@@ -815,7 +828,8 @@ scan_squelch_changed(double before, double after) {
 static void
 scan_squelch_push(const dsd_opts* opts) {
     if (opts->audio_in_type == AUDIO_IN_RTL) {
-        (void)dsd_rtl_stream_metrics_hook_set_channel_squelch(opts->rtl_squelch_level);
+        const dsd_squelch_setting setting = dsd_squelch_setting_of_opts(opts);
+        (void)dsd_rtl_stream_metrics_hook_set_channel_squelch_setting(&setting);
     }
 }
 
@@ -825,13 +839,13 @@ scan_squelch_push(const dsd_opts* opts) {
  * does not push; resume does), so after an entry point that found the scope suspended the demod
  * level is unknown and the push is unconditional. */
 static void
-scan_squelch_settle(scan_scope* scope, const dsd_opts* opts, double held) {
+scan_squelch_settle(scan_scope* scope, const dsd_opts* opts, dsd_squelch_setting held) {
     const scan_squelch_pending pending = scope->squelch_pending;
     scope->squelch_pending = SCAN_SQUELCH_SETTLED;
     if (pending == SCAN_SQUELCH_ENTERED) {
         held = scope->squelch_entered_from;
     }
-    if (pending == SCAN_SQUELCH_UNKNOWN || scan_squelch_changed(held, opts->rtl_squelch_level)) {
+    if (pending == SCAN_SQUELCH_UNKNOWN || scan_squelch_changed(&held, opts)) {
         scan_squelch_push(opts);
     }
 }
@@ -861,7 +875,7 @@ dsd_scan_mode_options(dsd_opts* opts, dsd_state* state, const dsd_scan_option_va
     opts->scan_row_scope_seq = g_scan_scope_seq;
     state->scan_row_scope_seq = g_scan_scope_seq;
     if (!scope->suspended) {
-        const double squelch_before = opts->rtl_squelch_level;
+        const dsd_squelch_setting squelch_before = dsd_squelch_setting_of_opts(opts);
         scan_settings_restore_row_opts(&scope->configured, opts);
         scan_settings_restore_widths(&scope->configured, opts);
         state->M = scope->configured.force_key;
@@ -901,7 +915,7 @@ dsd_scan_mode_enter(dsd_opts* opts, dsd_state* state, dsd_scan_mode mode) {
     if (!scope) {
         return -1;
     }
-    const double squelch_before = opts->rtl_squelch_level;
+    const dsd_squelch_setting squelch_before = dsd_squelch_setting_of_opts(opts);
     const int was_suspended = scope->suspended;
     DSD_MEMSET(&scope->options, 0, sizeof(scope->options));
     scope->modulation = 0;
@@ -940,7 +954,7 @@ dsd_scan_mode_leave(dsd_opts* opts, dsd_state* state) {
     if (!scope || !opts) {
         return;
     }
-    const double squelch_before = opts->rtl_squelch_level;
+    const dsd_squelch_setting squelch_before = dsd_squelch_setting_of_opts(opts);
     if (scope->suspended) {
         scope->squelch_pending = SCAN_SQUELCH_UNKNOWN;
     } else {
@@ -1104,23 +1118,36 @@ dsd_scan_mode_row_options(const dsd_state* state) {
 
 int
 dsd_scan_mode_set_configured_squelch(dsd_opts* opts, const dsd_state* state, double level) {
-    if (!opts) {
+    const dsd_squelch_setting setting = dsd_squelch_setting_of_level(level);
+    return dsd_scan_mode_set_configured_squelch_setting(opts, state, &setting);
+}
+
+int
+dsd_scan_mode_set_configured_squelch_setting(dsd_opts* opts, const dsd_state* state,
+                                             const dsd_squelch_setting* setting) {
+    if (!opts || !setting) {
         return -1;
     }
     scan_scope* scope = state ? scan_scope_get(state) : NULL;
     /* Suspended or absent, dsd_opts holds the configured values and resume recaptures them. */
     if (scope && !scope->suspended) {
-        scope->configured.rtl_squelch_level = level;
+        if (setting->mode == DSD_SQUELCH_MODE_AUTO) {
+            scope->configured.rtl_squelch_mode = DSD_SQUELCH_MODE_AUTO;
+            scope->configured.rtl_squelch_margin_db = setting->margin_db;
+        } else {
+            scope->configured.rtl_squelch_mode = DSD_SQUELCH_MODE_LEVEL;
+            scope->configured.rtl_squelch_level = setting->level > 0.0 ? setting->level : 0.0;
+        }
         if (scope->options.present & DSD_SCAN_OPT_SQUELCH) {
             return 0;
         }
-        /* The caller hands this level to the demod, so a row change still waiting for its
+        /* The caller hands this setting to the demod, so a row change still waiting for its
          * options judges against it. */
         if (scope->squelch_pending == SCAN_SQUELCH_ENTERED) {
-            scope->squelch_entered_from = level;
+            scope->squelch_entered_from = *setting;
         }
     }
-    opts->rtl_squelch_level = level;
+    dsd_squelch_setting_store(opts, setting);
     return 1;
 }
 

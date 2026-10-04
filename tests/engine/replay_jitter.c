@@ -325,8 +325,9 @@ replay_jitter_after_read(void) {
     }
 }
 
+/* The decoder's reads, flagged (the monitor's, with the auto squelch's gate) or not, perturbed alike. */
 static int
-replay_perturbed_read(void* rtl_ctx, float* out, size_t count, int* out_got) {
+replay_perturbed_read_ex(void* rtl_ctx, float* out, uint8_t* flags, size_t count, int* out_got) {
     size_t asked = count;
     if (g_options.short_reads && count > 1U) {
         asked = 1U + (size_t)(replay_rng_next(&g_totals.short_rng) % (uint64_t)count);
@@ -334,13 +335,18 @@ replay_perturbed_read(void* rtl_ctx, float* out, size_t count, int* out_got) {
             g_totals.shortened_reads++;
         }
     }
-    int rc = rtl_stream_read((RtlSdrContext*)rtl_ctx, out, asked, out_got);
+    int rc = rtl_stream_read_ex((RtlSdrContext*)rtl_ctx, out, flags, asked, out_got);
     g_totals.reads++;
     if (rc >= 0 && out_got != NULL && *out_got > 0) {
         replay_note_read(*out_got);
     }
     replay_jitter_after_read();
     return rc;
+}
+
+static int
+replay_perturbed_read(void* rtl_ctx, float* out, size_t count, int* out_got) {
+    return replay_perturbed_read_ex(rtl_ctx, out, NULL, count, out_got);
 }
 
 static double
@@ -356,6 +362,7 @@ replay_start(dsd_opts* opts, dsd_state* state, void* context) {
     (void)context;
     dsd_rtl_stream_io_hooks io = {0};
     io.read = replay_perturbed_read;
+    io.read_ex = replay_perturbed_read_ex;
     io.return_pwr = replay_return_pwr;
     dsd_rtl_stream_io_hooks_set(io);
     return 0;

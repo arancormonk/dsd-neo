@@ -11,8 +11,10 @@
 #include <dsd-neo/io/udp_socket_connect.h>
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/runtime/rtl_stream_io_hooks.h>
+#include <dsd-neo/runtime/squelch.h>
 #include <dsd-neo/runtime/udp_audio_hooks.h>
 #include <stddef.h>
+#include <stdint.h>
 
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -76,11 +78,46 @@ rtl_stream_read(RtlSdrContext* ctx, float* out, size_t count, int* out_got) {
     return 7;
 }
 
+static int g_rtl_read_ex_calls = 0;
+
+int
+rtl_stream_read_ex(RtlSdrContext* ctx, float* out, uint8_t* flags, size_t count, int* out_got) {
+    ++g_rtl_read_ex_calls;
+    g_last_rtl_ctx = ctx;
+    g_last_rtl_count = count;
+    if (out != NULL && count > 0U) {
+        out[0] = 4.5f;
+    }
+    if (flags != NULL && count > 0U) {
+        flags[0] = 1U;
+    }
+    if (out_got != NULL) {
+        *out_got = (count > 0U) ? 1 : 0;
+    }
+    return 5;
+}
+
+int
+rtl_stream_get_squelch_status(rtl_stream_squelch_status* out) {
+    out->active = 1;
+    out->state = 1;
+    out->gate_open = 0;
+    out->plan_valid = 1;
+    out->floor_power = 2e-6;
+    out->window_power = 3e-6;
+    return 0;
+}
+
 double
 rtl_stream_return_pwr(const RtlSdrContext* ctx) {
     ++g_rtl_return_pwr_calls;
     g_last_rtl_ctx = (RtlSdrContext*)ctx;
     return 12.25;
+}
+
+static int
+rtl_stream_io_test_read(void* rtl_ctx, float* out, size_t count, int* out_got) {
+    return rtl_stream_read((RtlSdrContext*)rtl_ctx, out, count, out_got);
 }
 
 static void
@@ -96,6 +133,7 @@ reset_udp_stub(void) {
 static void
 reset_rtl_stub(void) {
     g_rtl_read_calls = 0;
+    g_rtl_read_ex_calls = 0;
     g_rtl_return_pwr_calls = 0;
     g_last_rtl_ctx = NULL;
     g_last_rtl_count = 0;
@@ -168,6 +206,36 @@ test_rtl_stream_io_installer(void) {
     assert(dsd_rtl_stream_io_hook_return_pwr(&state) == 12.25);
     assert(g_rtl_return_pwr_calls == 1);
     assert(g_last_rtl_ctx == fake_ctx);
+
+    /* The flagged read goes to rtl_stream_read_ex() with the flags. */
+    uint8_t flag = 0U;
+    got = 0;
+    assert(dsd_rtl_stream_io_hook_read_ex(&state, &sample, &flag, 2U, &got) == 5);
+    assert(g_rtl_read_ex_calls == 1 && g_rtl_read_calls == 1);
+    assert(g_last_rtl_count == 2U && got == 1 && sample == 4.5f && flag == 1U);
+
+    /* The auto squelch's status reaches the runtime table, and dsd_state through the publication. */
+    dsd_rtl_squelch_status status;
+    assert(dsd_rtl_stream_io_hook_squelch_status(&state, &status) == 0);
+    assert(status.active == 1 && status.state == 1 && status.gate_open == 0 && status.plan_valid == 1);
+    assert(status.floor_power > 1.9e-6 && status.floor_power < 2.1e-6);
+    dsd_squelch_publish_status(&state);
+    assert(state.squelch_auto_active == 1U && state.squelch_auto_state == 1U && state.squelch_auto_gate_open == 0U);
+    /* 2e-6 / 2 = 1e-6: -60 dB. */
+    assert(state.squelch_auto_floor_cdb == -6000);
+
+    /* A host that installs read alone: read_ex reads through it, every flag open. */
+    dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){.read = rtl_stream_io_test_read});
+    assert(dsd_rtl_stream_io_hook_squelch_status(&state, &status) == -1 && status.active == 0);
+    dsd_squelch_publish_status(&state);
+    assert(state.squelch_auto_active == 0U && state.squelch_auto_floor_cdb == 0);
+    flag = 7U;
+    got = 0;
+    assert(dsd_rtl_stream_io_hook_read_ex(&state, &sample, &flag, 1U, &got) == 7);
+    assert(g_rtl_read_calls == 2 && got == 1 && sample == 9.5f && flag == 0U);
+    assert(dsd_rtl_stream_io_hook_read_ex(&state, &sample, NULL, 1U, &got) == 7);
+    assert(dsd_rtl_stream_io_hook_read_ex(&state, NULL, &flag, 1U, &got) == -1);
+    assert(dsd_rtl_stream_io_hook_read_ex(&state, &sample, &flag, 0U, &got) == -1);
 
     dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){0});
 }

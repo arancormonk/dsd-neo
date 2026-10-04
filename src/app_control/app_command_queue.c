@@ -71,6 +71,7 @@
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
+#include <dsd-neo/runtime/squelch.h>
 #include <dsd-neo/runtime/telemetry.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
@@ -289,6 +290,7 @@ static const int k_ui_cmd_coalescible_setter_ids[] = {
     DSD_APP_CMD_RTL_SET_PPM,
     DSD_APP_CMD_RTL_SET_BW,
     DSD_APP_CMD_RTL_SET_SQL_DB,
+    DSD_APP_CMD_RTL_SET_SQL_SETTING,
     DSD_APP_CMD_RTL_SET_VOL_MULT,
     DSD_APP_CMD_HANGTIME_SET,
     DSD_APP_CMD_MOD_SET,
@@ -328,6 +330,27 @@ ui_cmd_find_pending_tail_unlocked(int cmd_id) {
     }
     const size_t tail_idx = (g_tail + DSD_APP_CMD_Q_CAP - 1U) % DSD_APP_CMD_Q_CAP;
     return g_q[tail_idx].id == cmd_id ? &g_q[tail_idx] : NULL;
+}
+
+/* Whether a setter may overwrite the command queued at the tail (the same command). The squelch setting coalesces only
+   with a request of the same mode: an AUTO request sets a margin and a LEVEL one a level that the other leaves alone,
+   so replacing one with the other would drop what the first kept. */
+static int
+ui_cmd_coalesces_with(const struct dsd_app_command* pending, int cmd_id, const void* payload, size_t payload_sz) {
+    if (!pending) {
+        return 0;
+    }
+    if (cmd_id != DSD_APP_CMD_RTL_SET_SQL_SETTING) {
+        return 1;
+    }
+    dsd_app_squelch_setting_payload queued;
+    dsd_app_squelch_setting_payload next;
+    if (!payload || pending->n != sizeof queued || payload_sz != sizeof next) {
+        return 0;
+    }
+    DSD_MEMCPY(&queued, pending->data, sizeof queued);
+    DSD_MEMCPY(&next, payload, sizeof next);
+    return queued.mode == next.mode;
 }
 
 static void
@@ -1181,6 +1204,8 @@ typedef struct {
     int rtlsdr_ppm_error;
     int rtl_auto_ppm;
     double rtl_squelch_level;
+    int rtl_squelch_mode;
+    int rtl_squelch_margin_db;
     int rtl_volume_multiplier;
     int digital_resample_mode;
     dsd_airspy_config airspy;
@@ -1215,6 +1240,8 @@ ui_capture_radio_input(const dsd_opts* opts, const dsd_state* state, ui_radio_in
     out->rtlsdr_ppm_error = opts->rtlsdr_ppm_error;
     out->rtl_auto_ppm = opts->rtl_auto_ppm;
     out->rtl_squelch_level = opts->rtl_squelch_level;
+    out->rtl_squelch_mode = opts->rtl_squelch_mode;
+    out->rtl_squelch_margin_db = opts->rtl_squelch_margin_db;
     out->rtl_volume_multiplier = opts->rtl_volume_multiplier;
     out->digital_resample_mode = opts->digital_resample_mode;
     out->airspy = opts->airspy;
@@ -1244,6 +1271,8 @@ ui_restore_radio_input(dsd_opts* opts, const ui_radio_input* in) {
     opts->rtlsdr_ppm_error = in->rtlsdr_ppm_error;
     opts->rtl_auto_ppm = in->rtl_auto_ppm;
     opts->rtl_squelch_level = in->rtl_squelch_level;
+    opts->rtl_squelch_mode = in->rtl_squelch_mode;
+    opts->rtl_squelch_margin_db = in->rtl_squelch_margin_db;
     opts->rtl_volume_multiplier = in->rtl_volume_multiplier;
     opts->digital_resample_mode = in->digital_resample_mode;
     opts->airspy = in->airspy;
@@ -1829,6 +1858,22 @@ ui_cmd_handle_rtl_set_bw(dsd_opts* opts, dsd_state* state, const struct dsd_app_
     return ui_cmd_apply_status_from_service_rc(rc);
 }
 
+/* The squelch edit's toast, for either command: the setting stored, and whether a scan row still wins. */
+static void
+ui_cmd_toast_squelch_edit(const dsd_opts* opts, dsd_state* state, int rc) {
+    if (rc == 0) {
+        dsd_app_squelch_view view;
+        char notice[96];
+        (void)dsd_app_squelch_view_get(opts, state, &view);
+        (void)dsd_app_squelch_view_edit_notice(&view, notice, sizeof notice);
+        ui_set_toast(state, 3, "%s", notice);
+    } else if (ui_rc_is_not_supported(rc)) {
+        ui_set_toast(state, 3, "Unsupported: squelch control not available on active backend");
+    } else {
+        ui_set_toast(state, 4, "Failed: RTL squelch update");
+    }
+}
+
 static int
 ui_cmd_handle_rtl_set_sql_db(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     double d = 0.0;
@@ -1836,24 +1881,28 @@ ui_cmd_handle_rtl_set_sql_db(dsd_opts* opts, dsd_state* state, const struct dsd_
     if (state && ui_cmd_parse_double_payload(c, &d)) {
         int rc = svc_rtl_set_sql_db(opts, state, d);
         result = ui_cmd_apply_status_from_service_rc(rc);
-        if (rc == 0) {
-            /* Report the threshold that was stored rather than the number that was
-             * asked for: a request of 0 dB switches the squelch off, and echoing
-             * "0.0 dB" would describe a gate at full scale instead. The command edits
-             * the configured default, so when a scan row overrides the squelch the
-             * notice says the row still wins. */
-            dsd_app_squelch_view view;
-            char notice[96];
-            (void)dsd_app_squelch_view_get(opts, state, &view);
-            (void)dsd_app_squelch_view_edit_notice(&view, notice, sizeof notice);
-            ui_set_toast(state, 3, "%s", notice);
-        } else if (ui_rc_is_not_supported(rc)) {
-            ui_set_toast(state, 3, "Unsupported: squelch control not available on active backend");
-        } else {
-            ui_set_toast(state, 4, "Failed: RTL squelch update");
-        }
+        /* Report the threshold that was stored rather than the number that was asked for: a request of 0 dB switches
+           the squelch off, and echoing "0.0 dB" would describe a gate at full scale instead. The command edits the
+           configured default, so when a scan row overrides the squelch the notice says the row still wins. */
+        ui_cmd_toast_squelch_edit(opts, state, rc);
     }
     return result;
+}
+
+static int
+ui_cmd_handle_rtl_set_sql_setting(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    dsd_app_squelch_setting_payload payload;
+    if (!state || c->n != sizeof payload) {
+        return UI_CMD_APPLY_COMPLETED;
+    }
+    DSD_MEMCPY(&payload, c->data, sizeof payload);
+    dsd_squelch_setting setting;
+    setting.mode = payload.mode == DSD_SQUELCH_MODE_AUTO ? DSD_SQUELCH_MODE_AUTO : DSD_SQUELCH_MODE_LEVEL;
+    setting.margin_db = payload.margin_db;
+    setting.level = payload.level;
+    const int rc = svc_rtl_set_sql_setting(opts, state, &setting);
+    ui_cmd_toast_squelch_edit(opts, state, rc);
+    return ui_cmd_apply_status_from_service_rc(rc);
 }
 
 static int
@@ -1879,6 +1928,7 @@ apply_cmd_io_and_import_rtl_c(dsd_opts* opts, dsd_state* state, const struct dsd
     static const struct dsd_app_command_handler_entry k_handlers[] = {
         {DSD_APP_CMD_RTL_SET_BW, ui_cmd_handle_rtl_set_bw},
         {DSD_APP_CMD_RTL_SET_SQL_DB, ui_cmd_handle_rtl_set_sql_db},
+        {DSD_APP_CMD_RTL_SET_SQL_SETTING, ui_cmd_handle_rtl_set_sql_setting},
         {DSD_APP_CMD_RTL_SET_VOL_MULT, ui_cmd_handle_rtl_set_vol_mult},
     };
     if (!opts || !c) {
@@ -3001,7 +3051,15 @@ apply_cfg_rtl_common(dsd_opts* opts, const dsdneoUserConfig* cfg) {
      * Unlike the sibling keys below, 0 is a real value here rather than "key
      * omitted", so this applies unconditionally — as the startup loader does. */
     opts->rtl_squelch_level = dsd_squelch_level_from_sql((double)cfg->rtl_sql);
-    rtl_stream_set_channel_squelch((float)opts->rtl_squelch_level);
+    /* The mode beside it: rtl_sql_mode = auto puts rtl_sql_margin_db over the learned floor in force (issue #518
+       follow-up), the level kept beneath for a switch back. */
+    opts->rtl_squelch_mode = DSD_SQUELCH_MODE_LEVEL;
+    if (cfg->rtl_sql_mode == DSD_SQUELCH_MODE_AUTO) {
+        const dsd_squelch_setting auto_squelch = dsd_squelch_setting_auto(
+            cfg->rtl_sql_margin_db > 0 ? cfg->rtl_sql_margin_db : DSD_SQUELCH_MARGIN_DEFAULT_DB);
+        dsd_squelch_setting_store(opts, &auto_squelch);
+    }
+    svc_rtl_push_squelch(opts);
     if (dsd_user_config_rtl_gain_is_set(cfg)) {
         opts->rtl_gain_value = cfg->rtl_gain;
     }
@@ -3411,8 +3469,8 @@ apply_cfg_radio_input(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* 
     /* The Airspy path compares the settings the config asks for with the ones the Airspy runs. */
     opts->airspy = in->airspy;
     DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", in->audio_in_dev);
-    const svc_airspy_tuning tuning = {in->rtlsdr_center_freq, in->rtl_dsp_bw_khz, in->rtl_squelch_level,
-                                      in->rtl_volume_multiplier};
+    const svc_airspy_tuning tuning = {in->rtlsdr_center_freq,    in->rtl_dsp_bw_khz,   in->rtl_squelch_level,
+                                      in->rtl_volume_multiplier, in->rtl_squelch_mode, in->rtl_squelch_margin_db};
     int rc = 0;
     if (!state->rtl_ctx
         || svc_airspy_settings_reopen(&in->airspy, &cfg->airspy, tuning.bandwidth, opts->rtl_dsp_bw_khz, tuning.volume,
@@ -3454,7 +3512,7 @@ dsd_app_command_submit(int cmd_id, const void* payload, size_t payload_sz) {
     }
     if (ui_cmd_is_coalescible_setter(cmd_id)) {
         struct dsd_app_command* pending = ui_cmd_find_pending_tail_unlocked(cmd_id);
-        if (pending) {
+        if (ui_cmd_coalesces_with(pending, cmd_id, payload, payload_sz)) {
             ui_cmd_store_payload(pending, cmd_id, payload, payload_sz);
             dsd_mutex_unlock(&g_mu);
             return DSD_APP_COMMAND_SUBMIT_COALESCED;
@@ -3849,6 +3907,7 @@ static const struct ui_cmd_payload_min_size_rule k_ui_cmd_payload_min_size_rules
     {DSD_APP_CMD_KEY_RC4DES_SET, sizeof(uint64_t)},
     {DSD_APP_CMD_INPUT_WARN_DB_SET, sizeof(double)},
     {DSD_APP_CMD_RTL_SET_SQL_DB, sizeof(double)},
+    {DSD_APP_CMD_RTL_SET_SQL_SETTING, sizeof(dsd_app_squelch_setting_payload)},
     {DSD_APP_CMD_HANGTIME_SET, sizeof(double)},
     {DSD_APP_CMD_CONST_GATE_DELTA, sizeof(float)},
     {DSD_APP_CMD_UDP_OUT_CFG, sizeof(dsd_app_endpoint_payload)},

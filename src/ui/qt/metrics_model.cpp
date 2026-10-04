@@ -866,6 +866,12 @@ MetricsModel::fillSquelchOverride(View& next, const dsd_opts* opts_snapshot, con
         next.effective_squelch_off = false;
         next.squelch_row_override = false;
         next.squelch_readout.clear();
+        next.configured_squelch_auto = false;
+        next.effective_squelch_auto = false;
+        next.configured_squelch_margin_db = 0;
+        next.effective_squelch_margin_db = 0;
+        next.configured_squelch_level_off = false;
+        next.squelch_auto_status.clear();
         return;
     }
     next.configured_squelch_db = dsd_app_squelch_db_or_off(squelch.configured_level);
@@ -876,6 +882,15 @@ MetricsModel::fillSquelchOverride(View& next, const dsd_opts* opts_snapshot, con
     char readout[96];
     (void)dsd_app_squelch_view_format(&squelch, readout, sizeof readout);
     next.squelch_readout = QString::fromUtf8(readout);
+    next.configured_squelch_auto = squelch.configured_auto != 0U;
+    next.effective_squelch_auto = squelch.effective_auto != 0U;
+    /* A level setting keeps the margin it had, which Auto starts from again. */
+    next.configured_squelch_margin_db = squelch.configured_margin_db;
+    next.effective_squelch_margin_db = squelch.effective_margin_db;
+    next.configured_squelch_level_off = dsd_squelch_is_off(squelch.configured_level);
+    char status[40];
+    (void)dsd_app_squelch_view_auto_status(&squelch, status, sizeof status);
+    next.squelch_auto_status = QString::fromUtf8(status);
 }
 
 /* Issue #525: the analog width the Radio sheet shows and the configured one its control edits, as app_control's analog

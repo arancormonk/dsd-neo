@@ -34,7 +34,8 @@ dsd-neo -i airspy:serial=0123456789ABCDEF:851.375M -ft --frontend terminal
 ```
 
 Input syntax is `airspy[:serial=<16 hexadecimal digits>][:frequency[:bw[:sql[:vol]]]]`.
-The optional trailing fields are DSP bandwidth in kHz, squelch in dB (0 disables),
+The optional trailing fields are DSP bandwidth in kHz, squelch in dB (0 disables,
+or `auto[+N]` for the [auto squelch](cli.md#auto-squelch---squelch-auto)),
 and monitor volume (0–3); gain uses the separate native controls. Bandwidth must
 be one of 4, 6, 8, 12, 16, 24, or 48 kHz; other values warn and fall back to 48.
 Numeric volume values are clamped to 0–3. Invalid squelch or volume text warns
@@ -99,7 +100,7 @@ continues to report invalid values.
   combined with any serial or sample-rate change in the same restart. A failed
   reopen restores the previous receiver settings; other config changes, including
   audio output, still finish applying and the command reports failure. While a
-  `-Y` row or `--trunk-scan` target carries `--squelch-db`, an applied squelch
+  `-Y` row or `--trunk-scan` target carries `--squelch-db` or `--squelch`, an applied squelch
   (from a config or the squelch control) changes the configured default, which
   takes effect when the scanner leaves that row; see
   [CSV Formats](csv-formats.md). Airspy setting edits leave the squelch alone, so

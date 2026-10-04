@@ -2,6 +2,7 @@
 /* Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com> */
 
 #include <dsd-neo/core/analog_tone.h>
+#include <dsd-neo/core/power.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/analog_tones.h>
@@ -91,6 +92,16 @@ dsd_scan_row_edit_value_valid(unsigned int mode, uint32_t field, const dsd_scan_
     }
     switch (field) {
         case DSD_SCAN_ROW_FIELD_SQUELCH:
+            if (value->squelch_mode == DSD_SQUELCH_MODE_AUTO) {
+                if (dsd_scan_mode_analog_kind((dsd_scan_mode)mode) < 0) {
+                    return scan_row_edit_reason(err, err_size, "auto squelch works on nfm and am channels only");
+                }
+                if (value->squelch_margin_db < DSD_SQUELCH_MARGIN_MIN_DB
+                    || value->squelch_margin_db > DSD_SQUELCH_MARGIN_MAX_DB) {
+                    return scan_row_edit_reason(err, err_size, "auto squelch takes a margin of 3 to 30 dB");
+                }
+                return 1;
+            }
             if (value->squelch_db < -100 || value->squelch_db > 0) {
                 return scan_row_edit_reason(err, err_size, "squelch takes whole dB from -100 to 0 (0 = off)");
             }
@@ -106,10 +117,23 @@ dsd_scan_row_edit_value_valid(unsigned int mode, uint32_t field, const dsd_scan_
     }
 }
 
+/* Whether @p margin_db is an auto squelch margin; a level edit carries none, or the one it last had. */
+static int
+scan_row_edit_margin_valid(int margin_db) {
+    return margin_db >= DSD_SQUELCH_MARGIN_MIN_DB && margin_db <= DSD_SQUELCH_MARGIN_MAX_DB;
+}
+
 static void
 scan_row_edit_copy_value(dsd_scan_row_edit_value* dst, uint32_t field, const dsd_scan_row_edit_value* src) {
     switch (field) {
-        case DSD_SCAN_ROW_FIELD_SQUELCH: dst->squelch_db = src->squelch_db; break;
+        case DSD_SCAN_ROW_FIELD_SQUELCH:
+            dst->squelch_db = src->squelch_db;
+            dst->squelch_mode = src->squelch_mode;
+            /* A level without a margin keeps the one the field had, which Auto starts from again. */
+            if (scan_row_edit_margin_valid(src->squelch_margin_db)) {
+                dst->squelch_margin_db = src->squelch_margin_db;
+            }
+            break;
         case DSD_SCAN_ROW_FIELD_WIDTH: dst->width_hz = src->width_hz; break;
         case DSD_SCAN_ROW_FIELD_TONE:
             dst->tone_filter = src->tone_filter;
@@ -208,7 +232,13 @@ dsd_scan_row_edit_apply(const dsd_scan_option_values* row, const dsd_scan_row_ed
     }
     if (edit->set & DSD_SCAN_ROW_FIELD_SQUELCH) {
         out->present |= DSD_SCAN_OPT_SQUELCH;
-        out->squelch_db = edit->value.squelch_db;
+        out->squelch_mode =
+            edit->value.squelch_mode == DSD_SQUELCH_MODE_AUTO ? DSD_SQUELCH_MODE_AUTO : DSD_SQUELCH_MODE_LEVEL;
+        /* A level edit without a margin keeps the row's own (its list's auto margin), as the setting keeps one. */
+        if (scan_row_edit_margin_valid(edit->value.squelch_margin_db)) {
+            out->squelch_margin_db = edit->value.squelch_margin_db;
+        }
+        out->squelch_db = out->squelch_mode == DSD_SQUELCH_MODE_AUTO ? 0 : edit->value.squelch_db;
     } else if (edit->inherit & DSD_SCAN_ROW_FIELD_SQUELCH) {
         out->present &= ~(uint32_t)DSD_SCAN_OPT_SQUELCH;
     }

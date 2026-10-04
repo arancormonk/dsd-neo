@@ -10,6 +10,7 @@
 #include <dsd-neo/runtime/airspy_config.h>
 #include <dsd-neo/runtime/freq_parse.h>
 #include <dsd-neo/runtime/log.h>
+#include <dsd-neo/runtime/squelch.h>
 #include <limits.h>
 #include <math.h>
 #include <stddef.h>
@@ -152,7 +153,7 @@ dsd_airspy_config_render(FILE* out, const dsd_airspy_config* c) {
 typedef struct {
     uint32_t hz;
     int bw;
-    double squelch;
+    dsd_squelch_setting squelch;
     int volume;
 } airspy_tuning;
 
@@ -178,12 +179,20 @@ parse_airspy_bandwidth(const char* text, airspy_tuning* tuning) {
 static void
 parse_airspy_squelch(const char* text, airspy_tuning* tuning) {
     double sql = 0.0;
-    /* Squelch is a dB figure; anything beyond this span is a typo rather than a level. */
-    if (dsd_parse_double_strict(text, -300.0, 300.0, &sql) != 0 || !isfinite(sql)) {
+    /* A level is a dB figure; anything beyond this span is a typo rather than a level. */
+    if (dsd_parse_double_strict(text, -300.0, 300.0, &sql) == 0 && isfinite(sql)) {
+        tuning->squelch = dsd_squelch_setting_of_level(dsd_squelch_level_from_sql(sql));
+        return;
+    }
+    /* Otherwise one of the squelch grammar's words: off, auto[+N]. A number the grammar takes here is one out of
+       that span. */
+    dsd_squelch_setting setting;
+    if (dsd_squelch_setting_parse(text, &setting, NULL, 0U) != 0
+        || (setting.mode == DSD_SQUELCH_MODE_LEVEL && !dsd_squelch_setting_is_off(&setting))) {
         LOG_WARN("Invalid Airspy squelch '%s'; keeping previous/default value.\n", text);
         return;
     }
-    tuning->squelch = dsd_squelch_level_from_sql(sql);
+    tuning->squelch = setting;
 }
 
 static void
@@ -243,7 +252,7 @@ dsd_normalize_airspy_input_spec(dsd_opts* opts) {
     char spec[sizeof opts->audio_in_dev];
     DSD_SNPRINTF(spec, sizeof spec, "%s", opts->audio_in_dev);
     char* tail = strchr(spec, ':');
-    airspy_tuning tuning = {opts->rtlsdr_center_freq, opts->rtl_dsp_bw_khz, opts->rtl_squelch_level,
+    airspy_tuning tuning = {opts->rtlsdr_center_freq, opts->rtl_dsp_bw_khz, dsd_squelch_setting_of_opts(opts),
                             opts->rtl_volume_multiplier};
     if (tail) {
         ++tail;
@@ -276,7 +285,10 @@ dsd_normalize_airspy_input_spec(dsd_opts* opts) {
     opts->airspy = cfg;
     opts->rtlsdr_center_freq = tuning.hz;
     opts->rtl_dsp_bw_khz = tuning.bw;
-    opts->rtl_squelch_level = tuning.squelch;
+    /* --squelch wins over the spec's field. */
+    if (!opts->rtl_squelch_cli_set) {
+        dsd_squelch_setting_store(opts, &tuning.squelch);
+    }
     opts->rtl_volume_multiplier = tuning.volume;
     opts->audio_in_type = AUDIO_IN_RTL;
     opts->rtltcp_enabled = 0;

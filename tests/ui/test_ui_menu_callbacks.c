@@ -15,11 +15,13 @@
 #include <dsd-neo/app_control/rr_import_apply.h>
 #include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/power.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/config.h>
+#include <math.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -117,6 +119,11 @@ dsd_app_command_set_u64(int cmd_id, uint64_t value) {
 int
 dsd_app_command_set_double(int cmd_id, double value) {
     return capture_command(cmd_id, &value, sizeof value);
+}
+
+int
+dsd_app_command_submit(int cmd_id, const void* payload, size_t payload_sz) {
+    return capture_command(cmd_id, payload, payload_sz);
 }
 
 int
@@ -956,6 +963,33 @@ test_gain_rtl_and_env_callbacks(void) {
     cb_rtl_sql(&ctx, 1, -42.5);
     rc |= expect_int("rtl sql command", g_cmd.id, DSD_APP_CMD_RTL_SET_SQL_DB);
     rc |= expect_int("rtl sql value", cmd_double() == -42.5, 1);
+
+    /* The setting as typed (issue #518 follow-up): the grammar, whole; a refusal says why on the status line and never
+       repeats the text. */
+    {
+        dsd_app_squelch_setting_payload sql;
+        reset_capture();
+        cb_rtl_sql_text(&ctx, "auto+6");
+        rc |= expect_int("rtl sql setting command", g_cmd.id, DSD_APP_CMD_RTL_SET_SQL_SETTING);
+        rc |= expect_int("rtl sql setting size", (int)g_cmd.n, (int)sizeof sql);
+        DSD_MEMCPY(&sql, g_cmd.data, sizeof sql);
+        rc |= expect_int("rtl sql setting auto", sql.mode == DSD_SQUELCH_MODE_AUTO && sql.margin_db == 6, 1);
+        reset_capture();
+        cb_rtl_sql_text(&ctx, "-60");
+        DSD_MEMCPY(&sql, g_cmd.data, sizeof sql);
+        rc |= expect_int("rtl sql setting level",
+                         g_cmd.id == DSD_APP_CMD_RTL_SET_SQL_SETTING && sql.mode == DSD_SQUELCH_MODE_LEVEL
+                             && fabs(sql.level - 1e-6) < 1e-15,
+                         1);
+        reset_capture();
+        cb_rtl_sql_text(&ctx, "SECRET");
+        rc |= expect_int("rtl sql setting refused", g_cmd.calls, 0);
+        rc |= expect_int("rtl sql setting says why", strstr(g_status, "Squelch: ") != NULL, 1);
+        rc |= expect_int("rtl sql setting never repeats the text", strstr(g_status, "SECRET") == NULL, 1);
+        reset_capture();
+        cb_rtl_sql_text(&ctx, NULL);
+        rc |= expect_int("rtl sql setting cancelled", g_cmd.calls, 0);
+    }
 
     reset_capture();
     cb_rtl_vol(&ctx, 1, 9);

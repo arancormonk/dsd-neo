@@ -119,6 +119,10 @@ static int g_chain_seen_len = 0;
 static int g_chain_removes_tone = 0;
 static int g_chain_calls = 0;
 static unsigned int g_chain_last_flags = 0U;
+/* Every call's length and flags since the last clear, for the auto squelch's runs. */
+static size_t g_chain_run_len[64];
+static unsigned int g_chain_run_flags[64];
+static int g_chain_runs = 0;
 static int g_chain_last_source = -1;
 static int g_chain_last_rate_hz = 0;
 
@@ -131,6 +135,11 @@ dsd_analog_audio_process_f(const dsd_opts* opts, dsd_state* state, dsd_analog_au
     (void)chain;
     g_chain_calls++;
     g_chain_last_flags = flags;
+    if (g_chain_runs < 64) {
+        g_chain_run_len[g_chain_runs] = n;
+        g_chain_run_flags[g_chain_runs] = flags;
+        g_chain_runs++;
+    }
     g_chain_last_source = (int)source;
     g_chain_last_rate_hz = rate_hz;
     g_chain_seen_len = 0;
@@ -3763,6 +3772,145 @@ test_chain_playing_follows_the_sink(void) {
     dsd_state_ext_free_all(&state);
 }
 
+/* One 20 ms block of @p value through the unsynced finalize step with the auto squelch's flags: open over [0, @p open1),
+   closed to @p reopen, open to the end. */
+static void
+feed_flagged_block(dsd_opts* opts, dsd_state* state, float value, unsigned int open1, unsigned int reopen) {
+    float block[960];
+    uint8_t flags[960];
+    for (unsigned int i = 0; i < 960U; i++) {
+        block[i] = value;
+        flags[i] = (i >= open1 && i < reopen) ? (uint8_t)DSD_SQUELCH_FLAG_CLOSED : (uint8_t)0U;
+    }
+    g_chain_runs = 0;
+    assert(dsd_symbol_test_finalize_unsynced_analog_block_flags(opts, state, block, flags, 960U) == 960U);
+}
+
+/* Issue #518 follow-up: under the auto squelch each RTL monitor sample carries its gate. The level comparison is off
+   (the level here would close it), the audio chain gets each run of heard and unheard samples with its own playing flag
+   (the AGC adapts to exactly what is heard and rolls back at the close), the sink ramps each sample in (5 ms) and out
+   (10 ms) after the chain, so a closed stretch is exact silence, and a block with nothing heard is not written. The
+   tap's carrier follows the flags, so a silent carrier holds the scan row, which the level squelch's energy floor
+   would not. */
+static void
+test_auto_squelch_gates_each_sample(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    install_fake_rtl_hooks(1);
+    init_analog_monitor_fixture(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.rtl_squelch_mode = DSD_SQUELCH_MODE_AUTO;
+    opts.rtl_squelch_margin_db = 10;
+    opts.rtl_squelch_level = 2.0; /* above rtl_pwr: the level squelch would close */
+    g_chain_removes_tone = 0;
+    start_monitor_capture(&opts);
+    dsd_trunk_tuning_requests_reset();
+
+    /* Open, closed past the release, open again. */
+    feed_flagged_block(&opts, &state, 1000.0f, 200U, 900U);
+    assert(g_monitor_blocks == 1 && g_played_len == 960U * sizeof(short));
+    assert(g_chain_runs == 3);
+    assert(g_chain_run_len[0] == 200U && g_chain_run_flags[0] == DSD_ANALOG_AUDIO_PLAYING);
+    assert(g_chain_run_len[1] == 700U && g_chain_run_flags[1] == 0U);
+    assert(g_chain_run_len[2] == 60U && g_chain_run_flags[2] == DSD_ANALOG_AUDIO_PLAYING);
+    short out[960];
+    DSD_MEMCPY(out, g_played, sizeof out);
+    /* 5 ms up: 240 samples at 48 kHz; 10 ms down: 480. */
+    assert(out[0] > 0 && out[0] < 10 && out[100] > 400 && out[100] < 430 && out[199] > 820 && out[199] < 840);
+    for (unsigned int i = 200U + 480U; i < 900U; i++) {
+        assert(out[i] == 0);
+    }
+    assert(out[300] > 0 && out[300] < 830);
+    assert(out[959] > 240 && out[959] < 260);
+
+    /* Closed throughout: the release tail is written once, then nothing. */
+    feed_flagged_block(&opts, &state, 1000.0f, 0U, 960U);
+    assert(g_monitor_blocks == 2 && g_chain_runs == 1 && g_chain_run_flags[0] == 0U);
+    feed_flagged_block(&opts, &state, 1000.0f, 0U, 960U);
+    assert(g_monitor_blocks == 2);
+
+    /* Several transitions inside one block: one run each. */
+    float block[960];
+    uint8_t flags[960];
+    for (unsigned int i = 0; i < 960U; i++) {
+        block[i] = 500.0f;
+        flags[i] = ((i / 100U) % 2U) ? (uint8_t)DSD_SQUELCH_FLAG_CLOSED : (uint8_t)0U;
+    }
+    g_chain_runs = 0;
+    assert(dsd_symbol_test_finalize_unsynced_analog_block_flags(&opts, &state, block, flags, 960U) == 960U);
+    assert(g_chain_runs == 10);
+    for (int r = 0; r < 10; r++) {
+        assert(g_chain_run_flags[r] == ((r % 2) ? 0U : DSD_ANALOG_AUDIO_PLAYING));
+    }
+
+    /* Through the sample path the symbol reader takes: each sample's flag goes into the block with it. */
+    g_chain_runs = 0;
+    for (unsigned int i = 0; i < 960U; i++) {
+        dsd_symbol_test_push_unsynced_analog_sample_flag(&opts, &state, 700.0f,
+                                                         i < 480U ? (uint8_t)0U : (uint8_t)DSD_SQUELCH_FLAG_CLOSED);
+    }
+    assert(g_chain_runs == 2 && g_chain_run_len[0] == 480U && g_chain_run_flags[0] == DSD_ANALOG_AUDIO_PLAYING);
+    assert(g_chain_run_len[1] == 480U && g_chain_run_flags[1] == 0U);
+
+    /* The block gate wins over the per-sample one: a block it rejects (digital sync here; a muted output, a retune
+       still landing and the tone policy alike) plays nothing, not even the fade out of the open block before it. */
+    feed_flagged_block(&opts, &state, 1000.0f, 960U, 960U);
+    const int written_open = g_monitor_blocks;
+    state.carrier = 1;
+    feed_flagged_block(&opts, &state, 1000.0f, 960U, 960U);
+    assert(g_monitor_blocks == written_open);
+    state.carrier = 0;
+    /* After it the gate opens from silence: the 5 ms ramp, not the old gain. */
+    feed_flagged_block(&opts, &state, 1000.0f, 960U, 960U);
+    assert(g_monitor_blocks == written_open + 1);
+    DSD_MEMCPY(out, g_played, sizeof out);
+    assert(out[0] > 0 && out[0] < 10);
+
+    /* Closed past the hangover, so nothing before carries over: then a silent carrier, zero audio with every sample
+       open. The tap holds the row on it. */
+    for (int b = 0; b < 15; b++) {
+        feed_flagged_block(&opts, &state, 0.0f, 0U, 960U);
+    }
+    assert(state.analog_rx.carrier_open == 0);
+    clear_carrier_stamps(&state);
+    feed_flagged_block(&opts, &state, 0.0f, 960U, 960U);
+    feed_flagged_block(&opts, &state, 0.0f, 960U, 960U);
+    assert(state.analog_rx.carrier_open == 1);
+    assert(state.last_vc_sync_time != 0 && state.last_cc_sync_time != 0);
+    /* Closed long past the hangover: the carrier goes, and stamps stop. */
+    for (int b = 0; b < 15; b++) {
+        feed_flagged_block(&opts, &state, 0.0f, 0U, 960U);
+    }
+    assert(state.analog_rx.carrier_open == 0);
+    clear_carrier_stamps(&state);
+    feed_flagged_block(&opts, &state, 0.0f, 0U, 960U);
+    assert(state.last_vc_sync_time == 0 && state.last_cc_sync_time == 0);
+
+    /* Under the level squelch the same silent block is no carrier (its energy floor), and the flags mean nothing. */
+    opts.rtl_squelch_mode = DSD_SQUELCH_MODE_LEVEL;
+    opts.rtl_squelch_level = 0.0;
+    feed_flagged_block(&opts, &state, 0.0f, 960U, 960U);
+    feed_flagged_block(&opts, &state, 0.0f, 960U, 960U);
+    assert(state.analog_rx.carrier_open == 0);
+    const int blocks = g_monitor_blocks;
+    feed_flagged_block(&opts, &state, 1000.0f, 0U, 960U);
+    assert(g_monitor_blocks == blocks + 1 && g_chain_runs == 1 && g_chain_run_flags[0] == DSD_ANALOG_AUDIO_PLAYING);
+
+    /* AUTO on PCM input resolves to off: no per-sample gate, and the level comparison is off too. */
+    opts.rtl_squelch_mode = DSD_SQUELCH_MODE_AUTO;
+    opts.rtl_squelch_level = 2.0;
+    install_fake_rtl_hooks(0);
+    opts.audio_in_type = AUDIO_IN_WAV;
+    feed_flagged_block(&opts, &state, 1000.0f, 0U, 960U); /* the switch of input: a new reception, dropped */
+    const int pcm_blocks = g_monitor_blocks;
+    feed_flagged_block(&opts, &state, 1000.0f, 0U, 960U);
+    assert(g_monitor_blocks == pcm_blocks + 1 && g_chain_runs == 1);
+    opts.rtl_squelch_mode = DSD_SQUELCH_MODE_LEVEL;
+    g_chain_removes_tone = 1;
+    dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
+    dsd_state_ext_free_all(&state);
+}
+
 int
 main(void) {
     exitflag = 0;
@@ -3824,6 +3972,7 @@ main(void) {
     test_tone_policy_rejection_outlives_its_carrier();
     test_tone_policy_check_is_no_scan_activity();
     test_chain_playing_follows_the_sink();
+    test_auto_squelch_gates_each_sample();
     return 0;
 }
 

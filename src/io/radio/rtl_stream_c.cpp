@@ -156,10 +156,15 @@ rtl_stream_register_tune_completion_callback(rtl_stream_tune_completion_callback
  */
 extern "C" int
 rtl_stream_read(RtlSdrContext* ctx, float* out, size_t count, int* out_got) {
+    return rtl_stream_read_ex(ctx, out, NULL, count, out_got);
+}
+
+extern "C" int
+rtl_stream_read_ex(RtlSdrContext* ctx, float* out, uint8_t* flags, size_t count, int* out_got) {
     if (!ctx || !ctx->stream || !out || !out_got) {
         return -1;
     }
-    return ctx->stream->read(out, count, *out_got);
+    return ctx->stream->read(out, flags, count, *out_got);
 }
 
 /**

@@ -8,6 +8,7 @@
 
 #include <assert.h>
 #include <dsd-neo/core/input_level.h>
+#include <dsd-neo/core/power.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
@@ -41,6 +42,8 @@ static int g_stream_active_calls;
 static int g_input_level_calls;
 static int g_channel_squelch_calls;
 static float g_last_channel_squelch;
+static int g_channel_squelch_setting_calls;
+static dsd_squelch_setting g_last_channel_squelch_setting;
 static dsdneoRuntimeConfig g_runtime_config;
 
 static int g_last_symbol_rate;
@@ -290,6 +293,12 @@ rtl_stream_set_channel_squelch(float level) {
     g_last_channel_squelch = level;
 }
 
+void
+rtl_stream_set_channel_squelch_setting(const dsd_squelch_setting* setting) {
+    ++g_channel_squelch_setting_calls;
+    g_last_channel_squelch_setting = *setting;
+}
+
 static int g_replay_batch_calls;
 static int g_replay_batch_result;
 
@@ -476,6 +485,13 @@ main(void) {
     assert(dsd_rtl_stream_metrics_hook_set_channel_squelch(1e-6) == 0);
     assert(g_channel_squelch_calls == 1);
     assert(fabsf(g_last_channel_squelch - 1e-6f) < 1e-12f);
+    /* A whole setting, the auto squelch's margin included, reaches its own setter (issue #518 follow-up). */
+    const dsd_squelch_setting auto6 = {DSD_SQUELCH_MODE_AUTO, 0.0, 6};
+    assert(dsd_rtl_stream_metrics_hook_set_channel_squelch_setting(&auto6) == 0);
+    assert(g_channel_squelch_setting_calls == 1 && g_channel_squelch_calls == 1);
+    assert(g_last_channel_squelch_setting.mode == DSD_SQUELCH_MODE_AUTO
+           && g_last_channel_squelch_setting.margin_db == 6);
+    assert(dsd_rtl_stream_metrics_hook_set_channel_squelch_setting(NULL) == -1);
 
     test_replay_batch_hook();
 

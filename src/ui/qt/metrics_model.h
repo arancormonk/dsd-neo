@@ -232,6 +232,15 @@ class MetricsModel : public QObject {
     Q_PROPERTY(bool effectiveSquelchOff READ effectiveSquelchOff NOTIFY controlChanged)
     Q_PROPERTY(bool squelchRowOverride READ squelchRowOverride NOTIFY controlChanged)
     Q_PROPERTY(QString squelchReadout READ squelchReadout NOTIFY controlChanged)
+    /* The auto squelch (issue #518 follow-up): whether each setting is AUTO, its margin over the learned floor, and
+     * what the one in force shows ("floor -78.3 dB", "learning", "off on digital"), from the same squelch view. */
+    Q_PROPERTY(bool configuredSquelchAuto READ configuredSquelchAuto NOTIFY controlChanged)
+    Q_PROPERTY(int configuredSquelchMarginDb READ configuredSquelchMarginDb NOTIFY controlChanged)
+    Q_PROPERTY(bool effectiveSquelchAuto READ effectiveSquelchAuto NOTIFY controlChanged)
+    Q_PROPERTY(int effectiveSquelchMarginDb READ effectiveSquelchMarginDb NOTIFY controlChanged)
+    Q_PROPERTY(QString squelchAutoStatus READ squelchAutoStatus NOTIFY controlChanged)
+    /* Whether the level the configured default keeps (beneath an auto squelch too) gates nothing. */
+    Q_PROPERTY(bool configuredSquelchLevelOff READ configuredSquelchLevelOff NOTIFY controlChanged)
     /* Issue #518: the scan row on air for the "this channel" editors -- whether there is one, its name, and the
      * session-edit fields (DSD_SCAN_ROW_FIELD_*) it can take, runs an edit of and sets in its list, from the
      * app-control scan row view. */
@@ -811,6 +820,48 @@ class MetricsModel : public QObject {
     QString
     squelchReadout() const {
         return m_view.squelch_readout;
+    }
+
+    /** @brief Whether the configured default is the auto squelch; the buttons then step its margin. */
+    bool
+    configuredSquelchAuto() const {
+        return m_view.configured_squelch_auto;
+    }
+
+    /** @brief The configured margin over the learned floor, in whole dB (3..30); a level setting keeps the last one. */
+    int
+    configuredSquelchMarginDb() const {
+        return m_view.configured_squelch_margin_db;
+    }
+
+    /**
+     * @brief Whether the level the configured default keeps gates nothing: what dB goes back to from Auto. Unlike
+     * configuredSquelchOff() it is read under an auto squelch too.
+     */
+    bool
+    configuredSquelchLevelOff() const {
+        return m_view.configured_squelch_level_off;
+    }
+
+    /** @brief Whether the setting in force on the row on air is the auto squelch. */
+    bool
+    effectiveSquelchAuto() const {
+        return m_view.effective_squelch_auto;
+    }
+
+    /** @brief Its margin, in whole dB. */
+    int
+    effectiveSquelchMarginDb() const {
+        return m_view.effective_squelch_margin_db;
+    }
+
+    /**
+     * @brief What the auto squelch in force shows, from dsd_app_squelch_view_auto_status(): "floor -78.3 dB",
+     * "learning", "off: no radio input", "off on digital" or "off: no channel plan". Empty for a level.
+     */
+    QString
+    squelchAutoStatus() const {
+        return m_view.squelch_auto_status;
     }
 
     /**
@@ -1614,6 +1665,7 @@ class MetricsModel : public QObject {
         QString scan_mode;
         QString ui_message;
         QString squelch_readout;
+        QString squelch_auto_status;
         /* Slot views and lead ranking share the canonical slot count. */
         SlotCall slot_call[DSD_CALL_STATE_SLOT_COUNT];
         int lead_slot = -1;
@@ -1641,7 +1693,12 @@ class MetricsModel : public QObject {
         int modulation = 0;
         int tuner_gain_db = 0;
         int tuner_gain_configured_db = 0;
+        int configured_squelch_margin_db = 0;
+        int effective_squelch_margin_db = 0;
         bool tuner_gain_row_override = false;
+        bool configured_squelch_auto = false;
+        bool effective_squelch_auto = false;
+        bool configured_squelch_level_off = false;
         int ppm = 0;
         int enc_lockout_count = 0;
         int scan_avoid_count = 0;
@@ -1830,7 +1887,13 @@ class MetricsModel : public QObject {
                    && std::fabs(effective_squelch_db - other.effective_squelch_db) < 1e-6
                    && squelch_row_override == other.squelch_row_override
                    && configured_squelch_off == other.configured_squelch_off
-                   && effective_squelch_off == other.effective_squelch_off && squelch_readout == other.squelch_readout;
+                   && effective_squelch_off == other.effective_squelch_off && squelch_readout == other.squelch_readout
+                   && configured_squelch_auto == other.configured_squelch_auto
+                   && configured_squelch_margin_db == other.configured_squelch_margin_db
+                   && effective_squelch_auto == other.effective_squelch_auto
+                   && effective_squelch_margin_db == other.effective_squelch_margin_db
+                   && configured_squelch_level_off == other.configured_squelch_level_off
+                   && squelch_auto_status == other.squelch_auto_status;
         }
 
         bool

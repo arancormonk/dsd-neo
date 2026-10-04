@@ -15,6 +15,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/parse.h>
+#include <dsd-neo/core/power.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/secret_redaction.h>
 #include <dsd-neo/core/state.h>
@@ -42,6 +43,7 @@
 #include <dsd-neo/runtime/path_policy.h>
 #include <dsd-neo/runtime/rdio_export.h>
 #include <dsd-neo/runtime/scan_mode.h>
+#include <dsd-neo/runtime/squelch.h>
 #include <errno.h>
 #include <inttypes.h>
 #include <stdio.h>
@@ -489,6 +491,28 @@ cli_parse_analog_width_option(const char* option_name, int kind, const char* in,
         cli_set_exit_rc(out_exit_rc, 1);
         return 0;
     }
+    return 1;
+}
+
+/* --squelch <setting> (issue #518 follow-up): the squelch grammar (off, a level in dB or as a linear power, auto[+N]).
+ * It wins over an input spec's sql field, which is read later (dsd_squelch_spec_field_apply()). The refusal names the
+ * grammar, never the text. */
+static int
+cli_parse_squelch_option(const char* in, dsd_opts* opts, int* out_exit_rc) {
+    if (!in) {
+        LOG_ERROR("--squelch requires a setting: off, a level in dB, or auto[+N]\n");
+        cli_set_exit_rc(out_exit_rc, 1);
+        return 0;
+    }
+    dsd_squelch_setting setting;
+    char err[96];
+    if (dsd_squelch_setting_parse(in, &setting, err, sizeof err) != 0) {
+        LOG_ERROR("--squelch: %s\n", err);
+        cli_set_exit_rc(out_exit_rc, 1);
+        return 0;
+    }
+    dsd_squelch_setting_store(opts, &setting);
+    opts->rtl_squelch_cli_set = 1;
     return 1;
 }
 
@@ -1167,6 +1191,13 @@ cli_parse_airspy_option(int argc, char** argv, int i, dsd_opts* opts) {
                 return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
             analog_cli_seen |= 1 << DSD_ANALOG_DEMOD_AM;                                                               \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--squelch") == 0 || strncmp(argv[i], "--squelch=", 10) == 0) {                            \
+            const char* value = argv[i][9] == '=' ? argv[i] + 10 : (i + 1 < argc ? DSD_PARSE_ARGS_NEXT_ARG() : NULL);  \
+            if (!cli_parse_squelch_option(value, opts, out_exit_rc)) {                                                 \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             continue;                                                                                                  \
         }                                                                                                              \
         if (strcmp(argv[i], "--tone-allow") == 0 || strncmp(argv[i], "--tone-allow=", 13) == 0) {                      \

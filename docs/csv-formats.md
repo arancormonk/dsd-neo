@@ -201,7 +201,7 @@ channel,frequency_hz,name,mode,options
 1,118300000,Tower AM 8.33 kHz,am,--am-bandwidth-hz 8333 --squelch-db -55
 2,121500000,Guard AM default width,am,--squelch-db -60 --scan-max-visit-ms 30000
 3,154430000,Fire dispatch NFM 12.5 kHz,nfm,--nfm-bandwidth-hz 12500 --squelch-db -60
-4,155475000,Mutual aid NFM default width,nfm,--squelch-db -60
+4,155475000,Mutual aid NFM auto squelch,nfm,--squelch auto
 5,461000000,DMR repeater,dmr,--scan-max-visit-ms 20000
 6,851012500,P25 conventional,p25,--squelch-db -55
 7,150000000,Inherit configured decoder,,
@@ -235,6 +235,7 @@ Options are parsed once when the list is loaded. They are a restricted argument 
 | `--scan-voice-qualify-ms`, `--scan-voice-hold-ms` | Conventional voice-gate intervals, `100..600000` milliseconds; digital modes. |
 | `--scan-max-visit-ms <ms>` | Maximum time on this row or target per visit; `0` disables the cap for it, otherwise `1000..3600000` milliseconds. All modes, and every trunk-target type. |
 | `--squelch-db <dB>` | This row's or target's squelch threshold, in whole dB from `-100` to `0`, the same units as `[input] rtl_sql` and the `sql` field of `-i rtl:`; `0` switches the squelch off for this row alone. All modes, and every trunk-target type. |
+| `--squelch <setting>` | The same option in the squelch grammar: `off`, whole dB from `-100` to `0`, or `auto[+N]`, the [auto squelch](cli.md#auto-squelch---squelch-auto) N dB (3 to 30, default 10) over the noise floor learned on this channel. Levels and `off` on every row and trunk-target type; `auto` on `nfm` and `am` rows and `nfm-conventional` and `am-conventional` targets only. A row names one of `--squelch` and `--squelch-db`. |
 | `--nfm-bandwidth-hz <Hz>` | This analog row's or target's NFM channel width, whole Hz from `8000` to `25000` (for example `12500`). `nfm` rows and `nfm-conventional` targets only; a digital or blank row is told it `needs mode nfm`, and an `am` row refuses it as `not supported for this mode/target`. |
 | `--am-bandwidth-hz <Hz>` | This analog row's or target's AM channel width, whole Hz from `5000` to `20000` (for example `8333` for 8.33 kHz airband spacing). `am` rows and `am-conventional` targets only; a digital or blank row is told it `needs mode am`, and an `nfm` row refuses it as `not supported for this mode/target`. A row carries one width. |
 | `--tone-allow <list>`, `--tone-block <list>`, `--no-tone-filter` | This analog row's or target's CTCSS/DCS receive policy (see [Analog rows](#analog-rows)): hear only traffic carrying a listed tone or code, mute it, or no filter on this row whatever is configured. `<list>` is standard CTCSS tones and DCS codes separated by `/`, such as `67.0/100.0/D023N`. One option in three spellings, so a row names one of them once. `nfm` rows and `nfm-conventional` targets only; a digital or blank row is told it `needs mode nfm`, and an `am` row refuses it as `not supported for this mode/target`. |
@@ -248,11 +249,13 @@ columns while the gate is on (see `docs/trunk-scan.md`). `--scan-max-visit-ms` i
 trunk-system targets do accept, since the per-visit cap applies to every target type. Input/output, frontend
 selection, decoder flags and scanner-wide `-t` are not accepted in `options`.
 
-`--squelch-db` sets the channel squelch while the row or target is on air and restores the configured default
-when the scanner moves on or stops. A row that omits it inherits the default (`[input] rtl_sql`, the `sql` field of
-`-i rtl:...`, or whatever the squelch control last set); `0` switches the squelch off for that row only; any other
-value is a threshold in dB. Positive numbers (the legacy linear form some CLI inputs accept), values below `-100` and
-fractional dB are rejected with a row diagnostic. On an RTL-SDR, rtl_tcp, SoapySDR or Airspy input the threshold
+`--squelch-db` (or `--squelch`) sets the channel squelch while the row or target is on air and restores the
+configured default when the scanner moves on or stops. A row that omits it inherits the default (`--squelch`,
+`[input] rtl_sql`, the `sql` field of `-i rtl:...`, or whatever the squelch control last set, an auto squelch
+included); `0` or `off` switches the squelch off for that row only; any other value is a threshold in dB.
+Positive numbers (the legacy linear form some CLI inputs accept), values below `-100` and fractional dB are rejected
+with a row diagnostic, and so is `auto` on a digital or blank row: a digital channel runs no auto squelch, so an
+inherited one is off there. On an RTL-SDR, rtl_tcp, SoapySDR or Airspy input the threshold
 gates the demodulator, so a row set well above its signal level decodes nothing: on a trunk-system target it gates
 the control channel too, and a high threshold there makes the whole system look dead. On any other input (rigctl
 tuning a PCM, UDP or TCP audio source) there is no demodulator for it to gate, so it cannot gate digital
@@ -260,9 +263,9 @@ acquisition: it only gates the analog input monitor (`-8`, with audio output on)
 monitor stamps, and scan start logs one warning per affected digital row or target. On an analog row that monitor
 and its carrier are exactly what the squelch is for, so an analog row draws no such warning. Frontends show
 the value in force first and, while a row overrides it, the configured default beside it
-(`SQL: -60.0 dB (row; default -80.0 dB)`); the Qt/Android channel-map review and target preview list each row's
-squelch, or `inherit`. The squelch controls and Config->Save work on the configured default, never the row's value;
-a squelch edit made while a row overrides it says so.
+(`SQL: -60.0 dB (row; default -80.0 dB)`, `SQL: auto +6 dB (floor -81.0 dB; row; default -60.0 dB)`); the Qt/Android
+channel-map review and target preview list each row's squelch, or `inherit`. The squelch controls and Config->Save work
+on the configured default, never the row's value; a squelch edit made while a row overrides it says so.
 
 While a scan runs, a row's `--squelch-db`, its channel width and its tone policy (and a trunk-scan target's `rtl_gain`)
 can be changed for the rest of the session from the frontends' "this channel" editors, or made to follow the configured
@@ -272,7 +275,8 @@ per-channel edits](trunk-scan.md#runtime-behavior).
 ### Analog rows
 
 `nfm` and `am` channel-map rows and `nfm-conventional` and `am-conventional` trunk-scan targets accept only the options
-that mean something for an analog channel: `--scan-max-visit-ms`, `--squelch-db` and the width option of their own kind,
+that mean something for an analog channel: `--scan-max-visit-ms`, `--squelch-db` or `--squelch` (an auto squelch
+included) and the width option of their own kind,
 `--nfm-bandwidth-hz` on NFM and `--am-bandwidth-hz` on AM, and on NFM the tone policy (`--tone-allow`, `--tone-block`,
 `--no-tone-filter`). Key switches (`-b`, `-H`, `-1`, `-R`, `-k`, `-K`, `--dmr-tg-key-csv`, `--dmr-tg-key-clear`,
 `--no-decryption-keys`, `--key-profile-ref`), forcing (`-4`, `-0`, `--dmr-force-algid`, `--no-force-key`), CRC policy
@@ -345,7 +349,9 @@ silence. The per-visit cap and the hold, advance and avoid controls apply as for
 applies to an analog row, so a global `--scan-voice-only` does not block one. That includes the rows of an untyped
 list scanned under `-fA` or `-fM` (AM), which hold on their carrier under `-t` as well. Scan start warns once about an
 analog row whose squelch is off or at -100 dB or below: noise then keeps its carrier open, re-arming the hold with every
-block, so only the visit cap or a manual advance or avoid moves on.
+block, so only the visit cap or a manual advance or avoid moves on. The auto squelch (`--squelch auto`, the row's own
+or inherited) closes on noise on a radio input, so a row running it draws no warning; on audio input it is off and the
+row is warned about as an open one.
 
 On an `nfm` row or `nfm-conventional` target the tone policy (issue #527) is the configured receive policy
 (`--tone-allow`, `--tone-block`, `[analog] tone_filter` and `tone_list`; see "Tone filter" in `docs/cli.md`) for this
@@ -425,9 +431,9 @@ Backslashes are literal, so `-G "C:\Radio Lists\groups.csv"` works without shell
 include an optional `0x` prefix and whitespace inside a quoted argument. Long switches that take an argument
 also accept `--name=value`; argument-free switches reject it (for example, `--scan-voice-only=yes`). An
 argument must not start with `-`; use `./-name.csv` for a filename that starts with a dash. The one exception is
-`--squelch-db`, whose value is negative: a following token that reads as a negative number, a minus sign and a digit
-followed only by digits, `.`, `e`, `E`, `+` or `-` (`--squelch-db -60`), is its value, while anything else starting
-with `-` (`--squelch-db --strict-crc`) is still refused as a missing value. A malformed number such as
+`--squelch-db` (and `--squelch`), whose value is negative: a following token that reads as a negative number, a minus
+sign and a digit followed only by digits, `.`, `e`, `E`, `+` or `-` (`--squelch-db -60`), is its value, while anything
+else starting with `-` (`--squelch-db --strict-crc`) is still refused as a missing value. A malformed number such as
 `--squelch-db -5.5` is therefore reported as an out-of-range value, the same as `--squelch-db=-5.5`. The digit
 switches `-0`, `-1` and `-4` read as numbers there too: `--squelch-db -4` sets -4 dB and is never the `-4` switch.
 `--squelch-db=-60` also works. CSV commas remain field separators, including inside quotes. Unknown switches,

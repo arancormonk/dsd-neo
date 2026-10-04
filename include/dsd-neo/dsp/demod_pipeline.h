@@ -174,7 +174,8 @@ void full_demod(struct demod_state* d);
  * decimation phase), the channel FIR's history and pending outputs, and a replay's post-demod audio decimator on either
  * path (the polyphase history and phase; the fallback's one-pole and part-filled group). Every filter's next output is
  * centred on its next input sample, the decimator's next output comes with the post_downsample-th sample, and what
- * they held back is dropped. The one filter reset: stream open, retunes and family switches all reset through it.
+ * they held back is dropped. The auto squelch's tracker starts its windows over at its next block, keeping its floor
+ * when the context is the same. The one filter reset: stream open, retunes and family switches all reset through it.
  *
  * @param d Demodulator state; NULL is ignored.
  */

@@ -67,7 +67,7 @@ This project is an active work in progress as we decouple from the upstream fork
 
 - RTL‑SDR quality‑of‑life features
 
-  - Bias‑tee control (when supported by your librtlsdr), manual or auto gain, power squelch, adjustable tuner bandwidth, and per‑run PPM correction.
+  - Bias‑tee control (when supported by your librtlsdr), manual or auto gain, power squelch (a fixed level, or auto: a margin over each channel's learned noise floor), adjustable tuner bandwidth, and per‑run PPM correction.
   - Optional carrier/error-based auto‑PPM drift correction with SNR/power gating and short training/lock, for long unattended runs.
   - rtl_tcp niceties: configurable prebuffering to reduce dropouts and settings tuned for stable network use.
 

@@ -15,6 +15,7 @@
 #include <atomic>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/parse.h>
+#include <dsd-neo/core/power.h>
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
 #include <dsd-neo/dsp/math_utils.h>
@@ -26,6 +27,7 @@
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/mem.h>
 #include <dsd-neo/runtime/ring.h>
+#include <dsd-neo/runtime/squelch.h>
 #include <dsd-neo/runtime/worker_pool.h>
 #include <limits.h>
 #include <math.h>
@@ -549,7 +551,8 @@ demod_note_am_input_bypasses(const struct demod_state* demod) {
 
 static void
 demod_finalize_runtime_profile(struct demod_state* demod, const dsd_opts* opts) {
-    demod->channel_squelch_level.store((float)opts->rtl_squelch_level, std::memory_order_relaxed);
+    /* The level the level gate uses: off under the auto squelch, which gates per sample. */
+    demod->channel_squelch_level.store((float)dsd_squelch_level_in_force(opts), std::memory_order_relaxed);
     if (demod->output_kind == DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR) {
         demod->ted_enabled = 0;
     }
@@ -1274,6 +1277,9 @@ rtl_demod_reset_resampler_state(struct demod_state* demod) {
     if (demod->resamp_hist && demod->resamp_taps_per_phase > 0) {
         DSD_MEMSET(demod->resamp_hist, 0, (size_t)demod->resamp_taps_per_phase * 2U * sizeof(float));
     }
+    /* Its outputs' flags start over with it, closed until real inputs reach the filter's centre. */
+    DSD_MEMSET(demod->resamp_flag_hist, DSD_SQUELCH_FLAG_CLOSED, sizeof(demod->resamp_flag_hist));
+    demod->resamp_flag_head = 0;
 }
 
 /* A fresh open starts the carrier and timing loops from nothing: Costas and the band-edge FLL at zero frequency and
