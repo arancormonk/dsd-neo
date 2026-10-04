@@ -22,6 +22,10 @@ static const double k_edge_guard_hz = 800.0;
 static const double k_nyquist_fraction = 0.45;
 static const double k_min_band_hz = 1200.0;
 static const double k_sub_band_hz = 300.0;
+/* With no channel filter the half-band cascade's gentle roll-off is the channel's edge, and it truncates any signal
+   that reaches the rate's Nyquist: a plan needs the widest NFM signal the gate tests (5 kHz deviation, 3 kHz audio:
+   8 kHz from the carrier) to fit under it. */
+static const double k_unfiltered_signal_edge_hz = 8000.0;
 /* The channel taps' edge: the first 10 Hz step 1 dB under their DC gain (10^(-1/20)). */
 static const double k_edge_step_hz = 10.0;
 static const double k_edge_ratio = 0.89125093813374556;
@@ -99,26 +103,27 @@ nsq_sqrt(nsq_cplx a) {
 
 /* ---------------------------------------------------------------------------------------------- the band */
 
-double
-dsd_noise_squelch_passband_edge_hz(const float* taps, int taps_len, int rate_hz) {
-    const double nyquist = 0.5 * (double)rate_hz;
-    if (!taps || taps_len <= 0 || rate_hz <= 0) {
-        return nyquist;
+/* The first 10 Hz step under @p limit_hz at which @p taps, run at @p sample_rate, fall 1 dB under their DC gain;
+   @p limit_hz when they never do. */
+static double
+nsq_edge_hz(const float* taps, int taps_len, double sample_rate, double limit_hz) {
+    if (!taps || taps_len <= 0 || !(sample_rate > 0.0)) {
+        return limit_hz;
     }
     double dc = 0.0;
     for (int n = 0; n < taps_len; n++) {
         dc += (double)taps[n];
     }
     if (!(fabs(dc) > 0.0)) {
-        return nyquist;
+        return limit_hz;
     }
     const double limit = k_edge_ratio * fabs(dc);
     for (int step = 0;; step++) {
         const double f = (double)step * k_edge_step_hz;
-        if (f >= nyquist) {
+        if (f >= limit_hz) {
             break;
         }
-        const double w = 2.0 * M_PI * f / (double)rate_hz;
+        const double w = 2.0 * M_PI * f / sample_rate;
         double re = 0.0;
         double im = 0.0;
         for (int n = 0; n < taps_len; n++) {
@@ -129,7 +134,12 @@ dsd_noise_squelch_passband_edge_hz(const float* taps, int taps_len, int rate_hz)
             return f;
         }
     }
-    return nyquist;
+    return limit_hz;
+}
+
+double
+dsd_noise_squelch_passband_edge_hz(const float* taps, int taps_len, int rate_hz) {
+    return rate_hz > 0 ? nsq_edge_hz(taps, taps_len, (double)rate_hz, 0.5 * (double)rate_hz) : 0.0;
 }
 
 /* The four biquads of a Butterworth band-pass of prototype order 4 over [f1, f2] at fs: the prototype's poles moved to
@@ -228,14 +238,19 @@ nsq_sub_band_run(const dsd_noise_squelch_plan* plan, double* s1, double* s2, int
     return y;
 }
 
-/* The calibration noise as the channel filter puts it out: white complex noise at twice the rate through the
-   half-band stage (one output per two inputs), then the channel taps. Each ring holds its newest sample at pos - 1. */
+/* The calibration noise as the channel filter puts it out: white complex noise at twice the rate through the plan's
+   cascade FIR (the stages ahead of the last) and the last half-band stage (one output per two inputs), then the
+   channel taps. Each ring holds its newest sample at pos - 1. */
 typedef struct {
     nsq_rng rng;
+    const double* pre;
+    int pre_len;
     const float* hb;
     int hb_len;
     const float* taps;
     int taps_len;
+    nsq_cplx pre_ring[DSD_NOISE_SQUELCH_CASCADE_TAPS];
+    int pre_pos;
     nsq_cplx hb_ring[NSQ_HB_MAX];
     int hb_pos;
     nsq_cplx ch_ring[DSD_NOISE_SQUELCH_MAX_TAPS];
@@ -256,11 +271,36 @@ nsq_ring_fir(const nsq_cplx* ring, int pos, const float* h, int len) {
 }
 
 static nsq_cplx
+nsq_ring_fir_d(const nsq_cplx* ring, int pos, const double* h, int len) {
+    nsq_cplx acc = nsq_c(0.0, 0.0);
+    for (int j = 0; j < len; j++) {
+        int at = pos - 1 - j;
+        if (at < 0) {
+            at += len;
+        }
+        acc = nsq_add(acc, nsq_scale(ring[at], h[j]));
+    }
+    return acc;
+}
+
+/* One noise sample at twice the rate, through the cascade FIR when the plan has one. */
+static nsq_cplx
+nsq_noise_wide(nsq_noise_source* src) {
+    const nsq_cplx x = nsq_rng_complex(&src->rng);
+    if (src->pre_len <= 0) {
+        return x;
+    }
+    src->pre_ring[src->pre_pos] = x;
+    src->pre_pos = (src->pre_pos + 1) % src->pre_len;
+    return nsq_ring_fir_d(src->pre_ring, src->pre_pos, src->pre, src->pre_len);
+}
+
+static nsq_cplx
 nsq_noise_next(nsq_noise_source* src) {
     nsq_cplx in;
     if (src->hb_len > 0) {
         for (int k = 0; k < 2; k++) {
-            src->hb_ring[src->hb_pos] = nsq_rng_complex(&src->rng);
+            src->hb_ring[src->hb_pos] = nsq_noise_wide(src);
             src->hb_pos = (src->hb_pos + 1) % src->hb_len;
         }
         in = nsq_ring_fir(src->hb_ring, src->hb_pos, src->hb, src->hb_len);
@@ -272,8 +312,8 @@ nsq_noise_next(nsq_noise_source* src) {
     return nsq_ring_fir(src->ch_ring, src->ch_pos, src->taps, src->taps_len);
 }
 
-/* Each sub-band's mean output power for noise alone: 2 s through the half-band stage, the channel taps, the
-   discriminator and the sub-band, once the filters have filled and settled. */
+/* Each band-pass's mean output power for noise alone: 2 s through the cascade FIR and the last half-band stage, the
+   channel taps, the discriminator and the band-pass, once the filters have filled and settled. */
 static void
 nsq_calibrate(dsd_noise_squelch_plan* plan, const float* taps, int taps_len, const float* hb, int hb_len) {
     static const float k_unit_tap[1] = {1.0f};
@@ -282,9 +322,11 @@ nsq_calibrate(dsd_noise_squelch_plan* plan, const float* taps, int taps_len, con
     src.rng.state = 0x9E3779B97F4A7C15ULL;
     src.hb = hb;
     src.hb_len = hb ? hb_len : 0;
+    src.pre = plan->cascade;
+    src.pre_len = src.hb_len > 0 ? plan->cascade_len : 0;
     src.taps = taps ? taps : k_unit_tap;
     src.taps_len = taps ? taps_len : 1;
-    const int fill = src.taps_len + src.hb_len;
+    const int fill = src.taps_len + src.hb_len + src.pre_len;
     const int settle = (int)(k_settle_s * (double)plan->rate_hz);
     const int measured = (int)(k_calibration_s * (double)plan->rate_hz);
     double s1[DSD_NOISE_SQUELCH_MAX_BANDS][DSD_NOISE_SQUELCH_SECTIONS];
@@ -318,25 +360,85 @@ nsq_calibrate(dsd_noise_squelch_plan* plan, const float* taps, int taps_len, con
     }
 }
 
+/* |H(f)| of a stage's (symmetric) taps run at @p rate, against their DC gain. */
+static double
+nsq_stage_gain(const dsd_noise_squelch_stage* stage, double f, double rate) {
+    const double centre = 0.5 * (double)(stage->len - 1);
+    double dc = 0.0;
+    double re = 0.0;
+    for (int n = 0; n < stage->len; n++) {
+        dc += (double)stage->taps[n];
+        re += (double)stage->taps[n] * cos(2.0 * M_PI * f * ((double)n - centre) / rate);
+    }
+    return fabs(dc) > 0.0 ? fabs(re) / fabs(dc) : 0.0;
+}
+
+/* The stages ahead of the last as one linear-phase FIR at twice the rate (tools/noise_squelch_model.py
+   cascade_fir()): DSD_NOISE_SQUELCH_CASCADE_TAPS taps sampled from their composite response on 0..fs (type I
+   frequency sampling), unit DC gain. Stage i (top first) runs at fs * 2^(count - i). */
+static void
+nsq_design_cascade(dsd_noise_squelch_plan* plan, const dsd_noise_squelch_stage* stages, int count) {
+    plan->cascade_len = 0;
+    if (count < 2) {
+        return;
+    }
+
+    enum { N = DSD_NOISE_SQUELCH_CASCADE_TAPS, HALF = (DSD_NOISE_SQUELCH_CASCADE_TAPS - 1) / 2 };
+
+    const double fs = (double)plan->rate_hz;
+    double g[HALF + 1];
+    g[0] = 1.0;
+    for (int k = 1; k <= HALF; k++) {
+        const double f = (double)k * 2.0 * fs / (double)N;
+        double v = 1.0;
+        for (int i = 0; i + 1 < count; i++) {
+            v *= nsq_stage_gain(&stages[i], f, fs * pow(2.0, (double)(count - i)));
+        }
+        g[k] = v;
+    }
+    double sum = 0.0;
+    for (int n = 0; n < N; n++) {
+        double h = g[0];
+        for (int k = 1; k <= HALF; k++) {
+            h += 2.0 * g[k] * cos(2.0 * M_PI * (double)k * (double)(n - HALF) / (double)N);
+        }
+        plan->cascade[n] = h;
+        sum += h;
+    }
+    for (int n = 0; n < N; n++) {
+        plan->cascade[n] /= sum;
+    }
+    plan->cascade_len = N;
+}
+
 int
-dsd_noise_squelch_plan_design(dsd_noise_squelch_plan* out, const float* taps, int taps_len, const float* hb_taps,
-                              int hb_len, int rate_hz) {
+dsd_noise_squelch_plan_design(dsd_noise_squelch_plan* out, const float* taps, int taps_len,
+                              const dsd_noise_squelch_stage* stages, int stage_count, int rate_hz) {
     if (!out) {
         return -1;
     }
     DSD_MEMSET(out, 0, sizeof(*out));
-    if (rate_hz < 2 * NSQ_HALVES_PER_S || taps_len > DSD_NOISE_SQUELCH_MAX_TAPS || hb_len > NSQ_HB_MAX) {
+    if (!stages || stage_count <= 0) {
+        stages = NULL;
+        stage_count = 0;
+    }
+    if (rate_hz < 2 * NSQ_HALVES_PER_S || taps_len > DSD_NOISE_SQUELCH_MAX_TAPS
+        || stage_count > DSD_NOISE_SQUELCH_MAX_STAGES) {
         return -1;
+    }
+    for (int i = 0; i < stage_count; i++) {
+        if (!stages[i].taps || stages[i].len <= 0 || stages[i].len > NSQ_HB_MAX) {
+            return -1;
+        }
     }
     if (!taps || taps_len <= 0) {
         taps = NULL;
         taps_len = 0;
     }
-    if (!hb_taps || hb_len <= 0) {
-        hb_taps = NULL;
-        hb_len = 0;
-    }
     const double fs = (double)rate_hz;
+    if (!taps && stage_count > 0 && 0.5 * fs <= k_unfiltered_signal_edge_hz) {
+        return -1;
+    }
     const double edge = dsd_noise_squelch_passband_edge_hz(taps, taps_len, rate_hz);
     double hi = edge - k_edge_guard_hz;
     if (hi > k_nyquist_fraction * fs) {
@@ -369,7 +471,9 @@ dsd_noise_squelch_plan_design(dsd_noise_squelch_plan* out, const float* taps, in
         const double f1 = k_band_lo_hz + (step * ((double)k + 0.5));
         nsq_design_band_pass(f1, f1 + step, fs, out->section[k_count + k]);
     }
-    nsq_calibrate(out, taps, taps_len, hb_taps, hb_len);
+    nsq_design_cascade(out, stages, stage_count);
+    const dsd_noise_squelch_stage* last = stage_count > 0 ? &stages[stage_count - 1] : NULL;
+    nsq_calibrate(out, taps, taps_len, last ? last->taps : NULL, last ? last->len : 0);
     if (!(out->p_ref_sum > k_min_power)) {
         DSD_MEMSET(out, 0, sizeof(*out));
         return -1;

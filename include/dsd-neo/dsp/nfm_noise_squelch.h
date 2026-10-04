@@ -14,8 +14,10 @@
  * blocks.
  *
  * Band (tools/noise_squelch_model.py, docs/testing.md "Noise squelch"): B = [3.8 kHz, hi], hi = min(edge - 800 Hz,
- * 0.45 fs), edge the channel taps' -1 dB point (fs/2 without a channel filter). A plan needs at least 1200 Hz there;
- * a narrower channel (8 and 10 kHz NFM widths) has none, and the demodulator runs the auto squelch for it instead. B is
+ * 0.45 fs), edge the channel taps' -1 dB point (fs/2 without a channel filter). A plan needs at least 1200 Hz there; a
+ * narrower channel (8 and 10 kHz NFM widths) has none, nor has a channel with no filter behind the half-band cascade at
+ * a rate of 16 kHz or less (the cascade's roll-off would be its edge), and the demodulator runs the auto squelch for
+ * those instead. B is
  * cut into K equal sub-bands, K = floor(|B| / 300 Hz) held to 1..DSD_NOISE_SQUELCH_MAX_SUB_BANDS, and a staggered
  * set of K - 1 more, each a sub-band's width shifted by half of it, so a line on a boundary of the first set sits
  * inside one of the second. Each of the 2K - 1 is a Butterworth band-pass of prototype order 4 (four biquads).
@@ -52,7 +54,17 @@ enum {
     DSD_NOISE_SQUELCH_SECTIONS = 4,
     /** Most channel taps a plan designs for (the channel filter's DSD_CHANNEL_LPF_MAX_TAPS). */
     DSD_NOISE_SQUELCH_MAX_TAPS = 288,
+    /** Most half-band stages ahead of the channel filter (the demodulator's cascade). */
+    DSD_NOISE_SQUELCH_MAX_STAGES = 10,
+    /** Taps of the FIR that stands for the stages ahead of the last one. */
+    DSD_NOISE_SQUELCH_CASCADE_TAPS = 63,
 };
+
+/** @brief One half-band decimation stage ahead of the channel filter: its taps, run at twice the rate it puts out. */
+typedef struct {
+    const float* taps;
+    int len;
+} dsd_noise_squelch_stage;
 
 /** @brief One biquad, b = gain * [1, 0, -1], a = [1, a1, a2]. */
 typedef struct {
@@ -63,13 +75,13 @@ typedef struct {
 
 /**
  * @brief The band, its band-passes' filters and their noise references for one channel plan: the channel taps, the
- * half-band stage before them and the channel rate. A zeroed plan is not valid; a squelch with no valid plan keeps its
- * gate open.
+ * half-band cascade before them and the channel rate. A zeroed plan is not valid; a squelch with no valid plan keeps
+ * its gate open.
  */
 typedef struct {
     int valid;
     int rate_hz;    /**< channel rate, samples per second */
-    double edge_hz; /**< the channel taps' -1 dB point */
+    double edge_hz; /**< the channel taps' -1 dB point (fs/2 without a channel filter) */
     double lo_hz;   /**< the band's edges */
     double hi_hz;
     int sub_bands; /**< K */
@@ -77,6 +89,10 @@ typedef struct {
     dsd_noise_squelch_biquad section[DSD_NOISE_SQUELCH_MAX_BANDS][DSD_NOISE_SQUELCH_SECTIONS];
     double p_ref[DSD_NOISE_SQUELCH_MAX_BANDS]; /**< each band-pass's mean output power for noise alone */
     double p_ref_sum;                          /**< the K sub-bands' p_ref, summed */
+    /** The half-band stages ahead of the last as one linear-phase FIR at twice the rate (0 taps with fewer than two
+     * stages): the calibration noise runs through it, then the last stage. */
+    int cascade_len;
+    double cascade[DSD_NOISE_SQUELCH_CASCADE_TAPS];
 } dsd_noise_squelch_plan;
 
 /** @brief What the squelch publishes. */
@@ -120,15 +136,18 @@ double dsd_noise_squelch_passband_edge_hz(const float* taps, int taps_len, int r
 
 /**
  * @brief Design the plan for the channel taps (@p taps, @p taps_len; NULL or 0 when no channel filter runs), the
- * half-band stage that feeds them (@p hb_taps, @p hb_len; NULL or 0 when none does), and the channel rate @p rate_hz:
- * the band, its band-passes' biquads (the sub-bands and the staggered set), and their noise references from 2 s of
- * fixed-seed complex Gaussian noise through the half-band stage (at twice the rate), the channel taps, the
- * discriminator and each band-pass.
+ * half-band cascade that feeds them (@p stages, @p stage_count, top first: the last runs at twice @p rate_hz, each one
+ * before it at twice the rate of the next; NULL or 0 when none does), and the channel rate @p rate_hz: the band, its
+ * band-passes' biquads (the sub-bands and the staggered set), the cascade FIR, and the band-passes' noise references
+ * from 2 s of fixed-seed complex Gaussian noise through the cascade FIR and the last stage (at twice the rate), the
+ * channel taps, the discriminator and each band-pass.
  *
- * @return 0, or -1 (plan not valid) when less than 1200 Hz of band fits (the auto squelch then runs instead).
+ * @return 0, or -1 (plan not valid) when less than 1200 Hz of band fits, or when no channel filter runs behind a
+ * cascade at a rate whose Nyquist is 8 kHz or less (the cascade's roll-off would truncate a wide NFM signal into the
+ * band). The auto squelch then runs instead.
  */
-int dsd_noise_squelch_plan_design(dsd_noise_squelch_plan* out, const float* taps, int taps_len, const float* hb_taps,
-                                  int hb_len, int rate_hz);
+int dsd_noise_squelch_plan_design(dsd_noise_squelch_plan* out, const float* taps, int taps_len,
+                                  const dsd_noise_squelch_stage* stages, int stage_count, int rate_hz);
 
 /** @brief Whether @p a and @p b are the same plan (rate, band and references equal within a relative 1e-12). */
 int dsd_noise_squelch_plan_equal(const dsd_noise_squelch_plan* a, const dsd_noise_squelch_plan* b);

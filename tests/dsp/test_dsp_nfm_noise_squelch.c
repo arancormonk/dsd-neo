@@ -58,22 +58,31 @@ typedef struct {
     int width; /* 0: no channel filter */
     float taps[MAX_TAPS];
     int taps_len;
-    const float* hb;
+    int passes;
+    dsd_noise_squelch_stage stages[DSD_NOISE_SQUELCH_MAX_STAGES];
+    const float* hb; /* the last stage */
     int hb_len;
+    double front_gain2; /* white input's power after the plan's cascade FIR and the last stage, per unit input */
     double sum_h2;
     dsd_noise_squelch_plan plan;
     int plan_rc;
 } channel;
 
-/* The channel taps full_demod() designs for @p width at @p rate (0: none), and the plan for them with the half-band
-   stage @p hb (NULL: none). */
+/* The channel taps full_demod() designs for @p width at @p rate (0: none), and the plan for them behind the half-band
+   cascade of @p passes stages full_demod_apply_halfband_decimation() runs (0: none): the 31-tap stage first, the
+   15-tap ones after. */
 static void
-channel_make(channel* ch, int rate, int width, const float* hb, int hb_len) {
+channel_make(channel* ch, int rate, int width, int passes) {
     DSD_MEMSET(ch, 0, sizeof(*ch));
     ch->rate = rate;
     ch->width = width;
-    ch->hb = hb;
-    ch->hb_len = hb ? hb_len : 0;
+    ch->passes = passes;
+    for (int i = 0; i < passes; i++) {
+        ch->stages[i].taps = (i == 0) ? hb31_q15_taps : hb_q15_taps;
+        ch->stages[i].len = (i == 0) ? 31 : HB_TAPS;
+    }
+    ch->hb = passes > 0 ? ch->stages[passes - 1].taps : NULL;
+    ch->hb_len = passes > 0 ? ch->stages[passes - 1].len : 0;
     if (width > 0) {
         ch->taps_len = dsd_channel_lpf_design_analog(rate, width, ch->taps, MAX_TAPS);
         assert(ch->taps_len > 0);
@@ -85,16 +94,36 @@ channel_make(channel* ch, int rate, int width, const float* hb, int hb_len) {
         ch->sum_h2 += (double)ch->taps[i] * (double)ch->taps[i];
     }
     ch->plan_rc = dsd_noise_squelch_plan_design(&ch->plan, width > 0 ? ch->taps : NULL, width > 0 ? ch->taps_len : 0,
-                                                hb, ch->hb_len, rate);
+                                                passes > 0 ? ch->stages : NULL, passes, rate);
+    /* The cascade FIR convolved with the last stage, both at twice the rate. */
+    ch->front_gain2 = 1.0;
+    if (ch->hb_len > 0) {
+        const int pre_len = ch->plan.cascade_len > 0 ? ch->plan.cascade_len : 1;
+        ch->front_gain2 = 0.0;
+        for (int n = 0; n < pre_len + ch->hb_len - 1; n++) {
+            double c = 0.0;
+            for (int k = 0; k < ch->hb_len; k++) {
+                const int j = n - k;
+                if (j >= 0 && j < pre_len) {
+                    c += (double)ch->hb[k] * (ch->plan.cascade_len > 0 ? ch->plan.cascade[j] : 1.0);
+                }
+            }
+            ch->front_gain2 += c * c;
+        }
+    }
 }
 
 /* ------------------------------------------------------------------------------------------------ signal source */
 
-/* White complex noise (through the half-band stage at twice the rate when the channel has one) plus an optional FM
-   carrier, through the channel taps; then dsd_fm_demod()'s discriminator. */
+/* White complex noise plus an optional FM carrier, through the plan's cascade FIR and the last half-band stage at
+   twice the rate when the channel has a cascade (the receiver's decimation passes both), then the channel taps; then
+   dsd_fm_demod()'s discriminator. */
 typedef struct {
     synth_rng rng;
     const channel* ch;
+    double pre_re[2 * DSD_NOISE_SQUELCH_CASCADE_TAPS];
+    double pre_im[2 * DSD_NOISE_SQUELCH_CASCADE_TAPS];
+    int pre_pos;
     double hb_re[64];
     double hb_im[64];
     int hb_pos;
@@ -130,17 +159,10 @@ source_noise_only(source* s) {
 }
 
 /* An FM carrier @p cnr_db above the channel-output noise, offset @p offset_hz, a @p tone_hz tone at @p dev_hz peak
-   deviation (0: unmodulated). The half-band stage passes the channel's band at unity. */
+   deviation (0: unmodulated). The cascade passes the channel's band at about unity. */
 static void
 source_fm(source* s, double cnr_db, double offset_hz, double tone_hz, double dev_hz) {
-    double hb_gain2 = 1.0;
-    if (s->ch->hb_len > 0) {
-        hb_gain2 = 0.0;
-        for (int k = 0; k < s->ch->hb_len; k++) {
-            hb_gain2 += (double)s->ch->hb[k] * (double)s->ch->hb[k];
-        }
-    }
-    const double noise_out = 2.0 * s->noise_sd * s->noise_sd * hb_gain2 * s->ch->sum_h2;
+    const double noise_out = 2.0 * s->noise_sd * s->noise_sd * s->ch->front_gain2 * s->ch->sum_h2;
     double sum_h = 0.0;
     for (int k = 0; k < s->ch->taps_len; k++) {
         sum_h += (double)s->ch->taps[k];
@@ -152,18 +174,47 @@ source_fm(source* s, double cnr_db, double offset_hz, double tone_hz, double dev
     s->fm_index = tone_hz > 0.0 ? dev_hz / tone_hz : 0.0;
 }
 
+/* One input sample: noise, plus the carrier when there is one, @p per_out input samples to a channel sample. */
 static void
-source_noise_sample(source* s, double* xr, double* xi) {
+source_input_sample(source* s, int per_out, double* xr, double* xi) {
+    *xr = s->noise_sd * synth_gauss(&s->rng);
+    *xi = s->noise_sd * synth_gauss(&s->rng);
+    if (s->carrier) {
+        const double ph = s->carrier_phase + (s->fm_index * sin(s->mod_phase));
+        *xr += s->amp * cos(ph);
+        *xi += s->amp * sin(ph);
+        s->carrier_phase = fmod(s->carrier_phase + (s->carrier_step / (double)per_out), 2.0 * M_PI);
+        s->mod_phase = fmod(s->mod_phase + (s->mod_step / (double)per_out), 2.0 * M_PI);
+    }
+}
+
+/* The channel filter's next input: one input sample, or two through the half-band stage. */
+static void
+source_channel_input(source* s, double* xr, double* xi) {
     if (s->ch->hb_len <= 0) {
-        *xr = s->noise_sd * synth_gauss(&s->rng);
-        *xi = s->noise_sd * synth_gauss(&s->rng);
+        source_input_sample(s, 1, xr, xi);
         return;
     }
     const int len = s->ch->hb_len;
+    const int pre_len = s->ch->plan.cascade_len;
     for (int k = 0; k < 2; k++) {
+        double ir = 0.0;
+        double ii = 0.0;
+        source_input_sample(s, 2, &ir, &ii);
+        if (pre_len > 0) {
+            s->pre_pos = (s->pre_pos + 1) % pre_len;
+            s->pre_re[s->pre_pos] = s->pre_re[s->pre_pos + pre_len] = ir;
+            s->pre_im[s->pre_pos] = s->pre_im[s->pre_pos + pre_len] = ii;
+            ir = 0.0;
+            ii = 0.0;
+            for (int j = 0; j < pre_len; j++) {
+                ir += s->ch->plan.cascade[j] * s->pre_re[s->pre_pos + pre_len - j];
+                ii += s->ch->plan.cascade[j] * s->pre_im[s->pre_pos + pre_len - j];
+            }
+        }
         s->hb_pos = (s->hb_pos + 1) % len;
-        s->hb_re[s->hb_pos] = s->hb_re[s->hb_pos + len] = s->noise_sd * synth_gauss(&s->rng);
-        s->hb_im[s->hb_pos] = s->hb_im[s->hb_pos + len] = s->noise_sd * synth_gauss(&s->rng);
+        s->hb_re[s->hb_pos] = s->hb_re[s->hb_pos + len] = ir;
+        s->hb_im[s->hb_pos] = s->hb_im[s->hb_pos + len] = ii;
     }
     double yr = 0.0;
     double yi = 0.0;
@@ -193,14 +244,7 @@ source_run(source* s, float* iq, float* d, int count) {
     for (int n = 0; n < count; n++) {
         double xr = 0.0;
         double xi = 0.0;
-        source_noise_sample(s, &xr, &xi);
-        if (s->carrier) {
-            const double ph = s->carrier_phase + (s->fm_index * sin(s->mod_phase));
-            xr += s->amp * cos(ph);
-            xi += s->amp * sin(ph);
-            s->carrier_phase = fmod(s->carrier_phase + s->carrier_step, 2.0 * M_PI);
-            s->mod_phase = fmod(s->mod_phase + s->mod_step, 2.0 * M_PI);
-        }
+        source_channel_input(s, &xr, &xi);
         s->pos = (s->pos + 1) % len;
         s->re[s->pos] = s->re[s->pos + len] = xr;
         s->im[s->pos] = s->im[s->pos + len] = xi;
@@ -327,12 +371,12 @@ test_band_rule(void) {
     static channel ch;
     assert(fabs(dsd_noise_squelch_passband_edge_hz(NULL, 0, 48000) - 24000.0) < 1e-9);
 
-    channel_make(&ch, 48000, 8000, NULL, 0);
+    channel_make(&ch, 48000, 8000, 0);
     assert(ch.plan_rc == -1 && !ch.plan.valid);
-    channel_make(&ch, 48000, 10000, NULL, 0);
+    channel_make(&ch, 48000, 10000, 0);
     assert(ch.plan_rc == -1 && !ch.plan.valid);
 
-    channel_make(&ch, 48000, 12500, NULL, 0);
+    channel_make(&ch, 48000, 12500, 0);
     assert(ch.plan_rc == 0 && ch.plan.valid);
     /* The analog designs pass to their width's edge and fall 1 dB a little under 200 Hz past it. */
     assert(ch.plan.edge_hz > 6250.0 && ch.plan.edge_hz < 6460.0);
@@ -341,20 +385,36 @@ test_band_rule(void) {
     assert(ch.plan.sub_bands == (int)floor((ch.plan.hi_hz - 3800.0) / 300.0));
     assert(ch.plan.bands == (2 * ch.plan.sub_bands) - 1);
 
-    channel_make(&ch, 48000, 16000, NULL, 0);
+    channel_make(&ch, 48000, 16000, 0);
     assert(ch.plan.valid && ch.plan.sub_bands == (int)floor((ch.plan.hi_hz - 3800.0) / 300.0));
-    channel_make(&ch, 48000, 25000, NULL, 0);
+    channel_make(&ch, 48000, 25000, 0);
     assert(ch.plan.valid && ch.plan.sub_bands == DSD_NOISE_SQUELCH_MAX_SUB_BANDS);
     assert(ch.plan.bands == DSD_NOISE_SQUELCH_MAX_BANDS);
 
     /* No channel filter: the band runs to 0.45 fs. */
-    channel_make(&ch, 48000, 0, NULL, 0);
+    channel_make(&ch, 48000, 0, 0);
     assert(ch.plan.valid && fabs(ch.plan.edge_hz - 24000.0) < 1e-9 && fabs(ch.plan.hi_hz - 21600.0) < 1e-9);
-    channel_make(&ch, 8000, 0, NULL, 0);
+    channel_make(&ch, 8000, 0, 0);
     assert(!ch.plan.valid);
     /* At 12 kHz the edge guard binds first: fs/2 - 800 Hz. */
-    channel_make(&ch, 12000, 0, NULL, 0);
+    channel_make(&ch, 12000, 0, 0);
     assert(ch.plan.valid && fabs(ch.plan.hi_hz - 5200.0) < 1e-9 && ch.plan.sub_bands == 4 && ch.plan.bands == 7);
+    /* No channel filter behind the half-band cascade: its roll-off truncates a wide signal at a Nyquist of 8 kHz or
+       less (rtl-12k and rtl-16k with the width unset, an Airspy Mini at 11718 Hz), so those plans run as auto; above
+       it the band still runs to 0.45 fs. */
+    channel_make(&ch, 12000, 0, 7);
+    assert(ch.plan_rc == -1 && !ch.plan.valid);
+    channel_make(&ch, 11718, 0, 9);
+    assert(!ch.plan.valid);
+    channel_make(&ch, 16000, 0, 6);
+    assert(!ch.plan.valid);
+    channel_make(&ch, 19531, 0, 7);
+    assert(ch.plan.valid && ch.plan.cascade_len == DSD_NOISE_SQUELCH_CASCADE_TAPS);
+    channel_make(&ch, 48000, 0, 5);
+    assert(ch.plan.valid && fabs(ch.plan.edge_hz - 24000.0) < 1e-9 && fabs(ch.plan.hi_hz - 21600.0) < 1e-9);
+    /* One stage alone (the 31-tap one) needs no cascade FIR. */
+    channel_make(&ch, 48000, 12500, 1);
+    assert(ch.plan.valid && ch.plan.cascade_len == 0);
     printf("band rule: ok\n");
 }
 
@@ -364,7 +424,7 @@ test_band_rule(void) {
 static void
 test_band_pass_response(void) {
     static channel ch;
-    channel_make(&ch, 48000, 16000, NULL, 0);
+    channel_make(&ch, 48000, 16000, 0);
     const double fs = 48000.0;
     const double step = (ch.plan.hi_hz - ch.plan.lo_hz) / (double)ch.plan.sub_bands;
     double worst = 0.0;
@@ -399,13 +459,140 @@ test_band_pass_response(void) {
     assert(worst < 1e-8);
 }
 
+/* White noise through the real half-band cascade, every stage at its own rate: stage i keeps a ring of its inputs
+   (newest at pos and pos + len) and makes one output per two. */
+typedef struct {
+    synth_rng rng;
+    const channel* ch;
+    double re[DSD_NOISE_SQUELCH_MAX_STAGES][64];
+    double im[DSD_NOISE_SQUELCH_MAX_STAGES][64];
+    int pos[DSD_NOISE_SQUELCH_MAX_STAGES];
+} cascade_noise;
+
+static void
+cascade_stage_out(cascade_noise* c, int i, double* yr, double* yi) {
+    const dsd_noise_squelch_stage* st = &c->ch->stages[i];
+    const int len = st->len;
+    for (int k = 0; k < 2; k++) {
+        double xr = 0.0;
+        double xi = 0.0;
+        if (i == 0) {
+            xr = sqrt(0.5) * synth_gauss(&c->rng);
+            xi = sqrt(0.5) * synth_gauss(&c->rng);
+        } else {
+            cascade_stage_out(c, i - 1, &xr, &xi);
+        }
+        c->pos[i] = (c->pos[i] + 1) % len;
+        c->re[i][c->pos[i]] = c->re[i][c->pos[i] + len] = xr;
+        c->im[i][c->pos[i]] = c->im[i][c->pos[i] + len] = xi;
+    }
+    double ar = 0.0;
+    double ai = 0.0;
+    for (int k = 0; k < len; k++) {
+        ar += (double)st->taps[k] * c->re[i][c->pos[i] + len - k];
+        ai += (double)st->taps[k] * c->im[i][c->pos[i] + len - k];
+    }
+    *yr = ar;
+    *yi = ai;
+}
+
+/* Each band-pass's mean power, over @p seconds after 0.1 s, for noise through the real cascade, the channel taps and
+   the discriminator. */
+static void
+cascade_band_powers(const channel* ch, double seconds, double* p) {
+    static cascade_noise c;
+    DSD_MEMSET(&c, 0, sizeof(c));
+    synth_rng_seed(&c.rng, 0xCA5CADEULL);
+    c.ch = ch;
+    static double ring_re[2 * MAX_TAPS];
+    static double ring_im[2 * MAX_TAPS];
+    DSD_MEMSET(ring_re, 0, sizeof(ring_re));
+    DSD_MEMSET(ring_im, 0, sizeof(ring_im));
+    double s1[DSD_NOISE_SQUELCH_MAX_BANDS][DSD_NOISE_SQUELCH_SECTIONS];
+    double s2[DSD_NOISE_SQUELCH_MAX_BANDS][DSD_NOISE_SQUELCH_SECTIONS];
+    double e[DSD_NOISE_SQUELCH_MAX_BANDS];
+    DSD_MEMSET(s1, 0, sizeof(s1));
+    DSD_MEMSET(s2, 0, sizeof(s2));
+    DSD_MEMSET(e, 0, sizeof(e));
+    const int settle = ch->rate / 10;
+    const int total = settle + (int)(seconds * (double)ch->rate);
+    const int len = ch->taps_len;
+    int pos = 0;
+    float prev_re = 0.0f;
+    float prev_im = 0.0f;
+    for (int n = 0; n < total; n++) {
+        double xr = 0.0;
+        double xi = 0.0;
+        cascade_stage_out(&c, ch->passes - 1, &xr, &xi);
+        pos = (pos + 1) % len;
+        ring_re[pos] = ring_re[pos + len] = xr;
+        ring_im[pos] = ring_im[pos + len] = xi;
+        double yr = 0.0;
+        double yi = 0.0;
+        for (int k = 0; k < len; k++) {
+            yr += (double)ch->taps[k] * ring_re[pos + len - k];
+            yi += (double)ch->taps[k] * ring_im[pos + len - k];
+        }
+        const float cr = (float)yr;
+        const float cj = (float)yi;
+        const float d = disc_step((cj * prev_re) - (cr * prev_im), (cr * prev_re) + (cj * prev_im));
+        prev_re = cr;
+        prev_im = cj;
+        for (int k = 0; k < ch->plan.bands; k++) {
+            double y = (double)d;
+            for (int q = 0; q < DSD_NOISE_SQUELCH_SECTIONS; q++) {
+                const dsd_noise_squelch_biquad* b = &ch->plan.section[k][q];
+                const double out = (b->gain * y) + s1[k][q];
+                s1[k][q] = s2[k][q] - (b->a1 * out);
+                s2[k][q] = (-b->gain * y) - (b->a2 * out);
+                y = out;
+            }
+            if (n >= settle) {
+                e[k] += y * y;
+            }
+        }
+    }
+    for (int k = 0; k < ch->plan.bands; k++) {
+        p[k] = e[k] / (double)(total - settle);
+    }
+}
+
+/* The calibration models the whole cascade: an rtl-16k chain (six stages) reads its noise references within the
+   model's figures from noise through every real stage, where a plan of the last stage alone reads the whole band about
+   1 dB off (the earlier stages droop in the band). */
+static void
+test_calibration_through_cascade(void) {
+    static channel ch;
+    channel_make(&ch, 16000, 12500, 6);
+    assert(ch.plan.valid && ch.plan.cascade_len == DSD_NOISE_SQUELCH_CASCADE_TAPS);
+    static dsd_noise_squelch_plan last_only;
+    assert(dsd_noise_squelch_plan_design(&last_only, ch.taps, ch.taps_len, &ch.stages[5], 1, 16000) == 0);
+    double p[DSD_NOISE_SQUELCH_MAX_BANDS];
+    cascade_band_powers(&ch, 5.0, p);
+    double worst = 0.0;
+    double sum = 0.0;
+    for (int k = 0; k < ch.plan.bands; k++) {
+        const double err = fabs(db(ch.plan.p_ref[k] / p[k]));
+        worst = err > worst ? err : worst;
+        sum += k < ch.plan.sub_bands ? p[k] : 0.0;
+    }
+    const double sum_err = db(ch.plan.p_ref_sum / sum);
+    const double last_only_err = db(last_only.p_ref_sum / sum);
+    printf(
+        "calibration through the cascade: worst band-pass %.3f dB, whole band %+.3f dB (last stage alone %+.3f dB)\n",
+        worst, sum_err, last_only_err);
+    assert(worst < 0.6);
+    assert(fabs(sum_err) < 0.3);
+    assert(last_only_err > 0.6);
+}
+
 /* The calibration reproduces exactly, and 60 s of the same kind of noise agrees with it within the model's figures. */
 static void
 test_calibration(void) {
     static channel ch;
     static channel again;
-    channel_make(&ch, 48000, 12500, hb_q15_taps, HB_TAPS);
-    channel_make(&again, 48000, 12500, hb_q15_taps, HB_TAPS);
+    channel_make(&ch, 48000, 12500, 5);
+    channel_make(&again, 48000, 12500, 5);
     assert(ch.plan.valid && dsd_noise_squelch_plan_equal(&ch.plan, &again.plan));
     for (int k = 0; k < DSD_NOISE_SQUELCH_MAX_BANDS; k++) {
         assert(same_double(ch.plan.p_ref[k], again.plan.p_ref[k]));
@@ -465,14 +652,14 @@ test_noise_never_opens(void) {
     static const struct {
         int rate;
         int width;
-        int hb;
+        int passes;
     } plans[] = {
-        {48000, 12500, 0}, {48000, 16000, 1}, {48000, 25000, 0}, {24000, 12500, 1}, {48000, 0, 1}, {96000, 20000, 0},
+        {48000, 12500, 0}, {48000, 16000, 5}, {48000, 25000, 0}, {24000, 12500, 6}, {48000, 0, 5}, {96000, 20000, 0},
     };
 
     for (size_t p = 0; p < sizeof plans / sizeof plans[0]; p++) {
         static channel ch;
-        channel_make(&ch, plans[p].rate, plans[p].width, plans[p].hb ? hb_q15_taps : NULL, plans[p].hb ? HB_TAPS : 0);
+        channel_make(&ch, plans[p].rate, plans[p].width, plans[p].passes);
         assert(ch.plan.valid);
         static runner r;
         runner_init(&r, &ch, DSD_SQUELCH_MARGIN_MIN_DB);
@@ -495,7 +682,7 @@ test_noise_never_opens(void) {
 static void
 test_level_independence(void) {
     static channel ch;
-    channel_make(&ch, 48000, 12500, NULL, 0);
+    channel_make(&ch, 48000, 12500, 0);
     static const double scales[] = {0.01, 1.0, 100.0};
     double q_ref[64] = {0};
     int n_ref = 0;
@@ -525,7 +712,7 @@ test_level_independence(void) {
 static void
 test_quieting_follows_cnr(void) {
     static channel ch;
-    channel_make(&ch, 48000, 12500, NULL, 0);
+    channel_make(&ch, 48000, 12500, 0);
     static const double cnrs[] = {0.0, 6.0, 10.0, 20.0, 30.0};
     double prev = -1e9;
     for (size_t k = 0; k < sizeof cnrs / sizeof cnrs[0]; k++) {
@@ -563,14 +750,14 @@ test_strong_modulation_never_closes(void) {
     static const struct {
         int rate;
         int width;
-        int hb;
+        int passes;
     } plans[] = {
-        {48000, 11200, 0}, {62500, 11800, 1}, {39062, 12400, 1}, {46875, 13000, 1}, {48000, 25000, 0},
+        {48000, 11200, 0}, {62500, 11800, 5}, {39062, 12400, 6}, {46875, 13000, 7}, {48000, 25000, 0},
     };
 
     for (size_t w = 0; w < sizeof plans / sizeof plans[0]; w++) {
         static channel ch;
-        channel_make(&ch, plans[w].rate, plans[w].width, plans[w].hb ? hb_q15_taps : NULL, plans[w].hb ? HB_TAPS : 0);
+        channel_make(&ch, plans[w].rate, plans[w].width, plans[w].passes);
         assert(ch.plan.valid);
         const double dev = rated_deviation_hz((double)plans[w].width);
         double worst = 1e9;
@@ -602,8 +789,8 @@ test_strong_modulation_never_closes(void) {
         printf(
             "strong modulation %d Hz at %d Hz%s (deviation %.0f Hz): never closed at N = 30, lowest Q %.1f dB (%.0f Hz "
             "tone at %+.0f Hz)\n",
-            plans[w].width, plans[w].rate, plans[w].hb ? " behind the half-band" : "", dev, worst, worst_tone,
-            worst_offset);
+            plans[w].width, plans[w].rate, plans[w].passes > 0 ? " behind the half-band cascade" : "", dev, worst,
+            worst_tone, worst_offset);
         assert(worst >= 36.0);
     }
 }
@@ -633,7 +820,7 @@ gate_feed(dsd_noise_squelch* t, const dsd_noise_squelch_plan* plan, double q_db,
 static void
 test_hysteresis(void) {
     static channel ch;
-    channel_make(&ch, 48000, 16000, NULL, 0);
+    channel_make(&ch, 48000, 16000, 0);
     static uint8_t flags[48000];
     dsd_noise_squelch t;
     DSD_MEMSET(&t, 0, sizeof(t));
@@ -681,7 +868,7 @@ test_hysteresis(void) {
 static void
 test_first_window_flags(void) {
     static channel ch;
-    channel_make(&ch, 48000, 12500, NULL, 0);
+    channel_make(&ch, 48000, 12500, 0);
     static runner r;
     runner_init(&r, &ch, 10);
     static source s;
@@ -697,7 +884,7 @@ test_first_window_flags(void) {
 static void
 test_block_cuts(void) {
     static channel ch;
-    channel_make(&ch, 48000, 16000, hb_q15_taps, HB_TAPS);
+    channel_make(&ch, 48000, 16000, 5);
 
     enum { TOTAL = 48000 * 3 };
 
@@ -755,7 +942,7 @@ test_block_cuts(void) {
 static void
 test_zeros_and_no_plan(void) {
     static channel ch;
-    channel_make(&ch, 48000, 12500, NULL, 0);
+    channel_make(&ch, 48000, 12500, 0);
     static float iq[2 * 9600];
     static float d[9600];
     static uint8_t flags[9600];
@@ -796,6 +983,7 @@ main(int argc, char** argv) {
     test_band_rule();
     test_band_pass_response();
     test_calibration();
+    test_calibration_through_cascade();
     test_noise_never_opens();
     test_level_independence();
     test_quieting_follows_cnr();

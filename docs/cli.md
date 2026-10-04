@@ -720,22 +720,25 @@ their sensitivity in.
 - Measurement. The demodulator band-passes the discriminator's output from 3.8 kHz to just under the channel edge (the
   channel filter's -1 dB point less 800 Hz), in 300 Hz sub-bands (at most fifteen) and a second set staggered half a
   sub-band between them, and compares each 40 ms window's power, every 20 ms, with what noise alone puts there through
-  the same filters (calibrated on the channel's own taps). Noise reads about 0 dB; a carrier about its in-channel CNR
-  plus 2-3 dB on a 12.5 kHz channel, so `noise+10` opens at about 7-8 dB CNR there (a wider channel reads more quieting
-  at the same CNR). A strong tone's harmonics land in the band as lines when the channel filter truncates its sidebands;
-  the reading takes the best-quieted band-pass, less 4 dB, where that beats the whole band, so full-deviation tones and
-  speech never close the gate. `docs/testing.md` "Noise squelch design gate" has the figures.
+  the same filters (calibrated on the channel's own taps and the decimation stages ahead of them). Noise reads about 0
+  dB; a carrier about its in-channel CNR plus 2-3 dB on a 12.5 kHz channel, so `noise+10` opens at about 7-8 dB CNR
+  there (a wider channel reads more quieting at the same CNR). A strong tone's harmonics land in the band as lines when
+  the channel filter truncates its sidebands; the reading takes the best-quieted band-pass, less 4 dB, where that beats
+  the whole band, so full-deviation tones and speech never close the gate. `docs/testing.md` "Noise squelch design gate"
+  has the figures.
 - Gating. The gate opens on a window reading N or more and closes on one under max(N - 3, 1.5) dB: 3 dB of
   hysteresis, with the close threshold held to at least 1.5 dB so `noise+3` still closes on noise, which reads about
   0 dB. Like the auto squelch it is decided per sample: the same ramps, analog AGC hold and scan hold apply.
 - Where it runs: the FM monitor (`-fA`, `nfm` rows, `nfm-conventional` targets) on a radio input. A channel with less
-  than 1200 Hz between 3.8 kHz and its edge (the 8 and 10 kHz NFM widths, or a low DSP rate) has no room for the band:
-  the auto squelch runs the setting there, with N as its margin, and the readout says `as auto`. AM has no
-  discriminator: `-fM --squelch noise` stops at startup (`--squelch noise needs an FM channel and -fM is AM: use
-  --squelch auto[+N] or a level.`), a noise setting from an input spec or the config runs as auto on the AM monitor
-  and says so, the radio panel offers no Noise there, an `am` row or `am-conventional` target refuses `--squelch
-  noise`, and an `am` row that inherits a noise default runs it as auto. Like auto, it is off on digital channels and
-  on audio input.
+  than 1200 Hz between 3.8 kHz and its edge (the 8 and 10 kHz NFM widths, or a low DSP rate) has no room for the band,
+  nor has a channel with no channel filter at a DSP rate of 16 kHz or less (with the width unset at those rates, or
+  `DSD_NEO_CHANNEL_LPF=0`), where the decimation stages' gentle roll-off is the only edge and would truncate a wide
+  signal into the band: the auto squelch runs the setting there, with N as its margin, and the readout says `as auto`.
+  AM has no discriminator: `-fM --squelch noise` stops at startup (`--squelch noise needs an FM channel and -fM is AM:
+  use --squelch auto[+N] or a level.`), a noise setting from an input spec or the config runs as auto on the AM monitor
+  and says so, the radio panel offers no Noise there, an `am` row or `am-conventional` target refuses `--squelch noise`,
+  and an `am` row that inherits a noise default runs it as auto. Like auto, it is off on digital channels and on audio
+  input.
 - What it shows: `SQL: noise +10 dB (quieting 23 dB)`, `(starting)` before its first window, `(as auto: floor
   -78.3 dB)` where the auto squelch stands in, and the same `off` readings as auto; the startup banner
   `SQ=noise+10dB`; the Qt/Android radio panel's `dB | Auto | Noise` choice, whose buttons step N.

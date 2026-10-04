@@ -302,6 +302,46 @@ noise_falls_back_to_auto(void) {
     return rc;
 }
 
+/* With no channel filter the half-band cascade's roll-off is the channel's edge. At a channel rate of 16 kHz or less it
+   would truncate a wide signal into the band (the design gate's unfiltered 11.7-16 kHz plans fail), so the tracker
+   stands in there; at 24 kHz the noise squelch runs, its plan modelling the cascade the demod ran. */
+int
+unfiltered_low_rate_runs_as_auto(void) {
+    int rc = 0;
+
+    const struct {
+        int rate_out;
+        int noise;
+    } cases[] = {{12000, 0}, {24000, 1}};
+
+    for (const auto& c : cases) {
+        demod_state* s = new_monitor(0, c.rate_out, 1, 0);
+        if (!s) {
+            return fail("alloc");
+        }
+        s->channel_lpf_enable = 0;
+        s->downsample_passes = 2;
+        const int in_rate = c.rate_out * 4;
+        s->rate_in = in_rate;
+        const std::vector<float> iq = make_signal(in_rate, 0.5, 0.0, 0.0, 0, 0x10FFULL);
+        for (int at = 0; at + 4000 <= in_rate / 2; at += 4000) {
+            (void)run_block(s, &iq[(size_t)at * 2U], 4000);
+        }
+        if (c.noise) {
+            if (!s->squelch_noise_ran || s->squelch_auto_ran || !s->noise_squelch.plan.valid) {
+                rc |= fail("no noise squelch on an unfiltered 24 kHz channel");
+            }
+            if (s->noise_squelch.plan.cascade_len != DSD_NOISE_SQUELCH_CASCADE_TAPS) {
+                rc |= fail("the plan did not model the cascade ahead of the last stage");
+            }
+        } else if (s->squelch_noise_ran || !s->squelch_auto_ran || s->noise_squelch.plan.valid) {
+            rc |= fail("the tracker did not stand in on an unfiltered 12 kHz channel");
+        }
+        free_monitor(s);
+    }
+    return rc;
+}
+
 /* A new context (a retune) or a stream reset starts the noise squelch over: closed, filters and windows empty. Runs
    under NOISE leave the tracker's context and floor alone, so a return to AUTO on its channel keeps its floor. */
 int
@@ -439,6 +479,7 @@ main(void) {
     int rc = 0;
     rc |= fm_flags_follow_the_noise_squelch();
     rc |= noise_falls_back_to_auto();
+    rc |= unfiltered_low_rate_runs_as_auto();
     rc |= context_restarts_the_noise_squelch();
     rc |= post_decimation_carries_noise_flags();
     rc |= flags_do_not_depend_on_block_cuts();

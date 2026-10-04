@@ -1888,55 +1888,60 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   the M17 encoder and EDACS analog voice, which falls back to its no-squelch release watchdog. Tests:
   `DSP_SQUELCH_FLOOR`, `DSP_SQUELCH_AUTO_DEMOD`, `DSP_SYMBOL_REPLAY` (`test_auto_squelch_gates_each_sample`),
   `RUNTIME_SQUELCH`, `FRAME_SYNC_INTERNAL_HELPERS`.
-- The NFM noise squelch's core (issue #518 follow-up) is `src/dsp/nfm_noise_squelch.c`
-  (`<dsd-neo/dsp/nfm_noise_squelch.h>`), pure and on the FM discriminator's output at the channel rate. A plan
-  (`dsd_noise_squelch_plan_design()`) takes the band from 3.8 kHz to the channel taps' -1 dB point less 800 Hz (under
-  0.45 fs; at least 1200 Hz of it, else no valid plan), cuts it into 300 Hz sub-bands (at most fifteen) plus a set
-  staggered half a sub-band between them, order-4 Butterworth band-passes it designs in place, and calibrates each
-  band-pass's noise power on 2 s of fixed-seed complex Gaussian noise through the half-band stage, the channel taps and
-  the discriminator (`tools/noise_squelch_model.py` chose all of it: `docs/testing.md` "Noise squelch design gate").
-  Each 40 ms window, taken every 20 ms at sample-exact boundaries, reads Q = max(Q_sum, Q_max - 4 dB) of quieting; the
-  gate opens at N and closes under max(N - 3, 1.5) dB, one flag per sample as the tracker's, bit-identical whatever the
-  block cuts. Inside `full_demod()` a NOISE setting on the FM monitor with a valid plan arms it in
-  `full_demod_update_channel_state()` (`squelch_noise_wanted()`, the level gate standing aside) and
-  `squelch_noise_run()` flags each output right after `dsd_fm_demod()`, before the post-decimator, de-emphasis and audio
-  filters, which then carry the flags as the tracker's. On an AM channel, or one with no plan (8 and 10 kHz NFM, low DSP
-  rates), `squelch_auto_wanted()` runs the tracker instead, N as its margin. Its plan follows the same
-  `dsd_demod_squelch_plan_key` as the tracker's (designed only when NOISE needs it), and it keeps its own context record
-  (`demod_state::noise_context`), so a spell under NOISE never stores the tracker's floor under another channel; a new
-  context or `dsd_demod_reset_filter_state()` starts it over, closed. The IO layer's status adds which squelch ran and
-  its quieting (`rtl_stream_squelch_status::noise`, `quieting_db`). Tests: `DSP_NFM_NOISE_SQUELCH`,
-  `DSP_NOISE_SQUELCH_DEMOD`, `IO_RTL_SQUELCH_PLUMBING`, the `DECODE_IQ_*_SQL_NOISE_*` cases. The block
-  (`dsd_state::analog_out_f`) collects unsynced samples in a digital session too, monitored or not (the CQPSK
-  symbol-rate output excepted). `dsd_symbol_analog_block_reset()` (`<dsd-neo/dsp/symbol.h>`, decoder thread) drops a
-  part-collected block; app-control and the channel-scan leave call it when the receive family changes. On an RTL front
-  end the switch itself lands later, at the demod thread's next block boundary, so `getSymbol()` also follows the output
-  it reads: an analog-family decoder does not collect a direct (digital) output's samples while the front end has yet to
-  switch, and a move between the monitor output and a direct one drops the part-collected block
-  (`symbol_refresh_rtl_profile()`), so the first block the new family plays holds only its own samples. On the monitor
-  output it follows the monitor the stream publishes the same way (issue #582): while that is the other analog kind
-  (`dsd_rtl_stream_metrics_hook_analog_profile()`, a switch between FM and AM) or, on the analog family, no monitor at
-  all (`..._analog_family_active()` with nothing published: a typed digital `-Y` row's channel, which a leave back to
-  Analog or AM puts the monitor back from), an analog-family decoder collects nothing and drops a part-collected block,
-  whichever path changed the decoder. The demod thread clears the output ring before it publishes a new monitor, so the
-  answer read once per `getSymbol()` never admits the old profile's samples. Without it a whole block of the old
-  profile's audio, which a backlog the decoder catches up on after a block's synchronous playback holds, would play: a
-  block with no boundary in it is one `dsd_analog_rx_block_straddles_boundary()` cannot mute. Nothing published (no
-  front-end hooks, a front end off the analog family) leaves collection as it was; of those only a session with no
-  decode mode switched to Analog reads another profile until the switch lands (the M17 encoder is never the analog
-  family). A front end the stream leaves off the configured monitor for good, such as a scan leave whose fallback width
-  the rate refuses too (the refusal's toast says so), is silent there, as a digital output under an analog decoder is; a
-  refused switch between FM and AM puts the decoder back on the kind the front end kept (`ui_revert_analog_entry()`). A
-  digital decoder on the monitor output (a typed row's, the `-8` source monitor) collects what it reads. Test:
-  `RTL_SYMBOL_CACHE_GENERATION`. `tests/engine/analog_replay.c` (`dsd-neo_test_analog_replay`, the `DECODE_IQ_ANALOG_*`
-  audio cases) captures and scores exactly that output through the hook, and times it with a wrapped RTL stream read
-  hook, so changes to the monitor chain are measured against what a listener hears; back them with `tools/replay_ab.sh
-  --metric analog` evidence (`docs/testing.md`). The host's own options are the `--analog-*` names it lists; other
-  `--analog-*` arguments pass through to the CLI parser. After each delivered block it also reads the received-tone
-  publication (`dsd_state::analog_rx`, which the tap updated from the same block) into its `tone`, `tone_lock_ms` and
+  The block (`dsd_state::analog_out_f`) collects unsynced samples in a digital session too, monitored or not (the
+  CQPSK symbol-rate output excepted). `dsd_symbol_analog_block_reset()` (`<dsd-neo/dsp/symbol.h>`, decoder thread)
+  drops a part-collected block; app-control and the channel-scan leave call it when the receive family changes. On an
+  RTL front end the switch itself lands later, at the demod thread's next block boundary, so `getSymbol()` also
+  follows the output it reads: an analog-family decoder does not collect a direct (digital) output's samples while
+  the front end has yet to switch, and a move between the monitor output and a direct one drops the part-collected
+  block (`symbol_refresh_rtl_profile()`), so the first block the new family plays holds only its own samples.
+  On the monitor output it follows the monitor the stream publishes the same way (issue #582): while that is the
+  other analog kind (`dsd_rtl_stream_metrics_hook_analog_profile()`, a switch between FM and AM) or, on the analog
+  family, no monitor at all (`..._analog_family_active()` with nothing published: a typed digital `-Y` row's channel,
+  which a leave back to Analog or AM puts the monitor back from), an analog-family decoder collects nothing and drops
+  a part-collected block, whichever path changed the decoder. The demod thread clears the output ring before it
+  publishes a new monitor, so the answer read once per `getSymbol()` never admits the old profile's samples. Without
+  it a whole block of the old profile's audio, which a backlog the decoder catches up on after a block's synchronous
+  playback holds, would play: a block with no boundary in it is one `dsd_analog_rx_block_straddles_boundary()` cannot
+  mute. Nothing published (no front-end hooks, a front end off the analog family) leaves collection as it was; of
+  those only a session with no decode mode switched to Analog reads another profile until the switch lands (the M17
+  encoder is never the analog family). A front end the stream leaves off the configured monitor for good, such as a
+  scan leave whose fallback width the rate refuses too (the refusal's toast says so), is silent there, as a digital
+  output under an analog decoder is; a refused switch between FM and AM puts the decoder back on the kind the front end
+  kept (`ui_revert_analog_entry()`). A digital decoder on the monitor output (a typed row's, the `-8`
+  source monitor) collects what it reads. Test: `RTL_SYMBOL_CACHE_GENERATION`.
+  `tests/engine/analog_replay.c` (`dsd-neo_test_analog_replay`, the `DECODE_IQ_ANALOG_*` audio cases) captures and
+  scores exactly that output through the hook, and times it with a wrapped RTL stream read hook, so changes to the
+  monitor chain are measured against what a listener hears; back them with `tools/replay_ab.sh --metric analog` evidence
+  (`docs/testing.md`). The host's own options are the `--analog-*` names it lists; other `--analog-*` arguments pass
+  through to the CLI parser. After each delivered block it also reads the received-tone publication
+  (`dsd_state::analog_rx`, which the tap updated from the same block) into its `tone`, `tone_lock_ms` and
   `tone_lock_pct` fields (`tone=151.4` for CTCSS, `tone=D023N/D047I` for DCS: both spellings in one token), which the
   `DECODE_IQ_ANALOG_REAL_CTCSS_*`, `DECODE_IQ_ANALOG_DCS_023N_HOST` and `DECODE_IQ_ANALOG_DCS_023I_HOST` cases and
   `tools/replay_ab.sh` read.
+- The NFM noise squelch's core (issue #518 follow-up) is `src/dsp/nfm_noise_squelch.c`
+  (`<dsd-neo/dsp/nfm_noise_squelch.h>`), pure and on the FM discriminator's output at the channel rate. A plan
+  (`dsd_noise_squelch_plan_design()`) takes the band from 3.8 kHz to the channel taps' -1 dB point less 800 Hz (under
+  0.45 fs; at least 1200 Hz of it, else no valid plan, as there is none for a channel with no channel filter behind the
+  half-band cascade at a rate of 16 kHz or less, whose roll-off would truncate a wide signal into the band), cuts it
+  into 300 Hz sub-bands (at most fifteen) plus a set staggered half a sub-band between them, order-4 Butterworth
+  band-passes it designs in place, and calibrates each band-pass's noise power on 2 s of fixed-seed complex Gaussian
+  noise through the half-band cascade ahead of the channel filter (the stages `full_demod_apply_halfband_decimation()`
+  runs, passed as `dsd_noise_squelch_stage`s: those before the last as one 63-tap FIR sampled from their composite
+  response, then the last), the channel taps and the discriminator (`tools/noise_squelch_model.py` chose all of it:
+  `docs/testing.md` "Noise squelch design gate"). Each 40 ms window, taken every 20 ms at sample-exact boundaries, reads
+  Q = max(Q_sum, Q_max - 4 dB) of quieting; the gate opens at N and closes under max(N - 3, 1.5) dB, one flag per sample
+  as the tracker's, bit-identical whatever the block cuts. Inside `full_demod()` a NOISE setting on the FM monitor with
+  a valid plan arms it in `full_demod_update_channel_state()` (`squelch_noise_wanted()`, the level gate standing aside)
+  and `squelch_noise_run()` flags each output right after `dsd_fm_demod()`, before the post-decimator, de-emphasis and
+  audio filters, which then carry the flags as the tracker's. On an AM channel, or one with no plan (8 and 10 kHz NFM,
+  low DSP rates, an unfiltered channel at 16 kHz or less), `squelch_auto_wanted()` runs the tracker instead, N as its
+  margin. Its plan follows the same `dsd_demod_squelch_plan_key` as the tracker's, which carries the cascade's pass
+  count (designed only when NOISE needs it), and it keeps its own context record (`demod_state::noise_context`), so a
+  spell under NOISE never stores the tracker's floor under another channel; a new context or
+  `dsd_demod_reset_filter_state()` starts it over, closed. The IO layer's status adds which squelch ran and its quieting
+  (`rtl_stream_squelch_status::noise`, `quieting_db`). Tests: `DSP_NFM_NOISE_SQUELCH`, `DSP_NOISE_SQUELCH_DEMOD`,
+  `IO_RTL_SQUELCH_PLUMBING`, the `DECODE_IQ_*_SQL_NOISE_*` cases.
 - AM envelope detector (issue #524, `demod_pipeline.cpp`, declared in `<dsd-neo/dsp/demod_pipeline.h>`):
   `dsd_am_demod()` outputs 0.25 x clamp(|z| / C - 1, +/-2), C being `demod_state::am_carrier`, a one-pole average of
   |z| with a `DSD_AM_CARRIER_TAU_MS` (50 ms) time constant recomputed per block for the detector's rate (`rate_out`:

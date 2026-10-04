@@ -97,8 +97,9 @@ enum DSD_ATTR_PACKED dsd_digital_resample_mode {
  * Radio and DSP implementation units include this definition directly.
  */
 // NOLINTBEGIN(clang-analyzer-optin.performance.Padding)
-/* What a squelch plan is designed for (issue #518 follow-up): the channel rate, the channel filter's plan and the
-   half-band stage ahead of it (0 none, else its tap count). set is 0 until a plan was designed. */
+/* What a squelch plan is designed for (issue #518 follow-up): the channel rate, the channel filter's plan, the
+   half-band stage ahead of it (0 none, else its tap count) and how many stages the cascade runs. set is 0 until a plan
+   was designed. */
 typedef struct {
     int rate_hz;
     int rate_out;
@@ -106,6 +107,7 @@ typedef struct {
     int width_hz;
     int taps_len;
     int hb_taps;
+    int passes; /* half-band stages ahead of the channel filter */
     int set;
 } dsd_demod_squelch_plan_key;
 

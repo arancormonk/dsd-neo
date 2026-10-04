@@ -1509,6 +1509,7 @@ squelch_plan_key_of(const struct demod_state* d) {
     DSD_MEMSET(&k, 0, sizeof k);
     k.rate_hz = squelch_channel_rate_hz(d);
     k.hb_taps = d->downsample_passes <= 0 ? 0 : (d->downsample_passes == 1 ? 31 : HB_TAPS);
+    k.passes = d->downsample_passes > 0 ? d->downsample_passes : 0;
     if (filtered) {
         k.taps_len = d->channel_lpf_plan_taps_len;
         k.rate_out = d->channel_lpf_plan_rate_out;
@@ -1522,7 +1523,8 @@ squelch_plan_key_of(const struct demod_state* d) {
 static int
 squelch_plan_key_same(const dsd_demod_squelch_plan_key* a, const dsd_demod_squelch_plan_key* b) {
     return a->set && b->set && a->rate_hz == b->rate_hz && a->taps_len == b->taps_len && a->hb_taps == b->hb_taps
-           && a->rate_out == b->rate_out && a->profile == b->profile && a->width_hz == b->width_hz;
+           && a->passes == b->passes && a->rate_out == b->rate_out && a->profile == b->profile
+           && a->width_hz == b->width_hz;
 }
 
 static const float*
@@ -1550,10 +1552,17 @@ squelch_noise_ensure_plan(struct demod_state* d) {
     if (squelch_plan_key_same(&d->noise_plan, &k)) {
         return;
     }
+    /* The cascade as full_demod_apply_halfband_decimation() runs it: the 31-tap stage first, the 15-tap ones after. */
+    dsd_noise_squelch_stage stages[DSD_NOISE_SQUELCH_MAX_STAGES];
+    const int count = k.passes < DSD_NOISE_SQUELCH_MAX_STAGES ? k.passes : DSD_NOISE_SQUELCH_MAX_STAGES;
+    for (int i = 0; i < count; i++) {
+        stages[i].taps = (i == 0) ? hb31_q15_taps : hb_q15_taps;
+        stages[i].len = (i == 0) ? 31 : HB_TAPS;
+    }
     dsd_noise_squelch_plan plan;
     /* A channel with no band above voice has no valid plan: the tracker runs the setting instead. */
-    (void)dsd_noise_squelch_plan_design(&plan, k.taps_len > 0 ? d->channel_lpf_plan_taps : NULL, k.taps_len,
-                                        squelch_plan_hb(&k), k.hb_taps, k.rate_hz);
+    (void)dsd_noise_squelch_plan_design(&plan, k.taps_len > 0 ? d->channel_lpf_plan_taps : NULL, k.taps_len, stages,
+                                        count, k.rate_hz);
     dsd_noise_squelch_set_plan(&d->noise_squelch, &plan);
     d->noise_plan = k;
 }
