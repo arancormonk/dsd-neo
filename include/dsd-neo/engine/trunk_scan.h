@@ -16,6 +16,7 @@
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
+#include <dsd-neo/runtime/scan_row_edit.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -274,6 +275,51 @@ int dsd_engine_trunk_scan_active_is_p25_class(const dsd_state* state);
  * @return The new row count.
  */
 int dsd_engine_trunk_scan_append_p25_idens(const dsd_state* state, struct p25_bandplan_row* rows, int count, int cap);
+
+/**
+ * @brief Edit one field of a target's own settings for the rest of the session ("this channel", issue #518).
+ *
+ * @p session and @p target_id name the target as the frontends saw it (dsd_state::scan_row_session and
+ * trunk_scan_active_id): an edit opened on one coordinator never lands on the next, and one that outlives the visit
+ * still reaches the target it named. @p field is one DSD_SCAN_ROW_FIELD_*, which the target's type must take
+ * (dsd_scan_row_edit_fields(): the gain only on an RTL-family input other than an Airspy); @p action a
+ * dsd_scan_row_edit_action, with @p value for SET. A width the published DSP rate cannot filter is refused, as it would
+ * skip the target at every visit.
+ *
+ * A parked target runs the edit at once: its scope takes the merged options again (the squelch reaches the demod), and
+ * @p out says whether the caller must hand the front end the new width (publish_width) or reopen the stream for the
+ * new gain (restart_gain), and holds the edit before this one for dsd_engine_trunk_scan_restore_target_edit() should
+ * that fail. Any other target runs it from its next visit. Nothing is written to the list or saved.
+ *
+ * Takes the P25 SM tick guard (try-enter) around the change, so the caller must not hold it; decoder thread only. A
+ * width or gain edit of the parked target waits for its retune to land: only the request the caller makes after this
+ * call can be put back should the front end refuse it.
+ *
+ * @return a dsd_scan_row_edit_status: APPLIED, STORED, REFUSED (with @p out->err), STALE, UNAVAILABLE (no trunk scan)
+ * or BUSY (the guard was held, or the parked target is still retuning; nothing changed).
+ */
+int dsd_engine_trunk_scan_edit_target(dsd_opts* opts, dsd_state* state, uint32_t session, const char* target_id,
+                                      uint32_t field, int action, const dsd_scan_row_edit_value* value,
+                                      dsd_scan_row_edit_result* out);
+
+/**
+ * @brief Put the @p fields (DSD_SCAN_ROW_FIELD_*) of a target's session edit back to those of @p edit (the previous
+ * one dsd_engine_trunk_scan_edit_target() returned), keeping its other fields as they are now, and apply it as that
+ * call does. For a caller whose follow-up -- the width request, the stream restart -- failed: an edit of another field
+ * made since stays. Same session and thread rules, no checks of the values beyond those, but the P25 SM tick guard is
+ * waited for (entered, not tried): the rollback must not be left undone because a watchdog tick held it.
+ */
+int dsd_engine_trunk_scan_restore_target_edit(dsd_opts* opts, dsd_state* state, uint32_t session, const char* target_id,
+                                              uint32_t fields, const dsd_scan_row_edit* edit,
+                                              dsd_scan_row_edit_result* out);
+
+/**
+ * @brief dsd_engine_trunk_scan_restore_target_edit() for a caller that holds the P25 SM tick guard already: the
+ * rollback of a gain inside the one hold that covers a failed stream reopen and the recovery start after it.
+ */
+int dsd_engine_trunk_scan_restore_target_edit_locked(dsd_opts* opts, dsd_state* state, uint32_t session,
+                                                     const char* target_id, uint32_t fields,
+                                                     const dsd_scan_row_edit* edit, dsd_scan_row_edit_result* out);
 
 #ifdef __cplusplus
 }

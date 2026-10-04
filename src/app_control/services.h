@@ -436,6 +436,27 @@ int svc_store_analog_width_setting(dsd_opts* opts, const dsd_state* state, int k
 int svc_publish_analog_bandwidth(const dsd_opts* opts, const dsd_state* state, int kind, int configured_before_hz);
 
 /**
+ * @brief svc_publish_analog_bandwidth() for a "this channel" width edit applied on air (issue #518): asks a running RTL
+ * front end for the width now in force, the scan row's own, under the same conditions, and marks the request as the
+ * row edit's (svc_monitor_refusal::row_edit), so a refusal where it lands puts that edit back
+ * (dsd_app_scan_row_edit_settle_refusal()) and never touches the configured width, which the edit did not change.
+ *
+ * @return 1 when a request was queued; 0 when there is nothing to request (no RTL front end running the analog
+ * family of @p kind, a scan row's scope updating, or CQPSK asked for), so no refusal can follow; -1 when the front end
+ * refused it at once.
+ */
+int svc_publish_row_analog_width(const dsd_opts* opts, const dsd_state* state, int kind);
+
+/**
+ * @brief Whether the last monitor request queued is a "this channel" width edit's (svc_publish_row_analog_width())
+ * that has not reached the front end: still queued, refused, or replaced before the demod thread took it, on the
+ * stream running now. A width edit made then is one more the front end has run none of, so the width from before the
+ * first of them stays the one a refusal can have left it on. Read it before queuing the next request. 0 without radio
+ * support.
+ */
+int svc_row_width_request_not_run(void);
+
+/**
  * @brief Note a change of the configured width of analog @p kind from @p configured_before_hz, made after the requests
  * of the command that made it, without asking the front end for anything.
  *
@@ -516,6 +537,7 @@ typedef struct {
     int superseded;   /**< 1: a receive request was queued after this one, from anywhere (a CQPSK toggle, a symbol
                            profile), and decides what the front end runs; one that replaced this request before it
                            reached the front end carries its record on instead, so it never counts. */
+    int row_edit;     /**< 1: a "this channel" width edit's request (svc_publish_row_analog_width()). */
 } svc_monitor_refusal;
 
 /**

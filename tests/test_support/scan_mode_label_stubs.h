@@ -17,5 +17,15 @@ void dsd_test_scan_labels_row_options(const dsd_scan_option_values* values);
 void dsd_test_scan_labels_input_type(int audio_in_type);
 /* The tone policy in force the published options snapshot carries (dsd_tone_filter_mode and its list; NULL: none). */
 void dsd_test_scan_labels_tone_policy(int mode, const dsd_tone_set* set);
+/* The scan row on air the published snapshot pair carries ("this channel", issue #518): @p scanner a
+ * dsd_scan_row_scanner (NONE takes it down, and the scanner with it), the session, row, its fields
+ * (DSD_SCAN_ROW_FIELD_*) and a trunk target's id. Turns the snapshot options' trunk scan or -Y on for it. */
+void dsd_test_scan_labels_scan_row(int scanner, uint32_t session, int row, uint32_t editable, uint32_t listed,
+                                   uint32_t edited, const char* target_id);
+/* The effective tuner gain the published options snapshot carries. */
+void dsd_test_scan_labels_rtl_gain(int gain);
+/* The row scope stamps the published options and state snapshots carry (dsd_opts/dsd_state::scan_row_scope_seq):
+ * equal unless a case reads the pair between the decoder's two publishes. */
+void dsd_test_scan_labels_scope_seq(uint32_t opts_seq, uint32_t state_seq);
 
 #endif

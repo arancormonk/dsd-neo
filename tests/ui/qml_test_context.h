@@ -63,6 +63,7 @@
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/runtime/analog_tones.h>
+#include <dsd-neo/runtime/scan_row_edit.h>
 #include <memory>
 #include "../test_support/qt_test_paths.h"
 #include "decryption_profiles_model.h"
@@ -317,11 +318,82 @@ class TestUiController : public QObject {
  */
 class CommandRecorder : public QObject {
     Q_OBJECT
+    /* Issue #518: the session-edit fields and actions, as CommandBridge publishes them. */
+    Q_PROPERTY(int scanRowFieldSquelch READ scanRowFieldSquelch CONSTANT)
+    Q_PROPERTY(int scanRowFieldWidth READ scanRowFieldWidth CONSTANT)
+    Q_PROPERTY(int scanRowFieldTone READ scanRowFieldTone CONSTANT)
+    Q_PROPERTY(int scanRowFieldGain READ scanRowFieldGain CONSTANT)
+    Q_PROPERTY(int scanRowEditSet READ scanRowEditSet CONSTANT)
+    Q_PROPERTY(int scanRowEditInherit READ scanRowEditInherit CONSTANT)
+    Q_PROPERTY(int scanRowEditReset READ scanRowEditReset CONSTANT)
     quint64 m_next_key_request = 1;
     QString m_last_key_request;
     QVariantList m_last_selection;
 
   public:
+    static int
+    scanRowFieldSquelch() {
+        return DSD_SCAN_ROW_FIELD_SQUELCH;
+    }
+
+    static int
+    scanRowFieldWidth() {
+        return DSD_SCAN_ROW_FIELD_WIDTH;
+    }
+
+    static int
+    scanRowFieldTone() {
+        return DSD_SCAN_ROW_FIELD_TONE;
+    }
+
+    static int
+    scanRowFieldGain() {
+        return DSD_SCAN_ROW_FIELD_GAIN;
+    }
+
+    static int
+    scanRowEditSet() {
+        return DSD_SCAN_ROW_EDIT_SET;
+    }
+
+    static int
+    scanRowEditInherit() {
+        return DSD_SCAN_ROW_EDIT_INHERIT;
+    }
+
+    static int
+    scanRowEditReset() {
+        return DSD_SCAN_ROW_EDIT_RESET;
+    }
+
+    /* The row on air an editor captures (setScanRowContext()), and the session edits it then sends. */
+    Q_INVOKABLE QVariantMap
+    scanRowContext() const {
+        return m_scan_row_context;
+    }
+
+    void
+    setScanRowContext(const QVariantMap& context) {
+        m_scan_row_context = context;
+    }
+
+    Q_INVOKABLE bool
+    editScanRow(const QVariantMap& context, int field, int action, const QVariantMap& value) {
+        m_last_scan_row_edit = {{"context", context}, {"field", field}, {"action", action}, {"value", value}};
+        m_scan_row_edit_calls++;
+        return true;
+    }
+
+    int
+    scanRowEditCalls() const {
+        return m_scan_row_edit_calls;
+    }
+
+    QVariantMap
+    lastScanRowEdit() const {
+        return m_last_scan_row_edit;
+    }
+
     Q_INVOKABLE QVariantMap
     decryptionContext(const QString& target, const QString& epoch) const {
         return {{"session", "1"}, {"tuning", "1"}, {"target", target}, {"keyEpoch", epoch}};
@@ -610,6 +682,14 @@ class CommandRecorder : public QObject {
     }
 
     Q_INVOKABLE bool
+    setAirspy(const QString& key, const QString& value) {
+        (void)key;
+        (void)value;
+        m_airspy_calls++;
+        return true;
+    }
+
+    Q_INVOKABLE bool
     setSquelchDb(double db) {
         m_last_squelch_db = db;
         m_squelch_calls++;
@@ -705,6 +785,7 @@ class CommandRecorder : public QObject {
         m_set_trunking_calls = 0;
         m_last_set_trunking = false;
         m_gain_calls = 0;
+        m_airspy_calls = 0;
         m_last_gain_db = -1;
         m_last_squelch_db = 0.0;
         m_squelch_calls = 0;
@@ -718,6 +799,9 @@ class CommandRecorder : public QObject {
         m_last_tone_filter_mode = -1;
         m_last_tone_filter_list.clear();
         m_tone_filter_calls = 0;
+        m_scan_row_context = {{"active", false}};
+        m_last_scan_row_edit.clear();
+        m_scan_row_edit_calls = 0;
         m_lockout_accepted = true;
         m_lockout_requests.clear();
         m_avoid_clear_requests.clear();
@@ -758,6 +842,11 @@ class CommandRecorder : public QObject {
     int
     gainCalls() const {
         return m_gain_calls;
+    }
+
+    int
+    airspyCalls() const {
+        return m_airspy_calls;
     }
 
     int
@@ -937,6 +1026,10 @@ class CommandRecorder : public QObject {
     int m_set_trunking_calls = 0;
     bool m_last_set_trunking = false;
     int m_gain_calls = 0;
+    int m_airspy_calls = 0;
+    QVariantMap m_scan_row_context{{"active", false}};
+    QVariantMap m_last_scan_row_edit;
+    int m_scan_row_edit_calls = 0;
     bool m_lockout_accepted = true;
     QVariantList m_lockout_requests;
     QStringList m_avoid_clear_requests;
@@ -1753,10 +1846,33 @@ class Setup : public QObject {
         return (m_commands != nullptr) ? m_commands->nextChannelCalls() : -1;
     }
 
+    /** @brief The row on air the "this channel" editors capture, and the session edits they send (issue #518). */
+    Q_INVOKABLE void
+    setScanRowContext(const QVariantMap& context) {
+        if (m_commands != nullptr) {
+            m_commands->setScanRowContext(context);
+        }
+    }
+
+    Q_INVOKABLE int
+    scanRowEditCalls() const {
+        return (m_commands != nullptr) ? m_commands->scanRowEditCalls() : -1;
+    }
+
+    Q_INVOKABLE QVariantMap
+    lastScanRowEdit() const {
+        return (m_commands != nullptr) ? m_commands->lastScanRowEdit() : QVariantMap();
+    }
+
     /** @brief What the radio panel last asked the engine for. */
     Q_INVOKABLE int
     gainCalls() const {
         return (m_commands != nullptr) ? m_commands->gainCalls() : -1;
+    }
+
+    Q_INVOKABLE int
+    airspyCalls() const {
+        return (m_commands != nullptr) ? m_commands->airspyCalls() : -1;
     }
 
     Q_INVOKABLE int
@@ -2117,6 +2233,14 @@ class Setup : public QObject {
         metrics[QStringLiteral("toneFilterRowOverride")] = false;
         metrics[QStringLiteral("toneFilterConfiguredMode")] = 0;
         metrics[QStringLiteral("toneFilterConfiguredList")] = QString();
+        // No scan row on air for the "this channel" editors (#518).
+        metrics[QStringLiteral("scanRowActive")] = false;
+        metrics[QStringLiteral("scanRowLabel")] = QString();
+        metrics[QStringLiteral("scanRowKey")] = QString();
+        metrics[QStringLiteral("scanRowEditable")] = 0;
+        metrics[QStringLiteral("scanRowEdited")] = 0;
+        metrics[QStringLiteral("scanRowListed")] = 0;
+        metrics[QStringLiteral("scanRowSynced")] = true;
         // Whether an automatic controller owns the tuner, which one, and where it
         // points. The two named owners word a message; tunerControlled is the gate.
         metrics[QStringLiteral("tunerControlled")] = false;
@@ -2152,6 +2276,7 @@ class Setup : public QObject {
         metrics[QStringLiteral("analogBandwidthHz")] = 0;
         metrics[QStringLiteral("analogBandwidthDspLimited")] = false;
         metrics[QStringLiteral("analogBandwidthConfiguredHz")] = 0;
+        metrics[QStringLiteral("analogBandwidthSettingHz")] = 0;
         // #524: the configured NFM and AM widths whichever preset runs (0 = default), for the
         // width of the analog kind the configured preset does not run.
         metrics[QStringLiteral("nfmBandwidthConfiguredHz")] = 0;

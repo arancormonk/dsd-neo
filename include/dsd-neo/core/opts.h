@@ -271,6 +271,10 @@ struct dsd_opts {
     float trunk_hangtime; //hangtime in seconds before tuning back to CC
     int scanner_mode;     //experimental -- use the channel map as a conventional scanner, quicker tuning, but no CC
     int trunk_scan_enabled;
+    /* Issue #518: the scan row scope these options last took a row's options under (dsd_scan_mode_options());
+       dsd_state::scan_row_scope_seq carries the same number, so a frontend reading both snapshots can tell they are
+       of one row's visit. Runtime only, never saved. */
+    uint32_t scan_row_scope_seq;
     int trunk_scan_idle_dwell_ms;
     int trunk_scan_activity_hold_ms;
     int scan_voice_only;

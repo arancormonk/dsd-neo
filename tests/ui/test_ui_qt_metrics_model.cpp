@@ -41,6 +41,7 @@
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
+#include <dsd-neo/runtime/scan_row_edit.h>
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -1138,9 +1139,65 @@ test_tone_filter_editor_setting() {
     freeState(&state);
 }
 
+/* Issue #518: the scan row on air for the "this channel" editors, from the app-control scan row view: the name and the
+ * fields it takes, sets in its list and runs an edit of, while the scanner that published it runs. */
+static void
+test_scan_row() {
+    static dsd_opts opts;
+    static dsd_state state;
+    initOpts(&opts);
+    initState(&state);
+    dsd_qt::MetricsModel model;
+    int controls = 0;
+    QObject::connect(&model, &dsd_qt::MetricsModel::controlChanged, [&]() { ++controls; });
+    model.refresh(&opts, &state);
+    expect("no scan row, nothing to edit", !model.scanRowActive() && model.scanRowEditable() == 0);
+    opts.trunk_scan_enabled = 1;
+    state.scan_row_scanner = (uint8_t)DSD_SCAN_ROW_SCANNER_TRUNK_SCAN;
+    state.scan_row_session = 5U;
+    state.scan_row_index = 0;
+    state.scan_row_editable = (uint8_t)(DSD_SCAN_ROW_FIELD_SQUELCH | DSD_SCAN_ROW_FIELD_GAIN);
+    state.scan_row_listed = (uint8_t)DSD_SCAN_ROW_FIELD_SQUELCH;
+    state.scan_row_edited = (uint8_t)DSD_SCAN_ROW_FIELD_GAIN;
+    DSD_SNPRINTF(state.trunk_scan_active_id, sizeof state.trunk_scan_active_id, "%s", "county-p25");
+    const int before = controls;
+    model.refresh(&opts, &state);
+    expect("a trunk target on air",
+           model.scanRowActive() && model.scanRowLabel() == QStringLiteral("county-p25")
+               && model.scanRowEditable() == (DSD_SCAN_ROW_FIELD_SQUELCH | DSD_SCAN_ROW_FIELD_GAIN)
+               && model.scanRowListed() == DSD_SCAN_ROW_FIELD_SQUELCH
+               && model.scanRowEdited() == DSD_SCAN_ROW_FIELD_GAIN);
+    expect("the row announces itself", controls == before + 1);
+    expect("the readings are the row's", model.scanRowSynced());
+    /* The width setting a "this channel" step starts from is the options snapshot's, the row's own while on air. */
+    opts.analog_demod = DSD_ANALOG_DEMOD_FM;
+    opts.analog_nfm_bandwidth_hz = 12500;
+    model.refresh(&opts, &state);
+    expect("the width setting in force", model.analogBandwidthSettingHz() == 12500 && controls == before + 2);
+    opts.analog_nfm_bandwidth_hz = 0;
+    model.refresh(&opts, &state);
+    expect("the default's setting", model.analogBandwidthSettingHz() == 0 && controls == before + 3);
+    /* Options from another row's scope (read between the decoder's two publishes): the row stays on air, and the
+       readings beside it are not its own until the next pair. */
+    state.scan_row_scope_seq = opts.scan_row_scope_seq + 1U;
+    model.refresh(&opts, &state);
+    expect("snapshots of two scopes", model.scanRowActive() && !model.scanRowSynced() && controls == before + 4);
+    state.scan_row_scope_seq = opts.scan_row_scope_seq;
+    model.refresh(&opts, &state);
+    expect("one scope again", model.scanRowSynced() && controls == before + 5);
+    state.scan_row_edited = 0U;
+    model.refresh(&opts, &state);
+    expect("an edit dropped is announced", model.scanRowEdited() == 0 && controls == before + 6);
+    opts.trunk_scan_enabled = 0;
+    model.refresh(&opts, &state);
+    expect("the scanner gone, no row", !model.scanRowActive() && model.scanRowLabel().isEmpty());
+    freeState(&state);
+}
+
 int
 main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
+    test_scan_row();
     test_options_readiness();
     test_decode_clock_readings();
     test_temporary_lockout_metrics();

@@ -41,6 +41,7 @@
 #include "csv_picker.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "dsd-neo/runtime/scan_row_edit.h"
 #include "dsd-neo/ui/menu_core.h"
 #include "menu_actions.h"
 #include "menu_callbacks.h"
@@ -323,6 +324,25 @@ dsd_app_command_set_tone_filter(int32_t mode, const char* list) {
     payload.mode = mode;
     DSD_SNPRINTF(payload.list, sizeof payload.list, "%s", list ? list : "");
     return capture_command(DSD_APP_CMD_TONE_FILTER_SET, &payload, sizeof payload);
+}
+
+int
+dsd_app_command_scan_row_edit(const dsd_app_scan_row_edit_payload* payload) {
+    return capture_command(DSD_APP_CMD_SCAN_ROW_EDIT, payload, payload ? sizeof *payload : 0U);
+}
+
+/* As scan_mode.c answers it: FM for nfm, AM for am. */
+int
+dsd_scan_mode_analog_kind(dsd_scan_mode mode) { // NOLINT(misc-use-internal-linkage)
+    return mode == DSD_SCAN_MODE_NFM ? DSD_ANALOG_DEMOD_FM : (mode == DSD_SCAN_MODE_AM ? DSD_ANALOG_DEMOD_AM : -1);
+}
+
+/* No -Y row has a name in these tests. */
+const char*
+dsd_state_trunk_lcn_name_get(const dsd_state* state, size_t index) { // NOLINT(misc-use-internal-linkage)
+    (void)state;
+    (void)index;
+    return NULL;
 }
 
 int
@@ -2357,6 +2377,186 @@ test_nfm_bandwidth_prompt_submits_as_typed(void) {
     return rc;
 }
 
+static dsd_app_scan_row_edit_payload
+cmd_scan_row_edit(void) {
+    dsd_app_scan_row_edit_payload p;
+    assert(g_cmd.id == DSD_APP_CMD_SCAN_ROW_EDIT && g_cmd.n == sizeof p);
+    DSD_MEMCPY(&p, g_cmd.data, sizeof p);
+    return p;
+}
+
+/* Issue #518: under a scan row that takes a session edit of the row's setting, the squelch, width, gain and tone rows
+   open the scope chooser: the default goes on to the row's own prompt; this channel prompts on what the row runs and
+   posts a session edit naming the row; "use the default" is offered when the list sets the field and "back to the list
+   value" when the row runs an edit, each posted with no prompt. Without such a row, or for a width of the other
+   demodulator, the row's own prompt opens at once. */
+static int
+test_scan_row_scope_chooser(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    UiCtx ctx = make_ctx(&opts, &state);
+    int rc = 0;
+
+    /* No scan row: straight to the prompt. */
+    dsd_test_scan_labels_scan_row(DSD_SCAN_ROW_SCANNER_NONE, 0U, -1, 0U, 0U, 0U, NULL);
+    reset_capture();
+    rtl_set_sql(&ctx);
+    rc |= expect_int("no row: squelch prompt at once", g_chooser.calls == 0 && g_prompt.calls == 1, 1);
+    rc |= expect_str("no row: the default prompt", g_prompt.title, "Squelch (dB; 0 = off)");
+
+    /* A trunk target (nfm) that sets its own squelch and width, with a squelch edit running. */
+    dsd_test_scan_labels_set(1, DSD_SCAN_MODE_NFM);
+    const uint32_t editable =
+        DSD_SCAN_ROW_FIELD_SQUELCH | DSD_SCAN_ROW_FIELD_WIDTH | DSD_SCAN_ROW_FIELD_TONE | DSD_SCAN_ROW_FIELD_GAIN;
+    dsd_test_scan_labels_scan_row(DSD_SCAN_ROW_SCANNER_TRUNK_SCAN, 42U, 3, editable,
+                                  DSD_SCAN_ROW_FIELD_SQUELCH | DSD_SCAN_ROW_FIELD_WIDTH, DSD_SCAN_ROW_FIELD_SQUELCH,
+                                  "fire");
+    dsd_scan_option_values row = {0};
+    row.present = DSD_SCAN_OPT_SQUELCH | DSD_SCAN_OPT_BANDWIDTH;
+    row.squelch_db = -55;
+    row.channel_bw_hz = 12500;
+    dsd_test_scan_labels_row_options(&row);
+
+    reset_capture();
+    rtl_set_sql(&ctx);
+    rc |= expect_str("squelch scope title", g_chooser.title, "Squelch");
+    rc |= expect_int("squelch scope rows", g_chooser.n, 4);
+    rc |= expect_str("scope default", g_chooser.labels[0], "All channels (default)...");
+    rc |= expect_str("scope this channel", g_chooser.labels[1], "This channel (fire)...");
+    rc |= expect_str("scope inherit", g_chooser.labels[2], "This channel: use the default");
+    rc |= expect_str("scope reset", g_chooser.labels[3], "This channel: back to the list value");
+    rc |= expect_int("scope opens without posting", g_cmd.calls + g_prompt.calls, 0);
+
+    g_chooser.on_done(g_chooser.user, 1);
+    rc |= expect_str("this channel squelch prompt", g_prompt.title, "Squelch on this channel (dB, -100..0; 0 = off)");
+    rc |= expect_int("this channel squelch prompt opens on the row's", g_prompt.initial_int, -55);
+    g_prompt.int_cb(g_prompt.user, 1, -48);
+    dsd_app_scan_row_edit_payload p = cmd_scan_row_edit();
+    rc |= expect_int("squelch edit names the row",
+                     p.session == 42U && p.scanner == DSD_SCAN_ROW_SCANNER_TRUNK_SCAN && p.row == 3
+                         && strcmp(p.target_id, "fire") == 0 && p.mode == DSD_SCAN_MODE_NFM,
+                     1);
+    rc |= expect_int(
+        "squelch edit set -48",
+        p.field == (int32_t)DSD_SCAN_ROW_FIELD_SQUELCH && p.action == DSD_SCAN_ROW_EDIT_SET && p.squelch_db == -48, 1);
+
+    reset_capture();
+    rtl_set_sql(&ctx);
+    g_chooser.on_done(g_chooser.user, 2);
+    p = cmd_scan_row_edit();
+    rc |= expect_int("inherit posted at once", g_prompt.calls == 0 && p.action == DSD_SCAN_ROW_EDIT_INHERIT, 1);
+    reset_capture();
+    rtl_set_sql(&ctx);
+    g_chooser.on_done(g_chooser.user, 3);
+    p = cmd_scan_row_edit();
+    rc |= expect_int("reset posted at once", g_prompt.calls == 0 && p.action == DSD_SCAN_ROW_EDIT_RESET, 1);
+    reset_capture();
+    rtl_set_sql(&ctx);
+    g_chooser.on_done(g_chooser.user, 0);
+    rc |= expect_str("default goes to the row's own prompt", g_prompt.title, "Squelch (dB; 0 = off)");
+    rc |= expect_int("default posts nothing yet", g_cmd.calls, 0);
+    reset_capture();
+    rtl_set_sql(&ctx);
+    g_chooser.on_done(g_chooser.user, -1);
+    g_chooser.on_done(g_chooser.user, 4);
+    rc |= expect_int("cancelled scope posts nothing", g_cmd.calls + g_prompt.calls, 0);
+
+    /* The NFM width: no edit running, so no reset row; the AM width row is the other demodulator's. */
+    reset_capture();
+    rtl_set_nfm_bw(&ctx);
+    rc |= expect_int("nfm width scope rows", g_chooser.n, 3);
+    g_chooser.on_done(g_chooser.user, 1);
+    rc |= expect_str("this channel width prompt", g_prompt.title, "NFM bandwidth Hz on this channel (8000..25000)");
+    rc |= expect_int("this channel width opens on the row's", g_prompt.initial_int, 12500);
+    g_prompt.int_cb(g_prompt.user, 1, 16000);
+    p = cmd_scan_row_edit();
+    rc |= expect_int("width edit", p.field == (int32_t)DSD_SCAN_ROW_FIELD_WIDTH && p.width_hz == 16000, 1);
+    reset_capture();
+    rtl_set_am_bw(&ctx);
+    rc |= expect_int("am width under an nfm row: own prompt", g_chooser.calls == 0 && g_prompt.calls == 1, 1);
+
+    /* The gain: the list sets none, so two rows; the prompt opens on the gain in force. */
+    dsd_test_scan_labels_rtl_gain(25);
+    reset_capture();
+    rtl_set_gain(&ctx);
+    rc |= expect_int("gain scope rows", g_chooser.n, 2);
+    g_chooser.on_done(g_chooser.user, 1);
+    rc |= expect_int("this channel gain opens on the gain in force", g_prompt.initial_int, 25);
+    g_prompt.int_cb(g_prompt.user, 1, 0);
+    p = cmd_scan_row_edit();
+    rc |= expect_int("gain edit AGC", p.field == (int32_t)DSD_SCAN_ROW_FIELD_GAIN && p.gain_db == 0, 1);
+    g_prompt.int_cb = NULL;
+    dsd_test_scan_labels_rtl_gain(0);
+
+    /* The tone policy: a mode picker, then the list. */
+    reset_capture();
+    act_tone_filter(&ctx);
+    rc |= expect_str("tone scope title", g_chooser.title, "Tone filter");
+    g_chooser.on_done(g_chooser.user, 1);
+    rc |= expect_str("this channel tone picker", g_chooser.title, "Tone filter on this channel");
+    rc |= expect_int("this channel tone picker rows", g_chooser.n, 3);
+    g_chooser.on_done(g_chooser.user, DSD_TONE_FILTER_BLOCK);
+    rc |= expect_str("this channel tone list prompt", g_prompt.title,
+                     "Block on this channel (/ between, e.g. 67.0/D023N)");
+    g_prompt.str_cb(g_prompt.user, "100.0/D023N");
+    p = cmd_scan_row_edit();
+    rc |= expect_int("tone edit block",
+                     p.field == (int32_t)DSD_SCAN_ROW_FIELD_TONE && p.tone_mode == DSD_TONE_FILTER_BLOCK
+                         && strcmp(p.tone_list, "100.0/D023N") == 0,
+                     1);
+    /* Off keeps the list the row runs, so allow or block takes it up again. */
+    dsd_tone_set row_list;
+    rc |= expect_int("row list parses", dsd_tone_set_parse("100.0/D023N", &row_list, NULL, 0U), 0);
+    dsd_test_scan_labels_tone_policy(DSD_TONE_FILTER_ALLOW, &row_list);
+    reset_capture();
+    act_tone_filter(&ctx);
+    g_chooser.on_done(g_chooser.user, 1);
+    g_chooser.on_done(g_chooser.user, DSD_TONE_FILTER_OFF);
+    p = cmd_scan_row_edit();
+    rc |= expect_int("tone edit off, no prompt", g_prompt.calls == 0 && p.tone_mode == DSD_TONE_FILTER_OFF, 1);
+    rc |= expect_str("tone edit off keeps the row's list", p.tone_list, "100.0/D023N");
+    dsd_test_scan_labels_tone_policy(DSD_TONE_FILTER_OFF, NULL);
+
+    /* The options snapshot is of another row's scope (read between the decoder's two publishes): no chooser to start
+       from values that are not this row's, the default's prompt as with no row on air. */
+    dsd_test_scan_labels_scope_seq(7U, 8U);
+    reset_capture();
+    rtl_set_sql(&ctx);
+    rc |= expect_int("snapshots of two rows: the default prompt", g_chooser.calls == 0 && g_prompt.calls == 1, 1);
+    rc |= expect_str("snapshots of two rows: its title", g_prompt.title, "Squelch (dB; 0 = off)");
+    dsd_test_scan_labels_scope_seq(0U, 0U);
+
+    /* The scan moves on between the chooser and the prompt: the prompt opens on what the row named ran, not on the row
+       now on air, so accepting it does not hand the first row the second one's value. */
+    reset_capture();
+    rtl_set_sql(&ctx);
+    dsd_scan_option_values other = row;
+    other.squelch_db = -80;
+    dsd_test_scan_labels_row_options(&other);
+    dsd_test_scan_labels_scan_row(DSD_SCAN_ROW_SCANNER_TRUNK_SCAN, 42U, 4, editable, DSD_SCAN_ROW_FIELD_SQUELCH, 0U,
+                                  "county");
+    g_chooser.on_done(g_chooser.user, 1);
+    rc |= expect_int("prompt opens on the row named", g_prompt.initial_int, -55);
+    g_prompt.int_cb(g_prompt.user, 1, -55);
+    p = cmd_scan_row_edit();
+    rc |= expect_int("the edit goes to the row named", p.row == 3 && strcmp(p.target_id, "fire") == 0, 1);
+    dsd_test_scan_labels_row_options(&row);
+    dsd_test_scan_labels_scan_row(DSD_SCAN_ROW_SCANNER_TRUNK_SCAN, 42U, 3, editable,
+                                  DSD_SCAN_ROW_FIELD_SQUELCH | DSD_SCAN_ROW_FIELD_WIDTH, DSD_SCAN_ROW_FIELD_SQUELCH,
+                                  "fire");
+
+    /* A field the row does not take: its own prompt. */
+    dsd_test_scan_labels_scan_row(DSD_SCAN_ROW_SCANNER_TRUNK_SCAN, 42U, 3, DSD_SCAN_ROW_FIELD_SQUELCH, 0U, 0U, "fire");
+    reset_capture();
+    rtl_set_gain(&ctx);
+    rc |= expect_int("gain the row does not take: own prompt", g_chooser.calls == 0 && g_prompt.calls == 1, 1);
+
+    dsd_test_scan_labels_scan_row(DSD_SCAN_ROW_SCANNER_NONE, 0U, -1, 0U, 0U, 0U, NULL);
+    dsd_test_scan_labels_row_options(NULL);
+    dsd_test_scan_labels_set(1, DSD_SCAN_MODE_INHERIT);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -2365,6 +2565,7 @@ main(void) {
     rc |= test_nfm_bandwidth_row_follows_the_configured_preset();
     rc |= test_nfm_bandwidth_prompt_submits_as_typed();
     rc |= test_tone_filter_editor();
+    rc |= test_scan_row_scope_chooser();
     rc |= test_p25_bandplan_actions();
     rc |= test_config_profile_and_env_actions();
     rc |= test_io_actions_and_choosers();

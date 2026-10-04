@@ -83,7 +83,10 @@ static struct {
     int scan_leave;
     int refused_at_once;
     unsigned int stream_starts;
-} g_monitor_request = {0, 0U, 0, 0, 0, {-1, -1}, 0, 0, 0U};
+    /* A "this channel" width edit's request (svc_publish_row_analog_width()): a refusal puts that edit back, never the
+       configured width. */
+    int row_edit;
+} g_monitor_request = {0, 0U, 0, 0, 0, {-1, -1}, 0, 0, 0U, 0};
 
 /* A running RTL-family stream the decoder's requests reach. */
 static int
@@ -159,6 +162,7 @@ symbol_profile_request_monitor(const dsd_opts* opts, int configured_before_hz, i
     symbol_profile_record_request(opts, rtl_stream_receive_request_seq(), configured_before_hz, earlier_not_run);
     g_monitor_request.scan_leave = carries_leave;
     g_monitor_request.refused_at_once = 0;
+    g_monitor_request.row_edit = 0;
     return 0;
 }
 
@@ -392,6 +396,36 @@ svc_publish_analog_bandwidth(const dsd_opts* opts, const dsd_state* state, int k
 #endif
 }
 
+int
+svc_publish_row_analog_width(const dsd_opts* opts, const dsd_state* state, int kind) {
+#ifdef USE_RADIO
+    if (!opts || !state || !symbol_profile_rtl_running(opts, state) || !dsd_opts_is_analog_family(opts)
+        || opts->analog_demod != kind || dsd_scan_mode_updating(state) || rtl_stream_requested_cqpsk()) {
+        return 0;
+    }
+    /* No configured width changed: the request carries none to put back (-1). */
+    if (symbol_profile_request_monitor(opts, -1, 0) != 0) {
+        return -1;
+    }
+    g_monitor_request.row_edit = 1;
+    return 1;
+#else
+    (void)opts;
+    (void)state;
+    (void)kind;
+    return 0;
+#endif
+}
+
+int
+svc_row_width_request_not_run(void) {
+#ifdef USE_RADIO
+    return g_monitor_request.row_edit && symbol_profile_earlier_not_run();
+#else
+    return 0;
+#endif
+}
+
 void
 svc_note_analog_width_change(const dsd_opts* opts, const dsd_state* state, int kind, int configured_before_hz) {
 #ifdef USE_RADIO
@@ -477,6 +511,7 @@ symbol_profile_read_refusal(int outcome, svc_monitor_refusal* refusal) {
     refusal->kept_analog = 1;
     refusal->kept_kind = g_monitor_request.kind;
     refusal->scan_leave = g_monitor_request.scan_leave;
+    refusal->row_edit = g_monitor_request.row_edit;
     if (g_monitor_request.refused_at_once) {
         return symbol_profile_published_kept(refusal);
     }

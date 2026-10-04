@@ -215,6 +215,12 @@ enum dsd_app_command_id {
     // own tone options is on air the row keeps its own, and the toast says the row overrides the edit. Applied from the
     // monitor's next read of audio. Not coalescible: each queued edit is judged, and applied or refused, on its own.
     DSD_APP_CMD_TONE_FILTER_SET = 510, // payload: dsd_app_tone_filter_payload
+    // Session edit of one field of the scan row on air ("this channel", issue #518): the squelch, channel width, tone
+    // policy or (a --trunk-scan target's) tuner gain the row runs for the rest of the session, over what its list
+    // sets; the configured defaults are not touched and nothing is saved. Names the row the editor opened on (scanner,
+    // session, row, target id), so an edit that outlives the visit still reaches that row, and one from an earlier
+    // scan is refused. Not coalescible, and no scoped (suspend/resume) command: it changes the row's options itself.
+    DSD_APP_CMD_SCAN_ROW_EDIT = 511, // payload: dsd_app_scan_row_edit_payload
 
     // Pulse audio device selection
     DSD_APP_CMD_PULSE_OUT_SET = 520, // payload: char name[]
@@ -515,6 +521,28 @@ typedef struct {
     char list[DSD_APP_TONE_FILTER_LIST_SIZE]; /* NUL-terminated; "" for none */
 } dsd_app_tone_filter_payload;
 
+/** DSD_APP_CMD_SCAN_ROW_EDIT ("this channel", issue #518). The row as the frontends saw it: @c scanner, @c session and
+ * @c row are dsd_state::scan_row_scanner, scan_row_session and scan_row_index, and @c target_id a --trunk-scan target's
+ * id (trunk_scan_active_id; "" for a -Y row). @c field is one DSD_SCAN_ROW_FIELD_* and @c action a
+ * dsd_scan_row_edit_action (runtime/scan_row_edit.h); for SET the field's value: @c squelch_db (whole dB, -100..0,
+ * 0 = off), @c width_hz, @c tone_mode with @c tone_list as typed (checked by dsd_tone_filter_check()), or @c gain_db
+ * (whole dB, 0 = AGC). @c mode is the row's dsd_scan_mode as the editor saw it, for the notice only (the engine checks the
+ * edit against the row's own). */
+typedef struct {
+    uint32_t session;
+    int32_t scanner;
+    int32_t row;
+    int32_t mode;
+    int32_t field;
+    int32_t action;
+    int32_t squelch_db;
+    int32_t width_hz;
+    int32_t tone_mode;
+    int32_t gain_db;
+    char target_id[64];
+    char tone_list[DSD_APP_TONE_FILTER_LIST_SIZE];
+} dsd_app_scan_row_edit_payload;
+
 typedef enum {
     DSD_APP_COMMAND_SUBMIT_REJECTED = -1,
     DSD_APP_COMMAND_SUBMIT_QUEUED = 1,
@@ -564,6 +592,8 @@ int dsd_app_command_set_tone_filter(int32_t mode, const char* list);
  * decoder thread when the edit runs: the terminal's Off, which keeps the list the way --no-tone-filter keeps its own.
  * Allow and block are refused there when no list is configured. */
 int dsd_app_command_set_tone_filter_mode(int32_t mode);
+/** Submit DSD_APP_CMD_SCAN_ROW_EDIT. A payload whose strings are not NUL-terminated is rejected here. */
+int dsd_app_command_scan_row_edit(const dsd_app_scan_row_edit_payload* payload);
 int dsd_app_command_set_rr_apply(const dsd_app_rr_apply_payload* payload);
 int dsd_app_command_set_rr_account(const dsd_app_rr_account_payload* payload);
 

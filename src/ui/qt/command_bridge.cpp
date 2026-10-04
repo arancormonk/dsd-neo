@@ -30,8 +30,12 @@
 #pragma GCC diagnostic pop
 #endif
 #include <dsd-neo/app_control/history.h>
+#include <dsd-neo/app_control/scan_row_view.h>
+#include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/core/analog_tone.h>
+#include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/runtime/scan_row_edit.h>
 #include <stdint.h>
 
 #include <atomic>
@@ -477,6 +481,96 @@ CommandBridge::acknowledgeDecryptionResult(quint64 requestId) {
     if (requestId == m_pendingKeyRequest) {
         m_pendingKeyRequest = 0;
     }
+}
+
+int
+CommandBridge::scanRowFieldSquelch() {
+    return DSD_SCAN_ROW_FIELD_SQUELCH;
+}
+
+int
+CommandBridge::scanRowFieldWidth() {
+    return DSD_SCAN_ROW_FIELD_WIDTH;
+}
+
+int
+CommandBridge::scanRowFieldTone() {
+    return DSD_SCAN_ROW_FIELD_TONE;
+}
+
+int
+CommandBridge::scanRowFieldGain() {
+    return DSD_SCAN_ROW_FIELD_GAIN;
+}
+
+int
+CommandBridge::scanRowEditSet() {
+    return DSD_SCAN_ROW_EDIT_SET;
+}
+
+int
+CommandBridge::scanRowEditInherit() {
+    return DSD_SCAN_ROW_EDIT_INHERIT;
+}
+
+int
+CommandBridge::scanRowEditReset() {
+    return DSD_SCAN_ROW_EDIT_RESET;
+}
+
+QVariantMap
+// cppcheck-suppress functionStatic -- Q_INVOKABLE members cannot be static (Qt meta-object)
+CommandBridge::scanRowContext() const {
+    const dsd_opts* opts = dsd_app_get_latest_opts_snapshot();
+    dsd_app_scan_row_view view{};
+    (void)dsd_app_scan_row_view_get(opts, dsd_app_get_latest_snapshot(), &view);
+    /* The tone policy below comes from the options snapshot: only one taken under this row's scope is the row's. */
+    if (!view.active || !view.opts_match) {
+        return {{"active", false}};
+    }
+    /* The tone policy the row runs now, its own or the configured one it follows: what a "this channel" tone editor
+       opens on. */
+    char list[DSD_APP_TONE_FILTER_LIST_SIZE] = "";
+    (void)dsd_tone_set_format(&opts->analog_tone_set, list, sizeof list);
+    return {{"active", true},
+            {"scanner", view.scanner},
+            {"session", static_cast<qulonglong>(view.session)},
+            {"row", view.row},
+            {"mode", static_cast<int>(view.mode)},
+            {"target", QString::fromUtf8(view.target_id)},
+            {"label", QString::fromUtf8(view.label)},
+            {"key", QStringLiteral("%1:%2:%3").arg(view.scanner).arg(view.session).arg(view.row)},
+            {"toneMode", opts->analog_tone_filter},
+            {"toneList", QString::fromUtf8(list)}};
+}
+
+bool
+// cppcheck-suppress functionStatic -- Q_INVOKABLE members cannot be static (Qt meta-object)
+CommandBridge::editScanRow(const QVariantMap& context, int field, int action, const QVariantMap& value) const {
+    if (!context.value("active").toBool()) {
+        return false;
+    }
+    dsd_app_scan_row_edit_payload payload = {};
+    payload.session = static_cast<uint32_t>(context.value("session").toULongLong());
+    payload.scanner = context.value("scanner").toInt();
+    payload.row = context.value("row").toInt();
+    payload.mode = context.value("mode").toInt();
+    payload.field = field;
+    payload.action = action;
+    payload.squelch_db = value.value("squelchDb").toInt();
+    payload.width_hz = value.value("widthHz").toInt();
+    payload.tone_mode = value.value("toneMode").toInt();
+    payload.gain_db = value.value("gainDb").toInt();
+    const QByteArray target = context.value("target").toString().toUtf8();
+    const QByteArray list = value.value("toneList").toString().toUtf8();
+    /* Text that would reach the decoder cut short, or not fit, is refused here. */
+    if (target.contains('\0') || list.contains('\0') || static_cast<size_t>(target.size()) >= sizeof(payload.target_id)
+        || static_cast<size_t>(list.size()) >= sizeof(payload.tone_list)) {
+        return false;
+    }
+    std::memcpy(payload.target_id, target.constData(), static_cast<size_t>(target.size()));
+    std::memcpy(payload.tone_list, list.constData(), static_cast<size_t>(list.size()));
+    return accepted(dsd_app_command_scan_row_edit(&payload));
 }
 
 QVariantMap

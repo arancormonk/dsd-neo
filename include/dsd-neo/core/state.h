@@ -1830,6 +1830,19 @@ struct dsd_state {
     int16_t trunk_scan_configured_gain;     /**< dB in driver units; 0 = AGC */
     uint8_t trunk_scan_gain_override;       /**< 1 = the parked target runs its own rtl_gain */
     uint8_t trunk_scan_configured_autogain; /**< 1 = the configured tuner autogain is on */
+    /* The scan row on air, for the "this channel" editors (issue #518): the scanner that owns it (dsd_scan_row_scanner,
+     * 0 = none), the scan session (a new one for every trunk-scan coordinator and -Y scan, so an edit opened on one never
+     * lands on the next), the row (a --trunk-scan target's index, a -Y channel map row), the session-edit fields
+     * (DSD_SCAN_ROW_FIELD_*, runtime/scan_row_edit.h) it can take, those it runs a session edit of, and those its list
+     * row sets itself. Written by the trunk-scan coordinator and the -Y channel scan beside the fields above. */
+    uint32_t scan_row_session;
+    int32_t scan_row_index;
+    uint8_t scan_row_scanner;
+    uint8_t scan_row_editable;
+    uint8_t scan_row_edited;
+    uint8_t scan_row_listed;
+    /* The number dsd_opts::scan_row_scope_seq took when the row's options were installed (dsd_scan_mode_options()). */
+    uint32_t scan_row_scope_seq;
     /* Voice-gated scan (issue #381): per-visit gate memory for -Y. Arrive/sync/voice
      * anchors are monotonic seconds (-1 = unset this visit); roll_seen restarts the
      * visit on external lcn_freq_roll changes; hold_seen is lcn_scan_hold as of the

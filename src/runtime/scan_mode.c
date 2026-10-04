@@ -842,6 +842,9 @@ scan_scope_apply(dsd_opts* opts, dsd_state* state, const scan_scope* scope) {
     scan_options_apply(opts, state, &scope->options);
 }
 
+/* The last number dsd_scan_mode_options() stamped (decoder thread only); never 0, which no install stamps. */
+static uint32_t g_scan_scope_seq;
+
 int
 dsd_scan_mode_options(dsd_opts* opts, dsd_state* state, const dsd_scan_option_values* values) {
     scan_scope* scope = scan_scope_get(state);
@@ -852,6 +855,11 @@ dsd_scan_mode_options(dsd_opts* opts, dsd_state* state, const dsd_scan_option_va
     if (values) {
         scope->options = *values;
     }
+    /* The options and the row on air reach the frontends in two snapshots: the same number in both says the options
+       are this row's (dsd_app_scan_row_view::opts_match), whichever was published first. */
+    g_scan_scope_seq = (g_scan_scope_seq % UINT32_MAX) + 1U; /* 1..UINT32_MAX, wrapping past 0 */
+    opts->scan_row_scope_seq = g_scan_scope_seq;
+    state->scan_row_scope_seq = g_scan_scope_seq;
     if (!scope->suspended) {
         const double squelch_before = opts->rtl_squelch_level;
         scan_settings_restore_row_opts(&scope->configured, opts);

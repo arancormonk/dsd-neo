@@ -370,6 +370,27 @@ During scanning:
   scan runs. While the parked target has its own `rtl_gain`, that gain stays in
   force: the edit takes effect when an inheriting target is on air, the toast says `Default RTL gain -> 20; this channel
   overrides it (10)`, and the menu row reads `Gain... [20] (target: 10)`.
+- **Live per-channel edits.** The parked target's own squelch, channel width (`nfm-conventional` and `am-conventional`
+  targets), tone policy (`nfm-conventional`) and tuner gain (on an RTL-SDR, rtl_tcp or SoapySDR input; not an Airspy,
+  whose gain the scan does not set per target) can be changed for the rest of the session, over what its `options`
+  column and `rtl_gain` set. In the terminal the Squelch, NFM/AM bandwidth, Gain and Tone filter rows then open a
+  chooser first: `All channels (default)...` edits the configured default as above; `This channel (county-p25)...`
+  prompts on what the target runs now; `This channel: use the default` (offered when the target's list sets the field)
+  makes it follow the configured default; `This channel: back to the list value` (offered when it runs an edit) drops
+  the edit. The Qt and Android Radio and Tone filter sheets offer the same as `All channels | This channel`; in `This
+  channel` a control the target takes no edit of (and an Airspy's device panel) is held rather than left to change the
+  default. The edit goes to the target named when the editor opened: on air it applies at once (a squelch reaches the
+  demodulator; a width reaches the front end or, on audio input, the rigctl peer that demodulates it, which is asked for
+  the target's own passband, or for `-B` once it follows the default; a gain applies through a stream restart), and the
+  toast says `This channel (county-p25): squelch -55 dB for this session`. If the scan has moved on meanwhile, the edit
+  waits for that target's next visit (`... from its next visit`), and one from a scan that has since ended is refused
+  (`Refused: the scan changed; nothing applied`). A width or gain edit made while the target's retune is still landing
+  answers `Busy: the scan is retuning; try again`. A width the running DSP rate cannot filter is refused, as is a field
+  the target's type does not take. A width the front end or the peer then refuses, and a gain whose restart fails, put
+  that setting back alone (an edit of another setting made since stays), the configured defaults untouched; a failed
+  restart starts the input again without an I/Q capture, which would write over its recording. Every later visit keeps
+  the edit, it ends with the scan, and nothing is written to the target file or saved by Config->Save. On audio input
+  with a rigctl peer the width editors are not offered yet (they need a radio input; issue #621).
 - P25, DMR, and NXDN trunk targets stay parked while their trunking state machine is following an active call
   (NXDN stays parked while following an active grant and returns to its control channel at hangtime/release).
   The protocol's hangtime and release rules decide when call following ends; audio silence alone does not start

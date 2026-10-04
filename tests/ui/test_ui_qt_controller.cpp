@@ -31,6 +31,7 @@
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -38,6 +39,7 @@
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/decode_clock.h>
+#include <dsd-neo/runtime/scan_row_edit.h>
 #include <functional>
 #include <initializer_list>
 #include <memory>
@@ -506,6 +508,75 @@ test_tone_filter_bridge() {
     freeState(&state);
 }
 
+/* Issue #518: the bridge's "this channel" edits. The constants are the engine's; an editor opened with no row on air
+ * sends nothing; an edit naming a row is queued as a DSD_APP_CMD_SCAN_ROW_EDIT carrying the row and the value, which the
+ * decoder refuses with no scan running; text that would not fit is refused before anything is queued. */
+static void
+test_scan_row_edit_bridge() {
+    dsd_qt::CommandBridge bridge;
+    static dsd_opts opts;
+    static dsd_state state;
+    check(dsd_qt::CommandBridge::scanRowFieldSquelch() == DSD_SCAN_ROW_FIELD_SQUELCH);
+    check(dsd_qt::CommandBridge::scanRowFieldWidth() == DSD_SCAN_ROW_FIELD_WIDTH);
+    check(dsd_qt::CommandBridge::scanRowFieldTone() == DSD_SCAN_ROW_FIELD_TONE);
+    check(dsd_qt::CommandBridge::scanRowFieldGain() == DSD_SCAN_ROW_FIELD_GAIN);
+    check(dsd_qt::CommandBridge::scanRowEditSet() == DSD_SCAN_ROW_EDIT_SET);
+    check(dsd_qt::CommandBridge::scanRowEditInherit() == DSD_SCAN_ROW_EDIT_INHERIT);
+    check(dsd_qt::CommandBridge::scanRowEditReset() == DSD_SCAN_ROW_EDIT_RESET);
+    dsd_app_frontend_runtime_start(nullptr, nullptr);
+    check(!bridge.scanRowContext().value("active").toBool());
+    check(!bridge.editScanRow({{"active", false}}, DSD_SCAN_ROW_FIELD_SQUELCH, DSD_SCAN_ROW_EDIT_SET,
+                              {{"squelchDb", -50}}));
+
+    /* A target on air in the published pair: the context carries the row and the tone policy the options run, but
+       only while both snapshots are of that row's scope; between the decoder's two publishes it is not offered. */
+    static dsd_opts published_opts;
+    static dsd_state published_state;
+    initOpts(&published_opts);
+    initState(&published_state);
+    published_opts.trunk_scan_enabled = 1;
+    published_opts.analog_tone_filter = DSD_TONE_FILTER_ALLOW;
+    check(dsd_tone_set_parse("100.0", &published_opts.analog_tone_set, nullptr, 0U) == 0);
+    published_state.scan_row_scanner = (uint8_t)DSD_SCAN_ROW_SCANNER_TRUNK_SCAN;
+    published_state.scan_row_session = 4U;
+    published_state.scan_row_index = 1;
+    published_state.scan_row_editable = (uint8_t)(DSD_SCAN_ROW_FIELD_SQUELCH | DSD_SCAN_ROW_FIELD_TONE);
+    DSD_SNPRINTF(published_state.trunk_scan_active_id, sizeof published_state.trunk_scan_active_id, "%s", "fire");
+    published_opts.scan_row_scope_seq = 11U;
+    published_state.scan_row_scope_seq = 11U;
+    dsd_app_telemetry_publish_opts_snapshot(&published_opts);
+    dsd_app_telemetry_publish_snapshot(&published_state);
+    const QVariantMap context = bridge.scanRowContext();
+    check(context.value("active").toBool() && context.value("key").toString() == QStringLiteral("1:4:1")
+          && context.value("toneMode").toInt() == DSD_TONE_FILTER_ALLOW
+          && context.value("toneList").toString() == QStringLiteral("100.0"));
+    published_state.scan_row_scope_seq = 12U;
+    dsd_app_telemetry_publish_snapshot(&published_state);
+    check(!bridge.scanRowContext().value("active").toBool());
+    published_state.scan_row_scanner = (uint8_t)DSD_SCAN_ROW_SCANNER_NONE;
+    published_state.scan_row_session = 0U;
+    published_state.scan_row_index = -1;
+    published_opts.trunk_scan_enabled = 0;
+    dsd_app_telemetry_publish_opts_snapshot(&published_opts);
+    dsd_app_telemetry_publish_snapshot(&published_state);
+    freeState(&published_state);
+    const QVariantMap row{{"active", true}, {"scanner", 1},           {"session", 3},         {"row", 0},
+                          {"mode", 9},      {"target", "county-p25"}, {"label", "county-p25"}};
+    check(bridge.editScanRow(row, DSD_SCAN_ROW_FIELD_TONE, DSD_SCAN_ROW_EDIT_SET,
+                             {{"toneMode", 1}, {"toneList", "100.0/D023N"}}));
+    state.ui_msg[0] = '\0';
+    check(dsd_app_drain_cmds(&opts, &state) == 1);
+    check(QString::fromUtf8(state.ui_msg) == QStringLiteral("Refused: no scan is running"));
+    check(!bridge.editScanRow(row, DSD_SCAN_ROW_FIELD_TONE, DSD_SCAN_ROW_EDIT_SET,
+                              {{"toneMode", 1}, {"toneList", QString(2000, QLatin1Char('1'))}}));
+    QVariantMap long_target = row;
+    long_target["target"] = QString(100, QLatin1Char('x'));
+    check(!bridge.editScanRow(long_target, DSD_SCAN_ROW_FIELD_SQUELCH, DSD_SCAN_ROW_EDIT_INHERIT, {}));
+    check(dsd_app_drain_cmds(&opts, &state) == 0);
+    dsd_app_frontend_runtime_stop();
+    freeState(&state);
+}
+
 static void
 test_zero_bounds() {
     dsd_qt::CommandBridge bridge;
@@ -553,6 +624,7 @@ main(int argc, char** argv) {
     test_nfm_bandwidth_bridge();
     test_am_bandwidth_bridge();
     test_tone_filter_bridge();
+    test_scan_row_edit_bridge();
     test_zero_bounds();
     test_auto_start_requests();
     test_initial_usb_record();

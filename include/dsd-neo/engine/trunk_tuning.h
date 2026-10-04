@@ -73,6 +73,13 @@ int dsd_engine_scan_retune_attaches_family(const dsd_opts* opts, const dsd_state
  * the change, then asks for what the restored settings run: FM at -B, which without -B is the peer's own FM passband,
  * sent only when this client changed the peer. Best-effort; a no-op without rigctl. */
 void dsd_engine_scan_rigctl_restore(const dsd_opts* opts, const dsd_state* state);
+/** @brief Ask a rigctl peer that demodulates audio input for the demodulator and passband the scan row on air runs now
+ * (the one whose scope is in force, not a -Y tune staged since), as its tune's rigctl leg does (a session width edit
+ * applied on air, issue #518), but strictly: -B for a row that goes back to the default is a request the peer must
+ * take too, where a tune's is best-effort. Returns 1 when the
+ * peer took it, 0 when it refused, -1 with no such peer (no rigctl, or an RTL-family input, whose I/Q DSD-neo
+ * demodulates itself). */
+int dsd_engine_scan_rigctl_apply_modulation(const dsd_opts* opts, const dsd_state* state);
 /** @brief Forget the frequency and -B the legacy rigctl leg last sent (issue #589): the untyped -Y step and the
  * direct control-channel return skip a repeat of either, which holds only for the connection they went out on. Call it
  * whenever opts->rigctl_sockfd becomes a new connection (the rigctl reconnect service does), since the peer of a new

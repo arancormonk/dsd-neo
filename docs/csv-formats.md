@@ -264,6 +264,11 @@ the value in force first and, while a row overrides it, the configured default b
 squelch, or `inherit`. The squelch controls and Config->Save work on the configured default, never the row's value;
 a squelch edit made while a row overrides it says so.
 
+While a scan runs, a row's `--squelch-db`, its channel width and its tone policy (and a trunk-scan target's `rtl_gain`)
+can be changed for the rest of the session from the frontends' "this channel" editors, or made to follow the configured
+default whatever the row says; the file is never written, and Config->Save never saves such an edit. See [Live
+per-channel edits](trunk-scan.md#runtime-behavior).
+
 ### Analog rows
 
 `nfm` and `am` channel-map rows and `nfm-conventional` and `am-conventional` trunk-scan targets accept only the options
