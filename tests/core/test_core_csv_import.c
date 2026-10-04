@@ -10,6 +10,7 @@
 #include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/power.h>
 #include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -2556,6 +2557,8 @@ typedef struct {
     char mode[6][16];
     int bandwidth_hz[6];
     int squelch_db_set[6];
+    int squelch_mode[6];
+    int squelch_margin_db[6];
     int key_source[6];
     int tone_filter[6];
     char tone_list[6][96];
@@ -2568,6 +2571,8 @@ collect_nfm_profile(const dsd_csv_channel_profile* row, void* context) {
         DSD_SNPRINTF(seen->mode[seen->count], sizeof seen->mode[seen->count], "%s", row->mode);
         seen->bandwidth_hz[seen->count] = row->bandwidth_hz;
         seen->squelch_db_set[seen->count] = row->squelch_db_set;
+        seen->squelch_mode[seen->count] = row->squelch_mode;
+        seen->squelch_margin_db[seen->count] = row->squelch_margin_db;
         seen->key_source[seen->count] = row->key_source;
         seen->tone_filter[seen->count] = row->tone_filter;
         DSD_SNPRINTF(seen->tone_list[seen->count], sizeof seen->tone_list[seen->count], "%s", row->tone_list);
@@ -2630,7 +2635,7 @@ test_nfm_channel_map_rows(void) {
                         "1,461000000,DMR,dmr,--scan-max-visit-ms 20000\n"
                         "2,154430000,Fire,NFM,--nfm-bandwidth-hz 12500 --squelch-db -60 --scan-max-visit-ms 5000\n"
                         "3,851012500,P25,p25,\n"
-                        "4,155475000,Ops, nfm ,\n"
+                        "4,155475000,Ops, nfm ,--squelch noise+12\n"
                         "5,150000000,Blank,,\n";
     if (import_channel_map_text(path, mixed, log, sizeof log) != 0 || strstr(log, " row ")) {
         DSD_FPRINTF(stderr, "mixed nfm map: %s\n", log);
@@ -2645,6 +2650,11 @@ test_nfm_channel_map_rows(void) {
                         "mixed nfm map: row 2");
     rc |= fixture_check(strcmp(seen.mode[3], "nfm") == 0 && seen.bandwidth_hz[3] == -1 && seen.key_source[3] == 0,
                         "mixed nfm map: row 4");
+    rc |= fixture_check(seen.squelch_mode[1] == DSD_SQUELCH_MODE_LEVEL && seen.squelch_margin_db[1] == 0,
+                        "mixed nfm map: row 2's level squelch");
+    rc |= fixture_check(seen.squelch_db_set[3] && seen.squelch_mode[3] == DSD_SQUELCH_MODE_NOISE
+                            && seen.squelch_margin_db[3] == 12,
+                        "mixed nfm map: row 4's noise squelch");
     rc |= fixture_check(strcmp(seen.mode[4], "") == 0, "mixed nfm map: row 5");
 
     const char* header = "channel,frequency_hz,mode,options\n";
@@ -2739,6 +2749,7 @@ test_am_channel_map_rows(void) {
         {"1,118300000,am,--nfm-bandwidth-hz 12500\n", "row 2: --nfm-bandwidth-hz: not supported for this mode/target"},
         {"1,154430000,nfm,--am-bandwidth-hz 8333\n", "row 2: --am-bandwidth-hz: not supported for this mode/target"},
         {"1,118300000,am,--am-bandwidth-hz 25000\n", "row 2: --am-bandwidth-hz: expects whole Hz from 5000 to 20000"},
+        {"1,118300000,am,--squelch noise\n", "row 2: --squelch: expects"},
         {"1,118300000,am,--am-bandwidth-hz 8333 --am-bandwidth-hz 8333\n",
          "row 2: --am-bandwidth-hz: duplicate option"},
         {"1,461000000,dmr,--am-bandwidth-hz 8333\n", "row 2: --am-bandwidth-hz: needs mode am"},

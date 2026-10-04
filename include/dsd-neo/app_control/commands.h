@@ -187,8 +187,9 @@ enum dsd_app_command_id {
     DSD_APP_CMD_TRUNK_SET = 496,  // payload: int32_t on(0/1)
     DSD_APP_CMD_AIRSPY_SET = 497, // payload: dsd_app_airspy_setting_payload
     DSD_APP_CMD_AIRSPY_ENABLE_INPUT = 498,
-    // The whole squelch setting (issue #518 follow-up): a level, or the auto squelch with its margin over the floor
-    // the demodulator learns. Edits the configured default, as RTL_SET_SQL_DB does.
+    // The whole squelch setting (issue #518 follow-up): a level, the auto squelch with its margin over the floor the
+    // demodulator learns, or the noise squelch with its FM quieting. Edits the configured default, as RTL_SET_SQL_DB
+    // does.
     DSD_APP_CMD_RTL_SET_SQL_SETTING = 499, // payload: dsd_app_squelch_setting_payload
 
     // Rigctl / tuning params
@@ -320,7 +321,7 @@ enum dsd_app_command_id {
 };
 
 /* DSD_APP_CMD_RTL_SET_SQL_SETTING: mode is dsd_squelch_mode (core/power.h); level the LEVEL threshold in mean-power
-   units (0 = off), margin_db the AUTO margin in whole dB (3..30). */
+   units (0 = off), margin_db the AUTO margin or the NOISE quieting in whole dB (3..30). */
 typedef struct {
     int32_t mode;
     int32_t margin_db;
@@ -550,8 +551,9 @@ typedef struct {
     int32_t width_hz;
     int32_t tone_mode;
     int32_t gain_db;
-    int32_t squelch_mode;      /* dsd_squelch_mode: LEVEL (squelch_db) or AUTO (squelch_margin_db, nfm and am rows) */
-    int32_t squelch_margin_db; /* AUTO: 3..30 dB over the learned floor */
+    int32_t squelch_mode;      /* dsd_squelch_mode: LEVEL (squelch_db), AUTO (squelch_margin_db, nfm and am rows) or
+                                  NOISE (squelch_margin_db, nfm rows) */
+    int32_t squelch_margin_db; /* AUTO: 3..30 dB over the learned floor; NOISE: 3..30 dB of quieting */
     char target_id[64];
     char tone_list[DSD_APP_TONE_FILTER_LIST_SIZE];
 } dsd_app_scan_row_edit_payload;

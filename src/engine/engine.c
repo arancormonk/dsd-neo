@@ -77,6 +77,7 @@
 #include <dsd-neo/runtime/rdio_export.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/shutdown.h>
+#include <dsd-neo/runtime/squelch.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
@@ -1027,9 +1028,7 @@ dsd_engine_setup_check_noise_squelch(const dsd_opts* opts) {
                  mode == DSD_SQUELCH_MODE_NOISE ? "noise" : "auto");
         return 0;
     }
-    const int am_monitor = dsd_opts_is_analog_family(opts) && opts->analog_demod == DSD_ANALOG_DEMOD_AM
-                           && opts->scanner_mode != 1 && opts->trunk_scan_enabled != 1;
-    if (mode != DSD_SQUELCH_MODE_NOISE || !am_monitor) {
+    if (mode != DSD_SQUELCH_MODE_NOISE || !dsd_squelch_noise_has_no_fm(opts)) {
         return 0;
     }
     if (opts->rtl_squelch_cli_set) {

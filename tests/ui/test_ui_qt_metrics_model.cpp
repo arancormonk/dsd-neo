@@ -1458,6 +1458,25 @@ main(int argc, char** argv) {
     state.squelch_auto_floor_cdb = -7900;
     model.refresh(&opts, &state);
     expect("a moving floor reaches the panel", model.squelchAutoStatus() == QStringLiteral("floor -79.0 dB"));
+    /* The noise squelch: its flags, its quieting while it runs, and no Noise offered on the AM monitor on its own. */
+    opts.rtl_squelch_mode = DSD_SQUELCH_MODE_NOISE;
+    state.squelch_noise_active = 1;
+    state.squelch_noise_quieting_cdb = 2310;
+    model.refresh(&opts, &state);
+    expect("a noise default is noise on both sides", model.configuredSquelchNoise() && model.effectiveSquelchNoise());
+    expect("and not auto", !model.configuredSquelchAuto() && !model.effectiveSquelchAuto());
+    expect("the noise squelch shows its quieting", model.squelchAutoStatus() == QStringLiteral("quieting 23 dB"));
+    expect("the readout is the terminal's", model.squelchReadout() == QStringLiteral("noise +12 dB (quieting 23 dB)"));
+    expect("the FM monitor offers Noise", model.squelchNoiseOffered());
+    opts.analog_demod = DSD_ANALOG_DEMOD_AM;
+    state.squelch_noise_active = 0;
+    model.refresh(&opts, &state);
+    expect("the AM monitor offers no Noise", !model.squelchNoiseOffered());
+    expect("a noise setting on AM runs as auto",
+           model.squelchAutoStatus() == QStringLiteral("as auto: floor -79.0 dB"));
+    opts.analog_demod = DSD_ANALOG_DEMOD_FM;
+    state.squelch_noise_quieting_cdb = 0;
+    opts.rtl_squelch_mode = DSD_SQUELCH_MODE_AUTO;
     opts.audio_in_type = AUDIO_IN_WAV;
     model.refresh(&opts, &state);
     expect("non-radio input publishes no auto squelch",

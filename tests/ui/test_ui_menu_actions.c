@@ -1541,7 +1541,7 @@ test_additional_prompt_and_toggle_actions(void) {
     reset_capture();
     opts.rtl_squelch_level = 0.0;
     rtl_set_sql(&ctx);
-    rc |= expect_str("rtl squelch prompt", g_prompt.title, "Squelch (dB, off, or auto[+N])");
+    rc |= expect_str("rtl squelch prompt", g_prompt.title, "Squelch (dB, off, auto[+N] or noise[+N])");
     rc |= expect_str("rtl squelch off prompt offers off", g_prompt.prefill, "off");
 
     reset_capture();
@@ -1554,6 +1554,12 @@ test_additional_prompt_and_toggle_actions(void) {
     opts.rtl_squelch_margin_db = 6;
     rtl_set_sql(&ctx);
     rc |= expect_str("rtl squelch prompt offers auto", g_prompt.prefill, "auto+6");
+    reset_capture();
+    opts.rtl_squelch_mode = DSD_SQUELCH_MODE_NOISE;
+    opts.rtl_squelch_margin_db = 14;
+    rtl_set_sql(&ctx);
+    rc |= expect_str("rtl squelch prompt offers noise", g_prompt.prefill, "noise+14");
+    opts.rtl_squelch_margin_db = 6;
     opts.rtl_squelch_mode = DSD_SQUELCH_MODE_LEVEL;
 
     /* Issue #521: a scan row can override the squelch while it is on air. The editor edits the
@@ -2429,7 +2435,7 @@ test_scan_row_scope_chooser(void) {
     reset_capture();
     rtl_set_sql(&ctx);
     rc |= expect_int("no row: squelch prompt at once", g_chooser.calls == 0 && g_prompt.calls == 1, 1);
-    rc |= expect_str("no row: the default prompt", g_prompt.title, "Squelch (dB, off, or auto[+N])");
+    rc |= expect_str("no row: the default prompt", g_prompt.title, "Squelch (dB, off, auto[+N] or noise[+N])");
 
     /* A trunk target (nfm) that sets its own squelch and width, with a squelch edit running. */
     dsd_test_scan_labels_set(1, DSD_SCAN_MODE_NFM);
@@ -2456,7 +2462,7 @@ test_scan_row_scope_chooser(void) {
 
     g_chooser.on_done(g_chooser.user, 1);
     rc |= expect_str("this channel squelch prompt", g_prompt.title,
-                     "Squelch on this channel (dB -100..0, off, or auto[+N])");
+                     "Squelch on this channel (dB -100..0, off, auto[+N], noise[+N])");
     rc |= expect_str("this channel squelch prompt opens on the row's", g_prompt.prefill, "-55");
     g_prompt.str_cb(g_prompt.user, "-48");
     dsd_app_scan_row_edit_payload p = cmd_scan_row_edit();
@@ -2477,6 +2483,14 @@ test_scan_row_scope_chooser(void) {
     rc |= expect_int(
         "squelch edit set auto+6",
         p.action == DSD_SCAN_ROW_EDIT_SET && p.squelch_mode == DSD_SQUELCH_MODE_AUTO && p.squelch_margin_db == 6, 1);
+    reset_capture();
+    rtl_set_sql(&ctx);
+    g_chooser.on_done(g_chooser.user, 1);
+    g_prompt.str_cb(g_prompt.user, "noise+12");
+    p = cmd_scan_row_edit();
+    rc |= expect_int(
+        "squelch edit set noise+12",
+        p.action == DSD_SCAN_ROW_EDIT_SET && p.squelch_mode == DSD_SQUELCH_MODE_NOISE && p.squelch_margin_db == 12, 1);
     reset_capture();
     rtl_set_sql(&ctx);
     g_chooser.on_done(g_chooser.user, 1);
@@ -2504,7 +2518,8 @@ test_scan_row_scope_chooser(void) {
     reset_capture();
     rtl_set_sql(&ctx);
     g_chooser.on_done(g_chooser.user, 0);
-    rc |= expect_str("default goes to the row's own prompt", g_prompt.title, "Squelch (dB, off, or auto[+N])");
+    rc |=
+        expect_str("default goes to the row's own prompt", g_prompt.title, "Squelch (dB, off, auto[+N] or noise[+N])");
     rc |= expect_int("default posts nothing yet", g_cmd.calls, 0);
     reset_capture();
     rtl_set_sql(&ctx);
@@ -2574,7 +2589,7 @@ test_scan_row_scope_chooser(void) {
     reset_capture();
     rtl_set_sql(&ctx);
     rc |= expect_int("snapshots of two rows: the default prompt", g_chooser.calls == 0 && g_prompt.calls == 1, 1);
-    rc |= expect_str("snapshots of two rows: its title", g_prompt.title, "Squelch (dB, off, or auto[+N])");
+    rc |= expect_str("snapshots of two rows: its title", g_prompt.title, "Squelch (dB, off, auto[+N] or noise[+N])");
     dsd_test_scan_labels_scope_seq(0U, 0U);
 
     /* The scan moves on between the chooser and the prompt: the prompt opens on what the row named ran, not on the row

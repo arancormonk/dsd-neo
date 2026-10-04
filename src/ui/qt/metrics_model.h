@@ -237,6 +237,9 @@ class MetricsModel : public QObject {
     Q_PROPERTY(bool configuredSquelchAuto READ configuredSquelchAuto NOTIFY controlChanged)
     Q_PROPERTY(int configuredSquelchMarginDb READ configuredSquelchMarginDb NOTIFY controlChanged)
     Q_PROPERTY(bool effectiveSquelchAuto READ effectiveSquelchAuto NOTIFY controlChanged)
+    Q_PROPERTY(bool configuredSquelchNoise READ configuredSquelchNoise NOTIFY controlChanged)
+    Q_PROPERTY(bool effectiveSquelchNoise READ effectiveSquelchNoise NOTIFY controlChanged)
+    Q_PROPERTY(bool squelchNoiseOffered READ squelchNoiseOffered NOTIFY controlChanged)
     Q_PROPERTY(int effectiveSquelchMarginDb READ effectiveSquelchMarginDb NOTIFY controlChanged)
     Q_PROPERTY(QString squelchAutoStatus READ squelchAutoStatus NOTIFY controlChanged)
     /* Whether the level the configured default keeps (beneath an auto squelch too) gates nothing. */
@@ -828,7 +831,31 @@ class MetricsModel : public QObject {
         return m_view.configured_squelch_auto;
     }
 
-    /** @brief The configured margin over the learned floor, in whole dB (3..30); a level setting keeps the last one. */
+    /** @brief Whether the configured default is the noise squelch; the buttons then step its quieting. */
+    bool
+    configuredSquelchNoise() const {
+        return m_view.configured_squelch_noise;
+    }
+
+    /** @brief Whether the setting in force on the row on air is the noise squelch. */
+    bool
+    effectiveSquelchNoise() const {
+        return m_view.effective_squelch_noise;
+    }
+
+    /**
+     * @brief Whether the default may be the noise squelch: not on the AM monitor on its own (-fM, no scan), which
+     * refuses it (dsd_squelch_noise_has_no_fm()).
+     */
+    bool
+    squelchNoiseOffered() const {
+        return m_view.squelch_noise_offered;
+    }
+
+    /**
+     * @brief The configured margin over the learned floor (auto) or quieting (noise), in whole dB (3..30); a level
+     * setting keeps the last one.
+     */
     int
     configuredSquelchMarginDb() const {
         return m_view.configured_squelch_margin_db;
@@ -849,15 +876,16 @@ class MetricsModel : public QObject {
         return m_view.effective_squelch_auto;
     }
 
-    /** @brief Its margin, in whole dB. */
+    /** @brief Its margin or quieting, in whole dB. */
     int
     effectiveSquelchMarginDb() const {
         return m_view.effective_squelch_margin_db;
     }
 
     /**
-     * @brief What the auto squelch in force shows, from dsd_app_squelch_view_auto_status(): "floor -78.3 dB",
-     * "learning", "off: no radio input", "off on digital" or "off: no channel plan". Empty for a level.
+     * @brief What the dynamic squelch in force shows, from dsd_app_squelch_view_dynamic_status(): "floor -78.3 dB",
+     * "learning", "quieting 23 dB", "as auto: floor -78.3 dB", "off: no radio input", "off on digital" or "off: no
+     * channel plan". Empty for a level.
      */
     QString
     squelchAutoStatus() const {
@@ -1698,6 +1726,9 @@ class MetricsModel : public QObject {
         bool tuner_gain_row_override = false;
         bool configured_squelch_auto = false;
         bool effective_squelch_auto = false;
+        bool configured_squelch_noise = false;
+        bool effective_squelch_noise = false;
+        bool squelch_noise_offered = false;
         bool configured_squelch_level_off = false;
         int ppm = 0;
         int enc_lockout_count = 0;
@@ -1892,6 +1923,9 @@ class MetricsModel : public QObject {
                    && configured_squelch_margin_db == other.configured_squelch_margin_db
                    && effective_squelch_auto == other.effective_squelch_auto
                    && effective_squelch_margin_db == other.effective_squelch_margin_db
+                   && configured_squelch_noise == other.configured_squelch_noise
+                   && effective_squelch_noise == other.effective_squelch_noise
+                   && squelch_noise_offered == other.squelch_noise_offered
                    && configured_squelch_level_off == other.configured_squelch_level_off
                    && squelch_auto_status == other.squelch_auto_status;
         }

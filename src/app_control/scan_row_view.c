@@ -124,8 +124,10 @@ dsd_app_scan_row_value_text(uint32_t field, const dsd_scan_row_edit_value* value
     }
     switch (field) {
         case DSD_SCAN_ROW_FIELD_SQUELCH:
-            if (value->squelch_mode == DSD_SQUELCH_MODE_AUTO) {
-                DSD_SNPRINTF(out, out_size, "auto +%d dB", value->squelch_margin_db);
+            if (dsd_squelch_mode_is_dynamic(value->squelch_mode)) {
+                DSD_SNPRINTF(out, out_size, "%s +%d dB",
+                             value->squelch_mode == DSD_SQUELCH_MODE_NOISE ? "noise" : "auto",
+                             value->squelch_margin_db);
             } else if (value->squelch_db == 0) {
                 DSD_SNPRINTF(out, out_size, "%s", "off");
             } else {

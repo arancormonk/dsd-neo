@@ -17,8 +17,9 @@ int dsd_app_trunk_scan_validate_targets_csv(const char* path, int* target_count,
 
 /** Nonsecret configured target. Unset dwell/hold/gain/bandwidth/tone_filter are -1; empty modulation
  * inherits. squelch_db (whole dB, 0 = off) is meaningful only with squelch_db_set, since
- * -1 dB is a real threshold; squelch_margin_db is the target's own auto squelch (3..30 dB over the
- * learned floor) in its place, 0 for a level. bandwidth_hz is an analog target's own channel width in Hz
+ * -1 dB is a real threshold; squelch_mode is the target's own squelch's dsd_squelch_mode, and
+ * squelch_margin_db its dynamic margin in its place (auto: 3..30 dB over the learned floor; noise: 3..30
+ * dB of FM quieting), 0 for a level. bandwidth_hz is an analog target's own channel width in Hz
  * (an nfm-conventional target's --nfm-bandwidth-hz, an am-conventional target's
  * --am-bandwidth-hz). tone_filter is an nfm-conventional target's own CTCSS/DCS tone policy
  * (dsd_tone_filter_mode: OFF for --no-tone-filter, ALLOW, BLOCK) and tone_list its list as
@@ -35,6 +36,7 @@ typedef struct {
     int gain_db;
     int squelch_db_set;
     int squelch_db;
+    int squelch_mode;
     int squelch_margin_db;
     int bandwidth_hz;
     int tone_filter;

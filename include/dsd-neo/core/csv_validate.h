@@ -46,9 +46,10 @@ int dsd_csv_channel_has_slot(const char* channel);
 /** Nonsecret configured row scope. Inherited fields use -1; key_source is
  * 0 inherit, 1 direct, 2 collection, 3 explicitly empty. No key bytes or paths.
  * squelch_db is meaningful only with squelch_db_set (whole dB, 0 = off); -1 is a real
- * threshold there, so an inheriting row says so through squelch_db_set = 0. squelch_margin_db is
- * the row's own auto squelch (--squelch auto[+N], 3..30 dB over the learned floor; issue #518
- * follow-up), in place of squelch_db, and 0 for a level. */
+ * threshold there, so an inheriting row says so through squelch_db_set = 0. squelch_mode is the
+ * row's own squelch's dsd_squelch_mode, and squelch_margin_db its dynamic margin in place of
+ * squelch_db: --squelch auto[+N] (3..30 dB over the learned floor) or noise[+N] (3..30 dB of FM
+ * quieting; issue #518 follow-up), 0 for a level. */
 typedef struct {
     size_t index;
     uint64_t frequency_hz;
@@ -60,6 +61,7 @@ typedef struct {
     int dmr_mapping_count;
     int squelch_db_set;
     int squelch_db;
+    int squelch_mode;
     int squelch_margin_db;
     int bandwidth_hz; /* analog row's own channel width in Hz (an nfm row's --nfm-bandwidth-hz, an am row's
                          --am-bandwidth-hz); -1 inherits */

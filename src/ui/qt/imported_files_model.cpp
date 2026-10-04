@@ -25,6 +25,7 @@
 
 #include <dsd-neo/app_control/trunk_scan_validate.h>
 #include <dsd-neo/core/csv_validate.h>
+#include <dsd-neo/core/power.h>
 #include <dsd-neo/core/safe_api.h>
 
 #include <QSaveFile>
@@ -665,8 +666,10 @@ appendChannelProfile(const dsd_csv_channel_profile* row, void* context) {
                     {"mappings", row->dmr_mapping_count},
                     /* #521: invalid (not 0 or -1) when the row inherits the squelch. */
                     {"squelchDb", row->squelch_db_set ? QVariant(row->squelch_db) : QVariant()},
-                    /* Issue #518 follow-up: the row's own auto squelch margin, invalid for a level. */
+                    /* Issue #518 follow-up: the row's own auto or noise squelch margin, invalid for a level, and
+                       whether it is the noise squelch's. */
                     {"squelchMarginDb", row->squelch_margin_db > 0 ? QVariant(row->squelch_margin_db) : QVariant()},
+                    {"squelchNoise", row->squelch_mode == DSD_SQUELCH_MODE_NOISE},
                     /* #526: an analog (nfm or am) row's own channel width in Hz; invalid when it inherits
                                 the configured width of its kind. */
                     {"bandwidthHz", row->bandwidth_hz >= 0 ? QVariant(row->bandwidth_hz) : QVariant()},
@@ -733,6 +736,7 @@ appendTargetPreview(const dsd_app_scan_csv_target* target, void* context) {
         /* #521: invalid (not 0 or -1) when the target inherits the squelch. */
         {"squelchDb", target->squelch_db_set ? QVariant(target->squelch_db) : QVariant()},
         {"squelchMarginDb", target->squelch_margin_db > 0 ? QVariant(target->squelch_margin_db) : QVariant()},
+        {"squelchNoise", target->squelch_mode == DSD_SQUELCH_MODE_NOISE},
         /* #526: an analog (nfm- or am-conventional) target's own channel width in Hz; invalid when
                        it inherits the configured width of its kind. */
         {"bandwidthHz", target->bandwidth_hz >= 0 ? QVariant(target->bandwidth_hz) : QVariant()},

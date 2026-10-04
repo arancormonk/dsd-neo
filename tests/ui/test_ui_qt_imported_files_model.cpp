@@ -741,7 +741,7 @@ test_channel_review_bandwidth() {
     const QByteArray bytes =
         "channel,frequency_hz,mode,options\n1,154430000,nfm,--nfm-bandwidth-hz 12500\n"
         "2,155100000,nfm,--squelch auto+8\n3,461000000,dmr,\n4,118300000,am,--am-bandwidth-hz 8333\n"
-        "5,121500000,AM,\n";
+        "5,121500000,AM,\n6,154800000,nfm,--squelch noise+11\n";
     expect("write nfm map", file.open(QIODevice::WriteOnly) && file.write(bytes) == bytes.size());
     file.close();
     const auto result = model.importFile(source.filePath("nfm.csv"), "Nfm.csv", "chan");
@@ -752,8 +752,8 @@ test_channel_review_bandwidth() {
     }
     const auto review = model.channelProfiles(row);
     const auto rows = review.value("rows").toList();
-    expect("nfm map review", review.value("ok").toBool() && rows.size() == 5);
-    if (rows.size() == 5) {
+    expect("nfm map review", review.value("ok").toBool() && rows.size() == 6);
+    if (rows.size() == 6) {
         expect("reports the row's own width", rows[0].toMap().value("bandwidthHz").toInt() == 12500);
         expect("an inheriting nfm row carries none", !rows[1].toMap().value("bandwidthHz").isValid());
         expect("a digital row carries none", !rows[2].toMap().value("bandwidthHz").isValid());
@@ -766,6 +766,9 @@ test_channel_review_bandwidth() {
         expect("reports the row's own auto squelch",
                rows[1].toMap().value("squelchMarginDb").toInt() == 8 && rows[1].toMap().value("squelchDb").isValid());
         expect("a row without an auto squelch carries no margin", !rows[0].toMap().value("squelchMarginDb").isValid());
+        expect("an auto squelch is not the noise squelch", !rows[1].toMap().value("squelchNoise").toBool());
+        expect("reports the row's own noise squelch", rows[5].toMap().value("squelchMarginDb").toInt() == 11
+                                                          && rows[5].toMap().value("squelchNoise").toBool());
     }
     model.remove(row);
 }

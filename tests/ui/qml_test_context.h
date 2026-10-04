@@ -331,6 +331,7 @@ class CommandRecorder : public QObject {
     /* The squelch modes and the auto squelch's margin range, as CommandBridge publishes them. */
     Q_PROPERTY(int squelchModeLevel READ squelchModeLevel CONSTANT)
     Q_PROPERTY(int squelchModeAuto READ squelchModeAuto CONSTANT)
+    Q_PROPERTY(int squelchModeNoise READ squelchModeNoise CONSTANT)
     Q_PROPERTY(int squelchMarginMinDb READ squelchMarginMinDb CONSTANT)
     Q_PROPERTY(int squelchMarginMaxDb READ squelchMarginMaxDb CONSTANT)
     Q_PROPERTY(int squelchMarginDefaultDb READ squelchMarginDefaultDb CONSTANT)
@@ -382,6 +383,11 @@ class CommandRecorder : public QObject {
     static int
     squelchModeAuto() {
         return DSD_SQUELCH_MODE_AUTO;
+    }
+
+    static int
+    squelchModeNoise() {
+        return DSD_SQUELCH_MODE_NOISE;
     }
 
     static int
@@ -740,6 +746,17 @@ class CommandRecorder : public QObject {
         return true;
     }
 
+    /* Refuses a margin out of range, as CommandBridge does. */
+    Q_INVOKABLE bool
+    setSquelchNoise(int marginDb) {
+        if (marginDb < DSD_SQUELCH_MARGIN_MIN_DB || marginDb > DSD_SQUELCH_MARGIN_MAX_DB) {
+            return false;
+        }
+        m_last_squelch_margin_db = marginDb;
+        m_squelch_noise_calls++;
+        return true;
+    }
+
     Q_INVOKABLE bool
     restoreSquelchLevel() {
         m_restore_squelch_calls++;
@@ -841,6 +858,7 @@ class CommandRecorder : public QObject {
         m_squelch_calls = 0;
         m_last_squelch_margin_db = 0;
         m_squelch_auto_calls = 0;
+        m_squelch_noise_calls = 0;
         m_restore_squelch_calls = 0;
         m_last_nfm_bandwidth_hz = -1;
         m_nfm_bandwidth_calls = 0;
@@ -926,6 +944,11 @@ class CommandRecorder : public QObject {
     int
     squelchAutoCalls() const {
         return m_squelch_auto_calls;
+    }
+
+    int
+    squelchNoiseCalls() const {
+        return m_squelch_noise_calls;
     }
 
     int
@@ -1109,6 +1132,7 @@ class CommandRecorder : public QObject {
     double m_last_squelch_db = 0.0;
     int m_squelch_calls = 0;
     int m_last_squelch_margin_db = 0;
+    int m_squelch_noise_calls = 0;
     int m_squelch_auto_calls = 0;
     int m_restore_squelch_calls = 0;
     int m_last_nfm_bandwidth_hz = -1;
@@ -1976,6 +2000,12 @@ class Setup : public QObject {
         return (m_commands != nullptr) ? m_commands->squelchAutoCalls() : -1;
     }
 
+    /** @brief How many times the Radio sheet asked for the noise squelch (its margin is lastSquelchMarginDb()). */
+    Q_INVOKABLE int
+    squelchNoiseCalls() const {
+        return (m_commands != nullptr) ? m_commands->squelchNoiseCalls() : -1;
+    }
+
     /** @brief How many times the Radio sheet asked for the configured level back from Auto. */
     Q_INVOKABLE int
     restoreSquelchCalls() const {
@@ -2361,9 +2391,13 @@ class Setup : public QObject {
         metrics[QStringLiteral("effectiveSquelchOff")] = false;
         metrics[QStringLiteral("squelchRowOverride")] = false;
         metrics[QStringLiteral("squelchReadout")] = QStringLiteral("-120.0 dB");
-        // The auto squelch: whether each setting is AUTO, its margin (kept under a level; 0 here, which the sheet
-        // reads as the default), and the status of the one in force ("" under a level).
+        // The dynamic squelches: whether each setting is AUTO or NOISE, its margin (kept under a level; 0 here, which
+        // the sheet reads as the default), whether the default may be NOISE, and the status of the one in force (""
+        // under a level).
         metrics[QStringLiteral("configuredSquelchAuto")] = false;
+        metrics[QStringLiteral("configuredSquelchNoise")] = false;
+        metrics[QStringLiteral("effectiveSquelchNoise")] = false;
+        metrics[QStringLiteral("squelchNoiseOffered")] = true;
         metrics[QStringLiteral("configuredSquelchMarginDb")] = 0;
         metrics[QStringLiteral("effectiveSquelchAuto")] = false;
         metrics[QStringLiteral("effectiveSquelchMarginDb")] = 0;

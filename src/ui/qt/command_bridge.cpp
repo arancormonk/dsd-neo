@@ -291,16 +291,32 @@ CommandBridge::setSquelchDb(double db) const {
     return accepted(dsd_app_command_set_double(DSD_APP_CMD_RTL_SET_SQL_DB, db));
 }
 
+namespace {
+
+/* A dynamic setting for the configured default: AUTO with its margin, or NOISE with its quieting. */
 bool
-// cppcheck-suppress functionStatic -- Q_INVOKABLE members cannot be static (Qt meta-object)
-CommandBridge::setSquelchAuto(int marginDb) const {
+submitDynamicSquelch(int mode, int marginDb) {
     if (marginDb < DSD_SQUELCH_MARGIN_MIN_DB || marginDb > DSD_SQUELCH_MARGIN_MAX_DB) {
         return false;
     }
     dsd_app_squelch_setting_payload payload = {};
-    payload.mode = DSD_SQUELCH_MODE_AUTO;
+    payload.mode = mode;
     payload.margin_db = marginDb;
     return accepted(dsd_app_command_submit(DSD_APP_CMD_RTL_SET_SQL_SETTING, &payload, sizeof payload));
+}
+
+} // namespace
+
+bool
+// cppcheck-suppress functionStatic -- Q_INVOKABLE members cannot be static (Qt meta-object)
+CommandBridge::setSquelchAuto(int marginDb) const {
+    return submitDynamicSquelch(DSD_SQUELCH_MODE_AUTO, marginDb);
+}
+
+bool
+// cppcheck-suppress functionStatic -- Q_INVOKABLE members cannot be static (Qt meta-object)
+CommandBridge::setSquelchNoise(int marginDb) const {
+    return submitDynamicSquelch(DSD_SQUELCH_MODE_NOISE, marginDb);
 }
 
 bool
@@ -553,6 +569,11 @@ CommandBridge::squelchModeLevel() {
 int
 CommandBridge::squelchModeAuto() {
     return DSD_SQUELCH_MODE_AUTO;
+}
+
+int
+CommandBridge::squelchModeNoise() {
+    return DSD_SQUELCH_MODE_NOISE;
 }
 
 int

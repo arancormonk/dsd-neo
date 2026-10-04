@@ -68,11 +68,12 @@ dsp_status_print_squelch(const dsd_opts* opts, const dsd_state* state) {
     dsd_app_squelch_view view;
     const int view_ok = dsd_app_squelch_view_get(opts, state, &view) == 0;
     const int row_override = view_ok && view.row_override;
-    if (view_ok && view.effective_auto) {
-        /* The auto squelch's gate, the channel power and the setting with what it shows (issue #518 follow-up). */
+    if (view_ok && (view.effective_auto || view.effective_noise)) {
+        /* The dynamic squelch's gate, the channel power and the setting with what it shows (issue #518 follow-up). */
         char text[72];
         (void)dsd_app_squelch_view_format(&view, text, sizeof text);
-        const char* gate = view.effective_off ? "Off" : (view.auto_gate_open ? "Open" : "Closed");
+        const char* gate =
+            view.effective_off ? "Off" : ((view.auto_gate_open || view.noise_gate_open) ? "Open" : "Closed");
         ui_print_kv_line("Squelch", "%s ch:%.1f dB sql:%s", gate, pwr_to_dB(opts->rtl_pwr), text);
         return;
     }

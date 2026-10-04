@@ -483,10 +483,12 @@ function decryptionProtocol(flags) {
 
 // A scan row's or target's own squelch (--squelch-db or --squelch), for the channel-map review
 // and the target preview. Absent inherits the session's default; 0 is off; a margin is the
-// row's own auto squelch, that many dB over the noise floor it learns.
-function squelchSummary(db, marginDb) {
+// row's own auto squelch, that many dB over the noise floor it learns, or with @a noise its
+// noise squelch, opening at that many dB of FM quieting.
+function squelchSummary(db, marginDb, noise) {
     if (marginDb !== undefined && marginDb !== null && marginDb > 0)
-        return qsTr("Squelch: auto +%1 dB").arg(marginDb)
+        return noise === true ? qsTr("Squelch: noise +%1 dB").arg(marginDb)
+            : qsTr("Squelch: auto +%1 dB").arg(marginDb)
     if (db === undefined || db === null)
         return qsTr("Squelch: inherit")
     return db === 0 ? qsTr("Squelch: off") : qsTr("Squelch: %1 dB").arg(db)

@@ -1622,13 +1622,13 @@ svc_airspy_reopen_locked(dsd_opts* opts, dsd_state* state, const dsd_airspy_conf
     return rc;
 }
 
-/* Squelch is a linear power level; differences below this are the same threshold. The mode and the AUTO margin are part
-   of the setting too. */
+/* Squelch is a linear power level; differences below this are the same threshold. The mode and the dynamic margin are
+   part of the setting too. */
 static int
 svc_airspy_squelch_changed(const svc_airspy_tuning* previous, const dsd_opts* current) {
     return fabs(previous->squelch - current->rtl_squelch_level) > 1e-12
            || previous->squelch_mode != current->rtl_squelch_mode
-           || (current->rtl_squelch_mode == DSD_SQUELCH_MODE_AUTO
+           || (dsd_squelch_mode_is_dynamic(current->rtl_squelch_mode)
                && previous->squelch_margin_db != current->rtl_squelch_margin_db);
 }
 
@@ -1924,15 +1924,18 @@ svc_rtl_set_sql_setting(dsd_opts* opts, const dsd_state* state, const dsd_squelc
     if (!opts || !setting) {
         return -1;
     }
-    if (setting->mode == DSD_SQUELCH_MODE_AUTO
+    if (dsd_squelch_mode_is_dynamic(setting->mode)
         && (setting->margin_db < DSD_SQUELCH_MARGIN_MIN_DB || setting->margin_db > DSD_SQUELCH_MARGIN_MAX_DB)) {
         return -1;
     }
     if (!dsd_squelch_setting_level_finite(setting)) {
         return -1;
     }
-    const dsd_squelch_setting stored = setting->mode == DSD_SQUELCH_MODE_AUTO
-                                           ? dsd_squelch_setting_auto(setting->margin_db)
+    if (setting->mode == DSD_SQUELCH_MODE_NOISE && dsd_squelch_noise_has_no_fm(opts)) {
+        return SVC_SQL_NOISE_NEEDS_FM;
+    }
+    const dsd_squelch_setting stored = dsd_squelch_mode_is_dynamic(setting->mode)
+                                           ? dsd_squelch_setting_dynamic(setting->mode, setting->margin_db)
                                            : dsd_squelch_setting_of_level(setting->level);
     if (dsd_scan_mode_set_configured_squelch_setting(opts, state, &stored) == 1) {
         svc_rtl_push_squelch(opts);
@@ -1945,7 +1948,7 @@ svc_rtl_push_squelch(const dsd_opts* opts) {
     if (!opts) {
         return;
     }
-    if (opts->rtl_squelch_mode == DSD_SQUELCH_MODE_AUTO) {
+    if (dsd_squelch_mode_is_dynamic(opts->rtl_squelch_mode)) {
         const dsd_squelch_setting squelch = dsd_squelch_setting_of_opts(opts);
         rtl_stream_set_channel_squelch_setting(&squelch);
         return;

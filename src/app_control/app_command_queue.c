@@ -1867,6 +1867,8 @@ ui_cmd_toast_squelch_edit(const dsd_opts* opts, dsd_state* state, int rc) {
         (void)dsd_app_squelch_view_get(opts, state, &view);
         (void)dsd_app_squelch_view_edit_notice(&view, notice, sizeof notice);
         ui_set_toast(state, 3, "%s", notice);
+    } else if (rc == SVC_SQL_NOISE_NEEDS_FM) {
+        ui_set_toast(state, 4, "Refused: the noise squelch needs an FM channel; AM takes auto");
     } else if (ui_rc_is_not_supported(rc)) {
         ui_set_toast(state, 3, "Unsupported: squelch control not available on active backend");
     } else {
@@ -1897,7 +1899,7 @@ ui_cmd_handle_rtl_set_sql_setting(dsd_opts* opts, dsd_state* state, const struct
     }
     DSD_MEMCPY(&payload, c->data, sizeof payload);
     dsd_squelch_setting setting;
-    setting.mode = payload.mode == DSD_SQUELCH_MODE_AUTO ? DSD_SQUELCH_MODE_AUTO : DSD_SQUELCH_MODE_LEVEL;
+    setting.mode = dsd_squelch_mode_or_level(payload.mode);
     setting.margin_db = payload.margin_db;
     setting.level = payload.level;
     const int rc = svc_rtl_set_sql_setting(opts, state, &setting);

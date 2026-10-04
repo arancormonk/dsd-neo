@@ -55,6 +55,7 @@
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
 #include <dsd-neo/runtime/scan_row_edit.h>
+#include <dsd-neo/runtime/squelch.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <errno.h>
@@ -6046,6 +6047,27 @@ test_squelch_setting_command(void) {
     dsd_scan_mode_leave(&opts, &state);
     rc |= expect_true("leave puts the auto default in force",
                       opts.rtl_squelch_mode == DSD_SQUELCH_MODE_AUTO && g_cmd_squelch_setting_pushes == 0);
+
+    /* The noise squelch: in force and pushed whole; the AM monitor on its own refuses it and says why. */
+    rc |= expect_true("noise queued", submit_squelch_setting(DSD_SQUELCH_MODE_NOISE, 14, 0.0) > 0);
+    rc |= expect_int("noise drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_true("noise in force",
+                      opts.rtl_squelch_mode == DSD_SQUELCH_MODE_NOISE && opts.rtl_squelch_margin_db == 14);
+    rc |= expect_true("noise pushed whole", g_cmd_squelch_setting_pushes == 1
+                                                && g_cmd_squelch_setting_pushed.mode == DSD_SQUELCH_MODE_NOISE
+                                                && g_cmd_squelch_setting_pushed.margin_db == 14);
+    rc |= expect_str("noise toast", state.ui_msg, "Applied: RTL squelch -> noise +14 dB");
+    opts.analog_only = 1;
+    opts.analog_demod = DSD_ANALOG_DEMOD_AM;
+    const dsd_squelch_setting level40 = dsd_squelch_setting_of_level(dsd_squelch_level_from_sql(-40.0));
+    dsd_squelch_setting_store(&opts, &level40);
+    rc |= expect_true("noise on AM queued", submit_squelch_setting(DSD_SQUELCH_MODE_NOISE, 10, 0.0) > 0);
+    rc |= expect_int("noise on AM drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_true("noise on AM refused", opts.rtl_squelch_mode == DSD_SQUELCH_MODE_LEVEL);
+    rc |=
+        expect_str("noise on AM toast", state.ui_msg, "Refused: the noise squelch needs an FM channel; AM takes auto");
+    opts.analog_only = 0;
+    opts.analog_demod = DSD_ANALOG_DEMOD_FM;
     dsd_rtl_stream_metrics_hooks_set(NULL);
     dsd_state_ext_free_all(&state);
     return rc;

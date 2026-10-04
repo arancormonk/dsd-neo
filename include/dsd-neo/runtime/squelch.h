@@ -133,6 +133,13 @@ void dsd_squelch_publish_status(dsd_state* state);
  */
 int dsd_squelch_dynamic_in_force(const dsd_opts* opts);
 
+/**
+ * @brief Whether @p opts runs the AM monitor on its own (-fM, no -Y or trunk scan): a session where a NOISE setting
+ * has no FM channel to run on. A --squelch noise is refused there, and so is a frontend's request for it; a scan's AM
+ * rows run a NOISE default as AUTO instead. 0 for NULL.
+ */
+int dsd_squelch_noise_has_no_fm(const dsd_opts* opts);
+
 /** @brief The level the level comparisons use: rtl_squelch_level under LEVEL, 0 (off) under AUTO and NOISE. 0 for
  * NULL. */
 double dsd_squelch_level_in_force(const dsd_opts* opts);

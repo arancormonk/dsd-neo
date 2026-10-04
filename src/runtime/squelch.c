@@ -313,6 +313,12 @@ dsd_squelch_dynamic_in_force(const dsd_opts* opts) {
     return dsd_opts_input_is_radio(opts) && dsd_squelch_mode_is_dynamic(opts->rtl_squelch_mode);
 }
 
+int
+dsd_squelch_noise_has_no_fm(const dsd_opts* opts) {
+    return opts && dsd_opts_is_analog_family(opts) && opts->analog_demod == DSD_ANALOG_DEMOD_AM
+           && opts->scanner_mode != 1 && opts->trunk_scan_enabled != 1;
+}
+
 double
 dsd_squelch_level_in_force(const dsd_opts* opts) {
     if (!opts || dsd_squelch_mode_is_dynamic(opts->rtl_squelch_mode)) {
