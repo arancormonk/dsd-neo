@@ -41,6 +41,7 @@
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/path_policy.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
+#include <dsd-neo/runtime/scan_row_edit.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
@@ -243,6 +244,10 @@ typedef struct {
      * peers' plan without waiting for the next rotation. */
     unsigned long long iden_share_wacn;
     unsigned long long iden_share_sysid;
+    /* The operator's session edit of the target's squelch, width, tone policy and gain ("this channel", issue #518),
+     * laid over its list values wherever the target's options are read (trunk_scan_target_values(),
+     * trunk_scan_target_gain()). Lasts as long as the coordinator; never written to the list. */
+    dsd_scan_row_edit edit;
 } dsd_trunk_scan_target_runtime;
 
 /*
@@ -286,6 +291,11 @@ typedef struct {
     int analog_checked_rate_hz;
     int analog_checked_nfm_hz;
     int analog_checked_am_hz;
+    /* This scan's session number, which a session edit names (dsd_engine_trunk_scan_edit_target()), and whether the
+     * input runs a tuner gain the scan sets per target, so a target's gain can be edited (RTL-family input, not an
+     * Airspy, whose gain the retune profiles do not set). */
+    uint32_t session;
+    int gain_editable;
 } dsd_trunk_scan_coord;
 
 static dsd_trunk_scan_coord* g_trunk_scan_coord;
@@ -1999,11 +2009,40 @@ trunk_scan_get(const dsd_state* state) {
 _Static_assert(sizeof(((dsd_trunk_scan_target*)0)->id) <= DSD_CHANNEL_LABEL_SIZE,
                "a trunk scan target id must fit the published channel label");
 
-/* Whether the parked target runs a tuner gain of its own (its rtl_gain column), which a configured gain does not
-   reach while it is on air. */
+/* The options a target runs: its profile's -- its list options with any live decryption change over them -- or,
+   without a profile, its list options, with the operator's session edit laid over them (issue #518). @p scratch holds
+   the merged copy when there is an edit. */
+static const dsd_scan_option_values*
+trunk_scan_target_values(const dsd_trunk_scan_target_runtime* rt, dsd_scan_option_values* scratch) {
+    const dsd_scan_option_values* base = rt->profile ? &rt->profile->values : &rt->target.row_options;
+    if ((dsd_scan_row_edit_fields_edited(&rt->edit) & ~(uint32_t)DSD_SCAN_ROW_FIELD_GAIN) == 0U) {
+        return base;
+    }
+    dsd_scan_row_edit_apply(base, &rt->edit, trunk_scan_target_mode(rt->target.type), scratch);
+    return scratch;
+}
+
+/* Whether a target runs a tuner gain of its own -- its rtl_gain column, or a session edit -- and which (@p db, 0 for
+   the tuner's AGC; may be NULL). */
+static int
+trunk_scan_target_gain(const dsd_trunk_scan_target_runtime* rt, int* db) {
+    int is_set = 0;
+    dsd_scan_row_edit_gain(rt->target.rtl_gain_is_set, rt->target.rtl_gain_db, &rt->edit, &is_set, db);
+    return is_set;
+}
+
+/* Whether the parked target runs a tuner gain of its own, which a configured gain does not reach while it is on
+   air. */
 static int
 trunk_scan_active_target_sets_gain(const dsd_trunk_scan_coord* coord) {
-    return coord && coord->active < coord->count && coord->targets[coord->active].target.rtl_gain_is_set;
+    return coord && coord->active < coord->count && trunk_scan_target_gain(&coord->targets[coord->active], NULL);
+}
+
+/* Whether the input runs a tuner gain the scan sets per target (the retune gain profile): an RTL-family input other
+   than an Airspy. */
+static int
+trunk_scan_gain_editable(const dsd_opts* opts) {
+    return opts && opts->audio_in_type == AUDIO_IN_RTL && !dsd_opts_audio_in_dev_is_airspy_spec(opts->audio_in_dev);
 }
 
 /* Take the published label back down. The coordinator is not the owner of dsd_state, so the
@@ -2023,6 +2062,12 @@ trunk_scan_clear_published_target(dsd_state* state) {
     state->trunk_scan_configured_gain = 0;
     state->trunk_scan_gain_override = 0U;
     state->trunk_scan_configured_autogain = 0U;
+    state->scan_row_session = 0U;
+    state->scan_row_index = -1;
+    state->scan_row_scanner = (uint8_t)DSD_SCAN_ROW_SCANNER_NONE;
+    state->scan_row_editable = 0U;
+    state->scan_row_edited = 0U;
+    state->scan_row_listed = 0U;
     dsd_scan_timing_clear(state);
 }
 
@@ -2056,6 +2101,15 @@ trunk_scan_publish_active_target(dsd_state* state, const dsd_trunk_scan_coord* c
     state->trunk_scan_configured_gain = (int16_t)coord->configured_rtl_gain_value;
     state->trunk_scan_gain_override = trunk_scan_active_target_sets_gain(coord) ? 1U : 0U;
     state->trunk_scan_configured_autogain = coord->configured_tuner_autogain_on ? 1U : 0U;
+    const dsd_trunk_scan_target_runtime* rt = &coord->targets[coord->active];
+    const dsd_scan_option_values* listed = rt->profile ? &rt->profile->values : &rt->target.row_options;
+    state->scan_row_session = coord->session;
+    state->scan_row_index = (int32_t)coord->active;
+    state->scan_row_scanner = (uint8_t)DSD_SCAN_ROW_SCANNER_TRUNK_SCAN;
+    state->scan_row_editable =
+        (uint8_t)dsd_scan_row_edit_fields(trunk_scan_target_mode(rt->target.type), coord->gain_editable);
+    state->scan_row_edited = (uint8_t)dsd_scan_row_edit_fields_edited(&rt->edit);
+    state->scan_row_listed = (uint8_t)dsd_scan_row_edit_fields_listed(listed, rt->target.rtl_gain_is_set);
 }
 
 // A user purge clears the live ledger; every parked target keeps its own copy,
@@ -2244,21 +2298,24 @@ trunk_scan_apply_target_mod_opts(dsd_opts* opts, const dsd_trunk_scan_target* ta
 }
 
 static void
-trunk_scan_apply_target_gain_opts(dsd_opts* opts, const dsd_trunk_scan_target* target) {
-    if (!opts || !target || !target->rtl_gain_is_set) {
+trunk_scan_apply_target_gain_opts(dsd_opts* opts, const dsd_trunk_scan_target_runtime* rt) {
+    int db = 0;
+    if (!opts || !rt || !trunk_scan_target_gain(rt, &db)) {
         return;
     }
-    opts->rtl_gain_value = target->rtl_gain_db;
+    opts->rtl_gain_value = db;
 }
 
 static void
-trunk_scan_apply_target_opts(dsd_opts* opts, const dsd_trunk_scan_coord* coord, const dsd_trunk_scan_target* target) {
-    if (!opts || !coord || !target) {
+trunk_scan_apply_target_opts(dsd_opts* opts, const dsd_trunk_scan_coord* coord,
+                             const dsd_trunk_scan_target_runtime* rt) {
+    if (!opts || !coord || !rt) {
         return;
     }
+    const dsd_trunk_scan_target* target = &rt->target;
     opts->rtl_gain_value = coord->configured_rtl_gain_value;
     trunk_scan_apply_target_mod_opts(opts, target);
-    trunk_scan_apply_target_gain_opts(opts, target);
+    trunk_scan_apply_target_gain_opts(opts, rt);
     opts->trunk_is_tuned = 0;
     switch (target->type) {
         case DSD_TRUNK_SCAN_TARGET_P25_TRUNK:
@@ -2416,7 +2473,7 @@ trunk_scan_build_target_runtime(dsd_trunk_scan_coord* coord, dsd_opts* opts, dsd
         }
         trunk_scan_restore_saved_mod_gain_opts(opts, coord);
         trunk_scan_restore_snapshot(state, empty_snapshot);
-        trunk_scan_apply_target_opts(opts, coord, &rt->target);
+        trunk_scan_apply_target_opts(opts, coord, rt);
         trunk_scan_apply_target_demod(opts, state, &rt->target);
         trunk_scan_seed_target_state(state, &rt->target, now_m);
         if (trunk_scan_import_target_chan_csv(opts, state, &rt->target, err, err_sz) != 0) {
@@ -2717,17 +2774,17 @@ trunk_scan_analog_target_label(const dsd_trunk_scan_target* target, char* label,
  * width that changed and is counted otherwise (dsd_engine_scan_row_named_again()). */
 static void
 trunk_scan_warn_analog_width(const dsd_opts* opts, const dsd_state* state, const dsd_trunk_scan_target* target,
-                             int dsp_rate_hz, unsigned configured_changed, dsd_engine_scan_skipped* skipped) {
+                             const dsd_scan_option_values* values, int dsp_rate_hz, unsigned configured_changed,
+                             dsd_engine_scan_skipped* skipped) {
     char label[96];
     char brief[DSD_ANALOG_ERROR_TEXT_MAX];
     trunk_scan_analog_target_label(target, label, sizeof label);
     const int kind = dsd_scan_mode_analog_kind(trunk_scan_target_mode(target->type));
-    const int target_skipped = dsd_engine_scan_row_named_again(&target->row_options, kind, configured_changed)
-                                   ? dsd_engine_scan_warn_analog_width(opts, state, &target->row_options, kind,
-                                                                       dsp_rate_hz, label, brief, sizeof brief)
-                                         == DSD_ENGINE_SCAN_WIDTH_SKIPPED
-                                   : dsd_engine_scan_analog_width_skipped(opts, state, &target->row_options, kind,
-                                                                          dsp_rate_hz, brief, sizeof brief);
+    const int target_skipped =
+        dsd_engine_scan_row_named_again(values, kind, configured_changed)
+            ? dsd_engine_scan_warn_analog_width(opts, state, values, kind, dsp_rate_hz, label, brief, sizeof brief)
+                  == DSD_ENGINE_SCAN_WIDTH_SKIPPED
+            : dsd_engine_scan_analog_width_skipped(opts, state, values, kind, dsp_rate_hz, brief, sizeof brief);
     if (target_skipped) {
         dsd_engine_scan_skipped_add(skipped, label, brief);
     }
@@ -2757,7 +2814,9 @@ trunk_scan_recheck_analog_targets(const dsd_opts* opts, dsd_state* state, dsd_tr
     for (size_t i = 0; i < coord->count; i++) {
         const dsd_trunk_scan_target* target = &coord->targets[i].target;
         if (trunk_scan_type_is_analog(target->type)) {
-            trunk_scan_warn_analog_width(opts, state, target, rate_hz, same_rate ? configured_changed : 0U, &skipped);
+            dsd_scan_option_values scratch;
+            trunk_scan_warn_analog_width(opts, state, target, trunk_scan_target_values(&coord->targets[i], &scratch),
+                                         rate_hz, same_rate ? configured_changed : 0U, &skipped);
         }
     }
     dsd_engine_scan_note_skipped_rows(state, &skipped);
@@ -2805,6 +2864,7 @@ trunk_scan_switch_to(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coo
     }
 
     coord->active = next;
+    coord->gain_editable = trunk_scan_gain_editable(opts);
     /* Before the retune, not after: a retune that fails still leaves the receiver parked
      * here until the caller decides otherwise, and the label has to say so. */
     trunk_scan_publish_active_target(state, coord);
@@ -2813,10 +2873,11 @@ trunk_scan_switch_to(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coo
     (void)dsd_scan_mode_enter(opts, state, trunk_scan_target_mode(rt->target.type));
     trunk_scan_restore_target_snapshot(coord, state, rt);
     trunk_scan_share_peer_idens(coord, state, rt);
-    trunk_scan_apply_target_opts(opts, coord, &rt->target);
+    trunk_scan_apply_target_opts(opts, coord, rt);
     dsd_scan_mode_target_modulation(state, (dsd_scan_modulation)rt->target.modulation);
     (void)dsd_scan_key_change_commit(state, &key_change);
-    (void)dsd_scan_mode_options(opts, state, rt->profile ? &rt->profile->values : NULL);
+    dsd_scan_option_values values_scratch;
+    (void)dsd_scan_mode_options(opts, state, trunk_scan_target_values(rt, &values_scratch));
     dsd_engine_scan_ensure_output(opts);
     dsd_scan_groups_enter(state, rt->profile);
     (void)dsd_scan_maps_enter(state, rt->profile);
@@ -2919,11 +2980,12 @@ trunk_scan_advance(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord
     trunk_scan_publish_active_target(state, coord);
     (void)dsd_scan_mode_enter(opts, state, trunk_scan_target_mode(coord->targets[coord->active].target.type));
     trunk_scan_restore_snapshot(state, original_snapshot);
-    trunk_scan_apply_target_opts(opts, coord, &coord->targets[coord->active].target);
+    trunk_scan_apply_target_opts(opts, coord, &coord->targets[coord->active]);
     dsd_scan_mode_target_modulation(state, (dsd_scan_modulation)coord->targets[coord->active].target.modulation);
     (void)dsd_scan_key_change_commit(state, &rollback);
     const dsd_scan_row_profile* restored_profile = coord->targets[coord->active].profile;
-    (void)dsd_scan_mode_options(opts, state, restored_profile ? &restored_profile->values : NULL);
+    dsd_scan_option_values values_scratch;
+    (void)dsd_scan_mode_options(opts, state, trunk_scan_target_values(&coord->targets[coord->active], &values_scratch));
     dsd_scan_groups_enter(state, restored_profile);
     (void)dsd_scan_maps_enter(state, restored_profile);
     trunk_scan_apply_target_demod(opts, state, &coord->targets[coord->active].target);
@@ -3185,7 +3247,7 @@ trunk_scan_warn_targets(const dsd_opts* opts, dsd_state* state, const dsd_trunk_
         trunk_scan_analog_target_label(target, label, sizeof label);
         (void)dsd_engine_scan_warn_analog_squelch(opts, state, &target->row_options, label);
         if (check_rate_hz != TRUNK_SCAN_ANALOG_CHECK_DEFERRED) {
-            trunk_scan_warn_analog_width(opts, state, target, check_rate_hz, 0U, &skipped);
+            trunk_scan_warn_analog_width(opts, state, target, &target->row_options, check_rate_hz, 0U, &skipped);
         }
     }
     dsd_engine_scan_note_skipped_rows(state, &skipped);
@@ -3591,13 +3653,15 @@ trunk_scan_service_visit_limit(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_
 /* Whether the retune skips @p target before any backend moves (trunk_scan_analog_width_refused()): an analog target
  * whose width, of the kind its type's demodulator runs, the front end refuses at the published @p rate_hz. */
 static int
-trunk_scan_target_width_skipped(const dsd_opts* opts, const dsd_state* state, const dsd_trunk_scan_target* target,
+trunk_scan_target_width_skipped(const dsd_opts* opts, const dsd_state* state, const dsd_trunk_scan_target_runtime* rt,
                                 int rate_hz) {
-    if (rate_hz <= 0 || !trunk_scan_type_is_analog(target->type)) {
+    if (rate_hz <= 0 || !trunk_scan_type_is_analog(rt->target.type)) {
         return 0;
     }
-    const int kind = dsd_scan_mode_analog_kind(trunk_scan_target_mode(target->type));
-    return dsd_engine_scan_analog_width_skipped(opts, state, &target->row_options, kind, rate_hz, NULL, 0U);
+    const int kind = dsd_scan_mode_analog_kind(trunk_scan_target_mode(rt->target.type));
+    dsd_scan_option_values scratch;
+    return dsd_engine_scan_analog_width_skipped(opts, state, trunk_scan_target_values(rt, &scratch), kind, rate_hz,
+                                                NULL, 0U);
 }
 
 /* Whether the rotation has somewhere to take traffic the tone policy rejected (issue #527): another target the advance
@@ -3615,7 +3679,7 @@ trunk_scan_rejection_has_alternate(const dsd_opts* opts, const dsd_state* state,
     for (size_t i = 0; i < coord->count; i++) {
         const dsd_trunk_scan_target_runtime* alternate = &coord->targets[i];
         if (i == coord->active || alternate->avoided || alternate->retry_until_m > now_m
-            || trunk_scan_target_width_skipped(opts, state, &alternate->target, rate_hz)) {
+            || trunk_scan_target_width_skipped(opts, state, alternate, rate_hz)) {
             continue;
         }
         return 1;
@@ -3894,7 +3958,8 @@ commit_target_decryption(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord*
         rt->profile->values.present |= DSD_SCAN_OPT_FORCE;
         rt->profile->values.force = force;
     }
-    (void)dsd_scan_mode_options(opts, state, &rt->profile->values);
+    dsd_scan_option_values values_scratch;
+    (void)dsd_scan_mode_options(opts, state, trunk_scan_target_values(rt, &values_scratch));
     (void)dsd_scan_maps_enter(state, rt->profile);
     if (fields) {
         dsd_enc_lockout_bump_key_epoch(state);
@@ -4154,6 +4219,8 @@ trunk_scan_coord_create(const dsd_trunk_scan_target_list* list, const dsd_opts* 
         return NULL;
     }
     coord->count = list->count;
+    coord->session = dsd_scan_row_edit_new_session();
+    coord->gain_editable = trunk_scan_gain_editable(opts);
     trunk_scan_capture_saved_opts(coord, opts);
     return coord;
 }
@@ -4281,8 +4348,9 @@ static int
 trunk_scan_targets_run_configured_width(const dsd_trunk_scan_coord* coord, int kind) {
     for (size_t i = 0; i < coord->count; i++) {
         const dsd_trunk_scan_target* target = &coord->targets[i].target;
+        dsd_scan_option_values scratch;
         if (dsd_scan_mode_analog_kind(trunk_scan_target_mode(target->type)) == kind
-            && !(target->row_options.present & DSD_SCAN_OPT_BANDWIDTH)) {
+            && !(trunk_scan_target_values(&coord->targets[i], &scratch)->present & DSD_SCAN_OPT_BANDWIDTH)) {
             return 1;
         }
     }
@@ -4297,8 +4365,9 @@ channel_rows_run_configured_width(const dsd_state* state, int kind) {
             || dsd_scan_mode_analog_kind(dsd_channel_mode_get(state, (size_t)row)) != kind) {
             continue;
         }
-        const dsd_scan_row_profile* profile = dsd_channel_profile_get(state, (size_t)row);
-        if (!profile || !(profile->values.present & DSD_SCAN_OPT_BANDWIDTH)) {
+        dsd_scan_option_values scratch;
+        const dsd_scan_option_values* values = dsd_engine_channel_scan_row_values(state, row, &scratch);
+        if (!values || !(values->present & DSD_SCAN_OPT_BANDWIDTH)) {
             return 1;
         }
     }
@@ -4463,4 +4532,186 @@ dsd_engine_trunk_scan_set_configured_autogain(const dsd_opts* opts, dsd_state* s
     /* A retune forces the supervisor off under a manual gain (the scan's gain profile), so the setting is in force only
        while the gain in force is AGC. */
     return opts->rtl_gain_value > 0 ? 0 : 1;
+}
+
+/* The target @p target_id of the scan session @p session names, or -1 when this coordinator is another session or has
+   no such target. */
+static int
+trunk_scan_edit_find(const dsd_trunk_scan_coord* coord, uint32_t session, const char* target_id) {
+    if (session == 0U || session != coord->session || !target_id) {
+        return -1;
+    }
+    for (size_t i = 0; i < coord->count; i++) {
+        if (strcmp(coord->targets[i].target.id, target_id) == 0) {
+            return (int)i;
+        }
+    }
+    return -1;
+}
+
+/* Install @p next as target @p index's session edit: from its next visit when it is not parked, at once when it is.
+   On air the scope takes its options again (the squelch reaches the demod), and the caller learns whether the width or
+   the gain in force changed, which only it can hand to the front end. Caller holds the P25 SM tick guard. */
+static int
+trunk_scan_install_edit(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord, size_t index,
+                        const dsd_scan_row_edit* next, dsd_scan_row_edit_result* out) {
+    dsd_trunk_scan_target_runtime* rt = &coord->targets[index];
+    out->previous = rt->edit;
+    if (index != coord->active) {
+        rt->edit = *next;
+        return DSD_SCAN_ROW_EDIT_STORED;
+    }
+    int gain_before = 0;
+    const int gain_set_before = trunk_scan_target_gain(rt, &gain_before);
+    const int width_before = dsd_opts_analog_width_hz(opts);
+    dsd_scan_option_values before_scratch;
+    const dsd_scan_option_values before = *trunk_scan_target_values(rt, &before_scratch);
+    rt->edit = *next;
+    dsd_scan_option_values scratch;
+    const dsd_scan_option_values* after = trunk_scan_target_values(rt, &scratch);
+    (void)dsd_scan_mode_options(opts, state, after);
+    /* The receiver's request changed: the width the decoder runs, or, for a rigctl peer, whether the target sets one of
+       its own. Only a rollback reaches here with a retune still in flight (an edit of the width is BUSY then), which
+       lands with the width now in dsd_opts (trunk_scan_reapply_analog_width()). */
+    out->publish_width =
+        trunk_scan_type_is_analog(rt->target.type) && !rt->tune_pending
+        && (dsd_opts_analog_width_hz(opts) != width_before || dsd_scan_row_edit_width_request_differs(&before, after));
+    int gain_after = 0;
+    const int gain_set_after = trunk_scan_target_gain(rt, &gain_after);
+    if (gain_set_after != gain_set_before || gain_after != gain_before) {
+        opts->rtl_gain_value = gain_set_after ? gain_after : coord->configured_rtl_gain_value;
+        out->restart_gain = 1;
+    }
+    trunk_scan_publish_active_target(state, coord);
+    return DSD_SCAN_ROW_EDIT_APPLIED;
+}
+
+/* Whether the width @p next leaves target @p rt running is one the front end refuses at the published DSP rate: a width
+   the target would then be skipped for at every visit. Nothing is checked before the rate is known. */
+static int
+trunk_scan_edit_width_refused(const dsd_opts* opts, const dsd_state* state, const dsd_trunk_scan_target_runtime* rt,
+                              const dsd_scan_row_edit* next, char* err, size_t err_size) {
+    const int rate_hz = dsd_engine_scan_dsp_rate_hz(opts, state);
+    if (rate_hz <= 0 || !trunk_scan_type_is_analog(rt->target.type)) {
+        return 0;
+    }
+    const unsigned int mode = trunk_scan_target_mode(rt->target.type);
+    const dsd_scan_option_values* base = rt->profile ? &rt->profile->values : &rt->target.row_options;
+    dsd_scan_option_values after;
+    dsd_scan_row_edit_apply(base, next, mode, &after);
+    char brief[DSD_ANALOG_ERROR_TEXT_MAX] = {0};
+    if (!dsd_engine_scan_analog_width_skipped(opts, state, &after, dsd_scan_mode_analog_kind((dsd_scan_mode)mode),
+                                              rate_hz, brief, sizeof brief)) {
+        return 0;
+    }
+    DSD_SNPRINTF(err, err_size, "%s", brief[0] ? brief : "the DSP rate cannot filter that width");
+    return 1;
+}
+
+/* Whether target @p rt takes @p action on @p field (with @p value for SET), building the edit it would run in @p next:
+   0, or the dsd_scan_row_edit_status that refuses it, with why in @p result. */
+static int
+trunk_scan_edit_check(const dsd_opts* opts, const dsd_state* state, const dsd_trunk_scan_target_runtime* rt,
+                      uint32_t field, int action, const dsd_scan_row_edit_value* value, dsd_scan_row_edit* next,
+                      dsd_scan_row_edit_result* result) {
+    const unsigned int mode = trunk_scan_target_mode(rt->target.type);
+    if (!(dsd_scan_row_edit_fields(mode, trunk_scan_gain_editable(opts)) & field)) {
+        DSD_SNPRINTF(result->err, sizeof result->err, "%s", "this channel cannot take that setting");
+        return DSD_SCAN_ROW_EDIT_REFUSED;
+    }
+    if (action == DSD_SCAN_ROW_EDIT_SET
+        && !dsd_scan_row_edit_value_valid(mode, field, value, result->err, sizeof result->err)) {
+        return DSD_SCAN_ROW_EDIT_REFUSED;
+    }
+    *next = rt->edit;
+    if (dsd_scan_row_edit_change(next, field, (dsd_scan_row_edit_action)action, value) != 0) {
+        DSD_SNPRINTF(result->err, sizeof result->err, "%s", "invalid edit");
+        return DSD_SCAN_ROW_EDIT_REFUSED;
+    }
+    /* A width the DSP rate cannot filter would only skip the target at every visit; the list's own width (RESET) is
+       the list's to answer for, and was named when the scan started. */
+    if (field == DSD_SCAN_ROW_FIELD_WIDTH && action != DSD_SCAN_ROW_EDIT_RESET
+        && trunk_scan_edit_width_refused(opts, state, rt, next, result->err, sizeof result->err)) {
+        return DSD_SCAN_ROW_EDIT_REFUSED;
+    }
+    return 0;
+}
+
+int
+dsd_engine_trunk_scan_edit_target(dsd_opts* opts, dsd_state* state, uint32_t session, const char* target_id,
+                                  uint32_t field, int action, const dsd_scan_row_edit_value* value,
+                                  dsd_scan_row_edit_result* out) {
+    dsd_scan_row_edit_result local;
+    dsd_scan_row_edit_result* result = out ? out : &local;
+    DSD_MEMSET(result, 0, sizeof(*result));
+    dsd_trunk_scan_coord* coord = trunk_scan_get(state);
+    if (!opts || !state || !coord) {
+        return DSD_SCAN_ROW_EDIT_UNAVAILABLE;
+    }
+    const int index = trunk_scan_edit_find(coord, session, target_id);
+    if (index < 0) {
+        return DSD_SCAN_ROW_EDIT_STALE;
+    }
+    const dsd_trunk_scan_target_runtime* rt = &coord->targets[index];
+    dsd_scan_row_edit next;
+    const int refused = trunk_scan_edit_check(opts, state, rt, field, action, value, &next, result);
+    if (refused != 0) {
+        return refused;
+    }
+    /* The parked target's retune is still in flight: it lands the width it queued, and only the request this call's
+       caller makes can be put back if the front end refuses it, so a width or a gain waits for the landing. */
+    if ((size_t)index == coord->active && rt->tune_pending
+        && (field & (DSD_SCAN_ROW_FIELD_WIDTH | DSD_SCAN_ROW_FIELD_GAIN))) {
+        return DSD_SCAN_ROW_EDIT_BUSY;
+    }
+    if (!p25_sm_tick_guard_try_enter()) {
+        return DSD_SCAN_ROW_EDIT_BUSY;
+    }
+    const int rc = trunk_scan_install_edit(opts, state, coord, (size_t)index, &next, result);
+    p25_sm_tick_guard_leave();
+    return rc;
+}
+
+/* The restore both entry points share: the @p fields of the target's edit go back to @p edit's. Caller holds the P25
+   SM tick guard. */
+static int
+trunk_scan_restore_edit_locked(dsd_opts* opts, dsd_state* state, uint32_t session, const char* target_id,
+                               uint32_t fields, const dsd_scan_row_edit* edit, dsd_scan_row_edit_result* out) {
+    dsd_scan_row_edit_result local;
+    dsd_scan_row_edit_result* result = out ? out : &local;
+    /* @p edit may be @p out's previous edit: take it before the result is cleared. */
+    dsd_scan_row_edit from = {0};
+    if (edit) {
+        from = *edit;
+    }
+    DSD_MEMSET(result, 0, sizeof(*result));
+    dsd_trunk_scan_coord* coord = trunk_scan_get(state);
+    if (!opts || !state || !coord || !edit) {
+        return DSD_SCAN_ROW_EDIT_UNAVAILABLE;
+    }
+    const int index = trunk_scan_edit_find(coord, session, target_id);
+    if (index < 0) {
+        return DSD_SCAN_ROW_EDIT_STALE;
+    }
+    dsd_scan_row_edit next = coord->targets[index].edit;
+    dsd_scan_row_edit_take_fields(&next, &from, fields);
+    return trunk_scan_install_edit(opts, state, coord, (size_t)index, &next, result);
+}
+
+int
+dsd_engine_trunk_scan_restore_target_edit_locked(dsd_opts* opts, dsd_state* state, uint32_t session,
+                                                 const char* target_id, uint32_t fields, const dsd_scan_row_edit* edit,
+                                                 dsd_scan_row_edit_result* out) {
+    return trunk_scan_restore_edit_locked(opts, state, session, target_id, fields, edit, out);
+}
+
+int
+dsd_engine_trunk_scan_restore_target_edit(dsd_opts* opts, dsd_state* state, uint32_t session, const char* target_id,
+                                          uint32_t fields, const dsd_scan_row_edit* edit,
+                                          dsd_scan_row_edit_result* out) {
+    /* A rollback the caller owes the receiver: wait for the guard rather than leave the edit it could not apply. */
+    p25_sm_tick_guard_enter();
+    const int rc = trunk_scan_restore_edit_locked(opts, state, session, target_id, fields, edit, out);
+    p25_sm_tick_guard_leave();
+    return rc;
 }

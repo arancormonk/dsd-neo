@@ -81,6 +81,11 @@ int dsd_engine_scan_width_refused(const dsd_opts* opts, int kind, int width_hz, 
 int dsd_engine_scan_warn_analog_width(const dsd_opts* opts, const dsd_state* state, const dsd_scan_option_values* row,
                                       int kind, int dsp_rate_hz, const char* label, char* brief, size_t brief_size);
 
+/** The options -Y channel map @p row runs: its profile's with the operator's session edit laid over them (issue #518);
+ * NULL for a row with neither. @p scratch holds a merged copy. channel_scan.c. */
+const dsd_scan_option_values* dsd_engine_channel_scan_row_values(const dsd_state* state, int row,
+                                                                 dsd_scan_option_values* scratch);
+
 /** Whether the width an analog row of demodulator @p kind runs -- its own width, else the configured width of its kind
  * -- is one the front end refuses at @p dsp_rate_hz (dsd_engine_scan_width_refused()), or the row is an am row nothing
  * demodulates as AM (audio input with no rigctl peer), either of which skips the row at every visit. Quiet:

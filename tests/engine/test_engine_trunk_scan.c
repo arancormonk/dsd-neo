@@ -45,6 +45,7 @@
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
+#include <dsd-neo/runtime/scan_row_edit.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <limits.h>
@@ -164,6 +165,7 @@ static int g_scan_tune_to_freq_pending = 0;
 static uint64_t g_scan_tune_pending_request = 0U;
 static int g_p25_tick_guard_available = 1;
 static int g_p25_tick_guard_depth = 0;
+static int g_p25_tick_guard_blocking_enters = 0;
 static int g_p25_tick_guard_enter_calls = 0;
 static int g_p25_tick_guard_leave_calls = 0;
 static unsigned int g_fake_rtl_output_rate_hz = 0;
@@ -290,6 +292,13 @@ p25_sm_tick_guard_try_enter(void) {
     }
     g_p25_tick_guard_depth++;
     return 1;
+}
+
+/* The rollback's guard: waited for, never refused. */
+void
+p25_sm_tick_guard_enter(void) {
+    g_p25_tick_guard_blocking_enters++;
+    g_p25_tick_guard_depth++;
 }
 
 void
@@ -12288,6 +12297,572 @@ test_am_target_rotation_moves_between_demodulators(void) {
     return test_rc;
 }
 
+/* --- Issue #518: session edits of a target's own settings ("this channel") --- */
+
+static int
+expect_edit_rc(const char* stage, int got, int want) {
+    if (got != want) {
+        DSD_FPRINTF(stderr, "target edit %s returned %d, want %d\n", stage, got, want);
+        return 1;
+    }
+    return 0;
+}
+
+static int
+edit_target_squelch(dsd_opts* opts, dsd_state* state, const char* id, int action, int db,
+                    dsd_scan_row_edit_result* out) {
+    dsd_scan_row_edit_value value;
+    DSD_MEMSET(&value, 0, sizeof value);
+    value.squelch_db = db;
+    return dsd_engine_trunk_scan_edit_target(opts, state, state->scan_row_session, id, DSD_SCAN_ROW_FIELD_SQUELCH,
+                                             action, &value, out);
+}
+
+/* A squelch edit of the parked target runs at once (the demod is handed the level once), one of a target off air
+   waits for its next visit, inheriting follows the configured default, reset goes back to the list's value, and every
+   revisit keeps the edit. The published row says which fields the target takes, sets in its list and runs an edit
+   of; shutdown takes it down. */
+static int
+test_target_edit_squelch_live_and_stored(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (squelch_targets_init("thr,p25-trunk,851000000,,250,,,--squelch-db -60\n"
+                             "inh,dmr-conventional,461000000,,250,,\n",
+                             &opts, &state, dir, sizeof dir, target_path, sizeof target_path)
+        != 0) {
+        return 1;
+    }
+    int test_rc = expect_target_squelch(&opts, "edit init", -60, 1);
+    if (state.scan_row_scanner != (uint8_t)DSD_SCAN_ROW_SCANNER_TRUNK_SCAN || state.scan_row_session == 0U
+        || state.scan_row_index != 0
+        || state.scan_row_editable != (uint8_t)(DSD_SCAN_ROW_FIELD_SQUELCH | DSD_SCAN_ROW_FIELD_GAIN)
+        || state.scan_row_listed != (uint8_t)DSD_SCAN_ROW_FIELD_SQUELCH || state.scan_row_edited != 0U) {
+        DSD_FPRINTF(stderr, "published row scanner=%u session=%u index=%d editable=%#x listed=%#x edited=%#x\n",
+                    (unsigned)state.scan_row_scanner, (unsigned)state.scan_row_session, (int)state.scan_row_index,
+                    (unsigned)state.scan_row_editable, (unsigned)state.scan_row_listed,
+                    (unsigned)state.scan_row_edited);
+        test_rc = 1;
+    }
+    const uint32_t session = state.scan_row_session;
+
+    dsd_scan_row_edit_result result;
+    test_rc |=
+        expect_edit_rc("live set", edit_target_squelch(&opts, &state, "thr", DSD_SCAN_ROW_EDIT_SET, -45, &result),
+                       DSD_SCAN_ROW_EDIT_APPLIED);
+    test_rc |= expect_target_squelch(&opts, "live set", -45, 2);
+    if (state.scan_row_edited != (uint8_t)DSD_SCAN_ROW_FIELD_SQUELCH || result.publish_width || result.restart_gain
+        || dsd_scan_row_edit_fields_edited(&result.previous) != 0U) {
+        DSD_FPRINTF(stderr, "live set: edited=%#x publish=%d restart=%d\n", (unsigned)state.scan_row_edited,
+                    result.publish_width, result.restart_gain);
+        test_rc = 1;
+    }
+    const dsd_scan_option_values* row = dsd_scan_mode_row_options(&state);
+    if (!row || !(row->present & DSD_SCAN_OPT_SQUELCH) || row->squelch_db != -45) {
+        DSD_FPRINTF(stderr, "the scope's row options do not carry the edit\n");
+        test_rc = 1;
+    }
+
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "rotation to inh", 1U);
+    test_rc |= expect_target_squelch(&opts, "inheriting target", -80, 3);
+    if (state.scan_row_edited != 0U || state.scan_row_listed != 0U || state.scan_row_index != 1) {
+        DSD_FPRINTF(stderr, "published row did not follow the rotation\n");
+        test_rc = 1;
+    }
+
+    /* Off air: stored for the next visit, nothing reaches the demod now. */
+    test_rc |= expect_edit_rc("stored inherit",
+                              edit_target_squelch(&opts, &state, "thr", DSD_SCAN_ROW_EDIT_INHERIT, 0, &result),
+                              DSD_SCAN_ROW_EDIT_STORED);
+    test_rc |= expect_target_squelch(&opts, "stored inherit", -80, 3);
+    if (!(result.previous.set & DSD_SCAN_ROW_FIELD_SQUELCH) || result.previous.value.squelch_db != -45) {
+        DSD_FPRINTF(stderr, "stored inherit did not return the previous edit\n");
+        test_rc = 1;
+    }
+
+    trunk_scan_test_set_now(0.52);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "back to thr", 0U);
+    /* thr now follows the default, the level inh left in force: nothing new for the demod. */
+    test_rc |= expect_target_squelch(&opts, "thr inheriting", -80, 3);
+
+    test_rc |= expect_edit_rc("live reset", edit_target_squelch(&opts, &state, "thr", DSD_SCAN_ROW_EDIT_RESET, 0, NULL),
+                              DSD_SCAN_ROW_EDIT_APPLIED);
+    test_rc |= expect_target_squelch(&opts, "live reset", -60, 4);
+    if (state.scan_row_edited != 0U) {
+        DSD_FPRINTF(stderr, "reset left an edit published\n");
+        test_rc = 1;
+    }
+
+    /* Refusals change nothing. */
+    test_rc |= expect_edit_rc("bad value", edit_target_squelch(&opts, &state, "thr", DSD_SCAN_ROW_EDIT_SET, 5, &result),
+                              DSD_SCAN_ROW_EDIT_REFUSED);
+    if (strstr(result.err, "-100 to 0") == NULL) {
+        DSD_FPRINTF(stderr, "bad value reason: %s\n", result.err);
+        test_rc = 1;
+    }
+    dsd_scan_row_edit_value width;
+    DSD_MEMSET(&width, 0, sizeof width);
+    width.width_hz = 12500;
+    test_rc |= expect_edit_rc("width on a p25 target",
+                              dsd_engine_trunk_scan_edit_target(&opts, &state, session, "thr", DSD_SCAN_ROW_FIELD_WIDTH,
+                                                                DSD_SCAN_ROW_EDIT_SET, &width, &result),
+                              DSD_SCAN_ROW_EDIT_REFUSED);
+    test_rc |=
+        expect_edit_rc("unknown target", edit_target_squelch(&opts, &state, "nope", DSD_SCAN_ROW_EDIT_SET, -50, NULL),
+                       DSD_SCAN_ROW_EDIT_STALE);
+    dsd_scan_row_edit_value sq;
+    DSD_MEMSET(&sq, 0, sizeof sq);
+    sq.squelch_db = -50;
+    test_rc |=
+        expect_edit_rc("other session",
+                       dsd_engine_trunk_scan_edit_target(&opts, &state, session + 1U, "thr", DSD_SCAN_ROW_FIELD_SQUELCH,
+                                                         DSD_SCAN_ROW_EDIT_SET, &sq, NULL),
+                       DSD_SCAN_ROW_EDIT_STALE);
+    g_p25_tick_guard_available = 0;
+    test_rc |= expect_edit_rc("guard held", edit_target_squelch(&opts, &state, "thr", DSD_SCAN_ROW_EDIT_SET, -50, NULL),
+                              DSD_SCAN_ROW_EDIT_BUSY);
+    g_p25_tick_guard_available = 1;
+    test_rc |= expect_target_squelch(&opts, "after refusals", -60, 4);
+    if (g_p25_tick_guard_depth != 0) {
+        DSD_FPRINTF(stderr, "the edit left the P25 SM tick guard held (%d)\n", g_p25_tick_guard_depth);
+        test_rc = 1;
+    }
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    if (state.scan_row_scanner != (uint8_t)DSD_SCAN_ROW_SCANNER_NONE || state.scan_row_session != 0U
+        || state.scan_row_index != -1) {
+        DSD_FPRINTF(stderr, "shutdown left the row published\n");
+        test_rc = 1;
+    }
+    test_rc |=
+        expect_edit_rc("after shutdown",
+                       dsd_engine_trunk_scan_edit_target(&opts, &state, session, "thr", DSD_SCAN_ROW_FIELD_SQUELCH,
+                                                         DSD_SCAN_ROW_EDIT_SET, &sq, NULL),
+                       DSD_SCAN_ROW_EDIT_UNAVAILABLE);
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static int
+edit_target_gain(dsd_opts* opts, dsd_state* state, const char* id, int action, int db, dsd_scan_row_edit_result* out) {
+    dsd_scan_row_edit_value value;
+    DSD_MEMSET(&value, 0, sizeof value);
+    value.gain_db = db;
+    return dsd_engine_trunk_scan_edit_target(opts, state, state->scan_row_session, id, DSD_SCAN_ROW_FIELD_GAIN, action,
+                                             &value, out);
+}
+
+static int
+expect_target_gain(const dsd_opts* opts, const dsd_state* state, const char* stage, int gain, int override) {
+    if (opts->rtl_gain_value != gain || state->trunk_scan_gain_override != (uint8_t) override) {
+        DSD_FPRINTF(stderr, "%s: gain %d override %u, want %d/%d\n", stage, opts->rtl_gain_value,
+                    (unsigned)state->trunk_scan_gain_override, gain, override);
+        return 1;
+    }
+    return 0;
+}
+
+/* A gain edit of the parked target puts the gain in dsd_opts and asks the caller to reopen the stream for it (the
+   tuner takes gain only then); the configured gain stays the default every other target runs. A stored edit runs from
+   the target's next visit, inheriting follows the configured gain, the restore puts the previous edit back, and an
+   input whose gain the scan does not set per target refuses the field. */
+static int
+test_target_edit_gain(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static const char header[] = "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,rtl_gain\n";
+    if (make_temp_dir(dir, sizeof dir) != 0
+        || write_targets_file_with_header(dir, header,
+                                          "strong,p25-trunk,851000000,,250,,strong,10\n"
+                                          "default,dmr-trunk,452000000,,250,,default\n",
+                                          target_path, sizeof target_path)
+               != 0) {
+        cleanup_paths(dir, NULL, NULL);
+        return 1;
+    }
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    opts.rtl_gain_value = 22;
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0) {
+        DSD_FPRINTF(stderr, "gain edit init failed: %s\n", err);
+        cleanup_paths(dir, target_path, NULL);
+        return 1;
+    }
+    int test_rc = expect_target_gain(&opts, &state, "gain init", 10, 1);
+    if (state.scan_row_listed != (uint8_t)DSD_SCAN_ROW_FIELD_GAIN) {
+        DSD_FPRINTF(stderr, "the list gain is not published as listed\n");
+        test_rc = 1;
+    }
+
+    dsd_scan_row_edit_result result;
+    test_rc |=
+        expect_edit_rc("stored gain", edit_target_gain(&opts, &state, "default", DSD_SCAN_ROW_EDIT_SET, 15, &result),
+                       DSD_SCAN_ROW_EDIT_STORED);
+    test_rc |= expect_target_gain(&opts, &state, "stored gain", 10, 1);
+    test_rc |= result.restart_gain;
+
+    test_rc |= expect_edit_rc("live AGC", edit_target_gain(&opts, &state, "strong", DSD_SCAN_ROW_EDIT_SET, 0, &result),
+                              DSD_SCAN_ROW_EDIT_APPLIED);
+    test_rc |= expect_target_gain(&opts, &state, "live AGC", 0, 1);
+    if (!result.restart_gain || state.trunk_scan_configured_gain != 22) {
+        DSD_FPRINTF(stderr, "live AGC: restart=%d configured=%d\n", result.restart_gain,
+                    (int)state.trunk_scan_configured_gain);
+        test_rc = 1;
+    }
+
+    test_rc |=
+        expect_edit_rc("live inherit", edit_target_gain(&opts, &state, "strong", DSD_SCAN_ROW_EDIT_INHERIT, 0, &result),
+                       DSD_SCAN_ROW_EDIT_APPLIED);
+    test_rc |= expect_target_gain(&opts, &state, "live inherit", 22, 0);
+    test_rc |= result.restart_gain ? 0 : 1;
+    /* The edit before the inherit was AGC: putting it back runs AGC again. */
+    if (!(result.previous.set & DSD_SCAN_ROW_FIELD_GAIN) || result.previous.value.gain_db != 0) {
+        DSD_FPRINTF(stderr, "inherit did not return the AGC edit as previous\n");
+        test_rc = 1;
+    }
+    test_rc |=
+        expect_edit_rc("restore",
+                       dsd_engine_trunk_scan_restore_target_edit(&opts, &state, state.scan_row_session, "strong",
+                                                                 DSD_SCAN_ROW_FIELD_GAIN, &result.previous, &result),
+                       DSD_SCAN_ROW_EDIT_APPLIED);
+    test_rc |= expect_target_gain(&opts, &state, "restore", 0, 1);
+    test_rc |= result.restart_gain ? 0 : 1;
+
+    /* A rollback waits for the guard rather than give up: with a watchdog tick holding it, the restore still applies. */
+    g_p25_tick_guard_available = 0;
+    const int blocking_before = g_p25_tick_guard_blocking_enters;
+    dsd_scan_row_edit inherit_gain;
+    DSD_MEMSET(&inherit_gain, 0, sizeof inherit_gain);
+    inherit_gain.inherit = DSD_SCAN_ROW_FIELD_GAIN;
+    test_rc |=
+        expect_edit_rc("restore with the guard held",
+                       dsd_engine_trunk_scan_restore_target_edit(&opts, &state, state.scan_row_session, "strong",
+                                                                 DSD_SCAN_ROW_FIELD_GAIN, &inherit_gain, &result),
+                       DSD_SCAN_ROW_EDIT_APPLIED);
+    test_rc |= expect_target_gain(&opts, &state, "restore with the guard held", 22, 0);
+    if (g_p25_tick_guard_blocking_enters != blocking_before + 1 || g_p25_tick_guard_depth != 0) {
+        DSD_FPRINTF(stderr, "the restore did not wait for the guard (%d enters, depth %d)\n",
+                    g_p25_tick_guard_blocking_enters - blocking_before, g_p25_tick_guard_depth);
+        test_rc = 1;
+    }
+    g_p25_tick_guard_available = 1;
+    test_rc |=
+        expect_edit_rc("back to AGC", edit_target_gain(&opts, &state, "strong", DSD_SCAN_ROW_EDIT_SET, 0, &result),
+                       DSD_SCAN_ROW_EDIT_APPLIED);
+
+    /* The same gain again changes nothing on the device. */
+    test_rc |= expect_edit_rc("same gain", edit_target_gain(&opts, &state, "strong", DSD_SCAN_ROW_EDIT_SET, 0, &result),
+                              DSD_SCAN_ROW_EDIT_APPLIED);
+    test_rc |= result.restart_gain;
+
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "rotation to default", 1U);
+    test_rc |= expect_target_gain(&opts, &state, "stored gain on its visit", 15, 1);
+
+    /* Only an RTL-family input other than an Airspy runs a gain per target. */
+    opts.audio_in_type = AUDIO_IN_PULSE;
+    test_rc |= expect_edit_rc("gain on audio input",
+                              edit_target_gain(&opts, &state, "default", DSD_SCAN_ROW_EDIT_SET, 30, &result),
+                              DSD_SCAN_ROW_EDIT_REFUSED);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "airspy");
+    test_rc |= expect_edit_rc("gain on an Airspy",
+                              edit_target_gain(&opts, &state, "default", DSD_SCAN_ROW_EDIT_SET, 30, &result),
+                              DSD_SCAN_ROW_EDIT_REFUSED);
+    opts.audio_in_dev[0] = '\0';
+    test_rc |= expect_target_gain(&opts, &state, "after refusals", 15, 1);
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    if (opts.rtl_gain_value != 22) {
+        DSD_FPRINTF(stderr, "shutdown left the edited target gain %d in force\n", opts.rtl_gain_value);
+        test_rc = 1;
+    }
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* An nfm target's width and tone policy edits: the width reaches dsd_opts and the caller is told to hand it to the
+   front end, and is held to the DSP rate (a width that rate cannot filter is refused); a tone edit takes a list; an
+   am target refuses the tone field. A target's edited width is what the configured-width rule reads. */
+static int
+test_target_edit_width_and_tone(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (nfm_targets_init("fire,nfm-conventional,154430000,,250,250,,--nfm-bandwidth-hz 12500\n"
+                         "air,am-conventional,124925000,,250,250,\n",
+                         &opts, &state, dir, sizeof dir, target_path, sizeof target_path)
+        != 0) {
+        return 1;
+    }
+    g_scan_dsp_rate_hz = 24000;
+    int test_rc = expect_nfm_front(&opts, "width edit init", 1, 12500, 0);
+    if (state.scan_row_editable
+            != (uint8_t)(DSD_SCAN_ROW_FIELD_SQUELCH | DSD_SCAN_ROW_FIELD_WIDTH | DSD_SCAN_ROW_FIELD_TONE
+                         | DSD_SCAN_ROW_FIELD_GAIN)
+        || state.scan_row_listed != (uint8_t)DSD_SCAN_ROW_FIELD_WIDTH) {
+        DSD_FPRINTF(stderr, "nfm target editable=%#x listed=%#x\n", (unsigned)state.scan_row_editable,
+                    (unsigned)state.scan_row_listed);
+        test_rc = 1;
+    }
+    const uint32_t session = state.scan_row_session;
+    dsd_scan_row_edit_value value;
+    DSD_MEMSET(&value, 0, sizeof value);
+    dsd_scan_row_edit_result result;
+
+    value.width_hz = 16000;
+    test_rc |=
+        expect_edit_rc("width set",
+                       dsd_engine_trunk_scan_edit_target(&opts, &state, session, "fire", DSD_SCAN_ROW_FIELD_WIDTH,
+                                                         DSD_SCAN_ROW_EDIT_SET, &value, &result),
+                       DSD_SCAN_ROW_EDIT_APPLIED);
+    if (opts.analog_nfm_bandwidth_hz != 16000 || !result.publish_width) {
+        DSD_FPRINTF(stderr, "width set: width %d publish %d\n", opts.analog_nfm_bandwidth_hz, result.publish_width);
+        test_rc = 1;
+    }
+    /* 25 kHz does not fit a 24 kHz DSP rate. */
+    value.width_hz = 25000;
+    test_rc |=
+        expect_edit_rc("width the rate cannot filter",
+                       dsd_engine_trunk_scan_edit_target(&opts, &state, session, "fire", DSD_SCAN_ROW_FIELD_WIDTH,
+                                                         DSD_SCAN_ROW_EDIT_SET, &value, &result),
+                       DSD_SCAN_ROW_EDIT_REFUSED);
+    if (opts.analog_nfm_bandwidth_hz != 16000 || result.err[0] == '\0') {
+        DSD_FPRINTF(stderr, "refused width changed the width to %d (reason '%s')\n", opts.analog_nfm_bandwidth_hz,
+                    result.err);
+        test_rc = 1;
+    }
+    /* Following the default (20 kHz here) is what the configured-width rule then sees. */
+    test_rc |=
+        expect_edit_rc("width inherit",
+                       dsd_engine_trunk_scan_edit_target(&opts, &state, session, "fire", DSD_SCAN_ROW_FIELD_WIDTH,
+                                                         DSD_SCAN_ROW_EDIT_INHERIT, NULL, &result),
+                       DSD_SCAN_ROW_EDIT_APPLIED);
+    if (opts.analog_nfm_bandwidth_hz != 20000 || !dsd_engine_scan_runs_configured_nfm_width(&opts, &state)) {
+        DSD_FPRINTF(stderr, "inherited width %d, runs configured %d\n", opts.analog_nfm_bandwidth_hz,
+                    dsd_engine_scan_runs_configured_nfm_width(&opts, &state));
+        test_rc = 1;
+    }
+    /* The default's own width as the target's: the decoder's width stays, but a rigctl peer is now asked for the
+       target's passband rather than -B, so the caller still has a request to make. */
+    value.width_hz = 20000;
+    test_rc |=
+        expect_edit_rc("width set to the default's",
+                       dsd_engine_trunk_scan_edit_target(&opts, &state, session, "fire", DSD_SCAN_ROW_FIELD_WIDTH,
+                                                         DSD_SCAN_ROW_EDIT_SET, &value, &result),
+                       DSD_SCAN_ROW_EDIT_APPLIED);
+    if (opts.analog_nfm_bandwidth_hz != 20000 || !result.publish_width) {
+        DSD_FPRINTF(stderr, "width set to the default's: width %d publish %d\n", opts.analog_nfm_bandwidth_hz,
+                    result.publish_width);
+        test_rc = 1;
+    }
+    test_rc |=
+        expect_edit_rc("width inherit again",
+                       dsd_engine_trunk_scan_edit_target(&opts, &state, session, "fire", DSD_SCAN_ROW_FIELD_WIDTH,
+                                                         DSD_SCAN_ROW_EDIT_INHERIT, NULL, &result),
+                       DSD_SCAN_ROW_EDIT_APPLIED);
+    if (!result.publish_width) {
+        DSD_FPRINTF(stderr, "inheriting the default's width asked the peer for nothing\n");
+        test_rc = 1;
+    }
+
+    value.tone_filter = DSD_TONE_FILTER_ALLOW;
+    if (dsd_tone_set_parse("100.0", &value.tone_set, NULL, 0) != 0) {
+        test_rc = 1;
+    }
+    test_rc |= expect_edit_rc("tone set",
+                              dsd_engine_trunk_scan_edit_target(&opts, &state, session, "fire", DSD_SCAN_ROW_FIELD_TONE,
+                                                                DSD_SCAN_ROW_EDIT_SET, &value, &result),
+                              DSD_SCAN_ROW_EDIT_APPLIED);
+    if (opts.analog_tone_filter != DSD_TONE_FILTER_ALLOW || !dsd_tone_set_equal(&opts.analog_tone_set, &value.tone_set)
+        || state.scan_row_edited != (uint8_t)(DSD_SCAN_ROW_FIELD_WIDTH | DSD_SCAN_ROW_FIELD_TONE)) {
+        DSD_FPRINTF(stderr, "tone set: filter %d edited %#x\n", opts.analog_tone_filter,
+                    (unsigned)state.scan_row_edited);
+        test_rc = 1;
+    }
+    test_rc |= expect_edit_rc("tone on an am target",
+                              dsd_engine_trunk_scan_edit_target(&opts, &state, session, "air", DSD_SCAN_ROW_FIELD_TONE,
+                                                                DSD_SCAN_ROW_EDIT_SET, &value, &result),
+                              DSD_SCAN_ROW_EDIT_REFUSED);
+    /* A width rollback puts the width back and keeps the tone edit made since. */
+    dsd_scan_row_edit width_back;
+    DSD_MEMSET(&width_back, 0, sizeof width_back);
+    width_back.set = DSD_SCAN_ROW_FIELD_WIDTH;
+    width_back.value.width_hz = 16000;
+    test_rc |= expect_edit_rc("width rollback",
+                              dsd_engine_trunk_scan_restore_target_edit(&opts, &state, session, "fire",
+                                                                        DSD_SCAN_ROW_FIELD_WIDTH, &width_back, &result),
+                              DSD_SCAN_ROW_EDIT_APPLIED);
+    if (opts.analog_nfm_bandwidth_hz != 16000 || opts.analog_tone_filter != DSD_TONE_FILTER_ALLOW
+        || state.scan_row_edited != (uint8_t)(DSD_SCAN_ROW_FIELD_WIDTH | DSD_SCAN_ROW_FIELD_TONE)) {
+        DSD_FPRINTF(stderr, "width rollback: width %d tone %d edited %#x\n", opts.analog_nfm_bandwidth_hz,
+                    opts.analog_tone_filter, (unsigned)state.scan_row_edited);
+        test_rc = 1;
+    }
+
+    /* The am target's stored width runs on its visit. */
+    value.width_hz = 8333;
+    test_rc |= expect_edit_rc("am width stored",
+                              dsd_engine_trunk_scan_edit_target(&opts, &state, session, "air", DSD_SCAN_ROW_FIELD_WIDTH,
+                                                                DSD_SCAN_ROW_EDIT_SET, &value, &result),
+                              DSD_SCAN_ROW_EDIT_STORED);
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "rotation to air", 1U);
+    if (opts.analog_am_bandwidth_hz != 8333 || opts.analog_tone_filter != DSD_TONE_FILTER_OFF) {
+        DSD_FPRINTF(stderr, "am target on its visit: width %d tone %d\n", opts.analog_am_bandwidth_hz,
+                    opts.analog_tone_filter);
+        test_rc = 1;
+    }
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    g_scan_dsp_rate_hz = 0;
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* While the parked target's retune is in flight, a width or gain edit of it is BUSY -- the retune lands the width it
+   queued, and only a request the caller makes itself can be put back should the front end refuse it -- and a squelch
+   edit applies. A rollback still applies in flight, leaving the width to the landing. Once the retune lands, the width
+   edit applies and asks for the width. */
+static int
+test_target_edit_waits_for_its_retune(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    g_scan_tune_to_freq_pending = 1;
+    g_scan_tune_pending_request = 0U;
+    if (nfm_targets_init("fire,nfm-conventional,154430000,,250,250,,--nfm-bandwidth-hz 12500\n"
+                         "air,am-conventional,124925000,,250,250,\n",
+                         &opts, &state, dir, sizeof dir, target_path, sizeof target_path)
+        != 0) {
+        g_scan_tune_to_freq_pending = 0;
+        return 1;
+    }
+    g_scan_dsp_rate_hz = 24000;
+    int test_rc = 0;
+    if (g_scan_tune_pending_request == 0U) {
+        DSD_FPRINTF(stderr, "the first target's retune is not in flight\n");
+        test_rc = 1;
+    }
+    const uint32_t session = state.scan_row_session;
+    dsd_scan_row_edit_value value;
+    DSD_MEMSET(&value, 0, sizeof value);
+    dsd_scan_row_edit_result result;
+    value.width_hz = 16000;
+    test_rc |=
+        expect_edit_rc("width in flight",
+                       dsd_engine_trunk_scan_edit_target(&opts, &state, session, "fire", DSD_SCAN_ROW_FIELD_WIDTH,
+                                                         DSD_SCAN_ROW_EDIT_SET, &value, &result),
+                       DSD_SCAN_ROW_EDIT_BUSY);
+    value.gain_db = 20;
+    test_rc |= expect_edit_rc("gain in flight",
+                              dsd_engine_trunk_scan_edit_target(&opts, &state, session, "fire", DSD_SCAN_ROW_FIELD_GAIN,
+                                                                DSD_SCAN_ROW_EDIT_SET, &value, &result),
+                              DSD_SCAN_ROW_EDIT_BUSY);
+    if (opts.analog_nfm_bandwidth_hz != 12500 || state.scan_row_edited != 0U) {
+        DSD_FPRINTF(stderr, "a busy edit changed the target: width %d edited %#x\n", opts.analog_nfm_bandwidth_hz,
+                    (unsigned)state.scan_row_edited);
+        test_rc = 1;
+    }
+    test_rc |= expect_edit_rc("squelch in flight",
+                              edit_target_squelch(&opts, &state, "fire", DSD_SCAN_ROW_EDIT_SET, -50, &result),
+                              DSD_SCAN_ROW_EDIT_APPLIED);
+    dsd_scan_row_edit width_back;
+    DSD_MEMSET(&width_back, 0, sizeof width_back);
+    width_back.set = DSD_SCAN_ROW_FIELD_WIDTH;
+    width_back.value.width_hz = 16000;
+    test_rc |= expect_edit_rc("rollback in flight",
+                              dsd_engine_trunk_scan_restore_target_edit(&opts, &state, session, "fire",
+                                                                        DSD_SCAN_ROW_FIELD_WIDTH, &width_back, &result),
+                              DSD_SCAN_ROW_EDIT_APPLIED);
+    if (opts.analog_nfm_bandwidth_hz != 16000 || result.publish_width
+        || state.scan_row_edited != (uint8_t)(DSD_SCAN_ROW_FIELD_SQUELCH | DSD_SCAN_ROW_FIELD_WIDTH)) {
+        DSD_FPRINTF(stderr, "rollback in flight: width %d publish %d edited %#x\n", opts.analog_nfm_bandwidth_hz,
+                    result.publish_width, (unsigned)state.scan_row_edited);
+        test_rc = 1;
+    }
+    dsd_trunk_tuning_request_complete(g_scan_tune_pending_request, DSD_TRUNK_TUNE_RESULT_OK);
+    trunk_scan_test_set_now(0.05);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "landed", 0U);
+    value.width_hz = 12500;
+    test_rc |=
+        expect_edit_rc("width after landing",
+                       dsd_engine_trunk_scan_edit_target(&opts, &state, session, "fire", DSD_SCAN_ROW_FIELD_WIDTH,
+                                                         DSD_SCAN_ROW_EDIT_SET, &value, &result),
+                       DSD_SCAN_ROW_EDIT_APPLIED);
+    if (opts.analog_nfm_bandwidth_hz != 12500 || !result.publish_width) {
+        DSD_FPRINTF(stderr, "width after landing: width %d publish %d\n", opts.analog_nfm_bandwidth_hz,
+                    result.publish_width);
+        test_rc = 1;
+    }
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    g_scan_tune_to_freq_pending = 0;
+    dsd_trunk_tuning_requests_reset();
+    g_scan_dsp_rate_hz = 0;
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* A live decryption change installs the target's options again: a session edit made before it survives, and one made
+   after it keeps the decryption change. */
+static int
+test_target_edit_survives_decryption_apply(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (squelch_targets_init("dmr,dmr-conventional,461000000,,250,,,--squelch-db -60\n"
+                             "p25,p25-trunk,851000000,,250,,\n",
+                             &opts, &state, dir, sizeof dir, target_path, sizeof target_path)
+        != 0) {
+        return 1;
+    }
+    int test_rc = expect_edit_rc("edit before decryption",
+                                 edit_target_squelch(&opts, &state, "dmr", DSD_SCAN_ROW_EDIT_SET, -40, NULL),
+                                 DSD_SCAN_ROW_EDIT_APPLIED);
+    dsd_key_set keys = {0};
+    dsd_dmr_key_map map = {0};
+    const int applied = dsd_trunk_scan_hook_decryption_apply(&opts, &state, "dmr", dsd_trunk_tuning_generation(),
+                                                             DSD_TRUNK_KEY_FORCE, &keys, &map, 1);
+    const dsd_scan_option_values* row = dsd_scan_mode_row_options(&state);
+    if (applied != DSD_TRUNK_KEY_APPLIED || !row || row->squelch_db != -40 || !(row->present & DSD_SCAN_OPT_FORCE)
+        || row->force != 1) {
+        DSD_FPRINTF(stderr, "decryption apply rc %d lost the session edit or the force\n", applied);
+        test_rc = 1;
+    }
+    test_rc |= expect_target_squelch(&opts, "decryption apply", -40, 2);
+    test_rc |= expect_edit_rc("edit after decryption",
+                              edit_target_squelch(&opts, &state, "dmr", DSD_SCAN_ROW_EDIT_SET, -50, NULL),
+                              DSD_SCAN_ROW_EDIT_APPLIED);
+    row = dsd_scan_mode_row_options(&state);
+    if (!row || row->squelch_db != -50 || !(row->present & DSD_SCAN_OPT_FORCE) || row->force != 1) {
+        DSD_FPRINTF(stderr, "an edit after the decryption change dropped its force\n");
+        test_rc = 1;
+    }
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -12463,6 +13038,12 @@ main(void) {
     rc |= run_with_default_tune_hook(test_nfm_target_rejection_moves_to_a_same_frequency_target);
     rc |= run_with_default_tune_hook(test_nfm_target_rejection_weighs_an_am_alternate);
     rc |= run_with_default_tune_hook(test_tone_filter_warns_without_nfm_targets);
+    /* Issue #518: "this channel" session edits */
+    rc |= run_with_default_tune_hook(test_target_edit_squelch_live_and_stored);
+    rc |= run_with_default_tune_hook(test_target_edit_gain);
+    rc |= run_with_default_tune_hook(test_target_edit_width_and_tone);
+    rc |= run_with_default_tune_hook(test_target_edit_waits_for_its_retune);
+    rc |= run_with_default_tune_hook(test_target_edit_survives_decryption_apply);
     return rc;
 }
 

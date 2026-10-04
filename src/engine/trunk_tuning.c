@@ -565,7 +565,8 @@ dsd_engine_update_vc_tune_state(dsd_opts* opts, dsd_state* state, long int freq)
 /* The demodulator and passband a rigctl peer is asked for under the settings in force (issue #526). On audio input (a
  * PCM, UDP or TCP source) the peer demodulates what DSD-neo hears, so an AM row (the AM monitor) asks for AM at the AM
  * width it runs, its own or the configured one (the 6 kHz default when none is set), and an nfm row that sets its own
- * --nfm-bandwidth-hz (dsd_engine_scan_tuning_row_options()) asks for FM at that width. Either is the row's own request
+ * --nfm-bandwidth-hz (@p row: the options of the row being tuned, dsd_engine_scan_tuning_row_options(), or of the row
+ * on air for a live edit) asks for FM at that width. Either is the row's own request
  * (@p row_request set): a peer that refuses it fails the tune, and the scanner moves on as for any row it cannot tune.
  * Anything else asks for FM at -B and stays best-effort, as -B always has been, unless a refusal leaves the peer on an
  * am row's AM, or on a demodulator not known; without -B that is the peer's own passband (0), sent only to undo an AM
@@ -573,7 +574,8 @@ dsd_engine_update_vc_tune_state(dsd_opts* opts, dsd_state* state, long int freq)
  * (SetModulationKind()). On an RTL-family input DSD-neo demodulates the I/Q itself and the peer only follows the
  * frequency, so it is asked for FM at -B, best-effort, whatever the row runs and whatever the peer runs. */
 static int
-dsd_engine_rigctl_modulation(const dsd_opts* opts, const dsd_state* state, int* bandwidth, int* row_request) {
+dsd_engine_rigctl_modulation(const dsd_opts* opts, const dsd_scan_option_values* row, int* bandwidth,
+                             int* row_request) {
     int kind = DSD_ANALOG_DEMOD_FM;
     *bandwidth = opts->setmod_bw;
     *row_request = 0;
@@ -583,7 +585,6 @@ dsd_engine_rigctl_modulation(const dsd_opts* opts, const dsd_state* state, int* 
         *bandwidth = dsd_analog_width_effective_hz(DSD_ANALOG_DEMOD_AM, opts->analog_am_bandwidth_hz);
         *row_request = 1;
     } else if (peer_demodulates) {
-        const dsd_scan_option_values* row = dsd_engine_scan_tuning_row_options(opts, state);
         if (row && (row->present & DSD_SCAN_OPT_BANDWIDTH) && row->channel_bw_kind == DSD_ANALOG_DEMOD_FM) {
             *bandwidth = row->channel_bw_hz;
             *row_request = 1;
@@ -602,7 +603,8 @@ static int
 dsd_engine_tune_rigctl_modulation(const dsd_opts* opts, const dsd_state* state) {
     int bandwidth = 0;
     int row_request = 0;
-    const int kind = dsd_engine_rigctl_modulation(opts, state, &bandwidth, &row_request);
+    const int kind =
+        dsd_engine_rigctl_modulation(opts, dsd_engine_scan_tuning_row_options(opts, state), &bandwidth, &row_request);
     const bool ok = row_request ? SetScanRowModulation(opts->rigctl_sockfd, kind, bandwidth)
                                 : SetModulationKind(opts->rigctl_sockfd, kind, bandwidth);
     if (ok) {
@@ -616,6 +618,28 @@ dsd_engine_tune_rigctl_modulation(const dsd_opts* opts, const dsd_state* state) 
     return opts->audio_in_type == AUDIO_IN_RTL || CachedModulationKind(opts->rigctl_sockfd) == kind;
 }
 
+int
+dsd_engine_scan_rigctl_apply_modulation(const dsd_opts* opts, const dsd_state* state) {
+    if (!opts || !state || opts->use_rigctl != 1 || opts->rigctl_sockfd == DSD_INVALID_SOCKET
+        || opts->audio_in_type == AUDIO_IN_RTL) {
+        return -1;
+    }
+    /* Unlike a tune's best-effort -B (dsd_engine_tune_rigctl_modulation()), a live edit names what the peer is to run
+       now, the -B a row goes back to included: a refusal of either request fails it, so the edit goes back rather than
+       read as applied while the peer keeps the passband it had. The row is the one whose scope is in force, the edit's,
+       not a -Y tune staged since, which a failed tune can leave naming another row. */
+    int bandwidth = 0;
+    int row_request = 0;
+    const int kind = dsd_engine_rigctl_modulation(opts, dsd_scan_mode_row_options(state), &bandwidth, &row_request);
+    const bool ok = row_request ? SetScanRowModulation(opts->rigctl_sockfd, kind, bandwidth)
+                                : SetModulationKind(opts->rigctl_sockfd, kind, bandwidth);
+    if (!ok) {
+        DSD_FPRINTF(stderr, "Rigctl %s modulation update failed for bandwidth %d.\n", dsd_analog_demod_label(kind),
+                    bandwidth);
+    }
+    return ok ? 1 : 0;
+}
+
 void
 dsd_engine_scan_rigctl_restore(const dsd_opts* opts, const dsd_state* state) {
     if (!opts || opts->use_rigctl != 1 || opts->rigctl_sockfd == DSD_INVALID_SOCKET) {
@@ -623,7 +647,8 @@ dsd_engine_scan_rigctl_restore(const dsd_opts* opts, const dsd_state* state) {
     }
     int bandwidth = 0;
     int row_request = 0;
-    const int kind = dsd_engine_rigctl_modulation(opts, state, &bandwidth, &row_request);
+    const int kind =
+        dsd_engine_rigctl_modulation(opts, dsd_engine_scan_tuning_row_options(opts, state), &bandwidth, &row_request);
     if (!RestoreScanModulation(opts->rigctl_sockfd, kind, bandwidth)) {
         DSD_FPRINTF(stderr, "Rigctl %s modulation restore failed for bandwidth %d.\n", dsd_analog_demod_label(kind),
                     bandwidth);

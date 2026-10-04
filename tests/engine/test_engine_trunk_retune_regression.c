@@ -373,6 +373,16 @@ dsd_engine_scan_tuning_row_options(const dsd_opts* opts, const dsd_state* state)
     return g_tuning_row_options;
 }
 
+/* The options of the row whose scope is in force, which a live edit's rigctl request reads (issue #518): none unless a
+   test installs some. */
+static const dsd_scan_option_values* g_scope_row_options = NULL;
+
+const dsd_scan_option_values*
+dsd_scan_mode_row_options(const dsd_state* state) {
+    (void)state;
+    return g_scope_row_options;
+}
+
 int
 dsd_analog_width_effective_hz(int kind, int configured_hz) {
     if (configured_hz > 0) {
@@ -1233,6 +1243,61 @@ test_rigctl_failed_tune_puts_back_the_peer_modulation(void) {
 }
 
 /*
+ * Issue #518: a live "this channel" width edit asks the peer for what the row on air runs now
+ * (dsd_engine_scan_rigctl_apply_modulation()): the row's own passband, or -B once the row follows the default again.
+ * The row is the one whose scope is in force, never a -Y tune staged since (one that failed leaves another row staged
+ * while this one stays on air). Unlike a tune's best-effort -B, a refusal of either request fails the edit, which then
+ * goes back rather than read as applied while the peer keeps the row's passband -- though the peer is still on FM.
+ * With no peer, or on an RTL-family input, there is nothing to ask.
+ */
+static void
+test_rigctl_live_edit_apply_is_strict(void) {
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* state = calloc(1, sizeof(*state));
+    assert(opts && state);
+    opts->audio_in_type = AUDIO_IN_PULSE;
+    opts->use_rigctl = 1;
+    opts->rigctl_sockfd = 5;
+    opts->scanner_mode = 1;
+    opts->analog_only = 1;
+    opts->monitor_input_audio = 1;
+    opts->analog_demod = DSD_ANALOG_DEMOD_FM;
+    opts->setmod_bw = 12500;
+    g_peer_kind = DSD_ANALOG_DEMOD_FM;
+    /* Static: the stubs hold these by address after this frame's statements run. */
+    static dsd_scan_option_values on_air;
+    DSD_MEMSET(&on_air, 0, sizeof on_air);
+    on_air.present = DSD_SCAN_OPT_BANDWIDTH;
+    on_air.channel_bw_hz = 16000;
+    on_air.channel_bw_kind = DSD_ANALOG_DEMOD_FM;
+    static dsd_scan_option_values staged;
+    staged = on_air;
+    staged.channel_bw_hz = 25000;
+    g_scope_row_options = &on_air;
+    g_tuning_row_options = &staged;
+    g_setmod_result = true;
+    assert(dsd_engine_scan_rigctl_apply_modulation(opts, state) == 1);
+    assert(g_setmod_call == SETMOD_ROW && g_setmod_kind == DSD_ANALOG_DEMOD_FM && g_setmod_bw == 16000);
+    g_setmod_result = false;
+    assert(dsd_engine_scan_rigctl_apply_modulation(opts, state) == 0);
+    /* Following the default again: -B, refused while the peer stays on FM, fails the edit all the same. */
+    g_scope_row_options = NULL;
+    assert(dsd_engine_scan_rigctl_apply_modulation(opts, state) == 0);
+    assert(g_setmod_call == SETMOD_SESSION && g_setmod_bw == 12500 && g_peer_kind == DSD_ANALOG_DEMOD_FM);
+    g_setmod_result = true;
+    assert(dsd_engine_scan_rigctl_apply_modulation(opts, state) == 1);
+    opts->audio_in_type = AUDIO_IN_RTL;
+    assert(dsd_engine_scan_rigctl_apply_modulation(opts, state) == -1);
+    opts->audio_in_type = AUDIO_IN_PULSE;
+    opts->use_rigctl = 0;
+    assert(dsd_engine_scan_rigctl_apply_modulation(opts, state) == -1);
+    assert(dsd_engine_scan_rigctl_apply_modulation(NULL, state) == -1);
+    g_tuning_row_options = NULL;
+    free(state);
+    free(opts);
+}
+
+/*
  * Issue #526: once a scanner has left its rows, the rigctl peer goes back to what the restored settings ask for -- FM
  * at -B, the peer's own passband without it -- through RestoreScanModulation(), which first sends back each passband a
  * row changed, since no later tune outside a scan would undo an am row's AM. The restore is best-effort, and a session
@@ -1354,6 +1419,7 @@ main(void) {
     test_rigctl_refused_return_from_am_fails_the_tune();
     test_rigctl_failed_tune_puts_back_the_peer_modulation();
     test_rigctl_restore_after_a_scan();
+    test_rigctl_live_edit_apply_is_strict();
 #ifdef USE_RADIO
     test_rigctl_on_rtl_input_follows_the_frequency_only();
 #endif

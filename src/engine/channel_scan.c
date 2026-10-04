@@ -32,11 +32,18 @@
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
+#include <dsd-neo/runtime/scan_row_edit.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdlib.h>
 
 #include "scan_analog_internal.h"
+
+/* One row's session edit (issue #518). */
+typedef struct {
+    int row;
+    dsd_scan_row_edit edit;
+} channel_scan_row_edit;
 
 typedef struct {
     uint64_t request;
@@ -74,6 +81,23 @@ typedef struct {
     int tuned;
     int tuned_row;
     uint64_t tuned_map;
+    /* The row whose scope is installed, its options in force (the last row committed), or -1 before the first. */
+    int committed_row;
+    /* The operator's session edits of rows' own settings ("this channel", issue #518), one per edited row, laid over the
+     * row's options wherever they are read (channel_scan_row_values()). They go with this extension when the scanner
+     * leaves, and so never outlive the map they were made on: a map change leaves first. edits_epoch moves with every
+     * change, and a tune staged before one restages (channel_scan_staged_stale()), so it lands what the row now runs.
+     * session names this scan to the editors (dsd_state::scan_row_session). */
+    channel_scan_row_edit* edits;
+    size_t edit_count;
+    size_t edit_capacity;
+    uint32_t edits_epoch;
+    uint32_t staged_edits_epoch;
+    uint32_t session;
+    /* The options the staged row was prepared with (its session edit merged), which its tune's rigctl leg reads
+     * (dsd_engine_scan_tuning_row_options()); staged_has_values 0 for a row with none. */
+    dsd_scan_option_values staged_values;
+    int staged_has_values;
 } channel_scan;
 
 static void
@@ -83,12 +107,69 @@ channel_scan_free(void* ptr) {
         return;
     }
     dsd_scan_key_change_clear(&scan->keys);
+    free(scan->edits);
     free(scan);
 }
 
 static channel_scan*
 channel_scan_get(const dsd_state* state) {
     return DSD_STATE_EXT_GET_AS(channel_scan, state, DSD_STATE_EXT_ENGINE_CHANNEL_SCAN);
+}
+
+static channel_scan_row_edit*
+channel_scan_find_edit(const channel_scan* scan, int row) {
+    for (size_t i = 0; scan && i < scan->edit_count; i++) {
+        if (scan->edits[i].row == row) {
+            return &scan->edits[i];
+        }
+    }
+    return NULL;
+}
+
+/* The options @p row runs: its profile's, with the operator's session edit laid over them (issue #518). NULL for a row
+   with neither; @p scratch holds the merged copy when there is an edit. */
+static const dsd_scan_option_values*
+channel_scan_row_values(const dsd_state* state, int row, dsd_scan_option_values* scratch) {
+    const dsd_scan_row_profile* profile = dsd_channel_profile_get(state, (size_t)row);
+    const dsd_scan_option_values* base = profile ? &profile->values : NULL;
+    const channel_scan_row_edit* entry = channel_scan_find_edit(channel_scan_get(state), row);
+    if (!entry || dsd_scan_row_edit_fields_edited(&entry->edit) == 0U) {
+        return base;
+    }
+    dsd_scan_row_edit_apply(base, &entry->edit, dsd_channel_mode_get(state, (size_t)row), scratch);
+    return scratch;
+}
+
+const dsd_scan_option_values*
+dsd_engine_channel_scan_row_values(const dsd_state* state, int row, dsd_scan_option_values* scratch) {
+    return (state && scratch && row >= 0) ? channel_scan_row_values(state, row, scratch) : NULL;
+}
+
+/* Publish the row whose scope is in force for the "this channel" editors. */
+static void
+channel_scan_publish_row(dsd_state* state, const channel_scan* scan) {
+    const int row = scan->committed_row;
+    const dsd_scan_row_profile* profile = dsd_channel_profile_get(state, (size_t)row);
+    const channel_scan_row_edit* entry = channel_scan_find_edit(scan, row);
+    state->scan_row_session = scan->session;
+    state->scan_row_index = row;
+    state->scan_row_scanner = (uint8_t)DSD_SCAN_ROW_SCANNER_CHANNEL_SCAN;
+    state->scan_row_editable = (uint8_t)dsd_scan_row_edit_fields(dsd_channel_mode_get(state, (size_t)row), 0);
+    state->scan_row_edited = (uint8_t)dsd_scan_row_edit_fields_edited(entry ? &entry->edit : NULL);
+    state->scan_row_listed = (uint8_t)dsd_scan_row_edit_fields_listed(profile ? &profile->values : NULL, 0);
+}
+
+static void
+channel_scan_clear_published_row(dsd_state* state) {
+    if (state->scan_row_scanner != (uint8_t)DSD_SCAN_ROW_SCANNER_CHANNEL_SCAN) {
+        return;
+    }
+    state->scan_row_session = 0U;
+    state->scan_row_index = -1;
+    state->scan_row_scanner = (uint8_t)DSD_SCAN_ROW_SCANNER_NONE;
+    state->scan_row_editable = 0U;
+    state->scan_row_edited = 0U;
+    state->scan_row_listed = 0U;
 }
 
 const dsd_scan_option_values*
@@ -98,8 +179,7 @@ dsd_engine_scan_tuning_row_options(const dsd_opts* opts, const dsd_state* state)
     }
     const channel_scan* scan = channel_scan_get(state);
     if (scan && opts->trunk_scan_enabled != 1) {
-        const dsd_scan_row_profile* profile = dsd_channel_profile_get(state, (size_t)scan->row);
-        return profile ? &profile->values : NULL;
+        return scan->staged_has_values ? &scan->staged_values : NULL;
     }
     return dsd_scan_mode_row_options(state);
 }
@@ -140,8 +220,9 @@ channel_scan_row_runs_configured_width(const dsd_state* state, const channel_sca
     if (!dsd_scan_mode_is_analog(scan->mode)) {
         return 0;
     }
-    const dsd_scan_row_profile* profile = dsd_channel_profile_get(state, (size_t)scan->row);
-    return !(profile && (profile->values.present & DSD_SCAN_OPT_BANDWIDTH));
+    dsd_scan_option_values scratch;
+    const dsd_scan_option_values* values = channel_scan_row_values(state, scan->row, &scratch);
+    return !(values && (values->present & DSD_SCAN_OPT_BANDWIDTH));
 }
 
 /* Whether a configured setting the staged tune was prepared from changed while it was outstanding. A configured channel
@@ -179,7 +260,8 @@ static int
 channel_scan_staged_stale(const dsd_opts* opts, const dsd_state* state, const channel_scan* scan) {
     dsd_scan_settings latest;
     dsd_scan_mode_configured(opts, state, &latest);
-    if (channel_scan_configured_changed(state, &latest, scan) || scan->key_epoch != state->enc_lockout_key_epoch) {
+    if (channel_scan_configured_changed(state, &latest, scan) || scan->key_epoch != state->enc_lockout_key_epoch
+        || scan->staged_edits_epoch != scan->edits_epoch) {
         return 1;
     }
     if (scan->family_attached) {
@@ -216,7 +298,10 @@ channel_scan_commit(dsd_opts* opts, dsd_state* state, channel_scan* scan) {
     }
     state->lcn_freq_roll = scan->row + 1;
     const dsd_scan_row_profile* profile = dsd_channel_profile_get(state, (size_t)scan->row);
-    (void)dsd_scan_mode_options(opts, state, profile ? &profile->values : NULL);
+    dsd_scan_option_values values_scratch;
+    (void)dsd_scan_mode_options(opts, state, channel_scan_row_values(state, scan->row, &values_scratch));
+    scan->committed_row = scan->row;
+    channel_scan_publish_row(state, scan);
     dsd_engine_scan_ensure_output(opts);
     dsd_scan_groups_enter(state, profile);
     const int maps_changed = dsd_scan_maps_enter(state, profile);
@@ -328,8 +413,8 @@ channel_scan_warn_rows_squelch(const dsd_opts* opts, const dsd_state* state) {
         if (*dsd_state_trunk_lcn_slot_const(state, row) == 0) {
             continue;
         }
-        const dsd_scan_row_profile* profile = dsd_channel_profile_get(state, (size_t)row);
-        const dsd_scan_option_values* values = profile ? &profile->values : NULL;
+        dsd_scan_option_values scratch;
+        const dsd_scan_option_values* values = channel_scan_row_values(state, row, &scratch);
         /* An analog row's squelch gates exactly what it is for on any input: its monitor and carrier. */
         if (!dsd_scan_mode_is_analog(dsd_channel_mode_get(state, (size_t)row))) {
             channel_scan_warn_row_squelch(opts, row, *dsd_state_trunk_lcn_slot_const(state, row), values);
@@ -362,8 +447,8 @@ channel_scan_warn_rows_width(const dsd_opts* opts, dsd_state* state, int dsp_rat
             continue;
         }
         const int kind = dsd_scan_mode_analog_kind(dsd_channel_mode_get(state, (size_t)row));
-        const dsd_scan_row_profile* profile = dsd_channel_profile_get(state, (size_t)row);
-        const dsd_scan_option_values* values = profile ? &profile->values : NULL;
+        dsd_scan_option_values scratch;
+        const dsd_scan_option_values* values = channel_scan_row_values(state, row, &scratch);
         char label[64];
         char brief[DSD_ANALOG_ERROR_TEXT_MAX];
         channel_scan_row_label(state, row, label, sizeof label);
@@ -624,11 +709,11 @@ channel_scan_count_refused_rows(const dsd_opts* opts, const dsd_state* state, in
         if (!channel_scan_row_visited_analog(state, row)) {
             continue;
         }
-        const dsd_scan_row_profile* profile = dsd_channel_profile_get(state, (size_t)row);
+        dsd_scan_option_values scratch;
         const int kind = dsd_scan_mode_analog_kind(dsd_channel_mode_get(state, (size_t)row));
         char row_brief[DSD_ANALOG_ERROR_TEXT_MAX];
-        if (!dsd_engine_scan_analog_width_skipped(opts, state, profile ? &profile->values : NULL, kind, dsp_rate_hz,
-                                                  row_brief, sizeof row_brief)) {
+        if (!dsd_engine_scan_analog_width_skipped(opts, state, channel_scan_row_values(state, row, &scratch), kind,
+                                                  dsp_rate_hz, row_brief, sizeof row_brief)) {
             continue;
         }
         if (refused++ == 0) {
@@ -664,10 +749,10 @@ channel_scan_row_reachable(const dsd_opts* opts, const dsd_state* state, int row
     if (!channel_scan_row_visited_analog(state, row)) {
         return 1;
     }
-    const dsd_scan_row_profile* profile = dsd_channel_profile_get(state, (size_t)row);
+    dsd_scan_option_values scratch;
     const int kind = dsd_scan_mode_analog_kind(dsd_channel_mode_get(state, (size_t)row));
-    return !dsd_engine_scan_analog_width_skipped(opts, state, profile ? &profile->values : NULL, kind, dsp_rate_hz,
-                                                 NULL, 0U);
+    return !dsd_engine_scan_analog_width_skipped(opts, state, channel_scan_row_values(state, row, &scratch), kind,
+                                                 dsp_rate_hz, NULL, 0U);
 }
 
 /* A tone policy as it judges (dsd_analog_tone_policy_configure()): a list policy with a list, else none (OFF and an
@@ -739,8 +824,8 @@ channel_scan_row_rejects_alike(const dsd_opts* opts, const dsd_state* state, int
     if (!dsd_channel_mode_hears_tones(state, (size_t)row, dsd_scan_mode_configured_fm_monitor(opts, state))) {
         return 0;
     }
-    const dsd_scan_row_profile* profile = dsd_channel_profile_get(state, (size_t)row);
-    return channel_scan_tone_rejects_alike(opts, state, profile ? &profile->values : NULL);
+    dsd_scan_option_values scratch;
+    return channel_scan_tone_rejects_alike(opts, state, channel_scan_row_values(state, row, &scratch));
 }
 
 int
@@ -800,6 +885,8 @@ channel_scan_start_row(dsd_opts* opts, dsd_state* state, int row) {
         if (!scan) {
             return -1;
         }
+        scan->committed_row = -1;
+        scan->session = dsd_scan_row_edit_new_session();
         (void)dsd_state_ext_set(state, DSD_STATE_EXT_ENGINE_CHANNEL_SCAN, scan, channel_scan_free);
     }
     channel_scan_check_rows(opts, state, scan);
@@ -809,9 +896,16 @@ channel_scan_start_row(dsd_opts* opts, dsd_state* state, int row) {
     dsd_scan_settings before;
     dsd_scan_settings next;
     dsd_scan_settings_capture(opts, state, &before);
-    /* The row's own acquisition options (its analog channel width) are part of what the tune queues. */
-    const dsd_scan_row_profile* row_profile = dsd_channel_profile_get(state, (size_t)row);
-    if (dsd_scan_mode_prepare(opts, state, scan->mode, row_profile ? &row_profile->values : NULL, &next) != 0) {
+    /* The row's own acquisition options (its analog channel width, a session edit's included) are part of what the
+       tune queues. */
+    dsd_scan_option_values values_scratch;
+    const dsd_scan_option_values* staged = channel_scan_row_values(state, row, &values_scratch);
+    scan->staged_edits_epoch = scan->edits_epoch;
+    scan->staged_has_values = staged != NULL;
+    if (staged) {
+        scan->staged_values = *staged;
+    }
+    if (dsd_scan_mode_prepare(opts, state, scan->mode, staged, &next) != 0) {
         return -1;
     }
     scan->row_kind = next.analog_demod;
@@ -979,6 +1073,7 @@ dsd_engine_channel_scan_leave(dsd_opts* opts, dsd_state* state) {
         channel_scan_end_calls(opts, state);
     }
     (void)dsd_state_ext_set(state, DSD_STATE_EXT_ENGINE_CHANNEL_SCAN, NULL, NULL);
+    channel_scan_clear_published_row(state);
     dsd_scan_groups_leave(state);
     dsd_scan_maps_leave(state);
     /* The landing decision the row on air was timed with goes with its scope; the restore decides by it too. */
@@ -994,4 +1089,166 @@ dsd_engine_channel_scan_leave(dsd_opts* opts, dsd_state* state) {
         dsd_engine_scan_rigctl_restore(opts, state);
     }
     return monitor_request;
+}
+
+/* Store @p next as @p row's session edit, dropping the entry once it edits nothing. Returns -1 when it cannot be
+   stored (no memory), with nothing changed. */
+static int
+channel_scan_store_edit(channel_scan* scan, int row, const dsd_scan_row_edit* next) {
+    channel_scan_row_edit* entry = channel_scan_find_edit(scan, row);
+    if (dsd_scan_row_edit_fields_edited(next) == 0U) {
+        if (entry) {
+            *entry = scan->edits[scan->edit_count - 1U];
+            scan->edit_count--;
+        }
+        return 0;
+    }
+    if (!entry) {
+        if (scan->edit_count == scan->edit_capacity) {
+            const size_t capacity = scan->edit_capacity ? scan->edit_capacity * 2U : 4U;
+            channel_scan_row_edit* grown =
+                (channel_scan_row_edit*)realloc(scan->edits, capacity * sizeof(*scan->edits));
+            if (!grown) {
+                return -1;
+            }
+            scan->edits = grown;
+            scan->edit_capacity = capacity;
+        }
+        entry = &scan->edits[scan->edit_count++];
+        entry->row = row;
+    }
+    entry->edit = *next;
+    return 0;
+}
+
+/* Install @p next as @p row's session edit: from its next visit when its scope is not the one in force, at once when it
+   is. A tune staged before the change restages (edits_epoch). */
+static int
+channel_scan_install_edit(dsd_opts* opts, dsd_state* state, channel_scan* scan, int row, const dsd_scan_row_edit* next,
+                          dsd_scan_row_edit_result* out) {
+    const channel_scan_row_edit* entry = channel_scan_find_edit(scan, row);
+    if (entry) {
+        out->previous = entry->edit;
+    }
+    const int width_before = dsd_opts_analog_width_hz(opts);
+    dsd_scan_option_values before_scratch;
+    const dsd_scan_option_values* before = channel_scan_row_values(state, row, &before_scratch);
+    if (channel_scan_store_edit(scan, row, next) != 0) {
+        DSD_SNPRINTF(out->err, sizeof out->err, "%s", "out of memory");
+        return DSD_SCAN_ROW_EDIT_REFUSED;
+    }
+    scan->edits_epoch++;
+    if (row != scan->committed_row) {
+        return DSD_SCAN_ROW_EDIT_STORED;
+    }
+    dsd_scan_option_values scratch;
+    const dsd_scan_option_values* values = channel_scan_row_values(state, row, &scratch);
+    (void)dsd_scan_mode_options(opts, state, values);
+    /* The row on air is the one its last tune staged: its staged options carry the edit too, for whatever reads the
+       tune's (dsd_engine_scan_tuning_row_options()). A live rigctl request reads the scope in force. */
+    if (row == scan->row) {
+        scan->staged_has_values = values != NULL;
+        if (values) {
+            scan->staged_values = *values;
+        }
+    }
+    /* A tune still outstanding restages with the new options and lands them itself. Otherwise the receiver's request
+       changed if the width the decoder runs did, or, for a rigctl peer, whether the row sets one of its own. */
+    out->publish_width =
+        dsd_scan_mode_is_analog(dsd_channel_mode_get(state, (size_t)row)) && scan->request == 0 && !scan->retry
+        && (dsd_opts_analog_width_hz(opts) != width_before || dsd_scan_row_edit_width_request_differs(before, values));
+    channel_scan_publish_row(state, scan);
+    return DSD_SCAN_ROW_EDIT_APPLIED;
+}
+
+/* The -Y scan @p session names, or the reason it is not this one. */
+static int
+channel_scan_edit_scan(const dsd_opts* opts, const dsd_state* state, uint32_t session, int row, channel_scan** out) {
+    *out = NULL;
+    if (!opts || !state || opts->scanner_mode != 1 || opts->trunk_scan_enabled == 1) {
+        return DSD_SCAN_ROW_EDIT_UNAVAILABLE;
+    }
+    channel_scan* scan = channel_scan_get(state);
+    if (!scan || session == 0U || session != scan->session || row < 0 || row >= state->lcn_freq_count) {
+        return DSD_SCAN_ROW_EDIT_STALE;
+    }
+    *out = scan;
+    return 0;
+}
+
+int
+dsd_engine_channel_scan_edit_row(dsd_opts* opts, dsd_state* state, uint32_t session, int row, uint32_t field,
+                                 int action, const dsd_scan_row_edit_value* value, dsd_scan_row_edit_result* out) {
+    dsd_scan_row_edit_result local;
+    dsd_scan_row_edit_result* result = out ? out : &local;
+    DSD_MEMSET(result, 0, sizeof(*result));
+    channel_scan* scan = NULL;
+    const int rc = channel_scan_edit_scan(opts, state, session, row, &scan);
+    if (rc != 0) {
+        return rc;
+    }
+    const dsd_scan_mode mode = dsd_channel_mode_get(state, (size_t)row);
+    if (!(dsd_scan_row_edit_fields(mode, 0) & field)) {
+        DSD_SNPRINTF(result->err, sizeof result->err, "%s", "this channel cannot take that setting");
+        return DSD_SCAN_ROW_EDIT_REFUSED;
+    }
+    if (action == DSD_SCAN_ROW_EDIT_SET
+        && !dsd_scan_row_edit_value_valid(mode, field, value, result->err, sizeof result->err)) {
+        return DSD_SCAN_ROW_EDIT_REFUSED;
+    }
+    const channel_scan_row_edit* entry = channel_scan_find_edit(scan, row);
+    dsd_scan_row_edit next;
+    if (entry) {
+        next = entry->edit;
+    } else {
+        DSD_MEMSET(&next, 0, sizeof(next));
+    }
+    if (dsd_scan_row_edit_change(&next, field, (dsd_scan_row_edit_action)action, value) != 0) {
+        DSD_SNPRINTF(result->err, sizeof result->err, "%s", "invalid edit");
+        return DSD_SCAN_ROW_EDIT_REFUSED;
+    }
+    /* A width the DSP rate cannot filter would only skip the row at every visit; the list's own width (RESET) was
+       named when the scan checked the map. */
+    const int rate_hz = dsd_engine_scan_dsp_rate_hz(opts, state);
+    if (field == DSD_SCAN_ROW_FIELD_WIDTH && action != DSD_SCAN_ROW_EDIT_RESET && rate_hz > 0) {
+        const dsd_scan_row_profile* profile = dsd_channel_profile_get(state, (size_t)row);
+        dsd_scan_option_values after;
+        dsd_scan_row_edit_apply(profile ? &profile->values : NULL, &next, mode, &after);
+        char brief[DSD_ANALOG_ERROR_TEXT_MAX] = {0};
+        if (dsd_engine_scan_analog_width_skipped(opts, state, &after, dsd_scan_mode_analog_kind(mode), rate_hz, brief,
+                                                 sizeof brief)) {
+            DSD_SNPRINTF(result->err, sizeof result->err, "%s",
+                         brief[0] ? brief : "the DSP rate cannot filter that width");
+            return DSD_SCAN_ROW_EDIT_REFUSED;
+        }
+    }
+    return channel_scan_install_edit(opts, state, scan, row, &next, result);
+}
+
+int
+dsd_engine_channel_scan_restore_row_edit(dsd_opts* opts, dsd_state* state, uint32_t session, int row, uint32_t fields,
+                                         const dsd_scan_row_edit* edit, dsd_scan_row_edit_result* out) {
+    dsd_scan_row_edit_result local;
+    dsd_scan_row_edit_result* result = out ? out : &local;
+    /* @p edit may be @p out's previous edit: take it before the result is cleared. */
+    dsd_scan_row_edit from = {0};
+    if (edit) {
+        from = *edit;
+    }
+    DSD_MEMSET(result, 0, sizeof(*result));
+    channel_scan* scan = NULL;
+    const int rc = channel_scan_edit_scan(opts, state, session, row, &scan);
+    if (rc != 0) {
+        return rc;
+    }
+    if (!edit) {
+        return DSD_SCAN_ROW_EDIT_UNAVAILABLE;
+    }
+    const channel_scan_row_edit* entry = channel_scan_find_edit(scan, row);
+    dsd_scan_row_edit next = {0};
+    if (entry) {
+        next = entry->edit;
+    }
+    dsd_scan_row_edit_take_fields(&next, &from, fields);
+    return channel_scan_install_edit(opts, state, scan, row, &next, result);
 }

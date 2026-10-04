@@ -22,6 +22,7 @@
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/log.h>
+#include <dsd-neo/runtime/scan_row_edit.h>
 #include <dsd-neo/runtime/shutdown.h>
 #include <mbelib-neo/mbelib.h>
 #include <stdint.h>
@@ -964,6 +965,16 @@ init_state_trunk_scan_publication(dsd_state* state) {
     state->trunk_scan_hold = 0;
     state->trunk_scan_active_avoided = 0;
     state->trunk_scan_avoided_count = 0;
+    state->trunk_scan_configured_gain = 0;
+    state->trunk_scan_gain_override = 0;
+    state->trunk_scan_configured_autogain = 0;
+    state->scan_row_session = 0U;
+    state->scan_row_index = -1;
+    state->scan_row_scanner = (uint8_t)DSD_SCAN_ROW_SCANNER_NONE;
+    state->scan_row_editable = 0U;
+    state->scan_row_edited = 0U;
+    state->scan_row_listed = 0U;
+    state->scan_row_scope_seq = 0U;
     state->scan_voice_gate_arrive_m = -1.0;
     state->scan_voice_gate_sync_m = -1.0;
     state->scan_voice_gate_voice_m = -1.0;

@@ -32,6 +32,7 @@
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
+#include <dsd-neo/runtime/scan_row_edit.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <math.h>
 #include <stdint.h>
@@ -2260,6 +2261,170 @@ test_row_widths_on_audio_input(void) {
     }
 }
 
+/* Issue #518: session edits of a typed -Y row's own settings ("this channel"). The committed row runs an edit at once
+ * (its squelch reaches the demod, its width is for the caller to publish), a row off air keeps it for its next visit,
+ * a tune staged before an edit restages, refusals change nothing, and the edits and the published row go when the
+ * scanner leaves, so the next scan runs the list again under a new session. */
+static void
+test_row_session_edits(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    opts->scanner_mode = 1;
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->wav_sample_rate = 48000;
+    assert(dsd_apply_decode_mode_preset(DSDCFG_MODE_DMR, DSD_DECODE_PRESET_PROFILE_CLI, opts, state) == 0);
+    opts->analog_nfm_bandwidth_hz = 20000;
+    opts->rtl_squelch_level = dsd_squelch_level_from_sql(-80.0);
+    state->samplesPerSymbol = 10;
+    state->lcn_freq_count = 3;
+    for (int row = 0; row < 3; row++) {
+        *dsd_state_trunk_lcn_slot(state, row) = 150000000;
+    }
+    assert(dsd_channel_mode_set(state, 0, DSD_SCAN_MODE_NFM) == 0);
+    assert(dsd_channel_mode_set(state, 1, DSD_SCAN_MODE_DMR) == 0);
+    assert(dsd_channel_mode_set(state, 2, DSD_SCAN_MODE_NFM) == 0);
+    (void)nfm_row_profile(state, 0, DSD_SCAN_OPT_BANDWIDTH | DSD_SCAN_OPT_SQUELCH, 12500, -60);
+    const dsd_rtl_stream_metrics_hooks hooks = {.output_rate_hz = output_rate,
+                                                .set_channel_squelch = record_squelch_push};
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+    g_squelch_pushes = 0;
+    g_scan_dsp_rate_hz = 0;
+    expected_nxdn = 0;
+    tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+
+    assert(dsd_engine_channel_scan_step(opts, state) == 1);
+    assert(state->lcn_freq_roll == 1 && tuned_nfm_width_hz == 12500 && g_squelch_pushes == 1);
+    assert(state->scan_row_scanner == (uint8_t)DSD_SCAN_ROW_SCANNER_CHANNEL_SCAN && state->scan_row_index == 0);
+    assert(state->scan_row_session != 0U && state->scan_row_edited == 0U);
+    assert(state->scan_row_editable
+           == (uint8_t)(DSD_SCAN_ROW_FIELD_SQUELCH | DSD_SCAN_ROW_FIELD_WIDTH | DSD_SCAN_ROW_FIELD_TONE));
+    assert(state->scan_row_listed == (uint8_t)(DSD_SCAN_ROW_FIELD_SQUELCH | DSD_SCAN_ROW_FIELD_WIDTH));
+    const uint32_t session = state->scan_row_session;
+
+    dsd_scan_row_edit_value value;
+    DSD_MEMSET(&value, 0, sizeof value);
+    dsd_scan_row_edit_result result;
+    value.squelch_db = -45;
+    assert(dsd_engine_channel_scan_edit_row(opts, state, session, 0, DSD_SCAN_ROW_FIELD_SQUELCH, DSD_SCAN_ROW_EDIT_SET,
+                                            &value, &result)
+           == DSD_SCAN_ROW_EDIT_APPLIED);
+    assert(g_squelch_pushes == 2 && squelch_level_is(g_squelch_pushed, -45.0) && !result.publish_width);
+    assert(state->scan_row_edited == (uint8_t)DSD_SCAN_ROW_FIELD_SQUELCH);
+    value.width_hz = 16000;
+    assert(dsd_engine_channel_scan_edit_row(opts, state, session, 0, DSD_SCAN_ROW_FIELD_WIDTH, DSD_SCAN_ROW_EDIT_SET,
+                                            &value, &result)
+           == DSD_SCAN_ROW_EDIT_APPLIED);
+    assert(result.publish_width && opts->analog_nfm_bandwidth_hz == 16000 && g_squelch_pushes == 2);
+    /* A rigctl request for the row on air reads its edited width (dsd_engine_rigctl_modulation()). */
+    const dsd_scan_option_values* tuning = dsd_engine_scan_tuning_row_options(opts, state);
+    assert(tuning && (tuning->present & DSD_SCAN_OPT_BANDWIDTH) && tuning->channel_bw_hz == 16000);
+    assert((result.previous.set & DSD_SCAN_ROW_FIELD_SQUELCH) && !(result.previous.set & DSD_SCAN_ROW_FIELD_WIDTH));
+
+    /* Off air: stored, and run on the row's visit. */
+    value.width_hz = 11250;
+    assert(dsd_engine_channel_scan_edit_row(opts, state, session, 2, DSD_SCAN_ROW_FIELD_WIDTH, DSD_SCAN_ROW_EDIT_SET,
+                                            &value, &result)
+           == DSD_SCAN_ROW_EDIT_STORED);
+    assert(opts->analog_nfm_bandwidth_hz == 16000);
+    assert(dsd_engine_channel_scan_step(opts, state) == 1);
+    assert(state->lcn_freq_roll == 2 && opts->frame_dmr && state->scan_row_index == 1 && state->scan_row_edited == 0U);
+    assert(dsd_engine_channel_scan_step(opts, state) == 1);
+    assert(state->lcn_freq_roll == 3 && tuned_nfm_width_hz == 11250 && opts->analog_nfm_bandwidth_hz == 11250);
+    assert(state->scan_row_edited == (uint8_t)DSD_SCAN_ROW_FIELD_WIDTH && state->scan_row_listed == 0U);
+
+    /* A tune staged before an edit to its row restages and lands the edit. */
+    tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    assert(dsd_engine_channel_scan_step(opts, state) == 0);
+    assert(tuned_nfm_width_hz == 16000);
+    assert(dsd_engine_channel_scan_edit_row(opts, state, session, 0, DSD_SCAN_ROW_FIELD_WIDTH,
+                                            DSD_SCAN_ROW_EDIT_INHERIT, NULL, &result)
+           == DSD_SCAN_ROW_EDIT_STORED);
+    int before = tunes;
+    dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_OK);
+    assert(dsd_engine_channel_scan_pending(opts, state) == 1);
+    tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    assert(dsd_engine_channel_scan_pending(opts, state) == 0);
+    assert(tunes == before + 1 && tuned_nfm_width_hz == 20000 && opts->analog_nfm_bandwidth_hz == 20000);
+    assert(state->lcn_freq_roll == 1 && squelch_level_is(opts->rtl_squelch_level, -45.0));
+    assert(state->scan_row_edited == (uint8_t)(DSD_SCAN_ROW_FIELD_SQUELCH | DSD_SCAN_ROW_FIELD_WIDTH));
+
+    /* The default's own width as the row's: the decoder's width stays, but a rigctl peer is asked for the row's
+       passband rather than -B, so there is still a request to make; and back to the default again. */
+    value.width_hz = 20000;
+    assert(dsd_engine_channel_scan_edit_row(opts, state, session, 0, DSD_SCAN_ROW_FIELD_WIDTH, DSD_SCAN_ROW_EDIT_SET,
+                                            &value, &result)
+           == DSD_SCAN_ROW_EDIT_APPLIED);
+    assert(result.publish_width && opts->analog_nfm_bandwidth_hz == 20000);
+    assert(dsd_engine_channel_scan_edit_row(opts, state, session, 0, DSD_SCAN_ROW_FIELD_WIDTH,
+                                            DSD_SCAN_ROW_EDIT_INHERIT, NULL, &result)
+           == DSD_SCAN_ROW_EDIT_APPLIED);
+    assert(result.publish_width && opts->analog_nfm_bandwidth_hz == 20000);
+
+    /* Refusals. */
+    assert(dsd_engine_channel_scan_edit_row(opts, state, session, 1, DSD_SCAN_ROW_FIELD_WIDTH, DSD_SCAN_ROW_EDIT_SET,
+                                            &value, &result)
+           == DSD_SCAN_ROW_EDIT_REFUSED);
+    assert(dsd_engine_channel_scan_edit_row(opts, state, session, 0, DSD_SCAN_ROW_FIELD_GAIN, DSD_SCAN_ROW_EDIT_SET,
+                                            &value, &result)
+           == DSD_SCAN_ROW_EDIT_REFUSED);
+    g_scan_dsp_rate_hz = 24000;
+    value.width_hz = 25000;
+    assert(dsd_engine_channel_scan_edit_row(opts, state, session, 0, DSD_SCAN_ROW_FIELD_WIDTH, DSD_SCAN_ROW_EDIT_SET,
+                                            &value, &result)
+           == DSD_SCAN_ROW_EDIT_REFUSED);
+    assert(result.err[0] != '\0' && opts->analog_nfm_bandwidth_hz == 20000);
+    g_scan_dsp_rate_hz = 0;
+    value.squelch_db = -50;
+    assert(dsd_engine_channel_scan_edit_row(opts, state, session + 1U, 0, DSD_SCAN_ROW_FIELD_SQUELCH,
+                                            DSD_SCAN_ROW_EDIT_SET, &value, NULL)
+           == DSD_SCAN_ROW_EDIT_STALE);
+    assert(dsd_engine_channel_scan_edit_row(opts, state, session, 3, DSD_SCAN_ROW_FIELD_SQUELCH, DSD_SCAN_ROW_EDIT_SET,
+                                            &value, NULL)
+           == DSD_SCAN_ROW_EDIT_STALE);
+
+    /* The restore puts the field it names back (here: the squelch edit), and keeps an edit of another field made since
+       (the width). */
+    assert(dsd_engine_channel_scan_edit_row(opts, state, session, 0, DSD_SCAN_ROW_FIELD_SQUELCH,
+                                            DSD_SCAN_ROW_EDIT_RESET, NULL, &result)
+           == DSD_SCAN_ROW_EDIT_APPLIED);
+    assert(squelch_level_is(opts->rtl_squelch_level, -60.0));
+    const dsd_scan_row_edit squelch_back = result.previous;
+    value.width_hz = 16000;
+    assert(dsd_engine_channel_scan_edit_row(opts, state, session, 0, DSD_SCAN_ROW_FIELD_WIDTH, DSD_SCAN_ROW_EDIT_SET,
+                                            &value, &result)
+           == DSD_SCAN_ROW_EDIT_APPLIED);
+    assert(dsd_engine_channel_scan_restore_row_edit(opts, state, session, 0, DSD_SCAN_ROW_FIELD_SQUELCH, &squelch_back,
+                                                    &result)
+           == DSD_SCAN_ROW_EDIT_APPLIED);
+    assert(squelch_level_is(opts->rtl_squelch_level, -45.0) && opts->analog_nfm_bandwidth_hz == 16000);
+
+    /* Leave: everything goes with the scan. */
+    dsd_engine_channel_scan_leave(opts, state);
+    assert(state->scan_row_scanner == (uint8_t)DSD_SCAN_ROW_SCANNER_NONE && state->scan_row_session == 0U);
+    assert(dsd_engine_channel_scan_edit_row(opts, state, session, 0, DSD_SCAN_ROW_FIELD_SQUELCH, DSD_SCAN_ROW_EDIT_SET,
+                                            &value, NULL)
+           == DSD_SCAN_ROW_EDIT_STALE);
+    state->lcn_freq_roll = 0;
+    assert(dsd_engine_channel_scan_step(opts, state) == 1);
+    assert(state->lcn_freq_roll == 1 && tuned_nfm_width_hz == 12500
+           && squelch_level_is(opts->rtl_squelch_level, -60.0));
+    assert(state->scan_row_session != session && state->scan_row_edited == 0U);
+    opts->scanner_mode = 0;
+    assert(dsd_engine_channel_scan_edit_row(opts, state, state->scan_row_session, 0, DSD_SCAN_ROW_FIELD_SQUELCH,
+                                            DSD_SCAN_ROW_EDIT_SET, &value, NULL)
+           == DSD_SCAN_ROW_EDIT_UNAVAILABLE);
+    opts->scanner_mode = 1;
+
+    dsd_engine_channel_scan_leave(opts, state);
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    dsd_state_trunk_lcn_free(state);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    tunes = reset_count = 0;
+}
+
 int
 main(void) {
     dsd_neo_log_set_tap(count_squelch_warnings, NULL);
@@ -2289,6 +2454,7 @@ main(void) {
     test_am_rows_switch_demodulator_width_and_sink();
     test_am_row_warnings_for_its_widths();
     test_row_widths_on_audio_input();
+    test_row_session_edits();
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
     assert(opts && state);

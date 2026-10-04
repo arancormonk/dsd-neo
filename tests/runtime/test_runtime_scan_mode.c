@@ -20,6 +20,7 @@
 #include <dsd-neo/runtime/scan_options.h>
 #include <math.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -77,6 +78,12 @@ test_row_option_edits_are_not_acquisition_changes(void) {
     assert(dsd_scan_mode_options(o, s, &none) == -1); /* no scope yet: nothing to apply */
     assert(dsd_scan_mode_enter(o, s, DSD_SCAN_MODE_DMR) == 0);
     assert(dsd_scan_mode_options(o, s, NULL) == 0);
+    /* Every install stamps the options and the state alike, with a new number each time, so a frontend can tell the
+       two snapshots are of one row's scope (issue #518). */
+    const uint32_t first_stamp = o->scan_row_scope_seq;
+    assert(first_stamp != 0U && s->scan_row_scope_seq == first_stamp);
+    assert(dsd_scan_mode_options(o, s, NULL) == 0);
+    assert(o->scan_row_scope_seq != first_stamp && s->scan_row_scope_seq == o->scan_row_scope_seq);
     dsd_scan_settings before;
     dsd_scan_settings_capture(o, s, &before);
 
