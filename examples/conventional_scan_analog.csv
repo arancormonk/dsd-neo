@@ -6,3 +6,4 @@ channel,frequency_hz,name,mode,options
 5,461000000,DMR repeater,dmr,--scan-max-visit-ms 20000
 6,851012500,P25 conventional,p25,--squelch-db -55
 7,150000000,Inherit configured decoder,,
+8,453212500,Public works NFM noise squelch,nfm,--nfm-bandwidth-hz 12500 --squelch noise+12

@@ -542,8 +542,9 @@ no symbol profile is applied over the monitor. Everything below applies to both 
   reports never claim an analog target.
 - **Squelch matters.** Set a threshold with the target's `--squelch-db`, `[input] rtl_sql` or the `sql` field of
   `-i rtl:`, or let the [auto squelch](cli.md#auto-squelch---squelch-auto) (`--squelch auto[+N]`, the target's own or
-  the configured one) open a margin over the noise floor it learns on each target, which needs no threshold per
-  receiver and closes on noise. With the squelch off, or at -100 dB or below, noise holds the target until the
+  the configured one) open a margin over the noise floor it learns on each target, or the
+  [noise squelch](cli.md#noise-squelch---squelch-noise) (`--squelch noise[+N]`) open an FM target at N dB of
+  quieting; both need no threshold per receiver and close on noise. With the squelch off, or at -100 dB or below, noise holds the target until the
   per-visit cap or a manual advance or avoid moves on, and scan start warns about it once; so it does for the auto
   squelch on audio input, where it is off. A target whose carrier never stops (a birdie, a continuous broadcast) gives
   the auto squelch no noise to learn from and holds as an open squelch would; lock it out or cap its visit.
@@ -690,8 +691,9 @@ configuration while a target is parked records the configured global, not the pa
 `--squelch-db <dB>` is accepted on every target type as well. It sets the squelch while the target is
 parked: whole dB from `-100` to `0`, the units of `[input] rtl_sql`, where `0` switches the squelch off for that
 target and omitting the switch inherits the configured default. `--squelch <setting>` is the same option in the
-squelch grammar: `off`, a level, or on `nfm-conventional` and `am-conventional` targets `auto[+N]`; an auto squelch
-inherited by a digital target is off there. Advancing to the next target, a failed retune that
+squelch grammar: `off`, a level, on `nfm-conventional` and `am-conventional` targets `auto[+N]`, and on
+`nfm-conventional` targets `noise[+N]`; an auto or noise squelch inherited by a digital target is off there, and a
+noise squelch inherited by an `am-conventional` target runs as auto. Advancing to the next target, a failed retune that
 rolls back to the original, and shutdown each restore the right value: the incoming target's own, the original
 target's own, or the configured default. On an RTL-family input the threshold gates the demodulator; on a
 `p25-trunk`, `dmr-trunk` or `nxdn*-trunk` target that includes the control channel, so a threshold above the control

@@ -35,7 +35,8 @@ dsd-neo -i airspy:serial=0123456789ABCDEF:851.375M -ft --frontend terminal
 
 Input syntax is `airspy[:serial=<16 hexadecimal digits>][:frequency[:bw[:sql[:vol]]]]`.
 The optional trailing fields are DSP bandwidth in kHz, squelch in dB (0 disables,
-or `auto[+N]` for the [auto squelch](cli.md#auto-squelch---squelch-auto)),
+`auto[+N]` for the [auto squelch](cli.md#auto-squelch---squelch-auto), or `noise[+N]` for the
+[noise squelch](cli.md#noise-squelch---squelch-noise)),
 and monitor volume (0–3); gain uses the separate native controls. Bandwidth must
 be one of 4, 6, 8, 12, 16, 24, or 48 kHz; other values warn and fall back to 48.
 Numeric volume values are clamped to 0–3. Invalid squelch or volume text warns

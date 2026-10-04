@@ -521,7 +521,8 @@ constants, and Clang also folds an integer bit test on a float it computed or re
   and the Costas and Gardner loops check each sample where they load it (`src/dsp/costas.cpp`).
 - Arithmetic whose exact rounding is a contract keeps it explicitly: the decode clock's `ns / 1e9` (`decode_clock.c`
   is IEEE), the fallback decimator's block-split-invariant running sum (`#pragma clang fp reassociate(off)`), and the
-  auto squelch's window sums, which must not depend on where a block starts (`squelch_floor.c` is IEEE).
+  auto and noise squelches' window sums, which must not depend on where a block starts (`squelch_floor.c` and
+  `nfm_noise_squelch.c` are IEEE).
 - Tests that feed NaN or infinity, or check results with `std::isnan()`, compile their own sources with IEEE
   semantics (the block near the top of `tests/CMakeLists.txt`), leaving the code under test on the build's flags.
 
@@ -814,19 +815,24 @@ The `Linux • RelWithDebInfo • ctest (x86-64-v3, fast-math, clang)` check enf
     issue #518 follow-up), which a scan scope's push uses for every setting, levels included; a table without it falls
     back to the level call, with an AUTO setting off. Tests: `RUNTIME_RTL_STREAM_METRICS_HOOKS`, `ENGINE_RTL_STREAM_METRICS_HOOKS_INSTALL`.
   - Squelch setting (`include/dsd-neo/runtime/squelch.h`, `src/runtime/squelch.c`, issue #518 follow-up): a
-    `dsd_squelch_setting` (`<dsd-neo/core/power.h>`: mode LEVEL or AUTO, the AUTO margin in whole dB 3..30, the LEVEL
-    threshold in mean-power units) and its one grammar, `off | 0 | <negative dB> | <positive linear> | auto[+N]`
+    `dsd_squelch_setting` (`<dsd-neo/core/power.h>`: mode LEVEL, AUTO or NOISE -- the dynamic modes,
+    `dsd_squelch_mode_is_dynamic()` -- the AUTO margin or NOISE quieting in whole dB 3..30, the LEVEL threshold in
+    mean-power units) and its one grammar, `off | 0 | <negative dB> | <positive linear> | auto[+N] | noise[+N]`
     (`dsd_squelch_setting_parse()`, `dsd_squelch_setting_format()`), which `--squelch`, the `sql` field of every radio
     spec (`dsd_squelch_spec_field_apply()`, which leaves the setting alone once `--squelch` set it:
     `dsd_opts::rtl_squelch_cli_set`) and the terminal prompt share; scan rows (`scan_options.c`, `--squelch` sharing
-    `--squelch-db`'s option bit) take whole dB, `off`, and `auto[+N]` on analog rows only. `dsd_opts` holds it as `rtl_squelch_mode`, `rtl_squelch_margin_db` and `rtl_squelch_level` (the
-    level kept beneath an AUTO setting, for a switch back), the config as `[input] rtl_sql_mode`, `rtl_sql_margin_db`
-    and `rtl_sql`. `dsd_squelch_setting_resolve()` says why AUTO runs or is off (no radio input, a digital channel),
-    for the views and the startup notice. The decoder's comparisons go through `dsd_squelch_dynamic_in_force()`,
+    `--squelch-db`'s option bit) take whole dB, `off`, `auto[+N]` on analog rows and `noise[+N]` on nfm rows only.
+    `dsd_opts` holds it as `rtl_squelch_mode`, `rtl_squelch_margin_db` and `rtl_squelch_level` (the level kept beneath
+    a dynamic setting, for a switch back), the config as `[input] rtl_sql_mode`, `rtl_sql_margin_db` and `rtl_sql`.
+    `dsd_squelch_setting_resolve()` says why a dynamic setting runs, runs as AUTO (NOISE on an AM channel) or is off
+    (no radio input, a digital channel), for the views and the startup notice; `dsd_squelch_noise_has_no_fm()` is the
+    AM monitor on its own (`-fM`, no scan), where the engine refuses `--squelch noise` at startup and
+    `svc_rtl_set_sql_setting()` refuses a NOISE request (`SVC_SQL_NOISE_NEEDS_FM`). The decoder's comparisons go through `dsd_squelch_dynamic_in_force()`,
     `dsd_squelch_level_in_force()`, `dsd_squelch_level_open()` and `dsd_squelch_gate_open()` (DSP, below).
-    `dsd_squelch_publish_status()` copies the stream's auto status (the RTL IO hook `squelch_status`,
-    `rtl_stream_get_squelch_status()`) into int-only `dsd_state::squelch_auto_*` fields inside the snapshot range,
-    the floor in centi-dB on `rtl_squelch_level`'s scale; the frame sync's throttled UI publish calls it. Tests:
+    `dsd_squelch_publish_status()` copies the stream's dynamic squelch status (the RTL IO hook `squelch_status`,
+    `rtl_stream_get_squelch_status()`) into int-only `dsd_state::squelch_auto_*` and `squelch_noise_*` fields inside
+    the snapshot range, the floor in centi-dB on `rtl_squelch_level`'s scale and the noise squelch's quieting in
+    centi-dB; the frame sync's throttled UI publish calls it. Tests:
     `RUNTIME_SQUELCH`, `RUNTIME_CLI_PARSE`, `INPUT_SPEC`, `RUNTIME_CONFIG_USER`, `RUNTIME_SCAN_OPTIONS`,
     `ENGINE_IO_HOOKS_INSTALL`.
   - Sub-audible signalling tables and text (`include/dsd-neo/runtime/analog_tones.h`, `src/runtime/analog_tones.c`):
@@ -1409,7 +1415,13 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   `svc_rtl_set_sql_setting()`) sets a whole setting on the configured default as `RTL_SET_SQL_DB` sets a level (it
   coalesces only with a queued request of the same mode, so an AUTO request's margin and a LEVEL one's level both land),
   and a scan row edit carries `squelch_mode`/`squelch_margin_db` (AUTO on an nfm or am row only; a level edit without a
-  margin keeps the one the row had, its list's or the last edited, for a switch back to Auto). Tests:
+  margin keeps the one the row had, its list's or the last edited, for a switch back to Auto). The noise squelch adds
+  `effective_noise`/`configured_noise` beside the AUTO flags and what it shows (`dsd_state::squelch_noise_*`):
+  `noise +10 dB (quieting 23 dB)`, `(starting)`, and `(as auto: floor -78.3 dB)` where the floor tracker runs a NOISE
+  setting (an AM channel, a channel with no band above voice); `dsd_app_squelch_view_dynamic_status()` is that status
+  alone for either mode. Qt adds `configuredSquelchNoise`/`effectiveSquelchNoise` and `squelchNoiseOffered` (false on
+  the AM monitor on its own), and the radio panel's choice becomes `dB | Auto | Noise` (Noise on an nfm row only,
+  `CommandBridge::setSquelchNoise()`); the previews carry `squelch_mode` (Qt `squelchNoise`) beside the margin. Tests:
   `APP_CONTROL_SQUELCH_VIEW`, `APP_COMMAND_QUEUE`, `UI_MENU_CALLBACKS`, `UI_MENU_LABELS_RADIO`, `UI_QT_METRICS_MODEL`,
   `UI_QT_QML_CALL_LISTS` (`tst_radio_squelch_auto.qml`).
   `include/dsd-neo/app_control/rtl_gain_view.h` and `src/app_control/rtl_gain_view.c` do the same for the tuner gain
@@ -1876,6 +1888,24 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   the M17 encoder and EDACS analog voice, which falls back to its no-squelch release watchdog. Tests:
   `DSP_SQUELCH_FLOOR`, `DSP_SQUELCH_AUTO_DEMOD`, `DSP_SYMBOL_REPLAY` (`test_auto_squelch_gates_each_sample`),
   `RUNTIME_SQUELCH`, `FRAME_SYNC_INTERNAL_HELPERS`.
+- The NFM noise squelch's core (issue #518 follow-up) is `src/dsp/nfm_noise_squelch.c`
+  (`<dsd-neo/dsp/nfm_noise_squelch.h>`), pure and on the FM discriminator's output at the channel rate. A plan
+  (`dsd_noise_squelch_plan_design()`) takes the band from 3.8 kHz to the channel taps' -1 dB point less 800 Hz (under
+  0.45 fs; at least 1200 Hz of it, else no valid plan), cuts it into 500 Hz sub-bands (at most nine) of order-4
+  Butterworth band-passes it designs in place, and calibrates each sub-band's noise power on 2 s of fixed-seed complex
+  Gaussian noise through the half-band stage, the channel taps and the discriminator (`tools/noise_squelch_model.py`
+  chose all of it: `docs/testing.md` "Noise squelch design gate"). Each 40 ms window, taken every 20 ms at sample-exact
+  boundaries, reads Q = max(Q_sum, Q_max - 4 dB) of quieting; the gate opens at N and closes under max(N - 3, 1.5) dB,
+  one flag per sample as the tracker's, bit-identical whatever the block cuts. Inside `full_demod()` a NOISE setting
+  on the FM monitor with a valid plan arms it in `full_demod_update_channel_state()` (`squelch_noise_wanted()`, the
+  level gate standing aside) and `squelch_noise_run()` flags each output right after `dsd_fm_demod()`, before the
+  post-decimator, de-emphasis and audio filters, which then carry the flags as the tracker's. On an AM channel, or one
+  with no plan (8 and 10 kHz NFM, low DSP rates), `squelch_auto_wanted()` runs the tracker instead, N as its margin.
+  Its plan follows the same `dsd_demod_squelch_plan_key` as the tracker's (designed only when NOISE needs it), and it
+  keeps its own context record (`demod_state::noise_context`), so a spell under NOISE never stores the tracker's floor
+  under another channel; a new context or `dsd_demod_reset_filter_state()` starts it over, closed. The IO layer's
+  status adds which squelch ran and its quieting (`rtl_stream_squelch_status::noise`, `quieting_db`). Tests:
+  `DSP_NFM_NOISE_SQUELCH`, `DSP_NOISE_SQUELCH_DEMOD`, `IO_RTL_SQUELCH_PLUMBING`, the `DECODE_IQ_*_SQL_NOISE_*` cases.
   The block (`dsd_state::analog_out_f`) collects unsynced samples in a digital session too, monitored or not (the
   CQPSK symbol-rate output excepted). `dsd_symbol_analog_block_reset()` (`<dsd-neo/dsp/symbol.h>`, decoder thread)
   drops a part-collected block; app-control and the channel-scan leave call it when the receive family changes. On an
