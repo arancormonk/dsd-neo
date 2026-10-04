@@ -386,4 +386,12 @@ dsd_squelch_publish_status(dsd_state* state) {
     /* The level squelch compares the channel power, half the mean |z|^2 of the channel samples. */
     const double floor_level = st.floor_power / 2.0;
     state->squelch_auto_floor_cdb = floor_level > 1e-30 ? (int32_t)lround(1000.0 * log10(floor_level)) : 0;
+    state->squelch_noise_active = st.active && st.noise ? 1U : 0U;
+    double quieting = state->squelch_noise_active ? st.quieting_db : 0.0;
+    if (quieting > 200.0) {
+        quieting = 200.0;
+    } else if (quieting < -200.0) {
+        quieting = -200.0;
+    }
+    state->squelch_noise_quieting_cdb = (int32_t)lround(100.0 * quieting);
 }

@@ -23,6 +23,7 @@
 #endif
 #include <dsd-neo/dsp/costas.h>
 #include <dsd-neo/dsp/fsk_modem.h>
+#include <dsd-neo/dsp/nfm_noise_squelch.h>
 #include <dsd-neo/dsp/squelch_floor.h>
 #include <dsd-neo/dsp/ted.h>
 #include <dsd-neo/platform/threading.h>
@@ -96,6 +97,18 @@ enum DSD_ATTR_PACKED dsd_digital_resample_mode {
  * Radio and DSP implementation units include this definition directly.
  */
 // NOLINTBEGIN(clang-analyzer-optin.performance.Padding)
+/* What a squelch plan is designed for (issue #518 follow-up): the channel rate, the channel filter's plan and the
+   half-band stage ahead of it (0 none, else its tap count). set is 0 until a plan was designed. */
+typedef struct {
+    int rate_hz;
+    int rate_out;
+    int profile;
+    int width_hz;
+    int taps_len;
+    int hb_taps;
+    int set;
+} dsd_demod_squelch_plan_key;
+
 struct demod_state {
 #ifdef __cplusplus
     demod_state() noexcept { DSD_MEMSET(this, 0, sizeof(*this)); }
@@ -252,14 +265,14 @@ struct demod_state {
        nothing, so channel_squelched and the other per-block decisions still hold the last block's. */
     int front_end_empty;
 
-    /* The auto squelch (floor-relative, issue #518 follow-up). The IO layer copies the setting (squelch_mode,
-       squelch_margin_db) and the context (what sets the channel's noise) in before each full_demod(), on the demod
-       thread; the DSP reads and writes everything here as plain fields. While it runs (an AUTO setting on the analog
-       monitor) the block is never zeroed: the tracker flags each channel sample, the flags travel with the samples
-       through the post-decimator and the resampler (result_flags, resamp_outflags) to the output ring, and the decoder
-       mutes at its sink. */
+    /* The dynamic squelches (issue #518 follow-up). The IO layer copies the setting (squelch_mode, squelch_margin_db)
+       and the context (what sets the channel's noise) in before each full_demod(), on the demod thread; the DSP reads
+       and writes everything here as plain fields. While one runs (an AUTO or NOISE setting on the analog monitor) the
+       block is never zeroed: the auto squelch's tracker flags each channel sample, or the noise squelch each
+       discriminator output, the flags travel with the samples through the post-decimator and the resampler
+       (result_flags, resamp_outflags) to the output ring, and the decoder mutes at its sink. */
     int squelch_mode;      /* dsd_squelch_mode */
-    int squelch_margin_db; /* AUTO: the margin over the floor */
+    int squelch_margin_db; /* AUTO: the margin over the floor; NOISE: the quieting it opens at */
     dsd_squelch_floor_key squelch_context;
     /* 1 when this block's result_flags hold the tracker's flags. */
     int result_flags_active;
@@ -269,17 +282,21 @@ struct demod_state {
     dsd_squelch_floor_key squelch_context_applied;
     /* The floor cache's clock when the tracker last ran: its floor ages from there while it does not. */
     double squelch_floor_active_s;
-    /* What the tracker's plan was designed for: the channel rate, the channel filter's plan and the half-band stage
-       ahead of it (0 none, else its tap count). */
-    int squelch_plan_rate_hz;
-    int squelch_plan_rate_out;
-    int squelch_plan_profile;
-    int squelch_plan_width_hz;
-    int squelch_plan_taps_len;
-    int squelch_plan_hb_taps;
-    int squelch_plan_set;
+    /* What the tracker's plan was designed for. */
+    dsd_demod_squelch_plan_key squelch_plan;
     dsd_squelch_floor squelch_floor;
     dsd_squelch_floor_cache squelch_cache;
+    /* The NFM noise squelch: a NOISE setting on the FM monitor whose channel plan has a band above voice runs it on
+       the discriminator output (elsewhere the tracker runs the setting as AUTO). squelch_noise_armed marks a block it
+       runs on: decided before the discriminator, run after it. squelch_noise_ran is 1 when the previous block ran it,
+       in noise_context (its own, so the tracker's floor is never stored under a context it did not run in). Its plan
+       follows the same channel plan as the tracker's; designing one calibrates on 2 s of noise. */
+    int squelch_noise_armed;
+    int squelch_noise_ran;
+    int noise_context_set;
+    dsd_squelch_floor_key noise_context;
+    dsd_demod_squelch_plan_key noise_plan;
+    dsd_noise_squelch noise_squelch;
     /* The flags of the post-decimator's and the resampler's last inputs: each output takes the flag of the input at or
        just before its filter's centre, half the filter's length back. */
     uint8_t post_flag_hist[32];

@@ -8720,6 +8720,28 @@ add_test(
     COMMAND dsd-neo_test_dsp_squelch_auto_demod
 )
 
+# The NFM noise squelch inside full_demod() (issue #518 follow-up): on the discriminator's
+# output with the channel filter's plan, flags instead of zeroing, the tracker standing in
+# on AM and narrow channels, a retune or reset starting it over without touching the
+# tracker's floors, the post-decimator carrying its flags, and the same flags whatever the
+# block cuts.
+add_executable(
+    dsd-neo_test_dsp_noise_squelch_demod
+    dsp/test_dsp_noise_squelch_demod.cpp
+)
+target_include_directories(
+    dsd-neo_test_dsp_noise_squelch_demod
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/dsp
+)
+target_link_libraries(
+    dsd-neo_test_dsp_noise_squelch_demod
+    PRIVATE dsd-neo_dsp_private_test_support ${DSD_NEO_TEST_MATH_LIB}
+)
+add_test(
+    NAME DSP_NOISE_SQUELCH_DEMOD
+    COMMAND dsd-neo_test_dsp_noise_squelch_demod
+)
+
 add_executable(dsd-neo_test_dsp_squelch dsp/test_dsp_squelch.cpp)
 target_include_directories(
     dsd-neo_test_dsp_squelch

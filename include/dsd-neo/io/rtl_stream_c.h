@@ -851,22 +851,25 @@ void rtl_stream_set_channel_squelch(float level);
 
 /**
  * @brief Set the channel squelch from a whole setting (issue #518 follow-up): a LEVEL setting as
- * rtl_stream_set_channel_squelch(), an AUTO one by its margin over the floor the demodulator learns. AUTO gates the
- * analog monitor per sample (rtl_stream_read_ex()'s flags) and nothing else.
+ * rtl_stream_set_channel_squelch(), an AUTO one by its margin over the floor the demodulator learns, a NOISE one by
+ * the FM quieting it opens at. AUTO and NOISE gate the analog monitor per sample (rtl_stream_read_ex()'s flags) and
+ * nothing else.
  */
 void rtl_stream_set_channel_squelch_setting(const dsd_squelch_setting* setting);
 
-/** @brief What the auto squelch shows (rtl_stream_get_squelch_status()). */
+/** @brief What the dynamic squelch shows (rtl_stream_get_squelch_status()). */
 typedef struct {
-    int active;          /**< 1 when the last block ran the tracker (an AUTO setting on the analog monitor) */
-    int state;           /**< dsd_squelch_floor_state */
+    int active;          /**< 1 when the last block ran a dynamic squelch (AUTO or NOISE on the analog monitor) */
+    int noise;           /**< 1 when that was the noise squelch; 0 when the tracker ran (AUTO, or NOISE as AUTO) */
+    double quieting_db;  /**< the noise squelch's last window's quieting (0 unless noise) */
+    int state;           /**< the tracker's dsd_squelch_floor_state */
     int gate_open;       /**< the gate at the end of the last block (1 when not active) */
     int plan_valid;      /**< 0 when the channel plan could not be designed (the gate then stays open) */
-    double floor_power;  /**< the floor, mean |z|^2 (0 while learning) */
-    double window_power; /**< the last 40 ms window's mean |z|^2 */
+    double floor_power;  /**< the tracker's floor, mean |z|^2 (0 while learning) */
+    double window_power; /**< the tracker's last 40 ms window's mean |z|^2 */
 } rtl_stream_squelch_status;
 
-/** @brief Fill @p out with the auto squelch's status; 0, or -1 for NULL. */
+/** @brief Fill @p out with the dynamic squelch's status; 0, or -1 for NULL. */
 int rtl_stream_get_squelch_status(rtl_stream_squelch_status* out);
 
 /**
