@@ -506,6 +506,18 @@ dsd_neo_add_public_header_smoke_test(
   C
 )
 dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_runtime_squelch
+  HEADERS_PUBLIC_RUNTIME_SQUELCH
+  dsd-neo/runtime/squelch.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_runtime_squelch_cxx
+  HEADERS_PUBLIC_RUNTIME_SQUELCH_CXX
+  dsd-neo/runtime/squelch.h
+  CXX
+)
+dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_runtime_bootstrap
   HEADERS_PUBLIC_RUNTIME_BOOTSTRAP
   dsd-neo/runtime/bootstrap.h
@@ -6001,6 +6013,11 @@ target_link_libraries(
     PRIVATE dsd-neo_runtime
 )
 add_test(NAME RUNTIME_SCAN_ROW_EDIT COMMAND dsd-neo_test_runtime_scan_row_edit)
+
+# Issue #518 follow-up: the squelch setting's grammar, text and resolution.
+add_executable(dsd-neo_test_runtime_squelch runtime/test_runtime_squelch.c)
+target_link_libraries(dsd-neo_test_runtime_squelch PRIVATE dsd-neo_runtime)
+add_test(NAME RUNTIME_SQUELCH COMMAND dsd-neo_test_runtime_squelch)
 
 add_executable(dsd-neo_test_scan_mode_replay engine/scan_mode_replay.c)
 target_link_libraries(

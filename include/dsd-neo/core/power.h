@@ -20,6 +20,35 @@
 extern "C" {
 #endif
 
+/**
+ * @brief How the RTL squelch decides (issue #518 follow-up).
+ *
+ * LEVEL compares the channel power against a fixed threshold, as it always has. AUTO learns the channel's noise floor
+ * from windows it classes as noise and opens the gate a margin above it (src/dsp/squelch_floor.c), so the same setting
+ * works whatever the dongle, antenna or gain.
+ */
+typedef enum {
+    DSD_SQUELCH_MODE_LEVEL = 0,
+    DSD_SQUELCH_MODE_AUTO = 1,
+} dsd_squelch_mode;
+
+/** @brief The margin an AUTO squelch opens above the noise floor, in whole dB. */
+enum {
+    DSD_SQUELCH_MARGIN_MIN_DB = 3,
+    DSD_SQUELCH_MARGIN_MAX_DB = 30,
+    DSD_SQUELCH_MARGIN_DEFAULT_DB = 10,
+};
+
+/**
+ * @brief A squelch setting: the mode, the threshold a LEVEL squelch compares against (mean-power units, 0 = off), and
+ * the margin an AUTO squelch opens above the floor (whole dB). Each field means something in its own mode only.
+ */
+typedef struct {
+    int mode; /**< dsd_squelch_mode */
+    double level;
+    int margin_db;
+} dsd_squelch_setting;
+
 double raw_pwr(const short* samples, int len, int step);
 double pwr_to_dB(double mean_power);
 double dB_to_pwr(double dB);

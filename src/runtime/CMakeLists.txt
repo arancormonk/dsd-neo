@@ -16,6 +16,7 @@ target_sources(
         scan_mode.c
         scan_options.c
         scan_row_edit.c
+        squelch.c
         config_expand.c
         control_pump.c
         freq_parse.c
