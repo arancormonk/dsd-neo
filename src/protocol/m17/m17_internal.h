@@ -58,9 +58,34 @@ uint16_t m17_attach_lsf_crc(uint8_t* m17_lsf, uint8_t* lsf_packed);
 void m17_sync_monitored_tx_call(const dsd_opts* opts, dsd_state* state, uint64_t dst, uint64_t src,
                                 const char* dst_text, const char* src_text, uint8_t can, uint64_t* active_epoch);
 void m17_end_monitored_tx_call(const dsd_opts* opts, dsd_state* state, uint64_t* active_epoch);
-/* The stream encoder's microphone chain over one codec2 frame of @p nsam samples at 8 kHz (m17.c). */
-void m17_voice_chain_process(const dsd_opts* opts, dsd_state* state, dsd_voice_bandpass* bandpass, dsd_voice_agc* agc,
-                             short* voice, size_t nsam);
+
+/* The stream encoder's microphone chain at codec2's 8 kHz: the voice band-pass, the legacy 960 Hz filters and the AGC,
+   each the chain's own. */
+typedef struct {
+    dsd_voice_bandpass bandpass;
+    dsd_voice_onepole onepole;
+    dsd_voice_agc agc;
+} m17_voice_chain;
+
+/* Design @p chain for 8 kHz microphone audio, the AGC referenced to PCM input (m17.c). */
+void m17_voice_chain_init(m17_voice_chain* chain);
+/* Run @p chain over one codec2 frame of @p nsam samples (m17.c). */
+void m17_voice_chain_process(const dsd_opts* opts, dsd_state* state, m17_voice_chain* chain, short* voice, size_t nsam);
+
+/* The stream encoder's input side: one sample kept in dec of the input-rate audio, through the anti-alias low-pass
+   first, a pass-through when the input already runs at 8 kHz. */
+typedef struct {
+    int dec;
+    float sample;
+    dsd_voice_bandpass lowpass;
+} m17_encoder_input;
+
+/* Set up @p in for audio at @p input_rate_hz, a multiple of 8000 (m17.c). */
+void m17_encoder_input_init(m17_encoder_input* in, int input_rate_hz);
+/* Read @p nsam 8 kHz samples from the configured audio input into @p out: PCM inputs as they are after the input volume,
+   RTL monitor audio scaled to PCM16 by the analog chain's RTL monitor gain after the `vol` trim. Returns 1 when read, 0
+   when the input stopped, -1 on an input the encoder cannot read (m17.c). */
+int m17_encoder_read_block(dsd_opts* opts, dsd_state* state, m17_encoder_input* in, short* out, size_t nsam);
 
 int m17_decode_pkt_should_report_encrypted(const dsd_state* state, uint32_t protocol);
 int m17_pkt_ptr_clamped(int pbc_count);

@@ -32,20 +32,6 @@
 #define ANALOG_AUDIO_UNITY_SETTING         50.0
 
 #define ANALOG_AUDIO_CHAINS                2
-/* The legacy -v filters' corner. */
-#define ANALOG_AUDIO_LEGACY_CORNER_HZ      960.0
-/* A sample whose magnitude reaches this is not a finite audio sample. */
-#define ANALOG_AUDIO_FINITE_LIMIT          1e30
-
-/* The legacy one-pole filters behind -v 0x2 and 0x4 (the same RC sections init_audio_filters() designs), kept per chain
-   at the chain's rate so they start over with it instead of carrying another source's or channel's history. */
-typedef struct {
-    double lp_a;
-    double lp_y;
-    double hp_c;
-    double hp_x;
-    double hp_y;
-} analog_audio_legacy;
 
 /* Which reception samples belong to: the RTL stream generation (RTL input), the trunk-tuning generation, and the
    chains' reception epoch, which every boundary dsd_analog_rx_reset() announces moves (dsd_analog_audio_note_reception():
@@ -67,7 +53,9 @@ typedef struct {
     analog_audio_reception block_reception;
     dsd_voice_bandpass bandpass;
     dsd_voice_agc agc;
-    analog_audio_legacy legacy;
+    /* The legacy -v 0x2 / 0x4 filters, kept per chain at the chain's rate so they start over with it instead of carrying
+       another source's or channel's history. */
+    dsd_voice_onepole legacy;
 } analog_audio_chain_state;
 
 typedef struct {
@@ -127,17 +115,6 @@ analog_audio_band(const dsd_opts* opts, dsd_analog_audio_chain chain, dsd_analog
                : DSD_VOICE_BAND_FM;
 }
 
-static void
-analog_audio_legacy_design(analog_audio_legacy* lf, int rate_hz) {
-    const double ts = 1.0 / (double)rate_hz;
-    const double rc = 1.0 / (2.0 * 3.14159265358979323846 * ANALOG_AUDIO_LEGACY_CORNER_HZ);
-    lf->lp_a = ts / (ts + rc);
-    lf->lp_y = 0.0;
-    lf->hp_c = rc / (ts + rc);
-    lf->hp_x = 0.0;
-    lf->hp_y = 0.0;
-}
-
 static int
 analog_audio_reception_equal(const analog_audio_reception* a, const analog_audio_reception* b) {
     return a->rtl_generation == b->rtl_generation && a->tune_generation == b->tune_generation && a->epoch == b->epoch;
@@ -164,31 +141,12 @@ analog_audio_chain_configure(analog_audio_chain_state* cs, dsd_voice_band_kind b
     const int run_rate_hz = rate_hz > 0 ? rate_hz : 48000;
     (void)dsd_voice_bandpass_design(&cs->bandpass, band, rate_hz);
     (void)dsd_voice_agc_init(&cs->agc, run_rate_hz, dsd_analog_audio_source_gain(source));
-    analog_audio_legacy_design(&cs->legacy, run_rate_hz);
+    (void)dsd_voice_onepole_design(&cs->legacy, run_rate_hz);
     cs->configured = 1;
     cs->band = (int)band;
     cs->source = (int)source;
     cs->rate_hz = rate_hz;
     cs->reception = *reception;
-}
-
-static void
-analog_audio_legacy_lp(analog_audio_legacy* lf, float* buf, size_t n) {
-    for (size_t i = 0; i < n; i++) {
-        const double x = fabs((double)buf[i]) < ANALOG_AUDIO_FINITE_LIMIT ? (double)buf[i] : 0.0;
-        lf->lp_y = (lf->lp_a * x) + ((1.0 - lf->lp_a) * lf->lp_y);
-        buf[i] = (float)lf->lp_y;
-    }
-}
-
-static void
-analog_audio_legacy_hp(analog_audio_legacy* lf, float* buf, size_t n) {
-    for (size_t i = 0; i < n; i++) {
-        const double x = fabs((double)buf[i]) < ANALOG_AUDIO_FINITE_LIMIT ? (double)buf[i] : 0.0;
-        lf->hp_y = lf->hp_c * (x - lf->hp_x + lf->hp_y);
-        lf->hp_x = x;
-        buf[i] = (float)lf->hp_y;
-    }
 }
 
 /* The voice band-pass and the legacy 960 Hz filters, each as its flag asks. */
@@ -198,10 +156,10 @@ analog_audio_run_filters(const dsd_opts* opts, analog_audio_chain_state* cs, flo
         dsd_voice_bandpass_process(&cs->bandpass, buf, n);
     }
     if (opts->use_lpf == 1) {
-        analog_audio_legacy_lp(&cs->legacy, buf, n);
+        dsd_voice_onepole_lowpass(&cs->legacy, buf, n);
     }
     if (opts->use_hpf == 1) {
-        analog_audio_legacy_hp(&cs->legacy, buf, n);
+        dsd_voice_onepole_highpass(&cs->legacy, buf, n);
     }
 }
 

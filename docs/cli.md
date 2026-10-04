@@ -1324,7 +1324,8 @@ cache file. Direct frequency changes are disabled during `--trunk-scan`, whose t
 - RTL USB, RTL-TCP, SoapySDR, and IQ replay digital decode run in the symbol domain. The digital decoder receives one
   normalized float per FSK or CQPSK symbol decision; discriminator audio is not used for digital decode.
 - The trailing `vol` field and `rtl_volume` config key are monitor/non-symbol gain only. They do not scale RTL-family
-  digital symbols. `-8` enables the separate source monitor tap.
+  digital symbols, nor the FSK discriminator output that EDACS analog voice and the `-8` source monitor play (it
+  already peaks near full scale). `-8` enables the separate source monitor tap.
 - Examples:
   - `-i rtl:0:851.375M:22:-2:24:0:2`
   - `-i rtltcp:192.168.1.10:1234:851.375M:22:-2:24:0:2`
@@ -1407,7 +1408,7 @@ M17 `-M` details
 
 - `CAN` 0–15 (default 7; values > 15 clamp to 15)
 - `SRC`/`DST` up to 9 UPPER base40 chars (` ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-/.`)
-- `INPUT_RATE` default 48000; use multiples of 8000 up to 48000
+- `INPUT_RATE` default 48000; a multiple of 8000 up to 48000 (any other value warns and uses 48000)
 - `VOX` enable with `1` (default `0`)
 
 Examples

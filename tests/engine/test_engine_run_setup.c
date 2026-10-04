@@ -321,6 +321,37 @@ test_m17_userdata_is_normalized_during_common_setup(void) {
     return test_rc;
 }
 
+/* The stream encoder keeps one input sample in INPUT_RATE / 8000: a rate below 8000 kept none and hung reading nothing,
+   and one between the multiples fed codec2 audio at the wrong rate, so -M takes only multiples of 8000 up to 48000. */
+static int
+test_m17_userdata_refuses_unsupported_input_rates(void) {
+    static const struct {
+        const char* userdata;
+        int want_rate;
+    } cases[] = {
+        {"M17:7:A:B:0", 48000},     {"M17:7:A:B:4000", 48000}, {"M17:7:A:B:12000", 48000}, {"M17:7:A:B:96000", 48000},
+        {"M17:7:A:B:-8000", 48000}, {"M17:7:A:B:8000", 8000},  {"M17:7:A:B:24000", 24000}, {"M17:7:A:B:48000", 48000},
+    };
+
+    int failures = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        dsd_opts* opts = NULL;
+        dsd_state* state = NULL;
+        if (init_test_runtime(&opts, &state) != 0) {
+            return 1;
+        }
+        DSD_SNPRINTF(state->m17dat, sizeof state->m17dat, "%s", cases[i].userdata);
+        const int rc = dsd_engine_run_with_lifecycle(opts, state, NULL);
+        if (rc != 0 || state->m17_rate != cases[i].want_rate) {
+            DSD_FPRINTF(stderr, "%s: rc %d, rate %d, want %d\n", cases[i].userdata, rc, state->m17_rate,
+                        cases[i].want_rate);
+            failures++;
+        }
+        free_test_runtime(opts, state);
+    }
+    return expect_true("m17 input rate held to multiples of 8000 up to 48000", failures == 0);
+}
+
 static int
 test_m17_stream_encoder_rejects_unsupported_input(void) {
     dsd_opts* opts = NULL;
@@ -974,6 +1005,7 @@ main(void) {
     rc |= test_conflicting_scan_modes_fail_before_live_setup();
     rc |= test_m17_udp_input_and_output_specs();
     rc |= test_m17_userdata_is_normalized_during_common_setup();
+    rc |= test_m17_userdata_refuses_unsupported_input_rates();
     rc |= test_m17_stream_encoder_rejects_unsupported_input();
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_START_WRAP)
     rc |= test_m17_stream_encoder_propagates_rtl_start_failures();

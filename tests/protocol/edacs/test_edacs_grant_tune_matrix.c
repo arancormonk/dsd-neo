@@ -90,6 +90,8 @@ static int g_close_wav_count = 0;
 static int g_open_wav_count = 0;
 #ifdef USE_RADIO
 static int g_rtl_read_count = 0;
+/* When above 0, every fake RTL read returns this sample instead of the counting ramp. */
+static float g_rtl_read_value = 0.0f;
 static int g_rtl_return_pwr_count = 0;
 static int g_rtl_fail_at = -1;
 #endif
@@ -283,7 +285,7 @@ edacs_fake_rtl_read(void* rtl_ctx, float* out, size_t count, int* out_got) {
     if (out == NULL || out_got == NULL || count != 1U || (g_rtl_fail_at >= 0 && index == g_rtl_fail_at)) {
         return -1;
     }
-    out[0] = 100.0f + (float)index;
+    out[0] = g_rtl_read_value > 0.0f ? g_rtl_read_value : 100.0f + (float)index;
     *out_got = 1;
     return 0;
 }
@@ -1320,8 +1322,18 @@ edacs_run_analog_loop_helper_cases(void) {
     rc |= edacs_expect(g_rtl_read_count == 2880, "analog-helpers", "rtl-collect", "RTL read exactly three blocks");
     rc |= edacs_expect(g_rtl_return_pwr_count == 1 && pwr == 77.25, "analog-helpers", "rtl-collect",
                        "RTL collection used squelch power hook");
-    rc |= edacs_expect(analog1[0] == 200 && analog2[0] == 2120 && analog3[959] == 5958, "analog-helpers", "rtl-collect",
-                       "RTL samples preserved block ordering and volume scaling");
+    rc |= edacs_expect(analog1[0] == 100 && analog2[0] == 1060 && analog3[959] == 2979, "analog-helpers", "rtl-collect",
+                       "RTL samples preserved block ordering, with no volume trim on the FSK output");
+    /* The FSK discriminator output peaks near +/-30000, which fits int16: the volume trim (2 here) used to double it
+       and clip the upper half of the waveform before the analog audio chain saw it (issue #616). */
+    edacs_reset_audio_hook_state();
+    g_rtl_read_value = 30000.0f;
+    edacs_install_rtl_stream_hooks();
+    rc |= edacs_expect(edacs_collect_analog_triplet(&opts, &state, analog1, analog2, analog3, &pwr) == 1,
+                       "analog-helpers", "rtl-unclipped", "RTL triplet collection succeeded");
+    rc |= edacs_expect(analog1[0] == 30000 && analog2[480] == 30000 && analog3[959] == 30000, "analog-helpers",
+                       "rtl-unclipped", "an FSK peak near full scale reaches the chain unclipped");
+    g_rtl_read_value = 0.0f;
 #endif
 
     static short wav_src[960];

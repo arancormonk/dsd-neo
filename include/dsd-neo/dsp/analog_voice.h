@@ -5,11 +5,11 @@
 
 /**
  * @file
- * @brief Voice band-pass and AGC for the analog monitor (issue #518).
+ * @brief Voice band-pass, legacy one-pole filters and AGC for the analog monitor (issue #518).
  *
  * Pure signal processing with no global state: the caller owns each instance and feeds it samples at the rate it was
- * designed for. Both cores are causal per-sample recurrences, so their output depends only on the sample sequence (and,
- * for the AGC, the per-sample playing flag), never on how the caller splits it into calls, and they add no latency.
+ * designed for. Every core is a causal per-sample recurrence, so its output depends only on the sample sequence (and,
+ * for the AGC, the per-sample playing flag), never on how the caller splits it into calls, and none adds latency.
  */
 
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_DSP_ANALOG_VOICE_H
@@ -30,6 +30,8 @@ typedef enum {
     DSD_VOICE_BAND_FM = 0,
     /** 4th-order Butterworth high-pass at 200 Hz (AM carries no sub-audible signalling), then the same low-pass. */
     DSD_VOICE_BAND_AM = 1,
+    /** The 3400 Hz low-pass alone: an anti-alias filter ahead of keeping one sample in N to reach 8 kHz. */
+    DSD_VOICE_BAND_LOWPASS = 2,
 } dsd_voice_band_kind;
 
 /** One second-order section in transposed direct form II, coefficients normalised to a0 = 1. */
@@ -67,6 +69,35 @@ void dsd_voice_bandpass_process(dsd_voice_bandpass* bp, float* buf, size_t n);
 
 /** The designed magnitude response at @p hz, in dB (0 for a pass-through). */
 double dsd_voice_bandpass_gain_db(const dsd_voice_bandpass* bp, double hz);
+
+/** The legacy filters' corner (`-v 0x2` low-pass, `-v 0x4` high-pass). */
+#define DSD_VOICE_ONEPOLE_CORNER_HZ 960.0
+
+/** The legacy one-pole RC low-pass and high-pass at DSD_VOICE_ONEPOLE_CORNER_HZ, the sections init_audio_filters()
+    designs for dsd_state, as an instance a chain owns at its own rate. */
+typedef struct {
+    double lp_a;
+    double lp_y;
+    double hp_c;
+    double hp_x;
+    double hp_y;
+} dsd_voice_onepole;
+
+/**
+ * @brief Design both filters at @p rate_hz with clear state.
+ *
+ * @return 0 on success, -1 when @p f is NULL or @p rate_hz is 0 or less (@p f untouched).
+ */
+int dsd_voice_onepole_design(dsd_voice_onepole* f, int rate_hz);
+
+/** Clear both filters' state, keeping the design. */
+void dsd_voice_onepole_reset(dsd_voice_onepole* f);
+
+/** Low-pass @p n samples of @p buf in place. A non-finite input sample comes out as 0 and leaves the state alone. */
+void dsd_voice_onepole_lowpass(dsd_voice_onepole* f, float* buf, size_t n);
+
+/** High-pass @p n samples of @p buf in place. A non-finite input sample comes out as 0 and leaves the state alone. */
+void dsd_voice_onepole_highpass(dsd_voice_onepole* f, float* buf, size_t n);
 
 /** The AGC's output peak target: -10 dBFS. Every output sample stays at or below it in magnitude. */
 #define DSD_VOICE_AGC_TARGET_PEAK           10362.0f

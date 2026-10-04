@@ -1711,9 +1711,7 @@ typedef struct {
     char d40[50];
     char s40[50];
     uint8_t nil[368];
-    float sample;
     size_t nsam;
-    int dec;
     int sql_hit;
     int eot_out;
     short* samp1;
@@ -1736,9 +1734,10 @@ typedef struct {
     uint8_t m17_ip_packed[54];
     uint64_t monitored_call_epoch;
     int new_lsf;
+    /* The input side: one sample in dec, low-passed first (m17_encoder_read_block()). */
+    m17_encoder_input input;
     /* The microphone chain at codec2's 8 kHz (m17_str_voice_chain()). */
-    dsd_voice_bandpass voice_bandpass;
-    dsd_voice_agc voice_agc;
+    m17_voice_chain voice_chain;
 } m17_str_ctx;
 
 typedef struct {
@@ -1865,29 +1864,36 @@ enum m17_str_read_result {
     M17_STR_READ_OK = 1,
 };
 
+/* One input sample through the anti-alias low-pass, which runs at the input rate; the reader keeps the last of every dec
+   samples. Without it, audio above 4 kHz at the input rate aliased into the voice band (issue #618). */
+static float
+m17_str_input_filter(dsd_voice_bandpass* lowpass, float x) {
+    dsd_voice_bandpass_process(lowpass, &x, 1);
+    return x;
+}
+
 static int
-m17_str_read_block_pulse(dsd_opts* opts, size_t nsam, int dec, float* sample, short* out, int clip_output) {
+m17_str_read_block_pulse(dsd_opts* opts, m17_encoder_input* in, short* out, size_t nsam) {
     for (size_t i = 0; i < nsam; i++) {
-        for (int j = 0; j < dec; j++) {
+        for (int j = 0; j < in->dec; j++) {
             short s = 0;
             dsd_audio_read(opts->audio_in_stream, &s, 1);
-            *sample = (float)s;
+            in->sample = m17_str_input_filter(&in->lowpass, (float)s);
         }
-        *sample = m17_scale_input_sample(*sample, opts->input_volume_multiplier);
-        out[i] = clip_output ? m17_clip_float_to_short(*sample) : (short)*sample;
+        out[i] = m17_clip_float_to_short(m17_scale_input_sample(in->sample, opts->input_volume_multiplier));
     }
     return M17_STR_READ_OK;
 }
 
 static int
-m17_str_read_block_stdin(dsd_opts* opts, size_t nsam, int dec, float* sample, short* out) {
+m17_str_read_block_stdin(dsd_opts* opts, m17_encoder_input* in, short* out, size_t nsam) {
     if (opts->audio_in_file == NULL) {
         LOG_ERROR("M17 stream encoder has no STDIN audio handle");
         return M17_STR_READ_ERROR;
     }
 
     for (size_t i = 0; i < nsam; i++) {
-        for (int j = 0; j < dec; j++) {
+        for (int j = 0; j < in->dec; j++) {
             short s = 0;
             const sf_count_t result = sf_read_short(opts->audio_in_file, &s, 1);
             if (result != 1) {
@@ -1905,18 +1911,17 @@ m17_str_read_block_stdin(dsd_opts* opts, size_t nsam, int dec, float* sample, sh
                 DSD_FPRINTF(stderr, "Closing DSD-neo.\n");
                 return M17_STR_READ_STOP;
             }
-            *sample = (float)s;
+            in->sample = m17_str_input_filter(&in->lowpass, (float)s);
         }
-        *sample = m17_scale_input_sample(*sample, opts->input_volume_multiplier);
-        out[i] = m17_clip_float_to_short(*sample);
+        out[i] = m17_clip_float_to_short(m17_scale_input_sample(in->sample, opts->input_volume_multiplier));
     }
     return M17_STR_READ_OK;
 }
 
 static int
-m17_str_read_block_tcp(dsd_opts* opts, size_t nsam, int dec, float* sample, short* out) {
+m17_str_read_block_tcp(dsd_opts* opts, m17_encoder_input* in, short* out, size_t nsam) {
     for (size_t i = 0; i < nsam; i++) {
-        for (int j = 0; j < dec; j++) {
+        for (int j = 0; j < in->dec; j++) {
             short s = 0;
             const int result = dsd_net_audio_input_hook_tcp_read_sample(opts->tcp_in_ctx, (int16_t*)&s);
             if (result == 0) {
@@ -1927,92 +1932,110 @@ m17_str_read_block_tcp(dsd_opts* opts, size_t nsam, int dec, float* sample, shor
                 dsd_exitflag_store(1);
                 return M17_STR_READ_STOP;
             }
-            *sample = (float)s;
+            in->sample = m17_str_input_filter(&in->lowpass, (float)s);
         }
-        *sample = m17_scale_input_sample(*sample, opts->input_volume_multiplier);
-        out[i] = m17_clip_float_to_short(*sample);
+        out[i] = m17_clip_float_to_short(m17_scale_input_sample(in->sample, opts->input_volume_multiplier));
     }
     return M17_STR_READ_OK;
 }
 
 static int
-m17_str_read_block_udp(dsd_opts* opts, size_t nsam, int dec, float* sample, short* out, int clip_output) {
+m17_str_read_block_udp(dsd_opts* opts, m17_encoder_input* in, short* out, size_t nsam) {
     for (size_t i = 0; i < nsam; i++) {
-        for (int j = 0; j < dec; j++) {
+        for (int j = 0; j < in->dec; j++) {
             short s = 0;
             if (!dsd_net_audio_input_hook_udp_read_sample(opts, (int16_t*)&s)) {
                 DSD_FPRINTF(stderr, "UDP input stopped.\n");
                 dsd_exitflag_store(1);
                 return M17_STR_READ_STOP;
             }
-            *sample = (float)s;
+            in->sample = m17_str_input_filter(&in->lowpass, (float)s);
         }
-        *sample = m17_scale_input_sample(*sample, opts->input_volume_multiplier);
-        out[i] = clip_output ? m17_clip_float_to_short(*sample) : (short)*sample;
+        out[i] = m17_clip_float_to_short(m17_scale_input_sample(in->sample, opts->input_volume_multiplier));
     }
     return M17_STR_READ_OK;
 }
 
 static int
-m17_str_read_block_rtl(dsd_opts* opts, dsd_state* state, size_t nsam, int dec, float* sample, short* out,
-                       int clip_output) {
+m17_str_read_block_rtl(dsd_opts* opts, dsd_state* state, m17_encoder_input* in, short* out, size_t nsam) {
 #ifdef USE_RADIO
+    /* The m17encoder front end delivers the analog monitor's normalised audio (1 kHz at 3 kHz deviation reads 0.125
+       before the `vol` trim). Converted to short as it stood, every sample rounded to 0 and codec2 encoded silence
+       (issue #618); the analog chain's RTL monitor gain takes the reference signal to -12 dBFS peak, PCM scale. */
+    const float gain =
+        (float)opts->rtl_volume_multiplier * (float)dsd_analog_audio_source_gain(DSD_ANALOG_AUDIO_SOURCE_RTL_MONITOR);
     for (size_t i = 0; i < nsam; i++) {
-        for (int j = 0; j < dec; j++) {
+        for (int j = 0; j < in->dec; j++) {
             if (!state->rtl_ctx) {
                 dsd_request_shutdown(opts, state);
                 return M17_STR_READ_STOP;
             }
+            float raw = 0.0f;
             int got = 0;
-            if (dsd_rtl_stream_io_hook_read(state, sample, 1, &got) < 0 || got != 1) {
+            if (dsd_rtl_stream_io_hook_read(state, &raw, 1, &got) < 0 || got != 1) {
                 dsd_request_shutdown(opts, state);
                 return M17_STR_READ_STOP;
             }
             /* An I/Q replay's sample runs the decode clock to its capture time (issue #572). */
             (void)dsd_rtl_stream_metrics_hook_replay_advance_decode_clock();
+            in->sample = m17_str_input_filter(&in->lowpass, raw * gain);
         }
-        *sample *= opts->rtl_volume_multiplier;
-        out[i] = clip_output ? m17_clip_float_to_short(*sample) : (short)*sample;
+        out[i] = m17_clip_float_to_short(in->sample);
     }
     opts->rtl_pwr = dsd_rtl_stream_io_hook_return_pwr(state);
     return M17_STR_READ_OK;
 #else
     UNUSED(opts);
     UNUSED(state);
-    UNUSED(nsam);
-    UNUSED(dec);
-    UNUSED(sample);
+    UNUSED(in);
     UNUSED(out);
-    UNUSED(clip_output);
+    UNUSED(nsam);
     return M17_STR_READ_ERROR;
 #endif
 }
 
-static int
-m17_str_read_audio_block(m17_str_ctx* ctx, short* out, int clip_output) {
-    switch (ctx->opts->audio_in_type) {
-        case AUDIO_IN_PULSE:
-            return m17_str_read_block_pulse(ctx->opts, ctx->nsam, ctx->dec, &ctx->sample, out, clip_output);
-        case AUDIO_IN_STDIN: return m17_str_read_block_stdin(ctx->opts, ctx->nsam, ctx->dec, &ctx->sample, out);
-        case AUDIO_IN_TCP: return m17_str_read_block_tcp(ctx->opts, ctx->nsam, ctx->dec, &ctx->sample, out);
-        case AUDIO_IN_UDP:
-            return m17_str_read_block_udp(ctx->opts, ctx->nsam, ctx->dec, &ctx->sample, out, clip_output);
-        case AUDIO_IN_RTL:
-            return m17_str_read_block_rtl(ctx->opts, ctx->state, ctx->nsam, ctx->dec, &ctx->sample, out, clip_output);
+void
+m17_encoder_input_init(m17_encoder_input* in, int input_rate_hz) {
+    if (!in) {
+        return;
+    }
+    DSD_MEMSET(in, 0, sizeof(*in));
+    /* -M takes only multiples of 8000 up to 48000 (m17_finalize_userdata_log()); a lower rate would keep no sample at
+       all and read nothing, so it runs as 8 kHz. */
+    in->dec = input_rate_hz >= 8000 ? input_rate_hz / 8000 : 1;
+    /* With dec 1 the input already runs at 8 kHz and needs no anti-alias filter: a rate of 0 designs a pass-through. */
+    (void)dsd_voice_bandpass_design(&in->lowpass, DSD_VOICE_BAND_LOWPASS, in->dec > 1 ? input_rate_hz : 0);
+}
+
+int
+m17_encoder_read_block(dsd_opts* opts, dsd_state* state, m17_encoder_input* in, short* out, size_t nsam) {
+    if (!opts || !state || !in || !out) {
+        return M17_STR_READ_ERROR;
+    }
+    switch (opts->audio_in_type) {
+        case AUDIO_IN_PULSE: return m17_str_read_block_pulse(opts, in, out, nsam);
+        case AUDIO_IN_STDIN: return m17_str_read_block_stdin(opts, in, out, nsam);
+        case AUDIO_IN_TCP: return m17_str_read_block_tcp(opts, in, out, nsam);
+        case AUDIO_IN_UDP: return m17_str_read_block_udp(opts, in, out, nsam);
+        case AUDIO_IN_RTL: return m17_str_read_block_rtl(opts, state, in, out, nsam);
         default: return M17_STR_READ_ERROR;
     }
 }
 
 static int
+m17_str_read_audio_block(m17_str_ctx* ctx, short* out) {
+    return m17_encoder_read_block(ctx->opts, ctx->state, &ctx->input, out, ctx->nsam);
+}
+
+static int
 m17_str_read_audio_inputs(m17_str_ctx* ctx) {
-    int result = m17_str_read_audio_block(ctx, ctx->voice1, 1);
+    int result = m17_str_read_audio_block(ctx, ctx->voice1);
     if (result != M17_STR_READ_OK) {
         return result;
     }
 
     if (ctx->st == 2) {
-        const int clip_output = !(ctx->opts->audio_in_type == AUDIO_IN_UDP || ctx->opts->audio_in_type == AUDIO_IN_RTL);
-        result = m17_str_read_audio_block(ctx, ctx->voice2, clip_output);
+        result = m17_str_read_audio_block(ctx, ctx->voice2);
         if (result != M17_STR_READ_OK) {
             return result;
         }
@@ -2103,20 +2126,31 @@ m17_str_update_input_power(m17_str_ctx* ctx) {
     }
 }
 
+void
+m17_voice_chain_init(m17_voice_chain* chain) {
+    if (!chain) {
+        return;
+    }
+    (void)dsd_voice_bandpass_design(&chain->bandpass, DSD_VOICE_BAND_FM, 8000);
+    (void)dsd_voice_onepole_design(&chain->onepole, 8000);
+    (void)dsd_voice_agc_init(&chain->agc, 8000, dsd_analog_audio_source_gain(DSD_ANALOG_AUDIO_SOURCE_PCM16));
+}
+
 /* One codec2 frame of microphone audio at 8 kHz, all @p nsam samples of it (160 at 3200 bit/s, 320 at 1600): the voice
    band-pass (`use_pbf`), the legacy 960 Hz filters, then, with the gain on auto, the voice AGC referenced to PCM input;
    an explicit -n keeps analog_gain()'s 0..5x. The filters and the AGC carry their state from piece to piece, so the
-   frame is processed as one run whatever its length. */
+   frame is processed as one run whatever its length. The 960 Hz filters are the chain's own, designed at 8 kHz: run
+   from dsd_state's, designed for the monitor's input rate, they acted at 160 Hz on 48 kHz input (issue #617). */
 static void
-m17_voice_filter_piece(const dsd_opts* opts, dsd_state* state, dsd_voice_bandpass* bandpass, float* tmp, size_t len) {
+m17_voice_filter_piece(const dsd_opts* opts, m17_voice_chain* chain, float* tmp, size_t len) {
     if (opts->use_pbf == 1) {
-        dsd_voice_bandpass_process(bandpass, tmp, len);
+        dsd_voice_bandpass_process(&chain->bandpass, tmp, len);
     }
     if (opts->use_lpf == 1) {
-        lpf_f(state, tmp, (int)len);
+        dsd_voice_onepole_lowpass(&chain->onepole, tmp, len);
     }
     if (opts->use_hpf == 1) {
-        hpf_f(state, tmp, (int)len);
+        dsd_voice_onepole_highpass(&chain->onepole, tmp, len);
     }
 }
 
@@ -2135,9 +2169,8 @@ m17_voice_store_piece(const float* tmp, short* out, size_t len) {
 }
 
 void
-m17_voice_chain_process(const dsd_opts* opts, dsd_state* state, dsd_voice_bandpass* bandpass, dsd_voice_agc* agc,
-                        short* voice, size_t nsam) {
-    if (!opts || !state || !bandpass || !agc || !voice) {
+m17_voice_chain_process(const dsd_opts* opts, dsd_state* state, m17_voice_chain* chain, short* voice, size_t nsam) {
+    if (!opts || !state || !chain || !voice) {
         return;
     }
     const int is_auto = dsd_analog_gain_is_auto(opts->audio_gainA);
@@ -2147,9 +2180,9 @@ m17_voice_chain_process(const dsd_opts* opts, dsd_state* state, dsd_voice_bandpa
         for (size_t i = 0; i < len; i++) {
             tmp[i] = (float)voice[done + i];
         }
-        m17_voice_filter_piece(opts, state, bandpass, tmp, len);
+        m17_voice_filter_piece(opts, chain, tmp, len);
         if (is_auto) {
-            dsd_voice_agc_process(agc, tmp, len, 1);
+            dsd_voice_agc_process(&chain->agc, tmp, len, 1);
         }
         m17_voice_store_piece(tmp, voice + done, len);
         done += len;
@@ -2161,7 +2194,7 @@ m17_voice_chain_process(const dsd_opts* opts, dsd_state* state, dsd_voice_bandpa
 
 static void
 m17_str_voice_chain(m17_str_ctx* ctx, short* voice) {
-    m17_voice_chain_process(ctx->opts, ctx->state, &ctx->voice_bandpass, &ctx->voice_agc, voice, ctx->nsam);
+    m17_voice_chain_process(ctx->opts, ctx->state, &ctx->voice_chain, voice, ctx->nsam);
 }
 
 static void
@@ -2462,12 +2495,11 @@ m17_str_init(m17_str_ctx* ctx, dsd_opts* opts, dsd_state* state) {
     DSD_SNPRINTF(ctx->d40, sizeof(ctx->d40), "%s", "BROADCAST");
     DSD_SNPRINTF(ctx->s40, sizeof(ctx->s40), "%s", "DSD-neo  ");
     ctx->nsam = 160;
-    ctx->dec = state->m17_rate / 8000;
     ctx->sql_hit = 11;
     ctx->eot_out = 1;
     ctx->new_lsf = 1;
-    (void)dsd_voice_bandpass_design(&ctx->voice_bandpass, DSD_VOICE_BAND_FM, 8000);
-    (void)dsd_voice_agc_init(&ctx->voice_agc, 8000, dsd_analog_audio_source_gain(DSD_ANALOG_AUDIO_SOURCE_PCM16));
+    m17_encoder_input_init(&ctx->input, state->m17_rate);
+    m17_voice_chain_init(&ctx->voice_chain);
 
     DSD_MEMSET(mem, 0, M17_RRC_RECOMMENDED_TAPS * sizeof(float));
     DSD_MEMSET(ctx->nil, 0, sizeof(ctx->nil));
