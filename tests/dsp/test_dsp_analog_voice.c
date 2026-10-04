@@ -4,7 +4,7 @@
  */
 
 /*
- * The analog monitor's voice band-pass and AGC (issue #518). Every response bound comes from
+ * The analog monitor's voice band-pass, legacy one-pole filters and AGC (issue #518). Every response bound comes from
  * tools/design_voice_filters.py, which computes the design's figures at each rate: the elliptic high-pass's stopband
  * is exactly 40 dB (the worst CTCSS tone reads 40.0 dB), the combined FM passband reaches -0.72 dB at 48 kHz and
  * -0.74 dB at 96 kHz, and a DCS signal shaped below 300 Hz comes out 32.09 dB down at 8 kHz and 32.24 dB at 16 kHz,
@@ -336,6 +336,131 @@ test_bandpass_reset_and_nonfinite(void) {
         same &= same_bits(&with_bad[i], &clean[j++], 1);
     }
     CHECK(same, "a non-finite sample changed the filter state");
+}
+
+/* ---- legacy one-pole filters ---- */
+
+/* The RC one-pole's response at @p hz and @p fs, in dB: y = (1 - p) x + p y[-1] for the low-pass and
+   y = p (x - x[-1] + y[-1]) for the high-pass, p = RC / (Ts + RC). */
+static double
+onepole_db(int highpass, int fs, double hz) {
+    const double ts = 1.0 / (double)fs;
+    const double rc = 1.0 / (2.0 * M_PI * DSD_VOICE_ONEPOLE_CORNER_HZ);
+    const double p = rc / (ts + rc);
+    const double w = 2.0 * M_PI * hz / (double)fs;
+    const double den = sqrt(1.0 - (2.0 * p * cos(w)) + (p * p));
+    const double num = highpass ? p * 2.0 * sin(w / 2.0) : 1.0 - p;
+    return db(num / den);
+}
+
+static double
+onepole_measured_db(int highpass, int fs, double hz) {
+    dsd_voice_onepole f;
+    (void)dsd_voice_onepole_design(&f, fs);
+    double in_sq = 0.0;
+    double out_sq = 0.0;
+    for (int n = 0; n < 2 * fs; n++) {
+        const float x = (float)(10000.0 * sin(2.0 * M_PI * hz * (double)n / (double)fs));
+        float y = x;
+        if (highpass) {
+            dsd_voice_onepole_highpass(&f, &y, 1);
+        } else {
+            dsd_voice_onepole_lowpass(&f, &y, 1);
+        }
+        if (n >= fs) {
+            in_sq += (double)x * (double)x;
+            out_sq += (double)y * (double)y;
+        }
+    }
+    return 10.0 * log10(out_sq / in_sq);
+}
+
+/* The RC sections at the rate they are designed for: at 8 kHz as at 48 kHz, each filters at its own rate (a design
+   for 48 kHz run on 8 kHz samples acts at 160 Hz, issue #617). Bad arguments, reset, and a non-finite sample, which
+   comes out as 0 and leaves the state alone. */
+static void
+test_onepole(void) {
+    const int rates[] = {8000, 48000};
+    for (size_t r = 0; r < sizeof rates / sizeof rates[0]; r++) {
+        const int fs = rates[r];
+        const double lp = onepole_measured_db(0, fs, 1000.0);
+        const double hp = onepole_measured_db(1, fs, 500.0);
+        CHECK(fabs(lp - onepole_db(0, fs, 1000.0)) < 0.05, "one-pole low-pass at %d Hz: 1 kHz %.3f dB, want %.3f", fs,
+              lp, onepole_db(0, fs, 1000.0));
+        CHECK(fabs(hp - onepole_db(1, fs, 500.0)) < 0.05, "one-pole high-pass at %d Hz: 500 Hz %.3f dB, want %.3f", fs,
+              hp, onepole_db(1, fs, 500.0));
+    }
+    CHECK(onepole_db(0, 8000, 1000.0) > -5.0 && onepole_db(1, 8000, 500.0) < -7.0,
+          "at 8 kHz the one-poles read %.2f dB at 1 kHz and %.2f dB at 500 Hz", onepole_db(0, 8000, 1000.0),
+          onepole_db(1, 8000, 500.0));
+
+    dsd_voice_onepole f;
+    CHECK(dsd_voice_onepole_design(NULL, 8000) == -1, "NULL design accepted");
+    DSD_MEMSET(&f, 0x5A, sizeof f);
+    const dsd_voice_onepole before = f;
+    CHECK(dsd_voice_onepole_design(&f, 0) == -1, "rate 0 accepted");
+    const double* fields[2][5] = {{&f.lp_a, &f.lp_y, &f.hp_c, &f.hp_x, &f.hp_y},
+                                  {&before.lp_a, &before.lp_y, &before.hp_c, &before.hp_x, &before.hp_y}};
+    int untouched = 1;
+    for (int i = 0; i < 5; i++) {
+        uint64_t got = 0;
+        uint64_t want = 0;
+        DSD_MEMCPY(&got, fields[0][i], sizeof got);
+        DSD_MEMCPY(&want, fields[1][i], sizeof want);
+        untouched &= got == want;
+    }
+    CHECK(untouched, "a refused design changed the filter");
+
+    (void)dsd_voice_onepole_design(&f, 8000);
+    float x[32];
+    DSD_MEMSET(x, 0, sizeof x);
+    x[0] = 30000.0f;
+    dsd_voice_onepole_lowpass(&f, x, 32);
+    DSD_MEMSET(x, 0, sizeof x);
+    x[0] = 30000.0f;
+    dsd_voice_onepole_highpass(&f, x, 32);
+    dsd_voice_onepole_reset(&f);
+    DSD_MEMSET(x, 0, sizeof x);
+    dsd_voice_onepole_lowpass(&f, x, 16);
+    dsd_voice_onepole_highpass(&f, x + 16, 16);
+    int quiet = 1;
+    for (int i = 0; i < 32; i++) {
+        quiet &= fabs((double)x[i]) < 1e-30;
+    }
+    CHECK(quiet, "reset left an impulse's tail in the one-poles");
+
+    float clean[64];
+    float with_bad[66];
+    for (int i = 0; i < 64; i++) {
+        clean[i] = (float)(5000.0 * noise());
+    }
+    for (int highpass = 0; highpass < 2; highpass++) {
+        dsd_voice_onepole a;
+        (void)dsd_voice_onepole_design(&a, 8000);
+        dsd_voice_onepole b = a;
+        float want[64];
+        DSD_MEMCPY(want, clean, sizeof want);
+        for (int i = 0, j = 0; i < 66; i++) {
+            with_bad[i] = i == 20 ? NAN : (i == 40 ? INFINITY : clean[j++]);
+        }
+        if (highpass) {
+            dsd_voice_onepole_highpass(&a, with_bad, 66);
+            dsd_voice_onepole_highpass(&b, want, 64);
+        } else {
+            dsd_voice_onepole_lowpass(&a, with_bad, 66);
+            dsd_voice_onepole_lowpass(&b, want, 64);
+        }
+        int same = 1;
+        for (int i = 0, j = 0; i < 66; i++) {
+            if (i == 20 || i == 40) {
+                CHECK(fabs((double)with_bad[i]) < 1e-30, "one-pole %d: non-finite sample %d came out as %g", highpass,
+                      i, (double)with_bad[i]);
+                continue;
+            }
+            same &= same_bits(&with_bad[i], &want[j++], 1);
+        }
+        CHECK(same, "one-pole %d: a non-finite sample changed its state", highpass);
+    }
 }
 
 /* D023N's 23-bit word, repeated at 134.4 bit/s as +/-1 NRZ from bit 0, shaped with a 300 Hz windowed-sinc low-pass
@@ -738,6 +863,7 @@ main(void) {
     test_stability();
     test_section_skip_and_passthrough();
     test_bandpass_reset_and_nonfinite();
+    test_onepole();
     test_shaped_dcs_rejection();
     test_bandpass_partition_invariance();
     test_agc_convergence();

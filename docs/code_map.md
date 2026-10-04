@@ -1784,14 +1784,15 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   `DSD_ANALOG_AUDIO_DISCARD`: the chain neither filters it nor counts it, turns it into silence, and starts over with
   the next block, so the old channel leaves nothing in the new one's filters. EDACS runs the EDACS chain with the
   talkgroup gate as its playing flag and a reset per call, after the symbol register is read from the raw block. The M17
-  encoder keeps its own band-pass and AGC at 8 kHz in its stream context and runs them over the whole codec2 frame, 160
-  samples at 3200 bit/s and 320 at 1600 (`m17_voice_chain_process()`; an explicit `-n` keeps `analog_gain()`). The
-  analog_voice and analog_audio sources keep IEEE semantics under fast-math, which would fold away their
-  non-finite-sample guards. The published `dsd_state::aout_gainA` is the gain applied, in dB over the `-n 50` gain,
+  encoder keeps its own band-pass, 960 Hz one-poles (`dsd_voice_onepole`) and AGC at 8 kHz in its stream context
+  (`m17_voice_chain`) and runs them over the whole codec2 frame, 160 samples at 3200 bit/s and 320 at 1600
+  (`m17_voice_chain_process()`; an explicit `-n` keeps `analog_gain()`). The analog_voice and analog_audio sources keep
+  IEEE semantics under fast-math, which would fold away their non-finite-sample guards. The published
+  `dsd_state::aout_gainA` is the gain applied, in dB over the `-n 50` gain,
   which the terminal shows as `G: Auto (+x dB)`. Tests: `DSP_ANALOG_VOICE`, `DSP_ANALOG_AUDIO`, `DSP_SYMBOL_REPLAY`
   (`test_chain_playing_follows_the_sink`), `RTL_SYMBOL_CACHE_GENERATION` (source routing), `M17_STATE_DISPATCH`
-  (`test_stream_voice_chain_covers_the_whole_frame`), `EDACS_GRANT_TUNE_MATRIX` (`rtl-unclipped`), the
-  `DECODE_IQ_ANALOG_*` level, parity and fixed-gain cases.
+  (`test_stream_voice_chain_covers_the_whole_frame`, `test_stream_voice_chain_onepoles_run_at_8k`),
+  `EDACS_GRANT_TUNE_MATRIX` (`rtl-unclipped`), the `DECODE_IQ_ANALOG_*` level, parity and fixed-gain cases.
   The block (`dsd_state::analog_out_f`) collects unsynced samples in a digital session too, monitored or not (the
   CQPSK symbol-rate output excepted). `dsd_symbol_analog_block_reset()` (`<dsd-neo/dsp/symbol.h>`, decoder thread)
   drops a part-collected block; app-control and the channel-scan leave call it when the receive family changes. On an

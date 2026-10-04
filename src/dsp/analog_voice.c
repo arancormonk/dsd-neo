@@ -4,7 +4,7 @@
  */
 
 /*
- * Voice band-pass and AGC for the analog monitor (issue #518). tools/design_voice_filters.py derives the elliptic
+ * Voice band-pass, legacy one-pole filters and AGC for the analog monitor (issue #518). tools/design_voice_filters.py derives the elliptic
  * prototype below and prints the response figures tests/dsp/test_dsp_analog_voice.c holds the design to.
  */
 
@@ -184,6 +184,62 @@ dsd_voice_bandpass_gain_db(const dsd_voice_bandpass* bp, double hz) {
         mag2 *= ((nr * nr) + (ni * ni)) / den;
     }
     return mag2 > 1e-30 ? 10.0 * log10(mag2) : -300.0;
+}
+
+int
+dsd_voice_onepole_design(dsd_voice_onepole* f, int rate_hz) {
+    if (!f || rate_hz <= 0) {
+        return -1;
+    }
+    const double ts = 1.0 / (double)rate_hz;
+    const double rc = 1.0 / (2.0 * M_PI * DSD_VOICE_ONEPOLE_CORNER_HZ);
+    f->lp_a = ts / (ts + rc);
+    f->hp_c = rc / (ts + rc);
+    dsd_voice_onepole_reset(f);
+    return 0;
+}
+
+void
+dsd_voice_onepole_reset(dsd_voice_onepole* f) {
+    if (!f) {
+        return;
+    }
+    f->lp_y = 0.0;
+    f->hp_x = 0.0;
+    f->hp_y = 0.0;
+}
+
+void
+dsd_voice_onepole_lowpass(dsd_voice_onepole* f, float* buf, size_t n) {
+    if (!f || !buf) {
+        return;
+    }
+    for (size_t i = 0; i < n; i++) {
+        const double x = (double)buf[i];
+        if (!(fabs(x) < k_finite_limit)) {
+            buf[i] = 0.0f;
+            continue;
+        }
+        f->lp_y = (f->lp_a * x) + ((1.0 - f->lp_a) * f->lp_y);
+        buf[i] = (float)f->lp_y;
+    }
+}
+
+void
+dsd_voice_onepole_highpass(dsd_voice_onepole* f, float* buf, size_t n) {
+    if (!f || !buf) {
+        return;
+    }
+    for (size_t i = 0; i < n; i++) {
+        const double x = (double)buf[i];
+        if (!(fabs(x) < k_finite_limit)) {
+            buf[i] = 0.0f;
+            continue;
+        }
+        f->hp_y = f->hp_c * (x - f->hp_x + f->hp_y);
+        f->hp_x = x;
+        buf[i] = (float)f->hp_y;
+    }
 }
 
 static double

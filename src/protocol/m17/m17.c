@@ -1737,8 +1737,7 @@ typedef struct {
     uint64_t monitored_call_epoch;
     int new_lsf;
     /* The microphone chain at codec2's 8 kHz (m17_str_voice_chain()). */
-    dsd_voice_bandpass voice_bandpass;
-    dsd_voice_agc voice_agc;
+    m17_voice_chain voice_chain;
 } m17_str_ctx;
 
 typedef struct {
@@ -2103,20 +2102,31 @@ m17_str_update_input_power(m17_str_ctx* ctx) {
     }
 }
 
+void
+m17_voice_chain_init(m17_voice_chain* chain) {
+    if (!chain) {
+        return;
+    }
+    (void)dsd_voice_bandpass_design(&chain->bandpass, DSD_VOICE_BAND_FM, 8000);
+    (void)dsd_voice_onepole_design(&chain->onepole, 8000);
+    (void)dsd_voice_agc_init(&chain->agc, 8000, dsd_analog_audio_source_gain(DSD_ANALOG_AUDIO_SOURCE_PCM16));
+}
+
 /* One codec2 frame of microphone audio at 8 kHz, all @p nsam samples of it (160 at 3200 bit/s, 320 at 1600): the voice
    band-pass (`use_pbf`), the legacy 960 Hz filters, then, with the gain on auto, the voice AGC referenced to PCM input;
    an explicit -n keeps analog_gain()'s 0..5x. The filters and the AGC carry their state from piece to piece, so the
-   frame is processed as one run whatever its length. */
+   frame is processed as one run whatever its length. The 960 Hz filters are the chain's own, designed at 8 kHz: run
+   from dsd_state's, designed for the monitor's input rate, they acted at 160 Hz on 48 kHz input (issue #617). */
 static void
-m17_voice_filter_piece(const dsd_opts* opts, dsd_state* state, dsd_voice_bandpass* bandpass, float* tmp, size_t len) {
+m17_voice_filter_piece(const dsd_opts* opts, m17_voice_chain* chain, float* tmp, size_t len) {
     if (opts->use_pbf == 1) {
-        dsd_voice_bandpass_process(bandpass, tmp, len);
+        dsd_voice_bandpass_process(&chain->bandpass, tmp, len);
     }
     if (opts->use_lpf == 1) {
-        lpf_f(state, tmp, (int)len);
+        dsd_voice_onepole_lowpass(&chain->onepole, tmp, len);
     }
     if (opts->use_hpf == 1) {
-        hpf_f(state, tmp, (int)len);
+        dsd_voice_onepole_highpass(&chain->onepole, tmp, len);
     }
 }
 
@@ -2135,9 +2145,8 @@ m17_voice_store_piece(const float* tmp, short* out, size_t len) {
 }
 
 void
-m17_voice_chain_process(const dsd_opts* opts, dsd_state* state, dsd_voice_bandpass* bandpass, dsd_voice_agc* agc,
-                        short* voice, size_t nsam) {
-    if (!opts || !state || !bandpass || !agc || !voice) {
+m17_voice_chain_process(const dsd_opts* opts, dsd_state* state, m17_voice_chain* chain, short* voice, size_t nsam) {
+    if (!opts || !state || !chain || !voice) {
         return;
     }
     const int is_auto = dsd_analog_gain_is_auto(opts->audio_gainA);
@@ -2147,9 +2156,9 @@ m17_voice_chain_process(const dsd_opts* opts, dsd_state* state, dsd_voice_bandpa
         for (size_t i = 0; i < len; i++) {
             tmp[i] = (float)voice[done + i];
         }
-        m17_voice_filter_piece(opts, state, bandpass, tmp, len);
+        m17_voice_filter_piece(opts, chain, tmp, len);
         if (is_auto) {
-            dsd_voice_agc_process(agc, tmp, len, 1);
+            dsd_voice_agc_process(&chain->agc, tmp, len, 1);
         }
         m17_voice_store_piece(tmp, voice + done, len);
         done += len;
@@ -2161,7 +2170,7 @@ m17_voice_chain_process(const dsd_opts* opts, dsd_state* state, dsd_voice_bandpa
 
 static void
 m17_str_voice_chain(m17_str_ctx* ctx, short* voice) {
-    m17_voice_chain_process(ctx->opts, ctx->state, &ctx->voice_bandpass, &ctx->voice_agc, voice, ctx->nsam);
+    m17_voice_chain_process(ctx->opts, ctx->state, &ctx->voice_chain, voice, ctx->nsam);
 }
 
 static void
@@ -2466,8 +2475,7 @@ m17_str_init(m17_str_ctx* ctx, dsd_opts* opts, dsd_state* state) {
     ctx->sql_hit = 11;
     ctx->eot_out = 1;
     ctx->new_lsf = 1;
-    (void)dsd_voice_bandpass_design(&ctx->voice_bandpass, DSD_VOICE_BAND_FM, 8000);
-    (void)dsd_voice_agc_init(&ctx->voice_agc, 8000, dsd_analog_audio_source_gain(DSD_ANALOG_AUDIO_SOURCE_PCM16));
+    m17_voice_chain_init(&ctx->voice_chain);
 
     DSD_MEMSET(mem, 0, M17_RRC_RECOMMENDED_TAPS * sizeof(float));
     DSD_MEMSET(ctx->nil, 0, sizeof(ctx->nil));

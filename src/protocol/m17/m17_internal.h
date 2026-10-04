@@ -58,9 +58,19 @@ uint16_t m17_attach_lsf_crc(uint8_t* m17_lsf, uint8_t* lsf_packed);
 void m17_sync_monitored_tx_call(const dsd_opts* opts, dsd_state* state, uint64_t dst, uint64_t src,
                                 const char* dst_text, const char* src_text, uint8_t can, uint64_t* active_epoch);
 void m17_end_monitored_tx_call(const dsd_opts* opts, dsd_state* state, uint64_t* active_epoch);
-/* The stream encoder's microphone chain over one codec2 frame of @p nsam samples at 8 kHz (m17.c). */
-void m17_voice_chain_process(const dsd_opts* opts, dsd_state* state, dsd_voice_bandpass* bandpass, dsd_voice_agc* agc,
-                             short* voice, size_t nsam);
+
+/* The stream encoder's microphone chain at codec2's 8 kHz: the voice band-pass, the legacy 960 Hz filters and the AGC,
+   each the chain's own. */
+typedef struct {
+    dsd_voice_bandpass bandpass;
+    dsd_voice_onepole onepole;
+    dsd_voice_agc agc;
+} m17_voice_chain;
+
+/* Design @p chain for 8 kHz microphone audio, the AGC referenced to PCM input (m17.c). */
+void m17_voice_chain_init(m17_voice_chain* chain);
+/* Run @p chain over one codec2 frame of @p nsam samples (m17.c). */
+void m17_voice_chain_process(const dsd_opts* opts, dsd_state* state, m17_voice_chain* chain, short* voice, size_t nsam);
 
 int m17_decode_pkt_should_report_encrypted(const dsd_state* state, uint32_t protocol);
 int m17_pkt_ptr_clamped(int pbc_count);

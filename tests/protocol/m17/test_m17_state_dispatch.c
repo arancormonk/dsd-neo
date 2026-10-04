@@ -9,6 +9,7 @@
 #include "fixtures/m17_reference_vectors.h"
 
 #include <assert.h>
+#include <dsd-neo/core/audio_filters.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
@@ -2311,10 +2312,8 @@ voice_chain_settled_peaks(size_t nsam, double* first_half, double* second_half) 
     DSD_MEMSET(&state, 0, sizeof state);
     opts.use_pbf = 1;
     opts.audio_gainA = 0.0f;
-    dsd_voice_bandpass bandpass;
-    dsd_voice_agc agc;
-    (void)dsd_voice_bandpass_design(&bandpass, DSD_VOICE_BAND_FM, 8000);
-    (void)dsd_voice_agc_init(&agc, 8000, 1.0);
+    m17_voice_chain chain;
+    m17_voice_chain_init(&chain);
     short voice[320];
     double phase = 0.0;
     const size_t frames = (size_t)(3 * 8000) / nsam;
@@ -2323,7 +2322,7 @@ voice_chain_settled_peaks(size_t nsam, double* first_half, double* second_half) 
             voice[i] = (short)lrint(823.1 * sin(phase));
             phase += 2.0 * 3.14159265358979323846 * 1000.0 / 8000.0;
         }
-        m17_voice_chain_process(&opts, &state, &bandpass, &agc, voice, nsam);
+        m17_voice_chain_process(&opts, &state, &chain, voice, nsam);
     }
     *first_half = 0.0;
     *second_half = 0.0;
@@ -2354,6 +2353,73 @@ test_stream_voice_chain_covers_the_whole_frame(void) {
     return err;
 }
 
+/* The RMS of @p n samples as a sine amplitude, in dB over @p ref. */
+static double
+amplitude_db(const short* x, size_t n, double ref) {
+    double acc = 0.0;
+    for (size_t i = 0; i < n; i++) {
+        acc += (double)x[i] * (double)x[i];
+    }
+    return 20.0 * log10(sqrt(2.0 * acc / (double)n) / ref);
+}
+
+/* The steady-state output level, in dB, of a @p hz tone through the voice chain at 8 kHz with only the filter flags
+   given set and a fixed gain of exactly 1x (-n 20). */
+static double
+voice_chain_tone_db(int use_lpf, int use_hpf, double hz) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+    /* What production leaves in dsd_state: its filters designed for the monitor's 48 kHz input. */
+    init_audio_filters(&state, 48000);
+    opts.use_lpf = use_lpf;
+    opts.use_hpf = use_hpf;
+    opts.audio_gainA = 20.0f;
+    m17_voice_chain chain;
+    m17_voice_chain_init(&chain);
+    short voice[160];
+    double phase = 0.0;
+    for (int f = 0; f < 50; f++) {
+        for (size_t i = 0; i < 160U; i++) {
+            voice[i] = (short)lrint(8000.0 * sin(phase));
+            phase += 2.0 * 3.14159265358979323846 * hz / 8000.0;
+        }
+        m17_voice_chain_process(&opts, &state, &chain, voice, 160U);
+    }
+    return amplitude_db(voice, 160U, 8000.0);
+}
+
+/* The 960 Hz RC one-pole's response at @p hz on 8 kHz samples, in dB. */
+static double
+onepole_db(int highpass, double hz) {
+    const double pi = 3.14159265358979323846;
+    const double ts = 1.0 / 8000.0;
+    const double rc = 1.0 / (2.0 * pi * 960.0);
+    const double w = 2.0 * pi * hz / 8000.0;
+    const double p = rc / (ts + rc);
+    const double den = sqrt(1.0 - (2.0 * p * cos(w)) + (p * p));
+    const double num = highpass ? p * 2.0 * sin(w / 2.0) : 1.0 - p;
+    return 20.0 * log10(num / den);
+}
+
+/* Issue #617: the encoder's -v 0x2 / 0x4 filters are its own, designed at codec2's 8 kHz. Run from dsd_state's, designed
+   for the 48 kHz input, both acted at 160 Hz: the low-pass took 1 kHz about 16 dB down and the high-pass passed 500 Hz
+   nearly whole. */
+static int
+test_stream_voice_chain_onepoles_run_at_8k(void) {
+    const double lp = voice_chain_tone_db(1, 0, 1000.0);
+    const double hp = voice_chain_tone_db(0, 1, 500.0);
+    const double flat = voice_chain_tone_db(0, 0, 1000.0);
+    const int ok = fabs(lp - onepole_db(0, 1000.0)) < 0.2 && fabs(hp - onepole_db(1, 500.0)) < 0.2 && fabs(flat) < 0.05;
+    if (!ok) {
+        DSD_FPRINTF(stderr,
+                    "voice chain one-poles: lp 1 kHz %.2f dB (want %.2f), hp 500 Hz %.2f dB (want %.2f), flat %.2f\n",
+                    lp, onepole_db(0, 1000.0), hp, onepole_db(1, 500.0), flat);
+    }
+    return expect_int("voice chain one-poles run at 8 kHz", ok, 1);
+}
+
 int
 main(void) {
     int err = 0;
@@ -2375,6 +2441,7 @@ main(void) {
     err |= test_lsf_crc_confirms_the_transmission();
     err |= test_unconfirmed_stream_publishes_no_call();
     err |= test_stream_voice_chain_covers_the_whole_frame();
+    err |= test_stream_voice_chain_onepoles_run_at_8k();
 #ifdef USE_CODEC2
     err |= test_stream_voice_3200_dispatch_routes_pair_audio_to_udp();
     err |= test_stream_voice_1600_dispatch_routes_single_audio_to_udp();
