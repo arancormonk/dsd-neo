@@ -5,6 +5,7 @@
 
 /* The floor-relative ("auto") squelch's classifier, floor and gate (issue #518 follow-up); see squelch_floor.h. */
 
+#include <dsd-neo/core/power.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/dsp/squelch_floor.h>
 #include <math.h>
@@ -427,8 +428,9 @@ dsd_squelch_floor_process(dsd_squelch_floor* t, const float* iq, int count, uint
         if (flags) {
             flags[i] = t->gate_open ? 0U : (uint8_t)DSD_SQUELCH_FLAG_CLOSED;
         }
-        const double re = (double)iq[2 * i];
-        const double im = (double)iq[(2 * i) + 1];
+        const size_t at = (size_t)i * 2U;
+        const double re = (double)iq[at];
+        const double im = (double)iq[at + 1U];
         const double a = (re * re) + (im * im);
         t->w_n += 1.0;
         t->w_sa += a;
@@ -444,8 +446,8 @@ dsd_squelch_floor_process(dsd_squelch_floor* t, const float* iq, int count, uint
                 t->w_su_im += ((im * pr) - (re * pi)) / mag;
             }
         }
-        t->hist_re[t->hist_pos] = iq[2 * i];
-        t->hist_im[t->hist_pos] = iq[(2 * i) + 1];
+        t->hist_re[t->hist_pos] = iq[at];
+        t->hist_im[t->hist_pos] = iq[at + 1U];
         t->hist_pos = (t->hist_pos + 1) % lag;
         if (t->hist_fill < lag) {
             t->hist_fill++;

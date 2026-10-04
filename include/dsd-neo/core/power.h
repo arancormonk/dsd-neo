@@ -68,12 +68,12 @@ double dB_to_pwr(double dB);
  * decibels reads as a very low threshold rather than as "not gating", which is
  * exactly the confusion this predicate exists to prevent.
  *
- * @param mean_power Stored threshold in mean-power units.
+ * @param level Stored threshold in mean-power units.
  * @return Non-zero when the squelch is off.
  */
 static inline int
-dsd_squelch_is_off(double mean_power) {
-    return !(mean_power > 0.0);
+dsd_squelch_is_off(double level) {
+    return !(level > 0.0);
 }
 
 /**

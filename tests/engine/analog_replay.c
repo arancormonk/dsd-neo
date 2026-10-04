@@ -61,6 +61,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/parse.h>
+#include <dsd-neo/core/power.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/scan_profile.h>
 #include <dsd-neo/core/state.h>
@@ -529,54 +530,84 @@ analog_scale_cu8(unsigned char* data, size_t len, double gain) {
     return clipped;
 }
 
+/* A capture read whole: its sidecar text, where the sidecar names its data file, and its data. */
+typedef struct {
+    unsigned char* json;
+    size_t json_len;
+    size_t name_at; /* the data_file value: offset into json and length */
+    size_t name_len;
+    unsigned char* data;
+    size_t data_len;
+} analog_capture;
+
+/* Reads the capture meta_path names; 0, or -1 (what was read stays for analog_capture_free()). */
+static int
+analog_capture_load(const char* meta_path, analog_capture* cap) {
+    char data_path[DSD_TEST_PATH_MAX];
+    cap->json = analog_read_file(meta_path, ANALOG_SIDECAR_MAX, &cap->json_len);
+    if (cap->json == NULL || analog_sidecar_data_file((const char*)cap->json, &cap->name_at, &cap->name_len) != 0
+        || analog_sidecar_data_path(meta_path, (const char*)cap->json + cap->name_at, cap->name_len, data_path,
+                                    sizeof(data_path))
+               != 0) {
+        return -1;
+    }
+    cap->data = analog_read_file(data_path, 1L << 30, &cap->data_len);
+    return cap->data != NULL ? 0 : -1;
+}
+
+static void
+analog_capture_free(analog_capture* cap) {
+    free(cap->data);
+    free(cap->json);
+}
+
+/* Writes the capture's data and its sidecar, the data_file naming the copy beside it, into the scaled copy's
+   directory; 0, or -1. */
+static int
+analog_capture_write(const analog_capture* cap) {
+    const size_t name_len = strlen(ANALOG_SCALED_DATA);
+    const size_t meta_len = cap->json_len - cap->name_len + name_len;
+    char* meta = (char*)malloc(meta_len);
+    if (meta == NULL) {
+        return -1;
+    }
+    DSD_MEMCPY(meta, cap->json, cap->name_at);
+    DSD_MEMCPY(meta + cap->name_at, ANALOG_SCALED_DATA, name_len);
+    DSD_MEMCPY(meta + cap->name_at + name_len, cap->json + cap->name_at + cap->name_len,
+               cap->json_len - cap->name_at - cap->name_len);
+    const int rc = (analog_write_scaled(ANALOG_SCALED_DATA, cap->data, cap->data_len) == 0
+                    && analog_write_scaled(ANALOG_SCALED_META, meta, meta_len) == 0
+                    && dsd_test_path_join(g_scaled_meta, sizeof(g_scaled_meta), g_scaled_dir, ANALOG_SCALED_META) == 0)
+                       ? 0
+                       : -1;
+    free(meta);
+    return rc;
+}
+
 /* Writes the scaled copy of the capture meta_path names, with a sidecar naming it; 0, or -1 with a message. */
 static int
 analog_make_scaled_copy(const char* meta_path, double gain_db) {
-    size_t json_len = 0U;
-    unsigned char* json = analog_read_file(meta_path, ANALOG_SIDECAR_MAX, &json_len);
-    size_t start = 0U;
-    size_t len = 0U;
-    char data_path[DSD_TEST_PATH_MAX];
-    unsigned char* data = NULL;
-    size_t data_len = 0U;
+    analog_capture cap;
+    DSD_MEMSET(&cap, 0, sizeof cap);
     int rc = -1;
-    if (json == NULL || analog_sidecar_data_file((const char*)json, &start, &len) != 0
-        || analog_sidecar_data_path(meta_path, (const char*)json + start, len, data_path, sizeof(data_path)) != 0
-        || (data = analog_read_file(data_path, 1L << 30, &data_len)) == NULL
+    if (analog_capture_load(meta_path, &cap) != 0
         || dsd_test_mkdtemp(g_scaled_dir, sizeof(g_scaled_dir), "dsdneo_analog_iq") == NULL) {
         DSD_FPRINTF(stderr, "analog replay: --analog-iq-gain-db cannot copy the capture '%s'\n", meta_path);
         g_scaled_dir[0] = '\0';
-        goto done;
-    }
-    const size_t clipped = analog_scale_cu8(data, data_len, pow(10.0, gain_db / 20.0));
-    DSD_FPRINTF(stderr, "analog replay: capture scaled by %+.1f dB, %zu of %zu bytes clipped\n", gain_db, clipped,
-                data_len);
-    if ((double)clipped > ANALOG_MAX_CLIP_SHARE * (double)data_len) {
-        DSD_FPRINTF(stderr, "analog replay: --analog-iq-gain-db %+.1f clips the capture; use a smaller gain\n",
-                    gain_db);
-        goto done;
-    }
-    /* The sidecar as it was, its data_file naming the copy beside it. */
-    const size_t name_len = strlen(ANALOG_SCALED_DATA);
-    const size_t meta_len = json_len - len + name_len;
-    char* meta = (char*)malloc(meta_len);
-    if (meta == NULL) {
-        goto done;
-    }
-    DSD_MEMCPY(meta, json, start);
-    DSD_MEMCPY(meta + start, ANALOG_SCALED_DATA, name_len);
-    DSD_MEMCPY(meta + start + name_len, json + start + len, json_len - start - len);
-    if (analog_write_scaled(ANALOG_SCALED_DATA, data, data_len) == 0
-        && analog_write_scaled(ANALOG_SCALED_META, meta, meta_len) == 0
-        && dsd_test_path_join(g_scaled_meta, sizeof(g_scaled_meta), g_scaled_dir, ANALOG_SCALED_META) == 0) {
-        rc = 0;
     } else {
-        DSD_FPRINTF(stderr, "analog replay: --analog-iq-gain-db cannot write the scaled copy\n");
+        const size_t clipped = analog_scale_cu8(cap.data, cap.data_len, pow(10.0, gain_db / 20.0));
+        DSD_FPRINTF(stderr, "analog replay: capture scaled by %+.1f dB, %zu of %zu bytes clipped\n", gain_db, clipped,
+                    cap.data_len);
+        if ((double)clipped > ANALOG_MAX_CLIP_SHARE * (double)cap.data_len) {
+            DSD_FPRINTF(stderr, "analog replay: --analog-iq-gain-db %+.1f clips the capture; use a smaller gain\n",
+                        gain_db);
+        } else if (analog_capture_write(&cap) != 0) {
+            DSD_FPRINTF(stderr, "analog replay: --analog-iq-gain-db cannot write the scaled copy\n");
+        } else {
+            rc = 0;
+        }
     }
-    free(meta);
-done:
-    free(data);
-    free(json);
+    analog_capture_free(&cap);
     return rc;
 }
 

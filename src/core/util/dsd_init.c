@@ -142,6 +142,15 @@ init_opts_output_defaults(dsd_opts* opts) {
     opts->wav_out_raw = NULL;
 }
 
+/* The squelch: a -110 dB level until a spec, a config or --squelch sets one, and the auto squelch's default margin
+   ready for a switch to it. */
+static void
+init_opts_squelch_defaults(dsd_opts* opts) {
+    opts->rtl_squelch_level = dB_to_pwr(-110);
+    opts->rtl_squelch_mode = DSD_SQUELCH_MODE_LEVEL;
+    opts->rtl_squelch_margin_db = DSD_SQUELCH_MARGIN_DEFAULT_DB;
+}
+
 static void
 init_opts_decoder_and_input_defaults(dsd_opts* opts) {
     opts->dmr_stereo_wav = 0;  //flag for per call dmr stereo wav recordings
@@ -190,9 +199,6 @@ init_opts_decoder_and_input_defaults(dsd_opts* opts) {
     //all RTL user options -- enabled AGC by default due to weak signal related issues
     opts->rtl_dev_index = 0;  //choose which device we want by index number
     opts->rtl_gain_value = 0; //mid value, 0 - AGC - 0 to 49 acceptable values
-    opts->rtl_squelch_level = dB_to_pwr(-110);
-    opts->rtl_squelch_mode = DSD_SQUELCH_MODE_LEVEL;
-    opts->rtl_squelch_margin_db = DSD_SQUELCH_MARGIN_DEFAULT_DB;
     opts->rtl_volume_multiplier =
         2; //sample multiplier; This multiplies the sample value to produce a higher 'inlvl' for the demodulator
     // Generic input volume for non-RTL inputs (Pulse/WAV/TCP/UDP)
@@ -446,6 +452,7 @@ initOpts(dsd_opts* opts) {
     init_opts_display_and_audio_defaults(opts);
     init_opts_output_defaults(opts);
     init_opts_decoder_and_input_defaults(opts);
+    init_opts_squelch_defaults(opts);
     init_opts_runtime_and_network_defaults(opts);
     init_opts_trunking_and_filter_defaults(opts);
 } //initopts

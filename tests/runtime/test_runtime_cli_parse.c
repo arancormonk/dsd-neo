@@ -8332,16 +8332,16 @@ test_squelch_option(void) {
     static const struct {
         const char* argv1;
         const char* argv2;
-        int mode;
         double db; /* LEVEL: the threshold in dB, 0 = off */
+        int mode;
         int margin;
     } good[] = {
-        {"--squelch", "auto", DSD_SQUELCH_MODE_AUTO, 0.0, 10},
-        {"--squelch", "auto+6", DSD_SQUELCH_MODE_AUTO, 0.0, 6},
-        {"--squelch=AUTO+30", NULL, DSD_SQUELCH_MODE_AUTO, 0.0, 30},
-        {"--squelch=-60", NULL, DSD_SQUELCH_MODE_LEVEL, -60.0, 0},
-        {"--squelch", "-47.5", DSD_SQUELCH_MODE_LEVEL, -47.5, 0},
-        {"--squelch", "off", DSD_SQUELCH_MODE_LEVEL, 0.0, 0},
+        {"--squelch", "auto", 0.0, DSD_SQUELCH_MODE_AUTO, 10},
+        {"--squelch", "auto+6", 0.0, DSD_SQUELCH_MODE_AUTO, 6},
+        {"--squelch=AUTO+30", NULL, 0.0, DSD_SQUELCH_MODE_AUTO, 30},
+        {"--squelch=-60", NULL, -60.0, DSD_SQUELCH_MODE_LEVEL, 0},
+        {"--squelch", "-47.5", -47.5, DSD_SQUELCH_MODE_LEVEL, 0},
+        {"--squelch", "off", 0.0, DSD_SQUELCH_MODE_LEVEL, 0},
     };
 
     static const struct {

@@ -373,20 +373,21 @@ test_spec_squelch_grammar(void) {
     free(opts);
 
     /* soapy: the same field, and the spec still parses as tuning with it. */
-    opts = alloc_seeded_opts();
-    if (!opts) {
+    dsd_opts* soapy = alloc_seeded_opts();
+    if (!soapy) {
         return 1;
     }
-    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "soapy:driver=rtlsdr:162.475M:30:-2:48:auto+8:2");
+    DSD_SNPRINTF(soapy->audio_in_dev, sizeof soapy->audio_in_dev, "%s",
+                 "soapy:driver=rtlsdr:162.475M:30:-2:48:auto+8:2");
     int applied = 0;
-    if (dsd_normalize_soapy_input_spec(opts, &applied) != 0 || applied != 1
-        || strcmp(opts->audio_in_dev, "soapy:driver=rtlsdr") != 0 || opts->rtl_volume_multiplier != 2) {
-        DSD_FPRINTF(stderr, "soapy auto+8: applied=%d dev=%s vol=%d\n", applied, opts->audio_in_dev,
-                    opts->rtl_volume_multiplier);
+    if (dsd_normalize_soapy_input_spec(soapy, &applied) != 0 || applied != 1
+        || strcmp(soapy->audio_in_dev, "soapy:driver=rtlsdr") != 0 || soapy->rtl_volume_multiplier != 2) {
+        DSD_FPRINTF(stderr, "soapy auto+8: applied=%d dev=%s vol=%d\n", applied, soapy->audio_in_dev,
+                    soapy->rtl_volume_multiplier);
         rc = 1;
     }
-    rc |= expect_squelch("soapy: auto+8", opts, DSD_SQUELCH_MODE_AUTO, 0.25, 8);
-    free(opts);
+    rc |= expect_squelch("soapy: auto+8", soapy, DSD_SQUELCH_MODE_AUTO, 0.25, 8);
+    free(soapy);
     return rc;
 }
 

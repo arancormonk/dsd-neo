@@ -34,24 +34,20 @@ squelch_view_fill_auto(const dsd_opts* opts, const dsd_state* state, dsd_app_squ
         out->auto_resolution != DSD_SQUELCH_RESOLVED_AS_SET || (out->auto_running && !out->auto_plan_valid) ? 1U : 0U;
 }
 
-int
-dsd_app_squelch_view_get(const dsd_opts* opts, const dsd_state* state, dsd_app_squelch_view* out) {
-    if (!out) {
-        return -1;
-    }
-    DSD_MEMSET(out, 0, sizeof(*out));
-    if (!opts || !state) {
-        return -1;
-    }
-    const dsd_scan_option_values* row = dsd_scan_mode_row_options(state);
-    const dsd_scan_settings* configured = dsd_scan_mode_configured_view(state);
-    out->row_override = (row && (row->present & DSD_SCAN_OPT_SQUELCH)) ? 1U : 0U;
-    /* Outside a scope, and while one is suspended, dsd_opts holds the configured default. */
+/* The configured default. Outside a scope, and while one is suspended, dsd_opts holds it. */
+static void
+squelch_view_fill_configured(const dsd_opts* opts, const dsd_scan_settings* configured, dsd_app_squelch_view* out) {
+    const int mode = configured ? configured->rtl_squelch_mode : opts->rtl_squelch_mode;
     out->configured_level = configured ? configured->rtl_squelch_level : opts->rtl_squelch_level;
-    out->configured_auto =
-        (configured ? configured->rtl_squelch_mode : opts->rtl_squelch_mode) == DSD_SQUELCH_MODE_AUTO ? 1U : 0U;
+    out->configured_auto = mode == DSD_SQUELCH_MODE_AUTO ? 1U : 0U;
     out->configured_margin_db = configured ? configured->rtl_squelch_margin_db : opts->rtl_squelch_margin_db;
-    /* The row's own value, not dsd_opts: suspended for a command, dsd_opts reads the default. */
+    out->configured_off = !out->configured_auto && dsd_squelch_is_off(out->configured_level) ? 1U : 0U;
+}
+
+/* The setting in force: a row's own, not dsd_opts (suspended for a command, dsd_opts reads the default), else
+   dsd_opts. An AUTO row keeps the configured level beneath it. */
+static void
+squelch_view_fill_effective(const dsd_opts* opts, const dsd_scan_option_values* row, dsd_app_squelch_view* out) {
     if (out->row_override) {
         out->effective_auto = row->squelch_mode == DSD_SQUELCH_MODE_AUTO ? 1U : 0U;
         out->effective_margin_db = row->squelch_margin_db;
@@ -62,8 +58,22 @@ dsd_app_squelch_view_get(const dsd_opts* opts, const dsd_state* state, dsd_app_s
         out->effective_margin_db = opts->rtl_squelch_margin_db;
         out->effective_level = opts->rtl_squelch_level;
     }
-    out->configured_off = !out->configured_auto && dsd_squelch_is_off(out->configured_level) ? 1U : 0U;
     out->effective_off = dsd_squelch_is_off(out->effective_level) ? 1U : 0U;
+}
+
+int
+dsd_app_squelch_view_get(const dsd_opts* opts, const dsd_state* state, dsd_app_squelch_view* out) {
+    if (!out) {
+        return -1;
+    }
+    DSD_MEMSET(out, 0, sizeof(*out));
+    if (!opts || !state) {
+        return -1;
+    }
+    const dsd_scan_option_values* row = dsd_scan_mode_row_options(state);
+    out->row_override = (row && (row->present & DSD_SCAN_OPT_SQUELCH)) ? 1U : 0U;
+    squelch_view_fill_configured(opts, dsd_scan_mode_configured_view(state), out);
+    squelch_view_fill_effective(opts, row, out);
     if (out->effective_auto) {
         squelch_view_fill_auto(opts, state, out);
     }

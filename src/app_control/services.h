@@ -17,7 +17,7 @@
 
 #include <dsd-neo/core/airspy_config.h>
 #include <dsd-neo/core/opts_fwd.h>
-#include <dsd-neo/core/power.h>
+#include <dsd-neo/core/power.h> // IWYU pragma: keep (dsd_squelch_setting in svc_rtl_set_sql_setting())
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>

@@ -12,6 +12,7 @@
  */
 
 #include <assert.h>
+#include <dsd-neo/core/power.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/halfband.h>
@@ -19,7 +20,6 @@
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 
 #include "analog_tone_synth.h"
@@ -161,8 +161,8 @@ source_run(source* s, float* iq, int count) {
             yr += (double)s->ch->taps[k] * hr[-k];
             yi += (double)s->ch->taps[k] * hi[-k];
         }
-        iq[2 * n] = (float)yr;
-        iq[(2 * n) + 1] = (float)yi;
+        iq[(size_t)n * 2U] = (float)yr;
+        iq[((size_t)n * 2U) + 1U] = (float)yi;
     }
 }
 
@@ -458,7 +458,7 @@ test_carriers_open_and_close(void) {
         runner_run(&r, &s, 1.0);
         const int64_t on = r.first_open[0];
         const uint64_t span = r.samples - r.mark;
-        if (on < 0 || on > 2 * window_len(48000) || r.opens[0] != span - (uint64_t)on) {
+        if (on < 0 || on > 2 * (int64_t)window_len(48000) || r.opens[0] != span - (uint64_t)on) {
             DSD_FPRINTF(stderr, "%s: opened at %lld, open %llu of %llu after it\n", cases[i].name, (long long)on,
                         (unsigned long long)r.opens[0], (unsigned long long)(span - (uint64_t)(on < 0 ? 0 : on)));
             assert(0);
@@ -725,7 +725,8 @@ test_seeding(void) {
         source_init(&s, &ch, 0x5EED03ULL + (uint64_t)k, 1e-3);
         runner_init(&r, &ch, &margin, 1);
         dsd_squelch_floor_seed(&r.t[0], source_noise_out(&s) * pow(10.0, offsets_db[k] / 10.0), 1);
-        runner_run(&r, &s, (double)(rate / 25 + 1) / (double)rate + 0.001);
+        const int window = rate / 25;
+        runner_run(&r, &s, (double)(window + 1) / (double)rate + 0.001);
         assert(status_of(&r.t[0]).state == DSD_SQUELCH_FLOOR_LEARNING);
         runner_run(&r, &s, 0.5);
         const dsd_squelch_floor_status st = status_of(&r.t[0]);
@@ -958,7 +959,11 @@ test_change_context(void) {
 
 static int
 same_double(double a, double b) {
-    return memcmp(&a, &b, sizeof a) == 0;
+    uint64_t ua = 0U;
+    uint64_t ub = 0U;
+    DSD_MEMCPY(&ua, &a, sizeof ua);
+    DSD_MEMCPY(&ub, &b, sizeof ub);
+    return ua == ub;
 }
 
 static int
@@ -989,17 +994,17 @@ test_block_partitions(void) {
     source_run(&s, iq, seg);
     at += seg;
     source_fm(&s, 20.0, 0.0, 1000.0, 2500.0);
-    source_run(&s, iq + (2 * at), seg);
+    source_run(&s, iq + ((size_t)at * 2U), seg);
     at += seg;
     source_noise_only(&s);
-    source_run(&s, iq + (2 * at), seg);
+    source_run(&s, iq + ((size_t)at * 2U), seg);
     at += seg;
     source_am(&s, 12.0, 700.0, 0.9);
-    source_run(&s, iq + (2 * at), seg);
+    source_run(&s, iq + ((size_t)at * 2U), seg);
     at += seg;
     source_noise_only(&s);
     s.noise_var = 2e-2;
-    source_run(&s, iq + (2 * at), TOTAL - at);
+    source_run(&s, iq + ((size_t)at * 2U), TOTAL - at);
 
     static dsd_squelch_floor ref;
     DSD_MEMSET(&ref, 0, sizeof ref);
@@ -1046,7 +1051,7 @@ test_block_partitions(void) {
             if (n > TOTAL - pos) {
                 n = TOTAL - pos;
             }
-            dsd_squelch_floor_process(&t, iq + (2 * pos), n, flags + pos);
+            dsd_squelch_floor_process(&t, iq + ((size_t)pos * 2U), n, flags + pos);
             pos += n;
         }
         assert(memcmp(flags, ref_flags, sizeof flags) == 0);

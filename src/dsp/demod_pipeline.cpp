@@ -1494,33 +1494,60 @@ squelch_auto_wanted(const struct demod_state* d) {
     return d->squelch_mode == DSD_SQUELCH_MODE_AUTO && dsd_demod_analog_monitor_active(d);
 }
 
-/* The tracker's plan follows the channel filter in force, the half-band stage ahead of it and the channel rate. */
+namespace {
+
+/* What the tracker's plan follows: the channel filter in force, the half-band stage ahead of it and the channel rate. */
+struct squelch_plan_key {
+    int rate;
+    int taps_len;
+    int hb_taps;
+    int rate_out;
+    int profile;
+    int width_hz;
+};
+
+} // namespace
+
+static squelch_plan_key
+squelch_plan_key_of(const struct demod_state* d) {
+    const int filtered = d->channel_lpf_enable && d->channel_lpf_plan_taps_len >= 3;
+    squelch_plan_key k{};
+    k.rate = squelch_channel_rate_hz(d);
+    k.hb_taps = d->downsample_passes <= 0 ? 0 : (d->downsample_passes == 1 ? 31 : HB_TAPS);
+    if (filtered) {
+        k.taps_len = d->channel_lpf_plan_taps_len;
+        k.rate_out = d->channel_lpf_plan_rate_out;
+        k.profile = d->channel_lpf_plan_profile;
+        k.width_hz = d->channel_lpf_plan_width_hz;
+    }
+    return k;
+}
+
+static int
+squelch_plan_key_current(const struct demod_state* d, const squelch_plan_key& k) {
+    return d->squelch_plan_set && d->squelch_plan_rate_hz == k.rate && d->squelch_plan_taps_len == k.taps_len
+           && d->squelch_plan_hb_taps == k.hb_taps && d->squelch_plan_rate_out == k.rate_out
+           && d->squelch_plan_profile == k.profile && d->squelch_plan_width_hz == k.width_hz;
+}
+
 static void
 squelch_floor_ensure_plan(struct demod_state* d) {
-    const int filtered = d->channel_lpf_enable && d->channel_lpf_plan_taps_len >= 3;
-    const int taps_len = filtered ? d->channel_lpf_plan_taps_len : 0;
-    const int hb_taps = d->downsample_passes <= 0 ? 0 : (d->downsample_passes == 1 ? 31 : HB_TAPS);
-    const int rate = squelch_channel_rate_hz(d);
-    const int rate_out = filtered ? d->channel_lpf_plan_rate_out : 0;
-    const int profile = filtered ? d->channel_lpf_plan_profile : 0;
-    const int width_hz = filtered ? d->channel_lpf_plan_width_hz : 0;
-    if (d->squelch_plan_set && d->squelch_plan_rate_hz == rate && d->squelch_plan_taps_len == taps_len
-        && d->squelch_plan_hb_taps == hb_taps && d->squelch_plan_rate_out == rate_out
-        && d->squelch_plan_profile == profile && d->squelch_plan_width_hz == width_hz) {
+    const squelch_plan_key k = squelch_plan_key_of(d);
+    if (squelch_plan_key_current(d, k)) {
         return;
     }
-    const float* hb = hb_taps == 31 ? hb31_q15_taps : (hb_taps > 0 ? hb_q15_taps : NULL);
+    const float* hb = k.hb_taps == 31 ? hb31_q15_taps : (k.hb_taps > 0 ? hb_q15_taps : NULL);
     dsd_squelch_floor_plan plan;
     /* A plan that cannot be designed is not valid, and the tracker then keeps the gate open. */
-    (void)dsd_squelch_floor_plan_design(&plan, taps_len > 0 ? d->channel_lpf_plan_taps : NULL, taps_len, hb, hb_taps,
-                                        rate);
+    (void)dsd_squelch_floor_plan_design(&plan, k.taps_len > 0 ? d->channel_lpf_plan_taps : NULL, k.taps_len, hb,
+                                        k.hb_taps, k.rate);
     dsd_squelch_floor_set_plan(&d->squelch_floor, &plan);
-    d->squelch_plan_rate_hz = rate;
-    d->squelch_plan_taps_len = taps_len;
-    d->squelch_plan_hb_taps = hb_taps;
-    d->squelch_plan_rate_out = rate_out;
-    d->squelch_plan_profile = profile;
-    d->squelch_plan_width_hz = width_hz;
+    d->squelch_plan_rate_hz = k.rate;
+    d->squelch_plan_taps_len = k.taps_len;
+    d->squelch_plan_hb_taps = k.hb_taps;
+    d->squelch_plan_rate_out = k.rate_out;
+    d->squelch_plan_profile = k.profile;
+    d->squelch_plan_width_hz = k.width_hz;
     d->squelch_plan_set = 1;
 }
 

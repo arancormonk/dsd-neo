@@ -14807,6 +14807,102 @@ squelch_test_ring_round_trip(size_t at, int n, int with_flags, int replay_read) 
     return 1;
 }
 
+/* The setting reaches the demod: AUTO turns the level off, the margin is clamped, a level comes back whole. Returns the
+   first failed check's code, 0 when all held. */
+static int
+squelch_test_setting_checks(void) {
+    dsd_squelch_setting auto6 = {DSD_SQUELCH_MODE_AUTO, 0.0, 6};
+    demod.channel_squelch_level.store(1e-6f, std::memory_order_relaxed);
+    rtl_stream_set_channel_squelch_setting(&auto6);
+    demod_take_squelch_setting(&demod);
+    if (demod.squelch_mode != DSD_SQUELCH_MODE_AUTO || demod.squelch_margin_db != 6) {
+        return 1;
+    }
+    if (demod.channel_squelch_level.load(std::memory_order_relaxed) > 0.0f) {
+        return 2;
+    }
+    dsd_squelch_setting auto99 = {DSD_SQUELCH_MODE_AUTO, 0.0, 99};
+    rtl_stream_set_channel_squelch_setting(&auto99);
+    demod_take_squelch_setting(&demod);
+    if (demod.squelch_margin_db != DSD_SQUELCH_MARGIN_MAX_DB) {
+        return 3;
+    }
+    /* The context, while AUTO. */
+    controller.last_applied_freq_hz.store(162475000U, std::memory_order_relaxed);
+    dongle_note_gain(372);
+    g_squelch_bias_tee.store(1, std::memory_order_relaxed);
+    demod.rate_out = 12000;
+    demod.post_downsample = 2;
+    demod_take_squelch_setting(&demod);
+    if (demod.squelch_context.freq_hz != 162475000 || demod.squelch_context.gain != 372) {
+        return 5;
+    }
+    if (demod.squelch_context.bias != 1) {
+        return 6;
+    }
+    if (demod.squelch_context.rate_hz != 24000) {
+        return 7;
+    }
+    dsd_squelch_setting level = {DSD_SQUELCH_MODE_LEVEL, 2e-6, 10};
+    rtl_stream_set_channel_squelch_setting(&level);
+    demod_take_squelch_setting(&demod);
+    if (demod.squelch_mode != DSD_SQUELCH_MODE_LEVEL
+        || fabsf(demod.channel_squelch_level.load(std::memory_order_relaxed) - 2e-6f) > 1e-12f) {
+        return 4;
+    }
+    return 0;
+}
+
+/* The flags through the output ring, across its wrap, the replay copy and a block without flags. */
+static int
+squelch_test_ring_checks(void) {
+    const size_t near_end = output.capacity - 100U;
+    if (!squelch_test_ring_round_trip(near_end, 300, 1, 0)) {
+        return 8;
+    }
+    if (!squelch_test_ring_round_trip(near_end, 300, 1, 1)) {
+        return 9;
+    }
+    if (!squelch_test_ring_round_trip(near_end, 300, 0, 0)) {
+        return 10;
+    }
+    ring_clear(&output);
+    demod.result_len = 5;
+    demod.result_flags_active = 1;
+    for (int i = 0; i < 5; i++) {
+        demod.result[i] = 1.0f + (float)i;
+    }
+    float got[5] = {0};
+    if (demod_write_output_block(&demod, &output) != 5U || ring_read_available(&output, got, NULL, 5U) != 5
+        || fabsf(got[4] - 5.0f) > 1e-6f) {
+        return 11;
+    }
+    return 0;
+}
+
+/* The status the demod publishes, while the tracker runs and after. */
+static int
+squelch_test_status_checks(void) {
+    demod.result_flags_active = 1;
+    demod.squelch_floor.state = DSD_SQUELCH_FLOOR_KNOWN;
+    demod.squelch_floor.floor_power = 1e-5;
+    demod.squelch_floor.window_power = 3e-5;
+    demod.squelch_floor.gate_open = 0;
+    demod.squelch_floor.plan.valid = 1;
+    demod_publish_squelch_status(&demod);
+    rtl_stream_squelch_status st;
+    if (rtl_stream_get_squelch_status(&st) != 0 || !st.active || st.state != DSD_SQUELCH_FLOOR_KNOWN
+        || st.gate_open != 0 || !st.plan_valid || fabs(st.floor_power - 1e-5) > 1e-9) {
+        return 12;
+    }
+    demod.result_flags_active = 0;
+    demod_publish_squelch_status(&demod);
+    if (rtl_stream_get_squelch_status(&st) != 0 || st.active || st.gate_open != 1) {
+        return 12;
+    }
+    return 0;
+}
+
 extern "C" int
 rtl_stream_test_squelch_plumbing(void) {
     int initialized_output = 0;
@@ -14823,97 +14919,18 @@ rtl_stream_test_squelch_plumbing(void) {
     const int saved_post = demod.post_downsample;
     const int saved_kind = demod.output_kind;
     const int saved_resamp = demod.resamp_enabled;
-    int failed = 0;
 
-    dsd_squelch_setting auto6 = {DSD_SQUELCH_MODE_AUTO, 0.0, 6};
-    demod.channel_squelch_level.store(1e-6f, std::memory_order_relaxed);
-    rtl_stream_set_channel_squelch_setting(&auto6);
-    demod_take_squelch_setting(&demod);
-    if (demod.squelch_mode != DSD_SQUELCH_MODE_AUTO || demod.squelch_margin_db != 6) {
-        failed = failed ? failed : 1;
+    int failed = squelch_test_setting_checks();
+    if (!failed) {
+        failed = squelch_test_ring_checks();
     }
-    if (demod.channel_squelch_level.load(std::memory_order_relaxed) > 0.0f) {
-        failed = failed ? failed : 2;
-    }
-    dsd_squelch_setting auto99 = {DSD_SQUELCH_MODE_AUTO, 0.0, 99};
-    rtl_stream_set_channel_squelch_setting(&auto99);
-    demod_take_squelch_setting(&demod);
-    if (demod.squelch_margin_db != DSD_SQUELCH_MARGIN_MAX_DB) {
-        failed = failed ? failed : 3;
-    }
-
-    /* The context, while AUTO. */
-    controller.last_applied_freq_hz.store(162475000U, std::memory_order_relaxed);
-    dongle_note_gain(372);
-    g_squelch_bias_tee.store(1, std::memory_order_relaxed);
-    demod.rate_out = 12000;
-    demod.post_downsample = 2;
-    demod_take_squelch_setting(&demod);
-    if (demod.squelch_context.freq_hz != 162475000 || demod.squelch_context.gain != 372) {
-        failed = failed ? failed : 5;
-    }
-    if (demod.squelch_context.bias != 1) {
-        failed = failed ? failed : 6;
-    }
-    if (demod.squelch_context.rate_hz != 24000) {
-        failed = failed ? failed : 7;
-    }
-
-    dsd_squelch_setting level = {DSD_SQUELCH_MODE_LEVEL, 2e-6, 10};
-    rtl_stream_set_channel_squelch_setting(&level);
-    demod_take_squelch_setting(&demod);
-    if (demod.squelch_mode != DSD_SQUELCH_MODE_LEVEL
-        || fabsf(demod.channel_squelch_level.load(std::memory_order_relaxed) - 2e-6f) > 1e-12f) {
-        failed = failed ? failed : 4;
-    }
-
-    /* The ring, across its wrap. */
-    const size_t near_end = output.capacity - 100U;
-    if (!squelch_test_ring_round_trip(near_end, 300, 1, 0)) {
-        failed = failed ? failed : 8;
-    }
-    if (!squelch_test_ring_round_trip(near_end, 300, 1, 1)) {
-        failed = failed ? failed : 9;
-    }
-    if (!squelch_test_ring_round_trip(near_end, 300, 0, 0)) {
-        failed = failed ? failed : 10;
-    }
-    {
-        ring_clear(&output);
-        demod.result_len = 5;
-        demod.result_flags_active = 1;
-        for (int i = 0; i < 5; i++) {
-            demod.result[i] = 1.0f + (float)i;
-        }
-        float got[5] = {0};
-        if (demod_write_output_block(&demod, &output) != 5U || ring_read_available(&output, got, NULL, 5U) != 5
-            || fabsf(got[4] - 5.0f) > 1e-6f) {
-            failed = failed ? failed : 11;
-        }
-    }
-
-    /* The status. */
-    demod.result_flags_active = 1;
-    demod.squelch_floor.state = DSD_SQUELCH_FLOOR_KNOWN;
-    demod.squelch_floor.floor_power = 1e-5;
-    demod.squelch_floor.window_power = 3e-5;
-    demod.squelch_floor.gate_open = 0;
-    demod.squelch_floor.plan.valid = 1;
-    demod_publish_squelch_status(&demod);
-    rtl_stream_squelch_status st;
-    if (rtl_stream_get_squelch_status(&st) != 0 || !st.active || st.state != DSD_SQUELCH_FLOOR_KNOWN
-        || st.gate_open != 0 || !st.plan_valid || fabs(st.floor_power - 1e-5) > 1e-9
-        || rtl_stream_get_squelch_status(NULL) != -1) {
-        failed = failed ? failed : 12;
-    }
-    demod.result_flags_active = 0;
-    demod_publish_squelch_status(&demod);
-    if (rtl_stream_get_squelch_status(&st) != 0 || st.active || st.gate_open != 1) {
-        failed = failed ? failed : 12;
+    if (!failed) {
+        failed = squelch_test_status_checks();
     }
 
     DSD_MEMSET(&demod.squelch_floor, 0, sizeof(demod.squelch_floor));
     demod.result_len = 0;
+    demod.result_flags_active = 0;
     demod.rate_out = saved_rate_out;
     demod.post_downsample = saved_post;
     demod.output_kind = saved_kind;

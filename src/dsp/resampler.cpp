@@ -10,9 +10,9 @@
  * Simplified scalar upfirdn implementation used by the FM audio path.
  */
 
+#include <dsd-neo/core/power.h>
 #include <dsd-neo/dsp/demod_state.h>
 #include <dsd-neo/dsp/resampler.h>
-#include <dsd-neo/dsp/squelch_floor.h>
 #include <dsd-neo/runtime/mem.h>
 #include <limits.h>
 #include <math.h>

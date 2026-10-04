@@ -1839,7 +1839,7 @@ ui_cmd_handle_rtl_set_bw(dsd_opts* opts, dsd_state* state, const struct dsd_app_
 
 /* The squelch edit's toast, for either command: the setting stored, and whether a scan row still wins. */
 static void
-ui_cmd_toast_squelch_edit(dsd_opts* opts, dsd_state* state, int rc) {
+ui_cmd_toast_squelch_edit(const dsd_opts* opts, dsd_state* state, int rc) {
     if (rc == 0) {
         dsd_app_squelch_view view;
         char notice[96];

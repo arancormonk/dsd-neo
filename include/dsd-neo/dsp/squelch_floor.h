@@ -38,8 +38,6 @@
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_DSP_SQUELCH_FLOOR_H_
 #define DSD_NEO_INCLUDE_DSD_NEO_DSP_SQUELCH_FLOOR_H_
 
-#include <dsd-neo/core/power.h>
-#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus

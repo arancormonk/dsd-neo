@@ -7,9 +7,11 @@
 
 #include <ctype.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/runtime/rtl_stream_io_hooks.h>
 #include <dsd-neo/runtime/squelch.h>
 #include <errno.h>
@@ -115,41 +117,81 @@ squelch_starts_with(const char* text, size_t len, const char* word) {
     return 1;
 }
 
-/* The "auto" form's tail after the keyword: "" (the default margin) or "+N" / " + N" with N a whole 3..30. */
+/* The index of the first non-space at or after @p i in [@p text, @p text + @p len). */
+static size_t
+squelch_skip_space(const char* text, size_t len, size_t i) {
+    while (i < len && isspace((unsigned char)text[i])) {
+        i++;
+    }
+    return i;
+}
+
+/* A whole number of dB from DSD_SQUELCH_MARGIN_MIN_DB to _MAX_DB that is all of [@p text, @p text + @p len): 1, 0 when
+   it is not digits alone, -1 when it is digits out of range. */
 static int
-squelch_parse_auto_tail(const char* tail, size_t len, dsd_squelch_setting* out, char* err, size_t err_size) {
-    size_t i = 0U;
-    while (i < len && isspace((unsigned char)tail[i])) {
-        i++;
-    }
-    if (i == len) {
-        *out = dsd_squelch_setting_auto(DSD_SQUELCH_MARGIN_DEFAULT_DB);
-        return 0;
-    }
-    if (tail[i] != '+') {
-        return squelch_reason(err, err_size, "auto takes a margin as auto+N (N in whole dB, 3 to 30)");
-    }
-    i++;
-    while (i < len && isspace((unsigned char)tail[i])) {
-        i++;
-    }
+squelch_parse_margin(const char* text, size_t len, int* margin_db) {
     char digits[8];
-    size_t n = 0U;
-    while (i < len && n + 1U < sizeof digits && isdigit((unsigned char)tail[i])) {
-        digits[n++] = tail[i++];
+    if (len == 0U || len >= sizeof digits) {
+        return len == 0U ? 0 : -1;
     }
-    digits[n] = '\0';
-    if (n == 0U || i != len) {
-        return squelch_reason(err, err_size, "auto takes a margin as auto+N (N in whole dB, 3 to 30)");
+    for (size_t i = 0; i < len; i++) {
+        if (!isdigit((unsigned char)text[i])) {
+            return 0;
+        }
+        digits[i] = text[i];
     }
+    digits[len] = '\0';
     char* end = NULL;
     errno = 0;
     const long margin = strtol(digits, &end, 10);
     if (errno != 0 || !end || *end != '\0' || margin < DSD_SQUELCH_MARGIN_MIN_DB
         || margin > DSD_SQUELCH_MARGIN_MAX_DB) {
+        return -1;
+    }
+    *margin_db = (int)margin;
+    return 1;
+}
+
+/* The "auto" form's tail after the keyword: "" (the default margin) or "+N" / " + N" with N a whole 3..30. */
+static int
+squelch_parse_auto_tail(const char* tail, size_t len, dsd_squelch_setting* out, char* err, size_t err_size) {
+    const size_t i = squelch_skip_space(tail, len, 0U);
+    if (i == len) {
+        *out = dsd_squelch_setting_auto(DSD_SQUELCH_MARGIN_DEFAULT_DB);
+        return 0;
+    }
+    int margin = 0;
+    int parsed = 0;
+    if (tail[i] == '+') {
+        const size_t digits = squelch_skip_space(tail, len, i + 1U);
+        parsed = squelch_parse_margin(tail + digits, len - digits, &margin);
+    }
+    if (parsed == 0) {
+        return squelch_reason(err, err_size, "auto takes a margin as auto+N (N in whole dB, 3 to 30)");
+    }
+    if (parsed < 0) {
         return squelch_reason(err, err_size, "the auto margin must be a whole number of dB from 3 to 30");
     }
-    *out = dsd_squelch_setting_auto((int)margin);
+    *out = dsd_squelch_setting_auto(margin);
+    return 0;
+}
+
+/* A level: a number, negative for dB, positive for a linear mean power, 0 for off. */
+static int
+squelch_parse_level(const char* start, size_t len, dsd_squelch_setting* out, char* err, size_t err_size) {
+    char number[64];
+    char* end = NULL;
+    double value = 0.0;
+    if (len < sizeof number) {
+        DSD_MEMCPY(number, start, len);
+        number[len] = '\0';
+        errno = 0;
+        value = strtod(number, &end);
+    }
+    if (len >= sizeof number || errno != 0 || !end || end == number || *end != '\0' || !isfinite(value)) {
+        return squelch_reason(err, err_size, "expected off, a level in dB (negative), a linear power or auto[+N]");
+    }
+    *out = dsd_squelch_setting_of_level(dsd_squelch_level_from_sql(value));
     return 0;
 }
 
@@ -177,20 +219,7 @@ dsd_squelch_setting_parse(const char* text, dsd_squelch_setting* out, char* err,
     if (squelch_starts_with(start, len, "noise")) {
         return squelch_reason(err, err_size, "the noise squelch is not available; use auto[+N] or a level in dB");
     }
-    char number[64];
-    if (len >= sizeof number) {
-        return squelch_reason(err, err_size, "expected off, a level in dB (negative), a linear power or auto[+N]");
-    }
-    DSD_MEMCPY(number, start, len);
-    number[len] = '\0';
-    char* end = NULL;
-    errno = 0;
-    const double value = strtod(number, &end);
-    if (errno != 0 || !end || end == number || *end != '\0' || !isfinite(value)) {
-        return squelch_reason(err, err_size, "expected off, a level in dB (negative), a linear power or auto[+N]");
-    }
-    *out = dsd_squelch_setting_of_level(dsd_squelch_level_from_sql(value));
-    return 0;
+    return squelch_parse_level(start, len, out, err, err_size);
 }
 
 int
