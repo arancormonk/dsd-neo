@@ -1307,8 +1307,7 @@ pcm_squelch_note_off(const dsd_opts* opts, analog_rx_session* session, int pcm_s
             session->pcm_sq_native_hz, scanning ? " Scan rows hold on noise until --scan-max-visit-ms." : "");
     } else {
         LOG_INFO("NOTICE: Noise squelch: nothing above the voice band on this input (its audio is low-passed); the "
-                 "squelch is "
-                 "off. Feed it the discriminator or unfiltered FM audio, or use a level.%s\n",
+                 "squelch is off. Feed it the discriminator or unfiltered FM audio, or use a level.%s\n",
                  scanning ? " Scan rows hold on noise until --scan-max-visit-ms." : "");
     }
 }
