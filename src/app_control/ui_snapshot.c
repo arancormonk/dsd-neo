@@ -164,6 +164,11 @@ _Static_assert(offsetof(dsd_state, scan_timing) >= offsetof(dsd_state, vertex_ks
 _Static_assert(offsetof(dsd_state, analog_rx) >= offsetof(dsd_state, vertex_ks_count)
                    && UI_SNAPSHOT_FIELD_END(analog_rx) <= UI_SNAPSHOT_FIELD_END(ui_msg),
                "analog_rx must ride the vertex_ks_count..ui_msg range");
+/* The dynamic squelch's status (issue #518 follow-up), the PCM noise squelch's state among it (issue #628), reaches
+ * the frontends' readouts the same way. */
+_Static_assert(offsetof(dsd_state, squelch_auto_active) >= offsetof(dsd_state, vertex_ks_count)
+                   && UI_SNAPSHOT_FIELD_END(squelch_noise_state) <= UI_SNAPSHOT_FIELD_END(ui_msg),
+               "the squelch_* status must ride the vertex_ks_count..ui_msg range");
 
 /* The embedded trunk_lcn_freq[] is a plain array copied by the byte ranges
  * above; the scan-list heap tail past it needs an explicit deep copy.

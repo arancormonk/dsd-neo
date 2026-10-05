@@ -1433,7 +1433,7 @@ symbol_process_unsynced_audio(const dsd_opts* opts, dsd_state* state, unsigned i
 /* Whether sample @p i of the block plays under the auto squelch: the block's gate and the sample's own. */
 static inline int
 symbol_sample_heard(const dsd_opts* opts, const dsd_state* state, unsigned int i, int allowed) {
-    return allowed && dsd_squelch_gate_open(opts, state->analog_out_flags[i]);
+    return allowed && dsd_squelch_gate_open(opts, state, state->analog_out_flags[i]);
 }
 
 /* The audio chain under the auto squelch (issue #518 follow-up), which gates per sample: each run of samples that play,
@@ -1523,7 +1523,7 @@ symbol_finalize_unsynced_analog_block(dsd_opts* opts, dsd_state* state, unsigned
        AGC adapts to exactly the audio that plays. Under the auto squelch each sample's own gate
        joins it. */
     const int allowed = symbol_unsynced_audio_allowed(opts, state);
-    if (dsd_squelch_dynamic_in_force(opts)) {
+    if (dsd_squelch_dynamic_in_force(opts, state)) {
         symbol_process_unsynced_audio_runs(opts, state, analog_block, allowed);
         const int heard = symbol_apply_sink_gate(opts, state, analog_block, allowed);
         symbol_output_unsynced_analog(opts, state, analog_block, heard);

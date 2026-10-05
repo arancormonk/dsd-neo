@@ -965,10 +965,11 @@ analog_rx_log_unusable_rate(analog_rx_session* session, int rate_hz) {
  * the same dB-to-power step; for a read that is the whole block, exactly the value opts->rtl_pwr is about to hold.
  */
 static int
-analog_rx_squelch_open(const dsd_opts* opts, const float* samples, const uint8_t* flags, unsigned int count) {
-    if (dsd_squelch_dynamic_in_force(opts)) {
+analog_rx_squelch_open(const dsd_opts* opts, const dsd_state* state, const float* samples, const uint8_t* flags,
+                       unsigned int count) {
+    if (dsd_squelch_dynamic_in_force(opts, state)) {
         for (unsigned int i = 0; i < count; i++) {
-            if (!flags || dsd_squelch_gate_open(opts, flags[i])) {
+            if (!flags || dsd_squelch_gate_open(opts, state, flags[i])) {
                 return DSD_ANALOG_RX_SQUELCH_CARRIER;
             }
         }
@@ -1137,7 +1138,7 @@ analog_rx_read(const dsd_opts* opts, dsd_state* state, const float* samples, con
         analog_rx_publish_skipped(opts, state, session, rate_hz);
         return;
     }
-    const int squelch_open = analog_rx_squelch_open(opts, samples, flags, count);
+    const int squelch_open = analog_rx_squelch_open(opts, state, samples, flags, count);
     if (!session->detecting) {
         dsd_analog_rx_core_track_carrier(&session->core, samples, (int)count, rate_hz, squelch_open);
     } else if (!dsd_analog_rx_core_process(&session->core, samples, (int)count, rate_hz, squelch_open)) {
