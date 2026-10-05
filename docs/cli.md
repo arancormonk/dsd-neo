@@ -11,7 +11,7 @@ Friendly, practical overview of the `dsd-neo` command line. This covers what you
 - IQ capture/replay: `--iq-capture <path>`, `--iq-capture-format cu8|cf32`, `--iq-capture-max-mb <n>`, `--iq-replay <path>`, `--iq-replay-rate fast|realtime`, `--iq-loop`, `--iq-info <path>`
 - Levels/Audio: `-g 0|1..50`, `-n 0|1..100`, `-nm`, `-8`, `-V 0|1|2|3`, `-z 0|1|2`, `-y`, `-v 0x9`
 - Modes: `-fa | -fs | -fr | -f1 | -f2 | -fd | -fx | -fy | -fz | -fU | -fi | -fn | -fp | -fh | -fH | -fe | -fE | -fm | -fA | -fM`
-- Analog: `-fA` (NFM monitor), `--nfm-bandwidth-hz <Hz>` (8000..25000, default 16000); `-fM` (native AM, radio/I/Q inputs only), `--am-bandwidth-hz <Hz>` (5000..20000, default 6000); `--tone-allow <list>` / `--tone-block <list>` / `--no-tone-filter` (CTCSS/DCS receive policy on the FM monitor, e.g. `67.0/100.0/D023N`); `--squelch auto[+N]` (open N dB over each analog channel's learned noise floor, radio inputs); `--squelch noise[+N]` (open an FM channel at N dB of quieting, as a radio's squelch does); see [Analog reception](#analog-reception--fa--fm), [Tone filter](#tone-filter-ctcssdcs-receive-policy), [Auto squelch](#auto-squelch---squelch-auto) and [Noise squelch](#noise-squelch---squelch-noise)
+- Analog: `-fA` (NFM monitor), `--nfm-bandwidth-hz <Hz>` (8000..25000, default 16000); `-fM` (native AM, radio/I/Q inputs only), `--am-bandwidth-hz <Hz>` (5000..20000, default 6000); `--tone-allow <list>` / `--tone-block <list>` / `--no-tone-filter` (CTCSS/DCS receive policy on the FM monitor, e.g. `67.0/100.0/D023N`); `--squelch auto[+N]` (open N dB over each analog channel's learned noise floor, radio inputs); `--squelch noise[+N]` (open an FM channel at N dB of quieting, as a radio's squelch does; on audio input from a reference it learns); see [Analog reception](#analog-reception--fa--fm), [Tone filter](#tone-filter-ctcssdcs-receive-policy), [Auto squelch](#auto-squelch---squelch-auto) and [Noise squelch](#noise-squelch---squelch-noise)
 - Inversions/filtering: `-xx`, `-xr`, `-xd`, `-xz`, `-l`, `-q`
 - Trunking/scan: `-T`, `-Y`, `--trunk-scan targets.csv` (P25/DMR/NXDN96/NXDN48 trunk and conventional targets and analog NFM and AM conventional targets; each type selects its decoder class), `-C chan.csv`, `-G group.csv`, `--src-csv src.csv`, `--p25-bandplan plan.csv`, `--p25-bandplan-export plan.csv`, `-W`, `-E`, `-p`, `-e`, `-I 1234`, `-U 4532`, `-B 12000`, `-t 1`, `--enc-lockout|--enc-follow`, `--tg-lockout-session|--tg-lockout-persist`, `--scan-voice-only`, `--scan-voice-qualify-ms <ms>`, `--scan-voice-hold-ms <ms>`, `--scan-max-visit-ms <ms>`
 - RTL‑SDR strings: `-i rtl:dev:freq:gain:ppm:bw:sql:vol[:bias=on|off]` or `-i rtltcp:host:port:freq:gain:ppm:bw:sql:vol[:bias=on|off]`
@@ -681,8 +681,9 @@ alone is `auto+10`), so one setting suits every receiver and every channel of a 
   power (the legacy `sql` form), `auto[+N]`, or `noise[+N]` (the [noise squelch](#noise-squelch---squelch-noise)). It
   works with `--iq-replay`, which has no spec field, and wins over the `sql` field of an `rtl:`, `rtltcp:`, `soapy:` or
   Airspy spec (which takes `auto[+N]` and `noise[+N]` too), which wins over `[input] rtl_sql_mode` and
-  `rtl_sql_margin_db` in a config (`docs/config-system.md`). The terminal's `Squelch...` row and the Qt/Android radio
-  panel's `dB | Auto | Noise` choice set it live.
+  `rtl_sql_margin_db` in a config (`docs/config-system.md`). The terminal's Input > `Squelch...` row and the Qt/Android
+  radio panel's `dB | Auto | Noise` choice set it live; on audio input the Qt/Android monitor's `SQUELCH` row offers
+  `dB | Noise`.
 - Learning. The demodulator classes each 40 ms window of the channel-filtered I/Q as noise, carrier or undecided from
   its envelope and phase statistics, and takes the floor from noise windows only (5 of the last 8). Until it has one
   (`learning`) only carrier windows open, so landing in the middle of a transmission plays it. A carrier is never
@@ -700,8 +701,10 @@ alone is `auto+10`), so one setting suits every receiver and every channel of a 
 - Where it runs: the analog monitors (`-fA`, `-fM`, `nfm` and `am` scan rows, `nfm-conventional` and
   `am-conventional` targets) on a radio input (RTL-SDR, rtl_tcp, SoapySDR, Airspy, `--iq-replay`). On a digital
   channel it is off: CRC and FEC already decide what is traffic there, and a control channel never shows its noise. On
-  audio input (PCM, WAV, TCP, UDP) it is off and the engine says so at startup, since FM noise plays louder than voice
-  there. The M17 encoder and EDACS analog voice run without a squelch under it (EDACS keeps its release watchdog).
+  audio input (PCM, WAV, TCP, UDP) it has no channel power to learn a floor from, since FM noise plays louder than
+  voice there: it is off, the engine says so at startup, and the terminal and Qt/Android editors refuse it. Use the
+  [noise squelch](#noise-squelch-on-audio-input) or a level there. The M17 encoder and EDACS analog voice run without a
+  squelch under it (EDACS keeps its release watchdog).
 - What it shows: the terminal input line reads `SQL: auto +10 dB (floor -78.3 dB)`, `(learning)`, `(off: no radio
   input)`, `(off on digital)`, or in the rare front end it has no plan for `(off: no channel plan)`; the startup
   banner `SQ=auto+10dB`; the DSP panel and the Qt/Android radio panel the same.
@@ -739,12 +742,56 @@ their sensitivity in.
   stops at startup (`--squelch noise needs an FM channel and -fM is AM: use --squelch auto[+N] or a level.`), a noise
   setting from an input spec or the config runs as auto on the AM monitor and says so, the radio panel offers no Noise
   there, an `am` row or `am-conventional` target refuses `--squelch noise`, and an `am` row that inherits a noise
-  default runs it as auto. Like auto, it is off on digital channels and on audio input.
+  default runs it as auto. Like auto, it is off on digital channels. On audio input it learns its reference from the
+  input itself ([below](#noise-squelch-on-audio-input)).
 - What it shows: `SQL: noise +10 dB (quieting 23 dB)`, `(starting)` before its first window, `(as auto: floor
   -78.3 dB)` where the auto squelch stands in, and the same `off` readings as auto; the startup banner
   `SQ=noise+10dB`; the Qt/Android radio panel's `dB | Auto | Noise` choice, whose buttons step N.
 - Scans: a row or target's own `--squelch noise[+N]` (`nfm` rows, `nfm-conventional` targets) replaces the default
   while it is on air. See `docs/csv-formats.md`.
+
+### Noise squelch on audio input
+
+On audio input (Pulse, WAV and other files, stdin, TCP and UDP audio) the FM discriminator ran outside DSD-neo, so its
+gain and filters are unknown and there are no channel taps to calibrate against. `--squelch noise[+N]` there learns
+what noise alone puts above the voice band from the input itself, then gates as on a radio input: open at N dB of
+quieting, closed under max(N - 3, 1.5) dB. Quieting reads about the carrier-to-noise ratio plus 1-2 dB.
+
+- What to feed it: audio with the noise above voice left in, which is what a discriminator gives before any audio
+  filtering: a scanner's discriminator tap, `rtl_fm` (`rtl_fm -M fm -s 48k ... | dsd-neo -i - -s 48000 -fA --squelch
+  noise+10`), or SDR++, SDR# and similar programs with their audio low-pass off. De-emphasis is fine. The band is
+  3.8 kHz to the lower of 6.5 kHz and 0.45 times the input's own rate, in 200 Hz sub-bands, and needs 1200 Hz: a
+  12 kHz input has room (3.8-5.4 kHz), an 8 or 9.6 kHz input does not.
+- Learning. Each 40 ms window, every 20 ms, measures the sub-bands above voice and the voice band (400-2600 Hz). Until
+  four windows hold steady within 1.5 dB the squelch reads `learning` and stays closed; that first steady stretch
+  becomes the reference, about 0.15 s into noise. A carrier can only quiet the band, so noise is the loudest it gets:
+  when the band rises 4 dB or more from one steady stretch to the next, the louder side is noise and the reference moves
+  there. A step that moves the voice band as much as the band above it (the source's volume or AGC) rescales the
+  reference instead. Between transmissions the reference follows the noise with a 1 s time constant.
+- Starting on a carrier: the first steady stretch is the carrier, so the reference is too low and the gate errs closed
+  until the first noise corrects it. A channel that never shows noise (a continuous carrier) stays muted: use a level
+  for it. A carrier held open 5 s with nothing changing in the voice band (an unmodulated or steady-tone carrier) is
+  learned again, so it mutes after 5 s; speech keeps the gate open.
+- No band. When the input carries nothing above voice (its audio is low-passed, as most SDR programs' audio is by
+  default) the squelch sees it within about 1 s of steady input and reads `off: no band above voice`: the monitor plays
+  as with the squelch off, and the log says once `NOTICE: Noise squelch: nothing above the voice band on this input
+  (its audio is low-passed); the squelch is off. ...`. An input whose rate leaves under 1200 Hz of band reads `off: no
+  room above voice` and logs that at first use. Under `-Y` or a trunk scan the notice adds that rows hold on noise until
+  `--scan-max-visit-ms`. A band that appears later turns the squelch back on after about 1 s.
+- References per source. The squelch keeps up to eight references, one for each input stream, input rate, input volume
+  (`--input-volume`, Input > `Input volume...`) and rigctl peer passband (`-B`, or a scan row's width), so a `-Y` scan
+  over rows of different widths keeps each one's reference. A retune keeps the reference; reopening the input, or a
+  new rate or input volume, starts learning again, and a passband the peer does not report is learned each time. A
+  pause in the stream (UDP or TCP audio that stops) starts the windows over, at most one 20 ms read late.
+- Where it runs: the FM monitor (`-fA`, `nfm` rows) on audio input. An `am` row on audio input runs no noise squelch
+  (`off on AM audio`), and digital channels none. `--squelch auto` on audio input is off, with a startup warning. A
+  level squelch works on audio input as before, against the input level.
+- What it shows: `SQL: noise +10 dB (learning)`, `(quieting 23 dB)`, `(off: no band above voice)` on the terminal's
+  input line, and the same in the Qt/Android monitor's `SQUELCH` row, whose editor offers `dB | Noise`.
+- Scans: on a `-Y` scan over audio input (rigctl tuning an external receiver) an `nfm` row's noise no longer holds the
+  scan while the noise squelch runs (it is closed while learning), as on a radio input; with no band or no room the
+  row holds on noise as with the squelch off. `docs/testing.md` "PCM noise squelch design gate" has the figures behind
+  these numbers.
 
 ### Native AM (`-fM`)
 

@@ -63,6 +63,8 @@ This project is an active work in progress as we decouple from the upstream fork
   - Rotate one tuner across CSV-defined P25 trunk, DMR trunk, NXDN trunk, and one-frequency P25, DMR, NXDN96, NXDN48
     and analog NFM and AM targets with `--trunk-scan targets.csv`; conventional `-Y` channel maps can mix `nfm` and
     `am` rows with digital ones too.
+  - Noise squelch on audio input (`--squelch noise[+N]` with `-fA` on Pulse, file, stdin, TCP or UDP audio): it learns
+    the noise above voice from the discriminator audio itself and opens on FM quieting, as a radio's squelch does.
   - On‑the‑fly retune control via rigctl (`-U`) for external SDR front-ends (e.g., SDR++). For RTL/RTL‑TCP input, DSD-neo retunes directly (optional external UDP retune control can be enabled on loopback with `--rtl-udp-control <port>`; remote exposure requires `--rtl-udp-control-bind <ipv4>`; see `docs/udp-control.md`).
 
 - RTL‑SDR quality‑of‑life features

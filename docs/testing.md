@@ -1406,6 +1406,89 @@ those bounds, so a noise setting run as auto fails them.
 | `DECODE_IQ_SCAN_SQL_NOISE_ROW` | A `-Y` nfm row's own `--squelch noise` gates the burst as `-fA` does. |
 | `DECODE_IQ_ANALOG_SQL_NOISE_NFM_DETERMINISM` | Fast, jittered and realtime replays hand the sink the same gated audio (GNU `--wrap` builds). |
 
+#### PCM noise squelch design gate
+
+On audio input (issue #628) the FM discriminator ran outside DSD-neo, so the noise squelch has no channel taps to
+calibrate against and must learn what noise alone puts above the voice band from the input. The questions before any C
+was written: can a learned reference gate as the radio squelch does on every source chain such audio comes through, and
+can the squelch tell a source that low-passed its audio (nothing above voice) from one that did not?
+`tools/pcm_noise_squelch_model.py` (numpy/scipy, offline; CI does not run it) answers them on top of
+`tools/noise_squelch_model.py`'s discriminator and `tools/squelch_model.py`'s noise and filters. Its file comment states
+the learner in full. Two facts make a learned reference work:
+
+- The discriminator sees phase only, so the noise above voice does not depend on the RF noise level: it belongs to the
+  source chain (gain, filters, channel width), the same on every channel. Going from a 12.5 to a 25 kHz channel raises it
+  4 dB.
+- A carrier can only quiet that band, so noise is the loudest it reads on a fixed chain. A reference learned from a
+  carrier is too low and only mutes. The one dangerous error is a reference above the true noise, and the stale rule
+  (ruling 4) bounds how long one can hold the gate open. Kurtosis does not separate noise from a carrier (both read
+  about 3), so no single window classifies.
+
+Source chains (27): SDR-program taps (12.5, 16 and 25 kHz channel FIRs, de-emphasis none, 50, 75 and 750 us, at 48, 44.1,
+24, 16, 12, 96 and 8-9.6 kHz), `rtl_fm` (boxcar decimation, with and without `-E deemp`, at 48, 24 and 12 kHz), a
+hardware discriminator tap (a +/-7.5 kHz IF, AC coupling, a sound card), floors and an above-band tone added after the
+source's filters, and sources that low-passed their audio (steep FIRs at 3.0, 3.4 and 4.0 kHz, one amplified until it
+clips, and a gentle Butterworth whose verdict may go either way). Rates under 48 kHz that divide it reach the monitor
+through the production staging interpolator (`src/dsp/pcm_input_staging.c`), modelled tap for tap. Each source runs
+600 s of noise, the radio gate's tone grid at the source's rated deviation (centred and at its Carson edges),
+remodulated NFM speech, CNR sweeps, and scenarios: keyed transmissions, starting mid-carrier and on dead air, a
+continuous carrier, volume steps of +/-6, 12 and 20 dB in noise and under a carrier, an AGC and slow drift, clipping,
+impulses, a neighbour inside a wide source filter, stream pauses, zero padding, and the passband moving between 12.5
+and 25 kHz.
+
+The gate: a reference within 0.3 s of noise; noise reaching N = 3 in at most 1e-4 of evaluations once learned; wanted
+modulation keeping its 1st-percentile Q at least 6 dB over N = 30 where the source's floor leaves that much room;
+quieting rising with CNR and level-independent within 0.2 dB unclipped; every false open on noise at most 1 s, and
+none while learning; the low-passed sources reading no band and never reporting quieting.
+
+The band: 3.8 kHz to the lower of 6.5 kHz and 0.45 times the input's native rate, in 200 Hz sub-bands with two
+staggered sets between them, Q = max(Q_sum, Q_max - 6 dB). The radio squelch ends its band at the channel edge, but
+noise alone shows no edge here: through every source chain the noise is flat to within about 1 dB a sub-band across the
+band, so the top is fixed. 300 Hz sub-bands pass 14 of 25 sources (harmonics on the boundaries again), 250 Hz 23, and
+200 Hz with a 6 dB guard 24. Over the learner grid (steady window count, transition step, gain tolerance, no-band
+ratio, tracking constant) 144 of 162 combinations pass every source; the chosen one sits in the middle of that region.
+
+| Figure (full run, 27 sources, about 21 minutes on 4 workers) | Result |
+| --- | --- |
+| Sources with a band | 25; the 8 and 9.6 kHz inputs have no room (`no room above voice`) |
+| Reference learned | 0.14-0.16 s into noise on every source with a band |
+| Noise reaching N = 3 | at most 3.3e-5 of evaluations (the 750 us and above-band tone chains), never on the rest |
+| Wanted modulation, 1st percentile | 33.5-78.9 dB on the sources with a band (33.5 dB: the hardware tap at 48 kHz, ruling 6); `rtl_fm` 61-79 dB |
+| Worst false open on noise, every scenario | 0.26 s |
+| Low-passed sources | the 3.0 kHz FIR, and the 3.4 kHz FIR with de-emphasis and at 16 kHz, read no band and report no quieting; of the three that may go either way, the 4.0 kHz FIR reads no band, and the gentle Butterworth and the clipping 3.4 kHz source keep a band (clipping puts harmonics there) and pass |
+
+Rulings on the cases the gate left open:
+
+1. The band's top is fixed at 6.5 kHz, as above.
+2. The 10 kHz channel source is exempt from the check that a dead and a modulated carrier read alike: its channel edge
+   sits inside the band, where a carrier quiets the noise past the edge to nothing.
+3. No-band evidence is spectral, never a timeout: a steady stretch whose voice band is steady too and more than 30 dB a
+   Hz over the band, for 1 s. A session that starts on a steady tone carrier can read no band and play it until the
+   first noise.
+4. A clipping source flattens the band as a carrier does. The stale rule (a gate held open 5 s on one steady stretch
+   with 90% of its windows voice-steady is learned again) replaces any clip detection: it bounds a too-high reference
+   to 5 s, and so mutes a dead or steady-tone carrier after 5 s. The hot 3.4 kHz source's 5.08 s worst false open is
+   that bound.
+5. An AGC and impulse dropouts are diagnostic, not gated: they cost quieting, not false opens.
+6. The hardware tap at 48 kHz passes at 33.5 dB, 2.5 dB short of 36: its sound card's floor leaves no more room.
+7. An input rate with no room is logged by the squelch at first use; the engine adds no note of its own.
+
+`python3 tools/pcm_noise_squelch_model.py` reproduces the report (`build/pcm_noise_squelch_model/
+pcm_noise_squelch_report.md`, and `pcm_noise_squelch_results.json` beside it); `--quick` is a smoke run, `--only`
+narrows the sources and `--grid` runs the learner grid on one band. `TOOLS_PCM_NOISE_SQUELCH_MODEL_REPORT` checks the
+report on canned results, an all-no-room run included. The C core (`src/dsp/pcm_noise_squelch.c`) is held to the
+model by two suites:
+
+- `DSP_PCM_NOISE_SQUELCH`: the band rule, the band-passes' response, the threshold clamp, no room, noise learning and
+  never opening at N = 3, a carrier opening and confirming the reference, quieting following CNR, level independence,
+  a volume step, starting on a carrier, a low-passed source reading no band, exact zeros, the per-passband cache and
+  the stale rule, and block-cut bit identity.
+- `DSP_PCM_NOISE_SQUELCH_SWEEP` (`--sweep`): full-deviation tones on 12.5 and 25 kHz sources, centred and at their
+  Carson edges, never closing the gate at N = 30 (lowest Q 42.8 dB).
+
+`DSP_SYMBOL_REPLAY` holds the decoder integration: every monitor sample gated by its own flag on WAV and UDP input, and
+the squelch held closed, learning nothing, while the tap skips a UDP backlog.
+
 #### Tone and code labels
 
 The real excerpts come unlabelled, and a C detector must not be graded against its own output. `tools/analog_oracle.py`

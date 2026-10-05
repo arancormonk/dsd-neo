@@ -546,7 +546,8 @@ no symbol profile is applied over the monitor. Everything below applies to both 
   [noise squelch](cli.md#noise-squelch---squelch-noise) (`--squelch noise[+N]`) open an FM target at N dB of
   quieting; both need no threshold per receiver and close on noise. With the squelch off, or at -100 dB or below, noise holds the target until the
   per-visit cap or a manual advance or avoid moves on, and scan start warns about it once; so it does for the auto
-  squelch on audio input, where it is off. A target whose carrier never stops (a birdie, a continuous broadcast) gives
+  squelch on audio input, where it is off (the noise squelch runs there on `nfm-conventional` targets, from a reference
+  it learns; see [noise squelch on audio input](cli.md#noise-squelch-on-audio-input)). A target whose carrier never stops (a birdie, a continuous broadcast) gives
   the auto squelch no noise to learn from and holds as an open squelch would; lock it out or cap its visit.
 - **Width.** `--nfm-bandwidth-hz <Hz>` in the `options` column sets an `nfm-conventional` target's NFM channel width
   (whole Hz, `8000..25000`), and `--am-bandwidth-hz <Hz>` an `am-conventional` target's AM channel width (whole Hz,
