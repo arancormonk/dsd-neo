@@ -449,13 +449,17 @@ _Static_assert((int)ANALOG_RX_LABEL_SIZE >= (int)DSD_DCS_LABEL_SIZE, "a DCS labe
 
 /* Every boundary the tap resets at when it moves: the trunk-tuning generation, and on RTL input the stream generation
    and the analog receive profile the stream published (kind, width, channel filter on; all 0 on other inputs and while
-   the stream runs no analog monitor). A new kind of boundary is added here and in analog_rx_generations_read() only. */
+   the stream runs no analog monitor). On other inputs, the passband the rigctl peer runs (issue #628): a width-only
+   change there, a scan row's width edited live, is the peer's analog profile changing, which neither generation moves
+   for. A passband the client cannot read just now (DSD_RIGCTL_PASSBAND_UNKNOWN) matches any. A new kind of boundary is
+   added here and in analog_rx_generations_read() only. */
 typedef struct {
     uint32_t rtl_generation;
     uint64_t tune_generation;
     int rtl_profile_kind;
     int rtl_profile_width_hz;
     int rtl_profile_lpf_on;
+    int32_t peer_passband_hz;
 } analog_rx_generations;
 
 typedef struct {
@@ -565,13 +569,20 @@ analog_rx_generations_read(const dsd_opts* opts, analog_rx_generations* out) {
         (void)dsd_rtl_stream_metrics_hook_analog_profile(&out->rtl_profile_kind, &out->rtl_profile_width_hz,
                                                          &out->rtl_profile_lpf_on);
     }
+    out->peer_passband_hz = rtl ? 0 : dsd_rigctl_query_hook_get_passband_hz(opts);
+}
+
+static int
+analog_rx_passbands_match(int32_t a, int32_t b) {
+    return a == b || a == DSD_RIGCTL_PASSBAND_UNKNOWN || b == DSD_RIGCTL_PASSBAND_UNKNOWN;
 }
 
 static int
 analog_rx_generations_equal(const analog_rx_generations* a, const analog_rx_generations* b) {
     return a->rtl_generation == b->rtl_generation && a->tune_generation == b->tune_generation
            && a->rtl_profile_kind == b->rtl_profile_kind && a->rtl_profile_width_hz == b->rtl_profile_width_hz
-           && a->rtl_profile_lpf_on == b->rtl_profile_lpf_on;
+           && a->rtl_profile_lpf_on == b->rtl_profile_lpf_on
+           && analog_rx_passbands_match(a->peer_passband_hz, b->peer_passband_hz);
 }
 
 static void
@@ -954,6 +965,10 @@ analog_rx_generation_moved(const dsd_opts* opts, analog_rx_session* session) {
     analog_rx_generations now;
     analog_rx_generations_read(opts, &now);
     const int moved = !analog_rx_generations_equal(&now, &session->noted);
+    if (now.peer_passband_hz == DSD_RIGCTL_PASSBAND_UNKNOWN) {
+        /* Not read just now: the last one read still stands. */
+        now.peer_passband_hz = session->noted.peer_passband_hz;
+    }
     session->noted = now;
     return moved;
 }
@@ -1328,7 +1343,8 @@ pcm_squelch_configure(const dsd_opts* opts, analog_rx_session* session) {
         restart = 1;
     }
     if (restart) {
-        session->pcm_sq_passband_hz = dsd_rigctl_query_hook_get_passband_hz(opts);
+        /* The passband the tap noted with its boundaries: a change of it is one (analog_rx_generations). */
+        session->pcm_sq_passband_hz = session->noted.peer_passband_hz;
     }
     dsd_pcm_noise_squelch_key key;
     key.source = (opts->pcm_input_generation << 4) ^ (uint32_t)opts->audio_in_type;

@@ -31,6 +31,7 @@
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/net_audio_input_hooks.h>
+#include <dsd-neo/runtime/rigctl_query_hooks.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/shutdown.h>
 #include <dsd-neo/runtime/squelch.h>
@@ -4025,6 +4026,70 @@ test_pcm_noise_squelch_gates_each_sample(void) {
     dsd_state_ext_free_all(&state);
 }
 
+/* The passband the fake rigctl peer runs, as the client knows it. */
+static int32_t g_pcm_passband_hz = 25000;
+
+static int32_t
+fake_pcm_passband(const dsd_opts* opts) {
+    (void)opts;
+    return g_pcm_passband_hz;
+}
+
+/* A width-only change on the rigctl peer, a scan row's width edited live with no retune, is a boundary (issue #628):
+   the squelch keys its reference on the new passband, learning it closed, and the old passband's reference comes back
+   with it. A passband the client cannot read just now changes nothing. */
+static void
+test_pcm_noise_squelch_follows_the_passband(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static pcm_tap wide;
+    static pcm_tap narrow;
+    install_fake_rtl_hooks(0);
+    init_analog_monitor_fixture(&opts, &state);
+    opts.rtl_squelch_mode = DSD_SQUELCH_MODE_NOISE;
+    opts.rtl_squelch_margin_db = 10;
+    g_chain_removes_tone = 0;
+    start_monitor_capture(&opts);
+    g_pcm_passband_hz = 25000;
+    dsd_rigctl_query_hooks hooks = {0};
+    hooks.get_passband_hz = fake_pcm_passband;
+    dsd_rigctl_query_hooks_set(hooks);
+    pcm_tap_init(&wide, 41U, 25000.0, 0.0, 0.0);
+    pcm_tap_init(&narrow, 42U, 12500.0, 0.0, 0.0);
+
+    push_tap(&opts, &state, &wide, PCM_TAP_NOISE, 0.0, 1.0);
+    push_tap(&opts, &state, &wide, PCM_TAP_TONE, 20.0, 0.5);
+    push_tap(&opts, &state, &wide, PCM_TAP_NOISE, 0.0, 0.5);
+    assert(state.squelch_noise_state == DSD_SQUELCH_NOISE_STATE_KNOWN && state.squelch_auto_gate_open == 0U);
+
+    /* Not read just now: no boundary, the reference stands. */
+    g_pcm_passband_hz = DSD_RIGCTL_PASSBAND_UNKNOWN;
+    push_tap(&opts, &state, &wide, PCM_TAP_NOISE, 0.0, 0.3);
+    assert(state.squelch_noise_state == DSD_SQUELCH_NOISE_STATE_KNOWN);
+
+    /* The row's width edited to 12.5 kHz: the new passband has no reference yet, so it learns, closed. */
+    g_pcm_passband_hz = 12500;
+    const int before = g_monitor_blocks;
+    push_tap(&opts, &state, &narrow, PCM_TAP_NOISE, 0.0, 0.06);
+    assert(state.squelch_noise_state == DSD_SQUELCH_NOISE_STATE_LEARNING);
+    push_tap(&opts, &state, &narrow, PCM_TAP_NOISE, 0.0, 0.5);
+    assert(state.squelch_noise_state == DSD_SQUELCH_NOISE_STATE_PROVISIONAL);
+    assert(g_monitor_blocks == before);
+
+    /* Back to 25 kHz: its confirmed reference comes back from the cache. */
+    g_pcm_passband_hz = 25000;
+    push_tap(&opts, &state, &wide, PCM_TAP_NOISE, 0.0, 0.06);
+    assert(state.squelch_noise_state == DSD_SQUELCH_NOISE_STATE_KNOWN);
+    push_tap(&opts, &state, &wide, PCM_TAP_TONE, 20.0, 0.3);
+    assert(state.squelch_auto_gate_open == 1U);
+
+    dsd_rigctl_query_hooks_set((dsd_rigctl_query_hooks){0});
+    opts.rtl_squelch_mode = DSD_SQUELCH_MODE_LEVEL;
+    g_chain_removes_tone = 1;
+    dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
+    dsd_state_ext_free_all(&state);
+}
+
 /* The UDP producer for the backlog test: noise, then a carrier, then (from g_pcm_udp_new_n) the new channel's noise,
    each sample arriving at its 48 kHz time on the fake clock. */
 static pcm_tap g_pcm_udp_src;
@@ -4181,6 +4246,7 @@ main(void) {
     test_chain_playing_follows_the_sink();
     test_auto_squelch_gates_each_sample();
     test_pcm_noise_squelch_gates_each_sample();
+    test_pcm_noise_squelch_follows_the_passband();
     test_pcm_noise_squelch_holds_the_backlog();
     return 0;
 }
