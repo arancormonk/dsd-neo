@@ -564,6 +564,9 @@ typedef struct dsdneoUserConfig {
        threshold, 3..30; 0 reads as the default 10). rtl_sql keeps the level under every mode. */
     int rtl_sql_mode;
     int rtl_sql_margin_db;
+    /* 1 when the config names rtl_sql, rtl_sql_mode or rtl_sql_margin_db (a radio session's save always does). A PCM
+       source applies and saves the squelch only then (issue #628): a config without them leaves its squelch alone. */
+    int rtl_sql_is_set;
     int rtl_volume;   /* monitor/non-symbol gain; does not scale symbol streams */
     int rtl_auto_ppm; /* bool */
     char rtltcp_host[128];
