@@ -451,8 +451,9 @@ _Static_assert((int)ANALOG_RX_LABEL_SIZE >= (int)DSD_DCS_LABEL_SIZE, "a DCS labe
    and the analog receive profile the stream published (kind, width, channel filter on; all 0 on other inputs and while
    the stream runs no analog monitor). On other inputs, the passband the rigctl peer runs (issue #628): a width-only
    change there, a scan row's width edited live, is the peer's analog profile changing, which neither generation moves
-   for. A passband the client cannot read just now (DSD_RIGCTL_PASSBAND_UNKNOWN) leaves the last one read standing; one
-   read where none was known (the peer's width first set) is a change. A new kind of boundary is added here and in
+   for. A passband the client cannot read just now (DSD_RIGCTL_PASSBAND_BUSY) leaves the last one read standing, and is
+   never noted; one it no longer knows (DSD_RIGCTL_PASSBAND_UNKNOWN: a request's reply lost) is a change, as is one read
+   where none was known (the peer's width first set). A new kind of boundary is added here and in
    analog_rx_generations_read() only. */
 typedef struct {
     uint32_t rtl_generation;
@@ -576,7 +577,7 @@ analog_rx_generations_read(const dsd_opts* opts, analog_rx_generations* out) {
 /* Whether the passband read @p now leaves the one @p noted standing: the same, or not read just now. */
 static int
 analog_rx_passband_holds(int32_t now, int32_t noted) {
-    return now == noted || now == DSD_RIGCTL_PASSBAND_UNKNOWN;
+    return now == noted || now == DSD_RIGCTL_PASSBAND_BUSY;
 }
 
 /* Whether the boundaries read @p now are still the ones @p noted. */
@@ -592,6 +593,10 @@ analog_rx_generations_equal(const analog_rx_generations* now, const analog_rx_ge
 static void
 analog_rx_note_generations(const dsd_opts* opts, analog_rx_session* session) {
     analog_rx_generations_read(opts, &session->noted);
+    if (session->noted.peer_passband_hz == DSD_RIGCTL_PASSBAND_BUSY) {
+        /* Nothing read before it to stand: not known until it is read. */
+        session->noted.peer_passband_hz = DSD_RIGCTL_PASSBAND_UNKNOWN;
+    }
 }
 
 static int
@@ -969,7 +974,7 @@ analog_rx_generation_moved(const dsd_opts* opts, analog_rx_session* session) {
     analog_rx_generations now;
     analog_rx_generations_read(opts, &now);
     const int moved = !analog_rx_generations_equal(&now, &session->noted);
-    if (now.peer_passband_hz == DSD_RIGCTL_PASSBAND_UNKNOWN) {
+    if (now.peer_passband_hz == DSD_RIGCTL_PASSBAND_BUSY) {
         /* Not read just now: the last one read still stands. */
         now.peer_passband_hz = session->noted.peer_passband_hz;
     }

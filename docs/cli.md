@@ -787,11 +787,12 @@ quieting, closed under max(N - 3, 1.5) dB. Quieting reads about the carrier-to-n
   `--scan-max-visit-ms`. A band that appears later turns the squelch back on after about 1 s.
 - References per source. The squelch keeps up to eight references, one for each input stream, input rate, input volume
   (`--input-volume`, Input > `Input volume...`) and rigctl peer passband (`-B`, or a scan row's width), so a `-Y` scan
-  over rows of different widths keeps each one's reference. A retune keeps the reference; reopening the input, or a
-  new rate or input volume, starts learning again. While the peer's passband is not known the squelch keeps one
-  reference, through retunes too, but stores none for it to come back to; the first passband the client learns, and
-  any change of it (a row's width edited live), starts the windows over on that passband's reference. A pause in the
-  stream (UDP or TCP audio that stops) starts the windows over, at most one 20 ms read late.
+  over rows of different widths keeps each one's reference. A retune keeps the reference; reopening the input, or a new
+  rate or input volume, starts learning again. While the peer's passband is not known the squelch keeps one reference,
+  through retunes too, but stores none for it to come back to; the first passband the client learns, and any change of
+  it (a row's width edited live), starts the windows over on that passband's reference. A width request whose reply was
+  lost leaves the passband unknown again, so the squelch learns afresh rather than keep the old width's reference. A
+  pause in the stream (UDP or TCP audio that stops) starts the windows over, at most one 20 ms read late.
 - Where it runs: the FM monitor (`-fA`, `nfm` rows) on audio input. An `am` row on audio input runs no noise squelch
   (`off on AM audio`), and digital channels none. `--squelch auto` on audio input is off, with a startup warning. A
   level squelch works on audio input as before, against the input level.

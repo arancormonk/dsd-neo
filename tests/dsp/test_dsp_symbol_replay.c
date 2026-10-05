@@ -4087,7 +4087,8 @@ fake_pcm_passband(const dsd_opts* opts) {
 
 /* A width-only change on the rigctl peer, a scan row's width edited live with no retune, is a boundary (issue #628):
    the squelch keys its reference on the new passband, learning it closed, and the old passband's reference comes back
-   with it. The first width the client learns is such a change; a passband it cannot read just now changes nothing. */
+   with it. The first width the client learns is such a change; so is one it no longer knows (a request's reply lost),
+   which learns without storing what it learns; a passband it cannot read just now changes nothing. */
 static void
 test_pcm_noise_squelch_follows_the_passband(void) {
     static dsd_opts opts;
@@ -4119,14 +4120,22 @@ test_pcm_noise_squelch_follows_the_passband(void) {
     push_tap(&opts, &state, &wide, PCM_TAP_NOISE, 0.0, 0.5);
     assert(state.squelch_noise_state == DSD_SQUELCH_NOISE_STATE_KNOWN && state.squelch_auto_gate_open == 0U);
 
-    /* Not read just now: no boundary, the reference stands. */
-    g_pcm_passband_hz = DSD_RIGCTL_PASSBAND_UNKNOWN;
+    /* Not read just now (a P25 tick holds the client's record): no boundary, the reference stands. */
+    g_pcm_passband_hz = DSD_RIGCTL_PASSBAND_BUSY;
     push_tap(&opts, &state, &wide, PCM_TAP_NOISE, 0.0, 0.3);
     assert(state.squelch_noise_state == DSD_SQUELCH_NOISE_STATE_KNOWN);
 
-    /* The row's width edited to 12.5 kHz: the new passband has no reference yet, so it learns, closed. */
-    g_pcm_passband_hz = 12500;
+    /* A request for 12.5 kHz whose reply was lost: the peer may run either width, so the 25 kHz reference does not
+       stand; the squelch learns, closed, in a context it never stores. */
+    g_pcm_passband_hz = DSD_RIGCTL_PASSBAND_UNKNOWN;
     const int before = g_monitor_blocks;
+    push_tap(&opts, &state, &narrow, PCM_TAP_NOISE, 0.0, 0.06);
+    assert(state.squelch_noise_state == DSD_SQUELCH_NOISE_STATE_LEARNING);
+    push_tap(&opts, &state, &narrow, PCM_TAP_NOISE, 0.0, 0.5);
+    assert(state.squelch_noise_state == DSD_SQUELCH_NOISE_STATE_PROVISIONAL);
+
+    /* The next request answered, 12.5 kHz: nothing learned while unknown was stored under it, so it learns, closed. */
+    g_pcm_passband_hz = 12500;
     push_tap(&opts, &state, &narrow, PCM_TAP_NOISE, 0.0, 0.06);
     assert(state.squelch_noise_state == DSD_SQUELCH_NOISE_STATE_LEARNING);
     push_tap(&opts, &state, &narrow, PCM_TAP_NOISE, 0.0, 0.5);
@@ -4139,6 +4148,11 @@ test_pcm_noise_squelch_follows_the_passband(void) {
     assert(state.squelch_noise_state == DSD_SQUELCH_NOISE_STATE_KNOWN);
     push_tap(&opts, &state, &wide, PCM_TAP_TONE, 20.0, 0.3);
     assert(state.squelch_auto_gate_open == 1U);
+
+    /* Unknown again: nothing was kept from the last time, so it learns again. */
+    g_pcm_passband_hz = DSD_RIGCTL_PASSBAND_UNKNOWN;
+    push_tap(&opts, &state, &wide, PCM_TAP_NOISE, 0.0, 0.06);
+    assert(state.squelch_noise_state == DSD_SQUELCH_NOISE_STATE_LEARNING);
 
     dsd_rigctl_query_hooks_set((dsd_rigctl_query_hooks){0});
     opts.rtl_squelch_mode = DSD_SQUELCH_MODE_LEVEL;

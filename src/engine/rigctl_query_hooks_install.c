@@ -28,8 +28,8 @@ dsd_engine_rigctl_get_current_freq_hz(const dsd_opts* opts) {
 }
 
 /* The peer record CachedModulation() reads is shared with the P25 watchdog's retunes, so it is read under the tick
-   guard; when a tick holds it, the passband reads as not known (the PCM noise squelch then learns rather than take a
-   reference that may belong to another passband). */
+   guard; when a tick holds it, the passband cannot be read just now (DSD_RIGCTL_PASSBAND_BUSY: the PCM noise squelch
+   keeps the one it read last). A passband the record does not know (a lost reply) reads DSD_RIGCTL_PASSBAND_UNKNOWN. */
 static int32_t
 dsd_engine_rigctl_get_passband_hz(const dsd_opts* opts) {
     if (!opts || opts->use_rigctl != 1 || opts->rigctl_sockfd == DSD_INVALID_SOCKET) {
@@ -39,7 +39,7 @@ dsd_engine_rigctl_get_passband_hz(const dsd_opts* opts) {
         return (int32_t)CachedModulation(opts->rigctl_sockfd).bandwidth;
     }
     if (!p25_sm_tick_guard_try_enter()) {
-        return DSD_RIGCTL_PASSBAND_UNKNOWN;
+        return DSD_RIGCTL_PASSBAND_BUSY;
     }
     const int bandwidth = CachedModulation(opts->rigctl_sockfd).bandwidth;
     p25_sm_tick_guard_leave();

@@ -103,8 +103,8 @@ main(void) {
     assert(g_get_freq_calls == 1);
     assert(g_last_sockfd == 88);
 
-    /* The peer's passband (issue #628): 0 without rigctl or a socket, the record's under the tick guard, unknown while
-       a tick holds the guard, and read as is from inside a tick. */
+    /* The peer's passband (issue #628): 0 without rigctl or a socket, the record's under the tick guard (unknown after
+       a lost reply), busy -- not unknown -- while a tick holds the guard, and read as is from inside a tick. */
     reset_stub();
     opts.use_rigctl = 0;
     opts.rigctl_sockfd = 88;
@@ -122,7 +122,7 @@ main(void) {
     g_cached_bandwidth = 6000;
     g_guard_busy = 1;
     g_cached_calls = 0;
-    assert(dsd_rigctl_query_hook_get_passband_hz(&opts) == DSD_RIGCTL_PASSBAND_UNKNOWN && g_cached_calls == 0);
+    assert(dsd_rigctl_query_hook_get_passband_hz(&opts) == DSD_RIGCTL_PASSBAND_BUSY && g_cached_calls == 0);
     g_in_tick = 1;
     assert(dsd_rigctl_query_hook_get_passband_hz(&opts) == 6000 && g_cached_calls == 1 && g_guard_held == 0);
 
