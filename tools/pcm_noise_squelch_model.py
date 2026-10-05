@@ -33,11 +33,11 @@ carrier, and a steady stretch can be a carrier, so the learner relies only on wh
     amount (within GAIN_TOL, the voice band steady on both sides) is a gain change, a volume or AGC step: the reference
     is rescaled by it. Otherwise the shape changed: a carrier keyed or dropped. When the band got louder, that side is
     noise and becomes the reference if it came up within STEP of the reference; the first such transition confirms the
-    reference (KNOWN). Any stretch well under the reference with noise's voice-to-band ratio and shape (SHAPE_*) is
-    noise at a lower gain (the source turned down during a transmission), a pending gain step taken once most of the
-    next LOWER_HOLD_WINDOWS windows keep that ratio and shape with the voice band steady; it may begin with a transition
-    or not (speech that ended near its level leaves none). Any other louder stretch under the reference is the carrier's
-    modulation or level changing (speech after a pause, a fading carrier), and the reference stays.
+    reference (KNOWN). A louder stretch still well under the reference with noise's voice-to-band ratio and shape
+    (SHAPE_*) is noise at a lower gain (the source turned down during a transmission), a pending gain step taken once
+    most of the next LOWER_HOLD_WINDOWS windows keep that ratio and shape with the voice band steady (any run of the
+    stretch may start it: its first may still hold the carrier's tail). Any other louder stretch under the reference is
+    the carrier's modulation or level changing (speech after a pause, a fading carrier), and the reference stays.
   - A steady stretch at or louder than the reference less STEADY_DB is noise: the reference tracks it with a 1 s
     time constant, so slow drift never reads as quieting.
   - NO_BAND: a steady stretch whose voice band is steady too, with the voice band more than RATIO_MAX dB per Hz above
@@ -494,6 +494,7 @@ def run_learner(plan: SquelchPlan, w: dict, params: dict, n_db: float, keys=None
             if steady and not (new and cand_n < CONFIRM_WINDOWS):
                 pending = None
                 lowered = False
+                rose = False
                 if new:
                     cand_a, cand_n = None, 0
                     if state == LEARNING:
@@ -506,6 +507,7 @@ def run_learner(plan: SquelchPlan, w: dict, params: dict, n_db: float, keys=None
                             ref, v_ref = sp.copy(), sv
                     else:
                         da = sa - stretch["a"]
+                        rose = da > 0.0
                         dv = sv - 10.0 * math.log10(max(stretch["v"] / stretch["n"], MIN_POWER))
                         gain_like = abs(da - dv) <= gain_tol
                         ra_now = total_db(ref)
@@ -525,17 +527,20 @@ def run_learner(plan: SquelchPlan, w: dict, params: dict, n_db: float, keys=None
                                 state = KNOWN
                     at_ref = ref is not None and sa >= total_db(ref) - step_db
                     stretch = {"a": sa, "v": 0.0, "n": 0, "vs": 0, "at_ref": at_ref, "pend": pending, "pn": 0, "ps": 0,
-                               "on": 0, "os": 0, "lowered": lowered}
+                               "on": 0, "os": 0, "lowered": lowered, "rose": rose}
                     part = None if ref is None else participating(plan, ref, v_ref, ratio_max)
                 stretch["v"] += 10.0 ** (sv / 10.0)
                 stretch["n"] += 1
                 stretch["vs"] += 1 if v_steady else 0
-                # Noise come back at a lower gain (the source turned down during a transmission): a stretch well under
-                # the reference with noise's voice-to-band ratio and shape, however it began (speech that ended near its
-                # level leaves no transition), held for LOWER_HOLD_WINDOWS with most windows still so and voice-steady.
+                # Noise come back at a lower gain (the source turned down during a transmission) ends a transmission:
+                # a stretch that rose from the one before it, still well under the reference, with noise's voice-to-band
+                # ratio and shape, held for LOWER_HOLD_WINDOWS with most windows still so and voice-steady. Its first
+                # run may still hold the carrier's tail, so every later run of the stretch may start the step; a
+                # stretch that did not rise (a pause in speech) never does.
                 shaped = state in (PROVISIONAL, KNOWN) and noise_shaped(plan, sp, sv, ref, v_ref, part)
                 if (
                     stretch["pend"] is None
+                    and stretch["rose"]
                     and shaped
                     and not stretch["at_ref"]
                     and sa < total_db(ref) - step_db

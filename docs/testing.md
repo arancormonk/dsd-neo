@@ -1472,11 +1472,11 @@ Rulings on the cases the gate left open:
 5. An AGC and impulse dropouts are diagnostic, not gated: they cost quieting, not false opens.
 6. The hardware tap at 48 kHz passes at 33.5 dB, 2.5 dB short of 36: its sound card's floor leaves no more room.
 7. An input rate with no room is logged by the squelch at first use; the engine adds no note of its own.
-8. A louder steady stretch replaces the reference only when it comes up within 4 dB of it. A stretch well under it,
-   however it began, is noise at a lower gain (the source turned down during a transmission) only when it keeps
-   noise's voice-to-band ratio (within 1.5 dB) and shape (sub-bands within 5.5 dB of each other, tilted by at most
-   2.5 dB against the reference) for 0.4 s with the voice band steady in three windows of four; the reference then
-   rescales to it. Measured over six chains, noise at another gain keeps the ratio within +/-1 dB, a sub-band spread of
+8. A louder steady stretch replaces the reference only when it comes up within 4 dB of it. One that rose from the
+   stretch before it but stays well under the reference is noise at a lower gain (the source turned down during a
+   transmission, its noise back as it ends) only when it keeps noise's voice-to-band ratio (within 1.5 dB) and shape
+   (sub-bands within 5.5 dB of each other, tilted by at most 2.5 dB against the reference) for 0.4 s with the voice
+   band steady in three windows of four, any run of the stretch able to start it; the reference then rescales to it. Measured over six chains, noise at another gain keeps the ratio within +/-1 dB, a sub-band spread of
    at most 4.7 dB and a tilt of at most 2 dB (p95), and a dead carrier reads 6.5-11.5 dB off the ratio. The gate's
    scenarios had no speech whose energy above voice steps up under a carrier: a live weather broadcast (below), whose
    synthesized speech does, played half of each segment while any louder stretch replaced the reference. Rules tried
@@ -1484,7 +1484,8 @@ Rulings on the cases the gate left open:
    20 dB CNR) pull the reference down; gain steps seen under a carrier as the only evidence left noise after a volume
    drop during speech open for 1.94 s (`volume-carrier`, every source) and could be faked by a carrier that
    strengthens; a 3 dB ratio tolerance with a 0.2 s hold let 12 kHz `rtl_fm` speech through (a carrier 60% muted in
-   `keyed`).
+   `keyed`), and so did any stretch at all, without the rise: a 0.4 s pause in that speech sat at noise's ratio on the
+   narrow 3.8-5.4 kHz band (52% muted).
 9. A window of exact zeros ends the stretch, as a restart does: bursts separated by padding no longer add their open
    time up to a stale reading.
 

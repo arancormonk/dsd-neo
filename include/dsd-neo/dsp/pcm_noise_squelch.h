@@ -39,10 +39,11 @@
  *    fading carrier), and the reference stays. Quieter, from a stretch at the reference, with the voice band stationary
  *    and moving by the same amount (within 1.5 dB): a gain step, taken after 200 ms more of it with the voice band
  *    stationary in three windows of four (the reference rescales). Otherwise a carrier keyed (KNOWN).
- *  - Noise come back at a lower gain (the source turned down during a transmission): a stretch well under the
- *    reference, however it began, with the reference's voice-to-band ratio within 1.5 dB and its shape (sub-bands
- *    within 5.5 dB of each other, tilted by at most 2.5 dB against it) is a pending step, taken once 0.4 s of windows
- *    keep that ratio and shape with the voice band steady in three of four: the reference rescales to it.
+ *  - Noise come back at a lower gain (the source turned down during a transmission): a stretch that rose from the one
+ *    before it, still well under the reference, with the reference's voice-to-band ratio within 1.5 dB and its shape
+ *    (sub-bands within 5.5 dB of each other, tilted by at most 2.5 dB against it) is a pending step, taken once 0.4 s
+ *    of windows keep that ratio and shape with the voice band steady in three of four: the reference rescales to it.
+ *    A stretch that did not rise (a pause in speech) never is.
  *  - A steady run at or above the reference less 1.5 dB tracks it with a 1 s time constant (slow drift).
  *  - Stale quieting: the gate open for 5 s on one stretch whose voice band held stationary in 90 % of its windows reads
  *    a level that dropped (a source's volume lowered out of clipping, its audio low-pass switched on), not speech: the
@@ -195,6 +196,7 @@ typedef struct {
     int st_pending;
     double st_pend_db;
     int st_pend_lowered; /**< the pending step is noise come back at a lower gain */
+    int st_rose;         /**< the stretch began louder than the one before it */
     int st_pn;
     int st_ps;
     int st_on;

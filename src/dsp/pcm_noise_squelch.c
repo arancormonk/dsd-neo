@@ -405,7 +405,7 @@ dsd_pcm_noise_squelch_set_key(dsd_pcm_noise_squelch* t, const dsd_pcm_noise_sque
 /* ---------------------------------------------------------------------------------------------- the learner */
 
 static void
-pnsq_new_stretch(dsd_pcm_noise_squelch* t, double sa, int pending, double pend_db) {
+pnsq_new_stretch(dsd_pcm_noise_squelch* t, double sa, int pending, double pend_db, int rose) {
     t->have_stretch = 1;
     t->st_a_db = sa;
     t->st_v_sum = 0.0;
@@ -415,6 +415,7 @@ pnsq_new_stretch(dsd_pcm_noise_squelch* t, double sa, int pending, double pend_d
     t->st_pending = pending;
     t->st_pend_db = pend_db;
     t->st_pend_lowered = 0;
+    t->st_rose = rose;
     t->st_pn = 0;
     t->st_ps = 0;
     t->st_on = 0;
@@ -473,6 +474,7 @@ static void
 pnsq_transition(dsd_pcm_noise_squelch* t, const double* sp, double sa, double sv, int v_steady) {
     int pending = 0;
     double pend_db = 0.0;
+    int rose = 0;
     t->have_cand = 0;
     t->cand_n = 0;
     if (t->state == DSD_PCM_NOISE_SQUELCH_LEARNING) {
@@ -487,6 +489,7 @@ pnsq_transition(dsd_pcm_noise_squelch* t, const double* sp, double sa, double sv
         }
     } else {
         const double da = sa - t->st_a_db;
+        rose = da > 0.0;
         const double dv = sv - pnsq_db(t->st_v_sum / (double)t->st_n);
         const int gain_like = fabs(da - dv) <= k_gain_tol_db;
         const double ra = pnsq_total_db(&t->plan, t->ref);
@@ -510,7 +513,7 @@ pnsq_transition(dsd_pcm_noise_squelch* t, const double* sp, double sa, double sv
             t->state = DSD_PCM_NOISE_SQUELCH_KNOWN;
         }
     }
-    pnsq_new_stretch(t, sa, pending, pend_db);
+    pnsq_new_stretch(t, sa, pending, pend_db, rose);
 }
 
 /* The steady run continues the stretch: its pending gain step, stale quieting and slow tracking. */
@@ -519,11 +522,13 @@ pnsq_continue(dsd_pcm_noise_squelch* t, const double* sp, double sa, double sv, 
     t->st_v_sum += pow(10.0, sv / 10.0);
     t->st_n++;
     t->st_vs += v_steady ? 1 : 0;
-    /* Noise come back at a lower gain (the source turned down during a transmission): a stretch well under the
-       reference with noise's voice-to-band ratio and shape, however it began (speech that ended near its level leaves
-       no transition), held for PNSQ_LOWER_HOLD_WINDOWS with most windows still so and the voice band steady. */
+    /* Noise come back at a lower gain (the source turned down during a transmission) ends a transmission: a stretch
+       that rose from the one before it, still well under the reference, with noise's voice-to-band ratio and shape,
+       held for PNSQ_LOWER_HOLD_WINDOWS with most windows still so and the voice band steady. Its first run may still
+       hold the carrier's tail, so every later run of the stretch may start the step; a stretch that did not rise (a
+       pause in speech) never does. */
     const int shaped = pnsq_has_reference(t) && pnsq_noise_shaped(t, sp, sa, sv);
-    if (!t->st_pending && shaped && !t->st_at_ref && sa < pnsq_total_db(&t->plan, t->ref) - k_step_db) {
+    if (!t->st_pending && t->st_rose && shaped && !t->st_at_ref && sa < pnsq_total_db(&t->plan, t->ref) - k_step_db) {
         t->st_pending = 1;
         t->st_pend_db = sa - pnsq_total_db(&t->plan, t->ref);
         t->st_pend_lowered = 1;
