@@ -822,8 +822,9 @@ MetricsModel::fillDecoderView(View& next, const dsd_opts* opts_snapshot, const d
      * would put "0" on screen for a squelch of -120 dB. A level that gates
      * nothing is published separately, because pwr_to_dB() renders it as -120
      * too and the panel would otherwise show a threshold that is not in force. */
-    next.squelch_db = next.radio_input ? pwr_to_dB(opts_snapshot->rtl_squelch_level) : 0.0;
-    next.squelch_off = next.radio_input && dsd_squelch_is_off(opts_snapshot->rtl_squelch_level);
+    const bool squelch_input = next.radio_input || next.squelch_audio_input;
+    next.squelch_db = squelch_input ? pwr_to_dB(opts_snapshot->rtl_squelch_level) : 0.0;
+    next.squelch_off = squelch_input && dsd_squelch_is_off(opts_snapshot->rtl_squelch_level);
     next.ppm = next.radio_input ? opts_snapshot->rtlsdr_ppm_error : 0;
     fillSquelchOverride(next, opts_snapshot, snapshot);
     fillScanRow(next, opts_snapshot, snapshot);
@@ -856,11 +857,12 @@ MetricsModel::fillTunerGain(View& next, const dsd_opts* opts_snapshot, const dsd
 
 /* Issue #521: the configured/effective pair, the off decisions, the row badge and the readout
  * text all come from the same app_control view the terminal's SQL readout uses, so the two
- * frontends cannot disagree about a row. */
+ * frontends cannot disagree about a row. On radio and audio input alike (issue #628). */
 void
 MetricsModel::fillSquelchOverride(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot) {
     dsd_app_squelch_view squelch{};
-    if (!next.radio_input || dsd_app_squelch_view_get(opts_snapshot, snapshot, &squelch) != 0) {
+    if ((!next.radio_input && !next.squelch_audio_input)
+        || dsd_app_squelch_view_get(opts_snapshot, snapshot, &squelch) != 0) {
         next.configured_squelch_db = 0.0;
         next.effective_squelch_db = 0.0;
         next.configured_squelch_off = false;
@@ -1045,6 +1047,9 @@ MetricsModel::refresh(const dsd_opts* opts_snapshot, const dsd_state* snapshot) 
      * the running session was configured with, which is the same authority the
      * metrics fetch above uses to decide whether any of them mean anything. */
     next.radio_input = dsd_opts_input_is_radio(opts_snapshot) != 0;
+    /* Audio input (Pulse, a file, stdin, TCP, UDP) takes a squelch too: a level, or the noise squelch it learns from the
+     * input itself (issue #628). */
+    next.squelch_audio_input = dsd_squelch_input_kind(opts_snapshot) == DSD_SQUELCH_INPUT_AUDIO;
 
     next.carrier_lock = metrics.carrier_lock != 0;
     next.cfo_hz = metrics.cfo_hz;
