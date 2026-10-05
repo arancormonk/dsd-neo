@@ -7,6 +7,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/runtime/rigctl_query_hooks.h>
 #include <stddef.h>
+#include <stdint.h>
 
 #include "dsd-neo/core/opts_fwd.h"
 
@@ -21,6 +22,13 @@ fake_get_current_freq_hz(const dsd_opts* opts) {
     return g_return_value;
 }
 
+static int32_t
+fake_get_passband_hz(const dsd_opts* opts) {
+    g_calls++;
+    g_last_opts = opts;
+    return 25000;
+}
+
 int
 main(void) {
     static dsd_opts opts;
@@ -29,6 +37,7 @@ main(void) {
     dsd_rigctl_query_hooks_set((dsd_rigctl_query_hooks){0});
     assert(dsd_rigctl_query_hook_get_current_freq_hz(NULL) == 0);
     assert(dsd_rigctl_query_hook_get_current_freq_hz(&opts) == 0);
+    assert(dsd_rigctl_query_hook_get_passband_hz(&opts) == 0);
 
     // Installed hooks should be invoked through wrappers.
     dsd_rigctl_query_hooks hooks = {0};
@@ -42,6 +51,12 @@ main(void) {
     assert(dsd_rigctl_query_hook_get_current_freq_hz(&opts) == 123456789L);
     assert(g_calls == 1);
     assert(g_last_opts == &opts);
+
+    // The passband hook (issue #628) too; a table without it reads the peer's own passband (0).
+    assert(dsd_rigctl_query_hook_get_passband_hz(&opts) == 0);
+    hooks.get_passband_hz = fake_get_passband_hz;
+    dsd_rigctl_query_hooks_set(hooks);
+    assert(dsd_rigctl_query_hook_get_passband_hz(&opts) == 25000 && g_calls == 2 && g_last_opts == &opts);
 
     return 0;
 }

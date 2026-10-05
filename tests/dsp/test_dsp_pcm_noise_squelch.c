@@ -8,7 +8,7 @@
  * complex noise and a carrier through a FIR channel filter, a discriminator, optional de-emphasis and audio low-pass,
  * a volume and int16 rounding (tools/pcm_noise_squelch_model.py's sources). The band rule, the band-passes' response,
  * learning with the gate closed, noise that never opens it, carriers that open it and confirm the reference, quieting
- * that follows the CNR and not the level, gain steps, starting on a carrier, a source that low-passed its audio (no
+ * that follows the CNR and not the level, gain steps, starting on a carrier, a pcm_tap that low-passed its audio (no
  * band), rates with no room, digital silence, the per-passband cache, stale quieting, the threshold, and flags that do
  * not depend on how the samples are cut into blocks. --sweep runs strong modulation that must never close the gate.
  */
@@ -23,12 +23,10 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "analog_tone_synth.h"
+#include "pcm_tap_synth.h"
 
 enum {
-    RATE = 48000,
-    CH_TAPS = 127,
-    LPF_TAPS = 255,
+    RATE = PCM_TAP_RATE,
     BLOCK = 960, /* 20 ms */
     MAX_BLOCKS = 2000,
 };
@@ -43,161 +41,10 @@ same_double(double a, double b) {
     return ua == ub;
 }
 
-/* --------------------------------------------------------------------------------------------- the source */
-
-typedef enum { SIG_NOISE, SIG_DEAD, SIG_TONE, SIG_ZERO } sig_kind;
-
-/* An SDR program's FM output: noise plus a carrier through a Hamming-windowed sinc channel filter, the phase step per
-   sample, optional de-emphasis and audio low-pass, a gain and int16 rounding. */
-typedef struct {
-    synth_rng rng;
-    double width_hz;
-    double dev_hz;
-    double taps[CH_TAPS];
-    double sum_h2;
-    double ring_re[CH_TAPS];
-    double ring_im[CH_TAPS];
-    int pos;
-    double prev_re;
-    double prev_im;
-    double pole; /* de-emphasis, 0: none */
-    double deemph;
-    double lpf[LPF_TAPS];
-    int lpf_on;
-    double lpf_ring[LPF_TAPS];
-    int lpf_pos;
-    double carrier_phase;
-    double tone_phase;
-    double offset_hz; /* the carrier's offset from the channel's centre */
-    double scale;     /* noise alone at -20 dBFS RMS */
-} source;
-
-static void
-sinc_taps(double* h, int n, double cutoff_hz) {
-    const double fc = cutoff_hz / (double)RATE;
-    const double mid = 0.5 * (double)(n - 1);
-    double sum = 0.0;
-    for (int i = 0; i < n; i++) {
-        const double m = (double)i - mid;
-        const double s = fabs(m) < 1e-9 ? 2.0 * fc : sin(2.0 * M_PI * fc * m) / (M_PI * m);
-        h[i] = s * (0.54 - (0.46 * cos(2.0 * M_PI * (double)i / (double)(n - 1))));
-        sum += h[i];
-    }
-    for (int i = 0; i < n; i++) {
-        h[i] /= sum;
-    }
-}
-
-static double source_raw(source* s, sig_kind kind, double cnr_db, double tone_hz);
-
-static void
-source_init(source* s, uint64_t seed, double width_hz, double deemph_us, double lpf_hz) {
-    DSD_MEMSET(s, 0, sizeof(*s));
-    synth_rng_seed(&s->rng, seed);
-    s->width_hz = width_hz;
-    {
-        const double a = (width_hz / 2.0) - 3000.0;
-        const double b = width_hz / 8.0;
-        const double dev = a > b ? a : b;
-        s->dev_hz = dev < 5000.0 ? dev : 5000.0;
-    }
-    sinc_taps(s->taps, CH_TAPS, width_hz / 2.0);
-    for (int i = 0; i < CH_TAPS; i++) {
-        s->sum_h2 += s->taps[i] * s->taps[i];
-    }
-    s->prev_re = 1.0;
-    s->pole = deemph_us > 0.0 ? exp(-1.0 / ((double)RATE * deemph_us * 1e-6)) : 0.0;
-    if (lpf_hz > 0.0) {
-        sinc_taps(s->lpf, LPF_TAPS, lpf_hz);
-        s->lpf_on = 1;
-    }
-    /* Calibrate on a copy: noise alone at -20 dBFS RMS. */
-    source probe = *s;
-    double e = 0.0;
-    const int n = RATE / 2;
-    const int settle = n / 4;
-    const int measured = n - settle;
-    for (int i = 0; i < n; i++) {
-        const double x = source_raw(&probe, SIG_NOISE, 0.0, 0.0);
-        if (i >= settle) {
-            e += x * x;
-        }
-    }
-    s->scale = pow(10.0, -20.0 / 20.0) * 32768.0 / sqrt(e / (double)measured);
-}
-
-/* The discriminator output (after de-emphasis and the audio low-pass), unscaled. */
-static double
-source_raw(source* s, sig_kind kind, double cnr_db, double tone_hz) {
-    double re = synth_gauss(&s->rng) * 0.70710678118654752;
-    double im = synth_gauss(&s->rng) * 0.70710678118654752;
-    if (kind == SIG_DEAD || kind == SIG_TONE) {
-        const double amp = sqrt(s->sum_h2 * pow(10.0, cnr_db / 10.0));
-        if (kind == SIG_TONE) {
-            s->tone_phase += 2.0 * M_PI * tone_hz / (double)RATE;
-            s->carrier_phase += 2.0 * M_PI * s->dev_hz * sin(s->tone_phase) / (double)RATE;
-        }
-        s->carrier_phase += 2.0 * M_PI * s->offset_hz / (double)RATE;
-        re += amp * cos(s->carrier_phase);
-        im += amp * sin(s->carrier_phase);
-    }
-    s->ring_re[s->pos] = re;
-    s->ring_im[s->pos] = im;
-    s->pos = (s->pos + 1) % CH_TAPS;
-    double zr = 0.0;
-    double zi = 0.0;
-    for (int j = 0; j < CH_TAPS; j++) {
-        int at = s->pos - 1 - j;
-        if (at < 0) {
-            at += CH_TAPS;
-        }
-        zr += s->ring_re[at] * s->taps[j];
-        zi += s->ring_im[at] * s->taps[j];
-    }
-    const double d = atan2((zi * s->prev_re) - (zr * s->prev_im), (zr * s->prev_re) + (zi * s->prev_im));
-    s->prev_re = zr;
-    s->prev_im = zi;
-    double y = d;
-    if (s->pole > 0.0) {
-        s->deemph = ((1.0 - s->pole) * y) + (s->pole * s->deemph);
-        y = s->deemph;
-    }
-    if (s->lpf_on) {
-        s->lpf_ring[s->lpf_pos] = y;
-        s->lpf_pos = (s->lpf_pos + 1) % LPF_TAPS;
-        double acc = 0.0;
-        for (int j = 0; j < LPF_TAPS; j++) {
-            int at = s->lpf_pos - 1 - j;
-            if (at < 0) {
-                at += LPF_TAPS;
-            }
-            acc += s->lpf_ring[at] * s->lpf[j];
-        }
-        y = acc;
-    }
-    return y;
-}
-
-/* One int16-scale sample: kind at cnr_db, gain_db over the calibrated volume. */
-static float
-source_next(source* s, sig_kind kind, double cnr_db, double tone_hz, double gain_db) {
-    const double raw = source_raw(s, kind == SIG_ZERO ? SIG_NOISE : kind, cnr_db, tone_hz);
-    if (kind == SIG_ZERO) {
-        return 0.0f;
-    }
-    double v = floor((raw * s->scale * pow(10.0, gain_db / 20.0)) + 0.5);
-    if (v > 32767.0) {
-        v = 32767.0;
-    } else if (v < -32768.0) {
-        v = -32768.0;
-    }
-    return (float)v;
-}
-
 /* --------------------------------------------------------------------------------------------- runs */
 
 typedef struct {
-    sig_kind kind;
+    pcm_tap_kind kind;
     double seconds;
     double cnr_db;
     double tone_hz;
@@ -213,14 +60,14 @@ typedef struct {
 } trace;
 
 static void
-run_segments(dsd_pcm_noise_squelch* sq, source* src, const seg* segs, int nsegs, trace* tr) {
+run_segments(dsd_pcm_noise_squelch* sq, pcm_tap* src, const seg* segs, int nsegs, trace* tr) {
     static float pcm[BLOCK];
     static uint8_t flags[BLOCK];
     for (int k = 0; k < nsegs; k++) {
         const int blocks = (int)lround(segs[k].seconds * (double)RATE / (double)BLOCK);
         for (int b = 0; b < blocks; b++) {
             for (int i = 0; i < BLOCK; i++) {
-                pcm[i] = source_next(src, segs[k].kind, segs[k].cnr_db, segs[k].tone_hz, segs[k].gain_db);
+                pcm[i] = pcm_tap_next(src, segs[k].kind, segs[k].cnr_db, segs[k].tone_hz, segs[k].gain_db);
             }
             dsd_pcm_noise_squelch_process(sq, pcm, BLOCK, flags);
             if (tr && tr->blocks < MAX_BLOCKS) {
@@ -374,11 +221,11 @@ test_band_pass_response(void) {
 static void
 test_noise_learns_and_never_opens(void) {
     dsd_pcm_noise_squelch* sq = new_squelch(48000, 3);
-    static source src;
+    static pcm_tap src;
     static trace tr;
     DSD_MEMSET(&tr, 0, sizeof tr);
-    source_init(&src, 11U, 12500.0, 0.0, 0.0);
-    const seg s[] = {{SIG_NOISE, 20.0, 0.0, 0.0, 0.0}};
+    pcm_tap_init(&src, 11U, 12500.0, 0.0, 0.0);
+    const seg s[] = {{PCM_TAP_NOISE, 20.0, 0.0, 0.0, 0.0}};
     run_segments(sq, &src, s, 1, &tr);
     int learned_block = -1;
     double q_max = -1e9;
@@ -405,14 +252,14 @@ test_noise_learns_and_never_opens(void) {
 static void
 test_carrier_opens_and_confirms(void) {
     dsd_pcm_noise_squelch* sq = new_squelch(48000, 10);
-    static source src;
+    static pcm_tap src;
     static trace tr;
     DSD_MEMSET(&tr, 0, sizeof tr);
-    source_init(&src, 12U, 12500.0, 0.0, 0.0);
+    pcm_tap_init(&src, 12U, 12500.0, 0.0, 0.0);
     const seg s[] = {
-        {SIG_NOISE, 2.0, 0.0, 0.0, 0.0},
-        {SIG_TONE, 1.5, 20.0, 1000.0, 0.0},
-        {SIG_NOISE, 1.5, 0.0, 0.0, 0.0},
+        {PCM_TAP_NOISE, 2.0, 0.0, 0.0, 0.0},
+        {PCM_TAP_TONE, 1.5, 20.0, 1000.0, 0.0},
+        {PCM_TAP_NOISE, 1.5, 0.0, 0.0, 0.0},
     };
     run_segments(sq, &src, s, 3, &tr);
     assert(open_seconds(&tr, 0, 0.3) < 1e-9);
@@ -428,14 +275,14 @@ test_quieting_follows_cnr(void) {
     static const double cnrs[] = {0.0, 6.0, 10.0, 20.0, 30.0};
     for (int kind = 0; kind < 2; kind++) {
         dsd_pcm_noise_squelch* sq = new_squelch(48000, 10);
-        static source src;
+        static pcm_tap src;
         static trace tr;
         DSD_MEMSET(&tr, 0, sizeof tr);
-        source_init(&src, 13U + (uint64_t)kind, 12500.0, 0.0, 0.0);
+        pcm_tap_init(&src, 13U + (uint64_t)kind, 12500.0, 0.0, 0.0);
         seg s[1 + 5];
-        s[0] = (seg){SIG_NOISE, 2.0, 0.0, 0.0, 0.0};
+        s[0] = (seg){PCM_TAP_NOISE, 2.0, 0.0, 0.0, 0.0};
         for (int i = 0; i < 5; i++) {
-            s[1 + i] = (seg){kind ? SIG_DEAD : SIG_TONE, 0.6, cnrs[i], 1000.0, 0.0};
+            s[1 + i] = (seg){kind ? PCM_TAP_DEAD : PCM_TAP_TONE, 0.6, cnrs[i], 1000.0, 0.0};
         }
         run_segments(sq, &src, s, 6, &tr);
         double prev = -1e9;
@@ -457,14 +304,14 @@ test_level_independent(void) {
     double q20[3];
     for (int g = 0; g < 3; g++) {
         dsd_pcm_noise_squelch* sq = new_squelch(48000, 10);
-        static source src;
+        static pcm_tap src;
         static trace tr;
         DSD_MEMSET(&tr, 0, sizeof tr);
-        source_init(&src, 14U, 12500.0, 0.0, 0.0);
+        pcm_tap_init(&src, 14U, 12500.0, 0.0, 0.0);
         const seg s[] = {
-            {SIG_NOISE, 1.0, 0.0, 0.0, gains[g]},
-            {SIG_TONE, 0.6, 10.0, 1000.0, gains[g]},
-            {SIG_TONE, 0.6, 20.0, 1000.0, gains[g]},
+            {PCM_TAP_NOISE, 1.0, 0.0, 0.0, gains[g]},
+            {PCM_TAP_TONE, 0.6, 10.0, 1000.0, gains[g]},
+            {PCM_TAP_TONE, 0.6, 20.0, 1000.0, gains[g]},
         };
         run_segments(sq, &src, s, 3, &tr);
         q10[g] = median_q(&tr, 1, 0.12);
@@ -484,14 +331,14 @@ test_volume_step_down(void) {
     for (int n = 0; n < 2; n++) {
         const int threshold = n ? 3 : 10;
         dsd_pcm_noise_squelch* sq = new_squelch(48000, threshold);
-        static source src;
+        static pcm_tap src;
         static trace tr;
         DSD_MEMSET(&tr, 0, sizeof tr);
-        source_init(&src, 15U, 12500.0, 0.0, 0.0);
+        pcm_tap_init(&src, 15U, 12500.0, 0.0, 0.0);
         const seg s[] = {
-            {SIG_NOISE, 2.0, 0.0, 0.0, 0.0},
-            {SIG_NOISE, 3.0, 0.0, 0.0, -12.0},
-            {SIG_TONE, 1.0, 20.0, 1000.0, -12.0},
+            {PCM_TAP_NOISE, 2.0, 0.0, 0.0, 0.0},
+            {PCM_TAP_NOISE, 3.0, 0.0, 0.0, -12.0},
+            {PCM_TAP_TONE, 1.0, 20.0, 1000.0, -12.0},
         };
         run_segments(sq, &src, s, 3, &tr);
         assert(open_seconds(&tr, 1, 0.0) < 0.4);
@@ -506,14 +353,14 @@ test_volume_step_down(void) {
 static void
 test_starting_on_a_carrier(void) {
     dsd_pcm_noise_squelch* sq = new_squelch(48000, 10);
-    static source src;
+    static pcm_tap src;
     static trace tr;
     DSD_MEMSET(&tr, 0, sizeof tr);
-    source_init(&src, 16U, 12500.0, 0.0, 0.0);
+    pcm_tap_init(&src, 16U, 12500.0, 0.0, 0.0);
     const seg s[] = {
-        {SIG_DEAD, 2.0, 25.0, 0.0, 0.0},
-        {SIG_NOISE, 2.0, 0.0, 0.0, 0.0},
-        {SIG_TONE, 1.5, 20.0, 1000.0, 0.0},
+        {PCM_TAP_DEAD, 2.0, 25.0, 0.0, 0.0},
+        {PCM_TAP_NOISE, 2.0, 0.0, 0.0, 0.0},
+        {PCM_TAP_TONE, 1.5, 20.0, 1000.0, 0.0},
     };
     run_segments(sq, &src, s, 3, &tr);
     assert(open_seconds(&tr, 0, 0.0) < 1e-9);
@@ -527,19 +374,19 @@ test_starting_on_a_carrier(void) {
     free(sq);
 }
 
-/* A source that low-passed its audio at 3 kHz has nothing above voice: no band within 2 s, the gate shut on noise
+/* A pcm_tap that low-passed its audio at 3 kHz has nothing above voice: no band within 2 s, the gate shut on noise
    until then, and the squelch unavailable after. */
 static void
 test_low_passed_source_reads_no_band(void) {
     dsd_pcm_noise_squelch* sq = new_squelch(48000, 6);
-    static source src;
+    static pcm_tap src;
     static trace tr;
     DSD_MEMSET(&tr, 0, sizeof tr);
-    source_init(&src, 17U, 12500.0, 75.0, 3000.0);
+    pcm_tap_init(&src, 17U, 12500.0, 75.0, 3000.0);
     const seg s[] = {
-        {SIG_NOISE, 3.0, 0.0, 0.0, 0.0},
-        {SIG_TONE, 1.0, 20.0, 1000.0, 0.0},
-        {SIG_NOISE, 1.0, 0.0, 0.0, 0.0},
+        {PCM_TAP_NOISE, 3.0, 0.0, 0.0, 0.0},
+        {PCM_TAP_TONE, 1.0, 20.0, 1000.0, 0.0},
+        {PCM_TAP_NOISE, 1.0, 0.0, 0.0, 0.0},
     };
     run_segments(sq, &src, s, 3, &tr);
     int no_band = -1;
@@ -587,13 +434,13 @@ test_no_room(void) {
 static void
 test_silence_closes_and_teaches_nothing(void) {
     dsd_pcm_noise_squelch* sq = new_squelch(48000, 10);
-    static source src;
+    static pcm_tap src;
     static trace tr;
     DSD_MEMSET(&tr, 0, sizeof tr);
-    source_init(&src, 18U, 12500.0, 0.0, 0.0);
+    pcm_tap_init(&src, 18U, 12500.0, 0.0, 0.0);
     const seg s[] = {
-        {SIG_NOISE, 2.0, 0.0, 0.0, 0.0}, {SIG_TONE, 1.0, 20.0, 1000.0, 0.0}, {SIG_ZERO, 1.0, 0.0, 0.0, 0.0},
-        {SIG_NOISE, 1.0, 0.0, 0.0, 0.0}, {SIG_TONE, 1.0, 20.0, 1000.0, 0.0},
+        {PCM_TAP_NOISE, 2.0, 0.0, 0.0, 0.0}, {PCM_TAP_TONE, 1.0, 20.0, 1000.0, 0.0}, {PCM_TAP_ZERO, 1.0, 0.0, 0.0, 0.0},
+        {PCM_TAP_NOISE, 1.0, 0.0, 0.0, 0.0}, {PCM_TAP_TONE, 1.0, 20.0, 1000.0, 0.0},
     };
     run_segments(sq, &src, s, 5, &tr);
     assert(open_seconds(&tr, 2, 0.06) < 1e-9);
@@ -604,20 +451,20 @@ test_silence_closes_and_teaches_nothing(void) {
 }
 
 /* Each passband keeps its own reference: a scan back to a passband it learned gates at once, without learning; an
-   unknown passband is never kept; a new source forgets everything. */
+   unknown passband is never kept; a new pcm_tap forgets everything. */
 static void
 test_passband_cache(void) {
     dsd_pcm_noise_squelch* sq = new_squelch(48000, 10);
-    static source narrow;
-    static source wide;
+    static pcm_tap narrow;
+    static pcm_tap wide;
     static trace tr;
-    source_init(&narrow, 19U, 12500.0, 0.0, 0.0);
-    source_init(&wide, 20U, 25000.0, 0.0, 0.0);
+    pcm_tap_init(&narrow, 19U, 12500.0, 0.0, 0.0);
+    pcm_tap_init(&wide, 20U, 25000.0, 0.0, 0.0);
     wide.scale = narrow.scale; /* one program, one volume: its wide passband plays its noise louder */
     dsd_pcm_noise_squelch_key key = {1U, 48000, 1, 12500};
     dsd_pcm_noise_squelch_set_key(sq, &key);
-    const seg noise = {SIG_NOISE, 1.0, 0.0, 0.0, 0.0};
-    const seg carrier = {SIG_TONE, 0.5, 20.0, 1000.0, 0.0};
+    const seg noise = {PCM_TAP_NOISE, 1.0, 0.0, 0.0, 0.0};
+    const seg carrier = {PCM_TAP_TONE, 0.5, 20.0, 1000.0, 0.0};
     DSD_MEMSET(&tr, 0, sizeof tr);
     run_segments(sq, &narrow, &noise, 1, &tr);
     key.passband_hz = 25000;
@@ -648,7 +495,7 @@ test_passband_cache(void) {
     dsd_pcm_noise_squelch_set_key(sq, &key);
     dsd_pcm_noise_squelch_get_status(sq, &st);
     assert(st.state == DSD_PCM_NOISE_SQUELCH_LEARNING);
-    /* A new source (or volume) forgets the narrow passband too. */
+    /* A new pcm_tap (or volume) forgets the narrow passband too. */
     key.passband_hz = 12500;
     key.source = 2U;
     dsd_pcm_noise_squelch_set_key(sq, &key);
@@ -657,20 +504,20 @@ test_passband_cache(void) {
     free(sq);
 }
 
-/* The source switches its audio low-pass on mid-session: the band drops to its stopband while the voice band holds,
-   which reads as quieting. Stale quieting bounds the open gate to about 5 s, and the source then reads no band. */
+/* The pcm_tap switches its audio low-pass on mid-session: the band drops to its stopband while the voice band holds,
+   which reads as quieting. Stale quieting bounds the open gate to about 5 s, and the pcm_tap then reads no band. */
 static void
 test_stale_quieting(void) {
     dsd_pcm_noise_squelch* sq = new_squelch(48000, 10);
-    static source src;
+    static pcm_tap src;
     static trace tr;
     DSD_MEMSET(&tr, 0, sizeof tr);
-    source_init(&src, 21U, 12500.0, 0.0, 0.0);
-    const seg before = {SIG_NOISE, 2.0, 0.0, 0.0, 0.0};
+    pcm_tap_init(&src, 21U, 12500.0, 0.0, 0.0);
+    const seg before = {PCM_TAP_NOISE, 2.0, 0.0, 0.0, 0.0};
     run_segments(sq, &src, &before, 1, &tr);
-    sinc_taps(src.lpf, LPF_TAPS, 3000.0);
+    pcm_tap_sinc(src.lpf, PCM_TAP_LPF_TAPS, 3000.0);
     src.lpf_on = 1;
-    const seg after = {SIG_NOISE, 9.0, 0.0, 0.0, 0.0};
+    const seg after = {PCM_TAP_NOISE, 9.0, 0.0, 0.0, 0.0};
     run_segments(sq, &src, &after, 1, &tr);
     double opened = 0.0;
     for (int b = 100; b < tr.blocks; b++) {
@@ -701,18 +548,18 @@ static void
 test_block_cuts(void) {
     static float pcm[6 * RATE];
     static uint8_t flags[3][6 * RATE];
-    static source src;
-    source_init(&src, 22U, 12500.0, 75.0, 0.0);
+    static pcm_tap src;
+    pcm_tap_init(&src, 22U, 12500.0, 75.0, 0.0);
     const int n = 6 * RATE;
     for (int i = 0; i < n; i++) {
         const double t = (double)i / (double)RATE;
-        sig_kind kind = SIG_NOISE;
+        pcm_tap_kind kind = PCM_TAP_NOISE;
         if (t >= 2.0 && t < 3.5) {
-            kind = SIG_TONE;
+            kind = PCM_TAP_TONE;
         } else if (t >= 4.5 && t < 4.7) {
-            kind = SIG_ZERO;
+            kind = PCM_TAP_ZERO;
         }
-        pcm[i] = source_next(&src, kind, 15.0, 800.0, t >= 5.0 ? -10.0 : 0.0);
+        pcm[i] = pcm_tap_next(&src, kind, 15.0, 800.0, t >= 5.0 ? -10.0 : 0.0);
     }
     static const int cuts[3] = {1, 613, 4800};
     dsd_pcm_noise_squelch_status st[3];
@@ -745,19 +592,19 @@ test_strong_modulation_never_closes(void) {
         double worst_f = 0.0;
         double worst_off = 0.0;
         for (int f = 300; f <= 3000; f += 25) {
-            static source probe;
-            source_init(&probe, 1U, widths[w], 0.0, 0.0);
+            static pcm_tap probe;
+            pcm_tap_init(&probe, 1U, widths[w], 0.0, 0.0);
             const double room = (widths[w] / 2.0) - probe.dev_hz - (double)f;
             const double offsets[3] = {0.0, room, -room};
             for (int o = 0; o < (room > 1.0 ? 3 : 1); o++) {
                 dsd_pcm_noise_squelch* sq = new_squelch(48000, 30);
-                static source src;
+                static pcm_tap src;
                 static trace tr;
                 DSD_MEMSET(&tr, 0, sizeof tr);
-                source_init(&src, 100U + (uint64_t)f + (1000U * (uint64_t)o), widths[w], 0.0, 0.0);
+                pcm_tap_init(&src, 100U + (uint64_t)f + (1000U * (uint64_t)o), widths[w], 0.0, 0.0);
                 const seg s[] = {
-                    {SIG_NOISE, 0.5, 0.0, 0.0, 0.0},
-                    {SIG_TONE, 0.3, 80.0, (double)f, 0.0},
+                    {PCM_TAP_NOISE, 0.5, 0.0, 0.0, 0.0},
+                    {PCM_TAP_TONE, 0.3, 80.0, (double)f, 0.0},
                 };
                 run_segments(sq, &src, s, 1, &tr);
                 src.offset_hz = offsets[o];

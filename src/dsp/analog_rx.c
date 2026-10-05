@@ -23,9 +23,11 @@
 #include <dsd-neo/dsp/analog_audio.h>
 #include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/dsp/firdes.h>
+#include <dsd-neo/dsp/pcm_noise_squelch.h>
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/log.h>
+#include <dsd-neo/runtime/rigctl_query_hooks.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/squelch.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
@@ -37,6 +39,7 @@
 #include "analog_tone_policy.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "pcm_input_staging.h"
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -497,6 +500,21 @@ typedef struct {
     dsd_analog_tone_policy policy_logged;
     /** Published as dsd_analog_rx_publication::gate_rejected_ended: the last reception ended rejected. */
     int rejected_ended;
+    /** Every boundary the tap crossed (a reset, a generation move, a pause, a rate move, an FM/AM switch): the PCM noise
+        squelch starts its windows over when it moves. */
+    uint32_t boundaries;
+    /** The PCM noise squelch (issue #628): whether it took the previous monitor sample, the boundary count and rates it
+        last ran at, the rigctl passband it keys its reference on, whether the backlog skip holds it, and the state
+        it last logged a notice for. */
+    dsd_pcm_noise_squelch pcm_sq;
+    int pcm_sq_running;
+    uint32_t pcm_sq_boundaries;
+    int pcm_sq_rate_hz;
+    int pcm_sq_native_hz;
+    int32_t pcm_sq_passband_hz;
+    int pcm_sq_held;
+    int pcm_sq_logged_state;
+    int pcm_sq_logged_native_hz;
 } analog_rx_session;
 
 #ifdef DSD_NEO_TEST_HOOKS
@@ -1038,6 +1056,7 @@ dsd_analog_rx_reset(dsd_state* state) {
         session->read_rate_hz = 0;
         /* Nor may what a live input still holds, which arrived before the boundary too. */
         analog_rx_arm_backlog_skip(session);
+        session->boundaries++;
     }
     /* The monitor's audio chain starts over on the new reception too, whether or not this tap runs (issue #518). */
     dsd_analog_audio_note_reception(state);
@@ -1068,6 +1087,7 @@ analog_rx_boundary_dropped(const dsd_opts* opts, dsd_state* state, analog_rx_ses
     if (!moved && !paused && !rate_moved) {
         return 0;
     }
+    session->boundaries++;
     if (rate_moved) {
         /* Designed for the new rate at once, so the publication says straight away whether
            detection can use it. */
@@ -1101,6 +1121,7 @@ analog_rx_note_detecting(const dsd_opts* opts, analog_rx_session* session) {
     if (detecting != session->detecting) {
         session->detecting = detecting;
         dsd_analog_rx_core_reset(&session->core);
+        session->boundaries++;
     }
 }
 
@@ -1223,6 +1244,146 @@ dsd_analog_rx_tap_flags(const dsd_opts* opts, dsd_state* state, const float* blo
     if (start < count) {
         analog_rx_read(opts, state, block + start, flags ? flags + start : NULL, count - start);
     }
+}
+
+/* ---------------------------------------------------------------------------------------------- the PCM noise squelch */
+
+/* The source's own rate: what a staged input arrives at before the staging interpolates it to the monitor's rate. */
+static int
+pcm_squelch_native_rate(const dsd_opts* opts, int rate_hz) {
+    if (dsd_pcm_input_uses_staged_resampler(opts) && opts->wav_sample_rate > 0) {
+        return opts->wav_sample_rate;
+    }
+    return rate_hz;
+}
+
+static uint8_t
+pcm_squelch_state_code(int pcm_state) {
+    switch (pcm_state) {
+        case DSD_PCM_NOISE_SQUELCH_LEARNING: return (uint8_t)DSD_SQUELCH_NOISE_STATE_LEARNING;
+        case DSD_PCM_NOISE_SQUELCH_PROVISIONAL: return (uint8_t)DSD_SQUELCH_NOISE_STATE_PROVISIONAL;
+        case DSD_PCM_NOISE_SQUELCH_KNOWN: return (uint8_t)DSD_SQUELCH_NOISE_STATE_KNOWN;
+        case DSD_PCM_NOISE_SQUELCH_NO_BAND: return (uint8_t)DSD_SQUELCH_NOISE_STATE_NO_BAND;
+        default: return (uint8_t)DSD_SQUELCH_NOISE_STATE_NO_ROOM;
+    }
+}
+
+/* What the squelch knows, for the frontends and dsd_squelch_dynamic_in_force() (dsd_squelch_publish_status() leaves
+   these to it while it is in force). */
+static void
+pcm_squelch_publish(dsd_state* state, int pcm_state, int gate_open, int measured, double quieting_db) {
+    if (quieting_db > 200.0) {
+        quieting_db = 200.0;
+    } else if (quieting_db < -200.0) {
+        quieting_db = -200.0;
+    }
+    state->squelch_auto_active = 1U;
+    state->squelch_auto_state = 0U;
+    state->squelch_auto_gate_open = gate_open ? 1U : 0U;
+    state->squelch_auto_plan_valid = pcm_state != DSD_PCM_NOISE_SQUELCH_NO_ROOM ? 1U : 0U;
+    state->squelch_auto_floor_cdb = 0;
+    state->squelch_noise_active = 1U;
+    state->squelch_noise_measured = measured ? 1U : 0U;
+    state->squelch_noise_quieting_cdb = measured ? (int32_t)lround(100.0 * quieting_db) : 0;
+    state->squelch_noise_state = pcm_squelch_state_code(pcm_state);
+}
+
+/* Say once why the squelch is off on this input: no room at its rate, or nothing above voice. */
+static void
+pcm_squelch_note_off(const dsd_opts* opts, analog_rx_session* session, int pcm_state) {
+    if (pcm_state != DSD_PCM_NOISE_SQUELCH_NO_ROOM && pcm_state != DSD_PCM_NOISE_SQUELCH_NO_BAND) {
+        session->pcm_sq_logged_state = 0;
+        return;
+    }
+    if (session->pcm_sq_logged_state == pcm_state && session->pcm_sq_logged_native_hz == session->pcm_sq_native_hz) {
+        return;
+    }
+    session->pcm_sq_logged_state = pcm_state;
+    session->pcm_sq_logged_native_hz = session->pcm_sq_native_hz;
+    const int scanning = opts->scanner_mode == 1 || opts->trunk_scan_enabled == 1;
+    if (pcm_state == DSD_PCM_NOISE_SQUELCH_NO_ROOM) {
+        LOG_INFO(
+            "NOTICE: Noise squelch: a %d Hz input leaves no room above the voice band; the squelch is off on it.%s\n",
+            session->pcm_sq_native_hz, scanning ? " Scan rows hold on noise until --scan-max-visit-ms." : "");
+    } else {
+        LOG_INFO("NOTICE: Noise squelch: nothing above the voice band on this input (its audio is low-passed); the "
+                 "squelch is "
+                 "off. Feed it the discriminator or unfiltered FM audio, or use a level.%s\n",
+                 scanning ? " Scan rows hold on noise until --scan-max-visit-ms." : "");
+    }
+}
+
+/* The plan for the input's rates, the reference's source context and the threshold, as they stand for this sample; the
+   windows start over when the squelch was off or the tap crossed a boundary. */
+static void
+pcm_squelch_configure(const dsd_opts* opts, analog_rx_session* session) {
+    const int rate = analog_rx_rate_hz(opts);
+    const int native = pcm_squelch_native_rate(opts, rate);
+    int restart = !session->pcm_sq_running || session->pcm_sq_boundaries != session->boundaries;
+    if (rate != session->pcm_sq_rate_hz || native != session->pcm_sq_native_hz) {
+        dsd_pcm_noise_squelch_plan plan;
+        (void)dsd_pcm_noise_squelch_plan_design(&plan, rate, native);
+        dsd_pcm_noise_squelch_set_plan(&session->pcm_sq, &plan);
+        session->pcm_sq_rate_hz = rate;
+        session->pcm_sq_native_hz = native;
+        restart = 1;
+    }
+    if (restart) {
+        session->pcm_sq_passband_hz = dsd_rigctl_query_hook_get_passband_hz(opts);
+    }
+    dsd_pcm_noise_squelch_key key;
+    key.source = (opts->pcm_input_generation << 4) ^ (uint32_t)opts->audio_in_type;
+    key.native_rate_hz = native;
+    key.volume = opts->input_volume_multiplier;
+    key.passband_hz = session->pcm_sq_passband_hz == DSD_RIGCTL_PASSBAND_UNKNOWN
+                          ? DSD_PCM_NOISE_SQUELCH_PASSBAND_UNKNOWN
+                          : session->pcm_sq_passband_hz;
+    dsd_pcm_noise_squelch_set_key(&session->pcm_sq, &key);
+    if (restart) {
+        dsd_pcm_noise_squelch_restart(&session->pcm_sq);
+    }
+    dsd_pcm_noise_squelch_set_threshold(&session->pcm_sq, opts->rtl_squelch_margin_db);
+    session->pcm_sq_boundaries = session->boundaries;
+    session->pcm_sq_running = 1;
+}
+
+uint8_t
+dsd_analog_rx_pcm_squelch_sample(const dsd_opts* opts, dsd_state* state, float sample) {
+    if (!opts || !state) {
+        return 0U;
+    }
+    analog_rx_session* session = analog_rx_session_get(state);
+    if (!dsd_squelch_pcm_noise_in_force(opts)) {
+        if (session) {
+            session->pcm_sq_running = 0;
+        }
+        return 0U;
+    }
+    if (!session) {
+        /* The tap creates the session at its read of this very sample (dsd_analog_rx_tap_partial_flags()), and the
+           squelch starts with the next. Until then it is learning: closed. */
+        pcm_squelch_publish(state, DSD_PCM_NOISE_SQUELCH_LEARNING, 0, 0, 0.0);
+        return (uint8_t)DSD_SQUELCH_FLAG_CLOSED;
+    }
+    pcm_squelch_configure(opts, session);
+    dsd_pcm_noise_squelch_status st;
+    if (session->backlog_armed) {
+        /* What a queued input held at the boundary is the old channel's: closed, and nothing learned from it. */
+        session->pcm_sq_held = 1;
+        dsd_pcm_noise_squelch_get_status(&session->pcm_sq, &st);
+        pcm_squelch_publish(state, st.state, 0, 0, 0.0);
+        return (uint8_t)DSD_SQUELCH_FLAG_CLOSED;
+    }
+    if (session->pcm_sq_held) {
+        session->pcm_sq_held = 0;
+        dsd_pcm_noise_squelch_restart(&session->pcm_sq);
+    }
+    uint8_t flag = 0U;
+    dsd_pcm_noise_squelch_process(&session->pcm_sq, &sample, 1, &flag);
+    dsd_pcm_noise_squelch_get_status(&session->pcm_sq, &st);
+    pcm_squelch_publish(state, st.state, st.gate_open, st.available && st.quieting_valid, st.quieting_db);
+    pcm_squelch_note_off(opts, session, st.state);
+    return flag;
 }
 
 void

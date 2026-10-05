@@ -1579,6 +1579,10 @@ symbol_process_unsynced_analog(dsd_opts* opts, dsd_state* state, unsigned int an
     if ((unsigned int)state->analog_sample_counter >= analog_block) {
         state->analog_sample_counter = (int)analog_block - 1;
     }
+    if (opts->audio_in_type != AUDIO_IN_RTL) {
+        /* Audio input carries no flags of its own: the PCM noise squelch's, where it runs (issue #628). */
+        flag = dsd_analog_rx_pcm_squelch_sample(opts, state, sample);
+    }
     state->analog_out_flags[state->analog_sample_counter] = flag;
     state->analog_out_f[state->analog_sample_counter++] = sample;
     /* Received-tone detection (issue #522) reads the raw block as it fills, so its verdicts keep
