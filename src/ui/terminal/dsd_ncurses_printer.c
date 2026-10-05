@@ -359,7 +359,7 @@ ui_render_basic_input_sources(dsd_opts* opts, const dsd_state* state) {
     }
 
     if (opts->audio_in_type == AUDIO_IN_WAV) {
-        printw("| WAV Audio Input: %s; %d kHz; ", opts->audio_in_dev, opts->wav_sample_rate);
+        printw("| WAV Audio Input: %s; %d kHz; ", opts->audio_in_dev, opts->wav_sample_rate / 1000);
         printw(" IV: %iX;", opts->input_volume_multiplier);
         ui_print_squelch_field(opts, state);
         printw("\n");

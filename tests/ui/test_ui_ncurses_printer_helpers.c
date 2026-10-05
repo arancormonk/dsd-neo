@@ -877,7 +877,7 @@ test_basic_input_source_rendering(void) {
     opts.rtl_squelch_level = dsd_squelch_level_from_sql(-50.0);
     reset_printw_capture();
     ui_render_basic_input_sources(&opts, &state);
-    assert_capture_contains("| WAV Audio Input: capture.wav; 48000 kHz;");
+    assert_capture_contains("| WAV Audio Input: capture.wav; 48 kHz;");
     assert_capture_contains(" IV: 2X; SQL: -50.0 dB;");
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
