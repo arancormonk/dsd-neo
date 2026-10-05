@@ -1355,9 +1355,10 @@ false-open rate. With `s300x-guard4`:
   - every 8 and 10 kHz NFM width;
   - every chain at a DSP rate under 12 kHz;
   - the legacy WIDE filters (`DSD_NEO_CHANNEL_LPF=1`) at 11.7 and 12 kHz;
-  - no channel filter at a rate of 16 kHz or less (the width unset on rtl-12k, rtl-16k, an Airspy Mini at 11718 Hz and
-    an SDDC at 15625 Hz, or `DSD_NEO_CHANNEL_LPF=0`): the cascade's roll-off is then the channel's only edge and
-    truncates a wide signal into the band (27-34 dB before the rule; the unfiltered plans above, from 19.5 kHz, pass);
+  - no channel filter behind a half-band cascade at a channel rate (before any post-decimation) of 16 kHz or less (the
+    width unset on rtl-12k, rtl-16k, an Airspy Mini at 11718 Hz and an SDDC at 15625 Hz, or `DSD_NEO_CHANNEL_LPF=0`):
+    the cascade's roll-off is then the channel's only edge and truncates a wide signal into the band (27-34 dB before
+    the rule; the unfiltered plans above, from 19.5 kHz, pass, and a replay with no cascade keeps its band);
   - the custom widths 11.0 and 11.1 kHz;
   - 11.2 kHz on the chains whose taps reach their -1 dB point at 5790 Hz, 10 Hz short of the 5.8 kHz that 1200 Hz of
     band needs.

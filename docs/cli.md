@@ -729,16 +729,17 @@ their sensitivity in.
 - Gating. The gate opens on a window reading N or more and closes on one under max(N - 3, 1.5) dB: 3 dB of
   hysteresis, with the close threshold held to at least 1.5 dB so `noise+3` still closes on noise, which reads about
   0 dB. Like the auto squelch it is decided per sample: the same ramps, analog AGC hold and scan hold apply.
-- Where it runs: the FM monitor (`-fA`, `nfm` rows, `nfm-conventional` targets) on a radio input. A channel with less
-  than 1200 Hz between 3.8 kHz and its edge (the 8 and 10 kHz NFM widths, or a low DSP rate) has no room for the band,
-  nor has a channel with no channel filter at a DSP rate of 16 kHz or less (with the width unset at those rates, or
-  `DSD_NEO_CHANNEL_LPF=0`), where the decimation stages' gentle roll-off is the only edge and would truncate a wide
-  signal into the band: the auto squelch runs the setting there, with N as its margin, and the readout says `as auto`.
-  AM has no discriminator: `-fM --squelch noise` stops at startup (`--squelch noise needs an FM channel and -fM is AM:
-  use --squelch auto[+N] or a level.`), a noise setting from an input spec or the config runs as auto on the AM monitor
-  and says so, the radio panel offers no Noise there, an `am` row or `am-conventional` target refuses `--squelch noise`,
-  and an `am` row that inherits a noise default runs it as auto. Like auto, it is off on digital channels and on audio
-  input.
+- Where it runs: the FM monitor (`-fA`, `nfm` rows, `nfm-conventional` targets) on a radio input. A channel has no room
+  for the band when the band, from 3.8 kHz to the lower of its edge less 800 Hz and 0.45 times the channel rate (the
+  rate before any post-decimation), is under 1200 Hz wide (the 8 and 10 kHz NFM widths, or a low DSP rate). Nor does a
+  channel with no channel filter behind the half-band decimation at a channel rate of 16 kHz or less (the width unset at
+  those rates, or `DSD_NEO_CHANNEL_LPF=0`): the decimation stages' gentle roll-off is then its only edge and would
+  truncate a wide signal into the band; a replay with no decimation keeps its band. The auto squelch runs the setting on
+  such a channel, with N as its margin, and the readout says `as auto`. AM has no discriminator: `-fM --squelch noise`
+  stops at startup (`--squelch noise needs an FM channel and -fM is AM: use --squelch auto[+N] or a level.`), a noise
+  setting from an input spec or the config runs as auto on the AM monitor and says so, the radio panel offers no Noise
+  there, an `am` row or `am-conventional` target refuses `--squelch noise`, and an `am` row that inherits a noise
+  default runs it as auto. Like auto, it is off on digital channels and on audio input.
 - What it shows: `SQL: noise +10 dB (quieting 23 dB)`, `(starting)` before its first window, `(as auto: floor
   -78.3 dB)` where the auto squelch stands in, and the same `off` readings as auto; the startup banner
   `SQ=noise+10dB`; the Qt/Android radio panel's `dB | Auto | Noise` choice, whose buttons step N.

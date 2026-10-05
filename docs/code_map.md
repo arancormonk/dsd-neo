@@ -1404,12 +1404,13 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   suspended. The auto squelch (issue #518 follow-up) adds whether each setting is AUTO and its margin, why AUTO is off
   here, and what the stream shows (`dsd_state::squelch_auto_*`: running, learning, plan, gate, floor): `auto +10 dB
   (floor -78.3 dB)`, `(learning)`, `(off: no radio input)`, `(off on digital)`, `(off: no channel plan)`, and the row
-  form `auto +6 dB (floor -81.0 dB; row; default -60.0 dB)`. `dsd_app_squelch_view_auto_status()` is that status alone
-  (Qt's `squelchAutoStatus`, the line under the reading), `dsd_app_squelch_view_configured_text()` the default as the
-  terminal prompt opens on it (`auto+10`, `-60.0`, `off`); Qt's `configuredSquelchAuto`/`effectiveSquelchAuto` and their
-  margins (kept under a level setting) drive the radio panel's `dB | Auto` choice, whose buttons step the margin in
-  Auto; dB puts the default back on the level it kept (`CommandBridge::restoreSquelchLevel()`, the stored level whole, a
-  legacy linear one included; `configuredSquelchLevelOff` says whether it is off). The channel-map review and target
+  form `auto +6 dB (floor -81.0 dB; row; default -60.0 dB)`. `dsd_app_squelch_view_dynamic_status()` is that status
+  alone (Qt's `squelchAutoStatus`, the line under the reading; the noise squelch's too, below),
+  `dsd_app_squelch_view_configured_text()` the default as the terminal prompt opens on it (`auto+10`, `-60.0`, `off`);
+  Qt's `configuredSquelchAuto`/`effectiveSquelchAuto` and their margins (kept under a level setting) drive the radio
+  panel's `dB | Auto` choice, whose buttons step the margin in Auto; dB puts the default back on the level it kept
+  (`CommandBridge::restoreSquelchLevel()`, the stored level whole, a legacy linear one included;
+  `configuredSquelchLevelOff` says whether it is off). The channel-map review and target
   preview carry a row's own auto squelch as `squelch_margin_db` (`dsd_csv_channel_profile`, `dsd_app_scan_csv_target`;
   Qt `squelchMarginDb`). `DSD_APP_CMD_RTL_SET_SQL_SETTING` (`dsd_app_squelch_setting_payload`,
   `svc_rtl_set_sql_setting()`) sets a whole setting on the configured default as `RTL_SET_SQL_DB` sets a level (it
@@ -1418,8 +1419,8 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   margin keeps the one the row had, its list's or the last edited, for a switch back to Auto). The noise squelch adds
   `effective_noise`/`configured_noise` beside the AUTO flags and what it shows (`dsd_state::squelch_noise_*`):
   `noise +10 dB (quieting 23 dB)`, `(starting)`, and `(as auto: floor -78.3 dB)` where the floor tracker runs a NOISE
-  setting (an AM channel, a channel with no band above voice); `dsd_app_squelch_view_dynamic_status()` is that status
-  alone for either mode. Qt adds `configuredSquelchNoise`/`effectiveSquelchNoise` and `squelchNoiseOffered` (false on
+  setting (an AM channel, a channel with no band above voice), which `dsd_app_squelch_view_dynamic_status()` gives
+  alone as it does AUTO's. Qt adds `configuredSquelchNoise`/`effectiveSquelchNoise` and `squelchNoiseOffered` (false on
   the AM monitor on its own), and the radio panel's choice becomes `dB | Auto | Noise` (Noise on an nfm row only,
   `CommandBridge::setSquelchNoise()`); the previews carry `squelch_mode` (Qt `squelchNoise`) beside the margin. Tests:
   `APP_CONTROL_SQUELCH_VIEW`, `APP_COMMAND_QUEUE`, `UI_MENU_CALLBACKS`, `UI_MENU_LABELS_RADIO`, `UI_QT_METRICS_MODEL`,
