@@ -471,15 +471,21 @@ apply_soapy_tuning_from_config(const dsdneoUserConfig* cfg, dsd_opts* opts) {
     }
 }
 
+/* The lowest level the rtl_sql key takes. */
+static const int k_rtl_sql_min_db = -100;
+
 /* The squelch a save writes: the configured default beneath any scan row's own (--squelch-db, issue #521), whose
    value is effective state. Off is a setting in its own right, and 0 is how the CLI and the config key both spell it:
-   rendering it through pwr_to_dB() saved -120, which reloaded as a real threshold outside the key's -100..0 range. The
-   mode and margin the same way; the level stays the level under auto and noise. */
+   rendering it through pwr_to_dB() saved -120, which reloaded as a real threshold outside the key's -100..0 range. A
+   level under that range (the unset -110 dB default, or a lower --squelch) saves as -100, which every reader takes as
+   open just the same (channel_scan_analog_squelch_open()). The mode and margin the same way; the level stays the level
+   under auto and noise. */
 static void
 snapshot_squelch_values(const dsd_opts* opts, const dsd_state* state, dsdneoUserConfig* cfg) {
     const dsd_scan_settings* configured = dsd_scan_mode_configured_view(state);
     const double squelch = configured ? configured->rtl_squelch_level : opts->rtl_squelch_level;
-    cfg->rtl_sql = dsd_squelch_is_off(squelch) ? 0 : (int)local_pwr_to_dB(squelch);
+    const int db = dsd_squelch_is_off(squelch) ? 0 : (int)local_pwr_to_dB(squelch);
+    cfg->rtl_sql = db < k_rtl_sql_min_db ? k_rtl_sql_min_db : db;
     cfg->rtl_sql_mode = configured ? configured->rtl_squelch_mode : opts->rtl_squelch_mode;
     cfg->rtl_sql_margin_db = configured ? configured->rtl_squelch_margin_db : opts->rtl_squelch_margin_db;
 }
