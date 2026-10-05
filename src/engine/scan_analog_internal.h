@@ -51,12 +51,13 @@ dsd_engine_scan_held_width_hz(int kind, int width_hz) {
 void dsd_engine_scan_ensure_output(dsd_opts* opts);
 
 /** Warn, as one WARNING line beginning with @p label ("Scan channel 2 (154.430000 MHz)", "Trunk scan target 'fire'"),
- * about an analog (nfm or am) scan row or target whose squelch -- its own --squelch-db, else the configured one -- is
- * off or at -100 dB or below: noise then holds it on air until the visit cap or a manual advance or avoid moves on.
- * Said once when a scan (or a new map or target list) starts; it does not depend on the DSP rate. @p row may be NULL
- * (no options). Returns 1 when it warned, else 0. */
+ * about an analog (nfm or am, @p am) scan row or target whose squelch -- its own --squelch-db, else the configured one
+ * -- is off or at -100 dB or below, or is a dynamic one that is off there (auto off a radio input, noise on AM audio):
+ * noise then holds it on air until the visit cap or a manual advance or avoid moves on. Said once when a scan (or a
+ * new map or target list) starts; it does not depend on the DSP rate. @p row may be NULL (no options). Returns 1 when
+ * it warned, else 0. */
 int dsd_engine_scan_warn_analog_squelch(const dsd_opts* opts, const dsd_state* state, const dsd_scan_option_values* row,
-                                        const char* label);
+                                        int am, const char* label);
 
 /** Whether the RTL front end refuses analog width @p width_hz (0: the kind's default) of demodulator @p kind on this
  * input (issue #526): DSD_NEO_CHANNEL_LPF=0 turns off the channel filter it needs, at any rate, or DSP rate

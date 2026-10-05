@@ -1012,9 +1012,11 @@ dsd_engine_setup_check_analog_width(const dsd_opts* opts) {
 }
 
 /*
- * The dynamic squelches need a radio input: elsewhere they are off, and say so. The noise squelch needs FM as well: on
- * the AM monitor (-fM, no scan) a --squelch noise is refused, and a noise setting from an input spec or the config runs
- * as auto with the same N. A scan's AM rows inherit a noise default as auto without a word: each row resolves its own.
+ * The auto squelch needs a radio input: elsewhere it is off, and says so. The noise squelch runs on audio input too
+ * (issue #628), where the PCM noise squelch says so itself if the input has no room or no band above voice. It needs
+ * FM: on the AM monitor (-fM, no scan) a --squelch noise is refused, and a noise setting from an input spec or the
+ * config runs as auto with the same N. A scan's AM rows inherit a noise default as auto without a word: each row
+ * resolves its own.
  */
 static int
 dsd_engine_setup_check_noise_squelch(const dsd_opts* opts) {
@@ -1023,9 +1025,10 @@ dsd_engine_setup_check_noise_squelch(const dsd_opts* opts) {
         return 0;
     }
     if (!dsd_opts_input_is_radio(opts)) {
-        LOG_WARN("WARNING: --squelch %s needs a radio input (rtl:, rtltcp:, soapy:, airspy or --iq-replay); the "
-                 "squelch is off on this input.\n",
-                 mode == DSD_SQUELCH_MODE_NOISE ? "noise" : "auto");
+        if (mode == DSD_SQUELCH_MODE_AUTO) {
+            LOG_WARN("WARNING: --squelch auto needs a radio input (rtl:, rtltcp:, soapy:, airspy or --iq-replay); the "
+                     "squelch is off on this input. On audio input use --squelch noise[+N] or a level.\n");
+        }
         return 0;
     }
     if (mode != DSD_SQUELCH_MODE_NOISE || !dsd_squelch_noise_has_no_fm(opts)) {
