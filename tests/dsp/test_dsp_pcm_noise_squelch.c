@@ -348,6 +348,106 @@ test_volume_step_down(void) {
     }
 }
 
+/* Modulation that steps up under a carrier is not noise: a pause (a dead carrier) and then a steady stretch with energy
+   above voice, louder than the pause but still well under the noise, as a weather broadcast's speech is. The stretch has
+   a carrier's voice-to-band ratio, not noise's, so the reference stays and the gate holds open over the whole
+   transmission (it flapped shut on every such step, half of it muted, when any louder stretch replaced the
+   reference). */
+static void
+test_modulation_steps_keep_the_reference(void) {
+    dsd_pcm_noise_squelch* sq = new_squelch(48000, 10);
+    static pcm_tap src;
+    static trace tr;
+    DSD_MEMSET(&tr, 0, sizeof tr);
+    pcm_tap_init(&src, 21U, 12500.0, 0.0, 0.0);
+    src.tone_dev_hz =
+        600.0; /* a line 4.5 kHz up, well under the noise there (at the rated deviation it fills the band) */
+    seg s[12];
+    int n = 0;
+    s[n++] = (seg){PCM_TAP_NOISE, 2.0, 0.0, 0.0, 0.0};
+    for (int i = 0; i < 5; i++) {
+        s[n++] = (seg){PCM_TAP_DEAD, 0.4, 25.0, 0.0, 0.0};
+        s[n++] = (seg){PCM_TAP_TONE, 0.4, 25.0, 4500.0, 0.0};
+    }
+    s[n++] = (seg){PCM_TAP_NOISE, 1.0, 0.0, 0.0, 0.0};
+    run_segments(sq, &src, s, n, &tr);
+    double open = 0.0;
+    for (int k = 1; k < n - 1; k++) {
+        open += open_seconds(&tr, k, 0.0);
+    }
+    assert(open > 4.0 - 0.12 - 0.021);
+    assert(open_seconds(&tr, n - 1, 0.1) < 1e-9);
+    assert(tr.st[tr.blocks - 1].state == DSD_PCM_NOISE_SQUELCH_KNOWN);
+    free(sq);
+}
+
+/* A carrier that weakens (30 dB CNR, then 20) reads louder above voice, yet is no noise: the reference stays and the
+   gate holds, modulated or dead. */
+static void
+test_weakening_carrier_keeps_the_reference(void) {
+    static const pcm_tap_kind kinds[] = {PCM_TAP_TONE, PCM_TAP_DEAD};
+    for (int i = 0; i < 2; i++) {
+        dsd_pcm_noise_squelch* sq = new_squelch(48000, 10);
+        static pcm_tap src;
+        static trace tr;
+        DSD_MEMSET(&tr, 0, sizeof tr);
+        pcm_tap_init(&src, 23U + (uint64_t)i, 12500.0, 0.0, 0.0);
+        const seg s[] = {
+            {PCM_TAP_NOISE, 2.0, 0.0, 0.0, 0.0},
+            {kinds[i], 1.5, 30.0, 1000.0, 0.0},
+            {kinds[i], 2.0, 20.0, 1000.0, 0.0},
+            {PCM_TAP_NOISE, 1.0, 0.0, 0.0, 0.0},
+        };
+        run_segments(sq, &src, s, 4, &tr);
+        assert(open_seconds(&tr, 1, 0.12) > 1.5 - 0.12 - 0.021);
+        assert(open_seconds(&tr, 2, 0.0) > 2.0 - 0.021);
+        assert(median_q(&tr, 2, 0.5) > 15.0);
+        assert(open_seconds(&tr, 3, 0.1) < 1e-9);
+        free(sq);
+    }
+}
+
+/* Transmissions separated by gaps of exact zeros (a stream that pads), with no noise between them: a gap breaks the
+   stretch, so no burst inherits the time the ones before it were open, and none is taken for a stale reading. */
+static void
+test_gaps_break_the_stretch(void) {
+    dsd_pcm_noise_squelch* sq = new_squelch(48000, 10);
+    static pcm_tap src;
+    static trace tr;
+    DSD_MEMSET(&tr, 0, sizeof tr);
+    pcm_tap_init(&src, 25U, 12500.0, 0.0, 0.0);
+    const seg s[] = {
+        {PCM_TAP_NOISE, 2.0, 0.0, 0.0, 0.0}, {PCM_TAP_DEAD, 2.0, 20.0, 0.0, 0.0}, {PCM_TAP_ZERO, 1.0, 0.0, 0.0, 0.0},
+        {PCM_TAP_DEAD, 2.0, 20.0, 0.0, 0.0}, {PCM_TAP_ZERO, 1.0, 0.0, 0.0, 0.0},  {PCM_TAP_DEAD, 2.0, 20.0, 0.0, 0.0},
+    };
+    run_segments(sq, &src, s, 6, &tr);
+    for (int k = 1; k < 6; k += 2) {
+        assert(open_seconds(&tr, k, 0.12) > 2.0 - 0.12 - 0.021);
+    }
+    free(sq);
+}
+
+/* The source turned down under a carrier: the noise that follows is quieter than the reference, yet it is noise (its
+   voice-to-band ratio is noise's), so it becomes the reference and stays shut, and the next carrier opens the gate. */
+static void
+test_volume_step_under_a_carrier(void) {
+    dsd_pcm_noise_squelch* sq = new_squelch(48000, 10);
+    static pcm_tap src;
+    static trace tr;
+    DSD_MEMSET(&tr, 0, sizeof tr);
+    pcm_tap_init(&src, 22U, 12500.0, 0.0, 0.0);
+    const seg s[] = {
+        {PCM_TAP_NOISE, 2.0, 0.0, 0.0, 0.0},      {PCM_TAP_TONE, 1.0, 20.0, 1000.0, 0.0},
+        {PCM_TAP_TONE, 1.0, 20.0, 1000.0, -12.0}, {PCM_TAP_NOISE, 2.0, 0.0, 0.0, -12.0},
+        {PCM_TAP_TONE, 1.0, 20.0, 1000.0, -12.0},
+    };
+    run_segments(sq, &src, s, 5, &tr);
+    assert(open_seconds(&tr, 3, 0.4) < 1e-9);
+    assert(fabs(median_q(&tr, 3, 1.0)) < 1.5);
+    assert(open_seconds(&tr, 4, 0.12) > 1.0 - 0.12 - 0.021);
+    free(sq);
+}
+
 /* A session that starts on a carrier takes it as the reference and stays shut on it; the first noise corrects that,
    and the next carrier opens the gate. */
 static void
@@ -644,6 +744,10 @@ main(int argc, char** argv) {
     test_quieting_follows_cnr();
     test_level_independent();
     test_volume_step_down();
+    test_volume_step_under_a_carrier();
+    test_weakening_carrier_keeps_the_reference();
+    test_gaps_break_the_stretch();
+    test_modulation_steps_keep_the_reference();
     test_starting_on_a_carrier();
     test_low_passed_source_reads_no_band();
     test_silence_closes_and_teaches_nothing();

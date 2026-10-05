@@ -766,12 +766,18 @@ quieting, closed under max(N - 3, 1.5) dB. Quieting reads about the carrier-to-n
   four windows hold steady within 1.5 dB the squelch reads `learning` and stays closed; that first steady stretch
   becomes the reference, about 0.15 s into noise. A carrier can only quiet the band, so noise is the loudest it gets:
   when the band rises 4 dB or more from one steady stretch to the next, the louder side is noise and the reference moves
-  there. A step that moves the voice band as much as the band above it (the source's volume or AGC) rescales the
-  reference instead. Between transmissions the reference follows the noise with a 1 s time constant.
-- Starting on a carrier: the first steady stretch is the carrier, so the reference is too low and the gate errs closed
-  until the first noise corrects it. A channel that never shows noise (a continuous carrier) stays muted: use a level
-  for it. A carrier held open 5 s with nothing changing in the voice band (an unmodulated or steady-tone carrier) is
-  learned again, so it mutes after 5 s; speech keeps the gate open.
+  there, if it came up near the reference or keeps noise's ratio of voice band to band (the source turned down during
+  a transmission); a louder stretch still well under the reference with another ratio is speech changing under a
+  carrier and leaves the reference alone. A step that moves the voice band as much as the band above it (the source's
+  volume or AGC) rescales the reference instead. Between transmissions the reference follows the noise with a 1 s time
+  constant.
+- Starting on a carrier: with no noise to learn from, the first steady stretch (the carrier, or a pause in its speech)
+  becomes the reference, which is too low, so the gate stays closed or opens only in snatches until the first noise
+  corrects it. A channel that never shows noise (a continuous broadcast such as a weather station) never settles that
+  way: use a level for it. A steady tone strong enough to leave nothing above voice is the exception: it reads as no
+  band (below) after about a second and then plays, as with the squelch off. A carrier held open 5 s with nothing
+  changing in the voice band (an unmodulated or steady-tone carrier) is learned again, so it mutes after 5 s; speech
+  keeps the gate open.
 - No band. When the input carries nothing above voice (its audio is low-passed, as most SDR programs' audio is by
   default) the squelch sees it within about 1 s of steady input and reads `off: no band above voice`: the monitor plays
   as with the squelch off, and the log says once `NOTICE: Noise squelch: nothing above the voice band on this input

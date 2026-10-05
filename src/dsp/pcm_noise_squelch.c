@@ -27,9 +27,12 @@ static const double k_guard_db = 6.0;
 static const double k_hysteresis_db = 3.0;
 static const double k_close_floor_db = 1.5;
 /* The learner. */
-static const double k_steady_db = 1.5;     /* a run's windows within this of their median */
-static const double k_step_db = 4.0;       /* a new level */
-static const double k_gain_tol_db = 1.5;   /* both bands moved by the same amount: a gain step */
+static const double k_steady_db = 1.5;   /* a run's windows within this of their median */
+static const double k_step_db = 4.0;     /* a new level */
+static const double k_gain_tol_db = 1.5; /* both bands moved by the same amount: a gain step */
+/* A louder stretch under the reference is noise at another gain only with noise's voice-to-band ratio, within this: a gain
+   step keeps the ratio, a carrier's modulation does not (a dead carrier reads 7-9 dB lower, speech higher). */
+static const double k_shape_tol_db = 3.0;
 static const double k_ratio_max_db = 30.0; /* a sub-band this far under the voice band per Hz carries nothing */
 static const double k_gain_steady_fraction = 0.75;
 static const double k_stale_steady_fraction = 0.9;
@@ -431,12 +434,19 @@ pnsq_transition(dsd_pcm_noise_squelch* t, const double* sp, double sa, double sv
         const double da = sa - t->st_a_db;
         const double dv = sv - pnsq_db(t->st_v_sum / (double)t->st_n);
         const int gain_like = fabs(da - dv) <= k_gain_tol_db;
-        if (da > 0.0) {
+        const double ra = pnsq_total_db(&t->plan, t->ref);
+        /* Louder and up at the reference, or with noise's voice-to-band ratio (noise at another gain, after a step
+           under a carrier): noise. */
+        const int noise_like = sa >= ra - k_step_db || fabs((sv - sa) - (t->v_ref_db - ra)) <= k_shape_tol_db;
+        if (da > 0.0 && noise_like) {
             /* The band got louder: that side is noise. A shape change (a carrier dropped) confirms the reference. */
             pnsq_take_reference(t, sp, sv);
             if (!gain_like && t->state == DSD_PCM_NOISE_SQUELCH_PROVISIONAL) {
                 t->state = DSD_PCM_NOISE_SQUELCH_KNOWN;
             }
+        } else if (da > 0.0) {
+            /* Louder, but still well under the reference and without noise's ratio: the modulation changed under a
+               carrier (speech after a pause). The reference stays. */
         } else if (gain_like && v_steady && t->st_at_ref && t->st_vs * 2 >= t->st_n) {
             /* Quieter, from noise, both bands by the same amount: a gain step, once it holds. */
             pending = 1;
@@ -500,12 +510,15 @@ pnsq_window(dsd_pcm_noise_squelch* t, const double* p, double v, double e) {
     const dsd_pcm_noise_squelch_plan* plan = &t->plan;
     t->windows++;
     if (!(e > k_min_power)) {
-        /* Digital silence: closed, and nothing learned. */
+        /* Digital silence: closed, and nothing learned. A gap ends the stretch, as a restart does, so the next
+           transmission inherits no open time or pending gain step from the one before it. */
         t->run_len = 0;
         t->nb = 0;
         t->gate_open = 0;
         t->cand_n = 0;
         t->exit_n = 0;
+        t->have_stretch = 0;
+        t->st_pending = 0;
         return;
     }
     const int slot = t->run_pos;

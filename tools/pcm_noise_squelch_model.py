@@ -32,14 +32,17 @@ carrier, and a steady stretch can be a carrier, so the learner relies only on wh
   - A later steady stretch STEP dB or more away from the current one is a transition. Both bands moving by the same
     amount (within GAIN_TOL, the voice band steady on both sides) is a gain change, a volume or AGC step: the reference
     is rescaled by it. Otherwise the shape changed: a carrier keyed or dropped. When the band got louder, that side is
-    noise and becomes the reference; the first such transition confirms the reference (KNOWN).
+    noise and becomes the reference, if it came up within STEP of the reference or has its voice-to-band ratio within
+    SHAPE_TOL (noise at another gain, the source turned down under a carrier); the first such transition confirms the
+    reference (KNOWN). A louder stretch still well under the reference with another ratio is the modulation changing
+    under a carrier (speech after a pause): the reference stays.
   - A steady stretch at or louder than the reference less STEADY_DB is noise: the reference tracks it with a 1 s
     time constant, so slow drift never reads as quieting.
   - NO_BAND: a steady stretch whose voice band is steady too, with the voice band more than RATIO_MAX dB per Hz above
     the band, for NO_BAND_S. Discriminator noise through any de-emphasis keeps the two within about 25 dB; a source
     that low-passed its audio leaves the band at its stopband or floor, 40 dB and more under. A steady stretch under
     the ratio leaves NO_BAND again. The squelch is then off (unavailable).
-  - A window of exact zeros closes the gate and breaks the stretch's window run; nothing is learned from it.
+  - A window of exact zeros closes the gate and ends the stretch, as a restart does; nothing is learned from it.
 
 Gate: closed while LEARNING; against the reference it opens at Q >= N and closes under max(N - 3, 1.5) dB.
 
@@ -117,6 +120,9 @@ TAPS_PER_PHASE = 16  # kDefaultTapsPerPhase (src/dsp/resampler.cpp)
 MIN_POWER = 1e-30
 Q_CAP_DB = 200.0
 STEADY_DB = 1.5
+# A louder stretch under the reference is noise at a lower gain only when its voice-to-band ratio is noise's (within
+# this): a gain step keeps the ratio, a carrier's modulation does not (a dead carrier reads 7-9 dB lower, speech higher).
+SHAPE_TOL_DB = 3.0
 TRACK_S = 1.0
 N_MIN_DB = 3
 N_MAX_DB = 30
@@ -418,8 +424,10 @@ def run_learner(plan: SquelchPlan, w: dict, params: dict, n_db: float, keys=None
             stretch, run, nb, gate = None, 0, 0, False
             cand_a, cand_n, exit_n = None, 0, 0
         if silent[i]:
+            # A gap ends the stretch, as a restart does: the next transmission inherits no open time or pending step.
             run, nb, gate = 0, 0, False
             cand_n, exit_n = 0, 0
+            stretch = None
             out_state[i] = state
             continue
         run += 1
@@ -470,10 +478,16 @@ def run_learner(plan: SquelchPlan, w: dict, params: dict, n_db: float, keys=None
                         da = sa - stretch["a"]
                         dv = sv - 10.0 * math.log10(max(stretch["v"] / stretch["n"], MIN_POWER))
                         gain_like = abs(da - dv) <= gain_tol
-                        if da > 0.0:
+                        ra_now = total_db(ref)
+                        noise_like = sa >= ra_now - step_db or abs((sv - sa) - (v_ref - ra_now)) <= SHAPE_TOL_DB
+                        if da > 0.0 and noise_like:
                             ref, v_ref = sp.copy(), sv
                             if not gain_like and state == PROVISIONAL:
                                 state = KNOWN
+                        elif da > 0.0:
+                            # Louder, but still well under the reference and without noise's voice-to-band ratio: the
+                            # modulation changed under a carrier (speech after a pause), not noise at a lower gain.
+                            pass
                         elif gain_like and v_steady and stretch["at_ref"] and stretch["vs"] * 2 >= stretch["n"]:
                             pending = da
                         else:

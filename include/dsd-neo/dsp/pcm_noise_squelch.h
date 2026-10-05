@@ -26,14 +26,18 @@
  *
  * Windows: 40 ms (two 20 ms halves, boundary k at floor(k fs / 50) samples), taken every 20 ms. Each window gives each
  * band-pass's mean power p_k, the voice band's V and the input's mean square E. A window whose E is 0 (digital
- * silence) closes the gate and breaks the run of windows the learner needs; nothing is learned from it.
+ * silence) closes the gate and ends the stretch, as a restart does; nothing is learned from it.
  *
  * Learning (from the last M = 4 windows): the run is steady when their above-band powers A = sum p_k (k < K, in dB)
  * all sit within 1.5 dB of their median; its levels are the means over those windows (sp, sa, sv).
  *  - LEARNING: the first steady run held for 3 windows becomes the reference r_k (PROVISIONAL). The gate is closed
- *    until then. A carrier taken as the reference only mutes; the first noise corrects it.
- *  - A steady run 4 dB or more from the current stretch, held for 3 windows, is a transition. Louder: that side is
- *    noise and becomes the reference (KNOWN, when the voice band did not move with it). Quieter, from a stretch at the
+ *    until then. A carrier taken as the reference only mutes; the first noise corrects it. (A steady tone strong enough
+ *    to leave nothing above voice can read NO_BAND instead, which plays it.)
+ *  - A steady run 4 dB or more from the current stretch, held for 3 windows, is a transition. Louder, and up within
+ *    4 dB of the reference or with its voice-to-band ratio within 3 dB of the reference's (noise at another gain, the
+ *    source turned down under a carrier): that side is noise and becomes the reference (KNOWN, when the voice band did
+ *    not move with it). Louder but still well under the reference with another ratio: the modulation changed under a
+ *    carrier (speech after a pause), and the reference stays. Quieter, from a stretch at the
  *    reference, with the voice band stationary and moving by the same amount (within 1.5 dB): a gain step, taken after
  *    200 ms more of it with the voice band stationary in three windows of four (the reference rescales). Otherwise a
  *    carrier keyed (KNOWN).

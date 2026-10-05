@@ -47,8 +47,9 @@ typedef struct {
     int lpf_pos;
     double carrier_phase;
     double tone_phase;
-    double offset_hz; /* the carrier's offset from the channel's centre */
-    double scale;     /* noise alone at -20 dBFS RMS */
+    double offset_hz;   /* the carrier's offset from the channel's centre */
+    double tone_dev_hz; /* the tone's deviation; 0 is the width's rated deviation */
+    double scale;       /* noise alone at -20 dBFS RMS */
 } pcm_tap;
 
 static inline void
@@ -114,7 +115,8 @@ pcm_tap_raw(pcm_tap* s, pcm_tap_kind kind, double cnr_db, double tone_hz) {
         const double amp = sqrt(s->sum_h2 * pow(10.0, cnr_db / 10.0));
         if (kind == PCM_TAP_TONE) {
             s->tone_phase += 2.0 * M_PI * tone_hz / (double)PCM_TAP_RATE;
-            s->carrier_phase += 2.0 * M_PI * s->dev_hz * sin(s->tone_phase) / (double)PCM_TAP_RATE;
+            const double dev = s->tone_dev_hz > 0.0 ? s->tone_dev_hz : s->dev_hz;
+            s->carrier_phase += 2.0 * M_PI * dev * sin(s->tone_phase) / (double)PCM_TAP_RATE;
         }
         s->carrier_phase += 2.0 * M_PI * s->offset_hz / (double)PCM_TAP_RATE;
         re += amp * cos(s->carrier_phase);
