@@ -30,8 +30,8 @@ static const double k_close_floor_db = 1.5;
 static const double k_steady_db = 1.5;   /* a run's windows within this of their median */
 static const double k_step_db = 4.0;     /* a new level */
 static const double k_gain_tol_db = 1.5; /* both bands moved by the same amount: a gain step */
-/* A louder stretch under the reference is noise at another gain only with noise's voice-to-band ratio, within this: a gain
-   step keeps the ratio, a carrier's modulation does not (a dead carrier reads 7-9 dB lower, speech higher). */
+/* A louder stretch under the reference is noise at another gain only with noise's voice-to-band ratio, within this (a gain
+   step keeps the ratio), besides the gain steps that put it there. */
 static const double k_shape_tol_db = 3.0;
 static const double k_ratio_max_db = 30.0; /* a sub-band this far under the voice band per Hz carries nothing */
 static const double k_gain_steady_fraction = 0.75;
@@ -200,6 +200,16 @@ pnsq_take_reference(dsd_pcm_noise_squelch* t, const double* p, double v_db) {
     }
     t->v_ref_db = v_db;
     t->usable_hz = pnsq_participating(&t->plan, t->ref, t->v_ref_db, t->part);
+    t->carrier_gain_db = 0.0;
+    t->carrier_gain_seen = 0;
+}
+
+/* A gain-like step between two carrier stretches (both bands moved alike, the voice band stationary): the source's
+   volume moved during a transmission, which is where its noise comes back. */
+static void
+pnsq_note_carrier_gain(dsd_pcm_noise_squelch* t, double da) {
+    t->carrier_gain_db += da;
+    t->carrier_gain_seen = 1;
 }
 
 static void
@@ -284,6 +294,8 @@ dsd_pcm_noise_squelch_forget(dsd_pcm_noise_squelch* t) {
     t->state = t->plan.valid ? DSD_PCM_NOISE_SQUELCH_LEARNING : DSD_PCM_NOISE_SQUELCH_NO_ROOM;
     DSD_MEMSET(t->ref, 0, sizeof(t->ref));
     DSD_MEMSET(t->part, 0, sizeof(t->part));
+    t->carrier_gain_db = 0.0;
+    t->carrier_gain_seen = 0;
     t->v_ref_db = 0.0;
     t->usable_hz = 0.0;
     DSD_MEMSET(t->cache, 0, sizeof(t->cache));
@@ -390,6 +402,8 @@ dsd_pcm_noise_squelch_set_key(dsd_pcm_noise_squelch* t, const dsd_pcm_noise_sque
         t->state = DSD_PCM_NOISE_SQUELCH_LEARNING;
         DSD_MEMSET(t->ref, 0, sizeof(t->ref));
         DSD_MEMSET(t->part, 0, sizeof(t->part));
+        t->carrier_gain_db = 0.0;
+        t->carrier_gain_seen = 0;
         t->usable_hz = 0.0;
     }
     dsd_pcm_noise_squelch_restart(t);
@@ -435,9 +449,13 @@ pnsq_transition(dsd_pcm_noise_squelch* t, const double* sp, double sa, double sv
         const double dv = sv - pnsq_db(t->st_v_sum / (double)t->st_n);
         const int gain_like = fabs(da - dv) <= k_gain_tol_db;
         const double ra = pnsq_total_db(&t->plan, t->ref);
-        /* Louder and up at the reference, or with noise's voice-to-band ratio (noise at another gain, after a step
-           under a carrier): noise. */
-        const int noise_like = sa >= ra - k_step_db || fabs((sv - sa) - (t->v_ref_db - ra)) <= k_shape_tol_db;
+        /* Louder and up at the reference: noise. Louder but well under it is noise only where the gain steps seen under
+           a carrier put the reference, with noise's voice-to-band ratio: the source turned down during a
+           transmission. Without that evidence it is the carrier's modulation or level changing (speech after a pause,
+           a fading carrier), and the reference stays. */
+        const int lowered = t->carrier_gain_seen && fabs(sa - (ra + t->carrier_gain_db)) <= k_step_db
+                            && fabs((sv - sa) - (t->v_ref_db - ra)) <= k_shape_tol_db;
+        const int noise_like = sa >= ra - k_step_db || lowered;
         if (da > 0.0 && noise_like) {
             /* The band got louder: that side is noise. A shape change (a carrier dropped) confirms the reference. */
             pnsq_take_reference(t, sp, sv);
@@ -445,15 +463,21 @@ pnsq_transition(dsd_pcm_noise_squelch* t, const double* sp, double sa, double sv
                 t->state = DSD_PCM_NOISE_SQUELCH_KNOWN;
             }
         } else if (da > 0.0) {
-            /* Louder, but still well under the reference and without noise's ratio: the modulation changed under a
-               carrier (speech after a pause). The reference stays. */
+            if (gain_like && v_steady) {
+                pnsq_note_carrier_gain(t, da);
+            }
         } else if (gain_like && v_steady && t->st_at_ref && t->st_vs * 2 >= t->st_n) {
             /* Quieter, from noise, both bands by the same amount: a gain step, once it holds. */
             pending = 1;
             pend_db = da;
-        } else if (t->state == DSD_PCM_NOISE_SQUELCH_PROVISIONAL) {
-            /* A carrier keyed: the louder side, the reference, was noise. */
-            t->state = DSD_PCM_NOISE_SQUELCH_KNOWN;
+        } else {
+            if (gain_like && v_steady && !t->st_at_ref) {
+                pnsq_note_carrier_gain(t, da);
+            }
+            if (t->state == DSD_PCM_NOISE_SQUELCH_PROVISIONAL) {
+                /* A carrier keyed: the louder side, the reference, was noise. */
+                t->state = DSD_PCM_NOISE_SQUELCH_KNOWN;
+            }
         }
     }
     pnsq_new_stretch(t, sa, pending, pend_db);

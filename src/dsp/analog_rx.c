@@ -451,8 +451,9 @@ _Static_assert((int)ANALOG_RX_LABEL_SIZE >= (int)DSD_DCS_LABEL_SIZE, "a DCS labe
    and the analog receive profile the stream published (kind, width, channel filter on; all 0 on other inputs and while
    the stream runs no analog monitor). On other inputs, the passband the rigctl peer runs (issue #628): a width-only
    change there, a scan row's width edited live, is the peer's analog profile changing, which neither generation moves
-   for. A passband the client cannot read just now (DSD_RIGCTL_PASSBAND_UNKNOWN) matches any. A new kind of boundary is
-   added here and in analog_rx_generations_read() only. */
+   for. A passband the client cannot read just now (DSD_RIGCTL_PASSBAND_UNKNOWN) leaves the last one read standing; one
+   read where none was known (the peer's width first set) is a change. A new kind of boundary is added here and in
+   analog_rx_generations_read() only. */
 typedef struct {
     uint32_t rtl_generation;
     uint64_t tune_generation;
@@ -572,17 +573,20 @@ analog_rx_generations_read(const dsd_opts* opts, analog_rx_generations* out) {
     out->peer_passband_hz = rtl ? 0 : dsd_rigctl_query_hook_get_passband_hz(opts);
 }
 
+/* Whether the passband read @p now leaves the one @p noted standing: the same, or not read just now. */
 static int
-analog_rx_passbands_match(int32_t a, int32_t b) {
-    return a == b || a == DSD_RIGCTL_PASSBAND_UNKNOWN || b == DSD_RIGCTL_PASSBAND_UNKNOWN;
+analog_rx_passband_holds(int32_t now, int32_t noted) {
+    return now == noted || now == DSD_RIGCTL_PASSBAND_UNKNOWN;
 }
 
+/* Whether the boundaries read @p now are still the ones @p noted. */
 static int
-analog_rx_generations_equal(const analog_rx_generations* a, const analog_rx_generations* b) {
-    return a->rtl_generation == b->rtl_generation && a->tune_generation == b->tune_generation
-           && a->rtl_profile_kind == b->rtl_profile_kind && a->rtl_profile_width_hz == b->rtl_profile_width_hz
-           && a->rtl_profile_lpf_on == b->rtl_profile_lpf_on
-           && analog_rx_passbands_match(a->peer_passband_hz, b->peer_passband_hz);
+analog_rx_generations_equal(const analog_rx_generations* now, const analog_rx_generations* noted) {
+    return now->rtl_generation == noted->rtl_generation && now->tune_generation == noted->tune_generation
+           && now->rtl_profile_kind == noted->rtl_profile_kind
+           && now->rtl_profile_width_hz == noted->rtl_profile_width_hz
+           && now->rtl_profile_lpf_on == noted->rtl_profile_lpf_on
+           && analog_rx_passband_holds(now->peer_passband_hz, noted->peer_passband_hz);
 }
 
 static void

@@ -4026,6 +4026,55 @@ test_pcm_noise_squelch_gates_each_sample(void) {
     dsd_state_ext_free_all(&state);
 }
 
+/* No band decided inside a monitor block (issue #628): the block's samples before the decision were shut, and they
+   stay shut; the rest ramps in, as at any opening. The decision lands at another offset in the block for each run. */
+static void
+test_pcm_noise_squelch_no_band_keeps_the_block_edge(void) {
+    static const int lead[] = {0, 317, 701};
+    for (int r = 0; r < 3; r++) {
+        static dsd_opts opts;
+        static dsd_state state;
+        static pcm_tap low;
+        install_fake_rtl_hooks(0);
+        init_analog_monitor_fixture(&opts, &state);
+        opts.rtl_squelch_mode = DSD_SQUELCH_MODE_LEVEL;
+        opts.rtl_squelch_level = 0.0;
+        g_chain_removes_tone = 0;
+        start_monitor_capture(&opts);
+        pcm_tap_init(&low, 51U + (uint64_t)r, 12500.0, 75.0, 3000.0);
+        for (int i = 0; i < lead[r]; i++) {
+            dsd_symbol_test_push_unsynced_analog_sample(&opts, &state,
+                                                        pcm_tap_next(&low, PCM_TAP_NOISE, 0.0, 0.0, 0.0));
+        }
+        opts.rtl_squelch_mode = DSD_SQUELCH_MODE_NOISE;
+        opts.rtl_squelch_margin_db = 10;
+        int n = 0;
+        while (state.squelch_noise_state != DSD_SQUELCH_NOISE_STATE_NO_BAND && n < 4 * PCM_TAP_RATE) {
+            dsd_symbol_test_push_unsynced_analog_sample(&opts, &state,
+                                                        pcm_tap_next(&low, PCM_TAP_NOISE, 0.0, 0.0, 0.0));
+            n++;
+        }
+        assert(state.squelch_noise_state == DSD_SQUELCH_NOISE_STATE_NO_BAND);
+        const size_t at = g_played_len;
+        push_tap(&opts, &state, &low, PCM_TAP_NOISE, 0.0, 0.1);
+        assert(g_played_len >= at + 960U * sizeof(short));
+        short first = 0;
+        short peak = 0;
+        DSD_MEMCPY(&first, g_played + at, sizeof first);
+        for (size_t i = at; i + sizeof(short) <= g_played_len; i += sizeof(short)) {
+            short v = 0;
+            DSD_MEMCPY(&v, g_played + i, sizeof v);
+            peak = (short)(abs(v) > peak ? abs(v) : peak);
+        }
+        assert(peak > 100);
+        assert(abs(first) * 50 < peak);
+        opts.rtl_squelch_mode = DSD_SQUELCH_MODE_LEVEL;
+        g_chain_removes_tone = 1;
+        dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
+        dsd_state_ext_free_all(&state);
+    }
+}
+
 /* The passband the fake rigctl peer runs, as the client knows it. */
 static int32_t g_pcm_passband_hz = 25000;
 
@@ -4037,7 +4086,7 @@ fake_pcm_passband(const dsd_opts* opts) {
 
 /* A width-only change on the rigctl peer, a scan row's width edited live with no retune, is a boundary (issue #628):
    the squelch keys its reference on the new passband, learning it closed, and the old passband's reference comes back
-   with it. A passband the client cannot read just now changes nothing. */
+   with it. The first width the client learns is such a change; a passband it cannot read just now changes nothing. */
 static void
 test_pcm_noise_squelch_follows_the_passband(void) {
     static dsd_opts opts;
@@ -4050,13 +4099,20 @@ test_pcm_noise_squelch_follows_the_passband(void) {
     opts.rtl_squelch_margin_db = 10;
     g_chain_removes_tone = 0;
     start_monitor_capture(&opts);
-    g_pcm_passband_hz = 25000;
+    /* The peer's width not known yet (an untouched peer, -B 0, before a width request lands). */
+    g_pcm_passband_hz = DSD_RIGCTL_PASSBAND_UNKNOWN;
     dsd_rigctl_query_hooks hooks = {0};
     hooks.get_passband_hz = fake_pcm_passband;
     dsd_rigctl_query_hooks_set(hooks);
     pcm_tap_init(&wide, 41U, 25000.0, 0.0, 0.0);
     pcm_tap_init(&narrow, 42U, 12500.0, 0.0, 0.0);
+    push_tap(&opts, &state, &wide, PCM_TAP_NOISE, 0.0, 0.5);
+    assert(state.squelch_noise_state == DSD_SQUELCH_NOISE_STATE_PROVISIONAL);
 
+    /* The first width the client learns is a change: the reference is keyed on it, learned again. */
+    g_pcm_passband_hz = 25000;
+    push_tap(&opts, &state, &wide, PCM_TAP_NOISE, 0.0, 0.06);
+    assert(state.squelch_noise_state == DSD_SQUELCH_NOISE_STATE_LEARNING);
     push_tap(&opts, &state, &wide, PCM_TAP_NOISE, 0.0, 1.0);
     push_tap(&opts, &state, &wide, PCM_TAP_TONE, 20.0, 0.5);
     push_tap(&opts, &state, &wide, PCM_TAP_NOISE, 0.0, 0.5);
@@ -4247,6 +4303,7 @@ main(void) {
     test_auto_squelch_gates_each_sample();
     test_pcm_noise_squelch_gates_each_sample();
     test_pcm_noise_squelch_follows_the_passband();
+    test_pcm_noise_squelch_no_band_keeps_the_block_edge();
     test_pcm_noise_squelch_holds_the_backlog();
     return 0;
 }

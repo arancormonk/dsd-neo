@@ -34,10 +34,11 @@
  *    until then. A carrier taken as the reference only mutes; the first noise corrects it. (A steady tone strong enough
  *    to leave nothing above voice can read NO_BAND instead, which plays it.)
  *  - A steady run 4 dB or more from the current stretch, held for 3 windows, is a transition. Louder, and up within
- *    4 dB of the reference or with its voice-to-band ratio within 3 dB of the reference's (noise at another gain, the
- *    source turned down under a carrier): that side is noise and becomes the reference (KNOWN, when the voice band did
- *    not move with it). Louder but still well under the reference with another ratio: the modulation changed under a
- *    carrier (speech after a pause), and the reference stays. Quieter, from a stretch at the
+ *    4 dB of the reference, or within 4 dB of where the gain-like steps seen between carrier stretches put it with its
+ *    voice-to-band ratio within 3 dB of the reference's (the source turned down during a transmission): that side is
+ *    noise and becomes the reference (KNOWN, when the voice band did not move with it). Any other louder run under the
+ *    reference is the carrier's modulation or level changing (speech after a pause, a fading carrier), and the
+ *    reference stays. Quieter, from a stretch at the
  *    reference, with the voice band stationary and moving by the same amount (within 1.5 dB): a gain step, taken after
  *    200 ms more of it with the voice band stationary in three windows of four (the reference rescales). Otherwise a
  *    carrier keyed (KNOWN).
@@ -196,6 +197,10 @@ typedef struct {
     int st_ps;
     int st_on;
     int st_os;
+    /* Gain steps seen under a carrier since the reference was taken (dB, summed), and whether there was one: where noise
+       comes back if the source was turned down during a transmission. */
+    double carrier_gain_db;
+    int carrier_gain_seen;
     /* A new level being confirmed, no-band evidence and its exit. */
     int have_cand;
     double cand_a_db;

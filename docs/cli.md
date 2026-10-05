@@ -766,9 +766,9 @@ quieting, closed under max(N - 3, 1.5) dB. Quieting reads about the carrier-to-n
   four windows hold steady within 1.5 dB the squelch reads `learning` and stays closed; that first steady stretch
   becomes the reference, about 0.15 s into noise. A carrier can only quiet the band, so noise is the loudest it gets:
   when the band rises 4 dB or more from one steady stretch to the next, the louder side is noise and the reference moves
-  there, if it came up near the reference or keeps noise's ratio of voice band to band (the source turned down during
-  a transmission); a louder stretch still well under the reference with another ratio is speech changing under a
-  carrier and leaves the reference alone. A step that moves the voice band as much as the band above it (the source's
+  there if it came up near the reference, or where a volume step seen during the transmission put the noise; any other
+  louder stretch under the reference is the carrier's speech or level changing (a pause ending, a fading carrier) and
+  leaves the reference alone. A step that moves the voice band as much as the band above it (the source's
   volume or AGC) rescales the reference instead. Between transmissions the reference follows the noise with a 1 s time
   constant.
 - Starting on a carrier: with no noise to learn from, the first steady stretch (the carrier, or a pause in its speech)
@@ -787,8 +787,10 @@ quieting, closed under max(N - 3, 1.5) dB. Quieting reads about the carrier-to-n
 - References per source. The squelch keeps up to eight references, one for each input stream, input rate, input volume
   (`--input-volume`, Input > `Input volume...`) and rigctl peer passband (`-B`, or a scan row's width), so a `-Y` scan
   over rows of different widths keeps each one's reference. A retune keeps the reference; reopening the input, or a
-  new rate or input volume, starts learning again, and a passband the peer does not report is learned each time. A
-  pause in the stream (UDP or TCP audio that stops) starts the windows over, at most one 20 ms read late.
+  new rate or input volume, starts learning again. While the peer's passband is not known the squelch keeps one
+  reference, through retunes too, but stores none for it to come back to; the first passband the client learns, and
+  any change of it (a row's width edited live), starts the windows over on that passband's reference. A pause in the
+  stream (UDP or TCP audio that stops) starts the windows over, at most one 20 ms read late.
 - Where it runs: the FM monitor (`-fA`, `nfm` rows) on audio input. An `am` row on audio input runs no noise squelch
   (`off on AM audio`), and digital channels none. `--squelch auto` on audio input is off, with a startup warning. A
   level squelch works on audio input as before, against the input level.

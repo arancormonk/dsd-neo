@@ -388,8 +388,13 @@ dsd_squelch_level_open(const dsd_opts* opts) {
 }
 
 int
+dsd_squelch_flags_in_force(const dsd_opts* opts, const dsd_state* state) {
+    return dsd_squelch_dynamic_in_force(opts, state) || dsd_squelch_pcm_noise_in_force(opts);
+}
+
+int
 dsd_squelch_gate_open(const dsd_opts* opts, const dsd_state* state, uint8_t flag) {
-    if (dsd_squelch_dynamic_in_force(opts, state)) {
+    if (dsd_squelch_flags_in_force(opts, state)) {
         return (flag & (uint8_t)DSD_SQUELCH_FLAG_CLOSED) == 0U;
     }
     return dsd_squelch_level_open(opts);

@@ -282,7 +282,8 @@ test_gate_helpers(void) {
 
 /* NOISE on audio input (issue #628): it gates per sample on the FM monitor while the PCM noise squelch is available
    (learning, or holding a reference), and runs the level path -- level off, with its silence floor -- when the source
-   has no band above voice or no room for one. AUTO, the AM monitor and digital decoding never run it. */
+   has no band above voice or no room for one, its flags (open from then on) still carrying the monitor's gate. AUTO,
+   the AM monitor and digital decoding never run it. */
 static void
 test_pcm_noise_helpers(void) {
     static dsd_opts opts;
@@ -299,8 +300,9 @@ test_pcm_noise_helpers(void) {
 
     assert(dsd_squelch_input_kind(&opts) == DSD_SQUELCH_INPUT_AUDIO);
     assert(dsd_squelch_pcm_noise_in_force(&opts));
-    /* Not running yet, or not published: the level path. */
+    /* Not running yet, or not published: not gating, though its flags (shut until it runs) carry the gate. */
     assert(!dsd_squelch_dynamic_in_force(&opts, &state) && !dsd_squelch_dynamic_in_force(&opts, NULL));
+    assert(dsd_squelch_flags_in_force(&opts, &state));
     state.squelch_noise_state = DSD_SQUELCH_NOISE_STATE_LEARNING;
     assert(dsd_squelch_dynamic_in_force(&opts, &state));
     assert(!dsd_squelch_gate_open(&opts, &state, DSD_SQUELCH_FLAG_CLOSED) && dsd_squelch_gate_open(&opts, &state, 0U));
@@ -308,12 +310,20 @@ test_pcm_noise_helpers(void) {
     assert(dsd_squelch_dynamic_in_force(&opts, &state));
     state.squelch_noise_state = DSD_SQUELCH_NOISE_STATE_KNOWN;
     assert(dsd_squelch_dynamic_in_force(&opts, &state));
-    /* No band or no room: off, the flags mean nothing, and the level (off under NOISE) decides. */
+    assert(dsd_squelch_flags_in_force(&opts, &state));
+    /* No band or no room: not gating (the level, off under NOISE, is what the scan's carrier test reads), but the
+       flags still carry the gate, which reads open from the decision on: a sample the squelch shut before it stays
+       shut. */
     state.squelch_noise_state = DSD_SQUELCH_NOISE_STATE_NO_BAND;
-    assert(!dsd_squelch_dynamic_in_force(&opts, &state));
-    assert(dsd_squelch_level_in_force(&opts) <= 0.0 && dsd_squelch_gate_open(&opts, &state, DSD_SQUELCH_FLAG_CLOSED));
+    assert(!dsd_squelch_dynamic_in_force(&opts, &state) && dsd_squelch_flags_in_force(&opts, &state));
+    assert(dsd_squelch_level_in_force(&opts) <= 0.0 && dsd_squelch_level_open(&opts));
+    assert(!dsd_squelch_gate_open(&opts, &state, DSD_SQUELCH_FLAG_CLOSED) && dsd_squelch_gate_open(&opts, &state, 0U));
     state.squelch_noise_state = DSD_SQUELCH_NOISE_STATE_NO_ROOM;
-    assert(!dsd_squelch_dynamic_in_force(&opts, &state));
+    assert(!dsd_squelch_dynamic_in_force(&opts, &state) && dsd_squelch_flags_in_force(&opts, &state));
+    /* LEVEL on the same input: no flags, the level decides. */
+    opts.rtl_squelch_mode = DSD_SQUELCH_MODE_LEVEL;
+    assert(!dsd_squelch_flags_in_force(&opts, &state));
+    opts.rtl_squelch_mode = DSD_SQUELCH_MODE_NOISE;
 
     state.squelch_noise_state = DSD_SQUELCH_NOISE_STATE_KNOWN;
     /* Every audio input kind; not a symbol file. */

@@ -381,29 +381,38 @@ test_modulation_steps_keep_the_reference(void) {
     free(sq);
 }
 
-/* A carrier that weakens (30 dB CNR, then 20) reads louder above voice, yet is no noise: the reference stays and the
-   gate holds, modulated or dead. */
+/* A carrier that weakens (30 dB CNR, then 20, then 12) reads louder above voice at each step, yet is no noise: the
+   reference stays and the gate holds, dead or modulated at any deviation (a light one leaves the ratio of voice band to
+   band near noise's, so the ratio alone cannot tell). */
 static void
 test_weakening_carrier_keeps_the_reference(void) {
-    static const pcm_tap_kind kinds[] = {PCM_TAP_TONE, PCM_TAP_DEAD};
-    for (int i = 0; i < 2; i++) {
-        dsd_pcm_noise_squelch* sq = new_squelch(48000, 10);
-        static pcm_tap src;
-        static trace tr;
-        DSD_MEMSET(&tr, 0, sizeof tr);
-        pcm_tap_init(&src, 23U + (uint64_t)i, 12500.0, 0.0, 0.0);
-        const seg s[] = {
-            {PCM_TAP_NOISE, 2.0, 0.0, 0.0, 0.0},
-            {kinds[i], 1.5, 30.0, 1000.0, 0.0},
-            {kinds[i], 2.0, 20.0, 1000.0, 0.0},
-            {PCM_TAP_NOISE, 1.0, 0.0, 0.0, 0.0},
-        };
-        run_segments(sq, &src, s, 4, &tr);
-        assert(open_seconds(&tr, 1, 0.12) > 1.5 - 0.12 - 0.021);
-        assert(open_seconds(&tr, 2, 0.0) > 2.0 - 0.021);
-        assert(median_q(&tr, 2, 0.5) > 15.0);
-        assert(open_seconds(&tr, 3, 0.1) < 1e-9);
-        free(sq);
+    static const double devs[] = {-1.0, 150.0, 350.0, 700.0, 1200.0, 0.0}; /* -1: dead; 0: the rated deviation */
+    for (int i = 0; i < (int)(sizeof devs / sizeof devs[0]); i++) {
+        for (uint64_t seed = 23U; seed < 26U; seed++) {
+            dsd_pcm_noise_squelch* sq = new_squelch(48000, 10);
+            static pcm_tap src;
+            static trace tr;
+            DSD_MEMSET(&tr, 0, sizeof tr);
+            pcm_tap_init(&src, seed, 12500.0, 0.0, 0.0);
+            src.tone_dev_hz = devs[i] > 0.0 ? devs[i] : 0.0;
+            const pcm_tap_kind kind = devs[i] < 0.0 ? PCM_TAP_DEAD : PCM_TAP_TONE;
+            const seg s[] = {
+                {PCM_TAP_NOISE, 2.0, 0.0, 0.0, 0.0}, {kind, 1.5, 30.0, 1000.0, 0.0},
+                {kind, 2.0, 20.0, 1000.0, 0.0},      {kind, 2.0, 12.0, 1000.0, 0.0},
+                {PCM_TAP_NOISE, 1.0, 0.0, 0.0, 0.0},
+            };
+            run_segments(sq, &src, s, 5, &tr);
+            if (open_seconds(&tr, 2, 0.0) < 2.0 - 0.021 || open_seconds(&tr, 3, 0.0) < 2.0 - 0.021) {
+                fprintf(stderr, "weakening carrier (deviation %g, seed %llu) shut: %.2f s and %.2f s open\n", devs[i],
+                        (unsigned long long)seed, open_seconds(&tr, 2, 0.0), open_seconds(&tr, 3, 0.0));
+            }
+            assert(open_seconds(&tr, 1, 0.12) > 1.5 - 0.12 - 0.021);
+            assert(open_seconds(&tr, 2, 0.0) > 2.0 - 0.021);
+            assert(open_seconds(&tr, 3, 0.0) > 2.0 - 0.021);
+            assert(median_q(&tr, 2, 0.5) > 15.0);
+            assert(open_seconds(&tr, 4, 0.1) < 1e-9);
+            free(sq);
+        }
     }
 }
 

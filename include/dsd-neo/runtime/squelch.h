@@ -185,8 +185,16 @@ double dsd_squelch_level_in_force(const dsd_opts* opts);
 int dsd_squelch_level_open(const dsd_opts* opts);
 
 /**
+ * @brief Whether the monitor's per-sample flags carry the gate: a dynamic squelch in force
+ * (dsd_squelch_dynamic_in_force()), or the PCM noise squelch running at all (dsd_squelch_pcm_noise_in_force()), whose
+ * flags read open while it has no band or no room. So a block the squelch closed until its last sample stays closed
+ * when the decision that follows is "no band", rather than playing whole.
+ */
+int dsd_squelch_flags_in_force(const dsd_opts* opts, const dsd_state* state);
+
+/**
  * @brief Whether a monitor sample carrying @p flag is heard by the squelch: its own flag (DSD_SQUELCH_FLAG_CLOSED)
- * under a dynamic squelch (dsd_squelch_dynamic_in_force()), the level squelch otherwise.
+ * while the flags carry the gate (dsd_squelch_flags_in_force()), the level squelch otherwise.
  */
 int dsd_squelch_gate_open(const dsd_opts* opts, const dsd_state* state, uint8_t flag);
 

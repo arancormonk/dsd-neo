@@ -834,7 +834,9 @@ The `Linux • RelWithDebInfo • ctest (x86-64-v3, fast-math, clang)` check enf
     refuses AUTO on audio input too (`SVC_SQL_AUTO_NEEDS_RADIO`, issue #628). `dsd_squelch_pcm_noise_in_force()` is
     NOISE on audio input's FM monitor, the PCM noise squelch (DSP, below). The decoder's comparisons go through
     `dsd_squelch_dynamic_in_force()` (an RTL-family input's AUTO or NOISE, or the PCM noise squelch while
-    `dsd_state::squelch_noise_state` says it is learning or holds a reference), `dsd_squelch_level_in_force()`,
+    `dsd_state::squelch_noise_state` says it is learning or holds a reference), `dsd_squelch_flags_in_force()` (whether
+    the monitor's per-sample flags carry the gate: that, or the PCM noise squelch running at all, whose flags read open
+    with no band or no room, so a block shut up to the decision stays shut), `dsd_squelch_level_in_force()`,
     `dsd_squelch_level_open()` and `dsd_squelch_gate_open()` (DSP, below). `dsd_squelch_publish_status()` copies the
     stream's dynamic squelch status on radio input (the RTL IO hook `squelch_status`, `rtl_stream_get_squelch_status()`)
     into int-only `dsd_state::squelch_auto_*` and `squelch_noise_*` fields inside the snapshot range, the floor in
@@ -1972,8 +1974,9 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   most sixteen) with two staggered sets, and a 400-2600 Hz voice band. With no calibration possible it learns the
   noise reference from the input (`tools/pcm_noise_squelch_model.py` chose all of it: `docs/testing.md` "PCM noise
   squelch design gate"): closed while LEARNING, a reference from the first steady stretch (PROVISIONAL), confirmed or
-  raised by a louder transition that reaches it or keeps noise's voice-to-band ratio (KNOWN; a louder one under it
-  with another ratio is modulation under a carrier and leaves it), rescaled by a gain-like one, tracked with a 1 s time constant, learned again
+  raised by a louder transition that reaches it, or lands where gain-like steps under a carrier put it with noise's
+  voice-to-band ratio (KNOWN; any other louder one under it is the carrier's modulation or level and leaves it),
+  rescaled by a gain-like one, tracked with a 1 s time constant, learned again
   after 5 s open on one stretch with a steady voice band, and NO_BAND on 1 s of spectral evidence that nothing is
   above voice. Up to eight references are cached by `dsd_pcm_noise_squelch_key` (source generation and input type,
   native rate, input volume, rigctl peer passband; an unknown passband is never cached). Q = max(Q_sum,
