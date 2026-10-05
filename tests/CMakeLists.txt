@@ -8503,7 +8503,7 @@ target_include_directories(
 )
 dsd_neo_link_dsp_test(dsd-neo_test_dsp_pcm_noise_squelch ${DSD_NEO_TEST_MATH_LIB})
 add_test(NAME DSP_PCM_NOISE_SQUELCH COMMAND dsd-neo_test_dsp_pcm_noise_squelch)
-set_tests_properties(DSP_PCM_NOISE_SQUELCH PROPERTIES TIMEOUT 300)
+set_tests_properties(DSP_PCM_NOISE_SQUELCH PROPERTIES TIMEOUT 600)
 add_test(
     NAME DSP_PCM_NOISE_SQUELCH_SWEEP
     COMMAND dsd-neo_test_dsp_pcm_noise_squelch --sweep

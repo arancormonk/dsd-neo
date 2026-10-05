@@ -762,16 +762,18 @@ quieting, closed under max(N - 3, 1.5) dB. Quieting reads about the carrier-to-n
   noise+10`), or SDR++, SDR# and similar programs with their audio low-pass off. De-emphasis is fine. The band is
   3.8 kHz to the lower of 6.5 kHz and 0.45 times the input's own rate, in 200 Hz sub-bands, and needs 1200 Hz: a
   12 kHz input has room (3.8-5.4 kHz), an 8 or 9.6 kHz input does not.
-- Learning. Each 40 ms window, every 20 ms, measures the sub-bands above voice and the voice band (400-2600 Hz). Until
-  four windows hold steady within 1.5 dB the squelch reads `learning` and stays closed; that first steady stretch
-  becomes the reference, about 0.15 s into noise. A carrier can only quiet the band, so noise is the loudest it gets:
-  when the band rises 4 dB or more from one steady stretch to the next, the louder side is noise and the reference moves
-  there if it came up near the reference. A louder stretch still well under the reference is noise at a lower volume
-  (the source turned down during a transmission, its noise back as the transmission ends) only if it keeps noise's
-  balance of voice band to band and noise's shape across the band for 0.4 s; any other is the carrier's speech or
-  level changing (a pause ending, a fading carrier) and leaves the reference alone. A step that moves the voice band as much as the band above it (the source's
-  volume or AGC) rescales the reference instead. Between transmissions the reference follows the noise with a 1 s time
-  constant.
+- Learning. Each 40 ms window, every 20 ms, measures the sub-bands above voice and the voice band (400-2600 Hz, and
+  its four parts). Until four windows hold steady within 1.5 dB the squelch reads `learning` and stays closed; that
+  first steady stretch becomes the reference, about 0.15 s into noise. A carrier can only quiet the band, so noise is
+  the loudest it gets: when the band rises 4 dB or more from one steady stretch to the next, the louder side is noise
+  and the reference moves there if it came up near the reference. A stretch well under the reference is noise at a
+  lower volume (the source turned down in noise, during a transmission or across a pause) only if it keeps noise's
+  spectrum for 0.4 s: the voice band and each of its parts moved as far as the band above it, and the band not tilted.
+  A carrier's own noise falls away toward the low voice frequencies, and speech or a tone fills some parts and not
+  others, so any other stretch under the reference is the carrier's speech or level changing (a pause ending, a
+  fading carrier) and leaves the reference alone. A step straight out of noise that moves the voice band as much as
+  the band above it (the source's volume or AGC) rescales the reference after 0.2 s of noise's spectrum. Between
+  transmissions the reference follows the noise with a 1 s time constant.
 - Starting on a carrier: with no noise to learn from, the first steady stretch (the carrier, or a pause in its speech)
   becomes the reference, which is too low, so the gate stays closed or opens only in snatches until the first noise
   corrects it. A channel that never shows noise (a continuous broadcast such as a weather station) never settles that

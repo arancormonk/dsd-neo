@@ -22,14 +22,15 @@
  * none: NO_ROOM). It is cut into K sub-bands of about DSD_PCM_NOISE_SQUELCH_SUB_BAND_HZ (at most
  * DSD_PCM_NOISE_SQUELCH_MAX_SUB_BANDS) and DSD_PCM_NOISE_SQUELCH_SETS - 1 staggered sets of K - 1 more, each shifted by
  * a further 1/SETS of a sub-band, so a line on a boundary of one set sits inside a band-pass of another. Each band-pass
- * is a Butterworth band-pass of prototype order 4 (four biquads), as is the voice band [400, 2600] Hz.
+ * is a Butterworth band-pass of prototype order 4 (four biquads), as are the voice band [400, 2600] Hz and its
+ * DSD_PCM_NOISE_SQUELCH_VOICE_PARTS parts (400-800, 800-1300, 1300-1900 and 1900-2600 Hz).
  *
  * Windows: 40 ms (two 20 ms halves, boundary k at floor(k fs / 50) samples), taken every 20 ms. Each window gives each
- * band-pass's mean power p_k, the voice band's V and the input's mean square E. A window whose E is 0 (digital
- * silence) closes the gate and ends the stretch, as a restart does; nothing is learned from it.
+ * band-pass's mean power p_k, the voice band's V and its parts' V_j, and the input's mean square E. A window whose E is
+ * 0 (digital silence) closes the gate and ends the stretch, as a restart does; nothing is learned from it.
  *
  * Learning (from the last M = 4 windows): the run is steady when their above-band powers A = sum p_k (k < K, in dB)
- * all sit within 1.5 dB of their median; its levels are the means over those windows (sp, sa, sv).
+ * all sit within 1.5 dB of their median; its levels are the means over those windows (sp, sa, sv, sv_j).
  *  - LEARNING: the first steady run held for 3 windows becomes the reference r_k (PROVISIONAL). The gate is closed
  *    until then. A carrier taken as the reference only mutes; the first noise corrects it. (A steady tone strong enough
  *    to leave nothing above voice can read NO_BAND instead, which plays it.)
@@ -37,13 +38,16 @@
  *    4 dB of the reference: that side is noise and becomes the reference (KNOWN, when the voice band did not move with
  *    it). A louder run well under the reference is the carrier's modulation or level changing (speech after a pause, a
  *    fading carrier), and the reference stays. Quieter, from a stretch at the reference, with the voice band stationary
- *    and moving by the same amount (within 1.5 dB): a gain step, taken after 200 ms more of it with the voice band
- *    stationary in three windows of four (the reference rescales). Otherwise a carrier keyed (KNOWN).
- *  - Noise come back at a lower gain (the source turned down during a transmission): a stretch that rose from the one
- *    before it, still well under the reference, with the reference's voice-to-band ratio within 1.5 dB and its shape
- *    (sub-bands within 5.5 dB of each other, tilted by at most 2.5 dB against it) is a pending step, taken once 0.4 s
- *    of windows keep that ratio and shape with the voice band steady in three of four: the reference rescales to it.
- *    A stretch that did not rise (a pause in speech) never is.
+ *    and moving by the same amount (within 1.5 dB): a gain step, taken after 200 ms more of it with noise's spectrum
+ *    (below) and the voice band stationary in three windows of four (the reference rescales). Otherwise a carrier keyed
+ *    (KNOWN).
+ *  - Noise come back at a lower gain (the source turned down during a transmission or a pause): a stretch well under
+ *    the reference with noise's spectrum against it -- the voice band within 1.5 dB and each voice part within 2.5 dB
+ *    moved as far as the band (its participating sub-bands' median move, which a spur in one or two does not shift),
+ *    and the sub-bands tilted by at most 2.5 dB end to end -- is a pending step of that move, taken once 0.4 s of
+ *    windows keep that spectrum with the voice band steady in three of four: the reference rescales by it. A carrier's
+ *    noise falls toward the low voice parts, and a tone or speech fills some parts and not others, so neither keeps
+ *    it.
  *  - A steady run at or above the reference less 1.5 dB tracks it with a 1 s time constant (slow drift).
  *  - Stale quieting: the gate open for 5 s on one stretch whose voice band held stationary in 90 % of its windows reads
  *    a level that dropped (a source's volume lowered out of clipping, its audio low-pass switched on), not speech: the
@@ -89,6 +93,8 @@ enum {
     DSD_PCM_NOISE_SQUELCH_CACHE_SIZE = 8,
     /** A sub-band's width, Hz (about: the band is cut evenly). */
     DSD_PCM_NOISE_SQUELCH_SUB_BAND_HZ = 200,
+    /** Parts of the voice band the learner compares with the reference's. */
+    DSD_PCM_NOISE_SQUELCH_VOICE_PARTS = 4,
 };
 
 /** A passband no reference is stored for (the rigctl peer's state is not known). */
@@ -117,6 +123,7 @@ typedef struct {
     double voice_bw_db;
     dsd_noise_squelch_biquad section[DSD_PCM_NOISE_SQUELCH_MAX_BANDS][DSD_NOISE_SQUELCH_SECTIONS];
     dsd_noise_squelch_biquad voice[DSD_NOISE_SQUELCH_SECTIONS];
+    dsd_noise_squelch_biquad voice_part[DSD_PCM_NOISE_SQUELCH_VOICE_PARTS][DSD_NOISE_SQUELCH_SECTIONS];
 } dsd_pcm_noise_squelch_plan;
 
 /** @brief The source context references belong to. */
@@ -134,6 +141,7 @@ typedef struct {
     int state;
     double ref[DSD_PCM_NOISE_SQUELCH_MAX_BANDS];
     double v_ref_db;
+    double vp_ref_db[DSD_PCM_NOISE_SQUELCH_VOICE_PARTS];
     uint64_t stamp; /**< LRU */
 } dsd_pcm_noise_squelch_cache_entry;
 
@@ -161,20 +169,26 @@ typedef struct {
     double s2[DSD_PCM_NOISE_SQUELCH_MAX_BANDS][DSD_NOISE_SQUELCH_SECTIONS];
     double v1[DSD_NOISE_SQUELCH_SECTIONS];
     double v2[DSD_NOISE_SQUELCH_SECTIONS];
+    double vp1[DSD_PCM_NOISE_SQUELCH_VOICE_PARTS][DSD_NOISE_SQUELCH_SECTIONS];
+    double vp2[DSD_PCM_NOISE_SQUELCH_VOICE_PARTS][DSD_NOISE_SQUELCH_SECTIONS];
     /* Sample-exact half-window boundaries since the last restart. */
     uint64_t samples;
     uint64_t half_index;
     uint64_t half_end;
-    /* The open half and the one before it: per band-pass energy, voice energy, input energy and sample count. */
+    /* The open half and the one before it: per band-pass energy, voice and voice-part energy, input energy and sample
+       count. */
     double half_e[DSD_PCM_NOISE_SQUELCH_MAX_BANDS];
     double prev_e[DSD_PCM_NOISE_SQUELCH_MAX_BANDS];
     double half_v, prev_v;
+    double half_vp[DSD_PCM_NOISE_SQUELCH_VOICE_PARTS];
+    double prev_vp[DSD_PCM_NOISE_SQUELCH_VOICE_PARTS];
     double half_x, prev_x;
     double half_n, prev_n;
     int have_prev;
-    /* The last RUN_WINDOWS windows: band powers, voice power and their dB, newest at run_pos - 1. */
+    /* The last RUN_WINDOWS windows: band powers, voice and voice-part powers and their dB, newest at run_pos - 1. */
     double run_p[DSD_PCM_NOISE_SQUELCH_RUN_WINDOWS][DSD_PCM_NOISE_SQUELCH_MAX_BANDS];
     double run_v[DSD_PCM_NOISE_SQUELCH_RUN_WINDOWS];
+    double run_vp[DSD_PCM_NOISE_SQUELCH_RUN_WINDOWS][DSD_PCM_NOISE_SQUELCH_VOICE_PARTS];
     double run_a_db[DSD_PCM_NOISE_SQUELCH_RUN_WINDOWS];
     double run_v_db[DSD_PCM_NOISE_SQUELCH_RUN_WINDOWS];
     int run_pos;
@@ -183,6 +197,7 @@ typedef struct {
     int state;
     double ref[DSD_PCM_NOISE_SQUELCH_MAX_BANDS];
     double v_ref_db;
+    double vp_ref_db[DSD_PCM_NOISE_SQUELCH_VOICE_PARTS];
     unsigned char part[DSD_PCM_NOISE_SQUELCH_MAX_BANDS];
     double usable_hz;
     /* The stretch: anchor level, voice power sum, windows, voice-steady windows, whether it began at the reference, a
@@ -196,7 +211,6 @@ typedef struct {
     int st_pending;
     double st_pend_db;
     int st_pend_lowered; /**< the pending step is noise come back at a lower gain */
-    int st_rose;         /**< the stretch began louder than the one before it */
     int st_pn;
     int st_ps;
     int st_on;
@@ -219,7 +233,7 @@ typedef struct {
 
 /**
  * @brief Design the plan for samples at @p rate_hz from a source at @p native_rate_hz: the band, its band-passes
- * (sub-bands and staggered sets) and the voice band-pass.
+ * (sub-bands and staggered sets) and the voice band-passes.
  * @return 0, or -1 (plan not valid: NO_ROOM) when less than 1200 Hz of band fits under 0.45 of the native rate.
  */
 int dsd_pcm_noise_squelch_plan_design(dsd_pcm_noise_squelch_plan* out, int rate_hz, int native_rate_hz);

@@ -1967,27 +1967,28 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   Butterworth band-pass design (`dsd_noise_squelch_bank_design_band_pass()`), the runners, the per-band ratio and the
   Q = max(Q_sum, Q_max - guard) combine (`dsd_noise_squelch_bank_quieting_db()`); the radio squelch's results are
   bit-identical to before the split.
-- The PCM noise squelch's core (issue #628) is `src/dsp/pcm_noise_squelch.c` (`<dsd-neo/dsp/pcm_noise_squelch.h>`),
-  pure (no clock, I/O or allocation) and on audio input's own samples at the monitor rate. Its plan
+- The PCM noise squelch's core (issue #628) is `src/dsp/pcm_noise_squelch.c` (`<dsd-neo/dsp/pcm_noise_squelch.h>`), pure
+  (no clock, I/O or allocation) and on audio input's own samples at the monitor rate. Its plan
   (`dsd_pcm_noise_squelch_plan_design()`, from the monitor rate and the input's native rate) takes the band from 3.8 kHz
-  to the lower of 6.5 kHz and 0.45 times the native rate (at least 1200 Hz, else no room), in 200 Hz sub-bands (at
-  most sixteen) with two staggered sets, and a 400-2600 Hz voice band. With no calibration possible it learns the
-  noise reference from the input (`tools/pcm_noise_squelch_model.py` chose all of it: `docs/testing.md` "PCM noise
+  to the lower of 6.5 kHz and 0.45 times the native rate (at least 1200 Hz, else no room), in 200 Hz sub-bands (at most
+  sixteen) with two staggered sets, and a 400-2600 Hz voice band with four parts. With no calibration possible it learns
+  the noise reference from the input (`tools/pcm_noise_squelch_model.py` chose all of it: `docs/testing.md` "PCM noise
   squelch design gate"): closed while LEARNING, a reference from the first steady stretch (PROVISIONAL), confirmed or
-  raised by a louder transition that reaches it (KNOWN), lowered to noise come back at a lower gain (a stretch that
-  rose from the one before, still well under it, holding noise's voice-to-band ratio and sub-band shape for 0.4 s; any
-  other louder stretch under it is the carrier's modulation or level and leaves it), rescaled by a gain-like one, tracked with a 1 s time constant, learned again
-  after 5 s open on one stretch with a steady voice band, and NO_BAND on 1 s of spectral evidence that nothing is
+  raised by a louder transition that reaches it (KNOWN), lowered to noise come back at a lower gain (a stretch well
+  under it holding noise's spectrum for 0.4 s: the voice band and each of its parts moved as far as the sub-bands'
+  median, the sub-bands not tilted; any other stretch under it is the carrier's modulation or level and leaves it),
+  rescaled by a gain-like transition out of noise that holds noise's spectrum, tracked with a 1 s time constant, learned
+  again after 5 s open on one stretch with a steady voice band, and NO_BAND on 1 s of spectral evidence that nothing is
   above voice. Up to eight references are cached by `dsd_pcm_noise_squelch_key` (source generation and input type,
-  native rate, input volume, rigctl peer passband; an unknown passband is never cached). Q = max(Q_sum,
-  Q_max - 6 dB) over the band-passes that take part; the gate opens at N and closes under max(N - 3, 1.5) dB, one
-  flag per sample, bit-identical whatever the block cuts. The decoder runs it from `symbol_process_unsynced_analog()`
-  for non-RTL input (`dsd_analog_rx_pcm_squelch_sample()`, `src/dsp/analog_rx.c`): its state rides
-  `analog_rx_session` (state-ext slot 9) and never creates the session; a boundary counter the tap bumps at a reset,
-  a pause, a generation or rate move and an FM/AM switch restarts its windows; it holds closed and learns nothing
-  while the tap's backlog skip is armed; it reads the rigctl peer's passband through the runtime rigctl query hook
-  (`dsd_rigctl_query_hook_get_passband_hz()`, which the engine installs reading `CachedModulation()` under the P25 SM
-  tick guard, and which reads unknown when the guard is busy); and it writes `dsd_state::squelch_noise_*` and
+  native rate, input volume, rigctl peer passband; an unknown passband is never cached). Q = max(Q_sum, Q_max - 6 dB)
+  over the band-passes that take part; the gate opens at N and closes under max(N - 3, 1.5) dB, one flag per sample,
+  bit-identical whatever the block cuts. The decoder runs it from `symbol_process_unsynced_analog()` for non-RTL input
+  (`dsd_analog_rx_pcm_squelch_sample()`, `src/dsp/analog_rx.c`): its state rides `analog_rx_session` (state-ext slot 9)
+  and never creates the session; a boundary counter the tap bumps at a reset, a pause, a generation or rate move and an
+  FM/AM switch restarts its windows; it holds closed and learns nothing while the tap's backlog skip is armed; it reads
+  the rigctl peer's passband through the runtime rigctl query hook (`dsd_rigctl_query_hook_get_passband_hz()`, which the
+  engine installs reading `CachedModulation()` under the P25 SM tick guard: busy, keeping the passband last read, when
+  the guard is held; unknown, a boundary, after a lost reply); and it writes `dsd_state::squelch_noise_*` and
   `squelch_auto_gate_open` for the views, logging once why it is off (no room, no band, with the scan consequence).
   Tests: `DSP_PCM_NOISE_SQUELCH`, `DSP_PCM_NOISE_SQUELCH_SWEEP`, `DSP_SYMBOL_REPLAY`
   (`test_pcm_noise_squelch_gates_each_sample`, `test_pcm_noise_squelch_holds_the_backlog`),

@@ -8,14 +8,17 @@
  * complex noise and a carrier through a FIR channel filter, a discriminator, optional de-emphasis and audio low-pass,
  * a volume and int16 rounding (tools/pcm_noise_squelch_model.py's sources). The band rule, the band-passes' response,
  * learning with the gate closed, noise that never opens it, carriers that open it and confirm the reference, quieting
- * that follows the CNR and not the level, gain steps, starting on a carrier, a pcm_tap that low-passed its audio (no
- * band), rates with no room, digital silence, the per-passband cache, stale quieting, the threshold, and flags that do
- * not depend on how the samples are cut into blocks. --sweep runs strong modulation that must never close the gate.
+ * that follows the CNR and not the level, gain steps (in noise, under a carrier, across a pause, at an unkey, with a
+ * spur added after the volume), carriers that are no gain step, starting on a carrier, a pcm_tap that low-passed its
+ * audio (no band), rates with no room, digital silence, the per-passband cache, stale quieting, the threshold, and
+ * flags that do not depend on how the samples are cut into blocks. --sweep runs strong modulation that must never
+ * close the gate.
  */
 
 #include <assert.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/dsp/nfm_noise_squelch.h>
 #include <dsd-neo/dsp/pcm_noise_squelch.h>
 #include <math.h>
 #include <stdint.h>
@@ -59,6 +62,22 @@ typedef struct {
     int open_flags[MAX_BLOCKS];
 } trace;
 
+/* A spur added after the source's volume (a line of the sound card's or the program's own), RMS dBFS at g_spur_hz;
+   none while g_spur_hz is 0. */
+static double g_spur_hz = 0.0;
+static double g_spur_dbfs = 0.0;
+static uint64_t g_spur_n = 0U;
+
+static float
+spurred(float v) {
+    if (g_spur_hz <= 0.0) {
+        return v;
+    }
+    const double a = 32768.0 * sqrt(2.0) * pow(10.0, g_spur_dbfs / 20.0);
+    const double x = (double)v + (a * sin(2.0 * M_PI * g_spur_hz * (double)g_spur_n++ / (double)RATE));
+    return (float)floor(x + 0.5);
+}
+
 static void
 run_segments(dsd_pcm_noise_squelch* sq, pcm_tap* src, const seg* segs, int nsegs, trace* tr) {
     static float pcm[BLOCK];
@@ -67,7 +86,7 @@ run_segments(dsd_pcm_noise_squelch* sq, pcm_tap* src, const seg* segs, int nsegs
         const int blocks = (int)lround(segs[k].seconds * (double)RATE / (double)BLOCK);
         for (int b = 0; b < blocks; b++) {
             for (int i = 0; i < BLOCK; i++) {
-                pcm[i] = pcm_tap_next(src, segs[k].kind, segs[k].cnr_db, segs[k].tone_hz, segs[k].gain_db);
+                pcm[i] = spurred(pcm_tap_next(src, segs[k].kind, segs[k].cnr_db, segs[k].tone_hz, segs[k].gain_db));
             }
             dsd_pcm_noise_squelch_process(sq, pcm, BLOCK, flags);
             if (tr && tr->blocks < MAX_BLOCKS) {
@@ -96,6 +115,24 @@ new_squelch(int native_rate, int threshold_db) {
     dsd_pcm_noise_squelch_set_key(sq, &key);
     return sq;
 }
+
+/* The status after the last block. */
+static const dsd_pcm_noise_squelch_status*
+last_status(const trace* tr) {
+    assert(tr->blocks > 0);
+    return &tr->st[tr->blocks - 1];
+}
+
+/* A source's audio: its native rate, channel width and the low-pass its rate leaves (the staging interpolator's for
+   rates under 48 kHz). rtl_fm at -s 12k is the narrowest band, 3.8-5.4 kHz. */
+typedef struct {
+    int native_hz;
+    double width_hz;
+    double lpf_hz;
+} tap_source;
+
+static const tap_source k_sdr_48k = {48000, 12500.0, 0.0};
+static const tap_source k_rtl_fm_12k = {12000, 12000.0, 5400.0};
 
 /* Blocks of segment k, from @p skip_s seconds into it. */
 static int
@@ -200,6 +237,7 @@ static void
 test_band_pass_response(void) {
     dsd_pcm_noise_squelch_plan p;
     assert(dsd_pcm_noise_squelch_plan_design(&p, 48000, 48000) == 0);
+    assert(p.sub_bands > 1);
     const double step = p.step_hz;
     for (int k = 0; k < p.bands; k++) {
         const int set = k < p.sub_bands ? 0 : 1 + ((k - p.sub_bands) / (p.sub_bands - 1));
@@ -240,8 +278,8 @@ test_noise_learns_and_never_opens(void) {
         open += (double)tr.open_flags[b];
     }
     assert(learned_block >= 0 && (double)(learned_block + 1) * 0.02 <= 0.2 + 1e-9);
-    assert(tr.st[tr.blocks - 1].state == DSD_PCM_NOISE_SQUELCH_PROVISIONAL);
-    assert(tr.st[tr.blocks - 1].available == 1);
+    assert(last_status(&tr)->state == DSD_PCM_NOISE_SQUELCH_PROVISIONAL);
+    assert(last_status(&tr)->available == 1);
     assert(q_max < 3.0);
     assert(open < 0.5);
     free(sq);
@@ -265,7 +303,7 @@ test_carrier_opens_and_confirms(void) {
     assert(open_seconds(&tr, 0, 0.3) < 1e-9);
     assert(open_seconds(&tr, 1, 0.12) > 1.5 - 0.12 - 0.021);
     assert(open_seconds(&tr, 2, 0.1) < 1e-9);
-    assert(tr.st[tr.blocks - 1].state == DSD_PCM_NOISE_SQUELCH_KNOWN);
+    assert(last_status(&tr)->state == DSD_PCM_NOISE_SQUELCH_KNOWN);
     free(sq);
 }
 
@@ -377,40 +415,74 @@ test_modulation_steps_keep_the_reference(void) {
     }
     assert(open > 4.0 - 0.12 - 0.021);
     assert(open_seconds(&tr, n - 1, 0.1) < 1e-9);
-    assert(tr.st[tr.blocks - 1].state == DSD_PCM_NOISE_SQUELCH_KNOWN);
+    assert(last_status(&tr)->state == DSD_PCM_NOISE_SQUELCH_KNOWN);
     free(sq);
 }
 
 /* A carrier that weakens (30 dB CNR, then 20, then 12) reads louder above voice at each step, yet is no noise: the
-   reference stays and the gate holds, dead or modulated at any deviation (a light one leaves the ratio of voice band to
-   band near noise's, so the ratio alone cannot tell). */
+   reference stays and the gate holds, dead or modulated at any deviation, on a 48 kHz source and on rtl_fm's narrowest
+   band (a light tone leaves the ratio of voice band to band near noise's, so the ratio alone cannot tell; it fills one
+   part of the voice band, and its carrier's noise leaves the low parts far under noise's). */
 static void
 test_weakening_carrier_keeps_the_reference(void) {
-    static const double devs[] = {-1.0, 150.0, 350.0, 700.0, 1200.0, 0.0}; /* -1: dead; 0: the rated deviation */
-    for (int i = 0; i < (int)(sizeof devs / sizeof devs[0]); i++) {
-        for (uint64_t seed = 23U; seed < 26U; seed++) {
-            dsd_pcm_noise_squelch* sq = new_squelch(48000, 10);
+    static const double devs[] = {-1.0, 100.0, 150.0, 200.0, 350.0, 700.0, 1200.0, 0.0}; /* -1: dead; 0: rated */
+    for (int t = 0; t < 2; t++) {
+        const tap_source* ts = t ? &k_rtl_fm_12k : &k_sdr_48k;
+        for (int i = 0; i < (int)(sizeof devs / sizeof devs[0]); i++) {
+            for (uint64_t seed = 23U; seed < 25U; seed++) {
+                dsd_pcm_noise_squelch* sq = new_squelch(ts->native_hz, 10);
+                static pcm_tap src;
+                static trace tr;
+                DSD_MEMSET(&tr, 0, sizeof tr);
+                pcm_tap_init(&src, seed, ts->width_hz, 0.0, ts->lpf_hz);
+                src.tone_dev_hz = devs[i] > 0.0 ? devs[i] : 0.0;
+                const pcm_tap_kind kind = devs[i] < 0.0 ? PCM_TAP_DEAD : PCM_TAP_TONE;
+                const seg s[] = {
+                    {PCM_TAP_NOISE, 2.0, 0.0, 0.0, 0.0}, {kind, 1.5, 30.0, 1000.0, 0.0},
+                    {kind, 2.0, 20.0, 1000.0, 0.0},      {kind, 2.0, 12.0, 1000.0, 0.0},
+                    {PCM_TAP_NOISE, 1.0, 0.0, 0.0, 0.0},
+                };
+                run_segments(sq, &src, s, 5, &tr);
+                if (open_seconds(&tr, 2, 0.0) < 2.0 - 0.021 || open_seconds(&tr, 3, 0.0) < 2.0 - 0.021) {
+                    DSD_FPRINTF(stderr,
+                                "weakening carrier (%d Hz, deviation %g, seed %llu) shut: %.2f s and %.2f s open\n",
+                                ts->native_hz, devs[i], (unsigned long long)seed, open_seconds(&tr, 2, 0.0),
+                                open_seconds(&tr, 3, 0.0));
+                }
+                assert(open_seconds(&tr, 1, 0.12) > 1.5 - 0.12 - 0.021);
+                assert(open_seconds(&tr, 2, 0.0) > 2.0 - 0.021);
+                assert(open_seconds(&tr, 3, 0.0) > 2.0 - 0.021);
+                assert(median_q(&tr, 2, 0.5) > 15.0);
+                assert(open_seconds(&tr, 4, 0.1) < 1e-9);
+                free(sq);
+            }
+        }
+    }
+}
+
+/* A carrier keyed straight out of noise whose voice band drops as far as the band (a light tone at 20 dB CNR) is no
+   gain step: it does not keep noise's spectrum, so the reference stays and the gate holds over the whole carrier. */
+static void
+test_carrier_is_no_gain_step(void) {
+    static const double devs[] = {100.0, 200.0, 350.0};
+    for (int t = 0; t < 2; t++) {
+        const tap_source* ts = t ? &k_rtl_fm_12k : &k_sdr_48k;
+        for (int i = 0; i < (int)(sizeof devs / sizeof devs[0]); i++) {
+            dsd_pcm_noise_squelch* sq = new_squelch(ts->native_hz, 10);
             static pcm_tap src;
             static trace tr;
             DSD_MEMSET(&tr, 0, sizeof tr);
-            pcm_tap_init(&src, seed, 12500.0, 0.0, 0.0);
-            src.tone_dev_hz = devs[i] > 0.0 ? devs[i] : 0.0;
-            const pcm_tap_kind kind = devs[i] < 0.0 ? PCM_TAP_DEAD : PCM_TAP_TONE;
+            pcm_tap_init(&src, 23U, ts->width_hz, 0.0, ts->lpf_hz);
+            src.tone_dev_hz = devs[i];
             const seg s[] = {
-                {PCM_TAP_NOISE, 2.0, 0.0, 0.0, 0.0}, {kind, 1.5, 30.0, 1000.0, 0.0},
-                {kind, 2.0, 20.0, 1000.0, 0.0},      {kind, 2.0, 12.0, 1000.0, 0.0},
+                {PCM_TAP_NOISE, 2.0, 0.0, 0.0, 0.0},
+                {PCM_TAP_TONE, 2.0, 20.0, 1000.0, 0.0},
                 {PCM_TAP_NOISE, 1.0, 0.0, 0.0, 0.0},
             };
-            run_segments(sq, &src, s, 5, &tr);
-            if (open_seconds(&tr, 2, 0.0) < 2.0 - 0.021 || open_seconds(&tr, 3, 0.0) < 2.0 - 0.021) {
-                fprintf(stderr, "weakening carrier (deviation %g, seed %llu) shut: %.2f s and %.2f s open\n", devs[i],
-                        (unsigned long long)seed, open_seconds(&tr, 2, 0.0), open_seconds(&tr, 3, 0.0));
-            }
-            assert(open_seconds(&tr, 1, 0.12) > 1.5 - 0.12 - 0.021);
-            assert(open_seconds(&tr, 2, 0.0) > 2.0 - 0.021);
-            assert(open_seconds(&tr, 3, 0.0) > 2.0 - 0.021);
-            assert(median_q(&tr, 2, 0.5) > 15.0);
-            assert(open_seconds(&tr, 4, 0.1) < 1e-9);
+            run_segments(sq, &src, s, 3, &tr);
+            assert(open_seconds(&tr, 1, 0.12) > 2.0 - 0.12 - 0.021);
+            assert(median_q(&tr, 1, 0.5) > 15.0);
+            assert(open_seconds(&tr, 2, 0.1) < 1e-9);
             free(sq);
         }
     }
@@ -506,6 +578,45 @@ test_volume_step_under_a_carrier(void) {
     free(sq);
 }
 
+/* The noise after a source turned down with no stretch in between that rose to it: across a pause (exact zeros end the
+   stretch), and in a carrier's last 60 ms (too short to be one, so the noise follows the carrier at full volume and
+   reads quieter than it). Each keeps noise's spectrum, so it becomes the reference within the same bound, and the
+   next carrier opens the gate. With @p spur, a line at 5 kHz, -60 dBFS, is added after the volume: once the noise is
+   30 dB down it stands out of its sub-bands, which the band's median move passes over. */
+static void
+run_volume_step_without_a_rise(int pause, int spur) {
+    dsd_pcm_noise_squelch* sq = new_squelch(48000, 10);
+    static pcm_tap src;
+    static trace tr;
+    DSD_MEMSET(&tr, 0, sizeof tr);
+    pcm_tap_init(&src, pause ? 31U : 32U, 12500.0, 0.0, 0.0);
+    g_spur_hz = spur ? 5000.0 : 0.0;
+    g_spur_dbfs = -60.0;
+    g_spur_n = 0U;
+    const double gain = pause ? -12.0 : -30.0;
+    const seg s[] = {
+        {PCM_TAP_NOISE, 2.0, 0.0, 0.0, 0.0},
+        {PCM_TAP_TONE, 1.0, 20.0, 1000.0, 0.0},
+        pause ? (seg){PCM_TAP_ZERO, 0.2, 0.0, 0.0, 0.0} : (seg){PCM_TAP_TONE, 0.06, 20.0, 1000.0, gain},
+        {PCM_TAP_NOISE, 3.0, 0.0, 0.0, gain},
+        {PCM_TAP_TONE, 1.0, 20.0, 1000.0, gain},
+    };
+    run_segments(sq, &src, s, 5, &tr);
+    g_spur_hz = 0.0;
+    assert(open_seconds(&tr, 3, 0.0) < 0.7);
+    assert(open_seconds(&tr, 3, 0.7) < 1e-9);
+    assert(fabs(median_q(&tr, 3, 1.0)) < 1.5);
+    assert(open_seconds(&tr, 4, 0.12) > 1.0 - 0.12 - 0.021);
+    free(sq);
+}
+
+static void
+test_volume_step_without_a_rise(void) {
+    run_volume_step_without_a_rise(1, 0);
+    run_volume_step_without_a_rise(0, 0);
+    run_volume_step_without_a_rise(0, 1);
+}
+
 /* A session that starts on a carrier takes it as the reference and stays shut on it; the first noise corrects that,
    and the next carrier opens the gate. */
 static void
@@ -556,7 +667,7 @@ test_low_passed_source_reads_no_band(void) {
         assert(tr.open_flags[b] == 0);
     }
     assert(no_band >= 0 && (double)(no_band + 1) * 0.02 <= 2.0);
-    const dsd_pcm_noise_squelch_status* last = &tr.st[tr.blocks - 1];
+    const dsd_pcm_noise_squelch_status* last = last_status(&tr);
     assert(last->state == DSD_PCM_NOISE_SQUELCH_NO_BAND && last->available == 0 && last->gate_open == 1);
     assert(tr.open_flags[tr.blocks - 1] == BLOCK);
     free(sq);
@@ -684,7 +795,7 @@ test_stale_quieting(void) {
         }
     }
     assert(opened < 5.3);
-    assert(tr.st[tr.blocks - 1].state == DSD_PCM_NOISE_SQUELCH_NO_BAND);
+    assert(last_status(&tr)->state == DSD_PCM_NOISE_SQUELCH_NO_BAND);
     free(sq);
 }
 
@@ -804,7 +915,9 @@ main(int argc, char** argv) {
     test_volume_step_down();
     test_volume_step_under_a_carrier();
     test_volume_step_during_speech();
+    test_volume_step_without_a_rise();
     test_weakening_carrier_keeps_the_reference();
+    test_carrier_is_no_gain_step();
     test_strengthening_carrier_is_no_volume_step();
     test_gaps_break_the_stretch();
     test_modulation_steps_keep_the_reference();
