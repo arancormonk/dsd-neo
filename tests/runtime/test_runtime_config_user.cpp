@@ -1950,7 +1950,7 @@ test_pcm_squelch_keys_roundtrip(void) {
         rc |= 1;
     }
 
-    /* The save: a tcp session under noise+8 writes the keys; one with the squelch off writes none of them. */
+    /* The save: a tcp session under noise+8 writes the keys, and one with the squelch off writes it off. */
     reset_opts_and_state(opts, state);
     DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "tcp:127.0.0.1:7355");
     opts.audio_in_type = AUDIO_IN_TCP;
@@ -1970,9 +1970,29 @@ test_pcm_squelch_keys_roundtrip(void) {
     opts.rtl_squelch_mode = DSD_SQUELCH_MODE_LEVEL;
     opts.rtl_squelch_level = 0.0;
     dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
-    if (render_config_to_buffer(&snap, text, sizeof text) != 0 || strstr(text, "rtl_sql") != NULL) {
-        DSD_FPRINTF(stderr, "a PCM session with the squelch off rendered squelch keys:\n%s\n", text);
+    if (render_config_to_buffer(&snap, text, sizeof text) != 0) {
+        return 1;
+    }
+    rc |= expect_contains("tcp off render", text, "rtl_sql = 0");
+    /* Loaded back over a session running noise, that save switches the squelch off again. */
+    if (write_temp_config(text, path, sizeof path) != 0) {
+        return 1;
+    }
+    dsdneoUserConfig off;
+    const int loaded = dsd_user_config_load(path, &off);
+    (void)remove(path);
+    const dsd_squelch_setting noise10 = dsd_squelch_setting_noise(10);
+    dsd_squelch_setting_store(&opts, &noise10);
+    if (loaded != 0 || !off.rtl_sql_is_set) {
+        DSD_FPRINTF(stderr, "the saved off squelch did not load (rc %d set %d)\n", loaded, off.rtl_sql_is_set);
         rc |= 1;
+    } else {
+        dsd_apply_user_config_to_opts(&off, &opts, &state);
+        if (opts.rtl_squelch_mode != DSD_SQUELCH_MODE_LEVEL || !dsd_squelch_is_off(opts.rtl_squelch_level)) {
+            DSD_FPRINTF(stderr, "reloading a saved off squelch left mode %d level %g\n", opts.rtl_squelch_mode,
+                        opts.rtl_squelch_level);
+            rc |= 1;
+        }
     }
     /* A WAV session's level is saved too. */
     DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "capture.wav");

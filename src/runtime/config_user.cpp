@@ -484,14 +484,16 @@ snapshot_squelch_values(const dsd_opts* opts, const dsd_state* state, dsdneoUser
     cfg->rtl_sql_margin_db = configured ? configured->rtl_squelch_margin_db : opts->rtl_squelch_margin_db;
 }
 
-/* A PCM session (issue #628) saves its squelch only when one is set: an untouched session's save adds nothing. */
+/* A PCM session (issue #628) saves its squelch, off included (`rtl_sql = 0`), so loading the save puts back what ran,
+   as an RTL session's does. Only a config without the keys (one saved before audio input had a squelch) leaves the
+   squelch a load finds alone. */
 static void
 snapshot_pcm_squelch_values(const dsd_opts* opts, const dsd_state* state, dsdneoUserConfig* cfg) {
     if (dsd_squelch_input_kind(opts) != DSD_SQUELCH_INPUT_AUDIO) {
         return;
     }
     snapshot_squelch_values(opts, state, cfg);
-    cfg->rtl_sql_is_set = cfg->rtl_sql != 0 || dsd_squelch_mode_is_dynamic(cfg->rtl_sql_mode);
+    cfg->rtl_sql_is_set = 1;
 }
 
 static void
