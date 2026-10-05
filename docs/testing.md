@@ -1424,18 +1424,18 @@ the learner in full. Two facts make a learned reference work:
   (ruling 4) bounds how long one can hold the gate open. Kurtosis does not separate noise from a carrier (both read
   about 3), so no single window classifies.
 
-Source chains (27): SDR-program taps (12.5, 16 and 25 kHz channel FIRs, de-emphasis none, 50, 75 and 750 us, at 48, 44.1,
-24, 16, 12, 96 and 8-9.6 kHz), `rtl_fm` (boxcar decimation, with and without `-E deemp`, at 48, 24 and 12 kHz), a
-hardware discriminator tap (a +/-7.5 kHz IF, AC coupling, a sound card), floors and an above-band tone added after the
-source's filters, and sources that low-passed their audio (steep FIRs at 3.0, 3.4 and 4.0 kHz, one amplified until it
-clips, and a gentle Butterworth whose verdict may go either way). Rates under 48 kHz that divide it reach the monitor
-through the production staging interpolator (`src/dsp/pcm_input_staging.c`), modelled tap for tap. Each source runs
-600 s of noise, the radio gate's tone grid at the source's rated deviation (centred and at its Carson edges),
-remodulated NFM speech, CNR sweeps, and scenarios: keyed transmissions, starting mid-carrier and on dead air, a
-continuous carrier, volume steps of +/-6, 12 and 20 dB in noise and under a carrier, and of 12 and 30 dB across a pause
-and in a carrier's last 60 ms, a 200 Hz-deviation tone fading through 30, 20 and 12 dB CNR, an AGC and slow drift,
-clipping, impulses, a neighbour inside a wide source filter, stream pauses, zero padding, and the passband moving
-between 12.5 and 25 kHz.
+Source chains (28): SDR-program taps (12.5, 16 and 25 kHz channel FIRs, de-emphasis none, 50, 75 and 750 us, at 48,
+44.1, 24, 16, 12, 96 and 8-9.6 kHz), `rtl_fm` (boxcar decimation, with and without `-E deemp`, at 48, 24 and 12 kHz), a
+hardware discriminator tap (a +/-7.5 kHz IF, AC coupling, a sound card), floors and above-band tones (5 and 6.1 kHz)
+added after the source's filters, and sources that low-passed their audio (steep FIRs at 3.0, 3.4 and 4.0 kHz, one
+amplified until it clips, and a gentle Butterworth whose verdict may go either way). Rates under 48 kHz that divide it
+reach the monitor through the production staging interpolator (`src/dsp/pcm_input_staging.c`), modelled tap for tap.
+Each source runs 600 s of noise, the radio gate's tone grid at the source's rated deviation (centred and at its Carson
+edges), remodulated NFM speech, CNR sweeps, and scenarios: keyed transmissions, starting mid-carrier and on dead air, a
+continuous carrier, volume steps of +/-6, 12 and 20 dB in noise and under a carrier, of 12 and 30 dB across a pause and
+in a carrier's last 60 ms, and of 3 dB at N = 3, a 200 Hz-deviation tone fading through 30, 20 and 12 dB CNR, a carrier
+relaying noise and then speech, an AGC and slow drift, clipping, impulses, a neighbour inside a wide source filter,
+stream pauses, zero padding, and the passband moving between 12.5 and 25 kHz.
 
 The gate: a reference within 0.3 s of noise; noise reaching N = 3 in at most 1e-4 of evaluations once learned; wanted
 modulation keeping its 1st-percentile Q at least 6 dB over N = 30 where the source's floor leaves that much room;
@@ -1445,18 +1445,19 @@ none while learning; the low-passed sources reading no band and never reporting 
 The band: 3.8 kHz to the lower of 6.5 kHz and 0.45 times the input's native rate, in 200 Hz sub-bands with two
 staggered sets between them, Q = max(Q_sum, Q_max - 6 dB). The radio squelch ends its band at the channel edge, but
 noise alone shows no edge here: through every source chain the noise is flat to within about 1 dB a sub-band across the
-band, so the top is fixed. 300 Hz sub-bands pass 14 of 25 sources (harmonics on the boundaries again), 250 Hz 22, and
-200 Hz with a 5 dB guard 23 and with a 6 dB guard and two staggered sets 24. Over the learner grid on that band
-(steady window count, transition step, gain tolerance, no-band ratio, no-band time; a quick run on nine representative
+band, so the top is fixed. 300 Hz sub-bands pass 14 of 26 sources (harmonics on the boundaries again), 250 Hz 23, and
+200 Hz with a 5 dB guard 24 and with a 6 dB guard and two staggered sets 25. Over the learner grid on that band
+(steady window count, transition step, gain tolerance, no-band ratio, no-band time; a quick run on ten representative
 sources) all 162 combinations pass every source, so the chosen one, in the middle of the grid, has room on every side.
 
-| Figure (full run, 27 sources, about 51 minutes on 6 workers) | Result |
+| Figure (full run, 28 sources, about 54 minutes on 7 workers) | Result |
 | --- | --- |
-| Sources with a band | 25; the 8 and 9.6 kHz inputs have no room (`no room above voice`) |
+| Sources with a band | 26; the 8 and 9.6 kHz inputs have no room (`no room above voice`) |
 | Reference learned | 0.14-0.16 s into noise on every source with a band |
-| Noise reaching N = 3 | at most 3.3e-5 of evaluations (the 750 us and above-band tone chains), never on the rest |
+| Noise reaching N = 3 | at most 3.3e-5 of evaluations (the 750 us chain and the 5 kHz tone chain), never on the rest |
 | Wanted modulation, 1st percentile | 33.5-78.9 dB on the sources with a band (33.5 dB: the hardware tap at 48 kHz, ruling 6); `rtl_fm` 61-79 dB |
-| Worst false open on noise, every scenario | 0.44-0.68 s, the 0.4 s that noise turned down during a transmission or across a pause holds before it lowers the reference (ruling 8; 0.68 s: `rtl_fm` at 24 kHz turned down 30 dB in a carrier's last 60 ms); the clipping 3.4 kHz source's 5.08 s is the stale bound (ruling 4) |
+| Worst false open on noise, every scenario | 0.44-0.68 s on the unfiltered sources, the 0.4 s that noise turned down holds before it lowers the reference (ruling 8; 0.68 s: `rtl_fm` at 24 kHz turned down 30 dB in a carrier's last 60 ms); 1.00 s on the gentle 3 kHz Butterworth source, whose verdict may go either way; the clipping 3.4 kHz source's 5.08 s is the stale bound (ruling 4) |
+| Carrier relaying noise, then speech | the speech loses at most 1.4% (`relay-speech`, ruling 10) |
 | Low-passed sources | the 3.0 kHz FIR, and the 3.4 kHz FIR with de-emphasis and at 16 kHz, read no band and report no quieting; of the three that may go either way, the 4.0 kHz FIR reads no band, and the gentle Butterworth and the clipping 3.4 kHz source keep a band (clipping puts harmonics there) and pass |
 
 Rulings on the cases the gate left open:
@@ -1476,25 +1477,39 @@ Rulings on the cases the gate left open:
 7. An input rate with no room is logged by the squelch at first use; the engine adds no note of its own.
 8. A louder steady stretch replaces the reference only when it comes up within 4 dB of it: a live weather broadcast
    (below), whose synthesized speech steps its energy above voice up under the carrier, played half of each segment
-   while any louder stretch replaced the reference. A stretch well under the reference is noise at a lower gain (the
-   source turned down in noise, during a transmission or across a pause) only when it keeps noise's spectrum against the
-   reference for 0.4 s, with the voice band steady in three windows of four and any run of the stretch able to start it:
-   the voice band within 1.5 dB and each of its four parts (400-800, 800-1300, 1300-1900 and 1900-2600 Hz) within 2.5 dB
-   moved as far as the band, the band's move being its sub-bands' median, and the sub-bands tilted by at most 2.5 dB end
-   to end. The reference then rescales by that move. A gain step straight out of noise needs the same spectrum through
-   its 0.2 s hold. Measured over nine chains, noise 6 to 30 dB down keeps that spectrum in 93-100% of its runs; a
-   carrier's own noise leaves the 400-800 Hz part 14-20 dB under the band's move, and a tone or speech fills some parts
-   and not others, so of 363 dead, tone and speech carriers under the reference (3 to 30 dB CNR, at the rated deviation
-   and at 100-800 Hz) none kept it in more than 6.3% of its runs, where 75% is needed. Rules tried on the way failed
-   elsewhere: the voice-to-band ratio alone, and with the sub-bands' shape, let a lightly modulated carrier that weakens
-   pull the reference down (350 Hz deviation at 48 kHz; 200 Hz on `rtl_fm`'s 12 kHz band, 23 dB, muting the rest of the
-   carrier); keeping out a pause in speech by asking the stretch to rise from the one before it left noise turned down
-   across a pause, or in a carrier's last 60 ms, open until the stale rule (5.1 s, `pause-volume` and `unkey-volume`); a
-   gain step judged on the whole voice band took a speech carrier on 48 kHz `rtl_fm` for one (76% muted); and a limit on
-   the sub-bands' spread kept noise 30 dB down from ever passing on the source with a 5 kHz tone added after its volume
-   (2.94 s open).
+   while any louder stretch replaced the reference. Noise at a lower gain (the source turned down in noise, during a
+   transmission or across a pause) reads under the reference but keeps noise's spectrum against it: the voice band
+   within 1.5 dB and each of its four parts (400-800, 800-1300, 1300-1900 and 1900-2600 Hz) within 2.5 dB moved as far
+   as the band, the band's move being its sub-bands' median, and the sub-bands tilted by at most 2.5 dB end to end, the
+   tilt a least-squares line across the sub-bands within 3 dB of the move (a spur added after the volume stands out of
+   one or two). A stretch's runs more than 1.5 dB under the reference gather that evidence at their level; once 0.4 s of
+   them hold it in three runs of four with the voice band steady, moved 1.5 dB or more on average, the reference steps
+   by their mean move. A gain step straight out of noise needs the same evidence through its 0.2 s hold. Measured over
+   nine chains, noise 6 to 30 dB down keeps that spectrum in 93-100% of its runs; a carrier's own noise leaves the
+   400-800 Hz part 14-20 dB under the band's move, and a tone or speech fills some parts and not others, so of 363 dead,
+   tone and speech carriers under the reference (3 to 30 dB CNR, at the rated deviation and at 100-800 Hz) none kept it
+   in more than 6.3% of its runs. Rules tried on the way failed elsewhere: the voice-to-band ratio alone, and with the
+   sub-bands' shape, let a lightly modulated carrier that weakens pull the reference down (350 Hz deviation at 48 kHz;
+   200 Hz on `rtl_fm`'s 12 kHz band, 23 dB, muting the rest of the carrier); keeping out a pause in speech by asking the
+   stretch to rise from the one before it left noise turned down across a pause, or in a carrier's last 60 ms, open
+   until the stale rule (5.1 s, `pause-volume` and `unkey-volume`); a gain step judged on the whole voice band took a
+   speech carrier on 48 kHz `rtl_fm` for one (76% muted); a limit on the sub-bands' spread, and a tilt fitted to all of
+   them or to their pairwise slopes, kept noise 30 dB down from passing on the sources with a 5 or 6.1 kHz line added
+   after their volume (2.94 s open); fixed 0.4 s trials, tried afresh after each failure, let a carrier that matched
+   noise in 70% of its runs through within a second; and steps of 4 dB or more left noise turned down 3 dB open at N = 3
+   until the stale rule (5.1 s).
 9. A window of exact zeros ends the stretch, as a restart does: bursts separated by padding no longer add their open
    time up to a stale reading.
+10. A carrier that relays noise (a repeater passing a weak user's hiss: 300-3000 Hz noise on the carrier) at just the
+    level where it matches the source's own noise in every part of the spectrum is noise to every measure the squelch
+    has, and can step the reference down, muting that noise. The step is held, not trusted: the user's speech on the
+    same carrier shows a carrier at the stepped reference (eight of ten runs with the voice band off by twice the
+    tolerances), the old reference comes back, and nothing steps it down again until that carrier drops. The gate bounds
+    the speech after relayed noise to 15% dropout (`relay-speech`), and the harder cases in `DSP_PCM_NOISE_SQUELCH` lose
+    0.2-0.6 s of it. No spectral test told the two apart: the band under voice (100-350 Hz) reads -6.4 to +2.9 dB
+    against noise's move for a relay without CTCSS, depending on the CNR, a CTCSS tone fills it, and hum after the
+    volume lifts it; the window-to-window correlation of the voice and above-band powers reads about the same for both
+    (-0.2 for noise, 0 for a relay).
 
 Live check (an RTL-SDR running `rtl_fm -M fm` with no squelch, de-emphasis or low-pass, recorded at 48, 24 and
 12 kHz): 8 s of an empty channel, 8 s of a NOAA weather radio broadcast and 8 s of the empty channel again, fed to
@@ -1512,13 +1527,14 @@ model by two suites:
 - `DSP_PCM_NOISE_SQUELCH`: the band rule, the band-passes' response, the threshold clamp, no room, noise learning and
   never opening at N = 3, a carrier opening and confirming the reference, quieting following CNR, level independence,
   a volume step in noise, under a steady carrier, during speech (a tone with a 3 Hz syllabic envelope), across a pause,
-  in a carrier's last 60 ms, and with a 5 kHz spur added after the volume; a carrier that weakens (30, 20 and 12 dB
-  CNR, dead and modulated at 100-1200 Hz and the rated deviation, on a 48 kHz source and on `rtl_fm`'s 12 kHz band,
-  two seeds each); a light tone keyed straight out of noise, which is no gain step; modulation that steps up under a
-  carrier (a 4.5 kHz line after each pause), bursts separated by exact zeros, starting on a carrier, a low-passed
-  source reading no band, exact zeros, the per-passband cache and the stale rule, and block-cut bit identity. With the
-  learner before the voice band's parts, the pause, unkey, spur and gain-step cases fail, and so does the weakening
-  carrier at 100 Hz deviation.
+  in a carrier's last 60 ms, with a spur added after the volume at 3.9, 5, 6.1 and 6.4 kHz, and of 2-4 dB at N = 3;
+  a carrier that weakens (30, 20 and 12 dB CNR, dead and modulated at 100-1200 Hz and the rated deviation, on a 48 kHz
+  source and on `rtl_fm`'s 12 kHz band, two seeds each); a light tone keyed straight out of noise, which is no gain
+  step; a carrier relaying noise on both sources, whose speech refutes the step it caused; modulation that steps up
+  under a carrier (a 4.5 kHz line after each pause), bursts separated by exact zeros, starting on a carrier, a
+  low-passed source reading no band, exact zeros, the per-passband cache and the stale rule, and block-cut bit
+  identity. The pause, unkey, edge-spur, small-step, relayed-noise and gain-step cases, and the weakening carrier at
+  100 Hz deviation, each fail on the learner as it stood before the rule they pin.
 - `DSP_PCM_NOISE_SQUELCH_SWEEP` (`--sweep`): full-deviation tones on 12.5 and 25 kHz sources, centred and at their
   Carson edges, never closing the gate at N = 30 (lowest Q 42.8 dB).
 

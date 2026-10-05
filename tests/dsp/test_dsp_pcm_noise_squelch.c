@@ -9,8 +9,9 @@
  * a volume and int16 rounding (tools/pcm_noise_squelch_model.py's sources). The band rule, the band-passes' response,
  * learning with the gate closed, noise that never opens it, carriers that open it and confirm the reference, quieting
  * that follows the CNR and not the level, gain steps (in noise, under a carrier, across a pause, at an unkey, with a
- * spur added after the volume), carriers that are no gain step, starting on a carrier, a pcm_tap that low-passed its
- * audio (no band), rates with no room, digital silence, the per-passband cache, stale quieting, the threshold, and
+ * spur added after the volume, under the 4 dB a transition needs), carriers that are no gain step, a carrier relaying
+ * noise that a step mistook and its speech refutes, starting on a carrier, a pcm_tap that low-passed its audio (no
+ * band), rates with no room, digital silence, the per-passband cache, stale quieting, the threshold, and
  * flags that do not depend on how the samples are cut into blocks. --sweep runs strong modulation that must never
  * close the gate.
  */
@@ -581,16 +582,17 @@ test_volume_step_under_a_carrier(void) {
 /* The noise after a source turned down with no stretch in between that rose to it: across a pause (exact zeros end the
    stretch), and in a carrier's last 60 ms (too short to be one, so the noise follows the carrier at full volume and
    reads quieter than it). Each keeps noise's spectrum, so it becomes the reference within the same bound, and the
-   next carrier opens the gate. With @p spur, a line at 5 kHz, -60 dBFS, is added after the volume: once the noise is
-   30 dB down it stands out of its sub-bands, which the band's median move passes over. */
+   next carrier opens the gate. With @p spur_hz, a line at -60 dBFS is added after the volume: once the noise is down it
+   stands out of its sub-bands, which the band's median move and the tilt's trimmed line pass over, mid-band and at
+   either edge. */
 static void
-run_volume_step_without_a_rise(int pause, int spur) {
+run_volume_step_without_a_rise(int pause, double spur_hz) {
     dsd_pcm_noise_squelch* sq = new_squelch(48000, 10);
     static pcm_tap src;
     static trace tr;
     DSD_MEMSET(&tr, 0, sizeof tr);
     pcm_tap_init(&src, pause ? 31U : 32U, 12500.0, 0.0, 0.0);
-    g_spur_hz = spur ? 5000.0 : 0.0;
+    g_spur_hz = spur_hz;
     g_spur_dbfs = -60.0;
     g_spur_n = 0U;
     const double gain = pause ? -12.0 : -30.0;
@@ -612,9 +614,68 @@ run_volume_step_without_a_rise(int pause, int spur) {
 
 static void
 test_volume_step_without_a_rise(void) {
-    run_volume_step_without_a_rise(1, 0);
-    run_volume_step_without_a_rise(0, 0);
-    run_volume_step_without_a_rise(0, 1);
+    run_volume_step_without_a_rise(1, 0.0);
+    run_volume_step_without_a_rise(0, 0.0);
+    run_volume_step_without_a_rise(0, 5000.0);
+    run_volume_step_without_a_rise(1, 3900.0);
+    run_volume_step_without_a_rise(1, 6100.0);
+    run_volume_step_without_a_rise(0, 6400.0);
+}
+
+/* The source turned down by less than the 4 dB a transition needs, at N = 3: 3 dB leaves noise reading 3 dB of
+   quieting, so it opens until the step is taken (its runs under the reference's tracking range gather the evidence,
+   0.4 s of it), and 2 dB never opens. */
+static void
+test_small_volume_step(void) {
+    static const double steps[] = {-2.0, -3.0, -4.0};
+    for (int i = 0; i < 3; i++) {
+        dsd_pcm_noise_squelch* sq = new_squelch(48000, 3);
+        static pcm_tap src;
+        static trace tr;
+        DSD_MEMSET(&tr, 0, sizeof tr);
+        pcm_tap_init(&src, 33U, 12500.0, 0.0, 0.0);
+        const seg s[] = {
+            {PCM_TAP_NOISE, 2.0, 0.0, 0.0, 0.0},
+            {PCM_TAP_NOISE, 3.0, 0.0, 0.0, steps[i]},
+            {PCM_TAP_TONE, 1.0, 20.0, 1000.0, steps[i]},
+        };
+        run_segments(sq, &src, s, 3, &tr);
+        assert(open_seconds(&tr, 1, 0.0) < 0.7);
+        assert(open_seconds(&tr, 1, 0.7) < 1e-9);
+        assert(fabs(median_q(&tr, 1, 1.0)) < 1.5);
+        assert(open_seconds(&tr, 2, 0.12) > 1.0 - 0.12 - 0.021);
+        free(sq);
+    }
+}
+
+/* A repeater relaying a weak user's noise (300-3000 Hz noise on the carrier) at the level where it matches the
+   source's own noise reads as noise turned down, and the reference steps down to it. The user's speech that follows on
+   the same carrier is no noise at that level: it refutes the step, the reference comes back, and the speech plays
+   after a fraction of a second; nothing lowers the reference again on that carrier, so its later noise and speech
+   play, and the noise after it shuts. */
+static void
+test_relayed_noise_is_refuted(void) {
+    for (int t = 0; t < 2; t++) {
+        const tap_source* ts = t ? &k_rtl_fm_12k : &k_sdr_48k;
+        dsd_pcm_noise_squelch* sq = new_squelch(ts->native_hz, 10);
+        static pcm_tap src;
+        static trace tr;
+        DSD_MEMSET(&tr, 0, sizeof tr);
+        pcm_tap_init(&src, 41U, ts->width_hz, 0.0, ts->lpf_hz);
+        src.tone_dev_hz = 1000.0;
+        src.relay_rms = 0.35;
+        const seg s[] = {
+            {PCM_TAP_NOISE, 2.0, 0.0, 0.0, 0.0},        {PCM_TAP_RELAY, 3.0, 20.0, 0.0, 0.0},
+            {PCM_TAP_SYLLABIC, 3.0, 20.0, 1000.0, 0.0}, {PCM_TAP_RELAY, 1.5, 20.0, 0.0, 0.0},
+            {PCM_TAP_SYLLABIC, 2.0, 20.0, 1000.0, 0.0}, {PCM_TAP_NOISE, 1.0, 0.0, 0.0, 0.0},
+        };
+        run_segments(sq, &src, s, 6, &tr);
+        assert(open_seconds(&tr, 2, 0.0) > 3.0 - 0.75);
+        assert(open_seconds(&tr, 3, 0.0) > 1.5 - 0.021);
+        assert(open_seconds(&tr, 4, 0.0) > 2.0 - 0.021);
+        assert(open_seconds(&tr, 5, 0.1) < 1e-9);
+        free(sq);
+    }
 }
 
 /* A session that starts on a carrier takes it as the reference and stays shut on it; the first noise corrects that,
@@ -916,6 +977,8 @@ main(int argc, char** argv) {
     test_volume_step_under_a_carrier();
     test_volume_step_during_speech();
     test_volume_step_without_a_rise();
+    test_small_volume_step();
+    test_relayed_noise_is_refuted();
     test_weakening_carrier_keeps_the_reference();
     test_carrier_is_no_gain_step();
     test_strengthening_carrier_is_no_volume_step();

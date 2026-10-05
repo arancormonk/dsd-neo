@@ -38,16 +38,22 @@
  *    4 dB of the reference: that side is noise and becomes the reference (KNOWN, when the voice band did not move with
  *    it). A louder run well under the reference is the carrier's modulation or level changing (speech after a pause, a
  *    fading carrier), and the reference stays. Quieter, from a stretch at the reference, with the voice band stationary
- *    and moving by the same amount (within 1.5 dB): a gain step, taken after 200 ms more of it with noise's spectrum
- *    (below) and the voice band stationary in three windows of four (the reference rescales). Otherwise a carrier keyed
- *    (KNOWN).
- *  - Noise come back at a lower gain (the source turned down during a transmission or a pause): a stretch well under
- *    the reference with noise's spectrum against it -- the voice band within 1.5 dB and each voice part within 2.5 dB
- *    moved as far as the band (its participating sub-bands' median move, which a spur in one or two does not shift),
- *    and the sub-bands tilted by at most 2.5 dB end to end -- is a pending step of that move, taken once 0.4 s of
- *    windows keep that spectrum with the voice band steady in three of four: the reference rescales by it. A carrier's
- *    noise falls toward the low voice parts, and a tone or speech fills some parts and not others, so neither keeps
- *    it.
+ *    and moving by the same amount (within 1.5 dB): a gain step, taken after 200 ms more of it if three windows in four
+ *    keep noise's spectrum (below) with the voice band stationary: the reference moves by their mean step. Otherwise
+ *    a carrier keyed (KNOWN).
+ *  - Noise come back at a lower gain (the source turned down in noise, during a transmission or across a pause): a
+ *    run more than 1.5 dB under the reference has noise's spectrum against it when the voice band within 1.5 dB and
+ *    each voice part within 2.5 dB moved as far as the band (its participating sub-bands' median move, which a spur in
+ *    one or two does not shift) and the sub-bands tilt by at most 2.5 dB end to end (a least-squares line across those
+ *    within 3 dB of that move). The stretch's runs gather that evidence at their level (a level that moves 1.5 dB
+ *    starts over); once 0.4 s of them hold it in three of four with the voice band steady, moved 1.5 dB or more on
+ *    average, the reference moves by their mean step. A carrier's noise falls toward the low voice parts, and a tone
+ *    or speech fills some parts and not others, so neither gathers it.
+ *  - A downward step (gain or lowered) keeps the reference it replaced until a new one replaces it. Eight of the next
+ *    ten runs at or above the stepped reference with a voice band clearly not noise's (off by twice those tolerances:
+ *    a carrier relaying noise that matched noise's spectrum, now carrying speech) refute the step: the old reference
+ *    comes back, and nothing lowers it again in that stretch. While a step is held, such a carrier neither replaces nor
+ *    drags the reference.
  *  - A steady run at or above the reference less 1.5 dB tracks it with a 1 s time constant (slow drift).
  *  - Stale quieting: the gate open for 5 s on one stretch whose voice band held stationary in 90 % of its windows reads
  *    a level that dropped (a source's volume lowered out of clipping, its audio low-pass switched on), not speech: the
@@ -200,8 +206,16 @@ typedef struct {
     double vp_ref_db[DSD_PCM_NOISE_SQUELCH_VOICE_PARTS];
     unsigned char part[DSD_PCM_NOISE_SQUELCH_MAX_BANDS];
     double usable_hz;
+    /* The reference before the last downward step, held until a new reference replaces it; a carrier at the stepped
+       reference refutes the step and brings it back. */
+    int prior_valid;
+    double prior_ref[DSD_PCM_NOISE_SQUELCH_MAX_BANDS];
+    double prior_v_ref_db;
+    double prior_vp_ref_db[DSD_PCM_NOISE_SQUELCH_VOICE_PARTS];
     /* The stretch: anchor level, voice power sum, windows, voice-steady windows, whether it began at the reference, a
-       pending gain step and its windows, and the gate's open windows on it. */
+       pending gain step (its runs, those with noise's spectrum and their step sum), the gate's open windows on it, the
+       evidence for noise at a lower gain (its level, runs, those with noise's spectrum and their step sum), the last
+       runs at the stepped reference (a bit each, set for a carrier) and whether a refuted step blocks lowering. */
     int have_stretch;
     double st_a_db;
     double st_v_sum;
@@ -209,12 +223,19 @@ typedef struct {
     int st_vs;
     int st_at_ref;
     int st_pending;
-    double st_pend_db;
-    int st_pend_lowered; /**< the pending step is noise come back at a lower gain */
     int st_pn;
     int st_ps;
+    double st_psum;
     int st_on;
     int st_os;
+    int st_acc;
+    double st_acc_db;
+    int st_an;
+    int st_as;
+    double st_asum;
+    unsigned int st_ring;
+    int st_ring_n;
+    int st_blocked;
     /* A new level being confirmed, no-band evidence and its exit. */
     int have_cand;
     double cand_a_db;

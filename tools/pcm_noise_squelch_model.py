@@ -31,16 +31,23 @@ carrier, and a steady stretch can be a carrier, so the learner relies only on wh
     was a carrier the reference is too low and only mutes; the first noise corrects it.
   - A later steady stretch STEP dB or more away from the current one is a transition. Both bands moving by the same
     amount (within GAIN_TOL, the voice band steady on both sides) is a gain change, a volume or AGC step: the reference
-    is rescaled by it once most of the next GAIN_HOLD_WINDOWS windows keep noise's spectrum (SHAPE_*, below).
-    Otherwise the shape changed: a carrier keyed or dropped. When the band got louder, that side is noise and becomes
-    the reference if it came up within STEP of the reference; the first such transition confirms the reference
-    (KNOWN). Any stretch well under the reference with noise's spectrum (SHAPE_*: the voice band and each of
-    its parts (VOICE_PARTS_HZ) moved as far as the band's sub-bands, by their median, and the sub-bands not tilted) is
-    noise at a lower gain (the source turned down during a transmission or a pause), a pending gain step taken once
-    most of the next LOWER_HOLD_WINDOWS windows keep that spectrum with the voice band steady (any run of the stretch
-    may start it: its first may still hold the carrier's tail). A carrier's noise falls toward the low voice parts and
-    a tone or speech fills some parts and not others, so any other louder stretch under the reference is the carrier's
-    modulation or level changing (speech after a pause, a fading carrier), and the reference stays.
+    moves by the mean step of the next GAIN_HOLD_WINDOWS windows if most of them keep noise's spectrum (SHAPE_*,
+    below). Otherwise the shape changed: a carrier keyed or dropped. When the band got louder, that side is noise and
+    becomes the reference if it came up within STEP of the reference; the first such transition confirms the reference
+    (KNOWN).
+  - Noise at a lower gain (the source turned down in noise, during a transmission or across a pause): a run more than
+    STEADY_DB under the reference has noise's spectrum (SHAPE_*: the voice band and each of its parts
+    (VOICE_PARTS_HZ) moved as far as the band's sub-bands, by their median, and the sub-bands not tilted, the tilt a
+    line across those within TILT_TRIM_DB of that move). A stretch's runs gather that evidence at their level (one that
+    moves STEADY_DB starts over), and once LOWER_HOLD_WINDOWS or more of them hold it in most windows with the voice
+    band steady, moved STEADY_DB or more on average, the reference moves by their mean step. A carrier's noise falls
+    toward the low voice parts and a tone or speech fills some parts and not others, so neither gathers it, and the
+    evidence is kept rather than tried afresh, so a carrier that only sometimes matches noise never gathers enough.
+  - A downward step keeps the reference it replaced until a new one replaces it. REFUTE_MIN of the next REFUTE_RUNS
+    runs at or above the stepped reference with a voice band clearly not noise's (off by REFUTE_FACTOR times the
+    tolerances) refute it: a carrier relaying noise that matched noise's spectrum, now carrying speech. The old
+    reference comes back, and nothing lowers it again in that stretch; meanwhile such a carrier neither replaces the
+    reference nor drags it.
   - A steady stretch at or louder than the reference less STEADY_DB is noise: the reference tracks it with a 1 s
     time constant, so slow drift never reads as quieting.
   - NO_BAND: a steady stretch whose voice band is steady too, with the voice band more than RATIO_MAX dB per Hz above
@@ -70,9 +77,10 @@ Gate per chain (MARGIN_DB and FALSE_OPEN_TARGET as tools/noise_squelch_model.py)
   - Low-passed: NO_BAND within NO_BAND_TARGET_S of noise, the gate shut on noise until then.
 
 Scenarios: keyed traffic (speech, a dead carrier, weak carriers), starting mid-carrier, a continuous carrier, volume
-steps down and up in noise and under a carrier, a post-demod audio AGC, slow gain drift, clipping, impulses, an
-above-band tone, a neighbour appearing and vanishing inside a wide source filter, digital-silence pauses, and a scan
-between two passbands with the per-passband reference cache.
+steps down and up in noise and under a carrier, across a pause and in a carrier's last 60 ms, a 3 dB step at N = 3, a
+low-deviation tone fading through 30, 20 and 12 dB CNR, a carrier relaying noise and then speech, a post-demod audio
+AGC, slow gain drift, clipping, impulses, an above-band tone, a neighbour appearing and vanishing inside a wide source
+filter, digital-silence pauses, and a scan between two passbands with the per-passband reference cache.
 
 Candidates: the band (TOP, SUB, GUARD, SETS) with the default learner, then the learner's parameters (M, STEP,
 GAIN_TOL, RATIO_MAX, NO_BAND_S) on the chosen band (--grid). The chosen design (src/dsp/pcm_noise_squelch.c) is
@@ -137,9 +145,15 @@ STEADY_DB = 1.5
 # band steady: speech does not keep it.
 SHAPE_TOL_DB = 1.5
 SHAPE_TILT_DB = 2.5
+TILT_TRIM_DB = 3.0
 VOICE_PARTS_HZ = ((400.0, 800.0), (800.0, 1300.0), (1300.0, 1900.0), (1900.0, 2600.0))
 SHAPE_PART_TOL_DB = 2.5
 LOWER_HOLD_WINDOWS = 20
+# A downward step is refuted (undone) by REFUTE_MIN of the last REFUTE_RUNS runs at or above the stepped reference whose
+# voice band is clearly not noise's: off by more than REFUTE_FACTOR times the shape tolerances.
+REFUTE_RUNS = 10
+REFUTE_MIN = 8
+REFUTE_FACTOR = 2.0
 TRACK_S = 1.0
 N_MIN_DB = 3
 N_MAX_DB = 30
@@ -163,6 +177,10 @@ CNR_AGREE_DB = (6.0, 20.0)
 SETTLE_SCORE_S = 0.06
 # Scenarios whose dropouts are physics, not the learner: reported, not gated.
 DIAGNOSTIC_DROPOUTS = ("agc", "impulses", "clip")
+# A carrier that relays noise at the source's own noise level reads as noise turned down; the speech after it plays
+# once it refutes the step (REFUTE_RUNS), so the scenario bounds that speech's dropout instead of DROPOUT_TARGET.
+RELAY_DROPOUT_TARGET = 0.15
+RELAY_RMS = 0.35  # a relayed segment's modulation: band-limited noise (300-3000 Hz) at this RMS
 # Scenarios whose false opens are bounded by the stale-quieting rule rather than FALSE_EVENT_S.
 STALE_BOUNDED = ("clip",)
 # Band candidates: (top Hz or None for 0.45 x the native rate, sub-band Hz, guard dB). The radio design's 300 Hz
@@ -387,10 +405,41 @@ def noise_step(
         return None
     if float(np.max(np.abs((svp - vp_ref) - step))) > SHAPE_PART_TOL_DB:
         return None
+    # The tilt is a least-squares line across the sub-bands within TILT_TRIM_DB of the median move: a spur in one or two
+    # of them, at an edge as anywhere, is left out, while a carrier's noise rises smoothly and is not.
     x = np.flatnonzero(sel).astype(float)
+    keep = np.abs(d - step) <= TILT_TRIM_DB
+    if np.count_nonzero(keep) >= 3:
+        x, d = x[keep], d[keep]
     xm = x - np.mean(x)
     tilt = float(np.sum(xm * (d - np.mean(d))) / np.sum(xm * xm)) * (k - 1)
     return step if abs(tilt) <= SHAPE_TILT_DB else None
+
+
+def carrier_voice(
+    plan: SquelchPlan,
+    sp: np.ndarray,
+    sv: float,
+    svp: np.ndarray,
+    ref: np.ndarray,
+    v_ref: float,
+    vp_ref: np.ndarray,
+    part,
+) -> bool:
+    """Whether a stretch's voice band is clearly not noise's against the reference: the voice band off the band's move
+    by more than REFUTE_FACTOR x SHAPE_TOL_DB, or a part by more than REFUTE_FACTOR x SHAPE_PART_TOL_DB. Speech and a
+    carrier's own noise miss by 5-20 dB; noise at another gain never by that much, whatever its tilt reads on a narrow
+    band."""
+    k = plan.k
+    sel = np.ones(k, dtype=bool) if part is None else np.asarray(part[:k], dtype=bool)
+    if np.count_nonzero(sel) < 3:
+        return False
+    d = 10.0 * np.log10(np.maximum(sp[:k][sel], MIN_POWER) / np.maximum(ref[:k][sel], MIN_POWER))
+    step = float(np.median(d))
+    return (
+        abs((sv - v_ref) - step) > REFUTE_FACTOR * SHAPE_TOL_DB
+        or float(np.max(np.abs((svp - vp_ref) - step))) > REFUTE_FACTOR * SHAPE_PART_TOL_DB
+    )
 
 
 def participating(plan: SquelchPlan, p: np.ndarray, v_db: float, ratio_max: float) -> np.ndarray:
@@ -451,6 +500,9 @@ def run_learner(plan: SquelchPlan, w: dict, params: dict, n_db: float, keys=None
         state, ref, v_ref = init[0], None if init[1] is None else init[1].copy(), init[2]
         vp_ref = None if init[3] is None else init[3].copy()
     part = None if ref is None else participating(plan, ref, v_ref, ratio_max)
+    # The reference before the last downward step, held until a new reference replaces it or a carrier at the stepped
+    # reference refutes the step (it then comes back).
+    prior = None
     cache: dict = {}
     key = None if keys is None else keys[0]
     # The steady stretch: its anchor level (dB), its voice-band power sum and count, whether it sat at the reference
@@ -474,6 +526,7 @@ def run_learner(plan: SquelchPlan, w: dict, params: dict, n_db: float, keys=None
             ref = None if ref is None else ref.copy()
             vp_ref = None if vp_ref is None else vp_ref.copy()
             part = None if ref is None else participating(plan, ref, v_ref, ratio_max)
+            prior = None
             stretch, run, nb, gate = None, 0, 0, False
             cand_a, cand_n, exit_n = None, 0, 0
         if restarts is not None and i in restarts:
@@ -508,7 +561,7 @@ def run_learner(plan: SquelchPlan, w: dict, params: dict, n_db: float, keys=None
             # Leaving NO_BAND: a band (and a stationary voice band) for no_band_s in a row.
             exit_n = exit_n + 1 if (state == NO_BAND and steady and v_steady and not thin) else 0
             if exit_n >= no_band_windows:
-                ref, v_ref, vp_ref, state = sp.copy(), sv, svp.copy(), PROVISIONAL
+                ref, v_ref, vp_ref, state, prior = sp.copy(), sv, svp.copy(), PROVISIONAL, None
                 stretch = None
                 cand_a, cand_n, exit_n = sa, CONFIRM_WINDOWS, 0
             new = steady and (stretch is None or abs(sa - stretch["a"]) >= step_db)
@@ -520,25 +573,33 @@ def run_learner(plan: SquelchPlan, w: dict, params: dict, n_db: float, keys=None
             else:
                 cand_a, cand_n = None, 0
             if steady and not (new and cand_n < CONFIRM_WINDOWS):
-                pending = None
-                lowered = False
+                # The run against the reference: noise's spectrum and its step, or not.
+                nstep = None
+                carrier = False
+                if state in (PROVISIONAL, KNOWN):
+                    nstep = noise_step(plan, sp, sv, svp, ref, v_ref, vp_ref, part)
+                    carrier = carrier_voice(plan, sp, sv, svp, ref, v_ref, vp_ref, part)
+                shaped = nstep is not None
                 if new:
+                    pending = None
                     cand_a, cand_n = None, 0
                     if state == LEARNING:
-                        ref, v_ref, vp_ref, state = sp.copy(), sv, svp.copy(), PROVISIONAL
+                        ref, v_ref, vp_ref, state, prior = sp.copy(), sv, svp.copy(), PROVISIONAL, None
                     elif state == NO_BAND:
                         pass
                     elif stretch is None:
                         if sa > total_db(ref) + step_db:
                             # A first stretch after a restart louder than the reference is noise.
-                            ref, v_ref, vp_ref = sp.copy(), sv, svp.copy()
+                            ref, v_ref, vp_ref, prior = sp.copy(), sv, svp.copy(), None
                     else:
                         da = sa - stretch["a"]
                         dv = sv - 10.0 * math.log10(max(stretch["v"] / stretch["n"], MIN_POWER))
                         gain_like = abs(da - dv) <= gain_tol
                         ra_now = total_db(ref)
-                        if da > 0.0 and sa >= ra_now - step_db:
-                            ref, v_ref, vp_ref = sp.copy(), sv, svp.copy()
+                        if da > 0.0 and sa >= ra_now - step_db and (prior is None or not carrier):
+                            # The band got louder, up at the reference: that side is noise. While a downward step is
+                            # held, a carrier there does not replace the reference; it refutes the step.
+                            ref, v_ref, vp_ref, prior = sp.copy(), sv, svp.copy(), None
                             if not gain_like and state == PROVISIONAL:
                                 state = KNOWN
                         elif da > 0.0:
@@ -547,40 +608,84 @@ def run_learner(plan: SquelchPlan, w: dict, params: dict, n_db: float, keys=None
                             # come back at a lower gain (below).
                             pass
                         elif gain_like and v_steady and stretch["at_ref"] and stretch["vs"] * 2 >= stretch["n"]:
+                            # Quieter, from noise, both bands by the same amount: a gain step, once it holds with
+                            # noise's spectrum.
                             pending = da
-                        else:
-                            if state == PROVISIONAL:
-                                state = KNOWN
+                        elif state == PROVISIONAL:
+                            state = KNOWN
                     at_ref = ref is not None and sa >= total_db(ref) - step_db
                     stretch = {"a": sa, "v": 0.0, "n": 0, "vs": 0, "at_ref": at_ref, "pend": pending, "pn": 0, "ps": 0,
-                               "on": 0, "os": 0, "lowered": lowered}
+                               "ssum": 0.0, "on": 0, "os": 0, "acc": None, "an": 0, "as_": 0, "asum": 0.0,
+                               "blocked": False, "ring": []}
                     part = None if ref is None else participating(plan, ref, v_ref, ratio_max)
                 stretch["v"] += 10.0 ** (sv / 10.0)
                 stretch["n"] += 1
                 stretch["vs"] += 1 if v_steady else 0
-                # Noise come back at a lower gain (the source turned down during a transmission or a pause): a
-                # stretch well under the reference with noise's spectrum, held for LOWER_HOLD_WINDOWS with most windows
-                # still so and voice-steady. Its first run may still hold the carrier's tail, so every later run of
-                # the stretch may start the step.
-                nstep = None
-                if state in (PROVISIONAL, KNOWN):
-                    nstep = noise_step(plan, sp, sv, svp, ref, v_ref, vp_ref, part)
-                shaped = nstep is not None
-                if stretch["pend"] is None and shaped and not stretch["at_ref"] and sa < total_db(ref) - step_db:
-                    stretch["pend"], stretch["lowered"], stretch["pn"], stretch["ps"] = nstep, True, 0, 0
+                ra = None if ref is None else total_db(ref)
+                # A held downward step is refuted by a carrier at or above the stepped reference: REFUTE_MIN of the last
+                # REFUTE_RUNS runs there with a voice band clearly not noise's (noise turned down keeps noise's; a
+                # carrier relaying noise that matched it shows speech). The reference comes back, and nothing in this
+                # stretch lowers it again.
+                if prior is not None and ra is not None and sa >= ra - STEADY_DB:
+                    ring = stretch["ring"]
+                    ring.append(carrier)
+                    del ring[:-REFUTE_RUNS]
+                    if len(ring) == REFUTE_RUNS and sum(ring) >= REFUTE_MIN:
+                        ref, v_ref, vp_ref = prior[0].copy(), prior[1], prior[2].copy()
+                        prior = None
+                        stretch.update(blocked=True, ring=[], pend=None, acc=None)
+                        stretch["at_ref"] = sa >= total_db(ref) - step_db
+                        part = participating(plan, ref, v_ref, ratio_max)
+                        ra = total_db(ref)
+                        shaped = False
+                        carrier = True
+                # Noise come back at a lower gain (the source turned down in noise, during a transmission or across a
+                # pause): the stretch's runs under the reference's tracking range gather evidence at their level, and
+                # the step is taken once LOWER_HOLD_WINDOWS or more of them hold most with noise's spectrum and the
+                # voice band steady, moved STEADY_DB or more on average. The evidence is kept, not tried afresh: a
+                # carrier that only sometimes matches noise never gathers enough. A level that moves STEADY_DB starts
+                # over.
+                if stretch["pend"] is None and not stretch["blocked"] and ra is not None and sa < ra - STEADY_DB:
+                    if stretch["acc"] is None or abs(sa - stretch["acc"]) > STEADY_DB:
+                        stretch.update(acc=sa, an=0, as_=0, asum=0.0)
+                    stretch["an"] += 1
+                    if v_steady and shaped:
+                        stretch["as_"] += 1
+                        stretch["asum"] += nstep
+                    mean = stretch["asum"] / stretch["as_"] if stretch["as_"] else 0.0
+                    if (
+                        stretch["an"] >= LOWER_HOLD_WINDOWS
+                        and stretch["as_"] >= GAIN_STEADY_FRACTION * stretch["an"]
+                        and mean <= -STEADY_DB
+                    ):
+                        prior = (ref.copy(), v_ref, vp_ref.copy())
+                        ref = ref * 10.0 ** (mean / 10.0)
+                        v_ref += mean
+                        vp_ref = vp_ref + mean
+                        stretch.update(at_ref=True, ring=[], acc=None)
+                        part = participating(plan, ref, v_ref, ratio_max)
+                        if state == PROVISIONAL:
+                            # Noise after a carrier, at its lower gain: the carrier keyed is confirmed.
+                            state = KNOWN
+                # A gain step straight out of noise, from its transition: taken after GAIN_HOLD_WINDOWS by the mean step
+                # of its runs if most held noise's spectrum with the voice band steady; otherwise a carrier keyed.
                 if stretch["pend"] is not None:
                     stretch["pn"] += 1
-                    stretch["ps"] += 1 if v_steady and shaped else 0
-                    if stretch["pn"] >= (LOWER_HOLD_WINDOWS if stretch["lowered"] else GAIN_HOLD_WINDOWS):
-                        if stretch["ps"] >= GAIN_STEADY_FRACTION * stretch["pn"]:
-                            ref = ref * 10.0 ** (stretch["pend"] / 10.0)
-                            v_ref += stretch["pend"]
-                            vp_ref = vp_ref + stretch["pend"]
-                            stretch["at_ref"] = True
-                            if stretch["lowered"] and state == PROVISIONAL:
-                                # Noise after a carrier, at its lower gain: the carrier keyed is confirmed.
-                                state = KNOWN
-                        elif state == PROVISIONAL and not stretch["lowered"]:
+                    if v_steady and shaped:
+                        stretch["ps"] += 1
+                        stretch["ssum"] += nstep
+                    if stretch["pn"] >= GAIN_HOLD_WINDOWS:
+                        mean = stretch["ssum"] / stretch["ps"] if stretch["ps"] else 0.0
+                        if stretch["ps"] >= GAIN_STEADY_FRACTION * stretch["pn"] and mean <= -STEADY_DB:
+                            # The reference moves by the mean step; the one it held is kept in case a carrier refutes
+                            # the step.
+                            prior = (ref.copy(), v_ref, vp_ref.copy())
+                            ref = ref * 10.0 ** (mean / 10.0)
+                            v_ref += mean
+                            vp_ref = vp_ref + mean
+                            stretch.update(at_ref=True, ring=[], acc=None)
+                            part = participating(plan, ref, v_ref, ratio_max)
+                        elif state == PROVISIONAL:
                             state = KNOWN
                         stretch["pend"] = None
                 # Stale quieting: open on this stretch for STALE_S with the voice band stationary throughout.
@@ -588,11 +693,13 @@ def run_learner(plan: SquelchPlan, w: dict, params: dict, n_db: float, keys=None
                     stretch["on"] += 1
                     stretch["os"] += 1 if v_steady else 0
                     if stretch["on"] >= stale_windows and stretch["os"] >= STALE_STEADY_FRACTION * stretch["on"]:
-                        ref, v_ref, vp_ref = sp.copy(), sv, svp.copy()
+                        ref, v_ref, vp_ref, prior = sp.copy(), sv, svp.copy(), None
                         stretch["on"] = stretch["os"] = 0
                         stretch["at_ref"] = True
                         part = participating(plan, ref, v_ref, ratio_max)
-                if state in (PROVISIONAL, KNOWN) and stretch["pend"] is None:
+                # A run at or above the reference less STEADY_DB tracks it (slow drift), unless a held step's reference
+                # meets a carrier there.
+                if state in (PROVISIONAL, KNOWN) and stretch["pend"] is None and (prior is None or not carrier):
                     ra = total_db(ref)
                     if sa >= ra - STEADY_DB:
                         ref = ref + alpha * (sp - ref)
@@ -665,6 +772,7 @@ def chains() -> list[Chain]:
         Chain("hw-tap@44100", 44100, kind="hw", width=15000.0, floor_dbfs=-90.0),
         Chain("sdr-12k5-none@48000-floor70", 48000, floor_dbfs=-70.0, noise_dbfs=-30.0),
         Chain("sdr-12k5-none@48000-tone5k", 48000, tone=(5000.0, -60.0)),
+        Chain("sdr-12k5-none@48000-tone6k1", 48000, tone=(6100.0, -60.0)),
         Chain("lp-fir3000@48000", 48000, lpf=("fir", 3000.0), expect="no_band"),
         Chain("lp-fir3400-75us@48000", 48000, deemph_us=75.0, lpf=("fir", 3400.0), expect="no_band"),
         Chain("lp-fir4000@48000", 48000, lpf=("fir", 4000.0), expect="either"),
@@ -680,7 +788,7 @@ def chains() -> list[Chain]:
 @dataclasses.dataclass
 class Seg:
     seconds: float
-    kind: str = "noise"  # noise | speech | tone | dead | zero
+    kind: str = "noise"  # noise | speech | tone | dead | relay | zero
     cnr_db: float = 0.0
     gain_db: float = 0.0
     tone_hz: float = 1000.0
@@ -692,6 +800,14 @@ class Seg:
 
 
 _SPEECH: dict = {}
+
+
+def relay_audio(fs: int, n: int, rng: np.random.Generator) -> np.ndarray:
+    """A repeater relaying a weak user's noise: Gaussian noise through a land-mobile 300-3000 Hz audio band at
+    RELAY_RMS."""
+    x = rng.standard_normal(n + 4096)
+    y = sps.sosfilt(sps.butter(4, [300.0, 3000.0], btype="bandpass", fs=fs, output="sos"), x)[4096:]
+    return y * (RELAY_RMS / max(float(np.sqrt(np.mean(y * y))), 1e-12))
 
 
 def speech_audio(fs: int, n: int, rng: np.random.Generator) -> np.ndarray:
@@ -766,9 +882,11 @@ class Source:
             n = int(round(s.seconds * self.hi_rate))
             x = sm.white_noise(rng, n).astype(np.complex128)
             t = np.arange(n) / self.hi_rate
-            if s.kind in ("speech", "tone", "dead"):
+            if s.kind in ("speech", "tone", "dead", "relay"):
                 if s.kind == "speech":
                     au = speech_audio(self.hi_rate, n, rng)
+                elif s.kind == "relay":
+                    au = relay_audio(self.hi_rate, n, rng)
                 elif s.kind == "tone":
                     au = np.sin(2.0 * math.pi * s.tone_hz * t + rng.uniform(0.0, 2.0 * math.pi))
                 else:
@@ -869,6 +987,14 @@ def scenarios() -> dict[str, dict]:
             "segs": [S(2), S(1, "speech", 20), S(0.2, "zero"), S(3, gain_db=-12), S(1.5, "speech", 20, -12),
                      S(1.5, gain_db=-12)],
         },
+        # A repeater relaying a weak user's noise at the source's own noise level, then that user's speech: the noise
+        # may read as noise turned down; the speech refutes that and plays.
+        "relay-speech": {
+            "segs": [S(2), S(3, "relay", 20, dev_hz=500.0), S(3, "speech", 20), S(1.5, "relay", 20, dev_hz=500.0),
+                     S(2, "speech", 20), S(1.5)],
+        },
+        # The source turned down 3 dB, under the 4 dB a transition needs, at N = 3.
+        "small-step": {"segs": [S(2), S(4, gain_db=-3), S(1.5, "speech", 20, -3), S(1.5, gain_db=-3)], "n_db": 3},
         "unkey-volume": {
             "segs": [S(2), S(1, "speech", 20), S(0.06, "speech", 20, -30), S(3, gain_db=-30),
                      S(1.5, "speech", 20, -30), S(1.5, gain_db=-30)],
@@ -1060,7 +1186,7 @@ def evaluate(plan: SquelchPlan, chain: Chain, params: dict, meas: dict, spans: d
         w = meas["scen"][name]
         sp = spans["scen"][name]
         keys, restarts = keys_and_restarts(sc, w, sp)
-        r = run_learner(plan, w, params, float(N_DEFAULT_DB), keys, restarts)
+        r = run_learner(plan, w, params, float(sc.get("n_db", N_DEFAULT_DB)), keys, restarts)
         res["scenarios"][name] = score_scenario(name, sc, r, w, sp, fs)
         if name == "keyed":
             r3 = run_learner(plan, w, params, float(N_MIN_DB), keys, restarts)
@@ -1149,7 +1275,8 @@ def chain_verdict(chain: Chain, res: dict) -> dict:
             bound = STALE_S + 0.2 if name in STALE_BOUNDED else FALSE_EVENT_S
             if s["worst_event_s"] > bound:
                 why.append(f"{name}: open {s['worst_event_s']:.2f} s on noise")
-            if s["dropout"] > DROPOUT_TARGET and name not in DIAGNOSTIC_DROPOUTS:
+            target = RELAY_DROPOUT_TARGET if name == "relay-speech" else DROPOUT_TARGET
+            if s["dropout"] > target and name not in DIAGNOSTIC_DROPOUTS:
                 why.append(f"{name}: dropout {s['dropout']:.2f}")
             if s["no_band_on_noise"] and chain.expect == "band":
                 why.append(f"{name}: no band on noise")

@@ -766,13 +766,16 @@ quieting, closed under max(N - 3, 1.5) dB. Quieting reads about the carrier-to-n
   its four parts). Until four windows hold steady within 1.5 dB the squelch reads `learning` and stays closed; that
   first steady stretch becomes the reference, about 0.15 s into noise. A carrier can only quiet the band, so noise is
   the loudest it gets: when the band rises 4 dB or more from one steady stretch to the next, the louder side is noise
-  and the reference moves there if it came up near the reference. A stretch well under the reference is noise at a
-  lower volume (the source turned down in noise, during a transmission or across a pause) only if it keeps noise's
-  spectrum for 0.4 s: the voice band and each of its parts moved as far as the band above it, and the band not tilted.
-  A carrier's own noise falls away toward the low voice frequencies, and speech or a tone fills some parts and not
-  others, so any other stretch under the reference is the carrier's speech or level changing (a pause ending, a
-  fading carrier) and leaves the reference alone. A step straight out of noise that moves the voice band as much as
-  the band above it (the source's volume or AGC) rescales the reference after 0.2 s of noise's spectrum. Between
+  and the reference moves there if it came up near the reference. Noise at a lower volume (the source turned down in
+  noise, during a transmission or across a pause) reads quieter than the reference but keeps noise's spectrum: the
+  voice band and each of its parts move as far as the band above it, and the band does not tilt. Once 0.4 s of it
+  holds that spectrum, the reference steps down by the move, steps of 1.5 dB and more included; a step straight out of
+  noise that moves the voice band as much as the band above it (the source's volume or AGC) is taken after 0.2 s. A
+  carrier's own noise falls away toward the low voice frequencies, and speech or a tone fills some parts and not
+  others, so a carrier never gathers that evidence and any stretch of it under the reference leaves the reference
+  alone. A carrier that relays noise (a repeater passing a weak user's hiss) at just the level of the source's own
+  noise does read as noise turned down; its speech then shows a carrier at the stepped reference, which undoes the
+  step within a fraction of a second, and nothing steps the reference down again until that carrier drops. Between
   transmissions the reference follows the noise with a 1 s time constant.
 - Starting on a carrier: with no noise to learn from, the first steady stretch (the carrier, or a pause in its speech)
   becomes the reference, which is too low, so the gate stays closed or opens only in snatches until the first noise
