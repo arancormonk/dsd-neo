@@ -1489,6 +1489,30 @@ model by two suites:
 `DSP_SYMBOL_REPLAY` holds the decoder integration: every monitor sample gated by its own flag on WAV and UDP input, and
 the squelch held closed, learning nothing, while the tap skips a UDP backlog.
 
+#### PCM noise squelch replay cases
+
+The `DECODE_PCM_*` cases run the noise squelch on audio input end to end, in every build (they need no radio support).
+`dsd-neo_test_analog_replay --analog-pcm-tap RATE` turns the case's committed capture into the audio a scanner's
+discriminator tap, or an SDR program with its audio filtering off, would send: a 16 kHz channel filter and a polar
+discriminator, resampled to RATE, written as a 16-bit mono WAV into the host's private temporary directory and run as
+`-i` in place of `--iq-replay` (`--analog-pcm-gain-db` scales it, `--analog-pcm-lowpass-hz` low-passes it first, as an
+SDR program's audio filter would). Stream time is the WAV's read position, so the bounds read as on a replay. No
+fixture is committed for them.
+
+| Case | What it pins |
+| --- | --- |
+| `_TAP_BURST`, `_TAP_BURST_HOT` | `nfm_burst_synth` gates as on a radio input: first audible block at 330-380 ms (340 measured), 200-290 ms audible (260), at the tap's level and 10 dB louder. |
+| `_TAP_BURST_16K`, `_TAP_BURST_12K` | The same through the staged rates; 12 kHz keeps 3.8-5.4 kHz of band. |
+| `_TAP_MARGIN` | The burst quiets the band by about 22 dB: under `noise+30` nothing plays. |
+| `_TAP_FLOOR` | Ten seconds of `noise_floor` never open it at `noise+3`. |
+| `_TAP_LOWPASSED` | The same noise low-passed at 3 kHz has no band: the notice comes, the gate stays closed for about a second (1080 ms to the first audible block), then plays as with the squelch off. |
+| `_TAP_NO_ROOM` | An 8 kHz input has no room above voice: the notice comes and it plays from the start. |
+| `_TAP_STARTS_ON_CARRIER` | `nfm_ctcss_real` is carrier throughout: the reference learned from it is too low and nothing plays (the documented cost of starting on a carrier). |
+| `DECODE_PCM_ANALOG_SQL_AUTO_OFF` | `--squelch auto` on audio input warns at startup and plays. |
+| `DECODE_PCM_SCAN_SQL_NOISE_ROW`, `_AM_ROW_OFF` | A `-Y` nfm row's own `--squelch noise` gates as `-fA` does; an am row that inherits a noise default plays (off on AM audio). |
+
+With the PCM noise squelch disabled, every case but the two where it is meant to be off fails.
+
 #### Tone and code labels
 
 The real excerpts come unlabelled, and a C detector must not be graded against its own output. `tools/analog_oracle.py`

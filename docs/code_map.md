@@ -1987,7 +1987,8 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   `squelch_auto_gate_open` for the views, logging once why it is off (no room, no band, with the scan consequence).
   Tests: `DSP_PCM_NOISE_SQUELCH`, `DSP_PCM_NOISE_SQUELCH_SWEEP`, `DSP_SYMBOL_REPLAY`
   (`test_pcm_noise_squelch_gates_each_sample`, `test_pcm_noise_squelch_holds_the_backlog`),
-  `RUNTIME_RIGCTL_QUERY_HOOKS`, `ENGINE_RIGCTL_QUERY_HOOKS_INSTALL`.
+  `RUNTIME_RIGCTL_QUERY_HOOKS`, `ENGINE_RIGCTL_QUERY_HOOKS_INSTALL`, and the `DECODE_PCM_*` cases (the analog replay
+  host's `--analog-pcm-tap`, which runs a capture's discriminator audio as a WAV input in every build).
 - AM envelope detector (issue #524, `demod_pipeline.cpp`, declared in `<dsd-neo/dsp/demod_pipeline.h>`):
   `dsd_am_demod()` outputs 0.25 x clamp(|z| / C - 1, +/-2), C being `demod_state::am_carrier`, a one-pole average of
   |z| with a `DSD_AM_CARRIER_TAU_MS` (50 ms) time constant recomputed per block for the detector's rate (`rate_out`:
