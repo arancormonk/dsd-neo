@@ -16,19 +16,14 @@
 #include <dsd-neo/runtime/squelch.h>
 #include <stddef.h>
 
-/* Why a dynamic setting in force runs as it does here (dsd_squelch_resolution). */
+/* Why a dynamic setting in force runs as it does here (dsd_squelch_resolution): the policy every surface shares. */
 static uint8_t
 squelch_view_resolution(const dsd_opts* opts, const dsd_app_squelch_view* view) {
-    if (!dsd_opts_input_is_radio(opts)) {
-        return DSD_SQUELCH_RESOLVED_NO_RADIO;
-    }
-    if (!dsd_opts_is_analog_family(opts)) {
-        return DSD_SQUELCH_RESOLVED_DIGITAL;
-    }
-    if (view->effective_noise && opts->analog_demod == DSD_ANALOG_DEMOD_AM) {
-        return DSD_SQUELCH_RESOLVED_AM_AUTO;
-    }
-    return DSD_SQUELCH_RESOLVED_AS_SET;
+    const dsd_squelch_setting in_force = dsd_squelch_setting_dynamic(
+        view->effective_noise ? DSD_SQUELCH_MODE_NOISE : DSD_SQUELCH_MODE_AUTO, view->effective_margin_db);
+    return (uint8_t)dsd_squelch_setting_resolve(&in_force, dsd_squelch_input_kind(opts),
+                                                !dsd_opts_is_analog_family(opts),
+                                                opts->analog_demod == DSD_ANALOG_DEMOD_AM, NULL);
 }
 
 /* What the stream shows: the noise squelch's gate and quieting when it runs, else the floor tracker's state. */
@@ -38,6 +33,7 @@ squelch_view_fill_running(const dsd_state* state, dsd_app_squelch_view* out) {
     out->noise_measured = out->noise_running && state->squelch_noise_measured ? 1U : 0U;
     out->noise_gate_open = out->noise_running && state->squelch_auto_gate_open ? 1U : 0U;
     out->noise_quieting_db = (double)state->squelch_noise_quieting_cdb / 100.0;
+    out->noise_state = out->noise_running ? state->squelch_noise_state : (uint8_t)DSD_SQUELCH_NOISE_STATE_NONE;
     out->auto_running = state->squelch_auto_active && !out->noise_running ? 1U : 0U;
     out->auto_learning = out->auto_running && state->squelch_auto_state == 0U ? 1U : 0U;
     out->auto_plan_valid = out->auto_running && state->squelch_auto_plan_valid ? 1U : 0U;
@@ -52,8 +48,11 @@ squelch_view_fill_dynamic(const dsd_opts* opts, const dsd_state* state, dsd_app_
     squelch_view_fill_running(state, out);
     out->noise_as_auto =
         out->effective_noise && (out->auto_resolution == DSD_SQUELCH_RESOLVED_AM_AUTO || out->auto_running) ? 1U : 0U;
-    const int off_here =
-        out->auto_resolution == DSD_SQUELCH_RESOLVED_NO_RADIO || out->auto_resolution == DSD_SQUELCH_RESOLVED_DIGITAL;
+    const int pcm_off =
+        out->noise_state == DSD_SQUELCH_NOISE_STATE_NO_BAND || out->noise_state == DSD_SQUELCH_NOISE_STATE_NO_ROOM;
+    const int off_here = out->auto_resolution == DSD_SQUELCH_RESOLVED_NO_RADIO
+                         || out->auto_resolution == DSD_SQUELCH_RESOLVED_DIGITAL
+                         || out->auto_resolution == DSD_SQUELCH_RESOLVED_AUDIO_AM || pcm_off;
     out->effective_off = off_here || (out->auto_running && !out->auto_plan_valid) ? 1U : 0U;
 }
 
@@ -153,6 +152,15 @@ dsd_app_squelch_view_dynamic_status(const dsd_app_squelch_view* view, char* out,
         DSD_SNPRINTF(out, out_size, "%s", "off: no radio input");
     } else if (view->auto_resolution == DSD_SQUELCH_RESOLVED_DIGITAL) {
         DSD_SNPRINTF(out, out_size, "%s", "off on digital");
+    } else if (view->auto_resolution == DSD_SQUELCH_RESOLVED_AUDIO_AM) {
+        DSD_SNPRINTF(out, out_size, "%s", "off on AM audio");
+    } else if (view->noise_state == DSD_SQUELCH_NOISE_STATE_NO_BAND) {
+        DSD_SNPRINTF(out, out_size, "%s", "off: no band above voice");
+    } else if (view->noise_state == DSD_SQUELCH_NOISE_STATE_NO_ROOM) {
+        DSD_SNPRINTF(out, out_size, "%s", "off: no room above voice");
+    } else if (view->noise_state == DSD_SQUELCH_NOISE_STATE_LEARNING
+               || (view->noise_state != DSD_SQUELCH_NOISE_STATE_NONE && !view->noise_measured)) {
+        DSD_SNPRINTF(out, out_size, "%s", "learning");
     } else if (view->noise_as_auto) {
         char tracker[24];
         squelch_view_tracker_status(view, tracker, sizeof tracker);
@@ -212,7 +220,7 @@ dsd_app_squelch_view_edit_notice(const dsd_app_squelch_view* view, char* out, si
     squelch_view_setting_text(squelch_view_mode(view->configured_auto, view->configured_noise),
                               view->configured_margin_db, view->configured_level, configured, sizeof configured);
     if (!view->row_override) {
-        DSD_SNPRINTF(out, out_size, "Applied: RTL squelch -> %s", configured);
+        DSD_SNPRINTF(out, out_size, "Applied: squelch -> %s", configured);
         return 0;
     }
     char effective[24];

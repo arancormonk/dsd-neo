@@ -49,8 +49,9 @@ typedef struct {
     uint8_t configured_noise; /**< 1 when the configured default is NOISE. */
     int effective_margin_db;  /**< Its margin (AUTO) or quieting (NOISE), under a dynamic setting in force. */
     int configured_margin_db; /**< The same for a dynamic configured default. */
-    uint8_t auto_resolution;  /**< Under a dynamic setting in force: dsd_squelch_resolution (off without a radio input,
-                                   off on a digital channel, NOISE as AUTO on an AM channel, or as set). */
+    uint8_t auto_resolution;  /**< Under a dynamic setting in force: dsd_squelch_resolution (off without a radio input
+                                   (AUTO) or an input of either kind, off on a digital channel, NOISE as AUTO on a radio
+                                   input's AM channel, off on AM audio, or as set). */
     uint8_t noise_as_auto;    /**< NOISE in force and the floor tracker running it (an AM channel, or an FM one with
                                    no band above voice). */
     uint8_t auto_running;     /**< The stream runs the floor tracker (dsd_state::squelch_auto_active, not noise). */
@@ -62,6 +63,8 @@ typedef struct {
     uint8_t noise_measured;   /**< Running, and it has measured a window since it started. */
     uint8_t noise_gate_open;  /**< Running, and its gate is open. */
     double noise_quieting_db; /**< Measured: its last window's quieting. */
+    uint8_t noise_state;      /**< On audio input, what the PCM noise squelch knows (dsd_squelch_noise_state; 0 on radio
+                                   input, issue #628). */
 } dsd_app_squelch_view;
 
 /**
@@ -86,9 +89,11 @@ int dsd_app_squelch_view_format(const dsd_app_squelch_view* view, char* out, siz
 /**
  * @brief What a dynamic setting in force shows, without the setting or the row note: for AUTO "floor -78.3 dB",
  * "learning" or "off: no channel plan"; for NOISE "quieting 23 dB", "starting" before its first window, or "as auto: "
- * and AUTO's reading where the floor tracker runs it; for either "off: no radio input" or "off on digital"; "" for a
- * level. The parenthesis dsd_app_squelch_view_format() prints, for a frontend that lays it out on its own line.
- * Returns 0, or -1 when @p out is NULL, @p out_size is zero or @p view is NULL.
+ * and AUTO's reading where the floor tracker runs it, and on audio input (issue #628) "learning" until the PCM noise
+ * squelch holds a reference, "off: no band above voice", "off: no room above voice" or "off on AM audio"; for either
+ * "off: no radio input" or "off on digital"; "" for a level. The parenthesis dsd_app_squelch_view_format() prints, for
+ * a frontend that lays it out on its own line. Returns 0, or -1 when @p out is NULL, @p out_size is zero or @p view is
+ * NULL.
  */
 int dsd_app_squelch_view_dynamic_status(const dsd_app_squelch_view* view, char* out, size_t out_size);
 
@@ -96,7 +101,7 @@ int dsd_app_squelch_view_dynamic_status(const dsd_app_squelch_view* view, char* 
  * @brief Render the notice after the configured default was edited.
  *
  * "Default squelch -75.0 dB; this channel overrides it (-60.0 dB)" when the row on air shadows
- * the edit, otherwise "Applied: RTL squelch -> -75.0 dB". Returns 0, or -1 on bad arguments.
+ * the edit, otherwise "Applied: squelch -> -75.0 dB". Returns 0, or -1 on bad arguments.
  */
 int dsd_app_squelch_view_edit_notice(const dsd_app_squelch_view* view, char* out, size_t out_size);
 

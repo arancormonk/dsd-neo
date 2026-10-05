@@ -757,12 +757,6 @@ int svc_airspy_reopen_locked(dsd_opts* opts, dsd_state* state, const dsd_airspy_
  */
 int svc_airspy_apply(dsd_opts* opts, dsd_state* state, const dsd_airspy_config* config, int* out_capture_stopped);
 
-/**
- * @brief Hand the RTL demodulator the squelch @p opts holds: a level through rtl_stream_set_channel_squelch(), as every
- * level push always has, or an auto squelch whole (rtl_stream_set_channel_squelch_setting(), issue #518 follow-up).
- */
-void svc_rtl_push_squelch(const dsd_opts* opts);
-
 typedef struct {
     uint32_t frequency;
     int bandwidth;
@@ -817,9 +811,20 @@ int svc_rtl_set_gain(dsd_opts* opts, dsd_state* state, int value);
 int svc_rtl_set_bandwidth(dsd_opts* opts, dsd_state* state, int khz, char* why, size_t why_size);
 /** svc_rtl_set_bandwidth() without acquiring; caller holds the P25 SM tick guard. */
 int svc_rtl_set_bandwidth_locked(dsd_opts* opts, dsd_state* state, int khz, char* why, size_t why_size);
+/** @brief Set RTL monitor/non-symbol gain multiplier (clamped to 0–3). */
+int svc_rtl_set_volume_mult(dsd_opts* opts, int mult);
+/** @brief Toggle RTL bias tee (applied live when stream active). */
+int svc_rtl_set_bias_tee(dsd_opts* opts, const dsd_state* state, int on);
+/** @brief Toggle RTL-TCP adaptive networking and propagate to env/stream. */
+int svc_rtltcp_set_autotune(dsd_opts* opts, const dsd_state* state, int on);
+/** @brief Toggle carrier/error-based auto PPM and propagate to env/stream. */
+int svc_rtl_set_auto_ppm(dsd_opts* opts, const dsd_state* state, int on);
+#endif
+
 /**
- * @brief Set the RTL squelch threshold from a decibel value.
+ * @brief Set the squelch threshold from a decibel value.
  *
+ * Built with or without radio support: on audio input it sets the level the PCM monitor compares (issue #628).
  * Negative values are a threshold in dB. Zero or above switches the squelch off,
  * the same meaning 0 carries in the `sql` field of an input string and in the
  * `rtl_sql` config key; a 0 dB threshold is full scale and would never open.
@@ -832,27 +837,26 @@ int svc_rtl_set_bandwidth_locked(dsd_opts* opts, dsd_state* state, int khz, char
 int svc_rtl_set_sql_db(dsd_opts* opts, const dsd_state* state, double dB);
 
 /**
- * svc_rtl_set_sql_setting()'s refusal of a NOISE setting on the AM monitor (dsd_squelch_noise_has_no_fm()); apart from
- * DSD_ERR_NOT_SUPPORTED (-2).
+ * svc_rtl_set_sql_setting()'s refusals, apart from DSD_ERR_NOT_SUPPORTED (-2): a NOISE setting on the AM monitor
+ * (dsd_squelch_noise_has_no_fm()), and an AUTO setting on audio input, where it has no channel power to learn a floor
+ * from (issue #628).
  */
-enum { SVC_SQL_NOISE_NEEDS_FM = -3 };
+enum { SVC_SQL_NOISE_NEEDS_FM = -3, SVC_SQL_AUTO_NEEDS_RADIO = -4 };
 
 /**
  * @brief Set the configured squelch to a whole setting (issue #518 follow-up): a level, the auto squelch with its
  * margin, or the noise squelch with its quieting. As svc_rtl_set_sql_db(), a scan row's own squelch stays in force
  * until the scanner leaves it. Returns 0, -1 for NULL arguments, a margin outside 3..30 or a level that is not a
- * number, or SVC_SQL_NOISE_NEEDS_FM for NOISE on the AM monitor.
+ * number, SVC_SQL_NOISE_NEEDS_FM for NOISE on the AM monitor, or SVC_SQL_AUTO_NEEDS_RADIO for AUTO on audio input.
  */
 int svc_rtl_set_sql_setting(dsd_opts* opts, const dsd_state* state, const dsd_squelch_setting* setting);
-/** @brief Set RTL monitor/non-symbol gain multiplier (clamped to 0–3). */
-int svc_rtl_set_volume_mult(dsd_opts* opts, int mult);
-/** @brief Toggle RTL bias tee (applied live when stream active). */
-int svc_rtl_set_bias_tee(dsd_opts* opts, const dsd_state* state, int on);
-/** @brief Toggle RTL-TCP adaptive networking and propagate to env/stream. */
-int svc_rtltcp_set_autotune(dsd_opts* opts, const dsd_state* state, int on);
-/** @brief Toggle carrier/error-based auto PPM and propagate to env/stream. */
-int svc_rtl_set_auto_ppm(dsd_opts* opts, const dsd_state* state, int on);
-#endif
+
+/**
+ * @brief Hand the RTL demodulator the squelch @p opts holds: a level through rtl_stream_set_channel_squelch(), as every
+ * level push always has, or an auto squelch whole (rtl_stream_set_channel_squelch_setting(), issue #518 follow-up).
+ * Nothing in a build without radio support.
+ */
+void svc_rtl_push_squelch(const dsd_opts* opts);
 
 #ifdef __cplusplus
 }

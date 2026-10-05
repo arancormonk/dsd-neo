@@ -289,16 +289,15 @@ dsd_squelch_setting_format(const dsd_squelch_setting* s, char* out, size_t out_s
    input's AM channel). */
 static int
 squelch_dynamic_resolution(int mode, int input, int digital, int am) {
-    if (input != DSD_SQUELCH_INPUT_RADIO && input != DSD_SQUELCH_INPUT_AUDIO) {
+    /* AUTO never runs off a radio input, whatever the channel. */
+    if ((input != DSD_SQUELCH_INPUT_RADIO && input != DSD_SQUELCH_INPUT_AUDIO)
+        || (input == DSD_SQUELCH_INPUT_AUDIO && mode != DSD_SQUELCH_MODE_NOISE)) {
         return DSD_SQUELCH_RESOLVED_NO_RADIO;
     }
     if (digital) {
         return DSD_SQUELCH_RESOLVED_DIGITAL;
     }
     if (input == DSD_SQUELCH_INPUT_AUDIO) {
-        if (mode != DSD_SQUELCH_MODE_NOISE) {
-            return DSD_SQUELCH_RESOLVED_NO_RADIO;
-        }
         return am ? DSD_SQUELCH_RESOLVED_AUDIO_AM : DSD_SQUELCH_RESOLVED_AS_SET;
     }
     return (am && mode == DSD_SQUELCH_MODE_NOISE) ? DSD_SQUELCH_RESOLVED_AM_AUTO : DSD_SQUELCH_RESOLVED_AS_SET;

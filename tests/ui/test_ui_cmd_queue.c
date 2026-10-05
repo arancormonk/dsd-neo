@@ -5977,12 +5977,12 @@ test_squelch_setting_command(void) {
     rc |= expect_true("auto pushed whole", g_cmd_squelch_setting_pushes == 1
                                                && g_cmd_squelch_setting_pushed.mode == DSD_SQUELCH_MODE_AUTO
                                                && g_cmd_squelch_setting_pushed.margin_db == 6);
-    rc |= expect_str("auto toast", state.ui_msg, "Applied: RTL squelch -> auto +6 dB");
+    rc |= expect_str("auto toast", state.ui_msg, "Applied: squelch -> auto +6 dB");
 
     rc |= expect_true("bad margin queued", submit_squelch_setting(DSD_SQUELCH_MODE_AUTO, 2, 0.0) > 0);
     rc |= expect_int("bad margin drained", dsd_app_drain_cmds(&opts, &state), 1);
     rc |= expect_int("bad margin refused", opts.rtl_squelch_margin_db, 6);
-    rc |= expect_str("bad margin toast", state.ui_msg, "Failed: RTL squelch update");
+    rc |= expect_str("bad margin toast", state.ui_msg, "Failed: squelch update");
 
     g_cmd_squelch_pushes = 0;
     rc |= expect_true("level queued",
@@ -5992,7 +5992,7 @@ test_squelch_setting_command(void) {
     rc |= expect_squelch_db("level stored", opts.rtl_squelch_level, -50.0);
     rc |= expect_true("level pushed as a level", g_cmd_squelch_pushes == 1 && g_cmd_squelch_setting_pushes == 1);
     rc |= expect_squelch_db("level demod value", g_cmd_squelch_pushed, -50.0);
-    rc |= expect_str("level toast", state.ui_msg, "Applied: RTL squelch -> -50.0 dB");
+    rc |= expect_str("level toast", state.ui_msg, "Applied: squelch -> -50.0 dB");
 
     /* Requests of the two modes queued before one drain both apply, in order, so each keeps what it sets (the margin,
        the level); two of one mode coalesce to the later. */
@@ -6056,7 +6056,7 @@ test_squelch_setting_command(void) {
     rc |= expect_true("noise pushed whole", g_cmd_squelch_setting_pushes == 1
                                                 && g_cmd_squelch_setting_pushed.mode == DSD_SQUELCH_MODE_NOISE
                                                 && g_cmd_squelch_setting_pushed.margin_db == 14);
-    rc |= expect_str("noise toast", state.ui_msg, "Applied: RTL squelch -> noise +14 dB");
+    rc |= expect_str("noise toast", state.ui_msg, "Applied: squelch -> noise +14 dB");
     opts.analog_only = 1;
     opts.analog_demod = DSD_ANALOG_DEMOD_AM;
     const dsd_squelch_setting level40 = dsd_squelch_setting_of_level(dsd_squelch_level_from_sql(-40.0));
@@ -6116,7 +6116,7 @@ test_squelch_commands_edit_the_configured_default(void) {
     rc |= expect_squelch_db("plain squelch in force", opts.rtl_squelch_level, -70.0);
     rc |= expect_squelch_db("plain squelch edits the default", configured_squelch(&state), -70.0);
     rc |= expect_squelch_db("plain squelch demod level", g_cmd_squelch_pushed, -70.0);
-    rc |= expect_str("plain squelch toast", state.ui_msg, "Applied: RTL squelch -> -70.0 dB");
+    rc |= expect_str("plain squelch toast", state.ui_msg, "Applied: squelch -> -70.0 dB");
     rc |= expect_int("row squelch reinstalled", dsd_scan_mode_options(&opts, &state, &row), 0);
     rc |= expect_squelch_db("reinstalled row demod level", g_cmd_squelch_pushed, -60.0);
 
@@ -6610,6 +6610,73 @@ test_nfm_bandwidth_set_on_pcm_input(void) {
     }
     opts.analog_nfm_bandwidth_hz = 0;
 
+    opts.analog_only = 0;
+    freeState(&state);
+    return rc;
+}
+
+static int
+submit_pcm_squelch(dsd_opts* opts, dsd_state* state, int mode, int margin_db, double level) {
+    dsd_app_squelch_setting_payload payload;
+    DSD_MEMSET(&payload, 0, sizeof payload);
+    payload.mode = mode;
+    payload.margin_db = margin_db;
+    payload.level = level;
+    state->ui_msg[0] = '\0';
+    int rc = expect_true("pcm squelch queued",
+                         dsd_app_command_submit(DSD_APP_CMD_RTL_SET_SQL_SETTING, &payload, sizeof payload) > 0);
+    rc |= expect_int("pcm squelch drained", dsd_app_drain_cmds(opts, state), 1);
+    return rc;
+}
+
+/*
+ * The squelch commands on audio input (issue #628), in every build: radio-off builds dispatch them too. A level and the
+ * noise squelch are stored with their toasts; the auto squelch, which has no channel power to learn a floor from on
+ * audio input, is refused and says why; the AM monitor on its own still refuses noise.
+ */
+static int
+test_squelch_commands_on_pcm_input(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    init_decode_mode_context(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_UDP;
+    opts.analog_only = 1;
+    opts.analog_demod = DSD_ANALOG_DEMOD_FM;
+
+    state.ui_msg[0] = '\0';
+    rc |= expect_true("pcm level queued", dsd_app_command_set_double(DSD_APP_CMD_RTL_SET_SQL_DB, -50.0) > 0);
+    rc |= expect_int("pcm level drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_true("pcm level stored",
+                      opts.rtl_squelch_mode == DSD_SQUELCH_MODE_LEVEL
+                          && fabs(opts.rtl_squelch_level - dsd_squelch_level_from_sql(-50.0)) <= 1e-12);
+    rc |= expect_str("pcm level toast", state.ui_msg, "Applied: squelch -> -50.0 dB");
+
+    rc |= submit_pcm_squelch(&opts, &state, DSD_SQUELCH_MODE_NOISE, 12, 0.0);
+    rc |= expect_true("pcm noise stored",
+                      opts.rtl_squelch_mode == DSD_SQUELCH_MODE_NOISE && opts.rtl_squelch_margin_db == 12);
+    rc |= expect_str("pcm noise toast", state.ui_msg, "Applied: squelch -> noise +12 dB");
+
+    rc |= submit_pcm_squelch(&opts, &state, DSD_SQUELCH_MODE_AUTO, 6, 0.0);
+    rc |= expect_true("pcm auto refused",
+                      opts.rtl_squelch_mode == DSD_SQUELCH_MODE_NOISE && opts.rtl_squelch_margin_db == 12);
+    rc |= expect_str("pcm auto toast", state.ui_msg,
+                     "Refused: the auto squelch needs a radio input; audio input takes a level or noise");
+
+    state.ui_msg[0] = '\0';
+    rc |= expect_true("pcm off queued", dsd_app_command_set_double(DSD_APP_CMD_RTL_SET_SQL_DB, 0.0) > 0);
+    rc |= expect_int("pcm off drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |=
+        expect_true("pcm off stored", opts.rtl_squelch_mode == DSD_SQUELCH_MODE_LEVEL && opts.rtl_squelch_level <= 0.0);
+    rc |= expect_str("pcm off toast", state.ui_msg, "Applied: squelch -> off");
+
+    opts.analog_demod = DSD_ANALOG_DEMOD_AM;
+    rc |= submit_pcm_squelch(&opts, &state, DSD_SQUELCH_MODE_NOISE, 10, 0.0);
+    rc |= expect_true("pcm noise on AM refused", opts.rtl_squelch_mode == DSD_SQUELCH_MODE_LEVEL);
+    rc |= expect_str("pcm noise on AM toast", state.ui_msg,
+                     "Refused: the noise squelch needs an FM channel; AM takes auto");
+
+    opts.analog_demod = DSD_ANALOG_DEMOD_FM;
     opts.analog_only = 0;
     freeState(&state);
     return rc;
@@ -15027,6 +15094,7 @@ main(void) {
     rc |= test_config_refuses_scanner_under_trunk_scan();
     rc |= test_config_keeps_trunk_scan_lifecycle();
     rc |= test_nfm_bandwidth_set_on_pcm_input();
+    rc |= test_squelch_commands_on_pcm_input();
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
     dsd_neo_log_set_tap(record_capture_log, NULL);
     rc |= test_rtl_gain_commands_edit_the_trunk_scan_default();
