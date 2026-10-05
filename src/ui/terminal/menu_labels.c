@@ -1453,8 +1453,8 @@ lbl_rtl_vol(const void* v, char* b, size_t n) {
     return b;
 }
 
-/* The configured squelch the row edits: "Squelch... [-60.0 dB]", "[off]", "[auto +10 dB]" (issue #518 follow-up). A
-   scan row's own squelch is what the readouts show; this row edits the default beneath it. */
+/* The configured squelch the row edits: "Squelch... [-60.0 dB]", "[off]", "[auto +10 dB]", "[noise +10 dB]" (issue #518
+   follow-up). A scan row's own squelch is what the readouts show; this row edits the default beneath it. */
 const char*
 lbl_rtl_sql(const void* v, char* b, size_t n) {
     const UiCtx* c = (const UiCtx*)v;
@@ -1462,9 +1462,10 @@ lbl_rtl_sql(const void* v, char* b, size_t n) {
     if (c && c->opts) {
         dsd_app_squelch_view view;
         if (dsd_app_squelch_view_get(c->opts, dsd_app_get_latest_snapshot(), &view) == 0) {
-            const dsd_squelch_setting setting = view.configured_auto
-                                                    ? dsd_squelch_setting_auto(view.configured_margin_db)
-                                                    : dsd_squelch_setting_of_level(view.configured_level);
+            const dsd_squelch_setting setting =
+                view.configured_noise  ? dsd_squelch_setting_noise(view.configured_margin_db)
+                : view.configured_auto ? dsd_squelch_setting_auto(view.configured_margin_db)
+                                       : dsd_squelch_setting_of_level(view.configured_level);
             (void)dsd_squelch_setting_format(&setting, text, sizeof text);
         } else {
             const dsd_squelch_setting setting = dsd_squelch_setting_of_opts(c->opts);

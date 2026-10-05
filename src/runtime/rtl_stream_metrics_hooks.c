@@ -114,9 +114,9 @@ dsd_rtl_stream_metrics_hook_set_channel_squelch_setting(const dsd_squelch_settin
         g_rtl_stream_metrics_hooks.set_channel_squelch_setting(setting);
         return 0;
     }
-    /* A threshold alone: an AUTO setting is off there. */
-    return dsd_rtl_stream_metrics_hook_set_channel_squelch(setting->mode == DSD_SQUELCH_MODE_AUTO ? 0.0
-                                                                                                  : setting->level);
+    /* A threshold alone: a dynamic setting is off there. */
+    return dsd_rtl_stream_metrics_hook_set_channel_squelch(dsd_squelch_mode_is_dynamic(setting->mode) ? 0.0
+                                                                                                      : setting->level);
 }
 
 int

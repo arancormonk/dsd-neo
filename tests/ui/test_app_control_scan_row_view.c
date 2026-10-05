@@ -10,6 +10,7 @@
 #include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/power.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -104,6 +105,15 @@ test_values_and_notices(void) {
     v.squelch_db = 0;
     assert(dsd_app_scan_row_value_text(DSD_SCAN_ROW_FIELD_SQUELCH, &v, out, sizeof out) == 0);
     assert(strcmp(out, "off") == 0);
+    v.squelch_mode = DSD_SQUELCH_MODE_NOISE;
+    v.squelch_margin_db = 12;
+    assert(dsd_app_scan_row_value_text(DSD_SCAN_ROW_FIELD_SQUELCH, &v, out, sizeof out) == 0);
+    assert(strcmp(out, "noise +12 dB") == 0);
+    v.squelch_mode = DSD_SQUELCH_MODE_AUTO;
+    assert(dsd_app_scan_row_value_text(DSD_SCAN_ROW_FIELD_SQUELCH, &v, out, sizeof out) == 0);
+    assert(strcmp(out, "auto +12 dB") == 0);
+    v.squelch_mode = DSD_SQUELCH_MODE_LEVEL;
+    v.squelch_margin_db = 0;
     v.width_hz = 12500;
     assert(dsd_app_scan_row_value_text(DSD_SCAN_ROW_FIELD_WIDTH, &v, out, sizeof out) == 0);
     assert(strcmp(out, "12.5 kHz") == 0);

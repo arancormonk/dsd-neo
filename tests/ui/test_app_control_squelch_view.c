@@ -14,6 +14,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
 #include <dsd-neo/runtime/squelch.h>
@@ -36,11 +37,11 @@ expect_text(const dsd_app_squelch_view* view, const char* readout, const char* n
     assert(strcmp(out, notice) == 0);
 }
 
-/* The auto squelch's status on its own, as a frontend that lays it out on a line of its own reads it. */
+/* The dynamic squelch's status on its own, as a frontend that lays it out on a line of its own reads it. */
 static void
 expect_auto_status(const dsd_app_squelch_view* view, const char* status) {
     char out[40];
-    assert(dsd_app_squelch_view_auto_status(view, out, sizeof out) == 0);
+    assert(dsd_app_squelch_view_dynamic_status(view, out, sizeof out) == 0);
     assert(strcmp(out, status) == 0);
 }
 
@@ -154,6 +155,53 @@ main(void) {
     char text[24];
     assert(dsd_app_squelch_view_configured_text(&view, text, sizeof text) == 0 && strcmp(text, "auto+10") == 0);
 
+    /* The noise squelch: "starting" until its first window, its quieting while it runs, "as auto" where the tracker
+       stands in for it (an FM channel with no band, an AM channel), and its configured text. */
+    opts->rtl_squelch_mode = DSD_SQUELCH_MODE_NOISE;
+    opts->rtl_squelch_margin_db = 12;
+    state->squelch_auto_active = 0;
+    assert(dsd_app_squelch_view_get(opts, state, &view) == 0);
+    assert(view.effective_noise && view.configured_noise && !view.effective_auto && !view.configured_auto);
+    assert(!view.effective_off && !view.noise_running && !view.noise_as_auto);
+    expect_text(&view, "noise +12 dB (starting)", "Applied: RTL squelch -> noise +12 dB");
+    state->squelch_auto_active = 1;
+    state->squelch_noise_active = 1;
+    state->squelch_auto_gate_open = 1;
+    /* Running, but no window measured yet: still starting. */
+    assert(dsd_app_squelch_view_get(opts, state, &view) == 0);
+    assert(view.noise_running && !view.noise_measured && !view.noise_as_auto);
+    expect_auto_status(&view, "starting");
+    state->squelch_noise_measured = 1;
+    state->squelch_noise_quieting_cdb = 2349;
+    assert(dsd_app_squelch_view_get(opts, state, &view) == 0);
+    assert(view.noise_running && view.noise_measured && view.noise_gate_open && !view.auto_running
+           && !view.auto_gate_open);
+    assert(fabs(view.noise_quieting_db - 23.49) < 1e-9);
+    expect_text(&view, "noise +12 dB (quieting 23 dB)", "Applied: RTL squelch -> noise +12 dB");
+    expect_auto_status(&view, "quieting 23 dB");
+    state->squelch_noise_active = 0;
+    state->squelch_noise_measured = 0;
+    assert(dsd_app_squelch_view_get(opts, state, &view) == 0);
+    assert(view.noise_as_auto && view.auto_running && view.auto_gate_open && !view.noise_gate_open);
+    expect_text(&view, "noise +12 dB (as auto: floor -78.3 dB)", "Applied: RTL squelch -> noise +12 dB");
+    opts->analog_demod = DSD_ANALOG_DEMOD_AM;
+    state->squelch_auto_active = 0;
+    assert(dsd_app_squelch_view_get(opts, state, &view) == 0);
+    assert(view.auto_resolution == DSD_SQUELCH_RESOLVED_AM_AUTO && view.noise_as_auto && !view.effective_off);
+    expect_auto_status(&view, "as auto: learning");
+    assert(dsd_app_squelch_view_configured_text(&view, text, sizeof text) == 0 && strcmp(text, "noise+12") == 0);
+    opts->audio_in_type = AUDIO_IN_WAV;
+    assert(dsd_app_squelch_view_get(opts, state, &view) == 0);
+    assert(view.effective_off);
+    expect_auto_status(&view, "off: no radio input");
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->analog_demod = DSD_ANALOG_DEMOD_FM;
+    opts->rtl_squelch_mode = DSD_SQUELCH_MODE_AUTO;
+    opts->rtl_squelch_margin_db = 10;
+    state->squelch_auto_active = 1;
+    state->squelch_auto_gate_open = 0;
+    state->squelch_noise_quieting_cdb = 0;
+
     /* A row's own auto under a level default, and a row's level under an auto default. */
     opts->rtl_squelch_mode = DSD_SQUELCH_MODE_LEVEL;
     assert(dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_NFM) == 0);
@@ -187,9 +235,9 @@ main(void) {
     assert(dsd_app_squelch_view_configured_text(&view, text, sizeof text) == 0 && strcmp(text, "off") == 0);
     assert(dsd_app_squelch_view_configured_text(NULL, text, sizeof text) == -1 && text[0] == '\0');
     text[0] = 'x';
-    assert(dsd_app_squelch_view_auto_status(NULL, text, sizeof text) == -1 && text[0] == '\0');
-    assert(dsd_app_squelch_view_auto_status(&view, NULL, sizeof text) == -1);
-    assert(dsd_app_squelch_view_auto_status(&view, text, 0) == -1);
+    assert(dsd_app_squelch_view_dynamic_status(NULL, text, sizeof text) == -1 && text[0] == '\0');
+    assert(dsd_app_squelch_view_dynamic_status(&view, NULL, sizeof text) == -1);
+    assert(dsd_app_squelch_view_dynamic_status(&view, text, 0) == -1);
 
     char out[8];
     assert(dsd_app_squelch_view_get(NULL, state, &view) == -1 && !view.row_override);

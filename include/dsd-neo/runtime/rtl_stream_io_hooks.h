@@ -23,9 +23,12 @@
 extern "C" {
 #endif
 
-/** What the auto squelch shows (issue #518 follow-up; rtl_stream_get_squelch_status()). */
+/** What the dynamic squelch shows (issue #518 follow-up; rtl_stream_get_squelch_status()). */
 typedef struct {
-    int active;          /**< 1 when the stream's last block ran the floor tracker */
+    int active;          /**< 1 when the stream's last block ran a dynamic squelch */
+    int noise;           /**< 1 when that was the noise squelch, 0 when the floor tracker ran */
+    int quieting_valid;  /**< 1 once the noise squelch has measured a window since it started */
+    double quieting_db;  /**< the noise squelch's last window's quieting (0 until quieting_valid) */
     int state;           /**< dsd_squelch_floor_state */
     int gate_open;       /**< the gate at the end of that block */
     int plan_valid;      /**< 0 when the channel plan could not be designed */
@@ -39,7 +42,7 @@ typedef struct {
     /* read with each sample's auto squelch flag (DSD_SQUELCH_FLAG_CLOSED or 0). Optional: without it,
        dsd_rtl_stream_io_hook_read_ex() reads through read and reports every sample open. */
     int (*read_ex)(void* rtl_ctx, float* out, uint8_t* flags, size_t count, int* out_got);
-    /* The auto squelch's status. Optional. */
+    /* The dynamic squelch's status. Optional. */
     int (*squelch_status)(const void* rtl_ctx, dsd_rtl_squelch_status* out);
 } dsd_rtl_stream_io_hooks;
 

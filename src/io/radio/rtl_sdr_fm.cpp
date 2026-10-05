@@ -29,6 +29,7 @@
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
 #include <dsd-neo/dsp/math_utils.h>
+#include <dsd-neo/dsp/nfm_noise_squelch.h>
 #include <dsd-neo/dsp/resampler.h>
 #include <dsd-neo/dsp/snr_bias.h>
 #include <dsd-neo/dsp/snr_estimator.h>
@@ -335,20 +336,25 @@ static struct output_state output;
 static constexpr size_t kOutputRingCapacity = (size_t)(MAXIMUM_BUF_LENGTH * 8);
 static struct controller_state controller;
 
-/* The auto squelch (issue #518 follow-up). The setting a control thread pushes (rtl_stream_set_channel_squelch_setting())
- * and the demod thread copies into demod_state before each block: the dsd_squelch_mode in bits 0-7, the margin in dB in
- * bits 8-15. A LEVEL threshold stays in demod_state::channel_squelch_level, which the level gate reads only under a LEVEL
- * word. A switch to AUTO stores this word alone and leaves the level as it was, so a block that took the old LEVEL word
- * still gates on the old level; a switch to LEVEL stores the level before this word (release; the demod thread's acquire
- * load then sees it), so a block that took the new word gates on the new level. No block runs ungated between them. */
+/* The dynamic squelches (issue #518 follow-up). The setting a control thread pushes
+ * (rtl_stream_set_channel_squelch_setting()) and the demod thread copies into demod_state before each block: the
+ * dsd_squelch_mode in bits 0-7, the margin (AUTO) or quieting (NOISE) in dB in bits 8-15. A LEVEL threshold stays in
+ * demod_state::channel_squelch_level, which the level gate reads only under a LEVEL word. A switch to AUTO or NOISE
+ * stores this word alone and leaves the level as it was, so a block that took the old LEVEL word still gates on the old
+ * level; a switch to LEVEL stores the level before this word (release; the demod thread's acquire load then sees it),
+ * so a block that took the new word gates on the new level. No block runs ungated between them. */
 static std::atomic<uint32_t> g_squelch_auto_word{0U};
 /* The parts of the floor's context the demod thread does not hold itself: the tuner gain as last applied (tenths of a
  * dB, AUTO_GAIN under the tuner's AGC), the bias tee, and the device (a hash of its spec, at open). */
 static std::atomic<int> g_squelch_tuner_gain{AUTO_GAIN};
 static std::atomic<int> g_squelch_bias_tee{0};
 static std::atomic<uint32_t> g_squelch_device_hash{0U};
-/* What the tracker publishes after each block, for display (rtl_stream_get_squelch_status()). */
+/* What the dynamic squelch publishes after each block, for display (rtl_stream_get_squelch_status()): the tracker's
+ * state, or the noise squelch's quieting when it ran. */
 static std::atomic<int> g_squelch_status_active{0};
+static std::atomic<int> g_squelch_status_noise{0};
+static std::atomic<int> g_squelch_status_quieting_valid{0};
+static std::atomic<float> g_squelch_status_quieting{0.0f};
 static std::atomic<int> g_squelch_status_state{0};
 static std::atomic<int> g_squelch_status_gate_open{1};
 static std::atomic<int> g_squelch_status_plan_valid{0};
@@ -4206,13 +4212,14 @@ demod_feed_wideband_spectrum(const struct demod_state* d) {
                                        controller.last_applied_freq_hz.load(std::memory_order_acquire));
 }
 
-/* The demod thread, before a block: the squelch setting, and for an AUTO setting the context the floor belongs to. */
+/* The demod thread, before a block: the squelch setting, and for a dynamic setting the context the channel's noise
+   belongs to (the tracker's floor, and when the noise squelch starts over). */
 static void
 demod_take_squelch_setting(struct demod_state* d) {
     const uint32_t word = g_squelch_auto_word.load(std::memory_order_acquire);
     d->squelch_mode = (int)(word & 0xFFU);
     d->squelch_margin_db = (int)((word >> 8) & 0xFFU);
-    if (d->squelch_mode != DSD_SQUELCH_MODE_AUTO) {
+    if (!dsd_squelch_mode_is_dynamic(d->squelch_mode)) {
         return;
     }
     const int post = d->post_downsample > 1 ? d->post_downsample : 1;
@@ -4229,16 +4236,29 @@ demod_take_squelch_setting(struct demod_state* d) {
     d->squelch_context = key;
 }
 
-/* The demod thread, after a block: what the auto squelch's tracker shows. */
+/* The demod thread, after a block: what the dynamic squelch shows (the noise squelch when it ran, else the tracker). */
 static void
 demod_publish_squelch_status(const struct demod_state* d) {
     dsd_squelch_floor_status st;
     dsd_squelch_floor_get_status(&d->squelch_floor, &st);
     const int active = d->result_flags_active ? 1 : 0;
+    const int noise = active && d->squelch_noise_ran ? 1 : 0;
+    dsd_noise_squelch_status ns;
+    dsd_noise_squelch_get_status(&d->noise_squelch, &ns);
+    int gate_open = active ? st.gate_open : 1;
+    if (noise) {
+        gate_open = ns.gate_open;
+    }
     g_squelch_status_active.store(active, std::memory_order_relaxed);
+    /* A reading exists once the noise squelch has closed a window since it started; before that it is starting. */
+    const int measured = noise && ns.windows > 0U ? 1 : 0;
+    g_squelch_status_noise.store(noise, std::memory_order_relaxed);
+    g_squelch_status_quieting_valid.store(measured, std::memory_order_relaxed);
+    g_squelch_status_quieting.store(measured ? (float)ns.quieting_db : 0.0f, std::memory_order_relaxed);
     g_squelch_status_state.store(st.state, std::memory_order_relaxed);
-    g_squelch_status_gate_open.store(active ? st.gate_open : 1, std::memory_order_relaxed);
-    g_squelch_status_plan_valid.store(d->squelch_floor.plan.valid ? 1 : 0, std::memory_order_relaxed);
+    g_squelch_status_gate_open.store(gate_open, std::memory_order_relaxed);
+    g_squelch_status_plan_valid.store((noise ? d->noise_squelch.plan.valid : d->squelch_floor.plan.valid) ? 1 : 0,
+                                      std::memory_order_relaxed);
     g_squelch_status_floor.store((float)st.floor_power, std::memory_order_relaxed);
     g_squelch_status_window_power.store((float)st.window_power, std::memory_order_relaxed);
 }
@@ -14904,6 +14924,24 @@ squelch_test_setting_checks(void) {
     return 0;
 }
 
+/* NOISE reaches the demod as its own word with its quieting, the level left as it was, and the context taken (its
+   stand-in, the tracker, needs it). */
+static int
+squelch_test_noise_setting_checks(void) {
+    demod.channel_squelch_level.store(1e-6f, std::memory_order_relaxed);
+    controller.last_applied_freq_hz.store(162475000U, std::memory_order_relaxed);
+    dsd_squelch_setting noise14 = {DSD_SQUELCH_MODE_NOISE, 0.0, 14};
+    demod.squelch_context.freq_hz = 0;
+    rtl_stream_set_channel_squelch_setting(&noise14);
+    demod_take_squelch_setting(&demod);
+    if (demod.squelch_mode != DSD_SQUELCH_MODE_NOISE || demod.squelch_margin_db != 14
+        || demod.squelch_context.freq_hz != 162475000
+        || fabsf(demod.channel_squelch_level.load(std::memory_order_relaxed) - 1e-6f) > 1e-12f) {
+        return 14;
+    }
+    return 0;
+}
+
 /* The flags through the output ring, across its wrap, the replay copy and a block without flags. */
 static int
 squelch_test_ring_checks(void) {
@@ -14946,12 +14984,40 @@ squelch_test_status_checks(void) {
         || st.gate_open != 0 || !st.plan_valid || fabs(st.floor_power - 1e-5) > 1e-9) {
         return 12;
     }
+    if (st.noise || fabs(st.quieting_db) > 1e-12) {
+        return 12;
+    }
     demod.result_flags_active = 0;
     demod_publish_squelch_status(&demod);
-    if (rtl_stream_get_squelch_status(&st) != 0 || st.active || st.gate_open != 1) {
+    if (rtl_stream_get_squelch_status(&st) != 0 || st.active || st.noise || st.gate_open != 1) {
         return 12;
     }
     return 0;
+}
+
+/* The status while the noise squelch runs: its gate and quieting, not the tracker's. */
+static int
+squelch_test_noise_status_checks(void) {
+    demod.result_flags_active = 1;
+    demod.squelch_floor.gate_open = 0;
+    demod.squelch_noise_ran = 1;
+    demod.noise_squelch.plan.valid = 1;
+    demod.noise_squelch.gate_open = 1;
+    demod.noise_squelch.quieting_db = 23.5;
+    /* No window closed yet: running, but no reading. */
+    demod_publish_squelch_status(&demod);
+    rtl_stream_squelch_status st;
+    int failed = rtl_stream_get_squelch_status(&st) != 0 || !st.active || !st.noise || st.quieting_valid
+                 || fabs(st.quieting_db) > 1e-12;
+    demod.noise_squelch.windows = 1U;
+    demod_publish_squelch_status(&demod);
+    failed |= rtl_stream_get_squelch_status(&st) != 0 || !st.active || !st.noise || st.gate_open != 1 || !st.plan_valid
+              || !st.quieting_valid || fabs(st.quieting_db - 23.5) > 1e-4;
+    demod.squelch_noise_ran = 0;
+    DSD_MEMSET(&demod.noise_squelch, 0, sizeof(demod.noise_squelch));
+    demod.result_flags_active = 0;
+    demod_publish_squelch_status(&demod);
+    return failed ? 15 : 0;
 }
 
 extern "C" int
@@ -14974,10 +15040,16 @@ rtl_stream_test_squelch_plumbing(void) {
 
     int failed = squelch_test_setting_checks();
     if (!failed) {
+        failed = squelch_test_noise_setting_checks();
+    }
+    if (!failed) {
         failed = squelch_test_ring_checks();
     }
     if (!failed) {
         failed = squelch_test_status_checks();
+    }
+    if (!failed) {
+        failed = squelch_test_noise_status_checks();
     }
 
     DSD_MEMSET(&demod.squelch_floor, 0, sizeof(demod.squelch_floor));
@@ -16510,7 +16582,7 @@ rtl_stream_set_channel_squelch(float level) {
 
 extern "C" void
 rtl_stream_set_channel_squelch_setting(const dsd_squelch_setting* setting) {
-    if (!setting || setting->mode != DSD_SQUELCH_MODE_AUTO) {
+    if (!setting || !dsd_squelch_mode_is_dynamic(setting->mode)) {
         rtl_stream_set_channel_squelch(setting ? (float)setting->level : 0.0f);
         return;
     }
@@ -16521,7 +16593,7 @@ rtl_stream_set_channel_squelch_setting(const dsd_squelch_setting* setting) {
         margin = DSD_SQUELCH_MARGIN_MAX_DB;
     }
     /* The word alone: the level stays for a block that took the LEVEL word before this store (see g_squelch_auto_word). */
-    g_squelch_auto_word.store((uint32_t)DSD_SQUELCH_MODE_AUTO | ((uint32_t)margin << 8), std::memory_order_release);
+    g_squelch_auto_word.store((uint32_t)setting->mode | ((uint32_t)margin << 8), std::memory_order_release);
 }
 
 extern "C" int
@@ -16530,6 +16602,9 @@ rtl_stream_get_squelch_status(rtl_stream_squelch_status* out) {
         return -1;
     }
     out->active = g_squelch_status_active.load(std::memory_order_relaxed);
+    out->noise = g_squelch_status_noise.load(std::memory_order_relaxed);
+    out->quieting_valid = g_squelch_status_quieting_valid.load(std::memory_order_relaxed);
+    out->quieting_db = (double)g_squelch_status_quieting.load(std::memory_order_relaxed);
     out->state = g_squelch_status_state.load(std::memory_order_relaxed);
     out->gate_open = g_squelch_status_gate_open.load(std::memory_order_relaxed);
     out->plan_valid = g_squelch_status_plan_valid.load(std::memory_order_relaxed);

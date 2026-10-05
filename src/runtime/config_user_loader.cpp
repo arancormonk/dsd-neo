@@ -267,12 +267,14 @@ apply_input_source_keys(dsdneoUserConfig* cfg, const char* key_lc, const char* v
     }
 }
 
-/* rtl_sql_mode: level (rtl_sql's threshold) or auto (rtl_sql_margin_db over the learned floor). Anything else keeps
-   what was there; the validator reports it. */
+/* rtl_sql_mode: level (rtl_sql's threshold), auto (rtl_sql_margin_db over the learned floor) or noise
+   (rtl_sql_margin_db of quieting on FM). Anything else keeps what was there; the validator reports it. */
 static void
 apply_rtl_sql_mode(const char* val, dsdneoUserConfig* cfg) {
     if (dsd_strcasecmp(val, "auto") == 0) {
         cfg->rtl_sql_mode = DSD_SQUELCH_MODE_AUTO;
+    } else if (dsd_strcasecmp(val, "noise") == 0) {
+        cfg->rtl_sql_mode = DSD_SQUELCH_MODE_NOISE;
     } else if (dsd_strcasecmp(val, "level") == 0) {
         cfg->rtl_sql_mode = DSD_SQUELCH_MODE_LEVEL;
     }

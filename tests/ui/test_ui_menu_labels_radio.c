@@ -357,6 +357,11 @@ test_radio_tuning_labels(void) {
     opts.rtl_squelch_mode = DSD_SQUELCH_MODE_AUTO;
     opts.rtl_squelch_margin_db = 10;
     rc |= expect_str("rtl squelch auto", lbl_rtl_sql(&ctx, b, sizeof(b)), "Squelch... [auto +10 dB]");
+    opts.rtl_squelch_mode = DSD_SQUELCH_MODE_NOISE;
+    opts.rtl_squelch_margin_db = 14;
+    rc |= expect_str("rtl squelch noise", lbl_rtl_sql(&ctx, b, sizeof(b)), "Squelch... [noise +14 dB]");
+    opts.rtl_squelch_mode = DSD_SQUELCH_MODE_AUTO;
+    opts.rtl_squelch_margin_db = 10;
     /* Under a scan row, the default beneath it. */
     configured.rtl_squelch_mode = DSD_SQUELCH_MODE_LEVEL;
     configured.rtl_squelch_level = dsd_squelch_level_from_sql(-80.0);

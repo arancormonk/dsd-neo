@@ -1227,8 +1227,8 @@ synthetic fixture to 2 s (192 kB) or less. The two AM synthetics of #524 (1.5 s 
 synthetics of #523 0.77 MB (the no-code case reuses `nfm_notone_synth`), 4.86 MB in all, which leaves 0.14 MB. The
 auto squelch's two burst synthetics (0.75 s each) take 0.14 MB (4,992,000 bytes in all), which spends the budget: its
 hotter-receiver twins add nothing, since the analog replay host scales a copy at run time (`--analog-iq-gain-db`), and
-its noise and real-carrier cases reuse `noise_floor` and the excerpts. A pull request that adds analog fixtures states
-the running total.
+its noise and real-carrier cases reuse `noise_floor` and the excerpts. The noise squelch's replay cases add none either:
+they reuse the same bursts, copies and excerpts. A pull request that adds analog fixtures states the running total.
 
 #### Auto squelch classifier (design gate)
 
@@ -1292,6 +1292,119 @@ power of its first samples, as it did before the auto squelch, and a replay's de
 683 ms at 48 kHz. Both chunks of the 0.75 s burst start on noise, so a fixed threshold that keeps that noise out never
 plays the carrier; on a 2 s version (carrier from 0.5 to 1.5 s) a fixed `-20 dB` plays from 683 ms to the end. The
 auto squelch's per-sample gate opens 20 ms into the carrier and closes within a window of its end.
+
+#### Noise squelch design gate
+
+The NFM noise squelch (`--squelch noise[+N]`, issue #518) opens when the FM discriminator's output above the voice band
+quiets by N dB. The question before any C was written: does a quieting statistic read about 0 dB on noise at any level,
+follow the carrier-to-noise ratio, and stay well above the highest threshold while a strong carrier carries wanted
+modulation, at every plan the FM monitor runs? `tools/noise_squelch_model.py` (numpy/scipy, offline; CI does not run it)
+answers it on `tools/squelch_model.py`'s tap harness and rate chains, with `dsd_fm_demod()`'s discriminator modelled
+exactly. It covers 365 distinct plans:
+
+- 119 plans from the 171 NFM combinations the harness runs: every width, the unset default and every rate chain.
+- 246 plans at custom widths: 11.0-12.4 kHz in 100 Hz steps and 13-25 kHz in 1 kHz steps, on every chain at 24 kHz or
+  above.
+
+Each chain's decimation runs ahead of its channel filter: a cascade of half-band stages, the 31-tap one first and
+15-tap ones after, and the 15-tap stage droops inside the band. The model runs everything through the cascade as the
+chain does: the noise, the calibration and every wanted signal, made at twice the channel rate. The stages before the
+last are one 63-tap FIR sampled from their composite response, then the last stage runs as it is; the C core calibrates
+the same way. For each plan the model runs:
+
+- 600 s of noise.
+- A tone sweep at the width's rated deviation, centred and at every offset the tone's own Carson bandwidth leaves in the
+  channel (its edge and half way, either side). Tones run from 300 Hz in 5 Hz steps up to 800 Hz, where a tone's
+  harmonics crowd the band, then in 25 Hz steps to 3000 Hz.
+- Real NFM speech: the three excerpts' audio at rated deviation.
+- CNR sweeps, and the real excerpts as recorded.
+- Stress cases outside the gate: a carrier 1 kHz off centre past its Carson bandwidth, and 1.5 times rated deviation.
+
+The gate: wanted modulation keeps its 1st-percentile Q at least 6 dB above N = 30, and noise reaches N = 3 in at most
+1e-4 of the 20 ms evaluations.
+
+A single band above voice fails the gate. The channel filter truncates a strong tone's FM sidebands, so its 2nd and 3rd
+harmonics land in the band as lines, and they cap Q at 11-26 dB:
+
+- `single`, worst 11.2 dB.
+- A single band at the top of B, [hi - 1200 Hz, hi], `high1200`: 14.6 dB.
+
+Cutting the band ([3.8 kHz, the taps' -1 dB point less 800 Hz], under 0.45 fs) into sub-bands and taking the
+best-quieted one finds a sub-band clear of the lines. But the best of many noisy readings sits above 0 dB on noise: the
+`sW-max` candidates let noise reach N = 3 in 1-30% of evaluations. So every guarded candidate takes
+Q = max(Q_sum, Q_max - G dB), Q_sum from the sub-bands' summed powers (the whole band, as tight on noise as one
+band-pass). How the band is cut decides the wanted side:
+
+| Candidate | Plans passing (of 289 with a band) | Worst wanted p1 | Why |
+| --- | --- | --- | --- |
+| 500 Hz sub-bands, at most 9 (`s500-guard4`) | 40 | 26.1 dB | too few on narrow channels: at 11.2 kHz two sub-bands, and a harmonic on their boundary leaves neither clear (27.3 dB there) |
+| 300 Hz, at most 15 (`s300-guard4`) | 250 | 33.3 dB | a tone whose harmonics fall near the boundaries leaves no sub-band clear: 39 plans fail, at 11.7-13 kHz and 23 kHz |
+| 250 Hz, at most 18 (`s250-guard5`) | 288 | 35.9 dB | a 585 Hz tone on an 11.8 kHz channel; with a 4 dB guard noise reaches N = 3 in 1.3e-4 of evaluations |
+| 300 Hz and a set staggered half a sub-band between them (`s300x-guard4`) | 289 | 37.0 dB | the design |
+
+The staggered set puts a line that sits on a boundary of one set inside a band-pass of the other. Q_max takes the best
+of all 2K - 1 band-passes; Q_sum stays on the K sub-bands. Its 4 dB guard leaves the most wanted margin: 5 dB also
+passes every plan (36.1 dB at worst) and 6 dB fails two, and both only lower noise's loudest window, at the same
+false-open rate. With `s300x-guard4`:
+
+- All 289 plans with a band pass. Wanted modulation keeps 37.0 dB at worst (a 590 Hz tone at its Carson edge on
+  11.8 kHz at 39062 Hz), and speech keeps 38.6 dB.
+- Noise reaches N = 3 in at most two 20 ms evaluations in 29,970 (6.7e-5) and never N = 4. Its loudest window over
+  600 s is 3.85 dB.
+- The 76 plans with no band run the auto squelch:
+  - every 8 and 10 kHz NFM width;
+  - every chain at a DSP rate under 12 kHz;
+  - the legacy WIDE filters (`DSD_NEO_CHANNEL_LPF=1`) at 11.7 and 12 kHz;
+  - no channel filter behind a half-band cascade at a channel rate (before any post-decimation) of 16 kHz or less (the
+    width unset on rtl-12k, rtl-16k, an Airspy Mini at 11718 Hz and an SDDC at 15625 Hz, or `DSD_NEO_CHANNEL_LPF=0`):
+    the cascade's roll-off is then the channel's only edge and truncates a wide signal into the band (27-34 dB before
+    the rule; the unfiltered plans above, from 19.5 kHz, pass, and a replay with no cascade keeps its band);
+  - the custom widths 11.0 and 11.1 kHz;
+  - 11.2 kHz on the chains whose taps reach their -1 dB point at 5790 Hz, 10 Hz short of the 5.8 kHz that 1200 Hz of
+    band needs.
+
+| Figure (289 plans) | Result |
+| --- | --- |
+| Calibration, 2 s through the cascade, channel taps and discriminator | within 0.65 dB of the 600 s reference in every band-pass (1.97 dB skipping the cascade) |
+| Noise holding an open gate (Q at or over the close threshold) | 2.3e-2 of evaluations at N = 3 (close under 1.5 dB), 6.7e-5 at N = 6, none at N = 10 |
+| A receiver's slope (one pole at the channel edge) | noise's median Q -4.82..+1.08 dB |
+| Median Q at 0, 10, 20 and 30 dB CNR (1 kHz tone) | 0.9-3.8, 8.2-24.8, 19.1-35.2 and 28.0-45.0 dB: wider channels read more quieting at the same in-channel CNR |
+| The real excerpts as recorded (receiver noise and neighbours included) | the two squelch captures keep 21 dB at the 1st percentile through every plan of 12.5 kHz or wider. `nfm_ctcss_real` reads 20.0-23.9 dB (median) through 12.5-23 kHz plans, 12.5-21.0 dB through 24 kHz ones and 1.4-21.0 dB through 25 kHz and wider: its neighbour 12.5 kHz away falls inside those channels, as it falls in their audio |
+| Stress cases (outside the gate) | a carrier 1 kHz past its Carson edge, or at 1.5 times rated deviation, can close the gate (1st percentile down to 3.2 dB): its own sidebands fall in the band as noise does |
+
+`python3 tools/noise_squelch_model.py` reproduces the report (`build/noise_squelch_model/noise_squelch_report.md`, and
+`noise_squelch_results.json` beside it) in about an hour on 6 workers; `--quick` (30 s of noise per plan, shorter
+tones) is a smoke run. The C core is held to the model's design by two suites:
+
+- `DSP_NFM_NOISE_SQUELCH`:
+  - The band rule, the unfiltered-cascade rule included.
+  - The band-passes' response against the closed-form Butterworth band-pass.
+  - The calibration against 60 s of noise, and against noise through the six real stages of an rtl-16k chain (0.25 dB
+    per band-pass; a plan of the last stage alone is 1.0 dB off).
+  - Noise never opening at N = 3 on six plans, quieting independent of the input level, the hysteresis, and block-cut
+    bit identity.
+- `DSP_NFM_NOISE_SQUELCH_SWEEP` (the same binary with `--sweep`, 600 s timeout): full-deviation tones on the model's
+  grid, centred and at their Carson edges, never closing the gate at N = 30. It runs 11.2 kHz at 48 kHz, the gate's
+  weakest plan (11.8 kHz at 39062 Hz), 12.4 kHz at 39062 Hz and 13 kHz at 46875 Hz behind their chains' cascades,
+  and 25 kHz. Its lowest Q is 37.1 dB, and it fails without the staggered set.
+
+#### Noise squelch replay cases
+
+The `DECODE_IQ_ANALOG_SQL_NOISE_*` cases replay the same burst under `--squelch noise`, held to bounds of their own:
+first audible block at 330-380 ms, 200-270 ms audible. The burst measures 340 ms and 240 ms at both levels: the gate
+opens on the first full 40 ms window of carrier and closes within a window of its end. Auto's 320 and 280 ms miss
+those bounds, so a noise setting run as auto fails them.
+
+| Case | What it pins |
+| --- | --- |
+| `_NFM_BURST`, `_NFM_BURST_HOT` | The gate's edges, and the same measurements 10 dB hotter: quieting does not follow the level. |
+| `_NFM_MARGIN`, `_NFM_MARGIN_HOT` | The burst quiets the band by about 22 dB (it opens at `noise+20`, not at `+25`); under `noise+30` nothing is audible at either level. |
+| `_NOISE_FLOOR` | Ten seconds of `noise_floor` never open it at the lowest N (`noise+3`). |
+| `_NFM_REAL_CARRIER` | `nfm_ctcss_real` plays whole after the first window (4160 of the 4200 ms audible with the squelch off). |
+| `_NARROW_AS_AUTO` | An 8 kHz channel has no band above voice: the auto squelch runs the setting, and the burst measures as under `--squelch auto`. |
+| `_AM_REFUSED` | `-fM --squelch noise` stops at startup with its message, before any replay. |
+| `DECODE_IQ_SCAN_SQL_NOISE_ROW` | A `-Y` nfm row's own `--squelch noise` gates the burst as `-fA` does. |
+| `DECODE_IQ_ANALOG_SQL_NOISE_NFM_DETERMINISM` | Fast, jittered and realtime replays hand the sink the same gated audio (GNU `--wrap` builds). |
 
 #### Tone and code labels
 

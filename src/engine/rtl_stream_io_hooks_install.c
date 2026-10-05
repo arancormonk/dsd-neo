@@ -31,6 +31,9 @@ rtl_stream_io_squelch_status(const void* rtl_ctx, dsd_rtl_squelch_status* out) {
         return -1;
     }
     out->active = st.active;
+    out->noise = st.noise;
+    out->quieting_valid = st.quieting_valid;
+    out->quieting_db = st.quieting_db;
     out->state = st.state;
     out->gate_open = st.gate_open;
     out->plan_valid = st.plan_valid;

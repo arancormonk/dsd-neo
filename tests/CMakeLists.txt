@@ -72,6 +72,7 @@ if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
         dsp/test_dsp_simd_widen.cpp
         dsp/test_dsp_snr_estimator.cpp
         dsp/test_dsp_squelch_floor.c
+        dsp/test_dsp_nfm_noise_squelch.c
         dsp/test_dsp_symbol_replay.c
         io/test_io_input_level_metrics.c
         io/test_io_rtl_replay_eof_and_cf32.cpp
@@ -96,6 +97,7 @@ elseif(MSVC)
         dsp/test_dsp_simd_widen.cpp
         dsp/test_dsp_snr_estimator.cpp
         dsp/test_dsp_squelch_floor.c
+        dsp/test_dsp_nfm_noise_squelch.c
         dsp/test_dsp_symbol_replay.c
         io/test_io_input_level_metrics.c
         io/test_io_rtl_replay_eof_and_cf32.cpp
@@ -1002,6 +1004,18 @@ dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_dsp_squelch_floor_cxx
   HEADERS_PUBLIC_DSP_SQUELCH_FLOOR_CXX
   dsd-neo/dsp/squelch_floor.h
+  CXX
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_dsp_nfm_noise_squelch
+  HEADERS_PUBLIC_DSP_NFM_NOISE_SQUELCH
+  dsd-neo/dsp/nfm_noise_squelch.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_dsp_nfm_noise_squelch_cxx
+  HEADERS_PUBLIC_DSP_NFM_NOISE_SQUELCH_CXX
+  dsd-neo/dsp/nfm_noise_squelch.h
   CXX
 )
 dsd_neo_add_public_header_smoke_test(
@@ -8438,6 +8452,29 @@ dsd_neo_link_dsp_test(dsd-neo_test_dsp_squelch_floor ${DSD_NEO_TEST_MATH_LIB})
 add_test(NAME DSP_SQUELCH_FLOOR COMMAND dsd-neo_test_dsp_squelch_floor)
 set_tests_properties(DSP_SQUELCH_FLOOR PROPERTIES TIMEOUT 300)
 
+# The NFM noise squelch (issue #518 follow-up): the band rule and its sub-bands'
+# Butterworth response, the calibration, noise that never opens the gate, quieting
+# that follows the CNR and not the level, strong tones that never close it, the
+# hysteresis, the flags' timing, and the same flags whatever the block cuts.
+add_executable(
+    dsd-neo_test_dsp_nfm_noise_squelch
+    dsp/test_dsp_nfm_noise_squelch.c
+)
+target_include_directories(
+    dsd-neo_test_dsp_nfm_noise_squelch
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/tests/dsp
+)
+dsd_neo_link_dsp_test(dsd-neo_test_dsp_nfm_noise_squelch ${DSD_NEO_TEST_MATH_LIB})
+add_test(NAME DSP_NFM_NOISE_SQUELCH COMMAND dsd-neo_test_dsp_nfm_noise_squelch)
+set_tests_properties(DSP_NFM_NOISE_SQUELCH PROPERTIES TIMEOUT 300)
+# The strong-modulation sweep on its own: full-deviation tones in 5 Hz steps on five
+# plans, minutes under the sanitizers.
+add_test(
+    NAME DSP_NFM_NOISE_SQUELCH_SWEEP
+    COMMAND dsd-neo_test_dsp_nfm_noise_squelch --sweep
+)
+set_tests_properties(DSP_NFM_NOISE_SQUELCH_SWEEP PROPERTIES TIMEOUT 600)
+
 # DCS detection (issue #523) through the pure analog receive core, in sample time: every
 # supported code in both polarities through the receiver's DC block and de-emphasis at two
 # SNRs, the alias rule, hold under bit errors, loss on a stop and on the turn-off tone, and
@@ -8691,6 +8728,28 @@ target_link_libraries(
 add_test(
     NAME DSP_SQUELCH_AUTO_DEMOD
     COMMAND dsd-neo_test_dsp_squelch_auto_demod
+)
+
+# The NFM noise squelch inside full_demod() (issue #518 follow-up): on the discriminator's
+# output with the channel filter's plan, flags instead of zeroing, the tracker standing in
+# on AM and narrow channels, a retune or reset starting it over without touching the
+# tracker's floors, the post-decimator carrying its flags, and the same flags whatever the
+# block cuts.
+add_executable(
+    dsd-neo_test_dsp_noise_squelch_demod
+    dsp/test_dsp_noise_squelch_demod.cpp
+)
+target_include_directories(
+    dsd-neo_test_dsp_noise_squelch_demod
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/dsp
+)
+target_link_libraries(
+    dsd-neo_test_dsp_noise_squelch_demod
+    PRIVATE dsd-neo_dsp_private_test_support ${DSD_NEO_TEST_MATH_LIB}
+)
+add_test(
+    NAME DSP_NOISE_SQUELCH_DEMOD
+    COMMAND dsd-neo_test_dsp_noise_squelch_demod
 )
 
 add_executable(dsd-neo_test_dsp_squelch dsp/test_dsp_squelch.cpp)
@@ -12624,21 +12683,25 @@ if(DSD_HAS_RADIO)
         # jittered and realtime replays must hand the sink the same audio, gated at the
         # same samples (the burst's 280 ms, 14 writes of 960). The monitor reads one
         # sample at a time, so there is no read for a short-read leg to cut, and 280 ms
-        # of audio cannot back up a stalled sink; the NXDN case below covers that.
+        # of audio cannot back up a stalled sink; the NXDN case below covers that. The
+        # noise squelch gates the same way (its 240 ms, 12 writes).
         foreach(
             _sql_case
             IN
-            ITEMS "NFM;nfm_burst_synth;-fA" "AM;am_burst_synth;-fM"
+            ITEMS
+                "AUTO_NFM;nfm_burst_synth;-fA --squelch auto"
+                "AUTO_AM;am_burst_synth;-fM --squelch auto"
+                "NOISE_NFM;nfm_burst_synth;-fA --squelch noise"
         )
             list(GET _sql_case 0 _sql_kind)
             list(GET _sql_case 1 _sql_fixture)
             list(GET _sql_case 2 _sql_mode)
             dsd_neo_add_iq_determinism_test(
-                DECODE_IQ_ANALOG_SQL_AUTO_${_sql_kind}_DETERMINISM
+                DECODE_IQ_ANALOG_SQL_${_sql_kind}_DETERMINISM
                 ${_sql_fixture}
-                "${_sql_mode} --squelch auto"
+                "${_sql_mode}"
                 "sink:free;sink:free+jitter:7:120;sink:free+jitter:11:120;sink:free+realtime"
-                "monitor_samples=359[0-9][0-9] .*REPLAY SINK: stream=0 rate=48000 channels=1 async=1 writes=1[2-6] "
+                "monitor_samples=359[0-9][0-9] .*REPLAY SINK: stream=0 rate=48000 channels=1 async=1 writes=1[1-6] "
                 0
                 0
                 0
@@ -13503,6 +13566,107 @@ if(DSD_HAS_RADIO)
         "${_analog_off_path}"
     )
 
+    # The NFM noise squelch (issue #518 follow-up): it opens when the FM discriminator's
+    # noise above voice quiets by N dB (10 by default), as a radio's squelch does, with no
+    # floor to learn and whatever the level. On nfm_burst_synth it opens on the first full
+    # 40 ms window of carrier (340 ms to the first audible block, 20 ms after auto) and
+    # closes within a window of its end (240 ms audible): bounds auto's 320 and 280 ms miss,
+    # so a noise setting run as auto fails them. The _HOT twin replays the capture 10 dB
+    # hotter and measures the same.
+    set(_sql_noise_burst_bounds
+        "--analog-audible-dbfs -40 --analog-min-total-ms 700 --analog-max-total-ms 800 --analog-min-first-audible-ms 330 --analog-max-first-audible-ms 380 --analog-min-audible-ms 200 --analog-max-audible-ms 270 --analog-max-clip 0"
+    )
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_SQL_NOISE_NFM_BURST
+        nfm_burst_synth
+        "-fA --squelch noise ${_sql_noise_burst_bounds}"
+        ""
+        "${_analog_off_path}"
+    )
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_SQL_NOISE_NFM_BURST_HOT
+        nfm_burst_synth
+        "-fA --squelch noise --analog-iq-gain-db 10 ${_sql_noise_burst_bounds}"
+        "capture scaled by [+]10[.]0 dB, 0 of 72000 bytes clipped.*ANALOG AUDIO OK"
+        "${_analog_off_path}"
+    )
+    # The burst quiets the band by about 22 dB (it opens at noise+20, not at +25): under
+    # noise+30 it never opens, at either level.
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_SQL_NOISE_NFM_MARGIN
+        nfm_burst_synth
+        "-fA --squelch noise+30 ${_sql_auto_silent}"
+        ""
+        "${_analog_off_path}"
+    )
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_SQL_NOISE_NFM_MARGIN_HOT
+        nfm_burst_synth
+        "-fA --squelch noise+30 --analog-iq-gain-db 10 ${_sql_auto_silent}"
+        ""
+        "${_analog_off_path}"
+    )
+    # Ten seconds of receiver noise never open it, even at the lowest N.
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_SQL_NOISE_FLOOR
+        noise_floor
+        "-fA --squelch noise+3 --analog-max-audible-ms 0 --analog-min-total-ms 9900"
+        ""
+        "${_analog_off_path}"
+    )
+    # A real transmission plays whole after the first window: 4160 of nfm_ctcss_real's
+    # 4200 audible ms with the squelch off.
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_SQL_NOISE_NFM_REAL_CARRIER
+        nfm_ctcss_real
+        "-fA -n 50 --squelch noise --analog-audible-dbfs -40 --analog-min-captured-ms 5900 --analog-min-audible-ms 4100 --analog-max-first-audible-ms 100"
+        ""
+        "${_analog_off_path}"
+    )
+    # An 8 kHz channel has no band above voice: the floor tracker runs the setting as
+    # auto, and the burst gates exactly as under --squelch auto.
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_SQL_NOISE_NARROW_AS_AUTO
+        nfm_burst_synth
+        "-fA --nfm-bandwidth-hz 8000 --squelch noise ${_sql_auto_burst_bounds}"
+        ""
+        "${_analog_off_path}"
+    )
+    # A -Y map row's own --squelch noise on a digital (-fa) session gates as under -fA.
+    set(_scan_sql_noise_csv
+        "${CMAKE_CURRENT_BINARY_DIR}/scan_mode_sql_noise_row.csv"
+    )
+    file(
+        WRITE "${_scan_sql_noise_csv}"
+        "channel,frequency_hz,mode,options\n1,150000000,nfm,--squelch noise\n"
+    )
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_SCAN_SQL_NOISE_ROW
+        nfm_burst_synth
+        "-fa -C ${_scan_sql_noise_csv} --analog-scan-row 0 ${_sql_noise_burst_bounds}"
+        "Scan row applied: 0 nfm; width 16 kHz; squelch noise [+]10 dB [(]row[)].*ANALOG AUDIO OK"
+        "${_analog_off_path}"
+    )
+    # The AM monitor has no discriminator to quiet: -fM --squelch noise stops at startup
+    # and says why, before any replay.
+    add_test(
+        NAME DECODE_IQ_ANALOG_SQL_NOISE_AM_REFUSED
+        COMMAND
+            dsd-neo_test_analog_replay --frontend none -fM --squelch noise
+            --iq-replay
+            "${PROJECT_SOURCE_DIR}/tests/fixtures/iq/am_burst_synth.iq.json" -o
+            null
+    )
+    set_tests_properties(
+        DECODE_IQ_ANALOG_SQL_NOISE_AM_REFUSED
+        PROPERTIES
+            LABELS "iq-decode;analog"
+            TIMEOUT 120
+            PASS_REGULAR_EXPRESSION
+                "--squelch noise needs an FM channel and -fM is AM"
+            FAIL_REGULAR_EXPRESSION "ANALOG AUDIO OK|ANALOG METRIC"
+    )
+
     # Negative controls: bounds that must NOT hold, run through
     # analog_replay_fail_check.cmake, which requires the host's exit code (1 for a
     # missed bound), the named ANALOG AUDIO FAIL line and no ANALOG AUDIO OK. Without
@@ -13896,6 +14060,28 @@ if(Python3_Interpreter_FOUND)
             WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
         )
         set_tests_properties(TOOLS_AIRSPY_PACKAGING PROPERTIES TIMEOUT 120)
+    endif()
+    # tools/noise_squelch_model.py's report on canned results (issue #518 follow-up).
+    # The model imports numpy and scipy, so it registers only where the tests' Python
+    # has them.
+    execute_process(
+        COMMAND ${Python3_EXECUTABLE} -c "import numpy, scipy"
+        RESULT_VARIABLE _dsd_noise_model_py
+        OUTPUT_QUIET
+        ERROR_QUIET
+    )
+    if(_dsd_noise_model_py EQUAL 0)
+        add_test(
+            NAME TOOLS_NOISE_SQUELCH_MODEL_REPORT
+            COMMAND
+                ${Python3_EXECUTABLE}
+                ${PROJECT_SOURCE_DIR}/tests/tools/test_noise_squelch_model.py
+            WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+        )
+        set_tests_properties(
+            TOOLS_NOISE_SQUELCH_MODEL_REPORT
+            PROPERTIES TIMEOUT 120
+        )
     endif()
     # The report's per-repeat pairing of the analog columns (issue #518), on canned
     # summaries. Stdlib only, so it runs wherever Python does.

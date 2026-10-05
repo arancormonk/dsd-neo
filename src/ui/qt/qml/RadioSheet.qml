@@ -44,8 +44,9 @@ ModalSheet {
     property real pendingGain: NaN
     property real pendingPpm: NaN
     property real pendingSquelch: NaN
-    // An auto squelch requested, by its margin.
+    // A dynamic squelch requested, by its margin, and which one (auto or noise).
     property real pendingSquelchMargin: NaN
+    property int pendingSquelchMode: commands.squelchModeAuto
     property real pendingAnalogWidth: NaN
     property real pendingOtherWidth: NaN
 
@@ -64,6 +65,9 @@ ModalSheet {
     readonly property bool rowGain: rowScope && (rowFields & commands.scanRowFieldGain) !== 0
     readonly property bool rowSquelch: rowScope && (rowFields & commands.scanRowFieldSquelch) !== 0
     readonly property bool rowWidth: rowScope && (rowFields & commands.scanRowFieldWidth) !== 0
+    // Only an nfm row takes a tone policy, and only it has an FM discriminator
+    // for the noise squelch to quiet.
+    readonly property bool rowNfm: rowScope && (rowFields & commands.scanRowFieldTone) !== 0
     // The readings the steppers start from are the row's only while both
     // snapshots are of its scope; between the decoder's two publishes they
     // can pair one row's values with another's identity.
@@ -109,20 +113,38 @@ ModalSheet {
     // rows whose width it edits too, so on any other row "this channel" is a
     // level: there an auto default is off, as the reading says.
     readonly property bool squelchAutoOffered: !rowSquelch || rowWidth
+    // The noise squelch opens when the FM discriminator's noise above voice
+    // quiets by its margin: an nfm row takes it, and so does the default unless
+    // the session is the AM monitor on its own, which refuses it.
+    readonly property bool squelchNoiseOffered: rowSquelch ? rowNfm : metrics.squelchNoiseOffered === true
+    // A noise setting where the noise squelch cannot run -- an am row that
+    // inherits it, the AM monitor on its own -- runs as auto, and the panel
+    // shows and steps it as Auto.
+    readonly property bool baseSquelchNoiseAsAuto: rowSquelch
+        ? (!rowNfm && metrics.effectiveSquelchNoise === true)
+        : (!squelchNoiseOffered && metrics.configuredSquelchNoise === true)
     readonly property bool baseSquelchAuto: squelchAutoOffered
-        && (rowSquelch ? metrics.effectiveSquelchAuto === true : metrics.configuredSquelchAuto === true)
+        && ((rowSquelch ? metrics.effectiveSquelchAuto === true : metrics.configuredSquelchAuto === true)
+            || baseSquelchNoiseAsAuto)
+    readonly property bool baseSquelchNoise: rowSquelch ? (rowNfm && metrics.effectiveSquelchNoise === true)
+        : (squelchNoiseOffered && metrics.configuredSquelchNoise === true)
     readonly property int baseSquelchMargin: rowSquelch ? metrics.effectiveSquelchMarginDb
         : metrics.configuredSquelchMarginDb
-    readonly property bool squelchAuto: !isNaN(pendingSquelchMargin) || (isNaN(pendingSquelch) && baseSquelchAuto)
-    // The margin the buttons step, or the one choosing Auto starts from.
+    readonly property bool squelchAuto: !isNaN(pendingSquelchMargin) ? pendingSquelchMode === commands.squelchModeAuto
+        : (isNaN(pendingSquelch) && baseSquelchAuto)
+    readonly property bool squelchNoise: !isNaN(pendingSquelchMargin) ? pendingSquelchMode === commands.squelchModeNoise
+        : (isNaN(pendingSquelch) && baseSquelchNoise)
+    // Auto or Noise: the buttons step the margin.
+    readonly property bool squelchDynamic: squelchAuto || squelchNoise
+    // The margin the buttons step, or the one choosing Auto or Noise starts from.
     readonly property int squelchMargin: !isNaN(pendingSquelchMargin) ? pendingSquelchMargin
         : (baseSquelchMargin > 0 ? baseSquelchMargin : commands.squelchMarginDefaultDb)
     // The threshold in force comes first; with a row override that is the row's,
     // and the default being edited is named below it.
     readonly property string squelchReading: (squelchRowOverride && !rowSquelch)
-        ? squelchSettingText(metrics.effectiveSquelchAuto === true, metrics.effectiveSquelchMarginDb,
-            metrics.effectiveSquelchOff, metrics.effectiveSquelchDb)
-        : squelchSettingText(squelchAuto, squelchMargin, squelchOff, squelchDb)
+        ? squelchSettingText(metrics.effectiveSquelchAuto === true, metrics.effectiveSquelchNoise === true,
+            metrics.effectiveSquelchMarginDb, metrics.effectiveSquelchOff, metrics.effectiveSquelchDb)
+        : squelchSettingText(squelchAuto, squelchNoise, squelchMargin, squelchOff, squelchDb)
     // What an auto squelch in force shows: its floor, "learning", or why it is
     // off here. Held while a request is outstanding; it describes the old setting.
     readonly property string squelchAutoStatus: (isNaN(pendingSquelch) && isNaN(pendingSquelchMargin)
@@ -313,8 +335,10 @@ ModalSheet {
         return off ? qsTr("off") : Math.round(db) + " dB";
     }
 
-    /** A squelch setting as the panel prints it: an auto squelch by its margin, a level as squelchText(). */
-    function squelchSettingText(auto, margin, off, db) {
+    /** A squelch setting as the panel prints it: a dynamic squelch by its margin, a level as squelchText(). */
+    function squelchSettingText(auto, noise, margin, off, db) {
+        if (noise)
+            return qsTr("noise +%1 dB").arg(margin);
         return auto ? qsTr("auto +%1 dB").arg(margin) : squelchText(off, db);
     }
 
@@ -496,40 +520,55 @@ ModalSheet {
             commands.setSquelchDb(db);
     }
 
-    /** Ask for the auto squelch with @p margin dB, on the row or the default. */
-    function requestSquelchAuto(margin) {
+    /**
+     * Ask for a dynamic squelch, @p mode (commands.squelchModeAuto or
+     * squelchModeNoise) with @p margin dB, on the row or the default.
+     */
+    function requestSquelchDynamic(mode, margin) {
         pendingSquelch = NaN;
+        pendingSquelchMode = mode;
         pendingSquelchMargin = margin;
         squelchTtl.restart();
         if (rowSquelch)
             rowEdit(commands.scanRowFieldSquelch, commands.scanRowEditSet,
-                {"squelchMode": commands.squelchModeAuto, "squelchMarginDb": margin});
+                {"squelchMode": mode, "squelchMarginDb": margin});
+        else if (mode === commands.squelchModeNoise)
+            commands.setSquelchNoise(margin);
         else
             commands.setSquelchAuto(margin);
     }
 
     /**
-     * Nudge the auto squelch's margin, 1 dB a step within the range the
-     * engine takes: a margin is a few dB over the floor, not a threshold.
+     * Nudge the auto or noise squelch's margin, 1 dB a step within the range
+     * the engine takes: a margin is a few dB of quieting or over the floor,
+     * not a threshold.
      */
     function stepSquelchMargin(delta) {
-        if (!squelchSteppable || !squelchAuto)
+        if (!squelchSteppable || !squelchDynamic)
             return;
         var next = Math.max(commands.squelchMarginMinDb, Math.min(commands.squelchMarginMaxDb, squelchMargin + delta));
         if (next === squelchMargin)
             return;
-        requestSquelchAuto(next);
+        requestSquelchDynamic(squelchNoise ? commands.squelchModeNoise : commands.squelchModeAuto, next);
     }
 
     /**
-     * The dB | Auto choice. Auto starts from the margin it last ran, or the
-     * default; dB goes back to the level the setting kept beneath it.
+     * The dB | Auto | Noise choice (@p index 0, 1, 2). Auto and Noise start
+     * from the margin the setting last ran, or the default; dB goes back to the
+     * level the setting kept beneath it.
      */
-    function chooseSquelchAuto(auto) {
-        if (!squelchSteppable || auto === squelchAuto || (auto && !squelchAutoOffered))
+    function chooseSquelchMode(index) {
+        var current = squelchNoise ? 2 : (squelchAuto ? 1 : 0);
+        if (!squelchSteppable || index === current)
             return;
-        if (auto) {
-            requestSquelchAuto(squelchMargin);
+        if (index === 1) {
+            if (squelchAutoOffered)
+                requestSquelchDynamic(commands.squelchModeAuto, squelchMargin);
+            return;
+        }
+        if (index === 2) {
+            if (squelchNoiseOffered)
+                requestSquelchDynamic(commands.squelchModeNoise, squelchMargin);
             return;
         }
         var levelOff = metrics.configuredSquelchLevelOff === true;
@@ -733,17 +772,19 @@ ModalSheet {
             color: Theme.textSecondary
             font.pixelSize: Theme.fontSize(14)
         }
-        // A fixed threshold in dB, or the auto squelch: a margin over each
-        // channel's own noise floor, whatever the dongle, antenna or gain.
+        // A fixed threshold in dB, the auto squelch (a margin over each
+        // channel's own noise floor) or the noise squelch (an FM channel's
+        // quieting, as a radio's squelch): the same whatever the dongle,
+        // antenna or gain.
         SegmentedControl {
             objectName: "radioSquelchMode"
             visible: sheet.squelchAutoOffered
             width: parent.width
             enabled: sheet.squelchSteppable
-            model: [qsTr("dB"), qsTr("Auto")]
-            currentIndex: sheet.squelchAuto ? 1 : 0
+            model: sheet.squelchNoiseOffered ? [qsTr("dB"), qsTr("Auto"), qsTr("Noise")] : [qsTr("dB"), qsTr("Auto")]
+            currentIndex: sheet.squelchNoise ? 2 : (sheet.squelchAuto ? 1 : 0)
             onSelected: function (index) {
-                sheet.chooseSquelchAuto(index === 1);
+                sheet.chooseSquelchMode(index);
             }
         }
         Row {
@@ -763,26 +804,27 @@ ModalSheet {
                 font.family: Theme.mono
                 font.pixelSize: Theme.fontSize(14)
             }
-            // In Auto the buttons step the margin over the floor, 1 dB at a time.
+            // In Auto and Noise the buttons step the margin, 1 dB at a time.
             OutlineButton {
                 objectName: "radioSquelchDown"
                 width: 48
                 text: "−"
-                accessibleName: sheet.squelchAuto ? qsTr("Decrease Squelch Margin") : qsTr("Decrease Squelch")
+                accessibleName: sheet.squelchDynamic ? qsTr("Decrease Squelch Margin") : qsTr("Decrease Squelch")
                 enabled: sheet.squelchSteppable
-                onClicked: sheet.squelchAuto ? sheet.stepSquelchMargin(-1) : sheet.stepSquelch(-5)
+                onClicked: sheet.squelchDynamic ? sheet.stepSquelchMargin(-1) : sheet.stepSquelch(-5)
             }
             OutlineButton {
                 objectName: "radioSquelchUp"
                 width: 48
                 text: "+"
-                accessibleName: sheet.squelchAuto ? qsTr("Increase Squelch Margin") : qsTr("Increase Squelch")
+                accessibleName: sheet.squelchDynamic ? qsTr("Increase Squelch Margin") : qsTr("Increase Squelch")
                 enabled: sheet.squelchSteppable
-                onClicked: sheet.squelchAuto ? sheet.stepSquelchMargin(1) : sheet.stepSquelch(5)
+                onClicked: sheet.squelchDynamic ? sheet.stepSquelchMargin(1) : sheet.stepSquelch(5)
             }
         }
-        // The auto squelch in force: the floor it opens over, "learning" until
-        // it has one, or why it is off here (no radio input, a digital channel).
+        // The dynamic squelch in force: the floor it opens over ("learning"
+        // until it has one), the quieting the noise squelch reads, or why it is
+        // off here (no radio input, a digital channel).
         Text {
             objectName: "radioSquelchAutoStatus"
             visible: sheet.squelchAutoStatus !== ""
@@ -844,8 +886,8 @@ ModalSheet {
             Text {
                 objectName: "radioSquelchDefault"
                 anchors.verticalCenter: parent.verticalCenter
-                text: qsTr("default %1").arg(sheet.squelchSettingText(sheet.squelchAuto, sheet.squelchMargin,
-                    sheet.squelchOff, sheet.squelchDb))
+                text: qsTr("default %1").arg(sheet.squelchSettingText(sheet.squelchAuto, sheet.squelchNoise,
+                    sheet.squelchMargin, sheet.squelchOff, sheet.squelchDb))
                 color: Theme.textSecondary
                 font.family: Theme.mono
                 font.pixelSize: Theme.fontSize(12)

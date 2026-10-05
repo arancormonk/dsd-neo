@@ -408,11 +408,12 @@ apply_shared_radio_tuning_from_config(const dsdneoUserConfig* cfg, dsd_opts* opt
     opts->rtl_gain_value = gain;
     opts->rtlsdr_ppm_error = ppm;
     opts->rtl_dsp_bw_khz = bw;
-    /* rtl_sql is the level under either mode, kept for a switch back from auto. */
+    /* rtl_sql is the level under every mode, kept for a switch back from auto or noise. */
     opts->rtl_squelch_level = dsd_squelch_level_from_sql((double)sql);
     opts->rtl_squelch_mode = DSD_SQUELCH_MODE_LEVEL;
-    if (cfg->rtl_sql_mode == DSD_SQUELCH_MODE_AUTO) {
-        const dsd_squelch_setting setting = dsd_squelch_setting_auto(user_config_sql_margin_db(cfg));
+    if (dsd_squelch_mode_is_dynamic(cfg->rtl_sql_mode)) {
+        const dsd_squelch_setting setting =
+            dsd_squelch_setting_dynamic(cfg->rtl_sql_mode, user_config_sql_margin_db(cfg));
         dsd_squelch_setting_store(opts, &setting);
     }
     opts->rtl_volume_multiplier = vol;
@@ -879,8 +880,8 @@ render_input_rtl_common(FILE* out, const dsdneoUserConfig* cfg, int include_auto
         DSD_FPRINTF(out, "rtl_bw_khz = %d\n", cfg->rtl_bw_khz);
     }
     DSD_FPRINTF(out, "rtl_sql = %d\n", cfg->rtl_sql);
-    if (cfg->rtl_sql_mode == DSD_SQUELCH_MODE_AUTO) {
-        DSD_FPRINTF(out, "rtl_sql_mode = \"auto\"\n");
+    if (dsd_squelch_mode_is_dynamic(cfg->rtl_sql_mode)) {
+        DSD_FPRINTF(out, "rtl_sql_mode = \"%s\"\n", cfg->rtl_sql_mode == DSD_SQUELCH_MODE_NOISE ? "noise" : "auto");
         DSD_FPRINTF(out, "rtl_sql_margin_db = %d\n", user_config_sql_margin_db(cfg));
     }
     if (cfg->rtl_volume) {
@@ -1235,11 +1236,12 @@ dsd_user_config_render_ini(const dsdneoUserConfig* cfg, FILE* stream) {
 
 // Mapping helpers -------------------------------------------------------------
 
-/* The spec's sql field: auto+N under rtl_sql_mode = auto, else rtl_sql's whole dB. */
+/* The spec's sql field: auto+N or noise+N under rtl_sql_mode = auto or noise, else rtl_sql's whole dB. */
 static void
 format_rtl_sql_field(const dsdneoUserConfig* cfg, char* out, size_t out_size) {
-    if (cfg->rtl_sql_mode == DSD_SQUELCH_MODE_AUTO) {
-        DSD_SNPRINTF(out, out_size, "auto+%d", user_config_sql_margin_db(cfg));
+    if (dsd_squelch_mode_is_dynamic(cfg->rtl_sql_mode)) {
+        DSD_SNPRINTF(out, out_size, "%s+%d", cfg->rtl_sql_mode == DSD_SQUELCH_MODE_NOISE ? "noise" : "auto",
+                     user_config_sql_margin_db(cfg));
     } else {
         DSD_SNPRINTF(out, out_size, "%d", cfg->rtl_sql);
     }
@@ -1329,12 +1331,12 @@ dsd_user_config_radio_input_spec(const dsdneoUserConfig* cfg, const dsd_opts* op
     }
 }
 
-/* An rtl: or rtltcp: spec's sql field under rtl_sql_mode = auto is auto+N, which carries no level: rtl_sql, the level
-   beneath the auto squelch, is applied here instead (as the shared tuning does for SoapySDR and Airspy), so a switch
-   back to a level and a save find it. --squelch keeps the level it set. */
+/* An rtl: or rtltcp: spec's sql field under rtl_sql_mode = auto or noise is auto+N or noise+N, which carries no
+   level: rtl_sql, the level beneath the dynamic squelch, is applied here instead (as the shared tuning does for
+   SoapySDR and Airspy), so a switch back to a level and a save find it. --squelch keeps the level it set. */
 static void
 apply_rtl_sql_level_beneath_auto(const dsdneoUserConfig* cfg, dsd_opts* opts) {
-    if (cfg->rtl_sql_mode == DSD_SQUELCH_MODE_AUTO && !opts->rtl_squelch_cli_set) {
+    if (dsd_squelch_mode_is_dynamic(cfg->rtl_sql_mode) && !opts->rtl_squelch_cli_set) {
         opts->rtl_squelch_level = dsd_squelch_level_from_sql((double)cfg->rtl_sql);
     }
 }

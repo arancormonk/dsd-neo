@@ -830,10 +830,18 @@ int svc_rtl_set_bandwidth_locked(dsd_opts* opts, dsd_state* state, int khz, char
  * the live state, never with a frontend snapshot (dsd_app_get_latest_snapshot()).
  */
 int svc_rtl_set_sql_db(dsd_opts* opts, const dsd_state* state, double dB);
+
 /**
- * @brief Set the configured squelch to a whole setting (issue #518 follow-up): a level, or the auto squelch with its
- * margin. As svc_rtl_set_sql_db(), a scan row's own squelch stays in force until the scanner leaves it. Returns 0, or
- * -1 for NULL arguments or a margin outside 3..30.
+ * svc_rtl_set_sql_setting()'s refusal of a NOISE setting on the AM monitor (dsd_squelch_noise_has_no_fm()); apart from
+ * DSD_ERR_NOT_SUPPORTED (-2).
+ */
+enum { SVC_SQL_NOISE_NEEDS_FM = -3 };
+
+/**
+ * @brief Set the configured squelch to a whole setting (issue #518 follow-up): a level, the auto squelch with its
+ * margin, or the noise squelch with its quieting. As svc_rtl_set_sql_db(), a scan row's own squelch stays in force
+ * until the scanner leaves it. Returns 0, -1 for NULL arguments, a margin outside 3..30 or a level that is not a
+ * number, or SVC_SQL_NOISE_NEEDS_FM for NOISE on the AM monitor.
  */
 int svc_rtl_set_sql_setting(dsd_opts* opts, const dsd_state* state, const dsd_squelch_setting* setting);
 /** @brief Set RTL monitor/non-symbol gain multiplier (clamped to 0–3). */

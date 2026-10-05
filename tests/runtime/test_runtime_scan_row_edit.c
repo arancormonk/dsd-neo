@@ -67,6 +67,21 @@ test_value_checks(void) {
     assert(strstr(err, "-100 to 0") != NULL);
     v.squelch_db = -101;
     assert(dsd_scan_row_edit_value_valid(DSD_SCAN_MODE_P25, DSD_SCAN_ROW_FIELD_SQUELCH, &v, NULL, 0) == 0);
+    /* The noise squelch: nfm rows only, 3 to 30 dB of quieting. */
+    v.squelch_mode = DSD_SQUELCH_MODE_NOISE;
+    v.squelch_margin_db = 12;
+    assert(dsd_scan_row_edit_value_valid(DSD_SCAN_MODE_NFM, DSD_SCAN_ROW_FIELD_SQUELCH, &v, err, sizeof err) == 1);
+    assert(dsd_scan_row_edit_value_valid(DSD_SCAN_MODE_AM, DSD_SCAN_ROW_FIELD_SQUELCH, &v, err, sizeof err) == 0);
+    assert(strstr(err, "nfm channels only") != NULL);
+    assert(dsd_scan_row_edit_value_valid(DSD_SCAN_MODE_P25, DSD_SCAN_ROW_FIELD_SQUELCH, &v, err, sizeof err) == 0);
+    v.squelch_margin_db = 2;
+    assert(dsd_scan_row_edit_value_valid(DSD_SCAN_MODE_NFM, DSD_SCAN_ROW_FIELD_SQUELCH, &v, err, sizeof err) == 0);
+    assert(strstr(err, "3 to 30 dB of quieting") != NULL);
+    v.squelch_mode = DSD_SQUELCH_MODE_AUTO;
+    v.squelch_margin_db = 12;
+    assert(dsd_scan_row_edit_value_valid(DSD_SCAN_MODE_AM, DSD_SCAN_ROW_FIELD_SQUELCH, &v, err, sizeof err) == 1);
+    v.squelch_mode = DSD_SQUELCH_MODE_LEVEL;
+    v.squelch_margin_db = 0;
 
     v.width_hz = 12500;
     assert(dsd_scan_row_edit_value_valid(DSD_SCAN_MODE_NFM, DSD_SCAN_ROW_FIELD_WIDTH, &v, err, sizeof err) == 1);
@@ -136,6 +151,30 @@ test_change_transitions(void) {
     assert(dsd_scan_row_edit_change(NULL, DSD_SCAN_ROW_FIELD_SQUELCH, DSD_SCAN_ROW_EDIT_RESET, NULL) == -1);
     assert(edit.set == before.set && edit.inherit == before.inherit);
     assert(dsd_scan_row_edit_fields_edited(NULL) == 0U);
+}
+
+/* A noise squelch edit runs as NOISE with its threshold, and a level edit after it keeps that threshold for a switch
+   back (issue #518 follow-up). */
+static void
+test_noise_edit(void) {
+    const dsd_scan_option_values row = parse_row("--squelch noise+12", DSD_SCAN_MODE_NFM);
+    assert(row.squelch_mode == DSD_SQUELCH_MODE_NOISE && row.squelch_margin_db == 12);
+    dsd_scan_row_edit edit;
+    DSD_MEMSET(&edit, 0, sizeof edit);
+    dsd_scan_row_edit_value v;
+    DSD_MEMSET(&v, 0, sizeof v);
+    v.squelch_mode = DSD_SQUELCH_MODE_LEVEL;
+    v.squelch_db = -55;
+    assert(dsd_scan_row_edit_change(&edit, DSD_SCAN_ROW_FIELD_SQUELCH, DSD_SCAN_ROW_EDIT_SET, &v) == 0);
+    dsd_scan_option_values out;
+    dsd_scan_row_edit_apply(&row, &edit, DSD_SCAN_MODE_NFM, &out);
+    assert(out.squelch_mode == DSD_SQUELCH_MODE_LEVEL && out.squelch_db == -55 && out.squelch_margin_db == 12);
+    v.squelch_mode = DSD_SQUELCH_MODE_NOISE;
+    v.squelch_margin_db = 8;
+    assert(dsd_scan_row_edit_change(&edit, DSD_SCAN_ROW_FIELD_SQUELCH, DSD_SCAN_ROW_EDIT_SET, &v) == 0);
+    dsd_scan_row_edit_apply(&row, &edit, DSD_SCAN_MODE_NFM, &out);
+    assert(out.squelch_mode == DSD_SQUELCH_MODE_NOISE && out.squelch_margin_db == 8 && out.squelch_db == 0);
+    assert(out.present & DSD_SCAN_OPT_SQUELCH);
 }
 
 /* An auto squelch margin outlives a level: a level edit without one keeps the margin the row's list gave, or the last
@@ -313,6 +352,7 @@ main(void) {
     test_change_transitions();
     test_apply_over_the_row();
     test_level_keeps_the_auto_margin();
+    test_noise_edit();
     test_gain();
     test_take_fields();
     test_width_request_differs();

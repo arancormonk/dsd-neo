@@ -501,14 +501,14 @@ channel_scan_check_rows(const dsd_opts* opts, dsd_state* state, channel_scan* sc
 static dsd_squelch_setting
 channel_scan_analog_squelch(const dsd_opts* opts, const dsd_state* state, const dsd_scan_option_values* row) {
     if (row && (row->present & DSD_SCAN_OPT_SQUELCH)) {
-        return row->squelch_mode == DSD_SQUELCH_MODE_AUTO
-                   ? dsd_squelch_setting_auto(row->squelch_margin_db)
+        return dsd_squelch_mode_is_dynamic(row->squelch_mode)
+                   ? dsd_squelch_setting_dynamic(row->squelch_mode, row->squelch_margin_db)
                    : dsd_squelch_setting_of_level(dsd_squelch_level_from_sql((double)row->squelch_db));
     }
     const dsd_scan_settings* configured = dsd_scan_mode_configured_view(state);
     if (configured) {
-        return configured->rtl_squelch_mode == DSD_SQUELCH_MODE_AUTO
-                   ? dsd_squelch_setting_auto(configured->rtl_squelch_margin_db)
+        return dsd_squelch_mode_is_dynamic(configured->rtl_squelch_mode)
+                   ? dsd_squelch_setting_dynamic(configured->rtl_squelch_mode, configured->rtl_squelch_margin_db)
                    : dsd_squelch_setting_of_level(configured->rtl_squelch_level);
     }
     return dsd_squelch_setting_of_opts(opts);
@@ -516,11 +516,12 @@ channel_scan_analog_squelch(const dsd_opts* opts, const dsd_state* state, const 
 
 /* Whether that squelch holds the row on noise: off, or at -100 dB and below, every block re-arms its carrier hold, so
  * only the visit cap or a manual advance or avoid moves on. The -100 dB comparison allows for the rounding of the
- * level's power. The auto squelch closes on noise on a radio input; elsewhere it is off (issue #518 follow-up). */
+ * level's power. The auto and noise squelches close on noise on a radio input; elsewhere they are off (issue #518
+ * follow-up). */
 static int
 channel_scan_analog_squelch_open(const dsd_opts* opts, const dsd_state* state, const dsd_scan_option_values* row) {
     const dsd_squelch_setting squelch = channel_scan_analog_squelch(opts, state, row);
-    if (squelch.mode == DSD_SQUELCH_MODE_AUTO) {
+    if (dsd_squelch_setting_is_dynamic(&squelch)) {
         return !dsd_opts_input_is_radio(opts);
     }
     const double floor_level = dsd_squelch_level_from_sql(-100.0);

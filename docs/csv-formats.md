@@ -205,6 +205,7 @@ channel,frequency_hz,name,mode,options
 5,461000000,DMR repeater,dmr,--scan-max-visit-ms 20000
 6,851012500,P25 conventional,p25,--squelch-db -55
 7,150000000,Inherit configured decoder,,
+8,453212500,Public works NFM noise squelch,nfm,--nfm-bandwidth-hz 12500 --squelch noise+12
 ```
 
 ### Scoped row options
@@ -235,7 +236,7 @@ Options are parsed once when the list is loaded. They are a restricted argument 
 | `--scan-voice-qualify-ms`, `--scan-voice-hold-ms` | Conventional voice-gate intervals, `100..600000` milliseconds; digital modes. |
 | `--scan-max-visit-ms <ms>` | Maximum time on this row or target per visit; `0` disables the cap for it, otherwise `1000..3600000` milliseconds. All modes, and every trunk-target type. |
 | `--squelch-db <dB>` | This row's or target's squelch threshold, in whole dB from `-100` to `0`, the same units as `[input] rtl_sql` and the `sql` field of `-i rtl:`; `0` switches the squelch off for this row alone. All modes, and every trunk-target type. |
-| `--squelch <setting>` | The same option in the squelch grammar: `off`, whole dB from `-100` to `0`, or `auto[+N]`, the [auto squelch](cli.md#auto-squelch---squelch-auto) N dB (3 to 30, default 10) over the noise floor learned on this channel. Levels and `off` on every row and trunk-target type; `auto` on `nfm` and `am` rows and `nfm-conventional` and `am-conventional` targets only. A row names one of `--squelch` and `--squelch-db`. |
+| `--squelch <setting>` | The same option in the squelch grammar: `off`, whole dB from `-100` to `0`, `auto[+N]`, the [auto squelch](cli.md#auto-squelch---squelch-auto) N dB (3 to 30, default 10) over the noise floor learned on this channel, or `noise[+N]`, the [noise squelch](cli.md#noise-squelch---squelch-noise) opening at N dB (3 to 30, default 10) of FM quieting. Levels and `off` on every row and trunk-target type; `auto` on `nfm` and `am` rows and `nfm-conventional` and `am-conventional` targets only; `noise` on `nfm` rows and `nfm-conventional` targets only. A row names one of `--squelch` and `--squelch-db`. |
 | `--nfm-bandwidth-hz <Hz>` | This analog row's or target's NFM channel width, whole Hz from `8000` to `25000` (for example `12500`). `nfm` rows and `nfm-conventional` targets only; a digital or blank row is told it `needs mode nfm`, and an `am` row refuses it as `not supported for this mode/target`. |
 | `--am-bandwidth-hz <Hz>` | This analog row's or target's AM channel width, whole Hz from `5000` to `20000` (for example `8333` for 8.33 kHz airband spacing). `am` rows and `am-conventional` targets only; a digital or blank row is told it `needs mode am`, and an `nfm` row refuses it as `not supported for this mode/target`. A row carries one width. |
 | `--tone-allow <list>`, `--tone-block <list>`, `--no-tone-filter` | This analog row's or target's CTCSS/DCS receive policy (see [Analog rows](#analog-rows)): hear only traffic carrying a listed tone or code, mute it, or no filter on this row whatever is configured. `<list>` is standard CTCSS tones and DCS codes separated by `/`, such as `67.0/100.0/D023N`. One option in three spellings, so a row names one of them once. `nfm` rows and `nfm-conventional` targets only; a digital or blank row is told it `needs mode nfm`, and an `am` row refuses it as `not supported for this mode/target`. |
@@ -349,9 +350,9 @@ silence. The per-visit cap and the hold, advance and avoid controls apply as for
 applies to an analog row, so a global `--scan-voice-only` does not block one. That includes the rows of an untyped
 list scanned under `-fA` or `-fM` (AM), which hold on their carrier under `-t` as well. Scan start warns once about an
 analog row whose squelch is off or at -100 dB or below: noise then keeps its carrier open, re-arming the hold with every
-block, so only the visit cap or a manual advance or avoid moves on. The auto squelch (`--squelch auto`, the row's own
-or inherited) closes on noise on a radio input, so a row running it draws no warning; on audio input it is off and the
-row is warned about as an open one.
+block, so only the visit cap or a manual advance or avoid moves on. The auto and noise squelches (`--squelch auto`,
+`--squelch noise`, the row's own or inherited) close on noise on a radio input, so a row running one draws no warning;
+on audio input they are off and the row is warned about as an open one.
 
 On an `nfm` row or `nfm-conventional` target the tone policy (issue #527) is the configured receive policy
 (`--tone-allow`, `--tone-block`, `[analog] tone_filter` and `tone_list`; see "Tone filter" in `docs/cli.md`) for this

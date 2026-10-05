@@ -2,6 +2,7 @@
 #include <assert.h>
 #include <dsd-neo/app_control/trunk_scan_validate.h>
 #include <dsd-neo/core/analog_tone.h>
+#include <dsd-neo/core/power.h>
 #include <stdio.h>
 #include <string.h>
 #include "../test_support/test_support.h"
@@ -14,6 +15,8 @@ typedef struct {
     size_t count;
     int squelch_set[4];
     int squelch_db[4];
+    int squelch_mode[4];
+    int squelch_margin[4];
 } squelch_targets;
 
 static void
@@ -22,6 +25,8 @@ collect_target(const dsd_app_scan_csv_target* target, void* context) {
     if (seen->count < 4) {
         seen->squelch_set[seen->count] = target->squelch_db_set;
         seen->squelch_db[seen->count] = target->squelch_db;
+        seen->squelch_mode[seen->count] = target->squelch_mode;
+        seen->squelch_margin[seen->count] = target->squelch_margin_db;
     }
     seen->count++;
 }
@@ -79,6 +84,22 @@ test_target_squelch(const char* path) {
         }
         assert(count == 0);
     }
+
+    /* Issue #518 follow-up: an nfm-conventional target's own noise squelch and an am-conventional one's auto
+       squelch preview with their modes; an am-conventional target refuses the noise squelch. */
+    write_targets(path, "fire,nfm-conventional,154430000,,1500,1200,,--squelch noise+9\n"
+                        "tower,am-conventional,118300000,,1500,1200,,--squelch auto+6\n");
+    assert(dsd_app_trunk_scan_validate_targets_csv(path, &count, err, sizeof err) == 0 && count == 2);
+    squelch_targets dynamic = {0};
+    const dsd_app_scan_csv_callbacks dynamic_callbacks = {collect_target, NULL, &dynamic};
+    assert(dsd_app_scan_csv_inspect(path, NULL, 0, &dynamic_callbacks, err, sizeof err) == 0);
+    assert(dynamic.count == 2 && dynamic.squelch_set[0] && dynamic.squelch_mode[0] == DSD_SQUELCH_MODE_NOISE
+           && dynamic.squelch_margin[0] == 9);
+    assert(dynamic.squelch_mode[1] == DSD_SQUELCH_MODE_AUTO && dynamic.squelch_margin[1] == 6);
+    assert(seen.squelch_mode[0] == DSD_SQUELCH_MODE_LEVEL && seen.squelch_margin[0] == 0);
+    write_targets(path, "tower,am-conventional,118300000,,1500,1200,,--squelch noise\n");
+    assert(dsd_app_trunk_scan_validate_targets_csv(path, &count, err, sizeof err) != 0);
+    assert(strstr(err, "row 2: --squelch: expects") != NULL && count == 0);
 }
 
 /* --- Issue #526: nfm-conventional targets --- */

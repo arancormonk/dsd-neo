@@ -42,6 +42,7 @@ class CommandBridge : public QObject {
      * whole dB over the learned floor (issue #518 follow-up). */
     Q_PROPERTY(int squelchModeLevel READ squelchModeLevel CONSTANT)
     Q_PROPERTY(int squelchModeAuto READ squelchModeAuto CONSTANT)
+    Q_PROPERTY(int squelchModeNoise READ squelchModeNoise CONSTANT)
     Q_PROPERTY(int squelchMarginMinDb READ squelchMarginMinDb CONSTANT)
     Q_PROPERTY(int squelchMarginMaxDb READ squelchMarginMaxDb CONSTANT)
     Q_PROPERTY(int squelchMarginDefaultDb READ squelchMarginDefaultDb CONSTANT)
@@ -56,6 +57,7 @@ class CommandBridge : public QObject {
     static int scanRowEditReset();
     static int squelchModeLevel();
     static int squelchModeAuto();
+    static int squelchModeNoise();
     static int squelchMarginMinDb();
     static int squelchMarginMaxDb();
     static int squelchMarginDefaultDb();
@@ -69,7 +71,8 @@ class CommandBridge : public QObject {
     /**
      * @brief Submit a session edit of one @p field (a scanRowField*) of the row @p context names, with @p action (a
      * scanRowEdit*). For SET, @p value carries the field's value: squelchDb (whole dB, -100..0; 0 = off) or
-     * squelchMode squelchModeAuto with squelchMarginDb (an nfm or am row's auto squelch), widthHz, toneMode with
+     * squelchMode squelchModeAuto with squelchMarginDb (an nfm or am row's auto squelch), squelchMode
+     * squelchModeNoise with squelchMarginDb (an nfm row's noise squelch), widthHz, toneMode with
      * toneList, or gainDb (0 = AGC). Returns whether it was queued; the decoder refuses what the row
      * cannot take, with a message.
      */
@@ -188,8 +191,15 @@ class CommandBridge : public QObject {
     Q_INVOKABLE bool setSquelchAuto(int marginDb) const;
 
     /**
-     * @brief Put the configured default back on the level it kept beneath an auto squelch, exactly as stored (a legacy
-     * linear threshold included, which a whole-dB reading cannot carry).
+     * @brief Set the noise squelch: open an FM channel when its discriminator noise above voice quiets by @p marginDb
+     * (squelchMarginMinDb..squelchMarginMaxDb). Like setSquelchDb() it edits the configured default; the AM monitor
+     * refuses it.
+     */
+    Q_INVOKABLE bool setSquelchNoise(int marginDb) const;
+
+    /**
+     * @brief Put the configured default back on the level it kept beneath a dynamic squelch, exactly as stored (a
+     * legacy linear threshold included, which a whole-dB reading cannot carry).
      */
     Q_INVOKABLE bool restoreSquelchLevel() const;
 

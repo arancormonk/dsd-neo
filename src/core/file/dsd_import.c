@@ -1590,9 +1590,9 @@ csv_describe_channel_profile(const dsd_state* state, int index, dsd_csv_channel_
     out->dmr_mapping_count = profile && (profile->values.present & DSD_SCAN_OPT_DMR_MAP) ? profile->dmr_map.count : -1;
     out->squelch_db_set = profile && (profile->values.present & DSD_SCAN_OPT_SQUELCH) ? 1 : 0;
     out->squelch_db = out->squelch_db_set ? profile->values.squelch_db : 0;
-    out->squelch_margin_db = out->squelch_db_set && profile->values.squelch_mode == DSD_SQUELCH_MODE_AUTO
-                                 ? profile->values.squelch_margin_db
-                                 : 0;
+    out->squelch_mode =
+        out->squelch_db_set ? dsd_squelch_mode_or_level(profile->values.squelch_mode) : DSD_SQUELCH_MODE_LEVEL;
+    out->squelch_margin_db = dsd_squelch_mode_is_dynamic(out->squelch_mode) ? profile->values.squelch_margin_db : 0;
     out->bandwidth_hz =
         profile && (profile->values.present & DSD_SCAN_OPT_BANDWIDTH) ? profile->values.channel_bw_hz : -1;
     out->tone_filter =

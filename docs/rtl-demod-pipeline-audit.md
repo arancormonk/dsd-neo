@@ -375,7 +375,9 @@ refuses rather than clamps, and the checks sit where the rate is known:
 The channel squelch measures power after the channel filter, so its noise
 floor moves with the width (about 3 dB per halving). The auto squelch
 (`--squelch auto`) rescales the floor it learned by the new filter's noise
-gain, so a width change needs no relearning and no new threshold.
+gain, so a width change needs no relearning and no new threshold; the noise
+squelch (`--squelch noise`) designs and calibrates its band on the new
+filter's taps.
 
 ### State Hygiene
 

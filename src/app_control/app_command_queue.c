@@ -1867,6 +1867,8 @@ ui_cmd_toast_squelch_edit(const dsd_opts* opts, dsd_state* state, int rc) {
         (void)dsd_app_squelch_view_get(opts, state, &view);
         (void)dsd_app_squelch_view_edit_notice(&view, notice, sizeof notice);
         ui_set_toast(state, 3, "%s", notice);
+    } else if (rc == SVC_SQL_NOISE_NEEDS_FM) {
+        ui_set_toast(state, 4, "Refused: the noise squelch needs an FM channel; AM takes auto");
     } else if (ui_rc_is_not_supported(rc)) {
         ui_set_toast(state, 3, "Unsupported: squelch control not available on active backend");
     } else {
@@ -1897,7 +1899,7 @@ ui_cmd_handle_rtl_set_sql_setting(dsd_opts* opts, dsd_state* state, const struct
     }
     DSD_MEMCPY(&payload, c->data, sizeof payload);
     dsd_squelch_setting setting;
-    setting.mode = payload.mode == DSD_SQUELCH_MODE_AUTO ? DSD_SQUELCH_MODE_AUTO : DSD_SQUELCH_MODE_LEVEL;
+    setting.mode = dsd_squelch_mode_or_level(payload.mode);
     setting.margin_db = payload.margin_db;
     setting.level = payload.level;
     const int rc = svc_rtl_set_sql_setting(opts, state, &setting);
@@ -3051,13 +3053,13 @@ apply_cfg_rtl_common(dsd_opts* opts, const dsdneoUserConfig* cfg) {
      * Unlike the sibling keys below, 0 is a real value here rather than "key
      * omitted", so this applies unconditionally — as the startup loader does. */
     opts->rtl_squelch_level = dsd_squelch_level_from_sql((double)cfg->rtl_sql);
-    /* The mode beside it: rtl_sql_mode = auto puts rtl_sql_margin_db over the learned floor in force (issue #518
-       follow-up), the level kept beneath for a switch back. */
+    /* The mode beside it: rtl_sql_mode = auto or noise puts rtl_sql_margin_db (over the learned floor, or of FM
+       quieting) in force (issue #518 follow-up), the level kept beneath for a switch back. */
     opts->rtl_squelch_mode = DSD_SQUELCH_MODE_LEVEL;
-    if (cfg->rtl_sql_mode == DSD_SQUELCH_MODE_AUTO) {
-        const dsd_squelch_setting auto_squelch = dsd_squelch_setting_auto(
-            cfg->rtl_sql_margin_db > 0 ? cfg->rtl_sql_margin_db : DSD_SQUELCH_MARGIN_DEFAULT_DB);
-        dsd_squelch_setting_store(opts, &auto_squelch);
+    if (dsd_squelch_mode_is_dynamic(cfg->rtl_sql_mode)) {
+        const dsd_squelch_setting dynamic = dsd_squelch_setting_dynamic(
+            cfg->rtl_sql_mode, cfg->rtl_sql_margin_db > 0 ? cfg->rtl_sql_margin_db : DSD_SQUELCH_MARGIN_DEFAULT_DB);
+        dsd_squelch_setting_store(opts, &dynamic);
     }
     svc_rtl_push_squelch(opts);
     if (dsd_user_config_rtl_gain_is_set(cfg)) {

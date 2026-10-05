@@ -20,6 +20,7 @@
 #include <dsd-neo/dsp/firdes.h>
 #include <dsd-neo/dsp/halfband.h>
 #include <dsd-neo/dsp/math_utils.h>
+#include <dsd-neo/dsp/nfm_noise_squelch.h>
 #include <dsd-neo/dsp/simd_fir.h>
 #include <dsd-neo/dsp/squelch_floor.h>
 #include <dsd-neo/dsp/ted.h>
@@ -654,8 +655,10 @@ dsd_demod_reset_filter_state(struct demod_state* d) {
     channel_lpf_reset_state(d);
     post_decim_reset_state(d);
     /* The auto squelch's next block takes its context afresh: at the same context it keeps the floor and starts its
-       windows (and the coherence history) over, so none spans the reset; at another it moves the floor. */
+       windows (and the coherence history) over, so none spans the reset; at another it moves the floor. The noise
+       squelch's next block starts it over. */
     d->squelch_auto_ran = 0;
+    d->squelch_noise_ran = 0;
 }
 
 /**
@@ -1491,67 +1494,77 @@ squelch_channel_rate_hz(const struct demod_state* d) {
     return d->rate_out * (d->post_downsample > 1 ? d->post_downsample : 1);
 }
 
-/* An AUTO setting runs on the analog monitor only; a digital channel never shows its noise. */
+/* A dynamic setting runs on the analog monitor only; a digital channel never shows its noise. The tracker runs AUTO,
+   and NOISE where the noise squelch cannot (squelch_noise_wanted()). */
 static int
 squelch_auto_wanted(const struct demod_state* d) {
-    return d->squelch_mode == DSD_SQUELCH_MODE_AUTO && dsd_demod_analog_monitor_active(d);
+    return dsd_squelch_mode_is_dynamic(d->squelch_mode) && dsd_demod_analog_monitor_active(d);
 }
 
-namespace {
-
-/* What the tracker's plan follows: the channel filter in force, the half-band stage ahead of it and the channel rate. */
-struct squelch_plan_key {
-    int rate;
-    int taps_len;
-    int hb_taps;
-    int rate_out;
-    int profile;
-    int width_hz;
-};
-
-} // namespace
-
-static squelch_plan_key
+/* What the squelch plans follow: the channel filter in force, the half-band stage ahead of it and the channel rate. */
+static dsd_demod_squelch_plan_key
 squelch_plan_key_of(const struct demod_state* d) {
     const int filtered = d->channel_lpf_enable && d->channel_lpf_plan_taps_len >= 3;
-    squelch_plan_key k{};
-    k.rate = squelch_channel_rate_hz(d);
+    dsd_demod_squelch_plan_key k;
+    DSD_MEMSET(&k, 0, sizeof k);
+    k.rate_hz = squelch_channel_rate_hz(d);
     k.hb_taps = d->downsample_passes <= 0 ? 0 : (d->downsample_passes == 1 ? 31 : HB_TAPS);
+    k.passes = d->downsample_passes > 0 ? d->downsample_passes : 0;
     if (filtered) {
         k.taps_len = d->channel_lpf_plan_taps_len;
         k.rate_out = d->channel_lpf_plan_rate_out;
         k.profile = d->channel_lpf_plan_profile;
         k.width_hz = d->channel_lpf_plan_width_hz;
     }
+    k.set = 1;
     return k;
 }
 
 static int
-squelch_plan_key_current(const struct demod_state* d, const squelch_plan_key& k) {
-    return d->squelch_plan_set && d->squelch_plan_rate_hz == k.rate && d->squelch_plan_taps_len == k.taps_len
-           && d->squelch_plan_hb_taps == k.hb_taps && d->squelch_plan_rate_out == k.rate_out
-           && d->squelch_plan_profile == k.profile && d->squelch_plan_width_hz == k.width_hz;
+squelch_plan_key_same(const dsd_demod_squelch_plan_key* a, const dsd_demod_squelch_plan_key* b) {
+    return a->set && b->set && a->rate_hz == b->rate_hz && a->taps_len == b->taps_len && a->hb_taps == b->hb_taps
+           && a->passes == b->passes && a->rate_out == b->rate_out && a->profile == b->profile
+           && a->width_hz == b->width_hz;
+}
+
+static const float*
+squelch_plan_hb(const dsd_demod_squelch_plan_key* k) {
+    return k->hb_taps == 31 ? hb31_q15_taps : (k->hb_taps > 0 ? hb_q15_taps : NULL);
 }
 
 static void
 squelch_floor_ensure_plan(struct demod_state* d) {
-    const squelch_plan_key k = squelch_plan_key_of(d);
-    if (squelch_plan_key_current(d, k)) {
+    const dsd_demod_squelch_plan_key k = squelch_plan_key_of(d);
+    if (squelch_plan_key_same(&d->squelch_plan, &k)) {
         return;
     }
-    const float* hb = k.hb_taps == 31 ? hb31_q15_taps : (k.hb_taps > 0 ? hb_q15_taps : NULL);
     dsd_squelch_floor_plan plan;
     /* A plan that cannot be designed is not valid, and the tracker then keeps the gate open. */
-    (void)dsd_squelch_floor_plan_design(&plan, k.taps_len > 0 ? d->channel_lpf_plan_taps : NULL, k.taps_len, hb,
-                                        k.hb_taps, k.rate);
+    (void)dsd_squelch_floor_plan_design(&plan, k.taps_len > 0 ? d->channel_lpf_plan_taps : NULL, k.taps_len,
+                                        squelch_plan_hb(&k), k.hb_taps, k.rate_hz);
     dsd_squelch_floor_set_plan(&d->squelch_floor, &plan);
-    d->squelch_plan_rate_hz = k.rate;
-    d->squelch_plan_taps_len = k.taps_len;
-    d->squelch_plan_hb_taps = k.hb_taps;
-    d->squelch_plan_rate_out = k.rate_out;
-    d->squelch_plan_profile = k.profile;
-    d->squelch_plan_width_hz = k.width_hz;
-    d->squelch_plan_set = 1;
+    d->squelch_plan = k;
+}
+
+static void
+squelch_noise_ensure_plan(struct demod_state* d) {
+    const dsd_demod_squelch_plan_key k = squelch_plan_key_of(d);
+    if (squelch_plan_key_same(&d->noise_plan, &k)) {
+        return;
+    }
+    /* The cascade as full_demod_apply_halfband_decimation() runs it: the 31-tap stage first, the 15-tap ones after. */
+    dsd_noise_squelch_stage stages[DSD_NOISE_SQUELCH_MAX_STAGES];
+    const int count = k.passes < DSD_NOISE_SQUELCH_MAX_STAGES ? k.passes : DSD_NOISE_SQUELCH_MAX_STAGES;
+    for (int i = 0; i < count; i++) {
+        stages[i].taps = (i == 0) ? hb31_q15_taps : hb_q15_taps;
+        stages[i].len = (i == 0) ? 31 : HB_TAPS;
+    }
+    dsd_noise_squelch_plan plan;
+    /* A channel with no band above voice has no valid plan: the tracker runs the setting instead. */
+    (void)dsd_noise_squelch_plan_design(&plan, k.taps_len > 0 ? d->channel_lpf_plan_taps : NULL, k.taps_len, stages,
+                                        count, k.rate_hz);
+    dsd_noise_squelch_set_plan(&d->noise_squelch, &plan);
+    d->noise_plan = k;
 }
 
 /* The flag histories of the post-decimator and the resampler start over, closed: their next outputs map to samples of
@@ -1612,6 +1625,63 @@ squelch_auto_run(struct demod_state* d) {
     d->result_flags_active = 1;
 }
 
+/* A NOISE setting runs the noise squelch on the FM monitor whose channel plan has a band above voice; on an AM
+   channel, or one too narrow for the band (8 and 10 kHz NFM), the tracker runs it as AUTO with the same N. */
+static int
+squelch_noise_wanted(struct demod_state* d) {
+    if (d->squelch_mode != DSD_SQUELCH_MODE_NOISE || !dsd_demod_analog_monitor_active(d) || dsd_demod_am_active(d)) {
+        return 0;
+    }
+    squelch_noise_ensure_plan(d);
+    return d->noise_squelch.plan.valid;
+}
+
+/* The noise squelch takes the context it runs in: a gap since it last ran, or another context, starts it over (gate
+   closed, filters and windows empty), and the flag histories with it. */
+static void
+squelch_noise_take_context(struct demod_state* d) {
+    dsd_noise_squelch* t = &d->noise_squelch;
+    int threshold = d->squelch_margin_db;
+    if (threshold < DSD_SQUELCH_MARGIN_MIN_DB) {
+        threshold = DSD_SQUELCH_MARGIN_MIN_DB;
+    } else if (threshold > DSD_SQUELCH_MARGIN_MAX_DB) {
+        threshold = DSD_SQUELCH_MARGIN_MAX_DB;
+    }
+    if (t->threshold_db != threshold) {
+        dsd_noise_squelch_set_threshold(t, threshold);
+    }
+    const int same = d->noise_context_set && dsd_squelch_floor_key_equal(&d->noise_context, &d->squelch_context);
+    if (d->squelch_noise_ran && same) {
+        return;
+    }
+    dsd_noise_squelch_reset(t);
+    squelch_flag_histories_reset(d);
+    d->noise_context = d->squelch_context;
+    d->noise_context_set = 1;
+}
+
+/* After the discriminator: run the noise squelch over the block's outputs, one flag per sample into result_flags.
+   Nothing is zeroed. */
+static void
+squelch_noise_run(struct demod_state* d) {
+    if (!d->squelch_noise_armed) {
+        return;
+    }
+    d->squelch_noise_armed = 0;
+    const int pairs = d->lp_len >> 1;
+    if (pairs <= 0 || d->result_len != pairs || !d->lowpassed) {
+        /* Not reachable: an FM monitor block makes one discriminator output per channel sample. Should it happen, the
+           block plays and the squelch starts over. */
+        if (d->result_len > 0) {
+            DSD_MEMSET(d->result_flags, 0, (size_t)d->result_len);
+        }
+        d->squelch_noise_ran = 0;
+        return;
+    }
+    dsd_noise_squelch_process(&d->noise_squelch, d->result, d->lowpassed, pairs, d->result_flags);
+    d->squelch_noise_ran = 1;
+}
+
 /* The per-channel floors age with the stream's sample time in every mode, digital and level squelch included, so a
    floor cached before an hour on other traffic is stale when its channel comes back. */
 static void
@@ -1633,6 +1703,19 @@ full_demod_update_channel_state(struct demod_state* d) {
            DC block, which runs after this, is bypassed on AM for the same reason). */
         d->channel_pwr = dsd_demod_am_active(d) ? mean_square_iq(d->lowpassed, n) : mean_power(d->lowpassed, n, 1);
     }
+    if (squelch_noise_wanted(d)) {
+        /* The noise squelch gates per sample at the decoder's sink, from the discriminator's output (squelch_noise_run()
+           after the demodulator): the block runs whole, and the level gate is off. */
+        squelch_noise_take_context(d);
+        d->squelch_noise_armed = 1;
+        d->squelch_auto_ran = 0;
+        d->result_flags_active = 1;
+        d->channel_squelched = 0;
+        d->squelch_gate_open = 1;
+        return;
+    }
+    d->squelch_noise_armed = 0;
+    d->squelch_noise_ran = 0;
     if (squelch_auto_wanted(d)) {
         /* The auto squelch gates per sample at the decoder's sink: the block runs whole, and the level gate is off. */
         squelch_auto_run(d);
@@ -2082,6 +2165,7 @@ full_demod(struct demod_state* d) {
         return;
     }
     full_demod_run_output_demod(d);
+    squelch_noise_run(d);
     if (d->mode_demod == &raw_demod) {
         return;
     }
