@@ -435,8 +435,8 @@ expected to match exactly.
 While a scan row or target is on air that can take a "this channel" edit (issue #518), the `Squelch...`, `NFM
 bandwidth...`, `AM bandwidth...`, `Gain...` and `Tone filter...` rows open a chooser before their prompt: `All channels
 (default)...` goes on to the prompt above, which edits the configured default; `This channel (county-p25)...` prompts on
-what the row runs now (whole dB from -100 to 0 for the squelch, 0 = off, `auto[+N]` on an `nfm` or `am` row, or
-`noise[+N]` on an `nfm` row; the
+what the row runs now (whole dB from -100 to 0 for the squelch, 0 = off, `auto[+N]` on an `nfm` or `am` row on a
+radio input, or `noise[+N]` on an `nfm` row; the
 width in Hz; the gain, 0 = AGC; a tone picker and list) and changes that row alone for the rest of the session; `This
 channel: use the default` (offered when the row's list sets the setting) makes it follow the configured default, and
 `This channel: back to the list value` (offered while it runs an edit) drops the edit. The edit goes to the row named

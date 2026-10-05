@@ -24,6 +24,7 @@
 #include <dsd-neo/runtime/input_failure.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_row_edit.h>
+#include <dsd-neo/runtime/squelch.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -570,6 +571,43 @@ test_payload_checks(void) {
     assert(g_edit_calls == 0);
 }
 
+/* A row edit of @p mode (dsd_squelch_mode) with a 10 dB margin. */
+static struct dsd_app_command*
+squelch_mode_command(int mode) {
+    struct dsd_app_command* c =
+        (struct dsd_app_command*)command(DSD_SCAN_ROW_FIELD_SQUELCH, DSD_SCAN_ROW_EDIT_SET, NULL);
+    dsd_app_scan_row_edit_payload p;
+    DSD_MEMCPY(&p, c->data, sizeof p);
+    p.squelch_mode = mode;
+    p.squelch_margin_db = 10;
+    DSD_MEMCPY(c->data, &p, sizeof p);
+    return c;
+}
+
+/* "This channel" on audio input (issue #628): the auto squelch has no channel power to learn a floor from there, so a
+   row edit to it is refused and says why, as the default's editor refuses it; noise and a level go through, and a radio
+   input takes auto. */
+static void
+test_auto_refused_on_audio_input(void) {
+    char notice[DSD_APP_SCAN_ROW_NOTICE_SIZE];
+    int ttl = 0;
+    reset();
+    g_opts.audio_in_type = AUDIO_IN_UDP;
+    assert(apply(squelch_mode_command(DSD_SQUELCH_MODE_AUTO), notice, sizeof notice, &ttl)
+           == DSD_APP_SCAN_ROW_EDIT_REFUSED);
+    assert(g_edit_calls == 0 && ttl == 5);
+    assert(strstr(notice, "the auto squelch needs a radio input; audio input takes a level or noise") != NULL);
+    assert(apply(squelch_mode_command(DSD_SQUELCH_MODE_NOISE), notice, sizeof notice, &ttl)
+           == DSD_APP_SCAN_ROW_EDIT_DONE);
+    assert(apply(squelch_mode_command(DSD_SQUELCH_MODE_LEVEL), notice, sizeof notice, &ttl)
+           == DSD_APP_SCAN_ROW_EDIT_DONE);
+    assert(g_edit_calls == 2);
+    g_opts.audio_in_type = AUDIO_IN_RTL;
+    assert(apply(squelch_mode_command(DSD_SQUELCH_MODE_AUTO), notice, sizeof notice, &ttl)
+           == DSD_APP_SCAN_ROW_EDIT_DONE);
+    assert(g_edit_calls == 3);
+}
+
 int
 main(void) {
     test_applied_and_stored();
@@ -580,6 +618,7 @@ main(void) {
     test_rigctl_width();
     test_gain_restart();
     test_payload_checks();
+    test_auto_refused_on_audio_input();
     printf("APP_CONTROL_SCAN_ROW_EDIT: OK\n");
     return 0;
 }

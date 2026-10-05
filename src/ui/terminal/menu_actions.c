@@ -726,13 +726,15 @@ scope_submit(int action, const dsd_app_scan_row_edit_payload* values) {
 }
 
 /* This channel's squelch as typed: whole dB from -100 to 0 (0 or off = off), auto[+N], which the engine holds to an nfm
-   or am row, or noise[+N], which it holds to an nfm row. A refusal says why, never what was typed. */
+   or am row, or noise[+N], which it holds to an nfm row. Audio input takes no auto (issue #628). A refusal says why,
+   never what was typed. */
 static void
 cb_scope_squelch(void* u, const char* text) {
     UNUSED(u);
     if (!text) {
         return;
     }
+    const int audio = dsd_squelch_input_kind(dsd_app_get_latest_opts_snapshot()) == DSD_SQUELCH_INPUT_AUDIO;
     dsd_app_scan_row_edit_payload values = {0};
     dsd_squelch_setting setting;
     char why[96];
@@ -740,11 +742,13 @@ cb_scope_squelch(void* u, const char* text) {
     if (dsd_parse_int_strict(text, 10, -100, 0, &db) == 0) {
         values.squelch_db = db;
     } else if (dsd_squelch_setting_parse(text, &setting, why, sizeof why) == 0
-               && (dsd_squelch_setting_is_dynamic(&setting) || dsd_squelch_setting_is_off(&setting))) {
+               && (dsd_squelch_setting_is_dynamic(&setting) || dsd_squelch_setting_is_off(&setting))
+               && !(audio && setting.mode == DSD_SQUELCH_MODE_AUTO)) {
         values.squelch_mode = setting.mode;
         values.squelch_margin_db = dsd_squelch_setting_is_dynamic(&setting) ? setting.margin_db : 0;
     } else {
-        ui_statusf("Squelch on this channel: whole dB from -100 to 0, off, auto[+N] or noise[+N]");
+        ui_statusf("%s", audio ? "Squelch on this channel: whole dB from -100 to 0, off or noise[+N]"
+                               : "Squelch on this channel: whole dB from -100 to 0, off, auto[+N] or noise[+N]");
         return;
     }
     scope_submit(DSD_SCAN_ROW_EDIT_SET, &values);
@@ -824,6 +828,16 @@ scope_open_squelch(void* u, const dsd_scan_option_values* row) {
         DSD_SNPRINTF(text, sizeof text, "%s", "off");
     } else {
         DSD_SNPRINTF(text, sizeof text, "%d", (int)pwr_to_dB(g_scope.squelch_level));
+    }
+    /* Audio input takes a level or noise (issue #628): an auto setting, or noise on an am row, does not run there, so
+       the prompt offers what does run: off. */
+    if (dsd_squelch_input_kind(dsd_app_get_latest_opts_snapshot()) == DSD_SQUELCH_INPUT_AUDIO) {
+        if (strncmp(text, "auto", 4) == 0) {
+            DSD_SNPRINTF(text, sizeof text, "%s", "off");
+        }
+        ui_prompt_open_string_async("Squelch on this channel (dB -100..0, off, noise[+N])", text, sizeof text,
+                                    cb_scope_squelch, u);
+        return;
     }
     ui_prompt_open_string_async("Squelch on this channel (dB -100..0, off, auto[+N], noise[+N])", text, sizeof text,
                                 cb_scope_squelch, u);

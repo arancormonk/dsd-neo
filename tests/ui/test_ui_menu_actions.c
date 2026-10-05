@@ -2440,6 +2440,7 @@ test_scan_row_scope_chooser(void) {
     UiCtx ctx = make_ctx(&opts, &state);
     int rc = 0;
     opts.audio_in_type = AUDIO_IN_RTL;
+    dsd_test_scan_labels_input_type(AUDIO_IN_RTL);
 
     /* No scan row: straight to the prompt. */
     dsd_test_scan_labels_scan_row(DSD_SCAN_ROW_SCANNER_NONE, 0U, -1, 0U, 0U, 0U, NULL);
@@ -2565,6 +2566,31 @@ test_scan_row_scope_chooser(void) {
     p = cmd_scan_row_edit();
     rc |= expect_int("an am row's changed margin stays auto",
                      p.squelch_mode == DSD_SQUELCH_MODE_AUTO && p.squelch_margin_db == 14, 1);
+
+    /* On audio input (issue #628) the prompt takes a level or noise: a noise default opens as itself on an nfm row, and
+       on an am row, where neither runs, as off. */
+    dsd_test_scan_labels_input_type(AUDIO_IN_UDP);
+    reset_capture();
+    act_set_squelch(&ctx);
+    g_chooser.on_done(g_chooser.user, 1);
+    rc |= expect_str("audio input: this channel squelch prompt", g_prompt.title,
+                     "Squelch on this channel (dB -100..0, off, noise[+N])");
+    rc |= expect_str("audio input: an am row's noise default opens as off", g_prompt.prefill, "off");
+    dsd_test_scan_labels_set(1, DSD_SCAN_MODE_NFM);
+    reset_capture();
+    act_set_squelch(&ctx);
+    g_chooser.on_done(g_chooser.user, 1);
+    rc |= expect_str("audio input: an nfm row opens on the noise default", g_prompt.prefill, "noise+12");
+    dsd_test_scan_labels_squelch(DSD_SQUELCH_MODE_AUTO, 9, 0.0);
+    reset_capture();
+    act_set_squelch(&ctx);
+    g_chooser.on_done(g_chooser.user, 1);
+    rc |= expect_str("audio input: an auto default opens as off", g_prompt.prefill, "off");
+    g_prompt.str_cb(g_prompt.user, "auto");
+    rc |= expect_str("audio input: a refusal says what it takes", g_status,
+                     "Squelch on this channel: whole dB from -100 to 0, off or noise[+N]");
+    dsd_test_scan_labels_input_type(AUDIO_IN_RTL);
+
     dsd_test_scan_labels_squelch(DSD_SQUELCH_MODE_LEVEL, 0, 0.0);
     dsd_test_scan_labels_set(1, DSD_SCAN_MODE_NFM);
     dsd_test_scan_labels_row_options(&row);
@@ -2662,6 +2688,7 @@ test_scan_row_scope_chooser(void) {
     dsd_test_scan_labels_scan_row(DSD_SCAN_ROW_SCANNER_NONE, 0U, -1, 0U, 0U, 0U, NULL);
     dsd_test_scan_labels_row_options(NULL);
     dsd_test_scan_labels_set(1, DSD_SCAN_MODE_INHERIT);
+    dsd_test_scan_labels_input_type(AUDIO_IN_PULSE);
     return rc;
 }
 
