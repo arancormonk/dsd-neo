@@ -411,30 +411,26 @@ nsq_design_cascade(dsd_noise_squelch_plan* plan, const dsd_noise_squelch_stage* 
     plan->cascade_len = N;
 }
 
-int
-dsd_noise_squelch_plan_design(dsd_noise_squelch_plan* out, const float* taps, int taps_len,
-                              const dsd_noise_squelch_stage* stages, int stage_count, int rate_hz) {
-    if (!out) {
-        return -1;
-    }
-    DSD_MEMSET(out, 0, sizeof(*out));
-    if (!stages || stage_count <= 0) {
-        stages = NULL;
-        stage_count = 0;
-    }
+/* Whether the arguments describe a plan the squelch can take: a rate it can window, taps it can hold, and at most
+   DSD_NOISE_SQUELCH_MAX_STAGES stages with taps it can ring. */
+static int
+nsq_design_args_ok(int taps_len, const dsd_noise_squelch_stage* stages, int stage_count, int rate_hz) {
     if (rate_hz < 2 * NSQ_HALVES_PER_S || taps_len > DSD_NOISE_SQUELCH_MAX_TAPS
         || stage_count > DSD_NOISE_SQUELCH_MAX_STAGES) {
-        return -1;
+        return 0;
     }
     for (int i = 0; i < stage_count; i++) {
         if (!stages[i].taps || stages[i].len <= 0 || stages[i].len > NSQ_HB_MAX) {
-            return -1;
+            return 0;
         }
     }
-    if (!taps || taps_len <= 0) {
-        taps = NULL;
-        taps_len = 0;
-    }
+    return 1;
+}
+
+/* The band for the channel taps (NULL: no channel filter) behind @p stage_count half-band stages at @p rate_hz: the
+   rate, edge, band edges and band-pass counts into @p out; -1 when no band fits. */
+static int
+nsq_design_band(dsd_noise_squelch_plan* out, const float* taps, int taps_len, int stage_count, int rate_hz) {
     const double fs = (double)rate_hz;
     if (!taps && stage_count > 0 && 0.5 * fs <= k_unfiltered_signal_edge_hz) {
         return -1;
@@ -460,17 +456,49 @@ dsd_noise_squelch_plan_design(dsd_noise_squelch_plan* out, const float* taps, in
     out->hi_hz = hi;
     out->sub_bands = k_count;
     out->bands = (2 * k_count) - 1;
-    const double step = width / (double)k_count;
+    return 0;
+}
+
+/* The K sub-bands' band-passes, then the staggered set's: each a sub-band shifted by half its width, so a line on a
+   boundary of the first set sits inside one of these. */
+static void
+nsq_design_band_passes(dsd_noise_squelch_plan* out) {
+    const double fs = (double)out->rate_hz;
+    const int k_count = out->sub_bands;
+    const double step = (out->hi_hz - out->lo_hz) / (double)k_count;
     for (int k = 0; k < k_count; k++) {
-        const double f1 = k_band_lo_hz + (step * (double)k);
+        const double f1 = out->lo_hz + (step * (double)k);
         nsq_design_band_pass(f1, f1 + step, fs, out->section[k]);
     }
-    /* The staggered set: each a sub-band shifted by half its width, so a line on a boundary of the first set sits
-       inside one of these. */
     for (int k = 0; k + 1 < k_count; k++) {
-        const double f1 = k_band_lo_hz + (step * ((double)k + 0.5));
+        const double f1 = out->lo_hz + (step * ((double)k + 0.5));
         nsq_design_band_pass(f1, f1 + step, fs, out->section[k_count + k]);
     }
+}
+
+int
+dsd_noise_squelch_plan_design(dsd_noise_squelch_plan* out, const float* taps, int taps_len,
+                              const dsd_noise_squelch_stage* stages, int stage_count, int rate_hz) {
+    if (!out) {
+        return -1;
+    }
+    DSD_MEMSET(out, 0, sizeof(*out));
+    if (!stages || stage_count <= 0) {
+        stages = NULL;
+        stage_count = 0;
+    }
+    if (!nsq_design_args_ok(taps_len, stages, stage_count, rate_hz)) {
+        return -1;
+    }
+    if (!taps || taps_len <= 0) {
+        taps = NULL;
+        taps_len = 0;
+    }
+    if (nsq_design_band(out, taps, taps_len, stage_count, rate_hz) != 0) {
+        DSD_MEMSET(out, 0, sizeof(*out));
+        return -1;
+    }
+    nsq_design_band_passes(out);
     nsq_design_cascade(out, stages, stage_count);
     const dsd_noise_squelch_stage* last = stage_count > 0 ? &stages[stage_count - 1] : NULL;
     nsq_calibrate(out, taps, taps_len, last ? last->taps : NULL, last ? last->len : 0);
