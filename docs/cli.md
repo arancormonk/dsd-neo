@@ -766,11 +766,10 @@ quieting, closed under max(N - 3, 1.5) dB. Quieting reads about the carrier-to-n
   four windows hold steady within 1.5 dB the squelch reads `learning` and stays closed; that first steady stretch
   becomes the reference, about 0.15 s into noise. A carrier can only quiet the band, so noise is the loudest it gets:
   when the band rises 4 dB or more from one steady stretch to the next, the louder side is noise and the reference moves
-  there if it came up near the reference. If it is still well under the reference, it is noise at a lower volume (the
-  source turned down during a transmission) only where a volume step seen under a steady carrier put the noise, or,
-  after speech, only if it has noise's balance of voice band to band and noise's shape across the band and holds them
-  for 200 ms; any other louder stretch is the carrier's speech or level changing (a pause ending, a fading carrier)
-  and leaves the reference alone. A step that moves the voice band as much as the band above it (the source's
+  there if it came up near the reference. A stretch well under the reference is noise at a lower volume (the source
+  turned down during a transmission) only if it keeps noise's balance of voice band to band and noise's shape across
+  the band for 0.4 s; any other is the carrier's speech or level changing (a pause ending, a fading carrier) and leaves
+  the reference alone. A step that moves the voice band as much as the band above it (the source's
   volume or AGC) rescales the reference instead. Between transmissions the reference follows the noise with a 1 s time
   constant.
 - Starting on a carrier: with no noise to learn from, the first steady stretch (the carrier, or a pause in its speech)

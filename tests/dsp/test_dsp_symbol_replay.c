@@ -3967,7 +3967,8 @@ test_pcm_noise_squelch_gates_each_sample(void) {
     assert(g_monitor_blocks <= before + 3);
     assert(state.squelch_auto_gate_open == 0U);
 
-    /* A reset (a retune) restarts the windows and keeps the reference: the next carrier plays from its first windows. */
+    /* A reset (a retune) restarts the windows and keeps the reference: the next carrier plays from its first
+       windows. */
     dsd_analog_rx_reset(&state);
     before = g_monitor_blocks;
     push_tap(&opts, &state, &src, PCM_TAP_TONE, 20.0, 0.4);
@@ -4168,10 +4169,10 @@ fake_pcm_udp_read_sample(dsd_opts* opts, int16_t* out) {
     return 1;
 }
 
-/* The PCM noise squelch through getSymbol() on UDP input (issue #628): it learns on noise and a carrier plays; then the
-   decoder is held 400 ms, as for a rigctl retune, while the old carrier keeps arriving, and the receiver moves. What the
-   input queued meanwhile is the old channel's: the squelch holds the gate closed over it and learns nothing from it,
-   so none of it plays, and the new channel's noise stays shut. */
+/* The PCM noise squelch through getSymbol() on UDP input (issue #628): it learns on noise and a carrier plays; then
+   the decoder is held 400 ms, as for a rigctl retune, while the old carrier keeps arriving, and the receiver moves.
+   What the input queued meanwhile is the old channel's: the squelch holds the gate closed over it and learns nothing
+   from it, so none of it plays, and the new channel's noise stays shut. */
 static void
 test_pcm_noise_squelch_holds_the_backlog(void) {
     static dsd_opts opts;

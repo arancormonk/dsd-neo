@@ -30,11 +30,13 @@ static const double k_close_floor_db = 1.5;
 static const double k_steady_db = 1.5;   /* a run's windows within this of their median */
 static const double k_step_db = 4.0;     /* a new level */
 static const double k_gain_tol_db = 1.5; /* both bands moved by the same amount: a gain step */
-/* A louder stretch well under the reference is noise at a lower gain only with noise's voice-to-band ratio (within
-   k_shape_tol_db; a dead carrier reads 7-11 dB lower, speech and tones mostly higher), and after speech also noise's
-   shape across the band: its sub-bands under the reference's spread over at most k_shape_spread_db and tilt by at
-   most k_shape_tilt_db end to end (a gain step moves them all alike; a quieted carrier's noise rises with frequency). */
-static const double k_shape_tol_db = 3.0;
+/* A stretch well under the reference is noise at a lower gain (the source turned down during a transmission) only with
+   noise's voice-to-band ratio (within k_shape_tol_db: noise at another gain keeps it within +/-1 dB, a dead carrier
+   reads 6.5-11.5 dB lower, speech and tones swing or sit higher) and noise's shape across the band: its sub-bands under
+   the reference's spread over at most k_shape_spread_db and tilt by at most k_shape_tilt_db end to end (a gain step
+   moves them all alike; a quieted carrier's noise rises with frequency). It is then a pending step, taken once
+   PNSQ_LOWER_HOLD_WINDOWS windows hold it, most of them with that ratio and shape and the voice band steady. */
+static const double k_shape_tol_db = 1.5;
 static const double k_shape_spread_db = 5.5;
 static const double k_shape_tilt_db = 2.5;
 static const double k_ratio_max_db = 30.0; /* a sub-band this far under the voice band per Hz carries nothing */
@@ -47,7 +49,8 @@ enum {
     PNSQ_NO_BAND_WINDOWS = 50, /* 1 s */
     PNSQ_CONFIRM_WINDOWS = 3,
     PNSQ_GAIN_HOLD_WINDOWS = 10,
-    PNSQ_STALE_WINDOWS = 250, /* 5 s */
+    PNSQ_LOWER_HOLD_WINDOWS = 20, /* 0.4 s: speech does not keep noise's ratio and shape that long */
+    PNSQ_STALE_WINDOWS = 250,     /* 5 s */
 };
 
 static const double k_min_power = DSD_NOISE_SQUELCH_BANK_MIN_POWER;
@@ -204,16 +207,6 @@ pnsq_take_reference(dsd_pcm_noise_squelch* t, const double* p, double v_db) {
     }
     t->v_ref_db = v_db;
     t->usable_hz = pnsq_participating(&t->plan, t->ref, t->v_ref_db, t->part);
-    t->carrier_gain_db = 0.0;
-    t->carrier_gain_seen = 0;
-}
-
-/* A gain-like step between two carrier stretches (both bands moved alike, the voice band stationary): the source's
-   volume moved during a transmission, which is where its noise comes back. */
-static void
-pnsq_note_carrier_gain(dsd_pcm_noise_squelch* t, double da) {
-    t->carrier_gain_db += da;
-    t->carrier_gain_seen = 1;
 }
 
 static void
@@ -298,8 +291,6 @@ dsd_pcm_noise_squelch_forget(dsd_pcm_noise_squelch* t) {
     t->state = t->plan.valid ? DSD_PCM_NOISE_SQUELCH_LEARNING : DSD_PCM_NOISE_SQUELCH_NO_ROOM;
     DSD_MEMSET(t->ref, 0, sizeof(t->ref));
     DSD_MEMSET(t->part, 0, sizeof(t->part));
-    t->carrier_gain_db = 0.0;
-    t->carrier_gain_seen = 0;
     t->v_ref_db = 0.0;
     t->usable_hz = 0.0;
     DSD_MEMSET(t->cache, 0, sizeof(t->cache));
@@ -406,8 +397,6 @@ dsd_pcm_noise_squelch_set_key(dsd_pcm_noise_squelch* t, const dsd_pcm_noise_sque
         t->state = DSD_PCM_NOISE_SQUELCH_LEARNING;
         DSD_MEMSET(t->ref, 0, sizeof(t->ref));
         DSD_MEMSET(t->part, 0, sizeof(t->part));
-        t->carrier_gain_db = 0.0;
-        t->carrier_gain_seen = 0;
         t->usable_hz = 0.0;
     }
     dsd_pcm_noise_squelch_restart(t);
@@ -416,7 +405,7 @@ dsd_pcm_noise_squelch_set_key(dsd_pcm_noise_squelch* t, const dsd_pcm_noise_sque
 /* ---------------------------------------------------------------------------------------------- the learner */
 
 static void
-pnsq_new_stretch(dsd_pcm_noise_squelch* t, double sa, int pending, double pend_db, int pend_lowered) {
+pnsq_new_stretch(dsd_pcm_noise_squelch* t, double sa, int pending, double pend_db) {
     t->have_stretch = 1;
     t->st_a_db = sa;
     t->st_v_sum = 0.0;
@@ -425,15 +414,15 @@ pnsq_new_stretch(dsd_pcm_noise_squelch* t, double sa, int pending, double pend_d
     t->st_at_ref = pnsq_has_reference(t) && sa >= pnsq_total_db(&t->plan, t->ref) - k_step_db;
     t->st_pending = pending;
     t->st_pend_db = pend_db;
-    t->st_pend_lowered = pend_lowered;
+    t->st_pend_lowered = 0;
     t->st_pn = 0;
     t->st_ps = 0;
     t->st_on = 0;
     t->st_os = 0;
 }
 
-/* Whether the stretch (sp, sa, sv) has noise's voice-to-band ratio and shape against the reference, over the reference's
-   participating sub-bands: what noise at a lower gain looks like. */
+/* Whether the stretch (sp, sa, sv) has noise's voice-to-band ratio and shape against the reference, over the
+   reference's participating sub-bands: what noise at a lower gain looks like. */
 static int
 pnsq_noise_shaped(const dsd_pcm_noise_squelch* t, const double* sp, double sa, double sv) {
     const int k_count = t->plan.sub_bands;
@@ -484,7 +473,6 @@ static void
 pnsq_transition(dsd_pcm_noise_squelch* t, const double* sp, double sa, double sv, int v_steady) {
     int pending = 0;
     double pend_db = 0.0;
-    int pend_lowered = 0;
     t->have_cand = 0;
     t->cand_n = 0;
     if (t->state == DSD_PCM_NOISE_SQUELCH_LEARNING) {
@@ -510,40 +498,19 @@ pnsq_transition(dsd_pcm_noise_squelch* t, const double* sp, double sa, double sv
                 t->state = DSD_PCM_NOISE_SQUELCH_KNOWN;
             }
         } else if (da > 0.0) {
-            /* Louder but well under the reference: noise at a lower gain (the source turned down during a
-               transmission), or the carrier's modulation or level changing (speech after a pause, a fading carrier),
-               which leaves the reference. A carrier whose voice band held steady shows a volume change as gain-like
-               steps between its stretches: only where those put the noise is it noise. Speech shows none: there,
-               noise's ratio and shape, held as a gain step from noise must hold (a pending step). */
-            const int left_steady = (double)t->st_vs >= k_gain_steady_fraction * (double)t->st_n;
-            if (t->carrier_gain_seen && fabs(sa - (ra + t->carrier_gain_db)) <= k_step_db
-                && fabs((sv - sa) - (t->v_ref_db - ra)) <= k_shape_tol_db) {
-                pnsq_take_reference(t, sp, sv);
-                if (t->state == DSD_PCM_NOISE_SQUELCH_PROVISIONAL) {
-                    t->state = DSD_PCM_NOISE_SQUELCH_KNOWN;
-                }
-            } else if (!left_steady && pnsq_noise_shaped(t, sp, sa, sv)) {
-                pending = 1;
-                pend_db = sa - ra;
-                pend_lowered = 1;
-            } else if (gain_like && v_steady) {
-                pnsq_note_carrier_gain(t, da);
-            }
+            /* Louder but well under the reference: the carrier's modulation or level changed (speech after a pause, a
+               fading carrier), and the reference stays, unless the stretch is noise come back at a lower gain
+               (pnsq_continue()). */
         } else if (gain_like && v_steady && t->st_at_ref && t->st_vs * 2 >= t->st_n) {
             /* Quieter, from noise, both bands by the same amount: a gain step, once it holds. */
             pending = 1;
             pend_db = da;
-        } else {
-            if (gain_like && v_steady && !t->st_at_ref) {
-                pnsq_note_carrier_gain(t, da);
-            }
-            if (t->state == DSD_PCM_NOISE_SQUELCH_PROVISIONAL) {
-                /* A carrier keyed: the louder side, the reference, was noise. */
-                t->state = DSD_PCM_NOISE_SQUELCH_KNOWN;
-            }
+        } else if (t->state == DSD_PCM_NOISE_SQUELCH_PROVISIONAL) {
+            /* A carrier keyed: the louder side, the reference, was noise. */
+            t->state = DSD_PCM_NOISE_SQUELCH_KNOWN;
         }
     }
-    pnsq_new_stretch(t, sa, pending, pend_db, pend_lowered);
+    pnsq_new_stretch(t, sa, pending, pend_db);
 }
 
 /* The steady run continues the stretch: its pending gain step, stale quieting and slow tracking. */
@@ -552,10 +519,21 @@ pnsq_continue(dsd_pcm_noise_squelch* t, const double* sp, double sa, double sv, 
     t->st_v_sum += pow(10.0, sv / 10.0);
     t->st_n++;
     t->st_vs += v_steady ? 1 : 0;
+    /* Noise come back at a lower gain (the source turned down during a transmission): a stretch well under the
+       reference with noise's voice-to-band ratio and shape, however it began (speech that ended near its level leaves
+       no transition), held for PNSQ_LOWER_HOLD_WINDOWS with most windows still so and the voice band steady. */
+    const int shaped = pnsq_has_reference(t) && pnsq_noise_shaped(t, sp, sa, sv);
+    if (!t->st_pending && shaped && !t->st_at_ref && sa < pnsq_total_db(&t->plan, t->ref) - k_step_db) {
+        t->st_pending = 1;
+        t->st_pend_db = sa - pnsq_total_db(&t->plan, t->ref);
+        t->st_pend_lowered = 1;
+        t->st_pn = 0;
+        t->st_ps = 0;
+    }
     if (t->st_pending) {
         t->st_pn++;
-        t->st_ps += v_steady ? 1 : 0;
-        if (t->st_pn >= PNSQ_GAIN_HOLD_WINDOWS) {
+        t->st_ps += (v_steady && (shaped || !t->st_pend_lowered)) ? 1 : 0;
+        if (t->st_pn >= (t->st_pend_lowered ? PNSQ_LOWER_HOLD_WINDOWS : PNSQ_GAIN_HOLD_WINDOWS)) {
             if ((double)t->st_ps >= k_gain_steady_fraction * (double)t->st_pn) {
                 const double g = pow(10.0, t->st_pend_db / 10.0);
                 for (int k = 0; k < t->plan.bands; k++) {
@@ -564,8 +542,6 @@ pnsq_continue(dsd_pcm_noise_squelch* t, const double* sp, double sa, double sv, 
                 t->v_ref_db += t->st_pend_db;
                 t->usable_hz = pnsq_participating(&t->plan, t->ref, t->v_ref_db, t->part);
                 t->st_at_ref = 1;
-                t->carrier_gain_db = 0.0;
-                t->carrier_gain_seen = 0;
                 if (t->st_pend_lowered && t->state == DSD_PCM_NOISE_SQUELCH_PROVISIONAL) {
                     /* Noise after a carrier, at its lower gain: the carrier keyed is confirmed. */
                     t->state = DSD_PCM_NOISE_SQUELCH_KNOWN;

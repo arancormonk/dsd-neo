@@ -35,16 +35,14 @@
  *    to leave nothing above voice can read NO_BAND instead, which plays it.)
  *  - A steady run 4 dB or more from the current stretch, held for 3 windows, is a transition. Louder and up within
  *    4 dB of the reference: that side is noise and becomes the reference (KNOWN, when the voice band did not move with
- *    it). Louder but well under the reference, it is noise at a lower gain (the source turned down during a
- *    transmission) after a carrier whose voice band held steady only where the gain-like steps seen between its
- *    stretches put the noise, with the reference's voice-to-band ratio within 3 dB; after speech, which shows no such
- *    step, only with that ratio and the reference's shape (its sub-bands within 5.5 dB of each other and tilted by at
- *    most 2.5 dB against it), held as a gain step (below). Any other louder run under the reference is the carrier's
- *    modulation or level changing (speech after a pause, a fading carrier), and the reference stays. Quieter, from a
- *    stretch at the
- *    reference, with the voice band stationary and moving by the same amount (within 1.5 dB): a gain step, taken after
- *    200 ms more of it with the voice band stationary in three windows of four (the reference rescales). Otherwise a
- *    carrier keyed (KNOWN).
+ *    it). A louder run well under the reference is the carrier's modulation or level changing (speech after a pause, a
+ *    fading carrier), and the reference stays. Quieter, from a stretch at the reference, with the voice band stationary
+ *    and moving by the same amount (within 1.5 dB): a gain step, taken after 200 ms more of it with the voice band
+ *    stationary in three windows of four (the reference rescales). Otherwise a carrier keyed (KNOWN).
+ *  - Noise come back at a lower gain (the source turned down during a transmission): a stretch well under the
+ *    reference, however it began, with the reference's voice-to-band ratio within 1.5 dB and its shape (sub-bands
+ *    within 5.5 dB of each other, tilted by at most 2.5 dB against it) is a pending step, taken once 0.4 s of windows
+ *    keep that ratio and shape with the voice band steady in three of four: the reference rescales to it.
  *  - A steady run at or above the reference less 1.5 dB tracks it with a 1 s time constant (slow drift).
  *  - Stale quieting: the gate open for 5 s on one stretch whose voice band held stationary in 90 % of its windows reads
  *    a level that dropped (a source's volume lowered out of clipping, its audio low-pass switched on), not speech: the
@@ -196,15 +194,11 @@ typedef struct {
     int st_at_ref;
     int st_pending;
     double st_pend_db;
-    int st_pend_lowered; /**< the pending step is noise come back at a lower gain after speech */
+    int st_pend_lowered; /**< the pending step is noise come back at a lower gain */
     int st_pn;
     int st_ps;
     int st_on;
     int st_os;
-    /* Gain-like steps seen between carrier stretches since the reference was taken (dB, summed), and whether there was
-       one: where noise comes back if the source was turned down during a transmission. */
-    double carrier_gain_db;
-    int carrier_gain_seen;
     /* A new level being confirmed, no-band evidence and its exit. */
     int have_cand;
     double cand_a_db;

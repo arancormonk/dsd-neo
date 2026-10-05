@@ -1974,10 +1974,9 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   most sixteen) with two staggered sets, and a 400-2600 Hz voice band. With no calibration possible it learns the
   noise reference from the input (`tools/pcm_noise_squelch_model.py` chose all of it: `docs/testing.md` "PCM noise
   squelch design gate"): closed while LEARNING, a reference from the first steady stretch (PROVISIONAL), confirmed or
-  raised by a louder transition that reaches it (KNOWN), lowered to noise come back at a lower gain (after a steady
-  carrier where its gain-like steps put the noise; after speech on noise's voice-to-band ratio and sub-band shape,
-  held 200 ms; any other louder transition under it is the carrier's modulation or level and leaves it), rescaled by
-  a gain-like one, tracked with a 1 s time constant, learned again
+  raised by a louder transition that reaches it (KNOWN), lowered to noise come back at a lower gain (a stretch well
+  under it that holds noise's voice-to-band ratio and sub-band shape for 0.4 s; any other louder stretch under it is
+  the carrier's modulation or level and leaves it), rescaled by a gain-like one, tracked with a 1 s time constant, learned again
   after 5 s open on one stretch with a steady voice band, and NO_BAND on 1 s of spectral evidence that nothing is
   above voice. Up to eight references are cached by `dsd_pcm_noise_squelch_key` (source generation and input type,
   native rate, input volume, rigctl peer passband; an unknown passband is never cached). Q = max(Q_sum,

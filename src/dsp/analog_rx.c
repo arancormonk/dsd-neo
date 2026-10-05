@@ -505,8 +505,8 @@ typedef struct {
     dsd_analog_tone_policy policy_logged;
     /** Published as dsd_analog_rx_publication::gate_rejected_ended: the last reception ended rejected. */
     int rejected_ended;
-    /** Every boundary the tap crossed (a reset, a generation move, a pause, a rate move, an FM/AM switch): the PCM noise
-        squelch starts its windows over when it moves. */
+    /** Every boundary the tap crossed (a reset, a generation move, a pause, a rate move, an FM/AM switch): the PCM
+        noise squelch starts its windows over when it moves. */
     uint32_t boundaries;
     /** The PCM noise squelch (issue #628): whether it took the previous monitor sample, the boundary count and rates it
         last ran at, the rigctl passband it keys its reference on, whether the backlog skip holds it, and the state
@@ -1265,7 +1265,7 @@ dsd_analog_rx_tap_flags(const dsd_opts* opts, dsd_state* state, const float* blo
     }
 }
 
-/* ---------------------------------------------------------------------------------------------- the PCM noise squelch */
+/* --------------------------------------------------------------------------------------------- the PCM noise squelch */
 
 /* The source's own rate: what a staged input arrives at before the staging interpolates it to the monitor's rate. */
 static int

@@ -5,8 +5,9 @@
 
 /*
  * Seeded FM audio the way an SDR program writes its output for the PCM noise squelch's tests (issue #628,
- * tools/pcm_noise_squelch_model.py's "sdr" sources): complex noise and a carrier through a Hamming-windowed sinc channel
- * filter, the phase step per sample, optional de-emphasis and audio low-pass, a volume and int16 rounding, at 48 kHz.
+ * tools/pcm_noise_squelch_model.py's "sdr" sources): complex noise and a carrier through a Hamming-windowed sinc
+ * channel filter, the phase step per sample, optional de-emphasis and audio low-pass, a volume and int16 rounding, at
+ * 48 kHz.
  */
 
 #ifndef DSD_NEO_TESTS_DSP_PCM_TAP_SYNTH_H_

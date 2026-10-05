@@ -1047,8 +1047,8 @@ MetricsModel::refresh(const dsd_opts* opts_snapshot, const dsd_state* snapshot) 
      * the running session was configured with, which is the same authority the
      * metrics fetch above uses to decide whether any of them mean anything. */
     next.radio_input = dsd_opts_input_is_radio(opts_snapshot) != 0;
-    /* Audio input (Pulse, a file, stdin, TCP, UDP) takes a squelch too: a level, or the noise squelch it learns from the
-     * input itself (issue #628). */
+    /* Audio input (Pulse, a file, stdin, TCP, UDP) takes a squelch too: a level, or the noise squelch it learns from
+     * the input itself (issue #628). */
     next.squelch_audio_input = dsd_squelch_input_kind(opts_snapshot) == DSD_SQUELCH_INPUT_AUDIO;
 
     next.carrier_lock = metrics.carrier_lock != 0;
