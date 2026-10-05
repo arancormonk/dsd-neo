@@ -587,6 +587,10 @@ def chosen_summary(results: list[dict], chosen: list) -> list[str]:
     with_band = [(r, v) for r, v in chosen if v is not None]
     passing = sum(1 for _, v in with_band if v["supported"])
     no_band = sorted({(r["width"], r["fs"]) for r, v in chosen if v is None})
+    no_band_line = "- No band (noise runs as auto): " + (", ".join(f"{w} Hz at {fs} Hz" for w, fs in no_band) or "none")
+    if not with_band:
+        # Only fallback plans (an --only selection of them): nothing was measured.
+        return [f"- Plans with a band: 0 of {len(results)}.", no_band_line + "."]
     errs = [r["pref_error_db"] for r, _ in with_band]
     tilts = [r["candidates"][CHOSEN]["tilt_median_q"] for r, _ in with_band]
     tilt_lo = min(min(t.values()) for t in tilts)
@@ -600,10 +604,10 @@ def chosen_summary(results: list[dict], chosen: list) -> list[str]:
     cnr_txt = "; ".join(f"{k:+.0f} dB: {min(v):.1f}..{max(v):.1f}" for k, v in sorted(cnr_rows.items()))
     return [
         f"- Plans with a band: {len(with_band)} of {len(results)}; passing: {passing}.",
-        "- No band (noise runs as auto): " + (", ".join(f"{w} Hz at {fs} Hz" for w, fs in no_band) or "none") + ".",
+        no_band_line + ".",
         (
-            f"- Calibration: 2 s of noise through the half-band and the channel taps is within "
-            f"{max(e['c_2s'] for e in errs):.2f} dB of the long-run reference in every band (skipping the half-band: "
+            f"- Calibration: 2 s of noise through the half-band cascade and the channel taps is within "
+            f"{max(e['c_2s'] for e in errs):.2f} dB of the long-run reference in every band (skipping the cascade: "
             f"{max(e['2s_no_hb'] for e in errs):.2f} dB)."
         ),
         f"- A receiver slope (one pole at the channel edge) moves noise's median Q to {tilt_lo:+.2f}..{tilt_hi:+.2f}.",

@@ -14061,6 +14061,28 @@ if(Python3_Interpreter_FOUND)
         )
         set_tests_properties(TOOLS_AIRSPY_PACKAGING PROPERTIES TIMEOUT 120)
     endif()
+    # tools/noise_squelch_model.py's report on canned results (issue #518 follow-up).
+    # The model imports numpy and scipy, so it registers only where the tests' Python
+    # has them.
+    execute_process(
+        COMMAND ${Python3_EXECUTABLE} -c "import numpy, scipy"
+        RESULT_VARIABLE _dsd_noise_model_py
+        OUTPUT_QUIET
+        ERROR_QUIET
+    )
+    if(_dsd_noise_model_py EQUAL 0)
+        add_test(
+            NAME TOOLS_NOISE_SQUELCH_MODEL_REPORT
+            COMMAND
+                ${Python3_EXECUTABLE}
+                ${PROJECT_SOURCE_DIR}/tests/tools/test_noise_squelch_model.py
+            WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+        )
+        set_tests_properties(
+            TOOLS_NOISE_SQUELCH_MODEL_REPORT
+            PROPERTIES TIMEOUT 120
+        )
+    endif()
     # The report's per-repeat pairing of the analog columns (issue #518), on canned
     # summaries. Stdlib only, so it runs wherever Python does.
     add_test(
