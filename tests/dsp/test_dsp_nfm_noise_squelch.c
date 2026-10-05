@@ -740,12 +740,12 @@ test_quieting_follows_cnr(void) {
    offset its Carson bandwidth leaves inside the channel either way (the tone's own: a lower tone leaves more room;
    every lowest reading the design gate and this sweep found sits at that edge), opens the gate at the highest
    threshold and never closes it: the tone's harmonics fall in the band as lines, and the best sub-band stays
-   clear of them. 11.2 kHz is the narrowest width with a band (1200 Hz of it); 12.4 kHz behind the half-band at
-   39062 Hz is a plan 300 Hz sub-bands without the staggered set miss by 1 dB; 11.8 kHz at 62500 Hz and 13 kHz at
-   46875 Hz, both behind it, are where the design gate reads its lowest (590 and 520 Hz tones at their Carson edges).
-   Tones run in 5 Hz steps under 800 Hz, where their
-   harmonics crowd the band, and 25 Hz steps above (a 1475 Hz tone at +1525 Hz fills an 11.2 kHz channel exactly). Its
-   own CTest case (DSP_NFM_NOISE_SQUELCH_SWEEP, `--sweep`): it is the slow part. */
+   clear of them. 11.2 kHz is the narrowest width with a band (1200 Hz of it); 11.8 kHz at 39062 Hz (a replay rate,
+   no cascade) is where the design gate reads its lowest, a 590 Hz tone at its Carson edge; 12.4 kHz at 39062 Hz and
+   13 kHz at 46875 Hz run behind their chains' half-band cascades, where 300 Hz sub-bands without the staggered set
+   miss by about 2 dB. Tones run in 5 Hz steps under 800 Hz, where their harmonics crowd the band, and 25 Hz steps above
+   (a 1475 Hz tone at +1525 Hz fills an 11.2 kHz channel exactly). Its own CTest case (DSP_NFM_NOISE_SQUELCH_SWEEP,
+   `--sweep`): it is the slow part. */
 static void
 test_strong_modulation_never_closes(void) {
     static const struct {
@@ -753,7 +753,7 @@ test_strong_modulation_never_closes(void) {
         int width;
         int passes;
     } plans[] = {
-        {48000, 11200, 0}, {62500, 11800, 5}, {39062, 12400, 6}, {46875, 13000, 7}, {48000, 25000, 0},
+        {48000, 11200, 0}, {39062, 11800, 0}, {39062, 12400, 6}, {46875, 13000, 7}, {48000, 25000, 0},
     };
 
     for (size_t w = 0; w < sizeof plans / sizeof plans[0]; w++) {
