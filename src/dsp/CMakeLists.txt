@@ -35,6 +35,7 @@ target_sources(
         analog_voice.c
         analog_audio.c
         squelch_floor.c
+        noise_squelch_bank.c
         nfm_noise_squelch.c
 )
 
@@ -122,11 +123,13 @@ endif()
 # promises the same gate for the same samples however they are cut into blocks;
 # fast-math could reassociate its running window sums across a vectorised loop,
 # making them depend on where a block starts. The NFM noise squelch makes the
-# same promise for its band-pass and window sums.
+# same promise for its band-pass and window sums, on the band-pass bank it
+# shares with the PCM noise squelch.
 set(_dsd_neo_dsp_ieee_c_sources
     analog_voice.c
     analog_audio.c
     squelch_floor.c
+    noise_squelch_bank.c
     nfm_noise_squelch.c
 )
 if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
