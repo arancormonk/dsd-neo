@@ -436,6 +436,28 @@ test_gaps_break_the_stretch(void) {
     free(sq);
 }
 
+/* The source turned down during speech, whose voice band is never steady enough to show the step: the noise that
+   follows, quieter than the reference, has noise's ratio and shape and holds steady, so it becomes the reference after
+   the pending step's 200 ms; the next transmission opens the gate. */
+static void
+test_volume_step_during_speech(void) {
+    dsd_pcm_noise_squelch* sq = new_squelch(48000, 10);
+    static pcm_tap src;
+    static trace tr;
+    DSD_MEMSET(&tr, 0, sizeof tr);
+    pcm_tap_init(&src, 27U, 12500.0, 0.0, 0.0);
+    const seg s[] = {
+        {PCM_TAP_NOISE, 2.0, 0.0, 0.0, 0.0},          {PCM_TAP_SYLLABIC, 1.0, 20.0, 1000.0, 0.0},
+        {PCM_TAP_SYLLABIC, 1.0, 20.0, 1000.0, -12.0}, {PCM_TAP_NOISE, 2.0, 0.0, 0.0, -12.0},
+        {PCM_TAP_SYLLABIC, 1.0, 20.0, 1000.0, -12.0},
+    };
+    run_segments(sq, &src, s, 5, &tr);
+    assert(open_seconds(&tr, 3, 0.0) < 0.4);
+    assert(fabs(median_q(&tr, 3, 1.0)) < 1.5);
+    assert(open_seconds(&tr, 4, 0.12) > 1.0 - 0.12 - 0.021);
+    free(sq);
+}
+
 /* The source turned down under a carrier: the noise that follows is quieter than the reference, yet it is noise (its
    voice-to-band ratio is noise's), so it becomes the reference and stays shut, and the next carrier opens the gate. */
 static void
@@ -754,6 +776,7 @@ main(int argc, char** argv) {
     test_level_independent();
     test_volume_step_down();
     test_volume_step_under_a_carrier();
+    test_volume_step_during_speech();
     test_weakening_carrier_keeps_the_reference();
     test_gaps_break_the_stretch();
     test_modulation_steps_keep_the_reference();

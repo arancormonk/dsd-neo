@@ -24,7 +24,9 @@ enum {
     PCM_TAP_LPF_TAPS = 255,
 };
 
-typedef enum { PCM_TAP_NOISE, PCM_TAP_DEAD, PCM_TAP_TONE, PCM_TAP_ZERO } pcm_tap_kind;
+/* PCM_TAP_SYLLABIC: the tone with a 3 Hz syllabic envelope, so its voice band is never steady over a window run, as
+   speech's is not. */
+typedef enum { PCM_TAP_NOISE, PCM_TAP_DEAD, PCM_TAP_TONE, PCM_TAP_ZERO, PCM_TAP_SYLLABIC } pcm_tap_kind;
 
 /* An SDR program's FM output: noise plus a carrier through a Hamming-windowed sinc channel filter, the phase step per
    sample, optional de-emphasis and audio low-pass, a gain and int16 rounding. */
@@ -47,6 +49,7 @@ typedef struct {
     int lpf_pos;
     double carrier_phase;
     double tone_phase;
+    double syllable_phase;
     double offset_hz;   /* the carrier's offset from the channel's centre */
     double tone_dev_hz; /* the tone's deviation; 0 is the width's rated deviation */
     double scale;       /* noise alone at -20 dBFS RMS */
@@ -111,11 +114,15 @@ static inline double
 pcm_tap_raw(pcm_tap* s, pcm_tap_kind kind, double cnr_db, double tone_hz) {
     double re = synth_gauss(&s->rng) * 0.70710678118654752;
     double im = synth_gauss(&s->rng) * 0.70710678118654752;
-    if (kind == PCM_TAP_DEAD || kind == PCM_TAP_TONE) {
+    if (kind == PCM_TAP_DEAD || kind == PCM_TAP_TONE || kind == PCM_TAP_SYLLABIC) {
         const double amp = sqrt(s->sum_h2 * pow(10.0, cnr_db / 10.0));
-        if (kind == PCM_TAP_TONE) {
+        if (kind != PCM_TAP_DEAD) {
             s->tone_phase += 2.0 * M_PI * tone_hz / (double)PCM_TAP_RATE;
-            const double dev = s->tone_dev_hz > 0.0 ? s->tone_dev_hz : s->dev_hz;
+            double dev = s->tone_dev_hz > 0.0 ? s->tone_dev_hz : s->dev_hz;
+            if (kind == PCM_TAP_SYLLABIC) {
+                s->syllable_phase += 2.0 * M_PI * 3.0 / (double)PCM_TAP_RATE;
+                dev *= 0.1 + (0.9 * fabs(sin(s->syllable_phase)));
+            }
             s->carrier_phase += 2.0 * M_PI * dev * sin(s->tone_phase) / (double)PCM_TAP_RATE;
         }
         s->carrier_phase += 2.0 * M_PI * s->offset_hz / (double)PCM_TAP_RATE;

@@ -1472,6 +1472,26 @@ Rulings on the cases the gate left open:
 5. An AGC and impulse dropouts are diagnostic, not gated: they cost quieting, not false opens.
 6. The hardware tap at 48 kHz passes at 33.5 dB, 2.5 dB short of 36: its sound card's floor leaves no more room.
 7. An input rate with no room is logged by the squelch at first use; the engine adds no note of its own.
+8. A louder steady stretch replaces the reference only when it comes up within 4 dB of it. One well under it is noise
+   at a lower gain (the source turned down during a transmission) after a steady carrier only where the gain-like steps
+   seen between its stretches put the noise, with noise's voice-to-band ratio; after speech, which shows no such step,
+   only with noise's ratio and shape (sub-bands within 5.5 dB of each other, tilted by at most 2.5 dB against the
+   reference) held 200 ms as a gain step. The gate's scenarios had no speech whose energy above voice steps up under a
+   carrier: a live weather broadcast (below), whose synthesized speech does, played half of each segment while any
+   louder stretch replaced the reference. A rule on the ratio alone let a lightly modulated carrier that weakens
+   (350 Hz deviation, 30 then 20 dB CNR) pull the reference down and shut the gate; one on gain steps alone left noise
+   after a volume drop during speech open for 1.94 s (`volume-carrier`, every source). Measured over six chains, noise
+   at another gain keeps the ratio within +/-1 dB, a sub-band spread of at most 4.7 dB and a tilt of at most 2 dB (p95);
+   a dead carrier reads 6.5-11.5 dB off the ratio; speech never holds its voice band steady for 200 ms.
+9. A window of exact zeros ends the stretch, as a restart does: bursts separated by padding no longer add their open
+   time up to a stale reading.
+
+Live check (Vinton, Iowa; an RTL-SDR running `rtl_fm -M fm` with no squelch, de-emphasis or low-pass, recorded at 48,
+24 and 12 kHz): 8 s of an empty channel (163.275 MHz), 8 s of NOAA weather radio (162.475 MHz) and 8 s of the empty
+channel again, fed to `dsd-neo -i - -fA --squelch noise+10`, play 7.98-8.00 s at every rate and nothing of the noise;
+40 s of the broadcast after 3 s of noise play whole; 30 s of the empty channel piped live never open at `noise+3`.
+Started on the broadcast with no noise first, the gate opens only in snatches (6 of 40 s in the model), the documented
+cost of starting on a carrier.
 
 `python3 tools/pcm_noise_squelch_model.py` reproduces the report (`build/pcm_noise_squelch_model/
 pcm_noise_squelch_report.md`, and `pcm_noise_squelch_results.json` beside it); `--quick` is a smoke run, `--only`
@@ -1481,13 +1501,19 @@ model by two suites:
 
 - `DSP_PCM_NOISE_SQUELCH`: the band rule, the band-passes' response, the threshold clamp, no room, noise learning and
   never opening at N = 3, a carrier opening and confirming the reference, quieting following CNR, level independence,
-  a volume step, starting on a carrier, a low-passed source reading no band, exact zeros, the per-passband cache and
-  the stale rule, and block-cut bit identity.
+  a volume step in noise, under a steady carrier and during speech (a tone with a 3 Hz syllabic envelope), a carrier
+  that weakens (30, 20 and 12 dB CNR, dead and modulated at 150-1200 Hz and the rated deviation, three seeds each),
+  modulation that steps up under a carrier (a 4.5 kHz line after each pause), bursts separated by exact zeros,
+  starting on a carrier, a low-passed source reading no band, exact zeros, the per-passband cache and the stale rule,
+  and block-cut bit identity.
 - `DSP_PCM_NOISE_SQUELCH_SWEEP` (`--sweep`): full-deviation tones on 12.5 and 25 kHz sources, centred and at their
   Carson edges, never closing the gate at N = 30 (lowest Q 42.8 dB).
 
-`DSP_SYMBOL_REPLAY` holds the decoder integration: every monitor sample gated by its own flag on WAV and UDP input, and
-the squelch held closed, learning nothing, while the tap skips a UDP backlog.
+`DSP_SYMBOL_REPLAY` holds the decoder integration: every monitor sample gated by its own flag on WAV and UDP input; the
+squelch held closed, learning nothing, while the tap skips a UDP backlog; the rigctl peer's passband, its first known
+value and a live change of it, as a boundary that re-keys the reference while an unreadable one changes nothing; and a
+no-band decision inside a monitor block, at three offsets, leaving the samples before it shut and ramping in the rest.
+`APP_CONTROL_SCAN_ROW_EDIT` refuses a scan row's own auto squelch on audio input.
 
 #### PCM noise squelch replay cases
 
