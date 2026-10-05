@@ -101,6 +101,7 @@
     X(act_scan_toggle)                                                                                                 \
     X(act_set_audio_lpf)                                                                                               \
     X(act_set_input_warn)                                                                                              \
+    X(act_set_squelch)                                                                                                 \
     X(act_set_p25_cc_grace)                                                                                            \
     X(act_set_p25_force_extra)                                                                                         \
     X(act_set_p25_force_margin)                                                                                        \
@@ -194,7 +195,6 @@
     X(rtl_set_gain)                                                                                                    \
     X(rtl_set_nfm_bw)                                                                                                  \
     X(rtl_set_ppm)                                                                                                     \
-    X(rtl_set_sql)                                                                                                     \
     X(rtl_set_vol)                                                                                                     \
     X(rtl_toggle_auto_ppm)                                                                                             \
     X(rtl_toggle_bias)                                                                                                 \
@@ -239,6 +239,7 @@
     X(lbl_hpf_d)                                                                                                       \
     X(lbl_input_volume)                                                                                                \
     X(lbl_input_warn)                                                                                                  \
+    X(lbl_input_sql)                                                                                                   \
     X(lbl_inv_dmr)                                                                                                     \
     X(lbl_inv_dpmr)                                                                                                    \
     X(lbl_inv_m17)                                                                                                     \
@@ -290,7 +291,6 @@
     X(lbl_rtl_ppm)                                                                                                     \
     X(lbl_rtl_rtltcp_autotune)                                                                                         \
     X(lbl_rtl_tuner_autogain)                                                                                          \
-    X(lbl_rtl_sql)                                                                                                     \
     X(lbl_rtl_vol)                                                                                                     \
     X(lbl_scan)                                                                                                        \
     X(lbl_scan_avoid_clear)                                                                                            \
@@ -345,6 +345,7 @@
     X(const_view_active)                                                                                               \
     X(eye_view_active)                                                                                                 \
     X(io_rtl_active)                                                                                                   \
+    X(io_squelch_offered)                                                                                              \
     X(is_not_qpsk)                                                                                                     \
     X(is_ted_allowed)                                                                                                  \
     X(provoice_active)                                                                                                 \

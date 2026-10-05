@@ -1539,25 +1539,34 @@ test_additional_prompt_and_toggle_actions(void) {
      * pwr_to_dB() of a disabled squelch, which is -120: retyping what was shown
      * would have turned a squelch that was off into a real threshold. */
     reset_capture();
+    const int saved_in_type = opts.audio_in_type;
+    opts.audio_in_type = AUDIO_IN_RTL;
     opts.rtl_squelch_level = 0.0;
-    rtl_set_sql(&ctx);
+    act_set_squelch(&ctx);
     rc |= expect_str("rtl squelch prompt", g_prompt.title, "Squelch (dB, off, auto[+N] or noise[+N])");
     rc |= expect_str("rtl squelch off prompt offers off", g_prompt.prefill, "off");
+    /* Audio input takes a level or the noise squelch, not auto (issue #628): its prompt says so. */
+    reset_capture();
+    opts.audio_in_type = AUDIO_IN_UDP;
+    act_set_squelch(&ctx);
+    rc |= expect_str("audio input squelch prompt", g_prompt.title, "Squelch (dB, off or noise[+N])");
+    rc |= expect_str("audio input squelch prompt offers off", g_prompt.prefill, "off");
+    opts.audio_in_type = AUDIO_IN_RTL;
 
     reset_capture();
     opts.rtl_squelch_level = pow(10.0, -5.0);
-    rtl_set_sql(&ctx);
+    act_set_squelch(&ctx);
     rc |= expect_str("rtl squelch prompt states a real threshold", g_prompt.prefill, "-50.0");
     /* The auto squelch (issue #518 follow-up) reads back as the grammar spells it. */
     reset_capture();
     opts.rtl_squelch_mode = DSD_SQUELCH_MODE_AUTO;
     opts.rtl_squelch_margin_db = 6;
-    rtl_set_sql(&ctx);
+    act_set_squelch(&ctx);
     rc |= expect_str("rtl squelch prompt offers auto", g_prompt.prefill, "auto+6");
     reset_capture();
     opts.rtl_squelch_mode = DSD_SQUELCH_MODE_NOISE;
     opts.rtl_squelch_margin_db = 14;
-    rtl_set_sql(&ctx);
+    act_set_squelch(&ctx);
     rc |= expect_str("rtl squelch prompt offers noise", g_prompt.prefill, "noise+14");
     opts.rtl_squelch_margin_db = 6;
     opts.rtl_squelch_mode = DSD_SQUELCH_MODE_LEVEL;
@@ -1571,15 +1580,16 @@ test_additional_prompt_and_toggle_actions(void) {
         dsd_test_scan_labels_configured(&configured);
         reset_capture();
         opts.rtl_squelch_level = pow(10.0, -6.0); /* the row's -60 dB */
-        rtl_set_sql(&ctx);
+        act_set_squelch(&ctx);
         rc |= expect_str("rtl squelch prompt seeds the configured default", g_prompt.prefill, "-80.0");
         configured.rtl_squelch_level = 0.0;
         dsd_test_scan_labels_configured(&configured);
         reset_capture();
-        rtl_set_sql(&ctx);
+        act_set_squelch(&ctx);
         rc |= expect_str("rtl squelch prompt offers a configured off", g_prompt.prefill, "off");
         dsd_test_scan_labels_configured(NULL);
     }
+    opts.audio_in_type = saved_in_type;
 
     /* Issue #524: the AM width row. Shown while the configured analog preset runs AM on a radio input, as the NFM row
      * is while it runs FM, and under another preset -- a digital one, or NFM -- while an explicit AM width is
@@ -2429,11 +2439,12 @@ test_scan_row_scope_chooser(void) {
     static dsd_state state;
     UiCtx ctx = make_ctx(&opts, &state);
     int rc = 0;
+    opts.audio_in_type = AUDIO_IN_RTL;
 
     /* No scan row: straight to the prompt. */
     dsd_test_scan_labels_scan_row(DSD_SCAN_ROW_SCANNER_NONE, 0U, -1, 0U, 0U, 0U, NULL);
     reset_capture();
-    rtl_set_sql(&ctx);
+    act_set_squelch(&ctx);
     rc |= expect_int("no row: squelch prompt at once", g_chooser.calls == 0 && g_prompt.calls == 1, 1);
     rc |= expect_str("no row: the default prompt", g_prompt.title, "Squelch (dB, off, auto[+N] or noise[+N])");
 
@@ -2451,7 +2462,7 @@ test_scan_row_scope_chooser(void) {
     dsd_test_scan_labels_row_options(&row);
 
     reset_capture();
-    rtl_set_sql(&ctx);
+    act_set_squelch(&ctx);
     rc |= expect_str("squelch scope title", g_chooser.title, "Squelch");
     rc |= expect_int("squelch scope rows", g_chooser.n, 4);
     rc |= expect_str("scope default", g_chooser.labels[0], "All channels (default)...");
@@ -2476,7 +2487,7 @@ test_scan_row_scope_chooser(void) {
     rc |= expect_int("squelch edit set -48 is a level", p.squelch_mode, DSD_SQUELCH_MODE_LEVEL);
     /* auto[+N] for this channel (issue #518 follow-up), and off; anything else stays on the status line. */
     reset_capture();
-    rtl_set_sql(&ctx);
+    act_set_squelch(&ctx);
     g_chooser.on_done(g_chooser.user, 1);
     g_prompt.str_cb(g_prompt.user, "auto+6");
     p = cmd_scan_row_edit();
@@ -2484,7 +2495,7 @@ test_scan_row_scope_chooser(void) {
         "squelch edit set auto+6",
         p.action == DSD_SCAN_ROW_EDIT_SET && p.squelch_mode == DSD_SQUELCH_MODE_AUTO && p.squelch_margin_db == 6, 1);
     reset_capture();
-    rtl_set_sql(&ctx);
+    act_set_squelch(&ctx);
     g_chooser.on_done(g_chooser.user, 1);
     g_prompt.str_cb(g_prompt.user, "noise+12");
     p = cmd_scan_row_edit();
@@ -2492,13 +2503,13 @@ test_scan_row_scope_chooser(void) {
         "squelch edit set noise+12",
         p.action == DSD_SCAN_ROW_EDIT_SET && p.squelch_mode == DSD_SQUELCH_MODE_NOISE && p.squelch_margin_db == 12, 1);
     reset_capture();
-    rtl_set_sql(&ctx);
+    act_set_squelch(&ctx);
     g_chooser.on_done(g_chooser.user, 1);
     g_prompt.str_cb(g_prompt.user, "off");
     p = cmd_scan_row_edit();
     rc |= expect_int("squelch edit set off", p.squelch_mode == DSD_SQUELCH_MODE_LEVEL && p.squelch_db == 0, 1);
     reset_capture();
-    rtl_set_sql(&ctx);
+    act_set_squelch(&ctx);
     g_chooser.on_done(g_chooser.user, 1);
     g_prompt.str_cb(g_prompt.user, "-60.5");
     rc |= expect_int("squelch edit refuses half a dB", g_cmd.calls, 0);
@@ -2506,23 +2517,23 @@ test_scan_row_scope_chooser(void) {
     rc |= expect_int("squelch edit cancelled", g_cmd.calls, 0);
 
     reset_capture();
-    rtl_set_sql(&ctx);
+    act_set_squelch(&ctx);
     g_chooser.on_done(g_chooser.user, 2);
     p = cmd_scan_row_edit();
     rc |= expect_int("inherit posted at once", g_prompt.calls == 0 && p.action == DSD_SCAN_ROW_EDIT_INHERIT, 1);
     reset_capture();
-    rtl_set_sql(&ctx);
+    act_set_squelch(&ctx);
     g_chooser.on_done(g_chooser.user, 3);
     p = cmd_scan_row_edit();
     rc |= expect_int("reset posted at once", g_prompt.calls == 0 && p.action == DSD_SCAN_ROW_EDIT_RESET, 1);
     reset_capture();
-    rtl_set_sql(&ctx);
+    act_set_squelch(&ctx);
     g_chooser.on_done(g_chooser.user, 0);
     rc |=
         expect_str("default goes to the row's own prompt", g_prompt.title, "Squelch (dB, off, auto[+N] or noise[+N])");
     rc |= expect_int("default posts nothing yet", g_cmd.calls, 0);
     reset_capture();
-    rtl_set_sql(&ctx);
+    act_set_squelch(&ctx);
     g_chooser.on_done(g_chooser.user, -1);
     g_chooser.on_done(g_chooser.user, 4);
     rc |= expect_int("cancelled scope posts nothing", g_cmd.calls + g_prompt.calls, 0);
@@ -2533,12 +2544,12 @@ test_scan_row_scope_chooser(void) {
     dsd_test_scan_labels_row_options(&follows);
     dsd_test_scan_labels_squelch(DSD_SQUELCH_MODE_NOISE, 12, 0.0);
     reset_capture();
-    rtl_set_sql(&ctx);
+    act_set_squelch(&ctx);
     g_chooser.on_done(g_chooser.user, 1);
     rc |= expect_str("an nfm row opens on the noise default", g_prompt.prefill, "noise+12");
     dsd_test_scan_labels_set(1, DSD_SCAN_MODE_AM);
     reset_capture();
-    rtl_set_sql(&ctx);
+    act_set_squelch(&ctx);
     g_chooser.on_done(g_chooser.user, 1);
     rc |= expect_str("an am row opens on the noise default as auto", g_prompt.prefill, "auto+12");
     g_prompt.str_cb(g_prompt.user, g_prompt.prefill);
@@ -2548,7 +2559,7 @@ test_scan_row_scope_chooser(void) {
                          && p.squelch_margin_db == 12 && p.mode == DSD_SCAN_MODE_AM,
                      1);
     reset_capture();
-    rtl_set_sql(&ctx);
+    act_set_squelch(&ctx);
     g_chooser.on_done(g_chooser.user, 1);
     g_prompt.str_cb(g_prompt.user, "auto+14");
     p = cmd_scan_row_edit();
@@ -2618,7 +2629,7 @@ test_scan_row_scope_chooser(void) {
        from values that are not this row's, the default's prompt as with no row on air. */
     dsd_test_scan_labels_scope_seq(7U, 8U);
     reset_capture();
-    rtl_set_sql(&ctx);
+    act_set_squelch(&ctx);
     rc |= expect_int("snapshots of two rows: the default prompt", g_chooser.calls == 0 && g_prompt.calls == 1, 1);
     rc |= expect_str("snapshots of two rows: its title", g_prompt.title, "Squelch (dB, off, auto[+N] or noise[+N])");
     dsd_test_scan_labels_scope_seq(0U, 0U);
@@ -2626,7 +2637,7 @@ test_scan_row_scope_chooser(void) {
     /* The scan moves on between the chooser and the prompt: the prompt opens on what the row named ran, not on the row
        now on air, so accepting it does not hand the first row the second one's value. */
     reset_capture();
-    rtl_set_sql(&ctx);
+    act_set_squelch(&ctx);
     dsd_scan_option_values other = row;
     other.squelch_db = -80;
     dsd_test_scan_labels_row_options(&other);

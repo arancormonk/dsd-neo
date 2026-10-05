@@ -935,6 +935,31 @@ scope_or_default(void* v, uint32_t field, int kind, const char* title, void (*op
     ui_chooser_start_at(title, g_scope.items, g_scope.count, 0, chooser_done_scope, v);
 }
 
+// ---- Squelch: the configured default, or this channel's (issue #628: radio and audio input) ----
+
+static void
+act_set_squelch_default(void* v) {
+    UiCtx* c = (UiCtx*)v;
+    /* The configured default, as the squelch grammar reads it back: "off" for a squelch that is off rather than
+     * pwr_to_dB()'s -120 floor, so accepting what is shown never turns a disabled squelch into a real threshold, and
+     * "auto+10" or "noise+10" for a dynamic squelch (issue #518 follow-up). The command edits the configured default: a
+     * scan row overriding the squelch (issue #521) keeps its own, so offer the default rather than the row's value. */
+    dsd_app_squelch_view view;
+    char text[DSD_SQUELCH_TEXT_SIZE];
+    (void)dsd_app_squelch_view_get(c->opts, dsd_app_get_latest_snapshot(), &view);
+    (void)dsd_app_squelch_view_configured_text(&view, text, sizeof text);
+    /* Audio input has no channel power for the auto squelch to learn a floor from, so it takes a level or noise. */
+    const char* title = dsd_squelch_input_kind(c->opts) == DSD_SQUELCH_INPUT_AUDIO
+                            ? "Squelch (dB, off or noise[+N])"
+                            : "Squelch (dB, off, auto[+N] or noise[+N])";
+    ui_prompt_open_string_async(title, text, sizeof text, cb_rtl_sql_text, c);
+}
+
+void
+act_set_squelch(void* v) {
+    scope_or_default(v, DSD_SCAN_ROW_FIELD_SQUELCH, -1, "Squelch", act_set_squelch_default);
+}
+
 // ---- Tone filter (issue #527): the live editor of the configured CTCSS/DCS receive policy ----
 
 /* Picker rows: the three modes in dsd_tone_filter_mode order, so a mode's row index is the mode it sets, then off with
@@ -1905,25 +1930,6 @@ rtl_set_am_bw_default(void* v) {
 void
 rtl_set_am_bw(void* v) {
     scope_or_default(v, DSD_SCAN_ROW_FIELD_WIDTH, DSD_ANALOG_DEMOD_AM, "AM bandwidth", rtl_set_am_bw_default);
-}
-
-static void
-rtl_set_sql_default(void* v) {
-    UiCtx* c = (UiCtx*)v;
-    /* The configured default, as the squelch grammar reads it back: "off" for a squelch that is off rather than
-     * pwr_to_dB()'s -120 floor, so accepting what is shown never turns a disabled squelch into a real threshold, and
-     * "auto+10" or "noise+10" for a dynamic squelch (issue #518 follow-up). The command edits the configured default: a
-     * scan row overriding the squelch (issue #521) keeps its own, so offer the default rather than the row's value. */
-    dsd_app_squelch_view view;
-    char text[DSD_SQUELCH_TEXT_SIZE];
-    (void)dsd_app_squelch_view_get(c->opts, dsd_app_get_latest_snapshot(), &view);
-    (void)dsd_app_squelch_view_configured_text(&view, text, sizeof text);
-    ui_prompt_open_string_async("Squelch (dB, off, auto[+N] or noise[+N])", text, sizeof text, cb_rtl_sql_text, c);
-}
-
-void
-rtl_set_sql(void* v) {
-    scope_or_default(v, DSD_SCAN_ROW_FIELD_SQUELCH, -1, "Squelch", rtl_set_sql_default);
 }
 
 void

@@ -85,6 +85,7 @@ void act_p2_params(void* v);
 // ---- Env/Advanced actions ----
 void act_toggle_ftz_daz(void* v);
 void act_set_input_warn(void* v);
+void act_set_squelch(void* v);
 void act_deemph_cycle(void* v);
 void act_set_audio_lpf(void* v);
 void act_tone_filter(void* v);
@@ -202,7 +203,6 @@ void rtl_set_ppm(void* v);
 void rtl_set_bw(void* v);
 void rtl_set_nfm_bw(void* v);
 void rtl_set_am_bw(void* v);
-void rtl_set_sql(void* v);
 void rtl_set_vol(void* v);
 void rtl_toggle_bias(void* v);
 void rtl_toggle_rtltcp_autotune(void* v);

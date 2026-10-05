@@ -73,6 +73,7 @@ Main Menu
 │   │   ├── WAV / raw file...
 │   │   └── Symbol file (.bin/.raw/.sym)...
 │   ├── Input volume... [4X]                     v
+│   ├── Squelch... [off]                         (radio and audio input: a level in dB, off, auto[+N] or noise[+N])
 │   ├── Low-input warning... [-40.0 dBFS]
 │   ├── Invert signal [Off]                      i
 │   └── RTL-SDR                                   (RTL-SDR input only)
@@ -82,7 +83,6 @@ Main Menu
 │       ├── DSP bandwidth... [48 kHz]
 │       ├── NFM bandwidth... [default]           (-fA, or a width set, on a radio input)
 │       ├── AM bandwidth... [default]            (-fM, a width set, or a rate below the default, on a radio input)
-│       ├── Squelch... [off]                     (a level in dB, off, auto[+N] or noise[+N])
 │       ├── Volume multiplier... [1]             v
 │       ├── Tuner autogain [On]
 │       ├── Bias tee [Off]
@@ -408,18 +408,23 @@ The input section shows a persistent advisory line when recent input-level metri
 samples measured before demodulation. The line is advisory only; DSD-neo never changes input volume, RF gain, AGC, or
 filtering automatically.
 
-The default RTL input line shows the SQL threshold, reading `off` when the squelch is disabled, but does not
-duplicate channel power. Under the auto squelch it shows the margin and what the squelch is doing: `SQL: auto +10 dB
-(floor -78.3 dB)`, `(learning)` until it has a floor, or why it is off here: `(off: no radio input)`, `(off on
-digital)`. Under the noise squelch it shows the quieting it reads: `SQL: noise +10 dB (quieting 23 dB)`, `(starting)`
-before its first window, or `(as auto: floor -78.3 dB)` on an AM or narrow channel, where the auto squelch runs it.
+The RTL input line and the audio input lines (Pulse, TCP, UDP, WAV and stdin) show the SQL setting, reading `off` when
+the squelch is disabled, but do not duplicate channel power. Under the auto squelch the line shows the margin and what
+the squelch is doing: `SQL: auto +10 dB (floor -78.3 dB)`, `(learning)` until it has a floor, or why it is off here:
+`(off: no radio input)`, `(off on digital)`. Under the noise squelch it shows the quieting it reads: `SQL: noise +10 dB
+(quieting 23 dB)`, `(starting)` before its first window, or `(as auto: floor -78.3 dB)` on an AM or narrow channel,
+where the auto squelch runs it. On audio input the [noise squelch](cli.md#noise-squelch-on-audio-input) reads
+`(learning)` until it has a noise reference, then its quieting; `(off: no band above voice)` when the input carries
+nothing above voice (its audio is low-passed), `(off: no room above voice)` when its rate leaves no band, and `(off on
+AM audio)` on an AM monitor.
 While a scan row or target overrides the squelch with `--squelch-db` or `--squelch`, the line shows the
 row's setting first and the configured default beside it: `SQL: -60.0 dB (row; default -80.0 dB)`, `SQL: auto +6 dB
 (floor -81.0 dB; row; default -60.0 dB)`. The `Squelch...` row is labelled with the configured setting
 (`Squelch... [auto +10 dB]`) and its prompt takes a level in dB, `off`, `auto` / `auto+N` (N from 3 to 30 dB over
 the floor) or `noise` / `noise+N` (N from 3 to 30 dB of quieting), opening on the setting in force (`-60.0`, `off`,
-`auto+10`, `noise+10`). The AM monitor on its own refuses `noise` with a toast. It always edits that configured
-default; if a
+`auto+10`, `noise+10`). On audio input the prompt takes a level, `off` or `noise[+N]`, and refuses `auto` with a toast,
+since audio input has no channel power to learn a floor from. The AM monitor on its own refuses `noise` with a toast. It
+always edits that configured default; if a
 row is overriding it, the change takes effect when the scanner leaves the row, and the toast says so
 (`Default squelch -75.0 dB; this channel overrides it (-60.0 dB)`). The M17 VOX `SQL:` field on a non-RTL input
 reads the same way after the measured power, and the DSP panel's `Squelch` line marks a row's threshold with

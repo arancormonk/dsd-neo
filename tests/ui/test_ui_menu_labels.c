@@ -173,6 +173,15 @@ test_predicates(void) {
     opts.audio_in_type = AUDIO_IN_RTL;
     rc |= expect_int("rtl active input", io_rtl_active(&ctx), 1);
 
+    /* The squelch row: radio and audio input, not a symbol file (issue #628). */
+    rc |= expect_int("squelch row null ctx", io_squelch_offered(NULL), 0);
+    rc |= expect_int("squelch row on rtl", io_squelch_offered(&ctx), 1);
+    opts.audio_in_type = AUDIO_IN_TCP;
+    rc |= expect_int("squelch row on tcp audio", io_squelch_offered(&ctx), 1);
+    opts.audio_in_type = AUDIO_IN_SYMBOL_BIN;
+    rc |= expect_int("squelch row hidden on a symbol file", io_squelch_offered(&ctx), 0);
+    opts.audio_in_type = AUDIO_IN_RTL;
+
     rc |= expect_int("trunk predicate null ctx", trunk_enabled(NULL), 0);
     rc |= expect_int("trunk predicate off", trunk_enabled(&ctx), 0);
     opts.trunk_enable = 1;
@@ -653,6 +662,31 @@ test_input_and_audio_labels(void) {
                      "Alert on... [All]");
     opts.call_alert_events = DSD_CALL_ALERT_EVENT_VOICE_START | DSD_CALL_ALERT_EVENT_DATA;
     rc |= expect_str("call alert start data", lbl_call_alert_events(&ctx, b, sizeof(b)), "Alert on... [Start+Data]");
+
+    /* Input > Squelch names the configured setting it edits (issue #518 follow-up), on audio input as on a radio input
+       (issue #628). */
+    dsd_scan_settings configured = {0};
+    opts.audio_in_type = AUDIO_IN_UDP;
+    opts.rtl_squelch_level = 0.0;
+    rc |= expect_str("squelch off", lbl_input_sql(&ctx, b, sizeof(b)), "Squelch... [off]");
+    opts.rtl_squelch_level = dsd_squelch_level_from_sql(-60.0);
+    rc |= expect_str("squelch level", lbl_input_sql(&ctx, b, sizeof(b)), "Squelch... [-60.0 dB]");
+    opts.rtl_squelch_mode = DSD_SQUELCH_MODE_AUTO;
+    opts.rtl_squelch_margin_db = 10;
+    rc |= expect_str("squelch auto", lbl_input_sql(&ctx, b, sizeof(b)), "Squelch... [auto +10 dB]");
+    opts.rtl_squelch_mode = DSD_SQUELCH_MODE_NOISE;
+    opts.rtl_squelch_margin_db = 14;
+    rc |= expect_str("squelch noise", lbl_input_sql(&ctx, b, sizeof(b)), "Squelch... [noise +14 dB]");
+    opts.rtl_squelch_mode = DSD_SQUELCH_MODE_AUTO;
+    opts.rtl_squelch_margin_db = 10;
+    /* Under a scan row, the default beneath it. */
+    configured.rtl_squelch_mode = DSD_SQUELCH_MODE_LEVEL;
+    configured.rtl_squelch_level = dsd_squelch_level_from_sql(-80.0);
+    dsd_test_scan_labels_configured(&configured);
+    rc |= expect_str("squelch under a row", lbl_input_sql(&ctx, b, sizeof(b)), "Squelch... [-80.0 dB]");
+    dsd_test_scan_labels_configured(NULL);
+    opts.rtl_squelch_mode = DSD_SQUELCH_MODE_LEVEL;
+    rc |= expect_str("squelch null ctx", lbl_input_sql(NULL, b, sizeof(b)), "Squelch... [off]");
 
     return rc;
 }
