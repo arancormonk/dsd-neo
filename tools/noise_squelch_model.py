@@ -26,24 +26,34 @@ Butterworth band-passes of prototype order 4, 40 ms windows taken every 20 ms):
   W is 500 Hz (at most 9 sub-bands), 300 Hz (at most 15), 300 Hz staggered (`s300x`: a second set shifted by half a
   sub-band, so a line on one set's boundary sits inside the other's) or 250 Hz (at most 18).
 
-The chosen design (src/dsp/nfm_noise_squelch.c) is s300x-guard5: every plan with a band passes the gate. 500 Hz
+The chosen design (src/dsp/nfm_noise_squelch.c) is s300x-guard4: every plan with a band passes the gate. 500 Hz
 sub-bands leave too few on the narrowest channels: at 11.2 kHz (two sub-bands) a tone whose harmonic lands on their
-boundary, off-frequency to its Carson edge, holds Q under 30 dB. 300 Hz sub-bands alone still let a low tone's
-harmonics sit on a boundary in every clear sub-band; the staggered set puts each such line inside a band-pass of the
-other set. 250 Hz sub-bands narrow the gap too, but the finer tone grid finds tones (550-630 Hz on 11.3-12 kHz channels)
-that hold them at the margin, and their eighteen noisy readings open the gate on noise more often. Of the staggered
-guards, 4 dB leaves the most wanted margin, and noise still opens the gate at N = 3 no more often than the whole band's
-reading alone does; 5 and 6 dB only lower noise's loudest window.
+boundary, off-frequency to its Carson edge, holds Q under 30 dB. 300 Hz sub-bands alone still let a tone's harmonics
+fall near the boundaries of every clear sub-band (39 plans fail, at 11.7-13 kHz and 23 kHz); the staggered set puts
+each such line inside a band-pass of the other set. 250 Hz sub-bands narrow the gap too, but the fine tone grid finds a
+585 Hz tone that holds them under the margin on an 11.8 kHz channel, and their eighteen noisy readings open the gate on
+noise more often (with a 4 dB guard, 1.3e-4 of evaluations at N = 3). Of the staggered guards, 4 dB leaves the most
+wanted margin at the same false-open rate at N = 3 as 5 and 6 dB, which only lower noise's loudest window; 6 dB fails
+two 11.7 kHz plans.
 
 Gate (per plan, for the chosen candidate): a band of at least 1200 Hz fits (8 and 10 kHz channels have none, and run
 the auto squelch); wanted modulation -- a tone sweep 300-3000 Hz (5 Hz steps under 800 Hz, where a tone's
 harmonics crowd the band, 25 Hz above) at the plan's rated deviation, centred and at every offset the tone's own Carson
 bandwidth leaves inside the channel, and real NFM speech at rated deviation -- keeps the 1st-percentile Q at least
 MARGIN_DB above the highest threshold offered; noise reaches the lowest threshold in at most FALSE_OPEN_TARGET of
-evaluations. The plans are every NFM width, unset default and rate chain
-tools/squelch_model.py runs, and custom widths (CUSTOM_WIDTHS_HZ) on every chain at CUSTOM_MIN_RATE_HZ or above. The
-report also lists stress cases outside the gate (a carrier 1 kHz past its tone's Carson edge, 1.5x rated deviation) and
-the real captures as recorded (their receiver noise and neighbours included) through each plan of 12.5 kHz or wider.
+evaluations. The plans are every NFM width, unset default and rate chain tools/squelch_model.py runs, and custom widths
+(CUSTOM_WIDTHS_HZ) on every chain at CUSTOM_MIN_RATE_HZ or above. The report also lists stress cases outside the gate
+(a carrier 1 kHz past its tone's Carson edge, 1.5x rated deviation) and the real captures as recorded (their receiver
+noise and neighbours included) through each plan of 12.5 kHz or wider.
+
+The receiver's half-band cascade. Each chain decimates through `passes` half-band stages ahead of the channel filter
+(src/dsp/demod_pipeline.cpp: the 31-tap stage first, the 15-tap ones after), and the 15-tap stage droops inside the
+band. The noise, the calibration and every wanted signal go through the cascade as the chain runs it: made at twice
+the channel rate, through the stages before the last (one linear-phase FIR sampled from their composite response,
+CASCADE_FIR_TAPS taps, as the C core's calibration models them) and the last stage. With no channel filter the
+cascade's roll-off is the channel's edge, and it truncates a signal that reaches the rate's Nyquist into the band: such
+a plan needs the widest NFM signal tested (UNFILTERED_SIGNAL_EDGE_HZ from the carrier) to fit under the Nyquist, and
+has no band otherwise (rtl-12k and rtl-16k with the width unset, an Airspy Mini at 11718 Hz).
 
 Plans come from tools/squelch_model.py (its tap harness and rate chains), FM only: AM has no discriminator.
 
@@ -84,6 +94,13 @@ SUB_VARIANTS = (
     ("s250", 250.0, 18, False),
 )
 NYQUIST_FRACTION = 0.45
+# The decimating half-band stages ahead of the last one, as the last stage's input sees them: a linear-phase FIR at
+# twice the channel rate sampled from their composite response (src/dsp/nfm_noise_squelch.c designs the same one).
+CASCADE_FIR_TAPS = 63
+# With no channel filter the half-band cascade's roll-off is the channel's edge, and it truncates any signal that
+# reaches the rate's Nyquist: a plan needs the widest NFM signal the gate tests (5 kHz deviation, 3 kHz audio) to fit
+# under it (src/dsp/nfm_noise_squelch.c k_unfiltered_signal_edge_hz).
+UNFILTERED_SIGNAL_EDGE_HZ = 8000.0
 ORDER = 4
 HIGH_BAND_HZ = 1200.0
 GUARDS_DB = (4.0, 5.0, 6.0)
@@ -138,13 +155,50 @@ def passband_edge_hz(taps: np.ndarray, fs: float) -> float:
     return fs / 2.0
 
 
-def plan_band(taps: np.ndarray, fs: float) -> tuple[float, float, float] | None:
-    """(lo, hi, edge) of the measurement band, or None when less than MIN_BAND_HZ fits above voice."""
+def stage_gain(h: np.ndarray, f: float, rate: float) -> float:
+    """|H(f)| of the symmetric taps h run at rate, against their DC gain."""
+    n = np.arange(len(h)) - (len(h) - 1) / 2.0
+    return abs(float(np.sum(h * np.cos(2.0 * math.pi * f * n / rate)))) / abs(float(np.sum(h)))
+
+
+def stage_rate(stages: list, index: int, fs: float) -> float:
+    """The input rate of stages[index] (top first; the last runs at 2 fs)."""
+    return fs * 2.0 ** (len(stages) - index)
+
+
+def plan_band(taps: np.ndarray, fs: float, stages: list | None = None) -> tuple[float, float, float] | None:
+    """(lo, hi, edge) of the measurement band, or None when less than MIN_BAND_HZ fits above voice or no channel filter
+    (one unit tap) runs behind a cascade at a Nyquist of UNFILTERED_SIGNAL_EDGE_HZ or less."""
+    if len(taps) <= 1 and stages and fs / 2.0 <= UNFILTERED_SIGNAL_EDGE_HZ:
+        return None
     edge = passband_edge_hz(taps, fs)
     hi = min(edge - EDGE_GUARD_HZ, NYQUIST_FRACTION * fs)
     if hi - BAND_LO_HZ < MIN_BAND_HZ:
         return None
     return BAND_LO_HZ, hi, edge
+
+
+def cascade_fir(stages: list, fs: float) -> np.ndarray | None:
+    """The stages ahead of the last as one linear-phase FIR at 2 fs: CASCADE_FIR_TAPS taps sampled (frequency sampling,
+    type I) from their composite response on 0..fs, unit DC gain. None when the last stage is the only one."""
+    earlier = stages[:-1]
+    if not earlier:
+        return None
+    n_taps = CASCADE_FIR_TAPS
+    half = (n_taps - 1) // 2
+    rate = 2.0 * fs
+    g = [1.0]
+    for k in range(1, half + 1):
+        f = k * rate / n_taps
+        v = 1.0
+        for i, h in enumerate(earlier):
+            v *= stage_gain(h, f, stage_rate(stages, i, fs))
+        g.append(v)
+    n = np.arange(n_taps) - half
+    h = np.full(n_taps, g[0])
+    for k in range(1, half + 1):
+        h = h + 2.0 * g[k] * np.cos(2.0 * math.pi * k * n / n_taps)
+    return h / np.sum(h)
 
 
 def sub_band_count(lo: float, hi: float, sub_hz: float = SUB_BAND_HZ, most: int = MAX_SUB_BANDS) -> int:
@@ -166,14 +220,6 @@ def disc(z: np.ndarray) -> np.ndarray:
     x2 = x * x
     out[small] = x * (np.float32(1.0) + x2 * (np.float32(-1.0 / 3.0) + x2 * np.float32(0.2)))
     return out
-
-
-def hb_noise(rng: np.random.Generator, count: int, hb: np.ndarray | None) -> np.ndarray:
-    """count samples of the channel filter's input for white complex noise at the half-band input."""
-    if hb is None:
-        return sm.white_noise(rng, count)
-    wide = sm.white_noise(rng, 2 * count + len(hb) - 1)
-    return np.asarray(sps.oaconvolve(wide, hb.astype(np.float32), mode="valid"))[::2][:count].astype(np.complex64)
 
 
 def half_bounds(fs: int, count: int) -> np.ndarray:
@@ -206,11 +252,14 @@ class Plan:
     def __init__(self, job: dict):
         self.fs = int(job["fs"])
         self.taps = np.asarray(job["taps"], dtype=np.float64)
-        self.hb = None if job["hb"] is None else np.asarray(job["hb"], dtype=np.float64)
+        self.stages = [np.asarray(h, dtype=np.float64) for h in job.get("stages", [])]
+        self.hb = self.stages[-1] if self.stages else None
+        self.pre = cascade_fir(self.stages, self.fs)
         self.width = job["width"]
         self.key = job["key"]
         self.settle = int(SETTLE_S * self.fs)
-        self.band = plan_band(self.taps, self.fs)
+        self.edge = passband_edge_hz(self.taps, self.fs)
+        self.band = plan_band(self.taps, self.fs, self.stages)
         self.filters: dict[str, list] = {}
         self.primary: dict[str, int] = {}
         if self.band is not None:
@@ -227,22 +276,43 @@ class Plan:
             if hi - HIGH_BAND_HZ >= BAND_LO_HZ - 200.0:
                 self.filters["high1200"] = [self.bp(hi - HIGH_BAND_HZ, hi)]
         rng = np.random.default_rng(sm.job_seed("noise_sq_pch", self.key))
-        probe = sm.channel_filter(hb_noise(rng, self.fs + len(self.taps), self.hb), self.taps)
+        probe = sm.channel_filter(self.front_end(rng, self.fs + len(self.taps)), self.taps)
         self.p_noise_ch = float(np.mean(np.abs(probe) ** 2))
 
     def bp(self, lo: float, hi: float):
         return sps.butter(ORDER, [lo, hi], btype="bandpass", fs=self.fs, output="sos")
 
-    def demod(self, sig: np.ndarray | None, count: int, cnr_db: float, seed, hb: bool = True, tilt: float = 0.0):
-        """The discriminator output for count samples of sig (unit-power baseband, None for noise alone) at cnr_db."""
+    def front_end(self, rng: np.random.Generator, count: int, sig=None, scale: float = 0.0, cascade: bool = True):
+        """count channel-filter inputs: white noise, plus sig(n, rate) * scale when given, made at the rate it enters
+        and through the half-band cascade with the noise (the stages ahead of the last as self.pre)."""
+        if self.hb is None or not cascade:
+            x = sm.white_noise(rng, count)
+            if sig is not None:
+                x = x + sig(count, self.fs).astype(np.complex64) * np.float32(scale)
+            return x
+        pre_len = 0 if self.pre is None else len(self.pre) - 1
+        n = 2 * count + len(self.hb) - 1 + pre_len
+        x = sm.white_noise(rng, n)
+        if sig is not None:
+            x = x + sig(n, 2 * self.fs).astype(np.complex64) * np.float32(scale)
+        return self.through(x)[:count]
+
+    def through(self, x2: np.ndarray) -> np.ndarray:
+        """x2 at 2 fs through the cascade model to fs."""
+        if self.pre is not None:
+            x2 = np.asarray(sps.oaconvolve(x2, self.pre.astype(np.float32), mode="valid"))
+        return np.asarray(sps.oaconvolve(x2, self.hb.astype(np.float32), mode="valid"))[::2].astype(np.complex64)
+
+    def demod(self, sig, count: int, cnr_db: float, seed, hb: bool = True, tilt: float = 0.0):
+        """The discriminator output for count samples of sig (a function (n, rate) -> unit-power baseband, None for
+        noise alone) at cnr_db."""
         rng = np.random.default_rng(sm.job_seed("noise_sq", self.key, seed))
-        x = hb_noise(rng, count, self.hb if hb else None)
+        scale = math.sqrt(self.p_noise_ch * 10.0 ** (cnr_db / 10.0))
+        x = self.front_end(rng, count, sig, scale, cascade=hb)
         if tilt != 0.0:
             corner = min(self.width / 2.0, NYQUIST_FRACTION * self.fs)
             b, a = sps.butter(1, corner, btype="low" if tilt > 0 else "high", fs=self.fs)
             x = np.asarray(sps.lfilter(b, a, x)).astype(np.complex64)
-        if sig is not None:
-            x = x + sig[:count].astype(np.complex64) * np.float32(math.sqrt(self.p_noise_ch * 10.0 ** (cnr_db / 10.0)))
         return disc(sm.channel_filter(x, self.taps))
 
     def halves(self, d: np.ndarray) -> dict[str, np.ndarray]:
@@ -302,11 +372,14 @@ def run_plan(job: dict) -> dict:
     deviation = sm.rated_deviation_hz(width)
     out = {"key": plan.key, "fs": fs, "width": width, "deviation": deviation, "candidates": {}}
     if plan.band is None:
-        out["edge_hz"] = passband_edge_hz(plan.taps, fs)
-        out["why"] = (
-            f"less than {MIN_BAND_HZ:.0f} Hz fits between {BAND_LO_HZ:.0f} Hz and the channel edge less "
-            f"{EDGE_GUARD_HZ:.0f} Hz"
-        )
+        out["edge_hz"] = plan.edge
+        if len(plan.taps) <= 1 and plan.stages and fs / 2.0 <= UNFILTERED_SIGNAL_EDGE_HZ:
+            out["why"] = "no channel filter behind the half-band cascade at a Nyquist the widest NFM signal reaches"
+        else:
+            out["why"] = (
+                f"less than {MIN_BAND_HZ:.0f} Hz fits between {BAND_LO_HZ:.0f} Hz and the channel edge less "
+                f"{EDGE_GUARD_HZ:.0f} Hz"
+            )
         return out
     lo, hi, edge = plan.band
     out.update({"band": [lo, hi], "edge_hz": edge, "sub_bands": plan.primary[CHOSEN.split("-")[0]]})
@@ -365,10 +438,18 @@ def run_plan(job: dict) -> dict:
             }
 
     tone_n = int(TONE_SECONDS[mode] * fs) + len(plan.taps) + plan.settle
-    t = np.arange(tone_n) / fs
 
-    def fm(audio_dev_hz: np.ndarray, offset: float) -> np.ndarray:
-        return np.exp(1j * (2.0 * math.pi * np.cumsum(offset + audio_dev_hz) / fs))
+    def fm(audio_dev_hz, offset: float):
+        """A signal for Plan.demod(): an FM carrier, audio_dev_hz(t) its deviation in Hz, made at the rate asked."""
+
+        def make(n: int, rate: float) -> np.ndarray:
+            t = np.arange(n) / rate
+            return np.exp(1j * (2.0 * math.pi * np.cumsum(offset + audio_dev_hz(t, n, rate)) / rate))
+
+        return make
+
+    def tone(f: float, dev: float):
+        return lambda t, n, rate: dev * np.sin(2.0 * math.pi * f * t)
 
     half = width / 2.0
     for f in TONES_HZ:
@@ -376,7 +457,7 @@ def run_plan(job: dict) -> dict:
         room = half - deviation - f
         offsets = [0.0] + ([room, -room, room / 2.0, -room / 2.0] if room > 1.0 else [])
         for off in offsets:
-            sig = fm(deviation * np.sin(2.0 * math.pi * f * t), off)
+            sig = fm(tone(f, deviation), off)
             measure(
                 "gate",
                 f"tone {f:.0f} Hz at {off:+.0f} Hz",
@@ -384,37 +465,46 @@ def run_plan(job: dict) -> dict:
             )
     speech_n = int(SPEECH_SECONDS[mode] * fs) + len(plan.taps) + plan.settle
     for name in sm.REAL_FM:
-        audio = np.resize(sm.source_at_rate(name, "audio", fs), speech_n)
+
+        def speech(t, n, rate, name=name):
+            return deviation * np.resize(sm.source_at_rate(name, "audio", int(rate)), n)
+
         measure(
             "gate",
             f"speech {name}",
-            plan.demod(fm(deviation * audio, 0.0), speech_n, NOISE_FREE_CNR_DB, ("speech", name)),
+            plan.demod(fm(speech, 0.0), speech_n, NOISE_FREE_CNR_DB, ("speech", name)),
         )
     for f in (300.0, 1000.0, 2000.0, 3000.0):
         # 1 kHz past the tone's Carson edge either way.
         past = half - deviation - f + STRESS_OFFSET_HZ
         for off in (past, -past):
-            sig = fm(deviation * np.sin(2.0 * math.pi * f * t), off)
+            sig = fm(tone(f, deviation), off)
             measure(
                 "stress",
                 f"tone {f:.0f} Hz at {off:+.0f} Hz",
                 plan.demod(sig, tone_n, NOISE_FREE_CNR_DB, ("stress", off, f)),
             )
-        sig = fm(STRESS_DEVIATION * deviation * np.sin(2.0 * math.pi * f * t), 0.0)
+        sig = fm(tone(f, STRESS_DEVIATION * deviation), 0.0)
         measure(
             "stress",
             f"tone {f:.0f} Hz x{STRESS_DEVIATION:g} deviation",
             plan.demod(sig, tone_n, NOISE_FREE_CNR_DB, ("over", f)),
         )
     for cnr in CNRS_DB:
-        sig = fm(deviation * np.sin(2.0 * math.pi * 1000.0 * t), 0.0)
+        sig = fm(tone(1000.0, deviation), 0.0)
         measure("cnr_tone", f"{cnr:+.0f}", plan.demod(sig, tone_n, cnr, ("cnr", cnr)))
         measure(
-            "cnr_dead", f"{cnr:+.0f}", plan.demod(np.ones(tone_n, dtype=np.complex64), tone_n, cnr, ("cnr_dead", cnr))
+            "cnr_dead",
+            f"{cnr:+.0f}",
+            plan.demod(lambda n, rate: np.ones(n, dtype=np.complex64), tone_n, cnr, ("cnr_dead", cnr)),
         )
     if width >= 2.0 * sm.REAL_CHANNEL_HALF_HZ:
         for name in sm.REAL_FM:
-            measure("real", name, disc(sm.channel_filter(raw_capture_at_rate(name, fs), plan.taps)))
+            if plan.hb is None:
+                x = raw_capture_at_rate(name, fs)
+            else:
+                x = plan.through(raw_capture_at_rate(name, 2 * fs))
+            measure("real", name, disc(sm.channel_filter(x, plan.taps)))
     out["seconds"] = time.time() - t0
     return out
 
@@ -575,18 +665,54 @@ def report(results: list[dict], members: dict, out_dir: Path, started: float, mo
     return text
 
 
+def rtl_passes(rate_in_hz: int) -> int:
+    """rtl_downsample_passes_for_rate_in() (src/io/radio/rtl_sdr_fm.cpp): the half-band passes an RTL chain runs."""
+    factor = 1000000 // rate_in_hz + 1
+    if factor <= 1:
+        return 0
+    log2 = factor.bit_length() - 1
+    passes = min(sm.MAX_DOWNSAMPLE_PASSES, log2 if factor & (factor - 1) == 0 else log2 + 1)
+    good = (960000, 1024000, 1200000, 1536000, 1920000, 2048000, 2400000)
+    best, best_err = passes, None
+    for delta in (-1, 0, 1):
+        p = max(0, min(sm.MAX_DOWNSAMPLE_PASSES, passes + delta))
+        cap = rate_in_hz * (1 << p)
+        if cap < 225000 or cap > 3200000:
+            continue
+        for rate in good:
+            if best_err is None or abs(cap - rate) < best_err:
+                best_err, best = abs(cap - rate), p
+    return best
+
+
+def cascade_passes(plan) -> int:
+    """The half-band passes ahead of plan's channel filter."""
+    if plan.source == "rtl":
+        return rtl_passes(plan.rate_in)
+    if plan.source == "device":
+        capture = sm.DEVICE_CAPTURES_HZ[plan.name.split("-bw")[0]]
+        return round(math.log2(capture / plan.rate_out))
+    return 0 if plan.hb is None else 1
+
+
+def cascade_stages(plan, hb_taps: dict) -> list:
+    """The cascade's stages, top first, as src/dsp/demod_pipeline.cpp runs them: hb31 first, hb15 after."""
+    passes = cascade_passes(plan)
+    return [np.asarray(hb_taps["hb31" if i == 0 else "hb15"]).tolist() for i in range(passes)]
+
+
 def unique_jobs(combos: list[dict], hb_taps: dict, mode: str) -> tuple[list[dict], dict]:
     jobs, members = {}, {}
     for combo in combos:
         plan = combo["plan"]
-        key = f"{combo['fkey']}:{combo['protected_hz']}"
+        key = f"{combo['fkey']}:p{cascade_passes(plan)}:{combo['protected_hz']}"
         members.setdefault(key, []).append(sm.combo_id(combo))
         jobs.setdefault(
             key,
             {
                 "key": key,
                 "taps": np.asarray(combo["taps"]).tolist(),
-                "hb": None if hb_taps.get(plan.hb) is None else np.asarray(hb_taps[plan.hb]).tolist(),
+                "stages": cascade_stages(plan, hb_taps),
                 "fs": plan.channel_rate,
                 "width": combo["protected_hz"],
                 "mode": mode,
@@ -605,7 +731,8 @@ def custom_jobs(plans: list, harness_plans: dict, hb_taps: dict, mode: str, jobs
             rec = harness_plans.get((plan.rate_out, width, sm.FM_KIND))
             if not rec or not rec["realizable"]:
                 continue
-            key = f"{plan.channel_rate}:{plan.hb}:{sm.taps_key(np.asarray(rec['taps']))}:{width}"
+            taps_key = sm.taps_key(np.asarray(rec["taps"]))
+            key = f"{plan.channel_rate}:{plan.hb}:{taps_key}:p{cascade_passes(plan)}:{width}"
             members.setdefault(key, []).append(f"NFM {width} (custom) on {plan.name}")
             if key in known:
                 continue
@@ -614,7 +741,7 @@ def custom_jobs(plans: list, harness_plans: dict, hb_taps: dict, mode: str, jobs
                 {
                     "key": key,
                     "taps": np.asarray(rec["taps"]).tolist(),
-                    "hb": None if hb_taps.get(plan.hb) is None else np.asarray(hb_taps[plan.hb]).tolist(),
+                    "stages": cascade_stages(plan, hb_taps),
                     "fs": plan.channel_rate,
                     "width": width,
                     "mode": mode,
