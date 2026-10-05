@@ -73,6 +73,7 @@ if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
         dsp/test_dsp_snr_estimator.cpp
         dsp/test_dsp_squelch_floor.c
         dsp/test_dsp_nfm_noise_squelch.c
+        dsp/test_dsp_pcm_noise_squelch.c
         dsp/test_dsp_symbol_replay.c
         io/test_io_input_level_metrics.c
         io/test_io_rtl_replay_eof_and_cf32.cpp
@@ -98,6 +99,7 @@ elseif(MSVC)
         dsp/test_dsp_snr_estimator.cpp
         dsp/test_dsp_squelch_floor.c
         dsp/test_dsp_nfm_noise_squelch.c
+        dsp/test_dsp_pcm_noise_squelch.c
         dsp/test_dsp_symbol_replay.c
         io/test_io_input_level_metrics.c
         io/test_io_rtl_replay_eof_and_cf32.cpp
@@ -1016,6 +1018,18 @@ dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_dsp_nfm_noise_squelch_cxx
   HEADERS_PUBLIC_DSP_NFM_NOISE_SQUELCH_CXX
   dsd-neo/dsp/nfm_noise_squelch.h
+  CXX
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_dsp_pcm_noise_squelch
+  HEADERS_PUBLIC_DSP_PCM_NOISE_SQUELCH
+  dsd-neo/dsp/pcm_noise_squelch.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_dsp_pcm_noise_squelch_cxx
+  HEADERS_PUBLIC_DSP_PCM_NOISE_SQUELCH_CXX
+  dsd-neo/dsp/pcm_noise_squelch.h
   CXX
 )
 dsd_neo_add_public_header_smoke_test(
@@ -8474,6 +8488,27 @@ add_test(
     COMMAND dsd-neo_test_dsp_nfm_noise_squelch --sweep
 )
 set_tests_properties(DSP_NFM_NOISE_SQUELCH_SWEEP PROPERTIES TIMEOUT 600)
+# The PCM noise squelch (issue #628): the band rule and band-passes, learning with the
+# gate closed, noise that never opens it, carriers that open it, quieting that follows
+# the CNR and not the level, gain steps, starting on a carrier, a low-passed source (no
+# band), no room, digital silence, the per-passband cache, stale quieting and the same
+# flags whatever the block cuts. --sweep runs strong modulation on its own.
+add_executable(
+    dsd-neo_test_dsp_pcm_noise_squelch
+    dsp/test_dsp_pcm_noise_squelch.c
+)
+target_include_directories(
+    dsd-neo_test_dsp_pcm_noise_squelch
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/tests/dsp
+)
+dsd_neo_link_dsp_test(dsd-neo_test_dsp_pcm_noise_squelch ${DSD_NEO_TEST_MATH_LIB})
+add_test(NAME DSP_PCM_NOISE_SQUELCH COMMAND dsd-neo_test_dsp_pcm_noise_squelch)
+set_tests_properties(DSP_PCM_NOISE_SQUELCH PROPERTIES TIMEOUT 300)
+add_test(
+    NAME DSP_PCM_NOISE_SQUELCH_SWEEP
+    COMMAND dsd-neo_test_dsp_pcm_noise_squelch --sweep
+)
+set_tests_properties(DSP_PCM_NOISE_SQUELCH_SWEEP PROPERTIES TIMEOUT 600)
 
 # DCS detection (issue #523) through the pure analog receive core, in sample time: every
 # supported code in both polarities through the receiver's DC block and de-emphasis at two
@@ -14080,6 +14115,18 @@ if(Python3_Interpreter_FOUND)
         )
         set_tests_properties(
             TOOLS_NOISE_SQUELCH_MODEL_REPORT
+            PROPERTIES TIMEOUT 120
+        )
+        # tools/pcm_noise_squelch_model.py's report and band rule (issue #628).
+        add_test(
+            NAME TOOLS_PCM_NOISE_SQUELCH_MODEL_REPORT
+            COMMAND
+                ${Python3_EXECUTABLE}
+                ${PROJECT_SOURCE_DIR}/tests/tools/test_pcm_noise_squelch_model.py
+            WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+        )
+        set_tests_properties(
+            TOOLS_PCM_NOISE_SQUELCH_MODEL_REPORT
             PROPERTIES TIMEOUT 120
         )
     endif()
