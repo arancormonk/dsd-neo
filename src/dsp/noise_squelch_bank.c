@@ -9,7 +9,6 @@
 
 #include <dsd-neo/dsp/nfm_noise_squelch.h>
 #include <math.h>
-#include <stddef.h>
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846

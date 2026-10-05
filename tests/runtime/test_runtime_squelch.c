@@ -16,6 +16,8 @@
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/squelch.h>
 #include <math.h>
 #include <stdint.h>
@@ -225,7 +227,7 @@ test_resolve(void) {
 
     /* The input kinds: 1 is a radio input and 0 neither (as before); audio input runs NOISE on an FM monitor, keeps
        it off on AM audio (no discriminator to measure, and no auto to stand in) and on digital, and AUTO off. */
-    assert(DSD_SQUELCH_INPUT_RADIO == 1 && DSD_SQUELCH_INPUT_OTHER == 0);
+    _Static_assert(DSD_SQUELCH_INPUT_RADIO == 1 && DSD_SQUELCH_INPUT_OTHER == 0, "the input kinds keep 1 and 0");
     assert(dsd_squelch_setting_resolve(&n12, DSD_SQUELCH_INPUT_AUDIO, 0, 0, &out) == DSD_SQUELCH_RESOLVED_AS_SET);
     assert(dsd_squelch_setting_equal(&out, &n12));
     assert(dsd_squelch_setting_resolve(&n12, DSD_SQUELCH_INPUT_AUDIO, 0, 1, &out) == DSD_SQUELCH_RESOLVED_AUDIO_AM);

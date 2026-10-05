@@ -2600,58 +2600,26 @@ apply_cmd_io_and_import_imports(dsd_opts* opts, dsd_state* state, const struct d
 
 static int
 apply_cmd_io_and_import(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    /* Each group returns nonzero once it handled the command. */
+    static const dsd_app_command_handler_fn k_groups[] = {
+        apply_cmd_io_and_import_file_outputs_a, apply_cmd_io_and_import_file_outputs_b,
+        apply_cmd_io_and_import_network,
+#ifdef USE_RADIO
+        apply_cmd_io_and_import_rtl_a,          apply_cmd_io_and_import_rtl_b,
+        apply_cmd_io_and_import_rtl_c,          apply_cmd_io_and_import_rtl_d,
+#endif
+        apply_cmd_io_and_import_squelch,        apply_cmd_io_and_import_runtime_a,
+        apply_cmd_io_and_import_pulse_io,       apply_cmd_io_and_import_lrrp_and_p2,
+        apply_cmd_io_and_import_imports,
+    };
     if (!opts || !c) {
         return 0;
     }
-    int r = apply_cmd_io_and_import_file_outputs_a(opts, state, c);
-    if (r) {
-        return r;
-    }
-    r = apply_cmd_io_and_import_file_outputs_b(opts, state, c);
-    if (r) {
-        return r;
-    }
-    r = apply_cmd_io_and_import_network(opts, state, c);
-    if (r) {
-        return r;
-    }
-#ifdef USE_RADIO
-    r = apply_cmd_io_and_import_rtl_a(opts, state, c);
-    if (r) {
-        return r;
-    }
-    r = apply_cmd_io_and_import_rtl_b(opts, state, c);
-    if (r) {
-        return r;
-    }
-    r = apply_cmd_io_and_import_rtl_c(opts, state, c);
-    if (r) {
-        return r;
-    }
-    r = apply_cmd_io_and_import_rtl_d(opts, state, c);
-    if (r) {
-        return r;
-    }
-#endif
-    r = apply_cmd_io_and_import_squelch(opts, state, c);
-    if (r) {
-        return r;
-    }
-    r = apply_cmd_io_and_import_runtime_a(opts, state, c);
-    if (r) {
-        return r;
-    }
-    r = apply_cmd_io_and_import_pulse_io(opts, state, c);
-    if (r) {
-        return r;
-    }
-    r = apply_cmd_io_and_import_lrrp_and_p2(opts, state, c);
-    if (r) {
-        return r;
-    }
-    r = apply_cmd_io_and_import_imports(opts, state, c);
-    if (r) {
-        return r;
+    for (size_t i = 0; i < sizeof k_groups / sizeof k_groups[0]; i++) {
+        const int r = k_groups[i](opts, state, c);
+        if (r) {
+            return r;
+        }
     }
     return 0;
 }

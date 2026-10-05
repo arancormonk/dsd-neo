@@ -967,22 +967,22 @@ test_config_channel_map_weighs_the_tone_filter(void) {
 static int
 test_noise_squelch_needs_fm(void) {
     static const struct {
+        const char* dev; /* NULL: no radio input */
+        const char* says;
+        const char* omits;
         int am;
         int cli;
         int mode;
-        const char* dev; /* NULL: no radio input */
         int ok;
-        const char* says;
-        const char* omits;
     } cases[] = {
-        {1, 1, DSD_SQUELCH_MODE_NOISE, "soapy:driver=test:118.1M:7:0:24", 0, "--squelch noise needs an FM channel",
-         NULL},
-        {1, 0, DSD_SQUELCH_MODE_NOISE, "soapy:driver=test:118.1M:7:0:24:noise+12:2", 1, "runs auto+12dB",
-         "--squelch noise needs an FM"},
-        {0, 1, DSD_SQUELCH_MODE_NOISE, "soapy:driver=test:162.475M:7:0:24", 1, "SQ=noise+12dB",
-         "--squelch noise needs an FM"},
-        {0, 1, DSD_SQUELCH_MODE_NOISE, NULL, 1, NULL, "needs a radio input"},
-        {0, 1, DSD_SQUELCH_MODE_AUTO, NULL, 1, "--squelch auto needs a radio input", "needs an FM"},
+        {"soapy:driver=test:118.1M:7:0:24", "--squelch noise needs an FM channel", NULL, 1, 1, DSD_SQUELCH_MODE_NOISE,
+         0},
+        {"soapy:driver=test:118.1M:7:0:24:noise+12:2", "runs auto+12dB", "--squelch noise needs an FM", 1, 0,
+         DSD_SQUELCH_MODE_NOISE, 1},
+        {"soapy:driver=test:162.475M:7:0:24", "SQ=noise+12dB", "--squelch noise needs an FM", 0, 1,
+         DSD_SQUELCH_MODE_NOISE, 1},
+        {NULL, NULL, "needs a radio input", 0, 1, DSD_SQUELCH_MODE_NOISE, 1},
+        {NULL, "--squelch auto needs a radio input", "needs an FM", 0, 1, DSD_SQUELCH_MODE_AUTO, 1},
     };
 
     int test_rc = 0;

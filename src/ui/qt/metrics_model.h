@@ -1926,20 +1926,24 @@ class MetricsModel : public QObject {
         /* The configured/effective pair is whole-dB configuration, not a measurement, so a
          * difference below a millionth of a dB is the same setting. */
         bool
-        squelchOverrideEquals(const View& other) const {
+        squelchSettingEquals(const View& other) const {
             return std::fabs(configured_squelch_db - other.configured_squelch_db) < 1e-6
                    && std::fabs(effective_squelch_db - other.effective_squelch_db) < 1e-6
-                   && squelch_row_override == other.squelch_row_override
                    && configured_squelch_off == other.configured_squelch_off
-                   && effective_squelch_off == other.effective_squelch_off && squelch_readout == other.squelch_readout
+                   && effective_squelch_off == other.effective_squelch_off
                    && configured_squelch_auto == other.configured_squelch_auto
                    && configured_squelch_margin_db == other.configured_squelch_margin_db
                    && effective_squelch_auto == other.effective_squelch_auto
                    && effective_squelch_margin_db == other.effective_squelch_margin_db
                    && configured_squelch_noise == other.configured_squelch_noise
                    && effective_squelch_noise == other.effective_squelch_noise
-                   && squelch_noise_offered == other.squelch_noise_offered
-                   && configured_squelch_level_off == other.configured_squelch_level_off
+                   && configured_squelch_level_off == other.configured_squelch_level_off;
+        }
+
+        bool
+        squelchOverrideEquals(const View& other) const {
+            return squelchSettingEquals(other) && squelch_row_override == other.squelch_row_override
+                   && squelch_readout == other.squelch_readout && squelch_noise_offered == other.squelch_noise_offered
                    && squelch_audio_input == other.squelch_audio_input
                    && squelch_auto_status == other.squelch_auto_status;
         }

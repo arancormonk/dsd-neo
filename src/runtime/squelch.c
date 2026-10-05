@@ -452,18 +452,9 @@ squelch_clear_status(dsd_state* state) {
     state->squelch_noise_state = DSD_SQUELCH_NOISE_STATE_NONE;
 }
 
-void
-dsd_squelch_publish_status(const dsd_opts* opts, dsd_state* state) {
-    if (!state) {
-        return;
-    }
-    if (opts && !dsd_opts_input_is_radio(opts)) {
-        /* Audio input: the PCM noise squelch's own fields while it runs, nothing otherwise. */
-        if (!dsd_squelch_pcm_noise_in_force(opts)) {
-            squelch_clear_status(state);
-        }
-        return;
-    }
+/* Radio input: what the RTL stream's squelch reports. */
+static void
+squelch_publish_rtl_status(dsd_state* state) {
     state->squelch_noise_state = DSD_SQUELCH_NOISE_STATE_NONE;
     dsd_rtl_squelch_status st;
     (void)dsd_rtl_stream_io_hook_squelch_status(state, &st);
@@ -483,4 +474,19 @@ dsd_squelch_publish_status(const dsd_opts* opts, dsd_state* state) {
         quieting = -200.0;
     }
     state->squelch_noise_quieting_cdb = (int32_t)lround(100.0 * quieting);
+}
+
+void
+dsd_squelch_publish_status(const dsd_opts* opts, dsd_state* state) {
+    if (!state) {
+        return;
+    }
+    if (opts && !dsd_opts_input_is_radio(opts)) {
+        /* Audio input: the PCM noise squelch's own fields while it runs, nothing otherwise. */
+        if (!dsd_squelch_pcm_noise_in_force(opts)) {
+            squelch_clear_status(state);
+        }
+        return;
+    }
+    squelch_publish_rtl_status(state);
 }

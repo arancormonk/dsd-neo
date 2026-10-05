@@ -826,8 +826,12 @@ analog_tap_filter(const double* x, size_t n, const double* h, int taps, double* 
 static long
 analog_tap_capture_rate(const char* json) {
     static const char k_key[] = "\"sample_rate_hz\"";
-    const char* at = strstr(json, k_key);
-    if (at == NULL || (at = strchr(at + sizeof(k_key) - 1U, ':')) == NULL) {
+    const char* key = strstr(json, k_key);
+    if (key == NULL) {
+        return 0;
+    }
+    const char* at = strchr(key + sizeof(k_key) - 1U, ':');
+    if (at == NULL) {
         return 0;
     }
     char* end = NULL;

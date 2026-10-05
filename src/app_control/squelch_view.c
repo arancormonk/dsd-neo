@@ -136,6 +136,27 @@ squelch_view_tracker_status(const dsd_app_squelch_view* view, char* out, size_t 
     }
 }
 
+/* Why the dynamic squelch the view shows is off, or NULL while it runs. */
+static const char*
+squelch_view_off_reason(const dsd_app_squelch_view* view) {
+    if (view->auto_resolution == DSD_SQUELCH_RESOLVED_NO_RADIO) {
+        return "off: no radio input";
+    }
+    if (view->auto_resolution == DSD_SQUELCH_RESOLVED_DIGITAL) {
+        return "off on digital";
+    }
+    if (view->auto_resolution == DSD_SQUELCH_RESOLVED_AUDIO_AM) {
+        return "off on AM audio";
+    }
+    if (view->noise_state == DSD_SQUELCH_NOISE_STATE_NO_BAND) {
+        return "off: no band above voice";
+    }
+    if (view->noise_state == DSD_SQUELCH_NOISE_STATE_NO_ROOM) {
+        return "off: no room above voice";
+    }
+    return NULL;
+}
+
 int
 dsd_app_squelch_view_dynamic_status(const dsd_app_squelch_view* view, char* out, size_t out_size) {
     if (!out || out_size == 0U) {
@@ -148,16 +169,9 @@ dsd_app_squelch_view_dynamic_status(const dsd_app_squelch_view* view, char* out,
     if (!view->effective_auto && !view->effective_noise) {
         return 0;
     }
-    if (view->auto_resolution == DSD_SQUELCH_RESOLVED_NO_RADIO) {
-        DSD_SNPRINTF(out, out_size, "%s", "off: no radio input");
-    } else if (view->auto_resolution == DSD_SQUELCH_RESOLVED_DIGITAL) {
-        DSD_SNPRINTF(out, out_size, "%s", "off on digital");
-    } else if (view->auto_resolution == DSD_SQUELCH_RESOLVED_AUDIO_AM) {
-        DSD_SNPRINTF(out, out_size, "%s", "off on AM audio");
-    } else if (view->noise_state == DSD_SQUELCH_NOISE_STATE_NO_BAND) {
-        DSD_SNPRINTF(out, out_size, "%s", "off: no band above voice");
-    } else if (view->noise_state == DSD_SQUELCH_NOISE_STATE_NO_ROOM) {
-        DSD_SNPRINTF(out, out_size, "%s", "off: no room above voice");
+    const char* off = squelch_view_off_reason(view);
+    if (off) {
+        DSD_SNPRINTF(out, out_size, "%s", off);
     } else if (view->noise_state == DSD_SQUELCH_NOISE_STATE_LEARNING
                || (view->noise_state != DSD_SQUELCH_NOISE_STATE_NONE && !view->noise_measured)) {
         DSD_SNPRINTF(out, out_size, "%s", "learning");
