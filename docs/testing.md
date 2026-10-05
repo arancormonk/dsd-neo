@@ -1444,17 +1444,18 @@ none while learning; the low-passed sources reading no band and never reporting 
 The band: 3.8 kHz to the lower of 6.5 kHz and 0.45 times the input's native rate, in 200 Hz sub-bands with two
 staggered sets between them, Q = max(Q_sum, Q_max - 6 dB). The radio squelch ends its band at the channel edge, but
 noise alone shows no edge here: through every source chain the noise is flat to within about 1 dB a sub-band across the
-band, so the top is fixed. 300 Hz sub-bands pass 14 of 25 sources (harmonics on the boundaries again), 250 Hz 23, and
-200 Hz with a 6 dB guard 24. Over the learner grid (steady window count, transition step, gain tolerance, no-band
-ratio, tracking constant) 144 of 162 combinations pass every source; the chosen one sits in the middle of that region.
+band, so the top is fixed. 300 Hz sub-bands pass 14 of 25 sources (harmonics on the boundaries again), 250 Hz 22, and
+200 Hz with a 5 dB guard 23 and with a 6 dB guard and two staggered sets 24. Over the learner grid on that band
+(steady window count, transition step, gain tolerance, no-band ratio, tracking constant; a quick run on eight
+representative sources) 144 of 162 combinations pass every source; the chosen one sits in the middle of that region.
 
-| Figure (full run, 27 sources, about 21 minutes on 4 workers) | Result |
+| Figure (full run, 27 sources, about 41 minutes on 8 workers) | Result |
 | --- | --- |
 | Sources with a band | 25; the 8 and 9.6 kHz inputs have no room (`no room above voice`) |
 | Reference learned | 0.14-0.16 s into noise on every source with a band |
 | Noise reaching N = 3 | at most 3.3e-5 of evaluations (the 750 us and above-band tone chains), never on the rest |
 | Wanted modulation, 1st percentile | 33.5-78.9 dB on the sources with a band (33.5 dB: the hardware tap at 48 kHz, ruling 6); `rtl_fm` 61-79 dB |
-| Worst false open on noise, every scenario | 0.26 s |
+| Worst false open on noise, every scenario | 0.44-0.48 s, the 0.4 s that noise after a volume drop during a transmission holds before it lowers the reference (ruling 8); the clipping 3.4 kHz source's 5.08 s is the stale bound (ruling 4) |
 | Low-passed sources | the 3.0 kHz FIR, and the 3.4 kHz FIR with de-emphasis and at 16 kHz, read no band and report no quieting; of the three that may go either way, the 4.0 kHz FIR reads no band, and the gentle Butterworth and the clipping 3.4 kHz source keep a band (clipping puts harmonics there) and pass |
 
 Rulings on the cases the gate left open:
@@ -1476,8 +1477,9 @@ Rulings on the cases the gate left open:
    stretch before it but stays well under the reference is noise at a lower gain (the source turned down during a
    transmission, its noise back as it ends) only when it keeps noise's voice-to-band ratio (within 1.5 dB) and shape
    (sub-bands within 5.5 dB of each other, tilted by at most 2.5 dB against the reference) for 0.4 s with the voice
-   band steady in three windows of four, any run of the stretch able to start it; the reference then rescales to it. Measured over six chains, noise at another gain keeps the ratio within +/-1 dB, a sub-band spread of
-   at most 4.7 dB and a tilt of at most 2 dB (p95), and a dead carrier reads 6.5-11.5 dB off the ratio. The gate's
+   band steady in three windows of four, any run of the stretch able to start it; the reference then rescales to it.
+   Measured over six chains, noise at another gain keeps the ratio within +/-1 dB, a sub-band spread of at most
+   4.7 dB and a tilt of at most 2 dB (p95), and a dead carrier reads 6.5-11.5 dB off the ratio. The gate's
    scenarios had no speech whose energy above voice steps up under a carrier: a live weather broadcast (below), whose
    synthesized speech does, played half of each segment while any louder stretch replaced the reference. Rules tried
    on the way failed elsewhere: the ratio alone let a lightly modulated carrier that weakens (350 Hz deviation, 30 then
@@ -1489,12 +1491,12 @@ Rulings on the cases the gate left open:
 9. A window of exact zeros ends the stretch, as a restart does: bursts separated by padding no longer add their open
    time up to a stale reading.
 
-Live check (Vinton, Iowa; an RTL-SDR running `rtl_fm -M fm` with no squelch, de-emphasis or low-pass, recorded at 48,
-24 and 12 kHz): 8 s of an empty channel (163.275 MHz), 8 s of NOAA weather radio (162.475 MHz) and 8 s of the empty
-channel again, fed to `dsd-neo -i - -fA --squelch noise+10`, play 7.98-8.00 s at every rate and nothing of the noise;
-40 s of the broadcast after 3 s of noise play whole; 30 s of the empty channel piped live never open at `noise+3`.
-Started on the broadcast with no noise first, the gate opens only in snatches (6 of 40 s in the model), the documented
-cost of starting on a carrier.
+Live check (an RTL-SDR running `rtl_fm -M fm` with no squelch, de-emphasis or low-pass, recorded at 48, 24 and
+12 kHz): 8 s of an empty channel, 8 s of a NOAA weather radio broadcast and 8 s of the empty channel again, fed to
+`dsd-neo -i - -fA --squelch noise+10`, play 7.98-8.00 s at every rate and nothing of the noise; 40 s of the broadcast
+after 3 s of noise play whole; 30 s of the empty channel piped live never open at `noise+3`. Started on the broadcast
+with no noise first, the gate opens only in snatches (6 of 40 s in the model), the documented cost of starting on a
+carrier.
 
 `python3 tools/pcm_noise_squelch_model.py` reproduces the report (`build/pcm_noise_squelch_model/
 pcm_noise_squelch_report.md`, and `pcm_noise_squelch_results.json` beside it); `--quick` is a smoke run, `--only`
