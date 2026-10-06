@@ -65,6 +65,7 @@ enum {
     DSD_API_STOP_DRAIN_MS = 1000,
     DSD_API_DEFAULT_MAX_CLIENTS = 8,
     DSD_API_HARD_MAX_CLIENTS = 32,
+    DSD_API_REFUSED_MAX = 16,
 };
 
 /* How a session ends: not yet, once its queued lines are sent (a refused auth, a malformed line, the peer's EOF), or
@@ -109,6 +110,14 @@ typedef struct api_server {
     atomic_int authed_count;
     uint64_t last_tg_seq;  /* result pump only */
     uint64_t last_dec_seq; /* result pump only */
+
+    /* Accept thread only: connections refused at the limit, kept open (bounded) after their busy reply. */
+    struct {
+        dsd_socket_t sock;
+        uint64_t deadline_ms;
+    } refused[DSD_API_REFUSED_MAX];
+
+    int refused_count;
 } api_server;
 
 static api_server* g_srv = NULL;
@@ -745,14 +754,60 @@ queue_welcome(api_session* s, int auth_required) {
     dsd_json_buf_free(&b);
 }
 
+/* Tell a connection over the limit why, then half-close it. Closing it outright while a request it already sent sits
+   unread would reset the connection, which can discard the reply before the peer reads it; so, as session_linger()
+   does for a session, it stays open and is drained (by refused_service(), without blocking the accept loop) until the
+   peer closes or the linger ends. With the list full it is closed at once. */
 static void
-refuse_busy(dsd_socket_t c) {
+refuse_busy(api_server* srv, dsd_socket_t c) {
     static const char k_busy[] =
         "{\"type\":\"error\",\"error\":{\"code\":\"busy\",\"message\":\"too many API clients\"}}\n";
-    (void)dsd_socket_set_nonblocking(c, 1);
-    (void)dsd_socket_send(c, k_busy, sizeof k_busy - 1U, DSD_API_SEND_FLAGS);
+    const int len = (int)(sizeof k_busy - 1U);
+    const int sent =
+        dsd_socket_set_nonblocking(c, 1) == 0 ? dsd_socket_send(c, k_busy, (size_t)len, DSD_API_SEND_FLAGS) : -1;
+    if (sent == len && srv->refused_count < DSD_API_REFUSED_MAX) {
+        (void)dsd_socket_shutdown(c, SHUT_WR);
+        srv->refused[srv->refused_count].sock = c;
+        srv->refused[srv->refused_count].deadline_ms = dsd_realtime_mono_ms() + (uint64_t)DSD_API_LINGER_MS;
+        srv->refused_count++;
+        return;
+    }
     (void)dsd_socket_shutdown(c, SHUT_RDWR);
     (void)dsd_socket_close(c);
+}
+
+/* 1 while a refused connection should stay open, 0 once it can close: the peer's EOF, an error, or the deadline. */
+static int
+refused_keep(dsd_socket_t sock, uint64_t deadline_ms, uint64_t now_ms) {
+    if (now_ms >= deadline_ms) {
+        return 0;
+    }
+    char drain[DSD_API_READ_CHUNK];
+    int keep = 1;
+    for (int i = 0; i < DSD_API_READS_PER_WAKE && keep; i++) {
+        const int n = dsd_socket_recv(sock, drain, sizeof drain, 0);
+        if (n < 0 && socket_would_block(dsd_socket_get_error())) {
+            break;
+        }
+        keep = n > 0;
+    }
+    /* What it sent, unread, may hold a token. */
+    DSD_SECURE_ZERO(drain, sizeof drain);
+    return keep;
+}
+
+static void
+refused_service(api_server* srv) {
+    const uint64_t now_ms = dsd_realtime_mono_ms();
+    int kept = 0;
+    for (int i = 0; i < srv->refused_count; i++) {
+        if (refused_keep(srv->refused[i].sock, srv->refused[i].deadline_ms, now_ms)) {
+            srv->refused[kept++] = srv->refused[i];
+        } else {
+            (void)dsd_socket_close(srv->refused[i].sock);
+        }
+    }
+    srv->refused_count = kept;
 }
 
 static void
@@ -774,12 +829,12 @@ accept_one(api_server* srv) {
     api_session* s = full ? NULL : (api_session*)calloc(1U, sizeof(*s));
     if (s == NULL || dsd_socket_set_nonblocking(c, 1) != 0) {
         free(s);
-        refuse_busy(c);
+        refuse_busy(srv, c);
         return;
     }
     if (dsd_mutex_init(&s->mu) != 0) {
         free(s);
-        refuse_busy(c);
+        refuse_busy(srv, c);
         return;
     }
     s->sock = c;
@@ -826,6 +881,7 @@ static DSD_THREAD_RETURN_TYPE
     api_server* srv = (api_server*)arg;
     while (atomic_load(&srv->stop) == 0) {
         reap_sessions(srv, 0);
+        refused_service(srv);
         const int ready = dsd_socket_wait(srv->listen_sock, DSD_SOCKET_WAIT_READ, (unsigned int)DSD_API_POLL_MS);
         if (ready < 0) {
             dsd_sleep_ms((unsigned int)DSD_API_POLL_MS);
@@ -835,6 +891,10 @@ static DSD_THREAD_RETURN_TYPE
             accept_one(srv);
         }
     }
+    for (int i = 0; i < srv->refused_count; i++) {
+        (void)dsd_socket_close(srv->refused[i].sock);
+    }
+    srv->refused_count = 0;
     DSD_THREAD_RETURN;
 }
 
@@ -1178,6 +1238,13 @@ dsd_api_stop(void) {
     if (srv->results_started) {
         dsd_thread_join(srv->results_thread);
     }
+    /* The pump may have been asleep when the last commands completed or were cancelled: read them here, so they are
+       queued before the drain. */
+    dsd_json_buf b;
+    dsd_json_buf_init(&b);
+    results_emit_tg(srv, &b);
+    results_emit_dec(srv, &b);
+    dsd_json_buf_free(&b);
     server_drain_sessions(srv);
     atomic_store(&srv->stop, 1);
     dsd_thread_join(srv->accept_thread);

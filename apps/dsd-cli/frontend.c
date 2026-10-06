@@ -108,12 +108,9 @@ dsd_cli_run_start(dsd_opts* opts, dsd_state* state, void* context) {
 static void
 dsd_cli_run_stop(dsd_opts* opts, dsd_state* state, void* context) {
     (void)context;
+    /* The command session closes first, cancelling the commands still queued; the server goes last, so its stop
+       reports those results to the clients before it disconnects them. Requests in between are refused. */
 #if DSD_CLI_HAS_API
-    /* The server goes first: it must not outlive the command session it submits to. */
-    if (g_api_enabled) {
-        dsd_api_stop();
-        g_api_enabled = 0;
-    }
     if (g_own_runtime) {
         dsd_app_frontend_runtime_stop();
         g_own_runtime = 0;
@@ -122,6 +119,12 @@ dsd_cli_run_stop(dsd_opts* opts, dsd_state* state, void* context) {
 #if DSD_CLI_HAS_TERMINAL_UI
     if (dsd_opts_frontend_is_terminal(opts)) {
         dsd_cli_terminal_stop(opts, state, NULL);
+    }
+#endif
+#if DSD_CLI_HAS_API
+    if (g_api_enabled) {
+        dsd_api_stop();
+        g_api_enabled = 0;
     }
 #endif
     (void)opts;

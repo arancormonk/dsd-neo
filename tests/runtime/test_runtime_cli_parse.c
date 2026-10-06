@@ -2579,6 +2579,73 @@ test_bootstrap_inherited_trunk_scan_preserves_ui_only_short_options(void) {
     return test_rc;
 }
 
+/* An API token is any text: one that reads "--iq-replay" is not an input override, so the trunk scan the INI enables
+   stays on. */
+static int
+test_bootstrap_inherited_trunk_scan_ignores_api_token_text(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        DSD_FPRINTF(stderr, "out of memory\n");
+        return 1;
+    }
+
+    initOpts(opts);
+    initState(state);
+
+    (void)dsd_unsetenv("DSD_NEO_CONFIG");
+    (void)dsd_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
+
+    static const char* ini = "[trunk_scan]\n"
+                             "enabled = true\n"
+                             "targets_csv = \"targets.csv\"\n"
+                             "idle_dwell_ms = 500\n";
+
+    char cfg_path[1024];
+    if (test_create_temp_ini_with_contents(ini, cfg_path, sizeof cfg_path) != 0) {
+        DSD_FPRINTF(stderr, "failed to create temp trunk scan ini\n");
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    char arg0[] = "dsd-neo";
+    char arg1[] = "--config";
+    char arg2[1024];
+    char arg3[] = "--api-token";
+    char arg4[] = "--iq-replay";
+    DSD_SNPRINTF(arg2, sizeof arg2, "%s", cfg_path);
+    char* argv[] = {arg0, arg1, arg2, arg3, arg4, NULL};
+
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = dsd_runtime_bootstrap(5, argv, opts, state, &argc_effective, &exit_rc);
+
+    int test_rc = 0;
+    if (rc != DSD_BOOTSTRAP_CONTINUE || exit_rc != 0) {
+        DSD_FPRINTF(stderr, "expected a token option to continue, got rc=%d exit_rc=%d\n", rc, exit_rc);
+        test_rc = 1;
+    }
+    if (opts->trunk_scan_enabled != 1) {
+        DSD_FPRINTF(stderr, "expected inherited trunk scan to stay enabled past a token, got %d\n",
+                    opts->trunk_scan_enabled);
+        test_rc = 1;
+    }
+    if (strcmp(opts->api_token, "--iq-replay") != 0) {
+        DSD_FPRINTF(stderr, "expected the token text to be kept\n");
+        test_rc = 1;
+    }
+
+    (void)remove(cfg_path);
+    freeState(state);
+    free(opts);
+    free(state);
+    return test_rc;
+}
+
 static int
 test_bootstrap_inherited_trunk_scan_allows_cli_channel_map(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
@@ -9477,6 +9544,7 @@ main(void) {
     rc |= test_bootstrap_print_config_normalizes_soapy_shorthand();
     rc |= test_bootstrap_profile_preserves_trunking_with_ncurses_cli();
     rc |= test_bootstrap_inherited_trunk_scan_preserves_ui_only_short_options();
+    rc |= test_bootstrap_inherited_trunk_scan_ignores_api_token_text();
     rc |= test_bootstrap_inherited_trunk_scan_allows_cli_channel_map();
     rc |= test_bootstrap_inherited_trunk_scan_allows_cli_p25_bandplan();
     rc |= test_bootstrap_inherited_trunk_scan_disables_for_positional_input();

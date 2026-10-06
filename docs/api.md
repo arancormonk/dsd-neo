@@ -254,8 +254,13 @@ not the history from before.
  "cc_freq_hz":851037500,"center_freq_hz":851375000,"trunking":true,
  "synctype":0,"p25_neighbors":[
    {"freq_hz":851037500,"wacn":781824,"sysid":293,"rfss":1,"site":1,"lra":0,
-    "current_cc":true,"candidate":false,"cfva":"..."}]}
+    "current_cc":true,"candidate":false,"cfva":"...","last_seen":1767225600}]}
 ```
+
+`p25_neighbors` lists the decoder's P25 neighbor table, most recently heard
+first. `wacn` and `lra` are `null` when no announcement of that site carried
+them (abbreviated and frequency-only announcements do not); `cfva` is `?`
+when its flags are unknown; `last_seen` is the Unix time it was last announced.
 
 ### `metrics`: RF and decode health
 
@@ -306,9 +311,13 @@ them, it says so instead of skipping them silently:
 
 ```json
 {"type":"result_gap","command":"decryption_apply","missed":3}
-``` `status` is a
-`DSD_APP_KEY_*` value (`1` applied, `-1` invalid, `-2` stale, `-3` unavailable,
-`-4` file error, `-5` busy, `-6` cancelled).
+```
+
+A `decryption_apply` result's `status` is a `DSD_APP_KEY_*` value (`1`
+applied, `-1` invalid, `-2` stale, `-3` unavailable, `-4` file error, `-5`
+busy, `-6` cancelled). A request still queued when the decoder stops is
+reported as cancelled (a `tg_list_export` as `"ok":false`) before the server
+closes the connections.
 
 ## Command reference
 

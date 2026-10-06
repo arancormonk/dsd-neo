@@ -14,8 +14,11 @@
  * docs/api.md.
  *
  * Lifecycle: call dsd_api_start() once the app-control frontend runtime is open
- * (dsd_app_frontend_runtime_start()) and dsd_api_stop() before it closes; while
- * no runtime is open, commands are refused. Neither may be called from a
+ * (dsd_app_frontend_runtime_start()) and dsd_api_stop() after it closes
+ * (dsd_app_frontend_runtime_stop()): closing the runtime cancels the commands
+ * still queued, and the stop reports those results, with any other completion
+ * not yet sent, before it disconnects the clients. While no runtime is open,
+ * commands are refused. Neither may be called from a
  * telemetry observer callback. Start it before the decoder runs and publish
  * telemetry once right after (dsd_telemetry_publish_both_and_redraw()): that
  * first look is the event feed's starting point, so every event-history row
@@ -61,7 +64,12 @@ typedef struct dsd_api_config {
  */
 int dsd_api_start(const dsd_api_config* config);
 
-/** Stop the server, disconnecting clients and unregistering observers. Safe when stopped. */
+/**
+ * @brief Stop the server. Safe when stopped.
+ *
+ * Unregisters the feed, queues the results that completed since the last poll,
+ * lets each client receive what is queued (bounded), then disconnects them.
+ */
 void dsd_api_stop(void);
 
 /** Nonzero when the server is listening. */

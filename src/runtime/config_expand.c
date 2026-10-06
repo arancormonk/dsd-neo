@@ -16,6 +16,7 @@
 
 #include <ctype.h>
 #include <dsd-neo/runtime/config.h>
+#include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 #include "dsd-neo/core/safe_api.h"
@@ -23,61 +24,87 @@
 #if defined(_WIN32)
 #include <windows.h>
 #else
+#include <errno.h>
 #include <pwd.h>
 #include <unistd.h>
 #endif
 
+/* Room for a home directory path, terminator included. */
+enum { DSD_HOME_DIR_CAP = 1024 };
+
+/* Copy @p dir into @p out: 1 when it fits, -1 when it does not (a cut path would name another directory). */
+static int
+home_dir_copy(const char* dir, char* out, size_t cap) {
+    const size_t len = strlen(dir);
+    if (len >= cap) {
+        return -1;
+    }
+    DSD_MEMCPY(out, dir, len + 1U);
+    return 1;
+}
+
+#if !defined(_WIN32)
+/* The passwd entry's home directory, through the reentrant lookup: expansion runs on any thread (the control API
+   applies configuration from its session threads), and getpwuid() returns a shared static record. */
+static int
+home_dir_from_passwd(char* out, size_t cap) {
+    size_t len = 4096U;
+    for (int attempt = 0; attempt < 5; attempt++) {
+        char* buf = (char*)malloc(len);
+        if (buf == NULL) {
+            return 0;
+        }
+        struct passwd pw;
+        struct passwd* found = NULL;
+        const int rc = getpwuid_r(getuid(), &pw, buf, len, &found);
+        int result = 0;
+        if (rc == 0 && found != NULL && found->pw_dir != NULL && found->pw_dir[0] != '\0') {
+            result = home_dir_copy(found->pw_dir, out, cap);
+        }
+        free(buf);
+        if (rc != ERANGE) {
+            return result;
+        }
+        len *= 2U;
+    }
+    return 0;
+}
+#endif
+
 /**
  * @brief Get the user's home directory.
- * @return Pointer to static buffer with home path, or NULL if unavailable.
+ *
+ * Resolved at every call, never cached: callers on different threads share no
+ * state, and a changed environment is followed.
+ *
+ * @return 1 with the path in @p out, 0 when there is none, -1 when it does not fit.
  */
-static const char*
-get_home_dir(void) {
-    static char home_buf[1024];
-    static int cached = 0;
-
-    if (cached) {
-        return home_buf[0] ? home_buf : NULL;
-    }
-
-    home_buf[0] = '\0';
-    cached = 1;
-
+static int
+get_home_dir(char* out, size_t cap) {
 #if defined(_WIN32)
     /* Try USERPROFILE first, then HOMEDRIVE+HOMEPATH */
     const char* userprofile = getenv("USERPROFILE");
     if (userprofile && *userprofile) {
-        DSD_SNPRINTF(home_buf, sizeof(home_buf), "%s", userprofile);
-        home_buf[sizeof(home_buf) - 1] = '\0';
-        return home_buf;
+        return home_dir_copy(userprofile, out, cap);
     }
 
     const char* homedrive = getenv("HOMEDRIVE");
     const char* homepath = getenv("HOMEPATH");
     if (homedrive && homepath) {
-        DSD_SNPRINTF(home_buf, sizeof(home_buf), "%s%s", homedrive, homepath);
-        home_buf[sizeof(home_buf) - 1] = '\0';
-        return home_buf;
+        const int n = DSD_SNPRINTF(out, cap, "%s%s", homedrive, homepath);
+        return (n >= 0 && (size_t)n < cap) ? 1 : -1;
     }
+    return 0;
 #else
     /* Try $HOME first */
     const char* home = getenv("HOME");
     if (home && *home) {
-        DSD_SNPRINTF(home_buf, sizeof(home_buf), "%s", home);
-        home_buf[sizeof(home_buf) - 1] = '\0';
-        return home_buf;
+        return home_dir_copy(home, out, cap);
     }
 
     /* Fall back to passwd entry */
-    struct passwd* pw = getpwuid(getuid());
-    if (pw && pw->pw_dir && *pw->pw_dir) {
-        DSD_SNPRINTF(home_buf, sizeof(home_buf), "%s", pw->pw_dir);
-        home_buf[sizeof(home_buf) - 1] = '\0';
-        return home_buf;
-    }
+    return home_dir_from_passwd(out, cap);
 #endif
-
-    return NULL;
 }
 
 /**
@@ -117,11 +144,13 @@ try_expand_tilde(const char* input, const char** src, char** dst, const char* ds
         return 0;
     }
 
-    const char* home = get_home_dir();
-    if (home) {
-        if (copy_span_checked(dst, dst_end, home, strlen(home)) != 0) {
-            return -1;
-        }
+    char home[DSD_HOME_DIR_CAP];
+    const int found = get_home_dir(home, sizeof home);
+    if (found < 0) {
+        return -1;
+    }
+    if (found > 0 && copy_span_checked(dst, dst_end, home, strlen(home)) != 0) {
+        return -1;
     }
 
     (*src)++;

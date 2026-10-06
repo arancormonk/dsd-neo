@@ -284,10 +284,15 @@ test_client_slots_are_reclaimed(void) {
     dsd_sleep_ms(200);
     dsd_socket_t a = open_session(port, "\"type\":\"welcome\"");
     dsd_socket_t b = open_session(port, "\"type\":\"welcome\"");
-    /* A third concurrent client is told why, then dropped. */
+    /* A third concurrent client is told why, then dropped -- after a linger in which what it sends is still read, so
+       a request it had already sent cannot turn the close into a reset that discards the reply. A socket closed
+       outright would answer the first send below with a reset, and the second would fail. */
     dsd_socket_t full = connect_port(port);
     expect_line(full, "\"busy\"");
     expect_eof(full);
+    send_str(full, "{\"cmd\":\"ping\"}\n");
+    dsd_sleep_ms(100);
+    assert(send_bytes(full, "{\"cmd\":\"ping\"}\n", strlen("{\"cmd\":\"ping\"}\n")) == 0);
     dsd_socket_close(full);
     dsd_socket_close(a);
     dsd_socket_close(b);
@@ -497,6 +502,24 @@ test_feed(void) {
     }
     assert(saw_fresh && !saw_missed);
 
+    /* A P25 neighbor heard only in an abbreviated announcement has no WACN or LRA: unknown, not 0. */
+    state->p25_nb_entries[0].freq = 851037500;
+    state->p25_nb_entries[0].sysid = 0x125;
+    state->p25_nb_entries[0].wacn_valid = 0;
+    state->p25_nb_entries[0].lra_valid = 0;
+    state->p25_nb_count = 1;
+    send_str(c, "{\"id\":5,\"cmd\":\"subscribe\",\"topics\":[\"system\"]}\n");
+    assert(await_text(c, "{\"id\":5,\"ok\":true", 3000U));
+    int saw_neighbor = 0;
+    const uint64_t system_deadline = dsd_realtime_mono_ms() + 3000U;
+    while (dsd_realtime_mono_ms() < system_deadline && !saw_neighbor) {
+        dsd_telemetry_publish_both_and_redraw(opts, state);
+        saw_neighbor = read_line(c, 100U) == 1 && strstr(g_line, "\"type\":\"system\"") != NULL
+                       && strstr(g_line, "{\"freq_hz\":851037500,\"wacn\":null,\"sysid\":293,") != NULL;
+    }
+    assert(saw_neighbor);
+    assert(strstr(g_line, "\"site\":0,\"lra\":null,") != NULL);
+
     /* Stopping drains: a row published just before the stop still reaches the subscriber, then the stream ends. */
     commit_event(state, "Final", 11U);
     dsd_telemetry_publish_both_and_redraw(opts, state);
@@ -516,6 +539,35 @@ test_feed(void) {
     free(opts);
 }
 
+/* A request still queued when the decoder stops is cancelled as the command session closes; the server, stopped right
+   after (as the CLI does, most likely while its result pump sleeps), still reports that before it disconnects. */
+static void
+test_results_at_stop(void) {
+    dsd_app_frontend_runtime_start(NULL, NULL);
+    const int port = start_server(NULL, 0, 0);
+    dsd_socket_t c = open_session(port, "\"type\":\"welcome\"");
+    send_str(c, "{\"id\":1,\"cmd\":\"subscribe\",\"topics\":[\"result\"]}\n");
+    expect_line(c, "{\"id\":1,\"ok\":true");
+    /* No decoder drains the queue here: the request stays queued. */
+    send_str(c, "{\"id\":2,\"cmd\":\"decryption_apply\",\"params\":{\"source\":0}}\n");
+    expect_line(c, "{\"id\":2,\"ok\":true");
+    const char* id_at = strstr(g_line, "\"request_id\":\"");
+    assert(id_at != NULL);
+    char request_id[64];
+    DSD_SNPRINTF(request_id, sizeof request_id, "%s", id_at);
+    char* id_end = strchr(request_id + strlen("\"request_id\":\""), '"');
+    assert(id_end != NULL);
+    id_end[1] = '\0';
+
+    dsd_app_frontend_runtime_stop();
+    dsd_api_stop();
+    assert(await_line(c, "result", request_id, 3000U));
+    assert(strstr(g_line, "\"command\":\"decryption_apply\"") != NULL);
+    assert(strstr(g_line, "\"status\":-6,\"ok\":false") != NULL);
+    expect_eof(c);
+    dsd_socket_close(c);
+}
+
 int
 main(void) {
     assert(dsd_socket_init() == 0);
@@ -526,6 +578,7 @@ main(void) {
     test_vanishing_peer();
     test_authentication();
     test_feed();
+    test_results_at_stop();
     printf("api server tests passed\n");
     return 0;
 }

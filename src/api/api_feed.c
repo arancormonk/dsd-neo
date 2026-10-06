@@ -32,6 +32,7 @@
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/threading.h>
+#include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 
@@ -523,21 +524,25 @@ build_system(const dsd_state* state, dsd_json_buf* b) {
     }
     (void)dsd_json_kv_i64(&w, "synctype", state->synctype);
 
-    dsd_app_p25_neighbor neighbors[16];
-    const int n = dsd_app_p25_neighbors(state, neighbors, 16);
+    /* The whole table; a WACN or LRA no announcement carried (an abbreviated or frequency-only one) is null, not 0. */
+    dsd_app_p25_neighbor neighbors[P25_NB_MAX];
+    const int n = dsd_app_p25_neighbors(state, neighbors, P25_NB_MAX);
     (void)dsd_json_key(&w, "p25_neighbors");
     (void)dsd_json_arr_begin(&w);
     for (int i = 0; i < n; i++) {
+        const dsd_app_p25_neighbor* nb = &neighbors[i];
         (void)dsd_json_obj_begin(&w);
-        (void)dsd_json_kv_i64(&w, "freq_hz", neighbors[i].freq_hz);
-        (void)dsd_json_kv_u64(&w, "wacn", neighbors[i].wacn);
-        (void)dsd_json_kv_u64(&w, "sysid", neighbors[i].sysid);
-        (void)dsd_json_kv_u64(&w, "rfss", neighbors[i].rfss);
-        (void)dsd_json_kv_u64(&w, "site", neighbors[i].site);
-        (void)dsd_json_kv_u64(&w, "lra", neighbors[i].lra);
-        (void)dsd_json_kv_bool(&w, "current_cc", neighbors[i].is_current_cc);
-        (void)dsd_json_kv_bool(&w, "candidate", neighbors[i].is_candidate);
-        (void)dsd_json_kv_strn(&w, "cfva", neighbors[i].cfva_text, sizeof neighbors[i].cfva_text);
+        (void)dsd_json_kv_i64(&w, "freq_hz", nb->freq_hz);
+        (void)(nb->wacn_valid ? dsd_json_kv_u64(&w, "wacn", nb->wacn) : dsd_json_kv_null(&w, "wacn"));
+        (void)dsd_json_kv_u64(&w, "sysid", nb->sysid);
+        (void)dsd_json_kv_u64(&w, "rfss", nb->rfss);
+        (void)dsd_json_kv_u64(&w, "site", nb->site);
+        (void)(nb->lra_valid ? dsd_json_kv_u64(&w, "lra", nb->lra) : dsd_json_kv_null(&w, "lra"));
+        (void)dsd_json_kv_bool(&w, "current_cc", nb->is_current_cc);
+        (void)dsd_json_kv_bool(&w, "candidate", nb->is_candidate);
+        (void)dsd_json_kv_strn(&w, "cfva", nb->cfva_text, sizeof nb->cfva_text);
+        (void)(nb->last_seen > 0 ? dsd_json_kv_i64(&w, "last_seen", (int64_t)nb->last_seen)
+                                 : dsd_json_kv_null(&w, "last_seen"));
         (void)dsd_json_obj_end(&w);
     }
     (void)dsd_json_arr_end(&w);

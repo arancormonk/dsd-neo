@@ -1976,6 +1976,28 @@ target_link_libraries(dsd-neo_test_runtime_cli_frontend PRIVATE dsd-neo_runtime)
 add_test(NAME RUNTIME_CLI_FRONTEND COMMAND dsd-neo_test_runtime_cli_frontend)
 
 add_executable(
+    dsd-neo_test_runtime_cli_frontend_api
+    runtime/test_runtime_cli_frontend_api.c
+    ${PROJECT_SOURCE_DIR}/apps/dsd-cli/frontend.c
+)
+target_compile_definitions(
+    dsd-neo_test_runtime_cli_frontend_api
+    PRIVATE DSD_CLI_HAS_TERMINAL_UI=0 DSD_CLI_HAS_API=1
+)
+target_include_directories(
+    dsd-neo_test_runtime_cli_frontend_api
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/apps/dsd-cli
+)
+target_link_libraries(
+    dsd-neo_test_runtime_cli_frontend_api
+    PRIVATE dsd-neo_runtime
+)
+add_test(
+    NAME RUNTIME_CLI_FRONTEND_API
+    COMMAND dsd-neo_test_runtime_cli_frontend_api
+)
+
+add_executable(
     dsd-neo_test_runtime_input_ring_init
     runtime/test_runtime_input_ring_init.cpp
 )

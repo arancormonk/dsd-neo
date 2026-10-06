@@ -1592,13 +1592,15 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   - `json.c` is built with IEEE semantics so its non-finite checks survive fast-math; request lines, parsed strings
     and every buffer are wiped before their storage is released, since requests carry keys and tokens
 - Threading: commands run on session threads (the queue is multi-producer); telemetry is encoded on the decode thread;
-  `dsd_api_stop()` unregisters the observer (synchronous) and stops the result pump, then lets every session send
-  what is queued (bounded, 1 s; no new connections meanwhile) before joining the threads and freeing the server, so
-  the last rows reach clients and nothing reaches a freed server
+  `dsd_api_stop()` unregisters the observer (synchronous), stops the result pump and reads the results once more
+  (the pump may have slept through the last ones), then lets every session send what is queued (bounded, 1 s; no new
+  connections meanwhile) before joining the threads and freeing the server, so the last rows and results reach
+  clients and nothing reaches a freed server. The CLI stops it after the frontend runtime, whose close cancels the
+  commands still queued, so their cancelled results are among those sent. A connection refused at the client limit
+  is told `busy` and lingers (bounded, without blocking the accept thread) so the reply is not lost to a reset
 - Tests: `API_JSON`, `API_COMMANDS`, `API_COMMAND_PAYLOADS`, `API_SERVER` (`tests/api/`)
 - Build files: `src/api/CMakeLists.txt`
 
-## DSP
 ## DSP
 
 - Path: `src/dsp`, `include/dsd-neo/dsp`

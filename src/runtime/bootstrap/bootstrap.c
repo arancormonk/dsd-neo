@@ -450,6 +450,10 @@ bootstrap_cli_disables_inherited_trunk_scan(int argc, char** argv, int cfg_path_
         if (!arg) {
             break;
         }
+        /* A token is any text, "--iq-replay" included; the compacted pass below drops it with its option. */
+        if (bootstrap_cli_try_skip_free_value(argc, argv, &i)) {
+            continue;
+        }
         if (bootstrap_long_arg_disables_inherited_trunk_scan(arg)) {
             return 1;
         }
