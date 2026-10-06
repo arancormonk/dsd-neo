@@ -879,7 +879,8 @@ static double*
 analog_tap_discriminate(const analog_capture* cap, size_t n, long rate_in) {
     double h[ANALOG_TAP_CHANNEL_TAPS];
     analog_tap_lowpass(ANALOG_TAP_CHANNEL_HZ / (double)rate_in, ANALOG_TAP_CHANNEL_TAPS, h);
-    double* raw = (double*)malloc(n * sizeof(double));
+    /* Zeroed: GCC at -O2 cannot see that the loops below fill it before each filter reads it. */
+    double* raw = (double*)calloc(n, sizeof(double));
     double* i_ch = (double*)malloc(n * sizeof(double));
     double* q_ch = (double*)malloc(n * sizeof(double));
     double* disc = (double*)malloc(n * sizeof(double));
