@@ -14658,11 +14658,32 @@ target_link_libraries(dsd-neo_test_runtime_decode_clock PRIVATE dsd-neo_runtime)
 add_test(NAME RUNTIME_DECODE_CLOCK COMMAND dsd-neo_test_runtime_decode_clock)
 
 if(DSD_ENABLE_API)
-    set(_dsd_neo_api_test_deps dsd-neo_api dsd-neo_engine dsd-neo_feature_rtlsdr dsd-neo_feature_codec2 ${LIBS})
+    set(_dsd_neo_api_test_deps
+        dsd-neo_api
+        dsd-neo_engine
+        dsd-neo_feature_rtlsdr
+        dsd-neo_feature_codec2
+        ${LIBS}
+    )
+
+    # The JSON tests feed NaN and infinity to the writer, and the payload test
+    # compiles json.c itself, so it does not inherit src/api's IEEE property.
+    if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+        set(_dsd_neo_api_ieee_option -fno-fast-math)
+    elseif(MSVC)
+        set(_dsd_neo_api_ieee_option /fp:precise)
+    endif()
 
     add_executable(dsd-neo_test_api_json api/test_json.c)
-    target_include_directories(dsd-neo_test_api_json PRIVATE ${PROJECT_SOURCE_DIR}/include)
-    target_link_libraries(dsd-neo_test_api_json PRIVATE ${_dsd_neo_api_test_deps})
+    target_include_directories(
+        dsd-neo_test_api_json
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/api
+    )
+    target_compile_options(
+        dsd-neo_test_api_json
+        PRIVATE ${_dsd_neo_api_ieee_option}
+    )
+    target_link_libraries(dsd-neo_test_api_json PRIVATE dsd-neo_api)
     add_test(NAME API_JSON COMMAND dsd-neo_test_api_json)
 
     add_executable(dsd-neo_test_api_commands api/test_commands.c)
@@ -14670,14 +14691,56 @@ if(DSD_ENABLE_API)
         dsd-neo_test_api_commands
         PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/api
     )
-    target_link_libraries(dsd-neo_test_api_commands PRIVATE ${_dsd_neo_api_test_deps})
+    target_compile_definitions(
+        dsd-neo_test_api_commands
+        PRIVATE
+            DSD_API_TEST_COMMANDS_H="${PROJECT_SOURCE_DIR}/include/dsd-neo/app_control/commands.h"
+    )
+    target_link_libraries(
+        dsd-neo_test_api_commands
+        PRIVATE ${_dsd_neo_api_test_deps}
+    )
     add_test(NAME API_COMMANDS COMMAND dsd-neo_test_api_commands)
 
+    # The command table against stand-ins for the app-control submit API, so
+    # each case can check the payload bytes it builds.
+    add_executable(
+        dsd-neo_test_api_command_payloads
+        api/test_command_payloads.c
+        ${PROJECT_SOURCE_DIR}/src/api/api_commands.c
+        ${PROJECT_SOURCE_DIR}/src/api/api_response.c
+        ${PROJECT_SOURCE_DIR}/src/api/json.c
+    )
+    target_include_directories(
+        dsd-neo_test_api_command_payloads
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/api
+    )
+    target_compile_options(
+        dsd-neo_test_api_command_payloads
+        PRIVATE ${_dsd_neo_api_ieee_option}
+    )
+    target_link_libraries(
+        dsd-neo_test_api_command_payloads
+        PRIVATE dsd-neo_runtime dsd-neo_platform
+    )
+    add_test(
+        NAME API_COMMAND_PAYLOADS
+        COMMAND dsd-neo_test_api_command_payloads
+    )
+
     add_executable(dsd-neo_test_api_server api/test_server.c)
-    target_include_directories(dsd-neo_test_api_server PRIVATE ${PROJECT_SOURCE_DIR}/include)
-    target_link_libraries(dsd-neo_test_api_server PRIVATE ${_dsd_neo_api_test_deps})
+    target_include_directories(
+        dsd-neo_test_api_server
+        PRIVATE ${PROJECT_SOURCE_DIR}/include
+    )
+    target_link_libraries(
+        dsd-neo_test_api_server
+        PRIVATE ${_dsd_neo_api_test_deps}
+    )
     add_test(NAME API_SERVER COMMAND dsd-neo_test_api_server)
-    set_tests_properties(API_SERVER PROPERTIES TIMEOUT 60)
+    set_tests_properties(API_SERVER PROPERTIES TIMEOUT 120)
+    unset(_dsd_neo_api_test_deps)
+    unset(_dsd_neo_api_ieee_option)
 endif()
 
 # Windows builds the terminal UI against vcpkg's PDCurses, whose include

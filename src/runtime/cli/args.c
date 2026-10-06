@@ -173,6 +173,109 @@ cli_is_numeric_ipv4_address(const char* in) {
     return octets == 4;
 }
 
+/* First octet of an address cli_is_numeric_ipv4_address() accepted is 127. */
+static int
+cli_ipv4_is_loopback(const char* in) {
+    return in && in[0] == '1' && in[1] == '2' && in[2] == '7' && in[3] == '.';
+}
+
+/* One line of 1..cap-1 bytes, trailing whitespace dropped; anything else is not a token. */
+static int
+cli_read_api_token_file(const char* path, char* out, size_t cap) {
+    char opened[2048];
+    FILE* fp = dsd_path_fopen_user_read_file(path, opened, sizeof opened);
+    if (!fp) {
+        return -1;
+    }
+    char buf[512];
+    size_t n = fread(buf, 1U, sizeof buf - 1U, fp);
+    const int failed = ferror(fp) || !feof(fp);
+    (void)fclose(fp);
+    buf[n] = '\0';
+    while (n > 0U && (buf[n - 1U] == '\n' || buf[n - 1U] == '\r' || buf[n - 1U] == ' ' || buf[n - 1U] == '\t')) {
+        buf[--n] = '\0';
+    }
+    const int ok = !failed && n > 0U && n < cap && strlen(buf) == n && strpbrk(buf, "\r\n") == NULL;
+    if (ok) {
+        DSD_MEMCPY(out, buf, n + 1U);
+    }
+    DSD_SECURE_ZERO(buf, sizeof buf);
+    return ok ? 0 : -1;
+}
+
+/* The control/telemetry API options (docs/api.md). Each CLI value wins over its DSD_NEO_API_* fallback, and the
+   fallbacks are read only when the API is enabled. The token file is read here, so a missing or unreadable one is an
+   argument error rather than a server running without the token that was asked for. */
+static int
+cli_resolve_api_options(dsd_opts* opts, const char* cli_port, const char* cli_bind, const char* cli_token,
+                        const char* cli_token_file) {
+    const char* port = cli_port ? cli_port : dsd_neo_env_get("DSD_NEO_API_PORT");
+    if (port && (cli_port || port[0] != '\0')) {
+        unsigned long parsed = 0;
+        if (!cli_parse_decimal_u32(port, &parsed) || parsed > 65535UL) {
+            LOG_ERROR("Invalid %s value \"%s\" (expected port 0..65535)\n", cli_port ? "--api" : "DSD_NEO_API_PORT",
+                      port);
+            return -1;
+        }
+        opts->api_port = (int)parsed;
+    }
+    const int enabled = opts->api_port > 0;
+
+    const char* bind = cli_bind;
+    const char* bind_src = "--api-bind";
+    if (!bind && enabled) {
+        bind = dsd_neo_env_get("DSD_NEO_API_BIND");
+        bind_src = "DSD_NEO_API_BIND";
+        bind = (bind && bind[0] != '\0') ? bind : NULL;
+    }
+    if (bind) {
+        if (!cli_is_numeric_ipv4_address(bind) || strlen(bind) >= sizeof opts->api_bindaddr) {
+            LOG_ERROR("Invalid %s value \"%s\" (expected numeric IPv4 address)\n", bind_src, bind);
+            return -1;
+        }
+        DSD_SNPRINTF(opts->api_bindaddr, sizeof opts->api_bindaddr, "%s", bind);
+    }
+
+    const char* token = cli_token;
+    const char* token_src = "--api-token";
+    if (!token && enabled) {
+        const char* env = dsd_neo_env_get("DSD_NEO_API_TOKEN");
+        if (env && env[0] != '\0') {
+            token = env;
+            token_src = "DSD_NEO_API_TOKEN";
+        }
+    }
+    if (token) {
+        if (token[0] == '\0' || strlen(token) >= sizeof opts->api_token) {
+            LOG_ERROR("%s must be 1 to %u bytes\n", token_src, (unsigned)(sizeof opts->api_token - 1U));
+            return -1;
+        }
+        DSD_SNPRINTF(opts->api_token, sizeof opts->api_token, "%s", token);
+    } else {
+        const char* file = cli_token_file;
+        const char* file_src = "--api-token-file";
+        if (!file && enabled) {
+            const char* env = dsd_neo_env_get("DSD_NEO_API_TOKEN_FILE");
+            if (env && env[0] != '\0') {
+                file = env;
+                file_src = "DSD_NEO_API_TOKEN_FILE";
+            }
+        }
+        if (file && cli_read_api_token_file(file, opts->api_token, sizeof opts->api_token) != 0) {
+            LOG_ERROR("Cannot read an API token from %s \"%s\" (expected one line of 1 to %u bytes)\n", file_src, file,
+                      (unsigned)(sizeof opts->api_token - 1U));
+            return -1;
+        }
+    }
+
+    if (enabled && opts->api_bindaddr[0] != '\0' && !cli_ipv4_is_loopback(opts->api_bindaddr)
+        && opts->api_token[0] == '\0') {
+        LOG_ERROR("API bind address %s is not loopback; set --api-token or --api-token-file\n", opts->api_bindaddr);
+        return -1;
+    }
+    return 0;
+}
+
 static int
 cli_parse_decimal_u64(const char* in, uint64_t* out) {
     if (!in || !out || in[0] == '\0') {
@@ -1795,26 +1898,9 @@ cli_parse_airspy_option(int argc, char** argv, int i, dsd_opts* opts) {
         opts->rtl_udp_bindaddr[sizeof opts->rtl_udp_bindaddr - 1] = '\0';                                              \
     }                                                                                                                  \
                                                                                                                        \
-    if (api_cli_port) {                                                                                                \
-        unsigned long parsed_api_port = 0;                                                                             \
-        if (!cli_parse_decimal_u32(api_cli_port, &parsed_api_port) || parsed_api_port > 65535UL) {                     \
-            LOG_ERROR("Invalid --api value \"%s\" (expected port 0..65535)\n", api_cli_port);                          \
-            cli_set_exit_rc(out_exit_rc, 1);                                                                           \
-            return DSD_PARSE_ERROR;                                                                                    \
-        }                                                                                                              \
-        opts->api_port = (int)parsed_api_port;                                                                         \
-    }                                                                                                                  \
-    if (api_cli_bind) {                                                                                                \
-        DSD_SNPRINTF(opts->api_bindaddr, sizeof opts->api_bindaddr, "%s", api_cli_bind);                               \
-        opts->api_bindaddr[sizeof opts->api_bindaddr - 1] = '\0';                                                      \
-    }                                                                                                                  \
-    if (api_cli_token) {                                                                                               \
-        DSD_SNPRINTF(opts->api_token, sizeof opts->api_token, "%s", api_cli_token);                                    \
-        opts->api_token[sizeof opts->api_token - 1] = '\0';                                                            \
-    }                                                                                                                  \
-    if (api_cli_token_file) {                                                                                          \
-        DSD_SNPRINTF(opts->api_token_file, sizeof opts->api_token_file, "%s", api_cli_token_file);                     \
-        opts->api_token_file[sizeof opts->api_token_file - 1] = '\0';                                                  \
+    if (cli_resolve_api_options(opts, api_cli_port, api_cli_bind, api_cli_token, api_cli_token_file) != 0) {           \
+        cli_set_exit_rc(out_exit_rc, 1);                                                                               \
+        return DSD_PARSE_ERROR;                                                                                        \
     }                                                                                                                  \
                                                                                                                        \
     if (frontend_cli) {                                                                                                \

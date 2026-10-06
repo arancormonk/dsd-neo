@@ -25,6 +25,11 @@ void dsd_app_install_telemetry_hooks(void);
 void dsd_app_telemetry_publish_snapshot(const dsd_state* state);
 void dsd_app_telemetry_publish_opts_snapshot(const dsd_opts* opts);
 
+/* Telemetry observer dispatch (<dsd-neo/app_control/telemetry_observers.h>), called by the two publishers above on
+ * the decode thread after they release their own locks. */
+void dsd_app_telemetry_notify_state(const dsd_state* state);
+void dsd_app_telemetry_notify_opts(const dsd_opts* opts);
+
 #ifdef DSD_NEO_TEST_HOOKS
 typedef struct {
     uint64_t source_to_published[2];

@@ -7,12 +7,16 @@
 
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/threading.h>
-#include <string.h>
+#include <stddef.h>
+
+#include "snapshot_internal.h"
 
 enum { DSD_APP_TELEMETRY_MAX_OBSERVERS = 8 };
 
 static const dsd_app_telemetry_observer* g_observers[DSD_APP_TELEMETRY_MAX_OBSERVERS];
 static atomic_int g_observer_count = 0;
+/* Guards the table and every dispatch: callbacks run under it, so a removal returns only once no callback of the
+   removed observer is still running and the observer's storage may go. */
 static dsd_mutex_t g_observer_mu;
 static atomic_int g_observer_mu_state = 0; /* 0=uninit, 1=initing, 2=init */
 
@@ -40,13 +44,20 @@ dsd_app_telemetry_observer_add(const dsd_app_telemetry_observer* observer) {
     ensure_mu_init();
     dsd_mutex_lock(&g_observer_mu);
     int rc = -1;
+    int free_slot = -1;
     for (int i = 0; i < DSD_APP_TELEMETRY_MAX_OBSERVERS; i++) {
-        if (g_observers[i] == NULL) {
-            g_observers[i] = observer;
-            atomic_store(&g_observer_count, atomic_load(&g_observer_count) + 1);
-            rc = 0;
+        if (g_observers[i] == observer) {
+            free_slot = -1;
             break;
         }
+        if (g_observers[i] == NULL && free_slot < 0) {
+            free_slot = i;
+        }
+    }
+    if (free_slot >= 0) {
+        g_observers[free_slot] = observer;
+        atomic_fetch_add(&g_observer_count, 1);
+        rc = 0;
     }
     dsd_mutex_unlock(&g_observer_mu);
     return rc;
@@ -63,7 +74,7 @@ dsd_app_telemetry_observer_remove(const dsd_app_telemetry_observer* observer) {
     for (int i = 0; i < DSD_APP_TELEMETRY_MAX_OBSERVERS; i++) {
         if (g_observers[i] == observer) {
             g_observers[i] = NULL;
-            atomic_store(&g_observer_count, atomic_load(&g_observer_count) - 1);
+            atomic_fetch_add(&g_observer_count, -1);
             rc = 0;
             break;
         }
@@ -72,41 +83,34 @@ dsd_app_telemetry_observer_remove(const dsd_app_telemetry_observer* observer) {
     return rc;
 }
 
-static int
-snapshot_observers(const dsd_app_telemetry_observer* out[DSD_APP_TELEMETRY_MAX_OBSERVERS]) {
+void
+dsd_app_telemetry_notify_state(const dsd_state* state) {
     if (atomic_load(&g_observer_count) <= 0) {
-        return 0;
+        return;
     }
     ensure_mu_init();
     dsd_mutex_lock(&g_observer_mu);
-    int n = 0;
     for (int i = 0; i < DSD_APP_TELEMETRY_MAX_OBSERVERS; i++) {
-        if (g_observers[i] != NULL) {
-            out[n++] = g_observers[i];
+        const dsd_app_telemetry_observer* o = g_observers[i];
+        if (o != NULL && o->state != NULL) {
+            o->state(state, o->user);
         }
     }
     dsd_mutex_unlock(&g_observer_mu);
-    return n;
-}
-
-void
-dsd_app_telemetry_notify_state(const dsd_state* state) {
-    const dsd_app_telemetry_observer* local[DSD_APP_TELEMETRY_MAX_OBSERVERS];
-    const int n = snapshot_observers(local);
-    for (int i = 0; i < n; i++) {
-        if (local[i]->state != NULL) {
-            local[i]->state(state, local[i]->user);
-        }
-    }
 }
 
 void
 dsd_app_telemetry_notify_opts(const dsd_opts* opts) {
-    const dsd_app_telemetry_observer* local[DSD_APP_TELEMETRY_MAX_OBSERVERS];
-    const int n = snapshot_observers(local);
-    for (int i = 0; i < n; i++) {
-        if (local[i]->opts != NULL) {
-            local[i]->opts(opts, local[i]->user);
+    if (atomic_load(&g_observer_count) <= 0) {
+        return;
+    }
+    ensure_mu_init();
+    dsd_mutex_lock(&g_observer_mu);
+    for (int i = 0; i < DSD_APP_TELEMETRY_MAX_OBSERVERS; i++) {
+        const dsd_app_telemetry_observer* o = g_observers[i];
+        if (o != NULL && o->opts != NULL) {
+            o->opts(opts, o->user);
         }
     }
+    dsd_mutex_unlock(&g_observer_mu);
 }

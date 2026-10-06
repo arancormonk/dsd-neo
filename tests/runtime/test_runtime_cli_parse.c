@@ -4637,6 +4637,238 @@ test_lrrp_extra_port_missing_value_returns_error(void) {
     return test_missing_required_long_option_value_returns_error("--lrrp-extra-port");
 }
 
+/* The control API options: parse argv into fresh opts and report what landed there. */
+typedef struct {
+    int rc;
+    int exit_rc;
+    int port;
+    char bind[64];
+    char token[256];
+} api_parse_result;
+
+static api_parse_result
+api_parse(int argc, char** argv) {
+    api_parse_result r;
+    DSD_MEMSET(&r, 0, sizeof r);
+    r.rc = -1;
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return r;
+    }
+    initOpts(opts);
+    initState(state);
+    int argc_effective = 0;
+    r.exit_rc = -1;
+    r.rc = dsd_parse_args(argc, argv, opts, state, &argc_effective, &r.exit_rc);
+    r.port = opts->api_port;
+    DSD_SNPRINTF(r.bind, sizeof r.bind, "%s", opts->api_bindaddr);
+    DSD_SNPRINTF(r.token, sizeof r.token, "%s", opts->api_token);
+    close_parse_outputs(opts);
+    freeState(state);
+    free(opts);
+    free(state);
+    return r;
+}
+
+static void
+api_env_clear(void) {
+    (void)dsd_unsetenv("DSD_NEO_API_PORT");
+    (void)dsd_unsetenv("DSD_NEO_API_BIND");
+    (void)dsd_unsetenv("DSD_NEO_API_TOKEN");
+    (void)dsd_unsetenv("DSD_NEO_API_TOKEN_FILE");
+}
+
+/* Write @p contents to a fresh temp file; returns 0 with its path in @p path. */
+static int
+api_token_file(char* path, size_t cap, const char* contents, size_t len) {
+    const int fd = dsd_test_mkstemp(path, cap, "dsd_api_token");
+    if (fd < 0) {
+        return -1;
+    }
+    FILE* fp = dsd_test_fdopen(fd, "wb");
+    if (!fp) {
+        return -1;
+    }
+    const int ok = fwrite(contents, 1U, len, fp) == len;
+    return (fclose(fp) == 0 && ok) ? 0 : -1;
+}
+
+static int
+api_expect(const char* what, const api_parse_result* r, int rc, int port, const char* bind, const char* token) {
+    if (r->rc != rc || (rc == DSD_PARSE_ERROR && r->exit_rc != 1)
+        || (rc == DSD_PARSE_CONTINUE
+            && (r->port != port || strcmp(r->bind, bind) != 0 || strcmp(r->token, token) != 0))) {
+        DSD_FPRINTF(stderr, "%s: rc=%d exit_rc=%d port=%d bind='%s' token-set=%d\n", what, r->rc, r->exit_rc, r->port,
+                    r->bind, r->token[0] != '\0');
+        return 1;
+    }
+    return 0;
+}
+
+static int
+test_api_options(void) {
+    int test_rc = 0;
+    api_env_clear();
+    char a0[] = "dsd-neo";
+    char api[] = "--api";
+    char port9911[] = "9911";
+    char port0[] = "0";
+    char bad_port[] = "65536";
+    char bind_opt[] = "--api-bind";
+    char any[] = "0.0.0.0";
+    char host[] = "localhost";
+    char token_opt[] = "--api-token";
+    char token_eq[] = "--api-token=s3cret";
+    char file_opt[] = "--api-token-file";
+    char missing[] = "/nonexistent/dsd-neo-api-token";
+
+    {
+        char* argv[] = {a0, api, port9911, NULL};
+        api_parse_result r = api_parse(3, argv);
+        test_rc |= api_expect("--api 9911", &r, DSD_PARSE_CONTINUE, 9911, "", "");
+    }
+    {
+        char eq[] = "--api=9911";
+        char* argv[] = {a0, eq, NULL};
+        api_parse_result r = api_parse(2, argv);
+        test_rc |= api_expect("--api=9911", &r, DSD_PARSE_CONTINUE, 9911, "", "");
+    }
+    {
+        char* argv[] = {a0, api, bad_port, NULL};
+        api_parse_result r = api_parse(3, argv);
+        test_rc |= api_expect("--api 65536", &r, DSD_PARSE_ERROR, 0, "", "");
+    }
+    /* The environment fills in only what the CLI left out, and an explicit --api 0 wins over it. */
+    (void)dsd_setenv("DSD_NEO_API_PORT", "7000", 1);
+    {
+        char* argv[] = {a0, NULL};
+        api_parse_result r = api_parse(1, argv);
+        test_rc |= api_expect("DSD_NEO_API_PORT", &r, DSD_PARSE_CONTINUE, 7000, "", "");
+    }
+    {
+        char* argv[] = {a0, api, port0, NULL};
+        api_parse_result r = api_parse(3, argv);
+        test_rc |= api_expect("--api 0 over DSD_NEO_API_PORT", &r, DSD_PARSE_CONTINUE, 0, "", "");
+    }
+    (void)dsd_setenv("DSD_NEO_API_PORT", "70000", 1);
+    {
+        char* argv[] = {a0, NULL};
+        api_parse_result r = api_parse(1, argv);
+        test_rc |= api_expect("invalid DSD_NEO_API_PORT", &r, DSD_PARSE_ERROR, 0, "", "");
+    }
+    api_env_clear();
+
+    /* Off loopback, a token is required. */
+    {
+        char* argv[] = {a0, api, port9911, bind_opt, any, NULL};
+        api_parse_result r = api_parse(5, argv);
+        test_rc |= api_expect("non-loopback bind without token", &r, DSD_PARSE_ERROR, 0, "", "");
+    }
+    {
+        char* argv[] = {a0, api, port9911, bind_opt, any, token_eq, NULL};
+        api_parse_result r = api_parse(6, argv);
+        test_rc |= api_expect("non-loopback bind with token", &r, DSD_PARSE_CONTINUE, 9911, "0.0.0.0", "s3cret");
+    }
+    {
+        char* argv[] = {a0, api, port9911, bind_opt, host, NULL};
+        api_parse_result r = api_parse(5, argv);
+        test_rc |= api_expect("non-numeric bind", &r, DSD_PARSE_ERROR, 0, "", "");
+    }
+    (void)dsd_setenv("DSD_NEO_API_BIND", "10.0.0.1", 1);
+    {
+        char* argv[] = {a0, api, port9911, NULL};
+        api_parse_result r = api_parse(3, argv);
+        test_rc |= api_expect("DSD_NEO_API_BIND without token", &r, DSD_PARSE_ERROR, 0, "", "");
+    }
+    (void)dsd_setenv("DSD_NEO_API_TOKEN", "envtoken", 1);
+    {
+        char* argv[] = {a0, api, port9911, NULL};
+        api_parse_result r = api_parse(3, argv);
+        test_rc |=
+            api_expect("DSD_NEO_API_BIND with DSD_NEO_API_TOKEN", &r, DSD_PARSE_CONTINUE, 9911, "10.0.0.1", "envtoken");
+    }
+    {
+        char* argv[] = {a0, api, port9911, token_opt, port9911, NULL};
+        api_parse_result r = api_parse(5, argv);
+        test_rc |= api_expect("--api-token over DSD_NEO_API_TOKEN", &r, DSD_PARSE_CONTINUE, 9911, "10.0.0.1", "9911");
+    }
+    api_env_clear();
+
+    /* A token file that cannot give a token is an error, never a server without one. */
+    {
+        char* argv[] = {a0, api, port9911, file_opt, missing, NULL};
+        api_parse_result r = api_parse(5, argv);
+        test_rc |= api_expect("missing token file", &r, DSD_PARSE_ERROR, 0, "", "");
+    }
+    char path[1024];
+    if (api_token_file(path, sizeof path, "file-token\r\n", 12U) != 0) {
+        DSD_FPRINTF(stderr, "cannot create a token file\n");
+        return 1;
+    }
+    {
+        char* argv[] = {a0, api, port9911, file_opt, path, NULL};
+        api_parse_result r = api_parse(5, argv);
+        test_rc |= api_expect("token file", &r, DSD_PARSE_CONTINUE, 9911, "", "file-token");
+    }
+    (void)remove(path);
+
+    static const struct {
+        const char* what;
+        const char* contents;
+        size_t len;
+    } k_bad_files[] = {
+        {"empty token file", "", 0U},
+        {"whitespace token file", " \n", 2U},
+        {"two-line token file", "a\nb\n", 4U},
+        {"token file with NUL", "ab\0cd", 5U},
+    };
+
+    for (size_t i = 0; i < sizeof k_bad_files / sizeof k_bad_files[0]; i++) {
+        if (api_token_file(path, sizeof path, k_bad_files[i].contents, k_bad_files[i].len) != 0) {
+            return 1;
+        }
+        char* argv[] = {a0, api, port9911, file_opt, path, NULL};
+        api_parse_result r = api_parse(5, argv);
+        test_rc |= api_expect(k_bad_files[i].what, &r, DSD_PARSE_ERROR, 0, "", "");
+        (void)remove(path);
+    }
+    char long_token[300];
+    DSD_MEMSET(long_token, 'x', sizeof long_token);
+    if (api_token_file(path, sizeof path, long_token, 256U) != 0) {
+        return 1;
+    }
+    {
+        char* argv[] = {a0, api, port9911, file_opt, path, NULL};
+        api_parse_result r = api_parse(5, argv);
+        test_rc |= api_expect("256-byte token file", &r, DSD_PARSE_ERROR, 0, "", "");
+    }
+    (void)remove(path);
+    long_token[256] = '\0';
+    {
+        char* argv[] = {a0, api, port9911, token_opt, long_token, NULL};
+        api_parse_result r = api_parse(5, argv);
+        test_rc |= api_expect("256-byte --api-token", &r, DSD_PARSE_ERROR, 0, "", "");
+    }
+
+    /* The fallbacks are read only when the API is on: a stale token file in the environment does not stop a run. */
+    (void)dsd_setenv("DSD_NEO_API_TOKEN_FILE", missing, 1);
+    {
+        char* argv[] = {a0, NULL};
+        api_parse_result r = api_parse(1, argv);
+        test_rc |= api_expect("DSD_NEO_API_TOKEN_FILE with the API off", &r, DSD_PARSE_CONTINUE, 0, "", "");
+    }
+    {
+        char* argv[] = {a0, api, port9911, NULL};
+        api_parse_result r = api_parse(3, argv);
+        test_rc |= api_expect("DSD_NEO_API_TOKEN_FILE missing", &r, DSD_PARSE_ERROR, 0, "", "");
+    }
+    api_env_clear();
+    return test_rc;
+}
+
 static int
 test_rtl_udp_control_long_option_parse(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
@@ -9169,6 +9401,7 @@ test_tg_lockout_persistence_flags(void) {
 int
 main(void) {
     int rc = 0;
+    rc |= test_api_options();
     rc |= test_force_conflicts_and_explicit_off_options();
     rc |= test_help_returns_one_shot_and_does_not_exit();
     rc |= test_invalid_option_returns_error_and_does_not_exit();

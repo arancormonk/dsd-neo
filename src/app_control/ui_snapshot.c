@@ -5,7 +5,6 @@
 
 #include <dsd-neo/app_control/notification_status.h>
 #include <dsd-neo/app_control/snapshot.h>
-#include <dsd-neo/app_control/telemetry_observers.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts_fwd.h>

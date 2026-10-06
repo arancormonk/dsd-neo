@@ -5,13 +5,22 @@
 
 /**
  * @file
- * @brief Implementation of the small JSON writer/parser declared in api/json.h.
+ * @brief Implementation of the small JSON writer/parser declared in json.h.
+ *
+ * Built without fast-math (src/api/CMakeLists.txt): the writer's isfinite() and
+ * the parser's overflow check must see real infinities and NaNs. A telemetry
+ * value comes from fast-math code, so it passes through dsd_fp_opaque_d() first
+ * (docs/code_map.md, "Fast-math and non-finite values").
  */
 
-#include <dsd-neo/api/json.h>
+#include "json.h"
 
+#include <dsd-neo/core/parse.h>
+#include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/platform/fp_opaque.h>
+
+#include <errno.h>
 #include <math.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -35,7 +44,11 @@ dsd_json_buf_free(dsd_json_buf* b) {
     if (b == NULL) {
         return;
     }
-    free(b->data);
+    if (b->data != NULL) {
+        /* Request buffers can hold key material; every buffer is wiped before its storage goes back. */
+        DSD_SECURE_ZERO(b->data, b->cap);
+        free(b->data);
+    }
     dsd_json_buf_init(b);
 }
 
@@ -45,17 +58,38 @@ dsd_json_buf_reset(dsd_json_buf* b) {
         return;
     }
     b->len = 0U;
+    b->oom = 0;
     if (b->data != NULL) {
         b->data[0] = '\0';
     }
 }
 
+void
+dsd_json_buf_consume(dsd_json_buf* b, size_t n) {
+    if (b == NULL || b->data == NULL || n == 0U) {
+        return;
+    }
+    /* The consumed bytes are wiped, not left behind: a request line can carry key material. */
+    if (n >= b->len) {
+        DSD_SECURE_ZERO(b->data, b->len);
+        b->len = 0U;
+        b->data[0] = '\0';
+        return;
+    }
+    const size_t rest = b->len - n;
+    DSD_MEMMOVE(b->data, b->data + n, rest);
+    DSD_SECURE_ZERO(b->data + rest, n);
+    b->len = rest;
+    b->data[rest] = '\0';
+}
+
 int
 dsd_json_buf_reserve(dsd_json_buf* b, size_t extra) {
-    if (b == NULL) {
+    if (b == NULL || b->oom) {
         return -1;
     }
-    if (b->oom) {
+    if (extra > ((size_t)-1) - b->len - 1U) {
+        b->oom = 1;
         return -1;
     }
     const size_t need = b->len + extra + 1U; /* +1 for the NUL terminator */
@@ -64,22 +98,27 @@ dsd_json_buf_reserve(dsd_json_buf* b, size_t extra) {
     }
     size_t cap = (b->cap == 0U) ? 256U : b->cap;
     while (cap < need) {
-        if (cap > (size_t)-1 / 2U) {
+        if (cap > ((size_t)-1) / 2U) {
             b->oom = 1;
             return -1;
         }
         cap *= 2U;
     }
-    char* grown = (char*)realloc(b->data, cap);
+    /* Not realloc(): the old block is wiped before it is freed. */
+    char* grown = (char*)malloc(cap);
     if (grown == NULL) {
         b->oom = 1;
         return -1;
     }
+    if (b->data != NULL) {
+        DSD_MEMCPY(grown, b->data, b->len + 1U);
+        DSD_SECURE_ZERO(b->data, b->cap);
+        free(b->data);
+    } else {
+        grown[0] = '\0';
+    }
     b->data = grown;
     b->cap = cap;
-    if (b->len == 0U) {
-        b->data[0] = '\0';
-    }
     return 0;
 }
 
@@ -94,7 +133,7 @@ dsd_json_buf_append(dsd_json_buf* b, const char* data, size_t n) {
     if (dsd_json_buf_reserve(b, n) != 0) {
         return -1;
     }
-    memcpy(b->data + b->len, data, n);
+    DSD_MEMCPY(b->data + b->len, data, n);
     b->len += n;
     b->data[b->len] = '\0';
     return 0;
@@ -119,13 +158,60 @@ dsd_json_buf_putc(dsd_json_buf* b, char c) {
 }
 
 /*============================================================================
- * Escaping
+ * UTF-8 and escaping
  *============================================================================*/
 
+/* Length of the well-formed UTF-8 sequence at p (RFC 3629: no overlongs, no
+ * surrogates, nothing above U+10FFFF), or 0 when the bytes there are not one. */
+static size_t
+json_utf8_seq_len(const unsigned char* p, const unsigned char* end) {
+    if (p >= end) {
+        return 0U;
+    }
+    const unsigned char c = p[0];
+    if (c < 0x80U) {
+        return 1U;
+    }
+    size_t seq = 0U;
+    unsigned char lo = 0x80U;
+    unsigned char hi = 0xBFU;
+    if (c >= 0xC2U && c <= 0xDFU) {
+        seq = 2U;
+    } else if (c == 0xE0U) {
+        seq = 3U;
+        lo = 0xA0U;
+    } else if ((c >= 0xE1U && c <= 0xECU) || c == 0xEEU || c == 0xEFU) {
+        seq = 3U;
+    } else if (c == 0xEDU) {
+        seq = 3U;
+        hi = 0x9FU;
+    } else if (c == 0xF0U) {
+        seq = 4U;
+        lo = 0x90U;
+    } else if (c >= 0xF1U && c <= 0xF3U) {
+        seq = 4U;
+    } else if (c == 0xF4U) {
+        seq = 4U;
+        hi = 0x8FU;
+    } else {
+        return 0U;
+    }
+    if ((size_t)(end - p) < seq || p[1] < lo || p[1] > hi) {
+        return 0U;
+    }
+    for (size_t i = 2U; i < seq; i++) {
+        if ((p[i] & 0xC0U) != 0x80U) {
+            return 0U;
+        }
+    }
+    return seq;
+}
+
 static int
-json_append_replacement(dsd_json_buf* b) {
-    /* U+FFFD, UTF-8 encoded. */
-    return dsd_json_buf_append(b, "\xEF\xBF\xBD", 3U);
+json_append_u_escape(dsd_json_buf* b, unsigned int cp) {
+    static const char hex[] = "0123456789ABCDEF";
+    char esc[6] = {'\\', 'u', hex[(cp >> 12) & 0xFU], hex[(cp >> 8) & 0xFU], hex[(cp >> 4) & 0xFU], hex[cp & 0xFU]};
+    return dsd_json_buf_append(b, esc, sizeof esc);
 }
 
 int
@@ -134,106 +220,65 @@ dsd_json_buf_append_escaped(dsd_json_buf* b, const char* v) {
         return -1;
     }
     if (v == NULL) {
-        return dsd_json_buf_puts(b, "");
+        return 0;
     }
     const unsigned char* p = (const unsigned char*)v;
-    while (*p != 0U) {
+    const unsigned char* end = p + strlen(v);
+    while (p < end) {
         const unsigned char c = *p;
-        if (c == '"') {
-            if (dsd_json_buf_append(b, "\\\"", 2U) != 0) {
+        const char* short_esc = NULL;
+        switch (c) {
+            case '"': short_esc = "\\\""; break;
+            case '\\': short_esc = "\\\\"; break;
+            case '\b': short_esc = "\\b"; break;
+            case '\f': short_esc = "\\f"; break;
+            case '\n': short_esc = "\\n"; break;
+            case '\r': short_esc = "\\r"; break;
+            case '\t': short_esc = "\\t"; break;
+            default: break;
+        }
+        if (short_esc != NULL) {
+            if (dsd_json_buf_append(b, short_esc, 2U) != 0) {
                 return -1;
             }
             p++;
-        } else if (c == '\\') {
-            if (dsd_json_buf_append(b, "\\\\", 2U) != 0) {
+            continue;
+        }
+        if (c < 0x20U || c == 0x7FU) {
+            if (json_append_u_escape(b, c) != 0) {
                 return -1;
             }
             p++;
-        } else if (c == '\b') {
-            if (dsd_json_buf_append(b, "\\b", 2U) != 0) {
-                return -1;
-            }
-            p++;
-        } else if (c == '\f') {
-            if (dsd_json_buf_append(b, "\\f", 2U) != 0) {
-                return -1;
-            }
-            p++;
-        } else if (c == '\n') {
-            if (dsd_json_buf_append(b, "\\n", 2U) != 0) {
-                return -1;
-            }
-            p++;
-        } else if (c == '\r') {
-            if (dsd_json_buf_append(b, "\\r", 2U) != 0) {
-                return -1;
-            }
-            p++;
-        } else if (c == '\t') {
-            if (dsd_json_buf_append(b, "\\t", 2U) != 0) {
-                return -1;
-            }
-            p++;
-        } else if (c < 0x20U) {
-            char esc[8];
-            const int n = snprintf(esc, sizeof esc, "\\u%04X", (unsigned)c);
-            if (n <= 0 || dsd_json_buf_append(b, esc, (size_t)n) != 0) {
-                return -1;
-            }
-            p++;
-        } else if (c < 0x80U) {
+            continue;
+        }
+        if (c < 0x80U) {
             if (dsd_json_buf_putc(b, (char)c) != 0) {
                 return -1;
             }
             p++;
-        } else {
-            /* Validate a UTF-8 sequence; copy it verbatim when well formed,
-             * otherwise substitute U+FFFD so output stays valid UTF-8. */
-            size_t seq = 0U;
-            if ((c & 0xE0U) == 0xC0U) {
-                seq = 2U;
-            } else if ((c & 0xF0U) == 0xE0U) {
-                seq = 3U;
-            } else if ((c & 0xF8U) == 0xF0U) {
-                seq = 4U;
-            }
-            int valid = (seq != 0U);
-            for (size_t i = 1U; valid && i < seq; i++) {
-                if ((p[i] & 0xC0U) != 0x80U) {
-                    valid = 0;
-                }
-            }
-            /* Reject overlong/surrogate/out-of-range encodings. */
-            if (valid && seq == 3U) {
-                if (c == 0xE0U && p[1] < 0xA0U) {
-                    valid = 0;
-                }
-                if (c == 0xEDU && p[1] >= 0xA0U) {
-                    valid = 0;
-                }
-            } else if (valid && seq == 4U) {
-                if (c == 0xF0U && p[1] < 0x90U) {
-                    valid = 0;
-                }
-                if (c == 0xF4U && p[1] >= 0x90U) {
-                    valid = 0;
-                }
-                if (c > 0xF4U) {
-                    valid = 0;
-                }
-            }
-            if (valid) {
-                if (dsd_json_buf_append(b, (const char*)p, seq) != 0) {
-                    return -1;
-                }
-                p += seq;
-            } else {
-                if (json_append_replacement(b) != 0) {
-                    return -1;
-                }
-                p++;
-            }
+            continue;
         }
+        const size_t seq = json_utf8_seq_len(p, end);
+        if (seq == 0U) {
+            /* Not UTF-8 (off-air bytes, a Latin-1 CSV): U+FFFD keeps the line valid. */
+            if (dsd_json_buf_append(b, "\xEF\xBF\xBD", 3U) != 0) {
+                return -1;
+            }
+            p++;
+            continue;
+        }
+        if (seq == 3U && p[0] == 0xE2U && p[1] == 0x80U && (p[2] == 0xA8U || p[2] == 0xA9U)) {
+            /* U+2028/U+2029 end a line for some JSON readers. */
+            if (json_append_u_escape(b, 0x2000U | ((unsigned int)p[2] & 0x3FU)) != 0) {
+                return -1;
+            }
+            p += seq;
+            continue;
+        }
+        if (dsd_json_buf_append(b, (const char*)p, seq) != 0) {
+            return -1;
+        }
+        p += seq;
     }
     return 0;
 }
@@ -247,7 +292,7 @@ dsd_json_writer_init(dsd_json_writer* w, dsd_json_buf* buf) {
     if (w == NULL) {
         return;
     }
-    memset(w, 0, sizeof(*w));
+    DSD_MEMSET(w, 0, sizeof(*w));
     w->buf = buf;
     w->first[0] = 1U;
 }
@@ -287,7 +332,7 @@ json_writer_puts(dsd_json_writer* w, const char* s) {
     return 0;
 }
 
-/* Emit the separator dues for a value at the current level. */
+/* Emit the separator due for a value at the current level. */
 static int
 json_writer_before_value(dsd_json_writer* w) {
     if (dsd_json_writer_failed(w)) {
@@ -300,6 +345,10 @@ json_writer_before_value(dsd_json_writer* w) {
     if (w->after_key[level]) {
         w->after_key[level] = 0U;
         return 0;
+    }
+    if (level > 0 && w->is_obj[level]) {
+        /* An object member needs its key first. */
+        return json_writer_fail(w);
     }
     if (w->first[level]) {
         w->first[level] = 0U;
@@ -318,7 +367,7 @@ dsd_json_key(dsd_json_writer* w, const char* key) {
         return json_writer_fail(w);
     }
     const int level = w->depth;
-    if (level <= 0 || !w->is_obj[level]) {
+    if (level <= 0 || !w->is_obj[level] || w->after_key[level]) {
         return json_writer_fail(w);
     }
     if (!w->first[level]) {
@@ -333,10 +382,7 @@ dsd_json_key(dsd_json_writer* w, const char* key) {
     if (dsd_json_buf_append_escaped(w->buf, key) != 0) {
         return json_writer_fail(w);
     }
-    if (json_writer_putc(w, '"') != 0) {
-        return -1;
-    }
-    if (json_writer_putc(w, ':') != 0) {
+    if (json_writer_puts(w, "\":") != 0) {
         return -1;
     }
     w->after_key[level] = 1U;
@@ -345,14 +391,14 @@ dsd_json_key(dsd_json_writer* w, const char* key) {
 
 static int
 json_open(dsd_json_writer* w, char brace, int is_obj) {
+    if (w == NULL || w->depth + 1 >= DSD_JSON_MAX_DEPTH) {
+        return json_writer_fail(w);
+    }
     if (json_writer_before_value(w) != 0) {
         return -1;
     }
     if (json_writer_putc(w, brace) != 0) {
         return -1;
-    }
-    if (w->depth + 1 >= DSD_JSON_MAX_DEPTH) {
-        return json_writer_fail(w);
     }
     w->depth++;
     w->first[w->depth] = 1U;
@@ -362,12 +408,12 @@ json_open(dsd_json_writer* w, char brace, int is_obj) {
 }
 
 static int
-json_close(dsd_json_writer* w, char brace) {
+json_close(dsd_json_writer* w, char brace, int is_obj) {
     if (dsd_json_writer_failed(w) || w->depth <= 0) {
         return json_writer_fail(w);
     }
-    if (w->after_key[w->depth]) {
-        /* A key with no value is malformed. */
+    if (w->after_key[w->depth] || w->is_obj[w->depth] != (unsigned char)(is_obj ? 1 : 0)) {
+        /* A key with no value, or a mismatched close, is malformed. */
         return json_writer_fail(w);
     }
     if (json_writer_putc(w, brace) != 0) {
@@ -389,12 +435,12 @@ dsd_json_arr_begin(dsd_json_writer* w) {
 
 int
 dsd_json_obj_end(dsd_json_writer* w) {
-    return json_close(w, '}');
+    return json_close(w, '}', 1);
 }
 
 int
 dsd_json_arr_end(dsd_json_writer* w) {
-    return json_close(w, ']');
+    return json_close(w, ']', 0);
 }
 
 int
@@ -417,7 +463,7 @@ dsd_json_value_i64(dsd_json_writer* w, int64_t v) {
         return -1;
     }
     char tmp[32];
-    const int n = snprintf(tmp, sizeof tmp, "%lld", (long long)v);
+    const int n = DSD_SNPRINTF(tmp, sizeof tmp, "%lld", (long long)v);
     if (n <= 0 || (size_t)n >= sizeof tmp) {
         return json_writer_fail(w);
     }
@@ -430,7 +476,7 @@ dsd_json_value_u64(dsd_json_writer* w, uint64_t v) {
         return -1;
     }
     char tmp[32];
-    const int n = snprintf(tmp, sizeof tmp, "%llu", (unsigned long long)v);
+    const int n = DSD_SNPRINTF(tmp, sizeof tmp, "%llu", (unsigned long long)v);
     if (n <= 0 || (size_t)n >= sizeof tmp) {
         return json_writer_fail(w);
     }
@@ -438,15 +484,27 @@ dsd_json_value_u64(dsd_json_writer* w, uint64_t v) {
 }
 
 int
+dsd_json_value_u64_str(dsd_json_writer* w, uint64_t v) {
+    char tmp[32];
+    const int n = DSD_SNPRINTF(tmp, sizeof tmp, "%llu", (unsigned long long)v);
+    if (n <= 0 || (size_t)n >= sizeof tmp) {
+        return json_writer_fail(w);
+    }
+    return dsd_json_value_str(w, tmp);
+}
+
+int
 dsd_json_value_double(dsd_json_writer* w, double v) {
     if (json_writer_before_value(w) != 0) {
         return -1;
     }
-    if (!isfinite(v)) {
+    if (!isfinite(dsd_fp_opaque_d(v))) {
         return json_writer_puts(w, "null");
     }
     char tmp[40];
-    const int n = snprintf(tmp, sizeof tmp, "%.10g", v);
+    /* 15 significant digits is the most a double holds for every decimal value; "%g" never writes a bare "." or a
+       leading "+", and LC_NUMERIC stays "C" in this program (only LC_CTYPE is localized). */
+    const int n = DSD_SNPRINTF(tmp, sizeof tmp, "%.15g", v);
     if (n <= 0 || (size_t)n >= sizeof tmp) {
         return json_writer_fail(w);
     }
@@ -471,6 +529,9 @@ dsd_json_value_null(dsd_json_writer* w) {
 
 int
 dsd_json_value_raw(dsd_json_writer* w, const char* raw) {
+    if (raw == NULL || raw[0] == '\0') {
+        return json_writer_fail(w);
+    }
     if (json_writer_before_value(w) != 0) {
         return -1;
     }
@@ -490,6 +551,11 @@ dsd_json_kv_i64(dsd_json_writer* w, const char* key, int64_t v) {
 int
 dsd_json_kv_u64(dsd_json_writer* w, const char* key, uint64_t v) {
     return (dsd_json_key(w, key) == 0) ? dsd_json_value_u64(w, v) : -1;
+}
+
+int
+dsd_json_kv_u64_str(dsd_json_writer* w, const char* key, uint64_t v) {
+    return (dsd_json_key(w, key) == 0) ? dsd_json_value_u64_str(w, v) : -1;
 }
 
 int
@@ -515,6 +581,7 @@ typedef struct {
     const char* p;
     const char* end;
     size_t nodes;
+    int depth;
     const char* err;
 } json_parse_ctx;
 
@@ -541,18 +608,11 @@ static int
 json_hex4(const char* p, unsigned int* out) {
     unsigned int v = 0U;
     for (int i = 0; i < 4; i++) {
-        const char ch = p[i];
-        unsigned int d;
-        if (ch >= '0' && ch <= '9') {
-            d = (unsigned int)(ch - '0');
-        } else if (ch >= 'a' && ch <= 'f') {
-            d = (unsigned int)(ch - 'a') + 10U;
-        } else if (ch >= 'A' && ch <= 'F') {
-            d = (unsigned int)(ch - 'A') + 10U;
-        } else {
+        const int d = dsd_hex_nibble_value((unsigned char)p[i]);
+        if (d < 0) {
             return -1;
         }
-        v = (v << 4) | d;
+        v = (v << 4) | (unsigned int)d;
     }
     *out = v;
     return 0;
@@ -584,87 +644,82 @@ json_utf8_append(dsd_json_buf* b, unsigned int cp) {
     return dsd_json_buf_append(b, tmp, n);
 }
 
+/* Read a \uXXXX escape (the "\u" already consumed) into a code point. A lone surrogate becomes U+FFFD. */
+static int
+json_parse_u_escape(json_parse_ctx* c, unsigned int* out) {
+    unsigned int cp = 0U;
+    if (c->end - c->p < 4 || json_hex4(c->p, &cp) != 0) {
+        json_set_err(c, "bad \\u escape");
+        return -1;
+    }
+    c->p += 4;
+    if (cp >= 0xD800U && cp <= 0xDBFFU) {
+        unsigned int lo = 0U;
+        if (c->end - c->p >= 6 && c->p[0] == '\\' && c->p[1] == 'u' && json_hex4(c->p + 2, &lo) == 0 && lo >= 0xDC00U
+            && lo <= 0xDFFFU) {
+            c->p += 6;
+            cp = 0x10000U + ((cp - 0xD800U) << 10) + (lo - 0xDC00U);
+        } else {
+            cp = 0xFFFDU;
+        }
+    } else if (cp >= 0xDC00U && cp <= 0xDFFFU) {
+        cp = 0xFFFDU;
+    }
+    if (cp == 0U) {
+        /* Every consumer copies strings as C strings; a NUL would silently cut one short. */
+        json_set_err(c, "NUL in string");
+        return -1;
+    }
+    *out = cp;
+    return 0;
+}
+
 static char*
 json_parse_string_raw(json_parse_ctx* c) {
-    dsd_json_buf b;
-    dsd_json_buf_init(&b);
     if (!(c->p < c->end) || *c->p != '"') {
         json_set_err(c, "expected string");
-        dsd_json_buf_free(&b);
         return NULL;
     }
     c->p++;
+    dsd_json_buf b;
+    dsd_json_buf_init(&b);
+    if (dsd_json_buf_reserve(&b, 0U) != 0) {
+        json_set_err(c, "out of memory");
+        return NULL;
+    }
     while (c->p < c->end) {
         const unsigned char ch = (unsigned char)*c->p;
         if (ch == '"') {
             c->p++;
-            if (b.data == NULL) {
-                /* Return an owned empty string. */
-                char* empty = (char*)malloc(1U);
-                if (empty == NULL) {
-                    json_set_err(c, "out of memory");
-                    return NULL;
-                }
-                empty[0] = '\0';
-                return empty;
-            }
-            /* Detach storage; buffer already NUL-terminated by append. */
+            /* Detach the storage; the buffer is always NUL-terminated. */
             char* out = b.data;
             b.data = NULL;
-            dsd_json_buf_free(&b);
             return out;
         }
+        int rc = 0;
         if (ch == '\\') {
             c->p++;
             if (c->p >= c->end) {
                 json_set_err(c, "truncated escape");
-                dsd_json_buf_free(&b);
-                return NULL;
+                break;
             }
             const char esc = *c->p++;
             switch (esc) {
-                case '"': (void)dsd_json_buf_putc(&b, '"'); break;
-                case '\\': (void)dsd_json_buf_putc(&b, '\\'); break;
-                case '/': (void)dsd_json_buf_putc(&b, '/'); break;
-                case 'b': (void)dsd_json_buf_putc(&b, '\b'); break;
-                case 'f': (void)dsd_json_buf_putc(&b, '\f'); break;
-                case 'n': (void)dsd_json_buf_putc(&b, '\n'); break;
-                case 'r': (void)dsd_json_buf_putc(&b, '\r'); break;
-                case 't': (void)dsd_json_buf_putc(&b, '\t'); break;
+                case '"': rc = dsd_json_buf_putc(&b, '"'); break;
+                case '\\': rc = dsd_json_buf_putc(&b, '\\'); break;
+                case '/': rc = dsd_json_buf_putc(&b, '/'); break;
+                case 'b': rc = dsd_json_buf_putc(&b, '\b'); break;
+                case 'f': rc = dsd_json_buf_putc(&b, '\f'); break;
+                case 'n': rc = dsd_json_buf_putc(&b, '\n'); break;
+                case 'r': rc = dsd_json_buf_putc(&b, '\r'); break;
+                case 't': rc = dsd_json_buf_putc(&b, '\t'); break;
                 case 'u': {
-                    if (c->end - c->p < 4) {
-                        json_set_err(c, "truncated \\u escape");
-                        dsd_json_buf_free(&b);
-                        return NULL;
-                    }
                     unsigned int cp = 0U;
-                    if (json_hex4(c->p, &cp) != 0) {
-                        json_set_err(c, "bad \\u escape");
+                    if (json_parse_u_escape(c, &cp) != 0) {
                         dsd_json_buf_free(&b);
                         return NULL;
                     }
-                    c->p += 4;
-                    if (cp >= 0xD800U && cp <= 0xDBFFU) {
-                        /* High surrogate: require a following low surrogate. */
-                        if (c->end - c->p >= 6 && c->p[0] == '\\' && c->p[1] == 'u') {
-                            unsigned int lo = 0U;
-                            if (json_hex4(c->p + 2, &lo) == 0 && lo >= 0xDC00U && lo <= 0xDFFFU) {
-                                c->p += 6;
-                                cp = 0x10000U + ((cp - 0xD800U) << 10) + (lo - 0xDC00U);
-                            } else {
-                                cp = 0xFFFDU;
-                            }
-                        } else {
-                            cp = 0xFFFDU;
-                        }
-                    } else if (cp >= 0xDC00U && cp <= 0xDFFFU) {
-                        cp = 0xFFFDU;
-                    }
-                    if (json_utf8_append(&b, cp) != 0) {
-                        json_set_err(c, "out of memory");
-                        dsd_json_buf_free(&b);
-                        return NULL;
-                    }
+                    rc = json_utf8_append(&b, cp);
                     break;
                 }
                 default:
@@ -672,19 +727,22 @@ json_parse_string_raw(json_parse_ctx* c) {
                     dsd_json_buf_free(&b);
                     return NULL;
             }
-            continue;
-        }
-        if (ch < 0x20U) {
+        } else if (ch < 0x20U) {
             json_set_err(c, "control character in string");
-            dsd_json_buf_free(&b);
-            return NULL;
+            break;
+        } else {
+            const size_t seq = json_utf8_seq_len((const unsigned char*)c->p, (const unsigned char*)c->end);
+            if (seq == 0U) {
+                json_set_err(c, "invalid UTF-8 in string");
+                break;
+            }
+            rc = dsd_json_buf_append(&b, c->p, seq);
+            c->p += seq;
         }
-        if (dsd_json_buf_putc(&b, (char)ch) != 0) {
+        if (rc != 0) {
             json_set_err(c, "out of memory");
-            dsd_json_buf_free(&b);
-            return NULL;
+            break;
         }
-        c->p++;
     }
     json_set_err(c, "unterminated string");
     dsd_json_buf_free(&b);
@@ -733,7 +791,11 @@ dsd_json_free(dsd_json_node* node) {
         return;
     }
     json_free_children(node);
-    free(node->string);
+    if (node->string != NULL) {
+        /* Requests carry keys and tokens as strings or number literals; erase them with the tree. */
+        DSD_SECURE_ZERO(node->string, strlen(node->string));
+        free(node->string);
+    }
     free(node);
 }
 
@@ -751,16 +813,27 @@ json_push_item(dsd_json_node* container, char* key, dsd_json_node* value) {
         }
         container->keys = keys;
         container->keys[container->count] = key;
-    } else {
-        free(key);
     }
     container->items[container->count] = value;
     container->count++;
     return 0;
 }
 
+static int
+json_enter(json_parse_ctx* c) {
+    if (c->depth >= DSD_JSON_MAX_DEPTH) {
+        json_set_err(c, "nesting too deep");
+        return -1;
+    }
+    c->depth++;
+    return 0;
+}
+
 static dsd_json_node*
 json_parse_object(json_parse_ctx* c) {
+    if (json_enter(c) != 0) {
+        return NULL;
+    }
     dsd_json_node* obj = json_node_new(c, DSD_JSON_OBJECT);
     if (obj == NULL) {
         return NULL;
@@ -769,59 +842,56 @@ json_parse_object(json_parse_ctx* c) {
     json_skip_ws(c);
     if (c->p < c->end && *c->p == '}') {
         c->p++;
+        c->depth--;
         return obj;
     }
     for (;;) {
         json_skip_ws(c);
         char* key = json_parse_string_raw(c);
         if (key == NULL) {
-            dsd_json_free(obj);
-            return NULL;
+            break;
         }
         json_skip_ws(c);
         if (!(c->p < c->end) || *c->p != ':') {
             free(key);
             json_set_err(c, "expected ':'");
-            dsd_json_free(obj);
-            return NULL;
+            break;
         }
         c->p++;
         json_skip_ws(c);
         dsd_json_node* value = json_parse_value(c);
         if (value == NULL) {
             free(key);
-            dsd_json_free(obj);
-            return NULL;
+            break;
         }
         if (json_push_item(obj, key, value) != 0) {
             free(key);
             dsd_json_free(value);
             json_set_err(c, "out of memory");
-            dsd_json_free(obj);
-            return NULL;
+            break;
         }
         json_skip_ws(c);
-        if (!(c->p < c->end)) {
-            json_set_err(c, "unterminated object");
-            dsd_json_free(obj);
-            return NULL;
-        }
-        if (*c->p == ',') {
+        if (c->p < c->end && *c->p == ',') {
             c->p++;
             continue;
         }
-        if (*c->p == '}') {
+        if (c->p < c->end && *c->p == '}') {
             c->p++;
+            c->depth--;
             return obj;
         }
         json_set_err(c, "expected ',' or '}'");
-        dsd_json_free(obj);
-        return NULL;
+        break;
     }
+    dsd_json_free(obj);
+    return NULL;
 }
 
 static dsd_json_node*
 json_parse_array(json_parse_ctx* c) {
+    if (json_enter(c) != 0) {
+        return NULL;
+    }
     dsd_json_node* arr = json_node_new(c, DSD_JSON_ARRAY);
     if (arr == NULL) {
         return NULL;
@@ -830,93 +900,125 @@ json_parse_array(json_parse_ctx* c) {
     json_skip_ws(c);
     if (c->p < c->end && *c->p == ']') {
         c->p++;
+        c->depth--;
         return arr;
     }
     for (;;) {
         json_skip_ws(c);
         dsd_json_node* value = json_parse_value(c);
         if (value == NULL) {
-            dsd_json_free(arr);
-            return NULL;
+            break;
         }
         if (json_push_item(arr, NULL, value) != 0) {
             dsd_json_free(value);
             json_set_err(c, "out of memory");
-            dsd_json_free(arr);
-            return NULL;
+            break;
         }
         json_skip_ws(c);
-        if (!(c->p < c->end)) {
-            json_set_err(c, "unterminated array");
-            dsd_json_free(arr);
-            return NULL;
-        }
-        if (*c->p == ',') {
+        if (c->p < c->end && *c->p == ',') {
             c->p++;
             continue;
         }
-        if (*c->p == ']') {
+        if (c->p < c->end && *c->p == ']') {
             c->p++;
+            c->depth--;
             return arr;
         }
         json_set_err(c, "expected ',' or ']'");
-        dsd_json_free(arr);
-        return NULL;
+        break;
     }
+    dsd_json_free(arr);
+    return NULL;
 }
 
+static int
+json_is_digit(char ch) {
+    return ch >= '0' && ch <= '9';
+}
+
+/* RFC 8259 number: -? (0 | [1-9][0-9]*) (\.[0-9]+)? ([eE][+-]?[0-9]+)? */
 static dsd_json_node*
 json_parse_number(json_parse_ctx* c) {
     const char* start = c->p;
-    if (c->p < c->end && (*c->p == '-' || *c->p == '+')) {
+    if (c->p < c->end && *c->p == '-') {
         c->p++;
     }
-    int digits = 0;
-    while (c->p < c->end && *c->p >= '0' && *c->p <= '9') {
+    if (!(c->p < c->end) || !json_is_digit(*c->p)) {
+        json_set_err(c, "invalid number");
+        return NULL;
+    }
+    if (*c->p == '0') {
         c->p++;
-        digits++;
+        if (c->p < c->end && json_is_digit(*c->p)) {
+            json_set_err(c, "invalid number (leading zero)");
+            return NULL;
+        }
+    } else {
+        while (c->p < c->end && json_is_digit(*c->p)) {
+            c->p++;
+        }
     }
     if (c->p < c->end && *c->p == '.') {
         c->p++;
-        while (c->p < c->end && *c->p >= '0' && *c->p <= '9') {
-            c->p++;
-            digits++;
+        if (!(c->p < c->end) || !json_is_digit(*c->p)) {
+            json_set_err(c, "invalid number (fraction)");
+            return NULL;
         }
-    }
-    if (digits == 0) {
-        json_set_err(c, "invalid number");
-        return NULL;
+        while (c->p < c->end && json_is_digit(*c->p)) {
+            c->p++;
+        }
     }
     if (c->p < c->end && (*c->p == 'e' || *c->p == 'E')) {
         c->p++;
         if (c->p < c->end && (*c->p == '-' || *c->p == '+')) {
             c->p++;
         }
-        int exp_digits = 0;
-        while (c->p < c->end && *c->p >= '0' && *c->p <= '9') {
-            c->p++;
-            exp_digits++;
-        }
-        if (exp_digits == 0) {
-            json_set_err(c, "invalid exponent");
+        if (!(c->p < c->end) || !json_is_digit(*c->p)) {
+            json_set_err(c, "invalid number (exponent)");
             return NULL;
         }
+        while (c->p < c->end && json_is_digit(*c->p)) {
+            c->p++;
+        }
+    }
+    const size_t len = (size_t)(c->p - start);
+    if (len > (size_t)DSD_JSON_MAX_NUMBER_LEN) {
+        json_set_err(c, "number too long");
+        return NULL;
+    }
+    char* literal = (char*)malloc(len + 1U);
+    if (literal == NULL) {
+        json_set_err(c, "out of memory");
+        return NULL;
+    }
+    DSD_MEMCPY(literal, start, len);
+    literal[len] = '\0';
+    errno = 0;
+    char* end = NULL;
+    const double value = strtod(literal, &end);
+    if (end != literal + len || !isfinite(value)) {
+        free(literal);
+        json_set_err(c, "number out of range");
+        return NULL;
     }
     dsd_json_node* n = json_node_new(c, DSD_JSON_NUMBER);
     if (n == NULL) {
+        free(literal);
         return NULL;
     }
-    char tmp[64];
-    const size_t len = (size_t)(c->p - start);
-    if (len >= sizeof tmp) {
-        json_set_err(c, "number too long");
-        dsd_json_free(n);
-        return NULL;
-    }
-    memcpy(tmp, start, len);
-    tmp[len] = '\0';
-    n->number = strtod(tmp, NULL);
+    n->number = value;
+    n->string = literal;
     return n;
+}
+
+static int
+json_match_word(json_parse_ctx* c, const char* word) {
+    const size_t len = strlen(word);
+    if ((size_t)(c->end - c->p) < len || memcmp(c->p, word, len) != 0) {
+        return 0;
+    }
+    c->p += len;
+    return 1;
 }
 
 static dsd_json_node*
@@ -933,38 +1035,32 @@ json_parse_value(json_parse_ctx* c) {
         return json_parse_array(c);
     }
     if (ch == '"') {
+        char* s = json_parse_string_raw(c);
+        if (s == NULL) {
+            return NULL;
+        }
         dsd_json_node* n = json_node_new(c, DSD_JSON_STRING);
         if (n == NULL) {
+            free(s);
             return NULL;
         }
-        n->string = json_parse_string_raw(c);
-        if (n->string == NULL) {
-            dsd_json_free(n);
-            return NULL;
-        }
+        n->string = s;
         return n;
     }
-    if (c->end - c->p >= 4 && memcmp(c->p, "true", 4U) == 0) {
-        c->p += 4;
+    if (json_match_word(c, "true")) {
         dsd_json_node* n = json_node_new(c, DSD_JSON_BOOL);
         if (n != NULL) {
             n->boolean = 1;
         }
         return n;
     }
-    if (c->end - c->p >= 5 && memcmp(c->p, "false", 5U) == 0) {
-        c->p += 5;
-        dsd_json_node* n = json_node_new(c, DSD_JSON_BOOL);
-        if (n != NULL) {
-            n->boolean = 0;
-        }
-        return n;
+    if (json_match_word(c, "false")) {
+        return json_node_new(c, DSD_JSON_BOOL);
     }
-    if (c->end - c->p >= 4 && memcmp(c->p, "null", 4U) == 0) {
-        c->p += 4;
+    if (json_match_word(c, "null")) {
         return json_node_new(c, DSD_JSON_NULL);
     }
-    if (ch == '-' || (ch >= '0' && ch <= '9')) {
+    if (ch == '-' || json_is_digit(ch)) {
         return json_parse_number(c);
     }
     json_set_err(c, "unexpected character");
@@ -973,29 +1069,32 @@ json_parse_value(json_parse_ctx* c) {
 
 int
 dsd_json_parse(const char* text, dsd_json_node** out, char* err, size_t errsz) {
+    if (out != NULL) {
+        *out = NULL;
+    }
     if (text == NULL || out == NULL) {
         return -1;
     }
-    *out = NULL;
     json_parse_ctx c;
     c.p = text;
     c.end = text + strlen(text);
     c.nodes = 0U;
+    c.depth = 0;
     c.err = NULL;
     json_skip_ws(&c);
     dsd_json_node* root = json_parse_value(&c);
+    if (root != NULL) {
+        json_skip_ws(&c);
+        if (c.p != c.end) {
+            json_set_err(&c, "trailing content after JSON value");
+            dsd_json_free(root);
+            root = NULL;
+        }
+    }
     if (root == NULL) {
         if (err != NULL && errsz > 0U) {
-            snprintf(err, errsz, "%s", c.err ? c.err : "parse error");
+            DSD_SNPRINTF(err, errsz, "%s", c.err ? c.err : "parse error");
         }
-        return -1;
-    }
-    json_skip_ws(&c);
-    if (c.p != c.end) {
-        if (err != NULL && errsz > 0U) {
-            snprintf(err, errsz, "trailing content after JSON value");
-        }
-        dsd_json_free(root);
         return -1;
     }
     *out = root;
@@ -1004,11 +1103,11 @@ dsd_json_parse(const char* text, dsd_json_node** out, char* err, size_t errsz) {
 
 const dsd_json_node*
 dsd_json_obj_get(const dsd_json_node* obj, const char* key) {
-    if (obj == NULL || obj->type != DSD_JSON_OBJECT || key == NULL) {
+    if (obj == NULL || obj->type != DSD_JSON_OBJECT || key == NULL || obj->keys == NULL) {
         return NULL;
     }
     for (size_t i = 0U; i < obj->count; i++) {
-        if (obj->keys != NULL && obj->keys[i] != NULL && strcmp(obj->keys[i], key) == 0) {
+        if (obj->keys[i] != NULL && strcmp(obj->keys[i], key) == 0) {
             return obj->items[i];
         }
     }
@@ -1026,35 +1125,48 @@ dsd_json_as_str(const dsd_json_node* n) {
 const char*
 dsd_json_as_str_bounded(const dsd_json_node* n, size_t cap) {
     const char* s = dsd_json_as_str(n);
-    if (s == NULL) {
+    if (s == NULL || cap == 0U || strlen(s) >= cap) {
         return NULL;
-    }
-    const size_t len = strlen(s);
-    if (len >= cap) {
-        return NULL;
-    }
-    for (size_t i = 0U; i < len; i++) {
-        if (s[i] == '\0') {
-            return NULL;
-        }
     }
     return s;
 }
 
+/* The literal of an integer-valued number node: no fraction, no exponent. */
+static const char*
+json_integer_literal(const dsd_json_node* n) {
+    if (n == NULL || n->type != DSD_JSON_NUMBER || n->string == NULL) {
+        return NULL;
+    }
+    return strpbrk(n->string, ".eE") == NULL ? n->string : NULL;
+}
+
+static int
+json_all_digits(const char* s, int hex) {
+    if (s == NULL || s[0] == '\0') {
+        return 0;
+    }
+    for (const char* p = s; *p != '\0'; p++) {
+        if (hex ? dsd_hex_nibble_value((unsigned char)*p) < 0 : !json_is_digit(*p)) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
 int
 dsd_json_as_i64(const dsd_json_node* n, int64_t* out) {
-    if (n == NULL || out == NULL) {
+    const char* lit = json_integer_literal(n);
+    if (lit == NULL || out == NULL) {
         return -1;
     }
-    if (n->type == DSD_JSON_NUMBER) {
-        *out = (int64_t)n->number;
-        return 0;
+    errno = 0;
+    char* end = NULL;
+    const long long v = strtoll(lit, &end, 10);
+    if (errno != 0 || end == lit || end == NULL || *end != '\0') {
+        return -1;
     }
-    if (n->type == DSD_JSON_BOOL) {
-        *out = n->boolean ? 1 : 0;
-        return 0;
-    }
-    return -1;
+    *out = (int64_t)v;
+    return 0;
 }
 
 int
@@ -1062,34 +1174,39 @@ dsd_json_as_u64(const dsd_json_node* n, uint64_t* out) {
     if (n == NULL || out == NULL) {
         return -1;
     }
+    const char* text = NULL;
+    int hex = 0;
     if (n->type == DSD_JSON_NUMBER) {
-        if (n->number < 0.0) {
+        text = json_integer_literal(n);
+    } else if (n->type == DSD_JSON_STRING && n->string != NULL) {
+        text = n->string;
+        if (text[0] == '0' && (text[1] == 'x' || text[1] == 'X')) {
+            text += 2;
+            hex = 1;
+        }
+    }
+    if (!json_all_digits(text, hex)) {
+        return -1;
+    }
+    uint64_t v = 0U;
+    if (hex) {
+        if (dsd_parse_hex_u64_n(text, strlen(text), &v) != 0) {
             return -1;
         }
-        *out = (uint64_t)n->number;
-        return 0;
+    } else if (dsd_parse_uint64_strict(text, 10, UINT64_MAX, &v) != 0) {
+        return -1;
     }
-    if (n->type == DSD_JSON_BOOL) {
-        *out = n->boolean ? 1U : 0U;
-        return 0;
-    }
-    return -1;
+    *out = v;
+    return 0;
 }
 
 int
 dsd_json_as_double(const dsd_json_node* n, double* out) {
-    if (n == NULL || out == NULL) {
+    if (n == NULL || out == NULL || n->type != DSD_JSON_NUMBER) {
         return -1;
     }
-    if (n->type == DSD_JSON_NUMBER) {
-        *out = n->number;
-        return 0;
-    }
-    if (n->type == DSD_JSON_BOOL) {
-        *out = n->boolean ? 1.0 : 0.0;
-        return 0;
-    }
-    return -1;
+    *out = n->number; /* finite: the parser refuses anything else */
+    return 0;
 }
 
 int
@@ -1098,11 +1215,12 @@ dsd_json_as_bool(const dsd_json_node* n, int* out) {
         return -1;
     }
     if (n->type == DSD_JSON_BOOL) {
-        *out = n->boolean;
+        *out = n->boolean ? 1 : 0;
         return 0;
     }
-    if (n->type == DSD_JSON_NUMBER) {
-        *out = (n->number != 0.0) ? 1 : 0;
+    int64_t v = 0;
+    if (dsd_json_as_i64(n, &v) == 0 && (v == 0 || v == 1)) {
+        *out = (int)v;
         return 0;
     }
     return -1;

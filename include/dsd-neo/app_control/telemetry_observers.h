@@ -17,6 +17,10 @@
  * @c dsd_state / @c dsd_opts pointers. An observer must be cheap and must not
  * block: it copies what it needs under its own lock and returns. Dispatch costs
  * one atomic load when no observer is registered (the common case).
+ *
+ * Callbacks run under the registry lock, so dsd_app_telemetry_observer_remove()
+ * returns only after any callback of the removed observer has finished. A
+ * callback must therefore never add or remove an observer.
  */
 
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_APP_CONTROL_TELEMETRY_OBSERVERS_H_
@@ -32,9 +36,10 @@ extern "C" {
 /**
  * @brief Observer callback table. Either callback may be NULL.
  *
- * The state callback is invoked while the decoder holds no snapshot lock, but
- * still on the decode thread, so it must not re-enter the command queue or
- * block. The state/opts pointers are borrowed for the duration of the call.
+ * Callbacks run on the decode thread, outside the snapshot locks but under the
+ * observer registry lock: they must not block, re-enter the command queue, or
+ * add/remove observers. The state/opts pointers are borrowed for the duration
+ * of the call.
  */
 typedef struct dsd_app_telemetry_observer {
     void (*state)(const dsd_state* state, void* user);
@@ -45,16 +50,18 @@ typedef struct dsd_app_telemetry_observer {
 /**
  * @brief Register an observer. @p observer and its @c user must outlive removal.
  *
- * Returns 0 on success, -1 when the table is full or arguments are invalid.
+ * Returns 0 on success, -1 when the table is full, @p observer is already
+ * registered, or the arguments are invalid.
  */
 int dsd_app_telemetry_observer_add(const dsd_app_telemetry_observer* observer);
 
-/** Remove a previously added observer. Returns 0 on success, -1 if not found. */
+/**
+ * @brief Remove a previously added observer. Returns 0 on success, -1 if not found.
+ *
+ * Synchronous: once it returns, no callback of @p observer is running or will
+ * run, so its storage may be released. Never call it from a callback.
+ */
 int dsd_app_telemetry_observer_remove(const dsd_app_telemetry_observer* observer);
-
-/* Internal dispatch points, called by the publishing code. */
-void dsd_app_telemetry_notify_state(const dsd_state* state);
-void dsd_app_telemetry_notify_opts(const dsd_opts* opts);
 
 #ifdef __cplusplus
 }

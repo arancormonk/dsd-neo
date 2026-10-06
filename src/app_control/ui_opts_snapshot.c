@@ -5,7 +5,6 @@
 
 #include <dsd-neo/app_control/notification_status.h>
 #include <dsd-neo/app_control/snapshot.h>
-#include <dsd-neo/app_control/telemetry_observers.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/threading.h>

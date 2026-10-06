@@ -748,16 +748,26 @@ int dsd_user_config_load(const char* path, dsdneoUserConfig* cfg);
 int dsd_user_config_save_atomic(const char* path, const dsdneoUserConfig* cfg);
 
 /**
+ * @brief Reset @p cfg to the state the INI loader starts every file from.
+ *
+ * Not all-zero: some keys default to on (group/private/encrypted call tuning,
+ * persisted lockouts, ...), so a config built with dsd_user_config_apply_key()
+ * must start here or an omitted key would read as "off". Safe on NULL.
+ */
+void dsd_user_config_init(dsdneoUserConfig* cfg);
+
+/**
  * @brief Apply a single user-config key/value pair in memory.
  *
  * The same `[section] key = value` mapping the INI loader uses, exposed so
  * embedders (the JSON API) can build a @ref dsdneoUserConfig from structured
- * input without a file. Section and key are matched case-insensitively; an
- * unknown section or key is ignored (the INI mapper reports nothing back).
- * @p cfg is normally zeroed first, since applying a key only changes the fields
- * it owns.
+ * input without a file. Start from dsd_user_config_init(). Section and key are
+ * matched case-insensitively; @p value is the text an INI line would carry
+ * after its quotes. An unknown section or key is ignored, as the loader
+ * ignores it.
  *
- * @return 1 when @p cfg, @p section and @p key are valid handles, 0 otherwise.
+ * @return 1 when @p cfg, @p section and @p key are valid handles and both
+ *         names are shorter than 64 bytes, 0 otherwise.
  */
 int dsd_user_config_apply_key(dsdneoUserConfig* cfg, const char* section, const char* key, const char* value);
 

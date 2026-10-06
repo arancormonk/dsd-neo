@@ -206,6 +206,38 @@ dsd_socket_set_nonblocking(dsd_socket_t sock, int nonblock) {
 }
 
 int
+dsd_socket_wait(dsd_socket_t sock, int events, unsigned int timeout_ms) {
+    if ((events & (DSD_SOCKET_WAIT_READ | DSD_SOCKET_WAIT_WRITE)) == 0) {
+        return -1;
+    }
+    fd_set readable, writable, errors;
+    FD_ZERO(&readable);
+    FD_ZERO(&writable);
+    FD_ZERO(&errors);
+    FD_SET(sock, &readable);
+    FD_SET(sock, &writable);
+    FD_SET(sock, &errors);
+    struct timeval wait = {(long)(timeout_ms / 1000U), (long)(timeout_ms % 1000U) * 1000L};
+    const int ready = select(0, (events & DSD_SOCKET_WAIT_READ) ? &readable : NULL,
+                             (events & DSD_SOCKET_WAIT_WRITE) ? &writable : NULL, &errors, &wait);
+    if (ready == SOCKET_ERROR) {
+        return dsd_socket_get_error() == WSAEINTR ? 0 : -1;
+    }
+    if (ready == 0) {
+        return 0;
+    }
+    const int broken = FD_ISSET(sock, &errors) ? 1 : 0;
+    int out = 0;
+    if ((events & DSD_SOCKET_WAIT_READ) && (broken || FD_ISSET(sock, &readable))) {
+        out |= DSD_SOCKET_WAIT_READ;
+    }
+    if ((events & DSD_SOCKET_WAIT_WRITE) && (broken || FD_ISSET(sock, &writable))) {
+        out |= DSD_SOCKET_WAIT_WRITE;
+    }
+    return out;
+}
+
+int
 dsd_socket_set_recv_timeout(dsd_socket_t sock, unsigned int timeout_ms) {
     /* Windows uses DWORD (milliseconds) for socket timeouts */
     DWORD tv = timeout_ms;

@@ -126,6 +126,8 @@ static int g_test_last_result;
 /* WP-D1: the last export completion is independent of transient decoder toasts.
  * Protected by g_mu; retained without a reader first having to arm publication. */
 static dsd_app_tg_export_result g_tg_export_result;
+/* The last DSD_APP_RESULT_HISTORY results, at sequence % DSD_APP_RESULT_HISTORY, for dsd_app_tg_export_results_since(). */
+static dsd_app_tg_export_result g_tg_export_history[DSD_APP_RESULT_HISTORY];
 _Static_assert(sizeof(g_tg_export_result.path) == sizeof(((dsd_opts*)0)->group_in_file),
                "retained export path must fit every accepted group-file path");
 
@@ -169,6 +171,29 @@ dsd_app_tg_export_result_get(dsd_app_tg_export_result* out) {
     return out->sequence != 0;
 }
 
+int
+dsd_app_tg_export_results_since(uint64_t after_sequence, dsd_app_tg_export_result* out, int cap) {
+    if (!out || cap <= 0) {
+        return 0;
+    }
+    ensure_mu_init();
+    dsd_mutex_lock(&g_mu);
+    const uint64_t newest = g_tg_export_result.sequence;
+    uint64_t seq = after_sequence + 1U;
+    if (newest >= (uint64_t)DSD_APP_RESULT_HISTORY && seq < newest - (uint64_t)DSD_APP_RESULT_HISTORY + 1U) {
+        seq = newest - (uint64_t)DSD_APP_RESULT_HISTORY + 1U;
+    }
+    int n = 0;
+    for (; seq != 0U && seq <= newest && n < cap; seq++) {
+        const dsd_app_tg_export_result* r = &g_tg_export_history[seq % (uint64_t)DSD_APP_RESULT_HISTORY];
+        if (r->sequence == seq) {
+            DSD_MEMCPY(&out[n++], r, sizeof(*r));
+        }
+    }
+    dsd_mutex_unlock(&g_mu);
+    return n;
+}
+
 /* Called after dispatch, including envelope rejection, before erasing the queued
  * request. Publish only export fields; other command payloads may carry secrets. */
 static void
@@ -200,6 +225,7 @@ tg_export_publish_result_unlocked(const struct dsd_app_command* cmd, int status)
         result.sequence = 1;
     }
     g_tg_export_result = result;
+    g_tg_export_history[result.sequence % (uint64_t)DSD_APP_RESULT_HISTORY] = result;
 }
 
 static void

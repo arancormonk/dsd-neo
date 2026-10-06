@@ -9,8 +9,10 @@
 #include <dsd-neo/platform/sockets.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <netdb.h>
 #include <netinet/in.h>
+#include <poll.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <sys/select.h>
@@ -213,6 +215,43 @@ dsd_socket_set_nonblocking(dsd_socket_t sock, int nonblock) {
         flags &= ~O_NONBLOCK;
     }
     return fcntl(sock, F_SETFL, flags);
+}
+
+int
+dsd_socket_wait(dsd_socket_t sock, int events, unsigned int timeout_ms) {
+    struct pollfd pfd;
+    pfd.fd = sock;
+    pfd.events = 0;
+    pfd.revents = 0;
+    if (events & DSD_SOCKET_WAIT_READ) {
+        pfd.events |= POLLIN;
+    }
+    if (events & DSD_SOCKET_WAIT_WRITE) {
+        pfd.events |= POLLOUT;
+    }
+    if (pfd.events == 0) {
+        return -1;
+    }
+    const int timeout = timeout_ms > (unsigned int)INT_MAX ? INT_MAX : (int)timeout_ms;
+    const int ready = poll(&pfd, 1, timeout);
+    if (ready < 0) {
+        return errno == EINTR ? 0 : -1;
+    }
+    if (ready == 0) {
+        return 0;
+    }
+    if (pfd.revents & POLLNVAL) {
+        return -1;
+    }
+    const int broken = (pfd.revents & (POLLERR | POLLHUP)) != 0;
+    int out = 0;
+    if ((events & DSD_SOCKET_WAIT_READ) && (broken || (pfd.revents & POLLIN))) {
+        out |= DSD_SOCKET_WAIT_READ;
+    }
+    if ((events & DSD_SOCKET_WAIT_WRITE) && (broken || (pfd.revents & POLLOUT))) {
+        out |= DSD_SOCKET_WAIT_WRITE;
+    }
+    return out;
 }
 
 int

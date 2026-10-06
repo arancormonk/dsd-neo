@@ -797,6 +797,11 @@ apply_section_key(dsdneoUserConfig* cfg, const char* section, const char* key_lc
     }
 }
 
+extern "C" void
+dsd_user_config_init(dsdneoUserConfig* cfg) {
+    user_cfg_reset(cfg);
+}
+
 extern "C" int
 dsd_user_config_apply_key(dsdneoUserConfig* cfg, const char* section, const char* key, const char* value) {
     if (cfg == nullptr || section == nullptr || key == nullptr) {
@@ -807,6 +812,9 @@ dsd_user_config_apply_key(dsdneoUserConfig* cfg, const char* section, const char
     }
     char section_lc[64];
     char key_lc[64];
+    if (strlen(section) >= sizeof section_lc || strlen(key) >= sizeof key_lc) {
+        return 0; /* no section or key name is that long; a cut one could name another */
+    }
     DSD_SNPRINTF(section_lc, sizeof section_lc, "%s", section);
     DSD_SNPRINTF(key_lc, sizeof key_lc, "%s", key);
     user_config_lowercase_ascii(section_lc);

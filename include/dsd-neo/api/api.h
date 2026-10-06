@@ -10,11 +10,13 @@
  * A desktop-only server that wraps the app-control command queue and the
  * multi-consumer telemetry observers. One newline-delimited JSON object per
  * line flows in both directions. It is independent of any frontend, so it can
- * run alongside the terminal/Qt UI or headless.
+ * run alongside the terminal UI or headless. The protocol is documented in
+ * docs/api.md.
  *
- * Lifecycle: call dsd_api_start() after options are parsed and before/around
- * the engine run; call dsd_api_stop() at shutdown. Starting is idempotent and
- * a port of 0 disables the server.
+ * Lifecycle: call dsd_api_start() once the app-control frontend runtime is open
+ * (dsd_app_frontend_runtime_start()) and dsd_api_stop() before it closes; while
+ * no runtime is open, commands are refused. Neither may be called from a
+ * telemetry observer callback.
  */
 
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_API_API_H_
@@ -27,17 +29,21 @@ extern "C" {
 /** Protocol version carried in the welcome/hello exchange. */
 #define DSD_API_PROTOCOL_VERSION 1
 
-/** Longest accepted bind address (numeric IPv4). */
+/** Room for a numeric IPv4 bind address. */
 enum { DSD_API_BIND_ADDR_SIZE = 64 };
 
-/** Longest accepted shared-secret token. */
+/** Room for the shared-secret token, terminator included (tokens are at most 255 bytes). */
 enum { DSD_API_TOKEN_SIZE = 256 };
 
+/** dsd_api_config::port value that binds an OS-chosen port (read it back with dsd_api_bound_port()). */
+enum { DSD_API_PORT_EPHEMERAL = -1 };
+
 typedef struct dsd_api_config {
-    int port;                               /**< 0 disables the server. */
-    char bind_addr[DSD_API_BIND_ADDR_SIZE]; /**< Numeric IPv4; defaults to 127.0.0.1. */
-    char token[DSD_API_TOKEN_SIZE];         /**< Shared secret; empty means no auth. */
-    int max_clients;                        /**< Concurrent session cap; 0 for a default. */
+    int port;                               /**< 1..65535, DSD_API_PORT_EPHEMERAL, or 0 to disable. */
+    char bind_addr[DSD_API_BIND_ADDR_SIZE]; /**< Numeric IPv4; empty means 127.0.0.1. */
+    char token[DSD_API_TOKEN_SIZE];         /**< Shared secret; empty means no auth (loopback only). */
+    int max_clients;                        /**< Concurrent session cap, 1..32; 0 for the default of 8. */
+    int auth_timeout_ms; /**< A connection that has not authenticated by then is closed; 0 for the default 10000. */
 } dsd_api_config;
 
 /**
@@ -45,7 +51,8 @@ typedef struct dsd_api_config {
  *
  * Fails (returns non-zero) on an invalid configuration, a non-loopback bind
  * without a token, a socket failure, or when the server is already running with
- * a different configuration. Safe to call again with the same configuration.
+ * a different configuration. Starting again with the same configuration is a
+ * no-op that succeeds.
  *
  * @return 0 on success (including port 0 / disabled), non-zero on failure.
  */
@@ -57,7 +64,7 @@ void dsd_api_stop(void);
 /** Nonzero when the server is listening. */
 int dsd_api_is_running(void);
 
-/** The bound TCP port, or 0 when not running. Useful when port 0 requested an ephemeral port. */
+/** The bound TCP port, or 0 when not running. Reports the port DSD_API_PORT_EPHEMERAL picked. */
 int dsd_api_bound_port(void);
 
 #ifdef __cplusplus
