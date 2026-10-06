@@ -62,8 +62,9 @@ enum {
     PNSQ_STALE_WINDOWS = 250,     /* 5 s */
     PNSQ_REFUTE_RUNS = 10,        /* a step is refuted by PNSQ_REFUTE_MIN of the last PNSQ_REFUTE_RUNS runs at it */
     PNSQ_REFUTE_MIN = 8,
-    PNSQ_REFUTED_HOLD_WINDOWS = 30, /* 0.6 s: the evidence a stretch needs to step down again after a refutation */
-    PNSQ_BACK_HOLD_WINDOWS = 10,    /* 0.2 s: the evidence noise at a refuted step's level needs to take it back */
+    PNSQ_REFUTED_HOLD_WINDOWS = 30,      /* 0.6 s: the evidence a stretch needs to step down again after a refutation */
+    PNSQ_BACK_HOLD_WINDOWS = 10,         /* 0.2 s: the evidence noise at a refuted step's level needs to take it back */
+    PNSQ_BACK_HOLD_REFUTED_WINDOWS = 40, /* 0.8 s in a row, in the stretch whose carrier refuted it */
 };
 
 _Static_assert(PNSQ_REFUTE_RUNS < 32, "the refutation runs fit an unsigned int");
@@ -95,6 +96,7 @@ typedef struct {
 typedef struct {
     int shaped;  /* noise's spectrum: what noise at another gain looks like */
     int speech;  /* a voice band clearly louder than noise's: modulation */
+    int louder;  /* a voice band louder than noise's by more than the shape tolerances (lighter modulation) */
     double step; /* the band's move: the participating sub-bands' median, dB */
 } pnsq_shape;
 
@@ -599,6 +601,7 @@ pnsq_shape_against(const dsd_pcm_noise_squelch_plan* plan, const pnsq_against* a
     }
     out->shaped = level && fabs(dv) <= k_shape_tol_db && dp_abs <= k_shape_part_tol_db;
     out->speech = dv > k_refute_factor * k_shape_tol_db || dp_up > k_refute_factor * k_shape_part_tol_db;
+    out->louder = dv > k_shape_tol_db || dp_up > k_shape_part_tol_db;
 }
 
 /* The run @p r against the reference. */
@@ -708,9 +711,10 @@ pnsq_bits(unsigned int v) {
    PNSQ_REFUTE_RUNS such runs with a voice band clearly louder than noise's (noise turned down keeps noise's; a carrier
    relaying noise that matched it carries speech), or more than k_steady_db above it without noise's spectrum (noise is
    the ceiling: no carrier reads louder than noise at its gain, and noise turned back up keeps its spectrum), or, for a
-   step held over a proven reference (one a refutation brought back: the step is contested), anywhere without noise's
-   spectrum, louder voice or not (a carrier that relayed noise, carrying speech more lightly than before, after its
-   noise took the step again). A carrier N dB under it refutes nothing. The reference from before the first held step
+   step held over a proven reference (one a refutation brought back: the step is contested), with a voice band louder
+   than noise's by more than the shape tolerances alone (a carrier that relayed noise, carrying speech more lightly than
+   before, after its noise took the step again; noise whose own spectrum changed, or a dead carrier, reads quieter
+   there, not louder). A carrier N dB under it refutes nothing. The reference from before the first held step
    comes back, proven, the step is kept in case noise at its level takes it back (pnsq_take_back()), and the stretch
    steps down again only on a longer hold of evidence (pnsq_lowered()). */
 static void
@@ -722,7 +726,7 @@ pnsq_refute(dsd_pcm_noise_squelch* t, const pnsq_run* r, pnsq_shape* sh) {
     if (r->sa <= ra - t->open_db) {
         return;
     }
-    const int evidence = sh->speech || (!sh->shaped && (t->prior.proven || r->sa > ra + k_steady_db));
+    const int evidence = sh->speech || (t->prior.proven && sh->louder) || (!sh->shaped && r->sa > ra + k_steady_db);
     const unsigned int mask = (1U << PNSQ_REFUTE_RUNS) - 1U;
     t->st_ring = ((t->st_ring << 1) | (evidence ? 1U : 0U)) & mask;
     t->st_ring_n += t->st_ring_n < PNSQ_REFUTE_RUNS ? 1 : 0;
@@ -747,14 +751,16 @@ pnsq_refute(dsd_pcm_noise_squelch* t, const pnsq_run* r, pnsq_shape* sh) {
 }
 
 /* A refuted step taken back: the refuting carrier was weak traffic over noise genuinely turned down (or speech over a
-   source the stale rule rightly took), and noise comes back at the step's level after it. Runs within k_steady_db of
-   it, in a stretch with no refutation of its own (the carrier's own pauses, a relay's noise or a dead carrier between
-   its bursts, share the stretch that refuted the step), gather evidence against it; once PNSQ_BACK_HOLD_WINDOWS of
-   them hold most with its spectrum and the voice band steady, it is the reference again, and the one it replaces
-   (proven) is held as the step's prior. Modulation against it starts the evidence over. */
+   source the stale rule rightly took), and noise comes back at the step's level after it. Runs in a row within
+   k_steady_db of it, without modulation against it, gather evidence; once PNSQ_BACK_HOLD_WINDOWS of them hold most with
+   its spectrum and the voice band steady, it is the reference again, and the one it replaces (proven) is held as the
+   step's prior. In the stretch whose carrier refuted it, the hold is PNSQ_BACK_HOLD_REFUTED_WINDOWS: the carrier's own
+   shorter pauses (a relay's noise between its speech, a dead carrier between its bursts) leave the step refuted, while
+   noise after a weak carrier, sharing its stretch, takes the step back within the gate's 1 s bound and ends the
+   stretch's refutations and open time. */
 static void
 pnsq_take_back(dsd_pcm_noise_squelch* t, const pnsq_run* r, pnsq_shape* sh) {
-    if (!t->alt.valid || t->st_refutes > 0) {
+    if (!t->alt.valid) {
         return;
     }
     unsigned char alt_part[DSD_PCM_NOISE_SQUELCH_MAX_BANDS];
@@ -762,17 +768,15 @@ pnsq_take_back(dsd_pcm_noise_squelch* t, const pnsq_run* r, pnsq_shape* sh) {
     const pnsq_against a = {t->alt.ref, alt_part, t->alt.v_ref_db, t->alt.vp_ref_db};
     pnsq_shape ash;
     pnsq_shape_against(&t->plan, &a, r, &ash);
-    if (ash.speech) {
+    if (ash.speech || fabs(r->sa - pnsq_total_db(&t->plan, t->alt.ref)) > k_steady_db) {
         t->st_bn = 0;
         t->st_bs = 0;
         return;
     }
-    if (fabs(r->sa - pnsq_total_db(&t->plan, t->alt.ref)) > k_steady_db) {
-        return;
-    }
     t->st_bn++;
     t->st_bs += (ash.shaped && r->v_steady) ? 1 : 0;
-    if (t->st_bn < PNSQ_BACK_HOLD_WINDOWS || (double)t->st_bs < k_gain_steady_fraction * (double)t->st_bn) {
+    const int hold = t->st_refutes > 0 ? PNSQ_BACK_HOLD_REFUTED_WINDOWS : PNSQ_BACK_HOLD_WINDOWS;
+    if (t->st_bn < hold || (double)t->st_bs < k_gain_steady_fraction * (double)t->st_bn) {
         return;
     }
     dsd_pcm_noise_squelch_held restored;
@@ -786,6 +790,10 @@ pnsq_take_back(dsd_pcm_noise_squelch* t, const pnsq_run* r, pnsq_shape* sh) {
     t->st_pending = 0;
     t->st_acc = 0;
     t->st_at_ref = 1;
+    /* Noise is back: the stretch's refutations and open time are history. */
+    t->st_refutes = 0;
+    t->st_on = 0;
+    t->st_os = 0;
     *sh = ash;
 }
 

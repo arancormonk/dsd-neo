@@ -67,6 +67,10 @@ typedef struct {
     double butter[2][5];
     double butter_state[4];
     int butter_on;
+    /* An audio high-pass after those (pcm_tap_butter_hp()): one biquad and its state. */
+    double high[5];
+    double high_state[2];
+    int high_on;
 } pcm_tap;
 
 /* A biquad (b0, b1, b2, a1, a2) at @p f0_hz with quality @p q: a high-pass when @p high, else a low-pass. */
@@ -98,6 +102,15 @@ pcm_tap_butter_lp(pcm_tap* s, double hz) {
     pcm_tap_biquad_q(s->butter[1], hz, 0, 1.30656296487637652);
     DSD_MEMSET(s->butter_state, 0, sizeof(s->butter_state));
     s->butter_on = 1;
+}
+
+/* Switch on a second-order Butterworth audio high-pass at @p hz mid-session: the source's own spectrum changes under
+   the voice band while the band above it stays. */
+static inline void
+pcm_tap_butter_hp(pcm_tap* s, double hz) {
+    pcm_tap_biquad(s->high, hz, 1);
+    DSD_MEMSET(s->high_state, 0, sizeof(s->high_state));
+    s->high_on = 1;
 }
 
 /* One sample through a biquad @p c with state @p st (transposed direct form II). */
@@ -244,6 +257,9 @@ pcm_tap_raw(pcm_tap* s, pcm_tap_kind kind, double cnr_db, double tone_hz) {
     if (s->butter_on) {
         y = pcm_tap_biquad_run(s->butter[1], &s->butter_state[2],
                                pcm_tap_biquad_run(s->butter[0], &s->butter_state[0], y));
+    }
+    if (s->high_on) {
+        y = pcm_tap_biquad_run(s->high, s->high_state, y);
     }
     return y;
 }

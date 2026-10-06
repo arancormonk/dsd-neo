@@ -59,16 +59,17 @@
  *    stretch then steps down again only on 0.6 s of evidence with no such modulation in it, doubled for each further
  *    refutation in the stretch. While a step is held, only a stretch with noise's spectrum replaces the reference or
  *    is tracked.
- *  - The step refuted is kept too (and cached), until a new reference replaces it: 0.2 s of runs within 1.5 dB of its
- *    level, three in four with its spectrum against it and the voice band steady, in a stretch with no refutation of
- *    its own (noise come back after the carrier; the carrier's own pauses share the stretch that refuted the step),
- *    take it back, and the reference it replaces is held as its prior; modulation against it starts over. Weak traffic
- *    over noise genuinely turned down refutes a step just as a stronger carrier over relayed noise taken for noise
- *    does, and nothing tells the two apart: the traffic plays, and the noise after it takes the step back.
+ *  - The step refuted is kept too (and cached), until a new reference replaces it: 0.2 s of runs in a row within
+ *    1.5 dB of its level, three in four with its spectrum against it and the voice band steady, take it back
+ *    (modulation against it starts over), and the reference it replaces is held as its prior. In the stretch whose
+ *    carrier refuted it, 0.8 s in a row: the carrier's own shorter pauses leave the step refuted, while noise after a
+ *    weak carrier, sharing its stretch, takes it back within 1 s and ends the stretch's refutations. Weak traffic over
+ *    noise genuinely turned down refutes a step just as a stronger carrier over relayed noise taken for noise does, and
+ *    nothing tells the two apart: the traffic plays, and the noise after it takes the step back.
  *  - A reference a refutation brought back is proven, and a step held over it (taken back, or stepped down again) is
- *    contested: eight of ten runs less than N dB under it without noise's spectrum refute it, louder voice or not (a
- *    carrier that relayed noise carrying speech more lightly than before). A below-threshold carrier after weak
- *    traffic and its noise plays too.
+ *    contested: eight of ten runs less than N dB under it with a voice band louder than noise's by more than the
+ *    shape tolerances alone refute it too (a carrier that relayed noise, carrying speech more lightly than before).
+ *    Noise whose own spectrum changed, or a dead carrier, reads quieter there, not louder.
  *  - A steady run at or above the reference less 1.5 dB tracks it with a 1 s time constant (slow drift).
  *  - Stale quieting: the gate open for 5 s on one stretch whose voice band held stationary in 90 % of its windows reads
  *    a level that dropped (a source's volume lowered out of clipping, its audio low-pass switched on), not speech: the
