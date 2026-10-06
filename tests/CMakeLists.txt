@@ -14698,13 +14698,33 @@ target_link_libraries(dsd-neo_test_runtime_decode_clock PRIVATE dsd-neo_runtime)
 add_test(NAME RUNTIME_DECODE_CLOCK COMMAND dsd-neo_test_runtime_decode_clock)
 
 if(DSD_ENABLE_API)
-    set(_dsd_neo_api_test_deps
-        dsd-neo_api
-        dsd-neo_engine
-        dsd-neo_feature_rtlsdr
-        dsd-neo_feature_codec2
-        ${LIBS}
-    )
+    # The API reaches the engine only through app-control, so engine.c and the
+    # radio and protocol archives come after ${LIBS} in CMake's order. Linkers
+    # that default to --as-needed (Debian/Ubuntu) would drop librtlsdr and Codec2
+    # before anything references them; group the static providers ahead of
+    # ${LIBS}, as ENGINE_CHANNEL_SCAN_SQUELCH_GATE does.
+    if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+        set(_dsd_neo_api_test_deps
+            dsd-neo_api
+            dsd-neo_feature_rtlsdr
+            dsd-neo_feature_codec2
+            "-Wl,--start-group"
+            dsd-neo_app_control
+            dsd-neo_engine
+            dsd-neo_dispatch
+            ${_DSD_RUNTIME_CLI_PARSE_LIBS}
+            "-Wl,--end-group"
+            ${LIBS}
+        )
+    else()
+        set(_dsd_neo_api_test_deps
+            dsd-neo_api
+            dsd-neo_engine
+            dsd-neo_feature_rtlsdr
+            dsd-neo_feature_codec2
+            ${LIBS}
+        )
+    endif()
 
     # The JSON tests feed NaN and infinity to the writer, and the payload test
     # compiles json.c itself, so it does not inherit src/api's IEEE property.
@@ -14741,6 +14761,13 @@ if(DSD_ENABLE_API)
         PRIVATE ${_dsd_neo_api_test_deps}
     )
     add_test(NAME API_COMMANDS COMMAND dsd-neo_test_api_commands)
+    # Link with --as-needed everywhere so a local Linux build catches an ordering regression.
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        target_link_options(
+            dsd-neo_test_api_commands
+            PRIVATE "LINKER:--as-needed"
+        )
+    endif()
 
     # The command table against stand-ins for the app-control submit API, so
     # each case can check the payload bytes it builds.
@@ -14778,6 +14805,13 @@ if(DSD_ENABLE_API)
         PRIVATE ${_dsd_neo_api_test_deps}
     )
     add_test(NAME API_SERVER COMMAND dsd-neo_test_api_server)
+    # Link with --as-needed everywhere so a local Linux build catches an ordering regression.
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        target_link_options(
+            dsd-neo_test_api_server
+            PRIVATE "LINKER:--as-needed"
+        )
+    endif()
     set_tests_properties(API_SERVER PROPERTIES TIMEOUT 120)
     unset(_dsd_neo_api_test_deps)
     unset(_dsd_neo_api_ieee_option)
