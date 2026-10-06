@@ -14,6 +14,7 @@
 
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/platform/audio.h>
 #include <stdint.h>
