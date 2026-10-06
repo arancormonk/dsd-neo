@@ -1603,7 +1603,7 @@ test_snapshot_rtl_and_rtltcp_device_specs(void) {
     opts.rtl_gain_value = 28;
     opts.rtlsdr_ppm_error = 3;
     opts.rtl_dsp_bw_khz = 24;
-    opts.rtl_squelch_level = 1e-30; /* under the rtl_sql key's range: saved at its -100 dB floor */
+    opts.rtl_squelch_level = 1e-30; /* under pwr_to_dB()'s floor: saved at -120 dB, the key's lowest */
     opts.rtl_volume_multiplier = 5;
 
     dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
@@ -1614,7 +1614,7 @@ test_snapshot_rtl_and_rtltcp_device_specs(void) {
         rc |= 1;
     }
     if (strcmp(snap.rtl_freq, "769006250") != 0 || snap.rtl_gain != 28 || snap.rtl_ppm != 3 || snap.rtl_bw_khz != 24
-        || snap.rtl_sql != -100 || snap.rtl_volume != 5 || !snap.rtl_ppm_is_set) {
+        || snap.rtl_sql != -120 || snap.rtl_volume != 5 || !snap.rtl_ppm_is_set) {
         DSD_FPRINTF(stderr, "snapshot RTLTCP tuning mismatch freq=%s gain=%d ppm=%d bw=%d sql=%d vol=%d\n",
                     snap.rtl_freq, snap.rtl_gain, snap.rtl_ppm, snap.rtl_bw_khz, snap.rtl_sql, snap.rtl_volume);
         rc |= 1;
@@ -1995,8 +1995,8 @@ test_pcm_squelch_keys_roundtrip(void) {
             rc |= 1;
         }
     }
-    /* The unset level (-110 dB, under the key's -100..0 range) saves as -100, still open, and a default Pulse
-       session's save validates without a range warning. */
+    /* The unset level (-110 dB) saves as -110, inside the key's -120..0 range: a default Pulse session's save validates
+       without a range warning, and loads back the same threshold, so a level gate decides as it did before. */
     DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "pulse");
     opts.audio_in_type = AUDIO_IN_PULSE;
     opts.rtl_squelch_mode = DSD_SQUELCH_MODE_LEVEL;
@@ -2005,7 +2005,7 @@ test_pcm_squelch_keys_roundtrip(void) {
     if (render_config_to_buffer(&snap, text, sizeof text) != 0) {
         return 1;
     }
-    rc |= expect_contains("pulse unset level render", text, "rtl_sql = -100");
+    rc |= expect_contains("pulse unset level render", text, "rtl_sql = -110");
     if (write_temp_config(text, path, sizeof path) != 0) {
         return 1;
     }
@@ -2026,6 +2026,24 @@ test_pcm_squelch_keys_roundtrip(void) {
         rc |= 1;
     }
     dsdcfg_diags_free(&diags);
+    if (write_temp_config(text, path, sizeof path) != 0) {
+        return 1;
+    }
+    dsdneoUserConfig unset;
+    const int unset_loaded = dsd_user_config_load(path, &unset);
+    (void)remove(path);
+    opts.rtl_squelch_level = pow(10.0, -6.0);
+    if (unset_loaded != 0) {
+        DSD_FPRINTF(stderr, "the saved unset level did not load (rc %d)\n", unset_loaded);
+        rc |= 1;
+    } else {
+        dsd_apply_user_config_to_opts(&unset, &opts, &state);
+        const double want = pow(10.0, -11.0);
+        if (fabs(opts.rtl_squelch_level - want) > want * 1e-9) {
+            DSD_FPRINTF(stderr, "the saved unset level reloaded as %g, not %g\n", opts.rtl_squelch_level, want);
+            rc |= 1;
+        }
+    }
     /* A WAV session's level is saved too. */
     DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "capture.wav");
     opts.audio_in_type = AUDIO_IN_WAV;
