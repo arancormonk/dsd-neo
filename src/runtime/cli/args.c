@@ -359,7 +359,8 @@ cli_has_config_one_shot_arg(int argc, char** argv) {
     if (argc <= 1 || !argv) {
         return 0;
     }
-    for (int i = 1; i < argc; i++) {
+    for (int i = 1, advance = 1; i < argc; i += advance) {
+        advance = 1;
         const char* arg = argv[i];
         if (!arg) {
             break;
@@ -368,7 +369,7 @@ cli_has_config_one_shot_arg(int argc, char** argv) {
             break;
         }
         if (dsd_cli_option_takes_free_value(arg)) {
-            i++; /* a token is any text, a one-shot option's name included */
+            advance = 2; /* a token is any text, a one-shot option's name included */
             continue;
         }
         if (strcmp(arg, "--validate-config") == 0 || strncmp(arg, "--validate-config=", 18) == 0

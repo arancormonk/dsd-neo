@@ -89,12 +89,13 @@ main(void) {
         rc = 1;
     }
     static const char* const k_want[] = {"runtime_start", "api_start", "runtime_stop", "api_stop"};
+    _Static_assert(sizeof k_want / sizeof k_want[0] <= MAX_CALLS, "the record holds every expected call");
     const int want_count = (int)(sizeof k_want / sizeof k_want[0]);
     if (g_call_count != want_count) {
         DSD_FPRINTF(stderr, "got %d lifecycle calls, want %d\n", g_call_count, want_count);
         rc = 1;
     }
-    for (int i = 0; i < want_count && i < g_call_count && i < MAX_CALLS; i++) {
+    for (int i = 0; i < want_count && i < g_call_count; i++) {
         if (strcmp(g_calls[i], k_want[i]) != 0) {
             DSD_FPRINTF(stderr, "call %d: got %s want %s\n", i, g_calls[i], k_want[i]);
             rc = 1;
