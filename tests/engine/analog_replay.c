@@ -55,6 +55,14 @@
  * auto squelch's cases replay one burst at two levels this way and hold both to the same bounds, with no second
  * fixture committed. The copy and its sidecar go to a private temporary directory the host removes when it exits; it
  * refuses a gain that would clip more than one byte in a thousand, which would no longer be the same signal.
+ *
+ * --analog-pcm-tap RATE (issue #628) replays the capture as audio input instead: the host FM-demodulates the committed
+ * capture as a scanner's discriminator tap, or an SDR program with its audio filtering off, would (a 16 kHz channel
+ * filter and a polar discriminator, nothing after them), resamples it to RATE Hz (a divisor of the capture's rate),
+ * writes it as a 16-bit mono WAV to the same private directory and runs `-i TAP.wav` in place of `--iq-replay`.
+ * --analog-pcm-gain-db scales that audio (a louder source) and --analog-pcm-lowpass-hz low-passes it first (an SDR
+ * program's audio filter). Stream time on audio input is the WAV's read position, in frames at its own rate, so the
+ * bounds mean the same as on a replay; it needs no radio support, and the PCM cases run in every build.
  */
 
 #include <dsd-neo/core/channel_mode.h>
@@ -81,6 +89,7 @@
 #include <dsd-neo/runtime/squelch.h>
 #include <dsd-neo/runtime/udp_audio_hooks.h>
 #include <math.h>
+#include <sndfile.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -187,6 +196,10 @@ static int g_failed;
 static analog_limit g_scan_row;
 /* The gain the replayed copy of the capture is scaled by (--analog-iq-gain-db); unset replays the capture itself. */
 static analog_limit g_iq_gain_db;
+/* Audio input made from the capture (--analog-pcm-tap): its rate, gain and low-pass; unset replays the capture. */
+static analog_limit g_pcm_tap_hz;
+static analog_limit g_pcm_gain_db;
+static analog_limit g_pcm_lowpass_hz;
 
 /* ---- argument handling ---------------------------------------------------------------------------------------- */
 
@@ -216,6 +229,9 @@ static const analog_scalar_arg k_scalar_args[] = {
     {"--analog-max-tone-lock-ms", &g_limits.max_tone_lock_ms, 0.0, 1e9},
     {"--analog-scan-row", &g_scan_row, 0.0, 65535.0},
     {"--analog-iq-gain-db", &g_iq_gain_db, -40.0, 40.0},
+    {"--analog-pcm-tap", &g_pcm_tap_hz, 8000.0, 96000.0},
+    {"--analog-pcm-gain-db", &g_pcm_gain_db, -40.0, 20.0},
+    {"--analog-pcm-lowpass-hz", &g_pcm_lowpass_hz, 1000.0, 20000.0},
 };
 
 static const char* const k_probe_limit_args[PROBE_LIMIT_COUNT] = {
@@ -252,6 +268,9 @@ analog_usage(void) {
                 "  --analog-probe-{min,max}-dbfs HZ:DB  probe level relative to full scale\n"
                 "  --analog-scan-row ROW             enter row ROW of the -C channel map before the replay\n"
                 "  --analog-iq-gain-db DB            replay a copy of the capture scaled by DB (a hotter receiver)\n"
+                "  --analog-pcm-tap RATE             run the capture's discriminator audio as a RATE Hz WAV input\n"
+                "  --analog-pcm-gain-db DB           scale that audio by DB\n"
+                "  --analog-pcm-lowpass-hz HZ        low-pass that audio at HZ first, as an SDR program's filter\n"
                 "Other --analog-* arguments go to dsd-neo unchanged.\n");
 }
 
@@ -753,10 +772,246 @@ analog_replay_scaled(char** args, int count) {
     return -1;
 }
 
-/* Removes the scaled copy, if one was made. */
+/* ---- discriminator tap (--analog-pcm-tap) -------------------------------------------------------------------- */
+
+#define ANALOG_TAP_WAV            "tap.wav"
+#define ANALOG_TAP_WAV_HEADER     44U
+#define ANALOG_TAP_CHANNEL_HZ     8000.0 /* the channel filter's cutoff: a 16 kHz channel */
+#define ANALOG_TAP_CHANNEL_TAPS   127
+#define ANALOG_TAP_LPF_TAPS       255
+/* The anti-alias filter ahead of a rate change ends at this fraction of the new rate, as a resampler's does. */
+#define ANALOG_TAP_ALIAS_FRACTION 0.45
+/* The discriminator's +/-pi radians at a quarter of int16 full scale before any gain: an unclipped tap with room for a
+   hotter source. */
+#define ANALOG_TAP_SCALE          (0.25 * 32767.0 / ANALOG_PI)
+
+static uint64_t g_tap_frames; /* frames the tap WAV holds */
+static int g_tap_rate_hz;     /* ... and its rate */
+static char g_tap_arg[DSD_TEST_PATH_MAX];
+
+/* A Blackman-windowed sinc low-pass of @p taps (odd) ending at @p cutoff, a fraction of the rate; unity at DC. */
+static void
+analog_tap_lowpass(double cutoff, int taps, double* h) {
+    const int mid = taps / 2;
+    double sum = 0.0;
+    for (int i = 0; i < taps; i++) {
+        const int k = i - mid;
+        const double sinc = k == 0 ? 2.0 * cutoff : sin(2.0 * ANALOG_PI * cutoff * (double)k) / (ANALOG_PI * (double)k);
+        const double phase = 2.0 * ANALOG_PI * (double)i / (double)(taps - 1);
+        h[i] = sinc * (0.42 - (0.5 * cos(phase)) + (0.08 * cos(2.0 * phase)));
+        sum += h[i];
+    }
+    for (int i = 0; i < taps; i++) {
+        h[i] /= sum;
+    }
+}
+
+/* @p x filtered by @p h, centred, so the filter adds no delay: what a capture holds at a time stays at that time. */
+static void
+analog_tap_filter(const double* x, size_t n, const double* h, int taps, double* y) {
+    const long mid = taps / 2;
+    for (size_t i = 0; i < n; i++) {
+        double acc = 0.0;
+        for (int j = 0; j < taps; j++) {
+            const long at = (long)i + mid - (long)j;
+            if (at >= 0 && at < (long)n) {
+                acc += h[j] * x[at];
+            }
+        }
+        y[i] = acc;
+    }
+}
+
+/* The sidecar's sample_rate_hz; 0 when it has none. */
+static long
+analog_tap_capture_rate(const char* json) {
+    static const char k_key[] = "\"sample_rate_hz\"";
+    const char* key = strstr(json, k_key);
+    if (key == NULL) {
+        return 0;
+    }
+    const char* at = strchr(key + sizeof(k_key) - 1U, ':');
+    if (at == NULL) {
+        return 0;
+    }
+    char* end = NULL;
+    const long rate = strtol(at + 1, &end, 10);
+    return (end != at + 1 && rate > 0) ? rate : 0;
+}
+
+static void
+analog_tap_put_le(unsigned char* p, uint32_t value, int bytes) {
+    for (int i = 0; i < bytes; i++) {
+        p[i] = (unsigned char)((value >> (8 * i)) & 0xFFU);
+    }
+}
+
+/* Writes @p count int16 samples at @p rate_hz as a mono WAV into the private directory; 0, or -1. */
+static int
+analog_tap_write_wav(const int16_t* pcm, size_t count, int rate_hz) {
+    const size_t data_len = count * 2U;
+    unsigned char* buf = (unsigned char*)malloc(ANALOG_TAP_WAV_HEADER + data_len);
+    if (buf == NULL) {
+        return -1;
+    }
+    DSD_MEMCPY(buf, "RIFF", 4);
+    analog_tap_put_le(buf + 4, (uint32_t)(36U + data_len), 4);
+    DSD_MEMCPY(buf + 8, "WAVEfmt ", 8);
+    analog_tap_put_le(buf + 16, 16U, 4);                    /* fmt chunk size */
+    analog_tap_put_le(buf + 20, 1U, 2);                     /* PCM */
+    analog_tap_put_le(buf + 22, 1U, 2);                     /* mono */
+    analog_tap_put_le(buf + 24, (uint32_t)rate_hz, 4);      /* sample rate */
+    analog_tap_put_le(buf + 28, (uint32_t)rate_hz * 2U, 4); /* byte rate */
+    analog_tap_put_le(buf + 32, 2U, 2);                     /* block align */
+    analog_tap_put_le(buf + 34, 16U, 2);                    /* bits */
+    DSD_MEMCPY(buf + 36, "data", 4);
+    analog_tap_put_le(buf + 40, (uint32_t)data_len, 4);
+    for (size_t i = 0; i < count; i++) {
+        analog_tap_put_le(buf + ANALOG_TAP_WAV_HEADER + (2U * i), (uint32_t)(uint16_t)pcm[i], 2);
+    }
+    const int rc = analog_write_scaled(ANALOG_TAP_WAV, buf, ANALOG_TAP_WAV_HEADER + data_len);
+    free(buf);
+    return rc;
+}
+
+/* The capture's discriminator output at its own rate: a 16 kHz channel filter, then the phase step per sample. */
+static double*
+analog_tap_discriminate(const analog_capture* cap, size_t n, long rate_in) {
+    double h[ANALOG_TAP_CHANNEL_TAPS];
+    analog_tap_lowpass(ANALOG_TAP_CHANNEL_HZ / (double)rate_in, ANALOG_TAP_CHANNEL_TAPS, h);
+    /* Zeroed: GCC at -O2 cannot see that the loops below fill it before each filter reads it. */
+    double* raw = (double*)calloc(n, sizeof(double));
+    double* i_ch = (double*)malloc(n * sizeof(double));
+    double* q_ch = (double*)malloc(n * sizeof(double));
+    double* disc = (double*)malloc(n * sizeof(double));
+    if (raw == NULL || i_ch == NULL || q_ch == NULL || disc == NULL) {
+        free(raw);
+        free(i_ch);
+        free(q_ch);
+        free(disc);
+        return NULL;
+    }
+    for (size_t k = 0; k < n; k++) {
+        raw[k] = ((double)cap->data[2U * k] - ANALOG_CU8_MIDPOINT) / ANALOG_CU8_MIDPOINT;
+    }
+    analog_tap_filter(raw, n, h, ANALOG_TAP_CHANNEL_TAPS, i_ch);
+    for (size_t k = 0; k < n; k++) {
+        raw[k] = ((double)cap->data[(2U * k) + 1U] - ANALOG_CU8_MIDPOINT) / ANALOG_CU8_MIDPOINT;
+    }
+    analog_tap_filter(raw, n, h, ANALOG_TAP_CHANNEL_TAPS, q_ch);
+    disc[0] = 0.0;
+    for (size_t k = 1; k < n; k++) {
+        const double re = (i_ch[k] * i_ch[k - 1U]) + (q_ch[k] * q_ch[k - 1U]);
+        const double im = (q_ch[k] * i_ch[k - 1U]) - (i_ch[k] * q_ch[k - 1U]);
+        disc[k] = atan2(im, re);
+    }
+    free(raw);
+    free(i_ch);
+    free(q_ch);
+    return disc;
+}
+
+/* Low-passes @p x in place at @p cutoff (a fraction of the rate) with a filter of @p taps; 0, or -1. */
+static int
+analog_tap_lowpass_in_place(double* x, size_t n, double cutoff, int taps) {
+    double* h = (double*)malloc((size_t)taps * sizeof(double));
+    double* y = (double*)malloc(n * sizeof(double));
+    if (h == NULL || y == NULL) {
+        free(h);
+        free(y);
+        return -1;
+    }
+    analog_tap_lowpass(cutoff, taps, h);
+    analog_tap_filter(x, n, h, taps, y);
+    DSD_MEMCPY(x, y, n * sizeof(double));
+    free(h);
+    free(y);
+    return 0;
+}
+
+/* Writes the discriminator tap of the capture meta_path names (see the file comment); 0, or -1 with a message. */
+static int
+analog_make_tap(const char* meta_path) {
+    analog_capture cap;
+    DSD_MEMSET(&cap, 0, sizeof cap);
+    int rc = -1;
+    if (analog_capture_load(meta_path, &cap) != 0
+        || dsd_test_mkdtemp(g_scaled_dir, sizeof(g_scaled_dir), "dsdneo_analog_pcm") == NULL) {
+        DSD_FPRINTF(stderr, "analog replay: --analog-pcm-tap cannot read the capture '%s'\n", meta_path);
+        g_scaled_dir[0] = '\0';
+        analog_capture_free(&cap);
+        return -1;
+    }
+    const long rate_in = analog_tap_capture_rate((const char*)cap.json);
+    const long rate_out = (long)g_pcm_tap_hz.value;
+    const size_t n = cap.data_len / 2U;
+    if (rate_in <= 0 || fabs(g_pcm_tap_hz.value - (double)rate_out) > ANALOG_HZ_EPSILON || rate_out > rate_in
+        || rate_in % rate_out != 0 || n < 2U) {
+        DSD_FPRINTF(stderr, "analog replay: --analog-pcm-tap %g needs a divisor of the capture's %ld Hz\n",
+                    g_pcm_tap_hz.value, rate_in);
+        analog_capture_free(&cap);
+        return -1;
+    }
+    double* disc = analog_tap_discriminate(&cap, n, rate_in);
+    analog_capture_free(&cap);
+    const long factor = rate_in / rate_out;
+    const size_t out_n = n / (size_t)factor;
+    int16_t* pcm = (int16_t*)malloc(out_n * sizeof(int16_t));
+    if (disc != NULL && pcm != NULL
+        && (!g_pcm_lowpass_hz.set
+            || analog_tap_lowpass_in_place(disc, n, g_pcm_lowpass_hz.value / (double)rate_in, ANALOG_TAP_LPF_TAPS) == 0)
+        && (factor == 1
+            || analog_tap_lowpass_in_place(disc, n, ANALOG_TAP_ALIAS_FRACTION / (double)factor, ANALOG_TAP_CHANNEL_TAPS)
+                   == 0)) {
+        const double scale = ANALOG_TAP_SCALE * pow(10.0, (g_pcm_gain_db.set ? g_pcm_gain_db.value : 0.0) / 20.0);
+        size_t clipped = 0U;
+        for (size_t k = 0; k < out_n; k++) {
+            double v = floor((disc[k * (size_t)factor] * scale) + 0.5);
+            if (v > 32767.0 || v < -32768.0) {
+                clipped++;
+                v = v > 0.0 ? 32767.0 : -32768.0;
+            }
+            pcm[k] = (int16_t)v;
+        }
+        DSD_FPRINTF(stderr, "analog replay: discriminator tap at %ld Hz, %zu samples, %zu clipped\n", rate_out, out_n,
+                    clipped);
+        if (analog_tap_write_wav(pcm, out_n, (int)rate_out) == 0
+            && dsd_test_path_join(g_tap_arg, sizeof(g_tap_arg), g_scaled_dir, ANALOG_TAP_WAV) == 0) {
+            g_tap_frames = (uint64_t)out_n;
+            g_tap_rate_hz = (int)rate_out;
+            rc = 0;
+        }
+    }
+    if (rc != 0) {
+        DSD_FPRINTF(stderr, "analog replay: --analog-pcm-tap cannot write the tap\n");
+    }
+    free(pcm);
+    free(disc);
+    return rc;
+}
+
+/* Runs the capture's discriminator tap as audio input: `--iq-replay CAPTURE` becomes `-i TAP.wav`; 0, or -1. */
+static int
+analog_replay_tap(char** args, int count) {
+    static char k_input_flag[] = "-i";
+    for (int i = 1; i + 1 < count; i++) {
+        if (strcmp(args[i], "--iq-replay") == 0) {
+            if (analog_make_tap(args[i + 1]) != 0) {
+                return -1;
+            }
+            args[i] = k_input_flag;
+            args[i + 1] = g_tap_arg;
+            return 0;
+        }
+    }
+    DSD_FPRINTF(stderr, "analog replay: --analog-pcm-tap needs an --iq-replay capture (as two arguments)\n");
+    return -1;
+}
+
+/* Removes the scaled copy or the tap, if one was made. */
 static void
 analog_remove_scaled(void) {
-    static const char* const k_files[] = {ANALOG_SCALED_DATA, ANALOG_SCALED_META, NULL};
+    static const char* const k_files[] = {ANALOG_SCALED_DATA, ANALOG_SCALED_META, ANALOG_TAP_WAV, NULL};
     if (g_scaled_dir[0] != '\0' && dsd_test_remove_temp_dir(g_scaled_dir, k_files) != 0) {
         DSD_FPRINTF(stderr, "analog replay: could not remove %s\n", g_scaled_dir);
     }
@@ -957,15 +1212,47 @@ analog_note_tone(const dsd_state* state, double block_end_ms, double block_ms) {
     }
 }
 
+/* Whether the run reads the discriminator tap as audio input (--analog-pcm-tap). */
+static int
+analog_pcm_input(const dsd_opts* opts) {
+    return g_pcm_tap_hz.set && opts != NULL && opts->audio_in_type == AUDIO_IN_WAV;
+}
+
+/* Stream time on audio input: the tap WAV's read position, in frames at its own rate (the decoder reads it a sample at
+ * a time, and a staged low rate holds less than one input sample ahead); the whole tap once the reader reached its
+ * end and closed it. */
+static void
+analog_note_pcm_position(const dsd_opts* opts) {
+    if (g_tap_rate_hz <= 0) {
+        return;
+    }
+    sf_count_t frames = (sf_count_t)g_tap_frames;
+    if (opts->audio_in_file != NULL) {
+        frames = sf_seek(opts->audio_in_file, 0, SEEK_CUR);
+        if (frames < 0) {
+            return;
+        }
+    }
+    const double ms = (double)frames * 1000.0 / (double)g_tap_rate_hz;
+    if (ms > g_totals.read_ms) {
+        g_totals.read_ms = ms;
+    }
+}
+
 /* Replaces the UDP analog blaster. nbytes is a byte count of int16 mono samples, as dsd_symbol.c passes it. */
 static void
 analog_capture_blast(const dsd_opts* opts, dsd_state* state, size_t nbytes, const void* data) {
-    (void)opts;
     size_t n = nbytes / sizeof(short);
     if (data == NULL || n == 0U) {
         return;
     }
-    unsigned int rate_hz = dsd_rtl_stream_metrics_hook_output_rate_hz();
+    const int pcm_input = analog_pcm_input(opts);
+    if (pcm_input) {
+        analog_note_pcm_position(opts);
+    }
+    /* The monitor's rate: the RTL output rate, or on audio input its own (staged) rate. */
+    unsigned int rate_hz = pcm_input ? (unsigned int)dsd_opts_current_input_timing_rate(opts)
+                                     : dsd_rtl_stream_metrics_hook_output_rate_hz();
     if (rate_hz == 0U) {
         g_totals.no_rate = 1;
         return;
@@ -989,6 +1276,7 @@ analog_capture_blast(const dsd_opts* opts, dsd_state* state, size_t nbytes, cons
     analog_note_tone(state, block_start_ms + block_ms, block_ms);
 }
 
+#ifdef USE_RADIO
 /* The decoder's reads, flagged (the monitor's, with the auto squelch's gate) or not, counted alike. */
 static int
 analog_counting_read_ex(void* rtl_ctx, float* out, uint8_t* flags, size_t count, int* out_got) {
@@ -1018,6 +1306,7 @@ static double
 analog_return_pwr(const void* rtl_ctx) {
     return rtl_stream_return_pwr((const RtlSdrContext*)rtl_ctx);
 }
+#endif
 
 /* Runs after the engine installed its hooks and opened audio output, so these replacements stick. */
 static int
@@ -1029,11 +1318,13 @@ analog_start(dsd_opts* opts, dsd_state* state, void* context) {
     dsd_udp_audio_hooks audio = {0};
     audio.blast_analog = analog_capture_blast;
     dsd_udp_audio_hooks_set(audio);
+#ifdef USE_RADIO
     dsd_rtl_stream_io_hooks io = {0};
     io.read = analog_counting_read;
     io.read_ex = analog_counting_read_ex;
     io.return_pwr = analog_return_pwr;
     dsd_rtl_stream_io_hooks_set(io);
+#endif
     return 0;
 }
 
@@ -1225,8 +1516,8 @@ analog_note_resolution(void) {
 static void
 analog_check_limits(const analog_report_ctx* ctx) {
     if (g_totals.no_rate || g_totals.unclocked_reads > 0U) {
-        DSD_FPRINTF(stderr, "ANALOG AUDIO FAIL: input arrived without an RTL output rate; the host scores RTL and "
-                            "I/Q replay input only\n");
+        DSD_FPRINTF(stderr, "ANALOG AUDIO FAIL: input arrived without an RTL output rate; the host scores RTL, "
+                            "I/Q replay and --analog-pcm-tap input only\n");
         g_failed = 1;
     }
     analog_check_min("tone SNR dB", ctx->have_tone, ctx->snr_db, &g_limits.min_snr_db);
@@ -1295,9 +1586,11 @@ analog_enter_scan_row(dsd_opts* opts, dsd_state* state, double requested) {
 
 static void
 analog_stop(dsd_opts* opts, dsd_state* state, void* context) {
-    (void)opts;
     (void)state;
     (void)context;
+    if (analog_pcm_input(opts)) {
+        analog_note_pcm_position(opts);
+    }
     analog_report();
 }
 
@@ -1310,8 +1603,13 @@ main(int argc, char** argv) {
     g_totals.first_audible_ms = -1.0;
     g_tone.first_lock_ms = -1.0;
     int kept = 0;
-    if (analog_split_args(argc, argv, args, &kept) != 0
-        || (g_iq_gain_db.set && analog_replay_scaled(args, kept) != 0)) {
+    int args_rc = analog_split_args(argc, argv, args, &kept);
+    if (args_rc == 0 && g_iq_gain_db.set && g_pcm_tap_hz.set) {
+        DSD_FPRINTF(stderr, "analog replay: --analog-iq-gain-db scales a capture, --analog-pcm-tap replaces it\n");
+        args_rc = -1;
+    }
+    if (args_rc != 0 || (g_iq_gain_db.set && analog_replay_scaled(args, kept) != 0)
+        || (g_pcm_tap_hz.set && analog_replay_tap(args, kept) != 0)) {
         analog_remove_scaled();
         free((void*)args);
         return 2;

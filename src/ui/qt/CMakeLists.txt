@@ -127,6 +127,7 @@ qt_add_resources(
         qml/SegmentedControl.qml
         qml/SettingsScreen.qml
         qml/SpectrumScreen.qml
+        qml/SquelchSheet.qml
         qml/TalkgroupSaveFlow.qml
         qml/TalkgroupEditSheet.qml
         qml/TalkgroupCard.qml

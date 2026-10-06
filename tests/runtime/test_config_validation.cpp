@@ -1249,10 +1249,10 @@ test_int_out_of_range(void) {
 
 static int
 test_int_out_of_range_negative_max(void) {
-    // rtl_sql has range [-100, 0], so positive values are out of range
+    // rtl_sql has range [-120, 0], so positive values are out of range
     static const char* ini = "[input]\n"
                              "source = \"rtl\"\n"
-                             "rtl_sql = 10\n"; // out of range [-100, 0]
+                             "rtl_sql = 10\n"; // out of range [-120, 0]
 
     char path[DSD_TEST_PATH_MAX];
     if (write_temp_config(ini, path, sizeof path) != 0) {

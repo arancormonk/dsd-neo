@@ -12,6 +12,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "noise_squelch_bank.h"
+
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
 #endif
@@ -36,10 +38,9 @@ static const double k_close_floor_db = 1.5;
 /* Calibration: 2 s of noise, the first 30 ms of each band-pass's output left out (its start-up). */
 static const double k_calibration_s = 2.0;
 static const double k_settle_s = 0.03;
-/* A window at or below this mean |z|^2 holds no signal (exact zeros); a band's power at or below it is held there. */
-static const double k_min_power = 1e-30;
-/* Q never reads beyond +-200 dB (a noise-free synthetic carrier quiets the band to nothing). */
-static const double k_q_cap_db = 200.0;
+/* A window at or below this mean |z|^2 holds no signal (exact zeros); a band's power at or below it is held there.
+   Q never reads beyond +-200 dB (a noise-free synthetic carrier quiets the band to nothing): noise_squelch_bank.h. */
+static const double k_min_power = DSD_NOISE_SQUELCH_BANK_MIN_POWER;
 /* Biquad state this small is flushed to zero at each half-window (exact-zero input would otherwise go denormal). */
 static const double k_state_flush = 1e-150;
 /* Relative tolerance for plans that decide the same way. */
@@ -67,11 +68,6 @@ nsq_add(nsq_cplx a, nsq_cplx b) {
 }
 
 static nsq_cplx
-nsq_sub(nsq_cplx a, nsq_cplx b) {
-    return nsq_c(a.re - b.re, a.im - b.im);
-}
-
-static nsq_cplx
 nsq_mul(nsq_cplx a, nsq_cplx b) {
     return nsq_c((a.re * b.re) - (a.im * b.im), (a.re * b.im) + (a.im * b.re));
 }
@@ -79,26 +75,6 @@ nsq_mul(nsq_cplx a, nsq_cplx b) {
 static nsq_cplx
 nsq_scale(nsq_cplx a, double s) {
     return nsq_c(a.re * s, a.im * s);
-}
-
-static nsq_cplx
-nsq_div(nsq_cplx a, nsq_cplx b) {
-    const double d = (b.re * b.re) + (b.im * b.im);
-    return nsq_c(((a.re * b.re) + (a.im * b.im)) / d, ((a.im * b.re) - (a.re * b.im)) / d);
-}
-
-static double
-nsq_abs(nsq_cplx a) {
-    return hypot(a.re, a.im);
-}
-
-/* The principal square root. */
-static nsq_cplx
-nsq_sqrt(nsq_cplx a) {
-    const double r = nsq_abs(a);
-    const double re = sqrt(0.5 * (r + a.re));
-    const double im = sqrt(0.5 * (r - a.re));
-    return nsq_c(re, a.im < 0.0 ? -im : im);
 }
 
 /* ---------------------------------------------------------------------------------------------- the band */
@@ -142,42 +118,6 @@ dsd_noise_squelch_passband_edge_hz(const float* taps, int taps_len, int rate_hz)
     return rate_hz > 0 ? nsq_edge_hz(taps, taps_len, (double)rate_hz, 0.5 * (double)rate_hz) : 0.0;
 }
 
-/* The four biquads of a Butterworth band-pass of prototype order 4 over [f1, f2] at fs: the prototype's poles moved to
-   the band (low-pass to band-pass on pre-warped edges), then the bilinear transform; each biquad takes one conjugate
-   pole pair, a zero at z = 1 and one at z = -1, and unit gain at the band's centre. */
-static void
-nsq_design_band_pass(double f1, double f2, double fs, dsd_noise_squelch_biquad* out) {
-    const double w1 = 2.0 * fs * tan(M_PI * f1 / fs);
-    const double w2 = 2.0 * fs * tan(M_PI * f2 / fs);
-    const double bw = w2 - w1;
-    const double w0sq = w1 * w2;
-    const double centre = 2.0 * atan(sqrt(w0sq) / (2.0 * fs));
-    const nsq_cplx e1 = nsq_c(cos(-centre), sin(-centre));
-    const nsq_cplx e2 = nsq_mul(e1, e1);
-    const nsq_cplx two_fs = nsq_c(2.0 * fs, 0.0);
-    int made = 0;
-    for (int k = 0; k < DSD_NOISE_SQUELCH_SECTIONS / 2; k++) {
-        /* The order-4 prototype's upper-half-plane poles, at pi (2k + 1) / 8; their conjugates give the conjugate
-           band-pass poles. */
-        const double theta = M_PI * (double)(2 * k + 1) / (double)(2 * DSD_NOISE_SQUELCH_SECTIONS);
-        const nsq_cplx p = nsq_c(-sin(theta), cos(theta));
-        const nsq_cplx half = nsq_scale(p, 0.5 * bw);
-        const nsq_cplx root = nsq_sqrt(nsq_sub(nsq_mul(half, half), nsq_c(w0sq, 0.0)));
-        const nsq_cplx s_pair[2] = {nsq_add(half, root), nsq_sub(half, root)};
-        for (int j = 0; j < 2; j++) {
-            const nsq_cplx z = nsq_div(nsq_add(two_fs, s_pair[j]), nsq_sub(two_fs, s_pair[j]));
-            const double a1 = -2.0 * z.re;
-            const double a2 = (z.re * z.re) + (z.im * z.im);
-            const nsq_cplx num = nsq_sub(nsq_c(1.0, 0.0), e2);
-            const nsq_cplx den = nsq_add(nsq_add(nsq_c(1.0, 0.0), nsq_scale(e1, a1)), nsq_scale(e2, a2));
-            out[made].gain = 1.0 / nsq_abs(nsq_div(num, den));
-            out[made].a1 = a1;
-            out[made].a2 = a2;
-            made++;
-        }
-    }
-}
-
 /* ---------------------------------------------------------------------------------------------- calibration */
 
 typedef struct {
@@ -218,24 +158,6 @@ nsq_rng_complex(nsq_rng* r) {
     const double re = nsq_rng_normal(r) * s;
     const double im = nsq_rng_normal(r) * s;
     return nsq_c(re, im);
-}
-
-static double
-nsq_biquad_run(const dsd_noise_squelch_biquad* q, double* s1, double* s2, double x) {
-    const double y = (q->gain * x) + *s1;
-    *s1 = *s2 - (q->a1 * y);
-    *s2 = (-q->gain * x) - (q->a2 * y);
-    return y;
-}
-
-/* One discriminator output's pass through sub-band k's biquads. */
-static double
-nsq_sub_band_run(const dsd_noise_squelch_plan* plan, double* s1, double* s2, int k, double x) {
-    double y = x;
-    for (int s = 0; s < DSD_NOISE_SQUELCH_SECTIONS; s++) {
-        y = nsq_biquad_run(&plan->section[k][s], &s1[s], &s2[s], y);
-    }
-    return y;
 }
 
 /* The calibration noise as the channel filter puts it out: white complex noise at twice the rate through the plan's
@@ -345,7 +267,7 @@ nsq_calibrate(dsd_noise_squelch_plan* plan, const float* taps, int taps_len, con
         }
         const double x = atan2(step.im, step.re);
         for (int k = 0; k < plan->bands; k++) {
-            const double y = nsq_sub_band_run(plan, s1[k], s2[k], k, x);
+            const double y = dsd_noise_squelch_bank_run(plan->section[k], s1[k], s2[k], x);
             if (n >= fill + settle) {
                 energy[k] += y * y;
             }
@@ -468,11 +390,11 @@ nsq_design_band_passes(dsd_noise_squelch_plan* out) {
     const double step = (out->hi_hz - out->lo_hz) / (double)k_count;
     for (int k = 0; k < k_count; k++) {
         const double f1 = out->lo_hz + (step * (double)k);
-        nsq_design_band_pass(f1, f1 + step, fs, out->section[k]);
+        dsd_noise_squelch_bank_design_band_pass(f1, f1 + step, fs, out->section[k]);
     }
     for (int k = 0; k + 1 < k_count; k++) {
         const double f1 = out->lo_hz + (step * ((double)k + 0.5));
-        nsq_design_band_pass(f1, f1 + step, fs, out->section[k_count + k]);
+        dsd_noise_squelch_bank_design_band_pass(f1, f1 + step, fs, out->section[k_count + k]);
     }
 }
 
@@ -592,37 +514,13 @@ dsd_noise_squelch_set_threshold(dsd_noise_squelch* t, int threshold_db) {
     t->close_db = close > k_close_floor_db ? close : k_close_floor_db;
 }
 
-static double
-nsq_ratio_db(double ref, double power) {
-    if (!(power > k_min_power)) {
-        return k_q_cap_db;
-    }
-    const double q = 10.0 * log10(ref / power);
-    if (q > k_q_cap_db) {
-        return k_q_cap_db;
-    }
-    return q < -k_q_cap_db ? -k_q_cap_db : q;
-}
-
 double
 dsd_noise_squelch_quieting_db(const dsd_noise_squelch_plan* plan, const double* p, double iq_power) {
     if (!plan || !plan->valid || !p || !(iq_power > k_min_power)) {
         return 0.0;
     }
-    double sum = 0.0;
-    double best = -k_q_cap_db;
-    for (int k = 0; k < plan->bands; k++) {
-        if (k < plan->sub_bands) {
-            sum += p[k];
-        }
-        const double q = nsq_ratio_db(plan->p_ref[k], p[k]);
-        if (q > best) {
-            best = q;
-        }
-    }
-    const double q_sum = nsq_ratio_db(plan->p_ref_sum, sum);
-    const double guarded = best - k_guard_db;
-    return guarded > q_sum ? guarded : q_sum;
+    return dsd_noise_squelch_bank_quieting_db(plan->p_ref, plan->p_ref_sum, p, NULL, plan->sub_bands, plan->bands,
+                                              k_guard_db);
 }
 
 static void
@@ -686,7 +584,7 @@ dsd_noise_squelch_process(dsd_noise_squelch* t, const float* disc, const float* 
         }
         const double x = (double)disc[i];
         for (int k = 0; k < t->plan.bands; k++) {
-            const double y = nsq_sub_band_run(&t->plan, t->s1[k], t->s2[k], k, x);
+            const double y = dsd_noise_squelch_bank_run(t->plan.section[k], t->s1[k], t->s2[k], x);
             t->half_e[k] += y * y;
         }
         const size_t at = (size_t)i * 2U;

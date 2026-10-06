@@ -23,9 +23,11 @@
 #include <dsd-neo/dsp/analog_audio.h>
 #include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/dsp/firdes.h>
+#include <dsd-neo/dsp/pcm_noise_squelch.h>
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/log.h>
+#include <dsd-neo/runtime/rigctl_query_hooks.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/squelch.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
@@ -37,6 +39,7 @@
 #include "analog_tone_policy.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "pcm_input_staging.h"
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -446,13 +449,19 @@ _Static_assert((int)ANALOG_RX_LABEL_SIZE >= (int)DSD_DCS_LABEL_SIZE, "a DCS labe
 
 /* Every boundary the tap resets at when it moves: the trunk-tuning generation, and on RTL input the stream generation
    and the analog receive profile the stream published (kind, width, channel filter on; all 0 on other inputs and while
-   the stream runs no analog monitor). A new kind of boundary is added here and in analog_rx_generations_read() only. */
+   the stream runs no analog monitor). On other inputs, the passband the rigctl peer runs (issue #628): a width-only
+   change there, a scan row's width edited live, is the peer's analog profile changing, which neither generation moves
+   for. A passband the client cannot read just now (DSD_RIGCTL_PASSBAND_BUSY) leaves the last one read standing, and is
+   never noted; one it no longer knows (DSD_RIGCTL_PASSBAND_UNKNOWN: a request's reply lost) is a change, as is one read
+   where none was known (the peer's width first set). A new kind of boundary is added here and in
+   analog_rx_generations_read() only. */
 typedef struct {
     uint32_t rtl_generation;
     uint64_t tune_generation;
     int rtl_profile_kind;
     int rtl_profile_width_hz;
     int rtl_profile_lpf_on;
+    int32_t peer_passband_hz;
 } analog_rx_generations;
 
 typedef struct {
@@ -497,6 +506,21 @@ typedef struct {
     dsd_analog_tone_policy policy_logged;
     /** Published as dsd_analog_rx_publication::gate_rejected_ended: the last reception ended rejected. */
     int rejected_ended;
+    /** Every boundary the tap crossed (a reset, a generation move, a pause, a rate move, an FM/AM switch): the PCM
+        noise squelch starts its windows over when it moves. */
+    uint32_t boundaries;
+    /** The PCM noise squelch (issue #628): whether it took the previous monitor sample, the boundary count and rates it
+        last ran at, the rigctl passband it keys its reference on, whether the backlog skip holds it, and the state
+        it last logged a notice for. */
+    dsd_pcm_noise_squelch pcm_sq;
+    int pcm_sq_running;
+    uint32_t pcm_sq_boundaries;
+    int pcm_sq_rate_hz;
+    int pcm_sq_native_hz;
+    int32_t pcm_sq_passband_hz;
+    int pcm_sq_held;
+    int pcm_sq_logged_state;
+    int pcm_sq_logged_native_hz;
 } analog_rx_session;
 
 #ifdef DSD_NEO_TEST_HOOKS
@@ -547,18 +571,32 @@ analog_rx_generations_read(const dsd_opts* opts, analog_rx_generations* out) {
         (void)dsd_rtl_stream_metrics_hook_analog_profile(&out->rtl_profile_kind, &out->rtl_profile_width_hz,
                                                          &out->rtl_profile_lpf_on);
     }
+    out->peer_passband_hz = rtl ? 0 : dsd_rigctl_query_hook_get_passband_hz(opts);
 }
 
+/* Whether the passband read @p now leaves the one @p noted standing: the same, or not read just now. */
 static int
-analog_rx_generations_equal(const analog_rx_generations* a, const analog_rx_generations* b) {
-    return a->rtl_generation == b->rtl_generation && a->tune_generation == b->tune_generation
-           && a->rtl_profile_kind == b->rtl_profile_kind && a->rtl_profile_width_hz == b->rtl_profile_width_hz
-           && a->rtl_profile_lpf_on == b->rtl_profile_lpf_on;
+analog_rx_passband_holds(int32_t now, int32_t noted) {
+    return now == noted || now == DSD_RIGCTL_PASSBAND_BUSY;
+}
+
+/* Whether the boundaries read @p now are still the ones @p noted. */
+static int
+analog_rx_generations_equal(const analog_rx_generations* now, const analog_rx_generations* noted) {
+    return now->rtl_generation == noted->rtl_generation && now->tune_generation == noted->tune_generation
+           && now->rtl_profile_kind == noted->rtl_profile_kind
+           && now->rtl_profile_width_hz == noted->rtl_profile_width_hz
+           && now->rtl_profile_lpf_on == noted->rtl_profile_lpf_on
+           && analog_rx_passband_holds(now->peer_passband_hz, noted->peer_passband_hz);
 }
 
 static void
 analog_rx_note_generations(const dsd_opts* opts, analog_rx_session* session) {
     analog_rx_generations_read(opts, &session->noted);
+    if (session->noted.peer_passband_hz == DSD_RIGCTL_PASSBAND_BUSY) {
+        /* Nothing read before it to stand: not known until it is read. */
+        session->noted.peer_passband_hz = DSD_RIGCTL_PASSBAND_UNKNOWN;
+    }
 }
 
 static int
@@ -936,6 +974,10 @@ analog_rx_generation_moved(const dsd_opts* opts, analog_rx_session* session) {
     analog_rx_generations now;
     analog_rx_generations_read(opts, &now);
     const int moved = !analog_rx_generations_equal(&now, &session->noted);
+    if (now.peer_passband_hz == DSD_RIGCTL_PASSBAND_BUSY) {
+        /* Not read just now: the last one read still stands. */
+        now.peer_passband_hz = session->noted.peer_passband_hz;
+    }
     session->noted = now;
     return moved;
 }
@@ -965,10 +1007,11 @@ analog_rx_log_unusable_rate(analog_rx_session* session, int rate_hz) {
  * the same dB-to-power step; for a read that is the whole block, exactly the value opts->rtl_pwr is about to hold.
  */
 static int
-analog_rx_squelch_open(const dsd_opts* opts, const float* samples, const uint8_t* flags, unsigned int count) {
-    if (dsd_squelch_dynamic_in_force(opts)) {
+analog_rx_squelch_open(const dsd_opts* opts, const dsd_state* state, const float* samples, const uint8_t* flags,
+                       unsigned int count) {
+    if (dsd_squelch_dynamic_in_force(opts, state)) {
         for (unsigned int i = 0; i < count; i++) {
-            if (!flags || dsd_squelch_gate_open(opts, flags[i])) {
+            if (!flags || dsd_squelch_gate_open(opts, state, flags[i])) {
                 return DSD_ANALOG_RX_SQUELCH_CARRIER;
             }
         }
@@ -1037,6 +1080,7 @@ dsd_analog_rx_reset(dsd_state* state) {
         session->read_rate_hz = 0;
         /* Nor may what a live input still holds, which arrived before the boundary too. */
         analog_rx_arm_backlog_skip(session);
+        session->boundaries++;
     }
     /* The monitor's audio chain starts over on the new reception too, whether or not this tap runs (issue #518). */
     dsd_analog_audio_note_reception(state);
@@ -1067,6 +1111,7 @@ analog_rx_boundary_dropped(const dsd_opts* opts, dsd_state* state, analog_rx_ses
     if (!moved && !paused && !rate_moved) {
         return 0;
     }
+    session->boundaries++;
     if (rate_moved) {
         /* Designed for the new rate at once, so the publication says straight away whether
            detection can use it. */
@@ -1100,6 +1145,7 @@ analog_rx_note_detecting(const dsd_opts* opts, analog_rx_session* session) {
     if (detecting != session->detecting) {
         session->detecting = detecting;
         dsd_analog_rx_core_reset(&session->core);
+        session->boundaries++;
     }
 }
 
@@ -1137,7 +1183,7 @@ analog_rx_read(const dsd_opts* opts, dsd_state* state, const float* samples, con
         analog_rx_publish_skipped(opts, state, session, rate_hz);
         return;
     }
-    const int squelch_open = analog_rx_squelch_open(opts, samples, flags, count);
+    const int squelch_open = analog_rx_squelch_open(opts, state, samples, flags, count);
     if (!session->detecting) {
         dsd_analog_rx_core_track_carrier(&session->core, samples, (int)count, rate_hz, squelch_open);
     } else if (!dsd_analog_rx_core_process(&session->core, samples, (int)count, rate_hz, squelch_open)) {
@@ -1222,6 +1268,146 @@ dsd_analog_rx_tap_flags(const dsd_opts* opts, dsd_state* state, const float* blo
     if (start < count) {
         analog_rx_read(opts, state, block + start, flags ? flags + start : NULL, count - start);
     }
+}
+
+/* --------------------------------------------------------------------------------------------- the PCM noise squelch */
+
+/* The source's own rate: what a staged input arrives at before the staging interpolates it to the monitor's rate. */
+static int
+pcm_squelch_native_rate(const dsd_opts* opts, int rate_hz) {
+    if (dsd_pcm_input_uses_staged_resampler(opts) && opts->wav_sample_rate > 0) {
+        return opts->wav_sample_rate;
+    }
+    return rate_hz;
+}
+
+static uint8_t
+pcm_squelch_state_code(int pcm_state) {
+    switch (pcm_state) {
+        case DSD_PCM_NOISE_SQUELCH_LEARNING: return (uint8_t)DSD_SQUELCH_NOISE_STATE_LEARNING;
+        case DSD_PCM_NOISE_SQUELCH_PROVISIONAL: return (uint8_t)DSD_SQUELCH_NOISE_STATE_PROVISIONAL;
+        case DSD_PCM_NOISE_SQUELCH_KNOWN: return (uint8_t)DSD_SQUELCH_NOISE_STATE_KNOWN;
+        case DSD_PCM_NOISE_SQUELCH_NO_BAND: return (uint8_t)DSD_SQUELCH_NOISE_STATE_NO_BAND;
+        default: return (uint8_t)DSD_SQUELCH_NOISE_STATE_NO_ROOM;
+    }
+}
+
+/* What the squelch knows, for the frontends and dsd_squelch_dynamic_in_force() (dsd_squelch_publish_status() leaves
+   these to it while it is in force). */
+static void
+pcm_squelch_publish(dsd_state* state, int pcm_state, int gate_open, int measured, double quieting_db) {
+    if (quieting_db > 200.0) {
+        quieting_db = 200.0;
+    } else if (quieting_db < -200.0) {
+        quieting_db = -200.0;
+    }
+    state->squelch_auto_active = 1U;
+    state->squelch_auto_state = 0U;
+    state->squelch_auto_gate_open = gate_open ? 1U : 0U;
+    state->squelch_auto_plan_valid = pcm_state != DSD_PCM_NOISE_SQUELCH_NO_ROOM ? 1U : 0U;
+    state->squelch_auto_floor_cdb = 0;
+    state->squelch_noise_active = 1U;
+    state->squelch_noise_measured = measured ? 1U : 0U;
+    state->squelch_noise_quieting_cdb = measured ? (int32_t)lround(100.0 * quieting_db) : 0;
+    state->squelch_noise_state = pcm_squelch_state_code(pcm_state);
+}
+
+/* Say once why the squelch is off on this input: no room at its rate, or nothing above voice. */
+static void
+pcm_squelch_note_off(const dsd_opts* opts, analog_rx_session* session, int pcm_state) {
+    if (pcm_state != DSD_PCM_NOISE_SQUELCH_NO_ROOM && pcm_state != DSD_PCM_NOISE_SQUELCH_NO_BAND) {
+        session->pcm_sq_logged_state = 0;
+        return;
+    }
+    if (session->pcm_sq_logged_state == pcm_state && session->pcm_sq_logged_native_hz == session->pcm_sq_native_hz) {
+        return;
+    }
+    session->pcm_sq_logged_state = pcm_state;
+    session->pcm_sq_logged_native_hz = session->pcm_sq_native_hz;
+    const int scanning = opts->scanner_mode == 1 || opts->trunk_scan_enabled == 1;
+    if (pcm_state == DSD_PCM_NOISE_SQUELCH_NO_ROOM) {
+        LOG_INFO(
+            "NOTICE: Noise squelch: a %d Hz input leaves no room above the voice band; the squelch is off on it.%s\n",
+            session->pcm_sq_native_hz, scanning ? " Scan rows hold on noise until --scan-max-visit-ms." : "");
+    } else {
+        LOG_INFO("NOTICE: Noise squelch: nothing above the voice band on this input (its audio is low-passed); the "
+                 "squelch is off. Feed it the discriminator or unfiltered FM audio, or use a level.%s\n",
+                 scanning ? " Scan rows hold on noise until --scan-max-visit-ms." : "");
+    }
+}
+
+/* The plan for the input's rates, the reference's source context and the threshold, as they stand for this sample; the
+   windows start over when the squelch was off or the tap crossed a boundary. */
+static void
+pcm_squelch_configure(const dsd_opts* opts, analog_rx_session* session) {
+    const int rate = analog_rx_rate_hz(opts);
+    const int native = pcm_squelch_native_rate(opts, rate);
+    int restart = !session->pcm_sq_running || session->pcm_sq_boundaries != session->boundaries;
+    if (rate != session->pcm_sq_rate_hz || native != session->pcm_sq_native_hz) {
+        dsd_pcm_noise_squelch_plan plan;
+        (void)dsd_pcm_noise_squelch_plan_design(&plan, rate, native);
+        dsd_pcm_noise_squelch_set_plan(&session->pcm_sq, &plan);
+        session->pcm_sq_rate_hz = rate;
+        session->pcm_sq_native_hz = native;
+        restart = 1;
+    }
+    if (restart) {
+        /* The passband the tap noted with its boundaries: a change of it is one (analog_rx_generations). */
+        session->pcm_sq_passband_hz = session->noted.peer_passband_hz;
+    }
+    dsd_pcm_noise_squelch_key key;
+    key.source = (opts->pcm_input_generation << 4) ^ (uint32_t)opts->audio_in_type;
+    key.native_rate_hz = native;
+    key.volume = opts->input_volume_multiplier;
+    key.passband_hz = session->pcm_sq_passband_hz == DSD_RIGCTL_PASSBAND_UNKNOWN
+                          ? DSD_PCM_NOISE_SQUELCH_PASSBAND_UNKNOWN
+                          : session->pcm_sq_passband_hz;
+    dsd_pcm_noise_squelch_set_key(&session->pcm_sq, &key);
+    if (restart) {
+        dsd_pcm_noise_squelch_restart(&session->pcm_sq);
+    }
+    dsd_pcm_noise_squelch_set_threshold(&session->pcm_sq, opts->rtl_squelch_margin_db);
+    session->pcm_sq_boundaries = session->boundaries;
+    session->pcm_sq_running = 1;
+}
+
+uint8_t
+dsd_analog_rx_pcm_squelch_sample(const dsd_opts* opts, dsd_state* state, float sample) {
+    if (!opts || !state) {
+        return 0U;
+    }
+    analog_rx_session* session = analog_rx_session_get(state);
+    if (!dsd_squelch_pcm_noise_in_force(opts)) {
+        if (session) {
+            session->pcm_sq_running = 0;
+        }
+        return 0U;
+    }
+    if (!session) {
+        /* The tap creates the session at its read of this very sample (dsd_analog_rx_tap_partial_flags()), and the
+           squelch starts with the next. Until then it is learning: closed. */
+        pcm_squelch_publish(state, DSD_PCM_NOISE_SQUELCH_LEARNING, 0, 0, 0.0);
+        return (uint8_t)DSD_SQUELCH_FLAG_CLOSED;
+    }
+    pcm_squelch_configure(opts, session);
+    dsd_pcm_noise_squelch_status st;
+    if (session->backlog_armed) {
+        /* What a queued input held at the boundary is the old channel's: closed, and nothing learned from it. */
+        session->pcm_sq_held = 1;
+        dsd_pcm_noise_squelch_get_status(&session->pcm_sq, &st);
+        pcm_squelch_publish(state, st.state, 0, 0, 0.0);
+        return (uint8_t)DSD_SQUELCH_FLAG_CLOSED;
+    }
+    if (session->pcm_sq_held) {
+        session->pcm_sq_held = 0;
+        dsd_pcm_noise_squelch_restart(&session->pcm_sq);
+    }
+    uint8_t flag = 0U;
+    dsd_pcm_noise_squelch_process(&session->pcm_sq, &sample, 1, &flag);
+    dsd_pcm_noise_squelch_get_status(&session->pcm_sq, &st);
+    pcm_squelch_publish(state, st.state, st.gate_open, st.available && st.quieting_valid, st.quieting_db);
+    pcm_squelch_note_off(opts, session, st.state);
+    return flag;
 }
 
 void

@@ -296,6 +296,18 @@ void dsd_analog_rx_tap_partial_flags(const dsd_opts* opts, dsd_state* state, con
                                      unsigned int filled);
 
 /**
+ * @brief The PCM noise squelch's flag for one sample of the analog monitor on audio input (issue #628), taken as the
+ * symbol path captures the sample, before the tap reads it: DSD_SQUELCH_FLAG_CLOSED while the squelch holds the gate
+ * closed (learning included), 0 otherwise. It runs only where dsd_squelch_pcm_noise_in_force() holds, and returns 0
+ * elsewhere at once; it publishes what it knows into @p state (dsd_state::squelch_*), which
+ * dsd_squelch_dynamic_in_force() reads. Its windows start over at every boundary the tap knows of (a reset, a retune,
+ * a stream pause, a rate change) and when it is turned on; a new PCM stream, native rate or input volume forgets what
+ * it learned; the rigctl peer's passband picks the reference (dsd_rigctl_query_hook_get_passband_hz()). While the tap
+ * skips what a queued input held at a boundary, the squelch holds the gate closed and learns nothing.
+ */
+uint8_t dsd_analog_rx_pcm_squelch_sample(const dsd_opts* opts, dsd_state* state, float sample);
+
+/**
  * @brief Note that the symbol path emptied its monitor block.
  *
  * The symbol path calls it whenever it empties dsd_state::analog_out_f: after each block it

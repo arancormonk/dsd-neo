@@ -244,6 +244,9 @@ class MetricsModel : public QObject {
     Q_PROPERTY(QString squelchAutoStatus READ squelchAutoStatus NOTIFY controlChanged)
     /* Whether the level the configured default keeps (beneath an auto squelch too) gates nothing. */
     Q_PROPERTY(bool configuredSquelchLevelOff READ configuredSquelchLevelOff NOTIFY controlChanged)
+    /* Whether the input is audio (issue #628): the squelch above is a level or the noise squelch, edited from the
+     * monitor's Squelch row rather than the Radio sheet. */
+    Q_PROPERTY(bool squelchAudioInput READ squelchAudioInput NOTIFY controlChanged)
     /* Issue #518: the scan row on air for the "this channel" editors -- whether there is one, its name, and the
      * session-edit fields (DSD_SCAN_ROW_FIELD_*) it can take, runs an edit of and sets in its list, from the
      * app-control scan row view. */
@@ -868,6 +871,15 @@ class MetricsModel : public QObject {
     bool
     configuredSquelchLevelOff() const {
         return m_view.configured_squelch_level_off;
+    }
+
+    /**
+     * @brief Whether the session runs on audio input (Pulse, a file, stdin, TCP, UDP), where the squelch is a level or
+     * the noise squelch and the auto squelch does not run (issue #628).
+     */
+    bool
+    squelchAudioInput() const {
+        return m_view.squelch_audio_input;
     }
 
     /** @brief Whether the setting in force on the row on air is the auto squelch. */
@@ -1730,6 +1742,7 @@ class MetricsModel : public QObject {
         bool effective_squelch_noise = false;
         bool squelch_noise_offered = false;
         bool configured_squelch_level_off = false;
+        bool squelch_audio_input = false;
         int ppm = 0;
         int enc_lockout_count = 0;
         int scan_avoid_count = 0;
@@ -1913,20 +1926,25 @@ class MetricsModel : public QObject {
         /* The configured/effective pair is whole-dB configuration, not a measurement, so a
          * difference below a millionth of a dB is the same setting. */
         bool
-        squelchOverrideEquals(const View& other) const {
+        squelchSettingEquals(const View& other) const {
             return std::fabs(configured_squelch_db - other.configured_squelch_db) < 1e-6
                    && std::fabs(effective_squelch_db - other.effective_squelch_db) < 1e-6
-                   && squelch_row_override == other.squelch_row_override
                    && configured_squelch_off == other.configured_squelch_off
-                   && effective_squelch_off == other.effective_squelch_off && squelch_readout == other.squelch_readout
+                   && effective_squelch_off == other.effective_squelch_off
                    && configured_squelch_auto == other.configured_squelch_auto
                    && configured_squelch_margin_db == other.configured_squelch_margin_db
                    && effective_squelch_auto == other.effective_squelch_auto
                    && effective_squelch_margin_db == other.effective_squelch_margin_db
                    && configured_squelch_noise == other.configured_squelch_noise
                    && effective_squelch_noise == other.effective_squelch_noise
-                   && squelch_noise_offered == other.squelch_noise_offered
-                   && configured_squelch_level_off == other.configured_squelch_level_off
+                   && configured_squelch_level_off == other.configured_squelch_level_off;
+        }
+
+        bool
+        squelchOverrideEquals(const View& other) const {
+            return squelchSettingEquals(other) && squelch_row_override == other.squelch_row_override
+                   && squelch_readout == other.squelch_readout && squelch_noise_offered == other.squelch_noise_offered
+                   && squelch_audio_input == other.squelch_audio_input
                    && squelch_auto_status == other.squelch_auto_status;
         }
 

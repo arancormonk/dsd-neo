@@ -42,6 +42,7 @@
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
 #include <dsd-neo/runtime/scan_row_edit.h>
+#include <dsd-neo/runtime/squelch.h>
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -1411,11 +1412,20 @@ main(int argc, char** argv) {
     expect("a full-scale default reads 0 dB", std::fabs(model.configuredSquelchDb()) < 1e-9);
     expect("a full-scale default is not off", !model.configuredSquelchOff());
     expect("a full-scale default readout", model.squelchReadout() == QStringLiteral("-60.0 dB (row; default 0.0 dB)"));
-    /* A non-radio session has no squelch panel to feed. */
+    /* Audio input takes a squelch too (issue #628): the same readout, flagged for the monitor's Squelch row. */
+    expect("a radio input is not audio input", !model.squelchAudioInput());
     opts.audio_in_type = AUDIO_IN_WAV;
     model.refresh(&opts, &state);
-    expect("non-radio input publishes no squelch override", !model.squelchRowOverride());
-    expect("non-radio input publishes no squelch readout", model.squelchReadout().isEmpty());
+    expect("audio input is flagged", model.squelchAudioInput());
+    expect("audio input publishes the squelch override", model.squelchRowOverride());
+    expect("audio input publishes the readout",
+           model.squelchReadout() == QStringLiteral("-60.0 dB (row; default 0.0 dB)"));
+    /* A symbol file has no squelch to feed. */
+    opts.audio_in_type = AUDIO_IN_SYMBOL_BIN;
+    model.refresh(&opts, &state);
+    expect("a symbol file is not audio input", !model.squelchAudioInput());
+    expect("a symbol file publishes no squelch override", !model.squelchRowOverride());
+    expect("a symbol file publishes no squelch readout", model.squelchReadout().isEmpty());
     opts.audio_in_type = AUDIO_IN_RTL;
     dsd_scan_mode_leave(&opts, &state);
     opts.rtl_squelch_level = dsd_squelch_level_from_sql(-80.0);
@@ -1480,9 +1490,33 @@ main(int argc, char** argv) {
     state.squelch_noise_quieting_cdb = 0;
     opts.rtl_squelch_mode = DSD_SQUELCH_MODE_AUTO;
     opts.audio_in_type = AUDIO_IN_WAV;
+    state.squelch_auto_active = 0;
     model.refresh(&opts, &state);
-    expect("non-radio input publishes no auto squelch",
-           !model.configuredSquelchAuto() && model.squelchAutoStatus().isEmpty());
+    expect("auto on audio input reads off there",
+           model.configuredSquelchAuto() && model.squelchAutoStatus() == QStringLiteral("off: no radio input"));
+    /* The PCM noise squelch on audio input (issue #628): learning, then its quieting, or off with no band. */
+    opts.rtl_squelch_mode = DSD_SQUELCH_MODE_NOISE;
+    const int saved_monitor = opts.monitor_input_audio;
+    opts.monitor_input_audio = 1;
+    state.squelch_noise_active = 1;
+    state.squelch_noise_state = DSD_SQUELCH_NOISE_STATE_LEARNING;
+    model.refresh(&opts, &state);
+    expect("the PCM noise squelch learns", model.squelchAutoStatus() == QStringLiteral("learning"));
+    expect("the readout is the terminal's", model.squelchReadout() == QStringLiteral("noise +12 dB (learning)"));
+    expect("the PCM FM monitor offers Noise", model.squelchNoiseOffered());
+    state.squelch_noise_state = DSD_SQUELCH_NOISE_STATE_KNOWN;
+    state.squelch_noise_measured = 1;
+    state.squelch_noise_quieting_cdb = 2310;
+    model.refresh(&opts, &state);
+    expect("then shows its quieting", model.squelchAutoStatus() == QStringLiteral("quieting 23 dB"));
+    state.squelch_noise_state = DSD_SQUELCH_NOISE_STATE_NO_BAND;
+    model.refresh(&opts, &state);
+    expect("or why it is off", model.squelchAutoStatus() == QStringLiteral("off: no band above voice"));
+    state.squelch_noise_active = 0;
+    state.squelch_noise_measured = 0;
+    state.squelch_noise_quieting_cdb = 0;
+    state.squelch_noise_state = DSD_SQUELCH_NOISE_STATE_NONE;
+    opts.monitor_input_audio = saved_monitor;
     opts.audio_in_type = AUDIO_IN_RTL;
     state.squelch_auto_active = 0;
     state.squelch_auto_plan_valid = 0;

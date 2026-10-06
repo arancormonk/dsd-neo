@@ -293,8 +293,21 @@ ui_update_sync_and_edacs_tree(const dsd_state* state) {
     }
 }
 
+/* The shared squelch readout: the setting in force and how it runs, plus "(row; default X)" while a scan row or target
+   overrides it (issue #521); on radio and audio input alike (issue #628). */
 static void
-ui_render_basic_input_sources(dsd_opts* opts) {
+ui_print_squelch_field(const dsd_opts* opts, const dsd_state* state) {
+    dsd_app_squelch_view squelch;
+    if (dsd_app_squelch_view_get(opts, state, &squelch) != 0) {
+        return;
+    }
+    char sql[72];
+    (void)dsd_app_squelch_view_format(&squelch, sql, sizeof sql);
+    printw(" SQL: %s;", sql);
+}
+
+static void
+ui_render_basic_input_sources(dsd_opts* opts, const dsd_state* state) {
     if (opts->audio_in_type == AUDIO_IN_PULSE) {
         printw("| Pulse Signal Input:  %i kHz; %i Ch; ", opts->pulse_digi_rate_in / 1000, opts->pulse_digi_in_channels);
         if (opts->pa_input_idx[0] != 0) {
@@ -304,6 +317,7 @@ ui_render_basic_input_sources(dsd_opts* opts) {
             printw("RIG: %s:%d; ", opts->tcp_hostname, opts->rigctlportno);
         }
         printw(" IV: %iX;", opts->input_volume_multiplier);
+        ui_print_squelch_field(opts, state);
         printw("\n");
     }
 
@@ -326,6 +340,7 @@ ui_render_basic_input_sources(dsd_opts* opts) {
             printw("RIG: %s:%d; ", opts->tcp_hostname, opts->rigctlportno);
         }
         printw(" IV: %iX;", opts->input_volume_multiplier);
+        ui_print_squelch_field(opts, state);
         printw("\n");
     }
 
@@ -339,16 +354,21 @@ ui_render_basic_input_sources(dsd_opts* opts) {
                    (unsigned long long)opts->udp_in_drops);
         }
         printw(" IV: %iX;", opts->input_volume_multiplier);
+        ui_print_squelch_field(opts, state);
         printw("\n");
     }
 
     if (opts->audio_in_type == AUDIO_IN_WAV) {
-        printw("| WAV Audio Input: %s; %d kHz; ", opts->audio_in_dev, opts->wav_sample_rate);
-        printw(" IV: %iX;\n", opts->input_volume_multiplier);
+        printw("| WAV Audio Input: %s; %d kHz; ", opts->audio_in_dev, opts->wav_sample_rate / 1000);
+        printw(" IV: %iX;", opts->input_volume_multiplier);
+        ui_print_squelch_field(opts, state);
+        printw("\n");
     }
 
     if (opts->audio_in_type == AUDIO_IN_STDIN) {
-        printw("| STDIN Standard Input: - Menu Disabled when using STDIN!\n");
+        printw("| STDIN Standard Input: - Menu Disabled when using STDIN!");
+        ui_print_squelch_field(opts, state);
+        printw("\n");
     }
 }
 
@@ -457,13 +477,7 @@ ui_render_rtl_input_source(dsd_opts* opts, dsd_state* state) {
         ui_print_rtl_gain_field(opts);
         printw(" Mon: %iX;", opts->rtl_volume_multiplier);
         ui_print_rtl_ppm_field(opts);
-        /* The shared readout: the threshold in force, plus "(row; default X)" while a scan row
-         * or target overrides it (issue #521). */
-        dsd_app_squelch_view squelch;
-        char sql[72];
-        (void)dsd_app_squelch_view_get(opts, state, &squelch);
-        (void)dsd_app_squelch_view_format(&squelch, sql, sizeof sql);
-        printw(" SQL: %s;", sql);
+        ui_print_squelch_field(opts, state);
         printw(" DSP-BW: %i kHz;", opts->rtl_dsp_bw_khz);
         ui_print_analog_channel_field(opts, state);
         printw(" FRQ: %i;", opts->rtlsdr_center_freq);
@@ -501,7 +515,7 @@ ui_render_input_level_status(const dsd_state* state) {
 
 static void
 ui_render_input_sources_block(dsd_opts* opts, dsd_state* state) {
-    ui_render_basic_input_sources(opts);
+    ui_render_basic_input_sources(opts, state);
     ui_render_rtl_input_source(opts, state);
     ui_render_input_level_status(state);
 }

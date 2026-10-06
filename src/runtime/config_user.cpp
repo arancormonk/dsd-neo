@@ -471,6 +471,33 @@ apply_soapy_tuning_from_config(const dsdneoUserConfig* cfg, dsd_opts* opts) {
     }
 }
 
+/* The squelch a save writes: the configured default beneath any scan row's own (--squelch-db, issue #521), whose
+   value is effective state. Off is a setting in its own right, and 0 is how the CLI and the config key both spell it:
+   rendering it through pwr_to_dB() saved -120, which reloaded as a real threshold. A level saves as it runs, down to
+   pwr_to_dB()'s -120 dB floor (the key's range), so a level gate decides after a reload as it did before: the unset
+   -110 dB default reloads as -110. The mode and margin the same way; the level stays the level under auto and
+   noise. */
+static void
+snapshot_squelch_values(const dsd_opts* opts, const dsd_state* state, dsdneoUserConfig* cfg) {
+    const dsd_scan_settings* configured = dsd_scan_mode_configured_view(state);
+    const double squelch = configured ? configured->rtl_squelch_level : opts->rtl_squelch_level;
+    cfg->rtl_sql = dsd_squelch_is_off(squelch) ? 0 : (int)local_pwr_to_dB(squelch);
+    cfg->rtl_sql_mode = configured ? configured->rtl_squelch_mode : opts->rtl_squelch_mode;
+    cfg->rtl_sql_margin_db = configured ? configured->rtl_squelch_margin_db : opts->rtl_squelch_margin_db;
+}
+
+/* A PCM session (issue #628) saves its squelch, off included (`rtl_sql = 0`), so loading the save puts back what ran,
+   as an RTL session's does. Only a config without the keys (one saved before audio input had a squelch) leaves the
+   squelch a load finds alone. */
+static void
+snapshot_pcm_squelch_values(const dsd_opts* opts, const dsd_state* state, dsdneoUserConfig* cfg) {
+    if (dsd_squelch_input_kind(opts) != DSD_SQUELCH_INPUT_AUDIO) {
+        return;
+    }
+    snapshot_squelch_values(opts, state, cfg);
+    cfg->rtl_sql_is_set = 1;
+}
+
 static void
 snapshot_apply_live_rtl_values(const dsd_opts* opts, const dsd_state* state, dsdneoUserConfig* cfg) {
     if (!opts || !cfg) {
@@ -487,17 +514,8 @@ snapshot_apply_live_rtl_values(const dsd_opts* opts, const dsd_state* state, dsd
     cfg->rtl_ppm = opts->rtlsdr_ppm_error;
     cfg->rtl_ppm_is_set = 1;
     cfg->rtl_bw_khz = opts->rtl_dsp_bw_khz;
-    /* Off is a setting in its own right, and 0 is how the CLI and the config key
-     * both spell it. Rendering it through pwr_to_dB() saved -120, which reloaded
-     * as a real threshold and is outside the key's own -100..0 range. */
-    /* A scan row or target may be overriding the squelch (--squelch-db, issue #521); its value
-     * is effective state, so the save reads the configured default beneath it. */
-    const dsd_scan_settings* configured = dsd_scan_mode_configured_view(state);
-    const double squelch = configured ? configured->rtl_squelch_level : opts->rtl_squelch_level;
-    cfg->rtl_sql = dsd_squelch_is_off(squelch) ? 0 : (int)local_pwr_to_dB(squelch);
-    /* The mode and margin the same way; the level above stays the level under auto. */
-    cfg->rtl_sql_mode = configured ? configured->rtl_squelch_mode : opts->rtl_squelch_mode;
-    cfg->rtl_sql_margin_db = configured ? configured->rtl_squelch_margin_db : opts->rtl_squelch_margin_db;
+    snapshot_squelch_values(opts, state, cfg);
+    cfg->rtl_sql_is_set = 1;
     cfg->rtl_volume = opts->rtl_volume_multiplier;
     if (opts->rtlsdr_center_freq > 0) {
         DSD_SNPRINTF(cfg->rtl_freq, sizeof cfg->rtl_freq, "%u", opts->rtlsdr_center_freq);
@@ -862,6 +880,24 @@ render_input_source(FILE* out, dsdneoUserInputSource source) {
     }
 }
 
+/* The squelch keys: rtl_sql always, and the mode and margin under auto or noise. */
+static void
+render_input_squelch(FILE* out, const dsdneoUserConfig* cfg) {
+    DSD_FPRINTF(out, "rtl_sql = %d\n", cfg->rtl_sql);
+    if (dsd_squelch_mode_is_dynamic(cfg->rtl_sql_mode)) {
+        DSD_FPRINTF(out, "rtl_sql_mode = \"%s\"\n", cfg->rtl_sql_mode == DSD_SQUELCH_MODE_NOISE ? "noise" : "auto");
+        DSD_FPRINTF(out, "rtl_sql_margin_db = %d\n", user_config_sql_margin_db(cfg));
+    }
+}
+
+/* A PCM source's squelch keys, when its config or session set them (issue #628). */
+static void
+render_input_pcm_squelch(FILE* out, const dsdneoUserConfig* cfg) {
+    if (cfg->rtl_sql_is_set) {
+        render_input_squelch(out, cfg);
+    }
+}
+
 static void
 render_input_rtl_common(FILE* out, const dsdneoUserConfig* cfg, int include_auto_ppm) {
     if (!out || !cfg) {
@@ -879,11 +915,7 @@ render_input_rtl_common(FILE* out, const dsdneoUserConfig* cfg, int include_auto
     if (cfg->rtl_bw_khz) {
         DSD_FPRINTF(out, "rtl_bw_khz = %d\n", cfg->rtl_bw_khz);
     }
-    DSD_FPRINTF(out, "rtl_sql = %d\n", cfg->rtl_sql);
-    if (dsd_squelch_mode_is_dynamic(cfg->rtl_sql_mode)) {
-        DSD_FPRINTF(out, "rtl_sql_mode = \"%s\"\n", cfg->rtl_sql_mode == DSD_SQUELCH_MODE_NOISE ? "noise" : "auto");
-        DSD_FPRINTF(out, "rtl_sql_margin_db = %d\n", user_config_sql_margin_db(cfg));
-    }
+    render_input_squelch(out, cfg);
     if (cfg->rtl_volume) {
         DSD_FPRINTF(out, "rtl_volume = %d\n", cfg->rtl_volume);
     }
@@ -983,7 +1015,10 @@ render_input_section(FILE* out, const dsdneoUserConfig* cfg) {
     DSD_FPRINTF(out, "[input]\n");
     render_input_source(out, cfg->input_source);
     switch (cfg->input_source) {
-        case DSDCFG_INPUT_PULSE: render_input_pulse(out, cfg); break;
+        case DSDCFG_INPUT_PULSE:
+            render_input_pulse(out, cfg);
+            render_input_pcm_squelch(out, cfg);
+            break;
         case DSDCFG_INPUT_RTL: render_input_rtl(out, cfg); break;
         case DSDCFG_INPUT_RTLTCP: render_input_rtltcp(out, cfg); break;
         case DSDCFG_INPUT_AIRSPY:
@@ -991,9 +1026,18 @@ render_input_section(FILE* out, const dsdneoUserConfig* cfg) {
             dsd_airspy_config_render(out, &cfg->airspy);
             break;
         case DSDCFG_INPUT_SOAPY: render_input_soapy(out, cfg); break;
-        case DSDCFG_INPUT_FILE: render_input_file(out, cfg); break;
-        case DSDCFG_INPUT_TCP: render_input_tcp(out, cfg); break;
-        case DSDCFG_INPUT_UDP: render_input_udp(out, cfg); break;
+        case DSDCFG_INPUT_FILE:
+            render_input_file(out, cfg);
+            render_input_pcm_squelch(out, cfg);
+            break;
+        case DSDCFG_INPUT_TCP:
+            render_input_tcp(out, cfg);
+            render_input_pcm_squelch(out, cfg);
+            break;
+        case DSDCFG_INPUT_UDP:
+            render_input_udp(out, cfg);
+            render_input_pcm_squelch(out, cfg);
+            break;
         default: break;
     }
     DSD_FPRINTF(out, "input_warn_db = %.1f\n", cfg->input_warn_db);
@@ -1409,8 +1453,31 @@ apply_input_rtl_auto_ppm(const dsdneoUserConfig* cfg, dsd_opts* opts) {
     }
 }
 
+/* A PCM source's squelch keys (issue #628), when the config names them: the noise squelch runs on audio input, and a
+   level always did. --squelch wins; a config without them leaves the session's squelch as it is. */
+static void
+apply_pcm_squelch_from_config(const dsdneoUserConfig* cfg, dsd_opts* opts) {
+    if (!cfg->rtl_sql_is_set || opts->rtl_squelch_cli_set) {
+        return;
+    }
+    opts->rtl_squelch_level = dsd_squelch_level_from_sql((double)cfg->rtl_sql);
+    opts->rtl_squelch_mode = DSD_SQUELCH_MODE_LEVEL;
+    if (dsd_squelch_mode_is_dynamic(cfg->rtl_sql_mode)) {
+        const dsd_squelch_setting setting =
+            dsd_squelch_setting_dynamic(cfg->rtl_sql_mode, user_config_sql_margin_db(cfg));
+        dsd_squelch_setting_store(opts, &setting);
+    }
+}
+
 static void
 apply_input_source_config(const dsdneoUserConfig* cfg, dsd_opts* opts, int apply_file_input_rate_now) {
+    switch (cfg->input_source) {
+        case DSDCFG_INPUT_PULSE:
+        case DSDCFG_INPUT_FILE:
+        case DSDCFG_INPUT_TCP:
+        case DSDCFG_INPUT_UDP: apply_pcm_squelch_from_config(cfg, opts); break;
+        default: break;
+    }
     switch (cfg->input_source) {
         case DSDCFG_INPUT_PULSE: apply_input_source_pulse(cfg, opts); break;
         case DSDCFG_INPUT_RTL: apply_input_source_rtl(cfg, opts); break;
@@ -1829,9 +1896,11 @@ snapshot_other_input_config(const dsd_opts* opts, const dsd_state* state, dsdneo
     } else if (strncmp(opts->audio_in_dev, "tcp:", 4) == 0) {
         cfg->input_source = DSDCFG_INPUT_TCP;
         snapshot_parse_host_port_spec(opts->audio_in_dev, cfg->tcp_host, sizeof cfg->tcp_host, &cfg->tcp_port);
+        snapshot_pcm_squelch_values(opts, state, cfg);
     } else if (strncmp(opts->audio_in_dev, "udp:", 4) == 0) {
         cfg->input_source = DSDCFG_INPUT_UDP;
         snapshot_parse_host_port_spec(opts->audio_in_dev, cfg->udp_addr, sizeof cfg->udp_addr, &cfg->udp_port);
+        snapshot_pcm_squelch_values(opts, state, cfg);
     } else if (strncmp(opts->audio_in_dev, "pulse", 5) == 0) {
         cfg->input_source = DSDCFG_INPUT_PULSE;
         const char* dev = NULL;
@@ -1842,6 +1911,7 @@ snapshot_other_input_config(const dsd_opts* opts, const dsd_state* state, dsdneo
             DSD_SNPRINTF(cfg->pulse_input, sizeof cfg->pulse_input, "%s", dev);
             cfg->pulse_input[sizeof cfg->pulse_input - 1] = '\0';
         }
+        snapshot_pcm_squelch_values(opts, state, cfg);
     } else {
         cfg->input_source = DSDCFG_INPUT_FILE;
         DSD_SNPRINTF(cfg->file_path, sizeof cfg->file_path, "%.*s", (int)(sizeof cfg->file_path - 1),
@@ -1849,6 +1919,7 @@ snapshot_other_input_config(const dsd_opts* opts, const dsd_state* state, dsdneo
         cfg->file_path[sizeof cfg->file_path - 1] = '\0';
         cfg->file_sample_rate =
             (opts->audio_in_type == AUDIO_IN_WAV) ? opts->wav_sample_rate : dsd_opts_requested_file_sample_rate(opts);
+        snapshot_pcm_squelch_values(opts, state, cfg);
     }
 
     if (cfg->input_source == DSDCFG_INPUT_RTL || cfg->input_source == DSDCFG_INPUT_RTLTCP) {

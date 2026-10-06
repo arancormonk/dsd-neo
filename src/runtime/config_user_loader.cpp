@@ -298,10 +298,13 @@ apply_input_rtl_keys(dsdneoUserConfig* cfg, const char* key_lc, const char* val,
         (void)apply_integer_setting(val, 12, mode, &cfg->rtl_bw_khz);
     } else if (strcmp(key_lc, "rtl_sql") == 0) {
         (void)apply_integer_setting(val, 0, mode, &cfg->rtl_sql);
+        cfg->rtl_sql_is_set = 1;
     } else if (strcmp(key_lc, "rtl_sql_mode") == 0) {
         apply_rtl_sql_mode(val, cfg);
+        cfg->rtl_sql_is_set = 1;
     } else if (strcmp(key_lc, "rtl_sql_margin_db") == 0) {
         (void)apply_integer_setting(val, DSD_SQUELCH_MARGIN_DEFAULT_DB, mode, &cfg->rtl_sql_margin_db);
+        cfg->rtl_sql_is_set = 1;
     } else if (strcmp(key_lc, "rtl_volume") == 0) {
         (void)apply_integer_setting(val, 1, mode, &cfg->rtl_volume);
     } else if (strcmp(key_lc, "auto_ppm") == 0 || strcmp(key_lc, "rtl_auto_ppm") == 0) {

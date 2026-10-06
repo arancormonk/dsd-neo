@@ -197,12 +197,6 @@ static const NcMenuItem RTL_MENU_ITEMS[] = {
      .help = "AM channel-filter width in Hz (5000..20000; 0 = default 6000), applied live. It must fit the DSP "
              "bandwidth.",
      .on_select = rtl_set_am_bw},
-    {.id = "rtl.sql",
-     .label_fn = lbl_rtl_sql,
-     .help = "Squelch: a threshold in dB (more negative opens more; 0 or off switches it off), auto[+N] (N dB over "
-             "each analog channel's learned noise floor) or noise[+N] (N dB of FM quieting, as a radio's squelch); N "
-             "3..30, default 10; radio inputs only.",
-     .on_select = rtl_set_sql},
     /* 'v' is here as well as on Input > Input volume: the key drives whichever of the
        two multipliers matches the live input type, and on RTL that is this row. */
     {.id = "rtl.vol",
@@ -292,6 +286,14 @@ const NcMenuItem INPUT_MENU_ITEMS[] = {
              "on RTL it cycles Input > RTL-SDR > Volume multiplier instead.",
      .hotkey = "v",
      .on_select = io_set_input_volume},
+    {.id = "input.sql",
+     .is_enabled = io_squelch_offered,
+     .label_fn = lbl_input_sql,
+     .help = "Squelch: a threshold in dB (more negative opens more; 0 or off switches it off), auto[+N] (N dB over "
+             "each analog channel's learned noise floor; radio inputs only) or noise[+N] (N dB of FM quieting, as a "
+             "radio's squelch; on audio input it needs the discriminator or unfiltered FM audio); N 3..30, default "
+             "10.",
+     .on_select = act_set_squelch},
     {.id = "input.warn",
      .label_fn = lbl_input_warn,
      .help = "Warn in the footer when the input level falls below this many dBFS.",
@@ -310,7 +312,7 @@ const NcMenuItem INPUT_MENU_ITEMS[] = {
      .submenu_len = NC_LEN(AIRSPY_MENU_ITEMS)},
     {.id = "input.rtl",
      .label = "RTL-SDR",
-     .help = "Frequency, gain, PPM, bandwidth, squelch, calibration, device.",
+     .help = "Frequency, gain, PPM, bandwidth, calibration, device.",
      .is_enabled = io_rtl_active,
      .submenu = RTL_MENU_ITEMS,
      .submenu_len = NC_LEN(RTL_MENU_ITEMS)},

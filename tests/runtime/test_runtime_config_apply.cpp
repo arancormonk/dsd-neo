@@ -3140,13 +3140,13 @@ test_ui_rtl_setting_commands_stage_without_live_restart(void) {
     dsd_app_command_submit(DSD_APP_CMD_RTL_SET_SQL_DB, &sql_off, sizeof sql_off);
     (void)dsd_app_drain_cmds(opts, state);
     rc |= expect_true("RTL squelch command accepts off", opts->rtl_squelch_level == 0.0);
-    rc |= expect_true("RTL squelch off toast names it off", strstr(state->ui_msg, "RTL squelch -> off") != NULL);
+    rc |= expect_true("RTL squelch off toast names it off", strstr(state->ui_msg, "squelch -> off") != NULL);
 
     double sql_back = -55.0;
     dsd_app_command_submit(DSD_APP_CMD_RTL_SET_SQL_DB, &sql_back, sizeof sql_back);
     (void)dsd_app_drain_cmds(opts, state);
     rc |= expect_true("RTL squelch toast still states a real threshold",
-                      strstr(state->ui_msg, "RTL squelch -> -55.0 dB") != NULL);
+                      strstr(state->ui_msg, "Applied: squelch -> -55.0 dB") != NULL);
 
     free_test_runtime(&runtime);
     return rc;

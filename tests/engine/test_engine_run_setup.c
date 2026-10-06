@@ -960,23 +960,29 @@ test_config_channel_map_weighs_the_tone_filter(void) {
 
 /*
  * --squelch noise needs FM (issue #518 follow-up): on the AM monitor (-fM, no scan) a --squelch noise is refused, a
- * noise setting that came from an input spec or the config runs as auto with the same N and says so, the FM monitor
- * takes it as set, and without a radio input it is off and says so.
+ * noise setting that came from an input spec or the config runs as auto with the same N and says so, and the FM
+ * monitor takes it as set. Without a radio input it runs on audio input (issue #628) without a word at startup: the
+ * PCM noise squelch says so itself if the input has no room or no band. --squelch auto there is off and says so.
  */
 static int
 test_noise_squelch_needs_fm(void) {
     static const struct {
-        int am;
-        int cli;
         const char* dev; /* NULL: no radio input */
-        int ok;
         const char* says;
         const char* omits;
+        int am;
+        int cli;
+        int mode;
+        int ok;
     } cases[] = {
-        {1, 1, "soapy:driver=test:118.1M:7:0:24", 0, "--squelch noise needs an FM channel", NULL},
-        {1, 0, "soapy:driver=test:118.1M:7:0:24:noise+12:2", 1, "runs auto+12dB", "--squelch noise needs an FM"},
-        {0, 1, "soapy:driver=test:162.475M:7:0:24", 1, "SQ=noise+12dB", "--squelch noise needs an FM"},
-        {0, 1, NULL, 1, "--squelch noise needs a radio input", "--squelch noise needs an FM"},
+        {"soapy:driver=test:118.1M:7:0:24", "--squelch noise needs an FM channel", NULL, 1, 1, DSD_SQUELCH_MODE_NOISE,
+         0},
+        {"soapy:driver=test:118.1M:7:0:24:noise+12:2", "runs auto+12dB", "--squelch noise needs an FM", 1, 0,
+         DSD_SQUELCH_MODE_NOISE, 1},
+        {"soapy:driver=test:162.475M:7:0:24", "SQ=noise+12dB", "--squelch noise needs an FM", 0, 1,
+         DSD_SQUELCH_MODE_NOISE, 1},
+        {NULL, NULL, "needs a radio input", 0, 1, DSD_SQUELCH_MODE_NOISE, 1},
+        {NULL, "--squelch auto needs a radio input", "needs an FM", 0, 1, DSD_SQUELCH_MODE_AUTO, 1},
     };
 
     int test_rc = 0;
@@ -992,8 +998,8 @@ test_noise_squelch_needs_fm(void) {
         opts->analog_only = 1;
         opts->analog_demod = cases[i].am ? DSD_ANALOG_DEMOD_AM : DSD_ANALOG_DEMOD_FM;
         if (cases[i].cli) {
-            const dsd_squelch_setting noise = dsd_squelch_setting_noise(12);
-            dsd_squelch_setting_store(opts, &noise);
+            const dsd_squelch_setting dynamic = dsd_squelch_setting_dynamic(cases[i].mode, 12);
+            dsd_squelch_setting_store(opts, &dynamic);
             opts->rtl_squelch_cli_set = 1;
         }
         char banner[8192] = {0};
@@ -1005,13 +1011,14 @@ test_noise_squelch_needs_fm(void) {
         char tag[64];
         DSD_SNPRINTF(tag, sizeof tag, "noise squelch case %zu", i);
         test_rc |= expect_true(tag, (rc == 0) == (cases[i].ok != 0));
-        test_rc |= expect_contains(tag, banner, cases[i].says);
+        if (cases[i].says) {
+            test_rc |= expect_contains(tag, banner, cases[i].says);
+        }
         if (cases[i].omits) {
             test_rc |= expect_omits(tag, banner, cases[i].omits);
         }
         /* The setting stays as written: the demodulator resolves it per channel. */
-        test_rc |=
-            expect_true(tag, opts->rtl_squelch_mode == DSD_SQUELCH_MODE_NOISE && opts->rtl_squelch_margin_db == 12);
+        test_rc |= expect_true(tag, opts->rtl_squelch_mode == cases[i].mode && opts->rtl_squelch_margin_db == 12);
         free_test_runtime(opts, state);
     }
     return test_rc;

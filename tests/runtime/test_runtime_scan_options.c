@@ -123,7 +123,7 @@ check_squelch_setting_option(void) {
         < 0);
 }
 
-/* The row squelch uses the rtl_sql contract: whole dB from -100 to 0, 0 switches it off, and
+/* The row squelch takes whole dB from -100 to 0 (the rtl_sql key's spelling), 0 switches it off, and
  * omitting it inherits. Both the separate-token and the = spellings work, and a negative number
  * is the one exception to "a following token that starts with - is a switch". */
 static void

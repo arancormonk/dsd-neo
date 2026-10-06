@@ -247,8 +247,9 @@ frame_sync_publish_ui_throttled(const dsd_opts* opts, dsd_state* state) {
     }
 
     dsd_atomic_u64_store_relaxed(&g_frame_sync_ui_last_publish_ms, now_ms);
-    /* The auto squelch's floor and state, as the stream shows them now (issue #518 follow-up). */
-    dsd_squelch_publish_status(state);
+    /* The dynamic squelch's state, as the stream shows it now (issue #518 follow-up), or the PCM noise squelch's
+       (issue #628). */
+    dsd_squelch_publish_status(opts, state);
     dsd_telemetry_publish_both_and_redraw(opts, state);
 }
 

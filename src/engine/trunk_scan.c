@@ -3245,7 +3245,8 @@ trunk_scan_warn_targets(const dsd_opts* opts, dsd_state* state, const dsd_trunk_
         }
         char label[96];
         trunk_scan_analog_target_label(target, label, sizeof label);
-        (void)dsd_engine_scan_warn_analog_squelch(opts, state, &target->row_options, label);
+        const int am = trunk_scan_target_mode(target->type) == DSD_SCAN_MODE_AM;
+        (void)dsd_engine_scan_warn_analog_squelch(opts, state, &target->row_options, am, label);
         if (check_rate_hz != TRUNK_SCAN_ANALOG_CHECK_DEFERRED) {
             trunk_scan_warn_analog_width(opts, state, target, &target->row_options, check_rate_hz, 0U, &skipped);
         }

@@ -23,6 +23,7 @@
 #include <dsd-neo/runtime/rdio_export.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
+#include <dsd-neo/runtime/squelch.h>
 #include <errno.h>
 #include <math.h>
 #include <memory>
@@ -1602,7 +1603,7 @@ test_snapshot_rtl_and_rtltcp_device_specs(void) {
     opts.rtl_gain_value = 28;
     opts.rtlsdr_ppm_error = 3;
     opts.rtl_dsp_bw_khz = 24;
-    opts.rtl_squelch_level = 1e-30;
+    opts.rtl_squelch_level = 1e-30; /* under pwr_to_dB()'s floor: saved at -120 dB, the key's lowest */
     opts.rtl_volume_multiplier = 5;
 
     dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
@@ -1885,6 +1886,173 @@ test_noise_squelch_keys_roundtrip(void) {
     }
     rc |= expect_contains("noise render", text, "rtl_sql_mode = \"noise\"");
     rc |= expect_contains("noise render", text, "rtl_sql_margin_db = 14");
+    return rc;
+}
+
+/* The [input] squelch keys on audio input (issue #628): a PCM source's rtl_sql / rtl_sql_mode / rtl_sql_margin_db apply
+ * to the session when they are present (the noise squelch runs there now, and the level always did), a PCM config
+ * without them (one saved before audio input had a squelch) leaves the session's squelch alone (a runtime load must not
+ * switch a live one off), --squelch wins, and a PCM session's save always writes the keys, off and the unset level
+ * included, as an RTL session's does. */
+static int
+test_pcm_squelch_keys_roundtrip(void) {
+    static const char* ini = "[input]\n"
+                             "source = \"tcp\"\n"
+                             "tcp_host = \"127.0.0.1\"\n"
+                             "tcp_port = 7355\n"
+                             "rtl_sql = -40\n"
+                             "rtl_sql_mode = \"noise\"\n"
+                             "rtl_sql_margin_db = 8\n";
+    char path[DSD_TEST_PATH_MAX];
+    if (write_temp_config(ini, path, sizeof path) != 0) {
+        return 1;
+    }
+    dsdneoUserConfig cfg;
+    int rc = 0;
+    if (dsd_user_config_load(path, &cfg) != 0 || !cfg.rtl_sql_is_set || cfg.rtl_sql_mode != DSD_SQUELCH_MODE_NOISE) {
+        DSD_FPRINTF(stderr, "tcp squelch keys not loaded (set %d mode %d)\n", cfg.rtl_sql_is_set, cfg.rtl_sql_mode);
+        (void)remove(path);
+        return 1;
+    }
+    (void)remove(path);
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_opts_and_state(opts, state);
+    dsd_apply_user_config_to_opts(&cfg, &opts, &state);
+    if (opts.rtl_squelch_mode != DSD_SQUELCH_MODE_NOISE || opts.rtl_squelch_margin_db != 8
+        || fabs(opts.rtl_squelch_level - pow(10.0, -4.0)) > 1e-12) {
+        DSD_FPRINTF(stderr, "tcp apply of noise+8 over -40: mode %d margin %d level %g\n", opts.rtl_squelch_mode,
+                    opts.rtl_squelch_margin_db, opts.rtl_squelch_level);
+        rc |= 1;
+    }
+
+    /* A PCM config without the keys: the session's squelch stays. */
+    dsdneoUserConfig bare = cfg;
+    bare.rtl_sql_is_set = 0;
+    bare.rtl_sql = 0;
+    bare.rtl_sql_mode = DSD_SQUELCH_MODE_LEVEL;
+    const dsd_squelch_setting noise12 = dsd_squelch_setting_noise(12);
+    dsd_squelch_setting_store(&opts, &noise12);
+    dsd_apply_user_config_to_opts(&bare, &opts, &state);
+    if (opts.rtl_squelch_mode != DSD_SQUELCH_MODE_NOISE || opts.rtl_squelch_margin_db != 12) {
+        DSD_FPRINTF(stderr, "a PCM config without squelch keys changed the squelch: mode %d margin %d\n",
+                    opts.rtl_squelch_mode, opts.rtl_squelch_margin_db);
+        rc |= 1;
+    }
+
+    /* --squelch wins. */
+    reset_opts_and_state(opts, state);
+    opts.rtl_squelch_cli_set = 1;
+    opts.rtl_squelch_level = pow(10.0, -7.0);
+    dsd_apply_user_config_to_opts(&cfg, &opts, &state);
+    if (opts.rtl_squelch_mode != DSD_SQUELCH_MODE_LEVEL || fabs(opts.rtl_squelch_level - pow(10.0, -7.0)) > 1e-15) {
+        DSD_FPRINTF(stderr, "a PCM config replaced the --squelch setting: mode %d\n", opts.rtl_squelch_mode);
+        rc |= 1;
+    }
+
+    /* The save: a tcp session under noise+8 writes the keys, and one with the squelch off writes it off. */
+    reset_opts_and_state(opts, state);
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "tcp:127.0.0.1:7355");
+    opts.audio_in_type = AUDIO_IN_TCP;
+    opts.rtl_squelch_level = pow(10.0, -4.0);
+    opts.rtl_squelch_mode = DSD_SQUELCH_MODE_NOISE;
+    opts.rtl_squelch_margin_db = 8;
+    dsdneoUserConfig snap;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    char text[8192];
+    if (!snap.rtl_sql_is_set || render_config_to_buffer(&snap, text, sizeof text) != 0) {
+        DSD_FPRINTF(stderr, "snapshot of a tcp session's noise+8 not set\n");
+        return 1;
+    }
+    rc |= expect_contains("tcp noise render", text, "rtl_sql_mode = \"noise\"");
+    rc |= expect_contains("tcp noise render", text, "rtl_sql_margin_db = 8");
+    rc |= expect_contains("tcp noise render", text, "rtl_sql = -40");
+    opts.rtl_squelch_mode = DSD_SQUELCH_MODE_LEVEL;
+    opts.rtl_squelch_level = 0.0;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    if (render_config_to_buffer(&snap, text, sizeof text) != 0) {
+        return 1;
+    }
+    rc |= expect_contains("tcp off render", text, "rtl_sql = 0");
+    /* Loaded back over a session running noise, that save switches the squelch off again. */
+    if (write_temp_config(text, path, sizeof path) != 0) {
+        return 1;
+    }
+    dsdneoUserConfig off;
+    const int loaded = dsd_user_config_load(path, &off);
+    (void)remove(path);
+    const dsd_squelch_setting noise10 = dsd_squelch_setting_noise(10);
+    dsd_squelch_setting_store(&opts, &noise10);
+    if (loaded != 0 || !off.rtl_sql_is_set) {
+        DSD_FPRINTF(stderr, "the saved off squelch did not load (rc %d set %d)\n", loaded, off.rtl_sql_is_set);
+        rc |= 1;
+    } else {
+        dsd_apply_user_config_to_opts(&off, &opts, &state);
+        if (opts.rtl_squelch_mode != DSD_SQUELCH_MODE_LEVEL || !dsd_squelch_is_off(opts.rtl_squelch_level)) {
+            DSD_FPRINTF(stderr, "reloading a saved off squelch left mode %d level %g\n", opts.rtl_squelch_mode,
+                        opts.rtl_squelch_level);
+            rc |= 1;
+        }
+    }
+    /* The unset level (-110 dB) saves as -110, inside the key's -120..0 range: a default Pulse session's save validates
+       without a range warning, and loads back the same threshold, so a level gate decides as it did before. */
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "pulse");
+    opts.audio_in_type = AUDIO_IN_PULSE;
+    opts.rtl_squelch_mode = DSD_SQUELCH_MODE_LEVEL;
+    opts.rtl_squelch_level = pow(10.0, -11.0);
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    if (render_config_to_buffer(&snap, text, sizeof text) != 0) {
+        return 1;
+    }
+    rc |= expect_contains("pulse unset level render", text, "rtl_sql = -110");
+    if (write_temp_config(text, path, sizeof path) != 0) {
+        return 1;
+    }
+    dsdcfg_diagnostics_t diags;
+    DSD_MEMSET(&diags, 0, sizeof(diags));
+    const int validated = dsd_user_config_validate(path, &diags);
+    (void)remove(path);
+    for (int i = 0; i < diags.count; i++) {
+        if (strstr(diags.items[i].key, "rtl_sql") != NULL) {
+            DSD_FPRINTF(stderr, "a default Pulse save's %s does not validate: %s\n", diags.items[i].key,
+                        diags.items[i].message);
+            rc |= 1;
+        }
+    }
+    if (validated != 0 || diags.error_count != 0) {
+        DSD_FPRINTF(stderr, "a default Pulse save does not validate (rc %d, %d errors)\n", validated,
+                    diags.error_count);
+        rc |= 1;
+    }
+    dsdcfg_diags_free(&diags);
+    if (write_temp_config(text, path, sizeof path) != 0) {
+        return 1;
+    }
+    dsdneoUserConfig unset;
+    const int unset_loaded = dsd_user_config_load(path, &unset);
+    (void)remove(path);
+    opts.rtl_squelch_level = pow(10.0, -6.0);
+    if (unset_loaded != 0) {
+        DSD_FPRINTF(stderr, "the saved unset level did not load (rc %d)\n", unset_loaded);
+        rc |= 1;
+    } else {
+        dsd_apply_user_config_to_opts(&unset, &opts, &state);
+        const double want = pow(10.0, -11.0);
+        if (fabs(opts.rtl_squelch_level - want) > want * 1e-9) {
+            DSD_FPRINTF(stderr, "the saved unset level reloaded as %g, not %g\n", opts.rtl_squelch_level, want);
+            rc |= 1;
+        }
+    }
+    /* A WAV session's level is saved too. */
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "capture.wav");
+    opts.audio_in_type = AUDIO_IN_WAV;
+    opts.rtl_squelch_level = pow(10.0, -6.0);
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    if (render_config_to_buffer(&snap, text, sizeof text) != 0) {
+        return 1;
+    }
+    rc |= expect_contains("wav level render", text, "rtl_sql = -60");
     return rc;
 }
 
@@ -4294,6 +4462,7 @@ main(void) {
     rc |= test_snapshot_disabled_squelch_roundtrips_as_off();
     rc |= test_auto_squelch_keys_roundtrip();
     rc |= test_noise_squelch_keys_roundtrip();
+    rc |= test_pcm_squelch_keys_roundtrip();
     rc |= test_load_and_apply_rtltcp_regression();
     rc |= test_snapshot_roundtrip();
     rc |= test_apply_demod_lock();

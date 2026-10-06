@@ -351,8 +351,10 @@ applies to an analog row, so a global `--scan-voice-only` does not block one. Th
 list scanned under `-fA` or `-fM` (AM), which hold on their carrier under `-t` as well. Scan start warns once about an
 analog row whose squelch is off or at -100 dB or below: noise then keeps its carrier open, re-arming the hold with every
 block, so only the visit cap or a manual advance or avoid moves on. The auto and noise squelches (`--squelch auto`,
-`--squelch noise`, the row's own or inherited) close on noise on a radio input, so a row running one draws no warning;
-on audio input they are off and the row is warned about as an open one.
+`--squelch noise`, the row's own or inherited) close on noise on a radio input, so a row running one draws no warning.
+On audio input the noise squelch closes an `nfm` row on noise too (it learns its reference from the input; see "Noise
+squelch on audio input" in `docs/cli.md`); the auto squelch, and the noise squelch on an `am` row, are off there and
+the row is warned about as an open one.
 
 On an `nfm` row or `nfm-conventional` target the tone policy (issue #527) is the configured receive policy
 (`--tone-allow`, `--tone-block`, `[analog] tone_filter` and `tone_list`; see "Tone filter" in `docs/cli.md`) for this

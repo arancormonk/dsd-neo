@@ -27,6 +27,7 @@
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
+#include <dsd-neo/runtime/squelch.h>
 #include <dsd-neo/runtime/unicode.h>
 #include <dsd-neo/ui/menu_core.h>
 #include <dsd-neo/ui/ncurses_dsp_display.h>
@@ -795,7 +796,9 @@ test_dmr_mono_override_terminal_reporting(void) {
 static void
 test_basic_input_source_rendering(void) {
     static dsd_opts opts;
+    static dsd_state state;
     DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
 
     opts.audio_in_type = AUDIO_IN_PULSE;
     opts.pulse_digi_rate_in = 48000;
@@ -806,11 +809,13 @@ test_basic_input_source_rendering(void) {
     DSD_SNPRINTF(opts.pa_input_idx, sizeof(opts.pa_input_idx), "pulse-device");
     DSD_SNPRINTF(opts.tcp_hostname, sizeof(opts.tcp_hostname), "radio.local");
     reset_printw_capture();
-    ui_render_basic_input_sources(&opts);
+    ui_render_basic_input_sources(&opts, &state);
     assert_capture_contains("| Pulse Signal Input:  48 kHz; 2 Ch;");
     assert_capture_contains(" D: pulse-device;");
     assert_capture_contains("RIG: radio.local:4532;");
     assert_capture_contains(" IV: 3X;");
+    /* Audio input shows the squelch as a radio input does (issue #628). */
+    assert_capture_contains(" SQL: off;");
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
     opts.audio_in_type = AUDIO_IN_TCP;
@@ -819,9 +824,32 @@ test_basic_input_source_rendering(void) {
     opts.input_volume_multiplier = 4;
     DSD_SNPRINTF(opts.tcp_hostname, sizeof(opts.tcp_hostname), "10.0.0.5");
     reset_printw_capture();
-    ui_render_basic_input_sources(&opts);
+    ui_render_basic_input_sources(&opts, &state);
     assert_capture_contains("| TCP Signal Input: 10.0.0.5:7355; 48 kHz; 1 Ch;");
     assert_capture_contains(" IV: 4X;");
+
+    /* The PCM noise squelch on an FM monitor: learning, then its quieting, then no band above voice. */
+    opts.rtl_squelch_mode = DSD_SQUELCH_MODE_NOISE;
+    opts.rtl_squelch_margin_db = 12;
+    opts.analog_only = 1;
+    opts.monitor_input_audio = 1;
+    opts.analog_demod = DSD_ANALOG_DEMOD_FM;
+    state.squelch_noise_active = 1;
+    state.squelch_noise_state = DSD_SQUELCH_NOISE_STATE_LEARNING;
+    reset_printw_capture();
+    ui_render_basic_input_sources(&opts, &state);
+    assert_capture_contains(" SQL: noise +12 dB (learning);");
+    state.squelch_noise_state = DSD_SQUELCH_NOISE_STATE_KNOWN;
+    state.squelch_noise_measured = 1;
+    state.squelch_noise_quieting_cdb = 2300;
+    reset_printw_capture();
+    ui_render_basic_input_sources(&opts, &state);
+    assert_capture_contains(" SQL: noise +12 dB (quieting 23 dB);");
+    state.squelch_noise_state = DSD_SQUELCH_NOISE_STATE_NO_BAND;
+    reset_printw_capture();
+    ui_render_basic_input_sources(&opts, &state);
+    assert_capture_contains(" SQL: noise +12 dB (off: no band above voice);");
+    DSD_MEMSET(&state, 0, sizeof(state));
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
     opts.audio_in_type = AUDIO_IN_UDP;
@@ -829,7 +857,7 @@ test_basic_input_source_rendering(void) {
     opts.udp_in_portno = 23456;
     opts.input_volume_multiplier = 5;
     reset_printw_capture();
-    ui_render_basic_input_sources(&opts);
+    ui_render_basic_input_sources(&opts, &state);
     assert_capture_contains("| UDP Signal Input: 127.0.0.1:23456; 96 kHz; 1 Ch;");
     assert_capture_contains("[Waiting]");
 
@@ -837,7 +865,7 @@ test_basic_input_source_rendering(void) {
     opts.udp_in_drops = 3ULL;
     DSD_SNPRINTF(opts.udp_in_bindaddr, sizeof(opts.udp_in_bindaddr), "0.0.0.0");
     reset_printw_capture();
-    ui_render_basic_input_sources(&opts);
+    ui_render_basic_input_sources(&opts, &state);
     assert_capture_contains("| UDP Signal Input: 0.0.0.0:23456; 96 kHz; 1 Ch;");
     assert_capture_contains("Pkts:42 Drops:3");
 
@@ -846,16 +874,17 @@ test_basic_input_source_rendering(void) {
     opts.wav_sample_rate = 48000;
     opts.input_volume_multiplier = 2;
     DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "capture.wav");
+    opts.rtl_squelch_level = dsd_squelch_level_from_sql(-50.0);
     reset_printw_capture();
-    ui_render_basic_input_sources(&opts);
-    assert_capture_contains("| WAV Audio Input: capture.wav; 48000 kHz;");
-    assert_capture_contains(" IV: 2X;");
+    ui_render_basic_input_sources(&opts, &state);
+    assert_capture_contains("| WAV Audio Input: capture.wav; 48 kHz;");
+    assert_capture_contains(" IV: 2X; SQL: -50.0 dB;");
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
     opts.audio_in_type = AUDIO_IN_STDIN;
     reset_printw_capture();
-    ui_render_basic_input_sources(&opts);
-    assert_capture_contains("| STDIN Standard Input: - Menu Disabled when using STDIN!");
+    ui_render_basic_input_sources(&opts, &state);
+    assert_capture_contains("| STDIN Standard Input: - Menu Disabled when using STDIN! SQL: off;");
 }
 
 static void

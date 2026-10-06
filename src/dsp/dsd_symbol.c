@@ -1433,7 +1433,7 @@ symbol_process_unsynced_audio(const dsd_opts* opts, dsd_state* state, unsigned i
 /* Whether sample @p i of the block plays under the auto squelch: the block's gate and the sample's own. */
 static inline int
 symbol_sample_heard(const dsd_opts* opts, const dsd_state* state, unsigned int i, int allowed) {
-    return allowed && dsd_squelch_gate_open(opts, state->analog_out_flags[i]);
+    return allowed && dsd_squelch_gate_open(opts, state, state->analog_out_flags[i]);
 }
 
 /* The audio chain under the auto squelch (issue #518 follow-up), which gates per sample: each run of samples that play,
@@ -1520,10 +1520,10 @@ symbol_finalize_unsynced_analog_block(dsd_opts* opts, dsd_state* state, unsigned
        DCS signal about 32 dB). It only reads, so the audio that follows is unchanged. */
     dsd_analog_rx_tap_flags(opts, state, state->analog_out_f, state->analog_out_flags, analog_block);
     /* One gate decision for the block, taken after the tap and before the gain stage, so the
-       AGC adapts to exactly the audio that plays. Under the auto squelch each sample's own gate
-       joins it. */
+       AGC adapts to exactly the audio that plays. While the flags carry the gate
+       (dsd_squelch_flags_in_force()) each sample's own gate joins it. */
     const int allowed = symbol_unsynced_audio_allowed(opts, state);
-    if (dsd_squelch_dynamic_in_force(opts)) {
+    if (dsd_squelch_flags_in_force(opts, state)) {
         symbol_process_unsynced_audio_runs(opts, state, analog_block, allowed);
         const int heard = symbol_apply_sink_gate(opts, state, analog_block, allowed);
         symbol_output_unsynced_analog(opts, state, analog_block, heard);
@@ -1578,6 +1578,10 @@ symbol_process_unsynced_analog(dsd_opts* opts, dsd_state* state, unsigned int an
     }
     if ((unsigned int)state->analog_sample_counter >= analog_block) {
         state->analog_sample_counter = (int)analog_block - 1;
+    }
+    if (opts->audio_in_type != AUDIO_IN_RTL) {
+        /* Audio input carries no flags of its own: the PCM noise squelch's, where it runs (issue #628). */
+        flag = dsd_analog_rx_pcm_squelch_sample(opts, state, sample);
     }
     state->analog_out_flags[state->analog_sample_counter] = flag;
     state->analog_out_f[state->analog_sample_counter++] = sample;
@@ -2057,6 +2061,8 @@ symbol_read_sample_tcp(dsd_opts* opts, dsd_state* state, float* sample_out) {
                 DSD_FPRINTF(stderr, "Error, couldn't Reconnect to TCP audio input\n");
             } else {
                 reconnected = 1;
+                /* A new stream, whatever the old one's resampler tail still returns first (issue #628). */
+                dsd_opts_note_pcm_stream(opts);
                 LOG_INFO("TCP Socket Reconnected Successfully.\n");
             }
         } else {

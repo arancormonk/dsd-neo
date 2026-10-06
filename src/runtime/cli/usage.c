@@ -255,13 +255,14 @@ dsd_cli_usage_section_decode(void) {
     printf("                               shown apart; a scanner moves on from rejected traffic.\n");
     printf("      --tone-block <list>      Mute analog FM traffic carrying a listed tone or code; hear the rest.\n");
     printf("      --no-tone-filter         No tone filter (the default): ordinary carrier squelch.\n");
-    printf("      --squelch <setting>      Radio squelch: off, a level in dB (-60), auto[+N] or noise[+N] (N 3..30,\n");
+    printf("      --squelch <setting>      Squelch: off, a level in dB (-60), auto[+N] or noise[+N] (N 3..30,\n");
     printf("                               default 10). auto opens N dB above the noise floor each analog channel\n");
     printf("                               learns; noise opens an FM channel when its discriminator noise above\n");
     printf("                               voice quiets by N dB, as a radio's squelch does (auto on AM and on 8 or\n");
     printf("                               10 kHz FM). Both are the same whatever the dongle, gain or antenna. Wins\n");
     printf("                               over the input spec's sql field; works with --iq-replay. Off on digital\n");
-    printf("                               channels and PCM.\n");
+    printf("                               channels. On audio input (PCM) noise learns the noise above voice from\n");
+    printf("                               the input and gates the FM monitor; auto needs a radio input.\n");
     printf("  -fM           Native AM receiver (IQ inputs: RTL-SDR, rtl_tcp, SoapySDR, Airspy, --iq-replay)\n");
     printf("      --am-bandwidth-hz <Hz>   AM channel-filter width, the full RF passband in whole Hz (5000..20000;\n");
     printf("                               default 6000). Not the tuner or audio bandwidth; it must fit the DSP\n");
