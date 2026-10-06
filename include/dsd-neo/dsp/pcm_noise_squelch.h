@@ -60,10 +60,15 @@
  *    refutation in the stretch. While a step is held, only a stretch with noise's spectrum replaces the reference or
  *    is tracked.
  *  - The step refuted is kept too (and cached), until a new reference replaces it: 0.2 s of runs within 1.5 dB of its
- *    level, three in four with its spectrum against it and the voice band steady (doubled for each refutation in the
- *    stretch; modulation against it starts over), take it back, and the reference it replaces is held as its prior.
- *    Weak traffic over noise genuinely turned down refutes a step just as a stronger carrier over relayed noise taken
- *    for noise does, and nothing tells the two apart: the traffic plays, and the noise after it takes the step back.
+ *    level, three in four with its spectrum against it and the voice band steady, in a stretch with no refutation of
+ *    its own (noise come back after the carrier; the carrier's own pauses share the stretch that refuted the step),
+ *    take it back, and the reference it replaces is held as its prior; modulation against it starts over. Weak traffic
+ *    over noise genuinely turned down refutes a step just as a stronger carrier over relayed noise taken for noise
+ *    does, and nothing tells the two apart: the traffic plays, and the noise after it takes the step back.
+ *  - A reference a refutation brought back is proven, and a step held over it (taken back, or stepped down again) is
+ *    contested: eight of ten runs less than N dB under it without noise's spectrum refute it, louder voice or not (a
+ *    carrier that relayed noise carrying speech more lightly than before). A below-threshold carrier after weak
+ *    traffic and its noise plays too.
  *  - A steady run at or above the reference less 1.5 dB tracks it with a 1 s time constant (slow drift).
  *  - Stale quieting: the gate open for 5 s on one stretch whose voice band held stationary in 90 % of its windows reads
  *    a level that dropped (a source's volume lowered out of clipping, its audio low-pass switched on), not speech: the
@@ -158,6 +163,7 @@ typedef struct {
     double ref[DSD_PCM_NOISE_SQUELCH_MAX_BANDS];
     double v_ref_db;
     double vp_ref_db[DSD_PCM_NOISE_SQUELCH_VOICE_PARTS];
+    int proven; /**< one a refutation brought back: a step held over it is contested */
 } dsd_pcm_noise_squelch_held;
 
 /** @brief A remembered reference. */
@@ -170,6 +176,7 @@ typedef struct {
     double vp_ref_db[DSD_PCM_NOISE_SQUELCH_VOICE_PARTS];
     dsd_pcm_noise_squelch_held prior; /**< a downward step held: the reference from before it */
     dsd_pcm_noise_squelch_held alt;   /**< a step a refutation undid */
+    int ref_proven;                   /**< the reference is one a refutation brought back */
     uint64_t stamp;                   /**< LRU */
 } dsd_pcm_noise_squelch_cache_entry;
 
@@ -233,6 +240,7 @@ typedef struct {
        undid, until noise at its level takes it back or a new reference replaces it. */
     dsd_pcm_noise_squelch_held prior;
     dsd_pcm_noise_squelch_held alt;
+    int ref_proven; /**< the reference is one a refutation brought back */
     /* The stretch: anchor level, voice power sum, windows, voice-steady windows, whether it began at the reference, a
        pending gain step (its runs, those with noise's spectrum and their step sum), the gate's open windows on it, the
        evidence for noise at a lower gain (its level, runs, those with noise's spectrum and their step sum), the last

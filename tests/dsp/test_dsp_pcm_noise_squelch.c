@@ -800,6 +800,70 @@ test_weak_carrier_keeps_a_step(void) {
     }
 }
 
+/* A step held over a reference a refutation brought back is contested (issue #628). A carrier relays noise that steps
+   the reference down, its speech refutes that, its relayed noise steps down again, and its next speech is lighter
+   (500 Hz deviation against 1 kHz): that speech shows voice clearly louder than the relay's in only some of its runs,
+   but noise's spectrum in none, which refutes a contested step. Played over 3 s and 12 s, and after a gap before the
+   second relay (which starts a stretch of its own, so the relay takes the refuted step back). And a dead carrier the
+   stale rule took, whose speech refuted that: the dead carrier between its later 160 ms bursts shares the stretch that
+   refuted the step, so it never takes it back, and every burst plays. */
+static void
+test_contested_step(void) {
+    for (int c = 0; c < 3; c++) {
+        dsd_pcm_noise_squelch* sq = new_squelch(48000, 10);
+        static pcm_tap src;
+        static trace tr;
+        DSD_MEMSET(&tr, 0, sizeof tr);
+        pcm_tap_init(&src, 44U, 12500.0, 0.0, 0.0);
+        src.tone_dev_hz = 1000.0;
+        src.relay_rms = 0.35;
+        const double light = c == 1 ? 12.0 : 3.0;
+        const seg s[] = {
+            {PCM_TAP_NOISE, 2.0, 0.0, 0.0, 0.0},        {PCM_TAP_RELAY, 3.0, 20.0, 0.0, 0.0},
+            {PCM_TAP_SYLLABIC, 3.0, 20.0, 1000.0, 0.0}, {PCM_TAP_ZERO, 0.2, 0.0, 0.0, 0.0},
+            {PCM_TAP_RELAY, 1.8, 20.0, 0.0, 0.0},       {PCM_TAP_SYLLABIC, light, 20.0, 1000.0, 0.0},
+        };
+        static const double devs[] = {0.0, 0.0, 0.0, 0.0, 0.0, 500.0};
+        for (int k = 0; k < 6; k++) {
+            if (k == 3 && c != 2) {
+                continue;
+            }
+            const double keep = src.tone_dev_hz;
+            src.tone_dev_hz = devs[k] > 0.0 ? devs[k] : keep;
+            g_seg_base = k;
+            run_segments(sq, &src, &s[k], 1, &tr);
+            src.tone_dev_hz = keep;
+        }
+        g_seg_base = 0;
+        assert(open_seconds(&tr, 2, 0.0) > 3.0 - 0.75);
+        assert(open_seconds(&tr, 5, 0.0) > light - 0.75);
+        free(sq);
+    }
+    dsd_pcm_noise_squelch* sq = new_squelch(48000, 10);
+    static pcm_tap src;
+    static trace tr;
+    DSD_MEMSET(&tr, 0, sizeof tr);
+    pcm_tap_init(&src, 44U, 12500.0, 0.0, 0.0);
+    src.tone_dev_hz = 1000.0;
+    seg s[17];
+    int n = 0;
+    s[n++] = (seg){PCM_TAP_NOISE, 2.0, 0.0, 0.0, 0.0};
+    s[n++] = (seg){PCM_TAP_DEAD, 7.0, 20.0, 0.0, 0.0};
+    s[n++] = (seg){PCM_TAP_SYLLABIC, 1.5, 20.0, 1000.0, 0.0};
+    s[n++] = (seg){PCM_TAP_DEAD, 1.0, 20.0, 0.0, 0.0};
+    for (int b = 0; b < 6; b++) {
+        s[n++] = (seg){PCM_TAP_SYLLABIC, 0.16, 20.0, 1000.0, 0.0};
+        s[n++] = (seg){PCM_TAP_DEAD, 0.6, 20.0, 0.0, 0.0};
+    }
+    s[n++] = (seg){PCM_TAP_NOISE, 1.0, 0.0, 0.0, 0.0};
+    run_segments(sq, &src, s, n, &tr);
+    for (int b = 0; b < 6; b++) {
+        assert(open_seconds(&tr, 4 + (2 * b), 0.0) > 0.12);
+    }
+    assert(open_seconds(&tr, n - 1, 0.1) < 1e-9);
+    free(sq);
+}
+
 /* A refuted step taken back (issue #628). Weak traffic -- 6 dB CNR under noise+10 -- on noise the source turned down
    20 dB refutes the step just as a stronger carrier over relayed noise taken for noise does, and nothing tells the two
    apart: it plays. The noise after each transmission matches the refuted step and takes it back within half a second;
@@ -877,8 +941,9 @@ test_refuted_step_taken_back(void) {
 /* A repeater relaying a weak user's noise (300-3000 Hz noise on the carrier) at the level where it matches the
    source's own noise reads as noise turned down, and the reference steps down to it. The user's speech that follows on
    the same carrier is no noise at that level: it refutes the step, the reference comes back, and the speech plays
-   after a fraction of a second. The carrier's next relayed noise matches the refuted step and takes it back after a
-   fraction of a second of its own, its next speech refutes that as quickly, and the noise after the carrier shuts. */
+   after a fraction of a second. The carrier's next relayed noise shares the stretch whose speech refuted the step, so
+   it does not take that back: it steps down again only after 0.6 s of it, its next speech refutes that as quickly,
+   and the noise after the carrier shuts. */
 static void
 test_relayed_noise_is_refuted(void) {
     for (int t = 0; t < 2; t++) {
@@ -897,7 +962,7 @@ test_relayed_noise_is_refuted(void) {
         };
         run_segments(sq, &src, s, 6, &tr);
         assert(open_seconds(&tr, 2, 0.0) > 3.0 - 0.75);
-        assert(open_seconds(&tr, 3, 0.0) > 0.2 && open_seconds(&tr, 3, 0.0) < 0.8);
+        assert(open_seconds(&tr, 3, 0.0) > 0.6 - 0.021 && open_seconds(&tr, 3, 0.0) < 0.8);
         assert(open_seconds(&tr, 4, 0.0) > 2.0 - 0.5);
         assert(open_seconds(&tr, 5, 0.1) < 1e-9);
         free(sq);
@@ -1206,6 +1271,7 @@ main(int argc, char** argv) {
     test_small_volume_step();
     test_relayed_noise_is_refuted();
     test_refuted_step_taken_back();
+    test_contested_step();
     test_held_steps_come_back();
     test_modulation_refutes_wherever_shut();
     test_weak_carrier_keeps_a_step();
