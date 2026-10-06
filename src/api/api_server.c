@@ -46,7 +46,7 @@
 
 /* A peer that has gone away must cost an error return, never a SIGPIPE: Linux takes the flag per send, macOS and the
    BSDs a socket option (set at accept), Windows has no such signal. */
-#if defined(MSG_NOSIGNAL)
+#ifdef MSG_NOSIGNAL
 #define DSD_API_SEND_FLAGS MSG_NOSIGNAL
 #else
 #define DSD_API_SEND_FLAGS 0
@@ -725,7 +725,7 @@ accept_one(api_server* srv) {
     if (c == DSD_INVALID_SOCKET) {
         return;
     }
-#if defined(SO_NOSIGPIPE)
+#ifdef SO_NOSIGPIPE
     int one = 1;
     (void)dsd_socket_setsockopt(c, SOL_SOCKET, SO_NOSIGPIPE, &one, (int)sizeof(one));
 #endif
@@ -799,58 +799,98 @@ static DSD_THREAD_RETURN_TYPE
     DSD_THREAD_RETURN;
 }
 
+enum { DSD_API_RESULT_CHUNK = 8 };
+
+/* Results the history no longer held when the pump looked: said, not silently skipped. */
+static void
+results_emit_gap(dsd_json_buf* b, const char* command, uint64_t missed) {
+    dsd_json_buf_reset(b);
+    dsd_json_writer w;
+    dsd_json_writer_init(&w, b);
+    (void)dsd_json_obj_begin(&w);
+    (void)dsd_json_kv_str(&w, "type", "result_gap");
+    (void)dsd_json_kv_str(&w, "command", command);
+    (void)dsd_json_kv_u64(&w, "missed", missed);
+    (void)dsd_json_obj_end(&w);
+    if (!dsd_json_writer_failed(&w) && dsd_json_buf_putc(b, '\n') == 0) {
+        dsd_api_broadcast(b->data, b->len, DSD_API_TOPIC_RESULT);
+    }
+}
+
+static void
+results_emit_tg_one(const dsd_app_tg_export_result* r, dsd_json_buf* b) {
+    dsd_json_buf_reset(b);
+    dsd_json_writer w;
+    dsd_json_writer_init(&w, b);
+    (void)dsd_json_obj_begin(&w);
+    (void)dsd_json_kv_str(&w, "type", "result");
+    (void)dsd_json_kv_str(&w, "command", "tg_list_export");
+    (void)dsd_json_kv_u64(&w, "sequence", r->sequence);
+    (void)dsd_json_kv_bool(&w, "ok", r->success ? 1 : 0);
+    (void)dsd_json_kv_u64_str(&w, "policy_context", r->policy_context);
+    (void)dsd_json_kv_u64(&w, "policy_generation", r->policy_generation);
+    (void)dsd_json_kv_strn(&w, "path", r->path, sizeof r->path);
+    (void)dsd_json_obj_end(&w);
+    if (!dsd_json_writer_failed(&w) && dsd_json_buf_putc(b, '\n') == 0) {
+        dsd_api_broadcast(b->data, b->len, DSD_API_TOPIC_RESULT);
+    }
+}
+
 static void
 results_emit_tg(api_server* srv, dsd_json_buf* b) {
-    dsd_app_tg_export_result results[DSD_APP_RESULT_HISTORY];
-    const int n = dsd_app_tg_export_results_since(srv->last_tg_seq, results, DSD_APP_RESULT_HISTORY);
-    for (int i = 0; i < n; i++) {
-        const dsd_app_tg_export_result* r = &results[i];
-        srv->last_tg_seq = r->sequence;
-        if (!dsd_api_topic_interest(DSD_API_TOPIC_RESULT)) {
-            continue;
-        }
-        dsd_json_buf_reset(b);
-        dsd_json_writer w;
-        dsd_json_writer_init(&w, b);
-        (void)dsd_json_obj_begin(&w);
-        (void)dsd_json_kv_str(&w, "type", "result");
-        (void)dsd_json_kv_str(&w, "command", "tg_list_export");
-        (void)dsd_json_kv_u64(&w, "sequence", r->sequence);
-        (void)dsd_json_kv_bool(&w, "ok", r->success ? 1 : 0);
-        (void)dsd_json_kv_u64_str(&w, "policy_context", r->policy_context);
-        (void)dsd_json_kv_u64(&w, "policy_generation", r->policy_generation);
-        (void)dsd_json_kv_strn(&w, "path", r->path, sizeof r->path);
-        (void)dsd_json_obj_end(&w);
-        if (!dsd_json_writer_failed(&w) && dsd_json_buf_putc(b, '\n') == 0) {
-            dsd_api_broadcast(b->data, b->len, DSD_API_TOPIC_RESULT);
+    dsd_app_tg_export_result results[DSD_API_RESULT_CHUNK];
+    int n = DSD_API_RESULT_CHUNK;
+    while (n == DSD_API_RESULT_CHUNK) {
+        n = dsd_app_tg_export_results_since(srv->last_tg_seq, results, DSD_API_RESULT_CHUNK);
+        for (int i = 0; i < n; i++) {
+            const int interested = dsd_api_topic_interest(DSD_API_TOPIC_RESULT);
+            if (interested && results[i].sequence > srv->last_tg_seq + 1U) {
+                results_emit_gap(b, "tg_list_export", results[i].sequence - srv->last_tg_seq - 1U);
+            }
+            srv->last_tg_seq = results[i].sequence;
+            if (interested) {
+                results_emit_tg_one(&results[i], b);
+            }
         }
     }
 }
 
 static void
+results_emit_dec_one(const dsd_app_decryption_result* r, dsd_json_buf* b) {
+    dsd_json_buf_reset(b);
+    dsd_json_writer w;
+    dsd_json_writer_init(&w, b);
+    (void)dsd_json_obj_begin(&w);
+    (void)dsd_json_kv_str(&w, "type", "result");
+    (void)dsd_json_kv_str(&w, "command", "decryption_apply");
+    (void)dsd_json_kv_u64(&w, "sequence", r->sequence);
+    (void)dsd_json_kv_u64_str(&w, "request_id", r->request_id);
+    (void)dsd_json_kv_i64(&w, "status", r->status);
+    (void)dsd_json_kv_bool(&w, "ok", r->status == DSD_APP_KEY_APPLIED);
+    (void)dsd_json_kv_str(&w, "scope", r->scope == DSD_APP_KEY_SCOPE_TARGET ? "target" : "defaults");
+    (void)dsd_json_obj_end(&w);
+    if (!dsd_json_writer_failed(&w) && dsd_json_buf_putc(b, '\n') == 0) {
+        dsd_api_broadcast(b->data, b->len, DSD_API_TOPIC_RESULT);
+    }
+}
+
+static void
 results_emit_dec(api_server* srv, dsd_json_buf* b) {
-    dsd_app_decryption_result results[DSD_APP_RESULT_HISTORY];
-    const int n = dsd_app_decryption_results_since(srv->last_dec_seq, results, DSD_APP_RESULT_HISTORY);
-    for (int i = 0; i < n; i++) {
-        const dsd_app_decryption_result* r = &results[i];
-        srv->last_dec_seq = r->sequence;
-        if ((r->request_id & DSD_API_REQUEST_ID_TAG) == 0U || !dsd_api_topic_interest(DSD_API_TOPIC_RESULT)) {
-            continue; /* a frontend's request, not ours */
-        }
-        dsd_json_buf_reset(b);
-        dsd_json_writer w;
-        dsd_json_writer_init(&w, b);
-        (void)dsd_json_obj_begin(&w);
-        (void)dsd_json_kv_str(&w, "type", "result");
-        (void)dsd_json_kv_str(&w, "command", "decryption_apply");
-        (void)dsd_json_kv_u64(&w, "sequence", r->sequence);
-        (void)dsd_json_kv_u64_str(&w, "request_id", r->request_id);
-        (void)dsd_json_kv_i64(&w, "status", r->status);
-        (void)dsd_json_kv_bool(&w, "ok", r->status == DSD_APP_KEY_APPLIED);
-        (void)dsd_json_kv_str(&w, "scope", r->scope == DSD_APP_KEY_SCOPE_TARGET ? "target" : "defaults");
-        (void)dsd_json_obj_end(&w);
-        if (!dsd_json_writer_failed(&w) && dsd_json_buf_putc(b, '\n') == 0) {
-            dsd_api_broadcast(b->data, b->len, DSD_API_TOPIC_RESULT);
+    dsd_app_decryption_result results[DSD_API_RESULT_CHUNK];
+    int n = DSD_API_RESULT_CHUNK;
+    while (n == DSD_API_RESULT_CHUNK) {
+        n = dsd_app_decryption_results_since(srv->last_dec_seq, results, DSD_API_RESULT_CHUNK);
+        for (int i = 0; i < n; i++) {
+            const int interested = dsd_api_topic_interest(DSD_API_TOPIC_RESULT);
+            if (interested && results[i].sequence > srv->last_dec_seq + 1U) {
+                /* Some of these may be a frontend's; the client cannot tell, so it is told they all went. */
+                results_emit_gap(b, "decryption_apply", results[i].sequence - srv->last_dec_seq - 1U);
+            }
+            srv->last_dec_seq = results[i].sequence;
+            /* A frontend's own requests are its business; only the API's (tagged ids) are reported. */
+            if (interested && (results[i].request_id & DSD_API_REQUEST_ID_TAG) != 0U) {
+                results_emit_dec_one(&results[i], b);
+            }
         }
     }
 }
@@ -907,7 +947,9 @@ config_resolve(const dsd_api_config* in, dsd_api_config* out) {
     out->max_clients = (in->max_clients > 0) ? in->max_clients : DSD_API_DEFAULT_MAX_CLIENTS;
     out->auth_timeout_ms = (in->auth_timeout_ms > 0) ? in->auth_timeout_ms : DSD_API_DEFAULT_AUTH_TIMEOUT_MS;
     DSD_SNPRINTF(out->bind_addr, sizeof out->bind_addr, "%s", in->bind_addr[0] != '\0' ? in->bind_addr : "127.0.0.1");
-    DSD_MEMCPY(out->token, in->token, sizeof out->token);
+    /* Only the text: the token is compared over the whole zero-padded buffer, so stale bytes after a caller's
+       terminator must not come along. */
+    DSD_SNPRINTF(out->token, sizeof out->token, "%s", in->token);
     struct in_addr probe;
     if (inet_pton(AF_INET, out->bind_addr, &probe) != 1) {
         LOG_ERROR("API: invalid bind address %s (expected numeric IPv4)\n", out->bind_addr);
@@ -952,6 +994,7 @@ open_listener(const dsd_api_config* cfg, int* out_port) {
         return DSD_INVALID_SOCKET;
     }
     struct sockaddr_in bound;
+    DSD_MEMSET(&bound, 0, sizeof bound);
 #if DSD_PLATFORM_WIN_NATIVE
     int bound_len = (int)sizeof(bound);
 #else

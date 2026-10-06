@@ -16,7 +16,10 @@
  * Lifecycle: call dsd_api_start() once the app-control frontend runtime is open
  * (dsd_app_frontend_runtime_start()) and dsd_api_stop() before it closes; while
  * no runtime is open, commands are refused. Neither may be called from a
- * telemetry observer callback.
+ * telemetry observer callback. Start it before the decoder runs and publish
+ * telemetry once right after (dsd_telemetry_publish_both_and_redraw()): that
+ * first look is the event feed's starting point, so every event-history row
+ * committed afterwards reaches the clients subscribed when it is published.
  */
 
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_API_API_H_

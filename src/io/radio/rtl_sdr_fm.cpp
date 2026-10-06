@@ -1465,7 +1465,9 @@ publish_requested_ppm_delta(dsd_opts* opts, int delta) {
     std::lock_guard<std::mutex> lock(g_requested_ppm_state_mutex);
     const dsd_opts* source_opts = requested_ppm_source_opts_locked(opts);
     int requested_ppm = source_opts ? source_opts->rtlsdr_ppm_error : 0;
-    sync_requested_ppm_snapshots_locked(opts, requested_ppm + delta);
+    /* Saturating: a delta can be any int32 (the control API sends what its client asked for). */
+    const int64_t next = (int64_t)requested_ppm + delta;
+    sync_requested_ppm_snapshots_locked(opts, (int)std::max<int64_t>(INT_MIN, std::min<int64_t>(next, INT_MAX)));
     uint32_t request_id = controller.ppm_request_publish_seq.fetch_add(1U, std::memory_order_relaxed) + 1U;
     return request_id;
 }

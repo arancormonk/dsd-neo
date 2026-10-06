@@ -757,6 +757,18 @@ int dsd_user_config_save_atomic(const char* path, const dsdneoUserConfig* cfg);
 void dsd_user_config_init(dsdneoUserConfig* cfg);
 
 /**
+ * @brief Mark @p section present in @p cfg, as a `[section]` header in a file does.
+ *
+ * Some sections act even with no keys: an empty `[analog]` puts the analog
+ * widths and tone policy back to their defaults. Call it for every section
+ * before applying that section's keys with dsd_user_config_apply_key().
+ *
+ * @return 1 when @p cfg and @p section are valid and the name is shorter than
+ *         64 bytes, 0 otherwise. An unknown section is accepted and ignored.
+ */
+int dsd_user_config_apply_section(dsdneoUserConfig* cfg, const char* section);
+
+/**
  * @brief Apply a single user-config key/value pair in memory.
  *
  * The same `[section] key = value` mapping the INI loader uses, exposed so

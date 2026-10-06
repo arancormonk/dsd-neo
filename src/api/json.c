@@ -374,10 +374,8 @@ dsd_json_key(dsd_json_writer* w, const char* key) {
     if (level <= 0 || !w->is_obj[level] || w->after_key[level]) {
         return json_writer_fail(w);
     }
-    if (!w->first[level]) {
-        if (json_writer_putc(w, ',') != 0) {
-            return -1;
-        }
+    if (!w->first[level] && json_writer_putc(w, ',') != 0) {
+        return -1;
     }
     w->first[level] = 0U;
     if (json_writer_putc(w, '"') != 0) {
@@ -469,8 +467,11 @@ dsd_json_value_strn(dsd_json_writer* w, const char* v, size_t cap) {
     if (json_writer_putc(w, '"') != 0) {
         return -1;
     }
-    const char* nul = (v != NULL) ? (const char*)memchr(v, '\0', cap) : NULL;
-    const size_t n = (v == NULL) ? 0U : (nul != NULL ? (size_t)(nul - v) : cap);
+    size_t n = 0U;
+    if (v != NULL) {
+        const char* nul = (const char*)memchr(v, '\0', cap);
+        n = (nul != NULL) ? (size_t)(nul - v) : cap;
+    }
     if (dsd_json_buf_append_escaped_n(w->buf, v, n) != 0) {
         return json_writer_fail(w);
     }
@@ -802,6 +803,15 @@ json_node_new(json_parse_ctx* c, dsd_json_type type) {
     return n;
 }
 
+/* Free parser-owned text: request strings and number literals can be key material or a token. */
+static void
+json_free_text(char* text) {
+    if (text != NULL) {
+        DSD_SECURE_ZERO(text, strlen(text));
+        free(text);
+    }
+}
+
 static void
 json_free_children(dsd_json_node* n) {
     if (n == NULL || n->items == NULL) {
@@ -810,11 +820,11 @@ json_free_children(dsd_json_node* n) {
     for (size_t i = 0U; i < n->count; i++) {
         dsd_json_free(n->items[i]);
         if (n->keys != NULL) {
-            free(n->keys[i]);
+            json_free_text(n->keys[i]);
         }
     }
-    free(n->items);
-    free(n->keys);
+    free((void*)n->items);
+    free((void*)n->keys);
     n->items = NULL;
     n->keys = NULL;
     n->count = 0U;
@@ -826,23 +836,21 @@ dsd_json_free(dsd_json_node* node) {
         return;
     }
     json_free_children(node);
-    if (node->string != NULL) {
-        /* Requests carry keys and tokens as strings or number literals; erase them with the tree. */
-        DSD_SECURE_ZERO(node->string, strlen(node->string));
-        free(node->string);
-    }
+    /* Requests carry keys and tokens as strings or numbers; erase them with the tree. */
+    json_free_text(node->string);
+    DSD_SECURE_ZERO(node, sizeof(*node));
     free(node);
 }
 
 static int
 json_push_item(dsd_json_node* container, char* key, dsd_json_node* value) {
-    dsd_json_node** items = (dsd_json_node**)realloc(container->items, (container->count + 1U) * sizeof(*items));
+    dsd_json_node** items = (dsd_json_node**)realloc((void*)container->items, (container->count + 1U) * sizeof(*items));
     if (items == NULL) {
         return -1;
     }
     container->items = items;
     if (container->type == DSD_JSON_OBJECT) {
-        char** keys = (char**)realloc(container->keys, (container->count + 1U) * sizeof(*keys));
+        char** keys = (char**)realloc((void*)container->keys, (container->count + 1U) * sizeof(*keys));
         if (keys == NULL) {
             return -1;
         }
@@ -888,7 +896,7 @@ json_parse_object(json_parse_ctx* c) {
         }
         json_skip_ws(c);
         if (!(c->p < c->end) || *c->p != ':') {
-            free(key);
+            json_free_text(key);
             json_set_err(c, "expected ':'");
             break;
         }
@@ -896,11 +904,11 @@ json_parse_object(json_parse_ctx* c) {
         json_skip_ws(c);
         dsd_json_node* value = json_parse_value(c);
         if (value == NULL) {
-            free(key);
+            json_free_text(key);
             break;
         }
         if (json_push_item(obj, key, value) != 0) {
-            free(key);
+            json_free_text(key);
             dsd_json_free(value);
             json_set_err(c, "out of memory");
             break;
@@ -1057,13 +1065,13 @@ json_parse_number(json_parse_ctx* c) {
     char* end = NULL;
     const double value = strtod(literal, &end);
     if (end != literal + len || !isfinite(value)) {
-        free(literal);
+        json_free_text(literal);
         json_set_err(c, "number out of range");
         return NULL;
     }
     dsd_json_node* n = json_node_new(c, DSD_JSON_NUMBER);
     if (n == NULL) {
-        free(literal);
+        json_free_text(literal);
         return NULL;
     }
     n->number = value;
@@ -1101,7 +1109,7 @@ json_parse_value(json_parse_ctx* c) {
         }
         dsd_json_node* n = json_node_new(c, DSD_JSON_STRING);
         if (n == NULL) {
-            free(s);
+            json_free_text(s);
             return NULL;
         }
         n->string = s;

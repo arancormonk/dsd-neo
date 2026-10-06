@@ -4265,7 +4265,8 @@ ui_cmd_handle_spec_size_delta(dsd_opts* opts, dsd_state* state, const struct dsd
         opts->frontend_display.spectrum_view = 1;
 #ifdef USE_RADIO
         int n = rtl_stream_spectrum_get_size();
-        int want = n + d;
+        /* In 64 bits: a delta can be any int32 (the control API sends what its client asked for). */
+        int64_t want = (int64_t)n + d;
         if (want < 64) {
             want = 64;
         }
@@ -4273,7 +4274,7 @@ ui_cmd_handle_spec_size_delta(dsd_opts* opts, dsd_state* state, const struct dsd
             want = 1024;
         }
         if (want != n) {
-            (void)rtl_stream_spectrum_set_size(want);
+            (void)rtl_stream_spectrum_set_size((int)want);
         }
 #else
         (void)d;

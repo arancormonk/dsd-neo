@@ -311,7 +311,7 @@ test_vanishing_peer(void) {
 
 static void
 test_authentication(void) {
-    const int port = start_server("s3cret token", 0, 400);
+    int port = start_server("s3cret token", 0, 400);
     dsd_socket_t c = open_session(port, "\"auth_required\":true");
     send_str(c, "{\"id\":1,\"cmd\":\"ping\"}\n");
     expect_line(c, "\"authenticated\":false");
@@ -328,6 +328,29 @@ test_authentication(void) {
     dsd_socket_close(c);
 
     /* The token at the top level works too. */
+    c = open_session(port, "\"auth_required\":true");
+    send_str(c, "{\"cmd\":\"auth\",\"token\":\"s3cret token\"}\n");
+    expect_line(c, "\"authenticated\":true");
+    dsd_socket_close(c);
+    dsd_api_stop();
+
+    /* A reused config whose token was overwritten by a shorter one still has stale bytes after the terminator; only
+       the text is the token. */
+    dsd_api_config cfg;
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.port = DSD_API_PORT_EPHEMERAL;
+    cfg.auth_timeout_ms = 400;
+    DSD_SNPRINTF(cfg.token, sizeof cfg.token, "%s", "short");
+    DSD_MEMSET(cfg.token + 6, 'x', 20U); /* what an earlier, longer token leaves behind */
+    assert(dsd_api_start(&cfg) == 0);
+    c = open_session(dsd_api_bound_port(), "\"auth_required\":true");
+    send_str(c, "{\"cmd\":\"auth\",\"token\":\"short\"}\n");
+    expect_line(c, "\"authenticated\":true");
+    dsd_socket_close(c);
+    dsd_api_stop();
+    port = start_server("s3cret token", 0, 400);
+
+    /* And once more at the top level after a restart. */
     c = open_session(port, "\"auth_required\":true");
     send_str(c, "{\"cmd\":\"auth\",\"token\":\"s3cret token\"}\n");
     expect_line(c, "\"authenticated\":true");
@@ -401,30 +424,29 @@ test_feed(void) {
     assert(state->event_history_s != NULL);
     dsd_app_frontend_runtime_start(opts, state);
     const int port = start_server(NULL, 0, 0);
+    /* What the CLI does right after starting the server, before the decoder runs: the feed's first look. */
+    dsd_telemetry_publish_both_and_redraw(opts, state);
 
     dsd_socket_t c = open_session(port, "\"type\":\"welcome\"");
     send_str(c, "{\"id\":1,\"cmd\":\"subscribe\",\"topics\":[\"event\",\"status\",\"call\"]}\n");
     expect_line(c, "{\"id\":1,\"ok\":true");
 
-    /* The first publish after the subscription sets the baseline and sends the periodic records. */
-    dsd_telemetry_publish_both_and_redraw(opts, state);
-    assert(await_line(c, "status", "\"tg_policy\":{\"context\":\"", 3000U));
-    assert(strstr(g_line, "\"decryption\":{\"target_id\":\"\",\"tune_generation\":\"") != NULL);
-
-    /* A committed row is sent at the next publish, whole and escaped. */
+    /* A row committed right after the subscription is sent at the next publish, whole and escaped. */
     commit_event(state, "Dispatch", 7U);
     dsd_telemetry_publish_both_and_redraw(opts, state);
     assert(await_line(c, "event", "\"t_name\":\"Dispatch\"", 3000U));
+    assert(strstr(g_line, "\"update\":false") != NULL);
     assert(strstr(g_line, "\"source_id\":7,\"target_id\":101") != NULL);
     assert(strstr(g_line, "\"alias\":\"Unit \\\"7\\\"\\nline2\"") != NULL);
     assert(strstr(g_line, "\"slot\":0,\"push\":") != NULL);
+    assert(await_line(c, "status", "\"tg_policy\":{\"context\":\"", 3000U));
+    assert(strstr(g_line, "\"decryption\":{\"target_id\":\"\",\"tune_generation\":\"") != NULL);
 
     /* A row enriched in place after it was sent -- here the older of two, as a late alias lands on a call a newer
        notice already followed -- is sent again, marked as an update, under the same identity. */
     commit_event(state, "Notice", 10U);
     dsd_telemetry_publish_both_and_redraw(opts, state);
     assert(await_line(c, "event", "\"t_name\":\"Notice\"", 3000U));
-    assert(strstr(g_line, "\"update\":false") != NULL);
     Event_History* older = &state->event_history_s[0].Event_History_Items[2];
     assert(strcmp(older->t_name, "Dispatch") == 0);
     DSD_SNPRINTF(older->alias, sizeof older->alias, "%s", "Late Alias");
@@ -437,14 +459,14 @@ test_feed(void) {
     send_str(c, "{\"id\":2,\"cmd\":\"get\",\"what\":\"status\"}\n");
     assert(await_text(c, "{\"id\":2,\"ok\":true,\"what\":\"status\",\"data\":{\"type\":\"status\"", 3000U));
 
-    /* Unsubscribed, the client gets no events, and resubscribing does not replay what it missed. */
+    /* Unsubscribed, the client gets no events; resubscribed, it gets the rows committed from then on -- even one
+       committed before any further publish -- and none of those it missed. */
     send_str(c, "{\"id\":3,\"cmd\":\"unsubscribe\",\"topics\":[\"event\"]}\n");
     assert(await_text(c, "{\"id\":3,\"ok\":true", 3000U));
     commit_event(state, "Missed", 8U);
     dsd_telemetry_publish_both_and_redraw(opts, state);
     send_str(c, "{\"id\":4,\"cmd\":\"subscribe\",\"topics\":[\"event\"]}\n");
     assert(await_text(c, "{\"id\":4,\"ok\":true", 3000U));
-    dsd_telemetry_publish_both_and_redraw(opts, state);
     commit_event(state, "Fresh", 9U);
     dsd_telemetry_publish_both_and_redraw(opts, state);
     int saw_missed = 0;

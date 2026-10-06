@@ -345,9 +345,13 @@ ken_dmr_scrambler_keystream_creation(dsd_state* state, char* input, int show_key
     int lfsr = 0;
     {
         uint32_t parsed = 0U;
-        if (parse_decimal_u32_strict(trim_ascii_ws(input), &parsed)) {
-            lfsr = (int)parsed;
+        if (!parse_decimal_u32_strict(trim_ascii_ws(input), &parsed)) {
+            /* As the other stream-key loaders do: a key that does not parse is refused, never taken as 0. */
+            DSD_FPRINTF(stderr, "DMR Kenwood scrambler key parse failed: expected a decimal key\n");
+            state->ken_sc = 0;
+            return;
         }
+        lfsr = (int)parsed;
     }
     char key_text[16];
     DSD_FPRINTF(stderr, "DMR Kenwood 15-bit scrambler key loaded with forced application: %s\n",
@@ -368,7 +372,12 @@ anytone_bp_keystream_creation(dsd_state* state, char* input, int show_keys) {
     uint16_t key = 0;
     uint16_t kperm = 0;
 
-    (void)parse_hex_u16_truncating_strict(trim_ascii_ws(input), &key);
+    if (!parse_hex_u16_truncating_strict(trim_ascii_ws(input), &key)) {
+        /* As the other stream-key loaders do: a key that does not parse is refused, never taken as 0. */
+        DSD_FPRINTF(stderr, "DMR Anytone BP key parse failed: expected a hexadecimal key\n");
+        state->any_bp = 0;
+        return;
+    }
     key &= 0xFFFF; //truncate to 16-bits
 
     //calculate key permutation using simple operations

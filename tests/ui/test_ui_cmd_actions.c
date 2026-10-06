@@ -221,6 +221,15 @@ test_audio_actions(void) {
     dispatch_one(dsd_app_actions_audio, &opts, &state, &cmd);
     rc |= expect_int("gain delta clamps high", opts.audio_gain, 50);
 
+    /* The control API can send any int32 as a delta: no overflow on the way to the clamp. */
+    cmd = cmd_i32(DSD_APP_CMD_GAIN_DELTA, INT32_MAX);
+    dispatch_one(dsd_app_actions_audio, &opts, &state, &cmd);
+    rc |= expect_int("gain delta INT32_MAX clamps high", opts.audio_gain, 50);
+    cmd = cmd_i32(DSD_APP_CMD_GAIN_DELTA, INT32_MIN);
+    dispatch_one(dsd_app_actions_audio, &opts, &state, &cmd);
+    rc |= expect_int("gain delta INT32_MIN clamps low", opts.audio_gain, 0);
+    opts.audio_gain = 10;
+
     cmd = cmd_i32(DSD_APP_CMD_GAIN_DELTA, -80);
     dispatch_one(dsd_app_actions_audio, &opts, &state, &cmd);
     rc |= expect_int("gain delta clamps opts", opts.audio_gain, 0);
@@ -496,6 +505,16 @@ test_radio_actions(void) {
     cmd = cmd_i32(DSD_APP_CMD_PPM_DELTA, -7);
     dispatch_one(dsd_app_actions_radio, &opts, &state, &cmd);
     rc |= expect_int("ppm delta applies without radio backend", opts.rtlsdr_ppm_error, -7);
+    /* Any int32 delta saturates rather than overflowing. */
+    opts.rtlsdr_ppm_error = INT32_MAX - 1;
+    cmd = cmd_i32(DSD_APP_CMD_PPM_DELTA, INT32_MAX);
+    dispatch_one(dsd_app_actions_radio, &opts, &state, &cmd);
+    rc |= expect_int("ppm delta saturates high", opts.rtlsdr_ppm_error, INT32_MAX);
+    opts.rtlsdr_ppm_error = INT32_MIN + 1;
+    cmd = cmd_i32(DSD_APP_CMD_PPM_DELTA, INT32_MIN);
+    dispatch_one(dsd_app_actions_radio, &opts, &state, &cmd);
+    rc |= expect_int("ppm delta saturates low", opts.rtlsdr_ppm_error, INT32_MIN);
+    opts.rtlsdr_ppm_error = -7;
 
     cmd.id = DSD_APP_CMD_INVERT_TOGGLE;
     cmd.n = 0;

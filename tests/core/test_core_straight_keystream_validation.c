@@ -113,6 +113,22 @@ main(void) {
     }
 
     {
+        /* A key that does not parse is refused, never loaded as 0. */
+        char bad_bp[] = "0xZZ";
+        anytone_bp_keystream_creation(st, bad_bp, 0);
+        rc |= expect_eq_int("anytone-bad-refused", st->any_bp, 0);
+        char empty_bp[] = "  ";
+        anytone_bp_keystream_creation(st, empty_bp, 0);
+        rc |= expect_eq_int("anytone-empty-refused", st->any_bp, 0);
+        char bad_ken[] = "12a";
+        ken_dmr_scrambler_keystream_creation(st, bad_ken, 0);
+        rc |= expect_eq_int("kenwood-bad-refused", st->ken_sc, 0);
+        char huge_ken[] = "4294967296";
+        ken_dmr_scrambler_keystream_creation(st, huge_ken, 0);
+        rc |= expect_eq_int("kenwood-overflow-refused", st->ken_sc, 0);
+    }
+
+    {
         char arg[] = "0x12345";
         anytone_bp_keystream_creation(st, arg, 0);
         rc |= expect_eq_int("anytone-enabled", st->any_bp, 1);

@@ -4796,6 +4796,14 @@ test_api_options(void) {
         test_rc |= api_expect("--api-token over DSD_NEO_API_TOKEN", &r, DSD_PARSE_CONTINUE, 9911, "10.0.0.1", "9911");
     }
     api_env_clear();
+    /* A token may start with '-': it is the option's value, never an option of its own (here, not -h for help). */
+    {
+        char dash_token[] = "-h";
+        char* argv[] = {a0, api, port9911, token_opt, dash_token, NULL};
+        api_parse_result r = api_parse(5, argv);
+        test_rc |= api_expect("--api-token -h", &r, DSD_PARSE_CONTINUE, 9911, "", "-h");
+    }
+    api_env_clear();
 
     /* A token file that cannot give a token is an error, never a server without one. */
     {

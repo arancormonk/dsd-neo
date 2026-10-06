@@ -1895,6 +1895,15 @@ test_ui_slot_and_display_commands_update_state(void) {
     rc |= expect_int_eq("spectrum size command drains", applied, 1);
 #ifdef USE_RADIO
     rc |= expect_int_eq("spectrum size delta rounds to next power of two", rtl_stream_spectrum_get_size(), 256);
+    /* Any int32 delta clamps without overflowing on the way (the control API sends what its client asked for). */
+    spectrum_delta = INT32_MAX;
+    dsd_app_command_submit(DSD_APP_CMD_SPEC_SIZE_DELTA, &spectrum_delta, sizeof spectrum_delta);
+    (void)dsd_app_drain_cmds(opts, state);
+    rc |= expect_int_eq("spectrum size delta INT32_MAX clamps high", rtl_stream_spectrum_get_size(), 1024);
+    spectrum_delta = INT32_MIN;
+    dsd_app_command_submit(DSD_APP_CMD_SPEC_SIZE_DELTA, &spectrum_delta, sizeof spectrum_delta);
+    (void)dsd_app_drain_cmds(opts, state);
+    rc |= expect_int_eq("spectrum size delta INT32_MIN clamps low", rtl_stream_spectrum_get_size(), 64);
 #else
     rc |= expect_int_eq("spectrum size command keeps spectrum enabled without radio",
                         opts->frontend_display.spectrum_view, 1);

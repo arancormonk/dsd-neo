@@ -32,7 +32,8 @@ dsd-neo ... --api 9911 --api-bind 0.0.0.0 --api-token-file ~/.config/dsd-neo/api
 
 Each option has an environment fallback, read only when the CLI did not give the
 option and only when the API is enabled. An explicit `--api 0` disables the API
-even when `DSD_NEO_API_PORT` is set.
+even when `DSD_NEO_API_PORT` is set. A token may start with `-`; it is still the
+option's value.
 
 | Variable | Meaning |
 | --- | --- |
@@ -73,6 +74,9 @@ decoding without it, as it does for the RTL UDP retune control.
 * Without the terminal frontend (no `--frontend terminal`), the CLI
   opens the shared frontend runtime for the API: the command session, and the
   20 Hz snapshot publish the terminal frontend also runs.
+* The CLI starts the server before decoding begins and publishes once right
+  away, so the event feed has its starting point before any row can be
+  committed.
 
 Limits:
 
@@ -166,8 +170,9 @@ match responses by `id`.
   can send every bit. The server writes 64-bit identifiers as decimal strings
   for the same reason.
 * Booleans take `true`/`false` or `0`/`1`.
-* A string longer than its field (path and file names: 1023 bytes) is refused
-  with `invalid_params`, never cut short.
+* A string longer than the command's field is refused with `invalid_params`,
+  never cut short. Each string command's limit is in its catalog entry (most
+  paths: 1023 bytes; `m17_user_data_set`: 49).
 
 ### Session commands
 
@@ -223,8 +228,9 @@ A row is identified by `ring`, `slot` and `push`, which stay the same for its
 life. Each new committed row is sent once (`"update":false`). When a committed
 row changes in place -- a talker alias, GPS or text that arrives after the call
 ended, or a reacquired call merged into its row -- it is sent again with
-`"update":true`. A subscriber starts with the rows committed after it
-subscribed; it is not sent the backlog.
+`"update":true`. A subscriber is sent every row committed or changed after its
+`subscribe` response (and possibly one committed in the instant before it), but
+not the history from before.
 
 | Field | Meaning |
 | --- | --- |
@@ -292,7 +298,13 @@ and `p2_voice[2]` (each `{valid,errs_per_frame,samples}`).
 
 Every completion of these two commands is reported. A `decryption_apply`
 response carries the `request_id` its result will have; results of decryption
-requests made by a frontend rather than the API are not sent. `status` is a
+requests made by a frontend rather than the API are not sent. The decoder keeps
+the last 64 results of each kind; should more complete before the server reads
+them, it says so instead of skipping them silently:
+
+```json
+{"type":"result_gap","command":"decryption_apply","missed":3}
+``` `status` is a
 `DSD_APP_KEY_*` value (`1` applied, `-1` invalid, `-2` stale, `-3` unavailable,
 `-4` file error, `-5` busy, `-6` cancelled).
 
@@ -380,7 +392,7 @@ field, and the decoder refuses the rest when it applies the command.
 | `ui_msg_clear` | – |
 | `eh_reset` | – |
 | `event_log_disable` | – |
-| `event_log_set` | `{value:path}` |
+| `event_log_set` | `{value:path, <=1023 bytes}` |
 | `lcw_retune_toggle` | – |
 | `p25_cc_cand_toggle` | – |
 | `reverse_mute_toggle` | – |
@@ -390,13 +402,13 @@ field, and the decoder refuses the rest when it applies the command.
 | `inv_dmr_toggle` | – |
 | `inv_dpmr_toggle` | – |
 | `inv_m17_toggle` | – |
-| `wav_static_open` | `{value:path}` |
-| `wav_raw_open` | `{value:path}` |
-| `dsp_out_set` | `{value:filename}` |
-| `symcap_open` | `{value:path}` |
-| `symbol_in_open` | `{value:path}` |
-| `input_wav_set` | `{value:path}` |
-| `input_sym_stream_set` | `{value:path}` |
+| `wav_static_open` | `{value:path, <=1023 bytes}` |
+| `wav_raw_open` | `{value:path, <=1023 bytes}` |
+| `dsp_out_set` | `{value:filename, <=255 bytes}` |
+| `symcap_open` | `{value:path, <=1023 bytes}` |
+| `symbol_in_open` | `{value:path, <=1023 bytes}` |
+| `input_wav_set` | `{value:path, <=2047 bytes}` |
+| `input_sym_stream_set` | `{value:path, <=2047 bytes}` |
 | `input_set_pulse` | – |
 | `udp_out_cfg` | `{host,port}` |
 | `tcp_connect_audio_cfg` | `{host,port}` |
@@ -434,25 +446,25 @@ field, and the decoder refuses the rest when it applies the command.
 | `am_bandwidth_set` | `{value:Hz 5000..20000, 0=default}` |
 | `tone_filter_set` | `{mode:0\|1\|2,list,keep_list}` |
 | `scan_row_edit` | `{scanner,session,row,mode,target_id,field,action,squelch_db,squelch_mode,squelch_margin_db,width_hz,tone_mode,tone_list,gain_db}` |
-| `pulse_out_set` | `{value:name}` |
-| `pulse_in_set` | `{value:name}` |
+| `pulse_out_set` | `{value:name, <=99 bytes}` |
+| `pulse_in_set` | `{value:name, <=99 bytes}` |
 | `input_vol_set` | `{value:mult 1..16}` |
 | `lrrp_set_home` | – |
 | `lrrp_set_dsdp` | – |
-| `lrrp_set_custom` | `{value:path}` |
+| `lrrp_set_custom` | `{value:path, <=1023 bytes}` |
 | `lrrp_disable` | – |
-| `import_channel_map` | `{value:path}` |
-| `import_group_list` | `{value:path}` |
-| `import_keys_dec` | `{value:path}` |
-| `import_keys_hex` | `{value:path}` |
+| `import_channel_map` | `{value:path, <=1023 bytes}` |
+| `import_group_list` | `{value:path, <=1023 bytes}` |
+| `import_keys_dec` | `{value:path, <=1023 bytes}` |
+| `import_keys_hex` | `{value:path, <=1023 bytes}` |
 | `import_channel_map_clear` | – |
 | `import_group_list_clear` | – |
 | `import_keys_clear` | – |
-| `import_p25_bandplan` | `{value:path}` |
-| `export_p25_bandplan` | `{value:path}` |
+| `import_p25_bandplan` | `{value:path, <=1023 bytes}` |
+| `export_p25_bandplan` | `{value:path, <=1023 bytes}` |
 | `rr_apply_import` | `{decode_mode,edacs_ea,edacs_esk,simulcast_qpsk,p25_prefer_candidates,trunking,scanner,chan_path,group_path,tune_hz}` |
 | `rr_account_set` | `{username,app_key}` |
-| `import_src_list` | `{value:path}` |
+| `import_src_list` | `{value:path, <=1023 bytes}` |
 | `import_src_list_clear` | – |
 | `p25_p2_params_set` | `{wacn,sysid,cc}` |
 | `tg_listen_set` | `{id_start,id_end,listen}` |
@@ -476,13 +488,13 @@ field, and the decoder refuses the rest when it applies the command.
 | `key_rc4des_set` | `{value:uint64}` |
 | `key_hytera_set` | `{H,K1,K2,K3,K4}` |
 | `key_aes_set` | `{K1,K2,K3,K4}` |
-| `key_tyt_ap_set` | `{value:hex}` |
-| `key_retevis_rc2_set` | `{value:hex}` |
-| `key_tyt_ep_set` | `{value:hex}` |
-| `key_ken_scr_set` | `{value:decimal}` |
-| `key_anytone_bp_set` | `{value:hex16}` |
-| `key_xor_set` | `{value:len:hex}` |
-| `m17_user_data_set` | `{value:string}` |
+| `key_tyt_ap_set` | `{value:hex, <=255 bytes}` |
+| `key_retevis_rc2_set` | `{value:hex, <=255 bytes}` |
+| `key_tyt_ep_set` | `{value:hex, <=255 bytes}` |
+| `key_ken_scr_set` | `{value:decimal, <=127 bytes}` |
+| `key_anytone_bp_set` | `{value:hex16, <=127 bytes}` |
+| `key_xor_set` | `{value:len:hex, <=255 bytes}` |
+| `m17_user_data_set` | `{value:string, <=49 bytes}` |
 | `key_direct_set` | `{key_type,value}` |
 | `force_key_set` | `{value:0\|1\|2}` |
 | `decryption_apply` | `{type,value,hex,dec,map,profile,force,source,scope,fields,target_id,tune_generation,key_epoch}` |
@@ -521,15 +533,20 @@ field, and the decoder refuses the rest when it applies the command.
   key-map CSV), `profile`, `force`, `source` (`0`..`3`, default `2` direct) and
   `scope` (`0` defaults, `1` the scan target on air, which also needs
   `target_id`, `tune_generation` and `key_epoch` from `status.decryption`).
-  `fields` (bitmask: `1` material, `2` map, `4` force) defaults to what was
-  given. The response carries the `request_id` of the later `result`.
+  `fields` (bitmask: `1` material, `2` map, `4` force) defaults to the fields
+  the request names, even with an empty value: `value`, `hex`, `dec` or
+  `source` edit the material (`{"source":0}` clears it), `map` the key map
+  (`"map":""` clears it), `force` the force setting. The response carries the
+  `request_id` of the later `result`.
 * **`dsp_op`**: `op` is a `dsd_app_dsp_op` value; `a`..`d` default to 0 and mean
   what that op says in `commands.h`.
 * **`config_apply`**: builds a user config from INI-style
   `section → key → value` pairs, starting from the defaults the INI loader
-  starts every file from, and applies it as loading that file would. String,
-  number and boolean values are accepted; unknown keys are ignored, as in a
-  file. See [docs/config-system.md](config-system.md) for the keys.
+  starts every file from, and applies it as loading that file would. A section
+  with no keys counts, as an empty `[section]` does (`"analog":{}` puts the
+  analog settings back to their defaults). String, number and boolean values
+  are accepted; unknown keys are ignored, as in a file. See
+  [docs/config-system.md](config-system.md) for the keys.
 
   ```json
   {"cmd":"config_apply","params":{"sections":{

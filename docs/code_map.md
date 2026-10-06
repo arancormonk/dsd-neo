@@ -31,7 +31,8 @@ Generated (do not edit/commit):
   - Runtime CLI/bootstrap helpers: `include/dsd-neo/runtime/cli.h`
   - `frontend.c` owns the run's lifecycle hooks: the terminal frontend and/or the control API. With the API but no
     terminal it opens the app-control frontend runtime itself; at stop the API goes before the runtime it submits to.
-    It hands the parsed API token to the server and wipes it from `dsd_opts`.
+    It hands the parsed API token to the server and wipes it from `dsd_opts`, and publishes telemetry once right after
+    starting it, before the decoder runs: the API feed's first look, from which every event row reaches subscribers.
 - Build files: `apps/dsd-cli/CMakeLists.txt` (`DSD_CLI_HAS_API` when `DSD_ENABLE_API` builds `dsd-neo_api`)
 
 ## Engine
@@ -681,7 +682,8 @@ The `Linux • RelWithDebInfo • ctest (x86-64-v3, fast-math, clang)` check enf
 - Responsibilities:
   - Config system (schema, expansion, user config), logging, memory helpers, rings, worker pools, RT scheduling
     - In-memory user configs: `dsd_user_config_init()` resets a `dsdneoUserConfig` to the state the INI loader starts
-      every file from (not all zero: several keys default to on), and `dsd_user_config_apply_key()` applies one
+      every file from (not all zero: several keys default to on), `dsd_user_config_apply_section()` marks a section
+      present as a `[section]` header does (an empty `[analog]` acts), and `dsd_user_config_apply_key()` applies one
       `[section] key = value` through the loader's own mapper (the control API's `config_apply`)
   - CLI parsing and interactive/bootstrap helpers (`include/dsd-neo/runtime/cli.h`); the control API options and
     their `DSD_NEO_API_*` fallbacks are resolved at parse time, token file included, so a bad value is an argument
@@ -1017,8 +1019,9 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
     placeholders. State snapshots exclude argv ownership; teardown securely erases retained strings.
   - Retained results: talkgroup export and decryption completions are kept as the latest result
     (`dsd_app_tg_export_result_get()`, `dsd_app_decryption_result_get()`) and in a history of the last
-    `DSD_APP_RESULT_HISTORY` (16) by sequence number (`dsd_app_tg_export_results_since()`,
-    `dsd_app_decryption_results_since()`), for a consumer that must see every completion (the control API)
+    `DSD_APP_RESULT_HISTORY` (64) by sequence number (`dsd_app_tg_export_results_since()`,
+    `dsd_app_decryption_results_since()`), for a consumer that must see every completion (the control API, which
+    reports a `result_gap` when more completed than the history held)
   - Telemetry observers (`telemetry_observers.c`): the multi-consumer alternative to the snapshot accessors; see
     "Telemetry Hooks" for the contract
   - Source ID imports: `DSD_APP_CMD_IMPORT_SRC_LIST = 572` carries a path string;
@@ -1568,15 +1571,18 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
     1 MiB is disconnected, never shown a stream with gaps. An unauthenticated connection is closed at the auth
     deadline, one wrong token or one line that is not JSON ends the connection (the latter keeps a web page's HTTP
     request from driving the port), and the token is compared over its full buffer width
-  - `api_feed.c`: a telemetry observer (see "Telemetry Hooks"). On the decode thread, while an authenticated client is
-    connected, it encodes the call/status/system/metrics/quality records every 250 ms (cached for `get`) and the
-    event-history rows pushed or changed in place since its last look (per-row fingerprints find late enrichment of
-    any committed row), and appends them to subscribed sessions. The `status` record carries what the stateful
+  - `api_feed.c`: a telemetry observer (see "Telemetry Hooks"). On the decode thread it follows the event-history
+    rings at every publish (two counters per slot while nothing changes; per-row fingerprints find late enrichment of
+    any committed row) and sends the rows pushed or changed since its last look to event subscribers; following them
+    whether or not anyone listens is what lets a new subscriber get every row committed after its subscription. While
+    an authenticated client is connected it also encodes the call/status/system/metrics/quality records every 250 ms
+    (cached for `get`). The `status` record carries what the stateful
     commands must quote back: the talkgroup policy version, the decryption context and the scan row view. RF metrics
     follow the shared validity rules (app-control behavior note above)
   - `api_commands.c`: one table entry per `DSD_APP_CMD_*` (`API_COMMANDS` reads `commands.h` at run time and fails on a
     command without one), mapping `params` onto the exact payload through the same app-control submit functions the
-    frontends use. Values that do not fit their field are refused, never wrapped or cut; 64-bit values convert from
+    frontends use; each entry names its submit function and, for a string command, the longest value its handler
+    stores. Values that do not fit their field are refused, never wrapped or cut; 64-bit values convert from
     the JSON literal or a decimal/hex string, never through a double; secret payloads are wiped; `config_apply`
     starts from `dsd_user_config_init()` like the INI loader
   - `json.c` is built with IEEE semantics so its non-finite checks survive fast-math; request lines, parsed strings

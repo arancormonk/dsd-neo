@@ -47,12 +47,6 @@
 
 enum { DSD_API_TELEMETRY_INTERVAL_MS = 250 };
 
-/* The topics a `get` can read, which the feed therefore keeps current while any client is connected. */
-enum {
-    DSD_API_CACHED_TOPICS = DSD_API_TOPIC_CALL | DSD_API_TOPIC_SYSTEM | DSD_API_TOPIC_METRICS | DSD_API_TOPIC_QUALITY
-    | DSD_API_TOPIC_STATUS
-};
-
 static dsd_app_telemetry_observer g_observer;
 static int g_observer_added = 0;
 static const dsd_opts* g_live_opts = NULL;
@@ -218,34 +212,63 @@ encode_event_row(dsd_json_writer* w, const Event_History* e, int slot, uint64_t 
 }
 
 static uint64_t
-fnv1a(uint64_t h, const void* data, size_t len) {
-    const unsigned char* p = (const unsigned char*)data;
-    for (size_t i = 0; i < len; i++) {
-        h ^= p[i];
-        h *= UINT64_C(1099511628211);
+fnv1a_byte(uint64_t h, unsigned char byte) {
+    return (h ^ byte) * UINT64_C(1099511628211);
+}
+
+/* A scalar, a byte at a time by arithmetic rather than through its storage. */
+static uint64_t
+fnv1a_u64(uint64_t h, uint64_t v) {
+    for (int i = 0; i < 8; i++) {
+        h = fnv1a_byte(h, (unsigned char)(v >> (8 * i)));
     }
     return h;
 }
 
+/* A fixed char field up to its terminator (counted) or its end. */
 static uint64_t
 fnv1a_str(uint64_t h, const char* s, size_t cap) {
-    const char* end = (const char*)memchr(s, '\0', cap);
-    return fnv1a(h, s, end ? (size_t)(end - s) + 1U : cap);
+    for (size_t i = 0; i < cap; i++) {
+        h = fnv1a_byte(h, (unsigned char)s[i]);
+        if (s[i] == '\0') {
+            break;
+        }
+    }
+    return h;
 }
 
 /* Everything a client sees of a committed row. */
 static uint64_t
 row_fingerprint(const Event_History* e) {
+    const uint64_t scalars[] = {
+        (uint64_t)(int64_t)e->event_time,
+        (uint64_t)(int64_t)e->event_start_time,
+        e->sys_id1,
+        e->sys_id2,
+        e->sys_id3,
+        e->sys_id4,
+        e->sys_id5,
+        e->source_id,
+        e->target_id,
+        e->channel,
+        e->mi,
+        e->enc_key,
+        e->svc,
+        e->crc_invalid,
+        e->severity,
+        e->category,
+        (uint64_t)(int64_t)e->systype,
+        (uint64_t)(int64_t)e->subtype,
+        (uint64_t)(int64_t)e->gi,
+        e->emergency,
+        e->priority,
+        e->enc,
+        e->enc_alg,
+    };
     uint64_t h = UINT64_C(14695981039346656037);
-    const int64_t times[2] = {(int64_t)e->event_time, (int64_t)e->event_start_time};
-    const uint64_t ids[13] = {e->sys_id1,   e->sys_id2,     e->sys_id3, e->sys_id4, e->sys_id5,
-                              e->source_id, e->target_id,   e->channel, e->mi,      e->enc_key,
-                              e->svc,       e->crc_invalid, e->severity};
-    const int32_t small[8] = {e->systype,  e->subtype, e->gi,      e->emergency,
-                              e->priority, e->enc,     e->enc_alg, e->category};
-    h = fnv1a(h, times, sizeof times);
-    h = fnv1a(h, ids, sizeof ids);
-    h = fnv1a(h, small, sizeof small);
+    for (size_t i = 0; i < sizeof scalars / sizeof scalars[0]; i++) {
+        h = fnv1a_u64(h, scalars[i]);
+    }
     h = fnv1a_str(h, e->sysid_string, sizeof e->sysid_string);
     h = fnv1a_str(h, e->src_str, sizeof e->src_str);
     h = fnv1a_str(h, e->tgt_str, sizeof e->tgt_str);
@@ -267,8 +290,7 @@ static uint64_t g_eh_empty_fp = 0U;
 
 static void
 eh_init_empty_fingerprint(void) {
-    static Event_History blank;
-    DSD_MEMSET(&blank, 0, sizeof blank);
+    static Event_History blank; /* static: zero-filled; only the fields init_event_history() sets differ */
     blank.systype = -1;
     blank.subtype = -1;
     blank.severity = DSD_EVENT_SEVERITY_UNKNOWN;
@@ -301,7 +323,7 @@ eh_baseline(const Event_History_I* ring, int slot) {
 /* Gather one slot's rows pushed since the last look (new) and committed rows whose content changed in place (updates:
    late alias, GPS or text, a reacquisition merge), oldest first. */
 static void
-gather_slot_events(const Event_History_I* ring, int slot) {
+gather_slot_events(const Event_History_I* ring, int slot, int send) {
     if (!g_eh_valid || ring->instance != g_eh_instance[slot] || ring->push_seq < g_eh_push[slot]) {
         /* First look, or a new ring: start from what is there now rather than replaying it. */
         eh_baseline(ring, slot);
@@ -320,7 +342,7 @@ gather_slot_events(const Event_History_I* ring, int slot) {
     }
     for (uint64_t i = (uint64_t)(DSD_EVENT_HISTORY_LEN - 1); i >= 1U; i--) {
         const uint64_t fp = row_fingerprint(&ring->Event_History_Items[i]);
-        if (fp != g_eh_empty_fp && (i <= pushed || fp != g_eh_fp[slot][i])) {
+        if (send && fp != g_eh_empty_fp && (i <= pushed || fp != g_eh_fp[slot][i])) {
             gather_event(ring, slot, i, i > pushed);
         }
         g_eh_fp[slot][i] = fp;
@@ -329,9 +351,12 @@ gather_slot_events(const Event_History_I* ring, int slot) {
     g_eh_commit[slot] = ring->commit_rev;
 }
 
-/* Send the rows each slot gathered. A row keeps its identity, (ring, slot, push), across new and update lines. */
+/* Follow the event rings at every publish, whether or not anyone listens, and send what changed to the subscribers
+   when there are any. Following them all along is what lets a new subscriber get every row committed after it
+   subscribed: a baseline taken at its first publish would swallow a row committed in between. While nothing changes
+   this reads two counters per slot. A row keeps its identity, (ring, slot, push), across new and update lines. */
 static void
-emit_events(const dsd_state* state) {
+track_events(const dsd_state* state, int send) {
     if (state->event_history_s == NULL) {
         g_eh_valid = 0;
         return;
@@ -341,11 +366,11 @@ emit_events(const dsd_state* state) {
     dsd_event_history_transaction transaction;
     dsd_event_history_transaction_begin((dsd_state*)state, &transaction);
     for (int slot = 0; slot < 2; slot++) {
-        gather_slot_events(&state->event_history_s[slot], slot);
+        gather_slot_events(&state->event_history_s[slot], slot, send);
     }
     dsd_event_history_transaction_end(&transaction);
     g_eh_valid = 1;
-    if (g_events.len > 0U && g_events.data != NULL) {
+    if (send && g_events.len > 0U && g_events.data != NULL) {
         dsd_api_broadcast(g_events.data, g_events.len, DSD_API_TOPIC_EVENT);
     }
 }
@@ -550,9 +575,10 @@ build_metrics(const dsd_state* state, dsd_json_buf* b) {
         (void)dsd_json_kv_double(&w, "cfo_hz", m.cfo_hz);
         (void)dsd_json_kv_bool(&w, "carrier_lock", m.carrier_lock);
     } else {
-        static const char* const k_stream_only[] = {"output_rate_hz",  "symbol_rate_hz",       "symbol_levels",
-                                                    "channel_profile", "channel_bandwidth_hz", "cfo_hz",
-                                                    "carrier_lock"};
+        static const char* const k_stream_only[] = {
+            "output_rate_hz",       "symbol_rate_hz", "symbol_levels", "channel_profile",
+            "channel_bandwidth_hz", "cfo_hz",         "carrier_lock",
+        };
         for (size_t i = 0; i < sizeof k_stream_only / sizeof k_stream_only[0]; i++) {
             (void)dsd_json_kv_null(&w, k_stream_only[i]);
         }
@@ -651,15 +677,9 @@ feed_state(const dsd_state* state, void* user) {
     if (state == NULL) {
         return;
     }
+    track_events(state, dsd_api_topic_interest(DSD_API_TOPIC_EVENT));
     if (dsd_api_client_count() <= 0) {
-        g_eh_valid = 0;
         return;
-    }
-    if (dsd_api_topic_interest(DSD_API_TOPIC_EVENT)) {
-        emit_events(state);
-    } else {
-        /* Nobody is listening: the next subscriber starts from the rows current then, not a backlog. */
-        g_eh_valid = 0;
     }
     const uint64_t now = dsd_realtime_mono_ms();
     if (g_last_telemetry_ms != 0U && now - g_last_telemetry_ms < (uint64_t)DSD_API_TELEMETRY_INTERVAL_MS) {

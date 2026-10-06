@@ -148,14 +148,15 @@ static const char* const k_skip_exact_next_any[] = {
     "--calc-start-lcn",
 };
 
+/* Their value is taken whatever it starts with: an API token may begin with '-' and must not reach getopt. */
 static const char* const k_skip_exact_next_nonnull[] = {
-    "--iq-capture", "--iq-capture-format", "--iq-capture-max-mb", "--symbol-capture-format",
-    "--iq-replay",  "--iq-replay-rate",    "--iq-info",
+    "--iq-capture",     "--iq-capture-format", "--iq-capture-max-mb", "--symbol-capture-format", "--iq-replay",
+    "--iq-replay-rate", "--iq-info",           "--api-token",         "--api-token-file",
 };
 
 static const char* const k_skip_exact_next_nonopt[] = {
     "--lrrp-extra-port", "--rtl-udp-control", "--rtl-udp-control-bind", "--config", "--validate-config", "--api",
-    "--api-bind",        "--api-token",       "--api-token-file",
+    "--api-bind",
 };
 
 static const char* const k_skip_prefix[] = {

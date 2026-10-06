@@ -595,7 +595,7 @@ int dsd_app_command_set_tg_listen_all(const dsd_app_tg_listen_all_payload* paylo
 int dsd_app_tg_export_result_get(dsd_app_tg_export_result* out);
 
 /** How many of the most recent export and decryption results stay readable through the *_results_since() getters. */
-enum { DSD_APP_RESULT_HISTORY = 16 };
+enum { DSD_APP_RESULT_HISTORY = 64 };
 
 /** Copy, oldest first, up to @p cap retained export results whose sequence is above @p after_sequence; returns the
  * count. Only the last DSD_APP_RESULT_HISTORY are kept, so a reader that falls further behind sees a gap in the

@@ -3,6 +3,7 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <climits>
 #include <cstdio>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/io/rtl_stream.h>
@@ -66,6 +67,25 @@ test_adjust_and_getter_use_active_snapshot_when_caller_is_stale(void) {
     rc |= expect_int_eq("adjust rc", rtl_stream_adjust_ppm(caller_opts.get(), -2), 0);
     rc |= expect_int_eq("adjust uses active snapshot", rtl_stream_get_requested_ppm(caller_opts.get()), 7);
     rc |= expect_int_eq("adjust resyncs caller snapshot", caller_opts->rtlsdr_ppm_error, 7);
+    return rc;
+}
+
+/* The control API can send any int32 as a PPM delta: the sum no longer overflows on its way to the +-200 ppm clamp
+   every request gets (UBSan builds would flag the signed overflow). */
+static int
+test_adjust_saturates_extreme_deltas(void) {
+    std::unique_ptr<dsd_opts> caller_opts = make_test_opts();
+    caller_opts->rtlsdr_ppm_error = 0;
+
+    RtlSdrOrchestrator stream(*caller_opts);
+
+    int rc = 0;
+    rc |= expect_int_eq("seed high", rtl_stream_request_ppm(caller_opts.get(), INT_MAX - 1), 0);
+    rc |= expect_int_eq("adjust high rc", rtl_stream_adjust_ppm(caller_opts.get(), INT_MAX), 0);
+    rc |= expect_int_eq("adjust saturates high", rtl_stream_get_requested_ppm(caller_opts.get()), 200);
+    rc |= expect_int_eq("seed low", rtl_stream_request_ppm(caller_opts.get(), INT_MIN + 1), 0);
+    rc |= expect_int_eq("adjust low rc", rtl_stream_adjust_ppm(caller_opts.get(), INT_MIN), 0);
+    rc |= expect_int_eq("adjust saturates low", rtl_stream_get_requested_ppm(caller_opts.get()), -200);
     return rc;
 }
 
@@ -142,6 +162,7 @@ main(void) {
     int rc = 0;
     rc |= test_caller_request_updates_active_snapshot();
     rc |= test_adjust_and_getter_use_active_snapshot_when_caller_is_stale();
+    rc |= test_adjust_saturates_extreme_deltas();
     rc |= test_c_api_create_updates_live_caller_opts();
     rc |= test_c_api_lifecycle_rejects_invalid_inputs();
     rc |= test_c_api_stopped_context_contracts();

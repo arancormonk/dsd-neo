@@ -134,7 +134,7 @@ dsd_app_command_set_config_metadata(const dsd_app_config_metadata_payload* paylo
 
 int
 dsd_app_command_set_tone_filter(int32_t mode, const char* list) {
-    dsd_app_tone_filter_payload payload;
+    dsd_app_tone_filter_payload payload = {0};
     DSD_MEMSET(&payload, 0, sizeof payload);
     payload.mode = mode;
     DSD_SNPRINTF(payload.list, sizeof payload.list, "%s", list ? list : "");
@@ -143,7 +143,7 @@ dsd_app_command_set_tone_filter(int32_t mode, const char* list) {
 
 int
 dsd_app_command_set_tone_filter_mode(int32_t mode) {
-    dsd_app_tone_filter_payload payload;
+    dsd_app_tone_filter_payload payload = {0};
     DSD_MEMSET(&payload, 0, sizeof payload);
     payload.mode = mode;
     payload.keep_list = 1;
@@ -279,7 +279,7 @@ test_scalars(void) {
 
 static void
 test_strings(void) {
-    char request[3000];
+    char request[4096];
     char* path = repeat_char('p', 1023U);
     DSD_SNPRINTF(request, sizeof request, "{\"cmd\":\"event_log_set\",\"params\":{\"value\":\"%s\"}}", path);
     assert(ok(request));
@@ -294,7 +294,7 @@ test_strings(void) {
     char* host = repeat_char('h', 255U);
     DSD_SNPRINTF(request, sizeof request, "{\"cmd\":\"udp_out_cfg\",\"params\":{\"host\":\"%s\",\"port\":7355}}", host);
     assert(ok(request));
-    dsd_app_endpoint_payload ep;
+    dsd_app_endpoint_payload ep = {0};
     assert(g_last_id == DSD_APP_CMD_UDP_OUT_CFG && g_last_n == sizeof ep);
     DSD_MEMCPY(&ep, g_last, sizeof ep);
     assert(strlen(ep.host) == 255U && ep.port == 7355);
@@ -307,6 +307,22 @@ test_strings(void) {
     refused("{\"cmd\":\"udp_out_cfg\",\"params\":{\"host\":\"\",\"port\":7355}}");
     refused("{\"cmd\":\"udp_out_cfg\",\"params\":{\"host\":\"a\",\"port\":0}}");
     refused("{\"cmd\":\"udp_out_cfg\",\"params\":{\"host\":\"a\",\"port\":65536}}");
+
+    /* Each string command's limit is its handler's field: M17 user data holds 49 bytes, a Pulse name 99. */
+    assert(ok("{\"cmd\":\"m17_user_data_set\",\"params\":{\"value\":"
+              "\"0123456789012345678901234567890123456789012345678\"}}"));
+    assert(g_last_id == DSD_APP_CMD_M17_USER_DATA_SET && g_last_n == 50U);
+    refused("{\"cmd\":\"m17_user_data_set\",\"params\":{\"value\":"
+            "\"01234567890123456789012345678901234567890123456789\"}}");
+    char* pulse = repeat_char('n', 100U);
+    DSD_SNPRINTF(request, sizeof request, "{\"cmd\":\"pulse_out_set\",\"params\":{\"value\":\"%s\"}}", pulse);
+    refused(request);
+    free(pulse);
+    char* wav = repeat_char('w', 2047U);
+    DSD_SNPRINTF(request, sizeof request, "{\"cmd\":\"input_wav_set\",\"params\":{\"value\":\"%s\"}}", wav);
+    assert(ok(request));
+    assert(g_last_n == 2048U);
+    free(wav);
 
     refused("{\"cmd\":\"airspy_set\",\"params\":{\"key\":\"airspy_lna_gain\",\"value\":"
             "\"0123456789012345678901234567890123456789\"}}");
@@ -324,7 +340,7 @@ test_talkgroup_edits(void) {
     assert(ok("{\"cmd\":\"tg_row_set\",\"params\":{\"id_start\":100,\"id_end\":199,\"fields\":11,\"listen\":true,"
               "\"priority\":-3,\"name\":\"Fire\",\"policy_context\":\"18446744073709551614\",\"policy_generation\":"
               "4294967295}}"));
-    dsd_app_tg_row_payload row;
+    dsd_app_tg_row_payload row = {0};
     assert(g_last_id == DSD_APP_CMD_TG_ROW_SET && g_last_n == sizeof row);
     DSD_MEMCPY(&row, g_last, sizeof row);
     assert(row.id_start == 100U && row.id_end == 199U && row.fields == 11U && row.listen == 1 && row.priority == -3);
@@ -335,7 +351,7 @@ test_talkgroup_edits(void) {
               "\"policy_generation\":6}}"));
     const size_t base = offsetof(dsd_app_tg_export_payload, path);
     assert(g_last_id == DSD_APP_CMD_TG_LIST_EXPORT && g_last_n == base + strlen("/tmp/x.csv") + 1U);
-    dsd_app_tg_export_payload head;
+    dsd_app_tg_export_payload head = {0};
     DSD_MEMCPY(&head, g_last, base);
     assert(head.policy_context == 5U && head.policy_generation == 6U);
     assert(strcmp((const char*)g_last + base, "/tmp/x.csv") == 0);
@@ -348,7 +364,7 @@ static void
 test_keys(void) {
     assert(ok("{\"cmd\":\"key_aes_set\",\"params\":{\"K1\":\"0x0123456789ABCDEF\",\"K2\":18446744073709551615,"
               "\"K3\":\"42\",\"K4\":0}}"));
-    dsd_app_aes_key_payload aes;
+    dsd_app_aes_key_payload aes = {0};
     assert(g_last_id == DSD_APP_CMD_KEY_AES_SET && g_last_n == sizeof aes);
     DSD_MEMCPY(&aes, g_last, sizeof aes);
     assert(aes.K1 == UINT64_C(0x0123456789ABCDEF) && aes.K2 == UINT64_MAX && aes.K3 == 42U && aes.K4 == 0U);
@@ -356,7 +372,7 @@ test_keys(void) {
     refused("{\"cmd\":\"key_aes_set\",\"params\":{\"K1\":1.5,\"K2\":2,\"K3\":3,\"K4\":4}}");
 
     assert(ok("{\"cmd\":\"key_direct_set\",\"params\":{\"key_type\":\"m17_aes\",\"value\":\"00ff\"}}"));
-    dsd_app_key_direct_payload kd;
+    dsd_app_key_direct_payload kd = {0};
     DSD_MEMCPY(&kd, g_last, sizeof kd);
     assert(g_last_id == DSD_APP_CMD_KEY_DIRECT_SET && kd.key_type == DSD_APP_KEY_TYPE_M17_AES);
     assert(strcmp(kd.value, "00ff") == 0);
@@ -367,7 +383,7 @@ test_keys(void) {
     assert(run("{\"id\":9,\"cmd\":\"decryption_apply\",\"params\":{\"type\":\"rc4\",\"value\":\"0102030405\","
                "\"scope\":1,\"target_id\":\"county-p25\",\"tune_generation\":\"12\",\"key_epoch\":\"3\"}}",
                &out));
-    dsd_app_decryption_payload dec;
+    dsd_app_decryption_payload dec = {0};
     assert(g_last_id == DSD_APP_CMD_DECRYPTION_APPLY && g_last_n == sizeof dec);
     DSD_MEMCPY(&dec, g_last, sizeof dec);
     assert((dec.request_id & DSD_API_REQUEST_ID_TAG) != 0U && dec.session_generation == 77U);
@@ -379,6 +395,16 @@ test_keys(void) {
     DSD_SNPRINTF(expect, sizeof expect, "\"request_id\":\"%llu\"", (unsigned long long)dec.request_id);
     assert(strstr(out.data, expect) != NULL);
     dsd_json_buf_free(&out);
+    /* A field named with an empty value is an edit (a clear), not an omission. */
+    assert(ok("{\"cmd\":\"decryption_apply\",\"params\":{\"source\":0}}"));
+    DSD_MEMCPY(&dec, g_last, sizeof dec);
+    assert(dec.fields == (uint32_t)DSD_APP_DECRYPTION_MATERIAL && dec.source == DSD_APP_KEY_SOURCE_NONE);
+    assert(ok("{\"cmd\":\"decryption_apply\",\"params\":{\"map\":\"\",\"force\":0}}"));
+    DSD_MEMCPY(&dec, g_last, sizeof dec);
+    assert(dec.fields == (uint32_t)(DSD_APP_DECRYPTION_MAP | DSD_APP_DECRYPTION_FORCE) && dec.map_file[0] == '\0');
+    assert(ok("{\"cmd\":\"decryption_apply\",\"params\":{\"value\":\"1\",\"fields\":0}}"));
+    DSD_MEMCPY(&dec, g_last, sizeof dec);
+    assert(dec.fields == 0U);
     refused("{\"cmd\":\"decryption_apply\",\"params\":{\"scope\":2}}");
     refused("{\"cmd\":\"decryption_apply\",\"params\":{\"type\":\"m17Aes\"}}");
 }
@@ -386,7 +412,7 @@ test_keys(void) {
 static void
 test_structured(void) {
     assert(ok("{\"cmd\":\"rtl_set_sql_setting\",\"params\":{\"mode\":2,\"margin_db\":12}}"));
-    dsd_app_squelch_setting_payload sql;
+    dsd_app_squelch_setting_payload sql = {0};
     assert(g_last_id == DSD_APP_CMD_RTL_SET_SQL_SETTING && g_last_n == sizeof sql);
     DSD_MEMCPY(&sql, g_last, sizeof sql);
     assert(sql.mode == 2 && sql.margin_db == 12);
@@ -394,7 +420,7 @@ test_structured(void) {
 
     assert(ok("{\"cmd\":\"scan_row_edit\",\"params\":{\"scanner\":1,\"session\":7,\"row\":3,\"mode\":2,\"field\":4,"
               "\"action\":1,\"tone_mode\":1,\"tone_list\":\"100.0/D023N\",\"target_id\":\"county-p25\"}}"));
-    dsd_app_scan_row_edit_payload edit;
+    dsd_app_scan_row_edit_payload edit = {0};
     assert(g_last_id == DSD_APP_CMD_SCAN_ROW_EDIT && g_last_n == sizeof edit);
     DSD_MEMCPY(&edit, g_last, sizeof edit);
     assert(edit.scanner == 1 && edit.session == 7U && edit.row == 3 && edit.mode == 2 && edit.field == 4);
@@ -402,13 +428,13 @@ test_structured(void) {
     assert(strcmp(edit.target_id, "county-p25") == 0);
 
     assert(ok("{\"cmd\":\"tone_filter_set\",\"params\":{\"mode\":0,\"keep_list\":true}}"));
-    dsd_app_tone_filter_payload tone;
+    dsd_app_tone_filter_payload tone = {0};
     DSD_MEMCPY(&tone, g_last, sizeof tone);
     assert(tone.keep_list == 1 && tone.mode == 0);
     refused("{\"cmd\":\"tone_filter_set\",\"params\":{\"mode\":1,\"keep_list\":true,\"list\":\"100.0\"}}");
 
     assert(ok("{\"cmd\":\"dsp_op\",\"params\":{\"op\":7,\"a\":-1}}"));
-    dsd_app_dsp_payload dsp;
+    dsd_app_dsp_payload dsp = {0};
     DSD_MEMCPY(&dsp, g_last, sizeof dsp);
     assert(dsp.op == 7 && dsp.a == -1 && dsp.b == 0 && dsp.c == 0 && dsp.d == 0);
     refused("{\"cmd\":\"dsp_op\",\"params\":{\"op\":7,\"a\":2147483648}}");
@@ -421,7 +447,7 @@ static void
 test_config(void) {
     assert(ok("{\"cmd\":\"config_apply\",\"params\":{\"sections\":{\"trunking\":{\"enabled\":true}}}}"));
     assert(g_last_id == DSD_APP_CMD_CONFIG_APPLY && g_last_n == sizeof(dsdneoUserConfig));
-    dsdneoUserConfig* cfg = (dsdneoUserConfig*)malloc(sizeof(*cfg));
+    dsdneoUserConfig* cfg = (dsdneoUserConfig*)calloc(1U, sizeof(*cfg));
     assert(cfg != NULL);
     DSD_MEMCPY(cfg, g_last, sizeof(*cfg));
     assert(cfg->has_trunking == 1 && cfg->trunk_enabled == 1);
@@ -429,6 +455,13 @@ test_config(void) {
     assert(cfg->trunk_tune_group_calls == 1 && cfg->trunk_tune_private_calls == 1 && cfg->trunk_tune_enc_calls == 1);
     assert(cfg->has_input == 0);
     free(cfg);
+    /* An empty section still counts, as an empty [analog] in a file does: it puts the analog settings back. */
+    assert(ok("{\"cmd\":\"config_apply\",\"params\":{\"sections\":{\"analog\":{}}}}"));
+    dsdneoUserConfig* analog = (dsdneoUserConfig*)calloc(1U, sizeof(*analog));
+    assert(analog != NULL);
+    DSD_MEMCPY(analog, g_last, sizeof(*analog));
+    assert(analog->has_analog == 1);
+    free(analog);
     refused("{\"cmd\":\"config_apply\",\"params\":{\"sections\":{\"trunking\":{\"enabled\":[1]}}}}");
     refused("{\"cmd\":\"config_apply\",\"params\":{\"sections\":{\"trunking\":1}}}");
     refused("{\"cmd\":\"config_apply\",\"params\":{\"sections\":{}}}");

@@ -151,10 +151,13 @@ param_policy(const dsd_json_node* params, uint64_t* context, unsigned int* gener
 
 static int
 key_type_from_name(const char* name, int32_t* out) {
-    static const char* const k_names[] = {"basic", "hex", "rc4", "scrambler", "m17_scrambler", "m17_aes"};
-    static const int32_t k_types[] = {DSD_APP_KEY_TYPE_BASIC,         DSD_APP_KEY_TYPE_HEX,
-                                      DSD_APP_KEY_TYPE_RC4,           DSD_APP_KEY_TYPE_SCRAMBLER,
-                                      DSD_APP_KEY_TYPE_M17_SCRAMBLER, DSD_APP_KEY_TYPE_M17_AES};
+    static const char* const k_names[] = {
+        "basic", "hex", "rc4", "scrambler", "m17_scrambler", "m17_aes",
+    };
+    static const int32_t k_types[] = {
+        DSD_APP_KEY_TYPE_BASIC,     DSD_APP_KEY_TYPE_HEX,           DSD_APP_KEY_TYPE_RC4,
+        DSD_APP_KEY_TYPE_SCRAMBLER, DSD_APP_KEY_TYPE_M17_SCRAMBLER, DSD_APP_KEY_TYPE_M17_AES,
+    };
     if (name == NULL) {
         return -1;
     }
@@ -245,7 +248,7 @@ submit_float(const api_command_desc* d, const dsd_json_node* params, uint64_t* r
 static int
 submit_string(const api_command_desc* d, const dsd_json_node* params, uint64_t* request_id) {
     (void)request_id;
-    const char* s = dsd_json_as_str_bounded(dsd_json_obj_get(params, "value"), API_STRING_CAP);
+    const char* s = dsd_json_as_str_bounded(dsd_json_obj_get(params, "value"), (size_t)d->max + 1U);
     if (s == NULL) {
         return API_INVALID_PARAMS;
     }
@@ -620,14 +623,18 @@ decryption_strings(const dsd_json_node* params, dsd_app_decryption_payload* p) {
                : 0;
 }
 
-/* The fields a request names when it gives no explicit mask: material, a map and a force setting, as present. */
+/* The fields a request edits when it gives no explicit mask: those it names, even empty -- {"source":0} or "map":""
+   is a request to clear, not an omission. */
 static uint32_t
-decryption_default_fields(const dsd_json_node* params, const dsd_app_decryption_payload* p) {
+decryption_default_fields(const dsd_json_node* params) {
+    static const char* const k_material[] = {"value", "hex", "dec", "source"};
     uint32_t fields = 0U;
-    if (p->value[0] != '\0' || p->keys_hex[0] != '\0' || p->keys_dec[0] != '\0') {
-        fields |= (uint32_t)DSD_APP_DECRYPTION_MATERIAL;
+    for (size_t i = 0U; i < sizeof k_material / sizeof k_material[0]; i++) {
+        if (dsd_json_obj_get(params, k_material[i]) != NULL) {
+            fields |= (uint32_t)DSD_APP_DECRYPTION_MATERIAL;
+        }
     }
-    if (p->map_file[0] != '\0') {
+    if (dsd_json_obj_get(params, "map") != NULL) {
         fields |= (uint32_t)DSD_APP_DECRYPTION_MAP;
     }
     if (dsd_json_obj_get(params, "force") != NULL) {
@@ -652,7 +659,7 @@ fill_decryption(const dsd_json_node* params, dsd_app_decryption_payload* p) {
     }
     p->scope = (int32_t)scope;
     p->source = (int32_t)source;
-    p->fields = (fields >= 0) ? (uint32_t)fields : decryption_default_fields(params, p);
+    p->fields = (fields >= 0) ? (uint32_t)fields : decryption_default_fields(params);
     return 0;
 }
 
@@ -703,7 +710,8 @@ submit_config(const api_command_desc* d, const dsd_json_node* params, uint64_t* 
     int rc = 0;
     for (size_t i = 0; i < sections->count && rc == 0; i++) {
         const dsd_json_node* kv = sections->items[i];
-        if (kv == NULL || kv->type != DSD_JSON_OBJECT) {
+        /* A section counts even with no keys, as an empty [section] in a file does. */
+        if (kv == NULL || kv->type != DSD_JSON_OBJECT || !dsd_user_config_apply_section(cfg, sections->keys[i])) {
             rc = API_INVALID_PARAMS;
             break;
         }
@@ -749,6 +757,8 @@ submit_config_meta(const api_command_desc* d, const dsd_json_node* params, uint6
 #define API_U8(name, id, lo, hi, doc)        {name, id, submit_u8, lo, hi, doc}
 #define API_U32(name, id, doc)               {name, id, submit_u32, 0, UINT32_MAX, doc}
 #define API_KIND(name, id, fn, doc)          {name, id, fn, 0, 0, doc}
+/* A string command: max is the longest value its handler stores without cutting it, in bytes. */
+#define API_STR(name, id, max_len, doc)      {name, id, submit_string, 0, max_len, doc}
 
 /* Ordered to follow include/dsd-neo/app_control/commands.h. */
 static const api_command_desc k_commands[] = {
@@ -839,7 +849,7 @@ static const api_command_desc k_commands[] = {
     API_ACTION("ui_msg_clear", DSD_APP_CMD_UI_MSG_CLEAR),
     API_ACTION("eh_reset", DSD_APP_CMD_EH_RESET),
     API_ACTION("event_log_disable", DSD_APP_CMD_EVENT_LOG_DISABLE),
-    API_KIND("event_log_set", DSD_APP_CMD_EVENT_LOG_SET, submit_string, "{value:path}"),
+    API_STR("event_log_set", DSD_APP_CMD_EVENT_LOG_SET, 1023, "{value:path, <=1023 bytes}"),
 
     API_ACTION("lcw_retune_toggle", DSD_APP_CMD_LCW_RETUNE_TOGGLE),
     API_ACTION("p25_cc_cand_toggle", DSD_APP_CMD_P25_CC_CAND_TOGGLE),
@@ -851,13 +861,13 @@ static const api_command_desc k_commands[] = {
     API_ACTION("inv_dpmr_toggle", DSD_APP_CMD_INV_DPMR_TOGGLE),
     API_ACTION("inv_m17_toggle", DSD_APP_CMD_INV_M17_TOGGLE),
 
-    API_KIND("wav_static_open", DSD_APP_CMD_WAV_STATIC_OPEN, submit_string, "{value:path}"),
-    API_KIND("wav_raw_open", DSD_APP_CMD_WAV_RAW_OPEN, submit_string, "{value:path}"),
-    API_KIND("dsp_out_set", DSD_APP_CMD_DSP_OUT_SET, submit_string, "{value:filename}"),
-    API_KIND("symcap_open", DSD_APP_CMD_SYMCAP_OPEN, submit_string, "{value:path}"),
-    API_KIND("symbol_in_open", DSD_APP_CMD_SYMBOL_IN_OPEN, submit_string, "{value:path}"),
-    API_KIND("input_wav_set", DSD_APP_CMD_INPUT_WAV_SET, submit_string, "{value:path}"),
-    API_KIND("input_sym_stream_set", DSD_APP_CMD_INPUT_SYM_STREAM_SET, submit_string, "{value:path}"),
+    API_STR("wav_static_open", DSD_APP_CMD_WAV_STATIC_OPEN, 1023, "{value:path, <=1023 bytes}"),
+    API_STR("wav_raw_open", DSD_APP_CMD_WAV_RAW_OPEN, 1023, "{value:path, <=1023 bytes}"),
+    API_STR("dsp_out_set", DSD_APP_CMD_DSP_OUT_SET, 255, "{value:filename, <=255 bytes}"),
+    API_STR("symcap_open", DSD_APP_CMD_SYMCAP_OPEN, 1023, "{value:path, <=1023 bytes}"),
+    API_STR("symbol_in_open", DSD_APP_CMD_SYMBOL_IN_OPEN, 1023, "{value:path, <=1023 bytes}"),
+    API_STR("input_wav_set", DSD_APP_CMD_INPUT_WAV_SET, 2047, "{value:path, <=2047 bytes}"),
+    API_STR("input_sym_stream_set", DSD_APP_CMD_INPUT_SYM_STREAM_SET, 2047, "{value:path, <=2047 bytes}"),
     API_ACTION("input_set_pulse", DSD_APP_CMD_INPUT_SET_PULSE),
 
     API_KIND("udp_out_cfg", DSD_APP_CMD_UDP_OUT_CFG, submit_endpoint, "{host,port}"),
@@ -903,32 +913,32 @@ static const api_command_desc k_commands[] = {
              "{scanner,session,row,mode,target_id,field,action,squelch_db,squelch_mode,squelch_margin_db,width_hz,"
              "tone_mode,tone_list,gain_db}"),
 
-    API_KIND("pulse_out_set", DSD_APP_CMD_PULSE_OUT_SET, submit_string, "{value:name}"),
-    API_KIND("pulse_in_set", DSD_APP_CMD_PULSE_IN_SET, submit_string, "{value:name}"),
+    API_STR("pulse_out_set", DSD_APP_CMD_PULSE_OUT_SET, 99, "{value:name, <=99 bytes}"),
+    API_STR("pulse_in_set", DSD_APP_CMD_PULSE_IN_SET, 99, "{value:name, <=99 bytes}"),
 
     API_I32("input_vol_set", DSD_APP_CMD_INPUT_VOL_SET, "{value:mult 1..16}"),
 
     API_ACTION("lrrp_set_home", DSD_APP_CMD_LRRP_SET_HOME),
     API_ACTION("lrrp_set_dsdp", DSD_APP_CMD_LRRP_SET_DSDP),
-    API_KIND("lrrp_set_custom", DSD_APP_CMD_LRRP_SET_CUSTOM, submit_string, "{value:path}"),
+    API_STR("lrrp_set_custom", DSD_APP_CMD_LRRP_SET_CUSTOM, 1023, "{value:path, <=1023 bytes}"),
     API_ACTION("lrrp_disable", DSD_APP_CMD_LRRP_DISABLE),
 
-    API_KIND("import_channel_map", DSD_APP_CMD_IMPORT_CHANNEL_MAP, submit_string, "{value:path}"),
-    API_KIND("import_group_list", DSD_APP_CMD_IMPORT_GROUP_LIST, submit_string, "{value:path}"),
-    API_KIND("import_keys_dec", DSD_APP_CMD_IMPORT_KEYS_DEC, submit_string, "{value:path}"),
-    API_KIND("import_keys_hex", DSD_APP_CMD_IMPORT_KEYS_HEX, submit_string, "{value:path}"),
+    API_STR("import_channel_map", DSD_APP_CMD_IMPORT_CHANNEL_MAP, 1023, "{value:path, <=1023 bytes}"),
+    API_STR("import_group_list", DSD_APP_CMD_IMPORT_GROUP_LIST, 1023, "{value:path, <=1023 bytes}"),
+    API_STR("import_keys_dec", DSD_APP_CMD_IMPORT_KEYS_DEC, 1023, "{value:path, <=1023 bytes}"),
+    API_STR("import_keys_hex", DSD_APP_CMD_IMPORT_KEYS_HEX, 1023, "{value:path, <=1023 bytes}"),
     API_ACTION("import_channel_map_clear", DSD_APP_CMD_IMPORT_CHANNEL_MAP_CLEAR),
     API_ACTION("import_group_list_clear", DSD_APP_CMD_IMPORT_GROUP_LIST_CLEAR),
     API_ACTION("import_keys_clear", DSD_APP_CMD_IMPORT_KEYS_CLEAR),
-    API_KIND("import_p25_bandplan", DSD_APP_CMD_IMPORT_P25_BANDPLAN, submit_string, "{value:path}"),
-    API_KIND("export_p25_bandplan", DSD_APP_CMD_EXPORT_P25_BANDPLAN, submit_string, "{value:path}"),
+    API_STR("import_p25_bandplan", DSD_APP_CMD_IMPORT_P25_BANDPLAN, 1023, "{value:path, <=1023 bytes}"),
+    API_STR("export_p25_bandplan", DSD_APP_CMD_EXPORT_P25_BANDPLAN, 1023, "{value:path, <=1023 bytes}"),
 
     API_KIND("rr_apply_import", DSD_APP_CMD_RR_APPLY_IMPORT, submit_rr_apply,
              "{decode_mode,edacs_ea,edacs_esk,simulcast_qpsk,p25_prefer_candidates,trunking,scanner,chan_path,"
              "group_path,tune_hz}"),
     API_KIND("rr_account_set", DSD_APP_CMD_RR_ACCOUNT_SET, submit_rr_account, "{username,app_key}"),
 
-    API_KIND("import_src_list", DSD_APP_CMD_IMPORT_SRC_LIST, submit_string, "{value:path}"),
+    API_STR("import_src_list", DSD_APP_CMD_IMPORT_SRC_LIST, 1023, "{value:path, <=1023 bytes}"),
     API_ACTION("import_src_list_clear", DSD_APP_CMD_IMPORT_SRC_LIST_CLEAR),
 
     API_KIND("p25_p2_params_set", DSD_APP_CMD_P25_P2_PARAMS_SET, submit_p25p2, "{wacn,sysid,cc}"),
@@ -959,13 +969,13 @@ static const api_command_desc k_commands[] = {
     API_KIND("key_rc4des_set", DSD_APP_CMD_KEY_RC4DES_SET, submit_u64, "{value:uint64}"),
     API_KIND("key_hytera_set", DSD_APP_CMD_KEY_HYTERA_SET, submit_hytera, "{H,K1,K2,K3,K4}"),
     API_KIND("key_aes_set", DSD_APP_CMD_KEY_AES_SET, submit_aes, "{K1,K2,K3,K4}"),
-    API_KIND("key_tyt_ap_set", DSD_APP_CMD_KEY_TYT_AP_SET, submit_string, "{value:hex}"),
-    API_KIND("key_retevis_rc2_set", DSD_APP_CMD_KEY_RETEVIS_RC2_SET, submit_string, "{value:hex}"),
-    API_KIND("key_tyt_ep_set", DSD_APP_CMD_KEY_TYT_EP_SET, submit_string, "{value:hex}"),
-    API_KIND("key_ken_scr_set", DSD_APP_CMD_KEY_KEN_SCR_SET, submit_string, "{value:decimal}"),
-    API_KIND("key_anytone_bp_set", DSD_APP_CMD_KEY_ANYTONE_BP_SET, submit_string, "{value:hex16}"),
-    API_KIND("key_xor_set", DSD_APP_CMD_KEY_XOR_SET, submit_string, "{value:len:hex}"),
-    API_KIND("m17_user_data_set", DSD_APP_CMD_M17_USER_DATA_SET, submit_string, "{value:string}"),
+    API_STR("key_tyt_ap_set", DSD_APP_CMD_KEY_TYT_AP_SET, 255, "{value:hex, <=255 bytes}"),
+    API_STR("key_retevis_rc2_set", DSD_APP_CMD_KEY_RETEVIS_RC2_SET, 255, "{value:hex, <=255 bytes}"),
+    API_STR("key_tyt_ep_set", DSD_APP_CMD_KEY_TYT_EP_SET, 255, "{value:hex, <=255 bytes}"),
+    API_STR("key_ken_scr_set", DSD_APP_CMD_KEY_KEN_SCR_SET, 127, "{value:decimal, <=127 bytes}"),
+    API_STR("key_anytone_bp_set", DSD_APP_CMD_KEY_ANYTONE_BP_SET, 127, "{value:hex16, <=127 bytes}"),
+    API_STR("key_xor_set", DSD_APP_CMD_KEY_XOR_SET, 255, "{value:len:hex, <=255 bytes}"),
+    API_STR("m17_user_data_set", DSD_APP_CMD_M17_USER_DATA_SET, 49, "{value:string, <=49 bytes}"),
     API_KIND("key_direct_set", DSD_APP_CMD_KEY_DIRECT_SET, submit_key_direct, "{key_type,value}"),
     API_I32_RANGE("force_key_set", DSD_APP_CMD_FORCE_KEY_SET, 0, 2, "{value:0|1|2}"),
     API_KIND("decryption_apply", DSD_APP_CMD_DECRYPTION_APPLY, submit_decryption,

@@ -22,6 +22,7 @@
 #if DSD_CLI_HAS_API
 #include <dsd-neo/api/api.h>
 #include <dsd-neo/app_control/frontend_runtime.h>
+#include <dsd-neo/runtime/telemetry.h>
 #endif
 
 #if DSD_CLI_HAS_TERMINAL_UI
@@ -85,7 +86,10 @@ dsd_cli_run_start(dsd_opts* opts, dsd_state* state, void* context) {
         }
         const int started = dsd_api_start(&g_api_cfg) == 0;
         DSD_SECURE_ZERO(g_api_cfg.token, sizeof g_api_cfg.token);
-        if (!started) {
+        if (started) {
+            /* The feed's first look, before the decoder runs: every event row from here on reaches subscribers. */
+            dsd_telemetry_publish_both_and_redraw(opts, state);
+        } else {
             /* The decoder still runs, as it does when the RTL UDP retune control cannot bind; the reason is logged. */
             DSD_FPRINTF(stderr, "Failed to start the control/telemetry API; decoding continues without it\n");
             g_api_enabled = 0;
