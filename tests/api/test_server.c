@@ -17,6 +17,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/runtime/decode_clock.h>
@@ -28,7 +29,11 @@
 
 #if !DSD_PLATFORM_WIN_NATIVE
 #include <netinet/in.h>
+#include <sys/socket.h>
 #endif
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 enum { LINE_CAP = 1 << 18 };
 
@@ -83,11 +88,19 @@ expect_eof(dsd_socket_t sock) {
     }
 }
 
+/* The client side of these tests sends to a server that may already have dropped it; that must cost an error, not a
+   SIGPIPE, so the server-side SIGPIPE check (test_vanishing_peer) stays meaningful. */
+#ifdef MSG_NOSIGNAL
+#define TEST_SEND_FLAGS MSG_NOSIGNAL
+#else
+#define TEST_SEND_FLAGS 0
+#endif
+
 static int
 send_bytes(dsd_socket_t sock, const char* s, size_t len) {
     size_t sent = 0;
     while (sent < len) {
-        const int n = dsd_socket_send(sock, s + sent, len - sent, 0);
+        const int n = dsd_socket_send(sock, s + sent, len - sent, TEST_SEND_FLAGS);
         if (n <= 0) {
             return -1;
         }
@@ -107,6 +120,10 @@ connect_port(int port) {
     assert(dsd_socket_resolve("127.0.0.1", port, &addr) == 0);
     dsd_socket_t sock = dsd_socket_create(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     assert(sock != DSD_INVALID_SOCKET);
+#ifdef SO_NOSIGPIPE
+    int one = 1;
+    (void)dsd_socket_setsockopt(sock, SOL_SOCKET, SO_NOSIGPIPE, &one, (int)sizeof(one));
+#endif
     assert(dsd_socket_connect(sock, (struct sockaddr*)&addr, (int)sizeof(addr)) == 0);
     return sock;
 }

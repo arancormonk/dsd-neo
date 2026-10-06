@@ -15,6 +15,7 @@
 #include <dsd-neo/app_control/rr_import_apply.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/runtime/config.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>

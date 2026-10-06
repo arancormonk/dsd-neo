@@ -8,6 +8,8 @@
  * @brief Response framing shared by the API server's session commands and the command table.
  */
 
+#include <stddef.h>
+
 #include "api_internal.h"
 #include "json.h"
 

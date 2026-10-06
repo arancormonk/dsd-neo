@@ -9,6 +9,8 @@
 #include <dsd-neo/platform/threading.h>
 #include <stddef.h>
 
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 #include "snapshot_internal.h"
 
 enum { DSD_APP_TELEMETRY_MAX_OBSERVERS = 8 };

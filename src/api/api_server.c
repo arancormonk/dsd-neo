@@ -39,6 +39,7 @@
 #if !DSD_PLATFORM_WIN_NATIVE
 #include <arpa/inet.h>
 #include <netinet/in.h>
+#include <sys/socket.h>
 #endif
 
 #include "api_internal.h"
@@ -60,6 +61,7 @@ enum {
     DSD_API_READ_CHUNK = 8192,
     DSD_API_READS_PER_WAKE = 8,
     DSD_API_RESULT_POLL_MS = 100,
+    DSD_API_LINGER_MS = 1000,
     DSD_API_DEFAULT_MAX_CLIENTS = 8,
     DSD_API_HARD_MAX_CLIENTS = 32,
 };
@@ -585,6 +587,30 @@ session_has_output(api_session* s) {
     return queued;
 }
 
+/* End an orderly close (the last reply sent): send our FIN, then read and drop what the peer still sends until it
+   closes too or the linger time runs out. Closing a socket with unread input makes the stack send a reset, which can
+   destroy the reply before the peer reads it -- the parse_error or unauthorized line that explains the close. */
+static void
+session_linger(api_session* s) {
+    char drain[DSD_API_READ_CHUNK];
+    (void)dsd_socket_shutdown(s->sock, SHUT_WR);
+    const uint64_t deadline = dsd_realtime_mono_ms() + (uint64_t)DSD_API_LINGER_MS;
+    while (atomic_load(&s->srv->stop) == 0 && dsd_realtime_mono_ms() < deadline) {
+        const int ready = dsd_socket_wait(s->sock, DSD_SOCKET_WAIT_READ, (unsigned int)DSD_API_POLL_MS);
+        if (ready < 0) {
+            break;
+        }
+        if (ready == 0) {
+            continue;
+        }
+        const int n = dsd_socket_recv(s->sock, drain, sizeof drain, 0);
+        if (n == 0 || (n < 0 && !socket_would_block(dsd_socket_get_error()))) {
+            break;
+        }
+    }
+    DSD_SECURE_ZERO(drain, sizeof drain);
+}
+
 static void
 session_retire(api_session* s) {
     dsd_mutex_lock(&s->mu);
@@ -617,6 +643,7 @@ static DSD_THREAD_RETURN_TYPE
         }
         const int have_output = session_has_output(s);
         if (closing == SESSION_CLOSE_AFTER_FLUSH && !have_output) {
+            session_linger(s);
             break;
         }
         if (!authenticated && dsd_realtime_mono_ms() - s->opened_ms >= s->srv->auth_timeout_ms) {

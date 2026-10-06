@@ -19,7 +19,6 @@
  */
 
 #include <dsd-neo/app_control/call_view.h>
-#include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/frontend.h>
 #include <dsd-neo/app_control/notification_status.h>
 #include <dsd-neo/app_control/p25_metrics.h>
@@ -28,7 +27,6 @@
 #include <dsd-neo/app_control/telemetry_observers.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
-#include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/talkgroup_policy.h>
@@ -43,6 +41,8 @@
 #include <time.h>
 
 #include "api_internal.h"
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 #include "json.h"
 
 enum { DSD_API_TELEMETRY_INTERVAL_MS = 250 };
