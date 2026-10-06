@@ -367,6 +367,10 @@ cli_has_config_one_shot_arg(int argc, char** argv) {
         if (strcmp(arg, "--") == 0) {
             break;
         }
+        if (dsd_cli_option_takes_free_value(arg)) {
+            i++; /* a token is any text, a one-shot option's name included */
+            continue;
+        }
         if (strcmp(arg, "--validate-config") == 0 || strncmp(arg, "--validate-config=", 18) == 0
             || strcmp(arg, "--print-config") == 0 || strcmp(arg, "--list-profiles") == 0
             || strcmp(arg, "--dump-config-template") == 0) {

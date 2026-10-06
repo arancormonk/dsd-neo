@@ -691,7 +691,9 @@ The `Linux • RelWithDebInfo • ctest (x86-64-v3, fast-math, clang)` check enf
       `[section] key = value` through the loader's own mapper (the control API's `config_apply`)
   - CLI parsing and interactive/bootstrap helpers (`include/dsd-neo/runtime/cli.h`); the control API options and
     their `DSD_NEO_API_*` fallbacks are resolved at parse time, token file included, so a bad value is an argument
-    error
+    error. A token can read like an option (`--print-config`), so every pass over the raw argv -- bootstrap's
+    pre-parse and inherited-trunk-scan checks, the one-shot check, compaction -- steps over the value of an option
+    `dsd_cli_option_takes_free_value()` names; a new raw pass must do the same
   - UTF-8 output (`include/dsd-neo/runtime/unicode.h`): on Windows the first `dsd_unicode_init_locale()` switches the
     console's code pages to UTF-8 and registers `dsd_unicode_restore_console()` with `atexit()`, so the shell gets its
     own code pages back when dsd-neo exits

@@ -58,6 +58,16 @@ int dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int*
  */
 int dsd_cli_compact_args(int argc, char** argv);
 
+/**
+ * @brief Nonzero when @p arg is an option whose separate value may be any text.
+ *
+ * An API token (`--api-token`) or its file (`--api-token-file`) can read like
+ * an option of its own ("--print-config", "--iq-replay"). A pre-scan of the raw
+ * argv must step over such a value, as the parser and dsd_cli_compact_args()
+ * do, instead of reading it as an option.
+ */
+int dsd_cli_option_takes_free_value(const char* arg);
+
 /** @brief Print the CLI usage/help text. */
 void dsd_cli_usage(void);
 

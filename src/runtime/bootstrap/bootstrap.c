@@ -165,16 +165,13 @@ bootstrap_cli_try_file_rate_override(int argc, char** argv, int* i, bootstrap_cl
    bootstrap option of its own. */
 static int
 bootstrap_cli_try_skip_free_value(int argc, char** argv, int* i) {
-    static const char* const k_free_value_options[] = {"--api-token", "--api-token-file"};
-    for (size_t k = 0; k < sizeof k_free_value_options / sizeof k_free_value_options[0]; k++) {
-        if (strcmp(argv[*i], k_free_value_options[k]) == 0) {
-            if (*i + 1 < argc) {
-                ++(*i);
-            }
-            return 1;
-        }
+    if (!dsd_cli_option_takes_free_value(argv[*i])) {
+        return 0;
     }
-    return 0;
+    if (*i + 1 < argc) {
+        ++(*i);
+    }
+    return 1;
 }
 
 static void

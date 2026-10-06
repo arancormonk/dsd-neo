@@ -7008,6 +7008,46 @@ test_trunk_scan_long_options_parse(void) {
     return test_rc;
 }
 
+/* A token that reads like a one-shot option is still a token: the run is not taken for --print-config, so an explicit
+   --trunk-scan still disowns the channel map and P25 band plan a config file would otherwise hand down. */
+static int
+test_trunk_scan_api_token_is_not_a_one_shot(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return 1;
+    }
+    initOpts(opts);
+    initState(state);
+    DSD_SNPRINTF(opts->chan_in_file, sizeof opts->chan_in_file, "%s", "inherited_channels.csv");
+    DSD_SNPRINTF(opts->p25_bandplan_in_file, sizeof opts->p25_bandplan_in_file, "%s", "inherited_bandplan.csv");
+
+    char arg0[] = "dsd-neo";
+    char arg1[] = "--trunk-scan";
+    char arg2[] = "targets.csv";
+    char arg3[] = "--api-token";
+    char arg4[] = "--print-config";
+    char* argv[] = {arg0, arg1, arg2, arg3, arg4, NULL};
+    int argc_effective = 0;
+    int exit_rc = -1;
+    const int rc = dsd_parse_args(5, argv, opts, state, &argc_effective, &exit_rc);
+
+    int test_rc = 0;
+    if (rc != DSD_PARSE_CONTINUE || opts->trunk_scan_enabled != 1 || opts->chan_in_file[0] != '\0'
+        || opts->p25_bandplan_in_file[0] != '\0' || strcmp(opts->api_token, "--print-config") != 0) {
+        DSD_FPRINTF(stderr, "token reading as --print-config: rc=%d trunk_scan=%d chan=%s bandplan=%s\n", rc,
+                    opts->trunk_scan_enabled, opts->chan_in_file, opts->p25_bandplan_in_file);
+        test_rc = 1;
+    }
+
+    freeState(state);
+    free(opts);
+    free(state);
+    return test_rc;
+}
+
 static int
 test_trunk_scanner_option_order(void) {
     int failed = 0;
@@ -9590,6 +9630,7 @@ main(void) {
     rc |= test_input_source_tcp_ipv4_roundtrip();
     rc |= test_trunk_scan_long_options_parse();
     rc |= test_trunk_scanner_option_order();
+    rc |= test_trunk_scan_api_token_is_not_a_one_shot();
     rc |= test_trunk_scan_still_refuses_scanner_after_trunk();
     rc |= test_trunk_scan_conflicts_with_scanner_mode();
     rc |= test_trunk_scan_rejects_global_channel_map();
