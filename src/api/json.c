@@ -264,6 +264,11 @@ json_escape_char(dsd_json_buf* b, const unsigned char* p, const unsigned char* e
 
 int
 dsd_json_buf_append_escaped(dsd_json_buf* b, const char* v) {
+    return dsd_json_buf_append_escaped_n(b, v, v != NULL ? strlen(v) : 0U);
+}
+
+int
+dsd_json_buf_append_escaped_n(dsd_json_buf* b, const char* v, size_t n) {
     if (b == NULL) {
         return -1;
     }
@@ -271,7 +276,7 @@ dsd_json_buf_append_escaped(dsd_json_buf* b, const char* v) {
         return 0;
     }
     const unsigned char* p = (const unsigned char*)v;
-    const unsigned char* end = p + strlen(v);
+    const unsigned char* end = p + n;
     while (p < end) {
         size_t used = 0U;
         if (json_escape_char(b, p, end, &used) != 0) {
@@ -457,6 +462,22 @@ dsd_json_value_str(dsd_json_writer* w, const char* v) {
 }
 
 int
+dsd_json_value_strn(dsd_json_writer* w, const char* v, size_t cap) {
+    if (json_writer_before_value(w) != 0) {
+        return -1;
+    }
+    if (json_writer_putc(w, '"') != 0) {
+        return -1;
+    }
+    const char* nul = (v != NULL) ? (const char*)memchr(v, '\0', cap) : NULL;
+    const size_t n = (v == NULL) ? 0U : (nul != NULL ? (size_t)(nul - v) : cap);
+    if (dsd_json_buf_append_escaped_n(w->buf, v, n) != 0) {
+        return json_writer_fail(w);
+    }
+    return json_writer_putc(w, '"');
+}
+
+int
 dsd_json_value_i64(dsd_json_writer* w, int64_t v) {
     if (json_writer_before_value(w) != 0) {
         return -1;
@@ -540,6 +561,11 @@ dsd_json_value_raw(dsd_json_writer* w, const char* raw) {
 int
 dsd_json_kv_str(dsd_json_writer* w, const char* key, const char* v) {
     return (dsd_json_key(w, key) == 0) ? dsd_json_value_str(w, v) : -1;
+}
+
+int
+dsd_json_kv_strn(dsd_json_writer* w, const char* key, const char* v, size_t cap) {
+    return (dsd_json_key(w, key) == 0) ? dsd_json_value_strn(w, v, cap) : -1;
 }
 
 int

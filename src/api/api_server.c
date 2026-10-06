@@ -819,7 +819,7 @@ results_emit_tg(api_server* srv, dsd_json_buf* b) {
         (void)dsd_json_kv_bool(&w, "ok", r->success ? 1 : 0);
         (void)dsd_json_kv_u64_str(&w, "policy_context", r->policy_context);
         (void)dsd_json_kv_u64(&w, "policy_generation", r->policy_generation);
-        (void)dsd_json_kv_str(&w, "path", r->path);
+        (void)dsd_json_kv_strn(&w, "path", r->path, sizeof r->path);
         (void)dsd_json_obj_end(&w);
         if (!dsd_json_writer_failed(&w) && dsd_json_buf_putc(b, '\n') == 0) {
             dsd_api_broadcast(b->data, b->len, DSD_API_TOPIC_RESULT);

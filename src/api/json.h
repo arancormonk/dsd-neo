@@ -112,6 +112,8 @@ int dsd_json_key(dsd_json_writer* w, const char* key);
 
 /** Emit primitive/string values at the current position. */
 int dsd_json_value_str(dsd_json_writer* w, const char* v);
+/** A fixed char field of @p cap bytes: the text up to its terminator, or all @p cap bytes when it has none. */
+int dsd_json_value_strn(dsd_json_writer* w, const char* v, size_t cap);
 int dsd_json_value_i64(dsd_json_writer* w, int64_t v);
 int dsd_json_value_u64(dsd_json_writer* w, uint64_t v);
 /** A 64-bit value as a decimal string, for identifiers a double-based client would round. */
@@ -131,6 +133,7 @@ int dsd_json_value_raw(dsd_json_writer* w, const char* raw);
 
 /** Convenience: key plus value. Returns 0 or -1. */
 int dsd_json_kv_str(dsd_json_writer* w, const char* key, const char* v);
+int dsd_json_kv_strn(dsd_json_writer* w, const char* key, const char* v, size_t cap);
 int dsd_json_kv_i64(dsd_json_writer* w, const char* key, int64_t v);
 int dsd_json_kv_u64(dsd_json_writer* w, const char* key, uint64_t v);
 int dsd_json_kv_u64_str(dsd_json_writer* w, const char* key, uint64_t v);
@@ -146,6 +149,8 @@ int dsd_json_kv_null(dsd_json_writer* w, const char* key);
  * separators become \uXXXX escapes. Returns 0/-1.
  */
 int dsd_json_buf_append_escaped(dsd_json_buf* b, const char* v);
+/** dsd_json_buf_append_escaped() for the first @p n bytes of @p v. */
+int dsd_json_buf_append_escaped_n(dsd_json_buf* b, const char* v, size_t n);
 
 /*============================================================================
  * DOM parser

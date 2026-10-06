@@ -188,7 +188,7 @@ encode_event_row(dsd_json_writer* w, const Event_History* e, int slot, uint64_t 
     (void)dsd_json_kv_u64(w, "sys_id3", e->sys_id3);
     (void)dsd_json_kv_u64(w, "sys_id4", e->sys_id4);
     (void)dsd_json_kv_u64(w, "sys_id5", e->sys_id5);
-    (void)dsd_json_kv_str(w, "sysid_string", e->sysid_string);
+    (void)dsd_json_kv_strn(w, "sysid_string", e->sysid_string, sizeof e->sysid_string);
     (void)dsd_json_kv_i64(w, "gi", e->gi);
     (void)dsd_json_kv_i64(w, "emergency", e->emergency);
     (void)dsd_json_kv_i64(w, "priority", e->priority);
@@ -199,21 +199,21 @@ encode_event_row(dsd_json_writer* w, const Event_History* e, int slot, uint64_t 
     (void)dsd_json_kv_u64(w, "svc", e->svc);
     (void)dsd_json_kv_u64(w, "source_id", e->source_id);
     (void)dsd_json_kv_u64(w, "target_id", e->target_id);
-    (void)dsd_json_kv_str(w, "src_str", e->src_str);
-    (void)dsd_json_kv_str(w, "tgt_str", e->tgt_str);
-    (void)dsd_json_kv_str(w, "t_name", e->t_name);
-    (void)dsd_json_kv_str(w, "s_name", e->s_name);
-    (void)dsd_json_kv_str(w, "t_mode", e->t_mode);
-    (void)dsd_json_kv_str(w, "s_mode", e->s_mode);
-    (void)dsd_json_kv_str(w, "channel_label", e->channel_label);
+    (void)dsd_json_kv_strn(w, "src_str", e->src_str, sizeof e->src_str);
+    (void)dsd_json_kv_strn(w, "tgt_str", e->tgt_str, sizeof e->tgt_str);
+    (void)dsd_json_kv_strn(w, "t_name", e->t_name, sizeof e->t_name);
+    (void)dsd_json_kv_strn(w, "s_name", e->s_name, sizeof e->s_name);
+    (void)dsd_json_kv_strn(w, "t_mode", e->t_mode, sizeof e->t_mode);
+    (void)dsd_json_kv_strn(w, "s_mode", e->s_mode, sizeof e->s_mode);
+    (void)dsd_json_kv_strn(w, "channel_label", e->channel_label, sizeof e->channel_label);
     (void)dsd_json_kv_u64(w, "channel", e->channel);
     (void)dsd_json_kv_i64(w, "event_time", (int64_t)e->event_time);
     (void)dsd_json_kv_i64(w, "event_start_time", (int64_t)e->event_start_time);
-    (void)dsd_json_kv_str(w, "alias", e->alias);
-    (void)dsd_json_kv_str(w, "gps", e->gps_s);
-    (void)dsd_json_kv_str(w, "text", e->text_message);
-    (void)dsd_json_kv_str(w, "event", e->event_string);
-    (void)dsd_json_kv_str(w, "internal", e->internal_str);
+    (void)dsd_json_kv_strn(w, "alias", e->alias, sizeof e->alias);
+    (void)dsd_json_kv_strn(w, "gps", e->gps_s, sizeof e->gps_s);
+    (void)dsd_json_kv_strn(w, "text", e->text_message, sizeof e->text_message);
+    (void)dsd_json_kv_strn(w, "event", e->event_string, sizeof e->event_string);
+    (void)dsd_json_kv_strn(w, "internal", e->internal_str, sizeof e->internal_str);
     (void)dsd_json_obj_end(w);
 }
 
@@ -360,10 +360,10 @@ encode_slot_call(dsd_json_writer* w, const dsd_state* state, int slot, double no
     (void)dsd_json_obj_begin(w);
     (void)dsd_json_kv_i64(w, "slot", slot);
     (void)dsd_json_kv_i64(w, "state", view.state);
-    (void)dsd_json_kv_str(w, "name", view.name);
-    (void)dsd_json_kv_str(w, "tg_text", view.tg_text);
-    (void)dsd_json_kv_str(w, "src_text", view.src_text);
-    (void)dsd_json_kv_str(w, "channel", view.channel);
+    (void)dsd_json_kv_strn(w, "name", view.name, sizeof view.name);
+    (void)dsd_json_kv_strn(w, "tg_text", view.tg_text, sizeof view.tg_text);
+    (void)dsd_json_kv_strn(w, "src_text", view.src_text, sizeof view.src_text);
+    (void)dsd_json_kv_strn(w, "channel", view.channel, sizeof view.channel);
     (void)dsd_json_kv_u64(w, "tg_id", view.tg_id);
     (void)dsd_json_kv_u64(w, "elapsed_ms", view.elapsed_ms);
     (void)dsd_json_kv_u64(w, "kid", view.kid);
@@ -409,7 +409,7 @@ encode_control_context(dsd_json_writer* w, const dsd_state* state) {
 
     (void)dsd_json_key(w, "decryption");
     (void)dsd_json_obj_begin(w);
-    (void)dsd_json_kv_str(w, "target_id", state->trunk_scan_active_id);
+    (void)dsd_json_kv_strn(w, "target_id", state->trunk_scan_active_id, sizeof state->trunk_scan_active_id);
     (void)dsd_json_kv_u64_str(w, "tune_generation", dsd_trunk_tuning_generation());
     (void)dsd_json_kv_u64_str(w, "key_epoch", state->enc_lockout_key_epoch);
     (void)dsd_json_obj_end(w);
@@ -426,8 +426,8 @@ encode_control_context(dsd_json_writer* w, const dsd_state* state) {
         (void)dsd_json_kv_u64(w, "edited", row.edited);
         (void)dsd_json_kv_u64(w, "listed", row.listed);
         (void)dsd_json_kv_bool(w, "opts_match", row.opts_match);
-        (void)dsd_json_kv_str(w, "target_id", row.target_id);
-        (void)dsd_json_kv_str(w, "label", row.label);
+        (void)dsd_json_kv_strn(w, "target_id", row.target_id, sizeof row.target_id);
+        (void)dsd_json_kv_strn(w, "label", row.label, sizeof row.label);
         (void)dsd_json_obj_end(w);
     } else {
         (void)dsd_json_kv_null(w, "scan_row");
@@ -441,7 +441,7 @@ build_status(const dsd_state* state, dsd_json_buf* b) {
     begin_line(b, &w, "status");
     if (dsd_app_notification_get(&st)) {
         (void)dsd_json_kv_bool(&w, "available", 1);
-        (void)dsd_json_kv_str(&w, "protocol", st.protocol);
+        (void)dsd_json_kv_strn(&w, "protocol", st.protocol, sizeof st.protocol);
         (void)dsd_json_kv_i64(&w, "vc_freq_hz", st.vc_freq_hz);
         (void)dsd_json_kv_i64(&w, "cc_freq_hz", st.cc_freq_hz);
         (void)dsd_json_kv_i64(&w, "center_freq_hz", st.center_freq_hz);
@@ -455,8 +455,8 @@ build_status(const dsd_state* state, dsd_json_buf* b) {
             (void)dsd_json_obj_begin(&w);
             (void)dsd_json_kv_i64(&w, "slot", slot);
             (void)dsd_json_kv_i64(&w, "state", st.slots[slot].state);
-            (void)dsd_json_kv_str(&w, "name", st.slots[slot].name);
-            (void)dsd_json_kv_str(&w, "src_text", st.slots[slot].src_text);
+            (void)dsd_json_kv_strn(&w, "name", st.slots[slot].name, sizeof st.slots[slot].name);
+            (void)dsd_json_kv_strn(&w, "src_text", st.slots[slot].src_text, sizeof st.slots[slot].src_text);
             (void)dsd_json_kv_u64(&w, "tg_id", st.slots[slot].tg_id);
             (void)dsd_json_kv_bool(&w, "emergency", st.slots[slot].emergency);
             (void)dsd_json_kv_bool(&w, "enc", st.slots[slot].enc);
@@ -472,7 +472,7 @@ build_status(const dsd_state* state, dsd_json_buf* b) {
     if (state->ui_msg[0] != '\0' && state->ui_msg_expire > now) {
         (void)dsd_json_key(&w, "message");
         (void)dsd_json_obj_begin(&w);
-        (void)dsd_json_kv_str(&w, "text", state->ui_msg);
+        (void)dsd_json_kv_strn(&w, "text", state->ui_msg, sizeof state->ui_msg);
         (void)dsd_json_kv_i64(&w, "expires", (int64_t)state->ui_msg_expire);
         (void)dsd_json_obj_end(&w);
     } else {
@@ -488,7 +488,7 @@ build_system(const dsd_state* state, dsd_json_buf* b) {
     begin_line(b, &w, "system");
     dsd_app_notification_status st;
     if (dsd_app_notification_get(&st)) {
-        (void)dsd_json_kv_str(&w, "protocol", st.protocol);
+        (void)dsd_json_kv_strn(&w, "protocol", st.protocol, sizeof st.protocol);
         (void)dsd_json_kv_i64(&w, "vc_freq_hz", st.vc_freq_hz);
         (void)dsd_json_kv_i64(&w, "cc_freq_hz", st.cc_freq_hz);
         (void)dsd_json_kv_i64(&w, "center_freq_hz", st.center_freq_hz);
@@ -510,7 +510,7 @@ build_system(const dsd_state* state, dsd_json_buf* b) {
         (void)dsd_json_kv_u64(&w, "lra", neighbors[i].lra);
         (void)dsd_json_kv_bool(&w, "current_cc", neighbors[i].is_current_cc);
         (void)dsd_json_kv_bool(&w, "candidate", neighbors[i].is_candidate);
-        (void)dsd_json_kv_str(&w, "cfva", neighbors[i].cfva_text);
+        (void)dsd_json_kv_strn(&w, "cfva", neighbors[i].cfva_text, sizeof neighbors[i].cfva_text);
         (void)dsd_json_obj_end(&w);
     }
     (void)dsd_json_arr_end(&w);

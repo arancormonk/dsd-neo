@@ -142,6 +142,24 @@ test_escaping(void) {
 }
 
 static void
+test_bounded_strings(void) {
+    dsd_json_buf b;
+    dsd_json_buf_init(&b);
+    dsd_json_writer w;
+    dsd_json_writer_init(&w, &b);
+    /* A fixed field with no terminator is written up to its size, never past it. */
+    const char unterminated[4] = {'a', 'b', 'c', 'd'};
+    const char terminated[8] = "x\"y";
+    assert(dsd_json_arr_begin(&w) == 0);
+    assert(dsd_json_value_strn(&w, unterminated, sizeof unterminated) == 0);
+    assert(dsd_json_value_strn(&w, terminated, sizeof terminated) == 0);
+    assert(dsd_json_value_strn(&w, NULL, 4U) == 0);
+    assert(dsd_json_arr_end(&w) == 0);
+    assert(strcmp(b.data, "[\"abcd\",\"x\\\"y\",\"\"]") == 0);
+    dsd_json_buf_free(&b);
+}
+
+static void
 test_doubles(void) {
     dsd_json_buf b;
     dsd_json_buf_init(&b);
@@ -348,6 +366,7 @@ main(void) {
     test_writer_roundtrip();
     test_writer_misuse_fails();
     test_escaping();
+    test_bounded_strings();
     test_doubles();
     test_parse_errors();
     test_parse_limits();

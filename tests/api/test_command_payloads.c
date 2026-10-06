@@ -286,10 +286,10 @@ test_strings(void) {
     assert(g_last_id == DSD_APP_CMD_EVENT_LOG_SET && g_last_n == 1024U && g_last[1023] == '\0');
     free(path);
     /* One byte more would not fit the decoder's path fields: refused, not cut. */
-    path = repeat_char('p', 1024U);
-    DSD_SNPRINTF(request, sizeof request, "{\"cmd\":\"event_log_set\",\"params\":{\"value\":\"%s\"}}", path);
+    char* long_path = repeat_char('p', 1024U);
+    DSD_SNPRINTF(request, sizeof request, "{\"cmd\":\"event_log_set\",\"params\":{\"value\":\"%s\"}}", long_path);
     refused(request);
-    free(path);
+    free(long_path);
 
     char* host = repeat_char('h', 255U);
     DSD_SNPRINTF(request, sizeof request, "{\"cmd\":\"udp_out_cfg\",\"params\":{\"host\":\"%s\",\"port\":7355}}", host);
@@ -299,10 +299,11 @@ test_strings(void) {
     DSD_MEMCPY(&ep, g_last, sizeof ep);
     assert(strlen(ep.host) == 255U && ep.port == 7355);
     free(host);
-    host = repeat_char('h', 256U);
-    DSD_SNPRINTF(request, sizeof request, "{\"cmd\":\"udp_out_cfg\",\"params\":{\"host\":\"%s\",\"port\":7355}}", host);
+    char* long_host = repeat_char('h', 256U);
+    DSD_SNPRINTF(request, sizeof request, "{\"cmd\":\"udp_out_cfg\",\"params\":{\"host\":\"%s\",\"port\":7355}}",
+                 long_host);
     refused(request);
-    free(host);
+    free(long_host);
     refused("{\"cmd\":\"udp_out_cfg\",\"params\":{\"host\":\"\",\"port\":7355}}");
     refused("{\"cmd\":\"udp_out_cfg\",\"params\":{\"host\":\"a\",\"port\":0}}");
     refused("{\"cmd\":\"udp_out_cfg\",\"params\":{\"host\":\"a\",\"port\":65536}}");
