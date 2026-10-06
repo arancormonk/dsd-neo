@@ -1776,6 +1776,17 @@ test_ui_dsp_op_commands_dispatch_through_queue(void) {
     (void)rtl_stream_get_iq_dc(&dc_shift);
     rc |= expect_int_eq("DSP IQ DC shift command drains", applied, 1);
     rc |= expect_int_eq("DSP IQ DC shift applies delta", dc_shift, dc_shift_before_toggle + 3);
+    /* Any int32 delta clamps to the shift's range without overflowing on the way (the control API can send one). */
+    dsp.a = INT32_MAX;
+    dsd_app_command_submit(DSD_APP_CMD_DSP_OP, &dsp, sizeof dsp);
+    (void)dsd_app_drain_cmds(opts, state);
+    (void)rtl_stream_get_iq_dc(&dc_shift);
+    rc |= expect_int_eq("DSP IQ DC shift INT32_MAX clamps high", dc_shift, 15);
+    dsp.a = INT32_MIN;
+    dsd_app_command_submit(DSD_APP_CMD_DSP_OP, &dsp, sizeof dsp);
+    (void)dsd_app_drain_cmds(opts, state);
+    (void)rtl_stream_get_iq_dc(&dc_shift);
+    rc |= expect_int_eq("DSP IQ DC shift INT32_MIN clamps low", dc_shift, 6);
 
     rtl_stream_set_ted_gain(0.1f);
     dsp.op = DSD_APP_DSP_OP_TED_GAIN_SET;

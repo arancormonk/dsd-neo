@@ -4861,6 +4861,36 @@ test_api_options(void) {
         test_rc |= api_expect("256-byte --api-token", &r, DSD_PARSE_ERROR, 0, "", "");
     }
 
+    /* The bootstrap pre-scan steps over a token too: "--print-config" as a token is not the option. */
+    {
+        dsd_opts* bopts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+        dsd_state* bstate = (dsd_state*)calloc(1, sizeof(dsd_state));
+        if (!bopts || !bstate) {
+            free(bopts);
+            free(bstate);
+            return 1;
+        }
+        initOpts(bopts);
+        initState(bstate);
+        (void)dsd_unsetenv("DSD_NEO_CONFIG");
+        (void)dsd_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
+        char print_config[] = "--print-config";
+        char* argv[] = {a0, api, port9911, token_opt, print_config, NULL};
+        int argc_effective = 0;
+        int exit_rc = -1;
+        const int brc = dsd_runtime_bootstrap(5, argv, bopts, bstate, &argc_effective, &exit_rc);
+        if (brc != DSD_BOOTSTRAP_CONTINUE || bopts->api_port != 9911
+            || strcmp(bopts->api_token, "--print-config") != 0) {
+            DSD_FPRINTF(stderr, "bootstrap with --api-token --print-config: rc=%d exit_rc=%d port=%d\n", brc, exit_rc,
+                        bopts->api_port);
+            test_rc = 1;
+        }
+        close_parse_outputs(bopts);
+        freeState(bstate);
+        free(bopts);
+        free(bstate);
+    }
+
     /* The fallbacks are read only when the API is on: a stale token file in the environment does not stop a run. */
     (void)dsd_setenv("DSD_NEO_API_TOKEN_FILE", missing, 1);
     {

@@ -5839,6 +5839,24 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
     add_test(NAME ENGINE_SCAN_TIMING COMMAND dsd-neo_test_engine_scan_timing)
 endif()
 
+# The engine commits and publishes the last call before the frontends' stop hooks.
+add_executable(
+    dsd-neo_test_engine_lifecycle_finalize
+    engine/test_engine_lifecycle_finalize.c
+)
+target_include_directories(
+    dsd-neo_test_engine_lifecycle_finalize
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_engine_lifecycle_finalize
+    PRIVATE dsd-neo_engine ${LIBS} dsd-neo_test_support
+)
+add_test(
+    NAME ENGINE_LIFECYCLE_FINALIZE
+    COMMAND dsd-neo_test_engine_lifecycle_finalize
+)
+
 add_executable(
     dsd-neo_test_engine_trunk_retune_regression
     engine/test_engine_trunk_retune_regression.c

@@ -76,7 +76,9 @@ decoding without it, as it does for the RTL UDP retune control.
   20 Hz snapshot publish the terminal frontend also runs.
 * The CLI starts the server before decoding begins and publishes once right
   away, so the event feed has its starting point before any row can be
-  committed.
+  committed. At the end of a run the decoder commits and publishes the last
+  call before it stops the server, and the server sends each client what is
+  still queued (for up to a second) before it closes the connections.
 
 Limits:
 

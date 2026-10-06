@@ -356,15 +356,17 @@ gather_slot_events(const Event_History_I* ring, int slot, int send) {
    subscribed: a baseline taken at its first publish would swallow a row committed in between. While nothing changes
    this reads two counters per slot. A row keeps its identity, (ring, slot, push), across new and update lines. */
 static void
-track_events(const dsd_state* state, int send) {
+track_events(const dsd_state* state) {
     if (state->event_history_s == NULL) {
         g_eh_valid = 0;
         return;
     }
     dsd_json_buf_reset(&g_events);
-    /* Other threads write the rings under this transaction; read them under it too. */
+    /* Other threads write the rings under this transaction; read them under it too. Interest is read under it as
+       well: a row the watchdog commits after a subscription took effect cannot then be passed over as unwanted. */
     dsd_event_history_transaction transaction;
     dsd_event_history_transaction_begin((dsd_state*)state, &transaction);
+    const int send = dsd_api_topic_interest(DSD_API_TOPIC_EVENT);
     for (int slot = 0; slot < 2; slot++) {
         gather_slot_events(&state->event_history_s[slot], slot, send);
     }
@@ -677,7 +679,7 @@ feed_state(const dsd_state* state, void* user) {
     if (state == NULL) {
         return;
     }
-    track_events(state, dsd_api_topic_interest(DSD_API_TOPIC_EVENT));
+    track_events(state);
     if (dsd_api_client_count() <= 0) {
         return;
     }

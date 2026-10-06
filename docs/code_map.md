@@ -40,7 +40,11 @@ Generated (do not edit/commit):
 - Path: `src/engine` (including `src/engine/dispatch`), `include/dsd-neo/engine`
 - Targets: `dsd-neo_engine`, `dsd-neo_dispatch`
 - Responsibilities:
-  - Top-level decode runner and lifecycle (wires core/runtime/IO/protocol state machines)
+  - Top-level decode runner and lifecycle (wires core/runtime/IO/protocol state machines). At the end of a run
+    `dsd_engine_run_with_lifecycle()` commits the session's last calls (`dsd_engine_finalize_calls()`: end the slots
+    as sync loss, commit their rows, retire the held VOICE_END alerts) and publishes telemetry before it calls the
+    frontends' stop hooks, so a frontend that records calls gets the final transmission; `dsd_engine_cleanup()`
+    repeats the step, which then finds nothing left to do
   - Protocol/frame dispatch glue
   - Trunk retune policy and bookkeeping: `src/engine/trunk_tuning.c` implements the tune-to-frequency,
     tune-to-control-channel and return-to-control-channel requests behind
@@ -1588,8 +1592,9 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   - `json.c` is built with IEEE semantics so its non-finite checks survive fast-math; request lines, parsed strings
     and every buffer are wiped before their storage is released, since requests carry keys and tokens
 - Threading: commands run on session threads (the queue is multi-producer); telemetry is encoded on the decode thread;
-  `dsd_api_stop()` unregisters the observer (synchronous) before joining the threads and freeing the server, so
-  nothing reaches a freed server
+  `dsd_api_stop()` unregisters the observer (synchronous) and stops the result pump, then lets every session send
+  what is queued (bounded, 1 s; no new connections meanwhile) before joining the threads and freeing the server, so
+  the last rows reach clients and nothing reaches a freed server
 - Tests: `API_JSON`, `API_COMMANDS`, `API_COMMAND_PAYLOADS`, `API_SERVER` (`tests/api/`)
 - Build files: `src/api/CMakeLists.txt`
 

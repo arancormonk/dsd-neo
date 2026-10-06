@@ -801,7 +801,15 @@ apply_dsp_op_iq_and_ted(const dsd_app_dsp_payload* p) {
         case DSD_APP_DSP_OP_IQ_DC_K_DELTA: {
             int k = 0;
             (void)rtl_stream_get_iq_dc(&k);
-            rtl_stream_set_iq_dc(-1, k + p->a);
+            /* In 64 bits, saturated: a delta can be any int32 (the control API sends what its client asked for). Not
+               below 0, which the setter reads as "keep the shift"; it clamps the rest to its own range. */
+            int64_t next = (int64_t)k + p->a;
+            if (next > INT32_MAX) {
+                next = INT32_MAX;
+            } else if (next < 0) {
+                next = 0;
+            }
+            rtl_stream_set_iq_dc(-1, (int)next);
             return 1;
         }
         case DSD_APP_DSP_OP_TED_GAIN_SET: {

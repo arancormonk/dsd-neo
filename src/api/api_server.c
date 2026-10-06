@@ -62,6 +62,7 @@ enum {
     DSD_API_READS_PER_WAKE = 8,
     DSD_API_RESULT_POLL_MS = 100,
     DSD_API_LINGER_MS = 1000,
+    DSD_API_STOP_DRAIN_MS = 1000,
     DSD_API_DEFAULT_MAX_CLIENTS = 8,
     DSD_API_HARD_MAX_CLIENTS = 32,
 };
@@ -83,6 +84,7 @@ typedef struct api_session {
     dsd_json_buf pending; /* received bytes not yet ending in a newline */
     dsd_json_buf sending; /* lines taken from the outbox, partly sent */
     uint64_t opened_ms;
+    atomic_int drained;  /* everything queued has been sent (a closing session past its last write) */
     atomic_int finished; /* the thread has returned; the accept thread (or stop) joins and frees it */
     struct api_session* next;
 } api_session;
@@ -93,6 +95,8 @@ typedef struct api_server {
     dsd_thread_t results_thread;
     int results_started;
     atomic_int stop;
+    atomic_int pump_stop; /* the result pump stops first, so stop can drain what it queued */
+    atomic_int draining;  /* stopping: new connections are refused */
     int port;
     dsd_api_config config;          /* as started, for the same-configuration check */
     char token[DSD_API_TOKEN_SIZE]; /* zero-padded, compared over its full width */
@@ -133,7 +137,12 @@ socket_would_block(int err) {
 #if DSD_PLATFORM_WIN_NATIVE
     return err == WSAEWOULDBLOCK || err == WSAEINTR;
 #else
-    return err == EAGAIN || err == EWOULDBLOCK || err == EINTR;
+#if defined(EWOULDBLOCK) && EWOULDBLOCK != EAGAIN
+    if (err == EWOULDBLOCK) {
+        return 1;
+    }
+#endif
+    return err == EAGAIN || err == EINTR;
 #endif
 }
 
@@ -643,6 +652,7 @@ static DSD_THREAD_RETURN_TYPE
         }
         const int have_output = session_has_output(s);
         if (closing == SESSION_CLOSE_AFTER_FLUSH && !have_output) {
+            atomic_store(&s->drained, 1);
             session_linger(s);
             break;
         }
@@ -665,6 +675,7 @@ static DSD_THREAD_RETURN_TYPE
     }
     session_retire(s);
     dsd_json_buf_free(&scratch);
+    atomic_store(&s->drained, 1);
     atomic_store(&s->finished, 1);
     DSD_THREAD_RETURN;
 }
@@ -757,7 +768,7 @@ accept_one(api_server* srv) {
     (void)dsd_socket_setsockopt(c, SOL_SOCKET, SO_NOSIGPIPE, &one, (int)sizeof(one));
 #endif
     dsd_mutex_lock(&srv->mu);
-    const int full = srv->session_count >= srv->max_clients;
+    const int full = srv->session_count >= srv->max_clients || atomic_load(&srv->draining) != 0;
     dsd_mutex_unlock(&srv->mu);
     /* Accepted sockets inherit the listener's non-blocking mode on Windows and the BSDs, but not on Linux. */
     api_session* s = full ? NULL : (api_session*)calloc(1U, sizeof(*s));
@@ -776,6 +787,7 @@ accept_one(api_server* srv) {
     dsd_json_buf_init(&s->outbox);
     dsd_json_buf_init(&s->pending);
     dsd_json_buf_init(&s->sending);
+    atomic_store(&s->drained, 0);
     atomic_store(&s->finished, 0);
     s->opened_ms = dsd_realtime_mono_ms();
     if (srv->token_len == 0U) {
@@ -930,7 +942,7 @@ static DSD_THREAD_RETURN_TYPE
     api_server* srv = (api_server*)arg;
     dsd_json_buf b;
     dsd_json_buf_init(&b);
-    while (atomic_load(&srv->stop) == 0) {
+    while (atomic_load(&srv->pump_stop) == 0) {
         results_emit_tg(srv, &b);
         results_emit_dec(srv, &b);
         dsd_sleep_ms((unsigned int)DSD_API_RESULT_POLL_MS);
@@ -1059,6 +1071,8 @@ server_create(const dsd_api_config* cfg, dsd_socket_t sock, int port) {
     DSD_MEMCPY(srv->token, cfg->token, sizeof srv->token);
     srv->token_len = strlen(srv->token);
     atomic_store(&srv->stop, 0);
+    atomic_store(&srv->pump_stop, 0);
+    atomic_store(&srv->draining, 0);
     atomic_store(&srv->authed_count, 0);
     /* Results already retained when the server starts belong to someone else's earlier request. */
     dsd_app_tg_export_result tg_result;
@@ -1124,6 +1138,31 @@ dsd_api_start(const dsd_api_config* config) {
     return rc;
 }
 
+/* Let every session send what is queued -- the last telemetry, the final call's event row -- before the threads stop:
+   each is told to close once its outbox is empty, and stop waits (bounded) until all have drained. */
+static void
+server_drain_sessions(api_server* srv) {
+    atomic_store(&srv->draining, 1);
+    dsd_mutex_lock(&srv->mu);
+    for (api_session* s = srv->sessions; s != NULL; s = s->next) {
+        session_close(s, SESSION_CLOSE_AFTER_FLUSH);
+    }
+    dsd_mutex_unlock(&srv->mu);
+    const uint64_t deadline = dsd_realtime_mono_ms() + (uint64_t)DSD_API_STOP_DRAIN_MS;
+    for (;;) {
+        int pending = 0;
+        dsd_mutex_lock(&srv->mu);
+        for (const api_session* s = srv->sessions; s != NULL; s = s->next) {
+            pending += atomic_load(&s->drained) == 0;
+        }
+        dsd_mutex_unlock(&srv->mu);
+        if (pending == 0 || dsd_realtime_mono_ms() >= deadline) {
+            return;
+        }
+        dsd_sleep_ms(10U);
+    }
+}
+
 void
 dsd_api_stop(void) {
     ensure_lifecycle_mu();
@@ -1135,11 +1174,13 @@ dsd_api_stop(void) {
     }
     /* Synchronous: no feed callback runs past this, so nothing on the decode thread reaches srv again. */
     dsd_api_feed_stop();
-    atomic_store(&srv->stop, 1);
-    dsd_thread_join(srv->accept_thread);
+    atomic_store(&srv->pump_stop, 1);
     if (srv->results_started) {
         dsd_thread_join(srv->results_thread);
     }
+    server_drain_sessions(srv);
+    atomic_store(&srv->stop, 1);
+    dsd_thread_join(srv->accept_thread);
     reap_sessions(srv, 1);
     (void)dsd_socket_close(srv->listen_sock);
     g_srv = NULL;

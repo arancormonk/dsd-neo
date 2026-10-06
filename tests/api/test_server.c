@@ -497,8 +497,17 @@ test_feed(void) {
     }
     assert(saw_fresh && !saw_missed);
 
-    dsd_socket_close(c);
+    /* Stopping drains: a row published just before the stop still reaches the subscriber, then the stream ends. */
+    commit_event(state, "Final", 11U);
+    dsd_telemetry_publish_both_and_redraw(opts, state);
     dsd_api_stop();
+    assert(await_line(c, "event", "\"t_name\":\"Final\"", 3000U));
+    int ended = 0;
+    for (int i = 0; i < 200 && !ended; i++) {
+        ended = read_line(c, 100U) == 0;
+    }
+    assert(ended);
+    dsd_socket_close(c);
     /* The observer is gone: publishing now reaches no feed. */
     dsd_telemetry_publish_both_and_redraw(opts, state);
     dsd_app_frontend_runtime_stop();

@@ -161,6 +161,22 @@ bootstrap_cli_try_file_rate_override(int argc, char** argv, int* i, bootstrap_cl
     return 0;
 }
 
+/* An option whose value may be any text, a "--print-config"-like token included: step over the value, which is never a
+   bootstrap option of its own. */
+static int
+bootstrap_cli_try_skip_free_value(int argc, char** argv, int* i) {
+    static const char* const k_free_value_options[] = {"--api-token", "--api-token-file"};
+    for (size_t k = 0; k < sizeof k_free_value_options / sizeof k_free_value_options[0]; k++) {
+        if (strcmp(argv[*i], k_free_value_options[k]) == 0) {
+            if (*i + 1 < argc) {
+                ++(*i);
+            }
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static void
 bootstrap_parse_cli_args(int argc, char** argv, bootstrap_cli_args* args) {
     if (!args) {
@@ -169,6 +185,9 @@ bootstrap_parse_cli_args(int argc, char** argv, bootstrap_cli_args* args) {
     DSD_MEMSET(args, 0, sizeof(*args));
     for (int i = 1; i < argc; i++) {
         const char* arg = argv[i];
+        if (bootstrap_cli_try_skip_free_value(argc, argv, &i)) {
+            continue;
+        }
         if (bootstrap_cli_try_config_option(argc, argv, &i, args)) {
             continue;
         }

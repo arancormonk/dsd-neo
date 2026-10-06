@@ -78,6 +78,7 @@
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/shutdown.h>
 #include <dsd-neo/runtime/squelch.h>
+#include <dsd-neo/runtime/telemetry.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
@@ -2703,6 +2704,21 @@ dsd_engine_cleanup_watchdog_snapshots(dsd_opts* opts, dsd_state* state) {
     dsd_event_sync_slot(opts, state, 1);
 }
 
+/* Commit the session's last calls: end the slots as sync loss, commit their rows, and retire the VOICE_END alerts held
+   for a reacquisition that can no longer happen. Repeating it finds nothing left to do. */
+static void
+dsd_engine_finalize_calls(dsd_opts* opts, dsd_state* state) {
+    dsd_engine_cleanup_watchdog_snapshots(opts, state);
+    noCarrier(opts, state);
+    dsd_engine_cleanup_watchdog_snapshots(opts, state);
+    // noCarrier() ended the slots as sync loss, so their VOICE_END alerts are being held against
+    // a reacquisition that can no longer happen. Retire them now, after the pass above has
+    // committed the rows and before audio output closes, or the last transmission of the session
+    // ends silently. Deliberately not inside the snapshot helper: its first call above runs while
+    // calls may still be active.
+    dsd_event_flush_pending_alerts(opts, state);
+}
+
 static void
 dsd_engine_cleanup_close_wavs(dsd_opts* opts, dsd_state* state) {
     if (opts->static_wav_file == 0) {
@@ -2795,15 +2811,7 @@ dsd_engine_cleanup(dsd_opts* opts, dsd_state* state) {
         nxdn_trunk_diag_log_summary(opts, state);
     }
     dsd_engine_cleanup_codec2(state);
-    dsd_engine_cleanup_watchdog_snapshots(opts, state);
-    noCarrier(opts, state);
-    dsd_engine_cleanup_watchdog_snapshots(opts, state);
-    // noCarrier() ended the slots as sync loss, so their VOICE_END alerts are being held against
-    // a reacquisition that can no longer happen. Retire them now, after the pass above has
-    // committed the rows and before audio output closes, or the last transmission of the session
-    // ends silently. Deliberately not inside the snapshot helper: its first call above runs while
-    // calls may still be active.
-    dsd_event_flush_pending_alerts(opts, state);
+    dsd_engine_finalize_calls(opts, state);
     dsd_engine_cleanup_close_wavs(opts, state);
     dsd_rdio_upload_shutdown();
 
@@ -3141,6 +3149,11 @@ dsd_engine_run_with_lifecycle(dsd_opts* opts, dsd_state* state, const dsd_engine
 
 ENGINE_OUT:
     if (lifecycle_started && hooks && hooks->stop) {
+        /* The session's last calls are committed and published while the frontends are still attached, so a
+           frontend that records them (the control API's event subscribers) gets the final transmission too. */
+        dsd_exitflag_store(1);
+        dsd_engine_finalize_calls(opts, state);
+        dsd_telemetry_publish_both_and_redraw(opts, state);
         hooks->stop(opts, state, hooks->context);
     }
     dsd_engine_cleanup(opts, state);
