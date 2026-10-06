@@ -179,8 +179,8 @@ struct dsd_opts {
     int rtl_volume_multiplier;
     /* Generic input volume multiplier for non-RTL inputs (Pulse/WAV/TCP/UDP). */
     int input_volume_multiplier;
-    /* Bumped each time a PCM input stream (re)opens (dsd_opts_reset_pcm_input_state()): what the PCM noise squelch
-       learned belongs to one stream (issue #628). */
+    /* Bumped each time a PCM input stream (re)opens (dsd_opts_note_pcm_stream(): openAudioInput(), a TCP reconnect,
+       and dsd_opts_reset_pcm_input_state()): what the PCM noise squelch learned belongs to one stream (issue #628). */
     uint32_t pcm_input_generation;
     int rtl_udp_port;
     /* Base DSP bandwidth for RTL path in kHz (4,6,8,12,16,24,48). Influences capture rate planning.

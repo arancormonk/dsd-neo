@@ -5116,6 +5116,32 @@ if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
     )
 endif()
 
+# openAudioInput() over a recording device layer (GNU ld --wrap), so the test exists only where that links.
+if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
+    add_executable(
+        dsd-neo_test_core_audio_open_input
+        core/test_core_audio_open_input.c
+    )
+    target_include_directories(
+        dsd-neo_test_core_audio_open_input
+        PRIVATE ${PROJECT_SOURCE_DIR}/include
+    )
+    target_link_libraries(
+        dsd-neo_test_core_audio_open_input
+        PRIVATE dsd-neo_core
+    )
+    target_link_options(
+        dsd-neo_test_core_audio_open_input
+        PRIVATE
+            "LINKER:--wrap=dsd_audio_open_input"
+            "LINKER:--wrap=dsd_audio_close"
+    )
+    add_test(
+        NAME CORE_AUDIO_OPEN_INPUT
+        COMMAND dsd-neo_test_core_audio_open_input
+    )
+endif()
+
 add_executable(
     dsd-neo_test_core_audio2_helpers
     core/test_core_audio2_helpers.c

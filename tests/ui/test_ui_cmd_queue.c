@@ -159,6 +159,10 @@ __wrap_openAudioInput(dsd_opts* opts) {
         return __real_openAudioInput(opts);
     }
     g_open_audio_input_calls++;
+    if (g_open_audio_input_stub_rc == 0) {
+        /* A Pulse open that succeeds is a new stream, as the real one notes (CORE_AUDIO_OPEN_INPUT). */
+        dsd_opts_note_pcm_stream(opts);
+    }
     return g_open_audio_input_stub_rc;
 }
 
@@ -2647,6 +2651,7 @@ test_config_apply_input_change_clears_received_tone(void) {
     return rc;
 }
 
+#ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
 /* A config apply that moves a Pulse input to another device opens another PCM stream (issue #628): the generation the
    PCM noise squelch keys its references on moves with it, so it forgets what it learned on the old device. The same
    device, restated, is no new stream. */
@@ -2678,6 +2683,7 @@ test_config_apply_pulse_device_is_a_new_stream(void) {
     freeState(&state);
     return rc;
 }
+#endif
 
 /* A config apply carrying only a [mode], drained on this thread as the decoder drains it. */
 static int
@@ -2846,6 +2852,7 @@ test_stop_playback_pulse_failure_clears_received_tone(void) {
     opts.audio_in_type = AUDIO_IN_WAV;
     seed_received_tone(&state);
     const uint32_t seeded = state.analog_rx.generation;
+    const uint32_t generation = opts.pcm_input_generation;
     arm_open_audio_input_stub(1, -1);
     rc |= expect_int("stop playback onto pulse queued", post_empty(DSD_APP_CMD_STOP_PLAYBACK),
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
@@ -2853,6 +2860,34 @@ test_stop_playback_pulse_failure_clears_received_tone(void) {
     rc |= expect_int("stop playback tried to open pulse", g_open_audio_input_calls, 1);
     rc |= expect_int("stop playback switched to pulse", opts.audio_in_type, AUDIO_IN_PULSE);
     rc |= expect_received_tone_cleared("failed pulse open still clears the received tone", &state, seeded);
+    rc |= expect_true("a failed pulse open is no new stream", opts.pcm_input_generation == generation);
+    arm_open_audio_input_stub(0, 0);
+    freeState(&state);
+    return rc;
+}
+
+/*
+ * Stopping a symbol playback that ran over live Pulse input opens Pulse again: another PCM stream, which may be
+ * another source (the default one changed meanwhile), so the generation the PCM noise squelch keys its references on
+ * moves and it forgets what it learned before the playback (issue #628).
+ */
+static int
+test_stop_playback_reopens_pulse_as_a_new_stream(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    init_test_context(&opts, &state);
+    opts.audio_out_type = 0;
+    opts.audio_in_type = AUDIO_IN_SYMBOL_FLT;
+    opts.symbolfile = NULL;
+    const uint32_t generation = opts.pcm_input_generation;
+    arm_open_audio_input_stub(1, 0);
+    rc |=
+        expect_int("stop symbol playback queued", post_empty(DSD_APP_CMD_STOP_PLAYBACK), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("stop symbol playback drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("stop symbol playback opens pulse", g_open_audio_input_calls, 1);
+    rc |= expect_int("stop symbol playback switched to pulse", opts.audio_in_type, AUDIO_IN_PULSE);
+    rc |= expect_true("pulse after a playback is a new stream", opts.pcm_input_generation != generation);
     arm_open_audio_input_stub(0, 0);
     freeState(&state);
     return rc;
@@ -15299,12 +15334,13 @@ main(void) {
     rc |= test_input_switch_clears_received_tone();
     rc |= test_playback_switches_clear_received_tone();
     rc |= test_config_apply_input_change_clears_received_tone();
-    rc |= test_config_apply_pulse_device_is_a_new_stream();
     rc |= test_config_apply_mode_change_clears_received_tone();
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
+    rc |= test_config_apply_pulse_device_is_a_new_stream();
     rc |= test_tcp_connect_clears_received_tone();
     rc |= test_rigctl_reconnect_key_uses_the_connect_service();
     rc |= test_stop_playback_pulse_failure_clears_received_tone();
+    rc |= test_stop_playback_reopens_pulse_as_a_new_stream();
 #endif
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP) && defined(DSD_NEO_TEST_IO_CONTROL_WRAP)
     rc |= test_replay_leave_keeps_decode_stamps_ageing();

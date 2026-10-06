@@ -3395,10 +3395,7 @@ apply_cfg_pulse_in_hot_restart(dsd_opts* opts, const dsdneoUserConfig* cfg, cons
     }
     if (openAudioInput(opts) != 0) {
         LOG_ERROR("Config: failed to open PulseAudio input\n");
-        return;
     }
-    /* Another device is another stream: the PCM noise squelch forgets the old one's reference (issue #628). */
-    dsd_opts_note_pcm_stream(opts);
 }
 
 static void
