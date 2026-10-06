@@ -32,7 +32,9 @@ jobs:
           HEAD_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          deadline=$((SECONDS + 2700))
+          # linux-ci on main takes about 30 minutes with free runners and has
+          # taken 53 while its jobs queued for runners; allow 90.
+          deadline=$((SECONDS + 5400))
 
           while true; do
             run_state="$(
