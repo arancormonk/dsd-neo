@@ -806,8 +806,8 @@ test_weak_carrier_keeps_a_step(void) {
    but louder than noise's by more than the shape tolerances in all, which refutes a contested step. Played over 3 s
    and 12 s, and after a gap before the second relay (which starts a stretch of its own, so the relay takes the refuted
    step back). And a dead carrier the stale rule took, whose speech refuted that: the dead carrier's 0.6 s pauses
-   between its later 160 ms bursts, in the stretch that refuted the step, are shorter than the 0.8 s a take-back
-   there needs, and every burst plays. */
+   between its later 160 ms bursts are shorter than the 0.8 s a take-back needs, and every burst plays, also when the
+   bursts fade 6 dB (each one, and the pause after it, a stretch of its own). */
 static void
 test_contested_step(void) {
     for (int c = 0; c < 3; c++) {
@@ -840,36 +840,39 @@ test_contested_step(void) {
         assert(open_seconds(&tr, 5, 0.0) > light - 0.75);
         free(sq);
     }
-    dsd_pcm_noise_squelch* sq = new_squelch(48000, 10);
-    static pcm_tap src;
-    static trace tr;
-    DSD_MEMSET(&tr, 0, sizeof tr);
-    pcm_tap_init(&src, 44U, 12500.0, 0.0, 0.0);
-    src.tone_dev_hz = 1000.0;
-    seg s[17];
-    int n = 0;
-    s[n++] = (seg){PCM_TAP_NOISE, 2.0, 0.0, 0.0, 0.0};
-    s[n++] = (seg){PCM_TAP_DEAD, 7.0, 20.0, 0.0, 0.0};
-    s[n++] = (seg){PCM_TAP_SYLLABIC, 1.5, 20.0, 1000.0, 0.0};
-    s[n++] = (seg){PCM_TAP_DEAD, 0.6, 20.0, 0.0, 0.0};
-    for (int b = 0; b < 6; b++) {
-        s[n++] = (seg){PCM_TAP_SYLLABIC, 0.16, 20.0, 1000.0, 0.0};
+    static const double burst_cnrs[] = {20.0, 14.0};
+    for (int c = 0; c < 2; c++) {
+        dsd_pcm_noise_squelch* sq = new_squelch(48000, 10);
+        static pcm_tap src;
+        static trace tr;
+        DSD_MEMSET(&tr, 0, sizeof tr);
+        pcm_tap_init(&src, 44U, 12500.0, 0.0, 0.0);
+        src.tone_dev_hz = 1000.0;
+        seg s[17];
+        int n = 0;
+        s[n++] = (seg){PCM_TAP_NOISE, 2.0, 0.0, 0.0, 0.0};
+        s[n++] = (seg){PCM_TAP_DEAD, 7.0, 20.0, 0.0, 0.0};
+        s[n++] = (seg){PCM_TAP_SYLLABIC, 1.5, 20.0, 1000.0, 0.0};
         s[n++] = (seg){PCM_TAP_DEAD, 0.6, 20.0, 0.0, 0.0};
+        for (int b = 0; b < 6; b++) {
+            s[n++] = (seg){PCM_TAP_SYLLABIC, 0.16, burst_cnrs[c], 1000.0, 0.0};
+            s[n++] = (seg){PCM_TAP_DEAD, 0.6, 20.0, 0.0, 0.0};
+        }
+        s[n++] = (seg){PCM_TAP_NOISE, 1.0, 0.0, 0.0, 0.0};
+        run_segments(sq, &src, s, n, &tr);
+        for (int b = 0; b < 6; b++) {
+            assert(open_seconds(&tr, 4 + (2 * b), 0.0) > 0.12);
+        }
+        assert(open_seconds(&tr, n - 1, 0.1) < 1e-9);
+        free(sq);
     }
-    s[n++] = (seg){PCM_TAP_NOISE, 1.0, 0.0, 0.0, 0.0};
-    run_segments(sq, &src, s, n, &tr);
-    for (int b = 0; b < 6; b++) {
-        assert(open_seconds(&tr, 4 + (2 * b), 0.0) > 0.12);
-    }
-    assert(open_seconds(&tr, n - 1, 0.1) < 1e-9);
-    free(sq);
 }
 
 /* The bounds on a contested step (issue #628). Carriers 2 dB over noise turned down 20 dB, at noise+10: each refutes
    the step, and the noise after it shares the carrier's stretch (under the 4 dB a new one needs), so only 0.8 s of it
    in a row takes the step back: it is open under the gate's 1 s bound after every carrier, not seconds after the
-   later ones. And noise whose own spectrum changes after a contested step (an 800 Hz high-pass switched on) reads
-   quieter under the voice band, not louder, so it refutes nothing and stays shut. */
+   later ones. And noise whose own spectrum changes after a contested step (an 800 Hz high-pass, or 25 us de-emphasis,
+   switched on) changes steadily, with no modulation, so it refutes nothing and stays shut. */
 static void
 test_contested_step_bounds(void) {
     {
@@ -893,7 +896,7 @@ test_contested_step_bounds(void) {
         }
         free(sq);
     }
-    {
+    for (int f = 0; f < 2; f++) {
         dsd_pcm_noise_squelch* sq = new_squelch(48000, 10);
         static pcm_tap src;
         static trace tr;
@@ -906,8 +909,12 @@ test_contested_step_bounds(void) {
             {PCM_TAP_NOISE, 2.0, 0.0, 0.0, -20.0},
         };
         run_segments(sq, &src, s, 4, &tr);
-        assert(open_seconds(&tr, 2, 0.0) > 2.0 && open_seconds(&tr, 3, 0.5) < 1e-9);
-        pcm_tap_butter_hp(&src, 800.0);
+        assert(open_seconds(&tr, 2, 0.0) > 2.0 && open_seconds(&tr, 3, 1.0) < 1e-9);
+        if (f == 0) {
+            pcm_tap_butter_hp(&src, 800.0);
+        } else {
+            src.pole = exp(-1.0 / ((double)PCM_TAP_RATE * 25e-6));
+        }
         const seg after = {PCM_TAP_NOISE, 8.0, 0.0, 0.0, -20.0};
         g_seg_base = 4;
         run_segments(sq, &src, &after, 1, &tr);
@@ -919,11 +926,12 @@ test_contested_step_bounds(void) {
 
 /* A refuted step taken back (issue #628). Weak traffic -- 6 dB CNR under noise+10 -- on noise the source turned down
    20 dB refutes the step just as a stronger carrier over relayed noise taken for noise does, and nothing tells the two
-   apart: it plays. The noise after each transmission matches the refuted step and takes it back within half a second;
-   before, it stayed open until the step was gathered afresh. The same after the source's audio low-pass is switched on
-   (a 3 kHz Butterworth: the stale rule takes the filtered noise as the reference) and speech under noise+20 refutes
-   that, where the noise after each transmission stayed open until the stale rule took it again 5 s later. And across
-   volume changes in both directions between weak transmissions. */
+   apart: it plays. The noise after each transmission steps the reference down again within about half a second, as
+   noise turned down always does. After the source's audio low-pass is switched on (a 3 kHz Butterworth: the stale
+   rule takes the filtered noise as the reference) and speech under noise+20 refutes that, nothing steps down again:
+   the noise after each transmission stayed open until the stale rule took it again 5 s later, and now matches the
+   refuted step and takes it back within a second. And across volume changes in both directions between weak
+   transmissions. */
 static void
 test_refuted_step_taken_back(void) {
     {
@@ -939,7 +947,7 @@ test_refuted_step_taken_back(void) {
         };
         run_segments(sq, &src, s, 6, &tr);
         assert(open_seconds(&tr, 2, 0.0) > 2.0 && open_seconds(&tr, 4, 0.0) > 2.0);
-        assert(open_seconds(&tr, 3, 0.4) < 1e-9 && open_seconds(&tr, 5, 0.4) < 1e-9);
+        assert(open_seconds(&tr, 3, 0.7) < 1e-9 && open_seconds(&tr, 5, 0.7) < 1e-9);
         free(sq);
     }
     {
@@ -962,7 +970,8 @@ test_refuted_step_taken_back(void) {
         g_seg_base = 0;
         assert(open_seconds(&tr, 1, 0.0) < 5.3);
         assert(open_seconds(&tr, 2, 0.0) > 2.0 && open_seconds(&tr, 4, 0.0) > 2.0);
-        assert(open_seconds(&tr, 3, 0.5) < 1e-9 && open_seconds(&tr, 5, 0.5) < 1e-9);
+        assert(open_seconds(&tr, 3, 0.0) < 1.0 && open_seconds(&tr, 5, 0.0) < 1.0);
+        assert(open_seconds(&tr, 3, 1.0) < 1e-9 && open_seconds(&tr, 5, 1.0) < 1e-9);
         free(sq);
     }
     {
@@ -981,7 +990,7 @@ test_refuted_step_taken_back(void) {
         run_segments(sq, &src, s, 10, &tr);
         static const int after_traffic[] = {3, 6, 9};
         for (int i = 0; i < 3; i++) {
-            assert(open_seconds(&tr, after_traffic[i], 0.5) < 1e-9);
+            assert(open_seconds(&tr, after_traffic[i], 0.7) < 1e-9);
         }
         static const int after_volume[] = {1, 4, 7};
         for (int i = 0; i < 3; i++) {

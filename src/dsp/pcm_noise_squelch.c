@@ -62,9 +62,8 @@ enum {
     PNSQ_STALE_WINDOWS = 250,     /* 5 s */
     PNSQ_REFUTE_RUNS = 10,        /* a step is refuted by PNSQ_REFUTE_MIN of the last PNSQ_REFUTE_RUNS runs at it */
     PNSQ_REFUTE_MIN = 8,
-    PNSQ_REFUTED_HOLD_WINDOWS = 30,      /* 0.6 s: the evidence a stretch needs to step down again after a refutation */
-    PNSQ_BACK_HOLD_WINDOWS = 10,         /* 0.2 s: the evidence noise at a refuted step's level needs to take it back */
-    PNSQ_BACK_HOLD_REFUTED_WINDOWS = 40, /* 0.8 s in a row, in the stretch whose carrier refuted it */
+    PNSQ_REFUTED_HOLD_WINDOWS = 30, /* 0.6 s: the evidence a stretch needs to step down again after a refutation */
+    PNSQ_BACK_HOLD_WINDOWS = 40,    /* 0.8 s in a row: noise at a refuted step's level takes it back */
 };
 
 _Static_assert(PNSQ_REFUTE_RUNS < 32, "the refutation runs fit an unsigned int");
@@ -712,11 +711,11 @@ pnsq_bits(unsigned int v) {
    relaying noise that matched it carries speech), or more than k_steady_db above it without noise's spectrum (noise is
    the ceiling: no carrier reads louder than noise at its gain, and noise turned back up keeps its spectrum), or, for a
    step held over a proven reference (one a refutation brought back: the step is contested), with a voice band louder
-   than noise's by more than the shape tolerances alone (a carrier that relayed noise, carrying speech more lightly than
-   before, after its noise took the step again; noise whose own spectrum changed, or a dead carrier, reads quieter
-   there, not louder). A carrier N dB under it refutes nothing. The reference from before the first held step
-   comes back, proven, the step is kept in case noise at its level takes it back (pnsq_take_back()), and the stretch
-   steps down again only on a longer hold of evidence (pnsq_lowered()). */
+   than noise's by more than the shape tolerances alone and not steady (a carrier that relayed noise, carrying speech
+   more lightly than before, after its noise took the step again; a filter switched on in noise changes its spectrum
+   steadily, and a dead carrier reads quieter there). A carrier N dB under it refutes nothing. The reference from before
+   the first held step comes back, proven, the step is kept in case noise at its level takes it back
+   (pnsq_take_back()), and the stretch steps down again only on a longer hold of evidence (pnsq_lowered()). */
 static void
 pnsq_refute(dsd_pcm_noise_squelch* t, const pnsq_run* r, pnsq_shape* sh) {
     if (!t->prior.valid) {
@@ -726,7 +725,8 @@ pnsq_refute(dsd_pcm_noise_squelch* t, const pnsq_run* r, pnsq_shape* sh) {
     if (r->sa <= ra - t->open_db) {
         return;
     }
-    const int evidence = sh->speech || (t->prior.proven && sh->louder) || (!sh->shaped && r->sa > ra + k_steady_db);
+    const int evidence =
+        sh->speech || (t->prior.proven && sh->louder && !r->v_steady) || (!sh->shaped && r->sa > ra + k_steady_db);
     const unsigned int mask = (1U << PNSQ_REFUTE_RUNS) - 1U;
     t->st_ring = ((t->st_ring << 1) | (evidence ? 1U : 0U)) & mask;
     t->st_ring_n += t->st_ring_n < PNSQ_REFUTE_RUNS ? 1 : 0;
@@ -753,11 +753,10 @@ pnsq_refute(dsd_pcm_noise_squelch* t, const pnsq_run* r, pnsq_shape* sh) {
 /* A refuted step taken back: the refuting carrier was weak traffic over noise genuinely turned down (or speech over a
    source the stale rule rightly took), and noise comes back at the step's level after it. Runs in a row within
    k_steady_db of it, without modulation against it, gather evidence; once PNSQ_BACK_HOLD_WINDOWS of them hold most with
-   its spectrum and the voice band steady, it is the reference again, and the one it replaces (proven) is held as the
-   step's prior. In the stretch whose carrier refuted it, the hold is PNSQ_BACK_HOLD_REFUTED_WINDOWS: the carrier's own
-   shorter pauses (a relay's noise between its speech, a dead carrier between its bursts) leave the step refuted, while
-   noise after a weak carrier, sharing its stretch, takes the step back within the gate's 1 s bound and ends the
-   stretch's refutations and open time. */
+   its spectrum and the voice band steady, it is the reference again, the one it replaces (proven) is held as the
+   step's prior, and the stretch's refutations and open time end. A carrier's own shorter pauses (a relay's noise
+   between its speech, a dead carrier between its bursts) leave the step refuted, whatever stretch a fade puts them in,
+   while the noise after the carrier takes it back within the gate's 1 s bound. */
 static void
 pnsq_take_back(dsd_pcm_noise_squelch* t, const pnsq_run* r, pnsq_shape* sh) {
     if (!t->alt.valid) {
@@ -775,8 +774,7 @@ pnsq_take_back(dsd_pcm_noise_squelch* t, const pnsq_run* r, pnsq_shape* sh) {
     }
     t->st_bn++;
     t->st_bs += (ash.shaped && r->v_steady) ? 1 : 0;
-    const int hold = t->st_refutes > 0 ? PNSQ_BACK_HOLD_REFUTED_WINDOWS : PNSQ_BACK_HOLD_WINDOWS;
-    if (t->st_bn < hold || (double)t->st_bs < k_gain_steady_fraction * (double)t->st_bn) {
+    if (t->st_bn < PNSQ_BACK_HOLD_WINDOWS || (double)t->st_bs < k_gain_steady_fraction * (double)t->st_bn) {
         return;
     }
     dsd_pcm_noise_squelch_held restored;

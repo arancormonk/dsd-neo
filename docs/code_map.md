@@ -1983,11 +1983,11 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   refuted (eight of ten runs less than N dB under the stepped reference with a voice band clearly louder than
   noise's, or more than 1.5 dB above it without noise's spectrum, bring that reference back: a carrier relaying noise,
   then speech, or weak traffic on noise genuinely turned down; the stretch then steps down again only on 0.6 s of clean
-  evidence, doubled per refutation), the refuted step kept too (cached) until 0.2 s in a row of noise at its level with
-  its spectrum takes it back (0.8 s in the stretch that refuted it), a step held over a reference a refutation brought
-  back contested (a voice band louder than noise's by the shape tolerances alone refutes it), tracked with a 1 s time
-  constant, learned again, as a held step, after 5 s open on one stretch with a steady voice band, and
-  NO_BAND on 1 s of spectral evidence that nothing is above voice. Up to eight references are cached by
+  evidence, doubled per refutation), the refuted step kept too (cached) until 0.8 s in a row of noise at its level with
+  its spectrum takes it back, a step held over a reference a refutation brought back contested (a moving voice band
+  louder than noise's by the shape tolerances alone refutes it), tracked with a 1 s time constant, learned again, as a
+  held step, after 5 s open on one stretch with a steady voice band, and NO_BAND on 1 s of spectral evidence that
+  nothing is above voice. Up to eight references are cached by
   `dsd_pcm_noise_squelch_key` (source generation and input type, native rate, input volume, rigctl peer passband; an
   unknown passband is never cached). Q = max(Q_sum, Q_max - 6 dB) over the band-passes that take part; the gate opens at
   N and closes under max(N - 3, 1.5) dB, one flag per sample, bit-identical whatever the block cuts. The decoder runs it
