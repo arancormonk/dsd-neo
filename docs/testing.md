@@ -1505,45 +1505,49 @@ Rulings on the cases the gate left open:
 10. A carrier that relays noise (a repeater passing a weak user's hiss: 300-3000 Hz noise on the carrier) at just the
     level where it matches the source's own noise in every part of the spectrum is noise to every measure the squelch
     has, and can step the reference down, muting that noise. The step is held, not trusted: the user's speech on the
-    same carrier, wherever it sits under the gate's threshold against the stepped reference (less than N dB under it,
-    so a carrier that strengthens a little is caught too), shows a carrier there (eight of ten runs with the voice band
+    same carrier, wherever it sits under the gate's threshold against the stepped reference (less than N dB under it, so
+    a carrier that strengthens a little is caught too), shows a carrier there (eight of ten runs with the voice band
     louder than noise's by twice the tolerances, or more than 1.5 dB above the reference without noise's spectrum), and
-    the reference from before the first held step comes back, through a pause and a passband switch (the cache keeps
-    the held step) too. That threshold is read on band power, not the gate's state: under a source AGC a carrier fades
-    toward the reference, and counting only while the gate is shut (its hysteresis included) refuted too late and
-    muted up to 0.44 s more of its speech. The stretch steps down again only after 0.6 s of clean evidence, doubled at
-    each refutation. Weak traffic on noise genuinely
-    turned down (6 dB CNR at `noise+10` after a 20 dB step) shows the same: nothing tells a weak carrier over lower
-    noise from a stronger one over relayed noise taken for noise, and refuting only at the stepped reference itself
-    muted the whole of a carrier 2 dB stronger than the relay before it. So the refuted step is kept as well, and noise
-    that comes back at its level with its spectrum takes it back: 0.8 s of runs in a row, three in four with its
-    spectrum and the voice band steady, modulation against it starting over, and a take-back ends the stretch's
+    the reference from before the first held step comes back, through a pause and a passband switch (the cache keeps the
+    held step) too. That threshold is read on band power, not the gate's state: under a source AGC a carrier fades
+    toward the reference, and counting only while the gate is shut (its hysteresis included) refuted too late and muted
+    up to 0.44 s more of its speech. The stretch steps down again only after 0.6 s of clean evidence, doubled at each
+    refutation. Weak traffic on noise genuinely turned down (6 dB CNR at `noise+10` after a 20 dB step) shows the same:
+    nothing tells a weak carrier over lower noise from a stronger one over relayed noise taken for noise, and refuting
+    only at the stepped reference itself muted the whole of a carrier 2 dB stronger than the relay before it. So the
+    refuted step is kept as well, and noise that comes back with its spectrum takes it back: 0.8 s of runs in a row at
+    one level (within 1.5 dB of their mean), three in four with its spectrum and the voice band steady, modulation
+    against it starting over; it comes back moved by their mean step, so a source whose volume also moved meanwhile is
+    no exception (a 2 dB drop had left that noise open the stale rule's 5 s), and a take-back ends the stretch's
     refutations. Weak traffic plays, and the noise after it steps the reference down again in about 0.5 s, as noise
     turned down always does. Where nothing steps down again the take-back closes the noise: after the stale rule took a
     switched-on audio low-pass, the noise after each transmission had stayed open until that rule took it again 5 s
     later, and now closes after 0.9 s. A carrier's own shorter pauses (a relay's noise between its speech, a dead
     carrier between its bursts) take nothing back. A 0.2 s take-back muted the first 160 ms burst on a dead carrier the
-    stale rule took; a longer one only in the stretch whose carrier refuted the step was lost when the bursts faded
-    6 dB into stretches of their own, muting the rest; and forbidding a take-back in that stretch left the noise after
+    stale rule took; a longer one only in the stretch whose carrier refuted the step was lost when the bursts faded 6 dB
+    into stretches of their own, muting the rest; and forbidding a take-back in that stretch left the noise after
     carriers 2 dB over noise, which shares their stretch (under the 4 dB a new one needs), open 2.5 and 4.8 s after the
-    third and fourth. With 0.8 s everywhere that noise is open 0.64-0.86 s, and every burst plays, faded or not. The
-    relay's later pauses step down again only after 0.6 s of them. Its next speech may be lighter (500 Hz deviation
-    after 1 kHz), and against the relay's own noise in the voice band such speech reads clearly louder in only some of
-    its runs, too few to refute the step again: a whole transmission was muted (none of 3 s, 6.9 of 12 s). So a
-    reference a refutation brought back is proven, and a step held over it, stepped down again or taken back, is
-    contested: eight of ten runs under the threshold whose voice band is louder than noise's by more than the shape
-    tolerances alone (not twice them), and moving, refute it, and that speech plays (2.8 of 3 s, 11.8 of 12 s, and
-    2.8 s after a gap). Counting every run without noise's spectrum instead let noise whose own spectrum changed (an
-    800 Hz high-pass switched on) refute a contested step and play 4.8 s, and counting a voice band only louder let
-    25 us de-emphasis switched on do the same (5.0 s). A filter changes the spectrum steadily: with the voice band
-    required to move, both stay shut, as does a dead carrier. A filter that quiets the band by N dB on its own (75 us
-    de-emphasis, a 3 kHz low-pass, switched on) opens for the stale rule's 5 s, contested or not (ruling 4). A weak
-    carrier with no louder voice (dead, or speech at 0 dB CNR) refutes nothing. The gate bounds the speech after
-    relayed noise to 15% dropout (`relay-speech`), and the harder cases in `DSP_PCM_NOISE_SQUELCH` lose 0.2-0.6 s of
-    it. No spectral test told the two apart: the band under voice (100-350 Hz) reads -6.4 to +2.9 dB against noise's
-    move for a relay without CTCSS, depending on the CNR, a CTCSS tone fills it, and hum after the volume lifts it; the
-    window-to-window correlation of the voice and above-band powers reads about the same for both (-0.2 for noise, 0
-    for a relay).
+    third and fourth. With 0.8 s everywhere that noise is open 0.64-0.86 s, and every burst plays, faded or not, while
+    the pauses are shorter than that; a pause of 0.8 s or more takes the step back as noise would, and the speech after
+    it loses the 0.2 s a refutation needs (all of a 160 ms burst). The relay's later pauses step down again only after
+    0.6 s of them. Its next speech may be lighter (500 Hz deviation after 1 kHz), and against the relay's own noise in
+    the voice band such speech reads clearly louder in only some of its runs, too few to refute the step again: a whole
+    transmission was muted (none of 3 s, 6.9 of 12 s). So a reference a refutation brought back is proven, and a step
+    held over it, stepped down again or taken back, is contested: eight of ten runs under the threshold whose voice band
+    is louder than noise's by more than the shape tolerances alone (not twice them), and moves against the band above
+    it, refute it, and that speech plays (2.8 of 3 s, 11.8 of 12 s, and 2.8 s after a gap). Counting every run without
+    noise's spectrum instead let noise whose own spectrum changed (an 800 Hz high-pass switched on) refute a contested
+    step and play 4.8 s; counting a voice band only louder let 25 us de-emphasis switched on do the same (5.0 s); and
+    counting a voice band that moves on its own let that de-emphasized noise under a volume pumping 2 dB at 10 Hz play
+    12.3 of 16 s. A filter changes the spectrum steadily, and a moving volume moves the voice band and the band above it
+    alike: against the band above it, all three stay shut, as does a dead carrier. A filter that quiets the band by N dB
+    on its own (75 us de-emphasis, a 3 kHz low-pass, switched on) opens for the stale rule's 5 s, contested or not
+    (ruling 4). A weak carrier with no louder voice (dead, or speech at 0 dB CNR) refutes nothing. The gate bounds the
+    speech after relayed noise to 15% dropout (`relay-speech`), and the harder cases in `DSP_PCM_NOISE_SQUELCH` lose
+    0.2-0.6 s of it. No spectral test told the two apart: the band under voice (100-350 Hz) reads -6.4 to +2.9 dB
+    against noise's move for a relay without CTCSS, depending on the CNR, a CTCSS tone fills it, and hum after the
+    volume lifts it; the window-to-window correlation of the voice and above-band powers reads about the same for both
+    (-0.2 for noise, 0 for a relay).
 
 Live check (an RTL-SDR running `rtl_fm -M fm` with no squelch, de-emphasis or low-pass, recorded at 48, 24 and
 12 kHz): 8 s of an empty channel, 8 s of a NOAA weather radio broadcast and 8 s of the empty channel again, fed to
@@ -1568,13 +1572,13 @@ model by two suites:
   a passband switched away and back, across a gap, and on a carrier that strengthens; a dead carrier the stale rule
   took, whose speech brings the reference back; weak carriers that refute no genuine step; weak traffic that refutes
   one (after a 20 dB volume step, across volume changes both ways, and speech after a switched-on 3 kHz Butterworth
-  low-pass the stale rule took), whose noise after takes the step back; lighter speech after a relay stepped down
-  again (3 and 12 s, and across a gap), and 160 ms bursts on a dead carrier the stale rule took, which refute a
-  contested step, faded 6 dB or not; carriers 2 dB over noise turned down, whose noise after takes the step back
-  within 1 s, and an 800 Hz high-pass or 25 us de-emphasis switched on after a contested step, which refutes nothing;
-  modulation that steps up under a carrier (a 4.5 kHz line after each pause), bursts separated by exact zeros,
-  starting on a carrier, a low-passed source reading no band, exact zeros, the per-passband cache and the stale rule,
-  and block-cut bit identity.
+  low-pass the stale rule took, with the volume 2 dB lower meanwhile or not), whose noise after takes the step back;
+  lighter speech after a relay stepped down again (3 and 12 s, and across a gap), and 160 ms bursts on a dead carrier
+  the stale rule took, which refute a contested step, faded 6 dB or not; carriers 2 dB over noise turned down, whose
+  noise after takes the step back within 1 s, and an 800 Hz high-pass or 25 us de-emphasis switched on after a contested
+  step, under a pumping volume or not, which refutes nothing; modulation that steps up under a carrier (a 4.5 kHz line
+  after each pause), bursts separated by exact zeros, starting on a carrier, a low-passed source reading no band, exact
+  zeros, the per-passband cache and the stale rule, and block-cut bit identity.
   The pause, unkey, edge-spur, small-step, relayed-noise, held-step, weak-carrier, take-back, contested-step and
   gain-step cases, and the weakening carrier at 100 Hz deviation, each fail on the learner as it stood before the rule
   they pin.

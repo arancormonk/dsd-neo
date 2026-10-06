@@ -59,16 +59,17 @@
  *    stretch then steps down again only on 0.6 s of evidence with no such modulation in it, doubled for each further
  *    refutation in the stretch. While a step is held, only a stretch with noise's spectrum replaces the reference or
  *    is tracked.
- *  - The step refuted is kept too (and cached), until a new reference replaces it: 0.8 s of runs in a row within
- *    1.5 dB of its level, three in four with its spectrum against it and the voice band steady, take it back
- *    (modulation against it starts over), the reference it replaces is held as its prior, and the stretch's
- *    refutations end. A carrier's own shorter pauses leave the step refuted. Weak traffic over noise genuinely turned
+ *  - The step refuted is kept too (and cached), until a new reference replaces it: 0.8 s of runs in a row at one
+ *    level (within 1.5 dB of their mean), three in four with its spectrum against it and the voice band steady, take
+ *    it back, moved by their mean step (the source's volume may have moved too; modulation against it starts over),
+ *    the reference it replaces is held as its prior, and the stretch's refutations end. A carrier's own shorter pauses leave the step refuted. Weak traffic over noise genuinely turned
  *    down refutes a step just as a stronger carrier over relayed noise taken for noise does, and nothing tells the two
  *    apart: the traffic plays, and the noise after it takes the step back within 1 s.
  *  - A reference a refutation brought back is proven, and a step held over it (taken back, or stepped down again) is
  *    contested: eight of ten runs less than N dB under it with a voice band louder than noise's by more than the
- *    shape tolerances alone, and not steady, refute it too (a carrier that relayed noise, carrying speech more lightly
- *    than before). A filter switched on in noise changes its spectrum steadily, and refutes nothing.
+ *    shape tolerances alone, and moving against the band above it, refute it too (a carrier that relayed noise,
+ *    carrying speech more lightly than before). A filter switched on in noise changes its spectrum steadily, and a
+ *    gain that moves moves both bands alike: neither refutes anything.
  *  - A steady run at or above the reference less 1.5 dB tracks it with a 1 s time constant (slow drift).
  *  - Stale quieting: the gate open for 5 s on one stretch whose voice band held stationary in 90 % of its windows reads
  *    a level that dropped (a source's volume lowered out of clipping, its audio low-pass switched on), not speech: the
@@ -245,7 +246,8 @@ typedef struct {
        pending gain step (its runs, those with noise's spectrum and their step sum), the gate's open windows on it, the
        evidence for noise at a lower gain (its level, runs, those with noise's spectrum and their step sum), the last
        runs at the stepped reference (a bit each, set for a carrier's), the steps refuted in the stretch, and the runs
-       at a refuted step's level (those with its spectrum). */
+       in a row at one level against a refuted step (their count, those with its spectrum, the sum of their steps, and
+       the sum of their levels). */
     int have_stretch;
     double st_a_db;
     double st_v_sum;
@@ -268,6 +270,8 @@ typedef struct {
     int st_refutes;
     int st_bn;
     int st_bs;
+    double st_bsum;
+    double st_blev;
     /* A new level being confirmed, no-band evidence and its exit. */
     int have_cand;
     double cand_a_db;

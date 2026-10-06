@@ -71,6 +71,10 @@ typedef struct {
     double high[5];
     double high_state[2];
     int high_on;
+    /* A volume that pumps by pump_db around the segment's gain at pump_hz (an AGC working on noise), 0: steady. */
+    double pump_db;
+    double pump_hz;
+    uint64_t pump_n;
 } pcm_tap;
 
 /* A biquad (b0, b1, b2, a1, a2) at @p f0_hz with quality @p q: a high-pass when @p high, else a low-pass. */
@@ -270,6 +274,9 @@ pcm_tap_next(pcm_tap* s, pcm_tap_kind kind, double cnr_db, double tone_hz, doubl
     const double raw = pcm_tap_raw(s, kind == PCM_TAP_ZERO ? PCM_TAP_NOISE : kind, cnr_db, tone_hz);
     if (kind == PCM_TAP_ZERO) {
         return 0.0f;
+    }
+    if (s->pump_db != 0.0) {
+        gain_db += s->pump_db * sin(2.0 * M_PI * s->pump_hz * (double)s->pump_n++ / (double)PCM_TAP_RATE);
     }
     double v = floor((raw * s->scale * pow(10.0, gain_db / 20.0)) + 0.5);
     if (v > 32767.0) {
