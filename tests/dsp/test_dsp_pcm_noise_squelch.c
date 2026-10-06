@@ -10,10 +10,10 @@
  * learning with the gate closed, noise that never opens it, carriers that open it and confirm the reference, quieting
  * that follows the CNR and not the level, gain steps (in noise, under a carrier, across a pause, at an unkey, with a
  * spur added after the volume, under the 4 dB a transition needs), carriers that are no gain step, a carrier relaying
- * noise that a step mistook and its speech refutes, starting on a carrier, a pcm_tap that low-passed its audio (no
- * band), rates with no room, digital silence, the per-passband cache, stale quieting, the threshold, and
- * flags that do not depend on how the samples are cut into blocks. --sweep runs strong modulation that must never
- * close the gate.
+ * noise that a step mistook and its speech refutes, weak traffic that refutes a genuine step and the noise after it
+ * that takes the step back, starting on a carrier, a pcm_tap that low-passed its audio (no band), rates with no room,
+ * digital silence, the per-passband cache, stale quieting, the threshold, and flags that do not depend on how the
+ * samples are cut into blocks. --sweep runs strong modulation that must never close the gate.
  */
 
 #include <assert.h>
@@ -652,11 +652,6 @@ test_small_volume_step(void) {
     }
 }
 
-/* A repeater relaying a weak user's noise (300-3000 Hz noise on the carrier) at the level where it matches the
-   source's own noise reads as noise turned down, and the reference steps down to it. The user's speech that follows on
-   the same carrier is no noise at that level: it refutes the step, the reference comes back, and the speech plays
-   after a fraction of a second. The carrier's next pause steps down again only after 0.6 s of it, which its next
-   speech refutes as quickly, and the noise after the carrier shuts. */
 /* Each segment of @p segs run on its own at a deviation of @p devs[k] (0: the source's), numbered by its index. */
 static void
 run_segments_at(dsd_pcm_noise_squelch* sq, pcm_tap* src, const seg* segs, const double* devs, int nsegs, trace* tr) {
@@ -779,8 +774,8 @@ test_modulation_refutes_wherever_shut(void) {
 }
 
 /* A weak carrier on noise the source turned down -- unmodulated, or speech at 0 dB CNR -- sits at the stepped
-   reference without showing modulation louder than noise's, so it refutes nothing, and the noise after it stays shut;
-   a step that was refuted would leave that noise open well past the gate's 1 s bound. */
+   reference without showing modulation louder than noise's, so it refutes nothing: it stays muted, and the noise after
+   it stays shut. */
 static void
 test_weak_carrier_keeps_a_step(void) {
     static const pcm_tap_kind kinds[] = {PCM_TAP_DEAD, PCM_TAP_SYLLABIC};
@@ -798,12 +793,92 @@ test_weak_carrier_keeps_a_step(void) {
         };
         run_segments(sq, &src, s, 4, &tr);
         assert(open_seconds(&tr, 1, 0.0) < 0.7);
+        assert(open_seconds(&tr, 2, 0.0) < 1e-9);
         assert(open_seconds(&tr, 3, 0.0) < 1.0);
         assert(open_seconds(&tr, 3, 1.0) < 1e-9);
         free(sq);
     }
 }
 
+/* A refuted step taken back (issue #628). Weak traffic -- 6 dB CNR under noise+10 -- on noise the source turned down
+   20 dB refutes the step just as a stronger carrier over relayed noise taken for noise does, and nothing tells the two
+   apart: it plays. The noise after each transmission matches the refuted step and takes it back within half a second;
+   before, it stayed open until the step was gathered afresh. The same after the source's audio low-pass is switched on
+   (a 3 kHz Butterworth: the stale rule takes the filtered noise as the reference) and speech under noise+20 refutes
+   that, where the noise after each transmission stayed open until the stale rule took it again 5 s later. And across
+   volume changes in both directions between weak transmissions. */
+static void
+test_refuted_step_taken_back(void) {
+    {
+        dsd_pcm_noise_squelch* sq = new_squelch(48000, 10);
+        static pcm_tap src;
+        static trace tr;
+        DSD_MEMSET(&tr, 0, sizeof tr);
+        pcm_tap_init(&src, 61U, 12500.0, 0.0, 0.0);
+        const seg s[] = {
+            {PCM_TAP_NOISE, 2.0, 0.0, 0.0, 0.0},         {PCM_TAP_NOISE, 2.0, 0.0, 0.0, -20.0},
+            {PCM_TAP_SYLLABIC, 3.0, 6.0, 1000.0, -20.0}, {PCM_TAP_NOISE, 3.0, 0.0, 0.0, -20.0},
+            {PCM_TAP_SYLLABIC, 3.0, 6.0, 1000.0, -20.0}, {PCM_TAP_NOISE, 3.0, 0.0, 0.0, -20.0},
+        };
+        run_segments(sq, &src, s, 6, &tr);
+        assert(open_seconds(&tr, 2, 0.0) > 2.0 && open_seconds(&tr, 4, 0.0) > 2.0);
+        assert(open_seconds(&tr, 3, 0.4) < 1e-9 && open_seconds(&tr, 5, 0.4) < 1e-9);
+        free(sq);
+    }
+    {
+        dsd_pcm_noise_squelch* sq = new_squelch(48000, 20);
+        static pcm_tap src;
+        static trace tr;
+        DSD_MEMSET(&tr, 0, sizeof tr);
+        pcm_tap_init(&src, 62U, 12500.0, 0.0, 0.0);
+        src.tone_dev_hz = 1000.0;
+        const seg before = {PCM_TAP_NOISE, 2.0, 0.0, 0.0, 0.0};
+        run_segments(sq, &src, &before, 1, &tr);
+        pcm_tap_butter_lp(&src, 3000.0);
+        const seg s[] = {
+            {PCM_TAP_NOISE, 14.0, 0.0, 0.0, 0.0}, {PCM_TAP_SYLLABIC, 3.0, 15.0, 1000.0, 0.0},
+            {PCM_TAP_NOISE, 3.0, 0.0, 0.0, 0.0},  {PCM_TAP_SYLLABIC, 3.0, 15.0, 1000.0, 0.0},
+            {PCM_TAP_NOISE, 3.0, 0.0, 0.0, 0.0},
+        };
+        g_seg_base = 1;
+        run_segments(sq, &src, s, 5, &tr);
+        g_seg_base = 0;
+        assert(open_seconds(&tr, 1, 0.0) < 5.3);
+        assert(open_seconds(&tr, 2, 0.0) > 2.0 && open_seconds(&tr, 4, 0.0) > 2.0);
+        assert(open_seconds(&tr, 3, 0.5) < 1e-9 && open_seconds(&tr, 5, 0.5) < 1e-9);
+        free(sq);
+    }
+    {
+        dsd_pcm_noise_squelch* sq = new_squelch(48000, 10);
+        static pcm_tap src;
+        static trace tr;
+        DSD_MEMSET(&tr, 0, sizeof tr);
+        pcm_tap_init(&src, 64U, 12500.0, 0.0, 0.0);
+        const seg s[] = {
+            {PCM_TAP_NOISE, 2.0, 0.0, 0.0, 0.0},         {PCM_TAP_NOISE, 2.0, 0.0, 0.0, -12.0},
+            {PCM_TAP_SYLLABIC, 2.0, 6.0, 1000.0, -12.0}, {PCM_TAP_NOISE, 2.0, 0.0, 0.0, -12.0},
+            {PCM_TAP_NOISE, 2.0, 0.0, 0.0, -24.0},       {PCM_TAP_SYLLABIC, 2.0, 6.0, 1000.0, -24.0},
+            {PCM_TAP_NOISE, 2.0, 0.0, 0.0, -24.0},       {PCM_TAP_NOISE, 2.0, 0.0, 0.0, -6.0},
+            {PCM_TAP_SYLLABIC, 2.0, 6.0, 1000.0, -6.0},  {PCM_TAP_NOISE, 2.0, 0.0, 0.0, -6.0},
+        };
+        run_segments(sq, &src, s, 10, &tr);
+        static const int after_traffic[] = {3, 6, 9};
+        for (int i = 0; i < 3; i++) {
+            assert(open_seconds(&tr, after_traffic[i], 0.5) < 1e-9);
+        }
+        static const int after_volume[] = {1, 4, 7};
+        for (int i = 0; i < 3; i++) {
+            assert(open_seconds(&tr, after_volume[i], 0.0) < 1.0 && open_seconds(&tr, after_volume[i], 1.0) < 1e-9);
+        }
+        free(sq);
+    }
+}
+
+/* A repeater relaying a weak user's noise (300-3000 Hz noise on the carrier) at the level where it matches the
+   source's own noise reads as noise turned down, and the reference steps down to it. The user's speech that follows on
+   the same carrier is no noise at that level: it refutes the step, the reference comes back, and the speech plays
+   after a fraction of a second. The carrier's next relayed noise matches the refuted step and takes it back after a
+   fraction of a second of its own, its next speech refutes that as quickly, and the noise after the carrier shuts. */
 static void
 test_relayed_noise_is_refuted(void) {
     for (int t = 0; t < 2; t++) {
@@ -822,7 +897,7 @@ test_relayed_noise_is_refuted(void) {
         };
         run_segments(sq, &src, s, 6, &tr);
         assert(open_seconds(&tr, 2, 0.0) > 3.0 - 0.75);
-        assert(open_seconds(&tr, 3, 0.0) > 0.6 - 0.021);
+        assert(open_seconds(&tr, 3, 0.0) > 0.2 && open_seconds(&tr, 3, 0.0) < 0.8);
         assert(open_seconds(&tr, 4, 0.0) > 2.0 - 0.5);
         assert(open_seconds(&tr, 5, 0.1) < 1e-9);
         free(sq);
@@ -1130,6 +1205,7 @@ main(int argc, char** argv) {
     test_volume_step_without_a_rise();
     test_small_volume_step();
     test_relayed_noise_is_refuted();
+    test_refuted_step_taken_back();
     test_held_steps_come_back();
     test_modulation_refutes_wherever_shut();
     test_weak_carrier_keeps_a_step();

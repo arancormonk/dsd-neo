@@ -63,6 +63,7 @@ enum {
     PNSQ_REFUTE_RUNS = 10,        /* a step is refuted by PNSQ_REFUTE_MIN of the last PNSQ_REFUTE_RUNS runs at it */
     PNSQ_REFUTE_MIN = 8,
     PNSQ_REFUTED_HOLD_WINDOWS = 30, /* 0.6 s: the evidence a stretch needs to step down again after a refutation */
+    PNSQ_BACK_HOLD_WINDOWS = 10,    /* 0.2 s: the evidence noise at a refuted step's level needs to take it back */
 };
 
 _Static_assert(PNSQ_REFUTE_RUNS < 32, "the refutation runs fit an unsigned int");
@@ -81,6 +82,14 @@ typedef struct {
     double svp[DSD_PCM_NOISE_SQUELCH_VOICE_PARTS]; /* its parts, dB */
     int v_steady;                                  /* the voice band stationary over the run */
 } pnsq_run;
+
+/* A reference a run is measured against: the current one, or a step a refutation undid. */
+typedef struct {
+    const double* ref;
+    const unsigned char* part; /* its participating band-passes */
+    double v_ref_db;
+    const double* vp_ref_db;
+} pnsq_against;
 
 /* A run against the reference. */
 typedef struct {
@@ -244,8 +253,9 @@ pnsq_take_reference(dsd_pcm_noise_squelch* t, const double* p, double v_db, cons
         t->vp_ref_db[j] = vp_db[j];
     }
     t->usable_hz = pnsq_participating(&t->plan, t->ref, t->v_ref_db, t->part);
-    /* A new reference ends any held step. */
-    t->prior_valid = 0;
+    /* A new reference ends any held step, and any refuted one. */
+    t->prior.valid = 0;
+    t->alt.valid = 0;
 }
 
 /* The run @p r becomes the reference. */
@@ -254,35 +264,22 @@ pnsq_take_run(dsd_pcm_noise_squelch* t, const pnsq_run* r) {
     pnsq_take_reference(t, r->sp, r->sv, r->svp);
 }
 
+/* The current reference, held in @p h. */
+static void
+pnsq_keep(const dsd_pcm_noise_squelch* t, dsd_pcm_noise_squelch_held* h) {
+    DSD_MEMCPY(h->ref, t->ref, sizeof(h->ref));
+    h->v_ref_db = t->v_ref_db;
+    DSD_MEMCPY(h->vp_ref_db, t->vp_ref_db, sizeof(h->vp_ref_db));
+    h->valid = 1;
+}
+
 /* Hold the reference as the one before a downward step, unless a step is held already (the reference from before the
    first stands). */
 static void
 pnsq_hold_prior(dsd_pcm_noise_squelch* t) {
-    if (t->prior_valid) {
-        return;
+    if (!t->prior.valid) {
+        pnsq_keep(t, &t->prior);
     }
-    DSD_MEMCPY(t->prior_ref, t->ref, sizeof(t->prior_ref));
-    t->prior_v_ref_db = t->v_ref_db;
-    DSD_MEMCPY(t->prior_vp_ref_db, t->vp_ref_db, sizeof(t->prior_vp_ref_db));
-    t->prior_valid = 1;
-}
-
-/* The held step (whether one is held, and the reference from before it) into @p e. */
-static void
-pnsq_save_prior(const dsd_pcm_noise_squelch* t, dsd_pcm_noise_squelch_cache_entry* e) {
-    e->prior_valid = t->prior_valid;
-    DSD_MEMCPY(e->prior_ref, t->prior_ref, sizeof(e->prior_ref));
-    e->prior_v_ref_db = t->prior_v_ref_db;
-    DSD_MEMCPY(e->prior_vp_ref_db, t->prior_vp_ref_db, sizeof(e->prior_vp_ref_db));
-}
-
-/* The held step @p e saved, back. */
-static void
-pnsq_load_prior(dsd_pcm_noise_squelch* t, const dsd_pcm_noise_squelch_cache_entry* e) {
-    t->prior_valid = e->prior_valid;
-    DSD_MEMCPY(t->prior_ref, e->prior_ref, sizeof(t->prior_ref));
-    t->prior_v_ref_db = e->prior_v_ref_db;
-    DSD_MEMCPY(t->prior_vp_ref_db, e->prior_vp_ref_db, sizeof(t->prior_vp_ref_db));
 }
 
 static void
@@ -375,7 +372,8 @@ dsd_pcm_noise_squelch_forget(dsd_pcm_noise_squelch* t) {
     t->v_ref_db = 0.0;
     DSD_MEMSET(t->vp_ref_db, 0, sizeof(t->vp_ref_db));
     t->usable_hz = 0.0;
-    t->prior_valid = 0;
+    t->prior.valid = 0;
+    t->alt.valid = 0;
     DSD_MEMSET(t->cache, 0, sizeof(t->cache));
     t->cache_clock = 0U;
     dsd_pcm_noise_squelch_restart(t);
@@ -446,7 +444,8 @@ pnsq_cache_store(dsd_pcm_noise_squelch* t, int32_t passband_hz) {
     DSD_MEMCPY(e->ref, t->ref, sizeof(e->ref));
     e->v_ref_db = t->v_ref_db;
     DSD_MEMCPY(e->vp_ref_db, t->vp_ref_db, sizeof(e->vp_ref_db));
-    pnsq_save_prior(t, e);
+    e->prior = t->prior;
+    e->alt = t->alt;
     e->stamp = ++t->cache_clock;
 }
 
@@ -477,15 +476,17 @@ dsd_pcm_noise_squelch_set_key(dsd_pcm_noise_squelch* t, const dsd_pcm_noise_sque
         e->stamp = ++t->cache_clock;
         if (pnsq_has_reference(t)) {
             pnsq_take_reference(t, e->ref, e->v_ref_db, e->vp_ref_db);
-            /* A step the entry held is still held, with the reference from before it. */
-            pnsq_load_prior(t, e);
+            /* A step the entry held is still held, with the reference from before it, as is a step refuted. */
+            t->prior = e->prior;
+            t->alt = e->alt;
         }
     } else if (t->plan.valid) {
         t->state = DSD_PCM_NOISE_SQUELCH_LEARNING;
         DSD_MEMSET(t->ref, 0, sizeof(t->ref));
         DSD_MEMSET(t->part, 0, sizeof(t->part));
         t->usable_hz = 0.0;
-        t->prior_valid = 0;
+        t->prior.valid = 0;
+        t->alt.valid = 0;
     }
     dsd_pcm_noise_squelch_restart(t);
 }
@@ -510,6 +511,8 @@ pnsq_new_stretch(dsd_pcm_noise_squelch* t, double sa, int pending) {
     t->st_ring = 0U;
     t->st_ring_n = 0;
     t->st_refutes = 0;
+    t->st_bn = 0;
+    t->st_bs = 0;
 }
 
 /* The tilt of the moves @p d at sub-bands @p x (n of them, n >= 3) end to end: a least-squares line across those within
@@ -545,18 +548,19 @@ pnsq_tilt(const double* d, const double* x, int n, double med, int k_count) {
     return sxx > 0.0 ? (sxy / sxx) * (double)(k_count - 1) : 0.0;
 }
 
-/* The sub-bands of @p sp against the reference, over its participating sub-bands: their median move (dB) in @p step,
-   and in @p level whether they tilt by at most k_shape_tilt_db end to end. Returns 0 with fewer than three taking
-   part. */
+/* The sub-bands of @p sp against the reference @p a, over its participating sub-bands: their median move (dB) in
+   @p step, and in @p level whether they tilt by at most k_shape_tilt_db end to end. Returns 0 with fewer than three
+   taking part. */
 static int
-pnsq_band_step(const dsd_pcm_noise_squelch* t, const double* sp, double* step, int* level) {
-    const int k_count = t->plan.sub_bands;
+pnsq_band_step(const dsd_pcm_noise_squelch_plan* plan, const pnsq_against* a, const double* sp, double* step,
+               int* level) {
+    const int k_count = plan->sub_bands;
     double d[DSD_PCM_NOISE_SQUELCH_MAX_SUB_BANDS];
     double x[DSD_PCM_NOISE_SQUELCH_MAX_SUB_BANDS];
     int n = 0;
     for (int k = 0; k < k_count; k++) {
-        if (t->part[k]) {
-            d[n] = pnsq_db(sp[k]) - pnsq_db(t->ref[k]);
+        if (a->part[k]) {
+            d[n] = pnsq_db(sp[k]) - pnsq_db(a->ref[k]);
             x[n] = (double)k;
             n++;
         }
@@ -569,26 +573,36 @@ pnsq_band_step(const dsd_pcm_noise_squelch* t, const double* sp, double* step, i
     return 1;
 }
 
-/* The run @p r against the reference: noise's spectrum (the voice band and each of its parts moved as far as the band,
-   whose sub-bands do not tilt), and a voice band clearly louder than noise's (modulation; a carrier's own noise reads
-   lower). */
+/* The run @p r against the reference @p a: noise's spectrum (the voice band and each of its parts moved as far as the
+   band, whose sub-bands do not tilt), and a voice band clearly louder than noise's (modulation; a carrier's own noise
+   reads lower). */
 static void
-pnsq_shape_of(const dsd_pcm_noise_squelch* t, const pnsq_run* r, pnsq_shape* out) {
+pnsq_shape_against(const dsd_pcm_noise_squelch_plan* plan, const pnsq_against* a, const pnsq_run* r, pnsq_shape* out) {
     DSD_MEMSET(out, 0, sizeof(*out));
     int level = 0;
-    if (!pnsq_has_reference(t) || !pnsq_band_step(t, r->sp, &out->step, &level)) {
+    if (!pnsq_band_step(plan, a, r->sp, &out->step, &level)) {
         return;
     }
-    const double dv = (r->sv - t->v_ref_db) - out->step;
+    const double dv = (r->sv - a->v_ref_db) - out->step;
     double dp_abs = 0.0;
     double dp_up = -HUGE_VAL;
     for (int j = 0; j < DSD_PCM_NOISE_SQUELCH_VOICE_PARTS; j++) {
-        const double e = (r->svp[j] - t->vp_ref_db[j]) - out->step;
+        const double e = (r->svp[j] - a->vp_ref_db[j]) - out->step;
         dp_abs = fabs(e) > dp_abs ? fabs(e) : dp_abs;
         dp_up = e > dp_up ? e : dp_up;
     }
     out->shaped = level && fabs(dv) <= k_shape_tol_db && dp_abs <= k_shape_part_tol_db;
     out->speech = dv > k_refute_factor * k_shape_tol_db || dp_up > k_refute_factor * k_shape_part_tol_db;
+}
+
+/* The run @p r against the reference. */
+static void
+pnsq_shape_of(const dsd_pcm_noise_squelch* t, const pnsq_run* r, pnsq_shape* out) {
+    DSD_MEMSET(out, 0, sizeof(*out));
+    if (pnsq_has_reference(t)) {
+        const pnsq_against a = {t->ref, t->part, t->v_ref_db, t->vp_ref_db};
+        pnsq_shape_against(&t->plan, &a, r, out);
+    }
 }
 
 /* A transition from the current stretch to the run @p r (@p sh against the reference): whether it is a pending gain
@@ -599,7 +613,7 @@ pnsq_transition_from(dsd_pcm_noise_squelch* t, const pnsq_run* r, const pnsq_sha
     const double dv = r->sv - pnsq_db(t->st_v_sum / (double)t->st_n);
     const int gain_like = fabs(da - dv) <= k_gain_tol_db;
     const int at_ref = r->sa >= pnsq_total_db(&t->plan, t->ref) - k_step_db;
-    if (da > 0.0 && at_ref && (!t->prior_valid || sh->shaped)) {
+    if (da > 0.0 && at_ref && (!t->prior.valid || sh->shaped)) {
         /* The band got louder, up at the reference: that side is noise. A shape change (a carrier dropped) confirms
            the reference. While a downward step is held, only with noise's spectrum: a carrier there does not replace
            the reference, it refutes the step (pnsq_refute()). */
@@ -635,7 +649,7 @@ pnsq_transition(dsd_pcm_noise_squelch* t, const pnsq_run* r, const pnsq_shape* s
     } else if (!t->have_stretch) {
         /* A first stretch after a restart louder than the reference is noise; while a downward step is held, only with
            noise's spectrum (a carrier there refutes the step). */
-        if (r->sa > pnsq_total_db(&t->plan, t->ref) + k_step_db && (!t->prior_valid || sh->shaped)) {
+        if (r->sa > pnsq_total_db(&t->plan, t->ref) + k_step_db && (!t->prior.valid || sh->shaped)) {
             pnsq_take_run(t, r);
         }
     } else {
@@ -659,10 +673,11 @@ pnsq_rescale(dsd_pcm_noise_squelch* t, double step_db) {
 }
 
 /* A downward step of @p step_db: the reference it replaces is held (the one from before the first, on a step already
-   held), in case a carrier at the new one refutes it. */
+   held), in case a carrier at the new one refutes it; a step refuted before is dropped. */
 static void
 pnsq_step_down(dsd_pcm_noise_squelch* t, double step_db) {
     pnsq_hold_prior(t);
+    t->alt.valid = 0;
     pnsq_rescale(t, step_db);
     t->st_at_ref = 1;
     t->st_ring = 0U;
@@ -679,15 +694,18 @@ pnsq_bits(unsigned int v) {
     return n;
 }
 
-/* A held step is refuted by a carrier the gate keeps shut against the stepped reference (a run less than N dB under
-   it): PNSQ_REFUTE_MIN of the last PNSQ_REFUTE_RUNS such runs with a voice band clearly louder than noise's (noise
-   turned down keeps noise's; a carrier relaying noise that matched it carries speech), or more than k_steady_db above
-   it without noise's spectrum (noise is the ceiling: no carrier reads louder than noise at its gain, and noise turned
-   back up keeps its spectrum). A carrier strong enough to open the gate refutes nothing. The reference from before the
-   first held step comes back, and the stretch steps down again only on a longer hold of evidence (pnsq_lowered()). */
+/* A held step is refuted by a carrier under the gate's threshold against the stepped reference (a run less than N dB
+   under it: every run the gate keeps shut, and those its hysteresis still holds open, so a carrier fading toward the
+   reference -- under a source's AGC, say -- refutes the step before the gate shuts on it): PNSQ_REFUTE_MIN of the last
+   PNSQ_REFUTE_RUNS such runs with a voice band clearly louder than noise's (noise turned down keeps noise's; a carrier
+   relaying noise that matched it carries speech), or more than k_steady_db above it without noise's spectrum (noise is
+   the ceiling: no carrier reads louder than noise at its gain, and noise turned back up keeps its spectrum). A carrier
+   N dB under it refutes nothing. The reference from before the first held step comes back, the step is kept in case
+   noise at its level takes it back (pnsq_take_back()), and the stretch steps down again only on a longer hold of
+   evidence (pnsq_lowered()). */
 static void
 pnsq_refute(dsd_pcm_noise_squelch* t, const pnsq_run* r, pnsq_shape* sh) {
-    if (!t->prior_valid) {
+    if (!t->prior.valid) {
         return;
     }
     const double ra = pnsq_total_db(&t->plan, t->ref);
@@ -701,15 +719,73 @@ pnsq_refute(dsd_pcm_noise_squelch* t, const pnsq_run* r, pnsq_shape* sh) {
     if (t->st_ring_n < PNSQ_REFUTE_RUNS || pnsq_bits(t->st_ring) < PNSQ_REFUTE_MIN) {
         return;
     }
-    pnsq_take_reference(t, t->prior_ref, t->prior_v_ref_db, t->prior_vp_ref_db);
+    dsd_pcm_noise_squelch_held undone;
+    pnsq_keep(t, &undone);
+    pnsq_take_reference(t, t->prior.ref, t->prior.v_ref_db, t->prior.vp_ref_db);
+    t->alt = undone;
     t->st_refutes++;
     t->st_ring = 0U;
     t->st_ring_n = 0;
     t->st_pending = 0;
     t->st_acc = 0;
+    t->st_bn = 0;
+    t->st_bs = 0;
     t->st_at_ref = r->sa >= pnsq_total_db(&t->plan, t->ref) - k_step_db;
     sh->shaped = 0;
     sh->speech = 1;
+}
+
+/* The runs of evidence taking a refuted step back needs: PNSQ_BACK_HOLD_WINDOWS, doubled for each refutation in the
+   stretch (three times at most). */
+static int
+pnsq_back_hold(const dsd_pcm_noise_squelch* t) {
+    int hold = PNSQ_BACK_HOLD_WINDOWS;
+    for (int i = 0; i < t->st_refutes && i < 3; i++) {
+        hold *= 2;
+    }
+    return hold;
+}
+
+/* A refuted step taken back: the refuting carrier was weak traffic over noise genuinely turned down (or speech over a
+   source the stale rule rightly took), and noise comes back at the step's level. Runs within k_steady_db of it gather
+   evidence against it; once pnsq_back_hold() of them hold most with its spectrum and the voice band steady, it is the
+   reference again, and the one it replaces is held as the step's prior. Modulation against it starts the evidence
+   over. */
+static void
+pnsq_take_back(dsd_pcm_noise_squelch* t, const pnsq_run* r, pnsq_shape* sh) {
+    if (!t->alt.valid) {
+        return;
+    }
+    unsigned char alt_part[DSD_PCM_NOISE_SQUELCH_MAX_BANDS];
+    (void)pnsq_participating(&t->plan, t->alt.ref, t->alt.v_ref_db, alt_part);
+    const pnsq_against a = {t->alt.ref, alt_part, t->alt.v_ref_db, t->alt.vp_ref_db};
+    pnsq_shape ash;
+    pnsq_shape_against(&t->plan, &a, r, &ash);
+    if (ash.speech) {
+        t->st_bn = 0;
+        t->st_bs = 0;
+        return;
+    }
+    if (fabs(r->sa - pnsq_total_db(&t->plan, t->alt.ref)) > k_steady_db) {
+        return;
+    }
+    t->st_bn++;
+    t->st_bs += (ash.shaped && r->v_steady) ? 1 : 0;
+    if (t->st_bn < pnsq_back_hold(t) || (double)t->st_bs < k_gain_steady_fraction * (double)t->st_bn) {
+        return;
+    }
+    dsd_pcm_noise_squelch_held restored;
+    pnsq_keep(t, &restored);
+    pnsq_take_reference(t, t->alt.ref, t->alt.v_ref_db, t->alt.vp_ref_db);
+    t->prior = restored;
+    t->st_bn = 0;
+    t->st_bs = 0;
+    t->st_ring = 0U;
+    t->st_ring_n = 0;
+    t->st_pending = 0;
+    t->st_acc = 0;
+    t->st_at_ref = 1;
+    *sh = ash;
 }
 
 /* The runs of evidence a step down needs: PNSQ_LOWER_HOLD_WINDOWS, or after refutations in the stretch
@@ -802,12 +878,12 @@ pnsq_stale(dsd_pcm_noise_squelch* t, const pnsq_run* r) {
     t->st_os += r->v_steady ? 1 : 0;
     if (t->st_on >= PNSQ_STALE_WINDOWS && (double)t->st_os >= k_stale_steady_fraction * (double)t->st_on) {
         /* The stretch becomes the reference as a held step: a carrier taken so is refuted, and the reference before it
-           comes back, once it shows modulation. */
+           comes back, once it shows modulation; noise at the stretch's level after that takes it back
+           (pnsq_take_back()). */
         pnsq_hold_prior(t);
-        dsd_pcm_noise_squelch_cache_entry held;
-        pnsq_save_prior(t, &held);
+        const dsd_pcm_noise_squelch_held prior = t->prior;
         pnsq_take_run(t, r);
-        pnsq_load_prior(t, &held);
+        t->prior = prior;
         t->st_on = 0;
         t->st_os = 0;
         t->st_at_ref = 1;
@@ -820,7 +896,7 @@ pnsq_stale(dsd_pcm_noise_squelch* t, const pnsq_run* r) {
    noise's spectrum. */
 static void
 pnsq_track(dsd_pcm_noise_squelch* t, const pnsq_run* r, const pnsq_shape* sh) {
-    if (!pnsq_has_reference(t) || t->st_pending || (t->prior_valid && !sh->shaped)
+    if (!pnsq_has_reference(t) || t->st_pending || (t->prior.valid && !sh->shaped)
         || r->sa < pnsq_total_db(&t->plan, t->ref) - k_steady_db) {
         return;
     }
@@ -835,14 +911,15 @@ pnsq_track(dsd_pcm_noise_squelch* t, const pnsq_run* r, const pnsq_shape* sh) {
     t->usable_hz = pnsq_participating(&t->plan, t->ref, t->v_ref_db, t->part);
 }
 
-/* The steady run @p r (@p sh against the reference) continues the stretch: a held step's refutation, noise at a lower
-   gain, a pending gain step, stale quieting and slow tracking. */
+/* The steady run @p r (@p sh against the reference) continues the stretch: a held step's refutation, a refuted step
+   taken back, noise at a lower gain, a pending gain step, stale quieting and slow tracking. */
 static void
 pnsq_continue(dsd_pcm_noise_squelch* t, const pnsq_run* r, pnsq_shape* sh) {
     t->st_v_sum += pow(10.0, r->sv / 10.0);
     t->st_n++;
     t->st_vs += r->v_steady ? 1 : 0;
     pnsq_refute(t, r, sh);
+    pnsq_take_back(t, r, sh);
     pnsq_lowered(t, r, sh);
     pnsq_gain_step(t, r, sh);
     pnsq_stale(t, r);

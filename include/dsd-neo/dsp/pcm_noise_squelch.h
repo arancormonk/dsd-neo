@@ -50,14 +50,20 @@
  *    average, the reference moves by their mean step. A carrier's noise falls toward the low voice parts, and a tone
  *    or speech fills some parts and not others, so neither gathers it.
  *  - A downward step (gain or lowered) keeps the reference from before it (from before the first, on a step already
- *    held) until a new one replaces it; the cache keeps it with the reference. Eight of the next ten runs the gate
- *    keeps shut against the stepped reference (less than N dB under it) with a voice band clearly louder than noise's
- *    (by twice those tolerances: a carrier relaying noise that matched noise's spectrum, now carrying speech; a carrier
- *    the stale rule took, now modulated), or more than 1.5 dB above it without noise's spectrum (no carrier reads
- *    louder than noise at its gain, and noise turned back up keeps its spectrum), refute the steps: the old reference
- *    comes back. The stretch then steps down again only on 0.6 s of evidence with no such modulation in it, doubled for
- *    each further refutation in the stretch. While a step is held, only a stretch with noise's spectrum replaces the
- *    reference or is tracked.
+ *    held) until a new one replaces it; the cache keeps it with the reference. Eight of ten runs less than N dB under
+ *    the stepped reference (every run the gate keeps shut, and those its hysteresis still holds open, so a carrier
+ *    fading toward it refutes it before the gate shuts) with a voice band clearly louder than noise's (by twice those
+ *    tolerances: a carrier relaying noise that matched noise's spectrum, now carrying speech; a carrier the stale rule
+ *    took, now modulated), or more than 1.5 dB above it without noise's spectrum (no carrier reads louder than noise
+ *    at its gain, and noise turned back up keeps its spectrum), refute the steps: the old reference comes back. The
+ *    stretch then steps down again only on 0.6 s of evidence with no such modulation in it, doubled for each further
+ *    refutation in the stretch. While a step is held, only a stretch with noise's spectrum replaces the reference or
+ *    is tracked.
+ *  - The step refuted is kept too (and cached), until a new reference replaces it: 0.2 s of runs within 1.5 dB of its
+ *    level, three in four with its spectrum against it and the voice band steady (doubled for each refutation in the
+ *    stretch; modulation against it starts over), take it back, and the reference it replaces is held as its prior.
+ *    Weak traffic over noise genuinely turned down refutes a step just as a stronger carrier over relayed noise taken
+ *    for noise does, and nothing tells the two apart: the traffic plays, and the noise after it takes the step back.
  *  - A steady run at or above the reference less 1.5 dB tracks it with a 1 s time constant (slow drift).
  *  - Stale quieting: the gate open for 5 s on one stretch whose voice band held stationary in 90 % of its windows reads
  *    a level that dropped (a source's volume lowered out of clipping, its audio low-pass switched on), not speech: the
@@ -145,6 +151,15 @@ typedef struct {
     int32_t passband_hz;    /**< the rigctl peer's passband (0: its own), or DSD_PCM_NOISE_SQUELCH_PASSBAND_UNKNOWN */
 } dsd_pcm_noise_squelch_key;
 
+/** @brief A reference held beside the current one: the one from before a downward step, or a step a refutation
+ * undid. */
+typedef struct {
+    int valid;
+    double ref[DSD_PCM_NOISE_SQUELCH_MAX_BANDS];
+    double v_ref_db;
+    double vp_ref_db[DSD_PCM_NOISE_SQUELCH_VOICE_PARTS];
+} dsd_pcm_noise_squelch_held;
+
 /** @brief A remembered reference. */
 typedef struct {
     int used;
@@ -153,11 +168,9 @@ typedef struct {
     double ref[DSD_PCM_NOISE_SQUELCH_MAX_BANDS];
     double v_ref_db;
     double vp_ref_db[DSD_PCM_NOISE_SQUELCH_VOICE_PARTS];
-    int prior_valid; /**< a downward step held, with the reference from before it */
-    double prior_ref[DSD_PCM_NOISE_SQUELCH_MAX_BANDS];
-    double prior_v_ref_db;
-    double prior_vp_ref_db[DSD_PCM_NOISE_SQUELCH_VOICE_PARTS];
-    uint64_t stamp; /**< LRU */
+    dsd_pcm_noise_squelch_held prior; /**< a downward step held: the reference from before it */
+    dsd_pcm_noise_squelch_held alt;   /**< a step a refutation undid */
+    uint64_t stamp;                   /**< LRU */
 } dsd_pcm_noise_squelch_cache_entry;
 
 /** @brief What the squelch publishes. */
@@ -215,16 +228,16 @@ typedef struct {
     double vp_ref_db[DSD_PCM_NOISE_SQUELCH_VOICE_PARTS];
     unsigned char part[DSD_PCM_NOISE_SQUELCH_MAX_BANDS];
     double usable_hz;
-    /* The reference from before the first downward step still held, until a new reference replaces it; a carrier at
-       the stepped reference refutes the steps and brings it back. */
-    int prior_valid;
-    double prior_ref[DSD_PCM_NOISE_SQUELCH_MAX_BANDS];
-    double prior_v_ref_db;
-    double prior_vp_ref_db[DSD_PCM_NOISE_SQUELCH_VOICE_PARTS];
+    /* The reference from before the first downward step still held, until a new reference replaces it (a carrier under
+       the gate's threshold at the stepped reference refutes the steps and brings it back), and the step a refutation
+       undid, until noise at its level takes it back or a new reference replaces it. */
+    dsd_pcm_noise_squelch_held prior;
+    dsd_pcm_noise_squelch_held alt;
     /* The stretch: anchor level, voice power sum, windows, voice-steady windows, whether it began at the reference, a
        pending gain step (its runs, those with noise's spectrum and their step sum), the gate's open windows on it, the
        evidence for noise at a lower gain (its level, runs, those with noise's spectrum and their step sum), the last
-       runs at the stepped reference (a bit each, set for a carrier's) and the steps refuted in the stretch. */
+       runs at the stepped reference (a bit each, set for a carrier's), the steps refuted in the stretch, and the runs
+       at a refuted step's level (those with its spectrum). */
     int have_stretch;
     double st_a_db;
     double st_v_sum;
@@ -245,6 +258,8 @@ typedef struct {
     unsigned int st_ring;
     int st_ring_n;
     int st_refutes;
+    int st_bn;
+    int st_bs;
     /* A new level being confirmed, no-band evidence and its exit. */
     int have_cand;
     double cand_a_db;

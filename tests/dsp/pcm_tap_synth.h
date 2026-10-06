@@ -63,13 +63,17 @@ typedef struct {
     double relay_state[4];
     double relay_scale;
     double relay_rms; /* 0.35 unless a test sets it */
+    /* A gentle audio low-pass after the FIR one (pcm_tap_butter_lp()): two biquads and their states. */
+    double butter[2][5];
+    double butter_state[4];
+    int butter_on;
 } pcm_tap;
 
-/* A Butterworth biquad (b0, b1, b2, a1, a2) at @p f0_hz: a high-pass when @p high, else a low-pass. */
+/* A biquad (b0, b1, b2, a1, a2) at @p f0_hz with quality @p q: a high-pass when @p high, else a low-pass. */
 static inline void
-pcm_tap_biquad(double* c, double f0_hz, int high) {
+pcm_tap_biquad_q(double* c, double f0_hz, int high, double q) {
     const double w0 = 2.0 * M_PI * f0_hz / (double)PCM_TAP_RATE;
-    const double alpha = sin(w0) / (2.0 * 0.70710678118654752);
+    const double alpha = sin(w0) / (2.0 * q);
     const double cw = cos(w0);
     const double a0 = 1.0 + alpha;
     const double b = high ? (1.0 + cw) / 2.0 : (1.0 - cw) / 2.0;
@@ -78,6 +82,22 @@ pcm_tap_biquad(double* c, double f0_hz, int high) {
     c[2] = b / a0;
     c[3] = (-2.0 * cw) / a0;
     c[4] = (1.0 - alpha) / a0;
+}
+
+/* A Butterworth biquad (b0, b1, b2, a1, a2) at @p f0_hz: a high-pass when @p high, else a low-pass. */
+static inline void
+pcm_tap_biquad(double* c, double f0_hz, int high) {
+    pcm_tap_biquad_q(c, f0_hz, high, 0.70710678118654752);
+}
+
+/* Switch on a fourth-order Butterworth audio low-pass at @p hz (tools/pcm_noise_squelch_model.py's "butter" low-pass),
+   as an SDR program's audio filter switched on mid-session. */
+static inline void
+pcm_tap_butter_lp(pcm_tap* s, double hz) {
+    pcm_tap_biquad_q(s->butter[0], hz, 0, 0.54119610014619698);
+    pcm_tap_biquad_q(s->butter[1], hz, 0, 1.30656296487637652);
+    DSD_MEMSET(s->butter_state, 0, sizeof(s->butter_state));
+    s->butter_on = 1;
 }
 
 /* One sample through a biquad @p c with state @p st (transposed direct form II). */
@@ -220,6 +240,10 @@ pcm_tap_raw(pcm_tap* s, pcm_tap_kind kind, double cnr_db, double tone_hz) {
             acc += s->lpf_ring[at] * s->lpf[j];
         }
         y = acc;
+    }
+    if (s->butter_on) {
+        y = pcm_tap_biquad_run(s->butter[1], &s->butter_state[2],
+                               pcm_tap_biquad_run(s->butter[0], &s->butter_state[0], y));
     }
     return y;
 }

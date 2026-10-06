@@ -774,10 +774,12 @@ quieting, closed under max(N - 3, 1.5) dB. Quieting reads about the carrier-to-n
   carrier's own noise falls away toward the low voice frequencies, and speech or a tone fills some parts and not
   others, so a carrier never gathers that evidence and any stretch of it under the reference leaves the reference
   alone. A carrier that relays noise (a repeater passing a weak user's hiss) at just the level of the source's own
-  noise does read as noise turned down; its speech then shows a carrier at the stepped reference, which undoes the
-  step within a fraction of a second (through a pause or a passband switch too), and that carrier's later pauses step
-  it down again only after 0.6 s of them, longer each time, so its later speech loses no more. Between transmissions
-  the reference follows the noise with a 1 s time constant.
+  noise does read as noise turned down; its speech then shows a carrier under the threshold, which undoes the step
+  within a fraction of a second (through a pause or a passband switch too). Relayed noise in that carrier's later
+  pauses takes the step back after a fraction of a second, and its next speech undoes it again as quickly. Weak traffic
+  on noise genuinely turned down (a carrier under the threshold) reads just as that speech does, and nothing tells the
+  two apart: it undoes the step too, and plays; the noise after it takes the step back within about 0.3 s. Between
+  transmissions the reference follows the noise with a 1 s time constant.
 - Starting on a carrier: with no noise to learn from, the first steady stretch (the carrier, or a pause in its speech)
   becomes the reference, which is too low, so the gate stays closed or opens only in snatches until the first noise
   corrects it. A channel that never shows noise (a continuous broadcast such as a weather station) never settles that

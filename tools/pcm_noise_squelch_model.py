@@ -44,13 +44,17 @@ carrier, and a steady stretch can be a carrier, so the learner relies only on wh
     toward the low voice parts and a tone or speech fills some parts and not others, so neither gathers it, and the
     evidence is kept rather than tried afresh, so a carrier that only sometimes matches noise never gathers enough.
   - A downward step (and the stale rule's) keeps the reference from before it (from before the first, on a step
-    already held; the cache keeps it too) until a new one replaces it. REFUTE_MIN of the next REFUTE_RUNS runs the gate
-    keeps shut against the stepped reference with a voice band clearly louder than noise's (by REFUTE_FACTOR times the
+    already held; the cache keeps it too) until a new one replaces it. REFUTE_MIN of REFUTE_RUNS runs less than N dB
+    under the stepped reference with a voice band clearly louder than noise's (by REFUTE_FACTOR times the
     tolerances: a carrier relaying noise that matched noise's spectrum, now carrying speech), or more than STEADY_DB
     above it without noise's spectrum (no carrier reads louder than noise at its gain), refute the steps: that
-    reference comes back. The stretch steps down
-    again only on REFUTED_HOLD_WINDOWS of evidence with no such modulation, doubled for each further refutation in
-    it. While a step is held, only a stretch with noise's spectrum replaces the reference or is tracked.
+    reference comes back. The stretch steps down again only on REFUTED_HOLD_WINDOWS of evidence with no such
+    modulation, doubled for each further refutation in it. While a step is held, only a stretch with noise's spectrum
+    replaces the reference or is tracked.
+  - The step refuted is kept too (the cache keeps it), until a new reference replaces it: BACK_HOLD_WINDOWS runs
+    within STEADY_DB of its level, most with its spectrum and the voice band steady (doubled for each refutation in
+    the stretch; modulation against it starts over), take it back. Weak traffic on noise genuinely turned down refutes
+    a step just as a stronger carrier over relayed noise does; it plays, and the noise after it takes the step back.
   - A steady stretch at or louder than the reference less STEADY_DB is noise: the reference tracks it with a 1 s
     time constant, so slow drift never reads as quieting.
   - NO_BAND: a steady stretch whose voice band is steady too, with the voice band more than RATIO_MAX dB per Hz above
@@ -152,15 +156,18 @@ TILT_TRIM_DB = 3.0
 VOICE_PARTS_HZ = ((400.0, 800.0), (800.0, 1300.0), (1300.0, 1900.0), (1900.0, 2600.0))
 SHAPE_PART_TOL_DB = 2.5
 LOWER_HOLD_WINDOWS = 20
-# A downward step is refuted (undone) by REFUTE_MIN of the last REFUTE_RUNS runs at or above the stepped reference whose
-# voice band is clearly louder than noise's (by more than REFUTE_FACTOR times the shape tolerances), or that read more
-# than STEADY_DB above it without noise's spectrum. After a refutation
-# the stretch steps down again only on REFUTED_HOLD_WINDOWS runs of evidence with no such run among them, doubled for
-# each further refutation in the stretch.
+# A downward step is refuted (undone) by REFUTE_MIN of the last REFUTE_RUNS runs less than N dB under the stepped
+# reference whose voice band is clearly louder than noise's (by more than REFUTE_FACTOR times the shape
+# tolerances), or that read more than STEADY_DB above it without noise's spectrum. After a refutation the stretch steps
+# down again only on REFUTED_HOLD_WINDOWS runs of evidence with no such run among them, doubled for each further
+# refutation in the stretch.
 REFUTE_RUNS = 10
 REFUTE_MIN = 8
 REFUTE_FACTOR = 2.0
 REFUTED_HOLD_WINDOWS = 30
+# A step a refutation undid is taken back on BACK_HOLD_WINDOWS runs at its level, most with its spectrum (doubled for
+# each refutation in the stretch).
+BACK_HOLD_WINDOWS = 10
 TRACK_S = 1.0
 N_MIN_DB = 3
 N_MAX_DB = 30
@@ -224,7 +231,8 @@ GAIN_STEADY_FRACTION = 0.75
 # Stale quieting: the gate open this long on one steady stretch whose voice band held stationary (no speech) in at
 # least STALE_STEADY_FRACTION of its windows reads a level that dropped, not a carrier (the source's volume lowered out
 # of clipping, its audio low-pass switched on): the stretch becomes the reference, as a held step. A dead or steady-tone
-# carrier is muted after it too, until the speech it carries refutes the step.
+# carrier is muted after it too, until the speech it carries refutes the step; noise at the stretch's level after that
+# takes it back.
 STALE_S = 5.0
 STALE_STEADY_FRACTION = 0.9
 GRID = {
@@ -507,8 +515,11 @@ def run_learner(plan: SquelchPlan, w: dict, params: dict, n_db: float, keys=None
         vp_ref = None if init[3] is None else init[3].copy()
     part = None if ref is None else participating(plan, ref, v_ref, ratio_max)
     # The reference before the last downward step, held until a new reference replaces it or a carrier at the stepped
-    # reference refutes the step (it then comes back).
+    # reference refutes the step (it then comes back). alt: the step a refutation undid, held until noise at its level
+    # with its spectrum takes it back (the refutation was a weak carrier on noise genuinely turned down, or speech on a
+    # source the stale rule rightly took) or a new reference replaces it.
     prior = None
+    alt = None
     cache: dict = {}
     key = None if keys is None else keys[0]
     # The steady stretch: its anchor level (dB), its voice-band power sum and count, whether it sat at the reference
@@ -527,12 +538,14 @@ def run_learner(plan: SquelchPlan, w: dict, params: dict, n_db: float, keys=None
             if state != LEARNING:
                 held_ref = None if ref is None else ref.copy()
                 held_prior = None if prior is None else (prior[0].copy(), prior[1], prior[2].copy())
-                cache[key] = (state, held_ref, v_ref, None if vp_ref is None else vp_ref.copy(), held_prior)
+                held_alt = None if alt is None else (alt[0].copy(), alt[1], alt[2].copy())
+                cache[key] = (state, held_ref, v_ref, None if vp_ref is None else vp_ref.copy(), held_prior, held_alt)
             key = keys[i]
-            state, ref, v_ref, vp_ref, prior = cache.get(key, (LEARNING, None, 0.0, None, None))
+            state, ref, v_ref, vp_ref, prior, alt = cache.get(key, (LEARNING, None, 0.0, None, None, None))
             ref = None if ref is None else ref.copy()
             vp_ref = None if vp_ref is None else vp_ref.copy()
             prior = None if prior is None else (prior[0].copy(), prior[1], prior[2].copy())
+            alt = None if alt is None else (alt[0].copy(), alt[1], alt[2].copy())
             part = None if ref is None else participating(plan, ref, v_ref, ratio_max)
             stretch, run, nb, gate = None, 0, 0, False
             cand_a, cand_n, exit_n = None, 0, 0
@@ -568,7 +581,7 @@ def run_learner(plan: SquelchPlan, w: dict, params: dict, n_db: float, keys=None
             # Leaving NO_BAND: a band (and a stationary voice band) for no_band_s in a row.
             exit_n = exit_n + 1 if (state == NO_BAND and steady and v_steady and not thin) else 0
             if exit_n >= no_band_windows:
-                ref, v_ref, vp_ref, state, prior = sp.copy(), sv, svp.copy(), PROVISIONAL, None
+                ref, v_ref, vp_ref, state, prior, alt = sp.copy(), sv, svp.copy(), PROVISIONAL, None, None
                 stretch = None
                 cand_a, cand_n, exit_n = sa, CONFIRM_WINDOWS, 0
             new = steady and (stretch is None or abs(sa - stretch["a"]) >= step_db)
@@ -591,14 +604,14 @@ def run_learner(plan: SquelchPlan, w: dict, params: dict, n_db: float, keys=None
                     pending = None
                     cand_a, cand_n = None, 0
                     if state == LEARNING:
-                        ref, v_ref, vp_ref, state, prior = sp.copy(), sv, svp.copy(), PROVISIONAL, None
+                        ref, v_ref, vp_ref, state, prior, alt = sp.copy(), sv, svp.copy(), PROVISIONAL, None, None
                     elif state == NO_BAND:
                         pass
                     elif stretch is None:
                         if sa > total_db(ref) + step_db and (prior is None or shaped):
                             # A first stretch after a restart louder than the reference is noise; while a downward step
                             # is held, only with noise's spectrum (a carrier there refutes the step).
-                            ref, v_ref, vp_ref, prior = sp.copy(), sv, svp.copy(), None
+                            ref, v_ref, vp_ref, prior, alt = sp.copy(), sv, svp.copy(), None, None
                     else:
                         da = sa - stretch["a"]
                         dv = sv - 10.0 * math.log10(max(stretch["v"] / stretch["n"], MIN_POWER))
@@ -608,7 +621,7 @@ def run_learner(plan: SquelchPlan, w: dict, params: dict, n_db: float, keys=None
                             # The band got louder, up at the reference: that side is noise. While a downward step is
                             # held, only with noise's spectrum: a carrier there does not replace the reference, it
                             # refutes the step.
-                            ref, v_ref, vp_ref, prior = sp.copy(), sv, svp.copy(), None
+                            ref, v_ref, vp_ref, prior, alt = sp.copy(), sv, svp.copy(), None, None
                             if not gain_like and state == PROVISIONAL:
                                 state = KNOWN
                         elif da > 0.0:
@@ -625,33 +638,59 @@ def run_learner(plan: SquelchPlan, w: dict, params: dict, n_db: float, keys=None
                     at_ref = ref is not None and sa >= total_db(ref) - step_db
                     stretch = {"a": sa, "v": 0.0, "n": 0, "vs": 0, "at_ref": at_ref, "pend": pending, "pn": 0, "ps": 0,
                                "ssum": 0.0, "on": 0, "os": 0, "acc": None, "an": 0, "as_": 0, "asum": 0.0,
-                               "refutes": 0, "ring": []}
+                               "refutes": 0, "ring": [], "bn": 0, "bs": 0}
                     part = None if ref is None else participating(plan, ref, v_ref, ratio_max)
                 stretch["v"] += 10.0 ** (sv / 10.0)
                 stretch["n"] += 1
                 stretch["vs"] += 1 if v_steady else 0
                 ra = None if ref is None else total_db(ref)
-                # A held downward step is refuted by a carrier the gate keeps shut against the stepped reference (a run
-                # less than N dB under it): REFUTE_MIN of the last REFUTE_RUNS such runs with a voice band clearly
-                # louder than noise's (noise turned down keeps noise's; a carrier relaying noise that matched it carries
-                # speech), or more than STEADY_DB above it without noise's spectrum (noise is the ceiling: no carrier
-                # reads louder than noise at its gain, and noise turned back up keeps its spectrum). A carrier strong
-                # enough to open the gate refutes nothing. The reference from before the first held step comes back,
-                # and the stretch steps down again only on a longer hold of evidence.
+                # A held downward step is refuted by a carrier under the gate's threshold against the stepped reference
+                # (a run less than N dB under it: every run the gate keeps shut, and those its hysteresis still holds
+                # open, so a carrier fading toward the reference refutes the step before the gate shuts on it):
+                # REFUTE_MIN of the last REFUTE_RUNS such runs with a voice band clearly louder than noise's (noise
+                # turned down keeps noise's; a carrier relaying noise that matched it carries speech), or more than
+                # STEADY_DB above it without noise's spectrum (noise is the ceiling: no carrier reads louder than noise
+                # at its gain, and noise turned back up keeps its spectrum). A carrier N dB under it refutes nothing.
+                # The reference from before the first held step comes back, the step is kept in case noise at its level
+                # takes it back (below), and the stretch steps down again only on a longer hold of evidence.
                 if prior is not None and ra is not None and sa > ra - n_db:
                     ring = stretch["ring"]
                     ring.append(speech or (not shaped and sa > ra + STEADY_DB))
                     del ring[:-REFUTE_RUNS]
                     if len(ring) == REFUTE_RUNS and sum(ring) >= REFUTE_MIN:
+                        alt = (ref.copy(), v_ref, vp_ref.copy())
                         ref, v_ref, vp_ref = prior[0].copy(), prior[1], prior[2].copy()
                         prior = None
-                        stretch.update(ring=[], pend=None, acc=None)
+                        stretch.update(ring=[], pend=None, acc=None, bn=0, bs=0)
                         stretch["refutes"] += 1
                         stretch["at_ref"] = sa >= total_db(ref) - step_db
                         part = participating(plan, ref, v_ref, ratio_max)
                         ra = total_db(ref)
                         shaped = False
                         speech = True
+                # A refuted step taken back: the refuting carrier was weak traffic over noise genuinely turned down (or
+                # speech over a source the stale rule rightly took), and noise comes back at the step's level. Runs
+                # within STEADY_DB of it gather evidence against it; once BACK_HOLD_WINDOWS of them (doubled for each
+                # refutation in the stretch, three times at most) hold most with its spectrum and the voice band
+                # steady, it is the reference again, and the one it replaces is held as the step's prior. Modulation
+                # against it starts the evidence over.
+                if alt is not None:
+                    alt_part = participating(plan, alt[0], alt[1], ratio_max)
+                    if voice_louder(plan, sp, sv, svp, alt[0], alt[1], alt[2], alt_part):
+                        stretch.update(bn=0, bs=0)
+                    elif abs(sa - total_db(alt[0])) <= STEADY_DB:
+                        astep = noise_step(plan, sp, sv, svp, alt[0], alt[1], alt[2], alt_part)
+                        stretch["bn"] += 1
+                        stretch["bs"] += 1 if (astep is not None and v_steady) else 0
+                        back_hold = BACK_HOLD_WINDOWS << min(stretch["refutes"], 3)
+                        if stretch["bn"] >= back_hold and stretch["bs"] >= GAIN_STEADY_FRACTION * stretch["bn"]:
+                            prior = (ref.copy(), v_ref, vp_ref.copy())
+                            ref, v_ref, vp_ref = alt[0].copy(), alt[1], alt[2].copy()
+                            alt = None
+                            stretch.update(bn=0, bs=0, ring=[], pend=None, acc=None, at_ref=True)
+                            part = alt_part
+                            ra = total_db(ref)
+                            nstep, shaped, speech = astep, astep is not None, False
                 # Noise come back at a lower gain (the source turned down in noise, during a transmission or across a
                 # pause): the stretch's runs under the reference's tracking range gather evidence at their level, and
                 # the step is taken once LOWER_HOLD_WINDOWS or more of them hold most with noise's spectrum and the
@@ -678,6 +717,7 @@ def run_learner(plan: SquelchPlan, w: dict, params: dict, n_db: float, keys=None
                     ):
                         # A step on a held one keeps the reference from before the first.
                         prior = prior if prior is not None else (ref.copy(), v_ref, vp_ref.copy())
+                        alt = None
                         ref = ref * 10.0 ** (mean / 10.0)
                         v_ref += mean
                         vp_ref = vp_ref + mean
@@ -699,6 +739,7 @@ def run_learner(plan: SquelchPlan, w: dict, params: dict, n_db: float, keys=None
                             # The reference moves by the mean step; the one it held is kept in case a carrier refutes
                             # the step (the one from before the first, on a step already held).
                             prior = prior if prior is not None else (ref.copy(), v_ref, vp_ref.copy())
+                            alt = None
                             ref = ref * 10.0 ** (mean / 10.0)
                             v_ref += mean
                             vp_ref = vp_ref + mean
@@ -715,6 +756,7 @@ def run_learner(plan: SquelchPlan, w: dict, params: dict, n_db: float, keys=None
                         # The stretch becomes the reference as a held step: a carrier taken so is refuted, and the
                         # reference before it comes back, once it shows modulation.
                         prior = prior if prior is not None else (ref.copy(), v_ref, vp_ref.copy())
+                        alt = None
                         ref, v_ref, vp_ref = sp.copy(), sv, svp.copy()
                         stretch["on"] = stretch["os"] = 0
                         stretch["at_ref"] = True
