@@ -430,6 +430,35 @@ line_is_blank(const char* line) {
 }
 
 static void
+handle_ping(api_session* s, const dsd_json_node* id, int authenticated, dsd_json_buf* scratch) {
+    dsd_json_writer w;
+    dsd_api_response_begin(scratch, &w, id, 1);
+    (void)dsd_json_kv_i64(&w, "protocol", DSD_API_PROTOCOL_VERSION);
+    (void)dsd_json_kv_bool(&w, "authenticated", authenticated);
+    if (dsd_api_response_end(scratch, &w) == 0) {
+        session_queue(s, scratch);
+    }
+}
+
+/* The commands only an authenticated session may send: the session commands, then the command table. */
+static void
+handle_authenticated(api_session* s, const char* cmd, const dsd_json_node* root, const dsd_json_node* fields,
+                     dsd_json_buf* scratch) {
+    const dsd_json_node* id = dsd_json_obj_get(root, "id");
+    if (strcmp(cmd, "subscribe") == 0 || strcmp(cmd, "unsubscribe") == 0) {
+        handle_subscribe(s, id, fields, cmd[0] == 's', scratch);
+    } else if (strcmp(cmd, "get") == 0) {
+        handle_get(s, id, fields, scratch);
+    } else if (strcmp(cmd, "list_commands") == 0) {
+        handle_list_commands(s, id, scratch);
+    } else if (dsd_api_command_execute(root, scratch) == 0) {
+        session_queue(s, scratch);
+    } else {
+        session_error(s, id, "internal_error", "command dispatch failed", 0, scratch);
+    }
+}
+
+static void
 handle_request(api_session* s, const char* line, dsd_json_buf* scratch) {
     char err[96] = "";
     dsd_json_node* root = NULL;
@@ -441,47 +470,22 @@ handle_request(api_session* s, const char* line, dsd_json_buf* scratch) {
     }
     const dsd_json_node* id = dsd_json_obj_get(root, "id");
     const char* cmd = dsd_json_as_str(dsd_json_obj_get(root, "cmd"));
-    if (root->type != DSD_JSON_OBJECT || cmd == NULL) {
-        session_error(s, id, "bad_request", "expected a JSON object with a \"cmd\" string", 0, scratch);
-        dsd_json_free(root);
-        return;
-    }
     const dsd_json_node* params = dsd_json_obj_get(root, "params");
-    if (params != NULL && params->type != DSD_JSON_OBJECT) {
-        session_error(s, id, "bad_request", "\"params\" must be an object", 0, scratch);
-        dsd_json_free(root);
-        return;
-    }
-    /* Session commands also take their fields at the top level: {"cmd":"subscribe","topics":[...]}. */
-    const dsd_json_node* fields = (params != NULL) ? params : root;
     dsd_mutex_lock(&s->mu);
     const int authenticated = s->authenticated;
     dsd_mutex_unlock(&s->mu);
-
-    if (strcmp(cmd, "hello") == 0 || strcmp(cmd, "ping") == 0) {
-        dsd_json_writer w;
-        dsd_api_response_begin(scratch, &w, id, 1);
-        (void)dsd_json_kv_i64(&w, "protocol", DSD_API_PROTOCOL_VERSION);
-        (void)dsd_json_kv_bool(&w, "authenticated", authenticated);
-        if (dsd_api_response_end(scratch, &w) == 0) {
-            session_queue(s, scratch);
-        }
+    if (root->type != DSD_JSON_OBJECT || cmd == NULL || (params != NULL && params->type != DSD_JSON_OBJECT)) {
+        session_error(s, id, "bad_request", "expected an object with a \"cmd\" string and an object \"params\"", 0,
+                      scratch);
+    } else if (strcmp(cmd, "hello") == 0 || strcmp(cmd, "ping") == 0) {
+        handle_ping(s, id, authenticated, scratch);
     } else if (strcmp(cmd, "auth") == 0) {
-        handle_auth(s, id, fields, scratch);
+        /* Session commands also take their fields at the top level: {"cmd":"auth","token":"..."}. */
+        handle_auth(s, id, params != NULL ? params : root, scratch);
     } else if (!authenticated) {
         session_error(s, id, "unauthorized", "authenticate first", 0, scratch);
-    } else if (strcmp(cmd, "subscribe") == 0) {
-        handle_subscribe(s, id, fields, 1, scratch);
-    } else if (strcmp(cmd, "unsubscribe") == 0) {
-        handle_subscribe(s, id, fields, 0, scratch);
-    } else if (strcmp(cmd, "get") == 0) {
-        handle_get(s, id, fields, scratch);
-    } else if (strcmp(cmd, "list_commands") == 0) {
-        handle_list_commands(s, id, scratch);
-    } else if (dsd_api_command_execute(root, scratch) == 0) {
-        session_queue(s, scratch);
     } else {
-        session_error(s, id, "internal_error", "command dispatch failed", 0, scratch);
+        handle_authenticated(s, cmd, root, params != NULL ? params : root, scratch);
     }
     dsd_json_free(root);
 }
@@ -968,73 +972,46 @@ server_free(api_server* srv) {
     free(srv);
 }
 
-int
-dsd_api_start(const dsd_api_config* config) {
-    if (config == NULL || config->port == 0) {
-        return 0; /* disabled */
-    }
-    dsd_api_config cfg;
-    if (config_resolve(config, &cfg) != 0) {
-        DSD_SECURE_ZERO(&cfg, sizeof cfg);
-        return -1;
-    }
-    ensure_lifecycle_mu();
-    dsd_mutex_lock(&g_lifecycle_mu);
-    if (g_srv != NULL) {
-        const int same = config_same(&g_srv->config, &cfg);
-        dsd_mutex_unlock(&g_lifecycle_mu);
-        DSD_SECURE_ZERO(&cfg, sizeof cfg);
-        if (!same) {
-            LOG_ERROR("API: already running with a different configuration\n");
-        }
-        return same ? 0 : -1;
-    }
-    if (dsd_socket_init() != 0) {
-        dsd_mutex_unlock(&g_lifecycle_mu);
-        DSD_SECURE_ZERO(&cfg, sizeof cfg);
-        LOG_ERROR("API: socket subsystem unavailable\n");
-        return -1;
-    }
-    int port = 0;
-    const dsd_socket_t sock = open_listener(&cfg, &port);
-    api_server* srv = (sock != DSD_INVALID_SOCKET) ? (api_server*)calloc(1U, sizeof(*srv)) : NULL;
+/* A server for @p cfg around @p sock, or NULL (with @p sock closed) when it cannot be allocated. */
+static api_server*
+server_create(const dsd_api_config* cfg, dsd_socket_t sock, int port) {
+    api_server* srv = (api_server*)calloc(1U, sizeof(*srv));
     if (srv == NULL || dsd_mutex_init(&srv->mu) != 0) {
-        if (sock != DSD_INVALID_SOCKET) {
-            (void)dsd_socket_close(sock);
-        }
         free(srv);
-        dsd_mutex_unlock(&g_lifecycle_mu);
-        DSD_SECURE_ZERO(&cfg, sizeof cfg);
-        return -1;
+        (void)dsd_socket_close(sock);
+        return NULL;
     }
     srv->listen_sock = sock;
     srv->port = port;
-    srv->config = cfg;
-    srv->max_clients = cfg.max_clients;
-    srv->auth_timeout_ms = (uint64_t)cfg.auth_timeout_ms;
-    DSD_MEMCPY(srv->token, cfg.token, sizeof srv->token);
+    srv->config = *cfg;
+    srv->max_clients = cfg->max_clients;
+    srv->auth_timeout_ms = (uint64_t)cfg->auth_timeout_ms;
+    DSD_MEMCPY(srv->token, cfg->token, sizeof srv->token);
     srv->token_len = strlen(srv->token);
-    DSD_SECURE_ZERO(&cfg, sizeof cfg);
     atomic_store(&srv->stop, 0);
     atomic_store(&srv->authed_count, 0);
-    for (int t = 0; t < DSD_API_TOPIC_COUNT; t++) {
-        atomic_store(&g_topic_interest[t], 0);
-    }
     /* Results already retained when the server starts belong to someone else's earlier request. */
     dsd_app_tg_export_result tg_result;
     srv->last_tg_seq = dsd_app_tg_export_result_get(&tg_result) ? tg_result.sequence : 0U;
     dsd_app_decryption_result dec_result;
     srv->last_dec_seq = dsd_app_decryption_result_get(&dec_result) ? dec_result.sequence : 0U;
+    return srv;
+}
 
+/* Publish @p srv and start its feed and threads; on failure everything is undone and -1 returned. */
+static int
+server_launch(api_server* srv) {
+    for (int t = 0; t < DSD_API_TOPIC_COUNT; t++) {
+        atomic_store(&g_topic_interest[t], 0);
+    }
     g_srv = srv;
     dsd_api_feed_start();
     if (dsd_thread_create(&srv->accept_thread, accept_fn, srv) != 0) {
         LOG_ERROR("API: failed to start accept thread\n");
         dsd_api_feed_stop();
         g_srv = NULL;
-        (void)dsd_socket_close(sock);
+        (void)dsd_socket_close(srv->listen_sock);
         server_free(srv);
-        dsd_mutex_unlock(&g_lifecycle_mu);
         return -1;
     }
     if (dsd_thread_create(&srv->results_thread, results_fn, srv) == 0) {
@@ -1042,10 +1019,39 @@ dsd_api_start(const dsd_api_config* config) {
     } else {
         LOG_WARN("API: failed to start result pump thread; async results will not be reported\n");
     }
-    LOG_INFO("API: listening on %s:%d%s\n", srv->config.bind_addr, port,
+    LOG_INFO("API: listening on %s:%d%s\n", srv->config.bind_addr, srv->port,
              srv->token_len != 0U ? " (token required)" : "");
-    dsd_mutex_unlock(&g_lifecycle_mu);
     return 0;
+}
+
+int
+dsd_api_start(const dsd_api_config* config) {
+    if (config == NULL || config->port == 0) {
+        return 0; /* disabled */
+    }
+    dsd_api_config cfg;
+    int rc = config_resolve(config, &cfg);
+    ensure_lifecycle_mu();
+    dsd_mutex_lock(&g_lifecycle_mu);
+    if (rc == 0 && g_srv != NULL) {
+        rc = config_same(&g_srv->config, &cfg) ? 0 : -1;
+        if (rc != 0) {
+            LOG_ERROR("API: already running with a different configuration\n");
+        }
+    } else if (rc == 0) {
+        int port = 0;
+        dsd_socket_t sock = DSD_INVALID_SOCKET;
+        if (dsd_socket_init() != 0) {
+            LOG_ERROR("API: socket subsystem unavailable\n");
+        } else {
+            sock = open_listener(&cfg, &port);
+        }
+        api_server* srv = (sock != DSD_INVALID_SOCKET) ? server_create(&cfg, sock, port) : NULL;
+        rc = (srv != NULL) ? server_launch(srv) : -1;
+    }
+    dsd_mutex_unlock(&g_lifecycle_mu);
+    DSD_SECURE_ZERO(&cfg, sizeof cfg);
+    return rc;
 }
 
 void

@@ -298,8 +298,38 @@ eh_baseline(const Event_History_I* ring, int slot) {
     }
 }
 
-/* Rows pushed since the last call (new) and committed rows whose content changed in place (updates: late alias,
-   GPS or text, a reacquisition merge), oldest first. A row keeps its identity, (ring, slot, push), across both. */
+/* Gather one slot's rows pushed since the last look (new) and committed rows whose content changed in place (updates:
+   late alias, GPS or text, a reacquisition merge), oldest first. */
+static void
+gather_slot_events(const Event_History_I* ring, int slot) {
+    if (!g_eh_valid || ring->instance != g_eh_instance[slot] || ring->push_seq < g_eh_push[slot]) {
+        /* First look, or a new ring: start from what is there now rather than replaying it. */
+        eh_baseline(ring, slot);
+        return;
+    }
+    if (ring->push_seq == g_eh_push[slot] && ring->commit_rev == g_eh_commit[slot]) {
+        return;
+    }
+    uint64_t pushed = ring->push_seq - g_eh_push[slot];
+    if (pushed > (uint64_t)(DSD_EVENT_HISTORY_LEN - 1)) {
+        pushed = (uint64_t)(DSD_EVENT_HISTORY_LEN - 1);
+    }
+    /* Each push moved every committed row one index deeper; rows 1..pushed are new. */
+    for (uint64_t i = (uint64_t)(DSD_EVENT_HISTORY_LEN - 1); i >= 1U; i--) {
+        g_eh_fp[slot][i] = (i > pushed) ? g_eh_fp[slot][i - pushed] : 0U;
+    }
+    for (uint64_t i = (uint64_t)(DSD_EVENT_HISTORY_LEN - 1); i >= 1U; i--) {
+        const uint64_t fp = row_fingerprint(&ring->Event_History_Items[i]);
+        if (fp != g_eh_empty_fp && (i <= pushed || fp != g_eh_fp[slot][i])) {
+            gather_event(ring, slot, i, i > pushed);
+        }
+        g_eh_fp[slot][i] = fp;
+    }
+    g_eh_push[slot] = ring->push_seq;
+    g_eh_commit[slot] = ring->commit_rev;
+}
+
+/* Send the rows each slot gathered. A row keeps its identity, (ring, slot, push), across new and update lines. */
 static void
 emit_events(const dsd_state* state) {
     if (state->event_history_s == NULL) {
@@ -311,33 +341,7 @@ emit_events(const dsd_state* state) {
     dsd_event_history_transaction transaction;
     dsd_event_history_transaction_begin((dsd_state*)state, &transaction);
     for (int slot = 0; slot < 2; slot++) {
-        const Event_History_I* ring = &state->event_history_s[slot];
-        if (!g_eh_valid || ring->instance != g_eh_instance[slot] || ring->push_seq < g_eh_push[slot]) {
-            /* First look, or a new ring: start from what is there now rather than replaying it. */
-            eh_baseline(ring, slot);
-            continue;
-        }
-        if (ring->push_seq == g_eh_push[slot] && ring->commit_rev == g_eh_commit[slot]) {
-            continue;
-        }
-        uint64_t pushed = ring->push_seq - g_eh_push[slot];
-        if (pushed > (uint64_t)(DSD_EVENT_HISTORY_LEN - 1)) {
-            pushed = (uint64_t)(DSD_EVENT_HISTORY_LEN - 1);
-        }
-        /* Each push moved every committed row one index deeper; rows 1..pushed are new. */
-        for (uint64_t i = (uint64_t)(DSD_EVENT_HISTORY_LEN - 1); i >= 1U; i--) {
-            g_eh_fp[slot][i] = (i > pushed) ? g_eh_fp[slot][i - pushed] : 0U;
-        }
-        for (uint64_t i = (uint64_t)(DSD_EVENT_HISTORY_LEN - 1); i >= 1U; i--) {
-            const Event_History* row = &ring->Event_History_Items[i];
-            const uint64_t fp = row_fingerprint(row);
-            if (fp != g_eh_empty_fp && (i <= pushed || fp != g_eh_fp[slot][i])) {
-                gather_event(ring, slot, i, i > pushed);
-            }
-            g_eh_fp[slot][i] = fp;
-        }
-        g_eh_push[slot] = ring->push_seq;
-        g_eh_commit[slot] = ring->commit_rev;
+        gather_slot_events(&state->event_history_s[slot], slot);
     }
     dsd_event_history_transaction_end(&transaction);
     g_eh_valid = 1;

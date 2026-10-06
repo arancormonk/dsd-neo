@@ -161,42 +161,41 @@ dsd_json_buf_putc(dsd_json_buf* b, char c) {
  * UTF-8 and escaping
  *============================================================================*/
 
-/* Length of the well-formed UTF-8 sequence at p (RFC 3629: no overlongs, no
- * surrogates, nothing above U+10FFFF), or 0 when the bytes there are not one. */
+/* For a UTF-8 lead byte: the sequence length and the range the byte after it must fall in (RFC 3629: no overlongs,
+ * no surrogates, nothing above U+10FFFF); 0 when the byte cannot lead a sequence. */
+static size_t
+json_utf8_lead(unsigned char c, unsigned char* lo, unsigned char* hi) {
+    *lo = 0x80U;
+    *hi = 0xBFU;
+    if (c >= 0xC2U && c <= 0xDFU) {
+        return 2U;
+    }
+    if (c >= 0xE0U && c <= 0xEFU) {
+        *lo = (c == 0xE0U) ? 0xA0U : 0x80U;
+        *hi = (c == 0xEDU) ? 0x9FU : 0xBFU;
+        return 3U;
+    }
+    if (c >= 0xF0U && c <= 0xF4U) {
+        *lo = (c == 0xF0U) ? 0x90U : 0x80U;
+        *hi = (c == 0xF4U) ? 0x8FU : 0xBFU;
+        return 4U;
+    }
+    return 0U;
+}
+
+/* Length of the well-formed UTF-8 sequence at p, or 0 when the bytes there are not one. */
 static size_t
 json_utf8_seq_len(const unsigned char* p, const unsigned char* end) {
     if (p >= end) {
         return 0U;
     }
-    const unsigned char c = p[0];
-    if (c < 0x80U) {
+    if (p[0] < 0x80U) {
         return 1U;
     }
-    size_t seq = 0U;
-    unsigned char lo = 0x80U;
-    unsigned char hi = 0xBFU;
-    if (c >= 0xC2U && c <= 0xDFU) {
-        seq = 2U;
-    } else if (c == 0xE0U) {
-        seq = 3U;
-        lo = 0xA0U;
-    } else if ((c >= 0xE1U && c <= 0xECU) || c == 0xEEU || c == 0xEFU) {
-        seq = 3U;
-    } else if (c == 0xEDU) {
-        seq = 3U;
-        hi = 0x9FU;
-    } else if (c == 0xF0U) {
-        seq = 4U;
-        lo = 0x90U;
-    } else if (c >= 0xF1U && c <= 0xF3U) {
-        seq = 4U;
-    } else if (c == 0xF4U) {
-        seq = 4U;
-        hi = 0x8FU;
-    } else {
-        return 0U;
-    }
-    if ((size_t)(end - p) < seq || p[1] < lo || p[1] > hi) {
+    unsigned char lo = 0U;
+    unsigned char hi = 0U;
+    const size_t seq = json_utf8_lead(p[0], &lo, &hi);
+    if (seq == 0U || (size_t)(end - p) < seq || p[1] < lo || p[1] > hi) {
         return 0U;
     }
     for (size_t i = 2U; i < seq; i++) {
@@ -214,6 +213,55 @@ json_append_u_escape(dsd_json_buf* b, unsigned int cp) {
     return dsd_json_buf_append(b, esc, sizeof esc);
 }
 
+static const char*
+json_short_escape(unsigned char c) {
+    switch (c) {
+        case '"': return "\\\"";
+        case '\\': return "\\\\";
+        case '\b': return "\\b";
+        case '\f': return "\\f";
+        case '\n': return "\\n";
+        case '\r': return "\\r";
+        case '\t': return "\\t";
+        default: return NULL;
+    }
+}
+
+/* Append the multibyte character at p, or U+FFFD for a byte that does not start one; *used gets the bytes read. */
+static int
+json_escape_multibyte(dsd_json_buf* b, const unsigned char* p, const unsigned char* end, size_t* used) {
+    const size_t seq = json_utf8_seq_len(p, end);
+    if (seq == 0U) {
+        /* Not UTF-8 (off-air bytes, a Latin-1 CSV): U+FFFD keeps the line valid. */
+        *used = 1U;
+        return dsd_json_buf_append(b, "\xEF\xBF\xBD", 3U);
+    }
+    *used = seq;
+    if (seq == 3U && p[0] == 0xE2U && p[1] == 0x80U && (p[2] == 0xA8U || p[2] == 0xA9U)) {
+        /* U+2028/U+2029 end a line for some JSON readers. */
+        return json_append_u_escape(b, 0x2000U | ((unsigned int)p[2] & 0x3FU));
+    }
+    return dsd_json_buf_append(b, (const char*)p, seq);
+}
+
+/* Append the escaped form of the character at p; *used gets the bytes read. */
+static int
+json_escape_char(dsd_json_buf* b, const unsigned char* p, const unsigned char* end, size_t* used) {
+    const unsigned char c = *p;
+    const char* short_esc = json_short_escape(c);
+    *used = 1U;
+    if (short_esc != NULL) {
+        return dsd_json_buf_append(b, short_esc, 2U);
+    }
+    if (c < 0x20U || c == 0x7FU) {
+        return json_append_u_escape(b, c);
+    }
+    if (c < 0x80U) {
+        return dsd_json_buf_putc(b, (char)c);
+    }
+    return json_escape_multibyte(b, p, end, used);
+}
+
 int
 dsd_json_buf_append_escaped(dsd_json_buf* b, const char* v) {
     if (b == NULL) {
@@ -225,60 +273,11 @@ dsd_json_buf_append_escaped(dsd_json_buf* b, const char* v) {
     const unsigned char* p = (const unsigned char*)v;
     const unsigned char* end = p + strlen(v);
     while (p < end) {
-        const unsigned char c = *p;
-        const char* short_esc = NULL;
-        switch (c) {
-            case '"': short_esc = "\\\""; break;
-            case '\\': short_esc = "\\\\"; break;
-            case '\b': short_esc = "\\b"; break;
-            case '\f': short_esc = "\\f"; break;
-            case '\n': short_esc = "\\n"; break;
-            case '\r': short_esc = "\\r"; break;
-            case '\t': short_esc = "\\t"; break;
-            default: break;
-        }
-        if (short_esc != NULL) {
-            if (dsd_json_buf_append(b, short_esc, 2U) != 0) {
-                return -1;
-            }
-            p++;
-            continue;
-        }
-        if (c < 0x20U || c == 0x7FU) {
-            if (json_append_u_escape(b, c) != 0) {
-                return -1;
-            }
-            p++;
-            continue;
-        }
-        if (c < 0x80U) {
-            if (dsd_json_buf_putc(b, (char)c) != 0) {
-                return -1;
-            }
-            p++;
-            continue;
-        }
-        const size_t seq = json_utf8_seq_len(p, end);
-        if (seq == 0U) {
-            /* Not UTF-8 (off-air bytes, a Latin-1 CSV): U+FFFD keeps the line valid. */
-            if (dsd_json_buf_append(b, "\xEF\xBF\xBD", 3U) != 0) {
-                return -1;
-            }
-            p++;
-            continue;
-        }
-        if (seq == 3U && p[0] == 0xE2U && p[1] == 0x80U && (p[2] == 0xA8U || p[2] == 0xA9U)) {
-            /* U+2028/U+2029 end a line for some JSON readers. */
-            if (json_append_u_escape(b, 0x2000U | ((unsigned int)p[2] & 0x3FU)) != 0) {
-                return -1;
-            }
-            p += seq;
-            continue;
-        }
-        if (dsd_json_buf_append(b, (const char*)p, seq) != 0) {
+        size_t used = 0U;
+        if (json_escape_char(b, p, end, &used) != 0) {
             return -1;
         }
-        p += seq;
+        p += used;
     }
     return 0;
 }
@@ -674,6 +673,53 @@ json_parse_u_escape(json_parse_ctx* c, unsigned int* out) {
     return 0;
 }
 
+/* The escape after a backslash (already consumed): append its character to @p b. Returns 0, or -1 with c->err set. */
+static int
+json_parse_escape(json_parse_ctx* c, dsd_json_buf* b) {
+    static const char k_from[] = "\"\\/bfnrt";
+    static const char k_to[] = "\"\\/\b\f\n\r\t";
+    if (c->p >= c->end) {
+        json_set_err(c, "truncated escape");
+        return -1;
+    }
+    const char esc = *c->p++;
+    const char* hit = (esc != '\0') ? strchr(k_from, esc) : NULL;
+    unsigned int cp = 0U;
+    if (hit != NULL) {
+        cp = (unsigned char)k_to[hit - k_from];
+    } else if (esc != 'u') {
+        json_set_err(c, "bad escape");
+        return -1;
+    } else if (json_parse_u_escape(c, &cp) != 0) {
+        return -1;
+    }
+    if (json_utf8_append(b, cp) != 0) {
+        json_set_err(c, "out of memory");
+        return -1;
+    }
+    return 0;
+}
+
+/* One unescaped character: well-formed UTF-8 and not a control character. Returns 0, or -1 with c->err set. */
+static int
+json_parse_plain_char(json_parse_ctx* c, dsd_json_buf* b) {
+    if ((unsigned char)*c->p < 0x20U) {
+        json_set_err(c, "control character in string");
+        return -1;
+    }
+    const size_t seq = json_utf8_seq_len((const unsigned char*)c->p, (const unsigned char*)c->end);
+    if (seq == 0U) {
+        json_set_err(c, "invalid UTF-8 in string");
+        return -1;
+    }
+    if (dsd_json_buf_append(b, c->p, seq) != 0) {
+        json_set_err(c, "out of memory");
+        return -1;
+    }
+    c->p += seq;
+    return 0;
+}
+
 static char*
 json_parse_string_raw(json_parse_ctx* c) {
     if (!(c->p < c->end) || *c->p != '"') {
@@ -688,8 +734,7 @@ json_parse_string_raw(json_parse_ctx* c) {
         return NULL;
     }
     while (c->p < c->end) {
-        const unsigned char ch = (unsigned char)*c->p;
-        if (ch == '"') {
+        if (*c->p == '"') {
             c->p++;
             /* Detach the storage; the buffer is always NUL-terminated. */
             char* out = b.data;
@@ -697,51 +742,15 @@ json_parse_string_raw(json_parse_ctx* c) {
             return out;
         }
         int rc = 0;
-        if (ch == '\\') {
+        if (*c->p == '\\') {
             c->p++;
-            if (c->p >= c->end) {
-                json_set_err(c, "truncated escape");
-                break;
-            }
-            const char esc = *c->p++;
-            switch (esc) {
-                case '"': rc = dsd_json_buf_putc(&b, '"'); break;
-                case '\\': rc = dsd_json_buf_putc(&b, '\\'); break;
-                case '/': rc = dsd_json_buf_putc(&b, '/'); break;
-                case 'b': rc = dsd_json_buf_putc(&b, '\b'); break;
-                case 'f': rc = dsd_json_buf_putc(&b, '\f'); break;
-                case 'n': rc = dsd_json_buf_putc(&b, '\n'); break;
-                case 'r': rc = dsd_json_buf_putc(&b, '\r'); break;
-                case 't': rc = dsd_json_buf_putc(&b, '\t'); break;
-                case 'u': {
-                    unsigned int cp = 0U;
-                    if (json_parse_u_escape(c, &cp) != 0) {
-                        dsd_json_buf_free(&b);
-                        return NULL;
-                    }
-                    rc = json_utf8_append(&b, cp);
-                    break;
-                }
-                default:
-                    json_set_err(c, "bad escape");
-                    dsd_json_buf_free(&b);
-                    return NULL;
-            }
-        } else if (ch < 0x20U) {
-            json_set_err(c, "control character in string");
-            break;
+            rc = json_parse_escape(c, &b);
         } else {
-            const size_t seq = json_utf8_seq_len((const unsigned char*)c->p, (const unsigned char*)c->end);
-            if (seq == 0U) {
-                json_set_err(c, "invalid UTF-8 in string");
-                break;
-            }
-            rc = dsd_json_buf_append(&b, c->p, seq);
-            c->p += seq;
+            rc = json_parse_plain_char(c, &b);
         }
         if (rc != 0) {
-            json_set_err(c, "out of memory");
-            break;
+            dsd_json_buf_free(&b);
+            return NULL;
         }
     }
     json_set_err(c, "unterminated string");
@@ -936,50 +945,75 @@ json_is_digit(char ch) {
     return ch >= '0' && ch <= '9';
 }
 
-/* RFC 8259 number: -? (0 | [1-9][0-9]*) (\.[0-9]+)? ([eE][+-]?[0-9]+)? */
-static dsd_json_node*
-json_parse_number(json_parse_ctx* c) {
+/* Advance over a run of digits; nonzero when there was at least one. */
+static int
+json_skip_digits(json_parse_ctx* c) {
     const char* start = c->p;
+    while (c->p < c->end && json_is_digit(*c->p)) {
+        c->p++;
+    }
+    return c->p > start;
+}
+
+/* -? (0 | [1-9][0-9]*) */
+static int
+json_scan_int_part(json_parse_ctx* c) {
     if (c->p < c->end && *c->p == '-') {
         c->p++;
     }
     if (!(c->p < c->end) || !json_is_digit(*c->p)) {
         json_set_err(c, "invalid number");
+        return -1;
+    }
+    if (*c->p != '0') {
+        (void)json_skip_digits(c);
+        return 0;
+    }
+    c->p++;
+    if (c->p < c->end && json_is_digit(*c->p)) {
+        json_set_err(c, "invalid number (leading zero)");
+        return -1;
+    }
+    return 0;
+}
+
+/* (\.[0-9]+)? */
+static int
+json_scan_fraction(json_parse_ctx* c) {
+    if (!(c->p < c->end) || *c->p != '.') {
+        return 0;
+    }
+    c->p++;
+    if (!json_skip_digits(c)) {
+        json_set_err(c, "invalid number (fraction)");
+        return -1;
+    }
+    return 0;
+}
+
+/* ([eE][+-]?[0-9]+)? */
+static int
+json_scan_exponent(json_parse_ctx* c) {
+    if (!(c->p < c->end) || (*c->p != 'e' && *c->p != 'E')) {
+        return 0;
+    }
+    c->p++;
+    if (c->p < c->end && (*c->p == '-' || *c->p == '+')) {
+        c->p++;
+    }
+    if (!json_skip_digits(c)) {
+        json_set_err(c, "invalid number (exponent)");
+        return -1;
+    }
+    return 0;
+}
+
+/* RFC 8259 number: -? (0 | [1-9][0-9]*) (\.[0-9]+)? ([eE][+-]?[0-9]+)? */
+static dsd_json_node*
+json_parse_number(json_parse_ctx* c) {
+    const char* start = c->p;
+    if (json_scan_int_part(c) != 0 || json_scan_fraction(c) != 0 || json_scan_exponent(c) != 0) {
         return NULL;
-    }
-    if (*c->p == '0') {
-        c->p++;
-        if (c->p < c->end && json_is_digit(*c->p)) {
-            json_set_err(c, "invalid number (leading zero)");
-            return NULL;
-        }
-    } else {
-        while (c->p < c->end && json_is_digit(*c->p)) {
-            c->p++;
-        }
-    }
-    if (c->p < c->end && *c->p == '.') {
-        c->p++;
-        if (!(c->p < c->end) || !json_is_digit(*c->p)) {
-            json_set_err(c, "invalid number (fraction)");
-            return NULL;
-        }
-        while (c->p < c->end && json_is_digit(*c->p)) {
-            c->p++;
-        }
-    }
-    if (c->p < c->end && (*c->p == 'e' || *c->p == 'E')) {
-        c->p++;
-        if (c->p < c->end && (*c->p == '-' || *c->p == '+')) {
-            c->p++;
-        }
-        if (!(c->p < c->end) || !json_is_digit(*c->p)) {
-            json_set_err(c, "invalid number (exponent)");
-            return NULL;
-        }
-        while (c->p < c->end && json_is_digit(*c->p)) {
-            c->p++;
-        }
     }
     const size_t len = (size_t)(c->p - start);
     if (len > (size_t)DSD_JSON_MAX_NUMBER_LEN) {
