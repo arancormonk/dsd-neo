@@ -73,6 +73,7 @@ if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
         dsp/test_dsp_snr_estimator.cpp
         dsp/test_dsp_squelch_floor.c
         dsp/test_dsp_nfm_noise_squelch.c
+        dsp/test_dsp_pcm_noise_squelch.c
         dsp/test_dsp_symbol_replay.c
         io/test_io_input_level_metrics.c
         io/test_io_rtl_replay_eof_and_cf32.cpp
@@ -98,6 +99,7 @@ elseif(MSVC)
         dsp/test_dsp_snr_estimator.cpp
         dsp/test_dsp_squelch_floor.c
         dsp/test_dsp_nfm_noise_squelch.c
+        dsp/test_dsp_pcm_noise_squelch.c
         dsp/test_dsp_symbol_replay.c
         io/test_io_input_level_metrics.c
         io/test_io_rtl_replay_eof_and_cf32.cpp
@@ -1016,6 +1018,18 @@ dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_dsp_nfm_noise_squelch_cxx
   HEADERS_PUBLIC_DSP_NFM_NOISE_SQUELCH_CXX
   dsd-neo/dsp/nfm_noise_squelch.h
+  CXX
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_dsp_pcm_noise_squelch
+  HEADERS_PUBLIC_DSP_PCM_NOISE_SQUELCH
+  dsd-neo/dsp/pcm_noise_squelch.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_dsp_pcm_noise_squelch_cxx
+  HEADERS_PUBLIC_DSP_PCM_NOISE_SQUELCH_CXX
+  dsd-neo/dsp/pcm_noise_squelch.h
   CXX
 )
 dsd_neo_add_public_header_smoke_test(
@@ -5102,6 +5116,32 @@ if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
     )
 endif()
 
+# openAudioInput() over a recording device layer (GNU ld --wrap), so the test exists only where that links.
+if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
+    add_executable(
+        dsd-neo_test_core_audio_open_input
+        core/test_core_audio_open_input.c
+    )
+    target_include_directories(
+        dsd-neo_test_core_audio_open_input
+        PRIVATE ${PROJECT_SOURCE_DIR}/include
+    )
+    target_link_libraries(
+        dsd-neo_test_core_audio_open_input
+        PRIVATE dsd-neo_core
+    )
+    target_link_options(
+        dsd-neo_test_core_audio_open_input
+        PRIVATE
+            "LINKER:--wrap=dsd_audio_open_input"
+            "LINKER:--wrap=dsd_audio_close"
+    )
+    add_test(
+        NAME CORE_AUDIO_OPEN_INPUT
+        COMMAND dsd-neo_test_core_audio_open_input
+    )
+endif()
+
 add_executable(
     dsd-neo_test_core_audio2_helpers
     core/test_core_audio2_helpers.c
@@ -8474,6 +8514,27 @@ add_test(
     COMMAND dsd-neo_test_dsp_nfm_noise_squelch --sweep
 )
 set_tests_properties(DSP_NFM_NOISE_SQUELCH_SWEEP PROPERTIES TIMEOUT 600)
+# The PCM noise squelch (issue #628): the band rule and band-passes, learning with the
+# gate closed, noise that never opens it, carriers that open it, quieting that follows
+# the CNR and not the level, gain steps, starting on a carrier, a low-passed source (no
+# band), no room, digital silence, the per-passband cache, stale quieting and the same
+# flags whatever the block cuts. --sweep runs strong modulation on its own.
+add_executable(
+    dsd-neo_test_dsp_pcm_noise_squelch
+    dsp/test_dsp_pcm_noise_squelch.c
+)
+target_include_directories(
+    dsd-neo_test_dsp_pcm_noise_squelch
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/tests/dsp
+)
+dsd_neo_link_dsp_test(dsd-neo_test_dsp_pcm_noise_squelch ${DSD_NEO_TEST_MATH_LIB})
+add_test(NAME DSP_PCM_NOISE_SQUELCH COMMAND dsd-neo_test_dsp_pcm_noise_squelch)
+set_tests_properties(DSP_PCM_NOISE_SQUELCH PROPERTIES TIMEOUT 600)
+add_test(
+    NAME DSP_PCM_NOISE_SQUELCH_SWEEP
+    COMMAND dsd-neo_test_dsp_pcm_noise_squelch --sweep
+)
+set_tests_properties(DSP_PCM_NOISE_SQUELCH_SWEEP PROPERTIES TIMEOUT 600)
 
 # DCS detection (issue #523) through the pure analog receive core, in sample time: every
 # supported code in both polarities through the receiver's DC block and de-emphasis at two
@@ -12909,52 +12970,163 @@ endif()
 # line; the negative controls at the end of this block show that a missed bound fails.
 # Thresholds sit well clear of the values measured when each case was added;
 # docs/testing.md records those values and what each case pins.
+add_executable(dsd-neo_test_analog_replay engine/analog_replay.c)
+target_include_directories(
+    dsd-neo_test_analog_replay
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${LIBSNDFILE_INCLUDE_DIR}
+)
+# --analog-iq-gain-db reads the committed fixtures only, from this directory.
+target_compile_definitions(
+    dsd-neo_test_analog_replay
+    PRIVATE
+        "DSD_NEO_TEST_IQ_FIXTURE_DIR=\"${PROJECT_SOURCE_DIR}/tests/fixtures/iq\""
+)
+target_link_libraries(
+    dsd-neo_test_analog_replay
+    PRIVATE
+        dsd-neo_engine
+        dsd-neo_feature_radio
+        ${LIBS}
+        ${DSD_NEO_TEST_MATH_LIB}
+)
+# The RTL read adapters the replay cases count stream time through (USE_RADIO); the --analog-pcm-tap cases need none.
 if(DSD_HAS_RADIO)
-    add_executable(dsd-neo_test_analog_replay engine/analog_replay.c)
-    target_include_directories(
-        dsd-neo_test_analog_replay
-        PRIVATE ${PROJECT_SOURCE_DIR}/include
-    )
-    # --analog-iq-gain-db reads the committed fixtures only, from this directory.
-    target_compile_definitions(
-        dsd-neo_test_analog_replay
-        PRIVATE
-            "DSD_NEO_TEST_IQ_FIXTURE_DIR=\"${PROJECT_SOURCE_DIR}/tests/fixtures/iq\""
-    )
-    target_link_libraries(
-        dsd-neo_test_analog_replay
-        PRIVATE dsd-neo_engine dsd-neo_io_radio ${LIBS} ${DSD_NEO_TEST_MATH_LIB}
-    )
+    target_link_libraries(dsd-neo_test_analog_replay PRIVATE dsd-neo_io_radio)
+endif()
 
-    # dsd_neo_add_analog_replay_test(name fixture mode [expected [not_expected]])
-    # expected defaults to "ANALOG AUDIO OK" (pass "" to keep the default); a case
-    # that also asserts a log line names that line instead, since exit code 0 already
-    # means every audio bound held. not_expected is a regex that must not appear.
-    function(dsd_neo_add_analog_replay_test test_name fixture mode)
-        set(_expected "ANALOG AUDIO OK")
-        if(ARGC GREATER 3 AND NOT "${ARGV3}" STREQUAL "")
-            set(_expected "${ARGV3}")
-        endif()
-        set(_not_expected_arg)
-        if(ARGC GREATER 4)
-            set(_not_expected_arg "-DNOT_EXPECTED=${ARGV4}")
-        endif()
-        add_test(
-            NAME ${test_name}
-            COMMAND
-                ${CMAKE_COMMAND}
-                "-DDSD_BIN=$<TARGET_FILE:dsd-neo_test_analog_replay>"
-                "-DMODE=${mode}"
-                "-DFIXTURE=${PROJECT_SOURCE_DIR}/tests/fixtures/iq/${fixture}.iq.json"
-                "-DEXPECTED=${_expected}" ${_not_expected_arg} -P
-                "${CMAKE_CURRENT_SOURCE_DIR}/iq_decode_check.cmake"
-        )
-        set_tests_properties(
-            ${test_name}
-            PROPERTIES LABELS "iq-decode;analog" TIMEOUT 120
-        )
-    endfunction()
+# dsd_neo_add_analog_replay_test(name fixture mode [expected [not_expected]])
+# expected defaults to "ANALOG AUDIO OK" (pass "" to keep the default); a case
+# that also asserts a log line names that line instead, since exit code 0 already
+# means every audio bound held. not_expected is a regex that must not appear.
+function(dsd_neo_add_analog_replay_test test_name fixture mode)
+    set(_expected "ANALOG AUDIO OK")
+    if(ARGC GREATER 3 AND NOT "${ARGV3}" STREQUAL "")
+        set(_expected "${ARGV3}")
+    endif()
+    set(_not_expected_arg)
+    if(ARGC GREATER 4)
+        set(_not_expected_arg "-DNOT_EXPECTED=${ARGV4}")
+    endif()
+    add_test(
+        NAME ${test_name}
+        COMMAND
+            ${CMAKE_COMMAND}
+            "-DDSD_BIN=$<TARGET_FILE:dsd-neo_test_analog_replay>"
+            "-DMODE=${mode}"
+            "-DFIXTURE=${PROJECT_SOURCE_DIR}/tests/fixtures/iq/${fixture}.iq.json"
+            "-DEXPECTED=${_expected}" ${_not_expected_arg} -P
+            "${CMAKE_CURRENT_SOURCE_DIR}/iq_decode_check.cmake"
+    )
+    set_tests_properties(
+        ${test_name}
+        PROPERTIES LABELS "iq-decode;analog" TIMEOUT 120
+    )
+endfunction()
 
+# The noise squelch on audio input (issue #628): the host turns a capture into the
+# discriminator audio a scanner's tap or an SDR program with its audio filtering off
+# would send (--analog-pcm-tap RATE, a 16-bit mono WAV) and runs it as -i, so the PCM
+# noise squelch learns its reference from the input and gates the monitor end to end.
+# These need no radio support. On the burst it opens on the same first full window of
+# carrier as the radio squelch (340 ms to the first audible block) and closes within a
+# window of its end (260 ms audible), at every level and through the staged 16 and
+# 12 kHz rates. Every case bounds the stream time consumed, which proves the tap ran.
+set(_pcm_sql_noise_burst_bounds
+    "--analog-audible-dbfs -40 --analog-min-total-ms 700 --analog-max-total-ms 800 --analog-min-first-audible-ms 330 --analog-max-first-audible-ms 380 --analog-min-audible-ms 200 --analog-max-audible-ms 290 --analog-max-clip 0"
+)
+# Plays from the start, as with the squelch off.
+set(_pcm_sql_plays_bounds
+    "--analog-audible-dbfs -40 --analog-min-total-ms 700 --analog-max-first-audible-ms 100 --analog-min-audible-ms 700"
+)
+dsd_neo_add_analog_replay_test(
+    DECODE_PCM_ANALOG_SQL_NOISE_TAP_BURST
+    nfm_burst_synth
+    "-fA --squelch noise --analog-pcm-tap 48000 ${_pcm_sql_noise_burst_bounds}"
+)
+# A source 10 dB louder measures the same: the reference is learned from the input.
+dsd_neo_add_analog_replay_test(
+    DECODE_PCM_ANALOG_SQL_NOISE_TAP_BURST_HOT
+    nfm_burst_synth
+    "-fA --squelch noise --analog-pcm-tap 48000 --analog-pcm-gain-db 10 ${_pcm_sql_noise_burst_bounds}"
+    "discriminator tap at 48000 Hz, 36000 samples, 0 clipped.*ANALOG AUDIO OK"
+)
+# The staged rates: 16 kHz keeps the whole band, 12 kHz has 3.8-5.4 kHz of it.
+dsd_neo_add_analog_replay_test(
+    DECODE_PCM_ANALOG_SQL_NOISE_TAP_BURST_16K
+    nfm_burst_synth
+    "-fA --squelch noise --analog-pcm-tap 16000 ${_pcm_sql_noise_burst_bounds}"
+)
+dsd_neo_add_analog_replay_test(
+    DECODE_PCM_ANALOG_SQL_NOISE_TAP_BURST_12K
+    nfm_burst_synth
+    "-fA --squelch noise --analog-pcm-tap 12000 ${_pcm_sql_noise_burst_bounds}"
+)
+# The burst quiets the band by about 22 dB, as on a radio input: under noise+30 it never
+# opens.
+dsd_neo_add_analog_replay_test(
+    DECODE_PCM_ANALOG_SQL_NOISE_TAP_MARGIN
+    nfm_burst_synth
+    "-fA --squelch noise+30 --analog-pcm-tap 48000 --analog-audible-dbfs -100 --analog-max-audible-ms 0 --analog-min-total-ms 700"
+)
+# Ten seconds of noise never open it, even at the lowest N.
+dsd_neo_add_analog_replay_test(
+    DECODE_PCM_ANALOG_SQL_NOISE_TAP_FLOOR
+    noise_floor
+    "-fA --squelch noise+3 --analog-pcm-tap 48000 --analog-audible-dbfs -100 --analog-max-audible-ms 0 --analog-min-total-ms 9900"
+)
+# Audio low-passed at 3 kHz has nothing above voice: the squelch says so after about a
+# second, closed until then, and plays the rest as with the squelch off (1080 ms to the
+# first audible block measured).
+dsd_neo_add_analog_replay_test(
+    DECODE_PCM_ANALOG_SQL_NOISE_TAP_LOWPASSED
+    noise_floor
+    "-fA --squelch noise --analog-pcm-tap 48000 --analog-pcm-lowpass-hz 3000 --analog-audible-dbfs -40 --analog-min-total-ms 9900 --analog-min-first-audible-ms 500 --analog-max-first-audible-ms 1500 --analog-min-audible-ms 8000"
+    "NOTICE: Noise squelch: nothing above the voice band on this input.*ANALOG AUDIO OK"
+)
+# An 8 kHz input leaves no room above voice: off from the start, and said once.
+dsd_neo_add_analog_replay_test(
+    DECODE_PCM_ANALOG_SQL_NOISE_TAP_NO_ROOM
+    nfm_burst_synth
+    "-fA --squelch noise --analog-pcm-tap 8000 ${_pcm_sql_plays_bounds}"
+    "NOTICE: Noise squelch: a 8000 Hz input leaves no room above the voice band.*ANALOG AUDIO OK"
+)
+# A session that starts on a carrier learns it as the reference, so it errs closed until
+# noise corrects it; nfm_ctcss_real never shows noise, so nothing of it plays.
+dsd_neo_add_analog_replay_test(
+    DECODE_PCM_ANALOG_SQL_NOISE_TAP_STARTS_ON_CARRIER
+    nfm_ctcss_real
+    "-fA --squelch noise --analog-pcm-tap 48000 --analog-audible-dbfs -100 --analog-max-audible-ms 0 --analog-min-total-ms 5900"
+)
+# The auto squelch has no channel power to learn from on audio input: it warns and plays.
+dsd_neo_add_analog_replay_test(
+    DECODE_PCM_ANALOG_SQL_AUTO_OFF
+    nfm_burst_synth
+    "-fA --squelch auto --analog-pcm-tap 48000 ${_pcm_sql_plays_bounds}"
+    "WARNING: --squelch auto needs a radio input.*ANALOG AUDIO OK"
+)
+# A -Y map row's own --squelch noise on audio input gates as -fA does, and an am row that
+# inherits a noise default runs no squelch there (off on AM audio).
+set(_pcm_scan_sql_noise_csv
+    "${CMAKE_CURRENT_BINARY_DIR}/pcm_scan_sql_noise_row.csv"
+)
+file(
+    WRITE "${_pcm_scan_sql_noise_csv}"
+    "channel,frequency_hz,mode,options\n1,150000000,nfm,--squelch noise\n2,150025000,am,\n"
+)
+dsd_neo_add_analog_replay_test(
+    DECODE_PCM_SCAN_SQL_NOISE_ROW
+    nfm_burst_synth
+    "-fa -C ${_pcm_scan_sql_noise_csv} --analog-scan-row 0 --analog-pcm-tap 48000 ${_pcm_sql_noise_burst_bounds}"
+    "Scan row applied: 0 nfm; width 16 kHz; squelch noise [+]10 dB [(]row[)].*ANALOG AUDIO OK"
+)
+dsd_neo_add_analog_replay_test(
+    DECODE_PCM_SCAN_SQL_NOISE_AM_ROW_OFF
+    nfm_burst_synth
+    "-fa --squelch noise -C ${_pcm_scan_sql_noise_csv} --analog-scan-row 1 --analog-pcm-tap 48000 ${_pcm_sql_plays_bounds}"
+    "Scan row applied: 1 am; width 6 kHz; squelch noise [+]10 dB.*ANALOG AUDIO OK"
+)
+
+if(DSD_HAS_RADIO)
     # Under -fA the front end must stay on the monitor path; the host warns when it
     # delivers CQPSK symbols instead (the modulation auto-switch did this before the
     # analog family stood it down; see docs/testing.md).
@@ -14080,6 +14252,18 @@ if(Python3_Interpreter_FOUND)
         )
         set_tests_properties(
             TOOLS_NOISE_SQUELCH_MODEL_REPORT
+            PROPERTIES TIMEOUT 120
+        )
+        # tools/pcm_noise_squelch_model.py's report and band rule (issue #628).
+        add_test(
+            NAME TOOLS_PCM_NOISE_SQUELCH_MODEL_REPORT
+            COMMAND
+                ${Python3_EXECUTABLE}
+                ${PROJECT_SOURCE_DIR}/tests/tools/test_pcm_noise_squelch_model.py
+            WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+        )
+        set_tests_properties(
+            TOOLS_PCM_NOISE_SQUELCH_MODEL_REPORT
             PROPERTIES TIMEOUT 120
         )
     endif()

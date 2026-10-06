@@ -1900,63 +1900,6 @@ svc_rtl_set_bandwidth(dsd_opts* opts, dsd_state* state, int khz, char* why, size
 }
 
 int
-svc_rtl_set_sql_db(dsd_opts* opts, const dsd_state* state, double dB) {
-    if (!opts) {
-        return -1;
-    }
-    /* 0 dB is full scale, so as a threshold it would close the gate on every
-     * signal there is. Spending that value on "off" instead gives both UIs a way
-     * to switch the squelch off, and matches what 0 already means in the `sql`
-     * CLI field and the rtl_sql config key. */
-    const double level = (dB >= 0.0) ? 0.0 : dsd_squelch_level_from_sql(dB);
-    /* The operator edits the configured default. A scan row or target that overrides the
-     * squelch (--squelch-db) keeps its own threshold, in dsd_opts and in the demod, until the
-     * scanner leaves it. */
-    if (dsd_scan_mode_set_configured_squelch(opts, state, level) == 1) {
-        /* Sync the demod state for channel-based squelching: a level, in place of an auto squelch too. */
-        svc_rtl_push_squelch(opts);
-    }
-    return 0;
-}
-
-int
-svc_rtl_set_sql_setting(dsd_opts* opts, const dsd_state* state, const dsd_squelch_setting* setting) {
-    if (!opts || !setting) {
-        return -1;
-    }
-    if (dsd_squelch_mode_is_dynamic(setting->mode)
-        && (setting->margin_db < DSD_SQUELCH_MARGIN_MIN_DB || setting->margin_db > DSD_SQUELCH_MARGIN_MAX_DB)) {
-        return -1;
-    }
-    if (!dsd_squelch_setting_level_finite(setting)) {
-        return -1;
-    }
-    if (setting->mode == DSD_SQUELCH_MODE_NOISE && dsd_squelch_noise_has_no_fm(opts)) {
-        return SVC_SQL_NOISE_NEEDS_FM;
-    }
-    const dsd_squelch_setting stored = dsd_squelch_mode_is_dynamic(setting->mode)
-                                           ? dsd_squelch_setting_dynamic(setting->mode, setting->margin_db)
-                                           : dsd_squelch_setting_of_level(setting->level);
-    if (dsd_scan_mode_set_configured_squelch_setting(opts, state, &stored) == 1) {
-        svc_rtl_push_squelch(opts);
-    }
-    return 0;
-}
-
-void
-svc_rtl_push_squelch(const dsd_opts* opts) {
-    if (!opts) {
-        return;
-    }
-    if (dsd_squelch_mode_is_dynamic(opts->rtl_squelch_mode)) {
-        const dsd_squelch_setting squelch = dsd_squelch_setting_of_opts(opts);
-        rtl_stream_set_channel_squelch_setting(&squelch);
-        return;
-    }
-    rtl_stream_set_channel_squelch((float)opts->rtl_squelch_level);
-}
-
-int
 svc_rtl_set_volume_mult(dsd_opts* opts, int mult) {
     if (!opts) {
         return -1;
@@ -2014,3 +1957,70 @@ svc_rtl_set_auto_ppm(dsd_opts* opts, const dsd_state* state, int on) {
     return 0;
 }
 #endif
+
+/* The squelch services run on every input: audio input takes a level or the noise squelch (issue #628). */
+int
+svc_rtl_set_sql_db(dsd_opts* opts, const dsd_state* state, double dB) {
+    if (!opts) {
+        return -1;
+    }
+    /* 0 dB is full scale, so as a threshold it would close the gate on every
+     * signal there is. Spending that value on "off" instead gives both UIs a way
+     * to switch the squelch off, and matches what 0 already means in the `sql`
+     * CLI field and the rtl_sql config key. */
+    const double level = (dB >= 0.0) ? 0.0 : dsd_squelch_level_from_sql(dB);
+    /* The operator edits the configured default. A scan row or target that overrides the
+     * squelch (--squelch-db) keeps its own threshold, in dsd_opts and in the demod, until the
+     * scanner leaves it. */
+    if (dsd_scan_mode_set_configured_squelch(opts, state, level) == 1) {
+        /* Sync the demod state for channel-based squelching: a level, in place of an auto squelch too. */
+        svc_rtl_push_squelch(opts);
+    }
+    return 0;
+}
+
+int
+svc_rtl_set_sql_setting(dsd_opts* opts, const dsd_state* state, const dsd_squelch_setting* setting) {
+    if (!opts || !setting) {
+        return -1;
+    }
+    if (dsd_squelch_mode_is_dynamic(setting->mode)
+        && (setting->margin_db < DSD_SQUELCH_MARGIN_MIN_DB || setting->margin_db > DSD_SQUELCH_MARGIN_MAX_DB)) {
+        return -1;
+    }
+    if (!dsd_squelch_setting_level_finite(setting)) {
+        return -1;
+    }
+    if (setting->mode == DSD_SQUELCH_MODE_NOISE && dsd_squelch_noise_has_no_fm(opts)) {
+        return SVC_SQL_NOISE_NEEDS_FM;
+    }
+    /* The auto squelch learns a floor from the channel power DSD-neo's own receiver measures; audio input has none, so
+       it would resolve to off there. */
+    if (setting->mode == DSD_SQUELCH_MODE_AUTO && dsd_squelch_input_kind(opts) == DSD_SQUELCH_INPUT_AUDIO) {
+        return SVC_SQL_AUTO_NEEDS_RADIO;
+    }
+    const dsd_squelch_setting stored = dsd_squelch_mode_is_dynamic(setting->mode)
+                                           ? dsd_squelch_setting_dynamic(setting->mode, setting->margin_db)
+                                           : dsd_squelch_setting_of_level(setting->level);
+    if (dsd_scan_mode_set_configured_squelch_setting(opts, state, &stored) == 1) {
+        svc_rtl_push_squelch(opts);
+    }
+    return 0;
+}
+
+void
+svc_rtl_push_squelch(const dsd_opts* opts) {
+#ifdef USE_RADIO
+    if (!opts) {
+        return;
+    }
+    if (dsd_squelch_mode_is_dynamic(opts->rtl_squelch_mode)) {
+        const dsd_squelch_setting squelch = dsd_squelch_setting_of_opts(opts);
+        rtl_stream_set_channel_squelch_setting(&squelch);
+        return;
+    }
+    rtl_stream_set_channel_squelch((float)opts->rtl_squelch_level);
+#else
+    (void)opts;
+#endif
+}

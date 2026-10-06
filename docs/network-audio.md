@@ -33,6 +33,14 @@ Notes:
 - With rigctl enabled (`-U <port>`), a TCP input host is also used as the rigctl host. For SDR++ on another PC, allow
   both the TCP audio port, commonly `7355`, and the rigctl port, commonly `4532`.
 
+### Squelch on PCM input
+
+The analog FM monitor (`-fA`) on PCM input takes a level squelch (`--squelch -50`, against the input level) or the
+noise squelch (`--squelch noise[+N]`), which learns what noise alone puts above the voice band from the stream itself
+and opens when a carrier quiets it by N dB, as a radio's squelch does. It needs that noise in the stream: feed it the
+discriminator, or an SDR program's FM audio with its audio low-pass off, at 12 kHz or more. On low-passed audio it says
+so once and stays off. See "Noise squelch on audio input" in `docs/cli.md`.
+
 ## UDP Audio Output (`-o udp`)
 
 `-o udp[:host:port]` sends decoded audio to a UDP “blaster” socket (default `127.0.0.1:23456`).

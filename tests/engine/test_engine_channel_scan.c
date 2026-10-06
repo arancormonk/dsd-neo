@@ -1815,7 +1815,8 @@ nfm_warning_rows_visit(dsd_opts* opts, dsd_state* state, int visits) {
  * once per map and DSP rate, a width on an input with no demodulator for it or a width the running DSP rate cannot
  * filter. Digital rows and well-set nfm rows say nothing. */
 static const char* g_nfm_warning_input_dev = "";
-/* 1: the configured squelch is the auto squelch (its level stays configured_sql_db, for a switch back). */
+/* 1: the configured squelch is the auto squelch, 2 the noise squelch (its level stays configured_sql_db, for a switch
+   back). */
 static int g_nfm_warning_auto = 0;
 
 static int
@@ -1825,7 +1826,7 @@ nfm_row_warnings(int audio_in_type, int dsp_rate_hz, double configured_sql_db) {
     assert(opts && state);
     nfm_warning_rows_setup(opts, state, audio_in_type, configured_sql_db);
     if (g_nfm_warning_auto) {
-        opts->rtl_squelch_mode = DSD_SQUELCH_MODE_AUTO;
+        opts->rtl_squelch_mode = g_nfm_warning_auto == 2 ? DSD_SQUELCH_MODE_NOISE : DSD_SQUELCH_MODE_AUTO;
         opts->rtl_squelch_margin_db = DSD_SQUELCH_MARGIN_DEFAULT_DB;
     }
     DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", g_nfm_warning_input_dev);
@@ -1883,6 +1884,15 @@ test_nfm_row_warnings_once_per_row(void) {
     assert(strstr(g_analog_warning_rows[0], "--squelch auto"));
     assert(nfm_row_warnings(AUDIO_IN_WAV, 0, -60.0) == 3);
     assert(strstr(g_analog_warning_rows[2], "Scan channel 4 ") || strstr(g_analog_warning_rows[1], "Scan channel 4 "));
+    /* The noise squelch closes on noise on audio input's nfm rows too (issue #628): row 4 inherits it and is quiet
+       there as on a radio input, and the warning names the noise squelch as a fix. */
+    g_nfm_warning_auto = 2;
+    assert(nfm_row_warnings(AUDIO_IN_RTL, 48000, -110.0) == 1);
+    assert(nfm_row_warnings(AUDIO_IN_WAV, 0, -60.0) == 2);
+    assert(strstr(g_analog_warning_rows[0], "Scan channel 2 ") || strstr(g_analog_warning_rows[1], "Scan channel 2 "));
+    assert(!strstr(g_analog_warning_rows[0], "Scan channel 4 ")
+           && !strstr(g_analog_warning_rows[1], "Scan channel 4 "));
+    assert(strstr(g_analog_warning_rows[0], "--squelch noise") || strstr(g_analog_warning_rows[1], "--squelch noise"));
     g_nfm_warning_auto = 0;
 }
 

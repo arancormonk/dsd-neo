@@ -20,6 +20,7 @@
 
 // ---- Visibility/predicate functions ----
 bool io_rtl_active(const void* ctx);
+bool io_squelch_offered(const void* ctx);
 bool trunk_enabled(const void* ctx);
 bool scan_rotation_active(const void* ctx);
 bool rtl_freq_offered(const void* ctx);
@@ -105,6 +106,7 @@ const char* lbl_current_input(const void* vctx, char* b, size_t n);
 const char* lbl_current_output(const void* vctx, char* b, size_t n);
 const char* lbl_input_volume(const void* vctx, char* b, size_t n);
 const char* lbl_input_warn(const void* v, char* b, size_t n);
+const char* lbl_input_sql(const void* v, char* b, size_t n);
 const char* lbl_tcp(const void* vctx, char* b, size_t n);
 const char* lbl_out_mute(const void* vctx, char* b, size_t n);
 const char* lbl_gain_dig(const void* v, char* b, size_t n);
@@ -171,7 +173,6 @@ const char* lbl_rtl_bw(const void* v, char* b, size_t n);
 const char* lbl_rtl_nfm_bw(const void* v, char* b, size_t n);
 const char* lbl_rtl_am_bw(const void* v, char* b, size_t n);
 const char* lbl_rtl_vol(const void* v, char* b, size_t n);
-const char* lbl_rtl_sql(const void* v, char* b, size_t n);
 const char* lbl_rtl_bias(const void* v, char* b, size_t n);
 const char* lbl_rtl_rtltcp_autotune(const void* v, char* b, size_t n);
 const char* lbl_rtl_auto_ppm(const void* v, char* b, size_t n);

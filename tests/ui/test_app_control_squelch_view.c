@@ -59,13 +59,13 @@ main(void) {
     /* No scan scope: one value, no annotation. */
     assert(dsd_app_squelch_view_get(opts, state, &view) == 0);
     assert(!view.row_override && level_is(view.effective_level, -80.0) && level_is(view.configured_level, -80.0));
-    expect_text(&view, "-80.0 dB", "Applied: RTL squelch -> -80.0 dB");
+    expect_text(&view, "-80.0 dB", "Applied: squelch -> -80.0 dB");
 
     /* A row that inherits is not an override. */
     assert(dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_DMR) == 0);
     assert(dsd_app_squelch_view_get(opts, state, &view) == 0);
     assert(!view.row_override);
-    expect_text(&view, "-80.0 dB", "Applied: RTL squelch -> -80.0 dB");
+    expect_text(&view, "-80.0 dB", "Applied: squelch -> -80.0 dB");
 
     dsd_scan_option_values row = {0};
     row.present = DSD_SCAN_OPT_SQUELCH;
@@ -117,7 +117,7 @@ main(void) {
     assert(dsd_app_squelch_view_get(opts, state, &view) == 0);
     assert(!view.configured_off && !view.effective_off);
     assert(fabs(dsd_app_squelch_db_or_off(view.configured_level)) < 1e-12);
-    expect_text(&view, "0.0 dB", "Applied: RTL squelch -> 0.0 dB");
+    expect_text(&view, "0.0 dB", "Applied: squelch -> 0.0 dB");
 
     /* The auto squelch (issue #518 follow-up): its margin, what it shows in force, and why it is off where it is. */
     opts->rtl_squelch_level = dsd_squelch_level_from_sql(-80.0);
@@ -125,18 +125,18 @@ main(void) {
     opts->rtl_squelch_margin_db = 10;
     assert(dsd_app_squelch_view_get(opts, state, &view) == 0);
     assert(view.effective_auto && view.configured_auto && view.effective_off);
-    expect_text(&view, "auto +10 dB (off: no radio input)", "Applied: RTL squelch -> auto +10 dB");
+    expect_text(&view, "auto +10 dB (off: no radio input)", "Applied: squelch -> auto +10 dB");
     expect_auto_status(&view, "off: no radio input");
     opts->audio_in_type = AUDIO_IN_RTL;
     assert(dsd_app_squelch_view_get(opts, state, &view) == 0);
-    expect_text(&view, "auto +10 dB (off on digital)", "Applied: RTL squelch -> auto +10 dB");
+    expect_text(&view, "auto +10 dB (off on digital)", "Applied: squelch -> auto +10 dB");
     expect_auto_status(&view, "off on digital");
     opts->analog_only = 1;
     opts->monitor_input_audio = 1;
     opts->frame_dmr = 0;
     assert(dsd_app_squelch_view_get(opts, state, &view) == 0);
     assert(!view.effective_off && !view.auto_running);
-    expect_text(&view, "auto +10 dB (learning)", "Applied: RTL squelch -> auto +10 dB");
+    expect_text(&view, "auto +10 dB (learning)", "Applied: squelch -> auto +10 dB");
     expect_auto_status(&view, "learning");
     state->squelch_auto_active = 1;
     state->squelch_auto_plan_valid = 1;
@@ -144,12 +144,12 @@ main(void) {
     state->squelch_auto_floor_cdb = -7830;
     assert(dsd_app_squelch_view_get(opts, state, &view) == 0);
     assert(view.auto_running && !view.auto_learning && fabs(view.auto_floor_db - (-78.3)) < 1e-9);
-    expect_text(&view, "auto +10 dB (floor -78.3 dB)", "Applied: RTL squelch -> auto +10 dB");
+    expect_text(&view, "auto +10 dB (floor -78.3 dB)", "Applied: squelch -> auto +10 dB");
     expect_auto_status(&view, "floor -78.3 dB");
     state->squelch_auto_plan_valid = 0;
     assert(dsd_app_squelch_view_get(opts, state, &view) == 0);
     assert(view.effective_off);
-    expect_text(&view, "auto +10 dB (off: no channel plan)", "Applied: RTL squelch -> auto +10 dB");
+    expect_text(&view, "auto +10 dB (off: no channel plan)", "Applied: squelch -> auto +10 dB");
     expect_auto_status(&view, "off: no channel plan");
     state->squelch_auto_plan_valid = 1;
     char text[24];
@@ -163,7 +163,7 @@ main(void) {
     assert(dsd_app_squelch_view_get(opts, state, &view) == 0);
     assert(view.effective_noise && view.configured_noise && !view.effective_auto && !view.configured_auto);
     assert(!view.effective_off && !view.noise_running && !view.noise_as_auto);
-    expect_text(&view, "noise +12 dB (starting)", "Applied: RTL squelch -> noise +12 dB");
+    expect_text(&view, "noise +12 dB (starting)", "Applied: squelch -> noise +12 dB");
     state->squelch_auto_active = 1;
     state->squelch_noise_active = 1;
     state->squelch_auto_gate_open = 1;
@@ -177,25 +177,69 @@ main(void) {
     assert(view.noise_running && view.noise_measured && view.noise_gate_open && !view.auto_running
            && !view.auto_gate_open);
     assert(fabs(view.noise_quieting_db - 23.49) < 1e-9);
-    expect_text(&view, "noise +12 dB (quieting 23 dB)", "Applied: RTL squelch -> noise +12 dB");
+    expect_text(&view, "noise +12 dB (quieting 23 dB)", "Applied: squelch -> noise +12 dB");
     expect_auto_status(&view, "quieting 23 dB");
     state->squelch_noise_active = 0;
     state->squelch_noise_measured = 0;
     assert(dsd_app_squelch_view_get(opts, state, &view) == 0);
     assert(view.noise_as_auto && view.auto_running && view.auto_gate_open && !view.noise_gate_open);
-    expect_text(&view, "noise +12 dB (as auto: floor -78.3 dB)", "Applied: RTL squelch -> noise +12 dB");
+    expect_text(&view, "noise +12 dB (as auto: floor -78.3 dB)", "Applied: squelch -> noise +12 dB");
     opts->analog_demod = DSD_ANALOG_DEMOD_AM;
     state->squelch_auto_active = 0;
     assert(dsd_app_squelch_view_get(opts, state, &view) == 0);
     assert(view.auto_resolution == DSD_SQUELCH_RESOLVED_AM_AUTO && view.noise_as_auto && !view.effective_off);
     expect_auto_status(&view, "as auto: learning");
     assert(dsd_app_squelch_view_configured_text(&view, text, sizeof text) == 0 && strcmp(text, "noise+12") == 0);
+    /* On AM audio input the noise squelch is off: no discriminator to measure, and no auto to stand in. */
     opts->audio_in_type = AUDIO_IN_WAV;
+    assert(dsd_app_squelch_view_get(opts, state, &view) == 0);
+    assert(view.effective_off && view.auto_resolution == DSD_SQUELCH_RESOLVED_AUDIO_AM && !view.noise_as_auto);
+    expect_auto_status(&view, "off on AM audio");
+
+    /* On audio input's FM monitor (issue #628) the PCM noise squelch runs it: "starting" before it published,
+       "learning" until it holds a reference and has read a window, its quieting after, and off with no band or no
+       room above voice. */
+    opts->analog_demod = DSD_ANALOG_DEMOD_FM;
+    state->squelch_auto_active = 0;
+    state->squelch_noise_active = 0;
+    state->squelch_noise_state = DSD_SQUELCH_NOISE_STATE_NONE;
+    assert(dsd_app_squelch_view_get(opts, state, &view) == 0);
+    assert(view.auto_resolution == DSD_SQUELCH_RESOLVED_AS_SET && !view.effective_off && !view.noise_as_auto);
+    expect_auto_status(&view, "starting");
+    state->squelch_auto_active = 1;
+    state->squelch_noise_active = 1;
+    state->squelch_auto_gate_open = 0;
+    state->squelch_noise_state = DSD_SQUELCH_NOISE_STATE_LEARNING;
+    assert(dsd_app_squelch_view_get(opts, state, &view) == 0);
+    assert(view.noise_running && !view.noise_as_auto && !view.effective_off);
+    expect_text(&view, "noise +12 dB (learning)", "Applied: squelch -> noise +12 dB");
+    state->squelch_noise_state = DSD_SQUELCH_NOISE_STATE_KNOWN;
+    state->squelch_noise_measured = 1;
+    state->squelch_noise_quieting_cdb = 1810;
+    state->squelch_auto_gate_open = 1;
+    assert(dsd_app_squelch_view_get(opts, state, &view) == 0);
+    assert(view.noise_gate_open && !view.effective_off);
+    expect_text(&view, "noise +12 dB (quieting 18 dB)", "Applied: squelch -> noise +12 dB");
+    state->squelch_noise_state = DSD_SQUELCH_NOISE_STATE_NO_BAND;
+    state->squelch_noise_measured = 0;
+    assert(dsd_app_squelch_view_get(opts, state, &view) == 0);
+    assert(view.effective_off);
+    expect_text(&view, "noise +12 dB (off: no band above voice)", "Applied: squelch -> noise +12 dB");
+    state->squelch_noise_state = DSD_SQUELCH_NOISE_STATE_NO_ROOM;
+    assert(dsd_app_squelch_view_get(opts, state, &view) == 0);
+    assert(view.effective_off);
+    expect_auto_status(&view, "off: no room above voice");
+    /* AUTO on audio input stays off. */
+    opts->rtl_squelch_mode = DSD_SQUELCH_MODE_AUTO;
     assert(dsd_app_squelch_view_get(opts, state, &view) == 0);
     assert(view.effective_off);
     expect_auto_status(&view, "off: no radio input");
+    opts->rtl_squelch_mode = DSD_SQUELCH_MODE_NOISE;
+    state->squelch_noise_state = DSD_SQUELCH_NOISE_STATE_NONE;
+    state->squelch_noise_active = 0;
+    state->squelch_auto_active = 0;
+    state->squelch_auto_gate_open = 1;
     opts->audio_in_type = AUDIO_IN_RTL;
-    opts->analog_demod = DSD_ANALOG_DEMOD_FM;
     opts->rtl_squelch_mode = DSD_SQUELCH_MODE_AUTO;
     opts->rtl_squelch_margin_db = 10;
     state->squelch_auto_active = 1;

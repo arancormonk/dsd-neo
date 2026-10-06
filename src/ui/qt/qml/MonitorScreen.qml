@@ -15,6 +15,7 @@ Item {
             siteSheet.visible = false;
             networkSheet.visible = false;
             toneFilterSheet.visible = false;
+            squelchSheet.visible = false;
             historyDetail.visible = false;
             otherSlotMenu.visible = false;
         }
@@ -1017,6 +1018,51 @@ Item {
                 }
             }
 
+            // The squelch on audio input (#628): a level, or the noise squelch it
+            // learns from the input, read as the terminal's SQL field spells it
+            // ("noise +10 dB (learning)", "-50.0 dB", "(off: no band above
+            // voice)"). On a radio input the Radio sheet has the squelch; here,
+            // with no tuner, the monitor is where it is set. A Flow, as the
+            // tone filter row is, so the button moves under a long reading.
+            Flow {
+                // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
+                objectName: "monitorSquelch"
+
+                width: parent.width
+                spacing: 5
+                visible: metrics.squelchAudioInput === true
+
+                Text {
+                    objectName: "monitorSquelchLabel"
+
+                    text: qsTr("SQUELCH")
+                    font.family: Theme.mono
+                    font.pixelSize: Theme.fontSize(11)
+                    color: Theme.textSubdued
+                }
+
+                Text {
+                    objectName: "monitorSquelchValue"
+
+                    width: Math.min(implicitWidth, parent.width)
+                    text: metrics.squelchReadout
+                    textFormat: Text.PlainText
+                    wrapMode: Text.Wrap
+                    font.family: Theme.mono
+                    font.pixelSize: Theme.fontSize(11)
+                    color: Theme.textSubdued
+                }
+
+                OutlineButton {
+                    objectName: "monitorSquelchEdit"
+
+                    text: qsTr("Edit")
+                    accessibleName: qsTr("Edit squelch")
+                    enabled: decoderHost.running
+                    onClicked: squelchSheet.openEditor()
+                }
+            }
+
             // Why the scan stopped moving (#380): channels or targets the operator
             // avoided for the session, with the way to put them back. Hidden at zero
             // and outside any rotation, so an idle session never carries a 0. The
@@ -1215,6 +1261,12 @@ Item {
     // #527: the live tone-filter editor, over the monitor like the key sheet.
     ToneFilterSheet {
         id: toneFilterSheet
+        z: 10
+    }
+
+    // #628: the squelch on audio input, over the monitor like the tone-filter editor.
+    SquelchSheet {
+        id: squelchSheet
         z: 10
     }
 

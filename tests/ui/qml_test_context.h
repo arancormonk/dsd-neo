@@ -2403,6 +2403,8 @@ class Setup : public QObject {
         metrics[QStringLiteral("effectiveSquelchMarginDb")] = 0;
         metrics[QStringLiteral("squelchAutoStatus")] = QString();
         metrics[QStringLiteral("configuredSquelchLevelOff")] = false;
+        // #628: whether the session runs on audio input, where the monitor's Squelch row edits the squelch.
+        metrics[QStringLiteral("squelchAudioInput")] = false;
         // #525: the analog channel width in force (0 outside the analog preset and on PCM input),
         // whether the DSP rate bounds it, the configured width the control edits (0 = default),
         // the widest width the running stream's DSP rate filters (0 = not known), and the

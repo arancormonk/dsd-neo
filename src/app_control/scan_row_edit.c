@@ -22,6 +22,7 @@
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/scan_row_edit.h>
+#include <dsd-neo/runtime/squelch.h>
 #ifdef USE_RADIO
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/runtime/input_failure.h>
@@ -61,10 +62,11 @@ scan_row_edit_engine(dsd_opts* opts, dsd_state* state, const dsd_app_scan_row_ed
     return DSD_SCAN_ROW_EDIT_UNAVAILABLE;
 }
 
-/* The value a SET carries, the tone list parsed. Returns 0, or -1 with why in @p why. */
+/* The value a SET carries, the tone list parsed. Returns 0, or -1 with why in @p why: a tone list the parser refuses,
+   or the auto squelch on audio input, which has no channel power to learn a floor from (issue #628). */
 static int
-scan_row_edit_value(const dsd_app_scan_row_edit_payload* p, dsd_scan_row_edit_value* value, char* why,
-                    size_t why_size) {
+scan_row_edit_value(const dsd_opts* opts, const dsd_app_scan_row_edit_payload* p, dsd_scan_row_edit_value* value,
+                    char* why, size_t why_size) {
     DSD_MEMSET(value, 0, sizeof(*value));
     value->squelch_db = p->squelch_db;
     value->squelch_mode = dsd_squelch_mode_or_level(p->squelch_mode);
@@ -74,6 +76,11 @@ scan_row_edit_value(const dsd_app_scan_row_edit_payload* p, dsd_scan_row_edit_va
     value->tone_filter = p->tone_mode;
     if (p->action == DSD_SCAN_ROW_EDIT_SET && p->field == (int32_t)DSD_SCAN_ROW_FIELD_TONE
         && dsd_tone_filter_check(p->tone_mode, p->tone_list, &value->tone_set, why, why_size) != 0) {
+        return -1;
+    }
+    if (p->action == DSD_SCAN_ROW_EDIT_SET && p->field == (int32_t)DSD_SCAN_ROW_FIELD_SQUELCH
+        && value->squelch_mode == DSD_SQUELCH_MODE_AUTO && dsd_squelch_input_kind(opts) == DSD_SQUELCH_INPUT_AUDIO) {
+        DSD_SNPRINTF(why, why_size, "%s", "the auto squelch needs a radio input; audio input takes a level or noise");
         return -1;
     }
     return 0;
@@ -361,7 +368,7 @@ dsd_app_apply_scan_row_edit(dsd_opts* opts, dsd_state* state, const struct dsd_a
     }
     char why[DSD_SCAN_ROW_EDIT_ERROR_SIZE] = {0};
     dsd_scan_row_edit_value value;
-    if (scan_row_edit_value(&p, &value, why, sizeof why) != 0) {
+    if (scan_row_edit_value(opts, &p, &value, why, sizeof why) != 0) {
         (void)dsd_app_scan_row_notice(label, (uint32_t)p.field, (unsigned int)p.mode, p.action, NULL,
                                       DSD_SCAN_ROW_EDIT_REFUSED, why, notice, notice_size);
         *ttl_s = 5;

@@ -480,6 +480,9 @@ openAudioInput(dsd_opts* opts) {
         LOG_ERROR("Failed to open audio input: %s", dsd_audio_get_error());
         return -1;
     }
+    /* Every Pulse open is a new stream, whatever asked for it (a config switch, the end of a playback, a file that
+       ran out): the PCM noise squelch forgets the old stream's references (issue #628). */
+    dsd_opts_note_pcm_stream(opts);
     return 0;
 }
 

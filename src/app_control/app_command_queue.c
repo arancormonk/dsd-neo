@@ -424,12 +424,10 @@ ui_set_tcp_audio_connected_toast_if_output_ready(dsd_opts* opts, dsd_state* stat
     ui_set_toast(state, 3, "TCP audio connected: %s:%d", host, port);
 }
 
-#ifdef USE_RADIO
 static inline int
 ui_rc_is_not_supported(int rc) {
     return rc == DSD_ERR_NOT_SUPPORTED;
 }
-#endif
 
 static int
 ui_cmd_apply_status_from_service_rc(int rc) {
@@ -1858,55 +1856,6 @@ ui_cmd_handle_rtl_set_bw(dsd_opts* opts, dsd_state* state, const struct dsd_app_
     return ui_cmd_apply_status_from_service_rc(rc);
 }
 
-/* The squelch edit's toast, for either command: the setting stored, and whether a scan row still wins. */
-static void
-ui_cmd_toast_squelch_edit(const dsd_opts* opts, dsd_state* state, int rc) {
-    if (rc == 0) {
-        dsd_app_squelch_view view;
-        char notice[96];
-        (void)dsd_app_squelch_view_get(opts, state, &view);
-        (void)dsd_app_squelch_view_edit_notice(&view, notice, sizeof notice);
-        ui_set_toast(state, 3, "%s", notice);
-    } else if (rc == SVC_SQL_NOISE_NEEDS_FM) {
-        ui_set_toast(state, 4, "Refused: the noise squelch needs an FM channel; AM takes auto");
-    } else if (ui_rc_is_not_supported(rc)) {
-        ui_set_toast(state, 3, "Unsupported: squelch control not available on active backend");
-    } else {
-        ui_set_toast(state, 4, "Failed: RTL squelch update");
-    }
-}
-
-static int
-ui_cmd_handle_rtl_set_sql_db(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
-    double d = 0.0;
-    int result = UI_CMD_APPLY_COMPLETED;
-    if (state && ui_cmd_parse_double_payload(c, &d)) {
-        int rc = svc_rtl_set_sql_db(opts, state, d);
-        result = ui_cmd_apply_status_from_service_rc(rc);
-        /* Report the threshold that was stored rather than the number that was asked for: a request of 0 dB switches
-           the squelch off, and echoing "0.0 dB" would describe a gate at full scale instead. The command edits the
-           configured default, so when a scan row overrides the squelch the notice says the row still wins. */
-        ui_cmd_toast_squelch_edit(opts, state, rc);
-    }
-    return result;
-}
-
-static int
-ui_cmd_handle_rtl_set_sql_setting(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
-    dsd_app_squelch_setting_payload payload;
-    if (!state || c->n != sizeof payload) {
-        return UI_CMD_APPLY_COMPLETED;
-    }
-    DSD_MEMCPY(&payload, c->data, sizeof payload);
-    dsd_squelch_setting setting;
-    setting.mode = dsd_squelch_mode_or_level(payload.mode);
-    setting.margin_db = payload.margin_db;
-    setting.level = payload.level;
-    const int rc = svc_rtl_set_sql_setting(opts, state, &setting);
-    ui_cmd_toast_squelch_edit(opts, state, rc);
-    return ui_cmd_apply_status_from_service_rc(rc);
-}
-
 static int
 ui_cmd_handle_rtl_set_vol_mult(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     int32_t v = 0;
@@ -1929,8 +1878,6 @@ static int
 apply_cmd_io_and_import_rtl_c(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     static const struct dsd_app_command_handler_entry k_handlers[] = {
         {DSD_APP_CMD_RTL_SET_BW, ui_cmd_handle_rtl_set_bw},
-        {DSD_APP_CMD_RTL_SET_SQL_DB, ui_cmd_handle_rtl_set_sql_db},
-        {DSD_APP_CMD_RTL_SET_SQL_SETTING, ui_cmd_handle_rtl_set_sql_setting},
         {DSD_APP_CMD_RTL_SET_VOL_MULT, ui_cmd_handle_rtl_set_vol_mult},
     };
     if (!opts || !c) {
@@ -2006,6 +1953,74 @@ apply_cmd_io_and_import_rtl_d(dsd_opts* opts, dsd_state* state, const struct dsd
     return ui_cmd_apply_handler_table(k_handlers, sizeof k_handlers / sizeof k_handlers[0], opts, state, c);
 }
 #endif
+
+/* The squelch commands run on every input, so they sit outside the radio guard: audio input takes a level or the
+   noise squelch (issue #628). */
+/* The squelch edit's toast, for either command: the setting stored, and whether a scan row still wins. */
+static void
+ui_cmd_toast_squelch_edit(const dsd_opts* opts, dsd_state* state, int rc) {
+    if (rc == 0) {
+        dsd_app_squelch_view view;
+        char notice[96];
+        (void)dsd_app_squelch_view_get(opts, state, &view);
+        (void)dsd_app_squelch_view_edit_notice(&view, notice, sizeof notice);
+        ui_set_toast(state, 3, "%s", notice);
+    } else if (rc == SVC_SQL_NOISE_NEEDS_FM && dsd_squelch_input_kind(opts) == DSD_SQUELCH_INPUT_AUDIO) {
+        /* Auto needs a radio input too: AM audio takes a level. */
+        ui_set_toast(state, 4, "Refused: the noise squelch needs an FM channel; AM audio takes a level");
+    } else if (rc == SVC_SQL_NOISE_NEEDS_FM) {
+        ui_set_toast(state, 4, "Refused: the noise squelch needs an FM channel; AM takes auto");
+    } else if (rc == SVC_SQL_AUTO_NEEDS_RADIO) {
+        ui_set_toast(state, 4, "Refused: the auto squelch needs a radio input; audio input takes a level or noise");
+    } else if (ui_rc_is_not_supported(rc)) {
+        ui_set_toast(state, 3, "Unsupported: squelch control not available on active backend");
+    } else {
+        ui_set_toast(state, 4, "Failed: squelch update");
+    }
+}
+
+static int
+ui_cmd_handle_rtl_set_sql_db(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    double d = 0.0;
+    int result = UI_CMD_APPLY_COMPLETED;
+    if (state && ui_cmd_parse_double_payload(c, &d)) {
+        int rc = svc_rtl_set_sql_db(opts, state, d);
+        result = ui_cmd_apply_status_from_service_rc(rc);
+        /* Report the threshold that was stored rather than the number that was asked for: a request of 0 dB switches
+           the squelch off, and echoing "0.0 dB" would describe a gate at full scale instead. The command edits the
+           configured default, so when a scan row overrides the squelch the notice says the row still wins. */
+        ui_cmd_toast_squelch_edit(opts, state, rc);
+    }
+    return result;
+}
+
+static int
+ui_cmd_handle_rtl_set_sql_setting(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    dsd_app_squelch_setting_payload payload;
+    if (!state || c->n != sizeof payload) {
+        return UI_CMD_APPLY_COMPLETED;
+    }
+    DSD_MEMCPY(&payload, c->data, sizeof payload);
+    dsd_squelch_setting setting;
+    setting.mode = dsd_squelch_mode_or_level(payload.mode);
+    setting.margin_db = payload.margin_db;
+    setting.level = payload.level;
+    const int rc = svc_rtl_set_sql_setting(opts, state, &setting);
+    ui_cmd_toast_squelch_edit(opts, state, rc);
+    return ui_cmd_apply_status_from_service_rc(rc);
+}
+
+static int
+apply_cmd_io_and_import_squelch(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    static const struct dsd_app_command_handler_entry k_handlers[] = {
+        {DSD_APP_CMD_RTL_SET_SQL_DB, ui_cmd_handle_rtl_set_sql_db},
+        {DSD_APP_CMD_RTL_SET_SQL_SETTING, ui_cmd_handle_rtl_set_sql_setting},
+    };
+    if (!opts || !c) {
+        return 0;
+    }
+    return ui_cmd_apply_handler_table(k_handlers, sizeof k_handlers / sizeof k_handlers[0], opts, state, c);
+}
 
 static int
 ui_cmd_handle_rigctl_set_mod_bw(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
@@ -2588,54 +2603,26 @@ apply_cmd_io_and_import_imports(dsd_opts* opts, dsd_state* state, const struct d
 
 static int
 apply_cmd_io_and_import(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    /* Each group returns nonzero once it handled the command. */
+    static const dsd_app_command_handler_fn k_groups[] = {
+        apply_cmd_io_and_import_file_outputs_a, apply_cmd_io_and_import_file_outputs_b,
+        apply_cmd_io_and_import_network,
+#ifdef USE_RADIO
+        apply_cmd_io_and_import_rtl_a,          apply_cmd_io_and_import_rtl_b,
+        apply_cmd_io_and_import_rtl_c,          apply_cmd_io_and_import_rtl_d,
+#endif
+        apply_cmd_io_and_import_squelch,        apply_cmd_io_and_import_runtime_a,
+        apply_cmd_io_and_import_pulse_io,       apply_cmd_io_and_import_lrrp_and_p2,
+        apply_cmd_io_and_import_imports,
+    };
     if (!opts || !c) {
         return 0;
     }
-    int r = apply_cmd_io_and_import_file_outputs_a(opts, state, c);
-    if (r) {
-        return r;
-    }
-    r = apply_cmd_io_and_import_file_outputs_b(opts, state, c);
-    if (r) {
-        return r;
-    }
-    r = apply_cmd_io_and_import_network(opts, state, c);
-    if (r) {
-        return r;
-    }
-#ifdef USE_RADIO
-    r = apply_cmd_io_and_import_rtl_a(opts, state, c);
-    if (r) {
-        return r;
-    }
-    r = apply_cmd_io_and_import_rtl_b(opts, state, c);
-    if (r) {
-        return r;
-    }
-    r = apply_cmd_io_and_import_rtl_c(opts, state, c);
-    if (r) {
-        return r;
-    }
-    r = apply_cmd_io_and_import_rtl_d(opts, state, c);
-    if (r) {
-        return r;
-    }
-#endif
-    r = apply_cmd_io_and_import_runtime_a(opts, state, c);
-    if (r) {
-        return r;
-    }
-    r = apply_cmd_io_and_import_pulse_io(opts, state, c);
-    if (r) {
-        return r;
-    }
-    r = apply_cmd_io_and_import_lrrp_and_p2(opts, state, c);
-    if (r) {
-        return r;
-    }
-    r = apply_cmd_io_and_import_imports(opts, state, c);
-    if (r) {
-        return r;
+    for (size_t i = 0; i < sizeof k_groups / sizeof k_groups[0]; i++) {
+        const int r = k_groups[i](opts, state, c);
+        if (r) {
+            return r;
+        }
     }
     return 0;
 }

@@ -223,7 +223,7 @@ test_rtl_stream_io_installer(void) {
     assert(status.active == 1 && status.state == 1 && status.gate_open == 0 && status.plan_valid == 1);
     assert(status.floor_power > 1.9e-6 && status.floor_power < 2.1e-6);
     assert(status.noise == 1 && status.quieting_valid == 1 && status.quieting_db > 23.45 && status.quieting_db < 23.46);
-    dsd_squelch_publish_status(&state);
+    dsd_squelch_publish_status(NULL, &state);
     assert(state.squelch_auto_active == 1U && state.squelch_auto_state == 1U && state.squelch_auto_gate_open == 0U);
     /* 2e-6 / 2 = 1e-6: -60 dB. */
     assert(state.squelch_auto_floor_cdb == -6000);
@@ -234,7 +234,7 @@ test_rtl_stream_io_installer(void) {
     /* A host that installs read alone: read_ex reads through it, every flag open. */
     dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){.read = rtl_stream_io_test_read});
     assert(dsd_rtl_stream_io_hook_squelch_status(&state, &status) == -1 && status.active == 0);
-    dsd_squelch_publish_status(&state);
+    dsd_squelch_publish_status(NULL, &state);
     assert(state.squelch_auto_active == 0U && state.squelch_auto_floor_cdb == 0);
     assert(state.squelch_noise_active == 0U && state.squelch_noise_measured == 0U
            && state.squelch_noise_quieting_cdb == 0);

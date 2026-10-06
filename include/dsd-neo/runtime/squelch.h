@@ -18,10 +18,12 @@
  * the discriminator's output above the voice band quiets by N whole dB (3..30, default 10). Keywords are
  * case-insensitive and surrounding spaces are ignored. Diagnostics never repeat the text they were given.
  *
- * The dynamic squelches (AUTO, NOISE) need a radio input carrying an analog channel: on audio input FM noise is louder
- * than voice, so a floor plus a margin would read backwards (the noise squelch has no audio-input form yet), and a
- * digital channel never shows its noise (its CRC/FEC gates it anyway). There they resolve to off. NOISE needs FM: on an
- * AM channel it resolves to AUTO with the same N (dsd_squelch_setting_resolve()).
+ * The dynamic squelches (AUTO, NOISE) need an analog channel: a digital channel never shows its noise (its CRC/FEC
+ * gates it anyway), and there they resolve to off. AUTO needs a radio input: on audio input FM noise is louder than
+ * voice, so a floor plus a margin would read backwards. NOISE needs FM: on a radio input's AM channel it resolves to
+ * AUTO with the same N; on audio input (issue #628) it runs on the FM monitor through the PCM noise squelch, which
+ * learns the input's noise (src/dsp/pcm_noise_squelch.c), and is off on AM audio, where no AUTO can stand in
+ * (dsd_squelch_setting_resolve()).
  */
 
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_SQUELCH_H_
@@ -43,10 +45,29 @@ enum { DSD_SQUELCH_TEXT_SIZE = 24 };
 /** @brief Why a setting resolved as it did (dsd_squelch_setting_resolve()). */
 typedef enum {
     DSD_SQUELCH_RESOLVED_AS_SET = 0, /**< the setting runs as written */
-    DSD_SQUELCH_RESOLVED_NO_RADIO,   /**< a dynamic setting on an input that is not a radio: off */
+    DSD_SQUELCH_RESOLVED_NO_RADIO,   /**< AUTO off audio input, or a dynamic setting on neither input kind: off */
     DSD_SQUELCH_RESOLVED_DIGITAL,    /**< a dynamic setting on a digital channel: off */
-    DSD_SQUELCH_RESOLVED_AM_AUTO,    /**< NOISE on an AM channel: AUTO with the same N */
+    DSD_SQUELCH_RESOLVED_AM_AUTO,    /**< NOISE on a radio input's AM channel: AUTO with the same N */
+    DSD_SQUELCH_RESOLVED_AUDIO_AM,   /**< NOISE on AM audio input: off */
 } dsd_squelch_resolution;
+
+/** @brief The input a setting runs on (dsd_squelch_input_kind()). */
+typedef enum {
+    DSD_SQUELCH_INPUT_OTHER = 0, /**< neither: a symbol file, no input */
+    DSD_SQUELCH_INPUT_RADIO = 1, /**< an RTL-family input: DSD-neo runs the discriminator */
+    DSD_SQUELCH_INPUT_AUDIO = 2, /**< PCM audio input (Pulse, a file, stdin, TCP, UDP): the discriminator ran outside */
+} dsd_squelch_input;
+
+/** @brief What the PCM noise squelch knows (dsd_state::squelch_noise_state; 0 on radio input and when it is not
+ * running). */
+typedef enum {
+    DSD_SQUELCH_NOISE_STATE_NONE = 0,
+    DSD_SQUELCH_NOISE_STATE_LEARNING = 1,    /**< no reference yet: closed */
+    DSD_SQUELCH_NOISE_STATE_PROVISIONAL = 2, /**< a reference from the first steady stretch */
+    DSD_SQUELCH_NOISE_STATE_KNOWN = 3,       /**< a reference a transition confirmed as noise */
+    DSD_SQUELCH_NOISE_STATE_NO_BAND = 4,     /**< nothing above voice to measure: off */
+    DSD_SQUELCH_NOISE_STATE_NO_ROOM = 5,     /**< the input's rate leaves no band: off */
+} dsd_squelch_noise_state;
 
 /** @brief A LEVEL setting with @p level (mean-power units; 0 or below is off) and the default AUTO margin. */
 dsd_squelch_setting dsd_squelch_setting_of_level(double level);
@@ -94,13 +115,24 @@ int dsd_squelch_setting_format(const dsd_squelch_setting* s, char* out, size_t o
 int dsd_squelch_setting_level_finite(const dsd_squelch_setting* s);
 
 /**
- * @brief The setting that runs for @p configured on a session or row with @p radio_input (an RTL-family input),
- * @p digital (a digital mode or row) and @p am (an AM channel): a dynamic setting resolves to off without a radio
- * input or on a digital channel, NOISE resolves to AUTO with the same N on an AM channel, and every other setting runs
- * as written. Writes the result to @p out and returns why (dsd_squelch_resolution).
+ * @brief The setting that runs for @p configured on a session or row with @p input (dsd_squelch_input: 1 a radio
+ * input, 2 audio input, 0 neither), @p digital (a digital mode or row) and @p am (an AM channel): a dynamic setting
+ * resolves to off on a digital channel or on neither input kind; AUTO resolves to off on audio input; NOISE resolves
+ * to AUTO with the same N on a radio input's AM channel and to off on AM audio; every other setting runs as written.
+ * Writes the result to @p out and returns why (dsd_squelch_resolution).
  */
-int dsd_squelch_setting_resolve(const dsd_squelch_setting* configured, int radio_input, int digital, int am,
+int dsd_squelch_setting_resolve(const dsd_squelch_setting* configured, int input, int digital, int am,
                                 dsd_squelch_setting* out);
+
+/** @brief The input kind @p opts runs (dsd_squelch_input): DSD_SQUELCH_INPUT_OTHER for NULL. */
+int dsd_squelch_input_kind(const dsd_opts* opts);
+
+/**
+ * @brief Whether @p opts runs the PCM noise squelch (issue #628): a NOISE setting on audio input whose FM analog
+ * monitor reads it (dsd_analog_tone_detection_active()). Whether it gates is dsd_squelch_dynamic_in_force(): not while
+ * it has no band or no room. 0 for NULL.
+ */
+int dsd_squelch_pcm_noise_in_force(const dsd_opts* opts);
 
 /** @brief The setting @p opts holds (rtl_squelch_mode, rtl_squelch_level, rtl_squelch_margin_db); off for NULL. */
 dsd_squelch_setting dsd_squelch_setting_of_opts(const dsd_opts* opts);
@@ -120,18 +152,23 @@ void dsd_squelch_setting_store(dsd_opts* opts, const dsd_squelch_setting* settin
 int dsd_squelch_spec_field_apply(dsd_opts* opts, const char* text);
 
 /**
- * @brief Publish the auto squelch's status into @p state for the frontends (dsd_state::squelch_auto_*), from the RTL
- * stream's (dsd_rtl_stream_io_hook_squelch_status()); without a stream it reads as not running. The floor goes on
- * rtl_squelch_level's scale (half the mean |z|^2: the channel power the level squelch compares), in hundredths of a dB.
+ * @brief Publish the dynamic squelch's status into @p state for the frontends (dsd_state::squelch_auto_*,
+ * squelch_noise_*). On radio input (or with @p opts NULL) it is the RTL stream's
+ * (dsd_rtl_stream_io_hook_squelch_status()), not running without a stream; the floor goes on rtl_squelch_level's scale
+ * (half the mean |z|^2: the channel power the level squelch compares), in hundredths of a dB. While the PCM noise
+ * squelch is in force (dsd_squelch_pcm_noise_in_force()) the fields are its own, which it writes on the decoder thread,
+ * and are left alone. Everywhere else they are cleared.
  */
-void dsd_squelch_publish_status(dsd_state* state);
+void dsd_squelch_publish_status(const dsd_opts* opts, dsd_state* state);
 
 /**
  * @brief Whether a dynamic squelch gates @p opts's monitor per sample: an AUTO or NOISE setting on an RTL-family input
- * (`rtl:`, `rtltcp:`, `soapy:`, Airspy, I/Q replay). Each sample then carries its gate (the RTL stream's flags), and
- * the level comparisons are off. Elsewhere the dynamic settings resolve to off.
+ * (`rtl:`, `rtltcp:`, `soapy:`, Airspy, I/Q replay), whose stream's flags carry each sample's gate; or the PCM noise
+ * squelch in force (dsd_squelch_pcm_noise_in_force()) and available, as @p state publishes it (learning, or holding a
+ * reference; not with no band or no room, nor with @p state NULL), whose flags the monitor's capture attaches. The
+ * level comparisons are then off. Elsewhere the dynamic settings resolve to off.
  */
-int dsd_squelch_dynamic_in_force(const dsd_opts* opts);
+int dsd_squelch_dynamic_in_force(const dsd_opts* opts, const dsd_state* state);
 
 /**
  * @brief Whether @p opts runs the AM monitor on its own (-fM, no -Y or trunk scan): a session where a NOISE setting
@@ -148,10 +185,18 @@ double dsd_squelch_level_in_force(const dsd_opts* opts);
 int dsd_squelch_level_open(const dsd_opts* opts);
 
 /**
- * @brief Whether a monitor sample carrying @p flag is heard by the squelch: its own flag (DSD_SQUELCH_FLAG_CLOSED)
- * under a dynamic squelch (dsd_squelch_dynamic_in_force()), the level squelch otherwise.
+ * @brief Whether the monitor's per-sample flags carry the gate: a dynamic squelch in force
+ * (dsd_squelch_dynamic_in_force()), or the PCM noise squelch running at all (dsd_squelch_pcm_noise_in_force()), whose
+ * flags read open while it has no band or no room. So a block the squelch closed until its last sample stays closed
+ * when the decision that follows is "no band", rather than playing whole.
  */
-int dsd_squelch_gate_open(const dsd_opts* opts, uint8_t flag);
+int dsd_squelch_flags_in_force(const dsd_opts* opts, const dsd_state* state);
+
+/**
+ * @brief Whether a monitor sample carrying @p flag is heard by the squelch: its own flag (DSD_SQUELCH_FLAG_CLOSED)
+ * while the flags carry the gate (dsd_squelch_flags_in_force()), the level squelch otherwise.
+ */
+int dsd_squelch_gate_open(const dsd_opts* opts, const dsd_state* state, uint8_t flag);
 
 #ifdef __cplusplus
 }

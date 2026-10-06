@@ -179,6 +179,9 @@ struct dsd_opts {
     int rtl_volume_multiplier;
     /* Generic input volume multiplier for non-RTL inputs (Pulse/WAV/TCP/UDP). */
     int input_volume_multiplier;
+    /* Bumped each time a PCM input stream (re)opens (dsd_opts_note_pcm_stream(): openAudioInput(), a TCP reconnect,
+       and dsd_opts_reset_pcm_input_state()): what the PCM noise squelch learned belongs to one stream (issue #628). */
+    uint32_t pcm_input_generation;
     int rtl_udp_port;
     /* Base DSP bandwidth for RTL path in kHz (4,6,8,12,16,24,48). Influences capture rate planning.
        Not the hardware tuner IF bandwidth. */
@@ -500,6 +503,19 @@ dsd_opts_reset_input_upsample_state(dsd_opts* opts) {
 }
 
 /**
+ * @brief Note that a new PCM input stream began: a reopen, a reconnect, another device. The PCM noise squelch keys its
+ * references on dsd_opts::pcm_input_generation, so it forgets what it learned from the old stream.
+ *
+ * @param opts Decoder options.
+ */
+static inline void
+dsd_opts_note_pcm_stream(dsd_opts* opts) {
+    if (opts) {
+        opts->pcm_input_generation++;
+    }
+}
+
+/**
  * @brief Reset low-rate PCM input processing state at a stream boundary.
  *
  * Clears both the staged upsample bookkeeping and the reusable FIR state so the next socket/file block cannot blend
@@ -514,6 +530,7 @@ dsd_opts_reset_pcm_input_state(dsd_opts* opts) {
     }
     dsd_resampler_reset(&opts->input_resampler);
     dsd_opts_reset_input_upsample_state(opts);
+    dsd_opts_note_pcm_stream(opts);
 }
 
 /**

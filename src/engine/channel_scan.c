@@ -423,7 +423,8 @@ channel_scan_warn_rows_squelch(const dsd_opts* opts, const dsd_state* state) {
         }
         char label[64];
         channel_scan_row_label(state, row, label, sizeof label);
-        (void)dsd_engine_scan_warn_analog_squelch(opts, state, values, label);
+        const int am = dsd_channel_mode_get(state, (size_t)row) == DSD_SCAN_MODE_AM;
+        (void)dsd_engine_scan_warn_analog_squelch(opts, state, values, am, label);
     }
 }
 
@@ -516,13 +517,19 @@ channel_scan_analog_squelch(const dsd_opts* opts, const dsd_state* state, const 
 
 /* Whether that squelch holds the row on noise: off, or at -100 dB and below, every block re-arms its carrier hold, so
  * only the visit cap or a manual advance or avoid moves on. The -100 dB comparison allows for the rounding of the
- * level's power. The auto and noise squelches close on noise on a radio input; elsewhere they are off (issue #518
- * follow-up). */
+ * level's power. The auto and noise squelches close on noise on a radio input (issue #518 follow-up), and the noise
+ * squelch on audio input's FM rows too (issue #628; a source with nothing above voice says so when it finds out);
+ * elsewhere they are off. */
 static int
-channel_scan_analog_squelch_open(const dsd_opts* opts, const dsd_state* state, const dsd_scan_option_values* row) {
+channel_scan_analog_squelch_open(const dsd_opts* opts, const dsd_state* state, const dsd_scan_option_values* row,
+                                 int am) {
     const dsd_squelch_setting squelch = channel_scan_analog_squelch(opts, state, row);
     if (dsd_squelch_setting_is_dynamic(&squelch)) {
-        return !dsd_opts_input_is_radio(opts);
+        const int input = dsd_squelch_input_kind(opts);
+        if (input == DSD_SQUELCH_INPUT_RADIO) {
+            return 0;
+        }
+        return !(input == DSD_SQUELCH_INPUT_AUDIO && squelch.mode == DSD_SQUELCH_MODE_NOISE && !am);
     }
     const double floor_level = dsd_squelch_level_from_sql(-100.0);
     return dsd_squelch_is_off(squelch.level) || squelch.level <= floor_level * (1.0 + 1e-9);
@@ -542,13 +549,13 @@ dsd_engine_scan_ensure_output(dsd_opts* opts) {
 
 int
 dsd_engine_scan_warn_analog_squelch(const dsd_opts* opts, const dsd_state* state, const dsd_scan_option_values* row,
-                                    const char* label) {
-    if (!opts || !state || !label || !channel_scan_analog_squelch_open(opts, state, row)) {
+                                    int am, const char* label) {
+    if (!opts || !state || !label || !channel_scan_analog_squelch_open(opts, state, row, am)) {
         return 0;
     }
     LOG_WARN("WARNING: %s: the analog channel's squelch is off or at -100 dB or below, so noise holds it on air until "
-             "--scan-max-visit-ms or a manual advance or avoid moves on; give it --squelch auto (on a radio input) or "
-             "--squelch-db, or set a squelch.\n",
+             "--scan-max-visit-ms or a manual advance or avoid moves on; give it --squelch noise (an nfm row), "
+             "--squelch auto (on a radio input) or --squelch-db, or set a squelch.\n",
              label);
     return 1;
 }

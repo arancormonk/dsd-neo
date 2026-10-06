@@ -726,13 +726,15 @@ scope_submit(int action, const dsd_app_scan_row_edit_payload* values) {
 }
 
 /* This channel's squelch as typed: whole dB from -100 to 0 (0 or off = off), auto[+N], which the engine holds to an nfm
-   or am row, or noise[+N], which it holds to an nfm row. A refusal says why, never what was typed. */
+   or am row, or noise[+N], which it holds to an nfm row. Audio input takes no auto (issue #628). A refusal says why,
+   never what was typed. */
 static void
 cb_scope_squelch(void* u, const char* text) {
     UNUSED(u);
     if (!text) {
         return;
     }
+    const int audio = dsd_squelch_input_kind(dsd_app_get_latest_opts_snapshot()) == DSD_SQUELCH_INPUT_AUDIO;
     dsd_app_scan_row_edit_payload values = {0};
     dsd_squelch_setting setting;
     char why[96];
@@ -740,11 +742,13 @@ cb_scope_squelch(void* u, const char* text) {
     if (dsd_parse_int_strict(text, 10, -100, 0, &db) == 0) {
         values.squelch_db = db;
     } else if (dsd_squelch_setting_parse(text, &setting, why, sizeof why) == 0
-               && (dsd_squelch_setting_is_dynamic(&setting) || dsd_squelch_setting_is_off(&setting))) {
+               && (dsd_squelch_setting_is_dynamic(&setting) || dsd_squelch_setting_is_off(&setting))
+               && !(audio && setting.mode == DSD_SQUELCH_MODE_AUTO)) {
         values.squelch_mode = setting.mode;
         values.squelch_margin_db = dsd_squelch_setting_is_dynamic(&setting) ? setting.margin_db : 0;
     } else {
-        ui_statusf("Squelch on this channel: whole dB from -100 to 0, off, auto[+N] or noise[+N]");
+        ui_statusf("%s", audio ? "Squelch on this channel: whole dB from -100 to 0, off or noise[+N]"
+                               : "Squelch on this channel: whole dB from -100 to 0, off, auto[+N] or noise[+N]");
         return;
     }
     scope_submit(DSD_SCAN_ROW_EDIT_SET, &values);
@@ -824,6 +828,16 @@ scope_open_squelch(void* u, const dsd_scan_option_values* row) {
         DSD_SNPRINTF(text, sizeof text, "%s", "off");
     } else {
         DSD_SNPRINTF(text, sizeof text, "%d", (int)pwr_to_dB(g_scope.squelch_level));
+    }
+    /* Audio input takes a level or noise (issue #628): an auto setting, or noise on an am row, does not run there, so
+       the prompt offers what does run: off. */
+    if (dsd_squelch_input_kind(dsd_app_get_latest_opts_snapshot()) == DSD_SQUELCH_INPUT_AUDIO) {
+        if (strncmp(text, "auto", 4) == 0) {
+            DSD_SNPRINTF(text, sizeof text, "%s", "off");
+        }
+        ui_prompt_open_string_async("Squelch on this channel (dB -100..0, off, noise[+N])", text, sizeof text,
+                                    cb_scope_squelch, u);
+        return;
     }
     ui_prompt_open_string_async("Squelch on this channel (dB -100..0, off, auto[+N], noise[+N])", text, sizeof text,
                                 cb_scope_squelch, u);
@@ -933,6 +947,31 @@ scope_or_default(void* v, uint32_t field, int kind, const char* title, void (*op
                      "This channel: back to the list value");
     }
     ui_chooser_start_at(title, g_scope.items, g_scope.count, 0, chooser_done_scope, v);
+}
+
+// ---- Squelch: the configured default, or this channel's (issue #628: radio and audio input) ----
+
+static void
+act_set_squelch_default(void* v) {
+    UiCtx* c = (UiCtx*)v;
+    /* The configured default, as the squelch grammar reads it back: "off" for a squelch that is off rather than
+     * pwr_to_dB()'s -120 floor, so accepting what is shown never turns a disabled squelch into a real threshold, and
+     * "auto+10" or "noise+10" for a dynamic squelch (issue #518 follow-up). The command edits the configured default: a
+     * scan row overriding the squelch (issue #521) keeps its own, so offer the default rather than the row's value. */
+    dsd_app_squelch_view view;
+    char text[DSD_SQUELCH_TEXT_SIZE];
+    (void)dsd_app_squelch_view_get(c->opts, dsd_app_get_latest_snapshot(), &view);
+    (void)dsd_app_squelch_view_configured_text(&view, text, sizeof text);
+    /* Audio input has no channel power for the auto squelch to learn a floor from, so it takes a level or noise. */
+    const char* title = dsd_squelch_input_kind(c->opts) == DSD_SQUELCH_INPUT_AUDIO
+                            ? "Squelch (dB, off or noise[+N])"
+                            : "Squelch (dB, off, auto[+N] or noise[+N])";
+    ui_prompt_open_string_async(title, text, sizeof text, cb_rtl_sql_text, c);
+}
+
+void
+act_set_squelch(void* v) {
+    scope_or_default(v, DSD_SCAN_ROW_FIELD_SQUELCH, -1, "Squelch", act_set_squelch_default);
 }
 
 // ---- Tone filter (issue #527): the live editor of the configured CTCSS/DCS receive policy ----
@@ -1905,25 +1944,6 @@ rtl_set_am_bw_default(void* v) {
 void
 rtl_set_am_bw(void* v) {
     scope_or_default(v, DSD_SCAN_ROW_FIELD_WIDTH, DSD_ANALOG_DEMOD_AM, "AM bandwidth", rtl_set_am_bw_default);
-}
-
-static void
-rtl_set_sql_default(void* v) {
-    UiCtx* c = (UiCtx*)v;
-    /* The configured default, as the squelch grammar reads it back: "off" for a squelch that is off rather than
-     * pwr_to_dB()'s -120 floor, so accepting what is shown never turns a disabled squelch into a real threshold, and
-     * "auto+10" or "noise+10" for a dynamic squelch (issue #518 follow-up). The command edits the configured default: a
-     * scan row overriding the squelch (issue #521) keeps its own, so offer the default rather than the row's value. */
-    dsd_app_squelch_view view;
-    char text[DSD_SQUELCH_TEXT_SIZE];
-    (void)dsd_app_squelch_view_get(c->opts, dsd_app_get_latest_snapshot(), &view);
-    (void)dsd_app_squelch_view_configured_text(&view, text, sizeof text);
-    ui_prompt_open_string_async("Squelch (dB, off, auto[+N] or noise[+N])", text, sizeof text, cb_rtl_sql_text, c);
-}
-
-void
-rtl_set_sql(void* v) {
-    scope_or_default(v, DSD_SCAN_ROW_FIELD_SQUELCH, -1, "Squelch", rtl_set_sql_default);
 }
 
 void

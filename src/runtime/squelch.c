@@ -285,22 +285,35 @@ dsd_squelch_setting_format(const dsd_squelch_setting* s, char* out, size_t out_s
     return 0;
 }
 
+/* Why a dynamic setting runs as it does on @p input (DSD_SQUELCH_RESOLVED_AS_SET: as written, or as AUTO on a radio
+   input's AM channel). */
+static int
+squelch_dynamic_resolution(int mode, int input, int digital, int am) {
+    /* AUTO never runs off a radio input, whatever the channel. */
+    if ((input != DSD_SQUELCH_INPUT_RADIO && input != DSD_SQUELCH_INPUT_AUDIO)
+        || (input == DSD_SQUELCH_INPUT_AUDIO && mode != DSD_SQUELCH_MODE_NOISE)) {
+        return DSD_SQUELCH_RESOLVED_NO_RADIO;
+    }
+    if (digital) {
+        return DSD_SQUELCH_RESOLVED_DIGITAL;
+    }
+    if (input == DSD_SQUELCH_INPUT_AUDIO) {
+        return am ? DSD_SQUELCH_RESOLVED_AUDIO_AM : DSD_SQUELCH_RESOLVED_AS_SET;
+    }
+    return (am && mode == DSD_SQUELCH_MODE_NOISE) ? DSD_SQUELCH_RESOLVED_AM_AUTO : DSD_SQUELCH_RESOLVED_AS_SET;
+}
+
 int
-dsd_squelch_setting_resolve(const dsd_squelch_setting* configured, int radio_input, int digital, int am,
+dsd_squelch_setting_resolve(const dsd_squelch_setting* configured, int input, int digital, int am,
                             dsd_squelch_setting* out) {
     dsd_squelch_setting resolved = configured ? *configured : dsd_squelch_setting_of_level(0.0);
     int why = DSD_SQUELCH_RESOLVED_AS_SET;
     if (dsd_squelch_mode_is_dynamic(resolved.mode)) {
-        if (!radio_input) {
-            why = DSD_SQUELCH_RESOLVED_NO_RADIO;
-        } else if (digital) {
-            why = DSD_SQUELCH_RESOLVED_DIGITAL;
-        }
-        if (why != DSD_SQUELCH_RESOLVED_AS_SET) {
-            resolved = dsd_squelch_setting_of_level(0.0);
-        } else if (am && resolved.mode == DSD_SQUELCH_MODE_NOISE) {
-            why = DSD_SQUELCH_RESOLVED_AM_AUTO;
+        why = squelch_dynamic_resolution(resolved.mode, input, digital, am);
+        if (why == DSD_SQUELCH_RESOLVED_AM_AUTO) {
             resolved = dsd_squelch_setting_auto(resolved.margin_db);
+        } else if (why != DSD_SQUELCH_RESOLVED_AS_SET) {
+            resolved = dsd_squelch_setting_of_level(0.0);
         }
     }
     if (out) {
@@ -310,8 +323,49 @@ dsd_squelch_setting_resolve(const dsd_squelch_setting* configured, int radio_inp
 }
 
 int
-dsd_squelch_dynamic_in_force(const dsd_opts* opts) {
-    return dsd_opts_input_is_radio(opts) && dsd_squelch_mode_is_dynamic(opts->rtl_squelch_mode);
+dsd_squelch_input_kind(const dsd_opts* opts) {
+    if (!opts) {
+        return DSD_SQUELCH_INPUT_OTHER;
+    }
+    switch (opts->audio_in_type) {
+        case AUDIO_IN_RTL: return DSD_SQUELCH_INPUT_RADIO;
+        case AUDIO_IN_PULSE:
+        case AUDIO_IN_STDIN:
+        case AUDIO_IN_WAV:
+        case AUDIO_IN_UDP:
+        case AUDIO_IN_TCP: return DSD_SQUELCH_INPUT_AUDIO;
+        default: return DSD_SQUELCH_INPUT_OTHER;
+    }
+}
+
+int
+dsd_squelch_pcm_noise_in_force(const dsd_opts* opts) {
+    /* The input type first: the monitor asks for every sample. On audio input, dsd_analog_tone_detection_active()'s FM
+       monitor is these three options (every audio input carries audio). */
+    return dsd_squelch_input_kind(opts) == DSD_SQUELCH_INPUT_AUDIO && opts->rtl_squelch_mode == DSD_SQUELCH_MODE_NOISE
+           && opts->analog_only == 1 && opts->monitor_input_audio == 1 && opts->analog_demod == DSD_ANALOG_DEMOD_FM;
+}
+
+/* Whether the PCM noise squelch @p state publishes gates: learning, or holding a reference. */
+static int
+squelch_pcm_noise_available(const dsd_state* state) {
+    if (!state) {
+        return 0;
+    }
+    switch (state->squelch_noise_state) {
+        case DSD_SQUELCH_NOISE_STATE_LEARNING:
+        case DSD_SQUELCH_NOISE_STATE_PROVISIONAL:
+        case DSD_SQUELCH_NOISE_STATE_KNOWN: return 1;
+        default: return 0;
+    }
+}
+
+int
+dsd_squelch_dynamic_in_force(const dsd_opts* opts, const dsd_state* state) {
+    if (dsd_opts_input_is_radio(opts)) {
+        return dsd_squelch_mode_is_dynamic(opts->rtl_squelch_mode);
+    }
+    return dsd_squelch_pcm_noise_in_force(opts) && squelch_pcm_noise_available(state);
 }
 
 int
@@ -334,8 +388,13 @@ dsd_squelch_level_open(const dsd_opts* opts) {
 }
 
 int
-dsd_squelch_gate_open(const dsd_opts* opts, uint8_t flag) {
-    if (dsd_squelch_dynamic_in_force(opts)) {
+dsd_squelch_flags_in_force(const dsd_opts* opts, const dsd_state* state) {
+    return dsd_squelch_dynamic_in_force(opts, state) || dsd_squelch_pcm_noise_in_force(opts);
+}
+
+int
+dsd_squelch_gate_open(const dsd_opts* opts, const dsd_state* state, uint8_t flag) {
+    if (dsd_squelch_flags_in_force(opts, state)) {
         return (flag & (uint8_t)DSD_SQUELCH_FLAG_CLOSED) == 0U;
     }
     return dsd_squelch_level_open(opts);
@@ -379,11 +438,24 @@ dsd_squelch_spec_field_apply(dsd_opts* opts, const char* text) {
     return 0;
 }
 
-void
-dsd_squelch_publish_status(dsd_state* state) {
-    if (!state) {
-        return;
-    }
+/* Nothing running: every field at rest. */
+static void
+squelch_clear_status(dsd_state* state) {
+    state->squelch_auto_active = 0U;
+    state->squelch_auto_state = 0U;
+    state->squelch_auto_gate_open = 0U;
+    state->squelch_auto_plan_valid = 0U;
+    state->squelch_auto_floor_cdb = 0;
+    state->squelch_noise_active = 0U;
+    state->squelch_noise_measured = 0U;
+    state->squelch_noise_quieting_cdb = 0;
+    state->squelch_noise_state = DSD_SQUELCH_NOISE_STATE_NONE;
+}
+
+/* Radio input: what the RTL stream's squelch reports. */
+static void
+squelch_publish_rtl_status(dsd_state* state) {
+    state->squelch_noise_state = DSD_SQUELCH_NOISE_STATE_NONE;
     dsd_rtl_squelch_status st;
     (void)dsd_rtl_stream_io_hook_squelch_status(state, &st);
     state->squelch_auto_active = st.active ? 1U : 0U;
@@ -402,4 +474,19 @@ dsd_squelch_publish_status(dsd_state* state) {
         quieting = -200.0;
     }
     state->squelch_noise_quieting_cdb = (int32_t)lround(100.0 * quieting);
+}
+
+void
+dsd_squelch_publish_status(const dsd_opts* opts, dsd_state* state) {
+    if (!state) {
+        return;
+    }
+    if (opts && !dsd_opts_input_is_radio(opts)) {
+        /* Audio input: the PCM noise squelch's own fields while it runs, nothing otherwise. */
+        if (!dsd_squelch_pcm_noise_in_force(opts)) {
+            squelch_clear_status(state);
+        }
+        return;
+    }
+    squelch_publish_rtl_status(state);
 }
