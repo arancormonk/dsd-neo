@@ -1450,14 +1450,14 @@ band, so the top is fixed. 300 Hz sub-bands pass 14 of 26 sources (harmonics on 
 (steady window count, transition step, gain tolerance, no-band ratio, no-band time; a quick run on ten representative
 sources) all 162 combinations pass every source, so the chosen one, in the middle of the grid, has room on every side.
 
-| Figure (full run, 28 sources, about 54 minutes on 7 workers) | Result |
+| Figure (full run, 28 sources, about 52 minutes on 7 workers) | Result |
 | --- | --- |
 | Sources with a band | 26; the 8 and 9.6 kHz inputs have no room (`no room above voice`) |
 | Reference learned | 0.14-0.16 s into noise on every source with a band |
 | Noise reaching N = 3 | at most 3.3e-5 of evaluations (the 750 us chain and the 5 kHz tone chain), never on the rest |
 | Wanted modulation, 1st percentile | 33.5-78.9 dB on the sources with a band (33.5 dB: the hardware tap at 48 kHz, ruling 6); `rtl_fm` 61-79 dB |
 | Worst false open on noise, every scenario | 0.44-0.68 s on the unfiltered sources, the 0.4 s that noise turned down holds before it lowers the reference (ruling 8; 0.68 s: `rtl_fm` at 24 kHz turned down 30 dB in a carrier's last 60 ms); 1.00 s on the gentle 3 kHz Butterworth source, whose verdict may go either way; the clipping 3.4 kHz source's 5.08 s is the stale bound (ruling 4) |
-| Carrier relaying noise, then speech | the speech loses at most 1.4% (`relay-speech`, ruling 10) |
+| Carrier relaying noise, then speech | the speech loses at most 3.2% (`relay-speech`, ruling 10) |
 | Low-passed sources | the 3.0 kHz FIR, and the 3.4 kHz FIR with de-emphasis and at 16 kHz, read no band and report no quieting; of the three that may go either way, the 4.0 kHz FIR reads no band, and the gentle Butterworth and the clipping 3.4 kHz source keep a band (clipping puts harmonics there) and pass |
 
 Rulings on the cases the gate left open:
@@ -1503,9 +1503,13 @@ Rulings on the cases the gate left open:
 10. A carrier that relays noise (a repeater passing a weak user's hiss: 300-3000 Hz noise on the carrier) at just the
     level where it matches the source's own noise in every part of the spectrum is noise to every measure the squelch
     has, and can step the reference down, muting that noise. The step is held, not trusted: the user's speech on the
-    same carrier shows a carrier at the stepped reference (eight of ten runs with the voice band off by twice the
-    tolerances), the old reference comes back, and nothing steps it down again until that carrier drops. The gate bounds
-    the speech after relayed noise to 15% dropout (`relay-speech`), and the harder cases in `DSP_PCM_NOISE_SQUELCH` lose
+    same carrier shows a carrier at the stepped reference (eight of ten runs with the voice band louder than noise's by
+    twice the tolerances, or more than 1.5 dB above the reference without noise's spectrum), and the reference from
+    before the first held step comes back, through a pause and a passband switch (the cache keeps the held step) too.
+    The carrier's later pauses step it down again only after 0.6 s of them, doubled at each refutation. A weak carrier
+    on noise genuinely turned down sits at the stepped reference without louder voice, so it refutes nothing (a
+    stretch-long block after a refutation had left the noise after such a carrier open 3.8 s). The gate bounds the
+    speech after relayed noise to 15% dropout (`relay-speech`), and the harder cases in `DSP_PCM_NOISE_SQUELCH` lose
     0.2-0.6 s of it. No spectral test told the two apart: the band under voice (100-350 Hz) reads -6.4 to +2.9 dB
     against noise's move for a relay without CTCSS, depending on the CNR, a CTCSS tone fills it, and hum after the
     volume lifts it; the window-to-window correlation of the voice and above-band powers reads about the same for both
@@ -1525,16 +1529,17 @@ report on canned results, an all-no-room run included. The C core (`src/dsp/pcm_
 model by two suites:
 
 - `DSP_PCM_NOISE_SQUELCH`: the band rule, the band-passes' response, the threshold clamp, no room, noise learning and
-  never opening at N = 3, a carrier opening and confirming the reference, quieting following CNR, level independence,
-  a volume step in noise, under a steady carrier, during speech (a tone with a 3 Hz syllabic envelope), across a pause,
-  in a carrier's last 60 ms, with a spur added after the volume at 3.9, 5, 6.1 and 6.4 kHz, and of 2-4 dB at N = 3;
-  a carrier that weakens (30, 20 and 12 dB CNR, dead and modulated at 100-1200 Hz and the rated deviation, on a 48 kHz
+  never opening at N = 3, a carrier opening and confirming the reference, quieting following CNR, level independence, a
+  volume step in noise, under a steady carrier, during speech (a tone with a 3 Hz syllabic envelope), across a pause, in
+  a carrier's last 60 ms, with a spur added after the volume at 3.9, 5, 6.1 and 6.4 kHz, and of 2-4 dB at N = 3; a
+  carrier that weakens (30, 20 and 12 dB CNR, dead and modulated at 100-1200 Hz and the rated deviation, on a 48 kHz
   source and on `rtl_fm`'s 12 kHz band, two seeds each); a light tone keyed straight out of noise, which is no gain
-  step; a carrier relaying noise on both sources, whose speech refutes the step it caused; modulation that steps up
-  under a carrier (a 4.5 kHz line after each pause), bursts separated by exact zeros, starting on a carrier, a
-  low-passed source reading no band, exact zeros, the per-passband cache and the stale rule, and block-cut bit
-  identity. The pause, unkey, edge-spur, small-step, relayed-noise and gain-step cases, and the weakening carrier at
-  100 Hz deviation, each fail on the learner as it stood before the rule they pin.
+  step; a carrier relaying noise on both sources, whose speech refutes the step it caused, after two held steps, across
+  a passband switched away and back, and across a gap; weak carriers that refute no genuine step; modulation that steps
+  up under a carrier (a 4.5 kHz line after each pause), bursts separated by exact zeros, starting on a carrier, a
+  low-passed source reading no band, exact zeros, the per-passband cache and the stale rule, and block-cut bit identity.
+  The pause, unkey, edge-spur, small-step, relayed-noise, held-step, weak-carrier and gain-step cases, and the weakening
+  carrier at 100 Hz deviation, each fail on the learner as it stood before the rule they pin.
 - `DSP_PCM_NOISE_SQUELCH_SWEEP` (`--sweep`): full-deviation tones on 12.5 and 25 kHz sources, centred and at their
   Carson edges, never closing the gate at N = 30 (lowest Q 42.8 dB).
 

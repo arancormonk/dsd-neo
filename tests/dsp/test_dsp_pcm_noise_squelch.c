@@ -79,6 +79,10 @@ spurred(float v) {
     return (float)floor(x + 0.5);
 }
 
+/* The index the next run_segments() call numbers its first segment with, for a test that changes the source or the
+   squelch between segments. */
+static int g_seg_base = 0;
+
 static void
 run_segments(dsd_pcm_noise_squelch* sq, pcm_tap* src, const seg* segs, int nsegs, trace* tr) {
     static float pcm[BLOCK];
@@ -95,7 +99,7 @@ run_segments(dsd_pcm_noise_squelch* sq, pcm_tap* src, const seg* segs, int nsegs
                 for (int i = 0; i < BLOCK; i++) {
                     open += (flags[i] & (uint8_t)DSD_SQUELCH_FLAG_CLOSED) ? 0 : 1;
                 }
-                tr->seg_of[tr->blocks] = k;
+                tr->seg_of[tr->blocks] = g_seg_base + k;
                 dsd_pcm_noise_squelch_get_status(sq, &tr->st[tr->blocks]);
                 tr->open_flags[tr->blocks] = open;
                 tr->blocks++;
@@ -651,8 +655,112 @@ test_small_volume_step(void) {
 /* A repeater relaying a weak user's noise (300-3000 Hz noise on the carrier) at the level where it matches the
    source's own noise reads as noise turned down, and the reference steps down to it. The user's speech that follows on
    the same carrier is no noise at that level: it refutes the step, the reference comes back, and the speech plays
-   after a fraction of a second; nothing lowers the reference again on that carrier, so its later noise and speech
-   play, and the noise after it shuts. */
+   after a fraction of a second. The carrier's next pause steps down again only after 0.6 s of it, which its next
+   speech refutes as quickly, and the noise after the carrier shuts. */
+/* Each segment of @p segs run on its own at a deviation of @p devs[k] (0: the source's), numbered by its index. */
+static void
+run_segments_at(dsd_pcm_noise_squelch* sq, pcm_tap* src, const seg* segs, const double* devs, int nsegs, trace* tr) {
+    for (int k = 0; k < nsegs; k++) {
+        const double keep = src->tone_dev_hz;
+        if (devs[k] > 0.0) {
+            src->tone_dev_hz = devs[k];
+        }
+        g_seg_base = k;
+        run_segments(sq, src, &segs[k], 1, tr);
+        src->tone_dev_hz = keep;
+    }
+    g_seg_base = 0;
+}
+
+/* Held steps against the cases that would make one stick (issue #628): two relayed stretches that each step the
+   reference down, a passband switched away and back during relayed noise (the cache keeps the held step), and relayed
+   noise then a gap before the speech. In each the speech refutes the steps and brings back the reference from before
+   the first, and plays after a fraction of a second. */
+static void
+test_held_steps_come_back(void) {
+    const tap_source* ts = &k_rtl_fm_12k;
+    for (int c = 0; c < 3; c++) {
+        dsd_pcm_noise_squelch* sq = new_squelch(ts->native_hz, 10);
+        static pcm_tap src;
+        static trace tr;
+        DSD_MEMSET(&tr, 0, sizeof tr);
+        pcm_tap_init(&src, 43U + (uint64_t)c, ts->width_hz, 0.0, ts->lpf_hz);
+        src.tone_dev_hz = 1000.0;
+        src.relay_rms = 0.35;
+        int speech = 0;
+        if (c == 0) {
+            const seg s[] = {
+                {PCM_TAP_NOISE, 2.0, 0.0, 0.0, 0.0},
+                {PCM_TAP_RELAY, 3.0, 20.0, 0.0, 0.0},
+                {PCM_TAP_RELAY, 3.0, 25.0, 0.0, 0.0},
+                {PCM_TAP_SYLLABIC, 3.0, 25.0, 1000.0, 0.0},
+            };
+            static const double devs[] = {0.0, 1000.0, 500.0, 1000.0};
+            run_segments_at(sq, &src, s, devs, 4, &tr);
+            speech = 3;
+        } else if (c == 1) {
+            const seg s[] = {
+                {PCM_TAP_NOISE, 2.0, 0.0, 0.0, 0.0},        {PCM_TAP_RELAY, 2.8, 20.0, 0.0, 0.0},
+                {PCM_TAP_RELAY, 0.1, 20.0, 0.0, 0.0},       {PCM_TAP_RELAY, 0.1, 20.0, 0.0, 0.0},
+                {PCM_TAP_SYLLABIC, 3.0, 20.0, 1000.0, 0.0},
+            };
+            static const double devs[] = {0.0, 0.0, 0.0, 0.0, 0.0};
+            dsd_pcm_noise_squelch_key key = {1U, ts->native_hz, 1, 0};
+            run_segments_at(sq, &src, s, devs, 2, &tr);
+            key.passband_hz = 12500;
+            dsd_pcm_noise_squelch_set_key(sq, &key);
+            g_seg_base = 2;
+            run_segments(sq, &src, &s[2], 1, &tr);
+            key.passband_hz = 0;
+            dsd_pcm_noise_squelch_set_key(sq, &key);
+            g_seg_base = 3;
+            run_segments(sq, &src, &s[3], 2, &tr);
+            g_seg_base = 0;
+            speech = 4;
+        } else {
+            const seg s[] = {
+                {PCM_TAP_NOISE, 2.0, 0.0, 0.0, 0.0},
+                {PCM_TAP_RELAY, 3.0, 20.0, 0.0, 0.0},
+                {PCM_TAP_ZERO, 0.2, 0.0, 0.0, 0.0},
+                {PCM_TAP_SYLLABIC, 3.0, 10.0, 1000.0, 0.0},
+            };
+            run_segments(sq, &src, s, 4, &tr);
+            speech = 3;
+        }
+        if (open_seconds(&tr, speech, 0.0) < 3.0 - 0.75) {
+            DSD_FPRINTF(stderr, "held step case %d: speech open %.2f s of 3\n", c, open_seconds(&tr, speech, 0.0));
+        }
+        assert(open_seconds(&tr, speech, 0.0) > 3.0 - 0.75);
+        free(sq);
+    }
+}
+
+/* A weak carrier on noise the source turned down -- unmodulated, or speech at 0 dB CNR -- sits at the stepped
+   reference without showing modulation louder than noise's, so it refutes nothing, and the noise after it stays shut;
+   a step that was refuted would leave that noise open well past the gate's 1 s bound. */
+static void
+test_weak_carrier_keeps_a_step(void) {
+    static const pcm_tap_kind kinds[] = {PCM_TAP_DEAD, PCM_TAP_SYLLABIC};
+    for (int i = 0; i < 2; i++) {
+        dsd_pcm_noise_squelch* sq = new_squelch(48000, 10);
+        static pcm_tap src;
+        static trace tr;
+        DSD_MEMSET(&tr, 0, sizeof tr);
+        pcm_tap_init(&src, 47U, 12500.0, 0.0, 0.0);
+        const seg s[] = {
+            {PCM_TAP_NOISE, 1.5, 0.0, 0.0, 0.0},
+            {PCM_TAP_NOISE, 1.5, 0.0, 0.0, -20.0},
+            {kinds[i], 1.2, 0.0, 1000.0, -20.0},
+            {PCM_TAP_NOISE, 4.0, 0.0, 0.0, -20.0},
+        };
+        run_segments(sq, &src, s, 4, &tr);
+        assert(open_seconds(&tr, 1, 0.0) < 0.7);
+        assert(open_seconds(&tr, 3, 0.0) < 1.0);
+        assert(open_seconds(&tr, 3, 1.0) < 1e-9);
+        free(sq);
+    }
+}
+
 static void
 test_relayed_noise_is_refuted(void) {
     for (int t = 0; t < 2; t++) {
@@ -671,8 +779,8 @@ test_relayed_noise_is_refuted(void) {
         };
         run_segments(sq, &src, s, 6, &tr);
         assert(open_seconds(&tr, 2, 0.0) > 3.0 - 0.75);
-        assert(open_seconds(&tr, 3, 0.0) > 1.5 - 0.021);
-        assert(open_seconds(&tr, 4, 0.0) > 2.0 - 0.021);
+        assert(open_seconds(&tr, 3, 0.0) > 0.6 - 0.021);
+        assert(open_seconds(&tr, 4, 0.0) > 2.0 - 0.5);
         assert(open_seconds(&tr, 5, 0.1) < 1e-9);
         free(sq);
     }
@@ -979,6 +1087,8 @@ main(int argc, char** argv) {
     test_volume_step_without_a_rise();
     test_small_volume_step();
     test_relayed_noise_is_refuted();
+    test_held_steps_come_back();
+    test_weak_carrier_keeps_a_step();
     test_weakening_carrier_keeps_the_reference();
     test_carrier_is_no_gain_step();
     test_strengthening_carrier_is_no_volume_step();

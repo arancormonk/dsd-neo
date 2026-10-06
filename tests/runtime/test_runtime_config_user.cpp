@@ -1891,8 +1891,9 @@ test_noise_squelch_keys_roundtrip(void) {
 
 /* The [input] squelch keys on audio input (issue #628): a PCM source's rtl_sql / rtl_sql_mode / rtl_sql_margin_db apply
  * to the session when they are present (the noise squelch runs there now, and the level always did), a PCM config
- * without them leaves the session's squelch alone (a runtime load must not switch a live one off), --squelch wins,
- * and a PCM session saves the keys only when a squelch is set, so an untouched one's autosave writes nothing new. */
+ * without them (one saved before audio input had a squelch) leaves the session's squelch alone (a runtime load must not
+ * switch a live one off), --squelch wins, and a PCM session's save always writes the keys, off and the unset level
+ * included, as an RTL session's does. */
 static int
 test_pcm_squelch_keys_roundtrip(void) {
     static const char* ini = "[input]\n"

@@ -1979,25 +1979,26 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   the sub-bands' median, the sub-bands not tilted, the tilt a line across those within 3 dB of that move; 0.4 s of it in
   three runs of four, 1.5 dB or more on average, steps the reference by the mean move, and any other stretch under it is
   the carrier's modulation or level and leaves it), stepped by a gain-like transition out of noise that holds noise's
-  spectrum, a downward step held until refuted (eight of ten runs at the stepped reference with a voice band clearly not
-  noise's bring the old reference back and block lowering for the stretch: a carrier relaying noise, then speech) or
-  replaced, tracked with a 1 s time constant, learned again after 5 s open on one stretch with a steady voice band, and
-  NO_BAND on 1 s of spectral evidence that nothing is above voice. Up to eight references are cached by
-  `dsd_pcm_noise_squelch_key` (source generation and input type, native rate, input volume, rigctl peer passband; an
-  unknown passband is never cached). Q = max(Q_sum, Q_max - 6 dB) over the band-passes that take part; the gate opens at
-  N and closes under max(N - 3, 1.5) dB, one flag per sample, bit-identical whatever the block cuts. The decoder runs it
-  from `symbol_process_unsynced_analog()` for non-RTL input (`dsd_analog_rx_pcm_squelch_sample()`,
-  `src/dsp/analog_rx.c`): its state rides `analog_rx_session` (state-ext slot 9) and never creates the session; a
-  boundary counter the tap bumps at a reset, a pause, a generation or rate move and an FM/AM switch restarts its
-  windows; it holds closed and learns nothing while the tap's backlog skip is armed; it reads the rigctl peer's passband
-  through the runtime rigctl query hook (`dsd_rigctl_query_hook_get_passband_hz()`, which the engine installs reading
-  `CachedModulation()` under the P25 SM tick guard: busy, keeping the passband last read, when the guard is held;
-  unknown, a boundary, after a lost reply); and it writes `dsd_state::squelch_noise_*` and `squelch_auto_gate_open` for
-  the views, logging once why it is off (no room, no band, with the scan consequence). Tests: `DSP_PCM_NOISE_SQUELCH`,
-  `DSP_PCM_NOISE_SQUELCH_SWEEP`, `DSP_SYMBOL_REPLAY` (`test_pcm_noise_squelch_gates_each_sample`,
-  `test_pcm_noise_squelch_holds_the_backlog`), `RUNTIME_RIGCTL_QUERY_HOOKS`, `ENGINE_RIGCTL_QUERY_HOOKS_INSTALL`, and
-  the `DECODE_PCM_*` cases (the analog replay host's `--analog-pcm-tap`, which runs a capture's discriminator audio as a
-  WAV input in every build).
+  spectrum, a downward step held, with the reference from before the first held one (cached with it), until replaced or
+  refuted (eight of ten runs at the stepped reference with a voice band clearly louder than noise's, or more than 1.5 dB
+  above it without noise's spectrum, bring that reference back: a carrier relaying noise, then speech; the stretch then
+  steps down again only on 0.6 s of clean evidence, doubled per refutation), tracked with a 1 s time constant, learned
+  again after 5 s open on one stretch with a steady voice band, and NO_BAND on 1 s of spectral evidence that nothing is
+  above voice. Up to eight references are cached by `dsd_pcm_noise_squelch_key` (source generation and input type,
+  native rate, input volume, rigctl peer passband; an unknown passband is never cached). Q = max(Q_sum, Q_max - 6 dB)
+  over the band-passes that take part; the gate opens at N and closes under max(N - 3, 1.5) dB, one flag per sample,
+  bit-identical whatever the block cuts. The decoder runs it from `symbol_process_unsynced_analog()` for non-RTL input
+  (`dsd_analog_rx_pcm_squelch_sample()`, `src/dsp/analog_rx.c`): its state rides `analog_rx_session` (state-ext slot 9)
+  and never creates the session; a boundary counter the tap bumps at a reset, a pause, a generation or rate move and an
+  FM/AM switch restarts its windows; it holds closed and learns nothing while the tap's backlog skip is armed; it reads
+  the rigctl peer's passband through the runtime rigctl query hook (`dsd_rigctl_query_hook_get_passband_hz()`, which the
+  engine installs reading `CachedModulation()` under the P25 SM tick guard: busy, keeping the passband last read, when
+  the guard is held; unknown, a boundary, after a lost reply); and it writes `dsd_state::squelch_noise_*` and
+  `squelch_auto_gate_open` for the views, logging once why it is off (no room, no band, with the scan consequence).
+  Tests: `DSP_PCM_NOISE_SQUELCH`, `DSP_PCM_NOISE_SQUELCH_SWEEP`, `DSP_SYMBOL_REPLAY`
+  (`test_pcm_noise_squelch_gates_each_sample`, `test_pcm_noise_squelch_holds_the_backlog`),
+  `RUNTIME_RIGCTL_QUERY_HOOKS`, `ENGINE_RIGCTL_QUERY_HOOKS_INSTALL`, and the `DECODE_PCM_*` cases (the analog replay
+  host's `--analog-pcm-tap`, which runs a capture's discriminator audio as a WAV input in every build).
 - AM envelope detector (issue #524, `demod_pipeline.cpp`, declared in `<dsd-neo/dsp/demod_pipeline.h>`):
   `dsd_am_demod()` outputs 0.25 x clamp(|z| / C - 1, +/-2), C being `demod_state::am_carrier`, a one-pole average of
   |z| with a `DSD_AM_CARRIER_TAU_MS` (50 ms) time constant recomputed per block for the detector's rate (`rate_out`:
