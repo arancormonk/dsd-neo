@@ -2647,6 +2647,38 @@ test_config_apply_input_change_clears_received_tone(void) {
     return rc;
 }
 
+/* A config apply that moves a Pulse input to another device opens another PCM stream (issue #628): the generation the
+   PCM noise squelch keys its references on moves with it, so it forgets what it learned on the old device. The same
+   device, restated, is no new stream. */
+static int
+test_config_apply_pulse_device_is_a_new_stream(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    init_test_context(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_PULSE;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "pulse:old_source");
+    arm_open_audio_input_stub(1, 0);
+    const uint32_t generation = opts.pcm_input_generation;
+    dsdneoUserConfig cfg;
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_input = 1;
+    cfg.input_source = DSDCFG_INPUT_PULSE;
+    DSD_SNPRINTF(cfg.pulse_input, sizeof cfg.pulse_input, "%s", "new_source");
+    rc |= expect_true("pulse device config queued", dsd_app_command_apply_config(&cfg) > 0);
+    rc |= expect_int("pulse device config drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_str("pulse device config moves the input", opts.audio_in_dev, "pulse:new_source");
+    rc |= expect_int("pulse device config reopens the input", g_open_audio_input_calls, 1);
+    rc |= expect_true("another device is another stream", opts.pcm_input_generation != generation);
+    const uint32_t moved = opts.pcm_input_generation;
+    rc |= expect_true("same device config queued", dsd_app_command_apply_config(&cfg) > 0);
+    rc |= expect_int("same device config drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_true("the same device is the same stream", opts.pcm_input_generation == moved);
+    arm_open_audio_input_stub(0, 0);
+    freeState(&state);
+    return rc;
+}
+
 /* A config apply carrying only a [mode], drained on this thread as the decoder drains it. */
 static int
 submit_config_mode(dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode mode, const char* label) {
@@ -15267,6 +15299,7 @@ main(void) {
     rc |= test_input_switch_clears_received_tone();
     rc |= test_playback_switches_clear_received_tone();
     rc |= test_config_apply_input_change_clears_received_tone();
+    rc |= test_config_apply_pulse_device_is_a_new_stream();
     rc |= test_config_apply_mode_change_clears_received_tone();
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
     rc |= test_tcp_connect_clears_received_tone();

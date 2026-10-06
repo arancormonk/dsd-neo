@@ -503,6 +503,19 @@ dsd_opts_reset_input_upsample_state(dsd_opts* opts) {
 }
 
 /**
+ * @brief Note that a new PCM input stream began: a reopen, a reconnect, another device. The PCM noise squelch keys its
+ * references on dsd_opts::pcm_input_generation, so it forgets what it learned from the old stream.
+ *
+ * @param opts Decoder options.
+ */
+static inline void
+dsd_opts_note_pcm_stream(dsd_opts* opts) {
+    if (opts) {
+        opts->pcm_input_generation++;
+    }
+}
+
+/**
  * @brief Reset low-rate PCM input processing state at a stream boundary.
  *
  * Clears both the staged upsample bookkeeping and the reusable FIR state so the next socket/file block cannot blend
@@ -517,7 +530,7 @@ dsd_opts_reset_pcm_input_state(dsd_opts* opts) {
     }
     dsd_resampler_reset(&opts->input_resampler);
     dsd_opts_reset_input_upsample_state(opts);
-    opts->pcm_input_generation++;
+    dsd_opts_note_pcm_stream(opts);
 }
 
 /**

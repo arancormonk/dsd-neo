@@ -2061,6 +2061,8 @@ symbol_read_sample_tcp(dsd_opts* opts, dsd_state* state, float* sample_out) {
                 DSD_FPRINTF(stderr, "Error, couldn't Reconnect to TCP audio input\n");
             } else {
                 reconnected = 1;
+                /* A new stream, whatever the old one's resampler tail still returns first (issue #628). */
+                dsd_opts_note_pcm_stream(opts);
                 LOG_INFO("TCP Socket Reconnected Successfully.\n");
             }
         } else {
