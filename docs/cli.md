@@ -780,7 +780,8 @@ quieting, closed under max(N - 3, 1.5) dB. Quieting reads about the carrier-to-n
   undoes it even when it is lighter than the relayed noise, while a filter switched on in the noise, or a volume that
   pumps, does not. Weak traffic on noise genuinely turned down (a carrier under the threshold) reads just as that
   speech does, and nothing tells the two apart: it undoes the step too, and plays; the noise after it steps the
-  reference down again, or takes the step back, within a second. Between transmissions the reference follows the
+  reference down again, or takes the step back, within about a second. A steady line or tone in the voice band undoes
+  nothing: undoing takes a voice band that moves. Between transmissions the reference follows the
   noise with a 1 s time constant.
 - Starting on a carrier: with no noise to learn from, the first steady stretch (the carrier, or a pause in its speech)
   becomes the reference, which is too low, so the gate stays closed or opens only in snatches until the first noise

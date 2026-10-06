@@ -868,12 +868,40 @@ test_contested_step(void) {
     }
 }
 
-/* The bounds on a contested step (issue #628). Carriers 2 dB over noise turned down 20 dB, at noise+10: each refutes
-   the step, and the noise after it shares the carrier's stretch (under the 4 dB a new one needs), so only 0.8 s of it
-   in a row takes the step back: it is open under the gate's 1 s bound after every carrier, not seconds after the
-   later ones. And noise whose own spectrum changes after a contested step (an 800 Hz high-pass, or 25 us de-emphasis,
-   switched on) changes steadily, with no modulation, so it refutes nothing and stays shut; so does that noise under a
-   volume pumping 2 dB at 10 Hz, which moves the voice band and the band above it alike. */
+/* A steady line in the voice band refutes no step (issue #628): after noise turned down 20 dB, at noise+10, a 1 kHz
+   line at -50 dBFS added after the volume reads clearly louder than noise in one voice part, run after run, but never
+   moves against the band above it, as modulation would; the noise stays shut. */
+static void
+test_voice_band_line_refutes_nothing(void) {
+    dsd_pcm_noise_squelch* sq = new_squelch(48000, 10);
+    static pcm_tap src;
+    static trace tr;
+    DSD_MEMSET(&tr, 0, sizeof tr);
+    pcm_tap_init(&src, 137U, 12500.0, 0.0, 0.0);
+    const seg s[] = {
+        {PCM_TAP_NOISE, 2.0, 0.0, 0.0, 0.0},
+        {PCM_TAP_NOISE, 2.0, 0.0, 0.0, -20.0},
+    };
+    run_segments(sq, &src, s, 2, &tr);
+    g_spur_hz = 1000.0;
+    g_spur_dbfs = -50.0;
+    const seg after = {PCM_TAP_NOISE, 12.0, 0.0, 0.0, -20.0};
+    g_seg_base = 2;
+    run_segments(sq, &src, &after, 1, &tr);
+    g_seg_base = 0;
+    g_spur_hz = 0.0;
+    assert(open_seconds(&tr, 1, 0.0) < 0.7);
+    assert(open_seconds(&tr, 2, 0.0) < 1e-9);
+    free(sq);
+}
+
+/* The bounds on a contested step (issue #628). Weak traffic 4 dB over noise turned down 20 dB, at noise+10, again and
+   again: each transmission refutes the step and plays, and the noise after each one closes within the gate's 1 s
+   bound, not seconds after the later ones. And noise whose own spectrum changes after a contested step (an 800 Hz
+   high-pass, or 25 us de-emphasis, switched on) changes steadily, with no modulation, so it refutes nothing and stays
+   shut; so does that noise under a volume pumping 2 dB at 10 Hz, which moves the voice band and the band above it
+   alike, and noise with a steady 1 kHz line added after the volume, which reads clearly louder in the voice band but
+   never moves against the band above it. */
 static void
 test_contested_step_bounds(void) {
     {
@@ -887,17 +915,18 @@ test_contested_step_bounds(void) {
         s[n++] = (seg){PCM_TAP_NOISE, 2.0, 0.0, 0.0, 0.0};
         s[n++] = (seg){PCM_TAP_NOISE, 2.0, 0.0, 0.0, -20.0};
         for (int k = 0; k < 4; k++) {
-            s[n++] = (seg){PCM_TAP_TONE, 2.0, 2.0, 1000.0, -20.0};
+            s[n++] = (seg){PCM_TAP_SYLLABIC, 2.0, 4.0, 1000.0, -20.0};
             s[n++] = (seg){PCM_TAP_NOISE, 6.0, 0.0, 0.0, -20.0};
         }
         run_segments(sq, &src, s, n, &tr);
         for (int k = 0; k < 4; k++) {
             const int noise = 3 + (2 * k);
+            assert(open_seconds(&tr, noise - 1, 0.0) > 1.0);
             assert(open_seconds(&tr, noise, 0.0) < 1.0 && open_seconds(&tr, noise, 1.0) < 1e-9);
         }
         free(sq);
     }
-    for (int f = 0; f < 3; f++) {
+    for (int f = 0; f < 4; f++) {
         dsd_pcm_noise_squelch* sq = new_squelch(48000, 10);
         static pcm_tap src;
         static trace tr;
@@ -906,15 +935,18 @@ test_contested_step_bounds(void) {
         const seg s[] = {
             {PCM_TAP_NOISE, 2.0, 0.0, 0.0, 0.0},
             {PCM_TAP_NOISE, 2.0, 0.0, 0.0, -20.0},
-            {PCM_TAP_TONE, 3.0, 6.0, 1000.0, -20.0},
+            {PCM_TAP_SYLLABIC, 3.0, 6.0, 1000.0, -20.0},
             {PCM_TAP_NOISE, 2.0, 0.0, 0.0, -20.0},
         };
         run_segments(sq, &src, s, 4, &tr);
         assert(open_seconds(&tr, 2, 0.0) > 2.0 && open_seconds(&tr, 3, 1.0) < 1e-9);
         if (f == 0) {
             pcm_tap_butter_hp(&src, 800.0);
-        } else {
+        } else if (f < 3) {
             src.pole = exp(-1.0 / ((double)PCM_TAP_RATE * 25e-6));
+        } else {
+            g_spur_hz = 1000.0;
+            g_spur_dbfs = -50.0;
         }
         if (f == 2) {
             src.pump_db = 2.0;
@@ -924,6 +956,7 @@ test_contested_step_bounds(void) {
         g_seg_base = 4;
         run_segments(sq, &src, &after, 1, &tr);
         g_seg_base = 0;
+        g_spur_hz = 0.0;
         assert(open_seconds(&tr, 4, 0.0) < 1e-9);
         free(sq);
     }
@@ -935,8 +968,8 @@ test_contested_step_bounds(void) {
    noise turned down always does. After the source's audio low-pass is switched on (a 3 kHz Butterworth: the stale
    rule takes the filtered noise as the reference) and speech under noise+20 refutes that, nothing steps down again:
    the noise after each transmission stayed open until the stale rule took it again 5 s later, and now matches the
-   refuted step and takes it back within a second, also when the source's volume moved 2 dB meanwhile. And across
-   volume changes in both directions between weak transmissions. */
+   refuted step and takes it back within a second, also when the source's volume moved 2 dB meanwhile, and within
+   1.5 s when it pumps 2 dB at 1 or 2 Hz. And across volume changes in both directions between weak transmissions. */
 static void
 test_refuted_step_taken_back(void) {
     {
@@ -955,7 +988,7 @@ test_refuted_step_taken_back(void) {
         assert(open_seconds(&tr, 3, 0.7) < 1e-9 && open_seconds(&tr, 5, 0.7) < 1e-9);
         free(sq);
     }
-    for (int v = 0; v < 2; v++) {
+    for (int v = 0; v < 4; v++) {
         dsd_pcm_noise_squelch* sq = new_squelch(48000, 20);
         static pcm_tap src;
         static trace tr;
@@ -965,20 +998,28 @@ test_refuted_step_taken_back(void) {
         const seg before = {PCM_TAP_NOISE, 2.0, 0.0, 0.0, 0.0};
         run_segments(sq, &src, &before, 1, &tr);
         pcm_tap_butter_lp(&src, 3000.0);
-        /* The second time, the source's volume is 2 dB lower from the first transmission on. */
-        const double g = v ? -2.0 : 0.0;
+        /* Then the source's volume is 2 dB lower from the first transmission on, or it pumps 2 dB at 1 or 2 Hz from
+           the noise after it. */
+        const double g = v == 1 ? -2.0 : 0.0;
         const seg s[] = {
             {PCM_TAP_NOISE, 14.0, 0.0, 0.0, 0.0}, {PCM_TAP_SYLLABIC, 3.0, 15.0, 1000.0, g},
             {PCM_TAP_NOISE, 3.0, 0.0, 0.0, g},    {PCM_TAP_SYLLABIC, 3.0, 15.0, 1000.0, g},
             {PCM_TAP_NOISE, 3.0, 0.0, 0.0, g},
         };
         g_seg_base = 1;
-        run_segments(sq, &src, s, 5, &tr);
+        run_segments(sq, &src, s, 2, &tr);
+        if (v >= 2) {
+            src.pump_db = 2.0;
+            src.pump_hz = (double)(v - 1);
+        }
+        g_seg_base = 3;
+        run_segments(sq, &src, &s[2], 3, &tr);
         g_seg_base = 0;
+        const double bound = v >= 2 ? 1.5 : 1.0;
         assert(open_seconds(&tr, 1, 0.0) < 5.3);
         assert(open_seconds(&tr, 2, 0.0) > 2.0 && open_seconds(&tr, 4, 0.0) > 2.0);
-        assert(open_seconds(&tr, 3, 0.0) < 1.0 && open_seconds(&tr, 5, 0.0) < 1.0);
-        assert(open_seconds(&tr, 3, 1.0) < 1e-9 && open_seconds(&tr, 5, 1.0) < 1e-9);
+        assert(open_seconds(&tr, 3, 0.0) < bound && open_seconds(&tr, 5, 0.0) < bound);
+        assert(open_seconds(&tr, 3, bound) < 1e-9 && open_seconds(&tr, 5, bound) < 1e-9);
         free(sq);
     }
     {
@@ -1342,6 +1383,7 @@ main(int argc, char** argv) {
     test_refuted_step_taken_back();
     test_contested_step();
     test_contested_step_bounds();
+    test_voice_band_line_refutes_nothing();
     test_held_steps_come_back();
     test_modulation_refutes_wherever_shut();
     test_weak_carrier_keeps_a_step();

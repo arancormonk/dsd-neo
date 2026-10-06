@@ -59,12 +59,15 @@
  *    stretch then steps down again only on 0.6 s of evidence with no such modulation in it, doubled for each further
  *    refutation in the stretch. While a step is held, only a stretch with noise's spectrum replaces the reference or
  *    is tracked.
- *  - The step refuted is kept too (and cached), until a new reference replaces it: 0.8 s of runs in a row at one
- *    level (within 1.5 dB of their mean), three in four with its spectrum against it and the voice band steady, take
- *    it back, moved by their mean step (the source's volume may have moved too; modulation against it starts over),
- *    the reference it replaces is held as its prior, and the stretch's refutations end. A carrier's own shorter pauses leave the step refuted. Weak traffic over noise genuinely turned
- *    down refutes a step just as a stronger carrier over relayed noise taken for noise does, and nothing tells the two
- *    apart: the traffic plays, and the noise after it takes the step back within 1 s.
+ *  - The step refuted is kept too (and cached), until a new reference replaces it: 0.8 s of runs since the last
+ *    modulation against it, whatever stretch they fall in, three in four with its spectrum against it and the voice
+ *    band steady against the band above it, take it back, moved by their recent step (the source's volume may have
+ *    moved, or move still), the reference it replaces is held as its prior, and the stretch's refutations end. A
+ *    carrier's own shorter pauses leave the step refuted. Weak traffic over noise genuinely turned down refutes a step
+ *    just as a stronger carrier over relayed noise taken for noise does, and nothing tells the two apart: the traffic
+ *    plays, and the noise after it takes the step back within 1 s.
+ *  - Every refutation needs two of its ten runs with the voice band moving against the band above it: a steady line
+ *    added in the voice band, or a steady tone carrier, reads clearly louder but refutes nothing.
  *  - A reference a refutation brought back is proven, and a step held over it (taken back, or stepped down again) is
  *    contested: eight of ten runs less than N dB under it with a voice band louder than noise's by more than the
  *    shape tolerances alone, and moving against the band above it, refute it too (a carrier that relayed noise,
@@ -242,12 +245,17 @@ typedef struct {
     dsd_pcm_noise_squelch_held prior;
     dsd_pcm_noise_squelch_held alt;
     int ref_proven; /**< the reference is one a refutation brought back */
+    /* Evidence for taking the refuted step back: runs since the last modulation against it, those with its spectrum
+       and the voice band steady against the band above it, and their recent step. It belongs to the step, not the
+       stretch: a moving volume crosses stretches. */
+    int bk_n;
+    int bk_s;
+    double bk_step;
     /* The stretch: anchor level, voice power sum, windows, voice-steady windows, whether it began at the reference, a
        pending gain step (its runs, those with noise's spectrum and their step sum), the gate's open windows on it, the
        evidence for noise at a lower gain (its level, runs, those with noise's spectrum and their step sum), the last
-       runs at the stepped reference (a bit each, set for a carrier's), the steps refuted in the stretch, and the runs
-       in a row at one level against a refuted step (their count, those with its spectrum, the sum of their steps, and
-       the sum of their levels). */
+       runs at the stepped reference (a bit each, set for a carrier's, and a bit each set when the voice band moved
+       against the band above it) and the steps refuted in the stretch. */
     int have_stretch;
     double st_a_db;
     double st_v_sum;
@@ -266,12 +274,9 @@ typedef struct {
     int st_as;
     double st_asum;
     unsigned int st_ring;
+    unsigned int st_mring;
     int st_ring_n;
     int st_refutes;
-    int st_bn;
-    int st_bs;
-    double st_bsum;
-    double st_blev;
     /* A new level being confirmed, no-band evidence and its exit. */
     int have_cand;
     double cand_a_db;
