@@ -1965,6 +1965,9 @@ ui_cmd_toast_squelch_edit(const dsd_opts* opts, dsd_state* state, int rc) {
         (void)dsd_app_squelch_view_get(opts, state, &view);
         (void)dsd_app_squelch_view_edit_notice(&view, notice, sizeof notice);
         ui_set_toast(state, 3, "%s", notice);
+    } else if (rc == SVC_SQL_NOISE_NEEDS_FM && dsd_squelch_input_kind(opts) == DSD_SQUELCH_INPUT_AUDIO) {
+        /* Auto needs a radio input too: AM audio takes a level. */
+        ui_set_toast(state, 4, "Refused: the noise squelch needs an FM channel; AM audio takes a level");
     } else if (rc == SVC_SQL_NOISE_NEEDS_FM) {
         ui_set_toast(state, 4, "Refused: the noise squelch needs an FM channel; AM takes auto");
     } else if (rc == SVC_SQL_AUTO_NEEDS_RADIO) {

@@ -735,6 +735,49 @@ test_held_steps_come_back(void) {
     }
 }
 
+/* Speech the gate keeps shut against a held step refutes it wherever it sits under the stepped reference: the carrier
+   that relayed noise grows a little stronger (22 and 25 dB CNR against the relay's 20), so its speech reads a few dB
+   under the false reference, not at it. And a dead carrier held past the stale rule's 5 s becomes the reference as a
+   held step: the speech it then carries refutes that, and plays. */
+static void
+test_modulation_refutes_wherever_shut(void) {
+    static const double cnrs[] = {22.0, 25.0};
+    for (int i = 0; i < 2; i++) {
+        dsd_pcm_noise_squelch* sq = new_squelch(48000, 10);
+        static pcm_tap src;
+        static trace tr;
+        DSD_MEMSET(&tr, 0, sizeof tr);
+        pcm_tap_init(&src, 43U, 12500.0, 0.0, 0.0);
+        src.tone_dev_hz = 1000.0;
+        src.relay_rms = 0.35;
+        const seg s[] = {
+            {PCM_TAP_NOISE, 2.0, 0.0, 0.0, 0.0},
+            {PCM_TAP_RELAY, 3.0, 20.0, 0.0, 0.0},
+            {PCM_TAP_SYLLABIC, 3.0, cnrs[i], 1000.0, 0.0},
+        };
+        run_segments(sq, &src, s, 3, &tr);
+        assert(open_seconds(&tr, 2, 0.0) > 3.0 - 0.75);
+        free(sq);
+    }
+    dsd_pcm_noise_squelch* sq = new_squelch(48000, 10);
+    static pcm_tap src;
+    static trace tr;
+    DSD_MEMSET(&tr, 0, sizeof tr);
+    pcm_tap_init(&src, 44U, 12500.0, 0.0, 0.0);
+    src.tone_dev_hz = 1000.0;
+    const seg s[] = {
+        {PCM_TAP_NOISE, 2.0, 0.0, 0.0, 0.0},
+        {PCM_TAP_DEAD, 7.0, 20.0, 0.0, 0.0},
+        {PCM_TAP_SYLLABIC, 3.0, 20.0, 1000.0, 0.0},
+        {PCM_TAP_NOISE, 1.0, 0.0, 0.0, 0.0},
+    };
+    run_segments(sq, &src, s, 4, &tr);
+    assert(open_seconds(&tr, 1, 0.0) > 5.0 - 0.12 && open_seconds(&tr, 1, 6.0) < 1e-9);
+    assert(open_seconds(&tr, 2, 0.0) > 3.0 - 0.75);
+    assert(open_seconds(&tr, 3, 0.1) < 1e-9);
+    free(sq);
+}
+
 /* A weak carrier on noise the source turned down -- unmodulated, or speech at 0 dB CNR -- sits at the stepped
    reference without showing modulation louder than noise's, so it refutes nothing, and the noise after it stays shut;
    a step that was refuted would leave that noise open well past the gate's 1 s bound. */
@@ -1088,6 +1131,7 @@ main(int argc, char** argv) {
     test_small_volume_step();
     test_relayed_noise_is_refuted();
     test_held_steps_come_back();
+    test_modulation_refutes_wherever_shut();
     test_weak_carrier_keeps_a_step();
     test_weakening_carrier_keeps_the_reference();
     test_carrier_is_no_gain_step();

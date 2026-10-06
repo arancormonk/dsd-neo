@@ -6674,7 +6674,7 @@ test_squelch_commands_on_pcm_input(void) {
     rc |= submit_pcm_squelch(&opts, &state, DSD_SQUELCH_MODE_NOISE, 10, 0.0);
     rc |= expect_true("pcm noise on AM refused", opts.rtl_squelch_mode == DSD_SQUELCH_MODE_LEVEL);
     rc |= expect_str("pcm noise on AM toast", state.ui_msg,
-                     "Refused: the noise squelch needs an FM channel; AM takes auto");
+                     "Refused: the noise squelch needs an FM channel; AM audio takes a level");
 
     opts.analog_demod = DSD_ANALOG_DEMOD_FM;
     opts.analog_only = 0;

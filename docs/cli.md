@@ -784,7 +784,7 @@ quieting, closed under max(N - 3, 1.5) dB. Quieting reads about the carrier-to-n
   way: use a level for it. A steady tone strong enough to leave nothing above voice is the exception: it reads as no
   band (below) after about a second and then plays, as with the squelch off. A carrier held open 5 s with nothing
   changing in the voice band (an unmodulated or steady-tone carrier) is learned again, so it mutes after 5 s; speech
-  keeps the gate open.
+  keeps the gate open, and speech that the carrier carries later undoes that and plays.
 - No band. When the input carries nothing above voice (its audio is low-passed, as most SDR programs' audio is by
   default) the squelch sees it within about 1 s of steady input and reads `off: no band above voice`: the monitor plays
   as with the squelch off, and the log says once `NOTICE: Noise squelch: nothing above the voice band on this input

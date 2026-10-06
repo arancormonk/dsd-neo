@@ -50,17 +50,19 @@
  *    average, the reference moves by their mean step. A carrier's noise falls toward the low voice parts, and a tone
  *    or speech fills some parts and not others, so neither gathers it.
  *  - A downward step (gain or lowered) keeps the reference from before it (from before the first, on a step already
- *    held) until a new one replaces it; the cache keeps it with the reference. Eight of the next ten runs at or above
- *    the stepped reference with a voice band clearly louder than noise's (by twice those tolerances: a carrier relaying
- *    noise that matched noise's spectrum, now carrying speech), or more than 1.5 dB above it without noise's spectrum
- *    (no carrier reads louder than noise at its gain, and noise turned back up keeps its spectrum), refute the steps:
- *    the old reference comes back. The stretch then steps down again only on 0.6 s of evidence with no such modulation
- *    in it, doubled for each further refutation in the stretch. While a step is held, only a stretch with noise's
- *    spectrum replaces the reference or is tracked.
+ *    held) until a new one replaces it; the cache keeps it with the reference. Eight of the next ten runs the gate
+ *    keeps shut against the stepped reference (less than N dB under it) with a voice band clearly louder than noise's
+ *    (by twice those tolerances: a carrier relaying noise that matched noise's spectrum, now carrying speech; a carrier
+ *    the stale rule took, now modulated), or more than 1.5 dB above it without noise's spectrum (no carrier reads
+ *    louder than noise at its gain, and noise turned back up keeps its spectrum), refute the steps: the old reference
+ *    comes back. The stretch then steps down again only on 0.6 s of evidence with no such modulation in it, doubled for
+ *    each further refutation in the stretch. While a step is held, only a stretch with noise's spectrum replaces the
+ *    reference or is tracked.
  *  - A steady run at or above the reference less 1.5 dB tracks it with a 1 s time constant (slow drift).
  *  - Stale quieting: the gate open for 5 s on one stretch whose voice band held stationary in 90 % of its windows reads
  *    a level that dropped (a source's volume lowered out of clipping, its audio low-pass switched on), not speech: the
- *    stretch becomes the reference. A dead or steady-tone carrier is muted after it too.
+ *    stretch becomes the reference, as a held step (above). A dead or steady-tone carrier is muted after it too, until
+ *    it shows modulation.
  *  - Participation: a sub-band takes part when its power per Hz sits within 30 dB of the voice band's (the reference's
  *    for Q; the run's for the no-band test); a staggered band-pass when both sub-bands it straddles do. A reference
  *    with under 1200 Hz taking part does not gate (closed).

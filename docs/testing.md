@@ -1469,9 +1469,9 @@ Rulings on the cases the gate left open:
    Hz over the band, for 1 s. A session that starts on a steady tone carrier can read no band and play it until the
    first noise.
 4. A clipping source flattens the band as a carrier does. The stale rule (a gate held open 5 s on one steady stretch
-   with 90% of its windows voice-steady is learned again) replaces any clip detection: it bounds a too-high reference
-   to 5 s, and so mutes a dead or steady-tone carrier after 5 s. The hot 3.4 kHz source's 5.08 s worst false open is
-   that bound.
+   with 90% of its windows voice-steady is learned again) replaces any clip detection: it bounds a too-high reference to
+   5 s, and so mutes a dead or steady-tone carrier after 5 s. It takes the stretch as a held step (ruling 10), so that
+   carrier's later speech brings the reference back. The hot 3.4 kHz source's 5.08 s worst false open is that bound.
 5. An AGC and impulse dropouts are diagnostic, not gated: they cost quieting, not false opens.
 6. The hardware tap at 48 kHz passes at 33.5 dB, 2.5 dB short of 36: its sound card's floor leaves no more room.
 7. An input rate with no room is logged by the squelch at first use; the engine adds no note of its own.
@@ -1503,17 +1503,18 @@ Rulings on the cases the gate left open:
 10. A carrier that relays noise (a repeater passing a weak user's hiss: 300-3000 Hz noise on the carrier) at just the
     level where it matches the source's own noise in every part of the spectrum is noise to every measure the squelch
     has, and can step the reference down, muting that noise. The step is held, not trusted: the user's speech on the
-    same carrier shows a carrier at the stepped reference (eight of ten runs with the voice band louder than noise's by
-    twice the tolerances, or more than 1.5 dB above the reference without noise's spectrum), and the reference from
-    before the first held step comes back, through a pause and a passband switch (the cache keeps the held step) too.
-    The carrier's later pauses step it down again only after 0.6 s of them, doubled at each refutation. A weak carrier
-    on noise genuinely turned down sits at the stepped reference without louder voice, so it refutes nothing (a
-    stretch-long block after a refutation had left the noise after such a carrier open 3.8 s). The gate bounds the
-    speech after relayed noise to 15% dropout (`relay-speech`), and the harder cases in `DSP_PCM_NOISE_SQUELCH` lose
-    0.2-0.6 s of it. No spectral test told the two apart: the band under voice (100-350 Hz) reads -6.4 to +2.9 dB
-    against noise's move for a relay without CTCSS, depending on the CNR, a CTCSS tone fills it, and hum after the
-    volume lifts it; the window-to-window correlation of the voice and above-band powers reads about the same for both
-    (-0.2 for noise, 0 for a relay).
+    same carrier, wherever the gate keeps it shut against the stepped reference (less than N dB under it, so a carrier
+    that strengthens a little is caught too), shows a carrier there (eight of ten runs with the voice band louder than
+    noise's by twice the tolerances, or more than 1.5 dB above the reference without noise's spectrum), and the
+    reference from before the first held step comes back, through a pause and a passband switch (the cache keeps the
+    held step) too. The carrier's later pauses step it down again only after 0.6 s of them, doubled at each refutation.
+    A weak carrier on noise genuinely turned down sits at the stepped reference without louder voice, so it refutes
+    nothing (a stretch-long block after a refutation had left the noise after such a carrier open 3.8 s). The gate
+    bounds the speech after relayed noise to 15% dropout (`relay-speech`), and the harder cases in
+    `DSP_PCM_NOISE_SQUELCH` lose 0.2-0.6 s of it. No spectral test told the two apart: the band under voice (100-350 Hz)
+    reads -6.4 to +2.9 dB against noise's move for a relay without CTCSS, depending on the CNR, a CTCSS tone fills it,
+    and hum after the volume lifts it; the window-to-window correlation of the voice and above-band powers reads about
+    the same for both (-0.2 for noise, 0 for a relay).
 
 Live check (an RTL-SDR running `rtl_fm -M fm` with no squelch, de-emphasis or low-pass, recorded at 48, 24 and
 12 kHz): 8 s of an empty channel, 8 s of a NOAA weather radio broadcast and 8 s of the empty channel again, fed to
@@ -1535,8 +1536,9 @@ model by two suites:
   carrier that weakens (30, 20 and 12 dB CNR, dead and modulated at 100-1200 Hz and the rated deviation, on a 48 kHz
   source and on `rtl_fm`'s 12 kHz band, two seeds each); a light tone keyed straight out of noise, which is no gain
   step; a carrier relaying noise on both sources, whose speech refutes the step it caused, after two held steps, across
-  a passband switched away and back, and across a gap; weak carriers that refute no genuine step; modulation that steps
-  up under a carrier (a 4.5 kHz line after each pause), bursts separated by exact zeros, starting on a carrier, a
+  a passband switched away and back, across a gap, and on a carrier that strengthens; a dead carrier the stale rule
+  took, whose speech brings the reference back; weak carriers that refute no genuine step; modulation that steps up
+  under a carrier (a 4.5 kHz line after each pause), bursts separated by exact zeros, starting on a carrier, a
   low-passed source reading no band, exact zeros, the per-passband cache and the stale rule, and block-cut bit identity.
   The pause, unkey, edge-spur, small-step, relayed-noise, held-step, weak-carrier and gain-step cases, and the weakening
   carrier at 100 Hz deviation, each fail on the learner as it stood before the rule they pin.
