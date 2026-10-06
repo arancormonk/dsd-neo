@@ -1544,15 +1544,22 @@ Rulings on the cases the gate left open:
     steadily, and a moving volume moves the voice band and the band above it alike: against the band above it, all three
     stay shut, as does a dead carrier. A filter that quiets the band by N dB on its own (75 us de-emphasis, a 3 kHz
     low-pass, switched on) opens for the stale rule's 5 s, contested or not (ruling 4). A weak carrier with no louder
-    voice (dead, or speech at 0 dB CNR) refutes nothing, and neither does a steady line or tone in the voice band: a 1
-    kHz line at -50 dBFS added to noise after a genuine step read clearly louder in one voice part run after run, and
-    played 4.8 s, until refutation asked for the voice band to move against the band above it in two runs of ten (asking
-    it of every run instead cost the hardware tap's AGC scenario 11.6% of its speech). The gate bounds the speech after
-    relayed noise to 15% dropout (`relay-speech`), and the harder cases in `DSP_PCM_NOISE_SQUELCH` lose 0.2-0.6 s of it.
-    No spectral test told the two apart: the band under voice (100-350 Hz) reads -6.4 to +2.9 dB against noise's move
-    for a relay without CTCSS, depending on the CNR, a CTCSS tone fills it, and hum after the volume lifts it; the
-    window-to-window correlation of the voice and above-band powers reads about the same for both (-0.2 for noise, 0 for
-    a relay).
+    voice (dead, or speech at 0 dB CNR) refutes nothing, and neither does a steady tone carrier or a steady line in the
+    voice band: a 1 kHz line at -50 dBFS added to noise after a genuine step read clearly louder in one voice part run
+    after run, and played 4.8 s, until refutation asked for the voice band to move against the band above it in two runs
+    of ten (asking it of every run instead cost the hardware tap's AGC scenario 11.6% of its speech). Modulation against
+    a refuted step starts the take-back's evidence over in any run, one the learner otherwise passes over (a level still
+    being confirmed) included: light, faded bursts that never continue a stretch had let the pauses between them add up
+    to a take-back and muted the bursts after it. Known limits, which no measure of the audio removes: audio added after
+    the discriminator reads as the modulation of a carrier relaying noise. A steady line a little louder (-48 dBFS)
+    moves the voice band just enough, now and then, to refute a genuine step and plays the stale rule's 5 s; a tone
+    keyed on and off in the voice band moves it as speech does and keeps the gate open on noise as long as it keeps
+    switching. And light speech (250 Hz deviation) after the stale rule took a dead carrier moves the voice band too
+    little at first to refute that, and loses its first 2.9 s. The gate bounds the speech after relayed noise to 15%
+    dropout (`relay-speech`), and the harder cases in `DSP_PCM_NOISE_SQUELCH` lose 0.2-0.6 s of it. No spectral test
+    told the two apart: the band under voice (100-350 Hz) reads -6.4 to +2.9 dB against noise's move for a relay without
+    CTCSS, depending on the CNR, a CTCSS tone fills it, and hum after the volume lifts it; the window-to-window
+    correlation of the voice and above-band powers reads about the same for both (-0.2 for noise, 0 for a relay).
 
 Live check (an RTL-SDR running `rtl_fm -M fm` with no squelch, de-emphasis or low-pass, recorded at 48, 24 and
 12 kHz): 8 s of an empty channel, 8 s of a NOAA weather radio broadcast and 8 s of the empty channel again, fed to
@@ -1582,12 +1589,13 @@ model by two suites:
   rule took, which refute a contested step, faded 6 dB or not; carriers 2 dB over noise turned down, whose noise after
   takes the step back within 1 s, and an 800 Hz high-pass or 25 us de-emphasis switched on after a contested step, under
   a pumping volume or not, and a steady 1 kHz line after a genuine or a contested step, which refute nothing; a volume
-  pumping at 1 and 2 Hz after the low-pass case's refutation, whose noise is taken back within 1.5 s; modulation that
-  steps up under a carrier (a 4.5 kHz line after each pause), bursts separated by exact zeros, starting on a carrier, a
-  low-passed source reading no band, exact zeros, the per-passband cache and the stale rule, and block-cut bit identity.
-  The pause, unkey, edge-spur, small-step, relayed-noise, held-step, weak-carrier, take-back, contested-step,
-  voice-band-line and gain-step cases, and the weakening carrier at 100 Hz deviation, each fail on the learner as it
-  stood before the rule they pin.
+  pumping at 1 and 2 Hz after the low-pass case's refutation, whose noise is taken back within 1.5 s; light, faded
+  bursts between a stale dead carrier's pauses, whose modulation guards the refuted step though no stretch reads it;
+  modulation that steps up under a carrier (a 4.5 kHz line after each pause), bursts separated by exact zeros, starting
+  on a carrier, a low-passed source reading no band, exact zeros, the per-passband cache (its eight entries, the oldest
+  evicted, as in the model) and the stale rule, and block-cut bit identity. The pause, unkey, edge-spur, small-step,
+  relayed-noise, held-step, weak-carrier, take-back, contested-step, voice-band-line and gain-step cases, and the
+  weakening carrier at 100 Hz deviation, each fail on the learner as it stood before the rule they pin.
 - `DSP_PCM_NOISE_SQUELCH_SWEEP` (`--sweep`): full-deviation tones on 12.5 and 25 kHz sources, centred and at their
   Carson edges, never closing the gate at N = 30 (lowest Q 42.8 dB).
 

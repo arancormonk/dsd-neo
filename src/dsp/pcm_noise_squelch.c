@@ -487,13 +487,12 @@ dsd_pcm_noise_squelch_set_key(dsd_pcm_noise_squelch* t, const dsd_pcm_noise_sque
     if (e && t->plan.valid) {
         t->state = e->state;
         e->stamp = ++t->cache_clock;
-        if (pnsq_has_reference(t)) {
-            pnsq_take_reference(t, e->ref, e->v_ref_db, e->vp_ref_db);
-            /* A step the entry held is still held, with the reference from before it, as is a step refuted. */
-            t->prior = e->prior;
-            t->alt = e->alt;
-            t->ref_proven = e->ref_proven;
-        }
+        pnsq_take_reference(t, e->ref, e->v_ref_db, e->vp_ref_db);
+        /* A step the entry held is still held, with the reference from before it, as is a step refuted (a no-band
+           entry's too, for when it leaves NO_BAND). */
+        t->prior = e->prior;
+        t->alt = e->alt;
+        t->ref_proven = e->ref_proven;
     } else if (t->plan.valid) {
         t->state = DSD_PCM_NOISE_SQUELCH_LEARNING;
         DSD_MEMSET(t->ref, 0, sizeof(t->ref));
@@ -901,6 +900,24 @@ pnsq_gain_step(dsd_pcm_noise_squelch* t, const pnsq_run* r, const pnsq_shape* sh
     t->st_pending = 0;
 }
 
+/* Modulation against a refuted step, in any run (one whose level moves, or a new level still being confirmed,
+   included), starts the evidence for taking it back over (pnsq_take_back() counts only the runs that continue a
+   stretch). */
+static void
+pnsq_back_watch(dsd_pcm_noise_squelch* t, const pnsq_run* r) {
+    if (!t->alt.valid) {
+        return;
+    }
+    unsigned char alt_part[DSD_PCM_NOISE_SQUELCH_MAX_BANDS];
+    (void)pnsq_participating(&t->plan, t->alt.ref, t->alt.v_ref_db, alt_part);
+    const pnsq_against a = {t->alt.ref, alt_part, t->alt.v_ref_db, t->alt.vp_ref_db};
+    pnsq_shape ash;
+    pnsq_shape_against(&t->plan, &a, r, &ash);
+    if (ash.speech) {
+        pnsq_back_reset(t);
+    }
+}
+
 /* Stale quieting: open on this stretch for 5 s with the voice band stationary throughout. */
 static void
 pnsq_stale(dsd_pcm_noise_squelch* t, const pnsq_run* r) {
@@ -1110,6 +1127,7 @@ pnsq_window(dsd_pcm_noise_squelch* t, const double* p, double v, const double* v
     pnsq_run run;
     if (pnsq_run_push(t, p, v, vp, &run)) {
         const int steady = pnsq_steady(t->run_a_db);
+        pnsq_back_watch(t, &run);
         pnsq_no_band(t, &run, steady);
         pnsq_level(t, &run, steady);
     }

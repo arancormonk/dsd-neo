@@ -895,6 +895,45 @@ test_voice_band_line_refutes_nothing(void) {
     free(sq);
 }
 
+/* Modulation the learner does not otherwise read still guards a refuted step (issue #628). A dead carrier the stale
+   rule took, then speech that refutes that, then six 160 ms bursts of light speech (250 Hz deviation, a 5 Hz raised
+   cosine) at 14 dB CNR between 0.6 s pauses of the dead carrier at 20 dB: each burst is a level still being confirmed
+   when it ends, so its runs never continue a stretch, but its modulation against the refuted step must still start the
+   take-back's evidence over. Otherwise the pauses add up to 0.8 s, take the dead carrier back, and mute the bursts after
+   it. */
+static void
+test_unread_modulation_guards_a_refuted_step(void) {
+    dsd_pcm_noise_squelch* sq = new_squelch(48000, 10);
+    static pcm_tap src;
+    static trace tr;
+    DSD_MEMSET(&tr, 0, sizeof tr);
+    pcm_tap_init(&src, 44U, 12500.0, 0.0, 0.0);
+    src.tone_dev_hz = 1000.0;
+    const seg lead[] = {
+        {PCM_TAP_NOISE, 2.0, 0.0, 0.0, 0.0},
+        {PCM_TAP_DEAD, 7.0, 20.0, 0.0, 0.0},
+        {PCM_TAP_SYLLABIC, 1.5, 20.0, 1000.0, 0.0},
+    };
+    run_segments(sq, &src, lead, 3, &tr);
+    src.tone_dev_hz = 250.0;
+    src.syllable_hz = 5.0;
+    src.syllable_raised = 1;
+    const seg burst = {PCM_TAP_SYLLABIC, 0.16, 14.0, 1000.0, 0.0};
+    const seg pause = {PCM_TAP_DEAD, 0.6, 20.0, 0.0, 0.0};
+    for (int b = 0; b < 6; b++) {
+        g_seg_base = 3 + (2 * b);
+        run_segments(sq, &src, &burst, 1, &tr);
+        src.syllable_phase = 0.0;
+        g_seg_base = 4 + (2 * b);
+        run_segments(sq, &src, &pause, 1, &tr);
+    }
+    g_seg_base = 0;
+    for (int b = 0; b < 6; b++) {
+        assert(open_seconds(&tr, 3 + (2 * b), 0.0) > 0.12);
+    }
+    free(sq);
+}
+
 /* The bounds on a contested step (issue #628). Weak traffic 4 dB over noise turned down 20 dB, at noise+10, again and
    again: each transmission refutes the step and plays, and the noise after each one closes within the gate's 1 s
    bound, not seconds after the later ones. And noise whose own spectrum changes after a contested step (an 800 Hz
@@ -1232,6 +1271,21 @@ test_passband_cache(void) {
     dsd_pcm_noise_squelch_set_key(sq, &key);
     dsd_pcm_noise_squelch_get_status(sq, &st);
     assert(st.state == DSD_PCM_NOISE_SQUELCH_LEARNING);
+    /* Eight references are kept: a ninth passband's forgets the one stored or taken longest ago, which learns afresh,
+       while the rest come back (the model keeps the same eight). */
+    for (int i = 0; i < 9; i++) {
+        key.passband_hz = 6000 + (1000 * i);
+        dsd_pcm_noise_squelch_set_key(sq, &key);
+        run_segments(sq, &narrow, &noise, 1, NULL);
+    }
+    key.passband_hz = 7000;
+    dsd_pcm_noise_squelch_set_key(sq, &key);
+    dsd_pcm_noise_squelch_get_status(sq, &st);
+    assert(st.state == DSD_PCM_NOISE_SQUELCH_PROVISIONAL);
+    key.passband_hz = 6000;
+    dsd_pcm_noise_squelch_set_key(sq, &key);
+    dsd_pcm_noise_squelch_get_status(sq, &st);
+    assert(st.state == DSD_PCM_NOISE_SQUELCH_LEARNING);
     free(sq);
 }
 
@@ -1382,6 +1436,7 @@ main(int argc, char** argv) {
     test_relayed_noise_is_refuted();
     test_refuted_step_taken_back();
     test_contested_step();
+    test_unread_modulation_guards_a_refuted_step();
     test_contested_step_bounds();
     test_voice_band_line_refutes_nothing();
     test_held_steps_come_back();

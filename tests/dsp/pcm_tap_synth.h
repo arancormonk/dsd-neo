@@ -53,9 +53,11 @@ typedef struct {
     double carrier_phase;
     double tone_phase;
     double syllable_phase;
-    double offset_hz;   /* the carrier's offset from the channel's centre */
-    double tone_dev_hz; /* the tone's deviation; 0 is the width's rated deviation */
-    double scale;       /* noise alone at -20 dBFS RMS */
+    double syllable_hz;  /* PCM_TAP_SYLLABIC's envelope rate; 0 is 3 Hz */
+    int syllable_raised; /* a raised cosine from its peak (0.5 + 0.5 cos) in place of 0.1 + 0.9 |sin| */
+    double offset_hz;    /* the carrier's offset from the channel's centre */
+    double tone_dev_hz;  /* the tone's deviation; 0 is the width's rated deviation */
+    double scale;        /* noise alone at -20 dBFS RMS */
     /* PCM_TAP_RELAY's audio band: high-pass and low-pass biquads (b0, b1, b2, a1, a2), their states, and the scale that
        makes unit Gaussian noise through them unit RMS. */
     double relay_hp[5];
@@ -215,8 +217,10 @@ pcm_tap_raw(pcm_tap* s, pcm_tap_kind kind, double cnr_db, double tone_hz) {
             s->tone_phase += 2.0 * M_PI * tone_hz / (double)PCM_TAP_RATE;
             double dev = s->tone_dev_hz > 0.0 ? s->tone_dev_hz : s->dev_hz;
             if (kind == PCM_TAP_SYLLABIC) {
-                s->syllable_phase += 2.0 * M_PI * 3.0 / (double)PCM_TAP_RATE;
-                dev *= 0.1 + (0.9 * fabs(sin(s->syllable_phase)));
+                const double rate = s->syllable_hz > 0.0 ? s->syllable_hz : 3.0;
+                dev *= s->syllable_raised ? 0.5 + (0.5 * cos(s->syllable_phase))
+                                          : 0.1 + (0.9 * fabs(sin(s->syllable_phase)));
+                s->syllable_phase += 2.0 * M_PI * rate / (double)PCM_TAP_RATE;
             }
             s->carrier_phase += 2.0 * M_PI * dev * sin(s->tone_phase) / (double)PCM_TAP_RATE;
         }

@@ -182,6 +182,8 @@ BACK_HOLD_WINDOWS = 40
 BACK_TRACK = 0.2
 TRACK_S = 1.0
 N_MIN_DB = 3
+# References remembered per source context (the C core's DSD_PCM_NOISE_SQUELCH_CACHE_SIZE).
+CACHE_SIZE = 8
 N_MAX_DB = 30
 N_DEFAULT_DB = 10
 CLOSE_HYSTERESIS_DB = 3.0
@@ -536,6 +538,8 @@ def run_learner(plan: SquelchPlan, w: dict, params: dict, n_db: float, keys=None
     # Whether the reference is one a refutation brought back: a step held over it is contested (see the refutation).
     proven = False
     cache: dict = {}
+    stamps: dict = {}
+    cache_clock = 0
     key = None if keys is None else keys[0]
     # The steady stretch: its anchor level (dB), its voice-band power sum and count, whether it sat at the reference
     # when it began, and a pending gain step (dB) with its windows and voice-steady count.
@@ -557,10 +561,18 @@ def run_learner(plan: SquelchPlan, w: dict, params: dict, n_db: float, keys=None
                 held_ref = None if ref is None else ref.copy()
                 held_prior = None if prior is None else (prior[0].copy(), prior[1], prior[2].copy(), prior[3])
                 held_alt = None if alt is None else (alt[0].copy(), alt[1], alt[2].copy())
+                if key not in cache and len(cache) >= CACHE_SIZE:
+                    # Full: the least recently stored or taken entry goes, as in the C core.
+                    del cache[min(cache, key=lambda k: stamps[k])]
                 cache[key] = (state, held_ref, v_ref, None if vp_ref is None else vp_ref.copy(), held_prior, held_alt,
                               proven)
+                cache_clock += 1
+                stamps[key] = cache_clock
             key = keys[i]
             fresh = (LEARNING, None, 0.0, None, None, None, False)
+            if key in cache:
+                cache_clock += 1
+                stamps[key] = cache_clock
             state, ref, v_ref, vp_ref, prior, alt, proven = cache.get(key, fresh)
             ref = None if ref is None else ref.copy()
             vp_ref = None if vp_ref is None else vp_ref.copy()
@@ -589,6 +601,12 @@ def run_learner(plan: SquelchPlan, w: dict, params: dict, n_db: float, keys=None
             sa = total_db(sp)
             sv = 10.0 * math.log10(max(float(np.mean(v_all[lo : i + 1])), MIN_POWER))
             svp = 10.0 * np.log10(np.maximum(np.mean(vp_all[:, lo : i + 1], axis=1), MIN_POWER))
+            if alt is not None and voice_louder(
+                plan, sp, sv, svp, alt[0], alt[1], alt[2], participating(plan, alt[0], alt[1], ratio_max)
+            ):
+                # Modulation against a refuted step, in any run (one whose level moves, or a new level still being
+                # confirmed, included), starts the evidence for taking it back over.
+                back = [0, 0, 0.0]
             seg_v = v_db[lo : i + 1]
             v_steady = bool(np.max(np.abs(seg_v - np.median(seg_v))) <= STEADY_DB)
             ra = None if ref is None else total_db(ref)
