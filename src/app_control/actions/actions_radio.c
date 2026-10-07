@@ -79,7 +79,9 @@ ui_handle_ppm_delta(dsd_opts* opts, dsd_state* state, const struct dsd_app_comma
 #ifdef USE_RADIO
     rtl_stream_adjust_ppm(opts, d);
 #else
-    opts->rtlsdr_ppm_error += d;
+    /* Saturating: a delta can be any int32 (the control API sends what its client asked for). */
+    const int64_t ppm = (int64_t)opts->rtlsdr_ppm_error + d;
+    opts->rtlsdr_ppm_error = (ppm > INT32_MAX) ? INT32_MAX : ((ppm < INT32_MIN) ? INT32_MIN : (int)ppm);
 #endif
     return 1;
 }

@@ -748,6 +748,42 @@ int dsd_user_config_load(const char* path, dsdneoUserConfig* cfg);
 int dsd_user_config_save_atomic(const char* path, const dsdneoUserConfig* cfg);
 
 /**
+ * @brief Reset @p cfg to the state the INI loader starts every file from.
+ *
+ * Not all-zero: some keys default to on (group/private/encrypted call tuning,
+ * persisted lockouts, ...), so a config built with dsd_user_config_apply_key()
+ * must start here or an omitted key would read as "off". Safe on NULL.
+ */
+void dsd_user_config_init(dsdneoUserConfig* cfg);
+
+/**
+ * @brief Mark @p section present in @p cfg, as a `[section]` header in a file does.
+ *
+ * Some sections act even with no keys: an empty `[analog]` puts the analog
+ * widths and tone policy back to their defaults. Call it for every section
+ * before applying that section's keys with dsd_user_config_apply_key().
+ *
+ * @return 1 when @p cfg and @p section are valid and the name is shorter than
+ *         64 bytes, 0 otherwise. An unknown section is accepted and ignored.
+ */
+int dsd_user_config_apply_section(dsdneoUserConfig* cfg, const char* section);
+
+/**
+ * @brief Apply a single user-config key/value pair in memory.
+ *
+ * The same `[section] key = value` mapping the INI loader uses, exposed so
+ * embedders (the JSON API) can build a @ref dsdneoUserConfig from structured
+ * input without a file. Start from dsd_user_config_init(). Section and key are
+ * matched case-insensitively; @p value is the text an INI line would carry
+ * after its quotes. An unknown section or key is ignored, as the loader
+ * ignores it.
+ *
+ * @return 1 when @p cfg, @p section and @p key are valid handles and both
+ *         names are shorter than 64 bytes, 0 otherwise.
+ */
+int dsd_user_config_apply_key(dsdneoUserConfig* cfg, const char* section, const char* key, const char* value);
+
+/**
  * @brief Apply config-derived defaults to opts/state before env + CLI precedence.
  *
  * @param cfg User config to apply.

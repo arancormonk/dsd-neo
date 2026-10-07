@@ -29,14 +29,22 @@ Generated (do not edit/commit):
 - Target: `dsd-neo` (executable)
 - Responsibilities: argument parsing + wiring; keep `main.c` thin and push logic into module libraries
   - Runtime CLI/bootstrap helpers: `include/dsd-neo/runtime/cli.h`
-- Build files: `apps/dsd-cli/CMakeLists.txt`
+  - `frontend.c` owns the run's lifecycle hooks: the terminal frontend and/or the control API. With the API but no
+    terminal it opens the app-control frontend runtime itself; at stop the API goes before the runtime it submits to.
+    It hands the parsed API token to the server and wipes it from `dsd_opts`, and publishes telemetry once right after
+    starting it, before the decoder runs: the API feed's first look, from which every event row reaches subscribers.
+- Build files: `apps/dsd-cli/CMakeLists.txt` (`DSD_CLI_HAS_API` when `DSD_ENABLE_API` builds `dsd-neo_api`)
 
 ## Engine
 
 - Path: `src/engine` (including `src/engine/dispatch`), `include/dsd-neo/engine`
 - Targets: `dsd-neo_engine`, `dsd-neo_dispatch`
 - Responsibilities:
-  - Top-level decode runner and lifecycle (wires core/runtime/IO/protocol state machines)
+  - Top-level decode runner and lifecycle (wires core/runtime/IO/protocol state machines). At the end of a run
+    `dsd_engine_run_with_lifecycle()` commits the session's last calls (`dsd_engine_finalize_calls()`: end the slots
+    as sync loss, commit their rows, retire the held VOICE_END alerts) and publishes telemetry before it calls the
+    frontends' stop hooks, so a frontend that records calls gets the final transmission; `dsd_engine_cleanup()`
+    repeats the step, which then finds nothing left to do
   - Protocol/frame dispatch glue
   - Trunk retune policy and bookkeeping: `src/engine/trunk_tuning.c` implements the tune-to-frequency,
     tune-to-control-channel and return-to-control-channel requests behind
@@ -494,6 +502,10 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
     elsewhere; `none` → `audio_null.c` discard/silence backend; `aaudio` → Android). Exactly one
     backend translation unit is compiled per build; the shared last-error store lives in
     `src/platform/audio_error_internal.h`
+  - Socket readiness: `dsd_socket_wait()` in `include/dsd-neo/platform/sockets.h` waits for a socket to become
+    readable and/or writable (`poll()` on POSIX, `select()` on Windows), reporting end of stream and errors as ready
+    so the next `recv()`/`send()` returns them. Servers poll non-blocking sockets with it rather than receive
+    timeouts, which leave a Windows TCP socket in an indeterminate state when they fire
   - Fast-math-proof value checks: `dsd_fp_opaque_f()`/`dsd_fp_opaque_d()` in
     `include/dsd-neo/platform/fp_opaque.h` hide a value's origin from the optimizer (a round trip through a volatile
     object, one store and one load) before an IEEE translation unit tests it for NaN or infinity, so Clang's link-time
@@ -673,7 +685,15 @@ The `Linux • RelWithDebInfo • ctest (x86-64-v3, fast-math, clang)` check enf
 - Target: `dsd-neo_runtime`
 - Responsibilities:
   - Config system (schema, expansion, user config), logging, memory helpers, rings, worker pools, RT scheduling
-  - CLI parsing and interactive/bootstrap helpers (`include/dsd-neo/runtime/cli.h`)
+    - In-memory user configs: `dsd_user_config_init()` resets a `dsdneoUserConfig` to the state the INI loader starts
+      every file from (not all zero: several keys default to on), `dsd_user_config_apply_section()` marks a section
+      present as a `[section]` header does (an empty `[analog]` acts), and `dsd_user_config_apply_key()` applies one
+      `[section] key = value` through the loader's own mapper (the control API's `config_apply`)
+  - CLI parsing and interactive/bootstrap helpers (`include/dsd-neo/runtime/cli.h`); the control API options and
+    their `DSD_NEO_API_*` fallbacks are resolved at parse time, token file included, so a bad value is an argument
+    error. A token can read like an option (`--print-config`), so every pass over the raw argv -- bootstrap's
+    pre-parse and inherited-trunk-scan checks, the one-shot check, compaction -- steps over the value of an option
+    `dsd_cli_option_takes_free_value()` names; a new raw pass must do the same
   - UTF-8 output (`include/dsd-neo/runtime/unicode.h`): on Windows the first `dsd_unicode_init_locale()` switches the
     console's code pages to UTF-8 and registers `dsd_unicode_restore_console()` with `atexit()`, so the shell gets its
     own code pages back when dsd-neo exits
@@ -945,6 +965,14 @@ run with the default no-callback state.
 **Dependency direction:** DSP/Protocol → Runtime (hooks) ← UI (implementations). This keeps DSP UI-agnostic while
 allowing state propagation.
 
+**Multi-consumer observers:** the snapshot accessors are single-consumer, so a second consumer that must read the
+published data while a frontend also does (the control API) registers a telemetry observer with app-control instead
+(`include/dsd-neo/app_control/telemetry_observers.h`). The two app-control publishers call the observers on the decode
+thread with the live `dsd_state`/`dsd_opts`, after releasing their own locks. Callbacks run under the observer
+registry lock, so `dsd_app_telemetry_observer_remove()` returns only once no callback of that observer is running; a
+callback must not block, submit commands, or add/remove observers. Live event-history rows are read under
+`dsd_event_history_transaction_begin()`, as every other cross-thread reader does.
+
 ### Frame Sync Hooks (DSP → Runtime ← Engine/Protocols)
 
 DSP frame-sync code may need to trigger protocol-specific actions (for example, trunking state machine ticks) without
@@ -995,6 +1023,13 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
     watchdog's release-time audio flush; callees must use `_locked` forms to avoid acquiring the guard again.
   - Bootstrap retains only positional playback filenames in argv storage, preserving argument indexes with empty
     placeholders. State snapshots exclude argv ownership; teardown securely erases retained strings.
+  - Retained results: talkgroup export and decryption completions are kept as the latest result
+    (`dsd_app_tg_export_result_get()`, `dsd_app_decryption_result_get()`) and in a history of the last
+    `DSD_APP_RESULT_HISTORY` (64) by sequence number (`dsd_app_tg_export_results_since()`,
+    `dsd_app_decryption_results_since()`), for a consumer that must see every completion (the control API, which
+    reports a `result_gap` when more completed than the history held)
+  - Telemetry observers (`telemetry_observers.c`): the multi-consumer alternative to the snapshot accessors; see
+    "Telemetry Hooks" for the contract
   - Source ID imports: `DSD_APP_CMD_IMPORT_SRC_LIST = 572` carries a path string;
     `DSD_APP_CMD_IMPORT_SRC_LIST_CLEAR = 573` has no payload. Import validates one candidate, refuses zero usable
     rows, and adopts that same store and path on success; failure preserves both.
@@ -1526,6 +1561,47 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   group, and the terminal average helpers wrap the same arithmetic. Counts are
   corrected errors per voice frame, not BER; 0/0 FEC ratios are invalid.
 - Build files: `src/app_control/CMakeLists.txt`
+
+## API
+
+- Path: `src/api`, `include/dsd-neo/api`
+- Target: `dsd-neo_api` (built when `DSD_ENABLE_API=ON`, the desktop default; never on Android), linked by the CLI
+- Responsibilities: the control and telemetry API, newline-delimited JSON over TCP. Protocol and command reference:
+  [docs/api.md](api.md)
+  - Public surface: `include/dsd-neo/api/api.h` (`dsd_api_start()`/`dsd_api_stop()` with a `dsd_api_config`). The
+    rest is module-private: `src/api/json.h` (the bounded writer/parser), `src/api/api_internal.h`
+  - `api_server.c`: accept thread, result-pump thread and one thread per session, all on non-blocking sockets waited
+    on with `dsd_socket_wait()`. A session's outbox is appended by the feed and the pump; its thread sends it, keeping
+    an unsent tail so no line is ever cut, and reaps itself (the accept thread joins finished sessions and frees their
+    slots). Sends never raise SIGPIPE (`MSG_NOSIGNAL`, or `SO_NOSIGPIPE` at accept). A client whose backlog passes
+    1 MiB is disconnected, never shown a stream with gaps. An unauthenticated connection is closed at the auth
+    deadline, one wrong token or one line that is not JSON ends the connection (the latter keeps a web page's HTTP
+    request from driving the port), and the token is compared over its full buffer width
+  - `api_feed.c`: a telemetry observer (see "Telemetry Hooks"). On the decode thread it follows the event-history
+    rings at every publish (two counters per slot while nothing changes; per-row fingerprints find late enrichment of
+    any committed row) and sends the rows pushed or changed since its last look to event subscribers; following them
+    whether or not anyone listens is what lets a new subscriber get every row committed after its subscription. While
+    an authenticated client is connected it also encodes the call/status/system/metrics/quality records every 250 ms
+    (cached for `get`). The `status` record carries what the stateful
+    commands must quote back: the talkgroup policy version, the decryption context and the scan row view. RF metrics
+    follow the shared validity rules (app-control behavior note above)
+  - `api_commands.c`: one table entry per `DSD_APP_CMD_*` (`API_COMMANDS` reads `commands.h` at run time and fails on a
+    command without one), mapping `params` onto the exact payload through the same app-control submit functions the
+    frontends use; each entry names its submit function and, for a string command, the longest value its handler
+    stores. Values that do not fit their field are refused, never wrapped or cut; 64-bit values convert from
+    the JSON literal or a decimal/hex string, never through a double; secret payloads are wiped; `config_apply`
+    starts from `dsd_user_config_init()` like the INI loader
+  - `json.c` is built with IEEE semantics so its non-finite checks survive fast-math; request lines, parsed strings
+    and every buffer are wiped before their storage is released, since requests carry keys and tokens
+- Threading: commands run on session threads (the queue is multi-producer); telemetry is encoded on the decode thread;
+  `dsd_api_stop()` unregisters the observer (synchronous), stops the result pump and reads the results once more
+  (the pump may have slept through the last ones), then lets every session send what is queued (bounded, 1 s; no new
+  connections meanwhile) before joining the threads and freeing the server, so the last rows and results reach
+  clients and nothing reaches a freed server. The CLI stops it after the frontend runtime, whose close cancels the
+  commands still queued, so their cancelled results are among those sent. A connection refused at the client limit
+  is told `busy` and lingers (bounded, without blocking the accept thread) so the reply is not lost to a reset
+- Tests: `API_JSON`, `API_COMMANDS`, `API_COMMAND_PAYLOADS`, `API_SERVER` (`tests/api/`)
+- Build files: `src/api/CMakeLists.txt`
 
 ## DSP
 
@@ -3131,6 +3207,7 @@ Key public headers:
 - FEC: `<dsd-neo/fec/...>`
 - Crypto: `<dsd-neo/crypto/...>`
 - Protocols: `<dsd-neo/protocol/<name>/...>`
+- API: `<dsd-neo/api/api.h>`
 
 Additional includes of interest:
 

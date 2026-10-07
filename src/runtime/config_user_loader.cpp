@@ -797,6 +797,53 @@ apply_section_key(dsdneoUserConfig* cfg, const char* section, const char* key_lc
     }
 }
 
+static void note_section_present(dsdneoUserConfig* cfg, const char* section);
+
+extern "C" void
+dsd_user_config_init(dsdneoUserConfig* cfg) {
+    user_cfg_reset(cfg);
+}
+
+/* Lowercase and trim a section or key name as the loader does; 0 when it is too long to hold. */
+static int
+user_config_normalize_name(const char* name, char* out, size_t out_size) {
+    if (strlen(name) >= out_size) {
+        return 0; /* no section or key name is that long; a cut one could name another */
+    }
+    DSD_SNPRINTF(out, out_size, "%s", name);
+    user_config_lowercase_ascii(out);
+    user_config_trim_ascii_whitespace(out);
+    return 1;
+}
+
+extern "C" int
+dsd_user_config_apply_section(dsdneoUserConfig* cfg, const char* section) {
+    char section_lc[64];
+    if (cfg == nullptr || section == nullptr || !user_config_normalize_name(section, section_lc, sizeof section_lc)) {
+        return 0;
+    }
+    note_section_present(cfg, section_lc);
+    return 1;
+}
+
+extern "C" int
+dsd_user_config_apply_key(dsdneoUserConfig* cfg, const char* section, const char* key, const char* value) {
+    if (cfg == nullptr || section == nullptr || key == nullptr) {
+        return 0;
+    }
+    if (value == nullptr) {
+        value = "";
+    }
+    char section_lc[64];
+    char key_lc[64];
+    if (!user_config_normalize_name(section, section_lc, sizeof section_lc)
+        || !user_config_normalize_name(key, key_lc, sizeof key_lc)) {
+        return 0;
+    }
+    apply_section_key(cfg, section_lc, key_lc, value, USER_CFG_PARSE_MODE_BASE);
+    return 1;
+}
+
 // INI loader ------------------------------------------------------------------
 
 /* Forward declarations for include processing */

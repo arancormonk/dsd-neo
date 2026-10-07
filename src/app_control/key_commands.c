@@ -21,6 +21,8 @@
 static dsd_mutex_t result_mutex;
 static atomic_int mutex_state = 0;
 static dsd_app_decryption_result retained;
+/* The last DSD_APP_RESULT_HISTORY results, at sequence % DSD_APP_RESULT_HISTORY, for dsd_app_decryption_results_since(). */
+static dsd_app_decryption_result history[DSD_APP_RESULT_HISTORY];
 
 static void
 lock_result(void) {
@@ -68,7 +70,30 @@ dsd_app_publish_decryption_result(const struct dsd_app_command* command, int sta
     lock_result();
     result.sequence = retained.sequence == UINT64_MAX ? 1 : retained.sequence + 1;
     retained = result;
+    history[result.sequence % (uint64_t)DSD_APP_RESULT_HISTORY] = result;
     dsd_mutex_unlock(&result_mutex);
+}
+
+int
+dsd_app_decryption_results_since(uint64_t after_sequence, dsd_app_decryption_result* out, int cap) {
+    if (!out || cap <= 0) {
+        return 0;
+    }
+    lock_result();
+    const uint64_t newest = retained.sequence;
+    uint64_t seq = after_sequence + 1U;
+    if (newest >= (uint64_t)DSD_APP_RESULT_HISTORY && seq < newest - (uint64_t)DSD_APP_RESULT_HISTORY + 1U) {
+        seq = newest - (uint64_t)DSD_APP_RESULT_HISTORY + 1U;
+    }
+    int n = 0;
+    for (; seq != 0U && seq <= newest && n < cap; seq++) {
+        const dsd_app_decryption_result* r = &history[seq % (uint64_t)DSD_APP_RESULT_HISTORY];
+        if (r->sequence == seq) {
+            out[n++] = *r;
+        }
+    }
+    dsd_mutex_unlock(&result_mutex);
+    return n;
 }
 
 static int

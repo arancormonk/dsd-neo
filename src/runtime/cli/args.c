@@ -173,6 +173,132 @@ cli_is_numeric_ipv4_address(const char* in) {
     return octets == 4;
 }
 
+/* The network-control options (--rtl-udp-control*, --api*) the long-option pre-scan collects and applies after it. */
+typedef struct {
+    int rtl_udp_seen;
+    unsigned long rtl_udp_port;
+    const char* rtl_udp_bindaddr;
+    const char* api_port;
+    const char* api_bind;
+    const char* api_token;
+    const char* api_token_file;
+} cli_net_args;
+
+/* First octet of an address cli_is_numeric_ipv4_address() accepted is 127. */
+static int
+cli_ipv4_is_loopback(const char* in) {
+    return in && in[0] == '1' && in[1] == '2' && in[2] == '7' && in[3] == '.';
+}
+
+/* One line of 1..cap-1 bytes, trailing whitespace dropped; anything else is not a token. */
+static int
+cli_read_api_token_file(const char* path, char* out, size_t cap) {
+    char opened[2048];
+    FILE* fp = dsd_path_fopen_user_read_file(path, opened, sizeof opened);
+    if (!fp) {
+        return -1;
+    }
+    char buf[512];
+    size_t n = fread(buf, 1U, sizeof buf - 1U, fp);
+    const int failed = ferror(fp) || !feof(fp);
+    (void)fclose(fp);
+    buf[n] = '\0';
+    while (n > 0U && (buf[n - 1U] == '\n' || buf[n - 1U] == '\r' || buf[n - 1U] == ' ' || buf[n - 1U] == '\t')) {
+        buf[--n] = '\0';
+    }
+    const int ok = !failed && n > 0U && n < cap && strlen(buf) == n && strpbrk(buf, "\r\n") == NULL;
+    if (ok) {
+        DSD_MEMCPY(out, buf, n + 1U);
+    }
+    DSD_SECURE_ZERO(buf, sizeof buf);
+    return ok ? 0 : -1;
+}
+
+/* An option's CLI value, else (when @p use_env) its non-empty environment fallback; *src names the one used. */
+static const char*
+cli_api_value(const char* cli, const char* cli_name, const char* env_name, int use_env, const char** src) {
+    *src = cli_name;
+    if (cli || !use_env) {
+        return cli;
+    }
+    const char* env = dsd_neo_env_get(env_name);
+    *src = env_name;
+    return (env && env[0] != '\0') ? env : NULL;
+}
+
+static int
+cli_resolve_api_port(dsd_opts* opts, const char* cli) {
+    const char* src = NULL;
+    const char* port = cli_api_value(cli, "--api", "DSD_NEO_API_PORT", 1, &src);
+    unsigned long parsed = 0;
+    if (!port) {
+        return 0;
+    }
+    if (!cli_parse_decimal_u32(port, &parsed) || parsed > 65535UL) {
+        LOG_ERROR("Invalid %s value \"%s\" (expected port 0..65535)\n", src, port);
+        return -1;
+    }
+    opts->api_port = (int)parsed;
+    return 0;
+}
+
+static int
+cli_resolve_api_bind(dsd_opts* opts, const char* cli, int enabled) {
+    const char* src = NULL;
+    const char* bind = cli_api_value(cli, "--api-bind", "DSD_NEO_API_BIND", enabled, &src);
+    if (!bind) {
+        return 0;
+    }
+    if (!cli_is_numeric_ipv4_address(bind) || strlen(bind) >= sizeof opts->api_bindaddr) {
+        LOG_ERROR("Invalid %s value \"%s\" (expected numeric IPv4 address)\n", src, bind);
+        return -1;
+    }
+    DSD_SNPRINTF(opts->api_bindaddr, sizeof opts->api_bindaddr, "%s", bind);
+    return 0;
+}
+
+/* Token precedence: --api-token, DSD_NEO_API_TOKEN, --api-token-file, DSD_NEO_API_TOKEN_FILE. */
+static int
+cli_resolve_api_token(dsd_opts* opts, const cli_net_args* net, int enabled) {
+    const unsigned max_len = (unsigned)(sizeof opts->api_token - 1U);
+    const char* src = NULL;
+    const char* token = cli_api_value(net->api_token, "--api-token", "DSD_NEO_API_TOKEN", enabled, &src);
+    if (token) {
+        if (token[0] == '\0' || strlen(token) > max_len) {
+            LOG_ERROR("%s must be 1 to %u bytes\n", src, max_len);
+            return -1;
+        }
+        DSD_SNPRINTF(opts->api_token, sizeof opts->api_token, "%s", token);
+        return 0;
+    }
+    const char* file = cli_api_value(net->api_token_file, "--api-token-file", "DSD_NEO_API_TOKEN_FILE", enabled, &src);
+    if (file && cli_read_api_token_file(file, opts->api_token, sizeof opts->api_token) != 0) {
+        LOG_ERROR("Cannot read an API token from %s \"%s\" (expected one line of 1 to %u bytes)\n", src, file, max_len);
+        return -1;
+    }
+    return 0;
+}
+
+/* The control/telemetry API options (docs/api.md). Each CLI value wins over its DSD_NEO_API_* fallback, and the
+   fallbacks are read only when the API is enabled. The token file is read here, so a missing or unreadable one is an
+   argument error rather than a server running without the token that was asked for. */
+static int
+cli_resolve_api_options(dsd_opts* opts, const cli_net_args* net) {
+    if (cli_resolve_api_port(opts, net->api_port) != 0) {
+        return -1;
+    }
+    const int enabled = opts->api_port > 0;
+    if (cli_resolve_api_bind(opts, net->api_bind, enabled) != 0 || cli_resolve_api_token(opts, net, enabled) != 0) {
+        return -1;
+    }
+    if (enabled && opts->api_bindaddr[0] != '\0' && !cli_ipv4_is_loopback(opts->api_bindaddr)
+        && opts->api_token[0] == '\0') {
+        LOG_ERROR("API bind address %s is not loopback; set --api-token or --api-token-file\n", opts->api_bindaddr);
+        return -1;
+    }
+    return 0;
+}
+
 static int
 cli_parse_decimal_u64(const char* in, uint64_t* out) {
     if (!in || !out || in[0] == '\0') {
@@ -233,13 +359,18 @@ cli_has_config_one_shot_arg(int argc, char** argv) {
     if (argc <= 1 || !argv) {
         return 0;
     }
-    for (int i = 1; i < argc; i++) {
+    for (int i = 1, advance = 1; i < argc; i += advance) {
+        advance = 1;
         const char* arg = argv[i];
         if (!arg) {
             break;
         }
         if (strcmp(arg, "--") == 0) {
             break;
+        }
+        if (dsd_cli_option_takes_free_value(arg)) {
+            advance = 2; /* a token is any text, a one-shot option's name included */
+            continue;
         }
         if (strcmp(arg, "--validate-config") == 0 || strncmp(arg, "--validate-config=", 18) == 0
             || strcmp(arg, "--print-config") == 0 || strcmp(arg, "--list-profiles") == 0
@@ -784,8 +915,8 @@ cli_parse_airspy_option(int argc, char** argv, int i, dsd_opts* opts) {
                 cli_set_exit_rc(out_exit_rc, 1);                                                                       \
                 return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
-            rtl_udp_control_cli_seen = 1;                                                                              \
-            rtl_udp_control_cli_port = parsed_port;                                                                    \
+            net_cli.rtl_udp_seen = 1;                                                                                  \
+            net_cli.rtl_udp_port = parsed_port;                                                                        \
             arg_advance = 2;                                                                                           \
             continue;                                                                                                  \
         }                                                                                                              \
@@ -802,8 +933,8 @@ cli_parse_airspy_option(int argc, char** argv, int i, dsd_opts* opts) {
                 cli_set_exit_rc(out_exit_rc, 1);                                                                       \
                 return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
-            rtl_udp_control_cli_seen = 1;                                                                              \
-            rtl_udp_control_cli_port = parsed_port;                                                                    \
+            net_cli.rtl_udp_seen = 1;                                                                                  \
+            net_cli.rtl_udp_port = parsed_port;                                                                        \
             continue;                                                                                                  \
         }                                                                                                              \
         if (strcmp(argv[i], "--rtl-udp-control-bind") == 0) {                                                          \
@@ -818,7 +949,7 @@ cli_parse_airspy_option(int argc, char** argv, int i, dsd_opts* opts) {
                 cli_set_exit_rc(out_exit_rc, 1);                                                                       \
                 return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
-            rtl_udp_control_cli_bindaddr = bind_arg;                                                                   \
+            net_cli.rtl_udp_bindaddr = bind_arg;                                                                       \
             arg_advance = 2;                                                                                           \
             continue;                                                                                                  \
         }                                                                                                              \
@@ -829,7 +960,75 @@ cli_parse_airspy_option(int argc, char** argv, int i, dsd_opts* opts) {
                 cli_set_exit_rc(out_exit_rc, 1);                                                                       \
                 return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
-            rtl_udp_control_cli_bindaddr = bind_arg;                                                                   \
+            net_cli.rtl_udp_bindaddr = bind_arg;                                                                       \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--api") == 0) {                                                                           \
+            if (i + 1 >= argc) {                                                                                       \
+                LOG_ERROR("--api requires a port value\n");                                                            \
+                cli_set_exit_rc(out_exit_rc, 1);                                                                       \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            net_cli.api_port = DSD_PARSE_ARGS_NEXT_ARG();                                                              \
+            arg_advance = 2;                                                                                           \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strncmp(argv[i], "--api=", 6) == 0) {                                                                      \
+            net_cli.api_port = argv[i] + 6;                                                                            \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--api-bind") == 0) {                                                                      \
+            if (i + 1 >= argc) {                                                                                       \
+                LOG_ERROR("--api-bind requires a numeric IPv4 address\n");                                             \
+                cli_set_exit_rc(out_exit_rc, 1);                                                                       \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            const char* bind_arg = DSD_PARSE_ARGS_NEXT_ARG();                                                          \
+            if (!cli_is_numeric_ipv4_address(bind_arg)) {                                                              \
+                LOG_ERROR("Invalid --api-bind value \"%s\" (expected numeric IPv4 address)\n", bind_arg);              \
+                cli_set_exit_rc(out_exit_rc, 1);                                                                       \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            net_cli.api_bind = bind_arg;                                                                               \
+            arg_advance = 2;                                                                                           \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strncmp(argv[i], "--api-bind=", 11) == 0) {                                                                \
+            const char* bind_arg = argv[i] + 11;                                                                       \
+            if (!cli_is_numeric_ipv4_address(bind_arg)) {                                                              \
+                LOG_ERROR("Invalid --api-bind value \"%s\" (expected numeric IPv4 address)\n", bind_arg);              \
+                cli_set_exit_rc(out_exit_rc, 1);                                                                       \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            net_cli.api_bind = bind_arg;                                                                               \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--api-token") == 0) {                                                                     \
+            if (i + 1 >= argc) {                                                                                       \
+                LOG_ERROR("--api-token requires a value\n");                                                           \
+                cli_set_exit_rc(out_exit_rc, 1);                                                                       \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            net_cli.api_token = DSD_PARSE_ARGS_NEXT_ARG();                                                             \
+            arg_advance = 2;                                                                                           \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strncmp(argv[i], "--api-token=", 12) == 0) {                                                               \
+            net_cli.api_token = argv[i] + 12;                                                                          \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--api-token-file") == 0) {                                                                \
+            if (i + 1 >= argc) {                                                                                       \
+                LOG_ERROR("--api-token-file requires a path\n");                                                       \
+                cli_set_exit_rc(out_exit_rc, 1);                                                                       \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            net_cli.api_token_file = DSD_PARSE_ARGS_NEXT_ARG();                                                        \
+            arg_advance = 2;                                                                                           \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strncmp(argv[i], "--api-token-file=", 17) == 0) {                                                          \
+            net_cli.api_token_file = argv[i] + 17;                                                                     \
             continue;                                                                                                  \
         }                                                                                                              \
         if (strcmp(argv[i], "--iq-capture") == 0) {                                                                    \
@@ -1710,11 +1909,11 @@ cli_parse_airspy_option(int argc, char** argv, int i, dsd_opts* opts) {
         return DSD_PARSE_ONE_SHOT;                                                                                     \
     }                                                                                                                  \
                                                                                                                        \
-    if (rtl_udp_control_cli_seen) {                                                                                    \
-        int p = (int)rtl_udp_control_cli_port;                                                                         \
+    if (net_cli.rtl_udp_seen) {                                                                                        \
+        int p = (int)net_cli.rtl_udp_port;                                                                             \
         opts->rtl_udp_port = p;                                                                                        \
-        if (rtl_udp_control_cli_bindaddr) {                                                                            \
-            DSD_SNPRINTF(opts->rtl_udp_bindaddr, sizeof opts->rtl_udp_bindaddr, "%s", rtl_udp_control_cli_bindaddr);   \
+        if (net_cli.rtl_udp_bindaddr) {                                                                                \
+            DSD_SNPRINTF(opts->rtl_udp_bindaddr, sizeof opts->rtl_udp_bindaddr, "%s", net_cli.rtl_udp_bindaddr);       \
             opts->rtl_udp_bindaddr[sizeof opts->rtl_udp_bindaddr - 1] = '\0';                                          \
         }                                                                                                              \
         if (p > 0) {                                                                                                   \
@@ -1722,9 +1921,14 @@ cli_parse_airspy_option(int argc, char** argv, int i, dsd_opts* opts) {
         } else {                                                                                                       \
             LOG_INFO("NOTICE: RTL: external UDP retune control disabled\n");                                           \
         }                                                                                                              \
-    } else if (rtl_udp_control_cli_bindaddr) {                                                                         \
-        DSD_SNPRINTF(opts->rtl_udp_bindaddr, sizeof opts->rtl_udp_bindaddr, "%s", rtl_udp_control_cli_bindaddr);       \
+    } else if (net_cli.rtl_udp_bindaddr) {                                                                             \
+        DSD_SNPRINTF(opts->rtl_udp_bindaddr, sizeof opts->rtl_udp_bindaddr, "%s", net_cli.rtl_udp_bindaddr);           \
         opts->rtl_udp_bindaddr[sizeof opts->rtl_udp_bindaddr - 1] = '\0';                                              \
+    }                                                                                                                  \
+                                                                                                                       \
+    if (cli_resolve_api_options(opts, &net_cli) != 0) {                                                                \
+        cli_set_exit_rc(out_exit_rc, 1);                                                                               \
+        return DSD_PARSE_ERROR;                                                                                        \
     }                                                                                                                  \
                                                                                                                        \
     if (frontend_cli) {                                                                                                \
@@ -2113,10 +2317,8 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
     const char* iq_replay_rate_cli = NULL;
     const char* iq_info_cli = NULL;
     int iq_loop_cli = 0;
-    int rtl_udp_control_cli_seen = 0;
     int lrrp_extra_ports_cli_seen = 0;
-    unsigned long rtl_udp_control_cli_port = 0;
-    const char* rtl_udp_control_cli_bindaddr = NULL;
+    cli_net_args net_cli = {0, 0UL, NULL, NULL, NULL, NULL, NULL};
     int trunk_scan_cli_seen = 0;
     int chan_csv_cli_seen = 0;
     int p25_bandplan_cli_seen = 0;

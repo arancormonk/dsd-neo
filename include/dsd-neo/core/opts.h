@@ -183,6 +183,8 @@ struct dsd_opts {
        and dsd_opts_reset_pcm_input_state()): what the PCM noise squelch learned belongs to one stream (issue #628). */
     uint32_t pcm_input_generation;
     int rtl_udp_port;
+    /* Control/telemetry API (docs/api.md) listening port; 0 disables the server. */
+    int api_port;
     /* Base DSP bandwidth for RTL path in kHz (4,6,8,12,16,24,48). Influences capture rate planning.
        Not the hardware tuner IF bandwidth. */
     int rtl_dsp_bw_khz;
@@ -369,6 +371,11 @@ struct dsd_opts {
     char rigctlhostname[1024];
     char rdio_api_url[1024];
     char rtl_udp_bindaddr[64];
+    /* Control/telemetry API bind address (numeric IPv4, "" = 127.0.0.1) and shared-secret token. The token is
+       resolved from --api-token, DSD_NEO_API_TOKEN or a token file at parse time, handed to the server at start
+       and then wiped from here; published opts snapshots never carry it. */
+    char api_bindaddr[64];
+    char api_token[256];
     char udp_hostname[1024];
     char udp_in_bindaddr[1024];
     char m17_hostname[1024];

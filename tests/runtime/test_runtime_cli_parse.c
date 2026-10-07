@@ -2579,6 +2579,73 @@ test_bootstrap_inherited_trunk_scan_preserves_ui_only_short_options(void) {
     return test_rc;
 }
 
+/* An API token is any text: one that reads "--iq-replay" is not an input override, so the trunk scan the INI enables
+   stays on. */
+static int
+test_bootstrap_inherited_trunk_scan_ignores_api_token_text(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        DSD_FPRINTF(stderr, "out of memory\n");
+        return 1;
+    }
+
+    initOpts(opts);
+    initState(state);
+
+    (void)dsd_unsetenv("DSD_NEO_CONFIG");
+    (void)dsd_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
+
+    static const char* ini = "[trunk_scan]\n"
+                             "enabled = true\n"
+                             "targets_csv = \"targets.csv\"\n"
+                             "idle_dwell_ms = 500\n";
+
+    char cfg_path[1024];
+    if (test_create_temp_ini_with_contents(ini, cfg_path, sizeof cfg_path) != 0) {
+        DSD_FPRINTF(stderr, "failed to create temp trunk scan ini\n");
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    char arg0[] = "dsd-neo";
+    char arg1[] = "--config";
+    char arg2[1024];
+    char arg3[] = "--api-token";
+    char arg4[] = "--iq-replay";
+    DSD_SNPRINTF(arg2, sizeof arg2, "%s", cfg_path);
+    char* argv[] = {arg0, arg1, arg2, arg3, arg4, NULL};
+
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = dsd_runtime_bootstrap(5, argv, opts, state, &argc_effective, &exit_rc);
+
+    int test_rc = 0;
+    if (rc != DSD_BOOTSTRAP_CONTINUE || exit_rc != 0) {
+        DSD_FPRINTF(stderr, "expected a token option to continue, got rc=%d exit_rc=%d\n", rc, exit_rc);
+        test_rc = 1;
+    }
+    if (opts->trunk_scan_enabled != 1) {
+        DSD_FPRINTF(stderr, "expected inherited trunk scan to stay enabled past a token, got %d\n",
+                    opts->trunk_scan_enabled);
+        test_rc = 1;
+    }
+    if (strcmp(opts->api_token, "--iq-replay") != 0) {
+        DSD_FPRINTF(stderr, "expected the token text to be kept\n");
+        test_rc = 1;
+    }
+
+    (void)remove(cfg_path);
+    freeState(state);
+    free(opts);
+    free(state);
+    return test_rc;
+}
+
 static int
 test_bootstrap_inherited_trunk_scan_allows_cli_channel_map(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
@@ -4637,6 +4704,276 @@ test_lrrp_extra_port_missing_value_returns_error(void) {
     return test_missing_required_long_option_value_returns_error("--lrrp-extra-port");
 }
 
+/* The control API options: parse argv into fresh opts and report what landed there. */
+typedef struct {
+    int rc;
+    int exit_rc;
+    int port;
+    char bind[64];
+    char token[256];
+} api_parse_result;
+
+static api_parse_result
+api_parse(int argc, char** argv) {
+    api_parse_result r;
+    DSD_MEMSET(&r, 0, sizeof r);
+    r.rc = -1;
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return r;
+    }
+    initOpts(opts);
+    initState(state);
+    int argc_effective = 0;
+    r.exit_rc = -1;
+    r.rc = dsd_parse_args(argc, argv, opts, state, &argc_effective, &r.exit_rc);
+    r.port = opts->api_port;
+    DSD_SNPRINTF(r.bind, sizeof r.bind, "%s", opts->api_bindaddr);
+    DSD_SNPRINTF(r.token, sizeof r.token, "%s", opts->api_token);
+    close_parse_outputs(opts);
+    freeState(state);
+    free(opts);
+    free(state);
+    return r;
+}
+
+static void
+api_env_clear(void) {
+    (void)dsd_unsetenv("DSD_NEO_API_PORT");
+    (void)dsd_unsetenv("DSD_NEO_API_BIND");
+    (void)dsd_unsetenv("DSD_NEO_API_TOKEN");
+    (void)dsd_unsetenv("DSD_NEO_API_TOKEN_FILE");
+}
+
+/* Write @p contents to a fresh temp file; returns 0 with its path in @p path. */
+static int
+api_token_file(char* path, size_t cap, const char* contents, size_t len) {
+    const int fd = dsd_test_mkstemp(path, cap, "dsd_api_token");
+    if (fd < 0) {
+        return -1;
+    }
+    FILE* fp = dsd_test_fdopen(fd, "wb");
+    if (!fp) {
+        return -1;
+    }
+    const int ok = fwrite(contents, 1U, len, fp) == len;
+    return (fclose(fp) == 0 && ok) ? 0 : -1;
+}
+
+static int
+api_expect(const char* what, const api_parse_result* r, int rc, int port, const char* bind, const char* token) {
+    if (r->rc != rc || (rc == DSD_PARSE_ERROR && r->exit_rc != 1)
+        || (rc == DSD_PARSE_CONTINUE
+            && (r->port != port || strcmp(r->bind, bind) != 0 || strcmp(r->token, token) != 0))) {
+        DSD_FPRINTF(stderr, "%s: rc=%d exit_rc=%d port=%d bind='%s' token-set=%d\n", what, r->rc, r->exit_rc, r->port,
+                    r->bind, r->token[0] != '\0');
+        return 1;
+    }
+    return 0;
+}
+
+static int
+test_api_options(void) {
+    int test_rc = 0;
+    api_env_clear();
+    char a0[] = "dsd-neo";
+    char api[] = "--api";
+    char port9911[] = "9911";
+    char port0[] = "0";
+    char bad_port[] = "65536";
+    char bind_opt[] = "--api-bind";
+    char any[] = "0.0.0.0";
+    char host[] = "localhost";
+    char token_opt[] = "--api-token";
+    char token_eq[] = "--api-token=s3cret";
+    char file_opt[] = "--api-token-file";
+    char missing[] = "/nonexistent/dsd-neo-api-token";
+
+    {
+        char* argv[] = {a0, api, port9911, NULL};
+        api_parse_result r = api_parse(3, argv);
+        test_rc |= api_expect("--api 9911", &r, DSD_PARSE_CONTINUE, 9911, "", "");
+    }
+    {
+        char eq[] = "--api=9911";
+        char* argv[] = {a0, eq, NULL};
+        api_parse_result r = api_parse(2, argv);
+        test_rc |= api_expect("--api=9911", &r, DSD_PARSE_CONTINUE, 9911, "", "");
+    }
+    {
+        char* argv[] = {a0, api, bad_port, NULL};
+        api_parse_result r = api_parse(3, argv);
+        test_rc |= api_expect("--api 65536", &r, DSD_PARSE_ERROR, 0, "", "");
+    }
+    /* The environment fills in only what the CLI left out, and an explicit --api 0 wins over it. */
+    (void)dsd_setenv("DSD_NEO_API_PORT", "7000", 1);
+    {
+        char* argv[] = {a0, NULL};
+        api_parse_result r = api_parse(1, argv);
+        test_rc |= api_expect("DSD_NEO_API_PORT", &r, DSD_PARSE_CONTINUE, 7000, "", "");
+    }
+    {
+        char* argv[] = {a0, api, port0, NULL};
+        api_parse_result r = api_parse(3, argv);
+        test_rc |= api_expect("--api 0 over DSD_NEO_API_PORT", &r, DSD_PARSE_CONTINUE, 0, "", "");
+    }
+    (void)dsd_setenv("DSD_NEO_API_PORT", "70000", 1);
+    {
+        char* argv[] = {a0, NULL};
+        api_parse_result r = api_parse(1, argv);
+        test_rc |= api_expect("invalid DSD_NEO_API_PORT", &r, DSD_PARSE_ERROR, 0, "", "");
+    }
+    api_env_clear();
+
+    /* Off loopback, a token is required. */
+    {
+        char* argv[] = {a0, api, port9911, bind_opt, any, NULL};
+        api_parse_result r = api_parse(5, argv);
+        test_rc |= api_expect("non-loopback bind without token", &r, DSD_PARSE_ERROR, 0, "", "");
+    }
+    {
+        char* argv[] = {a0, api, port9911, bind_opt, any, token_eq, NULL};
+        api_parse_result r = api_parse(6, argv);
+        test_rc |= api_expect("non-loopback bind with token", &r, DSD_PARSE_CONTINUE, 9911, "0.0.0.0", "s3cret");
+    }
+    {
+        char* argv[] = {a0, api, port9911, bind_opt, host, NULL};
+        api_parse_result r = api_parse(5, argv);
+        test_rc |= api_expect("non-numeric bind", &r, DSD_PARSE_ERROR, 0, "", "");
+    }
+    (void)dsd_setenv("DSD_NEO_API_BIND", "10.0.0.1", 1);
+    {
+        char* argv[] = {a0, api, port9911, NULL};
+        api_parse_result r = api_parse(3, argv);
+        test_rc |= api_expect("DSD_NEO_API_BIND without token", &r, DSD_PARSE_ERROR, 0, "", "");
+    }
+    (void)dsd_setenv("DSD_NEO_API_TOKEN", "envtoken", 1);
+    {
+        char* argv[] = {a0, api, port9911, NULL};
+        api_parse_result r = api_parse(3, argv);
+        test_rc |=
+            api_expect("DSD_NEO_API_BIND with DSD_NEO_API_TOKEN", &r, DSD_PARSE_CONTINUE, 9911, "10.0.0.1", "envtoken");
+    }
+    {
+        char* argv[] = {a0, api, port9911, token_opt, port9911, NULL};
+        api_parse_result r = api_parse(5, argv);
+        test_rc |= api_expect("--api-token over DSD_NEO_API_TOKEN", &r, DSD_PARSE_CONTINUE, 9911, "10.0.0.1", "9911");
+    }
+    api_env_clear();
+    /* A token may start with '-': it is the option's value, never an option of its own (here, not -h for help). */
+    {
+        char dash_token[] = "-h";
+        char* argv[] = {a0, api, port9911, token_opt, dash_token, NULL};
+        api_parse_result r = api_parse(5, argv);
+        test_rc |= api_expect("--api-token -h", &r, DSD_PARSE_CONTINUE, 9911, "", "-h");
+    }
+    api_env_clear();
+
+    /* A token file that cannot give a token is an error, never a server without one. */
+    {
+        char* argv[] = {a0, api, port9911, file_opt, missing, NULL};
+        api_parse_result r = api_parse(5, argv);
+        test_rc |= api_expect("missing token file", &r, DSD_PARSE_ERROR, 0, "", "");
+    }
+    char path[1024];
+    if (api_token_file(path, sizeof path, "file-token\r\n", 12U) != 0) {
+        DSD_FPRINTF(stderr, "cannot create a token file\n");
+        return 1;
+    }
+    {
+        char* argv[] = {a0, api, port9911, file_opt, path, NULL};
+        api_parse_result r = api_parse(5, argv);
+        test_rc |= api_expect("token file", &r, DSD_PARSE_CONTINUE, 9911, "", "file-token");
+    }
+    (void)remove(path);
+
+    static const struct {
+        const char* what;
+        const char* contents;
+        size_t len;
+    } k_bad_files[] = {
+        {"empty token file", "", 0U},
+        {"whitespace token file", " \n", 2U},
+        {"two-line token file", "a\nb\n", 4U},
+        {"token file with NUL", "ab\0cd", 5U},
+    };
+
+    for (size_t i = 0; i < sizeof k_bad_files / sizeof k_bad_files[0]; i++) {
+        if (api_token_file(path, sizeof path, k_bad_files[i].contents, k_bad_files[i].len) != 0) {
+            return 1;
+        }
+        char* argv[] = {a0, api, port9911, file_opt, path, NULL};
+        api_parse_result r = api_parse(5, argv);
+        test_rc |= api_expect(k_bad_files[i].what, &r, DSD_PARSE_ERROR, 0, "", "");
+        (void)remove(path);
+    }
+    char long_token[300];
+    DSD_MEMSET(long_token, 'x', sizeof long_token);
+    if (api_token_file(path, sizeof path, long_token, 256U) != 0) {
+        return 1;
+    }
+    {
+        char* argv[] = {a0, api, port9911, file_opt, path, NULL};
+        api_parse_result r = api_parse(5, argv);
+        test_rc |= api_expect("256-byte token file", &r, DSD_PARSE_ERROR, 0, "", "");
+    }
+    (void)remove(path);
+    long_token[256] = '\0';
+    {
+        char* argv[] = {a0, api, port9911, token_opt, long_token, NULL};
+        api_parse_result r = api_parse(5, argv);
+        test_rc |= api_expect("256-byte --api-token", &r, DSD_PARSE_ERROR, 0, "", "");
+    }
+
+    /* The bootstrap pre-scan steps over a token too: "--print-config" as a token is not the option. */
+    {
+        dsd_opts* bopts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+        dsd_state* bstate = (dsd_state*)calloc(1, sizeof(dsd_state));
+        if (!bopts || !bstate) {
+            free(bopts);
+            free(bstate);
+            return 1;
+        }
+        initOpts(bopts);
+        initState(bstate);
+        (void)dsd_unsetenv("DSD_NEO_CONFIG");
+        (void)dsd_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
+        char print_config[] = "--print-config";
+        char* argv[] = {a0, api, port9911, token_opt, print_config, NULL};
+        int argc_effective = 0;
+        int exit_rc = -1;
+        const int brc = dsd_runtime_bootstrap(5, argv, bopts, bstate, &argc_effective, &exit_rc);
+        if (brc != DSD_BOOTSTRAP_CONTINUE || bopts->api_port != 9911
+            || strcmp(bopts->api_token, "--print-config") != 0) {
+            DSD_FPRINTF(stderr, "bootstrap with --api-token --print-config: rc=%d exit_rc=%d port=%d\n", brc, exit_rc,
+                        bopts->api_port);
+            test_rc = 1;
+        }
+        close_parse_outputs(bopts);
+        freeState(bstate);
+        free(bopts);
+        free(bstate);
+    }
+
+    /* The fallbacks are read only when the API is on: a stale token file in the environment does not stop a run. */
+    (void)dsd_setenv("DSD_NEO_API_TOKEN_FILE", missing, 1);
+    {
+        char* argv[] = {a0, NULL};
+        api_parse_result r = api_parse(1, argv);
+        test_rc |= api_expect("DSD_NEO_API_TOKEN_FILE with the API off", &r, DSD_PARSE_CONTINUE, 0, "", "");
+    }
+    {
+        char* argv[] = {a0, api, port9911, NULL};
+        api_parse_result r = api_parse(3, argv);
+        test_rc |= api_expect("DSD_NEO_API_TOKEN_FILE missing", &r, DSD_PARSE_ERROR, 0, "", "");
+    }
+    api_env_clear();
+    return test_rc;
+}
+
 static int
 test_rtl_udp_control_long_option_parse(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
@@ -6662,6 +6999,46 @@ test_trunk_scan_long_options_parse(void) {
         DSD_FPRINTF(stderr, "trunk scan long option parse mismatch rc=%d enabled=%d targets=%s dwell=%d hold=%d\n", rc,
                     opts->trunk_scan_enabled, opts->trunk_scan_targets_csv, opts->trunk_scan_idle_dwell_ms,
                     opts->trunk_scan_activity_hold_ms);
+        test_rc = 1;
+    }
+
+    freeState(state);
+    free(opts);
+    free(state);
+    return test_rc;
+}
+
+/* A token that reads like a one-shot option is still a token: the run is not taken for --print-config, so an explicit
+   --trunk-scan still disowns the channel map and P25 band plan a config file would otherwise hand down. */
+static int
+test_trunk_scan_api_token_is_not_a_one_shot(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return 1;
+    }
+    initOpts(opts);
+    initState(state);
+    DSD_SNPRINTF(opts->chan_in_file, sizeof opts->chan_in_file, "%s", "inherited_channels.csv");
+    DSD_SNPRINTF(opts->p25_bandplan_in_file, sizeof opts->p25_bandplan_in_file, "%s", "inherited_bandplan.csv");
+
+    char arg0[] = "dsd-neo";
+    char arg1[] = "--trunk-scan";
+    char arg2[] = "targets.csv";
+    char arg3[] = "--api-token";
+    char arg4[] = "--print-config";
+    char* argv[] = {arg0, arg1, arg2, arg3, arg4, NULL};
+    int argc_effective = 0;
+    int exit_rc = -1;
+    const int rc = dsd_parse_args(5, argv, opts, state, &argc_effective, &exit_rc);
+
+    int test_rc = 0;
+    if (rc != DSD_PARSE_CONTINUE || opts->trunk_scan_enabled != 1 || opts->chan_in_file[0] != '\0'
+        || opts->p25_bandplan_in_file[0] != '\0' || strcmp(opts->api_token, "--print-config") != 0) {
+        DSD_FPRINTF(stderr, "token reading as --print-config: rc=%d trunk_scan=%d chan=%s bandplan=%s\n", rc,
+                    opts->trunk_scan_enabled, opts->chan_in_file, opts->p25_bandplan_in_file);
         test_rc = 1;
     }
 
@@ -9169,6 +9546,7 @@ test_tg_lockout_persistence_flags(void) {
 int
 main(void) {
     int rc = 0;
+    rc |= test_api_options();
     rc |= test_force_conflicts_and_explicit_off_options();
     rc |= test_help_returns_one_shot_and_does_not_exit();
     rc |= test_invalid_option_returns_error_and_does_not_exit();
@@ -9206,6 +9584,7 @@ main(void) {
     rc |= test_bootstrap_print_config_normalizes_soapy_shorthand();
     rc |= test_bootstrap_profile_preserves_trunking_with_ncurses_cli();
     rc |= test_bootstrap_inherited_trunk_scan_preserves_ui_only_short_options();
+    rc |= test_bootstrap_inherited_trunk_scan_ignores_api_token_text();
     rc |= test_bootstrap_inherited_trunk_scan_allows_cli_channel_map();
     rc |= test_bootstrap_inherited_trunk_scan_allows_cli_p25_bandplan();
     rc |= test_bootstrap_inherited_trunk_scan_disables_for_positional_input();
@@ -9251,6 +9630,7 @@ main(void) {
     rc |= test_input_source_tcp_ipv4_roundtrip();
     rc |= test_trunk_scan_long_options_parse();
     rc |= test_trunk_scanner_option_order();
+    rc |= test_trunk_scan_api_token_is_not_a_one_shot();
     rc |= test_trunk_scan_still_refuses_scanner_after_trunk();
     rc |= test_trunk_scan_conflicts_with_scanner_mode();
     rc |= test_trunk_scan_rejects_global_channel_map();

@@ -216,6 +216,23 @@ int dsd_socket_get_error(void);
  */
 int dsd_socket_set_nonblocking(dsd_socket_t sock, int nonblock);
 
+/** Readiness flags for dsd_socket_wait(). */
+enum { DSD_SOCKET_WAIT_READ = 1, DSD_SOCKET_WAIT_WRITE = 2 };
+
+/**
+ * @brief Wait up to @p timeout_ms for @p sock to become readable and/or writable.
+ *
+ * A socket at end of stream or with a pending error counts as ready for every
+ * requested direction, so the following recv()/send() reports the condition.
+ *
+ * @param sock        Socket handle.
+ * @param events      DSD_SOCKET_WAIT_READ and/or DSD_SOCKET_WAIT_WRITE.
+ * @param timeout_ms  Longest wait in milliseconds (0 polls).
+ * @return The ready subset of @p events, 0 on timeout or a signal interruption,
+ *         or -1 on failure.
+ */
+int dsd_socket_wait(dsd_socket_t sock, int events, unsigned int timeout_ms);
+
 /**
  * @brief Set socket receive timeout.
  *

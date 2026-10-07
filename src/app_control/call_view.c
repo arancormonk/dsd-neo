@@ -5,6 +5,7 @@
 
 #include <dsd-neo/app_control/call_view.h>
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/events.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -201,9 +202,13 @@ dsd_app_slot_call_view(const dsd_state* state, uint8_t slot, double now_m, dsd_a
        policy-resolved id otherwise. Text-only targets stay 0. */
     out->tg_id = (call.ota_target_id != 0U) ? call.ota_target_id : call.policy_target_id;
 
+    /* The staged row is the event layer's (the P25 watchdog commits it from its own thread): read it under the
+       history transaction. dsd_call_state_get() above takes the same lock itself, so not around that. */
+    dsd_event_history_transaction transaction;
+    dsd_event_history_transaction_begin((dsd_state*)state, &transaction);
     slot_source_text(state, slot, &call, out->src_text, sizeof(out->src_text));
-
     slot_call_name(state, slot, &call, out);
+    dsd_event_history_transaction_end(&transaction);
 
     out->emergency = call.emergency;
     out->priority = call.priority;

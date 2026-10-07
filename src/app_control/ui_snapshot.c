@@ -348,6 +348,7 @@ dsd_app_telemetry_publish_snapshot(const dsd_state* state) {
        and nesting the two would put a lock-order edge between the snapshot path and a
        JNI poll. */
     dsd_app_notification_publish_state(state);
+    dsd_app_telemetry_notify_state(state);
 }
 
 const dsd_state*

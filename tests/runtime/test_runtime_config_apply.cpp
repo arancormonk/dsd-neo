@@ -1776,6 +1776,17 @@ test_ui_dsp_op_commands_dispatch_through_queue(void) {
     (void)rtl_stream_get_iq_dc(&dc_shift);
     rc |= expect_int_eq("DSP IQ DC shift command drains", applied, 1);
     rc |= expect_int_eq("DSP IQ DC shift applies delta", dc_shift, dc_shift_before_toggle + 3);
+    /* Any int32 delta clamps to the shift's range without overflowing on the way (the control API can send one). */
+    dsp.a = INT32_MAX;
+    dsd_app_command_submit(DSD_APP_CMD_DSP_OP, &dsp, sizeof dsp);
+    (void)dsd_app_drain_cmds(opts, state);
+    (void)rtl_stream_get_iq_dc(&dc_shift);
+    rc |= expect_int_eq("DSP IQ DC shift INT32_MAX clamps high", dc_shift, 15);
+    dsp.a = INT32_MIN;
+    dsd_app_command_submit(DSD_APP_CMD_DSP_OP, &dsp, sizeof dsp);
+    (void)dsd_app_drain_cmds(opts, state);
+    (void)rtl_stream_get_iq_dc(&dc_shift);
+    rc |= expect_int_eq("DSP IQ DC shift INT32_MIN clamps low", dc_shift, 6);
 
     rtl_stream_set_ted_gain(0.1f);
     dsp.op = DSD_APP_DSP_OP_TED_GAIN_SET;
@@ -1895,6 +1906,15 @@ test_ui_slot_and_display_commands_update_state(void) {
     rc |= expect_int_eq("spectrum size command drains", applied, 1);
 #ifdef USE_RADIO
     rc |= expect_int_eq("spectrum size delta rounds to next power of two", rtl_stream_spectrum_get_size(), 256);
+    /* Any int32 delta clamps without overflowing on the way (the control API sends what its client asked for). */
+    spectrum_delta = INT32_MAX;
+    dsd_app_command_submit(DSD_APP_CMD_SPEC_SIZE_DELTA, &spectrum_delta, sizeof spectrum_delta);
+    (void)dsd_app_drain_cmds(opts, state);
+    rc |= expect_int_eq("spectrum size delta INT32_MAX clamps high", rtl_stream_spectrum_get_size(), 1024);
+    spectrum_delta = INT32_MIN;
+    dsd_app_command_submit(DSD_APP_CMD_SPEC_SIZE_DELTA, &spectrum_delta, sizeof spectrum_delta);
+    (void)dsd_app_drain_cmds(opts, state);
+    rc |= expect_int_eq("spectrum size delta INT32_MIN clamps low", rtl_stream_spectrum_get_size(), 64);
 #else
     rc |= expect_int_eq("spectrum size command keeps spectrum enabled without radio",
                         opts->frontend_display.spectrum_view, 1);

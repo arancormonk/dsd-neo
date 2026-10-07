@@ -107,6 +107,23 @@ This project is an active work in progress as we decouple from the upstream fork
 - Versus DSD‑FME: similar protocol coverage and UI heritage, but DSD‑neo adds a broader M17 implementation than FME's simplified stream decoder: RF/UDP LSF, packet, BERT, EOT, MPKT, packet CRC assembly, AES-CTR receive, signed-stream verification, and stream/packet/BERT encoders. It also adds network‑friendly I/O (UDP audio in), refined RTL‑TCP handling (prebuffer, tuned defaults), optional auto‑PPM, and packaged cross‑platform binaries.
 - Versus the original DSD: more protocols (notably P25 Phase 2, M17, YSF, EDACS), built‑in trunking, network inputs, device control, and an interactive UI.
 
+## Control and telemetry API
+
+DSD‑neo can serve a TCP JSON‑Lines API that lets another program drive the decoder and consume
+live data, including alpha tags, aliases and system/site identity:
+
+```bash
+dsd-neo -i rtl:0:851.375M:22:2:24:0:1 --api 9911
+```
+
+- Newline‑delimited JSON both ways: every control the terminal and Qt frontends have (tuning, gain,
+  talkgroup edits, scanning, keys, config, …) and streaming telemetry (`call`, `event`, `system`,
+  `metrics`, `quality`, `status`).
+- Runs headless or alongside the terminal frontend; loopback by default, with a shared‑secret token
+  required off loopback.
+- Desktop only (not built on Android). See [docs/api.md](docs/api.md) for the protocol, the telemetry
+  fields and the command catalog.
+
 ## Build From Source
 
 Requirements

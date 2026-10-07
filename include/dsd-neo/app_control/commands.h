@@ -593,8 +593,18 @@ int dsd_app_command_set_tg_listen_all(const dsd_app_tg_listen_all_payload* paylo
  * accept a newer result matching its context/generation/path before registering
  * the file. Submission rejection must still be handled from the submit return. */
 int dsd_app_tg_export_result_get(dsd_app_tg_export_result* out);
+
+/** How many of the most recent export and decryption results stay readable through the *_results_since() getters. */
+enum { DSD_APP_RESULT_HISTORY = 64 };
+
+/** Copy, oldest first, up to @p cap retained export results whose sequence is above @p after_sequence; returns the
+ * count. Only the last DSD_APP_RESULT_HISTORY are kept, so a reader that falls further behind sees a gap in the
+ * sequence numbers. For a consumer that must see every result, not just the latest (the control API). */
+int dsd_app_tg_export_results_since(uint64_t after_sequence, dsd_app_tg_export_result* out, int cap);
 uint64_t dsd_app_command_session_generation(void);
 int dsd_app_decryption_result_get(dsd_app_decryption_result* out);
+/** dsd_app_tg_export_results_since() for decryption results. */
+int dsd_app_decryption_results_since(uint64_t after_sequence, dsd_app_decryption_result* out, int cap);
 int dsd_app_command_set_hytera_key(const dsd_app_hytera_key_payload* payload);
 int dsd_app_command_set_aes_key(const dsd_app_aes_key_payload* payload);
 int dsd_app_command_dsp_op(const dsd_app_dsp_payload* payload);

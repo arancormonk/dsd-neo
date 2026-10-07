@@ -7,9 +7,13 @@
  * Unit tests for config path expansion (~, $VAR, ${VAR}).
  */
 
+#include <dsd-neo/platform/platform.h>
 #include <dsd-neo/runtime/config.h>
 #include <stdio.h>
 #include <string.h>
+#include <string>
+#include <thread>
+#include <vector>
 #include "dsd-neo/core/safe_api.h"
 #include "test_support.h"
 
@@ -201,6 +205,75 @@ test_buffer_overflow_protection(void) {
     return 0;
 }
 
+#if DSD_PLATFORM_WIN_NATIVE
+#define TEST_HOME_VAR "USERPROFILE"
+#else
+#define TEST_HOME_VAR "HOME"
+#endif
+
+/* The home directory is read at every expansion, not cached from the first: the control API applies configuration
+   from several session threads at once, and a cache filled by one while another reads it is a data race (the
+   concurrent part is what the thread sanitizer build checks). */
+static int
+test_home_follows_environment_and_threads(void) {
+    const char* original = dsd_test_home_dir();
+    const std::string saved = original != NULL ? original : "";
+    int failed = 0;
+    char buf[512];
+
+    setenv(TEST_HOME_VAR, "/dsd-home-one", 1);
+    if (dsd_config_expand_path("~/a", buf, sizeof(buf)) != 0 || strcmp(buf, "/dsd-home-one/a") != 0) {
+        DSD_FPRINTF(stderr, "FAIL: ~/a with the first home gave '%s'\n", buf);
+        failed = 1;
+    }
+    setenv(TEST_HOME_VAR, "/dsd-home-two", 1);
+    if (dsd_config_expand_path("~/a", buf, sizeof(buf)) != 0 || strcmp(buf, "/dsd-home-two/a") != 0) {
+        DSD_FPRINTF(stderr, "FAIL: ~/a after the home changed gave '%s'\n", buf);
+        failed = 1;
+    }
+
+    /* A home directory too long for the expansion fails it instead of cutting the path. */
+    const std::string long_home = "/" + std::string(2000U, 'h');
+    setenv(TEST_HOME_VAR, long_home.c_str(), 1);
+    std::vector<char> big(4096U);
+    if (dsd_config_expand_path("~/a", big.data(), big.size()) == 0) {
+        DSD_FPRINTF(stderr, "FAIL: an oversized home directory was accepted\n");
+        failed = 1;
+    }
+
+    setenv(TEST_HOME_VAR, "/dsd-home-threads", 1);
+    std::vector<int> ok(8U, 0);
+    std::vector<std::thread> threads;
+    threads.reserve(ok.size());
+    for (size_t t = 0; t < ok.size(); t++) {
+        threads.emplace_back([&ok, t]() {
+            char out[256];
+            int good = 1;
+            for (int i = 0; i < 200; i++) {
+                good &= dsd_config_expand_path("~/capture.wav", out, sizeof(out)) == 0
+                        && strcmp(out, "/dsd-home-threads/capture.wav") == 0;
+            }
+            ok[t] = good;
+        });
+    }
+    for (std::thread& th : threads) {
+        th.join();
+    }
+    for (size_t t = 0; t < ok.size(); t++) {
+        if (!ok[t]) {
+            DSD_FPRINTF(stderr, "FAIL: thread %zu expanded ~ wrongly\n", t);
+            failed = 1;
+        }
+    }
+
+    if (!saved.empty()) {
+        setenv(TEST_HOME_VAR, saved.c_str(), 1);
+    } else {
+        unsetenv(TEST_HOME_VAR);
+    }
+    return failed;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -212,6 +285,7 @@ main(void) {
     rc |= test_no_expansion();
     rc |= test_combined_expansion();
     rc |= test_buffer_overflow_protection();
+    rc |= test_home_follows_environment_and_threads();
 
     if (rc == 0) {
         printf("All config_expand tests passed\n");

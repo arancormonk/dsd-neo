@@ -1976,6 +1976,28 @@ target_link_libraries(dsd-neo_test_runtime_cli_frontend PRIVATE dsd-neo_runtime)
 add_test(NAME RUNTIME_CLI_FRONTEND COMMAND dsd-neo_test_runtime_cli_frontend)
 
 add_executable(
+    dsd-neo_test_runtime_cli_frontend_api
+    runtime/test_runtime_cli_frontend_api.c
+    ${PROJECT_SOURCE_DIR}/apps/dsd-cli/frontend.c
+)
+target_compile_definitions(
+    dsd-neo_test_runtime_cli_frontend_api
+    PRIVATE DSD_CLI_HAS_TERMINAL_UI=0 DSD_CLI_HAS_API=1
+)
+target_include_directories(
+    dsd-neo_test_runtime_cli_frontend_api
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/apps/dsd-cli
+)
+target_link_libraries(
+    dsd-neo_test_runtime_cli_frontend_api
+    PRIVATE dsd-neo_runtime
+)
+add_test(
+    NAME RUNTIME_CLI_FRONTEND_API
+    COMMAND dsd-neo_test_runtime_cli_frontend_api
+)
+
+add_executable(
     dsd-neo_test_runtime_input_ring_init
     runtime/test_runtime_input_ring_init.cpp
 )
@@ -3984,6 +4006,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/synctype.c
     ${PROJECT_SOURCE_DIR}/src/app_control/call_view.c
     ${PROJECT_SOURCE_DIR}/src/app_control/notification_status.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/telemetry_observers.c
     ${PROJECT_SOURCE_DIR}/src/app_control/ui_snapshot.c
     ${PROJECT_SOURCE_DIR}/src/runtime/trunk_cc_candidates.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
@@ -4015,6 +4038,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/app_control/ui_opts_snapshot.c
     ${PROJECT_SOURCE_DIR}/src/app_control/call_view.c
     ${PROJECT_SOURCE_DIR}/src/app_control/notification_status.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/telemetry_observers.c
     ${PROJECT_SOURCE_DIR}/src/core/util/synctype.c
 )
 target_include_directories(
@@ -5836,6 +5860,24 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
     )
     add_test(NAME ENGINE_SCAN_TIMING COMMAND dsd-neo_test_engine_scan_timing)
 endif()
+
+# The engine commits and publishes the last call before the frontends' stop hooks.
+add_executable(
+    dsd-neo_test_engine_lifecycle_finalize
+    engine/test_engine_lifecycle_finalize.c
+)
+target_include_directories(
+    dsd-neo_test_engine_lifecycle_finalize
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_engine_lifecycle_finalize
+    PRIVATE dsd-neo_engine ${LIBS} dsd-neo_test_support
+)
+add_test(
+    NAME ENGINE_LIFECYCLE_FINALIZE
+    COMMAND dsd-neo_test_engine_lifecycle_finalize
+)
 
 add_executable(
     dsd-neo_test_engine_trunk_retune_regression
@@ -14654,6 +14696,126 @@ target_include_directories(
 )
 target_link_libraries(dsd-neo_test_runtime_decode_clock PRIVATE dsd-neo_runtime)
 add_test(NAME RUNTIME_DECODE_CLOCK COMMAND dsd-neo_test_runtime_decode_clock)
+
+if(DSD_ENABLE_API)
+    # The API reaches the engine only through app-control, so engine.c and the
+    # radio and protocol archives come after ${LIBS} in CMake's order. Linkers
+    # that default to --as-needed (Debian/Ubuntu) would drop librtlsdr and Codec2
+    # before anything references them; group the static providers ahead of
+    # ${LIBS}, as ENGINE_CHANNEL_SCAN_SQUELCH_GATE does.
+    if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+        set(_dsd_neo_api_test_deps
+            dsd-neo_api
+            dsd-neo_feature_rtlsdr
+            dsd-neo_feature_codec2
+            "-Wl,--start-group"
+            dsd-neo_app_control
+            dsd-neo_engine
+            dsd-neo_dispatch
+            ${_DSD_RUNTIME_CLI_PARSE_LIBS}
+            "-Wl,--end-group"
+            ${LIBS}
+        )
+    else()
+        set(_dsd_neo_api_test_deps
+            dsd-neo_api
+            dsd-neo_engine
+            dsd-neo_feature_rtlsdr
+            dsd-neo_feature_codec2
+            ${LIBS}
+        )
+    endif()
+
+    # The JSON tests feed NaN and infinity to the writer, and the payload test
+    # compiles json.c itself, so it does not inherit src/api's IEEE property.
+    if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+        set(_dsd_neo_api_ieee_option -fno-fast-math)
+    elseif(MSVC)
+        set(_dsd_neo_api_ieee_option /fp:precise)
+    endif()
+
+    add_executable(dsd-neo_test_api_json api/test_json.c)
+    target_include_directories(
+        dsd-neo_test_api_json
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/api
+    )
+    target_compile_options(
+        dsd-neo_test_api_json
+        PRIVATE ${_dsd_neo_api_ieee_option}
+    )
+    target_link_libraries(dsd-neo_test_api_json PRIVATE dsd-neo_api)
+    add_test(NAME API_JSON COMMAND dsd-neo_test_api_json)
+
+    add_executable(dsd-neo_test_api_commands api/test_commands.c)
+    target_include_directories(
+        dsd-neo_test_api_commands
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/api
+    )
+    target_compile_definitions(
+        dsd-neo_test_api_commands
+        PRIVATE
+            DSD_API_TEST_COMMANDS_H="${PROJECT_SOURCE_DIR}/include/dsd-neo/app_control/commands.h"
+    )
+    target_link_libraries(
+        dsd-neo_test_api_commands
+        PRIVATE ${_dsd_neo_api_test_deps}
+    )
+    add_test(NAME API_COMMANDS COMMAND dsd-neo_test_api_commands)
+    # Link with --as-needed everywhere so a local Linux build catches an ordering regression.
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        target_link_options(
+            dsd-neo_test_api_commands
+            PRIVATE "LINKER:--as-needed"
+        )
+    endif()
+
+    # The command table against stand-ins for the app-control submit API, so
+    # each case can check the payload bytes it builds.
+    add_executable(
+        dsd-neo_test_api_command_payloads
+        api/test_command_payloads.c
+        ${PROJECT_SOURCE_DIR}/src/api/api_commands.c
+        ${PROJECT_SOURCE_DIR}/src/api/api_response.c
+        ${PROJECT_SOURCE_DIR}/src/api/json.c
+    )
+    target_include_directories(
+        dsd-neo_test_api_command_payloads
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/api
+    )
+    target_compile_options(
+        dsd-neo_test_api_command_payloads
+        PRIVATE ${_dsd_neo_api_ieee_option}
+    )
+    target_link_libraries(
+        dsd-neo_test_api_command_payloads
+        PRIVATE dsd-neo_runtime dsd-neo_platform
+    )
+    add_test(
+        NAME API_COMMAND_PAYLOADS
+        COMMAND dsd-neo_test_api_command_payloads
+    )
+
+    add_executable(dsd-neo_test_api_server api/test_server.c)
+    target_include_directories(
+        dsd-neo_test_api_server
+        PRIVATE ${PROJECT_SOURCE_DIR}/include
+    )
+    target_link_libraries(
+        dsd-neo_test_api_server
+        PRIVATE ${_dsd_neo_api_test_deps}
+    )
+    add_test(NAME API_SERVER COMMAND dsd-neo_test_api_server)
+    # Link with --as-needed everywhere so a local Linux build catches an ordering regression.
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        target_link_options(
+            dsd-neo_test_api_server
+            PRIVATE "LINKER:--as-needed"
+        )
+    endif()
+    set_tests_properties(API_SERVER PROPERTIES TIMEOUT 120)
+    unset(_dsd_neo_api_test_deps)
+    unset(_dsd_neo_api_ieee_option)
+endif()
 
 # Windows builds the terminal UI against vcpkg's PDCurses, whose include
 # directory dsd-neo_ui_terminal receives as a system directory through

@@ -148,13 +148,16 @@ static const char* const k_skip_exact_next_any[] = {
     "--calc-start-lcn",
 };
 
+/* Their value is taken whatever it starts with, as is that of a free-value option (an API token may begin with '-'
+   and must not reach getopt; see dsd_cli_option_takes_free_value()). */
 static const char* const k_skip_exact_next_nonnull[] = {
     "--iq-capture", "--iq-capture-format", "--iq-capture-max-mb", "--symbol-capture-format",
     "--iq-replay",  "--iq-replay-rate",    "--iq-info",
 };
 
 static const char* const k_skip_exact_next_nonopt[] = {
-    "--lrrp-extra-port", "--rtl-udp-control", "--rtl-udp-control-bind", "--config", "--validate-config",
+    "--lrrp-extra-port", "--rtl-udp-control", "--rtl-udp-control-bind", "--config", "--validate-config", "--api",
+    "--api-bind",
 };
 
 static const char* const k_skip_prefix[] = {
@@ -173,6 +176,10 @@ static const char* const k_skip_prefix[] = {
     "--lrrp-extra-port=",
     "--rtl-udp-control=",
     "--rtl-udp-control-bind=",
+    "--api=",
+    "--api-bind=",
+    "--api-token=",
+    "--api-token-file=",
     "--iq-capture=",
     "--iq-capture-format=",
     "--iq-capture-max-mb=",
@@ -208,6 +215,14 @@ static const char* const k_skip_prefix[] = {
 };
 
 int
+dsd_cli_option_takes_free_value(const char* arg) {
+    static const char* const k_free_value_options[] = {"--api-token", "--api-token-file"};
+    return arg != NULL
+           && compact_matches_exact(arg, k_free_value_options,
+                                    sizeof(k_free_value_options) / sizeof(k_free_value_options[0]));
+}
+
+int
 dsd_cli_compact_args(int argc, char** argv) {
     if (argc <= 0 || argv == NULL) {
         return 0;
@@ -236,8 +251,9 @@ dsd_cli_compact_args(int argc, char** argv) {
             }
             continue;
         }
-        if (compact_matches_exact(arg, k_skip_exact_next_nonnull,
-                                  sizeof(k_skip_exact_next_nonnull) / sizeof(k_skip_exact_next_nonnull[0]))) {
+        if (dsd_cli_option_takes_free_value(arg)
+            || compact_matches_exact(arg, k_skip_exact_next_nonnull,
+                                     sizeof(k_skip_exact_next_nonnull) / sizeof(k_skip_exact_next_nonnull[0]))) {
             if (compact_has_next_nonnull(i, argc, argv)) {
                 advance = 2;
             }

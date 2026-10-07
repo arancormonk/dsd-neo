@@ -19,6 +19,10 @@ Friendly, practical overview of the `dsd-neo` command line. This covers what you
 - RTL retune control: `--rtl-udp-control <port>` binds to loopback by default; use
   `--rtl-udp-control-bind <ipv4>` for explicit remote exposure (see `docs/udp-control.md`). It stays off under
   `--trunk-scan`, which owns the tuner.
+- Control/telemetry API (desktop builds): `--api <port>` serves NDJSON control and telemetry on `127.0.0.1:<port>`
+  (`0` disables); `--api-bind <ipv4>` moves it, and a non-loopback bind requires `--api-token <secret>` or
+  `--api-token-file <path>` (one line of 1..255 bytes; a file that cannot be read is an error). See
+  [docs/api.md](api.md).
 - M17 encode: `-fZ -M M17:CAN:SRC:DST[:RATE[:VOX]]`, `-fP`, `-fB`
 - Keys: `-b`, `-H '<hex...>'`, `-R`, `-1`, `-2`, `-! '<hex...>'`, `-@ '<hex...>'`, `-5 '<hex...>'`, `-9`, `-A`, `-S bits:hex[:offset[:step]]`, `-k keys.csv`, `-K keys_hex.csv`, `--dmr-baofeng-pc5 <hex>`, `--dmr-csi-ee72 <hex>`, `--dmr-vertex-ks-csv <file>`, `--dmr-tg-key-csv <file>`, `--dmr-force-algid <hex>`, `--show-keys`, `-4`, `-0`, `-3`
 - Tools: `--calc-lcn file`, `--calc-cc-freq 451.2375`, `--calc-cc-lcn 50`, `--calc-step 12500`, `--calc-start-lcn 1`, `--auto-ppm`, `--auto-ppm-snr 6`, `--rtltcp-autotune`, `--rdio-mode off|dirwatch|api|both`
@@ -1654,6 +1658,14 @@ Out-of-range decimal keys are rejected without changing the installed key.
 ## Environment Variables (Advanced Tuning)
 
 These environment variables provide fine‑grained control for power users.
+
+Control/telemetry API (fallbacks for the `--api*` options, read only when the option is absent and the API is enabled)
+
+- `DSD_NEO_API_PORT=<port>` — enable the API on this port (as `--api`); `--api 0` still disables it
+- `DSD_NEO_API_BIND=<ipv4>` — bind address (as `--api-bind`); a non‑loopback bind requires a token
+- `DSD_NEO_API_TOKEN=<secret>` — shared-secret token (as `--api-token`)
+- `DSD_NEO_API_TOKEN_FILE=<path>` — read the token from this file (as `--api-token-file`)
+- An invalid value is an argument error. Protocol, telemetry and command reference: [docs/api.md](api.md)
 
 Auto‑PPM (RTL‑SDR)
 

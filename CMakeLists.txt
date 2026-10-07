@@ -82,6 +82,16 @@ option(
 option(DSD_ENABLE_SOAPYSDR "Enable SoapySDR backend support" ON)
 option(DSD_ENABLE_TERMINAL_UI "Enable ncurses/PDCurses terminal frontend" ON)
 option(DSD_ENABLE_QT_UI "Enable the Qt Quick frontend (src/ui/qt)" OFF)
+# The third-party TCP JSON control/telemetry API is desktop-only; Android does
+# not build or link it.
+option(
+    DSD_ENABLE_API
+    "Enable the third-party TCP JSON control/telemetry API"
+    ON
+)
+if(ANDROID)
+    set(DSD_ENABLE_API OFF CACHE BOOL "" FORCE)
+endif()
 set(DSD_SOAPYSDR_MIN_VERSION "0.8.1")
 option(
     DSD_REQUIRE_RTLSDR
@@ -1360,6 +1370,9 @@ add_subdirectory(src/fec)
 add_subdirectory(src/third_party)
 add_subdirectory(src/engine)
 add_subdirectory(src/app_control)
+if(DSD_ENABLE_API)
+    add_subdirectory(src/api)
+endif()
 add_subdirectory(src/ui)
 add_subdirectory(apps)
 # Android app shell (Qt Quick frontend + JNI lifecycle glue).

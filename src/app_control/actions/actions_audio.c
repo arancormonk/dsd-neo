@@ -41,14 +41,15 @@ ui_handle_toggle_mute(dsd_opts* opts, dsd_state* state, const struct dsd_app_com
 
 static inline void
 apply_gain_delta(dsd_opts* opts, dsd_state* state, int d) {
-    int g = opts->audio_gain + d;
+    /* In 64 bits: a delta can be any int32 (the control API sends what its client asked for). */
+    int64_t g = (int64_t)opts->audio_gain + d;
     if (g < 0) {
         g = 0;
     }
     if (g > 50) {
         g = 50;
     }
-    opts->audio_gain = g;
+    opts->audio_gain = (int)g;
     state->aout_gain = opts->audio_gain;
     state->aout_gainR = opts->audio_gain;
     opts->audio_gainR = opts->audio_gain;
