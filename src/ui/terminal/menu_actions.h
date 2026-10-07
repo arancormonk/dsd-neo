@@ -86,6 +86,12 @@ void act_p2_params(void* v);
 void act_toggle_ftz_daz(void* v);
 void act_set_input_warn(void* v);
 void act_set_squelch(void* v);
+// The NFM and AM channel width rows: on a radio input the channel filter, on audio input with a rigctl peer the
+// passband the peer is asked for (issue #621).
+bool is_nfm_width_editable(const void* v);
+bool is_am_width_editable(const void* v);
+void act_set_nfm_bw(void* v);
+void act_set_am_bw(void* v);
 void act_deemph_cycle(void* v);
 void act_set_audio_lpf(void* v);
 void act_tone_filter(void* v);
@@ -182,8 +188,6 @@ void act_toggle_ui_p25_callsign(void* v);
 #ifdef USE_RADIO
 bool is_airspy_input(const void* v);
 bool is_non_airspy_input(const void* v);
-bool is_nfm_width_editable(const void* v);
-bool is_am_width_editable(const void* v);
 void airspy_set_serial(void* v);
 void airspy_set_sample_rate(void* v);
 void airspy_set_gain_mode(void* v);
@@ -201,8 +205,6 @@ void rtl_set_freq(void* v);
 void rtl_set_gain(void* v);
 void rtl_set_ppm(void* v);
 void rtl_set_bw(void* v);
-void rtl_set_nfm_bw(void* v);
-void rtl_set_am_bw(void* v);
 void rtl_set_vol(void* v);
 void rtl_toggle_bias(void* v);
 void rtl_toggle_rtltcp_autotune(void* v);

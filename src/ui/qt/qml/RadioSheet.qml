@@ -1144,13 +1144,18 @@ ModalSheet {
             color: Theme.textSecondary
             font.pixelSize: Theme.fontSize(12)
         }
-        // Why the stepper is greyed out, rather than leaving a dead control.
+        // Why the stepper is greyed out, rather than leaving a dead control. On
+        // audio input with a rigctl peer (a live switch to it while the sheet is
+        // open, issue #621) the width is the peer's passband, which the
+        // monitor's Passband row sets.
         Text {
             objectName: "radioAnalogBandwidthNote"
             visible: !sheet.analogWidthEditable
             width: parent.width
             wrapMode: Text.WordWrap
-            text: qsTr("The channel width filters a radio input; this audio arrives already demodulated.")
+            text: metrics.peerPassband === true
+                ? qsTr("On this input the rigctl peer demodulates; set its passband from the Monitor's Passband row.")
+                : qsTr("The channel width filters a radio input; this audio arrives already demodulated.")
             color: Theme.textSecondary
             font.pixelSize: Theme.fontSize(12)
         }

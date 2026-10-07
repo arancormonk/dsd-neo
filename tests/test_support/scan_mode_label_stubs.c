@@ -9,6 +9,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
@@ -81,6 +82,19 @@ dsd_test_scan_labels_scan_row(int scanner, uint32_t session, int row, uint32_t e
                  target_id ? target_id : "");
     snapshot_opts.trunk_scan_enabled = scanner == 1 ? 1 : 0;
     snapshot_opts.scanner_mode = scanner == 2 ? 1 : 0;
+}
+
+void
+dsd_test_scan_labels_rigctl(int connected, int setmod_bw_hz) {
+    snapshot_opts.use_rigctl = connected ? 1 : 0;
+    snapshot_opts.rigctl_sockfd = connected ? (dsd_socket_t)5 : DSD_INVALID_SOCKET;
+    snapshot_opts.setmod_bw = setmod_bw_hz;
+}
+
+void
+dsd_test_scan_labels_analog(int analog_only, int analog_demod) {
+    snapshot_opts.analog_only = analog_only;
+    snapshot_opts.analog_demod = analog_demod;
 }
 
 void

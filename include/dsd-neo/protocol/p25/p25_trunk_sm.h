@@ -348,8 +348,10 @@ void p25_sm_seed_cc_from_current_tuner_if_unknown(const dsd_opts* opts, dsd_stat
  * Owns the watchdog guard; call on the decoder thread without holding it.
  * FAILED/DEFERRED leave the old channel and calls intact. OK/PENDING end the
  * old calls, forget site acquisition data, and retain the new CC through
- * asynchronous completion/recovery. Network band plans and user settings
- * survive. Requires an initialized context and a positive frequency in Hz.
+ * asynchronous completion/recovery. CC acquisition and its grace window start
+ * at the tune request's completion stamp, also when the request completed
+ * before the call returns. Network band plans and user settings survive.
+ * Requires an initialized context and a positive frequency in Hz.
  */
 dsd_trunk_tune_result p25_sm_select_control_channel(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, long hz);
 

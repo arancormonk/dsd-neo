@@ -132,7 +132,12 @@ p25_sm_select_control_channel(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* stat
         if (result == DSD_TRUNK_TUNE_RESULT_PENDING) {
             (void)p25_sm_await_pending_cc_tune(ctx, opts, state, request_id, "manual-cc");
         } else {
-            (void)p25_sm_restart_pending_cc_acquisition(ctx, opts, state, 0.0, "manual-cc");
+            // Acquisition starts at the request's completion stamp, not at this later point: the tuner was on
+            // the new channel from the moment it completed, however long the work above took. The restart
+            // falls back to now only when the request carries no stamp.
+            double completed_m = 0.0;
+            (void)dsd_trunk_tuning_request_status(request_id, &completed_m);
+            (void)p25_sm_restart_pending_cc_acquisition(ctx, opts, state, completed_m, "manual-cc");
         }
     }
     p25_sm_tick_guard_leave();

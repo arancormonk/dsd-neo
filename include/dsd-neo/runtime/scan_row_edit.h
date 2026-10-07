@@ -139,8 +139,9 @@ void dsd_scan_row_edit_take_fields(dsd_scan_row_edit* edit, const dsd_scan_row_e
 /**
  * @brief Whether a row's options @p before and @p after (NULL = none) ask a receiver for a different channel width: a
  * width of their own that differs in value or kind, or one where the other sets none. A rigctl peer that demodulates
- * audio input is asked for the row's own width, or for -B when it sets none, so the width the decoder runs can stay
- * the same while the peer's request changes.
+ * audio input is asked for the row's own width, else the configured width of its kind (NFM: -B, or the peer's own,
+ * when unset; issue #621), so the width the decoder runs can stay the same while the peer's request changes -- from
+ * the source if not the value (a row's own 12.5 kHz to a configured 12.5 kHz), which the peer's cache deduplicates.
  */
 int dsd_scan_row_edit_width_request_differs(const dsd_scan_option_values* before, const dsd_scan_option_values* after);
 

@@ -1226,7 +1226,8 @@ svc_check_analog_bandwidth_for_rtl_bw(int kind, int width_hz, int rtl_bw_khz, ch
 }
 
 int
-svc_set_analog_bandwidth(dsd_opts* opts, const dsd_state* state, int kind, int width_hz, char* why, size_t why_size) {
+svc_set_analog_bandwidth(dsd_opts* opts, const dsd_state* state, int kind, int width_hz, int guarded, char* why,
+                         size_t why_size) {
     svc_why(why, why_size, "%s", "");
     if (!opts || !state || !dsd_analog_demod_is_valid(kind)
         || !svc_analog_width_in_range(kind, width_hz, why, why_size)) {
@@ -1236,6 +1237,7 @@ svc_set_analog_bandwidth(dsd_opts* opts, const dsd_state* state, int kind, int w
         && svc_check_analog_bandwidth(opts, state, kind, width_hz, why, why_size) != 0) {
         return -1;
     }
+    const svc_rigctl_session before = svc_rigctl_session_now(opts, state);
     const int previous_hz = dsd_scan_mode_configured_analog_width(opts, state, kind);
     /* The configured width, without suspending a scan row (issue #526): a row that sets its own width keeps it in force
        until it leaves, and nothing reaches the front end until then. */
@@ -1246,7 +1248,49 @@ svc_set_analog_bandwidth(dsd_opts* opts, const dsd_state* state, int kind, int w
         svc_describe_analog_refusal(opts, kind, width_hz, why, why_size);
         return -1;
     }
-    return 0;
+    /* On audio input a rigctl peer demodulates, and the width is the passband it is asked for while the monitor of
+       that kind runs (issue #621): asked at once, as the front end is, rather than at the next retune, and asked again
+       when resubmitted unchanged, since a refused transition can have left the peer off it. */
+    if (svc_rigctl_follow_edit(opts, state, &before, kind, guarded) >= 0) {
+        return 0;
+    }
+    /* Refused, or the reply lost: the width goes back, and the peer, which may run either passband, is asked for the
+       one the session runs again. Asked as the edit was, whether or not the request changed: a retry of the width in
+       force goes back to the very same request, and only the peer record knows whether the peer runs it (it does not
+       after a lost reply). */
+    const svc_rigctl_session refused = svc_rigctl_session_now(opts, state);
+    (void)svc_store_analog_width_setting(opts, state, kind, previous_hz);
+    (void)svc_rigctl_follow_edit(opts, state, &refused, kind, guarded);
+    char setting[DSD_APP_ANALOG_WIDTH_TEXT_MAX];
+    (void)dsd_app_analog_width_setting_format(width_hz, setting, sizeof setting);
+    svc_why(why, why_size, "%s bandwidth -> %s: the rigctl peer refused the passband", dsd_analog_demod_label(kind),
+            setting);
+    return -1;
+}
+
+int
+svc_apply_rigctl_setmod_bw(dsd_opts* opts, const dsd_state* state, int hz, int guarded, char* why, size_t why_size) {
+    svc_why(why, why_size, "%s", "");
+    if (!opts) {
+        svc_why(why, why_size, "%s", "Rigctl setmod BW: no decoder options to set it in");
+        return -1;
+    }
+    const svc_rigctl_session before = svc_rigctl_session_now(opts, state);
+    const int previous_hz = opts->setmod_bw;
+    svc_set_rigctl_setmod_bw(opts, hz);
+    /* -B is what the FM monitor asks a rigctl peer for while no NFM width is in force (issue #621), asked whenever it
+       is edited there; elsewhere -B waits for the next tune. */
+    if (svc_rigctl_follow_edit(opts, state, &before, SVC_RIGCTL_EDIT_SETMOD_BW, guarded) >= 0) {
+        return 0;
+    }
+    /* As for a width: -B goes back, and the peer is asked again as the edit was, a retry of the -B in force
+       included. */
+    const int refused_hz = opts->setmod_bw;
+    const svc_rigctl_session refused = svc_rigctl_session_now(opts, state);
+    opts->setmod_bw = previous_hz;
+    (void)svc_rigctl_follow_edit(opts, state, &refused, SVC_RIGCTL_EDIT_SETMOD_BW, guarded);
+    svc_why(why, why_size, "Rigctl setmod BW -> %d Hz: the rigctl peer refused the passband", refused_hz);
+    return -1;
 }
 
 #ifdef USE_RADIO
@@ -1692,7 +1736,7 @@ svc_airspy_squelch_changed(const svc_airspy_tuning* previous, const dsd_opts* cu
 
 /* In-place path: native controls first, then the shared tuning the stream did not reopen for. */
 static int
-svc_airspy_apply_live(dsd_opts* opts, dsd_state* state, const dsd_airspy_config* config,
+svc_airspy_apply_live(dsd_opts* opts, const dsd_state* state, const dsd_airspy_config* config,
                       const svc_airspy_tuning* previous_tuning) {
     int rc = rtl_stream_airspy_controls(config);
     if (rc != 0) {
@@ -1792,7 +1836,7 @@ svc_rtl_set_dev_index(dsd_opts* opts, dsd_state* state, int index) {
 }
 
 int
-svc_rtl_set_freq(dsd_opts* opts, dsd_state* state, uint32_t hz) {
+svc_rtl_set_freq(dsd_opts* opts, const dsd_state* state, uint32_t hz) {
     if (!opts) {
         return -1;
     }

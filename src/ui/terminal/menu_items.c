@@ -39,8 +39,7 @@
 // ============================================================================
 #ifdef USE_RADIO
 static const NcMenuItem RTL_TUNING_ADV_ITEMS[] = {
-    /* The auto-PPM switch leads its settings, which keeps the RTL-SDR menu within fifteen rows beside the NFM and AM
-       channel width rows. */
+    /* The auto-PPM switch leads its settings. */
     {.id = "rtl.auto_ppm",
      .is_enabled = is_non_airspy_input,
      .label_fn = lbl_rtl_auto_ppm,
@@ -185,18 +184,6 @@ static const NcMenuItem RTL_MENU_ITEMS[] = {
      .label_fn = lbl_rtl_bw,
      .help = "DSP bandwidth (the demodulator's sample rate) in kHz: 4, 6, 8, 12, 16, 24 or 48.",
      .on_select = rtl_set_bw},
-    {.id = "rtl.nfm_bw",
-     .is_enabled = is_nfm_width_editable,
-     .label_fn = lbl_rtl_nfm_bw,
-     .help = "NFM channel-filter width in Hz (8000..25000; 0 = default 16000), applied live. It must fit the DSP "
-             "bandwidth.",
-     .on_select = rtl_set_nfm_bw},
-    {.id = "rtl.am_bw",
-     .is_enabled = is_am_width_editable,
-     .label_fn = lbl_rtl_am_bw,
-     .help = "AM channel-filter width in Hz (5000..20000; 0 = default 6000), applied live. It must fit the DSP "
-             "bandwidth.",
-     .on_select = rtl_set_am_bw},
     /* 'v' is here as well as on Input > Input volume: the key drives whichever of the
        two multipliers matches the live input type, and on RTL that is this row. */
     {.id = "rtl.vol",
@@ -294,6 +281,22 @@ const NcMenuItem INPUT_MENU_ITEMS[] = {
              "radio's squelch; on audio input it needs the discriminator or unfiltered FM audio); N 3..30, default "
              "10.",
      .on_select = act_set_squelch},
+    /* The channel widths sit beside Squelch, outside the RTL-SDR submenu, which audio input hides: on audio input with
+       a rigctl peer (-U) they are the passband the peer is asked for (issue #621). */
+    {.id = "input.nfm_bw",
+     .is_enabled = is_nfm_width_editable,
+     .label_fn = lbl_input_nfm_bw,
+     .help = "NFM width in Hz (8000..25000; 0 = unset), applied live. On a radio input it is the channel filter "
+             "(default 16000) and must fit the DSP bandwidth; on audio input with a rigctl peer (-U) it is the FM "
+             "passband the peer is asked for (unset: -B).",
+     .on_select = act_set_nfm_bw},
+    {.id = "input.am_bw",
+     .is_enabled = is_am_width_editable,
+     .label_fn = lbl_input_am_bw,
+     .help = "AM width in Hz (5000..20000; 0 = default 6000), applied live. On a radio input it is the channel filter "
+             "and must fit the DSP bandwidth; on audio input with a rigctl peer (-U) it is the AM passband the peer is "
+             "asked for.",
+     .on_select = act_set_am_bw},
     {.id = "input.warn",
      .label_fn = lbl_input_warn,
      .help = "Warn in the footer when the input level falls below this many dBFS.",

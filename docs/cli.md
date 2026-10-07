@@ -553,7 +553,12 @@ RTL input, `rtl_bw_khz`), and not the audio bandwidth.
   more (`DSD_NEO_CHANNEL_LPF` overrides that), and below them the DSP rate bounds the channel instead. Frontends then
   show the width the rate leaves, marked *DSP-limited*, so existing low-rate `-fA` command lines keep working
   unchanged.
-- On PCM input the option parses but has no effect, and says so with a warning.
+- On PCM input the option parses but filters nothing, and says so with a warning. With a rigctl peer (`-U`), which
+  demodulates what a PCM input hears, the width is the FM passband the peer is asked for, in place of `-B`, while the FM
+  monitor runs (`-B` under [Trunking & Scanning](#trunking--scanning)); left unset there it is not 16 kHz but `-B`, or
+  the peer's own passband with `-B` 0. The start says so in a notice instead of the warning: `NOTICE: --nfm-bandwidth-hz
+  filters nothing on PCM input; with rigctl (-U) it is the FM passband the peer is asked for, in place of -B, while the
+  FM monitor runs.`
 - AM's width, `--am-bandwidth-hz` (`[analog] am_bandwidth_hz`), takes whole Hz from 5000 to 20000, default 6000. AM
   always runs its channel filter, so its unset default is held to the rate like an explicit width: never DSP-limited,
   refused where the rate cannot filter it, and refused under `DSD_NEO_CHANNEL_LPF=0`.
@@ -619,8 +624,8 @@ With `DSD_NEO_CHANNEL_LPF=0` every explicit width on a radio input is refused, a
 needs is off (`NFM 12.5 kHz needs the channel filter, which DSD_NEO_CHANNEL_LPF=0 turns off`). A change that would
 reopen the device with one (a loaded config's `[input]`, a DSP bandwidth, Input > Switch source > RTL-SDR or Airspy)
 is refused before anything is torn down, and the running input stays. On PCM input, which runs no channel filter, the
-width is only stored, and a switch to Analog there goes ahead, as a PCM start with the same width does; a switch from
-PCM to a radio input is held to the width.
+width is only stored (with a rigctl peer, the passband the peer is asked for, below), and a switch to Analog there goes
+ahead, as a PCM start with the same width does; a switch from PCM to a radio input is held to the width.
 
 The terminal shows the width in force on the input status line beside `DSP-BW:`: `Analog: NFM 12.5 kHz;` for an explicit
 width, `Analog: NFM 16 kHz (default);` for the unset default, and `Analog: NFM 12 kHz (DSP-limited);` when the rate
@@ -631,41 +636,55 @@ as that rate, DSP-limited. The stream decides that when it opens, from the DSP b
 as `DSD_NEO_CHANNEL_LPF` says), and keeps it when the device delivers another rate. While an `nfm` or `am` scan row with
 its own width (`--nfm-bandwidth-hz`, `--am-bandwidth-hz`) is on air, the row's width is the one in force and the line
 names the configured width of that kind the row overrides: `Analog: NFM 12.5 kHz (row; default 16 kHz);`, `Analog: AM
-8.333 kHz (row; default 6 kHz);`. An analog row shows the field on a digital session too. The
-terminal sets the width from Input > RTL-SDR > NFM bandwidth..., whose label shows the setting (`[12.5 kHz]`, or
-`[default]`), while `-fA` is the configured mode or an `nfm` scan row is on air on a radio input (a scan row running a
-digital protocol does not hide it), and the AM width from AM bandwidth... beside it while `-fM` is or an `am` scan row
-is on air. The Qt and Android Radio sheet shows the same reading under the decode chips, and under any other chip while
-an `nfm` or `am` scan row is on air (a row's own width reads first, with a `row` badge naming the configured default of
-its kind the stepper edits, 16 kHz or 6 kHz while unset), with a stepper over 8, 11.25, 12.5, 16, 20 and 25 kHz (NFM)
-or 5, 6, 8, 10, 15 and 20 kHz (AM, under the AM chip or an `am` row) that skips the widths the DSP
-rate cannot filter (the running stream's, or with none running the rate an RTL-SDR or rtl_tcp input's DSP bandwidth
-sets), and *Use the default width* to return an explicit width to the unset default. On PCM input it reads *not used on
-PCM input* and the controls are disabled. With a rigctl peer (`-U`) the configured AM width is still the passband the
-peer is asked for on `am` rows and `am-conventional` targets without their own width; only `--am-bandwidth-hz` or
-`[analog] am_bandwidth_hz` sets it there. Under another mode, the other analog kind's included, both keep the width
-control of a kind on a radio input while an explicit width of it is set, with the setting as its reading (on the Radio
-sheet, a second width control below the first under `-fA` or `-fM`): a switch to that mode is held to the width, so a
-width the device or the capture cannot filter can be narrowed before the switch. The AM control is also offered, reading
-`default`, where the DSP rate cannot filter AM's 6 kHz default but can filter a narrower AM width (a replay or device at
-7.5 kHz filters up to 5.55 kHz), since a switch to AM is refused there with word to narrow the width. The setup wizard
-offers the NFM and AM chips too, and picking either suggests no trunking. Its AM chip is greyed out for a network or
-file source, with a note under the chips saying why, and on a USB or rtl_tcp radio whose bandwidth (the system's, or the
-app default) is 4 or 6 kHz, where no AM width fits, the wizard waits at the tune step with the reason and the bandwidths
-that fit; a system saved with that pair earlier fails to start with the same reason. Both controls always edit the
-configured width, which is also what a saved config writes: a scan row's own width is never saved. While a row that sets
-its own width is on air, an edit waits for the row to leave (or for a row without a width), and the message says so:
-`Default NFM bandwidth -> 20 kHz; this channel overrides it (12.5 kHz)`, and likewise for AM under an `am` row with its
-own width; an edit of the other kind's width is not shadowed. On any session, while the scan has an analog row or target
-without a width of its own (an `nfm` row or `nfm-conventional` target, an `am` row or `am-conventional` target), which
-runs the configured width of its kind when it comes on air, an edit of that width the DSP rate cannot filter is refused
-whichever row is on air, rather than accepted and that row skipped at every visit.
+8.333 kHz (row; default 6 kHz);`. An analog row shows the field on a digital session too. The terminal sets the width
+from Input > NFM bandwidth..., right after Squelch..., whose label shows the setting (`[12.5 kHz]`, or `[default]`),
+while `-fA` is the configured mode or an `nfm` scan row is on air on a radio input (a scan row running a digital
+protocol does not hide it), and the AM width from AM bandwidth... beside it while `-fM` is or an `am` scan row is on
+air. The Qt and Android Radio sheet shows the same reading under the decode chips, and under any other chip while an
+`nfm` or `am` scan row is on air (a row's own width reads first, with a `row` badge naming the configured default of its
+kind the stepper edits, 16 kHz or 6 kHz while unset), with a stepper over 8, 11.25, 12.5, 16, 20 and 25 kHz (NFM) or 5,
+6, 8, 10, 15 and 20 kHz (AM, under the AM chip or an `am` row) that skips the widths the DSP rate cannot filter (the
+running stream's, or with none running the rate an RTL-SDR or rtl_tcp input's DSP bandwidth sets), and *Use the default
+width* to return an explicit width to the unset default. On PCM input without a rigctl peer it reads *not used on PCM
+input* and the controls are disabled. On PCM input with a rigctl peer (`-U`), which demodulates what DSD-neo hears, the
+width is the passband the peer is asked for while the monitor of its kind runs (`-B` under [Trunking &
+Scanning](#trunking--scanning) has the rule), and no DSP rate bounds it or is checked: the terminal rows read `NFM
+passband... [12.5 kHz]` and `AM passband... [default]`, an unset NFM width reading as `-B`, which stands in for it
+(`[-B 12.5 kHz]`, or `[peer's own]` without `-B`), and the input line shows the passband after the squelch (`Passband:
+NFM 12.5 kHz (-B);`, `Passband: AM 6 kHz (default);`) whenever a width is offered, on a digital session with an
+explicit width the `-B` every tune asks for there. The Qt and Android monitor has a `PASSBAND` row reading the same,
+whose Edit opens the Passband sheet: `NFM passband` and `AM passband` steppers over the same widths with no DSP bound,
+`All channels | This channel` under a scan row that takes the edit, and *Use the default width*, which returns the NFM
+width to `-B`; the Radio sheet's width controls stay disabled there, and its note points to the Monitor's Passband row.
+The rows and the sheet offer NFM under `-fA` or an `nfm` row on air, AM under an `am` row on air, and either kind while
+an explicit width of it is set. An edit that changes the passband in force is asked of the peer at once (`Applied: NFM
+passband -> 12.5 kHz`, `Applied: NFM passband -> 12.5 kHz (-B)`), and one the peer refuses, or whose reply is lost, is
+put back, the peer asked again for the passband the session then runs (`Refused: AM bandwidth -> 8 kHz: the rigctl peer
+refused the passband`). Under another mode, the other analog kind's included, both keep the width control of a kind on a
+radio input while an explicit width of it is set, with the setting as its reading (on the Radio sheet, a second width
+control below the first under `-fA` or `-fM`): a switch to that mode is held to the width, so a width the device or the
+capture cannot filter can be narrowed before the switch. The AM control is also offered, reading `default`, where the
+DSP rate cannot filter AM's 6 kHz default but can filter a narrower AM width (a replay or device at 7.5 kHz filters up
+to 5.55 kHz), since a switch to AM is refused there with word to narrow the width. The setup wizard offers the NFM and
+AM chips too, and picking either suggests no trunking. Its AM chip is greyed out for a network or file source, with a
+note under the chips saying why, and on a USB or rtl_tcp radio whose bandwidth (the system's, or the app default) is 4
+or 6 kHz, where no AM width fits, the wizard waits at the tune step with the reason and the bandwidths that fit; a
+system saved with that pair earlier fails to start with the same reason. Both controls always edit the configured width,
+which is also what a saved config writes: a scan row's own width is never saved. While a row that sets its own width is
+on air, an edit waits for the row to leave (or for a row without a width), and the message says so: `Default NFM
+bandwidth -> 20 kHz; this channel overrides it (12.5 kHz)`, and likewise for AM under an `am` row with its own width; an
+edit of the other kind's width is not shadowed. On any session, while the scan has an analog row or target without a
+width of its own (an `nfm` row or `nfm-conventional` target, an `am` row or `am-conventional` target), which runs the
+configured width of its kind when it comes on air, an edit of that width the DSP rate cannot filter is refused whichever
+row is on air, rather than accepted and that row skipped at every visit.
 
 ### When changes apply
 
 | Change | When it applies |
 | --- | --- |
-| NFM or AM width from the terminal row, the Radio sheet or a loaded config | Live, on the next DSP block of a running analog monitor of that kind, with no reopen and no gap: the new filter runs over the signal already received, so no sample is dropped or repeated. The exception is an NFM edit between an explicit width and the unset default where the channel filter is off by default (`DSD_NEO_CHANNEL_LPF=0`, or a DSP rate below 20 kHz): it turns the filter off, dropping the samples it held back (about 1.5 ms), or on, starting it from an empty history. A width that changes the filter the front end runs also starts received-tone detection (below) over. Refused with a message, and the width unchanged, when the DSP rate it will run at cannot filter it (a config is then not applied at all); a width the front end refuses where it lands (a retune moved the rate) is put back, with the message. A width set while a scan row runs a digital protocol, or while CQPSK is toggled on under `-fA` or `-fM`, applies when the front end returns to the monitor; when a scan stops and the front end refuses the configured width at the rate a row's retune left it on, the front end keeps what it ran, the message says so, and the configured width takes the width a monitor of that kind kept, or else goes back to the kind's default, which the monitor then runs (`Refused: NFM 16 kHz does not fit the 16 kHz DSP rate; the monitor is back on the NFM default`; an AM default that rate cannot filter either leaves the width as it was, also when a retune refuses that default where it lands after it was asked for; a DSP-menu CQPSK toggle made before the front end took the return decides instead, and the width stays with no message, the refusal only logged); setting it under a scan row edits the configured width without disturbing the row, and an `nfm` row's own `--nfm-bandwidth-hz` stays in force until the row leaves. A width is held to the DSP rate as above on any session while the scan has an analog row or target of its kind (`nfm`/`nfm-conventional` for NFM, `am`/`am-conventional` for AM) without a width of its own, whichever row is on air, and an `am` row's own `--am-bandwidth-hz` stays in force until the row leaves as an `nfm` row's does. A width of the kind not in use is stored for the next switch to it. With no stream running, the next start uses it. |
+| NFM or AM width from the terminal row, the Radio sheet, the Passband sheet or a loaded config | Live, on the next DSP block of a running analog monitor of that kind, with no reopen and no gap: the new filter runs over the signal already received, so no sample is dropped or repeated. The exception is an NFM edit between an explicit width and the unset default where the channel filter is off by default (`DSD_NEO_CHANNEL_LPF=0`, or a DSP rate below 20 kHz): it turns the filter off, dropping the samples it held back (about 1.5 ms), or on, starting it from an empty history. A width that changes the filter the front end runs also starts received-tone detection (below) over. Refused with a message, and the width unchanged, when the DSP rate it will run at cannot filter it (a config is then not applied at all); a width the front end refuses where it lands (a retune moved the rate) is put back, with the message. A width set while a scan row runs a digital protocol, or while CQPSK is toggled on under `-fA` or `-fM`, applies when the front end returns to the monitor; when a scan stops and the front end refuses the configured width at the rate a row's retune left it on, the front end keeps what it ran, the message says so, and the configured width takes the width a monitor of that kind kept, or else goes back to the kind's default, which the monitor then runs (`Refused: NFM 16 kHz does not fit the 16 kHz DSP rate; the monitor is back on the NFM default`; an AM default that rate cannot filter either leaves the width as it was, also when a retune refuses that default where it lands after it was asked for; a DSP-menu CQPSK toggle made before the front end took the return decides instead, and the width stays with no message, the refusal only logged); setting it under a scan row edits the configured width without disturbing the row, and an `nfm` row's own `--nfm-bandwidth-hz` stays in force until the row leaves. A width is held to the DSP rate as above on any session while the scan has an analog row or target of its kind (`nfm`/`nfm-conventional` for NFM, `am`/`am-conventional` for AM) without a width of its own, whichever row is on air, and an `am` row's own `--am-bandwidth-hz` stays in force until the row leaves as an `nfm` row's does. A width of the kind not in use is stored for the next switch to it. With no stream running, the next start uses it. On PCM input with a rigctl peer (`-U`) no channel filter runs and no DSP rate holds the width: while the monitor of that kind runs it is the passband the peer is asked for, so an edit that changes the passband in force is asked of the peer at once, strictly, and one the peer refuses, or whose reply is lost, is put back with the message, the peer asked again for the passband the session then runs; a loaded config whose width the peer refuses puts that width back, keeps the rest applied and fails (`Config applied; the rigctl peer refused AM 10 kHz: the AM width stays 8 kHz`). A width set while a typed digital row is on air, or the other kind's, is stored for the next tune that asks for it. |
+| `-B` on PCM input with a rigctl peer (Trunking > `Rigctl setmod bandwidth...`) | While the FM monitor runs with no NFM width in force (a row's own or the configured one), `-B` is the FM passband the peer is asked for: an edit is asked of the peer at once, and one the peer refuses, or whose reply is lost, goes back to the `-B` it replaced, with the message (`Refused: Rigctl setmod BW -> 25000 Hz: the rigctl peer refused the passband`). Anywhere else it is stored for the next tune that asks for it: off the monitor (a digital mode, an RTL-family input) a tune sends it as before (on audio input the peer's own passband is read first, so a later return can put it back), and on the FM monitor with an NFM width in force the tune sends that width instead. |
+| A command that moves the session onto, off or between monitors on PCM input with a rigctl peer (a decode-mode or input switch, a channel-map import, a loaded config's `[mode]` or `[input]`) | The peer is asked for the passband the session then runs at once. One brought by the command (a first rigctl connection, a switch onto PCM input) is asked only for a width, as at start; `-B` and its own passband wait for the next tune. Leaving the monitor for a digital mode puts the peer back on `-B`, or on its own passband with `-B` 0, at once when the monitor ran a passband this client set (a width, or `-B` standing in), best-effort as a tune's `-B` is; a `-B` edit on a digital session still waits for the next tune. A refusal leaves the command's change standing, with a warning in the log and the message (`Rigctl peer refused NFM 9 kHz (see log)`), and so does a refused return to `-B` after a loaded config; a loaded config refused on entering the monitor, its width unchanged, stays applied and fails (`Config applied; the rigctl peer refused NFM 12.5 kHz (see log)`). |
 | Decode mode to or from Analog or AM (`-fA`, `-fM`, the NFM and AM chips, `[mode] decode`) | Live: the front end switches receive family, or between FM and AM, between DSP blocks. A switch to Analog with an explicit NFM width, or to AM with an AM width (its default included), the DSP rate cannot filter is refused, naming both, and the mode stays (under a scan row too); one the front end refuses where it lands (a retune moved the rate) puts the mode back, with the message. A switch made while a scan row runs a digital protocol reaches the front end when the scan stops; should a DSP-menu CQPSK toggle made before the front end took that return decide instead, or the scan go on (a channel map imported with the scanner on leaves the row, and the next row's tune decides, also when it lands before the front end took that return, which then never runs), the mode stays with no message (a refusal only logged), whether the front end stayed on the digital family or on the analog family (where an `-fA` session runs a typed row), and the next return to the monitor the front end refuses while it runs another family or kind, such as CQPSK toggled off or the scanner stopped on an `am` row, puts it back. A switch between FM and AM that a scan stop puts back this way asks the front end for the mode it restores, and when the rate a row's retune left cannot filter that mode's width either (NFM 16 kHz after a switch to AM under an NXDN48 row, left at 7.5 kHz), the width is settled as for any refused scan stop (the NFM or AM width row above): the width a monitor of that kind kept, else the kind's default, which the monitor then runs, and the message says so (`Refused: NFM 16 kHz does not fit the 7.5 kHz DSP rate; the monitor is back on the NFM default`; an AM default that rate cannot filter either leaves the AM width as it was). |
 | DSP bandwidth (`bw`, `rtl_bw_khz`, DSP bandwidth...) | Reopens the device. On an RTL-SDR or rtl_tcp input (an RTL input whose device string names no SoapySDR, Airspy or replay device opens as one) a bandwidth the explicit NFM width, or the AM width (its default included), in use cannot run at is refused, naming both, from the DSP bandwidth... row and from a loaded config alike. The width in use is the configured one under `-fA` or `-fM`, the configured width of a kind on any session while the scan has an analog row or target of that kind without a width of its own, and the own width of an analog scan row on air (`DSP BW 12 kHz cannot filter the scan row's NFM 12.5 kHz (max 9.6 kHz); keep a wider DSP bandwidth` from the DSP bandwidth... row). A loaded config is checked at the bandwidth its `[input]` reopens an RTL-SDR or rtl_tcp device at (its `rtl_bw_khz` as given), from whatever input runs now; one that builds the input already running (an rtl_tcp source without `rtl_freq` for the host and port in use) reopens nothing and changes no rate. A config whose `[input]` reopens a SoapySDR or Airspy device (an Airspy source over a running Airspy reopens it for a new sample rate, serial or DSP bandwidth) is held to neither rate: the reopened stream's start checks the width at the rate that device delivers. An Airspy source that changes only the volume also reopens the running Airspy, but at the rate it runs now, so the running front end checks the width first, as when nothing reopens, and checks the configured width even when the config leaves it as it was, since the reopened stream opens on it (also while a digital scan row runs, which leaves it unused): a width it cannot filter leaves the config unapplied. A bandwidth from the DSP bandwidth... row whose reopen does not start anyway (on a SoapySDR or Airspy input, a width the rate the device delivers at that bandwidth cannot filter; on any input, a device that does not open) puts the bandwidth that ran back and starts the input again, and says why: `Refused: NFM 25 kHz does not fit the 19.531 kHz DSP rate (max 16.377 kHz); ...` for a width, `Failed: the RTL-SDR input did not start (see log)` otherwise; with `--iq-capture` that restart runs without the capture (see IQ Capture And Replay). |
 | A loaded config whose `[input]` reopens the running radio input | Reopens the device. When the reopened stream does not start (its start refuses a width the rate the device delivered cannot filter, or the device does not open), the config is not applied to the receive side: the input and its device settings, the tuning, `[mode]` (the decoders and their timing, the EDACS variant, the extra LRRP ports), `[demod]` and `[analog]` (both widths and the tone filter) go back to what ran, that input is started again, and the message says why (`Config not applied: NFM 25 kHz does not fit the 19.531 kHz DSP rate (max 16.377 kHz); ...`, or `Config not applied: the rtl_tcp input did not start (see log)`). With `--iq-capture` that restart runs without the capture, which stops for the session, so it never writes over the recording (see IQ Capture And Replay for when the failed start already had). Under a scan row, the reopened stream opens on the configured settings, so its start checks the configured width at the rate the device delivers even while a digital row runs (the scan stops back onto that monitor), and the input put back after a rollback starts again on what its stream ran, the row's profile (a typed digital row's, whose rate need not fit the configured width); either stream is asked for the row's profile once the row is back. A reopened stream that cannot run the analog row on air (an `nfm` row's own 25 kHz at the rate an Airspy delivers) is rolled back the same way, with the message naming the width and that rate. A config that turns the scanner off (`[trunking] scanner = false`) leaves the row instead, so the reopened stream is not held to it. The config's other sections (output, trunking, logging, alerts, recording, DSP, a group list) stay applied. With no stream running before the load, the config's input is still opened; when that start fails there is nothing to put back, so the config stays applied with no input running, and the message says why (`Config applied; no input running: the SoapySDR input did not start (see log)`); an input it opens that cannot run the scan row on air is kept, with the whole config (its `[mode]` and `[analog]` widths too, even the width a row without its own runs and the new input refuses), and the message says so (`Config applied; the scan row cannot run: ...`). |
@@ -836,14 +855,15 @@ quieting, closed under max(N - 3, 1.5) dB. Quieting reads about the carrier-to-n
   room above voice` and logs that at first use. Under `-Y` or a trunk scan the notice adds that rows hold on noise until
   `--scan-max-visit-ms`. A band that appears later turns the squelch back on after about 1 s.
 - References per source. The squelch keeps up to eight references, one for each input stream, input rate, input volume
-  (`--input-volume`, Input > `Input volume...`) and rigctl peer passband (`-B`, or a scan row's width), so a `-Y` scan
-  over rows of different widths keeps each one's reference. A retune keeps the reference; reopening the input (an input
-  switch from the terminal menu included, or a UDP input bound again), or a new rate or input volume, starts learning
-  again. While the peer's passband is not known the squelch keeps one reference,
-  through retunes too, but stores none for it to come back to; the first passband the client learns, and any change of
-  it (a row's width edited live), starts the windows over on that passband's reference. A width request whose reply was
-  lost leaves the passband unknown again, so the squelch learns afresh rather than keep the old width's reference. A
-  pause in the stream (UDP or TCP audio that stops) starts the windows over, at most one 20 ms read late.
+  (`--input-volume`, Input > `Input volume...`) and rigctl peer passband (`-B`, the configured NFM width, or a scan
+  row's width), so a `-Y` scan over rows of different widths keeps each one's reference. A retune keeps the reference;
+  reopening the input (an input switch from the terminal menu included, or a UDP input bound again), or a new rate or
+  input volume, starts learning again. While the peer's passband is not known the squelch keeps one reference, through
+  retunes too, but stores none for it to come back to; the first passband the client learns, and any change of it (a
+  width or `-B` edited live, a row's or the configured one), starts the windows over on that passband's reference. A
+  width request whose reply was lost leaves the passband unknown again, so the squelch learns afresh rather than keep
+  the old width's reference. A pause in the stream (UDP or TCP audio that stops) starts the windows over, at most one
+  20 ms read late.
 - Where it runs: the FM monitor (`-fA`, `nfm` rows) on audio input. An `am` row on audio input runs no noise squelch
   (`off on AM audio`), and digital channels none. `--squelch auto` on audio input is off, with a startup warning. A
   level squelch works on audio input as before, against the input level.
@@ -883,7 +903,8 @@ of the setup wizard): the analog monitor with an AM envelope detector in place o
   Hz, is refused, never clamped: `--am-bandwidth-hz: AM bandwidth 25000 Hz is outside the supported range of 5000 to
   20000 Hz`. On a PCM input the option filters nothing, and says so; with a rigctl peer (`-U`) it is the AM passband
   the peer is asked for on `am` scan rows and `am-conventional` targets that set no width of their own, and the start
-  says that instead.
+  says that instead. An edit of it there (Input > `AM passband...`, the Passband sheet, a loaded config) reaches the
+  peer at once while such a row is on air, and goes back if the peer refuses it.
 - The width has to fit the DSP rate as an NFM width does (the table above), and the unset default is held to it too,
   since AM always runs its channel filter; `DSD_NEO_CHANNEL_LPF=0` therefore refuses AM. An RTL-SDR or rtl_tcp input's
   rate is its DSP bandwidth, so a width it cannot filter is refused at startup before the device opens, and without a
@@ -913,7 +934,7 @@ of the setup wizard): the analog monitor with an AM envelope detector in place o
   while it holds.
 - Live changes follow the [When changes apply](#when-changes-apply) table: switching between AM, the Analog (FM) monitor
   and the digital modes from a frontend applies to the running stream without reopening it, and so does a new AM width
-  (Input > RTL-SDR > `AM bandwidth... [default]` in the terminal, or the Radio sheet's channel width stepper under the
+  (Input > `AM bandwidth... [default]` in the terminal, or the Radio sheet's channel width stepper under the
   AM chip in the Qt and Android app; the terminal row takes any value, and the engine refuses what the rate cannot
   filter). Under `-Y` scanning the width is held to the running rate too, and it always edits the configured AM width,
   which a save writes and every row's leave keeps: on a blank row, which keeps the configured mode (its retune brings
@@ -1378,18 +1399,19 @@ is delayed.
   example](../examples/conventional_scan_modes.csv) and [the mixed analog
   example](../examples/conventional_scan_analog.csv). Declared rows work even when excluded by the global preset; blank
   rows inherit it. An `nfm` row runs the analog FM monitor at its own `--nfm-bandwidth-hz` width (the row's `options`)
-  or the configured NFM width (16 kHz by default), and an `am` row the AM monitor at its own `--am-bandwidth-hz` width
-  or the configured AM width (6 kHz by default), switching the receiver between the FM monitor, the AM monitor and the
-  digital decoder at each row without reopening the device, and holds under `-t` for as long as its carrier (squelch
-  open) lasts, whether or not audio is played: `-o null` and a muted frontend no longer let the scanner leave an active
-  analog row. `--scan-voice-only` never applies to an analog row. Details and the options an analog row accepts:
-  [csv-formats.md](csv-formats.md#analog-rows). Modes take effect at the first scheduled row entry, including manual `L`
-  cycling. Existing dwell and voice-hold defaults remain unchanged. The open audio sink retains its rate/channel count
-  while logical DMR slot decoding may change. Global mode and modulation commands update the saved configuration, and
-  exiting scanning restores it. Blank-mode rows retain that saved configuration while AUTO hunts. Loading a
-  configuration that disables scanning releases the row's decoder and keys. A manual frequency setting exits a typed
-  scan and reports that in its status message; legacy untyped scans retain their existing manual-tune behavior. Manual
-  `L` skips zero-frequency placeholders, while automatic scanning continues to park on them for the configured dwell.
+  or the configured NFM width (16 kHz by default; on audio input with a rigctl peer, `-B` stands in for an unset one),
+  and an `am` row the AM monitor at its own `--am-bandwidth-hz` width or the configured AM width (6 kHz by default),
+  switching the receiver between the FM monitor, the AM monitor and the digital decoder at each row without reopening
+  the device, and holds under `-t` for as long as its carrier (squelch open) lasts, whether or not audio is played:
+  `-o null` and a muted frontend no longer let the scanner leave an active analog row. `--scan-voice-only` never applies
+  to an analog row. Details and the options an analog row accepts: [csv-formats.md](csv-formats.md#analog-rows). Modes
+  take effect at the first scheduled row entry, including manual `L` cycling. Existing dwell and voice-hold defaults
+  remain unchanged. The open audio sink retains its rate/channel count while logical DMR slot decoding may change.
+  Global mode and modulation commands update the saved configuration, and exiting scanning restores it. Blank-mode rows
+  retain that saved configuration while AUTO hunts. Loading a configuration that disables scanning releases the row's
+  decoder and keys. A manual frequency setting exits a typed scan and reports that in its status message; legacy untyped
+  scans retain their existing manual-tune behavior. Manual `L` skips zero-frequency placeholders, while automatic
+  scanning continues to park on them for the configured dwell.
 - Single-tuner trunk scan mode: `--trunk-scan <targets.csv>`
   - Rotates one tuner across CSV-defined P25 trunk, P25 conventional (`p25-conventional`), DMR trunk, DMR
     conventional, NXDN trunk (`nxdn-trunk` NXDN96, `nxdn48-trunk` NXDN48), NXDN96 conventional
@@ -1455,14 +1477,33 @@ is delayed.
     they do not readmit the supergroup's grants.
 - Hold talkgroup: `-I <dec>`
 - rigctl over TCP: `-U <port>` (SDR++ default 4532)
-- Set rigctl bandwidth (Hz): `-B <hertz>` (e.g., 7000–48000 by mode). On audio input, where the peer demodulates, scan
-  rows that need their own ask the peer for it instead: an `am` row or `am-conventional` target sends `M AM <width>`
-  with its AM width, and an `nfm` row or target with its own `--nfm-bandwidth-hz` sends that width as the FM passband;
-  a peer that refuses either skips the row. Without `-B`, a later row undoes such a request with FM at the passband the
-  peer reported (`m`) before the first one, since SDR++ and GQRX keep their passband for `0`, and leaving the scan
-  returns the peer to FM at its own passband, with its own AM passband put back too
-  ([csv-formats.md](csv-formats.md#analog-rows)). On an RTL-family input the peer only follows the frequency and is
-  asked for `-B` alone.
+- Set rigctl bandwidth (Hz): `-B <hertz>` (e.g., 7000–48000 by mode), the FM passband the peer is asked for wherever it
+  does not demodulate the analog monitor: on digital modes, and on an RTL-family input, where the peer only follows the
+  frequency and is asked for `-B` alone. On audio input, where the peer demodulates, the analog monitor asks for its own
+  passband instead (issue #621): the AM monitor (an `am` row or `am-conventional` target) sends `M AM <width>` with its
+  own AM width, else the configured one, else the 6 kHz default, and the FM monitor (`-fA`, an `nfm` row or
+  `nfm-conventional` target) sends FM at the row's own `--nfm-bandwidth-hz`, else the configured NFM width, else `-B`,
+  which stands in for an unset NFM width, else at the peer's own passband. A peer that refuses a width skips the row; a
+  refused `-B` keeps the effect it always had: none at a scan row's tune (unless the peer may still be on an `am` row's
+  AM), a failed untyped `-Y` step or manual tune. Where the session runs the peer's own passband (`-B` 0, or the FM
+  monitor with neither a width nor `-B`) the untyped `-Y` step and a manual tune ask for FM at the peer's own passband,
+  best-effort: that undoes a passband this client set, and sends nothing to a peer it never changed or one back on its
+  own, a reconnect since or not. Before this client first changes a demodulator's passband it asks the peer what it
+  runs (`m`; on audio input `-B` on a digital mode counts, since the peer's FM passband is what the mode is heard
+  through), so a later return to the peer's own (a row with neither a width nor `-B` to ask for, after one that set a
+  passband) sends FM at the passband the peer reported, since SDR++ and GQRX keep their passband for `0` (a peer that
+  cannot answer `m` still gets `0`). A scan's reading lasts the scan; one taken for the session's own passband off a
+  scan is retired once the peer is known to run its own passband again (it takes it back, or refuses the session's
+  request while still on it) and is never sent again: the next change reads again what the operator may have changed on
+  the peer meanwhile, and a read that fails leaves it unknown, so a later return sends `0`. Leaving the scan returns
+  the peer to the passband the session runs, with its own AM passband put
+  back too ([csv-formats.md](csv-formats.md#analog-rows)). The session's width is asked of the peer once the input is
+  open at start, again on a rigctl reconnect, and when a symbol replay ends and the session falls back to Pulse, which
+  the peer then demodulates, best-effort; `-B` and the peer's own passband wait for the first tune, as before. A width
+  or `-B` changed while running (Input > `NFM passband...`, Trunking > `Rigctl setmod bandwidth...`, the Qt/Android
+  Passband sheet, a loaded config) is asked of the peer at once while it is the passband in force, and
+  goes back if the peer refuses it; leaving the monitor for a digital mode puts the peer back on `-B`, or its own
+  passband, at once, best-effort ([When changes apply](#when-changes-apply)).
 - Hang time after voice/sync loss (seconds): `-t <secs>`
   - This is not the idle dwell between `--trunk-scan` targets. DMR control/rest-channel acquisition has its own
     two-second window; use target `dwell_ms` to budget each visit. See [trunk-scan timing](trunk-scan.md).

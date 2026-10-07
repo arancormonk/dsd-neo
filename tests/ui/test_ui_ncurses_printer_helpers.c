@@ -701,6 +701,7 @@ dsd_channel_lpf_legacy_wide_width_hz(int rate_hz) {
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/secret_redaction.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "dsd-neo/platform/sockets.h"
 #include "dsd-neo/runtime/analog_channel.h"
 #include "dsd-neo/runtime/analog_tones.h"
 
@@ -714,9 +715,12 @@ static int g_stream_active;
 static int g_demod_rate_hz;
 /* The demodulator kind of the published analog width (DSD_ANALOG_DEMOD_*), or -1 for none (issue #524). */
 static int g_channel_analog_kind = DSD_ANALOG_DEMOD_FM;
+/* How often a line fetched the metrics: the audio input lines read none (issue #621). */
+static int g_metrics_calls;
 
 int
 dsd_app_frontend_get_metrics(dsd_frontend_metrics* out) { // NOLINT(misc-use-internal-linkage)
+    g_metrics_calls++;
     DSD_MEMSET(out, 0, sizeof(*out));
     out->requested_ppm = g_requested_ppm;
     out->output_kind = g_output_kind;
@@ -807,7 +811,8 @@ test_basic_input_source_rendering(void) {
     opts.use_rigctl = 1;
     opts.rigctlportno = 4532;
     DSD_SNPRINTF(opts.pa_input_idx, sizeof(opts.pa_input_idx), "pulse-device");
-    DSD_SNPRINTF(opts.tcp_hostname, sizeof(opts.tcp_hostname), "radio.local");
+    DSD_SNPRINTF(opts.rigctlhostname, sizeof(opts.rigctlhostname), "radio.local");
+    DSD_SNPRINTF(opts.tcp_hostname, sizeof(opts.tcp_hostname), "audio.local");
     reset_printw_capture();
     ui_render_basic_input_sources(&opts, &state);
     assert_capture_contains("| Pulse Signal Input:  48 kHz; 2 Ch;");
@@ -885,6 +890,132 @@ test_basic_input_source_rendering(void) {
     reset_printw_capture();
     ui_render_basic_input_sources(&opts, &state);
     assert_capture_contains("| STDIN Standard Input: - Menu Disabled when using STDIN! SQL: off;");
+}
+
+/*
+ * Issue #621: on audio input with a rigctl peer (-U) the peer demodulates, and the analog width is the passband it is
+ * asked for. Each audio input line shows it after the squelch, as app-control's analog width view reads it ("Passband:
+ * NFM 12.5 kHz (-B)" while -B stands in for an unset NFM width), and nothing without a peer. The RIG field names the
+ * rigctl host, which a menu reconnect of rigctl or of TCP audio can set apart from the TCP audio host.
+ */
+static void
+test_peer_passband_status_rendering(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.audio_in_type = AUDIO_IN_TCP;
+    opts.wav_sample_rate = 48000;
+    opts.tcp_portno = 7355;
+    opts.input_volume_multiplier = 1;
+    DSD_SNPRINTF(opts.tcp_hostname, sizeof(opts.tcp_hostname), "audio.local");
+    opts.use_rigctl = 1;
+    opts.rigctl_sockfd = (dsd_socket_t)5;
+    opts.rigctlportno = 4532;
+    DSD_SNPRINTF(opts.rigctlhostname, sizeof(opts.rigctlhostname), "rig.local");
+    opts.setmod_bw = 12500;
+    opts.analog_only = 1;
+    opts.analog_demod = DSD_ANALOG_DEMOD_FM;
+
+    reset_printw_capture();
+    g_metrics_calls = 0;
+    ui_render_basic_input_sources(&opts, &state);
+    assert_capture_contains("| TCP Signal Input: audio.local:7355; 48 kHz; 1 Ch; RIG: rig.local:4532;");
+    assert_capture_contains(" SQL: off; Passband: NFM 12.5 kHz (-B);");
+    assert(strstr(g_printw_capture, "Analog:") == NULL);
+    /* The peer's passband needs no stream metrics, and the audio line, drawn every frame, fetches none. */
+    assert(g_metrics_calls == 0);
+    /* The configured width, then the AM default under AM. */
+    opts.analog_nfm_bandwidth_hz = 20000;
+    reset_printw_capture();
+    ui_render_basic_input_sources(&opts, &state);
+    assert_capture_contains(" Passband: NFM 20 kHz;");
+    opts.analog_nfm_bandwidth_hz = 0;
+    opts.analog_demod = DSD_ANALOG_DEMOD_AM;
+    reset_printw_capture();
+    ui_render_basic_input_sources(&opts, &state);
+    assert_capture_contains(" Passband: AM 6 kHz (default);");
+    opts.analog_demod = DSD_ANALOG_DEMOD_FM;
+    /* -B 0: the peer keeps its own passband. */
+    opts.setmod_bw = 0;
+    reset_printw_capture();
+    ui_render_basic_input_sources(&opts, &state);
+    assert_capture_contains(" Passband: NFM peer's own;");
+    opts.setmod_bw = 12500;
+
+    /* UDP, Pulse, WAV and stdin show it too; UDP names the rig as Pulse and TCP do. */
+    opts.audio_in_type = AUDIO_IN_UDP;
+    opts.udp_in_portno = 23456;
+    reset_printw_capture();
+    ui_render_basic_input_sources(&opts, &state);
+    assert_capture_contains("| UDP Signal Input: 127.0.0.1:23456; 48 kHz; 1 Ch; RIG: rig.local:4532;");
+    assert_capture_contains(" Passband: NFM 12.5 kHz (-B);");
+    opts.audio_in_type = AUDIO_IN_PULSE;
+    opts.pulse_digi_rate_in = 48000;
+    opts.pulse_digi_in_channels = 1;
+    reset_printw_capture();
+    ui_render_basic_input_sources(&opts, &state);
+    assert_capture_contains("RIG: rig.local:4532;");
+    assert_capture_contains(" Passband: NFM 12.5 kHz (-B);");
+    opts.audio_in_type = AUDIO_IN_WAV;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "capture.wav");
+    reset_printw_capture();
+    ui_render_basic_input_sources(&opts, &state);
+    assert_capture_contains(" SQL: off; Passband: NFM 12.5 kHz (-B);");
+    opts.audio_in_type = AUDIO_IN_STDIN;
+    reset_printw_capture();
+    ui_render_basic_input_sources(&opts, &state);
+    assert_capture_contains(" SQL: off; Passband: NFM 12.5 kHz (-B);");
+
+    /* No peer: no passband, on any of them. */
+    opts.audio_in_type = AUDIO_IN_TCP;
+    opts.rigctl_sockfd = DSD_INVALID_SOCKET;
+    reset_printw_capture();
+    ui_render_basic_input_sources(&opts, &state);
+    assert(strstr(g_printw_capture, "Passband:") == NULL);
+    opts.rigctl_sockfd = (dsd_socket_t)5;
+    opts.use_rigctl = 0;
+    opts.audio_in_type = AUDIO_IN_UDP;
+    reset_printw_capture();
+    ui_render_basic_input_sources(&opts, &state);
+    assert(strstr(g_printw_capture, "Passband:") == NULL);
+    assert(strstr(g_printw_capture, "RIG:") == NULL);
+    /* A digital session with a peer shows none either. */
+    opts.use_rigctl = 1;
+    opts.analog_only = 0;
+    reset_printw_capture();
+    ui_render_basic_input_sources(&opts, &state);
+    assert(strstr(g_printw_capture, "Passband:") == NULL);
+    /* ...unless the passband controls are offered there (an explicit NFM default, issue #621 review): the field then
+       reads what the peer is asked for now, FM at -B, never the configured width nothing asks for, as the Qt Passband
+       row reads it. */
+    opts.analog_nfm_bandwidth_hz = 20000;
+    reset_printw_capture();
+    ui_render_basic_input_sources(&opts, &state);
+    assert_capture_contains(" SQL: off; Passband: NFM 12.5 kHz (-B);");
+    assert(strstr(g_printw_capture, "20 kHz") == NULL);
+    opts.setmod_bw = 0;
+    reset_printw_capture();
+    ui_render_basic_input_sources(&opts, &state);
+    assert_capture_contains(" Passband: NFM peer's own;");
+    opts.setmod_bw = 12500;
+    opts.analog_nfm_bandwidth_hz = 0;
+
+    /* A radio input with a live rigctl peer: the peer only follows the frequency, and the field is the channel filter,
+       read from the stream's metrics, as without a peer. */
+    opts.analog_only = 1;
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.rtl_dsp_bw_khz = 48;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "rtl");
+    g_stream_active = 1;
+    g_channel_bandwidth_hz = 0;
+    reset_printw_capture();
+    g_metrics_calls = 0;
+    ui_render_rtl_input_source(&opts, &state);
+    assert_capture_contains(" DSP-BW: 48 kHz; Analog: NFM 16 kHz (default);");
+    assert(strstr(g_printw_capture, "Passband:") == NULL);
+    assert(g_metrics_calls > 0);
+    g_stream_active = 0;
 }
 
 static void
@@ -3101,6 +3232,7 @@ main(void) {
     test_input_source_helpers();
     test_dmr_mono_override_terminal_reporting();
     test_basic_input_source_rendering();
+    test_peer_passband_status_rendering();
     test_rtl_and_soapy_input_source_rendering();
     test_analog_channel_status_rendering();
     test_rtl_auto_ppm_status_rendering();

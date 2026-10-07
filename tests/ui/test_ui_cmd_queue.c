@@ -64,6 +64,7 @@
 #include <errno.h>
 #include <math.h>
 #include <sndfile.h>
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -113,18 +114,42 @@ static int g_rigctl_connect_stub_rc = 0;
 static int g_rigctl_connect_calls = 0;
 static char g_rigctl_connect_host[256];
 static int g_rigctl_connect_port = 0;
+/* The decoder state the connect was given, which it passes to the width ask (issue #621). */
+static const dsd_state* g_rigctl_connect_state = NULL;
+
+/* A rigctl peer that demodulates audio input (issue #621): the real requests unless a test arms it. It answers each
+   request it is sent as scripted (taken, unless a test scripts a refusal or a lost reply), runs what it took or what a
+   lost reply may have left it on, and is sent nothing for a request the client knows it runs, as the client's record of
+   the peer skips one (dsd_rigctl.c). */
+enum { RIGCTL_FAKE_TAKE = 0, RIGCTL_FAKE_REFUSE, RIGCTL_FAKE_LOSE };
+
+static int g_rigctl_fake_armed = 0;
+static int g_rigctl_fake_answers[4];
+static int g_rigctl_fake_answer_count = 0;
+static int g_rigctl_fake_calls = 0;     /* requests asked of the client */
+static int g_rigctl_fake_sent = 0;      /* requests sent to the peer */
+static int g_rigctl_fake_unguarded = 0; /* requests sent outside the P25 SM tick guard */
+static int g_rigctl_fake_kind = 0;      /* the demodulator and passband the peer runs */
+static int g_rigctl_fake_bw = 0;
+static int g_rigctl_fake_known = 1;      /* whether the client knows what the peer runs */
+static int g_rigctl_fake_last_kind = -1; /* the last request sent */
+static int g_rigctl_fake_last_bw = -1;
 
 // GNU ld --wrap entry points must keep the reserved __wrap_* symbol name.
 // NOLINTBEGIN(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+bool __real_SetScanRowModulation(dsd_socket_t sockfd, int kind, int bandwidth);
+bool __wrap_SetScanRowModulation(dsd_socket_t sockfd, int kind, int bandwidth);
+bool __real_SetModulationKind(dsd_socket_t sockfd, int kind, int bandwidth);
+bool __wrap_SetModulationKind(dsd_socket_t sockfd, int kind, int bandwidth);
 int __real_svc_tcp_connect_audio(dsd_opts* opts, dsd_state* state, const char* host, int port);
 int __wrap_svc_tcp_connect_audio(dsd_opts* opts, dsd_state* state, const char* host, int port);
-int __real_svc_rigctl_connect(dsd_opts* opts, const char* host, int port);
-int __wrap_svc_rigctl_connect(dsd_opts* opts, const char* host, int port);
+int __real_svc_rigctl_connect(dsd_opts* opts, const dsd_state* state, const char* host, int port);
+int __wrap_svc_rigctl_connect(dsd_opts* opts, const dsd_state* state, const char* host, int port);
 int __real_openAudioInput(dsd_opts* opts);
 int __wrap_openAudioInput(dsd_opts* opts);
 int __real_dsd_audio_reconfigure_output_for_input_policy(dsd_opts* opts);
 int __wrap_dsd_audio_reconfigure_output_for_input_policy(dsd_opts* opts);
-int __wrap_io_control_set_freq(dsd_opts* opts, dsd_state* state, long int freq);
+int __wrap_io_control_set_freq(dsd_opts* opts, const dsd_state* state, long int freq);
 dsd_trunk_tune_result __wrap_dsd_trunk_tuning_hook_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq,
                                                               int ted_sps, uint64_t* out_request_id);
 int __real_dsd_tg_policy_call_skip_arm(dsd_state* state, uint32_t id, uint32_t src, int fallback, double now_mono_s);
@@ -161,13 +186,14 @@ __wrap_svc_tcp_connect_audio(dsd_opts* opts, dsd_state* state, const char* host,
 /* An armed connect succeeds or fails without a socket; a success leaves the options as the real service does: rigctl
    on over a new socket to the requested endpoint. */
 int
-__wrap_svc_rigctl_connect(dsd_opts* opts, const char* host, int port) {
+__wrap_svc_rigctl_connect(dsd_opts* opts, const dsd_state* state, const char* host, int port) {
     if (!g_rigctl_connect_stub_armed) {
-        return __real_svc_rigctl_connect(opts, host, port);
+        return __real_svc_rigctl_connect(opts, state, host, port);
     }
     g_rigctl_connect_calls++;
     DSD_SNPRINTF(g_rigctl_connect_host, sizeof g_rigctl_connect_host, "%s", host ? host : "");
     g_rigctl_connect_port = port;
+    g_rigctl_connect_state = state;
     if (g_rigctl_connect_stub_rc == 0 && opts && host) {
         DSD_SNPRINTF(opts->rigctlhostname, sizeof opts->rigctlhostname, "%s", host);
         opts->rigctlportno = port;
@@ -204,7 +230,7 @@ __wrap_dsd_audio_reconfigure_output_for_input_policy(dsd_opts* opts) {
 }
 
 int
-__wrap_io_control_set_freq(dsd_opts* opts, dsd_state* state, long int freq) {
+__wrap_io_control_set_freq(dsd_opts* opts, const dsd_state* state, long int freq) {
     (void)opts;
     (void)state;
     g_io_control_tune_calls++;
@@ -226,7 +252,85 @@ __wrap_dsd_trunk_tuning_hook_tune_to_cc(dsd_opts* opts, dsd_state* state, long i
     return g_cc_tune_result;
 }
 
+static bool
+rigctl_fake_request(int kind, int bandwidth) {
+    g_rigctl_fake_calls++;
+    if (g_rigctl_fake_known && g_rigctl_fake_kind == kind && g_rigctl_fake_bw == bandwidth) {
+        return true;
+    }
+    const int answer =
+        g_rigctl_fake_sent < g_rigctl_fake_answer_count ? g_rigctl_fake_answers[g_rigctl_fake_sent] : RIGCTL_FAKE_TAKE;
+    g_rigctl_fake_sent++;
+    g_rigctl_fake_last_kind = kind;
+    g_rigctl_fake_last_bw = bandwidth;
+    if (p25_sm_tick_guard_try_enter()) {
+        p25_sm_tick_guard_leave();
+        g_rigctl_fake_unguarded++;
+    }
+    if (answer == RIGCTL_FAKE_REFUSE) {
+        return false;
+    }
+    g_rigctl_fake_kind = kind;
+    g_rigctl_fake_bw = bandwidth;
+    g_rigctl_fake_known = answer == RIGCTL_FAKE_TAKE;
+    return answer == RIGCTL_FAKE_TAKE;
+}
+
+bool
+__wrap_SetScanRowModulation(dsd_socket_t sockfd, int kind, int bandwidth) {
+    if (!g_rigctl_fake_armed) {
+        return __real_SetScanRowModulation(sockfd, kind, bandwidth);
+    }
+    return rigctl_fake_request(kind, bandwidth);
+}
+
+bool
+__wrap_SetModulationKind(dsd_socket_t sockfd, int kind, int bandwidth) {
+    if (!g_rigctl_fake_armed) {
+        return __real_SetModulationKind(sockfd, kind, bandwidth);
+    }
+    return rigctl_fake_request(kind, bandwidth);
+}
+
 // NOLINTEND(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+
+/* Arm the fake rigctl peer on socket 5 of @p opts (UDP audio input): it runs @p kind at @p bandwidth, as the client
+   knows, and takes every request. */
+static void
+arm_rigctl_fake(dsd_opts* opts, int kind, int bandwidth) {
+    opts->audio_in_type = AUDIO_IN_UDP;
+    opts->use_rigctl = 1;
+    opts->rigctl_sockfd = (dsd_socket_t)5;
+    g_rigctl_fake_armed = 1;
+    g_rigctl_fake_kind = kind;
+    g_rigctl_fake_bw = bandwidth;
+    g_rigctl_fake_known = 1;
+    g_rigctl_fake_answer_count = 0;
+    g_rigctl_fake_calls = 0;
+    g_rigctl_fake_sent = 0;
+    g_rigctl_fake_unguarded = 0;
+    g_rigctl_fake_last_kind = -1;
+    g_rigctl_fake_last_bw = -1;
+}
+
+/* The answers to the next requests sent, from now: @p first, then @p second, then taken. Counts start over. */
+static void
+script_rigctl_fake(int first, int second) {
+    g_rigctl_fake_answers[0] = first;
+    g_rigctl_fake_answers[1] = second;
+    g_rigctl_fake_answer_count = 2;
+    g_rigctl_fake_calls = 0;
+    g_rigctl_fake_sent = 0;
+    g_rigctl_fake_unguarded = 0;
+}
+
+static void
+disarm_rigctl_fake(dsd_opts* opts) {
+    g_rigctl_fake_armed = 0;
+    g_rigctl_fake_answer_count = 0;
+    opts->use_rigctl = 0;
+    opts->rigctl_sockfd = DSD_INVALID_SOCKET;
+}
 
 static void
 reset_io_control_tune_stub(int result) {
@@ -249,6 +353,7 @@ arm_rigctl_connect_stub(int armed, int rc) {
     g_rigctl_connect_calls = 0;
     g_rigctl_connect_host[0] = '\0';
     g_rigctl_connect_port = 0;
+    g_rigctl_connect_state = NULL;
 }
 
 static void
@@ -3374,7 +3479,8 @@ test_tcp_connect_clears_received_tone(void) {
  * Issue #589: the '9' key reconnects rigctl to the TCP input's host at the rigctl port through the service the menu's
  * connect takes too, which hands the new socket the peer's record and closes the old one. It reports the service's
  * outcome, as the menu's connect does, and its toasts name the host it asked for, since a reconnect that fails keeps
- * the old endpoint in the options.
+ * the old endpoint in the options. Both hand the service the decoder state, which its width ask weighs a typed -Y list
+ * by (issue #621).
  */
 static int
 test_rigctl_reconnect_key_uses_the_connect_service(void) {
@@ -3396,11 +3502,24 @@ test_rigctl_reconnect_key_uses_the_connect_service(void) {
         rc |= expect_int(tag, g_rigctl_connect_calls, 1);
         rc |= expect_str(tag, g_rigctl_connect_host, "sdr.example");
         rc |= expect_int(tag, g_rigctl_connect_port, 4532);
+        rc |= expect_int(tag, g_rigctl_connect_state == &state, 1);
         rc |= expect_contains(tag, state.ui_msg,
                               connects ? "Rigctl connected: sdr.example:4532"
                                        : "Rigctl connect failed: sdr.example:4532");
         freeState(&state);
     }
+    /* The menu's connect to a host and port. */
+    init_test_context(&opts, &state);
+    arm_rigctl_connect_stub(1, 0);
+    rc |= expect_int("menu rigctl connect", post_host_port(DSD_APP_CMD_RIGCTL_CONNECT_CFG, "rig.example", 4533),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("menu rigctl connect", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("menu rigctl connect", g_rigctl_connect_calls, 1);
+    rc |= expect_str("menu rigctl connect", g_rigctl_connect_host, "rig.example");
+    rc |= expect_int("menu rigctl connect", g_rigctl_connect_port, 4533);
+    rc |= expect_int("menu rigctl connect", g_rigctl_connect_state == &state, 1);
+    rc |= expect_contains("menu rigctl connect", state.ui_msg, "Rigctl connected: rig.example:4533");
+    freeState(&state);
     arm_rigctl_connect_stub(0, 0);
     return rc;
 }
@@ -6100,7 +6219,7 @@ __wrap_rtl_stream_destroy(RtlSdrContext* ctx) {
     return 0;
 }
 
-/* Issue #578: the last log line about the I/Q capture (installed once, from main()). */
+/* Issue #578: the last log line about the I/Q capture (record_test_log(), installed once, from main()). */
 static char g_capture_log[512];
 
 static void
@@ -7310,6 +7429,536 @@ test_nfm_bandwidth_set_on_pcm_input(void) {
     freeState(&state);
     return rc;
 }
+
+/* Issue #621: the last warning logged about a rigctl peer. */
+static char g_rigctl_log[256];
+
+static void
+record_rigctl_log(dsd_neo_log_level_t level, const char* text) {
+    if (level == LOG_LEVEL_WARN && text && strstr(text, "rigctl peer")) {
+        DSD_SNPRINTF(g_rigctl_log, sizeof g_rigctl_log, "%s", text);
+    }
+}
+
+/* The run's one log tap, installed first thing in main(): a tap is never replaced. It keeps the I/Q capture lines the
+   RTL cases read and the rigctl peer warnings. */
+static void
+record_test_log(dsd_neo_log_level_t level, const char* text, void* ctx) {
+#if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
+    record_capture_log(level, text, ctx);
+#else
+    (void)ctx;
+#endif
+    record_rigctl_log(level, text);
+}
+
+#ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
+/* The requests sent to the fake rigctl peer: @p sent of them, the last @p kind at @p bandwidth, all under the P25 SM
+   tick guard. */
+static int
+expect_rigctl_sent(const char* label, int sent, int kind, int bandwidth) {
+    if (g_rigctl_fake_sent == sent
+        && (sent == 0 || (g_rigctl_fake_last_kind == kind && g_rigctl_fake_last_bw == bandwidth))
+        && g_rigctl_fake_unguarded == 0) {
+        return 0;
+    }
+    DSD_FPRINTF(stderr, "%s: sent %d (last kind %d at %d Hz, %d unguarded), want %d (kind %d at %d Hz)\n", label,
+                g_rigctl_fake_sent, g_rigctl_fake_last_kind, g_rigctl_fake_last_bw, g_rigctl_fake_unguarded, sent, kind,
+                bandwidth);
+    return 1;
+}
+
+/* The fake rigctl peer runs @p kind at @p bandwidth, as the client knows. */
+static int
+expect_rigctl_runs(const char* label, int kind, int bandwidth) {
+    return expect_true(label, g_rigctl_fake_kind == kind && g_rigctl_fake_bw == bandwidth && g_rigctl_fake_known);
+}
+
+static int
+submit_peer_am_width(dsd_opts* opts, dsd_state* state, int32_t hz, const char* label) {
+    state->ui_msg[0] = '\0';
+    int rc = expect_int(label, post_i32(DSD_APP_CMD_AM_BANDWIDTH_SET, hz), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int(label, dsd_app_drain_cmds(opts, state), 1);
+    return rc;
+}
+
+static int
+submit_rigctl_setmod_bw(dsd_opts* opts, dsd_state* state, int32_t hz, const char* label) {
+    state->ui_msg[0] = '\0';
+    int rc = expect_int(label, post_i32(DSD_APP_CMD_RIGCTL_SET_MOD_BW, hz), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int(label, dsd_app_drain_cmds(opts, state), 1);
+    return rc;
+}
+
+/*
+ * Issue #621: an AM width edit under an am scan row on air, on audio input with a rigctl peer. The peer demodulates,
+ * so the width is the passband it is asked for, and the edit asks for it at once (before, nothing asked until the next
+ * retune). A refusal puts the width back and fails the command, and the peer is asked again for the passband the
+ * session then runs: a lost reply may have left it on the refused one.
+ */
+static int
+test_am_width_asks_the_rigctl_peer(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    init_decode_mode_context(&opts, &state);
+    (void)dsd_apply_decode_mode_preset(DSDCFG_MODE_DMR, DSD_DECODE_PRESET_PROFILE_CLI, &opts, &state);
+    arm_rigctl_fake(&opts, DSD_ANALOG_DEMOD_AM, DSD_ANALOG_AM_WIDTH_DEFAULT_HZ);
+    rc |= expect_int("rigctl am row: on air", dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_AM), 0);
+    rc |= expect_int("rigctl am row: no width", dsd_scan_mode_options(&opts, &state, NULL), 0);
+
+    rc |= submit_peer_am_width(&opts, &state, 8000, "rigctl am 8000");
+    rc |= expect_int("rigctl am 8000 stored", opts.analog_am_bandwidth_hz, 8000);
+    rc |= expect_rigctl_sent("rigctl am 8000 asked", 1, DSD_ANALOG_DEMOD_AM, 8000);
+    rc |= expect_rigctl_runs("rigctl am 8000 runs", DSD_ANALOG_DEMOD_AM, 8000);
+    rc |= expect_toast("rigctl am 8000 toast", &state, "Applied: AM passband -> 8 kHz");
+    rc |= expect_int("rigctl am 8000 completed", dsd_app_command_test_last_failed(), 0);
+
+    /* Refused: the width goes back, and the peer, which kept 8 kHz, is asked for it again (nothing to send). */
+    script_rigctl_fake(RIGCTL_FAKE_REFUSE, RIGCTL_FAKE_TAKE);
+    rc |= submit_peer_am_width(&opts, &state, 10000, "rigctl am 10000 refused");
+    rc |= expect_int("rigctl am 10000 refused: width back", opts.analog_am_bandwidth_hz, 8000);
+    rc |= expect_int("rigctl am 10000 refused: configured back",
+                     dsd_scan_mode_configured_view(&state)->analog_am_bandwidth_hz, 8000);
+    rc |= expect_rigctl_sent("rigctl am 10000 refused: asked once", 1, DSD_ANALOG_DEMOD_AM, 10000);
+    rc |= expect_int("rigctl am 10000 refused: re-asked", g_rigctl_fake_calls, 2);
+    rc |= expect_rigctl_runs("rigctl am 10000 refused: peer kept 8 kHz", DSD_ANALOG_DEMOD_AM, 8000);
+    rc |= expect_toast("rigctl am 10000 refused: toast", &state,
+                       "Refused: AM bandwidth -> 10 kHz: the rigctl peer refused the passband");
+    rc |= expect_int("rigctl am 10000 refused: failed", dsd_app_command_test_last_failed(), 1);
+
+    /* A lost reply may have left the peer on 10 kHz: the re-ask puts it back on 8 kHz. */
+    script_rigctl_fake(RIGCTL_FAKE_LOSE, RIGCTL_FAKE_TAKE);
+    rc |= submit_peer_am_width(&opts, &state, 10000, "rigctl am 10000 lost");
+    rc |= expect_int("rigctl am 10000 lost: width back", opts.analog_am_bandwidth_hz, 8000);
+    rc |= expect_rigctl_sent("rigctl am 10000 lost: re-asked", 2, DSD_ANALOG_DEMOD_AM, 8000);
+    rc |= expect_rigctl_runs("rigctl am 10000 lost: peer back on 8 kHz", DSD_ANALOG_DEMOD_AM, 8000);
+    rc |= expect_toast("rigctl am 10000 lost: toast", &state,
+                       "Refused: AM bandwidth -> 10 kHz: the rigctl peer refused the passband");
+
+    /* An NFM edit under the am row is the setting alone: nothing runs it, nothing is asked. */
+    script_rigctl_fake(RIGCTL_FAKE_TAKE, RIGCTL_FAKE_TAKE);
+    rc |= submit_nfm_width(&opts, &state, 12500, "rigctl am row: nfm edit");
+    rc |= expect_int("rigctl am row: nfm edit stored", opts.analog_nfm_bandwidth_hz, 12500);
+    rc |= expect_rigctl_sent("rigctl am row: nfm edit asks nothing", 0, 0, 0);
+    rc |= expect_toast("rigctl am row: nfm edit toast", &state, "Applied: NFM bandwidth -> 12.5 kHz");
+
+    dsd_scan_mode_leave(&opts, &state);
+    disarm_rigctl_fake(&opts);
+    opts.analog_am_bandwidth_hz = 0;
+    opts.analog_nfm_bandwidth_hz = 0;
+    freeState(&state);
+    return rc;
+}
+
+/*
+ * Issue #621: the NFM width and -B on the FM monitor (-fA, no scan) with a rigctl peer. The configured NFM width is the
+ * passband the peer is asked for, and -B stands in while it is unset: a clear asks for -B, and a -B edit asks for it
+ * while it stands in. A refused -B goes back. Off the monitor (a P25 session) -B is stored only, for the next tune.
+ */
+static int
+test_nfm_width_and_setmod_bw_ask_the_rigctl_peer(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    init_decode_mode_context(&opts, &state);
+    (void)dsd_apply_decode_mode_preset(DSDCFG_MODE_ANALOG, DSD_DECODE_PRESET_PROFILE_CLI, &opts, &state);
+    opts.setmod_bw = 12500;
+    arm_rigctl_fake(&opts, DSD_ANALOG_DEMOD_FM, 12500);
+
+    rc |= submit_nfm_width(&opts, &state, 20000, "rigctl nfm 20000");
+    rc |= expect_rigctl_sent("rigctl nfm 20000 asked", 1, DSD_ANALOG_DEMOD_FM, 20000);
+    rc |= expect_toast("rigctl nfm 20000 toast", &state, "Applied: NFM passband -> 20 kHz");
+    rc |= submit_nfm_width(&opts, &state, 0, "rigctl nfm clear");
+    rc |= expect_int("rigctl nfm clear stored", opts.analog_nfm_bandwidth_hz, 0);
+    rc |= expect_rigctl_sent("rigctl nfm clear asks -B", 2, DSD_ANALOG_DEMOD_FM, 12500);
+    rc |= expect_toast("rigctl nfm clear toast", &state, "Applied: NFM passband -> 12.5 kHz (-B)");
+
+    /* -B standing in for the unset width is asked for at once. */
+    rc |= submit_rigctl_setmod_bw(&opts, &state, 20000, "rigctl -B 20000");
+    rc |= expect_int("rigctl -B 20000 stored", opts.setmod_bw, 20000);
+    rc |= expect_rigctl_sent("rigctl -B 20000 asked", 3, DSD_ANALOG_DEMOD_FM, 20000);
+    rc |= expect_toast("rigctl -B 20000 toast", &state, "Applied: Rigctl setmod BW -> 20000 Hz");
+    /* Refused: -B goes back, and the session's passband is asked again; the peer, which kept 20 kHz, is sent nothing
+       for it. */
+    script_rigctl_fake(RIGCTL_FAKE_REFUSE, RIGCTL_FAKE_TAKE);
+    rc |= submit_rigctl_setmod_bw(&opts, &state, 25000, "rigctl -B 25000 refused");
+    rc |= expect_int("rigctl -B 25000 refused: -B back", opts.setmod_bw, 20000);
+    rc |= expect_rigctl_sent("rigctl -B 25000 refused: asked once", 1, DSD_ANALOG_DEMOD_FM, 25000);
+    rc |= expect_int("rigctl -B 25000 refused: re-asked", g_rigctl_fake_calls, 2);
+    rc |= expect_rigctl_runs("rigctl -B 25000 refused: peer kept -B", DSD_ANALOG_DEMOD_FM, 20000);
+    rc |= expect_toast("rigctl -B 25000 refused: toast", &state,
+                       "Refused: Rigctl setmod BW -> 25000 Hz: the rigctl peer refused the passband");
+    rc |= expect_int("rigctl -B 25000 refused: failed", dsd_app_command_test_last_failed(), 1);
+    /* A lost reply may have left the peer on 25 kHz: the re-ask puts it back on -B. */
+    script_rigctl_fake(RIGCTL_FAKE_LOSE, RIGCTL_FAKE_TAKE);
+    rc |= submit_rigctl_setmod_bw(&opts, &state, 25000, "rigctl -B 25000 lost");
+    rc |= expect_int("rigctl -B 25000 lost: -B back", opts.setmod_bw, 20000);
+    rc |= expect_rigctl_sent("rigctl -B 25000 lost: re-asked", 2, DSD_ANALOG_DEMOD_FM, 20000);
+    rc |= expect_rigctl_runs("rigctl -B 25000 lost: peer back on -B", DSD_ANALOG_DEMOD_FM, 20000);
+    rc |= expect_toast("rigctl -B 25000 lost: toast", &state,
+                       "Refused: Rigctl setmod BW -> 25000 Hz: the rigctl peer refused the passband");
+    rc |= expect_int("rigctl -B 25000 lost: failed", dsd_app_command_test_last_failed(), 1);
+
+    /* With a configured width -B is not what the monitor asks for: stored only. */
+    rc |= submit_nfm_width(&opts, &state, 16000, "rigctl nfm 16000");
+    script_rigctl_fake(RIGCTL_FAKE_TAKE, RIGCTL_FAKE_TAKE);
+    rc |= submit_rigctl_setmod_bw(&opts, &state, 11000, "rigctl -B under a width");
+    rc |= expect_int("rigctl -B under a width stored", opts.setmod_bw, 11000);
+    rc |= expect_rigctl_sent("rigctl -B under a width asks nothing", 0, 0, 0);
+    rc |= expect_toast("rigctl -B under a width toast", &state, "Applied: Rigctl setmod BW -> 11000 Hz");
+
+    /* A P25 session runs no monitor the peer demodulates: -B waits for the next tune. */
+    (void)dsd_apply_decode_mode_preset(DSDCFG_MODE_P25P1, DSD_DECODE_PRESET_PROFILE_CLI, &opts, &state);
+    opts.analog_nfm_bandwidth_hz = 0;
+    rc |= submit_rigctl_setmod_bw(&opts, &state, 9000, "rigctl -B on p25");
+    rc |= expect_int("rigctl -B on p25 stored", opts.setmod_bw, 9000);
+    rc |= expect_rigctl_sent("rigctl -B on p25 asks nothing", 0, 0, 0);
+    rc |= expect_toast("rigctl -B on p25 toast", &state, "Applied: Rigctl setmod BW -> 9000 Hz");
+
+    /* Back onto the monitor with a decode-mode switch: the follow after the command asks for -B. A refusal there
+       leaves the switch standing and says so. */
+    script_rigctl_fake(RIGCTL_FAKE_REFUSE, RIGCTL_FAKE_TAKE);
+    state.ui_msg[0] = '\0';
+    rc |= expect_int("rigctl analog switch queued",
+                     dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_ANALOG),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("rigctl analog switch drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("rigctl analog switch stands", opts.analog_only, 1);
+    rc |= expect_rigctl_sent("rigctl analog switch asked -B", 1, DSD_ANALOG_DEMOD_FM, 9000);
+    rc |= expect_toast("rigctl analog switch toast", &state, "Rigctl peer refused NFM 9 kHz (see log)");
+    rc |= expect_int("rigctl analog switch completed", dsd_app_command_test_last_failed(), 0);
+
+    disarm_rigctl_fake(&opts);
+    opts.setmod_bw = 0;
+    opts.analog_nfm_bandwidth_hz = 0;
+    freeState(&state);
+    return rc;
+}
+
+/*
+ * Issue #621: a rigctl peer a command brings, where none demodulated the input before -- the first connect of the '9'
+ * key, a switch from a radio input onto TCP audio -- is asked for a width only, as the start and a reconnect ask it. On
+ * -fA with -B and no NFM width nothing goes out, as before #621 (a tune asks for -B), and the command's own toast
+ * stands; with a configured NFM width that width goes out, once.
+ */
+static int
+test_a_new_rigctl_peer_is_asked_for_a_width_only(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    for (int width = 0; width < 2; width++) {
+        const int sends = width ? 1 : 0;
+        char tag[96];
+        init_decode_mode_context(&opts, &state);
+        (void)dsd_apply_decode_mode_preset(DSDCFG_MODE_ANALOG, DSD_DECODE_PRESET_PROFILE_CLI, &opts, &state);
+        opts.setmod_bw = 12500;
+        opts.analog_nfm_bandwidth_hz = width ? 20000 : 0;
+        /* The '9' key with no rigctl connection before. */
+        arm_rigctl_fake(&opts, DSD_ANALOG_DEMOD_FM, 0);
+        opts.use_rigctl = 0;
+        opts.rigctl_sockfd = DSD_INVALID_SOCKET;
+        DSD_SNPRINTF(opts.tcp_hostname, sizeof opts.tcp_hostname, "%s", "sdr.example");
+        opts.rigctlportno = 4532;
+        arm_rigctl_connect_stub(1, 0);
+        DSD_SNPRINTF(tag, sizeof tag, "new peer on connect (nfm %d)", opts.analog_nfm_bandwidth_hz);
+        state.ui_msg[0] = '\0';
+        rc |= expect_int(tag, post_empty(DSD_APP_CMD_RIGCTL_CONNECT), DSD_APP_COMMAND_SUBMIT_QUEUED);
+        rc |= expect_int(tag, dsd_app_drain_cmds(&opts, &state), 1);
+        rc |= expect_int(tag, opts.use_rigctl == 1 && g_rigctl_connect_calls == 1, 1);
+        rc |= expect_rigctl_sent(tag, sends, DSD_ANALOG_DEMOD_FM, 20000);
+        rc |= expect_int(tag, g_rigctl_fake_calls, sends);
+        rc |= expect_toast(tag, &state, "Rigctl connected: sdr.example:4532");
+        rc |= expect_int(tag, dsd_app_command_test_last_failed(), 0);
+        arm_rigctl_connect_stub(0, 0);
+
+        /* A switch from an RTL input, whose I/Q DSD-neo demodulates while the peer follows the frequency, onto TCP. */
+        arm_rigctl_fake(&opts, DSD_ANALOG_DEMOD_FM, 0);
+        opts.audio_in_type = AUDIO_IN_RTL;
+        arm_tcp_connect_stub(1, DSD_AUDIO_INPUT_SWITCHED);
+        DSD_SNPRINTF(tag, sizeof tag, "new peer on a tcp switch (nfm %d)", opts.analog_nfm_bandwidth_hz);
+        rc |= expect_int(tag, post_host_port(DSD_APP_CMD_TCP_CONNECT_AUDIO_CFG, "127.0.0.1", 7355),
+                         DSD_APP_COMMAND_SUBMIT_QUEUED);
+        rc |= expect_int(tag, dsd_app_drain_cmds(&opts, &state), 1);
+        rc |= expect_int(tag, opts.audio_in_type, AUDIO_IN_TCP);
+        rc |= expect_rigctl_sent(tag, sends, DSD_ANALOG_DEMOD_FM, 20000);
+        rc |= expect_int(tag, g_rigctl_fake_calls, sends);
+        arm_tcp_connect_stub(0, 0);
+        disarm_rigctl_fake(&opts);
+        freeState(&state);
+    }
+    opts.setmod_bw = 0;
+    opts.analog_nfm_bandwidth_hz = 0;
+    return rc;
+}
+
+/*
+ * Issue #621: a config apply that moves a DMR session with a rigctl peer on audio input onto the FM monitor asks the
+ * peer for -B. A peer that refuses it leaves nothing to put back (the config set no width): the config stays applied,
+ * the command fails, and the toast and the log say so.
+ */
+static int
+test_config_mode_switch_refused_by_the_rigctl_peer(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    init_decode_mode_context(&opts, &state);
+    (void)dsd_apply_decode_mode_preset(DSDCFG_MODE_DMR, DSD_DECODE_PRESET_PROFILE_CLI, &opts, &state);
+    opts.setmod_bw = 12500;
+    arm_rigctl_fake(&opts, DSD_ANALOG_DEMOD_FM, 0);
+    script_rigctl_fake(RIGCTL_FAKE_REFUSE, RIGCTL_FAKE_TAKE);
+    g_rigctl_log[0] = '\0';
+    state.ui_msg[0] = '\0';
+    rc |= submit_config_mode(&opts, &state, DSDCFG_MODE_ANALOG, "rigctl config analog refused");
+    rc |= expect_int("rigctl config analog refused: the config stays", opts.analog_only, 1);
+    rc |= expect_int("rigctl config analog refused: no width set", opts.analog_nfm_bandwidth_hz, 0);
+    rc |= expect_rigctl_sent("rigctl config analog refused: asked -B", 1, DSD_ANALOG_DEMOD_FM, 12500);
+    rc |= expect_int("rigctl config analog refused: nothing re-asked", g_rigctl_fake_calls, 1);
+    rc |= expect_int("rigctl config analog refused: failed", dsd_app_command_test_last_failed(), 1);
+    rc |= expect_toast("rigctl config analog refused: toast", &state,
+                       "Config applied; the rigctl peer refused NFM 12.5 kHz (see log)");
+    rc |= expect_true("rigctl config analog refused: logged",
+                      strstr(g_rigctl_log, "rigctl peer refused NFM 12.5 kHz after a config apply") != NULL);
+    disarm_rigctl_fake(&opts);
+    opts.setmod_bw = 0;
+    freeState(&state);
+    return rc;
+}
+
+/* Put the -fA session with NFM 20000 back on the monitor, the fake peer running that width as the client knows. */
+static void
+reset_monitor_on_rigctl_fake(dsd_opts* opts, dsd_state* state, int setmod_bw) {
+    (void)dsd_apply_decode_mode_preset(DSDCFG_MODE_ANALOG, DSD_DECODE_PRESET_PROFILE_CLI, opts, state);
+    opts->analog_nfm_bandwidth_hz = 20000;
+    opts->setmod_bw = setmod_bw;
+    arm_rigctl_fake(opts, DSD_ANALOG_DEMOD_FM, 20000);
+}
+
+static int
+submit_peer_decode_mode(dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode mode, const char* label) {
+    state->ui_msg[0] = '\0';
+    int rc = expect_int(label, dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)mode),
+                        DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int(label, dsd_app_drain_cmds(opts, state), 1);
+    return rc;
+}
+
+/*
+ * Issue #621 (review): leaving the FM monitor for a digital mode on audio input with a rigctl peer undoes the passband
+ * the monitor set (here the configured 20 kHz) with what a digital mode asks for -- FM at -B, or at the peer's own
+ * passband without -B -- rather than leave the peer on 20 kHz until another tune. Best-effort: a refusal keeps the
+ * switch, a config apply's included, with a warning. A -B edit on the digital session still waits for a tune.
+ */
+static int
+test_leaving_the_monitor_undoes_the_rigctl_passband(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    init_decode_mode_context(&opts, &state);
+    reset_monitor_on_rigctl_fake(&opts, &state, 12500);
+    rc |= submit_peer_decode_mode(&opts, &state, DSDCFG_MODE_P25P1, "rigctl monitor -> p25");
+    rc |= expect_int("rigctl monitor -> p25: on p25", opts.frame_p25p1 == 1 && opts.analog_only == 0, 1);
+    rc |= expect_rigctl_sent("rigctl monitor -> p25: -B asked", 1, DSD_ANALOG_DEMOD_FM, 12500);
+    rc |= expect_rigctl_runs("rigctl monitor -> p25: peer on -B", DSD_ANALOG_DEMOD_FM, 12500);
+    rc |= expect_int("rigctl monitor -> p25: completed", dsd_app_command_test_last_failed(), 0);
+
+    /* A -B edit on P25 is stored for the next tune. */
+    rc |= submit_rigctl_setmod_bw(&opts, &state, 9000, "rigctl -B on p25 after the monitor");
+    rc |= expect_rigctl_sent("rigctl -B on p25 after the monitor asks nothing", 1, DSD_ANALOG_DEMOD_FM, 12500);
+
+    /* Without -B: back to the peer's own passband. */
+    reset_monitor_on_rigctl_fake(&opts, &state, 0);
+    rc |= submit_peer_decode_mode(&opts, &state, DSDCFG_MODE_P25P1, "rigctl monitor -> p25, no -B");
+    rc |= expect_rigctl_sent("rigctl monitor -> p25, no -B: own passband asked", 1, DSD_ANALOG_DEMOD_FM, 0);
+
+    /* Refused: the switch stands, with a warning, and nothing is asked again. */
+    reset_monitor_on_rigctl_fake(&opts, &state, 12500);
+    script_rigctl_fake(RIGCTL_FAKE_REFUSE, RIGCTL_FAKE_TAKE);
+    g_rigctl_log[0] = '\0';
+    rc |= submit_peer_decode_mode(&opts, &state, DSDCFG_MODE_P25P1, "rigctl monitor -> p25 refused");
+    rc |= expect_int("rigctl monitor -> p25 refused: on p25", opts.frame_p25p1 == 1 && opts.analog_only == 0, 1);
+    rc |= expect_int("rigctl monitor -> p25 refused: asked once", g_rigctl_fake_calls, 1);
+    rc |= expect_toast("rigctl monitor -> p25 refused: toast", &state, "Rigctl peer refused NFM 12.5 kHz (see log)");
+    rc |= expect_true("rigctl monitor -> p25 refused: logged",
+                      strstr(g_rigctl_log, "rigctl peer refused NFM 12.5 kHz; the setting stands") != NULL);
+    rc |= expect_int("rigctl monitor -> p25 refused: completed", dsd_app_command_test_last_failed(), 0);
+
+    /* A config apply that leaves the monitor is not failed by the refusal, and puts nothing back. */
+    reset_monitor_on_rigctl_fake(&opts, &state, 12500);
+    script_rigctl_fake(RIGCTL_FAKE_REFUSE, RIGCTL_FAKE_TAKE);
+    state.ui_msg[0] = '\0';
+    rc |= submit_config_mode(&opts, &state, DSDCFG_MODE_P25P1, "rigctl config monitor -> p25 refused");
+    rc |= expect_int("rigctl config monitor -> p25 refused: on p25", opts.frame_p25p1 == 1 && opts.analog_only == 0, 1);
+    rc |= expect_int("rigctl config monitor -> p25 refused: width kept", opts.analog_nfm_bandwidth_hz, 20000);
+    rc |= expect_int("rigctl config monitor -> p25 refused: asked once", g_rigctl_fake_calls, 1);
+    rc |= expect_toast("rigctl config monitor -> p25 refused: toast", &state,
+                       "Rigctl peer refused NFM 12.5 kHz (see log)");
+    rc |= expect_int("rigctl config monitor -> p25 refused: completed", dsd_app_command_test_last_failed(), 0);
+
+    disarm_rigctl_fake(&opts);
+    opts.setmod_bw = 0;
+    opts.analog_nfm_bandwidth_hz = 0;
+    freeState(&state);
+    return rc;
+}
+
+/*
+ * Issue #621 (review): an explicit width or -B edit whose setting the request in force reads asks the peer whether or
+ * not the request changed. After a refused switch onto the monitor the configured width the peer refused is unchanged,
+ * and resubmitting it reaches the peer; once the peer runs it, a resubmit sends nothing, since the client's record of
+ * the peer skips a confirmed match. The same holds for -B standing in for an unset NFM width.
+ */
+static int
+test_a_width_retry_reaches_the_rigctl_peer(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    init_decode_mode_context(&opts, &state);
+    (void)dsd_apply_decode_mode_preset(DSDCFG_MODE_DMR, DSD_DECODE_PRESET_PROFILE_CLI, &opts, &state);
+    opts.analog_nfm_bandwidth_hz = 20000;
+    opts.setmod_bw = 0;
+    arm_rigctl_fake(&opts, DSD_ANALOG_DEMOD_FM, 12500);
+    script_rigctl_fake(RIGCTL_FAKE_REFUSE, RIGCTL_FAKE_TAKE);
+    rc |= submit_peer_decode_mode(&opts, &state, DSDCFG_MODE_ANALOG, "rigctl retry: dmr -> analog refused");
+    rc |= expect_int("rigctl retry: on the monitor", opts.analog_only, 1);
+    rc |= expect_rigctl_sent("rigctl retry: width refused", 1, DSD_ANALOG_DEMOD_FM, 20000);
+    rc |= expect_rigctl_runs("rigctl retry: peer kept 12.5 kHz", DSD_ANALOG_DEMOD_FM, 12500);
+    rc |= expect_toast("rigctl retry: refusal toast", &state, "Rigctl peer refused NFM 20 kHz (see log)");
+
+    script_rigctl_fake(RIGCTL_FAKE_TAKE, RIGCTL_FAKE_TAKE);
+    rc |= submit_nfm_width(&opts, &state, 20000, "rigctl retry: the same width");
+    rc |= expect_rigctl_sent("rigctl retry: the same width asked", 1, DSD_ANALOG_DEMOD_FM, 20000);
+    rc |= expect_rigctl_runs("rigctl retry: peer on 20 kHz", DSD_ANALOG_DEMOD_FM, 20000);
+    rc |= expect_toast("rigctl retry: the same width toast", &state, "Applied: NFM passband -> 20 kHz");
+    rc |= expect_int("rigctl retry: the same width completed", dsd_app_command_test_last_failed(), 0);
+    script_rigctl_fake(RIGCTL_FAKE_TAKE, RIGCTL_FAKE_TAKE);
+    rc |= submit_nfm_width(&opts, &state, 20000, "rigctl retry: a confirmed match");
+    rc |= expect_rigctl_sent("rigctl retry: a confirmed match sends nothing", 0, 0, 0);
+    rc |= expect_toast("rigctl retry: a confirmed match toast", &state, "Applied: NFM passband -> 20 kHz");
+
+    /* -B standing in for the unset width, refused on the way onto the monitor, then resubmitted. */
+    (void)dsd_apply_decode_mode_preset(DSDCFG_MODE_DMR, DSD_DECODE_PRESET_PROFILE_CLI, &opts, &state);
+    opts.analog_nfm_bandwidth_hz = 0;
+    opts.setmod_bw = 12500;
+    arm_rigctl_fake(&opts, DSD_ANALOG_DEMOD_FM, 9000);
+    script_rigctl_fake(RIGCTL_FAKE_REFUSE, RIGCTL_FAKE_TAKE);
+    rc |= submit_peer_decode_mode(&opts, &state, DSDCFG_MODE_ANALOG, "rigctl -B retry: dmr -> analog refused");
+    rc |= expect_rigctl_sent("rigctl -B retry: -B refused", 1, DSD_ANALOG_DEMOD_FM, 12500);
+    rc |= expect_rigctl_runs("rigctl -B retry: peer kept 9 kHz", DSD_ANALOG_DEMOD_FM, 9000);
+    script_rigctl_fake(RIGCTL_FAKE_TAKE, RIGCTL_FAKE_TAKE);
+    rc |= submit_rigctl_setmod_bw(&opts, &state, 12500, "rigctl -B retry: the same -B");
+    rc |= expect_rigctl_sent("rigctl -B retry: the same -B asked", 1, DSD_ANALOG_DEMOD_FM, 12500);
+    rc |= expect_toast("rigctl -B retry: toast", &state, "Applied: Rigctl setmod BW -> 12500 Hz");
+    script_rigctl_fake(RIGCTL_FAKE_TAKE, RIGCTL_FAKE_TAKE);
+    rc |= submit_rigctl_setmod_bw(&opts, &state, 12500, "rigctl -B retry: a confirmed match");
+    rc |= expect_rigctl_sent("rigctl -B retry: a confirmed match sends nothing", 0, 0, 0);
+
+    /* A retry whose reply is lost leaves the peer on either passband: the rollback, back to the very same setting, asks
+       the peer again, and the peer record (unknown after the lost reply) lets it out. The width first, then -B. */
+    (void)dsd_apply_decode_mode_preset(DSDCFG_MODE_DMR, DSD_DECODE_PRESET_PROFILE_CLI, &opts, &state);
+    opts.analog_nfm_bandwidth_hz = 20000;
+    opts.setmod_bw = 0;
+    arm_rigctl_fake(&opts, DSD_ANALOG_DEMOD_FM, 12500);
+    script_rigctl_fake(RIGCTL_FAKE_REFUSE, RIGCTL_FAKE_TAKE);
+    rc |= submit_peer_decode_mode(&opts, &state, DSDCFG_MODE_ANALOG, "rigctl lost retry: dmr -> analog refused");
+    script_rigctl_fake(RIGCTL_FAKE_LOSE, RIGCTL_FAKE_TAKE);
+    rc |= submit_nfm_width(&opts, &state, 20000, "rigctl lost retry: the same width");
+    rc |= expect_int("rigctl lost retry: width kept", opts.analog_nfm_bandwidth_hz, 20000);
+    rc |= expect_rigctl_sent("rigctl lost retry: recovery asked", 2, DSD_ANALOG_DEMOD_FM, 20000);
+    rc |= expect_rigctl_runs("rigctl lost retry: peer known again", DSD_ANALOG_DEMOD_FM, 20000);
+    rc |= expect_toast("rigctl lost retry: toast", &state,
+                       "Refused: NFM bandwidth -> 20 kHz: the rigctl peer refused the passband");
+    rc |= expect_int("rigctl lost retry: failed", dsd_app_command_test_last_failed(), 1);
+
+    (void)dsd_apply_decode_mode_preset(DSDCFG_MODE_DMR, DSD_DECODE_PRESET_PROFILE_CLI, &opts, &state);
+    opts.analog_nfm_bandwidth_hz = 0;
+    opts.setmod_bw = 12500;
+    arm_rigctl_fake(&opts, DSD_ANALOG_DEMOD_FM, 9000);
+    script_rigctl_fake(RIGCTL_FAKE_REFUSE, RIGCTL_FAKE_TAKE);
+    rc |= submit_peer_decode_mode(&opts, &state, DSDCFG_MODE_ANALOG, "rigctl lost -B retry: dmr -> analog refused");
+    script_rigctl_fake(RIGCTL_FAKE_LOSE, RIGCTL_FAKE_TAKE);
+    rc |= submit_rigctl_setmod_bw(&opts, &state, 12500, "rigctl lost -B retry: the same -B");
+    rc |= expect_int("rigctl lost -B retry: -B kept", opts.setmod_bw, 12500);
+    rc |= expect_rigctl_sent("rigctl lost -B retry: recovery asked", 2, DSD_ANALOG_DEMOD_FM, 12500);
+    rc |= expect_rigctl_runs("rigctl lost -B retry: peer known again", DSD_ANALOG_DEMOD_FM, 12500);
+    rc |= expect_toast("rigctl lost -B retry: toast", &state,
+                       "Refused: Rigctl setmod BW -> 12500 Hz: the rigctl peer refused the passband");
+    rc |= expect_int("rigctl lost -B retry: failed", dsd_app_command_test_last_failed(), 1);
+
+    disarm_rigctl_fake(&opts);
+    opts.setmod_bw = 0;
+    opts.analog_nfm_bandwidth_hz = 0;
+    freeState(&state);
+    return rc;
+}
+
+static int
+submit_config_am_width(dsd_opts* opts, dsd_state* state, int width_hz, const char* label) {
+    dsdneoUserConfig cfg;
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_analog = 1;
+    cfg.analog_am_bandwidth_hz = width_hz;
+    state->ui_msg[0] = '\0';
+    int rc = expect_int(label, dsd_app_command_submit(DSD_APP_CMD_CONFIG_APPLY, &cfg, sizeof cfg),
+                        DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int(label, dsd_app_drain_cmds(opts, state), 1);
+    return rc;
+}
+
+/*
+ * Issue #621: a config apply that changes the AM width under an am row on air, on audio input with a rigctl peer, asks
+ * the peer for it after the scope resumes, under the P25 SM tick guard the config apply holds. A refusal or a lost
+ * reply puts the width back, asks again for the passband the session then runs (the peer may run the refused one), and
+ * fails the command, with the rest of the config applied.
+ */
+static int
+test_config_apply_asks_the_rigctl_peer(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    init_decode_mode_context(&opts, &state);
+    (void)dsd_apply_decode_mode_preset(DSDCFG_MODE_DMR, DSD_DECODE_PRESET_PROFILE_CLI, &opts, &state);
+    arm_rigctl_fake(&opts, DSD_ANALOG_DEMOD_AM, DSD_ANALOG_AM_WIDTH_DEFAULT_HZ);
+    rc |= expect_int("rigctl config: am row", dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_AM), 0);
+    rc |= expect_int("rigctl config: no width", dsd_scan_mode_options(&opts, &state, NULL), 0);
+
+    rc |= submit_config_am_width(&opts, &state, 8000, "rigctl config am 8000");
+    rc |= expect_int("rigctl config am 8000 in force", opts.analog_am_bandwidth_hz, 8000);
+    rc |= expect_rigctl_sent("rigctl config am 8000 asked", 1, DSD_ANALOG_DEMOD_AM, 8000);
+    rc |= expect_int("rigctl config am 8000 completed", dsd_app_command_test_last_failed(), 0);
+
+    script_rigctl_fake(RIGCTL_FAKE_REFUSE, RIGCTL_FAKE_TAKE);
+    g_rigctl_log[0] = '\0';
+    rc |= submit_config_am_width(&opts, &state, 10000, "rigctl config am 10000 refused");
+    rc |= expect_int("rigctl config refused: width back", opts.analog_am_bandwidth_hz, 8000);
+    rc |= expect_int("rigctl config refused: configured back",
+                     dsd_scan_mode_configured_view(&state)->analog_am_bandwidth_hz, 8000);
+    rc |= expect_rigctl_sent("rigctl config refused: asked once", 1, DSD_ANALOG_DEMOD_AM, 10000);
+    rc |= expect_int("rigctl config refused: re-asked", g_rigctl_fake_calls, 2);
+    rc |= expect_rigctl_runs("rigctl config refused: peer kept 8 kHz", DSD_ANALOG_DEMOD_AM, 8000);
+    rc |= expect_int("rigctl config refused: failed", dsd_app_command_test_last_failed(), 1);
+    rc |= expect_toast("rigctl config refused: toast", &state,
+                       "Config applied; the rigctl peer refused AM 10 kHz: the AM width stays 8 kHz");
+    rc |= expect_true(
+        "rigctl config refused: logged",
+        strstr(g_rigctl_log, "rigctl peer refused AM 10 kHz after a config apply; the AM width stays 8 kHz") != NULL);
+
+    script_rigctl_fake(RIGCTL_FAKE_LOSE, RIGCTL_FAKE_TAKE);
+    rc |= submit_config_am_width(&opts, &state, 10000, "rigctl config am 10000 lost");
+    rc |= expect_int("rigctl config lost: width back", opts.analog_am_bandwidth_hz, 8000);
+    rc |= expect_rigctl_sent("rigctl config lost: re-asked", 2, DSD_ANALOG_DEMOD_AM, 8000);
+    rc |= expect_rigctl_runs("rigctl config lost: peer back on 8 kHz", DSD_ANALOG_DEMOD_AM, 8000);
+    rc |= expect_int("rigctl config lost: failed", dsd_app_command_test_last_failed(), 1);
+    rc |= expect_toast("rigctl config lost: toast", &state,
+                       "Config applied; the rigctl peer refused AM 10 kHz: the AM width stays 8 kHz");
+
+    dsd_scan_mode_leave(&opts, &state);
+    disarm_rigctl_fake(&opts);
+    opts.analog_am_bandwidth_hz = 0;
+    freeState(&state);
+    return rc;
+}
+#endif
 
 static int
 submit_pcm_squelch(dsd_opts* opts, dsd_state* state, int mode, int margin_db, double level) {
@@ -15977,6 +16626,7 @@ main(void) {
         DSD_FPRINTF(stderr, "dsd_socket_init failed\n");
         return 1;
     }
+    dsd_neo_log_set_tap(record_test_log, NULL);
     int rc = test_session_queue_cancellation();
     rc |= test_scan_row_edit_commands_without_a_scan();
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
@@ -15985,9 +16635,17 @@ main(void) {
     rc |= test_config_refuses_scanner_under_trunk_scan();
     rc |= test_config_keeps_trunk_scan_lifecycle();
     rc |= test_nfm_bandwidth_set_on_pcm_input();
+#ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
+    rc |= test_am_width_asks_the_rigctl_peer();
+    rc |= test_nfm_width_and_setmod_bw_ask_the_rigctl_peer();
+    rc |= test_config_apply_asks_the_rigctl_peer();
+    rc |= test_config_mode_switch_refused_by_the_rigctl_peer();
+    rc |= test_a_new_rigctl_peer_is_asked_for_a_width_only();
+    rc |= test_leaving_the_monitor_undoes_the_rigctl_passband();
+    rc |= test_a_width_retry_reaches_the_rigctl_peer();
+#endif
     rc |= test_squelch_commands_on_pcm_input();
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
-    dsd_neo_log_set_tap(record_capture_log, NULL);
     rc |= test_rtl_gain_commands_edit_the_trunk_scan_default();
     rc |= test_config_gain_applies_when_the_spec_is_unchanged();
     rc |= test_config_gain_restart_holds_the_running_width();

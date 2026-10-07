@@ -692,6 +692,10 @@ typedef struct {
     int squelch_mode;
     int squelch_margin_db;
     int width_hz;
+    /* On audio input with a rigctl peer (issue #621), the width is the passband the peer is asked for: peer_passband,
+       and peer_width_hz what the row ran of it (-B standing in for an unset NFM width; 0 off a peer session). */
+    int peer_passband;
+    int peer_width_hz;
     int gain_db;
     int tone_filter;
     dsd_tone_set tone_set;
@@ -843,16 +847,49 @@ scope_open_squelch(void* u, const dsd_scan_option_values* row) {
                                 cb_scope_squelch, u);
 }
 
+/* The width rows' words (issues #524, #525, #621), by demodulator and session: the channel filter's bandwidth on a
+   radio input, the passband a rigctl peer (-U) that demodulates audio input is asked for. The scope chooser and the
+   prompts take their titles from here alone, so their wording cannot drift apart. Literals: the chooser and the prompts
+   keep the pointer. The configured NFM passband's prompt names what an unset width asks for (-B, or the peer's own
+   passband), so its title is WIDTH_NFM_PASSBAND_PROMPT_FMT filled in. */
+typedef struct {
+    const char* chooser;      /* the scope chooser */
+    const char* this_channel; /* this channel's own width */
+    const char* configured;   /* the configured width, the default every channel follows; NULL: the format below */
+} width_titles;
+
+#define WIDTH_NFM_PASSBAND_PROMPT_FMT "NFM passband Hz (8000..25000; 0 = %s)"
+
+static const width_titles k_width_titles[2][2] = {
+    /* NFM: on a radio input, on a rigctl peer */
+    {{"NFM bandwidth", "NFM bandwidth Hz on this channel (8000..25000)",
+      "NFM bandwidth Hz (8000..25000; 0 = default 16000)"},
+     {"NFM passband", "NFM passband Hz on this channel (8000..25000)", NULL}},
+    /* AM: on a radio input, on a rigctl peer */
+    {{"AM bandwidth", "AM bandwidth Hz on this channel (5000..20000)",
+      "AM bandwidth Hz (5000..20000; 0 = default 6000)"},
+     {"AM passband", "AM passband Hz on this channel (5000..20000)", "AM passband Hz (5000..20000; 0 = default 6000)"}},
+};
+
+/* The words for analog @p kind (dsd_analog_demod) on a rigctl peer session (@p peer) or not. */
+static const width_titles*
+width_titles_of(int kind, int peer) {
+    return &k_width_titles[kind == DSD_ANALOG_DEMOD_AM ? 1 : 0][peer ? 1 : 0];
+}
+
 static void
 scope_open_width(void* u, const dsd_scan_option_values* row) {
     const int kind = dsd_scan_mode_analog_kind((dsd_scan_mode)g_scope.view.mode);
+    /* What the row runs: its own width, the configured width it follows, on a rigctl peer the passband that stands in
+       for an unset one (-B, issue #621), else the kind's default. */
     int hz = (row && (row->present & DSD_SCAN_OPT_BANDWIDTH)) ? row->channel_bw_hz : g_scope.width_hz;
+    if (hz <= 0) {
+        hz = g_scope.peer_width_hz;
+    }
     if (hz <= 0) {
         hz = dsd_analog_width_default_hz(kind);
     }
-    ui_prompt_open_int_async(kind == DSD_ANALOG_DEMOD_AM ? "AM bandwidth Hz on this channel (5000..20000)"
-                                                         : "NFM bandwidth Hz on this channel (8000..25000)",
-                             hz, cb_scope_width, u);
+    ui_prompt_open_int_async(width_titles_of(kind, g_scope.peer_passband)->this_channel, hz, cb_scope_width, u);
 }
 
 static void
@@ -919,6 +956,15 @@ scope_capture(const dsd_opts* opts, const dsd_state* state) {
         g_scope.tone_filter = opts->analog_tone_filter;
         g_scope.tone_set = opts->analog_tone_set;
     }
+    /* On audio input with a rigctl peer (issue #621): the passband the row ran, of the width kind it runs. A pair whose
+       options run the other demodulator gives none, so an AM passband never opens an NFM width prompt. */
+    dsd_app_analog_width_view width;
+    (void)dsd_app_analog_width_view_get(opts, state, NULL, &width);
+    g_scope.peer_passband = width.peer_passband;
+    g_scope.peer_width_hz =
+        (width.peer_passband && width.kind == dsd_scan_mode_analog_kind((dsd_scan_mode)g_scope.view.mode))
+            ? width.width_hz
+            : 0;
 }
 
 static void
@@ -972,6 +1018,121 @@ act_set_squelch_default(void* v) {
 void
 act_set_squelch(void* v) {
     scope_or_default(v, DSD_SCAN_ROW_FIELD_SQUELCH, -1, "Squelch", act_set_squelch_default);
+}
+
+// ---- Channel widths (issues #524, #525): a radio input's channel filter, or the passband a rigctl peer that
+// demodulates audio input is asked for (issue #621) ----
+
+/* A channel width row of analog @p kind: on a radio input, where the width is the channel filter, and on audio input
+   with a rigctl peer (-U) that demodulates it, where it is the passband the peer is asked for (issue #621). There:
+   while the configured analog preset runs that kind, and under any other preset -- a digital one, or the other analog
+   kind -- while an explicit width of the kind is configured, or, on a radio input, AM's default is one the DSP rate
+   cannot filter (dsd_app_analog_width_offered(), from the running stream's rate; no rate bounds a peer's passband).
+   The configured preset, as the status line's width field reads it (app_control's analog width view): a typed digital
+   scan row on an analog session does not end it, and the width set under the row is the one its leave returns to.
+   Outside the preset a switch to it is held to the width, and where a SoapySDR or Airspy device or an I/Q replay
+   forces a DSP rate that cannot filter it, the refusal says to narrow the width: this row is where that happens, a
+   switch between NFM and AM included. */
+static bool
+is_analog_width_editable(const void* v, int kind) {
+    const UiCtx* c = (const UiCtx*)v;
+    if (!c || !c->opts) {
+        return false;
+    }
+    dsd_frontend_metrics metrics;
+    const dsd_frontend_metrics* running = dsd_app_frontend_get_metrics(&metrics) == 0 ? &metrics : NULL;
+    const dsd_state* snapshot = dsd_app_get_latest_snapshot();
+    dsd_app_analog_width_view view;
+    if (dsd_app_analog_width_view_get(c->opts, snapshot, running, &view) != 0) {
+        return false;
+    }
+    return dsd_app_analog_width_offered(c->opts, snapshot, &view, kind) != 0;
+}
+
+/* The NFM width row (issue #525). */
+bool
+is_nfm_width_editable(const void* v) {
+    return is_analog_width_editable(v, DSD_ANALOG_DEMOD_FM);
+}
+
+/* The AM width row (issue #524). */
+bool
+is_am_width_editable(const void* v) {
+    return is_analog_width_editable(v, DSD_ANALOG_DEMOD_AM);
+}
+
+/* Any value goes to the command as typed: it refuses what it cannot apply, with the reason, rather than the prompt
+   rounding it to something the operator did not ask for. */
+static void
+cb_nfm_bw(void* u, int ok, int hz) {
+    UNUSED(u);
+    if (ok) {
+        (void)dsd_app_command_set_i32(DSD_APP_CMD_NFM_BANDWIDTH_SET, (int32_t)hz);
+    }
+}
+
+/* Any value goes to the command as typed, as for the NFM width. */
+static void
+cb_am_bw(void* u, int ok, int hz) {
+    UNUSED(u);
+    if (ok) {
+        (void)dsd_app_command_set_i32(DSD_APP_CMD_AM_BANDWIDTH_SET, (int32_t)hz);
+    }
+}
+
+/* The scope chooser's title for the width of @p kind: its passband on audio input with a rigctl peer (issue #621), from
+   the snapshot pair the chooser captures, as its this-channel prompt reads it. */
+static const char*
+width_scope_title(int kind) {
+    dsd_app_analog_width_view view;
+    (void)dsd_app_analog_width_view_get(dsd_app_get_latest_opts_snapshot(), dsd_app_get_latest_snapshot(), NULL, &view);
+    return width_titles_of(kind, view.peer_passband)->chooser;
+}
+
+static void
+act_set_nfm_bw_default(void* v) {
+    UiCtx* c = (UiCtx*)v;
+    /* The command edits the configured width: an nfm scan row that sets its own (issue #526) keeps it, so offer the
+       configured width rather than the row's. */
+    const dsd_state* snapshot = dsd_app_get_latest_snapshot();
+    const int configured_hz = dsd_scan_mode_configured_analog_width(c->opts, snapshot, DSD_ANALOG_DEMOD_FM);
+    dsd_app_analog_width_view view;
+    (void)dsd_app_analog_width_view_get(c->opts, snapshot, NULL, &view);
+    const char* title = width_titles_of(DSD_ANALOG_DEMOD_FM, view.peer_passband)->configured;
+    if (!title) {
+        /* On a rigctl peer an unset width asks for -B, or leaves the peer its own passband (issue #621): the prompt
+           names which. Static: the prompt keeps the title pointer, and one prompt is open at a time. */
+        static char peer_title[sizeof WIDTH_NFM_PASSBAND_PROMPT_FMT + DSD_APP_ANALOG_WIDTH_TEXT_MAX];
+        char unset[DSD_APP_ANALOG_WIDTH_TEXT_MAX];
+        (void)dsd_app_analog_width_setting_text(&view, DSD_ANALOG_DEMOD_FM, 0, unset, sizeof unset);
+        DSD_SNPRINTF(peer_title, sizeof peer_title, WIDTH_NFM_PASSBAND_PROMPT_FMT, unset);
+        title = peer_title;
+    }
+    ui_prompt_open_int_async(title, configured_hz, cb_nfm_bw, c);
+}
+
+void
+act_set_nfm_bw(void* v) {
+    scope_or_default(v, DSD_SCAN_ROW_FIELD_WIDTH, DSD_ANALOG_DEMOD_FM, width_scope_title(DSD_ANALOG_DEMOD_FM),
+                     act_set_nfm_bw_default);
+}
+
+static void
+act_set_am_bw_default(void* v) {
+    UiCtx* c = (UiCtx*)v;
+    /* The command edits the configured width, as the NFM row's does. */
+    const dsd_state* snapshot = dsd_app_get_latest_snapshot();
+    const int configured_hz = dsd_scan_mode_configured_analog_width(c->opts, snapshot, DSD_ANALOG_DEMOD_AM);
+    dsd_app_analog_width_view view;
+    (void)dsd_app_analog_width_view_get(c->opts, snapshot, NULL, &view);
+    ui_prompt_open_int_async(width_titles_of(DSD_ANALOG_DEMOD_AM, view.peer_passband)->configured, configured_hz,
+                             cb_am_bw, c);
+}
+
+void
+act_set_am_bw(void* v) {
+    scope_or_default(v, DSD_SCAN_ROW_FIELD_WIDTH, DSD_ANALOG_DEMOD_AM, width_scope_title(DSD_ANALOG_DEMOD_AM),
+                     act_set_am_bw_default);
 }
 
 // ---- Tone filter (issue #527): the live editor of the configured CTCSS/DCS receive policy ----
@@ -1716,42 +1877,6 @@ is_non_airspy_input(const void* v) {
     return !is_airspy_input(v);
 }
 
-/* A channel width row of analog @p kind, on a radio input, where the width is the channel filter: while the configured
-   analog preset runs that kind, and under any other preset -- a digital one, or the other analog kind -- while an
-   explicit width of the kind is configured, or AM's default is one the DSP rate cannot filter
-   (dsd_app_analog_width_offered(), from the running stream's rate). The configured preset, as the status line's
-   "Analog:" field reads it (app_control's analog width view): a typed digital scan row on an analog session does not
-   end it, and the width set under the row is the one its leave returns to. Outside the preset a switch to it is held
-   to the width, and where a SoapySDR or Airspy device or an I/Q replay forces a DSP rate that cannot filter it, the
-   refusal says to narrow the width: this row is where that happens, a switch between NFM and AM included. */
-static bool
-is_analog_width_editable(const void* v, int kind) {
-    const UiCtx* c = (const UiCtx*)v;
-    if (!c || !c->opts) {
-        return false;
-    }
-    dsd_frontend_metrics metrics;
-    const dsd_frontend_metrics* running = dsd_app_frontend_get_metrics(&metrics) == 0 ? &metrics : NULL;
-    const dsd_state* snapshot = dsd_app_get_latest_snapshot();
-    dsd_app_analog_width_view view;
-    if (dsd_app_analog_width_view_get(c->opts, snapshot, running, &view) != 0) {
-        return false;
-    }
-    return dsd_app_analog_width_offered(c->opts, snapshot, &view, kind) != 0;
-}
-
-/* The NFM width row (issue #525). */
-bool
-is_nfm_width_editable(const void* v) {
-    return is_analog_width_editable(v, DSD_ANALOG_DEMOD_FM);
-}
-
-/* The AM width row (issue #524). */
-bool
-is_am_width_editable(const void* v) {
-    return is_analog_width_editable(v, DSD_ANALOG_DEMOD_AM);
-}
-
 // NcMenuItem action callbacks require a mutable context signature.
 // cppcheck-suppress-begin constParameterPointer
 void
@@ -1896,54 +2021,6 @@ void
 rtl_set_bw(void* v) {
     UiCtx* c = (UiCtx*)v;
     ui_prompt_open_int_async("DSP Bandwidth kHz (4,6,8,12,16,24,48)", c->opts->rtl_dsp_bw_khz, cb_rtl_bw, c);
-}
-
-/* Any value goes to the command as typed: it refuses what it cannot apply, with the reason, rather than the prompt
-   rounding it to something the operator did not ask for. */
-static void
-cb_rtl_nfm_bw(void* u, int ok, int hz) {
-    UNUSED(u);
-    if (ok) {
-        (void)dsd_app_command_set_i32(DSD_APP_CMD_NFM_BANDWIDTH_SET, (int32_t)hz);
-    }
-}
-
-/* Any value goes to the command as typed, as for the NFM width. */
-static void
-cb_rtl_am_bw(void* u, int ok, int hz) {
-    UNUSED(u);
-    if (ok) {
-        (void)dsd_app_command_set_i32(DSD_APP_CMD_AM_BANDWIDTH_SET, (int32_t)hz);
-    }
-}
-
-static void
-rtl_set_nfm_bw_default(void* v) {
-    UiCtx* c = (UiCtx*)v;
-    /* The command edits the configured width: an nfm scan row that sets its own (issue #526) keeps it, so offer the
-       configured width rather than the row's. */
-    const int configured_hz =
-        dsd_scan_mode_configured_analog_width(c->opts, dsd_app_get_latest_snapshot(), DSD_ANALOG_DEMOD_FM);
-    ui_prompt_open_int_async("NFM bandwidth Hz (8000..25000; 0 = default 16000)", configured_hz, cb_rtl_nfm_bw, c);
-}
-
-void
-rtl_set_nfm_bw(void* v) {
-    scope_or_default(v, DSD_SCAN_ROW_FIELD_WIDTH, DSD_ANALOG_DEMOD_FM, "NFM bandwidth", rtl_set_nfm_bw_default);
-}
-
-static void
-rtl_set_am_bw_default(void* v) {
-    UiCtx* c = (UiCtx*)v;
-    /* The command edits the configured width, as the NFM row's does. */
-    const int configured_hz =
-        dsd_scan_mode_configured_analog_width(c->opts, dsd_app_get_latest_snapshot(), DSD_ANALOG_DEMOD_AM);
-    ui_prompt_open_int_async("AM bandwidth Hz (5000..20000; 0 = default 6000)", configured_hz, cb_rtl_am_bw, c);
-}
-
-void
-rtl_set_am_bw(void* v) {
-    scope_or_default(v, DSD_SCAN_ROW_FIELD_WIDTH, DSD_ANALOG_DEMOD_AM, "AM bandwidth", rtl_set_am_bw_default);
 }
 
 void

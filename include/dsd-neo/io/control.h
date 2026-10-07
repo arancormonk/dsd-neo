@@ -25,7 +25,7 @@ extern "C" {
  * @return 0 on success, 1 when an RTL request is deferred, or a negative error/timeout code. An RTL timeout leaves an
  *         accepted request active and retains its target in opts->rtlsdr_center_freq.
  */
-int io_control_set_freq(dsd_opts* opts, dsd_state* state, long int freq);
+int io_control_set_freq(dsd_opts* opts, const dsd_state* state, long int freq);
 void resumeScan(dsd_opts* opts, dsd_state* state);
 void openSerial(dsd_opts* opts, dsd_state* state);
 

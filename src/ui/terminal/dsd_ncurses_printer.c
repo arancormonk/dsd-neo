@@ -306,6 +306,42 @@ ui_print_squelch_field(const dsd_opts* opts, const dsd_state* state) {
     printw(" SQL: %s;", sql);
 }
 
+/* The analog channel width in force (issue #525), under the configured analog preset or an analog scan row on air
+   ("12.5 kHz (row; default 16 kHz)" for a row's own width, issue #526), as app_control's analog width view decides and
+   spells it for every frontend: on a radio input the channel filter, beside the DSP rate it has to fit ("Analog:"); on
+   audio input with a rigctl peer (-U) the passband the peer is asked for ("Passband: NFM 12.5 kHz (-B)", issue #621),
+   whenever the width controls are offered, a digital session with an explicit width included, as the Qt/Android
+   Passband row shows it. Nothing on other audio input, where no width is in force. */
+static void
+ui_print_analog_channel_field(const dsd_opts* opts, const dsd_state* state) {
+    /* Only a radio input's reading takes the running stream's metrics (its DSP rate, the width its front end reports):
+       the audio input lines, which call this every frame, skip the fetch. */
+    dsd_frontend_metrics metrics;
+    const dsd_frontend_metrics* running = NULL;
+    if (dsd_opts_input_is_radio(opts)) {
+        (void)dsd_app_frontend_get_metrics(&metrics);
+        running = &metrics;
+    }
+    dsd_app_analog_width_view view;
+    if (dsd_app_analog_width_view_get(opts, state, running, &view) != 0 || (!view.radio_input && !view.peer_passband)) {
+        return;
+    }
+    char width[DSD_APP_ANALOG_WIDTH_TEXT_MAX];
+    (void)dsd_app_analog_width_view_format(&view, width, sizeof width);
+    if (width[0] != '\0') {
+        printw(" %s: %s %s;", view.peer_passband ? "Passband" : "Analog", dsd_analog_demod_label(view.kind), width);
+    }
+}
+
+/* The rigctl peer (-U) by the endpoint its connection uses: the rigctl host, which a menu reconnect of rigctl or of
+   TCP audio sets apart from the TCP audio host. */
+static void
+ui_print_rigctl_field(const dsd_opts* opts) {
+    if (opts->use_rigctl == 1) {
+        printw("RIG: %s:%d; ", opts->rigctlhostname, opts->rigctlportno);
+    }
+}
+
 static void
 ui_render_basic_input_sources(dsd_opts* opts, const dsd_state* state) {
     if (opts->audio_in_type == AUDIO_IN_PULSE) {
@@ -313,11 +349,10 @@ ui_render_basic_input_sources(dsd_opts* opts, const dsd_state* state) {
         if (opts->pa_input_idx[0] != 0) {
             printw(" D: %s;", opts->pa_input_idx);
         }
-        if (opts->use_rigctl == 1) {
-            printw("RIG: %s:%d; ", opts->tcp_hostname, opts->rigctlportno);
-        }
+        ui_print_rigctl_field(opts);
         printw(" IV: %iX;", opts->input_volume_multiplier);
         ui_print_squelch_field(opts, state);
+        ui_print_analog_channel_field(opts, state);
         printw("\n");
     }
 
@@ -336,17 +371,17 @@ ui_render_basic_input_sources(dsd_opts* opts, const dsd_state* state) {
     if (opts->audio_in_type == AUDIO_IN_TCP) {
         printw("| TCP Signal Input: %s:%d; %d kHz; 1 Ch; ", opts->tcp_hostname, opts->tcp_portno,
                opts->wav_sample_rate / 1000);
-        if (opts->use_rigctl == 1) {
-            printw("RIG: %s:%d; ", opts->tcp_hostname, opts->rigctlportno);
-        }
+        ui_print_rigctl_field(opts);
         printw(" IV: %iX;", opts->input_volume_multiplier);
         ui_print_squelch_field(opts, state);
+        ui_print_analog_channel_field(opts, state);
         printw("\n");
     }
 
     if (opts->audio_in_type == AUDIO_IN_UDP) {
         const char* host = (opts->udp_in_bindaddr[0] ? opts->udp_in_bindaddr : "127.0.0.1");
         printw("| UDP Signal Input: %s:%d; %d kHz; 1 Ch; ", host, opts->udp_in_portno, opts->wav_sample_rate / 1000);
+        ui_print_rigctl_field(opts);
         if (opts->udp_in_packets == 0ULL) {
             printw("[Waiting]");
         } else {
@@ -355,6 +390,7 @@ ui_render_basic_input_sources(dsd_opts* opts, const dsd_state* state) {
         }
         printw(" IV: %iX;", opts->input_volume_multiplier);
         ui_print_squelch_field(opts, state);
+        ui_print_analog_channel_field(opts, state);
         printw("\n");
     }
 
@@ -362,12 +398,14 @@ ui_render_basic_input_sources(dsd_opts* opts, const dsd_state* state) {
         printw("| WAV Audio Input: %s; %d kHz; ", opts->audio_in_dev, opts->wav_sample_rate / 1000);
         printw(" IV: %iX;", opts->input_volume_multiplier);
         ui_print_squelch_field(opts, state);
+        ui_print_analog_channel_field(opts, state);
         printw("\n");
     }
 
     if (opts->audio_in_type == AUDIO_IN_STDIN) {
         printw("| STDIN Standard Input: - Menu Disabled when using STDIN!");
         ui_print_squelch_field(opts, state);
+        ui_print_analog_channel_field(opts, state);
         printw("\n");
     }
 }
@@ -438,25 +476,6 @@ ui_print_rtl_auto_ppm_status(void) {
     ui_print_rtl_auto_ppm_status_values(metrics.auto_ppm_enabled, metrics.auto_ppm_locked, metrics.auto_ppm_locked_ppm,
                                         metrics.auto_ppm_snr_db, metrics.auto_ppm_df_hz, metrics.auto_ppm_step_dir);
 #endif
-}
-
-/* The analog channel width in force beside the DSP rate it has to fit (issue #525), under the configured analog preset
-   or an analog scan row on air ("12.5 kHz (row; default 16 kHz)" for a row's own width, issue #526), as app_control's
-   analog width view decides and spells it for every frontend. */
-static void
-ui_print_analog_channel_field(const dsd_opts* opts, const dsd_state* state) {
-    dsd_frontend_metrics metrics;
-    (void)dsd_app_frontend_get_metrics(&metrics);
-    dsd_app_analog_width_view view;
-    if (dsd_app_analog_width_view_get(opts, state, &metrics, &view) != 0 || (!view.shown && !view.row_analog)
-        || !view.radio_input) {
-        return;
-    }
-    char width[DSD_APP_ANALOG_WIDTH_TEXT_MAX];
-    (void)dsd_app_analog_width_view_format(&view, width, sizeof width);
-    if (width[0] != '\0') {
-        printw(" Analog: %s %s;", dsd_analog_demod_label(view.kind), width);
-    }
 }
 
 static void

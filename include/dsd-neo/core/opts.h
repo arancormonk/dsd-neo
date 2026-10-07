@@ -794,6 +794,59 @@ dsd_opts_input_is_radio(const dsd_opts* opts) {
 }
 
 /**
+ * @brief Return 1 when the session's input carries PCM audio, 0 otherwise.
+ *
+ * Pulse, stdin, WAV/file, UDP and TCP inputs deliver audio something else already demodulated (a rigctl peer such as
+ * SDR++ or GQRX, issue #621); dsd_squelch_input_kind() calls exactly these audio. An RTL-family input delivers I/Q
+ * DSD-neo demodulates itself, and symbol-file and null inputs carry no audio at all.
+ *
+ * @param opts Decoder options containing the configured input source.
+ * @return 1 for a PCM audio input, 0 for everything else and for NULL.
+ */
+static inline int
+dsd_opts_input_is_pcm_audio(const dsd_opts* opts) {
+    if (opts == NULL) {
+        return 0;
+    }
+    switch (opts->audio_in_type) {
+        case AUDIO_IN_PULSE:
+        case AUDIO_IN_STDIN:
+        case AUDIO_IN_WAV:
+        case AUDIO_IN_UDP:
+        case AUDIO_IN_TCP: return 1;
+        default: return 0;
+    }
+}
+
+/**
+ * @brief Return 1 while a rigctl peer is connected (-U), 0 otherwise.
+ *
+ * The test every rigctl request path makes before it sends: rigctl in use with a socket. Socket 0 is a socket.
+ *
+ * @param opts Decoder options containing the rigctl connection.
+ * @return 1 with rigctl on and its socket open, 0 otherwise and for NULL.
+ */
+static inline int
+dsd_opts_rigctl_live(const dsd_opts* opts) {
+    return (opts != NULL && opts->use_rigctl == 1 && opts->rigctl_sockfd != DSD_INVALID_SOCKET) ? 1 : 0;
+}
+
+/**
+ * @brief Return 1 when a connected rigctl peer demodulates what DSD-neo hears, 0 otherwise.
+ *
+ * On PCM audio input (dsd_opts_input_is_pcm_audio()) the audio arrives from the peer's demodulator, so the analog
+ * monitor's demodulator and passband are the peer's to set (issue #526, #621). On any other input the peer, if any,
+ * only follows the frequency.
+ *
+ * @param opts Decoder options.
+ * @return 1 with a live rigctl peer on PCM audio input, 0 otherwise and for NULL.
+ */
+static inline int
+dsd_opts_rigctl_peer_demodulates(const dsd_opts* opts) {
+    return (dsd_opts_rigctl_live(opts) && dsd_opts_input_is_pcm_audio(opts)) ? 1 : 0;
+}
+
+/**
  * @brief Return the effective PCM rate seen by non-RTL PCM decode paths.
  *
  * @param opts Decoder options containing the configured PCM input sample rate.

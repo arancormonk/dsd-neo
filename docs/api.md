@@ -565,6 +565,17 @@ field, and the decoder refuses the rest when it applies the command.
      "trunking":{"enabled":true}}}}
   ```
 
+* **`nfm_bandwidth_set`**, **`am_bandwidth_set`** and **`rigctl_set_mod_bw`**: on
+  a radio input a width is the channel filter. On audio input with a rigctl peer
+  (`-U`), which demodulates it, a width is the passband the peer is asked for,
+  and `-B` (`rigctl_set_mod_bw`) stands in for an unset NFM width on the FM
+  monitor (see `-B` in [docs/cli.md](cli.md#trunking--scanning)). While the
+  monitor of that kind runs, a value that changes the passband in force is asked
+  of the peer when the command applies; one the peer refuses, or whose reply is
+  lost, is put back, and `status.message` says why (`Refused: NFM bandwidth ->
+  20 kHz: the rigctl peer refused the passband`). Off that monitor (a digital
+  mode, or a typed digital row on air) the value is stored for the next tune
+  that asks for it.
 * **`decode_mode_set`** and **`rr_apply_import`**: `decode_mode` is a
   `dsdneoUserDecodeMode` (`1` auto, `2` P25p1, `3` P25p2, `4` DMR, `5` NXDN48,
   `6` NXDN96, `7` X2-TDMA, `8` YSF, `9` D-STAR, `10` EDACS/ProVoice, `11` dPMR,

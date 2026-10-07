@@ -19,9 +19,13 @@
  *    no "Current " or "Set " prefix
  *  - every row that shows a hotkey shows the key keymap.h binds to that action,
  *    and every bound key has a row (aliases and visualizer modifiers excepted)
+ *  - the channel width rows sit in Input right after Squelch, in every build,
+ *    and no other row edits a width (issue #621)
  *
  * Predicates are never evaluated: the audit covers the whole tree as written,
- * including rows a particular session would hide.
+ * including rows a particular session would hide. UI_MENU_TREE_AUDIT audits the
+ * tree a radio build compiles (USE_RADIO); UI_MENU_TREE_AUDIT_NO_RADIO the one a
+ * build without the radio pipeline compiles.
  */
 
 #include <dsd-neo/ui/keymap.h>
@@ -33,12 +37,22 @@
 
 #include "dsd-neo/core/safe_api.h"
 #include "menu_actions.h"
+#include "menu_items.h"
 #include "menu_labels.h" // IWYU pragma: keep (prototypes for the label and predicate stubs)
 #include "test_ui_menu_tree_audit_stubs.h"
+
+#ifdef USE_RADIO
+#define AUDIT_NAME "UI_MENU_TREE_AUDIT"
+#else
+#define AUDIT_NAME "UI_MENU_TREE_AUDIT_NO_RADIO"
+#endif
 
 #define DEFINE_ACTION_STUB(name)                                                                                       \
     void name(void* v) { (void)v; }
 AUDIT_ACTIONS(DEFINE_ACTION_STUB)
+#ifdef USE_RADIO
+AUDIT_ACTIONS_RADIO(DEFINE_ACTION_STUB)
+#endif
 #undef DEFINE_ACTION_STUB
 
 #define DEFINE_LABEL_STUB(name)                                                                                        \
@@ -50,6 +64,9 @@ AUDIT_ACTIONS(DEFINE_ACTION_STUB)
         return b;                                                                                                      \
     }
 AUDIT_LABELS(DEFINE_LABEL_STUB)
+#ifdef USE_RADIO
+AUDIT_LABELS_RADIO(DEFINE_LABEL_STUB)
+#endif
 #undef DEFINE_LABEL_STUB
 
 #define DEFINE_PREDICATE_STUB(name)                                                                                    \
@@ -58,6 +75,9 @@ AUDIT_LABELS(DEFINE_LABEL_STUB)
         return true;                                                                                                   \
     }
 AUDIT_PREDICATES(DEFINE_PREDICATE_STUB)
+#ifdef USE_RADIO
+AUDIT_PREDICATES_RADIO(DEFINE_PREDICATE_STUB)
+#endif
 #undef DEFINE_PREDICATE_STUB
 
 /* Referenced by menu_defs.c rather than menu_items.c. */
@@ -94,8 +114,10 @@ static const HotkeyRow k_hotkeys[] = {
     {"input.volume", {DSD_KEY_RTL_VOL_CYCLE, 0}},
     {"input.invert", {DSD_KEY_INVERT, 0}},
     {"src.tcp", {DSD_KEY_TCP_AUDIO, 0}},
+#ifdef USE_RADIO
     {"rtl.ppm", {DSD_KEY_PPM_DOWN, ' ', DSD_KEY_PPM_UP, 0}},
     {"rtl.vol", {DSD_KEY_RTL_VOL_CYCLE, 0}},
+#endif
     {"dec.mod", {DSD_KEY_MOD_TOGGLE, 0}},
     {"dec.p2lock", {DSD_KEY_MOD_P2, 0}},
     {"dec.crc", {DSD_KEY_AGGR_SYNC, 0}},
@@ -187,6 +209,10 @@ static const KeyWithoutRow k_keys_without_rows[] = {
     {DSD_KEY_CONST_GATE_INC, "modifier named in the Constellation row's help"},
     {DSD_KEY_SPEC_DEC, "modifier named in the Spectrum analyzer row's help"},
     {DSD_KEY_SPEC_INC, "modifier named in the Spectrum analyzer row's help"},
+#ifndef USE_RADIO
+    {DSD_KEY_PPM_DOWN, "the RTL-SDR rows exist only in radio builds"},
+    {DSD_KEY_PPM_UP, "the RTL-SDR rows exist only in radio builds"},
+#endif
 };
 
 /* ---- Audit state ---- */
@@ -369,6 +395,75 @@ audit_hotkeys(void) {
     }
 }
 
+/* ---- Channel width rows (issue #621) ---- */
+
+static int
+is_width_row(const NcMenuItem* it) {
+    return it->on_select == act_set_nfm_bw || it->on_select == act_set_am_bw || it->label_fn == lbl_input_nfm_bw
+           || it->label_fn == lbl_input_am_bw || it->is_enabled == is_nfm_width_editable
+           || it->is_enabled == is_am_width_editable
+           || (it->id && (strstr(it->id, ".nfm_bw") != NULL || strstr(it->id, ".am_bw") != NULL));
+}
+
+static void
+count_width_rows(const NcMenuItem* items, size_t n, const char* path, int* count) {
+    for (size_t i = 0; i < n; i++) {
+        const NcMenuItem* it = &items[i];
+        if (is_width_row(it)) {
+            (*count)++;
+            if (items != INPUT_MENU_ITEMS) {
+                fail(path, it->id, "a channel width row outside the Input menu");
+            }
+        }
+        if (it->submenu != NULL && it->submenu_len > 0) {
+            char sub_path[256];
+            DSD_SNPRINTF(sub_path, sizeof sub_path, "%s/%s", path, it->id ? it->id : "(no id)");
+            count_width_rows(it->submenu, it->submenu_len, sub_path, count);
+        }
+    }
+}
+
+static void
+expect_width_row(const NcMenuItem* it, const char* id, nc_action_fn on_select, nc_label_fn label_fn,
+                 nc_enabled_fn is_enabled) {
+    if (!it->id || strcmp(it->id, id) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: root/input: %s does not follow Squelch (found %s)\n", id,
+                    it->id ? it->id : "(no id)");
+        g_rc = 1;
+        return;
+    }
+    if (it->on_select != on_select || it->label_fn != label_fn || it->is_enabled != is_enabled) {
+        fail("root/input", id, "the width row runs another handler, label or predicate");
+    }
+}
+
+/* The NFM and AM width rows sit in Input right after Squelch, as Squelch moved there from the RTL-SDR submenu for
+   audio input (issue #628): on audio input with a rigctl peer they edit the passband the peer is asked for (issue
+   #621), and Input > RTL-SDR is hidden there. In every build, the radio pipeline or not. No other row edits a width. */
+static void
+audit_width_rows(const NcMenuItem* root, size_t n) {
+    size_t sql = INPUT_MENU_ITEMS_LEN;
+    for (size_t i = 0; i < INPUT_MENU_ITEMS_LEN; i++) {
+        if (INPUT_MENU_ITEMS[i].id && strcmp(INPUT_MENU_ITEMS[i].id, "input.sql") == 0) {
+            sql = i;
+        }
+    }
+    if (sql + 2 >= INPUT_MENU_ITEMS_LEN) {
+        fail("root/input", "input.sql", "no Squelch row with the two width rows after it");
+    } else {
+        expect_width_row(&INPUT_MENU_ITEMS[sql + 1], "input.nfm_bw", act_set_nfm_bw, lbl_input_nfm_bw,
+                         is_nfm_width_editable);
+        expect_width_row(&INPUT_MENU_ITEMS[sql + 2], "input.am_bw", act_set_am_bw, lbl_input_am_bw,
+                         is_am_width_editable);
+    }
+    int count = 0;
+    count_width_rows(root, n, "root", &count);
+    if (count != 2) {
+        DSD_FPRINTF(stderr, "FAIL: root: %d channel width rows, want Input's two\n", count);
+        g_rc = 1;
+    }
+}
+
 int
 main(void) {
     const NcMenuItem* root = NULL;
@@ -380,8 +475,9 @@ main(void) {
     }
     audit_array(root, n, 0, "root");
     audit_hotkeys();
+    audit_width_rows(root, n);
     if (g_rc == 0) {
-        printf("UI_MENU_TREE_AUDIT: OK (%d handlers, %d submenus, %d hotkey rows)\n", g_action_count, g_submenu_count,
+        printf(AUDIT_NAME ": OK (%d handlers, %d submenus, %d hotkey rows)\n", g_action_count, g_submenu_count,
                g_hotkey_count);
     }
     return g_rc;

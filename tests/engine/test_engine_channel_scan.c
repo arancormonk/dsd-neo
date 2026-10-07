@@ -2342,7 +2342,7 @@ test_row_session_edits(void) {
                                             &value, &result)
            == DSD_SCAN_ROW_EDIT_APPLIED);
     assert(result.publish_width && opts->analog_nfm_bandwidth_hz == 16000 && g_squelch_pushes == 2);
-    /* A rigctl request for the row on air reads its edited width (dsd_engine_rigctl_modulation()). */
+    /* A rigctl request for the row on air reads its edited width (dsd_rigctl_passband_of()). */
     const dsd_scan_option_values* tuning = dsd_engine_scan_tuning_row_options(opts, state);
     assert(tuning && (tuning->present & DSD_SCAN_OPT_BANDWIDTH) && tuning->channel_bw_hz == 16000);
     assert((result.previous.set & DSD_SCAN_ROW_FIELD_SQUELCH) && !(result.previous.set & DSD_SCAN_ROW_FIELD_WIDTH));

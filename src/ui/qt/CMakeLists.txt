@@ -116,6 +116,7 @@ qt_add_resources(
         qml/NetworkSheet.qml
         qml/OnboardingScreen.qml
         qml/OutlineButton.qml
+        qml/PassbandSheet.qml
         qml/PlayCircle.qml
         qml/PlexSwitch.qml
         qml/PlexFlickable.qml

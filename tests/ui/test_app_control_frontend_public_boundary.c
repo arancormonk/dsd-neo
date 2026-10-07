@@ -72,6 +72,8 @@ main(void) {
     (void)&dsd_app_analog_width_view_get;
     (void)&dsd_app_analog_width_view_format;
     (void)&dsd_app_analog_width_setting_format;
+    (void)&dsd_app_analog_width_setting_text;
+    (void)&dsd_app_analog_width_unset_hz;
     (void)&dsd_app_analog_rtl_bw_rate_hz;
     return 0;
 }

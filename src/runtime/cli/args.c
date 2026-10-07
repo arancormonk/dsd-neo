@@ -703,10 +703,11 @@ cli_warn_tone_filter_without_fm_monitor(const dsd_opts* opts, const dsd_state* s
 }
 
 /* The analog channel width is the radio front end's filter. PCM inputs (Pulse, files, UDP and TCP audio) arrive
- * already demodulated, so a width given for one of them parses but cannot act as a filter. The AM width still reaches
- * a rigctl peer (-U) there: an am scan row or am-conventional target without a width of its own asks the peer for AM
- * at the configured AM width (issue #526), so that one is said as what it does. The configured NFM width never reaches
- * the peer, which runs -B. */
+ * already demodulated, so a width given for one of them parses but cannot act as a filter. Either width still reaches
+ * a rigctl peer (-U) there, which demodulates what DSD-neo hears, so with one it is said as what it does: the AM width
+ * is the AM passband an am scan row or am-conventional target without a width of its own asks the peer for (issue
+ * #526), and the NFM width is the FM passband the peer is asked for, in place of -B, wherever the FM monitor runs
+ * without a row width of its own (issue #621). */
 static void
 cli_warn_analog_width_without_radio(const dsd_opts* opts, int kind, const char* option_name) {
     const char* dev = opts->audio_in_dev;
@@ -718,6 +719,12 @@ cli_warn_analog_width_without_radio(const dsd_opts* opts, int kind, const char* 
     if (kind == DSD_ANALOG_DEMOD_AM && opts->use_rigctl == 1) {
         LOG_INFO("NOTICE: %s filters nothing on PCM input; with rigctl (-U) it is the AM passband the peer is asked "
                  "for on am scan rows and am-conventional targets that set no width of their own.\n",
+                 option_name);
+        return;
+    }
+    if (opts->use_rigctl == 1) {
+        LOG_INFO("NOTICE: %s filters nothing on PCM input; with rigctl (-U) it is the FM passband the peer is asked "
+                 "for, in place of -B, while the FM monitor runs.\n",
                  option_name);
         return;
     }

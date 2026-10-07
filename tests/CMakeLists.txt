@@ -703,6 +703,18 @@ dsd_neo_add_public_header_smoke_test(
   C
 )
 dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_runtime_rigctl_passband
+  HEADERS_PUBLIC_RUNTIME_RIGCTL_PASSBAND
+  dsd-neo/runtime/rigctl_passband.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_runtime_rigctl_passband_cxx
+  HEADERS_PUBLIC_RUNTIME_RIGCTL_PASSBAND_CXX
+  dsd-neo/runtime/rigctl_passband.h
+  CXX
+)
+dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_runtime_udp_audio_hooks
   HEADERS_PUBLIC_RUNTIME_UDP_AUDIO_HOOKS
   dsd-neo/runtime/udp_audio_hooks.h
@@ -2228,6 +2240,8 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/bit_packing.c
     ${PROJECT_SOURCE_DIR}/src/app_control/analog_width_view.c
     ${PROJECT_SOURCE_DIR}/src/app_control/menu_services.c
+    # The width and -B services ask a rigctl peer through the follow (issue #621); the engine side is stubbed.
+    ${PROJECT_SOURCE_DIR}/src/app_control/rigctl_passband.c
     # svc_clear_keys() drops the DMR TG->key ID map through keyring_dmr_tg_map_reset().
     ${PROJECT_SOURCE_DIR}/src/core/vocoder/keyring.c
     ${PROJECT_SOURCE_DIR}/src/core/vocoder/keyring_dmr_tg_map.c
@@ -2260,16 +2274,20 @@ add_test(NAME UI_MENU_SERVICES COMMAND dsd-neo_test_ui_menu_services)
 
 if(DSD_ENABLE_TERMINAL_UI)
     # The Tone filter row reads the shared received-tone view, so it and the tone tables come in
-    # as sources: the label goldens run through the real policy text.
+    # as sources: the label goldens run through the real policy text. The width rows read the
+    # analog width view, and it the rigctl passband rule, in every build (issue #621).
     add_executable(
         dsd-neo_test_ui_menu_labels
         ui/test_ui_menu_labels.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_labels.c
         ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/analog_width_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/rtl_gain_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/rx_tone_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/squelch_view.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/analog_channel.c
         ${PROJECT_SOURCE_DIR}/src/runtime/analog_tones.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/rigctl_passband.c
         ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_io_hooks.c
         ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_metrics_hooks.c
         ${PROJECT_SOURCE_DIR}/src/runtime/squelch.c
@@ -2304,6 +2322,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         ${PROJECT_SOURCE_DIR}/src/app_control/squelch_view.c
         ${PROJECT_SOURCE_DIR}/src/runtime/analog_channel.c
         ${PROJECT_SOURCE_DIR}/src/runtime/analog_tones.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/rigctl_passband.c
         ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_io_hooks.c
         ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_metrics_hooks.c
         ${PROJECT_SOURCE_DIR}/src/runtime/squelch.c
@@ -2352,6 +2371,26 @@ if(DSD_ENABLE_TERMINAL_UI)
         PRIVATE USE_RADIO
     )
     add_test(NAME UI_MENU_TREE_AUDIT COMMAND dsd-neo_test_ui_menu_tree_audit)
+
+    # The same audit over the tree a build without the radio pipeline compiles: no
+    # RTL-SDR or Airspy rows, and the rows that must not depend on them (issue #621).
+    add_executable(
+        dsd-neo_test_ui_menu_tree_audit_no_radio
+        ui/test_ui_menu_tree_audit.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_items.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/menus/menu_defs.c
+    )
+    target_include_directories(
+        dsd-neo_test_ui_menu_tree_audit_no_radio
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/ui/terminal
+            ${CURSES_INCLUDE_DIRS}
+    )
+    add_test(
+        NAME UI_MENU_TREE_AUDIT_NO_RADIO
+        COMMAND dsd-neo_test_ui_menu_tree_audit_no_radio
+    )
 
     add_executable(
         dsd-neo_test_ui_menu_render_helpers
@@ -2619,6 +2658,25 @@ add_test(
     COMMAND dsd-neo_test_app_control_analog_width_view
 )
 
+# Issue #621: the live follow of a rigctl peer's passband, over a stubbed engine apply, -Y stage and P25 SM tick guard.
+add_executable(
+    dsd-neo_test_app_control_rigctl_passband
+    ui/test_app_control_rigctl_passband.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/rigctl_passband.c
+)
+target_include_directories(
+    dsd-neo_test_app_control_rigctl_passband
+    PRIVATE ${PROJECT_SOURCE_DIR}/src/app_control
+)
+target_link_libraries(
+    dsd-neo_test_app_control_rigctl_passband
+    PRIVATE dsd-neo_core dsd-neo_runtime
+)
+add_test(
+    NAME APP_CONTROL_RIGCTL_PASSBAND
+    COMMAND dsd-neo_test_app_control_rigctl_passband
+)
+
 # Issue #518: the scan row on air as the "this channel" editors see it.
 add_executable(
     dsd-neo_test_app_control_scan_row_view
@@ -2751,6 +2809,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         ${PROJECT_SOURCE_DIR}/src/app_control/rx_tone_view.c
         ${PROJECT_SOURCE_DIR}/src/runtime/analog_channel.c
         ${PROJECT_SOURCE_DIR}/src/runtime/analog_tones.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/rigctl_passband.c
         ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_io_hooks.c
         ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_metrics_hooks.c
         ${PROJECT_SOURCE_DIR}/src/runtime/squelch.c
@@ -2816,6 +2875,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         ${PROJECT_SOURCE_DIR}/src/app_control/squelch_view.c
         ${PROJECT_SOURCE_DIR}/src/runtime/analog_channel.c
         ${PROJECT_SOURCE_DIR}/src/runtime/analog_tones.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/rigctl_passband.c
         ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_io_hooks.c
         ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_metrics_hooks.c
         ${PROJECT_SOURCE_DIR}/src/runtime/squelch.c
@@ -5681,6 +5741,9 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
             "-Wl,--wrap=rtl_stream_request_demod_profile"
             "-Wl,--wrap=SetFreq"
             "-Wl,--wrap=SetModulation"
+            "-Wl,--wrap=SetModulationKind"
+            "-Wl,--wrap=SetScanRowModulation"
+            "-Wl,--wrap=RigctlMarkSessionPassband"
             "-Wl,--wrap=rtl_stream_request_fsk_reacquire"
             "-Wl,--wrap=rtl_stream_tune"
             "-Wl,--wrap=rtl_stream_tune_tagged"
@@ -5784,6 +5847,9 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
             "-Wl,--wrap=rtl_stream_destroy"
             "-Wl,--wrap=Connect"
             "-Wl,--wrap=RigctlRebindPeer"
+            "-Wl,--wrap=SetScanRowModulation"
+            "-Wl,--wrap=RigctlMarkSessionPassband"
+            "-Wl,--wrap=p25_sm_watchdog_start"
             ${LIBS}
             dsd-neo_test_support
     )
@@ -5928,6 +5994,8 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
             "-Wl,--wrap=getFrameSync"
             "-Wl,--wrap=dsd_audio_switch_input"
             "-Wl,--wrap=dsd_audio_reconfigure_output_for_input_policy"
+            "-Wl,--wrap=SetScanRowModulation"
+            "-Wl,--wrap=RigctlMarkSessionPassband"
             "-Wl,--start-group"
             dsd-neo_engine
             "-Wl,--end-group"
@@ -6006,8 +6074,10 @@ add_executable(
     dsd-neo_test_engine_trunk_retune_regression
     engine/test_engine_trunk_retune_regression.c
     ${PROJECT_SOURCE_DIR}/src/engine/trunk_tuning.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/channel_modes_rigctl.c
     ${PROJECT_SOURCE_DIR}/src/runtime/decode_mode.c
     ${PROJECT_SOURCE_DIR}/src/runtime/decode_clock.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/rigctl_passband.c
 )
 target_include_directories(
     dsd-neo_test_engine_trunk_retune_regression
@@ -6301,6 +6371,21 @@ add_executable(dsd-neo_test_runtime_squelch runtime/test_runtime_squelch.c)
 target_link_libraries(dsd-neo_test_runtime_squelch PRIVATE dsd-neo_runtime)
 add_test(NAME RUNTIME_SQUELCH COMMAND dsd-neo_test_runtime_squelch)
 
+# Issue #621: the passband a rigctl peer that demodulates audio input is asked
+# for, and the opts predicates that say whether one is there.
+add_executable(
+    dsd-neo_test_runtime_rigctl_passband
+    runtime/test_runtime_rigctl_passband.c
+)
+target_link_libraries(
+    dsd-neo_test_runtime_rigctl_passband
+    PRIVATE dsd-neo_runtime
+)
+add_test(
+    NAME RUNTIME_RIGCTL_PASSBAND
+    COMMAND dsd-neo_test_runtime_rigctl_passband
+)
+
 add_executable(dsd-neo_test_scan_mode_replay engine/scan_mode_replay.c)
 target_link_libraries(
     dsd-neo_test_scan_mode_replay
@@ -6535,6 +6620,8 @@ if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
             "LINKER:--wrap=svc_rigctl_connect"
             "LINKER:--wrap=openAudioInput"
             "LINKER:--wrap=dsd_audio_reconfigure_output_for_input_policy"
+            "LINKER:--wrap=SetScanRowModulation"
+            "LINKER:--wrap=SetModulationKind"
     )
 endif()
 if(
@@ -11066,6 +11153,9 @@ add_executable(
     dsd-neo_test_io_rigctl_control
     io/test_io_rigctl_control.c
     ${PROJECT_SOURCE_DIR}/src/io/control/dsd_rigctl.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/channel_modes_rigctl.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/analog_channel.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/rigctl_passband.c
 )
 target_compile_definitions(
     dsd-neo_test_io_rigctl_control

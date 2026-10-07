@@ -249,7 +249,9 @@ dsd_cli_usage_section_decode(void) {
     printf("  -fA           Passive Analog Audio Monitor (NFM on a radio input)\n");
     printf("      --nfm-bandwidth-hz <Hz>  NFM channel-filter width, the full RF passband in whole Hz (8000..25000;\n");
     printf("                               default 16000). Not the tuner or audio bandwidth; it must fit the DSP\n");
-    printf("                               rate (e.g. 25000 needs a 48 kHz DSP bandwidth). No effect on PCM input.\n");
+    printf("                               rate (e.g. 25000 needs a 48 kHz DSP bandwidth). On PCM input it filters\n");
+    printf("                               nothing; with rigctl (-U) it is the FM passband the peer is asked for,\n");
+    printf("                               in place of -B, while the FM monitor runs.\n");
     printf(
         "      --tone-allow <list>      Hear only analog FM traffic carrying a listed CTCSS tone or DCS code; mute\n");
     printf("                               the rest, and traffic with none after the tone check (800 ms, to 1.6 s\n");
@@ -270,8 +272,9 @@ dsd_cli_usage_section_decode(void) {
     printf("  -fM           Native AM receiver (IQ inputs: RTL-SDR, rtl_tcp, SoapySDR, Airspy, --iq-replay)\n");
     printf("      --am-bandwidth-hz <Hz>   AM channel-filter width, the full RF passband in whole Hz (5000..20000;\n");
     printf("                               default 6000). Not the tuner or audio bandwidth; it must fit the DSP\n");
-    printf("                               rate (e.g. 20000 needs a 24 or 48 kHz DSP bandwidth).\n");
-    printf("                               No effect on PCM input.\n");
+    printf("                               rate (e.g. 20000 needs a 24 or 48 kHz DSP bandwidth). On PCM input it\n");
+    printf("                               filters nothing; with rigctl (-U) it is the AM passband the peer is\n");
+    printf("                               asked for.\n");
     printf("  -ft           TDMA Trunking P25p1 Control and Voice, P25p2 Trunked Channels, and DMR\n");
     printf("  -fs           DMR TDMA BS and MS Simplex\n");
     printf("  -fr           DMR TDMA BS and MS Simplex using the single-slot mono decoder\n");
@@ -478,7 +481,10 @@ dsd_cli_usage_section_trunking_and_tools(void) {
     printf("      --enc-follow           P25: Follow encrypted grants without key lockout (default)\n");
     printf("  -I <dec>      Specify TG to Hold During Trunking (DMR, P25, NXDN Type-C Trunking)\n");
     printf("  -U <port>     Enable RIGCTL/TCP; Set TCP Port for RIGCTL. (4532 on SDR++)\n");
-    printf("  -B <Hertz>    Set RIGCTL Setmod Bandwidth in Hertz (0 - default - Off)\n");
+    printf("  -B <Hertz>    Set RIGCTL Setmod Bandwidth in Hertz (0 - default - Off): the FM passband the peer is\n");
+    printf("                 asked for wherever it does not demodulate the analog monitor (digital modes, radio\n");
+    printf("                 inputs). On the FM monitor of PCM input it stands in for an unset --nfm-bandwidth-hz\n");
+    printf("                 (0 = the peer's own passband); never used on AM.\n");
     printf("                 P25 - 12000; NXDN48 - 7000; NXDN96: 12000; DMR - 7000-12000; EDACS/PV - 12000-24000;\n");
     printf("                 May vary based on system stregnth, etc.\n");
     printf("  -t <secs>     Voice/sync-loss hangtime in seconds (default 2); also conventional -Y scan speed.\n");

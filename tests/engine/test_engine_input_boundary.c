@@ -11,8 +11,12 @@
  *    next source's call with the same identity is a new call, also when the switch drained inside the synced-frames
  *    loop, which breaks on it;
  *  - an input that ended (input_fallback_pending) is replaced by the Pulse input between frames, under the tick guard,
- *    as a new reception, unless a command replaced it first; the session ends when Pulse does not open.
- * The input switch itself is a link-time fake (CORE_AUDIO_INPUT_SWITCH tests the real one).
+ *    as a new reception, unless a command replaced it first; the session ends when Pulse does not open;
+ *  - a rigctl peer that comes to demodulate the input with the fallback (a symbol replay ended onto Pulse) is asked for
+ *    the session's width under the same guard, as at start (issue #621); one that demodulated the ended input already
+ *    is asked nothing new.
+ * The input switch and the rigctl requests are link-time fakes (CORE_AUDIO_INPUT_SWITCH tests the real switch,
+ * IO_RIGCTL_CONTROL the real requests).
  */
 
 #include <dsd-neo/core/audio_input_switch.h>
@@ -24,9 +28,12 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/engine/engine.h>
 #include <dsd-neo/engine/frame_processing.h>
+#include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/protocol/nxdn/nxdn_lfsr.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/exitflag.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -42,6 +49,14 @@ static int g_switch_guarded = 0;
 static int g_reconfigure_calls = 0;
 static int g_reconfigure_guarded = 0;
 static int g_process_frame_calls = 0;
+/* The passbands asked of the rigctl peer (issue #621), the last one, whether under the tick guard, and the marks. */
+static int g_rowmod_calls = 0;
+static int g_rowmod_kind = -1;
+static int g_rowmod_bw = 0;
+static int g_rowmod_guarded = 0;
+static int g_session_marks = 0;
+/* A rigctl socket no request reaches: every request to it is a fake below. */
+static const dsd_socket_t k_peer_sockfd = (dsd_socket_t)987654;
 
 static void
 expect(const char* label, int cond) {
@@ -121,6 +136,48 @@ int __wrap_dsd_audio_switch_input(dsd_opts* opts, dsd_state* state, const dsd_au
 int __wrap_getFrameSync(dsd_opts* opts, dsd_state* state);
 // NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
 int __wrap_dsd_audio_reconfigure_output_for_input_policy(dsd_opts* opts);
+// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+bool __wrap_SetScanRowModulation(dsd_socket_t sockfd, int kind, int bandwidth);
+// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+void __wrap_RigctlMarkSessionPassband(dsd_socket_t sockfd, int kind);
+
+/* The session's width asked of the peer, under the tick guard: the watchdog's retunes use the same peer record. */
+bool
+// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+__wrap_SetScanRowModulation(dsd_socket_t sockfd, int kind, int bandwidth) {
+    expect("the width goes to the session's peer", sockfd == k_peer_sockfd);
+    g_rowmod_calls++;
+    g_rowmod_kind = kind;
+    g_rowmod_bw = bandwidth;
+    g_rowmod_guarded = !p25_sm_tick_guard_try_enter();
+    if (!g_rowmod_guarded) {
+        p25_sm_tick_guard_leave();
+    }
+    return true;
+}
+
+void
+// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+__wrap_RigctlMarkSessionPassband(dsd_socket_t sockfd, int kind) {
+    (void)sockfd;
+    (void)kind;
+    g_session_marks++;
+}
+
+/* A symbol replay with -fA, an explicit NFM width and a rigctl peer, which ends: symbols are not peer audio, so the
+   peer was asked nothing at start, and the fallback onto Pulse brings it to demodulate the input. */
+static void
+end_a_symbol_replay_with_a_peer(dsd_opts* opts, dsd_state* state) {
+    opts->audio_in_type = AUDIO_IN_SYMBOL_BIN;
+    opts->symbolfile = NULL;
+    opts->use_rigctl = 1;
+    opts->rigctl_sockfd = k_peer_sockfd;
+    opts->analog_only = 1;
+    opts->analog_demod = DSD_ANALOG_DEMOD_FM;
+    opts->analog_nfm_bandwidth_hz = 20000;
+    state->input_fallback_pending = 1;
+    state->input_interrupted = 1;
+}
 
 /* The output follows the fallback's Pulse input under the tick guard too: the watchdog may flush audio into the stream
    a reconfigure closes. */
@@ -235,12 +292,27 @@ __wrap_getFrameSync(dsd_opts* opts, dsd_state* state) {
                    g_switch_calls == 1 && opts->audio_in_type == AUDIO_IN_UDP);
             expect("the fallback is consumed", state->input_fallback_pending == 0);
             expect("the command's boundary is consumed", state->input_boundary == 0);
-            /* A fallback whose Pulse input does not open ends the session. */
+            expect("no peer, no passband asked", g_rowmod_calls == 0);
+            end_a_symbol_replay_with_a_peer(opts, state);
+            return DSD_SYNC_NONE;
+        case 8:
+            expect("the replay fell back to pulse", g_switch_calls == 2 && opts->audio_in_type == AUDIO_IN_PULSE);
+            expect("the peer now demodulating the input is asked for the session's width",
+                   g_rowmod_calls == 1 && g_rowmod_kind == DSD_ANALOG_DEMOD_FM && g_rowmod_bw == 20000);
+            expect("the width was asked under the fallback's tick guard", g_rowmod_guarded == 1);
+            expect("off any scan the width is the session's", g_session_marks == 1);
+            /* A WAV file the peer already demodulated ends: the request in force is the same on Pulse. */
             opts->audio_in_type = AUDIO_IN_WAV;
             opts->audio_in_file = NULL;
-            g_switch_result = DSD_AUDIO_INPUT_KEPT;
             state->input_fallback_pending = 1;
             state->input_interrupted = 1;
+            return DSD_SYNC_NONE;
+        case 9:
+            expect("the wav file fell back to pulse", g_switch_calls == 3 && opts->audio_in_type == AUDIO_IN_PULSE);
+            expect("a peer that demodulated the ended input is asked nothing new", g_rowmod_calls == 1);
+            /* A fallback whose Pulse input does not open ends the session, and asks the peer nothing. */
+            end_a_symbol_replay_with_a_peer(opts, state);
+            g_switch_result = DSD_AUDIO_INPUT_KEPT;
             return DSD_SYNC_NONE;
         default:
             expect("a failed fallback ends the session before another hunt", 0);
@@ -268,8 +340,9 @@ main(void) {
 
     const int rc = dsd_engine_run_with_lifecycle(opts, state, NULL);
     expect("the engine ran", rc == 0);
-    expect("a failed fallback ended the session", g_step == 7 && dsd_exitflag_load() == 1);
-    expect("the failed fallback switched", g_switch_calls == 2);
+    expect("a failed fallback ended the session", g_step == 9 && dsd_exitflag_load() == 1);
+    expect("the failed fallback switched", g_switch_calls == 4);
+    expect("the failed fallback asked the peer nothing", g_rowmod_calls == 1 && g_session_marks == 1);
 
     freeState(state);
     free(state);

@@ -8841,6 +8841,40 @@ test_nfm_bandwidth_warns_on_pcm_input(void) {
         free(opts);
         free(state);
     }
+
+    /* Issue #621: with a rigctl peer the NFM width is the FM passband the peer is asked for, in place of -B, while the
+       FM monitor runs, so it is said as that, not as having no effect. */
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return 1;
+    }
+    initOpts(opts);
+    initState(state);
+    char arg0[] = "dsd-neo";
+    char arg_flag[] = "--nfm-bandwidth-hz=12500";
+    char arg_mode[] = "-fA";
+    char arg_in[] = "-i";
+    char arg_spec[] = "tcp:127.0.0.1:7355";
+    char arg_rigctl[] = "-U";
+    char arg_port[] = "4532";
+    char* argv[] = {arg0, arg_flag, arg_mode, arg_in, arg_spec, arg_rigctl, arg_port, NULL};
+    char output[4096];
+    int argc_effective = 0;
+    int exit_rc = 0;
+    const int rc = parse_args_capture_stderr(7, argv, opts, state, &argc_effective, &exit_rc, output, sizeof output);
+    if (rc != DSD_PARSE_CONTINUE || exit_rc != 0 || opts->analog_nfm_bandwidth_hz != 12500 || opts->use_rigctl != 1
+        || strstr(output, "has no effect")
+        || !strstr(output, "NOTICE: --nfm-bandwidth-hz filters nothing on PCM input; with rigctl (-U) it is the FM "
+                           "passband the peer is asked for, in place of -B, while the FM monitor runs.")) {
+        DSD_FPRINTF(stderr, "--nfm-bandwidth-hz on PCM input with rigctl: rc=%d exit_rc=%d\n%s\n", rc, exit_rc, output);
+        test_rc = 1;
+    }
+    freeState(state);
+    free(opts);
+    free(state);
     return test_rc;
 }
 

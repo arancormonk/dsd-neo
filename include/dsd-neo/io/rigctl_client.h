@@ -56,16 +56,21 @@ bool SetModulation(dsd_socket_t sockfd, int bandwidth);
  * FM sends "M NFM <bandwidth>", then "M FM <bandwidth>" if the peer refuses that token (SetModulation() is this call
  * for FM); AM sends "M AM <bandwidth>". Each socket caches the demodulator and passband its peer last accepted, keyed
  * on both, and a request for what the peer runs skips the I/O. An FM @p bandwidth of 0 asks for the peer's own
- * passband: it is sent only to undo a request this client made on the socket (an AM scan row's demodulator, or a row's
- * own passband), and skipped on a socket nothing was asked of, whose peer keeps its own settings. It sends the passband
- * SetScanRowModulation() read from the peer before a row changed it, since SDR++ and GQRX take a passband of 0 as
- * "unchanged"; only where the peer could not say is it sent as 0 (Hamlib's normal passband). Returns false when the
- * peer refuses the request or the I/O fails. After a refusal the cache keeps what the peer last accepted, so the same
- * request asks again. After an I/O failure the request may have reached the peer, so what it runs is not known: the
- * next request on the socket is sent whatever it asks for, the FM undo included, and a request for the other
- * demodulator than the one the peer last accepted leaves that not known either (DSD_RIGCTL_KIND_UNKNOWN). Connect()
- * starts the cache of a new connection on a closed socket's number empty, and RigctlRebindPeer() hands a reconnect
- * what the socket it replaces knew.
+ * passband: it is sent only to undo a request this client made on the socket (an AM scan row's demodulator, or a
+ * passband a row or the session set), and nothing is sent on a socket nothing was asked of, whose peer keeps its own
+ * settings, or where the peer last accepted FM at its own passband, a reconnect since or not: there is nothing of this
+ * client's to undo. It sends the passband SetScanRowModulation() read from the peer before this client changed it,
+ * since SDR++ and GQRX take a passband of 0 as "unchanged"; only where the peer could not say, or the reading was
+ * retired, is it sent as 0 (Hamlib's normal passband). Where that reading serves the session's passband (one a scan's
+ * restore kept, RestoreScanModulation() with session_passband, or one asked for off a scan,
+ * RigctlMarkSessionPassband(); issue #621), the peer accepting it back retires it, never to be sent again: the next
+ * change reads the peer's own passband again, which the operator may have changed meanwhile. Within a scan a reading
+ * serves the whole scan. Returns false when the peer refuses the request or the I/O fails. After a
+ * refusal the cache keeps what the peer last accepted, so the same request asks again. After an I/O failure the request
+ * may have reached the peer, so what it runs is not known: the next request on the socket is sent whatever it asks for,
+ * the FM undo included, and a request for the other demodulator than the one the peer last accepted leaves that not
+ * known either (DSD_RIGCTL_KIND_UNKNOWN). Connect() starts the cache of a new connection on a closed socket's number
+ * empty, and RigctlRebindPeer() hands a reconnect what the socket it replaces knew.
  */
 bool SetModulationKind(dsd_socket_t sockfd, int kind, int bandwidth);
 
@@ -105,33 +110,73 @@ dsd_rigctl_modulation CachedModulation(dsd_socket_t sockfd);
  * changed it (the first nfm row's own passband, say): nothing is sent when none was read or the peer runs its own
  * passband again, and the cache holds it as the peer's own (0) once accepted. Otherwise the peer is asked for
  * @p before's demodulator at @p before's passband, its own passband (as SetModulationKind() sends it) for 0 or one not
- * known. Returns true when nothing was to be sent or the peer accepted the request; false when it refused, the I/O
- * failed, or @p before knew no demodulator to go back to.
+ * known. Where the tune's last request was a return to the peer's own passband, putting back a passband this client
+ * set undoes it, so the reading of the peer's own passband that return retired for the session (issue #621) is
+ * reinstated, the other demodulator's retired with it included; a revert whose reply was lost may have stood and
+ * reinstates too, one the peer refused leaves the return in force. A retired reading is held only from its return to
+ * the next request sent on the socket, so a revert that undoes a later request (an am row's, say) brings nothing back,
+ * and the revert consumes what is held whichever way it goes. Returns true when nothing was to be sent or the peer
+ * accepted the request; false when it refused, the I/O failed, or @p before knew no demodulator to go back to.
  */
 bool RevertModulation(dsd_socket_t sockfd, dsd_rigctl_modulation before);
 /**
- * @brief A scan row's own request (issue #526): an am row's AM at its width, or an nfm row's own passband, @p bandwidth
- * Hz (> 0), which the scan puts back once it leaves (RestoreScanModulation()).
+ * @brief A passband this client sets on a peer that demodulates audio input, @p bandwidth Hz (> 0): a scan row's own
+ * request (issue #526: an am row's AM at its width, or an nfm row's own passband), which the scan puts back once it
+ * leaves (RestoreScanModulation()), the session's (issue #621: its configured width, the AM default, or -B standing in
+ * for an unset NFM width, dsd_rigctl_passband_sets_passband()), or the -B a digital mode is heard through on such
+ * input (dsd_rigctl_passband_captures()).
  *
- * Before the first such request of a demodulator on the socket since the scan's last restore, the peer is asked which
+ * Before the first such request of a demodulator on the socket since the scan's last restore, or since the reading
+ * taken for the session's passband was retired (the peer accepted it back, by an FM undo or RevertModulation(), or
+ * refused the session's request while on its own; issue #621, RigctlMarkSessionPassband()), the peer is asked which
  * demodulator and passband it runs ("m"); a peer on the other demodulator is first switched to this one at passband 0,
- * which keeps its own, so that passband can be read too. That read is the peer's own passband, which the FM undo and
- * the restore send back explicitly. A peer that cannot answer "m" leaves it not known, and the undo falls back to 0.
+ * which keeps its own, so that passband can be read too, and that other demodulator's passband is read in passing,
+ * serving whatever this request serves. That read is the peer's own passband, which the FM undo and the restore send
+ * back explicitly. A peer that cannot answer "m" leaves it not known for this reading, and the undo falls back to 0.
  * Then the request is sent as SetModulationKind() sends it. Returns false when the peer refuses it or the I/O fails.
  */
 bool SetScanRowModulation(dsd_socket_t sockfd, int kind, int bandwidth);
 /**
  * @brief Once a scan has left its rows, put back each passband a scan row changed on the socket (issue #526), then ask
- * for what the session runs, @p kind at @p bandwidth, as SetModulationKind() would.
+ * for what the session runs, @p kind at @p bandwidth: as SetModulationKind() would, or, with @p session_passband, as
+ * SetScanRowModulation() would.
  *
  * The passband of the demodulator the session does not run goes back first (a peer that keeps a passband per
  * demodulator, as SDR++ does, would otherwise keep an am row's width for AM), so the session's request comes last and
  * leaves the peer on its demodulator; FM without -B then puts back the peer's own FM passband. A passband whose read
  * failed cannot be put back. The next scan reads the peer's own passbands again, except those of a demodulator whose
  * undo the peer did not accept (refused, or its reply lost): that one may still run a row's passband, so what was read
- * of it stays for the next undo or restore to send. Returns what the session's request returns.
+ * of it stays for the next undo or restore to send.
+ *
+ * @p session_passband (issue #621) says the session's request overwrites a passband of the peer that demodulates the
+ * input (dsd_rigctl_passband_captures(): its configured width, the AM default, -B standing in for an unset NFM width,
+ * or the -B a digital mode is heard through on audio input). It then goes through SetScanRowModulation(), which reads
+ * the peer's own passband first where no row did, and what was read of the session's demodulator stays whatever the
+ * answer, serving the session, so a later return to the peer's own (SetModulationKind() at 0) sends the passband read
+ * rather than 0, which SDR++ and GQRX take as "unchanged" (a peer that cannot answer "m" still gets 0). Once the peer
+ * takes that passband back, the reading is retired, and the next change reads it again. Pass false for any other
+ * request (FM at -B on an input the peer does not demodulate, or the peer's own passband). Returns what the session's
+ * request returns.
  */
-bool RestoreScanModulation(dsd_socket_t sockfd, int kind, int bandwidth);
+bool RestoreScanModulation(dsd_socket_t sockfd, int kind, int bandwidth, bool session_passband);
+/**
+ * @brief Say that the passband just asked of the peer on @p sockfd for demodulator @p kind (through
+ * SetScanRowModulation()) is the session's, not a scan row's (issue #621; dsd_channel_modes_rigctl_request_is_session()
+ * decides which), without I/O.
+ *
+ * A scan row's reading of the peer's own passband lasts the scan, whose restore resets it (issue #526). The session's
+ * has no such restore, so once the peer accepts that reading back (SetModulationKind() at 0, or RevertModulation()),
+ * or refuses the session's request while known to run its own passband (the last request it accepted left it on that
+ * demodulator at 0, with a reading behind it, a reconnect since or not), it is retired, never to be sent again as a
+ * return, and the next change reads the peer's own passband again, which the operator may have changed meanwhile; a
+ * reading retired on such a refusal is not held for RevertModulation(), which only undoes a return. The reading of the
+ * other demodulator that the same lookup took in passing, and that nothing of this client's holds, serves the session
+ * with it and is retired with it. A scan row's change of that demodulator the peer answered
+ * (SetScanRowModulation() taken, or its reply lost) makes the reading the scan's again; a row request the cache
+ * already matches, or one the peer refused, leaves it. A reconnect to the same endpoint keeps it (RigctlRebindPeer()).
+ * Call it after each session request, taken or not. No-op for a socket the record does not describe.
+ */
+void RigctlMarkSessionPassband(dsd_socket_t sockfd, int kind);
 /**
  * @brief Hand a rigctl reconnect what the socket it replaces knew of its peer (issue #589), without I/O.
  *

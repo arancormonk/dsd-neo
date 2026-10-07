@@ -131,8 +131,22 @@ main(void) {
     assert(dsd_channel_mode_set(s, 0, DSD_SCAN_MODE_DMR) == 0);
     assert(dsd_channel_mode_set(s, 0, DSD_SCAN_MODE_P25) == 0);
     assert(dsd_channel_modes_present(s));
+    /* Whether a rigctl request is the session's (issue #621), with no scan scope held: a typed -Y list is a scan's
+       before its first row's scope is entered, as is any -Y list without the state; never during a trunk scan. */
+    o->scanner_mode = 1;
+    assert(!dsd_channel_modes_rigctl_request_is_session(o, s) && !dsd_channel_modes_rigctl_request_is_session(o, NULL));
+    o->scanner_mode = 0;
+    assert(dsd_channel_modes_rigctl_request_is_session(o, s) && dsd_channel_modes_rigctl_request_is_session(o, NULL));
+    o->trunk_scan_enabled = 1;
+    assert(!dsd_channel_modes_rigctl_request_is_session(o, s));
+    o->trunk_scan_enabled = 0;
+    assert(!dsd_channel_modes_rigctl_request_is_session(NULL, s));
     assert(dsd_channel_mode_set(s, 0, DSD_SCAN_MODE_INHERIT) == 0);
     assert(!dsd_channel_modes_present(s));
+    /* The untyped list holds no scope and has no leave restore: its requests are the session's. */
+    o->scanner_mode = 1;
+    assert(dsd_channel_modes_rigctl_request_is_session(o, s));
+    o->scanner_mode = 0;
     clear(s);
     fp = dsd_fopen_private(o->chan_in_file, "w");
     assert(fp);

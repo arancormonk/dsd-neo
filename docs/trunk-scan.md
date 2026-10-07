@@ -374,25 +374,26 @@ During scanning:
 - **Live per-channel edits.** The parked target's own squelch, channel width (`nfm-conventional` and `am-conventional`
   targets), tone policy (`nfm-conventional`) and tuner gain (on an RTL-SDR, rtl_tcp or SoapySDR input; not an Airspy,
   whose gain the scan does not set per target) can be changed for the rest of the session, over what its `options`
-  column and `rtl_gain` set. In the terminal the Squelch, NFM/AM bandwidth, Gain and Tone filter rows then open a
-  chooser first: `All channels (default)...` edits the configured default as above; `This channel (county-p25)...`
-  prompts on what the target runs now; `This channel: use the default` (offered when the target's list sets the field)
-  makes it follow the configured default; `This channel: back to the list value` (offered when it runs an edit) drops
-  the edit. The Qt and Android Radio and Tone filter sheets offer the same as `All channels | This channel`; in `This
-  channel` a control the target takes no edit of (and an Airspy's device panel) is held rather than left to change the
-  default. The edit goes to the target named when the editor opened: on air it applies at once (a squelch reaches the
-  demodulator; a width reaches the front end or, on audio input, the rigctl peer that demodulates it, which is asked for
-  the target's own passband, or for `-B` once it follows the default; a gain applies through a stream restart), and the
-  toast says `This channel (county-p25): squelch -55 dB for this session`; an analog target's squelch edit can also be
-  the auto squelch (`auto+N` at the terminal prompt, `Auto` on the Radio sheet). If the scan has moved on meanwhile, the
-  edit waits for that target's next visit (`... from its next visit`), and one from a scan that has since ended is
-  refused (`Refused: the scan changed; nothing applied`). A width or gain edit made while the target's retune is still
-  landing answers `Busy: the scan is retuning; try again`. A width the running DSP rate cannot filter is refused, as is
-  a field the target's type does not take. A width the front end or the peer then refuses, and a gain whose restart
-  fails, put that setting back alone (an edit of another setting made since stays), the configured defaults untouched; a
-  failed restart starts the input again without an I/Q capture, which would write over its recording. Every later visit
-  keeps the edit, it ends with the scan, and nothing is written to the target file or saved by Config->Save. On audio
-  input with a rigctl peer the width editors are not offered yet (they need a radio input; issue #621).
+  column and `rtl_gain` set. In the terminal the Squelch, NFM/AM bandwidth (NFM/AM passband on audio input with a rigctl
+  peer), Gain and Tone filter rows then open a chooser first: `All channels (default)...` edits the configured default
+  as above; `This channel (county-p25)...` prompts on what the target runs now; `This channel: use the default` (offered
+  when the target's list sets the field) makes it follow the configured default; `This channel: back to the list value`
+  (offered when it runs an edit) drops the edit. The Qt and Android Radio and Tone filter sheets offer the same as `All
+  channels | This channel`, and so do, on audio input, the monitor's Squelch sheet and, with a rigctl peer, its Passband
+  sheet; in `This channel` a control the target takes no edit of (and an Airspy's device panel) is held rather than left
+  to change the default. The edit goes to the target named when the editor opened: on air it applies at once (a squelch
+  reaches the demodulator; a width reaches the front end or, on audio input, the rigctl peer that demodulates it, which
+  is asked for the target's own passband, or once it follows the default for the configured width of its kind (an unset
+  NFM width: `-B`, or the peer's own passband without it); a gain applies through a stream restart), and the toast says
+  `This channel (county-p25): squelch -55 dB for this session`; an analog target's squelch edit can also be the auto
+  squelch (`auto+N` at the terminal prompt, `Auto` on the Radio sheet). If the scan has moved on meanwhile, the edit
+  waits for that target's next visit (`... from its next visit`), and one from a scan that has since ended is refused
+  (`Refused: the scan changed; nothing applied`). A width or gain edit made while the target's retune is still landing
+  answers `Busy: the scan is retuning; try again`. A width the running DSP rate cannot filter is refused, as is a field
+  the target's type does not take. A width the front end or the peer then refuses, and a gain whose restart fails, put
+  that setting back alone (an edit of another setting made since stays), the configured defaults untouched; a failed
+  restart starts the input again without an I/Q capture, which would write over its recording. Every later visit keeps
+  the edit, it ends with the scan, and nothing is written to the target file or saved by Config->Save.
 - P25, DMR, and NXDN trunk targets stay parked while their trunking state machine is following an active call
   (NXDN stays parked while following an active grant and returns to its control channel at hangtime/release).
   The protocol's hangtime and release rules decide when call following ends; audio silence alone does not start
@@ -551,43 +552,49 @@ no symbol profile is applied over the monitor. Everything below applies to both 
   the auto squelch no noise to learn from and holds as an open squelch would; lock it out or cap its visit.
 - **Width.** `--nfm-bandwidth-hz <Hz>` in the `options` column sets an `nfm-conventional` target's NFM channel width
   (whole Hz, `8000..25000`), and `--am-bandwidth-hz <Hz>` an `am-conventional` target's AM channel width (whole Hz,
-  `5000..20000`, for example `8333` for 8.33 kHz airband spacing); without one the configured width of the target's
-  kind (NFM 16 kHz, AM 6 kHz by default) applies. The AM default always runs its channel filter, so it is held to the
-  DSP rate like an explicit width. A width the running DSP rate cannot filter, the target's own or the configured one it
-  runs, is named with the fix at scan start, in the log and on the status line (and again if that rate changes, or, for
-  a target without its own width, if the configured width does), and that target's retune is then refused at every visit
-  without a further warning. So is a target's own width while `DSD_NEO_CHANNEL_LPF=0` turns off the channel filter it
-  needs. The Qt/Android preview of an imported target file checks the width's range only. The scan-list editor's own
-  validation (Save, Play) holds an RTL-SDR or rtl_tcp list's analog targets to the rate the list's bandwidth sets, an
-  `am` entry's 6 kHz default included, and names those it would skip in a warning; a SoapySDR or Airspy list's rate is
-  known once the scan's stream runs. While the target is parked, an RTL DSP bandwidth that cannot filter its width is
-  refused, from the DSP bandwidth control, Input > Switch source and a loaded config alike. While the list has a target
-  without a width of its own, the configured width of its kind is in use on any session, as under `-fA` or `-fM`: a
-  width edit, a loaded config or a DSP bandwidth that would leave it unfiltered is refused, whichever target is parked.
-  A configured-width edit made while the target's retune is still in flight is applied once the retune lands.
+  `5000..20000`, for example `8333` for 8.33 kHz airband spacing); without one the configured width of the target's kind
+  (NFM 16 kHz, AM 6 kHz by default; on audio input with a rigctl peer an unset NFM width asks for `-B`, see rigctl
+  below) applies. The AM default always runs its channel filter, so it is held to the DSP rate like an explicit width. A
+  width the running DSP rate cannot filter, the target's own or the configured one it runs, is named with the fix at
+  scan start, in the log and on the status line (and again if that rate changes, or, for a target without its own width,
+  if the configured width does), and that target's retune is then refused at every visit without a further warning. So
+  is a target's own width while `DSD_NEO_CHANNEL_LPF=0` turns off the channel filter it needs. The Qt/Android preview of
+  an imported target file checks the width's range only. The scan-list editor's own validation (Save, Play) holds an
+  RTL-SDR or rtl_tcp list's analog targets to the rate the list's bandwidth sets, an `am` entry's 6 kHz default
+  included, and names those it would skip in a warning; a SoapySDR or Airspy list's rate is known once the scan's stream
+  runs. While the target is parked, an RTL DSP bandwidth that cannot filter its width is refused, from the DSP bandwidth
+  control, Input > Switch source and a loaded config alike. While the list has a target without a width of its own, the
+  configured width of its kind is in use on any session, as under `-fA` or `-fM`: a width edit, a loaded config or a DSP
+  bandwidth that would leave it unfiltered is refused, whichever target is parked. A configured-width edit made while
+  the target's retune is still in flight is applied once the retune lands.
 - **rigctl.** With rigctl tuning an audio input, the peer demodulates. Each retune asks it for the target's demodulator
   and passband before the frequency: an `am-conventional` target sends `M AM <width>` with the AM width it runs (its
-  own, else the configured one), and an `nfm-conventional` target with its own width sends `M NFM <width>` (`M FM
-  <width>` to a peer that refuses the `NFM` token). A peer that refuses either fails that retune, as for any target it
-  cannot tune. SDR++ and GQRX take a passband of `0` as "leave it unchanged", and SDR++ keeps each passband it is sent,
-  so before a target first changes the peer's AM or FM passband DSD-neo asks the peer what it runs (`m`). Every other
-  target asks for `-B` as before, or, without `-B`, where an earlier target changed the peer, for FM at the passband it
-  read, which returns the peer to FM at its own passband; that request is best-effort, except that a peer still on an AM
-  target's AM that refuses it fails the retune, since the target would be heard through AM, as does one that may be on
+  own, else the configured one), and an `nfm-conventional` target sends `M NFM <width>` (`M FM <width>` to a peer that
+  refuses the `NFM` token) with its own width, else with the configured NFM width when one is set (issue #621). A peer
+  that refuses either fails that retune, as for any target it cannot tune. SDR++ and GQRX take a passband of `0` as
+  "leave it unchanged", and SDR++ keeps each passband it is sent, so before a target first changes the peer's AM or FM
+  passband DSD-neo asks the peer what it runs (`m`). Every other target asks for `-B` (a digital target, or an
+  `nfm-conventional` one without either width, where `-B` stands in for the unset NFM width): on audio input that too
+  is a passband DSD-neo sets on the peer, the one the target is heard through, so the peer's own is read first and
+  kept for the later return (issue #621). Without `-B`, where an earlier target changed the peer, such a target asks
+  for FM at the passband it read, which returns the peer to FM at its own passband; that request is best-effort,
+  except that a peer still on an AM target's AM that refuses it fails the retune, since the target would be heard
+  through AM, as does one that may be on
   AM because the reply to a request for AM was lost. A retune that fails after the peer took the new target's
   demodulator or passband (its frequency refused, say) asks the peer for what it ran before, or for the passband it read
   where DSD-neo had set none, so the target still parked is not heard through the other demodulator or the new target's
-  passband. When the scan stops
-  (shutdown, or trunk scan turned off) the AM passband an AM target changed is put back, then the peer is asked once
-  more for what the session runs, so it is left on neither an AM target's demodulator nor a target's passband. A peer
-  that cannot answer `m` is sent passband `0` instead, best-effort. Requests are cached on the demodulator and passband
-  together, so a peer already running both is not asked again; after a request whose reply was lost the next one is
-  always sent. On an RTL-family input DSD-neo demodulates the I/Q itself and the peer only follows the frequency: it is
-  asked for `-B`, best-effort, as before, whatever the target runs, and whatever demodulator the peer is on. A rigctl
-  reconnect during the scan (the `9` key, or the menu's host and port) to the same host and port keeps what the scan
-  needs to put the peer back; one to another host or port, while the old peer may be on an AM target's AM, asks the new
-  peer for FM at the next FM or digital target's retune, a refusal failing that retune, and leaves the old peer as the
-  scan last set it. A reconnect that fails keeps the connection in use.
+  passband. When the scan stops (shutdown, or trunk scan turned off) the AM passband an AM target changed is put back,
+  then the peer is asked once more for what the session runs (on an `-fA` session its configured NFM width, else `-B`, a
+  passband DSD-neo sets, so the reading of the peer's own passband stays for the session's later return to it), so it is
+  left on neither an AM target's demodulator nor a target's passband. A peer that cannot answer `m` is sent passband `0`
+  instead, best-effort. Requests are cached on the demodulator and passband together, so a peer already running both is
+  not asked again; after a request whose reply was lost the next one is always sent. On an RTL-family input DSD-neo
+  demodulates the I/Q itself and the peer only follows the frequency: it is asked for `-B`, best-effort, as before,
+  whatever the target runs, and whatever demodulator the peer is on. A rigctl reconnect during the scan (the `9` key, or
+  the menu's host and port) to the same host and port keeps what the scan needs to put the peer back; one to another
+  host or port, while the old peer may be on an AM target's AM, asks the new peer for FM at the next FM or digital
+  target's retune, a refusal failing that retune, and leaves the old peer as the scan last set it. A reconnect that
+  fails keeps the connection in use.
 - **Tone filter.** `--tone-allow <list>`, `--tone-block <list>` or `--no-tone-filter` in the `options` column set an
   `nfm-conventional` target's own CTCSS/DCS receive policy; without one the configured policy
   (`--tone-allow`/`--tone-block`, `[analog] tone_filter` and `tone_list`) applies (see "Tone filter" in `docs/cli.md`).

@@ -11,6 +11,7 @@
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
+#include "dsd-neo/core/state_fwd.h"
 #include "services.h"
 
 /* Rigctl is on over an open socket. Socket 0 is what zeroed opts hold, never a rigctl connection to close. */
@@ -20,7 +21,7 @@ rigctl_connection_live(const dsd_opts* opts) {
 }
 
 int
-svc_rigctl_connect(dsd_opts* opts, const char* host, int port) {
+svc_rigctl_connect(dsd_opts* opts, const dsd_state* state, const char* host, int port) {
     if (!opts || !host || port <= 0) {
         return -1;
     }
@@ -66,6 +67,11 @@ svc_rigctl_connect(dsd_opts* opts, const char* host, int port) {
     opts->rigctlportno = port;
     opts->rigctl_sockfd = new_sockfd;
     opts->use_rigctl = 1;
+    /* Issue #621: a peer that demodulates audio input is asked for the width the session's monitor runs, as at start. A
+       new peer was asked nothing; on the same endpoint the record taken over is unconfirmed, so a restarted peer is
+       asked again. The state tells a scan's request from the session's (an untyped -Y list's is the session's).
+       Best-effort, still under the guard: the watchdog's retunes use this socket too. */
+    dsd_engine_rigctl_ask_session_passband(opts, state);
     p25_sm_tick_guard_leave();
     return 0;
 }

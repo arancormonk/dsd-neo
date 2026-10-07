@@ -21,6 +21,7 @@
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
+#include <dsd-neo/runtime/rigctl_passband.h>
 #include <stddef.h>
 
 #ifdef USE_RADIO
@@ -88,9 +89,72 @@ int svc_tcp_connect_audio(dsd_opts* opts, dsd_state* state, const char* host, in
  * nothing, so a peer a scan changed keeps what it last set once another endpoint replaces it. The engine's legacy tune
  * cache is forgotten. A connect that fails while rigctl is on changes nothing: the connection in use stays. Without
  * one, a failure records @p host and @p port for the next attempt and leaves rigctl off. The connection is replaced
- * under the P25 SM tick guard (the watchdog's retunes use it), so a caller must not hold that guard.
+ * under the P25 SM tick guard (the watchdog's retunes use it), so a caller must not hold that guard. A peer that
+ * demodulates audio input is then asked, under the same hold, for the width the session's analog monitor runs
+ * (dsd_engine_rigctl_ask_session_passband(), issue #621): a new peer was asked nothing, and on the same endpoint the
+ * record taken over is unconfirmed, so a restarted peer gets the request again. @p state, the decoder state where the
+ * caller has one (NULL otherwise), tells a scan's request from the session's there: an untyped -Y list's is the
+ * session's, a typed list's or a trunk scan's a row's.
  */
-int svc_rigctl_connect(dsd_opts* opts, const char* host, int port);
+int svc_rigctl_connect(dsd_opts* opts, const dsd_state* state, const char* host, int port);
+/**
+ * @brief The request a rigctl peer that demodulates audio input is to run now (issue #621): the demodulator and
+ * passband dsd_rigctl_passband_of() gives for the options in force and the scan row whose scope is in force
+ * (dsd_scan_mode_row_options(), as dsd_engine_scan_rigctl_apply_modulation() asks it). FOLLOW, FM at -B, without such
+ * a peer (dsd_opts_rigctl_peer_demodulates()) or off the analog monitor. Callers take it before a change with
+ * svc_rigctl_session_now() and hand that to svc_rigctl_follow_passband() after it. NULL @p opts gives FOLLOW at 0.
+ */
+dsd_rigctl_passband svc_rigctl_passband_now(const dsd_opts* opts, const dsd_state* state);
+
+/** @brief A rigctl peer's side of the session at one moment (issue #621), which svc_rigctl_follow_passband() compares
+ * the session after a change with. */
+typedef struct {
+    int peer; /**< 1 while a rigctl peer demodulates the input (dsd_opts_rigctl_peer_demodulates()); FOLLOW alone does
+                   not tell it from a digital mode the peer follows. */
+    dsd_rigctl_passband request; /**< svc_rigctl_passband_now(). */
+} svc_rigctl_session;
+
+/** @brief svc_rigctl_passband_now() and whether a peer demodulates the input, taken before a change. */
+svc_rigctl_session svc_rigctl_session_now(const dsd_opts* opts, const dsd_state* state);
+/**
+ * @brief Ask a rigctl peer that demodulates audio input for the passband in force once a change made it differ from
+ * @p before (svc_rigctl_session_now() from before the change; NULL reads as unknown), issue #621.
+ *
+ * Nothing is asked (0) without such a peer, while a scan row's scope is suspended (dsd_scan_mode_updating(): the
+ * scoped dispatcher follows after the resume), or while a -Y tune or retry is staged
+ * (dsd_engine_channel_scan_waiting(): the restaged tune asks for its row). Off the monitor the request is FOLLOW, FM at
+ * -B (0: the peer's own passband), which a tune sends best-effort: it is asked only to undo a passband this client set
+ * on the monitor before the change (dsd_rigctl_passband_sets_passband() of @p before's, with the peer there), so the
+ * peer does not keep a monitor's width after a switch to a digital mode; FOLLOW before as well (a -B edit on a digital
+ * session) waits for a tune. A peer the change brought (none demodulated the input before: a first rigctl connect, a
+ * switch onto audio input) is asked for a width only (dsd_rigctl_passband_is_width()), as the start and a reconnect
+ * ask it: -B and the peer's own passband wait for a tune, as before issue #621. With the peer there before, nothing is
+ * asked when the request equals @p before's by dsd_rigctl_passband_equal(), which counts the source: entering the FM
+ * monitor from a digital mode is a change even where the wire request matches. Otherwise the request goes through
+ * dsd_engine_scan_rigctl_apply_modulation(), strictly: 1 when the peer took it, -1 when it refused it or its reply was
+ * lost (the peer then runs either passband; the engine logs it), 0 when the peer went away. A refused FOLLOW undo is
+ * the caller's to warn of; the change stands, since a tune's -B is best-effort. The rigctl I/O runs under the P25 SM
+ * tick guard, whose watchdog retunes use the socket and its peer record; the guard is not re-entrant, so a caller that
+ * holds it (a command that writes the policy store, a config apply) passes @p guarded 1. Decoder thread only.
+ */
+int svc_rigctl_follow_passband(const dsd_opts* opts, const dsd_state* state, const svc_rigctl_session* before,
+                               int guarded);
+/** @brief No explicit edit (svc_rigctl_follow_edit()). */
+#define SVC_RIGCTL_EDIT_NONE      (-2)
+/** @brief An explicit edit of -B (svc_rigctl_follow_edit()). */
+#define SVC_RIGCTL_EDIT_SETMOD_BW (-1)
+/**
+ * @brief svc_rigctl_follow_passband() for an explicit edit of a setting (issue #621): the configured width of analog
+ * kind @p edit (DSD_ANALOG_DEMOD_FM or DSD_ANALOG_DEMOD_AM, the width commands) or -B (SVC_RIGCTL_EDIT_SETMOD_BW, the
+ * -B command). While the request in force reads that setting -- the kind's configured width, its AM default or the -B
+ * that stands in for an unset NFM width, the peer's own passband without it; for -B, -B standing in or the peer's own
+ * -- the request is asked whether or not it changed: a retry of the setting a refused transition (a switch onto the
+ * monitor) left unchanged reaches the peer, and the peer's record skips a request it is confirmed to run, so an applied
+ * value sends nothing. Otherwise (a row's own width shadows the edit, a configured NFM width shadows -B, a digital
+ * session) only a change is asked, as svc_rigctl_follow_passband() asks it. Same returns, guard and thread rules.
+ */
+int svc_rigctl_follow_edit(const dsd_opts* opts, const dsd_state* state, const svc_rigctl_session* before, int edit,
+                           int guarded);
 
 // LRRP output file helpers
 /**
@@ -201,6 +265,18 @@ void svc_set_tg_hold(dsd_state* state, unsigned tg);
 void svc_set_hangtime(dsd_opts* opts, double seconds);
 /** @brief Set rigctl setmod bandwidth (clamped to 0..25 kHz). */
 void svc_set_rigctl_setmod_bw(dsd_opts* opts, int hz);
+/**
+ * @brief Set -B (svc_set_rigctl_setmod_bw()) and ask a rigctl peer for it while it is the passband the FM monitor asks
+ * for (issue #621): on audio input with a peer that demodulates it, with no NFM width in force (the row's own or the
+ * configured one), -B stands in for it, and is asked whether or not it changed (svc_rigctl_follow_edit()). Elsewhere
+ * -B is stored for the next tune: a digital session, a radio input, a configured width. A peer that refuses it, or
+ * whose reply is lost, gets the previous -B back, asked again the same way, best-effort, since it may run either.
+ * @p guarded as svc_rigctl_follow_passband() takes it. Decoder thread only.
+ *
+ * @return 0 when stored, -1 when the peer refused it (why in @p why: "Rigctl setmod BW -> 12500 Hz: the rigctl peer
+ * refused the passband") or without @p opts.
+ */
+int svc_apply_rigctl_setmod_bw(dsd_opts* opts, const dsd_state* state, int hz, int guarded, char* why, size_t why_size);
 /** @brief Toggle reverse mute (mute when unmuted, unmute when muted). */
 void svc_toggle_reverse_mute(dsd_opts* opts);
 /** @brief Toggle P25 LCW retune helper. */
@@ -407,11 +483,19 @@ void svc_describe_monitor_return_refusal(const dsd_opts* opts, int kind, int wid
  * put back; one refused where it lands is put back by the command drain, before its next command
  * (svc_take_monitor_request_outcome()). Anywhere else (another
  * preset, a typed digital scan row on an analog session, CQPSK toggled on under -fA, a stopped stream) the stored width
- * applies the next time that kind's analog profile is requested or the stream opens. Decoder thread only.
+ * applies the next time that kind's analog profile is requested or the stream opens.
+ *
+ * On audio input with a rigctl peer that demodulates it (issue #621) no channel filter runs, so no rate check applies:
+ * the width is the passband the peer is asked for while the monitor of that kind runs, and the edit is asked of the
+ * peer at once, whether or not it changed the request in force, while that request reads the width
+ * (svc_rigctl_follow_edit(), with @p guarded as it takes it). A peer that refuses it, or whose reply is lost, gets the
+ * previous width back, asked again the same way, best-effort, since it may run either: a retry of the width in force
+ * goes back to the very same request. The edit is then refused ("AM bandwidth -> 8 kHz: the rigctl peer refused the
+ * passband"). Decoder thread only.
  *
  * @return 0 when stored, -1 when refused (reason in @p why).
  */
-int svc_set_analog_bandwidth(dsd_opts* opts, const dsd_state* state, int kind, int width_hz, char* why,
+int svc_set_analog_bandwidth(dsd_opts* opts, const dsd_state* state, int kind, int width_hz, int guarded, char* why,
                              size_t why_size);
 
 /**
@@ -809,7 +893,7 @@ int svc_airspy_apply_config_locked(dsd_opts* opts, dsd_state* state, const dsd_a
 /** @brief Set RTL device index and mark stream for restart (applied immediately if active). */
 int svc_rtl_set_dev_index(dsd_opts* opts, dsd_state* state, int index);
 /** @brief Tune receiver frequency (Hz); caller owns trunking and call bookkeeping. */
-int svc_rtl_set_freq(dsd_opts* opts, dsd_state* state, uint32_t hz);
+int svc_rtl_set_freq(dsd_opts* opts, const dsd_state* state, uint32_t hz);
 /** @brief Set RTL manual gain (0–49), clamping and restarting if needed. */
 int svc_rtl_set_gain(dsd_opts* opts, dsd_state* state, int value);
 /**

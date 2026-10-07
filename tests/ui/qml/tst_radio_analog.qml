@@ -50,6 +50,7 @@ Item {
             testContext.setMetric("analogBandwidthReading", "");
             testContext.setMetric("analogBandwidthRowActive", false);
             testContext.setMetric("analogBandwidthRowOverride", false);
+            testContext.setMetric("peerPassband", false);
             testContext.setMetric("radioInput", true);
             if (sheet) {
                 sheet.forgetRequests();
@@ -296,9 +297,28 @@ Item {
             verify(!findChild(sheet, "radioAnalogBandwidthUp").enabled);
             verify(!findChild(sheet, "radioAnalogBandwidthDown").enabled);
             verify(findChild(sheet, "radioAnalogBandwidthNote").visible, "no reason shown for the disabled control");
+            compare(findChild(sheet, "radioAnalogBandwidthNote").text,
+                    "The channel width filters a radio input; this audio arrives already demodulated.");
             var calls = testContext.nfmBandwidthCalls();
             sheet.stepAnalogWidth(1);
             compare(testContext.nfmBandwidthCalls(), calls);
+        }
+
+        // Issue #621: a live switch to audio input with a rigctl peer while the
+        // sheet is open. The peer demodulates there, so the width is its
+        // passband, which the monitor's Passband row sets; the note says where.
+        function test_a_rigctl_peer_points_to_the_monitor_passband_row() {
+            analogSession(16000, false, 0);
+            testContext.setMetric("analogBandwidthHz", 12500);
+            testContext.setMetric("analogBandwidthReading", "12.5 kHz (-B)");
+            testContext.setMetric("radioInput", false);
+            testContext.setMetric("peerPassband", true);
+            tryVerify(function () { return metrics.radioInput === false && metrics.peerPassband === true });
+            var note = findChild(sheet, "radioAnalogBandwidthNote");
+            verify(note.visible);
+            compare(note.text,
+                    "On this input the rigctl peer demodulates; set its passband from the Monitor's Passband row.");
+            verify(!findChild(sheet, "radioAnalogBandwidthUp").enabled, "the Radio sheet stays radio-only");
         }
     }
 }

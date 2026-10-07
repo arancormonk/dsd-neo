@@ -18,6 +18,7 @@
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/call_alert.h>
@@ -53,6 +54,14 @@ static int g_history_mode = 1;
 const dsdneoRuntimeConfig*
 dsd_neo_get_config(void) {
     return g_cfg_valid ? &g_cfg : NULL;
+}
+
+/* The analog width view's reading of the unset NFM default where the channel filter runs but the rate cannot realize
+   the default: the legacy WIDE plan's passband, which no rate these cases run at falls back on. */
+int
+dsd_channel_lpf_legacy_wide_width_hz(int rate_hz) {
+    (void)rate_hz;
+    return 0;
 }
 
 int
@@ -686,6 +695,86 @@ test_input_and_audio_labels(void) {
 }
 
 /*
+ * Input > NFM bandwidth... and AM bandwidth... (issues #524, #525) name the configured width they edit, a setting
+ * rather than a reading: an explicit width as set, the unset default as "default" (the status line shows what that
+ * gives), and under a live scan scope the configured width beneath a row's own (issue #526). In every build, and on
+ * audio input with a rigctl peer (-U), where the width is the passband the peer is asked for (issue #621): the rows say
+ * so, and an unset NFM width reads as what stands in for it, -B or the peer's own passband.
+ */
+static int
+test_input_width_labels(void) {
+    int rc = 0;
+    char b[160];
+    static dsd_opts opts;
+    static dsd_state state;
+    UiCtx ctx;
+    reset_fixture(&opts, &state, &ctx);
+
+    /* A radio input: the channel filter. */
+    opts.audio_in_type = AUDIO_IN_RTL;
+    rc |= expect_str("nfm bandwidth default", lbl_input_nfm_bw(&ctx, b, sizeof(b)), "NFM bandwidth... [default]");
+    opts.analog_nfm_bandwidth_hz = 12500;
+    rc |= expect_str("nfm bandwidth explicit", lbl_input_nfm_bw(&ctx, b, sizeof(b)), "NFM bandwidth... [12.5 kHz]");
+    opts.analog_nfm_bandwidth_hz = 16000;
+    rc |= expect_str("nfm bandwidth explicit default value", lbl_input_nfm_bw(&ctx, b, sizeof(b)),
+                     "NFM bandwidth... [16 kHz]");
+    opts.analog_nfm_bandwidth_hz = 11250;
+    rc |= expect_str("nfm bandwidth 11.25", lbl_input_nfm_bw(&ctx, b, sizeof(b)), "NFM bandwidth... [11.25 kHz]");
+    /* Under an nfm scan row with its own width, dsd_opts holds the row's 12.5 kHz; the row names the configured width,
+       the one it edits. */
+    dsd_scan_settings configured = {0};
+    configured.analog_nfm_bandwidth_hz = 20000;
+    dsd_test_scan_labels_configured(&configured);
+    opts.analog_nfm_bandwidth_hz = 12500;
+    rc |= expect_str("nfm bandwidth under a width row", lbl_input_nfm_bw(&ctx, b, sizeof(b)),
+                     "NFM bandwidth... [20 kHz]");
+    dsd_test_scan_labels_configured(NULL);
+    opts.analog_nfm_bandwidth_hz = 0;
+    rc |= expect_str("am bandwidth default", lbl_input_am_bw(&ctx, b, sizeof(b)), "AM bandwidth... [default]");
+    opts.analog_am_bandwidth_hz = 12500;
+    rc |= expect_str("am bandwidth explicit", lbl_input_am_bw(&ctx, b, sizeof(b)), "AM bandwidth... [12.5 kHz]");
+    configured.analog_nfm_bandwidth_hz = 0;
+    configured.analog_am_bandwidth_hz = 8000;
+    dsd_test_scan_labels_configured(&configured);
+    rc |= expect_str("am bandwidth under a scan row", lbl_input_am_bw(&ctx, b, sizeof(b)), "AM bandwidth... [8 kHz]");
+    dsd_test_scan_labels_configured(NULL);
+    opts.analog_am_bandwidth_hz = 0;
+    rc |= expect_str("nfm bandwidth null ctx", lbl_input_nfm_bw(NULL, b, sizeof(b)), "NFM bandwidth... [default]");
+    rc |= expect_str("am bandwidth null ctx", lbl_input_am_bw(NULL, b, sizeof(b)), "AM bandwidth... [default]");
+
+    /* A radio input with a live rigctl peer: the peer only follows the frequency, so the rows stay the channel filter,
+       and -B stands in for nothing. */
+    opts.use_rigctl = 1;
+    opts.rigctl_sockfd = (dsd_socket_t)5;
+    opts.setmod_bw = 12500;
+    rc |= expect_str("nfm bandwidth on a radio with a peer", lbl_input_nfm_bw(&ctx, b, sizeof(b)),
+                     "NFM bandwidth... [default]");
+    rc |= expect_str("am bandwidth on a radio with a peer", lbl_input_am_bw(&ctx, b, sizeof(b)),
+                     "AM bandwidth... [default]");
+
+    /* Audio input with a rigctl peer: the passband the peer is asked for; -B stands in for an unset NFM width. */
+    opts.audio_in_type = AUDIO_IN_UDP;
+    rc |= expect_str("nfm passband -B", lbl_input_nfm_bw(&ctx, b, sizeof(b)), "NFM passband... [-B 12.5 kHz]");
+    opts.setmod_bw = 0;
+    rc |= expect_str("nfm passband peer's own", lbl_input_nfm_bw(&ctx, b, sizeof(b)), "NFM passband... [peer's own]");
+    opts.analog_nfm_bandwidth_hz = 12500;
+    rc |= expect_str("nfm passband explicit", lbl_input_nfm_bw(&ctx, b, sizeof(b)), "NFM passband... [12.5 kHz]");
+    opts.analog_nfm_bandwidth_hz = 0;
+    opts.setmod_bw = 12500;
+    rc |= expect_str("am passband default", lbl_input_am_bw(&ctx, b, sizeof(b)), "AM passband... [default]");
+    opts.analog_am_bandwidth_hz = 8000;
+    rc |= expect_str("am passband explicit", lbl_input_am_bw(&ctx, b, sizeof(b)), "AM passband... [8 kHz]");
+    opts.analog_am_bandwidth_hz = 0;
+    /* Audio input without a live peer edits nothing the session uses: the rows keep the plain wording. */
+    opts.rigctl_sockfd = DSD_INVALID_SOCKET;
+    rc |= expect_str("nfm bandwidth peer gone", lbl_input_nfm_bw(&ctx, b, sizeof(b)), "NFM bandwidth... [default]");
+    opts.rigctl_sockfd = (dsd_socket_t)5;
+    opts.use_rigctl = 0;
+    rc |= expect_str("nfm bandwidth rigctl off", lbl_input_nfm_bw(&ctx, b, sizeof(b)), "NFM bandwidth... [default]");
+    return rc;
+}
+
+/*
  * Audio > Tone filter... reads the policy the configuration sets, from the shared app-control view the Call Info line
  * and the Qt monitor read: "off", or the mode and its list, and while a scan row's own policy is on air that policy
  * with the configured one it shadows, "(row; default X)". A long list's overflow mark is ASCII here, as every menu
@@ -953,6 +1042,7 @@ main(void) {
     rc |= test_trunking_labels();
     rc |= test_encryption_labels();
     rc |= test_input_and_audio_labels();
+    rc |= test_input_width_labels();
     rc |= test_tone_filter_label();
     rc |= test_recording_labels();
     rc |= test_display_and_advanced_labels();

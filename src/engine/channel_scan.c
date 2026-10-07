@@ -633,7 +633,8 @@ dsd_engine_scan_note_skipped_rows(dsd_state* state, const dsd_engine_scan_skippe
  * the DSP rate while the scan has such a row (dsd_engine_scan_runs_configured_nfm_width(), _am_width()), but a list
  * loaded over a width the rate cannot filter, or a rate a device forced, still leaves one the rate cannot filter: that
  * skips the row at every visit as well. So can the AM default, which always runs its channel filter. Audio input
- * filters nothing, and the configured width is no row's to name there. */
+ * filters nothing, so no DSP rate holds the configured width there: with a rigctl peer it is the passband the peer is
+ * asked for (issue #621), which the peer takes or refuses at the tune, and no row is named for it here. */
 static int
 scan_warn_configured_width(const dsd_opts* opts, const dsd_state* state, int kind, int dsp_rate_hz, const char* label,
                            char* brief, size_t brief_size) {

@@ -22,6 +22,11 @@ void dsd_test_scan_labels_tone_policy(int mode, const dsd_tone_set* set);
  * (DSD_SCAN_ROW_FIELD_*) and a trunk target's id. Turns the snapshot options' trunk scan or -Y on for it. */
 void dsd_test_scan_labels_scan_row(int scanner, uint32_t session, int row, uint32_t editable, uint32_t listed,
                                    uint32_t edited, const char* target_id);
+/* The rigctl peer the published options snapshot carries (-U, issue #621): connected (a live socket) or not, and -B,
+ * the FM passband in Hz that stands in for an unset NFM width. */
+void dsd_test_scan_labels_rigctl(int connected, int setmod_bw_hz);
+/* The analog preset the published options snapshot carries (-fA, and its dsd_analog_demod). */
+void dsd_test_scan_labels_analog(int analog_only, int analog_demod);
 /* The effective tuner gain the published options snapshot carries. */
 void dsd_test_scan_labels_rtl_gain(int gain);
 /* The configured squelch the published options snapshot carries (dsd_squelch_mode, margin, level). */
