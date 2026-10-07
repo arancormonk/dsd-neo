@@ -1269,6 +1269,13 @@ rtl_stream_fsk_profile_modes(void) {
     return rtl_stream_fsk_modes_from_opts(g_stream ? g_stream->opts : NULL);
 }
 
+/* Whether the stream feeds the M17 encoder, whose monitor stays on the FM/WIDE front end through every live change
+   (issue #625). Its options are the orchestrator's copy from before the open: the encoder flag never changes there. */
+static int
+rtl_stream_runs_m17_encoder(void) {
+    return (g_stream && dsd_opts_runs_m17_encoder(g_stream->opts)) ? 1 : 0;
+}
+
 static int
 rtl_stream_fsk_channel_profile_for_current_mode(void) {
     const uint32_t modes = rtl_stream_fsk_profile_modes();
@@ -8958,6 +8965,10 @@ rtl_stream_set_symbol_profile(int symbol_rate_hz, int levels, int channel_profil
     if (channel_profile >= DSD_CH_LPF_PROFILE_WIDE && channel_profile <= DSD_CH_LPF_PROFILE_P25_CQPSK) {
         next_channel_profile = channel_profile;
     }
+    if (rtl_stream_runs_m17_encoder()) {
+        /* The M17 encoder's monitor keeps its WIDE channel whatever profile is published (issue #625). */
+        next_channel_profile = DSD_CH_LPF_PROFILE_WIDE;
+    }
     int changed = (demod.symbol_rate_hz != symbol_rate_hz || demod.symbol_levels != levels
                    || demod.channel_lpf_profile != next_channel_profile);
     demod.symbol_rate_hz = symbol_rate_hz;
@@ -9358,7 +9369,8 @@ rtl_stream_enable_cqpsk_mode(void) {
  * switch does, since those options are the orchestrator's copy from before the open and never see a mode change. */
 static int
 rtl_stream_runs_digital_family(void) {
-    if (!g_stream || !radio_source_is_rtl_family(g_stream->opts)) {
+    /* The M17 encoder's monitor is never the digital family, whatever frame flags -fZ left set (issue #625). */
+    if (!g_stream || !radio_source_is_rtl_family(g_stream->opts) || rtl_stream_runs_m17_encoder()) {
         return 0;
     }
     switch (g_stream->rx_family_switch.load(std::memory_order_relaxed)) {
@@ -9447,7 +9459,8 @@ rtl_stream_leave_demod_family_switch_gate(int gate) {
 static void
 rtl_stream_apply_cqpsk_toggle(int onoff) {
     int was = demod.cqpsk_enable ? 1 : 0;
-    int next = onoff ? 1 : 0;
+    /* The M17 encoder's monitor is FM audio, never the CQPSK path (issue #625). */
+    int next = (onoff && !rtl_stream_runs_m17_encoder()) ? 1 : 0;
     /* Only store when the value changes: the demod thread reads cqpsk_enable
      * concurrently, so even a same-value store outside the gate is a race. */
     if (next != was) {
@@ -11717,6 +11730,57 @@ rtl_stream_test_cqpsk_toggle_output_clear(int start_cqpsk, int target_cqpsk, int
     out_result->generation_before = rtl_stream_output_generation();
     rtl_stream_toggle_cqpsk(target_cqpsk ? 1 : 0);
     cqpsk_toggle_test_collect(out_result);
+
+    cqpsk_toggle_test_restore(&snapshot, initialized_output);
+    fsk_reacquire_test_cleanup_output_ring(initialized_output);
+    return 0;
+}
+
+extern "C" int
+rtl_stream_test_encoder_front_end_holds(rtl_stream_test_encoder_front_end* out) {
+    if (!out) {
+        return -1;
+    }
+    *out = {};
+    int initialized_output = 0;
+    const int prepare_rc = fsk_reacquire_test_prepare_output_ring(0U, &initialized_output);
+    if (prepare_rc != 0) {
+        fsk_reacquire_test_cleanup_output_ring(initialized_output);
+        return prepare_rc;
+    }
+    CqpskToggleTestSnapshot snapshot = {};
+    cqpsk_toggle_test_save(&snapshot);
+    static dsd_opts encoder_opts;
+    DSD_MEMSET(&encoder_opts, 0, sizeof(encoder_opts));
+    encoder_opts.frame_dstar = 1;
+    encoder_opts.frame_x2tdma = 1;
+    encoder_opts.frame_p25p1 = 1;
+    encoder_opts.frame_p25p2 = 1;
+    encoder_opts.frame_dmr = 1;
+    encoder_opts.frame_ysf = 1;
+    encoder_opts.m17encoder = 1;
+    cqpsk_toggle_test_configure_stream(1);
+    g_cqpsk_toggle_test_stream.opts = &encoder_opts;
+    demod.cqpsk_enable = 0;
+    demod.output_kind = DSD_DEMOD_OUTPUT_AUDIO_MONITOR;
+    demod.symbol_rate_hz = 4800;
+    demod.symbol_levels = 4;
+    demod.ted_enabled = 0;
+    demod.channel_lpf_profile = DSD_CH_LPF_PROFILE_WIDE;
+    demod.mode_demod = &dsd_fm_demod;
+
+    rtl_stream_toggle_cqpsk(1);
+    out->cqpsk_after_on = demod.cqpsk_enable;
+    out->output_after_on = demod.output_kind;
+    out->profile_after_on = demod.channel_lpf_profile;
+    rtl_stream_toggle_cqpsk(0);
+    out->cqpsk_after_off = demod.cqpsk_enable;
+    out->output_after_off = demod.output_kind;
+    out->profile_after_off = demod.channel_lpf_profile;
+    (void)rtl_stream_set_symbol_profile(4800, 4, DSD_CH_LPF_PROFILE_12K5);
+    out->output_after_symbol_profile = demod.output_kind;
+    out->profile_after_symbol_profile = demod.channel_lpf_profile;
+    out->fm_after = demod.mode_demod == &dsd_fm_demod ? 1 : 0;
 
     cqpsk_toggle_test_restore(&snapshot, initialized_output);
     fsk_reacquire_test_cleanup_output_ring(initialized_output);

@@ -1494,11 +1494,12 @@ squelch_channel_rate_hz(const struct demod_state* d) {
     return d->rate_out * (d->post_downsample > 1 ? d->post_downsample : 1);
 }
 
-/* A dynamic setting runs on the analog monitor only; a digital channel never shows its noise. The tracker runs AUTO,
-   and NOISE where the noise squelch cannot (squelch_noise_wanted()). */
+/* A dynamic setting runs on the analog monitor, the M17 encoder's monitor and the 9600 bit/s FSK path EDACS analog
+   voice reads (dsd_demod_dynamic_squelch_path(), issue #625); a digital channel elsewhere never shows its noise. The
+   tracker runs AUTO, and NOISE where the noise squelch cannot (squelch_noise_wanted()). */
 static int
 squelch_auto_wanted(const struct demod_state* d) {
-    return dsd_squelch_mode_is_dynamic(d->squelch_mode) && dsd_demod_analog_monitor_active(d);
+    return dsd_squelch_mode_is_dynamic(d->squelch_mode) && dsd_demod_dynamic_squelch_path(d);
 }
 
 /* What the squelch plans follow: the channel filter in force, the half-band stage ahead of it and the channel rate. */
@@ -1625,11 +1626,14 @@ squelch_auto_run(struct demod_state* d) {
     d->result_flags_active = 1;
 }
 
-/* A NOISE setting runs the noise squelch on the FM monitor whose channel plan has a band above voice; on an AM
-   channel, or one too narrow for the band (8 and 10 kHz NFM), the tracker runs it as AUTO with the same N. */
+/* A NOISE setting runs the noise squelch on the FM monitor, or the M17 encoder's, whose channel plan has a band above
+   voice; on an AM channel, one too narrow for the band (8 and 10 kHz NFM), or the 9600 bit/s FSK path (whose
+   discriminator output is peak-normalised, not the radians the noise squelch is calibrated on), the tracker runs it as
+   AUTO with the same N. */
 static int
 squelch_noise_wanted(struct demod_state* d) {
-    if (d->squelch_mode != DSD_SQUELCH_MODE_NOISE || !dsd_demod_analog_monitor_active(d) || dsd_demod_am_active(d)) {
+    if (d->squelch_mode != DSD_SQUELCH_MODE_NOISE
+        || !(dsd_demod_analog_monitor_active(d) || dsd_demod_encoder_monitor_active(d)) || dsd_demod_am_active(d)) {
         return 0;
     }
     squelch_noise_ensure_plan(d);

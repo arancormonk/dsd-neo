@@ -1550,6 +1550,100 @@ expect_m17_encoder_unchanged(void) {
     return rc;
 }
 
+/* The options a -fZ session opens with: initOpts()'s digital frame flags and modulation (src/core/util/dsd_init.c),
+   which -fZ leaves set, and the encoder flag; -fZ clears analog_only and monitor_input_audio. */
+static void
+make_m17_encoder_opts(dsd_opts* opts) {
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    opts->frame_dstar = 1;
+    opts->frame_x2tdma = 1;
+    opts->frame_p25p1 = 1;
+    opts->frame_p25p2 = 1;
+    opts->frame_dmr = 1;
+    opts->frame_ysf = 1;
+    opts->mod_c4fm = 1;
+    opts->m17encoder = 1;
+}
+
+/*
+ * Issue #625: a real -fZ session (the digital frame flags still set, analog_only cleared) opens the encoder's
+ * documented front end: the FM discriminator with de-emphasis on the WIDE channel, monitor output, no CQPSK, whatever
+ * -mq or DSD_NEO_CQPSK say. Those frame flags used to pick RO2 (no de-emphasis) and the 12K5 filter.
+ */
+static int
+expect_m17_encoder_real_options(void) {
+    int rc = 0;
+    set_channel_lpf_env(NULL);
+    for (int variant = 0; variant < 3; variant++) {
+        if (variant == 2) {
+            (void)dsd_setenv("DSD_NEO_CQPSK", "1", 1);
+            dsd_neo_config_init();
+        }
+        demod_state* demod = alloc_zeroed_demod();
+        if (!demod) {
+            DSD_FPRINTF(stderr, "M17 encoder real options: allocation failed\n");
+            rc = 1;
+            break;
+        }
+        static dsd_opts opts;
+        make_m17_encoder_opts(&opts);
+        opts.mod_qpsk = variant == 1 ? 1 : 0;
+        char err[DSD_ANALOG_ERROR_TEXT_MAX] = {0};
+        char label[128];
+        DSD_SNPRINTF(label, sizeof label, "-fZ front end (%s)",
+                     variant == 0 ? "defaults" : (variant == 1 ? "-mq" : "DSD_NEO_CQPSK=1"));
+        rc |= expect_int_eq(label, configure_and_finalize(demod, &opts, 48000, err, sizeof err), 0);
+        rc |= expect_int_eq("  monitor output", demod->output_kind, DSD_DEMOD_OUTPUT_AUDIO_MONITOR);
+        rc |= expect_int_eq("  CQPSK off", demod->cqpsk_enable, 0);
+        rc |= expect_int_eq("  FM discriminator", demod->mode_demod == &dsd_fm_demod ? 1 : 0, 1);
+        rc |= expect_int_eq("  de-emphasis", demod->deemph, 1);
+        rc |= expect_int_eq("  WIDE channel", demod->channel_lpf_profile, DSD_CH_LPF_PROFILE_WIDE);
+        rc |= expect_int_eq("  not the analog family", demod->analog_family, 0);
+        rc |= expect_int_eq("  the encoder's monitor", demod->m17_encoder_monitor, 1);
+        rc |= expect_int_eq("  a dynamic squelch path", dsd_demod_dynamic_squelch_path(demod), 1);
+        rtl_demod_cleanup(demod);
+        dsd_neo_aligned_free(demod);
+    }
+    (void)dsd_unsetenv("DSD_NEO_CQPSK");
+    dsd_neo_config_init();
+
+    /* A -fA monitor and a digital open are not the encoder's. */
+    static dsd_opts opts;
+    const int kinds[2] = {0, 1};
+    for (int kind : kinds) {
+        demod_state* demod = alloc_zeroed_demod();
+        if (!demod) {
+            return 1;
+        }
+        if (kind == 0) {
+            make_analog_opts(&opts);
+        } else {
+            make_m17_encoder_opts(&opts);
+            opts.m17encoder = 0;
+        }
+        char err[DSD_ANALOG_ERROR_TEXT_MAX] = {0};
+        (void)configure_and_finalize(demod, &opts, 48000, err, sizeof err);
+        rc |= expect_int_eq(kind == 0 ? "-fA is not the encoder's monitor" : "a digital open is not the encoder's",
+                            demod->m17_encoder_monitor, 0);
+        rtl_demod_cleanup(demod);
+        dsd_neo_aligned_free(demod);
+    }
+
+    /* Live: a CQPSK toggle each way and a published digital profile leave the encoder's monitor as it was. */
+    rtl_stream_test_encoder_front_end live;
+    rc |= expect_int_eq("encoder front end live checks run", rtl_stream_test_encoder_front_end_holds(&live), 0);
+    rc |= expect_int_eq("  CQPSK on refused", live.cqpsk_after_on, 0);
+    rc |= expect_int_eq("  monitor after CQPSK on", live.output_after_on, DSD_DEMOD_OUTPUT_AUDIO_MONITOR);
+    rc |= expect_int_eq("  WIDE after CQPSK on", live.profile_after_on, DSD_CH_LPF_PROFILE_WIDE);
+    rc |= expect_int_eq("  monitor after CQPSK off", live.output_after_off, DSD_DEMOD_OUTPUT_AUDIO_MONITOR);
+    rc |= expect_int_eq("  WIDE after CQPSK off", live.profile_after_off, DSD_CH_LPF_PROFILE_WIDE);
+    rc |= expect_int_eq("  monitor after a digital profile", live.output_after_symbol_profile,
+                        DSD_DEMOD_OUTPUT_AUDIO_MONITOR);
+    rc |= expect_int_eq("  WIDE after a digital profile", live.profile_after_symbol_profile, DSD_CH_LPF_PROFILE_WIDE);
+    rc |= expect_int_eq("  FM throughout", live.fm_after, 1);
+    return rc;
+}
+
 /*
  * The CQPSK family a switch out of the analog family lands on (issue #583): a trunk-scan target's own choice (explicit,
  * and a request made) stands whatever DSD_NEO_CQPSK says, as on a retune that stays on the digital family; anything
@@ -2311,6 +2405,7 @@ main(void) {
     rc |= expect_rx_request_outcomes();
     rc |= expect_analog_env_off_conflict();
     rc |= expect_m17_encoder_unchanged();
+    rc |= expect_m17_encoder_real_options();
     rc |= expect_analog_open_ignores_cqpsk();
     rc |= expect_landing_cqpsk_truth_table();
     rc |= expect_analog_am_open();

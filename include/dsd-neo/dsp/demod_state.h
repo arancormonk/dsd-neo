@@ -237,6 +237,9 @@ struct demod_state {
     /* Analog receive family (the -fA monitor; not the M17 encoder, which shares the analog front end). While set,
        channel_lpf_width_hz > 0 drives the channel filter instead of channel_lpf_profile. */
     int analog_family;
+    /* 1 for the M17 encoder's monitor (issue #625): the FM/WIDE front end the encoder reads, set when the stream
+       opens. Not part of the analog family, but the dynamic squelch runs on it (dsd_demod_encoder_monitor_active()). */
+    int m17_encoder_monitor;
     int analog_demod; /* dsd_analog_demod (runtime/analog_channel.h); 0 = FM */
     /* Full RF channel width in Hz the analog filter protects (cutoff W/2 + 600 Hz, 1200 Hz transition).
        0 keeps the profile design, including the legacy WIDE design for an unset default the rate cannot fit. */
@@ -269,8 +272,9 @@ struct demod_state {
 
     /* The dynamic squelches (issue #518 follow-up). The IO layer copies the setting (squelch_mode, squelch_margin_db)
        and the context (what sets the channel's noise) in before each full_demod(), on the demod thread; the DSP reads
-       and writes everything here as plain fields. While one runs (an AUTO or NOISE setting on the analog monitor) the
-       block is never zeroed: the auto squelch's tracker flags each channel sample, or the noise squelch each
+       and writes everything here as plain fields. While one runs (an AUTO or NOISE setting on the analog monitor, the
+       M17 encoder's monitor, or the 9600 bit/s FSK path EDACS analog voice reads: dsd_demod_dynamic_squelch_path())
+       the block is never zeroed: the auto squelch's tracker flags each channel sample, or the noise squelch each
        discriminator output, the flags travel with the samples through the post-decimator and the resampler
        (result_flags, resamp_outflags) to the output ring, and the decoder mutes at its sink. */
     int squelch_mode;      /* dsd_squelch_mode */
@@ -450,6 +454,36 @@ static inline int
 dsd_demod_analog_monitor_active(const struct demod_state* d) {
     return (d && d->analog_family && d->output_kind == DSD_DEMOD_OUTPUT_AUDIO_MONITOR && !d->cqpsk_enable
             && d->channel_lpf_profile == DSD_CH_LPF_PROFILE_WIDE)
+               ? 1
+               : 0;
+}
+
+/* Whether the front end is the M17 encoder's monitor (issue #625): FM audio on its WIDE channel, which the encoder's
+   VOX reads. Not the analog family, so no width, detector or tone policy of the family's applies. */
+static inline int
+dsd_demod_encoder_monitor_active(const struct demod_state* d) {
+    return (d && d->m17_encoder_monitor && !d->analog_family && d->output_kind == DSD_DEMOD_OUTPUT_AUDIO_MONITOR
+            && !d->cqpsk_enable && d->channel_lpf_profile == DSD_CH_LPF_PROFILE_WIDE)
+               ? 1
+               : 0;
+}
+
+/* Whether the front end is the FSK discriminator at 9600 bit/s, two levels: EDACS and ProVoice, whose analog voice
+   channel EDACS reads as audio (issue #625). Keyed on the symbol profile, not the channel filter: with the channel LPF
+   off the profile label stays WIDE. */
+static inline int
+dsd_demod_fsk9600_active(const struct demod_state* d) {
+    return (d && !d->analog_family && d->output_kind == DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR && !d->cqpsk_enable
+            && d->symbol_rate_hz == 9600 && d->symbol_levels == 2)
+               ? 1
+               : 0;
+}
+
+/* Where a dynamic (AUTO or NOISE) squelch runs: the analog monitor, the M17 encoder's monitor and the 9600 bit/s FSK
+   path. A digital channel elsewhere never shows its noise, and CRC/FEC decide its traffic. */
+static inline int
+dsd_demod_dynamic_squelch_path(const struct demod_state* d) {
+    return (dsd_demod_analog_monitor_active(d) || dsd_demod_encoder_monitor_active(d) || dsd_demod_fsk9600_active(d))
                ? 1
                : 0;
 }

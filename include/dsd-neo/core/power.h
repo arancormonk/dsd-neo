@@ -55,6 +55,16 @@ dsd_squelch_mode_or_level(int mode) {
 enum { DSD_SQUELCH_FLAG_CLOSED = 0x01 };
 
 /**
+ * @brief The longest an auto squelch's gate takes to close after a carrier drops, in milliseconds of the samples it
+ * flags (issue #625). While the floor is learned the gate opens for windows classed CARRIER only, and a 40 ms window
+ * holding the drop can still read CARRIER, so the next one closes it: two windows. With a floor, two 20 ms power
+ * sub-windows. The output resampler moves the flags with the audio, under a millisecond. tools/squelch_paths_model.py
+ * measured 78 ms at worst on the plans EDACS and the M17 encoder run, and DSP_SQUELCH_FLOOR pins it. EDACS analog voice
+ * budgets it in its release hold (edacs_analog()).
+ */
+enum { DSD_SQUELCH_CLOSE_DELAY_MS = 85 };
+
+/**
  * @brief The margin an AUTO squelch opens above the noise floor, and the quieting a NOISE squelch opens at, in whole dB.
  */
 enum {

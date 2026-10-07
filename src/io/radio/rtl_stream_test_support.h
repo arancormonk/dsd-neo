@@ -64,6 +64,22 @@ int rtl_stream_test_cqpsk_toggle_output_clear(int start_cqpsk, int target_cqpsk,
                                               size_t queued_samples, int cached_symbols,
                                               rtl_stream_test_cqpsk_toggle_result* out_result);
 
+/* An M17 encoder stream (-fZ leaves the default digital frame flags set; issue #625) on its FM/WIDE monitor: what the
+ * front end runs after a CQPSK toggle on, one off, and a published digital symbol profile (4800/4, 12K5). */
+typedef struct {
+    int cqpsk_after_on;
+    int output_after_on;
+    int profile_after_on;
+    int cqpsk_after_off;
+    int output_after_off;
+    int profile_after_off;
+    int output_after_symbol_profile;
+    int profile_after_symbol_profile;
+    int fm_after;
+} rtl_stream_test_encoder_front_end;
+
+int rtl_stream_test_encoder_front_end_holds(rtl_stream_test_encoder_front_end* out);
+
 /* A return to the NFM monitor at 16 kHz, checked at 48 kHz and refused where it landed at 16 kHz (issue #578), by a
  * stream on the analog family: what rtl_stream_receive_request_refusal() says it kept, and what the stream publishes
  * then, which a leave the front end refused at once reads instead: the analog kind and width setting the family runs

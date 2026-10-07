@@ -192,7 +192,8 @@ demod_uses_cqpsk_profile(const demod_state* demod) {
 
 static int
 opts_channel_profile_for_rate(const dsd_opts* opts, const demod_state* demod, int symbol_rate_hz) {
-    if (!opts) {
+    /* The M17 encoder's monitor runs WIDE, whatever digital frame flags -fZ left set (issue #625). */
+    if (!opts || dsd_opts_runs_m17_encoder(opts)) {
         return DSD_CH_LPF_PROFILE_WIDE;
     }
     switch (symbol_rate_hz) {
@@ -466,9 +467,12 @@ demod_apply_ted_defaults(struct demod_state* demod, const dsdneoRuntimeConfig* c
 static void
 demod_apply_cqpsk_defaults(struct demod_state* demod, const dsd_opts* opts) {
     /* The analog family's monitor audio comes from the FM discriminator, never the CQPSK path, whatever DSD_NEO_CQPSK
-       or the modulation say (rtl_demod_enter_analog_family() holds a live switch to the same). */
-    demod->cqpsk_enable =
-        (!dsd_opts_is_analog_family(opts) && rtl_demod_open_cqpsk_request((opts->mod_qpsk == 1) ? 1 : 0) > 0) ? 1 : 0;
+       or the modulation say (rtl_demod_enter_analog_family() holds a live switch to the same), and so does the M17
+       encoder's (issue #625). */
+    demod->cqpsk_enable = (!dsd_opts_is_analog_family(opts) && !dsd_opts_runs_m17_encoder(opts)
+                           && rtl_demod_open_cqpsk_request((opts->mod_qpsk == 1) ? 1 : 0) > 0)
+                              ? 1
+                              : 0;
     if (demod->cqpsk_enable) {
         if (!demod->ted_enabled) {
             demod->ted_enabled = 1;
@@ -581,9 +585,12 @@ rtl_demod_init_for_mode(struct demod_state* demod, struct output_state* output, 
     }
 
     DemodInitParams params = {};
-    if (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1 || opts->frame_provoice == 1) {
+    /* The M17 encoder's monitor is the FM discriminator with de-emphasis, whatever digital frame flags -fZ left at
+       their defaults (issue #625): they would otherwise pick RO2, which runs neither. */
+    const int encoder = dsd_opts_runs_m17_encoder(opts);
+    if (!encoder && (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1 || opts->frame_provoice == 1)) {
         demod_init_mode(demod, DEMOD_RO2, &params, rtl_dsp_bw_hz, output);
-    } else if (opts->analog_only == 1 || opts->m17encoder == 1) {
+    } else if (opts->analog_only == 1 || encoder) {
         params.deemph_default = 1;
         demod_init_mode(demod, DEMOD_ANALOG, &params, rtl_dsp_bw_hz, output);
         if (dsd_opts_is_analog_family(opts)) {
@@ -593,7 +600,10 @@ rtl_demod_init_for_mode(struct demod_state* demod, struct output_state* output, 
     } else {
         demod_init_mode(demod, DEMOD_DIGITAL, &params, rtl_dsp_bw_hz, output);
     }
-    demod->cqpsk_enable = (opts->mod_qpsk == 1) ? 1 : 0;
+    demod->cqpsk_enable = (!encoder && opts->mod_qpsk == 1) ? 1 : 0;
+    /* Written on every open: the global demod outlives a session. The dynamic squelch runs on the encoder's monitor
+       (dsd_demod_encoder_monitor_active()). */
+    demod->m17_encoder_monitor = encoder;
     demod_apply_output_kind(demod, opts);
 }
 
