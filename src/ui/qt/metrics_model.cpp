@@ -904,7 +904,9 @@ MetricsModel::fillSquelchOverride(View& next, const dsd_opts* opts_snapshot, con
 
 /* Issue #525: the analog width the Radio sheet shows and the configured one its control edits, as app_control's analog
  * width view decides them for every frontend (the terminal's "Analog:" status field too). Issue #526: an analog scan
- * row on air shows its width on any session, and one that sets its own flags the row override the sheet badges. */
+ * row on air shows its width on any session, and one that sets its own flags the row override the sheet badges.
+ * Issue #621: on audio input with a rigctl peer the same readings are the peer's passband, which the monitor's
+ * Passband sheet edits. */
 void
 MetricsModel::fillAnalogChannel(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot,
                                 const dsd_frontend_metrics& metrics) {
@@ -929,6 +931,18 @@ MetricsModel::fillAnalogChannel(View& next, const dsd_opts* opts_snapshot, const
     char reading[DSD_APP_ANALOG_WIDTH_TEXT_MAX];
     (void)dsd_app_analog_width_view_format(&view, reading, sizeof reading);
     next.analog_bandwidth_reading = QString::fromUtf8(reading);
+    /* Issue #621: on audio input with a rigctl peer the width is the passband the peer is asked for, and an unset NFM
+     * setting stands for -B (or the peer's own passband), which the Passband sheet shows and steps an unset width
+     * from. Both kinds from the one snapshot, as the view decides them. */
+    next.peer_passband = view.peer_passband != 0U;
+    next.passband_in_force = view.passband_in_force != 0U;
+    char unset[DSD_APP_ANALOG_WIDTH_TEXT_MAX];
+    (void)dsd_app_analog_width_setting_text(&view, DSD_ANALOG_DEMOD_FM, 0, unset, sizeof unset);
+    next.nfm_bandwidth_unset_text = QString::fromUtf8(unset);
+    (void)dsd_app_analog_width_setting_text(&view, DSD_ANALOG_DEMOD_AM, 0, unset, sizeof unset);
+    next.am_bandwidth_unset_text = QString::fromUtf8(unset);
+    next.nfm_bandwidth_unset_hz = dsd_app_analog_width_unset_hz(&view, DSD_ANALOG_DEMOD_FM);
+    next.am_bandwidth_unset_hz = dsd_app_analog_width_unset_hz(&view, DSD_ANALOG_DEMOD_AM);
 }
 
 void

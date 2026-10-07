@@ -116,6 +116,14 @@ class MetricsModel : public QObject {
     Q_PROPERTY(bool analogBandwidthRowOverride READ analogBandwidthRowOverride NOTIFY tunerChanged)
     /* Issue #524: whether the width analogBandwidth* describe is AM's (the preset's kind, or a scan row's on air). */
     Q_PROPERTY(bool analogBandwidthAm READ analogBandwidthAm NOTIFY tunerChanged)
+    /* Issue #621: audio input with a rigctl peer that demodulates it, where the width is the peer's passband, and what
+       an unset setting of each kind stands for there. */
+    Q_PROPERTY(bool peerPassband READ peerPassband NOTIFY tunerChanged)
+    Q_PROPERTY(bool passbandInForce READ passbandInForce NOTIFY tunerChanged)
+    Q_PROPERTY(QString nfmBandwidthUnsetText READ nfmBandwidthUnsetText NOTIFY controlChanged)
+    Q_PROPERTY(QString amBandwidthUnsetText READ amBandwidthUnsetText NOTIFY controlChanged)
+    Q_PROPERTY(int nfmBandwidthUnsetHz READ nfmBandwidthUnsetHz NOTIFY controlChanged)
+    Q_PROPERTY(int amBandwidthUnsetHz READ amBandwidthUnsetHz NOTIFY controlChanged)
     Q_PROPERTY(int slot1CallState READ slot1CallState NOTIFY slot1Changed)
     Q_PROPERTY(int slot2CallState READ slot2CallState NOTIFY slot2Changed)
     Q_PROPERTY(QString slot1CallName READ slot1CallName NOTIFY slot1Changed)
@@ -465,12 +473,14 @@ class MetricsModel : public QObject {
 
     /**
      * @brief The analog channel width in force, in Hz (issue #525); 0 outside the configured analog preset with no
-     * analog scan row on air, and on PCM input, where no channel filter runs.
+     * analog scan row on air, and on PCM input without a rigctl peer, where no channel filter runs.
      *
      * While a running stream runs the analog monitor, the width it reports (the configured width while its channel
      * filter runs, otherwise the width the DSP rate leaves: see analogBandwidthDspLimited()). Otherwise -- a stream not
      * running, a typed digital scan row filtering with its own profile -- the configured width, the kind's default when
-     * none is set. App-control's analog width view decides it, for the terminal's "Analog:" status field too.
+     * none is set. On audio input with a rigctl peer (peerPassband(), issue #621) it is the passband the peer is asked
+     * for, whenever a width is offered (shown or not): 0 for the peer's own passband, and with no width offered.
+     * App-control's analog width view decides it, for the terminal's "Analog:" and "Passband:" status fields too.
      */
     int
     analogBandwidthHz() const {
@@ -499,7 +509,9 @@ class MetricsModel : public QObject {
     /**
      * @brief The configured analog channel width in Hz, 0 for the default: what the width control edits.
      *
-     * Configuration, not a reading, so it is published for any input; the control is only enabled on a radio.
+     * Configuration, not a reading, so it is published for any input. The Radio sheet's control is only enabled on a
+     * radio; on audio input with a rigctl peer (peerPassband(), issue #621) it is the passband the peer is asked for,
+     * which the monitor's Passband sheet edits.
      */
     int
     analogBandwidthConfiguredHz() const {
@@ -537,9 +549,11 @@ class MetricsModel : public QObject {
     }
 
     /**
-     * @brief Whether the Radio sheet offers the NFM channel width for editing (dsd_app_analog_width_offered()).
+     * @brief Whether the controls offer the NFM channel width for editing (dsd_app_analog_width_offered()).
      *
-     * On a radio input: under the NFM preset, or under another preset while an explicit NFM width is set.
+     * On a radio input (the Radio sheet), and on audio input with a rigctl peer (peerPassband(); the monitor's Passband
+     * sheet, issue #621): under the NFM preset, while an nfm scan row is on air, or under another preset while an
+     * explicit NFM width is set.
      */
     bool
     nfmBandwidthOffered() const {
@@ -547,11 +561,13 @@ class MetricsModel : public QObject {
     }
 
     /**
-     * @brief Whether the Radio sheet offers the AM channel width for editing (dsd_app_analog_width_offered()).
+     * @brief Whether the controls offer the AM channel width for editing (dsd_app_analog_width_offered()).
      *
-     * On a radio input: under the AM preset; under another preset while an explicit AM width is set, or while the DSP
-     * rate cannot filter the 6 kHz AM default but filters a narrower AM width, where a switch to AM is refused with
-     * word to narrow the width (issue #524).
+     * On a radio input (the Radio sheet): under the AM preset or while an am scan row is on air; under another preset
+     * while an explicit AM width is set, or while the DSP rate cannot filter the 6 kHz AM default but filters a
+     * narrower AM width, where a switch to AM is refused with word to narrow the width (issue #524). On audio input
+     * with a rigctl peer (peerPassband(); the monitor's Passband sheet, issue #621) the same, less the DSP rate, which
+     * bounds no passband.
      */
     bool
     amBandwidthOffered() const {
@@ -561,8 +577,13 @@ class MetricsModel : public QObject {
     /**
      * @brief The analog width reading, as every frontend spells it: "12.5 kHz", "16 kHz (default)",
      * "12 kHz (DSP-limited)", "12.5 kHz (row; default 16 kHz)" while a scan row sets its own width, or "not used on PCM
-     * input" (dsd_app_analog_width_view_format()); empty outside the configured analog preset with no analog scan row
-     * on air.
+     * input" without a rigctl peer (dsd_app_analog_width_view_format()); empty outside the configured analog preset
+     * with no analog scan row on air.
+     *
+     * On audio input with a rigctl peer (peerPassband(), issue #621) it is the passband the peer is asked for, named by
+     * its source -- "12.5 kHz", "6 kHz (default)", "12.5 kHz (-B)", "peer's own", or
+     * "12.5 kHz (row; default -B 12.5 kHz)" -- whenever a width is offered, a digital session with an explicit width
+     * included (-B there, which every tune asks for), and empty when none is.
      */
     QString
     analogBandwidthReading() const {
@@ -596,6 +617,58 @@ class MetricsModel : public QObject {
     bool
     analogBandwidthAm() const {
         return m_view.analog_bandwidth_am;
+    }
+
+    /**
+     * @brief Whether the session runs on audio input with a rigctl peer (-U) that demodulates it (issue #621): the
+     * analog width is then the passband the peer is asked for, which the monitor's Passband row edits, and no DSP rate
+     * bounds it (dsd_app_analog_width_view::peer_passband).
+     */
+    bool
+    peerPassband() const {
+        return m_view.peer_passband;
+    }
+
+    /**
+     * @brief Whether, on a rigctl peer session, the analog monitor of the kind analogBandwidthAm() names runs now
+     * (dsd_app_analog_width_view::passband_in_force, issue #621): analogBandwidthReading() is then the passband asked
+     * for that kind's setting, and an edit of it is asked of the peer at once. False while a typed digital scan row on
+     * air keeps the peer following at -B, whose reading is not that setting's, and on any other session.
+     */
+    bool
+    passbandInForce() const {
+        return m_view.passband_in_force;
+    }
+
+    /**
+     * @brief An unset NFM width as the session reads it (dsd_app_analog_width_setting_text()): with a rigctl peer, what
+     * stands in for it ("-B 12.5 kHz", or "peer's own" without -B); elsewhere "default".
+     */
+    QString
+    nfmBandwidthUnsetText() const {
+        return m_view.nfm_bandwidth_unset_text;
+    }
+
+    /** @brief An unset AM width as the session reads it: "default" (dsd_app_analog_width_setting_text()). */
+    QString
+    amBandwidthUnsetText() const {
+        return m_view.am_bandwidth_unset_text;
+    }
+
+    /**
+     * @brief The width, in Hz, an unset NFM setting stands for (dsd_app_analog_width_unset_hz()): with a rigctl peer
+     * -B, 0 for the peer's own passband; elsewhere the 16 kHz default. Where an "All channels" step of an unset NFM
+     * width starts, never from a scan row's own width.
+     */
+    int
+    nfmBandwidthUnsetHz() const {
+        return m_view.nfm_bandwidth_unset_hz;
+    }
+
+    /** @brief The width, in Hz, an unset AM setting stands for: the 6 kHz default (dsd_app_analog_width_unset_hz()). */
+    int
+    amBandwidthUnsetHz() const {
+        return m_view.am_bandwidth_unset_hz;
     }
 
     /**
@@ -1716,7 +1789,12 @@ class MetricsModel : public QObject {
         int nfm_bandwidth_configured_hz = 0;
         int am_bandwidth_configured_hz = 0;
         int analog_bandwidth_max_hz = 0;
+        /* Issue #621: the width an unset setting of each kind stands for, and how the session spells it. */
+        int nfm_bandwidth_unset_hz = 0;
+        int am_bandwidth_unset_hz = 0;
         QString analog_bandwidth_reading;
+        QString nfm_bandwidth_unset_text;
+        QString am_bandwidth_unset_text;
         int decode_mode = 0;
         int configured_force = 0;
         int effective_force = 0;
@@ -1729,6 +1807,9 @@ class MetricsModel : public QObject {
         bool analog_bandwidth_row_active = false;
         bool analog_bandwidth_row_override = false;
         bool analog_bandwidth_am = false;
+        /* Issue #621: audio input with a rigctl peer that demodulates it, and whether the reading's kind runs now. */
+        bool peer_passband = false;
+        bool passband_in_force = false;
         QVariantList decryption_slots;
         int modulation = 0;
         int tuner_gain_db = 0;
@@ -1842,7 +1923,22 @@ class MetricsModel : public QObject {
                    && analog_bandwidth_row_override == other.analog_bandwidth_row_override
                    && analog_bandwidth_am == other.analog_bandwidth_am
                    && nfm_bandwidth_offered == other.nfm_bandwidth_offered
-                   && am_bandwidth_offered == other.am_bandwidth_offered;
+                   && am_bandwidth_offered == other.am_bandwidth_offered && peer_passband == other.peer_passband
+                   && passband_in_force == other.passband_in_force;
+        }
+
+        /* The configured widths the controls edit, and what an unset one stands for (#621), ride controlChanged; split
+           out of radioControlsEqual so it stays under the complexity ceiling. */
+        bool
+        analogSettingEquals(const View& other) const {
+            return analog_bandwidth_configured_hz == other.analog_bandwidth_configured_hz
+                   && analog_bandwidth_setting_hz == other.analog_bandwidth_setting_hz
+                   && nfm_bandwidth_configured_hz == other.nfm_bandwidth_configured_hz
+                   && am_bandwidth_configured_hz == other.am_bandwidth_configured_hz
+                   && nfm_bandwidth_unset_hz == other.nfm_bandwidth_unset_hz
+                   && am_bandwidth_unset_hz == other.am_bandwidth_unset_hz
+                   && nfm_bandwidth_unset_text == other.nfm_bandwidth_unset_text
+                   && am_bandwidth_unset_text == other.am_bandwidth_unset_text;
         }
 
         /* The scan controls (#380) ride controlChanged with the rest; split out only so
@@ -1908,11 +2004,7 @@ class MetricsModel : public QObject {
                    && tuner_gain_configured_db == other.tuner_gain_configured_db
                    && tuner_gain_row_override == other.tuner_gain_row_override && squelch_db == other.squelch_db
                    && squelch_off == other.squelch_off && ppm == other.ppm && airspy == other.airspy
-                   && squelchOverrideEquals(other)
-                   && analog_bandwidth_configured_hz == other.analog_bandwidth_configured_hz
-                   && analog_bandwidth_setting_hz == other.analog_bandwidth_setting_hz
-                   && nfm_bandwidth_configured_hz == other.nfm_bandwidth_configured_hz
-                   && am_bandwidth_configured_hz == other.am_bandwidth_configured_hz && scanRowEquals(other);
+                   && squelchOverrideEquals(other) && analogSettingEquals(other) && scanRowEquals(other);
         }
 
         bool
@@ -1985,8 +2077,8 @@ class MetricsModel : public QObject {
     static void fillTunerGain(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot);
     static void fillSquelchOverride(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot);
     static void fillScanRow(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot);
-    /** @brief The analog channel width in force and the configured one (#525), and the analog (nfm or am) scan row on
-     * air (#526). */
+    /** @brief The analog channel width in force and the configured one (#525), the analog (nfm or am) scan row on air
+     * (#526), and on audio input with a rigctl peer the passband and what an unset width stands for (#621). */
     static void fillAnalogChannel(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot,
                                   const dsd_frontend_metrics& metrics);
     /** @brief Listening settings, talkgroup Hold, and lockout state from the held snapshot. */

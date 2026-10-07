@@ -2427,6 +2427,16 @@ class Setup : public QObject {
         metrics[QStringLiteral("analogBandwidthRowOverride")] = false;
         // #524: whether the width the analogBandwidth* keys describe is AM's (the preset's kind, or a row's on air).
         metrics[QStringLiteral("analogBandwidthAm")] = false;
+        // #621: audio input with a rigctl peer that demodulates it, where the width is the passband the peer is asked
+        // for, and what an unset width of each kind stands for ("-B 12.5 kHz" or "peer's own" for NFM on a peer
+        // session; "default", 16 kHz NFM and 6 kHz AM elsewhere).
+        metrics[QStringLiteral("peerPassband")] = false;
+        // #621: whether the reading's kind runs now on a peer session (not while a typed digital row keeps it at -B).
+        metrics[QStringLiteral("passbandInForce")] = false;
+        metrics[QStringLiteral("nfmBandwidthUnsetText")] = QStringLiteral("default");
+        metrics[QStringLiteral("amBandwidthUnsetText")] = QStringLiteral("default");
+        metrics[QStringLiteral("nfmBandwidthUnsetHz")] = 16000;
+        metrics[QStringLiteral("amBandwidthUnsetHz")] = 6000;
         metrics[QStringLiteral("ppm")] = 0;
         m_metrics = metrics;
         m_engine = engine;

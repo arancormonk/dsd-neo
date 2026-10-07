@@ -1195,10 +1195,173 @@ test_scan_row() {
     freeState(&state);
 }
 
+/* Issue #621: on audio input with a rigctl peer (-U) that demodulates it, the analog width is the passband the peer is
+ * asked for. The monitor's Passband row offers it, no DSP rate bounds it, and an unset NFM width stands for -B (or the
+ * peer's own passband without one), which the sheet shows and steps from. Without the peer PCM input filters nothing,
+ * and a radio input has a channel filter instead. */
+static void
+test_rigctl_audio_passband() {
+    static dsd_opts opts;
+    static dsd_state state;
+    initOpts(&opts);
+    initState(&state);
+    dsd_qt::MetricsModel model;
+    int tuner = 0;
+    int controls = 0;
+    QObject::connect(&model, &dsd_qt::MetricsModel::tunerChanged, [&]() { ++tuner; });
+    QObject::connect(&model, &dsd_qt::MetricsModel::controlChanged, [&]() { ++controls; });
+
+    opts.audio_in_type = AUDIO_IN_TCP;
+    opts.analog_only = 0;
+    opts.analog_demod = DSD_ANALOG_DEMOD_FM;
+    opts.analog_nfm_bandwidth_hz = 0;
+    opts.analog_am_bandwidth_hz = 0;
+    opts.setmod_bw = 12500;
+    opts.use_rigctl = 0;
+    opts.rigctl_sockfd = DSD_INVALID_SOCKET;
+
+    /* A digital session with no width set: the peer changes no reading and offers nothing, so the flag alone moves the
+     * tuner group, and the spelling of an unset width (-B 16 kHz, the same width as the default) the control group. */
+    opts.setmod_bw = 16000;
+    model.refresh(&opts, &state);
+    int tuner_before = tuner;
+    int controls_before = controls;
+    opts.use_rigctl = 1;
+    opts.rigctl_sockfd = (dsd_socket_t)5;
+    model.refresh(&opts, &state);
+    expect("digital peer: the passband flag", model.peerPassband() && model.analogBandwidthReading().isEmpty()
+                                                  && !model.nfmBandwidthOffered() && !model.amBandwidthOffered());
+    expect("digital peer: the flag alone moves the tuner group", tuner == tuner_before + 1);
+    expect("digital peer: no analog monitor runs, so no passband is in force", !model.passbandInForce());
+    expect("digital peer: the spelling alone moves the control group",
+           controls == controls_before + 1 && model.nfmBandwidthUnsetText() == QStringLiteral("-B 16 kHz")
+               && model.nfmBandwidthUnsetHz() == 16000);
+    /* An explicit NFM default on the digital session offers the NFM width, and the reading is what the peer is asked
+     * for now, FM at -B, under a typed digital row on air as well: never the configured width, which nothing asks
+     * for (the Passband row's summary and the terminal's field read it). */
+    opts.analog_nfm_bandwidth_hz = 20000;
+    opts.setmod_bw = 12500;
+    expect("digital peer: typed digital row", dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_DMR) == 0);
+    expect("digital peer: typed digital row options", dsd_scan_mode_options(&opts, &state, nullptr) == 0);
+    model.refresh(&opts, &state);
+    expect("digital peer, explicit width: NFM offered", model.nfmBandwidthOffered() && !model.passbandInForce());
+    expect("digital peer, explicit width: the reading is -B",
+           model.analogBandwidthReading() == QStringLiteral("12.5 kHz (-B)") && !model.analogBandwidthAm());
+    dsd_scan_mode_leave(&opts, &state);
+    model.refresh(&opts, &state);
+    expect("digital peer, explicit width, no row: the reading is -B",
+           model.analogBandwidthReading() == QStringLiteral("12.5 kHz (-B)"));
+    opts.analog_nfm_bandwidth_hz = 0;
+    opts.setmod_bw = 16000;
+    model.refresh(&opts, &state);
+    expect("digital peer, no width: no reading", model.analogBandwidthReading().isEmpty());
+    opts.use_rigctl = 0;
+    opts.rigctl_sockfd = DSD_INVALID_SOCKET;
+    opts.setmod_bw = 12500;
+
+    /* The analog FM monitor (-fA) without the peer. */
+    opts.analog_only = 1;
+    model.refresh(&opts, &state);
+    expect("no peer: no passband", !model.peerPassband());
+    expect("no peer: no width offered", !model.nfmBandwidthOffered() && !model.amBandwidthOffered());
+    expect("no peer: PCM input filters nothing",
+           model.analogBandwidthReading() == QStringLiteral("not used on PCM input"));
+    expect("no peer: an unset width reads as the default",
+           model.nfmBandwidthUnsetText() == QStringLiteral("default")
+               && model.amBandwidthUnsetText() == QStringLiteral("default"));
+    expect("no peer: an unset width stands for the kind's default",
+           model.nfmBandwidthUnsetHz() == 16000 && model.amBandwidthUnsetHz() == 6000);
+
+    /* The peer connects: the FM monitor asks it for -B, standing in for the unset NFM width. */
+    opts.use_rigctl = 1;
+    opts.rigctl_sockfd = (dsd_socket_t)5;
+    tuner_before = tuner;
+    controls_before = controls;
+    model.refresh(&opts, &state);
+    expect("peer: the passband", model.peerPassband());
+    expect("peer: the FM monitor runs, so its passband is in force", model.passbandInForce());
+    expect("peer: the NFM width offered, AM's not", model.nfmBandwidthOffered() && !model.amBandwidthOffered());
+    expect("peer: no DSP rate bounds the passband", model.analogBandwidthMaxHz() == 0);
+    expect("peer: -B stands in for the unset width", model.analogBandwidthReading() == QStringLiteral("12.5 kHz (-B)"));
+    expect("peer: an unset NFM width reads as -B, AM's as the default",
+           model.nfmBandwidthUnsetText() == QStringLiteral("-B 12.5 kHz")
+               && model.amBandwidthUnsetText() == QStringLiteral("default"));
+    expect("peer: an unset NFM width steps from -B, AM's from its default",
+           model.nfmBandwidthUnsetHz() == 12500 && model.amBandwidthUnsetHz() == 6000);
+    expect("peer: the flag moves the tuner group", tuner == tuner_before + 1);
+    expect("peer: the stand-ins move the control group", controls == controls_before + 1);
+
+    /* With the NFM width unset a typed digital row on air asks for the same -B, so the reading holds, and the flag
+     * alone moves the tuner group. */
+    expect("peer: typed digital row over -B", dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_DMR) == 0);
+    expect("peer: typed digital row over -B options", dsd_scan_mode_options(&opts, &state, nullptr) == 0);
+    tuner_before = tuner;
+    model.refresh(&opts, &state);
+    expect("peer: under a typed digital row -B is no setting's passband",
+           model.analogBandwidthReading() == QStringLiteral("12.5 kHz (-B)") && !model.passbandInForce());
+    expect("peer: the in-force flag alone moves the tuner group", tuner == tuner_before + 1);
+    dsd_scan_mode_leave(&opts, &state);
+    model.refresh(&opts, &state);
+    expect("peer: the row's leave puts -B back in force", model.passbandInForce());
+
+    /* An explicit NFM width is the passband asked for; -B still names what an unset one would be. */
+    opts.analog_nfm_bandwidth_hz = 20000;
+    model.refresh(&opts, &state);
+    expect("peer: an explicit width is the passband", model.analogBandwidthReading() == QStringLiteral("20 kHz"));
+    expect("peer: the explicit width is configured", model.nfmBandwidthConfiguredHz() == 20000);
+    expect("peer: -B still stands in for an unset width",
+           model.nfmBandwidthUnsetText() == QStringLiteral("-B 12.5 kHz"));
+
+    /* A typed digital row on air keeps the peer following at -B: the reading is not the configured width's, and the
+     * flag alone says so, the configured width staying what a step moves. */
+    expect("peer: typed digital row", dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_DMR) == 0);
+    expect("peer: typed digital row options", dsd_scan_mode_options(&opts, &state, nullptr) == 0);
+    model.refresh(&opts, &state);
+    expect("peer: under a typed digital row the peer follows at -B",
+           model.analogBandwidthReading() == QStringLiteral("12.5 kHz (-B)") && !model.passbandInForce());
+    expect("peer: under a typed digital row the configured width stays", model.nfmBandwidthConfiguredHz() == 20000);
+    dsd_scan_mode_leave(&opts, &state);
+    model.refresh(&opts, &state);
+    expect("peer: the row's leave brings the configured passband back",
+           model.analogBandwidthReading() == QStringLiteral("20 kHz") && model.passbandInForce());
+
+    /* -B moves under the explicit width: the reading holds, and only what an unset width stands for changes. */
+    opts.setmod_bw = 16000;
+    tuner_before = tuner;
+    controls_before = controls;
+    model.refresh(&opts, &state);
+    expect("peer: -B under an explicit width leaves the reading",
+           model.analogBandwidthReading() == QStringLiteral("20 kHz") && tuner == tuner_before);
+    expect("peer: -B under an explicit width moves the stand-in",
+           model.nfmBandwidthUnsetText() == QStringLiteral("-B 16 kHz") && model.nfmBandwidthUnsetHz() == 16000
+               && controls == controls_before + 1);
+
+    /* Neither a width nor -B: the peer keeps its own passband. */
+    opts.analog_nfm_bandwidth_hz = 0;
+    opts.setmod_bw = 0;
+    model.refresh(&opts, &state);
+    expect("peer: without -B the peer's own passband", model.analogBandwidthReading() == QStringLiteral("peer's own"));
+    expect("peer: an unset width stands for the peer's own",
+           model.nfmBandwidthUnsetText() == QStringLiteral("peer's own") && model.nfmBandwidthUnsetHz() == 0);
+
+    /* A radio input has a channel filter, whatever rigctl follows. */
+    opts.setmod_bw = 12500;
+    opts.audio_in_type = AUDIO_IN_RTL;
+    model.refresh(&opts, &state);
+    expect("radio input: no peer passband", !model.peerPassband() && model.radioInput());
+    expect("radio input: an unset width is the default",
+           model.nfmBandwidthUnsetText() == QStringLiteral("default") && model.nfmBandwidthUnsetHz() == 16000);
+
+    opts.use_rigctl = 0;
+    opts.rigctl_sockfd = DSD_INVALID_SOCKET;
+    freeState(&state);
+}
+
 int
 main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
     test_scan_row();
+    test_rigctl_audio_passband();
     test_options_readiness();
     test_decode_clock_readings();
     test_temporary_lockout_metrics();

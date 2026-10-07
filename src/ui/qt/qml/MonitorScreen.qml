@@ -16,6 +16,7 @@ Item {
             networkSheet.visible = false;
             toneFilterSheet.visible = false;
             squelchSheet.visible = false;
+            passbandSheet.visible = false;
             historyDetail.visible = false;
             otherSlotMenu.visible = false;
         }
@@ -1063,6 +1064,53 @@ Item {
                 }
             }
 
+            // The passband on audio input with a rigctl peer (#621): the peer
+            // demodulates the audio, so the analog width is the passband it is
+            // asked for, read as the terminal's Passband field spells it ("NFM
+            // 12.5 kHz (-B)", "NFM peer's own"). On a radio input the Radio
+            // sheet has the width; here, with no tuner, the monitor is where it
+            // is set. A Flow, as the squelch row is, so the button moves under a
+            // long reading.
+            Flow {
+                // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
+                objectName: "monitorPassband"
+
+                width: parent.width
+                spacing: 5
+                visible: metrics.peerPassband === true
+                    && (metrics.nfmBandwidthOffered === true || metrics.amBandwidthOffered === true)
+
+                Text {
+                    objectName: "monitorPassbandLabel"
+
+                    text: qsTr("PASSBAND")
+                    font.family: Theme.mono
+                    font.pixelSize: Theme.fontSize(11)
+                    color: Theme.textSubdued
+                }
+
+                Text {
+                    objectName: "monitorPassbandValue"
+
+                    width: Math.min(implicitWidth, parent.width)
+                    text: passbandSheet.summary
+                    textFormat: Text.PlainText
+                    wrapMode: Text.Wrap
+                    font.family: Theme.mono
+                    font.pixelSize: Theme.fontSize(11)
+                    color: Theme.textSubdued
+                }
+
+                OutlineButton {
+                    objectName: "monitorPassbandEdit"
+
+                    text: qsTr("Edit")
+                    accessibleName: qsTr("Edit passband")
+                    enabled: decoderHost.running
+                    onClicked: passbandSheet.openEditor()
+                }
+            }
+
             // Why the scan stopped moving (#380): channels or targets the operator
             // avoided for the session, with the way to put them back. Hidden at zero
             // and outside any rotation, so an idle session never carries a 0. The
@@ -1267,6 +1315,12 @@ Item {
     // #628: the squelch on audio input, over the monitor like the tone-filter editor.
     SquelchSheet {
         id: squelchSheet
+        z: 10
+    }
+
+    // #621: the passband a rigctl peer is asked for on audio input, over the monitor like the squelch editor.
+    PassbandSheet {
+        id: passbandSheet
         z: 10
     }
 
