@@ -13,7 +13,11 @@
 #
 # RUNS is a ;-list of legs; a leg joins one or more parts with '+':
 #   fast | realtime        --iq-replay-rate (fast when neither is given)
-#   jitter:SEED:MAX_MS     --replay-jitter-seed SEED --replay-jitter-max-ms MAX_MS
+#   jitter:SEED:MAX_MS[:EVERY[:AFTER_MS]]
+#                          --replay-jitter-seed SEED --replay-jitter-max-ms MAX_MS,
+#                          and --replay-jitter-every EVERY when given; with
+#                          AFTER_MS the leg must sleep after a read that ended
+#                          at or past AFTER_MS of capture time
 #   short:SEED             --replay-short-reads SEED
 #   sink:free|sink:stalled --replay-sink MODE, with -o pulse in place of -o null
 #
@@ -29,7 +33,12 @@
 #
 # Each leg must also show that its perturbation happened, or the comparison
 # proves nothing. The host's REPLAY JITTER line must report sleeps=N > 0 on a
-# leg with a jitter part and shortened_reads=N > 0 on one with a short part,
+# leg with a jitter part (a sleep with a positive delay after a read that
+# returned samples), last_sleep_media_ms=L >= AFTER_MS on one that names
+# AFTER_MS (so the perturbation reaches past the case's retune, gap or squelch
+# edge rather than spending its budget before it), and shortened_reads=N > 0
+# (reads the cap made return fewer samples than their batch held) on one with a
+# short part,
 # and a realtime leg must take at least 90 % of the air time its REPLAY STREAM
 # line reports (media_ms) in wall time. The host times its own engine run on
 # the real-time monotonic clock and prints one REPLAY WALL: wall_ms=W line,
@@ -109,11 +118,19 @@ string(ASCII 27 _esc)
 
 # Host arguments, audio output and perturbations (jitter, short, realtime) for
 # one leg spec.
-function(_leg_args leg out_args out_output out_perturbations)
+function(
+    _leg_args
+    leg
+    out_args
+    out_output
+    out_perturbations
+    out_jitter_after
+)
     set(_args)
     set(_output null)
     set(_rate)
     set(_perturbations)
+    set(_jitter_after)
     string(REPLACE "+" ";" _parts "${leg}")
     foreach(_part IN LISTS _parts)
         if(_part STREQUAL "fast" OR _part STREQUAL "realtime")
@@ -124,7 +141,9 @@ function(_leg_args leg out_args out_output out_perturbations)
                 )
             endif()
             set(_rate "${_part}")
-        elseif(_part MATCHES "^jitter:([0-9]+):([0-9]+)$")
+        elseif(
+            _part MATCHES "^jitter:([0-9]+):([0-9]+)(:([0-9]+)(:([0-9]+))?)?$"
+        )
             list(
                 APPEND _args
                 --replay-jitter-seed
@@ -132,6 +151,12 @@ function(_leg_args leg out_args out_output out_perturbations)
                 --replay-jitter-max-ms
                 "${CMAKE_MATCH_2}"
             )
+            if(NOT "${CMAKE_MATCH_4}" STREQUAL "")
+                list(APPEND _args --replay-jitter-every "${CMAKE_MATCH_4}")
+            endif()
+            if(NOT "${CMAKE_MATCH_6}" STREQUAL "")
+                set(_jitter_after "${CMAKE_MATCH_6}")
+            endif()
             list(APPEND _perturbations jitter)
         elseif(_part MATCHES "^short:([0-9]+)$")
             list(APPEND _args --replay-short-reads "${CMAKE_MATCH_1}")
@@ -156,6 +181,7 @@ function(_leg_args leg out_args out_output out_perturbations)
     set(${out_args} "${_args}" PARENT_SCOPE)
     set(${out_output} "${_output}" PARENT_SCOPE)
     set(${out_perturbations} "${_perturbations}" PARENT_SCOPE)
+    set(${out_jitter_after} "${_jitter_after}" PARENT_SCOPE)
 endfunction()
 
 # One stream's text as a list of normalized lines: decoder lines in order
@@ -281,7 +307,7 @@ set(_index 0)
 foreach(_leg IN LISTS RUNS)
     math(EXPR _leg_number "${_index} + 1")
     set(_label "#${_leg_number} ${_leg}")
-    _leg_args("${_leg}" _leg_extra _leg_output _leg_perturbations)
+    _leg_args("${_leg}" _leg_extra _leg_output _leg_perturbations _leg_jitter_after)
     execute_process(
         COMMAND
             "${HOST_BIN}" --frontend none ${_mode_args} ${_leg_extra}
@@ -375,6 +401,22 @@ foreach(_leg IN LISTS RUNS)
                 "iq_determinism_check: leg ${_label}: a jitter leg that slept after no read perturbed nothing "
                 "(${_jitter_lines})"
             )
+        endif()
+        if(NOT "${_leg_jitter_after}" STREQUAL "")
+            if(NOT _jitter_lines MATCHES " last_sleep_media_ms=([0-9]+)")
+                message(
+                    FATAL_ERROR
+                    "iq_determinism_check: leg ${_label}: no last_sleep_media_ms on the host's REPLAY JITTER line "
+                    "(${_jitter_lines})"
+                )
+            endif()
+            if(CMAKE_MATCH_1 LESS _leg_jitter_after)
+                message(
+                    FATAL_ERROR
+                    "iq_determinism_check: leg ${_label}: a jitter leg whose last sleep came at ${CMAKE_MATCH_1} ms of "
+                    "capture time, before ${_leg_jitter_after} ms, perturbed nothing past it (${_jitter_lines})"
+                )
+            endif()
         endif()
     endif()
     if(NOT _short_at EQUAL -1)

@@ -2026,6 +2026,32 @@ add_test(
     COMMAND dsd-neo_test_runtime_input_ring_init
 )
 
+# A commit between the reader's first look at an empty input ring and its lock is read
+# without waiting out the 10 ms timeout. GNU ld --wrap puts the commit exactly there, so
+# the case exists only where that links, like the other wrap tests.
+if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
+    add_executable(
+        dsd-neo_test_runtime_input_ring_wakeup
+        runtime/test_runtime_input_ring_wakeup.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_runtime_input_ring_wakeup
+        PRIVATE ${PROJECT_SOURCE_DIR}/include
+    )
+    target_link_libraries(
+        dsd-neo_test_runtime_input_ring_wakeup
+        PRIVATE dsd-neo_runtime
+    )
+    target_link_options(
+        dsd-neo_test_runtime_input_ring_wakeup
+        PRIVATE "LINKER:--wrap=dsd_mutex_lock"
+    )
+    add_test(
+        NAME RUNTIME_INPUT_RING_WAKEUP
+        COMMAND dsd-neo_test_runtime_input_ring_wakeup
+    )
+endif()
+
 add_executable(
     dsd-neo_test_runtime_frame_sync_hooks
     runtime/test_runtime_frame_sync_hooks.c
@@ -11694,6 +11720,45 @@ if(DSD_HAS_RADIO)
         COMMAND dsd-neo_test_io_rtl_replay_eof_and_cf32
     )
 
+    # Issue #626: a replay's demod block (one capture chunk) is at most one live transfer,
+    # so the level squelch and every other per-block decision run at a live receiver's
+    # cadence; on nfm_burst_synth a level gate opens and closes within one block of the
+    # carrier's edges.
+    add_executable(
+        dsd-neo_test_io_rtl_replay_chunking
+        io/test_io_rtl_replay_chunking.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_io_rtl_replay_chunking
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/io/radio
+            ${PROJECT_SOURCE_DIR}/tests/test_support
+    )
+    target_compile_definitions(
+        dsd-neo_test_io_rtl_replay_chunking
+        PRIVATE
+            "DSD_NEO_TEST_IQ_FIXTURE_DIR=\"${PROJECT_SOURCE_DIR}/tests/fixtures/iq\""
+    )
+    target_link_libraries(
+        dsd-neo_test_io_rtl_replay_chunking
+        PRIVATE
+            dsd-neo_io_radio_private_test_support
+            dsd-neo_io_iq
+            dsd-neo_core
+            dsd-neo_test_support
+    )
+    if(DSD_HAS_RTLSDR)
+        target_link_libraries(
+            dsd-neo_test_io_rtl_replay_chunking
+            PRIVATE ${RTLSDR_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT}
+        )
+    endif()
+    add_test(
+        NAME IO_RTL_REPLAY_CHUNKING
+        COMMAND dsd-neo_test_io_rtl_replay_chunking
+    )
+
     add_executable(
         dsd-neo_test_io_rtl_replay_determinism
         io/test_io_rtl_replay_determinism.cpp
@@ -12788,24 +12853,52 @@ if(DSD_HAS_RADIO)
         )
     endfunction()
 
+    # A jitter leg that names AFTER_MS must sleep after a read that ended there or
+    # later: a leg whose budget runs out before its case's retune, gap or squelch edge
+    # perturbs nothing past it. Negative control: AFTER_MS 99999 lies past the end of
+    # nfm_burst_synth's 750 ms, so the runner must fail the leg on that check (its
+    # message is printed only by that FATAL_ERROR, which CMake wraps at spaces).
+    add_test(
+        NAME DECODE_IQ_NEG_DETERMINISM_JITTER_AFTER
+        COMMAND
+            ${CMAKE_COMMAND}
+            "-DHOST_BIN=$<TARGET_FILE:dsd-neo_test_replay_jitter>" "-DMODE=-fA"
+            "-DFIXTURE=${_DSD_NEO_IQ_FIXTURE_DIR}/nfm_burst_synth.iq.json"
+            "-DRUNS=fast;jitter:7:120:64:99999" "-DEXPECTED=REPLAY STREAM"
+            "-DMIN_FSK=0" "-DMIN_CQPSK=0" "-DMIN_TOTAL=0" -P
+            "${CMAKE_CURRENT_SOURCE_DIR}/iq_determinism_check.cmake"
+    )
+    set_tests_properties(
+        DECODE_IQ_NEG_DETERMINISM_JITTER_AFTER
+        PROPERTIES
+            LABELS "iq-decode;iq-determinism"
+            TIMEOUT 600
+            PASS_REGULAR_EXPRESSION
+                "before[ \n]+99999[ \n]+ms,[ \n]+perturbed[ \n]+nothing[ \n]+past[ \n]+it"
+    )
+
     # nxdn48_after_retune under -fa: the SPS hunt, the RETUNE/MUTE/RESET/MUTE group and the
     # call after it. Two fast replays, two with seeded sleeps after reads and one with short
-    # reads must match the first. Each leg measured fsk_samples=582330 cqpsk_symbols=8189
+    # reads must match the first. Each leg measured fsk_samples=605114 cqpsk_symbols=5342
     # generation_changes=3 media_ms=13679.666666 (13.5 s of samples plus the two MUTEs): the
-    # hunt runs the front end on its CQPSK path (6000 symbols/s, 8 samples each) for 1.37 s,
+    # hunt runs the front end on its CQPSK path (6000 symbols/s, 8 samples each) for 0.89 s,
     # so the legs cross output kinds and generations, and the FSK samples and CQPSK symbols
-    # together cover all but 158 of the capture's 648,000 samples. The verbatim REPLAY
+    # together cover all but 150 of the capture's 648,000 samples. The verbatim REPLAY
     # STREAM comparison already catches a leg that reads less than the others; the floors
     # catch every leg reading too little, and are sized to survive a legitimate change to
     # the hunt's visit and credit accounting. One CQPSK dwell is a fixed 3 passes x 1800 =
-    # 5,400 symbols (DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS); the other ~2.8k of the 8,189
-    # come from that accounting. MIN_CQPSK 5,000 sits just under one dwell, so it still
-    # proves the hunt dwelt on the CQPSK path. The FSK count moves the other way:
-    # 648,000 - 158 - 8 x cqpsk_symbols. MIN_FSK 535,000 is the measured 582,330 less one
-    # more full CQPSK dwell (5,400 x 8 = 43,200 samples, leaving 539,130) and a little
-    # more, and it still holds 83 % of the capture to the FSK path. The two together,
-    # 582,330 + 8 x 8,189 = 647,842 front-end samples, do not depend on that split at all,
-    # so MIN_TOTAL 647,000 holds every leg to all but 1,000 of the capture's 648,000.
+    # 5,400 symbols (DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS), and the hunt's request to leave
+    # the path lands at the next replay block, so the count is about one dwell (with 64 KiB
+    # blocks, 683 ms of this capture, the request landed up to a block late and the count
+    # was 8,189). MIN_CQPSK 5,000 sits just under one dwell, so it still proves the hunt
+    # dwelt on the CQPSK path. The FSK count moves the other way: 648,000 - 150 - 8 x
+    # cqpsk_symbols. MIN_FSK 535,000 is the measured 605,114 less one more full CQPSK dwell
+    # (5,400 x 8 = 43,200 samples, leaving 561,914) and room to spare, and it still holds
+    # 83 % of the capture to the FSK path. The two together, 605,114 + 8 x 5,342 = 647,850
+    # front-end samples, do not depend on that split at all, so MIN_TOTAL 647,000 holds
+    # every leg to all but 1,000 of the capture's 648,000.
+    # The jitter legs must still be sleeping past the RETUNE/MUTE/RESET/MUTE group, which
+    # ends at 7,680 ms of capture time (7.5 s of samples and the two MUTEs): AFTER_MS 7700.
     set(_nxdn48_retune_min_fsk 535000)
     set(_nxdn48_retune_min_cqpsk 5000)
     set(_nxdn48_retune_min_total 647000)
@@ -12813,7 +12906,7 @@ if(DSD_HAS_RADIO)
         DECODE_IQ_NXDN48_AFTER_RETUNE_AUTO_DETERMINISM
         nxdn48_after_retune
         -fa
-        "fast;fast;jitter:7:120;jitter:11:120;short:13"
+        "fast;fast;jitter:7:120:128:7700;jitter:11:120:128:7700;short:13"
         "Src=901"
         ${_nxdn48_retune_min_fsk}
         ${_nxdn48_retune_min_cqpsk}
@@ -12845,7 +12938,7 @@ if(DSD_HAS_RADIO)
         DECODE_IQ_NXDN48_AFTER_RETUNE_AUTO_DETERMINISM_REALTIME_JITTER
         nxdn48_after_retune
         -fa
-        "fast;realtime+jitter:17:120"
+        "fast;realtime+jitter:17:120:128:7700"
         "Src=901"
         ${_nxdn48_retune_min_fsk}
         ${_nxdn48_retune_min_cqpsk}
@@ -12861,7 +12954,10 @@ if(DSD_HAS_RADIO)
         # same samples (the burst's 280 ms, 14 writes of 960). The monitor reads one
         # sample at a time, so there is no read for a short-read leg to cut, and 280 ms
         # of audio cannot back up a stalled sink; the NXDN case below covers that. The
-        # noise squelch gates the same way (its 240 ms, 12 writes).
+        # noise squelch gates the same way (its 240 ms, 12 writes), and so does the level
+        # squelch at a live block's cadence (its 260 ms, 13 writes). One read a sample would
+        # spend the jitter budget in the first 30 ms, so the jitter legs sleep after about
+        # one read in 1,500 and must still be sleeping past the carrier's end (550 ms).
         foreach(
             _sql_case
             IN
@@ -12869,6 +12965,8 @@ if(DSD_HAS_RADIO)
                 "AUTO_NFM;nfm_burst_synth;-fA --squelch auto"
                 "AUTO_AM;am_burst_synth;-fM --squelch auto"
                 "NOISE_NFM;nfm_burst_synth;-fA --squelch noise"
+                "LEVEL_NFM;nfm_burst_synth;-fA --squelch -28"
+                "LEVEL_AM;am_burst_synth;-fM --squelch -30"
         )
             list(GET _sql_case 0 _sql_kind)
             list(GET _sql_case 1 _sql_fixture)
@@ -12877,7 +12975,7 @@ if(DSD_HAS_RADIO)
                 DECODE_IQ_ANALOG_SQL_${_sql_kind}_DETERMINISM
                 ${_sql_fixture}
                 "${_sql_mode}"
-                "sink:free;sink:free+jitter:7:120;sink:free+jitter:11:120;sink:free+realtime"
+                "sink:free;sink:free+jitter:7:120:1500:550;sink:free+jitter:11:120:1500:550;sink:free+realtime"
                 "monitor_samples=359[0-9][0-9] .*REPLAY SINK: stream=0 rate=48000 channels=1 async=1 writes=1[1-6] "
                 0
                 0
@@ -12897,53 +12995,57 @@ if(DSD_HAS_RADIO)
     endif()
     # The input-level advisories are decoder lines too, compared like the rest: their 10 s
     # cooldown runs on decode time (dsd_input_level_publish()), so a replay prints each at the
-    # same capture time however fast it runs. nxdn48_gap (DERIVED_GAP in
-    # tools/build_iq_fixtures.py) is a sidecar on nxdn48's data, RF HOT throughout, with a
-    # 12 s capture gap (a MUTE) 4 s in: every leg warns 3 s into the capture and again 17 s
-    # in, after the gap, and decodes the call between the two. On real time a fast leg
-    # finished before the cooldown ran out and printed only the first. Each leg measured
-    # fsk_samples=287933 cqpsk_symbols=0 media_ms=18000 (all but 67 of the capture's 288,000
-    # samples, plus the gap); the floors sit just under that.
+    # same capture time however fast it runs. ysf_gap (DERIVED_GAP in
+    # tools/build_iq_fixtures.py) is a sidecar on ysf's data, RF HOT in every block a replay
+    # hands the demod, with a 12 s capture gap (a MUTE) 4 s in: every leg warns as the replay
+    # starts and again 16 s in, right after the gap, and decodes the repeater's frames
+    # between the two. On real time a fast leg finished before the cooldown ran out and
+    # printed only the first. Each leg measured fsk_samples=287933 cqpsk_symbols=0
+    # media_ms=18000 (all but 67 of the capture's 288,000 samples, plus the gap); the floors
+    # sit just under that. The jitter leg must still be sleeping after the gap, which ends at
+    # 16 s of capture time.
     dsd_neo_add_iq_determinism_test(
-        DECODE_IQ_NXDN48_GAP_ADVISORY_DETERMINISM
-        nxdn48_gap
-        -fi
-        "fast;realtime;jitter:29:120"
-        "RF Level HOT.*Src=901.*RF Level HOT"
+        DECODE_IQ_YSF_GAP_ADVISORY_DETERMINISM
+        ysf_gap
+        -fy
+        "fast;realtime;jitter:29:120:64:16000"
+        "RF Level HOT.*Repeater CC.*RF Level HOT"
         287000
         0
         287000
     )
     # The end of a replay must not reach the decoder before it has decoded the last samples.
-    # rf_clip (DERIVED_CLIP in tools/build_iq_fixtures.py) is 4,096 pairs on the cu8 rails,
-    # one chunk, which the decoder takes in a single read: the CLIP advisory it prints comes
-    # from input-level polls made while it decodes that read's samples, with the next read
-    # the one that ends the stream. Ending the stream on the read that took the last samples
-    # cleared the level under those polls whenever the reader had reached EOF by then, as a
-    # fast replay had and a realtime one still pacing had not: only the realtime and
-    # short-read legs warned. The jitter host sleeps after about one read in 64, so with two
-    # reads a jitter leg would sleep never. Each leg measured fsk_samples=0
-    # cqpsk_symbols=402 media_ms=85.333333; MIN_CQPSK 400 and MIN_TOTAL 3,200 (8 x 400) sit
-    # just under it.
+    # rf_clip (DERIVED_CLIP in tools/build_iq_fixtures.py) is two replay chunks of an
+    # in-range tone and then one chunk on the cu8 rails. The decoder polls the input level
+    # every 64 symbols, and its poll at symbol 64 (of 70) lands while it decodes the last
+    # chunk, after the read that took its last samples, with the next read the one that
+    # ends the stream: the CLIP advisory comes from that poll. Ending the stream on the read
+    # that took the last samples cleared the level under it, and no leg warned. The short-read
+    # leg cuts that last chunk's 26 symbols into reads of 7 and 19 (seed 16), and the poll
+    # comes after the second. With four reads a jitter leg would hardly sleep. Each leg
+    # measured fsk_samples=0 cqpsk_symbols=70 media_ms=16; MIN_CQPSK 68 and MIN_TOTAL 544
+    # (8 x 68) sit just under it.
     dsd_neo_add_iq_determinism_test(
         DECODE_IQ_RF_CLIP_EOF_DETERMINISM
         rf_clip
         "-f1 -mq"
-        "fast;realtime;short:37"
+        "fast;realtime;short:16"
         "RF Level CLIP 100.0%"
         0
-        400
-        3200
+        68
+        544
     )
     # The CQPSK path decoding real frames: p25p2_cc under -f2 runs the front end's CQPSK
     # chain for the whole capture (fsk_samples=0 cqpsk_symbols=11992 media_ms=2000, so
     # 95,936 of its 96,000 samples), and fast, short-read and jitter legs must decode its
     # SACCH the same way. MIN_CQPSK 11,900 and MIN_TOTAL 95,000 sit just under that.
+    # The jitter leg sleeps after about one read in 16 of the decoder's ~690 and must still
+    # be sleeping past 1.5 s.
     dsd_neo_add_iq_determinism_test(
         DECODE_IQ_P25P2_CC_DETERMINISM
         p25p2_cc
         -f2
-        "fast;short:19;jitter:23:120"
+        "fast;short:19;jitter:23:120:16:1500"
         "P25p2 SACCH"
         0
         11900
@@ -13014,8 +13116,9 @@ if(DSD_HAS_RADIO)
     # Issue #521: a row's --squelch-db gates the demodulator end to end. nxdn48_attenuated is
     # nxdn48 replayed 20 dB down (tools/build_iq_fixtures.py --derived-only). Measured post-LPF
     # channel power (demod channel_pwr, fast replay): the leading 0.8 s is digital silence and
-    # the signal-bearing replay block reads -25.8 dB (nxdn48 itself: -5.8 dB). Every threshold
-    # below sits at least 10 dB from that: -10 dB closes the row, -40 dB and off open it. The
+    # the signal reads -25.7 dB in the median replay block, -28.6 to -24.8 dB in every block
+    # once it is on (nxdn48 itself: about -5.8 dB). Every threshold below sits at least 10 dB
+    # from that: -10 dB closes the row, -40 dB and off open it. The
     # host's DSD_NEO_SCAN_REPLAY_DEFAULT_SQL_DB sets the configured default the row overrides
     # (I/Q replay has no other way to take one), so OPEN and OFF prove the row -- not the
     # default -- opened the gate, and INHERIT proves a row without the switch keeps the default.
@@ -13854,6 +13957,50 @@ if(DSD_HAS_RADIO)
         "${_analog_off_path}"
     )
 
+    # The level squelch on replay (issue #626): a replay hands the demod one live transfer at
+    # a time (5.33 ms here), as a receiver's dongle does, so a fixed level gates the burst
+    # within one such block of the carrier's key and unkey (IO_RTL_REPLAY_CHUNKING pins
+    # the blocks). It used to gate per 64 KiB chunk, 683 ms of these captures: both of the
+    # burst's chunks started on noise and the carrier never played. -28 dB on nfm_burst_synth
+    # and -30 dB on am_burst_synth sit at least 8 dB from each block's noise and carrier
+    # power. The monitor keeps or drops each 20 ms block by the power at its last sample, as
+    # it does live, so the sink's edges fall on its blocks: the first audible block starts at
+    # 280 ms (the block whose end opened, 1.3 ms ahead of the carrier as the channel filter
+    # sees it), the last ends at 540 ms (the 540-560 ms block ends closed and is dropped),
+    # and 260 ms is audible, the whole span, so no block inside it is missing. The bounds
+    # pin those blocks. A -Y row's own --squelch-db gates the same way.
+    set(_sql_level_burst_bounds
+        "--analog-audible-dbfs -40 --analog-min-total-ms 700 --analog-max-total-ms 800 --analog-min-first-audible-ms 270 --analog-max-first-audible-ms 290 --analog-min-last-audible-ms 530 --analog-max-last-audible-ms 550 --analog-min-audible-ms 250 --analog-max-audible-ms 270 --analog-max-clip 0"
+    )
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_SQL_LEVEL_NFM_BURST
+        nfm_burst_synth
+        "-fA --squelch -28 ${_sql_level_burst_bounds}"
+        ""
+        "${_analog_off_path}"
+    )
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_SQL_LEVEL_AM_BURST
+        am_burst_synth
+        "-fM --squelch -30 ${_sql_level_burst_bounds}"
+        ""
+        "${_analog_off_path}"
+    )
+    set(_scan_sql_level_csv
+        "${CMAKE_CURRENT_BINARY_DIR}/scan_mode_sql_level_row.csv"
+    )
+    file(
+        WRITE "${_scan_sql_level_csv}"
+        "channel,frequency_hz,mode,options\n1,150000000,nfm,--squelch-db -28\n"
+    )
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_SCAN_SQL_LEVEL_ROW
+        nfm_burst_synth
+        "-fa -C ${_scan_sql_level_csv} --analog-scan-row 0 ${_sql_level_burst_bounds}"
+        "Scan row applied: 0 nfm; width 16 kHz; squelch -28[.]0 dB [(]row[)].*ANALOG AUDIO OK"
+        "${_analog_off_path}"
+    )
+
     # The NFM noise squelch (issue #518 follow-up): it opens when the FM discriminator's
     # noise above voice quiets by N dB (10 by default), as a radio's squelch does, with no
     # floor to learn and whatever the level. On nfm_burst_synth it opens on the first full
@@ -14080,6 +14227,16 @@ if(DSD_HAS_RADIO)
         nfm_burst_synth
         "-fA --squelch -35 --analog-iq-gain-db 10 ${_sql_auto_burst_bounds}"
         "ANALOG AUDIO FAIL: first audible ms 0[.]00 [(]limit 300[.]00[)]"
+    )
+    # The last-audible bound fails on its measured value: the level burst's last audible block
+    # ends at 540 ms, one block past a 520 ms limit, while the first-audible bound holds.
+    dsd_neo_add_analog_replay_fail_test(
+        DECODE_IQ_ANALOG_NEG_LAST_AUDIBLE
+        nfm_burst_synth
+        "-fA --squelch -28 --analog-audible-dbfs -40 --analog-min-first-audible-ms 270 --analog-max-last-audible-ms 520"
+        "ANALOG AUDIO FAIL: last audible ms 540[.]00 [(]limit 520[.]00[)]"
+        1
+        "ANALOG AUDIO FAIL: first audible"
     )
     # A gain that would clip the copy stops the host before the replay (exit 2):
     # noise_floor's 16 LSB noise is already a fifth of full scale.

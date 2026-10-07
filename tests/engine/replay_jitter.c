@@ -23,8 +23,11 @@
  * which counts what the decoder's reads returned, by the output kind of the replay batch each read took its samples
  * from (FSK discriminator samples and CQPSK symbols are different units and stay apart), the stream generation changes
  * between reads, and the capture time the last sample read ends at. It then prints the line the runner drops,
- *   REPLAY JITTER: ...
- * which says what the host injected; that differs between legs by design. A read that returns samples without a
+ *   REPLAY JITTER: ... sleeps=S slept_ms=T last_sleep_media_ms=L ... shortened_reads=R reads=N
+ * which says what the host injected; that differs between legs by design. A sleep counts only when it has a positive
+ * delay and follows a read that returned tagged samples, and last_sleep_media_ms is the capture time that read ended
+ * at, so the runner can require a leg to perturb past a point of its case. A read counts as shortened only when the cap
+ * made it return fewer samples than it would have returned asked in full (its batch held more). A read that returns samples without a
  * replay batch tag (a live input) prints "REPLAY STREAM FAIL:" and the host exits 1. When the engine returns, the host
  * prints the real time the run took, from the real-time monotonic clock around dsd_engine_run_with_lifecycle(),
  *   REPLAY WALL: wall_ms=W
@@ -104,8 +107,9 @@ typedef struct {
     uint64_t media_end_ns;
     uint64_t reads;
     uint64_t shortened_reads;
-    uint64_t sleeps;
+    uint64_t sleeps; /* sleeps with a positive delay, each after a successful, non-empty, tagged read */
     uint64_t slept_us;
+    uint64_t last_sleep_media_ns; /* capture time the read before the last sleep ended at */
     uint64_t jitter_rng;
     uint64_t short_rng;
 } replay_totals;
@@ -271,14 +275,23 @@ replay_split_args(int argc, char** argv, char** out, int* out_count) {
 
 /* ---- the wrapped read ----------------------------------------------------------------------------------------- */
 
-/* Counts what one read returned, by the batch it came from. Runs on the decoder thread, right after the read, which is
- * where dsd_rtl_stream_metrics_hook_replay_batch() may be called. */
-static void
-replay_note_read(int got) {
+/* What one tagged read took: the capture time its last sample ends at, and how many samples its batch still held when
+ * it began (the most an unperturbed read of any size could have returned). */
+typedef struct {
+    uint64_t media_end_ns;
+    uint32_t batch_left;
+} replay_read_note;
+
+/* Counts what one read returned, by the batch it came from, and returns 1 with @p note filled when the read carried a
+ * replay batch tag. Runs on the decoder thread, right after the read, which is where
+ * dsd_rtl_stream_metrics_hook_replay_batch() may be called: the tag describes the read just completed, so its
+ * first_index is where that read began. */
+static int
+replay_note_read(int got, replay_read_note* note) {
     dsd_rtl_stream_replay_batch batch;
     if (dsd_rtl_stream_metrics_hook_replay_batch(&batch) != 1) {
         g_totals.untagged_samples += (uint64_t)got;
-        return;
+        return 0;
     }
     switch (batch.output_kind) {
         case RTL_STREAM_OUTPUT_FSK_DISCRIMINATOR: g_totals.fsk_samples += (uint64_t)got; break;
@@ -298,13 +311,18 @@ replay_note_read(int got) {
     if (end_ns > g_totals.media_end_ns) {
         g_totals.media_end_ns = end_ns;
     }
+    note->media_end_ns = end_ns;
+    note->batch_left = batch.output_count > batch.first_index ? batch.output_count - batch.first_index : 0U;
+    return 1;
 }
 
 /* After about one read in --replay-jitter-every, sleeps a uniform [0, max] ms while the budget lasts. The decoder holds
- * the batch it just read meanwhile; the replay reader goes on filling the input ring. */
+ * the batch it just read meanwhile; the replay reader goes on filling the input ring. Only a read that returned tagged
+ * samples counts (@p note non-NULL): a sleep after the end of the stream, or after a failed read, perturbs nothing the
+ * decoder decodes. Neither does a zero-length delay, which counts as no sleep. */
 static void
-replay_jitter_after_read(void) {
-    if (!g_options.jitter) {
+replay_jitter_after_read(const replay_read_note* note) {
+    if (!g_options.jitter || note == NULL) {
         return;
     }
     if (replay_rng_next(&g_totals.jitter_rng) % g_options.jitter_every != 0U) {
@@ -318,29 +336,36 @@ replay_jitter_after_read(void) {
     if (delay_us > budget_us - g_totals.slept_us) {
         delay_us = budget_us - g_totals.slept_us;
     }
+    if (delay_us == 0U) {
+        return;
+    }
     g_totals.sleeps++;
     g_totals.slept_us += delay_us;
-    if (delay_us > 0U) {
-        dsd_sleep_us(delay_us);
-    }
+    g_totals.last_sleep_media_ns = note->media_end_ns;
+    dsd_sleep_us(delay_us);
 }
 
-/* The decoder's reads, flagged (the monitor's, with the auto squelch's gate) or not, perturbed alike. */
+/* The decoder's reads, flagged (the monitor's, with the auto squelch's gate) or not, perturbed alike. A read counts as
+ * shortened only when the cap made it return fewer samples than the same read asked in full would have: fewer than it
+ * asked for and fewer than its batch still held. A cap above what the batch held cuts nothing. */
 static int
 replay_perturbed_read_ex(void* rtl_ctx, float* out, uint8_t* flags, size_t count, int* out_got) {
     size_t asked = count;
     if (g_options.short_reads && count > 1U) {
         asked = 1U + (size_t)(replay_rng_next(&g_totals.short_rng) % (uint64_t)count);
-        if (asked < count) {
-            g_totals.shortened_reads++;
-        }
     }
     int rc = rtl_stream_read_ex((RtlSdrContext*)rtl_ctx, out, flags, asked, out_got);
     g_totals.reads++;
-    if (rc >= 0 && out_got != NULL && *out_got > 0) {
-        replay_note_read(*out_got);
+    replay_read_note note = {0U, 0U};
+    const replay_read_note* tagged = NULL;
+    if (rc >= 0 && out_got != NULL && *out_got > 0 && replay_note_read(*out_got, &note)) {
+        tagged = &note;
+        const size_t unperturbed = count < (size_t)note.batch_left ? count : (size_t)note.batch_left;
+        if (asked < count && (size_t)*out_got < unperturbed) {
+            g_totals.shortened_reads++;
+        }
     }
-    replay_jitter_after_read();
+    replay_jitter_after_read(tagged);
     return rc;
 }
 
@@ -377,11 +402,15 @@ replay_report(void) {
                 (unsigned long long)g_totals.monitor_samples, g_totals.generation_changes,
                 (unsigned long long)(g_totals.media_end_ns / 1000000U),
                 (unsigned long long)(g_totals.media_end_ns % 1000000U));
-    char jitter[160] = "jitter=off";
+    char jitter[224] = "jitter=off";
     if (g_options.jitter) {
-        DSD_SNPRINTF(jitter, sizeof(jitter), "jitter_seed=%u max_ms=%u every=%u budget_ms=%u sleeps=%llu slept_ms=%.3f",
+        DSD_SNPRINTF(jitter, sizeof(jitter),
+                     "jitter_seed=%u max_ms=%u every=%u budget_ms=%u sleeps=%llu slept_ms=%.3f "
+                     "last_sleep_media_ms=%llu.%06llu",
                      g_options.jitter_seed, g_options.jitter_max_ms, g_options.jitter_every, g_options.jitter_budget_ms,
-                     (unsigned long long)g_totals.sleeps, (double)g_totals.slept_us / 1000.0);
+                     (unsigned long long)g_totals.sleeps, (double)g_totals.slept_us / 1000.0,
+                     (unsigned long long)(g_totals.last_sleep_media_ns / 1000000U),
+                     (unsigned long long)(g_totals.last_sleep_media_ns % 1000000U));
     }
     char short_reads[96] = "short_reads=off";
     if (g_options.short_reads) {

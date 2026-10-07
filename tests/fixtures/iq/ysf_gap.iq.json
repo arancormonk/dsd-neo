@@ -23,7 +23,7 @@
   "source_backend": "rtl",
   "source_args": "fixture",
   "capture_started_utc": "2026-07-30T00:00:00Z",
-  "data_file": "nxdn48.iq",
+  "data_file": "ysf.iq",
   "data_bytes": 576000,
   "capture_drops": 0,
   "capture_drop_blocks": 0,

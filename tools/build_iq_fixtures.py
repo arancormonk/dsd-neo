@@ -286,18 +286,20 @@ DERIVED_NOISE = [
     ("noise_floor", 398, 10.0, 16.0),
 ]
 
-# A capture pinned to the cu8 rails and shorter than one replay chunk (issue #572). Every I/Q
-# pair is the same two rail bytes, so the raw input level reads 100 % CLIP, and the 4,096 pairs
-# (85 ms at 48 kHz, 8 KiB) are the replay's only chunk: the decoder takes all of the front end's
-# output in the replay's last reads, and polls the input level only while it decodes them. A
-# replay that reported its end on the read that took the last samples, rather than on the read
-# after it, cleared the level under the decoder whenever the reader had already reached the
-# capture's end. A fast replay had, a realtime one still pacing had not, so only realtime
-# printed the CLIP advisory. Constant bytes, so the data is the same on every numpy version.
-#
-# name, I/Q pairs, I byte, Q byte
+# A capture whose input level reaches the cu8 rails only in its last replay chunk (issues #572, #626).
+# A replay hands the demod chunks of one live transfer's time, 256 pairs (5.33 ms) at 48 kHz, and
+# publishes each chunk's raw input level as the demod starts it; the decoder polls the level every
+# 64 symbols. The lead-in is a tone at a quarter of full scale (in range: no CLIP, HOT or LOW), two
+# chunks of it, and the last chunk is the same two rail bytes in every pair, which read 100 % CLIP.
+# Under -f1 -mq the decoder's one poll after its first (symbol 64 of 70) lands while it decodes the
+# last chunk, after the read that took the last samples. A replay that reported its end on that
+# read, rather than on the read after it, cleared the level under the poll, and no leg printed the
+# CLIP advisory. Integer bytes, so the data is the same on every numpy version.
+CLIP_LEAD_TONE = (128, 143, 156, 165, 168, 165, 156, 143, 128, 113, 100, 91, 88, 91, 100, 113)
+
+# name, lead-in I/Q pairs, clipped I/Q pairs, I byte, Q byte
 DERIVED_CLIP = [
-    ("rf_clip", 4096, 0, 255),
+    ("rf_clip", 512, 256, 0, 255),
 ]
 
 # A call heard after a scan retune (issue #572): a scanner sits on an idle channel (the lead-in,
@@ -316,6 +318,9 @@ DERIVED_CLIP = [
 # one whole rotation) and decode the call alike. At 8.4 s and most lengths past it, the hunt reaches
 # 2400 baud just before the RESET, its dwell runs out early in the call, and -fa misses it. 7.5 s
 # keeps 0.5 s either side inside the band, so the fixture pins the decode rather than one hunt phase.
+# That sweep ran with 64 KiB replay blocks (683 ms here). Re-run once a block became one live
+# transfer (issue #626), -fa decodes the call at every lead-in from 1.5 to 9.5 s: the hunt's
+# requests land within a 5.33 ms block, so neither edge of that band exists any more.
 #
 # name, lead-in fixture, lead-in s, lead-in centre Hz, call fixture, call centre Hz
 DERIVED_RETUNE = [
@@ -332,14 +337,16 @@ RETUNE_CAPTURE_STARTED_UTC = "2026-01-01T00:00:00Z"
 # is one MUTE event. Muted bytes are left out of the data file (muted_bytes_excluded), so the data
 # is the source fixture's bytes unchanged and only the media clock, and with it the decode clock,
 # moves through the gap. The fixture is a sidecar alone: its data_file names the source's data, which
-# replay resolves beside the sidecar, so it adds no data bytes. nxdn48 is normalized near full scale,
-# RF HOT throughout, so the decoder warns before the gap (3 s in) and again after it (17 s in). The
-# cooldown runs out at 13 s, so the gap, which ends at 16 s, clears it by 3 s, and the second warning
-# falls 4 s past it. Every replay, fast or realtime, must print both warnings at the same capture time.
+# replay resolves beside the sidecar, so it adds no data bytes. ysf is normalized near full scale and
+# RF HOT throughout: its peak reaches -1 dBFS in every 512-byte (5.33 ms) block a replay hands the
+# demod (issue #626), as in every 64 KiB one before, while nxdn48, the first source, does in only 6 of
+# its 1125 such blocks, so the decoder's level polls missed it. The decoder warns as the replay starts
+# and again right after the gap: the cooldown runs out at 10 s, so the gap, which ends at 16 s, clears
+# it by 6 s. Every replay, fast or realtime, must print both warnings at the same capture time.
 #
 # name, source fixture, gap start s, gap length s, MUTE reason
 DERIVED_GAP = [
-    ("nxdn48_gap", "nxdn48", 4.0, 12.0, "driver_overflow"),
+    ("ysf_gap", "ysf", 4.0, 12.0, "driver_overflow"),
 ]
 GAP_CAPTURE_STARTED_UTC = "2026-07-30T00:00:00Z"
 
@@ -881,10 +888,12 @@ def build_noise(out_dir):
 
 
 def build_clip(out_dir):
-    """Write the rail-clipped single-chunk fixtures (issue #572; see DERIVED_CLIP)."""
+    """Write the fixtures clipped to the rails in their last replay chunk (issues #572, #626; see DERIVED_CLIP)."""
     total = 0
-    for name, pairs, i_byte, q_byte in DERIVED_CLIP:
-        written = write_capture(out_dir, name, bytes([i_byte, q_byte]) * pairs)
+    for name, lead_pairs, clip_pairs, i_byte, q_byte in DERIVED_CLIP:
+        tone = len(CLIP_LEAD_TONE)
+        lead = bytes(b for i in range(lead_pairs) for b in (CLIP_LEAD_TONE[i % tone], CLIP_LEAD_TONE[(i + 4) % tone]))
+        written = write_capture(out_dir, name, lead + bytes([i_byte, q_byte]) * clip_pairs)
         total += written
         print(f"{name:28s} clip    {written // 1024:6d} KiB")
     return total

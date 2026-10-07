@@ -112,6 +112,10 @@ static inline void eye_ring_append_i_chan(const float* iq_interleaved, int len_i
 
 static int lcm_post[17] = {1, 1, 1, 3, 1, 5, 3, 7, 1, 9, 5, 11, 3, 13, 7, 15, 1};
 static int ACTUAL_BUF_LENGTH;
+/* An I/Q replay's demod block is at most one live transfer (dsd_iq_replay_chunk_bytes(), issue #626): the transfer is
+ * DEFAULT_BUF_LENGTH bytes of cu8, two per complex sample. A change to the live transfer must move the replay's too. */
+static_assert(DSD_IQ_REPLAY_CHUNK_MAX_SAMPLES * 2U == (unsigned)DEFAULT_BUF_LENGTH,
+              "a replay chunk must hold at most one live RTL transfer");
 
 #if defined(__clang__)
 #define DSD_NEO_PRAGMA(x) _Pragma(#x)

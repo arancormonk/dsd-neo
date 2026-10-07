@@ -41,7 +41,9 @@
 #include "test_support.h"
 
 enum {
-    kReplayChunkBytes = 65536, /* one replay reader read */
+    /* One replay reader read: one chunk of the 1.536 Msps cu8 capture, a live transfer
+       (dsd_iq_replay_chunk_bytes(), which main() checks this against). */
+    kReplayChunkBytes = 16384,
     kChunks = 8,
     kReadsBeforeError = 3,
 };
@@ -174,6 +176,11 @@ int
 main(int test_argc, char** test_argv) {
     g_truncate_mode = test_argc > 1 && strcmp(test_argv[1], "truncate") == 0;
     const char* const test_name = g_truncate_mode ? "ENGINE_REPLAY_TRUNCATED_CAPTURE" : "ENGINE_REPLAY_READ_ERROR";
+    if (dsd_iq_replay_chunk_bytes(DSD_IQ_FORMAT_CU8, 1536000U) != (size_t)kReplayChunkBytes) {
+        DSD_FPRINTF(stderr, "FAIL: %s: the replay reader's chunk is %zu bytes, not the %d the reads here count\n",
+                    test_name, dsd_iq_replay_chunk_bytes(DSD_IQ_FORMAT_CU8, 1536000U), (int)kReplayChunkBytes);
+        return 1;
+    }
     char dir[DSD_TEST_PATH_MAX];
     if (!dsd_test_mkdtemp(dir, sizeof(dir), "dsdneo_replay_read_error")) {
         DSD_FPRINTF(stderr, "FAIL: could not create the fixture directory\n");

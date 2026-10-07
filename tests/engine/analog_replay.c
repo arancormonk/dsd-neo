@@ -10,8 +10,8 @@
  * dsd-neo would get. Its lifecycle start hook runs after the engine installed its hooks and opened (no) audio
  * output; it turns the analog monitor's UDP output on and puts a capture in place of the UDP analog hook, so what
  * gets scored is exactly what a listener hears. It also wraps the RTL stream read hook to count what the decoder
- * consumes, which is the time base for first-audible and audible durations: muted or squelched blocks never reach
- * the audio hook, so the audio alone cannot say when it started. No product code is involved.
+ * consumes, which is the time base for first-audible, last-audible and audible durations: muted or squelched blocks
+ * never reach the audio hook, so the audio alone cannot say when it started or stopped. No product code is involved.
  *
  * The host's own --analog-* options (see analog_usage) are removed before the rest reach dsd_runtime_bootstrap();
  * any other --analog-* argument is passed through to the CLI parser unchanged. When live processing ends, the stop
@@ -129,6 +129,8 @@ typedef struct {
     analog_limit max_audible_ms;
     analog_limit min_first_audible_ms;
     analog_limit max_first_audible_ms;
+    analog_limit min_last_audible_ms;
+    analog_limit max_last_audible_ms;
     analog_limit min_inband_db;
     analog_limit min_rms_dbfs;
     analog_limit max_rms_dbfs;
@@ -157,6 +159,7 @@ typedef struct {
     double captured_ms;
     double audible_ms;       /* ... in blocks at or above the audible level */
     double first_audible_ms; /* stream time where the first audible block began, -1 if none */
+    double last_audible_ms;  /* stream time where the last audible block ended, -1 if none */
     double widest_bin_hz;    /* coarsest DFT bin of any scored block: rate / block length */
     uint64_t clip_count;
     double energy_total; /* sum of squared samples, full scale = 1 */
@@ -220,6 +223,8 @@ static const analog_scalar_arg k_scalar_args[] = {
     {"--analog-max-audible-ms", &g_limits.max_audible_ms, 0.0, 1e9},
     {"--analog-min-first-audible-ms", &g_limits.min_first_audible_ms, 0.0, 1e9},
     {"--analog-max-first-audible-ms", &g_limits.max_first_audible_ms, 0.0, 1e9},
+    {"--analog-min-last-audible-ms", &g_limits.min_last_audible_ms, 0.0, 1e9},
+    {"--analog-max-last-audible-ms", &g_limits.max_last_audible_ms, 0.0, 1e9},
     {"--analog-min-inband-db", &g_limits.min_inband_db, -ANALOG_DB_LIMIT, ANALOG_DB_LIMIT},
     {"--analog-min-rms-dbfs", &g_limits.min_rms_dbfs, -ANALOG_DB_LIMIT, 0.0},
     {"--analog-max-rms-dbfs", &g_limits.max_rms_dbfs, -ANALOG_DB_LIMIT, 0.0},
@@ -256,6 +261,8 @@ analog_usage(void) {
                 "  --analog-max-audible-ms MS\n"
                 "  --analog-min-first-audible-ms MS  stream time when audible audio first starts\n"
                 "  --analog-max-first-audible-ms MS\n"
+                "  --analog-min-last-audible-ms MS   stream time when the last audible audio ends\n"
+                "  --analog-max-last-audible-ms MS\n"
                 "  --analog-min-inband-db DB         300-3000 Hz energy over 3400-6000 Hz energy\n"
                 "  --analog-min-rms-dbfs DB          RMS level of the delivered audio\n"
                 "  --analog-max-rms-dbfs DB\n"
@@ -1146,6 +1153,7 @@ analog_score_levels(const double* x, size_t n, double block_start_ms, double rat
         if (g_totals.first_audible_ms < 0.0) {
             g_totals.first_audible_ms = block_start_ms;
         }
+        g_totals.last_audible_ms = block_start_ms + block_ms;
     }
     if (g_limits.expect_tone_hz.set && analog_measurable(g_limits.expect_tone_hz.value)) {
         double tone = analog_tone_fit_energy(x, n, g_limits.expect_tone_hz.value, rate);
@@ -1380,6 +1388,7 @@ typedef struct {
     int have_tone;
     int have_time;
     int have_first;
+    int have_last;
     int have_lock;
     double total_ms;
     double rms_dbfs;
@@ -1395,6 +1404,7 @@ analog_report_measure(analog_report_ctx* ctx) {
     ctx->have_audio = g_totals.samples_captured > 0U && g_totals.rate_hz > 0U;
     ctx->have_time = g_totals.read_ms > 0.0;
     ctx->have_first = g_totals.first_audible_ms >= 0.0;
+    ctx->have_last = g_totals.last_audible_ms >= 0.0;
     ctx->have_lock = g_tone.first_lock_ms >= 0.0;
     ctx->total_ms = analog_consumed_ms();
     ctx->tone_ref = ctx->have_audio ? g_totals.tone_energy / captured : 0.0;
@@ -1415,6 +1425,7 @@ analog_print_metric_line(const analog_report_ctx* ctx) {
     analog_print_value(line, sizeof(line), "captured_ms", 1, g_totals.captured_ms);
     analog_print_value(line, sizeof(line), "audible_ms", 1, g_totals.audible_ms);
     analog_print_value(line, sizeof(line), "first_audible_ms", ctx->have_first, g_totals.first_audible_ms);
+    analog_print_value(line, sizeof(line), "last_audible_ms", ctx->have_last, g_totals.last_audible_ms);
     analog_print_value(line, sizeof(line), "rms_dbfs", ctx->have_audio, ctx->rms_dbfs);
     analog_print_value(line, sizeof(line), "peak_dbfs", ctx->have_audio, ctx->peak_dbfs);
     size_t used = strlen(line);
@@ -1528,6 +1539,8 @@ analog_check_limits(const analog_report_ctx* ctx) {
     analog_check_max("audible ms", 1, g_totals.audible_ms, &g_limits.max_audible_ms);
     analog_check_min("first audible ms", ctx->have_first, g_totals.first_audible_ms, &g_limits.min_first_audible_ms);
     analog_check_max("first audible ms", ctx->have_first, g_totals.first_audible_ms, &g_limits.max_first_audible_ms);
+    analog_check_min("last audible ms", ctx->have_last, g_totals.last_audible_ms, &g_limits.min_last_audible_ms);
+    analog_check_max("last audible ms", ctx->have_last, g_totals.last_audible_ms, &g_limits.max_last_audible_ms);
     analog_check_min("in-band ratio dB", ctx->have_audio, ctx->inband_db, &g_limits.min_inband_db);
     analog_check_min("RMS dBFS", ctx->have_audio, ctx->rms_dbfs, &g_limits.min_rms_dbfs);
     analog_check_max("RMS dBFS", ctx->have_audio, ctx->rms_dbfs, &g_limits.max_rms_dbfs);
@@ -1601,6 +1614,7 @@ main(int argc, char** argv) {
         return 1;
     }
     g_totals.first_audible_ms = -1.0;
+    g_totals.last_audible_ms = -1.0;
     g_tone.first_lock_ms = -1.0;
     int kept = 0;
     int args_rc = analog_split_args(argc, argv, args, &kept);
