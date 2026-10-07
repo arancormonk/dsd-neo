@@ -13,6 +13,7 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/power.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -36,9 +37,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "dsd-neo/core/dibit.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/dsp/analog_voice.h"
+#include "dsd-neo/platform/audio.h"
 #include "dsd-neo/platform/sockets.h"
 #include "dsd-neo/protocol/m17/m17_parse.h"
 #include "dsd-neo/protocol/m17/m17_tables.h"
@@ -132,11 +135,24 @@ codec2_decode(struct CODEC2* codec2_state, short speech[], const unsigned char* 
     }
 }
 
+/* The peak of each 160-sample frame the stream encoder hands codec2, in order (issue #625: closed samples reach it as
+   silence). */
+static int g_codec2_encode_count = 0;
+static int g_codec2_encode_peaks[256];
+
 void
 codec2_encode(struct CODEC2* codec2_state, unsigned char* bits, short speech[]) {
     (void)codec2_state;
     (void)bits;
-    (void)speech;
+    int peak = 0;
+    for (size_t i = 0U; speech != NULL && i < 160U; i++) {
+        const int v = speech[i] < 0 ? -(int)speech[i] : (int)speech[i];
+        peak = v > peak ? v : peak;
+    }
+    if (g_codec2_encode_count < (int)(sizeof(g_codec2_encode_peaks) / sizeof(g_codec2_encode_peaks[0]))) {
+        g_codec2_encode_peaks[g_codec2_encode_count] = peak;
+    }
+    g_codec2_encode_count++;
 }
 
 int
@@ -2663,9 +2679,719 @@ test_encoder_rtl_input_reaches_pcm_scale(void) {
 }
 #endif
 
+#ifdef DSD_NEO_TEST_AUDIO_WRAP
+/* The local output's writes ('W', 'Z' for all zeros) and drains ('D') in order, while g_audio_wrap_on. */
+static char g_audio_events[2048];
+static int g_audio_event_count = 0;
+static int g_audio_wrap_on = 0;
+
+// GNU linker wrappers of the local output (-Wl,--wrap): the names are the linker's.
+// NOLINTBEGIN(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+int __real_dsd_audio_write(dsd_audio_stream* stream, const int16_t* buffer, size_t frames);
+int __real_dsd_audio_drain(dsd_audio_stream* stream);
+int __wrap_dsd_audio_write(dsd_audio_stream* stream, const int16_t* buffer, size_t frames);
+int __wrap_dsd_audio_drain(dsd_audio_stream* stream);
+
+int
+__wrap_dsd_audio_write(dsd_audio_stream* stream, const int16_t* buffer, size_t frames) {
+    if (!g_audio_wrap_on) {
+        return __real_dsd_audio_write(stream, buffer, frames);
+    }
+    int zero = 1;
+    for (size_t i = 0U; buffer != NULL && i < frames; i++) {
+        zero &= buffer[i] == 0;
+    }
+    if (g_audio_event_count < (int)sizeof(g_audio_events) - 1) {
+        g_audio_events[g_audio_event_count++] = zero ? 'Z' : 'W';
+        g_audio_events[g_audio_event_count] = '\0';
+    }
+    return (int)frames;
+}
+
+int
+__wrap_dsd_audio_drain(dsd_audio_stream* stream) {
+    if (!g_audio_wrap_on) {
+        return __real_dsd_audio_drain(stream);
+    }
+    if (g_audio_event_count < (int)sizeof(g_audio_events) - 1) {
+        g_audio_events[g_audio_event_count++] = 'D';
+        g_audio_events[g_audio_event_count] = '\0';
+    }
+    return 0;
+}
+
+// NOLINTEND(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+
+/* Issue #625: the packet encoder's end drains a local output after its EOT marker, before its dead air, and again
+   after the dead air, before it returns: an asynchronous output drops its oldest samples when full, and the engine
+   closes it without a drain. */
+static int
+test_packet_encoder_end_drains_on_a_local_output(void) {
+    int err = 0;
+    static dsd_opts popts;
+    static dsd_state pstate;
+    static int ptoken;
+    static Event_History_I pevents[2];
+    DSD_MEMSET(&popts, 0, sizeof popts);
+    DSD_MEMSET(&pstate, 0, sizeof pstate);
+    DSD_MEMSET(pevents, 0, sizeof pevents);
+    for (uint8_t slot = 0U; slot < 2U; slot++) {
+        init_event_history(&pevents[slot], 0, 255);
+    }
+    pstate.event_history_s = pevents;
+    pstate.m17_can_en = -1;
+    DSD_SNPRINTF(pstate.m17sms, sizeof(pstate.m17sms), "%s", "OK");
+    popts.monitor_input_audio = 1;
+    popts.audio_out = 1;
+    popts.audio_out_type = 0;
+    popts.audio_raw_out = (dsd_audio_stream*)&ptoken;
+    g_audio_event_count = 0;
+    g_audio_events[0] = '\0';
+    g_audio_wrap_on = 1;
+    exitflag = 0;
+    (void)encodeM17PKT(&popts, &pstate);
+    exitflag = 0;
+    g_audio_wrap_on = 0;
+    popts.audio_raw_out = NULL;
+    static const char want_tail[] = "WWDZZZZZZZZZZZZZZZZZZZZZZZZZD";
+    const size_t len = strlen(g_audio_events);
+    const int ok =
+        len >= sizeof want_tail - 1U && strcmp(g_audio_events + (len - (sizeof want_tail - 1U)), want_tail) == 0;
+    if (!ok) {
+        DSD_FPRINTF(stderr, "packet encoder local output events: %s\n", g_audio_events);
+    }
+    err |= expect_int("packet encoder: the end drains around the dead air on a local output", ok, 1);
+    dsd_state_ext_free_all(&pstate);
+    return err;
+}
+#endif
+
+/* Issue #625: the VOX's two decisions. A read is heard on the stream's gate while one runs, on the level squelch
+   otherwise; past 10 closed reads, at a LICH superframe boundary, the transmitter unkeys. */
+static int
+test_encoder_vox_helpers(void) {
+    int err = 0;
+    int sql_hit = 11;
+    err |= expect_int("a heard read keys", m17_encoder_vox_keyed(1, 3, &sql_hit), 1);
+    err |= expect_int("a heard read resets the count", sql_hit, 0);
+    for (int i = 0; i < 10; i++) {
+        (void)m17_encoder_vox_keyed(0, 0, &sql_hit);
+    }
+    err |= expect_int("ten closed reads still keyed", m17_encoder_vox_keyed(0, 2, &sql_hit), 1);
+    err |= expect_int("eleven closed reads, off the LICH boundary, still keyed", sql_hit, 11);
+    err |= expect_int("eleven closed reads at the LICH boundary unkey", m17_encoder_vox_keyed(0, 0, &sql_hit), 0);
+    err |= expect_int("no counter: keyed", m17_encoder_vox_keyed(0, 0, NULL), 1);
+
+    static dsd_opts opts;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    opts.rtl_squelch_mode = DSD_SQUELCH_MODE_AUTO;
+    opts.rtl_pwr = 1.0;
+    err |= expect_int("under a running gate a closed read is closed", m17_encoder_squelch_heard(&opts, 1, 0), 0);
+    err |= expect_int("under a running gate an open sample is heard", m17_encoder_squelch_heard(&opts, 1, 1), 1);
+    opts.rtl_squelch_mode = DSD_SQUELCH_MODE_LEVEL;
+    opts.rtl_squelch_level = dB_to_pwr(-60.0);
+    opts.rtl_pwr = dB_to_pwr(-90.0);
+    err |= expect_int("without a gate the level decides: closed", m17_encoder_squelch_heard(&opts, 0, 1), 0);
+    opts.rtl_pwr = dB_to_pwr(-30.0);
+    err |= expect_int("without a gate the level decides: open", m17_encoder_squelch_heard(&opts, 0, 0), 1);
+    return err;
+}
+
+#ifdef USE_RADIO
+/* Issue #625: the encoder's RTL reader under a running gate (AUTO, the stream's status active with a plan). The read is
+   heard while a sample is open, a closed read is not, and a closed stretch fades to exact silence; under LEVEL the
+   flags are not read and the samples are the plain reader's. */
+static long g_gate_reads = 0;
+static long g_gate_open_until = 0;
+static int g_gate_status_active = 1;
+
+static int
+fake_rtl_gate_read_ex(void* rtl_ctx, float* out, uint8_t* flags, size_t count, int* out_got) {
+    (void)rtl_ctx;
+    if (out == NULL || out_got == NULL || count != 1U) {
+        return -1;
+    }
+    out[0] = (float)next_tone_sample();
+    if (flags != NULL) {
+        flags[0] = g_gate_reads < g_gate_open_until ? 0U : (uint8_t)DSD_SQUELCH_FLAG_CLOSED;
+    }
+    g_gate_reads++;
+    *out_got = 1;
+    return 0;
+}
+
+static int
+fake_rtl_gate_read(void* rtl_ctx, float* out, size_t count, int* out_got) {
+    return fake_rtl_gate_read_ex(rtl_ctx, out, NULL, count, out_got);
+}
+
+static int
+fake_rtl_gate_status(const void* rtl_ctx, dsd_rtl_squelch_status* out) {
+    (void)rtl_ctx;
+    DSD_MEMSET(out, 0, sizeof(*out));
+    out->active = g_gate_status_active;
+    out->plan_valid = 1;
+    return 0;
+}
+
+static double
+fake_rtl_gate_return_pwr(const void* rtl_ctx) {
+    (void)rtl_ctx;
+    return 1.0;
+}
+
+static void
+install_gate_rtl_hooks(void) {
+    dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){
+        .read = fake_rtl_gate_read,
+        .return_pwr = fake_rtl_gate_return_pwr,
+        .read_ex = fake_rtl_gate_read_ex,
+        .squelch_status = fake_rtl_gate_status,
+    });
+}
+
+static int
+test_encoder_rtl_reader_gates_closed_samples(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static int token;
+    int err = 0;
+    for (int level = 0; level < 2; level++) {
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&state, 0, sizeof state);
+        opts.audio_in_type = AUDIO_IN_RTL;
+        opts.rtl_volume_multiplier = 2;
+        opts.rtl_squelch_mode = level ? DSD_SQUELCH_MODE_LEVEL : DSD_SQUELCH_MODE_AUTO;
+        state.rtl_ctx = (struct RtlSdrContext*)&token;
+        install_gate_rtl_hooks();
+        start_tone(1000.0, 0.125, 8000);
+        g_gate_reads = 0;
+        g_gate_open_until = 400;
+        m17_encoder_input in;
+        m17_encoder_input_init(&in, 8000);
+        short blocks[4][160];
+        int heard[4] = {0};
+        int gated[4] = {0};
+        for (int b = 0; b < 4; b++) {
+            if (m17_encoder_read_block(&opts, &state, &in, blocks[b], 160U) != 1) {
+                err |= expect_int("encoder gate read", 0, 1);
+            }
+            heard[b] = in.squelch_heard;
+            gated[b] = in.squelch_gated;
+        }
+        int peak[4] = {0};
+        for (int b = 0; b < 4; b++) {
+            for (int i = 0; i < 160; i++) {
+                const int v = blocks[b][i] < 0 ? -blocks[b][i] : blocks[b][i];
+                peak[b] = v > peak[b] ? v : peak[b];
+            }
+        }
+        if (level) {
+            /* LEVEL: no gate, every read heard, the tone plays on (the plain reader's samples). */
+            err |= expect_int("level: no gate", gated[0] | gated[3], 0);
+            err |= expect_int("level: every read heard", heard[0] & heard[3], 1);
+            err |= expect_int("level: the tone plays past the flags", peak[3] > 1000, 1);
+        } else {
+            err |= expect_int("auto: the gate runs", gated[0] & gated[3], 1);
+            err |= expect_int("auto: open reads heard", heard[0] & heard[1] & heard[2], 1);
+            err |= expect_int("auto: a closed read is not heard", heard[3], 0);
+            err |= expect_int("auto: open audio plays", peak[0] > 1000, 1);
+            err |= expect_int("auto: closed audio is silence", peak[3], 0);
+        }
+    }
+    g_gate_status_active = 0;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.rtl_squelch_mode = DSD_SQUELCH_MODE_AUTO;
+    state.rtl_ctx = (struct RtlSdrContext*)&token;
+    g_gate_reads = 0;
+    g_gate_open_until = 0;
+    m17_encoder_input in;
+    m17_encoder_input_init(&in, 8000);
+    short block[160];
+    (void)m17_encoder_read_block(&opts, &state, &in, block, 160U);
+    err |= expect_int("no gate running: the flags are not read", in.squelch_gated == 0 && in.squelch_heard == 1, 1);
+    g_gate_status_active = 1;
+    dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){0});
+    return err;
+}
+
+/* An encoder run on the fake RTL stream: the tone, its flags open for g_vox_open_reads samples, the transmitter's
+   state recorded at the start of each 40 ms iteration (320 samples at 8 kHz, 3200 bit/s), and what it sent: the RF
+   frames as the symbol capture records them, and the IP frames. */
+enum { VOX_ITER_SAMPLES = 320, VOX_MAX_ITERS = 64 };
+
+static dsd_state* g_vox_state = NULL;
+static long g_vox_reads = 0;
+static long g_vox_open_reads = 0;
+static long g_vox_cap = 0;
+static long g_vox_low_power_from = -1;
+static long g_vox_exit_at = -1;
+static long g_vox_manual_unkey_at = -1;
+static int g_vox_tx[VOX_MAX_ITERS];
+static int g_vox_ip_stream = 0;
+static int g_vox_ip_eos = 0;
+static int g_vox_ip_eotx = 0;
+/* The monitored call's epoch as each IP stream frame went out (0 with no active call). */
+static uint64_t g_vox_ip_epoch[VOX_MAX_ITERS];
+
+/* RF as the symbol capture records it (opts->symbol_out_f): each frame's kind and, for a stream frame, its EOS bit. */
+enum { VOX_RF_MAX = 512 };
+
+static char g_vox_rf_kind[VOX_RF_MAX];
+static uint8_t g_vox_rf_eos[VOX_RF_MAX];
+static int g_vox_rf_count = 0;
+/* Play the RF on a local output (audio_raw_out) instead of the UDP analog output: the write and drain order is
+   recorded where the audio wraps are linked. */
+static int g_vox_local_audio = 0;
+
+/* Classify one 192-symbol RF frame: a preamble, an LSF, a stream frame (with its EOS bit: the first two punctured bits
+   after the LICH are the convolution of the frame number's MSB from a zero state), the EOT marker, or dead air. */
+static char
+vox_rf_classify(const uint8_t* dibits, uint8_t* eos) {
+    uint8_t ref[M17_FRAME_SYMBOLS];
+    int all_three = 1;
+    for (int i = 0; i < M17_FRAME_SYMBOLS; i++) {
+        all_three &= dibits[i] == 3U;
+    }
+    if (all_three) {
+        return 'D';
+    }
+    m17_fill_repeating_16bit_dibits(M17_EOT_MARKER_WORD, ref);
+    if (memcmp(ref, dibits, sizeof ref) == 0) {
+        return 'E';
+    }
+    m17_fill_repeating_16bit_dibits(M17_PREAMBLE_LSF_WORD, ref);
+    if (memcmp(ref, dibits, sizeof ref) == 0) {
+        return 'P';
+    }
+    m17_fill_sync_dibits_from_word(M17_SYNC_LSF_WORD, ref);
+    if (memcmp(ref, dibits, M17_SYNC_SYMBOLS) == 0) {
+        return 'L';
+    }
+    m17_fill_sync_dibits_from_word(M17_SYNC_STREAM_WORD, ref);
+    if (memcmp(ref, dibits, M17_SYNC_SYMBOLS) != 0) {
+        return '?';
+    }
+    uint8_t randomized[M17_PAYLOAD_BITS];
+    uint8_t decoded[M17_PAYLOAD_BITS];
+    for (int i = 0; i < M17_PAYLOAD_SYMBOLS; i++) {
+        randomized[i * 2] = (uint8_t)((dibits[M17_SYNC_SYMBOLS + i] >> 1U) & 1U);
+        randomized[(i * 2) + 1] = (uint8_t)(dibits[M17_SYNC_SYMBOLS + i] & 1U);
+    }
+    m17_payload_decode_bits(randomized, decoded);
+    if (decoded[M17_LICH_BITS] != decoded[M17_LICH_BITS + 1]) {
+        return '?';
+    }
+    *eos = decoded[M17_LICH_BITS];
+    return 'S';
+}
+
+static void
+vox_rf_parse(FILE* f) {
+    g_vox_rf_count = 0;
+    if (!f || fflush(f) != 0 || fseek(f, 0L, SEEK_SET) != 0) {
+        return;
+    }
+    uint8_t dibits[M17_FRAME_SYMBOLS];
+    unsigned char record[DSD_SYMBOL_CAPTURE_SOFT_RECORD_SIZE];
+    int n = 0;
+    while (fread(record, 1, sizeof record, f) == sizeof record) {
+        dibits[n++] = (uint8_t)(record[0] & 3U);
+        if (n == M17_FRAME_SYMBOLS) {
+            if (g_vox_rf_count < VOX_RF_MAX) {
+                uint8_t eos = 0U;
+                g_vox_rf_kind[g_vox_rf_count] = vox_rf_classify(dibits, &eos);
+                g_vox_rf_eos[g_vox_rf_count] = eos;
+                g_vox_rf_count++;
+            }
+            n = 0;
+        }
+    }
+}
+
+/* The transmissions the RF holds, past the start's dead air: each a preamble and an LSF, stream frames with the EOS bit
+   on the last one only, the EOT marker right after it, then dead air. Fills @p streams and @p dead_after (the stream
+   frames and the dead air after the marker of each, up to @p max) and returns how many, or -1 for anything else. */
+static int
+vox_rf_transmissions(int* streams, int* dead_after, int max) {
+    int i = 0;
+    while (i < g_vox_rf_count && g_vox_rf_kind[i] == 'D') {
+        i++;
+    }
+    int count = 0;
+    while (i < g_vox_rf_count) {
+        if (i + 2 > g_vox_rf_count || g_vox_rf_kind[i] != 'P' || g_vox_rf_kind[i + 1] != 'L') {
+            return -1;
+        }
+        i += 2;
+        int n = 0;
+        while (i < g_vox_rf_count && g_vox_rf_kind[i] == 'S') {
+            const int last = i + 1 >= g_vox_rf_count || g_vox_rf_kind[i + 1] != 'S';
+            if (g_vox_rf_eos[i] != (last ? 1U : 0U)) {
+                return -1;
+            }
+            n++;
+            i++;
+        }
+        if (n == 0 || i >= g_vox_rf_count || g_vox_rf_kind[i] != 'E') {
+            return -1;
+        }
+        i++;
+        int dead = 0;
+        while (i < g_vox_rf_count && g_vox_rf_kind[i] == 'D') {
+            dead++;
+            i++;
+        }
+        if (count < max) {
+            streams[count] = n;
+            dead_after[count] = dead;
+        }
+        count++;
+    }
+    return count;
+}
+
+/* One transmission and its counts (vox_rf_transmissions()): 0, or -1 for anything else. */
+static int
+vox_rf_ending(int* streams, int* dead_after) {
+    return vox_rf_transmissions(streams, dead_after, 1) == 1 ? 0 : -1;
+}
+
+static int
+fake_vox_read_ex(void* rtl_ctx, float* out, uint8_t* flags, size_t count, int* out_got) {
+    (void)rtl_ctx;
+    if (out == NULL || out_got == NULL || count != 1U || g_vox_reads >= g_vox_cap) {
+        return -1;
+    }
+    const long index = g_vox_reads++;
+    if ((index % VOX_ITER_SAMPLES) == 0 && index / VOX_ITER_SAMPLES < VOX_MAX_ITERS) {
+        g_vox_tx[index / VOX_ITER_SAMPLES] = g_vox_state->m17encoder_tx;
+    }
+    if (index == g_vox_exit_at) {
+        exitflag = 1;
+    }
+    if (index == g_vox_manual_unkey_at) {
+        /* What the TX toggle command does (apply_cmd_m17_tx_toggle()). */
+        g_vox_state->m17encoder_tx = 0;
+        g_vox_state->m17encoder_eot = 1;
+    }
+    out[0] = (float)next_tone_sample();
+    if (flags != NULL) {
+        flags[0] = index < g_vox_open_reads ? 0U : (uint8_t)DSD_SQUELCH_FLAG_CLOSED;
+    }
+    *out_got = 1;
+    return 0;
+}
+
+static int
+fake_vox_read(void* rtl_ctx, float* out, size_t count, int* out_got) {
+    return fake_vox_read_ex(rtl_ctx, out, NULL, count, out_got);
+}
+
+static double
+fake_vox_return_pwr(const void* rtl_ctx) {
+    (void)rtl_ctx;
+    return (g_vox_low_power_from >= 0 && g_vox_reads > g_vox_low_power_from) ? dB_to_pwr(-90.0) : 1.0;
+}
+
+static int
+fake_vox_connect(dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    (void)state;
+    return 0;
+}
+
+static int
+fake_vox_blaster(const dsd_opts* opts, dsd_state* state, size_t nsam, const void* data) {
+    (void)opts;
+    const uint8_t* bytes = (const uint8_t*)data;
+    if (nsam == 54U && bytes != NULL) {
+        dsd_call_snapshot call;
+        if (g_vox_ip_stream < VOX_MAX_ITERS) {
+            g_vox_ip_epoch[g_vox_ip_stream] =
+                (dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE) ? call.epoch : 0U;
+        }
+        g_vox_ip_stream++;
+        /* The EOS bit: after the magic (32 bits), the stream id (16) and the LSF (224). */
+        g_vox_ip_eos += (bytes[34] >> 7) & 1U;
+    } else if (nsam == 10U && bytes != NULL && bytes[0] == 'E') {
+        g_vox_ip_eotx++;
+    }
+    return 0;
+}
+
+static void
+vox_run(dsd_opts* opts, dsd_state* state, int mode, int vox) {
+    static int token;
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->rtl_volume_multiplier = 2;
+    opts->rtl_squelch_mode = mode;
+    opts->rtl_squelch_margin_db = 10;
+    opts->rtl_squelch_level = dB_to_pwr(-60.0);
+    opts->monitor_input_audio = 1;
+    opts->audio_out = 1;
+    opts->audio_out_type = g_vox_local_audio ? 0 : 8;
+    static int audio_token;
+    opts->audio_raw_out = g_vox_local_audio ? (dsd_audio_stream*)&audio_token : NULL;
+    opts->m17_use_ip = 1;
+    char capture_path[DSD_TEST_PATH_MAX] = {0};
+    const int capture_fd = dsd_test_mkstemp(capture_path, sizeof capture_path, "dsdneo_m17_vox_rf");
+    if (capture_fd >= 0) {
+        (void)dsd_close(capture_fd);
+        opts->symbol_out_f = dsd_fopen_private(capture_path, "w+b");
+    }
+    state->m17_vox = vox;
+    state->m17_rate = 8000;
+    state->m17_can_en = -1;
+    state->rtl_ctx = (struct RtlSdrContext*)&token;
+    g_vox_state = state;
+    g_vox_reads = 0;
+    DSD_MEMSET(g_vox_tx, 0xFF, sizeof g_vox_tx);
+    g_vox_ip_stream = 0;
+    g_vox_ip_eos = 0;
+    g_vox_ip_eotx = 0;
+    DSD_MEMSET(g_vox_ip_epoch, 0, sizeof g_vox_ip_epoch);
+#ifdef USE_CODEC2
+    g_codec2_encode_count = 0;
+    DSD_MEMSET(g_codec2_encode_peaks, 0, sizeof g_codec2_encode_peaks);
+#endif
+    start_tone(1000.0, 0.125, 8000);
+    dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){
+        .read = fake_vox_read,
+        .return_pwr = fake_vox_return_pwr,
+        .read_ex = fake_vox_read_ex,
+        .squelch_status = fake_rtl_gate_status,
+    });
+    dsd_m17_udp_hooks_set((dsd_m17_udp_hooks){.connect = fake_vox_connect, .blaster = fake_vox_blaster});
+    exitflag = 0;
+#ifdef DSD_NEO_TEST_AUDIO_WRAP
+    g_audio_event_count = 0;
+    g_audio_events[0] = '\0';
+    g_audio_wrap_on = g_vox_local_audio;
+#endif
+    (void)encodeM17STR(opts, state);
+#ifdef DSD_NEO_TEST_AUDIO_WRAP
+    g_audio_wrap_on = 0;
+#endif
+    exitflag = 0;
+    vox_rf_parse(opts->symbol_out_f);
+    if (opts->symbol_out_f) {
+        (void)fclose(opts->symbol_out_f);
+        opts->symbol_out_f = NULL;
+    }
+    if (capture_path[0] != '\0') {
+        (void)remove(capture_path);
+    }
+    opts->audio_raw_out = NULL;
+    dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){0});
+    dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
+    dsd_m17_udp_hooks_set((dsd_m17_udp_hooks){0});
+    dsd_state_ext_free_all(state);
+}
+
+static void
+vox_defaults(long open_iters, long iters) {
+    g_vox_open_reads = open_iters * VOX_ITER_SAMPLES;
+    g_vox_cap = iters * VOX_ITER_SAMPLES;
+    g_vox_low_power_from = -1;
+    g_vox_exit_at = -1;
+    g_vox_manual_unkey_at = -1;
+}
+
+/* The iteration the transmitter was first seen unkeyed at, or -1. */
+static int
+vox_first_unkeyed(int iters) {
+    for (int i = 1; i < iters && i < VOX_MAX_ITERS; i++) {
+        if (g_vox_tx[i] == 0) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+/* Issue #625: under AUTO and NOISE the VOX unkeys on the stream's gate: open for 3 iterations, then closed, it is keyed
+   through iteration 18 (11 closed reads end at iteration 13, and the LICH superframe ends at 18) and the stream ends
+   there with its EOS frame and the EOT marker, without dead air. Open flags hold it keyed; under LEVEL the power
+   decides, as before. */
+static int
+test_encoder_vox_unkeys_on_the_gate(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int err = 0;
+    const int modes[2] = {DSD_SQUELCH_MODE_AUTO, DSD_SQUELCH_MODE_NOISE};
+    for (int m = 0; m < 2; m++) {
+        vox_defaults(3, 24);
+        vox_run(&opts, &state, modes[m], 1);
+        err |= expect_int("vox gate: the input was read to its end", (int)(g_vox_reads == g_vox_cap), 1);
+        err |= expect_int("vox gate: keyed at the start", g_vox_tx[1], 1);
+        err |= expect_int("vox gate: unkeyed after 11 closed reads at the LICH boundary", vox_first_unkeyed(24), 19);
+        err |= expect_int("vox gate: one stream of 19 frames, the last with EOS", g_vox_ip_stream, 19);
+        err |= expect_int("vox gate: one EOS frame", g_vox_ip_eos, 1);
+        err |= expect_int("vox gate: one EOTX", g_vox_ip_eotx, 1);
+        /* RF: the preamble and LSF, 18 stream frames, the one with the EOS bit and the EOT marker, without dead air. */
+        int streams = 0;
+        int dead = -1;
+        err |= expect_int("vox gate: RF ends with an EOS frame and the EOT marker", vox_rf_ending(&streams, &dead), 0);
+        err |= expect_int("vox gate: RF stream frames", streams, 19);
+        err |= expect_int("vox gate: no dead air after the marker", dead, 0);
+#ifdef USE_CODEC2
+        /* Codec2 hears the tone while the gate is open, silence once it closed (the 10 ms ramp, then zeros). */
+        int quiet = 1;
+        for (int f = 2 * 4; f < g_codec2_encode_count && f < 2 * 18; f++) {
+            quiet &= g_codec2_encode_peaks[f] <= 1;
+        }
+        err |= expect_int("vox gate: codec2 hears the open tone", g_codec2_encode_peaks[1] > 1000, 1);
+        err |= expect_int("vox gate: codec2 hears silence once closed", quiet, 1);
+#endif
+    }
+    vox_defaults(24, 24);
+    vox_run(&opts, &state, DSD_SQUELCH_MODE_AUTO, 1);
+    err |= expect_int("vox gate: open flags stay keyed", vox_first_unkeyed(24), -1);
+    /* LEVEL ignores the flags: high power keyed throughout; power dropping after iteration 3 unkeys at 19, as before,
+       now with the EOS frame and EOT marker. */
+    vox_defaults(0, 24);
+    vox_run(&opts, &state, DSD_SQUELCH_MODE_LEVEL, 1);
+    err |= expect_int("vox level: power holds it keyed", vox_first_unkeyed(24), -1);
+    vox_defaults(0, 24);
+    g_vox_low_power_from = 3L * VOX_ITER_SAMPLES;
+    vox_run(&opts, &state, DSD_SQUELCH_MODE_LEVEL, 1);
+    err |= expect_int("vox level: low power unkeys", vox_first_unkeyed(24), 19);
+    err |= expect_int("vox level: one EOS frame", g_vox_ip_eos, 1);
+    int streams = 0;
+    int dead = -1;
+    err |= expect_int("vox level: RF ends with an EOS frame and the EOT marker", vox_rf_ending(&streams, &dead), 0);
+    err |= expect_int("vox level: no dead air after the marker", dead, 0);
+    /* A manual unkey while VOX still hears a carrier ends that stream (EOS frame, EOT marker, dead air) and VOX opens a
+       new one with its own LSF, and its own monitored call, at once; the input ending then ends that one too. */
+    vox_defaults(64, 12);
+    g_vox_manual_unkey_at = 5L * VOX_ITER_SAMPLES;
+    vox_run(&opts, &state, DSD_SQUELCH_MODE_AUTO, 1);
+    {
+        int tx_streams[4] = {0};
+        int tx_dead[4] = {0};
+        const int count = vox_rf_transmissions(tx_streams, tx_dead, 4);
+        err |= expect_int("manual unkey under VOX: two well-formed transmissions", count, 2);
+        err |= expect_int("manual unkey under VOX: the first ends at the unkey", tx_streams[0], 6);
+        err |= expect_int("manual unkey under VOX: dead air after the first", tx_dead[0], 25);
+        err |= expect_int("manual unkey under VOX: the second ends at the input's end", tx_streams[1], 7);
+        err |= expect_int("manual unkey under VOX: dead air after the second", tx_dead[1], 25);
+        err |= expect_int("manual unkey under VOX: two IP EOS frames", g_vox_ip_eos, 2);
+        err |= expect_int("manual unkey under VOX: two IP EOTX", g_vox_ip_eotx, 2);
+        /* Each transmission is one monitored call, and the two are distinct. */
+        const int first = tx_streams[0];
+        const int second = tx_streams[1];
+        int calls_ok = count == 2 && first > 0 && second > 0 && first <= VOX_MAX_ITERS
+                       && second <= VOX_MAX_ITERS - first && first + second == g_vox_ip_stream;
+        if (calls_ok) {
+            const uint64_t call_a = g_vox_ip_epoch[0];
+            const uint64_t call_b = g_vox_ip_epoch[first];
+            calls_ok = call_a != 0U && call_b != 0U && call_a != call_b;
+            for (int i = 0; calls_ok && i < first + second; i++) {
+                calls_ok = g_vox_ip_epoch[i] == (i < first ? call_a : call_b);
+            }
+        }
+        err |= expect_int("manual unkey under VOX: one monitored call per transmission", calls_ok, 1);
+    }
+    return err;
+}
+
+/* Issue #625: a transmission still open when the encoder stops ends exactly once: an exit seen while keyed sends that
+   frame with its EOS bit and the EOT marker after it; an input that ends sends a silent EOS frame and the marker; a
+   manual unkey whose next read fails still flushes, with its dead air. Each with IP's EOTX, never twice. */
+static int
+test_encoder_ends_an_open_stream_on_shutdown(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int err = 0;
+    /* Exit seen while keyed, during iteration 5. */
+    vox_defaults(64, 64);
+    g_vox_exit_at = (5L * VOX_ITER_SAMPLES) + 10;
+    vox_run(&opts, &state, DSD_SQUELCH_MODE_LEVEL, 0);
+    err |= expect_int("exit: one EOS frame", g_vox_ip_eos, 1);
+    err |= expect_int("exit: one EOTX", g_vox_ip_eotx, 1);
+    int streams = 0;
+    int dead = -1;
+    err |= expect_int("exit: RF ends with an EOS frame and the EOT marker", vox_rf_ending(&streams, &dead), 0);
+    err |= expect_int("exit: dead air after the marker", dead, 25);
+    /* The input ends while keyed. */
+    vox_defaults(64, 6);
+    vox_run(&opts, &state, DSD_SQUELCH_MODE_LEVEL, 0);
+    err |= expect_int("eof: one EOS frame", g_vox_ip_eos, 1);
+    err |= expect_int("eof: one EOTX", g_vox_ip_eotx, 1);
+    err |= expect_int("eof: frames", g_vox_ip_stream, 6 + 1);
+    err |= expect_int("eof: RF ends with an EOS frame and the EOT marker", vox_rf_ending(&streams, &dead), 0);
+    err |= expect_int("eof: RF stream frames", streams, 6 + 1);
+    err |= expect_int("eof: dead air after the marker", dead, 25);
+    /* A manual unkey, then the input ends before its frame. */
+    vox_defaults(64, 64);
+    g_vox_manual_unkey_at = 4L * VOX_ITER_SAMPLES;
+    g_vox_cap = (4L * VOX_ITER_SAMPLES) + 1;
+    vox_run(&opts, &state, DSD_SQUELCH_MODE_LEVEL, 0);
+    err |= expect_int("manual then eof: one EOS frame", g_vox_ip_eos, 1);
+    err |= expect_int("manual then eof: one EOTX", g_vox_ip_eotx, 1);
+    err |=
+        expect_int("manual then eof: RF ends with an EOS frame and the EOT marker", vox_rf_ending(&streams, &dead), 0);
+    err |= expect_int("manual then eof: dead air after the marker", dead, 25);
+#ifdef DSD_NEO_TEST_AUDIO_WRAP
+    /* On a local output, which may play asynchronously and drop its oldest samples when full, the EOS frame and the
+       marker drain before the dead air is queued, and the dead air drains before the encoder returns. */
+    g_vox_local_audio = 1;
+    vox_defaults(64, 64);
+    g_vox_manual_unkey_at = 4L * VOX_ITER_SAMPLES;
+    g_vox_cap = (4L * VOX_ITER_SAMPLES) + 1;
+    vox_run(&opts, &state, DSD_SQUELCH_MODE_LEVEL, 0);
+    g_vox_local_audio = 0;
+    {
+        static const char want_tail[] = "WWDZZZZZZZZZZZZZZZZZZZZZZZZZDD";
+        const size_t len = strlen(g_audio_events);
+        const int ok = len >= sizeof want_tail - 1U
+                       && strcmp(g_audio_events + (len - (sizeof want_tail - 1U)), want_tail) == 0
+                       && strchr(g_audio_events, 'D') == g_audio_events + (len - (sizeof want_tail - 1U)) + 2;
+        if (!ok) {
+            DSD_FPRINTF(stderr, "local output events: %s\n", g_audio_events);
+        }
+        err |= expect_int("manual then eof: the end drains around the dead air on a local output", ok, 1);
+    }
+    /* A VOX unkey sends no dead air and drains nothing then; the input stopping right after it drains what was queued
+       before the output closes. */
+    g_vox_local_audio = 1;
+    vox_defaults(3, 19);
+    vox_run(&opts, &state, DSD_SQUELCH_MODE_AUTO, 1);
+    g_vox_local_audio = 0;
+    {
+        const size_t len = strlen(g_audio_events);
+        const char* first_drain = strchr(g_audio_events, 'D');
+        const int ok =
+            len >= 3U && strcmp(g_audio_events + (len - 3U), "WWD") == 0 && first_drain == g_audio_events + (len - 1U);
+        if (!ok) {
+            DSD_FPRINTF(stderr, "vox unkey then eof local output events: %s\n", g_audio_events);
+        }
+        err |= expect_int("vox unkey then eof: one drain, after the EOS frame and the marker", ok, 1);
+    }
+#endif
+    /* Nothing open: an encoder that never keyed sends no end. */
+    vox_defaults(0, 6);
+    vox_run(&opts, &state, DSD_SQUELCH_MODE_AUTO, 1);
+    err |= expect_int("never keyed: no stream", g_vox_ip_stream + g_vox_ip_eotx, 0);
+    return err;
+}
+#endif
+
 int
 main(void) {
     int err = 0;
+    err |= test_encoder_vox_helpers();
+#ifdef DSD_NEO_TEST_AUDIO_WRAP
+    err |= test_packet_encoder_end_drains_on_a_local_output();
+#endif
+#ifdef USE_RADIO
+    err |= test_encoder_rtl_reader_gates_closed_samples();
+    err |= test_encoder_vox_unkeys_on_the_gate();
+    err |= test_encoder_ends_an_open_stream_on_shutdown();
+#endif
     err |= test_encoder_silent_udp_gives_way_to_a_queued_command();
     err |= test_embedded_lich_chunks_store_and_finalize_lsf_state();
     err |= test_embedded_lich_rejects_invalid_counter_and_gates_bad_lsf_crc();

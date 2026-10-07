@@ -374,6 +374,37 @@ dsd_squelch_noise_has_no_fm(const dsd_opts* opts) {
            && opts->scanner_mode != 1 && opts->trunk_scan_enabled != 1;
 }
 
+int
+dsd_squelch_edacs_analog_voice(const dsd_opts* opts) {
+    return opts && opts->frame_provoice == 1 && opts->trunk_enable == 1 && !dsd_opts_is_analog_family(opts)
+           && !dsd_opts_runs_m17_encoder(opts);
+}
+
+int
+dsd_squelch_channel_digital(const dsd_opts* opts) {
+    return !(dsd_opts_is_analog_family(opts) || dsd_opts_runs_m17_encoder(opts)
+             || dsd_squelch_edacs_analog_voice(opts));
+}
+
+int
+dsd_squelch_dynamic_input_kind(const dsd_opts* opts) {
+    const int input = dsd_squelch_input_kind(opts);
+    if (input == DSD_SQUELCH_INPUT_AUDIO && (dsd_opts_runs_m17_encoder(opts) || dsd_squelch_edacs_analog_voice(opts))) {
+        return DSD_SQUELCH_INPUT_OTHER;
+    }
+    return input;
+}
+
+int
+dsd_squelch_stream_gate_running(const dsd_opts* opts, const dsd_state* state) {
+    if (!opts || !state || dsd_squelch_input_kind(opts) != DSD_SQUELCH_INPUT_RADIO
+        || !dsd_squelch_mode_is_dynamic(opts->rtl_squelch_mode)) {
+        return 0;
+    }
+    dsd_rtl_squelch_status st;
+    return dsd_rtl_stream_io_hook_squelch_status(state, &st) == 0 && st.active && st.plan_valid;
+}
+
 double
 dsd_squelch_level_in_force(const dsd_opts* opts) {
     if (!opts || dsd_squelch_mode_is_dynamic(opts->rtl_squelch_mode)) {

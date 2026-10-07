@@ -852,14 +852,15 @@ void rtl_stream_set_channel_squelch(float level);
 /**
  * @brief Set the channel squelch from a whole setting (issue #518 follow-up): a LEVEL setting as
  * rtl_stream_set_channel_squelch(), an AUTO one by its margin over the floor the demodulator learns, a NOISE one by
- * the FM quieting it opens at. AUTO and NOISE gate the analog monitor per sample (rtl_stream_read_ex()'s flags) and
- * nothing else.
+ * the FM quieting it opens at. AUTO and NOISE flag each sample (rtl_stream_read_ex()) of the analog monitor, the M17
+ * encoder's monitor and the 9600 bit/s FSK path EDACS analog voice reads (issue #625; NOISE runs as AUTO there), and
+ * gate nothing else.
  */
 void rtl_stream_set_channel_squelch_setting(const dsd_squelch_setting* setting);
 
 /** @brief What the dynamic squelch shows (rtl_stream_get_squelch_status()). */
 typedef struct {
-    int active;          /**< 1 when the last block ran a dynamic squelch (AUTO or NOISE on the analog monitor) */
+    int active;          /**< 1 when the last block ran a dynamic squelch (AUTO or NOISE on a path it runs on) */
     int noise;           /**< 1 when that was the noise squelch; 0 when the tracker ran (AUTO, or NOISE as AUTO) */
     int quieting_valid;  /**< 1 once the noise squelch has measured a window since it started (else still starting) */
     double quieting_db;  /**< the noise squelch's last window's quieting (0 until quieting_valid) */

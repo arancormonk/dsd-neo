@@ -8330,6 +8330,18 @@ target_link_libraries(
     dsd-neo_test_m17_state_dispatch
     PRIVATE dsd-neo_proto_m17 dsd-neo_test_support
 )
+# Issue #625: the stream encoder's end of stream drains a local output around its dead air; the
+# wraps record the order of writes and drains where the linker can wrap them.
+if(NOT APPLE AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
+    target_compile_definitions(
+        dsd-neo_test_m17_state_dispatch
+        PRIVATE DSD_NEO_TEST_AUDIO_WRAP
+    )
+    target_link_options(
+        dsd-neo_test_m17_state_dispatch
+        PRIVATE "-Wl,--wrap=dsd_audio_write" "-Wl,--wrap=dsd_audio_drain"
+    )
+endif()
 add_test(NAME M17_STATE_DISPATCH COMMAND dsd-neo_test_m17_state_dispatch)
 
 add_executable(
@@ -12628,6 +12640,31 @@ if(DSD_HAS_RADIO)
         -fm
         "Total audio errors: 0"
         "Src=[0-9]"
+    )
+
+    # The M17 encoder's VOX on the dynamic squelch (issue #625): ten seconds of receiver noise
+    # replayed into -fZ with VOX on never key it under --squelch auto or noise (each used to key
+    # on the first frame: the level comparison was off under both, so every read was open). A
+    # level the noise clears keys it: the control that shows the cases would see a key-up.
+    dsd_neo_add_iq_reject_test(
+        DECODE_IQ_M17_ENCODER_VOX_SQL_AUTO_NOISE_FLOOR
+        noise_floor
+        "-fZ -M M17:7:DSD-NEO:TEST:48000:1 --squelch auto"
+        "Exiting"
+        "M17 LSF +[(]ENCODER[)]"
+    )
+    dsd_neo_add_iq_reject_test(
+        DECODE_IQ_M17_ENCODER_VOX_SQL_NOISE_NOISE_FLOOR
+        noise_floor
+        "-fZ -M M17:7:DSD-NEO:TEST:48000:1 --squelch noise"
+        "Exiting"
+        "M17 LSF +[(]ENCODER[)]"
+    )
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_M17_ENCODER_VOX_SQL_LEVEL_KEYS
+        noise_floor
+        "-fZ -M M17:7:DSD-NEO:TEST:48000:1 --squelch -40"
+        "M17 LSF +[(]ENCODER[)]"
     )
 
     # Received-tone detection on the analog FM monitor (issue #522): synthetic NFM with voice

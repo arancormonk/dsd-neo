@@ -1020,7 +1020,8 @@ dsd_engine_setup_check_analog_width(const dsd_opts* opts) {
  * (issue #628), where the PCM noise squelch says so itself if the input has no room or no band above voice. It needs
  * FM: on the AM monitor (-fM, no scan) a --squelch noise is refused, and a noise setting from an input spec or the
  * config runs as auto with the same N. A scan's AM rows inherit a noise default as auto without a word: each row
- * resolves its own.
+ * resolves its own. EDACS analog voice runs either setting as auto on a radio input and neither on audio input (issue
+ * #625); the M17 encoder's VOX says its own once its user data is read (dsd_engine_note_m17_encoder_squelch()).
  */
 static int
 dsd_engine_setup_check_noise_squelch(const dsd_opts* opts) {
@@ -1028,8 +1029,18 @@ dsd_engine_setup_check_noise_squelch(const dsd_opts* opts) {
     if (!dsd_squelch_mode_is_dynamic(mode)) {
         return 0;
     }
+    if (dsd_squelch_edacs_analog_voice(opts)) {
+        if (!dsd_opts_input_is_radio(opts)) {
+            LOG_INFO("NOTICE: --squelch %s runs on a radio input only: on this input an EDACS analog call ends on its "
+                     "release marker or the fallback watchdog.\n",
+                     mode == DSD_SQUELCH_MODE_NOISE ? "noise" : "auto");
+        } else if (mode == DSD_SQUELCH_MODE_NOISE) {
+            LOG_INFO("NOTICE: EDACS analog voice runs the noise squelch as auto+%ddB.\n", opts->rtl_squelch_margin_db);
+        }
+        return 0;
+    }
     if (!dsd_opts_input_is_radio(opts)) {
-        if (mode == DSD_SQUELCH_MODE_AUTO) {
+        if (mode == DSD_SQUELCH_MODE_AUTO && !dsd_opts_runs_m17_encoder(opts)) {
             LOG_WARN("WARNING: --squelch auto needs a radio input (rtl:, rtltcp:, soapy:, airspy or --iq-replay); the "
                      "squelch is off on this input. On audio input use --squelch noise[+N] or a level.\n");
         }
@@ -1182,6 +1193,27 @@ dsd_engine_parse_m17_userdata(dsd_opts* opts, dsd_state* state) {
     m17_uppercase_inplace(state->m17dat);
     m17_parse_userdata_fields(state);
     m17_finalize_userdata_log(state);
+}
+
+/* The M17 stream encoder reads its own input: on a radio input its VOX keys on the dynamic squelch's gate, but on
+   audio input none runs for it (the PCM noise squelch serves the FM monitor), so an AUTO or NOISE setting leaves the
+   VOX keyed (issue #625). Said once VOX is known, after the user data. */
+static void
+dsd_engine_note_m17_encoder_squelch(const dsd_opts* opts, const dsd_state* state) {
+    if (!dsd_opts_runs_m17_encoder(opts) || !dsd_squelch_mode_is_dynamic(opts->rtl_squelch_mode)
+        || dsd_opts_input_is_radio(opts)) {
+        return;
+    }
+    const char* setting = opts->rtl_squelch_mode == DSD_SQUELCH_MODE_NOISE ? "noise" : "auto";
+    if (state->m17_vox == 1) {
+        LOG_WARN("WARNING: M17 VOX: --squelch %s runs on a radio input only (rtl:, rtltcp:, soapy:, airspy or "
+                 "--iq-replay); on this input VOX has no squelch and stays keyed. Use a level (--squelch <dB>).\n",
+                 setting);
+    } else {
+        LOG_INFO("NOTICE: M17 encoder: --squelch %s runs on a radio input only; the encoder has no squelch on this "
+                 "input.\n",
+                 setting);
+    }
 }
 
 static void
@@ -3015,6 +3047,7 @@ dsd_engine_run_common_setup(dsd_opts* opts, dsd_state* state, int* early_exit) {
         }
     }
     dsd_engine_parse_m17_userdata(opts, state);
+    dsd_engine_note_m17_encoder_squelch(opts, state);
     return 0;
 }
 

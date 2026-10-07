@@ -479,11 +479,23 @@ dsd_opts_uses_wide_4800_profile(const dsd_opts* opts) {
  * @brief Return 1 for the analog receive family (the `-fA` monitor).
  *
  * The M17 encoder shares the analog front end but is not part of the family: its channel filter, demodulator and
- * de-emphasis stay on the fixed WIDE/FM path whatever the analog settings say.
+ * de-emphasis stay on the fixed WIDE/FM path whatever the analog settings say (dsd_opts_runs_m17_encoder()).
  */
 static inline int
 dsd_opts_is_analog_family(const dsd_opts* opts) {
     return (opts && opts->analog_only == 1 && opts->m17encoder != 1) ? 1 : 0;
+}
+
+/**
+ * @brief Return 1 for the M17 stream encoder (`-fZ`), whose RTL front end is the fixed FM/WIDE monitor with de-emphasis
+ * and no CQPSK, at open and through every live change (issue #625).
+ *
+ * `-fZ` clears analog_only and leaves the digital frame flags at their defaults, so neither says it is the encoder: the
+ * front end, the symbol profile and the squelch key on this instead.
+ */
+static inline int
+dsd_opts_runs_m17_encoder(const dsd_opts* opts) {
+    return (opts && opts->m17encoder == 1) ? 1 : 0;
 }
 
 /** @brief Explicit channel width configured for the active analog demodulator in Hz; 0 selects its default. */

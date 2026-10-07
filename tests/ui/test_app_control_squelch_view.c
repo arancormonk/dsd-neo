@@ -11,6 +11,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/power.h>
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -282,6 +283,73 @@ main(void) {
     assert(dsd_app_squelch_view_dynamic_status(NULL, text, sizeof text) == -1 && text[0] == '\0');
     assert(dsd_app_squelch_view_dynamic_status(&view, NULL, sizeof text) == -1);
     assert(dsd_app_squelch_view_dynamic_status(&view, text, 0) == -1);
+
+    /* Issue #625: the M17 encoder's monitor and EDACS analog voice are analog channels for the dynamic squelch. */
+    dsd_opts* enc = (dsd_opts*)calloc(1, sizeof(*enc));
+    dsd_state* est = (dsd_state*)calloc(1, sizeof(*est));
+    assert(enc && est);
+    enc->audio_in_type = AUDIO_IN_RTL;
+    enc->m17encoder = 1;
+    enc->frame_dmr = 1; /* -fZ leaves the default digital frame flags set */
+    enc->rtl_squelch_mode = DSD_SQUELCH_MODE_AUTO;
+    enc->rtl_squelch_margin_db = 10;
+    est->squelch_auto_active = 1;
+    est->squelch_auto_plan_valid = 1;
+    assert(dsd_app_squelch_view_get(enc, est, &view) == 0);
+    expect_text(&view, "auto +10 dB (learning)", "Applied: squelch -> auto +10 dB");
+    est->squelch_auto_state = 1;
+    est->squelch_auto_floor_cdb = -7830;
+    assert(dsd_app_squelch_view_get(enc, est, &view) == 0);
+    expect_auto_status(&view, "floor -78.3 dB");
+    enc->rtl_squelch_mode = DSD_SQUELCH_MODE_NOISE;
+    est->squelch_noise_active = 1;
+    assert(dsd_app_squelch_view_get(enc, est, &view) == 0);
+    expect_auto_status(&view, "starting");
+    est->squelch_noise_active = 0;
+    /* On audio input neither setting runs for the encoder (the PCM noise squelch serves the FM monitor). */
+    enc->audio_in_type = AUDIO_IN_UDP;
+    assert(dsd_app_squelch_view_get(enc, est, &view) == 0);
+    expect_auto_status(&view, "off: no radio input");
+    enc->rtl_squelch_mode = DSD_SQUELCH_MODE_AUTO;
+    assert(dsd_app_squelch_view_get(enc, est, &view) == 0);
+    expect_auto_status(&view, "off: no radio input");
+
+    /* EDACS analog voice: what the squelch is for between calls, the tracker during one, NOISE as AUTO. */
+    DSD_MEMSET(enc, 0, sizeof(*enc));
+    DSD_MEMSET(est, 0, sizeof(*est));
+    enc->audio_in_type = AUDIO_IN_RTL;
+    enc->frame_provoice = 1;
+    enc->trunk_enable = 1;
+    enc->rtl_squelch_mode = DSD_SQUELCH_MODE_AUTO;
+    enc->rtl_squelch_margin_db = 10;
+    est->squelch_auto_active = 1;
+    est->squelch_auto_plan_valid = 1;
+    assert(dsd_app_squelch_view_get(enc, est, &view) == 0);
+    assert(view.edacs_voice && !view.edacs_call && !view.effective_off);
+    expect_text(&view, "auto +10 dB (EDACS analog calls)", "Applied: squelch -> auto +10 dB");
+    est->squelch_edacs_call = 1;
+    est->squelch_auto_state = 1;
+    est->squelch_auto_floor_cdb = -8100;
+    assert(dsd_app_squelch_view_get(enc, est, &view) == 0);
+    expect_auto_status(&view, "floor -81.0 dB");
+    enc->rtl_squelch_mode = DSD_SQUELCH_MODE_NOISE;
+    assert(dsd_app_squelch_view_get(enc, est, &view) == 0);
+    assert(view.noise_as_auto);
+    expect_auto_status(&view, "as auto: floor -81.0 dB");
+    est->squelch_edacs_call = 0;
+    assert(dsd_app_squelch_view_get(enc, est, &view) == 0);
+    expect_auto_status(&view, "EDACS analog calls, as auto");
+    enc->audio_in_type = AUDIO_IN_TCP;
+    assert(dsd_app_squelch_view_get(enc, est, &view) == 0);
+    expect_auto_status(&view, "off: no radio input");
+    /* ProVoice without trunking follows no analog call: a digital channel. */
+    enc->audio_in_type = AUDIO_IN_RTL;
+    enc->trunk_enable = 0;
+    assert(dsd_app_squelch_view_get(enc, est, &view) == 0);
+    expect_auto_status(&view, "off on digital");
+    dsd_state_ext_free_all(est);
+    free(est);
+    free(enc);
 
     char out[8];
     assert(dsd_app_squelch_view_get(NULL, state, &view) == -1 && !view.row_override);

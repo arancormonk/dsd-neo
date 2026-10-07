@@ -710,11 +710,28 @@ alone is `auto+10`), so one setting suits every receiver and every channel of a 
   channel it is off: CRC and FEC already decide what is traffic there, and a control channel never shows its noise. On
   audio input (PCM, WAV, TCP, UDP) it has no channel power to learn a floor from, since FM noise plays louder than
   voice there: it is off, the engine says so at startup, and the terminal and Qt/Android editors refuse it. Use the
-  [noise squelch](#noise-squelch-on-audio-input) or a level there. The M17 encoder and EDACS analog voice run without a
-  squelch under it (EDACS keeps its release watchdog).
+  [noise squelch](#noise-squelch-on-audio-input) or a level there.
+- Two more readers of the gate on a radio input:
+  - The M17 encoder's monitor: its VOX keys on the gate, and the closed samples reach the encoder as silence (see
+    [M17 Encoding](#m17-encoding)).
+  - EDACS analog voice: the tracker runs on the 9600 bit/s FSK path EDACS reads. A call ends once the gate has stayed
+    closed for the level squelch's hold, less the 85 ms the gate can take to close: about 155 ms at 48 kHz and 395 ms
+    at the EDACS presets' 24 kHz. At those rates a carrier that drops ends no later than under a level squelch.
+  - The hold is never under 80 ms, two of the squelch's windows, so neither the window a call's first decision takes
+    nor one window read closed ends a call. That floor sets the hold only above about 70 kHz, where an I/Q replay runs
+    unresampled (`DSD_NEO_RESAMP=off`). There a call can end up to the 85 ms, the floor and the triplet it ends on after
+    its carrier drops: about 190 ms at 125 kHz, where a level squelch ends it within about 115 ms.
+  - The tracker runs on the EDACS control channel too, a continuous carrier it never takes as its floor, and EDACS
+    reads the gate only during a call.
+  - The closed samples play as silence. The release watchdog applies only where nothing decides the call: no squelch,
+    a dynamic setting on audio input, or no channel plan.
+
+  On audio input the auto squelch runs for neither: the encoder's VOX has no squelch there (the engine warns; use a
+  level), and an EDACS call ends on its release marker or the watchdog.
 - What it shows: the terminal input line reads `SQL: auto +10 dB (floor -78.3 dB)`, `(learning)`, `(off: no radio
-  input)`, `(off on digital)`, or in the rare front end it has no plan for `(off: no channel plan)`; the startup
-  banner `SQ=auto+10dB`; the DSP panel and the Qt/Android radio panel the same.
+  input)`, `(off on digital)`, or in the rare front end it has no plan for `(off: no channel plan)`. On EDACS it reads
+  `(EDACS analog calls)` between calls and the tracker's reading during one. The startup banner shows `SQ=auto+10dB`,
+  and the DSP panel and the Qt/Android radio panel show the same.
 - Scans: a row or target's own `--squelch auto[+N]` (`nfm` and `am` rows, `nfm-conventional` and `am-conventional`
   targets) replaces the default while it is on air, as `--squelch-db` does. Under the auto squelch an analog row's
   noise no longer holds the scan, so the open-squelch warning does not apply to it. See `docs/csv-formats.md`.
@@ -751,6 +768,11 @@ their sensitivity in.
   there, an `am` row or `am-conventional` target refuses `--squelch noise`, and an `am` row that inherits a noise
   default runs it as auto. Like auto, it is off on digital channels. On audio input it learns its reference from the
   input itself ([below](#noise-squelch-on-audio-input)).
+- The M17 encoder's monitor runs it as the FM monitor does, or as auto where its channel has no band.
+- EDACS analog voice runs it as auto, and the engine says so (`EDACS analog voice runs the noise squelch as
+  auto+NdB`): the FSK discriminator EDACS reads puts out peak-normalised levels, not the radians the noise squelch is
+  calibrated on.
+- On audio input neither runs it: the PCM noise squelch below serves the FM monitor only.
 - What it shows: `SQL: noise +10 dB (quieting 23 dB)`, `(starting)` before its first window, `(as auto: floor
   -78.3 dB)` where the auto squelch stands in, and the same `off` readings as auto; the startup banner
   `SQ=noise+10dB`; the Qt/Android radio panel's `dB | Auto | Noise` choice, whose buttons step N.
@@ -1494,7 +1516,10 @@ cache file. Direct frequency changes are disabled during `--trunk-scan`, whose t
   the row is on air it replaces this setting; leaving it, or stopping the scan, restores this one. The squelch menu and
   Qt panel still edit this configured value, and a save writes it, never the row's.
 - For DMR data/LRRP on direct RTL input, use `bw=48` when possible, or at least `bw=24`; lower basebands may still decode voice but corrupt data PDUs.
-- Note: For EDACS analog voice follow, `sql <= 0` now uses a bounded fallback watchdog to avoid indefinite VC hold when no release marker is detected.
+- Note: when EDACS follows an analog voice call and nothing decides when it ends, a bounded fallback watchdog releases
+  the voice channel if no release marker is detected. That covers `sql <= 0`, `--squelch auto`/`noise` on audio input,
+  and a channel the auto squelch has no plan for. Under `--squelch auto` or `noise` on a radio input, the squelch's gate
+  ends the call ([Auto squelch](#auto-squelch---squelch-auto)).
 - RTL USB, RTL-TCP, SoapySDR, and IQ replay digital decode run in the symbol domain. The digital decoder receives one
   normalized float per FSK or CQPSK symbol decision; discriminator audio is not used for digital decode.
 - The trailing `vol` field and `rtl_volume` config key are monitor/non-symbol gain only. They do not scale RTL-family
@@ -1584,6 +1609,27 @@ M17 `-M` details
 - `SRC`/`DST` up to 9 UPPER base40 chars (` ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-/.`)
 - `INPUT_RATE` default 48000; a multiple of 8000 up to 48000 (any other value warns and uses 48000)
 - `VOX` enable with `1` (default `0`)
+
+Input, squelch and VOX
+
+- On a radio input the encoder reads the FM monitor with de-emphasis on the WIDE channel, never CQPSK, whatever digital
+  decode flags or `DSD_NEO_CQPSK` say.
+- VOX decides per 40 ms read (two codec2 frames at 3200 bit/s). A read is heard when the squelch is open for any of it:
+  - a level squelch: the channel power on a radio input, the input level on audio input;
+  - `--squelch auto` or `noise` on a radio input: the gate on each sample. Closed samples fade to silence (5 ms in,
+    10 ms out) before encoding, as a level squelch's closed block reaches the encoder silent.
+- After 11 closed reads, at the next LICH superframe boundary (up to 240 ms more), the transmitter unkeys. The last
+  frame carries the end-of-stream bit and the EOT marker follows it, without dead air, so a quick re-key is not
+  delayed.
+- On audio input `--squelch auto` and `noise` run no squelch for the encoder: VOX stays keyed, and the engine warns at
+  startup. Use a level there.
+- A transmission still open when the encoder stops (an exit, or the input ending) ends the same way, followed by 1 s of
+  dead air, as a manual unkey's does.
+- A manual unkey while VOX still hears a carrier ends that stream the same way, with its dead air; VOX then keys a new
+  stream, with its own LSF and, when monitored, its own call.
+- On a local audio output the encoder lets the last frame and the EOT marker play before it queues the dead air, so a
+  full output cannot drop them. At shutdown it lets everything queued play before the output closes, a VOX unkey's
+  end included. The packet encoder (`-fP`) ends the same way.
 
 Examples
 

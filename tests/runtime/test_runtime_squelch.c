@@ -18,6 +18,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/runtime/analog_channel.h>
+#include <dsd-neo/runtime/rtl_stream_io_hooks.h>
 #include <dsd-neo/runtime/squelch.h>
 #include <math.h>
 #include <stdint.h>
@@ -282,6 +283,73 @@ test_gate_helpers(void) {
     assert(!dsd_squelch_level_open(NULL) && !dsd_squelch_gate_open(NULL, NULL, 0U));
 }
 
+/* Issue #625: where a dynamic setting has an analog channel off the analog family, and whether a stream runs its gate
+   for a reader of its own (EDACS analog voice, the M17 encoder). */
+static int g_stream_status_rc = 0;
+static int g_stream_status_active = 1;
+static int g_stream_status_plan = 1;
+
+static int
+fake_stream_status(const void* rtl_ctx, dsd_rtl_squelch_status* out) {
+    (void)rtl_ctx;
+    DSD_MEMSET(out, 0, sizeof(*out));
+    out->active = g_stream_status_active;
+    out->plan_valid = g_stream_status_plan;
+    return g_stream_status_rc;
+}
+
+static void
+test_paths_off_the_analog_family(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static int token;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.frame_dmr = 1;
+    assert(dsd_squelch_channel_digital(&opts) && !dsd_squelch_edacs_analog_voice(&opts));
+    opts.m17encoder = 1;
+    assert(!dsd_squelch_channel_digital(&opts));
+    opts.m17encoder = 0;
+    opts.frame_provoice = 1;
+    assert(dsd_squelch_channel_digital(&opts) && !dsd_squelch_edacs_analog_voice(&opts));
+    opts.trunk_enable = 1;
+    assert(!dsd_squelch_channel_digital(&opts) && dsd_squelch_edacs_analog_voice(&opts));
+    assert(dsd_squelch_dynamic_input_kind(&opts) == DSD_SQUELCH_INPUT_RADIO);
+    opts.audio_in_type = AUDIO_IN_UDP;
+    assert(dsd_squelch_dynamic_input_kind(&opts) == DSD_SQUELCH_INPUT_OTHER);
+    opts.frame_provoice = 0;
+    opts.m17encoder = 1;
+    assert(dsd_squelch_dynamic_input_kind(&opts) == DSD_SQUELCH_INPUT_OTHER);
+    opts.m17encoder = 0;
+    opts.analog_only = 1;
+    assert(dsd_squelch_dynamic_input_kind(&opts) == DSD_SQUELCH_INPUT_AUDIO && !dsd_squelch_channel_digital(&opts));
+    assert(dsd_squelch_channel_digital(NULL) && !dsd_squelch_edacs_analog_voice(NULL));
+
+    /* The stream's gate runs for a reader of its own: a dynamic setting on a radio input, status active with a plan. */
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.rtl_squelch_mode = DSD_SQUELCH_MODE_AUTO;
+    state.rtl_ctx = (struct RtlSdrContext*)&token;
+    dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){.squelch_status = fake_stream_status});
+    assert(dsd_squelch_stream_gate_running(&opts, &state));
+    g_stream_status_plan = 0;
+    assert(!dsd_squelch_stream_gate_running(&opts, &state));
+    g_stream_status_plan = 1;
+    g_stream_status_active = 0;
+    assert(!dsd_squelch_stream_gate_running(&opts, &state));
+    g_stream_status_active = 1;
+    g_stream_status_rc = -1;
+    assert(!dsd_squelch_stream_gate_running(&opts, &state));
+    g_stream_status_rc = 0;
+    opts.rtl_squelch_mode = DSD_SQUELCH_MODE_LEVEL;
+    assert(!dsd_squelch_stream_gate_running(&opts, &state));
+    opts.rtl_squelch_mode = DSD_SQUELCH_MODE_NOISE;
+    opts.audio_in_type = AUDIO_IN_UDP;
+    assert(!dsd_squelch_stream_gate_running(&opts, &state));
+    assert(!dsd_squelch_stream_gate_running(NULL, &state) && !dsd_squelch_stream_gate_running(&opts, NULL));
+    dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){0});
+}
+
 /* NOISE on audio input (issue #628): it gates per sample on the FM monitor while the PCM noise squelch is available
    (learning, or holding a reference), and runs the level path -- level off, with its silence floor -- when the source
    has no band above voice or no room for one, its flags (open from then on) still carrying the monitor's gate. AUTO,
@@ -453,6 +521,7 @@ main(void) {
     test_level_finite();
     test_opts_store_and_spec_field();
     test_gate_helpers();
+    test_paths_off_the_analog_family();
     test_pcm_noise_helpers();
     test_publish_status_sources();
     test_format();

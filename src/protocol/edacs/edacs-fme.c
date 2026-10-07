@@ -231,8 +231,9 @@ edacs_fill_analog_block_udp(dsd_opts* opts, dsd_state* state, short* block) {
 }
 
 #ifdef USE_RADIO
+/* One block of the RTL stream, with each sample's squelch flag into @p flags (960 of them, or NULL). */
 static int
-edacs_fill_analog_block_rtl(dsd_opts* opts, dsd_state* state, short* block) {
+edacs_fill_analog_block_rtl(dsd_opts* opts, dsd_state* state, short* block, uint8_t* flags) {
     float rtl_sample = 0.0f;
     for (int i = 0; i < 960; i++) {
         if (!state->rtl_ctx) {
@@ -240,7 +241,7 @@ edacs_fill_analog_block_rtl(dsd_opts* opts, dsd_state* state, short* block) {
             return 0;
         }
         int got = 0;
-        if (dsd_rtl_stream_io_hook_read(state, &rtl_sample, 1, &got) < 0 || got != 1) {
+        if (dsd_rtl_stream_io_hook_read_ex(state, &rtl_sample, flags ? &flags[i] : NULL, 1, &got) < 0 || got != 1) {
             dsd_request_shutdown(opts, state);
             return 0;
         }
@@ -300,14 +301,15 @@ edacs_collect_tcp_triplet(dsd_opts* opts, dsd_state* state, short* analog1, shor
 #ifdef USE_RADIO
 static int
 edacs_collect_rtl_triplet(dsd_opts* opts, dsd_state* state, short* analog1, short* analog2, short* analog3,
-                          double* pwr) {
-    if (!edacs_fill_analog_block_rtl(opts, state, analog1)) {
+                          uint8_t* flags, double* pwr) {
+    if (!edacs_fill_analog_block_rtl(opts, state, analog1, flags)) {
         return 0;
     }
-    if (!edacs_fill_analog_block_rtl(opts, state, analog2)) {
+    if (!edacs_fill_analog_block_rtl(opts, state, analog2, flags ? flags + EDACS_ANALOG_BLOCK_SAMPLES : NULL)) {
         return 0;
     }
-    if (!edacs_fill_analog_block_rtl(opts, state, analog3)) {
+    if (!edacs_fill_analog_block_rtl(opts, state, analog3,
+                                     flags ? flags + ((size_t)2U * EDACS_ANALOG_BLOCK_SAMPLES) : NULL)) {
         return 0;
     }
     *pwr = dsd_rtl_stream_io_hook_return_pwr(state);
@@ -316,10 +318,14 @@ edacs_collect_rtl_triplet(dsd_opts* opts, dsd_state* state, short* analog1, shor
 #endif
 
 int
-edacs_collect_analog_triplet(dsd_opts* opts, dsd_state* state, short* analog1, short* analog2, short* analog3,
-                             double* pwr) {
+edacs_collect_analog_triplet_flags(dsd_opts* opts, dsd_state* state, short* analog1, short* analog2, short* analog3,
+                                   uint8_t* flags, double* pwr) {
     if (!edacs_analog_triplet_args_valid(opts, state, analog1, analog2, analog3) || pwr == NULL) {
         return 0;
+    }
+    /* Audio input carries no flags: every sample reads open. */
+    if (flags && opts->audio_in_type != AUDIO_IN_RTL) {
+        DSD_MEMSET(flags, 0, (size_t)EDACS_ANALOG_TRIPLET_SAMPLES);
     }
 
     switch (opts->audio_in_type) {
@@ -328,12 +334,66 @@ edacs_collect_analog_triplet(dsd_opts* opts, dsd_state* state, short* analog1, s
         case AUDIO_IN_UDP: return edacs_collect_udp_triplet(opts, state, analog1, analog2, analog3, pwr);
         case AUDIO_IN_RTL:
 #ifdef USE_RADIO
-            return edacs_collect_rtl_triplet(opts, state, analog1, analog2, analog3, pwr);
+            return edacs_collect_rtl_triplet(opts, state, analog1, analog2, analog3, flags, pwr);
 #else
             return 0;
 #endif
         default: return 0;
     }
+}
+
+int
+edacs_collect_analog_triplet(dsd_opts* opts, dsd_state* state, short* analog1, short* analog2, short* analog3,
+                             double* pwr) {
+    return edacs_collect_analog_triplet_flags(opts, state, analog1, analog2, analog3, NULL, pwr);
+}
+
+int
+edacs_analog_sql_kind(const dsd_opts* opts, int gate_running) {
+    if (opts == NULL) {
+        return EDACS_ANALOG_SQL_NONE;
+    }
+    if (dsd_squelch_mode_is_dynamic(opts->rtl_squelch_mode)) {
+        /* The stream's per-sample gate, on a radio input whose demodulator runs it (the 9600 bit/s FSK path, NOISE as
+           AUTO): a tracker with no plan keeps every flag open, and audio input carries none (issue #625). */
+        return (dsd_squelch_input_kind(opts) == DSD_SQUELCH_INPUT_RADIO && gate_running) ? EDACS_ANALOG_SQL_GATE
+                                                                                         : EDACS_ANALOG_SQL_NONE;
+    }
+    return dsd_squelch_level_in_force(opts) > 0.0 ? EDACS_ANALOG_SQL_LEVEL : EDACS_ANALOG_SQL_NONE;
+}
+
+size_t
+edacs_gate_closed_run(size_t run, const uint8_t* flags, size_t count) {
+    if (flags == NULL) {
+        return 0U;
+    }
+    for (size_t i = 0; i < count; i++) {
+        run = (flags[i] & DSD_SQUELCH_FLAG_CLOSED) ? run + 1U : 0U;
+    }
+    return run;
+}
+
+size_t
+edacs_gate_hold_samples(int rate_hz) {
+    const size_t hold = (size_t)4U * (size_t)EDACS_ANALOG_TRIPLET_SAMPLES;
+    if (rate_hz <= 0) {
+        return hold;
+    }
+    const size_t delay = (size_t)(((int64_t)DSD_SQUELCH_CLOSE_DELAY_MS * (int64_t)rate_hz + 999) / 1000);
+    const size_t floor = (size_t)(((int64_t)EDACS_ANALOG_GATE_MIN_HOLD_MS * (int64_t)rate_hz + 999) / 1000);
+    if (delay >= hold || hold - delay < floor) {
+        return floor;
+    }
+    return hold - delay;
+}
+
+int
+edacs_gate_count(size_t run, size_t hold) {
+    if (run >= hold) {
+        return 0;
+    }
+    const size_t closed_triplets = run / (size_t)EDACS_ANALOG_TRIPLET_SAMPLES;
+    return closed_triplets >= 4U ? 1 : 5 - (int)closed_triplets;
 }
 
 unsigned long long
@@ -379,13 +439,41 @@ edacs_analog_rate_hz(const dsd_opts* opts) {
     return rate > 0 ? rate : 48000;
 }
 
+/* One block through the chain under the dynamic squelch (issue #625): each run of samples the gate heard, or did not,
+   goes through with its own playing flag, so the AGC adapts to exactly the samples heard and holds while the gate is
+   closed (as the monitor's symbol_process_unsynced_audio_runs() does); then the closed samples are silenced, as the
+   level squelch's zeroed I/Q silences a closed block. */
+static void
+edacs_process_analog_block_runs(const dsd_opts* opts, dsd_state* state, short* block, const uint8_t* sql_flags,
+                                dsd_analog_audio_source source, int rate_hz, unsigned int playing, unsigned int reset) {
+    unsigned int start = 0U;
+    while (start < (unsigned int)EDACS_ANALOG_BLOCK_SAMPLES) {
+        const int heard = (sql_flags[start] & DSD_SQUELCH_FLAG_CLOSED) == 0;
+        unsigned int end = start + 1U;
+        while (end < (unsigned int)EDACS_ANALOG_BLOCK_SAMPLES
+               && ((sql_flags[end] & DSD_SQUELCH_FLAG_CLOSED) == 0) == heard) {
+            end++;
+        }
+        (void)dsd_analog_audio_process_s(opts, state, DSD_ANALOG_AUDIO_CHAIN_EDACS, block + start, end - start, source,
+                                         rate_hz, (heard ? playing : 0U) | reset);
+        reset = 0U;
+        start = end;
+    }
+    for (int i = 0; i < EDACS_ANALOG_BLOCK_SAMPLES; i++) {
+        if (sql_flags[i] & DSD_SQUELCH_FLAG_CLOSED) {
+            block[i] = 0;
+        }
+    }
+}
+
 /* The analog voice chain (voice band-pass, legacy filters, then a fixed gain or the AGC) over the three blocks in
    order. The symbol register is built from the raw first block before this, so decoding never sees the filters. On an
    RTL input EDACS reads the FSK discriminator output; a call the talkgroup gate mutes does not move the AGC, and
-   @p first_of_call starts the chain over for another channel's call. */
+   @p first_of_call starts the chain over for another channel's call. With @p sql_flags (2880, the dynamic squelch's)
+   the closed samples hold the AGC and play silence; NULL plays every sample. */
 static void
 edacs_process_analog_triplet(const dsd_opts* opts, dsd_state* state, short* analog1, short* analog2, short* analog3,
-                             int first_of_call) {
+                             const uint8_t* sql_flags, int first_of_call) {
     const dsd_analog_audio_source source =
         opts->audio_in_type == AUDIO_IN_RTL ? DSD_ANALOG_AUDIO_SOURCE_RTL_FSK : DSD_ANALOG_AUDIO_SOURCE_PCM16;
     const int rate_hz = edacs_analog_rate_hz(opts);
@@ -393,6 +481,12 @@ edacs_process_analog_triplet(const dsd_opts* opts, dsd_state* state, short* anal
     short* blocks[3] = {analog1, analog2, analog3};
     for (int i = 0; i < 3; i++) {
         const unsigned int reset = (first_of_call && i == 0) ? DSD_ANALOG_AUDIO_RESET : 0U;
+        if (sql_flags) {
+            edacs_process_analog_block_runs(opts, state, blocks[i],
+                                            sql_flags + ((size_t)i * EDACS_ANALOG_BLOCK_SAMPLES), source, rate_hz,
+                                            flags, reset);
+            continue;
+        }
         (void)dsd_analog_audio_process_s(opts, state, DSD_ANALOG_AUDIO_CHAIN_EDACS, blocks[i], 960U, source, rate_hz,
                                          flags | reset);
     }
@@ -526,19 +620,28 @@ edacs_update_squelch_count(double pwr, double sql, int count) {
 }
 
 static void
-edacs_print_analog_status(const dsd_opts* opts, const dsd_state* state, int afs, unsigned char lcn, double pwr,
-                          double sql) {
+edacs_print_analog_status(const dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn, double pwr, double sql,
+                          int sql_kind, int gate_heard) {
     printFrameSync(opts, state, " EDACS", 0, "A");
 
-    if (pwr > sql) {
+    const int open = sql_kind == EDACS_ANALOG_SQL_GATE ? gate_heard : pwr > sql;
+    if (open) {
         DSD_FPRINTF(stderr, "%s", KGRN);
     } else {
         DSD_FPRINTF(stderr, "%s", KRED);
     }
-    /* The measurement is always a number; the threshold says "off" when this
-     * channel is not being gated at all (the watchdog case below). */
-    char sql_text[24];
-    (void)dsd_squelch_format(sql, " dB", sql_text, sizeof sql_text);
+    /* The measurement is always a number; the threshold says "off" when this channel is not being gated at all (the
+     * watchdog case below), and names the dynamic setting whose gate ends the call (issue #625: NOISE runs as AUTO). */
+    char sql_text[DSD_SQUELCH_TEXT_SIZE + 12];
+    if (sql_kind == EDACS_ANALOG_SQL_GATE) {
+        const dsd_squelch_setting setting = dsd_squelch_setting_of_opts(opts);
+        char setting_text[DSD_SQUELCH_TEXT_SIZE];
+        (void)dsd_squelch_setting_format(&setting, setting_text, sizeof setting_text);
+        DSD_SNPRINTF(sql_text, sizeof sql_text, "%s%s", setting_text,
+                     setting.mode == DSD_SQUELCH_MODE_NOISE ? " (as auto)" : "");
+    } else {
+        (void)dsd_squelch_format(sql, " dB", sql_text, sizeof sql_text);
+    }
     DSD_FPRINTF(stderr, " Analog PWR: %.1f dB SQL: %s", pwr_to_dB(pwr), sql_text);
 
     if (state->ea_mode == 0) {
@@ -557,6 +660,8 @@ edacs_print_analog_status(const dsd_opts* opts, const dsd_state* state, int afs,
     }
 
     if (dsd_telemetry_is_active()) {
+        /* Frame sync, which publishes the squelch's status, does not run during a call. */
+        dsd_squelch_publish_status(opts, state);
         dsd_telemetry_publish_both_and_redraw(opts, state);
     }
 }
@@ -726,15 +831,31 @@ edacs_publish_data_activity(dsd_state* state, int lcn, uint64_t target, uint64_t
     }
 }
 
+/* Why no squelch decides an analog call, once each time that starts: the fallback watchdog then releases it. */
+static void
+edacs_log_no_squelch(const dsd_opts* opts, double no_sql_watchdog_s) {
+    if (!dsd_squelch_mode_is_dynamic(opts->rtl_squelch_mode)) {
+        LOG_WARN("edacs_analog: SQL disabled (<=0). Enabling %.0fs fallback release watchdog.\n", no_sql_watchdog_s);
+    } else if (dsd_squelch_input_kind(opts) != DSD_SQUELCH_INPUT_RADIO) {
+        LOG_WARN("edacs_analog: --squelch %s runs on a radio input only. Enabling %.0fs fallback release watchdog.\n",
+                 opts->rtl_squelch_mode == DSD_SQUELCH_MODE_NOISE ? "noise" : "auto", no_sql_watchdog_s);
+    } else {
+        LOG_WARN("edacs_analog: the auto squelch is not running on this channel (no channel plan). Enabling %.0fs "
+                 "fallback release watchdog.\n",
+                 no_sql_watchdog_s);
+    }
+}
+
 //listening to and playing back analog audio
 static void
-edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
+edacs_analog_call(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
     const time_t now = dsd_decode_time();
     const double nowm = dsd_decode_now_mono_s();
     int count = 5;
     short analog1[960];
     short analog2[960];
     short analog3[960];
+    uint8_t sql_flags[EDACS_ANALOG_TRIPLET_SAMPLES];
 
     state->last_cc_sync_time = now;
     state->last_vc_sync_time = now;
@@ -744,40 +865,57 @@ edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
     DSD_MEMSET(analog1, 0, sizeof(analog1));
     DSD_MEMSET(analog2, 0, sizeof(analog2));
     DSD_MEMSET(analog3, 0, sizeof(analog3));
+    DSD_MEMSET(sql_flags, 0, sizeof(sql_flags));
 
-    double sql = dsd_squelch_level_in_force(opts); // AUTO is off here: EDACS reads the FSK output, not the monitor
-    double pwr = sql + 1e-3;                       // small offset for initial loop phase
-    const int sql_disabled = (sql <= 0.0);
+    double sql = dsd_squelch_level_in_force(opts);
+    double pwr = sql + 1e-3; // small offset for initial loop phase
     const double no_sql_watchdog_s = edacs_no_sql_watchdog_window(opts->trunk_hangtime);
+    /* Under a dynamic setting the call ends when the gate has been closed for the level squelch's hold (issue #625). */
+    const size_t gate_hold = edacs_gate_hold_samples(edacs_analog_rate_hz(opts));
+    size_t gate_closed_run = 0U;
+    int logged_kind = -1;
 
     DSD_FPRINTF(stderr, "\n");
-    if (sql_disabled) {
-        LOG_WARN("edacs_analog: SQL disabled (<=0). Enabling %.0fs fallback release watchdog.\n", no_sql_watchdog_s);
-    }
 
     int first_of_call = 1;
     while (!dsd_exitflag_load() && count > 0) {
         /* The audio chain notes the reception the triplet begins in, so a retune landing while it is collected drops
            all three blocks rather than play the old channel's samples (dsd_analog_audio_process_f()). */
         dsd_analog_audio_block_begin(opts, state, DSD_ANALOG_AUDIO_CHAIN_EDACS);
-        if (!edacs_collect_analog_triplet(opts, state, analog1, analog2, analog3, &pwr)) {
+        if (!edacs_collect_analog_triplet_flags(opts, state, analog1, analog2, analog3, sql_flags, &pwr)) {
             return;
         }
+        /* Decided per triplet: a live squelch change takes effect within one. */
+        const int kind = edacs_analog_sql_kind(opts, dsd_squelch_stream_gate_running(opts, state));
+        if (kind == EDACS_ANALOG_SQL_NONE && logged_kind != EDACS_ANALOG_SQL_NONE) {
+            edacs_log_no_squelch(opts, no_sql_watchdog_s);
+        }
+        logged_kind = kind;
+        sql = dsd_squelch_level_in_force(opts);
 
         unsigned long long int sr = edacs_build_symbol_register(opts, state, analog1);
 
         edacs_reset_digitize_overflow(state);
-        edacs_process_analog_triplet(opts, state, analog1, analog2, analog3, first_of_call);
+        edacs_process_analog_triplet(opts, state, analog1, analog2, analog3,
+                                     kind == EDACS_ANALOG_SQL_GATE ? sql_flags : NULL, first_of_call);
         first_of_call = 0;
         edacs_emit_analog_audio(opts, state, analog1, analog2, analog3);
         (void)dsd_call_state_update_media(state, 0U, 1, 0.0);
 
         opts->rtl_pwr = pwr;
-        count = edacs_update_squelch_count(pwr, sql, count);
-        edacs_print_analog_status(opts, state, afs, lcn, pwr, sql);
+        int gate_heard = 0;
+        if (kind == EDACS_ANALOG_SQL_GATE) {
+            gate_closed_run = edacs_gate_closed_run(gate_closed_run, sql_flags, (size_t)EDACS_ANALOG_TRIPLET_SAMPLES);
+            gate_heard = gate_closed_run < (size_t)EDACS_ANALOG_TRIPLET_SAMPLES;
+            count = edacs_gate_count(gate_closed_run, gate_hold);
+        } else {
+            gate_closed_run = 0U;
+            count = edacs_update_squelch_count(pwr, sql, count);
+        }
+        edacs_print_analog_status(opts, state, afs, lcn, pwr, sql, kind, gate_heard);
         edacs_write_analog_wav(opts, state, analog1, analog2, analog3);
 
-        if (edacs_should_release_voice(sr, sql_disabled, now, no_sql_watchdog_s)) {
+        if (edacs_should_release_voice(sr, kind == EDACS_ANALOG_SQL_NONE, now, no_sql_watchdog_s)) {
             count = 0;
         }
 
@@ -788,6 +926,14 @@ edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
             DSD_FPRINTF(stderr, "\n");
         }
     }
+}
+
+/* An analog call, which the readout marks while it plays (dsd_state::squelch_edacs_call, issue #625). */
+static void
+edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
+    state->squelch_edacs_call = 1U;
+    edacs_analog_call(opts, state, afs, lcn);
+    state->squelch_edacs_call = 0U;
 }
 
 static void

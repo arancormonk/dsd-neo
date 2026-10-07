@@ -1906,6 +1906,10 @@ struct dsd_state {
     uint8_t squelch_noise_measured;
     int32_t squelch_noise_quieting_cdb;
     uint8_t squelch_noise_state;
+    /* 1 while EDACS plays an analog voice call (edacs_analog(), issue #625), which ends on the dynamic squelch's gate:
+       the readout shows the tracker during a call and what it is for between calls. Written on the decoder thread;
+       rides the vertex_ks_count..ui_msg range. */
+    uint8_t squelch_edacs_call;
 
     // Transient UI message (shown briefly in ncurses printer)
     char ui_msg[128];

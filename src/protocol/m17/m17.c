@@ -1717,6 +1717,15 @@ typedef struct {
     size_t nsam;
     int sql_hit;
     int eot_out;
+    /* The iteration's read under the dynamic squelch (issue #625): whether it ran the stream's gate, and whether any
+       sample was heard. */
+    int squelch_gated;
+    int squelch_heard;
+    /* The end of stream the VOX asked for (issue #625): the EOS frame and the EOT marker, without the dead air a manual
+       unkey or a shutdown sends, so the encoder goes back to its input at once. */
+    int eot_vox;
+    /* Set when the input stopped with a transmission open: the next frame carries the EOS bit (m17_str_end_open()). */
+    int ending;
     short* samp1;
     short* samp2;
     short* voice1;
@@ -2000,6 +2009,17 @@ m17_str_read_block_rtl(dsd_opts* opts, dsd_state* state, m17_encoder_input* in, 
        (issue #618); the analog chain's RTL monitor gain takes the reference signal to -12 dBFS peak, PCM scale. */
     const float gain =
         (float)opts->rtl_volume_multiplier * (float)dsd_analog_audio_source_gain(DSD_ANALOG_AUDIO_SOURCE_RTL_MONITOR);
+    /* Under an AUTO or NOISE setting the stream flags each sample (issue #625): a closed one fades to exact silence
+       (5 ms in, 10 ms out at the input rate, the monitor sink's ramps) before the anti-alias filter, as the level
+       squelch's zeroed block reaches the encoder silent, and the VOX counts the read closed unless a sample was heard.
+       Whether the gate runs is asked once the block's first sample is in: the demodulator publishes a block's status
+       before its samples, so the answer covers them, where one asked before the stream's first block could only say
+       no (and the level comparison, open under AUTO, would key the VOX on noise). */
+    int gated = -1;
+    const float rate = (float)(in->dec * 8000);
+    const float up = 1.0f / (rate * 0.005f);
+    const float down = 1.0f / (rate * 0.010f);
+    int heard_any = 0;
     for (size_t i = 0; i < nsam; i++) {
         for (int j = 0; j < in->dec; j++) {
             if (!state->rtl_ctx) {
@@ -2007,17 +2027,30 @@ m17_str_read_block_rtl(dsd_opts* opts, dsd_state* state, m17_encoder_input* in, 
                 return M17_STR_READ_STOP;
             }
             float raw = 0.0f;
+            uint8_t flag = 0U;
             int got = 0;
-            if (dsd_rtl_stream_io_hook_read(state, &raw, 1, &got) < 0 || got != 1) {
+            if (dsd_rtl_stream_io_hook_read_ex(state, &raw, &flag, 1, &got) < 0 || got != 1) {
                 dsd_request_shutdown(opts, state);
                 return M17_STR_READ_STOP;
             }
             /* An I/Q replay's sample runs the decode clock to its capture time (issue #572). */
             (void)dsd_rtl_stream_metrics_hook_replay_advance_decode_clock();
-            in->sample = m17_str_input_filter(&in->lowpass, raw * gain);
+            if (gated < 0) {
+                gated = dsd_squelch_stream_gate_running(opts, state);
+            }
+            float sample = raw * gain;
+            if (gated) {
+                const int heard = (flag & DSD_SQUELCH_FLAG_CLOSED) == 0U;
+                heard_any |= heard;
+                in->squelch_gain = heard ? fminf(1.0f, in->squelch_gain + up) : fmaxf(0.0f, in->squelch_gain - down);
+                sample *= in->squelch_gain;
+            }
+            in->sample = m17_str_input_filter(&in->lowpass, sample);
         }
         out[i] = m17_clip_float_to_short(in->sample);
     }
+    in->squelch_gated = gated > 0 ? 1 : 0;
+    in->squelch_heard = gated > 0 ? heard_any : 1;
     opts->rtl_pwr = dsd_rtl_stream_io_hook_return_pwr(state);
     return M17_STR_READ_OK;
 #else
@@ -2048,6 +2081,9 @@ m17_encoder_read_block(dsd_opts* opts, dsd_state* state, m17_encoder_input* in, 
     if (!opts || !state || !in || !out) {
         return M17_STR_READ_ERROR;
     }
+    /* Only an RTL stream carries the dynamic squelch's gate; every other read leaves it to the level squelch. */
+    in->squelch_gated = 0;
+    in->squelch_heard = 1;
     switch (opts->audio_in_type) {
         case AUDIO_IN_PULSE: return m17_str_read_block_pulse(opts, in, out, nsam);
         case AUDIO_IN_STDIN: return m17_str_read_block_stdin(opts, in, out, nsam);
@@ -2069,12 +2105,16 @@ m17_str_read_audio_inputs(m17_str_ctx* ctx) {
     if (result != M17_STR_READ_OK) {
         return result;
     }
+    ctx->squelch_gated = ctx->input.squelch_gated;
+    ctx->squelch_heard = ctx->input.squelch_heard;
 
     if (ctx->st == 2) {
         result = m17_str_read_audio_block(ctx, ctx->voice2);
         if (result != M17_STR_READ_OK) {
             return result;
         }
+        ctx->squelch_gated |= ctx->input.squelch_gated;
+        ctx->squelch_heard |= ctx->input.squelch_heard;
     }
     return M17_STR_READ_OK;
 }
@@ -2274,28 +2314,49 @@ m17_str_pack_voice_bits(m17_str_frame_ctx* frame) {
     }
 }
 
+int
+m17_encoder_squelch_heard(const dsd_opts* opts, int gated, int flags_heard) {
+    return gated ? (flags_heard ? 1 : 0) : dsd_squelch_level_open(opts);
+}
+
+int
+m17_encoder_vox_keyed(int heard, int lich_cnt, int* sql_hit) {
+    if (!sql_hit) {
+        return 1;
+    }
+    if (heard) {
+        *sql_hit = 0;
+    } else {
+        (*sql_hit)++;
+    }
+    return (*sql_hit > 10 && lich_cnt == 0) ? 0 : 1;
+}
+
 static void
 m17_str_update_vox_and_eot(m17_str_ctx* ctx) {
-    if (dsd_squelch_level_open(ctx->opts)) {
-        ctx->sql_hit = 0;
-    } else {
-        ctx->sql_hit++;
-    }
+    const int heard = m17_encoder_squelch_heard(ctx->opts, ctx->squelch_gated, ctx->squelch_heard);
+    const int keyed = m17_encoder_vox_keyed(heard, ctx->lich_cnt, &ctx->sql_hit);
 
     if (ctx->state->m17_vox == 1) {
-        if (ctx->sql_hit > 10 && ctx->lich_cnt == 0) {
+        if (!keyed) {
+            /* Unkeying ends the open stream (issue #625): this frame carries the EOS bit and the EOT marker follows,
+               without dead air. */
+            if (ctx->state->m17encoder_tx == 1 && !ctx->eot_out) {
+                ctx->eot = 1;
+                ctx->eot_vox = 1;
+            }
             ctx->state->m17encoder_tx = 0;
         } else {
             ctx->state->m17encoder_tx = 1;
             ctx->eot = 0;
+            ctx->eot_vox = 0;
         }
     }
 
-    if (dsd_exitflag_load()) {
+    /* A shutdown and a manual unkey end it with the dead air after. */
+    if (dsd_exitflag_load() || ctx->ending || ctx->state->m17encoder_eot) {
         ctx->eot = 1;
-    }
-    if (ctx->state->m17encoder_eot) {
-        ctx->eot = 1;
+        ctx->eot_vox = 0;
     }
 }
 
@@ -2408,6 +2469,44 @@ m17_str_report_encoded_stream(const m17_str_ctx* ctx, const m17_str_frame_ctx* f
     }
 }
 
+static void m17_str_reset_tx_idle_state(m17_str_ctx* ctx);
+
+/* The end of the open stream: @p frame (the EOS-flagged one; NULL when it went out already), the EOT marker, the dead
+   air unless the VOX asked for the end (issue #625), and IP's EOTX. Once per stream: eot_out holds until the next
+   LSF. */
+static void
+m17_str_end_stream(m17_str_ctx* ctx, const m17_str_frame_ctx* frame) {
+    if (frame) {
+        m17_str_report_encoded_stream(ctx, frame, 0);
+        encodeM17RF(ctx->opts, ctx->state, frame->m17_t4s, 2);
+    }
+
+    DSD_MEMSET(ctx->nil, 0, sizeof(ctx->nil));
+    encodeM17RF(ctx->opts, ctx->state, ctx->nil, 55);
+    if (!ctx->eot_vox) {
+        /* A local output that plays asynchronously drops its oldest samples when it is full: the frame and the marker
+           play out before a second of dead air could push them out, and at shutdown the dead air plays out before the
+           engine closes the output (issue #625). */
+        dsd_drain_audio_output(ctx->opts);
+        m17_send_dead_air_frames(ctx->opts, ctx->state, ctx->nil, 25);
+        if (ctx->ending || dsd_exitflag_load()) {
+            dsd_drain_audio_output(ctx->opts);
+        }
+    }
+
+    if (ctx->use_ip == 1) {
+        if (frame) {
+            (void)dsd_m17_udp_hook_blaster(ctx->opts, ctx->state, 54, ctx->m17_ip_packed);
+        }
+        (void)dsd_m17_udp_hook_blaster(ctx->opts, ctx->state, 10, ctx->eotx);
+    }
+
+    ctx->eot = 0;
+    ctx->eot_vox = 0;
+    ctx->eot_out = 1;
+    ctx->state->m17encoder_eot = 0;
+}
+
 static void
 m17_str_handle_tx_active(m17_str_ctx* ctx, const m17_str_frame_ctx* frame) {
     ctx->state->carrier = 1;
@@ -2427,6 +2526,17 @@ m17_str_handle_tx_active(m17_str_ctx* ctx, const m17_str_frame_ctx* frame) {
         ctx->lich_cnt = 0;
     }
     ctx->fsn = m17_stream_next_frame_counter(ctx->fsn);
+    /* A stream that ends while keyed (a shutdown, or a manual unkey while VOX still hears a carrier): that frame
+       carried the EOS bit, the EOT marker follows it, and the stream starts over as the idle path's end does, so a
+       later key-up opens a new one with its LSF and, monitored, its own call (issue #625). */
+    if (ctx->eot && !ctx->eot_out) {
+        m17_str_end_stream(ctx, NULL);
+        m17_end_monitored_tx_call(ctx->opts, ctx->state, &ctx->monitored_call_epoch);
+        m17_str_reset_tx_idle_state(ctx);
+        ctx->new_lsf = 1;
+        DSD_MEMSET(ctx->state->m17_meta, 0, sizeof(ctx->state->m17_meta));
+        DSD_MEMSET(ctx->state->m17_lsf, 0, sizeof(ctx->state->m17_lsf));
+    }
 }
 
 static void
@@ -2447,22 +2557,7 @@ m17_str_flush_eot_if_needed(m17_str_ctx* ctx, const m17_str_frame_ctx* frame) {
     if (!(ctx->eot && !ctx->eot_out)) {
         return;
     }
-
-    m17_str_report_encoded_stream(ctx, frame, 0);
-    encodeM17RF(ctx->opts, ctx->state, frame->m17_t4s, 2);
-
-    DSD_MEMSET(ctx->nil, 0, sizeof(ctx->nil));
-    encodeM17RF(ctx->opts, ctx->state, ctx->nil, 55);
-    m17_send_dead_air_frames(ctx->opts, ctx->state, ctx->nil, 25);
-
-    if (ctx->use_ip == 1) {
-        (void)dsd_m17_udp_hook_blaster(ctx->opts, ctx->state, 54, ctx->m17_ip_packed);
-        (void)dsd_m17_udp_hook_blaster(ctx->opts, ctx->state, 10, ctx->eotx);
-    }
-
-    ctx->eot = 0;
-    ctx->eot_out = 1;
-    ctx->state->m17encoder_eot = 0;
+    m17_str_end_stream(ctx, frame);
 }
 
 static void
@@ -2478,6 +2573,8 @@ m17_str_handle_tx_idle(m17_str_ctx* ctx, const m17_str_frame_ctx* frame) {
 static void
 m17_str_iter_tail(m17_str_ctx* ctx) {
     if (dsd_telemetry_is_active()) {
+        /* The encoder never runs frame sync, which publishes the squelch's status for the readouts. */
+        dsd_squelch_publish_status(ctx->opts, ctx->state);
         dsd_telemetry_publish_both_and_redraw(ctx->opts, ctx->state);
     }
     dsd_event_sync_slot(ctx->opts, ctx->state, 0);
@@ -2622,8 +2719,30 @@ m17_str_run_iteration(m17_str_ctx* ctx) {
     return M17_STR_READ_OK;
 }
 
+/* A stream still open when the encoder stops (the input ended or failed, or an exit came between iterations), a manual
+   unkey's pending end included: one silent frame with the EOS bit, the EOT marker and the dead air (issue #625). */
+static void
+m17_str_end_open(m17_str_ctx* ctx) {
+    if (ctx->eot_out) {
+        return;
+    }
+    m17_str_frame_ctx frame;
+    DSD_MEMSET(&frame, 0, sizeof(frame));
+    DSD_MEMSET(ctx->voice1, 0, sizeof(short) * ctx->nsam);
+    DSD_MEMSET(ctx->voice2, 0, sizeof(short) * ctx->nsam);
+    ctx->ending = 1;
+    m17_str_encode_codec2(ctx, &frame);
+    m17_str_build_stream_frame(ctx, &frame);
+    m17_str_build_ip_frame(ctx, &frame);
+    m17_str_end_stream(ctx, &frame);
+}
+
 static void
 m17_str_finalize(m17_str_ctx* ctx) {
+    m17_str_end_open(ctx);
+    /* Whatever ended the last stream (a VOX or manual unkey just before the input stopped, or the end just sent), its
+       frames play out before the engine closes a local output, which it does without a drain (issue #625). */
+    dsd_drain_audio_output(ctx->opts);
     m17_end_monitored_tx_call(ctx->opts, ctx->state, &ctx->monitored_call_epoch);
     if (ctx->use_ip == 1) {
         (void)dsd_m17_udp_hook_blaster(ctx->opts, ctx->state, 10, ctx->disc);
@@ -2918,7 +3037,11 @@ m17_pkt_send_data_frame(m17_pkt_ctx* ctx) {
     if (ctx->eot) {
         DSD_MEMSET(ctx->nil, 0, sizeof(ctx->nil));
         encodeM17RF(ctx->opts, ctx->state, ctx->nil, 55);
+        /* As the stream encoder's end (m17_str_end_stream()): the last frame and the marker play out before the dead
+           air could push them out of an asynchronous local output, and the dead air before the engine closes it. */
+        dsd_drain_audio_output(ctx->opts);
         m17_send_dead_air_frames(ctx->opts, ctx->state, ctx->nil, 25);
+        dsd_drain_audio_output(ctx->opts);
         dsd_exitflag_store(1);
     }
     ctx->pbc++;

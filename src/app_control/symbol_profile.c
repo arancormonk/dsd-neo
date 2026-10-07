@@ -218,7 +218,7 @@ void
 svc_note_digital_decode_modes(const dsd_opts* opts, const dsd_state* state) {
 #ifdef USE_RADIO
     if (!opts || !state || opts->audio_in_type != AUDIO_IN_RTL || !state->rtl_ctx
-        || dsd_scan_mode_configured_view(state) || opts->analog_only == 1) {
+        || dsd_scan_mode_configured_view(state) || opts->analog_only == 1 || dsd_opts_runs_m17_encoder(opts)) {
         return;
     }
     rtl_stream_set_digital_decode_modes(opts);
@@ -299,8 +299,10 @@ symbol_profile_publish(const dsd_opts* opts, dsd_state* state, dsd_decode_mode_p
     if (dsd_opts_is_analog_family(opts)) {
         return symbol_profile_request_monitor(opts, configured_before_hz, scan_leave);
     }
-    /* The M17 encoder rides the analog front end without being the analog family. */
-    if (opts->analog_only) {
+    /* The M17 encoder rides the analog front end without being the analog family: no symbol profile reaches it. -fZ
+       clears analog_only and leaves the digital frame flags at their defaults, so the encoder flag decides (issue
+       #625). */
+    if (opts->analog_only || dsd_opts_runs_m17_encoder(opts)) {
         return 0;
     }
     /* The CQPSK state the row runs, and whether it is a trunk-scan target's own choice, by the rule the row's timing

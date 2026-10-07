@@ -78,6 +78,12 @@ typedef struct {
     int dec;
     float sample;
     dsd_voice_bandpass lowpass;
+    /* The dynamic squelch on an RTL input (issue #625): whether the last block read the stream's per-sample gate
+       (dsd_squelch_stream_gate_running()), whether any of its samples was heard (1 whenever no gate runs), and the
+       gain that ramps each sample in over 5 ms and out over 10 ms to exact silence, as the monitor's sink does. */
+    int squelch_gated;
+    int squelch_heard;
+    float squelch_gain;
 } m17_encoder_input;
 
 /* Set up @p in for audio at @p input_rate_hz, a multiple of 8000 (m17.c). */
@@ -87,6 +93,13 @@ void m17_encoder_input_init(m17_encoder_input* in, int input_rate_hz);
    when the input stopped, -1 on an input the encoder cannot read, and 2 when a silent UDP input left the read for a
    queued command, with nothing read (m17.c, issue #634). */
 int m17_encoder_read_block(dsd_opts* opts, dsd_state* state, m17_encoder_input* in, short* out, size_t nsam);
+
+/* Whether a 40 ms encoder read counts as heard for the VOX (issue #625): @p flags_heard (any sample the stream's gate
+   heard) while @p gated, else the level squelch (dsd_squelch_level_open()). */
+int m17_encoder_squelch_heard(const dsd_opts* opts, int gated, int flags_heard);
+/* The VOX: a heard read resets @p sql_hit, a closed one counts it; past 10 closed reads, at a LICH superframe boundary
+   (@p lich_cnt 0), the transmitter unkeys. Returns 1 while keyed. */
+int m17_encoder_vox_keyed(int heard, int lich_cnt, int* sql_hit);
 
 int m17_decode_pkt_should_report_encrypted(const dsd_state* state, uint32_t protocol);
 int m17_pkt_ptr_clamped(int pbc_count);

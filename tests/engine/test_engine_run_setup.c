@@ -1024,6 +1024,75 @@ test_noise_squelch_needs_fm(void) {
     return test_rc;
 }
 
+/* Issue #625: the M17 encoder's VOX and EDACS analog voice say at startup how a dynamic setting runs for them. The
+   encoder has no squelch on audio input (VOX stays keyed: warned, without the audio-input advice to use noise); EDACS
+   runs NOISE as AUTO on a radio input and neither setting on audio input. */
+static int
+test_squelch_notices_for_edacs_and_the_encoder(void) {
+    static const struct {
+        const char* dev; /* NULL: no radio input */
+        int encoder;
+        int vox;
+        int edacs;
+        int mode;
+        const char* says;
+        const char* omits;
+    } cases[] = {
+        {NULL, 1, 1, 0, DSD_SQUELCH_MODE_AUTO, "WARNING: M17 VOX: --squelch auto runs on a radio input only",
+         "On audio input use --squelch noise"},
+        {NULL, 1, 1, 0, DSD_SQUELCH_MODE_NOISE, "M17 VOX: --squelch noise runs on a radio input only", NULL},
+        {NULL, 1, 0, 0, DSD_SQUELCH_MODE_AUTO, "NOTICE: M17 encoder: --squelch auto runs on a radio input only",
+         "M17 VOX"},
+        {"soapy:driver=test:162.475M:7:0:24", 1, 1, 0, DSD_SQUELCH_MODE_AUTO, NULL, "radio input only"},
+        {"soapy:driver=test:851.0125M:7:0:24", 0, 0, 1, DSD_SQUELCH_MODE_NOISE,
+         "EDACS analog voice runs the noise squelch as auto+12dB", NULL},
+        {"soapy:driver=test:851.0125M:7:0:24", 0, 0, 1, DSD_SQUELCH_MODE_AUTO, NULL, "EDACS"},
+        {NULL, 0, 0, 1, DSD_SQUELCH_MODE_AUTO, "an EDACS analog call ends on its release marker",
+         "--squelch auto needs a radio input"},
+    };
+
+    int test_rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        dsd_opts* opts = NULL;
+        dsd_state* state = NULL;
+        if (init_test_runtime(&opts, &state) != 0) {
+            return 1;
+        }
+        if (cases[i].dev) {
+            DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", cases[i].dev);
+        }
+        opts->analog_only = 0;
+        opts->m17encoder = cases[i].encoder;
+        if (cases[i].encoder) {
+            DSD_SNPRINTF(state->m17dat, sizeof state->m17dat, "M17:7:SRC:DST:48000:%d", cases[i].vox);
+        }
+        if (cases[i].edacs) {
+            opts->frame_provoice = 1;
+            opts->trunk_enable = 1;
+        }
+        const dsd_squelch_setting dynamic = dsd_squelch_setting_dynamic(cases[i].mode, 12);
+        dsd_squelch_setting_store(opts, &dynamic);
+        opts->rtl_squelch_cli_set = 1;
+        char banner[8192] = {0};
+        int rc = 0;
+        if (run_lifecycle_capturing_banner(opts, state, banner, sizeof banner, &rc) != 0) {
+            free_test_runtime(opts, state);
+            return 1;
+        }
+        char tag[64];
+        DSD_SNPRINTF(tag, sizeof tag, "edacs/encoder squelch notice case %zu", i);
+        test_rc |= expect_true(tag, rc == 0);
+        if (cases[i].says) {
+            test_rc |= expect_contains(tag, banner, cases[i].says);
+        }
+        if (cases[i].omits) {
+            test_rc |= expect_omits(tag, banner, cases[i].omits);
+        }
+        free_test_runtime(opts, state);
+    }
+    return test_rc;
+}
+
 #ifdef DSD_NEO_TEST_RIGCTL_WRAP
 static int
 note_rigctl_rebinds_at_start(dsd_opts* opts, dsd_state* state, void* context) {
@@ -1096,6 +1165,7 @@ main(void) {
     rc |= test_receiver_failure_is_not_successful_completion();
     rc |= test_config_channel_map_weighs_the_tone_filter();
     rc |= test_noise_squelch_needs_fm();
+    rc |= test_squelch_notices_for_edacs_and_the_encoder();
 
     if (rc == 0) {
         printf("ENGINE_RUN_SETUP: OK\n");

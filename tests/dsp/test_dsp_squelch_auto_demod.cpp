@@ -7,7 +7,8 @@
  * The auto squelch inside full_demod() (issue #518 follow-up): the tracker runs on the channel-filtered samples with
  * the plan of the channel filter in force, flags each sample instead of zeroing anything, and the flags follow the
  * samples through the AM detector, the post-decimator (both paths) and the resampler. The same input cut into other
- * blocks gives the same flags.
+ * blocks gives the same flags. It also runs on the 9600 bit/s FSK path EDACS analog voice reads and on the M17
+ * encoder's monitor (issue #625), and closes within DSD_SQUELCH_CLOSE_DELAY_MS of a carrier dropping.
  */
 
 #include <cmath>
@@ -233,7 +234,7 @@ fm_flags_follow_the_tracker(void) {
     if (s->result_flags_active || s->squelch_auto_ran) {
         rc |= fail("flags under LEVEL");
     }
-    /* AUTO off the analog monitor (the M17 encoder's front end, say): off. */
+    /* AUTO off the analog monitor (a digital session's monitor output, say): off. */
     s->squelch_mode = DSD_SQUELCH_MODE_AUTO;
     s->analog_family = 0;
     (void)run_block(s, iq.data(), 1000);
@@ -731,6 +732,265 @@ flags_do_not_depend_on_block_cuts(void) {
     return 0;
 }
 
+/* A demod on the 9600 bit/s, two-level FSK path EDACS analog voice reads (issue #625): off the analog family, the FSK
+   discriminator's output, the PROVOICE channel filter, or none with the channel LPF off (its profile label then stays
+   WIDE). */
+demod_state*
+new_fsk9600(int rate_out, int lpf, int mode) {
+    demod_state* s = static_cast<demod_state*>(dsd_neo_aligned_malloc(sizeof(demod_state)));
+    if (!s) {
+        return NULL;
+    }
+    DSD_MEMSET(s, 0, sizeof(*s));
+    s->mode_demod = &dsd_fm_demod;
+    s->output_kind = DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR;
+    s->symbol_rate_hz = 9600;
+    s->symbol_levels = 2;
+    s->channel_lpf_profile = lpf ? DSD_CH_LPF_PROFILE_PROVOICE : DSD_CH_LPF_PROFILE_WIDE;
+    s->channel_lpf_enable = lpf;
+    s->rate_in = rate_out;
+    s->rate_out = rate_out;
+    s->post_downsample = 1;
+    s->squelch_mode = mode;
+    s->squelch_margin_db = 10;
+    s->squelch_context.freq_hz = 851012500;
+    s->squelch_context.rate_hz = rate_out;
+    return s;
+}
+
+/* The FSK path runs the tracker under AUTO, and under NOISE as AUTO: the flags are a tracker's own on the channel
+   samples, one per discriminator output, open over the carrier and closed on the noise around it, and the
+   discriminator's output is the same sample for sample as with the squelch off. Every other FSK profile runs none. */
+int
+fsk9600_path_runs_the_tracker(void) {
+    const int cases[4][2] = {{24000, 1}, {48000, 1}, {16000, 0}, {12000, 0}};
+    int rc = 0;
+    for (int c = 0; c < 4; c++) {
+        const int rate = cases[c][0];
+        const int lpf = cases[c][1];
+        demod_state* s = new_fsk9600(rate, lpf, DSD_SQUELCH_MODE_AUTO);
+        demod_state* noise = new_fsk9600(rate, lpf, DSD_SQUELCH_MODE_NOISE);
+        demod_state* off = new_fsk9600(rate, lpf, DSD_SQUELCH_MODE_LEVEL);
+        if (!s || !noise || !off) {
+            free_monitor(s);
+            free_monitor(noise);
+            free_monitor(off);
+            return fail("alloc");
+        }
+        const std::vector<float> iq = make_signal(rate, 1.0, 0.5, 1.0, 0, 0xED4C5ULL + (uint64_t)c);
+        const int total = (int)(iq.size() / 2U);
+        dsd_squelch_floor ref;
+        DSD_MEMSET(&ref, 0, sizeof ref);
+        dsd_squelch_floor_set_margin(&ref, 10);
+        int ref_ready = 0;
+        long opened = 0;
+        long closed = 0;
+        int case_rc = 0;
+        std::vector<uint8_t> want;
+        for (int at = 0; at < total && case_rc == 0; at += 960) {
+            const int pairs = total - at < 960 ? total - at : 960;
+            Block b = run_block(s, &iq[(size_t)at * 2U], pairs);
+            Block bn = run_block(noise, &iq[(size_t)at * 2U], pairs);
+            Block bo = run_block(off, &iq[(size_t)at * 2U], pairs);
+            if (b.result.empty()) {
+                continue;
+            }
+            if (!s->result_flags_active || !s->squelch_auto_ran) {
+                case_rc |= fail("no tracker on the 9600 bit/s FSK path under AUTO");
+                break;
+            }
+            if (b.result.size() * 2U != b.lowpassed.size()) {
+                case_rc |= fail("the FSK path made other than one output per channel sample");
+                break;
+            }
+            if (!ref_ready) {
+                dsd_squelch_floor_plan plan;
+                if (dsd_squelch_floor_plan_design(&plan, lpf ? s->channel_lpf_plan_taps : NULL,
+                                                  lpf ? s->channel_lpf_plan_taps_len : 0, NULL, 0, rate)
+                        != 0
+                    || !dsd_squelch_floor_plan_equal(&plan, &s->squelch_floor.plan)) {
+                    case_rc |= fail("the FSK path's tracker plan is not its channel's");
+                }
+                dsd_squelch_floor_set_plan(&ref, &plan);
+                dsd_squelch_floor_change_context(&ref, NULL, NULL, &s->squelch_context);
+                ref_ready = 1;
+            }
+            want.assign(b.result.size(), 0U);
+            dsd_squelch_floor_process(&ref, b.lowpassed.data(), (int)(b.lowpassed.size() / 2U), want.data());
+            if (want != b.flags) {
+                case_rc |= fail("the FSK path's flags differ from a tracker of its own");
+            }
+            if (!noise->result_flags_active || noise->squelch_noise_ran || bn.flags != b.flags) {
+                case_rc |= fail("NOISE does not run as AUTO on the FSK path");
+            }
+            if (off->result_flags_active || bo.result != b.result) {
+                case_rc |= fail("the squelch changed the FSK path's output");
+            }
+            for (size_t k = 0; k < b.flags.size(); k++) {
+                if (b.flags[k] & DSD_SQUELCH_FLAG_CLOSED) {
+                    closed++;
+                } else {
+                    opened++;
+                }
+            }
+        }
+        if (case_rc == 0 && (opened < rate / 3 || closed < rate)) {
+            case_rc |= fail("the FSK path's carrier did not open the gate, or its noise did not close it");
+        }
+        if (case_rc) {
+            DSD_FPRINTF(stderr, "squelch auto demod: the FSK case at %d Hz, channel LPF %s\n", rate,
+                        lpf ? "on" : "off");
+        }
+        rc |= case_rc;
+        free_monitor(s);
+        free_monitor(noise);
+        free_monitor(off);
+    }
+    /* Other FSK profiles: none. */
+    const int others[4][3] = {{4800, 4, DSD_CH_LPF_PROFILE_12K5},
+                              {4800, 2, DSD_CH_LPF_PROFILE_6K25},
+                              {2400, 2, DSD_CH_LPF_PROFILE_6K25},
+                              {6000, 4, DSD_CH_LPF_PROFILE_12K5}};
+    const std::vector<float> iq = make_signal(24000, 0.5, 0.0, 0.0, 0, 0x07E5ULL);
+    for (int c = 0; c < 4; c++) {
+        demod_state* s = new_fsk9600(24000, 1, DSD_SQUELCH_MODE_AUTO);
+        if (!s) {
+            return fail("alloc");
+        }
+        s->symbol_rate_hz = others[c][0];
+        s->symbol_levels = others[c][1];
+        s->channel_lpf_profile = others[c][2];
+        const int total = (int)(iq.size() / 2U);
+        for (int at = 0; at < total; at += 960) {
+            (void)run_block(s, &iq[(size_t)at * 2U], total - at < 960 ? total - at : 960);
+        }
+        if (s->result_flags_active || s->squelch_auto_ran) {
+            DSD_FPRINTF(stderr, "squelch auto demod: the tracker ran on %d/%d FSK\n", others[c][0], others[c][1]);
+            rc |= 1;
+        }
+        free_monitor(s);
+    }
+    return rc;
+}
+
+/* The M17 encoder's monitor (issue #625): off the analog family, the FM discriminator's audio on its WIDE channel. The
+   tracker runs there as on the analog monitor, and nowhere else off the family. */
+int
+encoder_monitor_runs_the_tracker(void) {
+    const int rate = 48000;
+    demod_state* s = new_monitor(0, rate, 1, 0);
+    if (!s) {
+        return fail("alloc");
+    }
+    s->analog_family = 0;
+    s->m17_encoder_monitor = 1;
+    const std::vector<float> iq = make_signal(rate, 1.0, 0.5, 1.0, 0, 0x317ULL);
+    const int total = (int)(iq.size() / 2U);
+    int rc = 0;
+    long opened = 0;
+    long closed = 0;
+    for (int at = 0; at < total; at += 960) {
+        const int pairs = total - at < 960 ? total - at : 960;
+        Block b = run_block(s, &iq[(size_t)at * 2U], pairs);
+        if (b.result.empty()) {
+            continue;
+        }
+        if (!s->result_flags_active || !s->squelch_auto_ran) {
+            rc |= fail("no tracker on the M17 encoder's monitor under AUTO");
+            break;
+        }
+        for (size_t k = 0; k < b.flags.size(); k++) {
+            if (b.flags[k] & DSD_SQUELCH_FLAG_CLOSED) {
+                closed++;
+            } else {
+                opened++;
+            }
+        }
+    }
+    if (rc == 0 && (opened < rate / 3 || closed < rate)) {
+        rc |= fail("the encoder's carrier did not open the gate, or its noise did not close it");
+    }
+    if (!dsd_demod_encoder_monitor_active(s) || !dsd_demod_dynamic_squelch_path(s)) {
+        rc |= fail("the encoder's monitor is not a dynamic squelch path");
+    }
+    s->cqpsk_enable = 1;
+    if (dsd_demod_encoder_monitor_active(s)) {
+        rc |= fail("the encoder's monitor under CQPSK is still one");
+    }
+    s->cqpsk_enable = 0;
+    s->channel_lpf_profile = DSD_CH_LPF_PROFILE_12K5;
+    if (dsd_demod_encoder_monitor_active(s)) {
+        rc |= fail("the encoder's monitor off its WIDE channel is still one");
+    }
+    s->channel_lpf_profile = DSD_CH_LPF_PROFILE_WIDE;
+    s->m17_encoder_monitor = 0;
+    (void)run_block(s, iq.data(), 960);
+    if (s->result_flags_active) {
+        rc |= fail("flags on a monitor off the family that is not the encoder's");
+    }
+    free_monitor(s);
+    return rc;
+}
+
+/* The gate closes within DSD_SQUELCH_CLOSE_DELAY_MS of a carrier dropping, at every phase of the 40 ms windows, while
+   the floor is learned (landing mid-carrier) and with a known one, on the EDACS plans at the presets' 24 kHz and at
+   48 kHz (issue #625: EDACS budgets this delay in its release hold). */
+int
+gate_closes_within_the_delay_bound(void) {
+    int rc = 0;
+    int worst_ms = 0;
+    const int rates[2] = {24000, 48000};
+    for (int r = 0; r < 2; r++) {
+        const int rate = rates[r];
+        const int bound = (DSD_SQUELCH_CLOSE_DELAY_MS * rate) / 1000;
+        for (int known = 0; known < 2; known++) {
+            for (int phase_ms = 0; phase_ms < 40; phase_ms += 2) {
+                const double start = known ? 1.0 : 0.0;
+                const double drop = start + 1.0 + (double)phase_ms / 1000.0;
+                const double span[1][2] = {{start, drop}};
+                const std::vector<float> iq =
+                    make_spans(rate, drop + 0.3, span, 1, 0, 0xD10ULL + (uint64_t)(phase_ms + (100 * known) + rate));
+                demod_state* s = new_fsk9600(rate, 1, DSD_SQUELCH_MODE_AUTO);
+                if (!s) {
+                    return fail("alloc");
+                }
+                std::vector<uint8_t> flags;
+                const int total = (int)(iq.size() / 2U);
+                for (int at = 0; at < total; at += 960) {
+                    const int pairs = total - at < 960 ? total - at : 960;
+                    Block b = run_block(s, &iq[(size_t)at * 2U], pairs);
+                    flags.insert(flags.end(), b.flags.begin(), b.flags.end());
+                }
+                free_monitor(s);
+                const size_t d = (size_t)(drop * rate);
+                if (flags.size() <= d + (size_t)bound || (flags[d - 1U] & DSD_SQUELCH_FLAG_CLOSED)) {
+                    DSD_FPRINTF(stderr, "squelch auto demod: no open carrier before the drop (%d Hz, %d ms, %s)\n",
+                                rate, phase_ms, known ? "known floor" : "learning");
+                    rc |= 1;
+                    continue;
+                }
+                size_t k = d;
+                while (k < flags.size() && !(flags[k] & DSD_SQUELCH_FLAG_CLOSED)) {
+                    k++;
+                }
+                const int delay = (int)(k - d);
+                const int delay_ms = (delay * 1000 + rate - 1) / rate;
+                worst_ms = delay_ms > worst_ms ? delay_ms : worst_ms;
+                if (delay > bound) {
+                    DSD_FPRINTF(stderr, "squelch auto demod: the gate closed %d ms after the drop (%d Hz, %d ms, %s)\n",
+                                delay_ms, rate, phase_ms, known ? "known floor" : "learning");
+                    rc |= 1;
+                }
+            }
+        }
+    }
+    if (rc == 0) {
+        printf("DSP_SQUELCH_AUTO_DEMOD: worst closing delay %d ms (bound %d ms)\n", worst_ms,
+               DSD_SQUELCH_CLOSE_DELAY_MS);
+    }
+    return rc;
+}
+
 } // namespace
 
 int
@@ -747,6 +1007,9 @@ main(void) {
     rc |= resampler_maps_flags();
     rc |= low_pass_real_maps_flags();
     rc |= flags_do_not_depend_on_block_cuts();
+    rc |= fsk9600_path_runs_the_tracker();
+    rc |= encoder_monitor_runs_the_tracker();
+    rc |= gate_closes_within_the_delay_bound();
     if (rc == 0) {
         printf("DSP_SQUELCH_AUTO_DEMOD: OK\n");
     }

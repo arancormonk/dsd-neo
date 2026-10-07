@@ -65,6 +65,9 @@ typedef struct {
     double noise_quieting_db; /**< Measured: its last window's quieting. */
     uint8_t noise_state;      /**< On audio input, what the PCM noise squelch knows (dsd_squelch_noise_state; 0 on radio
                                    input, issue #628). */
+    uint8_t edacs_voice;      /**< EDACS analog voice on a radio input under a dynamic setting (issue #625): the tracker
+                                   gates its analog calls, NOISE as AUTO. */
+    uint8_t edacs_call;       /**< edacs_voice, and an analog call is on air (dsd_state::squelch_edacs_call). */
 } dsd_app_squelch_view;
 
 /**
@@ -91,7 +94,8 @@ int dsd_app_squelch_view_format(const dsd_app_squelch_view* view, char* out, siz
  * "learning" or "off: no channel plan"; for NOISE "quieting 23 dB", "starting" before its first window, or "as auto: "
  * and AUTO's reading where the floor tracker runs it, and on audio input (issue #628) "learning" until the PCM noise
  * squelch holds a reference, "off: no band above voice", "off: no room above voice" or "off on AM audio"; for either
- * "off: no radio input" or "off on digital"; "" for a level. The parenthesis dsd_app_squelch_view_format() prints, for
+ * "off: no radio input" or "off on digital"; for EDACS analog voice between calls "EDACS analog calls" (", as auto" under
+ * NOISE), and the tracker's reading during one; "" for a level. The parenthesis dsd_app_squelch_view_format() prints, for
  * a frontend that lays it out on its own line. Returns 0, or -1 when @p out is NULL, @p out_size is zero or @p view is
  * NULL.
  */
