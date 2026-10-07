@@ -18,6 +18,8 @@ target_sources(
         simd_fir.cpp
         dsd_filters.c
         pcm_input_staging.c
+        rate_converter.c
+        analog_sink.c
         symbol_levels.c
         dsd_symbol.c
         frame_sync_level.c
@@ -127,6 +129,8 @@ endif()
 # same promise for its band-pass and window sums, on the band-pass bank it
 # shares with the PCM noise squelch, which promises it for its learner too.
 set(_dsd_neo_dsp_ieee_c_sources
+    rate_converter.c
+    analog_sink.c
     analog_voice.c
     analog_audio.c
     squelch_floor.c

@@ -866,7 +866,8 @@ openWavOutFileRaw(dsd_opts* opts, dsd_state* state) {
     UNUSED(state);
 
     SF_INFO info;
-    info.samplerate = 48000; //8000
+    /* The analog sink rate: every block is converted to it, whatever rate the input runs at (issue #633). */
+    info.samplerate = dsd_opts_analog_sink_rate_hz(opts);
     info.channels = 1;
     info.format = SF_FORMAT_WAV | SF_FORMAT_PCM_16 | SF_ENDIAN_LITTLE;
     opts->wav_out_raw = sf_open(opts->wav_out_file_raw, SFM_WRITE, &info);

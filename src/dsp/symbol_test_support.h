@@ -31,6 +31,12 @@ unsigned int dsd_symbol_test_finalize_unsynced_analog_block_flags(dsd_opts* opts
 void dsd_symbol_test_push_unsynced_analog_sample(dsd_opts* opts, dsd_state* state, float sample);
 /* The same with the sample's auto squelch flag, as the RTL stream reads it (DSD_SQUELCH_FLAG_CLOSED; 0 open). */
 void dsd_symbol_test_push_unsynced_analog_sample_flag(dsd_opts* opts, dsd_state* state, float sample, uint8_t flag);
+/* The same on RTL input, with @p rtl_generation the stream generation the sample came off, which getSymbol() refreshes
+   every symbol: a test can move the stream's rate and generation part-way through a block (issue #633). */
+void dsd_symbol_test_push_unsynced_analog_sample_rtl(dsd_opts* opts, dsd_state* state, float sample,
+                                                     uint32_t rtl_generation);
+/* Fail the analog sinks' state allocation while @p fail is set (issue #633): a block to convert is then muted. */
+void dsd_analog_sink_test_fail_alloc(int fail);
 /* Call @p sync in place of the unsynced raw WAV's sync to disk after each block: a slow disk's fsync,
    without the disk. NULL restores sf_write_sync(). */
 void dsd_symbol_test_set_raw_wav_sync(void (*sync)(void));

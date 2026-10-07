@@ -85,6 +85,15 @@ int rtl_demod_digital_resample_target_for(int output_kind, int digital_resample_
 int rtl_demod_monitor_output_rate_for(int resamp_target_hz, int rate_out_hz);
 
 /**
+ * The output resampler's ratio from @p in_rate_hz to @p target_hz, reduced to @p L / @p M (either may be NULL).
+ *
+ * @return 1 when the resampler may run it, 0 when it stays off: an expansion over 12, or a ratio the resampler cannot
+ *         design (dsd_resampler_ratio_designable()). Stream open, retunes and rtl_demod_monitor_output_rate_for() all
+ *         decide by it, so the rate they publish is the rate the samples have.
+ */
+int rtl_demod_resampler_ratio(int in_rate_hz, int target_hz, int* L, int* M);
+
+/**
  * The channel width @p kind is requested at: @p explicit_width_hz when positive, otherwise 0 (the legacy default) for
  * NFM and the kind's default for AM. Only the unset NFM default keeps the historical enable rule and WIDE fallback;
  * every requested width turns the channel filter on and is validated.

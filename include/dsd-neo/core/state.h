@@ -723,6 +723,16 @@ struct dsd_state {
        read it with the sample, and the monitor sink's gain, which ramps between closed and open samples. */
     uint8_t analog_out_flags[960];
     float analog_sink_gain;
+    /* The rate the analog block being collected runs at, and what it started under: the PCM input rate and stream
+       generations and, on RTL input, the stream generation of its samples (issue #633). A sample collected at another
+       rate marks the block mixed: it neither plays nor goes to the -6 WAV. */
+    int analog_block_rate_hz;
+    uint32_t analog_block_rate_gen;
+    uint32_t analog_block_pcm_gen;
+    uint32_t analog_block_rtl_gen;
+    uint8_t analog_block_mixed;
+    /* The rate the analog sinks last said they had no memory to convert, so that is said once per rate. */
+    int analog_sink_nomem_hz;
     //new stereo float sample storage
     float f_l[160];     //single sample left
     float f_r[160];     //single sample right

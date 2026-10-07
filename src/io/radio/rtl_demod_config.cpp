@@ -786,18 +786,30 @@ rtl_demod_should_skip_resampler(const struct demod_state* demod) {
     return 0;
 }
 
-static void
-rtl_demod_compute_resampler_ratio(int inRate, int target, int* L, int* M, int* scale) {
-    int g = gcd_int(inRate, target);
-    *L = target / g;
-    *M = inRate / g;
-    if (*L < 1) {
-        *L = 1;
+int
+rtl_demod_resampler_ratio(int in_rate_hz, int target_hz, int* L, int* M) {
+    int l = 1;
+    int m = 1;
+    const int g = gcd_int(in_rate_hz, target_hz);
+    if (g > 0) {
+        l = target_hz / g;
+        m = in_rate_hz / g;
     }
-    if (*M < 1) {
-        *M = 1;
+    if (l < 1) {
+        l = 1;
     }
-    *scale = (*M > 0) ? ((*L + *M - 1) / *M) : 1;
+    if (m < 1) {
+        m = 1;
+    }
+    if (L) {
+        *L = l;
+    }
+    if (M) {
+        *M = m;
+    }
+    /* In 64 bits: an arbitrary DSD_NEO_RESAMP target makes L + M - 1 overflow an int. */
+    const int64_t scale = ((int64_t)l + (int64_t)m - 1) / (int64_t)m;
+    return (scale <= 12 && dsd_resampler_ratio_designable(l, m, DSD_RESAMPLER_DEFAULT_TAPS_PER_PHASE)) ? 1 : 0;
 }
 
 static int
@@ -883,10 +895,7 @@ rtl_demod_maybe_update_resampler_after_rate_change(struct demod_state* demod, st
     }
     int L = 1;
     int M = 1;
-    int scale = 1;
-    rtl_demod_compute_resampler_ratio(inRate, target, &L, &M, &scale);
-
-    if (scale > 12) {
+    if (!rtl_demod_resampler_ratio(inRate, target, &L, &M)) {
         rtl_demod_disable_resampler(demod, 0);
         output->rate = inRate;
         LOG_WARN("WARNING: Resampler ratio too large on retune (L=%d,M=%d). Disabled.\n", L, M);
@@ -895,7 +904,13 @@ rtl_demod_maybe_update_resampler_after_rate_change(struct demod_state* demod, st
 
     if (rtl_demod_resampler_needs_reconfigure(demod, L, M)) {
         rtl_demod_free_resampler_buffers(demod);
-        resamp_design(demod, L, M);
+        if (!resamp_design(demod, L, M)) {
+            /* The samples would pass through at inRate: publishing the target would mislabel them (issue #633). */
+            rtl_demod_disable_resampler(demod, 0);
+            output->rate = inRate;
+            LOG_WARN("WARNING: Resampler design failed on retune (L=%d,M=%d). Disabled.\n", L, M);
+            return;
+        }
         demod->resamp_L = L;
         demod->resamp_M = M;
         demod->resamp_enabled = 1;
@@ -1535,9 +1550,5 @@ rtl_demod_monitor_output_rate_for(int resamp_target_hz, int rate_out_hz) {
     if (resamp_target_hz <= 0 || resamp_target_hz == rate_out_hz) {
         return rate_out_hz;
     }
-    int L = 1;
-    int M = 1;
-    int scale = 1;
-    rtl_demod_compute_resampler_ratio(rate_out_hz, resamp_target_hz, &L, &M, &scale);
-    return (scale > 12) ? rate_out_hz : resamp_target_hz;
+    return rtl_demod_resampler_ratio(rate_out_hz, resamp_target_hz, NULL, NULL) ? resamp_target_hz : rate_out_hz;
 }

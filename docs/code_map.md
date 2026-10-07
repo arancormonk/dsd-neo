@@ -594,10 +594,10 @@ The `Linux • RelWithDebInfo • ctest (x86-64-v3, fast-math, clang)` check enf
   direction the export uses. Every core CSV importer shares its token helpers through the module-private
   `src/core/file/csv_parse_internal.h`; the channel map's key column accepts decimal, `0x` hex and `<iden>-<chan>`
   spellings there.
-- State extension slots (`<dsd-neo/core/state_ext.h>`): engine owns 0, 1, 3 and 7; core 2, 4, 5, 8 and 11;
-  runtime 6; DSP 9 and 10 (taken from the core range as runtime took 6 from the engine's): 9 is
-  `DSD_STATE_EXT_DSP_ANALOG_RX`, the analog receive working state, and 10 `DSD_STATE_EXT_DSP_ANALOG_AUDIO`, the analog
-  monitor's audio chains. `CORE_STATE_EXT` pins both.
+- State extension slots (`<dsd-neo/core/state_ext.h>`): engine owns 0, 1, 3 and 7; core 2, 4, 5 and 8; runtime 6;
+  DSP 9, 10 and 11 (taken from the core range as runtime took 6 from the engine's): 9 is `DSD_STATE_EXT_DSP_ANALOG_RX`,
+  the analog receive working state, 10 `DSD_STATE_EXT_DSP_ANALOG_AUDIO`, the analog monitor's audio chains, and 11
+  `DSD_STATE_EXT_DSP_ANALOG_SINK`, the analog sinks' converters to the sink rate. `CORE_STATE_EXT` pins all three.
 - API note: `dsd_state::analog_rx` (`dsd_analog_rx_publication` in `<dsd-neo/core/state.h>`, issues #522 and #523) is
   the received-tone publication every frontend reads: int-only (`carrier_open`, `tone_kind`, `tone_state`,
   `ctcss_tenths_hz`, `dcs_code` (the code as its value, 023 octal = 19) and `dcs_inverted` for a DCS lock,
@@ -1980,6 +1980,43 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
 - The analog monitor's audible output leaves `dsd_symbol.c` in `symbol_output_unsynced_analog()`, after the audio
   chain (`symbol_process_unsynced_audio()`, below) and only while the gate is open; for `audio_out_type == 8` it goes
   through `dsd_udp_audio_hook_blast_analog()` with a byte count of int16 mono samples.
+- Analog output at the sink rate (issue #633). Every analog sink runs at `dsd_opts_analog_sink_rate_hz()` (48 kHz):
+  the local raw stream, the UDP analog socket and the `-6` raw WAV (`openWavOutFileRaw()`). The monitor runs at its own
+  rate (`symbol_analog_audio_rate_hz()`: the RTL output rate, or the effective PCM rate, which only the 8-24 kHz
+  divisors of 48 kHz are staged up to), so `symbol_write_unsynced_audio()` and `symbol_write_raw_wav_block()` hand a
+  block at another rate to `src/dsp/analog_sink.c` (`<dsd-neo/dsp/analog_sink.h>`). It converts the block with that
+  sink's own `dsd_rate_converter` and writes it in chunks of at most 960 samples, one UDP datagram each. A block
+  already at 48 kHz is written exactly as before, and nothing is allocated (`DSD_STATE_EXT_DSP_ANALOG_SINK`) until a
+  block needs converting. A converter starts over from silence when its sink's previous block was not written
+  (`dsd_analog_sink_block_begin()`), where samples were dropped (`dsd_analog_sink_break()`: an abandoned block, a
+  receive-family switch, the RTL early returns, a mixed-rate block), when the RTL stream, trunk-tuning or PCM input
+  generation moved since its last write, and, for the monitor only, at an announced reception boundary
+  (`dsd_analog_sink_note_reception()` from `dsd_analog_rx_reset()`). The `-6` WAV runs on across such a boundary, which
+  drops no input, so an acquisition reset in a digital session keeps every sample. A rate the converter cannot take
+  writes nothing and logs once. `analog_sink.c` stays apart from `analog_audio.c`, which `DSP_SYMBOL_REPLAY` replaces
+  with its own copy.
+  - The converter (`src/dsp/rate_converter.c`, `<dsd-neo/dsp/rate_converter.h>`): the exact L/M where both reduced
+    terms are at most 4096, else the closest ratio with terms in that bound (continued-fraction convergents and
+    semiconvergents, compared in 64-bit), which is within 250 ppm for every supported rate. Equal rates, or a best ratio
+    of 1/1, pass through bit for bit; inputs below 1 kHz, or above 16 times the output, are refused. The taps per phase
+    scale with the decimation (`dsd_resampler_design_taps()`: 16 when upsampling, 32 at 96 kHz, up to 256 at 768 kHz),
+    so the transition band stays fixed relative to the output. `dsd_rate_converter_process()` refuses an output buffer
+    smaller than one input's outputs rather than stall; `dsd_rate_converter_fill()` pulls exactly the outputs asked for
+    and keeps the rest, and can tag each output with the tag of the newest input it was made from (EDACS carries the
+    squelch's per-sample flags through it).
+  - Mixed-rate blocks: `dsd_opts_apply_input_sample_rate()` bumps `dsd_opts::input_rate_generation` at each PCM rate
+    change, provisional ones a transaction restores included. A block records the rate it starts at and the PCM rate,
+    PCM stream and RTL stream generations (`symbol_analog_block_begin()`); every collected sample compares those three
+    fields and, only on a mismatch, the rate (`symbol_analog_block_track_rate()`). A sample at another rate marks the
+    block mixed (`dsd_state::analog_block_mixed`). A mixed block, or one whose finishing rate differs from its start, is
+    handled as a boundary-straddling block: neither played nor written to `-6`. A rate restored before the next sample
+    is read marks nothing.
+  - The rational resampler refuses a ratio whose tap count, its byte size or the phase step overflow
+    (`dsd_resampler_ratio_designable()`). RTL stream open, retunes and `rtl_demod_monitor_output_rate_for()` decide the
+    output resampler through `rtl_demod_resampler_ratio()`, in 64 bits, and a design that fails leaves the resampler off
+    with the demod rate published, the rate the samples have.
+  - Tests: `DSP_RATE_CONVERTER`, `DSP_RESAMPLER`, `IO_RTL_DEMOD_CONFIG`, `DSP_SYMBOL_REPLAY` (the issue #633 cases),
+    `DECODE_PCM_ANALOG_TAP_44K`, `DECODE_PCM_ANALOG_SQL_NOISE_TAP_BURST_44K`.
 - The analog audio chain (issue #518) is `src/dsp/analog_audio.c` (`<dsd-neo/dsp/analog_audio.h>`) over the pure cores
   in `src/dsp/analog_voice.c` (`<dsd-neo/dsp/analog_voice.h>`): the voice band-pass (`use_pbf`, `-v 0x1`; FM: a
   6th-order elliptic high-pass at 300 Hz that takes every CTCSS tone, and all else below 254.1 Hz, 40 dB down (a DCS
@@ -2086,12 +2123,11 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
     `m17_encoder_vox_keyed()`).
   - EDACS analog voice (`edacs_analog()`) reads each triplet's flags (`edacs_collect_analog_triplet_flags()`,
     `edacs_analog_sql_kind()`). It ends the call once the run of closed samples reaches four triplets less
-    `DSD_SQUELCH_CLOSE_DELAY_MS` at its output rate (`edacs_gate_hold_samples()`), never under
-    `EDACS_ANALOG_GATE_MIN_HOLD_MS` (two windows: a call's first decision or one window read closed cannot end it). At
-    EDACS's 24 and 48 kHz outputs that ends a dropped carrier no later than the level squelch's fifth closed reading.
-    Above about 70 kHz (an unresampled replay) the floor sets the run, and the call ends within the delay, the floor
-    and one triplet of the drop, later than the level squelch's release there. The fallback watchdog runs only when
-    nothing decides the call.
+    `DSD_SQUELCH_CLOSE_DELAY_MS` at the chain's rate (`edacs_gate_hold_samples()`), never under
+    `EDACS_ANALOG_GATE_MIN_HOLD_MS` (two windows: a call's first decision or one window read closed cannot end it).
+    EDACS converts every input rate to 48 kHz (issue #633), and a converted sample takes the flag of the newest input
+    sample it was made from (`dsd_rate_converter_fill()`'s tags), so at every rate that ends a dropped carrier no later
+    than the level squelch's fifth closed reading. The fallback watchdog runs only when nothing decides the call.
 
   The gate closes within that delay of a drop: `<dsd-neo/core/power.h>`; `tools/squelch_paths_model.py` measures it,
   and `DSP_SQUELCH_AUTO_DEMOD` pins it. `dsd_state::squelch_edacs_call` marks an EDACS call for the readout. Tests:
@@ -2949,6 +2985,18 @@ Notes:
 
 - Optional codec integrations are expressed via feature interface targets:
   - `dsd-neo_feature_codec2` → `USE_CODEC2` (used by M17 when available)
+
+EDACS analog voice (`edacs_analog()` in `src/protocol/edacs/edacs-fme.c`) runs at 48 kHz (`EDACS_ANALOG_RATE_HZ`,
+issue #633): the release register reads every 5th sample as a 9600-baud symbol, the per-call WAV opens at it and the
+static WAV takes every 6th sample. TCP and UDP voice is read off the socket at the raw input rate, past the staging, RTL
+at the stream's output rate and Pulse at 48 kHz (`edacs_analog_input_rate_hz()`); at any other rate a call-local
+`dsd_rate_converter` converts each triplet as it is collected, so the register, the audio chain, the sinks and both
+WAVs see 48 kHz, and at 48 kHz the collection is unchanged. A triplet a retune cut through (the trunk-tuning, RTL
+stream or PCM stream generation moved while it was read), or read while the call's tune or any other retune is
+unresolved, is discarded: no audio, recording, release check, squelch count or media update. A tune that failed leaves
+the call, since the radio reads the previous channel again. The converter starts over at every retune, during a
+triplet or between two, and the PCM staging held from before the call is dropped when it ends. Tests:
+`EDACS_GRANT_TUNE_MATRIX` (the `analog-633` cases, with golden hashes of a 48 kHz call's audio, WAVs and stdout).
 
 P25 manual control-channel selection lives in `src/protocol/p25/p25_cc_selection.c`. The Frequency command routes
 active single-system P25 sessions here; the module holds the watchdog guard through the runtime CC tuning hook,

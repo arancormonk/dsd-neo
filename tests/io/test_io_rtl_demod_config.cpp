@@ -4,6 +4,7 @@
  */
 
 #include <atomic>
+#include <climits>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -40,6 +41,24 @@ alloc_zeroed_demod(void) {
     }
     return demod;
 }
+
+#if defined(DSD_NEO_TEST_ALIGNED_MALLOC_WRAP)
+/* GNU ld --wrap seam: fails the resampler's tap and history allocations on demand (issue #633). */
+static int g_fail_aligned_malloc = 0;
+
+// GNU ld --wrap requires these exact external symbol names.
+// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+extern "C" void* __real_dsd_neo_aligned_malloc(size_t size);
+
+extern "C" void*
+// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+__wrap_dsd_neo_aligned_malloc(size_t size) {
+    if (g_fail_aligned_malloc) {
+        return NULL;
+    }
+    return __real_dsd_neo_aligned_malloc(size);
+}
+#endif
 
 static int
 is_fsk_output_kind(int kind) {
@@ -870,6 +889,83 @@ expect_passes_for_device_rate(void) {
                         rtl_stream_test_passes_for_actual_rate(48000U, 48000), 0);
     rc |= expect_int_eq("zero rate is rejected", rtl_stream_test_passes_for_actual_rate(0U, 48000), 0);
     rc |= expect_int_eq("zero bandwidth is rejected", rtl_stream_test_passes_for_actual_rate(2000000U, 0), 0);
+    return rc;
+}
+
+/* The output rate a stream publishes is the rate its samples have (issue #633): a ratio the resampler refuses, or a
+   design that fails, leaves the resampler off and publishes the demod rate. INT_MAX is prime, so a DSD_NEO_RESAMP
+   target of INT_MAX against 200 MHz reduces to L = INT_MAX, M = 200000000: an expansion of 11, whose L + M - 1 and
+   16 x L overflow an int. */
+static int
+expect_resampler_publishes_the_rate_it_delivers(void) {
+    static constexpr int kHugeRate = 200000000;
+    int rc = 0;
+    int L = 0;
+    int M = 0;
+    rc |= expect_int_eq("INT_MAX target refused", rtl_demod_resampler_ratio(kHugeRate, INT_MAX, &L, &M), 0);
+    rc |= expect_int_eq("INT_MAX target L", L, INT_MAX);
+    rc |= expect_int_eq("INT_MAX target M", M, kHugeRate);
+    rc |= expect_int_eq("INT_MAX target predicts the demod rate", rtl_demod_monitor_output_rate_for(INT_MAX, kHugeRate),
+                        kHugeRate);
+    rc |= expect_int_eq("19531 Hz to 48 kHz still designs", rtl_demod_resampler_ratio(19531, 48000, &L, &M), 1);
+    rc |= expect_int_eq("19531 Hz to 48 kHz L", L, 48000);
+    rc |= expect_int_eq("19531 Hz to 48 kHz M", M, 19531);
+    rc |= expect_int_eq("an expansion of 12 runs", rtl_demod_resampler_ratio(4000, 48000, &L, &M), 1);
+    rc |= expect_int_eq("an expansion over 12 is refused", rtl_demod_resampler_ratio(3999, 48000, NULL, NULL), 0);
+
+    unsigned int output_rate_hz = 0U;
+    int resamp_enabled = -1;
+    rc |= expect_int_eq("stream open INT_MAX target helper rc",
+                        rtl_stream_test_digital_resample_chain(DSD_DEMOD_OUTPUT_AUDIO_MONITOR, kHugeRate, INT_MAX, 4800,
+                                                               DSD_DIGITAL_RESAMPLE_AUTO, 0, &output_rate_hz,
+                                                               &resamp_enabled),
+                        0);
+    rc |= expect_int_eq("stream open INT_MAX target leaves the resampler off", resamp_enabled, 0);
+    rc |= expect_int_eq("stream open INT_MAX target publishes the demod rate", (int)output_rate_hz, kHugeRate);
+
+    demod_state* demod = alloc_zeroed_demod();
+    if (!demod) {
+        DSD_FPRINTF(stderr, "resampler publication: allocation failed\n");
+        return 1;
+    }
+    output_state output;
+    DSD_MEMSET(&output, 0, sizeof(output));
+    demod->output_kind = DSD_DEMOD_OUTPUT_AUDIO_MONITOR;
+    demod->rate_out = kHugeRate;
+    demod->resamp_target_hz = INT_MAX;
+    rtl_demod_maybe_update_resampler_after_rate_change(demod, &output, kHugeRate);
+    rc |= expect_int_eq("retune INT_MAX target leaves the resampler off", demod->resamp_enabled, 0);
+    rc |= expect_int_eq("retune INT_MAX target publishes the demod rate", (int)output.rate.load(), kHugeRate);
+
+#if defined(DSD_NEO_TEST_ALIGNED_MALLOC_WRAP)
+    /* A design whose allocation fails: before the fix the resampler was marked on and 48 kHz published while the
+       samples passed through at 24 kHz. */
+    rtl_demod_cleanup(demod);
+    DSD_MEMSET(demod, 0, sizeof(*demod));
+    DSD_MEMSET(&output, 0, sizeof(output));
+    demod->output_kind = DSD_DEMOD_OUTPUT_AUDIO_MONITOR;
+    demod->rate_out = 24000;
+    demod->resamp_target_hz = 48000;
+    g_fail_aligned_malloc = 1;
+    rtl_demod_maybe_update_resampler_after_rate_change(demod, &output, 24000);
+    rc |= expect_int_eq("retune failed design leaves the resampler off", demod->resamp_enabled, 0);
+    rc |= expect_int_eq("retune failed design publishes the demod rate", (int)output.rate.load(), 24000);
+    rc |= expect_int_eq("stream open failed design helper rc",
+                        rtl_stream_test_digital_resample_chain(DSD_DEMOD_OUTPUT_AUDIO_MONITOR, 24000, 48000, 4800,
+                                                               DSD_DIGITAL_RESAMPLE_AUTO, 0, &output_rate_hz,
+                                                               &resamp_enabled),
+                        0);
+    g_fail_aligned_malloc = 0;
+    rc |= expect_int_eq("stream open failed design leaves the resampler off", resamp_enabled, 0);
+    rc |= expect_int_eq("stream open failed design publishes the demod rate", (int)output_rate_hz, 24000);
+
+    /* The same ratio designs once the memory is there. */
+    rtl_demod_maybe_update_resampler_after_rate_change(demod, &output, 24000);
+    rc |= expect_int_eq("retune design runs the resampler", demod->resamp_enabled, 1);
+    rc |= expect_int_eq("retune design publishes the target", (int)output.rate.load(), 48000);
+#endif
+    rtl_demod_cleanup(demod);
+    dsd_neo_aligned_free(demod);
     return rc;
 }
 
@@ -2429,6 +2525,7 @@ main(void) {
     rc |= expect_direct_output_open_rate_uses_demod_rate();
     rc |= expect_passes_for_device_rate();
     rc |= expect_digital_resample_policy();
+    rc |= expect_resampler_publishes_the_rate_it_delivers();
     rc |= expect_private_policy_matrices();
     rc |= expect_steady_state_watermark_disabled("rtl_tcp keeps demod watermark disabled", "rtltcp:127.0.0.1:1234");
     rc |= expect_steady_state_watermark_disabled("rtlsdr keeps demod watermark disabled", "rtl");

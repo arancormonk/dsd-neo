@@ -17,6 +17,8 @@
 extern "C" {
 #endif
 
+struct dsd_rate_converter;
+
 void edacs_process_valid_frame(dsd_opts* opts, dsd_state* state, unsigned long long msg_1, unsigned long long msg_2);
 const char* edacs_lcn_status_string(int lcn);
 short edacs_apply_input_volume(const dsd_opts* opts, short sample);
@@ -30,8 +32,14 @@ void edacs_build_raw_frames(const int* edacs_bit, unsigned long long* fr_1, unsi
 int edacs_frame_bch_verdict(const int* edacs_bit, unsigned long long* msg_1_ec_out, unsigned long long* msg_2_ec_out);
 unsigned long long edacs_build_symbol_register(const dsd_opts* opts, dsd_state* state, const short* analog1);
 void edacs_reset_digitize_overflow(dsd_state* state);
-int edacs_collect_analog_triplet(dsd_opts* opts, dsd_state* state, short* analog1, short* analog2, short* analog3,
-                                 double* pwr);
+/* The rate EDACS analog voice runs at: the 9600-baud release register reads every 5th sample, the per-call WAV opens at
+   it and the static WAV takes every 6th sample, and the analog sinks run at it (issue #633). */
+#define EDACS_ANALOG_RATE_HZ 48000
+int edacs_analog_input_rate_hz(const dsd_opts* opts);
+/* @p conv converts the input to EDACS_ANALOG_RATE_HZ while it converts (dsd_rate_converter_configure()); NULL, or an
+   identity, reads the input's samples as they are. */
+int edacs_collect_analog_triplet(dsd_opts* opts, dsd_state* state, struct dsd_rate_converter* conv, short* analog1,
+                                 short* analog2, short* analog3, double* pwr);
 
 /* EDACS analog voice reads three 960-sample blocks at a time. */
 enum { EDACS_ANALOG_BLOCK_SAMPLES = 960, EDACS_ANALOG_TRIPLET_SAMPLES = 3 * EDACS_ANALOG_BLOCK_SAMPLES };
@@ -41,9 +49,10 @@ enum { EDACS_ANALOG_BLOCK_SAMPLES = 960, EDACS_ANALOG_TRIPLET_SAMPLES = 3 * EDAC
 enum { EDACS_ANALOG_SQL_NONE = 0, EDACS_ANALOG_SQL_LEVEL = 1, EDACS_ANALOG_SQL_GATE = 2 };
 
 /* edacs_collect_analog_triplet() with each sample's squelch flag (DSD_SQUELCH_FLAG_CLOSED) into @p flags, 2880 of them
-   or NULL: an RTL stream's own, every flag 0 (open) on audio input. */
-int edacs_collect_analog_triplet_flags(dsd_opts* opts, dsd_state* state, short* analog1, short* analog2, short* analog3,
-                                       uint8_t* flags, double* pwr);
+   or NULL: an RTL stream's own, every flag 0 (open) on audio input. A converted sample takes the flag of the newest
+   input sample it was made from (dsd_rate_converter_fill()). */
+int edacs_collect_analog_triplet_flags(dsd_opts* opts, dsd_state* state, struct dsd_rate_converter* conv,
+                                       short* analog1, short* analog2, short* analog3, uint8_t* flags, double* pwr);
 
 /* The squelch an analog call runs (EDACS_ANALOG_SQL_*): the gate under a dynamic setting on a radio input whose stream
    runs it (@p gate_running: its status active with a valid plan), the level under a LEVEL setting above 0, else none.
@@ -60,10 +69,10 @@ enum { EDACS_ANALOG_GATE_MIN_HOLD_MS = 80 };
 /* The closed run that releases a call at @p rate_hz: four triplets, less the dynamic squelch's closing delay
    (DSD_SQUELCH_CLOSE_DELAY_MS), never under EDACS_ANALOG_GATE_MIN_HOLD_MS. The level squelch releases on its fifth
    closed reading, taken at each triplet's end, so it releases a carrier that drops inside a triplet four whole triplets
-   after that one ends: this run reaches that end for any drop and any closing delay up to the bound. Above about
-   70 kHz (an unresampled high-rate replay; EDACS's RTL output runs 24 or 48 kHz) four triplets are too short for the
-   delay and the floor sets the run, so a release there can come up to the delay, the floor and the triplet the run is
-   read at (EDACS decides once per triplet) after the drop. */
+   after that one ends: this run reaches that end for any drop and any closing delay up to the bound. EDACS counts it at
+   the chain's rate, EDACS_ANALOG_RATE_HZ whatever rate the input is read at (issue #633), where four triplets clear the
+   delay and the floor. Above about 70 kHz four triplets would be too short for the delay and the floor would set the
+   run. */
 size_t edacs_gate_hold_samples(int rate_hz);
 
 /* The level path's count (5 down to 1, 0 when released) a closed run of @p run samples matches against @p hold. */

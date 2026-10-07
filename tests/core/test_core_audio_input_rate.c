@@ -10,6 +10,7 @@
 #include <errno.h>
 #include <math.h>
 #include <sndfile.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -868,6 +869,28 @@ test_stereo_wav_container_rejected_by_mono_input_open(void) {
     return expect_rc;
 }
 
+/* A PCM rate commit moves input_rate_generation, and a commit of the same rate does not: the analog monitor block reads
+   it to tell a block whose samples ran at two rates (issue #633). */
+static int
+test_input_rate_generation_moves_with_the_rate(void) {
+    dsd_opts* opts = alloc_opts();
+    if (!opts) {
+        DSD_FPRINTF(stderr, "FAIL: alloc opts\n");
+        return 1;
+    }
+    int rc = 0;
+    opts->wav_sample_rate = 48000;
+    const uint32_t start = opts->input_rate_generation;
+    dsd_opts_apply_input_sample_rate(opts, 48000);
+    rc |= expect_int_eq("same rate keeps the generation", (int)(opts->input_rate_generation - start), 0);
+    dsd_opts_apply_input_sample_rate(opts, 44100);
+    rc |= expect_int_eq("new rate moves the generation", (int)(opts->input_rate_generation - start), 1);
+    dsd_opts_apply_input_sample_rate(opts, 48000);
+    rc |= expect_int_eq("restored rate moves it again", (int)(opts->input_rate_generation - start), 2);
+    free_opts(opts);
+    return rc;
+}
+
 static int
 test_reset_input_upsample_state_clears_staging_only(void) {
     dsd_opts* opts = alloc_opts();
@@ -981,6 +1004,7 @@ main(void) {
     rc |= test_mono_file_input_rejects_invalid_arguments();
     rc |= test_headerless_raw_input_defaults_nonpositive_rate_to_48000();
     rc |= test_stereo_wav_container_rejected_by_mono_input_open();
+    rc |= test_input_rate_generation_moves_with_the_rate();
     rc |= test_reset_input_upsample_state_clears_staging_only();
     rc |= test_reset_pcm_input_state_clears_resampler_and_staging();
     return rc;

@@ -19,6 +19,11 @@
  * when every requested threshold holds, or an "ANALOG AUDIO FAIL:" line per miss, in which case the host exits 1.
  * Without thresholds it only reports, which is how tools/replay_ab.sh --metric analog uses it.
  *
+ * The monitor's audio arrives at the analog sink rate (48 kHz) whatever rate the monitor runs at (issue #633): the host
+ * scores it at that rate, one monitor block at a time however many writes the block came in, and keeps stream time at
+ * the monitor's own rate. --analog-max-delivery-error-pct bounds how far the length of the delivered audio strays from
+ * the input its blocks span, which on audio input is 960 samples a block at the monitor's rate.
+ *
  * Stream time is kept in milliseconds, each read converted at the RTL output rate in force when it was made, so it
  * stays right when the front end changes rate mid-run and is reported even when no audio reached the hook at all.
  * A case that expects silence therefore pairs --analog-max-audible-ms 0 with --analog-min-total-ms, which proves
@@ -58,8 +63,9 @@
  *
  * --analog-pcm-tap RATE (issue #628) replays the capture as audio input instead: the host FM-demodulates the committed
  * capture as a scanner's discriminator tap, or an SDR program with its audio filtering off, would (a 16 kHz channel
- * filter and a polar discriminator, nothing after them), resamples it to RATE Hz (a divisor of the capture's rate),
- * writes it as a 16-bit mono WAV to the same private directory and runs `-i TAP.wav` in place of `--iq-replay`.
+ * filter and a polar discriminator, nothing after them), resamples it to RATE Hz (decimated for a divisor of the
+ * capture's rate, interpolated with a windowed sinc for any other), writes it as a 16-bit mono WAV to the same private
+ * directory and runs `-i TAP.wav` in place of `--iq-replay`.
  * --analog-pcm-gain-db scales that audio (a louder source) and --analog-pcm-lowpass-hz low-passes it first (an SDR
  * program's audio filter). Stream time on audio input is the WAV's read position, in frames at its own rate, so the
  * bounds mean the same as on a replay; it needs no radio support, and the PCM cases run in every build.
@@ -138,6 +144,7 @@ typedef struct {
     analog_limit max_clip;
     analog_limit audible_dbfs;
     analog_limit max_tone_lock_ms;
+    analog_limit max_delivery_error_pct;
 } analog_limits;
 
 enum { PROBE_MIN_DBC = 0, PROBE_MAX_DBC, PROBE_MIN_DBFS, PROBE_MAX_DBFS, PROBE_LIMIT_COUNT };
@@ -150,6 +157,9 @@ typedef struct {
 
 typedef struct {
     unsigned int rate_hz;       /* RTL output rate at the latest read or audio block */
+    unsigned int deliver_hz;    /* the analog sink rate the monitor's audio arrives at (issue #633) */
+    uint64_t blocks_scored;     /* monitor blocks delivered */
+    uint64_t native_scored;     /* ... and the input samples they span at the monitor's own rate */
     unsigned int first_rate_hz; /* ... at the first one */
     unsigned int rate_changes;  /* times the rate differed from the one before */
     double read_ms;             /* stream time the RTL stream read hook returned */
@@ -190,6 +200,8 @@ typedef struct {
 } analog_tone_track;
 
 static analog_limits g_limits;
+/* The run read audio input, where the delivery check applies (--analog-max-delivery-error-pct). */
+static int g_delivery_pcm;
 static analog_probe g_probes[ANALOG_MAX_PROBES];
 static int g_probe_count;
 static analog_totals g_totals;
@@ -232,6 +244,7 @@ static const analog_scalar_arg k_scalar_args[] = {
     {"--analog-max-clip", &g_limits.max_clip, 0.0, 1e12},
     {"--analog-audible-dbfs", &g_limits.audible_dbfs, -ANALOG_DB_LIMIT, 0.0},
     {"--analog-max-tone-lock-ms", &g_limits.max_tone_lock_ms, 0.0, 1e9},
+    {"--analog-max-delivery-error-pct", &g_limits.max_delivery_error_pct, 0.0, 100.0},
     {"--analog-scan-row", &g_scan_row, 0.0, 65535.0},
     {"--analog-iq-gain-db", &g_iq_gain_db, -40.0, 40.0},
     {"--analog-pcm-tap", &g_pcm_tap_hz, 8000.0, 96000.0},
@@ -270,6 +283,7 @@ analog_usage(void) {
                 "  --analog-max-clip N               samples at int16 full scale\n"
                 "  --analog-audible-dbfs DB          block RMS counted as audible (default -50)\n"
                 "  --analog-max-tone-lock-ms MS      stream time when the received tone first locks\n"
+                "  --analog-max-delivery-error-pct P delivered audio vs the input it spans, at the sink rate\n"
                 "  --analog-probe-hz HZ              report the level at HZ (repeatable, up to 8)\n"
                 "  --analog-probe-{min,max}-dbc HZ:DB   probe level relative to the expected tone\n"
                 "  --analog-probe-{min,max}-dbfs HZ:DB  probe level relative to full scale\n"
@@ -936,6 +950,42 @@ analog_tap_lowpass_in_place(double* x, size_t n, double cutoff, int taps) {
     return 0;
 }
 
+/* Input samples each side of the point the windowed-sinc interpolator evaluates. */
+#define ANALOG_TAP_SINC_HALF 64
+
+/* @p x (@p n samples at @p rate_in) at @p rate_out, for a rate the capture's does not divide (issue #633): a
+ * Hann-windowed sinc evaluated at each output instant, low-passed at ANALOG_TAP_ALIAS_FRACTION of the lower rate. It
+ * shares nothing with the converter under test. Returns the samples (free() them) and their count in @p out_n, or NULL.
+ */
+static double*
+analog_tap_resample(const double* x, size_t n, long rate_in, long rate_out, size_t* out_n) {
+    const size_t m = (size_t)(((uint64_t)n * (uint64_t)rate_out) / (uint64_t)rate_in);
+    double* y = m > 0U ? (double*)malloc(m * sizeof(double)) : NULL;
+    if (y == NULL) {
+        return NULL;
+    }
+    const double lower = (double)(rate_in < rate_out ? rate_in : rate_out);
+    const double cutoff = ANALOG_TAP_ALIAS_FRACTION * lower / (double)rate_in; /* cycles per input sample */
+    for (size_t k = 0; k < m; k++) {
+        const double t = (double)k * (double)rate_in / (double)rate_out;
+        const long center = (long)floor(t);
+        double acc = 0.0;
+        for (long j = center - ANALOG_TAP_SINC_HALF + 1; j <= center + ANALOG_TAP_SINC_HALF; j++) {
+            if (j < 0 || j >= (long)n) {
+                continue;
+            }
+            const double d = t - (double)j;
+            const double w = 0.5 + (0.5 * cos(ANALOG_PI * d / (double)ANALOG_TAP_SINC_HALF));
+            const double arg = 2.0 * cutoff * d;
+            const double sinc = fabs(arg) < ANALOG_HZ_EPSILON ? 1.0 : sin(ANALOG_PI * arg) / (ANALOG_PI * arg);
+            acc += x[j] * 2.0 * cutoff * sinc * w;
+        }
+        y[k] = acc;
+    }
+    *out_n = m;
+    return y;
+}
+
 /* Writes the discriminator tap of the capture meta_path names (see the file comment); 0, or -1 with a message. */
 static int
 analog_make_tap(const char* meta_path) {
@@ -952,21 +1002,30 @@ analog_make_tap(const char* meta_path) {
     const long rate_in = analog_tap_capture_rate((const char*)cap.json);
     const long rate_out = (long)g_pcm_tap_hz.value;
     const size_t n = cap.data_len / 2U;
-    if (rate_in <= 0 || fabs(g_pcm_tap_hz.value - (double)rate_out) > ANALOG_HZ_EPSILON || rate_out > rate_in
-        || rate_in % rate_out != 0 || n < 2U) {
-        DSD_FPRINTF(stderr, "analog replay: --analog-pcm-tap %g needs a divisor of the capture's %ld Hz\n",
+    if (rate_in <= 0 || fabs(g_pcm_tap_hz.value - (double)rate_out) > ANALOG_HZ_EPSILON || n < 2U) {
+        DSD_FPRINTF(stderr, "analog replay: --analog-pcm-tap %g cannot be made from the capture's %ld Hz\n",
                     g_pcm_tap_hz.value, rate_in);
         analog_capture_free(&cap);
         return -1;
     }
     double* disc = analog_tap_discriminate(&cap, n, rate_in);
     analog_capture_free(&cap);
-    const long factor = rate_in / rate_out;
-    const size_t out_n = n / (size_t)factor;
-    int16_t* pcm = (int16_t*)malloc(out_n * sizeof(int16_t));
+    /* A divisor of the capture's rate decimates after a low-pass; any other rate is interpolated (issue #633). */
+    const int divides = rate_out <= rate_in && rate_in % rate_out == 0;
+    const long factor = divides ? rate_in / rate_out : 1;
+    size_t out_n = divides ? n / (size_t)factor : 0U;
+    if (disc != NULL && g_pcm_lowpass_hz.set
+        && analog_tap_lowpass_in_place(disc, n, g_pcm_lowpass_hz.value / (double)rate_in, ANALOG_TAP_LPF_TAPS) != 0) {
+        free(disc);
+        disc = NULL;
+    }
+    if (disc != NULL && !divides) {
+        double* resampled = analog_tap_resample(disc, n, rate_in, rate_out, &out_n);
+        free(disc);
+        disc = resampled;
+    }
+    int16_t* pcm = out_n > 0U ? (int16_t*)malloc(out_n * sizeof(int16_t)) : NULL;
     if (disc != NULL && pcm != NULL
-        && (!g_pcm_lowpass_hz.set
-            || analog_tap_lowpass_in_place(disc, n, g_pcm_lowpass_hz.value / (double)rate_in, ANALOG_TAP_LPF_TAPS) == 0)
         && (factor == 1
             || analog_tap_lowpass_in_place(disc, n, ANALOG_TAP_ALIAS_FRACTION / (double)factor, ANALOG_TAP_CHANNEL_TAPS)
                    == 0)) {
@@ -1092,10 +1151,11 @@ analog_band_energy(const double* xw, size_t n, double rate_hz, double lo_hz, dou
     return 2.0 * energy / (double)n;
 }
 
-/* A frequency the monitor's rate can represent; anything at or above Nyquist would alias and is left unmeasured. */
+/* A frequency the delivered audio can represent; anything at or above Nyquist would alias and is left unmeasured. The
+   audio arrives at the analog sink rate, whatever rate the monitor runs at (issue #633). */
 static int
 analog_measurable(double hz) {
-    return g_totals.rate_hz > 0U && hz < 0.5 * (double)g_totals.rate_hz;
+    return g_totals.deliver_hz > 0U && hz < 0.5 * (double)g_totals.deliver_hz;
 }
 
 /* Records the RTL output rate in force now. */
@@ -1167,7 +1227,7 @@ analog_score_levels(const double* x, size_t n, double block_start_ms, double rat
 static void
 analog_score_block(const double* x, size_t n, double block_start_ms) {
     static double xw[ANALOG_MAX_BLOCK];
-    double rate = (double)g_totals.rate_hz;
+    double rate = (double)g_totals.deliver_hz;
     double wsum = 0.0;
     for (size_t i = 0; i < n; i++) {
         double w = 0.5 - (0.5 * cos(2.0 * ANALOG_PI * (double)i / (double)n));
@@ -1202,21 +1262,44 @@ analog_format_dcs_label(int code, int inverted) {
     DSD_SNPRINTF(g_tone.label, sizeof(g_tone.label), "%s/%s", canon, alias);
 }
 
-/* Reads the received-tone publication after one delivered block, which ended at block_end_ms. The tap updated it
- * from this same block just before the block came here. */
+/* The received-tone publication as one delivered block found it: the tap updated it from this same block just before
+ * the block came here. */
+typedef struct {
+    int locked;
+    int kind;
+    int ctcss_tenths_hz;
+    int dcs_code;
+    int dcs_inverted;
+} analog_tone_snapshot;
+
+static analog_tone_snapshot
+analog_take_tone_snapshot(const dsd_state* state) {
+    analog_tone_snapshot snap;
+    DSD_MEMSET(&snap, 0, sizeof(snap));
+    if (state != NULL && state->analog_rx.tone_state == DSD_ANALOG_TONE_STATE_LOCKED) {
+        snap.locked = 1;
+        snap.kind = (int)state->analog_rx.tone_kind;
+        snap.ctcss_tenths_hz = (int)state->analog_rx.ctcss_tenths_hz;
+        snap.dcs_code = (int)state->analog_rx.dcs_code;
+        snap.dcs_inverted = (int)state->analog_rx.dcs_inverted;
+    }
+    return snap;
+}
+
+/* Applies the publication after one delivered block, which ended at block_end_ms. */
 static void
-analog_note_tone(const dsd_state* state, double block_end_ms, double block_ms) {
-    if (state == NULL || state->analog_rx.tone_state != DSD_ANALOG_TONE_STATE_LOCKED) {
+analog_note_tone(const analog_tone_snapshot* snap, double block_end_ms, double block_ms) {
+    if (!snap->locked) {
         return;
     }
     g_tone.locked_ms += block_ms;
     if (g_tone.first_lock_ms < 0.0) {
         g_tone.first_lock_ms = block_end_ms;
     }
-    if (state->analog_rx.tone_kind == DSD_ANALOG_TONE_KIND_CTCSS) {
-        (void)dsd_ctcss_format(state->analog_rx.ctcss_tenths_hz, g_tone.label, sizeof(g_tone.label));
-    } else if (state->analog_rx.tone_kind == DSD_ANALOG_TONE_KIND_DCS) {
-        analog_format_dcs_label(state->analog_rx.dcs_code, state->analog_rx.dcs_inverted);
+    if (snap->kind == (int)DSD_ANALOG_TONE_KIND_CTCSS) {
+        (void)dsd_ctcss_format(snap->ctcss_tenths_hz, g_tone.label, sizeof(g_tone.label));
+    } else if (snap->kind == (int)DSD_ANALOG_TONE_KIND_DCS) {
+        analog_format_dcs_label(snap->dcs_code, snap->dcs_inverted);
     }
 }
 
@@ -1247,6 +1330,67 @@ analog_note_pcm_position(const dsd_opts* opts) {
     }
 }
 
+/* One monitor block, as its writes arrive: the monitor hands a block to the sink in writes of at most 960 samples at the
+ * analog sink rate (issue #633), all at one stream position, since the decoder reads no input between them. The block
+ * is scored once, whole, so the spectral windows and stream times do not depend on how it was cut into writes. */
+#define ANALOG_PENDING_MAX 65536
+
+static struct {
+    int active;
+    double consumed_ms; /* stream time when its first write came */
+    size_t n;
+    analog_tone_snapshot tone;
+    short pcm[ANALOG_PENDING_MAX];
+} g_pending;
+
+/* Scores the pending block: it ends at the stream time its writes came at and spans as much stream time as its audio
+   lasts at the sink rate. */
+static void
+analog_flush_block(void) {
+    if (!g_pending.active) {
+        return;
+    }
+    g_pending.active = 0;
+    if (g_pending.n == 0U || g_totals.deliver_hz == 0U) {
+        return;
+    }
+    const double ms_per_sample = 1000.0 / (double)g_totals.deliver_hz;
+    const double block_ms = (double)g_pending.n * ms_per_sample;
+    const double block_start_ms = g_pending.consumed_ms > block_ms ? g_pending.consumed_ms - block_ms : 0.0;
+    static double block[ANALOG_MAX_BLOCK];
+    size_t done = 0U;
+    while (done < g_pending.n) {
+        size_t chunk = g_pending.n - done < ANALOG_MAX_BLOCK ? g_pending.n - done : ANALOG_MAX_BLOCK;
+        for (size_t i = 0; i < chunk; i++) {
+            block[i] = (double)g_pending.pcm[done + i] / ANALOG_FULL_SCALE;
+        }
+        analog_score_block(block, chunk, block_start_ms + ((double)done * ms_per_sample));
+        done += chunk;
+    }
+    g_totals.blocks_scored++;
+    analog_note_tone(&g_pending.tone, block_start_ms + block_ms, block_ms);
+}
+
+/* One write of @p n samples at stream time @p consumed_ms: it starts a new block when the stream moved since the last
+   write, which scores the block before it, and joins the block in hand otherwise. @p native_samples is the input a new
+   block spans (0 when unknown). */
+static void
+analog_take_write(double consumed_ms, const short* pcm, size_t n, const analog_tone_snapshot* tone,
+                  uint64_t native_samples) {
+    if (!g_pending.active || fabs(consumed_ms - g_pending.consumed_ms) > ANALOG_HZ_EPSILON) {
+        analog_flush_block();
+        g_pending.active = 1;
+        g_pending.consumed_ms = consumed_ms;
+        g_pending.n = 0U;
+        g_pending.tone = *tone;
+        g_totals.native_scored += native_samples;
+    }
+    const size_t room = ANALOG_PENDING_MAX - g_pending.n;
+    const size_t take = n < room ? n : room;
+    DSD_MEMCPY(g_pending.pcm + g_pending.n, pcm, take * sizeof(short));
+    g_pending.n += take;
+}
+
 /* Replaces the UDP analog blaster. nbytes is a byte count of int16 mono samples, as dsd_symbol.c passes it. */
 static void
 analog_capture_blast(const dsd_opts* opts, dsd_state* state, size_t nbytes, const void* data) {
@@ -1258,7 +1402,8 @@ analog_capture_blast(const dsd_opts* opts, dsd_state* state, size_t nbytes, cons
     if (pcm_input) {
         analog_note_pcm_position(opts);
     }
-    /* The monitor's rate: the RTL output rate, or on audio input its own (staged) rate. */
+    /* The monitor's rate, the stream's clock: the RTL output rate, or on audio input its own (staged) rate. Its audio
+       arrives at the analog sink rate (issue #633). */
     unsigned int rate_hz = pcm_input ? (unsigned int)dsd_opts_current_input_timing_rate(opts)
                                      : dsd_rtl_stream_metrics_hook_output_rate_hz();
     if (rate_hz == 0U) {
@@ -1266,22 +1411,10 @@ analog_capture_blast(const dsd_opts* opts, dsd_state* state, size_t nbytes, cons
         return;
     }
     analog_note_rate(rate_hz);
-    double ms_per_sample = 1000.0 / (double)rate_hz;
-    double consumed_ms = analog_consumed_ms();
-    double block_ms = (double)n * ms_per_sample;
-    double block_start_ms = consumed_ms > block_ms ? consumed_ms - block_ms : 0.0;
-    const short* pcm = (const short*)data;
-    static double block[ANALOG_MAX_BLOCK];
-    size_t done = 0U;
-    while (done < n) {
-        size_t chunk = n - done < ANALOG_MAX_BLOCK ? n - done : ANALOG_MAX_BLOCK;
-        for (size_t i = 0; i < chunk; i++) {
-            block[i] = (double)pcm[done + i] / ANALOG_FULL_SCALE;
-        }
-        analog_score_block(block, chunk, block_start_ms + ((double)done * ms_per_sample));
-        done += chunk;
-    }
-    analog_note_tone(state, block_start_ms + block_ms, block_ms);
+    g_totals.deliver_hz = (unsigned int)dsd_opts_analog_sink_rate_hz(opts);
+    const analog_tone_snapshot tone = analog_take_tone_snapshot(state);
+    /* On audio input every block spans 960 input samples (symbol_analog_block_size()). */
+    analog_take_write(analog_consumed_ms(), (const short*)data, n, &tone, pcm_input ? 960U : 0U);
 }
 
 #ifdef USE_RADIO
@@ -1547,6 +1680,14 @@ analog_check_limits(const analog_report_ctx* ctx) {
     analog_check_max("peak dBFS", ctx->have_audio, ctx->peak_dbfs, &g_limits.max_peak_dbfs);
     analog_check_max("clipped samples", 1, (double)g_totals.clip_count, &g_limits.max_clip);
     analog_check_max("tone lock ms", ctx->have_lock, g_tone.first_lock_ms, &g_limits.max_tone_lock_ms);
+    /* Every block's audio at the sink rate lasts as long as the input it spans (issue #633): measured on audio input,
+       where each block spans 960 input samples at the monitor's rate. */
+    const int have_delivery = g_delivery_pcm && g_totals.native_scored > 0U && g_totals.rate_hz > 0U;
+    const double want_samples =
+        have_delivery ? (double)g_totals.native_scored * (double)g_totals.deliver_hz / (double)g_totals.rate_hz : 0.0;
+    const double delivery_error_pct =
+        have_delivery ? 100.0 * fabs((double)g_totals.samples_captured - want_samples) / want_samples : 0.0;
+    analog_check_max("delivery error pct", have_delivery, delivery_error_pct, &g_limits.max_delivery_error_pct);
     analog_report_probes(ctx, 1);
 }
 
@@ -1601,14 +1742,71 @@ static void
 analog_stop(dsd_opts* opts, dsd_state* state, void* context) {
     (void)state;
     (void)context;
+    analog_flush_block();
     if (analog_pcm_input(opts)) {
         analog_note_pcm_position(opts);
+        g_delivery_pcm = 1;
     }
     analog_report();
 }
 
+/* Scores four blocks of a 1 kHz tone at 48 kHz -- the third silent, a squelched gap -- each written whole when @p split
+   is 0, or as 960 samples and the rest when it is 1, and returns the totals. */
+static analog_totals
+analog_selftest_run(int split) {
+    DSD_MEMSET(&g_totals, 0, sizeof(g_totals));
+    DSD_MEMSET(&g_pending, 0, sizeof(g_pending));
+    DSD_MEMSET(&g_tone, 0, sizeof(g_tone));
+    g_totals.first_audible_ms = -1.0;
+    g_tone.first_lock_ms = -1.0;
+    g_totals.rate_hz = 44100U;
+    g_totals.deliver_hz = 48000U;
+    static short pcm[1045];
+    analog_tone_snapshot tone;
+    DSD_MEMSET(&tone, 0, sizeof(tone));
+    for (int b = 0; b < 4; b++) {
+        for (int i = 0; i < 1045; i++) {
+            pcm[i] =
+                b == 2 ? 0 : (short)lround(8000.0 * sin(2.0 * ANALOG_PI * 1000.0 * (double)(b * 1045 + i) / 48000.0));
+        }
+        const double at_ms = (double)(b + 1) * 960.0 * 1000.0 / 44100.0;
+        if (split) {
+            analog_take_write(at_ms, pcm, 960U, &tone, 960U);
+            analog_take_write(at_ms, pcm + 960, 85U, &tone, 960U);
+        } else {
+            analog_take_write(at_ms, pcm, 1045U, &tone, 960U);
+        }
+    }
+    analog_flush_block();
+    return g_totals;
+}
+
+/* --analog-selftest: a block scores the same whether it arrived as one write or as several (issue #633). */
+static int
+analog_selftest(void) {
+    g_limits.audible_dbfs.set = 1;
+    g_limits.audible_dbfs.value = -40.0;
+    const analog_totals whole = analog_selftest_run(0);
+    const analog_totals split = analog_selftest_run(1);
+    const int same = whole.blocks_scored == 4U && split.blocks_scored == 4U && whole.native_scored == 3840U
+                     && split.native_scored == 3840U && whole.samples_captured == split.samples_captured
+                     && fabs(whole.captured_ms - split.captured_ms) < 1e-9
+                     && fabs(whole.audible_ms - split.audible_ms) < 1e-9
+                     && fabs(whole.first_audible_ms - split.first_audible_ms) < 1e-9
+                     && fabs(whole.energy_total - split.energy_total) < 1e-9
+                     && fabs(whole.inband_energy - split.inband_energy) < 1e-9
+                     && fabs(whole.outband_energy - split.outband_energy) < 1e-9
+                     && fabs(whole.widest_bin_hz - split.widest_bin_hz) < 1e-9;
+    const int gap = fabs(whole.audible_ms - 3.0 * 1045.0 * 1000.0 / 48000.0) < 1e-6;
+    DSD_FPRINTF(stderr, "analog replay self-test: %s\n", same && gap ? "OK" : "FAIL");
+    return same && gap ? 0 : 1;
+}
+
 int
 main(int argc, char** argv) {
+    if (argc == 2 && strcmp(argv[1], "--analog-selftest") == 0) {
+        return analog_selftest();
+    }
     char** args = (char**)calloc((size_t)argc + 1U, sizeof(*args));
     if (args == NULL) {
         return 1;

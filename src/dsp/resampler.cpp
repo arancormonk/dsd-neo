@@ -37,7 +37,7 @@
 #endif
 
 static const double kPi = 3.14159265358979323846;
-static const int kDefaultTapsPerPhase = 16;
+static const int kDefaultTapsPerPhase = DSD_RESAMPLER_DEFAULT_TAPS_PER_PHASE;
 static const uint64_t kResamplerStateCookie = 0x4453444e454f5253ULL;
 
 template <typename T>
@@ -266,8 +266,22 @@ dsd_resampler_clear_history(dsd_resampler_state* state) {
 }
 
 int
-dsd_resampler_design(dsd_resampler_state* state, int L, int M) {
-    if (!state || L < 1 || M < 1) {
+dsd_resampler_ratio_designable(int L, int M, int taps_per_phase) {
+    if (L < 1 || M < 1 || taps_per_phase < DSD_RESAMPLER_MIN_TAPS_PER_PHASE
+        || taps_per_phase > DSD_RESAMPLER_MAX_TAPS_PER_PHASE) {
+        return 0;
+    }
+    const int64_t total_taps = (int64_t)taps_per_phase * (int64_t)L;
+    if (total_taps > (int64_t)INT_MAX || (uint64_t)total_taps > (uint64_t)(SIZE_MAX / sizeof(float))) {
+        return 0;
+    }
+    /* resampler_emit_outputs() steps a phase below L by M. */
+    return ((int64_t)L + (int64_t)M) <= (int64_t)INT_MAX ? 1 : 0;
+}
+
+static int
+resampler_design_k(dsd_resampler_state* state, int L, int M, int taps_per_phase) {
+    if (!state || !dsd_resampler_ratio_designable(L, M, taps_per_phase)) {
         if (state) {
             dsd_resampler_reset(state);
         }
@@ -279,11 +293,7 @@ dsd_resampler_design(dsd_resampler_state* state, int L, int M) {
     float* old_taps = state_initialized ? state->taps : NULL;
     float* old_hist = state_initialized ? state->hist : NULL;
 
-    int taps_per_phase = (kDefaultTapsPerPhase < 8) ? 8 : kDefaultTapsPerPhase; /* K */
-    int total_taps = taps_per_phase * L;
-    if (total_taps < L) {
-        total_taps = L;
-    }
+    const int total_taps = taps_per_phase * L; /* K x L, bounded by dsd_resampler_ratio_designable() */
 
     const double fc = 0.45 / (double)((L > M) ? L : M);
     float* new_taps = NULL;
@@ -313,6 +323,16 @@ dsd_resampler_design(dsd_resampler_state* state, int L, int M) {
 
     *state = next_state;
     return 1;
+}
+
+int
+dsd_resampler_design(dsd_resampler_state* state, int L, int M) {
+    return resampler_design_k(state, L, M, kDefaultTapsPerPhase);
+}
+
+int
+dsd_resampler_design_taps(dsd_resampler_state* state, int L, int M, int taps_per_phase) {
+    return resampler_design_k(state, L, M, taps_per_phase);
 }
 
 int
@@ -392,17 +412,18 @@ demod_resampler_state_copy_out(struct demod_state* demod, const dsd_resampler_st
     demod->resamp_hist = state->hist;
 }
 
-void
+int
 resamp_design(struct demod_state* s, int L, int M) {
     if (!s) {
-        return;
+        return 0;
     }
     dsd_resampler_state state = demod_resampler_state_copy_in(s);
-    (void)dsd_resampler_design(&state, L, M);
+    const int designed = dsd_resampler_design(&state, L, M);
     demod_resampler_state_copy_out(s, &state);
     /* A new resampler's outputs map to no input before its first: their flags start closed. */
     DSD_MEMSET(s->resamp_flag_hist, DSD_SQUELCH_FLAG_CLOSED, sizeof(s->resamp_flag_hist));
     s->resamp_flag_head = 0;
+    return (designed && s->resamp_taps != NULL && s->resamp_hist != NULL) ? 1 : 0;
 }
 
 /* The flags of a resampled block, from the resampler's phase before it ran: the same recurrence that emits its outputs,

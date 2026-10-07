@@ -2430,6 +2430,16 @@ test_wav_output_helpers_create_temp_and_raw_files(void) {
         rc |= expect_true("raw wav close clears handle", opts.wav_out_raw == NULL);
         rc |= expect_wav_header("raw wav RIFF/WAVE header", raw_path);
         rc |= expect_true("raw wav header-only size", file_size_or_negative(raw_path) >= 44);
+        /* The analog sink rate, which every block is converted to (issue #633); a zeroed opts has no raw output rate
+           set, so it is the 48 kHz default. */
+        SF_INFO raw_info;
+        DSD_MEMSET(&raw_info, 0, sizeof raw_info);
+        SNDFILE* raw = sf_open(raw_path, SFM_READ, &raw_info);
+        rc |= expect_true("raw wav reopens", raw != NULL);
+        if (raw) {
+            sf_close(raw);
+        }
+        rc |= expect_true("raw wav runs at the analog sink rate", raw_info.samplerate == 48000);
     }
     (void)remove(raw_path);
     (void)remove_dir(dir);

@@ -22,6 +22,7 @@
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/dsp/analog_audio.h>
 #include <dsd-neo/dsp/analog_rx.h>
+#include <dsd-neo/dsp/analog_sink.h>
 #include <dsd-neo/dsp/firdes.h>
 #include <dsd-neo/dsp/pcm_noise_squelch.h>
 #include <dsd-neo/runtime/analog_tones.h>
@@ -1082,8 +1083,10 @@ dsd_analog_rx_reset(dsd_state* state) {
         analog_rx_arm_backlog_skip(session);
         session->boundaries++;
     }
-    /* The monitor's audio chain starts over on the new reception too, whether or not this tap runs (issue #518). */
+    /* The monitor's audio chain starts over on the new reception too, whether or not this tap runs (issue #518), and
+       so does the monitor's converter to the sink rate (issue #633). */
     dsd_analog_audio_note_reception(state);
+    dsd_analog_sink_note_reception(state);
     analog_rx_forget(state);
 }
 

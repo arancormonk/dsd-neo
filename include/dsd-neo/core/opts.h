@@ -183,6 +183,10 @@ struct dsd_opts {
        and dsd_opts_reset_pcm_input_state(), which every input switch runs): what the PCM noise squelch learned belongs
        to one stream (issues #628, #634). */
     uint32_t pcm_input_generation;
+    /* Bumped each time dsd_opts_apply_input_sample_rate() changes the PCM input rate, provisional changes a transaction
+       later restores included: a monitor block that collects samples on both sides of one is mixed-rate, and neither
+       plays nor goes to the -6 WAV (issue #633). */
+    uint32_t input_rate_generation;
     int rtl_udp_port;
     /* Control/telemetry API (docs/api.md) listening port; 0 disables the server. */
     int api_port;
@@ -580,6 +584,9 @@ dsd_opts_apply_input_sample_rate(dsd_opts* opts, int sample_rate_hz) {
         sample_rate_hz = 48000;
     }
 
+    if (opts->wav_sample_rate != sample_rate_hz) {
+        opts->input_rate_generation++;
+    }
     opts->wav_sample_rate = sample_rate_hz;
     opts->wav_interpolator = (opts->wav_decimator > 0 && opts->wav_sample_rate >= opts->wav_decimator)
                                  ? (opts->wav_sample_rate / opts->wav_decimator)
@@ -879,6 +886,18 @@ dsd_opts_current_input_timing_rate(const dsd_opts* opts) {
         return dsd_opts_effective_input_rate(opts);
     }
     return 0;
+}
+
+/**
+ * @brief The rate every analog sink runs at: the local raw stream, the UDP analog socket and the -6 raw WAV (issue
+ * #633). The monitor's blocks are converted to it from whatever rate they run at.
+ *
+ * @param opts Decoder options (may be NULL).
+ * @return `pulse_raw_rate_out` when set, otherwise 48000.
+ */
+static inline int
+dsd_opts_analog_sink_rate_hz(const dsd_opts* opts) {
+    return (opts && opts->pulse_raw_rate_out > 0) ? opts->pulse_raw_rate_out : 48000;
 }
 
 /**
