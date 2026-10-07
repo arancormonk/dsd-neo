@@ -1322,27 +1322,35 @@ The plans and signals:
 - **Encoder:** the legacy WIDE profile plan, or no filter, on every chain, with the monitor's NFM carriers.
 
 The four per-window targets are #627's. Three timing checks run the C tracker itself (`squelch_model_taps track`):
-- the longest closed run inside a call, while learning (landing mid-carrier at 6, 10 and 20 dB CNR) and with a known
-  floor at margins 3, 10 and 30 (the carrier 3 dB over the opening level);
+- the longest closed run in a call, from its first sample: the closed window the tracker's first decision takes is
+  included. It is measured while learning (landing mid-carrier at 6, 10 and 20 dB CNR) and with a known floor at
+  margins 3, 10 and 30 (the carrier 3 dB over the opening level);
 - a carrier under the opening level, which must stay closed;
 - the delay from a carrier drop to the first closed flag, at 40 phases across a window.
 
-| Path | Plans | Noise read as carrier | 6 dB carrier missed | Carrier read as noise | Noise undecided | Longest closed run in a call | Closing delay (learning / known) |
+Each closed run is held to the path's hold. For EDACS that is four triplets less 85 ms at its output rate, never under
+80 ms. The output rate is the channel rate, as an unresampled replay runs it (the shortest hold), or 48 kHz on a
+device-forced chain. For the encoder it is the VOX's 440 ms.
+
+| Path | Plans | Noise read as carrier | 6 dB carrier missed | Carrier read as noise | Noise undecided | Longest closed run in a call (learning / known) | Closing delay (learning / known) |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| EDACS | 51 of 51 pass | 8e-5 at worst | 0.02 % | none | 3.8 % | 0 ms | 78 / 39 ms |
-| M17 encoder | 59 of 60, one accepted | 8e-5 | 1.26 % (the accepted plan) | none | 3.8 % | 40 ms | 78 / 39 ms |
+| EDACS | 51 of 51 pass | 8e-5 at worst | 0.02 % | none | 3.8 % | 40 / 60 ms | 78 / 39 ms |
+| M17 encoder | 60 of 60, one accepted | 8e-5 | 1.26 % (the accepted plan) | none | 3.8 % | 40 / 60 ms | 78 / 39 ms |
 
 - **Accepted plan:** the encoder's legacy WIDE filter forced on by `DSD_NEO_CHANNEL_LPF=1` at an SDDC's 7.8 kHz channel
   misses 1.26 % of 6 dB carriers. The run above accepted the analog monitor's forced 8 kHz plan at 1.1 %, and this
   plan's longest closed run is one window, far under the VOX's 440 ms hang.
 - **The bound:** the 78 ms worst closing delay is what EDACS budgets as `DSD_SQUELCH_CLOSE_DELAY_MS` (85 ms) in its
   release hold. While the floor is learned, a window holding the drop can still read CARRIER, so the next one closes it.
+- **The floor:** the 40 ms a call's first decision takes and the 60 ms of a carrier's onset over a known floor are what
+  EDACS's 80 ms minimum hold (`EDACS_ANALOG_GATE_MIN_HOLD_MS`, two windows) stays clear of. That matters only where four
+  triplets less the bound fall under it: above about 70 kHz, an unresampled replay.
 - **The noise squelch:** NOISE on the encoder's monitor runs the noise squelch where its plan has a band.
   `tools/noise_squelch_model.py --encoder-only` runs the three encoder plans no NFM plan shares, the 63-tap fallbacks
   at 62.5, 78.1 and 93.75 kHz. All three pass the chosen design: worst wanted-modulation 1st percentile 62.4 dB against
   the gate's 36, and no false open on noise. EDACS runs NOISE as auto, so its plans need no noise-model run.
-- **Reproducing:** `python3 tools/squelch_paths_model.py` writes `build/squelch_paths_model/report.md` in about 15
-  minutes on 12 workers; `--quick` takes under a minute.
+- **Reproducing:** `python3 tools/squelch_paths_model.py` writes `build/squelch_paths_model/report.md` in about 20
+  minutes on 14 workers; `--quick` takes under a minute.
 
 #### Auto squelch on EDACS analog voice and the M17 encoder (regression cases)
 
@@ -1350,9 +1358,9 @@ The four per-window targets are #627's. Three timing checks run the C tracker it
 | --- | --- |
 | `EDACS_GRANT_TUNE_MATRIX` analog-call release cases | An analog group grant plays a call on a fake RTL stream. Under AUTO and NOISE it ends on the gate at or before the level squelch's twin. That holds at drop phases 0, 0.25, 0.5 and 0.99 of a triplet, closing delays of 0, half and all of the bound, and 24 and 48 kHz. The tail after the gate closed is silence. On main the call ran to the read cap. |
 | `EDACS_GRANT_TUNE_MATRIX` disturbance cases | A 20 or 40 ms open burst in the tail restarts the hold; a 20 or 40 ms closed blip inside the call never ends it. A stream whose status says no gate runs ends nothing on its flags (the watchdog's case). |
-| `EDACS_GRANT_TUNE_MATRIX` real-tracker case | Flags the C tracker made on a carrier dropping at every 2 ms phase of its windows, while learning, end the call within the level squelch's time. |
-| `M17_STATE_DISPATCH` VOX cases | `encodeM17STR()` on a fake RTL stream with both reader hooks and positive power: open flags for 3 reads, then closed. VOX unkeys at read 19 under AUTO and NOISE (11 closed reads, then the LICH boundary) with one EOS frame, the EOT marker and IP's EOTX, and no dead air. Codec2 hears silence once the gate closed. Open flags hold it keyed; a level twin unkeys at 19 too. |
-| `M17_STATE_DISPATCH` end-of-stream cases | A keyed exit, a keyed input end, and a manual unkey followed by the input ending each end the stream once, with dead air. An encoder that never keyed sends no end. |
+| `EDACS_GRANT_TUNE_MATRIX` real-tracker case | Flags the C tracker made on a carrier dropping at every 2 ms phase of its windows, while learning, end the call within the level squelch's time at 48 kHz. At an unresampled 125 kHz, the call's first, closed window does not end it, and it ends within the closing delay and the hold's 80 ms floor of the drop. A one-triplet hold released at once there. |
+| `M17_STATE_DISPATCH` VOX cases | `encodeM17STR()` on a fake RTL stream with both reader hooks and positive power: open flags for 3 reads, then closed. VOX unkeys at read 19 under AUTO and NOISE (11 closed reads, then the LICH boundary). The RF, decoded from the symbol capture, carries the EOS bit on the 19th and last stream frame only, then the EOT marker, with no dead air after it; IP sends its EOTX. Codec2 hears silence once the gate closed. Open flags hold it keyed; a level twin unkeys at 19 too. |
+| `M17_STATE_DISPATCH` end-of-stream cases | A keyed exit, a keyed input end, and a manual unkey followed by the input ending each end the stream once, with the EOS frame, the EOT marker and 25 frames of dead air in the decoded RF. On a local output (the audio writes and drains recorded through linker wraps, GNU and Clang off Apple) the end drains after the marker and again after the dead air, and the packet encoder's end does too. An encoder that never keyed sends no end. |
 | `M17_STATE_DISPATCH` reader case | Closed samples fade to exact silence, and a read is heard while any sample is. LEVEL ignores the flags; with no gate running the flags are not read. |
 | `IO_RTL_DEMOD_CONFIG`, `IO_RTL_ANALOG_OPEN` | A real `-fZ` session (default frame flags, `-mq`, `DSD_NEO_CQPSK=1`) opens FM with de-emphasis on the WIDE channel and runs the tracker there. A CQPSK toggle each way and a published DMR profile change neither. |
 | `DSP_SQUELCH_AUTO_DEMOD` | The 9600/2 FSK path runs the tracker: PROVOICE at 24 and 48 kHz, no filter at 12 and 16 kHz. Its flags match a reference tracker, NOISE gives the same flags, and the FSK output is unchanged. Other FSK profiles run none. The encoder's monitor runs it; the gate closes within `DSD_SQUELCH_CLOSE_DELAY_MS` at every window phase (72 ms at worst there). |

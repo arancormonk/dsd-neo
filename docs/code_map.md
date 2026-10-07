@@ -2020,7 +2020,10 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   audio by the RTL monitor gain after the `vol` trim (`m17_encoder_read_block()`), so it reaches codec2 at PCM scale.
   On RTL it reads each sample's squelch flag (`read_ex`); while the stream's gate runs
   (`dsd_squelch_stream_gate_running()`, asked once a block's first sample is in) a closed sample fades to silence before
-  the low-pass, and the read records whether any sample was heard (`m17_encoder_input::squelch_heard`).
+  the low-pass, and the read records whether any sample was heard (`m17_encoder_input::squelch_heard`). A stream's end
+  (`m17_str_end_stream()`, and the packet encoder's) drains a local output after the EOT marker, before its dead air,
+  and again at shutdown: an asynchronous output drops its oldest samples when full, and the engine closes it without a
+  drain.
   The analog_voice and analog_audio sources keep IEEE semantics under fast-math, which would fold away their
   non-finite-sample guards. The published `dsd_state::aout_gainA` is the gain applied, in dB over the `-n 50` gain,
   which the terminal shows as `G: Auto (+x dB)`. Tests: `DSP_ANALOG_VOICE`, `DSP_ANALOG_AUDIO`, `DSP_SYMBOL_REPLAY`
@@ -2081,7 +2084,8 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
     `m17_encoder_vox_keyed()`).
   - EDACS analog voice (`edacs_analog()`) reads each triplet's flags (`edacs_collect_analog_triplet_flags()`,
     `edacs_analog_sql_kind()`). It ends the call once the run of closed samples reaches four triplets less
-    `DSD_SQUELCH_CLOSE_DELAY_MS` at its output rate (`edacs_gate_hold_samples()`). The level squelch's fifth closed
+    `DSD_SQUELCH_CLOSE_DELAY_MS` at its output rate, never under `EDACS_ANALOG_GATE_MIN_HOLD_MS` (two windows: a
+    call's first decision or one window read closed cannot end it; `edacs_gate_hold_samples()`). The level squelch's fifth closed
     reading releases a dropped carrier no sooner, and its fallback watchdog runs only when nothing decides the call.
 
   The gate closes within that delay of a drop: `<dsd-neo/core/power.h>`; `tools/squelch_paths_model.py` measures it,
