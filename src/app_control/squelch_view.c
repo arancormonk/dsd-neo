@@ -165,6 +165,19 @@ squelch_view_off_reason(const dsd_app_squelch_view* view) {
     return NULL;
 }
 
+/* The readout that needs no reading of the gate: why it is off, or an EDACS session between calls. NULL otherwise. */
+static const char*
+squelch_view_fixed_status(const dsd_app_squelch_view* view) {
+    const char* off = squelch_view_off_reason(view);
+    if (off) {
+        return off;
+    }
+    if (view->edacs_voice && !view->edacs_call) {
+        return view->noise_as_auto ? "EDACS analog calls, as auto" : "EDACS analog calls";
+    }
+    return NULL;
+}
+
 int
 dsd_app_squelch_view_dynamic_status(const dsd_app_squelch_view* view, char* out, size_t out_size) {
     if (!out || out_size == 0U) {
@@ -177,11 +190,9 @@ dsd_app_squelch_view_dynamic_status(const dsd_app_squelch_view* view, char* out,
     if (!view->effective_auto && !view->effective_noise) {
         return 0;
     }
-    const char* off = squelch_view_off_reason(view);
-    if (off) {
-        DSD_SNPRINTF(out, out_size, "%s", off);
-    } else if (view->edacs_voice && !view->edacs_call) {
-        DSD_SNPRINTF(out, out_size, "%s", view->noise_as_auto ? "EDACS analog calls, as auto" : "EDACS analog calls");
+    const char* fixed = squelch_view_fixed_status(view);
+    if (fixed) {
+        DSD_SNPRINTF(out, out_size, "%s", fixed);
     } else if (view->noise_state == DSD_SQUELCH_NOISE_STATE_LEARNING
                || (view->noise_state != DSD_SQUELCH_NOISE_STATE_NONE && !view->noise_measured)) {
         DSD_SNPRINTF(out, out_size, "%s", "learning");

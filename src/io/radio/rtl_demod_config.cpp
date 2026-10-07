@@ -190,12 +190,9 @@ demod_uses_cqpsk_profile(const demod_state* demod) {
     return (demod && demod->cqpsk_enable) ? 1 : 0;
 }
 
+/* The profile a symbol rate picks among the enabled modes, or -1 when the rate leaves it to the modes alone. */
 static int
-opts_channel_profile_for_rate(const dsd_opts* opts, const demod_state* demod, int symbol_rate_hz) {
-    /* The M17 encoder's monitor runs WIDE, whatever digital frame flags -fZ left set (issue #625). */
-    if (!opts || dsd_opts_runs_m17_encoder(opts)) {
-        return DSD_CH_LPF_PROFILE_WIDE;
-    }
+opts_channel_profile_for_symbol_rate(const dsd_opts* opts, int symbol_rate_hz) {
     switch (symbol_rate_hz) {
         case 9600:
             if (opts->frame_provoice == 1) {
@@ -213,6 +210,19 @@ opts_channel_profile_for_rate(const dsd_opts* opts, const demod_state* demod, in
             }
             break;
         default: break;
+    }
+    return -1;
+}
+
+static int
+opts_channel_profile_for_rate(const dsd_opts* opts, const demod_state* demod, int symbol_rate_hz) {
+    /* The M17 encoder's monitor runs WIDE, whatever digital frame flags -fZ left set (issue #625). */
+    if (!opts || dsd_opts_runs_m17_encoder(opts)) {
+        return DSD_CH_LPF_PROFILE_WIDE;
+    }
+    const int by_rate = opts_channel_profile_for_symbol_rate(opts, symbol_rate_hz);
+    if (by_rate >= 0) {
+        return by_rate;
     }
     if (dsd_opts_uses_wide_4800_profile(opts)) {
         return DSD_CH_LPF_PROFILE_12K5;

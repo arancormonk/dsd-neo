@@ -308,7 +308,8 @@ edacs_collect_rtl_triplet(dsd_opts* opts, dsd_state* state, short* analog1, shor
     if (!edacs_fill_analog_block_rtl(opts, state, analog2, flags ? flags + EDACS_ANALOG_BLOCK_SAMPLES : NULL)) {
         return 0;
     }
-    if (!edacs_fill_analog_block_rtl(opts, state, analog3, flags ? flags + (2 * EDACS_ANALOG_BLOCK_SAMPLES) : NULL)) {
+    if (!edacs_fill_analog_block_rtl(opts, state, analog3,
+                                     flags ? flags + ((size_t)2U * EDACS_ANALOG_BLOCK_SAMPLES) : NULL)) {
         return 0;
     }
     *pwr = dsd_rtl_stream_io_hook_return_pwr(state);

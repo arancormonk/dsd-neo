@@ -37,9 +37,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "dsd-neo/core/dibit.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/dsp/analog_voice.h"
+#include "dsd-neo/platform/audio.h"
 #include "dsd-neo/platform/sockets.h"
 #include "dsd-neo/protocol/m17/m17_parse.h"
 #include "dsd-neo/protocol/m17/m17_tables.h"
@@ -2683,15 +2685,14 @@ static char g_audio_events[2048];
 static int g_audio_event_count = 0;
 static int g_audio_wrap_on = 0;
 
+// GNU linker wrappers of the local output (-Wl,--wrap): the names are the linker's.
+// NOLINTBEGIN(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
 int __real_dsd_audio_write(dsd_audio_stream* stream, const int16_t* buffer, size_t frames);
 int __real_dsd_audio_drain(dsd_audio_stream* stream);
-// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
 int __wrap_dsd_audio_write(dsd_audio_stream* stream, const int16_t* buffer, size_t frames);
-// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
 int __wrap_dsd_audio_drain(dsd_audio_stream* stream);
 
 int
-// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
 __wrap_dsd_audio_write(dsd_audio_stream* stream, const int16_t* buffer, size_t frames) {
     if (!g_audio_wrap_on) {
         return __real_dsd_audio_write(stream, buffer, frames);
@@ -2708,7 +2709,6 @@ __wrap_dsd_audio_write(dsd_audio_stream* stream, const int16_t* buffer, size_t f
 }
 
 int
-// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
 __wrap_dsd_audio_drain(dsd_audio_stream* stream) {
     if (!g_audio_wrap_on) {
         return __real_dsd_audio_drain(stream);
@@ -2719,6 +2719,8 @@ __wrap_dsd_audio_drain(dsd_audio_stream* stream) {
     }
     return 0;
 }
+
+// NOLINTEND(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
 
 /* Issue #625: the packet encoder's end drains a local output after its EOT marker, before its dead air, and again
    after the dead air, before it returns: an asynchronous output drops its oldest samples when full, and the engine
