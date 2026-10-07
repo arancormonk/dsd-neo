@@ -12954,7 +12954,8 @@ if(DSD_HAS_RADIO)
         # same samples (the burst's 280 ms, 14 writes of 960). The monitor reads one
         # sample at a time, so there is no read for a short-read leg to cut, and 280 ms
         # of audio cannot back up a stalled sink; the NXDN case below covers that. The
-        # noise squelch gates the same way (its 240 ms, 12 writes). One read a sample would
+        # noise squelch gates the same way (its 240 ms, 12 writes), and so does the level
+        # squelch at a live block's cadence (its 260 ms, 13 writes). One read a sample would
         # spend the jitter budget in the first 30 ms, so the jitter legs sleep after about
         # one read in 1,500 and must still be sleeping past the carrier's end (550 ms).
         foreach(
@@ -12964,6 +12965,8 @@ if(DSD_HAS_RADIO)
                 "AUTO_NFM;nfm_burst_synth;-fA --squelch auto"
                 "AUTO_AM;am_burst_synth;-fM --squelch auto"
                 "NOISE_NFM;nfm_burst_synth;-fA --squelch noise"
+                "LEVEL_NFM;nfm_burst_synth;-fA --squelch -28"
+                "LEVEL_AM;am_burst_synth;-fM --squelch -30"
         )
             list(GET _sql_case 0 _sql_kind)
             list(GET _sql_case 1 _sql_fixture)
@@ -13954,6 +13957,50 @@ if(DSD_HAS_RADIO)
         "${_analog_off_path}"
     )
 
+    # The level squelch on replay (issue #626): a replay hands the demod one live transfer at
+    # a time (5.33 ms here), as a receiver's dongle does, so a fixed level gates the burst
+    # within one such block of the carrier's key and unkey (IO_RTL_REPLAY_CHUNKING pins
+    # the blocks). It used to gate per 64 KiB chunk, 683 ms of these captures: both of the
+    # burst's chunks started on noise and the carrier never played. -28 dB on nfm_burst_synth
+    # and -30 dB on am_burst_synth sit at least 8 dB from each block's noise and carrier
+    # power. The monitor keeps or drops each 20 ms block by the power at its last sample, as
+    # it does live, so the sink's edges fall on its blocks: the first audible block starts at
+    # 280 ms (the block whose end opened, 1.3 ms ahead of the carrier as the channel filter
+    # sees it), the last ends at 540 ms (the 540-560 ms block ends closed and is dropped),
+    # and 260 ms is audible, the whole span, so no block inside it is missing. The bounds
+    # pin those blocks. A -Y row's own --squelch-db gates the same way.
+    set(_sql_level_burst_bounds
+        "--analog-audible-dbfs -40 --analog-min-total-ms 700 --analog-max-total-ms 800 --analog-min-first-audible-ms 270 --analog-max-first-audible-ms 290 --analog-min-last-audible-ms 530 --analog-max-last-audible-ms 550 --analog-min-audible-ms 250 --analog-max-audible-ms 270 --analog-max-clip 0"
+    )
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_SQL_LEVEL_NFM_BURST
+        nfm_burst_synth
+        "-fA --squelch -28 ${_sql_level_burst_bounds}"
+        ""
+        "${_analog_off_path}"
+    )
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_SQL_LEVEL_AM_BURST
+        am_burst_synth
+        "-fM --squelch -30 ${_sql_level_burst_bounds}"
+        ""
+        "${_analog_off_path}"
+    )
+    set(_scan_sql_level_csv
+        "${CMAKE_CURRENT_BINARY_DIR}/scan_mode_sql_level_row.csv"
+    )
+    file(
+        WRITE "${_scan_sql_level_csv}"
+        "channel,frequency_hz,mode,options\n1,150000000,nfm,--squelch-db -28\n"
+    )
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_SCAN_SQL_LEVEL_ROW
+        nfm_burst_synth
+        "-fa -C ${_scan_sql_level_csv} --analog-scan-row 0 ${_sql_level_burst_bounds}"
+        "Scan row applied: 0 nfm; width 16 kHz; squelch -28[.]0 dB [(]row[)].*ANALOG AUDIO OK"
+        "${_analog_off_path}"
+    )
+
     # The NFM noise squelch (issue #518 follow-up): it opens when the FM discriminator's
     # noise above voice quiets by N dB (10 by default), as a radio's squelch does, with no
     # floor to learn and whatever the level. On nfm_burst_synth it opens on the first full
@@ -14180,6 +14227,16 @@ if(DSD_HAS_RADIO)
         nfm_burst_synth
         "-fA --squelch -35 --analog-iq-gain-db 10 ${_sql_auto_burst_bounds}"
         "ANALOG AUDIO FAIL: first audible ms 0[.]00 [(]limit 300[.]00[)]"
+    )
+    # The last-audible bound fails on its measured value: the level burst's last audible block
+    # ends at 540 ms, one block past a 520 ms limit, while the first-audible bound holds.
+    dsd_neo_add_analog_replay_fail_test(
+        DECODE_IQ_ANALOG_NEG_LAST_AUDIBLE
+        nfm_burst_synth
+        "-fA --squelch -28 --analog-audible-dbfs -40 --analog-min-first-audible-ms 270 --analog-max-last-audible-ms 520"
+        "ANALOG AUDIO FAIL: last audible ms 540[.]00 [(]limit 520[.]00[)]"
+        1
+        "ANALOG AUDIO FAIL: first audible"
     )
     # A gain that would clip the copy stops the host before the replay (exit 2):
     # noise_floor's 16 LSB noise is already a fifth of full scale.
