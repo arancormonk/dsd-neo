@@ -12,12 +12,14 @@
  * Drives the private canonical valid-frame dispatcher with already-decoded
  * 28-bit message words. Grant cases are
  * intentionally digital so the shared tune path is exercised without entering
- * the analog audio loop.
+ * the analog audio loop, except the analog-call cases (issue #625), which play
+ * an analog call on a fake RTL stream and check when its squelch ends it.
  */
 
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/power.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/sync_patterns.h>
@@ -32,7 +34,11 @@
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <dsd-neo/runtime/udp_audio_hooks.h>
 #ifdef USE_RADIO
+#include <dsd-neo/dsp/squelch_floor.h>
 #include <dsd-neo/runtime/rtl_stream_io_hooks.h>
+#include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
+#include <math.h>
+#include <stdlib.h>
 #endif
 #include <sndfile.h>
 #include <stddef.h>
@@ -1529,6 +1535,374 @@ test_edacs_analog_media_honors_talkgroup_policy(void) {
     return rc;
 }
 
+/* The analog-call squelch helpers (issue #625). */
+static int
+edacs_run_analog_sql_helper_cases(void) {
+    int rc = 0;
+    const uint8_t c = DSD_SQUELCH_FLAG_CLOSED;
+    const uint8_t open_then_closed[4] = {0U, c, c, c};
+    const uint8_t closed2[2] = {c, c};
+    rc |= edacs_expect(edacs_gate_closed_run(9U, open_then_closed, 4U) == 3U, "analog-sql", "run",
+                       "an open sample restarts the closed run");
+    rc |= edacs_expect(edacs_gate_closed_run(5U, closed2, 2U) == 7U, "analog-sql", "run",
+                       "closed samples carry the run across triplets");
+    rc |= edacs_expect(edacs_gate_closed_run(5U, NULL, 2U) == 0U, "analog-sql", "run", "no flags, no run");
+    const size_t triplet = (size_t)EDACS_ANALOG_TRIPLET_SAMPLES;
+    rc |= edacs_expect(edacs_gate_hold_samples(48000) == 4U * triplet - 4080U, "analog-sql", "hold",
+                       "four triplets less 85 ms at 48 kHz");
+    rc |= edacs_expect(edacs_gate_hold_samples(24000) == 4U * triplet - 2040U, "analog-sql", "hold",
+                       "four triplets less 85 ms at 24 kHz");
+    rc |= edacs_expect(edacs_gate_hold_samples(0) == 4U * triplet, "analog-sql", "hold", "no rate, no delay");
+    rc |= edacs_expect(edacs_gate_hold_samples(1000000) == triplet, "analog-sql", "hold", "never under one triplet");
+    const size_t hold = edacs_gate_hold_samples(48000);
+    rc |= edacs_expect(edacs_gate_count(0U, hold) == 5 && edacs_gate_count(triplet, hold) == 4
+                           && edacs_gate_count(hold - 1U, hold) == 3 && edacs_gate_count(hold, hold) == 0,
+                       "analog-sql", "count", "the level path's count from the closed run");
+
+    static dsd_opts opts;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.rtl_squelch_mode = DSD_SQUELCH_MODE_AUTO;
+    rc |= edacs_expect(edacs_analog_sql_kind(&opts, 1) == EDACS_ANALOG_SQL_GATE, "analog-sql", "kind",
+                       "AUTO on a radio input whose stream runs the gate");
+    rc |= edacs_expect(edacs_analog_sql_kind(&opts, 0) == EDACS_ANALOG_SQL_NONE, "analog-sql", "kind",
+                       "AUTO with no gate running: none");
+    opts.rtl_squelch_mode = DSD_SQUELCH_MODE_NOISE;
+    rc |= edacs_expect(edacs_analog_sql_kind(&opts, 1) == EDACS_ANALOG_SQL_GATE, "analog-sql", "kind",
+                       "NOISE runs as AUTO's gate");
+    opts.audio_in_type = AUDIO_IN_UDP;
+    rc |= edacs_expect(edacs_analog_sql_kind(&opts, 1) == EDACS_ANALOG_SQL_NONE, "analog-sql", "kind",
+                       "a dynamic setting on audio input: none");
+    opts.rtl_squelch_mode = DSD_SQUELCH_MODE_LEVEL;
+    opts.rtl_squelch_level = dB_to_pwr(-60.0);
+    rc |= edacs_expect(edacs_analog_sql_kind(&opts, 0) == EDACS_ANALOG_SQL_LEVEL, "analog-sql", "kind",
+                       "a level above 0");
+    opts.rtl_squelch_level = 0.0;
+    rc |=
+        edacs_expect(edacs_analog_sql_kind(&opts, 1) == EDACS_ANALOG_SQL_NONE, "analog-sql", "kind", "level off: none");
+    rc |= edacs_expect(edacs_analog_sql_kind(NULL, 1) == EDACS_ANALOG_SQL_NONE, "analog-sql", "kind", "NULL");
+    return rc;
+}
+
+#ifdef USE_RADIO
+/* An analog call on a fake RTL stream (issue #625): a 1 kHz tone up to g_call_drop samples, noise after, with each
+   sample's squelch flag closed from g_call_drop + g_call_flag_delay (or from g_call_flags), except over a blip that
+   inverts it. Reads past g_call_cap fail, which shuts the loop down: a call no squelch ends runs to it. */
+static long g_call_drop = 0;
+static long g_call_cap = 0;
+static long g_call_flag_delay = 0;
+static const uint8_t* g_call_flags = NULL;
+static long g_call_flags_len = 0;
+static long g_call_blip_at = -1;
+static long g_call_blip_len = 0;
+static int g_call_status_active = 1;
+static unsigned int g_call_rate_hz = 48000U;
+static uint32_t g_call_noise = 1U;
+static long g_call_blasted = 0;
+static long g_call_loud_after_close = 0;
+static long g_call_loud_before_drop = 0;
+
+static uint8_t
+edacs_call_flag(long i) {
+    if (g_call_flags) {
+        return i < g_call_flags_len ? g_call_flags[i] : (uint8_t)DSD_SQUELCH_FLAG_CLOSED;
+    }
+    int closed = i >= g_call_drop + g_call_flag_delay;
+    if (g_call_blip_at >= 0 && i >= g_call_blip_at && i < g_call_blip_at + g_call_blip_len) {
+        closed = !closed;
+    }
+    return closed ? (uint8_t)DSD_SQUELCH_FLAG_CLOSED : 0U;
+}
+
+static float
+edacs_call_sample(long i) {
+    if (i < g_call_drop) {
+        return 8000.0f * (float)sin(2.0 * 3.14159265358979323846 * 1000.0 * (double)i / (double)g_call_rate_hz);
+    }
+    g_call_noise = (g_call_noise * 1664525U) + 1013904223U;
+    return (float)((int)(g_call_noise >> 16) - 32768) * 0.25f;
+}
+
+static int
+edacs_call_read_ex(void* rtl_ctx, float* out, uint8_t* flags, size_t count, int* out_got) {
+    (void)rtl_ctx;
+    const long index = (long)g_rtl_read_count;
+    if (out_got != NULL) {
+        *out_got = 0;
+    }
+    if (out == NULL || out_got == NULL || count != 1U || index >= g_call_cap) {
+        return -1;
+    }
+    g_rtl_read_count++;
+    out[0] = edacs_call_sample(index);
+    if (flags != NULL) {
+        flags[0] = edacs_call_flag(index);
+    }
+    *out_got = 1;
+    return 0;
+}
+
+static int
+edacs_call_read(void* rtl_ctx, float* out, size_t count, int* out_got) {
+    return edacs_call_read_ex(rtl_ctx, out, NULL, count, out_got);
+}
+
+static double
+edacs_call_return_pwr(const void* rtl_ctx) {
+    (void)rtl_ctx;
+    return (long)g_rtl_read_count > g_call_drop ? 1e-9 : 1.0;
+}
+
+static int
+edacs_call_squelch_status(const void* rtl_ctx, dsd_rtl_squelch_status* out) {
+    (void)rtl_ctx;
+    DSD_MEMSET(out, 0, sizeof(*out));
+    out->active = g_call_status_active;
+    out->plan_valid = 1;
+    return 0;
+}
+
+static unsigned int
+edacs_call_output_rate_hz(void) {
+    return g_call_rate_hz;
+}
+
+/* The UDP analog output: each 960-sample block in order, whether it played anything after the gate closed, and
+   whether the call before the drop played at all. */
+static void
+edacs_call_blast_analog(const dsd_opts* opts, dsd_state* state, size_t nsam, const void* data) {
+    (void)opts;
+    (void)state;
+    const short* block = (const short*)data;
+    const long count = (long)(nsam / sizeof(short));
+    for (long k = 0; k < count && block != NULL; k++) {
+        const long at = g_call_blasted + k;
+        const int loud = block[k] != 0;
+        if (loud && at >= g_call_drop + g_call_flag_delay && g_call_blip_len == 0 && g_call_flags == NULL) {
+            g_call_loud_after_close++;
+        }
+        if (loud && at < g_call_drop) {
+            g_call_loud_before_drop++;
+        }
+    }
+    g_call_blasted += count;
+}
+
+typedef struct {
+    long reads;
+    int released;
+} edacs_call_result;
+
+/* One analog group call under squelch @p mode, granted on LCN 4 and played to its end. */
+static edacs_call_result
+edacs_run_analog_call(int mode) {
+    static int call_dibit_buf[900256];
+    static int call_payload_buf[900256];
+    static int rtl_ctx_token;
+    edacs_reset_audio_hook_state();
+    edacs_setup_state_fixture(0);
+    g_opts.trunk_tune_group_calls = 1;
+    g_opts.audio_in_type = AUDIO_IN_RTL;
+    g_opts.audio_out = 1;
+    g_opts.audio_out_type = 8;
+    g_opts.rtl_squelch_mode = mode;
+    g_opts.rtl_squelch_margin_db = 10;
+    g_opts.rtl_squelch_level = mode == DSD_SQUELCH_MODE_LEVEL ? dB_to_pwr(-60.0) : 0.0;
+    g_state.rtl_ctx = (struct RtlSdrContext*)&rtl_ctx_token;
+    g_state.synctype = DSD_SYNC_EDACS_POS;
+    g_state.dibit_buf = call_dibit_buf;
+    g_state.dmr_payload_buf = call_payload_buf;
+    g_state.dibit_buf_p = call_dibit_buf + 200;
+    g_state.dmr_payload_p = call_payload_buf + 200;
+    dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){
+        .read = edacs_call_read,
+        .return_pwr = edacs_call_return_pwr,
+        .read_ex = edacs_call_read_ex,
+        .squelch_status = edacs_call_squelch_status,
+    });
+    dsd_rtl_stream_metrics_hooks rates;
+    DSD_MEMSET(&rates, 0, sizeof(rates));
+    rates.output_rate_hz = edacs_call_output_rate_hz;
+    dsd_rtl_stream_metrics_hooks_set(&rates);
+    dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){.blast_analog = edacs_call_blast_analog});
+    g_call_noise = 1U;
+    g_call_blasted = 0;
+    g_call_loud_after_close = 0;
+    g_call_loud_before_drop = 0;
+
+    edacs_process_valid_frame(&g_opts, &g_state, edacs_standard_group_msg1(0, 4, 321, 1234),
+                              edacs_standard_group_msg2(1234));
+    edacs_call_result result = {(long)g_rtl_read_count, !dsd_exitflag_load()};
+    dsd_exitflag_store(0);
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    edacs_reset_audio_hook_state();
+    dsd_state_ext_free_all(&g_state);
+    return result;
+}
+
+/* Where the level squelch releases a call whose carrier drops at sample @p drop: it reads the power once per
+   triplet's end, and five closed readings end the call. */
+static long
+edacs_level_release(long drop) {
+    const long t = EDACS_ANALOG_TRIPLET_SAMPLES;
+    return ((drop / t) + 5) * t;
+}
+
+static void
+edacs_call_defaults(long drop, unsigned int rate_hz) {
+    g_call_drop = drop;
+    g_call_cap = drop + (12L * EDACS_ANALOG_TRIPLET_SAMPLES);
+    g_call_flag_delay = 0;
+    g_call_flags = NULL;
+    g_call_flags_len = 0;
+    g_call_blip_at = -1;
+    g_call_blip_len = 0;
+    g_call_status_active = 1;
+    g_call_rate_hz = rate_hz;
+}
+
+/* Under AUTO and NOISE an analog call ends on the gate within the level squelch's time of its carrier dropping, at
+   every drop phase and closing delay up to the bound, and its tail plays silence. */
+static int
+edacs_run_analog_call_release_cases(void) {
+    int rc = 0;
+    const long t = EDACS_ANALOG_TRIPLET_SAMPLES;
+    const double phases[4] = {0.0, 0.25, 0.5, 0.99};
+    const unsigned int rates[2] = {24000U, 48000U};
+    const int modes[2] = {DSD_SQUELCH_MODE_AUTO, DSD_SQUELCH_MODE_NOISE};
+    for (int r = 0; r < 2; r++) {
+        const long bound = (DSD_SQUELCH_CLOSE_DELAY_MS * (long)rates[r]) / 1000L;
+        const long hold = (long)edacs_gate_hold_samples((int)rates[r]);
+        for (int f = 0; f < 4; f++) {
+            const long drop = (4L * t) + (long)(phases[f] * (double)t);
+            edacs_call_defaults(drop, rates[r]);
+            const edacs_call_result level = edacs_run_analog_call(DSD_SQUELCH_MODE_LEVEL);
+            rc |= edacs_expect(level.released && level.reads == edacs_level_release(drop), "analog-call", "level",
+                               "the level squelch ends the call on its fifth closed reading");
+            for (int m = 0; m < 2; m++) {
+                for (int d = 0; d < 3; d++) {
+                    edacs_call_defaults(drop, rates[r]);
+                    g_call_flag_delay = (bound * d) / 2;
+                    const edacs_call_result gate = edacs_run_analog_call(modes[m]);
+                    const int in_time =
+                        gate.released && gate.reads >= drop + g_call_flag_delay + hold && gate.reads <= level.reads;
+                    if (!in_time) {
+                        DSD_FPRINTF(stderr,
+                                    "  %s at %u Hz, drop %ld, delay %ld: released %d after %ld samples (level %ld)\n",
+                                    modes[m] == DSD_SQUELCH_MODE_NOISE ? "noise" : "auto", rates[r], drop,
+                                    g_call_flag_delay, gate.released, gate.reads, level.reads);
+                    }
+                    rc |= edacs_expect(in_time, "analog-call", modes[m] == DSD_SQUELCH_MODE_NOISE ? "noise" : "auto",
+                                       "the gate ends the call within the level squelch's time");
+                    rc |= edacs_expect(g_call_loud_before_drop > 0 && g_call_loud_after_close == 0, "analog-call",
+                                       "audio", "the call plays and its closed tail is silence");
+                }
+            }
+        }
+    }
+    return rc;
+}
+
+/* A false open in the tail restarts the hold; a false close inside the call never ends it; a stream whose status
+   says no gate runs ends nothing on its flags. */
+static int
+edacs_run_analog_call_disturbance_cases(void) {
+    int rc = 0;
+    const long t = EDACS_ANALOG_TRIPLET_SAMPLES;
+    const long ms = 48;
+    const long hold = (long)edacs_gate_hold_samples(48000);
+    const long blips[2] = {20L * ms, 40L * ms};
+    for (int b = 0; b < 2; b++) {
+        const long drop = (4L * t) + (t / 2);
+        edacs_call_defaults(drop, 48000U);
+        g_call_blip_at = drop + t;
+        g_call_blip_len = blips[b];
+        const edacs_call_result tail = edacs_run_analog_call(DSD_SQUELCH_MODE_AUTO);
+        rc |= edacs_expect(tail.released && tail.reads >= g_call_blip_at + g_call_blip_len + hold, "analog-call",
+                           "tail-burst", "an open burst in the tail restarts the hold");
+
+        const long late_drop = 9L * t;
+        edacs_call_defaults(late_drop, 48000U);
+        g_call_blip_at = 3L * t;
+        g_call_blip_len = blips[b];
+        const edacs_call_result mid = edacs_run_analog_call(DSD_SQUELCH_MODE_AUTO);
+        rc |= edacs_expect(mid.released && mid.reads >= late_drop + hold, "analog-call", "mid-blip",
+                           "a closed blip inside the call does not end it");
+    }
+
+    edacs_call_defaults((4L * t) + (t / 2), 48000U);
+    g_call_status_active = 0;
+    const edacs_call_result inactive = edacs_run_analog_call(DSD_SQUELCH_MODE_AUTO);
+    rc |= edacs_expect(!inactive.released && inactive.reads == g_call_cap, "analog-call", "no-gate",
+                       "with no gate running the flags end nothing (the watchdog's case)");
+    return rc;
+}
+
+/* The flags the real tracker makes on a carrier that drops at every phase of its 40 ms windows while it is still
+   learning (the landing mid-carrier a call always starts with): the call ends within the level squelch's time. */
+static int
+edacs_run_analog_call_real_tracker_cases(void) {
+    int rc = 0;
+    const long t = EDACS_ANALOG_TRIPLET_SAMPLES;
+    const int rate = 48000;
+    dsd_squelch_floor_plan plan;
+    if (dsd_squelch_floor_plan_design(&plan, NULL, 0, NULL, 0, rate) != 0) {
+        return edacs_expect(0, "analog-call", "tracker", "designed the plan");
+    }
+    for (int phase = 0; phase < 40; phase += 2) {
+        const long drop = (4L * t) + ((long)phase * rate) / 1000L;
+        const long total = drop + (8L * t);
+        float* iq = (float*)calloc((size_t)total * 2U, sizeof(float));
+        uint8_t* flags = (uint8_t*)calloc((size_t)total, sizeof(uint8_t));
+        dsd_squelch_floor* tracker = (dsd_squelch_floor*)calloc(1U, sizeof(dsd_squelch_floor));
+        if (!iq || !flags || !tracker) {
+            free(iq);
+            free(flags);
+            free(tracker);
+            return edacs_expect(0, "analog-call", "tracker", "allocated");
+        }
+        uint32_t lcg = 7U + (uint32_t)phase;
+        for (long i = 0; i < total; i++) {
+            /* Complex Gaussian noise (Box-Muller), as a receiver's noise is behind its channel filter: 20 dB under the
+               carrier. */
+            lcg = (lcg * 1664525U) + 1013904223U;
+            const double u1 = ((double)(lcg >> 8) + 1.0) / 16777217.0;
+            lcg = (lcg * 1664525U) + 1013904223U;
+            const double u2 = (double)(lcg >> 8) / 16777216.0;
+            const double radius = 0.1 * sqrt(-log(u1));
+            double re = radius * cos(2.0 * 3.14159265358979323846 * u2);
+            double im = radius * sin(2.0 * 3.14159265358979323846 * u2);
+            if (i < drop) {
+                const double ph = 2.5 * sin(2.0 * 3.14159265358979323846 * 1000.0 * (double)i / (double)rate);
+                re += cos(ph);
+                im += sin(ph);
+            }
+            iq[(size_t)i * 2U] = (float)re;
+            iq[((size_t)i * 2U) + 1U] = (float)im;
+        }
+        dsd_squelch_floor_set_plan(tracker, &plan);
+        dsd_squelch_floor_set_margin(tracker, 10);
+        dsd_squelch_floor_reset(tracker);
+        dsd_squelch_floor_process(tracker, iq, (int)total, flags);
+        free(iq);
+        free(tracker);
+        edacs_call_defaults(drop, (unsigned int)rate);
+        g_call_flags = flags;
+        g_call_flags_len = total;
+        const edacs_call_result gate = edacs_run_analog_call(DSD_SQUELCH_MODE_AUTO);
+        free(flags);
+        g_call_flags = NULL;
+        if (!(gate.released && gate.reads <= edacs_level_release(drop) && gate.reads >= drop)) {
+            DSD_FPRINTF(stderr, "  real tracker, drop at %d ms of a window: released %d after %ld (level %ld)\n", phase,
+                        gate.released, gate.reads, edacs_level_release(drop));
+            rc |= 1;
+        }
+    }
+    return edacs_expect(rc == 0, "analog-call", "tracker",
+                        "the real tracker's flags end the call within the level squelch's time");
+}
+#endif
+
 int
 main(void) {
     int rc = 0;
@@ -1612,6 +1986,12 @@ main(void) {
     rc |= edacs_run_helper_contract_cases();
     rc |= edacs_run_analog_loop_helper_cases();
     rc |= test_edacs_analog_media_honors_talkgroup_policy();
+    rc |= edacs_run_analog_sql_helper_cases();
+#ifdef USE_RADIO
+    rc |= edacs_run_analog_call_release_cases();
+    rc |= edacs_run_analog_call_disturbance_cases();
+    rc |= edacs_run_analog_call_real_tracker_cases();
+#endif
 
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     dsd_rigctl_query_hooks_set((dsd_rigctl_query_hooks){0});

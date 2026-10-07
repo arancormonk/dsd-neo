@@ -177,6 +177,36 @@ int dsd_squelch_dynamic_in_force(const dsd_opts* opts, const dsd_state* state);
  */
 int dsd_squelch_noise_has_no_fm(const dsd_opts* opts);
 
+/**
+ * @brief Whether @p opts follows EDACS analog voice calls (issue #625): EDACS/ProVoice frames with trunking on, off the
+ * analog family and the M17 encoder. On a radio input the auto squelch runs on the 9600 bit/s FSK path EDACS reads
+ * (a NOISE setting runs as AUTO there, the FSK discriminator's output being peak-normalised), and EDACS ends an analog
+ * call on its gate; on audio input no dynamic squelch runs for it. 0 for NULL.
+ */
+int dsd_squelch_edacs_analog_voice(const dsd_opts* opts);
+
+/**
+ * @brief Whether a dynamic setting has no analog channel to run on under @p opts (issue #625): neither the analog
+ * family, the M17 encoder's monitor nor EDACS analog voice (dsd_squelch_edacs_analog_voice()). CRC and FEC decide a
+ * digital channel's traffic. 1 for NULL.
+ */
+int dsd_squelch_channel_digital(const dsd_opts* opts);
+
+/**
+ * @brief The input kind a dynamic setting resolves against under @p opts: dsd_squelch_input_kind(), except that the M17
+ * encoder and EDACS analog voice read as DSD_SQUELCH_INPUT_OTHER (no radio input) on audio input, where neither runs a
+ * dynamic squelch: the PCM noise squelch serves the FM monitor only (issue #625).
+ */
+int dsd_squelch_dynamic_input_kind(const dsd_opts* opts);
+
+/**
+ * @brief Whether the RTL stream's per-sample flags carry a dynamic squelch's gate for a reader of its own (EDACS analog
+ * voice, the M17 encoder; issue #625): an AUTO or NOISE setting on a radio input, and the stream's status says its
+ * last block ran the tracker or the noise squelch with a valid plan. A squelch without a plan keeps every flag open,
+ * and so does a stream that runs none, so a reader falls back to what it does with no squelch. 0 for NULL.
+ */
+int dsd_squelch_stream_gate_running(const dsd_opts* opts, const dsd_state* state);
+
 /** @brief The level the level comparisons use: rtl_squelch_level under LEVEL, 0 (off) under AUTO and NOISE. 0 for
  * NULL. */
 double dsd_squelch_level_in_force(const dsd_opts* opts);
