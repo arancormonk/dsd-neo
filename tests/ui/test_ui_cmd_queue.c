@@ -124,7 +124,7 @@ int __real_openAudioInput(dsd_opts* opts);
 int __wrap_openAudioInput(dsd_opts* opts);
 int __real_dsd_audio_reconfigure_output_for_input_policy(dsd_opts* opts);
 int __wrap_dsd_audio_reconfigure_output_for_input_policy(dsd_opts* opts);
-int __wrap_io_control_set_freq(dsd_opts* opts, dsd_state* state, long int freq);
+int __wrap_io_control_set_freq(dsd_opts* opts, const dsd_state* state, long int freq);
 dsd_trunk_tune_result __wrap_dsd_trunk_tuning_hook_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq,
                                                               int ted_sps, uint64_t* out_request_id);
 int __real_dsd_tg_policy_call_skip_arm(dsd_state* state, uint32_t id, uint32_t src, int fallback, double now_mono_s);
@@ -204,7 +204,7 @@ __wrap_dsd_audio_reconfigure_output_for_input_policy(dsd_opts* opts) {
 }
 
 int
-__wrap_io_control_set_freq(dsd_opts* opts, dsd_state* state, long int freq) {
+__wrap_io_control_set_freq(dsd_opts* opts, const dsd_state* state, long int freq) {
     (void)opts;
     (void)state;
     g_io_control_tune_calls++;

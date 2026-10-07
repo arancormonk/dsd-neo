@@ -271,6 +271,20 @@ static long int g_rigctl_setfreq_freq = 0;
 // The -B requests the legacy rigctl leg makes (issue #589); the peer takes each one.
 static int g_rigctl_setmod_calls = 0;
 static int g_rigctl_setmod_bw = 0;
+// The passband requests it makes on the analog monitor the peer demodulates (issue #621), and whether the peer takes
+// them (it does unless a case says otherwise).
+static int g_rigctl_rowmod_calls = 0;
+static int g_rigctl_rowmod_kind = -1;
+static int g_rigctl_rowmod_bw = 0;
+static int g_rigctl_rowmod_refuse = 0;
+// The passbands it marks as the session's (issue #621): the legacy list holds no scan scope.
+static int g_rigctl_session_marks = 0;
+// The requests it makes for a demodulator at a passband through SetModulationKind() (the peer's own passband at 0), the
+// last one, and whether the peer refuses them; unrefused ones reach the real client.
+static int g_rigctl_kindmod_calls = 0;
+static int g_rigctl_kindmod_kind = -1;
+static int g_rigctl_kindmod_bw = -1;
+static int g_rigctl_kindmod_refuse = 0;
 
 // GNU ld --wrap entry points must keep the reserved __wrap_* symbol names.
 // NOLINTBEGIN(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
@@ -718,6 +732,35 @@ __wrap_SetModulation(dsd_socket_t sockfd, int bandwidth) {
     g_rigctl_setmod_calls++;
     g_rigctl_setmod_bw = bandwidth;
     return true;
+}
+
+bool __real_SetModulationKind(dsd_socket_t sockfd, int kind, int bandwidth);
+
+bool
+__wrap_SetModulationKind(dsd_socket_t sockfd, int kind, int bandwidth) {
+    g_rigctl_kindmod_calls++;
+    g_rigctl_kindmod_kind = kind;
+    g_rigctl_kindmod_bw = bandwidth;
+    if (g_rigctl_kindmod_refuse) {
+        return false;
+    }
+    return __real_SetModulationKind(sockfd, kind, bandwidth);
+}
+
+void
+__wrap_RigctlMarkSessionPassband(dsd_socket_t sockfd, int kind) {
+    (void)sockfd;
+    (void)kind;
+    g_rigctl_session_marks++;
+}
+
+bool
+__wrap_SetScanRowModulation(dsd_socket_t sockfd, int kind, int bandwidth) {
+    (void)sockfd;
+    g_rigctl_rowmod_calls++;
+    g_rigctl_rowmod_kind = kind;
+    g_rigctl_rowmod_bw = bandwidth;
+    return g_rigctl_rowmod_refuse ? false : true;
 }
 
 // NOLINTEND(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
@@ -2840,8 +2883,11 @@ test_rx_tone_rigctl_scan_step(void) {
 }
 
 /* Issue #589: the legacy rigctl leg (the untyped -Y step here, and the direct control-channel return) skips a
-   frequency and a -B it sent last. What it sent describes one connection: once rigctl reconnects, the new
-   connection's peer -- another one, or the same one restarted -- was sent nothing, so both go out again. */
+   frequency it sent last. What it sent describes one connection: once rigctl reconnects, the new connection's peer --
+   another one, or the same one restarted -- was sent nothing, so it goes out again. -B is asked for at each step
+   (through the capturing call on audio input, issue #621), and the client's record of the peer skips a repeat; that
+   record is the one every writer updates (a live width, a scan's restore) and a reconnect hands over unconfirmed or
+   starts afresh (RigctlRebindPeer()), so a -B some other request replaced goes out again. */
 static int
 test_rigctl_reconnect_forgets_the_legacy_tune_cache(void) {
     dsd_opts* opts = NULL;
@@ -2863,22 +2909,273 @@ test_rigctl_reconnect_forgets_the_legacy_tune_cache(void) {
     g_rigctl_setfreq_ok = 1;
     g_rigctl_setfreq_calls = 0;
     g_rigctl_setmod_calls = 0;
+    g_rigctl_rowmod_calls = 0;
+    g_rigctl_rowmod_refuse = 0;
 
     for (int i = 0; i < 2; i++) {
         state->last_cc_sync_time = time(NULL) - 11;
         noCarrier(opts, state);
     }
     rc |= expect_true("rigctl-step-suppresses-a-repeat-on-one-connection",
-                      g_rigctl_setfreq_calls == 1 && g_rigctl_setmod_calls == 1);
+                      g_rigctl_setfreq_calls == 1 && g_rigctl_rowmod_calls == 2 && g_rigctl_rowmod_bw == 12500
+                          && g_rigctl_setmod_calls == 0);
 
     dsd_engine_rigctl_tune_cache_forget();
     state->last_cc_sync_time = time(NULL) - 11;
     noCarrier(opts, state);
     rc |= expect_true("rigctl-step-after-a-reconnect-sends-both-again",
-                      g_rigctl_setfreq_calls == 2 && g_rigctl_setfreq_freq == 953012500 && g_rigctl_setmod_calls == 2
-                          && g_rigctl_setmod_bw == 12500);
+                      g_rigctl_setfreq_calls == 2 && g_rigctl_setfreq_freq == 953012500 && g_rigctl_rowmod_calls == 3
+                          && g_rigctl_rowmod_bw == 12500);
     g_rigctl_setfreq_ok = 0;
     free_test_runtime(opts, state);
+    return rc;
+}
+
+/* One legacy -Y step by rigctl on PCM input: the counters are cleared, -t has run out, and the step lands unless the
+   peer refuses. Returns whether the peer was asked for the next row's frequency (the rows alternate, so each step that
+   gets that far sends one). */
+static int
+legacy_rigctl_step(dsd_opts* opts, dsd_state* state) {
+    g_rigctl_setfreq_calls = 0;
+    g_rigctl_setmod_calls = 0;
+    g_rigctl_rowmod_calls = 0;
+    g_rigctl_rowmod_kind = -1;
+    g_rigctl_rowmod_bw = 0;
+    g_rigctl_session_marks = 0;
+    g_rigctl_kindmod_calls = 0;
+    g_rigctl_kindmod_kind = -1;
+    g_rigctl_kindmod_bw = -1;
+    state->last_cc_sync_time = time(NULL) - 11;
+    noCarrier(opts, state);
+    return g_rigctl_setfreq_calls > 0;
+}
+
+/* Issue #621: on the FM monitor of audio input a rigctl peer demodulates, the legacy -Y step asks for the configured
+   NFM width (the passband this client sets, through the capturing call), and -B stands in once it is unset; a digital
+   session asks for -B through the same capturing call, since on audio input it is the passband the peer is heard
+   through, and marks it the session's too. A refusal fails the step as the -B of this leg always has. -B is asked for
+   at each step, so a later -B on a digital session goes out again rather than leave the peer on the monitor's
+   passband. Where the session runs the peer's own passband (-B 0, or the FM monitor with neither), the step asks for
+   that (SetModulationKind() at 0, which sends the passband read before this client changed it and nothing to a peer
+   back on its own or never asked), best-effort: a refusal still steps. */
+static int
+test_legacy_rigctl_step_asks_the_configured_nfm_width(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    opts->scanner_mode = 1;
+    opts->audio_in_type = AUDIO_IN_WAV;
+    opts->use_rigctl = 1;
+    opts->rigctl_sockfd = DSD_INVALID_SOCKET;
+    opts->setmod_bw = 12000;
+    opts->trunk_hangtime = 1;
+    // Frequencies no other case uses: engine.c caches the last rigctl tune across cases.
+    state->trunk_lcn_freq[0] = 957012500;
+    state->trunk_lcn_freq[1] = 958012500;
+    state->lcn_freq_count = 2;
+    state->lcn_freq_roll = 0;
+    g_rigctl_setfreq_ok = 1;
+    g_rigctl_rowmod_refuse = 0;
+
+    /* A digital session: -B, through the capturing call, the session's. */
+    rc |= expect_true("legacy-digital-sends-b", legacy_rigctl_step(opts, state) && g_rigctl_rowmod_calls == 1
+                                                    && g_rigctl_rowmod_kind == DSD_ANALOG_DEMOD_FM
+                                                    && g_rigctl_rowmod_bw == 12000 && g_rigctl_setmod_calls == 0
+                                                    && g_rigctl_session_marks == 1);
+
+    /* The FM monitor with a configured NFM width: that width, and no -B. */
+    opts->analog_only = 1;
+    opts->monitor_input_audio = 1;
+    opts->analog_demod = DSD_ANALOG_DEMOD_FM;
+    opts->analog_nfm_bandwidth_hz = 12500;
+    rc |= expect_true("legacy-fm-asks-configured-width",
+                      legacy_rigctl_step(opts, state) && g_rigctl_rowmod_calls == 1
+                          && g_rigctl_rowmod_kind == DSD_ANALOG_DEMOD_FM && g_rigctl_rowmod_bw == 12500
+                          && g_rigctl_setmod_calls == 0 && g_rigctl_setfreq_calls == 1);
+    /* The legacy list holds no scan scope and has no leave restore: the passband is the session's (issue #621). */
+    rc |= expect_true("legacy-fm-width-is-the-sessions", g_rigctl_session_marks == 1);
+
+    /* A refused width fails the step before the frequency moves. */
+    g_rigctl_rowmod_refuse = 1;
+    rc |= expect_true("legacy-refused-width-fails-the-step",
+                      !legacy_rigctl_step(opts, state) && g_rigctl_rowmod_calls == 1 && g_rigctl_setfreq_calls == 0);
+    g_rigctl_rowmod_refuse = 0;
+
+    /* Cleared: -B stands in, through the capturing call; a refusal fails the step as -B always did here. */
+    opts->analog_nfm_bandwidth_hz = 0;
+    rc |= expect_true("legacy-fm-b-stands-in", legacy_rigctl_step(opts, state) && g_rigctl_rowmod_calls == 1
+                                                   && g_rigctl_rowmod_kind == DSD_ANALOG_DEMOD_FM
+                                                   && g_rigctl_rowmod_bw == 12000 && g_rigctl_setmod_calls == 0
+                                                   && g_rigctl_session_marks == 1);
+    g_rigctl_rowmod_refuse = 1;
+    rc |= expect_true("legacy-refused-b-fails-the-step",
+                      !legacy_rigctl_step(opts, state) && g_rigctl_rowmod_calls == 1 && g_rigctl_setfreq_calls == 0);
+    g_rigctl_rowmod_refuse = 0;
+
+    /* Back on a digital session: the -B the leg sent before the monitor's passbands goes out again. */
+    opts->analog_only = 0;
+    opts->monitor_input_audio = 0;
+    rc |= expect_true("legacy-digital-resends-b", legacy_rigctl_step(opts, state) && g_rigctl_rowmod_calls == 1
+                                                      && g_rigctl_rowmod_bw == 12000 && g_rigctl_setmod_calls == 0
+                                                      && g_rigctl_session_marks == 1);
+
+    /* Without -B or a width on the FM monitor, the peer's own passband: asked for as FM at 0, which the client's record
+       sends only to undo a passband this client set. */
+    opts->analog_only = 1;
+    opts->monitor_input_audio = 1;
+    opts->setmod_bw = 0;
+    rc |= expect_true("legacy-fm-peer-own-asks-the-peers-own",
+                      legacy_rigctl_step(opts, state) && g_rigctl_setmod_calls == 0 && g_rigctl_rowmod_calls == 0
+                          && g_rigctl_kindmod_calls == 1 && g_rigctl_kindmod_kind == DSD_ANALOG_DEMOD_FM
+                          && g_rigctl_kindmod_bw == 0);
+    /* ...and so does a digital session without -B; refused, the step still lands. */
+    opts->analog_only = 0;
+    opts->monitor_input_audio = 0;
+    g_rigctl_kindmod_refuse = 1;
+    rc |= expect_true("legacy-digital-without-b-asks-the-peers-own-best-effort",
+                      legacy_rigctl_step(opts, state) && g_rigctl_kindmod_calls == 1
+                          && g_rigctl_kindmod_kind == DSD_ANALOG_DEMOD_FM && g_rigctl_kindmod_bw == 0
+                          && g_rigctl_setmod_calls == 0 && g_rigctl_setfreq_calls == 1);
+    g_rigctl_kindmod_refuse = 0;
+    g_rigctl_setfreq_ok = 0;
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+/* Issue #621: a live width on the FM monitor changes the peer's passband outside the legacy leg. The leg used to keep
+   its own copy of the -B it sent, which that write left stale: back on a digital session, held on the monitor in
+   between, the next step took -B for applied and sent nothing, leaving the peer on the monitor's width. It now asks
+   for -B at each step and the client's record of the peer, which the live write updated, decides. */
+static int
+test_legacy_rigctl_step_resends_b_after_a_live_width(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    opts->scanner_mode = 1;
+    opts->audio_in_type = AUDIO_IN_WAV;
+    opts->use_rigctl = 1;
+    opts->rigctl_sockfd = (dsd_socket_t)77; // a live peer for the live edit; every request to it is wrapped
+    opts->setmod_bw = 12000;
+    opts->trunk_hangtime = 1;
+    // Frequencies no other case uses: engine.c caches the last rigctl tune across cases.
+    state->trunk_lcn_freq[0] = 959012500;
+    state->trunk_lcn_freq[1] = 960012500;
+    state->lcn_freq_count = 2;
+    state->lcn_freq_roll = 0;
+    g_rigctl_setfreq_ok = 1;
+    g_rigctl_rowmod_refuse = 0;
+
+    rc |= expect_true("live-width-digital-sends-b",
+                      legacy_rigctl_step(opts, state) && g_rigctl_rowmod_calls == 1 && g_rigctl_rowmod_bw == 12000);
+    /* The analog monitor with a live 25 kHz width, held there (no step). */
+    opts->analog_only = 1;
+    opts->monitor_input_audio = 1;
+    opts->analog_demod = DSD_ANALOG_DEMOD_FM;
+    opts->analog_nfm_bandwidth_hz = 25000;
+    g_rigctl_rowmod_calls = 0;
+    rc |= expect_true("live-width-applied", dsd_engine_scan_rigctl_apply_modulation(opts, state) == 1
+                                                && g_rigctl_rowmod_calls == 1 && g_rigctl_rowmod_bw == 25000);
+    /* Back to digital: the next step asks for -B 12000 again. */
+    opts->analog_only = 0;
+    opts->monitor_input_audio = 0;
+    opts->analog_nfm_bandwidth_hz = 0;
+    rc |= expect_true("live-width-then-digital-resends-b",
+                      legacy_rigctl_step(opts, state) && g_rigctl_rowmod_calls == 1 && g_rigctl_rowmod_bw == 12000);
+    g_rigctl_setfreq_ok = 0;
+    opts->rigctl_sockfd = DSD_INVALID_SOCKET;
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+/* On an input the peer does not demodulate -- a symbol file, or an RTL-family input whose I/Q DSD-neo demodulates
+   itself -- a rigctl peer only follows the frequency: the leg asks for -B as it always did, with nothing read or marked
+   (issue #621 captures -B only where the peer demodulates the input). */
+static int
+test_legacy_rigctl_step_follows_b_where_the_peer_does_not_demodulate(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    opts->scanner_mode = 1;
+    opts->audio_in_type = AUDIO_IN_SYMBOL_BIN;
+    opts->use_rigctl = 1;
+    opts->rigctl_sockfd = DSD_INVALID_SOCKET;
+    opts->setmod_bw = 12000;
+    opts->trunk_hangtime = 1;
+    // Frequencies no other case uses: engine.c caches the last rigctl and RTL tunes across cases.
+    state->trunk_lcn_freq[0] = 961012500;
+    state->trunk_lcn_freq[1] = 962012500;
+    state->lcn_freq_count = 2;
+    state->lcn_freq_roll = 0;
+    g_rigctl_setfreq_ok = 1;
+    rc |= expect_true("legacy-symbol-input-follows-b", legacy_rigctl_step(opts, state) && g_rigctl_setmod_calls == 1
+                                                           && g_rigctl_setmod_bw == 12000 && g_rigctl_rowmod_calls == 0
+                                                           && g_rigctl_session_marks == 0);
+#ifdef USE_RADIO
+    /* An RTL-family input beside the peer: the same, and the RTL front end is tuned too. */
+    reset_rtl_profile_fakes();
+    dsd_trunk_tuning_requests_reset();
+    opts->audio_in_type = AUDIO_IN_RTL;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    rc |= expect_true("legacy-radio-input-follows-b", legacy_rigctl_step(opts, state) && g_rigctl_setmod_calls == 1
+                                                          && g_rigctl_setmod_bw == 12000 && g_rigctl_rowmod_calls == 0
+                                                          && g_rigctl_session_marks == 0 && g_rtl_tune_calls == 1);
+#endif
+    g_rigctl_setfreq_ok = 0;
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+/* Issue #621: the legacy leg's direct control-channel return tells a scan's request from the session's as every other
+   rigctl leg does (dsd_channel_modes_rigctl_request_is_session()): with a typed -Y list configured before its first
+   row's scope is entered, the -B it follows with on audio input is a scan's, not marked the session's, though the scope
+   alone would call it the session's; with an untyped list it is the session's. */
+static int
+test_legacy_rigctl_cc_return_weighs_a_typed_list(void) {
+    int rc = 0;
+    for (int typed = 0; typed < 2; typed++) {
+        dsd_opts* opts = NULL;
+        dsd_state* state = NULL;
+        if (init_test_runtime(&opts, &state) != 0) {
+            return 1;
+        }
+        dsd_trunk_tuning_requests_reset();
+        opts->use_rigctl = 1;
+        opts->rigctl_sockfd = DSD_INVALID_SOCKET;
+        opts->audio_in_type = AUDIO_IN_WAV;
+        opts->trunk_enable = 1;
+        opts->scanner_mode = 1;
+        opts->setmod_bw = 12500;
+        if (typed) {
+            rc |= expect_true("legacy-cc-return-typed-list", dsd_channel_mode_set(state, 0, DSD_SCAN_MODE_DMR) == 0);
+        }
+        g_rigctl_setfreq_ok = 1;
+        g_rigctl_setfreq_calls = 0;
+        g_rigctl_rowmod_calls = 0;
+        g_rigctl_rowmod_refuse = 0;
+        g_rigctl_session_marks = 0;
+        opts->trunk_is_tuned = 1;
+        // Frequencies no other case uses: engine.c caches the last rigctl tune across cases.
+        state->trunk_cc_freq = typed ? 971012500 : 972012500;
+        state->p25_cc_freq = 0;
+        state->lastsynctype = DSD_SYNC_DMR_BS_DATA_POS;
+        state->last_vc_sync_time = 0;
+        noCarrier(opts, state);
+        rc |= expect_true(typed ? "legacy-cc-return-on-a-typed-list-is-a-scans"
+                                : "legacy-cc-return-on-an-untyped-list-is-the-sessions",
+                          g_rigctl_setfreq_calls == 1 && g_rigctl_rowmod_calls == 1 && g_rigctl_rowmod_bw == 12500
+                              && g_rigctl_session_marks == (typed ? 0 : 1));
+        free_test_runtime(opts, state);
+    }
+    g_rigctl_setfreq_ok = 0;
     return rc;
 }
 #endif
@@ -5447,6 +5744,10 @@ main(void) {
 #ifdef DSD_NEO_TEST_RTL_WRAP
     rc |= test_rx_tone_rigctl_scan_step();
     rc |= test_rigctl_reconnect_forgets_the_legacy_tune_cache();
+    rc |= test_legacy_rigctl_step_asks_the_configured_nfm_width();
+    rc |= test_legacy_rigctl_step_resends_b_after_a_live_width();
+    rc |= test_legacy_rigctl_step_follows_b_where_the_peer_does_not_demodulate();
+    rc |= test_legacy_rigctl_cc_return_weighs_a_typed_list();
     rc |= test_tone_rejection_steps_the_legacy_scan();
     rc |= test_tone_rejection_stays_on_a_single_row();
     rc |= test_tone_rejection_that_ended_steps_the_legacy_scan();

@@ -218,6 +218,20 @@ uint32_t dsd_scan_mode_option_fields(const dsd_state* state);
  * editing a configured default can tell whether the row on air shadows it. Decoder thread or a
  * consumer-owned snapshot only; invalidated by scope updates. */
 const dsd_scan_option_values* dsd_scan_mode_row_options(const dsd_state* state);
+/**
+ * @brief Whether a passband this client sets on a rigctl peer now is the session's, not a scan row's (issue #621).
+ *
+ * A scan row's reading of the peer's own passband lasts the scan, whose leave restore resets it (issue #526); the
+ * session's has no such restore, so once the peer takes its own passband back the reading is retired
+ * (RigctlMarkSessionPassband()). It is a scan row's while a trunk scan runs or a scan scope is held on @p state (a
+ * typed -Y list's row, suspended or not); the legacy untyped -Y list holds none, has no leave restore and asks every
+ * row for the session's passband, so its requests are the session's. Without @p state (a caller that cannot see the
+ * scope) any configured -Y list counts as a scan. This is the scope's answer only: every rigctl leg asks
+ * dsd_channel_modes_rigctl_request_is_session() (core), which passes the state wherever the caller has one and on top
+ * of this answer counts a typed -Y list as a scan before its first row's scope is entered (dsd_channel_modes_present(),
+ * which runtime does not see). Returns 0 for NULL @p opts. Decoder thread.
+ */
+int dsd_scan_mode_rigctl_request_is_session(const dsd_opts* opts, const dsd_state* state);
 /** Edit the configured squelch default (a dsd_opts::rtl_squelch_level mean power, 0 = off) without
  * suspending the scope, so no acquisition setting is compared or reset. Without a scope, or while
  * one is suspended, dsd_opts holds the configured values and takes the level. Under a live scope

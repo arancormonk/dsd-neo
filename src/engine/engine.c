@@ -76,6 +76,7 @@
 #include <dsd-neo/runtime/input_spec.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/rdio_export.h>
+#include <dsd-neo/runtime/rigctl_passband.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/shutdown.h>
 #include <dsd-neo/runtime/squelch.h>
@@ -87,6 +88,7 @@
 #include <limits.h>
 #include <mbelib-neo/mbelib.h>
 #include <signal.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -108,10 +110,12 @@ struct CODEC2;
 void codec2_destroy(struct CODEC2* codec2_state);
 #endif
 
-// Local caches to avoid redundant device I/O in hot paths. The rigctl pair holds for one connection:
-// dsd_engine_rigctl_tune_cache_forget() empties it once rigctl reconnects (issue #589).
+// Local caches to avoid redundant device I/O in hot paths. The rigctl frequency holds for one connection:
+// dsd_engine_rigctl_tune_cache_forget() empties it once rigctl reconnects (issue #589). The legacy leg keeps no copy of
+// the -B it sent: the client's record of the peer skips a repeat (SetModulationKind()), and every request that changes
+// the peer's passband (a live width, a scan's restore, a manual tune; issue #621) updates that record, where a copy
+// here would go stale.
 static long int s_last_rigctl_freq = -1;
-static int s_last_rigctl_bw = -12345;
 static uint64_t s_no_carrier_generic_recovery_request_id = 0U;
 static uint64_t s_no_carrier_generic_recovery_expected_generation = 0U;
 static const dsd_state* s_no_carrier_generic_recovery_state = NULL;
@@ -131,7 +135,6 @@ no_carrier_clear_generic_recovery_tracking(void) {
 void
 dsd_engine_rigctl_tune_cache_forget(void) {
     s_last_rigctl_freq = -1;
-    s_last_rigctl_bw = -12345;
 }
 
 static void
@@ -1236,16 +1239,39 @@ no_carrier_reset_nxdn_scan_markers(dsd_state* state) {
     state->nxdn_last_ran = -1;
 }
 
+/* The legacy rigctl leg: the untyped -Y step and the direct control-channel return. On audio input a rigctl peer
+ * demodulates (issue #621) it asks for the passband the analog monitor runs -- the configured width, the AM default, or
+ * -B standing in for an unset NFM width -- or for the -B a digital mode is heard through, through the capturing call,
+ * so a later return to the peer's own sends the passband read, and that reading is the session's, which such a return
+ * retires (the list has no leave restore to reset it). A refusal fails the step, as a refused -B always has here.
+ * Anywhere else -B is asked for as it always was, strictly, and the client's record of the peer skips a repeat. Where
+ * the session runs the peer's own passband (-B 0, or the FM monitor with neither a width nor -B) it asks for FM at 0,
+ * best-effort: that undoes a passband this client set (a session width before a switch to a digital mode, say) with
+ * the passband read before it, and is a no-op for a peer back on its own or never asked. */
 static dsd_trunk_tune_result
-no_carrier_tune_rigctl_if_needed(const dsd_opts* opts, long int freq) {
+no_carrier_tune_rigctl_if_needed(const dsd_opts* opts, const dsd_state* state, long int freq) {
     if (opts->use_rigctl != 1) {
         return DSD_TRUNK_TUNE_RESULT_FAILED;
     }
-    if (opts->setmod_bw != 0 && opts->setmod_bw != s_last_rigctl_bw) {
+    const dsd_rigctl_passband passband = dsd_rigctl_passband_of(opts, NULL);
+    if (dsd_rigctl_passband_captures(opts, &passband)) {
+        const bool ok = SetScanRowModulation(opts->rigctl_sockfd, passband.kind, passband.bandwidth_hz);
+        /* The untyped -Y list holds no scan scope and has no leave restore: every row asks for the session's passband,
+           so the reading taken for it is the session's too. The direct control-channel return is told as every rigctl
+           leg tells it (dsd_channel_modes_rigctl_request_is_session()): a typed -Y list configured before its first
+           row's scope is entered makes it a scan's. */
+        if (dsd_channel_modes_rigctl_request_is_session(opts, state)) {
+            RigctlMarkSessionPassband(opts->rigctl_sockfd, passband.kind);
+        }
+        if (!ok) {
+            return DSD_TRUNK_TUNE_RESULT_FAILED;
+        }
+    } else if (opts->setmod_bw != 0) {
         if (!SetModulation(opts->rigctl_sockfd, opts->setmod_bw)) {
             return DSD_TRUNK_TUNE_RESULT_FAILED;
         }
-        s_last_rigctl_bw = opts->setmod_bw;
+    } else {
+        (void)SetModulationKind(opts->rigctl_sockfd, DSD_ANALOG_DEMOD_FM, 0);
     }
     if (freq != s_last_rigctl_freq) {
         if (!SetFreq(opts->rigctl_sockfd, freq)) {
@@ -1292,7 +1318,7 @@ no_carrier_step_retune(const dsd_opts* opts, dsd_state* state, long int freq, in
         return -1;
     }
     if (opts->use_rigctl == 1) {
-        if (no_carrier_tune_rigctl_if_needed(opts, freq) != DSD_TRUNK_TUNE_RESULT_OK) {
+        if (no_carrier_tune_rigctl_if_needed(opts, state, freq) != DSD_TRUNK_TUNE_RESULT_OK) {
             return -1;
         }
         *moved = 1;
@@ -1586,9 +1612,6 @@ no_carrier_sync_helper_tune_cache(const dsd_opts* opts, const dsd_state* state, 
     }
     if (opts->use_rigctl == 1) {
         s_last_rigctl_freq = cc;
-        if (opts->setmod_bw != 0) {
-            s_last_rigctl_bw = opts->setmod_bw;
-        }
     }
 #ifdef USE_RADIO
     if (opts->audio_in_type == AUDIO_IN_RTL && state->rtl_ctx) {
@@ -1793,7 +1816,7 @@ no_carrier_helper_result_is_deferred(int helper_attempted, dsd_trunk_tune_result
 static int
 no_carrier_apply_direct_cc_return(const dsd_opts* opts, dsd_state* state, long cc, int helper_attempted) {
     if (opts->use_rigctl == 1) {
-        if (no_carrier_tune_rigctl_if_needed(opts, cc) != DSD_TRUNK_TUNE_RESULT_OK) {
+        if (no_carrier_tune_rigctl_if_needed(opts, state, cc) != DSD_TRUNK_TUNE_RESULT_OK) {
             return 0;
         }
         state->dmr_rest_channel = -1;
@@ -2649,7 +2672,10 @@ dsd_engine_ended_input_runs(const dsd_opts* opts) {
 
 /* The file or TCP input ended (state->input_fallback_pending, which the symbol reader sets): the session goes on with
    the configured Pulse input, switched to here between frames and under the tick guard, as a menu switch is (issue
-   #634). The session ends when Pulse does not open, as it did when the reader opened Pulse itself: returns -1 then. */
+   #634). The session ends when Pulse does not open, as it did when the reader opened Pulse itself: returns -1 then. A
+   rigctl peer that comes to demodulate the input with the switch (a symbol replay ended: symbols are not the peer's
+   audio) is asked for the session's width, as at start and as a command's switch onto audio input asks it (issue
+   #621); one that demodulated the file or TCP stream already runs the request in force. */
 static int
 dsd_engine_input_fallback(dsd_opts* opts, dsd_state* state) {
     if (!state->input_fallback_pending) {
@@ -2667,12 +2693,17 @@ dsd_engine_input_fallback(dsd_opts* opts, dsd_state* state) {
     request.kind = DSD_AUDIO_INPUT_PULSE;
     request.path = NULL;
     request.tcp_sockfd = DSD_INVALID_SOCKET;
+    const int peer_before = dsd_opts_rigctl_peer_demodulates(opts);
     /* The output follows Pulse under the guard too: the watchdog may flush audio into the stream a reconfigure
-       closes. */
+       closes. So does the width asked of a new peer: the watchdog's retunes use the same peer record, and the guard is
+       not re-entrant. */
     p25_sm_tick_guard_enter();
     const int switched = dsd_audio_switch_input(opts, state, &request);
     const int output_failed =
         switched == DSD_AUDIO_INPUT_SWITCHED && dsd_audio_reconfigure_output_for_input_policy(opts) != 0;
+    if (switched == DSD_AUDIO_INPUT_SWITCHED && !output_failed && !peer_before) {
+        dsd_engine_rigctl_ask_session_passband(opts, state);
+    }
     p25_sm_tick_guard_leave();
     if (switched != DSD_AUDIO_INPUT_SWITCHED || output_failed) {
         dsd_request_shutdown(opts, state);
@@ -2779,6 +2810,10 @@ liveScanner(dsd_opts* opts, dsd_state* state, const dsd_engine_lifecycle_hooks* 
     if (live_scanner_open_audio_if_needed(opts) != 0) {
         return -1;
     }
+    /* The input is open, so the peer of an audio input is the one that demodulates it: ask it for the width the
+       session's analog monitor runs (issue #621), before the lifecycle starts the frontends and before the P25
+       watchdog starts, whose retunes use the same peer record. */
+    dsd_engine_rigctl_ask_session_passband(opts, state);
     if (live_scanner_start_trunk_scan_if_needed(opts, state) != 0) {
         return -1;
     }

@@ -39,6 +39,15 @@ int dsd_channel_modes_hear_tones(const dsd_state* state, int configured_fm_monit
  * (dsd_scan_mode_configured_fm_monitor()). The one rule the command line, the engine's channel-map import and
  * dsd_engine_scan_hears_tones() weigh the "no effect" warning by. 0 for NULL @p opts or @p state. */
 int dsd_channel_modes_conventional_hear_tones(const dsd_opts* opts, const dsd_state* state);
+/** Nonzero if a passband this client asks of a rigctl peer now is the session's, not a scan row's (issue #621): the one
+ * answer every rigctl leg marks a request by (RigctlMarkSessionPassband()), the engine's tunes, live apply, start and
+ * reconnect ask and legacy leg, and the manual tune (io_control_set_freq()). It is what the scan scope says
+ * (dsd_scan_mode_rigctl_request_is_session()), except that a typed -Y list (dsd_channel_modes_present()) configured on
+ * @p state is a scan's before its first row's scope is entered too: that row is tuned, and the start ask made, before
+ * the scope exists, and the list's rows ask for their own and its leave restore resets their readings. The untyped
+ * list holds no scope and has no leave restore, so its requests are the session's. Without @p state the scope's answer
+ * stands (any configured -Y list counts as a scan). 0 for NULL @p opts. Decoder thread. */
+int dsd_channel_modes_rigctl_request_is_session(const dsd_opts* opts, const dsd_state* state);
 #ifdef __cplusplus
 }
 #endif

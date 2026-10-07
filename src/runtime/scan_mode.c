@@ -1118,6 +1118,17 @@ dsd_scan_mode_row_options(const dsd_state* state) {
 }
 
 int
+dsd_scan_mode_rigctl_request_is_session(const dsd_opts* opts, const dsd_state* state) {
+    if (!opts || opts->trunk_scan_enabled == 1) {
+        return 0;
+    }
+    if (!state) {
+        return opts->scanner_mode != 1;
+    }
+    return scan_scope_get(state) == NULL;
+}
+
+int
 dsd_scan_mode_set_configured_squelch(dsd_opts* opts, const dsd_state* state, double level) {
     const dsd_squelch_setting setting = dsd_squelch_setting_of_level(level);
     return dsd_scan_mode_set_configured_squelch_setting(opts, state, &setting);

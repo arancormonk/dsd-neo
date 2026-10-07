@@ -324,18 +324,11 @@ dsd_squelch_setting_resolve(const dsd_squelch_setting* configured, int input, in
 
 int
 dsd_squelch_input_kind(const dsd_opts* opts) {
-    if (!opts) {
-        return DSD_SQUELCH_INPUT_OTHER;
+    if (dsd_opts_input_is_radio(opts)) {
+        return DSD_SQUELCH_INPUT_RADIO;
     }
-    switch (opts->audio_in_type) {
-        case AUDIO_IN_RTL: return DSD_SQUELCH_INPUT_RADIO;
-        case AUDIO_IN_PULSE:
-        case AUDIO_IN_STDIN:
-        case AUDIO_IN_WAV:
-        case AUDIO_IN_UDP:
-        case AUDIO_IN_TCP: return DSD_SQUELCH_INPUT_AUDIO;
-        default: return DSD_SQUELCH_INPUT_OTHER;
-    }
+    /* The one set of audio inputs a rigctl peer's passband applies to as well (issue #621). */
+    return dsd_opts_input_is_pcm_audio(opts) ? DSD_SQUELCH_INPUT_AUDIO : DSD_SQUELCH_INPUT_OTHER;
 }
 
 int

@@ -470,7 +470,7 @@ udp_socket_connectA(dsd_opts* opts, dsd_state* state) {
 }
 
 int
-io_control_set_freq(dsd_opts* opts, dsd_state* state, long int freq) {
+io_control_set_freq(dsd_opts* opts, const dsd_state* state, long int freq) {
     (void)opts;
     (void)state;
     (void)freq;

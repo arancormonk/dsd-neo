@@ -20,6 +20,7 @@
 #include <dsd-neo/runtime/input_failure.h>
 #include <dsd-neo/runtime/squelch.h>
 #include <math.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -105,6 +106,46 @@ __wrap_RigctlRebindPeer(dsd_socket_t old_fd, dsd_socket_t new_fd, int same_endpo
     g_rigctl_rebind_calls++;
     g_rigctl_rebind_old = old_fd;
     g_rigctl_rebind_new = new_fd;
+}
+
+/* Issue #621: the session passband the engine asks the peer for at start, and when -- each call takes the next number
+   in one sequence, the P25 watchdog's start too -- with whether the run's input was open by then. */
+static const dsd_opts* g_run_opts = NULL;
+static int g_order_seq = 0;
+static int g_ask_calls = 0;
+static int g_ask_seq = 0;
+static int g_ask_kind = -1;
+static int g_ask_bw = 0;
+static int g_ask_input_open = 0;
+static int g_watchdog_seq = 0;
+static int g_lifecycle_seq = 0;
+static int g_session_marks = 0;
+static int g_session_mark_kind = -1;
+
+bool
+__wrap_SetScanRowModulation(dsd_socket_t sockfd, int kind, int bandwidth) {
+    (void)sockfd;
+    g_ask_calls++;
+    g_ask_seq = ++g_order_seq;
+    g_ask_kind = kind;
+    g_ask_bw = bandwidth;
+    g_ask_input_open = g_run_opts && g_run_opts->audio_in_type == AUDIO_IN_WAV && g_run_opts->audio_in_file != NULL;
+    return true;
+}
+
+void
+__wrap_RigctlMarkSessionPassband(dsd_socket_t sockfd, int kind) {
+    (void)sockfd;
+    g_session_marks++;
+    g_session_mark_kind = kind;
+}
+
+void __real_p25_sm_watchdog_start(dsd_opts* opts, dsd_state* state);
+
+void
+__wrap_p25_sm_watchdog_start(dsd_opts* opts, dsd_state* state) {
+    g_watchdog_seq = ++g_order_seq;
+    __real_p25_sm_watchdog_start(opts, state);
 }
 
 // NOLINTEND(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
@@ -1132,6 +1173,142 @@ test_startup_rigctl_connection_names_the_peer_record(void) {
     free_test_runtime(opts, state);
     return rc;
 }
+
+/* A 16-bit mono WAV of @p frames silent samples at @p path. */
+static int
+write_silent_wav(const char* path, uint32_t frames) {
+    FILE* fp = dsd_fopen_private(path, "wb");
+    if (!fp) {
+        return -1;
+    }
+    const uint32_t rate = 48000U;
+    const uint32_t data_bytes = frames * 2U;
+    uint8_t header[44];
+    DSD_MEMSET(header, 0, sizeof header);
+    DSD_MEMCPY(header, "RIFF", 4);
+    const uint32_t riff = 36U + data_bytes;
+    const uint32_t fields[] = {16U, rate, rate * 2U};
+    for (int i = 0; i < 4; i++) {
+        header[4 + i] = (uint8_t)(riff >> (8 * i));
+    }
+    DSD_MEMCPY(header + 8, "WAVEfmt ", 8);
+    for (int i = 0; i < 4; i++) {
+        header[16 + i] = (uint8_t)(fields[0] >> (8 * i));
+        header[24 + i] = (uint8_t)(fields[1] >> (8 * i));
+        header[28 + i] = (uint8_t)(fields[2] >> (8 * i));
+        header[40 + i] = (uint8_t)(data_bytes >> (8 * i));
+    }
+    header[20] = 1U; /* PCM */
+    header[22] = 1U; /* mono */
+    header[32] = 2U; /* block align */
+    header[34] = 16U;
+    DSD_MEMCPY(header + 36, "data", 4);
+    int rc = fwrite(header, 1, sizeof header, fp) == sizeof header ? 0 : -1;
+    for (uint32_t i = 0; rc == 0 && i < data_bytes; i++) {
+        rc = fputc(0, fp) == EOF ? -1 : 0;
+    }
+    if (fclose(fp) != 0) {
+        rc = -1;
+    }
+    return rc;
+}
+
+/* The lifecycle start: its place in the sequence, and the run stops at once. */
+static int
+stop_the_run_at_start(dsd_opts* opts, dsd_state* state, void* context) {
+    (void)opts;
+    (void)state;
+    (void)context;
+    g_lifecycle_seq = ++g_order_seq;
+    dsd_exitflag_store(1);
+    return 0;
+}
+
+/* Issue #621: a session that starts on the FM monitor of audio input with a rigctl peer and a configured NFM width asks
+ * the peer for that width once the input is open, before the lifecycle starts the frontends and before the P25
+ * watchdog starts, whose retunes would otherwise race it. */
+/* One run of a -fA WAV session with a configured NFM width and a rigctl peer, stopped at the lifecycle start; with
+   @p untyped_list the session scans an all-blank -Y list (two frequencies, no modes), the legacy leg's. @p tag names
+   the case in the checks. */
+static int
+startup_passband_case(const char* tag, int untyped_list) {
+    char dir[DSD_TEST_PATH_MAX];
+    char wav[DSD_TEST_PATH_MAX];
+    if (!dsd_test_mkdtemp(dir, sizeof dir, "dsdneo_run_setup_passband")) {
+        return 1;
+    }
+    static const char* const files[] = {"in.wav", NULL};
+    if (dsd_test_path_join(wav, sizeof wav, dir, "in.wav") != 0 || write_silent_wav(wav, 480U) != 0) {
+        (void)dsd_test_remove_temp_dir(dir, files);
+        return 1;
+    }
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        (void)dsd_test_remove_temp_dir(dir, files);
+        return 1;
+    }
+    opts->playfiles = 0;
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", wav);
+    opts->analog_only = 1;
+    opts->monitor_input_audio = 1;
+    opts->analog_demod = DSD_ANALOG_DEMOD_FM;
+    opts->analog_nfm_bandwidth_hz = 12500;
+    opts->setmod_bw = 7000;
+    opts->use_rigctl = 1;
+    DSD_SNPRINTF(opts->rigctlhostname, sizeof opts->rigctlhostname, "%s", "127.0.0.1");
+    opts->rigctlportno = 45322;
+    if (untyped_list) {
+        opts->scanner_mode = 1;
+        state->trunk_lcn_freq[0] = 155475000;
+        state->trunk_lcn_freq[1] = 155500000;
+        state->lcn_freq_count = 2;
+    }
+    g_rigctl_fake_port = 45322;
+    g_run_opts = opts;
+    g_order_seq = 0;
+    g_ask_calls = 0;
+    g_ask_seq = 0;
+    g_watchdog_seq = 0;
+    g_lifecycle_seq = 0;
+    g_session_marks = 0;
+    g_session_mark_kind = -1;
+    const dsd_engine_lifecycle_hooks hooks = {.start = stop_the_run_at_start};
+    const int result = dsd_engine_run_with_lifecycle(opts, state, &hooks);
+    dsd_exitflag_store(0);
+    char label[96];
+    DSD_SNPRINTF(label, sizeof label, "%s run ok", tag);
+    int rc = expect_true(label, result == 0);
+    DSD_SNPRINTF(label, sizeof label, "%s asked once", tag);
+    rc |= expect_true(label, g_ask_calls == 1);
+    DSD_SNPRINTF(label, sizeof label, "%s is the configured NFM width", tag);
+    rc |= expect_true(label, g_ask_kind == DSD_ANALOG_DEMOD_FM && g_ask_bw == 12500);
+    DSD_SNPRINTF(label, sizeof label, "%s asked once the input is open", tag);
+    rc |= expect_true(label, g_ask_input_open == 1);
+    /* No typed -Y list or trunk scan: the passband is the session's (issue #621), and so is the untyped list's, which
+       holds no scan scope and has no leave restore. */
+    DSD_SNPRINTF(label, sizeof label, "%s is the session's", tag);
+    rc |= expect_true(label, g_session_marks == 1 && g_session_mark_kind == DSD_ANALOG_DEMOD_FM);
+    DSD_SNPRINTF(label, sizeof label, "%s asked before the lifecycle starts", tag);
+    rc |= expect_true(label, g_lifecycle_seq > 0 && g_ask_seq > 0 && g_ask_seq < g_lifecycle_seq);
+    DSD_SNPRINTF(label, sizeof label, "%s asked before the watchdog starts", tag);
+    rc |= expect_true(label, g_watchdog_seq > 0 && g_ask_seq > 0 && g_ask_seq < g_watchdog_seq);
+    g_run_opts = NULL;
+    g_rigctl_fake_port = 0;
+    opts->use_rigctl = 0;
+    opts->rigctl_sockfd = DSD_INVALID_SOCKET;
+    free_test_runtime(opts, state);
+    DSD_SNPRINTF(label, sizeof label, "%s temp dir removed", tag);
+    rc |= expect_true(label, dsd_test_remove_temp_dir(dir, files) == 0);
+    return rc;
+}
+
+static int
+test_startup_asks_the_session_passband(void) {
+    int rc = startup_passband_case("startup passband", 0);
+    rc |= startup_passband_case("startup passband on an untyped -Y list", 1);
+    return rc;
+}
 #endif
 
 int
@@ -1161,6 +1338,7 @@ main(void) {
     rc |= test_lifecycle_hooks_start_after_setup_and_stop_before_cleanup();
 #ifdef DSD_NEO_TEST_RIGCTL_WRAP
     rc |= test_startup_rigctl_connection_names_the_peer_record();
+    rc |= test_startup_asks_the_session_passband();
 #endif
     rc |= test_receiver_failure_is_not_successful_completion();
     rc |= test_config_channel_map_weighs_the_tone_filter();

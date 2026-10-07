@@ -5,6 +5,7 @@
 
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/channel_mode.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
@@ -15,7 +16,6 @@
 #include <dsd-neo/io/rigctl_client.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/platform/platform.h>
-#include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_block.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
@@ -24,8 +24,8 @@
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/decode_mode.h>
+#include <dsd-neo/runtime/rigctl_passband.h>
 #include <dsd-neo/runtime/scan_mode.h>
-#include <dsd-neo/runtime/scan_options.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -562,96 +562,121 @@ dsd_engine_update_vc_tune_state(dsd_opts* opts, dsd_state* state, long int freq)
     state->p25_last_vc_tune_time_m = state->last_vc_sync_time_m;
 }
 
-/* The demodulator and passband a rigctl peer is asked for under the settings in force (issue #526). On audio input (a
- * PCM, UDP or TCP source) the peer demodulates what DSD-neo hears, so an AM row (the AM monitor) asks for AM at the AM
- * width it runs, its own or the configured one (the 6 kHz default when none is set), and an nfm row that sets its own
- * --nfm-bandwidth-hz (@p row: the options of the row being tuned, dsd_engine_scan_tuning_row_options(), or of the row
- * on air for a live edit) asks for FM at that width. Either is the row's own request
- * (@p row_request set): a peer that refuses it fails the tune, and the scanner moves on as for any row it cannot tune.
- * Anything else asks for FM at -B and stays best-effort, as -B always has been, unless a refusal leaves the peer on an
- * am row's AM, or on a demodulator not known; without -B that is the peer's own passband (0), sent only to undo an AM
- * row or a row passband this client set, which returns the peer to FM at the passband it had before
- * (SetModulationKind()). On an RTL-family input DSD-neo demodulates the I/Q itself and the peer only follows the
- * frequency, so it is asked for FM at -B, best-effort, whatever the row runs and whatever the peer runs. */
-static int
-dsd_engine_rigctl_modulation(const dsd_opts* opts, const dsd_scan_option_values* row, int* bandwidth,
-                             int* row_request) {
-    int kind = DSD_ANALOG_DEMOD_FM;
-    *bandwidth = opts->setmod_bw;
-    *row_request = 0;
-    const int peer_demodulates = opts->audio_in_type != AUDIO_IN_RTL && dsd_opts_is_analog_family(opts);
-    if (peer_demodulates && opts->analog_demod == DSD_ANALOG_DEMOD_AM) {
-        kind = DSD_ANALOG_DEMOD_AM;
-        *bandwidth = dsd_analog_width_effective_hz(DSD_ANALOG_DEMOD_AM, opts->analog_am_bandwidth_hz);
-        *row_request = 1;
-    } else if (peer_demodulates) {
-        if (row && (row->present & DSD_SCAN_OPT_BANDWIDTH) && row->channel_bw_kind == DSD_ANALOG_DEMOD_FM) {
-            *bandwidth = row->channel_bw_hz;
-            *row_request = 1;
-        }
+/* Send the demodulator and passband a rigctl peer is asked for under the settings in force (issues #526, #621), which
+ * one rule decides: dsd_rigctl_passband_of(), keyed on the analog demodulator in force. On audio input (a PCM, UDP or
+ * TCP source) the peer demodulates what DSD-neo hears, so while the analog monitor runs it is asked for that monitor's
+ * demodulator at the row's own width (in the options of the row being tuned, dsd_engine_scan_tuning_row_options(), or
+ * of the row on air for a live edit, dsd_scan_mode_row_options()), else at the configured width of that kind -- the
+ * in-force width, which a scan installs per row -- else for AM at the 6 kHz default and for FM at -B, else at the
+ * peer's own passband (0). A width (own, configured or the AM default) is a strict request: a peer that refuses it
+ * fails the tune, and the scanner moves on as for any row it cannot tune. A width or -B on the monitor is a passband
+ * this client sets, sent through SetScanRowModulation(), which reads the peer's own passband first so a later return to
+ * it sends the passband read (dsd_rigctl_passband_sets_passband()). Anything else -- a digital mode, a symbol or null
+ * input -- asks for FM at -B and stays best-effort, as -B always has been, unless a refusal leaves the peer on an am
+ * row's AM, or on a demodulator not known; without -B that is the peer's own passband (0), sent only to undo an AM row
+ * or a passband this client set, which returns the peer to FM at the passband it had before (SetModulationKind()). On
+ * an RTL-family input DSD-neo demodulates the I/Q itself and the peer only follows the frequency, so it is asked for FM
+ * at -B, best-effort, whatever the row runs and whatever the peer runs. A passband this client sets goes through the
+ * capturing call, and so does -B on a digital mode of audio input, which the peer's FM passband is heard through
+ * (dsd_rigctl_passband_captures()); anything else as a plain request. With @p session
+ * (dsd_channel_modes_rigctl_request_is_session()) the passband is the session's, not a scan row's, and so is the
+ * reading of the peer's own taken for it: a return to the peer's own retires it (RigctlMarkSessionPassband()), where a
+ * scan row's lasts the scan. */
+static bool
+dsd_engine_rigctl_send_passband(const dsd_opts* opts, const dsd_rigctl_passband* passband, int session) {
+    if (!dsd_rigctl_passband_captures(opts, passband)) {
+        return SetModulationKind(opts->rigctl_sockfd, passband->kind, passband->bandwidth_hz);
     }
-    return kind;
+    const bool ok = SetScanRowModulation(opts->rigctl_sockfd, passband->kind, passband->bandwidth_hz);
+    if (session) {
+        RigctlMarkSessionPassband(opts->rigctl_sockfd, passband->kind);
+    }
+    return ok;
 }
 
-/* A row's own request goes through SetScanRowModulation(), which first reads the peer's own passband so that the FM
- * undo and the scan's leave can send it back. A refused row request fails the tune. Any other request is best-effort,
- * as -B always was, unless the peer demodulates audio input and is not known to run the demodulator asked for (still
- * on the AM an am row put it on, or on either after a lost reply, CachedModulationKind()): the row would then be heard
- * through the wrong one, so that tune fails too. On an RTL-family input DSD-neo demodulates the I/Q, and what the peer
- * runs is never heard, so no refusal fails the tune there. */
+static void
+dsd_engine_rigctl_note_refusal(const dsd_rigctl_passband* passband) {
+    DSD_FPRINTF(stderr, "Rigctl %s modulation update failed for bandwidth %d.\n",
+                dsd_analog_demod_label(passband->kind), passband->bandwidth_hz);
+}
+
+/* A passband this client sets goes through SetScanRowModulation(), which first reads the peer's own passband so that
+ * the FM undo and the scan's leave can send it back. A refused width fails the tune. Any other request, -B on the FM
+ * monitor included, is best-effort, as -B always was, unless the peer demodulates audio input and is not known to run
+ * the demodulator asked for (still on the AM an am row put it on, or on either after a lost reply,
+ * CachedModulationKind()): the row would then be heard through the wrong one, so that tune fails too. On an RTL-family
+ * input DSD-neo demodulates the I/Q, and what the peer runs is never heard, so no refusal fails the tune there. A tune
+ * that sets a passband is a scan row's (a trunk grant runs a digital mode and sets none), whose reading lasts the scan.
+ * One that follows with -B on audio input is captured too (issue #621): a scan row's under a trunk scan or a typed -Y
+ * list, else a trunk grant's on a plain session, the session's, whose reading a return to the peer's own retires
+ * (dsd_channel_modes_rigctl_request_is_session(), which tells a typed list's first row, tuned before its scope is
+ * entered, from the configuration). */
 static int
 dsd_engine_tune_rigctl_modulation(const dsd_opts* opts, const dsd_state* state) {
-    int bandwidth = 0;
-    int row_request = 0;
-    const int kind =
-        dsd_engine_rigctl_modulation(opts, dsd_engine_scan_tuning_row_options(opts, state), &bandwidth, &row_request);
-    const bool ok = row_request ? SetScanRowModulation(opts->rigctl_sockfd, kind, bandwidth)
-                                : SetModulationKind(opts->rigctl_sockfd, kind, bandwidth);
-    if (ok) {
+    const dsd_rigctl_passband passband = dsd_rigctl_passband_of(opts, dsd_engine_scan_tuning_row_options(opts, state));
+    const int session =
+        dsd_rigctl_passband_sets_passband(&passband) ? 0 : dsd_channel_modes_rigctl_request_is_session(opts, state);
+    if (dsd_engine_rigctl_send_passband(opts, &passband, session)) {
         return 1;
     }
-    DSD_FPRINTF(stderr, "Rigctl %s modulation update failed for bandwidth %d.\n", dsd_analog_demod_label(kind),
-                bandwidth);
-    if (row_request) {
+    dsd_engine_rigctl_note_refusal(&passband);
+    if (dsd_rigctl_passband_is_width(&passband)) {
         return 0;
     }
-    return opts->audio_in_type == AUDIO_IN_RTL || CachedModulationKind(opts->rigctl_sockfd) == kind;
+    return opts->audio_in_type == AUDIO_IN_RTL || CachedModulationKind(opts->rigctl_sockfd) == passband.kind;
 }
 
 int
 dsd_engine_scan_rigctl_apply_modulation(const dsd_opts* opts, const dsd_state* state) {
-    if (!opts || !state || opts->use_rigctl != 1 || opts->rigctl_sockfd == DSD_INVALID_SOCKET
-        || opts->audio_in_type == AUDIO_IN_RTL) {
+    if (!state || !dsd_opts_rigctl_peer_demodulates(opts)) {
         return -1;
     }
     /* Unlike a tune's best-effort -B (dsd_engine_tune_rigctl_modulation()), a live edit names what the peer is to run
-       now, the -B a row goes back to included: a refusal of either request fails it, so the edit goes back rather than
-       read as applied while the peer keeps the passband it had. The row is the one whose scope is in force, the edit's,
-       not a -Y tune staged since, which a failed tune can leave naming another row. */
-    int bandwidth = 0;
-    int row_request = 0;
-    const int kind = dsd_engine_rigctl_modulation(opts, dsd_scan_mode_row_options(state), &bandwidth, &row_request);
-    const bool ok = row_request ? SetScanRowModulation(opts->rigctl_sockfd, kind, bandwidth)
-                                : SetModulationKind(opts->rigctl_sockfd, kind, bandwidth);
+       now, the -B or peer's own passband a row goes back to included: a refusal of any request fails it, so the edit
+       goes back rather than read as applied while the peer keeps the passband it had. The row is the one whose scope
+       is in force, the edit's, not a -Y tune staged since, which a failed tune can leave naming another row. Whether
+       the request is the session's is told as at every rigctl leg (issue #621): off a trunk scan with no scan scope,
+       unless a typed -Y list is configured, whose first row is tuned before its scope is entered. */
+    const dsd_rigctl_passband passband = dsd_rigctl_passband_of(opts, dsd_scan_mode_row_options(state));
+    const bool ok =
+        dsd_engine_rigctl_send_passband(opts, &passband, dsd_channel_modes_rigctl_request_is_session(opts, state));
     if (!ok) {
-        DSD_FPRINTF(stderr, "Rigctl %s modulation update failed for bandwidth %d.\n", dsd_analog_demod_label(kind),
-                    bandwidth);
+        dsd_engine_rigctl_note_refusal(&passband);
     }
     return ok ? 1 : 0;
 }
 
 void
 dsd_engine_scan_rigctl_restore(const dsd_opts* opts, const dsd_state* state) {
-    if (!opts || opts->use_rigctl != 1 || opts->rigctl_sockfd == DSD_INVALID_SOCKET) {
+    if (!dsd_opts_rigctl_live(opts)) {
         return;
     }
-    int bandwidth = 0;
-    int row_request = 0;
-    const int kind =
-        dsd_engine_rigctl_modulation(opts, dsd_engine_scan_tuning_row_options(opts, state), &bandwidth, &row_request);
-    if (!RestoreScanModulation(opts->rigctl_sockfd, kind, bandwidth)) {
-        DSD_FPRINTF(stderr, "Rigctl %s modulation restore failed for bandwidth %d.\n", dsd_analog_demod_label(kind),
-                    bandwidth);
+    const dsd_rigctl_passband passband = dsd_rigctl_passband_of(opts, dsd_engine_scan_tuning_row_options(opts, state));
+    /* A passband this client sets, or -B on a digital mode of audio input (issue #621): the restore keeps the reading
+       of the peer's own taken for it, so the session's later return sends that back. */
+    if (!RestoreScanModulation(opts->rigctl_sockfd, passband.kind, passband.bandwidth_hz,
+                               dsd_rigctl_passband_captures(opts, &passband) != 0)) {
+        DSD_FPRINTF(stderr, "Rigctl %s modulation restore failed for bandwidth %d.\n",
+                    dsd_analog_demod_label(passband.kind), passband.bandwidth_hz);
+    }
+}
+
+void
+dsd_engine_rigctl_ask_session_passband(const dsd_opts* opts, const dsd_state* state) {
+    if (!dsd_opts_rigctl_peer_demodulates(opts)) {
+        return;
+    }
+    /* Only a width: -B and the peer's own passband are what a session asked nothing of always ran, and a tune asks for
+       them as before. */
+    const dsd_rigctl_passband passband = dsd_rigctl_passband_of(opts, NULL);
+    if (!dsd_rigctl_passband_is_width(&passband)) {
+        return;
+    }
+    /* The session's unless a trunk scan or a typed -Y list is configured, whose rows ask for their own: at start no
+       scan holds a scope yet, so the typed list is told from its configuration; the untyped list's requests are the
+       session's, as the legacy leg's are. */
+    if (!dsd_engine_rigctl_send_passband(opts, &passband, dsd_channel_modes_rigctl_request_is_session(opts, state))) {
+        dsd_engine_rigctl_note_refusal(&passband);
     }
 }
 

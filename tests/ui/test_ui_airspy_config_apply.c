@@ -57,7 +57,7 @@ uint32_t __wrap_rtl_stream_output_rate(const RtlSdrContext* ctx);
 int __wrap_rtl_stream_airspy_controls(const dsd_airspy_config* config);
 int __wrap_rtl_stream_airspy_info(dsd_airspy_info* info);
 void __wrap_rtl_stream_set_channel_squelch(float level);
-int __wrap_io_control_set_freq(dsd_opts* opts, dsd_state* state, long int hz);
+int __wrap_io_control_set_freq(dsd_opts* opts, const dsd_state* state, long int hz);
 int __wrap_dsd_audio_reconfigure_output_for_input_policy(dsd_opts* opts);
 
 int
@@ -147,7 +147,7 @@ __wrap_rtl_stream_set_channel_squelch(float level) {
 }
 
 int
-__wrap_io_control_set_freq(dsd_opts* opts, dsd_state* state, long int hz) {
+__wrap_io_control_set_freq(dsd_opts* opts, const dsd_state* state, long int hz) {
     (void)state;
     test_retunes++;
     test_freq = (uint32_t)hz;

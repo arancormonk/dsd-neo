@@ -703,6 +703,18 @@ dsd_neo_add_public_header_smoke_test(
   C
 )
 dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_runtime_rigctl_passband
+  HEADERS_PUBLIC_RUNTIME_RIGCTL_PASSBAND
+  dsd-neo/runtime/rigctl_passband.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_runtime_rigctl_passband_cxx
+  HEADERS_PUBLIC_RUNTIME_RIGCTL_PASSBAND_CXX
+  dsd-neo/runtime/rigctl_passband.h
+  CXX
+)
+dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_runtime_udp_audio_hooks
   HEADERS_PUBLIC_RUNTIME_UDP_AUDIO_HOOKS
   dsd-neo/runtime/udp_audio_hooks.h
@@ -5681,6 +5693,9 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
             "-Wl,--wrap=rtl_stream_request_demod_profile"
             "-Wl,--wrap=SetFreq"
             "-Wl,--wrap=SetModulation"
+            "-Wl,--wrap=SetModulationKind"
+            "-Wl,--wrap=SetScanRowModulation"
+            "-Wl,--wrap=RigctlMarkSessionPassband"
             "-Wl,--wrap=rtl_stream_request_fsk_reacquire"
             "-Wl,--wrap=rtl_stream_tune"
             "-Wl,--wrap=rtl_stream_tune_tagged"
@@ -5784,6 +5799,9 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
             "-Wl,--wrap=rtl_stream_destroy"
             "-Wl,--wrap=Connect"
             "-Wl,--wrap=RigctlRebindPeer"
+            "-Wl,--wrap=SetScanRowModulation"
+            "-Wl,--wrap=RigctlMarkSessionPassband"
+            "-Wl,--wrap=p25_sm_watchdog_start"
             ${LIBS}
             dsd-neo_test_support
     )
@@ -5928,6 +5946,8 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
             "-Wl,--wrap=getFrameSync"
             "-Wl,--wrap=dsd_audio_switch_input"
             "-Wl,--wrap=dsd_audio_reconfigure_output_for_input_policy"
+            "-Wl,--wrap=SetScanRowModulation"
+            "-Wl,--wrap=RigctlMarkSessionPassband"
             "-Wl,--start-group"
             dsd-neo_engine
             "-Wl,--end-group"
@@ -6006,8 +6026,10 @@ add_executable(
     dsd-neo_test_engine_trunk_retune_regression
     engine/test_engine_trunk_retune_regression.c
     ${PROJECT_SOURCE_DIR}/src/engine/trunk_tuning.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/channel_modes_rigctl.c
     ${PROJECT_SOURCE_DIR}/src/runtime/decode_mode.c
     ${PROJECT_SOURCE_DIR}/src/runtime/decode_clock.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/rigctl_passband.c
 )
 target_include_directories(
     dsd-neo_test_engine_trunk_retune_regression
@@ -6300,6 +6322,21 @@ add_test(NAME RUNTIME_SCAN_ROW_EDIT COMMAND dsd-neo_test_runtime_scan_row_edit)
 add_executable(dsd-neo_test_runtime_squelch runtime/test_runtime_squelch.c)
 target_link_libraries(dsd-neo_test_runtime_squelch PRIVATE dsd-neo_runtime)
 add_test(NAME RUNTIME_SQUELCH COMMAND dsd-neo_test_runtime_squelch)
+
+# Issue #621: the passband a rigctl peer that demodulates audio input is asked
+# for, and the opts predicates that say whether one is there.
+add_executable(
+    dsd-neo_test_runtime_rigctl_passband
+    runtime/test_runtime_rigctl_passband.c
+)
+target_link_libraries(
+    dsd-neo_test_runtime_rigctl_passband
+    PRIVATE dsd-neo_runtime
+)
+add_test(
+    NAME RUNTIME_RIGCTL_PASSBAND
+    COMMAND dsd-neo_test_runtime_rigctl_passband
+)
 
 add_executable(dsd-neo_test_scan_mode_replay engine/scan_mode_replay.c)
 target_link_libraries(
@@ -11066,6 +11103,9 @@ add_executable(
     dsd-neo_test_io_rigctl_control
     io/test_io_rigctl_control.c
     ${PROJECT_SOURCE_DIR}/src/io/control/dsd_rigctl.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/channel_modes_rigctl.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/analog_channel.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/rigctl_passband.c
 )
 target_compile_definitions(
     dsd-neo_test_io_rigctl_control

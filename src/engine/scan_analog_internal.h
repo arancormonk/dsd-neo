@@ -112,7 +112,8 @@ dsd_engine_scan_row_named_again(const dsd_scan_option_values* row, int kind, uns
 /** The nonsecret options of the scan row a scanner is tuning or has on air (issue #526): the -Y scanner's staged row,
  * whose options are installed only once its tune lands, else the row options the scan scope has installed (a trunk-scan
  * target's, applied before its retune). NULL outside a scan and for a row without options. The rigctl leg of a tune
- * reads a row's own channel width from here, which the settings in force cannot tell from the configured one. */
+ * reads a row's own channel width from here, which the settings in force cannot tell from the configured one: the peer
+ * is asked for the row's own width, else the configured width of its kind (dsd_rigctl_passband_of(), issue #621). */
 const dsd_scan_option_values* dsd_engine_scan_tuning_row_options(const dsd_opts* opts, const dsd_state* state);
 
 /** The rows (or trunk-scan targets) a width check found skipped at every visit: how many, and the first one's label and
