@@ -39,6 +39,8 @@
 
 static dsd_trunk_tune_result tune_result;
 static int early_completion;
+/* Decode time cc_tune() lets pass after it publishes an early completion, 0 for none. */
+static uint64_t early_completion_delay_ns;
 static uint64_t last_request;
 static long last_freq;
 static int last_sps;
@@ -58,6 +60,9 @@ cc_tune(dsd_opts* opts, dsd_state* state, long hz, int sps, uint64_t request_id)
         dsd_trunk_tuning_request_publish(request_id, early_completion > 0 ? DSD_TRUNK_TUNE_RESULT_OK
                                                                           : DSD_TRUNK_TUNE_RESULT_FAILED);
         assert(!dsd_trunk_tuning_frame_is_current(dsd_trunk_tuning_generation()));
+        if (early_completion_delay_ns != 0U) {
+            dsd_decode_clock_test_set_ns(dsd_decode_now_mono_ns() + early_completion_delay_ns);
+        }
     }
     return tune_result;
 }
@@ -127,6 +132,7 @@ try_setup(dsd_opts* opts, dsd_state* state) {
     p25_sm_get_ctx()->config.cc_grace_s = 30.0;
     tune_result = DSD_TRUNK_TUNE_RESULT_OK;
     early_completion = 0;
+    early_completion_delay_ns = 0U;
     cc_calls = vc_calls = return_calls = 0;
     dsd_trunk_tuning_requests_reset();
     const dsd_trunk_tuning_hooks hooks = {vc_tune, cc_tune, return_cc};
@@ -275,14 +281,23 @@ test_rejected(dsd_opts* opts, dsd_state* state, dsd_trunk_tune_result result) {
     freeState(state);
 }
 
+/* test_pending() runs on the TEST decode clock. Its retunes complete at PENDING_T0_NS, and the decoder thread reaches
+ * the state machine PENDING_DELAY_NS later, the way a busy or preempted decoder thread does. */
+#define PENDING_T0_NS    1234500000000ULL
+#define PENDING_DELAY_NS 1000000000ULL
+
+/* A retune the backend completes inside the tune call (@p early) or later. The decode clock steps between the
+ * completion and the state machine seeing it, and the control channel acquisition still starts at the completion. */
 static void
 test_pending(dsd_opts* opts, dsd_state* state, int early, int fail) {
+    dsd_decode_clock_use_test(PENDING_T0_NS);
     setup(opts, state);
     start_voice(opts, state);
     tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
     early_completion = 0;
     if (early) {
         early_completion = fail ? -1 : 1;
+        early_completion_delay_ns = PENDING_DELAY_NS;
     }
     select_cc(opts, state, CC_B);
     p25_sm_ctx_t* ctx = p25_sm_get_ctx();
@@ -299,7 +314,9 @@ test_pending(dsd_opts* opts, dsd_state* state, int early, int fail) {
         p25_sm_tick_ctx(ctx, opts, state);
         assert(ctx->cc_tune_pending && cc_calls == 1);
         dsd_trunk_tuning_request_publish(request, fail ? DSD_TRUNK_TUNE_RESULT_FAILED : DSD_TRUNK_TUNE_RESULT_OK);
+        dsd_decode_clock_test_set_ns(PENDING_T0_NS + PENDING_DELAY_NS);
     }
+    assert(dsd_decode_now_mono_ns() == PENDING_T0_NS + PENDING_DELAY_NS);
     if (fail) {
         tune_result = DSD_TRUNK_TUNE_RESULT_FAILED;
     }
@@ -316,15 +333,26 @@ test_pending(dsd_opts* opts, dsd_state* state, int early, int fail) {
     } else {
         double completed_m = 0.0;
         assert(dsd_trunk_tuning_request_status(request, &completed_m) == DSD_TRUNK_TUNE_RESULT_OK);
-        assert(fabs(ctx->t_cc_tune_m - completed_m) < 0.01);
+        assert(fabs(completed_m - (double)PENDING_T0_NS / 1e9) < 1e-9);
+        assert(fabs(ctx->t_cc_tune_m - completed_m) < 1e-9);
         assert(ctx->state == P25_SM_ON_CC && ctx->cc_sync_pending);
         p25_sm_tick_ctx(ctx, opts, state);
         assert(cc_calls == 1);
+        // The acquisition grace runs out a full grace after the completion, not after the state machine saw it.
+        const uint64_t grace_ns = (uint64_t)(ctx->config.cc_grace_s * 1e9);
+        dsd_decode_clock_test_set_ns(PENDING_T0_NS + grace_ns - (PENDING_DELAY_NS / 2U));
+        p25_sm_tick_ctx(ctx, opts, state);
+        assert(ctx->state == P25_SM_ON_CC && ctx->cc_sync_pending && cc_calls == 1);
+        dsd_decode_clock_test_set_ns(PENDING_T0_NS + grace_ns + (PENDING_DELAY_NS / 2U));
+        p25_sm_tick_ctx(ctx, opts, state);
+        assert(cc_calls == 2 && last_freq == CC_B);
+        assert(ctx->cc_acquisition_origin == P25_SM_CC_ACQUISITION_HUNT_PROBE);
     }
     const uint64_t generation = dsd_trunk_tuning_generation();
     dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_FAILED);
     assert(dsd_trunk_tuning_generation() == generation);
     freeState(state);
+    dsd_decode_clock_use_system();
 }
 
 static void
