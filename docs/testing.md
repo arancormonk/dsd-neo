@@ -1115,8 +1115,14 @@ build/dev-debug/tests/dsd-neo_test_analog_replay --frontend none -fA --iq-replay
 
 The host removes its own `--analog-*` options (either `--opt VALUE` or `--opt=VALUE`) before the rest reach the CLI
 parser; any other `--analog-*` argument goes to `dsd-neo` unchanged, so the prefix stays free for real options. Each
-audio block is scored as delivered, 20 ms at the monitor's rate, after the voice band-pass and the gain stage: the
-AGC by default, or a fixed gain with `-n N`.
+audio block is scored as delivered, after the voice band-pass and the gain stage (the AGC by default, or a fixed gain
+with `-n N`). A block is 20 ms of an RTL stream or I/Q replay at its output rate, or 960 samples of audio input at its
+rate (20 ms at 48 kHz); either reaches the sink at 48 kHz (issue #633). The host scores the audio at the sink rate and
+keeps stream time at the monitor's rate. A block
+at another rate arrives in writes of at most 960 samples, all at one stream position; the host takes them as one block
+and scores it whole, so the spectral windows and stream times do not depend on how it was cut
+(`dsd-neo_test_analog_replay --analog-selftest`, CTest `ANALOG_REPLAY_SELFTEST`, checks a block scores the same in one
+write or two).
 
 | Option | Measures |
 | --- | --- |
@@ -1134,6 +1140,7 @@ AGC by default, or a fixed gain with `-n N`.
 | `--analog-probe-hz HZ` | Level at `HZ` (Hann-windowed Goertzel), repeatable up to 8 frequencies: `dbfs`, and `dbc` against the expected tone. |
 | `--analog-probe-{min,max}-{dbc,dbfs} HZ:DB` | Bounds on a probe's level; each also adds the probe. |
 | `--analog-max-tone-lock-ms MS` | Upper bound on `tone_lock_ms`, the stream time of the first received-tone lock. Fails as not measured when no tone locked. |
+| `--analog-max-delivery-error-pct PCT` | How far the length of the delivered audio strays from the input its blocks span, at the sink rate (issue #633). Measured on audio input, where each block spans 960 samples at the monitor's rate; fails as not measured otherwise. |
 | `--analog-scan-row ROW` | Enter row `ROW` of the `-C` channel map before the replay, the way the conventional scanner commits it (its class, then its own options), and print `Scan row applied: ROW <class>; width <W>; squelch <S>`, each with `(row)` when the row sets it. I/Q replay cannot retune, so one row is all a run visits (issue #526). |
 | `--analog-iq-gain-db DB` | Replay a copy of the capture with every sample scaled by `DB` about the cu8 midpoint: the same air, noise included, as a receiver with that much more (or less) gain records it. It works on the committed fixtures only (`tests/fixtures/iq`, opened by their directory entries there, never by a path from the command line or a sidecar). The copy goes to a private temporary directory the host removes at exit, and the host prints `capture scaled by +10.0 dB, N of M bytes clipped`; it stops (exit 2) when more than one byte in a thousand would clip, or when the capture is not a committed fixture. The auto squelch's `_HOT` cases use it, so a hotter receiver costs no committed fixture. |
 
@@ -1363,9 +1370,8 @@ The four per-window targets are #627's. Three timing checks run the C tracker it
 - a carrier under the opening level, which must stay closed;
 - the delay from a carrier drop to the first closed flag, at 40 phases across a window.
 
-Each closed run is held to the path's hold. For EDACS that is four triplets less 85 ms at its output rate, never under
-80 ms. The output rate is the channel rate, as an unresampled replay runs it (the shortest hold), or 48 kHz on a
-device-forced chain. For the encoder it is the VOX's 440 ms.
+Each closed run is held to the path's hold. For EDACS that is four triplets less 85 ms at 48 kHz, about 155 ms at every
+channel rate: EDACS converts what it reads to 48 kHz (issue #633). For the encoder it is the VOX's 440 ms.
 
 | Path | Plans | Noise read as carrier | 6 dB carrier missed | Carrier read as noise | Noise undecided | Longest closed run in a call (learning / known) | Closing delay (learning / known) |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -1379,9 +1385,8 @@ device-forced chain. For the encoder it is the VOX's 440 ms.
 - **The bound:** the 78 ms worst closing delay is what EDACS budgets as `DSD_SQUELCH_CLOSE_DELAY_MS` (85 ms) in its
   release hold. While the floor is learned, a window holding the drop can still read CARRIER, so the next one closes it.
 - **The floor:** the 40 ms a call's first decision takes and the 60 ms of a carrier's onset over a known floor are what
-  EDACS's 80 ms minimum hold (`EDACS_ANALOG_GATE_MIN_HOLD_MS`, two windows) stays clear of. That matters only where four
-  triplets less the bound fall under it: above about 70 kHz, an unresampled replay. A release there comes within the
-  bound, the floor and one triplet of the drop (EDACS reads the run once per triplet).
+  EDACS's 80 ms minimum hold (`EDACS_ANALOG_GATE_MIN_HOLD_MS`, two windows) stays clear of. At 48 kHz, which EDACS runs
+  at whatever rate it reads, four triplets less the bound (155 ms) stay above it.
 - **The noise squelch:** NOISE on the encoder's monitor runs the noise squelch where its plan has a band.
   `tools/noise_squelch_model.py --encoder-only` runs the three encoder plans no NFM plan shares, the 63-tap fallbacks
   at 62.5, 78.1 and 93.75 kHz. All three pass the chosen design: worst wanted-modulation 1st percentile 62.4 dB against
@@ -1393,9 +1398,9 @@ device-forced chain. For the encoder it is the VOX's 440 ms.
 
 | Case | What it pins |
 | --- | --- |
-| `EDACS_GRANT_TUNE_MATRIX` analog-call release cases | An analog group grant plays a call on a fake RTL stream. Under AUTO and NOISE it ends on the gate at or before the level squelch's twin. That holds at drop phases 0, 0.25, 0.5 and 0.99 of a triplet, closing delays of 0, half and all of the bound, and 24 and 48 kHz. The tail after the gate closed is silence. On main the call ran to the read cap. |
+| `EDACS_GRANT_TUNE_MATRIX` analog-call release cases | An analog group grant plays a call on a fake RTL stream. Under AUTO and NOISE it ends on the gate at or before the level squelch's twin. That holds at drop phases 0, 0.25, 0.5 and 0.99 of a triplet, closing delays of 0, half and all of the bound, and 24 and 48 kHz. A 24 kHz stream runs at 48 kHz too (issue #633): a triplet reads 1440 samples, and the gate's flags follow the converted samples. The tail after the gate closed is silence. On main the call ran to the read cap. |
 | `EDACS_GRANT_TUNE_MATRIX` disturbance cases | A 20 or 40 ms open burst in the tail restarts the hold; a 20 or 40 ms closed blip inside the call never ends it. A stream whose status says no gate runs ends nothing on its flags (the watchdog's case). |
-| `EDACS_GRANT_TUNE_MATRIX` real-tracker case | Flags the C tracker made on a carrier dropping at every 2 ms phase of its windows, while learning, end the call within the level squelch's time at 48 kHz. At an unresampled 125 kHz, the call's first, closed window does not end it, and it ends within the closing delay, the hold's 80 ms floor and one triplet of the drop. A one-triplet hold released at once there. |
+| `EDACS_GRANT_TUNE_MATRIX` real-tracker case | Flags the C tracker made on a carrier dropping at every 2 ms phase of its windows, while learning, end the call within the time of the same call under the level squelch, at 48 kHz and on an unresampled 125 kHz replay, which EDACS converts to 48 kHz (issue #633). The call's first, closed window does not end it. |
 | `M17_STATE_DISPATCH` VOX cases | `encodeM17STR()` on a fake RTL stream with both reader hooks and positive power: open flags for 3 reads, then closed. VOX unkeys at read 19 under AUTO and NOISE (11 closed reads, then the LICH boundary). The RF, decoded from the symbol capture, carries the EOS bit on the 19th and last stream frame only, then the EOT marker, with no dead air after it; IP sends its EOTX. Codec2 hears silence once the gate closed. Open flags hold it keyed; a level twin unkeys at 19 too. A manual unkey while VOX still hears a carrier ends that stream with its dead air, and VOX keys a second, well-formed transmission with its own LSF and its own monitored call (two EOS frames and two EOTX on IP). |
 | `M17_STATE_DISPATCH` end-of-stream cases | A keyed exit, a keyed input end, and a manual unkey followed by the input ending each end the stream once, with the EOS frame, the EOT marker and 25 frames of dead air in the decoded RF. On a local output (the audio writes and drains recorded through linker wraps, GNU and Clang off Apple) the end drains after the marker and again after the dead air, and the packet encoder's end does too; a VOX unkey drains nothing then, but the input ending right after it drains once before the output closes. An encoder that never keyed sends no end. |
 | `M17_STATE_DISPATCH` reader case | Closed samples fade to exact silence, and a read is heard while any sample is. LEVEL ignores the flags; with no gate running the flags are not read. |
@@ -1769,7 +1774,8 @@ no-band decision inside a monitor block, at three offsets, leaving the samples b
 The `DECODE_PCM_*` cases run the noise squelch on audio input end to end, in every build (they need no radio support).
 `dsd-neo_test_analog_replay --analog-pcm-tap RATE` turns the case's committed capture into the audio a scanner's
 discriminator tap, or an SDR program with its audio filtering off, would send: a 16 kHz channel filter and a polar
-discriminator, resampled to RATE, written as a 16-bit mono WAV into the host's private temporary directory and run as
+discriminator, resampled to RATE (decimated for a divisor of the capture's 48 kHz, interpolated with the host's own
+windowed sinc for any other rate), written as a 16-bit mono WAV into the host's private temporary directory and run as
 `-i` in place of `--iq-replay` (`--analog-pcm-gain-db` scales it, `--analog-pcm-lowpass-hz` low-passes it first, as an
 SDR program's audio filter would). Stream time is the WAV's read position, so the bounds read as on a replay. No
 fixture is committed for them.
@@ -1777,7 +1783,8 @@ fixture is committed for them.
 | Case | What it pins |
 | --- | --- |
 | `_TAP_BURST`, `_TAP_BURST_HOT` | `nfm_burst_synth` gates as on a radio input: first audible block at 330-380 ms (340 measured), 200-290 ms audible (260), at the tap's level and 10 dB louder. |
-| `_TAP_BURST_16K`, `_TAP_BURST_12K` | The same through the staged rates; 12 kHz keeps 3.8-5.4 kHz of band. |
+| `_TAP_BURST_16K`, `_TAP_BURST_12K` | The same through the staged rates; 12 kHz keeps 3.8-5.4 kHz of band. `_TAP_BURST` and `_16K` also hold the delivered audio within 0.5% of the input it spans. |
+| `_TAP_BURST_44K`, `DECODE_PCM_ANALOG_TAP_44K` | A rate that does not divide 48 kHz (issue #633): the monitor runs at 44.1 kHz and its audio reaches the 48 kHz sink converted, within 0.5% of the input it spans (8.1% short before the fix). The squelch measures the same (261 ms audible); its first audible block starts at 326.5 ms, since a 44.1 kHz block lasts 21.8 ms, so its floor is 315 ms. `DECODE_PCM_ANALOG_NEG_DELIVERY_EXACT` (radio builds) shows the bound fires. |
 | `_TAP_MARGIN` | The burst quiets the band by about 22 dB: under `noise+30` nothing plays. |
 | `_TAP_FLOOR` | Ten seconds of `noise_floor` never open it at `noise+3`. |
 | `_TAP_LOWPASSED` | The same noise low-passed at 3 kHz has no band: the notice comes, the gate stays closed for about a second (1080 ms to the first audible block), then plays as with the squelch off. |

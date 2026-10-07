@@ -412,7 +412,7 @@ is lost, since the call may still resume; a terminator alerts immediately.
 | `per_call_wav` | BOOL | Enable per-call decoded voice WAV output | `false` |
 | `per_call_wav_dir` | PATH | Per-call WAV output directory | `./WAV` |
 | `static_wav` | PATH | Static decoded voice WAV output file | (empty) |
-| `raw_wav` | PATH | Raw (48 kHz) audio WAV output file | (empty) |
+| `raw_wav` | PATH | Raw (48 kHz) audio WAV output file; input at another rate is converted to 48 kHz | (empty) |
 | `rdio_mode` | ENUM | rdio export mode: off/dirwatch/api/both | `off` |
 | `rdio_system_id` | INT | rdio-scanner numeric system ID | `0` |
 | `rdio_api_url` | STRING | rdio API base URL | `http://127.0.0.1:3000` |

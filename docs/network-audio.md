@@ -87,9 +87,12 @@ source audio, and otherwise the next switch to Analog, AM or ProVoice does.
 
 The analog/source monitor stream is:
 
-- Sample rate: **48000 Hz**
+- Sample rate: **48000 Hz**, at every input rate: audio input at another rate is converted to 48 kHz before it is sent
+  (see "The analog outputs" in `docs/cli.md`), EDACS analog voice included
 - Channels: **mono**
 - Sample type: **`s16le`**
+- Datagrams: at most 960 samples (1920 bytes) of monitor or EDACS audio each; the M17 encoder's baseband (`-8` while
+  encoding) goes out in datagrams of 1920 samples (3840 bytes)
 
 ## Listen to UDP Output (Examples)
 
@@ -114,7 +117,9 @@ socat -u UDP-RECV:23458,reuseaddr STDOUT | ffplay -nodisp -f s16le -ar 48000 -ac
 ## stdout Audio Output (`-o -`)
 
 `-o -` writes the same raw decoded audio stream to stdout. The format matches the “Digital decoded voice” description
-above (rate/channels/type depend on mode and `-y`).
+above (rate/channels/type depend on mode and `-y`). Two writers send analog audio instead, as **48 kHz mono `s16le`**:
+EDACS analog voice, at every input rate, and the M17 encoder's baseband with `-8`. ProVoice's decoded voice keeps the
+digital format.
 
 This can be useful when you want to keep transport out of DSD-neo (pipe into another tool, or re-packetize yourself).
 

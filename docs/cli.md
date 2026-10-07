@@ -97,6 +97,14 @@ Tip: If you run with no arguments and no config is loaded, `dsd-neo` starts the 
 - Set sample rate: `-s <rate>` (WAV/TCP/UDP; 48k or 96k typical). A WAV file's header rate holds for that file only:
   an input switch away from it (Input > Switch source in the terminal UI) opens the next file, UDP or TCP input at the
   `-s` rate again (Pulse opens at its own capture rate, as at startup).
+- The analog outputs always run at 48 kHz: the analog and source monitor (local audio and the UDP analog stream), the
+  `-6` raw WAV and EDACS analog voice. Audio input at another rate is converted, so it plays at the input's speed.
+  8, 9.6, 12, 16 and 24 kHz input reaches the decoder at 48 kHz already. Any other rate from 1 kHz to 768 kHz (44.1,
+  22.05, 32, 96 kHz, ...) is converted on the way out, exactly for the usual rates and within 250 ppm for any other,
+  while decoding runs at the input's own rate as before. At a rate outside that range the analog outputs stay silent
+  and an error names the rate. A monitor block whose samples arrived at two rates (an input switch or config apply
+  landing part-way through it) is left out of every analog output, `-6` included. A block that straddles a retune at
+  one rate is not played either, but `-6`, which records the input as it arrives, keeps it.
 
 TCP/UDP PCM input format notes
 
@@ -209,7 +217,8 @@ Windows console runs:
 
 ## Recording & Files
 
-- `-6 <file>` Save raw audio WAV (48k/mono). Large files (≈360 MB/hour)
+- `-6 <file>` Save raw audio WAV (48k/mono): the input before the monitor's filters, converted to 48 kHz when it runs
+  at another rate (see "The analog outputs" under Inputs). Large files (≈360 MB/hour)
 - `-w <file>` Save decoded audio to a single WAV (mutually exclusive with `-P`)
 - `-P` Per‑call WAV saving (auto‑named files in a folder; mutually exclusive with `-w`)
 - Recordings (`-w`, `-P`, `-d`) follow each talkgroup's `record` policy: a lockout (`B`/`DE`), avoid, skip, an
@@ -715,12 +724,12 @@ alone is `auto+10`), so one setting suits every receiver and every channel of a 
   - The M17 encoder's monitor: its VOX keys on the gate, and the closed samples reach the encoder as silence (see
     [M17 Encoding](#m17-encoding)).
   - EDACS analog voice: the tracker runs on the 9600 bit/s FSK path EDACS reads. A call ends once the gate has stayed
-    closed for the level squelch's hold, less the 85 ms the gate can take to close: about 155 ms at 48 kHz and 395 ms
-    at the EDACS presets' 24 kHz. At those rates a carrier that drops ends no later than under a level squelch.
+    closed for the level squelch's hold, less the 85 ms the gate can take to close: about 155 ms. EDACS runs analog
+    voice at 48 kHz whatever rate it reads (the presets' 24 kHz, or an unresampled I/Q replay), and each converted
+    sample keeps the gate's flag, so the hold is the same at every rate, and a carrier that drops ends no later than
+    under a level squelch.
   - The hold is never under 80 ms, two of the squelch's windows, so neither the window a call's first decision takes
-    nor one window read closed ends a call. That floor sets the hold only above about 70 kHz, where an I/Q replay runs
-    unresampled (`DSD_NEO_RESAMP=off`). There a call can end up to the 85 ms, the floor and the triplet it ends on after
-    its carrier drops: about 190 ms at 125 kHz, where a level squelch ends it within about 115 ms.
+    nor one window read closed ends a call.
   - The tracker runs on the EDACS control channel too, a continuous carrier it never takes as its floor, and EDACS
     reads the gate only during a call.
   - The closed samples play as silence. The release watchdog applies only where nothing decides the call: no squelch,
@@ -1013,12 +1022,13 @@ tone setting, and it runs with `-o null` too. Muting by tone is the separate
   detection logs that it is inactive, once each time the input moves to such a rate, and the row is left out. Detection
   reads the input at least every 20 ms of it, whatever the length of the blocks the monitor handles audio in (on PCM
   input 960 samples at the rate the monitor runs at: 20 ms at 48 kHz, which 8, 9.6, 12, 16 and 24 kHz input is brought
-  up to first, but 384 ms at 2500 Hz), so at every supported rate the verdict the decoder publishes trails the times
-  above by at most two such reads. The frontends show it at their next refresh: the decoder hands them a new snapshot at
-  most every 50 ms while it hunts for sync, the terminal redraws at up to about 15 frames a second, and the Qt/Android
-  monitor polls every 250 ms by default, so the screen can trail the published verdict by a few hundred milliseconds
-  more. On RTL input, detection hears the monitor audio after the RTL monitor gain (`vol`), so a gain of 0 leaves it
-  nothing to hear and it reads no carrier; to silence the monitor, mute the output instead.
+  up to first, but 384 ms at 2500 Hz; what the monitor plays is converted to 48 kHz after that), so at every supported
+  rate the verdict the decoder publishes trails the times above by at most two such reads. The frontends show it at
+  their next refresh: the decoder hands them a new snapshot at most every 50 ms while it hunts for sync, the terminal
+  redraws at up to about 15 frames a second, and the Qt/Android monitor polls every 250 ms by default, so the screen can
+  trail the published verdict by a few hundred milliseconds more. On RTL input, detection hears the monitor audio after
+  the RTL monitor gain (`vol`), so a gain of 0 leaves it nothing to hear and it reads no carrier; to silence the
+  monitor, mute the output instead.
 - Externally demodulated audio (PCM inputs): the tone has to survive the producer. Feed the discriminator or flat audio
   with nothing below 300 Hz removed -- no voice high-pass, no de-emphasis that rolls off the low end -- and prefer
   48 kHz. Sound cards and receivers that high-pass their audio output remove CTCSS before DSD-neo sees it. PCM carrier
