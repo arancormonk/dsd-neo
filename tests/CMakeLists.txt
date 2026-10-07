@@ -8610,6 +8610,26 @@ target_include_directories(
 dsd_neo_link_dsp_test(dsd-neo_test_dsp_resampler)
 add_test(NAME DSP_RESAMPLER COMMAND dsd-neo_test_dsp_resampler)
 
+# The converter that takes analog output to the 48 kHz sinks (issue #633).
+add_executable(dsd-neo_test_dsp_rate_converter dsp/test_dsp_rate_converter.c)
+target_include_directories(
+    dsd-neo_test_dsp_rate_converter
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+dsd_neo_link_dsp_test(dsd-neo_test_dsp_rate_converter ${DSD_NEO_TEST_MATH_LIB})
+# A failed filter allocation is injected through a GNU ld --wrap of the aligned allocator.
+if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
+    target_compile_definitions(
+        dsd-neo_test_dsp_rate_converter
+        PRIVATE DSD_NEO_TEST_ALIGNED_MALLOC_WRAP
+    )
+    target_link_options(
+        dsd-neo_test_dsp_rate_converter
+        PRIVATE "LINKER:--wrap=dsd_neo_aligned_malloc"
+    )
+endif()
+add_test(NAME DSP_RATE_CONVERTER COMMAND dsd-neo_test_dsp_rate_converter)
+
 add_executable(dsd-neo_test_dsp_firdes dsp/test_dsp_firdes.c)
 target_include_directories(
     dsd-neo_test_dsp_firdes
