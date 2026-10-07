@@ -767,9 +767,14 @@ replace_previous_dibit_soft(dsd_state* state, const dsd_dibit_soft_t* soft) {
 }
 
 static void DSD_ATTR_USED
-replace_symbol_bin_soft_metric(dsd_state* state, int dibit) {
+replace_symbol_bin_soft_metric(const dsd_opts* opts, dsd_state* state, int dibit) {
     dsd_dibit_soft_t soft;
-    if (state != NULL && state->symbol_replay_has_soft) {
+    if (state != NULL && state->input_fallback_pending && opts->symbolfile == NULL) {
+        /* The capture ended mid-frame and the engine has yet to switch to Pulse (issue #634): the rest of the frame is
+           erasures, not the capture's last dibit repeated at full confidence. */
+        state->symbol_replay_has_soft = 0;
+        fallback_soft_from_dibit(dibit, 0, &soft);
+    } else if (state != NULL && state->symbol_replay_has_soft) {
         soft = state->symbol_replay_soft;
         state->symbol_replay_has_soft = 0;
     } else {
@@ -1066,7 +1071,7 @@ get_dibit_and_analog_signal(dsd_opts* opts, dsd_state* state, int* out_analog_si
     if (opts->audio_in_type == AUDIO_IN_SYMBOL_BIN) {
         //assign dibit from last symbol/dibit read from capture bin
         dibit = state->symbolc;
-        replace_symbol_bin_soft_metric(state, dibit);
+        replace_symbol_bin_soft_metric(opts, state, dibit);
         throttle_symbol_bin_replay(opts, state);
     }
 
@@ -1117,7 +1122,7 @@ getDibitAndSoftSymbol(dsd_opts* opts, dsd_state* state, float* out_soft_symbol) 
 
     if (opts->audio_in_type == AUDIO_IN_SYMBOL_BIN) {
         dibit = state->symbolc;
-        replace_symbol_bin_soft_metric(state, dibit);
+        replace_symbol_bin_soft_metric(opts, state, dibit);
         throttle_symbol_bin_replay(opts, state);
     }
 

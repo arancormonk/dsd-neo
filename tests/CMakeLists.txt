@@ -5269,6 +5269,21 @@ dsd_neo_link_dsp_test(
 )
 add_test(NAME DSP_WAV_INPUT_EOF COMMAND dsd-neo_test_dsp_wav_input_eof)
 
+# A silent input gives way to a queued command only in the frame-sync hunt and only after a stream pause; a lost TCP
+# input is no socket (issue #634).
+add_executable(dsd-neo_test_dsp_input_interrupt dsp/test_dsp_input_interrupt.c)
+target_include_directories(
+    dsd-neo_test_dsp_input_interrupt
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${LIBSNDFILE_INCLUDE_DIR}
+)
+dsd_neo_link_dsp_test(
+    dsd-neo_test_dsp_input_interrupt
+    dsd-neo_test_support
+    ${DSD_NEO_TEST_MATH_LIB}
+    ${LIBSNDFILE_LIBRARIES}
+)
+add_test(NAME DSP_INPUT_INTERRUPT COMMAND dsd-neo_test_dsp_input_interrupt)
+
 # The matched filter switching on, off, or to another filter must not move the
 # symbol grid's content position (issue #444); driven through getSymbol() from a WAV
 add_executable(
@@ -5847,6 +5862,31 @@ if(DSD_HAS_RADIO)
 endif()
 
 if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+    # The engine loop's side of an input switch: an interrupted hunt, a replaced stream, a fallback (issue #634).
+    add_executable(
+        dsd-neo_test_engine_input_boundary
+        engine/test_engine_input_boundary.c
+    )
+    target_include_directories(
+        dsd-neo_test_engine_input_boundary
+        PRIVATE ${PROJECT_SOURCE_DIR}/include
+    )
+    target_link_libraries(
+        dsd-neo_test_engine_input_boundary
+        PRIVATE
+            "-Wl,--wrap=getFrameSync"
+            "-Wl,--wrap=dsd_audio_switch_input"
+            "-Wl,--wrap=dsd_audio_reconfigure_output_for_input_policy"
+            "-Wl,--start-group"
+            dsd-neo_engine
+            "-Wl,--end-group"
+            ${LIBS}
+            dsd-neo_test_support
+    )
+    add_test(
+        NAME ENGINE_INPUT_BOUNDARY
+        COMMAND dsd-neo_test_engine_input_boundary
+    )
     add_executable(
         dsd-neo_test_engine_synced_trunk_scan_tick
         engine/test_engine_synced_trunk_scan_tick.c

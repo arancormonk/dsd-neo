@@ -10,6 +10,7 @@
 #include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/dibit.h>
+#include <dsd-neo/core/frontend_types.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/state.h>
@@ -21,7 +22,6 @@
 #include <dsd-neo/dsp/sps_filters.h>
 #include <dsd-neo/dsp/symbol.h>
 #include <dsd-neo/dsp/symbol_levels.h>
-#include <dsd-neo/io/rigctl_client.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/platform.h>
@@ -60,19 +60,22 @@
 #include "test_support.h"
 
 static int g_cleanup_calls = 0;
-/* What the Connect() stub returns: 0, a failed connection, unless a test hands it a socket. */
-static dsd_socket_t g_connect_socket = 0;
+/* What the TCP reconnect's connect (the net-audio tcp_connect hook) returns: a failed connection unless a test hands it
+   a socket. */
+static dsd_socket_t g_connect_socket = DSD_INVALID_SOCKET;
 
 static int
 symbol_level_matches(float got, uint8_t dibit) {
     return fabsf(got - dsd_symbol_level_from_dibit(dibit)) <= 1e-6f;
 }
 
-dsd_socket_t
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-Connect(char* hostname, int portno) {
-    (void)hostname;
-    (void)portno;
+static dsd_socket_t
+fake_tcp_connect(const char* host, int port, int resolve, dsd_socket_cancel_fn cancelled, void* context) {
+    (void)host;
+    (void)port;
+    (void)resolve;
+    (void)cancelled;
+    (void)context;
     return g_connect_socket;
 }
 
@@ -284,6 +287,40 @@ test_short_file_falls_back_to_legacy_replay(void) {
 
     fclose(opts.symbolfile);
     opts.symbolfile = NULL;
+}
+
+/*
+ * Issue #634: a legacy capture that ends mid-frame in a terminal session finishes the frame on erasures until the
+ * engine switches to Pulse. The two-level readers (D-STAR, ProVoice) take a legacy capture's bit at full confidence, so
+ * the symbol after the end is marked unusable, which dsd_two_level_symbol_reliability() turns into no confidence
+ * (DIBIT_TWO_LEVEL_RELIABILITY), rather than the capture's last bit repeated.
+ */
+static void
+test_ended_legacy_capture_reads_unusable_symbols(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_symbol_replay_fixture(&opts, &state);
+    opts.audio_out_type = 0;
+    opts.frontend_kind = DSD_FRONTEND_TERMINAL;
+    g_cleanup_calls = 0;
+
+    opts.symbolfile = tmpfile();
+    assert(opts.symbolfile != NULL);
+    assert(fputc(3, opts.symbolfile) != EOF);
+    rewind(opts.symbolfile);
+
+    assert(symbol_level_matches(getSymbol(&opts, &state, 1), 3U));
+    assert(state.symbol_replay_symbol_unusable == 0);
+
+    for (int i = 0; i < 3; i++) {
+        assert(getSymbol(&opts, &state, 1) == 0.0f);
+        assert(opts.symbolfile == NULL);
+        assert(state.input_fallback_pending == 1);
+        assert(state.symbol_replay_symbol_unusable == 1);
+    }
+    assert(g_cleanup_calls == 0);
+    state.input_fallback_pending = 0;
+    state.symbol_replay_symbol_unusable = 0;
 }
 
 /*
@@ -2289,6 +2326,7 @@ test_rx_tone_tcp_reconnect_starts_a_new_reception(void) {
     dsd_net_audio_input_hooks hooks;
     DSD_MEMSET(&hooks, 0, sizeof(hooks));
     hooks.tcp_open = fake_tcp_open;
+    hooks.tcp_connect = fake_tcp_connect;
     hooks.tcp_close = fake_tcp_close;
     hooks.tcp_read_sample = fake_tcp_read_sample;
     dsd_net_audio_input_hooks_set(hooks);
@@ -2314,7 +2352,7 @@ test_rx_tone_tcp_reconnect_starts_a_new_reception(void) {
     (void)dsd_socket_close(opts.tcp_sockfd);
     opts.tcp_sockfd = 0;
     opts.tcp_in_ctx = NULL;
-    g_connect_socket = 0;
+    g_connect_socket = DSD_INVALID_SOCKET;
     dsd_analog_rx_test_set_clock(NULL);
     dsd_state_ext_free_all(&state);
     dsd_socket_cleanup();
@@ -4102,6 +4140,7 @@ test_pcm_tcp_reconnect_is_a_new_stream(void) {
     dsd_net_audio_input_hooks hooks;
     DSD_MEMSET(&hooks, 0, sizeof(hooks));
     hooks.tcp_open = fake_tcp_open;
+    hooks.tcp_connect = fake_tcp_connect;
     hooks.tcp_close = fake_tcp_close;
     hooks.tcp_read_sample = fake_tcp_read_sample;
     dsd_net_audio_input_hooks_set(hooks);
@@ -4123,7 +4162,7 @@ test_pcm_tcp_reconnect_is_a_new_stream(void) {
     (void)dsd_socket_close(opts.tcp_sockfd);
     opts.tcp_sockfd = 0;
     opts.tcp_in_ctx = NULL;
-    g_connect_socket = 0;
+    g_connect_socket = DSD_INVALID_SOCKET;
     dsd_analog_rx_test_set_clock(NULL);
     dsd_state_ext_free_all(&state);
     dsd_socket_cleanup();
@@ -4313,6 +4352,7 @@ main(void) {
     dsd_neo_log_set_tap(count_rx_tone_log_lines, NULL);
     test_soft_symbol_replay_record();
     test_short_file_falls_back_to_legacy_replay();
+    test_ended_legacy_capture_reads_unusable_symbols();
     test_symbol_count_wraps_instead_of_overflowing();
     test_debug_replay_reopens_and_reprobes();
     test_missing_symbol_file_returns_error_symbol();

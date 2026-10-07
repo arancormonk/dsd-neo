@@ -11,14 +11,11 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/dsp/analog_audio.h>
 #include <dsd-neo/dsp/symbol.h>
-#include <dsd-neo/io/rigctl_client.h>
 #include <dsd-neo/platform/file_compat.h>
-#include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/shutdown.h>
 #include <math.h>
 #include <sndfile.h>
-#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include "dsd-neo/core/opts_fwd.h"
@@ -29,14 +26,6 @@
 static int g_cleanup_calls = 0;
 static int g_open_audio_input_rc = -1;
 static int g_open_audio_input_calls = 0;
-
-dsd_socket_t
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-Connect(char* hostname, int portno) {
-    (void)hostname;
-    (void)portno;
-    return (dsd_socket_t)0;
-}
 
 int
 // NOLINTNEXTLINE(misc-use-internal-linkage)
@@ -132,12 +121,13 @@ create_one_sample_wav(char* out_path, size_t out_path_size) {
 }
 
 /*
- * An interactive terminal session keeps going on live Pulse input when the file ends. That is
- * a new receiver: the tone the file carried at its end must not stay on screen for the live
- * audio (issue #522), which at the same rate nothing else would tell the analog tap.
+ * An interactive terminal session keeps going on live Pulse input when the file ends. The switch to Pulse replaces the
+ * input under the decoder, so it is the engine's, between frames and under the tick guard (issue #634): a frame-sync
+ * hunt read hands it over at once, with no symbol and no shutdown, and the engine's switch starts the new reception
+ * (ENGINE_INPUT_FALLBACK, which also checks the received tone goes with the file, issue #522).
  */
 static void
-test_eof_onto_live_input_clears_received_tone(void) {
+test_eof_in_the_hunt_hands_the_fallback_to_the_engine(void) {
     char wav_path[DSD_TEST_PATH_MAX];
     assert(create_one_sample_wav(wav_path, sizeof(wav_path)) == 0);
 
@@ -163,25 +153,68 @@ test_eof_onto_live_input_clears_received_tone(void) {
     g_open_audio_input_rc = 0;
     g_open_audio_input_calls = 0;
 
-    /* A tone the tap locked on the file. */
-    state.analog_rx.carrier_open = 1;
-    state.analog_rx.tone_state = DSD_ANALOG_TONE_STATE_LOCKED;
-    state.analog_rx.tone_kind = DSD_ANALOG_TONE_KIND_CTCSS;
-    state.analog_rx.ctcss_tenths_hz = 1000;
-    const uint32_t seeded = state.analog_rx.generation;
-
     assert(fabsf(getSymbol(&opts, &state, 0) - 1234.0f) < 1e-3f);
-    (void)getSymbol(&opts, &state, 0);
-    assert(g_open_audio_input_calls == 1);
-    assert(g_cleanup_calls == 0 && exitflag == 0);
-    assert(opts.audio_in_type == AUDIO_IN_PULSE);
+    assert(state.input_fallback_pending == 0 && state.input_interrupted == 0);
+    assert(getSymbol(&opts, &state, 0) == 0.0f);
+    assert(state.input_fallback_pending == 1);
+    assert(state.input_interrupted == 1);
     assert(opts.audio_in_file == NULL);
-    assert(state.analog_rx.tone_state != DSD_ANALOG_TONE_STATE_LOCKED);
-    assert(state.analog_rx.tone_kind == DSD_ANALOG_TONE_KIND_NONE);
-    assert(state.analog_rx.ctcss_tenths_hz == 0 && state.analog_rx.carrier_open == 0);
-    assert(state.analog_rx.generation != seeded);
+    assert(g_cleanup_calls == 0 && exitflag == 0);
+    /* The reader opens nothing itself: the engine switches. */
+    assert(g_open_audio_input_calls == 0);
+    assert(opts.audio_in_type == AUDIO_IN_WAV);
 
-    g_open_audio_input_rc = -1;
+    /* Read again before the engine got to it: still handed over, still no shutdown. */
+    state.input_interrupted = 0;
+    assert(getSymbol(&opts, &state, 0) == 0.0f);
+    assert(state.input_interrupted == 1 && state.input_fallback_pending == 1);
+    assert(g_cleanup_calls == 0 && exitflag == 0);
+
+    free(opts.audio_in_file_info);
+    opts.audio_in_file_info = NULL;
+    remove(wav_path);
+}
+
+/* A file that ends while a frame is being decoded (getSymbol() with sync, under the guarded processFrame()) gives the
+   rest of the frame silence: nothing of the new input is read into a frame of the old one (issue #634). */
+static void
+test_eof_in_frame_decoding_reads_silence_until_the_hunt(void) {
+    char wav_path[DSD_TEST_PATH_MAX];
+    assert(create_one_sample_wav(wav_path, sizeof(wav_path)) == 0);
+
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.audio_in_file_info = (SF_INFO*)calloc(1, sizeof(*opts.audio_in_file_info));
+    assert(opts.audio_in_file_info != NULL);
+    opts.audio_in_file = sf_open(wav_path, SFM_READ, opts.audio_in_file_info);
+    assert(opts.audio_in_file != NULL);
+    opts.audio_in_type = AUDIO_IN_WAV;
+    opts.audio_out_type = 0;
+    opts.frontend_kind = DSD_FRONTEND_TERMINAL;
+    opts.input_volume_multiplier = 1;
+    opts.wav_sample_rate = 48000;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "%s", wav_path);
+    state.samplesPerSymbol = 1;
+    state.symbolCenter = 0;
+    state.rf_mod = 0;
+    exitflag = 0;
+    g_cleanup_calls = 0;
+
+    /* The file's one sample in the hunt; it ends in the frame that follows. */
+    assert(fabsf(getSymbol(&opts, &state, 0) - 1234.0f) < 1e-3f);
+    for (int i = 0; i < 4; i++) {
+        assert(getSymbol(&opts, &state, 1) == 0.0f);
+        assert(state.input_fallback_pending == 1);
+        assert(state.input_interrupted == 0);
+        assert(g_cleanup_calls == 0 && exitflag == 0);
+    }
+    assert(opts.audio_in_file == NULL);
+    /* The frame over, the hunt's first read hands the fallback over. */
+    assert(getSymbol(&opts, &state, 0) == 0.0f);
+    assert(state.input_interrupted == 1);
+
     free(opts.audio_in_file_info);
     opts.audio_in_file_info = NULL;
     remove(wav_path);
@@ -189,7 +222,8 @@ test_eof_onto_live_input_clears_received_tone(void) {
 
 int
 main(void) {
-    test_eof_onto_live_input_clears_received_tone();
+    test_eof_in_the_hunt_hands_the_fallback_to_the_engine();
+    test_eof_in_frame_decoding_reads_silence_until_the_hunt();
 
     char wav_path[DSD_TEST_PATH_MAX];
     assert(create_one_sample_wav(wav_path, sizeof(wav_path)) == 0);

@@ -98,12 +98,18 @@ dsd_request_shutdown(dsd_opts* opts, dsd_state* state) {
     g_cleanup_calls++;
 }
 
+/* The RTL output rescale's requests: from which rate to which (issue #634). */
+static int g_rescale_calls = 0;
+static int g_rescale_from_hz = 0;
+static int g_rescale_to_hz = 0;
+
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 dsd_audio_rescale_symbol_timing(dsd_state* state, int old_rate_hz, int new_rate_hz) {
     (void)state;
-    (void)old_rate_hz;
-    (void)new_rate_hz;
+    g_rescale_calls++;
+    g_rescale_from_hz = old_rate_hz;
+    g_rescale_to_hz = new_rate_hz;
 }
 
 double
@@ -709,6 +715,37 @@ expect_from_batch(const char* label, const char* what, float symbol, float base,
                     base + (float)span);
         g_failures++;
     }
+}
+
+/*
+ * Issue #634: an input switch back to the radio tells the RTL output rescale which rate the symbol timing is in. Here the
+ * monitor runs at 48 kHz, where the rescale already is; a 96 kHz PCM input moved the timing to its own units; the
+ * return to the radio notes 96 kHz (dsd_symbol_note_timing_rate()), so the first symbol on the 48 kHz monitor rescales
+ * the timing from 96 kHz to 48 kHz. A rescale that still believed the timing was in 48 kHz units would leave it at
+ * twice the monitor's samples a symbol.
+ */
+static void
+test_return_to_radio_rescales_from_the_pcm_rate(dsd_opts* opts, dsd_state* state, void* rtl_context) {
+    reset_stream_fixture();
+    reset_decoder_fixture(opts, state, rtl_context);
+    g_output_kind = RTL_STREAM_OUTPUT_AUDIO_MONITOR;
+    g_output_rate_hz = 48000U;
+    state->rf_mod = 0;
+    state->samplesPerSymbol = 10;
+    state->symbolCenter = 4;
+    dsd_symbol_note_timing_rate(48000);
+    g_rescale_calls = 0;
+    (void)getSymbol(opts, state, 0);
+    expect_int("radio return", "no rescale at the rate the timing is in", g_rescale_calls, 0);
+
+    /* The 96 kHz PCM input, and the return to the radio. */
+    dsd_symbol_note_timing_rate(96000);
+    (void)getSymbol(opts, state, 0);
+    expect_int("radio return", "one rescale", g_rescale_calls, 1);
+    expect_int("radio return", "from the pcm input's rate", g_rescale_from_hz, 96000);
+    expect_int("radio return", "to the monitor's", g_rescale_to_hz, 48000);
+    (void)getSymbol(opts, state, 0);
+    expect_int("radio return", "and only once", g_rescale_calls, 1);
 }
 
 static const char*
@@ -1406,6 +1443,7 @@ main(void) {
     test_analog_block_follows_kind_switch(&opts, &state, &fake_rtl_context);
     test_analog_block_follows_typed_row_leave(&opts, &state, &fake_rtl_context);
     test_digital_decoder_collects_any_monitor(&opts, &state, &fake_rtl_context);
+    test_return_to_radio_rescales_from_the_pcm_rate(&opts, &state, &fake_rtl_context);
     dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
 
     dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){0});

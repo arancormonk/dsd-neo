@@ -17,8 +17,12 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/platform/timing.h>
 #include <dsd-neo/protocol/m17/m17.h>
+#include <dsd-neo/runtime/control_pump.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/m17_udp_hooks.h>
 #include <dsd-neo/runtime/net_audio_input_hooks.h>
@@ -2493,6 +2497,85 @@ encoder_udp_tone_db(double hz, double amplitude, int rate_hz, int volume, double
     return level;
 }
 
+static int g_silent_pending = 0;
+static int g_silent_waits = 0;
+static int g_silent_spurious_first = 0;       /* the first wait comes back at once, empty, as a spurious wakeup can */
+static uint64_t g_silent_first_empty_ms = 0U; /* when the first wait came back empty */
+
+static int
+fake_controls_pending(void) {
+    return g_silent_pending;
+}
+
+static int
+fake_udp_silent_wait(dsd_opts* opts, int16_t* out, unsigned int timeout_ms) {
+    (void)opts;
+    (void)out;
+    g_silent_waits++;
+    if (g_silent_waits > 1 || !g_silent_spurious_first) {
+        dsd_sleep_ms(timeout_ms);
+    }
+    if (g_silent_waits == 1) {
+        g_silent_first_empty_ms = dsd_realtime_mono_ms();
+    }
+    return -1;
+}
+
+/* Issue #634: the stream encoder reads its UDP input a block at a time and applies queued commands between blocks. A
+   silent input whose silence lasts a stream pause gives the block up for a queued command (2, nothing read), so the
+   encoder applies it and reads the block again, and encodes nothing of the block it gave up. */
+static int
+test_encoder_silent_udp_gives_way_to_a_queued_command(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+    opts.audio_in_type = AUDIO_IN_UDP;
+    opts.input_volume_multiplier = 1;
+    m17_encoder_input in;
+    m17_encoder_input_init(&in, 8000);
+    dsd_net_audio_input_hooks hooks;
+    DSD_MEMSET(&hooks, 0, sizeof hooks);
+    hooks.udp_read_sample_wait = fake_udp_silent_wait;
+    dsd_net_audio_input_hooks_set(hooks);
+    dsd_runtime_set_controls_pending(fake_controls_pending);
+    g_silent_pending = 1;
+    g_silent_waits = 0;
+    short out[160];
+    int rc = 0;
+    if (m17_encoder_read_block(&opts, &state, &in, out, 160U) != 2) {
+        DSD_FPRINTF(stderr, "silent udp: the block was not given up for the queued command\n");
+        rc = 1;
+    }
+    /* Not before the silence lasted a stream pause, counted from the first wait that came back empty. It is timed, not
+       counted in waits: a loaded host's 100 ms sleeps run long, and fewer of them make up the pause. */
+    const uint64_t silent_ms = g_silent_waits > 1 ? dsd_realtime_mono_ms() - g_silent_first_empty_ms : 0U;
+    if (silent_ms < DSD_ANALOG_STREAM_PAUSE_MIN_MS) {
+        DSD_FPRINTF(stderr, "silent udp: gave up after %d waits, %llu ms of silence\n", g_silent_waits,
+                    (unsigned long long)silent_ms);
+        rc = 1;
+    }
+    /* A first wait that came back at once (a spurious wakeup) is no silence: the pause is still whole. */
+    g_silent_waits = 0;
+    g_silent_spurious_first = 1;
+    const uint64_t start_ms = dsd_realtime_mono_ms();
+    if (m17_encoder_read_block(&opts, &state, &in, out, 160U) != 2) {
+        DSD_FPRINTF(stderr, "silent udp after a spurious wakeup: the block was not given up\n");
+        rc = 1;
+    }
+    const uint64_t waited_ms = dsd_realtime_mono_ms() - start_ms;
+    if (waited_ms < DSD_ANALOG_STREAM_PAUSE_MIN_MS) {
+        DSD_FPRINTF(stderr, "silent udp after a spurious wakeup: gave up after %llu ms\n",
+                    (unsigned long long)waited_ms);
+        rc = 1;
+    }
+    g_silent_spurious_first = 0;
+    g_silent_pending = 0;
+    dsd_runtime_set_controls_pending(NULL);
+    dsd_net_audio_input_hooks_set((dsd_net_audio_input_hooks){0});
+    return rc;
+}
+
 /* Issue #618: every encoder input keeps one sample in INPUT_RATE / 8000, low-passed first. A PCM microphone at 48 kHz
    passes 1 kHz whole and takes a 7 kHz tone, which used to fold onto 1 kHz at full level, more than 20 dB down; at
    8 kHz nothing is filtered; a hot input saturates at full scale instead of wrapping. */
@@ -2583,6 +2666,7 @@ test_encoder_rtl_input_reaches_pcm_scale(void) {
 int
 main(void) {
     int err = 0;
+    err |= test_encoder_silent_udp_gives_way_to_a_queued_command();
     err |= test_embedded_lich_chunks_store_and_finalize_lsf_state();
     err |= test_embedded_lich_rejects_invalid_counter_and_gates_bad_lsf_crc();
     err |= test_rf_lsf_crc_policy_preserves_relaxed_decode();

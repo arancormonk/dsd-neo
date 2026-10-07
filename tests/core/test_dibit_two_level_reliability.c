@@ -168,6 +168,10 @@ main(void) {
     rc |= expect_reliability("soft capture, a real 0 off-centre", opts, state, 0.0f, 255);
     state->symbol_replay_symbol_unusable = 1;
     rc |= expect_reliability("soft capture, an unusable symbol off-centre", opts, state, 0.0f, 0);
+    /* A legacy capture's bits carry full confidence, but not the symbols after it ended mid-frame (issue #634). */
+    state->symbol_replay_format = DSD_SYMBOL_REPLAY_FORMAT_LEGACY;
+    rc |= expect_reliability("legacy capture, an unusable symbol", opts, state, 0.0f, 0);
+    state->symbol_replay_format = DSD_SYMBOL_REPLAY_FORMAT_SOFT;
     set_thresholds(state, -1.0f, 1.0f, 3.0f);
     rc |= expect_reliability("soft capture, an unusable symbol between the thresholds", opts, state, 0.0f, 0);
     opts->audio_in_type = AUDIO_IN_SYMBOL_FLT;

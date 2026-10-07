@@ -29,6 +29,7 @@
 #include <dsd-neo/crypto/aes.h>
 #include <dsd-neo/crypto/ecdsa.h>
 #include <dsd-neo/dsp/analog_audio.h>
+#include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/dsp/analog_voice.h>
 #include <dsd-neo/fec/viterbi.h>
 #include <dsd-neo/platform/audio.h>
@@ -39,6 +40,7 @@
 #include <dsd-neo/protocol/m17/m17_tables.h>
 #include <dsd-neo/protocol/nxdn/nxdn_convolution.h>
 #include <dsd-neo/runtime/control_pump.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/m17_udp_hooks.h>
@@ -1863,7 +1865,36 @@ enum m17_str_read_result {
     M17_STR_READ_ERROR = -1,
     M17_STR_READ_STOP = 0,
     M17_STR_READ_OK = 1,
+    /* The input was silent for a stream pause while a command waited (issue #634): nothing was read, and the encoder
+       applies the command before it reads the block again. */
+    M17_STR_READ_AGAIN = 2,
 };
+
+enum { M17_STR_INPUT_WAIT_SLICE_MS = 100 };
+
+/* Wait for the next UDP sample, leaving the wait for a queued command once the input has been silent for a stream
+   pause (DSD_ANALOG_STREAM_PAUSE_MIN_MS), counted from the first wait that came back empty, as the decoder's frame-sync
+   hunt does (issue #634). Returns 1 with a sample, 0 when the input stopped, -1 when a command waits. */
+static int
+m17_str_wait_udp_sample(dsd_opts* opts, int16_t* out) {
+    uint64_t silent_since_ms = 0U;
+    int silent = 0;
+    for (;;) {
+        const int got = dsd_net_audio_input_hook_udp_read_sample_wait(opts, out, M17_STR_INPUT_WAIT_SLICE_MS);
+        if (got >= 0) {
+            return got;
+        }
+        const uint64_t now_ms = dsd_realtime_mono_ms();
+        if (!silent) {
+            silent = 1;
+            silent_since_ms = now_ms;
+            continue;
+        }
+        if (now_ms - silent_since_ms >= DSD_ANALOG_STREAM_PAUSE_MIN_MS && dsd_runtime_controls_pending()) {
+            return -1;
+        }
+    }
+}
 
 /* One input sample through the anti-alias low-pass, which runs at the input rate; the reader keeps the last of every dec
    samples. Without it, audio above 4 kHz at the input rate aliased into the voice band (issue #618). */
@@ -1945,7 +1976,11 @@ m17_str_read_block_udp(dsd_opts* opts, m17_encoder_input* in, short* out, size_t
     for (size_t i = 0; i < nsam; i++) {
         for (int j = 0; j < in->dec; j++) {
             short s = 0;
-            if (!dsd_net_audio_input_hook_udp_read_sample(opts, (int16_t*)&s)) {
+            const int got = m17_str_wait_udp_sample(opts, (int16_t*)&s);
+            if (got < 0) {
+                return M17_STR_READ_AGAIN;
+            }
+            if (got == 0) {
                 DSD_FPRINTF(stderr, "UDP input stopped.\n");
                 dsd_exitflag_store(1);
                 return M17_STR_READ_STOP;
@@ -2562,6 +2597,10 @@ m17_str_run_iteration(m17_str_ctx* ctx) {
 
     dsd_runtime_pump_controls(ctx->opts, ctx->state);
     const int read_result = m17_str_read_audio_inputs(ctx);
+    if (read_result == M17_STR_READ_AGAIN) {
+        /* Nothing is encoded from the block the wait gave up; the next iteration pumps the command first. */
+        return M17_STR_READ_OK;
+    }
     if (read_result != M17_STR_READ_OK) {
         return read_result;
     }

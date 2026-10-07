@@ -5,6 +5,7 @@
 
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/audio_filters.h>
+#include <dsd-neo/core/audio_input_switch.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/channel_mode.h>
 #include <dsd-neo/core/constants.h>
@@ -623,6 +624,8 @@ dsd_engine_setup_parse_tcp_input(dsd_opts* opts, dsd_state* state) {
         LOG_INFO("NOTICE: %d \n", opts->tcp_portno);
         opts->tcp_sockfd = Connect(opts->tcp_hostname, opts->tcp_portno);
         if (opts->tcp_sockfd != DSD_INVALID_SOCKET) {
+            /* The input's reconnect goes back to the address this connection went to (issue #634). */
+            ConnectKeepTcpAudioAddress(opts->tcp_hostname, opts->tcp_portno);
             opts->audio_in_type = AUDIO_IN_TCP;
             LOG_INFO("NOTICE: TCP Connection Success!\n");
             return 0;
@@ -2580,6 +2583,12 @@ live_scanner_process_synced_frames(dsd_opts* opts, dsd_state* state, dsd_engine_
             break;
         }
         dsd_runtime_pump_controls(opts, state);
+        /* A command replaced the input (issue #634): what follows is another stream, which the outer loop starts with
+           the end of this reception. */
+        if (state->input_boundary) {
+            state->synctype = DSD_SYNC_NONE;
+            break;
+        }
         if (!dsd_engine_channel_scan_service_sync(opts, state)) {
             break;
         }
@@ -2594,6 +2603,71 @@ live_scanner_process_synced_frames(dsd_opts* opts, dsd_state* state, dsd_engine_
     }
 }
 
+/* Whether the input that ended still runs, closed: a command pumped since it ended (in the synced-frames loop, say) may
+   have replaced it, and the fallback never replaces the input chosen then. */
+static int
+dsd_engine_ended_input_runs(const dsd_opts* opts) {
+    switch (opts->audio_in_type) {
+        case AUDIO_IN_WAV: return opts->audio_in_file == NULL;
+        case AUDIO_IN_TCP: return opts->tcp_in_ctx == NULL;
+        case AUDIO_IN_SYMBOL_BIN: return opts->symbolfile == NULL;
+        default: return 0;
+    }
+}
+
+/* The file or TCP input ended (state->input_fallback_pending, which the symbol reader sets): the session goes on with
+   the configured Pulse input, switched to here between frames and under the tick guard, as a menu switch is (issue
+   #634). The session ends when Pulse does not open, as it did when the reader opened Pulse itself: returns -1 then. */
+static int
+dsd_engine_input_fallback(dsd_opts* opts, dsd_state* state) {
+    if (!state->input_fallback_pending) {
+        return 0;
+    }
+    state->input_fallback_pending = 0;
+    if (!dsd_engine_ended_input_runs(opts)) {
+        return 0;
+    }
+    /* A new input is a new receiver (issue #522): the tone the file or TCP stream carried does
+       not describe live Pulse audio, which at the same rate nothing else would tell the tap. */
+    dsd_analog_rx_reset(state);
+    dsd_audio_input_request request;
+    DSD_MEMSET(&request, 0, sizeof request);
+    request.kind = DSD_AUDIO_INPUT_PULSE;
+    request.path = NULL;
+    request.tcp_sockfd = DSD_INVALID_SOCKET;
+    /* The output follows Pulse under the guard too: the watchdog may flush audio into the stream a reconfigure
+       closes. */
+    p25_sm_tick_guard_enter();
+    const int switched = dsd_audio_switch_input(opts, state, &request);
+    const int output_failed =
+        switched == DSD_AUDIO_INPUT_SWITCHED && dsd_audio_reconfigure_output_for_input_policy(opts) != 0;
+    p25_sm_tick_guard_leave();
+    if (switched != DSD_AUDIO_INPUT_SWITCHED || output_failed) {
+        dsd_request_shutdown(opts, state);
+        return -1;
+    }
+    state->input_boundary = 1;
+    return 0;
+}
+
+/* The stream the decoder read was replaced (state->input_boundary, issue #634): noCarrier() has ended the reception,
+   and every call it ended as a fade, which the next transmission could resume, ends as a teardown instead, since
+   nothing the new stream carries continues it. Nor does the hunt or the symbol grid carry the old stream into it: its
+   acquisition proof, votes, history and slicer windows go, as at a scan row boundary
+   (dsd_frame_sync_reset_acquisition()), and so do the matched filter's history and the raw samples its seam would
+   replay, as at the start of a run (issue #444). */
+static void
+dsd_engine_end_input_boundary(dsd_opts* opts, dsd_state* state) {
+    if (!state->input_boundary) {
+        return;
+    }
+    state->input_boundary = 0;
+    no_carrier_finalize_canonical_calls(opts, state, 1);
+    dsd_frame_sync_reset_acquisition(opts, state, opts->trunk_scan_enabled != 1);
+    init_rrc_filter_memory();
+    dsd_symbol_matched_filter_reset(state);
+}
+
 static void
 live_scanner_main_loop(dsd_opts* opts, dsd_state* state) {
     dsd_engine_slicer_threshold_cache threshold_cache;
@@ -2602,6 +2676,13 @@ live_scanner_main_loop(dsd_opts* opts, dsd_state* state) {
     dsd_engine_slicer_threshold_cache_init(&threshold_cache);
 
     while (!dsd_exitflag_load()) {
+        /* A hunt read that left a silent input's wait for a queued command (issue #634) ended no reception: unless the
+           command replaced the input, the pass resumes without noCarrier(). */
+        const int interrupted = state->input_interrupted;
+        state->input_interrupted = 0;
+        if (dsd_engine_input_fallback(opts, state) != 0) {
+            continue;
+        }
         dsd_runtime_pump_controls(opts, state);
         p25_sm_try_tick(opts, state);
         if (opts->trunk_scan_enabled != 1 && p25_sm_tick_guard_try_enter()) {
@@ -2620,7 +2701,10 @@ live_scanner_main_loop(dsd_opts* opts, dsd_state* state) {
             dsd_sleep_ms(1);
             continue;
         }
-        noCarrier(opts, state);
+        if (!interrupted || state->input_boundary) {
+            noCarrier(opts, state);
+            dsd_engine_end_input_boundary(opts, state);
+        }
         if (dsd_engine_channel_scan_pending(opts, state)) {
             dsd_engine_scan_y_timing_tick(opts, state, dsd_decode_now_mono_s(), dsd_decode_now_realtime_s());
             dsd_sleep_ms(1);
