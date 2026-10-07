@@ -48,8 +48,9 @@ Usage:
                                          [--noise-windows N]
 
 Writes report.md and report.json under DIR (default build/squelch_paths_model/) and prints the verdict; exits 1 when a
-plan either path runs misses a target and is not one of ACCEPTED, the plans accepted with a reason. The full run takes
-about 20 minutes on 14 workers; --quick about a minute, too few windows to resolve 1e-4. Offline; CI does not run it.
+plan either path runs misses a target, unless it is one of ACCEPTED_MISS and its one failure is a 6 dB carrier miss
+rate within the rate accepted for it. The full run takes about 20 minutes on 14 workers; --quick about a minute, too
+few windows to resolve 1e-4. Offline; CI does not run it.
 """
 
 from __future__ import annotations
@@ -106,13 +107,18 @@ TIMING_LEARN_CNRS_DB = (6.0, 10.0, 20.0)
 TIMING_DELAY_PHASES = 40
 BELOW_OPEN_LIMIT = 0.01
 
-# Plans accepted short of a target, with why. tools/squelch_model.py accepted the same forced filter (the channel LPF
-# on at an 8 kHz-class rate, where its legacy design is all the channel there is) at 1.1 % for the analog monitor.
-ACCEPTED = {
+# Plans accepted with a 6 dB carrier miss rate over MISS_TARGET, up to the rate given, and why. Only that target is
+# relaxed: every other failure of the plan stays fatal. tools/squelch_model.py accepted the same forced filter (the
+# channel LPF on at an 8 kHz-class rate, where its legacy design is all the channel there is) at 1.1 % for the analog
+# monitor.
+ACCEPTED_MISS = {
     ("encoder", "sddc-bw4k->7812", "legacy WIDE, DSD_NEO_CHANNEL_LPF=1"): (
-        "the channel LPF forced on at a 7.8 kHz channel misses 6 dB carriers a little over 1 %, as the analog "
-        "monitor's forced 8 kHz plan does (1.1 %, accepted by tools/squelch_model.py); its longest closed run inside "
-        "a call is one window, far under the VOX's 440 ms"
+        0.015,
+        (
+            "the channel LPF forced on at a 7.8 kHz channel misses 6 dB carriers a little over 1 %, as the analog "
+            "monitor's forced 8 kHz plan does (1.1 %, accepted by tools/squelch_model.py); its timing checks pass, its "
+            "longest closed run inside a call far under the VOX's 440 ms"
+        ),
     ),
 }
 
@@ -572,12 +578,14 @@ def summarize(filters: list[dict], results: dict) -> list[dict]:
             **{k: v for k, v in timing.items() if k not in ("kind", "key")},
         }
         reasons = []
+        miss_reason = None
         if not row["plan_valid"]:
             reasons.append("no valid plan")
         if row["false_carrier"] > sm.FALSE_CARRIER_TARGET:
             reasons.append(f"noise read as carrier {row['false_carrier']:.2e}")
         if row["miss_cnr6"] is not None and row["miss_cnr6"] > sm.MISS_TARGET:
-            reasons.append(f"6 dB carrier missed {row['miss_cnr6']:.2%}")
+            miss_reason = f"6 dB carrier missed {row['miss_cnr6']:.2%}"
+            reasons.append(miss_reason)
         if row["pollution_ge6"] is not None and row["pollution_ge6"] > sm.POLLUTION_TARGET:
             reasons.append(f"carrier read as noise {row['pollution_ge6']:.2e}")
         if row["noise_undecided"] > sm.NOISE_UNDECIDED_TARGET:
@@ -590,9 +598,11 @@ def summarize(filters: list[dict], results: dict) -> list[dict]:
             reasons.append(f"opened {row['below_open_worst']:.1%} under the threshold")
         if f["path"] == "edacs" and max(row["delay_learn_s"], row["delay_known_s"]) * 1000.0 > L_MAX_MS:
             reasons.append(f"closing delay {max(row['delay_learn_s'], row['delay_known_s']) * 1000:.0f} ms")
-        accepted = ACCEPTED.get((f["path"], f["plan"].name, f["label"]))
+        accepted = ACCEPTED_MISS.get((f["path"], f["plan"].name, f["label"]))
         row["reasons"] = reasons
-        row["accepted"] = accepted if reasons and accepted else None
+        # Accepted only when the miss rate is the plan's one failure, and within the rate accepted for it.
+        only_miss = reasons == [miss_reason] and miss_reason is not None
+        row["accepted"] = accepted[1] if accepted and only_miss and row["miss_cnr6"] <= accepted[0] else None
         row["pass"] = not reasons or row["accepted"] is not None
         rows.append(row)
     return rows
