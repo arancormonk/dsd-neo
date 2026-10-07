@@ -19,6 +19,11 @@ void dsd_audio_write_wav_short_block(SNDFILE* file, const short* samples, sf_cou
  * crypto and reverse-mute rule the float and stereo paths apply. 1 = muted. */
 int dsd_audio_mono_output_muted(const dsd_opts* opts, const dsd_state* state);
 
+/* Symbol replay pacing, shared by the startup open and the runtime input switch (dsd_audio_input_switch.c): a new
+ * input starts unpaced, and a `.bin` symbol capture is replayed at symbol pace with its header read afresh. */
+void dsd_audio_reset_symbol_replay_pacing(dsd_state* state);
+void dsd_audio_enable_bin_symbol_replay(dsd_state* state);
+
 static inline int
 dsd_audio_input_type_uses_async_output(int audio_in_type, int playfiles, const char* audio_in_dev, int m17decoderip) {
     if (playfiles == 1) {

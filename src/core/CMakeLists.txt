@@ -9,6 +9,7 @@ target_sources(
     dsd-neo_core
     PRIVATE
         audio/dsd_audio.c
+        audio/dsd_audio_input_switch.c
         audio/dsd_audio2.c
         audio/dispatch.c
         audio/dsd_audio_gate.c

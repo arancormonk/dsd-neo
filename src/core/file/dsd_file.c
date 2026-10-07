@@ -887,7 +887,11 @@ openSymbolOutFile(dsd_opts* opts, dsd_state* state) {
         if (fwrite(header, 1, sizeof(header), opts->symbol_out_f) != sizeof(header)) {
             LOG_ERROR("Error, couldn't write symbol capture header to %s\n", opts->symbol_out_file);
             closeSymbolOutFile(opts, state);
+            return;
         }
+        /* The name this capture is written under: a rotation or a new capture renames symbol_out_file before it
+           closes this one (issue #634). */
+        DSD_SNPRINTF(opts->symbol_out_open_path, sizeof opts->symbol_out_open_path, "%s", opts->symbol_out_file);
     }
 }
 
@@ -898,7 +902,12 @@ closeSymbolOutFile(dsd_opts* opts, dsd_state* state) {
     if (opts->symbol_out_f) {
         fclose(opts->symbol_out_f);
         opts->symbol_out_f = NULL;
+        /* A capture that got as far as its header is what Replay last replays (issue #634). */
+        if (opts->symbol_out_open_path[0] != '\0') {
+            DSD_SNPRINTF(opts->symbol_capture_last, sizeof opts->symbol_capture_last, "%s", opts->symbol_out_open_path);
+        }
     }
+    opts->symbol_out_open_path[0] = '\0';
 }
 
 void

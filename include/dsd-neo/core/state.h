@@ -1550,6 +1550,18 @@ struct dsd_state {
     int use_throttle;                        //only use throttle if set to 1
     uint64_t symbol_replay_next_deadline_ns; //0 when uninitialized
 
+    /* Input switches on the decoder thread (issue #634).
+       input_interrupted: a frame-sync hunt read gave way to a queued command once its input had been silent for a
+       stream pause; getFrameSync() returns at once and the engine loop applies the command.
+       input_boundary: the stream the decoder read was replaced (a switch, a rollback that restarted it, a loss, a
+       fallback); the engine ends the reception (noCarrier() and an explicit end of every call) before it decodes the
+       new stream.
+       input_fallback_pending: the file or TCP input ended; the frame being decoded reads zeros until it ends, and the
+       engine loop then switches to the Pulse input, unless a command replaced the ended input meanwhile. */
+    int input_interrupted;
+    int input_boundary;
+    int input_fallback_pending;
+
     //dmr trunking stuff
     int dmr_rest_channel;
     int dmr_mfid;     //just when 'fid' is used as a manufacturer ID and not a feature set id

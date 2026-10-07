@@ -498,6 +498,18 @@ dsd_neo_add_public_header_smoke_test(
   C
 )
 dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_core_audio_input_switch
+  HEADERS_PUBLIC_CORE_AUDIO_INPUT_SWITCH
+  dsd-neo/core/audio_input_switch.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_core_audio_input_switch_cxx
+  HEADERS_PUBLIC_CORE_AUDIO_INPUT_SWITCH_CXX
+  dsd-neo/core/audio_input_switch.h
+  CXX
+)
+dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_runtime_analog_channel
   HEADERS_PUBLIC_RUNTIME_ANALOG_CHANNEL
   dsd-neo/runtime/analog_channel.h
@@ -5090,6 +5102,24 @@ target_include_directories(
 target_link_libraries(dsd-neo_test_core_audio_input_rate PRIVATE dsd-neo_core)
 add_test(NAME CORE_AUDIO_INPUT_RATE COMMAND dsd-neo_test_core_audio_input_rate)
 
+# A runtime input switch opens the new input before it closes the running one, and one that cannot open changes
+# nothing (issue #634).
+add_executable(
+    dsd-neo_test_core_audio_input_switch
+    core/test_core_audio_input_switch.c
+)
+target_include_directories(
+    dsd-neo_test_core_audio_input_switch
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/tests/test_support
+)
+target_link_libraries(dsd-neo_test_core_audio_input_switch PRIVATE dsd-neo_core)
+add_test(
+    NAME CORE_AUDIO_INPUT_SWITCH
+    COMMAND dsd-neo_test_core_audio_input_switch
+)
+
 add_executable(dsd-neo_test_core_audio_gain core/test_core_audio_gain.c)
 target_include_directories(
     dsd-neo_test_core_audio_gain
@@ -5148,7 +5178,9 @@ if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
     )
     target_include_directories(
         dsd-neo_test_core_audio_open_input
-        PRIVATE ${PROJECT_SOURCE_DIR}/include
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/tests/test_support
     )
     target_link_libraries(
         dsd-neo_test_core_audio_open_input

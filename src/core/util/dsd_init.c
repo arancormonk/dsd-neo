@@ -87,6 +87,7 @@ init_opts_display_and_audio_defaults(dsd_opts* opts) {
     opts->p25tg = 0;
     opts->scoperate = 15;
     DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "pulse");
+    opts->radio_in_dev[0] = 0;
     DSD_SNPRINTF(opts->audio_out_dev, sizeof opts->audio_out_dev, "%s", "pulse");
     opts->audio_in_fd = -1;
     opts->audio_out_fd = -1;
@@ -112,6 +113,8 @@ init_opts_output_defaults(dsd_opts* opts) {
     opts->wav_out_fileR[0] = 0;
     opts->wav_out_file_raw[0] = 0;
     opts->symbol_out_file[0] = 0;
+    opts->symbol_out_open_path[0] = 0;
+    opts->symbol_capture_last[0] = 0;
     opts->lrrp_out_file[0] = 0;
     opts->event_out_file[0] = 0;
     opts->frame_log_file[0] = 0;
@@ -241,6 +244,7 @@ init_opts_decoder_and_input_defaults(dsd_opts* opts) {
 
     opts->wav_sample_rate = 48000; //default value (DSDPlus uses 96000 on raw signal wav files)
     opts->staged_file_sample_rate = 0;
+    opts->wav_header_replaced_rate = 0;
     opts->wav_interpolator = 1;  //default factor of 1 on 48000; 2 on 96000; sample rate / decimator
     opts->wav_decimator = 48000; //maybe for future use?
     DSD_MEMSET(&opts->input_resampler, 0, sizeof(opts->input_resampler));
@@ -589,6 +593,9 @@ init_state_audio_output_buffers(dsd_state* state) {
 
 static void
 init_state_sync_and_stream_defaults(dsd_state* state) {
+    state->input_interrupted = 0;
+    state->input_boundary = 0;
+    state->input_fallback_pending = 0;
     state->center = 0;
     state->jitter = -1;
     state->synctype = DSD_SYNC_NONE;
