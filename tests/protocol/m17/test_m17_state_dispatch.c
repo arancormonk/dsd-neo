@@ -3282,11 +3282,16 @@ test_encoder_vox_unkeys_on_the_gate(void) {
         err |= expect_int("manual unkey under VOX: two IP EOTX", g_vox_ip_eotx, 2);
         /* Each transmission is one monitored call, and the two are distinct. */
         const int first = tx_streams[0];
-        const int total = first + tx_streams[1];
-        int calls_ok = total == g_vox_ip_stream && total <= VOX_MAX_ITERS && g_vox_ip_epoch[0] != 0U
-                       && g_vox_ip_epoch[first] != 0U && g_vox_ip_epoch[first] != g_vox_ip_epoch[0];
-        for (int i = 0; calls_ok && i < total; i++) {
-            calls_ok = g_vox_ip_epoch[i] == g_vox_ip_epoch[i < first ? 0 : first];
+        const int second = tx_streams[1];
+        int calls_ok = count == 2 && first > 0 && second > 0 && first <= VOX_MAX_ITERS
+                       && second <= VOX_MAX_ITERS - first && first + second == g_vox_ip_stream;
+        if (calls_ok) {
+            const uint64_t call_a = g_vox_ip_epoch[0];
+            const uint64_t call_b = g_vox_ip_epoch[first];
+            calls_ok = call_a != 0U && call_b != 0U && call_a != call_b;
+            for (int i = 0; calls_ok && i < first + second; i++) {
+                calls_ok = g_vox_ip_epoch[i] == (i < first ? call_a : call_b);
+            }
         }
         err |= expect_int("manual unkey under VOX: one monitored call per transmission", calls_ok, 1);
     }
