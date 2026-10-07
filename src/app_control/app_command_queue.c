@@ -68,6 +68,7 @@
 #include <dsd-neo/runtime/freq_parse.h>
 #include <dsd-neo/runtime/input_failure.h>
 #include <dsd-neo/runtime/log.h>
+#include <dsd-neo/runtime/rigctl_passband.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
 #include <dsd-neo/runtime/squelch.h>
@@ -1210,7 +1211,7 @@ ui_cmd_handle_rigctl_connect_cfg(dsd_opts* opts, dsd_state* state, const struct 
     int32_t port = 0;
     int result = UI_CMD_APPLY_COMPLETED;
     if (state && ui_cmd_parse_host_port_payload(c, host, sizeof host, &port)) {
-        int rc = svc_rigctl_connect(opts, host, port);
+        int rc = svc_rigctl_connect(opts, state, host, port);
         result = ui_cmd_apply_status_from_service_rc(rc);
         if (rc == 0) {
             ui_set_toast(state, 3, "Rigctl connected: %s:%d", host, (int)port);
@@ -2206,14 +2207,25 @@ apply_cmd_io_and_import_squelch(dsd_opts* opts, dsd_state* state, const struct d
     return ui_cmd_apply_handler_table(k_handlers, sizeof k_handlers / sizeof k_handlers[0], opts, state, c);
 }
 
+/* Whether the command runs under the P25 SM tick guard (apply_cmd()), which the services that ask a rigctl peer for a
+   passband take otherwise (svc_rigctl_follow_passband(), issue #621). */
+static int command_writes_policy_store(const struct dsd_app_command* c);
+
+/* DSD_APP_CMD_RIGCTL_SET_MOD_BW: -B, asked of a rigctl peer at once while it is the passband the FM monitor on audio
+   input asks for (svc_apply_rigctl_setmod_bw(), issue #621); a refusal puts the previous -B back. */
 static int
 ui_cmd_handle_rigctl_set_mod_bw(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     int32_t hz = 0;
-    if (state && ui_cmd_parse_i32_payload(c, &hz)) {
-        svc_set_rigctl_setmod_bw(opts, hz);
-        ui_set_toast(state, 3, "Applied: Rigctl setmod BW -> %d Hz", opts->setmod_bw);
+    if (!state || !ui_cmd_parse_i32_payload(c, &hz)) {
+        return UI_CMD_APPLY_COMPLETED;
     }
-    return 1;
+    char why[96];
+    if (svc_apply_rigctl_setmod_bw(opts, state, (int)hz, command_writes_policy_store(c), why, sizeof why) != 0) {
+        ui_set_toast(state, 5, "Refused: %s", why);
+        return UI_CMD_APPLY_FAILED;
+    }
+    ui_set_toast(state, 3, "Applied: Rigctl setmod BW -> %d Hz", opts->setmod_bw);
+    return UI_CMD_APPLY_COMPLETED;
 }
 
 static int
@@ -2290,7 +2302,8 @@ ui_cmd_handle_scan_voice_hold_ms_set(dsd_opts* opts, dsd_state* state, const str
 
 /* DSD_APP_CMD_NFM_BANDWIDTH_SET (issue #525) and DSD_APP_CMD_AM_BANDWIDTH_SET (issue #524): the configured width of
    analog @p kind, held to the front end while the configured preset runs that kind and handed to a running monitor of
-   it (svc_set_analog_bandwidth()); refused with the reason, changing nothing, otherwise. */
+   it, or asked of a rigctl peer that demodulates audio input while the monitor of that kind runs (issue #621,
+   svc_set_analog_bandwidth()); refused with the reason, changing nothing, otherwise. */
 static int
 ui_cmd_handle_analog_bandwidth_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c, int kind) {
     int32_t hz = 0;
@@ -2298,7 +2311,7 @@ ui_cmd_handle_analog_bandwidth_set(dsd_opts* opts, dsd_state* state, const struc
         return UI_CMD_APPLY_INVALID_PAYLOAD;
     }
     char why[128];
-    if (svc_set_analog_bandwidth(opts, state, kind, (int)hz, why, sizeof why) != 0) {
+    if (svc_set_analog_bandwidth(opts, state, kind, (int)hz, command_writes_policy_store(c), why, sizeof why) != 0) {
         ui_set_toast(state, 5, "Refused: %s", why);
         return UI_CMD_APPLY_FAILED;
     }
@@ -5290,7 +5303,7 @@ rr_apply_files(dsd_opts* opts, dsd_state* state, const dsd_app_rr_apply_payload*
    cannot retune (WAV, stdin, UDP, symbol file), which the preview already warned
    about and which must not fail the whole apply. */
 static void
-rr_apply_tune(dsd_opts* opts, dsd_state* state, const dsd_app_rr_apply_payload* p) {
+rr_apply_tune(dsd_opts* opts, const dsd_state* state, const dsd_app_rr_apply_payload* p) {
     if (p->tune_hz == 0U) {
         return;
     }
@@ -5432,7 +5445,7 @@ apply_cmd_trunk_controls(dsd_opts* opts, dsd_state* state, const struct dsd_app_
         case DSD_APP_CMD_RIGCTL_CONNECT: {
             /* The TCP input's host at the rigctl port, through the service the menu's connect takes too (issue #589).
                The toasts name the host asked for: a failed reconnect keeps the old one in rigctlhostname. */
-            const int rc = svc_rigctl_connect(opts, opts->tcp_hostname, opts->rigctlportno);
+            const int rc = svc_rigctl_connect(opts, state, opts->tcp_hostname, opts->rigctlportno);
             if (rc == 0) {
                 ui_set_toast(state, 3, "Rigctl connected: %s:%d", opts->tcp_hostname, opts->rigctlportno);
             } else {
@@ -7452,8 +7465,72 @@ ui_warn_tone_filter_unreached(const dsd_opts* opts, const dsd_state* state, cons
     (void)dsd_scan_mode_warn_tone_filter_unused(opts, state, 0);
 }
 
+/* A rigctl request as a toast names it: "NFM 12.5 kHz", "NFM at its own passband". */
+static void
+ui_rigctl_passband_text(const dsd_rigctl_passband* passband, char* out, size_t out_size) {
+    char width[DSD_ANALOG_WIDTH_TEXT_MAX];
+    const char* label = dsd_analog_demod_label(passband->kind);
+    if (passband->bandwidth_hz > 0 && dsd_analog_width_format(passband->bandwidth_hz, width, sizeof width) == 0) {
+        DSD_SNPRINTF(out, out_size, "%s %s", label, width);
+    } else {
+        DSD_SNPRINTF(out, out_size, "%s at its own passband", label);
+    }
+}
+
+/*
+ * After any command, a rigctl peer that demodulates audio input is asked for the passband the command left in force
+ * when it changed it (issue #621, svc_rigctl_follow_passband(), with @p guarded the hold apply_cmd() took): a
+ * decode-mode or input switch onto, off or between monitors, a map import, a config; a peer the command brought (a
+ * first rigctl connect, a switch onto audio input) only for a width, as the start asks it. The width, -B and "this
+ * channel" commands have asked already, and the peer's record skips a request it is known to run. A refusal, or a lost
+ * reply, of a config apply's request puts back the configured width of the refused kind the config changed (from
+ * @p widths_before; a config sets no -B), asks again for the passband the session then runs, since the peer may run
+ * either, and fails the command with the rest of the config applied. Any other command's change stands, with a
+ * warning, and so does a config apply's that leaves the monitor (a refused -B, which a tune sends best-effort). Returns
+ * -1 when the command fails.
+ */
+static int
+apply_cmd_follow_rigctl_passband(dsd_opts* opts, dsd_state* state, const svc_rigctl_session* before,
+                                 const ui_cmd_widths_before* widths_before, int guarded) {
+    if (svc_rigctl_follow_passband(opts, state, before, guarded) >= 0) {
+        return 0;
+    }
+    const svc_rigctl_session refused = svc_rigctl_session_now(opts, state);
+    char refused_text[48];
+    ui_rigctl_passband_text(&refused.request, refused_text, sizeof refused_text);
+    /* Undoing a monitor's passband with a digital mode's -B (FOLLOW) is best-effort, as a tune's -B is: the change
+       stands, a config apply's included. */
+    if (!widths_before->config_apply || refused.request.source == DSD_RIGCTL_PASSBAND_FOLLOW) {
+        LOG_WARN("WARNING: The rigctl peer refused %s; the setting stands.\n", refused_text);
+        ui_set_toast(state, 5, "Rigctl peer refused %s (see log)", refused_text);
+        return 0;
+    }
+    const int kind = refused.request.kind;
+    const int old_hz = ui_analog_width_before(&widths_before->configured, kind);
+    if (old_hz == dsd_scan_mode_configured_analog_width(opts, state, kind)) {
+        /* The config changed what runs (a mode or an input), not the width: nothing to put back. */
+        LOG_WARN("WARNING: The rigctl peer refused %s after a config apply; the config stays applied.\n", refused_text);
+        ui_set_toast(state, 5, "Config applied; the rigctl peer refused %s (see log)", refused_text);
+        return -1;
+    }
+    (void)svc_store_analog_width_setting(opts, state, kind, old_hz);
+    (void)svc_rigctl_follow_passband(opts, state, &refused, guarded);
+    dsd_app_analog_width_view view;
+    (void)dsd_app_analog_width_view_get(opts, state, NULL, &view);
+    char setting[DSD_APP_ANALOG_WIDTH_TEXT_MAX];
+    (void)dsd_app_analog_width_setting_text(&view, kind, old_hz, setting, sizeof setting);
+    const char* label = dsd_analog_demod_label(kind);
+    LOG_WARN("WARNING: The rigctl peer refused %s after a config apply; the %s width stays %s.\n", refused_text, label,
+             setting);
+    ui_set_toast(state, 5, "Config applied; the rigctl peer refused %s: the %s width stays %s", refused_text, label,
+                 setting);
+    return -1;
+}
+
 static int
 apply_cmd_scoped(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c, int guarded) {
+    /* Before the suspend, so it is the request the row in force made. */
+    const svc_rigctl_session rigctl_before = svc_rigctl_session_now(opts, state);
     const int mode_update = command_updates_scan_mode(c);
     const int was_scanner = opts && opts->scanner_mode == 1;
     const ui_cmd_widths_before widths_before = ui_cmd_widths_before_of(opts, state, c);
@@ -7483,8 +7560,9 @@ apply_cmd_scoped(dsd_opts* opts, dsd_state* state, const struct dsd_app_command*
         return UI_CMD_APPLY_FAILED;
     }
     apply_cmd_fall_back_from_am_on_pcm(opts, state, c);
+    const int rigctl_refused = apply_cmd_follow_rigctl_passband(opts, state, &rigctl_before, &widths_before, guarded);
     ui_warn_tone_filter_unreached(opts, state, &tone_before);
-    return result;
+    return rigctl_refused ? UI_CMD_APPLY_FAILED : result;
 }
 
 static int

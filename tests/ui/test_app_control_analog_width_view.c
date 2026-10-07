@@ -20,11 +20,14 @@
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/platform/posix_compat.h>
+#include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/rigctl_passband.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
 #include <limits.h>
+#include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -53,6 +56,300 @@ monitor_metrics(int width_hz, int dsp_limited, int demod_rate_hz) {
     m.channel_bandwidth_dsp_limited = dsp_limited;
     m.demod_rate_hz = demod_rate_hz;
     return m;
+}
+
+static void
+expect_setting_text(const dsd_app_analog_width_view* view, int kind, int configured_hz, const char* want) {
+    char out[DSD_APP_ANALOG_WIDTH_TEXT_MAX];
+    assert(dsd_app_analog_width_setting_text(view, kind, configured_hz, out, sizeof out) == 0);
+    assert(strcmp(out, want) == 0);
+}
+
+static void
+expect_notice(const dsd_opts* opts, const dsd_state* state, int kind, const char* want) {
+    char out[96];
+    assert(dsd_app_analog_width_edit_notice(opts, state, kind, out, sizeof out) == 0);
+    assert(strcmp(out, want) == 0);
+}
+
+/* The reading and the setting text fit the view's buffer, whatever -B the command line set. */
+static void
+expect_fits(const dsd_app_analog_width_view* view, int kind) {
+    char big[128];
+    assert(dsd_app_analog_width_view_format(view, big, sizeof big) == 0);
+    assert(strlen(big) < (size_t)DSD_APP_ANALOG_WIDTH_TEXT_MAX);
+    assert(dsd_app_analog_width_setting_text(view, kind, 0, big, sizeof big) == 0);
+    assert(strlen(big) < (size_t)DSD_APP_ANALOG_WIDTH_TEXT_MAX);
+}
+
+/* The FM monitor (-fA) on UDP audio input with a rigctl peer on socket 5: the peer demodulates the input. */
+static void
+seed_peer_session(dsd_opts* opts) {
+    opts->audio_in_type = AUDIO_IN_UDP;
+    opts->use_rigctl = 1;
+    opts->rigctl_sockfd = (dsd_socket_t)5;
+    opts->analog_only = 1;
+    opts->frame_dmr = 0;
+    opts->m17encoder = 0;
+    opts->analog_demod = DSD_ANALOG_DEMOD_FM;
+    opts->analog_nfm_bandwidth_hz = 0;
+    opts->analog_am_bandwidth_hz = 0;
+    opts->setmod_bw = 12500;
+}
+
+/* Issue #621: on audio input with a rigctl peer the peer demodulates, and the width is the passband it is asked for.
+   The reading names that request and where it comes from; the configured width stays the setting the controls edit,
+   and an unset NFM width reads as the -B that stands in for it. No DSP rate bounds anything there. */
+static void
+test_peer_passband_readings(dsd_opts* opts, dsd_state* state) {
+    dsd_app_analog_width_view view;
+    seed_peer_session(opts);
+    /* A stale front-end mirror says nothing on audio input. */
+    dsd_frontend_metrics m = monitor_metrics(11250, 1, 12000);
+
+    /* -B stands in for the unset NFM width. */
+    assert(dsd_app_analog_width_view_get(opts, state, &m, &view) == 0);
+    assert(view.peer_passband && !view.radio_input && view.max_hz == 0 && !view.dsp_limited);
+    assert(view.shown && view.kind == DSD_ANALOG_DEMOD_FM && view.passband_in_force);
+    assert(view.width_hz == 12500 && view.passband_source == DSD_RIGCTL_PASSBAND_SETMOD_BW);
+    assert(view.setmod_bw_hz == 12500 && view.unset_hz == 12500 && view.configured_hz == 0);
+    expect_reading(&view, "12.5 kHz (-B)");
+    assert(dsd_app_analog_width_offered(opts, state, &view, DSD_ANALOG_DEMOD_FM) == 1);
+    assert(dsd_app_analog_width_offered(opts, state, &view, DSD_ANALOG_DEMOD_AM) == 0);
+    expect_setting_text(&view, DSD_ANALOG_DEMOD_FM, 0, "-B 12.5 kHz");
+    expect_setting_text(&view, DSD_ANALOG_DEMOD_FM, 20000, "20 kHz");
+    /* The unset width of either kind on the one snapshot: -B for NFM, the AM default for AM. */
+    assert(dsd_app_analog_width_unset_hz(&view, DSD_ANALOG_DEMOD_FM) == 12500);
+    assert(dsd_app_analog_width_unset_hz(&view, DSD_ANALOG_DEMOD_AM) == DSD_ANALOG_AM_WIDTH_DEFAULT_HZ);
+    expect_setting_text(&view, DSD_ANALOG_DEMOD_AM, 0, "default");
+    expect_setting_text(&view, DSD_ANALOG_DEMOD_AM, 8000, "8 kHz");
+    expect_notice(opts, state, DSD_ANALOG_DEMOD_FM, "Applied: NFM passband -> 12.5 kHz (-B)");
+    /* AM does not run: its edit is the setting alone, asked of the peer when an AM monitor runs. */
+    expect_notice(opts, state, DSD_ANALOG_DEMOD_AM, "Applied: AM bandwidth -> default");
+
+    /* A configured NFM width is the passband. */
+    opts->analog_nfm_bandwidth_hz = 20000;
+    assert(dsd_app_analog_width_view_get(opts, state, &m, &view) == 0);
+    assert(view.width_hz == 20000 && view.passband_source == DSD_RIGCTL_PASSBAND_CONFIGURED);
+    assert(view.configured_hz == 20000 && view.unset_hz == 12500);
+    expect_reading(&view, "20 kHz");
+    expect_notice(opts, state, DSD_ANALOG_DEMOD_FM, "Applied: NFM passband -> 20 kHz");
+
+    /* Neither a width nor -B: the peer's own passband. */
+    opts->analog_nfm_bandwidth_hz = 0;
+    opts->setmod_bw = 0;
+    assert(dsd_app_analog_width_view_get(opts, state, &m, &view) == 0);
+    assert(view.width_hz == 0 && view.passband_source == DSD_RIGCTL_PASSBAND_PEER_OWN);
+    assert(view.setmod_bw_hz == 0 && view.unset_hz == 0);
+    assert(dsd_app_analog_width_unset_hz(&view, DSD_ANALOG_DEMOD_FM) == 0);
+    assert(dsd_app_analog_width_unset_hz(&view, DSD_ANALOG_DEMOD_AM) == DSD_ANALOG_AM_WIDTH_DEFAULT_HZ);
+    expect_reading(&view, "peer's own");
+    expect_setting_text(&view, DSD_ANALOG_DEMOD_FM, 0, "peer's own");
+    expect_notice(opts, state, DSD_ANALOG_DEMOD_FM, "Applied: NFM passband -> peer's own");
+    /* An explicit AM width is offered too, as on a radio input. */
+    opts->analog_am_bandwidth_hz = 8000;
+    assert(dsd_app_analog_width_view_get(opts, state, &m, &view) == 0);
+    assert(dsd_app_analog_width_offered(opts, state, &view, DSD_ANALOG_DEMOD_AM) == 1);
+    opts->analog_am_bandwidth_hz = 0;
+
+    /* A typed digital row on air under -fA: the peer follows that row at -B, never at the configured NFM width its tune
+       does not ask for. The same on the live state and on a frontend snapshot pair. */
+    opts->analog_nfm_bandwidth_hz = 20000;
+    opts->setmod_bw = 12500;
+    assert(dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_DMR) == 0);
+    assert(dsd_scan_mode_options(opts, state, NULL) == 0);
+    assert(opts->analog_only == 0);
+    assert(dsd_app_analog_width_view_get(opts, state, NULL, &view) == 0);
+    assert(view.shown && !view.passband_in_force && view.configured_hz == 20000);
+    assert(view.width_hz == 12500 && view.passband_source == DSD_RIGCTL_PASSBAND_SETMOD_BW);
+    expect_reading(&view, "12.5 kHz (-B)");
+    expect_notice(opts, state, DSD_ANALOG_DEMOD_FM, "Applied: NFM bandwidth -> 20 kHz");
+    dsd_opts* opts_copy = (dsd_opts*)calloc(1, sizeof(*opts_copy));
+    dsd_state* state_copy = (dsd_state*)calloc(1, sizeof(*state_copy));
+    assert(opts_copy && state_copy);
+    DSD_MEMCPY(opts_copy, opts, sizeof(*opts_copy));
+    dsd_scan_mode_copy_snapshot(state_copy, state);
+    assert(dsd_app_analog_width_view_get(opts_copy, state_copy, NULL, &view) == 0);
+    assert(view.shown && !view.passband_in_force && view.width_hz == 12500 && view.configured_hz == 20000);
+    expect_reading(&view, "12.5 kHz (-B)");
+    opts->setmod_bw = 0;
+    assert(dsd_app_analog_width_view_get(opts, state, NULL, &view) == 0);
+    assert(view.width_hz == 0 && view.passband_source == DSD_RIGCTL_PASSBAND_PEER_OWN);
+    expect_reading(&view, "peer's own");
+    dsd_scan_mode_leave(opts, state);
+    assert(opts->analog_only == 1);
+
+    /* An nfm row with its own width: the row's passband, naming the setting it overrides. */
+    dsd_scan_option_values row = {0};
+    row.present = DSD_SCAN_OPT_BANDWIDTH;
+    row.channel_bw_hz = 12500;
+    opts->analog_nfm_bandwidth_hz = 16000;
+    assert(dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_NFM) == 0);
+    assert(dsd_scan_mode_options(opts, state, &row) == 0);
+    assert(dsd_app_analog_width_view_get(opts, state, NULL, &view) == 0);
+    assert(view.row_override && view.passband_in_force && view.width_hz == 12500);
+    assert(view.passband_source == DSD_RIGCTL_PASSBAND_ROW);
+    expect_reading(&view, "12.5 kHz (row; default 16 kHz)");
+    assert(dsd_scan_mode_set_configured_nfm_bandwidth(opts, state, 0) == 0);
+    opts->setmod_bw = 12500;
+    assert(dsd_app_analog_width_view_get(opts, state, NULL, &view) == 0);
+    expect_reading(&view, "12.5 kHz (row; default -B 12.5 kHz)");
+    /* The row overrides the edit: its notice is unchanged. */
+    expect_notice(opts, state, DSD_ANALOG_DEMOD_FM,
+                  "Default NFM bandwidth -> default; this channel overrides it (12.5 kHz)");
+    opts->setmod_bw = 0;
+    assert(dsd_app_analog_width_view_get(opts, state, NULL, &view) == 0);
+    expect_reading(&view, "12.5 kHz (row; default peer's own)");
+    /* The longest texts fit, a -B as large as the command line takes included. */
+    row.channel_bw_hz = 12345;
+    assert(dsd_scan_mode_options(opts, state, &row) == 0);
+    opts->setmod_bw = INT_MAX;
+    assert(dsd_app_analog_width_view_get(opts, state, NULL, &view) == 0);
+    expect_reading(&view, "12.345 kHz (row; default -B 2147483.647 kHz)");
+    expect_fits(&view, DSD_ANALOG_DEMOD_FM);
+    dsd_scan_mode_leave(opts, state);
+    assert(dsd_app_analog_width_view_get(opts, state, NULL, &view) == 0);
+    expect_reading(&view, "2147483.647 kHz (-B)");
+    expect_fits(&view, DSD_ANALOG_DEMOD_FM);
+    opts->setmod_bw = 12500;
+
+    /* An am row on air on a DMR session: AM is offered and asked for at the AM default, its configured width or the
+       row's own; NFM is not offered. */
+    opts->analog_only = 0;
+    opts->frame_dmr = 1;
+    dsd_scan_option_values am_row = {0};
+    am_row.present = DSD_SCAN_OPT_BANDWIDTH;
+    am_row.channel_bw_hz = 8333;
+    am_row.channel_bw_kind = DSD_ANALOG_DEMOD_AM;
+    assert(dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_AM) == 0);
+    assert(dsd_scan_mode_options(opts, state, NULL) == 0);
+    assert(dsd_app_analog_width_view_get(opts, state, NULL, &view) == 0);
+    assert(!view.shown && view.row_analog && view.kind == DSD_ANALOG_DEMOD_AM && view.passband_in_force);
+    assert(view.width_hz == DSD_ANALOG_AM_WIDTH_DEFAULT_HZ && view.passband_source == DSD_RIGCTL_PASSBAND_AM_DEFAULT);
+    assert(view.unset_hz == DSD_ANALOG_AM_WIDTH_DEFAULT_HZ);
+    assert(view.unset_hz == dsd_app_analog_width_unset_hz(&view, view.kind));
+    assert(dsd_app_analog_width_unset_hz(&view, DSD_ANALOG_DEMOD_FM) == 12500);
+    expect_reading(&view, "6 kHz (default)");
+    assert(dsd_app_analog_width_offered(opts, state, &view, DSD_ANALOG_DEMOD_AM) == 1);
+    assert(dsd_app_analog_width_offered(opts, state, &view, DSD_ANALOG_DEMOD_FM) == 0);
+    expect_notice(opts, state, DSD_ANALOG_DEMOD_AM, "Applied: AM passband -> 6 kHz (default)");
+    assert(dsd_scan_mode_set_configured_analog_width(opts, state, DSD_ANALOG_DEMOD_AM, 8000) == 1);
+    assert(dsd_app_analog_width_view_get(opts, state, NULL, &view) == 0);
+    assert(view.width_hz == 8000 && view.passband_source == DSD_RIGCTL_PASSBAND_CONFIGURED);
+    expect_reading(&view, "8 kHz");
+    expect_notice(opts, state, DSD_ANALOG_DEMOD_AM, "Applied: AM passband -> 8 kHz");
+    assert(dsd_scan_mode_set_configured_analog_width(opts, state, DSD_ANALOG_DEMOD_AM, 0) == 1);
+    assert(dsd_scan_mode_options(opts, state, &am_row) == 0);
+    assert(dsd_app_analog_width_view_get(opts, state, NULL, &view) == 0);
+    assert(view.row_override && view.passband_source == DSD_RIGCTL_PASSBAND_ROW);
+    expect_reading(&view, "8.333 kHz (row; default 6 kHz)");
+    dsd_scan_mode_leave(opts, state);
+    assert(dsd_app_analog_width_view_get(opts, state, NULL, &view) == 0);
+    assert(!view.shown && !view.row_analog && view.width_hz == 0 && !view.passband_in_force);
+    assert(view.passband_source == DSD_RIGCTL_PASSBAND_FOLLOW);
+    expect_reading(&view, "");
+    assert(dsd_app_analog_width_offered(opts, state, &view, DSD_ANALOG_DEMOD_AM) == 0);
+    assert(dsd_app_analog_width_offered(opts, state, &view, DSD_ANALOG_DEMOD_FM) == 0);
+
+    /* A digital session with an explicit NFM default offers the NFM width, and the reading is the passband the peer
+       is asked for now: FM at -B, which every tune of a typed digital row asks for, never the configured width, which
+       nothing asks for. The same on the live state and on a frontend snapshot pair; no width offered, no reading. */
+    opts->analog_nfm_bandwidth_hz = 20000;
+    opts->setmod_bw = 12500;
+    assert(dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_DMR) == 0);
+    assert(dsd_scan_mode_options(opts, state, NULL) == 0);
+    assert(dsd_app_analog_width_view_get(opts, state, NULL, &view) == 0);
+    assert(!view.shown && !view.row_analog && !view.passband_in_force && view.kind == DSD_ANALOG_DEMOD_FM);
+    assert(dsd_app_analog_width_offered(opts, state, &view, DSD_ANALOG_DEMOD_FM) == 1);
+    assert(view.configured_hz == 20000 && view.width_hz == 12500);
+    assert(view.passband_source == DSD_RIGCTL_PASSBAND_SETMOD_BW);
+    expect_reading(&view, "12.5 kHz (-B)");
+    expect_notice(opts, state, DSD_ANALOG_DEMOD_FM, "Applied: NFM bandwidth -> 20 kHz");
+    DSD_MEMCPY(opts_copy, opts, sizeof(*opts_copy));
+    dsd_scan_mode_copy_snapshot(state_copy, state);
+    assert(dsd_app_analog_width_view_get(opts_copy, state_copy, NULL, &view) == 0);
+    assert(!view.shown && !view.row_analog && view.width_hz == 12500 && view.configured_hz == 20000);
+    expect_reading(&view, "12.5 kHz (-B)");
+    opts->setmod_bw = 0;
+    assert(dsd_app_analog_width_view_get(opts, state, NULL, &view) == 0);
+    assert(view.passband_source == DSD_RIGCTL_PASSBAND_PEER_OWN);
+    expect_reading(&view, "peer's own");
+    dsd_scan_mode_leave(opts, state);
+    /* An explicit AM width alone offers AM, and the peer is still asked for FM at -B. */
+    opts->analog_nfm_bandwidth_hz = 0;
+    opts->analog_am_bandwidth_hz = 8000;
+    opts->setmod_bw = 12500;
+    assert(dsd_app_analog_width_view_get(opts, state, NULL, &view) == 0);
+    assert(dsd_app_analog_width_offered(opts, state, &view, DSD_ANALOG_DEMOD_AM) == 1);
+    assert(view.kind == DSD_ANALOG_DEMOD_FM && view.width_hz == 12500);
+    expect_reading(&view, "12.5 kHz (-B)");
+    opts->analog_am_bandwidth_hz = 0;
+    assert(dsd_app_analog_width_view_get(opts, state, NULL, &view) == 0);
+    assert(view.width_hz == 0 && view.passband_source == DSD_RIGCTL_PASSBAND_FOLLOW);
+    expect_reading(&view, "");
+    opts->frame_dmr = 0;
+    opts->analog_only = 1;
+
+    /* Every PCM audio input with the peer is a peer session; symbol and null inputs carry no audio the peer
+       demodulates, and read as audio input without a peer. */
+    const int pcm_inputs[] = {AUDIO_IN_PULSE, AUDIO_IN_STDIN, AUDIO_IN_WAV, AUDIO_IN_UDP, AUDIO_IN_TCP};
+    for (size_t i = 0; i < sizeof pcm_inputs / sizeof pcm_inputs[0]; i++) {
+        opts->audio_in_type = pcm_inputs[i];
+        assert(dsd_app_analog_width_view_get(opts, state, NULL, &view) == 0);
+        assert(view.peer_passband && view.width_hz == 12500);
+    }
+    const int no_peer_inputs[] = {AUDIO_IN_SYMBOL_BIN, AUDIO_IN_SYMBOL_FLT, AUDIO_IN_NULL};
+    for (size_t i = 0; i < sizeof no_peer_inputs / sizeof no_peer_inputs[0]; i++) {
+        opts->audio_in_type = no_peer_inputs[i];
+        assert(dsd_app_analog_width_view_get(opts, state, NULL, &view) == 0);
+        assert(!view.peer_passband && !view.radio_input && view.width_hz == 0 && view.setmod_bw_hz == 0);
+        assert(view.unset_hz == DSD_ANALOG_NFM_WIDTH_DEFAULT_HZ);
+        assert(dsd_app_analog_width_unset_hz(&view, DSD_ANALOG_DEMOD_FM) == DSD_ANALOG_NFM_WIDTH_DEFAULT_HZ);
+        assert(dsd_app_analog_width_unset_hz(&view, DSD_ANALOG_DEMOD_AM) == DSD_ANALOG_AM_WIDTH_DEFAULT_HZ);
+        expect_reading(&view, "not used on PCM input");
+        expect_setting_text(&view, DSD_ANALOG_DEMOD_FM, 0, "default");
+        assert(dsd_app_analog_width_offered(opts, state, &view, DSD_ANALOG_DEMOD_FM) == 0);
+    }
+    /* Without a live peer: rigctl off, or no socket. */
+    opts->audio_in_type = AUDIO_IN_UDP;
+    opts->rigctl_sockfd = DSD_INVALID_SOCKET;
+    assert(dsd_app_analog_width_view_get(opts, state, NULL, &view) == 0);
+    assert(!view.peer_passband);
+    expect_reading(&view, "not used on PCM input");
+    expect_notice(opts, state, DSD_ANALOG_DEMOD_FM, "Applied: NFM bandwidth -> default");
+    opts->rigctl_sockfd = (dsd_socket_t)5;
+    opts->use_rigctl = 0;
+    assert(dsd_app_analog_width_view_get(opts, state, NULL, &view) == 0);
+    assert(!view.peer_passband && dsd_app_analog_width_offered(opts, state, &view, DSD_ANALOG_DEMOD_FM) == 0);
+    opts->use_rigctl = 1;
+
+    /* On an RTL input DSD-neo demodulates the I/Q: the radio rules, whatever the peer. */
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->rtl_dsp_bw_khz = 48;
+    assert(dsd_app_analog_width_view_get(opts, state, NULL, &view) == 0);
+    assert(!view.peer_passband && view.radio_input && view.max_hz == 42000 && view.setmod_bw_hz == 0);
+    assert(view.unset_hz == DSD_ANALOG_NFM_WIDTH_DEFAULT_HZ && view.passband_source == DSD_RIGCTL_PASSBAND_FOLLOW);
+    assert(dsd_app_analog_width_unset_hz(&view, DSD_ANALOG_DEMOD_FM) == DSD_ANALOG_NFM_WIDTH_DEFAULT_HZ);
+    assert(dsd_app_analog_width_unset_hz(&view, DSD_ANALOG_DEMOD_AM) == DSD_ANALOG_AM_WIDTH_DEFAULT_HZ);
+    /* No view reads as no peer session; no analog demodulator has no width. */
+    assert(dsd_app_analog_width_unset_hz(NULL, DSD_ANALOG_DEMOD_FM) == DSD_ANALOG_NFM_WIDTH_DEFAULT_HZ);
+    assert(dsd_app_analog_width_unset_hz(NULL, DSD_ANALOG_DEMOD_AM) == DSD_ANALOG_AM_WIDTH_DEFAULT_HZ);
+    assert(dsd_app_analog_width_unset_hz(&view, -1) == 0);
+    expect_reading(&view, "16 kHz (default)");
+    expect_setting_text(&view, DSD_ANALOG_DEMOD_FM, 0, "default");
+    expect_notice(opts, state, DSD_ANALOG_DEMOD_FM, "Applied: NFM bandwidth -> default");
+
+    char out[DSD_APP_ANALOG_WIDTH_TEXT_MAX];
+    assert(dsd_app_analog_width_setting_text(NULL, DSD_ANALOG_DEMOD_FM, 0, out, sizeof out) == -1 && out[0] == '\0');
+    assert(dsd_app_analog_width_setting_text(&view, -1, 0, out, sizeof out) == -1 && out[0] == '\0');
+    assert(dsd_app_analog_width_setting_text(&view, DSD_ANALOG_DEMOD_FM, 0, NULL, 0) == -1);
+
+    opts->use_rigctl = 0;
+    opts->rigctl_sockfd = 0;
+    opts->setmod_bw = 0;
+    dsd_state_ext_free_all(state_copy);
+    free(state_copy);
+    free(opts_copy);
 }
 
 int
@@ -508,6 +805,8 @@ main(void) {
     assert(dsd_app_analog_width_view_format(&view, NULL, 0) == -1);
     assert(dsd_app_analog_width_view_format(NULL, out, sizeof out) == -1 && out[0] == '\0');
     assert(dsd_app_analog_width_setting_format(0, NULL, 0) == -1);
+
+    test_peer_passband_readings(opts, state);
 
     dsd_state_ext_free_all(copy);
     dsd_state_ext_free_all(state);

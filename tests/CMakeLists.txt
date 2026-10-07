@@ -2240,6 +2240,8 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/bit_packing.c
     ${PROJECT_SOURCE_DIR}/src/app_control/analog_width_view.c
     ${PROJECT_SOURCE_DIR}/src/app_control/menu_services.c
+    # The width and -B services ask a rigctl peer through the follow (issue #621); the engine side is stubbed.
+    ${PROJECT_SOURCE_DIR}/src/app_control/rigctl_passband.c
     # svc_clear_keys() drops the DMR TG->key ID map through keyring_dmr_tg_map_reset().
     ${PROJECT_SOURCE_DIR}/src/core/vocoder/keyring.c
     ${PROJECT_SOURCE_DIR}/src/core/vocoder/keyring_dmr_tg_map.c
@@ -2316,6 +2318,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         ${PROJECT_SOURCE_DIR}/src/app_control/squelch_view.c
         ${PROJECT_SOURCE_DIR}/src/runtime/analog_channel.c
         ${PROJECT_SOURCE_DIR}/src/runtime/analog_tones.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/rigctl_passband.c
         ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_io_hooks.c
         ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_metrics_hooks.c
         ${PROJECT_SOURCE_DIR}/src/runtime/squelch.c
@@ -2631,6 +2634,25 @@ add_test(
     COMMAND dsd-neo_test_app_control_analog_width_view
 )
 
+# Issue #621: the live follow of a rigctl peer's passband, over a stubbed engine apply, -Y stage and P25 SM tick guard.
+add_executable(
+    dsd-neo_test_app_control_rigctl_passband
+    ui/test_app_control_rigctl_passband.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/rigctl_passband.c
+)
+target_include_directories(
+    dsd-neo_test_app_control_rigctl_passband
+    PRIVATE ${PROJECT_SOURCE_DIR}/src/app_control
+)
+target_link_libraries(
+    dsd-neo_test_app_control_rigctl_passband
+    PRIVATE dsd-neo_core dsd-neo_runtime
+)
+add_test(
+    NAME APP_CONTROL_RIGCTL_PASSBAND
+    COMMAND dsd-neo_test_app_control_rigctl_passband
+)
+
 # Issue #518: the scan row on air as the "this channel" editors see it.
 add_executable(
     dsd-neo_test_app_control_scan_row_view
@@ -2763,6 +2785,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         ${PROJECT_SOURCE_DIR}/src/app_control/rx_tone_view.c
         ${PROJECT_SOURCE_DIR}/src/runtime/analog_channel.c
         ${PROJECT_SOURCE_DIR}/src/runtime/analog_tones.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/rigctl_passband.c
         ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_io_hooks.c
         ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_metrics_hooks.c
         ${PROJECT_SOURCE_DIR}/src/runtime/squelch.c
@@ -2828,6 +2851,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         ${PROJECT_SOURCE_DIR}/src/app_control/squelch_view.c
         ${PROJECT_SOURCE_DIR}/src/runtime/analog_channel.c
         ${PROJECT_SOURCE_DIR}/src/runtime/analog_tones.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/rigctl_passband.c
         ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_io_hooks.c
         ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_metrics_hooks.c
         ${PROJECT_SOURCE_DIR}/src/runtime/squelch.c
@@ -6572,6 +6596,8 @@ if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
             "LINKER:--wrap=svc_rigctl_connect"
             "LINKER:--wrap=openAudioInput"
             "LINKER:--wrap=dsd_audio_reconfigure_output_for_input_policy"
+            "LINKER:--wrap=SetScanRowModulation"
+            "LINKER:--wrap=SetModulationKind"
     )
 endif()
 if(

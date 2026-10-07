@@ -17,6 +17,13 @@ dsd_engine_channel_scan_leave(dsd_opts* opts, dsd_state* state) {
     return 0;
 }
 
+/* Nor a -Y tune or retry staged: a rigctl follow (issue #621) is not left to one. */
+int
+dsd_engine_channel_scan_waiting(const dsd_state* state) {
+    (void)state;
+    return 0;
+}
+
 /* Nor a running scan list: no row waits to run the configured NFM width (issue #526). APP_COMMAND_QUEUE drives the real
    list through the engine. */
 int

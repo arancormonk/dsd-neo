@@ -28,6 +28,7 @@
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/engine/p25_bandplan_export.h>
+#include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/io/control.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/io/udp_socket_connect.h>
@@ -499,6 +500,15 @@ static int g_rtl_create_capture = -1;
 static int g_rtl_create_captures = 0;
 static int g_rtltcp_autotune_result = 0;
 
+/* No rigctl peer is asked anything here (issue #621): the width and -B services' follow finds none, and
+   APP_CONTROL_RIGCTL_PASSBAND and APP_COMMAND_QUEUE drive the peer. */
+int
+dsd_engine_scan_rigctl_apply_modulation(const dsd_opts* opts, const dsd_state* state) {
+    (void)opts;
+    (void)state;
+    return -1;
+}
+
 void
 p25_sm_tick_guard_enter(void) {
     g_p25_tick_guard_enter_calls++;
@@ -894,6 +904,20 @@ test_p2_trunking_and_slot_controls(void) {
     rc |= expect_int("setmod bandwidth clamps high", opts.setmod_bw, 25000);
     svc_set_rigctl_setmod_bw(&opts, 12500);
     rc |= expect_int("setmod bandwidth stores in range", opts.setmod_bw, 12500);
+    /* Issue #621: the -B command's service stores and clamps the same way with no rigctl peer to ask, and says why it
+       cannot store without options. */
+    {
+        char why[96];
+        rc |= expect_int("setmod apply without a peer",
+                         svc_apply_rigctl_setmod_bw(&opts, &state, 30000, 0, why, sizeof why), 0);
+        rc |= expect_int("setmod apply clamps", opts.setmod_bw, 25000);
+        rc |= expect_str("setmod apply leaves no reason", why, "");
+        rc |= expect_int("setmod apply without options",
+                         svc_apply_rigctl_setmod_bw(NULL, &state, 12500, 0, why, sizeof why), -1);
+        rc |= expect_str("setmod apply without options says why", why,
+                         "Rigctl setmod BW: no decoder options to set it in");
+        svc_set_rigctl_setmod_bw(&opts, 12500);
+    }
 
     svc_toggle_reverse_mute(&opts);
     svc_toggle_lcw_retune(&opts);
@@ -2325,10 +2349,10 @@ test_nfm_bandwidth_services(void) {
 
     /* No stream: the RTL DSP bandwidth is the rate. 12.5 kHz fits 16 kHz, 16 kHz does not. */
     rc |= expect_int("nfm svc 12500 fits 16 kHz",
-                     svc_set_analog_bandwidth(&opts, &state, DSD_ANALOG_DEMOD_FM, 12500, why, sizeof why), 0);
+                     svc_set_analog_bandwidth(&opts, &state, DSD_ANALOG_DEMOD_FM, 12500, 0, why, sizeof why), 0);
     rc |= expect_int("nfm svc 12500 stored", opts.analog_nfm_bandwidth_hz, 12500);
     rc |= expect_int("nfm svc 16000 refused at 16 kHz",
-                     svc_set_analog_bandwidth(&opts, &state, DSD_ANALOG_DEMOD_FM, 16000, why, sizeof why), -1);
+                     svc_set_analog_bandwidth(&opts, &state, DSD_ANALOG_DEMOD_FM, 16000, 0, why, sizeof why), -1);
     rc |= expect_int("nfm svc 16000 not stored", opts.analog_nfm_bandwidth_hz, 12500);
     rc |= expect_int(
         "nfm svc 16000 reason",
@@ -2345,7 +2369,7 @@ test_nfm_bandwidth_services(void) {
        runs there, so no DSP rate holds the width, which is stored for a switch back to a radio input. */
     opts.audio_in_type = AUDIO_IN_TCP;
     rc |= expect_int("nfm svc pcm 16000 not held to the old rate",
-                     svc_set_analog_bandwidth(&opts, &state, DSD_ANALOG_DEMOD_FM, 16000, why, sizeof why), 0);
+                     svc_set_analog_bandwidth(&opts, &state, DSD_ANALOG_DEMOD_FM, 16000, 0, why, sizeof why), 0);
     rc |= expect_int("nfm svc pcm 16000 stored", opts.analog_nfm_bandwidth_hz, 16000);
     rc |= expect_int("nfm svc pcm range still checked",
                      svc_check_analog_bandwidth(&opts, &state, DSD_ANALOG_DEMOD_FM, 7999, why, sizeof why), -1);
@@ -2370,12 +2394,12 @@ test_nfm_bandwidth_services(void) {
     state.rtl_ctx = (RtlSdrContext*)fake_ctx;
     g_analog_check_calls = g_nfm_publish_calls = 0;
     rc |= expect_int("nfm svc live 8000",
-                     svc_set_analog_bandwidth(&opts, &state, DSD_ANALOG_DEMOD_FM, 8000, why, sizeof why), 0);
+                     svc_set_analog_bandwidth(&opts, &state, DSD_ANALOG_DEMOD_FM, 8000, 0, why, sizeof why), 0);
     rc |= expect_int("nfm svc live asks the front end", g_analog_check_calls, 1);
     rc |= expect_int("nfm svc live publish", g_nfm_publish_calls == 1 && g_nfm_publish_width_hz == 8000, 1);
     g_analog_check_result = -1;
     rc |= expect_int("nfm svc live refusal",
-                     svc_set_analog_bandwidth(&opts, &state, DSD_ANALOG_DEMOD_FM, 12500, why, sizeof why), -1);
+                     svc_set_analog_bandwidth(&opts, &state, DSD_ANALOG_DEMOD_FM, 12500, 0, why, sizeof why), -1);
     rc |= expect_int("nfm svc live refusal keeps the width", opts.analog_nfm_bandwidth_hz, 8000);
     rc |= expect_int("nfm svc live refusal publishes nothing", g_nfm_publish_calls, 1);
     /* The front end refused a width its RTL DSP bandwidth (16 kHz) can filter: something else refused it. */
@@ -2406,16 +2430,16 @@ test_nfm_bandwidth_services(void) {
         DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", forced_rate_devs[i].dev);
         g_demod_rate_hz = 24000;
         rc |= expect_int("nfm svc forced rate refusal",
-                         svc_set_analog_bandwidth(&opts, &state, DSD_ANALOG_DEMOD_FM, 25000, why, sizeof why), -1);
+                         svc_set_analog_bandwidth(&opts, &state, DSD_ANALOG_DEMOD_FM, 25000, 0, why, sizeof why), -1);
         rc |= expect_str("nfm svc forced rate reason", why, forced_rate_devs[i].at_24k);
         g_demod_rate_hz = 8000;
         rc |= expect_int("nfm svc no width fits",
-                         svc_set_analog_bandwidth(&opts, &state, DSD_ANALOG_DEMOD_FM, 8000, why, sizeof why), -1);
+                         svc_set_analog_bandwidth(&opts, &state, DSD_ANALOG_DEMOD_FM, 8000, 0, why, sizeof why), -1);
         rc |= expect_str("nfm svc no width fits reason", why, forced_rate_devs[i].at_8k);
         /* At a rate that filters it, the refusal is not the rate's. */
         g_demod_rate_hz = 78125;
         rc |= expect_int("nfm svc forced rate other refusal",
-                         svc_set_analog_bandwidth(&opts, &state, DSD_ANALOG_DEMOD_FM, 25000, why, sizeof why), -1);
+                         svc_set_analog_bandwidth(&opts, &state, DSD_ANALOG_DEMOD_FM, 25000, 0, why, sizeof why), -1);
         rc |= expect_int("nfm svc forced rate other reason",
                          strcmp(why, "the RTL front end refused NFM 25 kHz (see log)") == 0, 1);
     }
@@ -2423,14 +2447,14 @@ test_nfm_bandwidth_services(void) {
     DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl:0:851.375M:0:0:16");
     g_analog_check_result = 0;
     rc |= expect_int("nfm svc live 12500",
-                     svc_set_analog_bandwidth(&opts, &state, DSD_ANALOG_DEMOD_FM, 12500, why, sizeof why), 0);
+                     svc_set_analog_bandwidth(&opts, &state, DSD_ANALOG_DEMOD_FM, 12500, 0, why, sizeof why), 0);
     rc |= expect_int("nfm svc live 12500 published", g_nfm_publish_calls == 2 && g_nfm_publish_width_hz == 12500, 1);
 
     /* The front end took the check but refused the request itself (a retune moved its rate in between): refused
        here too, with the previous width put back, never reported as applied. */
     g_nfm_publish_result = -1;
     rc |= expect_int("nfm svc request refused",
-                     svc_set_analog_bandwidth(&opts, &state, DSD_ANALOG_DEMOD_FM, 16000, why, sizeof why), -1);
+                     svc_set_analog_bandwidth(&opts, &state, DSD_ANALOG_DEMOD_FM, 16000, 0, why, sizeof why), -1);
     rc |= expect_int("nfm svc request refused keeps the width", opts.analog_nfm_bandwidth_hz, 12500);
     rc |= expect_str("nfm svc request refused reason", why,
                      "NFM 16 kHz does not fit the 16 kHz DSP rate (max 13.2 kHz); use a 24 or 48 kHz DSP bandwidth");
@@ -2500,7 +2524,7 @@ test_am_bandwidth_services(void) {
     rc |= expect_int("nfm default still passes at 6 kHz",
                      svc_check_analog_bandwidth(&opts, &state, DSD_ANALOG_DEMOD_FM, 0, why, sizeof why), 0);
     rc |= expect_int("am svc 5 kHz refused at 6 kHz",
-                     svc_set_analog_bandwidth(&opts, &state, DSD_ANALOG_DEMOD_AM, 5000, why, sizeof why), -1);
+                     svc_set_analog_bandwidth(&opts, &state, DSD_ANALOG_DEMOD_AM, 5000, 0, why, sizeof why), -1);
     rc |= expect_int("am svc refused width not stored", opts.analog_am_bandwidth_hz, 0);
     rc |= expect_int("am svc range",
                      svc_check_analog_bandwidth(&opts, &state, DSD_ANALOG_DEMOD_AM, 25000, why, sizeof why), -1);
@@ -2510,14 +2534,14 @@ test_am_bandwidth_services(void) {
     opts.rtl_dsp_bw_khz = 16;
     g_nfm_publish_calls = 0;
     rc |= expect_int("am svc 10 kHz at 16 kHz",
-                     svc_set_analog_bandwidth(&opts, &state, DSD_ANALOG_DEMOD_AM, 10000, why, sizeof why), 0);
+                     svc_set_analog_bandwidth(&opts, &state, DSD_ANALOG_DEMOD_AM, 10000, 0, why, sizeof why), 0);
     rc |= expect_int("am svc stored as AM's", opts.analog_am_bandwidth_hz == 10000 && opts.analog_nfm_bandwidth_hz == 0,
                      1);
     rc |= expect_int(
         "am svc published for AM",
         g_nfm_publish_calls == 1 && g_width_publish_kind == DSD_ANALOG_DEMOD_AM && g_nfm_publish_width_hz == 10000, 1);
     rc |= expect_int("am svc 20 kHz refused at 16 kHz",
-                     svc_set_analog_bandwidth(&opts, &state, DSD_ANALOG_DEMOD_AM, 20000, why, sizeof why), -1);
+                     svc_set_analog_bandwidth(&opts, &state, DSD_ANALOG_DEMOD_AM, 20000, 0, why, sizeof why), -1);
     rc |= expect_str("am svc 20 kHz reason", why,
                      "AM 20 kHz does not fit the 16 kHz DSP rate (max 13.2 kHz); use a 24 or 48 kHz DSP bandwidth");
 
@@ -2526,7 +2550,7 @@ test_am_bandwidth_services(void) {
     state.rtl_ctx = (RtlSdrContext*)fake_ctx;
     g_analog_check_calls = 0;
     rc |= expect_int("am svc live default",
-                     svc_set_analog_bandwidth(&opts, &state, DSD_ANALOG_DEMOD_AM, 0, why, sizeof why), 0);
+                     svc_set_analog_bandwidth(&opts, &state, DSD_ANALOG_DEMOD_AM, 0, 0, why, sizeof why), 0);
     rc |= expect_int(
         "am svc live asks about AM at its default",
         g_analog_check_calls == 1 && g_analog_check_kind == DSD_ANALOG_DEMOD_AM && g_analog_check_width_hz == 0, 1);
@@ -2536,7 +2560,7 @@ test_am_bandwidth_services(void) {
     /* Under Analog (FM) the AM width is only configuration: stored, and held to no rate. */
     opts.analog_demod = DSD_ANALOG_DEMOD_FM;
     rc |= expect_int("am svc under nfm stored unchecked",
-                     svc_set_analog_bandwidth(&opts, &state, DSD_ANALOG_DEMOD_AM, 20000, why, sizeof why), 0);
+                     svc_set_analog_bandwidth(&opts, &state, DSD_ANALOG_DEMOD_AM, 20000, 0, why, sizeof why), 0);
     rc |= expect_int("am svc under nfm width", opts.analog_am_bandwidth_hz, 20000);
 
     /* A reopen at another DSP bandwidth holds the AM default too. */
