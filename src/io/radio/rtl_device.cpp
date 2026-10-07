@@ -2556,10 +2556,16 @@ rtl_device_test_replay_convert_block(const rtl_device_test_replay_convert_block_
 }
 #endif
 
-/* Read the capture into the input ring until the reader has to stop, and say why it stopped. */
+/* Read the capture into the input ring until the reader has to stop, and say why it stopped. Each chunk, and so each
+ * demod block, is at most one live transfer (dsd_iq_replay_chunk_bytes(), issue #626). */
 static replay_step
 replay_thread_read_capture(struct rtl_device* s, int* out_failure_rc) {
-    const size_t raw_block_bytes = 65536U;
+    const size_t raw_block_bytes = dsd_iq_replay_chunk_bytes(s->replay_cfg.format, s->replay_cfg.sample_rate_hz);
+    if (raw_block_bytes == 0U) {
+        /* Not reachable: the open refuses a capture with no sample rate or an unknown format. */
+        *out_failure_rc = kReplayPipelineFailureRc;
+        return REPLAY_STEP_FAILED;
+    }
     uint8_t* raw_block = static_cast<uint8_t*>(malloc(raw_block_bytes));
     float* f32_block = static_cast<float*>(malloc(raw_block_bytes * sizeof(float)));
     replay_step step = REPLAY_STEP_CONTINUE;

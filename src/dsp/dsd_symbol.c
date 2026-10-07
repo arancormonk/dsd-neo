@@ -1961,11 +1961,11 @@ symbol_apply_rtl_fsk_discriminator_timing(const dsd_opts* opts, dsd_state* state
     int output_rate_hz = symbol_rtl_fsk_output_rate_hz(opts);
     /* The SPS hunt's profile, not the front end's published rate. A hunt step only
      * queues its RTL profile request for the demod thread to apply between input
-     * blocks, so the published rate lags by at least a block -- and under fast I/Q
-     * replay of a fixture that fits the output ring it never moves at all. Slicing
-     * on the lagging rate put the timing back on the old profile after every hunt
-     * step, which frame_sync_ensure_enabled_sps_profile() then read as "the hunt is
-     * on the old profile", cancelling the step and pinning AUTO to 4800/4. */
+     * blocks, so the published rate lags by at least a block, live and in an I/Q
+     * replay alike. Slicing on the lagging rate put the timing back on the old
+     * profile after every hunt step, which frame_sync_ensure_enabled_sps_profile()
+     * then read as "the hunt is on the old profile", cancelling the step and pinning
+     * AUTO to 4800/4. */
     int symbol_rate_hz = dsd_frame_sync_active_profile_symbol_rate_hz(state);
     if (symbol_rate_hz <= 0) {
         symbol_rate_hz = symbol_rtl_fsk_symbol_rate_hz(work);

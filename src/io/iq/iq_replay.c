@@ -1995,6 +1995,22 @@ dsd_iq_replay_validate_effective_bytes_for_replay(uint64_t effective_bytes, int 
     return DSD_IQ_OK;
 }
 
+size_t
+dsd_iq_replay_chunk_bytes(dsd_iq_sample_format format, uint32_t sample_rate_hz) {
+    const size_t align = dsd_iq_sample_format_alignment_bytes(format);
+    if (align == 0U || sample_rate_hz == 0U) {
+        return 0U;
+    }
+    uint64_t samples =
+        ((uint64_t)sample_rate_hz * DSD_IQ_REPLAY_CHUNK_MAX_SAMPLES) / DSD_IQ_REPLAY_CHUNK_REFERENCE_RATE_HZ;
+    if (samples > DSD_IQ_REPLAY_CHUNK_MAX_SAMPLES) {
+        samples = DSD_IQ_REPLAY_CHUNK_MAX_SAMPLES;
+    } else if (samples == 0U) {
+        samples = 1U;
+    }
+    return (size_t)samples * align;
+}
+
 double
 dsd_iq_replay_estimate_duration_seconds(uint64_t data_bytes, dsd_iq_sample_format format, uint32_t sample_rate_hz) {
     if (sample_rate_hz == 0) {
