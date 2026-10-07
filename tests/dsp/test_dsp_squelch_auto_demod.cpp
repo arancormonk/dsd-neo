@@ -860,8 +860,9 @@ fsk9600_path_runs_the_tracker(void) {
         s->symbol_rate_hz = others[c][0];
         s->symbol_levels = others[c][1];
         s->channel_lpf_profile = others[c][2];
-        for (int at = 0; at < 24000 / 2; at += 960) {
-            (void)run_block(s, &iq[(size_t)at * 2U], 960);
+        const int total = (int)(iq.size() / 2U);
+        for (int at = 0; at < total; at += 960) {
+            (void)run_block(s, &iq[(size_t)at * 2U], total - at < 960 ? total - at : 960);
         }
         if (s->result_flags_active || s->squelch_auto_ran) {
             DSD_FPRINTF(stderr, "squelch auto demod: the tracker ran on %d/%d FSK\n", others[c][0], others[c][1]);
