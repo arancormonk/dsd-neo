@@ -673,7 +673,12 @@ The `Linux • RelWithDebInfo • ctest (x86-64-v3, fast-math, clang)` check enf
   default rather than an explicit request. An explicit width, or the AM default, forces the channel filter on; only
   the unset NFM default keeps the historical enable rule (`rtl_demod_analog_requested_width_hz()`). The presets
   never touch the widths. `dsd_opts_is_analog_family()` names the `-fA` receive family; the M17 encoder shares the analog
-  front end but is not part of it. `dsd_opts_analog_width_hz()` returns the explicit width for the active kind.
+  front end but is not part of it. `dsd_opts_runs_m17_encoder()` names the encoder (issue #625). `-fZ` clears
+  `analog_only` and leaves the digital frame flags at their defaults, so the RTL front end, the stream's live switches
+  and app-control's profile publishes key on it. The encoder's monitor stays FM with de-emphasis on the WIDE channel,
+  never CQPSK (`rtl_demod_init_for_mode()`, `demod_apply_cqpsk_defaults()`, `rtl_stream_runs_digital_family()`,
+  `rtl_stream_apply_cqpsk_toggle()`, `rtl_stream_set_symbol_profile()`, `svc_publish_symbol_profile()`).
+  `dsd_opts_analog_width_hz()` returns the explicit width for the active kind.
 - API note (runtime sink changes, `<dsd-neo/core/audio.h>`): `dsd_audio_ensure_analog_output()` and
   `dsd_audio_ensure_digital_output()` open the sink a new receive family writes to (the raw monitor stream; the digital
   voice stream, plus the raw stream for ProVoice and `-8`) with the parameters `openAudioOutput()` uses, when the
@@ -2005,12 +2010,17 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   retune or reset (`dsd_analog_rx_block_straddles_boundary()`), partly the old channel's and never played, goes in with
   `DSD_ANALOG_AUDIO_DISCARD`: the chain neither filters it nor counts it, turns it into silence, and starts over with
   the next block, so the old channel leaves nothing in the new one's filters. EDACS runs the EDACS chain with the
-  talkgroup gate as its playing flag and a reset per call, after the symbol register is read from the raw block. The M17
+  talkgroup gate as its playing flag and a reset per call, after the symbol register is read from the raw block; under
+  a dynamic squelch it runs the chain per run of heard and unheard samples and silences the closed ones
+  (`edacs_process_analog_block_runs()`, issue #625). The M17
   encoder keeps its own band-pass, 960 Hz one-poles (`dsd_voice_onepole`) and AGC at 8 kHz in its stream context
   (`m17_voice_chain`) and runs them over the whole codec2 frame, 160 samples at 3200 bit/s and 320 at 1600
   (`m17_voice_chain_process()`; an explicit `-n` keeps `analog_gain()`). Its input reader low-passes at 3400 Hz
   (`DSD_VOICE_BAND_LOWPASS`, at the input rate) before keeping one sample in `m17_rate / 8000`, and scales RTL monitor
   audio by the RTL monitor gain after the `vol` trim (`m17_encoder_read_block()`), so it reaches codec2 at PCM scale.
+  On RTL it reads each sample's squelch flag (`read_ex`); while the stream's gate runs
+  (`dsd_squelch_stream_gate_running()`, asked once a block's first sample is in) a closed sample fades to silence before
+  the low-pass, and the read records whether any sample was heard (`m17_encoder_input::squelch_heard`).
   The analog_voice and analog_audio sources keep IEEE semantics under fast-math, which would fold away their
   non-finite-sample guards. The published `dsd_state::aout_gainA` is the gain applied, in dB over the `-n 50` gain,
   which the terminal shows as `G: Auto (+x dB)`. Tests: `DSP_ANALOG_VOICE`, `DSP_ANALOG_AUDIO`, `DSP_SYMBOL_REPLAY`
@@ -2035,8 +2045,15 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   `dsd_demod_reset_filter_state()` (stream open, retunes, family switches, a replay's RESET) makes the next block take
   its context afresh: at the same context it keeps the floor and starts the windows and coherence history over. A
   floor the tracker kept through a spell without running ages the same way (`demod_state::squelch_floor_active_s`):
-  past `DSD_SQUELCH_FLOOR_STALE_S` it is learned again, neither kept nor stored for its channel with a fresh stamp. Inside `full_demod()` (`squelch_auto_run()`) the tracker runs on an AUTO setting on the analog
-  monitor (`dsd_demod_analog_monitor_active()`), with a plan for the channel filter in force, the half-band stage
+  past `DSD_SQUELCH_FLOOR_STALE_S` it is learned again, neither kept nor stored for its channel with a fresh stamp. Inside `full_demod()` (`squelch_auto_run()`) the tracker runs on an AUTO setting on a path
+  `dsd_demod_dynamic_squelch_path()` names:
+  - the analog monitor (`dsd_demod_analog_monitor_active()`);
+  - the M17 encoder's monitor (`dsd_demod_encoder_monitor_active()`: `demod_state::m17_encoder_monitor`, set at open,
+    FM audio on the WIDE channel);
+  - the FSK discriminator at 9600 bit/s, two levels, that EDACS analog voice reads (`dsd_demod_fsk9600_active()`,
+    keyed on the symbol profile, so a channel LPF that is off and leaves the WIDE label still counts).
+
+  It runs with a plan for the channel filter in force, the half-band stage
   ahead of it (`hb31` for one pass, `hb15` for more) and the channel rate (`rate_out` x `post_downsample`), and nothing
   is zeroed: the level gate and the AM detector's squelched-block branch stand aside, the flags land in
   `result_flags`, and the post-decimator, `low_pass_real()` and the resampler (`resamp_process_block_flags()`) carry
@@ -2057,10 +2074,22 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   (`dsd_analog_rx_tap_flags()`): a read is a carrier when any of its samples is open
   (`DSD_ANALOG_RX_SQUELCH_CARRIER`, with no energy floor), so a silent carrier holds the scan row. Every other squelch
   comparison goes through `<dsd-neo/runtime/squelch.h>` (`dsd_squelch_level_in_force()`, `dsd_squelch_level_open()`,
-  `dsd_squelch_gate_open()`): AUTO turns the level comparison off on PCM input, digital decoding (the GFSK sync skip),
-  the M17 encoder and EDACS analog voice, which falls back to its no-squelch release watchdog. Tests:
+  `dsd_squelch_gate_open()`): AUTO turns the level comparison off on PCM input and in digital decoding (the GFSK sync
+  skip). Two readers of their own take the gate instead (issue #625), when `dsd_squelch_stream_gate_running()` says the
+  stream's status ran a dynamic squelch with a valid plan; elsewhere they fall back to what they do with no squelch.
+  - The M17 encoder's VOX counts a 40 ms read heard when any sample was (`m17_encoder_squelch_heard()`,
+    `m17_encoder_vox_keyed()`).
+  - EDACS analog voice (`edacs_analog()`) reads each triplet's flags (`edacs_collect_analog_triplet_flags()`,
+    `edacs_analog_sql_kind()`). It ends the call once the run of closed samples reaches four triplets less
+    `DSD_SQUELCH_CLOSE_DELAY_MS` at its output rate (`edacs_gate_hold_samples()`). The level squelch's fifth closed
+    reading releases a dropped carrier no sooner, and its fallback watchdog runs only when nothing decides the call.
+
+  The gate closes within that delay of a drop: `<dsd-neo/core/power.h>`; `tools/squelch_paths_model.py` measures it,
+  and `DSP_SQUELCH_AUTO_DEMOD` pins it. `dsd_state::squelch_edacs_call` marks an EDACS call for the readout. Tests:
   `DSP_SQUELCH_FLOOR`, `DSP_SQUELCH_AUTO_DEMOD`, `DSP_SYMBOL_REPLAY` (`test_auto_squelch_gates_each_sample`),
-  `RUNTIME_SQUELCH`, `FRAME_SYNC_INTERNAL_HELPERS`.
+  `RUNTIME_SQUELCH`, `FRAME_SYNC_INTERNAL_HELPERS`, `EDACS_GRANT_TUNE_MATRIX` (the analog-call cases),
+  `M17_STATE_DISPATCH` (the VOX and end-of-stream cases), `IO_RTL_DEMOD_CONFIG`, `IO_RTL_ANALOG_OPEN` (the `-fZ` front
+  end) and `DECODE_IQ_M17_ENCODER_VOX_SQL_*`.
   The block (`dsd_state::analog_out_f`) collects unsynced samples in a digital session too, monitored or not (the
   CQPSK symbol-rate output excepted). `dsd_symbol_analog_block_reset()` (`<dsd-neo/dsp/symbol.h>`, decoder thread)
   drops a part-collected block; app-control and the channel-scan leave call it when the receive family changes. On an
@@ -2104,12 +2133,13 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   response, then the last), the channel taps and the discriminator (`tools/noise_squelch_model.py` chose all of it:
   `docs/testing.md` "Noise squelch design gate"). Each 40 ms window, taken every 20 ms at sample-exact boundaries, reads
   Q = max(Q_sum, Q_max - 4 dB) of quieting; the gate opens at N and closes under max(N - 3, 1.5) dB, one flag per sample
-  as the tracker's, bit-identical whatever the block cuts. Inside `full_demod()` a NOISE setting on the FM monitor with
-  a valid plan arms it in `full_demod_update_channel_state()` (`squelch_noise_wanted()`, the level gate standing aside)
+  as the tracker's, bit-identical whatever the block cuts. Inside `full_demod()` a NOISE setting on the FM monitor (or
+  the M17 encoder's, issue #625) with a valid plan arms it in `full_demod_update_channel_state()`
+  (`squelch_noise_wanted()`, the level gate standing aside)
   and `squelch_noise_run()` flags each output right after `dsd_fm_demod()`, before the post-decimator, de-emphasis and
-  audio filters, which then carry the flags as the tracker's. On an AM channel, or one with no plan (8 and 10 kHz NFM,
-  low DSP rates, an unfiltered channel at 16 kHz or less), `squelch_auto_wanted()` runs the tracker instead, N as its
-  margin. Its plan follows the same `dsd_demod_squelch_plan_key` as the tracker's, which carries the cascade's pass
+  audio filters, which then carry the flags as the tracker's. On an AM channel, one with no plan (8 and 10 kHz NFM,
+  low DSP rates, an unfiltered channel at 16 kHz or less), or the 9600 bit/s FSK path EDACS reads (its discriminator's
+  output is peak-normalised, not radians), `squelch_auto_wanted()` runs the tracker instead, N as its margin. Its plan follows the same `dsd_demod_squelch_plan_key` as the tracker's, which carries the cascade's pass
   count (designed only when NOISE needs it), and it keeps its own context record (`demod_state::noise_context`), so a
   spell under NOISE never stores the tracker's floor under another channel; a new context or
   `dsd_demod_reset_filter_state()` starts it over, closed. The IO layer's status adds which squelch ran and its quieting

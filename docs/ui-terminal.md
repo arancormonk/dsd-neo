@@ -453,7 +453,9 @@ the squelch is doing: `SQL: auto +10 dB (floor -78.3 dB)`, `(learning)` until it
 where the auto squelch runs it. On audio input the [noise squelch](cli.md#noise-squelch-on-audio-input) reads
 `(learning)` until it has a noise reference, then its quieting; `(off: no band above voice)` when the input carries
 nothing above voice (its audio is low-passed), `(off: no room above voice)` when its rate leaves no band, and `(off on
-AM audio)` on an AM monitor.
+AM audio)` on an AM monitor. The M17 encoder's RTL input line reads the tracker as the monitor's does. An EDACS session
+reads `(EDACS analog calls)` between calls (`, as auto` under the noise squelch) and the tracker's reading during
+one. On audio input both read `(off: no radio input)`: no dynamic squelch runs for them there (issue #625).
 While a scan row or target overrides the squelch with `--squelch-db` or `--squelch`, the line shows the
 row's setting first and the configured default beside it: `SQL: -60.0 dB (row; default -80.0 dB)`, `SQL: auto +6 dB
 (floor -81.0 dB; row; default -60.0 dB)`. The `Squelch...` row is labelled with the configured setting
