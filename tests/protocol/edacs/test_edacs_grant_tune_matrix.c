@@ -1918,7 +1918,8 @@ edacs_run_analog_call_real_tracker_cases(void) {
         rc |= edacs_run_analog_call_real_tracker_case(125000, phase);
     }
     return edacs_expect(rc == 0, "analog-call", "tracker",
-                        "the real tracker's flags end the call within the level squelch's time");
+                        "the real tracker's flags end the call within the level squelch's time at 48 kHz, and "
+                        "within the delay, the floor and a triplet at 125 kHz");
 }
 #endif
 

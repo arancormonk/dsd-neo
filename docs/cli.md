@@ -715,11 +715,11 @@ alone is `auto+10`), so one setting suits every receiver and every channel of a 
     [M17 Encoding](#m17-encoding)).
   - EDACS analog voice: the tracker runs on the 9600 bit/s FSK path EDACS reads. A call ends once the gate has stayed
     closed for the level squelch's hold, less the 85 ms the gate can take to close: about 155 ms at 48 kHz and 395 ms
-    at the EDACS presets' 24 kHz. A carrier that drops ends no later than under a level squelch.
+    at the EDACS presets' 24 kHz. At those rates a carrier that drops ends no later than under a level squelch.
   - The hold is never under 80 ms, two of the squelch's windows, so neither the window a call's first decision takes
     nor one window read closed ends a call. That floor sets the hold only above about 70 kHz, where an I/Q replay runs
     unresampled (`DSD_NEO_RESAMP=off`). There a call can end up to the 85 ms, the floor and the triplet it ends on after
-    its carrier drops: about 190 ms at 125 kHz.
+    its carrier drops: about 190 ms at 125 kHz, where a level squelch ends it within about 115 ms.
   - The tracker runs on the EDACS control channel too, a continuous carrier it never takes as its floor, and EDACS
     reads the gate only during a call.
   - The closed samples play as silence. The release watchdog applies only where nothing decides the call: no squelch,
@@ -1625,7 +1625,7 @@ Input, squelch and VOX
 - A transmission still open when the encoder stops (an exit, or the input ending) ends the same way, followed by 1 s of
   dead air, as a manual unkey's does.
 - A manual unkey while VOX still hears a carrier ends that stream the same way, with its dead air; VOX then keys a new
-  stream, with its own LSF.
+  stream, with its own LSF and, when monitored, its own call.
 - On a local audio output the encoder lets the last frame and the EOT marker play before it queues the dead air, so a
   full output cannot drop them. At shutdown it lets everything queued play before the output closes, a VOX unkey's
   end included. The packet encoder (`-fP`) ends the same way.

@@ -2024,7 +2024,8 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   (`m17_str_end_stream()`, and the packet encoder's) drains a local output after the EOT marker, before its dead air,
   and `m17_str_finalize()` drains again at shutdown, whatever ended the last stream: an asynchronous output drops its
   oldest samples when full, and the engine closes it without a drain. A stream that ends while keyed (a shutdown, or a
-  manual unkey while VOX hears a carrier) resets as the idle path's end does, so the next key-up sends a new LSF.
+  manual unkey while VOX hears a carrier) resets as the idle path's end does, so the next key-up sends a new LSF; a
+  monitored stream (`-8`) ends its call there, so the next one begins its own.
   The analog_voice and analog_audio sources keep IEEE semantics under fast-math, which would fold away their
   non-finite-sample guards. The published `dsd_state::aout_gainA` is the gain applied, in dB over the `-n 50` gain,
   which the terminal shows as `G: Auto (+x dB)`. Tests: `DSP_ANALOG_VOICE`, `DSP_ANALOG_AUDIO`, `DSP_SYMBOL_REPLAY`
@@ -2085,9 +2086,12 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
     `m17_encoder_vox_keyed()`).
   - EDACS analog voice (`edacs_analog()`) reads each triplet's flags (`edacs_collect_analog_triplet_flags()`,
     `edacs_analog_sql_kind()`). It ends the call once the run of closed samples reaches four triplets less
-    `DSD_SQUELCH_CLOSE_DELAY_MS` at its output rate, never under `EDACS_ANALOG_GATE_MIN_HOLD_MS` (two windows: a
-    call's first decision or one window read closed cannot end it; `edacs_gate_hold_samples()`). The level squelch's fifth closed
-    reading releases a dropped carrier no sooner, and its fallback watchdog runs only when nothing decides the call.
+    `DSD_SQUELCH_CLOSE_DELAY_MS` at its output rate (`edacs_gate_hold_samples()`), never under
+    `EDACS_ANALOG_GATE_MIN_HOLD_MS` (two windows: a call's first decision or one window read closed cannot end it). At
+    EDACS's 24 and 48 kHz outputs that ends a dropped carrier no later than the level squelch's fifth closed reading.
+    Above about 70 kHz (an unresampled replay) the floor sets the run, and the call ends within the delay, the floor
+    and one triplet of the drop, later than the level squelch's release there. The fallback watchdog runs only when
+    nothing decides the call.
 
   The gate closes within that delay of a drop: `<dsd-neo/core/power.h>`; `tools/squelch_paths_model.py` measures it,
   and `DSP_SQUELCH_AUTO_DEMOD` pins it. `dsd_state::squelch_edacs_call` marks an EDACS call for the readout. Tests:

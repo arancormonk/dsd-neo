@@ -2932,6 +2932,8 @@ static int g_vox_tx[VOX_MAX_ITERS];
 static int g_vox_ip_stream = 0;
 static int g_vox_ip_eos = 0;
 static int g_vox_ip_eotx = 0;
+/* The monitored call's epoch as each IP stream frame went out (0 with no active call). */
+static uint64_t g_vox_ip_epoch[VOX_MAX_ITERS];
 
 /* RF as the symbol capture records it (opts->symbol_out_f): each frame's kind and, for a stream frame, its EOS bit. */
 enum { VOX_RF_MAX = 512 };
@@ -3103,9 +3105,13 @@ fake_vox_connect(dsd_opts* opts, dsd_state* state) {
 static int
 fake_vox_blaster(const dsd_opts* opts, dsd_state* state, size_t nsam, const void* data) {
     (void)opts;
-    (void)state;
     const uint8_t* bytes = (const uint8_t*)data;
     if (nsam == 54U && bytes != NULL) {
+        dsd_call_snapshot call;
+        if (g_vox_ip_stream < VOX_MAX_ITERS) {
+            g_vox_ip_epoch[g_vox_ip_stream] =
+                (dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE) ? call.epoch : 0U;
+        }
         g_vox_ip_stream++;
         /* The EOS bit: after the magic (32 bits), the stream id (16) and the LSF (224). */
         g_vox_ip_eos += (bytes[34] >> 7) & 1U;
@@ -3147,6 +3153,7 @@ vox_run(dsd_opts* opts, dsd_state* state, int mode, int vox) {
     g_vox_ip_stream = 0;
     g_vox_ip_eos = 0;
     g_vox_ip_eotx = 0;
+    DSD_MEMSET(g_vox_ip_epoch, 0, sizeof g_vox_ip_epoch);
 #ifdef USE_CODEC2
     g_codec2_encode_count = 0;
     DSD_MEMSET(g_codec2_encode_peaks, 0, sizeof g_codec2_encode_peaks);
@@ -3258,7 +3265,7 @@ test_encoder_vox_unkeys_on_the_gate(void) {
     err |= expect_int("vox level: RF ends with an EOS frame and the EOT marker", vox_rf_ending(&streams, &dead), 0);
     err |= expect_int("vox level: no dead air after the marker", dead, 0);
     /* A manual unkey while VOX still hears a carrier ends that stream (EOS frame, EOT marker, dead air) and VOX opens a
-       new one with its own LSF at once; the input ending then ends that one too. */
+       new one with its own LSF, and its own monitored call, at once; the input ending then ends that one too. */
     vox_defaults(64, 12);
     g_vox_manual_unkey_at = 5L * VOX_ITER_SAMPLES;
     vox_run(&opts, &state, DSD_SQUELCH_MODE_AUTO, 1);
@@ -3273,6 +3280,15 @@ test_encoder_vox_unkeys_on_the_gate(void) {
         err |= expect_int("manual unkey under VOX: dead air after the second", tx_dead[1], 25);
         err |= expect_int("manual unkey under VOX: two IP EOS frames", g_vox_ip_eos, 2);
         err |= expect_int("manual unkey under VOX: two IP EOTX", g_vox_ip_eotx, 2);
+        /* Each transmission is one monitored call, and the two are distinct. */
+        const int first = tx_streams[0];
+        const int total = first + tx_streams[1];
+        int calls_ok = total == g_vox_ip_stream && total <= VOX_MAX_ITERS && g_vox_ip_epoch[0] != 0U
+                       && g_vox_ip_epoch[first] != 0U && g_vox_ip_epoch[first] != g_vox_ip_epoch[0];
+        for (int i = 0; calls_ok && i < total; i++) {
+            calls_ok = g_vox_ip_epoch[i] == g_vox_ip_epoch[i < first ? 0 : first];
+        }
+        err |= expect_int("manual unkey under VOX: one monitored call per transmission", calls_ok, 1);
     }
     return err;
 }

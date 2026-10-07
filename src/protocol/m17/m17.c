@@ -2528,9 +2528,10 @@ m17_str_handle_tx_active(m17_str_ctx* ctx, const m17_str_frame_ctx* frame) {
     ctx->fsn = m17_stream_next_frame_counter(ctx->fsn);
     /* A stream that ends while keyed (a shutdown, or a manual unkey while VOX still hears a carrier): that frame
        carried the EOS bit, the EOT marker follows it, and the stream starts over as the idle path's end does, so a
-       later key-up opens a new one with its LSF (issue #625). */
+       later key-up opens a new one with its LSF and, monitored, its own call (issue #625). */
     if (ctx->eot && !ctx->eot_out) {
         m17_str_end_stream(ctx, NULL);
+        m17_end_monitored_tx_call(ctx->opts, ctx->state, &ctx->monitored_call_epoch);
         m17_str_reset_tx_idle_state(ctx);
         ctx->new_lsf = 1;
         DSD_MEMSET(ctx->state->m17_meta, 0, sizeof(ctx->state->m17_meta));
