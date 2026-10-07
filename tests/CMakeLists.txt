@@ -12565,6 +12565,31 @@ if(DSD_HAS_RADIO)
         "Src=[0-9]"
     )
 
+    # The M17 encoder's VOX on the dynamic squelch (issue #625): ten seconds of receiver noise
+    # replayed into -fZ with VOX on never key it under --squelch auto or noise (each used to key
+    # on the first frame: the level comparison was off under both, so every read was open). A
+    # level the noise clears keys it: the control that shows the cases would see a key-up.
+    dsd_neo_add_iq_reject_test(
+        DECODE_IQ_M17_ENCODER_VOX_SQL_AUTO_NOISE_FLOOR
+        noise_floor
+        "-fZ -M M17:7:DSD-NEO:TEST:48000:1 --squelch auto"
+        "Exiting"
+        "M17 LSF +[(]ENCODER[)]"
+    )
+    dsd_neo_add_iq_reject_test(
+        DECODE_IQ_M17_ENCODER_VOX_SQL_NOISE_NOISE_FLOOR
+        noise_floor
+        "-fZ -M M17:7:DSD-NEO:TEST:48000:1 --squelch noise"
+        "Exiting"
+        "M17 LSF +[(]ENCODER[)]"
+    )
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_M17_ENCODER_VOX_SQL_LEVEL_KEYS
+        noise_floor
+        "-fZ -M M17:7:DSD-NEO:TEST:48000:1 --squelch -40"
+        "M17 LSF +[(]ENCODER[)]"
+    )
+
     # Received-tone detection on the analog FM monitor (issue #522): synthetic NFM with voice
     # and a CTCSS tone, replayed under -fA with -o null, so detection is shown to run with no
     # audio output and no tone policy at all. Each asserts the "Received tone:" log line and
