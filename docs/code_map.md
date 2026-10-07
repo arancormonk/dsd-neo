@@ -129,7 +129,10 @@ Generated (do not edit/commit):
     `dsd_symbol_matched_filter_reset()`) go with the old stream. A file or TCP input that ended
     (`dsd_state::input_fallback_pending`, which the symbol reader sets) is replaced by the configured Pulse input here,
     between frames and under the P25 SM tick guard (`dsd_engine_input_fallback()`), unless a command pumped since it
-    ended replaced it; the session ends when Pulse does not open. Test: `ENGINE_INPUT_BOUNDARY`.
+    ended replaced it; the session ends when Pulse does not open. A rigctl peer the switch brings to demodulate the
+    input (a symbol replay ended; a WAV or TCP stream was the peer's audio already) is asked for the session's width
+    under the same guard (`dsd_engine_rigctl_ask_session_passband()`, issue #621), as app-control's follow asks a peer a
+    command's switch brings. Test: `ENGINE_INPUT_BOUNDARY`.
 - Build files: `src/engine/CMakeLists.txt`
 
 Key public headers:
@@ -307,10 +310,14 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   custom sets). `dsd_scan_mode_apply_modulation()` owns target flags/locks for both entry and scope updates. Inherited
   profiles use the restored SPS hunt index, so AUTO's saved timing and the frontend's rate/levels agree after leaving a
   row. `dsd_scan_mode_row_options()` borrows the installed nonsecret row options (valid while suspended and on held
-  snapshots), and `dsd_scan_mode_row()` gives the row's class while suspended too, which `dsd_scan_mode_active()`
-  reports as INHERIT then (a config apply asks it for the analog monitor the resume puts back, issue #578), and
-  `dsd_scan_mode_suspended_effective()` the settings in force when the scope was suspended (the row over the baseline,
-  which a rollback restarts the input on, issue #578). Row
+  snapshots; a rigctl peer's live request reads its row here), `dsd_scan_mode_rigctl_request_is_session()` says whether
+  a passband this client sets on a rigctl peer now is the session's rather than a scan row's (issue #621: no trunk scan
+  and no scan scope held, a typed `-Y` row's suspended or not; without a state, no `-Y` list configured; the legacy
+  untyped list holds no scope, so its step asks for the session's; the scope's answer only: every rigctl leg asks
+  `dsd_channel_modes_rigctl_request_is_session()` in core, which refines it), and `dsd_scan_mode_row()` gives the
+  row's class while suspended too, which `dsd_scan_mode_active()` reports as INHERIT then (a config apply asks it for
+  the analog monitor the resume puts back, issue #578), and `dsd_scan_mode_suspended_effective()` the settings in force
+  when the scope was suspended (the row over the baseline, which a rollback restarts the input on, issue #578). Row
   options are applied through a per-field table (`scan_option_appliers[]`), and the row squelch is pushed to the RTL
   demodulator from the scope's entry points only, once per row change. `dsd_scan_mode_enter()` never pushes, so every
   caller must follow it with `dsd_scan_mode_options()` (NULL for a row without options);
@@ -678,7 +685,12 @@ The `Linux • RelWithDebInfo • ctest (x86-64-v3, fast-math, clang)` check enf
   and app-control's profile publishes key on it. The encoder's monitor stays FM with de-emphasis on the WIDE channel,
   never CQPSK (`rtl_demod_init_for_mode()`, `demod_apply_cqpsk_defaults()`, `rtl_stream_runs_digital_family()`,
   `rtl_stream_apply_cqpsk_toggle()`, `rtl_stream_set_symbol_profile()`, `svc_publish_symbol_profile()`).
-  `dsd_opts_analog_width_hz()` returns the explicit width for the active kind.
+  `dsd_opts_analog_width_hz()` returns the explicit width for the active kind. Beside `dsd_opts_input_is_radio()`,
+  `dsd_opts_input_is_pcm_audio()` names the inputs that deliver audio something else demodulated (Pulse, stdin, WAV,
+  UDP, TCP; not an RTL-family, symbol-file or null input), `dsd_opts_rigctl_live()` a connected rigctl peer (`-U` on
+  with a socket, socket 0 included) and `dsd_opts_rigctl_peer_demodulates()` both together, a peer whose demodulator
+  DSD-neo hears (issue #621): the squelch's input kind, the rigctl passband rule, the engine's rigctl legs and
+  app-control's analog width view and follow all key on these.
 - API note (runtime sink changes, `<dsd-neo/core/audio.h>`): `dsd_audio_ensure_analog_output()` and
   `dsd_audio_ensure_digital_output()` open the sink a new receive family writes to (the raw monitor stream; the digital
   voice stream, plus the raw stream for ProVoice and `-8`) with the parameters `openAudioOutput()` uses, when the
@@ -815,8 +827,28 @@ The `Linux • RelWithDebInfo • ctest (x86-64-v3, fast-math, clang)` check enf
     `src/dsp/demod_pipeline.cpp` static-asserts its design constants against the ones here. Tests:
     `RUNTIME_ANALOG_CHANNEL`, `DSP_CHANNEL_FILTERS` (validator and design agree across a width/rate grid; the
     analog design gates on `dsd_analog_width_realizable()` itself).
+  - The rigctl passband rule (issues #526, #621; `include/dsd-neo/runtime/rigctl_passband.h`,
+    `src/runtime/rigctl_passband.c`): the demodulator and passband a rigctl peer that demodulates audio input is asked
+    for, pure and NULL-safe, with liveness the caller's to check. `dsd_rigctl_passband_of()` keys on the analog
+    demodulator in force: on PCM audio input (`dsd_opts_input_is_pcm_audio()`) under the analog family it is
+    `dsd_rigctl_passband_for_kind()`, the row's own width of that kind (ROW, from the row's options, since the width in
+    force cannot tell it from the configured one), else the configured width of that kind in force (CONFIGURED), else
+    for AM the 6 kHz default (AM_DEFAULT) and for FM `-B` standing in for an unset NFM width (SETMOD_BW), else the
+    peer's own passband at 0 (PEER_OWN); anything else (a digital mode, the M17 encoder, an RTL-family, symbol-file or
+    null input) is FOLLOW, FM at `-B`, as every tune asked before the peer demodulated. `dsd_rigctl_passband_is_width()`
+    (ROW, CONFIGURED, AM_DEFAULT) is a strict request, whose refusal fails a scan tune;
+    `dsd_rigctl_passband_sets_passband()` adds SETMOD_BW, a passband this client sets, and
+    `dsd_rigctl_passband_captures()` adds FOLLOW at `-B` on PCM audio input, where a digital mode is heard through the
+    peer's FM passband: every request it names goes through `SetScanRowModulation()` so the peer's own passband is read
+    first and a later return to it sends the reading rather than `M NFM 0` (FOLLOW on any other input only follows the
+    frequency); `dsd_rigctl_passband_equal()` counts the source, so entering the monitor from FOLLOW is a change even
+    where the wire request matches. The engine's scan tune, live apply, leave restore, start and reconnect ask,
+    legacy `-Y` step and `io_control_set_freq()` (IO, below), and app-control's follow and analog width view, all take
+    their request from it. Test: `RUNTIME_RIGCTL_PASSBAND` (also `dsd_scan_mode_rigctl_request_is_session()` over a real
+    scope).
   - The configured NFM width (issue #525): `--nfm-bandwidth-hz` (`src/runtime/cli/args.c`; `compact.c` consumes its
-    value before getopt; a warning on PCM input) and the `[analog]` INI section (`has_analog`,
+    value before getopt; a warning on PCM input, or with rigctl `-U` a notice that it is the FM passband the peer is
+    asked for in place of `-B`, issue #621) and the `[analog]` INI section (`has_analog`,
     `analog_nfm_bandwidth_hz`) parse through `dsd_analog_width_parse()` and never clamp: the loader warns and keeps the
     default, `--validate-config` reports an error, and also one when the width does not fit the DSP rate `rtl_bw_khz`
     gives an `rtl`/`rtltcp` input that startup builds with it (`rtl_freq` set) under `decode = "analog"`. A save writes
@@ -1177,7 +1209,8 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   configured view), or, for either width on any session, an analog scan row of that kind that runs the configured width
   (no width of its own) is on air or waiting in the scan (`dsd_engine_scan_runs_configured_nfm_width()`, `_am_width()`,
   through `svc_scan_runs_configured_width()`) -- `svc_check_analog_bandwidth()` holds it to `DSD_NEO_CHANNEL_LPF` on a
-  radio input (PCM input runs no channel filter, so the width is only stored there) and to the running stream
+  radio input (PCM input runs no channel filter, so no rate holds the width there; with a rigctl peer it is the
+  passband the peer is asked for, below) and to the running stream
   (`rtl_stream_check_analog_profile()`) or, with none, to an RTL-SDR/rtl_tcp input's DSP bandwidth; a refusal is a toast
   naming the width, the rate, the limit and the fix, and changes nothing (the validator's full text is logged). AM
   always runs its channel filter, so every one of these holds AM's unset default (6 kHz) as it holds an explicit width,
@@ -1474,6 +1507,48 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   start with that config does, so the loaded file keeps `decode = am`; a live input switch leaves autosave on. Neither
   width command is scoped (`command_updates_scan_mode()`): each edits the configured width as above rather than
   suspending and re-applying the row. Tests: `APP_COMMAND_QUEUE`, `UI_MENU_SERVICES`.
+- Rigctl passband on audio input (issue #621): where a rigctl peer demodulates PCM audio input
+  (`dsd_opts_rigctl_peer_demodulates()`) the analog width is the passband the peer is asked for (runtime's
+  `dsd_rigctl_passband_of()`), so a command that changes the request in force asks the peer at once, as the front end is
+  asked, rather than at the next retune. `src/app_control/rigctl_passband.c` holds the follow:
+  `svc_rigctl_passband_now()` is the request for the options in force and the row whose scope is in force
+  (`dsd_scan_mode_row_options()`, as `dsd_engine_scan_rigctl_apply_modulation()` reads it; FOLLOW without such a peer),
+  `svc_rigctl_session_now()` pairs it with whether a peer demodulates the input (`svc_rigctl_session`), taken before a
+  change, and `svc_rigctl_follow_passband()` hands the engine's strict live apply the request once the change made it
+  differ (`dsd_rigctl_passband_equal()`, which counts the source, so entering the monitor from a digital mode asks even
+  where the wire request matches; the rules sit in `rigctl_follow_asks()`). It asks nothing without a peer, while a
+  scope is suspended (`dsd_scan_mode_updating()`: the scoped dispatcher follows after the resume), or while a `-Y` tune
+  or retry is staged (`dsd_engine_channel_scan_waiting()`: the restaged tune asks for its row). Off the monitor the
+  request is FOLLOW, FM at `-B` (0: the peer's own passband), which a tune sends best-effort: it is asked only to undo a
+  passband this client set on the monitor before the change (`dsd_rigctl_passband_sets_passband()` of the request
+  before, with the peer there), so a decode-mode switch or config that leaves the monitor for a digital mode does not
+  leave the peer on the monitor's width until another tune; FOLLOW before as well (a `-B` edit on a digital session), or
+  the peer's own passband before, asks nothing. A peer the change brought (a first rigctl connect, a switch onto PCM
+  input: `peer` 0 before) is asked for a width only (`dsd_rigctl_passband_is_width()`), as the start and reconnect asks
+  are, `-B` and the peer's own passband waiting for a tune. The rigctl I/O runs under the P25 SM tick guard, whose
+  watchdog retunes use the socket and its peer record; the guard is not re-entrant, so a caller that holds it passes
+  `guarded`. It returns 1 when the peer took the request, -1 when it refused or the reply was lost (the peer then runs
+  either passband; the engine logs it), and 0 when nothing was asked or the peer went away. `svc_set_analog_bandwidth()`
+  (which takes `guarded`, `command_writes_policy_store()` from the handler) follows after storing the width and, on -1,
+  stores the previous configured width back, asks again against the refused request, best-effort, and fails with `NFM
+  bandwidth -> 20 kHz: the rigctl peer refused the passband`. `svc_apply_rigctl_setmod_bw()` does the same for `-B`
+  around `svc_set_rigctl_setmod_bw()` (still clamped to 0..25 kHz), so `DSD_APP_CMD_RIGCTL_SET_MOD_BW` now fails, with
+  `Refused: Rigctl setmod BW -> 25000 Hz: the rigctl peer refused the passband`, where it used to only store.
+  `apply_cmd_scoped()` takes the session before every command, ahead of the suspend, and follows it after the resume and
+  the AM-on-PCM fallback (`apply_cmd_follow_rigctl_passband()`): a refusal leaves any command but a config apply
+  standing, with `WARNING: The rigctl peer refused NFM 9 kHz; the setting stands.` and the toast `Rigctl peer refused
+  NFM 9 kHz (see log)`, and so does a refused FOLLOW undo, a config apply's included, since a tune's `-B` is
+  best-effort; any other refusal of a CONFIG_APPLY whose `[analog]` changed the refused kind's configured width
+  (`ui_cmd_widths_before`) stores the old width back, asks again under the guard it holds, logs and fails with `Config
+  applied; the rigctl peer refused AM 10 kHz: the AM width stays 8 kHz` (the old setting as
+  `dsd_app_analog_width_setting_text()` spells it); one that changed only what runs (its `[mode]`, its `[input]`) logs
+  and fails with `Config applied; the rigctl peer refused NFM 12.5 kHz (see log)`, and a config sets no `-B`, so none is
+  put back. The width, `-B` and "this channel" commands have asked already, and the IO record skips a request the peer
+  is known to run, so their second follow sends nothing. A configured AM width edited under an `am` row without its own
+  width therefore reaches the peer at once, where it used to wait for the next retune. `svc_rigctl_connect()` asks a new
+  connection for the session's width (`dsd_engine_rigctl_ask_session_passband()`) after the socket swap, under the guard
+  it already holds. Tests: `APP_CONTROL_RIGCTL_PASSBAND`, `APP_COMMAND_QUEUE` (a fake peer behind
+  `--wrap=SetScanRowModulation` and `--wrap=SetModulationKind`), `UI_RIGCTL_CONNECT`, `UI_MENU_SERVICES`.
 - Tone filter (issue #527, the live editor): `DSD_APP_CMD_TONE_FILTER_SET` (510) carries the whole configured CTCSS/DCS
   policy, `dsd_app_tone_filter_payload` (the `dsd_tone_filter_mode` and its list as typed, NUL-terminated in
   `DSD_APP_TONE_FILTER_LIST_SIZE` bytes), submitted with `dsd_app_command_set_tone_filter()`, which refuses a list the
@@ -1587,36 +1662,56 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   analog channel width in force under the configured analog preset (the scan scope's configured view, so a typed digital
   row does not hide it; never for the M17 encoder): the front end's reported width while a running stream's options in
   force run the monitor, flagged DSP-limited when the rate bounds it, otherwise the configured width, and none on PCM
-  input. The running stream's demod rate, or with none running on an input whose RTL DSP bandwidth sets the rate that
-  rate, bounds the widths offered (`max_hz`, on a radio input under any preset); an unset default reads as what the
-  monitor runs at that rate, as the next start publishes it: the rate itself where no channel filter runs (below 20 kHz,
-  or as `DSD_NEO_CHANNEL_LPF` says), the legacy WIDE plan's passband (`dsd_channel_lpf_legacy_wide_width_hz()`) where
-  the filter runs but the rate cannot realize the default, both DSP-limited, and so it does at a running stream's demod
-  rate while the front end is off the monitor (a typed digital row, CQPSK toggled on under -fA), as the monitor it
-  returns to publishes it. There whether the filter runs is the stream's own decision
-  (`rtl_stream_channel_lpf_default()`, carried as `dsd_frontend_metrics::channel_lpf_default`), which its configuration
-  made from the rate it started at and keeps whatever rate the device then delivers (a forced rate, a replay's capture
-  rate), so the view does not re-derive it from the rate. The configured width comes from the scan scope's configured
-  view while one is live. An analog scan row on air (issue #526) shows its width on any session (`row_analog`), and a
-  row that sets its own width (`row_override`, `row_hz`) is the width in force, read as `12.5 kHz (row; default 16 kHz)`
-  with the configured width of its demodulator, which it overrides (on an AM session its leave returns to the AM width
-  instead). The services that hold a DSP rate to an analog session's width hold the configured preset's own kind and
+  input without a rigctl peer. The running stream's demod rate, or with none running on an input whose RTL DSP bandwidth
+  sets the rate that rate, bounds the widths offered (`max_hz`, on a radio input under any preset); an unset default
+  reads as what the monitor runs at that rate, as the next start publishes it: the rate itself where no channel filter
+  runs (below 20 kHz, or as `DSD_NEO_CHANNEL_LPF` says), the legacy WIDE plan's passband
+  (`dsd_channel_lpf_legacy_wide_width_hz()`) where the filter runs but the rate cannot realize the default, both
+  DSP-limited, and so it does at a running stream's demod rate while the front end is off the monitor (a typed digital
+  row, CQPSK toggled on under -fA), as the monitor it returns to publishes it. There whether the filter runs is the
+  stream's own decision (`rtl_stream_channel_lpf_default()`, carried as `dsd_frontend_metrics::channel_lpf_default`),
+  which its configuration made from the rate it started at and keeps whatever rate the device then delivers (a forced
+  rate, a replay's capture rate), so the view does not re-derive it from the rate. The configured width comes from the
+  scan scope's configured view while one is live. An analog scan row on air (issue #526) shows its width on any session
+  (`row_analog`), and a row that sets its own width (`row_override`, `row_hz`) is the width in force, read as `12.5 kHz
+  (row; default 16 kHz)` with the configured width of its demodulator, which it overrides (on an AM session its leave
+  returns to the AM width instead). On PCM audio input with a rigctl peer that demodulates it (`peer_passband`,
+  `dsd_opts_rigctl_peer_demodulates()`, issue #621) the width is the passband the peer is asked for, and no rate bounds
+  it (`radio_input`, `max_hz` and `dsp_limited` stay 0). There is a reading whenever the view offers a kind
+  (`dsd_app_analog_width_offered()`), so the frontends that show a passband beside the width controls show the one asked
+  for now: while the analog family runs the view's kind (`passband_in_force`) the reading is the rule's request,
+  `dsd_rigctl_passband_for_kind()` over the row's own width, the configured width and `-B` (`setmod_bw_hz`, 0 off a peer
+  session), with its source in `passband_source`; off it (a typed digital row on air under -fA, a digital session with
+  an explicit width set) the peer follows at `-B`, or at its own passband without one, and that is the reading, never
+  the configured width, which nothing then asks for. `unset_hz` is what an unset setting of the view's
+  kind stands for, `dsd_app_analog_width_unset_hz()` (public, for either kind on one snapshot): on a peer session `-B`
+  for NFM (0: the peer's own) and the 6 kHz default for AM, elsewhere the kind's default; it is where a stepper starts
+  from an unset setting. The view reads only the options and the copied scope, so a snapshot pair reads as the decoder
+  thread does. The services that hold a DSP rate to an analog session's width hold the configured preset's own kind and
   width, not the row's. They spell the reading (`12.5 kHz`, `16 kHz (default)`, `12 kHz (DSP-limited)`,
-  `not used on PCM input`), the width command's notice (`dsd_app_analog_width_edit_notice()`, for the kind the command
-  edits whatever kind the configured preset runs: `Applied: NFM bandwidth -> 12.5 kHz`, or
-  `Default NFM bandwidth -> 16 kHz; this channel overrides it (12.5 kHz)` under a row width) and the configured setting
-  (`12.5 kHz`, `default`). The terminal's `Analog:` status field, the `rtl.nfm_bw` row's label and predicate, the width
-  command's toast, RTL_SET_BW's configured-width check and Qt's `analogBandwidth*` properties (the row flags as
-  `analogBandwidthRowActive`/`analogBandwidthRowOverride`) all come from it. `dsd_app_analog_width_setting_hz()` reads
-  either kind's width in `dsd_opts` (0 = default) whichever preset runs, for every caller that only reads the width in
-  force (`dsd_scan_mode_configured_analog_width()` reads the configured one); app-control's
-  `svc_store_analog_width_setting()` is the one writer. `dsd_app_analog_width_offered()` (issue #524) says which kind's
-  width the frontends offer for editing on a radio input: the configured preset's kind whatever an analog scan row on
-  air runs (an nfm row runs FM over an AM session), the kind that row runs, the other kind's while an explicit
-  configured width of it is set, and AM's unset default where `max_hz` cannot filter it but can filter a narrower AM
-  width (a switch to AM is refused there with word to narrow the width); it takes the scan state for the configured
+  `not used on PCM input` without a rigctl peer; on a peer session by source, `12.5 kHz`, `6 kHz (default)`,
+  `12.5 kHz (-B)`, `peer's own`, and `12.5 kHz (row; default X)` with X the setting the row overrides, the AM unset
+  default as `6 kHz`), the width command's notice (`dsd_app_analog_width_edit_notice()`, for the kind the command edits
+  whatever kind the configured preset runs: `Applied: NFM bandwidth -> 12.5 kHz`, or `Default NFM bandwidth -> 16 kHz;
+  this channel overrides it (12.5 kHz)` under a row width, and on a peer session in force with no row width the passband
+  asked for, `Applied: NFM passband -> 12.5 kHz (-B)`) and the configured setting
+  (`dsd_app_analog_width_setting_format()`: `12.5 kHz`, `default`; `dsd_app_analog_width_setting_text()` spells it as
+  the session reads it, an unset NFM width on a peer session `-B 12.5 kHz` or `peer's own`). The terminal's `Analog:`
+  and `Passband:` status fields, the `input.nfm_bw` and `input.am_bw` rows' labels, prompts, chooser titles and
+  predicates, the width command's toast, RTL_SET_BW's configured-width check, app-control's config-refusal toast and
+  Qt's `analogBandwidth*`, `peerPassband`, `passbandInForce` and `nfm`/`amBandwidthUnsetText`/`UnsetHz` properties (the
+  row flags as `analogBandwidthRowActive`/`analogBandwidthRowOverride`) all come from it.
+  `dsd_app_analog_width_setting_hz()` reads either kind's width in `dsd_opts` (0 = default) whichever preset runs, for
+  every caller that only reads the width in force (`dsd_scan_mode_configured_analog_width()` reads the configured one);
+  app-control's `svc_store_analog_width_setting()` is the one writer. `dsd_app_analog_width_offered()` (issue #524) says
+  which kind's width the frontends offer for editing on a radio input, and on a peer session (issue #621; never on other
+  PCM input): the configured preset's kind whatever an analog scan row on air runs (an nfm row runs FM over an AM
+  session), the kind that row runs, the other kind's while an explicit configured width of it is set, and AM's unset
+  default where `max_hz` cannot filter it but can filter a narrower AM width (a switch to AM is refused there with word
+  to narrow the width; never on a peer session, where no rate is known); it takes the scan state for the configured
   view. The terminal's width rows and Qt's `nfmBandwidthOffered`/`amBandwidthOffered` use it, and Qt's
-  `analogBandwidthAm` says which kind the view's width is. Test: `APP_CONTROL_ANALOG_WIDTH_VIEW`.
+  `analogBandwidthAm` says which kind the view's width is. Tests: `APP_CONTROL_ANALOG_WIDTH_VIEW` (every peer reading,
+  live and on a snapshot pair), `APP_CONTROL_FRONTEND_PUBLIC_BOUNDARY`.
 - Decode quality: `include/dsd-neo/app_control/p25_metrics.h` and `src/app_control/p25_metrics.c`
   copy FEC ok percentages, populated P25 voice-error averages, and non-P25 last-frame
   errors from the caller's held snapshot. The core vocoder maintains ring counts;
@@ -2402,50 +2497,121 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
   - `dsd-neo_io_control` — rigctl/serial control interfaces. `SetModulationKind()` (`rigctl_client.h`) asks a rigctl
     peer for FM (`M NFM <bw>`, then `M FM <bw>`) or AM (`M AM <bw>`) at a passband, caching per socket on the
     demodulator and passband together; FM at 0 (the peer's own passband) is sent only to undo a request made on the
-    socket (issue #526). SDR++ and GQRX take a passband of 0 as "unchanged", and SDR++ saves every passband it is sent,
-    so the undo sends the peer's own passband explicitly: `SetScanRowModulation()`, a scan row's own request, first asks
-    the peer what it runs (`m`, switching a peer on the other demodulator to this one at passband 0 to read that one's),
-    and `RestoreScanModulation()` puts back each passband a row changed, the other demodulator's first, before the
-    session's request. A peer that cannot answer `m` gets passband 0, best-effort. `Connect()` starts the record empty
-    for a connection on the number of a closed socket and leaves it alone for one on another number (the TCP audio
-    input's reconnect while the rigctl socket stays open), and `SetModulation()` is the FM call. `RigctlRebindPeer()`
-    hands a rigctl reconnect, opened while the socket it replaces is still open, what that socket knew of its peer
-    (issue #589), and forgets the frequency `SetFreq()` last sent, since a later connection can get the closed socket's
-    number back: the record for the same host and port, so the FM undo and the scan's restore still send the peer's own
-    passbands and a failed tune still puts back what the peer last accepted, though no request is taken for one it
-    already runs until it accepts one (it may have restarted or been changed meanwhile); for another endpoint while the
-    old peer may run AM (an am row's, or either demodulator after a lost reply), a demodulator not known, so FM is sent
-    first and a refusal fails a best-effort tune; otherwise, and where no request may have changed the old peer,
-    nothing, a peer nothing was asked of as on a first connection, so one that refuses mode requests does not fail every
-    tune. No own passband of the old peer reaches another endpoint, and the record names the new socket afterwards,
-    never the closed one whose number a later connection may get back. Both rigctl reconnects, the '9' key (the TCP
-    input's host at the rigctl port) and the menu's host and port, go through `svc_rigctl_connect()`
-    (`src/app_control/rigctl_connect.c`): it connects, then, under the P25 SM tick guard since the watchdog's retunes
-    use the socket, rebinds, closes the old socket without sending it anything (the old peer keeps what a scan last set
-    on it) and forgets the engine's legacy tune cache; a connect that fails while rigctl is on changes nothing, so the
-    connection in use and its record stay. The engine names the record for a run's first connection the same way
-    (`RigctlRebindPeer()` with no old socket) before the P25 watchdog starts. The engine's rigctl
-    tune leg (`dsd_engine_tune_rigctl_modulation()` in `trunk_tuning.c`) asks a peer that demodulates audio input for
-    an AM scan row's AM width and an nfm row's own width through `SetScanRowModulation()`, failing the row's tune when
-    the peer refuses, and for `-B` otherwise, best-effort unless the peer refuses it while on an am row's AM or on a
-    demodulator not known (`CachedModulationKind()`, no I/O), which fails the tune; on an RTL-family input, where
-    DSD-neo demodulates, it always asks for `-B` and no refusal fails the tune. A rigctl tune that fails after its
-    modulation request changed what the peer runs puts that back (`CachedModulation()` before the request,
-    `RevertModulation()` after), so the row still on air is not heard through the failed row's demodulator or
+    socket (issue #526), and nothing is sent where the peer was never asked anything or last accepted FM at its own
+    passband, a reconnect since or not (the unconfirmed cache re-sends a passband, but a return has nothing to undo).
+    SDR++ and GQRX take a passband of 0 as "unchanged", and SDR++ saves every passband it is sent, so the undo sends the
+    peer's own passband explicitly: `SetScanRowModulation()`, a passband this client sets (a scan row's own request, or
+    since issue #621 the session's: its configured width, the AM default, or `-B` standing in for an unset NFM width)
+    or the `-B` a digital mode is heard through on audio input (`dsd_rigctl_passband_captures()`), first asks the peer
+    what it runs (`m`, switching a peer on the other demodulator to this one at passband 0 to read that one's, and
+    reading that other demodulator's passband in passing), and `RestoreScanModulation()` puts back each passband a row
+    changed, the other demodulator's first, before the session's request; with `session_passband` (a request
+    `dsd_rigctl_passband_captures()` names) that request goes through `SetScanRowModulation()` too and the reading of
+    the session's demodulator stays, whatever the answer. A peer that cannot answer `m` gets passband 0, best-effort.
+    The record (`rigctl_peer`; its state model is the comment above the struct) keeps per demodulator the peer's own
+    passband as read (`own_hz`, 0 when not known), who that reading serves (`reading`: none, a scan's, or the
+    session's) and whether a passband this client asked for stands on it (`changed`). A scan's reading lasts the scan,
+    whose restore resets it, except for a demodulator whose undo the peer refused or lost. A reading that serves the
+    session's passband (kept by a restore with `session_passband`, or asked off a scan and marked by
+    `RigctlMarkSessionPassband()`, no I/O) is retired once the peer is known to run its own passband
+    (`rigctl_retire_session_reading()`): it accepts that reading back (`SetModulationKind()` at 0,
+    `RevertModulation()`, the restore's undo), or it refused the session request while on its own
+    (`RigctlMarkSessionPassband()` after a refusal); the other demodulator's reading the same lookup took in passing,
+    which nothing of this client's holds, is retired with it. "The peer runs its own passband" is one rule,
+    `rigctl_runs_own_passband()`: the last request it accepted left it on that demodulator at 0
+    (`rigctl_peer_left_on_own()`, which also says when FM at 0 has nothing to undo), with a reading behind the 0, a
+    reconnect since or not. A retired reading is never sent again as a return: the next change reads `m` again, since
+    the operator may have changed the peer's passband meanwhile, and a return before that sends 0 where the peer runs
+    the other demodulator (a read that fails leaves the passband not known the same way). One exception undoes a
+    retire: a tune that fails after its request returned the peer to its own passband puts back the passband this
+    client had set (`RevertModulation()`), which undoes that return, so the reading it retired (`retired_hz`) is
+    reinstated for the session, the other demodulator's included; a revert whose reply was lost reinstates too, one the
+    peer refused leaves the return in force. A return's holds live only until the next request sent on the socket,
+    for either demodulator and whatever the answer, so a revert brings back only what the request it undoes (the tune's
+    last) retired, and it consumes them whichever way it goes; a reading retired on a refused session request (the
+    mark) is not held at all. A scan row's taken request makes a session reading the scan's, a same-endpoint rebind
+    keeps everything, and a return sent as 0 retires nothing. `Connect()` starts the record empty for a connection on
+    the number of a closed socket and leaves it alone for one on another number (the TCP audio input's reconnect while
+    the rigctl socket stays open), and
+    `SetModulation()` is the FM call. `RigctlRebindPeer()` hands a rigctl reconnect, opened while the socket it replaces
+    is still open, what that socket knew of its peer (issue #589), and forgets the frequency `SetFreq()` last sent,
+    since a later connection can get the closed socket's number back: the record for the same host and port, so the FM
+    undo and the scan's restore still send the peer's own passbands and a failed tune still puts back what the peer last
+    accepted, though no request is taken for one it already runs until it accepts one (it may have restarted or been
+    changed meanwhile); for another endpoint while the old peer may run AM (an am row's, or either demodulator after a
+    lost reply), a demodulator not known, so FM is sent first and a refusal fails a best-effort tune; otherwise, and
+    where no request may have changed the old peer, nothing, a peer nothing was asked of as on a first connection, so
+    one that refuses mode requests does not fail every tune. No own passband of the old peer reaches another endpoint,
+    and the record names the new socket afterwards, never the closed one whose number a later connection may get back.
+    Both rigctl reconnects, the '9' key (the TCP input's host at the rigctl port) and the menu's host and port, go
+    through `svc_rigctl_connect()` (`src/app_control/rigctl_connect.c`): it connects, then, under the P25 SM tick guard
+    since the watchdog's retunes use the socket, rebinds, closes the old socket without sending it anything (the old
+    peer keeps what a scan last set on it) and forgets the engine's legacy tune cache; a connect that fails while rigctl
+    is on changes nothing, so the connection in use and its record stay. The connect then asks the new peer for the
+    session's width (`dsd_engine_rigctl_ask_session_passband()`, under the same hold). The engine names the record for a
+    run's first connection the same way (`RigctlRebindPeer()` with no old socket) before the P25 watchdog starts. The
+    engine's rigctl legs ask for what `dsd_rigctl_passband_of()` (runtime) gives: a request
+    `dsd_rigctl_passband_captures()` names (a passband this client sets, or `-B` on a digital mode of audio input)
+    through `SetScanRowModulation()`, anything else (`-B` on an input the peer does not demodulate, the peer's own
+    passband) as before (`dsd_engine_rigctl_send_passband()` in `trunk_tuning.c` for the scan legs). Which requests are
+    the session's, `dsd_channel_modes_rigctl_request_is_session()` (core) decides for every leg, the engine's and the
+    manual tune's alike: what the scan scope says (`dsd_scan_mode_rigctl_request_is_session()`, given the state
+    wherever the caller has one), except that a typed `-Y` list configured before its first row's scope is entered
+    counts as a scan (`dsd_channel_modes_present()`, which runtime cannot see), while an untyped list's requests are the
+    session's. The tune leg (`dsd_engine_tune_rigctl_modulation()`) asks a peer that demodulates audio input
+    (`dsd_opts_rigctl_peer_demodulates()`) for the row being tuned: a width (the row's own, the configured width of its
+    kind, the AM default) fails the row's tune when the peer refuses it, and anything else, `-B` on the FM monitor
+    included, is best-effort unless the peer refuses it while on an am row's AM or on a demodulator not known
+    (`CachedModulationKind()`, no I/O), which fails the tune; on an RTL-family input, where DSD-neo demodulates, it
+    always asks for `-B` and no refusal fails the tune. This leg marks nothing for a tune that sets a passband, a scan
+    row's (a trunk grant runs a digital mode); a tune that follows with `-B` on audio input is captured too, and is
+    the session's or a row's as `dsd_channel_modes_rigctl_request_is_session()` says (a trunk grant on a plain session
+    is marked; a typed `-Y` list's first row, tuned before its scope is entered, is a row's). The live apply
+    (`dsd_engine_scan_rigctl_apply_modulation()`, a "this channel" edit and
+    app-control's follow) asks for the row whose scope is in force, strictly whatever the request, returns -1 unless the
+    peer demodulates (symbol and null inputs are not peer inputs), and marks the request the session's when
+    `dsd_channel_modes_rigctl_request_is_session()` says so. `dsd_engine_rigctl_ask_session_passband()` asks for a width
+    only (`dsd_rigctl_passband_is_width()`; `-B` and the peer's own passband wait for a tune), best-effort, marking it
+    the session's off a trunk scan or a typed `-Y` list (an untyped list's is the session's): once the input is open at
+    start (`liveScanner()`, before the lifecycle starts the frontends and before the P25 watchdog starts), from
+    `svc_rigctl_connect()`, and from the engine's fallback to Pulse when it brings a peer to demodulate the input
+    (`dsd_engine_input_fallback()`, under its tick guard), each of which passes the decoder state. A rigctl tune that
+    fails after its modulation request changed what the peer runs puts that back (`CachedModulation()` before the
+    request, `RevertModulation()` after), so the row still on air is not heard through the failed row's demodulator or
     passband; where no passband was known before the request (the first row on a fresh socket, or after a lost reply),
-    the peer's own passband that the row's request read is what goes back. The leg
-    reads a `-Y` row's own width from the row being tuned (`dsd_engine_scan_tuning_row_options()`,
-    `scan_analog_internal.h`), since the prepared settings in force cannot tell it from the configured one.
-    `dsd_engine_scan_rigctl_restore()` (`trunk_tuning.h`) calls `RestoreScanModulation()` with what the restored
-    session runs once `dsd_engine_channel_scan_leave()` has left a `-Y` map or a trunk-scan target list, so neither an
+    the peer's own passband that the row's request read is what goes back. The leg reads a `-Y` row's own width from the
+    row being tuned (`dsd_engine_scan_tuning_row_options()`, `scan_analog_internal.h`), since the prepared settings in
+    force cannot tell it from the configured one. `dsd_engine_scan_rigctl_restore()` (`trunk_tuning.h`) calls
+    `RestoreScanModulation()` with what the restored session runs, `session_passband` when
+    `dsd_rigctl_passband_captures()` names it (a passband this client sets, or `-B` on a digital mode of audio input),
+    once `dsd_engine_channel_scan_leave()` has left a `-Y` map or a trunk-scan target list, so neither an
     am row's AM nor a row's passband outlives the scan. After an I/O failure the socket's cache matches no request,
     since what the peer runs is no longer known (a lost reply to a request for the other demodulator leaves which one it
     runs not known either, `DSD_RIGCTL_KIND_UNKNOWN`), and a demodulator whose undo the peer did not accept keeps the
     own passband read for it, so the next undo still sends that rather than reading the row's back as the peer's own.
     The engine's legacy rigctl leg (`no_carrier_tune_rigctl_if_needed()` in `engine.c`: the untyped `-Y` step and the
-    direct control-channel return) skips a repeat of the frequency and the `-B` it last sent. That cache holds for one
-    connection: `dsd_engine_rigctl_tune_cache_forget()` (`trunk_tuning.h`) empties it when rigctl reconnects (issue
-    #589), since the new connection's peer, another one or the same one restarted, was sent neither.
+    direct control-channel return) skips a repeat of the frequency it last sent. That cache holds for one connection:
+    `dsd_engine_rigctl_tune_cache_forget()` (`trunk_tuning.h`) empties it when rigctl reconnects (issue #589), since the
+    new connection's peer, another one or the same one restarted, was sent nothing. The leg keeps no copy of the `-B` it
+    sent (issue #621): it asks for `-B` at every step, strictly as always (through the capturing call on audio input,
+    where the peer's FM passband is what a digital mode is heard through), and the client's peer record skips a repeat
+    (`SetModulationKind()`), the record every writer updates (a live width, a scan's restore, a manual tune) and
+    `RigctlRebindPeer()` hands a reconnect, where a private copy would go stale. On the analog monitor of audio input
+    (only the `-Y` step runs there) it asks for the session's passband through `SetScanRowModulation()` instead, marked
+    the session's (the untyped list holds no scope and has no leave restore), and a refusal abandons the step as a
+    refused `-B` always did. It marks as every leg does (`dsd_channel_modes_rigctl_request_is_session()`), so a
+    direct control-channel return under a typed `-Y` list configured before its first row's scope is a scan's. Where
+    the session runs the peer's own passband (`-B` 0, or the FM monitor with neither a width nor `-B`) it asks for FM
+    at 0, best-effort: that undoes a passband this client set (a session width before a switch to a digital mode, say)
+    with the passband read before it, and is a no-op for a peer this client never changed or one back on its own. A
+    manual tune (`io_control_set_freq()`, which takes a `const dsd_state*`, as does `set_rtl_frequency()`, and whose
+    rigctl leg `set_rigctl_frequency()` reads it to tell a scan's request from the session's, through
+    `dsd_channel_modes_rigctl_request_is_session()` as every leg) asks the same way before the frequency: the session's
+    passband, or `-B` on a digital mode of audio input, each captured, a refusal failing the tune before the frequency
+    moves; `-B` as before, strictly, on an input the peer does not demodulate; and FM at 0, best-effort, where the
+    session runs the peer's own. Tests:
+    `IO_RIGCTL_CONTROL`, `ENGINE_TRUNK_RETUNE_REGRESSION`, `ENGINE_NO_CARRIER_RESET`, `ENGINE_RUN_SETUP` (the start
+    ask), `ENGINE_TRUNK_SCAN_SCAN_LIST` (a mixed scan's wire sequence: a scan's reading lasts the scan).
 
 Key public headers:
 
@@ -3000,7 +3166,9 @@ triplet or between two, and the PCM staging held from before the call is dropped
 
 P25 manual control-channel selection lives in `src/protocol/p25/p25_cc_selection.c`. The Frequency command routes
 active single-system P25 sessions here; the module holds the watchdog guard through the runtime CC tuning hook,
-call teardown, and acquisition restart. A learned CC type identifies quiet P25 sessions in mixed modes;
+call teardown, and acquisition restart, which starts the CC acquisition and its grace window at the tune request's
+completion stamp (`dsd_trunk_tuning_request_status()`), as the engine's no-carrier return and the trunk-scan retune
+do, also when the request completed inside the call. A learned CC type identifies quiet P25 sessions in mixed modes;
 `noCarrier()` clears that evidence after another trunking protocol takes over. Extension ID 26
 (`DSD_STATE_EXT_PROTO_P25_CC_SELECTION`) retains the site-specific cache requirement across no-carrier resets,
 while network band plans and user settings survive.
@@ -3111,42 +3279,66 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     `include/dsd-neo/app_control/frontend.h`. The terminal frontend retains a small set of terminal-private backend
     integrations.
   - Radio-driven UI controls are gated by `USE_RADIO`; visualizers consume app-control frontend metric APIs.
-  - Analog channel width (issue #525): the RTL-SDR menu's `rtl.nfm_bw` row (`NFM bandwidth... [12.5 kHz]`, or
-    `[default]`, on a radio input while the configured -fA preset runs FM or an explicit width is set under another
-    preset, `is_nfm_width_editable()`) prompts for Hz and submits `DSD_APP_CMD_NFM_BANDWIDTH_SET` as typed; the DSP rate
-    row reads `DSP bandwidth...`, and the rtl_tcp adaptive buffering toggle lives in `Auto-PPM & rtl_tcp`. The input
-    status line prints `Analog: NFM 16 kHz (default);` beside `DSP-BW:` (`(DSP-limited)` when the rate bounds the
-    channel, `(row; default 16 kHz)` while an nfm scan row sets its own width, issue #526, `Analog: AM 8.333 kHz (row;
-    default 6 kHz)` for an am row's, and under an analog row on a digital session too). The row's label and prompt read
-    the configured width, the one the command edits. Both follow app-control's analog width view (above), and so does
-    Qt: `MetricsModel::analogBandwidthHz`/`analogBandwidthDspLimited`/`analogBandwidthReading` (0 and `not used on PCM
-    input` on PCM), `analogBandwidthMaxHz` is the widest width the running stream's demod rate filters (with none
-    running, the rate an RTL-SDR or rtl_tcp input's DSP bandwidth sets), and `analogBandwidthConfiguredHz` is the value
+  - Analog channel width (issue #525): the Input menu's `input.nfm_bw` row, right after `input.sql` (`NFM bandwidth...
+    [12.5 kHz]`, or `[default]`, on a radio input while the configured -fA preset runs FM or an explicit width is set
+    under another preset, `is_nfm_width_editable()`), prompts for Hz and submits `DSD_APP_CMD_NFM_BANDWIDTH_SET` as
+    typed; the RTL-SDR submenu's DSP rate row reads `DSP bandwidth...`, and the rtl_tcp adaptive buffering toggle lives
+    in `Auto-PPM & rtl_tcp`. The input status line prints `Analog: NFM 16 kHz (default);` beside `DSP-BW:`
+    (`(DSP-limited)` when the rate bounds the channel, `(row; default 16 kHz)` while an nfm scan row sets its own width,
+    issue #526, `Analog: AM 8.333 kHz (row; default 6 kHz)` for an am row's, and under an analog row on a digital
+    session too). The row's label and prompt read the configured width, the one the command edits. Both follow
+    app-control's analog width view (above), and so does Qt:
+    `MetricsModel::analogBandwidthHz`/`analogBandwidthDspLimited`/`analogBandwidthReading` (0 and
+    `not used on PCM input` on PCM input without a rigctl peer; on a peer session the passband the peer is asked for),
+    `analogBandwidthMaxHz` is the widest width the running stream's demod rate filters (with none running, the rate an
+    RTL-SDR or rtl_tcp input's DSP bandwidth sets), and `analogBandwidthConfiguredHz` is the value
     `qml/RadioSheet.qml`'s NFM width stepper (`radioAnalogBandwidth`, presets in `Util.NFM_WIDTHS_HZ`, stepping from the
     width in force when the default is set and skipping presets above the max) edits through
     `CommandBridge::setNfmBandwidthHz()`; `radioAnalogBandwidthDefault` sends 0 to return an explicit width to the
-    default, and the controls are disabled on PCM input with the reason shown. Under another preset the section stays on
-    a radio input while an explicit width is set (`analogWidthOffered`), reading the setting, so a width that blocks a
-    switch to NFM can be narrowed first. An nfm or am scan row on air (`analogBandwidthRowActive`, issue #526) keeps the
-    section, the width in force and the stepper on any preset (`analogWidthInForce`); a row's own width
+    default, and the controls are disabled on PCM input with the reason shown (`radioAnalogBandwidthNote`, which on a
+    rigctl peer session points to the monitor's Passband row instead, issue #621). Under another preset the section
+    stays on a radio input while an explicit width is set (`analogWidthOffered`), reading the setting, so a width that
+    blocks a switch to NFM can be narrowed first. An nfm or am scan row on air (`analogBandwidthRowActive`, issue #526)
+    keeps the section, the width in force and the stepper on any preset (`analogWidthInForce`); a row's own width
     (`analogBandwidthRowOverride`) reads first with a `row` badge and the configured default beside it
     (`radioAnalogBandwidthRowNote`, as `radioSquelchRowNote` does for a row squelch), the value is read aloud as the
     view's full reading, and the stepper steps the configured default of the row's kind (from its unset default when it
     is unset, 16 kHz for an nfm row and 6 kHz for an am row, `analogDefaultWidth`; never from the row's width). The
     `NFM` decode chip (`-fA`) sits in `Util.DECODE_MODES`, so the setup wizard offers it too (it suggests no trunking).
-    Tests: `UI_MENU_TREE_AUDIT`, `UI_MENU_ACTIONS`, `UI_MENU_LABELS_RADIO`, `UI_NCURSES_PRINTER_HELPERS`,
+    Tests: `UI_MENU_TREE_AUDIT`, `UI_MENU_ACTIONS`, `UI_MENU_LABELS`, `UI_NCURSES_PRINTER_HELPERS`,
     `UI_QT_METRICS_MODEL`, `UI_QT_SESSION_ARGS`, `UI_QT_QML_CALL_LISTS` (`tst_radio_analog.qml`,
     `tst_wizard_decode_chip.qml`).
   - AM (issue #524): the decoder picker lists AM after Analog; on an input that is not an I/Q radio (the snapshot's
     input type) its row reads `AM (needs an I/Q radio input)` and choosing it only repeats the reason in the status
-    line. Input > RTL-SDR has `rtl.am_bw` beside `rtl.nfm_bw` (`AM bandwidth... [default]`, `lbl_rtl_am_bw()`,
+    line. Input has `input.am_bw` right after `input.nfm_bw` (`AM bandwidth... [default]`, `lbl_input_am_bw()`,
     `is_am_width_editable()`: the configured AM preset on a radio input, or an explicit AM width under another preset,
     NFM included, as the NFM row stays under AM for an explicit NFM width, or AM's default where the running stream's
     rate cannot filter it but filters a narrower AM width; both rows share one predicate,
     `dsd_app_analog_width_offered()` over the analog width view with the frontend metrics), whose prompt hands the value as typed to
-    `DSD_APP_CMD_AM_BANDWIDTH_SET`; the Auto-PPM switch leads the `Auto-PPM & rtl_tcp` submenu, so the RTL menu keeps
-    fifteen rows. The status line's `Analog:` field reads `Analog: AM 6 kHz (default);` under AM, from the same view.
-    Tests: `UI_MENU_ACTIONS`, `UI_MENU_LABELS_RADIO`, `UI_MENU_TREE_AUDIT`, `UI_NCURSES_PRINTER_HELPERS`.
+    `DSD_APP_CMD_AM_BANDWIDTH_SET`. The status line's `Analog:` field reads `Analog: AM 6 kHz (default);` under AM,
+    from the same view. Tests: `UI_MENU_ACTIONS`, `UI_MENU_LABELS`, `UI_MENU_TREE_AUDIT`, `UI_NCURSES_PRINTER_HELPERS`.
+  - Rigctl passband (issue #621): the two width rows sit in Input (`INPUT_MENU_ITEMS`) outside any `#ifdef USE_RADIO`,
+    since the RTL-SDR submenu that held them is hidden on audio input; their predicates (`is_nfm_width_editable()`,
+    `is_am_width_editable()`, over `dsd_app_analog_width_offered()`), labels (`lbl_input_nfm_bw()`, `lbl_input_am_bw()`,
+    sharing `lbl_input_width()`) and actions (`act_set_nfm_bw()`, `act_set_am_bw()`) are in every build, and the RTL-SDR
+    submenu is down to 12 rows. On audio input with a rigctl peer (the view's `peer_passband`) the rows edit the
+    passband the peer is asked for: the labels read `NFM passband... [-B 12.5 kHz]` (the setting as
+    `dsd_app_analog_width_setting_text()` spells it: `[peer's own]` without `-B`, `[12.5 kHz]` for a width) and `AM
+    passband... [default]`. The default prompts, the scope chooser and its this-channel prompt take their titles from
+    one table, `k_width_titles[kind][peer]` in `menu_actions.c` (`width_titles_of()`): `NFM passband`, `NFM passband Hz
+    on this channel (8000..25000)`, `AM passband Hz (5000..20000; 0 = default 6000)`, and for the configured NFM
+    passband `WIDTH_NFM_PASSBAND_PROMPT_FMT` filled with what an unset width asks for (`NFM passband Hz (8000..25000; 0
+    = -B 12.5 kHz)`). The chooser's title is decided from the snapshot pair it captures, and `scope_capture()` keeps the
+    passband the row ran (`peer_width_hz`, for the chooser's kind only, so an AM passband never opens an NFM prompt), so
+    `scope_open_width()` opens on the row's own width, else the width in force, else that passband (`-B` included), else
+    the kind's default. The audio input lines (Pulse, TCP, UDP, WAV, stdin) print `ui_print_analog_channel_field()`
+    after the SQL field, ` Passband: NFM 12.5 kHz (-B);` on a peer session whenever the view has a reading (a width
+    offered) and nothing without one, fetching the frontend metrics only on a radio input; `ui_print_rigctl_field()`
+    prints `RIG: <rigctlhostname>:<rigctlportno>; ` on the Pulse, TCP and UDP lines (the Pulse and TCP lines printed
+    the TCP audio host, which a menu reconnect of rigctl or of TCP audio sets apart). Tests: `UI_MENU_TREE_AUDIT` and
+    `UI_MENU_TREE_AUDIT_NO_RADIO` (the two rows right after `input.sql`, and no width row anywhere else),
+    `UI_MENU_ACTIONS`, `UI_MENU_LABELS` (built without `USE_RADIO`: the width label goldens, radio and peer),
+    `UI_NCURSES_PRINTER_HELPERS`.
   - Tone filter (issue #527): the Audio menu's `audio.tone_filter` row (`Tone filter... [allow 100.0 Hz/D023N]`,
     `lbl_tone_filter()`), beside the other analog monitor rows and always shown, reads the rx tone view's policy text
     (`(row; default X)` under a row's own policy; the overflow mark as ASCII `...`; lowercase, as Call Info and other
@@ -3181,6 +3373,26 @@ Qt Quick frontend (`src/ui/qt`):
   to its kind, so a change of the section's kind drops both sections' outstanding requests (`onSectionAmChanged`) rather
   than show one kind's request under the other. Tests: `tests/ui/qml/tst_radio_am.qml`, `tst_wizard_decode_chip.qml`,
   `UI_QT_METRICS_MODEL`, `UI_QT_SESSION_ARGS`, `UI_QT_CONTROLLER`.
+- Rigctl passband (issue #621): on audio input with a rigctl peer that demodulates it, `MetricsModel::peerPassband`
+  (the analog width view's `peer_passband`, on `tunerChanged` with `passbandInForce`, its `passband_in_force`) shows
+  the monitor's `PASSBAND` row (`monitorPassband` in `qml/MonitorScreen.qml`, right after the squelch row) while either
+  width is offered (`nfmBandwidthOffered`/`amBandwidthOffered`). The row reads `qml/PassbandSheet.qml`'s `summary`, as
+  the terminal's Passband field spells it: the passband asked for now, which the view reads whenever a width is offered
+  (`NFM 12.5 kHz (-B)` on a digital session with an explicit width too), and never a setting the peer is not asked for
+  (empty with no reading). Its Edit (`monitorPassbandEdit`) opens the sheet. The sheet scopes `All channels | This
+  channel` as `SquelchSheet.qml` does (a this-channel step through `CommandBridge::editScanRow()`, `Use default` and
+  `List value` row actions, back to All channels when another row comes on air) and steps the NFM and AM widths over
+  `Util.NFM_WIDTHS_HZ`/`AM_WIDTHS_HZ` with no DSP bound (`Util.nextWidthIn()` with a max of 0, so a stale rate from a
+  radio session bounds nothing) through `setNfmBandwidthHz()`/`setAmBandwidthHz()`; *Use the default width* sends 0. An
+  unset width reads as, and steps from, what stands in for it: `nfmBandwidthUnsetText`/`amBandwidthUnsetText`
+  (`dsd_app_analog_width_setting_text()`: `-B 12.5 kHz`, `peer's own`, `default`) and
+  `nfmBandwidthUnsetHz`/`amBandwidthUnsetHz` (`dsd_app_analog_width_unset_hz()`, the kind's default where that is 0),
+  on `controlChanged`, compared in `analogSettingEquals()`. All channels shows the reading only while `passbandInForce`
+  says the kind's monitor runs with no row width of its own, and the setting otherwise, so a typed digital row keeping
+  the peer at `-B` does not read as the setting the steps move. The sheet closes when the session stops, the peer goes
+  away, or no kind is offered or pending. `qml/RadioSheet.qml` stays radio-only: on a peer session its width note points
+  to the monitor's Passband row. Tests: `UI_QT_METRICS_MODEL` (`test_rigctl_audio_passband()`), `UI_QT_QML_CALL_LISTS`
+  (`tst_monitor_passband.qml`, `tst_radio_analog.qml`).
 
 - After the session's first decoder redraw, `UiController` refreshes live metrics on every timer tick so scan
   countdowns and the sync-loss hold continue aging if input stalls. The countdowns age on the decode clock their
@@ -3372,6 +3584,10 @@ Key public headers:
   on every action row, at least two action rows per submenu, the depth and length limits, no two rows sharing an
   action, no banned words in labels, and a hotkey table cross-checked against `keymap.h`. A new row therefore needs
   help text, a home that fits the rules, and — if it carries a hotkey — an entry in that test's hotkey table.
+  `UI_MENU_TREE_AUDIT_NO_RADIO` builds the same audit without `USE_RADIO`, so the tree a radio-off build has is held to
+  the same rules in every configuration; its stubs split into common and `*_RADIO` lists in
+  `tests/ui/test_ui_menu_tree_audit_stubs.h`, so a row whose handler, label or predicate is radio-only goes in the
+  `*_RADIO` list.
 - Keep UI/business logic separate:
   - Do not perform device or file operations directly in menu callbacks. Use services instead to make behavior
     testable and reusable across command entry points.
@@ -3399,7 +3615,7 @@ Additional includes of interest:
 - Runtime: `<dsd-neo/runtime/cli.h>`, `<dsd-neo/runtime/frame_sync_hooks.h>`, `<dsd-neo/runtime/telemetry.h>`,
   `<dsd-neo/runtime/trunk_scan_hooks.h>`, `<dsd-neo/runtime/trunk_tuning_hooks.h>`,
   `<dsd-neo/runtime/radioreference.h>`, `<dsd-neo/runtime/radioreference_generate.h>`,
-  `<dsd-neo/runtime/radioreference_import.h>`
+  `<dsd-neo/runtime/radioreference_import.h>`, `<dsd-neo/runtime/rigctl_passband.h>`
 - IO: `<dsd-neo/io/rtl_stream_c.h>`, `<dsd-neo/io/rtl_stream.h>`, `<dsd-neo/io/rtl_device.h>`,
   `<dsd-neo/io/rtl_demod_config.h>`, `<dsd-neo/io/rtl_metrics.h>`, `<dsd-neo/io/control.h>`,
   `<dsd-neo/io/rigctl_client.h>`, `<dsd-neo/io/m17_udp.h>`, `<dsd-neo/io/udp_audio.h>`,
@@ -3468,6 +3684,14 @@ External dependencies (resolved via CMake):
   it (issue #527); `dsd_channel_modes_hear_tones()` whether any row the scanner tunes (one with a frequency) does, and
   `dsd_channel_modes_conventional_hear_tones()` whether a session outside a trunk scan does: a `-Y` list with rows by
   its rows, anything else (a `-Y` scan without rows included) by the configured decode mode.
+  `dsd_channel_modes_rigctl_request_is_session()` (`src/core/util/channel_modes_rigctl.c`, issue #621) says whether a
+  passband asked of a rigctl peer now is the session's or a scan row's, for every rigctl leg (the engine's tunes, live
+  apply, start and reconnect ask and legacy leg, and the IO manual tune): the scan scope's answer
+  (`dsd_scan_mode_rigctl_request_is_session()`), except that a typed `-Y` list configured on the state is a scan's
+  before its first row's scope is entered, which the scope cannot tell and runtime cannot see. Core is the lowest layer
+  that sees both the scope (runtime) and the row modes, and both the engine and `dsd-neo_io_control` link it. Tests:
+  `CORE_CHANNEL_MODES`, and the legs' own (`ENGINE_TRUNK_RETUNE_REGRESSION`, `IO_RIGCTL_CONTROL`, which build the file
+  in, and `ENGINE_NO_CARRIER_RESET`).
   `dsd_scan_settings_equal()` compares acquisition settings only; the row-scoped options (forcing, CRC, mutes, voice
   gate, group file) are folded through `dsd_scan_mode_resume()` without resetting acquisition. Conventional trunk-scan
   targets take their voice-gate hold/qualify from the row profile. `DSD_SCAN_OPT_MAX_VISIT` is the one **scan-timing**
@@ -3608,22 +3832,26 @@ External dependencies (resolved via CMake):
     moving the width in force, or one the front end queued nothing for: `svc_publish_row_analog_width()` returns 1
     only for a request queued) leaves the refusal nothing to put back;
   - a rigctl peer's passband on audio input (`dsd_engine_scan_rigctl_apply_modulation()`, strict where a tune's `-B`
-    is best-effort, and reading the scope in force, `dsd_scan_mode_row_options()`, never a `-Y` tune staged since);
+    is best-effort, and reading the scope in force, `dsd_scan_mode_row_options()`, never a `-Y` tune staged since): the
+    row's own width, or for a row that goes back to the default the configured width of its kind, else the AM default,
+    or for NFM `-B` or the peer's own passband (issue #621);
   - the stream restart for a gain. One P25 SM tick guard hold covers the reopen and, when it fails, the gain's rollback
     (`dsd_engine_trunk_scan_restore_target_edit_locked()`) and `svc_rtl_restart_recovery_locked()`, which starts the
     input again without reopening an I/Q capture over its recording.
 
   The trunk restore otherwise waits for the tick guard rather than give up. `<dsd-neo/app_control/scan_row_view.h>` is
   what every frontend asks (row on air, fields, label, payload) and how they word the outcome. The terminal's squelch,
-  width, gain and tone rows open a scope chooser through it (`scope_or_default()` in `menu_actions.c`); Qt's Radio and
-  Tone filter sheets offer "All channels | This channel" (`MetricsModel::scanRow*`,
+  width, gain and tone rows open a scope chooser through it (`scope_or_default()` in `menu_actions.c`, which the width
+  rows hand their passband titles on a rigctl peer session); Qt's Radio and Tone filter sheets, and on audio input the
+  monitor's Squelch and Passband sheets, offer "All channels | This channel" (`MetricsModel::scanRow*`,
   `CommandBridge::scanRowContext()`/`editScanRow()`), holding in "This channel" a control the row takes no edit of, and
   an Airspy's device panel, and taking the choice only once the metrics show the row the context names; rows are told
   apart by `scanRowKey` (scanner, session, row), not by name. Tests: `RUNTIME_SCAN_ROW_EDIT`, `ENGINE_TRUNK_SCAN`
   (`test_target_edit_*`), `ENGINE_CHANNEL_SCAN` (`test_row_session_edits`), `ENGINE_TRUNK_RETUNE_REGRESSION`
   (`test_rigctl_live_edit_apply_is_strict`), `APP_COMMAND_QUEUE` (`test_scan_row_edit_commands_*`),
   `APP_CONTROL_SCAN_ROW_EDIT`, `APP_CONTROL_SCAN_ROW_VIEW`, `UI_MENU_ACTIONS` (`test_scan_row_scope_chooser`),
-  `UI_QT_METRICS_MODEL`, `UI_QT_CONTROLLER` and `UI_QT_QML_CALL_LISTS` (`tst_scan_row_edits.qml`).
+  `UI_QT_METRICS_MODEL`, `UI_QT_CONTROLLER` and `UI_QT_QML_CALL_LISTS` (`tst_scan_row_edits.qml`,
+  `tst_monitor_passband.qml`).
 - Adding a row option: add the `DSD_SCAN_OPT_*` bit (reserved values only), a `dsd_scan_option_values` field and a
   `specifications[]` row with its setter in `runtime/scan_options.c` (use `ANY_MODES` only for options that mean the
   same on every class); add a `scan_option_appliers[]` row in `runtime/scan_mode.c`; if it lands in `dsd_opts`, add

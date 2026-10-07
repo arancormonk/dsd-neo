@@ -306,11 +306,12 @@ refuses rather than clamps, and the checks sit where the rate is known:
   leaving the width unset, which runs at any rate.
 - `DSD_NEO_CHANNEL_LPF=0` refuses every explicit width at any rate
   (`dsd_analog_channel_lpf_off_check()`) on a radio input (PCM input runs no
-  channel filter, so a width there is only stored), at stream start and,
-  first, in every change that would commit to a start with one: a width with
-  no stream running, a config reopen at an RTL DSP bandwidth or a device's
-  rate, a DSP bandwidth change and Input > Switch source > RTL-SDR, so the
-  running input is not torn down for a start that cannot open.
+  channel filter, so a width there is only stored, or with a rigctl peer asked
+  of the peer as its passband), at stream start and, first, in every change
+  that would commit to a start with one: a width with no stream running, a
+  config reopen at an RTL DSP bandwidth or a device's rate, a DSP bandwidth
+  change and Input > Switch source > RTL-SDR, so the running input is not torn
+  down for a start that cannot open.
 - The command checks a width the analog preset uses against the running
   stream (`rtl_stream_check_analog_profile()`), or with no stream against an
   RTL-SDR/rtl_tcp input's DSP bandwidth, and requests it live from a running
