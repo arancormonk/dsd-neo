@@ -16,14 +16,15 @@
 #include <dsd-neo/runtime/squelch.h>
 #include <stddef.h>
 
-/* Why a dynamic setting in force runs as it does here (dsd_squelch_resolution): the policy every surface shares. */
+/* Why a dynamic setting in force runs as it does here (dsd_squelch_resolution): the policy every surface shares. The M17
+   encoder's monitor and EDACS analog voice are analog channels (issue #625), with no dynamic squelch on audio input. */
 static uint8_t
 squelch_view_resolution(const dsd_opts* opts, const dsd_app_squelch_view* view) {
     const dsd_squelch_setting in_force = dsd_squelch_setting_dynamic(
         view->effective_noise ? DSD_SQUELCH_MODE_NOISE : DSD_SQUELCH_MODE_AUTO, view->effective_margin_db);
-    return (uint8_t)dsd_squelch_setting_resolve(&in_force, dsd_squelch_input_kind(opts),
-                                                !dsd_opts_is_analog_family(opts),
-                                                opts->analog_demod == DSD_ANALOG_DEMOD_AM, NULL);
+    return (uint8_t)dsd_squelch_setting_resolve(
+        &in_force, dsd_squelch_dynamic_input_kind(opts), dsd_squelch_channel_digital(opts),
+        dsd_opts_is_analog_family(opts) && opts->analog_demod == DSD_ANALOG_DEMOD_AM, NULL);
 }
 
 /* What the stream shows: the noise squelch's gate and quieting when it runs, else the floor tracker's state. */
@@ -46,8 +47,15 @@ static void
 squelch_view_fill_dynamic(const dsd_opts* opts, const dsd_state* state, dsd_app_squelch_view* out) {
     out->auto_resolution = squelch_view_resolution(opts, out);
     squelch_view_fill_running(state, out);
+    /* EDACS reads the gate during an analog call only; the tracker that runs between calls (the control channel's
+       carrier) says nothing about one (issue #625). */
+    out->edacs_voice = dsd_squelch_edacs_analog_voice(opts) && out->auto_resolution == DSD_SQUELCH_RESOLVED_AS_SET;
+    out->edacs_call = out->edacs_voice && state->squelch_edacs_call ? 1U : 0U;
     out->noise_as_auto =
-        out->effective_noise && (out->auto_resolution == DSD_SQUELCH_RESOLVED_AM_AUTO || out->auto_running) ? 1U : 0U;
+        out->effective_noise
+                && (out->auto_resolution == DSD_SQUELCH_RESOLVED_AM_AUTO || out->auto_running || out->edacs_voice)
+            ? 1U
+            : 0U;
     const int pcm_off =
         out->noise_state == DSD_SQUELCH_NOISE_STATE_NO_BAND || out->noise_state == DSD_SQUELCH_NOISE_STATE_NO_ROOM;
     const int off_here = out->auto_resolution == DSD_SQUELCH_RESOLVED_NO_RADIO
@@ -172,6 +180,8 @@ dsd_app_squelch_view_dynamic_status(const dsd_app_squelch_view* view, char* out,
     const char* off = squelch_view_off_reason(view);
     if (off) {
         DSD_SNPRINTF(out, out_size, "%s", off);
+    } else if (view->edacs_voice && !view->edacs_call) {
+        DSD_SNPRINTF(out, out_size, "%s", view->noise_as_auto ? "EDACS analog calls, as auto" : "EDACS analog calls");
     } else if (view->noise_state == DSD_SQUELCH_NOISE_STATE_LEARNING
                || (view->noise_state != DSD_SQUELCH_NOISE_STATE_NONE && !view->noise_measured)) {
         DSD_SNPRINTF(out, out_size, "%s", "learning");
