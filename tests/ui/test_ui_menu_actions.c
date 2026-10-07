@@ -21,6 +21,7 @@
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/posix_compat.h>
+#include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/call_alert.h>
@@ -1641,14 +1642,14 @@ test_additional_prompt_and_toggle_actions(void) {
     opts.analog_demod = DSD_ANALOG_DEMOD_FM;
     opts.audio_in_type = AUDIO_IN_RTL;
     opts.analog_am_bandwidth_hz = 8000;
-    rtl_set_am_bw(&ctx);
+    act_set_am_bw(&ctx);
     rc |= expect_str("am width prompt", g_prompt.title, "AM bandwidth Hz (5000..20000; 0 = default 6000)");
     rc |= expect_int("am width prompt offers the configured width", g_prompt.initial_int, 8000);
     g_prompt.int_cb(g_prompt.user, 1, 12000);
     rc |= expect_int("am width command", g_cmd.id, DSD_APP_CMD_AM_BANDWIDTH_SET);
     rc |= expect_int("am width payload", cmd_i32(), 12000);
     reset_capture();
-    rtl_set_am_bw(&ctx);
+    act_set_am_bw(&ctx);
     g_prompt.int_cb(g_prompt.user, 0, 12000);
     rc |= expect_int("am width cancel posts nothing", g_cmd.calls, 0);
     opts.analog_am_bandwidth_hz = 0;
@@ -2221,6 +2222,103 @@ test_nfm_bandwidth_row_follows_the_configured_preset(void) {
     return rc;
 }
 
+/*
+ * Issue #621: on audio input (TCP, UDP, Pulse, WAV) with a rigctl peer (-U) the peer demodulates, and the width rows
+ * edit the passband it is asked for. They are offered as on a radio input -- the configured preset's kind, the kind an
+ * analog scan row on air runs, an explicit width -- but never for a DSP rate, which audio input has none of; without a
+ * live peer they are not offered. The default prompts say passband and name what an unset width stands for (-B, or the
+ * peer's own passband for NFM; the 6 kHz default for AM), and the value goes to the command as typed.
+ */
+static int
+test_width_rows_on_rigctl_audio(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+    static UiCtx ctx;
+    ctx = make_ctx(&opts, &state);
+
+    opts.analog_only = 1;
+    opts.analog_demod = DSD_ANALOG_DEMOD_FM;
+    opts.use_rigctl = 1;
+    opts.rigctl_sockfd = (dsd_socket_t)5;
+    static const int inputs[] = {AUDIO_IN_TCP, AUDIO_IN_UDP, AUDIO_IN_PULSE, AUDIO_IN_WAV};
+    static const char* const names[] = {"tcp", "udp", "pulse", "wav"};
+    for (size_t i = 0; i < sizeof inputs / sizeof inputs[0]; i++) {
+        char tag[96];
+        opts.audio_in_type = inputs[i];
+        DSD_SNPRINTF(tag, sizeof tag, "%s -fA rigctl: nfm row offered", names[i]);
+        rc |= expect_int(tag, is_nfm_width_editable(&ctx), 1);
+        DSD_SNPRINTF(tag, sizeof tag, "%s -fA rigctl: am row not offered", names[i]);
+        rc |= expect_int(tag, is_am_width_editable(&ctx), 0);
+        opts.rigctl_sockfd = DSD_INVALID_SOCKET;
+        DSD_SNPRINTF(tag, sizeof tag, "%s -fA, rigctl socket closed: nfm row not offered", names[i]);
+        rc |= expect_int(tag, is_nfm_width_editable(&ctx), 0);
+        opts.rigctl_sockfd = (dsd_socket_t)5;
+        opts.use_rigctl = 0;
+        DSD_SNPRINTF(tag, sizeof tag, "%s -fA without rigctl: nfm row not offered", names[i]);
+        rc |= expect_int(tag, is_nfm_width_editable(&ctx), 0);
+        opts.use_rigctl = 1;
+    }
+    opts.audio_in_type = AUDIO_IN_TCP;
+
+    /* An am scan row on a digital session runs AM: the AM row is offered, the NFM one is not. */
+    opts.analog_only = 0;
+    opts.analog_demod = DSD_ANALOG_DEMOD_AM;
+    dsd_test_scan_labels_set(1, DSD_SCAN_MODE_AM);
+    rc |= expect_int("rigctl audio: am row under an am scan row on a digital session", is_am_width_editable(&ctx), 1);
+    rc |= expect_int("rigctl audio: nfm row not under an am scan row", is_nfm_width_editable(&ctx), 0);
+    dsd_test_scan_labels_set(1, DSD_SCAN_MODE_INHERIT);
+    /* An explicit AM width under -fA (NFM): a switch to AM asks the peer for it. */
+    opts.analog_only = 1;
+    opts.analog_demod = DSD_ANALOG_DEMOD_FM;
+    opts.analog_am_bandwidth_hz = 8000;
+    rc |= expect_int("rigctl audio: am row for an explicit AM width under -fA", is_am_width_editable(&ctx), 1);
+    opts.analog_am_bandwidth_hz = 0;
+    /* No DSP rate limits a peer's passband: a rate that cannot filter the AM default offers nothing here. */
+    g_metrics_demod_rate_hz = 7500;
+    rc |= expect_int("rigctl audio: no am row for a rate", is_am_width_editable(&ctx), 0);
+    g_metrics_demod_rate_hz = 0;
+
+    /* The default prompts: -B stands in for an unset NFM width, else the peer's own passband. */
+    opts.setmod_bw = 12500;
+    reset_capture();
+    act_set_nfm_bw(&ctx);
+    rc |= expect_int("rigctl audio: nfm prompt at once", g_chooser.calls == 0 && g_prompt.calls == 1, 1);
+    rc |= expect_str("rigctl audio: nfm prompt names -B", g_prompt.title,
+                     "NFM passband Hz (8000..25000; 0 = -B 12.5 kHz)");
+    rc |= expect_int("rigctl audio: nfm prompt offers the configured width", g_prompt.initial_int, 0);
+    g_prompt.int_cb(g_prompt.user, 1, 30000);
+    rc |= expect_int("rigctl audio: nfm command", g_cmd.id, DSD_APP_CMD_NFM_BANDWIDTH_SET);
+    rc |= expect_int("rigctl audio: nfm sent as typed", cmd_i32(), 30000);
+    opts.setmod_bw = 0;
+    reset_capture();
+    act_set_nfm_bw(&ctx);
+    rc |= expect_str("rigctl audio: nfm prompt names the peer's own", g_prompt.title,
+                     "NFM passband Hz (8000..25000; 0 = peer's own)");
+    opts.analog_nfm_bandwidth_hz = 20000;
+    reset_capture();
+    act_set_nfm_bw(&ctx);
+    rc |= expect_int("rigctl audio: nfm prompt offers an explicit width", g_prompt.initial_int, 20000);
+    opts.analog_nfm_bandwidth_hz = 0;
+    reset_capture();
+    act_set_am_bw(&ctx);
+    rc |= expect_str("rigctl audio: am prompt", g_prompt.title, "AM passband Hz (5000..20000; 0 = default 6000)");
+    g_prompt.int_cb(g_prompt.user, 1, 4000);
+    rc |= expect_int("rigctl audio: am command", g_cmd.id, DSD_APP_CMD_AM_BANDWIDTH_SET);
+    rc |= expect_int("rigctl audio: am sent as typed", cmd_i32(), 4000);
+    /* Without a live peer the prompts keep the radio wording. */
+    opts.rigctl_sockfd = DSD_INVALID_SOCKET;
+    reset_capture();
+    act_set_nfm_bw(&ctx);
+    rc |= expect_str("no peer: nfm prompt", g_prompt.title, "NFM bandwidth Hz (8000..25000; 0 = default 16000)");
+    reset_capture();
+    act_set_am_bw(&ctx);
+    rc |= expect_str("no peer: am prompt", g_prompt.title, "AM bandwidth Hz (5000..20000; 0 = default 6000)");
+    return rc;
+}
+
 /* The tone-filter edit captured last: its mode and list. */
 static dsd_app_tone_filter_payload
 cmd_tone_filter(void) {
@@ -2378,13 +2476,13 @@ test_nfm_bandwidth_prompt_submits_as_typed(void) {
 
     opts.analog_nfm_bandwidth_hz = 12500;
     reset_capture();
-    rtl_set_nfm_bw(&ctx);
+    act_set_nfm_bw(&ctx);
     rc |= expect_str("nfm prompt", g_prompt.title, "NFM bandwidth Hz (8000..25000; 0 = default 16000)");
     rc |= expect_int("nfm prompt seeds the configured width", g_prompt.initial_int, 12500);
     rc |= expect_int("nfm prompt is an int prompt", g_prompt.calls == 1 && g_prompt.int_cb != NULL, 1);
     opts.analog_nfm_bandwidth_hz = 0;
     reset_capture();
-    rtl_set_nfm_bw(&ctx);
+    act_set_nfm_bw(&ctx);
     rc |= expect_int("nfm prompt seeds the default as 0", g_prompt.initial_int, 0);
     /* Issue #526: under an nfm scan row with its own width, dsd_opts holds the row's; the prompt offers the configured
        width, the one the command edits. */
@@ -2393,12 +2491,12 @@ test_nfm_bandwidth_prompt_submits_as_typed(void) {
     dsd_test_scan_labels_configured(&configured);
     opts.analog_nfm_bandwidth_hz = 12500;
     reset_capture();
-    rtl_set_nfm_bw(&ctx);
+    act_set_nfm_bw(&ctx);
     rc |= expect_int("nfm prompt under a width row seeds the configured width", g_prompt.initial_int, 20000);
     dsd_test_scan_labels_configured(NULL);
     opts.analog_nfm_bandwidth_hz = 0;
     reset_capture();
-    rtl_set_nfm_bw(&ctx);
+    act_set_nfm_bw(&ctx);
 
     ui_prompt_int_done_fn cb = g_prompt.int_cb;
     void* user = g_prompt.user;
@@ -2595,9 +2693,72 @@ test_scan_row_scope_chooser(void) {
     dsd_test_scan_labels_set(1, DSD_SCAN_MODE_NFM);
     dsd_test_scan_labels_row_options(&row);
 
+    /* On audio input with a rigctl peer (issue #621) the width is the passband the peer is asked for: the chooser and
+       its prompts say so. This channel opens on what the row runs: its own width, else what stands in for an unset
+       one, -B. The default goes to the passband prompt. */
+    dsd_test_scan_labels_input_type(AUDIO_IN_UDP);
+    dsd_test_scan_labels_rigctl(1, 11250);
+    opts.audio_in_type = AUDIO_IN_UDP;
+    opts.use_rigctl = 1;
+    opts.rigctl_sockfd = (dsd_socket_t)5;
+    opts.setmod_bw = 11250;
+    reset_capture();
+    act_set_nfm_bw(&ctx);
+    rc |= expect_str("peer: nfm width scope title", g_chooser.title, "NFM passband");
+    rc |= expect_int("peer: nfm width scope rows", g_chooser.n, 3);
+    g_chooser.on_done(g_chooser.user, 1);
+    rc |=
+        expect_str("peer: this channel width prompt", g_prompt.title, "NFM passband Hz on this channel (8000..25000)");
+    rc |= expect_int("peer: this channel width opens on the row's", g_prompt.initial_int, 12500);
+    g_prompt.int_cb(g_prompt.user, 1, 16000);
+    p = cmd_scan_row_edit();
+    rc |= expect_int("peer: width edit", p.field == (int32_t)DSD_SCAN_ROW_FIELD_WIDTH && p.width_hz == 16000, 1);
+    dsd_scan_option_values follows_width = {0};
+    follows_width.present = DSD_SCAN_OPT_SQUELCH;
+    follows_width.squelch_db = -55;
+    dsd_test_scan_labels_row_options(&follows_width);
+    reset_capture();
+    act_set_nfm_bw(&ctx);
+    g_chooser.on_done(g_chooser.user, 1);
+    rc |= expect_int("peer: a row following an unset width opens on -B", g_prompt.initial_int, 11250);
+    /* A torn snapshot pair: the state names an nfm row while the options run the AM monitor, whose passband (the 6 kHz
+       AM default here) is no NFM width. The prompt opens on the NFM default rather than on it. */
+    dsd_test_scan_labels_analog(1, DSD_ANALOG_DEMOD_AM);
+    reset_capture();
+    act_set_nfm_bw(&ctx);
+    g_chooser.on_done(g_chooser.user, 1);
+    rc |= expect_str("peer: torn pair: this channel width prompt", g_prompt.title,
+                     "NFM passband Hz on this channel (8000..25000)");
+    rc |= expect_int("peer: torn pair: no AM passband in the NFM prompt", g_prompt.initial_int, 16000);
+    /* An am row on the AM monitor: the AM words, and a row that follows an unset width opens on the AM default the
+       peer is asked for. */
+    dsd_test_scan_labels_set(1, DSD_SCAN_MODE_AM);
+    reset_capture();
+    act_set_am_bw(&ctx);
+    rc |= expect_str("peer: am width scope title", g_chooser.title, "AM passband");
+    g_chooser.on_done(g_chooser.user, 1);
+    rc |= expect_str("peer: this channel am width prompt", g_prompt.title,
+                     "AM passband Hz on this channel (5000..20000)");
+    rc |= expect_int("peer: an am row following an unset width opens on the AM default", g_prompt.initial_int, 6000);
+    dsd_test_scan_labels_set(1, DSD_SCAN_MODE_NFM);
+    dsd_test_scan_labels_analog(0, DSD_ANALOG_DEMOD_FM);
+    reset_capture();
+    act_set_nfm_bw(&ctx);
+    g_chooser.on_done(g_chooser.user, 0);
+    rc |= expect_str("peer: the default goes to the passband prompt", g_prompt.title,
+                     "NFM passband Hz (8000..25000; 0 = -B 11.25 kHz)");
+    rc |= expect_int("peer: the default posts nothing yet", g_cmd.calls, 0);
+    dsd_test_scan_labels_row_options(&row);
+    dsd_test_scan_labels_rigctl(0, 0);
+    dsd_test_scan_labels_input_type(AUDIO_IN_RTL);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.use_rigctl = 0;
+    opts.setmod_bw = 0;
+
     /* The NFM width: no edit running, so no reset row; the AM width row is the other demodulator's. */
     reset_capture();
-    rtl_set_nfm_bw(&ctx);
+    act_set_nfm_bw(&ctx);
+    rc |= expect_str("nfm width scope title", g_chooser.title, "NFM bandwidth");
     rc |= expect_int("nfm width scope rows", g_chooser.n, 3);
     g_chooser.on_done(g_chooser.user, 1);
     rc |= expect_str("this channel width prompt", g_prompt.title, "NFM bandwidth Hz on this channel (8000..25000)");
@@ -2606,8 +2767,17 @@ test_scan_row_scope_chooser(void) {
     p = cmd_scan_row_edit();
     rc |= expect_int("width edit", p.field == (int32_t)DSD_SCAN_ROW_FIELD_WIDTH && p.width_hz == 16000, 1);
     reset_capture();
-    rtl_set_am_bw(&ctx);
+    act_set_am_bw(&ctx);
     rc |= expect_int("am width under an nfm row: own prompt", g_chooser.calls == 0 && g_prompt.calls == 1, 1);
+    /* The AM width under an am row: the chooser and its prompt in the radio's words. */
+    dsd_test_scan_labels_set(1, DSD_SCAN_MODE_AM);
+    reset_capture();
+    act_set_am_bw(&ctx);
+    rc |= expect_str("am width scope title", g_chooser.title, "AM bandwidth");
+    g_chooser.on_done(g_chooser.user, 1);
+    rc |= expect_str("this channel am width prompt", g_prompt.title, "AM bandwidth Hz on this channel (5000..20000)");
+    rc |= expect_int("this channel am width opens on the row's", g_prompt.initial_int, 12500);
+    dsd_test_scan_labels_set(1, DSD_SCAN_MODE_NFM);
 
     /* The gain: the list sets none, so two rows; the prompt opens on the gain in force. */
     dsd_test_scan_labels_rtl_gain(25);
@@ -2698,6 +2868,7 @@ main(void) {
     rc |= test_simple_commands_and_prompts();
     rc |= test_scan_voice_gate_actions();
     rc |= test_nfm_bandwidth_row_follows_the_configured_preset();
+    rc |= test_width_rows_on_rigctl_audio();
     rc |= test_nfm_bandwidth_prompt_submits_as_typed();
     rc |= test_tone_filter_editor();
     rc |= test_scan_row_scope_chooser();

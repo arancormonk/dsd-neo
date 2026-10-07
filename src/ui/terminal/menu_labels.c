@@ -889,6 +889,39 @@ lbl_input_sql(const void* v, char* b, size_t n) {
     return b;
 }
 
+/* The configured channel width of analog @p kind (issues #524, #525), a setting rather than a reading: an explicit
+   width as set, the unset default as "default" (the status line's width field shows what that gives). On audio input
+   with a rigctl peer (-U) the row edits the passband the peer is asked for (issue #621), and an unset NFM width reads
+   as what stands in for it, "-B 12.5 kHz" or "peer's own". App-control's spelling. The scan scope's configured view
+   while one is live: a row's own width (issue #526) runs over dsd_opts, and the row edits the configured width. */
+static const char*
+lbl_input_width(const void* v, int kind, char* b, size_t n) {
+    const UiCtx* c = (const UiCtx*)v;
+    dsd_app_analog_width_view view;
+    DSD_MEMSET(&view, 0, sizeof view);
+    int configured_hz = 0;
+    if (c) {
+        const dsd_state* snapshot = dsd_app_get_latest_snapshot();
+        (void)dsd_app_analog_width_view_get(c->opts, snapshot, NULL, &view);
+        configured_hz = dsd_scan_mode_configured_analog_width(c->opts, snapshot, kind);
+    }
+    char width[DSD_APP_ANALOG_WIDTH_TEXT_MAX];
+    (void)dsd_app_analog_width_setting_text(&view, kind, configured_hz, width, sizeof width);
+    DSD_SNPRINTF(b, n, "%s %s... [%s]", dsd_analog_demod_label(kind), view.peer_passband ? "passband" : "bandwidth",
+                 width);
+    return b;
+}
+
+const char*
+lbl_input_nfm_bw(const void* v, char* b, size_t n) {
+    return lbl_input_width(v, DSD_ANALOG_DEMOD_FM, b, n);
+}
+
+const char*
+lbl_input_am_bw(const void* v, char* b, size_t n) {
+    return lbl_input_width(v, DSD_ANALOG_DEMOD_AM, b, n);
+}
+
 const char*
 lbl_tcp(const void* vctx, char* b, size_t n) {
     const UiCtx* c = (const UiCtx*)vctx;
@@ -1444,35 +1477,6 @@ const char*
 lbl_rtl_bw(const void* v, char* b, size_t n) {
     const UiCtx* c = (const UiCtx*)v;
     DSD_SNPRINTF(b, n, "DSP bandwidth... [%d kHz]", (c && c->opts) ? c->opts->rtl_dsp_bw_khz : 0);
-    return b;
-}
-
-/* The configured NFM channel width, a setting rather than a reading: an explicit width as set, the unset default as
-   "default" (the status line's "Analog:" field shows what that gives at the DSP rate). App-control's spelling. The
-   scan scope's configured view while one is live: an nfm row's own width (issue #526) runs over dsd_opts, and the row
-   edits the configured width. */
-const char*
-lbl_rtl_nfm_bw(const void* v, char* b, size_t n) {
-    const UiCtx* c = (const UiCtx*)v;
-    const int configured_hz =
-        c ? dsd_scan_mode_configured_analog_width(c->opts, dsd_app_get_latest_snapshot(), DSD_ANALOG_DEMOD_FM) : 0;
-    char width[DSD_APP_ANALOG_WIDTH_TEXT_MAX];
-    (void)dsd_app_analog_width_setting_format(configured_hz, width, sizeof width);
-    DSD_SNPRINTF(b, n, "NFM bandwidth... [%s]", width);
-    return b;
-}
-
-/* The configured AM channel width (issue #524), spelt and read as the NFM row reads its own: an explicit width as set,
-   the unset default as "default" (6 kHz; the status line's "Analog:" field shows the width the front end runs), from
-   the scan scope's configured view while one is live. */
-const char*
-lbl_rtl_am_bw(const void* v, char* b, size_t n) {
-    const UiCtx* c = (const UiCtx*)v;
-    const int configured_hz =
-        c ? dsd_scan_mode_configured_analog_width(c->opts, dsd_app_get_latest_snapshot(), DSD_ANALOG_DEMOD_AM) : 0;
-    char width[DSD_APP_ANALOG_WIDTH_TEXT_MAX];
-    (void)dsd_app_analog_width_setting_format(configured_hz, width, sizeof width);
-    DSD_SNPRINTF(b, n, "AM bandwidth... [%s]", width);
     return b;
 }
 

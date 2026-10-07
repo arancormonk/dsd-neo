@@ -12,21 +12,11 @@
 #define DSD_NEO_TESTS_UI_TEST_UI_MENU_TREE_AUDIT_STUBS_H_
 
 /* ---- Generated from menu_items.c: every symbol the tree references. ----
-   Regenerate with: grep -oE '\.(on_select|label_fn|is_enabled) = [a-z_0-9]+' src/ui/terminal/menu_items.c */
+   Regenerate with: grep -oE '\.(on_select|label_fn|is_enabled) = [a-z_0-9]+' src/ui/terminal/menu_items.c
+   The *_RADIO lists hold what menu_actions.h and menu_labels.h declare only under USE_RADIO: the radio-off audit
+   (UI_MENU_TREE_AUDIT_NO_RADIO) stubs only the rest. */
 
 #define AUDIT_ACTIONS(X)                                                                                               \
-    X(switch_to_airspy)                                                                                                \
-    X(airspy_set_serial)                                                                                               \
-    X(airspy_set_sample_rate)                                                                                          \
-    X(airspy_set_gain_mode)                                                                                            \
-    X(airspy_set_sensitivity_gain)                                                                                     \
-    X(airspy_set_linearity_gain)                                                                                       \
-    X(airspy_set_lna_gain)                                                                                             \
-    X(airspy_set_mixer_gain)                                                                                           \
-    X(airspy_set_vga_gain)                                                                                             \
-    X(airspy_set_lna_agc)                                                                                              \
-    X(airspy_set_mixer_agc)                                                                                            \
-    X(airspy_set_bias_tee)                                                                                             \
     X(act_allow_toggle)                                                                                                \
     X(act_anytone_bp)                                                                                                  \
     X(act_auto_ppm_freeze)                                                                                             \
@@ -63,7 +53,6 @@
     X(act_import_group)                                                                                                \
     X(act_import_src)                                                                                                  \
     X(act_import_p25_bandplan)                                                                                         \
-    X(act_iq_dc_k_prompt)                                                                                              \
     X(act_ken_scr)                                                                                                     \
     X(act_keys_dec)                                                                                                    \
     X(act_keys_hex)                                                                                                    \
@@ -99,8 +88,10 @@
     X(act_scan_voice_qualify)                                                                                          \
     X(act_rt_sched)                                                                                                    \
     X(act_scan_toggle)                                                                                                 \
+    X(act_set_am_bw)                                                                                                   \
     X(act_set_audio_lpf)                                                                                               \
     X(act_set_input_warn)                                                                                              \
+    X(act_set_nfm_bw)                                                                                                  \
     X(act_set_squelch)                                                                                                 \
     X(act_set_p25_cc_grace)                                                                                            \
     X(act_set_p25_force_extra)                                                                                         \
@@ -120,14 +111,9 @@
     X(act_tcp_rcvbuf_prompt)                                                                                           \
     X(act_tcp_rcvtimeo_prompt)                                                                                         \
     X(act_tcp_waitall)                                                                                                 \
-    X(act_ted_gain_prompt)                                                                                             \
     X(act_tg_hold)                                                                                                     \
-    X(act_toggle_cq)                                                                                                   \
-    X(act_toggle_dsp_panel)                                                                                            \
     X(act_toggle_ftz_daz)                                                                                              \
     X(act_toggle_invert)                                                                                               \
-    X(act_toggle_iq_dc)                                                                                                \
-    X(act_toggle_iqbal)                                                                                                \
     X(act_toggle_payload)                                                                                              \
     X(act_toggle_ui_channels)                                                                                          \
     X(act_toggle_ui_compact)                                                                                           \
@@ -187,26 +173,44 @@
     X(lr_dsdp)                                                                                                         \
     X(lr_home)                                                                                                         \
     X(lr_off)                                                                                                          \
+    X(switch_out_pulse)                                                                                                \
+    X(switch_out_toggle_mute)                                                                                          \
+    X(switch_to_pulse)                                                                                                 \
+    X(switch_to_symbol)                                                                                                \
+    X(switch_to_udp)                                                                                                   \
+    X(switch_to_wav)
+
+#define AUDIT_ACTIONS_RADIO(X)                                                                                         \
+    X(switch_to_airspy)                                                                                                \
+    X(airspy_set_serial)                                                                                               \
+    X(airspy_set_sample_rate)                                                                                          \
+    X(airspy_set_gain_mode)                                                                                            \
+    X(airspy_set_sensitivity_gain)                                                                                     \
+    X(airspy_set_linearity_gain)                                                                                       \
+    X(airspy_set_lna_gain)                                                                                             \
+    X(airspy_set_mixer_gain)                                                                                           \
+    X(airspy_set_vga_gain)                                                                                             \
+    X(airspy_set_lna_agc)                                                                                              \
+    X(airspy_set_mixer_agc)                                                                                            \
+    X(airspy_set_bias_tee)                                                                                             \
+    X(act_iq_dc_k_prompt)                                                                                              \
+    X(act_ted_gain_prompt)                                                                                             \
+    X(act_toggle_cq)                                                                                                   \
+    X(act_toggle_dsp_panel)                                                                                            \
+    X(act_toggle_iq_dc)                                                                                                \
+    X(act_toggle_iqbal)                                                                                                \
     X(rtl_restart)                                                                                                     \
     X(rtl_set_bw)                                                                                                      \
-    X(rtl_set_am_bw)                                                                                                   \
     X(rtl_set_dev)                                                                                                     \
     X(rtl_set_freq)                                                                                                    \
     X(rtl_set_gain)                                                                                                    \
-    X(rtl_set_nfm_bw)                                                                                                  \
     X(rtl_set_ppm)                                                                                                     \
     X(rtl_set_vol)                                                                                                     \
     X(rtl_toggle_auto_ppm)                                                                                             \
     X(rtl_toggle_bias)                                                                                                 \
     X(rtl_toggle_rtltcp_autotune)                                                                                      \
     X(rtl_toggle_tuner_autogain)                                                                                       \
-    X(switch_out_pulse)                                                                                                \
-    X(switch_out_toggle_mute)                                                                                          \
-    X(switch_to_pulse)                                                                                                 \
-    X(switch_to_rtl)                                                                                                   \
-    X(switch_to_symbol)                                                                                                \
-    X(switch_to_udp)                                                                                                   \
-    X(switch_to_wav)
+    X(switch_to_rtl)
 
 #define AUDIT_LABELS(X)                                                                                                \
     X(lbl_allow)                                                                                                       \
@@ -219,14 +223,12 @@
     X(lbl_call_alert)                                                                                                  \
     X(lbl_call_alert_events)                                                                                           \
     X(lbl_cosine)                                                                                                      \
-    X(lbl_cqpsk_timing_bias)                                                                                           \
     X(lbl_crc_relax)                                                                                                   \
     X(lbl_current_input)                                                                                               \
     X(lbl_current_output)                                                                                              \
     X(lbl_decode_mode)                                                                                                 \
     X(lbl_deemph)                                                                                                      \
     X(lbl_dmr_le)                                                                                                      \
-    X(lbl_dsp_panel)                                                                                                   \
     X(lbl_enc_lockout_clear)                                                                                           \
     X(lbl_event_log)                                                                                                   \
     X(lbl_ftz_daz)                                                                                                     \
@@ -240,13 +242,13 @@
     X(lbl_input_volume)                                                                                                \
     X(lbl_input_warn)                                                                                                  \
     X(lbl_input_sql)                                                                                                   \
+    X(lbl_input_nfm_bw)                                                                                                \
+    X(lbl_input_am_bw)                                                                                                 \
     X(lbl_inv_dmr)                                                                                                     \
     X(lbl_inv_dpmr)                                                                                                    \
     X(lbl_inv_m17)                                                                                                     \
     X(lbl_inv_x2)                                                                                                      \
     X(lbl_invert_all)                                                                                                  \
-    X(lbl_iq_dc)                                                                                                       \
-    X(lbl_iq_dc_k)                                                                                                     \
     X(lbl_key_force_bp)                                                                                                \
     X(lbl_key_force_rc4)                                                                                               \
     X(lbl_key_hytera)                                                                                                  \
@@ -258,8 +260,6 @@
     X(lbl_monitor)                                                                                                     \
     X(lbl_mt)                                                                                                          \
     X(lbl_muting)                                                                                                      \
-    X(lbl_onoff_cq)                                                                                                    \
-    X(lbl_onoff_iqbal)                                                                                                 \
     X(lbl_out_mute)                                                                                                    \
     X(lbl_p25_cc_grace)                                                                                                \
     X(lbl_p25_enc_lockout)                                                                                             \
@@ -281,17 +281,6 @@
     X(lbl_rigctl)                                                                                                      \
     X(lbl_rr_account)                                                                                                  \
     X(lbl_rt_sched)                                                                                                    \
-    X(lbl_rtl_auto_ppm)                                                                                                \
-    X(lbl_rtl_bias)                                                                                                    \
-    X(lbl_rtl_bw)                                                                                                      \
-    X(lbl_rtl_am_bw)                                                                                                   \
-    X(lbl_rtl_freq)                                                                                                    \
-    X(lbl_rtl_gain)                                                                                                    \
-    X(lbl_rtl_nfm_bw)                                                                                                  \
-    X(lbl_rtl_ppm)                                                                                                     \
-    X(lbl_rtl_rtltcp_autotune)                                                                                         \
-    X(lbl_rtl_tuner_autogain)                                                                                          \
-    X(lbl_rtl_vol)                                                                                                     \
     X(lbl_scan)                                                                                                        \
     X(lbl_scan_avoid_clear)                                                                                            \
     X(lbl_scan_hold)                                                                                                   \
@@ -309,7 +298,6 @@
     X(lbl_tcp_rcvbuf)                                                                                                  \
     X(lbl_tcp_rcvtimeo)                                                                                                \
     X(lbl_tcp_waitall)                                                                                                 \
-    X(lbl_ted_gain)                                                                                                    \
     X(lbl_tg_lockout_persist)                                                                                          \
     X(lbl_tg_session_avoid_clear)                                                                                      \
     X(lbl_tg_hold)                                                                                                     \
@@ -337,17 +325,31 @@
     X(lbl_vis_spectrum)                                                                                                \
     X(lbl_window_freeze)
 
+#define AUDIT_LABELS_RADIO(X)                                                                                          \
+    X(lbl_cqpsk_timing_bias)                                                                                           \
+    X(lbl_dsp_panel)                                                                                                   \
+    X(lbl_iq_dc)                                                                                                       \
+    X(lbl_iq_dc_k)                                                                                                     \
+    X(lbl_onoff_cq)                                                                                                    \
+    X(lbl_onoff_iqbal)                                                                                                 \
+    X(lbl_rtl_auto_ppm)                                                                                                \
+    X(lbl_rtl_bias)                                                                                                    \
+    X(lbl_rtl_bw)                                                                                                      \
+    X(lbl_rtl_freq)                                                                                                    \
+    X(lbl_rtl_gain)                                                                                                    \
+    X(lbl_rtl_ppm)                                                                                                     \
+    X(lbl_rtl_rtltcp_autotune)                                                                                         \
+    X(lbl_rtl_tuner_autogain)                                                                                          \
+    X(lbl_rtl_vol)                                                                                                     \
+    X(lbl_ted_gain)
+
 #define AUDIT_PREDICATES(X)                                                                                            \
-    X(is_airspy_input)                                                                                                 \
-    X(is_non_airspy_input)                                                                                             \
     X(is_nfm_width_editable)                                                                                           \
     X(is_am_width_editable)                                                                                            \
     X(const_view_active)                                                                                               \
     X(eye_view_active)                                                                                                 \
     X(io_rtl_active)                                                                                                   \
     X(io_squelch_offered)                                                                                              \
-    X(is_not_qpsk)                                                                                                     \
-    X(is_ted_allowed)                                                                                                  \
     X(provoice_active)                                                                                                 \
     X(rtl_freq_offered)                                                                                                \
     X(rr_feature_available)                                                                                            \
@@ -355,5 +357,11 @@
     X(rr_key_prompt_offered_and_feature)                                                                               \
     X(scan_rotation_active)                                                                                            \
     X(trunk_enabled)
+
+#define AUDIT_PREDICATES_RADIO(X)                                                                                      \
+    X(is_airspy_input)                                                                                                 \
+    X(is_non_airspy_input)                                                                                             \
+    X(is_not_qpsk)                                                                                                     \
+    X(is_ted_allowed)
 
 #endif /* DSD_NEO_TESTS_UI_TEST_UI_MENU_TREE_AUDIT_STUBS_H_ */

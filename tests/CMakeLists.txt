@@ -2274,16 +2274,20 @@ add_test(NAME UI_MENU_SERVICES COMMAND dsd-neo_test_ui_menu_services)
 
 if(DSD_ENABLE_TERMINAL_UI)
     # The Tone filter row reads the shared received-tone view, so it and the tone tables come in
-    # as sources: the label goldens run through the real policy text.
+    # as sources: the label goldens run through the real policy text. The width rows read the
+    # analog width view, and it the rigctl passband rule, in every build (issue #621).
     add_executable(
         dsd-neo_test_ui_menu_labels
         ui/test_ui_menu_labels.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_labels.c
         ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/analog_width_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/rtl_gain_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/rx_tone_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/squelch_view.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/analog_channel.c
         ${PROJECT_SOURCE_DIR}/src/runtime/analog_tones.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/rigctl_passband.c
         ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_io_hooks.c
         ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_metrics_hooks.c
         ${PROJECT_SOURCE_DIR}/src/runtime/squelch.c
@@ -2367,6 +2371,26 @@ if(DSD_ENABLE_TERMINAL_UI)
         PRIVATE USE_RADIO
     )
     add_test(NAME UI_MENU_TREE_AUDIT COMMAND dsd-neo_test_ui_menu_tree_audit)
+
+    # The same audit over the tree a build without the radio pipeline compiles: no
+    # RTL-SDR or Airspy rows, and the rows that must not depend on them (issue #621).
+    add_executable(
+        dsd-neo_test_ui_menu_tree_audit_no_radio
+        ui/test_ui_menu_tree_audit.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_items.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/menus/menu_defs.c
+    )
+    target_include_directories(
+        dsd-neo_test_ui_menu_tree_audit_no_radio
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/ui/terminal
+            ${CURSES_INCLUDE_DIRS}
+    )
+    add_test(
+        NAME UI_MENU_TREE_AUDIT_NO_RADIO
+        COMMAND dsd-neo_test_ui_menu_tree_audit_no_radio
+    )
 
     add_executable(
         dsd-neo_test_ui_menu_render_helpers
