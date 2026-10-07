@@ -11476,6 +11476,17 @@ if(DSD_HAS_RADIO)
             PRIVATE ${RTLSDR_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT}
         )
     endif()
+    # A failed resampler design is injected through a GNU ld --wrap of the aligned allocator (issue #633).
+    if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
+        target_compile_definitions(
+            dsd-neo_test_io_rtl_demod_config
+            PRIVATE DSD_NEO_TEST_ALIGNED_MALLOC_WRAP
+        )
+        target_link_options(
+            dsd-neo_test_io_rtl_demod_config
+            PRIVATE "LINKER:--wrap=dsd_neo_aligned_malloc"
+        )
+    endif()
     add_test(NAME IO_RTL_DEMOD_CONFIG COMMAND dsd-neo_test_io_rtl_demod_config)
 
     add_executable(

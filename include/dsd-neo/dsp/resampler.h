@@ -57,11 +57,29 @@ void dsd_resampler_reset(dsd_resampler_state* state);
  */
 void dsd_resampler_clear_history(dsd_resampler_state* state);
 
+/** The taps per phase dsd_resampler_design() uses. */
+#define DSD_RESAMPLER_DEFAULT_TAPS_PER_PHASE 16
+/** The range of taps per phase dsd_resampler_design_taps() accepts. */
+#define DSD_RESAMPLER_MIN_TAPS_PER_PHASE     8
+#define DSD_RESAMPLER_MAX_TAPS_PER_PHASE     256
+
+/**
+ * @brief Whether a resampler of ratio @p L / @p M with @p taps_per_phase taps per phase can be designed at all.
+ *
+ * The prototype's taps_per_phase x L taps must fit an int and their byte size a size_t, and the phase recurrence (a
+ * phase below L plus M) must fit an int. Whether the memory is there is only known when a design allocates it.
+ *
+ * @return 1 when the ratio can be designed, 0 otherwise (also for any term below 1 or taps per phase out of range).
+ */
+int dsd_resampler_ratio_designable(int L, int M, int taps_per_phase);
+
 /**
  * @brief Design a windowed-sinc prototype for a reusable resampler state.
  *
  * Safe on first-use storage. If allocation fails while redesigning an existing
- * state, the prior taps/history remain intact.
+ * state, the prior taps/history remain intact. A ratio that cannot be designed
+ * (dsd_resampler_ratio_designable()) is an argument failure, which resets the
+ * state to an undesigned pass-through.
  *
  * @param state Resampler state to configure.
  * @param L Upsampling factor.
@@ -69,6 +87,18 @@ void dsd_resampler_clear_history(dsd_resampler_state* state);
  * @return 1 on success, 0 on allocation or argument failure.
  */
 int dsd_resampler_design(dsd_resampler_state* state, int L, int M);
+
+/**
+ * @brief dsd_resampler_design() with @p taps_per_phase taps per phase instead of
+ * DSD_RESAMPLER_DEFAULT_TAPS_PER_PHASE.
+ *
+ * The filter spans taps_per_phase input samples, so a decimating ratio needs more of them for the same transition band
+ * relative to the output rate (issue #633).
+ *
+ * @param taps_per_phase DSD_RESAMPLER_MIN_TAPS_PER_PHASE..DSD_RESAMPLER_MAX_TAPS_PER_PHASE.
+ * @return 1 on success, 0 on allocation or argument failure.
+ */
+int dsd_resampler_design_taps(dsd_resampler_state* state, int L, int M, int taps_per_phase);
 
 /**
  * @brief Process a block of samples through a reusable resampler state.
@@ -96,8 +126,10 @@ int dsd_resampler_process_block(dsd_resampler_state* state, const float* in, int
  * @param s Demodulator state to receive resampler taps/history.
  * @param L Upsampling factor.
  * @param M Downsampling factor.
+ * @return 1 when @p s holds the designed taps, 0 when the design failed (an allocation, or a ratio that cannot be
+ *         designed): the caller must not publish the resampled rate then, since the samples pass through.
  */
-void resamp_design(struct demod_state* s, int L, int M);
+int resamp_design(struct demod_state* s, int L, int M);
 
 /**
  * @brief Process one block using polyphase upfirdn with history.

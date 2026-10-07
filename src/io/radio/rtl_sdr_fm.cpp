@@ -28,7 +28,6 @@
 #include <dsd-neo/dsp/costas.h>
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
-#include <dsd-neo/dsp/math_utils.h>
 #include <dsd-neo/dsp/nfm_noise_squelch.h>
 #include <dsd-neo/dsp/resampler.h>
 #include <dsd-neo/dsp/snr_bias.h>
@@ -7759,23 +7758,20 @@ stream_open_configure_resampler_chain(void) {
         LOG_INFO("Resampler bypassed: input rate %d Hz matches target.\n", inRate);
         return;
     }
-    int g = gcd_int(inRate, target);
-    int L = target / g;
-    int M = inRate / g;
-    if (L < 1) {
-        L = 1;
-    }
-    if (M < 1) {
-        M = 1;
-    }
-    int scale = (L + M - 1) / M;
-    if (scale > 12) {
+    int L = 1;
+    int M = 1;
+    if (!rtl_demod_resampler_ratio(inRate, target, &L, &M)) {
         LOG_WARN("WARNING: Resampler ratio too large (L=%d,M=%d). Disabling resampler.\n", L, M);
         demod.resamp_enabled = 0;
         return;
     }
     demod.resamp_enabled = 1;
-    resamp_design(&demod, L, M);
+    if (!resamp_design(&demod, L, M)) {
+        /* The samples would pass through at inRate: publishing the target would mislabel them (issue #633). */
+        LOG_WARN("WARNING: Resampler design failed (L=%d,M=%d). Disabling resampler.\n", L, M);
+        demod.resamp_enabled = 0;
+        return;
+    }
     LOG_INFO("Rational resampler configured: %d -> %d Hz (L=%d,M=%d).\n", inRate, target, L, M);
 }
 

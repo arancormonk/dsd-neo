@@ -8,6 +8,7 @@
 
 /* Focused unit test for polyphase rational resampler (L/M). */
 
+#include <climits>
 #include <cmath>
 #include <cstdint>
 #include <dsd-neo/dsp/demod_state.h>
@@ -572,6 +573,104 @@ test_public_guard_and_passthrough_contracts(void) {
     return 0;
 }
 
+/* dsd_resampler_design_taps() (issue #633): a decimating converter needs a filter longer than 16 input samples. */
+static int
+test_design_taps_variant(void) {
+    dsd_resampler_state s = {};
+    int rc = 1;
+    std::vector<float> in(4096, 1.0f);
+    std::vector<float> out(4096);
+    int got = 0;
+
+    if (!dsd_resampler_design(&s, 3, 2) || s.taps_per_phase != DSD_RESAMPLER_DEFAULT_TAPS_PER_PHASE
+        || DSD_RESAMPLER_DEFAULT_TAPS_PER_PHASE != 16) {
+        DSD_FPRINTF(stderr, "default design did not keep 16 taps per phase\n");
+        goto cleanup;
+    }
+    if (!dsd_resampler_design_taps(&s, 1, 2, 32) || s.taps_per_phase != 32 || s.taps_len != 32 || s.L != 1
+        || s.M != 2) {
+        DSD_FPRINTF(stderr, "design_taps(1,2,32) gave K=%d taps=%d L=%d M=%d\n", s.taps_per_phase, s.taps_len, s.L,
+                    s.M);
+        goto cleanup;
+    }
+    got = dsd_resampler_process_block(&s, in.data(), (int)in.size(), out.data(), (int)out.size());
+    if (got != 2048) {
+        DSD_FPRINTF(stderr, "design_taps(1,2,32) produced %d outputs, want 2048\n", got);
+        goto cleanup;
+    }
+    for (int i = 64; i < got; i++) {
+        if (!approx_eq(out[(size_t)i], 1.0f, 2e-3f)) {
+            DSD_FPRINTF(stderr, "design_taps(1,2,32) DC gain out[%d]=%f\n", i, out[(size_t)i]);
+            goto cleanup;
+        }
+    }
+    if (dsd_resampler_design_taps(&s, 1, 2, DSD_RESAMPLER_MIN_TAPS_PER_PHASE - 1) != 0
+        || dsd_resampler_design_taps(&s, 1, 2, DSD_RESAMPLER_MAX_TAPS_PER_PHASE + 1) != 0 || s.enabled != 0
+        || s.taps != NULL) {
+        DSD_FPRINTF(stderr, "out-of-range taps per phase were not refused\n");
+        goto cleanup;
+    }
+    if (!dsd_resampler_design_taps(&s, 1, 16, DSD_RESAMPLER_MAX_TAPS_PER_PHASE)
+        || s.taps_per_phase != DSD_RESAMPLER_MAX_TAPS_PER_PHASE) {
+        DSD_FPRINTF(stderr, "design_taps at the maximum taps per phase failed\n");
+        goto cleanup;
+    }
+    rc = 0;
+
+cleanup:
+    dsd_resampler_reset(&s);
+    return rc;
+}
+
+/* A ratio whose taps or phase arithmetic overflow an int is refused before anything is allocated (issue #633); every
+   ratio a real stream designs still designs. */
+static int
+test_designable_bounds(void) {
+    dsd_resampler_state s = {};
+    int rc = 1;
+    float in[4] = {0.5f, -0.25f, 0.125f, 1.0f};
+    float out[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+
+    if (dsd_resampler_ratio_designable(0, 1, 16) || dsd_resampler_ratio_designable(1, 0, 16)
+        || dsd_resampler_ratio_designable(1, 1, 7) || dsd_resampler_ratio_designable(1, 1, 257)) {
+        DSD_FPRINTF(stderr, "degenerate ratios were reported designable\n");
+        goto cleanup;
+    }
+    /* The largest L: 16 x L taps fit an int and their bytes a size_t (a 32-bit size_t is the tighter bound). */
+    {
+        const uint64_t by_int = (uint64_t)INT_MAX / 16U;
+        const uint64_t by_size = (uint64_t)(SIZE_MAX / sizeof(float)) / 16U;
+        const int max_l = (int)(by_int < by_size ? by_int : by_size);
+        if (dsd_resampler_ratio_designable(max_l + 1, 1, 16) || !dsd_resampler_ratio_designable(max_l, 1, 16)) {
+            DSD_FPRINTF(stderr, "taps-count overflow bound is wrong\n");
+            goto cleanup;
+        }
+    }
+    /* A phase below L stepped by M must fit an int. */
+    if (dsd_resampler_ratio_designable(2, INT_MAX - 1, 16) || !dsd_resampler_ratio_designable(1, INT_MAX - 1, 16)) {
+        DSD_FPRINTF(stderr, "phase overflow bound is wrong\n");
+        goto cleanup;
+    }
+    if (dsd_resampler_design(&s, INT_MAX, 200000000) != 0 || s.enabled != 0 || s.taps != NULL || s.hist != NULL) {
+        DSD_FPRINTF(stderr, "an overflowing ratio was designed\n");
+        goto cleanup;
+    }
+    if (dsd_resampler_process_block(&s, in, 4, out, 4) != 4 || !arrays_close(out, in, 4, 0.0f)) {
+        DSD_FPRINTF(stderr, "a refused design does not pass through\n");
+        goto cleanup;
+    }
+    /* 19531 Hz to 48 kHz, which an RTL stream at a 12 kHz DSP bandwidth designs today. */
+    if (!dsd_resampler_design(&s, 48000, 19531) || s.taps_len != 16 * 48000) {
+        DSD_FPRINTF(stderr, "48000/19531 no longer designs\n");
+        goto cleanup;
+    }
+    rc = 0;
+
+cleanup:
+    dsd_resampler_reset(&s);
+    return rc;
+}
+
 int
 main(void) {
     // demod_state is large; allocate on heap to avoid stack overflow
@@ -641,6 +740,10 @@ main(void) {
         return 1;
     }
     if (test_public_guard_and_passthrough_contracts() != 0) {
+        free_demod_state(s);
+        return 1;
+    }
+    if (test_design_taps_variant() != 0 || test_designable_bounds() != 0) {
         free_demod_state(s);
         return 1;
     }
