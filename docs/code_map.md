@@ -2253,7 +2253,9 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   block to the next, so the front end's output does not depend on where the blocks are cut. The stages after it still
   decide per block, so `full_demod()`'s output as a whole does: channel power and the squelch decision, the squelch
   envelope, I/Q balance, the AM detector's warm start, CQPSK's adaptive Gardner gain, the rounding of a squelched
-  block's zero-symbol count, metrics, and the block a profile request is consumed on. Holding the look-ahead is
+  block's zero-symbol count, metrics, and the block a profile request is consumed on. A replay's block is therefore
+  sized like a live one (I/Q replay framing below): one live transfer at most, so those decisions run at a receiver's
+  cadence in a replay too (issue #626). Holding the look-ahead is
   latency: a filter emits an output only once it holds the c inputs after it, about 74 samples (1.54 ms) at 48 kHz on
   the default 1.536 Msps RTL chain, about 7 in the five-pass cascade and 67 in the 135-tap FIR, and 67 (1.40 ms) on a
   48 kHz replay, which runs no cascade.
@@ -2748,10 +2750,19 @@ Notes:
     (`rtl_stream_get_squelch_status()`).
   - I/Q replay framing (issue #572; `replay_thread_process_block()` in `rtl_device.cpp`, `demod_read_input_block()`
     in `rtl_sdr_fm.cpp`). Each demod block is exactly one capture chunk:
-    - The reader reads a chunk whole with `replay_read_exact()`: 64 KiB, or up to the next event or the end, looping
+    - A chunk is at most one live transfer (`dsd_iq_replay_chunk_bytes()`, `<dsd-neo/io/iq_replay.h>`, issue #626):
+      min(8192, rate x 8192 / 1,536,000) complex samples, at least one, in the format's bytes. That is never more than
+      the 16384 cu8 bytes a live RTL transfer holds (`ACTUAL_BUF_LENGTH`; a `static_assert` in `rtl_sdr_fm.cpp` ties
+      the two), and never longer than such a transfer lasts at the default 1.536 Msps, 5.33 ms. A 48 kHz capture
+      (every committed fixture) is replayed 256 samples a block, the 256 channel samples a live default block
+      decimates to. The rule depends on the capture's format and rate alone, so the chunking never follows a runtime
+      setting. With the old fixed 64 KiB chunk a 48 kHz block was 683 ms, and every per-block decision (the level
+      squelch, its envelope, the published channel power, adaptive loop gains, metrics, how soon a decoder request
+      lands) ran on that grid. Below 1.536 Msps a chunk is shorter than a live transfer at that rate, never longer.
+    - The reader reads a chunk whole with `replay_read_exact()`: one chunk, or up to the next event or the end, looping
       over short reads. A cf32 read that stopped inside a complex sample would otherwise be skipped, and every read
-      after it would stay off the sample grid. A read that fails after part of a chunk hands over that part first.
-      A chunk the capture's end or a failure cuts short ends on its last whole complex sample (2 bytes for cu8, 8 for
+      after it would stay off the sample grid. A read that fails after part of a chunk hands over that part first. A
+      chunk the capture's end or a failure cuts short ends on its last whole complex sample (2 bytes for cu8, 8 for
       cf32): nothing can complete a part of one, and a cf32 chunk holding one could not be converted at all.
     - `replay_submit_whole_chunk()` waits for the chunk's realtime deadline, then (with no deadline) for an empty input
       ring, and commits the whole chunk at once. The reader reads and converts the next chunk while the demod works on
@@ -2763,12 +2774,16 @@ Notes:
       (the wrapped path releases early).
     - The demod acknowledges its span's own generation, after the block's output is written or when it discards the
       block, never the newest the reader bumped, which can belong to a chunk still outside the ring. It publishes the
-      chunk's input level when it starts the block.
+      chunk's input level when it starts the block, so a replay's level covers one live transfer's time, as a live
+      stream's covers each transfer.
 
-    Tests: `IO_RTL_REPLAY_EOF_AND_CF32` (block log per chunk in fast and realtime replay, media time across a loop, a
-    chunk held numbered but uncommitted, a block that wraps the ring end and a discarded block, each releasing its
-    input before it acknowledges, a multi-chunk EOF, cf32 short reads, a read failure mid-chunk, in cu8 and inside a
-    cf32 sample, a cf32 end inside a sample, the input level at the first block).
+    Tests: `IO_IQ_METADATA` (the chunk rule against literal sizes), `IO_RTL_REPLAY_CHUNKING` (48 kHz cu8 and cf32
+    blocks of 256 samples, 1.536 Msps cu8 blocks of 16384 bytes, a MUTE cutting a chunk and moving the media time by
+    what it omits, and a level squelch on `nfm_burst_synth` opening on one run of blocks within one block of the
+    carrier's key and unkey), `IO_RTL_REPLAY_EOF_AND_CF32` (block log per chunk in fast and realtime replay, media time
+    across a loop, a chunk held numbered but uncommitted, a block that wraps the ring end and a discarded block, each
+    releasing its input before it acknowledges, a multi-chunk EOF, cf32 short reads, a read failure mid-chunk, in cu8
+    and inside a cf32 sample, a cf32 end inside a sample, the input level at the first block).
   - I/Q replay end of stream (issue #572; `replay_thread_fn()` in `rtl_device.cpp`, `rtl_stream_read_replay()` in
     `rtl_sdr_fm.cpp`). The capture's end and a read the capture source refuses end a replay the same way:
     - The source refuses a read that gets no bytes before the capture's end as its open measured it
@@ -2814,8 +2829,8 @@ Notes:
     cut short under the reader at a chunk's end and inside a cf32 sample), `IO_IQ_METADATA` (the open's and
     `--iq-info`'s format and stage check, the read past a cut, a `data_bytes: 0` capture read to its end),
     `ENGINE_REPLAY_READ_ERROR` and `ENGINE_REPLAY_TRUNCATED_CAPTURE` (exit status 1),
-    `DECODE_IQ_RF_CLIP_EOF_DETERMINISM` (a one-chunk clipped capture warns of CLIP fast, realtime and with short
-    reads).
+    `DECODE_IQ_RF_CLIP_EOF_DETERMINISM` (a capture clipped in its last chunk only warns of CLIP fast, realtime and with
+    short reads, from the level poll made after the read that took its last samples).
   - I/Q replay decoder pacing (issue #572; "Replay decoder pacing" in `rtl_sdr_fm.cpp`). Under `--iq-replay` the
     decoder paces the demod, so the demod's blocks and the decoder's reads and requests interleave the same way fast
     or realtime, however the host is loaded and however the decoder reads:

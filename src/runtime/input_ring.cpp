@@ -168,8 +168,10 @@ input_ring_wait_for_data(struct input_ring_state* r) {
             return -1;
         }
 #endif
+        /* Look again under the lock: a commit between the look above and the lock signalled before anyone waited
+           (input_ring_commit() signals only the empty-to-non-empty step), and the wait would sleep out its timeout. */
         dsd_mutex_lock(&r->ready_m);
-        int ret = dsd_cond_timedwait(&r->ready, &r->ready_m, 10); /* 10ms */
+        int ret = input_ring_is_empty(r) ? dsd_cond_timedwait(&r->ready, &r->ready_m, 10) /* 10ms */ : 0;
         dsd_mutex_unlock(&r->ready_m);
         if (ret != 0) {
             if (dsd_exitflag_load()) {

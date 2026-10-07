@@ -214,6 +214,12 @@ fill_capture_cfg(dsd_iq_capture_config* cfg, const char* data_path, const char* 
     DSD_SNPRINTF(cfg->source_args, sizeof(cfg->source_args), "%s", "dev=0");
 }
 
+/* One replay reader chunk at fill_capture_cfg()'s 1.536 Msps, the replay's demod block (dsd_iq_replay_chunk_bytes(),
+ * issue #626): a capture this size reaches the demod as one block. A cu8 chunk is one live transfer, 16384 bytes; a
+ * cf32 one the same 8192 samples, 65536 bytes. main() checks both against the rule. */
+static const size_t kReplayChunkBytes = 16384U;
+static const size_t kCf32ChunkBytes = 65536U;
+
 static void
 prepare_replay_opts(dsd_opts* opts, const char* metadata_path) {
     DSD_MEMSET(opts, 0, sizeof(*opts));
@@ -1007,7 +1013,7 @@ test_replay_eof_partial_block_drains_before_exit(void) {
 
     char metadata_path[DSD_TEST_PATH_MAX];
     rc |= make_replay_fixture(metadata_path, sizeof(metadata_path), DSD_IQ_FORMAT_CU8, "post_mute_pre_widen", 1,
-                              65536U + 2048U);
+                              kReplayChunkBytes + 2048U);
     if (rc != 0) {
         return 1;
     }
@@ -1124,7 +1130,8 @@ static int
 test_replay_last_read_leaves_stream_open(void) {
     int rc = 0;
     char metadata_path[DSD_TEST_PATH_MAX];
-    if (make_replay_fixture(metadata_path, sizeof(metadata_path), DSD_IQ_FORMAT_CU8, "post_mute_pre_widen", 1, 65536U)
+    if (make_replay_fixture(metadata_path, sizeof(metadata_path), DSD_IQ_FORMAT_CU8, "post_mute_pre_widen", 1,
+                            kReplayChunkBytes)
         != 0) {
         return 1;
     }
@@ -1527,9 +1534,6 @@ test_cf32_unknown_capture_stage_rejected(void) {
 
 /* The stream's own output clear (rtl_sdr_fm.cpp), which a CQPSK toggle or a reacquire runs from the decoder thread. */
 extern "C" void dsd_rtl_stream_clear_output(void);
-
-/* One replay reader chunk (rtl_device.cpp replay_thread_fn()): a capture this size reaches the demod as one block. */
-static const size_t kReplayChunkBytes = 65536U;
 
 namespace {
 /* The decoder's side of a replay, run on its own thread so a test can bound how long the end of the stream takes to
@@ -1998,7 +2002,7 @@ test_replay_eof_wait_does_not_spin(void) {
 
 /* One replay reader chunk in floats: cu8 widens each byte to a float, cf32 carries a float in every 4 bytes. */
 static const size_t kCu8ChunkFloats = kReplayChunkBytes;
-static const size_t kCf32ChunkFloats = kReplayChunkBytes / sizeof(float);
+static const size_t kCf32ChunkFloats = kCf32ChunkBytes / sizeof(float);
 /* fill_capture_cfg()'s sample rate. */
 static const uint64_t kFixtureSampleRateHz = 1536000U;
 
@@ -2126,9 +2130,9 @@ chunk_framing_stage(int stage, size_t count, void* ctx) {
     }
 }
 
-/* Issue #572: every demod block is exactly one capture chunk, a whole 64 KiB read or the shorter read an event cut,
- * and carries the chunk's sequence, submit generation and media span (time a MUTE omitted included), in fast and
- * realtime replay alike. A demod that takes whatever the input ring holds makes its blocks, and so its output, depend on
+/* Issue #572: every demod block is exactly one capture chunk, a whole chunk read (one live transfer, issue #626) or the
+ * shorter read an event cut, and carries the chunk's sequence, submit generation and media span (time a MUTE omitted
+ * included), in fast and realtime replay alike. A demod that takes whatever the input ring holds makes its blocks, and so its output, depend on
  * how far ahead the reader got. */
 static int
 test_replay_blocks_follow_capture_chunks(int realtime) {
@@ -2438,9 +2442,11 @@ run_early_release_window(const char* label, const char* metadata_path, int stage
  * acknowledge the wrapped chunk's own generation, not the newest the reader numbered. */
 static int
 test_replay_wrapped_block_acknowledges_its_own_chunk(void) {
-    /* The events after the first 4096 bytes put every later chunk 4096 floats off the 64 KiB grid, so chunk 33 straddles
-       the end of the 2,097,152-float input ring (stream_open_init_pipeline()), and chunk 34 follows it. */
-    const uint64_t chunks = 34U;
+    /* The events after the first 4096 bytes put every later chunk 4096 floats off the chunk grid, so the chunk after
+       the first whose end passes the 2,097,152-float input ring's end (stream_open_init_pipeline()) straddles it: chunk
+       2 + (2097152 - 4096) / kCu8ChunkFloats, 129 at one live transfer a chunk. The chunk after it follows. */
+    const uint64_t straddle = 2U + (2097152U - 4096U) / kCu8ChunkFloats;
+    const uint64_t chunks = straddle + 1U;
     int rc = 0;
     char metadata_path[DSD_TEST_PATH_MAX];
     rc |= make_eventful_replay_fixture(metadata_path, sizeof(metadata_path), 4096U + (chunks - 1U) * kReplayChunkBytes);
@@ -2448,7 +2454,7 @@ test_replay_wrapped_block_acknowledges_its_own_chunk(void) {
         return 1;
     }
     return run_early_release_window("wrapped block", metadata_path, RTL_STREAM_TEST_REPLAY_DEMOD_WRAPPED_RELEASED,
-                                    chunks, 33U);
+                                    chunks, straddle);
 }
 
 /* Issue #572: a block the demod discards (a controller gate closing on it) has its input released before the demod
@@ -3356,7 +3362,7 @@ test_replay_of_a_data_file_cut_short(void) {
         cut.data_path = metadata_path;
         cut.data_path.resize(cut.data_path.size() - std::strlen(".json"));
         cut.at_chunk = 2U;
-        cut.keep_bytes = 2U * kReplayChunkBytes + (cf32 ? 4092U : 0U);
+        cut.keep_bytes = cf32 ? 2U * kCf32ChunkBytes + 4092U : 2U * kReplayChunkBytes;
         std::vector<ExpectedChunk> chunks;
         if (cf32) {
             chunks.push_back(ExpectedChunk{kCf32ChunkFloats, 0U});
@@ -3505,6 +3511,15 @@ test_replay_keeps_tuner_autogain_off(void) {
 
 int
 main(void) {
+    if (dsd_iq_replay_chunk_bytes(DSD_IQ_FORMAT_CU8, 1536000U) != kReplayChunkBytes
+        || dsd_iq_replay_chunk_bytes(DSD_IQ_FORMAT_CF32, 1536000U) != kCf32ChunkBytes) {
+        DSD_FPRINTF(stderr,
+                    "FAIL: the replay reader's chunks at 1.536 Msps are %zu (cu8) and %zu (cf32) bytes, not the "
+                    "%zu and %zu these tests count\n",
+                    dsd_iq_replay_chunk_bytes(DSD_IQ_FORMAT_CU8, 1536000U),
+                    dsd_iq_replay_chunk_bytes(DSD_IQ_FORMAT_CF32, 1536000U), kReplayChunkBytes, kCf32ChunkBytes);
+        return 1;
+    }
     int rc = 0;
     rc |= test_replay_eof_drain_delivers_final_block();
     rc |= test_replay_read_survives_clear_at_eof();

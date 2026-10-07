@@ -17,6 +17,7 @@
 #include <cstring>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/io/iq_capture.h>
+#include <dsd-neo/io/iq_replay.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
@@ -68,11 +69,12 @@ expect_u64_eq(const char* label, uint64_t got, uint64_t want) {
 
 /* ---------------- Captures ---------------- */
 
-/* One replay reader chunk (rtl_device.cpp): a capture reaches the demod as blocks of this many bytes, the last one
- * shorter. */
-static const size_t kChunkBytes = 65536U;
 /* The capture: 1.536 Msps cu8 with the fs/4 offset, decimated by 32 to the 48 kHz demod rate. */
 static const uint32_t kCaptureRateHz = 1536000U;
+/* One replay reader chunk (rtl_device.cpp, dsd_iq_replay_chunk_bytes()): a capture reaches the demod as blocks of this
+ * many bytes, the last one shorter. At 1.536 Msps cu8 that is one live transfer, 16384 bytes (issue #626); main()
+ * checks it against the rule. */
+static const size_t kChunkBytes = 16384U;
 static const uint32_t kDecimation = 32U;
 
 static std::vector<std::string> g_fixture_dirs;
@@ -227,8 +229,8 @@ struct LayoutChunk {
 };
 } // namespace
 
-/* The chunks a replay of @p capture_bytes with @p events delivers, from the capture layout alone: the reader reads 64
- * KiB at a time, cut short at the next event and at the end, a MUTE moves the media timeline on by what it omitted,
+/* The chunks a replay of @p capture_bytes with @p events delivers, from the capture layout alone: the reader reads a
+ * chunk (kChunkBytes) at a time, cut short at the next event and at the end, a MUTE moves the media timeline on by what it omitted,
  * and a RESET starts the chunk after it on a new filter epoch. */
 static std::vector<LayoutChunk>
 capture_layout(size_t capture_bytes, const std::vector<CaptureEvent>& events) {
@@ -839,7 +841,7 @@ expect_legs_agree(const char* capture, const char* metadata_path, const std::vec
  * read. */
 static int
 test_replay_output_does_not_depend_on_the_reader(void) {
-    /* About 0.5 s: 23 whole chunks and a short last one. */
+    /* 0.5 s: 93 whole chunks (16384 bytes each) and a 12288-byte last one. */
     const size_t complex_samples = 768000U;
     const std::vector<uint8_t> payload = tone_and_noise_payload(complex_samples);
     char metadata_path[DSD_TEST_PATH_MAX];
@@ -1402,8 +1404,9 @@ test_replay_reader_start_failure_at_the_first_demand_wait(void) {
 
 /* ---------------- Event boundaries ---------------- */
 
-/* A short chunk: shorter than the reader's 64 KiB, so a capture of a few runs fast. */
-static const size_t kShortChunkBytes = 40000U;
+/* A short chunk: shorter than the reader's chunk, so each is one block, and a capture of a few runs fast. 6400 samples,
+ * 200 at the demod rate. */
+static const size_t kShortChunkBytes = 12800U;
 
 /* A capture of @p chunks short chunks with a RETUNE and a RESET between each two, as a live retune records them,
  * hopping from the first channel centre to the second and back; @p out_layout gets its chunks. */
@@ -1920,6 +1923,11 @@ test_replay_event_boundary_waits_stop_in_bounded_time(void) {
 
 int
 main(void) {
+    if (dsd_iq_replay_chunk_bytes(DSD_IQ_FORMAT_CU8, kCaptureRateHz) != kChunkBytes) {
+        DSD_FPRINTF(stderr, "FAIL: the replay reader's chunk is %zu bytes, not the %zu these tests count\n",
+                    dsd_iq_replay_chunk_bytes(DSD_IQ_FORMAT_CU8, kCaptureRateHz), kChunkBytes);
+        return 1;
+    }
     int rc = 0;
     rc |= test_replay_output_does_not_depend_on_the_reader();
     rc |= test_replay_events_do_not_depend_on_the_reader();

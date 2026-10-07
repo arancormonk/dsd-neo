@@ -1435,13 +1435,14 @@ test_replay_read_partial_eof_and_rewind(void) {
     return rc;
 }
 
-enum { kReplayReadChunk = 65536 }; /* one replay reader read */
+enum { kReplayReadChunk = 65536 }; /* this test's reads */
 
 /* Issue #572: the replay source knows from its open how many bytes the capture holds. A data file cut short after the
  * open (truncated while it replays) runs out before them, and the read that finds nothing more is an I/O error, not
  * the capture's end: the bytes still there are read first, then reads fail. A sidecar whose data_bytes is 0 (an
- * interrupted capture, replayed as the file was at its open) reads to that end with no error. The reads are whole
- * replay chunks, as the replay reader's are, so no stdio buffer holds bytes the cut removed. */
+ * interrupted capture, replayed as the file was at its open) reads to that end with no error. The reads are 64 KiB,
+ * larger than a stdio buffer, so none holds bytes the cut removed; the replay reader's own chunks are one live
+ * transfer (dsd_iq_replay_chunk_bytes()), which at a low capture rate a stdio buffer can hold ahead of a cut. */
 static int
 test_replay_read_of_a_data_file_cut_short(void) {
     static const char* const files[] = {"cut.iq", "cut.iq.json", "whole.iq", "whole.iq.json", NULL};
@@ -1817,7 +1818,6 @@ test_committed_fixture_capture_times_parse(void) {
         "nxdn48",
         "nxdn48_after_retune",
         "nxdn48_attenuated",
-        "nxdn48_gap",
         "nxdn96",
         "p25p1_c4fm_cc",
         "p25p1_c4fm_vc",
@@ -1828,6 +1828,7 @@ test_committed_fixture_capture_times_parse(void) {
         "provoice",
         "rf_clip",
         "ysf",
+        "ysf_gap",
     };
     int rc = 0;
     for (size_t i = 0; i < sizeof(kFixtures) / sizeof(kFixtures[0]); i++) {
@@ -1856,6 +1857,42 @@ test_committed_fixture_capture_times_parse(void) {
     return rc;
 }
 
+/* Issue #626: the replay reader's chunk, the replay's demod block, is at most one live RTL transfer (8192 complex
+ * samples) and no longer than one lasts at 1.536 Msps (16/3 ms), in the format's bytes; a capture with no rate or a
+ * format with no sample size has none. Literal values, so the rule is not checked against itself. */
+static int
+test_replay_chunk_is_one_live_transfer(void) {
+    static const struct {
+        dsd_iq_sample_format format;
+        uint32_t rate_hz;
+        uint64_t bytes;
+    } k_cases[] = {
+        {DSD_IQ_FORMAT_CU8, 48000U, 512U},      /* every committed fixture: 256 samples, 5.33 ms */
+        {DSD_IQ_FORMAT_CU8, 44100U, 470U},      /* 235.2 samples, rounded down */
+        {DSD_IQ_FORMAT_CU8, 960000U, 10240U},   /* 5120 samples, 5.33 ms; a live transfer there lasts 8.53 ms */
+        {DSD_IQ_FORMAT_CU8, 1024000U, 10922U},  /* 5461.3 samples, rounded down */
+        {DSD_IQ_FORMAT_CU8, 1536000U, 16384U},  /* exactly a live transfer */
+        {DSD_IQ_FORMAT_CU8, 2400000U, 16384U},  /* a live transfer: 8192 samples, 3.41 ms */
+        {DSD_IQ_FORMAT_CU8, 1U, 2U},            /* at least one sample */
+        {DSD_IQ_FORMAT_CF32, 48000U, 2048U},    /* 256 samples of 8 bytes */
+        {DSD_IQ_FORMAT_CF32, 1536000U, 65536U}, /* 8192 samples */
+        {DSD_IQ_FORMAT_CF32, 6000000U, 65536U}, /* 8192 samples, 1.37 ms */
+        {DSD_IQ_FORMAT_CU8, 0U, 0U},            /* no rate */
+        {DSD_IQ_FORMAT_CF32, 0U, 0U},           /* no rate */
+        {DSD_IQ_FORMAT_UNKNOWN, 48000U, 0U},    /* no sample size */
+    };
+
+    int rc = 0;
+    for (size_t i = 0; i < sizeof(k_cases) / sizeof(k_cases[0]); i++) {
+        char label[96];
+        DSD_SNPRINTF(label, sizeof(label), "replay chunk bytes (format %d, %u Hz)", (int)k_cases[i].format,
+                     (unsigned)k_cases[i].rate_hz);
+        rc |= expect_u64(label, (uint64_t)dsd_iq_replay_chunk_bytes(k_cases[i].format, k_cases[i].rate_hz),
+                         k_cases[i].bytes);
+    }
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -1875,6 +1912,7 @@ main(void) {
     rc |= test_replay_read_partial_eof_and_rewind();
     rc |= test_replay_read_of_a_data_file_cut_short();
     rc |= test_replay_open_refuses_formats_it_cannot_convert();
+    rc |= test_replay_chunk_is_one_live_transfer();
     rc |= remove_temp_dirs();
     return rc ? 1 : 0;
 }

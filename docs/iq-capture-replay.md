@@ -106,13 +106,22 @@ clock advance together. The default `fast` mode puts no clock on the reader, so 
 only as long as decoding it does.
 
 In both modes the decoder paces the demodulator, a capture chunk at a time: the demodulator starts on the next chunk
-(64 KiB of the capture, or up to the next event) only once the decoder has read everything it made of the last one,
-and every event and `--iq-loop` rewind waits for the same point. Both modes therefore hand the decoder the same
-stream, with each event applied at the same position in it, and whatever the decoder asks of the front end mid-replay
-(a symbol profile the sync hunt tries, a CQPSK switch, a reacquire) lands at the start of the next chunk, however fast
-the machine is or however loaded. Fast replay is somewhat slower than it was before issue #572 for the same reason: the
-front end waits for the decoder instead of running ahead of it, so the two no longer overlap. A 94 s capture that
-replayed in 8.4 s now takes 10.8 s.
+only once the decoder has read everything it made of the last one, and every event and `--iq-loop` rewind waits for the
+same point. Both modes therefore hand the decoder the same stream, with each event applied at the same position in it,
+and whatever the decoder asks of the front end mid-replay (a symbol profile the sync hunt tries, a CQPSK switch, a
+reacquire) lands at the start of the next chunk, however fast the machine is or however loaded. Fast replay is somewhat
+slower than it was before issue #572 for the same reason: the front end waits for the decoder instead of running ahead
+of it, so the two no longer overlap. A 94 s capture that replayed in 8.4 s took 10.8 s after it.
+
+A chunk is one block of a live receiver's (issue #626): at most 8192 complex samples, a live RTL-SDR transfer, and no
+more than such a transfer lasts at the default 1.536 Msps, 5.33 ms of capture (256 samples of a 48 kHz capture), or up
+to the next event. Every decision the demodulator makes once per block (the level squelch and its envelope, the
+channel power the decoder and the scanner read, adaptive loop gains, metrics) and every request the decoder makes
+therefore runs at a live receiver's cadence; with the 64 KiB chunks of earlier builds a 48 kHz capture's block was
+683 ms, and a level squelch opened and closed on that grid. The input-level snapshot covers one chunk, a live
+transfer's time, as a live stream's covers each transfer. A replay now does the per-block work a receiver does on air:
+in a Release build it takes 13 to 27 % more CPU than with 64 KiB chunks, and that 94 s capture's fast replay 2.0 s
+against 1.6 s.
 
 The decoder's clock follows the capture as well. Under `--iq-replay`, decode time is the sidecar's
 `capture_started_utc` plus the capture time of the sample being decoded, the time `MUTE` events omitted included:
