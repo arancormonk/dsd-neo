@@ -2469,6 +2469,8 @@ m17_str_report_encoded_stream(const m17_str_ctx* ctx, const m17_str_frame_ctx* f
     }
 }
 
+static void m17_str_reset_tx_idle_state(m17_str_ctx* ctx);
+
 /* The end of the open stream: @p frame (the EOS-flagged one; NULL when it went out already), the EOT marker, the dead
    air unless the VOX asked for the end (issue #625), and IP's EOTX. Once per stream: eot_out holds until the next
    LSF. */
@@ -2524,9 +2526,15 @@ m17_str_handle_tx_active(m17_str_ctx* ctx, const m17_str_frame_ctx* frame) {
         ctx->lich_cnt = 0;
     }
     ctx->fsn = m17_stream_next_frame_counter(ctx->fsn);
-    /* A shutdown seen while keyed: that frame carried the EOS bit, and the EOT marker follows it (issue #625). */
+    /* A stream that ends while keyed (a shutdown, or a manual unkey while VOX still hears a carrier): that frame
+       carried the EOS bit, the EOT marker follows it, and the stream starts over as the idle path's end does, so a
+       later key-up opens a new one with its LSF (issue #625). */
     if (ctx->eot && !ctx->eot_out) {
         m17_str_end_stream(ctx, NULL);
+        m17_str_reset_tx_idle_state(ctx);
+        ctx->new_lsf = 1;
+        DSD_MEMSET(ctx->state->m17_meta, 0, sizeof(ctx->state->m17_meta));
+        DSD_MEMSET(ctx->state->m17_lsf, 0, sizeof(ctx->state->m17_lsf));
     }
 }
 
@@ -2731,6 +2739,9 @@ m17_str_end_open(m17_str_ctx* ctx) {
 static void
 m17_str_finalize(m17_str_ctx* ctx) {
     m17_str_end_open(ctx);
+    /* Whatever ended the last stream (a VOX or manual unkey just before the input stopped, or the end just sent), its
+       frames play out before the engine closes a local output, which it does without a drain (issue #625). */
+    dsd_drain_audio_output(ctx->opts);
     m17_end_monitored_tx_call(ctx->opts, ctx->state, &ctx->monitored_call_epoch);
     if (ctx->use_ip == 1) {
         (void)dsd_m17_udp_hook_blaster(ctx->opts, ctx->state, 10, ctx->disc);

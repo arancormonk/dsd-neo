@@ -3006,43 +3006,52 @@ vox_rf_parse(FILE* f) {
     }
 }
 
-/* The RF a transmission sent, past the start's dead air: a preamble and an LSF, stream frames with the EOS bit on the
-   last one only, the EOT marker right after it, then dead air and nothing else. Returns 0 with the stream frames and
-   the dead air after the marker counted, or -1 for anything else. */
+/* The transmissions the RF holds, past the start's dead air: each a preamble and an LSF, stream frames with the EOS bit
+   on the last one only, the EOT marker right after it, then dead air. Fills @p streams and @p dead_after (the stream
+   frames and the dead air after the marker of each, up to @p max) and returns how many, or -1 for anything else. */
 static int
-vox_rf_ending(int* streams, int* dead_after) {
+vox_rf_transmissions(int* streams, int* dead_after, int max) {
     int i = 0;
     while (i < g_vox_rf_count && g_vox_rf_kind[i] == 'D') {
         i++;
     }
-    if (i + 2 > g_vox_rf_count || g_vox_rf_kind[i] != 'P' || g_vox_rf_kind[i + 1] != 'L') {
-        return -1;
-    }
-    i += 2;
-    int n = 0;
-    while (i < g_vox_rf_count && g_vox_rf_kind[i] == 'S') {
-        const int last = i + 1 >= g_vox_rf_count || g_vox_rf_kind[i + 1] != 'S';
-        if (g_vox_rf_eos[i] != (last ? 1U : 0U)) {
+    int count = 0;
+    while (i < g_vox_rf_count) {
+        if (i + 2 > g_vox_rf_count || g_vox_rf_kind[i] != 'P' || g_vox_rf_kind[i + 1] != 'L') {
             return -1;
         }
-        n++;
+        i += 2;
+        int n = 0;
+        while (i < g_vox_rf_count && g_vox_rf_kind[i] == 'S') {
+            const int last = i + 1 >= g_vox_rf_count || g_vox_rf_kind[i + 1] != 'S';
+            if (g_vox_rf_eos[i] != (last ? 1U : 0U)) {
+                return -1;
+            }
+            n++;
+            i++;
+        }
+        if (n == 0 || i >= g_vox_rf_count || g_vox_rf_kind[i] != 'E') {
+            return -1;
+        }
         i++;
+        int dead = 0;
+        while (i < g_vox_rf_count && g_vox_rf_kind[i] == 'D') {
+            dead++;
+            i++;
+        }
+        if (count < max) {
+            streams[count] = n;
+            dead_after[count] = dead;
+        }
+        count++;
     }
-    if (n == 0 || i >= g_vox_rf_count || g_vox_rf_kind[i] != 'E') {
-        return -1;
-    }
-    i++;
-    int dead = 0;
-    while (i < g_vox_rf_count && g_vox_rf_kind[i] == 'D') {
-        dead++;
-        i++;
-    }
-    if (i != g_vox_rf_count) {
-        return -1;
-    }
-    *streams = n;
-    *dead_after = dead;
-    return 0;
+    return count;
+}
+
+/* One transmission and its counts (vox_rf_transmissions()): 0, or -1 for anything else. */
+static int
+vox_rf_ending(int* streams, int* dead_after) {
+    return vox_rf_transmissions(streams, dead_after, 1) == 1 ? 0 : -1;
 }
 
 static int
@@ -3246,6 +3255,23 @@ test_encoder_vox_unkeys_on_the_gate(void) {
     int dead = -1;
     err |= expect_int("vox level: RF ends with an EOS frame and the EOT marker", vox_rf_ending(&streams, &dead), 0);
     err |= expect_int("vox level: no dead air after the marker", dead, 0);
+    /* A manual unkey while VOX still hears a carrier ends that stream (EOS frame, EOT marker, dead air) and VOX opens a
+       new one with its own LSF at once; the input ending then ends that one too. */
+    vox_defaults(64, 12);
+    g_vox_manual_unkey_at = 5L * VOX_ITER_SAMPLES;
+    vox_run(&opts, &state, DSD_SQUELCH_MODE_AUTO, 1);
+    {
+        int tx_streams[4] = {0};
+        int tx_dead[4] = {0};
+        const int count = vox_rf_transmissions(tx_streams, tx_dead, 4);
+        err |= expect_int("manual unkey under VOX: two well-formed transmissions", count, 2);
+        err |= expect_int("manual unkey under VOX: the first ends at the unkey", tx_streams[0], 6);
+        err |= expect_int("manual unkey under VOX: dead air after the first", tx_dead[0], 25);
+        err |= expect_int("manual unkey under VOX: the second ends at the input's end", tx_streams[1], 7);
+        err |= expect_int("manual unkey under VOX: dead air after the second", tx_dead[1], 25);
+        err |= expect_int("manual unkey under VOX: two IP EOS frames", g_vox_ip_eos, 2);
+        err |= expect_int("manual unkey under VOX: two IP EOTX", g_vox_ip_eotx, 2);
+    }
     return err;
 }
 
@@ -3296,7 +3322,7 @@ test_encoder_ends_an_open_stream_on_shutdown(void) {
     vox_run(&opts, &state, DSD_SQUELCH_MODE_LEVEL, 0);
     g_vox_local_audio = 0;
     {
-        static const char want_tail[] = "WWDZZZZZZZZZZZZZZZZZZZZZZZZZD";
+        static const char want_tail[] = "WWDZZZZZZZZZZZZZZZZZZZZZZZZZDD";
         const size_t len = strlen(g_audio_events);
         const int ok = len >= sizeof want_tail - 1U
                        && strcmp(g_audio_events + (len - (sizeof want_tail - 1U)), want_tail) == 0
@@ -3306,12 +3332,22 @@ test_encoder_ends_an_open_stream_on_shutdown(void) {
         }
         err |= expect_int("manual then eof: the end drains around the dead air on a local output", ok, 1);
     }
-    /* A VOX unkey sends no dead air and drains nothing. */
+    /* A VOX unkey sends no dead air and drains nothing then; the input stopping right after it drains what was queued
+       before the output closes. */
     g_vox_local_audio = 1;
-    vox_defaults(3, 24);
+    vox_defaults(3, 19);
     vox_run(&opts, &state, DSD_SQUELCH_MODE_AUTO, 1);
     g_vox_local_audio = 0;
-    err |= expect_int("vox unkey: nothing drained on a local output", strchr(g_audio_events, 'D') == NULL, 1);
+    {
+        const size_t len = strlen(g_audio_events);
+        const char* first_drain = strchr(g_audio_events, 'D');
+        const int ok =
+            len >= 3U && strcmp(g_audio_events + (len - 3U), "WWD") == 0 && first_drain == g_audio_events + (len - 1U);
+        if (!ok) {
+            DSD_FPRINTF(stderr, "vox unkey then eof local output events: %s\n", g_audio_events);
+        }
+        err |= expect_int("vox unkey then eof: one drain, after the EOS frame and the marker", ok, 1);
+    }
 #endif
     /* Nothing open: an encoder that never keyed sends no end. */
     vox_defaults(0, 6);

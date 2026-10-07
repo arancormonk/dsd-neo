@@ -1843,8 +1843,8 @@ edacs_run_analog_call_disturbance_cases(void) {
 /* One call on the flags the real tracker makes at @p rate_hz on a carrier that lands while it is still learning (the
    landing mid-carrier a call always starts with) and drops @p phase_ms into one of its 40 ms windows. At 48 kHz the
    call ends no later than under the level squelch; at an unresampled 125 kHz, where four triplets are shorter than the
-   closing delay, within the delay and the hold's floor of the drop. Never before the drop: the call's own first window,
-   closed while the tracker decides, is not its end. */
+   closing delay, within the delay, the hold's floor and the triplet the run is read at of the drop. Never before the
+   drop: the call's own first window, closed while the tracker decides, is not its end. */
 static int
 edacs_run_analog_call_real_tracker_case(int rate, int phase_ms) {
     const long t = EDACS_ANALOG_TRIPLET_SAMPLES;

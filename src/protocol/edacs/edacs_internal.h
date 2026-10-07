@@ -63,7 +63,8 @@ enum { EDACS_ANALOG_GATE_MIN_HOLD_MS = 80 };
    closed reading, taken at each triplet's end, so it releases a carrier that drops inside a triplet four whole triplets
    after that one ends: this run reaches that end for any drop and any closing delay up to the bound. Above about
    70 kHz (an unresampled high-rate replay; EDACS's RTL output runs 24 or 48 kHz) four triplets are too short for the
-   delay and the floor sets the run, so a release there can come up to the delay plus the floor after the drop. */
+   delay and the floor sets the run, so a release there can come up to the delay, the floor and the triplet the run is
+   read at (EDACS decides once per triplet) after the drop. */
 size_t edacs_gate_hold_samples(int rate_hz);
 
 /* The level path's count (5 down to 1, 0 when released) a closed run of @p run samples matches against @p hold. */

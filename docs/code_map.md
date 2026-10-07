@@ -2022,8 +2022,9 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   (`dsd_squelch_stream_gate_running()`, asked once a block's first sample is in) a closed sample fades to silence before
   the low-pass, and the read records whether any sample was heard (`m17_encoder_input::squelch_heard`). A stream's end
   (`m17_str_end_stream()`, and the packet encoder's) drains a local output after the EOT marker, before its dead air,
-  and again at shutdown: an asynchronous output drops its oldest samples when full, and the engine closes it without a
-  drain.
+  and `m17_str_finalize()` drains again at shutdown, whatever ended the last stream: an asynchronous output drops its
+  oldest samples when full, and the engine closes it without a drain. A stream that ends while keyed (a shutdown, or a
+  manual unkey while VOX hears a carrier) resets as the idle path's end does, so the next key-up sends a new LSF.
   The analog_voice and analog_audio sources keep IEEE semantics under fast-math, which would fold away their
   non-finite-sample guards. The published `dsd_state::aout_gainA` is the gain applied, in dB over the `-n 50` gain,
   which the terminal shows as `G: Auto (+x dB)`. Tests: `DSP_ANALOG_VOICE`, `DSP_ANALOG_AUDIO`, `DSP_SYMBOL_REPLAY`
