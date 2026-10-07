@@ -312,7 +312,8 @@ build still decodes.
 
 #### Replay determinism (issue #572)
 
-Under `--iq-replay` the decoder paces the front end a capture chunk at a time, every event and loop rewind lands on an
+Under `--iq-replay` the decoder paces the front end a capture chunk at a time (a chunk is at most one live transfer,
+`dsd_iq_replay_chunk_bytes()`: 5.33 ms of a 48 kHz capture), every event and loop rewind lands on an
 idle pipeline, the front end's filters carry their state across blocks, and the decode clock runs on the capture's time
 (`docs/iq-capture-replay.md` says what that means for a user, and the IO, DSP and Runtime sections of `docs/code_map.md`
 how it works). For one build, configuration and machine, a replay without `-T` or `-Y` therefore prints the same decoder
@@ -360,7 +361,7 @@ transition (a retune group, a capture gap, a squelch edge) as AFTER_MS and an EV
 `DECODE_IQ_NEG_DETERMINISM_JITTER_AFTER` holds the runner to the check: an AFTER_MS past the end of the capture must
 fail the leg. The wall time is the host's
 `REPLAY WALL` `wall_ms`, never a clock the runner reads: CMake's own timestamps read whole seconds before 3.23 (and
-follow `SOURCE_DATE_EPOCH`), which would time the 85 ms `rf_clip` capture's realtime leg at 0 ms. A leg without exactly
+follow `SOURCE_DATE_EPOCH`), which would time the 16 ms `rf_clip` capture's realtime leg at 0 ms. A leg without exactly
 one `REPLAY WALL` line carrying `wall_ms` fails, whatever its rate. `IQ_DETERMINISM_CHECK_WALL`
 (`tests/cmake/IqDeterminismCheckWall.cmake`) holds the runner to that against a stand-in host: a missing line or one
 without `wall_ms` fails, and so does 899 ms for 1000 ms of air time, while 900 ms passes. Every leg's stdout and stderr
@@ -387,14 +388,16 @@ differing line with context. A new difference is a defect to fix, not a pattern 
 
 Every leg's `REPLAY STREAM` line must also count at least MIN_FSK discriminator samples and MIN_CQPSK CQPSK symbols.
 The verbatim comparison already catches one leg reading less than the others; the floors catch every leg doing so,
-and keep the case on the path it was written for. On `nxdn48_after_retune` under `-fa` every leg measures 582,330 and
-8,189: the hunt spends about 1.37 s on the CQPSK path (6000 symbols a second, 8 samples each), so the legs cross output
-kinds and generations, and the two counts cover all but 158 of the capture's 648,000 samples
-(FSK = 648,000 - 158 - 8 x CQPSK). MIN_CQPSK is 5,000, just under one CQPSK dwell, a fixed 3 passes of 1,800 symbols
-(`DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS`), 5,400; the other 2.8k or so of the 8,189 come from the hunt's visit and
-credit accounting, which may legitimately change. MIN_FSK is 535,000, the measured count less one more full dwell
-(5,400 x 8 = 43,200 samples, leaving 539,130) and a little more. MIN_TOTAL floors the two together, FSK + 8 x CQPSK,
-which no split of the hunt's time between the paths moves: 647,842 measured, so 647,000. The comment beside the
+and keep the case on the path it was written for. On `nxdn48_after_retune` under `-fa` every leg measures 605,114 and
+5,342: the hunt spends about 0.89 s on the CQPSK path (6000 symbols a second, 8 samples each), so the legs cross output
+kinds and generations, and the two counts cover all but 150 of the capture's 648,000 samples
+(FSK = 648,000 - 150 - 8 x CQPSK). MIN_CQPSK is 5,000, just under one CQPSK dwell, a fixed 3 passes of 1,800 symbols
+(`DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS`), 5,400: the hunt's request to leave the path lands at the next replay block, so
+the count is about one dwell. With 64 KiB blocks (683 ms of this capture) the request landed up to a block late and the
+count was 8,189; the hunt's visit and credit accounting may legitimately move it again. MIN_FSK is 535,000, the
+measured count less one more full dwell (5,400 x 8 = 43,200 samples, leaving 561,914) and room to spare. MIN_TOTAL
+floors the two together, FSK + 8 x CQPSK, which no split of the hunt's time between the paths moves: 647,850 measured,
+so 647,000. The comment beside the
 registration records the measurement; re-derive all three from it when the hunt or the fixture changes.
 
 The fixture, `nxdn48_after_retune` (1.3 MB, `DERIVED_RETUNE` in `tools/build_iq_fixtures.py`), is a call after a scan
@@ -431,41 +434,59 @@ change to the hunt's dwell or to the front end's latency can move those edges. W
 fails after one, run the sweep again (`build_retune_fixture()` builds a fixture at any lead-in) before moving the
 lead-in.
 
+That sweep ran with 64 KiB replay blocks, 683 ms of this capture, so a hunt step's request landed up to 683 ms late. Run
+again on the same grid once a replay block became one live transfer (5.33 ms, issue #626), with the same three fast
+`-fa` replays and one `-fi` replay at each of the 41 lead-ins, `-fa` decodes `Src=901` at every one from 1.5 to 9.5 s
+(2 to 6 lines, 22 to 107 audio errors), `-fi` decodes its six `Src=901` lines at every one, and each point's three
+replays are byte-identical. Past 3.0 s the hunt takes the same steps at every lead-in (20, 5, 8, 10 and 10 sps, then
+20 again), so neither edge of the plateau above exists at this block size. 7.5 s still decodes the call (6 `Src=901`
+lines, 74 audio errors), and the case is kept there.
+
 | Case | Legs |
 | --- | --- |
-| `DECODE_IQ_NXDN48_AFTER_RETUNE_AUTO_DETERMINISM` | `fast;fast;jitter:7:120;jitter:11:120;short:13` |
+| `DECODE_IQ_NXDN48_AFTER_RETUNE_AUTO_DETERMINISM` | `fast;fast;jitter:7:120:128:7700;jitter:11:120:128:7700;short:13` |
 | `DECODE_IQ_NXDN48_AFTER_RETUNE_AUTO_DETERMINISM_REALTIME` | `fast;realtime` |
-| `DECODE_IQ_NXDN48_AFTER_RETUNE_AUTO_DETERMINISM_REALTIME_JITTER` | `fast;realtime+jitter:17:120` |
+| `DECODE_IQ_NXDN48_AFTER_RETUNE_AUTO_DETERMINISM_REALTIME_JITTER` | `fast;realtime+jitter:17:120:128:7700` |
 | `DECODE_IQ_NXDN48_AFTER_RETUNE_AUTO_DETERMINISM_STALLED_SINK` | `sink:free;sink:stalled`, only where `--wrap` links |
-| `DECODE_IQ_P25P2_CC_DETERMINISM` (`p25p2_cc`, `-f2`) | `fast;short:19;jitter:23:120` |
-| `DECODE_IQ_NXDN48_GAP_ADVISORY_DETERMINISM` (`nxdn48_gap`, `-fi`) | `fast;realtime;jitter:29:120` |
-| `DECODE_IQ_RF_CLIP_EOF_DETERMINISM` (`rf_clip`, `-f1 -mq`) | `fast;realtime;short:37` |
+| `DECODE_IQ_P25P2_CC_DETERMINISM` (`p25p2_cc`, `-f2`) | `fast;short:19;jitter:23:120:16:1500` |
+| `DECODE_IQ_YSF_GAP_ADVISORY_DETERMINISM` (`ysf_gap`, `-fy`) | `fast;realtime;jitter:29:120:64:16000` |
+| `DECODE_IQ_RF_CLIP_EOF_DETERMINISM` (`rf_clip`, `-f1 -mq`) | `fast;realtime;short:16` |
+| `DECODE_IQ_ANALOG_SQL_{AUTO,NOISE,LEVEL}_*_DETERMINISM` | `sink:free;sink:free+jitter:7:120:1500:550;sink:free+jitter:11:120:1500:550;sink:free+realtime`, only where `--wrap` links |
+| `DECODE_IQ_NEG_DETERMINISM_JITTER_AFTER` (`nfm_burst_synth`, `-fA`) | `fast;jitter:7:120:64:99999`, which must fail on AFTER_MS |
+
+The jitter legs' AFTER_MS is each case's transition: the end of the retune group (7,680 ms of capture time), the end of
+the capture gap (16 s), most of `p25p2_cc`'s 2 s, and the end of the squelch bursts' carrier (550 ms). The analog legs
+read one sample at a time, so they sleep after about one read in 1,500; at one in 64 they spent the budget in the first
+30 ms.
 
 `DECODE_IQ_P25P2_CC_DETERMINISM` holds the CQPSK path decoding real frames to the same rule: under `-f2` the whole
 2 s capture runs the CQPSK chain (`fsk_samples=0 cqpsk_symbols=11992`, 95,936 of its 96,000 samples), and every leg
 must decode its `P25p2 SACCH` lines alike; MIN_CQPSK 11,900 and MIN_TOTAL 95,000 sit just under the measurement.
 
-`DECODE_IQ_NXDN48_GAP_ADVISORY_DETERMINISM` holds the input-level advisories to it. `nxdn48_gap` (`DERIVED_GAP` in
-`tools/build_iq_fixtures.py`) is a version 2 sidecar alone: its `data_file` names `nxdn48.iq` (replay resolves it beside
-the sidecar), and it adds one 12 s `MUTE` (a `driver_overflow` gap) 4 s in, so the capture spans 18 s. `nxdn48` sits
-near full scale, RF HOT throughout: every leg warns 3 s into the capture and again 17 s in, the cooldown having run out
-at 13 s, and decodes the call between the two (EXPECTED `RF Level HOT.*Src=901.*RF Level HOT`; it decodes `Src=901`
-before the first warning too). Each leg measured
-`fsk_samples=287933 cqpsk_symbols=0 media_ms=18000`; MIN_FSK and MIN_TOTAL 287,000 sit just under it. With the
+`DECODE_IQ_YSF_GAP_ADVISORY_DETERMINISM` holds the input-level advisories to it. `ysf_gap` (`DERIVED_GAP` in
+`tools/build_iq_fixtures.py`) is a version 2 sidecar alone: its `data_file` names `ysf.iq` (replay resolves it beside
+the sidecar), and it adds one 12 s `MUTE` (a `driver_overflow` gap) 4 s in, so the capture spans 18 s. `ysf` sits near
+full scale, RF HOT in every block a replay hands the demod (its peak reaches -1 dBFS in all 1,125 of its 512-byte
+blocks): every leg warns as the replay starts and again 16 s in, right after the gap, the cooldown having run out at
+10 s, and decodes the repeater's frames between the two (EXPECTED `RF Level HOT.*Repeater CC.*RF Level HOT`). Each leg
+measured `fsk_samples=287933 cqpsk_symbols=0 media_ms=18000`; MIN_FSK and MIN_TOTAL 287,000 sit just under it. With the
 cooldown on real time, before the fix, the fast and jitter legs finished before it ran out and printed only the first
-warning, and the realtime leg printed both, so the case failed at the second warning's line. Four `nxdn48` captures
-played back to back show the same split (one warning fast, two realtime) in 2.3 MB of data where the gap adds none.
+warning, and the realtime leg printed both, so the case failed at the second warning's line. The case first ran on
+`nxdn48`, which read HOT throughout only in 64 KiB blocks: in a live transfer's time it reaches -1 dBFS in 6 of its
+1,125 blocks, and the decoder's poll every 64 symbols reads the newest block alone, so it saw none (issue #626).
 
 `DECODE_IQ_RF_CLIP_EOF_DETERMINISM` holds the end of the stream to it. `rf_clip` (`DERIVED_CLIP` in
-`tools/build_iq_fixtures.py`) is 4,096 I/Q pairs on the cu8 rails (85 ms, 8 KiB), one replay chunk, so the decoder takes
-the front end's whole output in one read and polls the input level only while it decodes that read's samples; its next
-read ends the stream. Every leg must print `RF Level CLIP 100.0%`. The replay used to end the stream on the read that
-took the last samples whenever the reader had already reached the capture's end, which cleared the input level under
-those polls: the fast leg, whose reader is there by then, printed no warning, and the realtime leg, whose reader is
-still pacing, and the short-read leg, whose last read comes later, did. A stream now ends only on the read that finds the
-ring empty (`rtl_stream_read_replay()`). With two reads in a run, a jitter leg, which sleeps after about one read in 64,
-would never sleep. Each leg measured `fsk_samples=0 cqpsk_symbols=402 media_ms=85.333333`; MIN_CQPSK 400 and MIN_TOTAL
-3,200 sit just under it.
+`tools/build_iq_fixtures.py`, 1.5 KiB) is two replay chunks of a tone at a quarter of full scale (in range: no warning)
+and one chunk of I/Q pairs on the cu8 rails, 768 pairs (16 ms). The decoder polls the input level every 64 symbols, and
+its poll at symbol 64 of the 70 lands while it decodes the last chunk, after the read that took its last samples; the
+read after that ends the stream. Every leg must print `RF Level CLIP 100.0%`. The replay used to end the stream on the
+read that took the last samples whenever the reader had already reached the capture's end, which cleared the input level
+under that poll. A stream now ends only on the read that finds the ring empty (`rtl_stream_read_replay()`), and putting
+the old rule back makes every leg miss the warning. The short-read leg's seed (16) cuts the last chunk's 26 symbols into
+reads of 7 and 19, and the poll comes after the second. The fixture used to be one 4,096-pair chunk on the rails (8
+KiB), which a replay now hands over in 16 blocks: CLIP would print long before the end. With four reads a jitter leg
+would hardly sleep. Each leg measured `fsk_samples=0 cqpsk_symbols=70 media_ms=16`; MIN_CQPSK 68 and MIN_TOTAL 544 sit
+just under it.
 
 On `main` before issue #572 the cases fail. The host needs the replay batch tag, which `main` lacks, so its own
 `dsd-neo` ran the fast and realtime legs through the runner: `fast;fast` and `fast;realtime` both stop at the first
@@ -476,11 +497,11 @@ of the call and one `Src=901` line each, two distinct outputs in three runs, and
 fails `_REALTIME` on a timestamp alone (`03:15:34` against `03:15:36`), and making replay audio output synchronous
 fails `_STALLED_SINK`.
 
-The eight cases under the label take 69 s in `dev-debug` run one after another, the two `nxdn48_after_retune`
-realtime ones 15.6 s each, since a realtime leg takes the capture's 13.7 s of air time,
-`DECODE_IQ_NXDN48_GAP_ADVISORY_DETERMINISM` 20.5 s (its realtime leg takes 18 s), `DECODE_IQ_P25P2_CC_DETERMINISM`
-1.3 s and `DECODE_IQ_RF_CLIP_EOF_DETERMINISM` 1.2 s. Under `ctest -j 16` they run beside the suite's longest test, and the full
-suite's wall time does not move (about 55 s). Under `tsan-debug` and `asan-ubsan-debug` they take up to 37 s each.
+The fifteen cases under the label take 98 s in `dev-debug` run one after another (measured on a loaded machine): the two
+`nxdn48_after_retune` realtime ones about 16 s each, since a realtime leg takes the capture's 13.7 s of air time,
+`DECODE_IQ_YSF_GAP_ADVISORY_DETERMINISM` 20 s (its realtime leg takes 18 s), the five analog squelch ones 4 to 5 s each,
+`DECODE_IQ_P25P2_CC_DETERMINISM` 2.5 s and `DECODE_IQ_RF_CLIP_EOF_DETERMINISM` 1.3 s. Under `ctest -j 16` they run
+beside the suite's longest tests. Under `tsan-debug` they take up to 77 s each and under `asan-ubsan-debug` up to 35 s.
 
 Repeatable is not the same as representative. Which frames a replay yields depends on where the decoder stands when each
 transmission arrives, the `-fa` hunt's rotation above all but a pinned mode's symbol timing too, and a capture replayed
@@ -519,11 +540,12 @@ the branch is level or ahead on every count except audio errors, 25 against 24 (
 Pacing And The Decode Clock").
 
 A shift must not be a whole multiple of the front end's total decimation (the capture rate over its `demod_rate_hz`, 32
-at 1.536 Msps). Replay anchors the chunk grid and restarts every filter at each event, so a shift of m whole decimations
-hands every dwell the same output samples, m outputs later: it changes nothing inside a dwell, and copies shifted that
-way are not independent draws of the signal. The earlier sweeps of this kind shifted mostly by multiples of 32 samples
-at 1.536 Msps, so their copies were not independent draws either. A capture made at its demod rate, decimation 1, has no
-other kind of shift, so its realizations vary only where each dwell starts against the decoder's own timeline.
+at 1.536 Msps). Replay anchors the chunk grid (one live transfer a chunk) and restarts every filter at each event, so a
+shift of m whole decimations hands every dwell the same output samples, m outputs later: it changes nothing inside a
+dwell, and copies shifted that way are not independent draws of the signal. The earlier sweeps of this kind shifted
+mostly by multiples of 32 samples at 1.536 Msps, so their copies were not independent draws either. A capture made at
+its demod rate, decimation 1, has no other kind of shift, so its realizations vary only where each dwell starts against
+the decoder's own timeline.
 
 So judge a hunt, timing or front-end change across captures and across realizations of each, with a pinned mode beside
 `-fa`, never from one replay or from identical repeats of it. `tools/replay_ab.sh` replays each repeat as its own
@@ -1104,6 +1126,7 @@ AGC by default, or a fixed gain with `-n N`.
 | `--analog-min-captured-ms MS` | Audio the monitor delivered at all, i.e. with the gate open. A stalled or shortened replay fails it. |
 | `--analog-min-audible-ms MS`, `--analog-max-audible-ms MS` | Blocks whose RMS is at or above the audible level (`--analog-audible-dbfs`, default -50 dBFS). |
 | `--analog-min-first-audible-ms MS`, `--analog-max-first-audible-ms MS` | Stream time where the first audible block starts. Fails when nothing is audible. |
+| `--analog-min-last-audible-ms MS`, `--analog-max-last-audible-ms MS` | Stream time where the last audible block ends (`last_audible_ms`). Fails when nothing is audible. With first-audible and audible-ms bounds that pin exact blocks, it pins a gate's closing edge and that no block between the edges is missing. |
 | `--analog-min-inband-db DB` | 300-3000 Hz energy over 3400-6000 Hz energy, Hann-windowed per block. |
 | `--analog-min-rms-dbfs DB`, `--analog-max-rms-dbfs DB` | RMS level of all delivered audio (`rms_dbfs`). |
 | `--analog-max-peak-dbfs DB` | Largest delivered sample (`peak_dbfs`). |
@@ -1211,6 +1234,7 @@ a missed bound), the named `ANALOG AUDIO FAIL:` line, an `ANALOG METRIC:` line (
 | `DECODE_IQ_ANALOG_NEG_TONE_LOCK_NOT_MEASURED` | a 400 ms tone-lock bound on `nfm_notone_synth`, where no tone locks | tone lock ms "not measured" |
 | `DECODE_IQ_ANALOG_NEG_AM_TONE_THROUGH_FM` | `DECODE_IQ_ANALOG_AM_TONE`'s 25 dB tone SNR floor on `am_tone_synth` under `-fA` (the FM monitor) | tone SNR, measured at -21.4 dB: the AM case's tone is the AM detector's |
 | `DECODE_IQ_ANALOG_NEG_PARITY_FIXED` | `DECODE_IQ_ANALOG_PARITY_NFM_REAL`'s window on `nfm_ctcss_real` at `-n 50` | RMS, measured at -32.8 dBFS: the parity holds only with the AGC |
+| `DECODE_IQ_ANALOG_NEG_LAST_AUDIBLE` | the level burst (`nfm_burst_synth`, `--squelch -28`) with a 520 ms last-audible bound | last audible ms, measured at 540, while the first-audible bound holds |
 
 When a later change adds a bound or a new kind of check to the host, add a negative control beside it.
 
@@ -1331,11 +1355,28 @@ learning, the gate opens on carrier windows only, which is what lets a scan land
 margin cases. A sink that ignores the per-sample flags fails every FM case and both determinism cases; the AM cases
 still pass, because the AM detector writes silence for a closed sample itself (`am_demod_flagged()`: its output,
 the envelope over the held carrier, means nothing without a carrier), so on AM they pin the detector's handling of
-the flags instead. Level mode cannot be held to these bounds on replay at all: it gates each demod block whole on the
-power of its first samples, as it did before the auto squelch, and a replay's demod block is one 64 KiB capture chunk,
-683 ms at 48 kHz. Both chunks of the 0.75 s burst start on noise, so a fixed threshold that keeps that noise out never
-plays the carrier; on a 2 s version (carrier from 0.5 to 1.5 s) a fixed `-20 dB` plays from 683 ms to the end. The
-auto squelch's per-sample gate opens 20 ms into the carrier and closes within a window of its end.
+the flags instead.
+
+#### Level squelch replay cases
+
+The level squelch (`--squelch <dB>`, a row's `--squelch-db`) gates each demod block whole on its channel power, and a
+replay's demod block is one capture chunk. With a fixed 64 KiB chunk that was 683 ms of a 48 kHz capture: both chunks of
+the 0.75 s burst started on noise, so a level that kept that noise out never played the carrier, and on a 2 s version a
+fixed `-20 dB` played from 683 ms to the end (issue #626). A chunk is now at most one live transfer, 256 samples
+(5.33 ms) here, the block a live default chain hands the demod, so the level gate opens and closes within one such block
+of the carrier's edges, as on air. The monitor then keeps or drops each 20 ms block by the power at its last sample,
+live and in a replay alike, so the sink's edges fall on its blocks; the cases pin those blocks exactly.
+
+| Case | What it pins |
+| --- | --- |
+| `IO_RTL_REPLAY_CHUNKING` | The gate itself: on `nfm_burst_synth` under -28 dB exactly one run of blocks opens, the first starting 131 samples before the carrier's key plus the channel filter's 67-sample delay and the last ending 157 samples after its unkey plus that delay, both within one 256-sample block. Noise blocks read -37.8 to -36.4 dB, carrier blocks -16.8 to -16.6 dB. On 64 KiB chunks no block opens. |
+| `DECODE_IQ_ANALOG_SQL_LEVEL_NFM_BURST`, `_AM_BURST` | `-fA --squelch -28` and `-fM --squelch -30` (AM noise opens at about -40 dB, its carrier blocks read about -20): first audible 280 ms (the first open block starts 1.3 ms before the carrier as the channel filter sees it), last audible 540 ms (the 540-560 ms block ends closed and is dropped), 260 ms audible, the whole span, so no block between is missing. On 64 KiB chunks nothing is audible. |
+| `DECODE_IQ_SCAN_SQL_LEVEL_ROW` | The issue's case: a `-Y` row's own `--squelch-db -28` on a `-fa` session gates the burst the same way. |
+| `DECODE_IQ_ANALOG_SQL_LEVEL_{NFM,AM}_DETERMINISM` | Fast, jittered and realtime replays hand the sink the same gated audio (13 writes of 960). |
+| `DECODE_IQ_ANALOG_NEG_LAST_AUDIBLE` | The last-audible bound fails on its measured value: 540 ms against a 520 ms limit. |
+
+`DECODE_IQ_ANALOG_NEG_SQL_LEVEL_HOT` still fails as before: on the hot copy every block's noise sits over -35 dB, so the
+gate opens from the first block and plays the whole replay (740 ms).
 
 #### Noise squelch design gate
 
