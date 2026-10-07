@@ -2677,6 +2677,93 @@ test_encoder_rtl_input_reaches_pcm_scale(void) {
 }
 #endif
 
+#ifdef DSD_NEO_TEST_AUDIO_WRAP
+/* The local output's writes ('W', 'Z' for all zeros) and drains ('D') in order, while g_audio_wrap_on. */
+static char g_audio_events[2048];
+static int g_audio_event_count = 0;
+static int g_audio_wrap_on = 0;
+
+int __real_dsd_audio_write(dsd_audio_stream* stream, const int16_t* buffer, size_t frames);
+int __real_dsd_audio_drain(dsd_audio_stream* stream);
+// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+int __wrap_dsd_audio_write(dsd_audio_stream* stream, const int16_t* buffer, size_t frames);
+// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+int __wrap_dsd_audio_drain(dsd_audio_stream* stream);
+
+int
+// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+__wrap_dsd_audio_write(dsd_audio_stream* stream, const int16_t* buffer, size_t frames) {
+    if (!g_audio_wrap_on) {
+        return __real_dsd_audio_write(stream, buffer, frames);
+    }
+    int zero = 1;
+    for (size_t i = 0U; buffer != NULL && i < frames; i++) {
+        zero &= buffer[i] == 0;
+    }
+    if (g_audio_event_count < (int)sizeof(g_audio_events) - 1) {
+        g_audio_events[g_audio_event_count++] = zero ? 'Z' : 'W';
+        g_audio_events[g_audio_event_count] = '\0';
+    }
+    return (int)frames;
+}
+
+int
+// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+__wrap_dsd_audio_drain(dsd_audio_stream* stream) {
+    if (!g_audio_wrap_on) {
+        return __real_dsd_audio_drain(stream);
+    }
+    if (g_audio_event_count < (int)sizeof(g_audio_events) - 1) {
+        g_audio_events[g_audio_event_count++] = 'D';
+        g_audio_events[g_audio_event_count] = '\0';
+    }
+    return 0;
+}
+
+/* Issue #625: the packet encoder's end drains a local output after its EOT marker, before its dead air, and again
+   after the dead air, before it returns: an asynchronous output drops its oldest samples when full, and the engine
+   closes it without a drain. */
+static int
+test_packet_encoder_end_drains_on_a_local_output(void) {
+    int err = 0;
+    static dsd_opts popts;
+    static dsd_state pstate;
+    static int ptoken;
+    static Event_History_I pevents[2];
+    DSD_MEMSET(&popts, 0, sizeof popts);
+    DSD_MEMSET(&pstate, 0, sizeof pstate);
+    DSD_MEMSET(pevents, 0, sizeof pevents);
+    for (uint8_t slot = 0U; slot < 2U; slot++) {
+        init_event_history(&pevents[slot], 0, 255);
+    }
+    pstate.event_history_s = pevents;
+    pstate.m17_can_en = -1;
+    DSD_SNPRINTF(pstate.m17sms, sizeof(pstate.m17sms), "%s", "OK");
+    popts.monitor_input_audio = 1;
+    popts.audio_out = 1;
+    popts.audio_out_type = 0;
+    popts.audio_raw_out = (dsd_audio_stream*)&ptoken;
+    g_audio_event_count = 0;
+    g_audio_events[0] = '\0';
+    g_audio_wrap_on = 1;
+    exitflag = 0;
+    (void)encodeM17PKT(&popts, &pstate);
+    exitflag = 0;
+    g_audio_wrap_on = 0;
+    popts.audio_raw_out = NULL;
+    static const char want_tail[] = "WWDZZZZZZZZZZZZZZZZZZZZZZZZZD";
+    const size_t len = strlen(g_audio_events);
+    const int ok =
+        len >= sizeof want_tail - 1U && strcmp(g_audio_events + (len - (sizeof want_tail - 1U)), want_tail) == 0;
+    if (!ok) {
+        DSD_FPRINTF(stderr, "packet encoder local output events: %s\n", g_audio_events);
+    }
+    err |= expect_int("packet encoder: the end drains around the dead air on a local output", ok, 1);
+    dsd_state_ext_free_all(&pstate);
+    return err;
+}
+#endif
+
 /* Issue #625: the VOX's two decisions. A read is heard on the stream's gate while one runs, on the level squelch
    otherwise; past 10 closed reads, at a LICH superframe boundary, the transmitter unkeys. */
 static int
@@ -2853,11 +2940,6 @@ static int g_vox_rf_count = 0;
 /* Play the RF on a local output (audio_raw_out) instead of the UDP analog output: the write and drain order is
    recorded where the audio wraps are linked. */
 static int g_vox_local_audio = 0;
-#ifdef DSD_NEO_TEST_AUDIO_WRAP
-static char g_audio_events[2048];
-static int g_audio_event_count = 0;
-static int g_audio_wrap_on = 0;
-#endif
 
 /* Classify one 192-symbol RF frame: a preamble, an LSF, a stream frame (with its EOS bit: the first two punctured bits
    after the LICH are the convolution of the frame number's MSB from a zero state), the EOT marker, or dead air. */
@@ -2962,45 +3044,6 @@ vox_rf_ending(int* streams, int* dead_after) {
     *dead_after = dead;
     return 0;
 }
-
-#ifdef DSD_NEO_TEST_AUDIO_WRAP
-int __real_dsd_audio_write(dsd_audio_stream* stream, const int16_t* buffer, size_t frames);
-int __real_dsd_audio_drain(dsd_audio_stream* stream);
-// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
-int __wrap_dsd_audio_write(dsd_audio_stream* stream, const int16_t* buffer, size_t frames);
-// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
-int __wrap_dsd_audio_drain(dsd_audio_stream* stream);
-
-int
-// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
-__wrap_dsd_audio_write(dsd_audio_stream* stream, const int16_t* buffer, size_t frames) {
-    if (!g_audio_wrap_on) {
-        return __real_dsd_audio_write(stream, buffer, frames);
-    }
-    int zero = 1;
-    for (size_t i = 0U; buffer != NULL && i < frames; i++) {
-        zero &= buffer[i] == 0;
-    }
-    if (g_audio_event_count < (int)sizeof(g_audio_events) - 1) {
-        g_audio_events[g_audio_event_count++] = zero ? 'Z' : 'W';
-        g_audio_events[g_audio_event_count] = '\0';
-    }
-    return (int)frames;
-}
-
-int
-// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
-__wrap_dsd_audio_drain(dsd_audio_stream* stream) {
-    if (!g_audio_wrap_on) {
-        return __real_dsd_audio_drain(stream);
-    }
-    if (g_audio_event_count < (int)sizeof(g_audio_events) - 1) {
-        g_audio_events[g_audio_event_count++] = 'D';
-        g_audio_events[g_audio_event_count] = '\0';
-    }
-    return 0;
-}
-#endif
 
 static int
 fake_vox_read_ex(void* rtl_ctx, float* out, uint8_t* flags, size_t count, int* out_got) {
@@ -3263,44 +3306,6 @@ test_encoder_ends_an_open_stream_on_shutdown(void) {
         }
         err |= expect_int("manual then eof: the end drains around the dead air on a local output", ok, 1);
     }
-    /* The packet encoder ends the same way: its last frame and the EOT marker drain before its dead air, which drains
-       before it returns. */
-    {
-        static dsd_opts popts;
-        static dsd_state pstate;
-        static int ptoken;
-        static Event_History_I pevents[2];
-        DSD_MEMSET(&popts, 0, sizeof popts);
-        DSD_MEMSET(&pstate, 0, sizeof pstate);
-        DSD_MEMSET(pevents, 0, sizeof pevents);
-        for (uint8_t slot = 0U; slot < 2U; slot++) {
-            init_event_history(&pevents[slot], 0, 255);
-        }
-        pstate.event_history_s = pevents;
-        pstate.m17_can_en = -1;
-        DSD_SNPRINTF(pstate.m17sms, sizeof(pstate.m17sms), "%s", "OK");
-        popts.monitor_input_audio = 1;
-        popts.audio_out = 1;
-        popts.audio_out_type = 0;
-        popts.audio_raw_out = (dsd_audio_stream*)&ptoken;
-        g_audio_event_count = 0;
-        g_audio_events[0] = '\0';
-        g_audio_wrap_on = 1;
-        exitflag = 0;
-        (void)encodeM17PKT(&popts, &pstate);
-        exitflag = 0;
-        g_audio_wrap_on = 0;
-        popts.audio_raw_out = NULL;
-        static const char want_tail[] = "WWDZZZZZZZZZZZZZZZZZZZZZZZZZD";
-        const size_t len = strlen(g_audio_events);
-        const int ok =
-            len >= sizeof want_tail - 1U && strcmp(g_audio_events + (len - (sizeof want_tail - 1U)), want_tail) == 0;
-        if (!ok) {
-            DSD_FPRINTF(stderr, "packet encoder local output events: %s\n", g_audio_events);
-        }
-        err |= expect_int("packet encoder: the end drains around the dead air on a local output", ok, 1);
-        dsd_state_ext_free_all(&pstate);
-    }
     /* A VOX unkey sends no dead air and drains nothing. */
     g_vox_local_audio = 1;
     vox_defaults(3, 24);
@@ -3320,6 +3325,9 @@ int
 main(void) {
     int err = 0;
     err |= test_encoder_vox_helpers();
+#ifdef DSD_NEO_TEST_AUDIO_WRAP
+    err |= test_packet_encoder_end_drains_on_a_local_output();
+#endif
 #ifdef USE_RADIO
     err |= test_encoder_rtl_reader_gates_closed_samples();
     err |= test_encoder_vox_unkeys_on_the_gate();
