@@ -2482,7 +2482,14 @@ m17_str_end_stream(m17_str_ctx* ctx, const m17_str_frame_ctx* frame) {
     DSD_MEMSET(ctx->nil, 0, sizeof(ctx->nil));
     encodeM17RF(ctx->opts, ctx->state, ctx->nil, 55);
     if (!ctx->eot_vox) {
+        /* A local output that plays asynchronously drops its oldest samples when it is full: the frame and the marker
+           play out before a second of dead air could push them out, and at shutdown the dead air plays out before the
+           engine closes the output (issue #625). */
+        dsd_drain_audio_output(ctx->opts);
         m17_send_dead_air_frames(ctx->opts, ctx->state, ctx->nil, 25);
+        if (ctx->ending || dsd_exitflag_load()) {
+            dsd_drain_audio_output(ctx->opts);
+        }
     }
 
     if (ctx->use_ip == 1) {
@@ -3018,7 +3025,11 @@ m17_pkt_send_data_frame(m17_pkt_ctx* ctx) {
     if (ctx->eot) {
         DSD_MEMSET(ctx->nil, 0, sizeof(ctx->nil));
         encodeM17RF(ctx->opts, ctx->state, ctx->nil, 55);
+        /* As the stream encoder's end (m17_str_end_stream()): the last frame and the marker play out before the dead
+           air could push them out of an asynchronous local output, and the dead air before the engine closes it. */
+        dsd_drain_audio_output(ctx->opts);
         m17_send_dead_air_frames(ctx->opts, ctx->state, ctx->nil, 25);
+        dsd_drain_audio_output(ctx->opts);
         dsd_exitflag_store(1);
     }
     ctx->pbc++;

@@ -2829,8 +2829,7 @@ test_encoder_rtl_reader_gates_closed_samples(void) {
 
 /* An encoder run on the fake RTL stream: the tone, its flags open for g_vox_open_reads samples, the transmitter's
    state recorded at the start of each 40 ms iteration (320 samples at 8 kHz, 3200 bit/s), and what it sent: the RF
-   frames (each a baseband block on the UDP analog output; dead air is all zeros, and the start's dead air, before the
-   first frame, is not counted) and the IP frames. */
+   frames as the symbol capture records them, and the IP frames. */
 enum { VOX_ITER_SAMPLES = 320, VOX_MAX_ITERS = 64 };
 
 static dsd_state* g_vox_state = NULL;
@@ -2841,12 +2840,167 @@ static long g_vox_low_power_from = -1;
 static long g_vox_exit_at = -1;
 static long g_vox_manual_unkey_at = -1;
 static int g_vox_tx[VOX_MAX_ITERS];
-static int g_vox_rf_frames = 0;
-static int g_vox_rf_zero_frames = 0;
 static int g_vox_ip_stream = 0;
 static int g_vox_ip_eos = 0;
 static int g_vox_ip_eotx = 0;
-static int g_vox_rf_after_eos = 0;
+
+/* RF as the symbol capture records it (opts->symbol_out_f): each frame's kind and, for a stream frame, its EOS bit. */
+enum { VOX_RF_MAX = 512 };
+
+static char g_vox_rf_kind[VOX_RF_MAX];
+static uint8_t g_vox_rf_eos[VOX_RF_MAX];
+static int g_vox_rf_count = 0;
+/* Play the RF on a local output (audio_raw_out) instead of the UDP analog output: the write and drain order is
+   recorded where the audio wraps are linked. */
+static int g_vox_local_audio = 0;
+#ifdef DSD_NEO_TEST_AUDIO_WRAP
+static char g_audio_events[2048];
+static int g_audio_event_count = 0;
+static int g_audio_wrap_on = 0;
+#endif
+
+/* Classify one 192-symbol RF frame: a preamble, an LSF, a stream frame (with its EOS bit: the first two punctured bits
+   after the LICH are the convolution of the frame number's MSB from a zero state), the EOT marker, or dead air. */
+static char
+vox_rf_classify(const uint8_t* dibits, uint8_t* eos) {
+    uint8_t ref[M17_FRAME_SYMBOLS];
+    int all_three = 1;
+    for (int i = 0; i < M17_FRAME_SYMBOLS; i++) {
+        all_three &= dibits[i] == 3U;
+    }
+    if (all_three) {
+        return 'D';
+    }
+    m17_fill_repeating_16bit_dibits(M17_EOT_MARKER_WORD, ref);
+    if (memcmp(ref, dibits, sizeof ref) == 0) {
+        return 'E';
+    }
+    m17_fill_repeating_16bit_dibits(M17_PREAMBLE_LSF_WORD, ref);
+    if (memcmp(ref, dibits, sizeof ref) == 0) {
+        return 'P';
+    }
+    m17_fill_sync_dibits_from_word(M17_SYNC_LSF_WORD, ref);
+    if (memcmp(ref, dibits, M17_SYNC_SYMBOLS) == 0) {
+        return 'L';
+    }
+    m17_fill_sync_dibits_from_word(M17_SYNC_STREAM_WORD, ref);
+    if (memcmp(ref, dibits, M17_SYNC_SYMBOLS) != 0) {
+        return '?';
+    }
+    uint8_t randomized[M17_PAYLOAD_BITS];
+    uint8_t decoded[M17_PAYLOAD_BITS];
+    for (int i = 0; i < M17_PAYLOAD_SYMBOLS; i++) {
+        randomized[i * 2] = (uint8_t)((dibits[M17_SYNC_SYMBOLS + i] >> 1U) & 1U);
+        randomized[(i * 2) + 1] = (uint8_t)(dibits[M17_SYNC_SYMBOLS + i] & 1U);
+    }
+    m17_payload_decode_bits(randomized, decoded);
+    if (decoded[M17_LICH_BITS] != decoded[M17_LICH_BITS + 1]) {
+        return '?';
+    }
+    *eos = decoded[M17_LICH_BITS];
+    return 'S';
+}
+
+static void
+vox_rf_parse(FILE* f) {
+    g_vox_rf_count = 0;
+    if (!f || fflush(f) != 0 || fseek(f, 0L, SEEK_SET) != 0) {
+        return;
+    }
+    uint8_t dibits[M17_FRAME_SYMBOLS];
+    unsigned char record[DSD_SYMBOL_CAPTURE_SOFT_RECORD_SIZE];
+    int n = 0;
+    while (fread(record, 1, sizeof record, f) == sizeof record) {
+        dibits[n++] = (uint8_t)(record[0] & 3U);
+        if (n == M17_FRAME_SYMBOLS) {
+            if (g_vox_rf_count < VOX_RF_MAX) {
+                uint8_t eos = 0U;
+                g_vox_rf_kind[g_vox_rf_count] = vox_rf_classify(dibits, &eos);
+                g_vox_rf_eos[g_vox_rf_count] = eos;
+                g_vox_rf_count++;
+            }
+            n = 0;
+        }
+    }
+}
+
+/* The RF a transmission sent, past the start's dead air: a preamble and an LSF, stream frames with the EOS bit on the
+   last one only, the EOT marker right after it, then dead air and nothing else. Returns 0 with the stream frames and
+   the dead air after the marker counted, or -1 for anything else. */
+static int
+vox_rf_ending(int* streams, int* dead_after) {
+    int i = 0;
+    while (i < g_vox_rf_count && g_vox_rf_kind[i] == 'D') {
+        i++;
+    }
+    if (i + 2 > g_vox_rf_count || g_vox_rf_kind[i] != 'P' || g_vox_rf_kind[i + 1] != 'L') {
+        return -1;
+    }
+    i += 2;
+    int n = 0;
+    while (i < g_vox_rf_count && g_vox_rf_kind[i] == 'S') {
+        const int last = i + 1 >= g_vox_rf_count || g_vox_rf_kind[i + 1] != 'S';
+        if (g_vox_rf_eos[i] != (last ? 1U : 0U)) {
+            return -1;
+        }
+        n++;
+        i++;
+    }
+    if (n == 0 || i >= g_vox_rf_count || g_vox_rf_kind[i] != 'E') {
+        return -1;
+    }
+    i++;
+    int dead = 0;
+    while (i < g_vox_rf_count && g_vox_rf_kind[i] == 'D') {
+        dead++;
+        i++;
+    }
+    if (i != g_vox_rf_count) {
+        return -1;
+    }
+    *streams = n;
+    *dead_after = dead;
+    return 0;
+}
+
+#ifdef DSD_NEO_TEST_AUDIO_WRAP
+int __real_dsd_audio_write(dsd_audio_stream* stream, const int16_t* buffer, size_t frames);
+int __real_dsd_audio_drain(dsd_audio_stream* stream);
+// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+int __wrap_dsd_audio_write(dsd_audio_stream* stream, const int16_t* buffer, size_t frames);
+// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+int __wrap_dsd_audio_drain(dsd_audio_stream* stream);
+
+int
+// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+__wrap_dsd_audio_write(dsd_audio_stream* stream, const int16_t* buffer, size_t frames) {
+    if (!g_audio_wrap_on) {
+        return __real_dsd_audio_write(stream, buffer, frames);
+    }
+    int zero = 1;
+    for (size_t i = 0U; buffer != NULL && i < frames; i++) {
+        zero &= buffer[i] == 0;
+    }
+    if (g_audio_event_count < (int)sizeof(g_audio_events) - 1) {
+        g_audio_events[g_audio_event_count++] = zero ? 'Z' : 'W';
+        g_audio_events[g_audio_event_count] = '\0';
+    }
+    return (int)frames;
+}
+
+int
+// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+__wrap_dsd_audio_drain(dsd_audio_stream* stream) {
+    if (!g_audio_wrap_on) {
+        return __real_dsd_audio_drain(stream);
+    }
+    if (g_audio_event_count < (int)sizeof(g_audio_events) - 1) {
+        g_audio_events[g_audio_event_count++] = 'D';
+        g_audio_events[g_audio_event_count] = '\0';
+    }
+    return 0;
+}
+#endif
 
 static int
 fake_vox_read_ex(void* rtl_ctx, float* out, uint8_t* flags, size_t count, int* out_got) {
@@ -2885,25 +3039,6 @@ fake_vox_return_pwr(const void* rtl_ctx) {
     return (g_vox_low_power_from >= 0 && g_vox_reads > g_vox_low_power_from) ? dB_to_pwr(-90.0) : 1.0;
 }
 
-static void
-fake_vox_blast_analog(const dsd_opts* opts, dsd_state* state, size_t nsam, const void* data) {
-    (void)opts;
-    (void)state;
-    const short* block = (const short*)data;
-    int zero = 1;
-    for (size_t i = 0U; block != NULL && i < nsam / sizeof(short); i++) {
-        zero &= block[i] == 0;
-    }
-    if (zero && g_vox_rf_frames == 0) {
-        return;
-    }
-    g_vox_rf_frames++;
-    g_vox_rf_zero_frames += zero;
-    if (g_vox_ip_eos > 0) {
-        g_vox_rf_after_eos++;
-    }
-}
-
 static int
 fake_vox_connect(dsd_opts* opts, dsd_state* state) {
     (void)opts;
@@ -2938,8 +3073,16 @@ vox_run(dsd_opts* opts, dsd_state* state, int mode, int vox) {
     opts->rtl_squelch_level = dB_to_pwr(-60.0);
     opts->monitor_input_audio = 1;
     opts->audio_out = 1;
-    opts->audio_out_type = 8;
+    opts->audio_out_type = g_vox_local_audio ? 0 : 8;
+    static int audio_token;
+    opts->audio_raw_out = g_vox_local_audio ? (dsd_audio_stream*)&audio_token : NULL;
     opts->m17_use_ip = 1;
+    char capture_path[DSD_TEST_PATH_MAX] = {0};
+    const int capture_fd = dsd_test_mkstemp(capture_path, sizeof capture_path, "dsdneo_m17_vox_rf");
+    if (capture_fd >= 0) {
+        (void)dsd_close(capture_fd);
+        opts->symbol_out_f = dsd_fopen_private(capture_path, "w+b");
+    }
     state->m17_vox = vox;
     state->m17_rate = 8000;
     state->m17_can_en = -1;
@@ -2947,9 +3090,6 @@ vox_run(dsd_opts* opts, dsd_state* state, int mode, int vox) {
     g_vox_state = state;
     g_vox_reads = 0;
     DSD_MEMSET(g_vox_tx, 0xFF, sizeof g_vox_tx);
-    g_vox_rf_frames = 0;
-    g_vox_rf_zero_frames = 0;
-    g_vox_rf_after_eos = 0;
     g_vox_ip_stream = 0;
     g_vox_ip_eos = 0;
     g_vox_ip_eotx = 0;
@@ -2964,11 +3104,27 @@ vox_run(dsd_opts* opts, dsd_state* state, int mode, int vox) {
         .read_ex = fake_vox_read_ex,
         .squelch_status = fake_rtl_gate_status,
     });
-    dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){.blast_analog = fake_vox_blast_analog});
     dsd_m17_udp_hooks_set((dsd_m17_udp_hooks){.connect = fake_vox_connect, .blaster = fake_vox_blaster});
     exitflag = 0;
+#ifdef DSD_NEO_TEST_AUDIO_WRAP
+    g_audio_event_count = 0;
+    g_audio_events[0] = '\0';
+    g_audio_wrap_on = g_vox_local_audio;
+#endif
     (void)encodeM17STR(opts, state);
+#ifdef DSD_NEO_TEST_AUDIO_WRAP
+    g_audio_wrap_on = 0;
+#endif
     exitflag = 0;
+    vox_rf_parse(opts->symbol_out_f);
+    if (opts->symbol_out_f) {
+        (void)fclose(opts->symbol_out_f);
+        opts->symbol_out_f = NULL;
+    }
+    if (capture_path[0] != '\0') {
+        (void)remove(capture_path);
+    }
+    opts->audio_raw_out = NULL;
     dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){0});
     dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
     dsd_m17_udp_hooks_set((dsd_m17_udp_hooks){0});
@@ -3014,9 +3170,12 @@ test_encoder_vox_unkeys_on_the_gate(void) {
         err |= expect_int("vox gate: one stream of 19 frames, the last with EOS", g_vox_ip_stream, 19);
         err |= expect_int("vox gate: one EOS frame", g_vox_ip_eos, 1);
         err |= expect_int("vox gate: one EOTX", g_vox_ip_eotx, 1);
-        /* RF: the preamble and LSF, 18 stream frames, the EOS frame and the EOT marker: no dead air. */
-        err |= expect_int("vox gate: RF frames", g_vox_rf_frames, 2 + 18 + 2);
-        err |= expect_int("vox gate: no dead air", g_vox_rf_zero_frames, 0);
+        /* RF: the preamble and LSF, 18 stream frames, the one with the EOS bit and the EOT marker, without dead air. */
+        int streams = 0;
+        int dead = -1;
+        err |= expect_int("vox gate: RF ends with an EOS frame and the EOT marker", vox_rf_ending(&streams, &dead), 0);
+        err |= expect_int("vox gate: RF stream frames", streams, 19);
+        err |= expect_int("vox gate: no dead air after the marker", dead, 0);
 #ifdef USE_CODEC2
         /* Codec2 hears the tone while the gate is open, silence once it closed (the 10 ms ramp, then zeros). */
         int quiet = 1;
@@ -3040,6 +3199,10 @@ test_encoder_vox_unkeys_on_the_gate(void) {
     vox_run(&opts, &state, DSD_SQUELCH_MODE_LEVEL, 1);
     err |= expect_int("vox level: low power unkeys", vox_first_unkeyed(24), 19);
     err |= expect_int("vox level: one EOS frame", g_vox_ip_eos, 1);
+    int streams = 0;
+    int dead = -1;
+    err |= expect_int("vox level: RF ends with an EOS frame and the EOT marker", vox_rf_ending(&streams, &dead), 0);
+    err |= expect_int("vox level: no dead air after the marker", dead, 0);
     return err;
 }
 
@@ -3057,15 +3220,19 @@ test_encoder_ends_an_open_stream_on_shutdown(void) {
     vox_run(&opts, &state, DSD_SQUELCH_MODE_LEVEL, 0);
     err |= expect_int("exit: one EOS frame", g_vox_ip_eos, 1);
     err |= expect_int("exit: one EOTX", g_vox_ip_eotx, 1);
-    err |= expect_int("exit: the marker and dead air after the EOS frame", g_vox_rf_after_eos, 1 + 25);
-    err |= expect_int("exit: dead air", g_vox_rf_zero_frames, 25);
+    int streams = 0;
+    int dead = -1;
+    err |= expect_int("exit: RF ends with an EOS frame and the EOT marker", vox_rf_ending(&streams, &dead), 0);
+    err |= expect_int("exit: dead air after the marker", dead, 25);
     /* The input ends while keyed. */
     vox_defaults(64, 6);
     vox_run(&opts, &state, DSD_SQUELCH_MODE_LEVEL, 0);
     err |= expect_int("eof: one EOS frame", g_vox_ip_eos, 1);
     err |= expect_int("eof: one EOTX", g_vox_ip_eotx, 1);
     err |= expect_int("eof: frames", g_vox_ip_stream, 6 + 1);
-    err |= expect_int("eof: dead air", g_vox_rf_zero_frames, 25);
+    err |= expect_int("eof: RF ends with an EOS frame and the EOT marker", vox_rf_ending(&streams, &dead), 0);
+    err |= expect_int("eof: RF stream frames", streams, 6 + 1);
+    err |= expect_int("eof: dead air after the marker", dead, 25);
     /* A manual unkey, then the input ends before its frame. */
     vox_defaults(64, 64);
     g_vox_manual_unkey_at = 4L * VOX_ITER_SAMPLES;
@@ -3073,7 +3240,74 @@ test_encoder_ends_an_open_stream_on_shutdown(void) {
     vox_run(&opts, &state, DSD_SQUELCH_MODE_LEVEL, 0);
     err |= expect_int("manual then eof: one EOS frame", g_vox_ip_eos, 1);
     err |= expect_int("manual then eof: one EOTX", g_vox_ip_eotx, 1);
-    err |= expect_int("manual then eof: dead air", g_vox_rf_zero_frames, 25);
+    err |=
+        expect_int("manual then eof: RF ends with an EOS frame and the EOT marker", vox_rf_ending(&streams, &dead), 0);
+    err |= expect_int("manual then eof: dead air after the marker", dead, 25);
+#ifdef DSD_NEO_TEST_AUDIO_WRAP
+    /* On a local output, which may play asynchronously and drop its oldest samples when full, the EOS frame and the
+       marker drain before the dead air is queued, and the dead air drains before the encoder returns. */
+    g_vox_local_audio = 1;
+    vox_defaults(64, 64);
+    g_vox_manual_unkey_at = 4L * VOX_ITER_SAMPLES;
+    g_vox_cap = (4L * VOX_ITER_SAMPLES) + 1;
+    vox_run(&opts, &state, DSD_SQUELCH_MODE_LEVEL, 0);
+    g_vox_local_audio = 0;
+    {
+        static const char want_tail[] = "WWDZZZZZZZZZZZZZZZZZZZZZZZZZD";
+        const size_t len = strlen(g_audio_events);
+        const int ok = len >= sizeof want_tail - 1U
+                       && strcmp(g_audio_events + (len - (sizeof want_tail - 1U)), want_tail) == 0
+                       && strchr(g_audio_events, 'D') == g_audio_events + (len - (sizeof want_tail - 1U)) + 2;
+        if (!ok) {
+            DSD_FPRINTF(stderr, "local output events: %s\n", g_audio_events);
+        }
+        err |= expect_int("manual then eof: the end drains around the dead air on a local output", ok, 1);
+    }
+    /* The packet encoder ends the same way: its last frame and the EOT marker drain before its dead air, which drains
+       before it returns. */
+    {
+        static dsd_opts popts;
+        static dsd_state pstate;
+        static int ptoken;
+        static Event_History_I pevents[2];
+        DSD_MEMSET(&popts, 0, sizeof popts);
+        DSD_MEMSET(&pstate, 0, sizeof pstate);
+        DSD_MEMSET(pevents, 0, sizeof pevents);
+        for (uint8_t slot = 0U; slot < 2U; slot++) {
+            init_event_history(&pevents[slot], 0, 255);
+        }
+        pstate.event_history_s = pevents;
+        pstate.m17_can_en = -1;
+        DSD_SNPRINTF(pstate.m17sms, sizeof(pstate.m17sms), "%s", "OK");
+        popts.monitor_input_audio = 1;
+        popts.audio_out = 1;
+        popts.audio_out_type = 0;
+        popts.audio_raw_out = (dsd_audio_stream*)&ptoken;
+        g_audio_event_count = 0;
+        g_audio_events[0] = '\0';
+        g_audio_wrap_on = 1;
+        exitflag = 0;
+        (void)encodeM17PKT(&popts, &pstate);
+        exitflag = 0;
+        g_audio_wrap_on = 0;
+        popts.audio_raw_out = NULL;
+        static const char want_tail[] = "WWDZZZZZZZZZZZZZZZZZZZZZZZZZD";
+        const size_t len = strlen(g_audio_events);
+        const int ok =
+            len >= sizeof want_tail - 1U && strcmp(g_audio_events + (len - (sizeof want_tail - 1U)), want_tail) == 0;
+        if (!ok) {
+            DSD_FPRINTF(stderr, "packet encoder local output events: %s\n", g_audio_events);
+        }
+        err |= expect_int("packet encoder: the end drains around the dead air on a local output", ok, 1);
+        dsd_state_ext_free_all(&pstate);
+    }
+    /* A VOX unkey sends no dead air and drains nothing. */
+    g_vox_local_audio = 1;
+    vox_defaults(3, 24);
+    vox_run(&opts, &state, DSD_SQUELCH_MODE_AUTO, 1);
+    g_vox_local_audio = 0;
+    err |= expect_int("vox unkey: nothing drained on a local output", strchr(g_audio_events, 'D') == NULL, 1);
+#endif
     /* Nothing open: an encoder that never keyed sends no end. */
     vox_defaults(0, 6);
     vox_run(&opts, &state, DSD_SQUELCH_MODE_AUTO, 1);

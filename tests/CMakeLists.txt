@@ -8304,6 +8304,18 @@ target_link_libraries(
     dsd-neo_test_m17_state_dispatch
     PRIVATE dsd-neo_proto_m17 dsd-neo_test_support
 )
+# Issue #625: the stream encoder's end of stream drains a local output around its dead air; the
+# wraps record the order of writes and drains where the linker can wrap them.
+if(NOT APPLE AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
+    target_compile_definitions(
+        dsd-neo_test_m17_state_dispatch
+        PRIVATE DSD_NEO_TEST_AUDIO_WRAP
+    )
+    target_link_options(
+        dsd-neo_test_m17_state_dispatch
+        PRIVATE "-Wl,--wrap=dsd_audio_write" "-Wl,--wrap=dsd_audio_drain"
+    )
+endif()
 add_test(NAME M17_STATE_DISPATCH COMMAND dsd-neo_test_m17_state_dispatch)
 
 add_executable(
