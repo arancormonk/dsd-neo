@@ -21,6 +21,31 @@ extern "C" {
  * of that open socket alone.
  */
 dsd_socket_t Connect(char* hostname, int portno);
+
+/** The longest ConnectBounded() waits for a connection: the bound rtl_tcp connects within too. */
+#define DSD_CONNECT_BOUNDED_TIMEOUT_MS 10000U
+
+/**
+ * @brief Connect() within DSD_CONNECT_BOUNDED_TIMEOUT_MS, asking @p cancelled every 100 ms
+ * (dsd_socket_connect_bounded()), with the same receive timeout and options (issue #634): the TCP audio input's menu
+ * connect and its reconnect, which must not hold the decoder thread for the system's connect timeout.
+ *
+ * @p resolve 1 looks @p hostname up; 0 connects to the address the running TCP audio input's connection went to when
+ * it is for this host and port (ConnectKeepTcpAudioAddress()), looking the host up only when it is not. A reconnect
+ * passes 0, so a host whose resolver stalls cannot hold the decoder thread on each attempt. Decoder thread only.
+ * Returns the connected socket, or DSD_INVALID_SOCKET when the lookup or the connection failed, timed out or was
+ * cancelled.
+ */
+dsd_socket_t ConnectBounded(const char* hostname, int portno, int resolve, dsd_socket_cancel_fn cancelled,
+                            void* context);
+
+/**
+ * @brief The TCP audio input now runs on the connection Connect() or ConnectBounded() last made, to @p hostname:@p portno
+ * (issue #634): its reconnect goes back to that address (ConnectBounded() with resolve 0). Call it once the input that
+ * connection serves is installed, at startup and after a switch that took it; a connection that is not kept (a switch
+ * that failed, a rigctl connection) leaves the address the running input's reconnect uses alone. Decoder thread only.
+ */
+void ConnectKeepTcpAudioAddress(const char* hostname, int portno);
 long int GetCurrentFreq(dsd_socket_t sockfd);
 bool SetFreq(dsd_socket_t sockfd, long int freq);
 bool SetModulation(dsd_socket_t sockfd, int bandwidth);

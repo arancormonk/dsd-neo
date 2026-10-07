@@ -47,6 +47,10 @@ static dsd_socket_t g_create_result;
 static int g_send_result;
 static int g_resolve_result;
 static int g_connect_result;
+static int g_resolve_count;
+static int g_bounded_connect_count;
+static unsigned int g_bounded_timeout_ms;
+static int g_bounded_cancelled;
 static int g_close_count;
 static dsd_socket_t g_closed_sock;
 static int g_recv_timeout_count;
@@ -73,6 +77,10 @@ reset_stubs(void) {
     g_send_result = -2;
     g_resolve_result = 0;
     g_connect_result = 0;
+    g_resolve_count = 0;
+    g_bounded_connect_count = 0;
+    g_bounded_timeout_ms = 0U;
+    g_bounded_cancelled = 0;
     g_close_count = 0;
     g_closed_sock = DSD_INVALID_SOCKET;
     g_recv_timeout_count = 0;
@@ -143,6 +151,7 @@ dsd_socket_close(dsd_socket_t sock) {
 int
 dsd_socket_resolve(const char* hostname, int port, struct sockaddr_in* addr) {
     (void)hostname;
+    g_resolve_count++;
     if (addr) {
         DSD_MEMSET(addr, 0, sizeof(*addr));
         addr->sin_family = AF_INET;
@@ -156,6 +165,28 @@ dsd_socket_connect(dsd_socket_t sock, const struct sockaddr* addr, int addrlen) 
     (void)sock;
     (void)addr;
     (void)addrlen;
+    return g_connect_result;
+}
+
+/* A pending connection that asks the cancel callback once, as dsd_socket_connect_bounded() does every 100 ms. */
+int
+dsd_socket_connect_bounded(dsd_socket_t sock, const struct sockaddr* addr, int addrlen, unsigned int timeout_ms,
+                           dsd_socket_cancel_fn cancelled, void* context, int* error_code) {
+    (void)sock;
+    (void)addr;
+    (void)addrlen;
+    g_bounded_connect_count++;
+    g_bounded_timeout_ms = timeout_ms;
+    if (cancelled && cancelled(context)) {
+        g_bounded_cancelled++;
+        if (error_code) {
+            *error_code = -1;
+        }
+        return -1;
+    }
+    if (error_code) {
+        *error_code = 0;
+    }
     return g_connect_result;
 }
 
@@ -250,6 +281,100 @@ test_connect_success_uses_rigctl_timeout(void) {
     assert(g_setsockopt_count == 1);
     assert(g_last_setsockopt_level == IPPROTO_TCP);
     assert(g_last_setsockopt_name == TCP_NODELAY);
+    return 0;
+}
+
+static int
+cancel_always(void* context) {
+    (void)context;
+    return 1;
+}
+
+/* Issue #634: the TCP audio input's menu connect and its reconnect connect within a bound, with the rigctl receive
+   timeout and options, and a reconnect connects to the address the running input's connection went to, looking
+   nothing up. */
+static int
+test_connect_bounded_resolves_once_and_bounds_the_connect(void) {
+    reset_stubs();
+    g_create_result = 81;
+    assert(ConnectBounded("audio.example", 7356, 1, NULL, NULL) == 81);
+    assert(g_resolve_count == 1);
+    assert(g_bounded_connect_count == 1);
+    assert(g_bounded_timeout_ms == DSD_CONNECT_BOUNDED_TIMEOUT_MS);
+    assert(g_recv_timeout_count == 1);
+    assert(g_last_setsockopt_name == TCP_NODELAY);
+    ConnectKeepTcpAudioAddress("audio.example", 7356); /* the switch took it */
+
+    /* A reconnect to the same host and port reuses the address. */
+    g_create_result = 82;
+    assert(ConnectBounded("audio.example", 7356, 0, NULL, NULL) == 82);
+    assert(g_resolve_count == 1);
+    assert(g_bounded_connect_count == 2);
+
+    /* A connect elsewhere that no switch took (it failed) leaves the running input's address alone. */
+    g_create_result = 87;
+    assert(ConnectBounded("other.example", 7400, 1, NULL, NULL) == 87);
+    assert(g_resolve_count == 2);
+    ConnectKeepTcpAudioAddress("audio.example", 7356); /* not the last connection: nothing changes */
+    assert(ConnectBounded("audio.example", 7356, 0, NULL, NULL) == 87);
+    assert(g_resolve_count == 2);
+
+    /* Another port, or a fresh connect, looks the host up. */
+    g_create_result = 83;
+    assert(ConnectBounded("audio.example", 7357, 0, NULL, NULL) == 83);
+    assert(g_resolve_count == 3);
+    assert(ConnectBounded("audio.example", 7357, 1, NULL, NULL) == 83);
+    assert(g_resolve_count == 4);
+    return 0;
+}
+
+/* The startup connection (Connect()) is kept too: the first reconnect of a TCP input started with -i tcp looks nothing
+   up either. */
+static int
+test_startup_connect_is_kept_for_the_reconnect(void) {
+    reset_stubs();
+    g_create_result = 88;
+    char host[] = "start.example";
+    assert(Connect(host, 7410) == 88);
+    assert(g_resolve_count == 1);
+    ConnectKeepTcpAudioAddress("start.example", 7410);
+    assert(ConnectBounded("start.example", 7410, 0, NULL, NULL) == 88);
+    assert(g_resolve_count == 1);
+    return 0;
+}
+
+static int
+test_connect_bounded_cancel_and_failures_close_the_socket(void) {
+    reset_stubs();
+    g_create_result = 84;
+    assert(ConnectBounded("audio.example", 7358, 1, cancel_always, NULL) == DSD_INVALID_SOCKET);
+    assert(g_bounded_cancelled == 1);
+    assert(g_close_count == 1);
+    assert(g_closed_sock == 84);
+    assert(g_recv_timeout_count == 0);
+
+    reset_stubs();
+    g_create_result = 85;
+    g_connect_result = -1;
+    assert(ConnectBounded("audio.example", 7359, 1, NULL, NULL) == DSD_INVALID_SOCKET);
+    assert(g_close_count == 1);
+    assert(g_closed_sock == 85);
+
+    /* A lookup that fails opens no socket, and leaves nothing for a reconnect to reuse. */
+    reset_stubs();
+    g_resolve_result = -1;
+    assert(ConnectBounded("nowhere.invalid", 7360, 1, NULL, NULL) == DSD_INVALID_SOCKET);
+    assert(g_bounded_connect_count == 0);
+    assert(g_close_count == 0);
+    g_resolve_result = 0;
+    g_create_result = 86;
+    assert(ConnectBounded("nowhere.invalid", 7360, 0, NULL, NULL) == 86);
+    assert(g_resolve_count == 2);
+
+    reset_stubs();
+    assert(ConnectBounded("", 7361, 1, NULL, NULL) == DSD_INVALID_SOCKET);
+    assert(ConnectBounded("audio.example", 0, 1, NULL, NULL) == DSD_INVALID_SOCKET);
+    assert(g_resolve_count == 0);
     return 0;
 }
 
@@ -1268,6 +1393,9 @@ main(void) {
     int rc = 0;
     rc |= test_connect_failure_cleanup();
     rc |= test_connect_success_uses_rigctl_timeout();
+    rc |= test_connect_bounded_resolves_once_and_bounds_the_connect();
+    rc |= test_connect_bounded_cancel_and_failures_close_the_socket();
+    rc |= test_startup_connect_is_kept_for_the_reconnect();
     rc |= test_setfreq_success_failure_and_cache();
     rc |= test_setmodulation_fallback_and_cache();
     rc |= test_setmodulation_kind_am_and_passband_restore();

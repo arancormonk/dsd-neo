@@ -327,6 +327,28 @@ udp_input_stop(dsd_opts* opts) {
  */
 int
 udp_input_read_sample(dsd_opts* opts, int16_t* out) {
+    // Block until we have a real sample (do not synthesize silence; it breaks symbol timing).
+    for (;;) {
+        const int got = udp_input_read_sample_wait(opts, out, 100U);
+        if (got >= 0) {
+            return got;
+        }
+    }
+}
+
+/**
+ * @brief Read one sample from the UDP ring, waiting at most @p timeout_ms for one.
+ *
+ * One timed wait on an empty ring, so a caller can do something else while the input is silent (the decoder applies
+ * queued commands; issue #634). A spurious wakeup can end the wait early, as a timeout.
+ *
+ * @param opts Decoder options containing UDP context.
+ * @param out [out] Receives one PCM16 sample.
+ * @param timeout_ms Longest wait for a sample.
+ * @return 1 with a sample, 0 on shutdown or a stopped input, -1 when none arrived in time.
+ */
+int
+udp_input_read_sample_wait(dsd_opts* opts, int16_t* out, unsigned int timeout_ms) {
     if (!opts || !opts->udp_in_ctx || !out) {
         return 0;
     }
@@ -334,15 +356,18 @@ udp_input_read_sample(dsd_opts* opts, int16_t* out) {
     if (!atomic_load(&ctx->running)) {
         return 0;
     }
-    // Block until we have a real sample (do not synthesize silence; it breaks symbol timing).
     dsd_mutex_lock(&ctx->ring.m);
-    while (ring_used(&ctx->ring) == 0) {
+    if (ring_used(&ctx->ring) == 0) {
         if (dsd_exitflag_load() || !atomic_load(&ctx->running)) {
             dsd_mutex_unlock(&ctx->ring.m);
             return 0;
         }
-        int ret = dsd_cond_timedwait(&ctx->ring.cv, &ctx->ring.m, 100); // 100ms timeout
-        (void)ret;                                                      // tolerate spurious wakeups
+        (void)dsd_cond_timedwait(&ctx->ring.cv, &ctx->ring.m, timeout_ms);
+        if (ring_used(&ctx->ring) == 0) {
+            const int stopped = dsd_exitflag_load() || !atomic_load(&ctx->running);
+            dsd_mutex_unlock(&ctx->ring.m);
+            return stopped ? 0 : -1;
+        }
     }
     *out = ctx->ring.buf[ctx->ring.tail];
     ctx->ring.tail = (ctx->ring.tail + 1) % ctx->ring.cap;

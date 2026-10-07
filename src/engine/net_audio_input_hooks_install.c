@@ -5,6 +5,7 @@
 
 #include <dsd-neo/runtime/net_audio_input_hooks.h>
 
+#include <dsd-neo/io/rigctl_client.h>
 #include <dsd-neo/io/tcp_input.h>
 #include <dsd-neo/io/udp_input.h>
 
@@ -21,6 +22,8 @@ dsd_engine_net_audio_input_hooks_install(void) {
     hooks.udp_start = udp_input_start;
     hooks.udp_stop = udp_input_stop;
     hooks.udp_read_sample = udp_input_read_sample;
+    hooks.udp_read_sample_wait = udp_input_read_sample_wait;
+    hooks.tcp_connect = ConnectBounded;
 
     dsd_net_audio_input_hooks_set(hooks);
 }
