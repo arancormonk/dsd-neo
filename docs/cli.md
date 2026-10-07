@@ -908,17 +908,21 @@ tone setting, and it runs with `-o null` too. Muting by tone is the separate
   about half a second. Near 0 dB in-band a noisy estimate can still confirm a neighbour for 200-260 ms before the same
   check drops it: over two hours of a continuous 0 dB carrier in offline seed sweeps, 68.2 Hz read as 67.0 or 69.3 Hz
   about ten times an hour and 161.0 or 166.7 Hz as a neighbour two or three times an hour; from 3 dB up 68.2 and 161.0
-  Hz never did. 150.0 and 151.4 Hz never read as each other on their values over two hours of 0 dB carrier; a radio 0.35
-  Hz off toward the other one did, 20 to 30 times an hour for 200 ms. At the start of a transmission the other tone of
-  the pair can be named for up to 200 ms before the right one takes over: at 0 dB, about once in 5,000 starts on the
-  table value and once in 100 for a radio 0.35 Hz off toward the other. DCS (DPL) signalling does not read as a CTCSS
+  Hz never did. 150.0 and 151.4 Hz are confirmed only after one more agreeing estimate while the estimate leans more
+  than 0.3 Hz toward the other tone, which costs them some confirmation time (at 0 dB the p95 is about 350 ms on the
+  table value and 390 ms for a radio 0.2 Hz off toward the other). They never read as each other on their values over
+  two hours of 0 dB carrier; a radio 0.35 Hz off toward the other one did, one to five times in two hours. At the start
+  of a transmission the other tone of the pair can still be named for up to 240 ms before the right one takes over: at
+  0 dB, about once in 100,000 starts on the table value, once in 9,500 for a radio 0.2 Hz off toward the other and
+  once in 1,400 for one 0.35 Hz off toward it. DCS (DPL) signalling does not read as a CTCSS
   tone: in the tests no DCS code did on a clean signal, nor did the codes nearest to a table tone at 10 or 0 dB in-band.
   Nor does a steady tone in the voice band, such as a 2300 Hz test tone alone on a clean carrier: a tone is confirmed
   only while it carries at least 1/100,000 (-50 dB) of the input's total power, far above what the decimating front end
   folds down from the voice band and far below any real CTCSS tone.
 - Transmitter tone error: a tone slightly off its table value still reads as that value. Over 10,000 seeded starts
-  each, tones 0.2 and 0.35 Hz off were confirmed within 400 ms at 10 dB in-band tone-to-noise on all starts and on all
-  but 1 (the slowest at 331 and 424 ms), and 0.2 Hz off at 0 dB on 98 starts in 100 (the slowest at 553 ms). A tone
+  each, tones of the standard table 0.2 and 0.35 Hz off were confirmed within 400 ms at 10 dB in-band tone-to-noise on
+  all starts and on all but 1 (the slowest at 331 and 424 ms), and 0.2 Hz off at 0 dB on 98 starts in 100 (the slowest
+  at 553 ms); 150.0 and 151.4 Hz set off toward each other take a little longer (above). A tone
   about 0.5 Hz or more off is confirmed late or not at all, and then reads `none`.
 - What is shown: the terminal's Call Info section carries an `Rx tone:` line (compact view too), and the Qt/Android
   monitor a `RECEIVED TONE` row. Both read `CTCSS 100.0 Hz` once a tone is confirmed, `detecting` while a carrier is
