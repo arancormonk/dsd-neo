@@ -28,25 +28,28 @@ carrier <= 1e-4, a 6 dB wanted carrier not read as carrier <= 1e-2, a carrier (w
 noise <= 1e-4, noise not read as noise <= 0.25.
 
 Timing checks run the C tracker itself (squelch_model_taps track) on each distinct plan:
-  - learning: a fresh tracker on a wanted carrier at 6, 10 and 20 dB CNR; the longest closed run after its first
-    window must stay under the path's hold;
+  - learning: a fresh tracker on a wanted carrier at 6, 10 and 20 dB CNR (a call lands mid-carrier); the longest
+    closed run from the call's first sample, the closed window its first decision takes included, must stay under
+    the path's hold;
   - known floor: 1 s of noise, then the carrier at the margin + 3 dB (margins 3, 10 and 30); the longest closed run
-    inside it must stay under the hold;
+    from the carrier's first sample must stay under the hold;
   - below the threshold: 1 s of noise, then a dead carrier whose power with the noise sits 3 dB under the opening
     level (margins 10 and 30; at 3 there is no carrier under it); the gate stays closed (open on at most 1 % of its
     samples);
   - closing delay: a 20 dB carrier dropping at 40 phases across a window, learning and with a known floor; the worst
     delay from the drop to the first closed flag must stay under L_MAX_MS, the bound EDACS budgets.
-The holds: EDACS releases after a closed run of 4 triplets (4 x 2880 samples at its output rate, 24 or 48 kHz; a
-device-forced rate is resampled to 48 kHz) less L_MAX_MS; the encoder's VOX after 11 closed 40 ms reads (440 ms).
+The holds: EDACS releases after a closed run of 4 triplets (4 x 2880 samples at its output rate) less L_MAX_MS, never
+under EDACS_MIN_HOLD_MS (two windows); its output rate is taken as the channel rate (a replay unresampled, the
+shortest hold) or 48 kHz on a device-forced chain, which is resampled there. The encoder's VOX releases after 11
+closed 40 ms reads (440 ms).
 
 Usage:
     python3 tools/squelch_paths_model.py [--quick] [--out DIR] [--build-dir build/dev-debug] [--jobs N]
                                          [--noise-windows N]
 
 Writes report.md and report.json under DIR (default build/squelch_paths_model/) and prints the verdict; exits 1 when a
-plan either path runs misses a target and is not one of ACCEPTED, the plans accepted with a reason. The full run takes about 15 minutes on 8 workers; --quick about a minute, too
-few windows to resolve 1e-4. Offline; CI does not run it.
+plan either path runs misses a target and is not one of ACCEPTED, the plans accepted with a reason. The full run takes
+about 20 minutes on 14 workers; --quick about a minute, too few windows to resolve 1e-4. Offline; CI does not run it.
 """
 
 from __future__ import annotations
@@ -95,6 +98,7 @@ EDACS_MIN_CHANNEL_RATE_HZ = 12000
 EDACS_TRIPLET_SAMPLES = 2880
 EDACS_HOLD_TRIPLETS = 4
 L_MAX_MS = 85.0
+EDACS_MIN_HOLD_MS = 80.0  # EDACS_ANALOG_GATE_MIN_HOLD_MS (src/protocol/edacs/edacs_internal.h)
 VOX_HOLD_S = 0.44
 TIMING_MARGINS_DB = (3, 10, 30)
 BELOW_MARGINS_DB = (10, 30)
@@ -122,7 +126,8 @@ def edacs_output_rate(plan: sm.RatePlan) -> int:
 
 
 def edacs_hold_s(plan: sm.RatePlan) -> float:
-    return EDACS_HOLD_TRIPLETS * EDACS_TRIPLET_SAMPLES / edacs_output_rate(plan) - L_MAX_MS / 1000.0
+    hold = EDACS_HOLD_TRIPLETS * EDACS_TRIPLET_SAMPLES / edacs_output_rate(plan) - L_MAX_MS / 1000.0
+    return max(hold, EDACS_MIN_HOLD_MS / 1000.0)
 
 
 def path_filters(plans: list[sm.RatePlan]) -> list[dict]:
@@ -469,14 +474,14 @@ def timing_job(job: dict) -> dict:
         count = round(variant["seconds"] * fs)
         for cnr in TIMING_LEARN_CNRS_DB:
             flags = track(exe, f, 10, carrier_plus_noise(variant, count, cnr))
-            run = longest_closed(flags[window:]) / fs
+            run = longest_closed(flags) / fs
             if run > out["learn_worst_s"]:
                 out["learn_worst_s"], out["learn_worst"] = run, f"{sm.variant_label(variant)} @ {cnr:g} dB"
         for margin in TIMING_MARGINS_DB:
             noise = sm.filtered_noise(rng, lead, taps, hb)
             sig = carrier_plus_noise(variant, count, margin + 3.0)
             flags = track(exe, f, margin, np.concatenate((noise, sig)))
-            run = longest_closed(flags[lead + 2 * window :]) / fs
+            run = longest_closed(flags[lead:]) / fs
             if run > out["known_worst_s"]:
                 out["known_worst_s"], out["known_worst"] = run, f"{sm.variant_label(variant)} @ +{margin} dB"
     dead = {"family": "cw", "mod": "none", "amount": 0.0, "offset": 0.0, "seconds": 1.0}

@@ -1553,7 +1553,9 @@ edacs_run_analog_sql_helper_cases(void) {
     rc |= edacs_expect(edacs_gate_hold_samples(24000) == 4U * triplet - 2040U, "analog-sql", "hold",
                        "four triplets less 85 ms at 24 kHz");
     rc |= edacs_expect(edacs_gate_hold_samples(0) == 4U * triplet, "analog-sql", "hold", "no rate, no delay");
-    rc |= edacs_expect(edacs_gate_hold_samples(1000000) == triplet, "analog-sql", "hold", "never under one triplet");
+    rc |= edacs_expect(edacs_gate_hold_samples(125000) == 10000U, "analog-sql", "hold",
+                       "an unresampled 125 kHz replay holds two windows (80 ms)");
+    rc |= edacs_expect(edacs_gate_hold_samples(1000000) == 80000U, "analog-sql", "hold", "never under two windows");
     const size_t hold = edacs_gate_hold_samples(48000);
     rc |= edacs_expect(edacs_gate_count(0U, hold) == 5 && edacs_gate_count(triplet, hold) == 4
                            && edacs_gate_count(hold - 1U, hold) == 3 && edacs_gate_count(hold, hold) == 0,
@@ -1838,65 +1840,82 @@ edacs_run_analog_call_disturbance_cases(void) {
     return rc;
 }
 
-/* The flags the real tracker makes on a carrier that drops at every phase of its 40 ms windows while it is still
-   learning (the landing mid-carrier a call always starts with): the call ends within the level squelch's time. */
+/* One call on the flags the real tracker makes at @p rate_hz on a carrier that lands while it is still learning (the
+   landing mid-carrier a call always starts with) and drops @p phase_ms into one of its 40 ms windows. At 48 kHz the
+   call ends no later than under the level squelch; at an unresampled 125 kHz, where four triplets are shorter than the
+   closing delay, within the delay and the hold's floor of the drop. Never before the drop: the call's own first window,
+   closed while the tracker decides, is not its end. */
 static int
-edacs_run_analog_call_real_tracker_cases(void) {
-    int rc = 0;
+edacs_run_analog_call_real_tracker_case(int rate, int phase_ms) {
     const long t = EDACS_ANALOG_TRIPLET_SAMPLES;
-    const int rate = 48000;
     dsd_squelch_floor_plan plan;
     if (dsd_squelch_floor_plan_design(&plan, NULL, 0, NULL, 0, rate) != 0) {
         return edacs_expect(0, "analog-call", "tracker", "designed the plan");
     }
-    for (int phase = 0; phase < 40; phase += 2) {
-        const long drop = (4L * t) + ((long)phase * rate) / 1000L;
-        const long total = drop + (8L * t);
-        float* iq = (float*)calloc((size_t)total * 2U, sizeof(float));
-        uint8_t* flags = (uint8_t*)calloc((size_t)total, sizeof(uint8_t));
-        dsd_squelch_floor* tracker = (dsd_squelch_floor*)calloc(1U, sizeof(dsd_squelch_floor));
-        if (!iq || !flags || !tracker) {
-            free(iq);
-            free(flags);
-            free(tracker);
-            return edacs_expect(0, "analog-call", "tracker", "allocated");
-        }
-        uint32_t lcg = 7U + (uint32_t)phase;
-        for (long i = 0; i < total; i++) {
-            /* Complex Gaussian noise (Box-Muller), as a receiver's noise is behind its channel filter: 20 dB under the
-               carrier. */
-            lcg = (lcg * 1664525U) + 1013904223U;
-            const double u1 = ((double)(lcg >> 8) + 1.0) / 16777217.0;
-            lcg = (lcg * 1664525U) + 1013904223U;
-            const double u2 = (double)(lcg >> 8) / 16777216.0;
-            const double radius = 0.1 * sqrt(-log(u1));
-            double re = radius * cos(2.0 * 3.14159265358979323846 * u2);
-            double im = radius * sin(2.0 * 3.14159265358979323846 * u2);
-            if (i < drop) {
-                const double ph = 2.5 * sin(2.0 * 3.14159265358979323846 * 1000.0 * (double)i / (double)rate);
-                re += cos(ph);
-                im += sin(ph);
-            }
-            iq[(size_t)i * 2U] = (float)re;
-            iq[((size_t)i * 2U) + 1U] = (float)im;
-        }
-        dsd_squelch_floor_set_plan(tracker, &plan);
-        dsd_squelch_floor_set_margin(tracker, 10);
-        dsd_squelch_floor_reset(tracker);
-        dsd_squelch_floor_process(tracker, iq, (int)total, flags);
+    const long drop = (long)rate + ((long)phase_ms * rate) / 1000L;
+    const long total = drop + (8L * t) + ((long)rate / 4L);
+    float* iq = (float*)calloc((size_t)total * 2U, sizeof(float));
+    uint8_t* flags = (uint8_t*)calloc((size_t)total, sizeof(uint8_t));
+    dsd_squelch_floor* tracker = (dsd_squelch_floor*)calloc(1U, sizeof(dsd_squelch_floor));
+    if (!iq || !flags || !tracker) {
         free(iq);
-        free(tracker);
-        edacs_call_defaults(drop, (unsigned int)rate);
-        g_call_flags = flags;
-        g_call_flags_len = total;
-        const edacs_call_result gate = edacs_run_analog_call(DSD_SQUELCH_MODE_AUTO);
         free(flags);
-        g_call_flags = NULL;
-        if (!(gate.released && gate.reads <= edacs_level_release(drop) && gate.reads >= drop)) {
-            DSD_FPRINTF(stderr, "  real tracker, drop at %d ms of a window: released %d after %ld (level %ld)\n", phase,
-                        gate.released, gate.reads, edacs_level_release(drop));
-            rc |= 1;
+        free(tracker);
+        return edacs_expect(0, "analog-call", "tracker", "allocated");
+    }
+    uint32_t lcg = 7U + (uint32_t)phase_ms + (uint32_t)rate;
+    for (long i = 0; i < total; i++) {
+        /* Complex Gaussian noise (Box-Muller), as a receiver's noise is behind its channel filter: 20 dB under the
+           carrier. */
+        lcg = (lcg * 1664525U) + 1013904223U;
+        const double u1 = ((double)(lcg >> 8) + 1.0) / 16777217.0;
+        lcg = (lcg * 1664525U) + 1013904223U;
+        const double u2 = (double)(lcg >> 8) / 16777216.0;
+        const double radius = 0.1 * sqrt(-log(u1));
+        double re = radius * cos(2.0 * 3.14159265358979323846 * u2);
+        double im = radius * sin(2.0 * 3.14159265358979323846 * u2);
+        if (i < drop) {
+            const double ph = 2.5 * sin(2.0 * 3.14159265358979323846 * 1000.0 * (double)i / (double)rate);
+            re += cos(ph);
+            im += sin(ph);
         }
+        iq[(size_t)i * 2U] = (float)re;
+        iq[((size_t)i * 2U) + 1U] = (float)im;
+    }
+    dsd_squelch_floor_set_plan(tracker, &plan);
+    dsd_squelch_floor_set_margin(tracker, 10);
+    dsd_squelch_floor_reset(tracker);
+    dsd_squelch_floor_process(tracker, iq, (int)total, flags);
+    free(iq);
+    free(tracker);
+    edacs_call_defaults(drop, (unsigned int)rate);
+    g_call_cap = total;
+    g_call_flags = flags;
+    g_call_flags_len = total;
+    const edacs_call_result gate = edacs_run_analog_call(DSD_SQUELCH_MODE_AUTO);
+    free(flags);
+    g_call_flags = NULL;
+    const long hold = (long)edacs_gate_hold_samples(rate);
+    const long bound = (DSD_SQUELCH_CLOSE_DELAY_MS * (long)rate) / 1000L;
+    const long latest = rate <= 48000 ? edacs_level_release(drop) : drop + bound + hold + t;
+    if (!(gate.released && gate.reads <= latest && gate.reads >= drop)) {
+        DSD_FPRINTF(stderr, "  real tracker at %d Hz, drop at %d ms of a window: released %d after %ld (latest %ld)\n",
+                    rate, phase_ms, gate.released, gate.reads, latest);
+        return 1;
+    }
+    return 0;
+}
+
+static int
+edacs_run_analog_call_real_tracker_cases(void) {
+    int rc = 0;
+    for (int phase = 0; phase < 40; phase += 2) {
+        rc |= edacs_run_analog_call_real_tracker_case(48000, phase);
+    }
+    /* An unresampled 125 kHz replay (DSD_NEO_RESAMP=off): the hold's floor keeps the tracker's first decision from
+       ending the call. */
+    for (int phase = 0; phase < 40; phase += 8) {
+        rc |= edacs_run_analog_call_real_tracker_case(125000, phase);
     }
     return edacs_expect(rc == 0, "analog-call", "tracker",
                         "the real tracker's flags end the call within the level squelch's time");

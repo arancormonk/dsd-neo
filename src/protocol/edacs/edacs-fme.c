@@ -379,8 +379,9 @@ edacs_gate_hold_samples(int rate_hz) {
         return hold;
     }
     const size_t delay = (size_t)(((int64_t)DSD_SQUELCH_CLOSE_DELAY_MS * (int64_t)rate_hz + 999) / 1000);
-    if (delay + (size_t)EDACS_ANALOG_TRIPLET_SAMPLES >= hold) {
-        return (size_t)EDACS_ANALOG_TRIPLET_SAMPLES;
+    const size_t floor = (size_t)(((int64_t)EDACS_ANALOG_GATE_MIN_HOLD_MS * (int64_t)rate_hz + 999) / 1000);
+    if (delay >= hold || hold - delay < floor) {
+        return floor;
     }
     return hold - delay;
 }
