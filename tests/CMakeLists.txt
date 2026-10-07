@@ -12814,6 +12814,30 @@ if(DSD_HAS_RADIO)
         )
     endfunction()
 
+    # A jitter leg that names AFTER_MS must sleep after a read that ended there or
+    # later: a leg whose budget runs out before its case's retune, gap or squelch edge
+    # perturbs nothing past it. Negative control: AFTER_MS 99999 lies past the end of
+    # nfm_burst_synth's 750 ms, so the runner must fail the leg on that check (its
+    # message is printed only by that FATAL_ERROR, which CMake wraps at spaces).
+    add_test(
+        NAME DECODE_IQ_NEG_DETERMINISM_JITTER_AFTER
+        COMMAND
+            ${CMAKE_COMMAND}
+            "-DHOST_BIN=$<TARGET_FILE:dsd-neo_test_replay_jitter>" "-DMODE=-fA"
+            "-DFIXTURE=${_DSD_NEO_IQ_FIXTURE_DIR}/nfm_burst_synth.iq.json"
+            "-DRUNS=fast;jitter:7:120:64:99999" "-DEXPECTED=REPLAY STREAM"
+            "-DMIN_FSK=0" "-DMIN_CQPSK=0" "-DMIN_TOTAL=0" -P
+            "${CMAKE_CURRENT_SOURCE_DIR}/iq_determinism_check.cmake"
+    )
+    set_tests_properties(
+        DECODE_IQ_NEG_DETERMINISM_JITTER_AFTER
+        PROPERTIES
+            LABELS "iq-decode;iq-determinism"
+            TIMEOUT 600
+            PASS_REGULAR_EXPRESSION
+                "before[ \n]+99999[ \n]+ms,[ \n]+perturbed[ \n]+nothing[ \n]+past[ \n]+it"
+    )
+
     # nxdn48_after_retune under -fa: the SPS hunt, the RETUNE/MUTE/RESET/MUTE group and the
     # call after it. Two fast replays, two with seeded sleeps after reads and one with short
     # reads must match the first. Each leg measured fsk_samples=582330 cqpsk_symbols=8189
@@ -12832,6 +12856,8 @@ if(DSD_HAS_RADIO)
     # more, and it still holds 83 % of the capture to the FSK path. The two together,
     # 582,330 + 8 x 8,189 = 647,842 front-end samples, do not depend on that split at all,
     # so MIN_TOTAL 647,000 holds every leg to all but 1,000 of the capture's 648,000.
+    # The jitter legs must still be sleeping past the RETUNE/MUTE/RESET/MUTE group, which
+    # ends at 7,680 ms of capture time (7.5 s of samples and the two MUTEs): AFTER_MS 7700.
     set(_nxdn48_retune_min_fsk 535000)
     set(_nxdn48_retune_min_cqpsk 5000)
     set(_nxdn48_retune_min_total 647000)
@@ -12839,7 +12865,7 @@ if(DSD_HAS_RADIO)
         DECODE_IQ_NXDN48_AFTER_RETUNE_AUTO_DETERMINISM
         nxdn48_after_retune
         -fa
-        "fast;fast;jitter:7:120;jitter:11:120;short:13"
+        "fast;fast;jitter:7:120:64:7700;jitter:11:120:64:7700;short:13"
         "Src=901"
         ${_nxdn48_retune_min_fsk}
         ${_nxdn48_retune_min_cqpsk}
@@ -12871,7 +12897,7 @@ if(DSD_HAS_RADIO)
         DECODE_IQ_NXDN48_AFTER_RETUNE_AUTO_DETERMINISM_REALTIME_JITTER
         nxdn48_after_retune
         -fa
-        "fast;realtime+jitter:17:120"
+        "fast;realtime+jitter:17:120:64:7700"
         "Src=901"
         ${_nxdn48_retune_min_fsk}
         ${_nxdn48_retune_min_cqpsk}
@@ -12887,7 +12913,9 @@ if(DSD_HAS_RADIO)
         # same samples (the burst's 280 ms, 14 writes of 960). The monitor reads one
         # sample at a time, so there is no read for a short-read leg to cut, and 280 ms
         # of audio cannot back up a stalled sink; the NXDN case below covers that. The
-        # noise squelch gates the same way (its 240 ms, 12 writes).
+        # noise squelch gates the same way (its 240 ms, 12 writes). One read a sample would
+        # spend the jitter budget in the first 30 ms, so the jitter legs sleep after about
+        # one read in 1,500 and must still be sleeping past the carrier's end (550 ms).
         foreach(
             _sql_case
             IN
@@ -12903,7 +12931,7 @@ if(DSD_HAS_RADIO)
                 DECODE_IQ_ANALOG_SQL_${_sql_kind}_DETERMINISM
                 ${_sql_fixture}
                 "${_sql_mode}"
-                "sink:free;sink:free+jitter:7:120;sink:free+jitter:11:120;sink:free+realtime"
+                "sink:free;sink:free+jitter:7:120:1500:550;sink:free+jitter:11:120:1500:550;sink:free+realtime"
                 "monitor_samples=359[0-9][0-9] .*REPLAY SINK: stream=0 rate=48000 channels=1 async=1 writes=1[1-6] "
                 0
                 0
@@ -12929,12 +12957,13 @@ if(DSD_HAS_RADIO)
     # in, after the gap, and decodes the call between the two. On real time a fast leg
     # finished before the cooldown ran out and printed only the first. Each leg measured
     # fsk_samples=287933 cqpsk_symbols=0 media_ms=18000 (all but 67 of the capture's 288,000
-    # samples, plus the gap); the floors sit just under that.
+    # samples, plus the gap); the floors sit just under that. The jitter leg must still be
+    # sleeping after the gap, which ends at 16 s of capture time.
     dsd_neo_add_iq_determinism_test(
         DECODE_IQ_NXDN48_GAP_ADVISORY_DETERMINISM
         nxdn48_gap
         -fi
-        "fast;realtime;jitter:29:120"
+        "fast;realtime;jitter:29:120:64:16000"
         "RF Level HOT.*Src=901.*RF Level HOT"
         287000
         0
@@ -12965,11 +12994,13 @@ if(DSD_HAS_RADIO)
     # chain for the whole capture (fsk_samples=0 cqpsk_symbols=11992 media_ms=2000, so
     # 95,936 of its 96,000 samples), and fast, short-read and jitter legs must decode its
     # SACCH the same way. MIN_CQPSK 11,900 and MIN_TOTAL 95,000 sit just under that.
+    # The decoder takes this capture's 11,992 symbols in a few dozen reads, so the jitter
+    # leg sleeps after about one read in 2 and must still be sleeping past 1.5 s.
     dsd_neo_add_iq_determinism_test(
         DECODE_IQ_P25P2_CC_DETERMINISM
         p25p2_cc
         -f2
-        "fast;short:19;jitter:23:120"
+        "fast;short:19;jitter:23:120:2:1500"
         "P25p2 SACCH"
         0
         11900

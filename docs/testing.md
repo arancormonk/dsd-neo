@@ -327,7 +327,11 @@ The host is `dsd-neo_test_replay_jitter` (`tests/engine/replay_jitter.c`). It ru
 `dsd-neo` would get and perturbs only the decoder's side of the replay, through the stream read hook: with
 `--replay-jitter-seed N` it sleeps a seeded U(0, `--replay-jitter-max-ms`) ms (120 by default) after about one read in
 `--replay-jitter-every` (64), within `--replay-jitter-budget-ms` (1.5 s, which cannot be raised); with
-`--replay-short-reads N` it caps each read at a seeded 1 to count samples. Where GNU ld can replace the audio device
+`--replay-short-reads N` it caps each read at a seeded 1 to count samples. Its `REPLAY JITTER:` line counts only what
+perturbed the decoding: `sleeps` are sleeps with a positive delay after a read that returned tagged samples (a sleep
+after the end of the stream or after a failed read perturbs nothing), `last_sleep_media_ms` is the capture time the
+read before the last of them ended at, and `shortened_reads` are reads the cap made return fewer samples than the same
+read asked in full would have, from the read's own batch tag (a cap above what the batch still held cuts nothing). Where GNU ld can replace the audio device
 layer (`--wrap=dsd_audio_*`, the seam `CORE_AUDIO_GAIN` uses; not on Apple or Windows), `--replay-sink free|stalled`
 gives the engine a test sink with the real backends' asynchronous contract (a 1 s ring, writes that never wait, a
 pump thread) whose device takes every chunk or stalls after the first. The host fails a leg whose stalled sink never
@@ -340,14 +344,21 @@ When the engine returns it prints `REPLAY WALL: wall_ms=…`, the real time the 
 
 The runner is `tests/iq_determinism_check.cmake`, registered through
 `dsd_neo_add_iq_determinism_test(name fixture mode runs expected min_fsk min_cqpsk min_total [NOT_EXPECTED regex])`.
-RUNS is a `;` list of at least two legs, each joining parts with `+`: `fast` or `realtime`, `jitter:SEED:MAX_MS`,
-`short:SEED`, and `sink:free` or `sink:stalled` (which plays to `-o pulse` in place of `-o null`). Each leg is one
+RUNS is a `;` list of at least two legs, each joining parts with `+`: `fast` or `realtime`,
+`jitter:SEED:MAX_MS[:EVERY[:AFTER_MS]]` (EVERY passes `--replay-jitter-every`), `short:SEED`, and `sink:free` or
+`sink:stalled` (which plays to `-o pulse` in place of `-o null`). Each leg is one
 process, held to `iq_decode_check.cmake`'s exit-status and sanitizer checks, to EXPECTED and, when given, to
 NOT_EXPECTED. A leg that prints `Retune ignored during IQ replay` fails as misconfigured: only `-T` and `-Y` print it,
 and they are outside the guarantee. A leg must also show that its perturbation happened: the host's `REPLAY JITTER`
-line has to report `sleeps` above 0 on a leg with a jitter part and `shortened_reads` above 0 on one with a short part,
-and a realtime leg has to take at least 90 % of its `REPLAY STREAM` `media_ms` in wall time, so an inert option or a
-replay rate the host ignores fails the case instead of comparing two identical fast runs. The wall time is the host's
+line has to report `sleeps` above 0 on a leg with a jitter part, `last_sleep_media_ms` at or past AFTER_MS on one that
+names it, and `shortened_reads` above 0 on one with a short part, and a realtime leg has to take at least 90 % of its
+`REPLAY STREAM` `media_ms` in wall time, so an inert option or a replay rate the host ignores fails the case instead
+of comparing two identical fast runs. AFTER_MS keeps a jitter leg honest about where it perturbs: the budget is spent
+in sleeps after reads, so a case whose decoder reads often (the monitor reads one sample at a time) spends it in its
+first tens of milliseconds unless EVERY spreads the sleeps out. Each jitter leg names the capture time of its case's
+transition (a retune group, a capture gap, a squelch edge) as AFTER_MS and an EVERY that reaches past it, and
+`DECODE_IQ_NEG_DETERMINISM_JITTER_AFTER` holds the runner to the check: an AFTER_MS past the end of the capture must
+fail the leg. The wall time is the host's
 `REPLAY WALL` `wall_ms`, never a clock the runner reads: CMake's own timestamps read whole seconds before 3.23 (and
 follow `SOURCE_DATE_EPOCH`), which would time the 85 ms `rf_clip` capture's realtime leg at 0 ms. A leg without exactly
 one `REPLAY WALL` line carrying `wall_ms` fails, whatever its rate. `IQ_DETERMINISM_CHECK_WALL`
