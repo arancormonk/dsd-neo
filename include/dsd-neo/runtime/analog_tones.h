@@ -11,8 +11,10 @@
  * many radios offer as a 51st (issue #518 follow-up), held in tenths of a hertz so every consumer
  * compares integers. 150.0 Hz sits 1.4 Hz from 151.4 Hz, the closest pair in the table: the
  * detector gives each of the two a snap and hold gate of half that distance, so no estimate is
- * within reach of both (src/dsp/analog_ctcss.c). A noisy estimate, or a radio set well off its
- * tone toward the other, can still name the other for a few hops (<dsd-neo/dsp/analog_rx.h>).
+ * within reach of both, and locks either only after a third agreeing hop while its estimate leans
+ * toward the other (src/dsp/analog_ctcss.c). A noisy estimate, or a radio set well off its tone
+ * toward the other, can still now and then name the other for a few hops
+ * (<dsd-neo/dsp/analog_rx.h>).
  *
  * DCS (issue #523): the standard 104-code set (023 ... 754), each code a 9-bit value written as
  * three octal digits and held as that value (023 octal = 19). A code's 23-bit word is the Golay

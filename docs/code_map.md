@@ -1783,7 +1783,11 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
     table value, at least 1e-5 (-50 dB) of the raw input's full-band power, which no folded voice-band residue reaches
     and every tone the tests lock exceeds by 24 dB or more, a phase fit whose reduced chi-square against the band's
     own noise stays under 6, estimates within 0.5 Hz of each other, and less than 0.08 of phase-locked second and
-    third harmonic power: a voice fundamental has harmonics, a tone does not). It holds while its own bin's estimate,
+    third harmonic power: a voice fundamental has harmonics, a tone does not). A tone of the close 150.0/151.4 Hz pair
+    (`ctcss_close_neighbour()`) needs three such hops while the candidate's newest estimate leans more than 0.3 Hz toward
+    the other tone (`k_pair_lean_hz`, `DSD_ANALOG_CTCSS_PAIR_LEAN_HOPS`; issue #623): one `ctcss_cand_ready()` test
+    for the 250 ms window, the late windows and a lock handed from another tone alike, where noise most often carries an
+    estimate of one tone of the pair into the other's acquisition gate. It holds while its own bin's estimate,
     re-measured every hop, stays within the tone's snap gate and the newest 100 ms keep rho >= 0.15 at the locked
     frequency and the same -50 dB of the full band; it is lost after four failing hops or at once on a reverse burst
     (a >100 degree phase jump between strong sub-blocks, which catches the 180 degree burst and the 120 and 240 degree

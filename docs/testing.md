@@ -568,14 +568,24 @@ user guide states; the per-row pins are tighter and record what these seeds meas
   the seeds and pins reproduce, at four input rates, at +10 and 0 dB in-band tone-to-noise, lock within 400 ms of an
   onset placed anywhere inside a hop. 150.0 Hz, which joined the table later (issue #518 follow-up), has rows of its
   own: at every rate at +10, +3 and 0 dB it locks within the lock contract on 20 seeds each, and with 151.4 Hz, each on
-  its value and 0.2 or 0.35 Hz either side, it never reads as the other on its seeds. Tones off their table value by
-  transmitter encoder error lock on that value: 0.2 and 0.35 Hz
+  its value and 0.2 or 0.35 Hz either side, it never reads as the other on its seeds. The pair has rows of its own for
+  the third agreeing hop a candidate needs while its estimate leans more than 0.3 Hz toward the other tone (issue #623):
+  on a clean carrier each tone set 0.4 Hz toward the other locks exactly one hop after the same tone set 0.4 Hz away,
+  and 146.2 Hz on the same hop either way; starting in noise anywhere in a hop, on seeds of their own, 200 starts per
+  row, on the value and 0.2 Hz toward the other at 0 dB and 0.35 Hz toward it at +10 dB, each locks only its own tone
+  (p95 347, 389 and 330 ms); 93 starts that named the other tone before the rule, rebuilt from the seeds of the sweep
+  the rule was tuned on (the 73 of its 80 such starts in the contract's conditions that the rule stops, and 20 of the
+  281 it stops set 0.35 Hz toward the other at 0 and +3 dB), now lock only their own (the slowest at 474 ms); the 22
+  slowest starts of the long-run sweep below, the late windows' locks among them, lock within the 700 ms ceiling (the
+  slowest at 664 ms); and a locked tone moved to the other tone of the pair, or between 151.4 and 146.2 Hz, at +10 and 0
+  dB, is dropped within 450 ms of the move (337 ms at the slowest) while the new one reads within 700 ms (560 ms), never
+  a third tone. Tones off their table value by transmitter encoder error lock on that value: 0.2 and 0.35 Hz
   off within 400 ms at +10 dB, and the exact tone at 0 dB on a second seed set within 400 ms too; 0.2 Hz off at 0 dB,
   99% of the starts lock within 400 ms and the slowest at 468 ms (the row asserts at least 95% and 500 ms). The lock
   gate is 0.5 Hz, so encoder error trades against lock time. The 32 slowest of the 2,000,000 long-run starts at 0 dB
   as the 250 ms window alone locked them (8 exact tones and 24 tones 0.2 Hz off, from 701 ms to 1,128 ms), rebuilt from
   the sweep's own seeds, each lock within the 700 ms ceiling (the slowest at 509 ms). Under transmitter-filtered speech 10 dB above the tone
-  every tone locks within 500 ms and holds that one lock to the end of the run; a tone held 15 s at 0 dB, at each rate,
+  every tone, 150.0 Hz included, locks within 500 ms and holds that one lock to the end of the run; a tone held 15 s at 0 dB, at each rate,
   locks once and is never lost.
 - Rejection: 67.0/69.3/71.9 Hz are each identified; off-table tones lock nothing over 3 s runs down to 0 dB in-band
   (152.6 Hz, 1.2 Hz above 151.4, and 68.2, 161.0 and 166.7 Hz between two table tones), nor do 100.85 and 100.9 Hz,
@@ -608,9 +618,10 @@ user guide states; the per-row pins are tighter and record what these seeds meas
   contract, and the 4 of 200 that are missed end with the carrier drop, within its 200 ms hangover (the row asserts 89%
   and at most 5 missed); a 120 or 240 degree burst inside the sub-block a tone locks on -- driven through the detector
   alone at +10 dB, every tone on its table value and 0.15 Hz either side, the step at every eighth sample of that
-  sub-block -- ends the lock within 150 ms after every one of the 2,887 steps that still lock the tone on that hop, and
-  after all but 15 of 2,859 when the tone has just moved there from another table tone it was locked on (2,882 and
-  2,852 before 150.0 Hz's bin joined the detector; 248 of those
+  sub-block -- ends the lock within 150 ms after every one of the 2,879 steps that still lock the tone on that hop, and
+  after all but 15 of 2,851 when the tone has just moved there from another table tone it was locked on (2,887 and
+  2,859 before 151.4 Hz's leaning candidates waited for a third hop, issue #623, and 2,882 and 2,852 before 150.0 Hz's
+  bin joined the detector; 248 of those
   300 tones lock in place of the old tone's lock, the rest just after losing it); the rows assert at most 2 and 20, and
   measured against the lock hop's own estimate 115 and 143 were missed; a tone that stops under a carrier that keeps
   dropping out (up for 20 ms of every 40 to 180 ms,
@@ -664,16 +675,34 @@ identical results), and they are the numbers the user guide quotes:
   and 25 times, 161.0 Hz 5 and 5, 166.7 Hz 6 and 4, each for 200-260 ms; at +3, +6 and +10 dB, 68.2 and 161.0 Hz never
   locked in two hours. Before 150.0 Hz joined the table it never locked in two hours either; with it, 152.6 Hz (1.2 Hz
   above 151.4, whose gate is now 0.7 Hz) locked 151.4 Hz 2 and 3 times, each for 200 ms.
-- 150.0 and 151.4 Hz (issue #518 follow-up), 1.4 Hz apart with a 0.7 Hz gate each, 10,000 starts per row (every rate,
-  onset anywhere in a hop, the offset alternately toward and away from the other tone): on the table value at +10 dB,
-  p95 257 and 260 ms and never the other tone; at 0 dB, p95 343 ms for both, 0.32% and 0.37% beyond 400 ms, and the
-  other tone named on 3 and 1 starts; 0.2 Hz off at 0 dB, p95 358 and 362 ms, 1.53% and 1.68% beyond 400 ms, the other
-  tone on 4 and 3; 0.35 Hz off at +10 dB, p95 283 and 292 ms, the other tone on 0 and 12; 0.35 Hz off at 0 dB, p95 426
-  and 430 ms, the other tone on 50 and 61. Every such start was toward the other tone, named it for 9-202 ms (mostly
-  100-150) while the window still held the noise before the onset, which pulls the estimate toward the nearer bin, and
-  then locked its own value. Two hours of continuous carrier at 0 dB, at 48 and 8 kHz: on their values, never the other
-  tone and never a drop; 0.35 Hz toward each other, the other tone 55 and 38 times (150.35 Hz) and 51 and 57 times
-  (151.05 Hz), each for 200 ms. The ad-hoc driver links the same generators and core at -O2.
+- 150.0 and 151.4 Hz (issue #518 follow-up), 1.4 Hz apart with a 0.7 Hz gate each, and since issue #623 a third agreeing
+  hop for a candidate whose newest estimate leans more than 0.3 Hz toward the other tone, which was chosen on a sweep of
+  seeds of its own and measured on another: 10,000 starts per row (every rate, the onset anywhere in a hop after 300 ms
+  of noise, offsets toward and away from the other tone in rows of their own; figures for 150.0 and 151.4 Hz). On the
+  table value at +10 dB, p95 256 and 262 ms and never the other tone; at +3 dB p95 306 and 309 ms, never the other; at 0
+  dB p95 352 and 351 ms, 0.58% and 0.55% beyond 400 ms, never the other. 0.2 Hz toward the other at 0 dB, p95 390 and
+  393 ms, 3.6% and 4.0% beyond 400 ms, the other tone on 0 and 3 starts; at +3 dB on 0 and 1; at +10 dB never. 0.35 Hz
+  toward the other at +10 dB, p95 325 and 344 ms, never the other; at 0 dB, outside the contract, p95 476 and 484 ms,
+  the other on 5 and 9. Starts set away from the other tone lock about as before (0.2 Hz away at 0 dB, p95 361 and 363
+  ms; 360 and 363 before). 100,000 starts per row at 0 dB: on the value the other tone on 2 and 0 starts (p95 350 and
+  352 ms), 0.2 Hz toward it on 12 and 9 (p95 391 and 394 ms), 0.2 Hz away on 1 and 0, and no start slower than 664 ms.
+  Each named the other for at most 236 ms. The same seeds before the rule: on the value the other tone on 9 and 17 of
+  the 100,000 starts at 0 dB, 0.2 Hz toward it on 78 and 154, and 0.35 Hz toward it on 79 and 128 of 10,000 at 0 dB and
+  0 and 14 at +10 dB (each start watched for 1 s after its onset). In the sweep the rule was tuned on, on 282 of the 309
+  starts whose first lock named the other tone the candidate leaned more than 0.3 Hz toward the true one, as noise that
+  carries an estimate into the other tone's gate leaves it. With the tone from the reception's start (a squelched
+  carrier) a start locks on a hop's end, and set 0.2 Hz toward the other at 0 dB the p95 is the eighth hop for both
+  tones (400 and 402 ms; a hop is 50.2 ms at 44.1 kHz), as it was for 151.4 Hz before the rule (150.0 Hz's was the
+  seventh, 352 ms); from the reception's start the other tone was named on 0 of 10,000 starts each 0.2 Hz toward it (1
+  and 4 before) and 5 and 5 set 0.35 Hz toward it (59 and 78). Two hours of continuous carrier at 0 dB, at 48 and 8 kHz:
+  on their values never the other tone; 0.2 Hz toward each other, never (3, 0, 0 and 2 times before the rule); 0.35 Hz
+  toward each other, the other tone 1 and 2 times (150.35 Hz) and 5 and 1 times (151.05 Hz), each for up to 200 ms (50,
+  37, 57 and 41 before). Under the tone policy with an allow list, a tone starting 300-350 ms after the carrier opened,
+  set 0.2 Hz toward the other at 0 dB, locked after the 800 ms window had run out on 11 and 15 of 5,000 starts (0 and 5
+  before the rule), turning the reception audible at its lock as before (first audible p95 703 ms from the carrier, 700
+  ms before); with the tone from the reception's start, never. The ad-hoc driver links the same generators and core at
+  -O2; every other tone's verdicts are bit-identical with and without the rule (200 starts each at 0 and +10 dB, on the
+  value and 0.2 Hz either side).
 - Holds, 200 runs of 20 s: at 0 and +3 dB a held tone never dropped. Under transmitter-filtered speech 10 dB above the
   tone, 300 runs of 20 s: 4 drops, all on 250.3 and 254.1 Hz, each reading `none` for 340-740 ms before the same tone
   locked again.

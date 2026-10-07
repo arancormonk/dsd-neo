@@ -280,15 +280,14 @@ samples_to_ms(double fs, int64_t samples) {
 static dsd_analog_rx_core g_core;
 
 /* Lock time of a tone at @p hz that should read as the table tone @p expect_tenths, measured
-   from its onset, with the onset landing anywhere inside a hop and the run lasting
-   @p watch_ms past it. Returns -1 if it never locked; asserts it never locked anything else. */
+   from its onset at @p onset_ms of noise, the run lasting @p watch_ms past it. Returns -1 if it
+   never locked; asserts it never locked anything else. */
 static double
-lock_time_as_ms(int fs, double hz, int expect_tenths, double snr_db, uint64_t seed, int onset_offset_ms,
-                double watch_ms) {
+lock_time_at_ms(int fs, double hz, int expect_tenths, double snr_db, uint64_t seed, double onset_ms, double watch_ms) {
     dsd_analog_rx_core_init(&g_core);
     signal_src src;
     signal_init(&src, fs, seed, hz, snr_db);
-    src.tone_on = ms_to_samples(fs, 300.0 + onset_offset_ms);
+    src.tone_on = ms_to_samples(fs, onset_ms);
     const int block = fs / 1000 > 0 ? fs / 1000 : 1;
     const int64_t total = src.tone_on + ms_to_samples(fs, watch_ms);
     const run_result r = run_signal(&g_core, &src, total, block, expect_tenths);
@@ -300,6 +299,13 @@ lock_time_as_ms(int fs, double hz, int expect_tenths, double snr_db, uint64_t se
         return -1.0;
     }
     return samples_to_ms(fs, r.first_lock - src.tone_on);
+}
+
+/* The same with the onset landing anywhere inside a hop: @p onset_offset_ms after 300 ms of noise. */
+static double
+lock_time_as_ms(int fs, double hz, int expect_tenths, double snr_db, uint64_t seed, int onset_offset_ms,
+                double watch_ms) {
+    return lock_time_at_ms(fs, hz, expect_tenths, snr_db, seed, 300.0 + onset_offset_ms, watch_ms);
 }
 
 /* Lock time of a tone exactly on its table value. */
@@ -472,8 +478,9 @@ test_tone_150_locks_within_bound(void) {
  * side (an encoder's error, toward the other tone included), at +10, +3 and 0 dB in-band, at 8 and
  * 48 kHz, over 3 s, locks nothing but itself on these seeds, and from 3 dB up, or within 0.2 Hz of
  * its value, it does lock. Each tone's gate is 0.7 Hz, half the distance between them
- * (ctcss_gate_hz()). Not never: at a tone's start, and near 0 dB with a tone set toward the other,
- * the other can be named for a few hops; docs/testing.md has the long-run rates.
+ * (ctcss_gate_hz()). Not never: near 0 dB, with a tone set toward the other, the other can still
+ * be named for a few hops, rarely now that a candidate leaning toward the other tone needs a
+ * third agreeing hop (issue #623; the rows below); docs/testing.md has the long-run rates.
  */
 static void
 test_150_and_151_4_never_cross(void) {
@@ -507,6 +514,311 @@ test_150_and_151_4_never_cross(void) {
             }
         }
     }
+}
+
+/* Issue #623: a tone of the 150.0/151.4 Hz pair @p toward_hz toward the other tone of the pair (negative: away). */
+static double
+pair_tone_hz(int tenths, double toward_hz) {
+    return ((double)tenths / 10.0) + (tenths == 1500 ? toward_hz : -toward_hz);
+}
+
+/* Onset of a start rebuilt from the long-run sweeps (docs/testing.md): 300 ms of noise and @p onset_us more. */
+static double
+sweep_onset_ms(int onset_us) {
+    return 300.0 + ((double)onset_us / 1000.0);
+}
+
+/*
+ * Issue #623: a candidate for 150.0 or 151.4 Hz whose newest estimate leans more than 0.3 Hz
+ * toward the other tone of the pair waits for a third agreeing hop before it locks. On a clean
+ * carrier (+30 dB in-band) from the reception's start, at every rate and on the same seed, each
+ * tone set 0.4 Hz toward the other locks exactly one hop after the same tone set 0.4 Hz away;
+ * 146.2 Hz, whose nearest neighbour is 3.8 Hz away, locks on the same hop either way.
+ */
+static void
+test_pair_lean_waits_one_hop(void) {
+    static const int tones[] = {1500, 1514, 1462};
+    for (int ri = 0; ri < RATE_COUNT; ri++) {
+        const int fs = k_rates[ri];
+        for (int ti = 0; ti < 3; ti++) {
+            const int tenths = tones[ti];
+            /* Toward the nearer neighbour: up for 150.0 and 146.2 Hz, down for 151.4 Hz. */
+            const double sign = tenths == 1514 ? -1.0 : 1.0;
+            const uint64_t seed = 623001ULL + (uint64_t)(ri * 3 + ti);
+            double t[2];
+            for (int side = 0; side < 2; side++) {
+                const double hz = ((double)tenths / 10.0) + ((side == 0 ? 0.4 : -0.4) * sign);
+                t[side] = lock_time_at_ms(fs, hz, tenths, 30.0, seed, 0.0, 600.0);
+                assert(t[side] >= 0.0);
+            }
+            /* One hop of the core at this rate, in input samples: a sub-block of decimated samples. */
+            const double hop_ms = samples_to_ms(fs, (int64_t)g_core.ctcss.sub_len * (int64_t)g_core.fe.decim);
+            const double extra = t[0] - t[1];
+            const double want = tenths == 1462 ? 0.0 : hop_ms;
+            if (fabs(extra - want) > 1.5) {
+                DSD_FPRINTF(stderr, "lean hop: fs=%d tone=%d toward %.0f away %.0f (hop %.1f ms)\n", fs, tenths, t[0],
+                            t[1], hop_ms);
+            }
+            assert(fabs(extra - want) <= 1.5);
+        }
+    }
+}
+
+/*
+ * Issue #623: starts of 150.0 and 151.4 Hz that named the other tone of the pair before the
+ * third-hop rule, rebuilt from the seeds of the offline sweep the rule was tuned on (10,000 starts
+ * per condition, the onset anywhere in a hop after 300 ms of noise): the 73 of its 80 such starts
+ * in the contract's conditions (on the table value and 0.2 Hz either side at 0, +3 and +10 dB,
+ * 0.35 Hz either side at +10 dB: 220,000 starts) that the rule stops, and 20 of the 281 it stops
+ * set 0.35 Hz toward the other at 0 and +3 dB. Each now locks its own tone, never the other, within
+ * the lock ceiling. Prints p50/worst.
+ */
+static void
+test_pair_starts_that_named_the_other_tone(void) {
+    static const struct {
+        int tenths;
+        double toward_hz;
+        double snr_db;
+        uint64_t seed;
+        int fs;
+        int onset_us;
+    } starts[] = {{1500, 0.00, 3.0, 516390005311ULL, 48000, 8849},   {1500, 0.00, 3.0, 516390005597ULL, 8000, 33747},
+                  {1500, 0.00, 3.0, 516390009911ULL, 44100, 19558},  {1500, 0.20, 0.0, 983170001832ULL, 44100, 34872},
+                  {1500, 0.20, 0.0, 983170001887ULL, 48000, 427},    {1500, 0.20, 0.0, 983170001928ULL, 48000, 18041},
+                  {1500, 0.20, 0.0, 983170002296ULL, 8000, 22645},   {1500, 0.20, 0.0, 983170002686ULL, 8000, 47248},
+                  {1500, 0.20, 0.0, 983170004044ULL, 8000, 8503},    {1500, 0.20, 0.0, 983170004483ULL, 8000, 10909},
+                  {1500, 0.20, 0.0, 983170005516ULL, 44100, 12004},  {1500, 0.20, 0.0, 983170006911ULL, 48000, 5776},
+                  {1500, 0.20, 0.0, 983170007415ULL, 44100, 32731},  {1500, 0.20, 0.0, 983170008495ULL, 8000, 30481},
+                  {1500, 0.20, 0.0, 983170008657ULL, 44100, 44888},  {1500, 0.20, 3.0, 416720001040ULL, 8000, 43910},
+                  {1500, 0.20, 3.0, 416720001638ULL, 44100, 43489},  {1500, 0.20, 3.0, 416720004896ULL, 44100, 43891},
+                  {1500, 0.20, 3.0, 416720005503ULL, 44100, 35678},  {1500, 0.20, 3.0, 416720007508ULL, 8000, 43477},
+                  {1500, 0.35, 10.0, 1400008081ULL, 48000, 9230},    {1514, 0.00, 0.0, 629020002312ULL, 78125, 41852},
+                  {1514, 0.00, 0.0, 629020005522ULL, 48000, 38415},  {1514, 0.00, 0.0, 629020005596ULL, 48000, 7900},
+                  {1514, 0.00, 0.0, 629020006255ULL, 48000, 3917},   {1514, 0.00, 0.0, 629020008457ULL, 44100, 32757},
+                  {1514, 0.00, 0.0, 629020009943ULL, 48000, 30244},  {1514, 0.20, 0.0, 234010000163ULL, 78125, 8056},
+                  {1514, 0.20, 0.0, 234010001757ULL, 78125, 40957},  {1514, 0.20, 0.0, 234010002023ULL, 8000, 42123},
+                  {1514, 0.20, 0.0, 234010002050ULL, 8000, 4533},    {1514, 0.20, 0.0, 234010002442ULL, 78125, 49610},
+                  {1514, 0.20, 0.0, 234010002932ULL, 44100, 45671},  {1514, 0.20, 0.0, 234010003411ULL, 48000, 10520},
+                  {1514, 0.20, 0.0, 234010003769ULL, 44100, 29509},  {1514, 0.20, 0.0, 234010004181ULL, 8000, 19714},
+                  {1514, 0.20, 0.0, 234010004898ULL, 78125, 48091},  {1514, 0.20, 0.0, 234010006060ULL, 78125, 41013},
+                  {1514, 0.20, 0.0, 234010008211ULL, 8000, 47224},   {1514, 0.20, 0.0, 234010009250ULL, 48000, 35080},
+                  {1514, 0.20, 0.0, 234010009564ULL, 8000, 6806},    {1514, 0.20, 0.0, 234010009811ULL, 78125, 13615},
+                  {1514, 0.20, 3.0, 718200000027ULL, 8000, 26556},   {1514, 0.20, 3.0, 718200000785ULL, 78125, 22751},
+                  {1514, 0.20, 3.0, 718200000995ULL, 44100, 48512},  {1514, 0.20, 3.0, 718200001631ULL, 48000, 34226},
+                  {1514, 0.20, 3.0, 718200003415ULL, 8000, 38816},   {1514, 0.20, 3.0, 718200004281ULL, 8000, 2316},
+                  {1514, 0.20, 3.0, 718200004576ULL, 8000, 39957},   {1514, 0.20, 3.0, 718200005197ULL, 78125, 7843},
+                  {1514, 0.20, 3.0, 718200005724ULL, 8000, 896},     {1514, 0.20, 3.0, 718200005859ULL, 44100, 588},
+                  {1514, 0.20, 3.0, 718200007479ULL, 78125, 21740},  {1514, 0.20, 3.0, 718200007568ULL, 44100, 17719},
+                  {1514, 0.20, 3.0, 718200008862ULL, 48000, 15058},  {1514, 0.20, 3.0, 718200009014ULL, 8000, 23263},
+                  {1514, 0.20, 3.0, 718200009105ULL, 44100, 46597},  {1514, 0.20, 3.0, 718200009337ULL, 8000, 11784},
+                  {1514, 0.20, 3.0, 718200009385ULL, 48000, 43967},  {1514, 0.20, 3.0, 718200009858ULL, 78125, 29022},
+                  {1514, 0.35, 10.0, 686100000543ULL, 48000, 43960}, {1514, 0.35, 10.0, 686100001079ULL, 48000, 11578},
+                  {1514, 0.35, 10.0, 686100001334ULL, 78125, 43453}, {1514, 0.35, 10.0, 686100003293ULL, 48000, 47965},
+                  {1514, 0.35, 10.0, 686100003631ULL, 8000, 5521},   {1514, 0.35, 10.0, 686100003945ULL, 78125, 37914},
+                  {1514, 0.35, 10.0, 686100004138ULL, 78125, 17196}, {1514, 0.35, 10.0, 686100006790ULL, 78125, 11687},
+                  {1514, 0.35, 10.0, 686100007108ULL, 78125, 32103}, {1514, 0.35, 10.0, 686100007584ULL, 44100, 12652},
+                  {1514, 0.35, 10.0, 686100008222ULL, 44100, 47778}, {1514, 0.35, 10.0, 686100008469ULL, 78125, 1940},
+                  {1514, 0.35, 10.0, 686100008998ULL, 48000, 46713}, {1500, 0.35, 0.0, 656640002623ULL, 78125, 13729},
+                  {1500, 0.35, 0.0, 656640003120ULL, 8000, 29682},   {1500, 0.35, 0.0, 656640003346ULL, 48000, 39030},
+                  {1500, 0.35, 0.0, 656640003986ULL, 48000, 23118},  {1500, 0.35, 0.0, 656640004068ULL, 78125, 15942},
+                  {1500, 0.35, 0.0, 656640005487ULL, 48000, 2862},   {1500, 0.35, 0.0, 656640006014ULL, 44100, 31917},
+                  {1500, 0.35, 0.0, 656640006088ULL, 8000, 16454},   {1500, 0.35, 3.0, 471410003951ULL, 48000, 46581},
+                  {1514, 0.35, 0.0, 122280000727ULL, 44100, 10240},  {1514, 0.35, 0.0, 122280003065ULL, 8000, 44647},
+                  {1514, 0.35, 0.0, 122280004887ULL, 48000, 11947},  {1514, 0.35, 0.0, 122280005805ULL, 78125, 27772},
+                  {1514, 0.35, 0.0, 122280006569ULL, 44100, 45832},  {1514, 0.35, 0.0, 122280006951ULL, 8000, 37360},
+                  {1514, 0.35, 0.0, 122280008682ULL, 44100, 33674},  {1514, 0.35, 0.0, 122280008687ULL, 8000, 46194},
+                  {1514, 0.35, 0.0, 122280008865ULL, 78125, 25496},  {1514, 0.35, 0.0, 122280008929ULL, 44100, 11031},
+                  {1514, 0.35, 3.0, 443210009967ULL, 8000, 16235}};
+
+    enum { START_COUNT = (int)(sizeof(starts) / sizeof(starts[0])) };
+
+    static double times[START_COUNT];
+    for (int i = 0; i < START_COUNT; i++) {
+        const double hz = pair_tone_hz(starts[i].tenths, starts[i].toward_hz);
+        times[i] = lock_time_at_ms(starts[i].fs, hz, starts[i].tenths, starts[i].snr_db, starts[i].seed,
+                                   sweep_onset_ms(starts[i].onset_us), 1000.0);
+        if (times[i] < 0.0 || times[i] > (double)DSD_ANALOG_CTCSS_LOCK_CEILING_MS) {
+            DSD_FPRINTF(stderr, "pair start: fs=%d hz=%.2f snr=%.0f -> %.0f ms\n", starts[i].fs, hz, starts[i].snr_db,
+                        times[i]);
+        }
+        assert(times[i] >= 0.0 && times[i] <= (double)DSD_ANALOG_CTCSS_LOCK_CEILING_MS);
+    }
+    qsort(times, (size_t)START_COUNT, sizeof(times[0]), compare_doubles);
+    printf(
+        "CTCSS 150.0/151.4 Hz starts that named the other tone before the third-hop rule: p50 %.0f ms, worst %.0f ms "
+        "(%d cases; each its own tone, <= %d ms)\n",
+        times[START_COUNT / 2], times[START_COUNT - 1], START_COUNT, DSD_ANALOG_CTCSS_LOCK_CEILING_MS);
+    (void)fflush(stdout);
+}
+
+/*
+ * Issue #623: 150.0 and 151.4 Hz starting in noise, the onset anywhere in a hop, at every rate,
+ * on seeds of their own: on the table value and 0.2 Hz toward the other tone at 0 dB in-band, and
+ * 0.35 Hz toward it at +10 dB. Each row locks only its own tone (lock_time_as_ms() asserts it)
+ * and checks the lock contract. Prints p50/p95/worst for the PR evidence.
+ */
+static void
+test_150_and_151_4_onset_in_noise(void) {
+    static const struct {
+        double toward_hz;
+        double snr_db;
+    } rows[] = {{0.0, 0.0}, {0.2, 0.0}, {0.35, 10.0}};
+
+    enum { SEEDS = 25 };
+
+    static double times[2 * RATE_COUNT * SEEDS];
+    for (size_t row = 0; row < sizeof(rows) / sizeof(rows[0]); row++) {
+        int count = 0;
+        for (int ti = 0; ti < 2; ti++) {
+            const int tenths = ti == 0 ? 1500 : 1514;
+            for (int ri = 0; ri < RATE_COUNT; ri++) {
+                for (int n = 0; n < SEEDS; n++) {
+                    const uint64_t seed = (6230017ULL * (uint64_t)(n + 1)) + ((uint64_t)ri * 7919ULL)
+                                          + ((uint64_t)row * 104729ULL) + (uint64_t)ti;
+                    const double hz = pair_tone_hz(tenths, rows[row].toward_hz);
+                    const double t = lock_time_as_ms(k_rates[ri], hz, tenths, rows[row].snr_db, seed,
+                                                     ((n * 7) + (ti * 3) + (int)row) % 50,
+                                                     (double)DSD_ANALOG_CTCSS_LOCK_CEILING_MS + 50.0);
+                    if (t < 0.0) {
+                        DSD_FPRINTF(stderr, "pair onset never locked: fs=%d hz=%.2f snr=%.0f\n", k_rates[ri], hz,
+                                    rows[row].snr_db);
+                    }
+                    assert(t >= 0.0);
+                    times[count++] = t;
+                }
+            }
+        }
+        char what[96];
+        DSD_SNPRINTF(what, sizeof(what), "CTCSS 150.0/151.4 Hz %.2f Hz toward the other at %+.0f dB in-band",
+                     rows[row].toward_hz, rows[row].snr_db);
+        check_lock_contract(what, times, count);
+    }
+}
+
+/*
+ * Issue #623: a locked tone of the pair that moves, phase-continuously, to the other tone of the
+ * pair or between 151.4 and 146.2 Hz, under a live carrier at +10 and 0 dB, every rate: the old
+ * tone is dropped within MOVED_OFF_BOUND_MS of the move, the new one reads within the lock ceiling
+ * of it, and no third tone is ever named. A lock handed between the pair's tones waits for the
+ * third agreeing hop too while the new tone's estimate still leans toward the old one.
+ */
+static void
+test_150_and_151_4_handover(void) {
+    static const double moves[][2] = {{151.4, 150.0}, {150.0, 151.4}, {151.4, 146.2}, {146.2, 151.4}};
+    static const double snrs[] = {10.0, 0.0};
+
+    enum { SEEDS = 3 };
+
+    double worst_old = 0.0;
+    double worst_new = 0.0;
+    for (size_t mi = 0; mi < sizeof(moves) / sizeof(moves[0]); mi++) {
+        const int from_t = (int)lround(moves[mi][0] * 10.0);
+        const int to_t = (int)lround(moves[mi][1] * 10.0);
+        for (int si = 0; si < 2; si++) {
+            for (int ri = 0; ri < RATE_COUNT; ri++) {
+                for (int n = 0; n < SEEDS; n++) {
+                    const int fs = k_rates[ri];
+                    dsd_analog_rx_core_init(&g_core);
+                    signal_src src;
+                    const uint64_t seed = 6231001ULL + (uint64_t)(((((int)mi * 2) + si) * RATE_COUNT + ri) * SEEDS + n);
+                    signal_init(&src, fs, seed, moves[mi][0], snrs[si]);
+                    src.tone_on = 0;
+                    src.move_at = ms_to_samples(fs, 2000.0 + (double)((n * 17 + ri * 5) % 50));
+                    src.move_hz = moves[mi][1];
+                    const int block = fs / 1000;
+                    const int64_t total = src.move_at + ms_to_samples(fs, 1500.0);
+                    float buf[128];
+                    int64_t old_last = -1;
+                    int64_t new_first = -1;
+                    int locked_before = 0;
+                    for (int64_t s = 0; s < total; s += block) {
+                        const int m = (total - s) < block ? (int)(total - s) : block;
+                        for (int i = 0; i < m; i++) {
+                            buf[i] = src.next(&src, s + i);
+                        }
+                        assert(dsd_analog_rx_core_process(&g_core, buf, m, fs, 1) == 1);
+                        const observation o = observe(&g_core);
+                        const int locked = o.state == DSD_ANALOG_TONE_STATE_LOCKED;
+                        if (locked) {
+                            /* Never a third tone, a DCS code included. */
+                            assert(!o.dcs && (o.tenths == from_t || o.tenths == to_t));
+                        }
+                        if (s + m <= src.move_at) {
+                            locked_before = locked && o.tenths == from_t;
+                            continue;
+                        }
+                        if (locked && o.tenths == from_t) {
+                            old_last = s + m;
+                        }
+                        if (locked && o.tenths == to_t && new_first < 0) {
+                            new_first = s + m;
+                        }
+                    }
+                    /* The run exercises a handover: the old tone was locked when it moved. */
+                    assert(locked_before);
+                    assert(new_first >= 0);
+                    const double old_ms = old_last < 0 ? 0.0 : samples_to_ms(fs, old_last - src.move_at);
+                    const double new_ms = samples_to_ms(fs, new_first - src.move_at);
+                    if (old_ms > (double)MOVED_OFF_BOUND_MS || new_ms > (double)DSD_ANALOG_CTCSS_LOCK_CEILING_MS) {
+                        DSD_FPRINTF(stderr, "pair handover: %.1f -> %.1f Hz fs=%d snr=%.0f old %.0f new %.0f ms\n",
+                                    moves[mi][0], moves[mi][1], fs, snrs[si], old_ms, new_ms);
+                    }
+                    assert(old_ms <= (double)MOVED_OFF_BOUND_MS);
+                    assert(new_ms <= (double)DSD_ANALOG_CTCSS_LOCK_CEILING_MS);
+                    worst_old = fmax(worst_old, old_ms);
+                    worst_new = fmax(worst_new, new_ms);
+                }
+            }
+        }
+    }
+    printf("CTCSS 150.0/151.4 Hz handover: old tone dropped within %.0f ms (<= %d), new tone read within %.0f ms "
+           "(<= %d)\n",
+           worst_old, MOVED_OFF_BOUND_MS, worst_new, DSD_ANALOG_CTCSS_LOCK_CEILING_MS);
+    (void)fflush(stdout);
+}
+
+/*
+ * The slowest starts of 150.0 and 151.4 Hz in the long-run sweeps at 0 dB in-band with the
+ * third-hop rule (docs/testing.md; 600,000 starts on the table value and 0.2 Hz either side),
+ * rebuilt from the sweep's own seeds, the late acquisition windows' locks among them: each locks
+ * its own tone within the 700 ms lock ceiling.
+ */
+static void
+test_pair_slow_starts_lock_within_ceiling(void) {
+    static const struct {
+        int tenths;
+        double toward_hz;
+        uint64_t seed;
+        int fs;
+        int onset_us;
+    } starts[] = {{1500, 0.20, 2252782983759959ULL, 78125, 36609}, {1514, 0.00, 2252428833716371ULL, 8000, 20987},
+                  {1514, 0.20, 2252033823692821ULL, 48000, 39445}, {1514, 0.00, 2252428833774930ULL, 48000, 44267},
+                  {1514, 0.20, 2252033823767090ULL, 78125, 4723},  {1514, 0.20, 2252033823781709ULL, 44100, 16947},
+                  {1514, 0.20, 2252033823765836ULL, 48000, 15187}, {1500, 0.20, 2252782983735594ULL, 48000, 27692},
+                  {1514, 0.20, 2252033823753512ULL, 78125, 33680}, {1514, 0.20, 2252033823705614ULL, 48000, 35082},
+                  {1500, 0.20, 2252782983715539ULL, 44100, 39693}, {1514, 0.20, 2252033823782711ULL, 8000, 34652},
+                  {1514, 0.20, 2252033823685696ULL, 44100, 40717}, {1500, 0.20, 2252782983778793ULL, 44100, 47403},
+                  {1500, 0.20, 2252782983716368ULL, 48000, 44432}, {1514, 0.20, 2252033823720172ULL, 78125, 44274},
+                  {1514, 0.20, 2252033823743453ULL, 78125, 6718},  {1514, 0.20, 2252033823748638ULL, 48000, 8572},
+                  {1500, 0.20, 2252782983686933ULL, 78125, 8268},  {1514, 0.20, 2252033823700477ULL, 78125, 10417},
+                  {1500, 0.20, 2252782983777525ULL, 78125, 13905}, {1514, -0.20, 2252595513781536ULL, 48000, 14487}};
+
+    enum { START_COUNT = (int)(sizeof(starts) / sizeof(starts[0])) };
+
+    double worst = 0.0;
+    for (int i = 0; i < START_COUNT; i++) {
+        const double hz = pair_tone_hz(starts[i].tenths, starts[i].toward_hz);
+        const double t = lock_time_at_ms(starts[i].fs, hz, starts[i].tenths, 0.0, starts[i].seed,
+                                         sweep_onset_ms(starts[i].onset_us), 1000.0);
+        if (t < 0.0 || t > (double)DSD_ANALOG_CTCSS_LOCK_CEILING_MS) {
+            DSD_FPRINTF(stderr, "slow pair start: fs=%d hz=%.2f -> %.0f ms\n", starts[i].fs, hz, t);
+        }
+        assert(t >= 0.0 && t <= (double)DSD_ANALOG_CTCSS_LOCK_CEILING_MS);
+        worst = fmax(worst, t);
+    }
+    printf("CTCSS 150.0/151.4 Hz slowest long-run starts at +0 dB in-band: worst %.0f ms (%d cases; each <= %d ms)\n",
+           worst, START_COUNT, DSD_ANALOG_CTCSS_LOCK_CEILING_MS);
+    (void)fflush(stdout);
 }
 
 /*
@@ -1161,9 +1473,10 @@ test_speech_that_moved_on_never_locks(void) {
  */
 static void
 test_tone_under_voice_locks(void) {
-    double times[SYNTH_LEGACY_CTCSS_COUNT];
-    for (int k = 0; k < SYNTH_LEGACY_CTCSS_COUNT; k++) {
-        const double hz = (double)synth_legacy_ctcss_tenths(k) / 10.0;
+    double times[SYNTH_LEGACY_CTCSS_COUNT + 1];
+    /* The legacy table, then 150.0 Hz (k == SYNTH_LEGACY_CTCSS_COUNT). */
+    for (int k = 0; k <= SYNTH_LEGACY_CTCSS_COUNT; k++) {
+        const double hz = k < SYNTH_LEGACY_CTCSS_COUNT ? (double)synth_legacy_ctcss_tenths(k) / 10.0 : 150.0;
         dsd_analog_rx_core_init(&g_core);
         signal_src src;
         signal_init(&src, 48000, 55555ULL + (uint64_t)k, hz, 30.0);
@@ -1186,7 +1499,7 @@ test_tone_under_voice_locks(void) {
         assert(r.locks == 1 && r.first_unlocked < 0);
         assert(r.final_state == DSD_ANALOG_TONE_STATE_LOCKED);
     }
-    check_lock_contract("CTCSS lock under voice 10 dB above the tone", times, SYNTH_LEGACY_CTCSS_COUNT);
+    check_lock_contract("CTCSS lock under voice 10 dB above the tone", times, SYNTH_LEGACY_CTCSS_COUNT + 1);
 }
 
 /*
@@ -1792,6 +2105,11 @@ main(void) {
     test_off_nominal_tones_lock();
     test_tone_150_locks_within_bound();
     test_150_and_151_4_never_cross();
+    test_pair_lean_waits_one_hop();
+    test_pair_starts_that_named_the_other_tone();
+    test_150_and_151_4_onset_in_noise();
+    test_150_and_151_4_handover();
+    test_pair_slow_starts_lock_within_ceiling();
     test_150_and_151_4_hold_only_their_own_side();
     test_snap_gates();
     test_tone_150_loss_and_burst();
