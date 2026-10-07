@@ -119,6 +119,17 @@ Generated (do not edit/commit):
     RTL-SDR input looks for its device, so the refusal depends on no dongle; other radio inputs are held to the rate
     they deliver at stream start. Tests: `RUNTIME_ANALOG_WIDTH_RATE_REFUSED` and `_RTL` (`tests/cmake/RunCliSmoke.cmake`:
     the message, a non-zero exit, and for `rtl` no device enumeration before it)
+  - The decode loop's side of an input switch (issue #634, `live_scanner_main_loop()`): a frame-sync hunt read that
+    left a silent input's wait for a queued command (`dsd_state::input_interrupted`) ended no reception, so the pass
+    pumps the command and skips `noCarrier()`; a replaced stream (`dsd_state::input_boundary`, set by an input switch,
+    a radio enable, a config reopen or the fallback below) ends the reception: the synced-frames loop breaks after its
+    pump, and the outer loop runs `noCarrier()` and ends every call as a teardown (`DSD_CALL_END_EXPLICIT`), so the new
+    source neither inherits digital confirmation nor merges into the old call; the hunt's acquisition proof and slicer
+    windows (`dsd_frame_sync_reset_acquisition()`) and the matched filter's history (`init_rrc_filter_memory()`,
+    `dsd_symbol_matched_filter_reset()`) go with the old stream. A file or TCP input that ended
+    (`dsd_state::input_fallback_pending`, which the symbol reader sets) is replaced by the configured Pulse input here,
+    between frames and under the P25 SM tick guard (`dsd_engine_input_fallback()`), unless a command pumped since it
+    ended replaced it; the session ends when Pulse does not open. Test: `ENGINE_INPUT_BOUNDARY`.
 - Build files: `src/engine/CMakeLists.txt`
 
 Key public headers:
@@ -472,7 +483,7 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   width the front end refuses fails the tune before any backend moves. Test: `ENGINE_TRUNK_RETUNE_REGRESSION` (the `-fA`
   and `-fM` blank rows among them).
 - DSP `dsd_frame_sync_reset_acquisition()` drops outgoing profile proof, modulation votes, symbol history, hunt budgets,
-  and slicer windows at committed row boundaries. Conventional rows also discard learned P25 modulation; trunk targets
+  and slicer windows at committed row boundaries, and at an input boundary (issue #634). Conventional rows also discard learned P25 modulation; trunk targets
   retain their own learned modulation. Normal no-carrier protocol confirmation resets remain in use.
   Unlocked RTL P25 trunk-scan targets try CQPSK after their first unproductive 4800-symbol/s dwell, before visiting 6000,
   so the default three-second target visit includes the trial. This changes acquisition scheduling, not symbol timing.
@@ -677,6 +688,24 @@ The `Linux • RelWithDebInfo • ctest (x86-64-v3, fast-math, clang)` check enf
   `decode_mode_apply_value()`) call them, and so does `DSD_APP_CMD_CONFIG_APPLY` when its `[mode]` moves the session
   between the analog and digital families or lands on a digital mode that writes raw audio (ProVoice, `-8`). Tests:
   `CORE_AUDIO_ENSURE_OUTPUT`, `APP_COMMAND_QUEUE`, `APP_CONTROL_RR_APPLY`, `UI_MENU_SERVICES`.
+- Runtime input switch (issue #634, `<dsd-neo/core/audio_input_switch.h>`, `src/core/audio/dsd_audio_input_switch.c`):
+  `dsd_audio_switch_input()` replaces the running PCM or symbol input with the one a request names (a WAV or headerless
+  PCM file, a float symbol stream, a symbol capture, UDP, a connected TCP socket, a Pulse device), on the decoder
+  thread. The new input opens before the old one closes: the old file and its `SF_INFO`, symbol file, TCP context and
+  socket and Pulse stream are taken out of the options and put back untouched when the open fails
+  (`DSD_AUDIO_INPUT_KEPT`). A UDP input cannot be taken out, since its receive thread uses the options, so a switch to
+  UDP stops the running one first (it may hold the port) and binds it again when the new one does not
+  (`DSD_AUDIO_INPUT_RESTARTED`, a new stream on the old input, or `DSD_AUDIO_INPUT_LOST`). A failure never writes the
+  input-failure latch. A switch that opens its input closes every PCM and symbol input the options hold, never a radio
+  stream running behind; names the input as `-i` and a saved config spell it (`udp:<bind>:<port>`, `tcp:<host>:<port>`,
+  `pulse[:<dev>]`, the path) and keeps a radio spec it replaced in `dsd_opts::radio_in_dev`; opens the next PCM input at
+  the raw rate a WAV header replaced (`dsd_opts::wav_header_replaced_rate`, which `openAudioInDevice()` and the config
+  file apply keep too); resets the PCM input state, so `pcm_input_generation` moves; and sets the symbol timing for the
+  new rate, rescaled between PCM inputs and set afresh from the active hunt profile when the old input was a radio,
+  whose timing is in no PCM rate's units. Files must be regular files: a pipe or device would block the decoder thread
+  in its open, so only startup opens one. `dsd_audio_path_input_kind()` is `-i`'s extension rule. The switch lives in
+  its own object file so a link-time wrap of `openAudioInput()` reaches it. Tests: `CORE_AUDIO_INPUT_SWITCH`,
+  `CORE_AUDIO_OPEN_INPUT`.
 - Build files: `src/core/CMakeLists.txt`
 
 ## Runtime
@@ -917,8 +946,8 @@ The `Linux • RelWithDebInfo • ctest (x86-64-v3, fast-math, clang)` check enf
     it just read, as the engine's pre-open check does: `interactive_am_refused()` in
     `src/runtime/bootstrap/interactive.c`); once an input is
     open, `dsd_decode_mode_input_is_iq()` and `dsd_decode_mode_runs_on_input()` go by the input type alone
-    (`dsd_opts_input_is_radio()`), since a live switch to TCP audio keeps the old device string and a replay session
-    switched to Pulse keeps its request. All of them say `DSD_DECODE_MODE_AM_NEEDS_IQ_TEXT`.
+    (`dsd_opts_input_is_radio()`): an input switch names the input it opens (`tcp:<host>:<port>` and the like, issue
+    #634), but a replay session switched to Pulse keeps its replay request. All of them say `DSD_DECODE_MODE_AM_NEEDS_IQ_TEXT`.
     `--am-bandwidth-hz` and `[analog] am_bandwidth_hz` carry the AM width (whole Hz, 5000..20000, 0 = the 6000
     default, saved only when explicit; the section is always saved). Tests: `RUNTIME_DECODE_MODE`,
     `RUNTIME_CLI_PARSE`, `RUNTIME_CONFIG_USER`, `CONFIG_VALIDATION`, `CONFIG_TEMPLATE`,
@@ -973,6 +1002,13 @@ registry lock, so `dsd_app_telemetry_observer_remove()` returns only once no cal
 callback must not block, submit commands, or add/remove observers. Live event-history rows are read under
 `dsd_event_history_transaction_begin()`, as every other cross-thread reader does.
 
+### Control Pump (DSP/Protocol → Runtime ← App-Control)
+
+`include/dsd-neo/runtime/control_pump.h` lets decode loops pump queued commands (`dsd_runtime_pump_controls()`) and ask
+whether one waits (`dsd_runtime_controls_pending()`, issue #634), without depending on app-control. App-control
+registers both at frontend start (`dsd_app_frontend_runtime_start()`); the pending query is asked only while an input
+waits on a silent source.
+
 ### Frame Sync Hooks (DSP → Runtime ← Engine/Protocols)
 
 DSP frame-sync code may need to trigger protocol-specific actions (for example, trunking state machine ticks) without
@@ -1021,6 +1057,28 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
     completions. Successful inherited-policy scan exports update the configured persistence path.
     `app_command_queue.c` uses `command_writes_policy_store()` to guard live policy transactions against the P25
     watchdog's release-time audio flush; callees must use `_locked` forms to avoid acquiring the guard again.
+  - Input switches (issue #634): Input > Switch source (WAV / raw file, symbol files, UDP, Pulse and a Pulse device),
+    Replay last, Stop replay and the TCP connect go through `dsd_audio_switch_input()` by way of the services in
+    `menu_services.c` and `tcp_audio_connect.c` (`svc_open_audio_file_in()`, `svc_open_symbol_stream_in()`,
+    `svc_open_symbol_in()`, `svc_udp_input_config()`, `svc_set_pulse_input()`, `svc_stop_playback()`, and
+    `svc_tcp_connect_audio()`, which connects within a bound through `ConnectBounded()`). Each handler holds the P25 SM
+    tick guard around the switch, since the watchdog reads the input type and rate it rewrites, and refuses it first in
+    the engine modes that read no switched input (`svc_input_switch_unsupported()`: MBE playback, the M17 IP frame
+    receiver and encoders) and while a scan is in force (`ui_scan_goes_on()`, or `--trunk-scan` with targets), whose
+    timing snapshots belong to the running input. `ui_cmd_finish_input_switch()` turns the result into the toast and
+    status: a switch that ran sets `dsd_state::input_boundary` and runs `ui_input_switched()` (an output that cannot
+    follow keeps the new input and fails with its own toast); one that kept the input resets nothing; a UDP restart or
+    loss runs `ui_input_left()`. A path payload that does not fit, or that the queue cut short, is refused rather than
+    truncated. Stop replay acts on a WAV or symbol playback only and switches to the configured Pulse input. Replay last
+    replays `dsd_opts::symbol_capture_last`, which `closeSymbolOutFile()` sets for every capture it closes (a stop, a new
+    capture, a rotation), so `SYMCAP_STOP` no longer writes `audio_in_dev`. The RTL-SDR row opens
+    `svc_rtl_row_destination()` (the first radio spec that is no Airspy one: the running spec, then the one a PCM switch
+    kept; else `rtl`), and is checked against it before anything changes; once the radio runs, the PCM input it
+    replaced is closed (`closeAudioInDevice()`), and kept when the radio does not start. A config apply's same-type reopens (TCP, UDP, Pulse) go
+    through the switch too, put back the input name the config wrote when they fail, and take the boundary for a
+    restarted UDP input (`apply_cfg_note_reopen()`); its WAV reopen refuses a pipe or device. The queue answers the
+    runtime's controls-pending query (`dsd_app_commands_pending()`). Tests: `APP_COMMAND_QUEUE`, `RUNTIME_CONFIG_APPLY`,
+    `UI_MENU_SERVICES`, `UI_TCP_AUDIO_CONNECT`.
   - Bootstrap retains only positional playback filenames in argv storage, preserving argument indexes with empty
     placeholders. State snapshots exclude argv ownership; teardown securely erases retained strings.
   - Retained results: talkgroup export and decryption completions are kept as the latest result
@@ -1316,10 +1374,10 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   or the width against the rate the device delivered with the fix for what sets it, or else the input that did not
   start (Airspy, SoapySDR, rtl_tcp, I/Q replay, RTL-SDR). Every one of
   these classifies the input as the stream's `detect_radio_source()` does (`dsd_app_analog_rtl_bw_rate_hz()`): an
-  `rtl`/`rtltcp` spec, or any device string on an RTL input that names no SoapySDR, Airspy or replay device (Input >
-  Switch source > RTL-SDR leaves `pulse` there), runs at `rtl_dsp_bw_khz`, saturated rather than overflowed for a loaded
+  `rtl`/`rtltcp` spec, or any device string on an RTL input that names no SoapySDR, Airspy or replay device (the bare
+  `rtl` Input > Switch source > RTL-SDR writes when no radio ran among them), runs at `rtl_dsp_bw_khz`, saturated rather than overflowed for a loaded
   config's out-of-range `rtl_bw_khz`. `svc_check_analog_bandwidth()` holds a width to no rate on a PCM input, which runs
-  no channel filter, whatever device string a live switch from an RTL-SDR left there. A config apply whose reopen of
+  no channel filter, whatever radio a switch to it replaced (kept in `dsd_opts::radio_in_dev`). A config apply whose reopen of
   the running RTL-family input fails to start (the live Airspy reopen, `svc_airspy_reopen_locked()`, or the hot restart
   for a new spec, `apply_cfg_rtl_hot_restart()`, both from `apply_cfg_radio_input()`) never loses that input either
   (`ui_cfg_settle_reopen()`, issue #578): it takes the reason from `svc_describe_start_failure()`, puts back what the
@@ -1611,6 +1669,19 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   recovery, CQPSK helpers
   (matched/RRC), and SIMD helpers; exposes runtime-tunable parameters consumed by the UI
 - Build files: `src/dsp/CMakeLists.txt`
+- Silent inputs and input ends in `dsd_symbol.c` (issue #634). A frame-sync hunt read (`getSymbol()` without sync)
+  waits on a UDP input in 100 ms slices (`udp_read_sample_wait` in the network-audio hooks); once the silence has lasted
+  a stream pause (`DSD_ANALOG_STREAM_PAUSE_MIN_MS`, the gap the analog receiver already takes for a boundary) and the
+  runtime's controls-pending query reports a queued command, it leaves with no sample and sets
+  `dsd_state::input_interrupted`, which `getFrameSync()` checks after each read and returns on at once, with no SPS hunt
+  step and no no-sync hooks. A shorter gap, frame decoding, or no queued command keeps waiting. The M17 TCP reconnect
+  gives up the same way between attempts, which connect within a bound to the address the connection was made to
+  (`tcp_connect` hook, `ConnectBounded()` with no lookup) and back off in slices; "no socket" is `DSD_INVALID_SOCKET`.
+  A file or TCP input that ends marks `dsd_state::input_fallback_pending`: frame decoding reads zeros until its frame
+  ends (a symbol capture's dibits are erasures then, reliability 0, never its last dibit repeated at full confidence),
+  and the hunt's read hands the switch to Pulse to the engine (`dsd_engine_input_fallback()`).
+  `dsd_symbol_note_timing_rate()` tells the RTL monitor output's rate rescale which rate the timing is in when an input
+  switch returns to the radio. Tests: `DSP_INPUT_INTERRUPT`, `DSP_WAV_INPUT_EOF`, `FRAME_SYNC_SPS_HUNT_FALSE_SYNC`.
 - `symbol_timing_debug.c`: measures the sub-symbol offset the decoder's symbol grid settled on and reports it once
   per accepted frame sync, behind `DSD_NEO_DEBUG_SYMBOL_TIMING` (see `docs/cli.md`). The sample trace it correlates
   over is filled by `dsd_symbol.c` and owned by decoder-state setup/teardown in `src/core/util/dsd_init.c`.
@@ -1816,11 +1887,12 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
     moved the radio) and at engine stop (`engine.c`),
     on accepted `RTL_SET_FREQ` / `MANUAL_TUNE` commands, on every tune `request_manual_tune()` accepts (manual channel
     cycle and scan avoid on an untyped list, candidate cycle, return-to-CC, lockout and skip: `io_control_set_freq()`
-    moves a rigctl radio without advancing the trunk-tuning generation), on every input switch (`ui_input_switched()`,
-    stop-playback even when the Pulse open fails, and the config apply's input comparison in `app_command_queue.c`), on
+    moves a rigctl radio without advancing the trunk-tuning generation), on every input switch that ran
+    (`ui_input_switched()`, a stop of playback included, a UDP restart through `ui_input_left()`, and the config apply's
+    input comparison in `app_command_queue.c`), on
     a config apply that changes the decode mode (the same comparison: out of the analog monitor no monitor block need
-    arrive to forget the tone before the row comes back), when the symbol path falls back to Pulse at the end of a WAV
-    file or after a lost TCP connection (`symbol_open_pulse_input_and_reconfigure_output()` in `dsd_symbol.c`), whenever
+    arrive to forget the tone before the row comes back), when the engine falls back to Pulse at the end of a WAV or
+    symbol file or after a lost TCP connection (`dsd_engine_input_fallback()` in `engine.c`), whenever
     `symbol_read_sample_tcp()` finds its connection interrupted, before it reconnects (the reconnect's 300 ms default
     backoff is shorter than `DSD_ANALOG_STREAM_PAUSE_MIN_MS`, and the new connection may carry another source), after
     the carrier hangover, and on the first read after an input that may pause (stdin, UDP, TCP, a live radio stream)
@@ -2776,7 +2848,12 @@ Notes:
     `demod_autogain_update()`; `IO_RTL_REPLAY_EOF_AND_CF32`).
 - Local audio output backends and audio device listing live in `dsd-neo_platform` (see `src/platform/audio_*.c`).
 - Network audio/input backends live in `src/io/audio_backends/` (`udp_input.c`, `tcp_input.c`, `udp_audio.c`,
-  `m17_udp.c`, `udp_bind.c`).
+  `m17_udp.c`, `udp_bind.c`). `udp_input_read_sample_wait()` gives up after a timeout with no sample, so the decoder can
+  apply a queued command while the input is silent (issue #634); `ConnectBounded()` (`dsd_rigctl.c`) connects within
+  `DSD_CONNECT_BOUNDED_TIMEOUT_MS`, cancellably; with resolve 0 (the TCP audio reconnect) it goes back to the address
+  the running input's connection went to, which `ConnectKeepTcpAudioAddress()` keeps once that input is installed (the
+  startup `Connect()`, a switch that took the socket), so a failed switch elsewhere never displaces it. The engine
+  installs both in the network-audio hook table (`udp_read_sample_wait`, `tcp_connect`).
 - M17 protocol frame packing/parsing lives in `src/protocol/m17/m17.c`; M17 UDP socket helpers are exposed via
   `include/dsd-neo/io/m17_udp.h`.
 

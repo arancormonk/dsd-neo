@@ -32,6 +32,12 @@ Notes:
   listen on its LAN interface or `0.0.0.0`, and allow inbound TCP through the host firewall.
 - With rigctl enabled (`-U <port>`), a TCP input host is also used as the rigctl host. For SDR++ on another PC, allow
   both the TCP audio port, commonly `7355`, and the rigctl port, commonly `4532`.
+- From the terminal UI, Input > Switch source > `UDP audio...` binds the address and port at once and `TCP audio...`
+  (or `8`) connects at once; either keeps the running input when it cannot (a held port, a refused or unanswered
+  connection). A TCP connect gives up after 10 seconds; a host name is looked up through the system resolver, which
+  bounds that wait itself, and a reconnect reuses the address it found. While a UDP sender is silent between
+  transmissions, menu commands still apply after about half a second; a sender that stops in the middle of a frame is
+  waited for, as before.
 
 ### Squelch on PCM input
 

@@ -229,8 +229,8 @@ Main Menu
 │   │   ├── Record symbols... [Off]              R
 │   │   ├── Stop recording [Off]                 r
 │   │   ├── ─────
-│   │   ├── Replay last capture [none]           Space
-│   │   └── Stop replay [Off]                    s
+│   │   ├── Replay last capture [none]           Space (the capture closed last this session)
+│   │   └── Stop replay [Off]                    s (a file or symbol playback, onto Pulse input)
 │   ├── WAV files
 │   │   ├── Per-call WAV [Off]                   P/p
 │   │   ├── Static WAV file...
@@ -291,6 +291,43 @@ Main Menu
 ├── ─────
 └── Quit DSD-neo                                 q
 ```
+
+### Switching the input
+
+Every row under Input > Switch source closes the input in use and opens the new one, and so do `Replay last capture`
+(`Space`), `Stop replay` (`s`), the `8` key and a TCP connect. The new input opens first. A switch that cannot open it
+changes nothing: the old input keeps running exactly as it was, and the message reads `Failed: ...` (the log says why).
+A switch that opens it starts a new reception: the received tone, the call and the decoder's acquisition start again,
+and the PCM noise squelch learns the new input afresh. The radio rows (`RTL-SDR`, `Airspy R2 / Mini`) are the exception
+while a radio already runs: its stream stops before the new device opens, and a start that fails reopens the radio that
+ran, as a restart does, so that radio comes back rather than running on untouched (an I/Q capture it was writing can
+stop, and the message says so). From an audio input, a radio that does not start leaves the audio input running.
+
+- `WAV / raw file...` opens a regular file the way `-i` opens a path: a `.wav` by its header (at its own rate), a
+  `.rrc` at 48 kHz, `.bin`, `.raw` and `.sym` as symbol files, anything else as headerless PCM16LE at the raw rate
+  (`-s`). A named pipe or a device is refused here, because opening one waits for a writer; give it at startup with `-i`.
+  A WAV's header rate holds for that file only: the next file, UDP or TCP input opens at the raw rate again (Pulse opens
+  at its own capture rate, as at startup).
+- `UDP audio...` binds the address and port now. A port another program holds refuses the switch. Switching from one
+  UDP port to another has to stop the running UDP input first, since it may hold the port: if the new port does not bind,
+  the old one binds again (a new reception), and the message says so.
+- `Pulse Audio (mic/line)` opens the default capture device, `Pulse input device...` the one chosen.
+- `RTL-SDR` reopens the radio that runs, or goes back to the radio the session ran before a switch to an audio input
+  (an rtl_tcp server or a SoapySDR device, say), or opens an RTL-SDR when none ran. It never opens an Airspy: from one,
+  it goes back to the radio an audio switch left, else to an RTL-SDR. `Airspy R2 / Mini` always opens the Airspy.
+- A switch names the input it opened (`udp:127.0.0.1:7355`, `tcp:host:port`, `pulse:<device>`, the file), so a saved
+  config reopens the same input. Startup tells a file's kind by its extension, so a symbol capture reopens as one only
+  when its name ends in `.bin` (`.raw` or `.sym` for a float symbol stream); a capture recorded under another name
+  reopens as PCM audio.
+
+While a scan runs (`-Y` with rows, or `--trunk-scan` with targets), the audio-input switches and `Stop replay` are
+refused with `Unsupported: stop the scan first`: the scan's saved timing belongs to the running input. The M17 IP frame
+receiver, the M17 encoders and MBE playback read no switched input, so they refuse every switch.
+
+While a UDP sender is silent, a menu command is applied once the silence has lasted about half a second. A TCP server
+that went away is noticed when a read times out (the socket's receive timeout, 1.5 seconds by default); an M17
+session's reconnect then gives way to a menu command between its attempts. A sender that stops in the middle of a
+frame is waited for, as before.
 
 ### Decoder mode
 
@@ -593,8 +630,8 @@ expires independently of **Save user TG lockouts**. See [Skip lifetimes](cli.md#
 | `r` | Stop symbol capture |
 | `P` | Start per-call WAV saving |
 | `p` | Stop per-call WAV saving |
-| `Space` | Replay last captured audio (where supported) |
-| `s` | Stop playback |
+| `Space` | Replay the symbol capture closed last this session (a stop, a new capture or an hourly rotation closes one) |
+| `s` | Stop a file or symbol playback and switch to the configured Pulse input; with no playback running it does nothing, and if Pulse does not open the playback runs on |
 | `[` / `]` | Event history previous/next |
 | `\\` | Toggle event history slot (or toggle M17 TX in encoder mode) |
 

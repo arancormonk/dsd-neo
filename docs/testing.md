@@ -743,7 +743,9 @@ and moves the generation on), `ENGINE_CHANNEL_SCAN`/`ENGINE_TRUNK_SCAN` (row com
 `UI_NCURSES_PRINTER_HELPERS` and `UI_QT_METRICS_MODEL` (a paused stream's publication reads no carrier past its deadline
 on the caller's clock) and `APP_COMMAND_QUEUE` (decode-mode change, `RTL_SET_FREQ`, `MANUAL_TUNE`, a manual channel
 cycle and scan avoid by rigctl on PCM input, accepted, pending or refused; switching to WAV, Pulse, a named Pulse
-source, UDP or symbol-stream input, replay and stop-playback, including a stop whose Pulse open fails; TCP connect and
+source, UDP or symbol-stream input, replay and stop-playback, each opening its input for real (issue #634: files in a
+temporary directory, UDP on a free loopback port, Pulse through the `openAudioInput()` wrap), while a switch that cannot
+open its input, a stop whose Pulse open fails included, keeps the tone; TCP connect and
 reconnect, accepted or refused; and a config apply, which clears the tone when it moves the input or changes the decode
 mode -- out of the analog monitor and straight back with no monitor block read in between, the row returns with no
 carrier, not the old tone -- and keeps it, generation included, when it changes an unrelated setting or restates the
@@ -751,7 +753,9 @@ mode the session is in). The `APP_COMMAND_QUEUE` cases for `RTL_SET_FREQ`, `MANU
 avoid, the TCP connect and the failed Pulse open, and the `ENGINE_NO_CARRIER_RESET` `-Y` step cases (the rigctl step,
 the legacy RTL step and the failed partial hop), stub what they drive through the linker's `--wrap` seam, so they run
 only where that seam exists: GCC or Clang builds off macOS, and for `APP_COMMAND_QUEUE` off Windows too. The RTL cases
-also need a radio build. All of these bounds come from synthetic signals.
+also need a radio build. All of these bounds come from synthetic signals. `--wrap` replaces only calls that reach the
+symbol from another object file, so a call made inside the object that defines it is not wrapped: the input switch lives
+in `dsd_audio_input_switch.c`, apart from `dsd_audio.c`, so the `openAudioInput()` wrap reaches its Pulse open.
 
 The off-air excerpts are pinned against their oracle labels (see [Tone and code labels](#tone-and-code-labels)) by
 cases in the analog block, run through the analog replay host, which reads the received tone from the decoder's
