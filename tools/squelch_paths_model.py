@@ -38,10 +38,9 @@ Timing checks run the C tracker itself (squelch_model_taps track) on each distin
     samples);
   - closing delay: a 20 dB carrier dropping at 40 phases across a window, learning and with a known floor; the worst
     delay from the drop to the first closed flag must stay under L_MAX_MS, the bound EDACS budgets.
-The holds: EDACS releases after a closed run of 4 triplets (4 x 2880 samples at its output rate) less L_MAX_MS, never
-under EDACS_MIN_HOLD_MS (two windows); its output rate is taken as the channel rate (a replay unresampled, the
-shortest hold) or 48 kHz on a device-forced chain, which is resampled there. The encoder's VOX releases after 11
-closed 40 ms reads (440 ms).
+The holds: EDACS releases after a closed run of 4 triplets (4 x 2880 samples at 48 kHz, the rate it runs analog
+voice at whatever rate it reads, issue #633) less L_MAX_MS, never under EDACS_MIN_HOLD_MS (two windows). The
+encoder's VOX releases after 11 closed 40 ms reads (440 ms).
 
 Usage:
     python3 tools/squelch_paths_model.py [--quick] [--out DIR] [--build-dir build/dev-debug] [--jobs N]
@@ -92,10 +91,11 @@ LSD_BPS = 150.0
 LSD_DEVIATION_HZ = 750.0
 DATA_BPS = 9600.0
 
-# EDACS's hold (src/protocol/edacs/edacs-fme.c): four triplets of 2880 samples at its output rate, less the closing
-# delay it budgets (L_MAX_MS, DSD_SQUELCH_CLOSE_DELAY_MS in include/dsd-neo/core/power.h). The encoder's VOX: 11 closed
-# 40 ms reads.
+# EDACS's hold (src/protocol/edacs/edacs-fme.c): four triplets of 2880 samples at 48 kHz (EDACS_ANALOG_RATE_HZ, which
+# it converts every input rate to), less the closing delay it budgets (L_MAX_MS, DSD_SQUELCH_CLOSE_DELAY_MS in
+# include/dsd-neo/core/power.h). The encoder's VOX: 11 closed 40 ms reads.
 EDACS_MIN_CHANNEL_RATE_HZ = 12000
+EDACS_RATE_HZ = 48000
 EDACS_TRIPLET_SAMPLES = 2880
 EDACS_HOLD_TRIPLETS = 4
 L_MAX_MS = 85.0
@@ -126,13 +126,9 @@ ACCEPTED_MISS = {
 # --------------------------------------------------------------------------------------------- plans
 
 
-def edacs_output_rate(plan: sm.RatePlan) -> int:
-    """The rate EDACS reads at: the channel rate, resampled to 48 kHz where a device forces another."""
-    return plan.channel_rate if plan.source != "device" else 48000
-
-
-def edacs_hold_s(plan: sm.RatePlan) -> float:
-    hold = EDACS_HOLD_TRIPLETS * EDACS_TRIPLET_SAMPLES / edacs_output_rate(plan) - L_MAX_MS / 1000.0
+def edacs_hold_s() -> float:
+    """EDACS's hold, the same at every channel rate: it converts what it reads to 48 kHz."""
+    hold = EDACS_HOLD_TRIPLETS * EDACS_TRIPLET_SAMPLES / EDACS_RATE_HZ - L_MAX_MS / 1000.0
     return max(hold, EDACS_MIN_HOLD_MS / 1000.0)
 
 
@@ -220,7 +216,7 @@ def run_profile_harness(exe: Path, filters: list[dict]) -> None:
         else:
             f["protected_hz"] = 2.0 * float(rec["protected_edge_hz"])
         f["fkey"] = f"{plan.channel_rate}:{plan.hb}:{sm.taps_key(f['taps'])}"
-        f["hold_s"] = edacs_hold_s(plan) if f["path"] == "edacs" else VOX_HOLD_S
+        f["hold_s"] = edacs_hold_s() if f["path"] == "edacs" else VOX_HOLD_S
 
 
 # --------------------------------------------------------------------------------------------- signals
