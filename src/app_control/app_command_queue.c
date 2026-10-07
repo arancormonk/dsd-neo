@@ -17,11 +17,11 @@
 #include <dsd-neo/core/airspy_config.h>
 #include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/audio_input_switch.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/channel_mode.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/csv_validate.h>
-#include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
@@ -48,7 +48,6 @@
 #include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/io/control.h>
 #include <dsd-neo/io/rtl_stream_c.h>
-#include <dsd-neo/io/udp_input.h>
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/platform.h>
@@ -442,12 +441,61 @@ ui_input_switched(dsd_opts* opts, dsd_state* state) {
     return ui_reconfigure_output_for_input_policy(opts, state);
 }
 
-static void
-ui_set_tcp_audio_connected_toast_if_output_ready(dsd_opts* opts, dsd_state* state, const char* host, int port) {
-    if (ui_input_switched(opts, state) != 0) {
-        return;
+static int ui_scan_goes_on(const dsd_opts* opts, const dsd_state* state);
+
+/* Whether a menu input switch must not run (issue #634), with a toast saying why: the engine mode reads no input a
+   switch would open (svc_input_switch_unsupported()), or a scan is in force, whose timing snapshots belong to the input
+   that runs (a scan scope or -Y with rows, ui_scan_goes_on(), or --trunk-scan with targets). */
+static int
+ui_input_mode_refused(const dsd_opts* opts, dsd_state* state) {
+    const char* why = svc_input_switch_unsupported(opts);
+    if (why) {
+        ui_set_toast(state, 4, "Unsupported: %s", why);
+        return 1;
     }
-    ui_set_toast(state, 3, "TCP audio connected: %s:%d", host, port);
+    return 0;
+}
+
+static int
+ui_input_switch_refused(const dsd_opts* opts, dsd_state* state) {
+    if (ui_input_mode_refused(opts, state)) {
+        return 1;
+    }
+    if (ui_scan_goes_on(opts, state) || (opts->trunk_scan_enabled == 1 && state->trunk_scan_target_count > 0U)) {
+        ui_set_toast(state, 4, "Unsupported: stop the scan first");
+        return 1;
+    }
+    return 0;
+}
+
+/* What an input switch did (a dsd_audio_input_switch_result), as the command's toast and status (issue #634). @p what
+   names the kind of input, @p name the input. A switch that ran replaced the stream the decoder read, so the engine
+   ends the reception before it decodes the new one (state->input_boundary). When the output then cannot follow the new
+   input's policy, the new input stays and the output reconfigure's own toast says what failed. The caller holds the
+   P25 SM tick guard, from the switch through the output reconfigure: the watchdog may flush audio into the stream a
+   reconfigure closes. */
+static int
+ui_cmd_finish_input_switch(dsd_opts* opts, dsd_state* state, int rc, const char* what, const char* name) {
+    switch (rc) {
+        case DSD_AUDIO_INPUT_SWITCHED:
+            state->input_boundary = 1;
+            if (ui_input_switched(opts, state) != 0) {
+                return UI_CMD_APPLY_FAILED;
+            }
+            ui_set_toast(state, 3, "Applied: %s -> %s", what, name);
+            return UI_CMD_APPLY_COMPLETED;
+        case DSD_AUDIO_INPUT_RESTARTED:
+            state->input_boundary = 1;
+            ui_input_left(opts, state);
+            ui_set_toast(state, 5, "Failed: %s -> %s; the UDP input before it was restarted", what, name);
+            return UI_CMD_APPLY_FAILED;
+        case DSD_AUDIO_INPUT_LOST:
+            state->input_boundary = 1;
+            ui_input_left(opts, state);
+            ui_set_toast(state, 5, "Failed: %s -> %s; the UDP input before it did not bind again", what, name);
+            return UI_CMD_APPLY_FAILED;
+        default: ui_set_toast(state, 4, "Failed: %s -> %s (see log)", what, name); return UI_CMD_APPLY_FAILED;
+    }
 }
 
 static inline int
@@ -523,6 +571,23 @@ ui_cmd_copy_payload_string(const struct dsd_app_command* c, char* out, size_t ou
     size_t n = (c->n < out_sz - 1) ? c->n : out_sz - 1;
     DSD_MEMCPY(out, c->data, n);
     out[n] = '\0';
+    return 1;
+}
+
+/* A path payload, whole (issue #634): one that does not fit @p out, or that the queue cut short, would name another
+   file than the one asked for, which an input switch would open, so it is refused. */
+static int
+ui_cmd_copy_payload_path(const struct dsd_app_command* c, char* out, size_t out_sz) {
+    if (!c || !out || out_sz == 0 || c->n == 0 || c->payload_truncated) {
+        return 0;
+    }
+    const char* end = (const char*)memchr(c->data, '\0', c->n);
+    const size_t len = end ? (size_t)(end - (const char*)c->data) : c->n;
+    if (len == 0 || len >= out_sz) {
+        return 0;
+    }
+    DSD_MEMCPY(out, c->data, len);
+    out[len] = '\0';
     return 1;
 }
 
@@ -980,65 +1045,95 @@ ui_cmd_handle_symcap_open(dsd_opts* opts, dsd_state* state, const struct dsd_app
     return result;
 }
 
+/* The kind of input a path opens as (dsd_audio_path_input_kind()), for a toast. */
+static const char*
+ui_file_input_what(const char* path) {
+    switch (dsd_audio_path_input_kind(path)) {
+        case DSD_AUDIO_INPUT_SYMBOL_FLT: return "Symbol stream input";
+        case DSD_AUDIO_INPUT_SYMBOL_BIN: return "Symbol input";
+        default: return "WAV input";
+    }
+}
+
+/* Input > Switch source > Symbol file, for a capture (.bin): replayed at symbol pace (issue #634). */
 static int
 ui_cmd_handle_symbol_in_open(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
-    int result = UI_CMD_APPLY_COMPLETED;
-    if (state && c->n > 0) {
-        char path[1024] = {0};
-        if (ui_cmd_copy_payload_string(c, path, sizeof path)) {
-            int rc = svc_open_symbol_in(opts, state, path);
-            result = ui_cmd_apply_status_from_service_rc(rc);
-            if (rc == 0) {
-                if (ui_input_switched(opts, state) == 0) {
-                    ui_set_toast(state, 3, "Applied: Symbol input -> %s", path);
-                } else {
-                    result = UI_CMD_APPLY_FAILED;
-                }
-            } else {
-                ui_set_toast(state, 4, "Failed: Symbol input open -> %s", path);
-            }
-        }
+    char path[sizeof opts->audio_in_dev];
+    if (!state || c->n == 0) {
+        return UI_CMD_APPLY_COMPLETED;
     }
+    if (!ui_cmd_copy_payload_path(c, path, sizeof path)) {
+        ui_set_toast(state, 4, "Failed: the path is longer than %zu characters", sizeof path - 1U);
+        return UI_CMD_APPLY_FAILED;
+    }
+    if (ui_input_switch_refused(opts, state)) {
+        return UI_CMD_APPLY_UNSUPPORTED;
+    }
+    p25_sm_tick_guard_enter();
+    const int rc = svc_open_symbol_in(opts, state, path);
+    const int result = ui_cmd_finish_input_switch(opts, state, rc, "Symbol input", path);
+    p25_sm_tick_guard_leave();
     return result;
 }
 
+/* Input > Switch source > WAV / raw file: the file opens as `-i` opens it, so a saved config reopens the same kind
+   (issue #634). */
 static int
 ui_cmd_handle_input_wav_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
-    if (c->n > 0 && ui_cmd_copy_payload_string(c, opts->audio_in_dev, sizeof opts->audio_in_dev)) {
-        opts->audio_in_type = AUDIO_IN_WAV;
-        if (ui_input_switched(opts, state) == 0) {
-            ui_set_toast(state, 3, "Applied: WAV input -> %s", opts->audio_in_dev);
-        } else {
-            return UI_CMD_APPLY_FAILED;
-        }
+    char path[sizeof opts->audio_in_dev];
+    if (!state || c->n == 0) {
+        return UI_CMD_APPLY_COMPLETED;
     }
-    return UI_CMD_APPLY_COMPLETED;
+    if (!ui_cmd_copy_payload_path(c, path, sizeof path)) {
+        ui_set_toast(state, 4, "Failed: the path is longer than %zu characters", sizeof path - 1U);
+        return UI_CMD_APPLY_FAILED;
+    }
+    if (ui_input_switch_refused(opts, state)) {
+        return UI_CMD_APPLY_UNSUPPORTED;
+    }
+    p25_sm_tick_guard_enter();
+    const int rc = svc_open_audio_file_in(opts, state, path);
+    const int result = ui_cmd_finish_input_switch(opts, state, rc, ui_file_input_what(path), path);
+    p25_sm_tick_guard_leave();
+    return result;
 }
 
+/* Input > Switch source > Symbol file, for a float symbol stream (.raw, .sym). */
 static int
 ui_cmd_handle_input_sym_stream_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
-    if (c->n > 0 && ui_cmd_copy_payload_string(c, opts->audio_in_dev, sizeof opts->audio_in_dev)) {
-        opts->audio_in_type = AUDIO_IN_SYMBOL_FLT;
-        if (ui_input_switched(opts, state) == 0) {
-            ui_set_toast(state, 3, "Applied: Symbol stream input -> %s", opts->audio_in_dev);
-        } else {
-            return UI_CMD_APPLY_FAILED;
-        }
+    char path[sizeof opts->audio_in_dev];
+    if (!state || c->n == 0) {
+        return UI_CMD_APPLY_COMPLETED;
     }
-    return UI_CMD_APPLY_COMPLETED;
+    if (!ui_cmd_copy_payload_path(c, path, sizeof path)) {
+        ui_set_toast(state, 4, "Failed: the path is longer than %zu characters", sizeof path - 1U);
+        return UI_CMD_APPLY_FAILED;
+    }
+    if (ui_input_switch_refused(opts, state)) {
+        return UI_CMD_APPLY_UNSUPPORTED;
+    }
+    p25_sm_tick_guard_enter();
+    const int rc = svc_open_symbol_stream_in(opts, state, path);
+    const int result = ui_cmd_finish_input_switch(opts, state, rc, "Symbol stream input", path);
+    p25_sm_tick_guard_leave();
+    return result;
 }
 
+/* Input > Switch source > Pulse: the default capture device. */
 static int
 ui_cmd_handle_input_set_pulse(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     (void)c;
-    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "pulse");
-    opts->audio_in_type = AUDIO_IN_PULSE;
-    if (ui_input_switched(opts, state) == 0) {
-        ui_set_toast(state, 3, "Applied: Input switched to Pulse");
-    } else {
-        return UI_CMD_APPLY_FAILED;
+    if (!state) {
+        return UI_CMD_APPLY_COMPLETED;
     }
-    return UI_CMD_APPLY_COMPLETED;
+    if (ui_input_switch_refused(opts, state)) {
+        return UI_CMD_APPLY_UNSUPPORTED;
+    }
+    p25_sm_tick_guard_enter();
+    const int rc = svc_set_pulse_input(opts, state, "");
+    const int result = ui_cmd_finish_input_switch(opts, state, rc, "Pulse input", "default device");
+    p25_sm_tick_guard_leave();
+    return result;
 }
 
 static int
@@ -1084,21 +1179,29 @@ ui_cmd_handle_udp_out_cfg(dsd_opts* opts, dsd_state* state, const struct dsd_app
     return result;
 }
 
+/* A TCP audio connect to @p host:@p port, from the menu's host and port or the '8' key (issue #634). */
+static int
+ui_cmd_tcp_connect_audio(dsd_opts* opts, dsd_state* state, const char* host, int port) {
+    if (ui_input_switch_refused(opts, state)) {
+        return UI_CMD_APPLY_UNSUPPORTED;
+    }
+    char endpoint[300];
+    DSD_SNPRINTF(endpoint, sizeof endpoint, "%s:%d", host, port);
+    p25_sm_tick_guard_enter();
+    const int rc = svc_tcp_connect_audio(opts, state, host, port);
+    const int result = ui_cmd_finish_input_switch(opts, state, rc, "TCP audio", endpoint);
+    p25_sm_tick_guard_leave();
+    return result;
+}
+
 static int
 ui_cmd_handle_tcp_connect_audio_cfg(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     char host[256] = {0};
     int32_t port = 0;
-    int result = UI_CMD_APPLY_COMPLETED;
-    if (state && ui_cmd_parse_host_port_payload(c, host, sizeof host, &port)) {
-        int rc = svc_tcp_connect_audio(opts, host, port);
-        result = ui_cmd_apply_status_from_service_rc(rc);
-        if (rc == 0) {
-            ui_set_tcp_audio_connected_toast_if_output_ready(opts, state, host, (int)port);
-        } else {
-            ui_set_toast(state, 4, "TCP audio connect failed: %s:%d", host, (int)port);
-        }
+    if (!state || !ui_cmd_parse_host_port_payload(c, host, sizeof host, &port)) {
+        return UI_CMD_APPLY_COMPLETED;
     }
-    return result;
+    return ui_cmd_tcp_connect_audio(opts, state, host, (int)port);
 }
 
 static int
@@ -1118,22 +1221,28 @@ ui_cmd_handle_rigctl_connect_cfg(dsd_opts* opts, dsd_state* state, const struct 
     return result;
 }
 
+/* Input > Switch source > UDP audio: binds now (issue #634). */
 static int
 ui_cmd_handle_udp_input_cfg(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     char bind[256] = {0};
     int32_t port = 0;
-    if (state && ui_cmd_parse_host_port_payload(c, bind, sizeof bind, &port)) {
-        DSD_SNPRINTF(opts->udp_in_bindaddr, sizeof opts->udp_in_bindaddr, "%s", bind);
-        opts->udp_in_portno = port;
-        DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "udp");
-        opts->audio_in_type = AUDIO_IN_UDP;
-        if (ui_input_switched(opts, state) == 0) {
-            ui_set_toast(state, 3, "UDP input set: %s:%d", bind[0] ? bind : "127.0.0.1", (int)port);
-        } else {
-            return UI_CMD_APPLY_FAILED;
-        }
+    if (!state || !ui_cmd_parse_host_port_payload(c, bind, sizeof bind, &port)) {
+        return UI_CMD_APPLY_COMPLETED;
     }
-    return UI_CMD_APPLY_COMPLETED;
+    char endpoint[300];
+    DSD_SNPRINTF(endpoint, sizeof endpoint, "%s:%d", bind[0] ? bind : "127.0.0.1", (int)port);
+    if (port < 1 || port > 65535) {
+        ui_set_toast(state, 4, "Failed: UDP input port %d is out of range (1-65535)", (int)port);
+        return UI_CMD_APPLY_FAILED;
+    }
+    if (ui_input_switch_refused(opts, state)) {
+        return UI_CMD_APPLY_UNSUPPORTED;
+    }
+    p25_sm_tick_guard_enter();
+    const int rc = svc_udp_input_config(opts, state, bind, (int)port);
+    const int result = ui_cmd_finish_input_switch(opts, state, rc, "UDP input", endpoint);
+    p25_sm_tick_guard_leave();
+    return result;
 }
 
 static int
@@ -1515,6 +1624,43 @@ ui_radio_start_failed_locked(dsd_opts* opts, dsd_state* state, const ui_radio_in
     return refused;
 }
 
+/* The rate the symbol timing is in under a PCM input, for the radio output's rescale to start from (issue #634); 0
+   under the radio. */
+static int
+ui_pcm_timing_rate_hz(const dsd_opts* opts) {
+    return opts->audio_in_type != AUDIO_IN_RTL ? dsd_opts_current_input_timing_rate(opts) : 0;
+}
+
+/* The device a Switch source radio row opens: the Airspy row's own spec, or for the RTL-SDR row the radio a switch to
+   PCM left (issue #634), else an RTL-SDR (svc_rtl_row_destination()). */
+static void
+ui_radio_row_set_device(dsd_opts* opts, int cmd_id) {
+    if (cmd_id == DSD_APP_CMD_AIRSPY_ENABLE_INPUT) {
+        DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "airspy%s%s",
+                     opts->airspy.serial[0] ? ":serial=" : "", opts->airspy.serial);
+        opts->rtltcp_enabled = 0;
+        return;
+    }
+    char destination[sizeof opts->audio_in_dev];
+    svc_rtl_row_destination(opts, destination, sizeof destination);
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", destination);
+    /* The backend flag follows the device, as a config's input does: an Airspy run since cleared it, and the retune
+       settling reads it (an rtl_tcp stream is buffered). */
+    opts->rtltcp_enabled = dsd_opts_audio_in_dev_is_rtltcp_spec(destination) ? 1 : 0;
+}
+
+/* A radio row's stream replaced the input: the PCM input it replaced is closed, as an input switch closes the input it
+   replaces (its file, or its UDP socket and receive thread with the port); the radio output's rescale starts from the
+   rate the timing is in; and the engine ends the reception before it decodes the new stream. */
+static void
+ui_radio_row_took_over(dsd_opts* opts, dsd_state* state, int pcm_timing_rate_hz) {
+    closeAudioInDevice(opts);
+    if (pcm_timing_rate_hz > 0) {
+        dsd_symbol_note_timing_rate(pcm_timing_rate_hz);
+    }
+    state->input_boundary = 1;
+}
+
 /* Input > Switch source > RTL-SDR or Airspy. The watchdog reads the input, and may retune it, while it holds the P25 SM
    tick guard, so the switch holds that guard from the copy of the input it would put back, through its rewrite of the
    input and its start, and, when the start fails, on through putting back the input that ran and starting it again
@@ -1523,6 +1669,9 @@ ui_radio_start_failed_locked(dsd_opts* opts, dsd_state* state, const ui_radio_in
    back would undo while the trunking state follows the retune. */
 static int
 ui_cmd_handle_rtl_enable_input(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    if (opts && state && ui_input_mode_refused(opts, state)) {
+        return UI_CMD_APPLY_UNSUPPORTED;
+    }
     if (ui_cmd_rtl_enable_input_refused(opts, state, c)) {
         return UI_CMD_APPLY_FAILED;
     }
@@ -1533,26 +1682,27 @@ ui_cmd_handle_rtl_enable_input(dsd_opts* opts, dsd_state* state, const struct ds
     why[0] = '\0';
     int refused = 0;
     int capture_stopped = 0;
+    int output_failed = 0;
     p25_sm_tick_guard_enter();
     ui_radio_input before;
     ui_capture_radio_input(opts, state, &before);
-    if (c->id == DSD_APP_CMD_AIRSPY_ENABLE_INPUT) {
-        DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "airspy%s%s",
-                     opts->airspy.serial[0] ? ":serial=" : "", opts->airspy.serial);
-        opts->rtltcp_enabled = 0;
-    } else if (dsd_opts_audio_in_dev_is_airspy_spec(opts->audio_in_dev)) {
-        DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "rtl");
-    }
+    const int pcm_timing_rate_hz = ui_pcm_timing_rate_hz(opts);
+    ui_radio_row_set_device(opts, c->id);
     const int rc = svc_rtl_enable_input_locked(opts, state);
     const int failed = rc != 0 && !ui_rc_is_not_supported(rc);
     if (failed) {
         refused = ui_radio_start_failed_locked(opts, state, &before, why, sizeof why, &capture_stopped);
+    } else if (rc == 0) {
+        ui_radio_row_took_over(opts, state, pcm_timing_rate_hz);
+        /* The output follows the new input under the guard too: the watchdog may flush audio into the stream a
+           reconfigure closes (issue #634). */
+        output_failed = ui_input_switched(opts, state) != 0;
     }
     p25_sm_tick_guard_leave();
 
     int result = ui_cmd_apply_status_from_service_rc(rc);
     if (rc == 0) {
-        if (ui_input_switched(opts, state) == 0) {
+        if (!output_failed) {
             ui_set_toast(state, 3, "Applied: %s input enabled",
                          c->id == DSD_APP_CMD_AIRSPY_ENABLE_INPUT ? "Airspy" : "RTL");
         } else {
@@ -2292,24 +2442,21 @@ apply_cmd_io_and_import_pulse_io(dsd_opts* opts, dsd_state* state, const struct 
             return result;
         }
         case DSD_APP_CMD_PULSE_IN_SET: {
-            int result = UI_CMD_APPLY_COMPLETED;
-            if (state && c->n > 0) {
-                char name[256] = {0};
-                size_t n = c->n < sizeof(name) ? c->n : sizeof(name) - 1;
-                DSD_MEMCPY(name, c->data, n);
-                name[n] = '\0';
-                int rc = svc_set_pulse_input(opts, name);
-                result = ui_cmd_apply_status_from_service_rc(rc);
-                if (rc == 0) {
-                    if (ui_input_switched(opts, state) == 0) {
-                        ui_set_toast(state, 3, "Applied: Pulse input -> %s", name);
-                    } else {
-                        result = UI_CMD_APPLY_FAILED;
-                    }
-                } else {
-                    ui_set_toast(state, 4, "Failed: Pulse input -> %s", name);
-                }
+            if (!state || c->n == 0) {
+                return UI_CMD_APPLY_COMPLETED;
             }
+            char name[256] = {0};
+            size_t n = c->n < sizeof(name) ? c->n : sizeof(name) - 1;
+            DSD_MEMCPY(name, c->data, n);
+            name[n] = '\0';
+            if (ui_input_switch_refused(opts, state)) {
+                return UI_CMD_APPLY_UNSUPPORTED;
+            }
+            p25_sm_tick_guard_enter();
+            const int rc = svc_set_pulse_input(opts, state, name);
+            const int result =
+                ui_cmd_finish_input_switch(opts, state, rc, "Pulse input", name[0] ? name : "default device");
+            p25_sm_tick_guard_leave();
             return result;
         }
         default: return 0;
@@ -3193,49 +3340,52 @@ apply_cfg_rtl_hot_restart(dsd_opts* opts, dsd_state* state, const dsdneoUserConf
 }
 #endif
 
-static void
-apply_cfg_tcp_hot_restart(dsd_opts* opts, const dsdneoUserConfig* cfg, const char* old_audio_in_dev,
-                          int old_audio_in_type) {
-    const char* host = NULL;
-    int port = 0;
+/* What a config's reopen of the running input did (issue #634): CFG_REOPEN_NOTHING when it reopened nothing, else the
+   dsd_audio_input_switch_result of the reopen. A reopen goes through the input switch, so one that fails keeps the
+   running input, and the input name the config wrote is put back. */
+enum { CFG_REOPEN_NOTHING = -1 };
 
+static int
+apply_cfg_tcp_hot_restart(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg, const char* old_audio_in_dev,
+                          int old_audio_in_type) {
     if (!cfg->has_input || cfg->input_source != DSDCFG_INPUT_TCP || old_audio_in_type != AUDIO_IN_TCP
         || strncmp(old_audio_in_dev, "tcp", 3) != 0 || strncmp(opts->audio_in_dev, "tcp", 3) != 0
         || strncmp(old_audio_in_dev, opts->audio_in_dev, sizeof opts->audio_in_dev) == 0) {
-        return;
+        return CFG_REOPEN_NOTHING;
     }
 
-    host = cfg->tcp_host[0] ? cfg->tcp_host : opts->tcp_hostname;
-    port = cfg->tcp_port ? cfg->tcp_port : opts->tcp_portno;
-    if (svc_tcp_connect_audio(opts, host, port) != 0) {
+    char host[sizeof opts->tcp_hostname];
+    DSD_SNPRINTF(host, sizeof host, "%s", cfg->tcp_host[0] ? cfg->tcp_host : opts->tcp_hostname);
+    const int port = cfg->tcp_port ? cfg->tcp_port : opts->tcp_portno;
+    const int rc = svc_tcp_connect_audio(opts, state, host, port);
+    if (rc != DSD_AUDIO_INPUT_SWITCHED) {
         DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", old_audio_in_dev);
         LOG_ERROR("Config: failed to reconnect TCP audio %s:%d\n", host, port);
     }
+    return rc;
 }
 
-static void
-apply_cfg_udp_hot_restart(dsd_opts* opts, const dsdneoUserConfig* cfg, const char* old_audio_in_dev,
+static int
+apply_cfg_udp_hot_restart(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg, const char* old_audio_in_dev,
                           int old_audio_in_type) {
     if (!cfg->has_input || cfg->input_source != DSDCFG_INPUT_UDP || old_audio_in_type != AUDIO_IN_UDP
         || strncmp(old_audio_in_dev, "udp", 3) != 0 || strncmp(opts->audio_in_dev, "udp", 3) != 0
         || strncmp(old_audio_in_dev, opts->audio_in_dev, sizeof opts->audio_in_dev) == 0) {
-        return;
+        return CFG_REOPEN_NOTHING;
     }
 
-    if (cfg->udp_addr[0]) {
-        DSD_SNPRINTF(opts->udp_in_bindaddr, sizeof opts->udp_in_bindaddr, "%s", cfg->udp_addr);
-    }
-    if (cfg->udp_port) {
-        opts->udp_in_portno = cfg->udp_port;
-    }
-    if (opts->udp_in_ctx) {
-        udp_input_stop(opts);
-    }
-    const char* bindaddr = opts->udp_in_bindaddr[0] ? opts->udp_in_bindaddr : "127.0.0.1";
-    int port = opts->udp_in_portno ? opts->udp_in_portno : 7355;
-    if (udp_input_start(opts, bindaddr, port, opts->wav_sample_rate) != 0) {
+    /* The endpoint the config names, over the running one's; the running one stays in the options, for the switch to
+       bind again should the new one not bind. */
+    char bindaddr[sizeof opts->udp_in_bindaddr];
+    DSD_SNPRINTF(bindaddr, sizeof bindaddr, "%s",
+                 cfg->udp_addr[0] ? cfg->udp_addr : (opts->udp_in_bindaddr[0] ? opts->udp_in_bindaddr : "127.0.0.1"));
+    const int port = cfg->udp_port ? cfg->udp_port : (opts->udp_in_portno ? opts->udp_in_portno : 7355);
+    const int rc = svc_udp_input_config(opts, state, bindaddr, port);
+    if (rc != DSD_AUDIO_INPUT_SWITCHED) {
+        DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", old_audio_in_dev);
         LOG_ERROR("Config: failed to restart UDP input %s:%d\n", bindaddr, port);
     }
+    return rc;
 }
 
 static void
@@ -3319,6 +3469,7 @@ cfg_file_runtime_apply_wav_input(dsd_opts* opts, dsd_state* state, const dsdneoU
         return;
     }
 
+    const int raw_sample_rate = opts->wav_sample_rate;
     int active_sample_rate = opts->wav_sample_rate;
     if (audio_file_info_uses_container_metadata(opts->audio_in_file_info) && opts->audio_in_file_info->samplerate > 0) {
         active_sample_rate = opts->audio_in_file_info->samplerate;
@@ -3329,6 +3480,9 @@ cfg_file_runtime_apply_wav_input(dsd_opts* opts, dsd_state* state, const dsdneoU
     if (opts->wav_sample_rate != active_sample_rate) {
         dsd_opts_apply_input_sample_rate(opts, active_sample_rate);
     }
+    /* A header rate holds for this file only (issue #634). */
+    opts->wav_header_replaced_rate =
+        (raw_sample_rate > 0 && active_sample_rate != raw_sample_rate) ? raw_sample_rate : 0;
 
     int active_effective_input_rate = dsd_opts_effective_input_rate(opts);
     if (cfg->has_mode) {
@@ -3375,25 +3529,35 @@ apply_cfg_file_runtime_rate(dsd_opts* opts, dsd_state* state, const dsdneoUserCo
                                       old_symbol_center, old_jitter);
 }
 
-static void
+static int
 apply_cfg_file_hot_restart(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg, const char* old_audio_in_dev,
                            int old_audio_in_type, int old_wav_sample_rate, int old_effective_input_rate) {
     if (!cfg->has_input || cfg->input_source != DSDCFG_INPUT_FILE || old_audio_in_type != AUDIO_IN_WAV
         || strncmp(old_audio_in_dev, opts->audio_in_dev, sizeof opts->audio_in_dev) == 0) {
-        return;
+        return CFG_REOPEN_NOTHING;
     }
 
     SNDFILE* new_audio_in_file = NULL;
     SF_INFO* new_audio_in_file_info = NULL;
     int configured_effective_input_rate = dsd_opts_effective_input_rate(opts);
 
+    /* A pipe or device would block the decoder thread in its open until a writer turns up: startup (-i) only, as for
+       a menu switch (issue #634). */
+    dsd_stat_t st;
+    if (dsd_stat_path(opts->audio_in_dev, &st) != 0 || !dsd_stat_is_regular(&st)) {
+        LOG_ERROR("Config: file input %s is not a regular file (a pipe or device can be given at startup with -i)\n",
+                  opts->audio_in_dev);
+        rollback_cfg_file_hot_restart(opts, state, old_audio_in_dev, old_audio_in_type, old_wav_sample_rate,
+                                      old_effective_input_rate, configured_effective_input_rate);
+        return DSD_AUDIO_INPUT_KEPT;
+    }
     if (dsd_audio_open_mono_file_input(opts->audio_in_dev, opts->wav_sample_rate, &new_audio_in_file,
                                        &new_audio_in_file_info, NULL, NULL)
         != 0) {
         LOG_ERROR("Config: failed to open file input %s: %s\n", opts->audio_in_dev, sf_strerror(NULL));
         rollback_cfg_file_hot_restart(opts, state, old_audio_in_dev, old_audio_in_type, old_wav_sample_rate,
                                       old_effective_input_rate, configured_effective_input_rate);
-        return;
+        return DSD_AUDIO_INPUT_KEPT;
     }
 
     if (opts->audio_in_file) {
@@ -3405,31 +3569,36 @@ apply_cfg_file_hot_restart(dsd_opts* opts, dsd_state* state, const dsdneoUserCon
     opts->audio_in_file_info = new_audio_in_file_info;
     opts->audio_in_type = AUDIO_IN_WAV;
     dsd_opts_reset_pcm_input_state(opts);
+    return DSD_AUDIO_INPUT_SWITCHED;
 }
 
-static void
-apply_cfg_pulse_in_hot_restart(dsd_opts* opts, const dsdneoUserConfig* cfg, const char* old_audio_in_dev,
-                               int old_audio_in_type) {
+static int
+apply_cfg_pulse_in_hot_restart(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg,
+                               const char* old_audio_in_dev, int old_audio_in_type) {
     if (!cfg->has_input || cfg->input_source != DSDCFG_INPUT_PULSE || old_audio_in_type != AUDIO_IN_PULSE
         || opts->audio_in_type != AUDIO_IN_PULSE) {
-        return;
+        return CFG_REOPEN_NOTHING;
     }
     if (strncmp(old_audio_in_dev, opts->audio_in_dev, sizeof opts->audio_in_dev) == 0
         && strncmp(old_audio_in_dev, "pulse", 5) == 0) {
-        return;
+        return CFG_REOPEN_NOTHING;
     }
 
-    closeAudioInput(opts);
+    /* The device the spec names (its first ':' field, as parse_audio_input_string() reads it), or the default. */
+    char device[128] = {0};
     if (strncmp(opts->audio_in_dev, "pulse", 5) == 0 && opts->audio_in_dev[5] == ':' && opts->audio_in_dev[6] != '\0') {
-        char tmp[128] = {0};
-        DSD_SNPRINTF(tmp, sizeof tmp, "%s", opts->audio_in_dev + 6);
-        parse_audio_input_string(opts, tmp);
-    } else {
-        opts->pa_input_idx[0] = '\0';
+        DSD_SNPRINTF(device, sizeof device, "%s", opts->audio_in_dev + 6);
+        char* colon = strchr(device, ':');
+        if (colon) {
+            *colon = '\0';
+        }
     }
-    if (openAudioInput(opts) != 0) {
+    const int rc = svc_set_pulse_input(opts, state, device);
+    if (rc != DSD_AUDIO_INPUT_SWITCHED) {
+        DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", old_audio_in_dev);
         LOG_ERROR("Config: failed to open PulseAudio input\n");
     }
+    return rc;
 }
 
 static void
@@ -3510,18 +3679,54 @@ apply_cfg_radio_input(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* 
 }
 #endif
 
+/* A reopen that replaced the stream the decoder read (issue #634): the engine ends the reception before it decodes the
+   new one. A reopen that restarted the running UDP input, or lost it, puts back the options the config wrote, so the
+   received-tone check that compares them (cfg_forget_rx_tone_on_boundary()) would see no change: the boundary is
+   taken here. A reopen that failed applied none of the config's input, so the file rate it staged for later file opens
+   goes back to @p old_staged_file_sample_rate as well. */
+static void
+apply_cfg_note_reopen(dsd_opts* opts, dsd_state* state, int rc, int old_staged_file_sample_rate) {
+    if (rc == CFG_REOPEN_NOTHING) {
+        return;
+    }
+    if (rc != DSD_AUDIO_INPUT_SWITCHED) {
+        opts->staged_file_sample_rate = old_staged_file_sample_rate;
+    }
+    if (rc == DSD_AUDIO_INPUT_KEPT) {
+        return;
+    }
+    state->input_boundary = 1;
+    if (rc == DSD_AUDIO_INPUT_RESTARTED || rc == DSD_AUDIO_INPUT_LOST) {
+        ui_input_left(opts, state);
+    }
+}
+
+/* The input options a config apply found, before it wrote its own. */
+typedef struct {
+    const char* audio_in_dev;
+    int audio_in_type;
+    int wav_sample_rate;
+    int effective_input_rate;
+    int staged_file_sample_rate;
+} cfg_input_before;
+
 static void
 apply_cfg_runtime_hot_switches(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg,
-                               const char* old_audio_in_dev, int old_audio_in_type, int old_wav_sample_rate,
-                               int old_effective_input_rate, const char* old_audio_out_dev, int old_audio_out_type) {
+                               const cfg_input_before* in, const char* old_audio_out_dev, int old_audio_out_type) {
     /* Tighten runtime behavior when applying configs mid-run by restarting
      * active backends whose configuration changed, while avoiding cross-backend
      * hot-switches. The running RTL-family input is reopened before these, by apply_cfg_radio_input(). */
-    apply_cfg_tcp_hot_restart(opts, cfg, old_audio_in_dev, old_audio_in_type);
-    apply_cfg_udp_hot_restart(opts, cfg, old_audio_in_dev, old_audio_in_type);
-    apply_cfg_file_hot_restart(opts, state, cfg, old_audio_in_dev, old_audio_in_type, old_wav_sample_rate,
-                               old_effective_input_rate);
-    apply_cfg_pulse_in_hot_restart(opts, cfg, old_audio_in_dev, old_audio_in_type);
+    const int staged = in->staged_file_sample_rate;
+    apply_cfg_note_reopen(opts, state, apply_cfg_tcp_hot_restart(opts, state, cfg, in->audio_in_dev, in->audio_in_type),
+                          staged);
+    apply_cfg_note_reopen(opts, state, apply_cfg_udp_hot_restart(opts, state, cfg, in->audio_in_dev, in->audio_in_type),
+                          staged);
+    apply_cfg_note_reopen(opts, state,
+                          apply_cfg_file_hot_restart(opts, state, cfg, in->audio_in_dev, in->audio_in_type,
+                                                     in->wav_sample_rate, in->effective_input_rate),
+                          staged);
+    apply_cfg_note_reopen(
+        opts, state, apply_cfg_pulse_in_hot_restart(opts, state, cfg, in->audio_in_dev, in->audio_in_type), staged);
     apply_cfg_pulse_out_hot_restart(opts, cfg, old_audio_out_dev, old_audio_out_type);
 }
 
@@ -5219,15 +5424,10 @@ apply_cmd_trunk_controls(dsd_opts* opts, dsd_state* state, const struct dsd_app_
             state->nxdn_bw = 0;
             return 1;
         case DSD_APP_CMD_TCP_CONNECT_AUDIO: {
-            int rc = svc_tcp_connect_audio(opts, opts->tcp_hostname, opts->tcp_portno);
-            if (rc == 0) {
-                LOG_INFO("TCP Socket Connected Successfully.\n");
-                ui_set_tcp_audio_connected_toast_if_output_ready(opts, state, opts->tcp_hostname, opts->tcp_portno);
-            } else {
-                LOG_ERROR("TCP Socket Connection Error.\n");
-                ui_set_toast(state, 4, "TCP audio connect failed: %s:%d", opts->tcp_hostname, opts->tcp_portno);
-            }
-            return ui_cmd_apply_status_from_service_rc(rc);
+            /* A copy: the switch rewrites tcp_hostname once it connects. */
+            char host[sizeof opts->tcp_hostname];
+            DSD_SNPRINTF(host, sizeof host, "%s", opts->tcp_hostname);
+            return ui_cmd_tcp_connect_audio(opts, state, host, opts->tcp_portno);
         }
         case DSD_APP_CMD_RIGCTL_CONNECT: {
             /* The TCP input's host at the rigctl port, through the service the menu's connect takes too (issue #589).
@@ -6072,8 +6272,9 @@ static int
 ui_cmd_handle_symcap_stop(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     (void)c;
     if (opts->symbol_out_f) {
+        /* The capture it closes is what Replay last replays (symbol_capture_last); the running input keeps its name
+           (issue #634). */
         closeSymbolOutFile(opts, state);
-        DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", opts->symbol_out_file);
         if (state && state->event_history_s) {
             char event_str[2000] = {0};
             DSD_SNPRINTF(event_str, sizeof event_str, "DSD-neo Dibit Capture File  Closed: %s;", opts->symbol_out_file);
@@ -6085,25 +6286,28 @@ ui_cmd_handle_symcap_stop(dsd_opts* opts, dsd_state* state, const struct dsd_app
     return 1;
 }
 
+/* Replay last capture: the capture closed most recently this session (symbol_capture_last), replayed at symbol pace
+   as Input > Switch source > Symbol file replays one (issue #634). */
 static int
 ui_cmd_handle_replay_last(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
-    dsd_stat_t sb;
     (void)c;
-    if (dsd_stat_path(opts->audio_in_dev, &sb) != 0) {
-        LOG_ERROR("Error, couldn't open %s\n", opts->audio_in_dev);
+    if (!state) {
+        return UI_CMD_APPLY_COMPLETED;
+    }
+    if (opts->symbol_capture_last[0] == '\0') {
+        ui_set_toast(state, 4, "Failed: no capture to replay");
         return UI_CMD_APPLY_FAILED;
     }
-    if (dsd_stat_is_regular(&sb)) {
-        opts->symbolfile = dsd_fopen_existing_regular_file(opts->audio_in_dev, "rb");
-        if (opts->symbolfile) {
-            opts->audio_in_type = AUDIO_IN_SYMBOL_BIN;
-            state->symbol_replay_format = DSD_SYMBOL_REPLAY_FORMAT_UNKNOWN;
-            state->symbol_replay_header_checked = 0;
-            state->symbol_replay_has_soft = 0;
-            (void)ui_input_switched(opts, state);
-        }
+    if (ui_input_switch_refused(opts, state)) {
+        return UI_CMD_APPLY_UNSUPPORTED;
     }
-    return 1;
+    char path[sizeof opts->symbol_capture_last];
+    DSD_SNPRINTF(path, sizeof path, "%s", opts->symbol_capture_last);
+    p25_sm_tick_guard_enter();
+    const int rc = svc_open_symbol_in(opts, state, path);
+    const int result = ui_cmd_finish_input_switch(opts, state, rc, "Replay", path);
+    p25_sm_tick_guard_leave();
+    return result;
 }
 
 static int
@@ -6138,33 +6342,27 @@ ui_cmd_handle_wav_toggle(dsd_opts* opts, dsd_state* state, const struct dsd_app_
     return ui_cmd_handle_wav_start(opts, state, c);
 }
 
+/* Stop replay: a playback (a WAV or raw file, a symbol file) ends with a switch to the configured Pulse input (issue
+   #634). The terminal reads its keys from stdin, so there is no switch to stdin. A Pulse input that does not open
+   leaves the playback running, as any failed switch leaves the input it had. */
 static int
 ui_cmd_handle_stop_playback(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     (void)c;
-    if (opts->symbolfile != NULL) {
-        if (opts->audio_in_type == AUDIO_IN_SYMBOL_BIN) {
-            fclose(opts->symbolfile);
-        }
-        opts->symbolfile = NULL;
+    if (!state) {
+        return UI_CMD_APPLY_COMPLETED;
     }
-    if (opts->audio_in_type == AUDIO_IN_WAV && opts->audio_in_file) {
-        sf_close(opts->audio_in_file);
-        opts->audio_in_file = NULL;
+    if (!svc_playback_running(opts)) {
+        ui_set_toast(state, 3, "No playback to stop");
+        return UI_CMD_APPLY_COMPLETED;
     }
-    if (opts->audio_out_type == 0) {
-        opts->audio_in_type = AUDIO_IN_PULSE;
-        if (openAudioInput(opts) != 0) {
-            LOG_ERROR("UI: failed to open PulseAudio input\n");
-            /* The playback is gone either way: its tone and a replay's capture clock go with it. */
-            ui_input_left(opts, state);
-        } else {
-            (void)ui_input_switched(opts, state);
-        }
-    } else {
-        opts->audio_in_type = AUDIO_IN_STDIN;
-        (void)ui_input_switched(opts, state);
+    if (ui_input_switch_refused(opts, state)) {
+        return UI_CMD_APPLY_UNSUPPORTED;
     }
-    return 1;
+    p25_sm_tick_guard_enter();
+    const int rc = svc_stop_playback(opts, state);
+    const int result = ui_cmd_finish_input_switch(opts, state, rc, "Stop replay", "Pulse input");
+    p25_sm_tick_guard_leave();
+    return result;
 }
 
 static int
@@ -6807,6 +7005,7 @@ ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_ap
     int old_audio_out_type = opts->audio_out_type;
     int old_wav_sample_rate = opts->wav_sample_rate;
     int old_effective_input_rate = dsd_opts_effective_input_rate(opts);
+    const int old_staged_file_sample_rate = opts->staged_file_sample_rate;
     int old_runtime_input_rate = current_demod_rate(opts, state);
     int old_samples_per_symbol = state->samplesPerSymbol;
     int old_symbol_center = state->symbolCenter;
@@ -6846,8 +7045,9 @@ ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_ap
        running before it there is nothing to put back, and no stream to publish to. */
     const int radio_rc = apply_cfg_radio_input(opts, state, &cfg, &rollback);
 #endif
-    apply_cfg_runtime_hot_switches(opts, state, &cfg, old_audio_in_dev, old_audio_in_type, old_wav_sample_rate,
-                                   old_effective_input_rate, old_audio_out_dev, old_audio_out_type);
+    const cfg_input_before input_before = {old_audio_in_dev, old_audio_in_type, old_wav_sample_rate,
+                                           old_effective_input_rate, old_staged_file_sample_rate};
+    apply_cfg_runtime_hot_switches(opts, state, &cfg, &input_before, old_audio_out_dev, old_audio_out_type);
     restore_live_pcm_rate_after_staged_file_apply(opts, &cfg, old_wav_sample_rate);
     apply_cfg_file_runtime_rate(opts, state, &cfg, old_runtime_input_rate, old_samples_per_symbol, old_symbol_center,
                                 old_jitter);
@@ -7403,6 +7603,15 @@ ui_settle_receive_requests(dsd_opts* opts, dsd_state* state) {
         dsd_telemetry_publish_opts_snapshot(opts);
         dsd_telemetry_publish_snapshot(state);
     }
+}
+
+int
+dsd_app_commands_pending(void) {
+    ensure_mu_init();
+    dsd_mutex_lock(&g_mu);
+    const int pending = !q_is_empty_unlocked();
+    dsd_mutex_unlock(&g_mu);
+    return pending;
 }
 
 int

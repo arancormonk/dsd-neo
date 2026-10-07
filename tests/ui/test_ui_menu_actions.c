@@ -1852,7 +1852,7 @@ test_additional_prompt_and_toggle_actions(void) {
 
     reset_capture();
     switch_to_wav(&ctx);
-    rc |= expect_str("switch wav prompt", g_prompt.title, "Enter WAV/RAW filename (or named pipe)");
+    rc |= expect_str("switch wav prompt", g_prompt.title, "Enter WAV/PCM filename");
 
     reset_capture();
     switch_to_symbol(&ctx);

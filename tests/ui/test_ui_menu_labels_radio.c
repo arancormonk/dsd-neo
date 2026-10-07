@@ -14,7 +14,6 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/io/rtl_stream_c.h>
-#include <dsd-neo/io/tcp_input.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
@@ -70,12 +69,6 @@ double
 env_get_double(const char* name, double defv) {
     (void)name;
     return g_env_double_has_value ? g_env_double_value : defv;
-}
-
-int
-tcp_input_is_valid(const tcp_input_ctx* ctx) {
-    (void)ctx;
-    return 0;
 }
 
 int

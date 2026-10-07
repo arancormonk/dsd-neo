@@ -21,6 +21,7 @@
 #include <dsd-neo/app_control/frontend_runtime.h>
 #include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/audio_input_switch.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/frontend_types.h>
 #include <dsd-neo/core/init.h>
@@ -36,10 +37,12 @@
 #ifdef USE_RADIO
 #include <dsd-neo/io/rtl_stream_c.h>
 #endif
+#include <dsd-neo/io/udp_input.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/exitflag.h>
+#include <dsd-neo/runtime/net_audio_input_hooks.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
@@ -53,8 +56,12 @@
 #include <string.h>
 #include <sys/types.h>
 #if !DSD_PLATFORM_WIN_NATIVE
+#include <arpa/inet.h>
 #include <dirent.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
 #endif
+#include <dsd-neo/platform/sockets.h>
 #include "../../src/app_control/commands_internal.h"
 
 #include "dsd-neo/core/dibit.h"
@@ -189,18 +196,64 @@ reset_tcp_connect_audio_fake(void) {
     g_last_tcp_connect_audio_port = 0;
 }
 
+/* The TCP connect service, faked: a success leaves the options as its input switch does (issue #634), TCP input on
+   the endpoint, named for it; a failure (DSD_AUDIO_INPUT_KEPT) changes nothing. */
 int
-svc_tcp_connect_audio(dsd_opts* opts, const char* host, int port) { // NOLINT(misc-use-internal-linkage)
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+svc_tcp_connect_audio(dsd_opts* opts, dsd_state* state, const char* host, int port) {
+    (void)state;
     g_tcp_connect_audio_calls++;
     DSD_SNPRINTF(g_last_tcp_connect_audio_host, sizeof g_last_tcp_connect_audio_host, "%s", host ? host : "");
     g_last_tcp_connect_audio_port = port;
 
-    if (g_tcp_connect_audio_result == 0 && opts && host && port > 0) {
-        DSD_SNPRINTF(opts->tcp_hostname, sizeof opts->tcp_hostname, "%s", host);
+    if (g_tcp_connect_audio_result == DSD_AUDIO_INPUT_SWITCHED && opts && host && port > 0) {
+        char next_host[sizeof opts->tcp_hostname];
+        DSD_SNPRINTF(next_host, sizeof next_host, "%s", host);
+        DSD_SNPRINTF(opts->tcp_hostname, sizeof opts->tcp_hostname, "%s", next_host);
         opts->tcp_portno = port;
         opts->audio_in_type = AUDIO_IN_TCP;
+        DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "tcp:%s:%d", next_host, port);
     }
     return g_tcp_connect_audio_result;
+}
+
+static int
+write_test_file(const char* path, const void* data, size_t n) {
+    FILE* f = dsd_fopen_private(path, "wb");
+    if (!f) {
+        DSD_FPRINTF(stderr, "FAIL: create %s\n", path);
+        return 1;
+    }
+    const int ok = fwrite(data, 1U, n, f) == n;
+    return (fclose(f) == 0 && ok) ? 0 : 1;
+}
+
+/* A loopback UDP port nothing holds: bound by the system and let go again (issue #634). */
+static int
+free_loopback_udp_port(void) {
+    dsd_socket_t sock = dsd_socket_create(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (sock == DSD_INVALID_SOCKET) {
+        return -1;
+    }
+    struct sockaddr_in addr;
+    DSD_MEMSET(&addr, 0, sizeof addr);
+    addr.sin_family = AF_INET;
+    addr.sin_port = 0;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    struct sockaddr_in bound;
+    DSD_MEMSET(&bound, 0, sizeof bound);
+#if DSD_PLATFORM_WIN_NATIVE
+    int bound_len = (int)sizeof bound;
+#else
+    socklen_t bound_len = (socklen_t)sizeof bound;
+#endif
+    int port = -1;
+    if (dsd_socket_bind(sock, (struct sockaddr*)&addr, sizeof addr) == 0
+        && getsockname(sock, (struct sockaddr*)&bound, &bound_len) == 0) {
+        port = (int)ntohs(bound.sin_port);
+    }
+    dsd_socket_close(sock);
+    return port;
 }
 
 static void
@@ -898,13 +951,14 @@ test_ui_command_queue_truncates_oversized_payload_string(void) {
     int applied = dsd_app_drain_cmds(opts, state);
 
     int rc = 0;
+    /* A path the queue cut short, or longer than the input name holds, would name another file: the switch is refused
+       and the input stays (issue #634). The toast stays inside its buffer. */
     rc |= expect_int_eq("oversized string command drain count", applied, 1);
-    rc |= expect_int_eq("oversized string switches input type", opts->audio_in_type, AUDIO_IN_WAV);
-    rc |= expect_int_eq("oversized string is field bounded", (int)strlen(opts->audio_in_dev),
-                        (int)sizeof(opts->audio_in_dev) - 1);
-    rc |= expect_true("oversized string preserves copied prefix",
-                      strspn(opts->audio_in_dev, "x") == strlen(opts->audio_in_dev));
-    rc |= expect_true("oversized string writes toast", strstr(state->ui_msg, "Applied: WAV input") != NULL);
+    rc |= expect_int_eq("oversized string keeps the input type", opts->audio_in_type, AUDIO_IN_PULSE);
+    rc |= expect_true("oversized string keeps the input name", strchr(opts->audio_in_dev, 'x') == NULL);
+    rc |= expect_true("oversized string writes a bounded toast",
+                      strstr(state->ui_msg, "Failed: the path is longer than") != NULL
+                          && memchr(state->ui_msg, '\0', sizeof state->ui_msg) != NULL);
 
     free(oversized);
     free_test_runtime(&runtime);
@@ -2045,7 +2099,7 @@ test_ui_replay_and_stop_playback_manage_symbol_state(void) {
     dsd_opts* opts = runtime.opts;
     dsd_state* state = runtime.state;
 
-    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", sym_path);
+    DSD_SNPRINTF(opts->symbol_capture_last, sizeof opts->symbol_capture_last, "%s", sym_path);
     opts->audio_in_type = AUDIO_IN_PULSE;
     state->symbol_replay_format = DSD_SYMBOL_REPLAY_FORMAT_SOFT;
     state->symbol_replay_header_checked = 1;
@@ -2062,12 +2116,20 @@ test_ui_replay_and_stop_playback_manage_symbol_state(void) {
     rc |= expect_int_eq("replay last clears header checked", state->symbol_replay_header_checked, 0);
     rc |= expect_int_eq("replay last clears soft flag", state->symbol_replay_has_soft, 0);
 
+    /* Stop switches to the Pulse input whatever the output (issue #634). The host may have no capture device: either
+       the switch ran and closed the replay, or it failed and the replay runs on. */
     opts->audio_out_type = 1;
     dsd_app_command_submit(DSD_APP_CMD_STOP_PLAYBACK, NULL, 0);
     applied = dsd_app_drain_cmds(opts, state);
     rc |= expect_int_eq("stop playback command drains", applied, 1);
-    rc |= expect_true("stop playback closes symbol file", opts->symbolfile == NULL);
-    rc |= expect_int_eq("stop playback falls back to stdin without Pulse output", opts->audio_in_type, AUDIO_IN_STDIN);
+    if (opts->audio_in_type == AUDIO_IN_PULSE) {
+        rc |= expect_true("stop playback closes symbol file", opts->symbolfile == NULL);
+    } else {
+        rc |= expect_int_eq("failed stop keeps the replay", opts->audio_in_type, AUDIO_IN_SYMBOL_BIN);
+        rc |= expect_true("failed stop keeps the symbol file", opts->symbolfile != NULL);
+        rc |= expect_true("failed stop says so", strstr(state->ui_msg, "Failed: Stop replay") != NULL);
+    }
+    closeAudioInDevice(opts);
 
     free_test_runtime(&runtime);
     (void)remove(sym_path);
@@ -2102,40 +2164,82 @@ test_ui_io_command_queue_applies_local_input_and_network_payloads(void) {
     rc |= expect_int_eq("TCP command passes port", g_last_tcp_connect_audio_port, 7355);
     rc |= expect_int_eq("TCP command switches input type on success", opts->audio_in_type, AUDIO_IN_TCP);
     rc |= expect_true("TCP command stores host on success", strcmp(opts->tcp_hostname, "example.invalid") == 0);
-    rc |= expect_true("TCP command writes success toast", strstr(state->ui_msg, "TCP audio connected") != NULL);
+    rc |= expect_true("TCP command writes success toast",
+                      strstr(state->ui_msg, "Applied: TCP audio -> example.invalid:7355") != NULL);
 
     struct HostPortPayload tcp_fail = {0};
     DSD_SNPRINTF(tcp_fail.host, sizeof tcp_fail.host, "%s", "fail.invalid");
     tcp_fail.port = 1234;
-    g_tcp_connect_audio_result = -1;
+    g_tcp_connect_audio_result = DSD_AUDIO_INPUT_KEPT;
     dsd_app_command_submit(DSD_APP_CMD_TCP_CONNECT_AUDIO_CFG, &tcp_fail, sizeof tcp_fail);
     applied = dsd_app_drain_cmds(opts, state);
     rc |= expect_int_eq("TCP failure command drain count", applied, 1);
     rc |= expect_int_eq("TCP failure still calls connector", g_tcp_connect_audio_calls, 2);
     rc |=
         expect_true("TCP failure does not replace connected host", strcmp(opts->tcp_hostname, "example.invalid") == 0);
-    rc |= expect_true("TCP failure writes failure toast", strstr(state->ui_msg, "TCP audio connect failed") != NULL);
+    rc |= expect_true("TCP failure writes failure toast",
+                      strstr(state->ui_msg, "Failed: TCP audio -> fail.invalid:1234") != NULL);
 
+    /* UDP binds now, through the real backend, on a loopback port nothing holds (issue #634). */
+    dsd_net_audio_input_hooks hooks;
+    DSD_MEMSET(&hooks, 0, sizeof hooks);
+    hooks.udp_start = udp_input_start;
+    hooks.udp_stop = udp_input_stop;
+    hooks.udp_read_sample = udp_input_read_sample;
+    hooks.udp_read_sample_wait = udp_input_read_sample_wait;
+    dsd_net_audio_input_hooks_set(hooks);
+    const int udp_port = free_loopback_udp_port();
+    rc |= expect_true("a free loopback udp port", udp_port > 0);
     struct HostPortPayload udp = {0};
-    udp.port = 45000;
+    udp.port = udp_port;
     dsd_app_command_submit(DSD_APP_CMD_UDP_INPUT_CFG, &udp, sizeof udp);
     applied = dsd_app_drain_cmds(opts, state);
+    char udp_name[64];
+    DSD_SNPRINTF(udp_name, sizeof udp_name, "udp:127.0.0.1:%d", udp_port);
     rc |= expect_int_eq("UDP input command drain count", applied, 1);
     rc |= expect_int_eq("UDP input switches input type", opts->audio_in_type, AUDIO_IN_UDP);
-    rc |= expect_int_eq("UDP input stores port", opts->udp_in_portno, 45000);
-    rc |= expect_true("UDP input allows empty bind address", opts->udp_in_bindaddr[0] == '\0');
-    rc |= expect_true("UDP input uses logical device name", strcmp(opts->audio_in_dev, "udp") == 0);
-    rc |= expect_true("UDP input toast uses loopback fallback", strstr(state->ui_msg, "127.0.0.1:45000") != NULL);
+    rc |= expect_true("UDP input binds", opts->udp_in_ctx != NULL);
+    rc |= expect_int_eq("UDP input stores port", opts->udp_in_portno, udp_port);
+    rc |= expect_true("UDP input binds the loopback for an empty address",
+                      strcmp(opts->udp_in_bindaddr, "127.0.0.1") == 0);
+    rc |= expect_true("UDP input is named as a saved config reopens it", strcmp(opts->audio_in_dev, udp_name) == 0);
+    rc |= expect_true("UDP input toast uses loopback fallback", strstr(state->ui_msg, udp_name + 4) != NULL);
 
-    const char wav_path[] = "/tmp/dsdneo-input.wav";
-    dsd_app_command_submit(DSD_APP_CMD_INPUT_WAV_SET, wav_path, sizeof wav_path);
-    dsd_app_command_submit(DSD_APP_CMD_INPUT_SYM_STREAM_SET, "capture.sym", sizeof "capture.sym");
-    dsd_app_command_submit(DSD_APP_CMD_INPUT_SET_PULSE, NULL, 0);
-    applied = dsd_app_drain_cmds(opts, state);
-    rc |= expect_int_eq("local input command drain count", applied, 3);
-    rc |= expect_int_eq("Pulse input command wins final type", opts->audio_in_type, AUDIO_IN_PULSE);
-    rc |= expect_true("Pulse input command stores logical device", strcmp(opts->audio_in_dev, "pulse") == 0);
-    rc |= expect_true("Pulse input command writes toast", strstr(state->ui_msg, "Input switched to Pulse") != NULL);
+    /* Files open by -i's rules, from a temporary directory; the last switch, to the default Pulse device, may find
+       no capture device on the host, and then leaves the symbol stream running. */
+    dsd_test_temp_cwd cwd;
+    if (dsd_test_temp_cwd_enter(&cwd, "dsdneo_cfg_local_inputs") != 0) {
+        DSD_FPRINTF(stderr, "FAIL: local input temp directory\n");
+        rc |= 1;
+    } else {
+        static const unsigned char k_raw[32] = {0};
+        rc |= write_test_file("input.pcm", k_raw, sizeof k_raw);
+        rc |= write_test_file("capture.sym", k_raw, sizeof k_raw);
+        dsd_app_command_submit(DSD_APP_CMD_INPUT_WAV_SET, "input.pcm", sizeof "input.pcm");
+        applied = dsd_app_drain_cmds(opts, state);
+        rc |= expect_int_eq("headerless file opens", applied, 1);
+        rc |= expect_int_eq("headerless file is PCM", opts->audio_in_type, AUDIO_IN_WAV);
+        rc |= expect_true("headerless file stops the udp input", opts->udp_in_ctx == NULL);
+        dsd_app_command_submit(DSD_APP_CMD_INPUT_SYM_STREAM_SET, "capture.sym", sizeof "capture.sym");
+        dsd_app_command_submit(DSD_APP_CMD_INPUT_SET_PULSE, NULL, 0);
+        applied = dsd_app_drain_cmds(opts, state);
+        rc |= expect_int_eq("local input command drain count", applied, 2);
+        if (opts->audio_in_type == AUDIO_IN_PULSE) {
+            rc |= expect_true("Pulse input command names the default device", strcmp(opts->audio_in_dev, "pulse") == 0);
+            rc |= expect_true("Pulse input command writes toast",
+                              strstr(state->ui_msg, "Applied: Pulse input -> default device") != NULL);
+        } else {
+            rc |= expect_int_eq("a failed Pulse switch keeps the symbol stream", opts->audio_in_type,
+                                AUDIO_IN_SYMBOL_FLT);
+            rc |= expect_true("a failed Pulse switch says so", strstr(state->ui_msg, "Failed: Pulse input") != NULL);
+        }
+        closeAudioInDevice(opts);
+        (void)remove("input.pcm");
+        (void)remove("capture.sym");
+        rc |= expect_int_eq("local input temp directory removed", dsd_test_temp_cwd_leave(&cwd), 0);
+    }
+    closeAudioInDevice(opts);
+    dsd_net_audio_input_hooks_set((dsd_net_audio_input_hooks){0});
 
     free_test_runtime(&runtime);
     return rc;
@@ -2351,12 +2455,16 @@ test_ui_file_capture_commands_manage_handles(void) {
     } else {
         opts->symbol_out_f = sym_fp;
         DSD_SNPRINTF(opts->symbol_out_file, sizeof opts->symbol_out_file, "%s", sym_path);
+        /* As openSymbolOutFile() names the capture it opened. */
+        DSD_SNPRINTF(opts->symbol_out_open_path, sizeof opts->symbol_out_open_path, "%s", sym_path);
         opts->symbol_out_file_is_auto = 1;
         dsd_app_command_submit(DSD_APP_CMD_SYMCAP_STOP, NULL, 0);
         applied = dsd_app_drain_cmds(opts, state);
         rc |= expect_int_eq("symbol capture stop command drains", applied, 1);
         rc |= expect_true("symbol capture stop closes handle", opts->symbol_out_f == NULL);
-        rc |= expect_true("symbol capture stop stages replay input path", strcmp(opts->audio_in_dev, sym_path) == 0);
+        /* The closed capture is what Replay last replays; the running input keeps its name (issue #634). */
+        rc |= expect_true("symbol capture stop records the capture", strcmp(opts->symbol_capture_last, sym_path) == 0);
+        rc |= expect_true("symbol capture stop leaves the input name", strcmp(opts->audio_in_dev, sym_path) != 0);
         rc |= expect_int_eq("symbol capture stop clears auto flag", opts->symbol_out_file_is_auto, 0);
         rc |= expect_int_eq("symbol capture stop event category",
                             state->event_history_s[0].Event_History_Items[1].category, DSD_EVENT_CATEGORY_SYSTEM);
@@ -2593,17 +2701,33 @@ test_ui_output_lrrp_and_p25_parameter_commands_dispatch_through_queue(void) {
     dsd_opts* opts = runtime.opts;
     dsd_state* state = runtime.state;
 
+    int rc = 0;
+    rc |= expect_true("no input runs before the Pulse input switch", opts->audio_in_stream == NULL);
+    char in_dev_before[sizeof opts->audio_in_dev];
+    DSD_SNPRINTF(in_dev_before, sizeof in_dev_before, "%s", opts->audio_in_dev);
+    const int in_type_before = opts->audio_in_type;
+
     dsd_app_command_submit(DSD_APP_CMD_PULSE_OUT_SET, "speaker", sizeof "speaker");
     dsd_app_command_submit(DSD_APP_CMD_PULSE_IN_SET, "microphone", sizeof "microphone");
     int applied = dsd_app_drain_cmds(opts, state);
 
-    int rc = 0;
     rc |= expect_int_eq("Pulse I/O command drain count", applied, 2);
     rc |= expect_true("Pulse output selects pulse device", strcmp(opts->audio_out_dev, "pulse") == 0);
     rc |= expect_int_eq("Pulse output selects pulse backend", opts->audio_out_type, 0);
-    rc |= expect_true("Pulse input selects pulse device", strcmp(opts->audio_in_dev, "pulse") == 0);
-    rc |= expect_int_eq("Pulse input selects pulse backend", opts->audio_in_type, AUDIO_IN_PULSE);
-    rc |= expect_true("Pulse input writes toast", strstr(state->ui_msg, "Pulse input") != NULL);
+    /* The switch opens the device (issue #634), which the host may not have; the null audio backend opens any. Either
+       the input runs under the name a saved config reopens, or the one before it runs on. */
+    if (opts->audio_in_stream != NULL) {
+        rc |= expect_true("Pulse input names the device", strcmp(opts->audio_in_dev, "pulse:microphone") == 0);
+        rc |= expect_int_eq("Pulse input selects pulse backend", opts->audio_in_type, AUDIO_IN_PULSE);
+        rc |= expect_true("Pulse input writes toast",
+                          strstr(state->ui_msg, "Applied: Pulse input -> microphone") != NULL);
+    } else {
+        rc |= expect_true("a failed Pulse input switch keeps the input name",
+                          strcmp(opts->audio_in_dev, in_dev_before) == 0);
+        rc |= expect_int_eq("a failed Pulse input switch keeps the input type", opts->audio_in_type, in_type_before);
+        rc |= expect_true("a failed Pulse input switch says so",
+                          strstr(state->ui_msg, "Failed: Pulse input -> microphone") != NULL);
+    }
 
     dsd_app_command_submit(DSD_APP_CMD_LRRP_SET_HOME, NULL, 0);
     applied = dsd_app_drain_cmds(opts, state);
@@ -3176,6 +3300,10 @@ test_ui_rtl_setting_commands_stage_without_live_restart(void) {
 
 int
 main(void) {
+    if (dsd_socket_init() != 0) {
+        DSD_FPRINTF(stderr, "FAIL: dsd_socket_init\n");
+        return 1;
+    }
     int rc = 0;
     rc |= test_basic_pulse_config_apply();
     rc |= test_input_warn_db_apply_clamps_to_window();

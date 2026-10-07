@@ -74,16 +74,18 @@ enum dsd_app_command_id {
     DSD_APP_CMD_INPUT_MONITOR_TOGGLE = 107,
     DSD_APP_CMD_COSINE_FILTER_TOGGLE = 108,
 
-    DSD_APP_CMD_TCP_CONNECT_AUDIO = 200, // use opts->tcp_hostname/port; sets audio_in_type=AUDIO_IN_TCP
+    // The input switches below (200, 206, 209, 444-447, 461, 463, 521) close the running input and open the new one
+    // (dsd_audio_switch_input(), issue #634); one that cannot open its input keeps the running one and fails.
+    DSD_APP_CMD_TCP_CONNECT_AUDIO = 200, // connect to opts->tcp_hostname/port and switch the input to it
     DSD_APP_CMD_RIGCTL_CONNECT = 201,    // uses opts->tcp_hostname/rigctlportno
     DSD_APP_CMD_RETURN_CC = 202,
     DSD_APP_CMD_CHANNEL_CYCLE = 203,
     DSD_APP_CMD_SYMCAP_SAVE = 204, // auto-name capture file and start
     DSD_APP_CMD_SYMCAP_STOP = 205,
-    DSD_APP_CMD_REPLAY_LAST = 206,
+    DSD_APP_CMD_REPLAY_LAST = 206, // replay opts->symbol_capture_last, the capture closed last
     DSD_APP_CMD_WAV_START = 207,
     DSD_APP_CMD_WAV_STOP = 208,
-    DSD_APP_CMD_STOP_PLAYBACK = 209,
+    DSD_APP_CMD_STOP_PLAYBACK = 209, // a file or symbol playback switches to the configured Pulse input
 
     // Trunk policy toggles
     DSD_APP_CMD_TRUNK_WLIST_TOGGLE = 210,
@@ -135,16 +137,16 @@ enum dsd_app_command_id {
     DSD_APP_CMD_WAV_RAW_OPEN = 441,         // payload: char path[]
     DSD_APP_CMD_DSP_OUT_SET = 442,          // payload: char filename[]
     DSD_APP_CMD_SYMCAP_OPEN = 443,          // payload: char path[]
-    DSD_APP_CMD_SYMBOL_IN_OPEN = 444,       // payload: char path[]
-    DSD_APP_CMD_INPUT_WAV_SET = 445,        // payload: char path[]; sets type=AUDIO_IN_WAV
-    DSD_APP_CMD_INPUT_SYM_STREAM_SET = 446, // payload: char path[]; sets type=AUDIO_IN_SYMBOL_FLT
-    DSD_APP_CMD_INPUT_SET_PULSE = 447,      // sets audio_in_dev="pulse", type=AUDIO_IN_PULSE
+    DSD_APP_CMD_SYMBOL_IN_OPEN = 444,       // payload: char path[]; a symbol capture, replayed at symbol pace
+    DSD_APP_CMD_INPUT_WAV_SET = 445,        // payload: char path[]; a file, opened as -i opens it
+    DSD_APP_CMD_INPUT_SYM_STREAM_SET = 446, // payload: char path[]; a float symbol stream
+    DSD_APP_CMD_INPUT_SET_PULSE = 447,      // the default Pulse input device
 
     // Networking / device configs
     DSD_APP_CMD_UDP_OUT_CFG = 460,           // payload: struct { char host[256]; int32_t port; }
     DSD_APP_CMD_TCP_CONNECT_AUDIO_CFG = 461, // payload: struct { char host[256]; int32_t port; }
     DSD_APP_CMD_RIGCTL_CONNECT_CFG = 462,    // payload: struct { char host[256]; int32_t port; }
-    DSD_APP_CMD_UDP_INPUT_CFG = 463,         // payload: struct { char bind[256]; int32_t port; }
+    DSD_APP_CMD_UDP_INPUT_CFG = 463,         // payload: struct { char bind[256]; int32_t port; }; binds now
 
     // RTL-SDR controls
     DSD_APP_CMD_RTL_ENABLE_INPUT = 480,
@@ -228,7 +230,7 @@ enum dsd_app_command_id {
 
     // Pulse audio device selection
     DSD_APP_CMD_PULSE_OUT_SET = 520, // payload: char name[]
-    DSD_APP_CMD_PULSE_IN_SET = 521,  // payload: char name[]
+    DSD_APP_CMD_PULSE_IN_SET = 521,  // payload: char name[]; switches the input to that Pulse device
 
     // Input volume
     DSD_APP_CMD_INPUT_VOL_SET = 530, // payload: int32_t mult (1..16)

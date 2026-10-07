@@ -1880,11 +1880,12 @@ dsd_finalize_user_config_file_input_after_cli(const dsdneoUserConfig* cfg, dsd_o
 static void
 snapshot_other_input_config(const dsd_opts* opts, const dsd_state* state, dsdneoUserConfig* cfg) {
     cfg->has_input = 1;
-    if (strncmp(opts->audio_in_dev, "rtl:", 4) == 0) {
+    /* A bare "rtl" or "rtltcp" too: the RTL-SDR row names its device "rtl" when no radio ran (issue #634). */
+    if (dsd_opts_audio_in_dev_is_rtl_spec(opts->audio_in_dev)) {
         cfg->input_source = DSDCFG_INPUT_RTL;
         snapshot_parse_rtl_device_spec(opts->audio_in_dev, cfg);
         snapshot_apply_live_rtl_values(opts, state, cfg);
-    } else if (strncmp(opts->audio_in_dev, "rtltcp:", 7) == 0) {
+    } else if (dsd_opts_audio_in_dev_is_rtltcp_spec(opts->audio_in_dev)) {
         cfg->input_source = DSDCFG_INPUT_RTLTCP;
         snapshot_parse_rtltcp_device_spec(opts->audio_in_dev, cfg);
         snapshot_apply_live_rtl_values(opts, state, cfg);

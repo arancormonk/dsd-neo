@@ -6483,6 +6483,7 @@ if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
             "LINKER:--wrap=svc_tcp_connect_audio"
             "LINKER:--wrap=svc_rigctl_connect"
             "LINKER:--wrap=openAudioInput"
+            "LINKER:--wrap=dsd_audio_reconfigure_output_for_input_policy"
     )
 endif()
 if(
@@ -6498,6 +6499,7 @@ if(
     target_link_options(
         dsd-neo_test_app_command_queue
         PRIVATE
+            "LINKER:--wrap=dsd_symbol_note_timing_rate"
             "LINKER:--wrap=rtl_stream_create"
             "LINKER:--wrap=rtl_stream_start"
             "LINKER:--wrap=rtl_stream_start_analog_refusal"

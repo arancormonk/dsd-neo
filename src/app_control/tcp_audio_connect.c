@@ -3,58 +3,51 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-#include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/audio_input_switch.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/io/rigctl_client.h>
-#include <dsd-neo/io/tcp_input.h>
 #include <dsd-neo/platform/sockets.h>
-#include <dsd-neo/runtime/log.h>
+#include <dsd-neo/runtime/exitflag.h>
 #include <stddef.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
+#include "dsd-neo/core/state_fwd.h"
 #include "services.h"
 
+static int
+tcp_audio_connect_cancelled(void* context) {
+    (void)context;
+    return dsd_exitflag_load() == 1;
+}
+
 int
-svc_tcp_connect_audio(dsd_opts* opts, const char* host, int port) {
-    if (!opts || !host || port <= 0) {
-        return -1;
+svc_tcp_connect_audio(dsd_opts* opts, dsd_state* state, const char* host, int port) {
+    if (!opts || !state || !host || !*host || port <= 0 || port > 65535) {
+        return DSD_AUDIO_INPUT_KEPT;
     }
 
     char next_host[sizeof opts->tcp_hostname];
     DSD_SNPRINTF(next_host, sizeof next_host, "%s", host);
 
-    dsd_socket_t new_sockfd = Connect(next_host, port);
-    if (new_sockfd == 0 || new_sockfd == DSD_INVALID_SOCKET) {
-        return -1;
+    /* Within a bound: a host that drops the connection attempt cannot hold the decoder thread for the system's
+       connect timeout (issue #634). The address it resolves is the one a reconnect uses again. */
+    const dsd_socket_t sockfd = ConnectBounded(next_host, port, 1, tcp_audio_connect_cancelled, NULL);
+    if (sockfd == DSD_INVALID_SOCKET) {
+        return DSD_AUDIO_INPUT_KEPT;
     }
 
-    tcp_input_ctx* new_tcp_in_ctx = tcp_input_open(new_sockfd, opts->wav_sample_rate);
-    if (new_tcp_in_ctx == NULL) {
-        LOG_ERROR("Error, couldn't open TCP audio input\n");
-        dsd_socket_close(new_sockfd);
-        return -1;
+    dsd_audio_input_request request;
+    DSD_MEMSET(&request, 0, sizeof request);
+    request.kind = DSD_AUDIO_INPUT_TCP;
+    request.host = next_host;
+    request.port = port;
+    request.tcp_sockfd = sockfd;
+    const int rc = dsd_audio_switch_input(opts, state, &request);
+    if (rc != DSD_AUDIO_INPUT_SWITCHED) {
+        dsd_socket_close(sockfd);
+        return rc;
     }
-
-    tcp_input_ctx* old_tcp_in_ctx = opts->tcp_in_ctx;
-    dsd_socket_t old_sockfd = opts->tcp_sockfd;
-    int old_audio_in_type = opts->audio_in_type;
-
-    opts->tcp_in_ctx = new_tcp_in_ctx;
-    opts->tcp_sockfd = new_sockfd;
-    DSD_SNPRINTF(opts->tcp_hostname, sizeof opts->tcp_hostname, "%s", next_host);
-    opts->tcp_portno = port;
-
-    if (old_audio_in_type == AUDIO_IN_PULSE) {
-        closeAudioInput(opts);
-    }
-    if (old_tcp_in_ctx) {
-        tcp_input_close(old_tcp_in_ctx);
-    }
-    if (old_sockfd != 0 && old_sockfd != DSD_INVALID_SOCKET && old_sockfd != new_sockfd) {
-        dsd_socket_close(old_sockfd);
-    }
-
-    dsd_opts_reset_pcm_input_state(opts);
-    opts->audio_in_type = AUDIO_IN_TCP;
-    return 0;
+    /* The input runs on this connection: its reconnect goes back to the address it went to. */
+    ConnectKeepTcpAudioAddress(next_host, port);
+    return rc;
 }
