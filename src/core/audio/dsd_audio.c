@@ -1023,7 +1023,7 @@ closeAudioInDevice(dsd_opts* opts) {
     }
 }
 
-static void
+void
 dsd_audio_reset_symbol_replay_pacing(dsd_state* state) {
     if (!state) {
         return;
@@ -1162,7 +1162,7 @@ dsd_audio_open_headless_wav_input(dsd_opts* opts, int sample_rate_hz, int includ
     return 0;
 }
 
-static void
+void
 dsd_audio_enable_bin_symbol_replay(dsd_state* state) {
     if (!state) {
         return;
@@ -1219,6 +1219,7 @@ dsd_audio_open_fallback_file_input(dsd_opts* opts, dsd_state* state, int old_eff
     }
 
     opts->audio_in_type = AUDIO_IN_WAV;
+    const int raw_sample_rate = opts->wav_sample_rate;
     int configured_file_sample_rate = dsd_opts_requested_file_sample_rate(opts);
     int active_sample_rate = configured_file_sample_rate;
     int opened_as_container = 0;
@@ -1237,6 +1238,10 @@ dsd_audio_open_fallback_file_input(dsd_opts* opts, dsd_state* state, int old_eff
         }
         dsd_audio_apply_input_sample_rate(opts, state, old_effective_input_rate, active_sample_rate);
     }
+    /* A header rate holds for this file only: a switch away from it opens the next PCM input at the raw rate again
+       (issue #634). */
+    opts->wav_header_replaced_rate =
+        (opened_as_container && active_sample_rate != raw_sample_rate) ? raw_sample_rate : 0;
     return 0;
 }
 
@@ -1271,6 +1276,7 @@ openAudioInDevice(dsd_opts* opts, dsd_state* state) {
 
     dsd_audio_release_input_sources(opts);
     dsd_audio_reset_symbol_replay_pacing(state);
+    opts->wav_header_replaced_rate = 0;
 
     named_input_status = dsd_audio_try_open_named_input(opts);
     if (named_input_status < 0) {

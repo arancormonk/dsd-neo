@@ -36,15 +36,27 @@ dsd_telemetry_hooks_set(dsd_telemetry_hooks hooks) { // NOLINT(misc-use-internal
     g_hooks = hooks;
 }
 
+static dsd_controls_pending_fn g_controls_pending;
+
 void
 dsd_runtime_set_control_pump(dsd_control_pump_fn fn) { // NOLINT(misc-use-internal-linkage)
     (void)fn;
+}
+
+void
+dsd_runtime_set_controls_pending(dsd_controls_pending_fn fn) { // NOLINT(misc-use-internal-linkage)
+    g_controls_pending = fn;
 }
 
 int
 dsd_app_drain_cmds(dsd_opts* opts, dsd_state* state) { // NOLINT(misc-use-internal-linkage)
     (void)opts;
     (void)state;
+    return 0;
+}
+
+int
+dsd_app_commands_pending(void) { // NOLINT(misc-use-internal-linkage)
     return 0;
 }
 
@@ -90,9 +102,12 @@ main(void) {
     dsd_app_frontend_runtime_start(NULL, NULL);
     assert(g_session_open == 1);
     assert(g_notification_resets == 0);
+    /* A silent input's wait asks the queue whether a command waits (issue #634). */
+    assert(g_controls_pending == dsd_app_commands_pending);
     dsd_app_frontend_runtime_stop();
     assert(g_notification_resets == 1);
     assert(g_session_open == 0);
+    assert(g_controls_pending == NULL);
     assert(g_hooks.publish_snapshot == NULL);
     assert(g_hooks.publish_opts_snapshot == NULL);
     assert(g_hooks.request_redraw == NULL);

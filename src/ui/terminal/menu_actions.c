@@ -1505,7 +1505,7 @@ switch_to_pulse(void* vctx) {
 void
 switch_to_wav(void* vctx) {
     UiCtx* c = (UiCtx*)vctx;
-    ui_prompt_open_string_async("Enter WAV/RAW filename (or named pipe)", NULL, 1024, cb_switch_to_wav, c);
+    ui_prompt_open_string_async("Enter WAV/PCM filename", NULL, 1024, cb_switch_to_wav, c);
 }
 
 void

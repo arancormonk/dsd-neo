@@ -3719,6 +3719,13 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
         }
 
         rt.symbol = getSymbol(opts, state, 0);
+        if (state->input_interrupted) {
+            /* The read left a silent input's wait for a queued command, or the input ended (issue #634): no symbol
+               came and no pass ran, so nothing of it is counted. The engine loop applies the command or switches
+               the input, and the next call hunts afresh. */
+            frame_sync_sps_hunt_mark_return(state);
+            return DSD_SYNC_NONE;
+        }
         frame_sync_update_symbol_ring(opts, state, rt.symbol, rt.lbuf, &rt.lidx, &rt.level_count, rt.t_max);
         frame_sync_maybe_auto_switch_modulation(opts, state, rt.t_max, &rt.lastt);
         rt.dibit = frame_sync_process_dibit_and_payload(opts, state, rt.symbol);

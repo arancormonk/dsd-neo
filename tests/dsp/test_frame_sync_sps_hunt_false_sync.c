@@ -34,6 +34,7 @@
 #include <dsd-neo/dsp/sync_calibration.h>
 #include <dsd-neo/engine/protocol_dispatch.h>
 #include <dsd-neo/runtime/frame_sync_hooks.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include "dsd-neo/core/opts_fwd.h"
@@ -87,11 +88,21 @@ stream_next_dibit(void) {
 
 /* Mirrors the production slicer's bookkeeping: history push plus the symbol counter
  * that src/dsp/dsd_symbol.c bumps on every getSymbol() path. */
+/* The read, counted from 1, that leaves a silent input's wait for a queued command (issue #634): it reads nothing, so
+   it pushes no symbol, as dsd_symbol.c's read does. 0 for none. */
+static long g_interrupt_at_read = 0;
+static long g_reads = 0;
+
 float
 getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) { // NOLINT(misc-use-internal-linkage)
     (void)opts;
     (void)have_sync;
 
+    g_reads++;
+    if (g_interrupt_at_read > 0 && g_reads == g_interrupt_at_read) {
+        state->input_interrupted = 1;
+        return 0.0f;
+    }
     const char dibit = stream_next_dibit();
     const float symbol = (dibit == '3') ? -3.0f : 3.0f;
     dsd_symbol_history_push(state, symbol);
@@ -833,8 +844,49 @@ test_budget_exit_runs_the_no_sync_hooks(void) {
     assert(g_no_carrier_order > g_release_order);
 }
 
+/* Issue #634: a hunt read that left a silent input's wait for a queued command is no symbol and no pass. getFrameSync()
+   returns at once, reads nothing more, runs no no-sync accounting and steps no profile, so the hunt resumes where it
+   stood once the engine has applied the command. */
+static void
+test_an_interrupted_read_returns_at_once_and_counts_nothing(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_hunt_opts_state(&opts, &state, 0);
+    const int buffers = init_state_buffers(&state);
+    assert(buffers);
+    stream_reset("", 0);
+    dsd_frame_sync_reset_mod_state();
+    g_hook_order = 0;
+    g_vc_no_sync_order = 0;
+    g_release_order = 0;
+    g_no_carrier_order = 0;
+    dsd_frame_sync_hooks_set((dsd_frame_sync_hooks){
+        .p25_sm_release = fake_p25_sm_release,
+        .p25_sm_vc_no_sync = fake_p25_sm_vc_no_sync,
+        .no_carrier = fake_no_carrier,
+    });
+
+    const int idx = state.sps_hunt_idx;
+    const int sps = state.samplesPerSymbol;
+    const uint32_t symbolcnt = state.symbolcnt;
+    g_reads = 0;
+    g_interrupt_at_read = 5;
+    assert(getFrameSync(&opts, &state) == DSD_SYNC_NONE);
+    assert(state.input_interrupted == 1);
+    /* Four symbols read, the fifth read interrupted, none after it. */
+    assert(g_reads == 5);
+    assert(state.symbolcnt == symbolcnt + 4);
+    assert(state.sps_hunt_idx == idx && state.samplesPerSymbol == sps);
+    assert(g_vc_no_sync_order == 0 && g_release_order == 0 && g_no_carrier_order == 0);
+
+    dsd_frame_sync_hooks_set((dsd_frame_sync_hooks){0});
+    g_interrupt_at_read = 0;
+    state.input_interrupted = 0;
+}
+
 int
 main(void) {
+    test_an_interrupted_read_returns_at_once_and_counts_nothing();
     test_false_syncs_do_not_starve_the_hunt();
     test_dense_false_syncs_do_not_starve_the_hunt();
     test_sub_frame_consumption_never_buys_dwell();

@@ -180,7 +180,8 @@ struct dsd_opts {
     /* Generic input volume multiplier for non-RTL inputs (Pulse/WAV/TCP/UDP). */
     int input_volume_multiplier;
     /* Bumped each time a PCM input stream (re)opens (dsd_opts_note_pcm_stream(): openAudioInput(), a TCP reconnect,
-       and dsd_opts_reset_pcm_input_state()): what the PCM noise squelch learned belongs to one stream (issue #628). */
+       and dsd_opts_reset_pcm_input_state(), which every input switch runs): what the PCM noise squelch learned belongs
+       to one stream (issues #628, #634). */
     uint32_t pcm_input_generation;
     int rtl_udp_port;
     /* Control/telemetry API (docs/api.md) listening port; 0 disables the server. */
@@ -271,6 +272,9 @@ struct dsd_opts {
     int rtltcp_autotune; // 1 to enable rtl_tcp network auto-tuning (adaptive buffering)
     int wav_sample_rate;
     int staged_file_sample_rate;
+    /* The raw PCM rate (from -s or a config's file rate) that a running WAV's header rate replaced in wav_sample_rate,
+       or 0. A switch away from that WAV opens the next PCM input at it again (dsd_audio_switch_input(), issue #634). */
+    int wav_header_replaced_rate;
     int wav_interpolator;
     int wav_decimator;
     float input_upsample_prev;
@@ -360,6 +364,8 @@ struct dsd_opts {
     char wav_out_fileR[1024];
     char wav_out_file_raw[1024];
     char symbol_out_file[1024];
+    char symbol_out_open_path[1024]; /* the capture file symbol_out_f writes, named when it opened */
+    char symbol_capture_last[1024];  /* the last capture closed this session: what Replay last replays (issue #634) */
     char lrrp_out_file[1024];
     uint16_t lrrp_extra_ports[DSD_LRRP_EXTRA_PORT_MAX]; //site-mapped UDP ports decoded as LRRP
     char event_out_file[1024];
@@ -399,6 +405,9 @@ struct dsd_opts {
     char soapy_settings[1024];
     char soapy_gains[512];
     char audio_in_dev[2048]; //increase size for super long directory/file names
+    /* The radio input spec a switch to a PCM input replaced in audio_in_dev, so Input > Switch source > RTL-SDR goes back
+       to that backend (runtime only, never saved; issue #634). */
+    char radio_in_dev[2048];
     char iq_capture_path[2048];
     char iq_replay_path[2048];
     char mbe_out_path[2048]; //1024
@@ -659,6 +668,14 @@ dsd_opts_audio_in_dev_is_udp_spec(const char* dev) {
 static inline int
 dsd_opts_audio_in_dev_is_m17udp_spec(const char* dev) {
     return dsd_opts_audio_dev_is_exact_or_prefixed(dev, "m17udp", "m17udp:");
+}
+
+/** Whether @p dev names a radio input: an RTL-SDR, rtl_tcp, Airspy, SoapySDR or I/Q replay spec. */
+static inline int
+dsd_opts_audio_in_dev_is_radio_spec(const char* dev) {
+    return dsd_opts_audio_in_dev_is_rtl_spec(dev) || dsd_opts_audio_in_dev_is_rtltcp_spec(dev)
+           || dsd_opts_audio_in_dev_is_airspy_spec(dev) || dsd_opts_audio_in_dev_is_soapy_spec(dev)
+           || dsd_opts_audio_in_dev_is_iqreplay_spec(dev);
 }
 
 /**

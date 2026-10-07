@@ -1263,6 +1263,39 @@ test_load_and_apply_rtl_digital_resample(void) {
     return rc;
 }
 
+/* Issue #634: the RTL-SDR row names its device "rtl" when no radio spec is to hand; an input switch names UDP, TCP and
+   Pulse inputs as -i and a saved config spell them. Each saves as the input it is. */
+static int
+test_snapshot_names_switched_inputs(void) {
+    static const struct {
+        const char* dev;
+        int source;
+    } cases[] = {
+        {"rtl", DSDCFG_INPUT_RTL},
+        {"rtltcp", DSDCFG_INPUT_RTLTCP},
+        {"udp:127.0.0.1:7360", DSDCFG_INPUT_UDP},
+        {"tcp:audio.example:7355", DSDCFG_INPUT_TCP},
+        {"pulse:mic", DSDCFG_INPUT_PULSE},
+        {"pulse", DSDCFG_INPUT_PULSE},
+    };
+
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        reset_opts_and_state(opts, state);
+        DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", cases[i].dev);
+        dsdneoUserConfig snap;
+        dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+        if (!snap.has_input || snap.input_source != cases[i].source) {
+            DSD_FPRINTF(stderr, "snapshot of input %s: source %d, want %d\n", cases[i].dev, snap.input_source,
+                        cases[i].source);
+            rc |= 1;
+        }
+    }
+    return rc;
+}
+
 static int
 test_snapshot_digital_resample_mode(void) {
     static dsd_opts opts;
@@ -4455,6 +4488,7 @@ main(void) {
     rc |= test_load_and_apply_sddc_digital_resample();
     rc |= test_load_and_apply_rtl_digital_resample();
     rc |= test_snapshot_digital_resample_mode();
+    rc |= test_snapshot_names_switched_inputs();
     rc |= test_snapshot_roundtrip_soapy_args();
     rc |= test_snapshot_roundtrip_zero_rtl_ppm();
     rc |= test_snapshot_roundtrip_agc_rtl_gain();

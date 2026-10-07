@@ -45,14 +45,38 @@ int svc_enable_per_call_wav(dsd_opts* opts, dsd_state* state);
  * @brief Set the symbol capture output filename and open it for writing.
  */
 int svc_open_symbol_out(dsd_opts* opts, dsd_state* state, const char* filename);
+/*
+ * Input switches (issue #634). Each opens the new input before it closes the running one (dsd_audio_switch_input()) and
+ * returns a dsd_audio_input_switch_result: DSD_AUDIO_INPUT_SWITCHED (0) when the new input runs, otherwise the input
+ * the session had still runs (KEPT), or a UDP input was restarted or lost on the way (RESTARTED, LOST). The caller
+ * holds the P25 SM tick guard: the watchdog reads the input type and rate the switch rewrites.
+ */
 /**
- * @brief Open a captured symbol file for playback and switch input type.
+ * @brief Why the running engine mode reads no input a switch would open (a reason for a toast), or NULL when a switch
+ * may run: MBE playback, the M17 IP frame receiver and the M17 encoders read no switched input, and the M17 stream
+ * encoder fixes its input rate when it starts.
+ */
+const char* svc_input_switch_unsupported(const dsd_opts* opts);
+/** @brief 1 while the input is a playback: a WAV or raw file, or a symbol file. */
+int svc_playback_running(const dsd_opts* opts);
+/** @brief Open a file as `-i` opens it (dsd_audio_path_input_kind()): Input > Switch source > WAV / raw file. */
+int svc_open_audio_file_in(dsd_opts* opts, dsd_state* state, const char* path);
+/** @brief Open a float symbol stream (`.raw`, `.sym`). */
+int svc_open_symbol_stream_in(dsd_opts* opts, dsd_state* state, const char* path);
+/**
+ * @brief Open a captured symbol file for playback, paced as `-i x.bin` is.
  */
 int svc_open_symbol_in(dsd_opts* opts, dsd_state* state, const char* filename);
+/** @brief Bind UDP audio input on @p bindaddr (NULL or "": 127.0.0.1) and @p port. */
+int svc_udp_input_config(dsd_opts* opts, dsd_state* state, const char* bindaddr, int port);
+/** @brief End a playback by switching to the configured Pulse input. */
+int svc_stop_playback(dsd_opts* opts, dsd_state* state);
 /**
- * @brief Connect to a PCM16LE audio stream over TCP and configure libsndfile.
+ * @brief Connect to a PCM16LE audio stream over TCP, within a bound (ConnectBounded()), and switch the input to it. A
+ * connection that fails changes nothing (DSD_AUDIO_INPUT_KEPT). Also reached from a config apply's TCP reopen, which
+ * holds the tick guard.
  */
-int svc_tcp_connect_audio(dsd_opts* opts, const char* host, int port);
+int svc_tcp_connect_audio(dsd_opts* opts, dsd_state* state, const char* host, int port);
 /**
  * @brief Connect to a rigctl server and enable rigctl control if successful. Both app-control rigctl connects, the '9'
  * key and the menu's host and port, go through here (issue #589); the engine's startup connection
@@ -111,8 +135,8 @@ int svc_set_dsp_output_file(dsd_opts* opts, const char* filename);
 // Pulse/UDP output helpers
 /** @brief Switch audio output to PulseAudio and select a device index/name. */
 int svc_set_pulse_output(dsd_opts* opts, const char* index);
-/** @brief Switch audio input to PulseAudio and select a device index/name. */
-int svc_set_pulse_input(dsd_opts* opts, const char* index);
+/** @brief Switch the input to the Pulse device @p device ("" for the default device): an input switch (above). */
+int svc_set_pulse_input(dsd_opts* opts, dsd_state* state, const char* device);
 /** @brief Configure UDP audio output endpoint and enable it. */
 int svc_udp_output_config(dsd_opts* opts, dsd_state* state, const char* host, int port);
 
@@ -626,8 +650,8 @@ int svc_rtl_enable_input_locked(dsd_opts* opts, dsd_state* state);
  *
  * Asked before the switch rewrites the input and tears down the running stream. The configured analog preset's
  * explicit width, or the AM default (as RTL_SET_BW holds them, a typed digital scan row included), must fit the rate the
- * RTL DSP bandwidth (rtl_dsp_bw_khz) gives the device the switch opens: an RTL-SDR from an Airspy spec, "pulse" or any
- * other device string, rtl_tcp from an rtl_tcp spec. The switch is unscoped, so the stream it opens starts on the
+ * RTL DSP bandwidth (rtl_dsp_bw_khz) gives the device the switch opens (svc_rtl_row_destination()): an RTL-SDR from an
+ * Airspy spec or "rtl", rtl_tcp from an rtl_tcp spec. The switch is unscoped, so the stream it opens starts on the
  * settings in force: while an analog scan row runs the analog family (issue #526), the width in force there, the row's
  * own width or, on a session whose preset runs another kind, the configured width of the row's kind, must fit that rate
  * as well. On such a session the configured width of a kind is held while the scan has an analog row or target of that
@@ -641,6 +665,11 @@ int svc_rtl_enable_input_locked(dsd_opts* opts, dsd_state* state);
  * @return 0 when the switch may go ahead, -1 otherwise (reason in @p why, may be NULL).
  */
 int svc_check_rtl_input_analog_width(const dsd_opts* opts, const dsd_state* state, char* why, size_t why_size);
+/**
+ * @brief The device DSD_APP_CMD_RTL_ENABLE_INPUT opens (issue #634), the first of: the running radio spec unless it is
+ * an Airspy one; the radio spec a switch to PCM replaced (dsd_opts::radio_in_dev) unless it is an Airspy one; "rtl".
+ */
+void svc_rtl_row_destination(const dsd_opts* opts, char* out, size_t out_size);
 /**
  * @brief Check the configured analog width against the Airspy DSD_APP_CMD_AIRSPY_ENABLE_INPUT would open (issue #578).
  *

@@ -10,6 +10,7 @@
  */
 
 #include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/audio_input_switch.h>
 #include <dsd-neo/core/channel_mode.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/csv_import.h>
@@ -60,6 +61,47 @@
 
 /* LOG_INFO lines saying an I/Q replay restarted on the system clock (svc_rtl_stop_locked()). */
 static int g_replay_restart_notices;
+
+/* The input switch the services ask for (issue #634), recorded rather than run: CORE_AUDIO_INPUT_SWITCH tests it. */
+static int g_switch_calls;
+static int g_switch_result;
+static dsd_audio_input_kind g_switch_kind;
+static int g_switch_path_null;
+static char g_switch_path[256];
+static char g_switch_host[256];
+static int g_switch_port;
+static dsd_audio_input_kind g_path_kind = DSD_AUDIO_INPUT_PCM_FILE;
+
+int
+dsd_audio_switch_input(dsd_opts* opts, dsd_state* state, const dsd_audio_input_request* req) {
+    (void)opts;
+    (void)state;
+    g_switch_calls++;
+    g_switch_kind = req->kind;
+    g_switch_path_null = req->path == NULL;
+    DSD_SNPRINTF(g_switch_path, sizeof g_switch_path, "%s", req->path ? req->path : "");
+    DSD_SNPRINTF(g_switch_host, sizeof g_switch_host, "%s", req->host ? req->host : "");
+    g_switch_port = req->port;
+    return g_switch_result;
+}
+
+dsd_audio_input_kind
+dsd_audio_path_input_kind(const char* path) {
+    (void)path;
+    return g_path_kind;
+}
+
+static void
+reset_switch_stub(int result) {
+    g_switch_calls = 0;
+    g_switch_result = result;
+    g_switch_kind = DSD_AUDIO_INPUT_PCM_FILE;
+    g_switch_path_null = 0;
+    g_switch_path[0] = '\0';
+    g_switch_host[0] = '\0';
+    g_switch_port = 0;
+    g_path_kind = DSD_AUDIO_INPUT_PCM_FILE;
+}
 
 void
 dsd_neo_log_write(dsd_neo_log_level_t level, const char* format, ...) {
@@ -883,17 +925,148 @@ static int
 test_payload_symbol_and_pulse_state(void) {
     int rc = 0;
     static dsd_opts opts;
+    static dsd_state state;
     DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
 
     rc |= expect_int("pulse output null opts", svc_set_pulse_output(NULL, "1"), -1);
-    rc |= expect_int("pulse input null opts", svc_set_pulse_input(NULL, "1"), -1);
     rc |= expect_int("pulse output valid index", svc_set_pulse_output(&opts, "2"), 0);
     rc |= expect_str("pulse output device set", opts.audio_out_dev, "pulse");
     rc |= expect_int("pulse output type set", opts.audio_out_type, 0);
-    rc |= expect_int("pulse input valid index", svc_set_pulse_input(&opts, "3"), 0);
-    rc |= expect_str("pulse input device set", opts.audio_in_dev, "pulse");
-    rc |= expect_int("pulse input type set", opts.audio_in_type, AUDIO_IN_PULSE);
 
+    /* Pulse input is an input switch (issue #634): the device asked for, "" for the default. */
+    reset_switch_stub(DSD_AUDIO_INPUT_SWITCHED);
+    rc |= expect_int("pulse input null opts", svc_set_pulse_input(NULL, &state, "1"), DSD_AUDIO_INPUT_KEPT);
+    rc |= expect_int("pulse input null device", svc_set_pulse_input(&opts, &state, NULL), DSD_AUDIO_INPUT_KEPT);
+    rc |= expect_int("pulse input asks nothing when refused", g_switch_calls, 0);
+    rc |= expect_int("pulse input valid index", svc_set_pulse_input(&opts, &state, "3"), DSD_AUDIO_INPUT_SWITCHED);
+    rc |= expect_int("pulse input switches", g_switch_calls, 1);
+    rc |= expect_int("pulse input kind", (int)g_switch_kind, (int)DSD_AUDIO_INPUT_PULSE);
+    rc |= expect_str("pulse input device", g_switch_path, "3");
+    reset_switch_stub(DSD_AUDIO_INPUT_KEPT);
+    rc |= expect_int("pulse input failure", svc_set_pulse_input(&opts, &state, ""), DSD_AUDIO_INPUT_KEPT);
+    rc |= expect_str("pulse input default device", g_switch_path, "");
+    rc |= expect_int("pulse input default device given", g_switch_path_null, 0);
+
+    /* Stop replay goes to the configured Pulse device. */
+    reset_switch_stub(DSD_AUDIO_INPUT_SWITCHED);
+    rc |= expect_int("stop playback switches", svc_stop_playback(&opts, &state), DSD_AUDIO_INPUT_SWITCHED);
+    rc |= expect_int("stop playback kind", (int)g_switch_kind, (int)DSD_AUDIO_INPUT_PULSE);
+    rc |= expect_int("stop playback configured device", g_switch_path_null, 1);
+    return rc;
+}
+
+/* The input switch requests the menu services build (issue #634). */
+static int
+test_input_switch_requests(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    reset_switch_stub(DSD_AUDIO_INPUT_SWITCHED);
+    g_path_kind = DSD_AUDIO_INPUT_SYMBOL_FLT;
+    rc |= expect_int("file in follows -i", svc_open_audio_file_in(&opts, &state, "c.raw"), DSD_AUDIO_INPUT_SWITCHED);
+    rc |= expect_int("file in kind is the path's", (int)g_switch_kind, (int)DSD_AUDIO_INPUT_SYMBOL_FLT);
+    rc |= expect_str("file in path", g_switch_path, "c.raw");
+    reset_switch_stub(DSD_AUDIO_INPUT_SWITCHED);
+    rc |= expect_int("file in empty path", svc_open_audio_file_in(&opts, &state, ""), DSD_AUDIO_INPUT_KEPT);
+    rc |= expect_int("file in null path", svc_open_audio_file_in(&opts, &state, NULL), DSD_AUDIO_INPUT_KEPT);
+    rc |= expect_int("file in asks nothing for no path", g_switch_calls, 0);
+
+    rc |= expect_int("symbol stream", svc_open_symbol_stream_in(&opts, &state, "s.sym"), DSD_AUDIO_INPUT_SWITCHED);
+    rc |= expect_int("symbol stream kind", (int)g_switch_kind, (int)DSD_AUDIO_INPUT_SYMBOL_FLT);
+    rc |= expect_int("symbol bin", svc_open_symbol_in(&opts, &state, "cap.bin"), DSD_AUDIO_INPUT_SWITCHED);
+    rc |= expect_int("symbol bin kind", (int)g_switch_kind, (int)DSD_AUDIO_INPUT_SYMBOL_BIN);
+    rc |= expect_str("symbol bin path", g_switch_path, "cap.bin");
+    reset_switch_stub(DSD_AUDIO_INPUT_KEPT);
+    rc |= expect_int("symbol bin missing file", svc_open_symbol_in(&opts, &state, "missing.bin"), DSD_AUDIO_INPUT_KEPT);
+    rc |= expect_int("symbol bin empty path", svc_open_symbol_in(&opts, &state, ""), DSD_AUDIO_INPUT_KEPT);
+    rc |= expect_int("symbol bin empty path asks nothing", g_switch_calls, 1);
+
+    reset_switch_stub(DSD_AUDIO_INPUT_RESTARTED);
+    rc |= expect_int("udp input", svc_udp_input_config(&opts, &state, "0.0.0.0", 7360), DSD_AUDIO_INPUT_RESTARTED);
+    rc |= expect_int("udp kind", (int)g_switch_kind, (int)DSD_AUDIO_INPUT_UDP);
+    rc |= expect_str("udp bind", g_switch_host, "0.0.0.0");
+    rc |= expect_int("udp port", g_switch_port, 7360);
+    rc |= expect_int("udp null opts", svc_udp_input_config(NULL, &state, "0.0.0.0", 7360), DSD_AUDIO_INPUT_KEPT);
+    rc |= expect_int("udp null state", svc_udp_input_config(&opts, NULL, "0.0.0.0", 7360), DSD_AUDIO_INPUT_KEPT);
+    return rc;
+}
+
+/* The engine modes that read no input a switch would open (issue #634). */
+static int
+test_input_switch_unsupported_modes(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    rc |= expect_int("live decoding switches", svc_input_switch_unsupported(&opts) == NULL, 1);
+    rc |= expect_int("no session", svc_input_switch_unsupported(NULL) != NULL, 1);
+    opts.playfiles = 1;
+    rc |= expect_int("mbe playback", svc_input_switch_unsupported(&opts) != NULL, 1);
+    opts.playfiles = 0;
+    opts.m17decoderip = 1;
+    rc |= expect_int("m17 ip frames", svc_input_switch_unsupported(&opts) != NULL, 1);
+    opts.m17decoderip = 0;
+    opts.m17encoderbrt = 1;
+    rc |= expect_int("m17 bert", svc_input_switch_unsupported(&opts) != NULL, 1);
+    opts.m17encoderbrt = 0;
+    opts.m17encoderpkt = 1;
+    rc |= expect_int("m17 packet", svc_input_switch_unsupported(&opts) != NULL, 1);
+    opts.m17encoderpkt = 0;
+    opts.m17encoder = 1;
+    rc |= expect_int("m17 stream encoder", svc_input_switch_unsupported(&opts) != NULL, 1);
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    const int playback_types[] = {AUDIO_IN_WAV, AUDIO_IN_SYMBOL_BIN, AUDIO_IN_SYMBOL_FLT};
+    for (size_t i = 0; i < sizeof playback_types / sizeof playback_types[0]; i++) {
+        opts.audio_in_type = playback_types[i];
+        rc |= expect_int("a file is a playback", svc_playback_running(&opts), 1);
+    }
+    const int live_types[] = {AUDIO_IN_PULSE, AUDIO_IN_UDP, AUDIO_IN_TCP, AUDIO_IN_RTL, AUDIO_IN_STDIN};
+    for (size_t i = 0; i < sizeof live_types / sizeof live_types[0]; i++) {
+        opts.audio_in_type = live_types[i];
+        rc |= expect_int("a live input is no playback", svc_playback_running(&opts), 0);
+    }
+    rc |= expect_int("no options, no playback", svc_playback_running(NULL), 0);
+    return rc;
+}
+
+/* The device Input > Switch source > RTL-SDR opens (issue #634). */
+static int
+test_rtl_row_destination(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    char dev[64];
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "soapy:driver=x");
+    svc_rtl_row_destination(&opts, dev, sizeof dev);
+    rc |= expect_str("a running soapy spec stays", dev, "soapy:driver=x");
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "airspy");
+    DSD_SNPRINTF(opts.radio_in_dev, sizeof opts.radio_in_dev, "%s", "soapy:driver=x");
+    svc_rtl_row_destination(&opts, dev, sizeof dev);
+    rc |= expect_str("from airspy, the remembered radio", dev, "soapy:driver=x");
+    opts.radio_in_dev[0] = '\0';
+    svc_rtl_row_destination(&opts, dev, sizeof dev);
+    rc |= expect_str("from airspy with nothing remembered: rtl", dev, "rtl");
+    DSD_SNPRINTF(opts.radio_in_dev, sizeof opts.radio_in_dev, "%s", "soapy:driver=x");
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "pulse");
+    svc_rtl_row_destination(&opts, dev, sizeof dev);
+    rc |= expect_str("pcm goes back to the remembered radio", dev, "soapy:driver=x");
+    DSD_SNPRINTF(opts.radio_in_dev, sizeof opts.radio_in_dev, "%s", "rtltcp:host:1234");
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "udp:127.0.0.1:7355");
+    svc_rtl_row_destination(&opts, dev, sizeof dev);
+    rc |= expect_str("pcm goes back to rtl_tcp", dev, "rtltcp:host:1234");
+    DSD_SNPRINTF(opts.radio_in_dev, sizeof opts.radio_in_dev, "%s", "airspy:serial=1");
+    svc_rtl_row_destination(&opts, dev, sizeof dev);
+    rc |= expect_str("a remembered airspy is not the rtl row's", dev, "rtl");
+    opts.radio_in_dev[0] = '\0';
+    svc_rtl_row_destination(&opts, dev, sizeof dev);
+    rc |= expect_str("no radio ran: rtl", dev, "rtl");
+    svc_rtl_row_destination(NULL, dev, sizeof dev);
+    rc |= expect_str("no options: rtl", dev, "rtl");
     return rc;
 }
 
@@ -1565,8 +1738,6 @@ test_file_network_and_import_failure_contracts(void) {
     rc |= expect_int("symbol out failed open", svc_open_symbol_out(&opts, &state, "capture.sym"), -1);
     rc |= expect_str("symbol out path still stored", opts.symbol_out_file, "capture.sym");
 
-    rc |= expect_int("symbol in missing file", svc_open_symbol_in(&opts, &state, "missing.sym"), -1);
-    rc |= expect_int("symbol in missing leaves type unchanged", opts.audio_in_type, 0);
     rc |= expect_int("static wav invalid path", svc_open_static_wav(&opts, &state, ""), -1);
     rc |= expect_int("static wav failed open", svc_open_static_wav(&opts, &state, "static.wav"), -1);
     rc |= expect_str("static wav path stored before open", opts.wav_out_file, "static.wav");
@@ -2447,6 +2618,9 @@ main(void) {
     rc |= test_lrrp_event_log_and_history_state();
     rc |= test_p2_trunking_and_slot_controls();
     rc |= test_payload_symbol_and_pulse_state();
+    rc |= test_input_switch_requests();
+    rc |= test_input_switch_unsupported_modes();
+    rc |= test_rtl_row_destination();
 #ifdef USE_RADIO
     rc |= test_rtl_restart_quiesces_p25_retunes();
     rc |= test_locked_restarts();

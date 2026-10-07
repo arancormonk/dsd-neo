@@ -44,6 +44,16 @@ void udp_input_stop(dsd_opts* opts);
  */
 int udp_input_read_sample(dsd_opts* opts, int16_t* out);
 
+/**
+ * @brief Read one PCM16 sample from the UDP ring, waiting at most @p timeout_ms for one (issue #634).
+ *
+ * @param opts Decoder options containing UDP context.
+ * @param out [out] Receives one sample.
+ * @param timeout_ms Longest wait for a sample when the ring is empty.
+ * @return 1 with a sample, 0 on shutdown or a stopped input, -1 when no sample arrived in time.
+ */
+int udp_input_read_sample_wait(dsd_opts* opts, int16_t* out, unsigned int timeout_ms);
+
 #ifdef __cplusplus
 }
 #endif

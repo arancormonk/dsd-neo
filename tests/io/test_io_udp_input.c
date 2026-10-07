@@ -243,6 +243,53 @@ test_startup_contracts(void) {
     return rc;
 }
 
+/* The bounded read (issue #634): a sample when there is one, -1 when none arrived in time, so the decoder can do
+   something else while the input is silent, and 0 on shutdown or with no input. It never makes a sample up. */
+static int
+test_read_wait(void) {
+    int rc = 0;
+    int16_t sample = 0;
+    static dsd_opts opts;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    opts.wav_sample_rate = 48000;
+    rc |= expect_int("wait read with no input", udp_input_read_sample_wait(&opts, &sample, 10U), 0);
+    if (udp_input_start(&opts, "127.0.0.1", 0, 48000) != 0) {
+        DSD_FPRINTF(stderr, "udp_input_start failed for the wait read\n");
+        return 1;
+    }
+    const int port = get_bound_port(opts.udp_in_sockfd);
+    rc |= expect_int("wait read rejects a null sample", udp_input_read_sample_wait(&opts, NULL, 10U), 0);
+    sample = 77;
+    rc |= expect_int("an empty ring times out", udp_input_read_sample_wait(&opts, &sample, 20U), -1);
+    rc |= expect_int("a timeout makes no sample up", sample, 77);
+
+    dsd_socket_t tx = dsd_socket_create(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    const int16_t v[] = {321, -321};
+    if (tx == DSD_INVALID_SOCKET || send_pcm16le(tx, "127.0.0.1", port, v, 2) != 0) {
+        DSD_FPRINTF(stderr, "failed to send the wait read's samples\n");
+        rc = 1;
+    } else {
+        for (int i = 0; i < 2; i++) {
+            /* The datagram may still be on its way: a few timed waits, never a made-up sample. */
+            int got = -1;
+            for (int tries = 0; tries < 50 && got < 0; tries++) {
+                got = udp_input_read_sample_wait(&opts, &sample, 20U);
+            }
+            rc |= expect_int("a sample arrives", got, 1);
+            rc |= expect_int("the sample sent", sample, v[i]);
+        }
+    }
+    exitflag = 1;
+    rc |= expect_int("a wait read stops on shutdown", udp_input_read_sample_wait(&opts, &sample, 20U), 0);
+    exitflag = 0;
+    if (tx != DSD_INVALID_SOCKET) {
+        dsd_socket_close(tx);
+    }
+    udp_input_stop(&opts);
+    rc |= expect_int("a wait read after stop", udp_input_read_sample_wait(&opts, &sample, 10U), 0);
+    return rc;
+}
+
 int
 main(void) {
     exitflag = 0;
@@ -259,6 +306,9 @@ main(void) {
     int rs_inited = 0;
 
     if (test_startup_contracts() != 0) {
+        goto cleanup;
+    }
+    if (test_read_wait() != 0) {
         goto cleanup;
     }
 

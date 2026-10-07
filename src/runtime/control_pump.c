@@ -12,6 +12,7 @@
 #include "dsd-neo/core/state_fwd.h"
 
 static dsd_control_pump_fn g_control_pump_fn = NULL;
+static dsd_controls_pending_fn g_controls_pending_fn = NULL;
 static dsd_mutex_t g_control_pump_mu;
 static atomic_int g_control_pump_mu_state = 0; // 0=uninit, 1=initing, 2=init
 
@@ -51,4 +52,21 @@ dsd_runtime_pump_controls(dsd_opts* opts, dsd_state* state) {
         return;
     }
     fn(opts, state);
+}
+
+void
+dsd_runtime_set_controls_pending(dsd_controls_pending_fn fn) {
+    ensure_control_pump_mu_init();
+    dsd_mutex_lock(&g_control_pump_mu);
+    g_controls_pending_fn = fn;
+    dsd_mutex_unlock(&g_control_pump_mu);
+}
+
+int
+dsd_runtime_controls_pending(void) {
+    ensure_control_pump_mu_init();
+    dsd_mutex_lock(&g_control_pump_mu);
+    dsd_controls_pending_fn fn = g_controls_pending_fn;
+    dsd_mutex_unlock(&g_control_pump_mu);
+    return fn ? fn() : 0;
 }

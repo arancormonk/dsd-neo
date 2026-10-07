@@ -50,6 +50,8 @@
 static bool Send(dsd_socket_t sockfd, const char* buf);
 static bool Recv(dsd_socket_t sockfd, char* buf);
 static void rigctl_peer_forget(dsd_socket_t sockfd);
+static void connect_apply_options(dsd_socket_t sockfd);
+static void connect_note_address(const char* host, int port, const struct sockaddr_in* addr);
 
 /**
  * @brief Establish a TCP RIGCTL connection to the given host/port.
@@ -88,6 +90,14 @@ Connect(char* hostname, int portno) {
         return DSD_INVALID_SOCKET;
     }
 
+    connect_apply_options(sockfd);
+    connect_note_address(hostname, portno, &serveraddr);
+    return sockfd;
+}
+
+/* The receive timeout and options every connection Connect() and ConnectBounded() make runs with. */
+static void
+connect_apply_options(dsd_socket_t sockfd) {
     /* Apply small receive timeout so control I/O can't wedge the app. Default 1500ms. */
     {
         int to_ms = 1500;
@@ -109,6 +119,85 @@ Connect(char* hostname, int portno) {
 
     /* A new connection on the number of a socket closed before it is a peer nothing was asked of. */
     rigctl_peer_forget(sockfd);
+}
+
+/* An address a connection was made to (issue #634). */
+typedef struct {
+    int valid;
+    char host[256];
+    int port;
+    struct sockaddr_in addr;
+} connect_address;
+
+/* The address the last connection Connect() or ConnectBounded() made went to, and the one the running TCP audio input's
+   connection went to (ConnectKeepTcpAudioAddress()), which its reconnect goes back to rather than looking the host up
+   while the decoder waits on it (issue #634). A connection nobody keeps (a switch that failed, a rigctl connection)
+   never displaces it. Decoder thread only. */
+static connect_address g_connect_last;
+static connect_address g_tcp_audio_address;
+
+static void
+connect_note_address(const char* host, int port, const struct sockaddr_in* addr) {
+    g_connect_last.valid = 0;
+    if (strlen(host) >= sizeof g_connect_last.host) {
+        return;
+    }
+    DSD_SNPRINTF(g_connect_last.host, sizeof g_connect_last.host, "%s", host);
+    g_connect_last.port = port;
+    g_connect_last.addr = *addr;
+    g_connect_last.valid = 1;
+}
+
+static int
+connect_address_is(const connect_address* address, const char* host, int port) {
+    return address->valid && address->port == port && strncmp(address->host, host, sizeof address->host) == 0;
+}
+
+void
+ConnectKeepTcpAudioAddress(const char* hostname, int portno) {
+    if (hostname && connect_address_is(&g_connect_last, hostname, portno)) {
+        g_tcp_audio_address = g_connect_last;
+    }
+}
+
+static int
+connect_bounded_resolve(const char* hostname, int portno, int resolve, struct sockaddr_in* addr) {
+    if (!resolve && connect_address_is(&g_tcp_audio_address, hostname, portno)) {
+        *addr = g_tcp_audio_address.addr;
+        return 0;
+    }
+    if (dsd_socket_resolve(hostname, portno, addr) != 0) {
+        LOG_ERROR("ERROR, no such host as %s\n", hostname);
+        return -1;
+    }
+    return 0;
+}
+
+dsd_socket_t
+ConnectBounded(const char* hostname, int portno, int resolve, dsd_socket_cancel_fn cancelled, void* context) {
+    if (!hostname || hostname[0] == '\0' || portno <= 0) {
+        return DSD_INVALID_SOCKET;
+    }
+    struct sockaddr_in serveraddr;
+    DSD_MEMSET(&serveraddr, 0, sizeof serveraddr);
+    if (connect_bounded_resolve(hostname, portno, resolve, &serveraddr) != 0) {
+        return DSD_INVALID_SOCKET;
+    }
+    dsd_socket_t sockfd = dsd_socket_create(AF_INET, SOCK_STREAM, 0);
+    if (sockfd == DSD_INVALID_SOCKET) {
+        LOG_ERROR("ERROR opening socket\n");
+        return DSD_INVALID_SOCKET;
+    }
+    int code = 0;
+    if (dsd_socket_connect_bounded(sockfd, (const struct sockaddr*)&serveraddr, sizeof(serveraddr),
+                                   DSD_CONNECT_BOUNDED_TIMEOUT_MS, cancelled, context, &code)
+        != 0) {
+        LOG_ERROR("ERROR connecting socket to %s:%d\n", hostname, portno);
+        dsd_socket_close(sockfd);
+        return DSD_INVALID_SOCKET;
+    }
+    connect_apply_options(sockfd);
+    connect_note_address(hostname, portno, &serveraddr);
     return sockfd;
 }
 

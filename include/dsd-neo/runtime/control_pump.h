@@ -41,6 +41,20 @@ void dsd_runtime_set_control_pump(dsd_control_pump_fn fn);
  */
 void dsd_runtime_pump_controls(dsd_opts* opts, dsd_state* state);
 
+typedef int (*dsd_controls_pending_fn)(void);
+
+/**
+ * @brief Register (or, with NULL, unregister) the query dsd_runtime_controls_pending() asks.
+ */
+void dsd_runtime_set_controls_pending(dsd_controls_pending_fn fn);
+
+/**
+ * @brief Whether a command waits to be pumped: 1 when the registered query says so, 0 without one.
+ *
+ * Asked only while an input waits on a silent source, so the decoder can leave the wait and apply it (issue #634).
+ */
+int dsd_runtime_controls_pending(void);
+
 #ifdef __cplusplus
 }
 #endif

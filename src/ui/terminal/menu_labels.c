@@ -22,8 +22,6 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/dsp/analog_audio.h>
-#include <dsd-neo/io/tcp_input.h>
-#include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/config.h>
@@ -894,7 +892,9 @@ lbl_input_sql(const void* v, char* b, size_t n) {
 const char*
 lbl_tcp(const void* vctx, char* b, size_t n) {
     const UiCtx* c = (const UiCtx*)vctx;
-    int active = (c->opts->audio_in_type == AUDIO_IN_TCP && tcp_input_is_valid(c->opts->tcp_in_ctx));
+    /* The snapshot's context pointer is only compared: the decoder frees that context when a reconnect or a switch
+       replaces it (issue #634). */
+    int active = (c->opts->audio_in_type == AUDIO_IN_TCP && c->opts->tcp_in_ctx != NULL);
     if (c->opts->tcp_hostname[0] != '\0' && c->opts->tcp_portno > 0) {
         int m = (n > 28) ? (int)(n - 28) : 0;
         DSD_SNPRINTF(b, n, "TCP audio: %.*s:%d [%s]", m, c->opts->tcp_hostname, c->opts->tcp_portno, onoff(active));
@@ -1077,12 +1077,9 @@ lbl_stop_symbol_capture(const void* vctx, char* b, size_t n) {
 const char*
 lbl_replay_last(const void* vctx, char* b, size_t n) {
     const UiCtx* c = (const UiCtx*)vctx;
-    if (c->opts->audio_in_dev[0] != '\0') {
-        dsd_stat_t sb;
-        if (dsd_stat_path(c->opts->audio_in_dev, &sb) == 0) {
-            DSD_SNPRINTF(b, n, "Replay last capture [%s]", c->opts->audio_in_dev);
-            return b;
-        }
+    if (c->opts->symbol_capture_last[0] != '\0') {
+        DSD_SNPRINTF(b, n, "Replay last capture [%s]", c->opts->symbol_capture_last);
+        return b;
     }
     DSD_SNPRINTF(b, n, "Replay last capture [none]");
     return b;
@@ -1091,7 +1088,9 @@ lbl_replay_last(const void* vctx, char* b, size_t n) {
 const char*
 lbl_stop_symbol_playback(const void* vctx, char* b, size_t n) {
     const UiCtx* c = (const UiCtx*)vctx;
-    if (c->opts->symbolfile != NULL && c->opts->audio_in_type == AUDIO_IN_SYMBOL_BIN) {
+    const int playback = c->opts->audio_in_type == AUDIO_IN_WAV || c->opts->audio_in_type == AUDIO_IN_SYMBOL_BIN
+                         || c->opts->audio_in_type == AUDIO_IN_SYMBOL_FLT;
+    if (playback) {
         if (c->opts->audio_in_dev[0] != '\0') {
             DSD_SNPRINTF(b, n, "Stop replay [%s]", c->opts->audio_in_dev);
         } else {

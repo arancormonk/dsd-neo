@@ -6,6 +6,7 @@
 #include <dsd-neo/app_control/analog_width_view.h>
 #include <dsd-neo/core/airspy_config.h>
 #include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/audio_input_switch.h>
 #include <dsd-neo/core/channel_mode.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/csv_import.h>
@@ -47,7 +48,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "dsd-neo/core/dibit.h"
 #include "dsd-neo/core/key_set.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -120,38 +120,84 @@ svc_open_symbol_out(dsd_opts* opts, dsd_state* state, const char* filename) {
     return (opts->symbol_out_f != NULL) ? 0 : -1;
 }
 
+/* Run an input switch (issue #634) for a menu service. */
+static int
+svc_switch_input(dsd_opts* opts, dsd_state* state, dsd_audio_input_kind kind, const char* path, const char* host,
+                 int port) {
+    if (!opts || !state) {
+        return DSD_AUDIO_INPUT_KEPT;
+    }
+    dsd_audio_input_request request;
+    DSD_MEMSET(&request, 0, sizeof request);
+    request.kind = kind;
+    request.path = path;
+    request.host = host;
+    request.port = port;
+    request.tcp_sockfd = DSD_INVALID_SOCKET;
+    return dsd_audio_switch_input(opts, state, &request);
+}
+
+const char*
+svc_input_switch_unsupported(const dsd_opts* opts) {
+    if (!opts) {
+        return "no session";
+    }
+    if (opts->playfiles == 1) {
+        return "MBE playback reads no audio input";
+    }
+    if (opts->m17decoderip == 1) {
+        return "the M17 IP frame receiver reads no audio input";
+    }
+    if (opts->m17encoderbrt == 1 || opts->m17encoderpkt == 1) {
+        return "the M17 encoder reads no audio input";
+    }
+    if (opts->m17encoder == 1) {
+        /* Its decimation and filter are set from the input rate it started on (m17_encoder_input_init()). */
+        return "the M17 stream encoder keeps the input it started on";
+    }
+    return NULL;
+}
+
+int
+svc_playback_running(const dsd_opts* opts) {
+    return opts
+           && (opts->audio_in_type == AUDIO_IN_WAV || opts->audio_in_type == AUDIO_IN_SYMBOL_BIN
+               || opts->audio_in_type == AUDIO_IN_SYMBOL_FLT);
+}
+
+int
+svc_open_audio_file_in(dsd_opts* opts, dsd_state* state, const char* path) {
+    if (!path || !*path) {
+        return DSD_AUDIO_INPUT_KEPT;
+    }
+    return svc_switch_input(opts, state, dsd_audio_path_input_kind(path), path, NULL, 0);
+}
+
+int
+svc_open_symbol_stream_in(dsd_opts* opts, dsd_state* state, const char* path) {
+    if (!path || !*path) {
+        return DSD_AUDIO_INPUT_KEPT;
+    }
+    return svc_switch_input(opts, state, DSD_AUDIO_INPUT_SYMBOL_FLT, path, NULL, 0);
+}
+
 int
 svc_open_symbol_in(dsd_opts* opts, dsd_state* state, const char* filename) {
-    (void)state;
-    if (!opts || !filename || !*filename) {
-        return -1;
+    if (!filename || !*filename) {
+        return DSD_AUDIO_INPUT_KEPT;
     }
-    opts->symbolfile = dsd_fopen_existing_regular_file(filename, "rb");
-    if (!opts->symbolfile) {
-        LOG_ERROR("Error, couldn't open %s\n", filename);
-        return -1;
-    }
-    dsd_stat_t sb;
-    if (dsd_fstat(dsd_fileno(opts->symbolfile), &sb) != 0) {
-        LOG_ERROR("Error, couldn't stat %s\n", filename);
-        fclose(opts->symbolfile);
-        opts->symbolfile = NULL;
-        return -1;
-    }
-    if (!dsd_stat_is_regular(&sb)) {
-        LOG_ERROR("Error, %s is not a regular file\n", filename);
-        fclose(opts->symbolfile);
-        opts->symbolfile = NULL;
-        return -1;
-    }
-    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", filename);
-    opts->audio_in_type = AUDIO_IN_SYMBOL_BIN; // symbol capture bin
-    if (state) {
-        state->symbol_replay_format = DSD_SYMBOL_REPLAY_FORMAT_UNKNOWN;
-        state->symbol_replay_header_checked = 0;
-        state->symbol_replay_has_soft = 0;
-    }
-    return 0;
+    return svc_switch_input(opts, state, DSD_AUDIO_INPUT_SYMBOL_BIN, filename, NULL, 0);
+}
+
+int
+svc_udp_input_config(dsd_opts* opts, dsd_state* state, const char* bindaddr, int port) {
+    return svc_switch_input(opts, state, DSD_AUDIO_INPUT_UDP, NULL, bindaddr, port);
+}
+
+int
+svc_stop_playback(dsd_opts* opts, dsd_state* state) {
+    /* The configured Pulse device (NULL): the one the session runs Pulse on. */
+    return svc_switch_input(opts, state, DSD_AUDIO_INPUT_PULSE, NULL, NULL, 0);
 }
 
 int
@@ -288,16 +334,11 @@ svc_set_pulse_output(dsd_opts* opts, const char* index) {
 }
 
 int
-svc_set_pulse_input(dsd_opts* opts, const char* index) {
-    if (!opts || !index) {
-        return -1;
+svc_set_pulse_input(dsd_opts* opts, dsd_state* state, const char* device) {
+    if (!device) {
+        return DSD_AUDIO_INPUT_KEPT;
     }
-    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "pulse");
-    opts->audio_in_type = AUDIO_IN_PULSE;
-    char tmp[128];
-    DSD_SNPRINTF(tmp, sizeof tmp, "%s", index);
-    parse_audio_input_string(opts, tmp);
-    return 0;
+    return svc_switch_input(opts, state, DSD_AUDIO_INPUT_PULSE, device, NULL, 0);
 }
 
 int
@@ -1283,16 +1324,33 @@ svc_check_input_analog_width_at(const dsd_opts* opts, const dsd_state* state, in
     return svc_input_width_fits(opts->analog_demod, in_force_hz, rate_hz, why, why_size) ? 0 : -1;
 }
 
+void
+svc_rtl_row_destination(const dsd_opts* opts, char* out, size_t out_size) {
+    if (!out || out_size == 0U) {
+        return;
+    }
+    const char* dev = "rtl";
+    if (opts && dsd_opts_audio_in_dev_is_radio_spec(opts->audio_in_dev)
+        && !dsd_opts_audio_in_dev_is_airspy_spec(opts->audio_in_dev)) {
+        dev = opts->audio_in_dev;
+    } else if (opts && dsd_opts_audio_in_dev_is_radio_spec(opts->radio_in_dev)
+               && !dsd_opts_audio_in_dev_is_airspy_spec(opts->radio_in_dev)) {
+        dev = opts->radio_in_dev;
+    }
+    DSD_SNPRINTF(out, out_size, "%s", dev);
+}
+
 int
 svc_check_rtl_input_analog_width(const dsd_opts* opts, const dsd_state* state, char* why, size_t why_size) {
     svc_why(why, why_size, "%s", "");
     if (!opts) {
         return -1;
     }
-    /* Input > Switch source > RTL-SDR turns an Airspy spec into "rtl" and reopens every other device string but a
-       SoapySDR or I/Q replay one as an RTL-SDR or rtl_tcp device, at its DSP bandwidth. A SoapySDR device may force its
-       own rate and a replay runs at its capture's: their start checks those. */
-    const char* dev = dsd_opts_audio_in_dev_is_airspy_spec(opts->audio_in_dev) ? "rtl" : opts->audio_in_dev;
+    /* Input > Switch source > RTL-SDR opens the device svc_rtl_row_destination() names, as an RTL-SDR or rtl_tcp
+       device at its DSP bandwidth unless it is a SoapySDR or I/Q replay one. A SoapySDR device may force its own rate
+       and a replay runs at its capture's: their start checks those. */
+    char dev[sizeof opts->audio_in_dev];
+    svc_rtl_row_destination(opts, dev, sizeof dev);
     return svc_check_input_analog_width_at(
         opts, state, dsd_app_analog_rtl_bw_rate_hz(dev, AUDIO_IN_RTL, opts->rtl_dsp_bw_khz), why, why_size);
 }

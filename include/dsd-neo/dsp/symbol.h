@@ -46,6 +46,16 @@ void dsd_symbol_matched_filter_reset(dsd_state* state);
  */
 void dsd_symbol_analog_block_reset(dsd_state* state);
 
+/**
+ * @brief Tell the RTL output rescale which rate the symbol timing is in now (issue #634).
+ *
+ * On an RTL monitor output the decoder rescales samplesPerSymbol and symbolCenter whenever the output rate changes,
+ * from the rate it last rescaled them to. An input switch back to the radio from a PCM input calls this with the PCM
+ * input's timing rate, so the next rescale starts from the rate the timing is really in. A no-op in a build without
+ * radio support.
+ */
+void dsd_symbol_note_timing_rate(int rate_hz);
+
 #ifdef __cplusplus
 }
 #endif

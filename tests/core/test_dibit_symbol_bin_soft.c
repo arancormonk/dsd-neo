@@ -272,6 +272,62 @@ test_symbol_replay_soft_metric_overrides_fallback(void) {
     return rc;
 }
 
+/* A capture that ended mid-frame (issue #634): until the engine switches to Pulse, the frame finishes on erasures, not
+   on the capture's last dibit repeated at full confidence. One the session replaced meanwhile reads as before. */
+static int
+test_ended_symbol_bin_reads_erasures(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    if (!init_state_buffers(&state)) {
+        DSD_FPRINTF(stderr, "failed to allocate state buffers\n");
+        return 1;
+    }
+
+    opts.audio_in_type = AUDIO_IN_SYMBOL_BIN;
+    opts.symbolfile = NULL; /* the reader closed the capture */
+    state.input_fallback_pending = 1;
+    state.synctype = DSD_SYNC_P25P1_NEG;
+    state.rf_mod = 0;
+    state.symbol_replay_has_soft = 1; /* the last record's metric, already used */
+    state.symbol_replay_soft.reliability = 200;
+    g_next_dibit = 3;
+
+    int rc = 0;
+    for (int i = 0; i < 3; i++) {
+        dsd_dibit_soft_t soft;
+        DSD_MEMSET(&soft, 0xA5, sizeof(soft));
+        (void)getDibitSoft(&opts, &state, &soft);
+        if (soft.reliability != 0 || soft.llr[0] != 0 || soft.llr[1] != 0) {
+            DSD_FPRINTF(stderr, "ended capture: symbol %d rel=%u llr=(%d,%d), want an erasure\n", i, soft.reliability,
+                        soft.llr[0], soft.llr[1]);
+            rc = 1;
+        }
+    }
+    if (state.symbol_replay_has_soft != 0) {
+        DSD_FPRINTF(stderr, "ended capture: a stale replay metric is left for the next capture\n");
+        rc = 1;
+    }
+
+    /* A capture a command opened before the engine's fallback ran is read as any capture (the dibit reader never
+       touches the file: any open handle will do). */
+    static char replaced_capture;
+    opts.symbolfile = (FILE*)(void*)&replaced_capture;
+    dsd_dibit_soft_t soft;
+    DSD_MEMSET(&soft, 0, sizeof(soft));
+    (void)getDibitSoft(&opts, &state, &soft);
+    if (soft.reliability != 255) {
+        DSD_FPRINTF(stderr, "replaced capture: rel=%u, want the capture's full confidence\n", soft.reliability);
+        rc = 1;
+    }
+    opts.symbolfile = NULL;
+
+    free_state_buffers(&state);
+    return rc;
+}
+
 static int
 test_symbol_bin_replay_throttle_paces_from_timing_rate(void) {
     static dsd_opts opts;
@@ -671,6 +727,7 @@ main(void) {
     }
     rc |= test_soft_symbol_capture_record();
     rc |= test_symbol_replay_soft_metric_overrides_fallback();
+    rc |= test_ended_symbol_bin_reads_erasures();
     rc |= test_symbol_bin_replay_throttle_paces_from_timing_rate();
     rc |= test_reader_wraps_ring_buffers_before_store();
     rc |= test_get_dibit_soft_falls_back_to_hard_dibit();

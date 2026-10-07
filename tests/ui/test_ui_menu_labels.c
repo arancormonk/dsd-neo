@@ -18,7 +18,6 @@
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
-#include <dsd-neo/io/tcp_input.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/call_alert.h>
@@ -42,7 +41,6 @@
 static dsdneoRuntimeConfig g_cfg;
 static int g_cfg_valid = 1;
 static int g_stat_path_rc = -1;
-static int g_tcp_valid = 1;
 static int g_rr_available = 1;
 static char g_rr_builtin_key[64];
 static int g_env_int_value;
@@ -67,11 +65,6 @@ double
 env_get_double(const char* name, double defv) {
     (void)name;
     return g_env_double_has_value ? g_env_double_value : defv;
-}
-
-int
-tcp_input_is_valid(const tcp_input_ctx* ctx) {
-    return (ctx != NULL && g_tcp_valid) ? 1 : 0;
 }
 
 int
@@ -149,7 +142,6 @@ reset_fixture(dsd_opts* opts, dsd_state* state, UiCtx* ctx) {
     DSD_MEMSET(&g_cfg, 0, sizeof(g_cfg));
     g_cfg_valid = 1;
     g_stat_path_rc = -1;
-    g_tcp_valid = 1;
     g_rr_available = 1;
     g_rr_builtin_key[0] = '\0';
     g_env_int_value = 0;
@@ -636,11 +628,12 @@ test_input_and_audio_labels(void) {
     rc |= expect_str("analog gain auto", lbl_gain_ana(&ctx, b, sizeof(b)), "Analog gain... [auto]");
     opts.audio_gainA = 50.0f;
 
+    /* The label reads the snapshot's context pointer without following it: the decoder frees the context a reconnect
+       or a switch replaces (issue #634). A disconnected input has none. */
     opts.audio_in_type = AUDIO_IN_TCP;
     opts.tcp_in_ctx = (tcp_input_ctx*)0x1;
-    g_tcp_valid = 1;
     rc |= expect_str("tcp on", lbl_tcp(&ctx, b, sizeof(b)), "TCP audio: tcp.example:7355 [On]");
-    g_tcp_valid = 0;
+    opts.tcp_in_ctx = NULL;
     rc |= expect_str("tcp off", lbl_tcp(&ctx, b, sizeof(b)), "TCP audio: tcp.example:7355 [Off]");
     opts.tcp_hostname[0] = '\0';
     rc |= expect_str("tcp unconfigured", lbl_tcp(&ctx, b, sizeof(b)), "TCP audio... [Off]");
@@ -783,10 +776,22 @@ test_recording_labels(void) {
     opts.audio_in_type = AUDIO_IN_SYMBOL_BIN;
     DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "%s", "last.bin");
     rc |= expect_str("stop replay on", lbl_stop_symbol_playback(&ctx, b, sizeof(b)), "Stop replay [last.bin]");
+    /* A WAV file is a playback the row stops too (issue #634). */
+    opts.symbolfile = NULL;
+    opts.audio_in_type = AUDIO_IN_WAV;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "%s", "voice.wav");
+    rc |= expect_str("stop replay on a wav", lbl_stop_symbol_playback(&ctx, b, sizeof(b)), "Stop replay [voice.wav]");
+    opts.audio_in_type = AUDIO_IN_PULSE;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "%s", "pulse");
+    rc |= expect_str("stop replay off on pulse", lbl_stop_symbol_playback(&ctx, b, sizeof(b)), "Stop replay [Off]");
+    /* Replay last names the last capture closed, not the input: a file that exists by the input's name is no
+       capture (issue #634). */
     g_stat_path_rc = 0;
+    rc |= expect_str("replay last none", lbl_replay_last(&ctx, b, sizeof(b)), "Replay last capture [none]");
+    DSD_SNPRINTF(opts.symbol_capture_last, sizeof(opts.symbol_capture_last), "%s", "last.bin");
     rc |= expect_str("replay last available", lbl_replay_last(&ctx, b, sizeof(b)), "Replay last capture [last.bin]");
     g_stat_path_rc = -1;
-    rc |= expect_str("replay last none", lbl_replay_last(&ctx, b, sizeof(b)), "Replay last capture [none]");
+    opts.symbol_capture_last[0] = '\0';
 
     rc |= expect_str("event log off", lbl_event_log(&ctx, b, sizeof(b)), "Event log file... [off]");
     DSD_SNPRINTF(opts.event_out_file, sizeof(opts.event_out_file), "%s", "events.log");

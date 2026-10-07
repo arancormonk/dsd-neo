@@ -37,6 +37,7 @@
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/control_pump.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/log.h>
@@ -67,8 +68,6 @@
 #ifdef DSD_NEO_TEST_HOOKS
 #include "symbol_test_support.h"
 #endif
-
-extern dsd_socket_t Connect(char* hostname, int portno);
 
 #ifdef DSD_NEO_TEST_HOOKS
 // Test-hook entry points are intentionally externally visible to focused fixtures.
@@ -290,6 +289,9 @@ typedef struct {
        from the input: it is already recorded there and already captured. */
     int sample_replayed;
     unsigned int analog_out_cap;
+    /* A frame-sync hunt read (getSymbol() without sync): only it may leave a silent input's wait for a queued command,
+       or for the input that ended (issue #634). Frame decoding reads on. */
+    int hunting;
 #ifdef USE_RADIO
     int rtl_output_kind;
     int rtl_direct_output;
@@ -793,6 +795,11 @@ maybe_auto_center(const dsd_opts* opts, dsd_state* state, int have_sync) {
 #endif
 
 #ifdef USE_RADIO
+/* The rate the symbol timing is in as far as the RTL output rescale knows: the output rate it last rescaled to, or
+   the rate an input switch to the radio found it in (dsd_symbol_note_timing_rate()). 0 before either, when the timing
+   is taken to be in 48 kHz units. Decoder thread only. */
+static unsigned int g_rtl_timing_rate_hz = 0U;
+
 /*
  * When using the RTL pipeline without resampling to 48 kHz, adjust
  * samplesPerSymbol and symbolCenter proportional to the current output rate
@@ -803,18 +810,26 @@ maybe_adjust_sps_for_output_rate(const dsd_opts* opts, dsd_state* state) {
     if (opts->audio_in_type != AUDIO_IN_RTL) {
         return; /* only for RTL input */
     }
-    static unsigned int last_rate = 0;
     unsigned int Fs = 0;
     if (state->rtl_ctx) {
         Fs = dsd_rtl_stream_metrics_hook_output_rate_hz();
     }
-    if (Fs == 0 || Fs == last_rate) {
+    if (Fs == 0 || Fs == g_rtl_timing_rate_hz) {
         return;
     }
-    dsd_audio_rescale_symbol_timing(state, last_rate != 0 ? (int)last_rate : 48000, (int)Fs);
-    last_rate = Fs;
+    dsd_audio_rescale_symbol_timing(state, g_rtl_timing_rate_hz != 0 ? (int)g_rtl_timing_rate_hz : 48000, (int)Fs);
+    g_rtl_timing_rate_hz = Fs;
 }
 #endif
+
+void
+dsd_symbol_note_timing_rate(int rate_hz) {
+#ifdef USE_RADIO
+    g_rtl_timing_rate_hz = rate_hz > 0 ? (unsigned int)rate_hz : 0U;
+#else
+    (void)rate_hz;
+#endif
+}
 
 #ifdef USE_RADIO
 enum {
@@ -1199,9 +1214,6 @@ symbol_scale_pcm_i16(short s, int input_volume_multiplier) {
 static inline unsigned int
 symbol_analog_block_size(const dsd_opts* opts, const dsd_state* state, unsigned int analog_out_cap) {
     unsigned int analog_block = analog_out_cap;
-#ifndef USE_RADIO
-    (void)state;
-#endif
     if (opts->audio_in_type == AUDIO_IN_RTL) {
 #ifdef USE_RADIO
         unsigned int Fs = 0;
@@ -1215,14 +1227,18 @@ symbol_analog_block_size(const dsd_opts* opts, const dsd_state* state, unsigned 
             } else if (analog_block > 4000) {
                 analog_block = 4000;
             }
+            if (analog_block > analog_out_cap) {
+                analog_block = analog_out_cap;
+            }
         }
 #endif
     }
-#ifdef USE_RADIO
-    if (analog_block > analog_out_cap) {
-        analog_block = analog_out_cap;
+    /* Never past the buffers the block fills (analog_out_f, analog_out_flags), whatever capacity the caller passed. */
+    const unsigned int buffer_cap =
+        (unsigned int)(sizeof(state->analog_out_flags) / sizeof(state->analog_out_flags[0]));
+    if (analog_block > buffer_cap) {
+        analog_block = buffer_cap;
     }
-#endif
     return analog_block;
 }
 
@@ -1706,18 +1722,17 @@ symbol_stop_after_shutdown(float* sample_out) {
     return 1;
 }
 
-static inline int
-symbol_open_pulse_input_and_reconfigure_output(dsd_opts* opts, dsd_state* state) {
-    opts->audio_in_type = AUDIO_IN_PULSE;
-    /* A new input is a new receiver (issue #522): the tone the file or TCP stream carried does
-       not describe live Pulse audio, which at the same rate nothing else would tell the tap. */
-    dsd_analog_rx_reset(state);
-    if (openAudioInput(opts) != 0) {
-        dsd_request_shutdown(opts, state);
-        return 0;
-    }
-    if (dsd_audio_reconfigure_output_for_input_policy(opts) != 0) {
-        dsd_request_shutdown(opts, state);
+enum { SYMBOL_INPUT_WAIT_SLICE_MS = 100 };
+
+/* The file or TCP input ended, and the session goes on with the Pulse input (issue #634). That switch replaces the input
+   under the decoder, so it is the engine's to make between frames, under the tick guard (dsd_engine_input_fallback()):
+   the frame being decoded finishes on silence, and a frame-sync hunt read leaves the hunt for it at once. */
+static int
+symbol_input_ended(dsd_state* state, const symbol_work_ctx* work, float* sample_out) {
+    state->input_fallback_pending = 1;
+    *sample_out = 0.0f;
+    if (work->hunting) {
+        state->input_interrupted = 1;
         return 0;
     }
     return 1;
@@ -1753,11 +1768,14 @@ symbol_read_sample_stdin(dsd_opts* opts, dsd_state* state, float* sample_out) {
 }
 
 static inline int
-symbol_read_sample_wav(dsd_opts* opts, dsd_state* state, float* sample_out) {
+symbol_read_sample_wav(dsd_opts* opts, dsd_state* state, float* sample_out, const symbol_work_ctx* work) {
     if (symbol_stop_after_shutdown(sample_out)) {
         return 0;
     }
     if (opts->audio_in_file == NULL) {
+        if (state->input_fallback_pending) {
+            return symbol_input_ended(state, work, sample_out);
+        }
         dsd_request_shutdown(opts, state);
         return 0;
     }
@@ -1779,7 +1797,7 @@ symbol_read_sample_wav(dsd_opts* opts, dsd_state* state, float* sample_out) {
          * gets the headless answer -- end of input ends the run -- and re-runs the
          * engine itself when it wants another source. */
         if (opts->audio_out_type == 0 && dsd_opts_frontend_active(opts)) {
-            return symbol_open_pulse_input_and_reconfigure_output(opts, state);
+            return symbol_input_ended(state, work, sample_out);
         }
         dsd_request_shutdown(opts, state);
         return 0;
@@ -2021,18 +2039,68 @@ symbol_read_sample_rtl(dsd_opts* opts, dsd_state* state, float* sample_out, symb
 }
 #endif
 
+/* The TCP reconnect gives up a backoff or a connect attempt for shutdown, and, in a frame-sync hunt, for a queued
+   command (issue #634): the stream ended when its read failed, so the hunt loses nothing of it. */
 static int
-symbol_read_sample_tcp(dsd_opts* opts, dsd_state* state, float* sample_out) {
-    short s = 0;
-    int tcp_result = dsd_net_audio_input_hook_tcp_read_sample(opts->tcp_in_ctx, (int16_t*)&s);
-    s = symbol_scale_pcm_i16(s, opts->input_volume_multiplier);
-    *sample_out = (float)s;
-    if (tcp_result == 0) {
-        int reconnected = 0;
-    TCP_RETRY:
+symbol_tcp_reconnect_cancelled_decoding(void* context) {
+    (void)context;
+    return dsd_exitflag_load() == 1;
+}
+
+static int
+symbol_tcp_reconnect_cancelled_hunting(void* context) {
+    (void)context;
+    return dsd_exitflag_load() == 1 || dsd_runtime_controls_pending();
+}
+
+/* Wait out the reconnect backoff in slices. Returns 1 when the reconnect was cancelled meanwhile. */
+static int
+symbol_tcp_backoff(int backoff_ms, dsd_socket_cancel_fn cancelled) {
+    int waited = 0;
+    while (waited < backoff_ms) {
+        if (cancelled(NULL)) {
+            return 1;
+        }
+        const int left = backoff_ms - waited;
+        const int slice = left < SYMBOL_INPUT_WAIT_SLICE_MS ? left : SYMBOL_INPUT_WAIT_SLICE_MS;
+        dsd_sleep_ms((unsigned int)slice);
+        waited += slice;
+    }
+    return cancelled(NULL);
+}
+
+/* A cancelled reconnect: shutdown, or a hunt read that leaves for a queued command with the TCP input still
+   disconnected, which the next read tries to reconnect again. */
+static int
+symbol_tcp_reconnect_gave_up(dsd_opts* opts, dsd_state* state) {
+    if (dsd_exitflag_load() == 1) {
+        dsd_request_shutdown(opts, state);
+        return 0;
+    }
+    state->input_interrupted = 1;
+    return 0;
+}
+
+static void
+symbol_tcp_close(dsd_opts* opts) {
+    if (opts->tcp_in_ctx) {
+        dsd_net_audio_input_hook_tcp_close(opts->tcp_in_ctx);
+        opts->tcp_in_ctx = NULL;
+    }
+    if (opts->tcp_sockfd != DSD_INVALID_SOCKET) {
+        dsd_socket_close(opts->tcp_sockfd);
+        opts->tcp_sockfd = DSD_INVALID_SOCKET;
+    }
+}
+
+/* Reconnect the TCP input after its read failed. Returns 1 when it reconnected, 0 when it did not (the read that
+   follows finds no stream), and -1 when it was cancelled (symbol_tcp_reconnect_gave_up()). An M17 session keeps
+   trying until it reconnects or is cancelled. */
+static int
+symbol_tcp_reconnect(dsd_opts* opts, dsd_state* state, dsd_socket_cancel_fn cancelled) {
+    for (;;) {
         if (dsd_exitflag_load() == 1) {
-            dsd_request_shutdown(opts, state);
-            return 0;
+            return -1;
         }
         int backoff_ms = 300;
         const dsdneoRuntimeConfig* cfg_retry = dsd_neo_get_config();
@@ -2048,28 +2116,51 @@ symbol_read_sample_tcp(dsd_opts* opts, dsd_state* state, float* sample_out) {
            reception (issue #522). The default backoff is shorter than a pause the received-tone
            tap would notice, so the old tone would otherwise carry over onto the new connection. */
         dsd_analog_rx_reset(state);
-        dsd_net_audio_input_hook_tcp_close(opts->tcp_in_ctx);
-        opts->tcp_in_ctx = NULL;
-        dsd_socket_close(opts->tcp_sockfd);
-        dsd_sleep_ms((unsigned int)backoff_ms);
+        symbol_tcp_close(opts);
+        if (symbol_tcp_backoff(backoff_ms, cancelled)) {
+            return -1;
+        }
 
-        opts->tcp_sockfd = 0;
-        opts->tcp_sockfd = Connect(opts->tcp_hostname, opts->tcp_portno);
-        if (opts->tcp_sockfd != 0) {
+        /* The address the connection was made to: a reconnect looks nothing up (issue #634). */
+        opts->tcp_sockfd =
+            dsd_net_audio_input_hook_tcp_connect(opts->tcp_hostname, opts->tcp_portno, 0, cancelled, NULL);
+        if (opts->tcp_sockfd != DSD_INVALID_SOCKET) {
             opts->tcp_in_ctx = dsd_net_audio_input_hook_tcp_open(opts->tcp_sockfd, opts->wav_sample_rate);
             if (opts->tcp_in_ctx == NULL) {
                 DSD_FPRINTF(stderr, "Error, couldn't Reconnect to TCP audio input\n");
-            } else {
-                reconnected = 1;
-                /* A new stream, whatever the old one's resampler tail still returns first (issue #628). */
-                dsd_opts_note_pcm_stream(opts);
-                LOG_INFO("TCP Socket Reconnected Successfully.\n");
+                return 0;
             }
-        } else {
-            LOG_ERROR("TCP Socket Connection Error.\n");
-            if (opts->frame_m17 == 1) {
-                goto TCP_RETRY;
-            }
+            /* A new stream, whatever the old one's resampler tail still returns first (issue #628). */
+            dsd_opts_note_pcm_stream(opts);
+            LOG_INFO("TCP Socket Reconnected Successfully.\n");
+            return 1;
+        }
+        LOG_ERROR("TCP Socket Connection Error.\n");
+        /* A connect a queued command cancelled lost no server: the read gives way to the command first. */
+        if (cancelled(NULL)) {
+            return -1;
+        }
+        if (opts->frame_m17 != 1) {
+            return 0;
+        }
+    }
+}
+
+static int
+symbol_read_sample_tcp(dsd_opts* opts, dsd_state* state, float* sample_out, const symbol_work_ctx* work) {
+    short s = 0;
+    int tcp_result = dsd_net_audio_input_hook_tcp_read_sample(opts->tcp_in_ctx, (int16_t*)&s);
+    s = symbol_scale_pcm_i16(s, opts->input_volume_multiplier);
+    *sample_out = (float)s;
+    if (tcp_result == 0) {
+        if (state->input_fallback_pending) {
+            return symbol_input_ended(state, work, sample_out);
+        }
+        const dsd_socket_cancel_fn cancelled =
+            work->hunting ? symbol_tcp_reconnect_cancelled_hunting : symbol_tcp_reconnect_cancelled_decoding;
+        const int reconnected = symbol_tcp_reconnect(opts, state, cancelled);
+        if (reconnected < 0) {
+            return symbol_tcp_reconnect_gave_up(opts, state);
         }
 
         if (dsd_pcm_input_take_staged_tail_sample(opts, sample_out, 1)) {
@@ -2083,15 +2174,9 @@ symbol_read_sample_tcp(dsd_opts* opts, dsd_state* state, float* sample_out) {
         tcp_result = dsd_net_audio_input_hook_tcp_read_sample(opts->tcp_in_ctx, (int16_t*)&s_retry);
         *sample_out = (float)s_retry;
         if (tcp_result == 0) {
-            dsd_net_audio_input_hook_tcp_close(opts->tcp_in_ctx);
-            opts->tcp_in_ctx = NULL;
-            dsd_socket_close(opts->tcp_sockfd);
-            opts->tcp_sockfd = 0;
-            if (!symbol_open_pulse_input_and_reconfigure_output(opts, state)) {
-                return 0;
-            }
-            *sample_out = 0;
+            symbol_tcp_close(opts);
             DSD_FPRINTF(stderr, "Connection to TCP Server Disconnected.\n");
+            return symbol_input_ended(state, work, sample_out);
         }
     }
     if (opts->audio_in_type == AUDIO_IN_TCP && dsd_pcm_input_uses_staged_resampler(opts)) {
@@ -2101,10 +2186,46 @@ symbol_read_sample_tcp(dsd_opts* opts, dsd_state* state, float* sample_out) {
     return 1;
 }
 
+/* Wait for the next UDP sample. A frame-sync hunt read leaves the wait for a queued command (issue #634), but only
+   once the input has been silent for a stream pause, as long as the analog receiver takes for a boundary
+   (DSD_ANALOG_STREAM_PAUSE_MIN_MS): the partial symbol and sync history it gives up then belong to a paused stream,
+   and a shorter gap never costs a sync. The silence is counted from the first wait that came back empty, with nothing
+   credited for that wait, which may have ended early. Returns 1 with a sample, 0 when the input stopped, and -1 when
+   the read left for a command (state->input_interrupted). */
+static int
+symbol_wait_udp_sample(dsd_opts* opts, dsd_state* state, const symbol_work_ctx* work, int16_t* out) {
+    uint64_t silent_since_ms = 0U;
+    int silent = 0;
+    for (;;) {
+        const int got = dsd_net_audio_input_hook_udp_read_sample_wait(opts, out, SYMBOL_INPUT_WAIT_SLICE_MS);
+        if (got >= 0) {
+            return got;
+        }
+        if (!work->hunting) {
+            continue;
+        }
+        const uint64_t now_ms = dsd_realtime_mono_ms();
+        if (!silent) {
+            silent = 1;
+            silent_since_ms = now_ms;
+            continue;
+        }
+        if (now_ms - silent_since_ms >= DSD_ANALOG_STREAM_PAUSE_MIN_MS && dsd_runtime_controls_pending()) {
+            state->input_interrupted = 1;
+            return -1;
+        }
+    }
+}
+
 static inline int
-symbol_read_sample_udp(dsd_opts* opts, dsd_state* state, float* sample_out) {
+symbol_read_sample_udp(dsd_opts* opts, dsd_state* state, float* sample_out, const symbol_work_ctx* work) {
     short s = 0;
-    if (!dsd_net_audio_input_hook_udp_read_sample(opts, (int16_t*)&s)) {
+    const int got = symbol_wait_udp_sample(opts, state, work, (int16_t*)&s);
+    if (got < 0) {
+        *sample_out = 0.0f;
+        return 0;
+    }
+    if (got == 0) {
         if (dsd_pcm_input_take_staged_tail_sample(opts, sample_out, 1)) {
             return 1;
         }
@@ -2139,7 +2260,7 @@ symbol_read_live_sample(dsd_opts* opts, dsd_state* state, symbol_work_ctx* work)
         return symbol_read_sample_stdin(opts, state, &work->sample);
     }
     if (opts->audio_in_type == AUDIO_IN_WAV) {
-        return symbol_read_sample_wav(opts, state, &work->sample);
+        return symbol_read_sample_wav(opts, state, &work->sample, work);
     }
 #ifdef USE_RADIO
     if (opts->audio_in_type == AUDIO_IN_RTL) {
@@ -2147,10 +2268,10 @@ symbol_read_live_sample(dsd_opts* opts, dsd_state* state, symbol_work_ctx* work)
     }
 #endif
     if (opts->audio_in_type == AUDIO_IN_TCP) {
-        return symbol_read_sample_tcp(opts, state, &work->sample);
+        return symbol_read_sample_tcp(opts, state, &work->sample, work);
     }
     if (opts->audio_in_type == AUDIO_IN_UDP) {
-        return symbol_read_sample_udp(opts, state, &work->sample);
+        return symbol_read_sample_udp(opts, state, &work->sample, work);
     }
     return 1;
 }
@@ -2302,9 +2423,27 @@ symbol_print_timing_line(const dsd_state* state, int timing_level) {
     }
 }
 
+/* The symbol capture ended and the session goes on with the Pulse input: as for a PCM file (symbol_input_ended()),
+   the engine makes the switch between frames, and a frame-sync hunt read leaves the hunt for it. The frame being
+   decoded finishes on erasures: the symbol that stands in is marked unusable, so the two-level readers give its bit no
+   confidence, as the dibit readers give its dibit none (issue #634). */
 static inline int
-symbol_process_symbol_bin_input(dsd_opts* opts, dsd_state* state, float* symbol_out) {
+symbol_bin_input_ended(dsd_state* state, int hunting, float* symbol_out) {
+    state->input_fallback_pending = 1;
+    if (hunting) {
+        state->input_interrupted = 1;
+    }
+    *symbol_out = 0.0f;
+    state->symbol_replay_symbol_unusable = 1;
+    return 1;
+}
+
+static inline int
+symbol_process_symbol_bin_input(dsd_opts* opts, dsd_state* state, float* symbol_out, int hunting) {
     if (opts->symbolfile == NULL) {
+        if (state->input_fallback_pending) {
+            return symbol_bin_input_ended(state, hunting, symbol_out);
+        }
         DSD_FPRINTF(stderr, "Error Opening File %s\n", opts->audio_in_dev);
         *symbol_out = -1.0f;
         return 1;
@@ -2360,9 +2499,7 @@ symbol_process_symbol_bin_input(dsd_opts* opts, dsd_state* state, float* symbol_
         }
         /* Frontend kind on purpose; same reasoning as the PCM end-of-file path above. */
         if (opts->audio_out_type == 0 && dsd_opts_frontend_active(opts)) {
-            (void)symbol_open_pulse_input_and_reconfigure_output(opts, state);
-            *symbol_out = 0.0f;
-            return 1;
+            return symbol_bin_input_ended(state, hunting, symbol_out);
         }
         dsd_request_shutdown(opts, state);
         *symbol_out = 0.0f;
@@ -2592,9 +2729,9 @@ symbol_prepare_span_no_radio(dsd_state* state, symbol_work_ctx* work) {
 #endif
 
 static inline void
-symbol_apply_replay_overrides(dsd_opts* opts, dsd_state* state, float* symbol) {
+symbol_apply_replay_overrides(dsd_opts* opts, dsd_state* state, float* symbol, int hunting) {
     if (opts->audio_in_type == AUDIO_IN_SYMBOL_BIN) {
-        (void)symbol_process_symbol_bin_input(opts, state, symbol);
+        (void)symbol_process_symbol_bin_input(opts, state, symbol, hunting);
     }
     if (opts->audio_in_type == AUDIO_IN_SYMBOL_FLT) {
         (void)symbol_process_symbol_flt_input(opts, state, symbol);
@@ -2620,6 +2757,7 @@ float
 getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
     symbol_work_ctx work;
     symbol_work_ctx_init(&work, state);
+    work.hunting = have_sync == 0;
 
 #ifdef USE_RADIO
     symbol_init_rtl_profile(opts, state, &work);
@@ -2641,6 +2779,6 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
 
     float symbol = symbol_finalize_live_symbol(state, &work);
 
-    symbol_apply_replay_overrides(opts, state, &symbol);
+    symbol_apply_replay_overrides(opts, state, &symbol, work.hunting);
     return symbol_commit_symbol(opts, state, have_sync, &work, symbol);
 }

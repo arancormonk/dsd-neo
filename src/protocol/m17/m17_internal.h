@@ -84,7 +84,8 @@ typedef struct {
 void m17_encoder_input_init(m17_encoder_input* in, int input_rate_hz);
 /* Read @p nsam 8 kHz samples from the configured audio input into @p out: PCM inputs as they are after the input volume,
    RTL monitor audio scaled to PCM16 by the analog chain's RTL monitor gain after the `vol` trim. Returns 1 when read, 0
-   when the input stopped, -1 on an input the encoder cannot read (m17.c). */
+   when the input stopped, -1 on an input the encoder cannot read, and 2 when a silent UDP input left the read for a
+   queued command, with nothing read (m17.c, issue #634). */
 int m17_encoder_read_block(dsd_opts* opts, dsd_state* state, m17_encoder_input* in, short* out, size_t nsam);
 
 int m17_decode_pkt_should_report_encrypted(const dsd_state* state, uint32_t protocol);

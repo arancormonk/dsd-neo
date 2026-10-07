@@ -257,6 +257,12 @@ If the default file does not exist, it will be created when settings are saved
 Autosave is disabled when an explicit `--profile NAME` is loaded successfully, because saving the effective config would
 flatten the profile overlay back into the base file and remove profile sections.
 
+An input switch in the terminal UI (Input > Switch source, Replay last, Stop replay, a TCP connect) names the input it
+opened the way `-i` and `[input]` spell it (`udp:127.0.0.1:7355`, `tcp:host:port`, `pulse:<device>`, a file path), so
+autosave records the input that runs. A switch to an audio input keeps the radio spec it replaced only for the session's
+own `RTL-SDR` row; it is not saved. A file the switch opened by its `-i` extension rule (`.raw`/`.sym` as symbol
+streams, `.bin` as a capture) is saved by its path, so startup opens it the same way.
+
 ---
 
 ## Precedence Rules

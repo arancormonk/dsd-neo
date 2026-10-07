@@ -498,6 +498,18 @@ dsd_neo_add_public_header_smoke_test(
   C
 )
 dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_core_audio_input_switch
+  HEADERS_PUBLIC_CORE_AUDIO_INPUT_SWITCH
+  dsd-neo/core/audio_input_switch.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_core_audio_input_switch_cxx
+  HEADERS_PUBLIC_CORE_AUDIO_INPUT_SWITCH_CXX
+  dsd-neo/core/audio_input_switch.h
+  CXX
+)
+dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_runtime_analog_channel
   HEADERS_PUBLIC_RUNTIME_ANALOG_CHANNEL
   dsd-neo/runtime/analog_channel.h
@@ -5090,6 +5102,24 @@ target_include_directories(
 target_link_libraries(dsd-neo_test_core_audio_input_rate PRIVATE dsd-neo_core)
 add_test(NAME CORE_AUDIO_INPUT_RATE COMMAND dsd-neo_test_core_audio_input_rate)
 
+# A runtime input switch opens the new input before it closes the running one, and one that cannot open changes
+# nothing (issue #634).
+add_executable(
+    dsd-neo_test_core_audio_input_switch
+    core/test_core_audio_input_switch.c
+)
+target_include_directories(
+    dsd-neo_test_core_audio_input_switch
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/tests/test_support
+)
+target_link_libraries(dsd-neo_test_core_audio_input_switch PRIVATE dsd-neo_core)
+add_test(
+    NAME CORE_AUDIO_INPUT_SWITCH
+    COMMAND dsd-neo_test_core_audio_input_switch
+)
+
 add_executable(dsd-neo_test_core_audio_gain core/test_core_audio_gain.c)
 target_include_directories(
     dsd-neo_test_core_audio_gain
@@ -5148,7 +5178,9 @@ if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
     )
     target_include_directories(
         dsd-neo_test_core_audio_open_input
-        PRIVATE ${PROJECT_SOURCE_DIR}/include
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/tests/test_support
     )
     target_link_libraries(
         dsd-neo_test_core_audio_open_input
@@ -5236,6 +5268,21 @@ dsd_neo_link_dsp_test(
     ${LIBSNDFILE_LIBRARIES}
 )
 add_test(NAME DSP_WAV_INPUT_EOF COMMAND dsd-neo_test_dsp_wav_input_eof)
+
+# A silent input gives way to a queued command only in the frame-sync hunt and only after a stream pause; a lost TCP
+# input is no socket (issue #634).
+add_executable(dsd-neo_test_dsp_input_interrupt dsp/test_dsp_input_interrupt.c)
+target_include_directories(
+    dsd-neo_test_dsp_input_interrupt
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${LIBSNDFILE_INCLUDE_DIR}
+)
+dsd_neo_link_dsp_test(
+    dsd-neo_test_dsp_input_interrupt
+    dsd-neo_test_support
+    ${DSD_NEO_TEST_MATH_LIB}
+    ${LIBSNDFILE_LIBRARIES}
+)
+add_test(NAME DSP_INPUT_INTERRUPT COMMAND dsd-neo_test_dsp_input_interrupt)
 
 # The matched filter switching on, off, or to another filter must not move the
 # symbol grid's content position (issue #444); driven through getSymbol() from a WAV
@@ -5815,6 +5862,31 @@ if(DSD_HAS_RADIO)
 endif()
 
 if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+    # The engine loop's side of an input switch: an interrupted hunt, a replaced stream, a fallback (issue #634).
+    add_executable(
+        dsd-neo_test_engine_input_boundary
+        engine/test_engine_input_boundary.c
+    )
+    target_include_directories(
+        dsd-neo_test_engine_input_boundary
+        PRIVATE ${PROJECT_SOURCE_DIR}/include
+    )
+    target_link_libraries(
+        dsd-neo_test_engine_input_boundary
+        PRIVATE
+            "-Wl,--wrap=getFrameSync"
+            "-Wl,--wrap=dsd_audio_switch_input"
+            "-Wl,--wrap=dsd_audio_reconfigure_output_for_input_policy"
+            "-Wl,--start-group"
+            dsd-neo_engine
+            "-Wl,--end-group"
+            ${LIBS}
+            dsd-neo_test_support
+    )
+    add_test(
+        NAME ENGINE_INPUT_BOUNDARY
+        COMMAND dsd-neo_test_engine_input_boundary
+    )
     add_executable(
         dsd-neo_test_engine_synced_trunk_scan_tick
         engine/test_engine_synced_trunk_scan_tick.c
@@ -6411,6 +6483,7 @@ if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
             "LINKER:--wrap=svc_tcp_connect_audio"
             "LINKER:--wrap=svc_rigctl_connect"
             "LINKER:--wrap=openAudioInput"
+            "LINKER:--wrap=dsd_audio_reconfigure_output_for_input_policy"
     )
 endif()
 if(
@@ -6426,6 +6499,7 @@ if(
     target_link_options(
         dsd-neo_test_app_command_queue
         PRIVATE
+            "LINKER:--wrap=dsd_symbol_note_timing_rate"
             "LINKER:--wrap=rtl_stream_create"
             "LINKER:--wrap=rtl_stream_start"
             "LINKER:--wrap=rtl_stream_start_analog_refusal"

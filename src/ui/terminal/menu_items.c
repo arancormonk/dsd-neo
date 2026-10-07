@@ -265,7 +265,7 @@ static const NcMenuItem INPUT_SOURCE_ITEMS[] = {
      .on_select = switch_to_udp},
     {.id = "src.wav",
      .label = "WAV / raw file...",
-     .help = "Decode a WAV or raw PCM file, or a named pipe.",
+     .help = "Decode a WAV or headerless PCM file; .bin, .raw and .sym open as symbol files, as with -i.",
      .on_select = switch_to_wav},
     {.id = "src.sym",
      .label = "Symbol file (.bin/.raw/.sym)...",
@@ -870,7 +870,7 @@ static const NcMenuItem REC_SYMCAP_ITEMS[] = {
      .on_select = io_replay_last_symbol_bin},
     {.id = "symcap.stop_play",
      .label_fn = lbl_stop_symbol_playback,
-     .help = "Stop the replay and restore the previous input.",
+     .help = "Stop the replay or file playback and switch to Pulse input.",
      .hotkey = "s",
      .on_select = io_stop_symbol_playback},
 };

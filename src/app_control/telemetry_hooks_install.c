@@ -52,12 +52,14 @@ dsd_app_frontend_runtime_start(const dsd_opts* initial_opts, const dsd_state* in
         dsd_app_telemetry_publish_snapshot(initial_state);
     }
     dsd_runtime_set_control_pump(dsd_app_frontend_control_pump);
+    dsd_runtime_set_controls_pending(dsd_app_commands_pending);
 }
 
 void
 dsd_app_frontend_runtime_stop(void) {
     dsd_app_command_session_set_open(0);
     dsd_runtime_set_control_pump(NULL);
+    dsd_runtime_set_controls_pending(NULL);
     dsd_telemetry_hooks_set((dsd_telemetry_hooks){0});
     /* Clearing the hooks stops the feed but leaves the last record behind, and that
        record is a module static that outlives the session. On Android the service starts

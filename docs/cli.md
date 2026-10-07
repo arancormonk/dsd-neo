@@ -94,7 +94,9 @@ Tip: If you run with no arguments and no config is loaded, `dsd-neo` starts the 
 - M17 UDP/IP frame input: `-i m17udp[:bind_addr:port]` (defaults `127.0.0.1:17000`; use `0.0.0.0` only when LAN access is intended; use with `-fU`)
 - stdin (raw PCM16LE mono): `-i -` (sample rate uses `-s`)
 
-- Set sample rate: `-s <rate>` (WAV/TCP/UDP; 48k or 96k typical)
+- Set sample rate: `-s <rate>` (WAV/TCP/UDP; 48k or 96k typical). A WAV file's header rate holds for that file only:
+  an input switch away from it (Input > Switch source in the terminal UI) opens the next file, UDP or TCP input at the
+  `-s` rate again (Pulse opens at its own capture rate, as at startup).
 
 TCP/UDP PCM input format notes
 
@@ -803,8 +805,9 @@ quieting, closed under max(N - 3, 1.5) dB. Quieting reads about the carrier-to-n
   `--scan-max-visit-ms`. A band that appears later turns the squelch back on after about 1 s.
 - References per source. The squelch keeps up to eight references, one for each input stream, input rate, input volume
   (`--input-volume`, Input > `Input volume...`) and rigctl peer passband (`-B`, or a scan row's width), so a `-Y` scan
-  over rows of different widths keeps each one's reference. A retune keeps the reference; reopening the input, or a new
-  rate or input volume, starts learning again. While the peer's passband is not known the squelch keeps one reference,
+  over rows of different widths keeps each one's reference. A retune keeps the reference; reopening the input (an input
+  switch from the terminal menu included, or a UDP input bound again), or a new rate or input volume, starts learning
+  again. While the peer's passband is not known the squelch keeps one reference,
   through retunes too, but stores none for it to come back to; the first passband the client learns, and any change of
   it (a row's width edited live), starts the windows over on that passband's reference. A width request whose reply was
   lost leaves the passband unknown again, so the squelch learns afresh rather than keep the old width's reference. A
