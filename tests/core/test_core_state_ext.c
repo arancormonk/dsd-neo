@@ -17,6 +17,8 @@ _Static_assert(DSD_STATE_EXT_DSP_ANALOG_RX == 9, "DSP analog receive owns state_
 _Static_assert((int)DSD_STATE_EXT_DSP_ANALOG_RX < (int)DSD_STATE_EXT_MAX, "slot 9 is inside the table");
 _Static_assert(DSD_STATE_EXT_DSP_ANALOG_AUDIO == 10, "DSP analog audio owns state_ext slot 10");
 _Static_assert((int)DSD_STATE_EXT_DSP_ANALOG_AUDIO < (int)DSD_STATE_EXT_MAX, "slot 10 is inside the table");
+_Static_assert(DSD_STATE_EXT_DSP_ANALOG_SINK == 11, "DSP analog sinks own state_ext slot 11 (issue #633)");
+_Static_assert((int)DSD_STATE_EXT_DSP_ANALOG_SINK < (int)DSD_STATE_EXT_MAX, "slot 11 is inside the table");
 
 static void
 test_cleanup_free(void* ptr) {

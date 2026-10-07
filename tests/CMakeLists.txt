@@ -491,6 +491,31 @@ dsd_neo_add_public_header_smoke_test(
   dsd-neo/core/dmr_key_map.h
   C
 )
+# The analog sinks' converter (issue #633).
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_dsp_rate_converter
+  HEADERS_PUBLIC_DSP_RATE_CONVERTER
+  dsd-neo/dsp/rate_converter.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_dsp_rate_converter_cxx
+  HEADERS_PUBLIC_DSP_RATE_CONVERTER_CXX
+  dsd-neo/dsp/rate_converter.h
+  CXX
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_dsp_analog_sink
+  HEADERS_PUBLIC_DSP_ANALOG_SINK
+  dsd-neo/dsp/analog_sink.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_dsp_analog_sink_cxx
+  HEADERS_PUBLIC_DSP_ANALOG_SINK_CXX
+  dsd-neo/dsp/analog_sink.h
+  CXX
+)
 dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_runtime_input_failure
   HEADERS_PUBLIC_RUNTIME_INPUT_FAILURE

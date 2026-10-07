@@ -17,6 +17,8 @@
 #include <dsd-neo/dsp/symbol.h>
 #include <dsd-neo/io/rigctl_client.h>
 #include <dsd-neo/io/rtl_stream_c.h>
+#include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/rtl_stream_io_hooks.h>
@@ -24,6 +26,7 @@
 #include <dsd-neo/runtime/shutdown.h>
 #include <dsd-neo/runtime/udp_audio_hooks.h>
 #include <math.h>
+#include <sndfile.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -65,6 +68,9 @@ static int g_monitor_kind = DSD_ANALOG_DEMOD_FM;
 /* A paced I/Q replay (1) tags each read's batch with the generation and profile it was published under; a live stream
    (0) tags nothing (fake_replay_batch()). */
 static int g_replay = 0;
+/* An RTL rate round trip (issue #633): the read with this index (counted from 1) lands a retune to 48 kHz and the next
+   one a retune back to 24 kHz, each a new stream generation; 0 lands none. */
+static int g_round_trip_at = 0;
 static int g_have_last_batch = 0;
 static dsd_rtl_stream_replay_batch g_last_batch;
 
@@ -248,6 +254,10 @@ fake_rtl_read(void* rtl_ctx, float* out, size_t count, int* out_got) {
         return -1;
     }
     apply_change_during_read();
+    if (g_round_trip_at > 0 && (g_read_calls == g_round_trip_at || g_read_calls == g_round_trip_at + 1)) {
+        g_output_rate_hz = g_read_calls == g_round_trip_at ? 48000U : 24000U;
+        g_stream_generation++;
+    }
     const float read_base = g_read_base;
     for (int i = 0; i < n; i++) {
         out[i] = read_base + (float)i;
@@ -364,6 +374,7 @@ reset_stream_fixture(void) {
     g_monitor_published = 0;
     g_monitor_kind = DSD_ANALOG_DEMOD_FM;
     g_replay = 0;
+    g_round_trip_at = 0;
     g_have_last_batch = 0;
     g_last_batch = (dsd_rtl_stream_replay_batch){0};
     dsd_rtl_stream_metrics_hook_symbol_cache_pending_reset();
@@ -1081,6 +1092,62 @@ test_replay_keeps_first_batch_after_change(dsd_opts* opts, dsd_state* state, voi
     reset_decoder_fixture(opts, state, rtl_context);
 }
 
+/* Read until the stream has handed the decoder @p reads samples. */
+static void
+read_until_reads(dsd_opts* opts, dsd_state* state, int reads) {
+    for (int i = 0; i < 100000 && g_read_calls < reads; i++) {
+        (void)getSymbol(opts, state, 0);
+    }
+}
+
+/*
+ * Issue #633: an RTL rate round trip (24, 48, 24 kHz with the demod resampler off) inside the samples one getSymbol()
+ * call reads, each step a new stream generation. The block they land in finishes at the rate it started at, but one of
+ * its samples ran at 48 kHz: the -6 raw WAV, which records every other block, leaves it out. The generation is read
+ * with each sample, not once a symbol, or the round trip would pass unseen.
+ */
+static void
+test_rtl_rate_round_trip_inside_one_symbol(dsd_opts* opts, dsd_state* state, void* rtl_context) {
+    reset_stream_fixture();
+    reset_decoder_fixture(opts, state, rtl_context);
+    g_output_kind = RTL_STREAM_OUTPUT_AUDIO_MONITOR;
+    g_output_rate_hz = 24000U;
+    g_analog_family = 1;
+    g_monitor_published = 1;
+    g_batch_samples = 1;
+    set_analog_block_output(opts, 1);
+    state->samplesPerSymbol = 10;
+    state->symbolCenter = 4;
+    char raw_path[] = "dsdneo_rtl_round_trip_XXXXXX";
+    const int fd = dsd_mkstemp(raw_path);
+    assert(fd >= 0);
+    (void)dsd_close(fd);
+    SF_INFO info;
+    DSD_MEMSET(&info, 0, sizeof(info));
+    info.samplerate = 48000;
+    info.channels = 1;
+    info.format = SF_FORMAT_WAV | SF_FORMAT_PCM_16;
+    opts->wav_out_raw = sf_open(raw_path, SFM_WRITE, &info);
+    assert(opts->wav_out_raw != NULL);
+
+    /* Two 20 ms blocks (480 samples at 24 kHz), then the round trip three samples into the next getSymbol() call. */
+    read_until_reads(opts, state, 960);
+    g_round_trip_at = g_read_calls + 3;
+    (void)getSymbol(opts, state, 0);
+    expect_int("rtl-633", "round trip inside one call", g_read_calls >= g_round_trip_at + 1, 1);
+    read_until_reads(opts, state, 6 * 480);
+    const int blocks = g_read_calls / 480;
+    sf_close(opts->wav_out_raw);
+    opts->wav_out_raw = NULL;
+    DSD_MEMSET(&info, 0, sizeof(info));
+    SNDFILE* wav = sf_open(raw_path, SFM_READ, &info);
+    assert(wav != NULL);
+    sf_close(wav);
+    (void)remove(raw_path);
+    /* Every block but the mixed one, each 480 samples at 24 kHz as 960 at 48 kHz. */
+    expect_int("rtl-633", "round trip block left out of -6", (long)info.frames, (long)(blocks - 1) * 960L);
+}
+
 int
 main(void) {
     static dsd_opts opts;
@@ -1444,6 +1511,7 @@ main(void) {
     test_analog_block_follows_typed_row_leave(&opts, &state, &fake_rtl_context);
     test_digital_decoder_collects_any_monitor(&opts, &state, &fake_rtl_context);
     test_return_to_radio_rescales_from_the_pcm_rate(&opts, &state, &fake_rtl_context);
+    test_rtl_rate_round_trip_inside_one_symbol(&opts, &state, &fake_rtl_context);
     dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
 
     dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){0});

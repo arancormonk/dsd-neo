@@ -19,6 +19,7 @@
 #include <dsd-neo/dsp/analog_audio.h>
 #include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/dsp/frame_sync.h>
+#include <dsd-neo/dsp/rate_converter.h>
 #include <dsd-neo/dsp/sps_filters.h>
 #include <dsd-neo/dsp/symbol.h>
 #include <dsd-neo/dsp/symbol_levels.h>
@@ -822,9 +823,12 @@ test_symbol_helper_rtl_cache_and_center_contract(void) {
 
 static uint32_t g_fake_rtl_generation = 1U;
 
+/* The fake stream's output rate: 48 kHz unless a case overrides the demod resampler (issue #633). */
+static unsigned int g_fake_rtl_rate_hz = 48000U;
+
 static unsigned int
 fake_rtl_output_rate_hz(void) {
-    return 48000U;
+    return g_fake_rtl_rate_hz;
 }
 
 static int
@@ -1219,23 +1223,45 @@ open_raw_wav_out(char* path, size_t path_size, int rate) {
     return sf_open(path, SFM_WRITE, &info);
 }
 
-/* Whether the WAV at @p path holds exactly the first @p count samples of the reset tests' input. */
+/* The raw WAV's rate: the analog sink rate, which the 2500 Hz input is converted to (issue #633). */
+enum { RAW_WAV_SINK_RATE = 48000, RAW_WAV_SINK_MAX = (RESET_WAV_TOTAL_MAX * (RAW_WAV_SINK_RATE / 500)) / 5 + 64 };
+
+/* Whether the WAV at @p path holds exactly the first @p count samples of the reset tests' input, converted from 2500 Hz
+   to the 48 kHz sink rate in one unbroken stream: no sample lost, none added. */
 static int
 raw_wav_holds_reset_input(const char* path, int count) {
+    static float in[RESET_WAV_TOTAL_MAX];
+    static float want_f[RAW_WAV_SINK_MAX];
+    static short got[RAW_WAV_SINK_MAX];
+    for (int i = 0; i < count; i++) {
+        in[i] = (float)g_reset_wav_samples[i];
+    }
+    dsd_rate_converter conv;
+    dsd_rate_converter_init(&conv);
+    assert(dsd_rate_converter_configure(&conv, RESET_WAV_RATE, RAW_WAV_SINK_RATE) == DSD_RATE_CONVERTER_CONVERTING);
+    size_t consumed = 0;
+    const int want = dsd_rate_converter_process(&conv, in, (size_t)count, want_f, RAW_WAV_SINK_MAX, &consumed);
+    dsd_rate_converter_free(&conv);
+    assert(want > 0 && consumed == (size_t)count);
+
     SF_INFO info;
     DSD_MEMSET(&info, 0, sizeof(info));
     SNDFILE* wav = sf_open(path, SFM_READ, &info);
     if (wav == NULL) {
         return 0;
     }
-    static short got[RESET_WAV_TOTAL_MAX];
-    const sf_count_t n = sf_read_short(wav, got, RESET_WAV_TOTAL_MAX);
+    const sf_count_t n = sf_read_short(wav, got, RAW_WAV_SINK_MAX);
     sf_close(wav);
-    if (info.frames != (sf_count_t)count || n != (sf_count_t)count) {
+    if (info.samplerate != RAW_WAV_SINK_RATE || info.frames != (sf_count_t)want || n != (sf_count_t)want) {
+        DSD_FPRINTF(stderr, "raw WAV: %d Hz, %lld frames; want %d Hz, %d frames\n", info.samplerate,
+                    (long long)info.frames, RAW_WAV_SINK_RATE, want);
         return 0;
     }
-    for (int i = 0; i < count; i++) {
-        if (got[i] != g_reset_wav_samples[i]) {
+    for (int i = 0; i < want; i++) {
+        float v = want_f[i];
+        v = v > 32767.0f ? 32767.0f : (v < -32768.0f ? -32768.0f : v);
+        if (got[i] != (short)lrintf(v)) {
+            DSD_FPRINTF(stderr, "raw WAV: frame %d is %d, want %d\n", i, got[i], (int)lrintf(v));
             return 0;
         }
     }
@@ -1278,7 +1304,8 @@ close_monitor_wav(dsd_opts* opts, dsd_state* state, const char* path) {
  * -- completes that block and fills the next. Read as the new reception's opening audio, those
  * 958 samples would lock 100.0 Hz again from the old channel alone; the tap must not read them.
  * The audio must not lose them either: resets run in digital sessions too, at every acquisition
- * reset and lost TCP connection, and the raw WAV has to hold every sample of the input.
+ * reset and lost TCP connection, and the raw WAV has to hold every sample of the input, converted
+ * to the 48 kHz sink rate in one unbroken stream (issue #633).
  */
 static void
 test_rx_tone_reset_sets_the_pending_block_aside(void) {
@@ -1288,7 +1315,7 @@ test_rx_tone_reset_sets_the_pending_block_aside(void) {
     static dsd_opts opts;
     static dsd_state state;
     open_monitor_wav(&opts, &state, wav_path, RESET_WAV_RATE);
-    opts.wav_out_raw = open_raw_wav_out(raw_path, sizeof(raw_path), RESET_WAV_RATE);
+    opts.wav_out_raw = open_raw_wav_out(raw_path, sizeof(raw_path), RAW_WAV_SINK_RATE);
     assert(opts.wav_out_raw != NULL);
 
     for (int n = 0; n < 2 * RESET_WAV_BLOCK; n++) {
@@ -1345,7 +1372,7 @@ run_detection_starting_mid_block(int pending, int reset_first) {
     static dsd_opts opts;
     static dsd_state state;
     open_monitor_wav(&opts, &state, wav_path, RESET_WAV_RATE);
-    opts.wav_out_raw = open_raw_wav_out(raw_path, sizeof(raw_path), RESET_WAV_RATE);
+    opts.wav_out_raw = open_raw_wav_out(raw_path, sizeof(raw_path), RAW_WAV_SINK_RATE);
     assert(opts.wav_out_raw != NULL);
     opts.analog_only = 0;
 
@@ -1495,6 +1522,8 @@ test_rx_tone_unusable_rate_is_unavailable(void) {
 /* What the log tap has counted: the unusable-rate warning, and the received-tone lines the tap
    logs when its verdict changes. */
 static int g_unusable_rate_warnings = 0;
+/* "Analog output: " errors (issue #633). */
+static int g_analog_output_errors_seen = 0;
 static int g_rx_tone_lines = 0;
 static int g_rx_tone_100_lines = 0;
 static int g_rx_tone_none_lines = 0;
@@ -1516,6 +1545,9 @@ count_rx_tone_log_lines(dsd_neo_log_level_t level, const char* text, void* ctx) 
     }
     if (level == LOG_LEVEL_WARN && strstr(text, "Received tone detection inactive") != NULL) {
         g_unusable_rate_warnings++;
+    }
+    if (level == LOG_LEVEL_ERROR && strncmp(text, "Analog output: ", strlen("Analog output: ")) == 0) {
+        g_analog_output_errors_seen++;
     }
     if (level == LOG_LEVEL_INFO && strncmp(text, "Received tone: ", strlen("Received tone: ")) == 0) {
         g_rx_tone_lines++;
@@ -4346,6 +4378,556 @@ test_pcm_noise_squelch_holds_the_backlog(void) {
     dsd_state_ext_free_all(&state);
 }
 
+/* --- Issue #633: the analog sinks run at 48 kHz, whatever rate the monitor runs at --- */
+
+enum { SINK_RATE = 48000, SINK_CAPTURE_MAX = 4 * 48000, SINK_WRITES_MAX = 8192 };
+
+/* What the UDP analog socket was handed, write by write: the samples and each write's length. */
+static short g_sink_samples[SINK_CAPTURE_MAX];
+static size_t g_sink_len;
+static size_t g_sink_write_lens[SINK_WRITES_MAX];
+static size_t g_sink_writes;
+
+static void
+capture_sink_write(const dsd_opts* opts, dsd_state* state, size_t nbytes, const void* data) {
+    (void)opts;
+    (void)state;
+    const size_t n = nbytes / sizeof(short);
+    if (g_sink_writes < SINK_WRITES_MAX) {
+        g_sink_write_lens[g_sink_writes] = n;
+    }
+    g_sink_writes++;
+    if (data && g_sink_len + n <= SINK_CAPTURE_MAX) {
+        DSD_MEMCPY(g_sink_samples + g_sink_len, data, nbytes);
+    }
+    g_sink_len += n;
+}
+
+static void
+start_sink_capture(dsd_opts* opts) {
+    opts->audio_out = 1;
+    opts->audio_out_type = 8;
+    dsd_udp_audio_hooks hooks = {0};
+    hooks.blast_analog = capture_sink_write;
+    dsd_udp_audio_hooks_set(hooks);
+    g_sink_len = 0;
+    g_sink_writes = 0;
+}
+
+static void
+stop_sink_capture(void) {
+    dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
+}
+
+/* The samples a fresh converter makes from @p n inputs at @p in_hz: floor((n * L + M - 1) / M). */
+static size_t
+sink_outputs(int in_hz, size_t n) {
+    int L = 1;
+    int M = 1;
+    (void)dsd_rate_converter_ratio(in_hz, SINK_RATE, &L, &M);
+    return (n * (size_t)L + (size_t)M - 1U) / (size_t)M;
+}
+
+/* A fresh converter's output for @p in at @p in_hz, saturated to int16 as the sinks write it. */
+static size_t
+sink_reference(int in_hz, const float* in, size_t n, short* out, size_t cap) {
+    static float tmp[SINK_CAPTURE_MAX];
+    dsd_rate_converter conv;
+    dsd_rate_converter_init(&conv);
+    assert(dsd_rate_converter_configure(&conv, in_hz, SINK_RATE) == DSD_RATE_CONVERTER_CONVERTING);
+    size_t consumed = 0;
+    const int got = dsd_rate_converter_process(&conv, in, n, tmp, SINK_CAPTURE_MAX, &consumed);
+    dsd_rate_converter_free(&conv);
+    assert(got > 0 && consumed == n && (size_t)got <= cap);
+    for (int i = 0; i < got; i++) {
+        float v = tmp[i];
+        v = v > 32767.0f ? 32767.0f : (v < -32768.0f ? -32768.0f : v);
+        out[i] = (short)lrintf(v);
+    }
+    return (size_t)got;
+}
+
+/* The frequency of the tone in @p s by its rising zero crossings, after @p skip samples. */
+static double
+sink_tone_hz(const short* s, size_t n, size_t skip, int rate) {
+    size_t first = 0;
+    size_t last = 0;
+    size_t count = 0;
+    for (size_t i = skip + 1U; i < n; i++) {
+        if (s[i - 1U] < 0 && s[i] >= 0) {
+            if (count == 0) {
+                first = i;
+            }
+            last = i;
+            count++;
+        }
+    }
+    return count < 2U ? 0.0 : (double)(count - 1U) * (double)rate / (double)(last - first);
+}
+
+static sf_count_t
+raw_wav_frames(const char* path, int* rate_out) {
+    SF_INFO info;
+    DSD_MEMSET(&info, 0, sizeof(info));
+    SNDFILE* wav = sf_open(path, SFM_READ, &info);
+    assert(wav != NULL);
+    sf_close(wav);
+    if (rate_out) {
+        *rate_out = info.samplerate;
+    }
+    return info.frames;
+}
+
+/*
+ * A 44.1 kHz WAV through getSymbol(): the monitor runs at 44.1 kHz, as its filters, tone tap and squelch expect, and
+ * the UDP analog socket and the -6 raw WAV get it at 48 kHz. Every block of 960 goes out as 1044 or 1045 samples in
+ * writes of at most 960, one unbroken stream whose 1 kHz tone is still 1 kHz; the raw WAV holds every block converted.
+ * Before the fix each block went out as its 960 input samples, which a 48 kHz sink plays 9% fast: the tone read
+ * 1088 Hz.
+ */
+static void
+test_monitor_plays_a_44100_hz_wav_at_48_khz(void) {
+    enum { BLOCKS = 45, IN_RATE = 44100 };
+
+    static short samples[BLOCKS * 960];
+    for (int n = 0; n < BLOCKS * 960; n++) {
+        samples[n] = (short)lround(3000.0 * sin(2.0 * M_PI * 1000.0 * (double)n / (double)IN_RATE));
+    }
+    char wav_path[DSD_TEST_PATH_MAX];
+    char raw_path[DSD_TEST_PATH_MAX];
+    assert(write_mono_wav(wav_path, sizeof(wav_path), "dsdneo_633_44k", IN_RATE, samples, BLOCKS * 960) == 0);
+    static dsd_opts opts;
+    static dsd_state state;
+    open_monitor_wav(&opts, &state, wav_path, IN_RATE);
+    g_chain_removes_tone = 0;
+    start_sink_capture(&opts);
+    opts.wav_out_raw = open_raw_wav_out(raw_path, sizeof(raw_path), SINK_RATE);
+    assert(opts.wav_out_raw != NULL);
+
+    for (int n = 0; n < BLOCKS * 960; n++) {
+        (void)getSymbol(&opts, &state, 0);
+    }
+    assert(state.analog_sample_counter == 0);
+    size_t blocks_played = 0;
+    size_t max_write = 0;
+    for (size_t i = 0; i < g_sink_writes && i < SINK_WRITES_MAX; i++) {
+        max_write = g_sink_write_lens[i] > max_write ? g_sink_write_lens[i] : max_write;
+        blocks_played += g_sink_write_lens[i] < 960U ? 1U : 0U;
+    }
+    assert(max_write <= 960U);
+    assert(blocks_played >= BLOCKS - 2 && g_sink_writes == 2U * blocks_played);
+    const size_t want = sink_outputs(IN_RATE, blocks_played * 960U);
+    assert(g_sink_len + 1U >= want && g_sink_len <= want + 1U);
+    const double hz = sink_tone_hz(g_sink_samples, g_sink_len, 960U, SINK_RATE);
+    assert(fabs(hz - 1000.0) <= 2.0);
+
+    sf_close(opts.wav_out_raw);
+    opts.wav_out_raw = NULL;
+    int raw_rate = 0;
+    assert(raw_wav_frames(raw_path, &raw_rate) == (sf_count_t)sink_outputs(IN_RATE, (size_t)BLOCKS * 960U));
+    assert(raw_rate == SINK_RATE);
+    (void)remove(raw_path);
+    stop_sink_capture();
+    close_monitor_wav(&opts, &state, wav_path);
+    g_chain_removes_tone = 1;
+}
+
+/* At the sink rate nothing changes: every block goes out in one write of its own samples, byte for byte, and no
+   converter is ever allocated. */
+static void
+test_monitor_at_48_khz_is_unconverted(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    install_fake_rtl_hooks(0);
+    init_analog_monitor_fixture(&opts, &state);
+    opts.rtl_squelch_level = -100.0;
+    g_chain_removes_tone = 0;
+    start_sink_capture(&opts);
+    float block[960];
+    g_tone_phase = 0.0;
+    g_tone_fs = 48000.0;
+    for (int b = 0; b < 6; b++) {
+        fill_tone_block(block, 960U, 1000.0, 3000.0);
+        const size_t before = g_sink_len;
+        assert(dsd_symbol_test_finalize_unsynced_analog_block(&opts, &state, block, 960U) == 960U);
+        assert(g_sink_len == before + 960U && g_sink_write_lens[g_sink_writes - 1U] == 960U);
+        for (int i = 0; i < 960; i++) {
+            assert(g_sink_samples[before + (size_t)i] == (short)lrintf(block[i]));
+        }
+    }
+    assert(g_sink_writes == 6U);
+    assert(dsd_state_ext_get(&state, DSD_STATE_EXT_DSP_ANALOG_SINK) == NULL);
+    stop_sink_capture();
+    dsd_state_ext_free_all(&state);
+    g_chain_removes_tone = 1;
+}
+
+/* Feed one 960-sample block of a @p hz tone through the unsynced finalize step; returns how much the socket got. */
+static size_t
+feed_sink_block(dsd_opts* opts, dsd_state* state, float* block, double hz) {
+    fill_tone_block(block, 960U, hz, 3000.0);
+    const size_t before = g_sink_len;
+    assert(dsd_symbol_test_finalize_unsynced_analog_block(opts, state, block, 960U) == 960U);
+    return g_sink_len - before;
+}
+
+/* Whether the last @p got samples the socket received are a fresh converter's output for @p block: the converter
+   started over from silence. */
+static int
+sink_block_starts_fresh(int in_hz, const float* block, size_t got) {
+    static short want[2048];
+    const size_t n = sink_reference(in_hz, block, 960U, want, sizeof(want) / sizeof(want[0]));
+    return n == got && memcmp(want, g_sink_samples + (g_sink_len - got), got * sizeof(short)) == 0;
+}
+
+/*
+ * The monitor's converter starts over from silence wherever the stream it plays breaks: after a block that did not
+ * play, after a part-collected block was dropped, at a reception boundary and at a retune. Blocks that play one after
+ * another run on in one stream. The -6 raw WAV runs on across a reception boundary, which drops no input, and starts
+ * over only where input was dropped or the stream moved.
+ */
+static void
+test_monitor_converter_starts_over_where_the_stream_breaks(void) {
+    enum { IN_RATE = 44100 };
+
+    static dsd_opts opts;
+    static dsd_state state;
+    install_fake_rtl_hooks(0);
+    init_analog_monitor_fixture(&opts, &state);
+    opts.wav_sample_rate = IN_RATE;
+    opts.rtl_squelch_level = -100.0;
+    g_chain_removes_tone = 0;
+    g_tone_phase = 0.0;
+    g_tone_fs = IN_RATE;
+    start_sink_capture(&opts);
+    float block[960];
+
+    size_t got = feed_sink_block(&opts, &state, block, 700.0);
+    assert(got == 1045U && sink_block_starts_fresh(IN_RATE, block, got));
+    got = feed_sink_block(&opts, &state, block, 700.0);
+    /* Played right after the first: one stream, so not a fresh start. */
+    assert(got >= 1044U && got <= 1045U && !sink_block_starts_fresh(IN_RATE, block, got));
+
+    /* A block that does not play. */
+    opts.audio_out = 0;
+    assert(feed_sink_block(&opts, &state, block, 700.0) == 0U);
+    opts.audio_out = 1;
+    got = feed_sink_block(&opts, &state, block, 700.0);
+    assert(got == 1045U && sink_block_starts_fresh(IN_RATE, block, got));
+
+    /* A dropped part-collected block. */
+    dsd_symbol_analog_block_reset(&state);
+    got = feed_sink_block(&opts, &state, block, 700.0);
+    assert(got == 1045U && sink_block_starts_fresh(IN_RATE, block, got));
+
+    /* A reception boundary: the first block that plays after it starts over. */
+    dsd_analog_rx_reset(&state);
+    for (int b = 0; b < 4 && (got = feed_sink_block(&opts, &state, block, 700.0)) == 0U; b++) {}
+    assert(got == 1045U && sink_block_starts_fresh(IN_RATE, block, got));
+
+    /* A retune: a new trunk-tuning generation. */
+    got = feed_sink_block(&opts, &state, block, 700.0);
+    assert(got > 0U && !sink_block_starts_fresh(IN_RATE, block, got));
+    dsd_trunk_tuning_generation_advance();
+    for (int b = 0; b < 4 && (got = feed_sink_block(&opts, &state, block, 700.0)) == 0U; b++) {}
+    assert(got == 1045U && sink_block_starts_fresh(IN_RATE, block, got));
+    stop_sink_capture();
+    dsd_state_ext_free_all(&state);
+    g_chain_removes_tone = 1;
+    g_tone_fs = 48000.0;
+}
+
+/* The -6 raw WAV across the same events: every block is written, and the converter starts over only where input was
+   dropped (a dropped part-collected block) or the stream moved (a retune), never at a reception boundary. */
+static void
+test_raw_wav_runs_on_across_a_reception_boundary(void) {
+    enum { IN_RATE = 44100, BLOCKS = 8 };
+
+    static dsd_opts opts;
+    static dsd_state state;
+    static float in[BLOCKS * 960];
+    install_fake_rtl_hooks(0);
+    init_analog_monitor_fixture(&opts, &state);
+    opts.wav_sample_rate = IN_RATE;
+    char raw_path[DSD_TEST_PATH_MAX];
+    opts.wav_out_raw = open_raw_wav_out(raw_path, sizeof(raw_path), SINK_RATE);
+    assert(opts.wav_out_raw != NULL);
+    g_tone_phase = 0.0;
+    g_tone_fs = IN_RATE;
+    for (int b = 0; b < BLOCKS; b++) {
+        fill_tone_block(in + (size_t)b * 960U, 960U, 700.0, 3000.0);
+    }
+    /* Blocks 0-1 | drop | 2-4 (a reception boundary before 4) | retune | 5-7. */
+    for (int b = 0; b < BLOCKS; b++) {
+        if (b == 2) {
+            dsd_symbol_analog_block_reset(&state);
+        } else if (b == 4) {
+            dsd_analog_rx_reset(&state);
+        } else if (b == 5) {
+            dsd_trunk_tuning_generation_advance();
+        }
+        assert(dsd_symbol_test_finalize_unsynced_analog_block(&opts, &state, in + (size_t)b * 960U, 960U) == 960U);
+    }
+    sf_close(opts.wav_out_raw);
+    opts.wav_out_raw = NULL;
+
+    static short want[16384];
+    size_t want_len = 0;
+    static const int seg_start[] = {0, 2, 5};
+    static const int seg_blocks[] = {2, 3, 3};
+    for (int s = 0; s < 3; s++) {
+        want_len += sink_reference(IN_RATE, in + (size_t)seg_start[s] * 960U, (size_t)seg_blocks[s] * 960U,
+                                   want + want_len, sizeof(want) / sizeof(want[0]) - want_len);
+    }
+    SF_INFO info;
+    DSD_MEMSET(&info, 0, sizeof(info));
+    SNDFILE* wav = sf_open(raw_path, SFM_READ, &info);
+    assert(wav != NULL);
+    static short got[16384];
+    const sf_count_t n = sf_read_short(wav, got, (sf_count_t)(sizeof(got) / sizeof(got[0])));
+    sf_close(wav);
+    assert(n == (sf_count_t)want_len && memcmp(got, want, want_len * sizeof(short)) == 0);
+    (void)remove(raw_path);
+    dsd_state_ext_free_all(&state);
+    g_tone_fs = 48000.0;
+}
+
+/* Push @p n samples of a tone through the unsynced path, one at a time as getSymbol() does. */
+static void
+push_sink_samples(dsd_opts* opts, dsd_state* state, int n) {
+    float s[1];
+    for (int i = 0; i < n; i++) {
+        fill_tone_block(s, 1U, 300.0, 3000.0);
+        dsd_symbol_test_push_unsynced_analog_sample(opts, state, s[0]);
+    }
+}
+
+/* A monitor at @p in_hz with the UDP socket and a -6 raw WAV capturing. */
+static void
+start_mixed_rate_case(dsd_opts* opts, dsd_state* state, int audio_in_type, int in_hz, char* raw_path,
+                      size_t raw_path_size) {
+    install_fake_rtl_hooks(0);
+    init_analog_monitor_fixture(opts, state);
+    opts->audio_in_type = audio_in_type;
+    opts->wav_sample_rate = in_hz;
+    opts->pulse_digi_rate_in = 48000;
+    opts->rtl_squelch_level = -100.0;
+    g_chain_removes_tone = 0;
+    g_tone_phase = 0.0;
+    g_tone_fs = in_hz;
+    start_sink_capture(opts);
+    opts->wav_out_raw = open_raw_wav_out(raw_path, raw_path_size, SINK_RATE);
+    assert(opts->wav_out_raw != NULL);
+}
+
+static sf_count_t
+finish_mixed_rate_case(dsd_opts* opts, dsd_state* state, const char* raw_path) {
+    sf_close(opts->wav_out_raw);
+    opts->wav_out_raw = NULL;
+    const sf_count_t frames = raw_wav_frames(raw_path, NULL);
+    (void)remove(raw_path);
+    stop_sink_capture();
+    dsd_state_ext_free_all(state);
+    g_chain_removes_tone = 1;
+    g_tone_fs = 48000.0;
+    return frames;
+}
+
+/*
+ * A rate change that lands while a block fills, with no reception boundary announced (a config apply, an input
+ * switch), leaves a block whose samples ran at two rates: at either rate part of it would play at the wrong speed, so
+ * it is neither played nor written to the -6 WAV, and the next block, wholly at the new rate, starts the converters
+ * over. Before the fix the mixed block played. The same holds for a round trip inside one block, which leaves the
+ * finishing rate where it started, and for a backend switch that leaves the configured PCM rate alone (TCP at 2500 Hz,
+ * Pulse at 48 kHz, TCP again).
+ */
+static void
+test_mixed_rate_block_neither_plays_nor_records(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    char raw_path[DSD_TEST_PATH_MAX];
+
+    start_mixed_rate_case(&opts, &state, AUDIO_IN_WAV, 2500, raw_path, sizeof(raw_path));
+    push_sink_samples(&opts, &state, 960);
+    const size_t first = sink_outputs(2500, 960U);
+    assert(g_sink_len == first);
+    push_sink_samples(&opts, &state, 959);
+    dsd_opts_apply_input_sample_rate(&opts, 44100);
+    g_tone_fs = 44100.0;
+    push_sink_samples(&opts, &state, 1);
+    assert(state.analog_sample_counter == 0 && g_sink_len == first);
+    push_sink_samples(&opts, &state, 960);
+    assert(g_sink_len == first + sink_outputs(44100, 960U));
+    assert(finish_mixed_rate_case(&opts, &state, raw_path) == (sf_count_t)(first + sink_outputs(44100, 960U)));
+
+    start_mixed_rate_case(&opts, &state, AUDIO_IN_WAV, 2500, raw_path, sizeof(raw_path));
+    push_sink_samples(&opts, &state, 300);
+    dsd_opts_apply_input_sample_rate(&opts, 4000);
+    push_sink_samples(&opts, &state, 300);
+    dsd_opts_apply_input_sample_rate(&opts, 2500);
+    push_sink_samples(&opts, &state, 360);
+    assert(state.analog_sample_counter == 0 && g_sink_len == 0U);
+    assert(finish_mixed_rate_case(&opts, &state, raw_path) == 0);
+
+    start_mixed_rate_case(&opts, &state, AUDIO_IN_TCP, 2500, raw_path, sizeof(raw_path));
+    push_sink_samples(&opts, &state, 300);
+    opts.audio_in_type = AUDIO_IN_PULSE;
+    dsd_opts_note_pcm_stream(&opts);
+    push_sink_samples(&opts, &state, 300);
+    opts.audio_in_type = AUDIO_IN_TCP;
+    dsd_opts_note_pcm_stream(&opts);
+    push_sink_samples(&opts, &state, 360);
+    assert(opts.wav_sample_rate == 2500 && state.analog_sample_counter == 0 && g_sink_len == 0U);
+    assert(finish_mixed_rate_case(&opts, &state, raw_path) == 0);
+}
+
+/* A rate a transaction sets and restores before another sample is read (a config apply onto the same open file, a
+   failed switch rolling back) leaves the block whole: it plays and is recorded, at 48 kHz unconverted. */
+static void
+test_provisional_rate_keeps_the_block(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    char raw_path[DSD_TEST_PATH_MAX];
+    start_mixed_rate_case(&opts, &state, AUDIO_IN_WAV, 48000, raw_path, sizeof(raw_path));
+    push_sink_samples(&opts, &state, 500);
+    dsd_opts_apply_input_sample_rate(&opts, 96000);
+    dsd_opts_apply_input_sample_rate(&opts, 48000);
+    push_sink_samples(&opts, &state, 200);
+    dsd_opts_apply_input_sample_rate(&opts, 44100);
+    dsd_opts_note_pcm_stream(&opts);
+    dsd_opts_apply_input_sample_rate(&opts, 48000);
+    dsd_opts_note_pcm_stream(&opts);
+    push_sink_samples(&opts, &state, 260);
+    assert(state.analog_sample_counter == 0 && g_sink_len == 960U && g_sink_writes == 1U);
+    assert(finish_mixed_rate_case(&opts, &state, raw_path) == 960);
+}
+
+/* A rate the converter cannot take (below 1 kHz) is not written at the wrong speed: the analog outputs stay silent,
+   with one error naming the rate. 1 kHz converts. */
+static void
+test_unconvertible_rate_stays_silent(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    char raw_path[DSD_TEST_PATH_MAX];
+    start_mixed_rate_case(&opts, &state, AUDIO_IN_WAV, 999, raw_path, sizeof(raw_path));
+    g_analog_output_errors_seen = 0;
+    push_sink_samples(&opts, &state, 3 * 960);
+    assert(g_sink_len == 0U && g_analog_output_errors_seen == 1);
+    assert(finish_mixed_rate_case(&opts, &state, raw_path) == 0);
+
+    start_mixed_rate_case(&opts, &state, AUDIO_IN_WAV, 1000, raw_path, sizeof(raw_path));
+    push_sink_samples(&opts, &state, 960);
+    assert(g_sink_len == sink_outputs(1000, 960U) && g_sink_len == (size_t)960U * 48U);
+    assert(finish_mixed_rate_case(&opts, &state, raw_path) == (sf_count_t)(960 * 48));
+}
+
+/* With no memory for the converters, a block to convert is muted with one error for its rate: the same rate does not
+   say it again, another rate or a later session does. Once the memory is there, blocks convert again. */
+static void
+test_sink_allocation_failure_is_said_once_per_rate(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    char raw_path[DSD_TEST_PATH_MAX];
+    start_mixed_rate_case(&opts, &state, AUDIO_IN_WAV, 44100, raw_path, sizeof(raw_path));
+    dsd_analog_sink_test_fail_alloc(1);
+    g_analog_output_errors_seen = 0;
+    push_sink_samples(&opts, &state, 2 * 960);
+    assert(g_sink_len == 0U && g_analog_output_errors_seen == 1);
+    dsd_opts_apply_input_sample_rate(&opts, 96000);
+    g_tone_fs = 96000.0;
+    push_sink_samples(&opts, &state, 960);
+    assert(g_sink_len == 0U && g_analog_output_errors_seen == 2);
+    dsd_analog_sink_test_fail_alloc(0);
+    push_sink_samples(&opts, &state, 960);
+    assert(g_sink_len == 480U && g_analog_output_errors_seen == 2);
+    assert(finish_mixed_rate_case(&opts, &state, raw_path) == 480);
+
+    /* A later decoder session at a rate an earlier one named says it again. */
+    start_mixed_rate_case(&opts, &state, AUDIO_IN_WAV, 96000, raw_path, sizeof(raw_path));
+    dsd_analog_sink_test_fail_alloc(1);
+    push_sink_samples(&opts, &state, 960);
+    assert(g_sink_len == 0U && g_analog_output_errors_seen == 3);
+    dsd_analog_sink_test_fail_alloc(0);
+    assert(finish_mixed_rate_case(&opts, &state, raw_path) == 0);
+}
+
+#ifdef USE_RADIO
+/* With the demod resampler overridden (DSD_NEO_RESAMP), the RTL monitor runs at the demod rate: 24 kHz blocks of 480
+   go out as 960 samples at 48 kHz, not as 480. */
+static void
+test_rtl_monitor_rate_override_is_converted(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    install_fake_rtl_hooks(1);
+    g_fake_rtl_rate_hz = 24000U;
+    init_analog_monitor_fixture(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.rtl_squelch_level = -100.0;
+    g_chain_removes_tone = 0;
+    g_tone_phase = 0.0;
+    g_tone_fs = 24000.0;
+    start_sink_capture(&opts);
+    float block[480];
+    size_t played = 0;
+    for (int b = 0; b < 6; b++) {
+        fill_tone_block(block, 480U, 1000.0, 3000.0);
+        const size_t before = g_sink_len;
+        assert(dsd_symbol_test_finalize_unsynced_analog_block(&opts, &state, block, 480U) == 480U);
+        if (g_sink_len != before) {
+            assert(g_sink_len - before == 960U);
+            played++;
+        }
+    }
+    assert(played >= 4U);
+    stop_sink_capture();
+    dsd_state_ext_free_all(&state);
+    g_fake_rtl_rate_hz = 48000U;
+    g_chain_removes_tone = 1;
+    g_tone_fs = 48000.0;
+}
+
+/* An RTL rate round trip inside one block (24, 48, 24 kHz with the resampler off), each step a new stream generation:
+   the finishing rate matches the start, but the samples in between ran at 48 kHz, so the block is neither recorded nor
+   played. */
+static void
+test_rtl_rate_round_trip_block_is_mixed(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    install_fake_rtl_hooks(1);
+    init_analog_monitor_fixture(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.rtl_squelch_level = -100.0;
+    char raw_path[DSD_TEST_PATH_MAX];
+    opts.wav_out_raw = open_raw_wav_out(raw_path, sizeof(raw_path), SINK_RATE);
+    assert(opts.wav_out_raw != NULL);
+    start_sink_capture(&opts);
+    g_fake_rtl_rate_hz = 24000U;
+    uint32_t generation = 10U;
+    for (int i = 0; i < 200; i++) {
+        dsd_symbol_test_push_unsynced_analog_sample_rtl(&opts, &state, 1000.0f, generation);
+    }
+    g_fake_rtl_rate_hz = 48000U;
+    generation++;
+    for (int i = 0; i < 200; i++) {
+        dsd_symbol_test_push_unsynced_analog_sample_rtl(&opts, &state, 1000.0f, generation);
+    }
+    g_fake_rtl_rate_hz = 24000U;
+    generation++;
+    /* The block completes at 960 samples (no stream context sizes it to 20 ms here). */
+    for (int i = 0; i < 560 && state.analog_sample_counter != 0; i++) {
+        dsd_symbol_test_push_unsynced_analog_sample_rtl(&opts, &state, 1000.0f, generation);
+    }
+    assert(state.analog_sample_counter == 0 && g_sink_len == 0U);
+    sf_close(opts.wav_out_raw);
+    opts.wav_out_raw = NULL;
+    assert(raw_wav_frames(raw_path, NULL) == 0);
+    (void)remove(raw_path);
+    stop_sink_capture();
+    dsd_state_ext_free_all(&state);
+    g_fake_rtl_rate_hz = 48000U;
+}
+#endif
+
 int
 main(void) {
     exitflag = 0;
@@ -4414,6 +4996,18 @@ main(void) {
     test_pcm_noise_squelch_follows_the_passband();
     test_pcm_noise_squelch_no_band_keeps_the_block_edge();
     test_pcm_noise_squelch_holds_the_backlog();
+    test_monitor_plays_a_44100_hz_wav_at_48_khz();
+    test_monitor_at_48_khz_is_unconverted();
+    test_monitor_converter_starts_over_where_the_stream_breaks();
+    test_raw_wav_runs_on_across_a_reception_boundary();
+    test_mixed_rate_block_neither_plays_nor_records();
+    test_provisional_rate_keeps_the_block();
+    test_unconvertible_rate_stays_silent();
+    test_sink_allocation_failure_is_said_once_per_rate();
+#ifdef USE_RADIO
+    test_rtl_monitor_rate_override_is_converted();
+    test_rtl_rate_round_trip_block_is_mixed();
+#endif
     return 0;
 }
 

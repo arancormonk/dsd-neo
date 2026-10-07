@@ -274,7 +274,7 @@ dsd_audio_output_params_init(const dsd_opts* opts, dsd_audio_params* params) {
 /* Raw/analog stream: analog monitor, ProVoice and the -8 source monitor write here. */
 static dsd_audio_stream*
 dsd_audio_open_raw_output_stream(const dsd_opts* opts, dsd_audio_params* params) {
-    params->sample_rate = opts->pulse_raw_rate_out;
+    params->sample_rate = dsd_opts_analog_sink_rate_hz(opts);
     params->channels = opts->pulse_raw_out_channels;
     return dsd_audio_open_output(params);
 }
