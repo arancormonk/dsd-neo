@@ -55,10 +55,14 @@ cascade's roll-off is the channel's edge, and it truncates a signal that reaches
 a plan needs the widest NFM signal tested (UNFILTERED_SIGNAL_EDGE_HZ from the carrier) to fit under the Nyquist, and
 has no band otherwise (rtl-12k and rtl-16k with the width unset, an Airspy Mini at 11718 Hz).
 
-Plans come from tools/squelch_model.py (its tap harness and rate chains), FM only: AM has no discriminator.
+Plans come from tools/squelch_model.py (its tap harness and rate chains), FM only: AM has no discriminator. The M17
+encoder's monitor runs the noise squelch too (issue #625), on the legacy WIDE profile plan off the analog family at
+every chain (the unset default's 16 kHz design never applies to it): those plans join the set, and --encoder-only runs
+just the ones no NFM plan shares.
 
 Usage:
     python3 tools/noise_squelch_model.py [--quick] [--out DIR] [--build-dir build/dev-debug] [--jobs N] [--only TEXT]
+                                         [--encoder-only]
 """
 
 from __future__ import annotations
@@ -753,6 +757,37 @@ def custom_jobs(plans: list, harness_plans: dict, hb_taps: dict, mode: str, jobs
             )
 
 
+def encoder_jobs(plans: list, harness_plans: dict, hb_taps: dict, mode: str, jobs: list, members: dict) -> set:
+    """The M17 encoder's monitor (issue #625): the legacy WIDE profile plan, off the analog family, on every chain whose
+    channel LPF runs (with it off the encoder runs the unset default's unfiltered plan, already in the set). Returns the
+    keys of the plans no NFM plan shares."""
+    known = {j["key"] for j in jobs}
+    added = set()
+    for plan in plans:
+        if plan.rate_in < sm.LPF_DEFAULT_ENABLE_RATE_IN_HZ:
+            continue
+        rec = harness_plans[(plan.rate_out, 0, sm.FM_KIND)]
+        width = rec["legacy_wide_width_hz"] * plan.post_downsample
+        taps_key = sm.taps_key(np.asarray(rec["taps"]))
+        key = f"{plan.channel_rate}:{plan.hb}:{taps_key}:p{cascade_passes(plan)}:{width}"
+        members.setdefault(key, []).append(f"M17 encoder legacy WIDE on {plan.name}")
+        if key in known:
+            continue
+        known.add(key)
+        added.add(key)
+        jobs.append(
+            {
+                "key": key,
+                "taps": np.asarray(rec["taps"]).tolist(),
+                "stages": cascade_stages(plan, hb_taps),
+                "fs": plan.channel_rate,
+                "width": width,
+                "mode": mode,
+            }
+        )
+    return added
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=(__doc__ or "").split("\n", 1)[0])
     parser.add_argument("--quick", action="store_true", help="30 s of noise per plan and short tones (a smoke run)")
@@ -760,6 +795,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--build-dir", type=Path, default=sm.ROOT / "build" / "dev-debug")
     parser.add_argument("--jobs", type=int, default=min(4, os.cpu_count() or 1))
     parser.add_argument("--only", help="run only plans whose key contains this text")
+    parser.add_argument(
+        "--encoder-only", action="store_true", help="run only the M17 encoder's plans that no NFM plan shares"
+    )
     args = parser.parse_args(argv)
     started = time.time()
     mode = "quick" if args.quick else "full"
@@ -777,9 +815,12 @@ def main(argv: list[str] | None = None) -> int:
     combos = [c for c in sm.build_combos(plans, harness_plans, hb_taps) if c["runs"] and c["config"].kind == sm.FM_KIND]
     jobs, members = unique_jobs(combos, hb_taps, mode)
     custom_jobs(plans, harness_plans, hb_taps, mode, jobs, members)
+    encoder_only = encoder_jobs(plans, harness_plans, hb_taps, mode, jobs, members)
     jobs.sort(key=lambda j: -j["fs"])
     if args.only:
         jobs = [j for j in jobs if args.only in j["key"]]
+    if args.encoder_only:
+        jobs = [j for j in jobs if j["key"] in encoder_only]
     print(f"{len(combos)} NFM combinations and the custom widths: {len(jobs)} distinct plans", flush=True)
     sm.real_sources()  # loaded once, before the workers fork
     results = []
