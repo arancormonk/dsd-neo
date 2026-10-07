@@ -2026,6 +2026,32 @@ add_test(
     COMMAND dsd-neo_test_runtime_input_ring_init
 )
 
+# A commit between the reader's first look at an empty input ring and its lock is read
+# without waiting out the 10 ms timeout. GNU ld --wrap puts the commit exactly there, so
+# the case exists only where that links, like the other wrap tests.
+if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
+    add_executable(
+        dsd-neo_test_runtime_input_ring_wakeup
+        runtime/test_runtime_input_ring_wakeup.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_runtime_input_ring_wakeup
+        PRIVATE ${PROJECT_SOURCE_DIR}/include
+    )
+    target_link_libraries(
+        dsd-neo_test_runtime_input_ring_wakeup
+        PRIVATE dsd-neo_runtime
+    )
+    target_link_options(
+        dsd-neo_test_runtime_input_ring_wakeup
+        PRIVATE "LINKER:--wrap=dsd_mutex_lock"
+    )
+    add_test(
+        NAME RUNTIME_INPUT_RING_WAKEUP
+        COMMAND dsd-neo_test_runtime_input_ring_wakeup
+    )
+endif()
+
 add_executable(
     dsd-neo_test_runtime_frame_sync_hooks
     runtime/test_runtime_frame_sync_hooks.c
