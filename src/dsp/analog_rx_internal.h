@@ -92,6 +92,10 @@ enum { DSD_ANALOG_CTCSS_LONG_WINDOW = 12, DSD_ANALOG_CTCSS_LONG_MIN = 8 };
 /** @brief Consecutive agreeing hops needed to lock, and failing hops that lose the lock. */
 enum { DSD_ANALOG_CTCSS_ACQUIRE_HOPS = 2, DSD_ANALOG_CTCSS_LOSE_HOPS = 4 };
 
+/** @brief Consecutive agreeing hops a tone of the close 150.0/151.4 Hz pair needs instead while its candidate's newest
+    estimate leans toward the other tone of the pair (issue #623; k_pair_lean_hz in analog_ctcss.c). */
+enum { DSD_ANALOG_CTCSS_PAIR_LEAN_HOPS = DSD_ANALOG_CTCSS_ACQUIRE_HOPS + 1 };
+
 /** @brief Carrier time without a lock after which the verdict is "no tone". */
 enum { DSD_ANALOG_CTCSS_NO_TONE_MS = 500 };
 

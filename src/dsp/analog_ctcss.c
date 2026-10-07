@@ -29,7 +29,9 @@
  * fundamental has and a tone has not.
  *
  * Hysteresis, in level and in frequency: a tone locks after two consecutive hops qualify it
- * with estimates within 0.5 Hz of each other and of the table value; it holds while its own
+ * with estimates within 0.5 Hz of each other and of the table value -- three for 150.0 or
+ * 151.4 Hz while the newest estimate leans more than 0.3 Hz toward the other (k_pair_lean_hz),
+ * where noise most often carries an estimate of one into the other's gate; it holds while its own
  * bin's estimate stays within the tone's snap gate and the newest 100 ms still carry
  * rho >= 0.15 at the locked frequency (and the same -50 dB of the full band), and is lost
  * after four failing hops or at once on a reverse burst (the transmitter's end-of-message
@@ -76,6 +78,17 @@ static const double k_hold_rho = 0.15;
 static const double k_snap_hz = 0.8;
 /* Estimates this close are the same distance from two tones (snap ties). */
 static const double k_snap_tie_hz = 1e-9;
+/* A candidate for one tone of a close pair (150.0 and 151.4 Hz, 1.4 Hz apart; ctcss_close_neighbour()) whose newest
+   estimate sits more than this toward the other tone needs one more agreeing hop to lock
+   (DSD_ANALOG_CTCSS_PAIR_LEAN_HOPS; issue #623). The pair's acquisition gates are 0.4 Hz apart, so a noisy
+   estimate of either tone can reach the other's: at 0 dB in-band the 250 ms estimate scatters by about 0.19 Hz, and
+   by more while the window still holds the noise before a tone's onset. A tone set 0.2 Hz toward the other was then
+   named as the other at about one start in 850. Noise that carries an estimate from the true tone into the other's
+   gate leaves it leaning toward the true tone: nine in ten of the candidates that named the other tone leaned more
+   than this. A third agreeing hop, whose newest sub-block brings fresh noise, stops most of them, and only leaning
+   candidates wait for it: a tone near its value leans this far on few hops, so the wait costs little lock time
+   (docs/testing.md has both). */
+static const double k_pair_lean_hz = 0.3;
 /* Frequency hysteresis: a tone only locks from estimates this close to the table value. At
    0 dB in-band the 250 ms estimate scatters by about 0.19 Hz (RMS), so an off-table tone such
    as 68.2 Hz, 1.1 Hz from 69.3, reaches the 0.8 Hz snap gate on several percent of hops but
@@ -258,6 +271,20 @@ ctcss_gate_hz(int k) {
         gate = fmin(gate, 0.5 * (ctcss_tone_hz(k + 1) - ctcss_tone_hz(k)));
     }
     return gate;
+}
+
+/** @brief The other tone of a close pair: the neighbour of table tone @p k that narrowed its gate below k_snap_hz
+ *  (ctcss_gate_hz()), or -1. Only 150.0 and 151.4 Hz have one. */
+static int
+ctcss_close_neighbour(int k) {
+    const double gate = ctcss_gate_hz(k);
+    if (!(gate < k_snap_hz - k_snap_tie_hz)) {
+        return -1;
+    }
+    if (k > 0 && fabs((ctcss_tone_hz(k) - ctcss_tone_hz(k - 1)) - (2.0 * gate)) <= k_snap_tie_hz) {
+        return k - 1;
+    }
+    return k + 1 < DSD_CTCSS_TONE_COUNT ? k + 1 : -1;
 }
 
 /** @brief Nearest table tone whose gate holds @p hz, or -1: also -1 for an estimate the same distance
@@ -717,9 +744,23 @@ ctcss_track(dsd_analog_ctcss_cand* cand, int qualified, const dsd_analog_ctcss_h
     cand->hz = hop->est_hz;
 }
 
+/* Whether @p cand has agreed on enough hops to lock: DSD_ANALOG_CTCSS_ACQUIRE_HOPS, or
+   DSD_ANALOG_CTCSS_PAIR_LEAN_HOPS for a tone of a close pair while its newest estimate leans more than k_pair_lean_hz
+   toward the other tone. One test for both acquisition windows and for a lock handed from another tone. */
 static int
 ctcss_cand_ready(const dsd_analog_ctcss_cand* cand) {
-    return cand->index >= 0 && cand->run >= DSD_ANALOG_CTCSS_ACQUIRE_HOPS;
+    if (cand->index < 0) {
+        return 0;
+    }
+    int hops = DSD_ANALOG_CTCSS_ACQUIRE_HOPS;
+    const int other = ctcss_close_neighbour(cand->index);
+    if (other >= 0) {
+        const double toward = ctcss_tone_hz(other) > ctcss_tone_hz(cand->index) ? 1.0 : -1.0;
+        if ((cand->hz - ctcss_tone_hz(cand->index)) * toward > k_pair_lean_hz) {
+            hops = DSD_ANALOG_CTCSS_PAIR_LEAN_HOPS;
+        }
+    }
+    return cand->run >= hops;
 }
 
 static void
