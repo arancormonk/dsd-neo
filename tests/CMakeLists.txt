@@ -13306,6 +13306,12 @@ if(DSD_HAS_RADIO)
     target_link_libraries(dsd-neo_test_analog_replay PRIVATE dsd-neo_io_radio)
 endif()
 
+# The host scores a monitor block once however many writes it arrives in (issue #633).
+add_test(
+    NAME ANALOG_REPLAY_SELFTEST
+    COMMAND dsd-neo_test_analog_replay --analog-selftest
+)
+
 # dsd_neo_add_analog_replay_test(name fixture mode [expected [not_expected]])
 # expected defaults to "ANALOG AUDIO OK" (pass "" to keep the default); a case
 # that also asserts a log line names that line instead, since exit code 0 already
@@ -13353,7 +13359,7 @@ set(_pcm_sql_plays_bounds
 dsd_neo_add_analog_replay_test(
     DECODE_PCM_ANALOG_SQL_NOISE_TAP_BURST
     nfm_burst_synth
-    "-fA --squelch noise --analog-pcm-tap 48000 ${_pcm_sql_noise_burst_bounds}"
+    "-fA --squelch noise --analog-pcm-tap 48000 --analog-max-delivery-error-pct 0.5 ${_pcm_sql_noise_burst_bounds}"
 )
 # A source 10 dB louder measures the same: the reference is learned from the input.
 dsd_neo_add_analog_replay_test(
@@ -13366,7 +13372,25 @@ dsd_neo_add_analog_replay_test(
 dsd_neo_add_analog_replay_test(
     DECODE_PCM_ANALOG_SQL_NOISE_TAP_BURST_16K
     nfm_burst_synth
-    "-fA --squelch noise --analog-pcm-tap 16000 ${_pcm_sql_noise_burst_bounds}"
+    "-fA --squelch noise --analog-pcm-tap 16000 --analog-max-delivery-error-pct 0.5 ${_pcm_sql_noise_burst_bounds}"
+)
+# A rate that does not divide 48 kHz (issue #633): the monitor runs at 44.1 kHz and its
+# audio reaches the 48 kHz sink converted, as long as the input it spans. Before the fix
+# each block went out as its 960 samples, 8% short. The squelch measures the same.
+dsd_neo_add_analog_replay_test(
+    DECODE_PCM_ANALOG_TAP_44K
+    nfm_burst_synth
+    "-fA --analog-pcm-tap 44100 --analog-max-delivery-error-pct 0.5 ${_pcm_sql_plays_bounds}"
+)
+# A 44.1 kHz block lasts 21.8 ms, so the first audible block starts at 326.5 ms where a
+# 20 ms block starts at 340 (the squelch opens in the same window); 261 ms are audible.
+set(_pcm_sql_noise_burst_44k_bounds
+    "--analog-audible-dbfs -40 --analog-min-total-ms 700 --analog-max-total-ms 800 --analog-min-first-audible-ms 315 --analog-max-first-audible-ms 380 --analog-min-audible-ms 200 --analog-max-audible-ms 290 --analog-max-clip 0"
+)
+dsd_neo_add_analog_replay_test(
+    DECODE_PCM_ANALOG_SQL_NOISE_TAP_BURST_44K
+    nfm_burst_synth
+    "-fA --squelch noise --analog-pcm-tap 44100 --analog-max-delivery-error-pct 0.5 ${_pcm_sql_noise_burst_44k_bounds}"
 )
 dsd_neo_add_analog_replay_test(
     DECODE_PCM_ANALOG_SQL_NOISE_TAP_BURST_12K
@@ -14253,6 +14277,14 @@ if(DSD_HAS_RADIO)
     set_tests_properties(
         DECODE_IQ_ANALOG_NEG_ADJACENT_UNFILTERED
         PROPERTIES ENVIRONMENT "DSD_NEO_CHANNEL_LPF=0"
+    )
+    # The delivery check measures (issue #633): 44.1 kHz audio converted to 48 kHz is a
+    # fraction of a sample from the exact length, so a bound of 0 fires.
+    dsd_neo_add_analog_replay_fail_test(
+        DECODE_PCM_ANALOG_NEG_DELIVERY_EXACT
+        nfm_burst_synth
+        "-fA --analog-pcm-tap 44100 --analog-max-delivery-error-pct 0"
+        "ANALOG AUDIO FAIL: delivery error pct 0[.][0-9]+ [(]limit 0[.]00[)]"
     )
     # The silence pattern (max audible 0 with a stream-time floor) on a replay that
     # is audible throughout: the audible bound must fire, the stream-time one not.
