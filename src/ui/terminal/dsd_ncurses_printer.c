@@ -499,7 +499,8 @@ ui_render_rtl_input_source(dsd_opts* opts, dsd_state* state) {
         ui_print_squelch_field(opts, state);
         printw(" DSP-BW: %i kHz;", opts->rtl_dsp_bw_khz);
         ui_print_analog_channel_field(opts, state);
-        printw(" FRQ: %i;", opts->rtlsdr_center_freq);
+        /* The tuned frequency, which follows an I/Q replay's recorded retunes (issue #575). */
+        printw(" FRQ: %u;", (unsigned int)dsd_opts_tuned_freq_hz(opts));
         ui_print_rtl_auto_ppm_status();
         if (!soapy_input && opts->rtl_udp_port != 0) {
             printw("\n| External RTL Tuning on UDP: %s:%i", opts->rtl_udp_bindaddr, opts->rtl_udp_port);
@@ -2427,7 +2428,8 @@ ui_render_nxdn_monitor_line(const dsd_opts* opts, const dsd_state* state, int id
 static void
 ui_render_nxdn_site_line(const dsd_state* state, int idas) {
     printw("| ");
-    if (state->nxdn_last_ran > 63U) {
+    /* Outside IDAS, whose area has its own label, a stand-in is DCR's fixed 7: no RAN (issue #575). */
+    if (state->nxdn_last_ran > 63U || (!idas && state->nxdn_last_ran_stand_in != 0U)) {
         printw("%s", idas ? "IDAS - Area: --; " : "NXDN - RAN: --; ");
     } else if (idas) {
         printw("IDAS - Area: %02d; ", state->nxdn_last_ran);
@@ -2577,7 +2579,12 @@ static void
 ui_render_call_info_dpmr(const dsd_opts* opts, dsd_state* state) {
     //dPMR
     if (DSD_SYNC_IS_DPMR(ncurses_last_synctype)) {
-        printw("| DCC: [%i] ", state->dpmr_color_code);
+        /* -1 is "none decoded on this carrier" (issue #575). */
+        if (state->dpmr_color_code < 0 || state->dpmr_color_code > 63) {
+            printw("| DCC: [--] ");
+        } else {
+            printw("| DCC: [%i] ", state->dpmr_color_code);
+        }
         dsd_call_snapshot call;
         (void)ui_active_call_snapshot(state, 0U, &call);
         printw("TGT: [%s] SRC: [%s] ", call.target_text[0] != '\0' ? call.target_text : "unknown",
@@ -2936,9 +2943,20 @@ ui_restore_call_info_color(const dsd_state* state) {
     }
 }
 
+/* The DMR colour code, or "--" while it reads 16, "nothing decoded", as it does between transmissions (issue #575);
+ * the NXDN RAN line prints its sentinel the same way. */
+static void
+ui_print_dmr_dcc(const char* mode, const dsd_state* state) {
+    if (state->dmr_color_code > 15U) {
+        printw("DMR %s - DCC: --; ", mode);
+    } else {
+        printw("DMR %s - DCC: %02u; ", mode, state->dmr_color_code);
+    }
+}
+
 static void
 ui_render_p25_dmr_header_dmr_bs(const dsd_state* state) {
-    printw("DMR BS - DCC: %02i; ", state->dmr_color_code);
+    ui_print_dmr_dcc("BS", state);
     printw("%s ", state->dmr_branding);
     printw("%s", state->dmr_branding_sub);
     printw("%s", state->dmr_site_parms);
@@ -3012,7 +3030,7 @@ ui_render_p25_dmr_header(const dsd_opts* opts, dsd_state* state) {
     if (DSD_SYNC_IS_DMR_BS(ncurses_last_synctype)) {
         ui_render_p25_dmr_header_dmr_bs(state);
     } else if (DSD_SYNC_IS_DMR_MS(ncurses_last_synctype)) {
-        printw("DMR MS - DCC: %02i; ", state->dmr_color_code);
+        ui_print_dmr_dcc("MS", state);
     } else if (DSD_SYNC_IS_P25P1(ncurses_last_synctype)) {
         ui_render_p25_dmr_header_p25p1(opts, state);
     } else if (DSD_SYNC_IS_P25P2(ncurses_last_synctype)) {

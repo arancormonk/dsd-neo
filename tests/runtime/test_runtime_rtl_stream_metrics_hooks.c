@@ -412,6 +412,7 @@ fake_replay_batch(dsd_rtl_stream_replay_batch* out) {
     out->media_duration_ns = 21333333ULL;
     out->output_count = 512U;
     out->first_index = g_replay_batch_first_index;
+    out->center_frequency_hz = 851012500U;
     return g_replay_batch_result;
 }
 
@@ -419,11 +420,11 @@ fake_replay_batch(dsd_rtl_stream_replay_batch* out) {
  * when its hook reports one, and none, with nothing left in the output, whenever the hook reports anything else. */
 static void
 test_replay_batch_hook(void) {
-    dsd_rtl_stream_replay_batch batch = {.generation = 9U, .output_kind = 9, .levels = 9};
+    dsd_rtl_stream_replay_batch batch = {.generation = 9U, .output_kind = 9, .levels = 9, .center_frequency_hz = 9U};
     dsd_rtl_stream_metrics_hooks_set(NULL);
     assert(dsd_rtl_stream_metrics_hook_replay_batch(&batch) == 0);
     assert(batch.generation == 0U && batch.output_kind == 0 && batch.channel_profile == 0);
-    assert(batch.symbol_rate_hz == 0 && batch.levels == 0);
+    assert(batch.symbol_rate_hz == 0 && batch.levels == 0 && batch.center_frequency_hz == 0U);
     assert(dsd_rtl_stream_metrics_hook_replay_batch(NULL) == 0);
 
     dsd_rtl_stream_metrics_hooks hooks = {0};
@@ -435,6 +436,7 @@ test_replay_batch_hook(void) {
     assert(batch.symbol_rate_hz == 4800 && batch.levels == 4);
     assert(batch.media_start_ns == 9000000000ULL && batch.media_duration_ns == 21333333ULL);
     assert(batch.output_count == 512U && batch.first_index == 0U);
+    assert(batch.center_frequency_hz == 851012500U);
     const int results[] = {0, -1, 2};
     for (size_t i = 0; i < sizeof(results) / sizeof(results[0]); i++) {
         g_replay_batch_result = results[i];
@@ -442,7 +444,7 @@ test_replay_batch_hook(void) {
         assert(batch.generation == 0U && batch.output_kind == 0 && batch.channel_profile == 0);
         assert(batch.symbol_rate_hz == 0 && batch.levels == 0);
         assert(batch.media_start_ns == 0U && batch.media_duration_ns == 0U);
-        assert(batch.output_count == 0U && batch.first_index == 0U);
+        assert(batch.output_count == 0U && batch.first_index == 0U && batch.center_frequency_hz == 0U);
     }
     /* A NULL output never reaches the hook. */
     assert(dsd_rtl_stream_metrics_hook_replay_batch(NULL) == 0);
@@ -451,34 +453,41 @@ test_replay_batch_hook(void) {
 }
 
 /* Issue #572: a reader that takes one replay sample at a time runs the decode clock's media time to that sample's
- * capture time, the read's batch span at its index; a live read (no batch) runs nothing. */
+ * capture time, the read's batch span at its index; a live read (no batch) runs nothing. Issue #575: it also reports the
+ * centre the batch was captured on, which a live read leaves where it was; a reader that wants no centre passes NULL. */
 static void
 test_replay_advance_decode_clock(void) {
     const int64_t anchor_s = 1788245497LL;
     const uint64_t anchor_ns = (uint64_t)anchor_s * 1000000000ULL;
     dsd_decode_clock_use_replay(anchor_s);
+    uint32_t center_hz = 7U;
 
     dsd_rtl_stream_metrics_hooks_set(NULL);
-    assert(dsd_rtl_stream_metrics_hook_replay_advance_decode_clock() == 0);
+    assert(dsd_rtl_stream_metrics_hook_replay_advance_decode_clock(&center_hz) == 0);
     assert(dsd_decode_now_mono_ns() == anchor_ns);
+    assert(center_hz == 7U);
 
     dsd_rtl_stream_metrics_hooks hooks = {0};
     hooks.replay_batch = fake_replay_batch;
     dsd_rtl_stream_metrics_hooks_set(&hooks);
     g_replay_batch_result = 0;
-    assert(dsd_rtl_stream_metrics_hook_replay_advance_decode_clock() == 0);
+    assert(dsd_rtl_stream_metrics_hook_replay_advance_decode_clock(&center_hz) == 0);
     assert(dsd_decode_now_mono_ns() == anchor_ns);
+    assert(center_hz == 7U);
 
     g_replay_batch_result = 1;
     g_replay_batch_first_index = 0U;
-    assert(dsd_rtl_stream_metrics_hook_replay_advance_decode_clock() == 1);
+    assert(dsd_rtl_stream_metrics_hook_replay_advance_decode_clock(&center_hz) == 1);
     assert(dsd_decode_now_mono_ns() == anchor_ns + 9000000000ULL);
+    assert(center_hz == 851012500U);
     g_replay_batch_first_index = 3U;
-    assert(dsd_rtl_stream_metrics_hook_replay_advance_decode_clock() == 1);
+    assert(dsd_rtl_stream_metrics_hook_replay_advance_decode_clock(NULL) == 1);
     assert(dsd_decode_now_mono_ns() == anchor_ns + 9000000000ULL + (21333333ULL * 3ULL) / 512ULL);
     g_replay_batch_first_index = 511U;
-    assert(dsd_rtl_stream_metrics_hook_replay_advance_decode_clock() == 1);
+    center_hz = 0U;
+    assert(dsd_rtl_stream_metrics_hook_replay_advance_decode_clock(&center_hz) == 1);
     assert(dsd_decode_now_mono_ns() == anchor_ns + 9000000000ULL + (21333333ULL * 511ULL) / 512ULL);
+    assert(center_hz == 851012500U);
 
     g_replay_batch_first_index = 0U;
     g_replay_batch_result = 0;

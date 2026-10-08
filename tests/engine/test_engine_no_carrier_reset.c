@@ -3594,6 +3594,261 @@ test_dmr_mfid_clear_runs_on_the_decode_clock_without_trunking(void) {
 }
 
 /*
+ * Issue #575: dmr_color_code, dpmr_color_code and nxdn_last_ran are read as the code of the carrier being decoded, so
+ * a carrier boundary forgets them (16, -1 and (unsigned)-1, as initState() leaves them). DMR MS mode has no confidence
+ * relock to rewrite the colour code: a call opens before its embedded code decodes, and a failed QR(16,7,6) decode
+ * writes nothing, so the previous carrier's value would label the next call. The NXDN SACCH writes the RAN only once
+ * the transmission is confirmed, and confirmation restarts at every no-carrier pass, so a call opening on its FACCH1
+ * VCALL would read the previous transmission's RAN. The resets run in noCarrier() and in
+ * dsd_engine_reset_no_carrier_state(), the reset channel_scan_commit() runs on a -Y row change. Trunk scan keeps the
+ * DMR colour code with the DMR confidence lock, and the RAN, which its per-target snapshot saves and restores.
+ */
+/*
+ * Issue #575: a confirmation gate's evidence is per-transmission, and the no-carrier pass restarts every gate so that
+ * the next carrier proves itself again. A carrier boundary reaches the next carrier without that pass (an accepted
+ * tune, a source change, a replay's recorded retune), so it restarts them itself, as it drops the DMR gate's lock with
+ * the colour code: the calls it ended were the transmissions that evidence vouched for. It also moves the carrier
+ * count the buffering decoders watch.
+ */
+static int
+test_carrier_boundary_restarts_the_evidence(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    state->nxdn_confirmed = 1;
+    state->nxdn_confirm_weak_streak = 1;
+    state->dpmr_confirmed = 1;
+    state->dpmr_cch_evidence = 1;
+    state->dpmr_cch_evidence_symbolcnt = 99U;
+    state->dstar_confirmed = 1;
+    state->m17_confirmed = 1;
+    state->provoice_confirmed = 1;
+    state->ysf_fich_confirmed = 1;
+    state->p25_p1_nid_evidence = 1;
+    state->p25_p1_nid_evidence_symbolcnt = 99U;
+    const uint32_t carrier_seq = state->carrier_seq;
+
+    dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, 0);
+
+    rc |= expect_true("evidence: the boundary restarts the NXDN gate",
+                      state->nxdn_confirmed == 0 && state->nxdn_confirm_weak_streak == 0);
+    rc |= expect_true("evidence: the boundary restarts the dPMR gate and its CCH evidence",
+                      state->dpmr_confirmed == 0 && state->dpmr_cch_evidence == 0
+                          && state->dpmr_cch_evidence_symbolcnt == 0U);
+    rc |= expect_true("evidence: the boundary restarts the D-STAR gate", state->dstar_confirmed == 0);
+    rc |= expect_true("evidence: the boundary restarts the M17 gate", state->m17_confirmed == 0);
+    rc |= expect_true("evidence: the boundary restarts the ProVoice gate", state->provoice_confirmed == 0);
+    rc |= expect_true("evidence: the boundary restarts the YSF FICH verdict", state->ysf_fich_confirmed == 0);
+    rc |= expect_true("evidence: the boundary drops the Phase 1 NID's evidence",
+                      state->p25_p1_nid_evidence == 0 && state->p25_p1_nid_evidence_symbolcnt == 0U);
+    rc |= expect_true("evidence: the boundary moves the carrier count", state->carrier_seq == carrier_seq + 1U);
+
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+/*
+ * Issue #575: a carrier boundary between frames leaves every multi-frame assembly the decoders keep in dsd_state
+ * half-built, and the next carrier's next piece can complete it: an NXDN SACCH superframe whose fourth segment passes its
+ * own CRC publishes the carrier left's talkgroup and source at the new frequency, and confirms the new carrier on it.
+ * The boundary drops each assembly that can publish an identity or a code, as the no-carrier pass does: the NXDN SACCH
+ * superframe and alias blocks, the DMR data blocks, short LC fragments, embedded LC, late-entry MI and talker alias, the
+ * P25 MAC fragments and talker aliases, the dPMR superframe part, the M17 LSF chunks, packet and signature, and the
+ * YSF text.
+ */
+static int
+test_carrier_boundary_discards_partial_assemblies(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    for (int part = 0; part < 3; part++) {
+        DSD_MEMSET(state->nxdn_sacch_frame_segment[part], 0, sizeof(state->nxdn_sacch_frame_segment[part]));
+        state->nxdn_sacch_frame_segcrc[part] = 0;
+    }
+    state->nxdn_part_of_frame = 2;
+    state->nxdn_alias_block_number = 2;
+    state->nxdn_alias_block_segment[0][0][0] = 'A';
+    state->nxdn_alias_arib_total_segments = 3;
+    state->nxdn_alias_arib_seen_mask = 1;
+    state->nxdn_alias_arib_segments[0][0] = 7;
+    DSD_MEMSET(state->dmr_cach_fragment, 0, sizeof(state->dmr_cach_fragment));
+    state->dmr_cach_counter = 2;
+    state->data_block_counter[0] = 3;
+    state->data_header_valid[0] = 1;
+    state->dmr_embedded_signalling[0][1][0] = 1;
+    state->late_entry_mi_fragment[0][1][0] = 5U;
+    state->dmr_alias_format[0] = 1;
+    state->dmr_alias_block_len[0] = 4;
+    state->dmr_alias_char_size[0] = 7;
+    state->dmr_alias_block_segment[0][0][0][0] = 1;
+    DSD_SNPRINTF(state->generic_talker_alias[0], sizeof(state->generic_talker_alias[0]), "%s", "OLD ALIAS");
+    DSD_MEMSET(state->p25_mac_frag, 0x5A, sizeof(state->p25_mac_frag));
+    DSD_MEMSET(state->p25_apx_alias_rx, 0x5A, sizeof(state->p25_apx_alias_rx));
+    DSD_MEMSET(state->p25_l3h_alias_phase1, 0x5A, sizeof(state->p25_l3h_alias_phase1));
+    opts->dPMR_next_part_of_superframe = 2;
+    state->m17_lsf[0] = 1;
+    state->m17_pkt[0] = 1;
+    state->m17_pbc_ct = 3;
+    state->m17_signature[0] = 1;
+    state->m17_signature_received_mask = 3;
+    state->m17_signature_complete = 1;
+    state->ysf_txt[0][0] = 'T';
+    /* Phase 2: the ESS_B a 2V burst would decode, and the crypto of the call that ended. */
+    state->ess_b[0][0] = 1;
+    state->ess_b_llr[0][0] = 900;
+    state->fourv_counter[0] = 2;
+    state->payload_algid = 0x84;
+    state->payload_keyid = 0x1234;
+    state->payload_miP = 0x0102030405060708ULL;
+
+    dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, 0);
+
+    int nxdn_cleared = state->nxdn_part_of_frame == 0;
+    for (int part = 0; part < 4; part++) {
+        nxdn_cleared &= state->nxdn_sacch_frame_segcrc[part] == 1 && state->nxdn_sacch_frame_segment[part][0] == 1;
+    }
+    rc |= expect_true("assemblies: the boundary drops the NXDN SACCH superframe", nxdn_cleared);
+    rc |= expect_true("assemblies: the boundary drops the NXDN alias blocks",
+                      state->nxdn_alias_block_number == 0 && state->nxdn_alias_block_segment[0][0][0] == 0
+                          && state->nxdn_alias_arib_total_segments == 0 && state->nxdn_alias_arib_seen_mask == 0
+                          && state->nxdn_alias_arib_segments[0][0] == 0);
+    rc |= expect_true("assemblies: the boundary drops the DMR short LC fragments and data blocks",
+                      state->dmr_cach_fragment[0][0] == 1 && state->dmr_cach_counter == 0
+                          && state->data_block_counter[0] == 1 && state->data_header_valid[0] == 0);
+    rc |= expect_true("assemblies: the boundary drops the DMR embedded LC and late-entry MI",
+                      state->dmr_embedded_signalling[0][1][0] == 0 && state->late_entry_mi_fragment[0][1][0] == 0U);
+    rc |= expect_true("assemblies: the boundary drops the DMR talker alias and the alias shown",
+                      state->dmr_alias_format[0] == 0 && state->dmr_alias_block_len[0] == 0
+                          && state->dmr_alias_char_size[0] == 0 && state->dmr_alias_block_segment[0][0][0][0] == 0
+                          && state->generic_talker_alias[0][0] == '\0');
+    const unsigned char* mac = (const unsigned char*)state->p25_mac_frag;
+    const unsigned char* apx = (const unsigned char*)state->p25_apx_alias_rx;
+    const unsigned char* l3h = (const unsigned char*)state->p25_l3h_alias_phase1;
+    rc |= expect_true("assemblies: the boundary drops the P25 MAC fragments and talker aliases",
+                      mac[0] == 0 && apx[0] == 0 && l3h[0] == 0);
+    rc |=
+        expect_true("assemblies: the boundary drops the dPMR superframe part", opts->dPMR_next_part_of_superframe == 0);
+    rc |= expect_true("assemblies: the boundary drops the M17 LSF chunks, packet and signature",
+                      state->m17_lsf[0] == 0 && state->m17_pkt[0] == 0 && state->m17_pbc_ct == 0
+                          && state->m17_signature[0] == 0 && state->m17_signature_received_mask == 0
+                          && state->m17_signature_complete == 0);
+    rc |= expect_true("assemblies: the boundary drops the YSF text", state->ysf_txt[0][0] == 0);
+    rc |= expect_true("assemblies: the boundary drops the Phase 2 ESS_B and marks it the carrier left's",
+                      state->ess_b[0][0] == 0 && state->ess_b_llr[0][0] == 0 && state->fourv_counter[0] == 0
+                          && state->p25_p2_ess_b_stale[0] == 1U && state->p25_p2_ess_b_stale[1] == 1U);
+    rc |= expect_true("assemblies: the boundary drops the ended call's P25 crypto",
+                      state->payload_algid == 0 && state->payload_keyid == 0 && state->payload_miP == 0ULL);
+
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+static int
+test_carrier_boundary_forgets_the_access_codes(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    rc |= expect_true("access-codes: initState leaves all three unknown",
+                      state->dmr_color_code == 16U && state->dpmr_color_code == -1
+                          && state->nxdn_last_ran == (unsigned int)-1);
+
+    /* A DMR MS decode sets the colour code without the BS confidence lock. */
+    state->dmr_color_code = 7U;
+    state->dpmr_color_code = 12;
+    state->nxdn_last_ran = 21U;
+    state->p2_cc = 0x293ULL;
+    state->p2_cc_verified = 1U;
+    noCarrier(opts, state);
+    /* The Phase 2 seed is the descrambling key and stays; its proof on this carrier goes. */
+    rc |= expect_true("access-codes: noCarrier forgets the Phase 2 seed's proof", state->p2_cc_verified == 0U);
+    rc |= expect_true("access-codes: noCarrier keeps the Phase 2 seed", state->p2_cc == 0x293ULL);
+    rc |= expect_true("access-codes: noCarrier forgets the DMR colour code", state->dmr_color_code == 16U);
+    rc |= expect_true("access-codes: noCarrier forgets the dPMR colour code", state->dpmr_color_code == -1);
+    rc |= expect_true("access-codes: noCarrier forgets the NXDN RAN", state->nxdn_last_ran == (unsigned int)-1);
+
+    state->dmr_color_code = 9U;
+    state->dpmr_color_code = 33;
+    state->nxdn_last_ran = 0U; /* RAN 0 is a legal code, so "forgotten" is -1, not 0. */
+    state->p2_cc_verified = 1U;
+    dsd_engine_reset_no_carrier_state(opts, state);
+    rc |= expect_true("access-codes: the shared reset forgets the Phase 2 seed's proof", state->p2_cc_verified == 0U);
+    rc |= expect_true("access-codes: the shared reset forgets the DMR colour code", state->dmr_color_code == 16U);
+    rc |= expect_true("access-codes: the shared reset forgets the dPMR colour code", state->dpmr_color_code == -1);
+    rc |= expect_true("access-codes: the shared reset forgets the NXDN RAN", state->nxdn_last_ran == (unsigned int)-1);
+
+    opts->trunk_scan_enabled = 1;
+    state->dmr_color_code = 5U;
+    state->dmr_confidence_locked = 1;
+    state->dmr_confidence_color_code = 5;
+    state->dpmr_color_code = 12;
+    state->nxdn_last_ran = 21U;
+    state->p2_cc_verified = 1U;
+    noCarrier(opts, state);
+    rc |= expect_true("access-codes: trunk scan keeps the Phase 2 seed's proof its target snapshot carries",
+                      state->p2_cc_verified == 1U);
+    rc |= expect_true("access-codes: trunk scan keeps the DMR colour code with its lock",
+                      state->dmr_color_code == 5U && state->dmr_confidence_locked == 1
+                          && state->dmr_confidence_color_code == 5);
+    rc |= expect_true("access-codes: trunk scan keeps the NXDN RAN its target snapshot carries",
+                      state->nxdn_last_ran == 21U);
+    rc |= expect_true("access-codes: trunk scan still forgets the dPMR colour code", state->dpmr_color_code == -1);
+    opts->trunk_scan_enabled = 0;
+
+    /* The forget both paths share, which app-control also runs on an accepted retune the user asks for: the DMR
+       colour code goes with the confidence lock it pairs with, the NXDN RAN with its stand-in mark, and the Phase 2
+       seed's proof without the seed. */
+    state->dmr_color_code = 5U;
+    state->dmr_confidence_locked = 1;
+    state->dmr_confidence_color_code = 5;
+    state->dpmr_color_code = 12;
+    state->nxdn_last_ran = 21U;
+    state->nxdn_last_ran_stand_in = 1U;
+    state->nac = 0x293;
+    state->p2_cc = 0x293ULL;
+    state->p2_cc_verified = 1U;
+    dsd_engine_forget_carrier_codes(state);
+    rc |= expect_true("access-codes: the forget drops the Phase 1 NAC", state->nac == 0);
+    rc |= expect_true("access-codes: the forget drops the DMR colour code with its lock",
+                      state->dmr_color_code == 16U && state->dmr_confidence_locked == 0);
+    rc |= expect_true("access-codes: the forget drops the NXDN RAN with its stand-in mark",
+                      state->nxdn_last_ran == (unsigned int)-1 && state->nxdn_last_ran_stand_in == 0U);
+    rc |= expect_true("access-codes: the forget drops the dPMR colour code", state->dpmr_color_code == -1);
+    rc |= expect_true("access-codes: the forget drops the seed's proof and keeps the seed",
+                      state->p2_cc_verified == 0U && state->p2_cc == 0x293ULL);
+    dsd_engine_forget_carrier_codes(NULL);
+
+    /* With trunking off a retune also forgets the voice frequencies the carrier's grants named, as the trunking-off
+       no-carrier pass does, and the DMR grants'; with trunking on they are the followed system's and stay. */
+    for (int trunked = 0; trunked < 2; trunked++) {
+        opts->trunk_enable = trunked;
+        state->p25_vc_freq[0] = state->p25_vc_freq[1] = 851012500L;
+        state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = 851012500L;
+        dsd_engine_forget_untrunked_carrier_state(opts, state);
+        const long want = trunked ? 851012500L : 0L;
+        rc |= expect_true(trunked ? "access-codes: trunking keeps the P25 voice frequencies"
+                                  : "access-codes: the untrunked forget drops the P25 voice frequencies",
+                          state->p25_vc_freq[0] == want && state->p25_vc_freq[1] == want);
+        rc |= expect_true(trunked ? "access-codes: trunking keeps the trunk voice frequencies"
+                                  : "access-codes: the untrunked forget drops the trunk voice frequencies",
+                          state->trunk_vc_freq[0] == want && state->trunk_vc_freq[1] == want);
+    }
+    opts->trunk_enable = 0;
+    dsd_engine_forget_untrunked_carrier_state(NULL, state);
+
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+/*
  * The received tone (issue #522) has to survive noCarrier(): in analog mode it runs on every
  * no-sync pass, about every 375 ms, and a reset there would keep any tone from ever locking.
  * Locks one through the real tap, then checks the publication and the detector behind it
@@ -4048,12 +4303,20 @@ test_rx_tone_resets_on_legacy_scan_step(void) {
     noCarrier(opts, state);
     rc |= expect_true("rx-tone-no-step-keeps-tone",
                       g_rtl_tune_calls == 0 && state->lcn_freq_roll == 0 && state->analog_rx.ctcss_tenths_hz == 1318);
+    state->trunk_vc_freq[0] = 946012500L;
+    noCarrier(opts, state);
+    rc |= expect_true("legacy-no-step-keeps-trunk-vc-freq",
+                      g_rtl_tune_calls == 0 && state->trunk_vc_freq[0] == 946012500L);
 
-    /* The hangtime runs out: the step retunes and the tone is gone. */
-    state->last_cc_sync_time = time(NULL) - 11;
+    /* The hangtime runs out: the step retunes and the tone is gone, with the voice frequencies the old channel's grants
+       named (issue #575), which a pass that does not step keeps. Under the ten seconds after which every pass forgets
+       them as stale. */
+    state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = 946012500L;
+    state->last_cc_sync_time = time(NULL) - 2;
     noCarrier(opts, state);
     rc |= expect_true("rx-tone-step-retuned", g_rtl_tune_calls == 1 && state->lcn_freq_roll == 1);
     rc |= expect_true("rx-tone-step-clears-tone", rx_tone_publication_cleared(state, generation));
+    rc |= expect_true("legacy-step-clears-trunk-vc-freq", state->trunk_vc_freq[0] == 0 && state->trunk_vc_freq[1] == 0);
     free_test_runtime(opts, state);
     return rc;
 }
@@ -5741,6 +6004,9 @@ main(void) {
     rc |= test_rx_tone_survives_no_carrier();
     rc |= test_dmr_stale_follow_clear_runs_on_the_decode_clock();
     rc |= test_dmr_mfid_clear_runs_on_the_decode_clock_without_trunking();
+    rc |= test_carrier_boundary_forgets_the_access_codes();
+    rc |= test_carrier_boundary_restarts_the_evidence();
+    rc |= test_carrier_boundary_discards_partial_assemblies();
 #ifdef DSD_NEO_TEST_RTL_WRAP
     rc |= test_rx_tone_rigctl_scan_step();
     rc |= test_rigctl_reconnect_forgets_the_legacy_tune_cache();

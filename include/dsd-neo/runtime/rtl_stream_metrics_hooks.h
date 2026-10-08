@@ -43,6 +43,8 @@ typedef struct dsd_rtl_stream_replay_batch {
     uint64_t media_duration_ns; /**< Capture time the batch spans. */
     uint32_t output_count;      /**< Samples in the batch. */
     uint32_t first_index;       /**< Index in the batch of the first sample the last read returned. */
+    /** Channel centre in Hz the batch was captured on, which a recorded RETUNE moves (issue #575). */
+    uint32_t center_frequency_hz;
 } dsd_rtl_stream_replay_batch;
 
 typedef struct {
@@ -226,16 +228,19 @@ unsigned int dsd_rtl_stream_metrics_hook_output_rate_for_family(int family, int 
 int dsd_rtl_stream_metrics_hook_replay_batch(dsd_rtl_stream_replay_batch* out);
 /**
  * @brief Run the decode clock's media time to the first sample the decoder's last RTL read returned, while the input is
- * an I/Q replay.
+ * an I/Q replay, and report the centre that sample was captured on.
  *
  * For the readers that take one sample at a time (the analog monitor, M17, EDACS analog): the sample's capture time is
  * the read's batch span at its index (dsd_decode_clock_batch_media_ns()), which dsd_decode_clock_set_media_ns() takes
  * (issue #572). The symbol cache does the same for each sample it hands out. Call it on the decoder thread right after a
- * read that returned samples, as dsd_rtl_stream_metrics_hook_replay_batch().
+ * read that returned samples, as dsd_rtl_stream_metrics_hook_replay_batch(). The caller notes the centre for the
+ * tuned-frequency reading (dsd_opts_note_iq_replay_center(), issue #575).
  *
+ * @param center_hz_out [out] The batch's capture centre in Hz (`center_frequency_hz`), written only when this returns
+ *                      1; may be NULL.
  * @return 1 when it set the media time; 0 when there is no replay batch (a live input, or no hook installed).
  */
-int dsd_rtl_stream_metrics_hook_replay_advance_decode_clock(void);
+int dsd_rtl_stream_metrics_hook_replay_advance_decode_clock(uint32_t* center_hz_out);
 int dsd_rtl_stream_metrics_hook_cqpsk_status(int* out_cqpsk_enable, int* out_cqpsk_timing_active);
 int dsd_rtl_stream_metrics_hook_request_cqpsk_reacquire(void);
 int dsd_rtl_stream_metrics_hook_cqpsk_timing_bias(void);

@@ -42,6 +42,7 @@
 #include <dsd-neo/runtime/control_pump.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/exitflag.h>
+#include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/m17_udp_hooks.h>
 #include <dsd-neo/runtime/net_audio_input_hooks.h>
@@ -2033,8 +2034,11 @@ m17_str_read_block_rtl(dsd_opts* opts, dsd_state* state, m17_encoder_input* in, 
                 dsd_request_shutdown(opts, state);
                 return M17_STR_READ_STOP;
             }
-            /* An I/Q replay's sample runs the decode clock to its capture time (issue #572). */
-            (void)dsd_rtl_stream_metrics_hook_replay_advance_decode_clock();
+            /* An I/Q replay's sample runs the decode clock to its capture time (issue #572) and notes the centre it
+               was captured on (issue #575). */
+            uint32_t replay_center_hz = 0U;
+            (void)dsd_rtl_stream_metrics_hook_replay_advance_decode_clock(&replay_center_hz);
+            dsd_frame_sync_note_replay_center(opts, state, replay_center_hz);
             if (gated < 0) {
                 gated = dsd_squelch_stream_gate_running(opts, state);
             }

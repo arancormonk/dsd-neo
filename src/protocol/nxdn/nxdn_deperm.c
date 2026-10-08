@@ -264,6 +264,7 @@ nxdn_handle_sacch_non_superframe(dsd_opts* opts, dsd_state* state, const uint8_t
         nxdn_confirm_note_evidence(state, NXDN_EVIDENCE_WEAK);
         if (nxdn_confirm_is_confirmed(state)) {
             state->nxdn_last_ran = nxdn_ran_from_trellis(trellis_buf);
+            state->nxdn_last_ran_stand_in = 0U;
         }
         state->nxdn_part_of_frame = 3;
         DSD_FPRINTF(stderr, "PF 1/1");
@@ -306,6 +307,7 @@ nxdn_handle_sacch_superframe(dsd_opts* opts, dsd_state* state, const uint8_t* tr
         if (nxdn_confirm_is_confirmed(state)) {
             const int ran = nxdn_ran_from_trellis(trellis_buf);
             state->nxdn_ran = state->nxdn_last_ran = ran;
+            state->nxdn_last_ran_stand_in = 0U;
         }
         state->nxdn_sf = sf;
         state->nxdn_part_of_frame = part_of_frame;
@@ -371,14 +373,11 @@ nxdn_handle_dcr_csm_alias(const dsd_opts* opts, dsd_state* state, const uint8_t*
     if (nxdn_dcr_decode_csm_alias(trellis_buf, csm_alias, sizeof(csm_alias))) {
         DSD_FPRINTF(stderr, "\n Call Sign Memory: %s; ", csm_alias + 4);
         DSD_SNPRINTF(state->generic_talker_alias[0], sizeof(state->generic_talker_alias[0]), "%s", csm_alias);
-        if (state->event_history_s != NULL) {
-            dsd_event_history_transaction transaction;
-            dsd_event_history_transaction_begin(state, &transaction);
-            DSD_SNPRINTF(state->event_history_s[0].Event_History_Items[0].alias,
-                         sizeof(state->event_history_s[0].Event_History_Items[0].alias), "%s; ", csm_alias);
-            dsd_event_history_mark_dirty(&state->event_history_s[0]);
-            dsd_event_history_transaction_end(&transaction);
-        }
+        // The display takes the call sign either way; the history row only through the open call, since
+        // a CSM decoded ahead of the SACCH2 SB0 observation has no row of its own yet.
+        char row_alias[sizeof(csm_alias) + 2U];
+        DSD_SNPRINTF(row_alias, sizeof(row_alias), "%s; ", csm_alias);
+        (void)dsd_event_set_open_call_detail(state, 0U, DSD_EVENT_DETAIL_ALIAS, row_alias);
     } else if (opts->payload == 1) {
         DSD_FPRINTF(stderr, "\n Call Sign Memory: decode error; ");
     }
@@ -511,6 +510,7 @@ nxdn_handle_facch2_udch(dsd_opts* opts, dsd_state* state, const uint8_t* trellis
     if (crc == check) {
         nxdn_confirm_note_evidence(state, NXDN_EVIDENCE_STRONG);
         state->nxdn_last_ran = (unsigned int)ran;
+        state->nxdn_last_ran_stand_in = 0U;
         nxdn_print_last_ran(state);
         state->nxdn_part_of_frame = 3 - sf;
     } else {
@@ -630,6 +630,7 @@ nxdn_handle_cac(dsd_opts* opts, dsd_state* state, const uint8_t* trellis_buf, co
         nxdn_confirm_note_evidence(state, NXDN_EVIDENCE_STRONG);
         state->data_header_format[0] = 2;
         state->nxdn_last_ran = nxdn_ran_from_trellis(trellis_buf);
+        state->nxdn_last_ran_stand_in = 0U;
     }
 
     DSD_FPRINTF(stderr, "%s", KYEL);
@@ -741,7 +742,10 @@ nxdn_update_sacch2_identity_state(const dsd_opts* opts, dsd_state* state, const 
         return;
     }
 
+    /* DCR carries no RAN: the 7 stands in for one so the terminal and the event line show something, and is never
+     * read as an access code (issue #575). */
     state->nxdn_last_ran = 7;
+    state->nxdn_last_ran_stand_in = 1U;
     if (nxdn_dcr_is_sb0_message_type(fields->sf_mes)) {
         const dsd_call_observation observation = {
             .protocol = DSD_SYNC_NXDN_POS,

@@ -249,6 +249,18 @@ p25_sm_apply_group_grant_policy(dsd_opts* opts, dsd_state* state, int channel, i
     }
 }
 
+/* The trunking-off grant frequency kept with the target it named (issue #575). */
+static uint32_t g_conventional_grant_target;
+static long g_conventional_grant_freq;
+
+void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+p25_conventional_grant_note(dsd_state* state, uint32_t target, long int freq) {
+    (void)state;
+    g_conventional_grant_target = target;
+    g_conventional_grant_freq = freq;
+}
+
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 p25_aff_register(dsd_state* state, uint32_t rid) {
@@ -409,6 +421,8 @@ main(void) {
     (void)p25_decode_pdu_trunking(&opts, &st, mpdu, sizeof mpdu);
     rc |= expect_true("p1 pdu telephone nontrunk p1 vc freq", st.p25_vc_freq[0] == 851125000);
     rc |= expect_true("p1 pdu telephone p1 leaves slot 2 freq", st.p25_vc_freq[1] == 0);
+    rc |= expect_true("p1 pdu telephone keeps the frequency with the target the grant named",
+                      g_conventional_grant_target == 0x010203U && g_conventional_grant_freq == 851125000);
     rc |= expect_true("p1 pdu telephone no trunk tune hook",
                       g_group_grant_count == 0 && st.p25_sm_tune_count == before + 1);
     rc |= expect_true("p1 pdu telephone activity", recent_activity(&st, &activity));

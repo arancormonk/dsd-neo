@@ -71,5 +71,6 @@ dsd_engine_frame_sync_hooks_install(void) {
     hooks.eot_cc = eot_cc;
     hooks.no_carrier = noCarrier;
     hooks.scan_visit_should_yield = scan_visit_should_yield_from_frame;
+    hooks.replay_retune = dsd_engine_leave_replay_carrier;
     dsd_frame_sync_hooks_set(hooks);
 }

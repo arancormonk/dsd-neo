@@ -663,7 +663,10 @@ Item {
                     enc: model.enc,
                     emergency: model.emergency,
                     detail: model.detail,
-                    durationSecs: model.durationSecs
+                    durationSecs: model.durationSecs,
+                    freqHz: model.freqHz,
+                    accessCode: model.accessCode,
+                    accessCodeText: model.accessCodeText
                 })
             }
             Text {

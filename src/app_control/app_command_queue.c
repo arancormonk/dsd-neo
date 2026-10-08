@@ -416,6 +416,18 @@ ui_set_toast(dsd_state* state, int ttl_s, const char* fmt, ...) {
     state->ui_msg_expire = dsd_realtime_time() + ttl_s;
 }
 
+/* An I/Q replay plays the tuning its capture recorded and defers every other retune unseen (issue #575), so a tune or a
+   tuner release asked of it would be reported as done and never land. Returns 1, with the reason toasted, while the
+   input in force is a replay (dsd_opts_input_is_iq_replay()); the caller fails the command. */
+static int
+ui_cmd_refuse_replay_tune(const dsd_opts* opts, dsd_state* state) {
+    if (!dsd_opts_input_is_iq_replay(opts)) {
+        return 0;
+    }
+    ui_set_toast(state, 3, "An I/Q replay cannot retune.");
+    return 1;
+}
+
 static int
 ui_reconfigure_output_for_input_policy(dsd_opts* opts, dsd_state* state) {
     if (dsd_audio_reconfigure_output_for_input_policy(opts) != 0) {
@@ -1306,6 +1318,18 @@ ui_cmd_leaves_scanner_scope(const dsd_opts* opts, int was_scanner) {
     return was_scanner && opts->scanner_mode != 1 && opts->trunk_scan_enabled != 1;
 }
 
+/* End every slot's call now and commit it (dsd_event_sync_slot()), its last render reading the carrier it was heard
+   on. */
+static void
+ui_end_calls(dsd_opts* opts, dsd_state* state) {
+    const double ended_m = dsd_decode_now_mono_s();
+    for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
+        if (dsd_call_state_end(state, (uint8_t)slot, ended_m) > 0) {
+            dsd_event_sync_slot(opts, state, (uint8_t)slot);
+        }
+    }
+}
+
 #ifdef USE_RADIO
 /* A rollback's toast: @p prefix and the reason @p why, and, when the restart of the input that ran turned the I/Q
    capture off to keep the recording (svc_rtl_restart_recovery_locked(), @p capture_stopped), a note of it if the whole
@@ -1360,6 +1384,9 @@ typedef struct {
     char soapy_gains[sizeof(((dsd_opts*)0)->soapy_gains)];
     int soapy_bandwidth_hz;
     dsd_input_failure failure;
+    /* The frequency the receiver was tuned to (dsd_opts_tuned_freq_hz()): during a replay, the centre its capture
+       recorded last. Read only to tell a carrier boundary (issue #575); nothing puts it back. */
+    uint32_t tuned_freq_hz;
 } ui_radio_input;
 
 static void
@@ -1377,6 +1404,7 @@ ui_capture_radio_input(const dsd_opts* opts, const dsd_state* state, ui_radio_in
     out->rtltcp_portno = opts->rtltcp_portno;
     out->rtl_dev_index = opts->rtl_dev_index;
     out->rtlsdr_center_freq = opts->rtlsdr_center_freq;
+    out->tuned_freq_hz = dsd_opts_tuned_freq_hz(opts);
     out->rtl_dsp_bw_khz = opts->rtl_dsp_bw_khz;
     out->rtl_gain_value = opts->rtl_gain_value;
     out->rtlsdr_ppm_error = opts->rtlsdr_ppm_error;
@@ -1818,22 +1846,54 @@ ui_cmd_leave_typed_scan_after_tune(dsd_opts* opts, dsd_state* state, int result)
     return 1;
 }
 
+/* The frequency entry's refusals, each toasted: a replay, a trunk scan owning the tuner, a frequency out of range.
+   Returns 1 with the command status in *status when the entry is refused. */
+static int
+ui_cmd_rtl_set_freq_refused(const dsd_opts* opts, dsd_state* state, uint32_t v, int* status) {
+    if (ui_cmd_refuse_replay_tune(opts, state)) {
+        *status = UI_CMD_APPLY_FAILED;
+        return 1;
+    }
+    if (opts->trunk_scan_enabled) {
+        ui_set_toast(state, 3, "Trunk scan active: frequency control disabled");
+        *status = UI_CMD_APPLY_FAILED;
+        return 1;
+    }
+    if (v == 0
+#if LONG_MAX < UINT32_MAX
+        || v > (uint32_t)LONG_MAX
+#endif
+    ) {
+        ui_set_toast(state, 3, "Invalid frequency");
+        *status = UI_CMD_APPLY_INVALID_PAYLOAD;
+        return 1;
+    }
+    return 0;
+}
+
+/* The toast a frequency entry's tune leaves, from svc_rtl_set_freq()'s result. */
+static void
+ui_cmd_rtl_set_freq_toast(dsd_state* state, int rc, uint32_t v, int stop_scanner) {
+    if (rc == 0) {
+        ui_set_toast(state, 3, "Applied: RTL frequency -> %u Hz%s", v, stop_scanner ? " (scanner stopped)" : "");
+    } else if (rc == RTL_STREAM_TUNE_TIMEOUT) {
+        ui_set_toast(state, 3, "Accepted: RTL frequency -> %u Hz (pending)%s", v,
+                     stop_scanner ? " (scanner stopped)" : "");
+    } else if (ui_rc_is_not_supported(rc)) {
+        ui_set_toast(state, 3, "Unsupported: frequency control not available on active backend");
+    } else {
+        ui_set_toast(state, 4, "Failed: RTL frequency -> %u Hz", v);
+    }
+}
+
 static int
 ui_cmd_handle_rtl_set_freq(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     uint32_t v = 0;
     int result = UI_CMD_APPLY_COMPLETED;
     if (state && ui_cmd_parse_u32_payload(c, &v)) {
-        if (opts->trunk_scan_enabled) {
-            ui_set_toast(state, 3, "Trunk scan active: frequency control disabled");
-            return UI_CMD_APPLY_FAILED;
-        }
-        if (v == 0
-#if LONG_MAX < UINT32_MAX
-            || v > (uint32_t)LONG_MAX
-#endif
-        ) {
-            ui_set_toast(state, 3, "Invalid frequency");
-            return UI_CMD_APPLY_INVALID_PAYLOAD;
+        int refused_status = UI_CMD_APPLY_FAILED;
+        if (ui_cmd_rtl_set_freq_refused(opts, state, v, &refused_status)) {
+            return refused_status;
         }
         if (manual_frequency_selects_p25_cc(opts, state)) {
             return ui_cmd_handle_p25_cc_selection(opts, state, v);
@@ -1842,20 +1902,12 @@ ui_cmd_handle_rtl_set_freq(dsd_opts* opts, dsd_state* state, const struct dsd_ap
         result = ui_cmd_apply_status_from_tune_rc(rc);
         if (rc == 0 || rc == RTL_STREAM_TUNE_TIMEOUT) {
             /* A new channel: the tone heard on the old one goes now, not when the analog tap
-               next notices the stream moved (issue #522). */
+               next notices the stream moved (issue #522). The tune itself ran the carrier boundary
+               (svc_rtl_set_freq(), issue #575). */
             dsd_analog_rx_reset(state);
         }
         const int stop_scanner = ui_cmd_leave_typed_scan_after_tune(opts, state, rc);
-        if (rc == 0) {
-            ui_set_toast(state, 3, "Applied: RTL frequency -> %u Hz%s", v, stop_scanner ? " (scanner stopped)" : "");
-        } else if (rc == RTL_STREAM_TUNE_TIMEOUT) {
-            ui_set_toast(state, 3, "Accepted: RTL frequency -> %u Hz (pending)%s", v,
-                         stop_scanner ? " (scanner stopped)" : "");
-        } else if (ui_rc_is_not_supported(rc)) {
-            ui_set_toast(state, 3, "Unsupported: frequency control not available on active backend");
-        } else {
-            ui_set_toast(state, 4, "Failed: RTL frequency -> %u Hz", v);
-        }
+        ui_cmd_rtl_set_freq_toast(state, rc, v, stop_scanner);
     }
     return result;
 }
@@ -1882,6 +1934,12 @@ ui_cmd_handle_manual_tune(dsd_opts* opts, dsd_state* state, const struct dsd_app
     if (!state || !ui_cmd_parse_u32_payload(c, &v)) {
         return result;
     }
+    /* Every refusal below is a failed command with its reason toasted, as the frequency entry's are
+     * (ui_cmd_handle_rtl_set_freq()). The replay's comes ahead of the owner gates: their toasts point at a release,
+     * which a replay refuses too. */
+    if (ui_cmd_refuse_replay_tune(opts, state)) {
+        return UI_CMD_APPLY_FAILED;
+    }
     /* Either automatic controller owns the tuner. Trunking parks on a control
      * channel; conventional scanner mode steps the channel map on its own once
      * trunk_hangtime expires (no_carrier_step_scanner_mode_if_needed()), so a
@@ -1889,11 +1947,11 @@ ui_cmd_handle_manual_tune(dsd_opts* opts, dsd_state* state, const struct dsd_app
      * a refusal, because the toast would have claimed it worked. */
     if (opts->trunk_enable) {
         ui_set_toast(state, 3, "Trunking active: tap-to-tune disabled");
-        return result;
+        return UI_CMD_APPLY_FAILED;
     }
     if (opts->scanner_mode) {
         ui_set_toast(state, 3, "Scanner active: tap-to-tune disabled");
-        return result;
+        return UI_CMD_APPLY_FAILED;
     }
     /* The third owner, and the one a release cannot clear (see apply_tuner_release):
      * dsd_trunk_scan_hook_tick() runs on every engine iteration and steps targets on
@@ -1901,7 +1959,7 @@ ui_cmd_handle_manual_tune(dsd_opts* opts, dsd_state* state, const struct dsd_app
      * owner engine_trunk_tuning_owner_active() actually gates dispatch on. */
     if (opts->trunk_scan_enabled) {
         ui_set_toast(state, 3, "Trunk scan active: tap-to-tune disabled");
-        return result;
+        return UI_CMD_APPLY_FAILED;
     }
     int rc = svc_rtl_set_freq(opts, state, v);
     result = ui_cmd_apply_status_from_tune_rc(rc);
@@ -1909,7 +1967,7 @@ ui_cmd_handle_manual_tune(dsd_opts* opts, dsd_state* state, const struct dsd_app
         /* Only after the tune is accepted, matching how trunk_tuning.c and the
          * manual return-to-CC path order this — never on the failure path. */
         dsd_frame_sync_reset_mod_state();
-        dsd_analog_rx_reset(state);
+        dsd_analog_rx_reset(state); // the tune itself ran the carrier boundary (svc_rtl_set_freq(), issue #575)
         reset_call_tracking(opts, state, 1);
         if (rc == 0) {
             ui_set_toast(state, 3, "Applied: tuned -> %u Hz", v);
@@ -2849,12 +2907,7 @@ current_cc_freq(const dsd_state* state) {
 
 static void
 reset_call_tracking(dsd_opts* opts, dsd_state* state, int clear_trunk_vc) {
-    const double ended_m = dsd_decode_now_mono_s();
-    for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
-        if (dsd_call_state_end(state, (uint8_t)slot, ended_m) > 0) {
-            dsd_event_sync_slot(opts, state, (uint8_t)slot);
-        }
-    }
+    ui_end_calls(opts, state);
     DSD_MEMSET(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
     DSD_MEMSET(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
     (void)dsd_recent_activity_clear_all(state);
@@ -3039,6 +3092,11 @@ apply_manual_return_to_cc(dsd_opts* opts, dsd_state* state) {
     if (!state) {
         return UI_CMD_APPLY_COMPLETED;
     }
+    /* A retune the user asked for, refused as a tap is (issue #575), ahead of the cases with nothing to return to, so a
+       replay never reports it done. */
+    if (ui_cmd_refuse_replay_tune(opts, state)) {
+        return UI_CMD_APPLY_FAILED;
+    }
     if (opts->trunk_enable != 1 || (state->trunk_cc_freq == 0 && state->p25_cc_freq == 0)) {
         return UI_CMD_APPLY_COMPLETED;
     }
@@ -3101,6 +3159,11 @@ try_manual_candidate_cycle_locked(dsd_opts* opts, dsd_state* state, int p25_live
     }
 
     reset_call_tracking(opts, state, 0);
+    if (opts->trunk_enable != 1) {
+        /* With trunking off the candidate list is no system the receiver follows: the next entry is another carrier
+           (issue #575). */
+        dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, p25_live);
+    }
     LOG_INFO("Candidate Cycle: tuning to %.06lf MHz\n", (double)cand / 1000000);
     mark_cc_sync(state, 1);
     set_cc_symbol_timing(opts, state, sym_rate);
@@ -3150,6 +3213,11 @@ apply_manual_lcn_cycle_untyped_locked(dsd_opts* opts, dsd_state* state, int p25_
     }
 
     reset_call_tracking(opts, state, 0);
+    if (opts->trunk_enable != 1) {
+        /* A conventional list's next channel is another carrier; a trunked system's channel list is the system's own
+           (issue #575). */
+        dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, p25_live);
+    }
     LOG_INFO("Channel Cycle: tuning to %.06lf MHz\n", (double)freq / 1000000);
     state->lcn_freq_roll = next + 1;
     dsd_scan_row_keys_apply(state, next);
@@ -3665,7 +3733,8 @@ cfg_is_live_airspy(const dsdneoUserConfig* cfg, const char* old_device, int old_
  * none having run before), or the live Airspy path failed, which fails the apply.
  */
 static int
-apply_cfg_radio_input(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg, const ui_cfg_rollback* before) {
+apply_cfg_radio_input_tuned(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg,
+                            const ui_cfg_rollback* before) {
     const ui_radio_input* in = &before->input;
     if (!cfg_is_live_airspy(cfg, in->audio_in_dev, in->audio_in_type)) {
         apply_cfg_live_rtl_ppm_request(opts, cfg, in->audio_in_type);
@@ -3688,6 +3757,23 @@ apply_cfg_radio_input(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* 
         rc = svc_airspy_apply_config_locked(opts, state, &cfg->airspy, &tuning);
     }
     apply_cfg_live_rtl_ppm_request(opts, cfg, in->audio_in_type);
+    return rc;
+}
+
+/* apply_cfg_radio_input_tuned(), then a radio input left on another frequency leaves its carrier (issue #575). A source
+   the config changed already did, where the stream started (dsd_engine_note_stream_source()), as did the live Airspy
+   retune (svc_rtl_set_freq_locked()), each moving state->carrier_seq. What is left is a reopen of the same source on
+   the config's frequency, read as every frontend reads it (dsd_opts_tuned_freq_hz()): the input stays a radio input, so
+   no input boundary or no-carrier pass ends the reception before the next carrier syncs. A start that failed put the
+   old input back, and the same source reopened for a new gain stays on its carrier. */
+static int
+apply_cfg_radio_input(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg, const ui_cfg_rollback* before) {
+    const uint32_t carrier_seq = state->carrier_seq;
+    const int rc = apply_cfg_radio_input_tuned(opts, state, cfg, before);
+    if (state->carrier_seq == carrier_seq && before->input.audio_in_type == AUDIO_IN_RTL
+        && opts->audio_in_type == AUDIO_IN_RTL && dsd_opts_tuned_freq_hz(opts) != before->input.tuned_freq_hz) {
+        dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, 1); // a config apply holds the guard
+    }
     return rc;
 }
 #endif
@@ -4542,11 +4628,18 @@ apply_cmd_eye_spectrum(dsd_opts* opts, dsd_state* state, const struct dsd_app_co
  * engine_trunk_tuning_owner_active()) and is deliberately untouched: it owns live
  * scan hooks that clearing a flag would not tear down, and it is only reachable
  * from a frontend that passes --trunk-scan.
+ *
+ * Refused during an I/Q replay (issue #575): it hands the tuner over to manual
+ * tunes, which a replay refuses, so it would only stop the decoder following the
+ * capture's trunking while the capture's recorded retunes went on.
  */
 static int
 apply_tuner_release(dsd_opts* opts, dsd_state* state) {
     if (!state) {
         return UI_CMD_APPLY_COMPLETED;
+    }
+    if (ui_cmd_refuse_replay_tune(opts, state)) {
+        return UI_CMD_APPLY_FAILED;
     }
     opts->trunk_enable = 0;
     opts->scanner_mode = 0;
@@ -5302,10 +5395,10 @@ rr_apply_files(dsd_opts* opts, dsd_state* state, const dsd_app_rr_apply_payload*
    RTL_STREAM_TUNE_TIMEOUT is accepted-pending; anything else is a session that
    cannot retune (WAV, stdin, UDP, symbol file), which the preview already warned
    about and which must not fail the whole apply. */
-static void
-rr_apply_tune(dsd_opts* opts, const dsd_state* state, const dsd_app_rr_apply_payload* p) {
+static int
+rr_apply_tune_frequency_fits(const dsd_app_rr_apply_payload* p) {
     if (p->tune_hz == 0U) {
-        return;
+        return 0;
     }
     /* io_control_set_freq() takes a long, which is 32-bit signed under the
        win-msvc-* presets while the payload carries a full uint32_t (and
@@ -5317,10 +5410,24 @@ rr_apply_tune(dsd_opts* opts, const dsd_state* state, const dsd_app_rr_apply_pay
        rejects it. */
 #if LONG_MAX < UINT32_MAX
     if (p->tune_hz > (uint32_t)LONG_MAX) {
-        return;
+        return 0;
     }
 #endif
-    (void)io_control_set_freq(opts, state, (long int)p->tune_hz);
+    return 1;
+}
+
+/* Whether the import moves the receiver to its system's channel: it carries a frequency the tuner takes, and the
+   session owns a tuner (a radio input, or a connected rigctl peer). */
+static int
+rr_apply_moves_the_receiver(const dsd_opts* opts, const dsd_app_rr_apply_payload* p) {
+    return rr_apply_tune_frequency_fits(p) && (dsd_opts_input_is_radio(opts) || dsd_opts_rigctl_live(opts));
+}
+
+static void
+rr_apply_tune(dsd_opts* opts, const dsd_state* state, const dsd_app_rr_apply_payload* p) {
+    if (rr_apply_tune_frequency_fits(p)) {
+        (void)io_control_set_freq(opts, state, (long int)p->tune_hz);
+    }
 }
 
 /* The session was just re-pointed at a different system, so the old system's CC
@@ -5365,6 +5472,13 @@ apply_rr_import(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* 
         return pre;
     }
     const dsdneoUserDecodeMode mode = (dsdneoUserDecodeMode)p.decode_mode;
+    if (rr_apply_moves_the_receiver(opts, &p)) {
+        /* The import re-points the session at another system and tunes its channel: the carrier boundary runs first,
+           while the calls of the system it leaves are still active, before anything below ends them
+           (decode_mode_apply_value() -> reset_call_tracking()), so the followed channel's buffered audio plays under its
+           talkgroup (issue #575). The import runs under the P25 SM tick guard. */
+        dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, 1);
+    }
     (void)svc_leave_channel_scan(opts, state);
     if (decode_mode_apply_value(opts, state, mode) != UI_CMD_APPLY_COMPLETED) {
         ui_set_toast(state, 4, "Failed: RR import -> decode mode");
@@ -5963,15 +6077,8 @@ tg_lockout_report(dsd_opts* opts, dsd_state* state, unsigned int tg) {
 }
 
 static void
-slot_block_note_event(const dsd_opts* opts, dsd_state* state, uint8_t slot, const char* text) {
-    const int eh_slot = slot == 0 ? 0 : 1;
-    dsd_event_history_transaction transaction;
-    dsd_event_history_transaction_begin(state, &transaction);
-    DSD_SNPRINTF(state->event_history_s[eh_slot].Event_History_Items[0].internal_str,
-                 sizeof state->event_history_s[eh_slot].Event_History_Items[0].internal_str, "%s", text);
-    dsd_event_history_mark_dirty(&state->event_history_s[eh_slot]);
-    dsd_event_history_transaction_end(&transaction);
-    watchdog_event_current(opts, state, eh_slot);
+slot_block_note_event(dsd_opts* opts, dsd_state* state, uint8_t slot, const char* text) {
+    dsd_event_note_current_call(opts, state, slot == 0 ? 0U : 1U, text);
 }
 
 static int
@@ -6247,6 +6354,11 @@ apply_cmd_channel_cycle(dsd_opts* opts, dsd_state* state, const struct dsd_app_c
     }
     if (!state) {
         return 1;
+    }
+    // Every leg below is a retune the user asked for -- the next target, -Y row, P25 candidate or LCN -- refused during
+    // an I/Q replay as a tap is (issue #575).
+    if (ui_cmd_refuse_replay_tune(opts, state)) {
+        return UI_CMD_APPLY_FAILED;
     }
     // Under --trunk-scan "next" means the next target. Walking the parked target's own
     // LCN list here would retune under the coordinator's feet and be snapshotted as if

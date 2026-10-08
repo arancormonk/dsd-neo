@@ -44,6 +44,7 @@ p25_sm_forget_selected_site(p25_sm_ctx_t* ctx, dsd_state* state) {
     if (!state->p2_hardset) {
         state->p2_cc = 0;
     }
+    state->p2_cc_verified = 0U; // proven on the site being forgotten (issue #575)
     state->p2_rfssid = 0;
     state->p2_siteid = 0;
     state->p25_site_lra_valid = 0;

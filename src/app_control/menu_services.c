@@ -23,6 +23,7 @@
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/engine/engine.h>
+#include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/engine/p25_bandplan_export.h>
 #include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/io/control.h>
@@ -256,6 +257,7 @@ svc_set_p2_params(dsd_state* state, unsigned long long wacn, unsigned long long 
     state->p2_wacn = (wacn > 0xFFFFF) ? 0xFFFFF : wacn;
     state->p2_sysid = (sysid > 0xFFF) ? 0xFFF : sysid;
     state->p2_cc = (cc > 0xFFF) ? 0xFFF : cc;
+    state->p2_cc_verified = 0U; // a seed set by hand proves nothing until a burst decodes with it (issue #575)
     state->p2_hardset = (state->p2_wacn != 0 && state->p2_sysid != 0 && state->p2_cc != 0) ? 1 : 0;
 }
 
@@ -1510,7 +1512,8 @@ svc_rtl_restart(dsd_opts* opts, dsd_state* state) {
 /* Stop and destroy any existing stream context. An I/Q replay stopped here restarts from the capture's first sample, if
    at all, so its decode time can no longer follow the capture: the decode clock goes back to the system clock with the
    stream stopped (issue #572). When the input is still that replay, the restart replays it on the system clock, which
-   is logged once, at the leave. */
+   is logged once, at the leave. The replay centre the decoder last read goes with the stream (issue #575): every stop,
+   restart, input switch and rollback comes here, so a live radio that replaces the replay reads its own centre. */
 static void
 svc_rtl_stop_locked(dsd_opts* opts, dsd_state* state) {
     if (state->rtl_ctx) {
@@ -1520,6 +1523,7 @@ svc_rtl_stop_locked(dsd_opts* opts, dsd_state* state) {
     }
     opts->rtl_started = 0;
     opts->rtl_needs_restart = 0;
+    dsd_opts_forget_iq_replay_center(opts);
     const int leaves_replay = dsd_decode_clock_source() == DSD_DECODE_CLOCK_REPLAY;
     dsd_engine_decode_clock_leave_replay(opts, state);
     if (leaves_replay && opts->audio_in_type == AUDIO_IN_RTL && opts->iq_replay_requested
@@ -1562,6 +1566,9 @@ svc_rtl_start_locked(dsd_opts* opts, dsd_state* state) {
     opts->rtl_needs_restart = 0;
     ++g_svc_rtl_starts;
     svc_apply_scan_autogain(opts, state);
+    /* A stream on another source than the one before it is another carrier (issue #575): every start comes here, so a
+       command that changes the source and restarts needs no boundary of its own. Callers hold the P25 SM tick guard. */
+    dsd_engine_note_stream_source(opts, state, 1);
     return 0;
 }
 
@@ -1736,8 +1743,8 @@ svc_airspy_squelch_changed(const svc_airspy_tuning* previous, const dsd_opts* cu
 
 /* In-place path: native controls first, then the shared tuning the stream did not reopen for. */
 static int
-svc_airspy_apply_live(dsd_opts* opts, const dsd_state* state, const dsd_airspy_config* config,
-                      const svc_airspy_tuning* previous_tuning) {
+svc_airspy_apply_live(dsd_opts* opts, dsd_state* state, const dsd_airspy_config* config,
+                      const svc_airspy_tuning* previous_tuning, int guard_held) {
     int rc = rtl_stream_airspy_controls(config);
     if (rc != 0) {
         svc_airspy_restore_tuning(opts, previous_tuning);
@@ -1747,7 +1754,7 @@ svc_airspy_apply_live(dsd_opts* opts, const dsd_state* state, const dsd_airspy_c
     if (previous_tuning->frequency != opts->rtlsdr_center_freq) {
         uint32_t frequency = opts->rtlsdr_center_freq;
         opts->rtlsdr_center_freq = previous_tuning->frequency;
-        rc = svc_rtl_set_freq(opts, state, frequency);
+        rc = guard_held ? svc_rtl_set_freq_locked(opts, state, frequency) : svc_rtl_set_freq(opts, state, frequency);
         if (rc == RTL_STREAM_TUNE_TIMEOUT) {
             /* Accepted-but-pending requests remain owned by the controller. DEFERRED
              * means the request was never queued (replay, PPM training, or a
@@ -1785,7 +1792,7 @@ svc_airspy_apply_config_impl(dsd_opts* opts, dsd_state* state, const dsd_airspy_
                                             previous_tuning->volume, opts->rtl_volume_multiplier);
     int rc = (reopen || !state->rtl_ctx) ? svc_airspy_reopen_impl(opts, state, config, &previous, previous_tuning,
                                                                   guard_held, out_capture_stopped)
-                                         : svc_airspy_apply_live(opts, state, config, previous_tuning);
+                                         : svc_airspy_apply_live(opts, state, config, previous_tuning, guard_held);
     (void)rtl_stream_airspy_info(&opts->airspy_info);
     return rc;
 }
@@ -1835,13 +1842,30 @@ svc_rtl_set_dev_index(dsd_opts* opts, dsd_state* state, int index) {
     return 0;
 }
 
-int
-svc_rtl_set_freq(dsd_opts* opts, const dsd_state* state, uint32_t hz) {
+/* A tune the user asked for, through the centralized io/control tuning API for both RTL and rigctl. An accepted one
+   (applied or pending) puts the receiver on another carrier, which can sync before any no-carrier pass: the carrier
+   boundary runs at this success point (issue #575). @p guard_held says whether the caller holds the P25 SM tick
+   guard. */
+static int
+svc_rtl_tune(dsd_opts* opts, dsd_state* state, uint32_t hz, int guard_held) {
     if (!opts) {
         return -1;
     }
-    // Use centralized io/control tuning API for both RTL and rigctl
-    return io_control_set_freq(opts, state, (long int)hz);
+    const int rc = io_control_set_freq(opts, state, (long int)hz);
+    if (state && (rc == RTL_STREAM_TUNE_OK || rc == RTL_STREAM_TUNE_TIMEOUT)) {
+        dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, guard_held);
+    }
+    return rc;
+}
+
+int
+svc_rtl_set_freq(dsd_opts* opts, dsd_state* state, uint32_t hz) {
+    return svc_rtl_tune(opts, state, hz, 0);
+}
+
+int
+svc_rtl_set_freq_locked(dsd_opts* opts, dsd_state* state, uint32_t hz) {
+    return svc_rtl_tune(opts, state, hz, 1);
 }
 
 int

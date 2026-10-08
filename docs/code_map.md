@@ -587,6 +587,70 @@ The `Linux • RelWithDebInfo • ctest (x86-64-v3, fast-math, clang)` check enf
   released by `dsd_state_trunk_lcn_free()`. Per-row key sets (key-file or direct-key columns, `-Y` only) live in a
   sibling store with the same shape (`dsd_state_trunk_lcn_keys_*`), swapped by `dsd_scan_keys_enter()`/
   `dsd_scan_keys_leave()` in `src/core/util/key_set.c`, and are likewise never deep-copied into the UI snapshot.
+- API note (call history rows, issue #575): every `Event_History` row records the frequency its call was heard on
+  (`freq_hz`, Hz, 0 unknown) and its access code (`access_code_kind`, a `dsd_access_code_kind`, and `access_code`; zero
+  means none, so a memset-zero row reads as unknown). `<dsd-neo/core/access_code.h>` (`src/core/util/access_code.c`,
+  outside `state.h` so app-control views can name the kinds) pins the kinds (NONE 0, COLOR_CODE 1, NAC 2, RAN 3, CAN 4;
+  the Qt store persists them), maps a protocol to its kind (`dsd_access_code_kind_for_protocol()`) and reads the live
+  code from state the protocol set only from checked content (`dsd_access_code_current()`; the header names each check):
+  DMR `dmr_color_code` 0..15, P25 Phase 1 `nac` only and Phase 2 `p2_cc` only (0x001..0xFFE; no fallback between them,
+  since a Phase 1 NID of 0x000/0xFFF leaves `nac` 0 beside a stale `p2_cc`), and `p2_cc` only while `p2_cc_verified`
+  says this carrier proved it (see Protocols), NXDN `nxdn_last_ran` < 64 unless `nxdn_last_ran_stand_in` marks it as a
+  value the terminal shows where the RAN goes but that is none (an IDAS area bit or site type, DCR's fixed 7; see
+  Protocols), dPMR `dpmr_color_code` 0..63, M17 the service options' low nibble once the call has service metadata.
+  `watchdog_event_current_load_tuning()` in `dsd_events.c` applies two per-row rules on every voice render, against the
+  staged row: the frequency is the call's own `frequency_hz` whenever it has one, else the staged value, else -- only on
+  an ACTIVE render outside `--playfiles` -- `dsd_opts_tuned_freq_hz()`, so the tuner is pinned at the epoch's first
+  active render as the channel label is (a typed `-Y` row's queued tune writes `rtlsdr_center_freq` before
+  `channel_scan_commit()` ends the outgoing calls, and `trunk_scan_switch_to()` restores the next target's state before
+  it retunes); the access code is refreshed from a valid live reading while the call is ACTIVE (a sentinel never erases
+  a known code), frozen once it has ENDED (a held finalize pass may run after a hop), reused only when its kind is the
+  protocol's, and never taken under `--playfiles`. Staged values -- these two, the channel label and the row's start
+  stamp -- are reused only when the slot's lifecycle has opened the call's epoch, and every canonical render opens it
+  first: `dsd_event_sync_slot()`, `watchdog_event_current()` and `dsd_event_note_current_call()` all run the history
+  step before they render, so a render that follows a protocol's unsynced observation no longer draws the new call over
+  the outgoing epoch's row, which the next sync committed as the outgoing call's (two rows for the new call, none for a
+  staged outgoing one). The window is DMR's: `prepare_dmr_bs_voice_slot()` observes the tuned call through the trunk
+  SM's voice sync, a burst can end the superframe before its post-skip sync, and the control pump runs between
+  `processFrame()` and the next `getFrameSync()`; D-STAR's `processDSTAR()` syncs after every voice frame. Notes for the
+  slot's call (the DMR/NXDN encryption lockout, an operator's slot lockout or skip) go through
+  `dsd_event_note_current_call()`, never a raw `Items[0].internal_str` write, and it declines when the slot has no call
+  to carry the note (none observed, or one that ended and committed its row). Detail a protocol decodes without naming
+  its call -- D-STAR slow-data text and APRS, the NXDN alias and DCR call sign memory -- reaches a row only through
+  `dsd_event_set_open_call_detail()`, which writes it only while the slot's call is ACTIVE and its epoch is open, and
+  `dsd_event_enrich_*()` declines a row-0 write while the call's epoch is not yet open (the live alias display and the
+  call's CRC verdict still follow). Detail decoded before any call for the transmission was observed used to be
+  committed at the next epoch open as a detail-only row with no summary, or to land on a previous call that had ended
+  but not yet committed; declined detail lands when it repeats. One case remains: while the previous call is still
+  ACTIVE, a direct writer's detail for the next transmission still lands on the previous call's row, since none of these
+  messages names its call. The protocols still write their display scratch (`dstar_txt`, `dstar_gps`,
+  `generic_talker_alias`) as before; with no orphan commit running `watchdog_event_reset_post_push()` at the next call's
+  open, D-STAR text and position decoded before that call was observed now stay on screen through it. A notice for a
+  non-canonical call (the P25 lockout's synthetic snapshot, `watchdog_event_emit_noncanonical_notice()`) renders into a
+  blank row and restores the canonical staged row byte for byte, as a data notice does: no other call's label,
+  frequency, code, start, alias, GPS or text, no WAV rotation or end alert, and the canonical call keeps its row. Data
+  notices read both live (the notice's own frequency first). A reacquisition merge only fills an unknown frequency or
+  code (kind and value together). The system identity string (`sysid_string`, which also names WAV files and the
+  rdio-scanner `short_name`) and the event line print `--` for a DMR colour code, NXDN RAN or dPMR colour code still at
+  its sentinel (`DMR_CC_--`, `NXDN_RAN_--`, `DPMR_CC_--`, `CC: --;`, `RAN: --;`; `watchdog_event_code_text()`), and for
+  an NXDN stand-in, which is never the row's access code (`dsd_access_code_current()`); the numeric sys ids keep the raw
+  value, since 0 is a code. The dPMR event line's `CC:` is the row's decoded colour code (its access code), not the
+  call's `channel`, which `dpmr_publish_call()` sets to 0 for an undecoded code. In
+  `watchdog_event_merge_system_identity()` the sentinel, not 0, is the missing code: a reacquired segment that decoded
+  one fills it (0 included), and a decoded code is never replaced. The DMR, NXDN and dPMR strings are then rebuilt from
+  the merged row (`watchdog_event_rebuild_code_sysid()`), so a code one segment decoded and a system code or site only
+  the other decoded both appear. The DMR colour code, the NXDN RAN, the P25 NAC, the M17 CAN and dPMR's colour code in
+  the string and the event line are the row's access code, so a call whose last render runs after the receiver moved
+  names the code it was heard with (under `--playfiles`, which takes none, `DMR_CC_--` and `CC: --;` whatever the file
+  reader wrote into `dmr_color_code`), set after the tuning load on a live render
+  (`watchdog_event_current_apply_code_identity()`) and rebuilt by a merge from the merged code: a Phase 1 call's
+  `sys_id3` falls back to a `p2_cc` another carrier left, which the access code does not take. An unknown NAC prints
+  `---` (`P25_---`, `P25_45564006---_10_10`, `NAC: ---;`), three wide like the code, so the long form keeps its field
+  positions; an unknown CAN prints `--` (`M17_CAN_--`, `CAN: --;`). The NXDN event line names the call's own `channel`
+  and the row's `freq_hz`, never the global last grant (`nxdn_grant_chan`/`_freq`, which left the render env). The
+  rdio-scanner sidecar's `freq` is `freq_hz` (clamped to `uint32_t`, still 0 below 1 MHz); it was the channel number
+  before. The control API's event rows carry `freq_hz`, `access_code_kind` and `access_code`, folded into the row
+  fingerprint. Tests: `CORE_ACCESS_CODE`, `CORE_CALL_ALERT_HISTORY`, `RUNTIME_RDIO_EXPORT`, `API_SERVER`.
 - API note: text arriving as UTF-16 code units (DMR UDT/SMS, talker aliases) is decoded with
   `<dsd-neo/core/utf16.h>` and printed one scalar value at a time through `dsd_unicode_fput_scalar()` in
   `<dsd-neo/runtime/unicode.h>`. Never pass a code unit to `%lc`: a lone surrogate has no encoding, and the
@@ -697,7 +761,19 @@ The `Linux • RelWithDebInfo • ctest (x86-64-v3, fast-math, clang)` check enf
   UDP, TCP; not an RTL-family, symbol-file or null input), `dsd_opts_rigctl_live()` a connected rigctl peer (`-U` on
   with a socket, socket 0 included) and `dsd_opts_rigctl_peer_demodulates()` both together, a peer whose demodulator
   DSD-neo hears (issue #621): the squelch's input kind, the rigctl passband rule, the engine's rigctl legs and
-  app-control's analog width view and follow all key on these.
+  app-control's analog width view and follow all key on these. `dsd_opts_tuned_freq_hz()` is the frequency the
+  receiver is tuned to, as every frontend reads it (the terminal `FRQ:` field, the Qt `centerFreqHz`, the Android
+  notification; issue #575): 0 off a radio input, rigctl on an audio input included (`rtlsdr_center_freq` holds a
+  made-up 850 MHz until DSD-neo tunes the peer, the legacy rigctl `-Y` scan never writes it, and a change made on the
+  peer is invisible), else the I/Q replay centre the decoder last read (`iq_replay_center_freq`) when there is one,
+  else `rtlsdr_center_freq`; the replay read paths store that centre through `dsd_opts_note_iq_replay_center()`. The
+  decoded readings (SiteSheet CC/VC, `dsd_app_vc_freq()`/`dsd_app_cc_freq()`, the trunk `Frequency:` lines) stay on
+  their decoded values. `dsd_opts_input_is_iq_replay()` says whether the input in force is an I/Q replay (an RTL input
+  with an `iqreplay` spec), from the input type and device string rather than `iq_replay_active`, which an input switch
+  does not clear. `dsd_opts_trunk_vc_followed()` says whether the receiver sits on a voice channel a trunking grant sent
+  it to (`trunk_enable` and `trunk_is_tuned` both 1): only then does `trunk_vc_freq[]` name the carrier being decoded,
+  and a call observation whose message carries no frequency may stamp it (P25's target-matched `p25_vc_freq[]` differs;
+  see Protocols). Tests: `CORE_OPTS_TUNED_FREQ`.
 - API note (runtime sink changes, `<dsd-neo/core/audio.h>`): `dsd_audio_ensure_analog_output()` and
   `dsd_audio_ensure_digital_output()` open the sink a new receive family writes to (the raw monitor stream; the digital
   voice stream, plus the raw stream for ProVoice and `-8`) with the parameters `openAudioOutput()` uses, when the
@@ -812,10 +888,12 @@ The `Linux • RelWithDebInfo • ctest (x86-64-v3, fast-math, clang)` check enf
     replay's stamps keep ageing; wall time returns to real time. Each replay sample moves media time to its own capture
     time as it reaches symbol processing (`dsd_decode_clock_batch_media_ns()` over the batch tag's span): the symbol
     cache's pop, and the one-sample readers (the analog monitor, M17, EDACS analog) through
-    `dsd_rtl_stream_metrics_hook_replay_advance_decode_clock()`. Unit tests step decode time on the TEST source
-    (`docs/testing.md`, "Decode time in unit tests"). Tests: `RUNTIME_DECODE_CLOCK` (the sources, the anchor floor and
-    ceiling, `dsd_decode_clock_batch_media_ns()`, the leave's continuity), `RTL_SYMBOL_REPLAY_CLOCK`,
-    `ENGINE_REPLAY_DECODE_CLOCK`, and the leave in `ENGINE_NO_CARRIER_RESET` and `APP_COMMAND_QUEUE`.
+    `dsd_rtl_stream_metrics_hook_replay_advance_decode_clock()`, which also reports the centre the batch was captured
+    on through its optional `center_hz_out` (issue #575; see IO, "I/Q replay tuned frequency"). Unit tests step
+    decode time on the TEST source (`docs/testing.md`, "Decode time in unit tests"). Tests: `RUNTIME_DECODE_CLOCK`
+    (the sources, the anchor floor and ceiling, `dsd_decode_clock_batch_media_ns()`, the leave's continuity),
+    `RTL_SYMBOL_REPLAY_CLOCK`, `ENGINE_REPLAY_DECODE_CLOCK`, and the leave in `ENGINE_NO_CARRIER_RESET` and
+    `APP_COMMAND_QUEUE`.
   - Analog channel contract shared by the CLI, config, app commands, scan rows and the demodulator
     (`include/dsd-neo/runtime/analog_channel.h`, `src/runtime/analog_channel.c`): `dsd_analog_demod` (FM = 0,
     AM = 1), `dsd_rx_family`, per-kind width ranges and defaults (NFM 8000–25000 Hz, default 16000; AM
@@ -899,9 +977,9 @@ The `Linux • RelWithDebInfo • ctest (x86-64-v3, fast-math, clang)` check enf
     on (`output_rate_for_family`, told whether the CQPSK state is a trunk-scan target's own choice, which stands over
     `DSD_NEO_CQPSK` there, issue #583), and what the I/Q replay batch the decoder's last read took its samples from ran
     on (`replay_batch`, `dsd_rtl_stream_replay_batch`: generation, output kind, channel profile, symbol rate and
-    levels, and the media span, output count and first sample's index the decode clock runs on; decoder thread only,
-    while the stream is open; issue #572); the engine installs
-    `rtl_stream_request_analog_profile()`, `rtl_stream_request_digital_family_landing()`,
+    levels, the media span, output count and first sample's index the decode clock runs on, and the channel centre
+    the batch was captured on, issue #575; decoder thread only, while the stream is open; issue #572); the engine
+    installs `rtl_stream_request_analog_profile()`, `rtl_stream_request_digital_family_landing()`,
     `rtl_stream_get_analog_profile()`, `rtl_stream_analog_family_active()`, `rtl_stream_family_landing_after_pending()`,
     `rtl_stream_output_rate_for_family()` and `rtl_stream_get_replay_batch()` behind them. It also hands the
     demodulator a whole squelch setting (`set_channel_squelch_setting`, `rtl_stream_set_channel_squelch_setting()`;
@@ -1123,6 +1201,21 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
     restarted UDP input (`apply_cfg_note_reopen()`); its WAV reopen refuses a pipe or device. The queue answers the
     runtime's controls-pending query (`dsd_app_commands_pending()`). Tests: `APP_COMMAND_QUEUE`, `RUNTIME_CONFIG_APPLY`,
     `UI_MENU_SERVICES`, `UI_TCP_AUDIO_CONNECT`.
+  - Replay tuning (issue #575): an I/Q replay plays the tuning its capture recorded and defers every other retune
+    unseen, so while the input in force is a replay (`dsd_opts_input_is_iq_replay()`) `MANUAL_TUNE` (the Spectrum tap),
+    `RTL_SET_FREQ` (the terminal menu's frequency row, Qt's frequency entry), `TUNER_RELEASE`
+    (`CommandBridge::releaseTuner()`), `RETURN_CC` (refused ahead of its no-op cases, trunking off or no control
+    channel yet, so it never reads as done) and `CHANNEL_CYCLE`
+    (every leg: LCN, P25 candidate, `-Y` row, trunk-scan target) are refused as failed commands with the toast "An I/Q
+    replay cannot retune." (`ui_cmd_refuse_replay_tune()`), where they used to report a tune that never landed or fail
+    on the backend's deferred result with no reason given. Scan hold and avoid, skip and lockout are not refused: their
+    main effect is on the scan or the decoder. The tap's refusal comes ahead of its tuner-owner gates, whose toasts
+    point at a release; every refusal of the tap, the owner gates included, is a failed command with its reason toasted,
+    as the frequency entry's are. Qt and the control API learn it from the toast: they see only whether the command was
+    queued. Qt's Spectrum screen offers none of them during a replay (`MetricsModel::replayInput`; see UI, Qt, "Tuned
+    frequency, call codes and replay tuning on screen"). `svc_rtl_stop_locked()` clears the replay centre the
+    tuned-frequency reading follows (see IO, "I/Q replay tuned frequency"). Tests: `APP_COMMAND_QUEUE`,
+    `UI_MENU_SERVICES`.
   - Bootstrap retains only positional playback filenames in argv storage, preserving argument indexes with empty
     placeholders. State snapshots exclude argv ownership; teardown securely erases retained strings.
   - Retained results: talkgroup export and decryption completions are kept as the latest result
@@ -1719,6 +1812,17 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   view. The terminal's width rows and Qt's `nfmBandwidthOffered`/`amBandwidthOffered` use it, and Qt's
   `analogBandwidthAm` says which kind the view's width is. Tests: `APP_CONTROL_ANALOG_WIDTH_VIEW` (every peer reading,
   live and on a snapshot pair), `APP_CONTROL_FRONTEND_PUBLIC_BOUNDARY`.
+  `include/dsd-neo/app_control/access_code_view.h` and `src/app_control/access_code_view.c` (issue #575) spell a call
+  history row's access code, the `dsd_access_code_kind` and value of `<dsd-neo/core/access_code.h>`:
+  `dsd_app_access_code_view()` gives the short text a list row shows (`CC 1`, `NAC 293`, `RAN 5`, `CAN 0`) and the long
+  one a detail sheet shows (`Color code 1`, `Network access code 293`, `Radio access number 5`, `Channel access number
+  0`), a NAC as three uppercase hex digits and every other code in decimal. A kind it does not know, `NONE` included,
+  or a value outside its protocol's range (colour code 0..63, dPMR's range, of which DMR's 0..15 is a subset; NAC
+  0x001..0xFFE; RAN 0..63; CAN 0..15) is not visible and leaves both texts empty, so a corrupt or newer store never
+  reads as a code. `dsd_app_access_code_format()` writes one of the two texts (`DSD_APP_ACCESS_CODE_SHORT` or
+  `_LONG`) for a caller that shows one at a time; the view is built on it. The public header names the kinds through
+  `core/access_code.h` only, never `state.h`. The Qt call history's `accessCode`/`accessCodeText` roles come from it,
+  each formatting only its own text. Test: `APP_CONTROL_ACCESS_CODE_VIEW`.
 - Decode quality: `include/dsd-neo/app_control/p25_metrics.h` and `src/app_control/p25_metrics.c`
   copy FEC ok percentages, populated P25 voice-error averages, and non-P25 last-frame
   errors from the caller's held snapshot. The core vocoder maintains ring counts;
@@ -1745,7 +1849,9 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   - `api_feed.c`: a telemetry observer (see "Telemetry Hooks"). On the decode thread it follows the event-history
     rings at every publish (two counters per slot while nothing changes; per-row fingerprints find late enrichment of
     any committed row) and sends the rows pushed or changed since its last look to event subscribers; following them
-    whether or not anyone listens is what lets a new subscriber get every row committed after its subscription. While
+    whether or not anyone listens is what lets a new subscriber get every row committed after its subscription. An
+    event row carries every field a client sees of the row, the call's `freq_hz` and access code included (issue
+    #575), and the fingerprint covers the same fields, so a row that learns one in place is sent again. While
     an authenticated client is connected it also encodes the call/status/system/metrics/quality records every 250 ms
     (cached for `get`). The `status` record carries what the stateful
     commands must quote back: the talkgroup policy version, the decryption context and the scan row view. RF metrics
@@ -2072,7 +2178,9 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   dropped. The cache keeps the batch's media span with its samples, and each sample it hands out runs the decode
   clock's media time to that sample's capture time (`rtl_symbol_cache_pop()`), so a decode window reads the same time
   whatever the batch boundaries; a live read's samples move nothing, and the matched-filter seam's hand-backs never
-  pass through the pop. Tests: `RTL_SYMBOL_CACHE_GENERATION`, `RTL_SYMBOL_REPLAY_CLOCK`.
+  pass through the pop. The cache keeps the batch's capture centre too (`rtl_symbol_cache_center_hz`, 0 after a live
+  read), which its readers publish into `opts->iq_replay_center_freq` after each sample they take (issue #575; see IO,
+  "I/Q replay tuned frequency"). Tests: `RTL_SYMBOL_CACHE_GENERATION`, `RTL_SYMBOL_REPLAY_CLOCK`.
 - `dsd_symbol.c` owns the open-loop FSK symbol grid. Only the inter-frame sync search moves it, by a whole sample at
   a time, on the first zero crossing latched in the previous symbol — a bang-bang loop on one unfiltered sample
   index, and between frames the only thing tracking the sampling instant across a call. Issue #444 documents how
@@ -3059,11 +3167,11 @@ Notes:
       `m17.c`, `edacs-fme.c`, the analog monitor). So the demod never starts a block while the decoder runs, and a
       request, clear or snapshot the decoder makes lands at the start of the next block.
     - The batch tag (`rtl_stream_replay_batch` in `rtl_stream_c.h`: chunk sequence, output generation, the published
-      output kind, channel profile, symbol rate and levels, output rate, media start and duration, output count) of
-      the batch the last read took samples from, with their place in it, is what `rtl_stream_get_replay_batch()`
-      returns, on the decoder thread while the stream is open. The symbol cache labels what it reads from it, through
-      the runtime metrics hook (see DSP), so it keeps the first batch after a change, and runs the decode clock on its
-      media span, sample by sample (see Runtime).
+      output kind, channel profile, symbol rate and levels, output rate, media start and duration, output count, and
+      the channel centre the chunk was captured on) of the batch the last read took samples from, with their place in
+      it, is what `rtl_stream_get_replay_batch()` returns, on the decoder thread while the stream is open. The symbol
+      cache labels what it reads from it, through the runtime metrics hook (see DSP), so it keeps the first batch after
+      a change, and runs the decode clock on its media span, sample by sample (see Runtime).
     - Lock order: `replay_eof_m`, then `output.ready_m`. The locked sections use the unlocked ring helpers.
 
     Tests: `IO_RTL_REPLAY_DETERMINISM` (greedy fast, slow and realtime readers with the same requests deliver the same
@@ -3104,6 +3212,48 @@ Notes:
     block and nothing discarded; a decoder stalled at a RESET or a rewind loses nothing; the demod taking the purge
     flag keeps the next chunk; a purge a stop left untaken does not reach the next replay; the reset plans of a hop
     and a hop back; bounded stops at an event boundary and at a rewind).
+  - I/Q replay tuned frequency (issue #575). A replayed RETUNE moves the demod, but `opts->rtlsdr_center_freq` keeps
+    the capture's opening centre: a live retune is deferred during a replay before it writes the field, and the DMR,
+    NXDN, EDACS and P25/DMR trunking paths read it as the control or current channel, so moving it would change how a
+    replay decodes. The reading follows the capture instead:
+    - `demod_replay_batch_tag()` tags each batch with `controller.last_applied_freq_hz`, which the opening settings
+      and a loop rewind set (`controller_apply_replay_settings()`) and a replayed RETUNE moves
+      (`rtl_replay_on_retune_event()`). Each is applied on an idle pipeline (above), so the centre in force when the
+      demod tags a block is the one its chunk was captured on. The engine's metrics adapter copies it into
+      `dsd_rtl_stream_replay_batch::center_frequency_hz`.
+    - The decoder thread writes it into `dsd_opts::iq_replay_center_freq` wherever a replay sample runs the decode
+      clock: the symbol cache keeps the batch centre beside its media span (`rtl_symbol_cache_center_hz`) and its
+      readers (the FSK sample read and the CQPSK fast path) publish it after each sample they take; the one-sample
+      readers (the analog monitor, M17, EDACS analog) get it from
+      `dsd_rtl_stream_metrics_hook_replay_advance_decode_clock()`. Each notes it through
+      `dsd_opts_note_iq_replay_center()`, which stores only a nonzero centre that differs from the one noted; a live
+      read writes nothing and costs nothing new, and a live fill drops the centre a replay fill left in the cache.
+    - A move from one nonzero centre to another is a retune the capture recorded. The read paths note each centre
+      through `dsd_frame_sync_note_replay_center()` (runtime), which returns from `dsd_opts_note_iq_replay_center()`
+      whether the decoder adopted a new centre over another and, when it did, runs the frame-sync hook `replay_retune`
+      there, before the read returns the first sample the new carrier carries: a retune can land inside a frame, whose
+      decoding goes on publishing calls before the next frame-sync return. The engine installs
+      `dsd_engine_leave_replay_carrier()` for it. With trunking off it is another conventional carrier, and it runs the
+      carrier boundary an accepted live retune runs (`dsd_engine_carrier_boundary()`, see Protocols, "Call frequency and
+      access-code provenance"): the outgoing calls end and commit as a hop, the codes and the untrunked state go, and
+      `carrier_seq` moves, so the frame the retune landed in is dropped by the decoder reading it; a call decoded after
+      the adoption takes the new centre and code, and no later pass ends it. With trunking on it is the system
+      following itself, and under trunk scan a target switch with its own snapshots: nothing changes. It runs inside a
+      sample read on the decoder thread, where no call-state lock is held: that lock is taken only inside
+      `call_state.c` and the event layer, which never read samples, and `dsd_call_state_end_ex()` and
+      `dsd_event_sync_slot()` take and release it themselves, as a protocol publishing a call mid-frame does. The P25
+      SM tick guard the frame may hold is not taken. A stop of the stream clears the centre
+      (`dsd_opts_forget_iq_replay_center()`). Test: `ENGINE_INPUT_BOUNDARY` (a retune adopted inside a frame); the one
+      `iq-decode` fixture with a conventional recorded retune (`nxdn48_after_retune`, `-fi` and `-fa`) decodes byte for
+      byte as before.
+    - It lives in the caller's options, not the RTL orchestrator's copy, and does not key on `iq_replay_active`. Every
+      stop of the stream clears it (`svc_rtl_stop_locked()`, which each app-control stop, restart, input switch and
+      rollback runs; the engine's own open and close in `engine.c`), so a live radio that replaces a replay reads its
+      own centre again.
+    - Readers go through `dsd_opts_tuned_freq_hz()` (see Core). Tests: `IO_RTL_REPLAY_DETERMINISM` (every leg's batch
+      centres follow the capture layout's RETUNEs; a looping capture's opening centre, the RETUNE's, and the opening
+      one again after the rewind), `RUNTIME_RTL_STREAM_METRICS_HOOKS`, `ENGINE_RTL_STREAM_METRICS_HOOKS_INSTALL`,
+      `RTL_SYMBOL_REPLAY_CLOCK`, `UI_MENU_SERVICES`, `ENGINE_RUN_SETUP`.
   - I/Q replay end to end (issue #572). With the pacing and events above, the streaming front end (see DSP) and the
     decode clock on the capture's time (see Runtime), a replay without `-T` or `-Y` prints the same decoder output on
     every run, fast or realtime, however the decoder is scheduled, capture-time timestamps included
@@ -3179,6 +3329,211 @@ do, also when the request completed inside the call. A learned CC type identifie
 `noCarrier()` clears that evidence after another trunking protocol takes over. Extension ID 26
 (`DSD_STATE_EXT_PROTO_P25_CC_SELECTION`) retains the site-specific cache requirement across no-carrier resets,
 while network band plans and user settings survive.
+
+Call frequency and access-code provenance (issue #575). A call's canonical `frequency_hz` and the live access codes
+(`dmr_color_code`, `dpmr_color_code`, `nxdn_last_ran`) are read as describing the carrier the call is decoded on, so:
+
+- A call observation's `frequency_hz` is either a frequency its own message carries (a P25 TSBK/LCW/MBT/VPDU grant,
+  a DMR CSBK grant's activity, an EDACS grant) or the frequency of the carrier the call is decoded on. Messages that
+  carry none read a global only when it names that carrier:
+  - `trunk_vc_freq[]` only while `dsd_opts_trunk_vc_followed()` (the DMR voice LC `dmr_flco_publish_voice()`, the NXDN
+    VCALL `nxdn_vcall_publish()`, the P25 Phase 1 ESS epoch `p25_crypto_ensure_phase1_call()`); with trunking off every
+    DMR grant in `dmr_csbk.c` writes it for display while the receiver stays put, so it names another channel. The
+    P25 conventional voice publication (`p25_sm_conventional_frequency()`), which runs only with trunking off, never
+    reads it.
+  - P25 `p25_vc_freq[]` while trunking (the ESS epoch): followed, it is the voice channel. With trunking off a grant's
+    frequency belongs to the call whose target it named, and to no other: every trunking-off writer is target-matched,
+    writing only for a grant or grant update that names the target of a call active on this carrier
+    (`p25p2_vpdu_update_playback_if_match()`, used by both MFID90 regroup grants too, the VPDU telephone and SNDCP
+    data grants, and `p25_telephone_update_nontrunk_vc_freq()` in `p25p1_pdu_trunking.c`), and each keeps the
+    frequency with that target, per slot whose active call has it (`p25_conventional_grant_note()`:
+    `p25_conventional_grant_freq[]`/`_target[]`). The Phase 2 writer fills both slots' `p25_vc_freq[]`, so the
+    conventional publication (`p25_sm_conventional_frequency()`) and the ESS epoch read the pair instead
+    (`p25_conventional_grant_frequency()`), and a call takes it only when it has that target: a second talkgroup on
+    the carrier, or an ESS epoch that names none, takes none and its row falls back to the tuned frequency.
+    `noCarrier()` and the carrier boundary clear both with trunking off. Trunk scan keeps the pair in each target's
+    snapshot beside `p25_vc_freq[]`, and a fresh target starts without one: a rotation between conventional P25
+    targets runs neither, so the incoming carrier's call with the same target would otherwise take the other's grant.
+  - The DMR trunk SM's voice-sync publication stamps its own tuned `vc_freq_hz`. The NXDN VCALL names the last
+    grant's channel (`nxdn_grant_chan`) only when that grant's frequency is the followed one, since a duplicate
+    assignment decoded while tuned moves it without moving the receiver.
+  - The P25 encryption lockout's notice for a call the slot has not published (the synthetic snapshot of
+    `p25_lockout_snapshot_from_observation()`) carries the frequency of the grant the SM tuned the slot to when that
+    grant names the locked-out target (`p25_lockout_grant_frequency()`), as `p25_call_publish_observation()` stamps
+    the SM's own calls. The notice renders before the release returns the tuner to the control channel, so on a
+    radio input the live tuner reads the same channel; off one (an audio input with a rigctl peer), where the tuner
+    reads nothing, the grant is the only source.
+- `dmr_color_code` goes back to 16 ("not decoded") at the carrier boundary, with `dmr_confidence_reset()`, in
+  `dsd_engine_forget_carrier_codes()`, which `no_carrier_reset_decode_state()` runs in `noCarrier()` and in
+  `dsd_engine_reset_no_carrier_state()`, and the carrier boundary runs (`dsd_engine_carrier_boundary()`, below). BS
+  mode rewrites it at the confidence relock before any burst is dispatched; DMR MS mode has no lock, so without the
+  reset a call opening before its embedded code decodes, or after a failed QR(16,7,6), took the previous carrier's
+  code. It is reset there rather than inside `dmr_confidence_reset()`, whose
+  BS burst-error callers in `dmr_bs.c` stay on the same carrier.
+- `nxdn_last_ran` goes back to `(unsigned)-1` at the same boundary (RAN 0 is a legal code). The SACCH writes it only
+  once the transmission is confirmed, and `nxdn_confirm_reset()` restarts confirmation at every no-carrier pass, so a
+  call opening on its FACCH1 VCALL read the previous transmission's RAN; on a control channel the CRC-gated CAC sets
+  it again at once. The `LIMAZULUTWEAKS` reset in `noCarrier()` and the legacy `-Y` step's reset remain.
+- `nxdn_last_ran` also holds values that are not a RAN, which the terminal shows in its place: the IDAS (Type-D) SCCH's
+  area bit (`nxdn_scch_prepare_type_d()`, confirmed transmissions only) and a site ID message's site type
+  (`nxdn_scch_handle_site_id()`, behind the SCCH's 7-bit CRC alone), and the fixed 7 the DCR SACCH2 gives a confirmed
+  transmission (`nxdn_update_sacch2_identity_state()`). Every write of a value sets `nxdn_last_ran_stand_in` beside it
+  (the `(unsigned)-1` resets need not, since no reader takes -1): 1 for those three, 0 for the RAN fields (CAC,
+  FACCH2/UDCH, SACCH, and the site information message's site code), so `dsd_access_code_current()` gives an IDAS or DCR
+  call no access code, and a RAN decoded afterwards reads again. The flag marks the value rather than the carrier:
+  `nxdn_location_category` "Type-D", which labels the terminal's "IDAS - Area", is set by any SCCH that passes its CRC,
+  noise included, and kept across carriers with trunking on, so it could hide a real RAN; and no state marks a DCR
+  carrier (`nxdn_dcr_sf_message_type` drops to 0xFF on every SACCH2 CRC failure and survives the carrier boundary). The
+  site ID write stays ungated, since gating it on confirmation would change what the terminal shows on an unconfirmed
+  IDAS carrier and no access code reads it now. The live displays follow the mark too: outside IDAS, whose area keeps
+  its own label, the terminal's NXDN line prints `RAN: --` and the Qt site sheet shows no RAN for a stand-in, which
+  there is DCR's 7 (`ui_render_nxdn_site_line()`, `MetricsModel::fillNxdnSite()`).
+- `p2_cc` is the Phase 2 descrambler's seed, which `-X`, a Phase 1 NID or another carrier may have left. It is a call's
+  received NAC only while `p2_cc_verified` is set: a burst descrambled with it passed its Reed-Solomon check (a
+  scrambled FACCH or SACCH, `process_FACCHs()`/`process_SACCHs()`, or an ESS, `p25p2_process_ess()`, all through
+  `p25p2_note_seed_proven()`; it proves the seed `p25p2_process_frame_scramble()` descrambled the buffered superframe
+  with, so the seed in force is proven only while it is still that one: a broadcast decoded from an earlier burst of the
+  same buffer may have replaced it; when the proof is first set it renders both slots before the burst's MAC PDU is
+  dispatched, since that burst may carry the MAC_END_PTT that ends its call and an ended call no longer reads the live
+  NAC), or a network status broadcast that passed its CRC named it
+  (`p25p2_vpdu_apply_nsb_identity()`). Under `-F` an XCCH MAC_SIGNAL that failed its CRC still reaches the VPDU decoder,
+  which `p25p2_xcch_validate_sacch_crc()` allows, so the signal handler passes the verdict through
+  (`process_MAC_VPDU_crc()`): such a broadcast may still name the system, as before, but proves no NAC. Every other
+  proof needs a Reed-Solomon decode that succeeded with its parity check intact, which no option relaxes: a FACCH or
+  SACCH that needed the soft-erasure retry, or an ESS that needed `p25p2_ess_decode_with_soft_erasures()`'s erasures,
+  still decodes for its content but proves nothing, since erasures spend the code's check (the shortened RS(63,35)
+  ESS with all 28 parity symbols erased decodes any payload). And a slot's ESS_B that the carrier left
+  (`p25_p2_ess_b_stale`, set when the carrier's decoding is forgotten, cleared by the next 4V burst's fragment) is not
+  decoded at all: a 2V burst ahead of any 4V burst would read the old carrier's ALG, KID and MI from it, and
+  prove the new seed with it. An unscrambled FACCH/SACCH (DUID 15, 12, 13) never tests the seed, so a call carried only
+  by those records no NAC. The mark goes at the carrier boundary with
+  the codes above, and whenever a Phase 1 NID, a hand-set seed or a site reset changes `p2_cc`; `p2_cc` itself is the
+  descrambling key and is never reset for it.
+- Trunk scan skips both resets (`preserve_scan_state`): the per-target snapshot saves and restores the DMR colour code
+  with its confidence lock, the RAN with its stand-in mark, `p2_cc` with its proof, and the conventional grant pair.
+  What the decoders gathered on the carrier is in no snapshot: a target switch (`trunk_scan_switch_to()`) forgets it
+  between saving the outgoing target and restoring the incoming one (`dsd_engine_forget_carrier_decoding()`, the
+  evidence and assemblies of the boundary's step 3). The decoder-wide values stay global: `carrier_seq` only counts
+  boundaries, and a switch is none; `carrier_source_key` and the RTL symbol cache's centre belong to the one tuner's
+  stream; the ESS_B stale mark is set by that forget.
+- `dsd_engine_carrier_boundary()` (`<dsd-neo/engine/frame_processing.h>`) is the one carrier boundary: every place the
+  receiver leaves a carrier for another runs it, and no caller open-codes any part of it. A tune, a source change or an
+  input switch can run beside the watchdog's ticks, so the boundary holds the P25 SM tick guard from its first
+  inspection of the state machines through its last step, taking it when the caller does not hold it (`guard_held`
+  must be exact: the guard is not re-entrant); a scan step and a replay retune run where no recovery tick runs,
+  inspect no state machine and take none. Its order is fixed:
+  1. The voice channel a trunking state machine followed, if one is held, is released while its calls are still active
+     (`carrier_boundary_release_followed()`): the P25 or DMR state machine comes to rest on its control channel without
+     tuning, as trunk scan hands a carrier back (the P25 release flushes the partial Phase 2 superframe, which the 8 kHz
+     int16 mixer plays only for an active call on a talkgroup the hold or policy allows), and the shared
+     `dsd_engine_release_tuned_call_state()` drops `trunk_is_tuned` and the voice channel frequencies, so
+     `dsd_opts_trunk_vc_followed()` stamps no frequency of the assignment left behind. A scan step and a replay retune
+     release no state machine: conventional scanning and trunking off exclude both recovery ticks, so none follows a
+     voice channel, and a replay retune runs inside a sample read, where the guard's holder is not known.
+  2. The outgoing calls end, as a hop, and commit (`no_carrier_finalize_canonical_calls()`), while the live codes are
+     still that carrier's.
+  3. `dsd_engine_forget_carrier_codes()` forgets the codes: the DMR colour code with its confidence lock, the RAN with
+     its stand-in mark, the dPMR colour code, the Phase 1 NAC, and the seed's proof (never `p2_cc`). The NAC goes
+     because a NID whose BCH-decoded NAC is the reserved 000 or FFF leaves `state->nac` as it was
+     (`p25p1_apply_nac_update()`) while the frame still dispatches; `noCarrier()` resets it too. With them goes the
+     evidence that vouched for the carrier's transmissions (`carrier_boundary_forget_evidence()`): the NXDN, dPMR (with
+     its CCH evidence), D-STAR, M17 and ProVoice confirmation gates restart, the YSF FICH verdict and the Phase 1 NID's
+     evidence go, as the no-carrier pass restarts them, so the next carrier proves itself again. And every multi-frame
+     assembly that can publish an identity or a code goes too (`carrier_boundary_forget_assemblies()`), as the
+     no-carrier pass drops them, since the next carrier's next piece could complete one with the carrier left's pieces:
+     the NXDN SACCH superframe (segments, CRC marks, part) and alias blocks; the DMR data blocks, short LC fragments and
+     Capacity Plus blocks (`dmr_reset_blocks()`), embedded LC, late-entry MI and talker alias, with the alias shown; the
+     P25 MAC fragments and Phase 1 talker aliases; the Phase 2 slots' ESS_B with its reliabilities (marked stale, see
+     `p2_cc` above), partial voice superframe and staged rekey (`p25p2_frame_forget_carrier()`); the ended calls' P25
+     crypto (`p25_crypto_reset_slot()`: ALG, KID, MI and the LFSR state that steps it); the dPMR superframe part; the
+     M17 LSF chunks, packet and signature; the YSF text. The evidence and assemblies together are
+     `dsd_engine_forget_carrier_decoding()`, which a trunk-scan target switch runs as well. D-STAR slow data, X2-TDMA
+     signalling and P25 link control live within one superframe or frame, which the carrier count covers; the Phase 2
+     ESS_A is collected fresh from each 2V burst.
+  4. With trunking off, `dsd_engine_forget_untrunked_carrier_state()` forgets what the carrier left beyond its codes:
+     what the trunking-off no-carrier pass forgets (`no_carrier_reset_non_trunk_fields_if_needed()`: the P25 voice
+     frequencies a grant update wrote, which `p25_sm_conventional_frequency()` gives the call it named over the
+     tuner's, the DMR
+     rest channel and branding, the NXDN site and channel plan) and the DMR grants' `trunk_vc_freq[]`.
+  5. `state->carrier_seq` moves, so a decoder that buffered the left carrier's bursts drops them (see below).
+
+  The carrier count guards every decoder that reads more of the air after a unit is whole and before it decodes or
+  publishes that unit: a replay read that adopts a recorded retune runs the boundary inside such a read, and the unit
+  read whole before it would decode after the boundary ended its calls. Each notes `carrier_seq` where it starts reading
+  and, if it moved before the decode, drops what it collected, as on a sync loss, without reporting a decode error.
+  Nothing after the drop confirms or publishes for that frame: YSF does not set its FICH verdict from the carrier left's
+  FICH, and `processFrame()` reports any frame whose handler saw the count move as `DSD_FRAME_VERDICT_UNPRODUCTIVE`,
+  whatever the handler made of it, so the SPS hunt is not told a dropped frame proved anything. A unit whose own symbols
+  straddle the move is mixed, and its FEC or CRC decides, as for any noise. Guarded:
+  - P25 Phase 2 `processP2()`: the four-burst buffer (`p2_dibit_buffer()`); a boundary between buffers drops the slots'
+    ESS fragments, partial voice superframe and staged rekey (`p25p2_frame_forget_carrier()`).
+  - P25 Phase 1: `processLDU1()` (link control, read by the seventh voice frame), `processLDU2()` (encryption sync),
+    `processHDU()` and `processTDULC()` (decoded before their trailing symbols, published after), `processMPDU()` (the
+    header, read before its data blocks).
+  - DMR: the BS burst loop (`process_dmr_bs_iteration()`; the loop ends and `dmr_reset_blocks()` drops the data blocks
+    and CACH fragments a short LC gathers) and its bootstrap, the BS data burst's live half (`dmr_data_sync()`), the MS
+    voice superframe (`dmrMS()`, whose sixth burst assembles the embedded LC), its bootstrap, and `dmrMSData()`.
+  - NXDN `nxdn_frame()` (everything after the LICH decodes after the 174-dibit read; the SACCH segments go too).
+  - dPMR `processdPMRvoice()` (two frames), D-STAR `processDSTAR()` (slow data decoded after the twenty-first voice
+    frame), X2-TDMA `processX2TDMAvoice()` (the six-slot signalling published as the call's encryption), YSF
+    `processYSF()` (the V/D type 1 voice and data channels, the full-rate data channels), and the EDACS control frame
+    `edacs()` (two of three voted copies can be read before the move).
+
+  Not guarded, each because no unit is whole before its frame's last read: the P25 Phase 1 TSBK (each block decodes as
+  read), M17 (each frame is interleaved over its whole length and decodes as read; the LSF and a packet complete in the
+  frame that straddles), ProVoice (the two IMBE frames of a pair are interleaved together), the X2-TDMA data burst (read
+  from the frame sync's buffer), the D-STAR header (decoded as soon as read) and EDACS analog voice.
+
+  It runs at the lowest-level primitives where the carrier changes, so a new command that reaches one is covered:
+  - An accepted tune the user asked for: `svc_rtl_set_freq()`/`svc_rtl_set_freq_locked()` (`svc_rtl_tune()`) run it
+    at their success point (applied, or pending on a tuner that timed out). That covers `RTL_SET_FREQ` when it does not
+    pick a P25 control channel, `MANUAL_TUNE`, and the live Airspy retune of an Airspy or config apply. A refused,
+    deferred or failed tune keeps everything, since the receiver stayed.
+  - A stream start on another source: every radio stream start (`svc_rtl_start_locked()`, which `svc_rtl_restart()`,
+    `RTL_SET_DEV`, the source reopens of a config apply, an input switch and a replay open reach, and the engine's own
+    start, `live_scanner_start_rtl_if_needed()`) runs `dsd_engine_note_stream_source()`, which keys the source by its
+    kind of device and which one (an RTL-SDR index, an rtl_tcp host and port, an Airspy serial, a SoapySDR device, a
+    capture), never its settings or tuning, and runs the boundary when the key moved, or for any replay start, which
+    plays its capture again from its start. The first start of a session, and the same source reopened for its gain,
+    PPM, bandwidth, squelch or volume, keep the carrier.
+  - A config apply that leaves the same radio source on another frequency as `dsd_opts_tuned_freq_hz()` reads it
+    (`apply_cfg_radio_input()`), when no start or retune inside it ran the boundary already (`carrier_seq` unmoved).
+  - A channel cycle with trunking off: its LCN list and its P25 candidate list name no system the receiver follows.
+  - A RadioReference import that tunes its channel on a session that owns a tuner: it runs the boundary first, before
+    `decode_mode_apply_value()` and `rr_apply_reacquire()` end the calls with `reset_call_tracking()`, so the followed
+    channel's buffered audio still plays under its talkgroup.
+  - An input switch (`state->input_boundary`), trunking on or off: the engine loop runs it before `noCarrier()` and
+    `dsd_engine_end_input_boundary()`.
+  - A `-Y` row commit (`channel_scan_commit()`, then `channel_scan_end_calls()` and the shared reset) and the untyped
+    `-Y` step (in `no_carrier_run()`, before the finalize and the shared reset).
+  - An I/Q replay's retune the capture recorded, with trunking off, where the read path adopts the new centre
+    (`dsd_engine_leave_replay_carrier()`; see IO, "I/Q replay tuned frequency"); with trunking on it is exempt.
+
+  Exempt, and never routed there: a retune within a system under trunking (the return to the control channel, the
+  skip and lockout returns, the P25 control channel pick `ui_cmd_handle_p25_cc_selection()` and candidate cycle, and a
+  channel cycle with trunking on, whose list is the system's own channels), whose codes stay valid as under automatic
+  trunk following, and where the DMR decode gate keeps dispatching the control channel's bursts: forgetting it made the
+  first CSBK after a return pending, and `dmr_data_dispatch_burst()` dropped it. The skip and lockout returns under
+  trunking still run the no-carrier pass they always ran (`dsd_engine_no_carrier_locked()`). Nor do a trunk-scan target
+  switch, whose snapshots carry the codes and which forgets only what the decoders gathered (above); an external controller's retune over the RTL UDP port, which follows a system
+  for the decoder as the trunking state machines do and reaches the tuner on the IO thread; or the tuner release,
+  trunking toggles and rigctl reconnect, which retune nothing.
+- `dpmr_color_code` is set only in `dpmr_publish_call()`, after `dpmr_confirm_is_confirmed()`, from a decoded
+  `ColorCode[0]`, with or without a caller identity; the ID printer only prints.
+  `no_carrier_reset_call_strings_and_dpmr()` resets it to -1 with the confirmation evidence.
+- Between transmissions the terminal's `DMR BS`/`DMR MS - DCC:` and dPMR `DCC:` fields print `--` for these
+  sentinels (16, -1; `ui_print_dmr_dcc()`, `ui_render_call_info_dpmr()`), as the NXDN `RAN:` line does, and the Qt
+  site sheet leaves an unknown DMR colour code or NXDN RAN out.
+
+Tests: `DMR_FLCO_PRIVACY_MODES`, `DMR_MS_DATA`, `NXDN_ELEMENT_BOUNDS`, `NXDN_DEPERM_PRIMITIVES`, `P25_SM_UNIFIED_CORE`,
+`P25_CRYPTO_STATE`, `P25_P1_LOCKOUT_EVENTS`, `DPMR_VOICE_BRIDGE`, `ENGINE_NO_CARRIER_RESET`, `ENGINE_TRUNK_SCAN`,
+`CORE_ACCESS_CODE`, `UI_NCURSES_PRINTER_HELPERS`, `UI_QT_METRICS_MODEL`, `APP_COMMAND_QUEUE`, `APP_P25_CC_SELECTION`,
+`APP_CONTROL_RR_APPLY`, `RUNTIME_CONFIG_APPLY`, `UI_MENU_AIRSPY_CONFIG_FAILURE`, `UI_MENU_AIRSPY_CONFIG_TUNING`,
+`P25_P2_VPDU_GRANTS`, `P25_P2_XCCH_HELPERS`, `P25_P2_RELIABILITY`, `P25_P2_ESS_CARRIER`, `ENGINE_CHANNEL_SCAN`,
+`ENGINE_INPUT_BOUNDARY`, `UI_MENU_SERVICES`; the decoders' carrier-count guards: `P25_P2_RELIABILITY`, `P25_P1_LDU1_HELPERS`,
+`P25_P1_LDU2_HELPERS`, `P25_P1_HDU_HELPERS`, `P25_P1_TDULC`, `P25_P1_MDPU_HELPERS`, `DMR_BS_SYNC_TIMES`,
+`DMR_DATA_SYNC`, `DMR_MS_DATA`, `NXDN_FRAME_ROUTING`, `DPMR_VOICE_BRIDGE`, `DSTAR_PROCESS`, `X2TDMA_VOICE_HELPERS`,
+`YSF_DCH_DECODE`, `EDACS_FRAME_VERDICT`, `ENGINE_PROTOCOL_DISPATCH` (a split frame's verdict).
 
 Key public headers (selection):
 
@@ -3473,6 +3828,50 @@ Qt Quick frontend (`src/ui/qt`):
     session's.
   - Tests: `UI_QT_CALL_HISTORY_MODEL`, `UI_QT_TALKGROUP_LIST_MODEL`, `UI_QT_QML_CALL_LISTS`
     (`tst_history_session_identity.qml`), `CORE_INIT_STATE` (the ring identity).
+- Call history frequency and access code (issue #575; `call_history_model.{h,cpp}`, `call_history_merge.h`). Every row
+  carries the frequency its call was heard on (`Row::freqHz`, Hz, 0 unknown) and its access code as a
+  `dsd_access_code_kind` and value (`Row::codeKind`, `Row::code`), read from `Event_History::freq_hz`,
+  `access_code_kind` and `access_code`. The roles are `freqHz` (qint64), `accessCode` and `accessCodeText`; the two
+  texts are spelled by `app_control/access_code_view` at read time, and only the kind and value are stored.
+  - Per-field fold: the source label, the frequency and the code pair each keep the provenance of the fragment they
+    came from (start, push stamp, slot; `CallHistoryProvenance`, `call_history_provenance_compare()`). A merge
+    (`tryMerge()`) adopts a fragment's value by `call_history_fold_adopts()`: the newest fragment with a known value
+    wins, unknown never erases known, and equal provenance adopts, since that is the same fragment filling itself in.
+    So fragments folded in any arrival order give the same row. `merge_source_label()` runs on the same rule, with its
+    behaviour unchanged. `rows_mergeable()` never looks at the frequency: a trunked conversation lands on several voice
+    channels, and splitting on frequency would undo the fold, so the merged row shows the newest fragment's frequency.
+  - Seen ratchet: `SeenState` keeps the `freqHz`, `acKind` and `ac` last read. `call_history_seen_absorb_fill()`
+    counts unknown -> known on a re-read ring row as an advance, so a committed row whose frequency or code the core
+    filled in place re-ingests as an update while its end and source stay. A change from one known value to another
+    is ignored, because the core only ever fills a committed row (a reacquisition merge).
+  - Repeated notices: a notice heard again (`absorbRepeatedNotice()`, matched by the unchanged `findRepeatedNotice()`)
+    fills the frequency and code the logged notice lacks, keeps the ones it knows (push stamps say nothing across
+    rings), and signals them with `session`. So a notice an older build logged gains them when a fresh replay ring
+    delivers it again.
+  - JSON: rows store `freqHz`, `freqWhen`, `freqSeq`, `freqSlot`, `acKind`, `ac`, `acWhen`, `acSeq` and `acSlot`; the
+    seen store `freqHz`, `acKind` and `ac`. Every key of an unknown field is omitted, as `detail` and `channel` are. On
+    load a missing key reads as unknown, and a known value stored without its provenance takes the row's own
+    (start, push stamp, slot), as `srcNameWhen` does. A kind or value that does not fit the ring's `uint8_t` and
+    `uint16_t` loads as unknown. Older builds ignore the keys.
+  - Tests: `UI_QT_CALL_HISTORY_MODEL`, `UI_QT_CALL_HISTORY_MERGE`, `APP_CONTROL_ACCESS_CODE_VIEW`.
+- Tuned frequency, call codes and replay tuning on screen (issue #575; `qml/MonitorScreen.qml`,
+  `qml/HistoryScreen.qml`, `qml/HistoryDetailSheet.qml`, `qml/HomeScreen.qml`, `qml/SpectrumScreen.qml`).
+  - Signal strip: its first reading is `FREQ` (`monitorFreq`), `Util.fmtMhz(metrics.centerFreqHz)` while that is above
+    0, in every mode: the tuned frequency, a scan target's park frequency, or the voice channel a trunked target
+    follows. The scan header (`scanTargetHeader`) is unchanged, because on a phone it would elide the target's name.
+  - Rows: a voice row's meta line puts the `accessCode` role right after the ids and `Util.fmtMhz(freqHz)` last, after
+    the channel, so the elide takes the frequency first. History notice rows place them the same way around their
+    detail; the monitor's notice rows keep their detail (or "data message") first, then the code, then the frequency.
+    The record every details sheet opens with (monitor, History, Home's recent activity) carries `freqHz`, `accessCode`
+    and `accessCodeText`, and the sheet adds the long code text and "Frequency …" after the radio ID, which keeps the
+    indexes of the lines before it.
+  - Replay: `MetricsModel::replayInput` (`controlChanged`, beside `tunerControlled`) is `dsd_opts_input_is_iq_replay()`
+    on the snapshot `radioInput` reads, the predicate app-control refuses tunes on. The Spectrum screen is view-only
+    while it holds, whatever the session's intent, so `tuneTo()`, the tap, the rail, stepping and "Go to" do nothing.
+    It hides "Explore from here", closes that button's confirm and an open "Go to" sheet when a replay begins, and
+    shows "An I/Q replay cannot retune." in the button's place, the refusal's own words.
+  - Tests: `UI_QT_METRICS_MODEL` (`test_replay_input()`), `UI_QT_QML_CALL_LISTS` (`tst_monitor_scan_target.qml`,
+    `tst_monitor_recent_calls.qml`, `tst_call_log_follow.qml`, `tst_spectrum_screen.qml`, `tst_back_modals.qml`).
 - Received tone or code (issues #522, #523): `MetricsModel` publishes the `rxTone*` group (`rxToneVisible`,
   `rxToneStatus`, `rxToneText`, `rxToneKind`, `rxToneTenthsHz`, `rxToneDcsCode`, `rxToneDcsInverted`,
   `rxToneDcsAliasCode`, `rxToneDcsAliasInverted`, `rxToneCarrier`) with its own `rxToneChanged` signal, filled from

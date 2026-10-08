@@ -14,6 +14,7 @@
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/core/vocoder.h>
 #include <dsd-neo/platform/posix_compat.h>
+#include <dsd-neo/protocol/p25/p25.h>
 #include <dsd-neo/protocol/p25/p25p2_frame.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
@@ -230,12 +231,30 @@ watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
     (void)slot;
 }
 
+/* Set by the MAC PDU stubs to end the slots' calls, as a MAC_END_PTT does; and whether a render of a slot found its
+   call still active with the seed proven, which is what lets the call's row keep the NAC (issue #575). */
+static int g_mac_ends_calls = 0;
+static int g_render_saw_proven_active_call = 0;
+
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 dsd_event_sync_slot(dsd_opts* opts, dsd_state* state, uint8_t slot) {
     (void)opts;
-    (void)state;
-    (void)slot;
+    dsd_call_snapshot call;
+    if (state != NULL && state->p2_cc_verified != 0U && dsd_call_state_get(state, slot, &call) > 0
+        && call.phase == DSD_CALL_PHASE_ACTIVE) {
+        g_render_saw_proven_active_call = 1;
+    }
+}
+
+static void
+mac_stub_end_calls(dsd_state* state) {
+    if (!g_mac_ends_calls || state == NULL) {
+        return;
+    }
+    for (uint8_t slot = 0; slot < 2; slot++) {
+        (void)dsd_call_state_end(state, slot, 0.0);
+    }
 }
 
 int
@@ -374,7 +393,7 @@ void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int* bits) {
     (void)opts;
-    (void)state;
+    mac_stub_end_calls(state);
     g_sacch_mac_calls++;
     g_sacch_mac_last_opcode = (bits[0] << 2) | (bits[1] << 1) | bits[2];
 }
@@ -383,22 +402,35 @@ void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 process_FACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int* bits) {
     (void)opts;
-    (void)state;
+    mac_stub_end_calls(state);
     g_facch_mac_calls++;
     g_facch_mac_last_opcode = (bits[0] << 2) | (bits[1] << 1) | bits[2];
 }
 
-/* Dibit acquisition */
+/* Dibit acquisition. While a feed is set, the reads return its dibits in turn, as processP2() collects a superframe;
+   the read at g_dibit_feed_boundary_at adopts a retune its capture recorded, where the carrier boundary moves the
+   carrier count (dsd_engine_carrier_boundary(), issue #575). */
+static uint8_t g_dibit_feed[700];
+static int g_dibit_feed_active = 0;
+static int g_dibit_feed_pos = 0;
+static int g_dibit_feed_boundary_at = -1;
+
 int
 getDibitSoft(dsd_opts* opts, dsd_state* state, dsd_dibit_soft_t* out_soft) {
     (void)opts;
-    (void)state;
+    int dibit = 0;
+    if (g_dibit_feed_active && g_dibit_feed_pos < (int)sizeof g_dibit_feed) {
+        if (g_dibit_feed_pos == g_dibit_feed_boundary_at && state) {
+            state->carrier_seq++;
+        }
+        dibit = g_dibit_feed[g_dibit_feed_pos++];
+    }
     if (out_soft) {
         out_soft->reliability = 128;
         out_soft->llr[0] = -128;
         out_soft->llr[1] = -128;
     }
-    return 0;
+    return dibit;
 }
 
 static void
@@ -1243,6 +1275,302 @@ test_duid_abort_resolves_staged_rekey(void) {
     return rc;
 }
 
+/* One superframe of four bursts with the given DUID codewords, on a site whose seed is set. */
+static void
+run_seeded_superframe(dsd_opts* opts, dsd_state* state, const uint8_t duids[4]) {
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    p25_p2_frame_reset();
+    reset_ess_stubs();
+    reset_playback_stub();
+    state->p2_wacn = 1;
+    state->p2_sysid = 1;
+    state->p2_cc = 0x123;
+    for (int i = 0; i < 4; i++) {
+        seed_duid_bits(i, duids[i]);
+    }
+    p25p2_process_frame_scramble(opts, state);
+    p25p2_process_duid(opts, state);
+}
+
+/* The ESS fixture's buffer, descrambled with the site's seed, as processP2() descrambles every superframe before its
+   bursts decode (issue #575). */
+static void
+descramble_with_site_seed(dsd_opts* opts, dsd_state* state) {
+    state->p2_wacn = 1;
+    state->p2_sysid = 1;
+    state->p2_cc = 0x123;
+    p25p2_process_frame_scramble(opts, state);
+}
+
+/* The same, with the seed changed after the buffer was descrambled, as a network status broadcast decoded from an
+   earlier burst of the buffer changes it (under -F even one that failed its CRC). */
+static void
+run_reseeded_superframe(dsd_opts* opts, dsd_state* state, const uint8_t duids[4]) {
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    p25_p2_frame_reset();
+    reset_ess_stubs();
+    reset_playback_stub();
+    state->p2_wacn = 1;
+    state->p2_sysid = 1;
+    state->p2_cc = 0x123;
+    for (int i = 0; i < 4; i++) {
+        seed_duid_bits(i, duids[i]);
+    }
+    p25p2_process_frame_scramble(opts, state);
+    state->p2_cc = 0x456;
+    p25p2_process_duid(opts, state);
+}
+
+/*
+ * Issue #575: p2_cc is the NAC a Phase 2 call was heard with only once a burst descrambled with it passed its
+ * Reed-Solomon check -- a scrambled FACCH (DUID 9) or SACCH (DUID 3), or an ESS, which bits descrambled with a wrong
+ * seed fail. An unscrambled FACCH (DUID 15) or SACCH (DUID 12) never tests the seed, however well it decodes, and a
+ * scrambled burst that fails its check proves nothing either.
+ */
+static int
+test_seed_proof_needs_a_descrambled_burst(void) {
+    printf("Test 32: only a descrambled burst that decodes proves the seed... ");
+    static dsd_opts opts;
+    static dsd_state state;
+    static const uint8_t unscrambled[4] = {0xFFU, 0xC6U, 0xFFU, 0xC6U};
+    static const uint8_t scrambled_facch[4] = {0x9AU, 0x9AU, 0x9AU, 0x9AU};
+    static const uint8_t scrambled_sacch[4] = {0x39U, 0x39U, 0x39U, 0x39U};
+    int rc = 0;
+
+    reset_xcch_stubs();
+    run_seeded_superframe(&opts, &state, unscrambled);
+    rc |= expect_int("unscrambled bursts decode", g_facch_mac_calls > 0 && g_sacch_mac_calls > 0, 1);
+    rc |= expect_int("unscrambled bursts prove nothing", state.p2_cc_verified, 0);
+
+    reset_xcch_stubs();
+    g_facch_min_success = 99;
+    g_sacch_min_success = 99;
+    run_seeded_superframe(&opts, &state, scrambled_facch);
+    rc |= expect_int("failed scrambled FACCH proves nothing", state.p2_cc_verified, 0);
+    run_seeded_superframe(&opts, &state, scrambled_sacch);
+    rc |= expect_int("failed scrambled SACCH proves nothing", state.p2_cc_verified, 0);
+
+    reset_xcch_stubs();
+    run_seeded_superframe(&opts, &state, scrambled_facch);
+    rc |= expect_int("scrambled FACCH decodes", g_facch_mac_calls > 0, 1);
+    rc |= expect_int("scrambled FACCH proves the seed", state.p2_cc_verified, 1);
+    reset_xcch_stubs();
+    run_seeded_superframe(&opts, &state, scrambled_sacch);
+    rc |= expect_int("scrambled SACCH proves the seed", state.p2_cc_verified, 1);
+
+    /* A scrambled burst that decodes only once soft erasures are added checked less of its parity than its fixed
+       erasures leave, possibly none of it: it still decodes, but proves nothing. */
+    reset_xcch_stubs();
+    g_facch_min_success = 19; /* one dynamic erasure past the 18 fixed */
+    run_seeded_superframe(&opts, &state, scrambled_facch);
+    rc |= expect_int("soft-erasure scrambled FACCH decodes", g_facch_mac_calls > 0, 1);
+    rc |= expect_int("soft-erasure scrambled FACCH proves nothing", state.p2_cc_verified, 0);
+    reset_xcch_stubs();
+    g_sacch_min_success = 12; /* one dynamic erasure past the 11 fixed */
+    run_seeded_superframe(&opts, &state, scrambled_sacch);
+    rc |= expect_int("soft-erasure scrambled SACCH decodes", g_sacch_mac_calls > 0, 1);
+    rc |= expect_int("soft-erasure scrambled SACCH proves nothing", state.p2_cc_verified, 0);
+
+    prepare_ess_soft_inputs(&state);
+    reset_ess_stubs();
+    g_ess_hard_rc = -1;
+    p25p2_process_ess(&opts, &state, 0);
+    rc |= expect_int("failed ESS proves nothing", state.p2_cc_verified, 0);
+    prepare_ess_soft_inputs(&state);
+    descramble_with_site_seed(&opts, &state);
+    reset_ess_stubs();
+    g_ess_hard_rc = 0;
+    p25p2_process_ess(&opts, &state, 0);
+    rc |= expect_int("ESS proves the seed", state.p2_cc_verified, 1);
+    prepare_ess_soft_inputs(&state);
+    descramble_with_site_seed(&opts, &state);
+    reset_ess_stubs();
+    g_ess_hard_rc = -1;
+    g_ess_soft_min_success = 1;
+    g_ess_soft_success_rc = 0;
+    p25p2_process_ess(&opts, &state, 0);
+    rc |= expect_int("soft-erasure ESS decodes", g_ess_soft_calls > 0 && state.p25_p2_rs_ess_ok == 1U, 1);
+    rc |= expect_int("soft-erasure ESS proves nothing", state.p2_cc_verified, 0);
+
+    /* A burst decoded from a buffer descrambled with another seed proves that seed, not the one in force now. */
+    reset_xcch_stubs();
+    run_reseeded_superframe(&opts, &state, scrambled_facch);
+    rc |= expect_int("reseeded scrambled FACCH decodes", g_facch_mac_calls > 0, 1);
+    rc |= expect_int("reseeded scrambled FACCH proves nothing", state.p2_cc_verified, 0);
+    reset_xcch_stubs();
+    run_reseeded_superframe(&opts, &state, scrambled_sacch);
+    rc |= expect_int("reseeded scrambled SACCH proves nothing", state.p2_cc_verified, 0);
+    prepare_ess_soft_inputs(&state);
+    descramble_with_site_seed(&opts, &state);
+    state.p2_cc = 0x456;
+    reset_ess_stubs();
+    g_ess_hard_rc = 0;
+    p25p2_process_ess(&opts, &state, 0);
+    rc |= expect_int("reseeded ESS proves nothing", state.p2_cc_verified, 0);
+
+    reset_xcch_stubs();
+    reset_ess_stubs();
+    if (rc == 0) {
+        printf("PASS\n");
+    } else {
+        printf("FAIL\n");
+    }
+    return rc;
+}
+
+/* processP2() reading the superframe the feed holds, with the carrier boundary at read @p boundary_at (-1: none). */
+static void
+read_fed_superframe(dsd_opts* opts, dsd_state* state, int boundary_at) {
+    g_dibit_feed_pos = 0;
+    g_dibit_feed_boundary_at = boundary_at;
+    g_dibit_feed_active = 1;
+    processP2(opts, state);
+    g_dibit_feed_active = 0;
+}
+
+/* A superframe of four bursts with the given DUID codewords, fed to processP2() on a site whose seed is set. */
+static void
+run_fed_superframe(dsd_opts* opts, dsd_state* state, const uint8_t duids[4], int boundary_at) {
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    p25_p2_frame_reset();
+    reset_ess_stubs();
+    reset_playback_stub();
+    reset_xcch_stubs();
+    for (int i = 0; i < 4; i++) {
+        seed_duid_bits(i, duids[i]);
+    }
+    for (size_t i = 0; i < sizeof g_dibit_feed; i++) {
+        const size_t bit = i * 2U;
+        g_dibit_feed[i] = (uint8_t)((p2bit[bit] << 1) | p2bit[bit + 1U]);
+    }
+    state->p2_wacn = 1;
+    state->p2_sysid = 1;
+    state->p2_cc = 0x123;
+    read_fed_superframe(opts, state, boundary_at);
+}
+
+/*
+ * Issue #575: processP2() collects four bursts before any of them decodes. A replay read that adopts a retune its
+ * capture recorded runs the carrier boundary inside that collection; the bursts read before it belong to the carrier
+ * left, and decoding them afterwards would open the call the boundary just ended and prove the seed for the carrier
+ * the receiver moved to. The superframe is dropped whole, as on a sync loss. A boundary between superframes drops what
+ * the slots gathered on the carrier left: ESS fragments, a partial voice superframe and a staged rekey.
+ */
+static int
+test_superframe_split_by_a_carrier_boundary_is_dropped(void) {
+    printf("Test 33: a superframe the carrier boundary splits is dropped... ");
+    static dsd_opts opts;
+    static dsd_state state;
+    static const uint8_t scrambled_facch[4] = {0x9AU, 0x9AU, 0x9AU, 0x9AU};
+    int rc = 0;
+
+    run_fed_superframe(&opts, &state, scrambled_facch, -1);
+    rc |= expect_int("whole superframe decodes its FACCHs", g_facch_mac_calls, 4);
+    rc |= expect_int("whole superframe proves the seed", (int)state.p2_cc_verified, 1);
+
+    run_fed_superframe(&opts, &state, scrambled_facch, 400);
+    rc |= expect_int("split superframe decodes no FACCH", g_facch_calls, 0);
+    rc |= expect_int("split superframe opens no call", g_facch_mac_calls, 0);
+    rc |= expect_int("split superframe proves nothing", (int)state.p2_cc_verified, 0);
+    rc |= expect_int("split superframe leaves the stereo mark", state.dmr_stereo, 0);
+
+    /* The boundary at the first read: nothing of the carrier left was collected, but the superframe still straddles
+       the move as far as the decoder can tell, and goes too. */
+    run_fed_superframe(&opts, &state, scrambled_facch, 0);
+    rc |= expect_int("superframe split at its first read decodes nothing", g_facch_mac_calls, 0);
+
+    /* Between superframes: the next one decodes, and what the slots gathered before the move is gone. */
+    run_fed_superframe(&opts, &state, scrambled_facch, -1);
+    state.fourv_counter[0] = 2;
+    state.voice_counter[0] = 7;
+    state.p25_p2_rekey[0].pending = 1U;
+    state.carrier_seq++;
+    reset_xcch_stubs();
+    read_fed_superframe(&opts, &state, -1);
+    rc |= expect_int("next superframe decodes", g_facch_mac_calls, 4);
+    rc |= expect_int("ESS fragments of the carrier left go", state.fourv_counter[0], 0);
+    rc |= expect_int("partial voice superframe of the carrier left goes", state.voice_counter[0], 0);
+    rc |= expect_int("staged rekey of the carrier left goes", (int)state.p25_p2_rekey[0].pending, 0);
+
+    /* No move: the slots keep what they gathered. */
+    state.fourv_counter[0] = 2;
+    state.voice_counter[0] = 7;
+    reset_xcch_stubs();
+    read_fed_superframe(&opts, &state, -1);
+    rc |= expect_int("same carrier keeps the ESS fragments", state.fourv_counter[0], 2);
+    rc |= expect_int("same carrier keeps the partial voice superframe", state.voice_counter[0], 7);
+
+    reset_xcch_stubs();
+    reset_ess_stubs();
+    if (rc == 0) {
+        printf("PASS\n");
+    } else {
+        printf("FAIL\n");
+    }
+    return rc;
+}
+
+/*
+ * Issue #575: the first burst descrambled with a proven seed may itself carry the MAC_END_PTT that ends its call. The
+ * committed row reads the live NAC only while the call is active, so the slots are rendered as soon as the proof is set,
+ * before the burst's MAC PDU is dispatched; otherwise the row of a call ended by the burst that proved its NAC kept none.
+ * Both the scrambled FACCH and the scrambled SACCH prove it this way.
+ */
+static int
+test_seed_proof_reaches_the_call_its_burst_ends(void) {
+    printf("Test 34: the seed a terminating burst proves reaches the call it ends... ");
+    static dsd_opts opts;
+    static dsd_state state;
+    static const uint8_t scrambled_facch[4] = {0x9AU, 0x9AU, 0x9AU, 0x9AU};
+    static const uint8_t scrambled_sacch[4] = {0x39U, 0x39U, 0x39U, 0x39U};
+    const uint8_t* const duids[2] = {scrambled_facch, scrambled_sacch};
+    static const char* const labels[2] = {"scrambled FACCH", "scrambled SACCH"};
+    int rc = 0;
+
+    for (int path = 0; path < 2; path++) {
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        p25_p2_frame_reset();
+        reset_ess_stubs();
+        reset_playback_stub();
+        reset_xcch_stubs();
+        seed_p25p2_call(&state, 0U, 1201U, 1202U, 0U, 0U, 0U);
+        state.p2_wacn = 1;
+        state.p2_sysid = 1;
+        state.p2_cc = 0x123;
+        for (int i = 0; i < 4; i++) {
+            seed_duid_bits(i, duids[path][i]);
+        }
+        g_mac_ends_calls = 1;
+        g_render_saw_proven_active_call = 0;
+        p25p2_process_frame_scramble(&opts, &state);
+        p25p2_process_duid(&opts, &state);
+        g_mac_ends_calls = 0;
+
+        dsd_call_snapshot call;
+        char tag[96];
+        DSD_SNPRINTF(tag, sizeof(tag), "%s proves the seed", labels[path]);
+        rc |= expect_int(tag, (int)state.p2_cc_verified, 1);
+        DSD_SNPRINTF(tag, sizeof(tag), "%s ends the call", labels[path]);
+        rc |= expect_int(tag, dsd_call_state_get(&state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ENDED, 1);
+        DSD_SNPRINTF(tag, sizeof(tag), "%s renders the call with the proven NAC before ending it", labels[path]);
+        rc |= expect_int(tag, g_render_saw_proven_active_call, 1);
+        dsd_state_ext_free_all(&state);
+    }
+
+    reset_xcch_stubs();
+    reset_ess_stubs();
+    if (rc == 0) {
+        printf("PASS\n");
+    } else {
+        printf("FAIL\n");
+    }
+    return rc;
+}
+
 static void
 prepare_lcch_release_duids(void) {
     p25_p2_frame_reset();
@@ -1478,6 +1806,9 @@ main(void) {
     failures += test_duid_abort_resolves_staged_rekey();
     failures += test_duid_lcch_release_defers_during_vc_grace();
     failures += test_duid_lcch_release_tears_down_after_vc_grace();
+    failures += test_seed_proof_needs_a_descrambled_burst();
+    failures += test_superframe_split_by_a_carrier_boundary_is_dropped();
+    failures += test_seed_proof_reaches_the_call_its_burst_ends();
 
     printf("\n%d test(s) failed\n", failures);
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});

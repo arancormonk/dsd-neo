@@ -409,6 +409,31 @@ Item {
             verify(Ui.Navigation.back(app));
             compare(Ui.Navigation.modals.length, 0);
         }
+        // Issue #575: Home's recent activity opens the same details sheet as the
+        // monitor and the log, and it names the call's access code and frequency
+        // there too.
+        function test_home_recent_details_name_the_code_and_frequency() {
+            app.width = 1104;
+            app.height = 900;
+            var name = callHistory.pushTuned(4001, 7001, "Fire Dispatch", 851012500, "CC 1", "Color code 1");
+            var home = item("homeScreen");
+            verify(waitForPolish(app.contentItem));
+            tryCompare(home, "width", 1000);
+            verify(home.supportingPane);
+            var recent = visualChild(home, function (entry) {
+                return entry.model === callHistory && typeof entry.itemAt === "function";
+            });
+            verify(recent !== null);
+            var row = null;
+            tryVerify(function () { row = recent.itemAtIndex(0); return row !== null && row.name === name; });
+            tap(row);
+            var detail = item("homeRecentDetailSheet", home);
+            tryCompare(detail, "visible", true);
+            compare(detail.record.freqHz, 851012500);
+            compare(detail.record.accessCode, "CC 1");
+            verify(detail.detailLines.indexOf("Color code 1") >= 0, "no code line: " + detail.detailLines);
+            verify(detail.detailLines.indexOf("Frequency 851.0125 MHz") >= 0, "no frequency line: " + detail.detailLines);
+        }
         function test_scan_remove_confirms_exact_uid_data() {
             return [{tag: "confirm", change: "none"}, {tag: "row shifted", change: "shift"},
                 {tag: "already removed", change: "removed"}, {tag: "cancel", change: "cancel"}];

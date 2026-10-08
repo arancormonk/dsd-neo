@@ -1202,6 +1202,7 @@ nxdn_location_id_handler(dsd_state* state, uint32_t location_id, uint8_t type) {
     //type 0 is for current site, type 1 is for adjacent sites
     if (type == 0) {
         state->nxdn_last_ran = site_code % 64; //Table 6.3-4 RAN for Trunked Radio Systems
+        state->nxdn_last_ran_stand_in = 0U;
         if (site_code != 0) {
             state->nxdn_location_site_code = site_code;
         }
@@ -2286,6 +2287,14 @@ nxdn_vcall_publish(dsd_opts* opts, dsd_state* state, const struct nxdn_vcall_inf
     if (!DSD_SYNC_IS_NXDN(protocol)) {
         protocol = DSD_SYNC_NXDN_POS;
     }
+    /* A VCALL carries no channel or frequency of its own (issue #575). The call may name only the voice channel the
+     * receiver followed a grant to: trunk_vc_freq[] while that holds, and the last grant's channel only when that
+     * grant is the one followed. Without trunking no grant is followed, and trunk_vc_freq[] holds whatever a DMR grant
+     * decoded with trunking off wrote for display; a grant decoded while tuned (a duplicate assignment for another
+     * call) moves nxdn_grant_chan without moving the receiver. */
+    const long int followed_freq = dsd_opts_trunk_vc_followed(opts) ? state->trunk_vc_freq[0] : 0;
+    const uint16_t followed_chan =
+        (followed_freq != 0 && state->nxdn_grant_freq == followed_freq) ? state->nxdn_grant_chan : 0U;
     const dsd_call_observation observation = {
         .protocol = protocol,
         .slot = 0U,
@@ -2293,8 +2302,8 @@ nxdn_vcall_publish(dsd_opts* opts, dsd_state* state, const struct nxdn_vcall_inf
         .ota_target_id = info->destination_id,
         .policy_target_id = info->destination_id,
         .ota_source_id = (info->voice_call_option & 0x0FU) < 4U ? info->source_unit_id : 0U,
-        .channel = state->nxdn_grant_chan,
-        .frequency_hz = state->trunk_vc_freq[0],
+        .channel = followed_chan,
+        .frequency_hz = followed_freq,
         .service_options = info->cc_option,
         .emergency = (uint8_t)((info->cc_option & 0x80U) != 0U),
         .has_service_metadata = 1U,
@@ -2357,14 +2366,10 @@ nxdn_vcall_run_enc_lockout(dsd_opts* opts, dsd_state* state, const struct nxdn_v
 
     if (dsd_enc_lockout_note(state, info->destination_id, is_group, (int)state->nxdn_cipher_type,
                              (int)state->nxdn_key)) {
-        dsd_event_history_transaction transaction;
-        dsd_event_history_transaction_begin(state, &transaction);
-        DSD_SNPRINTF(state->event_history_s[0].Event_History_Items[0].internal_str,
-                     sizeof(state->event_history_s[0].Event_History_Items[0].internal_str),
-                     "Target: %d; has been locked out; Encryption Lock Out Enabled.", info->destination_id);
-        dsd_event_history_mark_dirty(&state->event_history_s[0]);
-        dsd_event_history_transaction_end(&transaction);
-        watchdog_event_current(opts, state, 0);
+        char note[128];
+        DSD_SNPRINTF(note, sizeof note, "Target: %d; has been locked out; Encryption Lock Out Enabled.",
+                     info->destination_id);
+        dsd_event_note_current_call(opts, state, 0U, note);
     }
 
     // Deliberately unconditional (the event above fires once per lock, the
@@ -2565,7 +2570,9 @@ nxdn_scch_prepare_type_d(dsd_state* state, const struct nxdn_scch_info* info) {
          * hold cannot rest on one (issue #398). */
         return;
     }
+    /* The area bit, which the terminal shows as "IDAS - Area" where the RAN goes; not a RAN (issue #575). */
     state->nxdn_last_ran = info->area;
+    state->nxdn_last_ran_stand_in = 1U;
     state->last_cc_sync_time = info->now;
     state->last_cc_sync_time_m = dsd_decode_now_mono_s();
 }
@@ -2597,7 +2604,9 @@ nxdn_scch_handle_site_id(dsd_state* state, const struct nxdn_scch_info* info) {
     }
     state->nxdn_location_site_code = info->sitet;
     state->nxdn_location_sys_code = info->sitet;
+    /* Likewise shown where the RAN goes, and likewise not one (issue #575). */
     state->nxdn_last_ran = info->sitet;
+    state->nxdn_last_ran_stand_in = 1U;
 }
 
 static int

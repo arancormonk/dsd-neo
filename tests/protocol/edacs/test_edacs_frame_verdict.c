@@ -30,6 +30,9 @@
 static int g_frame_bits[240];
 static int g_bit_pos;
 static int g_dibit_calls;
+/* The read that adopts a retune its capture recorded, where the carrier boundary moves the carrier count
+   (dsd_engine_carrier_boundary(), issue #575); -1 for none. */
+static int g_boundary_at = -1;
 
 // NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
 int __wrap_get_dibit_and_analog_signal(dsd_opts* opts, dsd_state* state, int* out_analog_signal);
@@ -38,9 +41,11 @@ int
 // NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
 __wrap_get_dibit_and_analog_signal(dsd_opts* opts, dsd_state* state, int* out_analog_signal) {
     (void)opts;
-    (void)state;
     if (out_analog_signal != NULL) {
         *out_analog_signal = 0;
+    }
+    if (g_dibit_calls == g_boundary_at && state != NULL) {
+        state->carrier_seq++;
     }
     g_dibit_calls++;
     if (g_bit_pos >= (int)(sizeof(g_frame_bits) / sizeof(g_frame_bits[0]))) {
@@ -144,11 +149,38 @@ test_failed_bch_reports_zero_untuned(void) {
     assert(g_dibit_calls == 240);
 }
 
+/* Issue #575: the carrier boundary moved the carrier count inside the third copy of the second message (a replay read
+   adopting a recorded retune). Both messages still outvote the copy read after the move, so the frame would decode and
+   act on the carrier left's message after the boundary: it is dropped, as on a sync loss, with no verdict. */
+static void
+test_frame_split_by_a_carrier_boundary_is_dropped(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    const unsigned long long int cw_1 = codeword_for(0x0123456ULL);
+    const unsigned long long int cw_2 = codeword_for(0x0ABCDEFULL);
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    build_frame(cw_1, cw_2);
+    g_boundary_at = 210;
+    assert(edacs(&opts, &state) == 0);
+    g_boundary_at = -1;
+    assert(state.carrier_seq == 1U);
+    assert(g_dibit_calls == 240);
+
+    /* The same frame read on one carrier decodes. */
+    DSD_MEMSET(&state, 0, sizeof(state));
+    build_frame(cw_1, cw_2);
+    assert(edacs(&opts, &state) == 1);
+}
+
 int
 main(void) {
     test_frame_bch_verdict_reads_the_voted_frames();
     test_tuned_early_out_reports_the_real_verdict();
     test_failed_bch_reports_zero_untuned();
+    test_frame_split_by_a_carrier_boundary_is_dropped();
     printf("EDACS_FRAME_VERDICT: OK\n");
     return 0;
 }

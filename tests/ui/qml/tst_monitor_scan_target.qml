@@ -21,6 +21,11 @@ Item {
             Ui.Theme.resetFontScale();
             root.width = 420; root.height = 900;
             testContext.setMetric("radioInput", false);
+            testContext.setMetric("centerFreqHz", 851000000);
+            testContext.setMetric("snrValid", false);
+            testContext.setMetric("snrDb", 0.0);
+            testContext.setMetric("cfoHz", 0.0);
+            testContext.setMetric("tunerGainText", "auto");
             testContext.setMetric("scanTargetId", "");
             testContext.setMetric("scanTargetOrdinal", 0);
             testContext.setMetric("scanTargetCount", 0);
@@ -51,6 +56,78 @@ Item {
             tryCompare(header, "text", "SCANNING · 2/3 · HOLD · Dispatch");
             cleanup();
             tryCompare(header, "text", "");
+        }
+
+        // Issue #575: the tuned frequency is the signal strip's first reading in
+        // every mode, plain, scanning and holding, while there is one. The header
+        // is not where it goes, so the header reads exactly as it did.
+        function test_freq_reading_data() {
+            return [{tag: "plain", count: 0, hold: false, header: ""},
+                    {tag: "scanning", count: 3, hold: false, header: "SCANNING · 2/3 · Dispatch"},
+                    {tag: "holding", count: 3, hold: true, header: "SCANNING · 2/3 · HOLD · Dispatch"}];
+        }
+        function test_freq_reading(data) {
+            var strip = findChild(screen, "signalStrip");
+            var freq = findChild(screen, "monitorFreq");
+            var value = findChild(screen, "monitorFreqValue");
+            verify(strip !== null, "the signal strip is named");
+            verify(freq !== null && value !== null, "the strip carries a FREQ reading");
+            compare(strip.children[0], freq, "FREQ is the strip's first reading");
+            testContext.setMetric("radioInput", true);
+            testContext.setMetric("centerFreqHz", 851012500);
+            if (data.count > 0) {
+                screen.scanTargetName = "Dispatch";
+                testContext.setMetric("scanTargetId", "internal-entry-uid");
+                testContext.setMetric("scanTargetOrdinal", 2);
+                testContext.setMetric("scanTargetCount", data.count);
+            }
+            testContext.setMetric("scanHold", data.hold);
+            var header = findChild(screen, "scanTargetHeader");
+            tryCompare(header, "text", data.header);
+            tryCompare(freq, "visible", true);
+            compare(value.text, "851.0125 MHz");
+            // No frequency known: no reading, rather than "0.0 MHz".
+            testContext.setMetric("centerFreqHz", 0);
+            tryCompare(freq, "visible", false);
+            testContext.setMetric("centerFreqHz", 851012500);
+            tryCompare(freq, "visible", true);
+            // No tuner under the session: the strip, and the reading with it, go.
+            testContext.setMetric("radioInput", false);
+            tryCompare(strip, "visible", false);
+            verify(!freq.visible, "the reading outlived its strip");
+            compare(header.text, data.header, "the header is unchanged");
+        }
+
+        // With FREQ first and every reading at its widest, the strip wraps whole
+        // readings onto the next line and nothing runs off a phone.
+        function test_freq_reading_fits_a_phone_data() {
+            return [{tag: "phone", scale: 1}, {tag: "large text", scale: 1.6}];
+        }
+        function test_freq_reading_fits_a_phone(data) {
+            root.width = 411; root.height = 900;
+            Ui.Theme.fontScale = data.scale;
+            testContext.setMetric("radioInput", true);
+            testContext.setMetric("centerFreqHz", 1296987500);
+            testContext.setMetric("snrValid", true);
+            testContext.setMetric("snrDb", -10.0);
+            testContext.setMetric("cfoHz", -1234.0);
+            testContext.setMetric("tunerGainText", "49.6 dB");
+            var strip = findChild(screen, "signalStrip");
+            var value = findChild(screen, "monitorFreqValue");
+            tryCompare(value, "text", "1296.9875 MHz");
+            waitForRendering(screen);
+            verify(findChild(screen, "monitorFreq").visible, "the reading shows");
+            var shown = 0;
+            for (var i = 0; i < strip.children.length; ++i) {
+                var reading = strip.children[i];
+                if (!reading.visible)
+                    continue;
+                ++shown;
+                var at = reading.mapToItem(screen, 0, 0);
+                verify(at.x >= 0 && at.x + reading.width <= screen.width + 1,
+                       "strip reading " + i + " runs off the screen");
+            }
+            verify(shown >= 6, "the strip shows all its readings");
         }
 
         // Mirrors the terminal's Scan Timing grammar (issue #508): one space before

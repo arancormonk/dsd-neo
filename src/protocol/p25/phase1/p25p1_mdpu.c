@@ -697,7 +697,15 @@ processMPDU(dsd_opts* opts, dsd_state* state) {
     P25MpduContext ctx;
     p25_mpdu_prepare_state(opts, state);
     p25_mpdu_context_init(&ctx);
+    const uint32_t carrier_seq = state->carrier_seq;
     p25_mpdu_collect_blocks(opts, state, &ctx);
+    if (state->carrier_seq != carrier_seq) {
+        /* The carrier boundary moved the carrier count while the blocks were read (issue #575). The header is read
+           whole before its data blocks but decodes only now, so it would publish the carrier left's packet after the
+           boundary: the MPDU is dropped, as on a sync loss. */
+        p25_status_accum_classify(state);
+        return;
+    }
     p25_mpdu_finalize_header(state, &ctx);
     p25_mpdu_decode_header_if_usable(opts, state, &ctx);
     p25_mpdu_log_header_crc_error(&ctx);

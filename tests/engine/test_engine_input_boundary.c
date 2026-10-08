@@ -19,8 +19,10 @@
  * IO_RIGCTL_CONTROL the real requests).
  */
 
+#include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/audio_input_switch.h>
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/events.h>
 #include <dsd-neo/core/frame.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
@@ -29,10 +31,15 @@
 #include <dsd-neo/engine/engine.h>
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/platform/sockets.h>
+#include <dsd-neo/protocol/dmr/dmr.h>
+#include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/protocol/nxdn/nxdn_lfsr.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
+#include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/analog_channel.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/exitflag.h>
+#include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -79,10 +86,18 @@ LFSRN(const char* buffer_in, char* buffer_out, dsd_state* state) {
     (void)state;
 }
 
-/* A frame on the input in use; a switch the command pump then drains replaces the stream under the synced loop. */
+/* A frame on the input in use; a switch the command pump then drains replaces the stream under the synced loop. The
+   replay phase's frame instead carries a recorded retune (decode_frame_across_a_recorded_retune()). */
+static void decode_frame_across_a_recorded_retune(dsd_opts* opts, dsd_state* state);
+static int g_in_frame_retune = 0;
+
 void
 processFrame(dsd_opts* opts, dsd_state* state) {
-    (void)opts;
+    if (g_in_frame_retune) {
+        decode_frame_across_a_recorded_retune(opts, state);
+        g_in_frame_retune = 0;
+        return;
+    }
     g_process_frame_calls++;
     state->input_boundary = 1;
 }
@@ -210,9 +225,138 @@ __wrap_dsd_audio_switch_input(dsd_opts* opts, dsd_state* state, const dsd_audio_
     return g_switch_result;
 }
 
+/*
+ * Issue #575: an I/Q replay plays the retunes its capture recorded, which the read path adopts as the centre of the
+ * sample it just read (dsd_frame_sync_note_replay_center()). With trunking off a recorded retune is another
+ * conventional carrier, so the reception ends across it as at an accepted live retune, right where the read adopts the
+ * new centre and before that sample reaches the protocol: a retune can land inside a frame, whose decoding goes on
+ * publishing calls before the next frame-sync return. The outgoing call ends and commits with the colour code it was
+ * heard with; the incoming one, decoded after the adoption in the same frame, carries the new carrier's frequency and
+ * code, and nothing ends it later. With trunking on a recorded retune is the system following itself, and nothing
+ * changes. Each frame-sync pass here is a hunt read that left for a queued command, so no noCarrier() runs between
+ * them.
+ */
+static int g_replay_step = 0;
+
+static void
+begin_call_with_target(dsd_state* state, uint32_t target) {
+    dsd_call_observation call = dsd_call_observation_data(DSD_SYNC_DMR_BS_VOICE_POS, 0U, 5678U, target);
+    call.kind = DSD_CALL_KIND_GROUP_VOICE;
+    call.policy_target_id = target;
+    expect("a call begins", dsd_call_state_observe(state, &call, DSD_CALL_BOUNDARY_BEGIN) > 0);
+}
+
+static uint32_t
+slot0_target(const dsd_state* state) {
+    dsd_call_snapshot call;
+    DSD_MEMSET(&call, 0, sizeof call);
+    return dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+               ? (uint32_t)call.ota_target_id
+               : 0U;
+}
+
+/* The frame the in-frame retune lands in: its later samples are the new carrier's. The read that takes the first of
+   them adopts the new centre, and the frame then decodes the incoming call on a radio input. */
+static void
+decode_frame_across_a_recorded_retune(dsd_opts* opts, dsd_state* state) {
+    opts->audio_in_type = AUDIO_IN_RTL;
+    dsd_frame_sync_note_replay_center(opts, state, 860000000U);
+    expect("the read that adopts the new centre ends the outgoing call", slot0_target(state) == 0U);
+    expect("the outgoing call commits with the colour code it was heard with",
+           state->event_history_s[0].Event_History_Items[1].target_id == 1234U
+               && state->event_history_s[0].Event_History_Items[1].sys_id2 == 5U);
+    expect("the incoming carrier starts with no colour code", state->dmr_color_code == 16U);
+    state->dmr_color_code = 9U;
+    begin_call_with_target(state, 4321U);
+    dsd_event_sync_slot(opts, state, 0U);
+    opts->audio_in_type = AUDIO_IN_NULL;
+}
+
+/* A clean DMR voice LC header for a group call on slot 0: FLCO 0, @p tg from @p src. */
+static void
+decode_dmr_group_voice_lc(dsd_opts* opts, dsd_state* state, uint32_t tg, uint32_t src) {
+    uint8_t bits[96];
+    DSD_MEMSET(bits, 0, sizeof bits);
+    for (unsigned int i = 0U; i < 24U; i++) {
+        bits[24U + i] = (uint8_t)((tg >> (23U - i)) & 1U);
+        bits[48U + i] = (uint8_t)((src >> (23U - i)) & 1U);
+    }
+    uint32_t errors = 0U;
+    state->currentslot = 0;
+    state->lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    dmr_flco(opts, state, bits, 1U, &errors, 1U);
+}
+
+static int
+replay_retune_step(dsd_opts* opts, dsd_state* state) {
+    g_replay_step++;
+    state->input_interrupted = 1;
+    const Event_History* staged = &state->event_history_s[0].Event_History_Items[0];
+    switch (g_replay_step) {
+        case 1:
+            begin_call(state);
+            state->dmr_color_code = 5U;
+            dsd_frame_sync_note_replay_center(opts, state, 851012500U);
+            return DSD_SYNC_NONE;
+        case 2:
+            expect("a replay's first centre ends nothing", slot0_target(state) == 1234U);
+            expect("a replay's first centre forgets nothing", state->dmr_color_code == 5U);
+            g_in_frame_retune = 1;
+            return DSD_SYNC_DMR_BS_VOICE_POS;
+        case 3:
+            expect("the frame across the retune was processed", g_in_frame_retune == 0);
+            expect("the incoming call is open", slot0_target(state) == 4321U);
+            expect("the incoming call carries the new carrier's frequency",
+                   staged->target_id == 4321U && staged->freq_hz == 860000000);
+            expect("the incoming call carries the new carrier's colour code",
+                   staged->access_code_kind == (uint8_t)DSD_ACCESS_CODE_COLOR_CODE && staged->access_code == 9U);
+            return DSD_SYNC_NONE;
+        case 4:
+            expect("no late cleanup ends the incoming call", slot0_target(state) == 4321U);
+            expect("no late cleanup erases the incoming colour code", state->dmr_color_code == 9U);
+            /* Trunking on: a recorded retune is the system following itself. */
+            opts->trunk_enable = 1;
+            state->dmr_color_code = 7U;
+            dsd_frame_sync_note_replay_center(opts, state, 851012500U);
+            expect("a recorded trunked retune ends nothing", slot0_target(state) == 4321U);
+            expect("a recorded trunked retune forgets nothing", state->dmr_color_code == 7U);
+            opts->trunk_enable = 0;
+            dsd_opts_forget_iq_replay_center(opts);
+            (void)dsd_call_state_end_ex(state, 0U, 0.0, DSD_CALL_END_EXPLICIT);
+            state->input_interrupted = 0;
+            return DSD_SYNC_NONE;
+        case 5:
+            /* A trunking session following a voice channel heard within the last seconds, which noCarrier() keeps as a
+               fade would want it, has its radio input replaced (issue #575). */
+            opts->trunk_enable = 1;
+            opts->trunk_is_tuned = 1;
+            state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = 851012500L;
+            state->last_vc_sync_time = dsd_decode_time();
+            state->last_cc_sync_time = dsd_decode_time();
+            begin_call(state);
+            state->input_boundary = 1;
+            return DSD_SYNC_NONE;
+        case 6:
+            expect("a trunked input switch ends the followed call", slot0_target(state) == 0U);
+            expect("a trunked input switch leaves the followed voice channel",
+                   opts->trunk_is_tuned == 0 && state->trunk_vc_freq[0] == 0 && state->trunk_vc_freq[1] == 0);
+            decode_dmr_group_voice_lc(opts, state, 4700U, 4701U);
+            expect("the new input's call is open", slot0_target(state) == 4700U);
+            expect("the new input's call takes no frequency of the voice channel left behind", staged->freq_hz == 0);
+            opts->trunk_enable = 0;
+            (void)dsd_call_state_end_ex(state, 0U, 0.0, DSD_CALL_END_EXPLICIT);
+            state->input_interrupted = 0;
+            return DSD_SYNC_NONE;
+        default: return DSD_SYNC_NONE;
+    }
+}
+
 int
 // NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
 __wrap_getFrameSync(dsd_opts* opts, dsd_state* state) {
+    if (g_replay_step < 6) {
+        return replay_retune_step(opts, state);
+    }
     uint8_t reason = 0U;
     g_step++;
     switch (g_step) {
@@ -231,8 +375,12 @@ __wrap_getFrameSync(dsd_opts* opts, dsd_state* state) {
                    state->matched_filter.raw_count == 36 && state->matched_filter.replay == 36);
             expect("the same stream keeps its acquisition proof",
                    state->profile_proof_valid == 1 && state->profile_proof_symbolcnt == 4800U);
-            /* Now a command replaced the stream. */
+            /* Now a command replaced the stream, whose grants named a voice frequency within the last ten seconds, so
+               no pass forgets it as stale (issue #575). */
             state->dstar_confirmed = 1;
+            state->dmr_color_code = 5U;
+            state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = 851012500L;
+            state->last_cc_sync_time = dsd_decode_time();
             state->input_boundary = 1;
             state->input_interrupted = 1;
             return DSD_SYNC_NONE;
@@ -241,6 +389,16 @@ __wrap_getFrameSync(dsd_opts* opts, dsd_state* state) {
                    call_phase(state, &reason) == DSD_CALL_PHASE_ENDED && reason == DSD_CALL_END_EXPLICIT);
             expect("the new stream inherits no confirmation", state->dstar_confirmed == 0);
             expect("the boundary is consumed", state->input_boundary == 0);
+            /* The old stream's call commits as a teardown before noCarrier() forgets what that stream decoded, so its
+               row keeps the colour code it was heard with in every field (issue #575). */
+            expect("the replaced stream's call commits with its colour code",
+                   state->event_history_s[0].Event_History_Items[1].target_id == 1234U
+                       && state->event_history_s[0].Event_History_Items[1].sys_id2 == 5U);
+            expect("the new stream inherits no colour code", state->dmr_color_code == 16U);
+            expect("the new stream inherits no voice frequency the old one's grants named",
+                   state->trunk_vc_freq[0] == 0 && state->trunk_vc_freq[1] == 0);
+            state->trunk_vc_freq[0] = 851012500L;
+            state->last_cc_sync_time = dsd_decode_time();
             expect("nothing of the old stream is replayed into the new one",
                    state->matched_filter.raw_count == 0 && state->matched_filter.replay == 0
                        && state->matched_filter.kind == 0 && state->matched_filter.raw[0] == 0.0f);
@@ -252,6 +410,7 @@ __wrap_getFrameSync(dsd_opts* opts, dsd_state* state) {
         case 4:
             expect("a plain pass ends the call as a fade",
                    call_phase(state, &reason) == DSD_CALL_PHASE_ENDED && reason == DSD_CALL_END_SYNC_LOSS);
+            expect("a plain pass keeps a recent grant's voice frequency", state->trunk_vc_freq[0] == 851012500L);
             /* A sync, whose frame is followed by a switch drained in the synced loop. */
             begin_call(state);
             state->dstar_confirmed = 1;
@@ -321,6 +480,123 @@ __wrap_getFrameSync(dsd_opts* opts, dsd_state* state) {
     }
 }
 
+/*
+ * Issue #575: the watchdog writes the P25 state machine, the followed assignment and the call state under the P25 SM
+ * tick guard. An input switch, a tune or a source change during live trunking runs the carrier boundary beside its
+ * ticks, so the boundary holds the guard from the state machines' inspection through the teardown: taken when the
+ * caller does not hold it, kept (never taken again: it is not re-entrant) when the caller does. Each state machine
+ * access the boundary makes is checked for the hold while it is watched.
+ */
+static int g_watch_tick_guard = 0;
+static int g_sm_calls_guarded = 0;
+static int g_sm_calls_unguarded = 0;
+
+static void
+note_sm_call_guard(void) {
+    if (!g_watch_tick_guard) {
+        return;
+    }
+    if (p25_sm_tick_guard_try_enter()) {
+        p25_sm_tick_guard_leave();
+        g_sm_calls_unguarded++;
+    } else {
+        g_sm_calls_guarded++;
+    }
+}
+
+// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+p25_sm_ctx_t* __real_p25_sm_get_ctx(void);
+// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+p25_sm_ctx_t* __wrap_p25_sm_get_ctx(void);
+// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+dmr_sm_ctx_t* __real_dmr_sm_get_ctx(void);
+// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+dmr_sm_ctx_t* __wrap_dmr_sm_get_ctx(void);
+// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+void __real_p25_sm_abandon_carrier(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reason);
+// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+void __wrap_p25_sm_abandon_carrier(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reason);
+// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+void __real_dmr_sm_abandon_carrier(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reason);
+// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+void __wrap_dmr_sm_abandon_carrier(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reason);
+// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+void __real_dsd_engine_release_tuned_call_state(dsd_opts* opts, dsd_state* state);
+// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+void __wrap_dsd_engine_release_tuned_call_state(dsd_opts* opts, dsd_state* state);
+
+p25_sm_ctx_t*
+// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+__wrap_p25_sm_get_ctx(void) {
+    note_sm_call_guard();
+    return __real_p25_sm_get_ctx();
+}
+
+dmr_sm_ctx_t*
+// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+__wrap_dmr_sm_get_ctx(void) {
+    note_sm_call_guard();
+    return __real_dmr_sm_get_ctx();
+}
+
+void
+// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+__wrap_p25_sm_abandon_carrier(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reason) {
+    note_sm_call_guard();
+    __real_p25_sm_abandon_carrier(ctx, opts, state, reason);
+}
+
+void
+// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+__wrap_dmr_sm_abandon_carrier(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reason) {
+    note_sm_call_guard();
+    __real_dmr_sm_abandon_carrier(ctx, opts, state, reason);
+}
+
+void
+// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+__wrap_dsd_engine_release_tuned_call_state(dsd_opts* opts, dsd_state* state) {
+    note_sm_call_guard();
+    __real_dsd_engine_release_tuned_call_state(opts, state);
+}
+
+static void
+check_the_boundary_holds_the_tick_guard(dsd_opts* opts, dsd_state* state) {
+    for (int caller_holds = 0; caller_holds < 2; caller_holds++) {
+        p25_sm_ctx_t* p25 = p25_sm_get_ctx();
+        dmr_sm_ctx_t* dmr = dmr_sm_get_ctx();
+        p25->state = P25_SM_TUNED;
+        dmr->state = DMR_SM_TUNED;
+        opts->trunk_enable = 1;
+        opts->trunk_is_tuned = 1;
+        g_sm_calls_guarded = 0;
+        g_sm_calls_unguarded = 0;
+        if (caller_holds) {
+            p25_sm_tick_guard_enter();
+        }
+        g_watch_tick_guard = 1;
+        dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_INPUT_SWITCH, caller_holds);
+        g_watch_tick_guard = 0;
+        expect(caller_holds ? "under the caller's hold, the boundary inspects and tears down only inside it"
+                            : "the boundary takes the guard before it inspects the state machines and holds it through "
+                              "the teardown",
+               g_sm_calls_unguarded == 0 && g_sm_calls_guarded >= 5);
+        expect("the boundary left both followed voice channels",
+               p25_sm_get_state(p25) != P25_SM_TUNED && dmr->state != DMR_SM_TUNED && opts->trunk_is_tuned == 0);
+        const int guard_free = p25_sm_tick_guard_try_enter();
+        if (guard_free) {
+            p25_sm_tick_guard_leave();
+        }
+        if (caller_holds) {
+            expect("the caller's hold is kept", guard_free == 0);
+            p25_sm_tick_guard_leave();
+        } else {
+            expect("the hold the boundary took is released", guard_free == 1);
+        }
+    }
+    opts->trunk_enable = 0;
+}
+
 int
 main(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
@@ -343,6 +619,7 @@ main(void) {
     expect("a failed fallback ended the session", g_step == 9 && dsd_exitflag_load() == 1);
     expect("the failed fallback switched", g_switch_calls == 4);
     expect("the failed fallback asked the peer nothing", g_rowmod_calls == 1 && g_session_marks == 1);
+    check_the_boundary_holds_the_tick_guard(opts, state);
 
     freeState(state);
     free(state);

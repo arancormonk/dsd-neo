@@ -9,8 +9,10 @@
 
 #include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/frontend_runtime.h>
+#include <dsd-neo/app_control/rr_import_apply.h>
 #include <dsd-neo/app_control/rx_tone_view.h>
 #include <dsd-neo/app_control/scan_row_view.h>
+#include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/airspy_config.h>
 #include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/audio.h>
@@ -27,22 +29,26 @@
 #include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/core/sync_patterns.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/engine/engine.h>
 #include <dsd-neo/engine/trunk_scan.h>
+#include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/io/rtl_stream_fwd.h>
 #include <dsd-neo/io/udp_input.h>
 #include <dsd-neo/platform/atomic_compat.h>
+#include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
+#include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
@@ -54,6 +60,7 @@
 #include <dsd-neo/runtime/input_failure.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/net_audio_input_hooks.h>
+#include <dsd-neo/runtime/p25_optional_hooks.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
@@ -98,6 +105,28 @@ static long int g_cc_tune_freq = 0;
 static int g_cc_tune_ted_sps = 0;
 static int g_cc_profile_at_tune = -1;
 static int g_skip_arm_refused = 0;
+/* DMR data bursts dispatched past the decode gate, counted while armed (issue #575). */
+static int g_dmr_burst_handler_armed = 0;
+static int g_dmr_burst_handler_calls = 0;
+/* Digital audio frames the mixer wrote, counted while armed (issue #575). */
+static int g_audio_write_armed = 0;
+static size_t g_audio_write_frames = 0U;
+#ifdef DSD_NEO_TEST_AUDIO_ENSURE_WRAP
+/*
+ * Calls that reached the sink helpers from a session not playing to the null output. Where the helpers are not wrapped
+ * (macOS, Windows, other compilers) each would open a host audio stream or socket, so every case that changes the
+ * decode mode starts from init_decode_mode_context(); main() checks this once every case has run.
+ */
+static int g_ensure_off_null_calls;
+/* A stand-in digital sink a case installs as opts->audio_out_stream to count what the mixer writes. The real digital
+ * helper keeps an open stream and opens nothing (dsd_audio_ensure_digital_output()), so a digital call that finds it
+ * in place, with no raw sink wanted, is the one sink call that case may legitimately make: counted here, for the case
+ * to check exactly, and not as a sink-safety violation. */
+static const void* g_ensure_fake_digital_sink;
+static int g_ensure_fake_digital_sink_calls;
+static int g_ensure_analog_calls;
+static int g_ensure_digital_calls;
+#endif
 /* TCP audio connect and Pulse input open: the real functions unless a test arms a result. */
 static int g_tcp_connect_stub_armed = 0;
 static int g_tcp_connect_stub_rc = 0;
@@ -150,6 +179,12 @@ int __wrap_openAudioInput(dsd_opts* opts);
 int __real_dsd_audio_reconfigure_output_for_input_policy(dsd_opts* opts);
 int __wrap_dsd_audio_reconfigure_output_for_input_policy(dsd_opts* opts);
 int __wrap_io_control_set_freq(dsd_opts* opts, const dsd_state* state, long int freq);
+void __real_dmr_data_burst_handler(dsd_opts* opts, dsd_state* state, uint8_t info[196], uint8_t databurst,
+                                   const uint8_t* reliab98);
+void __wrap_dmr_data_burst_handler(dsd_opts* opts, dsd_state* state, uint8_t info[196], uint8_t databurst,
+                                   const uint8_t* reliab98);
+int __real_dsd_audio_write(dsd_audio_stream* stream, const int16_t* buffer, size_t frames);
+int __wrap_dsd_audio_write(dsd_audio_stream* stream, const int16_t* buffer, size_t frames);
 dsd_trunk_tune_result __wrap_dsd_trunk_tuning_hook_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq,
                                                               int ted_sps, uint64_t* out_request_id);
 int __real_dsd_tg_policy_call_skip_arm(dsd_state* state, uint32_t id, uint32_t src, int fallback, double now_mono_s);
@@ -236,6 +271,28 @@ __wrap_io_control_set_freq(dsd_opts* opts, const dsd_state* state, long int freq
     g_io_control_tune_calls++;
     g_io_control_tune_freq = freq;
     return g_io_control_tune_result;
+}
+
+/* A DMR data burst the decode gate let through (issue #575): counted, and handled for real unless a test armed the
+   count alone. */
+void
+__wrap_dmr_data_burst_handler(dsd_opts* opts, dsd_state* state, uint8_t info[196], uint8_t databurst,
+                              const uint8_t* reliab98) {
+    if (!g_dmr_burst_handler_armed) {
+        __real_dmr_data_burst_handler(opts, state, info, databurst, reliab98);
+        return;
+    }
+    g_dmr_burst_handler_calls++;
+}
+
+/* Digital audio the mixer let through (issue #575): counted, and written for real unless a test armed the count. */
+int
+__wrap_dsd_audio_write(dsd_audio_stream* stream, const int16_t* buffer, size_t frames) {
+    if (!g_audio_write_armed) {
+        return __real_dsd_audio_write(stream, buffer, frames);
+    }
+    g_audio_write_frames += frames;
+    return 0;
 }
 
 dsd_trunk_tune_result
@@ -2055,6 +2112,7 @@ test_manual_tune_trunking_gate_and_reacquisition(void) {
     rc |= expect_int("manual tune under trunking drained", dsd_app_drain_cmds(&opts, &state), 1);
     rc |= expect_int("manual tune under trunking never reaches the tuner", g_io_control_tune_calls, 0);
     rc |= expect_contains("manual tune under trunking explains itself", state.ui_msg, "Trunking active");
+    rc |= expect_int("manual tune under trunking is a failed command", dsd_app_command_test_last_failed(), 1);
     rc |= expect_int("manual tune under trunking leaves the trunker tuned", opts.trunk_is_tuned, 1);
     rc |= expect_true("manual tune under trunking leaves the VC", state.p25_vc_freq[0] == 852000000L);
     freeState(&state);
@@ -2072,7 +2130,21 @@ test_manual_tune_trunking_gate_and_reacquisition(void) {
     rc |= expect_int("manual tune under the scanner drained", dsd_app_drain_cmds(&opts, &state), 1);
     rc |= expect_int("manual tune under the scanner never reaches the tuner", g_io_control_tune_calls, 0);
     rc |= expect_contains("manual tune under the scanner explains itself", state.ui_msg, "Scanner active");
+    rc |= expect_int("manual tune under the scanner is a failed command", dsd_app_command_test_last_failed(), 1);
     opts.scanner_mode = 0;
+    freeState(&state);
+
+    /* The trunk scan is the third owner, refused the same way. */
+    init_test_context(&opts, &state);
+    opts.trunk_scan_enabled = 1;
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    rc |= expect_int("manual tune under the trunk scan queued",
+                     dsd_app_command_set_u32(DSD_APP_CMD_MANUAL_TUNE, 853125000U), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("manual tune under the trunk scan drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("manual tune under the trunk scan never reaches the tuner", g_io_control_tune_calls, 0);
+    rc |= expect_contains("manual tune under the trunk scan explains itself", state.ui_msg, "Trunk scan active");
+    rc |= expect_int("manual tune under the trunk scan is a failed command", dsd_app_command_test_last_failed(), 1);
+    opts.trunk_scan_enabled = 0;
     freeState(&state);
 
     init_test_context(&opts, &state);
@@ -2086,6 +2158,7 @@ test_manual_tune_trunking_gate_and_reacquisition(void) {
     rc |= expect_int("manual tune reaches the tuner once", g_io_control_tune_calls, 1);
     rc |= expect_true("manual tune targets the tapped frequency", g_io_control_tune_freq == 853125000L);
     rc |= expect_contains("manual tune reports applied", state.ui_msg, "Applied: tuned -> 853125000 Hz");
+    rc |= expect_int("an applied manual tune is no failed command", dsd_app_command_test_last_failed(), 0);
     rc |= expect_call_phase("manual tune ends canonical slot 1", &state, 0U, DSD_CALL_PHASE_ENDED);
     rc |= expect_call_phase("manual tune ends canonical slot 2", &state, 1U, DSD_CALL_PHASE_ENDED);
     rc |= expect_int("manual tune clears trunk tuned", opts.trunk_is_tuned, 0);
@@ -2255,6 +2328,92 @@ test_tuner_release(void) {
                      DSD_APP_COMMAND_SUBMIT_REJECTED);
     rc |= expect_int("release rejects an i32 payload", dsd_app_command_set_i32(DSD_APP_CMD_TUNER_RELEASE, 1),
                      DSD_APP_COMMAND_SUBMIT_REJECTED);
+
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    return rc;
+}
+
+/* A radio input of @p audio_in_dev, an I/Q replay ("iqreplay:...") or a live device. */
+static void
+init_radio_context(dsd_opts* opts, dsd_state* state, const char* audio_in_dev) {
+    init_test_context(opts, state);
+    opts->audio_in_type = AUDIO_IN_RTL;
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof(opts->audio_in_dev), "%s", audio_in_dev);
+}
+
+/*
+ * Issue #575: an I/Q replay plays the tuning its capture recorded and defers every other retune unseen, so a tap, the
+ * menu's frequency and the tuner release are refused while the input in force is a replay, with the reason, as a failed
+ * command: none reaches the tuner, and the release leaves trunking where it was. On a live radio the same commands go
+ * through.
+ */
+static int
+test_replay_refuses_tunes_and_release(void) {
+    static const char kReason[] = "An I/Q replay cannot retune.";
+    static const char kReplay[] = "iqreplay:capture.iq.json";
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+
+#ifdef USE_RADIO
+    char what[128];
+
+    static const struct {
+        int cmd;
+        const char* tag;
+    } tunes[] = {
+        {DSD_APP_CMD_MANUAL_TUNE, "manual tune"},
+        {DSD_APP_CMD_RTL_SET_FREQ, "rtl set freq"},
+    };
+
+    for (size_t i = 0; i < sizeof(tunes) / sizeof(tunes[0]); i++) {
+        init_radio_context(&opts, &state, kReplay);
+        reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+        DSD_SNPRINTF(what, sizeof(what), "%s during a replay", tunes[i].tag);
+        rc |= expect_int(what, dsd_app_command_set_u32(tunes[i].cmd, 853125000U), DSD_APP_COMMAND_SUBMIT_QUEUED);
+        rc |= expect_int(what, dsd_app_drain_cmds(&opts, &state), 1);
+        rc |= expect_int(what, g_io_control_tune_calls, 0);
+        rc |= expect_contains(what, state.ui_msg, kReason);
+        rc |= expect_int(what, dsd_app_command_test_last_failed(), 1);
+        freeState(&state);
+
+        init_radio_context(&opts, &state, "rtl:0");
+        reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+        DSD_SNPRINTF(what, sizeof(what), "%s on a live radio", tunes[i].tag);
+        rc |= expect_int(what, dsd_app_command_set_u32(tunes[i].cmd, 853125000U), DSD_APP_COMMAND_SUBMIT_QUEUED);
+        rc |= expect_int(what, dsd_app_drain_cmds(&opts, &state), 1);
+        rc |= expect_int(what, g_io_control_tune_calls, 1);
+        rc |= expect_true(what, strstr(state.ui_msg, kReason) == NULL);
+        rc |= expect_int(what, dsd_app_command_test_last_failed(), 0);
+        freeState(&state);
+    }
+#endif
+
+    init_radio_context(&opts, &state, kReplay);
+    seed_active_p25_voice(&opts, &state, 851000000L, 852000000L, 1201);
+    opts.scanner_mode = 1;
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    rc |= expect_int("release during a replay queued", dsd_app_command_action(DSD_APP_CMD_TUNER_RELEASE),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("release during a replay drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_contains("release during a replay explains itself", state.ui_msg, kReason);
+    rc |= expect_int("release during a replay fails", dsd_app_command_test_last_failed(), 1);
+    rc |= expect_int("release during a replay keeps trunking", opts.trunk_enable, 1);
+    rc |= expect_int("release during a replay keeps the scanner", opts.scanner_mode, 1);
+    rc |= expect_int("release during a replay keeps trunk tuned", opts.trunk_is_tuned, 1);
+    rc |= expect_true("release during a replay keeps the VC", state.p25_vc_freq[0] == 852000000L);
+    rc |= expect_int("release during a replay never touches the tuner", g_io_control_tune_calls, 0);
+    freeState(&state);
+
+    init_radio_context(&opts, &state, "rtl:0");
+    seed_active_p25_voice(&opts, &state, 851000000L, 852000000L, 1201);
+    rc |= expect_int("release on a live radio queued", dsd_app_command_action(DSD_APP_CMD_TUNER_RELEASE),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("release on a live radio drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("release on a live radio clears trunking", opts.trunk_enable, 0);
+    rc |= expect_int("release on a live radio is no failed command", dsd_app_command_test_last_failed(), 0);
+    rc |= expect_contains("release on a live radio explains itself", state.ui_msg, "Automatic tuning stopped");
+    freeState(&state);
 
     reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
     return rc;
@@ -4234,9 +4393,703 @@ test_scan_hold_avoid_commands(void) {
     reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_OK);
     return rc;
 }
+
+/*
+ * Issue #575: the return to the control channel and the channel cycle (the next LCN, P25 candidate or -Y row) are
+ * retunes the user asks for, so an I/Q replay refuses them as it refuses a tap, with the reason, as a failed command:
+ * none reaches the tuner. A session never runs --trunk-scan on a replay (trunk scan refuses that input at start and
+ * refuses input switches), but the refusal sits ahead of the cycle's trunk-scan leg too, and the hold and avoid, which
+ * act on the scan itself, still reach the coordinator. On a live radio the same commands go through.
+ */
+static int
+test_replay_refuses_channel_cycle_and_return_cc(void) {
+    static const char kReason[] = "An I/Q replay cannot retune.";
+    static const char kReplay[] = "iqreplay:capture.iq.json";
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+
+    for (int replay = 1; replay >= 0; replay--) {
+        const char* where = replay ? "during a replay" : "on a live radio";
+        char what[128];
+
+        init_radio_context(&opts, &state, replay ? kReplay : "rtl:0");
+        seed_active_p25_voice(&opts, &state, 851000000L, 852000000L, 1201);
+        reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+        reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_OK);
+        DSD_SNPRINTF(what, sizeof(what), "return to CC %s", where);
+        rc |= expect_int(what, dsd_app_command_action(DSD_APP_CMD_RETURN_CC), DSD_APP_COMMAND_SUBMIT_QUEUED);
+        rc |= expect_int(what, dsd_app_drain_cmds(&opts, &state), 1);
+        rc |= expect_int(what, g_cc_tune_calls + g_io_control_tune_calls, replay ? 0 : 1);
+        rc |= expect_int(what, strstr(state.ui_msg, kReason) != NULL ? 1 : 0, replay);
+        rc |= expect_int(what, dsd_app_command_test_last_failed(), replay);
+        if (replay) {
+            rc |= expect_int(what, opts.trunk_is_tuned, 1);
+            rc |= expect_true(what, state.p25_vc_freq[0] == 852000000L);
+        }
+        freeState(&state);
+
+        /* With trunking off, or with trunking on before the session has a control channel, a live radio has nothing to
+           return to and the command does nothing; a replay refuses it first all the same, so it never reads as done. */
+        for (int trunked = 0; trunked < 2; trunked++) {
+            init_radio_context(&opts, &state, replay ? kReplay : "rtl:0");
+            opts.trunk_enable = trunked;
+            state.trunk_cc_freq = 0;
+            state.p25_cc_freq = 0;
+            state.ui_msg[0] = '\0';
+            reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+            reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_OK);
+            DSD_SNPRINTF(what, sizeof(what), "return to CC %s with %s", where,
+                         trunked ? "no control channel yet" : "trunking off");
+            rc |= expect_int(what, dsd_app_command_action(DSD_APP_CMD_RETURN_CC), DSD_APP_COMMAND_SUBMIT_QUEUED);
+            rc |= expect_int(what, dsd_app_drain_cmds(&opts, &state), 1);
+            rc |= expect_int(what, g_cc_tune_calls + g_io_control_tune_calls, 0);
+            rc |= expect_int(what, strstr(state.ui_msg, kReason) != NULL ? 1 : 0, replay);
+            rc |= expect_int(what, dsd_app_command_test_last_failed(), replay);
+            freeState(&state);
+        }
+
+        init_radio_context(&opts, &state, replay ? kReplay : "rtl:0");
+        seed_active_p25_voice(&opts, &state, 855000000L, 856000000L, 3201);
+        state.lcn_freq_count = 2;
+        state.lcn_freq_roll = 0;
+        state.trunk_lcn_freq[0] = 857000000L;
+        state.trunk_lcn_freq[1] = 858000000L;
+        reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+        reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_OK);
+        DSD_SNPRINTF(what, sizeof(what), "channel cycle %s", where);
+        rc |= expect_int(what, dsd_app_command_action(DSD_APP_CMD_CHANNEL_CYCLE), DSD_APP_COMMAND_SUBMIT_QUEUED);
+        rc |= expect_int(what, dsd_app_drain_cmds(&opts, &state), 1);
+        rc |= expect_int(what, g_cc_tune_calls + g_io_control_tune_calls, replay ? 0 : 1);
+        rc |= expect_int(what, strstr(state.ui_msg, kReason) != NULL ? 1 : 0, replay);
+        rc |= expect_int(what, dsd_app_command_test_last_failed(), replay);
+        rc |= expect_int(what, state.lcn_freq_roll, replay ? 0 : 1);
+        freeState(&state);
+
+        init_radio_context(&opts, &state, replay ? kReplay : "rtl:0");
+        opts.trunk_scan_enabled = 1;
+        dsd_trunk_scan_hooks hooks = {0};
+        hooks.control = fake_scan_control;
+        dsd_trunk_scan_hooks_set(&hooks);
+        g_scan_control_calls = 0;
+        g_scan_control_result = 0;
+        DSD_SNPRINTF(what, sizeof(what), "trunk-scan next target %s", where);
+        rc |= expect_int(what, dsd_app_command_action(DSD_APP_CMD_CHANNEL_CYCLE), DSD_APP_COMMAND_SUBMIT_QUEUED);
+        rc |= expect_int(what, dsd_app_drain_cmds(&opts, &state), 1);
+        rc |= expect_int(what, g_scan_control_calls, replay ? 0 : 1);
+        rc |= expect_int(what, strstr(state.ui_msg, kReason) != NULL ? 1 : 0, replay);
+        rc |= expect_int(what, dsd_app_command_test_last_failed(), replay);
+        g_scan_control_result = 1;
+        DSD_SNPRINTF(what, sizeof(what), "trunk-scan hold %s", where);
+        rc |= expect_int(what, dsd_app_command_action(DSD_APP_CMD_SCAN_HOLD_TOGGLE), DSD_APP_COMMAND_SUBMIT_QUEUED);
+        rc |= expect_int(what, dsd_app_drain_cmds(&opts, &state), 1);
+        rc |= expect_int(what, g_scan_control_last_op, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE);
+        rc |= expect_int(what, dsd_app_command_test_last_failed(), 0);
+        g_scan_control_result = 0;
+        DSD_SNPRINTF(what, sizeof(what), "trunk-scan avoid %s", where);
+        rc |= expect_int(what, dsd_app_command_action(DSD_APP_CMD_SCAN_AVOID), DSD_APP_COMMAND_SUBMIT_QUEUED);
+        rc |= expect_int(what, dsd_app_drain_cmds(&opts, &state), 1);
+        rc |= expect_int(what, g_scan_control_last_op, DSD_TRUNK_SCAN_CONTROL_AVOID_ACTIVE);
+        dsd_trunk_scan_hooks_set(NULL);
+        freeState(&state);
+    }
+
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_OK);
+    return rc;
+}
 #endif
 
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
+/* The codes the carrier on air decoded, and the Phase 2 seed it proved. */
+static void
+seed_carrier_codes(dsd_state* state) {
+    state->dmr_color_code = 7U;
+    state->dmr_confidence_locked = 1;
+    state->dmr_confidence_color_code = 7;
+    state->nxdn_last_ran = 21U;
+    state->dpmr_color_code = 12;
+    state->p2_cc = 0x293ULL;
+    state->p2_cc_verified = 1U;
+}
+
+/* Forgotten, as the carrier boundary forgets them, or kept; the Phase 2 seed, the descrambling key, stays either way. */
+static int
+expect_carrier_codes(const char* what, const dsd_state* state, int forgotten) {
+    char tag[160];
+    int rc = 0;
+    DSD_SNPRINTF(tag, sizeof tag, "%s: DMR colour code", what);
+    rc |= expect_int(tag, (int)state->dmr_color_code, forgotten ? 16 : 7);
+    DSD_SNPRINTF(tag, sizeof tag, "%s: DMR confidence lock", what);
+    rc |= expect_int(tag, (int)state->dmr_confidence_locked, forgotten ? 0 : 1);
+    DSD_SNPRINTF(tag, sizeof tag, "%s: NXDN RAN", what);
+    rc |= expect_true(tag, state->nxdn_last_ran == (forgotten ? (unsigned int)-1 : 21U));
+    DSD_SNPRINTF(tag, sizeof tag, "%s: dPMR colour code", what);
+    rc |= expect_int(tag, state->dpmr_color_code, forgotten ? -1 : 12);
+    DSD_SNPRINTF(tag, sizeof tag, "%s: Phase 2 seed proof", what);
+    rc |= expect_int(tag, (int)state->p2_cc_verified, forgotten ? 0 : 1);
+    DSD_SNPRINTF(tag, sizeof tag, "%s: Phase 2 seed", what);
+    rc |= expect_true(tag, state->p2_cc == 0x293ULL);
+    return rc;
+}
+
+#ifdef USE_RADIO
+/* A call of @p protocol opened and synced on slot 0; for P25 Phase 2, as an unscrambled MAC_PTT opens one. Returns the
+   slot's staged row. */
+static const Event_History*
+observe_call(dsd_opts* opts, dsd_state* state, int protocol, uint32_t target) {
+    const dsd_call_observation observation = {
+        .protocol = protocol,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = target,
+        .policy_target_id = target,
+        .ota_source_id = target + 1U,
+    };
+    (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN);
+    dsd_event_sync_slot(opts, state, 0U);
+    return &state->event_history_s[0].Event_History_Items[0];
+}
+#endif
+
+/*
+ * Issue #575: an accepted retune the user asks for to another carrier, which can sync before any no-carrier pass
+ * forgets the codes the previous one decoded, forgets them itself, as the carrier boundary does
+ * (dsd_engine_forget_carrier_codes()): a Phase 2 call on the new carrier records no NAC until that carrier proves the
+ * seed. A refused or failed tune leaves the receiver, and the codes, where they were. A retune within the system --
+ * the return to the control channel, or a channel cycle over a trunked system's channels -- keeps them, as automatic
+ * trunk following does; a channel cycle over a conventional list moves to another carrier.
+ */
+static int
+test_accepted_retunes_forget_the_carrier_codes(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+
+#ifdef USE_RADIO
+    init_radio_context(&opts, &state, "rtl:0");
+    seed_carrier_codes(&state);
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    const Event_History* row = observe_call(&opts, &state, DSD_SYNC_P25P2_POS, 4100U);
+    rc |= expect_true("verified reception records its NAC",
+                      row->access_code_kind == (uint8_t)DSD_ACCESS_CODE_NAC && row->access_code == 0x293U);
+    post_u32(DSD_APP_CMD_MANUAL_TUNE, 853125000U);
+    rc |= expect_int("accepted tap drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("accepted tap reaches the tuner", g_io_control_tune_calls, 1);
+    rc |= expect_carrier_codes("accepted tap", &state, 1);
+    row = observe_call(&opts, &state, DSD_SYNC_P25P2_POS, 4200U);
+    rc |= expect_int("a Phase 2 call after the tap is another", (int)row->target_id, 4200);
+    rc |= expect_true("a Phase 2 call after the tap records no NAC",
+                      row->access_code_kind == (uint8_t)DSD_ACCESS_CODE_NONE);
+    freeState(&state);
+
+    /* The Phase 1 NAC goes with them: a NID whose BCH-decoded NAC is the reserved 000 or FFF leaves state->nac as it
+       was, so a Phase 1 call on the new carrier would record the old carrier's NAC. */
+    init_radio_context(&opts, &state, "rtl:0");
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    state.nac = 0x293;
+    row = observe_call(&opts, &state, DSD_SYNC_P25P1_POS, 4400U);
+    rc |= expect_true("a Phase 1 reception records its NAC",
+                      row->access_code_kind == (uint8_t)DSD_ACCESS_CODE_NAC && row->access_code == 0x293U);
+    post_u32(DSD_APP_CMD_MANUAL_TUNE, 853125000U);
+    rc |= expect_int("accepted tap drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("accepted tap forgets the Phase 1 NAC", state.nac, 0);
+    row = observe_call(&opts, &state, DSD_SYNC_P25P1_POS, 4500U);
+    rc |= expect_int("a Phase 1 call after the tap is another", (int)row->target_id, 4500);
+    rc |= expect_true("a Phase 1 call after the tap records no NAC",
+                      row->access_code_kind == (uint8_t)DSD_ACCESS_CODE_NONE);
+    freeState(&state);
+
+    init_radio_context(&opts, &state, "rtl:0");
+    seed_carrier_codes(&state);
+    reset_io_control_tune_stub(-1);
+    post_u32(DSD_APP_CMD_MANUAL_TUNE, 853125000U);
+    rc |= expect_int("failed tap drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_carrier_codes("failed tap", &state, 0);
+    freeState(&state);
+
+    init_radio_context(&opts, &state, "rtl:0");
+    seed_carrier_codes(&state);
+    opts.trunk_enable = 1;
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    post_u32(DSD_APP_CMD_MANUAL_TUNE, 853125000U);
+    rc |= expect_int("refused tap drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("refused tap never tunes", g_io_control_tune_calls, 0);
+    rc |= expect_carrier_codes("refused tap", &state, 0);
+    freeState(&state);
+
+    init_radio_context(&opts, &state, "rtl:0");
+    seed_carrier_codes(&state);
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_TIMEOUT);
+    post_u32(DSD_APP_CMD_RTL_SET_FREQ, 853125000U);
+    rc |= expect_int("accepted frequency entry drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_carrier_codes("accepted frequency entry", &state, 1);
+    freeState(&state);
+
+    init_radio_context(&opts, &state, "rtl:0");
+    seed_carrier_codes(&state);
+    reset_io_control_tune_stub(-1);
+    post_u32(DSD_APP_CMD_RTL_SET_FREQ, 853125000U);
+    rc |= expect_int("failed frequency entry drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_carrier_codes("failed frequency entry", &state, 0);
+    freeState(&state);
+#endif
+
+    for (int accepted = 1; accepted >= 0; accepted--) {
+        char what[96];
+        init_radio_context(&opts, &state, "rtl:0");
+        seed_active_p25_voice(&opts, &state, 851000000L, 852000000L, 1201);
+        seed_carrier_codes(&state);
+        reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+        reset_cc_tune_stub(accepted ? DSD_TRUNK_TUNE_RESULT_OK : DSD_TRUNK_TUNE_RESULT_DEFERRED);
+        DSD_SNPRINTF(what, sizeof what, "%s return to CC", accepted ? "accepted" : "deferred");
+        rc |= expect_int(what, dsd_app_command_action(DSD_APP_CMD_RETURN_CC), DSD_APP_COMMAND_SUBMIT_QUEUED);
+        rc |= expect_int(what, dsd_app_drain_cmds(&opts, &state), 1);
+        rc |= expect_carrier_codes(what, &state, 0);
+        freeState(&state);
+
+        init_radio_context(&opts, &state, "rtl:0");
+        seed_active_p25_voice(&opts, &state, 855000000L, 856000000L, 3201);
+        state.lcn_freq_count = 2;
+        state.lcn_freq_roll = 0;
+        state.trunk_lcn_freq[0] = 857000000L;
+        state.trunk_lcn_freq[1] = 858000000L;
+        seed_carrier_codes(&state);
+        reset_io_control_tune_stub(accepted ? RTL_STREAM_TUNE_OK : RTL_STREAM_TUNE_DEFERRED);
+        reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_OK);
+        DSD_SNPRINTF(what, sizeof what, "%s trunked channel cycle", accepted ? "accepted" : "deferred");
+        rc |= expect_int(what, dsd_app_command_action(DSD_APP_CMD_CHANNEL_CYCLE), DSD_APP_COMMAND_SUBMIT_QUEUED);
+        rc |= expect_int(what, dsd_app_drain_cmds(&opts, &state), 1);
+        rc |= expect_int(what, g_io_control_tune_calls, 1);
+        rc |= expect_carrier_codes(what, &state, 0);
+        freeState(&state);
+
+        init_radio_context(&opts, &state, "rtl:0");
+        state.lcn_freq_count = 2;
+        state.lcn_freq_roll = 0;
+        state.trunk_lcn_freq[0] = 857000000L;
+        state.trunk_lcn_freq[1] = 858000000L;
+        seed_carrier_codes(&state);
+        reset_io_control_tune_stub(accepted ? RTL_STREAM_TUNE_OK : RTL_STREAM_TUNE_DEFERRED);
+        DSD_SNPRINTF(what, sizeof what, "%s conventional channel cycle", accepted ? "accepted" : "deferred");
+        rc |= expect_int(what, dsd_app_command_action(DSD_APP_CMD_CHANNEL_CYCLE), DSD_APP_COMMAND_SUBMIT_QUEUED);
+        rc |= expect_int(what, dsd_app_drain_cmds(&opts, &state), 1);
+        rc |= expect_int(what, g_io_control_tune_calls, 1);
+        rc |= expect_carrier_codes(what, &state, accepted);
+        freeState(&state);
+
+        /* The candidate leg: under trunking a candidate is the system's own control channel; with trunking off the
+           candidate list is no system the receiver follows, so its next entry is another carrier. */
+        for (int trunked = 1; trunked >= 0; trunked--) {
+            init_radio_context(&opts, &state, "rtl:0");
+            opts.trunk_enable = trunked;
+            opts.p25_prefer_candidates = 1;
+            rc |= expect_int("candidate seeded", p25_cc_add_candidate(&state, 857000000L, 1), 1);
+            seed_carrier_codes(&state);
+            reset_io_control_tune_stub(accepted ? RTL_STREAM_TUNE_OK : RTL_STREAM_TUNE_DEFERRED);
+            reset_cc_tune_stub(accepted ? DSD_TRUNK_TUNE_RESULT_OK : DSD_TRUNK_TUNE_RESULT_DEFERRED);
+            DSD_SNPRINTF(what, sizeof what, "%s %s candidate cycle", accepted ? "accepted" : "deferred",
+                         trunked ? "trunked" : "untrunked");
+            rc |= expect_int(what, dsd_app_command_action(DSD_APP_CMD_CHANNEL_CYCLE), DSD_APP_COMMAND_SUBMIT_QUEUED);
+            rc |= expect_int(what, dsd_app_drain_cmds(&opts, &state), 1);
+            rc |= expect_int(what, g_io_control_tune_calls + g_cc_tune_calls, 1);
+            rc |= expect_carrier_codes(what, &state, accepted && !trunked);
+            freeState(&state);
+        }
+    }
+
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_OK);
+    return rc;
+}
+
+#ifdef USE_RADIO
+/*
+ * Issue #575: a retune to another carrier ends the calls heard on the one it leaves, and commits them, before it forgets
+ * that carrier's codes, so an NXDN call heard with RAN 5 commits RAN 5 in every field, the numeric sys id included,
+ * which the last render reads live. The tap ended its calls after the forget; the frequency entry ended none, leaving
+ * the call to end on the next carrier.
+ */
+static int
+test_tune_away_commits_the_outgoing_call_first(void) {
+    static const struct {
+        int cmd;
+        const char* tag;
+    } tunes[] = {
+        {DSD_APP_CMD_MANUAL_TUNE, "tap"},
+        {DSD_APP_CMD_RTL_SET_FREQ, "frequency entry"},
+    };
+
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    for (size_t i = 0; i < sizeof tunes / sizeof tunes[0]; i++) {
+        char what[96];
+        init_radio_context(&opts, &state, "rtl:0");
+        reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+        state.nxdn_last_ran = 5U;
+        (void)observe_call(&opts, &state, DSD_SYNC_NXDN_POS, 4300U);
+        post_u32(tunes[i].cmd, 853125000U);
+        DSD_SNPRINTF(what, sizeof what, "%s drained", tunes[i].tag);
+        rc |= expect_int(what, dsd_app_drain_cmds(&opts, &state), 1);
+        const Event_History* row = &state.event_history_s[0].Event_History_Items[1];
+        DSD_SNPRINTF(what, sizeof what, "%s commits the outgoing call", tunes[i].tag);
+        rc |= expect_int(what, (int)row->target_id, 4300);
+        DSD_SNPRINTF(what, sizeof what, "%s: committed RAN", tunes[i].tag);
+        rc |= expect_true(what, row->access_code_kind == (uint8_t)DSD_ACCESS_CODE_RAN && row->access_code == 5U);
+        DSD_SNPRINTF(what, sizeof what, "%s: committed sys id", tunes[i].tag);
+        rc |= expect_int(what, (int)row->sys_id3, 5);
+        DSD_SNPRINTF(what, sizeof what, "%s: committed sysid", tunes[i].tag);
+        rc |= expect_true(what, strcmp(row->sysid_string, "NXDN_RAN_5") == 0);
+        DSD_SNPRINTF(what, sizeof what, "%s: committed event line", tunes[i].tag);
+        rc |= expect_contains(what, row->event_string, "RAN: 05; ");
+        DSD_SNPRINTF(what, sizeof what, "%s forgets the RAN after", tunes[i].tag);
+        rc |= expect_true(what, state.nxdn_last_ran == (unsigned int)-1);
+        freeState(&state);
+    }
+    return rc;
+}
+#endif
+
+#ifdef USE_RADIO
+/* A P25 voice frequency, and a DMR grant's, the carrier on air left. */
+static void
+seed_frequency_caches(dsd_state* state) {
+    state->p25_vc_freq[0] = state->p25_vc_freq[1] = 851012500L;
+    state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = 851012500L;
+}
+
+static int
+expect_frequency_caches(const char* what, const dsd_state* state, int cleared) {
+    char tag[160];
+    const long want = cleared ? 0L : 851012500L;
+    DSD_SNPRINTF(tag, sizeof tag, "%s: P25 voice frequencies", what);
+    int rc = expect_true(tag, state->p25_vc_freq[0] == want && state->p25_vc_freq[1] == want);
+    DSD_SNPRINTF(tag, sizeof tag, "%s: trunk voice frequencies", what);
+    rc |= expect_true(tag, state->trunk_vc_freq[0] == want && state->trunk_vc_freq[1] == want);
+    return rc;
+}
+
+/*
+ * Issue #575: with trunking off, the P25 voice frequency a grant update wrote names a channel on the carrier that
+ * carried it, and the trunking-off no-carrier pass forgets it. A retune to another carrier can sync a P25 call before
+ * that pass, which took the old frequency (p25_sm_conventional_frequency()) over the tuner's: a tune from 851.0125 to
+ * 853.125 MHz whose next call recorded 851.0125. The retune forgets it, with the DMR grant's, as that pass does; with
+ * trunking on they belong to the system and stay.
+ */
+static int
+test_tune_away_clears_the_untrunked_frequency_caches(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+
+    init_radio_context(&opts, &state, "rtl:0");
+    opts.trunk_enable = 0;
+    opts.rtlsdr_center_freq = 851012500U;
+    seed_frequency_caches(&state);
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    post_u32(DSD_APP_CMD_RTL_SET_FREQ, 853125000U);
+    rc |= expect_int("untrunked frequency entry drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_frequency_caches("untrunked frequency entry", &state, 1);
+    opts.rtlsdr_center_freq = 853125000U; /* where the tuner went */
+    state.synctype = state.lastsynctype = DSD_SYNC_P25P1_POS;
+    p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
+    rc |= expect_int("a P25 call after the entry is published",
+                     p25_sm_emit_ptt_call(&opts, &state, 0, 4600, 0, 4601, 1, 0), 1);
+    const Event_History* row = &state.event_history_s[0].Event_History_Items[0];
+    rc |= expect_int("a P25 call after the entry is another", (int)row->target_id, 4600);
+    rc |= expect_true("a P25 call after the entry records the new tuner frequency", row->freq_hz == 853125000);
+    freeState(&state);
+
+    init_radio_context(&opts, &state, "rtl:0");
+    opts.trunk_enable = 0;
+    state.lcn_freq_count = 2;
+    state.lcn_freq_roll = 0;
+    state.trunk_lcn_freq[0] = 857000000L;
+    state.trunk_lcn_freq[1] = 858000000L;
+    seed_frequency_caches(&state);
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    rc |= expect_int("conventional channel cycle queued", dsd_app_command_action(DSD_APP_CMD_CHANNEL_CYCLE),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("conventional channel cycle drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_frequency_caches("conventional channel cycle", &state, 1);
+    freeState(&state);
+
+    init_radio_context(&opts, &state, "rtl:0");
+    opts.trunk_enable = 0;
+    opts.p25_prefer_candidates = 1;
+    rc |= expect_int("candidate seeded", p25_cc_add_candidate(&state, 857000000L, 1), 1);
+    seed_frequency_caches(&state);
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_OK);
+    rc |= expect_int("untrunked candidate cycle queued", dsd_app_command_action(DSD_APP_CMD_CHANNEL_CYCLE),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("untrunked candidate cycle drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_frequency_caches("untrunked candidate cycle", &state, 1);
+    freeState(&state);
+
+    /* Under trunking these belong to the followed system, and this forget leaves them (ENGINE_NO_CARRIER_RESET); a
+       frequency entry that picks no P25 control channel leaves the assignment they describe through the trunked release
+       instead (test_trunked_tune_away_leaves_the_followed_assignment()). */
+
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_OK);
+    return rc;
+}
+#endif
+
+#ifdef USE_RADIO
+/* A clean DMR voice LC header for a group call on slot 0: FLCO 0, @p tg from @p src. */
+static void
+decode_dmr_group_voice_lc(dsd_opts* opts, dsd_state* state, uint32_t tg, uint32_t src) {
+    uint8_t bits[96];
+    DSD_MEMSET(bits, 0, sizeof bits);
+    for (unsigned int i = 0U; i < 24U; i++) {
+        bits[24U + i] = (uint8_t)((tg >> (23U - i)) & 1U);
+        bits[48U + i] = (uint8_t)((src >> (23U - i)) & 1U);
+    }
+    uint32_t errors = 0U;
+    state->currentslot = 0;
+    state->lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    dmr_flco(opts, state, bits, 1U, &errors, 1U);
+}
+
+/*
+ * Issue #575: under trunking a frequency entry that picks no P25 control channel moves a voice-tuned DMR or NXDN
+ * receiver to another carrier, and the assignment it followed is left behind: the state machine that followed it comes
+ * to rest without tuning (the entry is the move), as trunk scan hands a carrier back, and trunk_is_tuned and the voice
+ * channel frequencies go. Left set, dsd_opts_trunk_vc_followed() let the next call's LC stamp the old voice channel's
+ * frequency: an 851.0125 -> 853.125 MHz entry whose next DMR call recorded 851.0125.
+ */
+static int
+test_trunked_tune_away_leaves_the_followed_assignment(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+
+    init_radio_context(&opts, &state, "rtl:0");
+    opts.trunk_enable = 1;
+    opts.frame_p25p1 = 0;
+    opts.frame_p25p2 = 0;
+    opts.trunk_is_tuned = 1;
+    opts.rtlsdr_center_freq = 851012500U;
+    state.trunk_cc_freq = 851000000L;
+    state.trunk_vc_freq[0] = state.trunk_vc_freq[1] = 851012500L;
+    dmr_sm_ctx_t* dmr = dmr_sm_get_ctx();
+    dmr_sm_init_ctx(dmr, &opts, &state);
+    dmr->state = DMR_SM_TUNED;
+    dmr->vc_freq_hz = 851012500L;
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    post_u32(DSD_APP_CMD_RTL_SET_FREQ, 853125000U);
+    rc |= expect_int("trunked frequency entry drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("trunked frequency entry reaches the tuner", g_io_control_tune_calls, 1);
+    rc |= expect_int("trunked frequency entry leaves the voice channel", opts.trunk_is_tuned, 0);
+    rc |= expect_true("trunked frequency entry forgets the voice channel",
+                      state.trunk_vc_freq[0] == 0 && state.trunk_vc_freq[1] == 0);
+    rc |= expect_int("the DMR state machine rests on its control channel", dmr->state, DMR_SM_ON_CC);
+    rc |= expect_true("the DMR state machine forgets the voice channel", dmr->vc_freq_hz == 0);
+    opts.rtlsdr_center_freq = 853125000U; /* where the tuner went */
+    decode_dmr_group_voice_lc(&opts, &state, 4700U, 4701U);
+    const Event_History* row = &state.event_history_s[0].Event_History_Items[0];
+    rc |= expect_int("a DMR call after the entry is another", (int)row->target_id, 4700);
+    rc |= expect_true("a DMR call after the entry records the new tuner frequency", row->freq_hz == 853125000);
+    dmr_sm_init_ctx(dmr, &opts, &state);
+    freeState(&state);
+
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    return rc;
+}
+#endif
+
+#ifdef USE_RADIO
+/*
+ * Issue #575: a trunked retune to another carrier releases the Phase 2 voice channel it followed while that channel's
+ * calls are still active, and the release flushes the partial superframe buffered for them
+ * (p25_sm_abandon_carrier()). Under a talkgroup hold the 8 kHz int16 mixer plays that tail only for an active call on
+ * the held talkgroup (dsd_audio_call_target()): a call ended before the release has no talkgroup, and the mixer
+ * dropped the tail. Both a frequency entry that picks no P25 control channel and a RadioReference import of another
+ * system run the carrier boundary first; the import used to end the call (decode_mode_apply_value() ->
+ * reset_call_tracking()) before its boundary released the channel.
+ */
+static int
+run_trunked_tune_away_with_a_held_tail(const char* what, int import) {
+    int rc = 0;
+    char tag[128];
+    static dsd_opts opts;
+    static dsd_state state;
+    static int fake_stream;
+
+    init_radio_context(&opts, &state, "rtl:0");
+    seed_active_p25_voice(&opts, &state, 851000000L, 852000000L, 1201);
+    opts.trunk_tune_group_calls = 1;
+    state.trunk_chan_map[0x1234] = 852000000L;
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){.tune_to_freq_request = stub_tune_to_freq_ok});
+    p25_sm_ctx_t* sm = p25_sm_get_ctx();
+    p25_sm_init_ctx(sm, &opts, &state);
+    p25_sm_event_t ev = p25_sm_ev_group_grant(0x1234, 852000000L, 1201, 1202, 0);
+    p25_sm_event(sm, &opts, &state, &ev);
+    ev = p25_sm_ev_active_call(0, 1201, 0, 1202, 1, 0);
+    p25_sm_event(sm, &opts, &state, &ev);
+    DSD_SNPRINTF(tag, sizeof tag, "%s: the P25 SM follows the voice channel", what);
+    rc |= expect_int(tag, p25_sm_get_state(sm), P25_SM_TUNED);
+    sm->vc_is_tdma = 1;
+    /* A frequency entry that picks no P25 control channel moves the receiver to another carrier. */
+    opts.frame_p25p1 = 0;
+    opts.frame_p25p2 = 0;
+    state.tg_hold = 1201U;
+    state.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
+    opts.floating_point = 0;
+    opts.pulse_digi_rate_out = 8000;
+    opts.audio_out = 1;
+    opts.audio_out_type = 0;
+    opts.audio_out_stream = (dsd_audio_stream*)(void*)&fake_stream;
+    for (int frame = 0; frame < 18; frame++) {
+        for (int i = 0; i < 160; i++) {
+            state.s_l4[frame][i] = 1000;
+        }
+    }
+    state.voice_counter[0] = 18; /* a full superframe of voice buffered for slot 0 */
+    dsd_p25_optional_hooks hooks = {0};
+    hooks.p25p2_flush_partial_audio = dsd_p25p2_flush_partial_audio;
+    dsd_p25_optional_hooks_set(hooks);
+    g_audio_write_frames = 0U;
+    g_audio_write_armed = 1;
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    /* The stand-in sink is the session's digital output: the import's decode-mode apply asks for it, and finds it open.
+       This case is built only where the sink helpers are wrapped (DSD_NEO_TEST_IO_CONTROL_WRAP comes with
+       DSD_NEO_TEST_AUDIO_ENSURE_WRAP), so every call is counted. */
+    g_ensure_fake_digital_sink = &fake_stream;
+    g_ensure_fake_digital_sink_calls = 0;
+    const int analog_before = g_ensure_analog_calls;
+    if (import) {
+        dsd_app_rr_apply_payload p;
+        DSD_MEMSET(&p, 0, sizeof p);
+        p.decode_mode = (int32_t)DSDCFG_MODE_P25P1;
+        p.trunking = 1U;
+        p.tune_hz = 853125000U;
+        DSD_SNPRINTF(tag, sizeof tag, "%s queued", what);
+        rc |= expect_int(tag, dsd_app_command_set_rr_apply(&p), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    } else {
+        post_u32(DSD_APP_CMD_RTL_SET_FREQ, 853125000U);
+    }
+    DSD_SNPRINTF(tag, sizeof tag, "%s drained", what);
+    rc |= expect_int(tag, dsd_app_drain_cmds(&opts, &state), 1);
+    g_ensure_fake_digital_sink = NULL;
+    /* Exactly the sink calls each command makes: the import's decode-mode apply asks once for the digital output the
+       new mode plays to, which is the stand-in already open; a frequency entry asks for none. Any other sink call,
+       an analog one included, stays a sink-safety violation main() reports. */
+    DSD_SNPRINTF(tag, sizeof tag, "%s asks for the open digital sink only", what);
+    rc |= expect_int(tag, g_ensure_fake_digital_sink_calls, import ? 1 : 0);
+    DSD_SNPRINTF(tag, sizeof tag, "%s asks for no analog sink", what);
+    rc |= expect_int(tag, g_ensure_analog_calls - analog_before, 0);
+    DSD_SNPRINTF(tag, sizeof tag, "%s: the P25 SM rests on its control channel", what);
+    rc |= expect_int(tag, p25_sm_get_state(sm), P25_SM_ON_CC);
+    DSD_SNPRINTF(tag, sizeof tag, "%s: the held talkgroup's buffered tail plays", what);
+    rc |= expect_true(tag, g_audio_write_frames > 0U);
+
+    g_audio_write_armed = 0;
+    dsd_p25_optional_hooks_set((dsd_p25_optional_hooks){0});
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+    opts.audio_out_stream = NULL;
+    p25_sm_init_ctx(sm, &opts, &state);
+    freeState(&state);
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    return rc;
+}
+
+static int
+test_trunked_tune_away_flushes_the_followed_tail_first(void) {
+    int rc = run_trunked_tune_away_with_a_held_tail("trunked frequency entry", 0);
+    rc |= run_trunked_tune_away_with_a_held_tail("import of another system", 1);
+    return rc;
+}
+#endif
+
+/* A DMR BS data burst of type @p burst on colour code @p cc, cached as the decoder caches one (dmr_stereo_payload): a
+   zero CACH (a valid TACT), the slot type's Golay(20,8) codeword around the BS data sync, and a zero payload. */
+static void
+stage_dmr_data_burst(dsd_state* state, unsigned int cc, unsigned int burst) {
+    unsigned char slot_type[20];
+    unsigned char check[20];
+    DSD_MEMSET(slot_type, 0, sizeof slot_type);
+    for (unsigned int b = 0U; b < 4U; b++) {
+        slot_type[b] = (unsigned char)((cc >> (3U - b)) & 1U);
+        slot_type[4U + b] = (unsigned char)((burst >> (3U - b)) & 1U);
+    }
+    int found = 0;
+    for (unsigned int parity = 0U; parity < 4096U && !found; parity++) {
+        for (unsigned int b = 0U; b < 12U; b++) {
+            slot_type[8U + b] = (unsigned char)((parity >> (11U - b)) & 1U);
+        }
+        DSD_MEMCPY(check, slot_type, sizeof check);
+        found = Golay_20_8_decode(check) && memcmp(check, slot_type, sizeof check) == 0;
+    }
+    if (!found) {
+        DSD_FPRINTF(stderr, "stage_dmr_data_burst: no Golay(20,8) codeword\n");
+    }
+    DSD_MEMSET(state->dmr_stereo_payload, 0, sizeof state->dmr_stereo_payload);
+    for (size_t i = 0U; i < 5U; i++) {
+        state->dmr_stereo_payload[61U + i] = (slot_type[2U * i] << 1) | slot_type[(2U * i) + 1U];
+        state->dmr_stereo_payload[90U + i] = (slot_type[10U + (2U * i)] << 1) | slot_type[11U + (2U * i)];
+    }
+    for (size_t i = 0U; i < 24U; i++) {
+        state->dmr_stereo_payload[66U + i] = DMR_BS_DATA_SYNC[i] == '3' ? 3 : 1;
+    }
+    state->dmr_stereo = 1;
+    state->dmr_ms_mode = 0;
+}
+
+/*
+ * Issue #575: a return to the control channel stays on the system, so it keeps the DMR decode gate the system's bursts
+ * locked, as automatic trunk following does. The first CSBK after the return is dispatched; forgetting the gate there
+ * left it pending, and dmr_data_dispatch_burst() dropped it, so a channel grant could be missed until it repeated. The
+ * same holds for a return to the control channel the receiver is already on.
+ */
+static int
+test_return_cc_keeps_the_dmr_decode_gate(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    Golay_20_8_init();
+    Hamming_7_4_init();
+    init_radio_context(&opts, &state, "rtl:0");
+    opts.trunk_enable = 1;
+    state.trunk_cc_freq = 851000000L;
+    g_dmr_burst_handler_armed = 1;
+    g_dmr_burst_handler_calls = 0;
+
+    stage_dmr_data_burst(&state, 5U, 3U);
+    dmr_data_sync(&opts, &state);
+    rc |= expect_int("the first CSBK waits for the gate", g_dmr_burst_handler_calls, 0);
+    stage_dmr_data_burst(&state, 5U, 3U);
+    dmr_data_sync(&opts, &state);
+    rc |= expect_int("the second CSBK locks the gate and is dispatched", g_dmr_burst_handler_calls, 1);
+
+    for (int pass = 0; pass < 2; pass++) {
+        char what[96];
+        const char* where = pass == 0 ? "from a voice channel" : "on the control channel";
+        reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+        if (pass == 1) {
+            opts.rtlsdr_center_freq = 851000000U;
+        }
+        DSD_SNPRINTF(what, sizeof what, "return to CC %s", where);
+        rc |= expect_int(what, dsd_app_command_action(DSD_APP_CMD_RETURN_CC), DSD_APP_COMMAND_SUBMIT_QUEUED);
+        rc |= expect_int(what, dsd_app_drain_cmds(&opts, &state), 1);
+        rc |= expect_int(what, g_io_control_tune_calls, 1);
+        DSD_SNPRINTF(what, sizeof what, "return to CC %s keeps the gate", where);
+        rc |= expect_true(what, state.dmr_confidence_locked == 1 && state.dmr_color_code == 5U);
+        stage_dmr_data_burst(&state, 5U, 3U);
+        dmr_data_sync(&opts, &state);
+        DSD_SNPRINTF(what, sizeof what, "the first CSBK after the return %s is dispatched", where);
+        rc |= expect_int(what, g_dmr_burst_handler_calls, 2 + pass);
+    }
+
+    g_dmr_burst_handler_armed = 0;
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    freeState(&state);
+    return rc;
+}
+
 /*
  * Per-row keys through the command queue: a channel cycle onto a keyed row
  * installs its set, a runtime key import while parked lands in the globals
@@ -7144,21 +7997,21 @@ test_replay_kept_by_a_failed_stop(void) {
 #endif
 
 #ifdef DSD_NEO_TEST_AUDIO_ENSURE_WRAP
-/* The sink helpers a decode-mode change calls, recorded instead of run (every build, radio or not). */
-static int g_ensure_analog_calls;
-static int g_ensure_digital_calls;
+/* g_ensure_analog_calls and g_ensure_digital_calls, the sink helpers a decode-mode change calls, recorded instead of
+   run (every build, radio or not), are defined with the other test state at the top of the file. */
 /* The output layout in the options when the digital sink was last asked for: the one a stream opened there gets. */
 static int g_ensure_digital_channels;
 static int g_ensure_digital_rate;
-/*
- * Calls that reached the sink helpers from a session not playing to the null output. Where the helpers are not wrapped
- * (macOS, Windows, other compilers) each would open a host audio stream or socket, so every case that changes the
- * decode mode starts from init_decode_mode_context(); main() checks this once every case has run.
- */
-static int g_ensure_off_null_calls;
+/* g_ensure_off_null_calls is defined with the other test state at the top of the file. */
 
 static void
-note_ensure_output(const dsd_opts* opts, const char* helper) {
+note_ensure_output(const dsd_opts* opts, const char* helper, int digital) {
+    if (digital && g_ensure_fake_digital_sink != NULL
+        && (const void*)opts->audio_out_stream == g_ensure_fake_digital_sink && opts->frame_provoice != 1
+        && opts->monitor_input_audio != 1) {
+        g_ensure_fake_digital_sink_calls++;
+        return;
+    }
     if (opts->audio_out_type != 9) {
         g_ensure_off_null_calls++;
         DSD_FPRINTF(stderr, "%s reached with audio_out_type %d; start the case from init_decode_mode_context()\n",
@@ -7173,14 +8026,14 @@ int __wrap_dsd_audio_ensure_digital_output(dsd_opts* opts);
 
 int
 __wrap_dsd_audio_ensure_analog_output(dsd_opts* opts) {
-    note_ensure_output(opts, "dsd_audio_ensure_analog_output()");
+    note_ensure_output(opts, "dsd_audio_ensure_analog_output()", 0);
     g_ensure_analog_calls++;
     return 0;
 }
 
 int
 __wrap_dsd_audio_ensure_digital_output(dsd_opts* opts) {
-    note_ensure_output(opts, "dsd_audio_ensure_digital_output()");
+    note_ensure_output(opts, "dsd_audio_ensure_digital_output()", 1);
     g_ensure_digital_calls++;
     g_ensure_digital_channels = opts->pulse_digi_out_channels;
     g_ensure_digital_rate = opts->pulse_digi_rate_out;
@@ -16852,7 +17705,17 @@ main(void) {
     rc |= test_retune_commands_clear_received_tone();
 #endif
     rc |= test_tuner_release();
+    rc |= test_replay_refuses_tunes_and_release();
     rc |= test_scan_hold_avoid_commands();
+    rc |= test_replay_refuses_channel_cycle_and_return_cc();
+    rc |= test_accepted_retunes_forget_the_carrier_codes();
+#ifdef USE_RADIO
+    rc |= test_tune_away_commits_the_outgoing_call_first();
+    rc |= test_tune_away_clears_the_untrunked_frequency_caches();
+    rc |= test_trunked_tune_away_leaves_the_followed_assignment();
+    rc |= test_trunked_tune_away_flushes_the_followed_tail_first();
+#endif
+    rc |= test_return_cc_keeps_the_dmr_decode_gate();
     rc |= test_scan_row_keys_commands();
 #endif
 #ifdef DSD_NEO_TEST_AUDIO_ENSURE_WRAP

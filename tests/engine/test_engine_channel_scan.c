@@ -201,6 +201,18 @@ dsd_engine_reset_no_carrier_state(dsd_opts* opts, dsd_state* state) {
     reset_count++;
 }
 
+/* The carrier boundary every row commit runs before the reset (issue #575). */
+static int untrunked_forget_count;
+
+void
+dsd_engine_carrier_boundary(dsd_opts* opts, dsd_state* state, dsd_carrier_boundary_kind kind, int guard_held) {
+    assert(opts->scanner_mode == 1);
+    assert(kind == DSD_CARRIER_BOUNDARY_SCAN_STEP);
+    (void)state;
+    (void)guard_held;
+    untrunked_forget_count++;
+}
+
 void
 dsd_frame_sync_reset_acquisition(const dsd_opts* opts, dsd_state* state, int forget) {
     (void)opts;
@@ -1242,6 +1254,7 @@ test_rx_tone_row_commit_and_step_clear(void) {
         *dsd_state_trunk_lcn_slot(state, row) = 150000000;
     }
     expected_nxdn = 0;
+    reset_count = untrunked_forget_count = 0;
 
     /* The outgoing row's tone is still on the publication while the tune is pending ... */
     tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
@@ -1253,6 +1266,8 @@ test_rx_tone_row_commit_and_step_clear(void) {
     state->synctype = DSD_SYNC_P25P1_POS;
     assert(!dsd_engine_channel_scan_service_sync(opts, state));
     assert(state->lcn_freq_roll == 1 && reset_count == 1);
+    /* The commit forgets the untrunked carrier state with the rest of the outgoing row's (issue #575). */
+    assert(untrunked_forget_count == reset_count);
     /* ... and the row commit takes it away. */
     assert(received_tone_cleared(state) && state->analog_rx.generation != generation);
 

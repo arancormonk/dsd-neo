@@ -63,6 +63,10 @@ void processTDULC(dsd_opts* opts, dsd_state* state);
 static int g_rs_hard_result = 0;
 static int g_rs_soft_result = 1;
 static int g_rs_soft_called = 0;
+/* Whether the first of the TDULC's trailing reads adopts a retune its capture recorded, where the carrier boundary moves
+   the carrier count (dsd_engine_carrier_boundary(), issue #575). The words before them come through the scripted
+   reader, so this stub's first read is the first trailing symbol. */
+static int g_boundary_in_tail = 0;
 
 // Alias helpers referenced by LCW path
 void
@@ -166,7 +170,10 @@ p25p1_rs_24_12_13_soft_reliability(char* data, const char* parity, const uint8_t
 int
 getDibitSoft(dsd_opts* opts, dsd_state* state, dsd_dibit_soft_t* out_soft) {
     (void)opts;
-    (void)state;
+    if (g_boundary_in_tail && state != NULL) {
+        state->carrier_seq++;
+        g_boundary_in_tail = 0;
+    }
     if (out_soft) {
         out_soft->reliability = 255;
         out_soft->llr[0] = -255;
@@ -502,6 +509,17 @@ main(void) {
     rc |= expect_eq_int("soft rs fec err", (int)state.p25_p1_voice_fec_err, 0);
     rc |= expect_eq_int("soft rs dispatch", (int)ctx->grant_count, 1);
     rc |= expect_eq_int("soft rs grant tg", ctx->vc_tg, 0x3456);
+
+    /* Case 6 (issue #575): the carrier boundary moved the carrier count in the trailing symbols (a replay read adopting
+       a recorded retune). The link control decoded whole before the move but dispatches only after them, so its grant
+       would retune for the carrier left after the boundary: nothing of it is dispatched, as on a sync loss. */
+    build_lcw_words(0x44, 0x00, 0x00, 0x3456, 0x100A, 0x0000);
+    g_rs_hard_result = 0;
+    p25_sm_init_ctx(ctx, &opts, &state);
+    g_boundary_in_tail = 1;
+    processTDULC(&opts, &state);
+    rc |= expect_eq_int("split tdulc moved the carrier count", (int)state.carrier_seq, 1);
+    rc |= expect_eq_int("split tdulc dispatches no grant", (int)ctx->grant_count, 0);
 
     dsd_state_ext_free_all(&state);
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});

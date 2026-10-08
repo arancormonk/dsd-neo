@@ -229,10 +229,11 @@ read_capture_file(const char* path, char* out, size_t out_sz) {
     if (!f) {
         return -1;
     }
-    size_t n = fread(out, 1, out_sz - 1, f);
-    out[n] = '\0';
+    /* Zeroed first, so whatever fread() leaves is terminated without indexing the buffer by its count. */
+    DSD_MEMSET(out, 0, out_sz);
+    const int failed = fread(out, 1, out_sz - 1, f) == 0 && ferror(f) != 0;
     fclose(f);
-    return 0;
+    return failed ? -1 : 0;
 }
 
 static void
@@ -719,6 +720,118 @@ test_private_voice_ignores_regroup_clear_key_collision(void) {
     return rc;
 }
 
+/* Issue #575: with trunking off, a grant writes p25_vc_freq[] only when it names the target of a call active on this
+ * carrier, so that frequency is the call's own and the conventional call takes it. The MFID90 Group Regroup Channel
+ * Grant used to write it for any group, which named another call's channel. */
+static int
+test_trunking_off_conventional_call_takes_only_its_own_grant_frequency(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    unsigned long long int MAC[24];
+    dsd_call_snapshot call = {0};
+    int rc = 0;
+
+    dsd_state_ext_free_all(&state);
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+    opts.trunk_enable = 0;
+    opts.trunk_tune_group_calls = 1;
+    state.synctype = state.lastsynctype = DSD_SYNC_P25P2_POS;
+    seed_fdma_iden(&state, 1, 1, 170200000L, 100);
+    p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
+
+    rc |= expect_true("own-grant: conventional call opens",
+                      p25_sm_emit_active_call(&opts, &state, 0, 0x4567, 0, 0x010203, 1, 0) == 1
+                          && copy_call(&state, 0U, &call) && call.phase == DSD_CALL_PHASE_ACTIVE);
+    rc |= expect_eq_long("own-grant: no frequency yet", (long)call.frequency_hz, 0);
+
+    /* An MFID90 regroup grant for another group: not this call's channel. */
+    DSD_MEMSET(MAC, 0, sizeof MAC);
+    MAC[1] = 0xA3;
+    MAC[2] = 0x90;
+    MAC[5] = 0x10;
+    MAC[6] = 0x0A; /* channel 0x100A -> 851.125 MHz */
+    MAC[7] = 0x12;
+    MAC[8] = 0x34;
+    process_MAC_VPDU(&opts, &state, 0, P25_MAC_PDU_ACTIVE, MAC);
+    rc |= expect_eq_long("own-grant: untargeted MFID90 leaves p25_vc_freq", state.p25_vc_freq[0], 0);
+    (void)p25_sm_emit_active_call(&opts, &state, 0, 0x4567, 0, 0x010203, 1, 0);
+    rc |= expect_true("own-grant: call still active", copy_call(&state, 0U, &call));
+    rc |= expect_eq_long("own-grant: untargeted MFID90 gives the call no frequency", (long)call.frequency_hz, 0);
+
+    /* The same grant naming this call's group is its channel. */
+    MAC[7] = 0x45;
+    MAC[8] = 0x67;
+    process_MAC_VPDU(&opts, &state, 0, P25_MAC_PDU_ACTIVE, MAC);
+    rc |= expect_eq_long("own-grant: targeted MFID90 writes p25_vc_freq", state.p25_vc_freq[0], 851125000);
+    (void)p25_sm_emit_active_call(&opts, &state, 0, 0x4567, 0, 0x010203, 1, 0);
+    rc |= expect_true("own-grant: call still active after the update", copy_call(&state, 0U, &call));
+    rc |= expect_eq_long("own-grant: the call carries its own grant frequency", (long)call.frequency_hz, 851125000);
+
+    /* A DMR grant decoded with trunking off leaves trunk_vc_freq behind; it is never the call's. */
+    state.p25_vc_freq[0] = state.p25_vc_freq[1] = 0;
+    state.trunk_vc_freq[0] = state.trunk_vc_freq[1] = 852012500L;
+    (void)p25_sm_emit_active_call(&opts, &state, 1, 0x7777, 0, 0x020304, 1, 0);
+    rc |= expect_true("own-grant: second call opens", copy_call(&state, 1U, &call));
+    rc |= expect_eq_long("own-grant: a DMR leftover gives the call no frequency", (long)call.frequency_hz, 0);
+
+    p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+/* Issue #575: with trunking off, the frequency a grant update names belongs to the call whose target it named, and to
+ * no other. Two calls on one carrier, nothing cleared between them: TG 0x4567's grant names 851.125 MHz, and TG
+ * 0x7777, opening on the other slot and later on the first, receives no grant of its own, so it takes none (its row
+ * falls back to the tuned frequency on a radio input). The Phase 2 writer fills both slots' p25_vc_freq[], which the
+ * second call used to read. */
+static int
+test_trunking_off_second_call_takes_no_grant_frequency_of_the_first(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    unsigned long long int MAC[24];
+    dsd_call_snapshot call = {0};
+    int rc = 0;
+
+    dsd_state_ext_free_all(&state);
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+    opts.trunk_enable = 0;
+    opts.trunk_tune_group_calls = 1;
+    state.synctype = state.lastsynctype = DSD_SYNC_P25P2_POS;
+    seed_fdma_iden(&state, 1, 1, 170200000L, 100);
+    p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
+
+    rc |= expect_true("two calls: the first call opens",
+                      p25_sm_emit_active_call(&opts, &state, 0, 0x4567, 0, 0x010203, 1, 0) == 1);
+    DSD_MEMSET(MAC, 0, sizeof MAC);
+    MAC[1] = 0xA3;
+    MAC[2] = 0x90;
+    MAC[5] = 0x10;
+    MAC[6] = 0x0A; /* channel 0x100A -> 851.125 MHz */
+    MAC[7] = 0x45;
+    MAC[8] = 0x67;
+    process_MAC_VPDU(&opts, &state, 0, P25_MAC_PDU_ACTIVE, MAC);
+    (void)p25_sm_emit_active_call(&opts, &state, 0, 0x4567, 0, 0x010203, 1, 0);
+    rc |= expect_true("two calls: the first call is still active", copy_call(&state, 0U, &call));
+    rc |=
+        expect_eq_long("two calls: the first call carries its own grant frequency", (long)call.frequency_hz, 851125000);
+
+    (void)p25_sm_emit_active_call(&opts, &state, 1, 0x7777, 0, 0x020304, 1, 0);
+    rc |= expect_true("two calls: the second call opens on the other slot", copy_call(&state, 1U, &call));
+    rc |= expect_eq_long("two calls: the second call takes no frequency the first one's grant named",
+                         (long)call.frequency_hz, 0);
+
+    (void)dsd_call_state_end_ex(&state, 0U, 0.0, DSD_CALL_END_EXPLICIT);
+    (void)p25_sm_emit_active_call(&opts, &state, 0, 0x7777, 0, 0x020304, 1, 0);
+    rc |= expect_true("two calls: the second talkgroup opens on the first slot", copy_call(&state, 0U, &call));
+    rc |= expect_eq_long("two calls: there it takes none of the first one's grant either", (long)call.frequency_hz, 0);
+
+    p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -735,6 +848,8 @@ main(void) {
     rc |= test_motorola_extended_function_supergroup_state();
     rc |= test_inband_encrypted_voice_starts_classification_deadline();
     rc |= test_private_voice_ignores_regroup_clear_key_collision();
+    rc |= test_trunking_off_conventional_call_takes_only_its_own_grant_frequency();
+    rc |= test_trunking_off_second_call_takes_no_grant_frequency_of_the_first();
 
     // Case A: MFID 0x90, opcode A3 (Group Regroup Channel Grant - Implicit)
     {
@@ -1923,6 +2038,7 @@ main(void) {
         rc |= expect_eq_long("p2 rejected nsb preserves wacn", (long)state.p2_wacn, 0x11111);
         rc |= expect_eq_long("p2 rejected nsb preserves sysid", (long)state.p2_sysid, 0x222);
         rc |= expect_eq_long("p2 rejected nsb preserves nac", (long)state.p2_cc, 0x333);
+        rc |= expect_eq_long("p2 rejected nsb proves no nac", state.p2_cc_verified, 0);
     }
 
     // Case K: P2 abbreviated NSB with unknown IDEN keeps identity metadata but
@@ -1964,11 +2080,54 @@ main(void) {
         rc |= expect_eq_long("p2 unknown-iden nsb wacn", (long)state.p2_wacn, 0xABCDE);
         rc |= expect_eq_long("p2 unknown-iden nsb sysid", (long)state.p2_sysid, 0x123);
         rc |= expect_eq_long("p2 unknown-iden nsb nac", (long)state.p2_cc, 0x055);
+        // Issue #575: the checked broadcast names the NAC on this carrier, so the seed is proven.
+        rc |= expect_eq_long("p2 nsb proves the nac", state.p2_cc_verified, 1);
         rc |= expect_eq_long("p2 unknown-iden nsb lra", state.p25_site_lra, 0x05);
         rc |= expect_eq_long("p2 unknown-iden nsb lra valid", state.p25_site_lra_valid, 1);
         rc |= expect_eq_long("p2 unknown-iden nsb clears stale iden", state.p25_iden_fdma[iden].populated, 0);
         rc |= expect_eq_long("p2 unknown-iden nsb clears explicit iden", state.p25_chan_tdma_explicit[iden], 0);
         rc |= expect_eq_long("p2 unknown-iden nsb clears pending", state.p25_pending_announcement_count, 0);
+    }
+
+    // Issue #575: under -F an LCCH MAC_SIGNAL that failed its CRC still reaches the VPDU decoder. A network status
+    // broadcast in it proves nothing: the seed it names stays unproven until a broadcast that passed its CRC names it,
+    // abbreviated or extended.
+    for (int extended = 0; extended < 2; extended++) {
+        static dsd_opts opts;
+        static dsd_state state;
+        unsigned long long int MAC[24] = {0};
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&state, 0, sizeof state);
+        p25_sm_release(p25_sm_get_ctx(), &opts, &state, "explicit-release");
+
+        state.p2_wacn = 0xABCDE;
+        state.p2_sysid = 0x123;
+        state.p2_cc = 0x055;
+        state.p2_cc_verified = 0U;
+        MAC[1] = extended ? 0xFB : 0x7B;
+        MAC[2] = 0x05; // LRA
+        MAC[3] = 0xAB;
+        MAC[4] = 0xCD;
+        MAC[5] = 0xE1;
+        MAC[6] = 0x23;
+        MAC[7] = 0x80;
+        MAC[8] = 0x0A; // unknown IDEN 8
+        if (extended) {
+            MAC[9] = 0x80;
+            MAC[10] = 0x0A;
+            MAC[12] = 0x00;
+            MAC[13] = 0x55; // NAC
+        } else {
+            MAC[11] = 0x55; // NAC
+        }
+
+        process_MAC_VPDU_crc(&opts, &state, 1, P25_MAC_PDU_SIGNAL, MAC, 0);
+        rc |= expect_eq_long(extended ? "p2 failed-crc nsb-ext proves no nac" : "p2 failed-crc nsb proves no nac",
+                             state.p2_cc_verified, 0);
+        process_MAC_VPDU_crc(&opts, &state, 1, P25_MAC_PDU_SIGNAL, MAC, 1);
+        rc |= expect_eq_long(extended ? "p2 checked nsb-ext proves the nac" : "p2 checked nsb proves the nac",
+                             state.p2_cc_verified, 1);
+        rc |= expect_eq_long("p2 nsb keeps the seed", (long)state.p2_cc, 0x055);
     }
 
     // Case L: P2 extended NSB with unknown IDEN keeps identity metadata but

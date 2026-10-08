@@ -16,6 +16,7 @@
  * must still begin its own epoch.
  */
 
+#include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
@@ -211,7 +212,68 @@ test_active_then_ptt_lockout_single_row(void) {
     return rc;
 }
 
+static const Event_History*
+committed_row(void) {
+    if (g_state.event_history_s == NULL) {
+        return NULL;
+    }
+    for (int i = 1; i < 255; i++) {
+        const Event_History* row = &g_state.event_history_s[0].Event_History_Items[i];
+        if (row->event_string[0] != '\0') {
+            return row;
+        }
+    }
+    return NULL;
+}
+
+/* One clear call that the MAC_PTT opens and the MAC_END_PTT finishes, as an unscrambled FACCH/SACCH carries them. */
+static void
+run_clear_ptt_call(uint8_t sig_fill) {
+    mac_ptt(sig_fill);
+    (void)p25_sm_emit_active_call(&g_opts, &g_state, 0, TEST_TG, 0, TEST_SRC, 1, 0x00);
+    event_ticks();
+    (void)p25_sm_emit_end_call_at(&g_opts, &g_state, 0, TEST_TG, TEST_SRC, dsd_decode_now_mono_s());
+    event_ticks();
+}
+
+/* Issue #575: an unscrambled FACCH/SACCH call never tests the descrambler seed, so a p2_cc from -X or from another
+ * carrier is no NAC the call was heard with: its row has no access code, and its text prints none. Once a burst
+ * descrambled with the seed proved it on this carrier, the same call records it. */
+static int
+test_unverified_seed_is_no_received_nac(void) {
+    int rc = 0;
+    reset_test_state(1);
+    tune_grant(0x00);
+    event_ticks();
+    run_clear_ptt_call(0x55U);
+
+    const Event_History* row = committed_row();
+    rc |= expect("unverified seed call commits a row", row != NULL);
+    if (row != NULL) {
+        rc |= expect("unverified seed records no NAC", row->access_code_kind == (uint8_t)DSD_ACCESS_CODE_NONE);
+        rc |= expect("unverified seed prints no NAC", strstr(row->event_string, "NAC: ---; ") != NULL);
+        rc |= expect("unverified seed sysid names no NAC", strstr(row->sysid_string, "---") != NULL);
+    }
+
+    /* The same call once a burst descrambled with the seed proved it on this carrier: the NAC is the call's. */
+    reset_test_state(1);
+    tune_grant(0x00);
+    g_state.p2_cc_verified = 1U;
+    event_ticks();
+    run_clear_ptt_call(0x56U);
+    row = committed_row();
+    rc |= expect("verified seed call commits a row", row != NULL);
+    if (row != NULL) {
+        rc |= expect("verified seed records the NAC",
+                     row->access_code_kind == (uint8_t)DSD_ACCESS_CODE_NAC && row->access_code == 0x293U);
+        rc |= expect("verified seed prints the NAC", strstr(row->event_string, "NAC: 293; ") != NULL);
+        rc |= expect("verified seed sysid names the NAC", strstr(row->sysid_string, "293_") != NULL);
+    }
+    return rc;
+}
+
 /* A differently-signed PTT after the epoch has accepted a PTT is the next
+ * transmission: it must still begin its own canonical epoch. *//* A differently-signed PTT after the epoch has accepted a PTT is the next
  * transmission: it must still begin its own canonical epoch. */
 static int
 test_second_ptt_still_begins_new_epoch(void) {
@@ -525,6 +587,7 @@ main(void) {
     rc |= test_late_first_ptt_folds_into_continuous_epoch();
     rc |= test_post_end_changed_source_reopens();
     rc |= test_repeat_helper_windows();
+    rc |= test_unverified_seed_is_no_received_nac();
 
     if (g_state.event_history_s != NULL) {
         free(g_state.event_history_s);

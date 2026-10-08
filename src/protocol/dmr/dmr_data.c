@@ -49,6 +49,8 @@ typedef struct dmr_data_sync_ctx_s {
     int cach_okay;
     int confidence_pending;
     int confidence_reject;
+    /* The carrier count (state->carrier_seq) the burst began on (issue #575). */
+    uint32_t carrier_seq;
 } dmr_data_sync_ctx;
 
 static void
@@ -62,6 +64,13 @@ dmr_data_sync_init_ctx(dmr_data_sync_ctx* ctx, dsd_opts* opts, dsd_state* state)
         ctx->soft_p = state->dmr_soft_p - 90;
     }
     ctx->cach_okay = -1;
+    ctx->carrier_seq = state->carrier_seq;
+}
+
+/* Whether the carrier boundary moved the carrier count since the burst began (issue #575). */
+static int
+dmr_data_carrier_left(const dmr_data_sync_ctx* ctx) {
+    return ctx->state->carrier_seq != ctx->carrier_seq;
 }
 
 static int
@@ -329,10 +338,18 @@ dmr_data_sync(dsd_opts* opts, dsd_state* state) {
         dmr_data_collect_sync(&ctx);
         if (dmr_data_collect_slot_type_suffix(&ctx)) {
             dmr_data_collect_second_half(&ctx);
-            if (opts->dmr_debug_burst != 0) {
-                (void)dmr_debug_format_burst(debug_line, sizeof(debug_line), state, state->currentslot, ctx.burst);
+            if (dmr_data_carrier_left(&ctx)) {
+                /* The carrier boundary moved while the burst's live half was read (issue #575): the CACH read before
+                   it may complete a short LC of the carrier left, which would decode after the boundary ended that
+                   carrier's calls. Nothing in the burst dispatches, and what earlier bursts gathered goes, as on a
+                   sync loss; a carrier left is not a burst FEC error. */
+                dmr_reset_blocks(opts, state);
+            } else {
+                if (opts->dmr_debug_burst != 0) {
+                    (void)dmr_debug_format_burst(debug_line, sizeof(debug_line), state, state->currentslot, ctx.burst);
+                }
+                dmr_data_dispatch_burst(&ctx);
             }
-            dmr_data_dispatch_burst(&ctx);
         }
     }
 

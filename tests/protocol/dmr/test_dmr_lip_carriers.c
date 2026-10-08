@@ -215,8 +215,10 @@ reset_carrier_state(dsd_state* state) {
     state->lastsynctype = DSD_SYNC_DMR_BS_DATA_POS;
 }
 
+// An active call whose epoch the event layer has opened, as the voice burst's sync leaves it: detail reaches the call's
+// row only once its epoch is open (dsd_event_enrich_*() declines before).
 static int
-seed_active_call(dsd_state* state) {
+seed_active_call(dsd_opts* opts, dsd_state* state) {
     const dsd_call_observation observation = {
         .protocol = DSD_SYNC_DMR_BS_VOICE_POS,
         .slot = 0,
@@ -224,7 +226,11 @@ seed_active_call(dsd_state* state) {
         .ota_source_id = 111,
         .ota_target_id = 1201,
     };
-    return dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) >= 0;
+    if (dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) < 0) {
+        return 0;
+    }
+    dsd_event_sync_slot(opts, state, 0U);
+    return 1;
 }
 
 static void
@@ -278,7 +284,7 @@ test_active_call_ownership(dsd_opts* opts, dsd_state* state, const char* path, i
     static const char* const carriers[] = {"UDT", "UDP 5017", "compressed UDP"};
     int failed = 0;
     reset_carrier_state(state);
-    CHECK(seed_active_call(state));
+    CHECK(seed_active_call(opts, state));
     CHECK(truncate_output(path));
     send_carrier_report(opts, state, carrier, 111, 0);
     Event_History* active = &state->event_history_s[0].Event_History_Items[0];
@@ -306,7 +312,7 @@ static int
 test_truncated_ownership(dsd_opts* opts, dsd_state* state, const char* path) {
     int failed = 0;
     reset_carrier_state(state);
-    CHECK(seed_active_call(state));
+    CHECK(seed_active_call(opts, state));
     CHECK(truncate_output(path));
     send_carrier_report(opts, state, 1, 111, 0);
     Event_History* active = &state->event_history_s[0].Event_History_Items[0];
@@ -372,7 +378,7 @@ static int
 test_icmp_enclosed_report(dsd_opts* opts, dsd_state* state, const char* path) {
     int failed = 0;
     reset_carrier_state(state);
-    CHECK(seed_active_call(state));
+    CHECK(seed_active_call(opts, state));
     CHECK(truncate_output(path));
     send_carrier_report(opts, state, 1, 111, 0);
     const Event_History* active = &state->event_history_s[0].Event_History_Items[0];

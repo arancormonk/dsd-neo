@@ -16,6 +16,7 @@
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/engine/channel_scan.h>
+#include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/engine/scan_voice_gate.h>
 #include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/platform/posix_compat.h>
@@ -95,6 +96,10 @@ typedef struct {
     double p25_last_vc_tune_time_m;
     double last_t3_tune_time_m;
     long int p25_vc_freq[2];
+    /* With trunking off, the grant frequency each slot keeps with the target it named (issue #575): it names the
+       target's own carrier, so it travels with the target, and a fresh target starts without one. */
+    long int p25_conventional_grant_freq[2];
+    uint32_t p25_conventional_grant_target[2];
     long int trunk_vc_freq[2];
     time_t p25_patch_last_update[8];
     long int trunk_lcn_freq[DSD_TRUNK_LCN_EMBEDDED];
@@ -168,6 +173,7 @@ typedef struct {
     uint16_t p25_patch_key[8];
     uint16_t p25_patch_wgid[8][8];
     uint16_t p25_ga_tg[512];
+    uint8_t p2_cc_verified; /* p2_cc proven on the target's carrier (issue #575) */
     uint8_t p25_prot_valid;
     uint8_t p25_prot_algid;
     uint8_t p25_cc_prot_valid;
@@ -203,6 +209,7 @@ typedef struct {
     uint16_t nxdn_grant_chan;
     long int nxdn_grant_freq;
     unsigned int nxdn_last_ran;
+    uint8_t nxdn_last_ran_stand_in;
     uint32_t nxdn_location_sys_code;
     uint16_t nxdn_location_site_code;
     char nxdn_location_category[14];
@@ -1575,12 +1582,17 @@ trunk_scan_save_p25_identity_snapshot(const dsd_state* state, dsd_trunk_scan_sna
     snapshot->p2_wacn = state->p2_wacn;
     snapshot->p2_sysid = state->p2_sysid;
     snapshot->p2_cc = state->p2_cc;
+    snapshot->p2_cc_verified = state->p2_cc_verified;
     snapshot->p2_siteid = state->p2_siteid;
     snapshot->p2_rfssid = state->p2_rfssid;
     snapshot->p25_cc_freq = state->p25_cc_freq;
     snapshot->trunk_cc_freq = state->trunk_cc_freq;
     snapshot->trunk_recovery_protocol = state->trunk_recovery_protocol;
     DSD_MEMCPY(snapshot->p25_vc_freq, state->p25_vc_freq, sizeof(snapshot->p25_vc_freq));
+    DSD_MEMCPY(snapshot->p25_conventional_grant_freq, state->p25_conventional_grant_freq,
+               sizeof(snapshot->p25_conventional_grant_freq));
+    DSD_MEMCPY(snapshot->p25_conventional_grant_target, state->p25_conventional_grant_target,
+               sizeof(snapshot->p25_conventional_grant_target));
     DSD_MEMCPY(snapshot->trunk_vc_freq, state->trunk_vc_freq, sizeof(snapshot->trunk_vc_freq));
     trunk_scan_save_enc_lockout_snapshot(state, snapshot);
     DSD_MEMCPY(snapshot->trunk_lcn_freq, state->trunk_lcn_freq, sizeof(snapshot->trunk_lcn_freq));
@@ -1624,12 +1636,17 @@ trunk_scan_restore_p25_identity_snapshot(dsd_state* state, const dsd_trunk_scan_
     state->p2_wacn = snapshot->p2_wacn;
     state->p2_sysid = snapshot->p2_sysid;
     state->p2_cc = snapshot->p2_cc;
+    state->p2_cc_verified = snapshot->p2_cc_verified;
     state->p2_siteid = snapshot->p2_siteid;
     state->p2_rfssid = snapshot->p2_rfssid;
     state->p25_cc_freq = snapshot->p25_cc_freq;
     state->trunk_cc_freq = snapshot->trunk_cc_freq;
     state->trunk_recovery_protocol = snapshot->trunk_recovery_protocol;
     DSD_MEMCPY(state->p25_vc_freq, snapshot->p25_vc_freq, sizeof(state->p25_vc_freq));
+    DSD_MEMCPY(state->p25_conventional_grant_freq, snapshot->p25_conventional_grant_freq,
+               sizeof(state->p25_conventional_grant_freq));
+    DSD_MEMCPY(state->p25_conventional_grant_target, snapshot->p25_conventional_grant_target,
+               sizeof(state->p25_conventional_grant_target));
     DSD_MEMCPY(state->trunk_vc_freq, snapshot->trunk_vc_freq, sizeof(state->trunk_vc_freq));
     trunk_scan_restore_enc_lockout_snapshot(state, snapshot);
     DSD_MEMCPY(state->trunk_lcn_freq, snapshot->trunk_lcn_freq, sizeof(state->trunk_lcn_freq));
@@ -1850,6 +1867,7 @@ trunk_scan_save_nxdn_snapshot(const dsd_state* state, dsd_trunk_scan_snapshot* s
     snapshot->nxdn_grant_chan = state->nxdn_grant_chan;
     snapshot->nxdn_grant_freq = state->nxdn_grant_freq;
     snapshot->nxdn_last_ran = state->nxdn_last_ran;
+    snapshot->nxdn_last_ran_stand_in = state->nxdn_last_ran_stand_in;
     snapshot->nxdn_location_sys_code = state->nxdn_location_sys_code;
     snapshot->nxdn_location_site_code = state->nxdn_location_site_code;
     DSD_MEMCPY(snapshot->nxdn_location_category, state->nxdn_location_category,
@@ -1868,6 +1886,7 @@ trunk_scan_restore_nxdn_snapshot(dsd_state* state, const dsd_trunk_scan_snapshot
     state->nxdn_grant_chan = snapshot->nxdn_grant_chan;
     state->nxdn_grant_freq = snapshot->nxdn_grant_freq;
     state->nxdn_last_ran = snapshot->nxdn_last_ran;
+    state->nxdn_last_ran_stand_in = snapshot->nxdn_last_ran_stand_in;
     state->nxdn_location_sys_code = snapshot->nxdn_location_sys_code;
     state->nxdn_location_site_code = snapshot->nxdn_location_site_code;
     DSD_MEMCPY(state->nxdn_location_category, snapshot->nxdn_location_category, sizeof(state->nxdn_location_category));
@@ -2862,6 +2881,10 @@ trunk_scan_switch_to(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coo
         }
         trunk_scan_save_target_snapshot(coord, state, outgoing);
     }
+    /* The tuner leaves the carrier on air (issue #575). The snapshots carry each target's codes and caches; what the
+       decoders gathered on that carrier (confirmation evidence, half-built assemblies such as an NXDN SACCH superframe)
+       is in none of them, and the incoming carrier's pieces would complete it, so it goes. */
+    dsd_engine_forget_carrier_decoding(opts, state);
 
     coord->active = next;
     coord->gain_editable = trunk_scan_gain_editable(opts);

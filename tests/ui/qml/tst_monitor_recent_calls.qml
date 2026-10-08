@@ -117,6 +117,82 @@ Item {
             compare(findChild(sheet, "historyHoldButton").text, "Hold TG 1234567")
         }
 
+        // Issue #575: a recent row names the call's access code right after its
+        // ids and the frequency it was heard on last, so a narrow phone elides
+        // the frequency first. The details sheet spells both out in full.
+        function test_03g_a_recent_row_shows_the_access_code_and_frequency() {
+            var name = callHistory.pushTuned(4001, 7001, "Fire Dispatch", 851012500, "CC 1", "Color code 1")
+            tc.list.positionViewAtBeginning()
+            var row = null
+            tryVerify(function () { row = tc.list.itemAtIndex(0); return row !== null && row.name === name },
+                      5000, "the tuned row is not on top")
+            compare(row.metaText, "TG 4001 · SRC 7001 · CC 1 · 0:04 · Fire Dispatch · 851.0125 MHz")
+
+            waitForRendering(row)
+            mouseClick(row, row.width / 2, row.height / 2)
+            var sheet = findChild(screenLoader.item, "monitorHistoryDetail")
+            tryCompare(sheet, "visible", true)
+            compare(sheet.record.freqHz, 851012500)
+            compare(sheet.record.accessCode, "CC 1")
+            compare(sheet.record.accessCodeText, "Color code 1")
+            var radio = sheet.detailLines.indexOf("Radio ID 7001")
+            verify(radio >= 0, "the details lost the radio id: " + sheet.detailLines)
+            compare(sheet.detailLines[radio + 1], "Color code 1")
+            compare(sheet.detailLines[radio + 2], "Frequency 851.0125 MHz")
+        }
+
+        // A row without either reads exactly as it did, and its details add no line.
+        function test_03h_a_row_without_a_code_or_frequency_is_unchanged() {
+            var name = callHistory.pushWithIds(4001, 7001)
+            tc.list.positionViewAtBeginning()
+            var row = null
+            tryVerify(function () { row = tc.list.itemAtIndex(0); return row !== null && row.name === name },
+                      5000, "the plain row is not on top")
+            compare(row.metaText, "TG 4001 · SRC 7001 · 0:04")
+
+            waitForRendering(row)
+            mouseClick(row, row.width / 2, row.height / 2)
+            var sheet = findChild(screenLoader.item, "monitorHistoryDetail")
+            tryCompare(sheet, "visible", true)
+            var radio = sheet.detailLines.indexOf("Radio ID 7001")
+            compare(sheet.detailLines[radio + 1], "")
+            compare(sheet.detailLines[radio + 2], "")
+        }
+
+        // A notice row on the monitor names what every row names (issue #575): its payload,
+        // or "data message" when it has none, then the access code it was heard with, and
+        // the frequency last. One with neither reads exactly as it did. The details sheet
+        // spells both out, as it does for a call.
+        function test_03i_a_recent_notice_row_shows_its_payload_code_and_frequency() {
+            var name = callHistory.pushTunedNotice(4001, 7001, "GPS 40.1 -75.2", "Fire Dispatch", 851012500,
+                                                   "NAC 293", "Network access code 293")
+            tc.list.positionViewAtBeginning()
+            var row = null
+            tryVerify(function () { row = tc.list.itemAtIndex(0); return row !== null && row.name === name },
+                      5000, "the notice row is not on top")
+            compare(row.metaText, "GPS 40.1 -75.2 · NAC 293 · 851.0125 MHz")
+
+            waitForRendering(row)
+            mouseClick(row, row.width / 2, row.height / 2)
+            var sheet = findChild(screenLoader.item, "monitorHistoryDetail")
+            tryCompare(sheet, "visible", true)
+            verify(sheet.detailLines.indexOf("Network access code 293") >= 0, "no code line: " + sheet.detailLines)
+            verify(sheet.detailLines.indexOf("Frequency 851.0125 MHz") >= 0, "no frequency line: " + sheet.detailLines)
+            sheet.visible = false
+
+            var bare = callHistory.pushTunedNotice(4001, 7001, "", "", 851012500, "CC 1", "Color code 1")
+            tc.list.positionViewAtBeginning()
+            tryVerify(function () { row = tc.list.itemAtIndex(0); return row !== null && row.name === bare },
+                      5000, "the payload-less notice row is not on top")
+            compare(row.metaText, "data message · CC 1 · 851.0125 MHz")
+
+            var plain = callHistory.pushTunedNotice(4001, 7001, "GPS 40.1 -75.2", "", 0, "", "")
+            tc.list.positionViewAtBeginning()
+            tryVerify(function () { row = tc.list.itemAtIndex(0); return row !== null && row.name === plain },
+                      5000, "the plain notice row is not on top")
+            compare(row.metaText, "GPS 40.1 -75.2")
+        }
+
         function test_source_alias_is_visible() {
             var newest = callHistory.pushWithSourceName("Radio 1201")
             tryVerify(function () {

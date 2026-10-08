@@ -47,6 +47,7 @@
 #include <dsd-neo/runtime/colors.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/exitflag.h>
+#include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/net_audio_input_hooks.h>
 #include <dsd-neo/runtime/rigctl_query_hooks.h>
@@ -262,8 +263,11 @@ edacs_read_sample_rtl(dsd_opts* opts, dsd_state* state, short* out, uint8_t* fla
         dsd_request_shutdown(opts, state);
         return 0;
     }
-    /* An I/Q replay's sample runs the decode clock to its capture time (issue #572). */
-    (void)dsd_rtl_stream_metrics_hook_replay_advance_decode_clock();
+    /* An I/Q replay's sample runs the decode clock to its capture time (issue #572) and notes the centre it was
+       captured on (issue #575). */
+    uint32_t replay_center_hz = 0U;
+    (void)dsd_rtl_stream_metrics_hook_replay_advance_decode_clock(&replay_center_hz);
+    dsd_frame_sync_note_replay_center(opts, state, replay_center_hz);
     /* EDACS keeps the stream on the digital family, so this is the FSK discriminator output, which the modem
        scales to a +/-30000 peak: it fits int16 as it is. The monitor's volume trim is not applied (nor is it to
        any FSK direct output, symbol_read_sample_rtl()): doubled, the upper half of the waveform clipped before the
@@ -2556,14 +2560,21 @@ edacs(dsd_opts* opts, dsd_state* state) {
     (void)dsd_format_local_datetime(dsd_decode_time(), DSD_LOCAL_DATETIME_DATE_COMPACT, datestr, sizeof datestr);
 
     int edacs_bit[241] = {0}; //zero out bit array and collect bits into it.
+    const uint32_t carrier_seq = state->carrier_seq;
     edacs_collect_bits(opts, state, edacs_bit);
+    unsigned long long int msg_1_ec = 0;
+    unsigned long long int msg_2_ec = 0;
+    if (state->carrier_seq != carrier_seq) {
+        /* The carrier boundary moved the carrier count while the frame was read (issue #575). The vote can take two
+           copies of each message read before the move, so the carrier left's message would decode and act after the
+           boundary: the frame is dropped, as on a sync loss, with no verdict. */
+        goto EDACS_END;
+    }
 
     /* Vote and check before the tuned early-out below. The 240 dibits are already read, so
      * the vote and two BCH re-derivations cost nothing next to them, and their answer is
      * this frame's verdict whether or not the call goes on to act on the message. Deciding
      * not to decode must not read as the check having failed (#391). */
-    unsigned long long int msg_1_ec = 0;
-    unsigned long long int msg_2_ec = 0;
     decoded = edacs_frame_bch_verdict(edacs_bit, &msg_1_ec, &msg_2_ec);
 
     // If we have executed a tune to a channel, then we will forego decoding any more edacs until we return from the voice channel

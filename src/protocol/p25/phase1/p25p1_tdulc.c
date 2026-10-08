@@ -295,6 +295,7 @@ processTDULC(dsd_opts* opts, dsd_state* state) {
     uint8_t LCW_bits[72];
     int soft_dibit_index = 0;
     int status_count = 21;
+    const uint32_t carrier_seq = state->carrier_seq;
     tdulc_read_data_and_parity_words(opts, state, dodeca_data, dodeca_parity, &status_count, soft_dibits,
                                      &soft_dibit_index);
 
@@ -306,7 +307,12 @@ processTDULC(dsd_opts* opts, dsd_state* state) {
     // initialize the next call's crypto classification and must survive TDULC.
     p25_crypto_reset_slot(state, 0);
 
-    if (irrecoverable_errors == 0) {
+    if (state->carrier_seq != carrier_seq) {
+        /* The carrier boundary moved the carrier count while the TDULC was read (issue #575). Its link control decodes
+           before the trailing symbols but dispatches only after them, so a grant read whole before the move would
+           retune for the carrier left after the boundary: it is dropped, as on a sync loss. */
+        DSD_FPRINTF(stderr, "\n");
+    } else if (irrecoverable_errors == 0) {
         DSD_FPRINTF(stderr, "%s", KYEL);
         p25_lcw_from_tdulc(opts, state, LCW_bits, 0);
         DSD_FPRINTF(stderr, "%s", KNRM);

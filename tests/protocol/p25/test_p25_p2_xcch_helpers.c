@@ -31,6 +31,7 @@ static int g_audio_allow;
 static int g_crc12_result;
 static int g_crc16_result;
 static int g_vpdu_count;
+static int g_vpdu_crc_ok;
 static int g_vpdu_type;
 static p25_mac_pdu_type g_vpdu_pdu_type;
 static int g_vpdu_entry_lasttg[2];
@@ -127,11 +128,21 @@ crc16_lb_bridge(const int* payload, int len) {
     return g_crc16_result;
 }
 
+void process_MAC_VPDU_crc(dsd_opts* opts, dsd_state* state, int type, p25_mac_pdu_type pdu_type,
+                          unsigned long long int mac[24], int crc_ok);
+
 void
 process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, p25_mac_pdu_type pdu_type,
                  unsigned long long int mac[24]) {
+    process_MAC_VPDU_crc(opts, state, type, pdu_type, mac, 1);
+}
+
+void
+process_MAC_VPDU_crc(dsd_opts* opts, dsd_state* state, int type, p25_mac_pdu_type pdu_type,
+                     unsigned long long int mac[24], int crc_ok) {
     (void)opts;
     g_vpdu_count++;
+    g_vpdu_crc_ok = crc_ok;
     g_vpdu_type = type;
     g_vpdu_pdu_type = pdu_type;
     if (state) {
@@ -537,6 +548,7 @@ reset_stubs(void) {
     g_crc12_result = 0;
     g_crc16_result = 0;
     g_vpdu_count = 0;
+    g_vpdu_crc_ok = -1;
     g_vpdu_type = -1;
     // Sentinel: MAC_PTT carries no MAC message opcode, so process_MAC_VPDU()
     // is never called with it and any observed value came from a real call.
@@ -989,6 +1001,31 @@ test_sacch_dispatch_and_lcch_crc_abort(void) {
     state.p2_is_lcch = 1;
     process_SACCH_MAC_PDU(&opts, &state, payload);
     rc |= expect_int("validated lcch claims P25 recovery", state.trunk_recovery_protocol, DSD_TRUNK_RECOVERY_P25);
+    rc |= expect_int("validated lcch signal reaches the vpdu", g_vpdu_count, 1);
+    rc |= expect_int("validated lcch signal passes its crc", g_vpdu_crc_ok, 1);
+
+    /* Issue #575: under -F a MAC_SIGNAL whose CRC failed still reaches the VPDU decoder, with that verdict, so a
+       network status broadcast in it proves no NAC (process_MAC_VPDU_crc()). */
+    reset_stubs();
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.currentslot = 0;
+    state.p2_is_lcch = 1;
+    opts.aggressive_framesync = 0;
+    g_crc16_result = 1;
+    process_SACCH_MAC_PDU(&opts, &state, payload);
+    rc |= expect_int("-F lcch signal with a failed crc reaches the vpdu", g_vpdu_count, 1);
+    rc |= expect_int("-F lcch signal carries its failed crc", g_vpdu_crc_ok, 0);
+
+    reset_stubs();
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.currentslot = 0;
+    g_crc12_result = 1;
+    mac[1] = 0x00;
+    pack_payload_from_mac(payload, 180, mac, 0x0, 0, 0);
+    process_SACCH_MAC_PDU(&opts, &state, payload);
+    rc |= expect_int("empty sacch signal with a failed crc reaches the vpdu", g_vpdu_count, 1);
+    rc |= expect_int("empty sacch signal carries its failed crc", g_vpdu_crc_ok, 0);
+    opts.aggressive_framesync = 1;
 
     return rc;
 }

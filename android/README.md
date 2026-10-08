@@ -68,7 +68,11 @@ do both at once:
   abandoned.
 - **Monitor** (`Starting`, `Running`, `Stopping`) — the live session takes the
   screen: the hero call, mute, hold, skip and avoid, the signal strip, and the session's
-  recent calls.
+  recent calls. On a radio source the signal strip opens with **FREQ**, the frequency
+  the receiver is tuned to: the saved system's frequency, a scan target's park
+  frequency, or the voice channel while a trunked target follows a call. It shows
+  while scanning and holding as well, and an I/Q replay shows the frequency each part
+  of the capture was recorded on.
 
 **Skip** leaves this call without changing the talkgroup list. On P25 a group-call
 skip lasts while the receiver keeps seeing the talkgroup's call: control-channel
@@ -839,6 +843,18 @@ copies are migrated when available; missing files can be reselected through Edit
 File details show the basename, size and modification time. Replay completion is
 retained with a Play again action. Progress is not invented when the input backend
 cannot report it. History rows open full details, including timestamps and messages.
+
+The Spectrum view is view-only during an I/Q replay: the replay plays the tuning its
+capture recorded, so tapping, stepping, **Go to** and **Explore from here** are not
+offered, and the view says **An I/Q replay cannot retune.**
+
+Each call in History and Monitor's Recent calls names the access code of the carrier
+it was decoded on right after its talkgroup and source: a DMR or dPMR color code
+(**CC 1**), a P25 network access code in hex (**NAC 293**), an NXDN radio access
+number (**RAN 5**) or an M17 channel access number (**CAN 0**). The frequency the
+call was heard on closes the line, so a narrow phone cuts it off first. The details
+sheet spells both out (**Color code 1**, **Frequency 851.0125 MHz**). A call whose
+code or frequency is not known leaves it out.
 
 Tap a row in History or Monitor's Recent calls to **Hold TG** while listening to
 the same saved system. The held talkgroup follows the decoder's state; release it

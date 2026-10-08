@@ -237,9 +237,11 @@ MetricsModel::fillDmrSite(SiteView& site, const dsd_state* snapshot) {
 QStringList
 MetricsModel::fillNxdnSite(SiteView& site, const dsd_state* snapshot) {
     QStringList parts;
-    site.nxdnRan = snapshot->nxdn_last_ran <= 63 ? static_cast<int>(snapshot->nxdn_last_ran) : -1;
     site.nxdnLocationCategory = siteText(snapshot->nxdn_location_category);
     const bool idas = site.nxdnLocationCategory == QStringLiteral("Type-D");
+    // Outside IDAS, whose area shows under its own label, a stand-in is DCR's fixed 7, which is no RAN (issue #575).
+    const bool ran_stand_in = !idas && snapshot->nxdn_last_ran_stand_in != 0U;
+    site.nxdnRan = (snapshot->nxdn_last_ran <= 63 && !ran_stand_in) ? static_cast<int>(snapshot->nxdn_last_ran) : -1;
     site.siteProtocol = idas ? QStringLiteral("IDAS") : QStringLiteral("NXDN");
     site.nxdnSiteCode = snapshot->nxdn_location_site_code;
     // As in the terminal, a decoded site code establishes location validity.
@@ -1072,8 +1074,10 @@ MetricsModel::refresh(const dsd_opts* opts_snapshot, const dsd_state* snapshot) 
      * is pointing it. Both come from the same options snapshot as radio_input,
      * so a frame never mixes a center from one generation with a gate from
      * another. Scanner mode counts alongside trunking: it owns the tuner too,
-     * stepping the channel map once the hangtime expires. */
-    next.center_freq_hz = next.radio_input ? static_cast<double>(opts_snapshot->rtlsdr_center_freq) : 0.0;
+     * stepping the channel map once the hangtime expires. The centre follows an
+     * I/Q replay's recorded retunes (issue #575), and reads 0 off a radio input,
+     * as radio_input does (dsd_opts_tuned_freq_hz()). */
+    next.center_freq_hz = static_cast<double>(dsd_opts_tuned_freq_hz(opts_snapshot));
     next.channel_bandwidth_hz = next.radio_input ? metrics.channel_bandwidth_hz : 0;
     fillAnalogChannel(next, opts_snapshot, snapshot, metrics);
     next.trunking_enabled = opts_snapshot->trunk_enable != 0;
@@ -1082,6 +1086,9 @@ MetricsModel::refresh(const dsd_opts* opts_snapshot, const dsd_state* snapshot) 
      * it steps targets from the engine loop and a release cannot clear it, so an
      * affordance gated only on the other two offers a tune the scan then undoes. */
     next.tuner_controlled = next.trunking_enabled || next.scanner_mode || (opts_snapshot->trunk_scan_enabled != 0);
+    /* An I/Q replay refuses every tune and the tuner release (issue #575): the predicate app-control refuses on, read
+     * from the same snapshot as radio_input, so a view never offers a tune the command queue then turns down. */
+    next.replay_input = dsd_opts_input_is_iq_replay(opts_snapshot) != 0;
 
     /* Sync is held for a moment after the last synced frame rather than sampled;
      * the hold decays on its own rather than being cleared on a retune. See

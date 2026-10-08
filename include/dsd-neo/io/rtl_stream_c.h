@@ -252,6 +252,10 @@ uint32_t rtl_stream_output_generation(void);
  * Under `--iq-replay` the decoder paces the demod: the demod publishes each block's output as one batch, into an empty
  * output ring, with this tag, and a replay read hands out samples of that one batch only. So the tag describes every
  * sample the read returned.
+ *
+ * The replay applies every event, a RETUNE included, and a loop rewind only on an idle pipeline, once the decoder has
+ * read and acknowledged every batch published. So the channel centre in force when the demod tags a block is the one
+ * the block's chunk was captured on (issue #575).
  */
 typedef struct rtl_stream_replay_batch {
     uint64_t chunk_sequence;    /**< The capture chunk the block took, from 1. */
@@ -265,6 +269,9 @@ typedef struct rtl_stream_replay_batch {
     uint64_t media_duration_ns; /**< Capture time the chunk spans. */
     uint32_t output_count;      /**< Samples in the batch. */
     uint32_t first_index;       /**< Index in the batch of the first sample the last read returned. */
+    /** Channel centre in Hz the chunk was captured on: the capture's opening centre, then each recorded RETUNE's, and
+        the opening one again after a loop rewind. */
+    uint32_t center_frequency_hz;
 } rtl_stream_replay_batch;
 
 /**

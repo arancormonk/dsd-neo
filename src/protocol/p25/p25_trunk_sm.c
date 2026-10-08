@@ -54,6 +54,8 @@ static void p25_voice_release_or_preserve_companion(p25_sm_ctx_t* ctx, dsd_opts*
                                                     const char* release_reason, const char* slot_diag,
                                                     const char* slot_log);
 static void handle_enc(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev);
+static void p25_emit_enc_lockout_with_ctx(const p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, uint8_t slot,
+                                          int target, int svc_bits, int is_group, int algid, int keyid);
 static void handle_crypto_pending(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev);
 static int p25_sm_crypto_classification_in_flight(const p25_sm_ctx_t* ctx, const dsd_state* state, double now_m,
                                                   double grant_timeout);
@@ -4579,7 +4581,7 @@ handle_enc(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_eve
     int is_group = 1;
     const int target = p25_enc_lockout_target(slot_ctx, tg, &is_group);
     if (target > 0) {
-        p25_emit_enc_lockout_once_typed(opts, state, (uint8_t)slot, target, 0x40, is_group, algid, ev->keyid);
+        p25_emit_enc_lockout_with_ctx(ctx, opts, state, (uint8_t)slot, target, 0x40, is_group, algid, ev->keyid);
     }
 
     p25_call_end_slot(opts, state, slot, dsd_decode_now_mono_s());
@@ -6321,16 +6323,43 @@ typedef struct {
     uint32_t source;
     uint32_t group_id;
     uint32_t private_id;
-    long frequency_hz;
+    int64_t frequency_hz;
 } p25_sm_conventional_call_t;
 
-static long
-p25_sm_conventional_frequency(const dsd_state* state, int slot, long fallback_hz) {
-    long frequency_hz = state->p25_vc_freq[slot];
-    if (frequency_hz == 0) {
-        frequency_hz = state->trunk_vc_freq[slot];
+void
+p25_conventional_grant_note(dsd_state* state, uint32_t target, long int freq) {
+    if (!state || target == 0U || freq == 0) {
+        return;
     }
-    return frequency_hz != 0 ? frequency_hz : fallback_hz;
+    for (int slot = 0; slot < 2; slot++) {
+        dsd_call_snapshot call;
+        if (dsd_call_state_get(state, (uint8_t)slot, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+            && call.ota_target_id == (uint64_t)target) {
+            state->p25_conventional_grant_freq[slot] = freq;
+            state->p25_conventional_grant_target[slot] = target;
+        }
+    }
+}
+
+int64_t
+p25_conventional_grant_frequency(const dsd_state* state, int slot, uint32_t target) {
+    if (!state || slot < 0 || slot > 1 || target == 0U || state->p25_conventional_grant_target[slot] != target) {
+        return 0;
+    }
+    return (int64_t)state->p25_conventional_grant_freq[slot];
+}
+
+/* The voice message carries no frequency (issue #575). This path runs only with trunking off
+ * (p25_sm_emit_voice_start_event() drops voice with trunking on and no assignment, and an assignment publishes through
+ * the SM's slot observation instead), where nothing is followed, so the call takes only the frequency a grant update
+ * naming its own target wrote (p25_conventional_grant_note(), from the trunking-off writers in p25p2_vpdu.c and
+ * p25p1_pdu_trunking.c; noCarrier() and the carrier boundary clear it with trunking off): never another call's, which
+ * p25_vc_freq[] may hold for either slot. Never trunk_vc_freq[]: with trunking off only a DMR grant writes it, for
+ * display, naming another channel. */
+static int64_t
+p25_sm_conventional_frequency(const dsd_state* state, int slot, uint32_t target, int64_t fallback_hz) {
+    const int64_t own = p25_conventional_grant_frequency(state, slot, target);
+    return own != 0 ? own : fallback_hz;
 }
 
 static int
@@ -6343,7 +6372,7 @@ p25_sm_conventional_identified_call(const dsd_state* state, const p25_sm_event_t
     }
     call->source = p25_call_positive_id(p25_sm_conventional_source(state, ev, slot));
     call->protocol = p25_sm_conventional_protocol(state);
-    call->frequency_hz = p25_sm_conventional_frequency(state, slot, 0);
+    call->frequency_hz = p25_sm_conventional_frequency(state, slot, call->target, 0);
     if (call->is_group) {
         call->group_id = call->target;
     } else {
@@ -6365,7 +6394,7 @@ p25_sm_conventional_anonymous_call(const dsd_state* state, int slot, p25_sm_conv
     call->is_group = active_call.kind == DSD_CALL_KIND_GROUP_VOICE;
     call->source = active_call.ota_source_id <= UINT32_MAX ? (uint32_t)active_call.ota_source_id : 0U;
     call->protocol = active_call.protocol;
-    call->frequency_hz = p25_sm_conventional_frequency(state, slot, active_call.frequency_hz);
+    call->frequency_hz = p25_sm_conventional_frequency(state, slot, call->target, active_call.frequency_hz);
     if (call->is_group) {
         call->group_id = call->target;
     } else {
@@ -6822,9 +6851,29 @@ p25_lockout_next_epoch(uint64_t epoch) {
     return epoch == 0U ? 1U : epoch;
 }
 
+/* The frequency of the grant the SM tuned this slot to, when that grant names the locked-out target: the call's own
+ * frequency, which the SM's call publication stamps the same way (p25_call_publish_observation()). 0 otherwise, and the
+ * notice then reads the live tuner, which off a radio input (an audio input with a rigctl peer) reads nothing
+ * (issue #575). */
+static long
+p25_lockout_grant_frequency(const p25_sm_ctx_t* ctx, uint8_t slot, int target, int is_group) {
+    if (!ctx || ctx->state != P25_SM_TUNED) {
+        return 0;
+    }
+    const p25_sm_slot_ctx_t* slot_ctx = &ctx->slots[slot & 1U];
+    if (!slot_ctx->grant_active || slot_ctx->freq_hz <= 0) {
+        return 0;
+    }
+    int grant_is_group = 1;
+    if (p25_enc_lockout_target(slot_ctx, 0, &grant_is_group) != target || grant_is_group != (is_group ? 1 : 0)) {
+        return 0;
+    }
+    return slot_ctx->freq_hz;
+}
+
 static void
-p25_lockout_snapshot_from_observation(const dsd_state* state, uint8_t slot, int target, int svc_bits, int is_group,
-                                      uint64_t epoch, dsd_call_snapshot* call) {
+p25_lockout_snapshot_from_observation(const p25_sm_ctx_t* ctx, const dsd_state* state, uint8_t slot, int target,
+                                      int svc_bits, int is_group, uint64_t epoch, dsd_call_snapshot* call) {
     DSD_MEMSET(call, 0, sizeof(*call));
     call->epoch = epoch;
     call->phase = DSD_CALL_PHASE_ACTIVE;
@@ -6834,13 +6883,14 @@ p25_lockout_snapshot_from_observation(const dsd_state* state, uint8_t slot, int 
     call->kind = is_group ? DSD_CALL_KIND_GROUP_VOICE : DSD_CALL_KIND_PRIVATE_VOICE;
     call->ota_target_id = (uint32_t)target;
     call->policy_target_id = (uint32_t)target;
+    call->frequency_hz = p25_lockout_grant_frequency(ctx, slot, target, is_group);
     call->service_options = (uint16_t)svc_bits;
     call->crypto = DSD_CALL_CRYPTO_ENCRYPTED;
 }
 
 static int
-p25_lockout_get_call_context(const dsd_state* state, uint8_t slot, int target, int svc_bits, int is_group,
-                             dsd_call_snapshot* call) {
+p25_lockout_get_call_context(const p25_sm_ctx_t* ctx, const dsd_state* state, uint8_t slot, int target, int svc_bits,
+                             int is_group, dsd_call_snapshot* call) {
     uint64_t epoch = 1U;
     if (dsd_call_state_get(state, slot, call) > 0) {
         const dsd_call_kind kind = is_group ? DSD_CALL_KIND_GROUP_VOICE : DSD_CALL_KIND_PRIVATE_VOICE;
@@ -6850,7 +6900,7 @@ p25_lockout_get_call_context(const dsd_state* state, uint8_t slot, int target, i
         }
         epoch = p25_lockout_next_epoch(call->epoch);
     }
-    p25_lockout_snapshot_from_observation(state, slot, target, svc_bits, is_group, epoch, call);
+    p25_lockout_snapshot_from_observation(ctx, state, slot, target, svc_bits, is_group, epoch, call);
     return 0;
 }
 
@@ -6869,9 +6919,10 @@ p25_lockout_end_matching_call(dsd_state* state, uint8_t slot, dsd_call_snapshot*
     return 1;
 }
 
-void
-p25_emit_enc_lockout_once_typed(dsd_opts* opts, dsd_state* state, uint8_t slot, int target, int svc_bits, int is_group,
-                                int algid, int keyid) {
+/* The lockout for the SM context `ctx`, whose slot holds the grant the locked-out call was followed to. */
+static void
+p25_emit_enc_lockout_with_ctx(const p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, uint8_t slot, int target,
+                              int svc_bits, int is_group, int algid, int keyid) {
     if (!opts || !state || target <= 0) {
         return;
     }
@@ -6881,7 +6932,7 @@ p25_emit_enc_lockout_once_typed(dsd_opts* opts, dsd_state* state, uint8_t slot, 
     slot &= 1U;
     if (state->event_history_s) {
         dsd_call_snapshot call;
-        const int finalizes_call = p25_lockout_get_call_context(state, slot, target, svc_bits, is_group, &call);
+        const int finalizes_call = p25_lockout_get_call_context(ctx, state, slot, target, svc_bits, is_group, &call);
         char detail[160];
         DSD_SNPRINTF(detail, sizeof(detail), "Target: %d; has been locked out; Encryption Lock Out Enabled.", target);
         if (finalizes_call && p25_lockout_end_matching_call(state, slot, &call)) {
@@ -6893,6 +6944,12 @@ p25_emit_enc_lockout_once_typed(dsd_opts* opts, dsd_state* state, uint8_t slot, 
     } else if (opts->verbose > 1) {
         p25_sm_log_status(opts, state, "enc-lo-skip-nohist");
     }
+}
+
+void
+p25_emit_enc_lockout_once_typed(dsd_opts* opts, dsd_state* state, uint8_t slot, int target, int svc_bits, int is_group,
+                                int algid, int keyid) {
+    p25_emit_enc_lockout_with_ctx(p25_sm_get_ctx(), opts, state, slot, target, svc_bits, is_group, algid, keyid);
 }
 
 /* ============================================================================

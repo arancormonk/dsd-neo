@@ -64,6 +64,7 @@
 #include <dsd-neo/protocol/p25/p25_crypto.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/protocol/p25/p25p2_frame.h>
 #include <dsd-neo/protocol/provoice/provoice.h>
 #include <dsd-neo/runtime/airspy_config.h>
 #include <dsd-neo/runtime/analog_channel.h>
@@ -1540,6 +1541,7 @@ no_carrier_clear_stale_p25_return_hints_after_generic_activity(const dsd_opts* o
     }
 
     state->p2_cc = 0;
+    state->p2_cc_verified = 0U;
     state->p2_wacn = 0;
     state->p2_sysid = 0;
     state->p2_rfssid = 0;
@@ -2001,7 +2003,7 @@ no_carrier_close_mbe_outputs_if_needed(dsd_opts* opts, dsd_state* state) {
 }
 
 static void
-no_carrier_reset_decode_state(dsd_state* state, int preserve_dmr_confidence) {
+no_carrier_reset_decode_state(dsd_state* state, int preserve_scan_state) {
     state->jitter = -1;
     state->lastsynctype = DSD_SYNC_NONE;
     state->carrier = 0;
@@ -2034,9 +2036,40 @@ no_carrier_reset_decode_state(dsd_state* state, int preserve_dmr_confidence) {
     set_spaces(state->ftype, 13);
     state->errs = 0;
     state->errs2 = 0;
-    if (!preserve_dmr_confidence) {
-        dmr_confidence_reset(state);
+    /* Trunk scan keeps the carrier identity in each target's snapshot, which saves and restores it. */
+    if (!preserve_scan_state) {
+        dsd_engine_forget_carrier_codes(state);
     }
+}
+
+void
+dsd_engine_forget_carrier_codes(dsd_state* state) {
+    if (!state) {
+        return;
+    }
+    dmr_confidence_reset(state);
+    /* The colour code is read as this carrier's (issue #575), so it goes back to "not decoded" (16, as initState()
+     * leaves it) with the lock. BS mode rewrites it when the gate relocks, before any burst is dispatched, but MS mode
+     * has no lock: a call opens before its embedded code decodes, and a failed QR(16,7,6) decode writes nothing, so the
+     * previous carrier's code would label it. Here rather than in dmr_confidence_reset(), whose BS burst-error callers
+     * stay on the same carrier. */
+    state->dmr_color_code = 16U;
+    /* The NXDN RAN likewise ((unsigned)-1, as initState() leaves it; RAN 0 is a legal code), with its stand-in mark. The
+     * SACCH writes it only once the transmission is confirmed, and confirmation restarts at a no-carrier pass, so a call
+     * opening on its FACCH1 VCALL would otherwise read the previous transmission's RAN. On a control channel the
+     * CRC-gated CAC sets it again at once. */
+    state->nxdn_last_ran = (unsigned int)-1;
+    state->nxdn_last_ran_stand_in = 0U;
+    /* The dPMR colour code, which only the confirmed path publishes; the no-carrier pass also resets it with the
+     * confirmation evidence (no_carrier_reset_call_strings_and_dpmr()). */
+    state->dpmr_color_code = -1;
+    /* The Phase 1 NAC: a NID whose BCH-decoded NAC is the reserved 000 or FFF leaves it as it was while the frame still
+     * dispatches, so a Phase 1 call on the next carrier would read this one's. The no-carrier pass resets it as well
+     * (no_carrier_reset_voice_and_audio_metrics()). */
+    state->nac = 0;
+    /* The Phase 2 seed's proof is the carrier's too: the next carrier's bursts, or a network status broadcast, prove it
+     * again. p2_cc itself is the descrambling key and stays. */
+    state->p2_cc_verified = 0U;
 }
 
 static void
@@ -2046,6 +2079,8 @@ no_carrier_reset_non_trunk_fields_if_needed(const dsd_opts* opts, dsd_state* sta
     }
     state->p25_vc_freq[0] = 0;
     state->p25_vc_freq[1] = 0;
+    DSD_MEMSET(state->p25_conventional_grant_freq, 0, sizeof(state->p25_conventional_grant_freq));
+    DSD_MEMSET(state->p25_conventional_grant_target, 0, sizeof(state->p25_conventional_grant_target));
     state->dmr_rest_channel = -1;
     state->nxdn_location_site_code = 0;
     state->nxdn_location_sys_code = 0;
@@ -2057,6 +2092,17 @@ no_carrier_reset_non_trunk_fields_if_needed(const dsd_opts* opts, dsd_state* sta
     state->dmr_branding_sub[0] = '\0';
     state->dmr_branding[0] = '\0';
     state->dmr_site_parms[0] = '\0';
+}
+
+void
+dsd_engine_forget_untrunked_carrier_state(const dsd_opts* opts, dsd_state* state) {
+    if (!opts || !state || opts->trunk_enable != 0) {
+        return;
+    }
+    no_carrier_reset_non_trunk_fields_if_needed(opts, state);
+    /* With trunking off only a DMR grant writes these, naming a channel the carrier that announced it carries. */
+    state->trunk_vc_freq[0] = 0;
+    state->trunk_vc_freq[1] = 0;
 }
 
 static void
@@ -2328,6 +2374,9 @@ no_carrier_reset_call_strings_and_dpmr(dsd_opts* opts, dsd_state* state) {
     dpmr_confirm_reset(state);
     state->dpmr_cch_evidence = 0;
     state->dpmr_cch_evidence_symbolcnt = 0;
+    /* And so is the colour code it published, read as this carrier's (issue #575): -1, as initState() leaves it,
+     * until the next confirmed transmission decodes one. */
+    state->dpmr_color_code = -1;
 }
 
 static void
@@ -2361,6 +2410,204 @@ no_carrier_finalize_canonical_calls(dsd_opts* opts, dsd_state* state, int retune
             dsd_event_sync_slot(opts, state, call_slot);
         }
     }
+}
+
+/* Whether a boundary of @p kind can run while the P25 or DMR state machine ticks, so that it must hold the P25 SM tick
+   guard: a tune, a source change or an input switch, which a trunking session can make. A scan step runs under
+   conventional scanning and a replay retune with trunking off, where neither recovery tick runs
+   (dsd_trunk_p25_recovery_allowed(), dsd_trunk_dmr_recovery_allowed()), no state machine follows a voice channel, and
+   the caller's hold is not known (a replay retune runs inside a sample read, possibly under processFrame()'s). */
+static int
+carrier_boundary_takes_guard(dsd_carrier_boundary_kind kind) {
+    return kind == DSD_CARRIER_BOUNDARY_TUNE || kind == DSD_CARRIER_BOUNDARY_SOURCE
+           || kind == DSD_CARRIER_BOUNDARY_INPUT_SWITCH;
+}
+
+/* Step 1 of the carrier boundary: the voice channel a trunking state machine followed, if one is held, is released while
+   its calls are still active (dsd_engine_carrier_boundary()). The state machine comes to rest on its control channel
+   without tuning, as trunk scan hands a carrier back (trunk_scan_release_active_carrier()); the P25 release flushes
+   the partial Phase 2 superframe, which the 8 kHz int16 mixer plays only for an active call on a talkgroup the hold or
+   policy allows. The shared release then drops trunk_is_tuned and the voice channel frequencies, so
+   dsd_opts_trunk_vc_followed() stamps no frequency of the assignment left behind. The caller holds the P25 SM tick
+   guard whenever a state machine can be ticking (carrier_boundary_takes_guard()), so the inspection below and the
+   teardown run inside the same hold as the watchdog's writes. */
+static void
+carrier_boundary_release_followed(dsd_opts* opts, dsd_state* state, dsd_carrier_boundary_kind kind) {
+    /* Trunk scan hands its carriers back itself. */
+    const int release_machines = carrier_boundary_takes_guard(kind) && opts->trunk_scan_enabled != 1;
+    int p25_tuned = 0;
+    int dmr_tuned = 0;
+    p25_sm_ctx_t* p25 = NULL;
+    dmr_sm_ctx_t* dmr = NULL;
+    if (release_machines) {
+        p25 = p25_sm_get_ctx();
+        dmr = dmr_sm_get_ctx();
+        p25_tuned = p25_sm_get_state(p25) == P25_SM_TUNED;
+        dmr_tuned = dmr->state == DMR_SM_TUNED;
+    }
+    if (opts->trunk_is_tuned != 1 && !p25_tuned && !dmr_tuned) {
+        return;
+    }
+    if (p25_tuned) {
+        p25_sm_abandon_carrier(p25, opts, state, "carrier-boundary");
+    }
+    if (dmr_tuned) {
+        dmr_sm_abandon_carrier(dmr, opts, state, "carrier-boundary");
+    }
+    dsd_engine_release_tuned_call_state(opts, state);
+}
+
+/* With its codes, step 3 forgets the evidence that vouched for the carrier's transmissions: every confirmation gate's
+   is per-transmission, and the no-carrier pass restarts each so that the next carrier proves itself again, as the
+   forget drops the DMR gate's lock with the colour code. A carrier boundary reaches the next carrier without that pass,
+   and the calls it just ended were the transmissions the evidence vouched for. */
+static void
+carrier_boundary_forget_evidence(dsd_state* state) {
+    nxdn_confirm_reset(state);
+    dpmr_confirm_reset(state);
+    state->dpmr_cch_evidence = 0;
+    state->dpmr_cch_evidence_symbolcnt = 0;
+    dstar_confirm_reset(state);
+    m17_confirm_reset(state);
+    provoice_confirm_reset(state);
+    state->ysf_fich_confirmed = 0;
+    state->p25_p1_nid_evidence = 0;
+    state->p25_p1_nid_evidence_symbolcnt = 0;
+}
+
+/* With its codes and evidence, step 3 drops every multi-frame assembly the decoders keep in dsd_state that can publish
+   an identity or a code, as the no-carrier pass drops them: a boundary between frames leaves each half-built, and the
+   next carrier's next piece could complete it with the carrier left's pieces (an NXDN SACCH superframe whose fourth
+   segment passes its own CRC publishes the old talkgroup and source at the new frequency). Decoders that hold a frame's
+   or superframe's pieces locally drop them through the carrier count instead. */
+static void
+carrier_boundary_forget_assemblies(dsd_opts* opts, dsd_state* state) {
+    /* NXDN: the SACCH superframe and the alias blocks. */
+    DSD_MEMSET(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
+    DSD_MEMSET(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
+    state->nxdn_part_of_frame = 0;
+    state->nxdn_sf = 0;
+    state->nxdn_alias_block_number = 0;
+    DSD_MEMSET(state->nxdn_alias_block_segment, 0, sizeof(state->nxdn_alias_block_segment));
+    state->nxdn_alias_arib_total_segments = 0;
+    state->nxdn_alias_arib_seen_mask = 0;
+    DSD_MEMSET(state->nxdn_alias_arib_segments, 0, sizeof(state->nxdn_alias_arib_segments));
+    /* DMR: data blocks, short LC (CACH) fragments, Capacity Plus CSBK blocks and data headers, as on a sync loss; the
+       embedded LC, late-entry MI and talker alias fragments; and the alias shown for the call that ended. */
+    dmr_reset_blocks(opts, state);
+    state->dmr_cach_counter = 0;
+    DSD_MEMSET(state->dmr_embedded_signalling, 0, sizeof(state->dmr_embedded_signalling));
+    DSD_MEMSET(state->late_entry_mi_fragment, 0, sizeof(state->late_entry_mi_fragment));
+    DSD_MEMSET(state->dmr_alias_format, 0, sizeof(state->dmr_alias_format));
+    DSD_MEMSET(state->dmr_alias_block_len, 0, sizeof(state->dmr_alias_block_len));
+    DSD_MEMSET(state->dmr_alias_char_size, 0, sizeof(state->dmr_alias_char_size));
+    DSD_MEMSET(state->dmr_alias_block_segment, 0, sizeof(state->dmr_alias_block_segment));
+    DSD_MEMSET(state->generic_talker_alias, 0, sizeof(state->generic_talker_alias));
+    /* P25: Phase 2 MAC fragments and the Phase 1 talker aliases carried over several link control words. */
+    DSD_MEMSET(state->p25_mac_frag, 0, sizeof(state->p25_mac_frag));
+    DSD_MEMSET(state->p25_apx_alias_rx, 0, sizeof(state->p25_apx_alias_rx));
+    DSD_MEMSET(state->p25_l3h_alias_phase1, 0, sizeof(state->p25_l3h_alias_phase1));
+    /* dPMR: the superframe part the next frame's identity half is read against. */
+    opts->dPMR_next_part_of_superframe = 0;
+    /* M17: the LSF from LICH chunks, the packet and the signature. */
+    DSD_MEMSET(state->m17_lsf, 0, sizeof(state->m17_lsf));
+    DSD_MEMSET(state->m17_pkt, 0, sizeof(state->m17_pkt));
+    state->m17_pbc_ct = 0;
+    state->m17_signature_advertised = 0;
+    DSD_MEMSET(state->m17_signature_digest, 0, sizeof(state->m17_signature_digest));
+    DSD_MEMSET(state->m17_signature, 0, sizeof(state->m17_signature));
+    state->m17_signature_received_mask = 0;
+    state->m17_signature_complete = 0;
+    state->m17_signature_bad_sequence = 0;
+    /* YSF: the text assembled frame by frame. */
+    DSD_MEMSET(state->ysf_txt, 0, sizeof(state->ysf_txt));
+    /* P25 Phase 2: the slots' ESS_B, which a 2V burst ahead of any 4V burst would decode as the new carrier's
+       ALG/KID/MI, the partial voice superframe and any staged rekey. And the ended calls' P25 crypto (ALG, KID, MI with
+       its LFSR state): the next carrier's calls key their own. */
+    p25p2_frame_forget_carrier(state);
+    p25_crypto_reset_slot(state, 0);
+    p25_crypto_reset_slot(state, 1);
+}
+
+void
+dsd_engine_forget_carrier_decoding(dsd_opts* opts, dsd_state* state) {
+    if (!opts || !state) {
+        return;
+    }
+    carrier_boundary_forget_evidence(state);
+    carrier_boundary_forget_assemblies(opts, state);
+}
+
+void
+dsd_engine_carrier_boundary(dsd_opts* opts, dsd_state* state, dsd_carrier_boundary_kind kind, int guard_held) {
+    if (!opts || !state) {
+        return;
+    }
+    /* The watchdog's ticks write the state machines, the followed assignment and the call state under the P25 SM tick
+       guard, so a boundary that can run beside them holds it from the first inspection through the last step: the
+       caller's hold (@p guard_held), or one taken here. The guard is not re-entrant. */
+    const int take_guard = carrier_boundary_takes_guard(kind) && !guard_held;
+    if (take_guard) {
+        p25_sm_tick_guard_enter();
+    }
+    carrier_boundary_release_followed(opts, state, kind);
+    no_carrier_finalize_canonical_calls(opts, state, 1);
+    dsd_engine_forget_carrier_codes(state);
+    dsd_engine_forget_carrier_decoding(opts, state);
+    dsd_engine_forget_untrunked_carrier_state(opts, state);
+    state->carrier_seq++;
+    if (take_guard) {
+        p25_sm_tick_guard_leave();
+    }
+}
+
+/* FNV-1a over @p text, never 0, which stands for no source. */
+static uint64_t
+carrier_source_hash(const char* text) {
+    uint64_t hash = 14695981039346656037ULL;
+    for (const unsigned char* p = (const unsigned char*)text; *p != '\0'; ++p) {
+        hash ^= (uint64_t)*p;
+        hash *= 1099511628211ULL;
+    }
+    return hash != 0U ? hash : 1U;
+}
+
+/* The source a radio stream runs, as a key: the kind of device and which one, never its settings or tuning. */
+static uint64_t
+carrier_source_key(const dsd_opts* opts) {
+    char key[sizeof opts->audio_in_dev + 32];
+    const char* dev = opts->audio_in_dev;
+    if (dsd_opts_audio_in_dev_is_iqreplay_spec(dev) || dsd_opts_audio_in_dev_is_soapy_spec(dev)) {
+        DSD_SNPRINTF(key, sizeof key, "%s", dev);
+    } else if (dsd_opts_audio_in_dev_is_rtltcp_spec(dev)) {
+        DSD_SNPRINTF(key, sizeof key, "rtltcp/%s/%d", opts->rtltcp_hostname, opts->rtltcp_portno);
+    } else if (dsd_opts_audio_in_dev_is_airspy_spec(dev)) {
+        DSD_SNPRINTF(key, sizeof key, "airspy/%s", opts->airspy.serial);
+    } else {
+        DSD_SNPRINTF(key, sizeof key, "rtl/%d", opts->rtl_dev_index);
+    }
+    return carrier_source_hash(key);
+}
+
+void
+dsd_engine_note_stream_source(dsd_opts* opts, dsd_state* state, int guard_held) {
+    if (!opts || !state) {
+        return;
+    }
+    const uint64_t key = carrier_source_key(opts);
+    if (state->carrier_source_key != 0U
+        && (key != state->carrier_source_key || dsd_opts_audio_in_dev_is_iqreplay_spec(opts->audio_in_dev))) {
+        dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_SOURCE, guard_held);
+    }
+    state->carrier_source_key = key;
+}
+
+void
+dsd_engine_leave_replay_carrier(dsd_opts* opts, dsd_state* state) {
+    if (!opts || !state || opts->trunk_enable != 0 || opts->trunk_scan_enabled == 1) {
+        return;
+    }
+    dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_REPLAY_RETUNE, 0);
 }
 
 static void
@@ -2441,6 +2688,10 @@ no_carrier_run(dsd_opts* opts, dsd_state* state, int guard_held) {
         return;
     }
     no_carrier_return_to_control_channel_if_needed(opts, state, now, guard_held);
+    if (scanner_retuned) {
+        /* The untyped step moved to another channel: the carrier boundary (issue #575). */
+        dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_SCAN_STEP, guard_held);
+    }
     no_carrier_finalize_canonical_calls(opts, state, scanner_retuned);
     dsd_engine_reset_no_carrier_state(opts, state);
 }
@@ -2500,9 +2751,12 @@ live_scanner_apply_audio_gain(dsd_opts* opts, dsd_state* state) {
 }
 
 #ifdef USE_RADIO
+/* The engine's own stream open. A replay centre an earlier run left (an embedding host's reused options) is not this
+   stream's: it starts with none, which the first replay read sets (issue #575). */
 static int
 live_scanner_start_rtl_if_needed(dsd_opts* opts, dsd_state* state) {
     if (opts->audio_in_type == AUDIO_IN_RTL) {
+        dsd_opts_forget_iq_replay_center(opts);
         if (state->rtl_ctx == NULL) {
             if (rtl_stream_create(opts, &state->rtl_ctx) < 0) {
                 LOG_ERROR("Failed to create radio stream.\n");
@@ -2521,6 +2775,7 @@ live_scanner_start_rtl_if_needed(dsd_opts* opts, dsd_state* state) {
         }
         opts->rtl_started = 1;
         opts->rtl_needs_restart = 0;
+        dsd_engine_note_stream_source(opts, state, 0);
     }
     return 0;
 }
@@ -2765,6 +3020,11 @@ live_scanner_main_loop(dsd_opts* opts, dsd_state* state) {
             continue;
         }
         if (!interrupted || state->input_boundary) {
+            if (state->input_boundary) {
+                /* The stream the decoder read was replaced: the carrier boundary, before noCarrier(), which keeps a
+                   trunking session's recent voice channel as a fade would want it (issue #575). */
+                dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_INPUT_SWITCH, 0);
+            }
             noCarrier(opts, state);
             dsd_engine_end_input_boundary(opts, state);
         }
@@ -2893,13 +3153,15 @@ dsd_engine_cleanup_close_wavs(dsd_opts* opts, dsd_state* state) {
 }
 
 static void
-dsd_engine_cleanup_close_radio(const dsd_opts* opts, dsd_state* state) {
+dsd_engine_cleanup_close_radio(dsd_opts* opts, dsd_state* state) {
 #ifdef USE_RADIO
     if (opts->rtl_started == 1 && state->rtl_ctx) {
         rtl_stream_stop(state->rtl_ctx);
         rtl_stream_destroy(state->rtl_ctx);
         state->rtl_ctx = NULL;
     }
+    /* The replay centre goes with the stream (issue #575), as at app-control's stop. */
+    dsd_opts_forget_iq_replay_center(opts);
 #else
     UNUSED(opts);
     UNUSED(state);

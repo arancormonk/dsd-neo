@@ -482,7 +482,18 @@ typedef struct {
     int err;
     uint32_t v_error;
     uint8_t fich_decode[32];
+    /* The carrier count (state->carrier_seq) the frame began on (issue #575). */
+    uint32_t carrier_seq;
 } ysf_fich_info;
+
+/* Whether the carrier boundary moved the carrier count since the frame began (issue #575): a replay read adopting a
+   recorded retune. A payload decodes only once read, so a data channel or voice channel read whole before the move
+   would decode after the boundary ended the carrier left's call: from there nothing of the frame decodes or publishes,
+   as on a sync loss. */
+static bool
+ysf_carrier_left(const dsd_state* state, const ysf_fich_info* info) {
+    return state->carrier_seq != info->carrier_seq;
+}
 
 // V/D2 decodes straight through mbelib, so its frames never reach the vocoder's
 // per-call WAV write (-P); they are written here under the same record policy, on
@@ -683,6 +694,9 @@ ysf_handle_vd_type1(dsd_opts* opts, dsd_state* state, const ysf_fich_info* info)
             vbuf[(i * 36) + j] = get_dibit_and_analog_signal(opts, state, NULL);
         }
     }
+    if (ysf_carrier_left(state, info)) {
+        return;
+    }
 
     ysf_ehr(opts, state, vbuf, 0, 4);
     ysf_conv_dch(opts, state, info->bn, info->bt, info->fn, info->ft, info->cm, dbuf);
@@ -774,6 +788,9 @@ ysf_handle_vd_type2(dsd_opts* opts, dsd_state* state, const ysf_fich_info* info)
 
         ysf_emit_audio_from_temp(opts, state, true);
     }
+    if (ysf_carrier_left(state, info)) {
+        return;
+    }
 
     ysf_conv_dch2(opts, state, info->bn, info->bt, info->fn, info->ft, info->cm, dbuf);
 }
@@ -841,7 +858,7 @@ ysf_handle_full_rate_voice(dsd_opts* opts, dsd_state* state, const ysf_fich_info
         ysf_decode_full_rate_voice_slot(opts, state);
     }
 
-    if (is_csd3) {
+    if (is_csd3 && !ysf_carrier_left(state, info)) {
         ysf_conv_dch(opts, state, 2, info->bt, info->fn, info->ft, info->cm, dbuf);
     }
 }
@@ -855,6 +872,9 @@ ysf_handle_full_rate_data(dsd_opts* opts, dsd_state* state, const ysf_fich_info*
         for (int j = 0; j < 36; j++) {
             dbuf_fr[i % 2][((i / 2) * 36) + j] = get_dibit_and_analog_signal(opts, state, NULL);
         }
+    }
+    if (ysf_carrier_left(state, info)) {
+        return;
     }
 
     for (int i = 0; i < 2; i++) {
@@ -905,7 +925,8 @@ ysf_end_call_lifecycle(dsd_opts* opts, dsd_state* state, const ysf_fich_info* in
     // A FICH-verified communication terminator (FI=2) is positive over-the-air end evidence, so
     // the event layer can keep an audible epoch whose callsigns never decoded; EXPLICIT would be
     // indistinguishable from an engine retune and drop that row.
-    if (info->err == 0 && info->fi == 2U && dsd_call_state_end_ex(state, 0U, 0.0, DSD_CALL_END_TERMINATOR) > 0) {
+    if (info->err == 0 && info->fi == 2U && !ysf_carrier_left(state, info)
+        && dsd_call_state_end_ex(state, 0U, 0.0, DSD_CALL_END_TERMINATOR) > 0) {
         dsd_event_sync_slot(opts, state, 0U);
     }
 }
@@ -932,6 +953,7 @@ processYSF(dsd_opts* opts, dsd_state* state) {
     static uint8_t last_fi;
     ysf_fich_info info;
 
+    info.carrier_seq = state->carrier_seq;
     ysf_parse_fich(opts, state, &info, &last_dt, &last_fi);
     ysf_print_fich_summary(opts, &info);
 
@@ -947,7 +969,13 @@ processYSF(dsd_opts* opts, dsd_state* state) {
      * dt/fi come from a frame that did check out, ysf_dispatch_payload() lays the rest of the
      * frame out on them, and ysf_handle_vd_type2() synthesizes and plays voice from it. A
      * frame that produced audio must not tell the SPS hunt it validated nothing (#391).
-     * noCarrier() clears the flag with the other per-transmission YSF state. */
+     * noCarrier() clears the flag with the other per-transmission YSF state.
+     *
+     * A frame the carrier boundary split confirms nothing and reports nothing decoded (issue #575): its FICH was the
+     * carrier left's, the boundary restarted the verdict, and the payload was dropped. */
+    if (ysf_carrier_left(state, &info)) {
+        return 0;
+    }
     if (info.err == 0) {
         state->ysf_fich_confirmed = 1;
     }

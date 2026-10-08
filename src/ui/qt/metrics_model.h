@@ -157,6 +157,8 @@ class MetricsModel : public QObject {
     Q_PROPERTY(qulonglong callSkipCount READ callSkipCount NOTIFY controlChanged)
     Q_PROPERTY(QString tgPolicyContext READ tgPolicyContext NOTIFY controlChanged)
     Q_PROPERTY(bool tunerControlled READ tunerControlled NOTIFY controlChanged)
+    /* Issue #575: an I/Q replay refuses every tune, as an owner of the tuner does; it rides the same group. */
+    Q_PROPERTY(bool replayInput READ replayInput NOTIFY controlChanged)
     Q_PROPERTY(bool trunkingEnabled READ trunkingEnabled NOTIFY controlChanged)
     Q_PROPERTY(bool scannerMode READ scannerMode NOTIFY controlChanged)
     Q_PROPERTY(bool optionsKnown READ optionsKnown NOTIFY controlChanged)
@@ -683,6 +685,19 @@ class MetricsModel : public QObject {
     bool
     tunerControlled() const {
         return m_view.tuner_controlled;
+    }
+
+    /**
+     * @brief Whether the input in force is an I/Q replay (issue #575).
+     *
+     * A replay plays the tuning its capture recorded and app-control refuses every manual tune and the tuner release
+     * during one, so a view offers no tuning at all while this holds. Unlike tunerControlled() there is no way out to
+     * offer: nothing can be released. Read from the same options snapshot as radioInput(), through the core predicate
+     * app-control refuses on (dsd_opts_input_is_iq_replay()), so the two never disagree.
+     */
+    bool
+    replayInput() const {
+        return m_view.replay_input;
     }
 
     /**
@@ -1843,6 +1858,7 @@ class MetricsModel : public QObject {
         bool effective_squelch_off = false;
         bool audio_muted = false;
         bool tuner_controlled = false;
+        bool replay_input = false;
         bool trunking_enabled = false;
         bool scanner_mode = false;
         bool options_known = false;
@@ -2051,9 +2067,10 @@ class MetricsModel : public QObject {
         controlEquals(const View& other) const {
             return audio_muted == other.audio_muted && held_tg == other.held_tg
                    && enc_lockout_count == other.enc_lockout_count && tuner_controlled == other.tuner_controlled
-                   && trunking_enabled == other.trunking_enabled && scanner_mode == other.scanner_mode
-                   && scanControlEquals(other) && scan_mode == other.scan_mode && decode_mode == other.decode_mode
-                   && decryptionEquals(other) && radioControlsEqual(other) && tgLockoutsEqual(other);
+                   && replay_input == other.replay_input && trunking_enabled == other.trunking_enabled
+                   && scanner_mode == other.scanner_mode && scanControlEquals(other) && scan_mode == other.scan_mode
+                   && decode_mode == other.decode_mode && decryptionEquals(other) && radioControlsEqual(other)
+                   && tgLockoutsEqual(other);
         }
     };
 

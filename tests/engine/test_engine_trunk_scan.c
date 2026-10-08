@@ -77,6 +77,7 @@ dsd_analog_rx_rejection_ended_now(const dsd_opts* opts, const dsd_state* state) 
 /* --- Issue #526: scanner sinks and DSP rate, from engine/trunk_tuning.c and core/audio, which this fixture does not
  * link. The stubs record which sink each row commit asked for. --- */
 static int g_ensure_analog_calls;
+static int g_forget_carrier_decoding_calls;
 static int g_ensure_digital_calls;
 static int g_scan_dsp_rate_hz;
 
@@ -2429,6 +2430,9 @@ test_p25_nac_state_isolated_per_target(void) {
     }
 
     state.nac = 0x2A1;
+    /* Issue #575: the first target's Phase 2 seed was proven on its carrier. */
+    state.p2_cc = 0x2A1ULL;
+    state.p2_cc_verified = 1U;
     trunk_scan_test_set_now(0.26);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 1 || state.nac != 0) {
@@ -2436,13 +2440,91 @@ test_p25_nac_state_isolated_per_target(void) {
                     dsd_engine_trunk_scan_active_index(&state), state.nac);
         test_rc = 1;
     }
+    if (state.p2_cc_verified != 0U) {
+        DSD_FPRINTF(stderr, "fresh P25 scan target inherited the first target's Phase 2 seed proof\n");
+        test_rc = 1;
+    }
 
     state.nac = 0x345;
+    state.p2_cc = 0x345ULL;
+    state.p2_cc_verified = 0U; /* the second target's seed was never proven */
     trunk_scan_test_set_now(0.52);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 0 || state.nac != 0x2A1) {
         DSD_FPRINTF(stderr, "P25 scan target did not restore its own NAC active=%zu nac=0x%03X\n",
                     dsd_engine_trunk_scan_active_index(&state), state.nac);
+        test_rc = 1;
+    }
+    if (state.p2_cc != 0x2A1ULL || state.p2_cc_verified != 1U) {
+        DSD_FPRINTF(stderr, "P25 scan target did not restore its Phase 2 seed and its proof cc=0x%03llX verified=%u\n",
+                    state.p2_cc, (unsigned)state.p2_cc_verified);
+        test_rc = 1;
+    }
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* Issue #575: with trunking off a grant's voice channel frequency is kept with the target it named, for that call
+   only (p25_conventional_grant_note(), read through p25_conventional_grant_frequency()). It names the carrier its grant was heard on, so it belongs to that scan
+   target: a rotation between conventional P25 targets runs no carrier boundary and no no-carrier pass, so the cache
+   travels in each target's snapshot beside p25_vc_freq[]. A fresh target starts without one, and the target that
+   heard it gets it back; a call with the same talkgroup on the other target never takes it. What the decoders
+   gathered on the carrier left (evidence, half-built assemblies) is in no snapshot, so the switch forgets it. */
+static int
+test_p25_conventional_grant_frequency_isolated_per_target(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("a,p25-conventional,851000000,,250,,\n"
+                             "b,p25-conventional,852000000,,250,,\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
+    int test_rc = 0;
+    if (rc != 0 || dsd_engine_trunk_scan_active_index(&state) != 0) {
+        DSD_FPRINTF(stderr, "conventional grant scan init failed rc=%d err=%s\n", rc, err);
+        test_rc = 1;
+    }
+
+    /* Target a heard TG 0x4567's grant name its voice channel, and is three segments into an NXDN SACCH superframe. */
+    state.p25_conventional_grant_freq[0] = state.p25_conventional_grant_freq[1] = 851125000L;
+    state.p25_conventional_grant_target[0] = state.p25_conventional_grant_target[1] = 0x4567U;
+    state.nxdn_part_of_frame = 2;
+    g_forget_carrier_decoding_calls = 0;
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (g_forget_carrier_decoding_calls != 1 || state.nxdn_part_of_frame != 0) {
+        DSD_FPRINTF(stderr, "a target switch kept what the decoders gathered on the carrier left calls=%d part=%d\n",
+                    g_forget_carrier_decoding_calls, state.nxdn_part_of_frame);
+        test_rc = 1;
+    }
+    if (dsd_engine_trunk_scan_active_index(&state) != 1 || state.p25_conventional_grant_freq[0] != 0
+        || state.p25_conventional_grant_freq[1] != 0 || state.p25_conventional_grant_target[0] != 0U
+        || state.p25_conventional_grant_target[1] != 0U) {
+        DSD_FPRINTF(stderr, "fresh conventional P25 target inherited the first target's grant frequency active=%zu\n",
+                    dsd_engine_trunk_scan_active_index(&state));
+        test_rc = 1;
+    }
+
+    trunk_scan_test_set_now(0.52);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 0 || state.p25_conventional_grant_freq[0] != 851125000L
+        || state.p25_conventional_grant_freq[1] != 851125000L || state.p25_conventional_grant_target[0] != 0x4567U
+        || state.p25_conventional_grant_target[1] != 0x4567U) {
+        DSD_FPRINTF(stderr, "conventional P25 target did not get its own grant frequency back active=%zu\n",
+                    dsd_engine_trunk_scan_active_index(&state));
         test_rc = 1;
     }
 
@@ -4110,6 +4192,8 @@ test_nxdn_state_isolated_per_target(void) {
     }
 
     seed_nxdn_identity(&state, 12, 461012500, 7U, 0x25U, 3, "Type-C", 1, 96, 12, 4);
+    /* The first target's value is a stand-in (an IDAS area bit, DCR's 7), not a RAN (issue #575). */
+    state.nxdn_last_ran_stand_in = 1U;
     trunk_scan_test_set_now(0.26);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 1) {
@@ -4119,8 +4203,13 @@ test_nxdn_state_isolated_per_target(void) {
     /* A never-visited target must come back with the "no RAN decoded" sentinel, not a
      * fabricated RAN 0. */
     test_rc |= expect_nxdn_identity("fresh target", &state, 0, 0, (unsigned int)-1, 0U, 0, " ", 0, 0, 0, 0);
+    if (state.nxdn_last_ran_stand_in != 0U) {
+        DSD_FPRINTF(stderr, "fresh target took the first target's stand-in mark\n");
+        test_rc = 1;
+    }
 
     seed_nxdn_identity(&state, 34, 462037500, 9U, 0x44U, 5, "Type-C", 2, 110, 25, 6);
+    state.nxdn_last_ran_stand_in = 0U; /* the second target's RAN 9 is one */
     trunk_scan_test_set_now(0.52);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 0) {
@@ -4128,6 +4217,10 @@ test_nxdn_state_isolated_per_target(void) {
         test_rc = 1;
     }
     test_rc |= expect_nxdn_identity("restored target", &state, 12, 461012500, 7U, 0x25U, 3, "Type-C", 1, 96, 12, 4);
+    if (state.nxdn_last_ran_stand_in != 1U) {
+        DSD_FPRINTF(stderr, "restored target lost its stand-in mark, so its value would read as a RAN\n");
+        test_rc = 1;
+    }
 
     dsd_engine_trunk_scan_shutdown(&opts, &state);
     trunk_scan_test_clear_now();
@@ -12903,6 +12996,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_dmr_service_options_state_isolated_per_target);
     rc |= run_with_default_tune_hook(test_p25_targets_seed_valid_control_channel_timing);
     rc |= run_with_default_tune_hook(test_p25_nac_state_isolated_per_target);
+    rc |= run_with_default_tune_hook(test_p25_conventional_grant_frequency_isolated_per_target);
     rc |= run_with_default_tune_hook(test_p25_target_switch_resyncs_sm_mode);
     rc |= run_with_default_tune_hook(test_p25_scan_retune_restarts_pending_cc_acquisition);
     rc |= run_with_default_tune_hook(test_mixed_target_switch_resets_dmr_demod_profile);
@@ -13051,6 +13145,23 @@ void
 dsd_engine_reset_no_carrier_state(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
+}
+
+void
+dsd_engine_carrier_boundary(dsd_opts* opts, dsd_state* state, dsd_carrier_boundary_kind kind, int guard_held) {
+    (void)opts;
+    (void)state;
+    (void)kind;
+    (void)guard_held;
+}
+
+/* What the decoders gathered on a carrier, which a target switch forgets (issue #575): counted, with a stand-in
+   assembly the real function drops (an NXDN SACCH superframe's part). */
+void
+dsd_engine_forget_carrier_decoding(dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    g_forget_carrier_decoding_calls++;
+    state->nxdn_part_of_frame = 0;
 }
 
 /* Coordinator tests stub DSP; acquisition contents are covered by FRAME_SYNC_INTERNAL_HELPERS.

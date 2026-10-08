@@ -753,6 +753,8 @@ p25_telephone_update_nontrunk_vc_freq(const dsd_opts* opts, dsd_state* state, ui
     } else {
         state->p25_vc_freq[0] = state->p25_vc_freq[1] = freq;
     }
+    /* Kept with its target, for that call's own publication only (issue #575). */
+    p25_conventional_grant_note(state, target, freq);
 }
 
 static void DSD_ATTR_USED

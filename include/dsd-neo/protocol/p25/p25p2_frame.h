@@ -21,6 +21,16 @@ extern "C" {
 void p25_p2_frame_reset(void);
 void process_2V(dsd_opts* opts, dsd_state* state);
 
+/**
+ * @brief Drop what the Phase 2 slots gathered on a carrier the receiver left (issue #575).
+ *
+ * The ESS_B fragments with their reliabilities, the partial voice superframe and any staged rekey go, as the no-carrier
+ * pass drops them on a sync loss, and the slots' ESS_B is marked as the carrier left's: a 2V burst decodes no ESS until
+ * the slot's next 4V burst collects a fragment on the new carrier. The carrier boundary and the decoder's own carrier
+ * check run it.
+ */
+void p25p2_frame_forget_carrier(dsd_state* state);
+
 #ifdef __cplusplus
 }
 #endif

@@ -197,6 +197,8 @@ dsd_engine_release_tuned_call_state(dsd_opts* opts, dsd_state* state) {
     state->payload_miN = 0;
     state->p25_vc_freq[0] = 0;
     state->p25_vc_freq[1] = 0;
+    DSD_MEMSET(state->p25_conventional_grant_freq, 0, sizeof(state->p25_conventional_grant_freq));
+    DSD_MEMSET(state->p25_conventional_grant_target, 0, sizeof(state->p25_conventional_grant_target));
     state->trunk_vc_freq[0] = 0;
     state->trunk_vc_freq[1] = 0;
     state->p25_p2_audio_allowed[0] = 0;

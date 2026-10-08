@@ -88,6 +88,10 @@ static int g_status_classify_calls;
 static int g_audio_play_calls;
 static int g_active_calls;
 static int g_last_status_dibit;
+static int g_imbe_calls;
+/* The IMBE frame whose read adopts a retune its capture recorded, where the carrier boundary moves the carrier count
+   (dsd_engine_carrier_boundary(), issue #575); -1 for none. */
+static int g_boundary_at_imbe = -1;
 static uint32_t g_last_policy_id;
 static uint8_t g_last_policy_source;
 static dsd_tg_policy_upsert_mode g_last_policy_upsert_mode;
@@ -188,8 +192,11 @@ LFSRP(dsd_state* state) {
 void
 process_IMBE(dsd_opts* opts, dsd_state* state, int* status_count) {
     (void)opts;
-    (void)state;
     (void)status_count;
+    if (g_imbe_calls == g_boundary_at_imbe && state != NULL) {
+        state->carrier_seq++;
+    }
+    g_imbe_calls++;
 }
 
 void
@@ -365,6 +372,8 @@ reset_hook_counters(void) {
     g_audio_play_calls = 0;
     g_active_calls = 0;
     g_last_status_dibit = -1;
+    g_imbe_calls = 0;
+    g_boundary_at_imbe = -1;
     g_last_policy_id = 0U;
     g_last_policy_source = 0U;
     g_last_policy_upsert_mode = 0;
@@ -940,6 +949,40 @@ test_ldu2_encrypted_trunk_lockout_state(void) {
     return rc;
 }
 
+/* Issue #575: the carrier boundary moved the carrier count while the LDU2 was read (a replay read adopting a recorded
+   retune). Its encryption sync is read whole by the seventh voice frame but decodes only after the ninth, so it would
+   publish the carrier left's algorithm, key and MI after the boundary ended that call: the LDU's encryption sync and
+   low-speed data are dropped, as on a sync loss. */
+static int
+test_ldu2_split_by_a_carrier_boundary_publishes_no_encryption_sync(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_hook_counters();
+    processLDU2(&opts, &state);
+    rc |= expect_int("whole LDU2 reads nine voice frames", g_imbe_calls, 9);
+    rc |= expect_int("whole LDU2 checks its encryption sync", (int)state.p25_p1_voice_fec_ok, 1);
+
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_hook_counters();
+    state.payload_algid = 0x81;
+    state.payload_keyid = 0x1234;
+    state.payload_miP = 0x0102030405060708ULL;
+    g_boundary_at_imbe = 7; /* the eighth voice frame: the encryption sync and its parity were read before it */
+    processLDU2(&opts, &state);
+    rc |= expect_int("split LDU2 moved the carrier count", (int)state.carrier_seq, 1);
+    rc |= expect_int("split LDU2 still reads the frame", g_imbe_calls, 9);
+    rc |= expect_int("split LDU2 checks no encryption sync",
+                     (int)(state.p25_p1_voice_fec_ok + state.p25_p1_voice_fec_err), 0);
+    rc |= expect_int("split LDU2 publishes no algorithm", state.payload_algid, 0x81);
+    rc |= expect_int("split LDU2 publishes no key", state.payload_keyid, 0x1234);
+    rc |= expect_int("split LDU2 advances no MI", state.payload_miP == 0x0102030405060708ULL, 1);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -959,6 +1002,7 @@ main(void) {
     rc |= test_ldu2_key_reporting_preserves_user_unmute();
     rc |= test_ldu2_lsd_alias_begin_clamps_length();
     rc |= test_ldu2_encrypted_trunk_lockout_state();
+    rc |= test_ldu2_split_by_a_carrier_boundary_publishes_no_encryption_sync();
     dsd_decode_clock_use_system();
     return rc;
 }

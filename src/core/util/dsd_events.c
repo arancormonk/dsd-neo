@@ -11,6 +11,7 @@
 * 2025-05 DSD-FME Florida Man Edition
 *-----------------------------------------------------------------------------*/
 
+#include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/channel_label.h>
@@ -93,6 +94,9 @@ init_event_history(Event_History_I* event_struct, uint8_t start, uint8_t stop) {
         event_struct->Event_History_Items[i].channel_label[0] = '\0';
         event_struct->Event_History_Items[i].channel_label_resolved = 0;
         event_struct->Event_History_Items[i].channel = 0;
+        event_struct->Event_History_Items[i].freq_hz = 0;
+        event_struct->Event_History_Items[i].access_code_kind = (uint8_t)DSD_ACCESS_CODE_NONE;
+        event_struct->Event_History_Items[i].access_code = 0;
         event_struct->Event_History_Items[i].event_time = 0;
         event_struct->Event_History_Items[i].event_start_time = 0;
 
@@ -159,6 +163,10 @@ push_event_history(Event_History_I* event_struct) {
         event_struct->Event_History_Items[i].channel_label_resolved =
             event_struct->Event_History_Items[i - 1].channel_label_resolved;
         event_struct->Event_History_Items[i].channel = event_struct->Event_History_Items[i - 1].channel;
+        event_struct->Event_History_Items[i].freq_hz = event_struct->Event_History_Items[i - 1].freq_hz;
+        event_struct->Event_History_Items[i].access_code_kind =
+            event_struct->Event_History_Items[i - 1].access_code_kind;
+        event_struct->Event_History_Items[i].access_code = event_struct->Event_History_Items[i - 1].access_code;
         event_struct->Event_History_Items[i].event_time = event_struct->Event_History_Items[i - 1].event_time;
         event_struct->Event_History_Items[i].event_start_time =
             event_struct->Event_History_Items[i - 1].event_start_time;
@@ -580,8 +588,6 @@ static void
 watchdog_event_capture_render_env(const dsd_state* state, uint8_t slot, const dsd_call_snapshot* call,
                                   dsd_call_event_render_env* env) {
     env->mfid = slot == 0U ? state->dmr_fid : state->dmr_fidR;
-    env->nxdn_grant_chan = state->nxdn_grant_chan;
-    env->nxdn_grant_freq = state->nxdn_grant_freq;
     env->ea_mode = state->ea_mode;
     env->edacs_a_bits = state->edacs_a_bits;
     env->edacs_f_bits = state->edacs_f_bits;
@@ -610,6 +616,130 @@ watchdog_event_capture_render_env(const dsd_state* state, uint8_t slot, const ds
                                       && (dsd_call_state_end_reason_is_terminator(call->end_reason)
                                           || (!dsd_call_state_protocol_voice_has_terminator(call->protocol)
                                               && call->end_reason == (uint8_t)DSD_CALL_END_SYNC_LOSS)));
+}
+
+// The sys id slot that carries an access code: DMR's colour code and NXDN's RAN. A slot reads its "nothing decoded"
+// sentinel -- DMR 16, NXDN (unsigned)-1, which every carrier boundary leaves (issue #575) -- until the protocol decodes
+// one. Zero is a code for both, so it is never taken for a missing one.
+static int
+watchdog_event_dmr_cc_known(uint32_t cc) {
+    return cc <= 15U;
+}
+
+// The sys id slot holding a protocol's access code, or -1 when its system identity carries none.
+static int
+watchdog_event_code_sys_id_index(int systype) {
+    if (DSD_SYNC_IS_DMR(systype)) {
+        return 1;
+    }
+    if (DSD_SYNC_IS_NXDN(systype)) {
+        return 2;
+    }
+    return -1;
+}
+
+// Whether a value in that slot is the sentinel rather than a value. An NXDN stand-in (an IDAS area bit or site type, or
+// DCR's fixed 7) is a value here, kept for the structured consumers; the text prints the row's access code, which a
+// stand-in never is.
+static int
+watchdog_event_code_sys_id_is_sentinel(int systype, uint32_t value) {
+    if (DSD_SYNC_IS_DMR(systype)) {
+        return !watchdog_event_dmr_cc_known(value);
+    }
+    if (DSD_SYNC_IS_NXDN(systype)) {
+        return value > 63U;
+    }
+    return 0;
+}
+
+// The code as a system identity string or an event line prints it: decimal, two digits wide when `two_digits`, or
+// "--" when unknown, as the terminal prints it.
+static const char*
+watchdog_event_code_text(char* buf, size_t cap, int known, uint32_t value, int two_digits) {
+    if (!known) {
+        return "--";
+    }
+    if (two_digits) {
+        DSD_SNPRINTF(buf, cap, "%02u", (unsigned)value);
+    } else {
+        DSD_SNPRINTF(buf, cap, "%u", (unsigned)value);
+    }
+    return buf;
+}
+
+// The system identity strings of the protocols whose identity names an access code, built from a row's own values, so
+// the live render and a merge spell them alike.
+// DMR's colour code is the row's access code, as the event line prints it: --playfiles takes none, whatever value the
+// file reader wrote into dmr_color_code.
+static void
+watchdog_event_format_dmr_sysid(char* out, size_t cap, uint32_t syscode, uint8_t access_code_kind,
+                                uint16_t access_code) {
+    char cc_buf[12];
+    const char* cc_text = watchdog_event_code_text(
+        cc_buf, sizeof cc_buf, access_code_kind == (uint8_t)DSD_ACCESS_CODE_COLOR_CODE, access_code, 0);
+    if (syscode != 0U) {
+        DSD_SNPRINTF(out, cap, "DMR_%X_CC_%s", (unsigned)syscode, cc_text);
+    } else {
+        DSD_SNPRINTF(out, cap, "DMR_CC_%s", cc_text);
+    }
+}
+
+// NXDN's RAN is the row's access code too, which an IDAS or DCR stand-in never is (dsd_access_code_current()).
+static void
+watchdog_event_format_nxdn_sysid(char* out, size_t cap, uint32_t site_code, uint32_t sys_code, uint8_t access_code_kind,
+                                 uint16_t access_code) {
+    char ran_buf[12];
+    const char* ran_text = watchdog_event_code_text(ran_buf, sizeof ran_buf,
+                                                    access_code_kind == (uint8_t)DSD_ACCESS_CODE_RAN, access_code, 0);
+    if (site_code != 0U) {
+        DSD_SNPRINTF(out, cap, "NXDN_%u_%u_RAN_%s", (unsigned)sys_code, (unsigned)site_code, ran_text);
+    } else {
+        DSD_SNPRINTF(out, cap, "NXDN_RAN_%s", ran_text);
+    }
+}
+
+// dPMR's identity is its colour code alone, the row's access code: the event line prints the same code.
+static void
+watchdog_event_format_dpmr_sysid(char* out, size_t cap, uint8_t access_code_kind, uint16_t access_code) {
+    char cc_buf[12];
+    DSD_SNPRINTF(out, cap, "DPMR_CC_%s",
+                 watchdog_event_code_text(cc_buf, sizeof cc_buf,
+                                          access_code_kind == (uint8_t)DSD_ACCESS_CODE_COLOR_CODE, access_code, 0));
+}
+
+// A P25 NAC as the system identity and the event line print it, from the row's access code: three hex digits, or
+// "---" when the row has none. Three wide either way, so the long identity form keeps its field positions. The NAC
+// sys id (sys_id3) is the live nac, else p2_cc, which on a Phase 1 call may be another carrier's p2_cc; the access code
+// reads the one the call's phase carries (dsd_access_code_current()).
+static const char*
+watchdog_event_nac_text(char* buf, size_t cap, uint8_t access_code_kind, uint16_t access_code) {
+    if (access_code_kind != (uint8_t)DSD_ACCESS_CODE_NAC) {
+        return "---";
+    }
+    DSD_SNPRINTF(buf, cap, "%03X", (unsigned)access_code);
+    return buf;
+}
+
+static void
+watchdog_event_format_p25_sysid(char* out, size_t cap, const uint32_t sys_id[5], uint8_t access_code_kind,
+                                uint16_t access_code) {
+    char nac_buf[8];
+    const char* nac = watchdog_event_nac_text(nac_buf, sizeof nac_buf, access_code_kind, access_code);
+    if (sys_id[0] != 0U) {
+        DSD_SNPRINTF(out, cap, "P25_%05X%03X%s_%u_%u", (unsigned)sys_id[0], (unsigned)sys_id[1], nac,
+                     (unsigned)sys_id[3], (unsigned)sys_id[4]);
+    } else {
+        DSD_SNPRINTF(out, cap, "P25_%s", nac);
+    }
+}
+
+// M17's CAN rides in the call's service options, which the row's access code holds once they were observed.
+static void
+watchdog_event_format_m17_sysid(char* out, size_t cap, uint8_t access_code_kind, uint16_t access_code) {
+    char can_buf[12];
+    DSD_SNPRINTF(out, cap, "M17_CAN_%s",
+                 watchdog_event_code_text(can_buf, sizeof can_buf, access_code_kind == (uint8_t)DSD_ACCESS_CODE_CAN,
+                                          access_code, 0));
 }
 
 // Depth of the row this slot last committed, or 0 when it can no longer be located.
@@ -670,10 +800,50 @@ watchdog_event_crypto_rank(const Event_History* item) {
     return item->enc_alg != 0U ? 3 : 2;
 }
 
+// Rebuilds the system identity string of a row whose identity names its access code -- dPMR and M17 from its merged
+// access code, DMR, NXDN and P25 from that and its merged ids -- and returns 1; 0 for any other protocol.
+static int
+watchdog_event_rebuild_code_sysid(Event_History* row) {
+    if (DSD_SYNC_IS_P25(row->systype)) {
+        const uint32_t sys_id[5] = {row->sys_id1, row->sys_id2, row->sys_id3, row->sys_id4, row->sys_id5};
+        watchdog_event_format_p25_sysid(row->sysid_string, sizeof(row->sysid_string), sys_id, row->access_code_kind,
+                                        row->access_code);
+        return 1;
+    }
+    if (DSD_SYNC_IS_M17(row->systype)) {
+        watchdog_event_format_m17_sysid(row->sysid_string, sizeof(row->sysid_string), row->access_code_kind,
+                                        row->access_code);
+        return 1;
+    }
+    if (DSD_SYNC_IS_DMR(row->systype)) {
+        watchdog_event_format_dmr_sysid(row->sysid_string, sizeof(row->sysid_string), row->sys_id1,
+                                        row->access_code_kind, row->access_code);
+        return 1;
+    }
+    if (DSD_SYNC_IS_NXDN(row->systype)) {
+        watchdog_event_format_nxdn_sysid(row->sysid_string, sizeof(row->sysid_string), row->sys_id1, row->sys_id2,
+                                         row->access_code_kind, row->access_code);
+        return 1;
+    }
+    if (DSD_SYNC_IS_DPMR(row->systype)) {
+        watchdog_event_format_dpmr_sysid(row->sysid_string, sizeof(row->sysid_string), row->access_code_kind,
+                                         row->access_code);
+        return 1;
+    }
+    return 0;
+}
+
 // System identity: the numeric ids drive both the rendered string and every structured consumer,
-// so they have to come across. A late-entry first segment renders a placeholder ("P25_000",
-// "DMR_CC_0") from all-zero ids, which is non-empty and would otherwise block the string forever
-// -- so the string follows whenever the ids themselves were upgraded.
+// so they have to come across. A late-entry first segment renders a placeholder ("P25_000" from
+// all-zero ids, "DMR_CC_--" from a colour code still at its sentinel), which is non-empty and would
+// otherwise block the string forever -- so the string follows whenever the ids themselves were upgraded.
+//
+// The access code's slot (DMR sys_id2, NXDN sys_id3) differs (issue #575). Its "nothing decoded" sentinel, not 0, is
+// the missing value there: 0 is a code. A segment that decoded a code fills a sentinel, with 0 too; a code the row
+// already has is never replaced, 0 included, just as the row's access code never is; and a segment that decoded none
+// never replaces anything. For these protocols, and dPMR, whose identity is the access code the identity-field merge
+// has already filled, the string is rebuilt from the merged row rather than taken from either segment: one segment may
+// have decoded the code and the other a system code or site.
 static void
 watchdog_event_merge_system_identity(Event_History* retained, const Event_History* staged) {
     int sys_ids_upgraded = 0;
@@ -681,11 +851,26 @@ watchdog_event_merge_system_identity(Event_History* retained, const Event_Histor
                                  &retained->sys_id5};
     const uint32_t staged_sys[5] = {staged->sys_id1, staged->sys_id2, staged->sys_id3, staged->sys_id4,
                                     staged->sys_id5};
+    const int code_index = watchdog_event_code_sys_id_index(retained->systype);
     for (size_t i = 0; i < 5U; i++) {
+        if (code_index >= 0 && (size_t)code_index == i) {
+            if (watchdog_event_code_sys_id_is_sentinel(retained->systype, staged_sys[i])) {
+                continue;
+            }
+            if (!watchdog_event_code_sys_id_is_sentinel(retained->systype, *retained_sys[i])) {
+                continue;
+            }
+            *retained_sys[i] = staged_sys[i];
+            sys_ids_upgraded = 1;
+            continue;
+        }
         if (*retained_sys[i] == 0U && staged_sys[i] != 0U) {
             *retained_sys[i] = staged_sys[i];
             sys_ids_upgraded = 1;
         }
+    }
+    if (watchdog_event_rebuild_code_sysid(retained)) {
+        return;
     }
     if (sys_ids_upgraded) {
         (void)watchdog_event_merge_text_progressive(retained->sysid_string, staged->sysid_string,
@@ -709,25 +894,24 @@ watchdog_event_merge_channel_label(Event_History* retained, const Event_History*
     retained->channel_label_resolved = 1U;
 }
 
-// Scalar identity a later segment may only fill in, never overwrite: the first segment that
-// decoded a value is as authoritative as any later one.
+// The frequency and access code the transmission was heard with fill in only when the first
+// segment never learned them: by the time a reacquired segment merges, the receiver may have
+// moved on, and the segment's own readings may describe the next carrier. Kind and code move
+// together, since a code means nothing without its kind.
 static void
-watchdog_event_merge_identity_fields(Event_History* retained, const Event_History* staged) {
-    if (retained->source_id == 0U && staged->source_id != 0U) {
-        retained->source_id = staged->source_id;
+watchdog_event_merge_tuning(Event_History* retained, const Event_History* staged) {
+    if (retained->freq_hz == 0 && staged->freq_hz != 0) {
+        retained->freq_hz = staged->freq_hz;
     }
-    if (retained->target_id == 0U && staged->target_id != 0U) {
-        retained->target_id = staged->target_id;
+    if (retained->access_code_kind == (uint8_t)DSD_ACCESS_CODE_NONE
+        && staged->access_code_kind != (uint8_t)DSD_ACCESS_CODE_NONE) {
+        retained->access_code_kind = staged->access_code_kind;
+        retained->access_code = staged->access_code;
     }
-    if (retained->channel == 0U && staged->channel != 0U) {
-        retained->channel = staged->channel;
-    }
-    if (retained->gi < 0 && staged->gi >= 0) {
-        retained->gi = staged->gi;
-    }
-    if (retained->svc == 0U && staged->svc != 0U) {
-        retained->svc = staged->svc;
-    }
+}
+
+static void
+watchdog_event_merge_stamps(Event_History* retained, const Event_History* staged) {
     // The committed row's start is its stamp of record: frontends key their own
     // mirrors on it, so a reacquired segment may fill a missing start but never
     // move one — not forward (its epoch began later than the transmission), and
@@ -745,6 +929,29 @@ watchdog_event_merge_identity_fields(Event_History* retained, const Event_Histor
     if (staged->event_time > retained->event_time) {
         retained->event_time = staged->event_time;
     }
+}
+
+// Scalar identity a later segment may only fill in, never overwrite: the first segment that
+// decoded a value is as authoritative as any later one.
+static void
+watchdog_event_merge_identity_fields(Event_History* retained, const Event_History* staged) {
+    if (retained->source_id == 0U && staged->source_id != 0U) {
+        retained->source_id = staged->source_id;
+    }
+    if (retained->target_id == 0U && staged->target_id != 0U) {
+        retained->target_id = staged->target_id;
+    }
+    if (retained->channel == 0U && staged->channel != 0U) {
+        retained->channel = staged->channel;
+    }
+    watchdog_event_merge_tuning(retained, staged);
+    if (retained->gi < 0 && staged->gi >= 0) {
+        retained->gi = staged->gi;
+    }
+    if (retained->svc == 0U && staged->svc != 0U) {
+        retained->svc = staged->svc;
+    }
+    watchdog_event_merge_stamps(retained, staged);
     watchdog_event_merge_text(retained->src_str, staged->src_str, sizeof(retained->src_str));
     watchdog_event_merge_text(retained->tgt_str, staged->tgt_str, sizeof(retained->tgt_str));
     watchdog_event_merge_text(retained->t_name, staged->t_name, sizeof(retained->t_name));
@@ -1076,6 +1283,11 @@ typedef struct {
     uint32_t sys_id4;
     uint32_t sys_id5;
     uint32_t channel;
+    /* The frequency the call was heard on and its access code, as the row records them; see
+     * watchdog_event_current_load_tuning() for the rules. */
+    int64_t freq_hz;
+    uint8_t access_code_kind;
+    uint16_t access_code;
     uint8_t enc;
     uint8_t emergency;
     uint8_t priority;
@@ -1240,11 +1452,7 @@ watchdog_event_current_init_base(const dsd_state* state, uint8_t slot, const dsd
     if (DSD_SYNC_IS_DMR(ctx->protocol)) {
         ctx->sys_id1 = state->dmr_t3_syscode;
         ctx->sys_id2 = state->dmr_color_code;
-        if (ctx->sys_id1) {
-            DSD_SNPRINTF(ctx->sysid_string, sizeof(ctx->sysid_string), "DMR_%X_CC_%d", ctx->sys_id1, ctx->sys_id2);
-        } else {
-            DSD_SNPRINTF(ctx->sysid_string, sizeof(ctx->sysid_string), "DMR_CC_%d", ctx->sys_id2);
-        }
+        // The string is set after the tuning load (watchdog_event_current_apply_code_identity()).
     }
 }
 
@@ -1253,13 +1461,7 @@ watchdog_event_current_apply_nxdn(const dsd_state* state, watchdog_event_current
     ctx->sys_id1 = state->nxdn_location_site_code;
     ctx->sys_id2 = state->nxdn_location_sys_code;
     ctx->sys_id3 = state->nxdn_last_ran;
-
-    if (ctx->sys_id1) {
-        DSD_SNPRINTF(ctx->sysid_string, sizeof(ctx->sysid_string), "NXDN_%d_%d_RAN_%d", ctx->sys_id2, ctx->sys_id1,
-                     ctx->sys_id3);
-    } else {
-        DSD_SNPRINTF(ctx->sysid_string, sizeof(ctx->sysid_string), "NXDN_RAN_%d", ctx->sys_id3);
-    }
+    // The string is set after the tuning load (watchdog_event_current_apply_code_identity()).
 }
 
 static void
@@ -1269,11 +1471,10 @@ watchdog_event_current_apply_ysf(dsd_state* state, Event_History* item, watchdog
     DSD_SNPRINTF(ctx->sysid_string, sizeof(ctx->sysid_string), "%s", "YSF");
 }
 
+// The system identity string is set after the tuning load (watchdog_event_current_apply_code_identity()).
 static void
 watchdog_event_current_apply_m17(const dsd_state* state, watchdog_event_current_ctx* ctx) {
     ctx->sys_id1 = ctx->svc_opts & 0xFU;
-
-    DSD_SNPRINTF(ctx->sysid_string, sizeof(ctx->sysid_string), "M17_CAN_%d", ctx->sys_id1);
     (void)state;
 }
 
@@ -1283,9 +1484,28 @@ watchdog_event_current_apply_dstar(const dsd_state* state, watchdog_event_curren
     (void)state;
 }
 
+// Run after watchdog_event_current_load_tuning(): the DMR, NXDN, P25, M17 and dPMR identities name the row's access code,
+// so the string a merge rebuilds from the merged row (watchdog_event_rebuild_code_sysid()) and the event line agree
+// with it.
 static void
-watchdog_event_current_apply_dpmr(const dsd_state* state, watchdog_event_current_ctx* ctx) {
-    DSD_SNPRINTF(ctx->sysid_string, sizeof(ctx->sysid_string), "DPMR_CC_%d", state->dpmr_color_code);
+watchdog_event_current_apply_code_identity(watchdog_event_current_ctx* ctx) {
+    if (DSD_SYNC_IS_DMR(ctx->protocol)) {
+        watchdog_event_format_dmr_sysid(ctx->sysid_string, sizeof(ctx->sysid_string), ctx->sys_id1,
+                                        ctx->access_code_kind, ctx->access_code);
+    } else if (DSD_SYNC_IS_NXDN(ctx->protocol)) {
+        watchdog_event_format_nxdn_sysid(ctx->sysid_string, sizeof(ctx->sysid_string), ctx->sys_id1, ctx->sys_id2,
+                                         ctx->access_code_kind, ctx->access_code);
+    } else if (DSD_SYNC_IS_P25(ctx->protocol)) {
+        const uint32_t sys_id[5] = {ctx->sys_id1, ctx->sys_id2, ctx->sys_id3, ctx->sys_id4, ctx->sys_id5};
+        watchdog_event_format_p25_sysid(ctx->sysid_string, sizeof(ctx->sysid_string), sys_id, ctx->access_code_kind,
+                                        ctx->access_code);
+    } else if (DSD_SYNC_IS_M17(ctx->protocol)) {
+        watchdog_event_format_m17_sysid(ctx->sysid_string, sizeof(ctx->sysid_string), ctx->access_code_kind,
+                                        ctx->access_code);
+    } else if (DSD_SYNC_IS_DPMR(ctx->protocol)) {
+        watchdog_event_format_dpmr_sysid(ctx->sysid_string, sizeof(ctx->sysid_string), ctx->access_code_kind,
+                                         ctx->access_code);
+    }
 }
 
 static void
@@ -1333,10 +1553,6 @@ watchdog_event_current_apply_protocol_metadata(dsd_state* state, Event_History* 
         watchdog_event_current_apply_dstar(state, ctx);
     }
 
-    if (DSD_SYNC_IS_DPMR(ctx->protocol)) {
-        watchdog_event_current_apply_dpmr(state, ctx);
-    }
-
     if (DSD_SYNC_IS_EDACS(ctx->protocol)) {
         watchdog_event_current_apply_edacs(state, ctx);
     }
@@ -1364,9 +1580,18 @@ watchdog_event_current_load_labels(const dsd_state* state, watchdog_event_curren
 // resolves it and every later render of that epoch copies the staged row's answer back. Under -Y
 // the scanner advances lcn_freq_roll before the call ends and the row is rendered once more on the
 // finalize pass, so asking again would relabel a finished transmission with a channel it was never
-// heard on. The staged row is cleared between epochs -- retire_staged_row(),
-// history_authoritative() and finalize_ended() all init it -- so a resolved answer is always this
-// epoch's own.
+// heard on.
+//
+// The staged row holds this epoch's answer only when the slot's lifecycle has opened the rendered
+// call's epoch (staged_is_own). On that canonical path the row is cleared between epochs --
+// retire_staged_row(), history_authoritative() and finalize_ended() all init it -- and every
+// canonical render opens the epoch before it renders: dsd_event_sync_slot(),
+// watchdog_event_current(), dsd_event_note_current_call() and a canonical call notice. A notice for
+// a call that is not the slot's canonical one -- the P25 encryption lockout's synthetic snapshot for
+// a grant -- renders with no lifecycle, into a blank row
+// (watchdog_event_emit_noncanonical_notice()). The flag keeps any render whose lifecycle does not
+// own the row from reusing another call's answer; such a render resolves the label live, as a data
+// notice does.
 //
 // The verdict is carried by its own flag rather than inferred from a non-empty label, because an
 // unnamed scan-list row resolves to an empty label and that is an answer too: a -Y list with only
@@ -1376,8 +1601,8 @@ watchdog_event_current_load_labels(const dsd_state* state, watchdog_event_curren
 // that would then silently re-resolve.
 static void
 watchdog_event_current_load_channel_label(const dsd_opts* opts, const dsd_state* state, const Event_History* staged,
-                                          watchdog_event_current_ctx* ctx) {
-    if (staged != NULL && staged->channel_label_resolved != 0U) {
+                                          int staged_is_own, watchdog_event_current_ctx* ctx) {
+    if (staged_is_own && staged != NULL && staged->channel_label_resolved != 0U) {
         DSD_SNPRINTF(ctx->channel_label, sizeof(ctx->channel_label), "%s", staged->channel_label);
         ctx->channel_label_resolved = 1U;
         return;
@@ -1386,9 +1611,72 @@ watchdog_event_current_load_channel_label(const dsd_opts* opts, const dsd_state*
     ctx->channel_label_resolved = 1U;
 }
 
+// The frequency the call was heard on and the access code it was heard with, resolved per render
+// against the staged row, which holds what earlier renders of this epoch decided -- when it is this
+// epoch's own (staged_is_own; see load_channel_label() above). Otherwise its frequency and code
+// describe another call, so neither is reused, and the render reads only the call's own frequency
+// and the live receiver, as a data notice does.
+//
+// Frequency. The call's own frequency -- one its message carried, or the voice channel a trunking
+// receiver followed -- names the carrier exactly and is taken on every render, in any phase. Without
+// one, the receiver's tuned frequency is asked exactly once, on the epoch's first render while the
+// call is active, and later renders copy the staged answer back, as the channel label is pinned.
+// Asking again while the call is still live would label it with the next channel, in two windows:
+// a typed -Y row's queued tune writes rtlsdr_center_freq (rtl_sdr_fm.cpp) before
+// channel_scan_commit() ends the outgoing calls, and app-control command handlers render the
+// still-live call in between; and trunk_scan_switch_to() restores the next target's decoder state
+// before it retunes. An epoch first rendered after its end takes no tuner reading at all: by then
+// the receiver may be on the next channel, and unknown is safer than wrong. Playing back files
+// (--playfiles), the tuner is not what the recording was heard on, so it is never asked.
+//
+// Access code. While the call is active, a valid live code replaces the staged one, so a colour
+// code that locks after the call opened still lands; a sentinel (DMR 16, a P25 nac cleared by a
+// no-carrier pass, an NXDN RAN of (unsigned)-1) means "nothing decoded now" and never erases a
+// known code. Once the call has ended the code is frozen, known or unknown: a held drop-verdict or
+// finalize pass can run after a -Y hop or a trunk-scan snapshot restore, and must not label the
+// call with the next carrier's code. A staged code is reused only when its kind is the one the
+// call's protocol carries. Under --playfiles no code is taken: the SDRTrunk JSON reader writes
+// dmr_color_code = 0 for every file, which describes no carrier.
+static void
+watchdog_event_current_load_tuning(const dsd_opts* opts, const dsd_state* state, const dsd_call_snapshot* call,
+                                   const Event_History* staged, int staged_is_own, watchdog_event_current_ctx* ctx) {
+    ctx->freq_hz = 0;
+    ctx->access_code_kind = (uint8_t)DSD_ACCESS_CODE_NONE;
+    ctx->access_code = 0U;
+    if (call == NULL || call->epoch == 0U) {
+        return;
+    }
+    if (!staged_is_own) {
+        staged = NULL;
+    }
+    const int live = call->phase == DSD_CALL_PHASE_ACTIVE && opts->playfiles == 0;
+
+    if (call->frequency_hz > 0) {
+        ctx->freq_hz = call->frequency_hz;
+    } else if (staged != NULL && staged->freq_hz != 0) {
+        ctx->freq_hz = staged->freq_hz;
+    } else if (live) {
+        ctx->freq_hz = (int64_t)dsd_opts_tuned_freq_hz(opts);
+    }
+
+    const uint8_t protocol_kind = (uint8_t)dsd_access_code_kind_for_protocol(call->protocol);
+    if (staged != NULL && protocol_kind != (uint8_t)DSD_ACCESS_CODE_NONE && staged->access_code_kind == protocol_kind) {
+        ctx->access_code_kind = staged->access_code_kind;
+        ctx->access_code = staged->access_code;
+    }
+    uint8_t live_kind = (uint8_t)DSD_ACCESS_CODE_NONE;
+    uint16_t live_code = 0U;
+    if (live
+        && dsd_access_code_current(state, call->protocol, call->service_options, call->has_service_metadata, &live_kind,
+                                   &live_code)) {
+        ctx->access_code_kind = live_kind;
+        ctx->access_code = live_code;
+    }
+}
+
 static void
 watchdog_event_current_update_item(const dsd_opts* opts, dsd_state* state, uint8_t slot, Event_History* item,
-                                   const watchdog_event_current_ctx* ctx, time_t now) {
+                                   const watchdog_event_current_ctx* ctx, time_t now, int staged_is_own) {
     item->write = 0;
     item->crc_invalid = ctx->crc_invalid;
     dsd_event_history_item_set_metadata(item, ctx->crc_invalid ? DSD_EVENT_SEVERITY_WARNING : ctx->severity,
@@ -1415,6 +1703,18 @@ watchdog_event_current_update_item(const dsd_opts* opts, dsd_state* state, uint8
     item->source_id = ctx->source_id;
     item->target_id = ctx->target_id;
     item->channel = ctx->channel;
+    item->freq_hz = ctx->freq_hz;
+    item->access_code_kind = ctx->access_code_kind;
+    item->access_code = ctx->access_code;
+    // Of what this function writes, the start stamp is the one value a render reuses from the staged
+    // row (event_time is re-derived below, or under --playfiles left as the file reader stamped the
+    // row for the recording), and that row is this epoch's only when staged_is_own (see
+    // load_channel_label()). A notice for a call that is not the slot's canonical one renders over
+    // another epoch's staged row, whose stamp is when that other call started: the notice starts from
+    // its own call instead, or not at all when that call has no start of its own.
+    if (!staged_is_own) {
+        item->event_start_time = 0;
+    }
     if (opts->playfiles == 0) {
         item->event_time = now;
         if (ctx->call_elapsed_valid) {
@@ -1422,7 +1722,8 @@ watchdog_event_current_update_item(const dsd_opts* opts, dsd_state* state, uint8
             // from two independently truncated clocks makes the stamp jitter by a
             // second between renders, and the committed value is whatever the last
             // render happened to say. The retire/commit paths clear the staged row
-            // between epochs, so a nonzero stamp is always this epoch's own.
+            // between epochs and the line above drops another epoch's, so a nonzero
+            // stamp here is always this epoch's own.
             if (item->event_start_time == 0) {
                 item->event_start_time = now - (time_t)ctx->call_elapsed_s;
             }
@@ -1458,15 +1759,23 @@ watchdog_event_current_build_event_text_ids(const watchdog_event_current_ctx* ct
 static void
 watchdog_event_current_build_event_m17(const watchdog_event_current_ctx* ctx, const char* datestr, const char* timestr,
                                        const char* sys_string, char* event_string, size_t event_size) {
-    DSD_SNPRINTF(event_string, event_size, "%s %s %s TGT: %s SRC: %s CAN: %02u;", datestr, timestr, sys_string,
-                 ctx->tgt_str, ctx->src_str, ctx->sys_id1);
+    char can_buf[12];
+    const char* can = watchdog_event_code_text(
+        can_buf, sizeof can_buf, ctx->access_code_kind == (uint8_t)DSD_ACCESS_CODE_CAN, ctx->access_code, 1);
+    DSD_SNPRINTF(event_string, event_size, "%s %s %s TGT: %s SRC: %s CAN: %s;", datestr, timestr, sys_string,
+                 ctx->tgt_str, ctx->src_str, can);
 }
 
 static void
 watchdog_event_current_build_event_dpmr(const watchdog_event_current_ctx* ctx, const char* datestr, const char* timestr,
                                         const char* sys_string, char* event_string, size_t event_size) {
-    DSD_SNPRINTF(event_string, event_size, "%s %s %s CC: %02u; TGT: %s; SRC: %s; ", datestr, timestr, sys_string,
-                 ctx->channel, ctx->tgt_str, ctx->src_str);
+    // The row's decoded colour code, not the call's channel: the protocol sets the channel to 0 when no colour code
+    // decoded, which would read as CC 0 (issue #575).
+    char cc_buf[12];
+    const char* cc = watchdog_event_code_text(
+        cc_buf, sizeof cc_buf, ctx->access_code_kind == (uint8_t)DSD_ACCESS_CODE_COLOR_CODE, ctx->access_code, 1);
+    DSD_SNPRINTF(event_string, event_size, "%s %s %s CC: %s; TGT: %s; SRC: %s; ", datestr, timestr, sys_string, cc,
+                 ctx->tgt_str, ctx->src_str);
     if (ctx->enc) {
         watchdog_event_str_append(event_string, event_size, "Scrambler Enc; ");
     }
@@ -1520,12 +1829,16 @@ watchdog_event_append_call_kind(const watchdog_event_current_ctx* ctx, char* eve
 static void
 watchdog_event_current_build_event_dmr(const watchdog_event_current_ctx* ctx, const char* datestr, const char* timestr,
                                        const char* sys_string, char* event_string, size_t event_size) {
+    // The row's colour code, as the system identity names it.
+    char cc_buf[12];
+    const char* cc = watchdog_event_code_text(
+        cc_buf, sizeof cc_buf, ctx->access_code_kind == (uint8_t)DSD_ACCESS_CODE_COLOR_CODE, ctx->access_code, 1);
     if (ctx->sys_id1) {
-        DSD_SNPRINTF(event_string, event_size, "%s %s %s TGT: %08d; SRC: %08d; CC: %02d; SYS: %X; ", datestr, timestr,
-                     sys_string, ctx->target_id, ctx->source_id, ctx->sys_id2, ctx->sys_id1);
+        DSD_SNPRINTF(event_string, event_size, "%s %s %s TGT: %08d; SRC: %08d; CC: %s; SYS: %X; ", datestr, timestr,
+                     sys_string, ctx->target_id, ctx->source_id, cc, ctx->sys_id1);
     } else {
-        DSD_SNPRINTF(event_string, event_size, "%s %s %s TGT: %08d; SRC: %08d; CC: %02d; ", datestr, timestr,
-                     sys_string, ctx->target_id, ctx->source_id, ctx->sys_id2);
+        DSD_SNPRINTF(event_string, event_size, "%s %s %s TGT: %08d; SRC: %08d; CC: %s; ", datestr, timestr, sys_string,
+                     ctx->target_id, ctx->source_id, cc);
     }
 
     if (ctx->enc) {
@@ -1577,13 +1890,15 @@ watchdog_event_append_ess_crypto(const watchdog_event_current_ctx* ctx, char* ev
 static void
 watchdog_event_current_build_event_p25(const watchdog_event_current_ctx* ctx, const char* datestr, const char* timestr,
                                        const char* sys_string, char* event_string, size_t event_size) {
+    char nac_buf[8];
+    const char* nac = watchdog_event_nac_text(nac_buf, sizeof nac_buf, ctx->access_code_kind, ctx->access_code);
     if (ctx->sys_id1) {
-        DSD_SNPRINTF(event_string, event_size, "%s %s %s TGT: %08d; SRC: %08d; NAC: %03X; NET_STS: %05X:%03X:%d.%d; ",
-                     datestr, timestr, sys_string, ctx->target_id, ctx->source_id, ctx->sys_id3, ctx->sys_id1,
-                     ctx->sys_id2, ctx->sys_id4, ctx->sys_id5);
+        DSD_SNPRINTF(event_string, event_size, "%s %s %s TGT: %08d; SRC: %08d; NAC: %s; NET_STS: %05X:%03X:%d.%d; ",
+                     datestr, timestr, sys_string, ctx->target_id, ctx->source_id, nac, ctx->sys_id1, ctx->sys_id2,
+                     ctx->sys_id4, ctx->sys_id5);
     } else {
-        DSD_SNPRINTF(event_string, event_size, "%s %s %s TGT: %08d; SRC: %08d; NAC: %03X; ", datestr, timestr,
-                     sys_string, ctx->target_id, ctx->source_id, ctx->sys_id3);
+        DSD_SNPRINTF(event_string, event_size, "%s %s %s TGT: %08d; SRC: %08d; NAC: %s; ", datestr, timestr, sys_string,
+                     ctx->target_id, ctx->source_id, nac);
     }
 
     watchdog_event_append_ess_crypto(ctx, event_string, event_size);
@@ -1612,22 +1927,33 @@ watchdog_event_current_build_event_x2tdma(const watchdog_event_current_ctx* ctx,
 static void
 watchdog_event_current_build_event_nxdn(const watchdog_event_current_ctx* ctx, const char* datestr, const char* timestr,
                                         const char* sys_string, char* event_string, size_t event_size) {
+    // The row's RAN, its access code: never a stand-in, nor a RAN the live state learned after the call (issue #575).
+    char ran_buf[12];
+    const char* ran = watchdog_event_code_text(
+        ran_buf, sizeof ran_buf, ctx->access_code_kind == (uint8_t)DSD_ACCESS_CODE_RAN, ctx->access_code, 1);
     if (ctx->sys_id1) {
-        DSD_SNPRINTF(event_string, event_size, "%s %s %s TGT: %08d; SRC: %08d; RAN: %02d; SYS: %d.%d; ", datestr,
-                     timestr, sys_string, ctx->target_id, ctx->source_id, ctx->sys_id3, ctx->sys_id2, ctx->sys_id1);
+        DSD_SNPRINTF(event_string, event_size, "%s %s %s TGT: %08d; SRC: %08d; RAN: %s; SYS: %d.%d; ", datestr, timestr,
+                     sys_string, ctx->target_id, ctx->source_id, ran, ctx->sys_id2, ctx->sys_id1);
     } else {
-        DSD_SNPRINTF(event_string, event_size, "%s %s %s TGT: %08d; SRC: %08d; RAN: %02d; ", datestr, timestr,
-                     sys_string, ctx->target_id, ctx->source_id, ctx->sys_id3);
+        DSD_SNPRINTF(event_string, event_size, "%s %s %s TGT: %08d; SRC: %08d; RAN: %s; ", datestr, timestr, sys_string,
+                     ctx->target_id, ctx->source_id, ran);
     }
 
-    if (ctx->env.nxdn_grant_chan != 0) {
-        char ch_str[96];
-        if (ctx->env.nxdn_grant_freq != 0) {
-            DSD_SNPRINTF(ch_str, sizeof(ch_str), "CH: %u; FREQ: %.6lf MHz; ", ctx->env.nxdn_grant_chan,
-                         (double)ctx->env.nxdn_grant_freq / 1000000.0);
-        } else {
-            DSD_SNPRINTF(ch_str, sizeof(ch_str), "CH: %u; ", ctx->env.nxdn_grant_chan);
-        }
+    // The call's own channel and the row's own frequency, never the last grant decoded: that is
+    // global, and a duplicate assignment for another call decoded while tuned, or a -Y control-channel
+    // row's last grant carried onto a conventional row, would name another call's channel here. The
+    // NXDN VCALL names a channel only for a grant the receiver followed.
+    char ch_str[96];
+    ch_str[0] = '\0';
+    if (ctx->channel != 0U && ctx->freq_hz > 0) {
+        DSD_SNPRINTF(ch_str, sizeof(ch_str), "CH: %u; FREQ: %.6lf MHz; ", ctx->channel,
+                     (double)ctx->freq_hz / 1000000.0);
+    } else if (ctx->channel != 0U) {
+        DSD_SNPRINTF(ch_str, sizeof(ch_str), "CH: %u; ", ctx->channel);
+    } else if (ctx->freq_hz > 0) {
+        DSD_SNPRINTF(ch_str, sizeof(ch_str), "FREQ: %.6lf MHz; ", (double)ctx->freq_hz / 1000000.0);
+    }
+    if (ch_str[0] != '\0') {
         watchdog_event_str_append(event_string, event_size, ch_str);
     }
 
@@ -1780,6 +2106,9 @@ watchdog_event_ctx_from_row(const dsd_call_event_render_env* env, const Event_Hi
     ctx->key_id = item->enc_key;
     ctx->mi = item->mi;
     ctx->channel = item->channel;
+    ctx->freq_hz = item->freq_hz;
+    ctx->access_code_kind = item->access_code_kind;
+    ctx->access_code = item->access_code;
     ctx->sys_id1 = item->sys_id1;
     ctx->sys_id2 = item->sys_id2;
     ctx->sys_id3 = item->sys_id3;
@@ -1997,7 +2326,12 @@ watchdog_event_current_impl(const dsd_opts* opts, dsd_state* state, uint8_t slot
 
     watchdog_event_current_apply_protocol_metadata(state, &candidate, &ctx);
     watchdog_event_current_load_labels(state, &ctx);
-    watchdog_event_current_load_channel_label(opts, state, &candidate, &ctx);
+    // Rendered with the slot's lifecycle on the epoch it has opened, the staged row is this call's;
+    // otherwise it is another epoch's, and its label, frequency, code and start stamp are not reused.
+    const int staged_is_own = lifecycle != NULL && effective_call != NULL && lifecycle->epoch == effective_call->epoch;
+    watchdog_event_current_load_channel_label(opts, state, &candidate, staged_is_own, &ctx);
+    watchdog_event_current_load_tuning(opts, state, effective_call, &candidate, staged_is_own, &ctx);
+    watchdog_event_current_apply_code_identity(&ctx);
 
     const char* sys_string = dsd_synctype_to_string(ctx.protocol);
 
@@ -2007,7 +2341,7 @@ watchdog_event_current_impl(const dsd_opts* opts, dsd_state* state, uint8_t slot
     (void)dsd_format_local_datetime(now, DSD_LOCAL_DATETIME_TIME_COLON, timestr, sizeof timestr);
     (void)dsd_format_local_datetime(now, DSD_LOCAL_DATETIME_DATE_HYPHEN, datestr, sizeof datestr);
 
-    watchdog_event_current_update_item(opts, state, slot, &candidate, &ctx, now);
+    watchdog_event_current_update_item(opts, state, slot, &candidate, &ctx, now, staged_is_own);
 
     char event_string[2000];
     DSD_MEMSET(event_string, 0, sizeof(event_string));
@@ -2029,18 +2363,103 @@ watchdog_event_current_impl(const dsd_opts* opts, dsd_state* state, uint8_t slot
     /* stack buffers; no free */
 }
 
+// A render outside dsd_event_sync_slot() -- the DMR P_CLEAR release, or a note through
+// dsd_event_note_current_call() -- can run after a protocol observed a new epoch but before any
+// sync opened it. DMR is the window: prepare_dmr_bs_voice_slot() observes the tuned call through
+// the trunk SM's voice sync, a burst can then end the superframe before its post-skip sync, and the
+// control pump runs app-control commands between processFrame() and the next getFrameSync(). (D-STAR
+// is not one: processDSTAR() syncs after every voice frame.) Rendering then would draw the new
+// call over the outgoing epoch's staged row, and the next sync would commit that row as the
+// outgoing epoch's: the outgoing call loses its row and the new call gets two. So the epoch is
+// opened first, as the sync does, committing the outgoing row as it stands. The history step can
+// commit a row and sound an alert, which is why it takes the mutable options the render's own
+// finalize pass already uses.
+static void
+watchdog_event_current_open_and_render(dsd_opts* opts, dsd_state* state, uint8_t slot, const char* note) {
+    dsd_call_state_ext* ext = dsd_call_state_ext_get(state, 0);
+    if (!ext) {
+        // No call has been observed: nothing to render, and no call to carry a note.
+        return;
+    }
+    dsd_call_state_ext_lock(ext);
+    const dsd_call_snapshot* call = &ext->calls.slots[slot];
+    dsd_call_event_lifecycle* lifecycle = &ext->events[slot];
+    watchdog_event_history_impl(opts, state, slot, call, lifecycle);
+    // A note is the slot's call's: with no call to carry it -- none observed, or one that ended and
+    // already committed its row -- it is declined. Written into the blank staged row, it became a
+    // note-only row when the next epoch opened.
+    if (note != NULL && watchdog_event_call_is_authoritative(call, lifecycle)) {
+        Event_History_I* event_struct = &state->event_history_s[slot];
+        DSD_SNPRINTF(event_struct->Event_History_Items[0].internal_str,
+                     sizeof(event_struct->Event_History_Items[0].internal_str), "%s", note);
+        dsd_event_history_mark_dirty(event_struct);
+    }
+    watchdog_event_current_impl(opts, state, slot, call, lifecycle, 1);
+    dsd_call_state_ext_unlock(ext);
+}
+
 void
 watchdog_event_current(const dsd_opts* opts, dsd_state* state, uint8_t slot) {
     if (!opts || !state || !state->event_history_s || slot > 1U) {
         return;
     }
-    dsd_call_state_ext* ext = dsd_call_state_ext_get(state, 0);
-    if (!ext) {
+    // The render path below already writes through opts on its finalize pass; the const is the
+    // historical signature the protocol hook table carries.
+    watchdog_event_current_open_and_render((dsd_opts*)opts, state, slot, NULL);
+}
+
+void
+dsd_event_note_current_call(dsd_opts* opts, dsd_state* state, uint8_t slot, const char* note) {
+    if (!opts || !state || !state->event_history_s || slot > 1U || !note) {
         return;
     }
+    watchdog_event_current_open_and_render(opts, state, slot, note);
+}
+
+// Under the call-state lock: 1 when the slot's staged row belongs to its canonical call, open and
+// active -- the call is ACTIVE and the lifecycle has opened its epoch.
+static int
+watchdog_event_slot_call_is_open(const dsd_call_snapshot* call, const dsd_call_event_lifecycle* lifecycle) {
+    return call->epoch != 0U && call->phase == DSD_CALL_PHASE_ACTIVE && lifecycle->epoch == call->epoch;
+}
+
+// Detail a protocol decodes without naming the call it belongs to -- D-STAR slow-data text and
+// APRS, the NXDN alias and DCR call sign memory -- reaches a row only through the slot's open call.
+// Decoded before any call for the transmission was observed (an RF header that failed its CRC,
+// late entry, an alias ahead of the VCALL), the detail has no row: written into the blank staged
+// row it was committed, when the next epoch opened, as a detail-only row with no summary, and the
+// call it belonged to lacked it. Decoded after the slot's call ended, it belongs to whatever keyed
+// up next, not to the ended call's row. Opening the epoch first would not help either way, since no
+// call for the transmission has been observed. Slow data and aliases repeat, so declined detail
+// lands once the call is open. While the previous call is still active, the next transmission's
+// detail cannot be told apart from its own: none of these messages names its call.
+int
+dsd_event_set_open_call_detail(dsd_state* state, uint8_t slot, dsd_event_detail_field field, const char* value) {
+    if (!state || !state->event_history_s || slot > 1U || !value
+        || (field != DSD_EVENT_DETAIL_ALIAS && field != DSD_EVENT_DETAIL_GPS && field != DSD_EVENT_DETAIL_TEXT)) {
+        return -1;
+    }
+    dsd_call_state_ext* ext = dsd_call_state_ext_get(state, 0);
+    if (!ext) {
+        return 0;
+    }
     dsd_call_state_ext_lock(ext);
-    watchdog_event_current_impl(opts, state, slot, &ext->calls.slots[slot], &ext->events[slot], 1);
+    if (!watchdog_event_slot_call_is_open(&ext->calls.slots[slot], &ext->events[slot])) {
+        dsd_call_state_ext_unlock(ext);
+        return 0;
+    }
+    Event_History_I* event_struct = &state->event_history_s[slot];
+    Event_History* item = &event_struct->Event_History_Items[0];
+    if (field == DSD_EVENT_DETAIL_ALIAS) {
+        DSD_SNPRINTF(item->alias, sizeof(item->alias), "%s", value);
+    } else if (field == DSD_EVENT_DETAIL_GPS) {
+        DSD_SNPRINTF(item->gps_s, sizeof(item->gps_s), "%s", value);
+    } else {
+        DSD_SNPRINTF(item->text_message, sizeof(item->text_message), "%s", value);
+    }
+    dsd_event_history_mark_dirty(event_struct);
     dsd_call_state_ext_unlock(ext);
+    return 1;
 }
 
 void
@@ -2152,27 +2571,48 @@ watchdog_event_notice_already_committed(const dsd_call_state_ext* ext, const dsd
     return ext == NULL && watchdog_event_notice_matches_history(event_struct, call, detail);
 }
 
-static int
-dsd_event_emit_call_notice_impl(dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_snapshot* call,
-                                const char* detail, int finalize_call) {
-    if (!opts || !state || !state->event_history_s || !call || call->epoch == 0U || !detail || slot > 1U) {
-        return -1;
-    }
-    dsd_call_state_ext* ext = dsd_call_state_ext_get(state, 0);
-    watchdog_event_lock_if_present(ext);
-    dsd_call_event_lifecycle* lifecycle = ext ? &ext->events[slot] : NULL;
+// A notice for a call that is not the slot's canonical one -- the P25 encryption lockout's synthetic
+// snapshot for a grant the slot's call does not match -- describes a call with no staged row of its
+// own. Row 0 is the canonical call's staged row, so the notice renders into a blank row and pushes
+// it, and the canonical row is put back exactly as it was, as a data notice does. Rendering over the
+// canonical row gave the notice that call's alias, GPS and text, and retiring it afterwards cleared
+// the canonical call's row: P25 handle_enc() ends that call right after the notice, so its first
+// render then came after its end and its row committed with no access code, no tuned frequency and
+// no enrichment.
+//
+// The canonical commit path's side effects stay with the canonical call: the notice rotates no WAV
+// and sounds no end alert, whatever finalize the caller asked for -- the recording and the end
+// belong to the slot's call, which this notice does not end -- and it leaves the YSF and D-STAR
+// slow-data scratch alone, which feeds the canonical call's row. Under --playfiles the blank row
+// keeps the event_time the file reader stamped on the staged row for the recording being played,
+// which a render there does not restamp.
+static void
+watchdog_event_emit_noncanonical_notice(const dsd_opts* opts, dsd_state* state, uint8_t slot,
+                                        const dsd_call_snapshot* call, const char* detail) {
     Event_History_I* event_struct = &state->event_history_s[slot];
-    if (watchdog_event_notice_already_committed(ext, lifecycle, event_struct, call, detail)) {
-        watchdog_event_unlock_if_present(ext);
-        return 0;
+    Event_History canonical_row;
+    DSD_MEMCPY(&canonical_row, &event_struct->Event_History_Items[0], sizeof(canonical_row));
+    init_event_history(event_struct, 0, 1);
+    Event_History* item = &event_struct->Event_History_Items[0];
+    if (opts->playfiles != 0) {
+        item->event_time = canonical_row.event_time;
     }
+    watchdog_event_current_impl(opts, state, slot, call, NULL, 0);
+    DSD_SNPRINTF(item->internal_str, sizeof(item->internal_str), "%s", detail);
+    write_event_to_log_file(opts, state, slot, watchdog_event_should_write_slot(state), item->event_string);
+    item->write = 1;
+    push_event_history(event_struct);
+    DSD_MEMCPY(&event_struct->Event_History_Items[0], &canonical_row, sizeof(canonical_row));
+    dsd_event_history_mark_dirty(event_struct);
+}
 
-    dsd_call_event_lifecycle* canonical_lifecycle = NULL;
-    if (ext != NULL && watchdog_event_notice_matches_canonical(&ext->calls.slots[slot], call)) {
-        canonical_lifecycle = lifecycle;
-        watchdog_event_history_authoritative(opts, state, slot, call, canonical_lifecycle);
-    }
-    watchdog_event_current_impl(opts, state, slot, call, canonical_lifecycle, 0);
+// A notice for the slot's canonical call, rendered over its own staged row. Caller holds the call-state lock.
+static void
+watchdog_event_emit_canonical_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_snapshot* call,
+                                     const char* detail, dsd_call_event_lifecycle* lifecycle, int finalize_call) {
+    Event_History_I* event_struct = &state->event_history_s[slot];
+    watchdog_event_history_authoritative(opts, state, slot, call, lifecycle);
+    watchdog_event_current_impl(opts, state, slot, call, lifecycle, 0);
     DSD_SNPRINTF(event_struct->Event_History_Items[0].internal_str,
                  sizeof(event_struct->Event_History_Items[0].internal_str), "%s", detail);
     dsd_event_history_mark_dirty(event_struct);
@@ -2182,17 +2622,36 @@ dsd_event_emit_call_notice_impl(dsd_opts* opts, dsd_state* state, uint8_t slot, 
     // unconditionally would give one transmission two rows and leave the first one orphaned.
     // The commit path keeps the notice detail: internal_str is merged progressively, so the
     // detail that just fired supersedes whatever the row carried.
-    (void)watchdog_event_commit_staged_row(opts, state, event_struct, slot, canonical_lifecycle,
-                                           call->kind == DSD_CALL_KIND_DATA, finalize_call,
-                                           finalize_call ? DSD_EVENT_END_FINAL : DSD_EVENT_END_NONE);
-    watchdog_event_notice_mark_handled(lifecycle, call);
-    if (canonical_lifecycle != NULL) {
-        // committed_seq/committed_epoch are maintained by the commit path itself; only the
-        // end-of-epoch marker is this function's to set.
-        if (call->phase == DSD_CALL_PHASE_ENDED) {
-            canonical_lifecycle->ended_committed = 1U;
-        }
+    (void)watchdog_event_commit_staged_row(opts, state, event_struct, slot, lifecycle, call->kind == DSD_CALL_KIND_DATA,
+                                           finalize_call, finalize_call ? DSD_EVENT_END_FINAL : DSD_EVENT_END_NONE);
+    // committed_seq/committed_epoch are maintained by the commit path itself; only the
+    // end-of-epoch marker is this function's to set.
+    if (call->phase == DSD_CALL_PHASE_ENDED) {
+        lifecycle->ended_committed = 1U;
     }
+}
+
+static int
+dsd_event_emit_call_notice_impl(dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_snapshot* call,
+                                const char* detail, int finalize_call) {
+    if (!opts || !state || !state->event_history_s || !call || call->epoch == 0U || !detail || slot > 1U) {
+        return -1;
+    }
+    dsd_call_state_ext* ext = dsd_call_state_ext_get(state, 0);
+    watchdog_event_lock_if_present(ext);
+    dsd_call_event_lifecycle* lifecycle = ext ? &ext->events[slot] : NULL;
+    const Event_History_I* event_struct = &state->event_history_s[slot];
+    if (watchdog_event_notice_already_committed(ext, lifecycle, event_struct, call, detail)) {
+        watchdog_event_unlock_if_present(ext);
+        return 0;
+    }
+
+    if (ext != NULL && watchdog_event_notice_matches_canonical(&ext->calls.slots[slot], call)) {
+        watchdog_event_emit_canonical_notice(opts, state, slot, call, detail, lifecycle, finalize_call);
+    } else {
+        watchdog_event_emit_noncanonical_notice(opts, state, slot, call, detail);
+    }
+    watchdog_event_notice_mark_handled(lifecycle, call);
     watchdog_event_unlock_if_present(ext);
     return 1;
 }
@@ -2230,20 +2689,69 @@ dsd_event_enrich_apply(dsd_state* state, uint8_t slot, Event_History* item, cons
     }
 }
 
-// Caller holds the call-state lock. Enrichment may precede the first render of its epoch,
-// so an unrelated staged row must not be marked along with the canonical call.
+// Caller holds the call-state lock. The known CRC failure belongs to the transmission, so the
+// canonical call is marked whether or not a row takes the enrichment.
 static void
-dsd_event_enrich_mark_crc(dsd_call_state_ext* ext, dsd_call_snapshot* call, Event_History* item,
-                          const dsd_call_event_lifecycle* lifecycle, uint8_t history_index) {
+dsd_event_enrich_mark_call_crc(dsd_call_state_ext* ext, dsd_call_snapshot* call) {
     if (!call->crc_invalid) {
         call->crc_invalid = 1;
         call->revision = call->revision == UINT64_MAX ? 1U : call->revision + 1U;
         ext->calls.revision = ext->calls.revision == UINT64_MAX ? 1U : ext->calls.revision + 1U;
     }
-    if (!item->crc_invalid && (history_index != 0U || lifecycle->epoch == call->epoch)) {
+}
+
+// Caller holds the call-state lock, and item is the epoch's own row: its committed row, or the
+// staged row once the lifecycle has opened the epoch (dsd_event_enrich_epoch() declines otherwise).
+static void
+dsd_event_enrich_mark_crc(dsd_call_state_ext* ext, dsd_call_snapshot* call, Event_History* item) {
+    dsd_event_enrich_mark_call_crc(ext, call);
+    if (!item->crc_invalid) {
         item->crc_invalid = 1;
         dsd_event_history_item_set_metadata(item, DSD_EVENT_SEVERITY_WARNING, (dsd_event_category)item->category);
         watchdog_event_mark_crc(item->event_string, sizeof(item->event_string));
+    }
+}
+
+// Where an enrichment of the epoch lands. Caller holds the call-state lock.
+typedef enum {
+    DSD_EVENT_ENRICH_TARGET_ROW = 0,  // the epoch's own row, at the index returned beside it
+    DSD_EVENT_ENRICH_TARGET_NONE,     // the epoch committed a row that can no longer be located
+    DSD_EVENT_ENRICH_TARGET_UNOPENED, // the call was observed but no sync has opened its epoch yet
+} dsd_event_enrich_target;
+
+static dsd_event_enrich_target
+dsd_event_enrich_find_row(const dsd_state* state, uint8_t slot, uint64_t epoch,
+                          const dsd_call_event_lifecycle* lifecycle, uint8_t* history_index) {
+    *history_index = 0U;
+    // Once this epoch's row has been committed the row has to be located by push sequence: an
+    // interleaved data or system notice pushes it deeper than index 1. The test is on
+    // committed_epoch rather than the lifecycle's current epoch, so an epoch that never pushed a
+    // row of its own cannot enrich an older epoch's row that committed_seq still points at.
+    if (lifecycle->committed_valid && lifecycle->committed_epoch == epoch) {
+        *history_index = watchdog_event_committed_row_index(&state->event_history_s[slot], lifecycle);
+        return *history_index != 0U ? DSD_EVENT_ENRICH_TARGET_ROW : DSD_EVENT_ENRICH_TARGET_NONE;
+    }
+    if (lifecycle->epoch == epoch && lifecycle->ended_committed) {
+        // Committed but not locatable (the row aged out of the ring, or a context restore
+        // invalidated the reference). Enriching row 0 would write into an unrelated staged row.
+        return DSD_EVENT_ENRICH_TARGET_NONE;
+    }
+    return lifecycle->epoch == epoch ? DSD_EVENT_ENRICH_TARGET_ROW : DSD_EVENT_ENRICH_TARGET_UNOPENED;
+}
+
+// The call has been observed but no sync has opened its epoch yet, so row 0 is still the
+// outgoing epoch's staged row -- or blank, and written here it would commit at the epoch
+// open as a detail-only row. The row declines; the live alias display and the call's CRC
+// verdict still follow the call, as they did. Aliases and positions repeat, and the next
+// one lands on the call's own row. Caller holds the call-state lock.
+static void
+dsd_event_enrich_unopened(dsd_state* state, uint8_t slot, dsd_call_state_ext* ext, dsd_call_snapshot* call,
+                          const char* value, dsd_event_enrichment_kind kind) {
+    if (kind == DSD_EVENT_ENRICH_ALIAS) {
+        DSD_SNPRINTF(state->generic_talker_alias[slot], sizeof(state->generic_talker_alias[slot]), "%s", value);
+    }
+    if (state->event_crc_invalid[slot]) {
+        dsd_event_enrich_mark_call_crc(ext, call);
     }
 }
 
@@ -2259,32 +2767,24 @@ dsd_event_enrich_epoch(dsd_state* state, uint8_t slot, uint64_t epoch, const cha
     }
     dsd_call_state_ext_lock(ext);
     dsd_call_snapshot* call = &ext->calls.slots[slot];
-    const dsd_call_event_lifecycle* lifecycle = &ext->events[slot];
     if (call->epoch != epoch) {
         dsd_call_state_ext_unlock(ext);
         return 0;
     }
-    // Once this epoch's row has been committed the row has to be located by push sequence: an
-    // interleaved data or system notice pushes it deeper than index 1. The test is on
-    // committed_epoch rather than the lifecycle's current epoch, so an epoch that never pushed a
-    // row of its own cannot enrich an older epoch's row that committed_seq still points at.
     uint8_t history_index = 0U;
-    if (lifecycle->committed_valid && lifecycle->committed_epoch == epoch) {
-        history_index = watchdog_event_committed_row_index(&state->event_history_s[slot], lifecycle);
-        if (history_index == 0U) {
-            dsd_call_state_ext_unlock(ext);
-            return 0;
-        }
-    } else if (lifecycle->epoch == epoch && lifecycle->ended_committed) {
-        // Committed but not locatable (the row aged out of the ring, or a context restore
-        // invalidated the reference). Enriching row 0 would write into an unrelated staged row.
+    const dsd_event_enrich_target target =
+        dsd_event_enrich_find_row(state, slot, epoch, &ext->events[slot], &history_index);
+    if (target == DSD_EVENT_ENRICH_TARGET_UNOPENED) {
+        dsd_event_enrich_unopened(state, slot, ext, call, value, kind);
+    }
+    if (target != DSD_EVENT_ENRICH_TARGET_ROW) {
         dsd_call_state_ext_unlock(ext);
         return 0;
     }
     Event_History* item = &state->event_history_s[slot].Event_History_Items[history_index];
     dsd_event_enrich_apply(state, slot, item, value, kind);
     if (state->event_crc_invalid[slot]) {
-        dsd_event_enrich_mark_crc(ext, call, item, lifecycle, history_index);
+        dsd_event_enrich_mark_crc(ext, call, item);
     }
     if (history_index != 0U) {
         // Late enrichment landed on a committed row, not the staged one.
@@ -2520,6 +3020,18 @@ dsd_event_emit_data_notice_impl(dsd_opts* opts, dsd_state* state, uint8_t slot, 
     // question is answered either way, empty label included, so the row says so.
     (void)dsd_channel_label_current(opts, state, item->channel_label, sizeof(item->channel_label));
     item->channel_label_resolved = 1U;
+    // Live for the same reason: the notice's own frequency when the PDU named one, else the tuned
+    // frequency, and the carrier's access code. Neither is taken playing back files, where the
+    // decoder state describes no carrier (see watchdog_event_current_load_tuning()).
+    if (observation->frequency_hz > 0) {
+        item->freq_hz = observation->frequency_hz;
+    } else if (opts->playfiles == 0) {
+        item->freq_hz = (int64_t)dsd_opts_tuned_freq_hz(opts);
+    }
+    if (opts->playfiles == 0) {
+        (void)dsd_access_code_current(state, observation->protocol, observation->service_options,
+                                      observation->has_service_metadata, &item->access_code_kind, &item->access_code);
+    }
     item->event_time = dsd_decode_time();
     DSD_SNPRINTF(item->src_str, sizeof(item->src_str), "%s", observation->source_text);
     DSD_SNPRINTF(item->tgt_str, sizeof(item->tgt_str), "%s", observation->target_text);

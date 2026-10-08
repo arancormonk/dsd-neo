@@ -51,7 +51,17 @@ typedef struct {
     int eeei;
     int aiei;
     int msMode;
+    /* The carrier count (state->carrier_seq) the superframe began on (issue #575). */
+    uint32_t carrier_seq;
 } x2tdma_voice_ctx;
+
+/* Whether the carrier boundary moved the carrier count since the superframe began (issue #575): a replay read adopting
+   a recorded retune. What was read before the move belongs to the carrier left, so from there nothing decodes or
+   publishes, as on a sync loss. */
+static int
+x2tdma_carrier_left(const x2tdma_voice_ctx* ctx, const dsd_state* state) {
+    return state->carrier_seq != ctx->carrier_seq;
+}
 
 static void
 x2tdma_process_voice_frame(dsd_opts* opts, dsd_state* state, char ambe_fr[4][24]) {
@@ -441,6 +451,9 @@ x2tdma_decode_signaling(int j, x2tdma_voice_ctx* ctx, dsd_state* state) {
 static void
 x2tdma_process_voice_frames(dsd_opts* opts, dsd_state* state, x2tdma_voice_ctx* ctx) {
     x2tdma_fill_ambe_from_stream(opts, state, ctx->ambe_fr2, 18, 18);
+    if (x2tdma_carrier_left(ctx, state)) {
+        return;
+    }
 
     if (ctx->mutecurrentslot == 0) {
         if (state->firstframe == 1) {
@@ -453,6 +466,9 @@ x2tdma_process_voice_frames(dsd_opts* opts, dsd_state* state, x2tdma_voice_ctx* 
     }
 
     x2tdma_fill_ambe_from_stream(opts, state, ctx->ambe_fr3, 0, 36);
+    if (x2tdma_carrier_left(ctx, state)) {
+        return;
+    }
     if (ctx->mutecurrentslot == 0) {
         x2tdma_process_voice_frame(opts, state, ctx->ambe_fr3);
     } else {
@@ -478,7 +494,8 @@ x2tdma_update_next_slot_lights(const x2tdma_voice_ctx* ctx, dsd_state* state) {
     }
 }
 
-static void
+/* One slot of the superframe; 0 once the carrier boundary moved the carrier count since the superframe began. */
+static int
 x2tdma_process_slot_iteration(dsd_opts* opts, dsd_state* state, x2tdma_voice_ctx* ctx, int j, int** dibit_p) {
     x2tdma_skip_prev_half(opts, state, j, dibit_p);
     x2tdma_read_cach_from_slot(opts, state, j, dibit_p, ctx->cachdata);
@@ -487,6 +504,9 @@ x2tdma_process_slot_iteration(dsd_opts* opts, dsd_state* state, x2tdma_voice_ctx
     x2tdma_fill_ambe_from_slot(opts, state, j, dibit_p, ctx->ambe_fr2, 0, 18);
 
     x2tdma_read_sync_from_slot(opts, state, j, dibit_p, ctx->sync, ctx->syncdata);
+    if (x2tdma_carrier_left(ctx, state)) {
+        return 0;
+    }
     x2tdma_update_mute_and_lights(ctx, state);
     x2tdma_update_call_transition(opts, ctx, state);
     x2tdma_update_ms_mode(ctx);
@@ -497,6 +517,9 @@ x2tdma_process_slot_iteration(dsd_opts* opts, dsd_state* state, x2tdma_voice_ctx
 
     x2tdma_decode_signaling(j, ctx, state);
     x2tdma_process_voice_frames(opts, state, ctx);
+    if (x2tdma_carrier_left(ctx, state)) {
+        return 0;
+    }
 
     x2tdma_read_cach_from_stream(opts, state, ctx->cachdata);
     skipDibit(opts, state, 54);
@@ -508,6 +531,7 @@ x2tdma_process_slot_iteration(dsd_opts* opts, dsd_state* state, x2tdma_voice_ctx
         skipDibit(opts, state, 12);
         skipDibit(opts, state, 54);
     }
+    return 1;
 }
 
 static void
@@ -571,16 +595,26 @@ processX2TDMAvoice(dsd_opts* opts, dsd_state* state) {
     ctx.aiei = 0;
     ctx.msMode = 0;
     dsd_x2tdma_init_mi_placeholder(ctx.mi);
+    ctx.carrier_seq = state->carrier_seq;
 
     dibit_p = state->dibit_buf_p - 144;
     for (j = 0; j < 6; j++) {
-        x2tdma_process_slot_iteration(opts, state, &ctx, j, &dibit_p);
+        if (!x2tdma_process_slot_iteration(opts, state, &ctx, j, &dibit_p)) {
+            break;
+        }
     }
 
-    x2tdma_update_call_crypto(opts, state, &ctx);
+    /* The encryption is assembled from the whole superframe's signalling: none of it is published once the carrier
+       boundary moved the carrier count during the superframe (issue #575). */
+    const int carrier_kept = !x2tdma_carrier_left(&ctx, state);
+    if (carrier_kept) {
+        x2tdma_update_call_crypto(opts, state, &ctx);
+    }
 
     if (opts->errorbars == 1) {
         DSD_FPRINTF(stderr, "\n");
     }
-    x2tdma_print_call_crypto(opts, state, &ctx);
+    if (carrier_kept) {
+        x2tdma_print_call_crypto(opts, state, &ctx);
+    }
 }

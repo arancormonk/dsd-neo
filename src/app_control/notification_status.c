@@ -156,7 +156,8 @@ dsd_app_notification_publish_opts(const dsd_opts* opts) {
     g_status.radio_input = radio ? 1U : 0U;
     g_status.trunking = (opts->trunk_enable == 1) ? 1U : 0U;
     g_status.trunk_tuned = (opts->trunk_is_tuned == 1) ? 1U : 0U;
-    g_status.center_freq_hz = radio ? (int64_t)opts->rtlsdr_center_freq : 0;
+    /* The tuned frequency, which follows an I/Q replay's recorded retunes (issue #575); 0 off a radio input. */
+    g_status.center_freq_hz = (int64_t)dsd_opts_tuned_freq_hz(opts);
     g_status.revision++;
     g_have = 1;
     dsd_mutex_unlock(&g_mu);

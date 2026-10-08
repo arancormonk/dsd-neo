@@ -166,6 +166,30 @@ __wrap_dsd_audio_reconfigure_output_for_input_policy(dsd_opts* opts) {
 
 // NOLINTEND(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp,misc-use-internal-linkage)
 
+/* Issue #575: the codes the carrier on air decoded, which an apply that moves the Airspy to another centre forgets. */
+static void
+seed_carrier_codes(dsd_state* state) {
+    state->dmr_color_code = 5U;
+    state->nxdn_last_ran = 9U;
+    state->nxdn_last_ran_stand_in = 1U;
+    state->dpmr_color_code = 33;
+    state->p2_cc = 0x293U;
+    state->p2_cc_verified = 1U;
+}
+
+static int
+carrier_codes_kept(const dsd_state* state) {
+    return state->dmr_color_code == 5U && state->nxdn_last_ran == 9U && state->nxdn_last_ran_stand_in == 1U
+           && state->dpmr_color_code == 33 && state->p2_cc_verified == 1U && state->p2_cc == 0x293U;
+}
+
+static int
+carrier_codes_forgotten(const dsd_state* state) {
+    return state->dmr_color_code == 16U && state->nxdn_last_ran == (unsigned int)-1
+           && state->nxdn_last_ran_stand_in == 0U && state->dpmr_color_code == -1 && state->p2_cc_verified == 0U
+           && state->p2_cc == 0x293U;
+}
+
 static void
 test_config_apply(int failure) {
     dsd_opts* opts = calloc(1, sizeof(*opts));
@@ -197,8 +221,10 @@ test_config_apply(int failure) {
         cfg->rtl_volume = 3;
         DSD_SNPRINTF(cfg->rtl_freq, sizeof cfg->rtl_freq, "852M");
         test_fail_create = 1;
+        seed_carrier_codes(state);
         DSD_MEMCPY(cmd->data, cfg, sizeof(*cfg));
         assert(apply_cmd(opts, state, cmd) == UI_CMD_APPLY_FAILED);
+        assert(carrier_codes_kept(state)); /* the reopen failed: the old centre runs again */
         assert(test_outputs == 1);
         assert(test_creates == 2); /* failed candidate, then rollback */
         assert(opts->airspy.sample_rate == 0 && opts->rtl_dsp_bw_khz == 12);
@@ -212,43 +238,54 @@ test_config_apply(int failure) {
         assert(apply_cmd(opts, state, cmd) == UI_CMD_APPLY_FAILED);
         assert(test_outputs == 2);
         assert(test_retunes == 0 && opts->rtlsdr_center_freq == 851000000);
+        assert(carrier_codes_kept(state));
     } else {
         DSD_SNPRINTF(cfg->rtl_freq, sizeof cfg->rtl_freq, "852M");
         cfg->rtl_sql = -55;
+        seed_carrier_codes(state);
         DSD_MEMCPY(cmd->data, cfg, sizeof(*cfg));
         assert(apply_cmd(opts, state, cmd) == UI_CMD_APPLY_COMPLETED);
         assert(test_retunes == 1 && test_freq == 852000000 && test_creates == 0);
+        assert(carrier_codes_forgotten(state)); /* retuned live to another carrier */
         assert(test_squelches == 1 && fabsf(test_sql - (float)dsd_squelch_level_from_sql(-55)) < 1e-8f);
         cfg->airspy.sample_rate = 2500000;
         DSD_SNPRINTF(cfg->airspy.serial, sizeof cfg->airspy.serial, "0123456789abcdef");
         cfg->rtl_bw_khz = 24;
         cfg->rtl_volume = 3;
         DSD_SNPRINTF(cfg->rtl_freq, sizeof cfg->rtl_freq, "853M");
+        seed_carrier_codes(state);
         DSD_MEMCPY(cmd->data, cfg, sizeof(*cfg));
         assert(apply_cmd(opts, state, cmd) == UI_CMD_APPLY_COMPLETED);
         assert(test_creates == 1 && test_retunes == 1);
+        assert(carrier_codes_forgotten(state)); /* reopened on another carrier */
         assert(test_open_freq == 853000000 && test_open_bw == 24 && test_open_volume == 3);
         assert(test_open_rate == 2500000);
         cfg->rtl_volume = 1;
+        seed_carrier_codes(state);
         DSD_MEMCPY(cmd->data, cfg, sizeof(*cfg));
         assert(apply_cmd(opts, state, cmd) == UI_CMD_APPLY_COMPLETED);
         assert(test_creates == 2 && test_open_volume == 1);
+        assert(carrier_codes_kept(state)); /* reopened on the same carrier */
         cfg->rtl_sql = 0;
         DSD_MEMCPY(cmd->data, cfg, sizeof(*cfg));
         assert(apply_cmd(opts, state, cmd) == UI_CMD_APPLY_COMPLETED);
         assert(test_creates == 2 && test_retunes == 1 && test_sql == 0.0f);
+        assert(carrier_codes_kept(state));
         const int tune_results[] = {RTL_STREAM_TUNE_TIMEOUT, RTL_STREAM_TUNE_DEFERRED, RTL_STREAM_TUNE_FAILED};
         for (size_t i = 0; i < sizeof tune_results / sizeof tune_results[0]; ++i) {
             uint32_t old_frequency = opts->rtlsdr_center_freq;
             DSD_SNPRINTF(cfg->rtl_freq, sizeof cfg->rtl_freq, "%u", old_frequency + 1000000);
             test_tune_result = tune_results[i];
+            seed_carrier_codes(state);
             DSD_MEMCPY(cmd->data, cfg, sizeof(*cfg));
             int status = apply_cmd(opts, state, cmd);
             if (test_tune_result != RTL_STREAM_TUNE_TIMEOUT) {
                 /* DEFERRED was never queued, so it must not be reported as applied. */
                 assert(status == UI_CMD_APPLY_FAILED && opts->rtlsdr_center_freq == old_frequency);
+                assert(carrier_codes_kept(state));
             } else {
                 assert(status == UI_CMD_APPLY_COMPLETED && opts->rtlsdr_center_freq == old_frequency + 1000000);
+                assert(carrier_codes_forgotten(state));
             }
             assert(test_creates == 2);
         }

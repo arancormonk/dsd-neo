@@ -465,6 +465,7 @@ processLDU1(dsd_opts* opts, dsd_state* state) {
     ldu1_decode_ctx_t ctx;
     p25p1_ldu1_init_decode_ctx(state, &ctx);
 
+    const uint32_t carrier_seq = state->carrier_seq;
     p25p1_ldu1_collect_voice_and_data(opts, state, &ctx);
     if (opts->errorbars == 1) {
         DSD_FPRINTF(stderr, "\n");
@@ -474,6 +475,12 @@ processLDU1(dsd_opts* opts, dsd_state* state) {
     }
 
     p25p1_ldu1_finalize_status(opts, state);
+    if (state->carrier_seq != carrier_seq) {
+        /* The carrier boundary moved the carrier count while the LDU was read (issue #575). The link control is read
+           whole by the seventh voice frame but decodes only now, so it would publish the carrier left's call after the
+           boundary ended it: the link control and low-speed data are dropped, as on a sync loss. */
+        return;
+    }
     int irrecoverable_errors = p25p1_ldu1_apply_rs_fec(state, ctx.hex_data, ctx.hex_parity, ctx.soft_dibits);
 
     uint8_t lcformat[9];

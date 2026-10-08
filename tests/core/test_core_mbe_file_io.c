@@ -2731,7 +2731,9 @@ test_close_and_rename_wav_exports_rdio_sidecar(void) {
         item->gi = 0;
         item->source_id = 660045U;
         item->target_id = 1201U;
-        item->channel = 851012500U;
+        // The sidecar's freq is the frequency the call was heard on, never the trunk channel number.
+        item->channel = 0x10C8U;
+        item->freq_hz = 851012500;
         item->enc = 1;
         DSD_SNPRINTF(item->sysid_string, sizeof item->sysid_string, "%s", "P25_TEST");
         DSD_SNPRINTF(item->t_name, sizeof item->t_name, "%s", "FIRE DISP");

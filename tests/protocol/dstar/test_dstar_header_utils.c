@@ -5,8 +5,10 @@
 
 #include <assert.h>
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/protocol/dstar/dstar.h>
 #include <dsd-neo/protocol/dstar/dstar_header.h>
 #include <dsd-neo/protocol/dstar/dstar_header_utils.h>
@@ -18,6 +20,7 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "dsd-neo/core/synctype_ids.h"
 
 static const uint8_t k_slow_data_scrambler[24] = {
     0, 0, 0, 0, 1, 1, 1, 0, 1, 1, 1, 1, 0, 0, 1, 0, 1, 1, 0, 0, 1, 0, 0, 1,
@@ -275,6 +278,21 @@ set_compacted_slow_data_bytes(uint8_t bytes[60], const uint8_t compact[51]) {
     }
 }
 
+// Open a D-STAR voice call on the slot, as a decoded header followed by a voice frame's sync leaves it: slow-data detail
+// reaches the history row only through an open call (issue #575 follow-up).
+static void
+open_dstar_call(dsd_opts* opts, dsd_state* state) {
+    dsd_call_observation observation;
+    DSD_MEMSET(&observation, 0, sizeof(observation));
+    observation.protocol = DSD_SYNC_DSTAR_VOICE_POS;
+    observation.slot = 0U;
+    observation.kind = DSD_CALL_KIND_VOICE;
+    DSD_SNPRINTF(observation.source_text, sizeof(observation.source_text), "%s", "N0CALL");
+    DSD_SNPRINTF(observation.target_text, sizeof(observation.target_text), "%s", "CQCQCQ");
+    assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    dsd_event_sync_slot(opts, state, 0U);
+}
+
 static void
 test_slow_data_text_keeps_byte_after_marker(void) {
     static dsd_opts opts;
@@ -300,13 +318,24 @@ test_slow_data_text_keeps_byte_after_marker(void) {
     bytes[7] = 'G';
 
     pack_slow_data_bytes(bytes, bits);
-    const uint64_t revision = history[0].revision;
+    uint64_t revision = history[0].revision;
     processDSTAR_SD(&opts, &state, bits);
 
     assert(state.dstar_txt[5] == 'E');
     assert(state.dstar_txt[6] == ' ');
     assert(state.dstar_txt[7] == 'G');
+    /* No call is open: the display text is kept, the history row is left alone. */
+    assert(state.event_history_s[0].Event_History_Items[0].text_message[0] == '\0');
+    assert(history[0].revision == revision);
+
+    /* The decoder descrambles the block in place, so the repeat is packed afresh. */
+    open_dstar_call(&opts, &state);
+    pack_slow_data_bytes(bytes, bits);
+    revision = history[0].revision;
+    processDSTAR_SD(&opts, &state, bits);
+    assert(strcmp(state.event_history_s[0].Event_History_Items[0].text_message, state.dstar_txt) == 0);
     assert(history[0].revision == revision + 1U);
+    dsd_state_ext_free_all(&state);
     free(history);
 }
 
@@ -355,13 +384,23 @@ test_slow_data_aprs_latitude_uses_compacted_direction(void) {
     set_compacted_slow_data_bytes(bytes, compact);
 
     pack_slow_data_bytes(bytes, bits);
-    const uint64_t revision = history[0].revision;
+    uint64_t revision = history[0].revision;
     processDSTAR_SD(&opts, &state, bits);
 
     assert(strstr(state.dstar_gps, "Lat: 41d 30m 59s N ") != NULL);
     assert(strstr(state.dstar_gps, "Lon: 087d 30m 15s W ") != NULL);
+    /* No call is open: the display position is kept, the history row is left alone. */
+    assert(state.event_history_s[0].Event_History_Items[0].gps_s[0] == '\0');
+    assert(history[0].revision == revision);
+
+    /* The decoder descrambles the block in place, so the repeat is packed afresh. */
+    open_dstar_call(&opts, &state);
+    pack_slow_data_bytes(bytes, bits);
+    revision = history[0].revision;
+    processDSTAR_SD(&opts, &state, bits);
     assert(strcmp(state.event_history_s[0].Event_History_Items[0].gps_s, state.dstar_gps) == 0);
     assert(history[0].revision == revision + 1U);
+    dsd_state_ext_free_all(&state);
     free(history);
 }
 

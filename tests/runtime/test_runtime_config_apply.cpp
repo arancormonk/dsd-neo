@@ -744,6 +744,220 @@ test_config_reapply_converts_rtl_squelch_from_db(void) {
     return rc;
 }
 
+/*
+ * Issue #575: a config that reopens the running RTL input on another frequency puts the receiver on another carrier,
+ * which can sync before any no-carrier pass, so the codes the old carrier decoded go. A reopen on the same frequency
+ * (here for a new gain) stays on the carrier and keeps them.
+ */
+static void
+seed_carrier_codes(dsd_state* state) {
+    state->dmr_color_code = 5U;
+    state->nxdn_last_ran = 9U;
+    state->nxdn_last_ran_stand_in = 1U;
+    state->dpmr_color_code = 33;
+    state->p2_cc = 0x293U;
+    state->p2_cc_verified = 1U;
+}
+
+static int
+expect_carrier_codes(const char* what, const dsd_state* state, int forgotten) {
+    const int kept = state->dmr_color_code == 5U && state->nxdn_last_ran == 9U && state->nxdn_last_ran_stand_in == 1U
+                     && state->dpmr_color_code == 33 && state->p2_cc_verified == 1U;
+    const int gone = state->dmr_color_code == 16U && state->nxdn_last_ran == (unsigned int)-1
+                     && state->nxdn_last_ran_stand_in == 0U && state->dpmr_color_code == -1
+                     && state->p2_cc_verified == 0U;
+    return expect_true(what, (forgotten ? gone : kept) && state->p2_cc == 0x293U);
+}
+
+static int
+test_config_reopen_on_another_frequency_forgets_the_carrier_codes(void) {
+    test_runtime runtime;
+    if (alloc_test_runtime(&runtime) != 0) {
+        return 1;
+    }
+    dsd_opts* opts = runtime.opts;
+    dsd_state* state = runtime.state;
+
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->rtlsdr_center_freq = 851375000U;
+    opts->rtl_gain_value = 22;
+    opts->rtl_dsp_bw_khz = 24;
+    opts->rtl_volume_multiplier = 2;
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "rtl:0:851375000:22:0:24:0:2");
+
+    dsdneoUserConfig cfg;
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_input = 1;
+    cfg.input_source = DSDCFG_INPUT_RTL;
+    cfg.rtl_device = 0;
+    DSD_SNPRINTF(cfg.rtl_freq, sizeof cfg.rtl_freq, "%s", "851375000");
+    cfg.rtl_gain = 30;
+    cfg.rtl_bw_khz = 24;
+    cfg.rtl_volume = 2;
+
+    int rc = 0;
+    seed_carrier_codes(state);
+    state->p25_vc_freq[0] = 851012500L;
+    state->trunk_vc_freq[0] = 851012500L;
+    dsd_app_command_submit(DSD_APP_CMD_CONFIG_APPLY, &cfg, sizeof cfg);
+    (void)dsd_app_drain_cmds(opts, state);
+    rc |= expect_true("same-frequency reopen ran", strstr(opts->audio_in_dev, ":30:") != NULL);
+    rc |= expect_carrier_codes("same-frequency reopen keeps the codes", state, 0);
+    rc |= expect_true("same-frequency reopen keeps the frequency caches",
+                      state->p25_vc_freq[0] == 851012500L && state->trunk_vc_freq[0] == 851012500L);
+
+    DSD_SNPRINTF(cfg.rtl_freq, sizeof cfg.rtl_freq, "%s", "460.125M");
+    seed_carrier_codes(state);
+    dsd_app_command_submit(DSD_APP_CMD_CONFIG_APPLY, &cfg, sizeof cfg);
+    (void)dsd_app_drain_cmds(opts, state);
+    rc |= expect_true("reopen on another frequency ran", opts->rtlsdr_center_freq == 460125000U);
+    rc |= expect_carrier_codes("reopen on another frequency forgets the codes", state, 1);
+    rc |= expect_true("reopen on another frequency forgets the untrunked frequency caches",
+                      state->p25_vc_freq[0] == 0 && state->trunk_vc_freq[0] == 0);
+
+    free_test_runtime(&runtime);
+    return rc;
+}
+
+/* An active P25 call on slot 0, as the carrier on air carries it. */
+static void
+observe_active_call(dsd_state* state) {
+    dsd_call_observation observation;
+    DSD_MEMSET(&observation, 0, sizeof observation);
+    observation.protocol = DSD_SYNC_P25P1_POS;
+    observation.slot = 0U;
+    observation.kind = DSD_CALL_KIND_GROUP_VOICE;
+    observation.ota_target_id = 4800U;
+    observation.policy_target_id = 4800U;
+    observation.ota_source_id = 4801U;
+    (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN);
+}
+
+static int
+call_active(const dsd_state* state) {
+    dsd_call_snapshot call;
+    return dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE;
+}
+
+/*
+ * Issue #575: a config that replaces the radio source moves the receiver to another carrier even where the configured
+ * centre stays: a replay that opened at 851.375 MHz and recorded a retune to 860 MHz, replaced by a live RTL-SDR at
+ * 851.375 MHz, or one RTL-SDR replaced by another. The tuned frequency (dsd_opts_tuned_freq_hz()) and the source are
+ * what is compared, not rtlsdr_center_freq: the outgoing call ends, and the codes and the untrunked frequency caches
+ * go. The same source reopened for a new gain stays on its carrier, and its call stays open.
+ */
+static int
+test_config_source_change_is_a_carrier_boundary(void) {
+    test_runtime runtime;
+    if (alloc_test_runtime(&runtime) != 0) {
+        return 1;
+    }
+    dsd_opts* opts = runtime.opts;
+    dsd_state* state = runtime.state;
+
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->rtlsdr_center_freq = 851375000U;
+    opts->iq_replay_center_freq = 860000000U; /* the capture's recorded retune */
+    opts->rtl_gain_value = 22;
+    opts->rtl_dsp_bw_khz = 24;
+    opts->rtl_volume_multiplier = 2;
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "iqreplay:capture.iq.json");
+
+    dsdneoUserConfig cfg;
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_input = 1;
+    cfg.input_source = DSDCFG_INPUT_RTL;
+    cfg.rtl_device = 0;
+    DSD_SNPRINTF(cfg.rtl_freq, sizeof cfg.rtl_freq, "%s", "851375000");
+    cfg.rtl_gain = 22;
+    cfg.rtl_bw_khz = 24;
+    cfg.rtl_volume = 2;
+
+    int rc = 0;
+    observe_active_call(state);
+    seed_carrier_codes(state);
+    state->p25_vc_freq[0] = 860012500L;
+    dsd_app_command_submit(DSD_APP_CMD_CONFIG_APPLY, &cfg, sizeof cfg);
+    (void)dsd_app_drain_cmds(opts, state);
+    rc |= expect_true("replay replaced by a live RTL-SDR", strncmp(opts->audio_in_dev, "rtl:", 4) == 0);
+    rc |= expect_true("replay to live ends the outgoing call", !call_active(state));
+    rc |= expect_carrier_codes("replay to live forgets the codes", state, 1);
+    rc |= expect_true("replay to live forgets the untrunked frequency caches", state->p25_vc_freq[0] == 0);
+
+    cfg.rtl_device = 1;
+    observe_active_call(state);
+    seed_carrier_codes(state);
+    dsd_app_command_submit(DSD_APP_CMD_CONFIG_APPLY, &cfg, sizeof cfg);
+    (void)dsd_app_drain_cmds(opts, state);
+    rc |= expect_true("another RTL-SDR on the same centre ran", opts->rtl_dev_index == 1);
+    rc |= expect_true("another RTL-SDR ends the outgoing call", !call_active(state));
+    rc |= expect_carrier_codes("another RTL-SDR forgets the codes", state, 1);
+
+    cfg.rtl_gain = 30;
+    observe_active_call(state);
+    seed_carrier_codes(state);
+    dsd_app_command_submit(DSD_APP_CMD_CONFIG_APPLY, &cfg, sizeof cfg);
+    (void)dsd_app_drain_cmds(opts, state);
+    rc |= expect_true("the same RTL-SDR reopened for a gain", strstr(opts->audio_in_dev, ":30:") != NULL);
+    rc |= expect_true("a gain-only reopen keeps the call", call_active(state));
+    rc |= expect_carrier_codes("a gain-only reopen keeps the codes", state, 0);
+
+    free_test_runtime(&runtime);
+    return rc;
+}
+
+/*
+ * Issue #575: the carrier boundary lives where a radio stream starts (dsd_engine_note_stream_source()). A device change
+ * (RTL_SET_DEV) restarts the stream on another source: the outgoing call ends and its codes go. The same source restarted
+ * (RTL_RESTART, here after a gain change) keeps its carrier and its call. A command that changes the source and restarts
+ * through svc_rtl_restart() needs no boundary of its own: RTL_RESTART after another device index was written gets it.
+ */
+static int
+test_stream_restart_on_another_source_is_a_carrier_boundary(void) {
+    test_runtime runtime;
+    if (alloc_test_runtime(&runtime) != 0) {
+        return 1;
+    }
+    dsd_opts* opts = runtime.opts;
+    dsd_state* state = runtime.state;
+
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->rtl_dev_index = 0;
+    opts->rtlsdr_center_freq = 851375000U;
+    opts->rtl_gain_value = 22;
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "rtl:0:851375000:22:0:24:0:2");
+
+    int rc = 0;
+    dsd_app_command_submit(DSD_APP_CMD_RTL_RESTART, NULL, 0U); /* the session's stream starts */
+    (void)dsd_app_drain_cmds(opts, state);
+
+    observe_active_call(state);
+    seed_carrier_codes(state);
+    opts->rtl_gain_value = 30;
+    dsd_app_command_submit(DSD_APP_CMD_RTL_RESTART, NULL, 0U);
+    (void)dsd_app_drain_cmds(opts, state);
+    rc |= expect_true("a same-source restart keeps the call", call_active(state));
+    rc |= expect_carrier_codes("a same-source restart keeps the codes", state, 0);
+
+    const int32_t device = 1;
+    dsd_app_command_submit(DSD_APP_CMD_RTL_SET_DEV, &device, sizeof device);
+    (void)dsd_app_drain_cmds(opts, state);
+    rc |= expect_true("the device change ran", opts->rtl_dev_index == 1);
+    rc |= expect_true("a device change ends the outgoing call", !call_active(state));
+    rc |= expect_carrier_codes("a device change forgets the codes", state, 1);
+
+    observe_active_call(state);
+    seed_carrier_codes(state);
+    opts->rtl_dev_index = 2; /* a command with no boundary of its own changes the source ... */
+    dsd_app_command_submit(DSD_APP_CMD_RTL_RESTART, NULL, 0U); /* ... and restarts the stream */
+    (void)dsd_app_drain_cmds(opts, state);
+    rc |= expect_true("a source change through the restart ends the outgoing call", !call_active(state));
+    rc |= expect_carrier_codes("a source change through the restart forgets the codes", state, 1);
+
+    free_test_runtime(&runtime);
+    return rc;
+}
+
 /* The engine maps the runtime squelch hook onto the same demod setter the config path calls. */
 static void
 forward_row_squelch_to_demod(double mean_power) {
@@ -3353,6 +3567,9 @@ main(void) {
 #ifdef DSD_NEO_TEST_RTL_WRAP
     rc |= test_config_reapply_converts_rtl_squelch_from_db();
     rc |= test_config_reapply_under_row_squelch_keeps_the_row();
+    rc |= test_config_reopen_on_another_frequency_forgets_the_carrier_codes();
+    rc |= test_config_source_change_is_a_carrier_boundary();
+    rc |= test_stream_restart_on_another_source_is_a_carrier_boundary();
 #endif
 #endif
     return rc ? 1 : 0;

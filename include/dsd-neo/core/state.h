@@ -182,7 +182,19 @@ typedef struct {
     // named is ordinary -- so the emptiness alone cannot serve as "ask again", or a later render
     // of the same epoch would stamp whichever channel the scanner has since hopped to.
     uint8_t channel_label_resolved;
-    uint32_t channel;  // If this occurs on a trunking channel, which channel
+    uint32_t channel; // If this occurs on a trunking channel, which channel
+    // Frequency in Hz the call was heard on, or 0 when unknown. The call's own frequency (a grant's
+    // channel, the followed voice channel) whenever the call has one; otherwise the receiver's tuned
+    // frequency, taken once, on the epoch's first render while the call is active, and kept for the
+    // rest of the epoch. A row is never given the tuner reading after its call has ended.
+    int64_t freq_hz;
+    // Which access code access_code is, a dsd_access_code_kind (<dsd-neo/core/access_code.h>);
+    // DSD_ACCESS_CODE_NONE (0) when none is known. Refreshed from the decoder while the call is
+    // active, never erased there by an unknown reading, and frozen once the call has ended.
+    uint8_t access_code_kind;
+    // The colour code, NAC, RAN or CAN the call was heard with; meaningful only when
+    // access_code_kind is not DSD_ACCESS_CODE_NONE.
+    uint16_t access_code;
     time_t event_time; //time event occurred
     // Wall-clock time the transmission this row describes began, or 0 when unknown.
     // event_time is restamped as last-activity on every render pass, so by commit it
@@ -591,6 +603,12 @@ struct dsd_state {
     unsigned long long int p2_wacn;
     unsigned long long int p2_sysid;
     unsigned long long int p2_cc; //p1 NAC
+    /* 1 once p2_cc is proven on the carrier being decoded: a burst descrambled with it (a scrambled FACCH or SACCH, or an
+     * ESS) passed its Reed-Solomon check, or a CRC-checked network status broadcast named it. Only then is p2_cc a
+     * Phase 2 call's received NAC (issue #575): a call carried by unscrambled FACCH/SACCH never tests the seed, which
+     * -X or another carrier may have left. 0 at every carrier boundary and whenever p2_cc changes; p2_cc itself, the
+     * descrambling key, is never reset for it. */
+    uint8_t p2_cc_verified;
     unsigned long long int p2_siteid;
     unsigned long long int p2_rfssid;
     long int p25_cc_freq;        // P25 control-channel frequency from network status
@@ -643,6 +661,11 @@ struct dsd_state {
     uint8_t dmr_data_target_is_group[2];
     // P25 trunking freq storage
     long int p25_vc_freq[2];
+    /* With trunking off, the voice channel frequency a grant update named for the target of a call active on this
+       carrier, kept per slot with that target (issue #575): a call takes it only when it has that target, never another
+       call's (p25_conventional_grant_frequency()). */
+    long int p25_conventional_grant_freq[2];
+    uint32_t p25_conventional_grant_target[2];
     long int trunk_vc_freq[2]; // generic trunk-owner voice-channel frequencies
     // Trunking LCNs and maps
     long int trunk_lcn_freq[DSD_TRUNK_LCN_EMBEDDED];
@@ -811,6 +834,9 @@ struct dsd_state {
     uint64_t rtl_symbol_cache_media_duration_ns;
     uint32_t rtl_symbol_cache_media_count;
     uint32_t rtl_symbol_cache_media_first_index;
+    /* The centre in Hz that batch was captured on, which each sample the cache hands out publishes as
+       dsd_opts::iq_replay_center_freq (issue #575); 0, as after a live read, publishes nothing. */
+    uint32_t rtl_symbol_cache_center_hz;
     int rtl_fsk_sps_num;
     int rtl_fsk_sps_den;
     int rtl_fsk_sps_accum;
@@ -1019,6 +1045,11 @@ struct dsd_state {
     unsigned int dmr_color_code;
     unsigned int dmr_t3_syscode;
     unsigned int nxdn_last_ran;
+    /* 1 while nxdn_last_ran holds a value that is not a decoded RAN, which the terminal shows in its place: an IDAS
+     * (Type-D) carrier's SCCH area bit or site type, or the fixed 7 a DCR transmission is given. 0 once a RAN field
+     * (CAC, FACCH2/UDCH, SACCH, site information) writes it. Every write of a value sets it (the (unsigned)-1 resets
+     * need not), and only a RAN is read as the carrier's access code (issue #575). */
+    uint8_t nxdn_last_ran_stand_in;
     unsigned int nxdn_cipher_type;
     unsigned int nxdn_key;
 
@@ -1217,6 +1248,9 @@ struct dsd_state {
     int ess_b[2][96];       //external storage for ESS_B fragments
     int16_t ess_b_llr[2][96];
     int fourv_counter[2]; //external reference counter for ESS_B fragment collection
+    /* The slot's ESS_B is the carrier left's (issue #575): set by p25p2_frame_forget_carrier(), cleared when the slot's
+       next 4V burst collects a fragment. A 2V burst decodes no ESS while it is set. */
+    uint8_t p25_p2_ess_b_stale[2];
     int voice_counter[2]; //external reference counter for 18V x 2 P25p2 Superframe
     int p2_is_lcch;       //flag to tell us when a frame is lcch and not sacch
     // Authoritative P25 voice crypto classification. Slot 0 is also used by P25 Phase 1.
@@ -1570,6 +1604,12 @@ struct dsd_state {
        engine loop then switches to the Pulse input, unless a command replaced the ended input meanwhile. */
     int input_interrupted;
     int input_boundary;
+    /* The carrier boundary's count (issue #575): dsd_engine_carrier_boundary() bumps it whenever the receiver leaves a
+       carrier. A decoder that buffers several bursts or frames before it decodes them notes it when collection starts,
+       and drops what it buffered, as on a sync loss, when it moved meanwhile: those bursts belong to the carrier left. */
+    uint32_t carrier_seq;
+    /* The radio source the stream last started on, as dsd_engine_note_stream_source() keys it; 0 before any start. */
+    uint64_t carrier_source_key;
     int input_fallback_pending;
 
     //dmr trunking stuff

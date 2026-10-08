@@ -43,12 +43,18 @@ static int g_rtl_destroy_calls = 0;
 static int g_rtl_create_result = 0;
 static int g_rtl_start_result = 0;
 static int g_fake_rtl_context = 0;
+/* The options the stream was created with, and the replay centre they held then (issue #575). */
+static dsd_opts* g_rtl_create_opts = NULL;
+static uint32_t g_rtl_create_replay_center = 0U;
+/* A replay centre the start fake writes into those options, as a replay read while the stream ran would; 0: none. */
+static uint32_t g_rtl_start_replay_center = 0U;
 
 // GNU ld --wrap entry points must keep the reserved __wrap_* symbol names.
 // NOLINTBEGIN(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
 int
 __wrap_rtl_stream_create(dsd_opts* opts, RtlSdrContext** out_ctx) {
-    (void)opts;
+    g_rtl_create_opts = opts;
+    g_rtl_create_replay_center = opts->iq_replay_center_freq;
     g_rtl_create_calls++;
     *out_ctx = g_rtl_create_result == 0 ? (RtlSdrContext*)&g_fake_rtl_context : NULL;
     return g_rtl_create_result;
@@ -58,6 +64,9 @@ int
 __wrap_rtl_stream_start(RtlSdrContext* ctx) {
     (void)ctx;
     g_rtl_start_calls++;
+    if (g_rtl_start_replay_center != 0U && g_rtl_create_opts != NULL) {
+        g_rtl_create_opts->iq_replay_center_freq = g_rtl_start_replay_center;
+    }
     return g_rtl_start_result;
 }
 
@@ -77,6 +86,9 @@ reset_rtl_start_fakes(int create_result, int start_result) {
     g_rtl_destroy_calls = 0;
     g_rtl_create_result = create_result;
     g_rtl_start_result = start_result;
+    g_rtl_create_opts = NULL;
+    g_rtl_create_replay_center = 0U;
+    g_rtl_start_replay_center = 0U;
 }
 #endif
 
@@ -450,6 +462,38 @@ test_m17_stream_encoder_propagates_rtl_start_failures(void) {
     test_rc |=
         expect_true("M17 RTL start failure clears stream state", opts->rtl_started == 0 && state->rtl_ctx == NULL);
     free_test_runtime(opts, state);
+    return test_rc;
+}
+
+/* Issue #575: the I/Q replay centre the tuned-frequency reading follows belongs to the stream that read it. An engine
+ * run opens the RTL stream with none, whatever an earlier run on the same options left (the create fake sees what the
+ * options held then), and its cleanup leaves none behind once the stream goes, though one was read after the open (the
+ * start fake writes one, as a replay read would). */
+static int
+test_rtl_run_clears_a_stale_replay_centre(void) {
+    int test_rc = 0;
+    for (int start_fails = 0; start_fails <= 1; start_fails++) {
+        dsd_opts* opts = NULL;
+        dsd_state* state = NULL;
+        if (init_test_runtime(&opts, &state) != 0) {
+            return 1;
+        }
+        opts->playfiles = 0;
+        DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "rtltcp:127.0.0.1:1234");
+        opts->iq_replay_center_freq = 851500000U;
+        /* A create that fails, then a start that fails: the run ends at its stream open either way, and cleans up. */
+        reset_rtl_start_fakes(start_fails ? 0 : -1, start_fails ? -1 : 0);
+        g_rtl_start_replay_center = 851625000U;
+        const int rc = dsd_engine_run_with_lifecycle(opts, state, NULL);
+        test_rc |= expect_true("RTL run whose stream fails to open fails", rc != 0 && g_rtl_create_calls == 1);
+        test_rc |= expect_true("RTL run opens its stream with no replay centre", g_rtl_create_replay_center == 0U);
+        test_rc |= expect_true("RTL run's start ran only after a create", g_rtl_start_calls == start_fails);
+        test_rc |= expect_true("RTL run's cleanup leaves no replay centre", opts->iq_replay_center_freq == 0U);
+        test_rc |=
+            expect_true("RTL run reads the tuned centre", dsd_opts_tuned_freq_hz(opts) == opts->rtlsdr_center_freq);
+        free_test_runtime(opts, state);
+    }
+    reset_rtl_start_fakes(0, 0);
     return test_rc;
 }
 #endif
@@ -1322,6 +1366,7 @@ main(void) {
     rc |= test_m17_stream_encoder_rejects_unsupported_input();
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_START_WRAP)
     rc |= test_m17_stream_encoder_propagates_rtl_start_failures();
+    rc |= test_rtl_run_clears_a_stale_replay_centre();
 #endif
     rc |= test_udp_input_defaults_and_null_output();
     rc |= test_udp_output_connection_failure_is_fatal();

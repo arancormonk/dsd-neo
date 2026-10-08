@@ -204,6 +204,26 @@ acquire_cc(dsd_opts* opts, dsd_state* state) {
     assert(p25_sm_get_ctx()->expected_cc_nac == 0x456);
 }
 
+/* Issue #575: the codes the carrier on air decoded. A control channel the user picks (a frequency entry under P25
+ * trunking) is the system's own, so the pick keeps them, accepted or refused, as automatic trunk following does. The
+ * Phase 2 seed's proof goes only with the seed: an accepted pick resets the site's identity (p2_cc), a refused one
+ * leaves it. */
+static void
+seed_carrier_codes(dsd_state* state) {
+    state->dmr_color_code = 5U;
+    state->nxdn_last_ran = 9U;
+    state->nxdn_last_ran_stand_in = 1U;
+    state->dpmr_color_code = 33;
+    state->p2_cc_verified = 1U;
+}
+
+static void
+expect_carrier_codes_kept(const dsd_state* state) {
+    assert(state->dmr_color_code == 5U && state->nxdn_last_ran == 9U && state->nxdn_last_ran_stand_in == 1U);
+    assert(state->dpmr_color_code == 33);
+    assert(state->p2_cc_verified == (state->p2_cc != 0U ? 1U : 0U));
+}
+
 static void
 test_selection(dsd_opts* opts, dsd_state* state, int voice, int cc_type) {
     setup(opts, state);
@@ -220,7 +240,9 @@ test_selection(dsd_opts* opts, dsd_state* state, int voice, int cc_type) {
     const uint32_t grants = p25_sm_get_ctx()->grant_count;
     const uint32_t releases = p25_sm_get_ctx()->release_count;
     const uint64_t generation = dsd_trunk_tuning_generation();
+    seed_carrier_codes(state);
     select_cc(opts, state, CC_B);
+    expect_carrier_codes_kept(state);
     assert(cc_calls == 1 && last_freq == CC_B && return_calls == 0);
     assert(last_sps
            == dsd_opts_compute_sps_rate(opts, cc_type == 1 ? 6000 : 4800, dsd_opts_current_input_timing_rate(opts)));
@@ -262,7 +284,9 @@ test_rejected(dsd_opts* opts, dsd_state* state, dsd_trunk_tune_result result) {
     start_voice(opts, state);
     tune_result = result;
     const p25_sm_ctx_t before = *p25_sm_get_ctx();
+    seed_carrier_codes(state);
     select_cc(opts, state, CC_B);
+    expect_carrier_codes_kept(state);
     const p25_sm_ctx_t* after = p25_sm_get_ctx();
     assert(after->state == before.state && after->vc_freq_hz == before.vc_freq_hz);
     assert(after->cc_tune_request_id == before.cc_tune_request_id && after->cc_sync_pending == before.cc_sync_pending);

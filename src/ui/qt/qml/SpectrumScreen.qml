@@ -36,7 +36,11 @@ Item {
     // automatic controller holding the tuner is temporary and has a name; a saved
     // system is a choice they made, and it has a way out.
     readonly property bool tunerHeld: metrics ? metrics.tunerControlled : false
-    readonly property bool viewOnly: !screen.exploring || screen.tunerHeld
+    // A third with no way out at all (issue #575): an I/Q replay plays the
+    // tuning its capture recorded, and the engine refuses every other tune and
+    // the tuner release, whatever this session's intent.
+    readonly property bool replayInput: metrics ? metrics.replayInput : false
+    readonly property bool viewOnly: !screen.exploring || screen.tunerHeld || screen.replayInput
 
     // The frame's own center is what the bins were measured at; the options
     // reading is only a fallback for the moment before the first frame lands.
@@ -89,6 +93,17 @@ Item {
     onViewOnlyChanged: {
         if (viewOnly)
             screen.stopSweep();
+    }
+
+    // A replay that begins under a sheet leaves it nothing to do: the release
+    // the confirm would ask for and the tune Go to would submit are both ones
+    // the engine refuses, and Go to would answer "Cannot tune to ..." rather
+    // than say why.
+    onReplayInputChanged: {
+        if (replayInput) {
+            confirmExplore.visible = false;
+            goToSheet.visible = false;
+        }
     }
 
     // Gesture state and the steps that act on it live here rather than inside
@@ -512,8 +527,8 @@ Item {
             anchors.topMargin: 4
             anchors.left: parent.left
             anchors.right: parent.right
-            anchors.bottom: tuning.visible ? tuning.top : (exploreButton.visible ? exploreButton.top : parent.bottom)
-            anchors.bottomMargin: (tuning.visible || exploreButton.visible) ? Theme.gap : 0
+            anchors.bottom: tuning.visible ? tuning.top : (exploreButton.visible ? exploreButton.top : (replayReason.visible ? replayReason.top : parent.bottom))
+            anchors.bottomMargin: (tuning.visible || exploreButton.visible || replayReason.visible) ? Theme.gap : 0
 
             SpectrumTrace {
                 id: trace
@@ -1040,7 +1055,7 @@ Item {
             anchors.left: parent.left
             anchors.right: parent.right
             anchors.bottom: parent.bottom
-            visible: screen.viewOnly && decoderHost.sessionActive
+            visible: screen.viewOnly && !screen.replayInput && decoderHost.sessionActive
             text: qsTr("Explore from here")
             onClicked: {
                 // Nothing is holding the tuner, so there is nothing to warn about
@@ -1052,6 +1067,25 @@ Item {
             }
         }
 
+        // Where the way out would be, why there is none: a replay is a recording
+        // of where the receiver went, and nothing here can move it. The engine's
+        // own words, so this and a refused command never disagree.
+        Text {
+            id: replayReason
+
+            objectName: "spectrumReplayReason"
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.bottom: parent.bottom
+            visible: screen.replayInput && decoderHost.sessionActive
+            text: qsTr("An I/Q replay cannot retune.")
+            horizontalAlignment: Text.AlignHCenter
+            wrapMode: Text.Wrap
+            font.family: Theme.sans
+            font.pixelSize: Theme.fontSize(14)
+            color: Theme.textSecondary
+        }
+
         // The engine's answer to the last tap, or this screen's own. Anchored
         // above the controls rather than to the bottom of the body, which the
         // tuning row now occupies.
@@ -1059,7 +1093,7 @@ Item {
             objectName: "spectrumToast"
 
             anchors.horizontalCenter: parent.horizontalCenter
-            anchors.bottom: tuning.visible ? tuning.top : (exploreButton.visible ? exploreButton.top : parent.bottom)
+            anchors.bottom: tuning.visible ? tuning.top : (exploreButton.visible ? exploreButton.top : (replayReason.visible ? replayReason.top : parent.bottom))
             anchors.bottomMargin: Theme.gap
             // Suppressed while sweeping: every step draws an "Applied" message
             // with a three-second life, so at this cadence it would never leave

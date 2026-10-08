@@ -2065,6 +2065,55 @@ test_conventional_anonymous_activity_preserves_service_options(void) {
     return 0;
 }
 
+/* Issue #575: the conventional voice message carries no frequency, and with trunking off the receiver follows no
+ * grant. The one frequency that names this call's carrier is what a grant update naming the call's own target wrote
+ * to p25_vc_freq[] (every trunking-off writer of it is target-matched), so the call takes that. A DMR grant decoded
+ * with trunking off leaves trunk_vc_freq[] behind for display; that names another channel, so the call never takes
+ * it. */
+static int
+test_conventional_voice_takes_only_its_own_grant_frequency(void) {
+    int fail = 0;
+    static const char* const cases[3] = {"own grant update", "DMR leftover", "another call's grant update"};
+    for (int which = 0; which < 3; which++) {
+        reset_test_state();
+        g_opts.trunk_enable = 0;
+        g_state.p25_cc_freq = 0;
+        g_state.synctype = g_state.lastsynctype = DSD_SYNC_P25P1_POS;
+        p25_sm_init_ctx(p25_sm_get_ctx(), &g_opts, &g_state);
+        p25_crypto_reset_slot(&g_state, 0);
+        long want = 0;
+        if (which == 0) {
+            /* As a grant update naming this call's target leaves it. */
+            g_state.p25_vc_freq[0] = 851012500L;
+            g_state.p25_conventional_grant_freq[0] = 851012500L;
+            g_state.p25_conventional_grant_target[0] = 1000U;
+            want = 851012500L;
+        } else if (which == 1) {
+            g_state.trunk_vc_freq[0] = g_state.trunk_vc_freq[1] = 852012500L;
+        } else {
+            /* As a grant update naming another call, TG 2000, leaves them: not this call's frequency. */
+            g_state.p25_vc_freq[0] = g_state.p25_vc_freq[1] = 851012500L;
+            g_state.p25_conventional_grant_freq[0] = 851012500L;
+            g_state.p25_conventional_grant_target[0] = 2000U;
+        }
+        dsd_call_snapshot call = {0};
+        if (!p25_sm_emit_active_call(&g_opts, &g_state, 0, 1000, 0, 123, 1, 0)
+            || dsd_call_state_get(&g_state, 0U, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE
+            || call.frequency_hz != want) {
+            DSD_FPRINTF(stderr, "FAIL: Conventional call frequency %lld, expected %ld (%s)\n",
+                        (long long)call.frequency_hz, want, cases[which]);
+            fail = 1;
+        }
+        if (!p25_sm_emit_active(&g_opts, &g_state, 0) || dsd_call_state_get(&g_state, 0U, &call) <= 0
+            || call.frequency_hz != want) {
+            DSD_FPRINTF(stderr, "FAIL: Anonymous conventional activity frequency %lld, expected %ld (%s)\n",
+                        (long long)call.frequency_hz, want, cases[which]);
+            fail = 1;
+        }
+    }
+    return fail;
+}
+
 static int
 test_conventional_unknown_service_stays_unconfirmed(void) {
     reset_test_state();
@@ -3390,6 +3439,7 @@ main(void) {
     fail += test_conventional_anonymous_activity_waits_for_identity();
     fail += test_conventional_anonymous_activity_preserves_service_options();
     fail += test_conventional_unknown_service_stays_unconfirmed();
+    fail += test_conventional_voice_takes_only_its_own_grant_frequency();
     fail += test_end_clears_voice();
     fail += test_tdma_boundaries_only_hang_after_last_assigned_voice();
     fail += run_on_test_decode_clock(test_tdma_idle_ends_voice_with_newer_grant);

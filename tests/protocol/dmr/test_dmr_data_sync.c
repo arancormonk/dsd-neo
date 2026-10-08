@@ -41,6 +41,9 @@ static uint8_t g_handler_burst;
 static uint8_t g_handler_info[196];
 static uint8_t g_handler_reliab[98];
 static dmr_confidence_result g_confidence_result;
+/* The live read that adopts a retune its capture recorded, where the carrier boundary moves the carrier count
+   (dsd_engine_carrier_boundary(), issue #575); -1 for none. */
+static int g_boundary_at;
 
 static void
 reset_fixture(void) {
@@ -60,6 +63,7 @@ reset_fixture(void) {
     g_debug_format_calls = 0;
     g_handler_burst = 0;
     g_confidence_result = DMR_CONFIDENCE_LOCKED;
+    g_boundary_at = -1;
     for (size_t i = 0; i < 64U; i++) {
         g_live_dibits[i] = 0;
         g_live_reliability[i] = 0;
@@ -101,7 +105,9 @@ int
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 getDibitSoft(dsd_opts* opts, dsd_state* state, dsd_dibit_soft_t* out_soft) {
     (void)opts;
-    (void)state;
+    if (g_boundary_at >= 0 && g_live_dibit_index == g_boundary_at && state != NULL) {
+        state->carrier_seq++;
+    }
     int index = g_live_dibit_index;
     if (index >= (int)(sizeof(g_live_dibits) / sizeof(g_live_dibits[0]))) {
         index = (int)(sizeof(g_live_dibits) / sizeof(g_live_dibits[0])) - 1;
@@ -382,6 +388,39 @@ test_live_second_half_reliability_and_debug_output(void) {
     assert(g_cach_calls == 1);
 }
 
+/* Issue #575: the carrier boundary moved the carrier count while the burst's live half was read (a replay read adopting
+   a recorded retune). The CACH read before it may complete a short LC of the carrier left, which would then decode
+   after the boundary ended that carrier's calls: nothing in the burst dispatches, the blocks and CACH fragments gathered
+   go, and no decode error is reported. */
+static void
+test_live_half_split_by_a_carrier_boundary_is_dropped(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static int payload[90];
+    static dsd_dibit_soft_t reliab[90];
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    prepare_state(&state, payload, reliab);
+    reset_fixture();
+    state.dmr_stereo = 0;
+    state.min = 0;
+    state.lmid = 10;
+    state.center = 20;
+    state.umid = 30;
+    state.max = 40;
+    prepare_live_symbols(173U, 3);
+    g_boundary_at = 20;
+
+    dmr_data_sync(&opts, &state);
+
+    assert(state.carrier_seq == 1U);
+    assert(g_live_dibit_index == 54);
+    assert(g_handler_calls == 0);
+    assert(g_sm_calls == 0);
+    assert(g_cach_calls == 0);
+    assert(g_reset_calls == 1);
+    assert(g_skip_calls == 66);
+}
+
 static uint8_t
 run_live_reliability(uint8_t reliability) {
     static dsd_opts opts;
@@ -517,6 +556,7 @@ main(void) {
     test_cach_failure_resets_without_dispatch();
     test_golay_failure_resets_and_skips_live_tail();
     test_live_second_half_reliability_and_debug_output();
+    test_live_half_split_by_a_carrier_boundary_is_dropped();
     test_live_reliability_is_forwarded_unscaled();
     test_direct_mode_sync_overrides_cach_slot();
     test_confidence_pending_and_reject_gate_dispatch();

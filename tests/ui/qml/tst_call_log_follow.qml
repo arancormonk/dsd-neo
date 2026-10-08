@@ -69,6 +69,12 @@ Item {
             tryVerify(function () { return tc.atTop() })
         }
 
+        function cleanup() {
+            var sheet = findChild(screenLoader.item, "historyDetailSheet")
+            if (sheet !== null)
+                sheet.visible = false
+        }
+
         function test_source_alias_is_visible() {
             var newest = callHistory.pushWithSourceName("Radio 1201")
             tryVerify(function () {
@@ -251,6 +257,50 @@ Item {
             var row = tc.list.itemAtIndex(0)
             verify(row.metaText.indexOf("TG 0") < 0, "the meta line still says TG 0: " + row.metaText)
             verify(row.metaText.indexOf("County EMS") < 0, "the meta line repeats the name: " + row.metaText)
+        }
+
+        // Issue #575: the call's access code follows its ids and the frequency it
+        // was heard on closes the line, on voice and notice rows alike, so a
+        // narrow phone elides the frequency first. The details carry all three.
+        function test_06c_a_row_shows_the_access_code_and_frequency() {
+            var name = callHistory.pushTuned(4001, 7001, "Fire Dispatch", 851012500, "CC 1", "Color code 1")
+            var row = null
+            tryVerify(function () { row = tc.list.itemAtIndex(0); return row !== null && row.name === name },
+                      5000, "the tuned row is not on top")
+            compare(row.metaText, "TG 4001 · SRC 7001 · CC 1 · 0:04 · Fire Dispatch · 851.0125 MHz")
+
+            waitForRendering(row)
+            mouseClick(row, row.width / 2, row.height / 2)
+            var sheet = findChild(screenLoader.item, "historyDetailSheet")
+            verify(sheet !== null, "the details sheet is missing")
+            tryCompare(sheet, "visible", true)
+            compare(sheet.record.freqHz, 851012500)
+            compare(sheet.record.accessCode, "CC 1")
+            compare(sheet.record.accessCodeText, "Color code 1")
+            verify(sheet.detailLines.indexOf("Color code 1") >= 0, "no code line: " + sheet.detailLines)
+            verify(sheet.detailLines.indexOf("Frequency 851.0125 MHz") >= 0, "no frequency line: " + sheet.detailLines)
+        }
+
+        function test_06d_a_notice_row_shows_the_access_code_and_frequency() {
+            var name = callHistory.pushTunedNotice(4001, 7001, "GPS 40.1 -75.2", "Fire Dispatch", 851012500,
+                                                   "NAC 293", "Network access code 293")
+            var row = null
+            tryVerify(function () { row = tc.list.itemAtIndex(0); return row !== null && row.name === name },
+                      5000, "the notice row is not on top")
+            compare(row.metaText, "TG 4001 · SRC 7001 · NAC 293 · GPS 40.1 -75.2 · Fire Dispatch · 851.0125 MHz")
+        }
+
+        // Without either, both kinds read exactly as they did.
+        function test_06e_rows_without_a_code_or_frequency_are_unchanged() {
+            var voice = callHistory.pushTuned(4001, 7001, "Fire Dispatch", 0, "", "")
+            var row = null
+            tryVerify(function () { row = tc.list.itemAtIndex(0); return row !== null && row.name === voice },
+                      5000, "the voice row is not on top")
+            compare(row.metaText, "TG 4001 · SRC 7001 · 0:04 · Fire Dispatch")
+            var notice = callHistory.pushTunedNotice(4001, 7001, "GPS 40.1 -75.2", "", 0, "", "")
+            tryVerify(function () { row = tc.list.itemAtIndex(0); return row !== null && row.name === notice },
+                      5000, "the notice row is not on top")
+            compare(row.metaText, "TG 4001 · SRC 7001 · GPS 40.1 -75.2")
         }
 
         function test_07_a_filter_that_hides_nothing_is_still_answered_from_the_top() {

@@ -39,6 +39,9 @@ static int g_mbf34_candidate_count;
 static uint8_t g_mbf34_fallback_bytes[18];
 static int g_mbf34_fallback_calls;
 static int g_get_dibit_soft_calls;
+/* The read that adopts a retune its capture recorded, where the carrier boundary moves the carrier count
+   (dsd_engine_carrier_boundary(), issue #575); -1 for none. */
+static int g_boundary_at = -1;
 static int g_status_add_calls;
 static int g_last_status_dibit;
 static int g_pdu_header_calls;
@@ -100,7 +103,9 @@ int
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 getDibitSoft(dsd_opts* opts, dsd_state* state, dsd_dibit_soft_t* out_soft) {
     (void)opts;
-    (void)state;
+    if (g_get_dibit_soft_calls == g_boundary_at && state != NULL) {
+        state->carrier_seq++;
+    }
     int call = g_get_dibit_soft_calls++;
     if (out_soft != NULL) {
         out_soft->llr[0] = (int16_t)(1000 + call);
@@ -846,6 +851,48 @@ test_process_mpdu_zero_block_header_orchestration(void) {
     return rc;
 }
 
+/* Issue #575: the carrier boundary moved the carrier count while the MPDU's blocks were read (a replay read adopting a
+   recorded retune). The header is read whole before its data blocks but decodes only after the last of them, so it
+   would publish the carrier left's packet after the boundary: the MPDU is dropped, as on a sync loss. */
+static int
+test_process_mpdu_split_by_a_carrier_boundary_publishes_nothing(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static const uint8_t header[P25_MPDU_R12_BYTES] = {0x17U, 0x20U, 0x10U, 0x11U, 0x12U, 0x13U,
+                                                       0x01U, 0x15U, 0x16U, 0x17U, 0x7AU, 0x1DU};
+    int rc = 0;
+
+    for (int split = 0; split < 2; split++) {
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        DSD_MEMSET(g_soft_candidates, 0, sizeof(g_soft_candidates));
+        DSD_MEMCPY(g_soft_candidates[0].bytes, header, sizeof(header));
+        g_soft_candidate_count = 1;
+        g_r12_fallback_calls = 0;
+        g_mbf34_candidate_count = 0;
+        g_mbf34_fallback_calls = 0;
+        g_get_dibit_soft_calls = 0;
+        g_status_add_calls = 0;
+        reset_dispatch_counters();
+        g_boundary_at = split ? 150 : -1; /* inside the data block: the header was read whole before it */
+
+        processMPDU(&opts, &state);
+
+        rc |= expect_int("mpdu reads the header and its data block", g_get_dibit_soft_calls, 202);
+        if (split) {
+            rc |= expect_int("split mpdu moved the carrier count", (int)state.carrier_seq, 1);
+            rc |= expect_int("split mpdu decodes no header", g_pdu_header_calls, 0);
+            rc |= expect_int("split mpdu decodes no data", g_pdu_data_calls + g_pdu_trunking_calls, 0);
+            rc |= expect_int("split mpdu checks no header", (int)(state.p25_p1_fec_ok + state.p25_p1_fec_err), 0);
+        } else {
+            rc |= expect_int("whole mpdu decodes its header", g_pdu_header_calls, 1);
+        }
+    }
+    g_boundary_at = -1;
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
 static void
 seed_integrity_packet(P25MpduContext* ctx, int rate34, int bad_header, int bad_packet) {
     static const uint8_t payload[12] = {0x81U, 0x02U, 0x23U, 0x44U, 0x65U, 0x86U,
@@ -976,6 +1023,7 @@ main(void) {
     rc |= test_rate34_dispatch_reconstructs_payload_and_preserves_active_call();
     rc |= test_trunking_payload_crc_dispatch();
     rc |= test_process_mpdu_zero_block_header_orchestration();
+    rc |= test_process_mpdu_split_by_a_carrier_boundary_publishes_nothing();
     rc |= test_packet_integrity_scope();
     rc |= test_confirmed_crc9_failure_with_valid_packet_crc();
     return rc;

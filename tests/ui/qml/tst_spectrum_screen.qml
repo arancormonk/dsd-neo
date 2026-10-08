@@ -40,6 +40,7 @@ Item {
             testContext.setMetric("tunerControlled",false)
             testContext.setMetric("trunkingEnabled",false)
             testContext.setMetric("scannerMode",false)
+            testContext.setMetric("replayInput",false)
             testContext.setMetric("syncedHere",false)
             // Most cases are about what exploring can do; the screen defaults to
             // the other intent, where none of it is available.
@@ -152,6 +153,84 @@ Item {
             compare(testContext.releaseTunerCalls(), 0, "nothing held the tuner; nothing to release")
             compare(asked, 1)
             screen.exploring = true
+        }
+
+        // Issue #575: an I/Q replay plays the tuning its capture recorded and the
+        // engine refuses any other, so a replay is view-only whatever the session's
+        // intent, and there is no way out of it to offer: no tuning controls, no
+        // "Explore from here". It says why instead, in the engine's own words.
+        function test_03g_a_replay_is_view_only_with_no_way_out() {
+            var screen = screenLoader.item
+            var tuning = findChild(screen, "spectrumTuning")
+            var button = findChild(screen, "spectrumExploreFromHere")
+            var reason = findChild(screen, "spectrumReplayReason")
+            verify(tuning !== null && button !== null, "a tuning control is missing")
+            verify(decoderHost.sessionActive, "the fixture has no session for the explore button to offer")
+            try {
+                for (var exploring of [true, false]) {
+                    screen.exploring = exploring
+                    testContext.setMetric("replayInput", true)
+                    tryVerify(function () { return screen.viewOnly }, 2000, "a replay offered tuning")
+                    verify(!tuning.visible, "a replay showed the tuning controls")
+                    verify(!button.visible, "a replay offered to explore from here")
+                    verify(!screen.tuneTo(spectrum.centerFreqHz + 100000), "tuneTo() asked a replay to retune")
+                    verify(reason !== null && reason.visible, "a replay did not say why it is view-only")
+                    compare(reason.text, "An I/Q replay cannot retune.")
+
+                    mouseClick(tc.area, tc.xOf(testContext.spectrumPeakHz()), tc.area.height * 0.75)
+                    tc.wait(50)
+                    compare(testContext.manualTuneCalls(), 0)
+                    compare(testContext.releaseTunerCalls(), 0)
+
+                    testContext.setMetric("replayInput", false)
+                    tryVerify(function () { return !reason.visible }, 2000, "the reason outlived the replay")
+                    compare(screen.viewOnly, !exploring)
+                }
+            } finally {
+                testContext.setMetric("replayInput", false)
+                screen.exploring = true
+            }
+        }
+
+        // A replay that begins under the confirm sheet leaves nothing to confirm:
+        // accepting would ask for a release the engine refuses.
+        function test_03h_a_replay_closes_the_explore_confirm() {
+            var screen = screenLoader.item
+            screen.exploring = false
+            testContext.setMetric("tunerControlled", true)
+            try {
+                tryVerify(function () { return screen.tunerHeld })
+                findChild(screen, "spectrumExploreFromHere").clicked()
+                var sheet = findChild(screen, "spectrumExploreConfirm")
+                tryVerify(function () { return sheet.visible }, 2000, "the tap did not ask first")
+                testContext.setMetric("replayInput", true)
+                tryVerify(function () { return !sheet.visible }, 2000, "the confirm outlived the replay starting")
+            } finally {
+                findChild(screen, "spectrumExploreConfirm").visible = false
+                testContext.setMetric("replayInput", false)
+                testContext.setMetric("tunerControlled", false)
+                screen.exploring = true
+            }
+        }
+
+        // Nor is there anything left to go to: a Go to submitted under a replay
+        // would answer "Cannot tune to ..." rather than the replay's reason.
+        function test_03i_a_replay_closes_go_to() {
+            var screen = screenLoader.item
+            var sheet = findChild(screen, "spectrumGoToSheet")
+            verify(sheet !== null, "the go-to sheet is missing")
+            try {
+                verify(!screen.viewOnly, "the fixture is not exploring")
+                sheet.open(spectrum.centerFreqHz)
+                verify(sheet.visible)
+                testContext.setMetric("replayInput", true)
+                tryVerify(function () { return !sheet.visible }, 2000, "Go to outlived the replay starting")
+                compare(testContext.manualTuneCalls(), 0)
+                compare(screen.hint, "", "a replay start left a tuning hint behind")
+            } finally {
+                sheet.visible = false
+                testContext.setMetric("replayInput", false)
+            }
         }
 
         // With a controller holding the tuner, taking it costs something the user

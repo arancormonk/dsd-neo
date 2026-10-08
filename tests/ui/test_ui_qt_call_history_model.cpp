@@ -14,13 +14,17 @@
  * Clear, the session views and retention go by session and ring order, never by
  * stamps: calls ingested after a clear show however old their stamps (a replay's
  * are the capture's), a relaunch keeps cleared calls cleared, a new session starts
- * fresh, and a full log or seen map gives up the oldest session first. */
+ * fresh, and a full log or seen map gives up the oldest session first. Each call's
+ * frequency and access code (issue #575) reach the roles, survive a save and reload,
+ * fold across fragments by the fragment they came from, fill in place, and fill a
+ * notice heard again. */
 
 #include <QByteArray>
 #include <QChar>
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
+#include <QHash>
 #include <QIODevice>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -28,6 +32,7 @@
 #include <QJsonValue>
 #include <QLatin1String>
 #include <QList>
+#include <QMetaType>
 #include <QModelIndex>
 #include <QSettings>
 #include <QSignalSpy>
@@ -36,6 +41,7 @@
 #include <QStringList>
 #include <QTemporaryDir>
 #include <QVariant>
+#include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state.h>
@@ -164,6 +170,15 @@ struct RingFixture {
         ring->push_seq += static_cast<uint64_t>(count);
         ring->commit_rev++;
         ring->revision++;
+    }
+
+    /** Give a row the frequency and access code its call was heard with, as the core stamps them. */
+    static Event_History*
+    carrier(Event_History* item, int64_t freq_hz, uint8_t kind = DSD_ACCESS_CODE_NONE, uint16_t code = 0U) {
+        item->freq_hz = freq_hz;
+        item->access_code_kind = kind;
+        item->access_code = code;
+        return item;
     }
 
     /** A staged-row render: bumps revision only, exactly like the core. */
@@ -1472,6 +1487,333 @@ test_update_of_a_live_call_keeps_landing_on_its_row(void) {
                && !model.data(model.index(older), CallHistoryModel::EncRole).toBool());
 }
 
+/* What one row shows for its frequency and access code. */
+struct CarrierView {
+    qint64 freqHz;
+    QString accessCode;
+    QString accessCodeText;
+};
+
+CarrierView
+carrier_at(const CallHistoryModel& model, int row) {
+    const QModelIndex idx = model.index(row);
+    return CarrierView{model.data(idx, CallHistoryModel::FreqHzRole).toLongLong(),
+                       model.data(idx, CallHistoryModel::AccessCodeRole).toString(),
+                       model.data(idx, CallHistoryModel::AccessCodeTextRole).toString()};
+}
+
+bool
+carrier_is(const CallHistoryModel& model, int row, qint64 freqHz, const char* accessCode, const char* accessCodeText) {
+    if (row < 0 || row >= model.rowCount()) {
+        return false;
+    }
+    const CarrierView view = carrier_at(model, row);
+    return view.freqHz == freqHz && view.accessCode == QLatin1String(accessCode)
+           && view.accessCodeText == QLatin1String(accessCodeText);
+}
+
+/* Whether @p spy saw a dataChanged naming every one of @p roles. */
+bool
+data_changed_with(const QSignalSpy& spy, std::initializer_list<int> roles) {
+    for (const QList<QVariant>& arguments : spy) {
+        const QVector<int> changed = qvariant_cast<QVector<int>>(arguments.at(2));
+        bool all = true;
+        for (int role : roles) {
+            all = all && changed.contains(role);
+        }
+        if (all) {
+            return true;
+        }
+    }
+    return false;
+}
+
+QJsonObject
+stored_row_with_tg(const QJsonArray& rows, qulonglong tg) {
+    for (const auto& value : rows) {
+        const QJsonObject row = value.toObject();
+        if (row.value(QLatin1String("tg")).toVariant().toULongLong() == tg) {
+            return row;
+        }
+    }
+    return QJsonObject();
+}
+
+/* Issue #575: each call shows the frequency and access code it was heard with. The model carries the kind and value;
+ * the text comes from app-control at read time, so every frontend spells a code alike. */
+void
+test_carrier_roles_and_text(void) {
+    resetStorage();
+    RingFixture ring;
+    CallHistoryModel model;
+    const QHash<int, QByteArray> names = model.roleNames();
+    expect("the frequency role is named freqHz", names.value(CallHistoryModel::FreqHzRole) == "freqHz");
+    expect("the code role is named accessCode", names.value(CallHistoryModel::AccessCodeRole) == "accessCode");
+    expect("the long code role is named accessCodeText",
+           names.value(CallHistoryModel::AccessCodeTextRole) == "accessCodeText");
+
+    const time_t when = 1754510000;
+    RingFixture::carrier(ring.commit(0, 11001, 501, when, when + 4), 851012500, DSD_ACCESS_CODE_COLOR_CODE, 1U);
+    RingFixture::carrier(ring.commit(0, 11002, 502, when + 30, when + 34), 852500000, DSD_ACCESS_CODE_NAC, 0x293U);
+    RingFixture::carrier(ring.commit(0, 11003, 503, when + 60, when + 64), 853000000, DSD_ACCESS_CODE_NAC, 0x05U);
+    ring.commit(0, 11004, 504, when + 90, when + 94);
+    model.refresh(ring.state);
+    expect("four calls land", model.count() == 4);
+    expect("a DMR call shows its frequency and colour code",
+           carrier_is(model, row_with_tg(model, 11001), 851012500, "CC 1", "Color code 1"));
+    expect("a P25 call shows its NAC in hex",
+           carrier_is(model, row_with_tg(model, 11002), 852500000, "NAC 293", "Network access code 293"));
+    expect("a NAC keeps three hex digits",
+           carrier_is(model, row_with_tg(model, 11003), 853000000, "NAC 005", "Network access code 005"));
+    expect("a call heard with neither shows nothing", carrier_is(model, row_with_tg(model, 11004), 0, "", ""));
+    expect("the frequency role is a qint64",
+           model.data(model.index(row_with_tg(model, 11001)), CallHistoryModel::FreqHzRole).typeId()
+               == QMetaType::LongLong);
+}
+
+/* The kind, value and each field's provenance persist; the text never does. A field nobody knows writes no key. */
+void
+test_carrier_survives_save_and_reload(void) {
+    resetStorage();
+    RingFixture ring;
+    const time_t when = 1754511000;
+    {
+        CallHistoryModel model;
+        RingFixture::carrier(ring.commit(0, 12001, 601, when, when + 4), 851012500, DSD_ACCESS_CODE_RAN, 5U);
+        RingFixture::carrier(ring.commit(1, 12002, 602, when + 30, when + 34), 0, DSD_ACCESS_CODE_CAN, 0U);
+        RingFixture::carrier(ring.commit(0, 12003, 603, when + 60, when + 64), 446006250);
+        ring.commit(1, 12004, 604, when + 90, when + 94);
+        model.refresh(ring.state);
+        expect("four calls land before the save", model.count() == 4);
+    } // destructor flushes the stores
+    const QJsonArray rows = dsd_qt::json_store_load_array("call_history.json");
+    const QJsonObject both = stored_row_with_tg(rows, 12001);
+    expect("a known frequency and code are stored with their provenance",
+           both.value(QLatin1String("freqHz")).toVariant().toLongLong() == 851012500
+               && both.value(QLatin1String("acKind")).toInt() == DSD_ACCESS_CODE_RAN
+               && both.value(QLatin1String("ac")).toInt() == 5 && both.contains(QLatin1String("freqWhen"))
+               && both.contains(QLatin1String("freqSeq")) && both.contains(QLatin1String("freqSlot"))
+               && both.contains(QLatin1String("acWhen")) && both.contains(QLatin1String("acSeq"))
+               && both.contains(QLatin1String("acSlot")));
+    expect("the display text is never stored",
+           !both.contains(QLatin1String("accessCode")) && !both.contains(QLatin1String("accessCodeText")));
+    const QJsonObject codeOnly = stored_row_with_tg(rows, 12002);
+    expect("CAN 0 is stored as a code", codeOnly.value(QLatin1String("acKind")).toInt() == DSD_ACCESS_CODE_CAN
+                                            && codeOnly.contains(QLatin1String("ac")));
+    expect("an unknown frequency writes none of its keys",
+           !codeOnly.contains(QLatin1String("freqHz")) && !codeOnly.contains(QLatin1String("freqWhen"))
+               && !codeOnly.contains(QLatin1String("freqSeq")) && !codeOnly.contains(QLatin1String("freqSlot")));
+    const QJsonObject freqOnly = stored_row_with_tg(rows, 12003);
+    expect("an unknown code writes none of its keys",
+           !freqOnly.contains(QLatin1String("acKind")) && !freqOnly.contains(QLatin1String("ac"))
+               && !freqOnly.contains(QLatin1String("acWhen")) && !freqOnly.contains(QLatin1String("acSeq"))
+               && !freqOnly.contains(QLatin1String("acSlot")));
+    const QJsonArray seen = dsd_qt::json_store_load_array("call_history_seen.json");
+    int seenWithBoth = 0;
+    int seenWithNeither = 0;
+    for (const auto& value : seen) {
+        const QJsonObject entry = value.toObject();
+        if (entry.value(QLatin1String("freqHz")).toVariant().toLongLong() == 851012500
+            && entry.value(QLatin1String("acKind")).toInt() == DSD_ACCESS_CODE_RAN
+            && entry.value(QLatin1String("ac")).toInt() == 5) {
+            seenWithBoth++;
+        }
+        if (!entry.contains(QLatin1String("freqHz")) && !entry.contains(QLatin1String("acKind"))
+            && !entry.contains(QLatin1String("ac"))) {
+            seenWithNeither++;
+        }
+    }
+    expect("the seen store records what was read", seenWithBoth == 1);
+    expect("and omits what was not", seenWithNeither == 1);
+
+    CallHistoryModel restored;
+    expect("the log reloads", restored.count() == 4);
+    expect("frequency and code survive a reload",
+           carrier_is(restored, row_with_tg(restored, 12001), 851012500, "RAN 5", "Radio access number 5"));
+    expect("a code alone survives a reload",
+           carrier_is(restored, row_with_tg(restored, 12002), 0, "CAN 0", "Channel access number 0"));
+    expect("a frequency alone survives a reload",
+           carrier_is(restored, row_with_tg(restored, 12003), 446006250, "", ""));
+    expect("neither stays neither", carrier_is(restored, row_with_tg(restored, 12004), 0, "", ""));
+    /* The seen store's frequency and code are what the ring rows are read against: lost, each ring row that knows
+     * one would read as advanced and re-ingest as an update. */
+    QSignalSpy changed(&restored, &QAbstractItemModel::dataChanged);
+    expect("dataChanged spy connects", changed.isValid());
+    restored.refresh(ring.state);
+    expect("the reloaded log ingests nothing twice", restored.count() == 4);
+    expect("the reloaded seen store knows each row's frequency and code, so nothing re-reads as an update",
+           changed.count() == 0);
+}
+
+/* A store an older build wrote has none of the keys: its rows load with neither field known. A row that has a
+ * frequency but no provenance takes its own (start, push stamp, slot), as srcNameWhen does, so a fragment older than
+ * the row does not replace it. */
+void
+test_store_without_carrier_keys_loads_unknown(void) {
+    resetStorage();
+    RingFixture ring;
+    const time_t when = 1754512000;
+    {
+        CallHistoryModel model;
+        RingFixture::carrier(ring.commit(0, 13001, 701, when, when + 4), 851012500, DSD_ACCESS_CODE_NAC, 0x293U);
+        RingFixture::carrier(ring.commit(0, 13002, 702, when + 100, when + 104), 852000000, DSD_ACCESS_CODE_NAC,
+                             0x293U);
+        model.refresh(ring.state);
+        expect("two calls land", model.count() == 2);
+    } // destructor flushes the stores
+    QJsonArray rows = dsd_qt::json_store_load_array("call_history.json");
+    for (int i = 0; i < rows.size(); i++) {
+        QJsonObject row = rows.at(i).toObject();
+        const bool keepFrequency = row.value(QLatin1String("tg")).toVariant().toULongLong() == 13002U;
+        for (const char* key :
+             {"freqHz", "freqWhen", "freqSeq", "freqSlot", "acKind", "ac", "acWhen", "acSeq", "acSlot"}) {
+            if (!(keepFrequency && QLatin1String(key) == QLatin1String("freqHz"))) {
+                row.remove(QLatin1String(key));
+            }
+        }
+        rows.replace(i, row);
+    }
+    expect("an older build's history saved", dsd_qt::json_store_save_array("call_history.json", rows));
+    QJsonArray seen = dsd_qt::json_store_load_array("call_history_seen.json");
+    for (int i = 0; i < seen.size(); i++) {
+        QJsonObject entry = seen.at(i).toObject();
+        entry.remove(QLatin1String("freqHz"));
+        entry.remove(QLatin1String("acKind"));
+        entry.remove(QLatin1String("ac"));
+        seen.replace(i, entry);
+    }
+    expect("an older build's seen store saved", dsd_qt::json_store_save_array("call_history_seen.json", seen));
+
+    CallHistoryModel restored;
+    expect("the older store loads", restored.count() == 2);
+    expect("a row without the keys shows neither", carrier_is(restored, row_with_tg(restored, 13001), 0, "", ""));
+    expect("a frequency without its provenance still loads",
+           carrier_is(restored, row_with_tg(restored, 13002), 852000000, "", ""));
+
+    /* A fragment of the same call that started before the stored row (a backfilled one) folds in: it is older than
+     * the row's own start, so its frequency does not replace the row's, and its code fills the unknown one. */
+    RingFixture other;
+    RingFixture::carrier(other.commit(0, 13002, 702, when + 98, when + 99), 853000000, DSD_ACCESS_CODE_NAC, 0x294U);
+    restored.refresh(other.state);
+    expect("the older fragment merges into the row", restored.count() == 2);
+    expect("an older fragment keeps the stored frequency and fills the code",
+           carrier_is(restored, row_with_tg(restored, 13002), 852000000, "NAC 294", "Network access code 294"));
+}
+
+/* The core fills a committed row's frequency or code in place when a reacquisition merge learns one. The row's key,
+ * end and source do not move, so only the seen ratchet can tell the row has advanced. A known value never changes in
+ * the core, so a read that changes one is not an advance. */
+void
+test_carrier_filled_in_place_reingests(void) {
+    resetStorage();
+    RingFixture ring;
+    CallHistoryModel model;
+    const time_t when = 1754513000;
+    Event_History* item = ring.commit(0, 14001, 801, when, when + 6);
+    model.refresh(ring.state);
+    expect("the call lands without a frequency or code", model.count() == 1 && carrier_is(model, 0, 0, "", ""));
+
+    QSignalSpy changed(&model, &QAbstractItemModel::dataChanged);
+    expect("dataChanged spy connects", changed.isValid());
+    RingFixture::carrier(item, 851012500);
+    ring.touchCommitted(0);
+    model.refresh(ring.state);
+    expect("a frequency filled in place updates the row",
+           model.count() == 1 && carrier_is(model, 0, 851012500, "", ""));
+    expect("the update names the frequency role", data_changed_with(changed, {CallHistoryModel::FreqHzRole}));
+    expect("end and source stay", model.data(model.index(0), CallHistoryModel::DurationSecsRole).toInt() == 6
+                                      && model.data(model.index(0), CallHistoryModel::SrcRole).toULongLong() == 801U);
+
+    changed.clear();
+    RingFixture::carrier(item, 851012500, DSD_ACCESS_CODE_COLOR_CODE, 7U);
+    ring.touchCommitted(0);
+    model.refresh(ring.state);
+    expect("a code filled in place updates the row",
+           model.count() == 1 && carrier_is(model, 0, 851012500, "CC 7", "Color code 7"));
+    expect("the update names both code roles",
+           data_changed_with(changed, {CallHistoryModel::AccessCodeRole, CallHistoryModel::AccessCodeTextRole}));
+
+    changed.clear();
+    RingFixture::carrier(item, 852000000, DSD_ACCESS_CODE_COLOR_CODE, 9U);
+    ring.touchCommitted(0);
+    model.refresh(ring.state);
+    expect("a known value read as another is not an update",
+           changed.count() == 0 && carrier_is(model, 0, 851012500, "CC 7", "Color code 7"));
+}
+
+/* A trunked conversation lands on several voice channels: the fragments still merge into one row, and the row shows
+ * the newest fragment's frequency, whichever order a refresh collects them in. A fragment that never learned the code
+ * does not erase the one an earlier fragment knew. */
+void
+test_fragments_on_different_frequencies_merge(void) {
+    const time_t when = 1754514000;
+    for (int incremental = 0; incremental < 2; incremental++) {
+        resetStorage();
+        RingFixture ring;
+        CallHistoryModel model;
+        RingFixture::carrier(ring.commit(0, 15001, 901, when, when + 4), 851012500, DSD_ACCESS_CODE_NAC, 0x293U);
+        if (incremental) {
+            model.refresh(ring.state);
+        }
+        // The same slot, so a batched refresh walks the newer fragment first.
+        RingFixture::carrier(ring.commit(0, 15001, 901, when + 6, when + 10), 851037500);
+        model.refresh(ring.state);
+        expect(incremental ? "fragments on two channels merge (incremental)"
+                           : "fragments on two channels merge (batched)",
+               model.count() == 1);
+        expect(incremental ? "the row shows the newest fragment's frequency (incremental)"
+                           : "the row shows the newest fragment's frequency (batched)",
+               carrier_is(model, 0, 851037500, "NAC 293", "Network access code 293"));
+    }
+}
+
+/* A notice logged before rows carried the fields, re-delivered from a fresh ring (a replay after an upgrade), is the
+ * same delivery: it only joins the running session, and it fills the frequency and code it lacked. Filling is all it
+ * does: across rings, push stamps say nothing about which delivery is newer. */
+void
+test_repeated_notice_gains_carrier(void) {
+    resetStorage();
+    const time_t when = kCaptureStart + 70;
+    {
+        CallHistoryModel model;
+        model.beginSession();
+        RingFixture ring;
+        ring.commitNotice(1, when, "2010-01-01 00:01:10 SMS from 44");
+        model.refresh(ring.state);
+        expect("the notice is logged without the fields", model.count() == 1 && carrier_is(model, 0, 0, "", ""));
+    } // destructor flushes the stores
+    {
+        CallHistoryModel model;
+        model.beginSession();
+        QSignalSpy changed(&model, &QAbstractItemModel::dataChanged);
+        expect("dataChanged spy connects", changed.isValid());
+        RingFixture ring;
+        RingFixture::carrier(ring.commitNotice(1, when, "2010-01-01 00:01:10 SMS from 44"), 851012500,
+                             DSD_ACCESS_CODE_COLOR_CODE, 3U);
+        model.refresh(ring.state);
+        expect("the notice heard again logs no new row", model.count() == 1);
+        expect("and joins the running session",
+               model.data(model.index(0), CallHistoryModel::SessionRole).toLongLong() == model.session());
+        expect("the stored notice gains the frequency and code",
+               carrier_is(model, 0, 851012500, "CC 3", "Color code 3"));
+        expect("the update names the new roles with the session",
+               data_changed_with(changed, {CallHistoryModel::SessionRole, CallHistoryModel::FreqHzRole,
+                                           CallHistoryModel::AccessCodeRole, CallHistoryModel::AccessCodeTextRole}));
+    }
+    {
+        CallHistoryModel model;
+        expect("the fields survive a save and reload",
+               model.count() == 1 && carrier_is(model, 0, 851012500, "CC 3", "Color code 3"));
+        model.beginSession();
+        RingFixture ring;
+        RingFixture::carrier(ring.commitNotice(1, when, "2010-01-01 00:01:10 SMS from 44"), 852000000,
+                             DSD_ACCESS_CODE_COLOR_CODE, 4U);
+        model.refresh(ring.state);
+        expect("a twin with other values does not replace known ones",
+               model.count() == 1 && carrier_is(model, 0, 851012500, "CC 3", "Color code 3"));
+    }
+}
+
 } // namespace
 
 int
@@ -1531,6 +1873,12 @@ main(int argc, char** argv) {
     test_update_of_a_call_heard_again_reaches_its_row();
     test_update_of_a_replayed_call_under_newer_rows_reaches_its_row();
     test_update_of_a_live_call_keeps_landing_on_its_row();
+    test_carrier_roles_and_text();
+    test_carrier_survives_save_and_reload();
+    test_store_without_carrier_keys_loads_unknown();
+    test_carrier_filled_in_place_reingests();
+    test_fragments_on_different_frequencies_merge();
+    test_repeated_notice_gains_carrier();
 
     QDir(dataDir).removeRecursively();
     if (g_failures != 0) {

@@ -753,9 +753,37 @@ Item {
             // next line and never splits a label from its value. Whitespace groups
             // them, as in the design — separator glyphs would strand at a line head.
             Flow {
+                objectName: "signalStrip"
                 width: parent.width
                 visible: metrics.radioInput
                 spacing: 10
+
+                // Where the receiver is tuned: the frequency a plain session sits
+                // on, a scan target's park frequency, or the voice channel while a
+                // trunked target follows a call (issue #575). First, because it
+                // is what the rest of the strip is a reading of. Here and not in
+                // the header, which on a phone would elide the target's name to
+                // make room for it.
+                Row {
+                    objectName: "monitorFreq"
+                    spacing: 5
+                    visible: metrics.centerFreqHz > 0
+
+                    Text {
+                        text: qsTr("FREQ")
+                        font.family: Theme.mono
+                        font.pixelSize: Theme.fontSize(11)
+                        color: Theme.textSubdued
+                    }
+
+                    Text {
+                        objectName: "monitorFreqValue"
+                        text: Util.fmtMhz(metrics.centerFreqHz)
+                        font.family: Theme.mono
+                        font.pixelSize: Theme.fontSize(11)
+                        color: Theme.textSecondary
+                    }
+                }
 
                 Row {
                     spacing: 5
@@ -1194,27 +1222,45 @@ Item {
                             emergency: model.emergency,
                             enc: model.enc,
                             durationSecs: model.durationSecs,
-                            detail: model.detail
+                            detail: model.detail,
+                            freqHz: model.freqHz,
+                            accessCode: model.accessCode,
+                            accessCodeText: model.accessCodeText
                         })
                         width: ListView.view.width
                         name: model.name
                         metaText: {
-                            if (model.kind === 1)
-                                return model.detail.length > 0 ? model.detail : qsTr("data message");
+                            // A notice keeps its payload first, the pane being too
+                            // narrow for its ids, then names what every row names: the
+                            // access code, and the frequency last (issue #575).
+                            if (model.kind === 1) {
+                                var parts = [model.detail.length > 0 ? model.detail : qsTr("data message")];
+                                if (model.accessCode.length > 0)
+                                    parts.push(model.accessCode);
+                                if (model.freqHz > 0)
+                                    parts.push(Util.fmtMhz(model.freqHz));
+                                return parts.join(" · ");
+                            }
                             // Same meta rules as the history row: a zero talkgroup is
-                            // not printed, the channel closes the line unless it is
-                            // already the name.
+                            // not printed, the access code follows the ids, the channel
+                            // follows the duration unless it is already the name, and
+                            // the frequency closes the line, the first thing a narrow
+                            // phone elides.
                             var meta = [];
                             if (model.tg > 0)
                                 meta.push("TG " + model.tg);
                             if (model.src > 0 || model.srcName)
                                 meta.push("SRC " + Util.sourceText(model.src, model.srcName));
+                            if (model.accessCode.length > 0)
+                                meta.push(model.accessCode);
                             if (model.enc)
                                 meta.push(qsTr("encrypted"));
                             if (model.durationSecs >= 0)
                                 meta.push(Util.fmtDuration(model.durationSecs));
                             if (model.channel.length > 0 && model.channel !== model.name)
                                 meta.push(model.channel);
+                            if (model.freqHz > 0)
+                                meta.push(Util.fmtMhz(model.freqHz));
                             return meta.join(" · ");
                         }
                         // Aged on the decode clock the row's when is stamped on. ageTick

@@ -202,6 +202,9 @@ encode_event_row(dsd_json_writer* w, const Event_History* e, int slot, uint64_t 
     (void)dsd_json_kv_strn(w, "s_mode", e->s_mode, sizeof e->s_mode);
     (void)dsd_json_kv_strn(w, "channel_label", e->channel_label, sizeof e->channel_label);
     (void)dsd_json_kv_u64(w, "channel", e->channel);
+    (void)dsd_json_kv_i64(w, "freq_hz", e->freq_hz);
+    (void)dsd_json_kv_u64(w, "access_code_kind", e->access_code_kind);
+    (void)dsd_json_kv_u64(w, "access_code", e->access_code);
     (void)dsd_json_kv_i64(w, "event_time", (int64_t)e->event_time);
     (void)dsd_json_kv_i64(w, "event_start_time", (int64_t)e->event_start_time);
     (void)dsd_json_kv_strn(w, "alias", e->alias, sizeof e->alias);
@@ -252,6 +255,9 @@ row_fingerprint(const Event_History* e) {
         e->source_id,
         e->target_id,
         e->channel,
+        (uint64_t)e->freq_hz,
+        e->access_code_kind,
+        e->access_code,
         e->mi,
         e->enc_key,
         e->svc,

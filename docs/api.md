@@ -222,6 +222,7 @@ slot with nothing to show is omitted. The fields are documented in
   "emergency":0,"priority":0,"enc":0,"enc_alg":128,"enc_key":0,"mi":"0","svc":0,
   "source_id":1,"target_id":1,"src_str":"","tgt_str":"","t_name":"1",
   "s_name":"","t_mode":"","s_mode":"","channel_label":"","channel":0,
+  "freq_hz":851012500,"access_code_kind":2,"access_code":659,
   "event_time":1760000000,"event_start_time":1760000000,"alias":"","gps":"",
   "text":"","event":"...","internal":""}}
 ```
@@ -237,7 +238,7 @@ not the history from before.
 | Field | Meaning |
 | --- | --- |
 | `systype`, `subtype` | Protocol and message kind. |
-| `sys_id1..5`, `sysid_string` | System identity (P25 WACN:SYS:CC:SITE:RFSS, NAC, DMR color code, NXDN RAN, ...). |
+| `sys_id1..5`, `sysid_string` | System identity (P25 WACN:SYS:CC:SITE:RFSS, NAC, DMR color code, NXDN RAN, ...). `sysid_string` prints `--` for a DMR or dPMR color code, an NXDN RAN or an M17 CAN that never decoded (`DMR_CC_--`, `NXDN_RAN_--`, `M17_CAN_--`), and for an NXDN value that is not a RAN (an IDAS area, DCR's fixed 7); a P25 NAC the call was not heard with prints `---`, three wide like the code (`P25_---`, `P25_45564006---_10_10`). The DMR, P25, M17 and dPMR codes there are the row's `access_code` (so `--playfiles`, which takes none, prints `DMR_CC_--`); the numeric ids keep the decoder's raw value. |
 | `source_id`, `target_id` | Source and target/group identifiers. |
 | `src_str`, `tgt_str` | Text identities (M17, YSF, D-STAR, dPMR callsigns). |
 | `t_name`, `s_name`, `t_mode`, `s_mode` | Group/source names and modes from the imported CSVs. |
@@ -245,6 +246,8 @@ not the history from before.
 | `event`, `internal` | The event text, and DSD-neo's own notices. |
 | `enc`, `enc_alg`, `enc_key`, `mi` | Encryption indicators: the algorithm, the key **id** and the over-the-air MI, never key material. |
 | `channel`, `channel_label` | Trunk channel number and named scan channel. |
+| `freq_hz` | Frequency in Hz the call was heard on, `0` when unknown: the call's own frequency (a grant's channel, the voice channel a trunking receiver followed) when it has one, else the receiver's tuned frequency as it stood when the call was first seen live. Off a radio input (rigctl on an audio input included) and under `--playfiles`, only the call's own frequency is recorded. |
+| `access_code_kind`, `access_code` | The access code the call was heard with. `access_code_kind`: `0` none known, `1` colour code (DMR 0-15, dPMR 0-63), `2` P25 NAC (Phase 1 or 2), `3` NXDN RAN, `4` M17 CAN; these values never change. `access_code` is the code (decimal; NAC 0x293 is `659`) and means nothing when the kind is `0`. Taken while the call is live, from decodes the protocol checked (a CRC or FEC; for a dPMR colour code the call's confirmation; for a P25 Phase 2 NAC a burst descrambled with it that passed its check, or a network status broadcast naming it, on the carrier the call is on; a call carried only by unscrambled control bursts records none), and frozen once it has ended; never taken under `--playfiles`. An NXDN IDAS (Type-D) or DCR call has none: neither carries a RAN. |
 | `event_time`, `event_start_time` | Unix time of the last activity and of the start. |
 
 ### `system`: site identity

@@ -280,6 +280,7 @@ init_opts_runtime_and_network_defaults(dsd_opts* opts) {
     opts->iq_replay_loop = 0;
     opts->iq_replay_active = 0;
     opts->iq_replay_rate_mode = DSD_IQ_REPLAY_RATE_FAST;
+    opts->iq_replay_center_freq = 0U;
     opts->iq_capture_format = 1; /* DSD_IQ_FORMAT_CU8 */
     opts->iq_capture_max_bytes = 0;
     opts->iq_capture_path[0] = '\0';
@@ -799,6 +800,7 @@ init_state_protocol_defaults_a(dsd_state* state) {
     state->debug_mode = 0;
 
     state->nxdn_last_ran = -1;
+    state->nxdn_last_ran_stand_in = 0U;
     state->nxdn_confirmed = 0;
     state->nxdn_confirm_weak_streak = 0;
     state->nxdn_confirm_frame_evidence = 0;
@@ -1007,12 +1009,23 @@ init_state_trunk_scan_publication(dsd_state* state) {
     state->scan_timing.visit_deadline_m = -1.0;
 }
 
+/* The voice channel frequencies, and with trunking off the one a grant update named for its call's target (issue
+   #575). */
+static void
+init_state_p25_voice_channel_freqs(dsd_state* state) {
+    state->p25_vc_freq[0] = 0;
+    state->p25_vc_freq[1] = 0;
+    DSD_MEMSET(state->p25_conventional_grant_freq, 0, sizeof(state->p25_conventional_grant_freq));
+    DSD_MEMSET(state->p25_conventional_grant_target, 0, sizeof(state->p25_conventional_grant_target));
+}
+
 static void
 init_state_p25_and_trunk_defaults(dsd_state* state) {
     //P2 variables
     state->p2_wacn = 0;
     state->p2_sysid = 0;
     state->p2_cc = 0;
+    state->p2_cc_verified = 0U;
     state->p2_siteid = 0;
     state->p2_rfssid = 0;
     state->p2_hardset = 0;
@@ -1062,8 +1075,7 @@ init_state_p25_and_trunk_defaults(dsd_state* state) {
     state->p25_cc_freq = 0;
     state->p25_last_cc_msg_time = 0;
     state->p25_last_cc_msg_time_m = 0.0;
-    state->p25_vc_freq[0] = 0;
-    state->p25_vc_freq[1] = 0;
+    init_state_p25_voice_channel_freqs(state);
 
     init_state_p25_patch_defaults(state);
     dsd_enc_lockout_init(state);

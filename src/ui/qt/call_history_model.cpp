@@ -18,6 +18,8 @@
 #include <QVariant>
 #include <QtGlobal>
 #include <algorithm>
+#include <dsd-neo/app_control/access_code_view.h>
+#include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state.h>
@@ -208,6 +210,32 @@ row_identity_value(const CallHistoryModel::Row& row, int role) {
     }
 }
 
+/** @brief Whether a kind and value fit the fields a ring row carries them in (uint8_t, uint16_t). */
+bool
+access_code_fits(qint64 kind, qint64 code) {
+    return kind >= 0 && kind <= UINT8_MAX && code >= 0 && code <= UINT16_MAX;
+}
+
+/** @brief The frequency and access-code roles. The code's text is app-control's, spelled at read time. */
+QVariant
+row_carrier_value(const CallHistoryModel::Row& row, int role) {
+    switch (role) {
+        case CallHistoryModel::FreqHzRole: return row.freqHz;
+        case CallHistoryModel::AccessCodeRole:
+        case CallHistoryModel::AccessCodeTextRole: {
+            // Only the text the role asks for: a delegate reads each role on its own.
+            char text[sizeof(dsd_app_access_code::long_text)];
+            const bool fits = access_code_fits(row.codeKind, row.code);
+            const uint8_t kind = fits ? static_cast<uint8_t>(row.codeKind) : static_cast<uint8_t>(DSD_ACCESS_CODE_NONE);
+            const int form =
+                role == CallHistoryModel::AccessCodeRole ? DSD_APP_ACCESS_CODE_SHORT : DSD_APP_ACCESS_CODE_LONG;
+            dsd_app_access_code_format(kind, fits ? static_cast<uint32_t>(row.code) : 0U, form, text, sizeof(text));
+            return QString::fromLatin1(text);
+        }
+        default: return row_identity_value(row, role);
+    }
+}
+
 /** @brief One row's value for @p role; an unknown role reads as null. */
 QVariant
 row_role_value(const CallHistoryModel::Row& row, int role) {
@@ -223,7 +251,7 @@ row_role_value(const CallHistoryModel::Row& row, int role) {
         case CallHistoryModel::DetailRole: return row.detail;
         case CallHistoryModel::ChannelRole: return row.channel;
         case CallHistoryModel::SessionRole: return row.session;
-        default: return row_identity_value(row, role);
+        default: return row_carrier_value(row, role);
     }
 }
 
@@ -256,6 +284,9 @@ CallHistoryModel::roleNames() const {
     roles.insert(DetailRole, QByteArrayLiteral("detail"));
     roles.insert(ChannelRole, QByteArrayLiteral("channel"));
     roles.insert(SessionRole, QByteArrayLiteral("session"));
+    roles.insert(FreqHzRole, QByteArrayLiteral("freqHz"));
+    roles.insert(AccessCodeRole, QByteArrayLiteral("accessCode"));
+    roles.insert(AccessCodeTextRole, QByteArrayLiteral("accessCodeText"));
     return roles;
 }
 
@@ -415,6 +446,38 @@ notice_summary(const Event_History* item) {
     return text.trimmed();
 }
 
+/** @brief The frequency and access code a ring item was heard with; 0 for whatever is unknown. */
+struct ItemCarrier {
+    qint64 freqHz = 0;
+    int codeKind = 0;
+    int code = 0;
+};
+
+ItemCarrier
+item_carrier(const Event_History* item) {
+    ItemCarrier carrier;
+    carrier.freqHz = call_history_freq_known(item->freq_hz) ? static_cast<qint64>(item->freq_hz) : 0;
+    carrier.codeKind = static_cast<int>(item->access_code_kind);
+    // The value means something only beside a kind (Event_History::access_code).
+    carrier.code = call_history_access_code_known(carrier.codeKind) ? static_cast<int>(item->access_code) : 0;
+    return carrier;
+}
+
+/** @brief Give @p row its item's frequency and access code, each from the row's own fragment. */
+void
+row_take_carrier(CallHistoryModel::Row& row, const Event_History* item) {
+    const ItemCarrier carrier = item_carrier(item);
+    row.freqHz = carrier.freqHz;
+    row.freqWhen = row.when;
+    row.freqSeq = row.seq;
+    row.freqSlot = row.slot;
+    row.codeKind = carrier.codeKind;
+    row.code = carrier.code;
+    row.acWhen = row.when;
+    row.acSeq = row.seq;
+    row.acSlot = row.slot;
+}
+
 /** @brief One committed ring item as a display row. */
 CallHistoryModel::Row
 row_from_item(const Event_History* item, const QString& sessionLabel, const QString& systemUid, int slot,
@@ -471,6 +534,7 @@ row_from_item(const Event_History* item, const QString& sessionLabel, const QStr
     row.sourceNameWhen = row.when;
     row.sourceNameSeq = seq;
     row.sourceNameSlot = slot;
+    row_take_carrier(row, item);
     if (row.kind == CallHistoryModel::KindVoice) {
         row.durationSecs = call_history_duration_secs(start, end);
     }
@@ -480,11 +544,18 @@ row_from_item(const Event_History* item, const QString& sessionLabel, const QStr
 } // namespace
 
 int
-CallHistoryModel::noteSeen(const QString& key, quint64 ring, qint64 when, qint64 end, qulonglong src, bool emergency,
-                           bool enc, bool voice, const QString& sourceName) {
+CallHistoryModel::noteSeen(const QString& key, quint64 ring, const SeenState& read, bool voice) {
+    // What a sighting records: the row as read, in this session, from this ring, with no twin yet.
+    const auto sighting = [this, ring, &read]() {
+        SeenState entry = read;
+        entry.session = m_session;
+        entry.ring = ring;
+        entry.twin.clear();
+        return entry;
+    };
     auto seen = m_seen.find(key);
     if (seen == m_seen.end()) {
-        m_seen.insert(key, SeenState{when, end, src, emergency, enc, sourceName, m_session, ring, QString()});
+        m_seen.insert(key, sighting());
         return SeenNew;
     }
     if (seen->ring == 0U) {
@@ -500,32 +571,42 @@ CallHistoryModel::noteSeen(const QString& key, quint64 ring, qint64 when, qint64
         // call heard again, not the entry's own row read again, so it is taken in as the live path takes
         // a call heard again. A state an embedding host reuses keeps its ring, and the rows an earlier run
         // left in it stay this entry's (Event_History_I::instance).
-        *seen = SeenState{when, end, src, emergency, enc, sourceName, m_session, ring, QString()};
+        *seen = sighting();
         return SeenAgain;
     }
     seen->session = qMax(seen->session, m_session);
     // Seen is not final: the core merges a reacquired segment into its committed
     // row in place — the end extends, src fills 0 -> real, the crypto verdict can
-    // flip on — and the key does not change when it does. Re-read the row as an
-    // update whenever it advanced. Notices are immutable, so only voice re-reads.
+    // flip on, an unknown frequency or access code fills — and the key does not
+    // change when it does. Re-read the row as an update whenever it advanced.
+    // Notices are immutable, so only voice re-reads.
     if (!voice) {
         return SeenUnchanged;
     }
     int64_t storedEnd = seen->end;
     uint64_t storedSrc = seen->src;
     bool storedEnc = seen->enc;
-    const bool advanced =
-        call_history_seen_absorb(&storedEnd, &storedSrc, &storedEnc, end, src, enc, &seen->emergency, emergency);
-    const bool labelAdvanced = !sourceName.isEmpty() && sourceName != seen->sourceName && src == storedSrc;
-    if (!advanced && !labelAdvanced) {
+    const bool advanced = call_history_seen_absorb(&storedEnd, &storedSrc, &storedEnc, read.end, read.src, read.enc,
+                                                   &seen->emergency, read.emergency);
+    const bool labelAdvanced =
+        !read.sourceName.isEmpty() && read.sourceName != seen->sourceName && read.src == storedSrc;
+    int64_t storedFreqHz = seen->freqHz;
+    int storedAcKind = seen->acKind;
+    int storedAc = seen->ac;
+    const bool filled =
+        call_history_seen_absorb_fill(&storedFreqHz, &storedAcKind, &storedAc, read.freqHz, read.acKind, read.ac);
+    if (!advanced && !labelAdvanced && !filled) {
         return SeenUnchanged;
     }
     if (labelAdvanced) {
-        seen->sourceName = sourceName;
+        seen->sourceName = read.sourceName;
     }
     seen->end = storedEnd;
     seen->src = storedSrc;
     seen->enc = storedEnc;
+    seen->freqHz = storedFreqHz;
+    seen->acKind = storedAcKind;
+    seen->ac = storedAc;
     return SeenAdvanced;
 }
 
@@ -559,15 +640,21 @@ CallHistoryModel::collectFresh(const dsd_state* snapshot, const bool scan[2], co
                 continue;
             }
             const qint64 start = static_cast<qint64>(item->event_start_time);
-            const qint64 end = static_cast<qint64>(item->event_time);
-            const qint64 when = (start > 0) ? start : end;
-            const bool voice = kind == KindVoice;
-            const qulonglong src = static_cast<qulonglong>(item->source_id);
+            SeenState read;
+            read.end = static_cast<qint64>(item->event_time);
+            read.when = (start > 0) ? start : read.end;
+            read.src = static_cast<qulonglong>(item->source_id);
+            read.emergency = item->emergency != 0U;
+            read.enc = item->enc != 0U;
+            read.sourceName = QString::fromUtf8(item->s_name[0] ? item->s_name : item->src_str);
+            const ItemCarrier carrier = item_carrier(item);
+            read.freqHz = carrier.freqHz;
+            read.acKind = carrier.codeKind;
+            read.ac = carrier.code;
             // Must match keyFor() on the equivalent Row, or a relaunched UI would
             // re-ingest every row its predecessor already logged.
-            const QString key = seen_key(slot, seq, when, item->target_id, kind);
-            const int verdict = noteSeen(key, ring, when, end, src, item->emergency != 0U, item->enc != 0U, voice,
-                                         QString::fromUtf8(item->s_name[0] ? item->s_name : item->src_str));
+            const QString key = seen_key(slot, seq, read.when, item->target_id, kind);
+            const int verdict = noteSeen(key, ring, read, kind == KindVoice);
             if (verdict == SeenUnchanged) {
                 continue;
             }
@@ -609,37 +696,92 @@ rows_mergeable(const CallHistoryModel::Row& existing, const CallHistoryModel::Ro
                                             srcKnownMatch);
 }
 
+CallHistoryProvenance
+provenance(qint64 when, qulonglong seq, int slot) {
+    CallHistoryProvenance from;
+    from.when = static_cast<int64_t>(when);
+    from.seq = static_cast<uint64_t>(seq);
+    from.slot = slot;
+    return from;
+}
+
 /**
  * @brief Adopt @p row's source label when it is the later of the two.
  *
  * Fragments reach the merge in whichever order a refresh happens to collect them --
  * a backlog walks newest-first, a live session arrives oldest-first -- so the label
- * has to be chosen by the fragment it came from rather than by arrival. The push
- * sequence and slot break a same-second tie; identical provenance is the fragment
- * enriching its own label, which must still land.
+ * has to be chosen by the fragment it came from rather than by arrival
+ * (call_history_fold_adopts()). The push sequence and slot break a same-second tie;
+ * identical provenance is the fragment enriching its own label, which must still land.
  */
 void
 merge_source_label(CallHistoryModel::Row& existing, const CallHistoryModel::Row& row) {
-    if (row.sourceName.isEmpty()) {
+    if (!call_history_fold_adopts(!existing.sourceName.isEmpty(),
+                                  provenance(existing.sourceNameWhen, existing.sourceNameSeq, existing.sourceNameSlot),
+                                  !row.sourceName.isEmpty(),
+                                  provenance(row.sourceNameWhen, row.sourceNameSeq, row.sourceNameSlot))) {
         return;
-    }
-    if (!existing.sourceName.isEmpty()) {
-        if (row.sourceNameWhen != existing.sourceNameWhen) {
-            if (row.sourceNameWhen < existing.sourceNameWhen) {
-                return;
-            }
-        } else if (row.sourceNameSeq != existing.sourceNameSeq) {
-            if (row.sourceNameSeq < existing.sourceNameSeq) {
-                return;
-            }
-        } else if (row.sourceNameSlot < existing.sourceNameSlot) {
-            return;
-        }
     }
     existing.sourceName = row.sourceName;
     existing.sourceNameWhen = row.sourceNameWhen;
     existing.sourceNameSeq = row.sourceNameSeq;
     existing.sourceNameSlot = row.sourceNameSlot;
+}
+
+void
+take_freq(CallHistoryModel::Row& to, const CallHistoryModel::Row& from) {
+    to.freqHz = from.freqHz;
+    to.freqWhen = from.freqWhen;
+    to.freqSeq = from.freqSeq;
+    to.freqSlot = from.freqSlot;
+}
+
+void
+take_access_code(CallHistoryModel::Row& to, const CallHistoryModel::Row& from) {
+    to.codeKind = from.codeKind;
+    to.code = from.code;
+    to.acWhen = from.acWhen;
+    to.acSeq = from.acSeq;
+    to.acSlot = from.acSlot;
+}
+
+/**
+ * @brief Fold @p row's frequency and access code into @p existing, each by the fragment it came from.
+ *
+ * A trunked call lands on several voice channels, and its fragments still merge (rows_mergeable() never
+ * looks at the frequency), so the merged row shows the newest fragment's known frequency, whatever order
+ * the fragments arrive in. The code pair folds the same way with its own provenance.
+ */
+void
+fold_carrier(CallHistoryModel::Row& existing, const CallHistoryModel::Row& row) {
+    if (call_history_fold_adopts(call_history_freq_known(existing.freqHz),
+                                 provenance(existing.freqWhen, existing.freqSeq, existing.freqSlot),
+                                 call_history_freq_known(row.freqHz),
+                                 provenance(row.freqWhen, row.freqSeq, row.freqSlot))) {
+        take_freq(existing, row);
+    }
+    if (call_history_fold_adopts(call_history_access_code_known(existing.codeKind),
+                                 provenance(existing.acWhen, existing.acSeq, existing.acSlot),
+                                 call_history_access_code_known(row.codeKind),
+                                 provenance(row.acWhen, row.acSeq, row.acSlot))) {
+        take_access_code(existing, row);
+    }
+}
+
+/**
+ * @brief Fill what @p existing does not know of its frequency and access code from @p row; keep what it knows.
+ *
+ * For a notice heard again: the same delivery, so it can only fill in. Across rings the push stamps say nothing
+ * about which delivery is newer.
+ */
+void
+fill_carrier(CallHistoryModel::Row& existing, const CallHistoryModel::Row& row) {
+    if (!call_history_freq_known(existing.freqHz) && call_history_freq_known(row.freqHz)) {
+        take_freq(existing, row);
+    }
+    if (!call_history_access_code_known(existing.codeKind) && call_history_access_code_known(row.codeKind)) {
+        take_access_code(existing, row);
+    }
 }
 
 } // namespace
@@ -657,6 +799,7 @@ CallHistoryModel::tryMerge(const Row& row, int scanRows) {
             continue;
         }
         merge_source_label(existing, row);
+        fold_carrier(existing, row);
         const qint64 start = qMin(existing.when, row.when);
         const qint64 span = qMax(row_end_secs(existing), row_end_secs(row)) - start;
         existing.when = start;
@@ -690,6 +833,30 @@ CallHistoryModel::findRepeatedNotice(const Row& row) const {
     return -1;
 }
 
+bool
+CallHistoryModel::absorbRepeatedNotice(const Row& row) {
+    const int repeated = findRepeatedNotice(row);
+    if (repeated < 0) {
+        return false;
+    }
+    const QString twin = keyFor(m_rows.at(repeated));
+    m_noticeTwinsTaken.insert(twin);
+    // Kept on the notice's own seen entry, which the seen store persists: a relaunched model rebuilds
+    // the ring's taken twins from it, and its next identical notice then promotes the other twin.
+    const auto seen = m_seen.find(keyFor(row));
+    if (seen != m_seen.end()) {
+        seen->twin = twin;
+    }
+    Row& logged = m_rows[repeated];
+    logged.session = qMax(logged.session, row.session);
+    // A notice logged before rows carried a frequency and access code gains them here, when a fresh ring
+    // delivers it again (a replay after an upgrade).
+    fill_carrier(logged, row);
+    const QModelIndex idx = index(repeated);
+    Q_EMIT dataChanged(idx, idx, {SessionRole, FreqHzRole, AccessCodeRole, AccessCodeTextRole});
+    return true;
+}
+
 QString
 CallHistoryModel::keyFor(const Row& row) {
     // Derived from the persisted row so it survives an Activity restart: the
@@ -706,8 +873,9 @@ CallHistoryModel::ingestRow(const Row& row, bool isUpdate, bool again) {
     // signals: a merge is a dataChanged on the absorbing row, a new call inserts
     // at its sorted (newest-first) position. Never a reset — delegates and the
     // reader's scroll position survive every ingest.
-    static const QVector<int> mergeRoles = {WhenRole,     SrcRole,      SourceNameRole, EncRole,    DurationSecsRole,
-                                            DayLabelRole, TimeTextRole, EmergencyRole,  SessionRole};
+    static const QVector<int> mergeRoles = {WhenRole,         SrcRole,      SourceNameRole, EncRole,
+                                            DurationSecsRole, DayLabelRole, TimeTextRole,   EmergencyRole,
+                                            SessionRole,      FreqHzRole,   AccessCodeRole, AccessCodeTextRole};
     // A call heard again overlaps the logged call it repeats, which the merge folds it into as it
     // folds any overlapping fragment, so that row joins the running session and no new row is logged.
     // Only the search reaches further: a replay's calls sort by the capture's stamps, anywhere in the
@@ -736,24 +904,10 @@ CallHistoryModel::ingestRow(const Row& row, bool isUpdate, bool again) {
         }
         return false;
     }
-    if (again && !isUpdate && row.kind == KindNotice) {
-        // Notices never merge, but one decoded again is the same delivery, not a second one: the logged
-        // notice joins the running session.
-        const int repeated = findRepeatedNotice(row);
-        if (repeated >= 0) {
-            const QString twin = keyFor(m_rows.at(repeated));
-            m_noticeTwinsTaken.insert(twin);
-            // Kept on the notice's own seen entry, which the seen store persists: a relaunched model rebuilds
-            // the ring's taken twins from it, and its next identical notice then promotes the other twin.
-            const auto seen = m_seen.find(keyFor(row));
-            if (seen != m_seen.end()) {
-                seen->twin = twin;
-            }
-            m_rows[repeated].session = qMax(m_rows.at(repeated).session, row.session);
-            const QModelIndex idx = index(repeated);
-            Q_EMIT dataChanged(idx, idx, {SessionRole});
-            return false;
-        }
+    // Notices never merge, but one decoded again is the same delivery, not a second one: the logged
+    // notice joins the running session.
+    if (again && !isUpdate && row.kind == KindNotice && absorbRepeatedNotice(row)) {
+        return false;
     }
     if (isUpdate) {
         // A seen row that advanced refines a call this model already logged; if
@@ -935,6 +1089,102 @@ CallHistoryModel::clearAll() {
     startAsyncSave();
 }
 
+namespace {
+
+/** @brief A stored integer, or @p fallback when the key is missing (a store an older build wrote). */
+qint64
+json_i64_or(const QJsonObject& obj, const char* key, qint64 fallback) {
+    return obj.contains(QLatin1String(key)) ? obj.value(QLatin1String(key)).toVariant().toLongLong() : fallback;
+}
+
+/**
+ * @brief A stored access code as {kind, value}, or {0, 0} when it is missing or does not fit the ring's fields.
+ *
+ * Stores older builds wrote have no code: a missing key means unknown.
+ */
+QPair<int, int>
+json_access_code(const QJsonObject& obj, const char* kindKey, const char* codeKey) {
+    const qint64 kind = json_i64_or(obj, kindKey, DSD_ACCESS_CODE_NONE);
+    const qint64 code = json_i64_or(obj, codeKey, 0);
+    if (!access_code_fits(kind, code) || !call_history_access_code_known(static_cast<int>(kind))) {
+        return qMakePair(0, 0);
+    }
+    return qMakePair(static_cast<int>(kind), static_cast<int>(code));
+}
+
+/**
+ * @brief Read a stored row's frequency and access code, and the fragment each came from.
+ *
+ * Unknown values are never written, so a missing key reads as unknown. A known value written without its
+ * provenance takes the row's own identity, as the source label's does.
+ */
+void
+row_carrier_from_json(CallHistoryModel::Row& row, const QJsonObject& obj) {
+    row.freqHz = qMax<qint64>(json_i64_or(obj, "freqHz", 0), 0);
+    row.freqWhen = json_i64_or(obj, "freqWhen", row.when);
+    row.freqSeq = static_cast<qulonglong>(json_i64_or(obj, "freqSeq", static_cast<qint64>(row.seq)));
+    row.freqSlot = static_cast<int>(json_i64_or(obj, "freqSlot", row.slot));
+    const QPair<int, int> code = json_access_code(obj, "acKind", "ac");
+    row.codeKind = code.first;
+    row.code = code.second;
+    row.acWhen = json_i64_or(obj, "acWhen", row.when);
+    row.acSeq = static_cast<qulonglong>(json_i64_or(obj, "acSeq", static_cast<qint64>(row.seq)));
+    row.acSlot = static_cast<int>(json_i64_or(obj, "acSlot", row.slot));
+}
+
+/** @brief One stored row. */
+CallHistoryModel::Row
+row_from_json(const QJsonObject& obj) {
+    CallHistoryModel::Row row;
+    row.when = obj.value(QLatin1String("when")).toVariant().toLongLong();
+    row.name = obj.value(QLatin1String("name")).toString();
+    row.tg = obj.value(QLatin1String("tg")).toVariant().toULongLong();
+    row.src = obj.value(QLatin1String("src")).toVariant().toULongLong();
+    row.sourceName = obj.value(QLatin1String("srcName")).toString();
+    row.enc = obj.value(QLatin1String("enc")).toBool();
+    row.emergency = obj.value(QLatin1String("em")).toBool();
+    row.durationSecs = obj.value(QLatin1String("durationSecs")).toInt(-1);
+    row.systemName = obj.value(QLatin1String("systemName")).toString();
+    row.systemUid = obj.value(QLatin1String("systemUid")).toString();
+    row.kind = obj.value(QLatin1String("kind")).toInt(CallHistoryModel::KindVoice);
+    row.detail = obj.value(QLatin1String("detail")).toString();
+    row.channel = obj.value(QLatin1String("channel")).toString();
+    row.slot = obj.value(QLatin1String("slot")).toInt();
+    row.seq = obj.value(QLatin1String("seq")).toVariant().toULongLong();
+    // Older stores have no label provenance; their surviving row identity
+    // is the best available starting point.
+    row.sourceNameWhen = obj.contains(QLatin1String("srcNameWhen"))
+                             ? obj.value(QLatin1String("srcNameWhen")).toVariant().toLongLong()
+                             : row.when;
+    row.sourceNameSeq = obj.contains(QLatin1String("srcNameSeq"))
+                            ? obj.value(QLatin1String("srcNameSeq")).toVariant().toULongLong()
+                            : row.seq;
+    row.sourceNameSlot = obj.value(QLatin1String("srcNameSlot")).toInt(row.slot);
+    row.session = obj.value(QLatin1String("session")).toVariant().toLongLong();
+    row_carrier_from_json(row, obj);
+    return row;
+}
+
+/** @brief Write a row's frequency and access code with the fragment each came from; nothing for an unknown one. */
+void
+row_carrier_to_json(const CallHistoryModel::Row& row, QJsonObject& obj) {
+    if (call_history_freq_known(row.freqHz)) {
+        obj.insert(QLatin1String("freqHz"), row.freqHz);
+        obj.insert(QLatin1String("freqWhen"), row.freqWhen);
+        obj.insert(QLatin1String("freqSeq"), static_cast<qint64>(row.freqSeq));
+        obj.insert(QLatin1String("freqSlot"), row.freqSlot);
+    }
+    if (call_history_access_code_known(row.codeKind)) {
+        obj.insert(QLatin1String("acKind"), row.codeKind);
+        obj.insert(QLatin1String("ac"), row.code);
+        obj.insert(QLatin1String("acWhen"), row.acWhen);
+        obj.insert(QLatin1String("acSeq"), static_cast<qint64>(row.acSeq));
+        obj.insert(QLatin1String("acSlot"), row.acSlot);
+    }
+}
+
+} // namespace
+
 void
 CallHistoryModel::load() {
     QList<Row> rows;
@@ -943,33 +1193,7 @@ CallHistoryModel::load() {
         if (!value.isObject()) {
             continue;
         }
-        const QJsonObject obj = value.toObject();
-        Row row;
-        row.when = obj.value(QLatin1String("when")).toVariant().toLongLong();
-        row.name = obj.value(QLatin1String("name")).toString();
-        row.tg = obj.value(QLatin1String("tg")).toVariant().toULongLong();
-        row.src = obj.value(QLatin1String("src")).toVariant().toULongLong();
-        row.sourceName = obj.value(QLatin1String("srcName")).toString();
-        row.enc = obj.value(QLatin1String("enc")).toBool();
-        row.emergency = obj.value(QLatin1String("em")).toBool();
-        row.durationSecs = obj.value(QLatin1String("durationSecs")).toInt(-1);
-        row.systemName = obj.value(QLatin1String("systemName")).toString();
-        row.systemUid = obj.value(QLatin1String("systemUid")).toString();
-        row.kind = obj.value(QLatin1String("kind")).toInt(KindVoice);
-        row.detail = obj.value(QLatin1String("detail")).toString();
-        row.channel = obj.value(QLatin1String("channel")).toString();
-        row.slot = obj.value(QLatin1String("slot")).toInt();
-        row.seq = obj.value(QLatin1String("seq")).toVariant().toULongLong();
-        // Older stores have no label provenance; their surviving row identity
-        // is the best available starting point.
-        row.sourceNameWhen = obj.contains(QLatin1String("srcNameWhen"))
-                                 ? obj.value(QLatin1String("srcNameWhen")).toVariant().toLongLong()
-                                 : row.when;
-        row.sourceNameSeq = obj.contains(QLatin1String("srcNameSeq"))
-                                ? obj.value(QLatin1String("srcNameSeq")).toVariant().toULongLong()
-                                : row.seq;
-        row.sourceNameSlot = obj.value(QLatin1String("srcNameSlot")).toInt(row.slot);
-        row.session = obj.value(QLatin1String("session")).toVariant().toLongLong();
+        const Row row = row_from_json(value.toObject());
         // Rows carry their session with them, so the session numbering can never fall back
         // onto rows already in the log, even if the settings that hold it were lost.
         m_session = qMax(m_session, row.session);
@@ -986,8 +1210,9 @@ CallHistoryModel::load() {
         // for a row of one fragment only. A merged row keeps one fragment's slot and seq but the earliest
         // fragment's start, so its seed's key is no ring row's, and a merged call whose seen entries were
         // evicted or lost is logged again as new rows, one per fragment.
-        m_seen.insert(keyFor(*it), SeenState{it->when, it->when + qMax(it->durationSecs, 0), it->src, it->emergency,
-                                             it->enc, it->sourceName, it->session, 0U, QString()});
+        m_seen.insert(keyFor(*it),
+                      SeenState{it->when, it->when + qMax(it->durationSecs, 0), it->src, it->emergency, it->enc,
+                                it->sourceName, it->freqHz, it->codeKind, it->code, it->session, 0U, QString()});
         if (tryMerge(*it, kMergeScanRows) < 0) {
             m_rows.prepend(*it);
         }
@@ -1014,6 +1239,11 @@ CallHistoryModel::load() {
         state.enc = obj.value(QLatin1String("enc")).toBool();
         state.emergency = obj.value(QLatin1String("em")).toBool();
         state.sourceName = obj.value(QLatin1String("srcName")).toString();
+        // Absent when unknown, and in stores older builds wrote.
+        state.freqHz = qMax<qint64>(json_i64_or(obj, "freqHz", 0), 0);
+        const QPair<int, int> code = json_access_code(obj, "acKind", "ac");
+        state.acKind = code.first;
+        state.ac = code.second;
         state.session = obj.value(QLatin1String("session")).toVariant().toLongLong();
         // Hex text: a nonce can use all 64 bits, more than a JSON number holds exactly.
         bool ringOk = false;
@@ -1065,6 +1295,7 @@ CallHistoryModel::rowsToJson() const {
         obj.insert(QLatin1String("slot"), row.slot);
         obj.insert(QLatin1String("seq"), static_cast<qint64>(row.seq));
         obj.insert(QLatin1String("session"), row.session);
+        row_carrier_to_json(row, obj);
         array.append(obj);
     }
     return array;
@@ -1096,6 +1327,13 @@ CallHistoryModel::seenToJson() const {
         obj.insert(QLatin1String("enc"), state.enc);
         if (state.emergency) {
             obj.insert(QLatin1String("em"), true);
+        }
+        if (call_history_freq_known(state.freqHz)) {
+            obj.insert(QLatin1String("freqHz"), state.freqHz);
+        }
+        if (call_history_access_code_known(state.acKind)) {
+            obj.insert(QLatin1String("acKind"), state.acKind);
+            obj.insert(QLatin1String("ac"), state.ac);
         }
         obj.insert(QLatin1String("session"), state.session);
         obj.insert(QLatin1String("ring"), QString::number(state.ring, 16));

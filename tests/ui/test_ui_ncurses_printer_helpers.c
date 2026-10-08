@@ -1050,6 +1050,19 @@ test_rtl_and_soapy_input_source_rendering(void) {
     assert_capture_contains("| Auto PPM: Off");
     assert_capture_contains("| External RTL Tuning on UDP: 127.0.0.1:5555");
 
+    /* Issue #575: an I/Q replay's recorded RETUNEs leave rtlsdr_center_freq on the capture's opening centre; the field
+     * reads the centre the samples being decoded were captured on, and the tuned centre again once there is none. */
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "iqreplay:capture.iq.json");
+    opts.iq_replay_center_freq = 851500000U;
+    reset_printw_capture();
+    ui_render_rtl_input_source(&opts, &state);
+    assert_capture_contains(" FRQ: 851500000;");
+    opts.iq_replay_center_freq = 0U;
+    reset_printw_capture();
+    ui_render_rtl_input_source(&opts, &state);
+    assert_capture_contains(" FRQ: 851012500;");
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "rtl");
+
     /* Squelch off is the default every documented example uses. Printed as a
      * number it read as a threshold that had been applied. */
     opts.rtl_squelch_level = 0.0;
@@ -1113,11 +1126,14 @@ test_rtl_and_soapy_input_source_rendering(void) {
     opts.rtl_gain_value = 0;
     opts.rtl_dsp_bw_khz = 12;
     DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "soapy:driver=rtlsdr");
+    /* A SoapySDR centre above 2^31 Hz prints as itself, not as a negative number. */
+    opts.rtlsdr_center_freq = 2400000000U;
     reset_printw_capture();
     ui_render_rtl_input_source(&opts, &state);
     assert_capture_contains("| SoapySDR: driver=rtlsdr;");
     assert_capture_contains(" G: AGC;");
     assert_capture_contains(" DSP-BW: 12 kHz;");
+    assert_capture_contains(" FRQ: 2400000000;");
 
     DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "soapy");
     reset_printw_capture();
@@ -2285,6 +2301,23 @@ test_sync_tree_follows_scan_class(void) {
     reset_printw_capture();
     ui_render_nxdn_site_line(state, 1);
     assert_capture_contains("IDAS - Area: --;");
+    /* Issue #575: DCR's fixed 7 stands in for a RAN it does not carry; the IDAS area keeps its own label. */
+    state->nxdn_last_ran = 7U;
+    state->nxdn_last_ran_stand_in = 1U;
+    reset_printw_capture();
+    ui_render_nxdn_site_line(state, 0);
+    assert_capture_contains("NXDN - RAN: --;");
+    assert(strstr(g_printw_capture, "RAN: 07") == NULL);
+    state->nxdn_last_ran = 1U;
+    reset_printw_capture();
+    ui_render_nxdn_site_line(state, 1);
+    assert_capture_contains("IDAS - Area: 01;");
+    state->nxdn_last_ran = 7U;
+    state->nxdn_last_ran_stand_in = 0U;
+    reset_printw_capture();
+    ui_render_nxdn_site_line(state, 0);
+    assert_capture_contains("NXDN - RAN: 07;");
+    state->nxdn_last_ran = (unsigned int)-1;
     /* Issue #526: an analog row has no frame sync, so the last digital sync type is dropped
        rather than shown beside an nfm row. */
     g_scan_mode_active = DSD_SCAN_MODE_NFM;
@@ -2722,6 +2755,59 @@ test_live_protocol_panels_ignore_ended_call_identity(void) {
 
     dsd_state_ext_free_all(state);
     free(state);
+}
+
+/* Between transmissions the DMR colour code is back at 16 and the dPMR one at -1, "nothing decoded" (issue #575): the
+   panels print "--" there, as the NXDN RAN line does, rather than the sentinel. */
+static void
+test_colour_code_sentinels_print_as_unknown(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1U, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1U, sizeof(*state));
+    assert(opts != NULL && state != NULL);
+    state->dmr_rest_channel = -1;
+
+    state->dmr_color_code = 16U;
+    ncurses_last_synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    reset_printw_capture();
+    ui_render_p25_dmr_header(opts, state);
+    assert_capture_contains("DMR BS - DCC: --;");
+    assert(strstr(g_printw_capture, "16") == NULL);
+
+    ncurses_last_synctype = DSD_SYNC_DMR_MS_VOICE;
+    reset_printw_capture();
+    ui_render_p25_dmr_header(opts, state);
+    assert_capture_contains("DMR MS - DCC: --;");
+    assert(strstr(g_printw_capture, "16") == NULL);
+
+    state->dmr_color_code = 0U;
+    reset_printw_capture();
+    ui_render_p25_dmr_header(opts, state);
+    assert_capture_contains("DMR MS - DCC: 00;");
+    state->dmr_color_code = 15U;
+    ncurses_last_synctype = DSD_SYNC_DMR_BS_DATA_NEG;
+    reset_printw_capture();
+    ui_render_p25_dmr_header(opts, state);
+    assert_capture_contains("DMR BS - DCC: 15;");
+
+    state->dpmr_color_code = -1;
+    ncurses_last_synctype = DSD_SYNC_DPMR_FS1_POS;
+    reset_printw_capture();
+    ui_render_call_info_dpmr(opts, state);
+    assert_capture_contains("| DCC: [--] ");
+    assert(strstr(g_printw_capture, "-1") == NULL);
+    state->dpmr_color_code = 0;
+    reset_printw_capture();
+    ui_render_call_info_dpmr(opts, state);
+    assert_capture_contains("| DCC: [0] ");
+    state->dpmr_color_code = 63;
+    reset_printw_capture();
+    ui_render_call_info_dpmr(opts, state);
+    assert_capture_contains("| DCC: [63] ");
+
+    ncurses_last_synctype = DSD_SYNC_NONE;
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
 }
 
 /* An encryption-lockout-suppressed P25p2 companion (canonical call ended by
@@ -3268,6 +3354,7 @@ main(void) {
     test_slot_header_burst_column_is_fixed();
     test_slot_header_id_highlight_is_balanced();
     test_live_protocol_panels_ignore_ended_call_identity();
+    test_colour_code_sentinels_print_as_unknown();
     test_lockout_suppressed_companion_slot_renders_idle();
     return 0;
 }

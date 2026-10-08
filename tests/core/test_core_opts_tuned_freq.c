@@ -1,0 +1,137 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+/*
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ */
+
+/*
+ * Issue #575: the frequency the receiver is tuned to, as every frontend reads it (dsd_opts_tuned_freq_hz()), the note
+ * the replay read paths leave for it (dsd_opts_note_iq_replay_center()), and the I/Q replay predicate the frontends'
+ * tune refusal keys on (dsd_opts_input_is_iq_replay()). A replay's recorded RETUNEs
+ * move the demod without touching rtlsdr_center_freq, so the centre the decoder last read samples from wins while it
+ * is set; an audio input has no tuner reading at all. Also the followed-voice-channel predicate
+ * (dsd_opts_trunk_vc_followed()) a call observation needs before it stamps the voice channel's frequency.
+ */
+
+#include <assert.h>
+#include <dsd-neo/core/opts.h>
+#include <stdlib.h>
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
+
+static dsd_opts*
+make_opts(int audio_in_type, const char* audio_in_dev) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    assert(opts != NULL);
+    opts->audio_in_type = audio_in_type;
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof(opts->audio_in_dev), "%s", audio_in_dev);
+    opts->rtlsdr_center_freq = 851012500U;
+    return opts;
+}
+
+/* An audio input (a rigctl peer's audio included) carries no tuner reading, a stale replay centre neither. */
+static void
+test_tuned_freq_audio_input(void) {
+    assert(dsd_opts_tuned_freq_hz(NULL) == 0U);
+
+    dsd_opts* opts = make_opts(AUDIO_IN_PULSE, "pulse");
+    assert(dsd_opts_tuned_freq_hz(opts) == 0U);
+    opts->iq_replay_center_freq = 851500000U;
+    assert(dsd_opts_tuned_freq_hz(opts) == 0U);
+    opts->audio_in_type = AUDIO_IN_WAV;
+    assert(dsd_opts_tuned_freq_hz(opts) == 0U);
+    free(opts);
+}
+
+static void
+test_tuned_freq_radio_input(void) {
+    /* A live radio input reads the centre DSD-neo tuned it to. */
+    dsd_opts* opts = make_opts(AUDIO_IN_RTL, "rtl:0");
+    assert(dsd_opts_tuned_freq_hz(opts) == 851012500U);
+
+    /* During a replay the centre the samples being decoded were captured on wins, and once the replay stops (0) the
+       tuned centre reads again. */
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof(opts->audio_in_dev), "%s", "iqreplay:capture.iq.json");
+    assert(dsd_opts_tuned_freq_hz(opts) == 851012500U);
+    opts->iq_replay_center_freq = 851500000U;
+    assert(dsd_opts_tuned_freq_hz(opts) == 851500000U);
+    opts->iq_replay_center_freq = 0U;
+    assert(dsd_opts_tuned_freq_hz(opts) == 851012500U);
+
+    /* The full unsigned range: a SoapySDR or Airspy centre above 2^31 Hz reads as itself. */
+    opts->rtlsdr_center_freq = 2400000000U;
+    assert(dsd_opts_tuned_freq_hz(opts) == 2400000000U);
+    free(opts);
+}
+
+/* The replay read paths note each sample's capture centre (dsd_opts_note_iq_replay_center()): a centre is stored, and
+   none (0: a live read) leaves the reading as it was. It says when the decoder adopted a new centre over another, a
+   retune the capture recorded (issue #575): never for no centre, the same one or a stream's first. */
+static void
+test_note_iq_replay_center(void) {
+    assert(dsd_opts_note_iq_replay_center(NULL, 851500000U) == 0);
+
+    dsd_opts* opts = make_opts(AUDIO_IN_RTL, "iqreplay:capture.iq.json");
+    assert(dsd_opts_note_iq_replay_center(opts, 0U) == 0);
+    assert(opts->iq_replay_center_freq == 0U);
+    assert(dsd_opts_note_iq_replay_center(opts, 851500000U) == 0);
+    assert(opts->iq_replay_center_freq == 851500000U);
+    assert(dsd_opts_tuned_freq_hz(opts) == 851500000U);
+    assert(dsd_opts_note_iq_replay_center(opts, 851500000U) == 0);
+    assert(dsd_opts_note_iq_replay_center(opts, 0U) == 0);
+    assert(opts->iq_replay_center_freq == 851500000U);
+    assert(dsd_opts_note_iq_replay_center(opts, 851625000U) == 1);
+    assert(dsd_opts_tuned_freq_hz(opts) == 851625000U);
+    dsd_opts_forget_iq_replay_center(opts);
+    assert(opts->iq_replay_center_freq == 0U);
+    assert(dsd_opts_note_iq_replay_center(opts, 851500000U) == 0);
+    free(opts);
+}
+
+static void
+test_input_is_iq_replay(void) {
+    assert(dsd_opts_input_is_iq_replay(NULL) == 0);
+
+    dsd_opts* opts = make_opts(AUDIO_IN_RTL, "iqreplay:capture.iq.json");
+    assert(dsd_opts_input_is_iq_replay(opts) == 1);
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof(opts->audio_in_dev), "%s", "iqreplay");
+    assert(dsd_opts_input_is_iq_replay(opts) == 1);
+
+    /* A live radio is no replay, whatever the session's replay flags still say. */
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof(opts->audio_in_dev), "%s", "rtl:0:851.0125M");
+    opts->iq_replay_requested = 1;
+    opts->iq_replay_active = 1;
+    assert(dsd_opts_input_is_iq_replay(opts) == 0);
+
+    /* Nor is a PCM input that a replay spec still names: the input in force is the type. */
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof(opts->audio_in_dev), "%s", "iqreplay:capture.iq.json");
+    opts->audio_in_type = AUDIO_IN_WAV;
+    assert(dsd_opts_input_is_iq_replay(opts) == 0);
+    free(opts);
+}
+
+/* A voice channel counts as followed only with trunking on and a grant tuned (dsd_opts_trunk_vc_followed()). Hytera XPT
+   site status raises trunk_is_tuned on the rest channel with trunking off, and that is no followed channel. */
+static void
+test_trunk_vc_followed(void) {
+    assert(dsd_opts_trunk_vc_followed(NULL) == 0);
+
+    dsd_opts* opts = make_opts(AUDIO_IN_RTL, "rtl:0");
+    assert(dsd_opts_trunk_vc_followed(opts) == 0);
+    opts->trunk_enable = 1;
+    assert(dsd_opts_trunk_vc_followed(opts) == 0);
+    opts->trunk_is_tuned = 1;
+    assert(dsd_opts_trunk_vc_followed(opts) == 1);
+    opts->trunk_enable = 0;
+    assert(dsd_opts_trunk_vc_followed(opts) == 0);
+    free(opts);
+}
+
+int
+main(void) {
+    test_tuned_freq_audio_input();
+    test_tuned_freq_radio_input();
+    test_note_iq_replay_center();
+    test_input_is_iq_replay();
+    test_trunk_vc_followed();
+    return 0;
+}

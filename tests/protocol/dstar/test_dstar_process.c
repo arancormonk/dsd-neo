@@ -52,6 +52,16 @@ static int header_decode_soft_result = 1;
 static uint8_t captured_slow_data[DSTAR_EXPECTED_SLOW_DIBITS];
 static dsd_vocoder_soft_bit captured_ambe_frames[DSTAR_VOICE_FRAMES][4][24];
 static float captured_soft_symbols[DSD_DSTAR_HEADER_CODED_BITS];
+/* The stream position whose read adopts a retune its capture recorded, where the carrier boundary moves the carrier
+   count (dsd_engine_carrier_boundary(), issue #575); -1 for none. */
+static int boundary_at = -1;
+
+static void
+note_read(dsd_state* state) {
+    if (stream_pos == boundary_at && state != NULL) {
+        state->carrier_seq++;
+    }
+}
 
 /* Never 0, so a cell the reader left untouched ({0, 0}) cannot pass for one it filled. */
 static uint8_t
@@ -72,6 +82,7 @@ reset_counters(void) {
     watchdog_history_calls = 0;
     watchdog_current_calls = 0;
     header_decode_soft_calls = 0;
+    boundary_at = -1;
     DSD_MEMSET(captured_slow_data, 0, sizeof(captured_slow_data));
     DSD_MEMSET(captured_ambe_frames, 0, sizeof(captured_ambe_frames));
     DSD_MEMSET(captured_soft_symbols, 0, sizeof(captured_soft_symbols));
@@ -81,8 +92,8 @@ reset_counters(void) {
 int
 get_dibit_and_analog_signal(dsd_opts* opts, dsd_state* state, int* out_analog_signal) {
     (void)opts;
-    (void)state;
     (void)out_analog_signal;
+    note_read(state);
     int value = stream_pos & 3;
     stream_pos++;
     dibit_calls++;
@@ -92,7 +103,7 @@ get_dibit_and_analog_signal(dsd_opts* opts, dsd_state* state, int* out_analog_si
 int
 getDibitAndSoftSymbol(dsd_opts* opts, dsd_state* state, float* out_soft_symbol) {
     (void)opts;
-    (void)state;
+    note_read(state);
     assert(out_soft_symbol != NULL);
     *out_soft_symbol = (float)(stream_pos + 1) * 0.25F;
     int value = stream_pos & 3;
@@ -383,6 +394,38 @@ test_failed_header_leaves_the_transmission_pending(void) {
     header_decode_soft_result = 1;
 }
 
+/* Issue #575: the carrier boundary moved the carrier count while the superframe was read (a replay read adopting a
+   recorded retune). Its slow data decodes only after the twenty-first voice frame, so a header, text or position
+   message read whole before the move would publish the carrier left's station after the boundary ended its call: the
+   superframe is dropped from the voice frame read across or after the move, slow data and all, as on a sync loss. */
+static void
+test_voice_superframe_split_by_a_carrier_boundary_is_dropped(void) {
+    static const int boundaries[3] = {
+        (10 * DSTAR_FRAME_DIBITS) + 30,                                /* inside the eleventh voice frame */
+        (19 * DSTAR_FRAME_DIBITS) + DSTAR_VOICE_DIBITS_PER_FRAME + 10, /* inside the last slow data */
+        (20 * DSTAR_FRAME_DIBITS) + 5,                                 /* inside the last voice frame */
+    };
+    static const int voice_frames_before[3] = {10, 20, 20};
+    for (int b = 0; b < 3; b++) {
+        static dsd_opts opts;
+        static dsd_state state;
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        opts.floating_point = 1;
+        opts.pulse_digi_out_channels = 1;
+        reset_counters();
+        boundary_at = boundaries[b];
+
+        (void)processDSTAR(&opts, &state);
+
+        assert(state.carrier_seq == 1U);
+        assert(slow_data_calls == 0);
+        assert(mbe_frame_calls == voice_frames_before[b]);
+        assert(voice_play_calls == voice_frames_before[b]);
+        assert(soft_symbol_calls == (voice_frames_before[b] + 1) * DSTAR_VOICE_DIBITS_PER_FRAME);
+    }
+}
+
 int
 main(void) {
     test_voice_process_without_telemetry();
@@ -392,6 +435,7 @@ main(void) {
     test_voice_process_confirms_on_the_second_superframe();
     test_passing_header_confirms_the_voice_frame_behind_it();
     test_failed_header_leaves_the_transmission_pending();
+    test_voice_superframe_split_by_a_carrier_boundary_is_dropped();
     printf("DSTAR_PROCESS: OK\n");
     return 0;
 }

@@ -143,7 +143,42 @@ void dsd_event_stage_clear(dsd_state* state, uint8_t slot);
 void write_event_to_log_file(const dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t swrite,
                              const char* event_string);
 void watchdog_event_history(dsd_opts* opts, dsd_state* state, uint8_t slot);
+/**
+ * Render the slot's canonical call into its staged row, opening the call's epoch first (committing the outgoing epoch's
+ * staged row as it stands) when no sync has opened it yet.
+ */
 void watchdog_event_current(const dsd_opts* opts, dsd_state* state, uint8_t slot);
+/**
+ * Attach a note (internal_str: a lockout, a skip) to the slot's canonical call and render it.
+ *
+ * The call's epoch is opened first, so a note written right after a protocol observed a new call lands on that call's
+ * row rather than on the outgoing epoch's. The note is declined when the slot has no call to carry it: no call has been
+ * observed, or the call ended and already committed its row (an ended call still finalizing takes it). Written into the
+ * blank staged row instead, it would become a note-only row when the next call opened. Use this rather than writing
+ * Items[0].internal_str and calling watchdog_event_current(). Callers must not hold an event-history transaction.
+ */
+void dsd_event_note_current_call(dsd_opts* opts, dsd_state* state, uint8_t slot, const char* note);
+
+/** The decoded per-call detail a protocol writes into the slot's call row. */
+typedef enum {
+    DSD_EVENT_DETAIL_ALIAS = 0, /**< Talker alias (Event_History::alias). */
+    DSD_EVENT_DETAIL_GPS = 1,   /**< Position report (Event_History::gps_s). */
+    DSD_EVENT_DETAIL_TEXT = 2,  /**< Text message (Event_History::text_message). */
+} dsd_event_detail_field;
+
+/**
+ * Write a protocol's decoded detail into the row of the slot's open call.
+ *
+ * Written only while the slot's canonical call is active and its epoch has been opened, so the staged row is that
+ * call's own. Otherwise the detail is declined: decoded before any call for the transmission was observed (an RF
+ * header that failed its CRC, late entry, an alias ahead of the call message), or after the call ended, it has no row
+ * to go to, and written into the staged row it would become a detail-only row or land on another call's row. Slow data
+ * and aliases repeat, so declined detail lands once the call is open. Callers must not hold an event-history
+ * transaction.
+ *
+ * @return 1 when written, 0 when declined, -1 for invalid arguments.
+ */
+int dsd_event_set_open_call_detail(dsd_state* state, uint8_t slot, dsd_event_detail_field field, const char* value);
 void dsd_event_sync_slot(dsd_opts* opts, dsd_state* state, uint8_t slot);
 int dsd_event_emit_call_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_snapshot* call,
                                const char* detail);

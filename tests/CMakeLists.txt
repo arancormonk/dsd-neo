@@ -872,6 +872,19 @@ dsd_neo_add_public_header_smoke_test(
   dsd-neo/app_control/call_view.h
   CXX
 )
+# Issue #575: the call history's access-code text, read by the Qt call history.
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_access_code_view
+  HEADERS_PUBLIC_APP_CONTROL_ACCESS_CODE_VIEW
+  dsd-neo/app_control/access_code_view.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_access_code_view_cxx
+  HEADERS_PUBLIC_APP_CONTROL_ACCESS_CODE_VIEW_CXX
+  dsd-neo/app_control/access_code_view.h
+  CXX
+)
 
 dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_app_control_scan_timing_view
@@ -1122,6 +1135,18 @@ dsd_neo_add_public_header_smoke_test(
   HEADERS_PUBLIC_CORE_CHANNEL_LABEL
   dsd-neo/core/channel_label.h
   C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_core_access_code
+  HEADERS_PUBLIC_CORE_ACCESS_CODE
+  dsd-neo/core/access_code.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_core_access_code_cxx
+  HEADERS_PUBLIC_CORE_ACCESS_CODE_CXX
+  dsd-neo/core/access_code.h
+  CXX
 )
 dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_core_talkgroup_policy
@@ -2573,6 +2598,21 @@ target_link_libraries(
 )
 add_test(NAME APP_CONTROL_CALL_VIEW COMMAND dsd-neo_test_app_control_call_view)
 
+# Issue #575: a call's access code as every frontend spells it.
+add_executable(
+    dsd-neo_test_app_control_access_code_view
+    ui/test_app_control_access_code_view.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/access_code_view.c
+)
+target_include_directories(
+    dsd-neo_test_app_control_access_code_view
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+add_test(
+    NAME APP_CONTROL_ACCESS_CODE_VIEW
+    COMMAND dsd-neo_test_app_control_access_code_view
+)
+
 add_executable(
     dsd-neo_test_app_control_scan_timing_view
     ui/test_app_control_scan_timing_view.c
@@ -3594,6 +3634,7 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/talkgroup_filter_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
+        ${PROJECT_SOURCE_DIR}/src/app_control/access_code_view.c
     )
     target_include_directories(
         dsd-neo_test_ui_qt_talkgroup_list_model
@@ -3623,7 +3664,8 @@ if(DSD_ENABLE_QT_UI)
 
     # The call-history model's ring ingest, driven against synthetic event
     # rings: the slot/seq row keying, merge-versus-duplicate decisions, the
-    # commit_rev rescan gate, and the relaunch (Activity restart) path.
+    # commit_rev rescan gate, and the relaunch (Activity restart) path. The
+    # access-code text comes from app-control (issue #575).
     find_package(Qt6 REQUIRED COMPONENTS Test)
     add_executable(
         dsd-neo_test_ui_qt_call_history_model
@@ -3631,6 +3673,7 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_filter.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
+        ${PROJECT_SOURCE_DIR}/src/app_control/access_code_view.c
     )
     target_include_directories(
         dsd-neo_test_ui_qt_call_history_model
@@ -5089,6 +5132,17 @@ add_test(
     COMMAND dsd-neo_test_core_p25_bandplan_seed
 )
 
+# Issue #575: the tuned-frequency resolver and the I/Q replay predicate (header-only)
+add_executable(
+    dsd-neo_test_core_opts_tuned_freq
+    core/test_core_opts_tuned_freq.c
+)
+target_include_directories(
+    dsd-neo_test_core_opts_tuned_freq
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+add_test(NAME CORE_OPTS_TUNED_FREQ COMMAND dsd-neo_test_core_opts_tuned_freq)
+
 add_executable(dsd-neo_test_core_channel_label core/test_core_channel_label.c)
 target_include_directories(
     dsd-neo_test_core_channel_label
@@ -5096,6 +5150,15 @@ target_include_directories(
 )
 target_link_libraries(dsd-neo_test_core_channel_label PRIVATE dsd-neo_core)
 add_test(NAME CORE_CHANNEL_LABEL COMMAND dsd-neo_test_core_channel_label)
+
+# Issue #575: the access code a call history row records, per protocol
+add_executable(dsd-neo_test_core_access_code core/test_core_access_code.c)
+target_include_directories(
+    dsd-neo_test_core_access_code
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(dsd-neo_test_core_access_code PRIVATE dsd-neo_core)
+add_test(NAME CORE_ACCESS_CODE COMMAND dsd-neo_test_core_access_code)
 
 add_executable(
     dsd-neo_test_core_state_trunk_lcn_avoid
@@ -5996,6 +6059,11 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
             "-Wl,--wrap=dsd_audio_reconfigure_output_for_input_policy"
             "-Wl,--wrap=SetScanRowModulation"
             "-Wl,--wrap=RigctlMarkSessionPassband"
+            "-Wl,--wrap=p25_sm_get_ctx"
+            "-Wl,--wrap=dmr_sm_get_ctx"
+            "-Wl,--wrap=p25_sm_abandon_carrier"
+            "-Wl,--wrap=dmr_sm_abandon_carrier"
+            "-Wl,--wrap=dsd_engine_release_tuned_call_state"
             "-Wl,--start-group"
             dsd-neo_engine
             "-Wl,--end-group"
@@ -6613,6 +6681,8 @@ if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
         PRIVATE
             "LINKER:--wrap=dsd_trunk_tuning_hook_tune_to_cc"
             "LINKER:--wrap=io_control_set_freq"
+            "LINKER:--wrap=dmr_data_burst_handler"
+            "LINKER:--wrap=dsd_audio_write"
             "LINKER:--wrap=dsd_tg_policy_call_skip_arm"
             "LINKER:--wrap=dsd_audio_ensure_analog_output"
             "LINKER:--wrap=dsd_audio_ensure_digital_output"
@@ -7101,6 +7171,20 @@ target_include_directories(
 )
 target_link_libraries(dsd-neo_test_p25_p2_lfsr PRIVATE dsd-neo_proto_p25)
 add_test(NAME P25_P2_LFSR COMMAND dsd-neo_test_p25_p2_lfsr)
+
+# P25 Phase 2 ESS across a carrier boundary, through the real RS(63,35) decoder (issue #575)
+add_executable(
+    dsd-neo_test_p25_p2_ess_carrier
+    protocol/p25/test_p25_p2_ess_carrier.c
+)
+target_include_directories(
+    dsd-neo_test_p25_p2_ess_carrier
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/protocol/p25/phase2
+)
+target_link_libraries(dsd-neo_test_p25_p2_ess_carrier PRIVATE dsd-neo_proto_p25)
+add_test(NAME P25_P2_ESS_CARRIER COMMAND dsd-neo_test_p25_p2_ess_carrier)
 
 add_executable(dsd-neo_test_p25_mac_lengths protocol/p25/test_p25_mac_lengths.c)
 target_include_directories(

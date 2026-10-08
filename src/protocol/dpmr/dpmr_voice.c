@@ -295,7 +295,7 @@ dpmr_update_superframe_part(dsd_opts* opts, dsd_state* state, const dpmr_superfr
 }
 
 void
-dpmr_print_ids(dsd_state* state) {
+dpmr_print_ids(const dsd_state* state) {
     dsd_call_snapshot call;
     DSD_MEMSET(&call, 0, sizeof(call));
     (void)dsd_call_state_get(state, 0U, &call);
@@ -318,7 +318,6 @@ dpmr_print_ids(dsd_state* state) {
             DSD_FPRINTF(stderr, "%s", KGRN);
             DSD_FPRINTF(stderr, " Channel Code=%02d", (int)state->dPMRVoiceFS2Frame.ColorCode[0]);
             DSD_FPRINTF(stderr, "%s", KNRM);
-            state->dpmr_color_code = (int)state->dPMRVoiceFS2Frame.ColorCode[0];
         }
     } else {
         DSD_FPRINTF(stderr, "%s", KRED);
@@ -350,6 +349,11 @@ dpmr_publish_call(dsd_opts* opts, dsd_state* state) {
         /* Service options, colour code and emergency all come out of a CCH that has not
          * proved itself; publishing them would put a call row on the air alone (#407). */
         return;
+    }
+    /* This carrier's colour code, read with the call it belongs to (issue #575): published here, on the confirmed
+     * path, whether or not a caller identity decoded with it. The engine puts it back to -1 between carriers. */
+    if (state->dPMRVoiceFS2Frame.ColorCode[0] != (unsigned int)(-1)) {
+        state->dpmr_color_code = (int)state->dPMRVoiceFS2Frame.ColorCode[0];
     }
     dsd_call_observation observation = {
         .protocol = state->synctype,
@@ -443,6 +447,7 @@ processdPMRvoice(dsd_opts* opts, dsd_state* state) {
     DSD_MEMSET(ctx.CCHDataHammingCorrected, 1, sizeof(ctx.CCHDataHammingCorrected));
     DSD_MEMSET(ctx.CCHDataCRC, 1, sizeof(ctx.CCHDataCRC));
 
+    const uint32_t carrier_seq = state->carrier_seq;
     dpmr_read_first_cch(opts, state, &ctx);
     dpmr_read_tch_group(opts, state, &ctx, 0);
 
@@ -450,6 +455,14 @@ processdPMRvoice(dsd_opts* opts, dsd_state* state) {
     dpmr_read_second_cch(opts, state, &ctx);
 
     dpmr_read_tch_group(opts, state, &ctx, 4);
+    if (state->carrier_seq != carrier_seq) {
+        /* The carrier boundary moved the carrier count while the two frames were read (issue #575). Nothing decodes
+           before both are in, so the first frame's CCH and the channel code, read whole before the move, would publish
+           the carrier left's call and colour code after the boundary ended that call and forgot the code: the pair is
+           dropped, as on a sync loss, with no CRC to report. */
+        DSD_FPRINTF(stderr, "\n");
+        return 0;
+    }
 
     /* Evidence is noted before anything is published, so the frame that completes a weak
      * streak still publishes itself rather than waiting for the next one. */

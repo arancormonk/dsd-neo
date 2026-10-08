@@ -8,7 +8,9 @@
  * SACCH, FACCH, CAC, FACCH2, and FACCH3 soft-decision paths.
  */
 
+#include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -57,6 +59,23 @@ static int
 expect_str(const char* tag, const char* got, const char* want) {
     if (strcmp(got, want) != 0) {
         DSD_FPRINTF(stderr, "%s: got '%s' want '%s'\n", tag, got, want);
+        return 1;
+    }
+    return 0;
+}
+
+/* The NXDN access code a call history row takes from the state now (issue #575): RAN `want_ran` when `want_valid`,
+ * else none. */
+static int
+expect_nxdn_access_code(const char* tag, const dsd_state* state, int want_valid, uint16_t want_ran) {
+    uint8_t kind = 0xA5U;
+    uint16_t value = 0xBEEFU;
+    const int valid = dsd_access_code_current(state, DSD_SYNC_NXDN_POS, 0U, 0U, &kind, &value);
+    const uint8_t want_kind = want_valid ? (uint8_t)DSD_ACCESS_CODE_RAN : (uint8_t)DSD_ACCESS_CODE_NONE;
+    const uint16_t want_value = want_valid ? want_ran : 0U;
+    if (valid != want_valid || kind != want_kind || value != want_value) {
+        DSD_FPRINTF(stderr, "%s: got valid=%d kind=%u value=%u want valid=%d kind=%u value=%u\n", tag, valid,
+                    (unsigned)kind, (unsigned)value, want_valid, (unsigned)want_kind, (unsigned)want_value);
         return 1;
     }
     return 0;
@@ -441,6 +460,7 @@ test_sacch_state_update(void) {
     rc |= expect_int("sacch-sf-good-part", state.nxdn_part_of_frame, 1);
     rc |= expect_int("sacch-sf-good-ran", (int)state.nxdn_ran, 0x15);
     rc |= expect_int("sacch-sf-good-last-ran", (int)state.nxdn_last_ran, 0x15);
+    rc |= expect_nxdn_access_code("sacch-sf-good-access-code", &state, 1, 0x15U);
     rc |= expect_u8_at("sacch-sf-good-segcrc", 1U, state.nxdn_sacch_frame_segcrc[1], 0U);
     for (size_t i = 0U; i < 18U; i++) {
         rc |= expect_u8_at("sacch-sf-good-segment-copy", i, state.nxdn_sacch_frame_segment[1][i], trellis[i + 8U]);
@@ -539,6 +559,9 @@ test_sacch2_state_update(void) {
     rc |= expect_u8_at("sacch2-single-copy-cipher-lsb", 1U, state.dmr_pdu_sf[0][1], 1U);
     rc |= expect_int("sacch2-single-payload-seed-clear", (int)state.payload_miN, 0);
     rc |= expect_int("sacch2-single-last-ran", (int)state.nxdn_last_ran, 7);
+    /* The 7 is DCR's stand-in, which the terminal shows where a RAN goes; DCR carries no RAN, so the call has no
+     * access code (issue #575). */
+    rc |= expect_nxdn_access_code("sacch2-single-no-access-code", &state, 0, 0U);
     dsd_call_snapshot call;
     rc |= expect_int("sacch2-single-canonical", dsd_call_state_get(&state, 0U, &call), 1);
     rc |= expect_int("sacch2-single-target", (int)call.ota_target_id, 777);
@@ -557,6 +580,9 @@ test_sacch2_state_update(void) {
     rc |= expect_int("sacch2-single-event-key", histories[0].Event_History_Items[0].enc_key, 0);
     rc |= expect_int("sacch2-single-event-mi", (int)histories[0].Event_History_Items[0].mi, 0);
     rc |= expect_str("sacch2-single-event-alias", histories[0].Event_History_Items[0].alias, "JPN DCR");
+    rc |= expect_int("sacch2-single-event-no-access-code", histories[0].Event_History_Items[0].access_code_kind,
+                     DSD_ACCESS_CODE_NONE);
+    rc |= expect_int("sacch2-single-event-no-access-code-value", histories[0].Event_History_Items[0].access_code, 0);
     rc |= expect_int("sacch2-single-event-revision", histories[0].revision > 1U, 1);
     rc |= expect_int("sacch2-single-cipher", state.nxdn_cipher_type, 1);
     rc |= expect_int("sacch2-single-enc-lockout", state.dmr_encL, 1);
@@ -605,6 +631,35 @@ test_sacch2_state_update(void) {
     rc |= expect_int("sacch2-bad-crc-seed-clear", (int)state.payload_miN, 0);
     rc |= expect_int("sacch2-bad-crc-no-call", dsd_call_state_get(&state, 0U, &call), 0);
     rc |= expect_str("sacch2-bad-crc-no-alias", state.generic_talker_alias[0], "");
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+/* A RAN field decoded after DCR's stand-in is a RAN again (issue #575): the stand-in marks only the value it wrote. */
+static int
+test_ran_after_dcr_stand_in_is_an_access_code(void) {
+    static const uint8_t sacch2_m_data[5] = {0};
+    static const uint8_t facch2_m_data[26] = {0};
+    static Event_History_I histories[2];
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t sacch2[32];
+    uint8_t facch2[208];
+    int rc = 0;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    init_sacch2_state(&state, histories);
+    make_sacch2_trellis(sacch2, 1U, 2U, 0x01U);
+    nxdn_handle_sacch2(&opts, &state, sacch2, sacch2_m_data, 0x2AU, 0x2AU);
+    nxdn_confirm_begin_frame(&state);
+    nxdn_handle_sacch2(&opts, &state, sacch2, sacch2_m_data, 0x2AU, 0x2AU);
+    rc |= expect_int("dcr-stand-in-written", (int)state.nxdn_last_ran, 7);
+    rc |= expect_nxdn_access_code("dcr-stand-in-no-access-code", &state, 0, 0U);
+
+    make_facch2_trellis(facch2, 1U, 0x2AU, 0x10U);
+    nxdn_handle_facch2_udch(&opts, &state, facch2, facch2_m_data, 0x456U, 0x456U, 1U);
+    rc |= expect_int("facch2-after-dcr-ran", (int)state.nxdn_last_ran, 0x2A);
+    rc |= expect_nxdn_access_code("facch2-after-dcr-access-code", &state, 1, 0x2AU);
     dsd_state_ext_free_all(&state);
     return rc;
 }
@@ -701,10 +756,27 @@ test_pich_tch_dcr_csm_alias_state(void) {
     state.nxdn_dcr_sf_message_type = 0x01U;
     make_csm_trellis(trellis, csm_digits);
 
+    /* A CSM decoded before any call is observed: the live display takes it, the history row does not. */
     nxdn_handle_pich_tch(&opts, &state, trellis, m_data, 0x123U, 0x123U, 0x08U);
     rc |= expect_str("pich-csm-alias", state.generic_talker_alias[0], "CSM 123456789");
+    rc |= expect_str("pich-csm-no-call-event-alias", histories[0].Event_History_Items[0].alias, "");
+    rc |= expect_int("pich-csm-no-call-event-revision", (int)histories[0].revision, 0);
+
+    /* Once the call is open the repeat lands on its row, with the "; " suffix. */
+    const dsd_call_observation observation = {
+        .protocol = DSD_SYNC_NXDN_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 777U,
+        .policy_target_id = 777U,
+        .ota_source_id = 777U,
+    };
+    rc |= expect_int("pich-csm-call-opens", dsd_call_state_observe(&state, &observation, DSD_CALL_BOUNDARY_BEGIN), 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    const uint64_t revision = histories[0].revision;
+    nxdn_handle_pich_tch(&opts, &state, trellis, m_data, 0x123U, 0x123U, 0x08U);
     rc |= expect_str("pich-csm-event-alias", histories[0].Event_History_Items[0].alias, "CSM 123456789; ");
-    rc |= expect_int("pich-csm-event-revision", (int)histories[0].revision, 1);
+    rc |= expect_int("pich-csm-event-revision", (int)(histories[0].revision - revision), 1);
 
     DSD_SNPRINTF(state.generic_talker_alias[0], sizeof(state.generic_talker_alias[0]), "%s", "KEEP");
     DSD_SNPRINTF(histories[0].Event_History_Items[0].alias, sizeof(histories[0].Event_History_Items[0].alias), "%s",
@@ -714,6 +786,7 @@ test_pich_tch_dcr_csm_alias_state(void) {
     nxdn_handle_pich_tch(&opts, &state, trellis, m_data, 0x123U, 0x123U, 0x08U);
     rc |= expect_str("pich-non-sb0-keeps-alias", state.generic_talker_alias[0], "KEEP");
     rc |= expect_str("pich-non-sb0-keeps-event-alias", histories[0].Event_History_Items[0].alias, "KEEP; ");
+    dsd_state_ext_free_all(&state);
     return rc;
 }
 
@@ -938,6 +1011,7 @@ main(void) {
     rc |= test_bit_window_and_state_helpers();
     rc |= test_sacch_state_update();
     rc |= test_sacch2_state_update();
+    rc |= test_ran_after_dcr_stand_in_is_an_access_code();
     rc |= test_cac_crc_failure_reset();
     rc |= test_pich_tch_dcr_csm_alias_state();
     rc |= test_facch1_crc_gates_element_decode();

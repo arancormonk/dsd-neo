@@ -638,7 +638,9 @@ test_dirwatch_sidecar_generation(void) {
     hist->Event_History_Items[0].event_time = (time_t)1700000000;
     hist->Event_History_Items[0].target_id = 1201;
     hist->Event_History_Items[0].source_id = 660045;
-    hist->Event_History_Items[0].channel = 851012500;
+    // The channel is the trunk channel number (here a P25 channel); the sidecar's freq is the row's frequency.
+    hist->Event_History_Items[0].channel = 0x10C8;
+    hist->Event_History_Items[0].freq_hz = 851012500;
     hist->Event_History_Items[0].enc = 1;
     DSD_SNPRINTF(hist->Event_History_Items[0].sysid_string, sizeof(hist->Event_History_Items[0].sysid_string), "%s",
                  "P25_TEST");
@@ -1176,7 +1178,7 @@ test_sidecar_escapes_strings_and_tgt_fallback(void) {
     hist.Event_History_Items[0].event_time = (time_t)1700000400;
     hist.Event_History_Items[0].target_id = 44;
     hist.Event_History_Items[0].source_id = 0;
-    hist.Event_History_Items[0].channel = 12345;
+    hist.Event_History_Items[0].freq_hz = 12345;
     DSD_SNPRINTF(hist.Event_History_Items[0].tgt_str, sizeof(hist.Event_History_Items[0].tgt_str), "TG \"A\"\\B\n\t%c",
                  1);
     DSD_SNPRINTF(hist.Event_History_Items[0].sysid_string, sizeof(hist.Event_History_Items[0].sysid_string),
@@ -1367,6 +1369,79 @@ test_sidecar_channel_label_fallback(void) {
     (void)remove(json_path);
     (void)remove(wav_path);
     remove_empty_dir(dir_template);
+    return rc;
+}
+
+// Export one row's sidecar into a fresh directory and return the sidecar's body in @p body, or -1.
+static int
+export_sidecar_body(const Event_History_I* hist, char* body, size_t body_size) {
+    char dir_template[DSD_TEST_PATH_MAX] = {0};
+    if (!dsd_test_mkdtemp(dir_template, sizeof(dir_template), "dsdneo_rdio_export_freq")) {
+        DSD_FPRINTF(stderr, "mkdtemp failed: %s\n", strerror(errno));
+        return -1;
+    }
+    char wav_path[DSD_TEST_PATH_MAX] = {0};
+    char json_path[DSD_TEST_PATH_MAX] = {0};
+    if (dsd_test_path_join(wav_path, sizeof(wav_path), dir_template, "freq.wav") != 0
+        || dsd_test_path_join(json_path, sizeof(json_path), dir_template, "freq.json") != 0) {
+        DSD_FPRINTF(stderr, "path join failed\n");
+        remove_empty_dir(dir_template);
+        return -1;
+    }
+    if (write_dummy_wav(wav_path) != 0) {
+        remove_empty_dir(dir_template);
+        return -1;
+    }
+    static dsd_opts opts;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    opts.rdio_mode = DSD_RDIO_MODE_DIRWATCH;
+    int rc = 0;
+    if (dsd_rdio_export_call(&opts, hist, wav_path) != 0 || read_file(json_path, body, body_size) != 0) {
+        DSD_FPRINTF(stderr, "export failed for frequency sidecar\n");
+        rc = -1;
+    }
+    (void)remove(json_path);
+    (void)remove(wav_path);
+    remove_empty_dir(dir_template);
+    return rc;
+}
+
+// The sidecar's freq is the frequency the call was heard on (Event_History::freq_hz). A row's channel is a trunk
+// channel number, an LCN or a dPMR colour code, never Hz, and must not be read as one even when it is large enough to
+// pass the 1 MHz floor. A frequency that does not fit the field, or sits below the floor, is reported as 0.
+static int
+test_sidecar_freq_comes_from_the_row_frequency(void) {
+    static Event_History_I hist;
+
+    struct {
+        const char* label;
+        uint32_t channel;
+        int64_t freq_hz;
+        const char* want;
+    } cases[] = {
+        {"channel number without a frequency", 851012500U, 0, "\"freq\": 0,"},
+        {"row frequency beside a channel number", 0x10C8U, 453212500, "\"freq\": 453212500,"},
+        {"frequency past 32 bits", 0U, INT64_C(5000000000), "\"freq\": 0,"},
+        {"negative frequency", 0U, -851012500, "\"freq\": 0,"},
+        {"sub-MHz frequency", 0U, 999999, "\"freq\": 0,"},
+    };
+
+    int rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        DSD_MEMSET(&hist, 0, sizeof(hist));
+        hist.Event_History_Items[0].event_time = (time_t)1700000800;
+        hist.Event_History_Items[0].target_id = 1201;
+        hist.Event_History_Items[0].channel = cases[i].channel;
+        hist.Event_History_Items[0].freq_hz = cases[i].freq_hz;
+        char body[4096];
+        if (export_sidecar_body(&hist, body, sizeof body) != 0) {
+            return 1;
+        }
+        if (!strstr(body, cases[i].want)) {
+            DSD_FPRINTF(stderr, "%s: sidecar missing %s\n%s\n", cases[i].label, cases[i].want, body);
+            rc = 1;
+        }
+    }
     return rc;
 }
 
@@ -1671,6 +1746,7 @@ main(void) {
     rc |= test_sidecar_escapes_strings_and_tgt_fallback();
     rc |= test_sidecar_private_fallback_and_malformed_wav_duration();
     rc |= test_sidecar_channel_label_fallback();
+    rc |= test_sidecar_freq_comes_from_the_row_frequency();
     rc |= test_api_shutdown_drains_queue();
     rc |= test_api_delete_after_successful_upload();
     rc |= test_api_upload_does_not_follow_redirect();

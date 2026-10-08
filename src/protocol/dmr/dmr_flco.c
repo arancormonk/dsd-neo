@@ -739,8 +739,14 @@ dmr_flco_publish_voice(dmr_flco_ctx* ctx) {
          * (handle_voice_sync() in dmr_trunk_sm.c), and dsd_call_state_observe()
          * leaves a previously observed channel alone when an observation omits
          * one, so saying nothing here is what preserves the SM's value.
+         *
+         * The LC carries no frequency either. The voice channel's stands in only
+         * while the receiver followed a grant to it: with trunking off every
+         * decoded grant writes trunk_vc_freq[] for display (dmr_csbk.c) while the
+         * receiver stays put, so there it names another channel, not the carrier
+         * this call is decoded on (issue #575).
          */
-        .frequency_hz = ctx->state->trunk_vc_freq[ctx->slot],
+        .frequency_hz = dsd_opts_trunk_vc_followed(ctx->opts) ? ctx->state->trunk_vc_freq[ctx->slot] : 0,
         .service_options = ctx->so,
         .emergency = (uint8_t)((ctx->so & 0x80U) != 0U),
         .priority = (uint8_t)(ctx->so & 0x03U),
@@ -1013,14 +1019,9 @@ dmr_flco_slot_can_decrypt(const dmr_flco_ctx* ctx) {
 
 static void
 dmr_flco_emit_enc_lockout_event(dmr_flco_ctx* ctx) {
-    dsd_event_history_transaction transaction;
-    dsd_event_history_transaction_begin(ctx->state, &transaction);
-    DSD_SNPRINTF(ctx->state->event_history_s[ctx->slot].Event_History_Items[0].internal_str,
-                 sizeof(ctx->state->event_history_s[ctx->slot].Event_History_Items[0].internal_str),
-                 "Target: %d; has been locked out; Encryption Lock Out Enabled.", ctx->target);
-    dsd_event_history_mark_dirty(&ctx->state->event_history_s[ctx->slot]);
-    dsd_event_history_transaction_end(&transaction);
-    watchdog_event_current(ctx->opts, ctx->state, ctx->slot);
+    char note[128];
+    DSD_SNPRINTF(note, sizeof note, "Target: %d; has been locked out; Encryption Lock Out Enabled.", ctx->target);
+    dsd_event_note_current_call(ctx->opts, ctx->state, ctx->slot, note);
 }
 
 // Arm the ledger for a corroborated, undecryptable encrypted transmission and force the
