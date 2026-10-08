@@ -14,9 +14,10 @@
  *   1. estimates the offset from the bin from the slope of the sub-block phases -- a coarse
  *      pulse-pair estimate, refined by a magnitude-weighted least-squares fit -- which is what
  *      separates 67.0 from 69.3 Hz inside 250 ms where plain Goertzel bins cannot,
- *   2. snaps the fine estimate to the table within the tone's gate: +/-0.8 Hz, or half the
- *      distance to its nearest neighbour where that is less (150.0 and 151.4 Hz, 1.4 Hz apart,
- *      get 0.7 Hz each), so no estimate is ever within the gates of two tones, and
+ *   2. snaps the fine estimate to the table within the tone's gate: +/-0.8 Hz, or 0.5 % of the
+ *      tone where that is more (from 160 Hz up), or half the distance to its nearest neighbour
+ *      where that is less (150.0 and 151.4 Hz, 1.4 Hz apart, get 0.7 Hz each), so no estimate is
+ *      ever within the gates of two tones, and
  *   3. measures rho, the share of the sub-audible band energy the tone explains, with the
  *      window made coherent at the fine estimate,
  *
@@ -51,6 +52,22 @@
  * 100 ms holds nothing else keeps the verdict, so a dropout's silence alone never ends a lock or
  * makes one. A carrier that keeps dropping out still cannot keep a lock the tone has left:
  * every opening makes the two hops that read it count.
+ *
+ * Transmitter tone error (issue #643). The rules above -- the on-value rules -- confirm a tone only
+ * from estimates within 0.5 Hz of its value, but encoders are specified to 0.5 % of it: a radio
+ * 0.4 % high on 150.0 Hz sends 150.6 Hz, which they never confirm. Where they qualify nothing, a hop
+ * may also qualify a tone from an estimate further off, up to 0.5 % of the tone (never past its
+ * gate), as far as the estimate's own precision allows (ctcss_tone_error_gate_hz()); only a window
+ * that carries the tone throughout is weighed that way. The on-value rules stay first at every
+ * step: a hop they qualify wins over one that rests on tone error; a lock that rests on tone error
+ * alone (not main_confirmed) needs the late windows, may not pre-empt a tone they are acquiring,
+ * yields to any tone they confirm, and is reported as off-value, which the tone policy never
+ * rejects on before its window ends (dsd_analog_rx_report::off_value); a lock is only handed to a
+ * candidate they would lock. The hold grows with the offset the tone locked at, and never rejects
+ * what acquisition would take. A lock that rests on tone error alone is none for the on-value
+ * rules: what they keep -- their candidates, late windows and holdoff, and the frequency a lock of
+ * theirs is measured from -- is left as it would be without it. Where nothing rests on tone error,
+ * the detector does exactly what the on-value rules do.
  */
 
 #include <dsd-neo/core/safe_api.h>
@@ -72,14 +89,14 @@ static const double k_acquire_rho = 0.35;
    well under one hop in 10^12, while a tone at 0 dB in-band reads about 0.5. */
 static const double k_late_acquire_rho = 0.25;
 static const double k_hold_rho = 0.15;
-/* The snap gate: a locked tone holds while its own bin's fine estimate stays this close to the
-   table value. A tone whose nearest neighbour is closer than twice this gets half that distance
-   instead (ctcss_gate_hz()). */
+/* The snap gate's floor: a locked tone holds while its own bin's fine estimate stays this close to the
+   table value, or k_tone_error_frac of it where that is more. A tone whose nearest neighbour is closer
+   than twice that gets half that distance instead (ctcss_tables_build()). */
 static const double k_snap_hz = 0.8;
 /* Estimates this close are the same distance from two tones (snap ties). */
 static const double k_snap_tie_hz = 1e-9;
-/* A candidate for one tone of a close pair (150.0 and 151.4 Hz, 1.4 Hz apart; ctcss_close_neighbour()) whose newest
-   estimate sits more than this toward the other tone needs one more agreeing hop to lock
+/* A candidate for one tone of a close pair (150.0 and 151.4 Hz, 1.4 Hz apart; dsd_analog_ctcss_tables::close_neighbour)
+   whose newest estimate sits more than this toward the other tone needs one more agreeing hop to lock
    (DSD_ANALOG_CTCSS_PAIR_LEAN_HOPS; issue #623). The pair's acquisition gates are 0.4 Hz apart, so a noisy
    estimate of either tone can reach the other's: at 0 dB in-band the 250 ms estimate scatters by about 0.19 Hz, and
    by more while the window still holds the noise before a tone's onset. A tone set 0.2 Hz toward the other was then
@@ -94,6 +111,26 @@ static const double k_pair_lean_hz = 0.3;
    as 68.2 Hz, 1.1 Hz from 69.3, reaches the 0.8 Hz snap gate on several percent of hops but
    this one on well under one in a thousand, while a table tone misses it on about 1%. */
 static const double k_acquire_snap_hz = 0.5;
+/* Transmitter tone error (issue #643): CTCSS encoders are specified to 0.5 % (the CML MX315A datasheet: "a tone
+   accuracy within 0.5%"), and radio decoders accept 1-2 Hz either side of a tone (Tait TN-1031). A radio 0.4 % high on
+   150.0 Hz sends 150.6 Hz, which the 0.5 Hz gate above never confirms. So a tone may also be confirmed from estimates
+   up to this share of its value off it -- never past its gate (ctcss_tables_build()) -- as far as the estimate is
+   precise enough to say so: the gate is shortened by k_name_sigmas times the estimate's own standard deviation
+   (ctcss_estimate_variance()), and never shorter than k_acquire_snap_hz. Only a window that carries the tone in every
+   sub-block (ctcss_window_stationary()) is measured that way; tones below 100 Hz, where 0.5 % is less than 0.5 Hz,
+   never are. */
+static const double k_tone_error_frac = 0.005;
+static const double k_name_sigmas = 3.0;
+/* The least standard deviation an estimate is credited with: what the tone's own negative-frequency image can bend the
+   fitted slope by (a few hundredths of a hertz at most above 100 Hz), so a clean tone just short of a gate's edge is
+   never named on that bias alone. */
+static const double k_min_est_sd_hz = 0.01;
+/* The variance reported for a window with no usable fit: far wider than any gate. */
+static const double k_no_est_var_hz2 = 1e6;
+/* A sub-block below this share of the window's median coherent amplitude at the bin means the window does not carry the
+   tone throughout -- an onset, a fade or a dropout -- where the fit leans toward its own bin (issue #623) and its
+   variance cannot be trusted. */
+static const double k_stationary_frac = 0.5;
 /* Weighted RMS phase residual (radians) above which the window is not one steady tone,
    whatever the noise: a tone at 0 dB in-band SNR fits to about 0.15 rad. */
 static const double k_max_residual_rad = 0.5;
@@ -190,6 +227,7 @@ ctcss_cand_clear(dsd_analog_ctcss_cand* cand) {
     cand->hz = 0.0;
     cand->prev_hz = 0.0;
     cand->run = 0;
+    cand->narrow_run = 0;
 }
 
 static void
@@ -212,6 +250,7 @@ ctcss_reset(void* ctx) {
     det->ring_head = 0;
     det->ring_count = 0;
     det->fresh = 0;
+    det->main_fresh = 0;
     det->sub_fill = 0;
     det->sub_open = 0;
     det->prev_open = 0;
@@ -224,13 +263,21 @@ ctcss_reset(void* ctx) {
     ctcss_cand_clear(&det->cand);
     ctcss_cand_clear(&det->long_cand);
     det->fail_run = 0;
+    det->lock_offset_hz = 0.0;
+    det->main_confirmed = 0;
+    det->main_fail_run = 0;
+    det->main_lost = 0;
+    det->main_none = 0;
     det->holdoff = 0;
+    det->wide_holdoff = 0;
     det->open_samples = 0;
     DSD_MEMSET(det->wide, 0, sizeof(det->wide));
     det->wide_pos = 0;
     det->last_hop.best_index = -1;
     det->last_hop.snapped = -1;
 }
+
+static void ctcss_tables_build(dsd_analog_ctcss_tables* t);
 
 static void
 ctcss_configure(void* ctx, double rate_hz) {
@@ -252,39 +299,56 @@ ctcss_configure(void* ctx, double rate_hz) {
         det->step_re[k] = cos(w);
         det->step_im[k] = -sin(w);
     }
+    ctcss_tables_build(&det->tables);
     ctcss_reset(det);
 }
 
-/**
- * @brief The snap and hold gate of table tone @p k: k_snap_hz, or half the distance to its nearest
- * neighbour where that is less, so the gates of two tones never overlap. Only 150.0 and 151.4 Hz,
- * 1.4 Hz apart, get less than k_snap_hz: 0.7 Hz each (the next closest pair, 67.0 and 69.3 Hz, is
- * 2.3 Hz apart).
- */
+/** @brief Half the distance from table tone @p k to its nearest neighbour. */
 static double
-ctcss_gate_hz(int k) {
-    double gate = k_snap_hz;
+ctcss_half_spacing_hz(int k) {
+    double half = 1e9; /* no neighbour on that side: no limit (finite, for fast-math builds) */
     if (k > 0) {
-        gate = fmin(gate, 0.5 * (ctcss_tone_hz(k) - ctcss_tone_hz(k - 1)));
+        half = fmin(half, 0.5 * (ctcss_tone_hz(k) - ctcss_tone_hz(k - 1)));
     }
     if (k + 1 < DSD_CTCSS_TONE_COUNT) {
-        gate = fmin(gate, 0.5 * (ctcss_tone_hz(k + 1) - ctcss_tone_hz(k)));
+        half = fmin(half, 0.5 * (ctcss_tone_hz(k + 1) - ctcss_tone_hz(k)));
     }
-    return gate;
+    return half;
 }
 
-/** @brief The other tone of a close pair: the neighbour of table tone @p k that narrowed its gate below k_snap_hz
- *  (ctcss_gate_hz()), or -1. Only 150.0 and 151.4 Hz have one. */
-static int
-ctcss_close_neighbour(int k) {
-    const double gate = ctcss_gate_hz(k);
-    if (!(gate < k_snap_hz - k_snap_tie_hz)) {
-        return -1;
+/**
+ * @brief The per-tone gates (issue #643), computed once per configuration: ctcss_snap() runs over every tone for
+ * every bin of every window, and computing them there cost about a third of the detector's time.
+ *
+ * - tolerance: k_snap_hz, or k_tone_error_frac of the tone where that is more (from 160 Hz up);
+ * - gate, the snap and hold gate: the tolerance, or half the distance to the nearest neighbour where that is less, so
+ *   the gates of two tones never overlap. Only 150.0 and 151.4 Hz, 1.4 Hz apart, get less than their tolerance: 0.7 Hz
+ *   each (the next closest pair, 67.0 and 69.3 Hz, is 2.3 Hz apart);
+ * - on-value gate, what the gate was before tone error was allowed for: k_snap_hz, or half the distance to the nearest
+ *   neighbour where that is less. The on-value hold (main_confirmed) is judged against it;
+ * - close neighbour: the neighbour that narrowed the gate below the tolerance, or -1;
+ * - noise shape: an FM discriminator's noise density rises as f^2, so at the tone it is 3 (f / B)^2 times the band's
+ *   average, B = DSD_ANALOG_RX_BAND_HZ, and never taken below the average.
+ */
+static void
+ctcss_tables_build(dsd_analog_ctcss_tables* t) {
+    for (int k = 0; k < DSD_CTCSS_TONE_COUNT; k++) {
+        const double hz = ctcss_tone_hz(k);
+        const double half = ctcss_half_spacing_hz(k);
+        t->tolerance_hz[k] = fmax(k_snap_hz, k_tone_error_frac * hz);
+        t->gate_hz[k] = fmin(t->tolerance_hz[k], half);
+        t->on_value_gate_hz[k] = fmin(k_snap_hz, half);
+        const double f = hz / DSD_ANALOG_RX_BAND_HZ;
+        t->noise_shape[k] = fmax(1.0, 3.0 * f * f);
+        t->close_neighbour[k] = -1;
+        if (t->gate_hz[k] < t->tolerance_hz[k] - k_snap_tie_hz) {
+            if (k > 0 && fabs((hz - ctcss_tone_hz(k - 1)) - (2.0 * t->gate_hz[k])) <= k_snap_tie_hz) {
+                t->close_neighbour[k] = k - 1;
+            } else if (k + 1 < DSD_CTCSS_TONE_COUNT) {
+                t->close_neighbour[k] = k + 1;
+            }
+        }
     }
-    if (k > 0 && fabs((ctcss_tone_hz(k) - ctcss_tone_hz(k - 1)) - (2.0 * gate)) <= k_snap_tie_hz) {
-        return k - 1;
-    }
-    return k + 1 < DSD_CTCSS_TONE_COUNT ? k + 1 : -1;
 }
 
 /** @brief Nearest table tone whose gate holds @p hz, or -1: also -1 for an estimate the same distance
@@ -292,13 +356,13 @@ ctcss_close_neighbour(int k) {
  *  edge counts as inside within k_snap_tie_hz, so where two gates meet both tones are compared, and
  *  the tie found, whatever the rounding of their distances and gates. */
 static int
-ctcss_snap(double hz) {
+ctcss_snap(const dsd_analog_ctcss_tables* t, double hz) {
     int best = -1;
     double best_err = 0.0;
     int tied = 0;
     for (int k = 0; k < DSD_CTCSS_TONE_COUNT; k++) {
         const double err = fabs(hz - ctcss_tone_hz(k));
-        if (err > ctcss_gate_hz(k) + k_snap_tie_hz) {
+        if (err > t->gate_hz[k] + k_snap_tie_hz) {
             continue;
         }
         if (best < 0 || err < best_err - k_snap_tie_hz) {
@@ -314,7 +378,9 @@ ctcss_snap(double hz) {
 
 int
 dsd_analog_ctcss_snap_index(double hz) {
-    return ctcss_snap(hz);
+    dsd_analog_ctcss_tables t;
+    ctcss_tables_build(&t);
+    return ctcss_snap(&t, hz);
 }
 
 /** @brief Coarse per-sub-block phase advance: the magnitude-weighted pulse-pair estimate. */
@@ -336,6 +402,8 @@ typedef struct {
     double advance;                           /**< per-sub-block phase advance, radians */
     double residual;                          /**< magnitude-weighted RMS residual, radians */
     double err[DSD_ANALOG_CTCSS_LONG_WINDOW]; /**< per-sub-block residual, radians */
+    double jm;                                /**< weighted mean sub-block index */
+    double sxx;                               /**< weighted sum of squared index deviations; 0 = no usable fit */
 } ctcss_fit;
 
 /**
@@ -370,6 +438,8 @@ ctcss_refine_advance(const dsd_analog_ctcss* det, int span, int bin, double coar
     }
     fit->advance = coarse;
     fit->residual = M_PI;
+    fit->jm = 0.0;
+    fit->sxx = 0.0;
     if (!(sw > 0.0)) {
         /* An empty bin has nothing to fit: every sub-block counts as fully unexplained. */
         for (int j = 0; j < span; j++) {
@@ -386,6 +456,8 @@ ctcss_refine_advance(const dsd_analog_ctcss* det, int span, int bin, double coar
         sxx += w[j] * ((double)j - jm) * ((double)j - jm);
     }
     const double slope = (sxx > 0.0) ? sxy / sxx : 0.0;
+    fit->jm = jm;
+    fit->sxx = sxx;
     double se = 0.0;
     for (int j = 0; j < span; j++) {
         fit->err[j] = r[j] - (rm + (slope * ((double)j - jm)));
@@ -436,6 +508,55 @@ ctcss_fit_chi2(const dsd_analog_ctcss* det, int span, int bin, const ctcss_fit* 
         chi2 += fit->err[j] * fit->err[j] / var;
     }
     return chi2 / (double)(span - 2);
+}
+
+/**
+ * @brief Variance of a window's fine estimate at @p bin, Hz^2 (issue #643): how far off its table value the estimate
+ * may be trusted to say a tone is.
+ *
+ * The fit weights each sub-block's phase by its bin power w_j, which is inverse to the phase noise the sub-block
+ * carries, so the slope's variance is sum (w_j (j - jm))^2 v_j / sxx^2, with v_j the phase variance the noise model of
+ * ctcss_fit_chi2() gives -- here without its floor, and with the noise density at the tone (the discriminator's f^2
+ * rise, dsd_analog_ctcss_tables::noise_shape). For a window that carries the tone throughout, in white noise, that is
+ * the Cramer-Rao bound: 0.19 Hz at 0 dB in-band over 250 ms. Then it is scaled up by the fit's own reduced chi-square
+ * against the same variances, floored at k_min_phase_var as the qualification's is (the floor that absorbs the tone's
+ * own negative-frequency image), wherever the phase wanders more than the model allows: coloured noise, a voice's
+ * pitch, a phase disturbance. Computed only for a bin the tone-error gate is weighing.
+ */
+static double
+ctcss_estimate_variance(const dsd_analog_ctcss* det, int span, int bin) {
+    ctcss_fit fit;
+    ctcss_refine_advance(det, span, bin, ctcss_coarse_advance(det, span, bin), &fit);
+    if (!(fit.sxx > 0.0) || span <= 2) {
+        return k_no_est_var_hz2;
+    }
+    const double noise_bin_gain = det->rate_hz / (2.0 * DSD_ANALOG_RX_BAND_HZ) * det->tables.noise_shape[bin];
+    double lever = 0.0;
+    double chi2 = 0.0;
+    for (int j = 0; j < span; j++) {
+        const double bin_power = ctcss_mag2(ctcss_ring_at(det, span, j, bin));
+        const double tone_energy = 2.0 * bin_power / (double)det->sub_len;
+        double noise_energy = ctcss_ring_energy_at(det, span, j) - tone_energy;
+        if (!(noise_energy > 0.0)) {
+            noise_energy = 0.0;
+        }
+        const double noise_in_bin = noise_energy * noise_bin_gain;
+        double snr = 1e9;
+        if (noise_in_bin > 0.0) {
+            snr = (bin_power / noise_in_bin) - 1.0;
+        }
+        if (snr < 0.0) {
+            snr = 0.0;
+        }
+        const double var = k_max_phase_var / (1.0 + (2.0 * k_max_phase_var * snr));
+        chi2 += fit.err[j] * fit.err[j] / fmax(var, k_min_phase_var);
+        const double lw = bin_power * ((double)j - fit.jm);
+        lever += lw * lw * var;
+    }
+    const double inflate = fmax(1.0, chi2 / (double)(span - 2));
+    const double conv = det->rate_hz / (2.0 * M_PI * (double)det->sub_len);
+    const double var_slope = lever / (fit.sxx * fit.sxx) * inflate;
+    return (var_slope * conv * conv) + (k_min_est_sd_hz * k_min_est_sd_hz);
 }
 
 /**
@@ -496,20 +617,115 @@ ctcss_measure_bin(const dsd_analog_ctcss* det, int span, int bin, dsd_analog_ctc
     out->est_hz = ctcss_tone_hz(bin) + (fit.advance * det->rate_hz / (2.0 * M_PI * (double)det->sub_len));
     out->rho = ctcss_rho(det, span, bin, fit.advance, 0, span);
     out->share = ctcss_full_share(det, span, out->rho, 0, span);
-    out->snapped = ctcss_snap(out->est_hz);
+    out->snapped = ctcss_snap(&det->tables, out->est_hz);
     out->recent_rho = 0.0;
     out->harmonic = 0.0;
+    out->span = span;
+    out->est_var_hz2 = -1.0;
+    out->stationary = -1;
 }
 
+/* What a qualifying hop passes whatever its frequency: an estimate that snaps to the table, from its own bin,
+   explaining enough of the band and of the full input, with a phase fit that is one steady tone. */
 static int
-ctcss_hop_qualifies(const dsd_analog_ctcss_hop* hop, double acquire_rho) {
+ctcss_hop_fit_ok(const dsd_analog_ctcss_hop* hop, double acquire_rho) {
     /* A 50 ms sub-block only resolves offsets up to 10 Hz from its bin: a signal 10.7 Hz
        below a bin reads as 9.3 Hz above it. The table is dense enough that every supported
        tone is within 4.1 Hz of its nearest bin, so an estimate further than 5 Hz from the bin
        that produced it is an alias, never a tone. */
-    return hop->snapped >= 0 && fabs(hop->est_hz - ctcss_tone_hz(hop->snapped)) <= k_acquire_snap_hz
-           && fabs(hop->est_hz - ctcss_tone_hz(hop->best_index)) <= k_max_bin_offset_hz && hop->rho >= acquire_rho
-           && hop->share >= k_min_full_share && hop->residual <= k_max_residual_rad && hop->chi2 <= k_max_chi2;
+    return hop->snapped >= 0 && fabs(hop->est_hz - ctcss_tone_hz(hop->best_index)) <= k_max_bin_offset_hz
+           && hop->rho >= acquire_rho && hop->share >= k_min_full_share && hop->residual <= k_max_residual_rad
+           && hop->chi2 <= k_max_chi2;
+}
+
+/** @brief How far @p hop's estimate sits off the table tone it snapped to. */
+static double
+ctcss_hop_offset_hz(const dsd_analog_ctcss_hop* hop) {
+    return fabs(hop->est_hz - ctcss_tone_hz(hop->snapped));
+}
+
+/* On its value: within k_acquire_snap_hz of the table tone, the frequency hysteresis that keeps an off-table tone such
+   as 68.2 Hz off 69.3. These on-value rules are the detector as it stood before tone error was allowed for (issue
+   #643), and they are applied first at every step: a hop they qualify is taken whatever else qualifies, and tone error
+   is weighed only where they find nothing. */
+static int
+ctcss_hop_qualifies_on_value(const dsd_analog_ctcss_hop* hop, double acquire_rho) {
+    return ctcss_hop_fit_ok(hop, acquire_rho) && ctcss_hop_offset_hz(hop) <= k_acquire_snap_hz;
+}
+
+/**
+ * @brief Whether every sub-block of the newest @p span carries @p bin's tone: none below k_stationary_frac of the
+ * window's median coherent amplitude. An onset, a fade or a dropout inside the window fails it.
+ */
+static int
+ctcss_window_stationary(const dsd_analog_ctcss* det, int span, int bin) {
+    if (span < 1 || span > DSD_ANALOG_CTCSS_LONG_WINDOW) {
+        return 0;
+    }
+    double mag[DSD_ANALOG_CTCSS_LONG_WINDOW] = {0.0};
+    double sorted[DSD_ANALOG_CTCSS_LONG_WINDOW] = {0.0};
+    for (int j = 0; j < span; j++) {
+        mag[j] = sqrt(ctcss_mag2(ctcss_ring_at(det, span, j, bin)));
+        /* Insertion sort: at most twelve values. */
+        int i = j;
+        while (i > 0 && sorted[i - 1] > mag[j]) {
+            sorted[i] = sorted[i - 1];
+            i--;
+        }
+        sorted[i] = mag[j];
+    }
+    const double median = sorted[span / 2];
+    if (!(median > 0.0)) {
+        return 0;
+    }
+    for (int j = 0; j < span; j++) {
+        if (!(mag[j] >= k_stationary_frac * median)) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+/**
+ * @brief The tone-error gate of @p hop's tone (issue #643): k_tone_error_frac of the tone, never past its gate,
+ * shortened by k_name_sigmas times the estimate's standard deviation, and never less than k_acquire_snap_hz -- which is
+ * what it is for a tone below 100 Hz and for a window that does not carry the tone throughout. Computes, and keeps in
+ * @p hop, the window's stationarity and the estimate's variance, each only when the gate needs it.
+ */
+static double
+ctcss_tone_error_gate_hz(const dsd_analog_ctcss* det, dsd_analog_ctcss_hop* hop) {
+    const int k = hop->snapped;
+    const double reach = fmin(k_tone_error_frac * ctcss_tone_hz(k), det->tables.gate_hz[k]);
+    if (!(reach > k_acquire_snap_hz)) {
+        return k_acquire_snap_hz;
+    }
+    if (hop->stationary < 0) {
+        hop->stationary = ctcss_window_stationary(det, hop->span, hop->best_index);
+    }
+    if (!hop->stationary) {
+        return k_acquire_snap_hz;
+    }
+    if (hop->est_var_hz2 < 0.0) {
+        hop->est_var_hz2 = ctcss_estimate_variance(det, hop->span, hop->best_index);
+    }
+    return fmax(k_acquire_snap_hz, reach - (k_name_sigmas * sqrt(hop->est_var_hz2)));
+}
+
+/* Off its value by transmitter tone error: every other test passed, the estimate more than k_acquire_snap_hz off the
+   table tone but within its tone-error gate. */
+static int
+ctcss_hop_qualifies_tone_error(const dsd_analog_ctcss* det, dsd_analog_ctcss_hop* hop, double acquire_rho) {
+    if (!ctcss_hop_fit_ok(hop, acquire_rho)) {
+        return 0;
+    }
+    const double off = ctcss_hop_offset_hz(hop);
+    return off > k_acquire_snap_hz && off <= ctcss_tone_error_gate_hz(det, hop);
+}
+
+/* Either way. */
+static int
+ctcss_hop_qualifies(const dsd_analog_ctcss* det, dsd_analog_ctcss_hop* hop, double acquire_rho) {
+    return ctcss_hop_qualifies_on_value(hop, acquire_rho) || ctcss_hop_qualifies_tone_error(det, hop, acquire_rho);
 }
 
 /**
@@ -518,22 +734,37 @@ ctcss_hop_qualifies(const dsd_analog_ctcss_hop* hop, double acquire_rho) {
  * Every bin rather than only the loudest one: under voice, energy the transmitter's voice
  * filter let through just below 300 Hz can outweigh a tone at the bottom of the table, and
  * the bin that sees the tone best is the one whose window the tone explains best. A bin
- * whose fine estimate snaps to the table and passes the fit wins over one that does not;
- * among equals the larger rho wins.
+ * the on-value rules qualify wins over one that qualifies by tone error alone (issue #643), which wins over one that
+ * does not qualify; among equals the larger rho wins. So the winner is the on-value rules' own whenever they qualify
+ * anything. @p alt, when not NULL, gets the best tone-error qualifier (alt->evaluated 0 when there is none): what an
+ * on-value winner the harmonic test then rejects hands over to.
  */
 static void
-ctcss_measure(const dsd_analog_ctcss* det, int span, double acquire_rho, dsd_analog_ctcss_hop* hop) {
-    int have_qualified = 0;
+ctcss_measure(const dsd_analog_ctcss* det, int span, double acquire_rho, dsd_analog_ctcss_hop* hop,
+              dsd_analog_ctcss_hop* alt) {
+    int best_rank = 0;
     hop->rho = -1.0;
+    if (alt) {
+        DSD_MEMSET(alt, 0, sizeof(*alt));
+        alt->rho = -1.0;
+    }
     for (int k = 0; k < DSD_CTCSS_TONE_COUNT; k++) {
         dsd_analog_ctcss_hop trial;
         ctcss_measure_bin(det, span, k, &trial);
-        const int qualified = ctcss_hop_qualifies(&trial, acquire_rho);
-        if (qualified < have_qualified || (qualified == have_qualified && !(trial.rho > hop->rho))) {
+        int rank = 0;
+        if (ctcss_hop_qualifies_on_value(&trial, acquire_rho)) {
+            rank = 2;
+        } else if (ctcss_hop_qualifies_tone_error(det, &trial, acquire_rho)) {
+            rank = 1;
+            if (alt && trial.rho > alt->rho) {
+                *alt = trial;
+            }
+        }
+        if (rank < best_rank || (rank == best_rank && !(trial.rho > hop->rho))) {
             continue;
         }
         *hop = trial;
-        have_qualified = qualified;
+        best_rank = rank;
     }
 }
 
@@ -595,24 +826,43 @@ _Static_assert(DSD_ANALOG_CTCSS_ACQUIRE_HOPS >= 2, "a lock takes its burst refer
  * @p burst_ref_hz: the same candidate's estimate from the qualifying hop before this one.
  */
 static void
-ctcss_lock(dsd_analog_ctcss* det, int index, double hz, double burst_ref_hz) {
+ctcss_lock(dsd_analog_ctcss* det, int index, double hz, double burst_ref_hz, int main_confirmed) {
     det->state = DSD_ANALOG_TONE_STATE_LOCKED;
     det->locked = index;
     det->locked_hz = hz;
     det->burst_ref_hz = burst_ref_hz;
     det->fail_run = 0;
+    det->lock_offset_hz = fabs(hz - ctcss_tone_hz(index));
+    det->main_confirmed = main_confirmed;
+    det->main_fail_run = 0;
+    det->main_lost = 0;
 }
 
 static void
 ctcss_unlock(dsd_analog_ctcss* det) {
     /* What the ring holds from before the loss may still carry the tone that was lost: the late
-       acquisition window starts over from here. */
+       acquisition window starts over from here -- for the on-value rules only when the lock was theirs, since a lock
+       that rested on tone error alone never existed for them (issue #643). Their verdict is then NONE if they lost this
+       lock or an earlier one, or have read no tone for 500 ms of carrier, and still ACQUIRING otherwise. */
+    const int theirs = det->main_confirmed || det->main_lost;
     det->fresh = 0;
-    det->state = DSD_ANALOG_TONE_STATE_NONE;
+    if (det->main_confirmed) {
+        det->main_fresh = 0;
+    }
+    if (theirs) {
+        det->main_none = 1;
+    }
+    const int64_t no_tone_samples = (int64_t)llround(det->rate_hz * (double)DSD_ANALOG_CTCSS_NO_TONE_MS / 1000.0);
+    det->state = det->main_none || det->open_samples >= no_tone_samples ? DSD_ANALOG_TONE_STATE_NONE
+                                                                        : DSD_ANALOG_TONE_STATE_ACQUIRING;
     det->locked = -1;
     det->locked_hz = 0.0;
     det->burst_ref_hz = 0.0;
     det->fail_run = 0;
+    det->lock_offset_hz = 0.0;
+    det->main_confirmed = 0;
+    det->main_fail_run = 0;
+    det->main_lost = 0;
 }
 
 /** @brief Most pieces the harmonic check splits a 250 ms window into (about 25 ms each), and
@@ -730,7 +980,7 @@ ctcss_passes_harmonic(const dsd_analog_ctcss* det, int span, dsd_analog_ctcss_ho
 }
 
 /* Feed a hop into @p cand: the run of consecutive hops that qualified the same table tone with
-   estimates that agree. */
+   estimates that agree, and the part of it the on-value rules alone qualified (narrow_run). */
 static void
 ctcss_track(dsd_analog_ctcss_cand* cand, int qualified, const dsd_analog_ctcss_hop* hop) {
     if (!qualified) {
@@ -738,58 +988,211 @@ ctcss_track(dsd_analog_ctcss_cand* cand, int qualified, const dsd_analog_ctcss_h
         return;
     }
     const int stable = hop->snapped == cand->index && fabs(hop->est_hz - cand->hz) <= k_stable_hz;
+    const int on_value = ctcss_hop_offset_hz(hop) <= k_acquire_snap_hz;
     cand->run = stable ? cand->run + 1 : 1;
+    cand->narrow_run = on_value ? (stable ? cand->narrow_run + 1 : 1) : 0;
     cand->prev_hz = stable ? cand->hz : hop->est_hz;
     cand->index = hop->snapped;
     cand->hz = hop->est_hz;
 }
 
-/* Whether @p cand has agreed on enough hops to lock: DSD_ANALOG_CTCSS_ACQUIRE_HOPS, or
-   DSD_ANALOG_CTCSS_PAIR_LEAN_HOPS for a tone of a close pair while its newest estimate leans more than k_pair_lean_hz
-   toward the other tone. One test for both acquisition windows and for a lock handed from another tone. */
+/* The agreeing hops @p cand needs to lock: DSD_ANALOG_CTCSS_ACQUIRE_HOPS, or DSD_ANALOG_CTCSS_PAIR_LEAN_HOPS for a tone
+   of a close pair while its newest estimate leans more than k_pair_lean_hz toward the other tone. */
 static int
-ctcss_cand_ready(const dsd_analog_ctcss_cand* cand) {
-    if (cand->index < 0) {
-        return 0;
-    }
-    int hops = DSD_ANALOG_CTCSS_ACQUIRE_HOPS;
-    const int other = ctcss_close_neighbour(cand->index);
+ctcss_cand_hops_needed(const dsd_analog_ctcss* det, const dsd_analog_ctcss_cand* cand) {
+    const int other = det->tables.close_neighbour[cand->index];
     if (other >= 0) {
         const double toward = ctcss_tone_hz(other) > ctcss_tone_hz(cand->index) ? 1.0 : -1.0;
         if ((cand->hz - ctcss_tone_hz(cand->index)) * toward > k_pair_lean_hz) {
-            hops = DSD_ANALOG_CTCSS_PAIR_LEAN_HOPS;
+            return DSD_ANALOG_CTCSS_PAIR_LEAN_HOPS;
         }
     }
-    return cand->run >= hops;
+    return DSD_ANALOG_CTCSS_ACQUIRE_HOPS;
+}
+
+/* Whether @p cand has agreed on enough hops to lock. One test for both acquisition windows and for a lock handed from
+   another tone. */
+static int
+ctcss_cand_ready(const dsd_analog_ctcss* det, const dsd_analog_ctcss_cand* cand) {
+    return cand->index >= 0 && cand->run >= ctcss_cand_hops_needed(det, cand);
+}
+
+/* Whether the on-value rules alone would lock @p cand now: its agreeing run qualified on its value throughout. */
+static int
+ctcss_cand_main_ready(const dsd_analog_ctcss* det, const dsd_analog_ctcss_cand* cand) {
+    return cand->index >= 0 && cand->narrow_run >= ctcss_cand_hops_needed(det, cand);
+}
+
+/* What the on-value rules hold of @p cand: the agreeing hops at the end of its run that they qualified, as they count
+   them (issue #643). A run that ends on a hop qualified by tone error is none of theirs. */
+static void
+ctcss_cand_narrow(dsd_analog_ctcss_cand* cand) {
+    if (cand->narrow_run < 1) {
+        ctcss_cand_clear(cand);
+        return;
+    }
+    if (cand->narrow_run == 1) {
+        /* The one hop they qualified starts their run: the burst reference it would give is its own estimate. */
+        cand->prev_hz = cand->hz;
+    }
+    cand->run = cand->narrow_run;
 }
 
 static void
 ctcss_lock_cand(dsd_analog_ctcss* det, const dsd_analog_ctcss_cand* cand) {
-    ctcss_lock(det, cand->index, cand->hz, cand->prev_hz);
-    ctcss_cand_clear(&det->long_cand);
+    const int theirs = ctcss_cand_main_ready(det, cand);
+    ctcss_lock(det, cand->index, cand->hz, cand->prev_hz, theirs);
+    if (theirs) {
+        ctcss_cand_clear(&det->long_cand);
+    } else {
+        /* A lock the on-value rules do not take leaves their late run where it was. */
+        ctcss_cand_narrow(&det->long_cand);
+    }
 }
 
 /*
  * Whether the newest 250 ms still carry what a late window qualified: the tone's own bin there
- * reads at least the late rho, with an estimate inside the snap gate. A tone in noise always does
- * (that window's rho is about 0.5 at 0 dB); a voice that held a pitch near a table tone for most
- * of a late window and has since moved on does not.
+ * reads at least the late rho, with an estimate inside @p gate_hz -- the on-value rules' gate for
+ * what they qualified, the tone's snap gate for what tone error did (issue #643). A tone in noise
+ * always does (that window's rho is about 0.5 at 0 dB); a voice that held a pitch near a table tone
+ * for most of a late window and has since moved on does not.
  */
 static int
-ctcss_late_still_present(const dsd_analog_ctcss* det, const dsd_analog_ctcss_hop* hop) {
+ctcss_late_still_present(const dsd_analog_ctcss* det, const dsd_analog_ctcss_hop* hop, const double* gate_hz) {
     dsd_analog_ctcss_hop newest;
     ctcss_measure_bin(det, DSD_ANALOG_CTCSS_WINDOW, hop->snapped, &newest);
     return newest.rho >= k_late_acquire_rho
-           && fabs(newest.est_hz - ctcss_tone_hz(hop->snapped)) <= ctcss_gate_hz(hop->snapped);
+           && fabs(newest.est_hz - ctcss_tone_hz(hop->snapped)) <= gate_hz[hop->snapped];
 }
 
-/* Measure one late window, the newest @p span sub-blocks, and say whether it qualifies a tone. */
+/* The late windows to try over the newest @p fresh sub-blocks (dsd_analog_ctcss::fresh, or main_fresh for the on-value
+   rules), the longer first: the newest available sub-blocks, then DSD_ANALOG_CTCSS_LONG_MIN when that is shorter.
+   Returns how many. */
 static int
-ctcss_late_qualifies(const dsd_analog_ctcss* det, int span, dsd_analog_ctcss_hop* hop) {
-    DSD_MEMSET(hop, 0, sizeof(*hop));
-    ctcss_measure(det, span, k_late_acquire_rho, hop);
-    return ctcss_hop_qualifies(hop, k_late_acquire_rho) && ctcss_late_still_present(det, hop)
+ctcss_late_spans(int fresh, int spans[2]) {
+    const int avail = fresh < DSD_ANALOG_CTCSS_LONG_WINDOW ? fresh : DSD_ANALOG_CTCSS_LONG_WINDOW;
+    if (avail < DSD_ANALOG_CTCSS_LONG_MIN) {
+        return 0;
+    }
+    spans[0] = avail;
+    spans[1] = DSD_ANALOG_CTCSS_LONG_MIN;
+    return avail > DSD_ANALOG_CTCSS_LONG_MIN ? 2 : 1;
+}
+
+/* Whether a late window's on-value winner @p hop of span @p span qualifies a tone other than @p except (-1 for any). */
+static int
+ctcss_late_on_value(const dsd_analog_ctcss* det, int span, dsd_analog_ctcss_hop* hop, int except) {
+    return ctcss_hop_qualifies_on_value(hop, k_late_acquire_rho) && hop->snapped != except
+           && ctcss_late_still_present(det, hop, det->tables.on_value_gate_hz)
            && ctcss_passes_harmonic(det, span, hop, k_max_harmonic_ratio);
+}
+
+/* Whether the late windows hold a tone other than @p index that the on-value rules qualify (issue #643). */
+static int
+ctcss_on_value_rival(const dsd_analog_ctcss* det, int index) {
+    int spans[2];
+    const int n = ctcss_late_spans(det->main_fresh, spans);
+    for (int i = 0; i < n; i++) {
+        dsd_analog_ctcss_hop hop;
+        DSD_MEMSET(&hop, 0, sizeof(hop));
+        ctcss_measure(det, spans[i], k_late_acquire_rho, &hop, NULL);
+        if (ctcss_late_on_value(det, spans[i], &hop, index)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/*
+ * Whether @p cand may lock now (issue #643). A run the on-value rules alone qualified always may. One that rests on
+ * tone error may only fill a gap they leave: once the late windows exist (DSD_ANALOG_CTCSS_LONG_MIN sub-blocks since
+ * the last reset or loss), with no candidate of another tone on its value in either acquisition window and no such
+ * tone qualifying in the late windows -- a tone the on-value rules are still acquiring is never pre-empted.
+ */
+static int
+ctcss_lock_allowed(const dsd_analog_ctcss* det, const dsd_analog_ctcss_cand* cand) {
+    if (ctcss_cand_main_ready(det, cand)) {
+        return 1;
+    }
+    if (det->fresh < DSD_ANALOG_CTCSS_LONG_MIN || det->main_fresh < DSD_ANALOG_CTCSS_LONG_MIN) {
+        return 0;
+    }
+    const dsd_analog_ctcss_cand* both[2] = {&det->cand, &det->long_cand};
+    for (int i = 0; i < 2; i++) {
+        if (both[i]->index >= 0 && both[i]->index != cand->index && both[i]->narrow_run >= 1) {
+            return 0;
+        }
+    }
+    return !ctcss_on_value_rival(det, cand->index);
+}
+
+/* The late windows the on-value rules measured this hop: each one's span, winner and best tone-error qualifier. */
+typedef struct {
+    int spans[2];
+    int count;
+    dsd_analog_ctcss_hop wins[2];
+    dsd_analog_ctcss_hop alts[2];
+} ctcss_late_set;
+
+/* The on-value rules over their own late windows (main_fresh), the longer first. Returns 1 with the qualifying hop in
+   @p hop when one qualifies. */
+static int
+ctcss_late_on_value_pass(const dsd_analog_ctcss* det, ctcss_late_set* set, dsd_analog_ctcss_hop* hop) {
+    const int n = ctcss_late_spans(det->main_fresh, set->spans);
+    set->count = 0;
+    for (int i = 0; i < n; i++) {
+        DSD_MEMSET(&set->wins[i], 0, sizeof(set->wins[i]));
+        ctcss_measure(det, set->spans[i], k_late_acquire_rho, &set->wins[i], &set->alts[i]);
+        set->count++;
+        if (ctcss_late_on_value(det, set->spans[i], &set->wins[i], -1)) {
+            *hop = set->wins[i];
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* Whether the newest @p span sub-blocks qualify a tone by tone error, from the window the on-value pass measured when
+   it measured that span. The window's best tone-error qualifier is its winner, unless the on-value rules qualified that
+   (and something after them rejected it), when the best one behind it. */
+static int
+ctcss_late_tone_error_window(const dsd_analog_ctcss* det, const ctcss_late_set* set, int span,
+                             dsd_analog_ctcss_hop* hop) {
+    dsd_analog_ctcss_hop win;
+    dsd_analog_ctcss_hop alt;
+    int j = 0;
+    while (j < set->count && set->spans[j] != span) {
+        j++;
+    }
+    if (j < set->count) {
+        win = set->wins[j];
+        alt = set->alts[j];
+    } else {
+        DSD_MEMSET(&win, 0, sizeof(win));
+        ctcss_measure(det, span, k_late_acquire_rho, &win, &alt);
+    }
+    dsd_analog_ctcss_hop* c = ctcss_hop_qualifies_on_value(&win, k_late_acquire_rho) ? &alt : &win;
+    if (c->evaluated && ctcss_hop_qualifies_tone_error(det, c, k_late_acquire_rho)
+        && ctcss_late_still_present(det, c, det->tables.gate_hz)
+        && ctcss_passes_harmonic(det, span, c, k_max_harmonic_ratio)) {
+        *hop = *c;
+        return 1;
+    }
+    return 0;
+}
+
+/* Tone error over the late windows since the last loss of any lock (fresh). Returns 1 with the qualifying hop in @p hop
+   when one qualifies. */
+static int
+ctcss_late_tone_error_pass(const dsd_analog_ctcss* det, const ctcss_late_set* set, dsd_analog_ctcss_hop* hop) {
+    int spans[2];
+    const int n = ctcss_late_spans(det->fresh, spans);
+    for (int i = 0; i < n; i++) {
+        if (ctcss_late_tone_error_window(det, set, spans[i], hop)) {
+            return 1;
+        }
+    }
+    return 0;
 }
 
 /*
@@ -801,75 +1204,218 @@ ctcss_late_qualifies(const dsd_analog_ctcss* det, int span, dsd_analog_ctcss_hop
  * the longer one tried first -- with the same tests as the 250 ms window, except that rho may be
  * as low as k_late_acquire_rho, and with one more: the newest 250 ms must still carry the tone
  * (ctcss_late_still_present()). Two consecutive qualifying hops with agreeing estimates lock it,
- * as for the 250 ms window.
+ * as for the 250 ms window. The on-value rules go first across both windows; tone error (issue #643)
+ * is weighed only when they qualify nothing in either, on the same measurements.
  *
  * Neither window reaches back past the last reset or loss (dsd_analog_ctcss::fresh): until 600 ms
  * have closed since then the longer one covers only what has, and until 400 ms have there is no
  * late acquisition at all, so a tone that has just been lost cannot lock again from what the ring
- * still holds of it. A reverse burst's holdoff blocks it as it blocks the 250 ms window, and it
- * never runs while a tone is locked.
+ * still holds of it. The on-value rules count from their own losses (main_fresh), so a lock that
+ * rested on tone error alone, which they never had, does not start them over. A reverse burst's
+ * holdoff blocks it as it blocks the 250 ms window, and it never runs while a tone is locked --
+ * except while a lock rests on tone error alone (not main_confirmed), when the on-value rules,
+ * for which nothing is locked, keep listening and lock what they confirm: the locked tone itself,
+ * which they then hold, or another, which takes the lock.
  */
 static void
 ctcss_step_late(dsd_analog_ctcss* det) {
-    const int avail = det->fresh < DSD_ANALOG_CTCSS_LONG_WINDOW ? det->fresh : DSD_ANALOG_CTCSS_LONG_WINDOW;
-    if (det->state == DSD_ANALOG_TONE_STATE_LOCKED || det->holdoff > 0 || avail < DSD_ANALOG_CTCSS_LONG_MIN) {
+    const int locked = det->state == DSD_ANALOG_TONE_STATE_LOCKED;
+    const int yield = locked && !det->main_confirmed;
+    if ((locked && !yield) || det->holdoff > 0) {
         ctcss_cand_clear(&det->long_cand);
         return;
     }
+    ctcss_late_set set;
     dsd_analog_ctcss_hop hop;
-    int qualified = ctcss_late_qualifies(det, avail, &hop);
-    if (!qualified && avail > DSD_ANALOG_CTCSS_LONG_MIN) {
-        qualified = ctcss_late_qualifies(det, DSD_ANALOG_CTCSS_LONG_MIN, &hop);
+    DSD_MEMSET(&hop, 0, sizeof(hop));
+    int qualified = ctcss_late_on_value_pass(det, &set, &hop);
+    /* Tone error never while yielding, and never in a burst's holdoff of its own. */
+    if (!qualified && !yield && det->wide_holdoff == 0) {
+        qualified = ctcss_late_tone_error_pass(det, &set, &hop);
     }
     ctcss_track(&det->long_cand, qualified, &hop);
-    if (ctcss_cand_ready(&det->long_cand)) {
+    if (yield) {
+        /* The on-value rules, for which nothing is locked, lock what they confirm: the locked tone itself, which they
+           then hold, or another, which takes the lock. */
+        if (ctcss_cand_main_ready(det, &det->long_cand)) {
+            ctcss_lock_cand(det, &det->long_cand);
+        }
+        return;
+    }
+    if (ctcss_cand_ready(det, &det->long_cand) && ctcss_lock_allowed(det, &det->long_cand)) {
         ctcss_lock_cand(det, &det->long_cand);
     }
 }
 
 static void
 ctcss_step_unlocked(dsd_analog_ctcss* det) {
-    if (ctcss_cand_ready(&det->cand)) {
+    if (ctcss_cand_ready(det, &det->cand) && ctcss_lock_allowed(det, &det->cand)) {
         ctcss_lock_cand(det, &det->cand);
         return;
     }
     const int64_t no_tone_samples = (int64_t)llround(det->rate_hz * (double)DSD_ANALOG_CTCSS_NO_TONE_MS / 1000.0);
     if (det->state == DSD_ANALOG_TONE_STATE_ACQUIRING && det->open_samples >= no_tone_samples) {
         det->state = DSD_ANALOG_TONE_STATE_NONE;
+        det->main_none = 1;
     }
 }
 
-static void
-ctcss_step_locked(dsd_analog_ctcss* det, dsd_analog_ctcss_hop* hop) {
+/*
+ * The late same-tone hold (issue #643): a locked tone whose 250 ms window is one steady tone but sits outside its hold
+ * on frequency alone -- it moved within its tolerance, as when a second radio keys inside the carrier hangover, by more
+ * than the 250 ms estimate can yet confirm -- holds while a late window over the locked bin qualifies it with every
+ * acquisition test. Returns the late estimate's offset, or a negative value when none qualifies.
+ */
+static double
+ctcss_late_same_tone(const dsd_analog_ctcss* det) {
+    int spans[2];
+    const int n = ctcss_late_spans(det->fresh, spans);
+    for (int i = 0; i < n; i++) {
+        dsd_analog_ctcss_hop late;
+        ctcss_measure_bin(det, spans[i], det->locked, &late);
+        if (late.snapped == det->locked && ctcss_hop_qualifies(det, &late, k_late_acquire_rho)
+            && ctcss_late_still_present(det, &late, det->tables.gate_hz)
+            && ctcss_passes_harmonic(det, spans[i], &late, k_max_harmonic_ratio)) {
+            return ctcss_hop_offset_hz(&late);
+        }
+    }
+    return -1.0;
+}
+
+/*
+ * What ends a lock, or hands it to another tone, before its hold is judged. Returns 1 when it did. A lock that rests on
+ * tone error alone is none for the on-value rules (issue #643): they lock what they confirm, as from no lock -- the
+ * locked tone itself, which they then hold, or another, which takes the lock -- before anything else of this one is
+ * judged. Then the reverse burst, and a tone the on-value rules would lock in its place.
+ */
+static int
+ctcss_locked_preempted(dsd_analog_ctcss* det) {
+    if (det->locked < 0 || det->locked >= DSD_CTCSS_TONE_COUNT) {
+        /* Not reachable: a lock always names a table tone. */
+        ctcss_unlock(det);
+        return 1;
+    }
+    if (!det->main_confirmed && ctcss_cand_main_ready(det, &det->cand)) {
+        ctcss_lock_cand(det, &det->cand);
+        return 1;
+    }
     /* The burst reference moves on one hop behind locked_hz: this hop checks against the
        frequency from two hops ago, and the next one against the frequency this hop starts from. */
     const double burst_ref_hz = det->burst_ref_hz;
     det->burst_ref_hz = det->locked_hz;
     if (ctcss_reverse_burst(det, burst_ref_hz)) {
+        /* The holdoff and the candidate's loss are the on-value rules' for a lock of theirs; after a lock that was not,
+           only the tone-error rules hold off. */
+        const int theirs = det->main_confirmed;
         ctcss_unlock(det);
-        det->holdoff = CTCSS_BURST_HOLDOFF_HOPS;
-        ctcss_cand_clear(&det->cand);
+        if (theirs) {
+            det->holdoff = CTCSS_BURST_HOLDOFF_HOPS;
+            ctcss_cand_clear(&det->cand);
+        } else {
+            det->wide_holdoff = CTCSS_BURST_HOLDOFF_HOPS;
+        }
+        return 1;
+    }
+    if (det->cand.index >= 0 && det->cand.index != det->locked && ctcss_cand_main_ready(det, &det->cand)) {
+        ctcss_lock_cand(det, &det->cand);
+        return 1;
+    }
+    return 0;
+}
+
+/* The late same-tone hold (issue #643) for a hop the hold's frequency test failed: while the locked bin's 250 ms
+   window @p own is one steady tone that misses on frequency alone, a late window over it that passes every late
+   acquisition test holds it. Returns 1 when one does. */
+static int
+ctcss_late_same_tone_holds(dsd_analog_ctcss* det, dsd_analog_ctcss_hop* own, double own_off) {
+    const int k = det->locked;
+    if (!(own_off <= det->tables.gate_hz[k] && own->rho >= k_acquire_rho && own->residual <= k_max_residual_rad
+          && own->chi2 <= k_max_chi2 && own->share >= k_min_full_share)) {
+        return 0;
+    }
+    if (own->stationary < 0) {
+        own->stationary = ctcss_window_stationary(det, DSD_ANALOG_CTCSS_WINDOW, k);
+    }
+    if (!own->stationary) {
+        return 0;
+    }
+    const double late_off = ctcss_late_same_tone(det);
+    if (!(late_off >= 0.0)) {
+        return 0;
+    }
+    det->lock_offset_hz = fmax(det->lock_offset_hz, late_off);
+    return 1;
+}
+
+/*
+ * The hold's frequency test (issue #643): a tone that locked on its value keeps the 0.8 Hz hold (half the distance to
+ * its neighbour where that is less) as before; one that locked further off gets as much more as the 0.5 Hz acquisition
+ * gate gets from the 0.8 Hz hold, never past its gate. And the hold never rejects what acquisition would take: the same
+ * tone from this window under the tone-error gate, or, while this window is one steady tone that misses on frequency
+ * alone and no other tone qualified, from a late window.
+ */
+static int
+ctcss_hold_on_tone(dsd_analog_ctcss* det, dsd_analog_ctcss_hop* own, double own_off, int other, int present) {
+    const int k = det->locked;
+    const double hold_hz =
+        fmin(det->tables.gate_hz[k], fmax(k_snap_hz, det->lock_offset_hz + (k_snap_hz - k_acquire_snap_hz)));
+    if (own_off <= hold_hz || (own->snapped == k && own_off <= ctcss_tone_error_gate_hz(det, own))) {
+        return 1;
+    }
+    return !other && present && ctcss_late_same_tone_holds(det, own, own_off);
+}
+
+/* Whether the on-value rules would still hold this lock: their own gate, the same presence, and no rival. Once they
+   would have lost it, the lock rests on tone error alone again, and yields to any tone they confirm. */
+static void
+ctcss_track_main_hold(dsd_analog_ctcss* det, double own_off, int present, int rival) {
+    const int main_holds = own_off <= det->tables.on_value_gate_hz[det->locked] && present && !rival;
+    det->main_fail_run = main_holds ? 0 : det->main_fail_run + 1;
+    if (det->main_confirmed && det->main_fail_run >= DSD_ANALOG_CTCSS_LOSE_HOPS) {
+        /* Where the on-value rules lose it, as a loss of theirs: their late windows start over. */
+        det->main_confirmed = 0;
+        det->main_lost = 1;
+        det->main_none = 1;
+        det->main_fresh = 0;
+    }
+}
+
+static void
+ctcss_step_locked(dsd_analog_ctcss* det, dsd_analog_ctcss_hop* hop) {
+    if (ctcss_locked_preempted(det)) {
         return;
     }
-    const int other = det->cand.index >= 0 && det->cand.index != det->locked;
-    if (other && ctcss_cand_ready(&det->cand)) {
-        ctcss_lock_cand(det, &det->cand);
-        return;
+    const int k = det->locked;
+    const int other = det->cand.index >= 0 && det->cand.index != k;
+    /* A rival is another tone this hop qualified on its value, as the on-value rules count it. One that rests on tone
+       error alone neither fails the hold nor takes the lock: a lock is only ever handed to a candidate the on-value
+       rules would lock (issue #643). */
+    const int rival = other && det->cand.narrow_run >= 1;
+    if (det->cand.index == k && ctcss_cand_ready(det, &det->cand)) {
+        det->lock_offset_hz = fmax(det->lock_offset_hz, fabs(det->cand.hz - ctcss_tone_hz(k)));
     }
     /* The locked bin's own estimate, every hop: once locked, a tone is only held while it still
        sits on the table value it locked to. Without this an off-table tone that locked on one
        noisy pair of hops would keep reporting its neighbour for as long as it stayed coherent. */
     dsd_analog_ctcss_hop own;
-    ctcss_measure_bin(det, DSD_ANALOG_CTCSS_WINDOW, det->locked, &own);
-    const int on_tone = fabs(own.est_hz - ctcss_tone_hz(det->locked)) <= ctcss_gate_hz(det->locked);
-    const double advance = ctcss_advance_for(det, det->locked, det->locked_hz);
-    hop->recent_rho = ctcss_rho(det, DSD_ANALOG_CTCSS_WINDOW, det->locked, advance, DSD_ANALOG_CTCSS_WINDOW - 2, 2);
-    const int above_residue =
-        ctcss_full_share(det, DSD_ANALOG_CTCSS_WINDOW, hop->recent_rho, DSD_ANALOG_CTCSS_WINDOW - 2, 2)
-        >= k_min_full_share;
-    if (on_tone && hop->recent_rho >= k_hold_rho && above_residue && !other) {
+    ctcss_measure_bin(det, DSD_ANALOG_CTCSS_WINDOW, k, &own);
+    const double own_off = fabs(own.est_hz - ctcss_tone_hz(k));
+    const double advance = ctcss_advance_for(det, k, det->locked_hz);
+    hop->recent_rho = ctcss_rho(det, DSD_ANALOG_CTCSS_WINDOW, k, advance, DSD_ANALOG_CTCSS_WINDOW - 2, 2);
+    const int present =
+        hop->recent_rho >= k_hold_rho
+        && ctcss_full_share(det, DSD_ANALOG_CTCSS_WINDOW, hop->recent_rho, DSD_ANALOG_CTCSS_WINDOW - 2, 2)
+               >= k_min_full_share;
+    const int on_tone = ctcss_hold_on_tone(det, &own, own_off, other, present);
+    ctcss_track_main_hold(det, own_off, present, rival);
+    if (on_tone && present && !rival) {
         det->fail_run = 0;
-        det->locked_hz = own.est_hz;
+        /* The frequency the reverse-burst check and the hold's presence measure from follows the estimate as the
+           on-value rules move it: a hop that only the wider hold keeps leaves it where they left it, while the lock
+           is theirs. */
+        if (own_off <= det->tables.on_value_gate_hz[k] || !det->main_confirmed) {
+            det->locked_hz = own.est_hz;
+        }
         return;
     }
     if (++det->fail_run >= DSD_ANALOG_CTCSS_LOSE_HOPS) {
@@ -877,14 +1423,37 @@ ctcss_step_locked(dsd_analog_ctcss* det, dsd_analog_ctcss_hop* hop) {
     }
 }
 
+/* Whether the 250 ms window qualifies a tone this hop: the on-value winner if the harmonic test passes it, else the
+   window's best tone-error qualifier if that passes (issue #643). Leaves in @p hop the hop that qualified, or the
+   window's winner when none did. */
+static int
+ctcss_window_qualifies(const dsd_analog_ctcss* det, dsd_analog_ctcss_hop* hop, dsd_analog_ctcss_hop* alt) {
+    if (det->holdoff > 0) {
+        return 0;
+    }
+    if (ctcss_hop_qualifies_on_value(hop, k_acquire_rho)) {
+        if (ctcss_passes_harmonic(det, DSD_ANALOG_CTCSS_WINDOW, hop, k_max_harmonic_ratio)) {
+            return 1;
+        }
+        if (det->wide_holdoff == 0 && alt->evaluated
+            && ctcss_passes_harmonic(det, DSD_ANALOG_CTCSS_WINDOW, alt, k_max_harmonic_ratio)) {
+            *hop = *alt;
+            return 1;
+        }
+        return 0;
+    }
+    return det->wide_holdoff == 0 && ctcss_hop_qualifies_tone_error(det, hop, k_acquire_rho)
+           && ctcss_passes_harmonic(det, DSD_ANALOG_CTCSS_WINDOW, hop, k_max_harmonic_ratio);
+}
+
 static void
 ctcss_evaluate_hop(dsd_analog_ctcss* det, int freeze) {
     dsd_analog_ctcss_hop hop;
+    dsd_analog_ctcss_hop alt;
     DSD_MEMSET(&hop, 0, sizeof(hop));
-    ctcss_measure(det, DSD_ANALOG_CTCSS_WINDOW, k_acquire_rho, &hop);
+    ctcss_measure(det, DSD_ANALOG_CTCSS_WINDOW, k_acquire_rho, &hop, &alt);
     if (!freeze) {
-        const int qualified = det->holdoff == 0 && ctcss_hop_qualifies(&hop, k_acquire_rho)
-                              && ctcss_passes_harmonic(det, DSD_ANALOG_CTCSS_WINDOW, &hop, k_max_harmonic_ratio);
+        const int qualified = ctcss_window_qualifies(det, &hop, &alt);
         ctcss_track(&det->cand, qualified, &hop);
         if (det->state == DSD_ANALOG_TONE_STATE_LOCKED) {
             ctcss_step_locked(det, &hop);
@@ -894,6 +1463,9 @@ ctcss_evaluate_hop(dsd_analog_ctcss* det, int freeze) {
         ctcss_step_late(det);
         if (det->holdoff > 0) {
             det->holdoff--;
+        }
+        if (det->wide_holdoff > 0) {
+            det->wide_holdoff--;
         }
     }
     det->last_hop = hop;
@@ -934,6 +1506,9 @@ ctcss_close_subblock(dsd_analog_ctcss* det) {
     }
     if (det->fresh < DSD_ANALOG_CTCSS_LONG_WINDOW) {
         det->fresh++;
+    }
+    if (det->main_fresh < DSD_ANALOG_CTCSS_LONG_WINDOW) {
+        det->main_fresh++;
     }
     if (det->ring_count >= DSD_ANALOG_CTCSS_WINDOW) {
         ctcss_evaluate_hop(det, freeze);
@@ -993,6 +1568,7 @@ ctcss_report(const void* ctx, dsd_analog_rx_report* out) {
     if (det->state == DSD_ANALOG_TONE_STATE_LOCKED && det->locked >= 0) {
         out->kind = DSD_ANALOG_TONE_KIND_CTCSS;
         out->ctcss_tenths_hz = dsd_ctcss_tone_tenths(det->locked);
+        out->off_value = det->main_confirmed ? 0 : 1;
     }
 }
 
@@ -1003,4 +1579,23 @@ const dsd_analog_rx_detector_ops dsd_analog_ctcss_ops = {
 const dsd_analog_ctcss_hop*
 dsd_analog_ctcss_last_hop(const dsd_analog_ctcss* det) {
     return det ? &det->last_hop : NULL;
+}
+
+void
+dsd_analog_ctcss_measure_span(const dsd_analog_ctcss* det, int span, int bin, dsd_analog_ctcss_hop* out) {
+    if (!out) {
+        return;
+    }
+    DSD_MEMSET(out, 0, sizeof(*out));
+    out->best_index = -1;
+    out->snapped = -1;
+    out->est_var_hz2 = -1.0;
+    out->stationary = -1;
+    if (!det || det->sub_len <= 0 || span < 3 || span > DSD_ANALOG_CTCSS_LONG_WINDOW || span > det->ring_count
+        || bin < 0 || bin >= DSD_CTCSS_TONE_COUNT) {
+        return;
+    }
+    ctcss_measure_bin(det, span, bin, out);
+    out->stationary = ctcss_window_stationary(det, span, bin);
+    out->est_var_hz2 = ctcss_estimate_variance(det, span, bin);
 }

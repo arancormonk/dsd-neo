@@ -509,12 +509,17 @@ struct dsd_analog_rx_publication {
     int tone_kind;       /**< dsd_analog_tone_kind; NONE unless tone_state is LOCKED */
     int tone_state;      /**< dsd_analog_tone_state */
     int ctcss_tenths_hz; /**< locked CTCSS tone in tenths of a hertz (1000 = 100.0 Hz); 0 = none */
-    int dcs_code;        /**< locked DCS code as its value (023 octal = 19); 0 = none */
-    int dcs_inverted;    /**< 1 = the locked code is named in inverted polarity (the canonical member
+    /** 1 while the locked CTCSS tone was confirmed only by allowing for transmitter tone error, off its table value by
+        more than the detector's 0.5 Hz on-value gate (issue #643; 150.6 Hz read as 150.0). The tone policy may pass the
+        reception on it at once, but rejects on it only when its window ends. 0 otherwise. */
+    int ctcss_off_value;
+    int dcs_code;     /**< locked DCS code as its value (023 octal = 19); 0 = none */
+    int dcs_inverted; /**< 1 = the locked code is named in inverted polarity (the canonical member
                               of its alias class, runtime/analog_tones.h: never, for the standard set) */
-    /** 1 while, with a carrier and nothing locked, the DCS detector holds a candidate code it has not confirmed:
-        some slicer read a supported code's word once (issue #527). The tone policy waits past its window for it. Not
-        tone_state's ACQUIRING, which turns NONE 500 ms into a carrier with nothing locked. */
+    /** 1 while, with a carrier and nothing locked -- or only an off-value CTCSS tone (ctcss_off_value) -- the DCS
+        detector holds a candidate code it has not confirmed: some slicer read a supported code's word once (issue
+        #527). The tone policy waits past its window for it. Not tone_state's ACQUIRING, which turns NONE 500 ms into a
+        carrier with nothing locked. */
     int dcs_candidate;
     int gate; /**< dsd_analog_tone_gate: the configured tone policy's verdict (issue #527) */
     /** 1 when gate was decided because no tone or code was confirmed within the acquisition window (an allow list's

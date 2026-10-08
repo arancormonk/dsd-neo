@@ -6241,10 +6241,14 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/file/p25_bandplan_csv.c
     ${PROJECT_SOURCE_DIR}/src/core/util/key_set.c
     ${PROJECT_SOURCE_DIR}/src/protocol/nxdn/nxdn_trunk_diag.c
+    ${PROJECT_SOURCE_DIR}/src/dsp/analog_tone_policy.c
 )
 target_include_directories(
     dsd-neo_test_engine_trunk_scan
-    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/engine
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/engine
+        ${PROJECT_SOURCE_DIR}/src/dsp
 )
 target_compile_definitions(
     dsd-neo_test_engine_trunk_scan
@@ -8849,6 +8853,28 @@ dsd_neo_link_dsp_test(dsd-neo_test_dsp_analog_ctcss ${DSD_NEO_TEST_MATH_LIB})
 add_test(NAME DSP_ANALOG_CTCSS COMMAND dsd-neo_test_dsp_analog_ctcss)
 set_tests_properties(DSP_ANALOG_CTCSS PROPERTIES TIMEOUT 300)
 
+# CTCSS transmitter tone error (issue #643) through the pure analog receive core: 150.6 Hz read as
+# 150.0 Hz, every tone 0.4 % off its value, the 150.0/151.4 Hz midpoint, the estimate's precision
+# against what it claims, and the cases where a tone the on-value rules acquire must not be pre-empted
+# by one that rests on tone error.
+add_executable(
+    dsd-neo_test_dsp_analog_ctcss_tone_error
+    dsp/test_dsp_analog_ctcss_tone_error.c
+)
+target_include_directories(
+    dsd-neo_test_dsp_analog_ctcss_tone_error
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/dsp
+        ${PROJECT_SOURCE_DIR}/tests/dsp
+)
+dsd_neo_link_dsp_test(dsd-neo_test_dsp_analog_ctcss_tone_error ${DSD_NEO_TEST_MATH_LIB})
+add_test(
+    NAME DSP_ANALOG_CTCSS_TONE_ERROR
+    COMMAND dsd-neo_test_dsp_analog_ctcss_tone_error
+)
+set_tests_properties(DSP_ANALOG_CTCSS_TONE_ERROR PROPERTIES TIMEOUT 300)
+
 # The auto squelch's classifier, floor and gate (issue #518 follow-up): plan constants
 # against the design model, noise and carriers, learning, no false opens on noise at
 # every margin, floor tracking and relearning, seeding, the per-channel cache, and the
@@ -9077,7 +9103,7 @@ add_test(
 add_executable(dsd-neo_bench_dsp EXCLUDE_FROM_ALL dsp/bench_dsp.cpp)
 target_include_directories(
     dsd-neo_bench_dsp
-    PRIVATE ${PROJECT_SOURCE_DIR}/include
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/dsp
 )
 dsd_neo_link_dsp_test(dsd-neo_bench_dsp ${DSD_NEO_TEST_MATH_LIB})
 
@@ -12916,6 +12942,14 @@ if(DSD_HAS_RADIO)
         -fA
         "Received tone: CTCSS 67\\.0 Hz"
         "Received tone: (none|DCS|CTCSS ([0-9]|[0-57-9][0-9]|6[0-689]|[0-9][0-9][0-9])\\.[0-9] Hz|CTCSS 67\\.[1-9] Hz)"
+    )
+    # A transmitter 0.4 % high on 150.0 Hz (issue #643): 150.6 Hz reads 150.0, never none first, never 151.4.
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_ANALOG_CTCSS_1506
+        nfm_ctcss_synth_1506
+        -fA
+        "Received tone: CTCSS 150\\.0 Hz"
+        "Received tone: (none|DCS|CTCSS ([0-9]|[0-9][0-9]|[02-9][0-9][0-9]|1[0-46-9][0-9]|15[1-9])\\.[0-9] Hz|CTCSS 150\\.[1-9] Hz)"
     )
     # The tone stops at 1.2 s while the carrier and voice carry on: 100.0, then none.
     dsd_neo_add_iq_decode_test(

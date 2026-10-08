@@ -1804,6 +1804,7 @@ test_committed_fixture_capture_times_parse(void) {
         "nfm_adjacent_synth",
         "nfm_ctcss_real",
         "nfm_ctcss_synth_1000",
+        "nfm_ctcss_synth_1506",
         "nfm_ctcss_synth_670",
         "nfm_ctcss_synth_drop",
         "nfm_dcs_synth_023i",

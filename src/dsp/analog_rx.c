@@ -374,7 +374,10 @@ dsd_analog_rx_core_track_carrier(dsd_analog_rx_core* core, const float* block, i
 /* One verdict from every detector's: the first locked detector in table order names the code
    or tone (a code outranks a tone, see k_detectors); otherwise the carrier is still being
    evaluated while any detector is, and carries no tone once every detector has said so. A
-   candidate (only the DCS detector reports one) counts only while nothing is locked. */
+   candidate (only the DCS detector reports one) counts only while nothing is locked -- or only an
+   off-value CTCSS tone (issue #643), on which the tone policy waits for its window to end, and
+   which a code still being read must then be able to extend as it would with nothing locked. The
+   DCS detector reports before the CTCSS one, so its candidate is known by then. */
 static void
 core_merge_reports(const dsd_analog_rx_core* core, dsd_analog_rx_report* out) {
     DSD_MEMSET(out, 0, sizeof(*out));
@@ -384,8 +387,9 @@ core_merge_reports(const dsd_analog_rx_core* core, dsd_analog_rx_report* out) {
         dsd_analog_rx_report report;
         k_detectors[i].ops->report(core_detector_const(core, i), &report);
         if (report.state == DSD_ANALOG_TONE_STATE_LOCKED) {
+            const int pending_code = report.off_value && out->candidate;
             *out = report;
-            out->candidate = 0;
+            out->candidate = pending_code;
             return;
         }
         if (report.state == DSD_ANALOG_TONE_STATE_ACQUIRING) {
@@ -428,6 +432,7 @@ dsd_analog_rx_core_publish(const dsd_analog_rx_core* core, dsd_analog_rx_publica
     out->tone_state = report.state;
     out->tone_kind = report.kind;
     out->ctcss_tenths_hz = report.ctcss_tenths_hz;
+    out->ctcss_off_value = report.kind == DSD_ANALOG_TONE_KIND_CTCSS ? report.off_value : 0;
     out->dcs_code = report.dcs_code;
     out->dcs_inverted = report.dcs_inverted;
     out->dcs_candidate = report.candidate;
@@ -777,6 +782,7 @@ analog_rx_publish(const dsd_opts* opts, dsd_state* state, analog_rx_session* ses
         state->analog_rx.tone_state = DSD_ANALOG_TONE_STATE_INACTIVE;
         state->analog_rx.tone_kind = DSD_ANALOG_TONE_KIND_NONE;
         state->analog_rx.ctcss_tenths_hz = 0;
+        state->analog_rx.ctcss_off_value = 0;
         state->analog_rx.dcs_code = 0;
         state->analog_rx.dcs_inverted = 0;
         state->analog_rx.dcs_candidate = 0;

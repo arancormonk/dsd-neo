@@ -671,9 +671,11 @@ The `Linux • RelWithDebInfo • ctest (x86-64-v3, fast-math, clang)` check enf
   `DSD_STATE_EXT_DSP_ANALOG_SINK`, the analog sinks' converters to the sink rate. `CORE_STATE_EXT` pins all three.
 - API note: `dsd_state::analog_rx` (`dsd_analog_rx_publication` in `<dsd-neo/core/state.h>`, issues #522 and #523) is
   the received-tone publication every frontend reads: int-only (`carrier_open`, `tone_kind`, `tone_state`,
-  `ctcss_tenths_hz`, `dcs_code` (the code as its value, 023 octal = 19) and `dcs_inverted` for a DCS lock,
-  always the canonical member of the code's alias class, `dcs_candidate` (1 while, with nothing locked, the DCS detector
-  holds a candidate code it has read once and not yet confirmed: the tone policy waits past its window for it), `gate`
+  `ctcss_tenths_hz`, `ctcss_off_value` (1 while the locked CTCSS tone rests on transmitter tone error alone, issue #643:
+  the tone policy rejects on it only when its window ends), `dcs_code` (the code as its value, 023 octal = 19) and
+  `dcs_inverted` for a DCS lock, always the canonical member of the code's alias class, `dcs_candidate` (1 while, with
+  nothing locked or only an off-value CTCSS tone, the DCS detector holds a candidate code it has read once and not yet
+  confirmed: the tone policy waits past its window for it), `gate`
   and `gate_no_tone`, the CTCSS/DCS receive policy's verdict (issue #527: OFF with no policy in force, PENDING while it
   checks, ALLOWED, REJECTED; `gate_no_tone` when no confirmed value decided it), `gate_rejected_ended` (1 once a
   rejected reception has ended with its carrier, until the next carrier or any other reset), a `generation`
@@ -1909,7 +1911,10 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   ceiling by at least 100 ms. Each ceiling sits above the slowest event of the long-run sweeps in `docs/testing.md`
   (1,000,000 starts per condition at 0 dB, 800,000 stops), as the header states; change them only with new sweeps. The
   header also states the measured wrong-tone rates (neighbour locks near 0 dB, talk-off), which a policy acting on the
-  first lock has to budget for. The DCS timing contract sits beside it, built the same way, for the demodulator's DC
+  first lock has to budget for. A tone off its value by transmitter tone error has its own lock bounds from a carrier's
+  start, `DSD_ANALOG_CTCSS_OFF_VALUE_LOCK_P95_MS` and `DSD_ANALOG_CTCSS_OFF_VALUE_LOCK_CEILING_MS` (issue #643), which
+  `DSP_ANALOG_CTCSS_TONE_ERROR` asserts on its off-value rows. The DCS timing contract sits beside it, built the same
+  way, for the demodulator's DC
   block at 8 to 78.125 kHz: `DSD_ANALOG_DCS_LOCK_MS` (520, every start at 10 dB in-band or better; 7,000,000 starts
   over those rates), at 3 dB the p95 target `DSD_ANALOG_DCS_LOCK_P95_MS` (450) and the ceiling
   `DSD_ANALOG_DCS_LOCK_CEILING_MS` (1,500; lock time in noise has no absolute bound), and for loss the p95 targets
@@ -1966,7 +1971,9 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
     code's word read twice in a row is far stronger evidence than a tone's correlation); otherwise the verdict is
     ACQUIRING while any detector still is, and NONE once all have said so. So a CTCSS talk-off on a coded channel
     never hides the code, and a tone that a code's own waveform raises in noise before the code locks gives way the
-    moment it does. The front end accepts 2400 Hz up to `DSD_ANALOG_RX_MAX_RATE_HZ` (320 kHz, below the ~333 kHz its
+    moment it does. A CTCSS lock off its value (`dsd_analog_rx_report::off_value`, issue #643) keeps the DCS detector's
+    candidate in the merge, so the tone policy's DCS extension runs under it as it would with nothing locked. The front
+    end accepts 2400 Hz up to `DSD_ANALOG_RX_MAX_RATE_HZ` (320 kHz, below the ~333 kHz its
     tap budget can design), logs which side of that range an unusable rate is on (once for each stretch of input at
     such a rate: a usable block ends the stretch, a reset does not) and publishes UNAVAILABLE there (after a reset,
     from the next block on), keeping the carrier (floor, test and hangover) at every rate all the same, which the
@@ -1989,8 +1996,12 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   - `src/dsp/analog_ctcss.c` is the CTCSS detector: one continuously running phasor per table tone, 50 ms sub-blocks
     with absolute phase in a 250 ms window, one hop per sub-block. Each hop fits every bin's sub-block phases (a
     pulse-pair estimate refined by weighted least squares), snaps the fine estimate to the table within the tone's gate
-    (`ctcss_gate_hz()`: +/-0.8 Hz, or half the distance to its nearest neighbour where that is less -- 0.7 Hz for 150.0
-    and 151.4 Hz, 1.4 Hz apart -- so no estimate is within two gates, and one midway between two snaps to neither),
+    (`dsd_analog_ctcss_tables`, built once by `ctcss_tables_build()` in `ctcss_configure()`: the tone's tolerance,
+    max(0.8 Hz, 0.5 % of the tone), an encoder's specified accuracy (issue #643), or half the distance to its nearest
+    neighbour where that is less -- 0.8 Hz up to 159.8 Hz, 0.5 % from 162.2 Hz up (1.27 Hz at 254.1), 0.7 Hz for 150.0
+    and 151.4 Hz, 1.4 Hz apart -- so no estimate is within two gates, and one midway between two snaps to neither; the
+    tables also hold each tone's on-value gate, min(0.8 Hz, half that distance), its close neighbour and its noise
+    shape, which every hop used to recompute 2,600 times a window, a third of the detector's time),
     rejects aliases (an estimate more than 5 Hz from its bin) and scores rho, the share of the sub-audible band energy
     the tone explains. A tone locks after two consecutive hops qualify it (rho >= 0.35, an estimate within 0.5 Hz of the
     table value, at least 1e-5 (-50 dB) of the raw input's full-band power, which no folded voice-band residue reaches
@@ -2012,18 +2023,55 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
     too. The two frequency gates are hysteresis: at
     0 dB the estimate scatters by about 0.19 Hz, so an off-table tone 1.1 Hz from a neighbour reaches the 0.8 Hz gate on
     several percent of hops but the 0.5 Hz one almost never, and the per-hop check drops a lock the tone has moved away
-    from. The price of the tighter acquisition gate is tolerance of transmitter encoder error: `DSP_ANALOG_CTCSS` pins
-    tones 0.2 and 0.35 Hz off their table value locking within 400 ms at +10 dB on every one of its 200 seeded starts,
-    and 0.2 Hz off at 0 dB within 400 ms on at least 95% of them (all within 500 ms); over 10,000 starts, 1.55% of
-    0.2 Hz-off tones at 0 dB take longer than 400 ms (`docs/testing.md`). From about 0.5 Hz off a tone locks late or not
-    at all. A carrier with no lock after 500 ms of evaluation reads `NONE`, on the first hop after it however the input
+    from. `DSP_ANALOG_CTCSS` pins tones 0.2 and 0.35 Hz off their table value locking within 400 ms at +10 dB on every
+    one of its 200 seeded starts, and 0.2 Hz off at 0 dB within 400 ms on at least 95% of them (all within 500 ms); over
+    10,000 starts, 1.55% of 0.2 Hz-off tones at 0 dB take longer than 400 ms (`docs/testing.md`). Transmitter tone error
+    beyond that (issue #643: an encoder is specified to 0.5 % of its tone, and the reporter's radios sent 150.6 Hz for
+    150.0) gets a second set of rules under one invariant: the on-value rules above -- the detector as it stood before
+    -- run first at every step, in their own order, and the second set acts only where they find nothing, so wherever
+    it does not fire the output is the old detector's. A hop whose estimate is more than 0.5 Hz off but passes every
+    other test qualifies its tone when the window carries the tone throughout (`ctcss_window_stationary()`: every
+    sub-block's coherent amplitude at least half the window's median, so an onset, fade or dropout keeps 0.5 Hz) and
+    the estimate is within the tone-error gate (`ctcss_tone_error_gate_hz()`): min(0.5 % of the tone, its gate) less
+    three standard deviations of the estimate, never under 0.5 Hz. The variance (`ctcss_estimate_variance()`) is the
+    weighted fit's slope variance from each sub-block's phase noise, unfloored, the band noise shaped by the
+    discriminator's f^2 at the bin, then inflated by the fit's chi-square where that exceeds 1 (against noise floored
+    at the tone's own image allowance) and given a 0.01 Hz floor: at 0 dB over 250 ms it is the Cramer-Rao bound,
+    0.19 Hz. Both are computed only for such a hop and kept in it (`dsd_analog_ctcss_hop::stationary`, `est_var_hz2`):
+    nothing is added per sample. `ctcss_measure()` ranks on-value qualifiers first, then tone-error ones, then the
+    rest, and the late windows run the on-value rules over both spans before tone error over either. A candidate counts
+    `narrow_run`, the part of its run the on-value rules qualified (`ctcss_cand_main_ready()`); one that is not
+    main-ready locks only once the late windows exist, with no on-value candidate of another tone in either acquisition
+    window and no on-value rival in the late windows (`ctcss_lock_allowed()`), so a tone the on-value rules are still
+    acquiring is never pre-empted. Such a lock is not `main_confirmed` and publishes `ctcss_off_value` until a
+    main-ready run of the same tone confirms it; while unconfirmed, `ctcss_step_late()` keeps listening with the
+    on-value rules and hands the lock to any tone they confirm. A lock is only ever handed to a main-ready candidate,
+    and
+    a rival fails the hold only when the on-value rules qualified it this hop. The hold is min(gate, max(0.8 Hz,
+    `lock_offset_hz` + 0.3 Hz)), so a tone that locked on its value keeps 0.8 Hz exactly, or the same tone under the
+    tone-error gate from this window, or, while the window is one steady tone that misses on frequency alone, the late
+    same-tone hold (`ctcss_late_same_tone()`: a late window over the locked bin passes every late acquisition test).
+    `main_fail_run` counts the held hops the on-value hold would fail; at `DSD_ANALOG_CTCSS_LOSE_HOPS` the lock is
+    unconfirmed again (`main_lost`). A lock the on-value rules do not hold is none for them: on every hop they run
+    first as from no lock and lock what they confirm, and its coming and going leaves what they keep alone -- their
+    late windows count from their own losses (`main_fresh`), their late run outlives it (`ctcss_cand_narrow()`: the
+    agreeing on-value hops at its end), its reverse burst holds off only the tone-error rules
+    (`wide_holdoff`), and its loss returns to their own verdict (`main_none`): NONE once they lost a lock or read no
+    tone for 500 ms of carrier, ACQUIRING before. A hop only the wider hold keeps
+    leaves `locked_hz`, the burst and presence reference, where the on-value rules left it.
+    `dsd_analog_ctcss_measure_span()` exposes the precision to `DSP_ANALOG_CTCSS_TONE_ERROR`, which
+    pins 150.6 Hz naming 150.0, every tone 0.4 % off, the midpoint naming neither, the precision against what it claims,
+    and the cases where an on-value tone must not be pre-empted, nor anything the on-value rules keep be disturbed by
+    an off-value lock coming and going. A carrier with no lock after 500 ms of evaluation reads
+    `NONE`, on the first hop after it however the input
     is blocked (carrier time is counted per sample), and a tone that starts later still locks. Late acquisition keeps
     lock time in noise inside the lock ceiling: the ring holds 12 sub-blocks, and while nothing is locked each hop also
     measures its newest 600 and 400 ms (`ctcss_step_late()`), over no more than has closed since the last reset or
     loss (`fresh`), so a lost tone is never in them and neither runs before 400 ms have. They apply the same tests with
     rho down to 0.25 (noise alone puts about 1/116 of the band into a bin over 400 ms) and one more: the newest 250 ms
-    must still carry the tone at that rho, within its snap gate, which keeps a voice that held a pitch near a table
-    tone for most of a longer window and then moved on from locking. Two agreeing hops lock, as for the 250 ms window.
+    must still carry the tone at that rho, within its on-value gate (its snap gate for what tone error qualified), which
+    keeps a voice that held a pitch near a table tone for most of a longer window and then moved on from locking. Two
+    agreeing hops lock, as for the 250 ms window.
     On its own the 250 ms window passed the 700 ms ceiling on about one start in 125,000 at 0 dB (the slowest after
     1,128 ms), when noise kept every pair of its hops from qualifying the tone; the longer windows average that noise
     down. Samples from inside the
@@ -2075,7 +2123,10 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
     first read with a carrier, a confirmed value is judged at once (allow: listed passes; block: listed is rejected),
     and `DSD_ANALOG_TONE_WINDOW_MS` (800, in `dsp/analog_rx.h`) without one decides "no tone" (allow rejects, block
     passes), extended to at most `DSD_ANALOG_TONE_WINDOW_DCS_MS` (1,600) while the list holds a code and
-    `dcs_candidate` stands. `_Static_assert`s hold both windows to the CTCSS and DCS lock ceilings plus 100 ms. After a
+    `dcs_candidate` stands. An off-value CTCSS tone (`ctcss_off_value`, issue #643) the list does not pass is judged
+    only when the window ends (`policy_off_value_reject()`), since the detector may still confirm another value on its
+    own rules, and under ALLOWED it starts a fresh window, as a loss does; one the list passes is judged at once.
+    `_Static_assert`s hold both windows to the CTCSS and DCS lock ceilings plus 100 ms. After a
     verdict it goes on judging: an allow list's allowed value lost goes PENDING with a fresh window, a confirmed
     nonpassing value rejects, a block list keeps a pass on loss, and a rejection holds until the reception ends except
     for a newly confirmed passing value; another confirmed nonpassing value becomes the rejection's reason (a "no tone"
