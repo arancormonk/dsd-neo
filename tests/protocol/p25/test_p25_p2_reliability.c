@@ -231,12 +231,30 @@ watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
     (void)slot;
 }
 
+/* Set by the MAC PDU stubs to end the slots' calls, as a MAC_END_PTT does; and whether a render of a slot found its
+   call still active with the seed proven, which is what lets the call's row keep the NAC (issue #575). */
+static int g_mac_ends_calls = 0;
+static int g_render_saw_proven_active_call = 0;
+
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 dsd_event_sync_slot(dsd_opts* opts, dsd_state* state, uint8_t slot) {
     (void)opts;
-    (void)state;
-    (void)slot;
+    dsd_call_snapshot call;
+    if (state != NULL && state->p2_cc_verified != 0U && dsd_call_state_get(state, slot, &call) > 0
+        && call.phase == DSD_CALL_PHASE_ACTIVE) {
+        g_render_saw_proven_active_call = 1;
+    }
+}
+
+static void
+mac_stub_end_calls(dsd_state* state) {
+    if (!g_mac_ends_calls || state == NULL) {
+        return;
+    }
+    for (uint8_t slot = 0; slot < 2; slot++) {
+        (void)dsd_call_state_end(state, slot, 0.0);
+    }
 }
 
 int
@@ -375,7 +393,7 @@ void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int* bits) {
     (void)opts;
-    (void)state;
+    mac_stub_end_calls(state);
     g_sacch_mac_calls++;
     g_sacch_mac_last_opcode = (bits[0] << 2) | (bits[1] << 1) | bits[2];
 }
@@ -384,7 +402,7 @@ void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 process_FACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int* bits) {
     (void)opts;
-    (void)state;
+    mac_stub_end_calls(state);
     g_facch_mac_calls++;
     g_facch_mac_last_opcode = (bits[0] << 2) | (bits[1] << 1) | bits[2];
 }
@@ -1473,6 +1491,64 @@ test_superframe_split_by_a_carrier_boundary_is_dropped(void) {
     return rc;
 }
 
+/*
+ * Issue #575: the first burst descrambled with a proven seed may itself carry the MAC_END_PTT that ends its call. The
+ * committed row reads the live NAC only while the call is active, so the slots are rendered as soon as the proof is set,
+ * before the burst's MAC PDU is dispatched; otherwise the row of a call ended by the burst that proved its NAC kept none.
+ * Both the scrambled FACCH and the scrambled SACCH prove it this way.
+ */
+static int
+test_seed_proof_reaches_the_call_its_burst_ends(void) {
+    printf("Test 34: the seed a terminating burst proves reaches the call it ends... ");
+    static dsd_opts opts;
+    static dsd_state state;
+    static const uint8_t scrambled_facch[4] = {0x9AU, 0x9AU, 0x9AU, 0x9AU};
+    static const uint8_t scrambled_sacch[4] = {0x39U, 0x39U, 0x39U, 0x39U};
+    const uint8_t* const duids[2] = {scrambled_facch, scrambled_sacch};
+    static const char* const labels[2] = {"scrambled FACCH", "scrambled SACCH"};
+    int rc = 0;
+
+    for (int path = 0; path < 2; path++) {
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        p25_p2_frame_reset();
+        reset_ess_stubs();
+        reset_playback_stub();
+        reset_xcch_stubs();
+        seed_p25p2_call(&state, 0U, 1201U, 1202U, 0U, 0U, 0U);
+        state.p2_wacn = 1;
+        state.p2_sysid = 1;
+        state.p2_cc = 0x123;
+        for (int i = 0; i < 4; i++) {
+            seed_duid_bits(i, duids[path][i]);
+        }
+        g_mac_ends_calls = 1;
+        g_render_saw_proven_active_call = 0;
+        p25p2_process_frame_scramble(&opts, &state);
+        p25p2_process_duid(&opts, &state);
+        g_mac_ends_calls = 0;
+
+        dsd_call_snapshot call;
+        char tag[96];
+        DSD_SNPRINTF(tag, sizeof(tag), "%s proves the seed", labels[path]);
+        rc |= expect_int(tag, (int)state.p2_cc_verified, 1);
+        DSD_SNPRINTF(tag, sizeof(tag), "%s ends the call", labels[path]);
+        rc |= expect_int(tag, dsd_call_state_get(&state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ENDED, 1);
+        DSD_SNPRINTF(tag, sizeof(tag), "%s renders the call with the proven NAC before ending it", labels[path]);
+        rc |= expect_int(tag, g_render_saw_proven_active_call, 1);
+        dsd_state_ext_free_all(&state);
+    }
+
+    reset_xcch_stubs();
+    reset_ess_stubs();
+    if (rc == 0) {
+        printf("PASS\n");
+    } else {
+        printf("FAIL\n");
+    }
+    return rc;
+}
+
 static void
 prepare_lcch_release_duids(void) {
     p25_p2_frame_reset();
@@ -1710,6 +1786,7 @@ main(void) {
     failures += test_duid_lcch_release_tears_down_after_vc_grace();
     failures += test_seed_proof_needs_a_descrambled_burst();
     failures += test_superframe_split_by_a_carrier_boundary_is_dropped();
+    failures += test_seed_proof_reaches_the_call_its_burst_ends();
 
     printf("\n%d test(s) failed\n", failures);
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});

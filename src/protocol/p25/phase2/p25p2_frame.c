@@ -394,12 +394,21 @@ p2_dibit_buffer(dsd_opts* opts, dsd_state* state) {
 
 /* A burst descrambled with the seed (WACN, SYSID, p2_cc) passed its Reed-Solomon check, which bits descrambled with a
    wrong seed fail: p2_cc is the NAC this carrier runs on (issue #575). It proves the seed the buffer was descrambled
-   with, so the seed in force is proven only while it is still that one. */
+   with, so the seed in force is proven only while it is still that one.
+
+   A call's row reads the live NAC only while the call is active, and the burst that proves the seed may carry the
+   MAC_END_PTT that ends it, dispatched right after: the slots are rendered when the proof is first set, before the
+   burst's MAC PDU, so the row of the call that burst ends keeps the NAC it proved. */
 static void
-p25p2_note_seed_proven(dsd_state* state) {
+p25p2_note_seed_proven(dsd_opts* opts, dsd_state* state) {
     if (s_descramble_seed.valid && s_descramble_seed.wacn == state->p2_wacn
         && s_descramble_seed.sysid == state->p2_sysid && s_descramble_seed.nac == state->p2_cc) {
+        const int newly_proven = state->p2_cc_verified == 0U;
         state->p2_cc_verified = 1U;
+        if (newly_proven) {
+            dsd_event_sync_slot(opts, state, 0U);
+            dsd_event_sync_slot(opts, state, 1U);
+        }
     }
 }
 
@@ -613,7 +622,7 @@ process_FACCHs(dsd_opts* opts, dsd_state* state) {
     if (ec >= 0) {
         state->p25_p2_rs_facch_ok++;
         state->p25_p2_rs_facch_corr += (unsigned int)ec;
-        p25p2_note_seed_proven(state);
+        p25p2_note_seed_proven(opts, state);
         /* Feedback: RS OK */
 #ifdef USE_RADIO
         dsd_rtl_stream_metrics_hook_p25p2_err_update(state->currentslot, 1, 0, 0, 0, 0);
@@ -729,7 +738,7 @@ process_SACCHs(dsd_opts* opts, dsd_state* state) {
     if (ec >= 0) {
         state->p25_p2_rs_sacch_ok++;
         state->p25_p2_rs_sacch_corr += (unsigned int)ec;
-        p25p2_note_seed_proven(state);
+        p25p2_note_seed_proven(opts, state);
         /* Feedback: RS OK */
 #ifdef USE_RADIO
         dsd_rtl_stream_metrics_hook_p25p2_err_update(state->currentslot, 0, 0, 1, 0, 0);
@@ -1428,7 +1437,7 @@ p25p2_process_ess(dsd_opts* opts, dsd_state* state, int defer_rekey) {
         state->p25_p2_rs_ess_ok++;
         state->p25_p2_rs_ess_corr += (unsigned int)result.corrections;
         // The ESS is read from the descrambled 4V/2V bits.
-        p25p2_note_seed_proven(state);
+        p25p2_note_seed_proven(opts, state);
         if (!defer_rekey || !p25p2_ess_stage_rekey(state, &result)) {
             p25p2_ess_apply_result(opts, state, state->currentslot, &result);
         }
