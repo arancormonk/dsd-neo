@@ -257,10 +257,11 @@ dsd-neo -fM --iq-replay tests/fixtures/iq/am_airband_real.iq.json --iq-replay-ra
   refused during one, from the terminal, Qt/Android and the control API alike, with "An I/Q replay cannot retune.",
   rather than reported as a tune that never lands; the retunes trunking and the conventional scanner ask for are
   ignored, as described above.
-- The tuned frequency the frontends show (the terminal `FRQ:` field, the Qt Spectrum label, the Android notification)
-  follows the capture's recorded `RETUNE` events: it reads the centre the samples being decoded were captured on, the
-  capture's opening centre until the first `RETUNE` and again after an `--iq-loop` rewind. The centre option the
-  trunking paths read as the current channel keeps the opening centre, as before, so replay decoding is unchanged.
+- The tuned frequency the frontends show (the terminal `FRQ:` field, the `FREQ` reading that opens the Qt/Android
+  Monitor screen's signal strip, the Qt Spectrum label, the Android notification) follows the capture's recorded
+  `RETUNE` events: it reads the centre the samples being decoded were captured on, the capture's opening centre until
+  the first `RETUNE` and again after an `--iq-loop` rewind. The centre option the trunking paths read as the current
+  channel keeps the opening centre, as before, so replay decoding is unchanged.
 - Event timelines currently require a constant sample rate through the capture. Metadata with event sample-rate changes is
   rejected until segment-rate replay is supported.
 - Replay converts `cu8`, and `cf32` captured as the driver delivered it (`capture_stage: "post_driver_cf32_pre_ring"`).

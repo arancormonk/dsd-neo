@@ -444,6 +444,10 @@ test_site() {
     expect("DMR verbatim site", model.siteProtocol() == "DMR" && model.dmrColorCode() == 7
                                     && model.dmrSiteText() == "Net 12 Site 3; " && model.dmrRestLsn() == 4
                                     && !model.p25WacnValid());
+    // 16 is "not decoded", which every carrier boundary now leaves (issue #575): no CC 16 on the site line.
+    state.dmr_color_code = 16;
+    model.refresh(&opts, &state);
+    expect("unknown DMR colour code hidden", model.dmrColorCode() == -1 && !model.siteLine().contains("CC"));
     state.synctype = DSD_SYNC_NXDN_POS;
     state.nxdn_last_ran = 64;
     model.refresh(&opts, &state);

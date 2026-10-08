@@ -1225,11 +1225,8 @@ p25p2_vpdu_iter_block_02(p25p2_vpdu_ctx* ctx) {
         }
         // If playing back files, and we still want to see what freqs are in use in the ncurses terminal
         //might only want to do these on a grant update, and not a grant by itself?
-        if (opts->trunk_enable == 0) {
-            if (p25p2_vpdu_active_target_matches(state, (uint64_t)(uint32_t)sgroup)) {
-                p25_set_playback_vc_freq(opts, state, freq);
-            }
-        }
+        // Only for the group of a call active on this carrier, as for the implicit grant (issue #575).
+        p25p2_vpdu_update_playback_if_match(opts, state, sgroup, freq);
     }
 
     if (len_b < 0) {

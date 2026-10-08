@@ -753,12 +753,12 @@ The `Linux • RelWithDebInfo • ctest (x86-64-v3, fast-math, clang)` check enf
   peer is invisible), else the I/Q replay centre the decoder last read (`iq_replay_center_freq`) when there is one,
   else `rtlsdr_center_freq`; the replay read paths store that centre through `dsd_opts_note_iq_replay_center()`. The
   decoded readings (SiteSheet CC/VC, `dsd_app_vc_freq()`/`dsd_app_cc_freq()`, the trunk `Frequency:` lines) stay on
-  their decoded values. `dsd_opts_input_is_iq_replay()` says whether the input in
-  force is an I/Q replay (an RTL input with an `iqreplay` spec), from the input type and device string rather than
-  `iq_replay_active`, which an input switch does not clear. `dsd_opts_trunk_vc_followed()` says whether the receiver
-  sits on a voice channel a trunking grant sent it to (`trunk_enable` and `trunk_is_tuned` both 1): only then does
-  `trunk_vc_freq[]` name the carrier being decoded, and a call observation whose message carries no frequency may
-  stamp it (P25's target-matched `p25_vc_freq[]` differs; see Protocols). Tests: `CORE_OPTS_TUNED_FREQ`.
+  their decoded values. `dsd_opts_input_is_iq_replay()` says whether the input in force is an I/Q replay (an RTL input
+  with an `iqreplay` spec), from the input type and device string rather than `iq_replay_active`, which an input switch
+  does not clear. `dsd_opts_trunk_vc_followed()` says whether the receiver sits on a voice channel a trunking grant sent
+  it to (`trunk_enable` and `trunk_is_tuned` both 1): only then does `trunk_vc_freq[]` name the carrier being decoded,
+  and a call observation whose message carries no frequency may stamp it (P25's target-matched `p25_vc_freq[]` differs;
+  see Protocols). Tests: `CORE_OPTS_TUNED_FREQ`.
 - API note (runtime sink changes, `<dsd-neo/core/audio.h>`): `dsd_audio_ensure_analog_output()` and
   `dsd_audio_ensure_digital_output()` open the sink a new receive family writes to (the raw monitor stream; the digital
   voice stream, plus the raw stream for ProVoice and `-8`) with the parameters `openAudioOutput()` uses, when the
@@ -3346,10 +3346,13 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
 - `dpmr_color_code` is set only in `dpmr_publish_call()`, after `dpmr_confirm_is_confirmed()`, from a decoded
   `ColorCode[0]`, with or without a caller identity; the ID printer only prints.
   `no_carrier_reset_call_strings_and_dpmr()` resets it to -1 with the confirmation evidence.
+- Between transmissions the terminal's `DMR BS`/`DMR MS - DCC:` and dPMR `DCC:` fields print `--` for these
+  sentinels (16, -1; `ui_print_dmr_dcc()`, `ui_render_call_info_dpmr()`), as the NXDN `RAN:` line does, and the Qt
+  site sheet leaves an unknown DMR colour code or NXDN RAN out.
 
 Tests: `DMR_FLCO_PRIVACY_MODES`, `DMR_MS_DATA`, `NXDN_ELEMENT_BOUNDS`, `NXDN_DEPERM_PRIMITIVES`, `P25_SM_UNIFIED_CORE`,
 `P25_CRYPTO_STATE`, `P25_P1_LOCKOUT_EVENTS`, `DPMR_VOICE_BRIDGE`, `ENGINE_NO_CARRIER_RESET`, `ENGINE_TRUNK_SCAN`,
-`CORE_ACCESS_CODE`.
+`CORE_ACCESS_CODE`, `UI_NCURSES_PRINTER_HELPERS`.
 
 Key public headers (selection):
 

@@ -2740,6 +2740,59 @@ test_live_protocol_panels_ignore_ended_call_identity(void) {
     free(state);
 }
 
+/* Between transmissions the DMR colour code is back at 16 and the dPMR one at -1, "nothing decoded" (issue #575): the
+   panels print "--" there, as the NXDN RAN line does, rather than the sentinel. */
+static void
+test_colour_code_sentinels_print_as_unknown(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1U, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1U, sizeof(*state));
+    assert(opts != NULL && state != NULL);
+    state->dmr_rest_channel = -1;
+
+    state->dmr_color_code = 16U;
+    ncurses_last_synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    reset_printw_capture();
+    ui_render_p25_dmr_header(opts, state);
+    assert_capture_contains("DMR BS - DCC: --;");
+    assert(strstr(g_printw_capture, "16") == NULL);
+
+    ncurses_last_synctype = DSD_SYNC_DMR_MS_VOICE;
+    reset_printw_capture();
+    ui_render_p25_dmr_header(opts, state);
+    assert_capture_contains("DMR MS - DCC: --;");
+    assert(strstr(g_printw_capture, "16") == NULL);
+
+    state->dmr_color_code = 0U;
+    reset_printw_capture();
+    ui_render_p25_dmr_header(opts, state);
+    assert_capture_contains("DMR MS - DCC: 00;");
+    state->dmr_color_code = 15U;
+    ncurses_last_synctype = DSD_SYNC_DMR_BS_DATA_NEG;
+    reset_printw_capture();
+    ui_render_p25_dmr_header(opts, state);
+    assert_capture_contains("DMR BS - DCC: 15;");
+
+    state->dpmr_color_code = -1;
+    ncurses_last_synctype = DSD_SYNC_DPMR_FS1_POS;
+    reset_printw_capture();
+    ui_render_call_info_dpmr(opts, state);
+    assert_capture_contains("| DCC: [--] ");
+    assert(strstr(g_printw_capture, "-1") == NULL);
+    state->dpmr_color_code = 0;
+    reset_printw_capture();
+    ui_render_call_info_dpmr(opts, state);
+    assert_capture_contains("| DCC: [0] ");
+    state->dpmr_color_code = 63;
+    reset_printw_capture();
+    ui_render_call_info_dpmr(opts, state);
+    assert_capture_contains("| DCC: [63] ");
+
+    ncurses_last_synctype = DSD_SYNC_NONE;
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+}
+
 /* An encryption-lockout-suppressed P25p2 companion (canonical call ended by
    lockout, crypto BLOCKED, MAC repeats keeping the raw burst hint on
    MAC_ACTIVE and ESS repeats keeping ALG/KID/MI current) renders as an idle
@@ -3284,6 +3337,7 @@ main(void) {
     test_slot_header_burst_column_is_fixed();
     test_slot_header_id_highlight_is_balanced();
     test_live_protocol_panels_ignore_ended_call_identity();
+    test_colour_code_sentinels_print_as_unknown();
     test_lockout_suppressed_companion_slot_renders_idle();
     return 0;
 }
