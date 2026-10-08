@@ -28,12 +28,14 @@
 #include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/core/sync_patterns.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/engine/engine.h>
 #include <dsd-neo/engine/trunk_scan.h>
+#include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/io/rtl_stream_fwd.h>
 #include <dsd-neo/io/udp_input.h>
@@ -44,6 +46,7 @@
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
+#include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
@@ -99,6 +102,9 @@ static long int g_cc_tune_freq = 0;
 static int g_cc_tune_ted_sps = 0;
 static int g_cc_profile_at_tune = -1;
 static int g_skip_arm_refused = 0;
+/* DMR data bursts dispatched past the decode gate, counted while armed (issue #575). */
+static int g_dmr_burst_handler_armed = 0;
+static int g_dmr_burst_handler_calls = 0;
 /* TCP audio connect and Pulse input open: the real functions unless a test arms a result. */
 static int g_tcp_connect_stub_armed = 0;
 static int g_tcp_connect_stub_rc = 0;
@@ -151,6 +157,10 @@ int __wrap_openAudioInput(dsd_opts* opts);
 int __real_dsd_audio_reconfigure_output_for_input_policy(dsd_opts* opts);
 int __wrap_dsd_audio_reconfigure_output_for_input_policy(dsd_opts* opts);
 int __wrap_io_control_set_freq(dsd_opts* opts, const dsd_state* state, long int freq);
+void __real_dmr_data_burst_handler(dsd_opts* opts, dsd_state* state, uint8_t info[196], uint8_t databurst,
+                                   const uint8_t* reliab98);
+void __wrap_dmr_data_burst_handler(dsd_opts* opts, dsd_state* state, uint8_t info[196], uint8_t databurst,
+                                   const uint8_t* reliab98);
 dsd_trunk_tune_result __wrap_dsd_trunk_tuning_hook_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq,
                                                               int ted_sps, uint64_t* out_request_id);
 int __real_dsd_tg_policy_call_skip_arm(dsd_state* state, uint32_t id, uint32_t src, int fallback, double now_mono_s);
@@ -237,6 +247,18 @@ __wrap_io_control_set_freq(dsd_opts* opts, const dsd_state* state, long int freq
     g_io_control_tune_calls++;
     g_io_control_tune_freq = freq;
     return g_io_control_tune_result;
+}
+
+/* A DMR data burst the decode gate let through (issue #575): counted, and handled for real unless a test armed the
+   count alone. */
+void
+__wrap_dmr_data_burst_handler(dsd_opts* opts, dsd_state* state, uint8_t info[196], uint8_t databurst,
+                              const uint8_t* reliab98) {
+    if (!g_dmr_burst_handler_armed) {
+        __real_dmr_data_burst_handler(opts, state, info, databurst, reliab98);
+        return;
+    }
+    g_dmr_burst_handler_calls++;
 }
 
 dsd_trunk_tune_result
@@ -4458,11 +4480,12 @@ expect_carrier_codes(const char* what, const dsd_state* state, int forgotten) {
 }
 
 #ifdef USE_RADIO
-/* A Phase 2 call opened and synced on slot 0, as an unscrambled MAC_PTT opens one. */
+/* A call of @p protocol opened and synced on slot 0; for P25 Phase 2, as an unscrambled MAC_PTT opens one. Returns the
+   slot's staged row. */
 static const Event_History*
-observe_phase2_call(dsd_opts* opts, dsd_state* state, uint32_t target) {
+observe_call(dsd_opts* opts, dsd_state* state, int protocol, uint32_t target) {
     const dsd_call_observation observation = {
-        .protocol = DSD_SYNC_P25P2_POS,
+        .protocol = protocol,
         .slot = 0U,
         .kind = DSD_CALL_KIND_GROUP_VOICE,
         .ota_target_id = target,
@@ -4476,10 +4499,12 @@ observe_phase2_call(dsd_opts* opts, dsd_state* state, uint32_t target) {
 #endif
 
 /*
- * Issue #575: an accepted retune the user asks for moves the receiver to another carrier, which can sync before any
- * no-carrier pass forgets the codes the previous one decoded. The tune forgets them itself, as the carrier boundary
- * does (dsd_engine_forget_carrier_codes()): a Phase 2 call on the new carrier records no NAC until that carrier proves
- * the seed. A refused or failed tune leaves the receiver, and the codes, where they were.
+ * Issue #575: an accepted retune the user asks for to another carrier, which can sync before any no-carrier pass
+ * forgets the codes the previous one decoded, forgets them itself, as the carrier boundary does
+ * (dsd_engine_forget_carrier_codes()): a Phase 2 call on the new carrier records no NAC until that carrier proves the
+ * seed. A refused or failed tune leaves the receiver, and the codes, where they were. A retune within the system --
+ * the return to the control channel, or a channel cycle over a trunked system's channels -- keeps them, as automatic
+ * trunk following does; a channel cycle over a conventional list moves to another carrier.
  */
 static int
 test_accepted_retunes_forget_the_carrier_codes(void) {
@@ -4491,14 +4516,14 @@ test_accepted_retunes_forget_the_carrier_codes(void) {
     init_radio_context(&opts, &state, "rtl:0");
     seed_carrier_codes(&state);
     reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
-    const Event_History* row = observe_phase2_call(&opts, &state, 4100U);
+    const Event_History* row = observe_call(&opts, &state, DSD_SYNC_P25P2_POS, 4100U);
     rc |= expect_true("verified reception records its NAC",
                       row->access_code_kind == (uint8_t)DSD_ACCESS_CODE_NAC && row->access_code == 0x293U);
     post_u32(DSD_APP_CMD_MANUAL_TUNE, 853125000U);
     rc |= expect_int("accepted tap drained", dsd_app_drain_cmds(&opts, &state), 1);
     rc |= expect_int("accepted tap reaches the tuner", g_io_control_tune_calls, 1);
     rc |= expect_carrier_codes("accepted tap", &state, 1);
-    row = observe_phase2_call(&opts, &state, 4200U);
+    row = observe_call(&opts, &state, DSD_SYNC_P25P2_POS, 4200U);
     rc |= expect_int("a Phase 2 call after the tap is another", (int)row->target_id, 4200);
     rc |= expect_true("a Phase 2 call after the tap records no NAC",
                       row->access_code_kind == (uint8_t)DSD_ACCESS_CODE_NONE);
@@ -4549,7 +4574,7 @@ test_accepted_retunes_forget_the_carrier_codes(void) {
         DSD_SNPRINTF(what, sizeof what, "%s return to CC", accepted ? "accepted" : "deferred");
         rc |= expect_int(what, dsd_app_command_action(DSD_APP_CMD_RETURN_CC), DSD_APP_COMMAND_SUBMIT_QUEUED);
         rc |= expect_int(what, dsd_app_drain_cmds(&opts, &state), 1);
-        rc |= expect_carrier_codes(what, &state, accepted);
+        rc |= expect_carrier_codes(what, &state, 0);
         freeState(&state);
 
         init_radio_context(&opts, &state, "rtl:0");
@@ -4561,15 +4586,163 @@ test_accepted_retunes_forget_the_carrier_codes(void) {
         seed_carrier_codes(&state);
         reset_io_control_tune_stub(accepted ? RTL_STREAM_TUNE_OK : RTL_STREAM_TUNE_DEFERRED);
         reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_OK);
-        DSD_SNPRINTF(what, sizeof what, "%s channel cycle", accepted ? "accepted" : "deferred");
+        DSD_SNPRINTF(what, sizeof what, "%s trunked channel cycle", accepted ? "accepted" : "deferred");
         rc |= expect_int(what, dsd_app_command_action(DSD_APP_CMD_CHANNEL_CYCLE), DSD_APP_COMMAND_SUBMIT_QUEUED);
         rc |= expect_int(what, dsd_app_drain_cmds(&opts, &state), 1);
+        rc |= expect_int(what, g_io_control_tune_calls, 1);
+        rc |= expect_carrier_codes(what, &state, 0);
+        freeState(&state);
+
+        init_radio_context(&opts, &state, "rtl:0");
+        state.lcn_freq_count = 2;
+        state.lcn_freq_roll = 0;
+        state.trunk_lcn_freq[0] = 857000000L;
+        state.trunk_lcn_freq[1] = 858000000L;
+        seed_carrier_codes(&state);
+        reset_io_control_tune_stub(accepted ? RTL_STREAM_TUNE_OK : RTL_STREAM_TUNE_DEFERRED);
+        DSD_SNPRINTF(what, sizeof what, "%s conventional channel cycle", accepted ? "accepted" : "deferred");
+        rc |= expect_int(what, dsd_app_command_action(DSD_APP_CMD_CHANNEL_CYCLE), DSD_APP_COMMAND_SUBMIT_QUEUED);
+        rc |= expect_int(what, dsd_app_drain_cmds(&opts, &state), 1);
+        rc |= expect_int(what, g_io_control_tune_calls, 1);
         rc |= expect_carrier_codes(what, &state, accepted);
         freeState(&state);
     }
 
     reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
     reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_OK);
+    return rc;
+}
+
+#ifdef USE_RADIO
+/*
+ * Issue #575: a retune to another carrier ends the calls heard on the one it leaves, and commits them, before it forgets
+ * that carrier's codes, so an NXDN call heard with RAN 5 commits RAN 5 in every field, the numeric sys id included,
+ * which the last render reads live. The tap ended its calls after the forget; the frequency entry ended none, leaving
+ * the call to end on the next carrier.
+ */
+static int
+test_tune_away_commits_the_outgoing_call_first(void) {
+    static const struct {
+        int cmd;
+        const char* tag;
+    } tunes[] = {
+        {DSD_APP_CMD_MANUAL_TUNE, "tap"},
+        {DSD_APP_CMD_RTL_SET_FREQ, "frequency entry"},
+    };
+
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    for (size_t i = 0; i < sizeof tunes / sizeof tunes[0]; i++) {
+        char what[96];
+        init_radio_context(&opts, &state, "rtl:0");
+        reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+        state.nxdn_last_ran = 5U;
+        (void)observe_call(&opts, &state, DSD_SYNC_NXDN_POS, 4300U);
+        post_u32(tunes[i].cmd, 853125000U);
+        DSD_SNPRINTF(what, sizeof what, "%s drained", tunes[i].tag);
+        rc |= expect_int(what, dsd_app_drain_cmds(&opts, &state), 1);
+        const Event_History* row = &state.event_history_s[0].Event_History_Items[1];
+        DSD_SNPRINTF(what, sizeof what, "%s commits the outgoing call", tunes[i].tag);
+        rc |= expect_int(what, (int)row->target_id, 4300);
+        DSD_SNPRINTF(what, sizeof what, "%s: committed RAN", tunes[i].tag);
+        rc |= expect_true(what, row->access_code_kind == (uint8_t)DSD_ACCESS_CODE_RAN && row->access_code == 5U);
+        DSD_SNPRINTF(what, sizeof what, "%s: committed sys id", tunes[i].tag);
+        rc |= expect_int(what, (int)row->sys_id3, 5);
+        DSD_SNPRINTF(what, sizeof what, "%s: committed sysid", tunes[i].tag);
+        rc |= expect_true(what, strcmp(row->sysid_string, "NXDN_RAN_5") == 0);
+        DSD_SNPRINTF(what, sizeof what, "%s: committed event line", tunes[i].tag);
+        rc |= expect_contains(what, row->event_string, "RAN: 05; ");
+        DSD_SNPRINTF(what, sizeof what, "%s forgets the RAN after", tunes[i].tag);
+        rc |= expect_true(what, state.nxdn_last_ran == (unsigned int)-1);
+        freeState(&state);
+    }
+    return rc;
+}
+#endif
+
+/* A DMR BS data burst of type @p burst on colour code @p cc, cached as the decoder caches one (dmr_stereo_payload): a
+   zero CACH (a valid TACT), the slot type's Golay(20,8) codeword around the BS data sync, and a zero payload. */
+static void
+stage_dmr_data_burst(dsd_state* state, unsigned int cc, unsigned int burst) {
+    unsigned char slot_type[20];
+    unsigned char check[20];
+    DSD_MEMSET(slot_type, 0, sizeof slot_type);
+    for (unsigned int b = 0U; b < 4U; b++) {
+        slot_type[b] = (unsigned char)((cc >> (3U - b)) & 1U);
+        slot_type[4U + b] = (unsigned char)((burst >> (3U - b)) & 1U);
+    }
+    int found = 0;
+    for (unsigned int parity = 0U; parity < 4096U && !found; parity++) {
+        for (unsigned int b = 0U; b < 12U; b++) {
+            slot_type[8U + b] = (unsigned char)((parity >> (11U - b)) & 1U);
+        }
+        DSD_MEMCPY(check, slot_type, sizeof check);
+        found = Golay_20_8_decode(check) && memcmp(check, slot_type, sizeof check) == 0;
+    }
+    if (!found) {
+        DSD_FPRINTF(stderr, "stage_dmr_data_burst: no Golay(20,8) codeword\n");
+    }
+    DSD_MEMSET(state->dmr_stereo_payload, 0, sizeof state->dmr_stereo_payload);
+    for (unsigned int i = 0U; i < 5U; i++) {
+        state->dmr_stereo_payload[61U + i] = (slot_type[2U * i] << 1) | slot_type[(2U * i) + 1U];
+        state->dmr_stereo_payload[90U + i] = (slot_type[10U + (2U * i)] << 1) | slot_type[11U + (2U * i)];
+    }
+    for (unsigned int i = 0U; i < 24U; i++) {
+        state->dmr_stereo_payload[66U + i] = DMR_BS_DATA_SYNC[i] == '3' ? 3 : 1;
+    }
+    state->dmr_stereo = 1;
+    state->dmr_ms_mode = 0;
+}
+
+/*
+ * Issue #575: a return to the control channel stays on the system, so it keeps the DMR decode gate the system's bursts
+ * locked, as automatic trunk following does. The first CSBK after the return is dispatched; forgetting the gate there
+ * left it pending, and dmr_data_dispatch_burst() dropped it, so a channel grant could be missed until it repeated. The
+ * same holds for a return to the control channel the receiver is already on.
+ */
+static int
+test_return_cc_keeps_the_dmr_decode_gate(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    Golay_20_8_init();
+    Hamming_7_4_init();
+    init_radio_context(&opts, &state, "rtl:0");
+    opts.trunk_enable = 1;
+    state.trunk_cc_freq = 851000000L;
+    g_dmr_burst_handler_armed = 1;
+    g_dmr_burst_handler_calls = 0;
+
+    stage_dmr_data_burst(&state, 5U, 3U);
+    dmr_data_sync(&opts, &state);
+    rc |= expect_int("the first CSBK waits for the gate", g_dmr_burst_handler_calls, 0);
+    stage_dmr_data_burst(&state, 5U, 3U);
+    dmr_data_sync(&opts, &state);
+    rc |= expect_int("the second CSBK locks the gate and is dispatched", g_dmr_burst_handler_calls, 1);
+
+    for (int pass = 0; pass < 2; pass++) {
+        char what[96];
+        const char* where = pass == 0 ? "from a voice channel" : "on the control channel";
+        reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+        if (pass == 1) {
+            opts.rtlsdr_center_freq = 851000000U;
+        }
+        DSD_SNPRINTF(what, sizeof what, "return to CC %s", where);
+        rc |= expect_int(what, dsd_app_command_action(DSD_APP_CMD_RETURN_CC), DSD_APP_COMMAND_SUBMIT_QUEUED);
+        rc |= expect_int(what, dsd_app_drain_cmds(&opts, &state), 1);
+        rc |= expect_int(what, g_io_control_tune_calls, 1);
+        DSD_SNPRINTF(what, sizeof what, "return to CC %s keeps the gate", where);
+        rc |= expect_true(what, state.dmr_confidence_locked == 1 && state.dmr_color_code == 5U);
+        stage_dmr_data_burst(&state, 5U, 3U);
+        dmr_data_sync(&opts, &state);
+        DSD_SNPRINTF(what, sizeof what, "the first CSBK after the return %s is dispatched", where);
+        rc |= expect_int(what, g_dmr_burst_handler_calls, 2 + pass);
+    }
+
+    g_dmr_burst_handler_armed = 0;
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    freeState(&state);
     return rc;
 }
 
@@ -17192,6 +17365,10 @@ main(void) {
     rc |= test_scan_hold_avoid_commands();
     rc |= test_replay_refuses_channel_cycle_and_return_cc();
     rc |= test_accepted_retunes_forget_the_carrier_codes();
+#ifdef USE_RADIO
+    rc |= test_tune_away_commits_the_outgoing_call_first();
+#endif
+    rc |= test_return_cc_keeps_the_dmr_decode_gate();
     rc |= test_scan_row_keys_commands();
 #endif
 #ifdef DSD_NEO_TEST_AUDIO_ENSURE_WRAP

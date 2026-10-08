@@ -1318,6 +1318,30 @@ ui_cmd_leaves_scanner_scope(const dsd_opts* opts, int was_scanner) {
     return was_scanner && opts->scanner_mode != 1 && opts->trunk_scan_enabled != 1;
 }
 
+/* End every slot's call now and commit it (dsd_event_sync_slot()), its last render reading the carrier it was heard
+   on. */
+static void
+ui_end_calls(dsd_opts* opts, dsd_state* state) {
+    const double ended_m = dsd_decode_now_mono_s();
+    for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
+        if (dsd_call_state_end(state, (uint8_t)slot, ended_m) > 0) {
+            dsd_event_sync_slot(opts, state, (uint8_t)slot);
+        }
+    }
+}
+
+/* An accepted retune the user asked for to another carrier, which can sync before any no-carrier pass ends the
+   reception (issue #575): the calls heard on the carrier it leaves end and commit first, with the codes that carrier
+   decoded, and then those codes go (dsd_engine_forget_carrier_codes()). A retune within the system -- the return to the
+   control channel, the skip and lockout returns, the P25 control channel picks and cycles, a trunked channel cycle --
+   does not run it: the system's codes stay valid there, as under automatic trunk following, and the DMR decode gate
+   they carry keeps dispatching the control channel's bursts. */
+static void
+ui_leave_carrier(dsd_opts* opts, dsd_state* state) {
+    ui_end_calls(opts, state);
+    dsd_engine_forget_carrier_codes(state);
+}
+
 #ifdef USE_RADIO
 /* A rollback's toast: @p prefix and the reason @p why, and, when the restart of the input that ran turned the I/Q
    capture off to keep the recording (svc_rtl_restart_recovery_locked(), @p capture_stopped), a note of it if the whole
@@ -1806,7 +1830,6 @@ static int
 ui_cmd_handle_p25_cc_selection(dsd_opts* opts, dsd_state* state, uint32_t hz) {
     const dsd_trunk_tune_result result = p25_sm_select_control_channel(p25_sm_get_ctx(), opts, state, (long)hz);
     if (dsd_trunk_tune_result_is_ok(result)) {
-        dsd_engine_forget_carrier_codes(state); // a control channel the user picked: a new carrier (issue #575)
         ui_set_toast(state, 3, "%s: P25 control channel -> %u Hz",
                      result == DSD_TRUNK_TUNE_RESULT_PENDING ? "Accepted (pending)" : "Applied", hz);
         return UI_CMD_APPLY_COMPLETED;
@@ -1887,10 +1910,10 @@ ui_cmd_handle_rtl_set_freq(dsd_opts* opts, dsd_state* state, const struct dsd_ap
         result = ui_cmd_apply_status_from_tune_rc(rc);
         if (rc == 0 || rc == RTL_STREAM_TUNE_TIMEOUT) {
             /* A new channel: the tone heard on the old one goes now, not when the analog tap
-               next notices the stream moved (issue #522), and so do the codes it decoded, which the
-               next carrier could otherwise inherit before any no-carrier pass (issue #575). */
+               next notices the stream moved (issue #522), and so do its calls and the codes it
+               decoded (issue #575). */
             dsd_analog_rx_reset(state);
-            dsd_engine_forget_carrier_codes(state);
+            ui_leave_carrier(opts, state);
         }
         const int stop_scanner = ui_cmd_leave_typed_scan_after_tune(opts, state, rc);
         ui_cmd_rtl_set_freq_toast(state, rc, v, stop_scanner);
@@ -1954,8 +1977,7 @@ ui_cmd_handle_manual_tune(dsd_opts* opts, dsd_state* state, const struct dsd_app
          * manual return-to-CC path order this — never on the failure path. */
         dsd_frame_sync_reset_mod_state();
         dsd_analog_rx_reset(state);
-        /* The new carrier can sync before any no-carrier pass forgets the old one's codes (issue #575). */
-        dsd_engine_forget_carrier_codes(state);
+        ui_leave_carrier(opts, state); // the old carrier's calls commit, then its codes go (issue #575)
         reset_call_tracking(opts, state, 1);
         if (rc == 0) {
             ui_set_toast(state, 3, "Applied: tuned -> %u Hz", v);
@@ -2895,12 +2917,7 @@ current_cc_freq(const dsd_state* state) {
 
 static void
 reset_call_tracking(dsd_opts* opts, dsd_state* state, int clear_trunk_vc) {
-    const double ended_m = dsd_decode_now_mono_s();
-    for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
-        if (dsd_call_state_end(state, (uint8_t)slot, ended_m) > 0) {
-            dsd_event_sync_slot(opts, state, (uint8_t)slot);
-        }
-    }
+    ui_end_calls(opts, state);
     DSD_MEMSET(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
     DSD_MEMSET(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
     (void)dsd_recent_activity_clear_all(state);
@@ -3002,10 +3019,8 @@ request_manual_tune(dsd_opts* opts, dsd_state* state, long int freq, int p25_cc_
     if (accepted) {
         /* The radio is moving (issue #522). With rigctl on PCM input nothing else reports this
            hop: io_control does not advance the trunk-tuning generation, and there is no RTL
-           stream generation to move, so the tone heard on the old channel goes here, and so do the
-           codes it decoded, which the next carrier could inherit before any no-carrier pass (issue #575). */
+           stream generation to move, so the tone heard on the old channel goes here. */
         dsd_analog_rx_reset(state);
-        dsd_engine_forget_carrier_codes(state);
         return 1;
     }
     LOG_WARN("WARNING: %s tune to %ld Hz was not accepted (result=%d); preserving decoder state\n",
@@ -3202,6 +3217,11 @@ apply_manual_lcn_cycle_untyped_locked(dsd_opts* opts, dsd_state* state, int p25_
     }
 
     reset_call_tracking(opts, state, 0);
+    if (opts->trunk_enable != 1) {
+        /* A conventional list's next channel is another carrier; a trunked system's channel list is the system's own
+           (issue #575). */
+        ui_leave_carrier(opts, state);
+    }
     LOG_INFO("Channel Cycle: tuning to %.06lf MHz\n", (double)freq / 1000000);
     state->lcn_freq_roll = next + 1;
     dsd_scan_row_keys_apply(state, next);
@@ -3744,16 +3764,16 @@ apply_cfg_radio_input_tuned(dsd_opts* opts, dsd_state* state, const dsdneoUserCo
     return rc;
 }
 
-/* apply_cfg_radio_input_tuned(), then the codes the old carrier decoded go when the radio input is on another centre
-   (issue #575): a reopen on the config's frequency, or the live Airspy retune, keeps the input a radio input, so no
-   input boundary or no-carrier pass ends the reception before the next carrier syncs. A start that failed put the old
-   centre back, and its codes stay. */
+/* apply_cfg_radio_input_tuned(), then the radio input on another centre leaves the old carrier (issue #575): a reopen
+   on the config's frequency, or the live Airspy retune, keeps the input a radio input, so no input boundary or
+   no-carrier pass ends the reception before the next carrier syncs. A start that failed put the old centre back, and
+   its calls and codes stay. */
 static int
 apply_cfg_radio_input(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg, const ui_cfg_rollback* before) {
     const int rc = apply_cfg_radio_input_tuned(opts, state, cfg, before);
     if (before->input.audio_in_type == AUDIO_IN_RTL && opts->audio_in_type == AUDIO_IN_RTL
         && opts->rtlsdr_center_freq != before->input.rtlsdr_center_freq) {
-        dsd_engine_forget_carrier_codes(state);
+        ui_leave_carrier(opts, state);
     }
     return rc;
 }
@@ -5456,9 +5476,9 @@ apply_rr_import(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* 
        onto an already-matching mode needs the first one. */
     (void)decode_mode_republish(opts, state, mode);
     if (rr_apply_tune(opts, state, &p)) {
-        /* The receiver moved to the imported system's channel, which can sync before any no-carrier pass forgets
-           the codes the old one decoded (issue #575). */
-        dsd_engine_forget_carrier_codes(state);
+        /* The receiver moved to the imported system's channel, which can sync before any no-carrier pass ends the
+           reception on the old one (issue #575). */
+        ui_leave_carrier(opts, state);
     }
     rr_apply_reacquire(opts, state);
 
