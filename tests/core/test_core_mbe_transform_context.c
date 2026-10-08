@@ -311,6 +311,7 @@ store_expected_process_status(int ret, float audio[160], int* errs, int* errs2, 
         err_str[0] = '\0';
         return;
     }
+    dsd_mbe_float_to_pcm16_scale(audio);
     store_expected_decode_status(ret, errs, errs2, result);
     mbe_formatProcessResult(err_str, err_str_size, result);
 }

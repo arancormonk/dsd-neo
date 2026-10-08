@@ -15,10 +15,12 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/core/vocoder.h>
 #include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/protocol/ysf/ysf.h>
+#include <math.h>
 #include <mbelib-neo/mbelib.h>
 #include <sndfile.h>
 #include <stdint.h>
@@ -911,8 +913,9 @@ test_process_ysf_vd_type2_routes_dch2_voice_and_audio_errors(void) {
     const dsd_call_snapshot call = get_test_ysf_call(&state);
     assert(strcmp(call.source_text, "VD2SRC4444") == 0);
     assert(strcmp(state.err_str, "========") == 0);
-    assert(state.f_l[0] == 5.0F);
-    assert(state.f_l[159] == 5.0F);
+    // The fifth stubbed frame (5.0), scaled to the int16 scale of the voice buffers.
+    assert(fabsf(state.f_l[0] - (5.0F * DSD_MBE_PCM16_PER_FLOAT)) <= 1e-6F);
+    assert(fabsf(state.f_l[159] - (5.0F * DSD_MBE_PCM16_PER_FLOAT)) <= 1e-6F);
 }
 
 static void

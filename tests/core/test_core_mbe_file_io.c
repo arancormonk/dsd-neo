@@ -6,11 +6,13 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/ambe_interleave.h>
 #include <dsd-neo/core/bit_packing.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/parse.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -19,6 +21,7 @@
 #include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/runtime/rdio_export.h>
 #include <errno.h>
+#include <mbelib-neo/mbelib.h>
 #include <sndfile.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -1473,6 +1476,117 @@ test_sdrtrunk_json_hex_voice_writes_unencrypted_mbe_records(void) {
     return rc;
 }
 
+/* A clean AMBE 3600x2450 voice frame, as SDRTrunk records DMR voice: 36 dibits
+ * in transmit order, two per hex digit. Sent twice from a fresh vocoder state it
+ * decodes, with no corrected errors, to voice peaking near 7200 on the int16
+ * scale. It is 49 parameter bits packed with mbelib-neo's
+ * mbe_quality_frame_from_data() (tools/quality) and mapped to dibits through
+ * dsd_ambe_2450_dibit_map. */
+static const char k_sdrtrunk_dmr_voice_hex[] = "3ABF032D9ADEE4CB50";
+
+/* mbelib-neo's float PCM is int16 / 7. SDRTrunk JSON playback scales each frame
+ * to the int16 scale its WAV writers expect, as live decode does, so a per-call
+ * WAV holds the PCM mbe_floattoshort() makes of the frames, not a 7th of it. */
+static int
+test_sdrtrunk_json_voice_wav_is_pcm16_scale(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I history[2];
+    int rc = 0;
+
+    char ambe_fr[4][24];
+    DSD_MEMSET(ambe_fr, 0, sizeof ambe_fr);
+    for (size_t i = 0; i < DSD_AMBE_2450_DIBITS; i++) {
+        const int nibble = dsd_hex_nibble_value((unsigned char)k_sdrtrunk_dmr_voice_hex[i / 2U]);
+        if (nibble < 0) {
+            DSD_FPRINTF(stderr, "sdrtrunk pcm16 frame: bad hex digit\n");
+            return 1;
+        }
+        const unsigned dibit = ((unsigned)nibble >> ((i % 2U) ? 0U : 2U)) & 0x3U;
+        const dsd_ambe_2450_dibit_map_entry* map = &dsd_ambe_2450_dibit_map[i];
+        ambe_fr[map->high_row][map->high_col] = (char)((dibit >> 1U) & 1U);
+        ambe_fr[map->low_row][map->low_col] = (char)(dibit & 1U);
+    }
+    short want[320];
+    mbe_parms cur, prev, prev_enhanced;
+    mbe_initMbeParms(&cur, &prev, &prev_enhanced);
+    int peak = 0;
+    for (int frame = 0; frame < 2; frame++) {
+        char ambe_d[49] = {0};
+        float audio[160] = {0};
+        mbe_process_result result;
+        rc |= expect_int("sdrtrunk pcm16 reference decode",
+                         mbe_decodeAmbe3600x2450Frame((const char (*)[24])ambe_fr, ambe_d, &result), 0);
+        rc |= expect_true("sdrtrunk pcm16 reference synthesis",
+                          mbe_processAmbe2450Dataf(audio, &result, ambe_d, &cur, &prev, &prev_enhanced) >= 0);
+        mbe_floattoshort(audio, want + (frame * 160));
+    }
+    for (int i = 0; i < 320; i++) {
+        const int magnitude = want[i] < 0 ? -want[i] : want[i];
+        peak = magnitude > peak ? magnitude : peak;
+    }
+    rc |= expect_true("sdrtrunk pcm16 reference is audible", peak >= 4000);
+
+    char json[256];
+    DSD_SNPRINTF(json, sizeof json,
+                 "{\"version\":\"2\",\"protocol\":\"DMR\",\"call_type\":\"GROUP\",\"encrypted\":\"false\","
+                 "\"frames\":[{\"hex\":\"%s\"},{\"hex\":\"%s\"}]}",
+                 k_sdrtrunk_dmr_voice_hex, k_sdrtrunk_dmr_voice_hex);
+
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+    DSD_MEMSET(history, 0, sizeof history);
+    opts.playfiles = 1;
+    opts.floating_point = 1;
+    opts.dmr_stereo_wav = 1;
+    state.event_history_s = history;
+    mbe_initMbeParms(&cur, &prev, &prev_enhanced);
+    state.cur_mp = &cur;
+    state.prev_mp = &prev;
+    state.prev_mp_enhanced = &prev_enhanced;
+
+    char wav_path[DSD_TEST_PATH_MAX];
+    const int fd = dsd_test_mkstemp(wav_path, sizeof wav_path, "sdrtrunk_json_pcm16");
+    if (fd < 0) {
+        return 1;
+    }
+    dsd_close(fd);
+    SF_INFO info;
+    DSD_MEMSET(&info, 0, sizeof info);
+    info.samplerate = 8000;
+    info.channels = 1;
+    info.format = SF_FORMAT_WAV | SF_FORMAT_PCM_16;
+    opts.wav_out_f = sf_open(wav_path, SFM_WRITE, &info);
+    if (!opts.wav_out_f) {
+        (void)remove(wav_path);
+        return 1;
+    }
+
+    rc |= run_sdrtrunk_json(json, &opts, &state);
+    sf_close(opts.wav_out_f);
+    opts.wav_out_f = NULL;
+
+    short got[320];
+    DSD_MEMSET(got, 0, sizeof got);
+    DSD_MEMSET(&info, 0, sizeof info);
+    SNDFILE* written = sf_open(wav_path, SFM_READ, &info);
+    rc |= expect_true("sdrtrunk pcm16 wav readable", written != NULL);
+    if (written) {
+        rc |= expect_int("sdrtrunk pcm16 wav frames", (int)sf_read_short(written, got, 320), 320);
+        sf_close(written);
+    }
+    int worst = 0;
+    for (int i = 0; i < 320; i++) {
+        const int difference = (int)got[i] - (int)want[i];
+        const int magnitude = difference < 0 ? -difference : difference;
+        worst = magnitude > worst ? magnitude : worst;
+    }
+    rc |= expect_true("sdrtrunk voice wav matches mbe_floattoshort", worst <= 1);
+    dsd_state_ext_free_all(&state);
+    (void)remove(wav_path);
+    return rc;
+}
+
 /* SDRTrunk JSON playback writes its static and per-call WAVs itself; both
  * honour the replayed call's talkgroup policy, as live decode does. */
 static int
@@ -2839,6 +2953,7 @@ main(void) {
     rc |= test_sdrtrunk_json_invalid_numeric_fields_reset_to_zero();
     rc |= test_sdrtrunk_json_protocol_opens_and_closes_mbe_out_file();
     rc |= test_sdrtrunk_json_hex_voice_writes_unencrypted_mbe_records();
+    rc |= test_sdrtrunk_json_voice_wav_is_pcm16_scale();
     rc |= test_sdrtrunk_json_wav_honors_talkgroup_policy();
     rc |= test_sdrtrunk_json_mbe_capture_honors_talkgroup_policy();
     rc |= test_sdrtrunk_json_hex_voice_blocks_encrypted_without_keystream();

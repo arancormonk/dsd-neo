@@ -762,6 +762,7 @@ ysf_handle_vd_type2(dsd_opts* opts, dsd_state* state, const ysf_fich_info* info)
             state->errs2 = 0;
             state->err_str[0] = '\0';
         } else {
+            dsd_mbe_float_to_pcm16_scale(state->audio_out_temp_buf);
             state->errs = ((result.flags & MBE_PROCESS_FLAG_C0_VALID) != 0u) ? result.c0_errors : result.total_errors;
             state->errs2 = result.total_errors;
             mbe_formatProcessResult(state->err_str, sizeof(state->err_str), &result);

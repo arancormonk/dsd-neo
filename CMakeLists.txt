@@ -602,11 +602,13 @@ endif()
 find_package(LibSndFile REQUIRED)
 find_package(OpenSSL 3.0 REQUIRED)
 
-# Require mbelib-neo 2.2+. Its ABI provides the
+# Require mbelib-neo 2.3+. Its ABI provides the
 # soft-decision frame decode and result-based processing APIs used by dsd-neo,
 # and 2.2 follows TIA-102.BABA-1 for AMBE 2450 erasures and repeats with
-# deterministic mute noise.
-set(_DSD_MBE_REQUIRED_VERSION 2.2)
+# deterministic mute noise. 2.3 synthesizes speech at the reference level, so
+# float PCM is int16 / 7 as documented; the vocoder scales it to the int16
+# scale of the voice buffers, which would clip with 2.2's 17 dB hotter speech.
+set(_DSD_MBE_REQUIRED_VERSION 2.3)
 find_package(mbe-neo ${_DSD_MBE_REQUIRED_VERSION} CONFIG REQUIRED)
 if(ANDROID AND TARGET mbe_neo::mbe_static)
     # Every shared library an Android app uses has to be bundled into the APK
@@ -715,7 +717,7 @@ unset(_DSD_SAVED_CMAKE_REQUIRED_FLAGS)
 if(NOT DSD_HAVE_MBE_NEO_SOFT_API)
     message(
         FATAL_ERROR
-        "mbe-neo 2.2+ with the soft-decision/result API is required; update mbelib-neo"
+        "mbe-neo 2.3+ with the soft-decision/result API is required; update mbelib-neo"
     )
 endif()
 if(ANDROID AND (DSD_ANDROID_VENDORED_RTLSDR OR DSD_ENABLE_AIRSPY))

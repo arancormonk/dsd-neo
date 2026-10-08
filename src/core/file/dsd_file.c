@@ -34,6 +34,7 @@
 #include <dsd-neo/core/string_utils.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/time_format.h>
+#include <dsd-neo/core/vocoder.h>
 #include <dsd-neo/crypto/aes.h>
 #include <dsd-neo/crypto/des.h>
 #include <dsd-neo/crypto/dmr_keystream.h>
@@ -1403,6 +1404,7 @@ store_sdrtrunk_process_result(dsd_state* state, int ret, const mbe_process_resul
         state->err_str[0] = '\0';
         return;
     }
+    dsd_mbe_float_to_pcm16_scale(state->audio_out_temp_buf);
     store_sdrtrunk_decode_result(state, ret, result);
     mbe_formatProcessResult(state->err_str, sizeof(state->err_str), result);
 }
