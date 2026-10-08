@@ -3225,8 +3225,19 @@ Notes:
       readers (the FSK sample read and the CQPSK fast path) publish it after each sample they take; the one-sample
       readers (the analog monitor, M17, EDACS analog) get it from
       `dsd_rtl_stream_metrics_hook_replay_advance_decode_clock()`. Each notes it through
-      `dsd_opts_note_iq_replay_center()`, which stores only a nonzero centre; a live read writes nothing and costs
-      nothing new, and a live fill drops the centre a replay fill left in the cache.
+      `dsd_opts_note_iq_replay_center()`, which stores only a nonzero centre that differs from the one noted; a live
+      read writes nothing and costs nothing new, and a live fill drops the centre a replay fill left in the cache.
+    - A move from one nonzero centre to another is a retune the capture recorded, which the note marks
+      (`dsd_opts::iq_replay_center_moved`) and nothing on the read path acts on. The engine's decoder loop consumes
+      the mark after each frame-sync return, before the frame it found is processed
+      (`dsd_engine_follow_replay_retune()`). With trunking off it is another conventional carrier, so the loop ends
+      the reception across it as an accepted live retune does: the outgoing calls end and commit as a hop
+      (`no_carrier_finalize_canonical_calls()`), then `dsd_engine_forget_carrier_codes()` and
+      `dsd_engine_forget_untrunked_carrier_state()` run (see Protocols, "Call frequency and access-code provenance").
+      With trunking on it is the system following itself, and under trunk scan a target switch with its own snapshots:
+      the decoder carries on as before. `dsd_opts_forget_iq_replay_center()` clears the centre and the mark at every
+      stop of the stream. Test: `ENGINE_INPUT_BOUNDARY`; the one `iq-decode` fixture with a conventional recorded
+      retune (`nxdn48_after_retune`, `-fi` and `-fa`) decodes byte for byte as before.
     - It lives in the caller's options, not the RTL orchestrator's copy, and does not key on `iq_replay_active`. Every
       stop of the stream clears it (`svc_rtl_stop_locked()`, which each app-control stop, restart, input switch and
       rollback runs; the engine's own open and close in `engine.c`), so a live radio that replaces a replay reads its
@@ -3406,7 +3417,8 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   always ran (`dsd_engine_no_carrier_locked()`). Nor does a trunk-scan target switch, whose snapshots carry the codes;
   an external controller's retune over the RTL UDP port, which follows a system for the decoder as the trunking state
   machines do and reaches the tuner on the IO thread; or the tuner release, trunking toggles and rigctl reconnect, which
-  retune nothing.
+  retune nothing. An I/Q replay's retune the capture recorded, with trunking off, is the same boundary on the decoder
+  thread (`dsd_engine_follow_replay_retune()`; see IO, "I/Q replay tuned frequency"); with trunking on it is exempt.
 - `dpmr_color_code` is set only in `dpmr_publish_call()`, after `dpmr_confirm_is_confirmed()`, from a decoded
   `ColorCode[0]`, with or without a caller identity; the ID printer only prints.
   `no_carrier_reset_call_strings_and_dpmr()` resets it to -1 with the confirmation evidence.

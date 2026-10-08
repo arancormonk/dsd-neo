@@ -2555,7 +2555,7 @@ live_scanner_apply_audio_gain(dsd_opts* opts, dsd_state* state) {
 static int
 live_scanner_start_rtl_if_needed(dsd_opts* opts, dsd_state* state) {
     if (opts->audio_in_type == AUDIO_IN_RTL) {
-        opts->iq_replay_center_freq = 0U;
+        dsd_opts_forget_iq_replay_center(opts);
         if (state->rtl_ctx == NULL) {
             if (rtl_stream_create(opts, &state->rtl_ctx) < 0) {
                 LOG_ERROR("Failed to create radio stream.\n");
@@ -2647,6 +2647,28 @@ live_scanner_emit_start_log_if_enabled(const dsd_opts* opts, dsd_state* state) {
     write_event_to_log_file(opts, state, 0, 0, event_string);
 }
 
+/* An I/Q replay plays the retunes its capture recorded. They move the centre the read path notes
+   (dsd_opts_note_iq_replay_center()), and the RTL stream resets its own pipeline, but nothing ends the reception on the
+   decoder's side. With trunking off a recorded retune is another conventional carrier, which can sync a call before
+   any no-carrier pass, so it is the boundary an accepted live retune is (issue #575): the outgoing calls end and commit
+   first, as a hop, while the codes are still the carrier's they were heard on, and then the codes go, with what the
+   trunking-off no-carrier pass forgets. With trunking on it is the system following itself, and under trunk scan a
+   target switch whose snapshots carry the codes: the decoder carries on as it does live. Decoder thread, after each
+   frame-sync return, before the frame it found is processed; it acts only when the centre moved. */
+static void
+dsd_engine_follow_replay_retune(dsd_opts* opts, dsd_state* state) {
+    if (opts->iq_replay_center_moved == 0U) {
+        return;
+    }
+    opts->iq_replay_center_moved = 0U;
+    if (opts->trunk_enable != 0 || opts->trunk_scan_enabled == 1) {
+        return;
+    }
+    no_carrier_finalize_canonical_calls(opts, state, 1);
+    dsd_engine_forget_carrier_codes(state);
+    dsd_engine_forget_untrunked_carrier_state(opts, state);
+}
+
 static void
 live_scanner_process_synced_frames(dsd_opts* opts, dsd_state* state, dsd_engine_slicer_threshold_cache* threshold_cache,
                                    uint64_t* frame_tune_generation) {
@@ -2707,6 +2729,7 @@ live_scanner_process_synced_frames(dsd_opts* opts, dsd_state* state, dsd_engine_
             *frame_tune_generation = dsd_trunk_tuning_generation();
         }
         state->synctype = getFrameSync(opts, state);
+        dsd_engine_follow_replay_retune(opts, state);
         (void)dsd_engine_slicer_thresholds_refresh(state, threshold_cache);
     }
 }
@@ -2833,6 +2856,7 @@ live_scanner_main_loop(dsd_opts* opts, dsd_state* state) {
         dsd_engine_scan_y_timing_tick(opts, state, dsd_decode_now_mono_s(), dsd_decode_now_realtime_s());
         frame_tune_generation = dsd_trunk_tuning_generation();
         state->synctype = getFrameSync(opts, state);
+        dsd_engine_follow_replay_retune(opts, state);
         (void)dsd_engine_slicer_thresholds_refresh(state, &threshold_cache);
         live_scanner_process_synced_frames(opts, state, &threshold_cache, &frame_tune_generation);
     }
@@ -2956,7 +2980,7 @@ dsd_engine_cleanup_close_radio(dsd_opts* opts, dsd_state* state) {
         state->rtl_ctx = NULL;
     }
     /* The replay centre goes with the stream (issue #575), as at app-control's stop. */
-    opts->iq_replay_center_freq = 0U;
+    dsd_opts_forget_iq_replay_center(opts);
 #else
     UNUSED(opts);
     UNUSED(state);

@@ -351,6 +351,9 @@ struct dsd_opts {
     uint8_t iq_replay_active;     /* 1 while replay stream is active */
     uint8_t iq_replay_rate_mode;  /* DSD_IQ_REPLAY_RATE_* */
     uint8_t iq_capture_format;    /* DSD_IQ_FORMAT_* */
+    /* 1 once the replay centre below moved from one nonzero value to another, a retune the capture recorded, until the
+       engine's decoder loop consumes it (issue #575). */
+    uint8_t iq_replay_center_moved;
     /* During an I/Q replay, the channel centre in Hz the samples being decoded were captured on: the replay batch tag's,
        which a recorded RETUNE moves (issue #575). 0 when none. The decoder thread writes it from the read path, as it
        does rtl_pwr, a live read never does, and every stop of the RTL stream clears it. rtlsdr_center_freq keeps the
@@ -835,8 +838,24 @@ dsd_opts_tuned_freq_hz(const dsd_opts* opts) {
  */
 static inline void
 dsd_opts_note_iq_replay_center(dsd_opts* opts, uint32_t center_hz) {
-    if (opts != NULL && center_hz != 0U) {
+    if (opts != NULL && center_hz != 0U && opts->iq_replay_center_freq != center_hz) {
+        /* A move from one centre to another is a recorded retune, which the engine's decoder loop ends the reception
+           across (iq_replay_center_moved); the first centre of a stream is none. */
+        opts->iq_replay_center_moved |= (uint8_t)(opts->iq_replay_center_freq != 0U);
         opts->iq_replay_center_freq = center_hz;
+    }
+}
+
+/**
+ * @brief Forget the I/Q replay centre, and any recorded retune not yet consumed, when the stream that set it stops.
+ *
+ * @param opts Decoder options (may be NULL).
+ */
+static inline void
+dsd_opts_forget_iq_replay_center(dsd_opts* opts) {
+    if (opts != NULL) {
+        opts->iq_replay_center_freq = 0U;
+        opts->iq_replay_center_moved = 0U;
     }
 }
 

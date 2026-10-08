@@ -1522,7 +1522,7 @@ svc_rtl_stop_locked(dsd_opts* opts, dsd_state* state) {
     }
     opts->rtl_started = 0;
     opts->rtl_needs_restart = 0;
-    opts->iq_replay_center_freq = 0U;
+    dsd_opts_forget_iq_replay_center(opts);
     const int leaves_replay = dsd_decode_clock_source() == DSD_DECODE_CLOCK_REPLAY;
     dsd_engine_decode_clock_leave_replay(opts, state);
     if (leaves_replay && opts->audio_in_type == AUDIO_IN_RTL && opts->iq_replay_requested
