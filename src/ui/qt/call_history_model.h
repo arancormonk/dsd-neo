@@ -27,6 +27,10 @@
  * each folds into a logged row it overlaps, which joins the running session. (A first
  * sighting merges only within the newest rows, so a call the first replay split in
  * two stays two rows.)
+ *
+ * Each row also carries the frequency and access code its call was heard with (issue
+ * #575). A merged row takes each from the newest fragment that knew it, field by field
+ * (call_history_merge.h), and the access code's text is app-control's, spelled when read.
  */
 
 #ifndef DSD_NEO_SRC_UI_QT_CALL_HISTORY_MODEL_H_
@@ -69,13 +73,16 @@ class CallHistoryModel : public QAbstractListModel {
         DurationSecsRole, // -1 when unknown
         SystemNameRole,
         SystemUidRole,
-        DayLabelRole,   // "TODAY" / "YESTERDAY" / "MON 3 AUG" — drives list sections
-        TimeTextRole,   // "12:04"
-        KindRole,       // RowKind: voice call or data/control notice
-        DetailRole,     // notice payload: decoded text message or GPS string
-        ChannelRole,    // scan channel the row was heard on (-Y row name or trunk-scan target id), else empty
-        SourceNameRole, // resolved source label, falling back to the OTA source text
-        SessionRole     // decode session that logged the row, or last extended it (see session())
+        DayLabelRole,      // "TODAY" / "YESTERDAY" / "MON 3 AUG" — drives list sections
+        TimeTextRole,      // "12:04"
+        KindRole,          // RowKind: voice call or data/control notice
+        DetailRole,        // notice payload: decoded text message or GPS string
+        ChannelRole,       // scan channel the row was heard on (-Y row name or trunk-scan target id), else empty
+        SourceNameRole,    // resolved source label, falling back to the OTA source text
+        SessionRole,       // decode session that logged the row, or last extended it (see session())
+        FreqHzRole,        // frequency in Hz the call was heard on (qint64), 0 when unknown
+        AccessCodeRole,    // "CC 1", "NAC 293", "RAN 5", "CAN 0" (app_control/access_code_view.h), else empty
+        AccessCodeTextRole // "Color code 1", "Network access code 293", ..., else empty
     };
 
     /** @brief What a row logs; pinned values because rows persist as JSON. */
@@ -216,6 +223,22 @@ class CallHistoryModel : public QAbstractListModel {
         /* The decode session that logged the row, or last extended it (session()). Rows from
          * stores written before sessions existed read 0. */
         qint64 session = 0;
+        /* The frequency in Hz the call was heard on (Event_History::freq_hz), 0 when unknown.
+         * A trunked call lands on several voice channels, so like the source label it carries
+         * the fragment it came from, and a merge keeps the newest fragment's known value
+         * (call_history_fold_adopts()). */
+        qint64 freqHz = 0;
+        qint64 freqWhen = 0;
+        qulonglong freqSeq = 0;
+        int freqSlot = 0;
+        /* The access code the call was heard with: a dsd_access_code_kind (0 = none known) and
+         * its value, folded as one pair with its own provenance. The text is derived at read
+         * time (app_control/access_code_view.h) and never stored. */
+        int codeKind = 0;
+        int code = 0;
+        qint64 acWhen = 0;
+        qulonglong acSeq = 0;
+        int acSlot = 0;
     };
 
   private:
@@ -237,6 +260,12 @@ class CallHistoryModel : public QAbstractListModel {
         bool emergency = false;
         bool enc = false;
         QString sourceName;
+        /* The frequency and access code last read (0 = unknown). The core only fills them, so
+         * unknown -> known is an advance and any other change is ignored
+         * (call_history_seen_absorb_fill()). */
+        qint64 freqHz = 0;
+        int acKind = 0;
+        int ac = 0;
         /* The session the ring row was last read in. The map keeps the newest sessions'
          * entries, not the newest stamps: a replay's rows are older than live ones. */
         qint64 session = 0;
@@ -282,12 +311,13 @@ class CallHistoryModel : public QAbstractListModel {
 
     /**
      * @brief Record what was just read from a ring row of ring @p ring and say what to do with it.
+     * @param read The row's content as just read (when, end, src, emergency, enc, sourceName, freqHz,
+     *             acKind, ac); its session, ring and twin are ignored.
      * @return SeenNew for a first sighting, SeenAgain when the key was read from another ring (a
      *         call heard again: the same capture decoded in a new ring), SeenAdvanced when a voice
      *         row already ingested has since learned something, SeenUnchanged otherwise.
      */
-    int noteSeen(const QString& key, quint64 ring, qint64 when, qint64 end, qulonglong src, bool emergency, bool enc,
-                 bool voice, const QString& sourceName);
+    int noteSeen(const QString& key, quint64 ring, const SeenState& read, bool voice);
 
     /** @brief Scan the flagged slots' rings for rows not seen before, or seen but advanced. */
     QList<FreshRow> collectFresh(const dsd_state* snapshot, const bool scan[2], const QString& systemUid);
@@ -301,6 +331,14 @@ class CallHistoryModel : public QAbstractListModel {
 
     /** @brief The logged notice @p row repeats field for field, not yet taken by another notice of the ring, or -1. */
     int findRepeatedNotice(const Row& row) const;
+
+    /**
+     * @brief Take a notice heard again as the logged delivery it repeats, if there is one.
+     *
+     * The logged notice joins the running session and fills the frequency and access code it
+     * lacked from @p row; a known value is kept. @return true when @p row repeated a logged notice.
+     */
+    bool absorbRepeatedNotice(const Row& row);
 
     /**
      * @brief Merge @p row into the log or insert it at its sorted position.

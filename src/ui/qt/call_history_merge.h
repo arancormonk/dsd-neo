@@ -8,7 +8,8 @@
  * @brief Merge and re-ingest policy for the Qt call history, free of Qt.
  *
  * The Qt Quick frontend only builds for Android, so the decisions that make or
- * break the history — when two committed ring rows are one conversation, and
+ * break the history — when two committed ring rows are one conversation, which
+ * fragment's source label, frequency and access code a merged row shows, and
  * when an already-ingested row has learned enough to be worth re-reading — live
  * here as plain functions the host test suite can exercise.
  */
@@ -16,6 +17,7 @@
 #ifndef DSD_NEO_SRC_UI_QT_CALL_HISTORY_MERGE_H_
 #define DSD_NEO_SRC_UI_QT_CALL_HISTORY_MERGE_H_
 
+#include <dsd-neo/core/access_code.h>
 #include <stdint.h>
 
 namespace dsd_qt {
@@ -94,6 +96,100 @@ call_history_seen_absorb(int64_t* stored_end, uint64_t* stored_src, bool* stored
         *stored_emergency = *stored_emergency || emergency;
     }
     return true;
+}
+
+/**
+ * @brief Which fragment a merged row's field came from: its start, push stamp and slot.
+ *
+ * Fragments reach the merge in whichever order a refresh happens to collect them -- a
+ * backlog walks newest-first, a live session arrives oldest-first -- so a field has to be
+ * chosen by the fragment it came from rather than by arrival. Each field keeps its own:
+ * the newest fragment that knew a source label need not be the newest that knew the
+ * frequency.
+ */
+struct CallHistoryProvenance {
+    int64_t when; /**< The fragment's start. */
+    uint64_t seq; /**< Its push stamp, which breaks a same-second tie. */
+    int slot;     /**< Its TDMA slot, which breaks a tie between the slots' rings. */
+};
+
+/**
+ * @brief Order two fragments: by start, then push stamp, then slot.
+ * @return -1 when @p a is older than @p b, 1 when newer, 0 for the same fragment.
+ */
+inline int
+call_history_provenance_compare(const CallHistoryProvenance& a, const CallHistoryProvenance& b) {
+    if (a.when != b.when) {
+        return a.when < b.when ? -1 : 1;
+    }
+    if (a.seq != b.seq) {
+        return a.seq < b.seq ? -1 : 1;
+    }
+    if (a.slot != b.slot) {
+        return a.slot < b.slot ? -1 : 1;
+    }
+    return 0;
+}
+
+/**
+ * @brief Whether a fragment's value of one field replaces the merged row's.
+ *
+ * The per-field fold behind the source label, the frequency and the access code: the
+ * newest fragment with a known value wins, unknown never erases known, and a known value
+ * fills an unknown one whatever its age. Equal provenance adopts, since that is the same
+ * fragment filling itself in (an in-place update). So fragments folded in any order give
+ * the same row. The caller takes the incoming provenance with the value.
+ *
+ * @param stored_known   The row holds a known value.
+ * @param stored         The fragment the row's value came from.
+ * @param incoming_known The fragment carries a known value.
+ * @param incoming       The fragment.
+ */
+inline bool
+call_history_fold_adopts(bool stored_known, const CallHistoryProvenance& stored, bool incoming_known,
+                         const CallHistoryProvenance& incoming) {
+    if (!incoming_known) {
+        return false;
+    }
+    return !stored_known || call_history_provenance_compare(incoming, stored) >= 0;
+}
+
+/** @brief Whether a row's frequency is known: 0 (and anything not positive) is unknown. */
+inline bool
+call_history_freq_known(int64_t freq_hz) {
+    return freq_hz > 0;
+}
+
+/** @brief Whether a row's access code is known: any kind but DSD_ACCESS_CODE_NONE. */
+inline bool
+call_history_access_code_known(int kind) {
+    return kind != static_cast<int>(DSD_ACCESS_CODE_NONE);
+}
+
+/**
+ * @brief Fold a fresh read of a seen ring row's frequency and access code into what was last recorded.
+ *
+ * The core fills a committed row's frequency or code only while it is unknown (a
+ * reacquisition merge learning one), so unknown -> known is the one change that makes the
+ * row worth re-reading, and it is recorded. A read that changes a known value into another
+ * is ignored and recorded nowhere, and unknown never erases.
+ *
+ * @return true when either field was learned.
+ */
+inline bool
+call_history_seen_absorb_fill(int64_t* stored_freq_hz, int* stored_ac_kind, int* stored_ac, int64_t freq_hz,
+                              int ac_kind, int ac) {
+    bool learned = false;
+    if (!call_history_freq_known(*stored_freq_hz) && call_history_freq_known(freq_hz)) {
+        *stored_freq_hz = freq_hz;
+        learned = true;
+    }
+    if (!call_history_access_code_known(*stored_ac_kind) && call_history_access_code_known(ac_kind)) {
+        *stored_ac_kind = ac_kind;
+        *stored_ac = ac;
+        learned = true;
+    }
+    return learned;
 }
 
 /* Sanity bound on a row's start/end stamps: a span longer than this is a corrupt

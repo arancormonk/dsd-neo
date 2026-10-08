@@ -7,6 +7,7 @@ target_sources(
         actions/actions_logging.c
         actions/actions_radio.c
         actions/actions_trunk.c
+        access_code_view.c
         analog_width_view.c
         app_command_queue.c
         key_commands.c

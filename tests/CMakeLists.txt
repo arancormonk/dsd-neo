@@ -872,6 +872,19 @@ dsd_neo_add_public_header_smoke_test(
   dsd-neo/app_control/call_view.h
   CXX
 )
+# Issue #575: the call history's access-code text, read by the Qt call history.
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_access_code_view
+  HEADERS_PUBLIC_APP_CONTROL_ACCESS_CODE_VIEW
+  dsd-neo/app_control/access_code_view.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_access_code_view_cxx
+  HEADERS_PUBLIC_APP_CONTROL_ACCESS_CODE_VIEW_CXX
+  dsd-neo/app_control/access_code_view.h
+  CXX
+)
 
 dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_app_control_scan_timing_view
@@ -2585,6 +2598,21 @@ target_link_libraries(
 )
 add_test(NAME APP_CONTROL_CALL_VIEW COMMAND dsd-neo_test_app_control_call_view)
 
+# Issue #575: a call's access code as every frontend spells it.
+add_executable(
+    dsd-neo_test_app_control_access_code_view
+    ui/test_app_control_access_code_view.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/access_code_view.c
+)
+target_include_directories(
+    dsd-neo_test_app_control_access_code_view
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+add_test(
+    NAME APP_CONTROL_ACCESS_CODE_VIEW
+    COMMAND dsd-neo_test_app_control_access_code_view
+)
+
 add_executable(
     dsd-neo_test_app_control_scan_timing_view
     ui/test_app_control_scan_timing_view.c
@@ -3606,6 +3634,7 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/talkgroup_filter_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
+        ${PROJECT_SOURCE_DIR}/src/app_control/access_code_view.c
     )
     target_include_directories(
         dsd-neo_test_ui_qt_talkgroup_list_model
@@ -3635,7 +3664,8 @@ if(DSD_ENABLE_QT_UI)
 
     # The call-history model's ring ingest, driven against synthetic event
     # rings: the slot/seq row keying, merge-versus-duplicate decisions, the
-    # commit_rev rescan gate, and the relaunch (Activity restart) path.
+    # commit_rev rescan gate, and the relaunch (Activity restart) path. The
+    # access-code text comes from app-control (issue #575).
     find_package(Qt6 REQUIRED COMPONENTS Test)
     add_executable(
         dsd-neo_test_ui_qt_call_history_model
@@ -3643,6 +3673,7 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_filter.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
+        ${PROJECT_SOURCE_DIR}/src/app_control/access_code_view.c
     )
     target_include_directories(
         dsd-neo_test_ui_qt_call_history_model

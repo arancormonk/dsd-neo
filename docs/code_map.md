@@ -1790,6 +1790,17 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   view. The terminal's width rows and Qt's `nfmBandwidthOffered`/`amBandwidthOffered` use it, and Qt's
   `analogBandwidthAm` says which kind the view's width is. Tests: `APP_CONTROL_ANALOG_WIDTH_VIEW` (every peer reading,
   live and on a snapshot pair), `APP_CONTROL_FRONTEND_PUBLIC_BOUNDARY`.
+  `include/dsd-neo/app_control/access_code_view.h` and `src/app_control/access_code_view.c` (issue #575) spell a call
+  history row's access code, the `dsd_access_code_kind` and value of `<dsd-neo/core/access_code.h>`:
+  `dsd_app_access_code_view()` gives the short text a list row shows (`CC 1`, `NAC 293`, `RAN 5`, `CAN 0`) and the long
+  one a detail sheet shows (`Color code 1`, `Network access code 293`, `Radio access number 5`, `Channel access number
+  0`), a NAC as three uppercase hex digits and every other code in decimal. A kind it does not know, `NONE` included,
+  or a value outside its protocol's range (colour code 0..63, dPMR's range, of which DMR's 0..15 is a subset; NAC
+  0x001..0xFFE; RAN 0..63; CAN 0..15) is not visible and leaves both texts empty, so a corrupt or newer store never
+  reads as a code. `dsd_app_access_code_format()` writes one of the two texts (`DSD_APP_ACCESS_CODE_SHORT` or
+  `_LONG`) for a caller that shows one at a time; the view is built on it. The public header names the kinds through
+  `core/access_code.h` only, never `state.h`. The Qt call history's `accessCode`/`accessCodeText` roles come from it,
+  each formatting only its own text. Test: `APP_CONTROL_ACCESS_CODE_VIEW`.
 - Decode quality: `include/dsd-neo/app_control/p25_metrics.h` and `src/app_control/p25_metrics.c`
   copy FEC ok percentages, populated P25 voice-error averages, and non-P25 last-frame
   errors from the caller's held snapshot. The core vocoder maintains ring counts;
@@ -3611,6 +3622,32 @@ Qt Quick frontend (`src/ui/qt`):
     session's.
   - Tests: `UI_QT_CALL_HISTORY_MODEL`, `UI_QT_TALKGROUP_LIST_MODEL`, `UI_QT_QML_CALL_LISTS`
     (`tst_history_session_identity.qml`), `CORE_INIT_STATE` (the ring identity).
+- Call history frequency and access code (issue #575; `call_history_model.{h,cpp}`, `call_history_merge.h`). Every row
+  carries the frequency its call was heard on (`Row::freqHz`, Hz, 0 unknown) and its access code as a
+  `dsd_access_code_kind` and value (`Row::codeKind`, `Row::code`), read from `Event_History::freq_hz`,
+  `access_code_kind` and `access_code`. The roles are `freqHz` (qint64), `accessCode` and `accessCodeText`; the two
+  texts are spelled by `app_control/access_code_view` at read time, and only the kind and value are stored.
+  - Per-field fold: the source label, the frequency and the code pair each keep the provenance of the fragment they
+    came from (start, push stamp, slot; `CallHistoryProvenance`, `call_history_provenance_compare()`). A merge
+    (`tryMerge()`) adopts a fragment's value by `call_history_fold_adopts()`: the newest fragment with a known value
+    wins, unknown never erases known, and equal provenance adopts, since that is the same fragment filling itself in.
+    So fragments folded in any arrival order give the same row. `merge_source_label()` runs on the same rule, with its
+    behaviour unchanged. `rows_mergeable()` never looks at the frequency: a trunked conversation lands on several voice
+    channels, and splitting on frequency would undo the fold, so the merged row shows the newest fragment's frequency.
+  - Seen ratchet: `SeenState` keeps the `freqHz`, `acKind` and `ac` last read. `call_history_seen_absorb_fill()`
+    counts unknown -> known on a re-read ring row as an advance, so a committed row whose frequency or code the core
+    filled in place re-ingests as an update while its end and source stay. A change from one known value to another
+    is ignored, because the core only ever fills a committed row (a reacquisition merge).
+  - Repeated notices: a notice heard again (`absorbRepeatedNotice()`, matched by the unchanged `findRepeatedNotice()`)
+    fills the frequency and code the logged notice lacks, keeps the ones it knows (push stamps say nothing across
+    rings), and signals them with `session`. So a notice an older build logged gains them when a fresh replay ring
+    delivers it again.
+  - JSON: rows store `freqHz`, `freqWhen`, `freqSeq`, `freqSlot`, `acKind`, `ac`, `acWhen`, `acSeq` and `acSlot`; the
+    seen store `freqHz`, `acKind` and `ac`. Every key of an unknown field is omitted, as `detail` and `channel` are. On
+    load a missing key reads as unknown, and a known value stored without its provenance takes the row's own
+    (start, push stamp, slot), as `srcNameWhen` does. A kind or value that does not fit the ring's `uint8_t` and
+    `uint16_t` loads as unknown. Older builds ignore the keys.
+  - Tests: `UI_QT_CALL_HISTORY_MODEL`, `UI_QT_CALL_HISTORY_MERGE`, `APP_CONTROL_ACCESS_CODE_VIEW`.
 - Received tone or code (issues #522, #523): `MetricsModel` publishes the `rxTone*` group (`rxToneVisible`,
   `rxToneStatus`, `rxToneText`, `rxToneKind`, `rxToneTenthsHz`, `rxToneDcsCode`, `rxToneDcsInverted`,
   `rxToneDcsAliasCode`, `rxToneDcsAliasInverted`, `rxToneCarrier`) with its own `rxToneChanged` signal, filled from
