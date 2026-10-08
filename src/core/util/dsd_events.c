@@ -616,21 +616,14 @@ watchdog_event_capture_render_env(const dsd_state* state, uint8_t slot, const ds
                                       && (dsd_call_state_end_reason_is_terminator(call->end_reason)
                                           || (!dsd_call_state_protocol_voice_has_terminator(call->protocol)
                                               && call->end_reason == (uint8_t)DSD_CALL_END_SYNC_LOSS)));
-    env->nxdn_ran_stand_in = state->nxdn_last_ran_stand_in != 0U ? 1U : 0U;
 }
 
-// The access code a system identity string or an event line names: DMR's colour code and NXDN's RAN, each with the
-// sys id slot that carries it. A slot reads its "nothing decoded" sentinel -- DMR 16, NXDN (unsigned)-1, which every
-// carrier boundary leaves (issue #575) -- until the protocol decodes one; an NXDN stand-in is no RAN either. Zero is
-// a code for both, so it is never taken for a missing one.
+// The sys id slot that carries an access code: DMR's colour code and NXDN's RAN. A slot reads its "nothing decoded"
+// sentinel -- DMR 16, NXDN (unsigned)-1, which every carrier boundary leaves (issue #575) -- until the protocol decodes
+// one. Zero is a code for both, so it is never taken for a missing one.
 static int
 watchdog_event_dmr_cc_known(uint32_t cc) {
     return cc <= 15U;
-}
-
-static int
-watchdog_event_nxdn_ran_known(uint32_t ran, uint8_t stand_in) {
-    return ran <= 63U && stand_in == 0U;
 }
 
 // The sys id slot holding a protocol's access code, or -1 when its system identity carries none.
@@ -645,8 +638,9 @@ watchdog_event_code_sys_id_index(int systype) {
     return -1;
 }
 
-// Whether a value in that slot is the sentinel rather than a code. Stand-ins are codes here: the mark, not the value,
-// says what they are, and a merge carries the mark with the value.
+// Whether a value in that slot is the sentinel rather than a value. An NXDN stand-in (an IDAS area bit or site type, or
+// DCR's fixed 7) is a value here, kept for the structured consumers; the text prints the row's access code, which a
+// stand-in never is.
 static int
 watchdog_event_code_sys_id_is_sentinel(int systype, uint32_t value) {
     if (DSD_SYNC_IS_DMR(systype)) {
@@ -690,12 +684,13 @@ watchdog_event_format_dmr_sysid(char* out, size_t cap, uint32_t syscode, uint8_t
     }
 }
 
+// NXDN's RAN is the row's access code too, which an IDAS or DCR stand-in never is (dsd_access_code_current()).
 static void
-watchdog_event_format_nxdn_sysid(char* out, size_t cap, uint32_t site_code, uint32_t sys_code, uint32_t ran,
-                                 uint8_t stand_in) {
+watchdog_event_format_nxdn_sysid(char* out, size_t cap, uint32_t site_code, uint32_t sys_code, uint8_t access_code_kind,
+                                 uint16_t access_code) {
     char ran_buf[12];
-    const char* ran_text =
-        watchdog_event_code_text(ran_buf, sizeof ran_buf, watchdog_event_nxdn_ran_known(ran, stand_in), ran, 0);
+    const char* ran_text = watchdog_event_code_text(ran_buf, sizeof ran_buf,
+                                                    access_code_kind == (uint8_t)DSD_ACCESS_CODE_RAN, access_code, 0);
     if (site_code != 0U) {
         DSD_SNPRINTF(out, cap, "NXDN_%u_%u_RAN_%s", (unsigned)sys_code, (unsigned)site_code, ran_text);
     } else {
@@ -805,10 +800,10 @@ watchdog_event_crypto_rank(const Event_History* item) {
     return item->enc_alg != 0U ? 3 : 2;
 }
 
-// Rebuilds the system identity string of a row whose identity names its access code -- NXDN from its merged ids, dPMR
-// and M17 from its merged access code, DMR and P25 from both -- and returns 1; 0 for any other protocol.
+// Rebuilds the system identity string of a row whose identity names its access code -- dPMR and M17 from its merged
+// access code, DMR, NXDN and P25 from that and its merged ids -- and returns 1; 0 for any other protocol.
 static int
-watchdog_event_rebuild_code_sysid(Event_History* row, const dsd_call_event_render_env* env) {
+watchdog_event_rebuild_code_sysid(Event_History* row) {
     if (DSD_SYNC_IS_P25(row->systype)) {
         const uint32_t sys_id[5] = {row->sys_id1, row->sys_id2, row->sys_id3, row->sys_id4, row->sys_id5};
         watchdog_event_format_p25_sysid(row->sysid_string, sizeof(row->sysid_string), sys_id, row->access_code_kind,
@@ -827,7 +822,7 @@ watchdog_event_rebuild_code_sysid(Event_History* row, const dsd_call_event_rende
     }
     if (DSD_SYNC_IS_NXDN(row->systype)) {
         watchdog_event_format_nxdn_sysid(row->sysid_string, sizeof(row->sysid_string), row->sys_id1, row->sys_id2,
-                                         row->sys_id3, env != NULL ? env->nxdn_ran_stand_in : 0U);
+                                         row->access_code_kind, row->access_code);
         return 1;
     }
     if (DSD_SYNC_IS_DPMR(row->systype)) {
@@ -846,14 +841,11 @@ watchdog_event_rebuild_code_sysid(Event_History* row, const dsd_call_event_rende
 // The access code's slot (DMR sys_id2, NXDN sys_id3) differs (issue #575). Its "nothing decoded" sentinel, not 0, is
 // the missing value there: 0 is a code. A segment that decoded a code fills a sentinel, with 0 too; a code the row
 // already has is never replaced, 0 included, just as the row's access code never is; and a segment that decoded none
-// never replaces anything. The NXDN stand-in mark travels with the value in the render envs, so the re-render prints
-// what the value is. For these protocols, and dPMR, whose identity is the access code the identity-field merge has
-// already filled, the string is rebuilt from the merged row rather than taken from either segment: one segment may
+// never replaces anything. For these protocols, and dPMR, whose identity is the access code the identity-field merge
+// has already filled, the string is rebuilt from the merged row rather than taken from either segment: one segment may
 // have decoded the code and the other a system code or site.
 static void
-watchdog_event_merge_system_identity(Event_History* retained, const Event_History* staged,
-                                     dsd_call_event_render_env* retained_env,
-                                     const dsd_call_event_render_env* staged_env) {
+watchdog_event_merge_system_identity(Event_History* retained, const Event_History* staged) {
     int sys_ids_upgraded = 0;
     uint32_t* retained_sys[5] = {&retained->sys_id1, &retained->sys_id2, &retained->sys_id3, &retained->sys_id4,
                                  &retained->sys_id5};
@@ -869,9 +861,6 @@ watchdog_event_merge_system_identity(Event_History* retained, const Event_Histor
                 continue;
             }
             *retained_sys[i] = staged_sys[i];
-            if (DSD_SYNC_IS_NXDN(retained->systype) && retained_env != NULL && staged_env != NULL) {
-                retained_env->nxdn_ran_stand_in = staged_env->nxdn_ran_stand_in;
-            }
             sys_ids_upgraded = 1;
             continue;
         }
@@ -880,7 +869,7 @@ watchdog_event_merge_system_identity(Event_History* retained, const Event_Histor
             sys_ids_upgraded = 1;
         }
     }
-    if (watchdog_event_rebuild_code_sysid(retained, retained_env)) {
+    if (watchdog_event_rebuild_code_sysid(retained)) {
         return;
     }
     if (sys_ids_upgraded) {
@@ -978,7 +967,6 @@ watchdog_event_merge_identity_fields(Event_History* retained, const Event_Histor
 // Identity is fill-if-blank; progressive detail is superseded by the newer decode.
 static void
 watchdog_event_merge_staged_into(Event_History* retained, const Event_History* staged,
-                                 dsd_call_event_render_env* retained_env, const dsd_call_event_render_env* staged_env,
                                  watchdog_event_merge_added* added) {
     DSD_MEMSET(added, 0, sizeof(*added));
     retained->emergency |= staged->emergency;
@@ -991,7 +979,7 @@ watchdog_event_merge_staged_into(Event_History* retained, const Event_History* s
                                             (dsd_event_category)retained->category);
     }
     watchdog_event_merge_identity_fields(retained, staged);
-    watchdog_event_merge_system_identity(retained, staged, retained_env, staged_env);
+    watchdog_event_merge_system_identity(retained, staged);
 
     added->alias =
         (uint8_t)watchdog_event_merge_text_progressive(retained->alias, staged->alias, sizeof(retained->alias), 1);
@@ -1095,7 +1083,7 @@ watchdog_event_commit_staged_row(dsd_opts* opts, dsd_state* state, Event_History
     if (watchdog_event_staged_row_merges(event_struct, lifecycle, staged, retained_index)) {
         Event_History* retained = &event_struct->Event_History_Items[retained_index];
         watchdog_event_merge_added added;
-        watchdog_event_merge_staged_into(retained, staged, &lifecycle->committed_env, &lifecycle->staged_env, &added);
+        watchdog_event_merge_staged_into(retained, staged, &added);
         // Re-render against the environment the row was committed under, not the live decoder.
         // A protocol with no builder, or a row with no recoverable timestamp, keeps its string.
         int rendered_changed = 0;
@@ -1473,8 +1461,7 @@ watchdog_event_current_apply_nxdn(const dsd_state* state, watchdog_event_current
     ctx->sys_id1 = state->nxdn_location_site_code;
     ctx->sys_id2 = state->nxdn_location_sys_code;
     ctx->sys_id3 = state->nxdn_last_ran;
-    watchdog_event_format_nxdn_sysid(ctx->sysid_string, sizeof(ctx->sysid_string), ctx->sys_id1, ctx->sys_id2,
-                                     ctx->sys_id3, ctx->env.nxdn_ran_stand_in);
+    // The string is set after the tuning load (watchdog_event_current_apply_code_identity()).
 }
 
 static void
@@ -1497,13 +1484,17 @@ watchdog_event_current_apply_dstar(const dsd_state* state, watchdog_event_curren
     (void)state;
 }
 
-// Run after watchdog_event_current_load_tuning(): the DMR, P25, M17 and dPMR identities name the row's access code, so the
-// string a merge rebuilds from the merged row (watchdog_event_rebuild_code_sysid()) and the event line agree with it.
+// Run after watchdog_event_current_load_tuning(): the DMR, NXDN, P25, M17 and dPMR identities name the row's access code,
+// so the string a merge rebuilds from the merged row (watchdog_event_rebuild_code_sysid()) and the event line agree
+// with it.
 static void
 watchdog_event_current_apply_code_identity(watchdog_event_current_ctx* ctx) {
     if (DSD_SYNC_IS_DMR(ctx->protocol)) {
         watchdog_event_format_dmr_sysid(ctx->sysid_string, sizeof(ctx->sysid_string), ctx->sys_id1,
                                         ctx->access_code_kind, ctx->access_code);
+    } else if (DSD_SYNC_IS_NXDN(ctx->protocol)) {
+        watchdog_event_format_nxdn_sysid(ctx->sysid_string, sizeof(ctx->sysid_string), ctx->sys_id1, ctx->sys_id2,
+                                         ctx->access_code_kind, ctx->access_code);
     } else if (DSD_SYNC_IS_P25(ctx->protocol)) {
         const uint32_t sys_id[5] = {ctx->sys_id1, ctx->sys_id2, ctx->sys_id3, ctx->sys_id4, ctx->sys_id5};
         watchdog_event_format_p25_sysid(ctx->sysid_string, sizeof(ctx->sysid_string), sys_id, ctx->access_code_kind,
@@ -1936,10 +1927,10 @@ watchdog_event_current_build_event_x2tdma(const watchdog_event_current_ctx* ctx,
 static void
 watchdog_event_current_build_event_nxdn(const watchdog_event_current_ctx* ctx, const char* datestr, const char* timestr,
                                         const char* sys_string, char* event_string, size_t event_size) {
+    // The row's RAN, its access code: never a stand-in, nor a RAN the live state learned after the call (issue #575).
     char ran_buf[12];
-    const char* ran = watchdog_event_code_text(ran_buf, sizeof ran_buf,
-                                               watchdog_event_nxdn_ran_known(ctx->sys_id3, ctx->env.nxdn_ran_stand_in),
-                                               ctx->sys_id3, 1);
+    const char* ran = watchdog_event_code_text(
+        ran_buf, sizeof ran_buf, ctx->access_code_kind == (uint8_t)DSD_ACCESS_CODE_RAN, ctx->access_code, 1);
     if (ctx->sys_id1) {
         DSD_SNPRINTF(event_string, event_size, "%s %s %s TGT: %08d; SRC: %08d; RAN: %s; SYS: %d.%d; ", datestr, timestr,
                      sys_string, ctx->target_id, ctx->source_id, ran, ctx->sys_id2, ctx->sys_id1);

@@ -3976,6 +3976,36 @@ test_reacquisition_merge_keeps_the_code_and_takes_a_later_system_id(void) {
     return rc;
 }
 
+// An NXDN row names the RAN its call was heard with, the row's access code, as DMR, dPMR, P25 and M17 rows name theirs.
+// A call heard with RAN 5 whose last render runs once the live RAN moved on -- forgotten by a retune, or the next
+// carrier's RAN 9 -- commits RAN 5 in its system identity and event line; the live RAN would name another carrier's.
+static int
+test_nxdn_row_names_the_ran_it_was_heard_with(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    static const unsigned int later_rans[] = {(unsigned int)-1, 9U};
+    int rc = 0;
+    for (size_t i = 0; i < sizeof later_rans / sizeof later_rans[0]; i++) {
+        reset_fixture(&opts, &state, event_history);
+        state.nxdn_last_ran = 5U;
+        assert(observe_test_call(&state, 0U, DSD_SYNC_NXDN_POS, DSD_CALL_KIND_GROUP_VOICE, 100U, 201U, 0U, 0U,
+                                 DSD_CALL_BOUNDARY_BEGIN)
+               == 1);
+        dsd_event_sync_slot(&opts, &state, 0U);
+        state.nxdn_last_ran = later_rans[i];
+        assert(end_test_call(&state, 0U, DSD_CALL_END_SYNC_LOSS) == 1);
+        dsd_event_sync_slot(&opts, &state, 0U);
+        assert(committed_history_rows(&event_history[0]) == 1);
+        const Event_History* row = &event_history[0].Event_History_Items[1];
+        rc |= expect_access_code("NXDN row keeps the RAN it was heard with", row, DSD_ACCESS_CODE_RAN, 5U);
+        rc |= expect_str_eq("NXDN sysid names the row's RAN", row->sysid_string, "NXDN_RAN_5");
+        rc |= expect_has_substr("NXDN event names the row's RAN", row->event_string, "RAN: 05; ");
+    }
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
 // A reacquired segment that decoded the code fills a system identity the first segment rendered without one, 0
 // included (a code for DMR and NXDN alike); a segment that decoded none never replaces one, 0 included.
 static int
@@ -6879,6 +6909,7 @@ main(void) {
     rc |= test_reacquisition_merge_upgrades_an_unknown_system_code();
     rc |= test_reacquisition_merge_names_a_dpmr_code_in_the_system_identity();
     rc |= test_reacquisition_merge_keeps_the_code_and_takes_a_later_system_id();
+    rc |= test_nxdn_row_names_the_ran_it_was_heard_with();
     rc |= test_unknown_p25_and_m17_codes_render_as_dashes();
     rc |= test_reacquisition_merge_names_a_p25_or_m17_code();
     rc |= test_data_notice_carries_frequency_and_access_code();

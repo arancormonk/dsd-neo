@@ -277,10 +277,6 @@ typedef struct {
      * UNVERIFIED_TERMINATOR). Zero while the call is active, after a bare sync loss, and after
      * an engine retune or teardown -- those end EXPLICIT, which says nothing about the air. */
     uint8_t ended_positively;
-    /* The NXDN RAN's stand-in mark (`nxdn_last_ran_stand_in`) beside the row's sys_id3: the value is an IDAS area bit
-     * or site type, or DCR's fixed 7, not a RAN, so the system identity and the event line print no RAN for it
-     * (issue #575). A merge that takes a reacquired segment's sys_id3 takes its mark with it. */
-    uint8_t nxdn_ran_stand_in;
 } dsd_call_event_render_env;
 
 /** Event bookkeeping paired with one canonical call slot. */
