@@ -40,6 +40,9 @@ static int g_symbol_levels = 4;
 static int g_channel_profile = RTL_STREAM_CHANNEL_PROFILE_P25_C4FM;
 static float g_read_base = 1000.0f;
 static float g_read_base_step = 0.0f;
+/* Every sample a read returns is g_constant_value while this is set, instead of the batch's base plus its index. */
+static int g_constant_samples = 0;
+static float g_constant_value = 0.0f;
 static int g_read_calls = 0;
 /* The samples one read returns at most: one demod block's batch. */
 static int g_batch_samples = 4;
@@ -260,7 +263,7 @@ fake_rtl_read(void* rtl_ctx, float* out, size_t count, int* out_got) {
     }
     const float read_base = g_read_base;
     for (int i = 0; i < n; i++) {
-        out[i] = read_base + (float)i;
+        out[i] = g_constant_samples ? g_constant_value : read_base + (float)i;
     }
     g_read_base += g_read_base_step;
     /* The batch is published after the change, with what the front end then runs. */
@@ -356,6 +359,8 @@ reset_stream_fixture(void) {
     g_channel_profile = RTL_STREAM_CHANNEL_PROFILE_P25_C4FM;
     g_read_base = 1000.0f;
     g_read_base_step = 0.0f;
+    g_constant_samples = 0;
+    g_constant_value = 0.0f;
     g_read_calls = 0;
     g_batch_samples = 4;
     g_bump_generation_during_read = 0;
@@ -1100,6 +1105,22 @@ read_until_reads(dsd_opts* opts, dsd_state* state, int reads) {
     }
 }
 
+/* A -6 raw WAV at the analog sink rate (48 kHz mono) in a private file made from the dsd_mkstemp() template @p path. */
+static SNDFILE*
+open_raw_wav(char* path) {
+    const int fd = dsd_mkstemp(path);
+    assert(fd >= 0);
+    (void)dsd_close(fd);
+    SF_INFO info;
+    DSD_MEMSET(&info, 0, sizeof(info));
+    info.samplerate = 48000;
+    info.channels = 1;
+    info.format = SF_FORMAT_WAV | SF_FORMAT_PCM_16;
+    SNDFILE* wav = sf_open(path, SFM_WRITE, &info);
+    assert(wav != NULL);
+    return wav;
+}
+
 /*
  * Issue #633: an RTL rate round trip (24, 48, 24 kHz with the demod resampler off) inside the samples one getSymbol()
  * call reads, each step a new stream generation. The block they land in finishes at the rate it started at, but one of
@@ -1119,16 +1140,7 @@ test_rtl_rate_round_trip_inside_one_symbol(dsd_opts* opts, dsd_state* state, voi
     state->samplesPerSymbol = 10;
     state->symbolCenter = 4;
     char raw_path[] = "dsdneo_rtl_round_trip_XXXXXX";
-    const int fd = dsd_mkstemp(raw_path);
-    assert(fd >= 0);
-    (void)dsd_close(fd);
-    SF_INFO info;
-    DSD_MEMSET(&info, 0, sizeof(info));
-    info.samplerate = 48000;
-    info.channels = 1;
-    info.format = SF_FORMAT_WAV | SF_FORMAT_PCM_16;
-    opts->wav_out_raw = sf_open(raw_path, SFM_WRITE, &info);
-    assert(opts->wav_out_raw != NULL);
+    opts->wav_out_raw = open_raw_wav(raw_path);
 
     /* Two 20 ms blocks (480 samples at 24 kHz), then the round trip three samples into the next getSymbol() call. */
     read_until_reads(opts, state, 960);
@@ -1139,6 +1151,7 @@ test_rtl_rate_round_trip_inside_one_symbol(dsd_opts* opts, dsd_state* state, voi
     const int blocks = g_read_calls / 480;
     sf_close(opts->wav_out_raw);
     opts->wav_out_raw = NULL;
+    SF_INFO info;
     DSD_MEMSET(&info, 0, sizeof(info));
     SNDFILE* wav = sf_open(raw_path, SFM_READ, &info);
     assert(wav != NULL);
@@ -1146,6 +1159,109 @@ test_rtl_rate_round_trip_inside_one_symbol(dsd_opts* opts, dsd_state* state, voi
     (void)remove(raw_path);
     /* Every block but the mixed one, each 480 samples at 24 kHz as 960 at 48 kHz. */
     expect_int("rtl-633", "round trip block left out of -6", (long)info.frames, (long)(blocks - 1) * 960L);
+}
+
+/* The 20 ms blocks each raw WAV level case reads, and the frames they come to at 48 kHz. */
+#define RAW_WAV_LEVEL_BLOCKS 6
+#define RAW_WAV_LEVEL_FRAMES (RAW_WAV_LEVEL_BLOCKS * 960)
+
+/* One raw WAV level case: what the front end delivers, and the frames the -6 WAV must hold. */
+typedef struct {
+    const char* label;
+    /* Every frame from @p settle on is @p want within @p tolerance; the ones before it, the converter's start from
+       silence, are no larger than @p settle_max. */
+    long want;
+    long tolerance;
+    long settle_max;
+    int output_kind;
+    unsigned int rate_hz;
+    float value;
+    int settle;
+} raw_wav_level_case;
+
+/* Runs @p c: RAW_WAV_LEVEL_BLOCKS blocks of @p c->value samples, the -6 WAV recording them, then reads it back. */
+static void
+run_raw_wav_level(dsd_opts* opts, dsd_state* state, void* rtl_context, const raw_wav_level_case* c) {
+    reset_stream_fixture();
+    reset_decoder_fixture(opts, state, rtl_context);
+    reset_analog_block_capture();
+    const int monitor = c->output_kind == RTL_STREAM_OUTPUT_AUDIO_MONITOR;
+    g_output_kind = c->output_kind;
+    g_output_rate_hz = c->rate_hz;
+    g_channel_profile = RTL_STREAM_CHANNEL_PROFILE_12K5;
+    g_analog_family = monitor;
+    g_monitor_published = monitor;
+    g_constant_samples = 1;
+    g_constant_value = c->value;
+    /* The monitor output is read one sample at a time; the discriminator output fills the symbol cache four at a
+       time. */
+    g_batch_samples = monitor ? 1 : 4;
+    set_analog_block_output(opts, monitor);
+    state->rf_mod = 0;
+    state->samplesPerSymbol = 10;
+    state->symbolCenter = 4;
+    char raw_path[] = "dsdneo_rtl_raw_level_XXXXXX";
+    opts->wav_out_raw = open_raw_wav(raw_path);
+    const int block_samples = (int)c->rate_hz / 50;
+    read_until_reads(opts, state, (RAW_WAV_LEVEL_BLOCKS * block_samples) / g_batch_samples);
+    sf_close(opts->wav_out_raw);
+    opts->wav_out_raw = NULL;
+
+    SF_INFO info;
+    DSD_MEMSET(&info, 0, sizeof(info));
+    SNDFILE* wav = sf_open(raw_path, SFM_READ, &info);
+    assert(wav != NULL);
+    static short frames[RAW_WAV_LEVEL_FRAMES];
+    const sf_count_t got = sf_read_short(wav, frames, (sf_count_t)RAW_WAV_LEVEL_FRAMES);
+    sf_close(wav);
+    (void)remove(raw_path);
+    /* The last block may still be filling when the reads stop. */
+    expect_int(c->label, "frames written", got >= (sf_count_t)(RAW_WAV_LEVEL_FRAMES - 960), 1);
+    int bad = 0;
+    for (sf_count_t i = 0; i < got; i++) {
+        const long v = frames[i];
+        const int settled = i >= c->settle;
+        const int ok = settled ? labs(v - c->want) <= c->tolerance : labs(v) <= c->settle_max;
+        if (!ok && bad++ == 0) {
+            if (settled) {
+                DSD_FPRINTF(stderr, "FAIL: %s: frame %lld of %lld is %ld, want %ld +/- %ld\n", c->label, (long long)i,
+                            (long long)got, v, c->want, c->tolerance);
+            } else {
+                DSD_FPRINTF(stderr, "FAIL: %s: settling frame %lld is %ld, want at most %ld either way\n", c->label,
+                            (long long)i, v, c->settle_max);
+            }
+        }
+    }
+    expect_int(c->label, "frames off the level", bad, 0);
+    g_constant_samples = 0;
+}
+
+/*
+ * Issue #643: the -6 raw WAV on RTL monitor input at the int16 level a PCM input at the reference has. The monitor's
+ * samples run at its 1/pi output scale, where the reference signal (1 kHz at 3 kHz deviation, or AM at 50 %) peaks at
+ * 0.25 with the default volume trim, so written as they were they rounded to 0 or +/-1: a silent WAV. The WAV scales
+ * them by 8231 / 0.25 = 32924, so 0.125 is written as 4116 (within 1 %), at the sink rate (48 kHz, written as it is)
+ * and converted from 24 kHz. The converter starts from silence: with 16 taps a phase when upsampling
+ * (rate_converter_taps_per_phase()) every tap holds the level from the 16th input, frame 30, on, and before that its
+ * filter's step response rings either side of zero and overshoots the level by 12.6 % (4632), bounded here at 25 %:
+ * the scale is applied once, to the converted samples. The FSK discriminator output, normalised to +/-30000 already, is
+ * written exactly as it is at the sink rate, and converted unscaled from 24 kHz.
+ */
+static void
+test_rtl_raw_wav_level(dsd_opts* opts, dsd_state* state, void* rtl_context) {
+    static const raw_wav_level_case cases[] = {
+        {"rtl-643 monitor at 48 kHz", 4116L, 41L, 0L, RTL_STREAM_OUTPUT_AUDIO_MONITOR, 48000U, 0.125f, 0},
+        {"rtl-643 monitor at 24 kHz", 4116L, 41L, 5145L, RTL_STREAM_OUTPUT_AUDIO_MONITOR, 24000U, 0.125f, 30},
+        {"rtl-643 FSK discriminator at 48 kHz", 12000L, 0L, 0L, RTL_STREAM_OUTPUT_FSK_DISCRIMINATOR, 48000U, 12000.25f,
+         0},
+        {"rtl-643 FSK discriminator at 24 kHz", 12000L, 120L, 15000L, RTL_STREAM_OUTPUT_FSK_DISCRIMINATOR, 24000U,
+         12000.25f, 30},
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        run_raw_wav_level(opts, state, rtl_context, &cases[i]);
+    }
+    reset_stream_fixture();
+    reset_decoder_fixture(opts, state, rtl_context);
 }
 
 int
@@ -1512,6 +1628,7 @@ main(void) {
     test_digital_decoder_collects_any_monitor(&opts, &state, &fake_rtl_context);
     test_return_to_radio_rescales_from_the_pcm_rate(&opts, &state, &fake_rtl_context);
     test_rtl_rate_round_trip_inside_one_symbol(&opts, &state, &fake_rtl_context);
+    test_rtl_raw_wav_level(&opts, &state, &fake_rtl_context);
     dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
 
     dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){0});

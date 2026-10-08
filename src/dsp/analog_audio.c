@@ -23,15 +23,13 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 
-/* RTL monitor audio: 1 kHz at 3 kHz deviation is 2 pi 3000 / 48000 = 0.3927 rad, 0.125 after the monitor's 1/pi output
-   scale, and the AM detector puts 50% at 0.25 x 0.5 = 0.125; the default volume trim doubles it to 0.25. */
-#define ANALOG_AUDIO_RTL_MONITOR_REFERENCE 0.25
-/* The FSK discriminator output's normalised peak (fsk_modem.c). */
-#define ANALOG_AUDIO_RTL_FSK_REFERENCE     30000.0
+/* The FSK discriminator output's normalised peak (fsk_modem.c). The RTL monitor audio's reference is public
+   (DSD_ANALOG_AUDIO_RTL_MONITOR_REFERENCE): the -6 raw WAV's scale uses it too. */
+#define ANALOG_AUDIO_RTL_FSK_REFERENCE 30000.0
 /* `-n` at which the fixed gain is the source gain. */
-#define ANALOG_AUDIO_UNITY_SETTING         50.0
+#define ANALOG_AUDIO_UNITY_SETTING     50.0
 
-#define ANALOG_AUDIO_CHAINS                2
+#define ANALOG_AUDIO_CHAINS            2
 
 /* Which reception samples belong to: the RTL stream generation (RTL input), the trunk-tuning generation, and the
    chains' reception epoch, which every boundary dsd_analog_rx_reset() announces moves (dsd_analog_audio_note_reception():
@@ -67,7 +65,7 @@ double
 dsd_analog_audio_source_gain(dsd_analog_audio_source source) {
     switch (source) {
         case DSD_ANALOG_AUDIO_SOURCE_RTL_MONITOR:
-            return DSD_ANALOG_AUDIO_REFERENCE_PEAK / ANALOG_AUDIO_RTL_MONITOR_REFERENCE;
+            return DSD_ANALOG_AUDIO_REFERENCE_PEAK / DSD_ANALOG_AUDIO_RTL_MONITOR_REFERENCE;
         case DSD_ANALOG_AUDIO_SOURCE_RTL_FSK: return DSD_ANALOG_AUDIO_REFERENCE_PEAK / ANALOG_AUDIO_RTL_FSK_REFERENCE;
         /* PCM: the reference signal is one already at the reference peak. */
         case DSD_ANALOG_AUDIO_SOURCE_PCM16:

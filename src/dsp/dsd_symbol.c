@@ -1251,10 +1251,12 @@ symbol_analog_block_size(const dsd_opts* opts, const dsd_state* state, unsigned 
     return analog_block;
 }
 
+/* The block in int16, each sample scaled by @p gain (dsd_analog_sink_write()'s gain); analog_out_f is left as it is. A
+   gain of 1.0 leaves every sample exactly as it was. */
 static inline void
-symbol_convert_analog_block_to_i16(dsd_state* state, unsigned int analog_block) {
+symbol_convert_analog_block_to_i16(dsd_state* state, unsigned int analog_block, double gain) {
     for (unsigned int i = 0; i < analog_block; i++) {
-        state->analog_out[i] = float_to_int16_clip(state->analog_out_f[i]);
+        state->analog_out[i] = float_to_int16_clip((float)(gain * (double)state->analog_out_f[i]));
     }
 }
 
@@ -1271,7 +1273,7 @@ dsd_symbol_test_convert_analog_block_to_i16(const float* input, short* output, u
     for (unsigned int i = 0; i < n; i++) {
         state.analog_out_f[i] = input[i];
     }
-    symbol_convert_analog_block_to_i16(&state, n);
+    symbol_convert_analog_block_to_i16(&state, n, 1.0);
     for (unsigned int i = 0; i < n; i++) {
         output[i] = state.analog_out[i];
     }
@@ -1371,6 +1373,25 @@ symbol_analog_block_track_rate(const dsd_opts* opts, dsd_state* state, uint32_t 
     state->analog_block_rtl_gen = rtl_generation;
 }
 
+/* What the block's samples are, for the audio chain's gain that takes the reference signal to the reference level and
+   the -6 raw WAV's int16 scale (issue #643): on an RTL input, the FSK discriminator output when the symbol cache holds
+   that kind (the -8 source monitor under digital decoding; symbol_refresh_rtl_profile() empties the block when the
+   output moves), else monitor audio; PCM otherwise. */
+static inline dsd_analog_audio_source
+symbol_analog_audio_source(const dsd_opts* opts, const dsd_state* state) {
+#ifdef USE_RADIO
+    if (opts->audio_in_type == AUDIO_IN_RTL) {
+        return state->rtl_symbol_cache_output_kind == RTL_STREAM_OUTPUT_FSK_DISCRIMINATOR_LOCAL
+                   ? DSD_ANALOG_AUDIO_SOURCE_RTL_FSK
+                   : DSD_ANALOG_AUDIO_SOURCE_RTL_MONITOR;
+    }
+#else
+    (void)opts;
+    (void)state;
+#endif
+    return DSD_ANALOG_AUDIO_SOURCE_PCM16;
+}
+
 /* The -6 raw WAV as an analog sink. */
 typedef struct {
     SNDFILE* wav;
@@ -1383,7 +1404,10 @@ symbol_raw_wav_sink_write(const void* ctx, const short* samples, size_t count) {
 }
 
 /* The -6 raw WAV gets each block at the analog sink rate (issue #633): as it is when the block already runs at that
-   rate, converted otherwise, and not at all when the block mixes two rates (@p block_hz 0). */
+   rate, converted otherwise, and not at all when the block mixes two rates (@p block_hz 0). It is written at int16
+   scale (issue #643): RTL monitor audio, at the monitor's 1/pi output scale, is scaled to the level a PCM input at the
+   reference has, and the FSK discriminator output and PCM input are written as they are. The block itself is not
+   touched: received-tone detection and the monitor read it after. */
 static inline void
 symbol_write_raw_wav_block(const dsd_opts* opts, dsd_state* state, unsigned int count, int block_hz) {
     if (block_hz <= 0) {
@@ -1392,11 +1416,12 @@ symbol_write_raw_wav_block(const dsd_opts* opts, dsd_state* state, unsigned int 
     }
     const int sink_hz = dsd_opts_analog_sink_rate_hz(opts);
     const symbol_raw_wav_sink sink = {opts->wav_out_raw};
+    const double gain = dsd_analog_audio_int16_scale(symbol_analog_audio_source(opts, state));
     if (block_hz == sink_hz
-        || dsd_analog_sink_write(opts, state, DSD_ANALOG_SINK_RAW_WAV, state->analog_out_f, count, block_hz, sink_hz,
-                                 symbol_raw_wav_sink_write, &sink)
+        || dsd_analog_sink_write(opts, state, DSD_ANALOG_SINK_RAW_WAV, state->analog_out_f, count, gain, block_hz,
+                                 sink_hz, symbol_raw_wav_sink_write, &sink)
                == DSD_ANALOG_SINK_NATIVE) {
-        symbol_convert_analog_block_to_i16(state, count);
+        symbol_convert_analog_block_to_i16(state, count, gain);
         symbol_write_wav_short_block(opts->wav_out_raw, state->analog_out, count, "symbol raw WAV");
     }
 }
@@ -1457,10 +1482,10 @@ symbol_write_unsynced_audio(const dsd_opts* opts, dsd_state* state, unsigned int
        time spent waiting for input, which received-tone detection measures (issue #522). */
     dsd_analog_rx_playback_begin(state);
     if (!has_sink || block_hz == sink_hz
-        || dsd_analog_sink_write(opts, state, DSD_ANALOG_SINK_MONITOR, state->analog_out_f, analog_block, block_hz,
+        || dsd_analog_sink_write(opts, state, DSD_ANALOG_SINK_MONITOR, state->analog_out_f, analog_block, 1.0, block_hz,
                                  sink_hz, symbol_monitor_sink_write, &sink)
                == DSD_ANALOG_SINK_NATIVE) {
-        symbol_convert_analog_block_to_i16(state, analog_block);
+        symbol_convert_analog_block_to_i16(state, analog_block, 1.0);
         symbol_monitor_sink_write(&sink, state->analog_out, analog_block);
     }
     dsd_analog_rx_playback_end(state);
@@ -1512,24 +1537,6 @@ symbol_output_unsynced_analog(const dsd_opts* opts, dsd_state* state, unsigned i
         symbol_write_unsynced_audio(opts, state, analog_block, block_hz);
     }
     symbol_stamp_unsynced_carrier(opts, state);
-}
-
-/* What the block's samples are, for the gain that takes the reference signal to the reference level: on an RTL input,
-   the FSK discriminator output when the symbol cache holds that kind (the -8 source monitor under digital decoding;
-   symbol_refresh_rtl_profile() empties the block when the output moves), else monitor audio; PCM otherwise. */
-static inline dsd_analog_audio_source
-symbol_analog_audio_source(const dsd_opts* opts, const dsd_state* state) {
-#ifdef USE_RADIO
-    if (opts->audio_in_type == AUDIO_IN_RTL) {
-        return state->rtl_symbol_cache_output_kind == RTL_STREAM_OUTPUT_FSK_DISCRIMINATOR_LOCAL
-                   ? DSD_ANALOG_AUDIO_SOURCE_RTL_FSK
-                   : DSD_ANALOG_AUDIO_SOURCE_RTL_MONITOR;
-    }
-#else
-    (void)opts;
-    (void)state;
-#endif
-    return DSD_ANALOG_AUDIO_SOURCE_PCM16;
 }
 
 /* The monitor's voice band-pass, legacy filters and gain stage (dsd_analog_audio_process_f()). The filters run whether

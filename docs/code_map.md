@@ -2255,7 +2255,12 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   (`dsd_analog_sink_note_reception()` from `dsd_analog_rx_reset()`). The `-6` WAV runs on across such a boundary, which
   drops no input, so an acquisition reset in a digital session keeps every sample. A rate the converter cannot take
   writes nothing and logs once. `analog_sink.c` stays apart from `analog_audio.c`, which `DSP_SYMBOL_REPLAY` replaces
-  with its own copy.
+  with its own copy. The `-6` WAV is written at int16 scale (issue #643): `symbol_write_raw_wav_block()` scales the
+  native and the converted path alike (`dsd_analog_sink_write()`'s `gain`, which the monitor passes as 1.0) by
+  `dsd_analog_audio_int16_scale()` of the block's source, 32924 for RTL monitor audio at its 1/pi output scale and 1.0
+  for the FSK discriminator output and PCM, and leaves `analog_out_f` to the tap and the monitor; that scale is inline
+  in `<dsd-neo/dsp/analog_audio.h>` for the same reason, since the tests that replace `analog_audio.c` keep the writer
+  (tests: `DSP_ANALOG_AUDIO`, `RTL_SYMBOL_CACHE_GENERATION`, `DECODE_IQ_ANALOG_RAW_WAV_*`).
   - The converter (`src/dsp/rate_converter.c`, `<dsd-neo/dsp/rate_converter.h>`): the exact L/M where both reduced
     terms are at most 4096, else the closest ratio with terms in that bound (continued-fraction convergents and
     semiconvergents, compared in 64-bit), which is within 250 ppm for every supported rate. Equal rates, or a best ratio

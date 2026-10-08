@@ -1206,6 +1206,7 @@ write or two).
 | `--analog-probe-{min,max}-{dbc,dbfs} HZ:DB` | Bounds on a probe's level; each also adds the probe. |
 | `--analog-max-tone-lock-ms MS` | Upper bound on `tone_lock_ms`, the stream time of the first received-tone lock. Fails as not measured when no tone locked. |
 | `--analog-max-delivery-error-pct PCT` | How far the length of the delivered audio strays from the input its blocks span, at the sink rate (issue #633). Measured on audio input, where each block spans 960 samples at the monitor's rate; fails as not measured otherwise. |
+| `--analog-raw-wav-min-rms-dbfs DB` | Lower bound on the RMS level of the run's `-6` raw WAV (issue #643), which this option has the host record: it adds `-6 FILE` for a private temporary file, reads the WAV back when live processing ends (closing it first, which the engine would only do after the stop hook), prints `ANALOG RAW WAV: frames=N rate_hz=R rms_dbfs=X peak_dbfs=Y clip=C` after the `ANALOG METRIC:` line, and removes the file at exit. Fails as not measured when the WAV holds no frames. |
 | `--analog-scan-row ROW` | Enter row `ROW` of the `-C` channel map before the replay, the way the conventional scanner commits it (its class, then its own options), and print `Scan row applied: ROW <class>; width <W>; squelch <S>`, each with `(row)` when the row sets it. I/Q replay cannot retune, so one row is all a run visits (issue #526). |
 | `--analog-iq-gain-db DB` | Replay a copy of the capture with every sample scaled by `DB` about the cu8 midpoint: the same air, noise included, as a receiver with that much more (or less) gain records it. It works on the committed fixtures only (`tests/fixtures/iq`, opened by their directory entries there, never by a path from the command line or a sidecar). The copy goes to a private temporary directory the host removes at exit, and the host prints `capture scaled by +10.0 dB, N of M bytes clipped`; it stops (exit 2) when more than one byte in a thousand would clip, or when the capture is not a committed fixture. The auto squelch's `_HOT` cases use it, so a hotter receiver costs no committed fixture. |
 
@@ -1224,10 +1225,11 @@ it. Sub-audible tones 20-30 Hz apart need a longer, phase-continuous window than
 When live processing ends the host prints `ANALOG METRIC:` (`rate_hz`, `total_ms`, `captured_ms`, `audible_ms`,
 `first_audible_ms`, `rms_dbfs`, `peak_dbfs`, `clip`, `inband_db`, `tone_hz`, `tone_dbfs`, `tone_snr_db`, and the
 received-tone fields `tone`, `tone_lock_ms` and `tone_lock_pct` described under [Analog A/B](#analog-ab); `NA` where
-a value was not measured), one `ANALOG PROBE:` line per probe, and then `ANALOG AUDIO OK`, or one
-`ANALOG AUDIO FAIL:` line per missed bound and exit status 1. Without bounds it only reports, which is how
-`tools/replay_ab.sh --metric analog` uses it. Every bound is absolute and per case, so "narrower is cleaner" becomes
-two cases with their own limits, not a comparison between runs. Measured on the commit that added them:
+a value was not measured), the `ANALOG RAW WAV:` line when the run recorded one, one `ANALOG PROBE:` line per probe,
+and then `ANALOG AUDIO OK`, or one `ANALOG AUDIO FAIL:` line per missed bound and exit status 1. Without bounds it
+only reports, which is how `tools/replay_ab.sh --metric analog` uses it. Every bound is absolute and per case, so
+"narrower is cleaner" becomes two cases with their own limits, not a comparison between runs. Measured on the commit
+that added them:
 
 | Case | Fixture | Measured (default monitor filters) | Bounds |
 | --- | --- | --- | --- |
@@ -1249,6 +1251,8 @@ two cases with their own limits, not a comparison between runs. Measured on the 
 | `DECODE_IQ_ANALOG_NFM_REAL_SQUELCH_B_SMOKE` | `nfm_squelch_real_b`, `-n 50`, audible from -40 dBFS | captured 4000 ms, audible 3100 ms, in-band 25.5 dB | captured ≥ 3900, audible ≥ 2500, in-band ≥ 20 |
 | `DECODE_IQ_ANALOG_PARITY_NFM_REAL` | `nfm_ctcss_real` under `-fA` (default chain) | RMS -23.9 dBFS, no clipping: the level `dmr_voice` decodes to (-24.9 dBFS RMS) within 1 dB | captured ≥ 5800, RMS -27.9 to -21.9 dBFS (DMR voice ±3 dB), clip 0 |
 | `DECODE_IQ_ANALOG_PARITY_AM_REAL` | `am_airband_real` under `-fM` (default chain) | RMS -23.9 dBFS, no clipping | captured ≥ 7800, `PARITY_NFM_REAL`'s window, clip 0 |
+| `DECODE_IQ_ANALOG_RAW_WAV_NFM_REAL` | `nfm_ctcss_real` under `-fA`, the `-6` raw WAV (issue #643) | raw WAV RMS -28.9 dBFS, peak -13.9 dBFS, no clipping: the monitor's 1/pi-scale samples at the level a PCM input at the reference has (before the fix: every sample 0) | raw WAV RMS ≥ -32 dBFS |
+| `DECODE_IQ_ANALOG_RAW_WAV_AM_REAL` | `am_airband_real` under `-fM`, the `-6` raw WAV | raw WAV RMS -18.3 dBFS, peak -4.5 dBFS, no clipping (before the fix: -117.8 dBFS, samples of -1, 0 and 1) | raw WAV RMS ≥ -21.5 dBFS |
 | `DECODE_IQ_ANALOG_SOURCE_MONITOR_FIXED` | `p25p1_c4fm_vc` under `-fs -8 -n 50` (the source monitor during digital decoding) | captured 3000 ms, peak -9.9 dBFS, no clipping (main: 141440 clipped samples, -0.03 dBFS RMS) | captured ≥ 2900, peak ≤ -6 dBFS, clip 0 |
 | `DECODE_IQ_ANALOG_NO_MOD_AUTO_SWITCH` | `am_airband_real` under `-fA` (monitor path only, not AM reception) | total and captured 8000 ms, no CQPSK symbols (before the fix: total 751 ms, captured 0 to 20 ms, CQPSK warning) | captured ≥ 7800 ms, total 7800 to 8200 ms |
 | `DECODE_IQ_ANALOG_REAL_CTCSS_1514` | `nfm_ctcss_real` | tone 151.4, first lock at 300 ms, locked 88.67% | tone lock ≤ 400 ms; tone 151.4 and no other tone logged |
@@ -1306,6 +1310,7 @@ a missed bound), the named `ANALOG AUDIO FAIL:` line, an `ANALOG METRIC:` line (
 | `DECODE_IQ_ANALOG_NEG_TONE_LOCK_NOT_MEASURED` | a 400 ms tone-lock bound on `nfm_notone_synth`, where no tone locks | tone lock ms "not measured" |
 | `DECODE_IQ_ANALOG_NEG_AM_TONE_THROUGH_FM` | `DECODE_IQ_ANALOG_AM_TONE`'s 25 dB tone SNR floor on `am_tone_synth` under `-fA` (the FM monitor) | tone SNR, measured at -21.4 dB: the AM case's tone is the AM detector's |
 | `DECODE_IQ_ANALOG_NEG_PARITY_FIXED` | `DECODE_IQ_ANALOG_PARITY_NFM_REAL`'s window on `nfm_ctcss_real` at `-n 50` | RMS, measured at -32.8 dBFS: the parity holds only with the AGC |
+| `DECODE_IQ_ANALOG_NEG_RAW_WAV_RMS` | a -20 dBFS raw WAV floor on `nfm_ctcss_real` under `-fA` (-28.9 dBFS) | raw WAV RMS dBFS, read back from a WAV that holds frames |
 | `DECODE_IQ_ANALOG_NEG_LAST_AUDIBLE` | the level burst (`nfm_burst_synth`, `--squelch -28`) with a 520 ms last-audible bound | last audible ms, measured at 540, while the first-audible bound holds |
 
 When a later change adds a bound or a new kind of check to the host, add a negative control beside it.

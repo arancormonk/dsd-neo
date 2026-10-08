@@ -218,7 +218,10 @@ Windows console runs:
 ## Recording & Files
 
 - `-6 <file>` Save raw audio WAV (48k/mono): the input before the monitor's filters, converted to 48 kHz when it runs
-  at another rate (see "The analog outputs" under Inputs). Large files (≈360 MB/hour)
+  at another rate (see "The analog outputs" under Inputs). On radio input the analog monitor's audio is saved at the
+  level a PCM input at the reference has: a 1 kHz tone at 3 kHz deviation, or AM at 50% modulation, peaks at -12 dBFS
+  at the default RTL `vol` of 2, whatever `-n` is, so open-squelch FM noise can clip. Audio input, and the FSK
+  discriminator output digital decoding reads on radio input, are saved as they are. Large files (≈360 MB/hour)
 - `-w <file>` Save decoded audio to a single WAV (mutually exclusive with `-P`)
 - `-P` Per‑call WAV saving (auto‑named files in a folder; mutually exclusive with `-w`)
 - Recordings (`-w`, `-P`, `-d`) follow each talkgroup's `record` policy: a lockout (`B`/`DE`), avoid, skip, an

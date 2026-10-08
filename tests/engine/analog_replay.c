@@ -69,6 +69,11 @@
  * --analog-pcm-gain-db scales that audio (a louder source) and --analog-pcm-lowpass-hz low-passes it first (an SDR
  * program's audio filter). Stream time on audio input is the WAV's read position, in frames at its own rate, so the
  * bounds mean the same as on a replay; it needs no radio support, and the PCM cases run in every build.
+ *
+ * --analog-raw-wav-min-rms-dbfs DB (issue #643) records the run's `-6` raw WAV too: the host adds `-6 FILE` for a
+ * private temporary file, reads it back when live processing ends, prints one "ANALOG RAW WAV:" line (its frames, RMS
+ * and peak dBFS, clipped samples) after the METRIC line, fails when its RMS is below DB, and removes the file when it
+ * exits.
  */
 
 #include <dsd-neo/core/channel_mode.h>
@@ -215,6 +220,8 @@ static analog_limit g_iq_gain_db;
 static analog_limit g_pcm_tap_hz;
 static analog_limit g_pcm_gain_db;
 static analog_limit g_pcm_lowpass_hz;
+/* The lower bound on the -6 raw WAV's RMS level (--analog-raw-wav-min-rms-dbfs); unset records no raw WAV. */
+static analog_limit g_raw_wav_min_rms_dbfs;
 
 /* ---- argument handling ---------------------------------------------------------------------------------------- */
 
@@ -250,6 +257,7 @@ static const analog_scalar_arg k_scalar_args[] = {
     {"--analog-pcm-tap", &g_pcm_tap_hz, 8000.0, 96000.0},
     {"--analog-pcm-gain-db", &g_pcm_gain_db, -40.0, 20.0},
     {"--analog-pcm-lowpass-hz", &g_pcm_lowpass_hz, 1000.0, 20000.0},
+    {"--analog-raw-wav-min-rms-dbfs", &g_raw_wav_min_rms_dbfs, -ANALOG_DB_LIMIT, 0.0},
 };
 
 static const char* const k_probe_limit_args[PROBE_LIMIT_COUNT] = {
@@ -292,6 +300,7 @@ analog_usage(void) {
                 "  --analog-pcm-tap RATE             run the capture's discriminator audio as a RATE Hz WAV input\n"
                 "  --analog-pcm-gain-db DB           scale that audio by DB\n"
                 "  --analog-pcm-lowpass-hz HZ        low-pass that audio at HZ first, as an SDR program's filter\n"
+                "  --analog-raw-wav-min-rms-dbfs DB  record the -6 raw WAV to a private file; RMS level of that WAV\n"
                 "Other --analog-* arguments go to dsd-neo unchanged.\n");
 }
 
@@ -1469,6 +1478,85 @@ analog_start(dsd_opts* opts, dsd_state* state, void* context) {
     return 0;
 }
 
+/* ---- raw WAV (--analog-raw-wav-min-rms-dbfs) ------------------------------------------------------------------ */
+
+#define ANALOG_RAW_WAV_CHUNK 4096
+
+/* The private file the run's -6 raw WAV goes to, "" when none was made. */
+static char g_raw_wav_path[DSD_TEST_PATH_MAX];
+
+/* What the raw WAV held when live processing ended. */
+static struct {
+    int have; /* it was read and holds frames */
+    long long frames;
+    int rate_hz;
+    double rms_dbfs;
+    double peak_dbfs;
+    uint64_t clip_count;
+} g_raw_wav;
+
+/* Makes the private file and adds `-6 FILE` to the dsd-neo arguments (args has room for two more); 0, or -1. */
+static int
+analog_raw_wav_add(char** args, int* count) {
+    static char k_raw_wav_flag[] = "-6";
+    const int fd = dsd_test_mkstemp(g_raw_wav_path, sizeof(g_raw_wav_path), "dsdneo_analog_raw");
+    if (fd < 0) {
+        DSD_FPRINTF(stderr, "analog replay: --analog-raw-wav-min-rms-dbfs cannot make its raw WAV file\n");
+        g_raw_wav_path[0] = '\0';
+        return -1;
+    }
+    (void)dsd_close(fd);
+    args[(*count)++] = k_raw_wav_flag;
+    args[(*count)++] = g_raw_wav_path;
+    args[*count] = NULL;
+    return 0;
+}
+
+/* Reads the raw WAV back. The engine closes it only after the stop hook, so the host closes it here first, which writes
+   its final header; the engine's cleanup then finds it closed. */
+static void
+analog_raw_wav_measure(dsd_opts* opts) {
+    if (opts->wav_out_raw != NULL) {
+        sf_close(opts->wav_out_raw);
+        opts->wav_out_raw = NULL;
+    }
+    SF_INFO info;
+    DSD_MEMSET(&info, 0, sizeof(info));
+    SNDFILE* wav = sf_open(g_raw_wav_path, SFM_READ, &info);
+    if (wav == NULL) {
+        return;
+    }
+    static short pcm[ANALOG_RAW_WAV_CHUNK];
+    double sum_sq = 0.0;
+    double peak = 0.0;
+    long long frames = 0;
+    sf_count_t got = 0;
+    while ((got = sf_read_short(wav, pcm, ANALOG_RAW_WAV_CHUNK)) > 0) {
+        for (sf_count_t i = 0; i < got; i++) {
+            const double x = (double)pcm[i] / ANALOG_FULL_SCALE;
+            sum_sq += x * x;
+            peak = fabs(x) > peak ? fabs(x) : peak;
+            if (pcm[i] >= 32767 || pcm[i] <= -32768) {
+                g_raw_wav.clip_count++;
+            }
+        }
+        frames += (long long)got;
+    }
+    sf_close(wav);
+    g_raw_wav.frames = frames;
+    g_raw_wav.rate_hz = info.samplerate;
+    g_raw_wav.have = frames > 0 && info.channels == 1;
+    g_raw_wav.rms_dbfs = frames > 0 ? analog_db(sum_sq / (double)frames) : 0.0;
+    g_raw_wav.peak_dbfs = analog_db(peak * peak);
+}
+
+static void
+analog_raw_wav_remove(void) {
+    if (g_raw_wav_path[0] != '\0' && remove(g_raw_wav_path) != 0) {
+        DSD_FPRINTF(stderr, "analog replay: could not remove %s\n", g_raw_wav_path);
+    }
+}
+
 /* ---- report --------------------------------------------------------------------------------------------------- */
 
 static void
@@ -1688,7 +1776,23 @@ analog_check_limits(const analog_report_ctx* ctx) {
     const double delivery_error_pct =
         have_delivery ? 100.0 * fabs((double)g_totals.samples_captured - want_samples) / want_samples : 0.0;
     analog_check_max("delivery error pct", have_delivery, delivery_error_pct, &g_limits.max_delivery_error_pct);
+    analog_check_min("raw WAV RMS dBFS", g_raw_wav.have, g_raw_wav.rms_dbfs, &g_raw_wav_min_rms_dbfs);
     analog_report_probes(ctx, 1);
+}
+
+/* The ANALOG RAW WAV line, when the run recorded one (--analog-raw-wav-min-rms-dbfs). */
+static void
+analog_print_raw_wav_line(void) {
+    if (!g_raw_wav_min_rms_dbfs.set) {
+        return;
+    }
+    char line[256];
+    DSD_SNPRINTF(line, sizeof(line), "ANALOG RAW WAV: frames=%lld rate_hz=%d", g_raw_wav.frames, g_raw_wav.rate_hz);
+    analog_print_value(line, sizeof(line), "rms_dbfs", g_raw_wav.have, g_raw_wav.rms_dbfs);
+    analog_print_value(line, sizeof(line), "peak_dbfs", g_raw_wav.have, g_raw_wav.peak_dbfs);
+    const size_t used = strlen(line);
+    DSD_SNPRINTF(line + used, sizeof(line) - used, " clip=%llu", (unsigned long long)g_raw_wav.clip_count);
+    DSD_FPRINTF(stderr, "%s\n", line);
 }
 
 static void
@@ -1697,6 +1801,7 @@ analog_report(void) {
     DSD_MEMSET(&ctx, 0, sizeof(ctx));
     analog_report_measure(&ctx);
     analog_print_metric_line(&ctx);
+    analog_print_raw_wav_line();
     analog_report_probes(&ctx, 0);
     analog_note_resolution();
     analog_check_limits(&ctx);
@@ -1746,6 +1851,9 @@ analog_stop(dsd_opts* opts, dsd_state* state, void* context) {
     if (analog_pcm_input(opts)) {
         analog_note_pcm_position(opts);
         g_delivery_pcm = 1;
+    }
+    if (g_raw_wav_min_rms_dbfs.set) {
+        analog_raw_wav_measure(opts);
     }
     analog_report();
 }
@@ -1807,7 +1915,8 @@ main(int argc, char** argv) {
     if (argc == 2 && strcmp(argv[1], "--analog-selftest") == 0) {
         return analog_selftest();
     }
-    char** args = (char**)calloc((size_t)argc + 1U, sizeof(*args));
+    /* Room for the NULL after the arguments and for the `-6 FILE` --analog-raw-wav-min-rms-dbfs adds. */
+    char** args = (char**)calloc((size_t)argc + 3U, sizeof(*args));
     if (args == NULL) {
         return 1;
     }
@@ -1821,8 +1930,10 @@ main(int argc, char** argv) {
         args_rc = -1;
     }
     if (args_rc != 0 || (g_iq_gain_db.set && analog_replay_scaled(args, kept) != 0)
-        || (g_pcm_tap_hz.set && analog_replay_tap(args, kept) != 0)) {
+        || (g_pcm_tap_hz.set && analog_replay_tap(args, kept) != 0)
+        || (g_raw_wav_min_rms_dbfs.set && analog_raw_wav_add(args, &kept) != 0)) {
         analog_remove_scaled();
+        analog_raw_wav_remove();
         free((void*)args);
         return 2;
     }
@@ -1851,5 +1962,6 @@ main(int argc, char** argv) {
     free(opts);
     free((void*)args);
     analog_remove_scaled();
+    analog_raw_wav_remove();
     return rc;
 }

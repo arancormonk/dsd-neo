@@ -5056,7 +5056,8 @@ target_link_libraries(
 add_test(NAME DSP_ANALOG_VOICE COMMAND dsd-neo_test_dsp_analog_voice)
 
 # The analog monitor's audio chain (issue #518): source gains, fixed gain and AGC,
-# band choice, legacy filter flags, resets and the state-extension slot.
+# band choice, legacy filter flags, resets and the state-extension slot; and the -6
+# raw WAV's int16 scale (issue #643).
 add_executable(dsd-neo_test_dsp_analog_audio dsp/test_dsp_analog_audio.c)
 target_include_directories(
     dsd-neo_test_dsp_analog_audio
@@ -13862,6 +13863,26 @@ if(DSD_HAS_RADIO)
         ""
         "${_analog_off_path}"
     )
+    # The -6 raw WAV on radio input (issue #643): the monitor's samples, at its 1/pi
+    # output scale, are written at the level a PCM input at the reference has, so the
+    # off-air excerpts record audibly: nfm_ctcss_real -28.9 dBFS RMS (-13.9 dBFS peak)
+    # and am_airband_real -18.3 dBFS (-4.5 dBFS peak), unclipped. Written unscaled they
+    # rounded to digital silence: all zero, and -117.8 dBFS (+/-1 LSB). Each bound sits
+    # about 3 dB under its level; DECODE_IQ_ANALOG_NEG_RAW_WAV_RMS shows a missed one fails.
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_RAW_WAV_NFM_REAL
+        nfm_ctcss_real
+        "-fA --analog-raw-wav-min-rms-dbfs -32"
+        ""
+        "${_analog_off_path}"
+    )
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_RAW_WAV_AM_REAL
+        am_airband_real
+        "-fM --analog-raw-wav-min-rms-dbfs -21.5"
+        ""
+        "${_analog_off_path}"
+    )
     # The -8 source monitor under digital decoding plays the FSK discriminator output,
     # which is normalised to +/-30000. The fixed gain used to scale it as RTL monitor
     # audio (12000x at -n 50) and clipped every sample (141440 clipped, -0.03 dBFS RMS);
@@ -14550,6 +14571,15 @@ if(DSD_HAS_RADIO)
         nfm_ctcss_real
         "-fA -n 50 ${_analog_speech_parity}"
         "ANALOG AUDIO FAIL: RMS dBFS -[0-9]+[.][0-9]+ [(]limit -27[.]90[)]"
+    )
+    # The raw WAV bound (issue #643) above what nfm_ctcss_real records (-28.9 dBFS RMS)
+    # fails on the level read back from a -6 WAV that holds frames; "not measured" does
+    # not count.
+    dsd_neo_add_analog_replay_fail_test(
+        DECODE_IQ_ANALOG_NEG_RAW_WAV_RMS
+        nfm_ctcss_real
+        "-fA --analog-raw-wav-min-rms-dbfs -20"
+        "ANALOG RAW WAV: frames=[1-9][0-9]* .*ANALOG AUDIO FAIL: raw WAV RMS dBFS -[0-9]+[.][0-9]+ [(]limit -20[.]00[)]"
     )
     # The auto squelch's burst bounds under a fixed threshold, on the hot copy: -35 dB
     # sits 2.5 dB over the burst's noise at its own level (the gate opens on noise at

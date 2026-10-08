@@ -77,13 +77,15 @@ void dsd_analog_sink_note_reception(const dsd_state* state);
 /**
  * @brief Write @p n samples of @p sink's block, collected at @p block_hz, to a sink at @p sink_hz.
  *
- * The samples are converted, saturated to int16 (NaN as silence) and handed to @p write in chunks of at most
- * DSD_ANALOG_SINK_CHUNK samples.
+ * The samples are converted, scaled by @p gain, saturated to int16 (NaN as silence) and handed to @p write in chunks of
+ * at most DSD_ANALOG_SINK_CHUNK samples. @p gain is what takes the samples to int16 scale: 1.0 for the monitor, whose
+ * audio chain has set its level, and dsd_analog_audio_int16_scale() for the -6 raw WAV (issue #643). The converter is
+ * linear, so scaling its output is scaling its input; @p buf is left as it is.
  *
  * @return A dsd_analog_sink_result.
  */
 int dsd_analog_sink_write(const dsd_opts* opts, dsd_state* state, dsd_analog_sink sink, const float* buf, size_t n,
-                          int block_hz, int sink_hz, dsd_analog_sink_write_fn write, const void* ctx);
+                          double gain, int block_hz, int sink_hz, dsd_analog_sink_write_fn write, const void* ctx);
 
 #ifdef __cplusplus
 }
