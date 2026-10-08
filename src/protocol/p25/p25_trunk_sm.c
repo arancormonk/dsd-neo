@@ -6825,6 +6825,26 @@ p25_lockout_next_epoch(uint64_t epoch) {
     return epoch == 0U ? 1U : epoch;
 }
 
+/* The frequency of the grant the SM tuned this slot to, when that grant names the locked-out target: the call's own
+ * frequency, which the SM's call publication stamps the same way (p25_call_publish_observation()). 0 otherwise, and the
+ * notice then reads the live tuner, which off a radio input (an audio input with a rigctl peer) reads nothing
+ * (issue #575). */
+static long
+p25_lockout_grant_frequency(const p25_sm_ctx_t* ctx, uint8_t slot, int target, int is_group) {
+    if (!ctx || ctx->state != P25_SM_TUNED) {
+        return 0;
+    }
+    const p25_sm_slot_ctx_t* slot_ctx = &ctx->slots[slot & 1U];
+    if (!slot_ctx->grant_active || slot_ctx->freq_hz <= 0) {
+        return 0;
+    }
+    int grant_is_group = 1;
+    if (p25_enc_lockout_target(slot_ctx, 0, &grant_is_group) != target || grant_is_group != (is_group ? 1 : 0)) {
+        return 0;
+    }
+    return slot_ctx->freq_hz;
+}
+
 static void
 p25_lockout_snapshot_from_observation(const dsd_state* state, uint8_t slot, int target, int svc_bits, int is_group,
                                       uint64_t epoch, dsd_call_snapshot* call) {
@@ -6837,6 +6857,7 @@ p25_lockout_snapshot_from_observation(const dsd_state* state, uint8_t slot, int 
     call->kind = is_group ? DSD_CALL_KIND_GROUP_VOICE : DSD_CALL_KIND_PRIVATE_VOICE;
     call->ota_target_id = (uint32_t)target;
     call->policy_target_id = (uint32_t)target;
+    call->frequency_hz = p25_lockout_grant_frequency(p25_sm_get_ctx(), slot, target, is_group);
     call->service_options = (uint16_t)svc_bits;
     call->crypto = DSD_CALL_CRYPTO_ENCRYPTED;
 }

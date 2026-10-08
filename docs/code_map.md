@@ -3313,6 +3313,12 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   - The DMR trunk SM's voice-sync publication stamps its own tuned `vc_freq_hz`. The NXDN VCALL names the last
     grant's channel (`nxdn_grant_chan`) only when that grant's frequency is the followed one, since a duplicate
     assignment decoded while tuned moves it without moving the receiver.
+  - The P25 encryption lockout's notice for a call the slot has not published (the synthetic snapshot of
+    `p25_lockout_snapshot_from_observation()`) carries the frequency of the grant the SM tuned the slot to when that
+    grant names the locked-out target (`p25_lockout_grant_frequency()`), as `p25_call_publish_observation()` stamps
+    the SM's own calls. The notice renders before the release returns the tuner to the control channel, so on a
+    radio input the live tuner reads the same channel; off one (an audio input with a rigctl peer), where the tuner
+    reads nothing, the grant is the only source.
 - `dmr_color_code` goes back to 16 ("not decoded") at the carrier boundary where `no_carrier_reset_decode_state()`
   runs `dmr_confidence_reset()`, in `noCarrier()` and in `dsd_engine_reset_no_carrier_state()` (which
   `channel_scan_commit()` runs). BS mode rewrites it at the confidence relock before any burst is dispatched; DMR MS
@@ -3342,7 +3348,8 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   `no_carrier_reset_call_strings_and_dpmr()` resets it to -1 with the confirmation evidence.
 
 Tests: `DMR_FLCO_PRIVACY_MODES`, `DMR_MS_DATA`, `NXDN_ELEMENT_BOUNDS`, `NXDN_DEPERM_PRIMITIVES`, `P25_SM_UNIFIED_CORE`,
-`P25_CRYPTO_STATE`, `DPMR_VOICE_BRIDGE`, `ENGINE_NO_CARRIER_RESET`, `ENGINE_TRUNK_SCAN`, `CORE_ACCESS_CODE`.
+`P25_CRYPTO_STATE`, `P25_P1_LOCKOUT_EVENTS`, `DPMR_VOICE_BRIDGE`, `ENGINE_NO_CARRIER_RESET`, `ENGINE_TRUNK_SCAN`,
+`CORE_ACCESS_CODE`.
 
 Key public headers (selection):
 
