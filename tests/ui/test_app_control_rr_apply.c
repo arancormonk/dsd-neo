@@ -572,8 +572,9 @@ expect_carrier_codes(const char* what, const dsd_state* state, int forgotten) {
     return rc;
 }
 
-/* Issue #575: an import that moves the receiver to its system's channel forgets the codes the old carrier decoded,
-   which the new one could otherwise inherit before any no-carrier pass; an import that does not move it keeps them. */
+/* Issue #575: an import that moves the receiver to its system's channel -- it carries a frequency, and the session owns
+   a tuner -- is a carrier boundary, which runs before the import ends anything, so the codes the old carrier decoded go
+   whatever the tuner then answers. An import with no frequency, or on a session that owns no tuner, keeps them. */
 static int
 test_apply_tune_forgets_the_carrier_codes(void) {
     int rc = 0;
@@ -582,6 +583,7 @@ test_apply_tune_forgets_the_carrier_codes(void) {
     dsd_app_rr_apply_payload p;
 
     init_test_context(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_RTL;
     DSD_MEMSET(&p, 0, sizeof p);
     p.decode_mode = (int32_t)DSDCFG_MODE_TDMA;
     p.trunking = 1U;
@@ -599,12 +601,6 @@ test_apply_tune_forgets_the_carrier_codes(void) {
     rc |= expect_int("pending import drained", dsd_app_drain_cmds(&opts, &state), 1);
     rc |= expect_carrier_codes("pending import", &state, 1);
 
-    reset_io_control_tune_stub(-1);
-    seed_carrier_codes(&state);
-    rc |= expect_int("untuned import queued", dsd_app_command_set_rr_apply(&p), DSD_APP_COMMAND_SUBMIT_QUEUED);
-    rc |= expect_int("untuned import drained", dsd_app_drain_cmds(&opts, &state), 1);
-    rc |= expect_carrier_codes("untuned import", &state, 0);
-
     reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
     p.tune_hz = 0U;
     seed_carrier_codes(&state);
@@ -612,6 +608,16 @@ test_apply_tune_forgets_the_carrier_codes(void) {
     rc |= expect_int("tuneless import drained", dsd_app_drain_cmds(&opts, &state), 1);
     rc |= expect_int("tuneless import asks no tune", g_io_control_tune_calls, 0);
     rc |= expect_carrier_codes("tuneless import", &state, 0);
+    freeState(&state);
+
+    /* A session with no tuner: the tune is asked, the backend answers -1, and the receiver stayed. */
+    init_test_context(&opts, &state);
+    p.tune_hz = 851012500U;
+    reset_io_control_tune_stub(-1);
+    seed_carrier_codes(&state);
+    rc |= expect_int("untuned import queued", dsd_app_command_set_rr_apply(&p), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("untuned import drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_carrier_codes("untuned import", &state, 0);
 
     freeState(&state);
     return rc;

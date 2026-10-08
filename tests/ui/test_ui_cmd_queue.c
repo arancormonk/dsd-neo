@@ -9,6 +9,7 @@
 
 #include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/frontend_runtime.h>
+#include <dsd-neo/app_control/rr_import_apply.h>
 #include <dsd-neo/app_control/rx_tone_view.h>
 #include <dsd-neo/app_control/scan_row_view.h>
 #include <dsd-neo/core/access_code.h>
@@ -110,6 +111,14 @@ static int g_dmr_burst_handler_calls = 0;
 /* Digital audio frames the mixer wrote, counted while armed (issue #575). */
 static int g_audio_write_armed = 0;
 static size_t g_audio_write_frames = 0U;
+#ifdef DSD_NEO_TEST_AUDIO_ENSURE_WRAP
+/*
+ * Calls that reached the sink helpers from a session not playing to the null output. Where the helpers are not wrapped
+ * (macOS, Windows, other compilers) each would open a host audio stream or socket, so every case that changes the
+ * decode mode starts from init_decode_mode_context(); main() checks this once every case has run.
+ */
+static int g_ensure_off_null_calls;
+#endif
 /* TCP audio connect and Pulse input open: the real functions unless a test arms a result. */
 static int g_tcp_connect_stub_armed = 0;
 static int g_tcp_connect_stub_rc = 0;
@@ -4870,11 +4879,14 @@ test_trunked_tune_away_leaves_the_followed_assignment(void) {
  * calls are still active, and the release flushes the partial superframe buffered for them
  * (p25_sm_abandon_carrier()). Under a talkgroup hold the 8 kHz int16 mixer plays that tail only for an active call on
  * the held talkgroup (dsd_audio_call_target()): a call ended before the release has no talkgroup, and the mixer
- * dropped the tail.
+ * dropped the tail. Both a frequency entry that picks no P25 control channel and a RadioReference import of another
+ * system run the carrier boundary first; the import used to end the call (decode_mode_apply_value() ->
+ * reset_call_tracking()) before its boundary released the channel.
  */
 static int
-test_trunked_tune_away_flushes_the_followed_tail_first(void) {
+run_trunked_tune_away_with_a_held_tail(const char* what, int import) {
     int rc = 0;
+    char tag[128];
     static dsd_opts opts;
     static dsd_state state;
     static int fake_stream;
@@ -4890,9 +4902,10 @@ test_trunked_tune_away_flushes_the_followed_tail_first(void) {
     p25_sm_event(sm, &opts, &state, &ev);
     ev = p25_sm_ev_active_call(0, 1201, 0, 1202, 1, 0);
     p25_sm_event(sm, &opts, &state, &ev);
-    rc |= expect_int("the P25 SM follows the voice channel", p25_sm_get_state(sm), P25_SM_TUNED);
+    DSD_SNPRINTF(tag, sizeof tag, "%s: the P25 SM follows the voice channel", what);
+    rc |= expect_int(tag, p25_sm_get_state(sm), P25_SM_TUNED);
     sm->vc_is_tdma = 1;
-    /* The entry picks no P25 control channel: it moves the receiver to another carrier. */
+    /* A frequency entry that picks no P25 control channel moves the receiver to another carrier. */
     opts.frame_p25p1 = 0;
     opts.frame_p25p2 = 0;
     state.tg_hold = 1201U;
@@ -4914,10 +4927,31 @@ test_trunked_tune_away_flushes_the_followed_tail_first(void) {
     g_audio_write_frames = 0U;
     g_audio_write_armed = 1;
     reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
-    post_u32(DSD_APP_CMD_RTL_SET_FREQ, 853125000U);
-    rc |= expect_int("trunked frequency entry drained", dsd_app_drain_cmds(&opts, &state), 1);
-    rc |= expect_int("the P25 SM rests on its control channel", p25_sm_get_state(sm), P25_SM_ON_CC);
-    rc |= expect_true("the held talkgroup's buffered tail plays", g_audio_write_frames > 0U);
+#ifdef DSD_NEO_TEST_AUDIO_ENSURE_WRAP
+    const int off_null_before = g_ensure_off_null_calls;
+#endif
+    if (import) {
+        dsd_app_rr_apply_payload p;
+        DSD_MEMSET(&p, 0, sizeof p);
+        p.decode_mode = (int32_t)DSDCFG_MODE_P25P1;
+        p.trunking = 1U;
+        p.tune_hz = 853125000U;
+        DSD_SNPRINTF(tag, sizeof tag, "%s queued", what);
+        rc |= expect_int(tag, dsd_app_command_set_rr_apply(&p), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    } else {
+        post_u32(DSD_APP_CMD_RTL_SET_FREQ, 853125000U);
+    }
+    DSD_SNPRINTF(tag, sizeof tag, "%s drained", what);
+    rc |= expect_int(tag, dsd_app_drain_cmds(&opts, &state), 1);
+#ifdef DSD_NEO_TEST_AUDIO_ENSURE_WRAP
+    /* The import's decode-mode apply asks the sink helpers for the stream this case plays to. This case is built only
+       where they are wrapped (DSD_NEO_TEST_IO_CONTROL_WRAP comes with DSD_NEO_TEST_AUDIO_ENSURE_WRAP), so nothing opened. */
+    g_ensure_off_null_calls = off_null_before;
+#endif
+    DSD_SNPRINTF(tag, sizeof tag, "%s: the P25 SM rests on its control channel", what);
+    rc |= expect_int(tag, p25_sm_get_state(sm), P25_SM_ON_CC);
+    DSD_SNPRINTF(tag, sizeof tag, "%s: the held talkgroup's buffered tail plays", what);
+    rc |= expect_true(tag, g_audio_write_frames > 0U);
 
     g_audio_write_armed = 0;
     dsd_p25_optional_hooks_set((dsd_p25_optional_hooks){0});
@@ -4926,6 +4960,13 @@ test_trunked_tune_away_flushes_the_followed_tail_first(void) {
     p25_sm_init_ctx(sm, &opts, &state);
     freeState(&state);
     reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    return rc;
+}
+
+static int
+test_trunked_tune_away_flushes_the_followed_tail_first(void) {
+    int rc = run_trunked_tune_away_with_a_held_tail("trunked frequency entry", 0);
+    rc |= run_trunked_tune_away_with_a_held_tail("import of another system", 1);
     return rc;
 }
 #endif
@@ -7928,12 +7969,7 @@ static int g_ensure_digital_calls;
 /* The output layout in the options when the digital sink was last asked for: the one a stream opened there gets. */
 static int g_ensure_digital_channels;
 static int g_ensure_digital_rate;
-/*
- * Calls that reached the sink helpers from a session not playing to the null output. Where the helpers are not wrapped
- * (macOS, Windows, other compilers) each would open a host audio stream or socket, so every case that changes the
- * decode mode starts from init_decode_mode_context(); main() checks this once every case has run.
- */
-static int g_ensure_off_null_calls;
+/* g_ensure_off_null_calls is defined with the other test state at the top of the file. */
 
 static void
 note_ensure_output(const dsd_opts* opts, const char* helper) {

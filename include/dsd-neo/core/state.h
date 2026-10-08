@@ -1596,6 +1596,12 @@ struct dsd_state {
        engine loop then switches to the Pulse input, unless a command replaced the ended input meanwhile. */
     int input_interrupted;
     int input_boundary;
+    /* The carrier boundary's count (issue #575): dsd_engine_carrier_boundary() bumps it whenever the receiver leaves a
+       carrier. A decoder that buffers several bursts or frames before it decodes them notes it when collection starts,
+       and drops what it buffered, as on a sync loss, when it moved meanwhile: those bursts belong to the carrier left. */
+    uint32_t carrier_seq;
+    /* The radio source the stream last started on, as dsd_engine_note_stream_source() keys it; 0 before any start. */
+    uint64_t carrier_source_key;
     int input_fallback_pending;
 
     //dmr trunking stuff

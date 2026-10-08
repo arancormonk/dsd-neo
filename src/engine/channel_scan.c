@@ -290,10 +290,11 @@ channel_scan_commit(dsd_opts* opts, dsd_state* state, channel_scan* scan) {
         return 0;
     }
     const int outgoing_force = state->M;
-    /* End calls with the outgoing row's keys and label still installed. */
+    /* The next row is another carrier: the carrier boundary (issue #575) ends the calls with the outgoing row's keys and
+       label still installed, and forgets what that carrier left. */
+    dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_SCAN_STEP, 0);
     channel_scan_end_calls(opts, state);
     dsd_engine_reset_no_carrier_state(opts, state);
-    dsd_engine_forget_untrunked_carrier_state(opts, state); // the next row is another carrier (issue #575)
     if (dsd_scan_mode_enter(opts, state, scan->mode) != 0) {
         scan->retry = 1;
         return -1;

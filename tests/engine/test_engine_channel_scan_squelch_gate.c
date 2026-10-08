@@ -59,9 +59,11 @@ dsd_engine_reset_no_carrier_state(dsd_opts* opts, dsd_state* state) {
 }
 
 void
-dsd_engine_forget_untrunked_carrier_state(const dsd_opts* opts, dsd_state* state) {
+dsd_engine_carrier_boundary(dsd_opts* opts, dsd_state* state, dsd_carrier_boundary_kind kind, int guard_held) {
     (void)opts;
     (void)state;
+    (void)kind;
+    (void)guard_held;
 }
 
 /* The scanner's DSP-rate read beside the tune above (trunk_tuning.c): no rate, so no row width is checked. */

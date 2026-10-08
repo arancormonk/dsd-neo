@@ -2409,14 +2409,98 @@ no_carrier_finalize_canonical_calls(dsd_opts* opts, dsd_state* state, int retune
     }
 }
 
+/* Step 1 of the carrier boundary: the voice channel a trunking state machine followed, if one is held, is released while
+   its calls are still active (dsd_engine_carrier_boundary()). The state machine comes to rest on its control channel
+   without tuning, as trunk scan hands a carrier back (trunk_scan_release_active_carrier()); the P25 release flushes
+   the partial Phase 2 superframe, which the 8 kHz int16 mixer plays only for an active call on a talkgroup the hold or
+   policy allows. The shared release then drops trunk_is_tuned and the voice channel frequencies, so
+   dsd_opts_trunk_vc_followed() stamps no frequency of the assignment left behind. */
+static void
+carrier_boundary_release_followed(dsd_opts* opts, dsd_state* state, dsd_carrier_boundary_kind kind, int guard_held) {
+    /* A replay retune runs inside a sample read, where the P25 SM tick guard's holder is not known, and only with
+       trunking off, where no state machine follows a voice channel; trunk scan hands its carriers back itself. */
+    const int release_machines = kind != DSD_CARRIER_BOUNDARY_REPLAY_RETUNE && opts->trunk_scan_enabled != 1;
+    p25_sm_ctx_t* p25 = p25_sm_get_ctx();
+    dmr_sm_ctx_t* dmr = dmr_sm_get_ctx();
+    const int p25_tuned = release_machines && p25_sm_get_state(p25) == P25_SM_TUNED;
+    const int dmr_tuned = release_machines && dmr->state == DMR_SM_TUNED;
+    if (opts->trunk_is_tuned != 1 && !p25_tuned && !dmr_tuned) {
+        return;
+    }
+    if (p25_tuned) {
+        if (!guard_held) {
+            p25_sm_tick_guard_enter();
+        }
+        p25_sm_abandon_carrier(p25, opts, state, "carrier-boundary");
+        if (!guard_held) {
+            p25_sm_tick_guard_leave();
+        }
+    }
+    if (dmr_tuned) {
+        dmr_sm_abandon_carrier(dmr, opts, state, "carrier-boundary");
+    }
+    dsd_engine_release_tuned_call_state(opts, state);
+}
+
+void
+dsd_engine_carrier_boundary(dsd_opts* opts, dsd_state* state, dsd_carrier_boundary_kind kind, int guard_held) {
+    if (!opts || !state) {
+        return;
+    }
+    carrier_boundary_release_followed(opts, state, kind, guard_held);
+    no_carrier_finalize_canonical_calls(opts, state, 1);
+    dsd_engine_forget_carrier_codes(state);
+    dsd_engine_forget_untrunked_carrier_state(opts, state);
+    state->carrier_seq++;
+}
+
+/* FNV-1a over @p text, never 0, which stands for no source. */
+static uint64_t
+carrier_source_hash(const char* text) {
+    uint64_t hash = 14695981039346656037ULL;
+    for (const unsigned char* p = (const unsigned char*)text; *p != '\0'; ++p) {
+        hash ^= (uint64_t)*p;
+        hash *= 1099511628211ULL;
+    }
+    return hash != 0U ? hash : 1U;
+}
+
+/* The source a radio stream runs, as a key: the kind of device and which one, never its settings or tuning. */
+static uint64_t
+carrier_source_key(const dsd_opts* opts) {
+    char key[sizeof opts->audio_in_dev + 32];
+    const char* dev = opts->audio_in_dev;
+    if (dsd_opts_audio_in_dev_is_iqreplay_spec(dev) || dsd_opts_audio_in_dev_is_soapy_spec(dev)) {
+        DSD_SNPRINTF(key, sizeof key, "%s", dev);
+    } else if (dsd_opts_audio_in_dev_is_rtltcp_spec(dev)) {
+        DSD_SNPRINTF(key, sizeof key, "rtltcp/%s/%d", opts->rtltcp_hostname, opts->rtltcp_portno);
+    } else if (dsd_opts_audio_in_dev_is_airspy_spec(dev)) {
+        DSD_SNPRINTF(key, sizeof key, "airspy/%s", opts->airspy.serial);
+    } else {
+        DSD_SNPRINTF(key, sizeof key, "rtl/%d", opts->rtl_dev_index);
+    }
+    return carrier_source_hash(key);
+}
+
+void
+dsd_engine_note_stream_source(dsd_opts* opts, dsd_state* state, int guard_held) {
+    if (!opts || !state) {
+        return;
+    }
+    const uint64_t key = carrier_source_key(opts);
+    if (state->carrier_source_key != 0U
+        && (key != state->carrier_source_key || dsd_opts_audio_in_dev_is_iqreplay_spec(opts->audio_in_dev))) {
+        dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_SOURCE, guard_held);
+    }
+    state->carrier_source_key = key;
+}
+
 void
 dsd_engine_leave_replay_carrier(dsd_opts* opts, dsd_state* state) {
     if (!opts || !state || opts->trunk_enable != 0 || opts->trunk_scan_enabled == 1) {
         return;
     }
-    no_carrier_finalize_canonical_calls(opts, state, 1);
-    dsd_engine_forget_carrier_codes(state);
-    dsd_engine_forget_untrunked_carrier_state(opts, state);
+    dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_REPLAY_RETUNE, 0);
 }
 
 static void
@@ -2497,12 +2581,12 @@ no_carrier_run(dsd_opts* opts, dsd_state* state, int guard_held) {
         return;
     }
     no_carrier_return_to_control_channel_if_needed(opts, state, now, guard_held);
+    if (scanner_retuned) {
+        /* The untyped step moved to another channel: the carrier boundary (issue #575). */
+        dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_SCAN_STEP, guard_held);
+    }
     no_carrier_finalize_canonical_calls(opts, state, scanner_retuned);
     dsd_engine_reset_no_carrier_state(opts, state);
-    if (scanner_retuned) {
-        /* The untyped step moved to another channel: its grants' voice frequencies go too (issue #575). */
-        dsd_engine_forget_untrunked_carrier_state(opts, state);
-    }
 }
 
 void
@@ -2584,6 +2668,7 @@ live_scanner_start_rtl_if_needed(dsd_opts* opts, dsd_state* state) {
         }
         opts->rtl_started = 1;
         opts->rtl_needs_restart = 0;
+        dsd_engine_note_stream_source(opts, state, 0);
     }
     return 0;
 }
@@ -2789,8 +2874,6 @@ dsd_engine_end_input_boundary(dsd_opts* opts, dsd_state* state) {
     }
     state->input_boundary = 0;
     no_carrier_finalize_canonical_calls(opts, state, 1);
-    /* noCarrier() has forgotten the codes; the voice frequencies the old stream's grants named go too (issue #575). */
-    dsd_engine_forget_untrunked_carrier_state(opts, state);
     dsd_frame_sync_reset_acquisition(opts, state, opts->trunk_scan_enabled != 1);
     init_rrc_filter_memory();
     dsd_symbol_matched_filter_reset(state);
@@ -2830,6 +2913,11 @@ live_scanner_main_loop(dsd_opts* opts, dsd_state* state) {
             continue;
         }
         if (!interrupted || state->input_boundary) {
+            if (state->input_boundary) {
+                /* The stream the decoder read was replaced: the carrier boundary, before noCarrier(), which keeps a
+                   trunking session's recent voice channel as a fade would want it (issue #575). */
+                dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_INPUT_SWITCH, 0);
+            }
             noCarrier(opts, state);
             dsd_engine_end_input_boundary(opts, state);
         }

@@ -893,7 +893,10 @@ int svc_airspy_apply_config_locked(dsd_opts* opts, dsd_state* state, const dsd_a
 /** @brief Set RTL device index and mark stream for restart (applied immediately if active). */
 int svc_rtl_set_dev_index(dsd_opts* opts, dsd_state* state, int index);
 /** @brief Tune receiver frequency (Hz); caller owns trunking and call bookkeeping. */
-int svc_rtl_set_freq(dsd_opts* opts, const dsd_state* state, uint32_t hz);
+/* A tune the user asked for. An accepted one is a carrier boundary (dsd_engine_carrier_boundary(), issue #575); the
+   _locked form is for a caller that holds the P25 SM tick guard. */
+int svc_rtl_set_freq(dsd_opts* opts, dsd_state* state, uint32_t hz);
+int svc_rtl_set_freq_locked(dsd_opts* opts, dsd_state* state, uint32_t hz);
 /** @brief Set RTL manual gain (0–49), clamping and restarting if needed. */
 int svc_rtl_set_gain(dsd_opts* opts, dsd_state* state, int value);
 /**

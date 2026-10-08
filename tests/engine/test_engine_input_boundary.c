@@ -31,6 +31,7 @@
 #include <dsd-neo/engine/engine.h>
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/platform/sockets.h>
+#include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/nxdn/nxdn_lfsr.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/runtime/analog_channel.h>
@@ -269,6 +270,21 @@ decode_frame_across_a_recorded_retune(dsd_opts* opts, dsd_state* state) {
     opts->audio_in_type = AUDIO_IN_NULL;
 }
 
+/* A clean DMR voice LC header for a group call on slot 0: FLCO 0, @p tg from @p src. */
+static void
+decode_dmr_group_voice_lc(dsd_opts* opts, dsd_state* state, uint32_t tg, uint32_t src) {
+    uint8_t bits[96];
+    DSD_MEMSET(bits, 0, sizeof bits);
+    for (unsigned int i = 0U; i < 24U; i++) {
+        bits[24U + i] = (uint8_t)((tg >> (23U - i)) & 1U);
+        bits[48U + i] = (uint8_t)((src >> (23U - i)) & 1U);
+    }
+    uint32_t errors = 0U;
+    state->currentslot = 0;
+    state->lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    dmr_flco(opts, state, bits, 1U, &errors, 1U);
+}
+
 static int
 replay_retune_step(dsd_opts* opts, dsd_state* state) {
     g_replay_step++;
@@ -307,6 +323,28 @@ replay_retune_step(dsd_opts* opts, dsd_state* state) {
             (void)dsd_call_state_end_ex(state, 0U, 0.0, DSD_CALL_END_EXPLICIT);
             state->input_interrupted = 0;
             return DSD_SYNC_NONE;
+        case 5:
+            /* A trunking session following a voice channel heard within the last seconds, which noCarrier() keeps as a
+               fade would want it, has its radio input replaced (issue #575). */
+            opts->trunk_enable = 1;
+            opts->trunk_is_tuned = 1;
+            state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = 851012500L;
+            state->last_vc_sync_time = dsd_decode_time();
+            state->last_cc_sync_time = dsd_decode_time();
+            begin_call(state);
+            state->input_boundary = 1;
+            return DSD_SYNC_NONE;
+        case 6:
+            expect("a trunked input switch ends the followed call", slot0_target(state) == 0U);
+            expect("a trunked input switch leaves the followed voice channel",
+                   opts->trunk_is_tuned == 0 && state->trunk_vc_freq[0] == 0 && state->trunk_vc_freq[1] == 0);
+            decode_dmr_group_voice_lc(opts, state, 4700U, 4701U);
+            expect("the new input's call is open", slot0_target(state) == 4700U);
+            expect("the new input's call takes no frequency of the voice channel left behind", staged->freq_hz == 0);
+            opts->trunk_enable = 0;
+            (void)dsd_call_state_end_ex(state, 0U, 0.0, DSD_CALL_END_EXPLICIT);
+            state->input_interrupted = 0;
+            return DSD_SYNC_NONE;
         default: return DSD_SYNC_NONE;
     }
 }
@@ -314,7 +352,7 @@ replay_retune_step(dsd_opts* opts, dsd_state* state) {
 int
 // NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
 __wrap_getFrameSync(dsd_opts* opts, dsd_state* state) {
-    if (g_replay_step < 4) {
+    if (g_replay_step < 6) {
         return replay_retune_step(opts, state);
     }
     uint8_t reason = 0U;

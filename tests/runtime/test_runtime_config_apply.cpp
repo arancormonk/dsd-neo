@@ -906,6 +906,58 @@ test_config_source_change_is_a_carrier_boundary(void) {
     return rc;
 }
 
+/*
+ * Issue #575: the carrier boundary lives where a radio stream starts (dsd_engine_note_stream_source()). A device change
+ * (RTL_SET_DEV) restarts the stream on another source: the outgoing call ends and its codes go. The same source restarted
+ * (RTL_RESTART, here after a gain change) keeps its carrier and its call. A command that changes the source and restarts
+ * through svc_rtl_restart() needs no boundary of its own: RTL_RESTART after another device index was written gets it.
+ */
+static int
+test_stream_restart_on_another_source_is_a_carrier_boundary(void) {
+    test_runtime runtime;
+    if (alloc_test_runtime(&runtime) != 0) {
+        return 1;
+    }
+    dsd_opts* opts = runtime.opts;
+    dsd_state* state = runtime.state;
+
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->rtl_dev_index = 0;
+    opts->rtlsdr_center_freq = 851375000U;
+    opts->rtl_gain_value = 22;
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "rtl:0:851375000:22:0:24:0:2");
+
+    int rc = 0;
+    dsd_app_command_submit(DSD_APP_CMD_RTL_RESTART, NULL, 0U); /* the session's stream starts */
+    (void)dsd_app_drain_cmds(opts, state);
+
+    observe_active_call(state);
+    seed_carrier_codes(state);
+    opts->rtl_gain_value = 30;
+    dsd_app_command_submit(DSD_APP_CMD_RTL_RESTART, NULL, 0U);
+    (void)dsd_app_drain_cmds(opts, state);
+    rc |= expect_true("a same-source restart keeps the call", call_active(state));
+    rc |= expect_carrier_codes("a same-source restart keeps the codes", state, 0);
+
+    const int32_t device = 1;
+    dsd_app_command_submit(DSD_APP_CMD_RTL_SET_DEV, &device, sizeof device);
+    (void)dsd_app_drain_cmds(opts, state);
+    rc |= expect_true("the device change ran", opts->rtl_dev_index == 1);
+    rc |= expect_true("a device change ends the outgoing call", !call_active(state));
+    rc |= expect_carrier_codes("a device change forgets the codes", state, 1);
+
+    observe_active_call(state);
+    seed_carrier_codes(state);
+    opts->rtl_dev_index = 2; /* a command with no boundary of its own changes the source ... */
+    dsd_app_command_submit(DSD_APP_CMD_RTL_RESTART, NULL, 0U); /* ... and restarts the stream */
+    (void)dsd_app_drain_cmds(opts, state);
+    rc |= expect_true("a source change through the restart ends the outgoing call", !call_active(state));
+    rc |= expect_carrier_codes("a source change through the restart forgets the codes", state, 1);
+
+    free_test_runtime(&runtime);
+    return rc;
+}
+
 /* The engine maps the runtime squelch hook onto the same demod setter the config path calls. */
 static void
 forward_row_squelch_to_demod(double mean_power) {
@@ -3517,6 +3569,7 @@ main(void) {
     rc |= test_config_reapply_under_row_squelch_keeps_the_row();
     rc |= test_config_reopen_on_another_frequency_forgets_the_carrier_codes();
     rc |= test_config_source_change_is_a_carrier_boundary();
+    rc |= test_stream_restart_on_another_source_is_a_carrier_boundary();
 #endif
 #endif
     return rc ? 1 : 0;

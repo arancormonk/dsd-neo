@@ -3232,11 +3232,10 @@ Notes:
       whether the decoder adopted a new centre over another and, when it did, runs the frame-sync hook `replay_retune`
       there, before the read returns the first sample the new carrier carries: a retune can land inside a frame, whose
       decoding goes on publishing calls before the next frame-sync return. The engine installs
-      `dsd_engine_leave_replay_carrier()` for it. With trunking off it is another conventional carrier, the boundary an
-      accepted live retune is: the outgoing calls end and commit as a hop (`no_carrier_finalize_canonical_calls()`),
-      then `dsd_engine_forget_carrier_codes()` and `dsd_engine_forget_untrunked_carrier_state()` run (see Protocols,
-      "Call frequency and access-code provenance"); a call decoded after the adoption takes the new centre and code, and
-      no later pass ends it. With trunking on it is the system following itself, and under trunk scan a target switch
+      `dsd_engine_leave_replay_carrier()` for it. With trunking off it is another conventional carrier, and it runs the
+      carrier boundary an accepted live retune runs (`dsd_engine_carrier_boundary()`, see Protocols, "Call frequency and
+      access-code provenance"): the outgoing calls end and commit as a hop, the codes and the untrunked state go, and
+      `carrier_seq` moves; a call decoded after the adoption takes the new centre and code, and no later pass ends it. With trunking on it is the system following itself, and under trunk scan a target switch
       with its own snapshots: nothing changes. It runs inside a sample read on the decoder thread, where no call-state
       lock is held: that lock is taken only inside `call_state.c` and the event layer, which never read samples, and
       `dsd_call_state_end_ex()` and `dsd_event_sync_slot()` take and release it themselves, as a protocol publishing a
@@ -3356,9 +3355,10 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
     reads nothing, the grant is the only source.
 - `dmr_color_code` goes back to 16 ("not decoded") at the carrier boundary, with `dmr_confidence_reset()`, in
   `dsd_engine_forget_carrier_codes()`, which `no_carrier_reset_decode_state()` runs in `noCarrier()` and in
-  `dsd_engine_reset_no_carrier_state()` (which `channel_scan_commit()` runs). BS mode rewrites it at the confidence relock before any burst is dispatched; DMR MS
-  mode has no lock, so without the reset a call opening before its embedded code decodes, or after a failed
-  QR(16,7,6), took the previous carrier's code. It is reset there rather than inside `dmr_confidence_reset()`, whose
+  `dsd_engine_reset_no_carrier_state()`, and the carrier boundary runs (`dsd_engine_carrier_boundary()`, below). BS
+  mode rewrites it at the confidence relock before any burst is dispatched; DMR MS mode has no lock, so without the
+  reset a call opening before its embedded code decodes, or after a failed QR(16,7,6), took the previous carrier's
+  code. It is reset there rather than inside `dmr_confidence_reset()`, whose
   BS burst-error callers in `dmr_bs.c` stay on the same carrier.
 - `nxdn_last_ran` goes back to `(unsigned)-1` at the same boundary (RAN 0 is a legal code). The SACCH writes it only
   once the transmission is confirmed, and `nxdn_confirm_reset()` restarts confirmation at every no-carrier pass, so a
@@ -3393,45 +3393,62 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   descrambling key and is never reset for it.
 - Trunk scan skips both resets (`preserve_scan_state`): the per-target snapshot saves and restores the DMR colour code
   with its confidence lock, the RAN with its stand-in mark, and `p2_cc` with its proof.
-- `dsd_engine_forget_carrier_codes()` (`<dsd-neo/engine/frame_processing.h>`) is that boundary's one forget: the DMR
-  colour code with its confidence lock, the RAN with its stand-in mark, the dPMR colour code, the Phase 1 NAC, and the
-  seed's proof (never `p2_cc`). The NAC goes because a NID whose BCH-decoded NAC is the reserved 000 or FFF leaves
-  `state->nac` as it was (`p25p1_apply_nac_update()`) while the frame still dispatches; `noCarrier()` resets it too. Its
-  sibling `dsd_engine_forget_untrunked_carrier_state()` forgets, with trunking off only, what the carrier left beyond
-  its codes: what the trunking-off no-carrier pass forgets (`no_carrier_reset_non_trunk_fields_if_needed()`: the P25
-  voice frequencies a grant update wrote, which `p25_sm_conventional_frequency()` gives a call over the tuner's, the DMR
-  rest channel and branding, the NXDN site and channel plan) and the DMR grants' `trunk_vc_freq[]`. Every accepted
-  retune to another carrier follows one rule: the outgoing calls end and commit first, while the live values are still
-  that carrier's, then the codes go, then (trunking off) that state. App-control runs it through `ui_leave_carrier()`:
-  under trunking first `ui_leave_followed_assignment()`, while the followed channel's calls are still active, which
-  brings the P25 or DMR state machine that followed a voice channel to rest on its control channel without tuning, as
-  trunk scan hands a carrier back (the P25 release flushes the partial Phase 2 superframe, which the 8 kHz int16 mixer
-  plays only for an active call on a talkgroup the hold or policy allows), and runs the shared
-  `dsd_engine_release_tuned_call_state()`, so `trunk_is_tuned` and the voice channel frequencies go and
-  `dsd_opts_trunk_vc_followed()` stamps no frequency of the assignment left behind; then `ui_end_calls()` for any call
-  left; then both forgets. It does so for `MANUAL_TUNE`, `RTL_SET_FREQ` when it does not pick a P25 control channel, a
-  channel cycle with trunking off (its LCN list and its P25 candidate list name no system the receiver follows), a
-  RadioReference import's tune (`rr_apply_tune()`), and a config apply that leaves the radio input on another carrier
-  (`apply_cfg_radio_input()`): another source (`ui_radio_source_changed()`: another kind of device, a replay for a live
-  radio or the reverse, another RTL-SDR index, rtl_tcp server, Airspy serial, SoapySDR device or capture) or another
-  tuned frequency as `dsd_opts_tuned_freq_hz()` reads it (a reopen on the config's frequency, the live Airspy retune, a
-  replay that recorded a retune replaced by a live radio on its opening centre); the same source reopened for its gain,
-  PPM, bandwidth, squelch or volume stays on its carrier. The engine runs it at a `-Y` row commit
-  (`channel_scan_commit()`: `channel_scan_end_calls()`, the shared reset, the untrunked forget), at the untyped `-Y`
-  step (the step, `no_carrier_finalize_canonical_calls()`, the shared reset, the untrunked forget), and at an input
-  switch (`noCarrier()`, then `dsd_engine_end_input_boundary()` with the untrunked forget). A refused, deferred or
-  failed tune keeps everything, since the receiver stayed. A retune within a system under trunking does not run either
-  forget: the return to the control channel, the skip and lockout returns, the P25 control channel pick
-  (`ui_cmd_handle_p25_cc_selection()`) and candidate cycle, and a channel cycle with trunking on, whose list is the
-  system's own channels. The system's codes stay valid there, as under automatic trunk following, and the DMR decode
-  gate keeps dispatching the control channel's bursts: forgetting it made the first CSBK after a return pending, and
-  `dmr_data_dispatch_burst()` dropped it. The skip and lockout returns under trunking still run the no-carrier pass they
-  always ran (`dsd_engine_no_carrier_locked()`). Nor does a trunk-scan target switch, whose snapshots carry the codes;
-  an external controller's retune over the RTL UDP port, which follows a system for the decoder as the trunking state
-  machines do and reaches the tuner on the IO thread; or the tuner release, trunking toggles and rigctl reconnect, which
-  retune nothing. An I/Q replay's retune the capture recorded, with trunking off, is the same boundary, run where the
-  read path adopts the new centre (`dsd_engine_leave_replay_carrier()`; see IO, "I/Q replay tuned frequency"); with
-  trunking on it is exempt.
+- `dsd_engine_carrier_boundary()` (`<dsd-neo/engine/frame_processing.h>`) is the one carrier boundary: every place the
+  receiver leaves a carrier for another runs it, and no caller open-codes any part of it. Its order is fixed:
+  1. The voice channel a trunking state machine followed, if one is held, is released while its calls are still active
+     (`carrier_boundary_release_followed()`): the P25 or DMR state machine comes to rest on its control channel without
+     tuning, as trunk scan hands a carrier back (the P25 release flushes the partial Phase 2 superframe, which the 8 kHz
+     int16 mixer plays only for an active call on a talkgroup the hold or policy allows), and the shared
+     `dsd_engine_release_tuned_call_state()` drops `trunk_is_tuned` and the voice channel frequencies, so
+     `dsd_opts_trunk_vc_followed()` stamps no frequency of the assignment left behind. A replay retune releases no
+     state machine: it runs only with trunking off and inside a sample read, where the P25 SM tick guard's holder is
+     not known; every other caller says whether it holds that guard.
+  2. The outgoing calls end, as a hop, and commit (`no_carrier_finalize_canonical_calls()`), while the live codes are
+     still that carrier's.
+  3. `dsd_engine_forget_carrier_codes()` forgets the codes: the DMR colour code with its confidence lock, the RAN with
+     its stand-in mark, the dPMR colour code, the Phase 1 NAC, and the seed's proof (never `p2_cc`). The NAC goes
+     because a NID whose BCH-decoded NAC is the reserved 000 or FFF leaves `state->nac` as it was
+     (`p25p1_apply_nac_update()`) while the frame still dispatches; `noCarrier()` resets it too.
+  4. With trunking off, `dsd_engine_forget_untrunked_carrier_state()` forgets what the carrier left beyond its codes:
+     what the trunking-off no-carrier pass forgets (`no_carrier_reset_non_trunk_fields_if_needed()`: the P25 voice
+     frequencies a grant update wrote, which `p25_sm_conventional_frequency()` gives a call over the tuner's, the DMR
+     rest channel and branding, the NXDN site and channel plan) and the DMR grants' `trunk_vc_freq[]`.
+  5. `state->carrier_seq` moves, so a decoder that buffered the left carrier's bursts drops them (see below).
+
+  It runs at the lowest-level primitives where the carrier changes, so a new command that reaches one is covered:
+  - An accepted tune the user asked for: `svc_rtl_set_freq()`/`svc_rtl_set_freq_locked()` (`svc_rtl_tune()`) run it
+    at their success point (applied, or pending on a tuner that timed out). That covers `RTL_SET_FREQ` when it does not
+    pick a P25 control channel, `MANUAL_TUNE`, and the live Airspy retune of an Airspy or config apply. A refused,
+    deferred or failed tune keeps everything, since the receiver stayed.
+  - A stream start on another source: every radio stream start (`svc_rtl_start_locked()`, which `svc_rtl_restart()`,
+    `RTL_SET_DEV`, the source reopens of a config apply, an input switch and a replay open reach, and the engine's own
+    start, `live_scanner_start_rtl_if_needed()`) runs `dsd_engine_note_stream_source()`, which keys the source by its
+    kind of device and which one (an RTL-SDR index, an rtl_tcp host and port, an Airspy serial, a SoapySDR device, a
+    capture), never its settings or tuning, and runs the boundary when the key moved, or for any replay start, which
+    plays its capture again from its start. The first start of a session, and the same source reopened for its gain,
+    PPM, bandwidth, squelch or volume, keep the carrier.
+  - A config apply that leaves the same radio source on another frequency as `dsd_opts_tuned_freq_hz()` reads it
+    (`apply_cfg_radio_input()`), when no start or retune inside it ran the boundary already (`carrier_seq` unmoved).
+  - A channel cycle with trunking off: its LCN list and its P25 candidate list name no system the receiver follows.
+  - A RadioReference import that tunes its channel on a session that owns a tuner: it runs the boundary first, before
+    `decode_mode_apply_value()` and `rr_apply_reacquire()` end the calls with `reset_call_tracking()`, so the followed
+    channel's buffered audio still plays under its talkgroup.
+  - An input switch (`state->input_boundary`), trunking on or off: the engine loop runs it before `noCarrier()` and
+    `dsd_engine_end_input_boundary()`.
+  - A `-Y` row commit (`channel_scan_commit()`, then `channel_scan_end_calls()` and the shared reset) and the untyped
+    `-Y` step (in `no_carrier_run()`, before the finalize and the shared reset).
+  - An I/Q replay's retune the capture recorded, with trunking off, where the read path adopts the new centre
+    (`dsd_engine_leave_replay_carrier()`; see IO, "I/Q replay tuned frequency"); with trunking on it is exempt.
+
+  Exempt, and never routed there: a retune within a system under trunking (the return to the control channel, the
+  skip and lockout returns, the P25 control channel pick `ui_cmd_handle_p25_cc_selection()` and candidate cycle, and a
+  channel cycle with trunking on, whose list is the system's own channels), whose codes stay valid as under automatic
+  trunk following, and where the DMR decode gate keeps dispatching the control channel's bursts: forgetting it made the
+  first CSBK after a return pending, and `dmr_data_dispatch_burst()` dropped it. The skip and lockout returns under
+  trunking still run the no-carrier pass they always ran (`dsd_engine_no_carrier_locked()`). Nor do a trunk-scan target
+  switch, whose snapshots carry the codes; an external controller's retune over the RTL UDP port, which follows a system
+  for the decoder as the trunking state machines do and reaches the tuner on the IO thread; or the tuner release,
+  trunking toggles and rigctl reconnect, which retune nothing.
 - `dpmr_color_code` is set only in `dpmr_publish_call()`, after `dpmr_confirm_is_confirmed()`, from a decoded
   `ColorCode[0]`, with or without a caller identity; the ID printer only prints.
   `no_carrier_reset_call_strings_and_dpmr()` resets it to -1 with the confirmation evidence.
@@ -3443,7 +3460,8 @@ Tests: `DMR_FLCO_PRIVACY_MODES`, `DMR_MS_DATA`, `NXDN_ELEMENT_BOUNDS`, `NXDN_DEP
 `P25_CRYPTO_STATE`, `P25_P1_LOCKOUT_EVENTS`, `DPMR_VOICE_BRIDGE`, `ENGINE_NO_CARRIER_RESET`, `ENGINE_TRUNK_SCAN`,
 `CORE_ACCESS_CODE`, `UI_NCURSES_PRINTER_HELPERS`, `UI_QT_METRICS_MODEL`, `APP_COMMAND_QUEUE`, `APP_P25_CC_SELECTION`,
 `APP_CONTROL_RR_APPLY`, `RUNTIME_CONFIG_APPLY`, `UI_MENU_AIRSPY_CONFIG_FAILURE`, `UI_MENU_AIRSPY_CONFIG_TUNING`,
-`P25_P2_VPDU_GRANTS`, `P25_P2_XCCH_HELPERS`, `P25_P2_RELIABILITY`, `ENGINE_CHANNEL_SCAN`, `ENGINE_INPUT_BOUNDARY`.
+`P25_P2_VPDU_GRANTS`, `P25_P2_XCCH_HELPERS`, `P25_P2_RELIABILITY`, `ENGINE_CHANNEL_SCAN`, `ENGINE_INPUT_BOUNDARY`,
+`UI_MENU_SERVICES`.
 
 Key public headers (selection):
 

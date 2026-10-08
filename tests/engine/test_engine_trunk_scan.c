@@ -13079,9 +13079,11 @@ dsd_engine_reset_no_carrier_state(dsd_opts* opts, dsd_state* state) {
 }
 
 void
-dsd_engine_forget_untrunked_carrier_state(const dsd_opts* opts, dsd_state* state) {
+dsd_engine_carrier_boundary(dsd_opts* opts, dsd_state* state, dsd_carrier_boundary_kind kind, int guard_held) {
     (void)opts;
     (void)state;
+    (void)kind;
+    (void)guard_held;
 }
 
 /* Coordinator tests stub DSP; acquisition contents are covered by FRAME_SYNC_INTERNAL_HELPERS.

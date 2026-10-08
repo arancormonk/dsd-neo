@@ -27,6 +27,7 @@
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/engine/channel_scan.h>
+#include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/engine/p25_bandplan_export.h>
 #include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/io/control.h>
@@ -470,12 +471,39 @@ udp_socket_connectA(dsd_opts* opts, dsd_state* state) {
     return g_udp_connectA_result;
 }
 
+static int g_io_control_set_freq_result = -1;
+
 int
 io_control_set_freq(dsd_opts* opts, const dsd_state* state, long int freq) {
     (void)opts;
     (void)state;
     (void)freq;
-    return -1;
+    return g_io_control_set_freq_result;
+}
+
+/* The engine's carrier boundary and the stream-start source note (issue #575), recorded: these services call them at
+   their success points, and the engine and config-apply tests run the real ones. */
+static int g_carrier_boundary_calls = 0;
+static int g_carrier_boundary_kind = -1;
+static int g_carrier_boundary_guarded = -1;
+static int g_stream_source_notes = 0;
+static int g_stream_source_guarded = -1;
+
+void
+dsd_engine_carrier_boundary(dsd_opts* opts, dsd_state* state, dsd_carrier_boundary_kind kind, int guard_held) {
+    (void)opts;
+    (void)state;
+    g_carrier_boundary_calls++;
+    g_carrier_boundary_kind = (int)kind;
+    g_carrier_boundary_guarded = guard_held;
+}
+
+void
+dsd_engine_note_stream_source(dsd_opts* opts, dsd_state* state, int guard_held) {
+    (void)opts;
+    (void)state;
+    g_stream_source_notes++;
+    g_stream_source_guarded = guard_held;
 }
 
 static int g_p25_tick_guard_depth = 0;
@@ -1154,6 +1182,47 @@ test_rtl_restart_quiesces_p25_retunes(void) {
     rc |= expect_int("start failure destroys replacement", g_rtl_destroy_calls, 1);
     rc |= expect_int("start failure clears replacement context", state.rtl_ctx == NULL, 1);
 
+    reset_rtl_restart_stubs();
+    return rc;
+}
+
+/* Issue #575: the tune and the stream start are where the carrier changes, so they run the carrier boundary there: an
+   accepted tune (applied or pending) runs it, unguarded or under the caller's guard, a refused one does not; and every
+   stream start notes its source, under the restart's guard, which a start that fails never reaches. */
+static int
+test_tune_and_start_run_the_carrier_boundary(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.audio_in_type = AUDIO_IN_RTL;
+
+    g_carrier_boundary_calls = 0;
+    g_io_control_set_freq_result = -1;
+    rc |= expect_int("refused tune", svc_rtl_set_freq(&opts, &state, 851000000U), -1);
+    rc |= expect_int("a refused tune is no boundary", g_carrier_boundary_calls, 0);
+    g_io_control_set_freq_result = RTL_STREAM_TUNE_OK;
+    rc |= expect_int("applied tune", svc_rtl_set_freq(&opts, &state, 851000000U), RTL_STREAM_TUNE_OK);
+    rc |= expect_int("an applied tune is a boundary", g_carrier_boundary_calls, 1);
+    rc |= expect_int("a tune's boundary", g_carrier_boundary_kind, (int)DSD_CARRIER_BOUNDARY_TUNE);
+    rc |= expect_int("an unguarded tune's boundary takes the guard", g_carrier_boundary_guarded, 0);
+    g_io_control_set_freq_result = RTL_STREAM_TUNE_TIMEOUT;
+    rc |= expect_int("pending tune", svc_rtl_set_freq_locked(&opts, &state, 851000000U), RTL_STREAM_TUNE_TIMEOUT);
+    rc |= expect_int("a pending tune is a boundary", g_carrier_boundary_calls, 2);
+    rc |= expect_int("a guarded tune's boundary holds the guard", g_carrier_boundary_guarded, 1);
+    g_io_control_set_freq_result = -1;
+
+    reset_rtl_restart_stubs();
+    g_stream_source_notes = 0;
+    rc |= expect_int("failed start", svc_rtl_restart(&opts, &state), -1);
+    rc |= expect_int("a failed start notes no source", g_stream_source_notes, 0);
+    g_rtl_create_result = 0;
+    g_rtl_start_result = 0;
+    rc |= expect_int("started stream", svc_rtl_restart(&opts, &state), 0);
+    rc |= expect_int("a start notes its source", g_stream_source_notes, 1);
+    rc |= expect_int("under the restart's guard", g_stream_source_guarded, 1);
+    state.rtl_ctx = NULL;
     reset_rtl_restart_stubs();
     return rc;
 }
@@ -2682,6 +2751,7 @@ main(void) {
     rc |= test_rtl_row_destination();
 #ifdef USE_RADIO
     rc |= test_rtl_restart_quiesces_p25_retunes();
+    rc |= test_tune_and_start_run_the_carrier_boundary();
     rc |= test_locked_restarts();
     rc |= test_replay_restart_notice();
     rc |= test_stop_clears_the_replay_centre();

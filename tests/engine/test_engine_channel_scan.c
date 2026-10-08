@@ -201,14 +201,15 @@ dsd_engine_reset_no_carrier_state(dsd_opts* opts, dsd_state* state) {
     reset_count++;
 }
 
-/* The forget a retune to another carrier runs with trunking off (issue #575); every row commit runs it beside the
-   reset. */
+/* The carrier boundary every row commit runs before the reset (issue #575). */
 static int untrunked_forget_count;
 
 void
-dsd_engine_forget_untrunked_carrier_state(const dsd_opts* opts, dsd_state* state) {
+dsd_engine_carrier_boundary(dsd_opts* opts, dsd_state* state, dsd_carrier_boundary_kind kind, int guard_held) {
     assert(opts->scanner_mode == 1);
+    assert(kind == DSD_CARRIER_BOUNDARY_SCAN_STEP);
     (void)state;
+    (void)guard_held;
     untrunked_forget_count++;
 }
 
