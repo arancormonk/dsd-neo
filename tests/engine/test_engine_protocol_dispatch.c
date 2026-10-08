@@ -37,6 +37,10 @@ static int g_called_handler = TEST_HANDLER_NONE;
 /* The verdict every stub reports, so one case can drive the whole table. */
 static dsd_frame_verdict g_handler_verdict = DSD_FRAME_VERDICT_PRODUCTIVE;
 static int g_retune_during_handler = 0;
+/* The handler's read adopts a retune its capture recorded, where the carrier boundary moves the carrier count
+   (dsd_engine_carrier_boundary(), issue #575). */
+static int g_boundary_during_handler = 0;
+static dsd_state* g_dispatch_state = NULL;
 
 static dsd_frame_verdict
 record_handler(int handler_id) {
@@ -44,6 +48,9 @@ record_handler(int handler_id) {
     g_called_handler = handler_id;
     if (g_retune_during_handler) {
         dsd_trunk_tuning_generation_advance();
+    }
+    if (g_boundary_during_handler && g_dispatch_state != NULL) {
+        g_dispatch_state->carrier_seq++;
     }
     return g_handler_verdict;
 }
@@ -194,17 +201,23 @@ run_dispatch_case_verdict(int synctype, int expected_handler, dsd_frame_verdict 
     state->sps_hunt_last_frame_verdict = stale_verdict_in_state;
     g_called_handler = TEST_HANDLER_NONE;
     g_handler_verdict = verdict;
+    g_dispatch_state = state;
 
     processFrame(opts, state);
+    g_dispatch_state = NULL;
 
     assert(g_called_handler == expected_handler);
     assert(state->maxref == 80.0F);
     assert(state->minref == -40.0F);
     /* #391: the handler's verdict, recorded where getFrameSync() reads it on its next entry.
      * A synctype no handler claims leaves it productive -- the pre-#391 behaviour -- and
-     * either way a verdict left over from the previous frame must not survive. */
+     * either way a verdict left over from the previous frame must not survive. Issue #575: a frame the carrier boundary
+     * split was dropped by its decoder and validated nothing on either carrier, whatever the handler reported. */
+    const int dropped = g_boundary_during_handler && expected_handler != TEST_HANDLER_NONE;
     assert(state->sps_hunt_last_frame_verdict
-           == (expected_handler == TEST_HANDLER_NONE ? DSD_FRAME_VERDICT_PRODUCTIVE : (int)verdict));
+           == (expected_handler == TEST_HANDLER_NONE ? DSD_FRAME_VERDICT_PRODUCTIVE
+               : dropped                             ? DSD_FRAME_VERDICT_UNPRODUCTIVE
+                                                     : (int)verdict));
     /* Productivity (including sticky NXDN call confirmation) is not recovery ownership. */
     assert(state->trunk_recovery_protocol == DSD_TRUNK_RECOVERY_P25);
     g_handler_verdict = DSD_FRAME_VERDICT_PRODUCTIVE;
@@ -251,6 +264,14 @@ main(void) {
     g_retune_during_handler = 1;
     run_dispatch_case(DSD_SYNC_NXDN_POS, TEST_HANDLER_NXDN);
     g_retune_during_handler = 0;
+    /* Issue #575: whatever a handler made of a frame the carrier boundary split, productive or a proof, it counts as
+       nothing decoded, as on a sync loss. */
+    g_boundary_during_handler = 1;
+    run_dispatch_case(DSD_SYNC_P25P2_POS, TEST_HANDLER_P25P2);
+    run_dispatch_case(DSD_SYNC_X2TDMA_VOICE_POS, TEST_HANDLER_X2TDMA);
+    run_dispatch_case_verdict(DSD_SYNC_P25P1_POS, TEST_HANDLER_P25P1, DSD_FRAME_VERDICT_PROFILE_PROVEN, 0);
+    run_dispatch_case(-1, TEST_HANDLER_NONE);
+    g_boundary_during_handler = 0;
     run_dispatch_case(DSD_SYNC_DMR_BS_VOICE_POS, TEST_HANDLER_DMR);
     run_dispatch_case(DSD_SYNC_DPMR_FS1_POS, TEST_HANDLER_DPMR);
     run_dispatch_case(DSD_SYNC_P25P1_POS, TEST_HANDLER_P25P1);

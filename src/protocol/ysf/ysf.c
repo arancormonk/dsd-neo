@@ -969,7 +969,13 @@ processYSF(dsd_opts* opts, dsd_state* state) {
      * dt/fi come from a frame that did check out, ysf_dispatch_payload() lays the rest of the
      * frame out on them, and ysf_handle_vd_type2() synthesizes and plays voice from it. A
      * frame that produced audio must not tell the SPS hunt it validated nothing (#391).
-     * noCarrier() clears the flag with the other per-transmission YSF state. */
+     * noCarrier() clears the flag with the other per-transmission YSF state.
+     *
+     * A frame the carrier boundary split confirms nothing and reports nothing decoded (issue #575): its FICH was the
+     * carrier left's, the boundary restarted the verdict, and the payload was dropped. */
+    if (ysf_carrier_left(state, &info)) {
+        return 0;
+    }
     if (info.err == 0) {
         state->ysf_fich_confirmed = 1;
     }

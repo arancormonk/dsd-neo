@@ -781,10 +781,14 @@ test_process_ysf_vd_type1_split_by_a_carrier_boundary_publishes_nothing(void) {
     append_vd_type1_blocks(dch, 1U);
     g_boundary_at = 100U + (4U * 72U) + 36U + 10U;
 
-    processYSF(&opts, &state);
+    const int verdict = processYSF(&opts, &state);
     g_boundary_at = SIZE_MAX;
 
     assert(state.carrier_seq == 1U);
+    /* The FICH that checked out was the carrier left's: the frame confirms nothing, and reports nothing decoded, so the
+       boundary's restart of the verdict stands and the next carrier's bad-FICH frames are not taken as productive. */
+    assert(verdict == 0);
+    assert(state.ysf_fich_confirmed == 0);
     assert(g_dibit_stream_pos == g_dibit_stream_len);
     assert(g_process_mbe_call_count == 0);
     const dsd_call_snapshot call = get_test_ysf_call(&state);
