@@ -1103,19 +1103,22 @@ process_4V(dsd_opts* opts, dsd_state* state) {
     p25p2_decode_and_store_voice_frame(opts, state, ambe_soft[3], 3, 0);
 }
 
+/* The ESS helpers take the burst's slot, which p25p2_process_ess() checked once (0 or 1), and never re-read
+   state->currentslot. */
 static void
-p25p2_ess_load_payload_and_parity(dsd_state* state, int payload[96], int parity[168]) {
+p25p2_ess_load_payload_and_parity(const dsd_state* state, int slot, int payload[96], int parity[168]) {
     for (int i = 0; i < 96; i++) {
-        payload[i] = state->ess_b[state->currentslot][i];
+        payload[i] = state->ess_b[slot][i];
     }
     for (int i = 0; i < 168; i++) {
-        parity[i] = ess_a[state->currentslot][i];
+        parity[i] = ess_a[slot][i];
     }
 }
 
 /* Returns 1 when the ESS decodes, with @p soft_depth the soft erasures the decode needed (0 for a hard decode). */
 static int
-p25p2_ess_decode_with_soft_erasures(dsd_state* state, int payload[96], int parity[168], int* ec, int* soft_depth) {
+p25p2_ess_decode_with_soft_erasures(dsd_state* state, int slot, int payload[96], int parity[168], int* ec,
+                                    int* soft_depth) {
     *soft_depth = 0;
     *ec = ez_rs28_ess(payload, parity, NULL, 0);
     if (*ec >= 0 && *ec < 15) {
@@ -1124,13 +1127,12 @@ p25p2_ess_decode_with_soft_erasures(dsd_state* state, int payload[96], int parit
 
     int original_payload[96];
     int original_parity[168];
-    p25p2_ess_load_payload_and_parity(state, payload, parity);
+    p25p2_ess_load_payload_and_parity(state, slot, payload, parity);
     DSD_MEMCPY(original_payload, payload, sizeof(original_payload));
     DSD_MEMCPY(original_parity, parity, sizeof(original_parity));
 
     int erasures[44];
-    int n_erasures = p25p2_ess_soft_erasures_ranked(state->ess_b_llr[state->currentslot], ess_a_llr[state->currentslot],
-                                                    erasures, 28);
+    int n_erasures = p25p2_ess_soft_erasures_ranked(state->ess_b_llr[slot], ess_a_llr[slot], erasures, 28);
     for (int n = 1; n <= n_erasures; n++) {
         DSD_MEMCPY(payload, original_payload, sizeof(original_payload));
         DSD_MEMCPY(parity, original_parity, sizeof(original_parity));
@@ -1185,14 +1187,14 @@ typedef struct {
 } p25p2_ess_result;
 
 static p25p2_ess_result
-p25p2_ess_decode(dsd_state* state) {
+p25p2_ess_decode(dsd_state* state, int slot) {
     int payload[96] = {0};
     int parity[168] = {0};
-    p25p2_ess_load_payload_and_parity(state, payload, parity);
+    p25p2_ess_load_payload_and_parity(state, slot, payload, parity);
 
     p25p2_ess_result result = {.corrections = 69};
     result.accepted =
-        p25p2_ess_decode_with_soft_erasures(state, payload, parity, &result.corrections, &result.soft_depth);
+        p25p2_ess_decode_with_soft_erasures(state, slot, payload, parity, &result.corrections, &result.soft_depth);
     result.algid = p25p2_ess_algid_from_payload(payload);
     p25p2_ess_payload_to_hex(payload, &result.essb_hex1, &result.essb_hex2);
     result.keyid = (int)((result.essb_hex1 >> 8) & 0xFFFF);
@@ -1336,29 +1338,26 @@ p25p2_ess_apply_slot1(dsd_opts* opts, dsd_state* state, const p25p2_ess_result* 
 }
 
 static void
-p25p2_ess_handle_decode_failure(dsd_state* state) {
+p25p2_ess_handle_decode_failure(dsd_state* state, int slot) {
     state->p25_p2_rs_ess_err++;
 
-    if (state->currentslot == 0 && state->payload_algid != 0x80 && state->payload_keyid != 0
-        && state->payload_miP != 0) {
+    if (slot == 0 && state->payload_algid != 0x80 && state->payload_keyid != 0 && state->payload_miP != 0) {
         LFSRP(state);
     }
-    if (state->currentslot == 1 && state->payload_algidR != 0x80 && state->payload_keyidR != 0
-        && state->payload_miN != 0) {
+    if (slot == 1 && state->payload_algidR != 0x80 && state->payload_keyidR != 0 && state->payload_miN != 0) {
         LFSRP(state);
     }
-    if (state->currentslot == 0 && (state->payload_algid == 0x84 || state->payload_algid == 0x89)) {
+    if (slot == 0 && (state->payload_algid == 0x84 || state->payload_algid == 0x89)) {
         p25_lfsr128_slot(state, 0);
     }
-    if (state->currentslot == 1 && (state->payload_algidR == 0x84 || state->payload_algidR == 0x89)) {
+    if (slot == 1 && (state->payload_algidR == 0x84 || state->payload_algidR == 0x89)) {
         p25_lfsr128_slot(state, 1);
     }
 }
 
 static int
-p25p2_ess_stage_rekey(dsd_state* state, const p25p2_ess_result* result) {
-    const int slot = state->currentslot;
-    if (slot < 0 || slot > 1 || result->algid == 0 || state->p25_crypto_state[slot] != DSD_P25_CRYPTO_DECRYPTABLE) {
+p25p2_ess_stage_rekey(dsd_state* state, int slot, const p25p2_ess_result* result) {
+    if (result->algid == 0 || state->p25_crypto_state[slot] != DSD_P25_CRYPTO_DECRYPTABLE) {
         return 0;
     }
 
@@ -1438,17 +1437,23 @@ p25p2_resolve_deferred_rekeys_on_abort(dsd_opts* opts, dsd_state* state) {
 
 void
 p25p2_process_ess(dsd_opts* opts, dsd_state* state, int defer_rekey) {
-    /* The slot's ESS_B is the carrier left's (p25p2_frame_forget_carrier(), issue #575): nothing to decode until a 4V
-       burst on this carrier collects a fragment. */
-    if (state->currentslot >= 0 && state->currentslot < 2 && state->p25_p2_ess_b_stale[state->currentslot]) {
+    /* The burst's slot, checked once: every ESS helper below indexes the slots' arrays with it. A slot out of range
+       has no ESS to decode. */
+    const int slot = state->currentslot;
+    if (slot < 0 || slot > 1) {
         return;
     }
-    const p25p2_ess_result result = p25p2_ess_decode(state);
+    /* The slot's ESS_B is the carrier left's (p25p2_frame_forget_carrier(), issue #575): nothing to decode until a 4V
+       burst on this carrier collects a fragment. */
+    if (state->p25_p2_ess_b_stale[slot]) {
+        return;
+    }
+    const p25p2_ess_result result = p25p2_ess_decode(state, slot);
 
     DSD_FPRINTF(stderr, "%s", KYEL);
     if (opts->payload == 1) {
-        DSD_FPRINTF(stderr, " VCH %d - ESS_B %08llX%016llX ERR = %02d", state->currentslot + 1, result.essb_hex1,
-                    result.essb_hex2, result.corrections);
+        DSD_FPRINTF(stderr, " VCH %d - ESS_B %08llX%016llX ERR = %02d", slot + 1, result.essb_hex1, result.essb_hex2,
+                    result.corrections);
     }
 
     if (result.accepted) {
@@ -1460,17 +1465,15 @@ p25p2_process_ess(dsd_opts* opts, dsd_state* state, int defer_rekey) {
         if (result.soft_depth == 0) {
             p25p2_note_seed_proven(opts, state);
         }
-        if (!defer_rekey || !p25p2_ess_stage_rekey(state, &result)) {
-            p25p2_ess_apply_result(opts, state, state->currentslot, &result);
+        if (!defer_rekey || !p25p2_ess_stage_rekey(state, slot, &result)) {
+            p25p2_ess_apply_result(opts, state, slot, &result);
         }
     } else {
-        p25p2_ess_handle_decode_failure(state);
+        p25p2_ess_handle_decode_failure(state, slot);
     }
 
     DSD_FPRINTF(stderr, "%s", KNRM);
-    if (state->currentslot >= 0 && state->currentslot < 2) {
-        state->fourv_counter[state->currentslot] = 0;
-    }
+    state->fourv_counter[slot] = 0;
 }
 
 static void

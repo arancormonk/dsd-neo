@@ -19,6 +19,7 @@
 #include <dsd-neo/protocol/dmr/dmr_utf8_text.h>
 #include <dsd-neo/protocol/nxdn/nxdn_lfsr.h>
 #include <dsd-neo/protocol/p25/p25p2_frame.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include "dsd-neo/core/opts_fwd.h"
@@ -135,6 +136,21 @@ main(void) {
     }
     p25p2_process_ess(&opts, &state, 0);
     rc |= expect_int("a hard-decoded ESS proves the seed", state.p2_cc_verified, 1);
+
+    /* A burst whose slot is out of range has no ESS_B, ESS_A or counters to read: the ESS path checks the slot once and
+       decodes nothing, rather than indexing the slots' arrays with it. */
+    static const int bad_slots[] = {-1, 2};
+    for (size_t k = 0; k < sizeof bad_slots / sizeof bad_slots[0]; k++) {
+        char tag[96];
+        reset_session(&opts, &state);
+        seed_site(&opts, &state, 0x456ULL);
+        state.currentslot = bad_slots[k];
+        p25p2_process_ess(&opts, &state, 0);
+        DSD_SNPRINTF(tag, sizeof tag, "slot %d: no ESS decode is counted", bad_slots[k]);
+        rc |= expect_int(tag, (long long)state.p25_p2_rs_ess_ok + (long long)state.p25_p2_rs_ess_err, 0);
+        DSD_SNPRINTF(tag, sizeof tag, "slot %d: the seed is not proven", bad_slots[k]);
+        rc |= expect_int(tag, state.p2_cc_verified, 0);
+    }
 
     dsd_state_ext_free_all(&state);
     if (rc == 0) {
