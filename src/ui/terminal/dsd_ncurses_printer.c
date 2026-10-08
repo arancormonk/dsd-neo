@@ -2428,7 +2428,8 @@ ui_render_nxdn_monitor_line(const dsd_opts* opts, const dsd_state* state, int id
 static void
 ui_render_nxdn_site_line(const dsd_state* state, int idas) {
     printw("| ");
-    if (state->nxdn_last_ran > 63U) {
+    /* Outside IDAS, whose area has its own label, a stand-in is DCR's fixed 7: no RAN (issue #575). */
+    if (state->nxdn_last_ran > 63U || (!idas && state->nxdn_last_ran_stand_in != 0U)) {
         printw("%s", idas ? "IDAS - Area: --; " : "NXDN - RAN: --; ");
     } else if (idas) {
         printw("IDAS - Area: %02d; ", state->nxdn_last_ran);

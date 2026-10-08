@@ -3345,7 +3345,9 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   noise included, and kept across carriers with trunking on, so it could hide a real RAN; and no state marks a DCR
   carrier (`nxdn_dcr_sf_message_type` drops to 0xFF on every SACCH2 CRC failure and survives the carrier boundary). The
   site ID write stays ungated, since gating it on confirmation would change what the terminal shows on an unconfirmed
-  IDAS carrier and no access code reads it now.
+  IDAS carrier and no access code reads it now. The live displays follow the mark too: outside IDAS, whose area keeps
+  its own label, the terminal's NXDN line prints `RAN: --` and the Qt site sheet shows no RAN for a stand-in, which
+  there is DCR's 7 (`ui_render_nxdn_site_line()`, `MetricsModel::fillNxdnSite()`).
 - Trunk scan skips both resets (`preserve_scan_state`): the per-target snapshot saves and restores the DMR colour code
   with its confidence lock, and the RAN with its stand-in mark.
 - `dpmr_color_code` is set only in `dpmr_publish_call()`, after `dpmr_confirm_is_confirmed()`, from a decoded
@@ -3357,7 +3359,7 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
 
 Tests: `DMR_FLCO_PRIVACY_MODES`, `DMR_MS_DATA`, `NXDN_ELEMENT_BOUNDS`, `NXDN_DEPERM_PRIMITIVES`, `P25_SM_UNIFIED_CORE`,
 `P25_CRYPTO_STATE`, `P25_P1_LOCKOUT_EVENTS`, `DPMR_VOICE_BRIDGE`, `ENGINE_NO_CARRIER_RESET`, `ENGINE_TRUNK_SCAN`,
-`CORE_ACCESS_CODE`, `UI_NCURSES_PRINTER_HELPERS`.
+`CORE_ACCESS_CODE`, `UI_NCURSES_PRINTER_HELPERS`, `UI_QT_METRICS_MODEL`.
 
 Key public headers (selection):
 

@@ -237,9 +237,11 @@ MetricsModel::fillDmrSite(SiteView& site, const dsd_state* snapshot) {
 QStringList
 MetricsModel::fillNxdnSite(SiteView& site, const dsd_state* snapshot) {
     QStringList parts;
-    site.nxdnRan = snapshot->nxdn_last_ran <= 63 ? static_cast<int>(snapshot->nxdn_last_ran) : -1;
     site.nxdnLocationCategory = siteText(snapshot->nxdn_location_category);
     const bool idas = site.nxdnLocationCategory == QStringLiteral("Type-D");
+    // Outside IDAS, whose area shows under its own label, a stand-in is DCR's fixed 7, which is no RAN (issue #575).
+    const bool ran_stand_in = !idas && snapshot->nxdn_last_ran_stand_in != 0U;
+    site.nxdnRan = (snapshot->nxdn_last_ran <= 63 && !ran_stand_in) ? static_cast<int>(snapshot->nxdn_last_ran) : -1;
     site.siteProtocol = idas ? QStringLiteral("IDAS") : QStringLiteral("NXDN");
     site.nxdnSiteCode = snapshot->nxdn_location_site_code;
     // As in the terminal, a decoded site code establishes location validity.

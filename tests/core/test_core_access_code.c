@@ -63,7 +63,6 @@ reset_sources(dsd_state* state) {
     state->p2_cc = 0ULL;
     state->nxdn_last_ran = (unsigned int)-1;
     state->nxdn_last_ran_stand_in = 0U;
-    DSD_SNPRINTF(state->nxdn_location_category, sizeof state->nxdn_location_category, "%s", " ");
     state->dpmr_color_code = -1;
 }
 
@@ -173,7 +172,6 @@ static int
 test_nxdn_stand_ins_are_not_rans(dsd_state* state) {
     int rc = 0;
     reset_sources(state);
-    DSD_SNPRINTF(state->nxdn_location_category, sizeof state->nxdn_location_category, "%s", "Type-D");
     state->nxdn_last_ran = 1U;
     state->nxdn_last_ran_stand_in = 1U;
     rc |= expect_none("IDAS area bit", state, DSD_SYNC_NXDN_POS, 0U, 0U);

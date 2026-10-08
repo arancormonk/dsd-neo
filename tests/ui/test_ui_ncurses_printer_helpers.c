@@ -2301,6 +2301,23 @@ test_sync_tree_follows_scan_class(void) {
     reset_printw_capture();
     ui_render_nxdn_site_line(state, 1);
     assert_capture_contains("IDAS - Area: --;");
+    /* Issue #575: DCR's fixed 7 stands in for a RAN it does not carry; the IDAS area keeps its own label. */
+    state->nxdn_last_ran = 7U;
+    state->nxdn_last_ran_stand_in = 1U;
+    reset_printw_capture();
+    ui_render_nxdn_site_line(state, 0);
+    assert_capture_contains("NXDN - RAN: --;");
+    assert(strstr(g_printw_capture, "RAN: 07") == NULL);
+    state->nxdn_last_ran = 1U;
+    reset_printw_capture();
+    ui_render_nxdn_site_line(state, 1);
+    assert_capture_contains("IDAS - Area: 01;");
+    state->nxdn_last_ran = 7U;
+    state->nxdn_last_ran_stand_in = 0U;
+    reset_printw_capture();
+    ui_render_nxdn_site_line(state, 0);
+    assert_capture_contains("NXDN - RAN: 07;");
+    state->nxdn_last_ran = (unsigned int)-1;
     /* Issue #526: an analog row has no frame sync, so the last digital sync type is dropped
        rather than shown beside an nfm row. */
     g_scan_mode_active = DSD_SCAN_MODE_NFM;

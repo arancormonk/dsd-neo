@@ -452,6 +452,15 @@ test_site() {
     state.nxdn_last_ran = 64;
     model.refresh(&opts, &state);
     expect("unknown NXDN RAN hidden", model.nxdnRan() == -1 && model.siteLine().isEmpty());
+    // DCR's fixed 7 stands in for a RAN it does not carry (issue #575).
+    state.nxdn_last_ran = 7;
+    state.nxdn_last_ran_stand_in = 1;
+    model.refresh(&opts, &state);
+    expect("DCR stand-in is no RAN", model.nxdnRan() == -1 && !model.siteLine().contains("RAN"));
+    state.nxdn_last_ran_stand_in = 0;
+    model.refresh(&opts, &state);
+    expect("NXDN RAN 7 shown", model.nxdnRan() == 7 && model.siteLine().contains("RAN 7"));
+    state.nxdn_last_ran_stand_in = 1; // the IDAS area below is a stand-in too, shown under its own label
     state.nxdn_last_ran = 0;
     DSD_SNPRINTF(state.nxdn_location_category, sizeof(state.nxdn_location_category), "%s", "Type-D");
     state.nxdn_location_sys_code = 12;
