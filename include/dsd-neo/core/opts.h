@@ -857,6 +857,26 @@ dsd_opts_input_is_iq_replay(const dsd_opts* opts) {
 }
 
 /**
+ * @brief Return 1 while the receiver is on a voice channel a trunking grant sent it to, 0 otherwise.
+ *
+ * A trunking receiver's tune of a grant sets `trunk_is_tuned` together with the voice-channel frequencies
+ * `trunk_vc_freq[]` and `p25_vc_freq[]` (dsd_engine_update_vc_tune_state(), the P25 SM's own commit), and the return to
+ * the control channel clears it. Without trunking nothing is followed: every DMR grant writes `trunk_vc_freq[]` for
+ * display while the receiver stays put, and Hytera XPT site status raises `trunk_is_tuned` on the rest channel. So a
+ * call observation whose message carries no frequency of its own (a DMR voice LC, an NXDN VCALL, a P25 Phase 1 ESS)
+ * may stamp `trunk_vc_freq[]` only while this returns 1; otherwise it names another channel, not the carrier the call
+ * is decoded on (issue #575). P25's own `p25_vc_freq[]` differs: without trunking only a grant naming a call active on
+ * this carrier writes it, so P25 reads it either way.
+ *
+ * @param opts Decoder options (may be NULL).
+ * @return 1 with trunking on and a voice channel tuned; 0 otherwise and for NULL.
+ */
+static inline int
+dsd_opts_trunk_vc_followed(const dsd_opts* opts) {
+    return (opts != NULL && opts->trunk_enable == 1 && opts->trunk_is_tuned == 1) ? 1 : 0;
+}
+
+/**
  * @brief Return 1 when the session's input carries PCM audio, 0 otherwise.
  *
  * Pulse, stdin, WAV/file, UDP and TCP inputs deliver audio something else already demodulated (a rigctl peer such as

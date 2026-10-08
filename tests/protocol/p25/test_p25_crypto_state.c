@@ -13,6 +13,7 @@
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/p25/p25_crypto.h>
+#include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -919,6 +920,53 @@ test_slot_local_transition_purge_and_mi_refresh(void) {
     return rc;
 }
 
+/* Issue #575: an ESS that opens a Phase 1 call carries no frequency. With trunking off it takes p25_vc_freq[], which
+ * only a grant naming a call active on this carrier writes then (and noCarrier() clears), so it names this carrier;
+ * never trunk_vc_freq[], which a DMR grant decoded with trunking off leaves behind for display. A trunking receiver's
+ * call takes the voice channel it followed. */
+static int
+test_phase1_resolution_stamps_only_this_carriers_frequency(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static p25_sm_ctx_t saved_ctx;
+    dsd_call_snapshot call;
+    int rc = 0;
+
+    reset_fixture(&opts, &state);
+    state.synctype = DSD_SYNC_P25P1_POS;
+    state.p25_vc_freq[0] = 851012500L;
+    state.trunk_vc_freq[0] = 852012500L;
+    rc |= expect_int("trunking-off P1 ESS resolves clear",
+                     p25_crypto_resolve(&opts, &state, DSD_P25_CRYPTO_PHASE1, 0, 0x80, 0, 0, 0), DSD_P25_CRYPTO_CLEAR);
+    rc |= expect_int("trunking-off P1 ESS opens a call", dsd_call_state_get(&state, 0U, &call), 1);
+    rc |= expect_int("trunking-off P1 ESS takes this carrier's grant frequency", call.frequency_hz, 851012500L);
+
+    reset_fixture(&opts, &state);
+    state.synctype = DSD_SYNC_P25P1_POS;
+    state.trunk_vc_freq[0] = 852012500L;
+    rc |= expect_int("DMR-leftover P1 ESS resolves clear",
+                     p25_crypto_resolve(&opts, &state, DSD_P25_CRYPTO_PHASE1, 0, 0x80, 0, 0, 0), DSD_P25_CRYPTO_CLEAR);
+    rc |= expect_int("DMR-leftover P1 ESS opens a call", dsd_call_state_get(&state, 0U, &call), 1);
+    rc |= expect_int("DMR-leftover P1 ESS takes no frequency", call.frequency_hz, 0);
+
+    p25_sm_ctx_t* ctx = p25_sm_get_ctx();
+    saved_ctx = *ctx;
+    reset_fixture(&opts, &state);
+    opts.trunk_enable = 1;
+    opts.trunk_is_tuned = 1;
+    ctx->state = P25_SM_TUNED;
+    state.synctype = DSD_SYNC_P25P1_POS;
+    state.p25_vc_freq[0] = state.p25_vc_freq[1] = 851012500L;
+    state.trunk_vc_freq[0] = state.trunk_vc_freq[1] = 851012500L;
+    rc |= expect_int("followed P1 ESS resolves clear",
+                     p25_crypto_resolve(&opts, &state, DSD_P25_CRYPTO_PHASE1, 0, 0x80, 0, 0, 0), DSD_P25_CRYPTO_CLEAR);
+    rc |= expect_int("followed P1 ESS opens a call", dsd_call_state_get(&state, 0U, &call), 1);
+    rc |= expect_int("followed P1 ESS takes the voice channel", call.frequency_hz, 851012500L);
+    *ctx = saved_ctx;
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -935,5 +983,6 @@ main(void) {
     rc |= test_algorithm_and_manual_key_resolution();
     rc |= test_imported_key_activation_is_slot_aware();
     rc |= test_slot_local_transition_purge_and_mi_refresh();
+    rc |= test_phase1_resolution_stamps_only_this_carriers_frequency();
     return rc;
 }

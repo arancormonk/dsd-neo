@@ -739,8 +739,14 @@ dmr_flco_publish_voice(dmr_flco_ctx* ctx) {
          * (handle_voice_sync() in dmr_trunk_sm.c), and dsd_call_state_observe()
          * leaves a previously observed channel alone when an observation omits
          * one, so saying nothing here is what preserves the SM's value.
+         *
+         * The LC carries no frequency either. The voice channel's stands in only
+         * while the receiver followed a grant to it: with trunking off every
+         * decoded grant writes trunk_vc_freq[] for display (dmr_csbk.c) while the
+         * receiver stays put, so there it names another channel, not the carrier
+         * this call is decoded on (issue #575).
          */
-        .frequency_hz = ctx->state->trunk_vc_freq[ctx->slot],
+        .frequency_hz = dsd_opts_trunk_vc_followed(ctx->opts) ? ctx->state->trunk_vc_freq[ctx->slot] : 0,
         .service_options = ctx->so,
         .emergency = (uint8_t)((ctx->so & 0x80U) != 0U),
         .priority = (uint8_t)(ctx->so & 0x03U),

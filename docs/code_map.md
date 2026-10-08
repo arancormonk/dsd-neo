@@ -706,7 +706,10 @@ The `Linux • RelWithDebInfo • ctest (x86-64-v3, fast-math, clang)` check enf
   decoded readings (SiteSheet CC/VC, `dsd_app_vc_freq()`/`dsd_app_cc_freq()`, the trunk `Frequency:` lines) stay on
   their decoded values. `dsd_opts_input_is_iq_replay()` says whether the input in
   force is an I/Q replay (an RTL input with an `iqreplay` spec), from the input type and device string rather than
-  `iq_replay_active`, which an input switch does not clear. Tests: `CORE_OPTS_TUNED_FREQ`.
+  `iq_replay_active`, which an input switch does not clear. `dsd_opts_trunk_vc_followed()` says whether the receiver
+  sits on a voice channel a trunking grant sent it to (`trunk_enable` and `trunk_is_tuned` both 1): only then does
+  `trunk_vc_freq[]` name the carrier being decoded, and a call observation whose message carries no frequency may
+  stamp it (P25's target-matched `p25_vc_freq[]` differs; see Protocols). Tests: `CORE_OPTS_TUNED_FREQ`.
 - API note (runtime sink changes, `<dsd-neo/core/audio.h>`): `dsd_audio_ensure_analog_output()` and
   `dsd_audio_ensure_digital_output()` open the sink a new receive family writes to (the raw monitor stream; the digital
   voice stream, plus the raw stream for ProVoice and `-8`) with the parameters `openAudioOutput()` uses, when the
@@ -3226,6 +3229,45 @@ do, also when the request completed inside the call. A learned CC type identifie
 `noCarrier()` clears that evidence after another trunking protocol takes over. Extension ID 26
 (`DSD_STATE_EXT_PROTO_P25_CC_SELECTION`) retains the site-specific cache requirement across no-carrier resets,
 while network band plans and user settings survive.
+
+Call frequency and access-code provenance (issue #575). A call's canonical `frequency_hz` and the live access codes
+(`dmr_color_code`, `dpmr_color_code`, `nxdn_last_ran`) are read as describing the carrier the call is decoded on, so:
+
+- A call observation's `frequency_hz` is either a frequency its own message carries (a P25 TSBK/LCW/MBT/VPDU grant,
+  a DMR CSBK grant's activity, an EDACS grant) or the frequency of the carrier the call is decoded on. Messages that
+  carry none read a global only when it names that carrier:
+  - `trunk_vc_freq[]` only while `dsd_opts_trunk_vc_followed()` (the DMR voice LC `dmr_flco_publish_voice()`, the NXDN
+    VCALL `nxdn_vcall_publish()`, the P25 Phase 1 ESS epoch `p25_crypto_ensure_phase1_call()`); with trunking off every
+    DMR grant in `dmr_csbk.c` writes it for display while the receiver stays put, so it names another channel. The
+    P25 conventional voice publication (`p25_sm_conventional_frequency()`), which runs only with trunking off, never
+    reads it.
+  - P25 `p25_vc_freq[]` either way (the conventional publication and the ESS epoch): followed, it is the voice
+    channel; with trunking off every writer is target-matched, writing only for a grant or grant update that names
+    the target of a call active on this carrier (`p25p2_vpdu_update_playback_if_match()`, used by both MFID90
+    regroup grants too, the VPDU telephone and SNDCP data grants, and `p25_telephone_update_nontrunk_vc_freq()` in
+    `p25p1_pdu_trunking.c`), and `noCarrier()` clears it with trunking off. So with trunking off a call takes only a
+    frequency a grant update naming its own target (or an earlier call's on the same carrier) wrote.
+  - The DMR trunk SM's voice-sync publication stamps its own tuned `vc_freq_hz`. The NXDN VCALL names the last
+    grant's channel (`nxdn_grant_chan`) only when that grant's frequency is the followed one, since a duplicate
+    assignment decoded while tuned moves it without moving the receiver.
+- `dmr_color_code` goes back to 16 ("not decoded") at the carrier boundary where `no_carrier_reset_decode_state()`
+  runs `dmr_confidence_reset()`, in `noCarrier()` and in `dsd_engine_reset_no_carrier_state()` (which
+  `channel_scan_commit()` runs). BS mode rewrites it at the confidence relock before any burst is dispatched; DMR MS
+  mode has no lock, so without the reset a call opening before its embedded code decodes, or after a failed
+  QR(16,7,6), took the previous carrier's code. It is reset there rather than inside `dmr_confidence_reset()`, whose
+  BS burst-error callers in `dmr_bs.c` stay on the same carrier.
+- `nxdn_last_ran` goes back to `(unsigned)-1` at the same boundary (RAN 0 is a legal code). The SACCH writes it only
+  once the transmission is confirmed, and `nxdn_confirm_reset()` restarts confirmation at every no-carrier pass, so a
+  call opening on its FACCH1 VCALL read the previous transmission's RAN; on a control channel the CRC-gated CAC sets
+  it again at once. The `LIMAZULUTWEAKS` reset in `noCarrier()` and the legacy `-Y` step's reset remain.
+- Trunk scan skips both resets (`preserve_scan_state`): the per-target snapshot saves and restores the DMR colour code
+  with its confidence lock, and the RAN.
+- `dpmr_color_code` is set only in `dpmr_publish_call()`, after `dpmr_confirm_is_confirmed()`, from a decoded
+  `ColorCode[0]`, with or without a caller identity; the ID printer only prints.
+  `no_carrier_reset_call_strings_and_dpmr()` resets it to -1 with the confirmation evidence.
+
+Tests: `DMR_FLCO_PRIVACY_MODES`, `DMR_MS_DATA`, `NXDN_ELEMENT_BOUNDS`, `P25_SM_UNIFIED_CORE`, `P25_CRYPTO_STATE`,
+`DPMR_VOICE_BRIDGE`, `ENGINE_NO_CARRIER_RESET`.
 
 Key public headers (selection):
 

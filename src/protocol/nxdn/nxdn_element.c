@@ -2286,6 +2286,14 @@ nxdn_vcall_publish(dsd_opts* opts, dsd_state* state, const struct nxdn_vcall_inf
     if (!DSD_SYNC_IS_NXDN(protocol)) {
         protocol = DSD_SYNC_NXDN_POS;
     }
+    /* A VCALL carries no channel or frequency of its own (issue #575). The call may name only the voice channel the
+     * receiver followed a grant to: trunk_vc_freq[] while that holds, and the last grant's channel only when that
+     * grant is the one followed. Without trunking no grant is followed, and trunk_vc_freq[] holds whatever a DMR grant
+     * decoded with trunking off wrote for display; a grant decoded while tuned (a duplicate assignment for another
+     * call) moves nxdn_grant_chan without moving the receiver. */
+    const long int followed_freq = dsd_opts_trunk_vc_followed(opts) ? state->trunk_vc_freq[0] : 0;
+    const uint16_t followed_chan =
+        (followed_freq != 0 && state->nxdn_grant_freq == followed_freq) ? state->nxdn_grant_chan : 0U;
     const dsd_call_observation observation = {
         .protocol = protocol,
         .slot = 0U,
@@ -2293,8 +2301,8 @@ nxdn_vcall_publish(dsd_opts* opts, dsd_state* state, const struct nxdn_vcall_inf
         .ota_target_id = info->destination_id,
         .policy_target_id = info->destination_id,
         .ota_source_id = (info->voice_call_option & 0x0FU) < 4U ? info->source_unit_id : 0U,
-        .channel = state->nxdn_grant_chan,
-        .frequency_hz = state->trunk_vc_freq[0],
+        .channel = followed_chan,
+        .frequency_hz = followed_freq,
         .service_options = info->cc_option,
         .emergency = (uint8_t)((info->cc_option & 0x80U) != 0U),
         .has_service_metadata = 1U,

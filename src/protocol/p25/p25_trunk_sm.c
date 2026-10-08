@@ -6321,16 +6321,19 @@ typedef struct {
     uint32_t source;
     uint32_t group_id;
     uint32_t private_id;
-    long frequency_hz;
+    int64_t frequency_hz;
 } p25_sm_conventional_call_t;
 
-static long
-p25_sm_conventional_frequency(const dsd_state* state, int slot, long fallback_hz) {
-    long frequency_hz = state->p25_vc_freq[slot];
-    if (frequency_hz == 0) {
-        frequency_hz = state->trunk_vc_freq[slot];
-    }
-    return frequency_hz != 0 ? frequency_hz : fallback_hz;
+/* The voice message carries no frequency (issue #575). This path runs only with trunking off
+ * (p25_sm_emit_voice_start_event() drops voice with trunking on and no assignment, and an assignment publishes through
+ * the SM's slot observation instead), where nothing is followed, so the call takes only a frequency a grant update
+ * naming its own target (or an earlier call's on this carrier) wrote: every trunking-off writer of p25_vc_freq[]
+ * requires the grant's target to be a call active on this carrier (p25p2_vpdu.c, p25p1_pdu_trunking.c), and
+ * noCarrier() clears it with trunking off. Never trunk_vc_freq[]: with trunking off only a DMR grant writes it, for
+ * display, naming another channel. */
+static int64_t
+p25_sm_conventional_frequency(const dsd_state* state, int slot, int64_t fallback_hz) {
+    return state->p25_vc_freq[slot] != 0 ? (int64_t)state->p25_vc_freq[slot] : fallback_hz;
 }
 
 static int

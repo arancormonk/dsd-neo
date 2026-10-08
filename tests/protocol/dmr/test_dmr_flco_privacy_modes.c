@@ -530,6 +530,128 @@ test_kirisun_flco_sets_late_entry_mode(void) {
     assert(irr == 0);
 }
 
+// A Tier III talkgroup voice channel grant (CSBK opcode 49) naming logical channel `lpcn`.
+static void
+build_group_voice_grant_csbk(uint8_t bits[256], uint8_t bytes[48], uint16_t lpcn, uint32_t target, uint32_t source) {
+    DSD_MEMSET(bits, 0, 256);
+    DSD_MEMSET(bytes, 0, 48);
+    bytes[0] = 49U;
+    write_bits_u64(bits, 16U, lpcn & 0x0FFFU, 12U);
+    write_bits_u64(bits, 32U, target & 0x00FFFFFFU, 24U);
+    write_bits_u64(bits, 56U, source & 0x00FFFFFFU, 24U);
+}
+
+// Issue #575: with trunking off every decoded grant writes the global trunk_vc_freq for display while the receiver
+// stays where it is. The voice LC carries no frequency, so the call it opens must not take the grant's: the history
+// row would record another channel's frequency for this call.
+static void
+test_unfollowed_grant_frequency_stays_off_the_voice_call(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t cs_bits[256];
+    uint8_t cs_bytes[48];
+    uint8_t lc_bits[80];
+    uint32_t irr = 0U;
+    dsd_call_snapshot call;
+    const uint16_t lpcn = 0x0010U;
+    const long int grant_freq = 852012500L;
+
+    dsd_state_ext_free_all(&state);
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.trunk_enable = 0;
+    opts.trunk_tune_group_calls = 1;
+    opts.trunk_tune_private_calls = 1;
+    state.trunk_chan_map[lpcn] = grant_freq;
+
+    build_group_voice_grant_csbk(cs_bits, cs_bytes, lpcn, 3100U, 4100U);
+    dmr_cspdu(&opts, &state, cs_bits, cs_bytes, 1U, 0U);
+    // The display write stays: the terminal and the call view still show the grant.
+    assert(state.trunk_vc_freq[0] == grant_freq);
+    assert(state.trunk_vc_freq[1] == grant_freq);
+    assert(opts.trunk_is_tuned == 0);
+
+    state.currentslot = 0;
+    state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    build_regular_flco(lc_bits, 0x00U, 0x00U, 0x00U, 1001U, 2002U);
+    dmr_flco(&opts, &state, lc_bits, 1U, &irr, 1U);
+    assert(irr == 0U);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE);
+    assert(call.ota_target_id == 1001U);
+    assert(call.frequency_hz == 0);
+
+    // The same holds on the other slot.
+    state.currentslot = 1;
+    irr = 0U;
+    build_regular_flco(lc_bits, 0x00U, 0x00U, 0x00U, 1003U, 2004U);
+    dmr_flco(&opts, &state, lc_bits, 1U, &irr, 1U);
+    assert(dsd_call_state_get(&state, 1U, &call) > 0);
+    assert(call.ota_target_id == 1003U);
+    assert(call.frequency_hz == 0);
+    dsd_state_ext_free_all(&state);
+}
+
+// The voice channel a trunking receiver followed is this carrier, so a voice LC heard there stamps it. The engine sets
+// trunk_vc_freq[] and trunk_is_tuned together when it tunes a grant (dsd_engine_update_vc_tune_state()).
+static void
+test_followed_voice_channel_frequency_reaches_the_voice_call(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t lc_bits[80];
+    uint32_t irr = 0U;
+    dsd_call_snapshot call;
+    const long int vc_freq = 852012500L;
+
+    dsd_state_ext_free_all(&state);
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.trunk_enable = 1;
+    opts.trunk_is_tuned = 1;
+    state.trunk_cc_freq = 851012500L;
+    state.trunk_vc_freq[0] = vc_freq;
+    state.trunk_vc_freq[1] = vc_freq;
+    state.currentslot = 1;
+    state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+
+    build_regular_flco(lc_bits, 0x00U, 0x00U, 0x00U, 1001U, 2002U);
+    dmr_flco(&opts, &state, lc_bits, 1U, &irr, 1U);
+    assert(irr == 0U);
+    assert(dsd_call_state_get(&state, 1U, &call) > 0);
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE);
+    assert(call.frequency_hz == vc_freq);
+
+    // Back on the control channel the engine has cleared trunk_is_tuned; a stale trunk_vc_freq left behind
+    // (a hop that has not cleared it yet) is not this carrier either.
+    dsd_state_ext_free_all(&state);
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.trunk_is_tuned = 0;
+    state.trunk_vc_freq[0] = vc_freq;
+    state.trunk_vc_freq[1] = vc_freq;
+    state.currentslot = 0;
+    state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    irr = 0U;
+    dmr_flco(&opts, &state, lc_bits, 1U, &irr, 1U);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.frequency_hz == 0);
+
+    // Hytera XPT site status raises trunk_is_tuned on the rest channel even with trunking off; a grant frequency left
+    // in trunk_vc_freq is still not this carrier.
+    dsd_state_ext_free_all(&state);
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.trunk_enable = 0;
+    opts.trunk_is_tuned = 1;
+    state.trunk_vc_freq[0] = vc_freq;
+    state.trunk_vc_freq[1] = vc_freq;
+    state.currentslot = 0;
+    state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    irr = 0U;
+    dmr_flco(&opts, &state, lc_bits, 1U, &irr, 1U);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.frequency_hz == 0);
+    dsd_state_ext_free_all(&state);
+}
+
 static void
 test_flco_canonical_crypto_uses_algorithm_aware_keys(void) {
     static dsd_opts opts;
@@ -2671,6 +2793,8 @@ main(void) {
     test_hytera_basic_key_output_uses_segment_count();
     test_kirisun_flco_sets_late_entry_mode();
     test_flco_canonical_crypto_uses_algorithm_aware_keys();
+    test_unfollowed_grant_frequency_stays_off_the_voice_call();
+    test_followed_voice_channel_frequency_reaches_the_voice_call();
     test_hytera_enhanced_flco_uses_secondary_checksum();
     test_flco_scan_hook_reports_encrypted_service_option();
     test_hytera_flco_scan_hook_uses_final_call_type();

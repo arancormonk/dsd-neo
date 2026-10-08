@@ -59,6 +59,7 @@ static int g_late_entry_calls;
 static int g_sbrc_calls;
 static int g_voice_sync_calls;
 static int g_sm_tick_calls;
+static int g_qr_ok = 1;
 
 static void
 reset_fixture(void) {
@@ -88,6 +89,7 @@ reset_fixture(void) {
     g_sbrc_calls = 0;
     g_voice_sync_calls = 0;
     g_sm_tick_calls = 0;
+    g_qr_ok = 1;
     DSD_MEMSET(g_stream, 0, sizeof(g_stream));
     DSD_MEMSET(g_data_sync_payload, 0, sizeof(g_data_sync_payload));
     DSD_MEMSET(g_data_sync_reliability, 0, sizeof(g_data_sync_reliability));
@@ -161,7 +163,7 @@ bool
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 QR_16_7_6_decode(unsigned char* rx_bits) {
     (void)rx_bits;
-    return true;
+    return g_qr_ok != 0;
 }
 
 void
@@ -564,6 +566,34 @@ test_ms_bootstrap_plays_short_on_one_channel(void) {
     assert(g_play_ss3_calls == 6);
 }
 
+/* Issue #575: the engine puts dmr_color_code back to 16 ("not decoded") at every carrier boundary, because MS mode has
+ * no confidence relock to rewrite it: a call opens before its embedded colour code decodes, and only a QR(16,7,6)
+ * decode that succeeds sets it. A failed decode must leave the unknown value, never invent one, and the next good one
+ * sets this carrier's code. load_voice_stream() puts colour code 11 in every embedded signalling field. */
+static void
+test_ms_colour_code_stays_unknown_until_the_embedded_code_decodes(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_fixture();
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    load_voice_stream();
+    opts.floating_point = 1;
+    opts.pulse_digi_out_channels = 1;
+    state.dmr_color_code = 16;
+
+    g_qr_ok = 0;
+    dmrMS(&opts, &state);
+    assert(state.dmr_color_code == 16);
+
+    reset_fixture();
+    load_voice_stream();
+    g_qr_ok = 1;
+    dmrMS(&opts, &state);
+    assert(state.dmr_color_code == 11);
+    assert(state.color_code == 11);
+}
+
 int
 main(void) {
     test_ms_data_collects_payload_and_cleans_state();
@@ -572,6 +602,7 @@ main(void) {
     test_ms_voice_cycle_plays_float_on_one_channel();
     test_ms_bootstrap_uses_cached_payload_then_enters_voice_cycle();
     test_ms_bootstrap_plays_short_on_one_channel();
+    test_ms_colour_code_stays_unknown_until_the_embedded_code_decodes();
     DSD_FPRINTF(stdout, "DMR_MS_DATA: OK\n");
     return 0;
 }

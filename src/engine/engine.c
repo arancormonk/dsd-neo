@@ -2001,7 +2001,7 @@ no_carrier_close_mbe_outputs_if_needed(dsd_opts* opts, dsd_state* state) {
 }
 
 static void
-no_carrier_reset_decode_state(dsd_state* state, int preserve_dmr_confidence) {
+no_carrier_reset_decode_state(dsd_state* state, int preserve_scan_state) {
     state->jitter = -1;
     state->lastsynctype = DSD_SYNC_NONE;
     state->carrier = 0;
@@ -2034,8 +2034,20 @@ no_carrier_reset_decode_state(dsd_state* state, int preserve_dmr_confidence) {
     set_spaces(state->ftype, 13);
     state->errs = 0;
     state->errs2 = 0;
-    if (!preserve_dmr_confidence) {
+    /* Trunk scan keeps the carrier identity below in each target's snapshot, which saves and restores it. */
+    if (!preserve_scan_state) {
         dmr_confidence_reset(state);
+        /* The colour code is read as this carrier's (issue #575), so it goes back to "not decoded" (16, as initState()
+         * leaves it) with the lock. BS mode rewrites it when the gate relocks, before any burst is dispatched, but MS
+         * mode has no lock: a call opens before its embedded code decodes, and a failed QR(16,7,6) decode writes
+         * nothing, so the previous carrier's code would label it. Here rather than in dmr_confidence_reset(), whose
+         * BS burst-error callers stay on the same carrier. */
+        state->dmr_color_code = 16U;
+        /* The NXDN RAN likewise ((unsigned)-1, as initState() leaves it; RAN 0 is a legal code). The SACCH writes it
+         * only once the transmission is confirmed, and confirmation restarts here, so a call opening on its FACCH1
+         * VCALL would otherwise read the previous transmission's RAN. On a control channel the CRC-gated CAC sets it
+         * again at once. */
+        state->nxdn_last_ran = (unsigned int)-1;
     }
 }
 
@@ -2328,6 +2340,9 @@ no_carrier_reset_call_strings_and_dpmr(dsd_opts* opts, dsd_state* state) {
     dpmr_confirm_reset(state);
     state->dpmr_cch_evidence = 0;
     state->dpmr_cch_evidence_symbolcnt = 0;
+    /* And so is the colour code it published, read as this carrier's (issue #575): -1, as initState() leaves it,
+     * until the next confirmed transmission decodes one. */
+    state->dpmr_color_code = -1;
 }
 
 static void

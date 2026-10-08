@@ -1166,7 +1166,9 @@ p25p2_vpdu_iter_block_01(p25p2_vpdu_ctx* ctx) {
         }
         // If playing back files, and we still want to see what freqs are in use in the ncurses terminal
         //might only want to do these on a grant update, and not a grant by itself?
-        p25_set_playback_vc_freq(opts, state, freq);
+        // Only for the group of a call active on this carrier, like every other trunking-off writer: a conventional
+        // call takes p25_vc_freq as its own frequency (issue #575).
+        p25p2_vpdu_update_playback_if_match(opts, state, sgroup, freq);
     }
 
     if (len_b < 0) {

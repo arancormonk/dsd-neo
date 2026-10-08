@@ -8,7 +8,8 @@
  * the replay read paths leave for it (dsd_opts_note_iq_replay_center()), and the I/Q replay predicate the frontends'
  * tune refusal keys on (dsd_opts_input_is_iq_replay()). A replay's recorded RETUNEs
  * move the demod without touching rtlsdr_center_freq, so the centre the decoder last read samples from wins while it
- * is set; an audio input has no tuner reading at all.
+ * is set; an audio input has no tuner reading at all. Also the followed-voice-channel predicate
+ * (dsd_opts_trunk_vc_followed()) a call observation needs before it stamps the voice channel's frequency.
  */
 
 #include <assert.h>
@@ -100,10 +101,28 @@ test_input_is_iq_replay(void) {
     free(opts);
 }
 
+/* A voice channel counts as followed only with trunking on and a grant tuned (dsd_opts_trunk_vc_followed()). Hytera XPT
+   site status raises trunk_is_tuned on the rest channel with trunking off, and that is no followed channel. */
+static void
+test_trunk_vc_followed(void) {
+    assert(dsd_opts_trunk_vc_followed(NULL) == 0);
+
+    dsd_opts* opts = make_opts(AUDIO_IN_RTL, "rtl:0");
+    assert(dsd_opts_trunk_vc_followed(opts) == 0);
+    opts->trunk_enable = 1;
+    assert(dsd_opts_trunk_vc_followed(opts) == 0);
+    opts->trunk_is_tuned = 1;
+    assert(dsd_opts_trunk_vc_followed(opts) == 1);
+    opts->trunk_enable = 0;
+    assert(dsd_opts_trunk_vc_followed(opts) == 0);
+    free(opts);
+}
+
 int
 main(void) {
     test_tuned_freq();
     test_note_iq_replay_center();
     test_input_is_iq_replay();
+    test_trunk_vc_followed();
     return 0;
 }

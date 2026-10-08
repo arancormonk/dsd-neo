@@ -3594,6 +3594,64 @@ test_dmr_mfid_clear_runs_on_the_decode_clock_without_trunking(void) {
 }
 
 /*
+ * Issue #575: dmr_color_code, dpmr_color_code and nxdn_last_ran are read as the code of the carrier being decoded, so
+ * a carrier boundary forgets them (16, -1 and (unsigned)-1, as initState() leaves them). DMR MS mode has no confidence
+ * relock to rewrite the colour code: a call opens before its embedded code decodes, and a failed QR(16,7,6) decode
+ * writes nothing, so the previous carrier's value would label the next call. The NXDN SACCH writes the RAN only once
+ * the transmission is confirmed, and confirmation restarts at every no-carrier pass, so a call opening on its FACCH1
+ * VCALL would read the previous transmission's RAN. The resets run in noCarrier() and in
+ * dsd_engine_reset_no_carrier_state(), the reset channel_scan_commit() runs on a -Y row change. Trunk scan keeps the
+ * DMR colour code with the DMR confidence lock, and the RAN, which its per-target snapshot saves and restores.
+ */
+static int
+test_carrier_boundary_forgets_the_access_codes(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    rc |= expect_true("access-codes: initState leaves all three unknown",
+                      state->dmr_color_code == 16U && state->dpmr_color_code == -1
+                          && state->nxdn_last_ran == (unsigned int)-1);
+
+    /* A DMR MS decode sets the colour code without the BS confidence lock. */
+    state->dmr_color_code = 7U;
+    state->dpmr_color_code = 12;
+    state->nxdn_last_ran = 21U;
+    noCarrier(opts, state);
+    rc |= expect_true("access-codes: noCarrier forgets the DMR colour code", state->dmr_color_code == 16U);
+    rc |= expect_true("access-codes: noCarrier forgets the dPMR colour code", state->dpmr_color_code == -1);
+    rc |= expect_true("access-codes: noCarrier forgets the NXDN RAN", state->nxdn_last_ran == (unsigned int)-1);
+
+    state->dmr_color_code = 9U;
+    state->dpmr_color_code = 33;
+    state->nxdn_last_ran = 0U; /* RAN 0 is a legal code, so "forgotten" is -1, not 0. */
+    dsd_engine_reset_no_carrier_state(opts, state);
+    rc |= expect_true("access-codes: the shared reset forgets the DMR colour code", state->dmr_color_code == 16U);
+    rc |= expect_true("access-codes: the shared reset forgets the dPMR colour code", state->dpmr_color_code == -1);
+    rc |= expect_true("access-codes: the shared reset forgets the NXDN RAN", state->nxdn_last_ran == (unsigned int)-1);
+
+    opts->trunk_scan_enabled = 1;
+    state->dmr_color_code = 5U;
+    state->dmr_confidence_locked = 1;
+    state->dmr_confidence_color_code = 5;
+    state->dpmr_color_code = 12;
+    state->nxdn_last_ran = 21U;
+    noCarrier(opts, state);
+    rc |= expect_true("access-codes: trunk scan keeps the DMR colour code with its lock",
+                      state->dmr_color_code == 5U && state->dmr_confidence_locked == 1
+                          && state->dmr_confidence_color_code == 5);
+    rc |= expect_true("access-codes: trunk scan keeps the NXDN RAN its target snapshot carries",
+                      state->nxdn_last_ran == 21U);
+    rc |= expect_true("access-codes: trunk scan still forgets the dPMR colour code", state->dpmr_color_code == -1);
+    opts->trunk_scan_enabled = 0;
+
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+/*
  * The received tone (issue #522) has to survive noCarrier(): in analog mode it runs on every
  * no-sync pass, about every 375 ms, and a reset there would keep any tone from ever locking.
  * Locks one through the real tap, then checks the publication and the detector behind it
@@ -5741,6 +5799,7 @@ main(void) {
     rc |= test_rx_tone_survives_no_carrier();
     rc |= test_dmr_stale_follow_clear_runs_on_the_decode_clock();
     rc |= test_dmr_mfid_clear_runs_on_the_decode_clock_without_trunking();
+    rc |= test_carrier_boundary_forgets_the_access_codes();
 #ifdef DSD_NEO_TEST_RTL_WRAP
     rc |= test_rx_tone_rigctl_scan_step();
     rc |= test_rigctl_reconnect_forgets_the_legacy_tune_cache();

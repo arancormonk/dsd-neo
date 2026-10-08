@@ -303,15 +303,18 @@ dsd_trunk_tune_result
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 dsd_trunk_tuning_hook_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps,
                                    uint64_t* out_request_id) {
-    (void)state;
     if (out_request_id != NULL) {
         *out_request_id = 0U;
     }
     g_tune_freq_calls++;
     g_tune_freq_freq = freq;
     g_tune_freq_ted_sps = ted_sps;
+    /* What the engine's tune does on success (dsd_engine_update_vc_tune_state()). */
     if (opts != NULL) {
         opts->trunk_is_tuned = 1;
+    }
+    if (state != NULL) {
+        state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = freq;
     }
     return DSD_TRUNK_TUNE_RESULT_OK;
 }
@@ -1967,6 +1970,104 @@ test_assignment_data_gate_and_duplicate_release(void) {
     return rc;
 }
 
+/* Issue #575: a VCALL carries no channel or frequency of its own, so the call it publishes may name only the voice
+ * channel the receiver followed. The grant a trunking receiver tuned is that channel; a grant it did not follow is not,
+ * and neither is a trunk_vc_freq some other grant left behind for display. */
+static int
+test_vcall_names_only_the_followed_voice_channel(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    uint8_t bits[96];
+    const uint16_t channel = 0x12AU;
+    const long int grant_freq = 855512500L;
+    const uint16_t other_channel = 0x0055U;
+    const long int other_freq = 857112500L;
+    const long int display_freq = 852012500L;
+    const uint16_t source = 0x0123U;
+    const uint16_t target = 0x0456U;
+    if (!opts || !state) {
+        DSD_FPRINTF(stderr, "alloc-failed: %s%s\n", !opts ? "dsd_opts" : "", !state ? " dsd_state" : "");
+        free(state);
+        free(opts);
+        return 1;
+    }
+    int rc = 0;
+    dsd_call_snapshot call;
+
+    /* Followed: the receiver tuned the grant, so the VCALL heard there names its channel and frequency. */
+    reset_assignment_capture();
+    opts->trunk_enable = 1;
+    opts->trunk_tune_group_calls = 1;
+    opts->trunk_hangtime = 5;
+    state->p25_cc_freq = 851012500L;
+    state->trunk_cc_freq = 851012500L;
+    g_mapped_channel = channel;
+    g_mapped_channel_freq = grant_freq;
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    write_assignment_fields(bits, 0x04U, 0x00U, 1U, 0U, source, target, channel, 0U);
+    NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+    rc |= expect_int("followed-tuned", opts->trunk_is_tuned, 1);
+    rc |= expect_int("followed-tune-freq", (int)g_tune_freq_freq, (int)grant_freq);
+
+    state->nxdn_confirmed = 1;
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    write_vcall_fields(bits, 0x01U, 0x00U, 1U, 0U, source, target, 0U, 0U);
+    NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+    rc |= expect_int("followed-call", dsd_call_state_get(state, 0U, &call), 1);
+    rc |= expect_u64("followed-call-frequency", (uint64_t)call.frequency_hz, (uint64_t)grant_freq);
+    rc |= expect_int("followed-call-channel", (int)call.channel, channel);
+
+    /* Still on that channel, a duplicate assignment for another call is decoded and not followed. The grant globals
+     * now name the other channel; the next VCALL of this call must not take it. */
+    state->last_vc_sync_time = dsd_decode_time();
+    g_mapped_channel = other_channel;
+    g_mapped_channel_freq = other_freq;
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    write_assignment_fields(bits, 0x05U, 0x00U, 1U, 0U, 0x0201U, 0x0302U, other_channel, 0U);
+    NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+    rc |= expect_int("duplicate-not-followed", g_tune_freq_calls, 1);
+    rc |= expect_int("duplicate-grant-channel", state->nxdn_grant_chan, other_channel);
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    write_vcall_fields(bits, 0x01U, 0x00U, 1U, 0U, source, target, 0U, 0U);
+    NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+    rc |= expect_int("duplicate-call", dsd_call_state_get(state, 0U, &call), 1);
+    rc |= expect_u64("duplicate-call-frequency", (uint64_t)call.frequency_hz, (uint64_t)grant_freq);
+    rc |= expect_int("duplicate-call-channel", (int)call.channel, channel);
+    dsd_state_ext_free_all(state);
+
+    /* Not followed: with trunking off a grant is decoded and the receiver stays put. trunk_vc_freq holds what a DMR
+     * grant decoded with trunking off on an earlier scan row wrote there for display (noCarrier() keeps it until the
+     * control channel has been gone ten seconds). The VCALL names neither. */
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    reset_assignment_capture();
+    opts->trunk_enable = 0;
+    opts->trunk_tune_group_calls = 1;
+    state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = display_freq;
+    g_mapped_channel = channel;
+    g_mapped_channel_freq = grant_freq;
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    write_assignment_fields(bits, 0x04U, 0x00U, 1U, 0U, source, target, channel, 0U);
+    NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+    rc |= expect_int("unfollowed-no-tune", g_tune_freq_calls, 0);
+    rc |= expect_int("unfollowed-grant-channel", state->nxdn_grant_chan, channel);
+
+    state->nxdn_confirmed = 1;
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    write_vcall_fields(bits, 0x01U, 0x00U, 1U, 0U, 0x0777U, 0x0888U, 0U, 0U);
+    NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+    rc |= expect_int("unfollowed-call", dsd_call_state_get(state, 0U, &call), 1);
+    rc |= expect_u64("unfollowed-call-target", call.ota_target_id, 0x0888U);
+    rc |= expect_u64("unfollowed-call-frequency", (uint64_t)call.frequency_hz, 0U);
+    rc |= expect_int("unfollowed-call-channel", (int)call.channel, 0);
+    rc |= expect_int("unfollowed-display-kept", (int)state->trunk_vc_freq[0], (int)display_freq);
+
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -2000,6 +2101,7 @@ main(void) {
     rc |= test_arib_tx_release_uses_shifted_fields_and_clears_call();
     rc |= test_assignment_group_grant_anchors_tunes_and_loads_scrambler();
     rc |= test_assignment_data_gate_and_duplicate_release();
+    rc |= test_vcall_names_only_the_followed_voice_channel();
     dsd_decode_clock_use_system();
 
     if (rc == 0) {

@@ -205,8 +205,12 @@ p25_crypto_ensure_phase1_call(const dsd_opts* opts, dsd_state* state) {
         return 0;
     }
 
+    /* The ESS carries no frequency, so the call takes this carrier's (issue #575). p25_vc_freq[] is that: the voice
+     * channel a trunking receiver followed, and with trunking off only a grant naming a call active on this carrier
+     * writes it (noCarrier() clears it). trunk_vc_freq[] only while followed: with trunking off a DMR grant writes it
+     * for display, naming another channel. */
     int64_t frequency_hz = state->p25_vc_freq[0];
-    if (frequency_hz == 0) {
+    if (frequency_hz == 0 && dsd_opts_trunk_vc_followed(opts)) {
         frequency_hz = state->trunk_vc_freq[0];
     }
     dsd_call_observation observation = {
