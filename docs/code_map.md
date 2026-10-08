@@ -3364,14 +3364,16 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
 - `p2_cc` is the Phase 2 descrambler's seed, which `-X`, a Phase 1 NID or another carrier may have left. It is a call's
   received NAC only while `p2_cc_verified` is set: a burst descrambled with it passed its Reed-Solomon check (a
   scrambled FACCH or SACCH, `process_FACCHs()`/`process_SACCHs()`, or an ESS, `p25p2_process_ess()`, all through
-  `p25p2_note_seed_proven()`), or a network status broadcast that passed its CRC named it
+  `p25p2_note_seed_proven()`; it proves the seed `p25p2_process_frame_scramble()` descrambled the buffered superframe
+  with, so the seed in force is proven only while it is still that one: a broadcast decoded from an earlier burst of the
+  same buffer may have replaced it), or a network status broadcast that passed its CRC named it
   (`p25p2_vpdu_apply_nsb_identity()`). Under `-F` an XCCH MAC_SIGNAL that failed its CRC still reaches the VPDU decoder,
   which `p25p2_xcch_validate_sacch_crc()` allows, so the signal handler passes the verdict through
   (`process_MAC_VPDU_crc()`): such a broadcast may still name the system, as before, but proves no NAC. Every other
   proof needs a Reed-Solomon decode that succeeded, which no option relaxes. An unscrambled FACCH/SACCH (DUID 15, 12,
-  13) never tests the seed, so a call carried only by those records no NAC.
-  The mark goes at the carrier boundary with the codes above, and whenever a Phase 1 NID, a hand-set seed or a site
-  reset changes `p2_cc`; `p2_cc` itself is the descrambling key and is never reset for it.
+  13) never tests the seed, so a call carried only by those records no NAC. The mark goes at the carrier boundary with
+  the codes above, and whenever a Phase 1 NID, a hand-set seed or a site reset changes `p2_cc`; `p2_cc` itself is the
+  descrambling key and is never reset for it.
 - Trunk scan skips both resets (`preserve_scan_state`): the per-target snapshot saves and restores the DMR colour code
   with its confidence lock, the RAN with its stand-in mark, and `p2_cc` with its proof.
 - `dsd_engine_forget_carrier_codes()` (`<dsd-neo/engine/frame_processing.h>`) is that boundary's one forget: the DMR

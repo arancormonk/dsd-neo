@@ -25,6 +25,9 @@ void p25p2_process_isch(dsd_opts* opts, dsd_state* state, int framing_index);
 void p25p2_process_ess(dsd_opts* opts, dsd_state* state, int defer_rekey);
 void p25p2_duid_post_timeslot(dsd_opts* opts, dsd_state* state, int timeslot_index, int sacch_status);
 void p25p2_process_duid(dsd_opts* opts, dsd_state* state);
+/* Descramble the buffered superframe with the seed in force (WACN, SYSID, p2_cc), which a burst decoded from it then
+   proves (issue #575); processP2() runs it before p25p2_process_duid(). */
+void p25p2_process_frame_scramble(dsd_opts* opts, const dsd_state* state);
 void p25p2_generate_scramble_bits(uint64_t wacn, uint64_t sysid, uint64_t nac, uint8_t* out_bits, size_t bit_count);
 
 #ifdef __cplusplus

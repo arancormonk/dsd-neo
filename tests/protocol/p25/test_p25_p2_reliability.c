@@ -1257,6 +1257,37 @@ run_seeded_superframe(dsd_opts* opts, dsd_state* state, const uint8_t duids[4]) 
     for (int i = 0; i < 4; i++) {
         seed_duid_bits(i, duids[i]);
     }
+    p25p2_process_frame_scramble(opts, state);
+    p25p2_process_duid(opts, state);
+}
+
+/* The ESS fixture's buffer, descrambled with the site's seed, as processP2() descrambles every superframe before its
+   bursts decode (issue #575). */
+static void
+descramble_with_site_seed(dsd_opts* opts, dsd_state* state) {
+    state->p2_wacn = 1;
+    state->p2_sysid = 1;
+    state->p2_cc = 0x123;
+    p25p2_process_frame_scramble(opts, state);
+}
+
+/* The same, with the seed changed after the buffer was descrambled, as a network status broadcast decoded from an
+   earlier burst of the buffer changes it (under -F even one that failed its CRC). */
+static void
+run_reseeded_superframe(dsd_opts* opts, dsd_state* state, const uint8_t duids[4]) {
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    p25_p2_frame_reset();
+    reset_ess_stubs();
+    reset_playback_stub();
+    state->p2_wacn = 1;
+    state->p2_sysid = 1;
+    state->p2_cc = 0x123;
+    for (int i = 0; i < 4; i++) {
+        seed_duid_bits(i, duids[i]);
+    }
+    p25p2_process_frame_scramble(opts, state);
+    state->p2_cc = 0x456;
     p25p2_process_duid(opts, state);
 }
 
@@ -1303,10 +1334,27 @@ test_seed_proof_needs_a_descrambled_burst(void) {
     p25p2_process_ess(&opts, &state, 0);
     rc |= expect_int("failed ESS proves nothing", state.p2_cc_verified, 0);
     prepare_ess_soft_inputs(&state);
+    descramble_with_site_seed(&opts, &state);
     reset_ess_stubs();
     g_ess_hard_rc = 0;
     p25p2_process_ess(&opts, &state, 0);
     rc |= expect_int("ESS proves the seed", state.p2_cc_verified, 1);
+
+    /* A burst decoded from a buffer descrambled with another seed proves that seed, not the one in force now. */
+    reset_xcch_stubs();
+    run_reseeded_superframe(&opts, &state, scrambled_facch);
+    rc |= expect_int("reseeded scrambled FACCH decodes", g_facch_mac_calls > 0, 1);
+    rc |= expect_int("reseeded scrambled FACCH proves nothing", state.p2_cc_verified, 0);
+    reset_xcch_stubs();
+    run_reseeded_superframe(&opts, &state, scrambled_sacch);
+    rc |= expect_int("reseeded scrambled SACCH proves nothing", state.p2_cc_verified, 0);
+    prepare_ess_soft_inputs(&state);
+    descramble_with_site_seed(&opts, &state);
+    state.p2_cc = 0x456;
+    reset_ess_stubs();
+    g_ess_hard_rc = 0;
+    p25p2_process_ess(&opts, &state, 0);
+    rc |= expect_int("reseeded ESS proves nothing", state.p2_cc_verified, 0);
 
     reset_xcch_stubs();
     reset_ess_stubs();
