@@ -4774,20 +4774,75 @@ test_tune_away_clears_the_untrunked_frequency_caches(void) {
     rc |= expect_frequency_caches("untrunked candidate cycle", &state, 1);
     freeState(&state);
 
-    /* A frequency entry under trunking that picks no P25 control channel leaves the system's frequencies. */
+    /* Under trunking these belong to the followed system, and this forget leaves them (ENGINE_NO_CARRIER_RESET); a
+       frequency entry that picks no P25 control channel leaves the assignment they describe through the trunked release
+       instead (test_trunked_tune_away_leaves_the_followed_assignment()). */
+
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_OK);
+    return rc;
+}
+#endif
+
+#ifdef USE_RADIO
+/* A clean DMR voice LC header for a group call on slot 0: FLCO 0, @p tg from @p src. */
+static void
+decode_dmr_group_voice_lc(dsd_opts* opts, dsd_state* state, uint32_t tg, uint32_t src) {
+    uint8_t bits[96];
+    DSD_MEMSET(bits, 0, sizeof bits);
+    for (unsigned int i = 0U; i < 24U; i++) {
+        bits[24U + i] = (uint8_t)((tg >> (23U - i)) & 1U);
+        bits[48U + i] = (uint8_t)((src >> (23U - i)) & 1U);
+    }
+    uint32_t errors = 0U;
+    state->currentslot = 0;
+    state->lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    dmr_flco(opts, state, bits, 1U, &errors, 1U);
+}
+
+/*
+ * Issue #575: under trunking a frequency entry that picks no P25 control channel moves a voice-tuned DMR or NXDN
+ * receiver to another carrier, and the assignment it followed is left behind: the state machine that followed it comes
+ * to rest without tuning (the entry is the move), as trunk scan hands a carrier back, and trunk_is_tuned and the voice
+ * channel frequencies go. Left set, dsd_opts_trunk_vc_followed() let the next call's LC stamp the old voice channel's
+ * frequency: an 851.0125 -> 853.125 MHz entry whose next DMR call recorded 851.0125.
+ */
+static int
+test_trunked_tune_away_leaves_the_followed_assignment(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+
     init_radio_context(&opts, &state, "rtl:0");
     opts.trunk_enable = 1;
     opts.frame_p25p1 = 0;
     opts.frame_p25p2 = 0;
-    seed_frequency_caches(&state);
+    opts.trunk_is_tuned = 1;
+    opts.rtlsdr_center_freq = 851012500U;
+    state.trunk_cc_freq = 851000000L;
+    state.trunk_vc_freq[0] = state.trunk_vc_freq[1] = 851012500L;
+    dmr_sm_ctx_t* dmr = dmr_sm_get_ctx();
+    dmr_sm_init_ctx(dmr, &opts, &state);
+    dmr->state = DMR_SM_TUNED;
+    dmr->vc_freq_hz = 851012500L;
     reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
     post_u32(DSD_APP_CMD_RTL_SET_FREQ, 853125000U);
     rc |= expect_int("trunked frequency entry drained", dsd_app_drain_cmds(&opts, &state), 1);
-    rc |= expect_frequency_caches("trunked frequency entry", &state, 0);
+    rc |= expect_int("trunked frequency entry reaches the tuner", g_io_control_tune_calls, 1);
+    rc |= expect_int("trunked frequency entry leaves the voice channel", opts.trunk_is_tuned, 0);
+    rc |= expect_true("trunked frequency entry forgets the voice channel",
+                      state.trunk_vc_freq[0] == 0 && state.trunk_vc_freq[1] == 0);
+    rc |= expect_int("the DMR state machine rests on its control channel", dmr->state, DMR_SM_ON_CC);
+    rc |= expect_true("the DMR state machine forgets the voice channel", dmr->vc_freq_hz == 0);
+    opts.rtlsdr_center_freq = 853125000U; /* where the tuner went */
+    decode_dmr_group_voice_lc(&opts, &state, 4700U, 4701U);
+    const Event_History* row = &state.event_history_s[0].Event_History_Items[0];
+    rc |= expect_int("a DMR call after the entry is another", (int)row->target_id, 4700);
+    rc |= expect_true("a DMR call after the entry records the new tuner frequency", row->freq_hz == 853125000);
+    dmr_sm_init_ctx(dmr, &opts, &state);
     freeState(&state);
 
     reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
-    reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_OK);
     return rc;
 }
 #endif
@@ -17499,6 +17554,7 @@ main(void) {
 #ifdef USE_RADIO
     rc |= test_tune_away_commits_the_outgoing_call_first();
     rc |= test_tune_away_clears_the_untrunked_frequency_caches();
+    rc |= test_trunked_tune_away_leaves_the_followed_assignment();
 #endif
     rc |= test_return_cc_keeps_the_dmr_decode_gate();
     rc |= test_scan_row_keys_commands();

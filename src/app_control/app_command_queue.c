@@ -46,6 +46,7 @@
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/engine/scan_voice_gate.h>
 #include <dsd-neo/engine/trunk_scan.h>
+#include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/io/control.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/platform/atomic_compat.h>
@@ -54,6 +55,7 @@
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
+#include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
@@ -1330,16 +1332,48 @@ ui_end_calls(dsd_opts* opts, dsd_state* state) {
     }
 }
 
+/* Under trunking, a retune to another carrier leaves behind the voice channel a grant sent the receiver to, if any
+   (issue #575). The state machine that followed it comes to rest on its control channel without tuning -- the user's
+   tune is the move -- as trunk scan hands a carrier back (trunk_scan_release_active_carrier()), and the shared release
+   drops trunk_is_tuned and the voice channel frequencies (dsd_engine_release_tuned_call_state()). Left set,
+   dsd_opts_trunk_vc_followed() let the next call's LC or VCALL stamp the old voice channel's frequency. NXDN trunking
+   keeps no state machine of its own: the shared release is all it owes. @p guard_held says whether the caller holds the
+   P25 SM tick guard, which the P25 state machine's release needs. */
+static void
+ui_leave_followed_assignment(dsd_opts* opts, dsd_state* state, int guard_held) {
+    if (opts->trunk_enable != 1) {
+        return;
+    }
+    if (!guard_held) {
+        p25_sm_tick_guard_enter();
+    }
+    p25_sm_ctx_t* p25 = p25_sm_get_ctx();
+    if (p25_sm_get_state(p25) == P25_SM_TUNED) {
+        p25_sm_abandon_carrier(p25, opts, state, "user-retune");
+    }
+    dmr_sm_ctx_t* dmr = dmr_sm_get_ctx();
+    if (dmr->state == DMR_SM_TUNED) {
+        dmr_sm_abandon_carrier(dmr, opts, state, "user-retune");
+    }
+    dsd_engine_release_tuned_call_state(opts, state);
+    if (!guard_held) {
+        p25_sm_tick_guard_leave();
+    }
+}
+
 /* An accepted retune the user asked for to another carrier, which can sync before any no-carrier pass ends the
    reception (issue #575): the calls heard on the carrier it leaves end and commit first, with the codes that carrier
-   decoded and the frequencies it named, and then those go -- the codes (dsd_engine_forget_carrier_codes()), and with
-   trunking off the voice frequencies its grants named (dsd_engine_forget_untrunked_carrier_state()). A retune within a
-   system under trunking -- the return to the control channel, the skip and lockout returns, the P25 control channel
-   picks and candidate cycles, a trunked channel cycle -- does not run it: the system's codes stay valid there, as under
-   automatic trunk following, and the DMR decode gate they carry keeps dispatching the control channel's bursts. */
+   decoded and the frequencies it named; under trunking the assignment it followed is left
+   (ui_leave_followed_assignment()); then the codes go (dsd_engine_forget_carrier_codes()), and with trunking off the
+   voice frequencies its grants named (dsd_engine_forget_untrunked_carrier_state()). A retune within a system under
+   trunking -- the return to the control channel, the skip and lockout returns, the P25 control channel picks and
+   candidate cycles, a trunked channel cycle -- does not run it: the system's codes stay valid there, as under automatic
+   trunk following, and the DMR decode gate they carry keeps dispatching the control channel's bursts. @p guard_held
+   says whether the caller holds the P25 SM tick guard. */
 static void
-ui_leave_carrier(dsd_opts* opts, dsd_state* state) {
+ui_leave_carrier(dsd_opts* opts, dsd_state* state, int guard_held) {
     ui_end_calls(opts, state);
+    ui_leave_followed_assignment(opts, state, guard_held);
     dsd_engine_forget_carrier_codes(state);
     dsd_engine_forget_untrunked_carrier_state(opts, state);
 }
@@ -1915,7 +1949,7 @@ ui_cmd_handle_rtl_set_freq(dsd_opts* opts, dsd_state* state, const struct dsd_ap
                next notices the stream moved (issue #522), and so do its calls and the codes it
                decoded (issue #575). */
             dsd_analog_rx_reset(state);
-            ui_leave_carrier(opts, state);
+            ui_leave_carrier(opts, state, 0);
         }
         const int stop_scanner = ui_cmd_leave_typed_scan_after_tune(opts, state, rc);
         ui_cmd_rtl_set_freq_toast(state, rc, v, stop_scanner);
@@ -1979,7 +2013,7 @@ ui_cmd_handle_manual_tune(dsd_opts* opts, dsd_state* state, const struct dsd_app
          * manual return-to-CC path order this — never on the failure path. */
         dsd_frame_sync_reset_mod_state();
         dsd_analog_rx_reset(state);
-        ui_leave_carrier(opts, state); // the old carrier's calls commit, then its codes go (issue #575)
+        ui_leave_carrier(opts, state, 0); // the old carrier's calls commit, then its codes go (issue #575)
         reset_call_tracking(opts, state, 1);
         if (rc == 0) {
             ui_set_toast(state, 3, "Applied: tuned -> %u Hz", v);
@@ -3173,7 +3207,7 @@ try_manual_candidate_cycle_locked(dsd_opts* opts, dsd_state* state, int p25_live
     if (opts->trunk_enable != 1) {
         /* With trunking off the candidate list is no system the receiver follows: the next entry is another carrier
            (issue #575). */
-        ui_leave_carrier(opts, state);
+        ui_leave_carrier(opts, state, p25_live);
     }
     LOG_INFO("Candidate Cycle: tuning to %.06lf MHz\n", (double)cand / 1000000);
     mark_cc_sync(state, 1);
@@ -3227,7 +3261,7 @@ apply_manual_lcn_cycle_untyped_locked(dsd_opts* opts, dsd_state* state, int p25_
     if (opts->trunk_enable != 1) {
         /* A conventional list's next channel is another carrier; a trunked system's channel list is the system's own
            (issue #575). */
-        ui_leave_carrier(opts, state);
+        ui_leave_carrier(opts, state, p25_live);
     }
     LOG_INFO("Channel Cycle: tuning to %.06lf MHz\n", (double)freq / 1000000);
     state->lcn_freq_roll = next + 1;
@@ -3780,7 +3814,7 @@ apply_cfg_radio_input(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* 
     const int rc = apply_cfg_radio_input_tuned(opts, state, cfg, before);
     if (before->input.audio_in_type == AUDIO_IN_RTL && opts->audio_in_type == AUDIO_IN_RTL
         && opts->rtlsdr_center_freq != before->input.rtlsdr_center_freq) {
-        ui_leave_carrier(opts, state);
+        ui_leave_carrier(opts, state, 1); // a config apply runs under the P25 SM tick guard
     }
     return rc;
 }
@@ -5484,8 +5518,8 @@ apply_rr_import(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* 
     (void)decode_mode_republish(opts, state, mode);
     if (rr_apply_tune(opts, state, &p)) {
         /* The receiver moved to the imported system's channel, which can sync before any no-carrier pass ends the
-           reception on the old one (issue #575). */
-        ui_leave_carrier(opts, state);
+           reception on the old one (issue #575). The import runs under the P25 SM tick guard. */
+        ui_leave_carrier(opts, state, 1);
     }
     rr_apply_reacquire(opts, state);
 
