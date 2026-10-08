@@ -3351,7 +3351,9 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
     conventional publication (`p25_sm_conventional_frequency()`) and the ESS epoch read the pair instead
     (`p25_conventional_grant_frequency()`), and a call takes it only when it has that target: a second talkgroup on
     the carrier, or an ESS epoch that names none, takes none and its row falls back to the tuned frequency.
-    `noCarrier()` and the carrier boundary clear both with trunking off.
+    `noCarrier()` and the carrier boundary clear both with trunking off. Trunk scan keeps the pair in each target's
+    snapshot beside `p25_vc_freq[]`, and a fresh target starts without one: a rotation between conventional P25
+    targets runs neither, so the incoming carrier's call with the same target would otherwise take the other's grant.
   - The DMR trunk SM's voice-sync publication stamps its own tuned `vc_freq_hz`. The NXDN VCALL names the last
     grant's channel (`nxdn_grant_chan`) only when that grant's frequency is the followed one, since a duplicate
     assignment decoded while tuned moves it without moving the receiver.
@@ -3397,12 +3399,23 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   (`p25p2_vpdu_apply_nsb_identity()`). Under `-F` an XCCH MAC_SIGNAL that failed its CRC still reaches the VPDU decoder,
   which `p25p2_xcch_validate_sacch_crc()` allows, so the signal handler passes the verdict through
   (`process_MAC_VPDU_crc()`): such a broadcast may still name the system, as before, but proves no NAC. Every other
-  proof needs a Reed-Solomon decode that succeeded, which no option relaxes. An unscrambled FACCH/SACCH (DUID 15, 12,
-  13) never tests the seed, so a call carried only by those records no NAC. The mark goes at the carrier boundary with
+  proof needs a Reed-Solomon decode that succeeded with its parity check intact, which no option relaxes: a FACCH or
+  SACCH that needed the soft-erasure retry, or an ESS that needed `p25p2_ess_decode_with_soft_erasures()`'s erasures,
+  still decodes for its content but proves nothing, since erasures spend the code's check (the shortened RS(63,35)
+  ESS with all 28 parity symbols erased decodes any payload). And a slot's ESS_B that the carrier left
+  (`p25_p2_ess_b_stale`, set when the carrier's decoding is forgotten, cleared by the next 4V burst's fragment) is not
+  decoded at all: a 2V burst ahead of any 4V burst would read the old carrier's ALG, KID and MI from it, and
+  prove the new seed with it. An unscrambled FACCH/SACCH (DUID 15, 12, 13) never tests the seed, so a call carried only
+  by those records no NAC. The mark goes at the carrier boundary with
   the codes above, and whenever a Phase 1 NID, a hand-set seed or a site reset changes `p2_cc`; `p2_cc` itself is the
   descrambling key and is never reset for it.
 - Trunk scan skips both resets (`preserve_scan_state`): the per-target snapshot saves and restores the DMR colour code
-  with its confidence lock, the RAN with its stand-in mark, and `p2_cc` with its proof.
+  with its confidence lock, the RAN with its stand-in mark, `p2_cc` with its proof, and the conventional grant pair.
+  What the decoders gathered on the carrier is in no snapshot: a target switch (`trunk_scan_switch_to()`) forgets it
+  between saving the outgoing target and restoring the incoming one (`dsd_engine_forget_carrier_decoding()`, the
+  evidence and assemblies of the boundary's step 3). The decoder-wide values stay global: `carrier_seq` only counts
+  boundaries, and a switch is none; `carrier_source_key` and the RTL symbol cache's centre belong to the one tuner's
+  stream; the ESS_B stale mark is set by that forget.
 - `dsd_engine_carrier_boundary()` (`<dsd-neo/engine/frame_processing.h>`) is the one carrier boundary: every place the
   receiver leaves a carrier for another runs it, and no caller open-codes any part of it. A tune, a source change or an
   input switch can run beside the watchdog's ticks, so the boundary holds the P25 SM tick guard from its first
@@ -3430,9 +3443,13 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
      no-carrier pass drops them, since the next carrier's next piece could complete one with the carrier left's pieces:
      the NXDN SACCH superframe (segments, CRC marks, part) and alias blocks; the DMR data blocks, short LC fragments and
      Capacity Plus blocks (`dmr_reset_blocks()`), embedded LC, late-entry MI and talker alias, with the alias shown; the
-     P25 MAC fragments and Phase 1 talker aliases; the dPMR superframe part; the M17 LSF chunks, packet and signature;
-     the YSF text. D-STAR slow data, X2-TDMA signalling and P25 link control live within one superframe or frame, which
-     the carrier count covers.
+     P25 MAC fragments and Phase 1 talker aliases; the Phase 2 slots' ESS_B with its reliabilities (marked stale, see
+     `p2_cc` above), partial voice superframe and staged rekey (`p25p2_frame_forget_carrier()`); the ended calls' P25
+     crypto (`p25_crypto_reset_slot()`: ALG, KID, MI and the LFSR state that steps it); the dPMR superframe part; the
+     M17 LSF chunks, packet and signature; the YSF text. The evidence and assemblies together are
+     `dsd_engine_forget_carrier_decoding()`, which a trunk-scan target switch runs as well. D-STAR slow data, X2-TDMA
+     signalling and P25 link control live within one superframe or frame, which the carrier count covers; the Phase 2
+     ESS_A is collected fresh from each 2V burst.
   4. With trunking off, `dsd_engine_forget_untrunked_carrier_state()` forgets what the carrier left beyond its codes:
      what the trunking-off no-carrier pass forgets (`no_carrier_reset_non_trunk_fields_if_needed()`: the P25 voice
      frequencies a grant update wrote, which `p25_sm_conventional_frequency()` gives the call it named over the
@@ -3449,7 +3466,7 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   whatever the handler made of it, so the SPS hunt is not told a dropped frame proved anything. A unit whose own symbols
   straddle the move is mixed, and its FEC or CRC decides, as for any noise. Guarded:
   - P25 Phase 2 `processP2()`: the four-burst buffer (`p2_dibit_buffer()`); a boundary between buffers drops the slots'
-    ESS fragments, partial voice superframe and staged rekey (`p25p2_forget_carrier_left()`).
+    ESS fragments, partial voice superframe and staged rekey (`p25p2_frame_forget_carrier()`).
   - P25 Phase 1: `processLDU1()` (link control, read by the seventh voice frame), `processLDU2()` (encryption sync),
     `processHDU()` and `processTDULC()` (decoded before their trailing symbols, published after), `processMPDU()` (the
     header, read before its data blocks).
@@ -3498,7 +3515,7 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   trunk following, and where the DMR decode gate keeps dispatching the control channel's bursts: forgetting it made the
   first CSBK after a return pending, and `dmr_data_dispatch_burst()` dropped it. The skip and lockout returns under
   trunking still run the no-carrier pass they always ran (`dsd_engine_no_carrier_locked()`). Nor do a trunk-scan target
-  switch, whose snapshots carry the codes; an external controller's retune over the RTL UDP port, which follows a system
+  switch, whose snapshots carry the codes and which forgets only what the decoders gathered (above); an external controller's retune over the RTL UDP port, which follows a system
   for the decoder as the trunking state machines do and reaches the tuner on the IO thread; or the tuner release,
   trunking toggles and rigctl reconnect, which retune nothing.
 - `dpmr_color_code` is set only in `dpmr_publish_call()`, after `dpmr_confirm_is_confirmed()`, from a decoded
@@ -3512,8 +3529,8 @@ Tests: `DMR_FLCO_PRIVACY_MODES`, `DMR_MS_DATA`, `NXDN_ELEMENT_BOUNDS`, `NXDN_DEP
 `P25_CRYPTO_STATE`, `P25_P1_LOCKOUT_EVENTS`, `DPMR_VOICE_BRIDGE`, `ENGINE_NO_CARRIER_RESET`, `ENGINE_TRUNK_SCAN`,
 `CORE_ACCESS_CODE`, `UI_NCURSES_PRINTER_HELPERS`, `UI_QT_METRICS_MODEL`, `APP_COMMAND_QUEUE`, `APP_P25_CC_SELECTION`,
 `APP_CONTROL_RR_APPLY`, `RUNTIME_CONFIG_APPLY`, `UI_MENU_AIRSPY_CONFIG_FAILURE`, `UI_MENU_AIRSPY_CONFIG_TUNING`,
-`P25_P2_VPDU_GRANTS`, `P25_P2_XCCH_HELPERS`, `P25_P2_RELIABILITY`, `ENGINE_CHANNEL_SCAN`, `ENGINE_INPUT_BOUNDARY`,
-`UI_MENU_SERVICES`; the decoders' carrier-count guards: `P25_P2_RELIABILITY`, `P25_P1_LDU1_HELPERS`,
+`P25_P2_VPDU_GRANTS`, `P25_P2_XCCH_HELPERS`, `P25_P2_RELIABILITY`, `P25_P2_ESS_CARRIER`, `ENGINE_CHANNEL_SCAN`,
+`ENGINE_INPUT_BOUNDARY`, `UI_MENU_SERVICES`; the decoders' carrier-count guards: `P25_P2_RELIABILITY`, `P25_P1_LDU1_HELPERS`,
 `P25_P1_LDU2_HELPERS`, `P25_P1_HDU_HELPERS`, `P25_P1_TDULC`, `P25_P1_MDPU_HELPERS`, `DMR_BS_SYNC_TIMES`,
 `DMR_DATA_SYNC`, `DMR_MS_DATA`, `NXDN_FRAME_ROUTING`, `DPMR_VOICE_BRIDGE`, `DSTAR_PROCESS`, `X2TDMA_VOICE_HELPERS`,
 `YSF_DCH_DECODE`, `EDACS_FRAME_VERDICT`, `ENGINE_PROTOCOL_DISPATCH` (a split frame's verdict).
