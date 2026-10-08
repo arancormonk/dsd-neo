@@ -129,6 +129,10 @@ static int g_soft_dibits[400];
 static dsd_dibit_soft_t g_soft_values[400];
 static int g_status_accum_count;
 static int g_status_values[16];
+static int g_soft_calls;
+/* The read that adopts a retune its capture recorded, where the carrier boundary moves the carrier count
+   (dsd_engine_carrier_boundary(), issue #575); -1 for none. */
+static int g_boundary_at = -1;
 
 static void
 reset_soft_inputs(void) {
@@ -155,7 +159,9 @@ append_soft_input(int dibit, uint8_t reliability, int16_t llr0, int16_t llr1) {
 int
 getDibitSoft(dsd_opts* opts, dsd_state* state, dsd_dibit_soft_t* out_soft) {
     (void)opts;
-    (void)state;
+    if (g_soft_calls++ == g_boundary_at && state != NULL) {
+        state->carrier_seq++;
+    }
     if (g_soft_input_index >= g_soft_input_count) {
         if (out_soft != NULL) {
             DSD_MEMSET(out_soft, 0, sizeof(*out_soft));
@@ -772,6 +778,46 @@ test_hdu_encrypted_trunk_lockout_state(void) {
     return rc;
 }
 
+/* Issue #575: the carrier boundary moved the carrier count after the HDU's words were read, in its trailing symbols (a
+   replay read adopting a recorded retune). The header decoded whole before the move but publishes only after them, so
+   it would label the carrier left's call after the boundary ended it: nothing of it is published, as on a sync loss. */
+static int
+test_hdu_split_by_a_carrier_boundary_publishes_nothing(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    int total_reads = 0;
+
+    for (int split = 0; split < 2; split++) {
+        reset_hook_counters();
+        reset_fec_stubs();
+        reset_soft_inputs();
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        state.p25_p1_hdu_crypto_fresh = 1;
+        state.p25kid = 77;
+        g_soft_calls = 0;
+        g_boundary_at = split ? total_reads - 3 : -1; /* inside the trailing symbols */
+
+        processHDU(&opts, &state);
+
+        if (!split) {
+            total_reads = g_soft_calls;
+            rc |= expect_int("whole HDU publishes its key id", state.p25kid, 0);
+            rc |= expect_int("whole HDU publishes its encryption", state.p25_p1_hdu_crypto_fresh, 0);
+            rc |= expect_int("whole HDU resets the drop bytes", state.dropL, 267);
+        } else {
+            rc |= expect_int("split HDU moved the carrier count", (int)state.carrier_seq, 1);
+            rc |= expect_int("split HDU reads it all", g_soft_calls, total_reads);
+            rc |= expect_int("split HDU publishes no key id", state.p25kid, 77);
+            rc |= expect_int("split HDU publishes no encryption", state.p25_p1_hdu_crypto_fresh, 1);
+            rc |= expect_int("split HDU leaves the drop bytes", state.dropL, 0);
+        }
+    }
+    g_boundary_at = -1;
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -786,6 +832,7 @@ main(void) {
     rc |= test_hdu_key_reporting_preserves_user_unmute_and_good_decode_state();
     rc |= test_hdu_nondefinitive_metadata_preserves_prior_tuple();
     rc |= test_hdu_encrypted_trunk_lockout_state();
+    rc |= test_hdu_split_by_a_carrier_boundary_publishes_nothing();
     dsd_decode_clock_use_system();
     return rc;
 }

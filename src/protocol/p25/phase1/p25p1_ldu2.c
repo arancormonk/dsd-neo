@@ -493,8 +493,18 @@ processLDU2(dsd_opts* opts, dsd_state* state) {
     state->currentslot = 0;
 
     Ldu2Frame frame = {0};
+    const uint32_t carrier_seq = state->carrier_seq;
     ldu2_collect_voice_symbols(opts, state, &frame);
     ldu2_consume_trailing_status(opts, state);
+    if (state->carrier_seq != carrier_seq) {
+        /* The carrier boundary moved the carrier count while the LDU was read (issue #575). The encryption sync is
+           read whole by the seventh voice frame but decodes only now, so it would publish the carrier left's
+           algorithm, key and MI after the boundary ended that call: the encryption sync and low-speed data are
+           dropped, as on a sync loss, and the MI is not advanced for a superframe that will not follow. */
+        state->xl_is_hdu = 0;
+        DSD_FPRINTF(stderr, "\n");
+        return;
+    }
     frame.irrecoverable_errors = ldu2_run_fec(state, frame.hex_data, frame.hex_parity, frame.soft_dibits);
 
     ldu2_decode_post_fec_fields(state, &frame);

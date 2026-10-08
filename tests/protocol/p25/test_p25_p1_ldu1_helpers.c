@@ -65,6 +65,10 @@ static int g_status_add_calls;
 static int g_status_classify_calls;
 static int g_audio_play_calls;
 static int g_active_calls;
+static int g_imbe_calls;
+/* The IMBE frame whose read adopts a retune its capture recorded, where the carrier boundary moves the carrier count
+   (dsd_engine_carrier_boundary(), issue #575); -1 for none. */
+static int g_boundary_at_imbe = -1;
 static int g_last_status_dibit;
 static uint32_t g_last_policy_id;
 static uint8_t g_last_policy_source;
@@ -174,8 +178,11 @@ p25_status_accum_ensure_started(dsd_state* state) {
 void
 process_IMBE(dsd_opts* opts, dsd_state* state, int* status_count) {
     (void)opts;
-    (void)state;
     (void)status_count;
+    if (g_imbe_calls == g_boundary_at_imbe && state != NULL) {
+        state->carrier_seq++;
+    }
+    g_imbe_calls++;
 }
 
 void
@@ -281,6 +288,8 @@ reset_hook_counters(void) {
     g_status_classify_calls = 0;
     g_audio_play_calls = 0;
     g_active_calls = 0;
+    g_imbe_calls = 0;
+    g_boundary_at_imbe = -1;
     g_last_status_dibit = -1;
     g_last_policy_id = 0U;
     g_last_policy_source = 0U;
@@ -755,6 +764,37 @@ test_ldu1_softid_alias_state(void) {
     return rc;
 }
 
+/* Issue #575: the carrier boundary moved the carrier count while the LDU1 was read (a replay read adopting a recorded
+   retune). Its link control is read whole by the seventh voice frame but decodes only after the ninth and the low-speed
+   data, so it would publish the carrier left's call after the boundary ended it: the LDU's link control and low-speed
+   data are dropped, as on a sync loss. */
+static int
+test_ldu1_split_by_a_carrier_boundary_publishes_no_link_control(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_hook_counters();
+    processLDU1(&opts, &state);
+    rc |= expect_int("whole LDU1 reads nine voice frames", g_imbe_calls, 9);
+    rc |= expect_int("whole LDU1 checks its link control", (int)state.p25_p1_voice_fec_ok, 1);
+    rc |= expect_int("whole LDU1 publishes its link control", g_lcw_calls, 1);
+
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_hook_counters();
+    g_boundary_at_imbe = 7; /* the eighth voice frame: the link control and its parity were read before it */
+    processLDU1(&opts, &state);
+    rc |= expect_int("split LDU1 moved the carrier count", (int)state.carrier_seq, 1);
+    rc |= expect_int("split LDU1 still reads the frame", g_imbe_calls, 9);
+    rc |= expect_int("split LDU1 checks no link control", (int)(state.p25_p1_voice_fec_ok + state.p25_p1_voice_fec_err),
+                     0);
+    rc |= expect_int("split LDU1 publishes no link control", g_lcw_calls, 0);
+    rc |= expect_int("split LDU1 refreshes no voice activity", (int)state.last_vc_sync_time, 0);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -771,6 +811,7 @@ main(void) {
     rc |= test_ldu1_collect_lsd_stores_soft_bits_and_counters();
     rc |= test_ldu1_lsd_correction_respects_encryption();
     rc |= test_ldu1_softid_alias_state();
+    rc |= test_ldu1_split_by_a_carrier_boundary_publishes_no_link_control();
     dsd_decode_clock_use_system();
     return rc;
 }

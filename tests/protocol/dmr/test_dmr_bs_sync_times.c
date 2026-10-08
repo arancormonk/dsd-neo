@@ -41,6 +41,9 @@ volatile uint8_t exitflag = 0;
 static uint8_t g_dibits[512];
 static int g_bootstrap_payload[90];
 static size_t g_dibit_index = 0;
+/* The read that adopts a retune its capture recorded, where the carrier boundary moves the carrier count
+   (dsd_engine_carrier_boundary(), issue #575); SIZE_MAX for none. */
+static size_t g_boundary_at = SIZE_MAX;
 static int g_continuous_voice;
 static unsigned int g_open_left_calls;
 static unsigned int g_open_right_calls;
@@ -79,6 +82,7 @@ static int g_any_voice_open = 0;
 static void
 reset_spies(void) {
     g_dibit_index = 0;
+    g_boundary_at = SIZE_MAX;
     g_continuous_voice = 0;
     g_open_left_calls = 0;
     g_open_right_calls = 0;
@@ -190,7 +194,9 @@ get_dibit_and_analog_signal(dsd_opts* opts, dsd_state* state, int* out_analog_si
 int
 getDibitSoft(dsd_opts* opts, dsd_state* state, dsd_dibit_soft_t* out_soft) {
     (void)opts;
-    (void)state;
+    if (g_dibit_index == g_boundary_at && state != NULL) {
+        state->carrier_seq++;
+    }
     if (g_continuous_voice) {
         if (out_soft != NULL) {
             DSD_MEMSET(out_soft, 0, sizeof(*out_soft));
@@ -689,6 +695,72 @@ test_bs_bootstrap_prefetched_voice_runs_first_frame_path(void) {
     assert(state.last_vc_sync_time_m > 0.0);
 }
 
+/* Issue #575: the carrier boundary moved the carrier count while a burst was read (a replay read adopting a recorded
+   retune). The burst straddles two carriers, and what it carries from the carrier left (the first AMBE frames, the EMB
+   colour code, the CACH fragment that may complete a short LC) would decode after the boundary ended that carrier's
+   calls: nothing in it decodes, what earlier bursts gathered goes, and the loop ends as on a sync loss, without
+   reporting a decode error. */
+static void
+test_bs_burst_split_by_a_carrier_boundary_is_dropped(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    opts.floating_point = 1;
+    opts.pulse_digi_rate_out = 8000;
+    state.currentslot = 0;
+    state.dmr_color_code = 16;
+    load_voice_burst_stream();
+    g_any_voice_open = 1;
+    g_boundary_at = 100U; /* AMBE frame 2's second half: the EMB and frame 1 were read before it */
+
+    dmrBS(&opts, &state);
+
+    assert(state.carrier_seq == 1U);
+    assert(g_dibit_index == 144U);
+    assert(g_process_mbe_calls == 0U);
+    assert(g_confidence_voice_burst_calls == 0U);
+    assert(g_cach_calls == 0U);
+    assert(g_late_entry_calls == 0U);
+    assert(g_sm_voice_sync_calls == 0U);
+    assert(g_debug_dump_calls == 0U);
+    assert(g_reset_blocks_calls == 1U);
+    assert(g_refresh_error_calls == 0U);
+    assert(g_confidence_reset_calls == 1U);
+    assert(state.dmr_stereo == 0);
+}
+
+/* The same for the burst the frame sync found: its second half is read after the boundary moved. */
+static void
+test_bs_bootstrap_split_by_a_carrier_boundary_is_dropped(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    opts.floating_point = 1;
+    opts.pulse_digi_rate_out = 8000;
+    state.currentslot = 1;
+    state.dmr_color_code = 16;
+    state.dmr_payload_p = g_bootstrap_payload + 90U;
+    load_bootstrap_voice_stream(1);
+    g_any_voice_open = 1;
+    g_boundary_at = 120U;
+
+    dmrBSBootstrap(&opts, &state);
+
+    assert(state.carrier_seq == 1U);
+    assert(g_dibit_index == 144U);
+    assert(g_process_mbe_calls == 0U);
+    assert(g_cach_calls == 0U);
+    assert(g_late_entry_calls == 0U);
+    assert(g_play_fs3_calls == 0U);
+    assert(g_reset_blocks_calls == 1U);
+    assert(g_refresh_error_calls == 0U);
+    assert(g_confidence_reset_calls == 1U);
+}
+
 static int
 yield_after_one_second(const dsd_opts* opts, dsd_state* state) {
     (void)opts;
@@ -734,6 +806,8 @@ main(void) {
     test_bs_confidence_reject_resets_slot_without_voice_decode();
     test_bs_voice_gate_closed_skips_decode_but_keeps_loop_hooks();
     test_bs_bootstrap_prefetched_voice_runs_first_frame_path();
+    test_bs_burst_split_by_a_carrier_boundary_is_dropped();
+    test_bs_bootstrap_split_by_a_carrier_boundary_is_dropped();
     dsd_decode_clock_use_system();
     printf("DMR BS sync times: OK\n");
     return 0;

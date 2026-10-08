@@ -612,6 +612,7 @@ nxdn_frame(dsd_opts* opts, dsd_state* state) {
     int frame_proved = 0;
 
     nxdn_frame_ctx_init(&ctx);
+    const uint32_t carrier_seq = state->carrier_seq;
     nxdn_collect_lich(opts, state, &ctx);
 
     nxdn_prepare_lich_parity(&ctx);
@@ -632,6 +633,17 @@ nxdn_frame(dsd_opts* opts, dsd_state* state) {
         dsd_dibit_soft_t soft = {.reliability = 255};
         ctx.dbuf[i + 8] = (uint8_t)getDibitSoft(opts, state, &soft);
         ctx.dbuf_reliab[i + 8] = soft.reliability;
+    }
+    if (state->carrier_seq != carrier_seq) {
+        /* The carrier boundary moved the carrier count while the frame was read (issue #575). Everything after the
+           LICH decodes only now, so a SACCH segment read whole before the move, possibly the one completing a
+           superframe, would decode after the boundary ended that carrier's calls: the frame is dropped, with the
+           SACCH segments gathered, as on a sync loss. */
+        DSD_MEMSET(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
+        DSD_MEMSET(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
+        nxdn_mark_bad_sync(state);
+        DSD_FPRINTF(stderr, "\n");
+        goto END;
     }
 
     nxdn_descramble_with_seed(ctx.dbuf, 182, state->nxdn_pn95_seed);

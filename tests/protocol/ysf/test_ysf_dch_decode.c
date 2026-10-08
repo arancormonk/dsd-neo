@@ -46,6 +46,9 @@ int __wrap_mbe_processAmbe2450Dataf(float* aout_buf, mbe_process_result* result,
 static uint8_t g_dibit_stream[512];
 static size_t g_dibit_stream_len;
 static size_t g_dibit_stream_pos;
+/* The read that adopts a retune its capture recorded, where the carrier boundary moves the carrier count
+   (dsd_engine_carrier_boundary(), issue #575); SIZE_MAX for none. */
+static size_t g_boundary_at = SIZE_MAX;
 static int g_mbe_call_count;
 static int g_process_mbe_call_count;
 static int g_process_mbe_synctype[5];
@@ -74,8 +77,10 @@ int
 // NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
 __wrap_get_dibit_and_analog_signal(dsd_opts* opts, dsd_state* state, int* out_analog_signal) {
     (void)opts;
-    (void)state;
     (void)out_analog_signal;
+    if (g_dibit_stream_pos == g_boundary_at && state != NULL) {
+        state->carrier_seq++;
+    }
     if (g_dibit_stream_pos >= g_dibit_stream_len) {
         return 0;
     }
@@ -749,6 +754,44 @@ test_process_ysf_vd_type1_routes_ehr_voice_and_dch_state(void) {
     assert(strcmp(call.source_text, "VD1SRC0002") == 0);
 }
 
+/* Issue #575: the carrier boundary moved the carrier count while the V/D type 1 payload was read (a replay read adopting
+   a recorded retune), in its last voice channel. The data channel and the first four voice channels were read whole
+   before the move but decode only after the payload, so they would publish the carrier left's callsigns and play its
+   voice after the boundary ended its call: nothing of the payload decodes, as on a sync loss. */
+static void
+test_process_ysf_vd_type1_split_by_a_carrier_boundary_publishes_nothing(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t fich_bits[48];
+    uint8_t fich_input[100];
+    uint8_t dch[180];
+
+    InitAllFecFunction();
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(g_dibit_stream, 0, sizeof(g_dibit_stream));
+    g_dibit_stream_len = 0;
+    g_dibit_stream_pos = 0;
+    g_process_mbe_call_count = 0;
+
+    make_fich_bits_for_vd_type1(fich_bits);
+    encode_fich_input(fich_bits, 0, 0, fich_input);
+    encode_dch_payload_to_input("VD1DST0001VD1SRC0002", 20U, dch, 176U, 9U, 0);
+    append_dibits_to_stream(fich_input, 100U);
+    append_vd_type1_blocks(dch, 1U);
+    g_boundary_at = 100U + (4U * 72U) + 36U + 10U;
+
+    processYSF(&opts, &state);
+    g_boundary_at = SIZE_MAX;
+
+    assert(state.carrier_seq == 1U);
+    assert(g_dibit_stream_pos == g_dibit_stream_len);
+    assert(g_process_mbe_call_count == 0);
+    const dsd_call_snapshot call = get_test_ysf_call(&state);
+    assert(call.target_text[0] == '\0');
+    assert(call.source_text[0] == '\0');
+}
+
 static void
 test_process_ysf_bad_fich_fallback_reopens_ysf_epoch(void) {
     static dsd_opts opts;
@@ -1089,6 +1132,7 @@ main(void) {
     test_ysf_conv_dch2_decodes_valid_source_and_rejects_crc_error();
     test_process_ysf_full_rate_data_routes_fich_and_dch_state();
     test_process_ysf_vd_type1_routes_ehr_voice_and_dch_state();
+    test_process_ysf_vd_type1_split_by_a_carrier_boundary_publishes_nothing();
     test_process_ysf_bad_fich_fallback_reopens_ysf_epoch();
     test_process_ysf_fich_verdict_is_sticky_per_transmission();
     test_process_ysf_vd_type2_routes_dch2_voice_and_audio_errors();

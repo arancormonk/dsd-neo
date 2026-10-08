@@ -406,8 +406,17 @@ processHDU(dsd_opts* opts, dsd_state* state) {
     // so we start counter at 36-14-1 = 21
     status_count = 21;
 
+    const uint32_t carrier_seq = state->carrier_seq;
     irrecoverable_errors =
         hdu_read_and_fec(opts, state, hex_data, hex_parity, soft_dibits, &status_count, &soft_dibit_index);
+    hdu_consume_trailing_dibits_and_status(opts, state);
+    if (state->carrier_seq != carrier_seq) {
+        /* The carrier boundary moved the carrier count while the HDU was read (issue #575). Its words decode before the
+           trailing symbols but publish only after them, so a header read whole before the move would label the carrier
+           left's call after the boundary ended it: nothing of it is published, as on a sync loss. */
+        p25_status_accum_classify(state);
+        return;
+    }
 
     // Now put the corrected data on the DSD structures
 
@@ -415,7 +424,6 @@ processHDU(dsd_opts* opts, dsd_state* state) {
 
     uint32_t kid_parsed = 0;
     state->p25kid = (dsd_parse_binary_u32_n(kid, 16, &kid_parsed) == 0) ? (int)kid_parsed : 0;
-    hdu_consume_trailing_dibits_and_status(opts, state);
 
     uint32_t algid_parsed = 0;
     algidhex = (dsd_parse_binary_u32_n(algid, 8, &algid_parsed) == 0) ? (int)algid_parsed : 0;

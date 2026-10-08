@@ -2560,14 +2560,21 @@ edacs(dsd_opts* opts, dsd_state* state) {
     (void)dsd_format_local_datetime(dsd_decode_time(), DSD_LOCAL_DATETIME_DATE_COMPACT, datestr, sizeof datestr);
 
     int edacs_bit[241] = {0}; //zero out bit array and collect bits into it.
+    const uint32_t carrier_seq = state->carrier_seq;
     edacs_collect_bits(opts, state, edacs_bit);
+    unsigned long long int msg_1_ec = 0;
+    unsigned long long int msg_2_ec = 0;
+    if (state->carrier_seq != carrier_seq) {
+        /* The carrier boundary moved the carrier count while the frame was read (issue #575). The vote can take two
+           copies of each message read before the move, so the carrier left's message would decode and act after the
+           boundary: the frame is dropped, as on a sync loss, with no verdict. */
+        goto EDACS_END;
+    }
 
     /* Vote and check before the tuned early-out below. The 240 dibits are already read, so
      * the vote and two BCH re-derivations cost nothing next to them, and their answer is
      * this frame's verdict whether or not the call goes on to act on the message. Deciding
      * not to decode must not read as the check having failed (#391). */
-    unsigned long long int msg_1_ec = 0;
-    unsigned long long int msg_2_ec = 0;
     decoded = edacs_frame_bch_verdict(edacs_bit, &msg_1_ec, &msg_2_ec);
 
     // If we have executed a tune to a channel, then we will forego decoding any more edacs until we return from the voice channel

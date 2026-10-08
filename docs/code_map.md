@@ -3235,11 +3235,13 @@ Notes:
       `dsd_engine_leave_replay_carrier()` for it. With trunking off it is another conventional carrier, and it runs the
       carrier boundary an accepted live retune runs (`dsd_engine_carrier_boundary()`, see Protocols, "Call frequency and
       access-code provenance"): the outgoing calls end and commit as a hop, the codes and the untrunked state go, and
-      `carrier_seq` moves; a call decoded after the adoption takes the new centre and code, and no later pass ends it. With trunking on it is the system following itself, and under trunk scan a target switch
-      with its own snapshots: nothing changes. It runs inside a sample read on the decoder thread, where no call-state
-      lock is held: that lock is taken only inside `call_state.c` and the event layer, which never read samples, and
-      `dsd_call_state_end_ex()` and `dsd_event_sync_slot()` take and release it themselves, as a protocol publishing a
-      call mid-frame does. The P25 SM tick guard the frame may hold is not taken. A stop of the stream clears the centre
+      `carrier_seq` moves, so the frame the retune landed in is dropped by the decoder reading it; a call decoded after
+      the adoption takes the new centre and code, and no later pass ends it. With trunking on it is the system
+      following itself, and under trunk scan a target switch with its own snapshots: nothing changes. It runs inside a
+      sample read on the decoder thread, where no call-state lock is held: that lock is taken only inside
+      `call_state.c` and the event layer, which never read samples, and `dsd_call_state_end_ex()` and
+      `dsd_event_sync_slot()` take and release it themselves, as a protocol publishing a call mid-frame does. The P25
+      SM tick guard the frame may hold is not taken. A stop of the stream clears the centre
       (`dsd_opts_forget_iq_replay_center()`). Test: `ENGINE_INPUT_BOUNDARY` (a retune adopted inside a frame); the one
       `iq-decode` fixture with a conventional recorded retune (`nxdn48_after_retune`, `-fi` and `-fa`) decodes byte for
       byte as before.
@@ -3408,12 +3410,39 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   3. `dsd_engine_forget_carrier_codes()` forgets the codes: the DMR colour code with its confidence lock, the RAN with
      its stand-in mark, the dPMR colour code, the Phase 1 NAC, and the seed's proof (never `p2_cc`). The NAC goes
      because a NID whose BCH-decoded NAC is the reserved 000 or FFF leaves `state->nac` as it was
-     (`p25p1_apply_nac_update()`) while the frame still dispatches; `noCarrier()` resets it too.
+     (`p25p1_apply_nac_update()`) while the frame still dispatches; `noCarrier()` resets it too. With them goes the
+     evidence that vouched for the carrier's transmissions (`carrier_boundary_forget_evidence()`): the NXDN, dPMR (with
+     its CCH evidence), D-STAR, M17 and ProVoice confirmation gates restart, the YSF FICH verdict and the Phase 1 NID's
+     evidence go, as the no-carrier pass restarts them, so the next carrier proves itself again.
   4. With trunking off, `dsd_engine_forget_untrunked_carrier_state()` forgets what the carrier left beyond its codes:
      what the trunking-off no-carrier pass forgets (`no_carrier_reset_non_trunk_fields_if_needed()`: the P25 voice
      frequencies a grant update wrote, which `p25_sm_conventional_frequency()` gives a call over the tuner's, the DMR
      rest channel and branding, the NXDN site and channel plan) and the DMR grants' `trunk_vc_freq[]`.
   5. `state->carrier_seq` moves, so a decoder that buffered the left carrier's bursts drops them (see below).
+
+  The carrier count guards every decoder that reads more of the air after a unit is whole and before it decodes or
+  publishes that unit: a replay read that adopts a recorded retune runs the boundary inside such a read, and the unit
+  read whole before it would decode after the boundary ended its calls. Each notes `carrier_seq` where it starts reading
+  and, if it moved before the decode, drops what it collected, as on a sync loss, without reporting a decode error. A
+  unit whose own symbols straddle the move is mixed, and its FEC or CRC decides, as for any noise. Guarded:
+  - P25 Phase 2 `processP2()`: the four-burst buffer (`p2_dibit_buffer()`); a boundary between buffers drops the slots'
+    ESS fragments, partial voice superframe and staged rekey (`p25p2_forget_carrier_left()`).
+  - P25 Phase 1: `processLDU1()` (link control, read by the seventh voice frame), `processLDU2()` (encryption sync),
+    `processHDU()` and `processTDULC()` (decoded before their trailing symbols, published after), `processMPDU()` (the
+    header, read before its data blocks).
+  - DMR: the BS burst loop (`process_dmr_bs_iteration()`; the loop ends and `dmr_reset_blocks()` drops the data blocks
+    and CACH fragments a short LC gathers) and its bootstrap, the BS data burst's live half (`dmr_data_sync()`), the MS
+    voice superframe (`dmrMS()`, whose sixth burst assembles the embedded LC), its bootstrap, and `dmrMSData()`.
+  - NXDN `nxdn_frame()` (everything after the LICH decodes after the 174-dibit read; the SACCH segments go too).
+  - dPMR `processdPMRvoice()` (two frames), D-STAR `processDSTAR()` (slow data decoded after the twenty-first voice
+    frame), X2-TDMA `processX2TDMAvoice()` (the six-slot signalling published as the call's encryption), YSF
+    `processYSF()` (the V/D type 1 voice and data channels, the full-rate data channels), and the EDACS control frame
+    `edacs()` (two of three voted copies can be read before the move).
+
+  Not guarded, each because no unit is whole before its frame's last read: the P25 Phase 1 TSBK (each block decodes as
+  read), M17 (each frame is interleaved over its whole length and decodes as read; the LSF and a packet complete in the
+  frame that straddles), ProVoice (the two IMBE frames of a pair are interleaved together), the X2-TDMA data burst (read
+  from the frame sync's buffer), the D-STAR header (decoded as soon as read) and EDACS analog voice.
 
   It runs at the lowest-level primitives where the carrier changes, so a new command that reaches one is covered:
   - An accepted tune the user asked for: `svc_rtl_set_freq()`/`svc_rtl_set_freq_locked()` (`svc_rtl_tune()`) run it
@@ -3461,7 +3490,10 @@ Tests: `DMR_FLCO_PRIVACY_MODES`, `DMR_MS_DATA`, `NXDN_ELEMENT_BOUNDS`, `NXDN_DEP
 `CORE_ACCESS_CODE`, `UI_NCURSES_PRINTER_HELPERS`, `UI_QT_METRICS_MODEL`, `APP_COMMAND_QUEUE`, `APP_P25_CC_SELECTION`,
 `APP_CONTROL_RR_APPLY`, `RUNTIME_CONFIG_APPLY`, `UI_MENU_AIRSPY_CONFIG_FAILURE`, `UI_MENU_AIRSPY_CONFIG_TUNING`,
 `P25_P2_VPDU_GRANTS`, `P25_P2_XCCH_HELPERS`, `P25_P2_RELIABILITY`, `ENGINE_CHANNEL_SCAN`, `ENGINE_INPUT_BOUNDARY`,
-`UI_MENU_SERVICES`.
+`UI_MENU_SERVICES`; the decoders' carrier-count guards: `P25_P2_RELIABILITY`, `P25_P1_LDU1_HELPERS`,
+`P25_P1_LDU2_HELPERS`, `P25_P1_HDU_HELPERS`, `P25_P1_TDULC`, `P25_P1_MDPU_HELPERS`, `DMR_BS_SYNC_TIMES`,
+`DMR_DATA_SYNC`, `DMR_MS_DATA`, `NXDN_FRAME_ROUTING`, `DPMR_VOICE_BRIDGE`, `DSTAR_PROCESS`, `X2TDMA_VOICE_HELPERS`,
+`YSF_DCH_DECODE`, `EDACS_FRAME_VERDICT`.
 
 Key public headers (selection):
 

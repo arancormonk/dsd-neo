@@ -37,6 +37,9 @@ static int g_mbe_cipher[8];
 static int g_mbe_enc[8];
 static unsigned long long g_mbe_mi[8];
 static int g_dibit_calls;
+/* The read that adopts a retune its capture recorded, where the carrier boundary moves the carrier count
+   (dsd_engine_carrier_boundary(), issue #575); -1 for none. */
+static int g_boundary_at = -1;
 
 static void
 reset_capture(void) {
@@ -48,13 +51,16 @@ reset_capture(void) {
     DSD_MEMSET(g_mbe_enc, 0, sizeof(g_mbe_enc));
     DSD_MEMSET(g_mbe_mi, 0, sizeof(g_mbe_mi));
     g_dibit_calls = 0;
+    g_boundary_at = -1;
 }
 
 int
 get_dibit_and_analog_signal(dsd_opts* opts, dsd_state* state, int* out_analog_signal) {
     (void)opts;
-    (void)state;
     (void)out_analog_signal;
+    if (g_dibit_calls == g_boundary_at && state != NULL) {
+        state->carrier_seq++;
+    }
     g_dibit_calls++;
     return 0;
 }
@@ -531,6 +537,38 @@ test_process_dpmr_voice_zero_stream_updates_cch_and_dispatches_voice(void) {
     return rc;
 }
 
+/* Issue #575: the carrier boundary moved the carrier count while the two frames were read (a replay read adopting a
+   recorded retune). Nothing decodes before both are in, so the first frame's CCH and the channel code, read whole before
+   the move, would publish the carrier left's call and colour code after the boundary ended that call and forgot the
+   code: the pair is dropped, as on a sync loss. */
+static int
+test_process_dpmr_voice_split_by_a_carrier_boundary_publishes_nothing(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.synctype = DSD_SYNC_DPMR_FS1_POS;
+    state.dpmr_color_code = -1;
+    state.dPMRVoiceFS2Frame.ColorCode[0] = (unsigned int)(-1);
+    reset_capture();
+    g_boundary_at = 300;
+
+    const int verdict = processdPMRvoice(&opts, &state);
+
+    dsd_call_snapshot call;
+    rc |= expect_int("split-moved-carrier-count", (int)state.carrier_seq, 1);
+    rc |= expect_int("split-dibit-count", g_dibit_calls, 372);
+    rc |= expect_int("split-verdict", verdict, 0);
+    rc |= expect_int("split-mbe-calls", (int)g_mbe_calls, 0);
+    rc |= expect_int("split-no-call", dsd_call_state_get(&state, 0U, &call) > 0, 0);
+    rc |= expect_int("split-no-crc", (int)state.dPMRVoiceFS2Frame.CCHDataCrcOk[0], 0);
+    rc |= expect_int("split-no-confirmation", state.dpmr_confirmed, 0);
+    rc |= expect_int("split-no-color-code", state.dpmr_color_code, -1);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -546,6 +584,7 @@ main(void) {
     rc |= test_unconfirmed_frame_with_retained_caller_publishes_no_color_code();
     rc |= test_id_print_side_effects_suppress_invalid_ids();
     rc |= test_process_dpmr_voice_zero_stream_updates_cch_and_dispatches_voice();
+    rc |= test_process_dpmr_voice_split_by_a_carrier_boundary_publishes_nothing();
 
     if (rc == 0) {
         printf("DPMR_VOICE_BRIDGE: OK\n");

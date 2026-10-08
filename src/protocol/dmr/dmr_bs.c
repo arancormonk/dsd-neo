@@ -828,11 +828,21 @@ process_dmr_bs_bootstrap_voice_if_open(dsd_opts* opts, dsd_state* state, dmr_bs_
     }
 }
 
+/* The carrier boundary moved state->carrier_seq while a burst was read (issue #575): the burst straddles two carriers,
+   and what it carries from the carrier left (the first AMBE frames, the EMB colour code, a CACH fragment that may
+   complete a short LC, the embedded LC the sixth burst assembles) would decode after the boundary ended that carrier's
+   calls. Nothing in it decodes; what earlier bursts gathered (data blocks, CACH fragments) goes, as on a sync loss. */
+static void
+drop_dmr_bs_carrier_left(dsd_opts* opts, dsd_state* state) {
+    dmr_reset_blocks(opts, state);
+}
+
 static dmr_bs_action DSD_ATTR_USED
 process_dmr_bs_iteration(dsd_opts* opts, dsd_state* state, dmr_bs_ctx* ctx) {
     (void)dsd_format_local_datetime(dsd_decode_time(), DSD_LOCAL_DATETIME_TIME_COLON, ctx->timestr,
                                     sizeof ctx->timestr);
     reset_dmr_bs_loop_buffers(ctx);
+    const uint32_t carrier_seq = state->carrier_seq;
 
     if (!collect_dmr_bs_cach_and_tact(opts, state, ctx)) {
         return DMR_BS_ACTION_END;
@@ -849,6 +859,13 @@ process_dmr_bs_iteration(dsd_opts* opts, dsd_state* state, dmr_bs_ctx* ctx) {
     build_dmr_bs_emb_pdu(ctx);
     read_dmr_bs_ambe_segment_stream(opts, state, ctx->ambe_fr2, 90, 18, 18, NULL);
     read_dmr_bs_ambe_segment_stream(opts, state, ctx->ambe_fr3, 108, 36, 0, NULL);
+    if (state->carrier_seq != carrier_seq) {
+        drop_dmr_bs_carrier_left(opts, state);
+        /* A carrier left is not a CACH/EMB decode failure. */
+        ctx->tact_okay = 1;
+        ctx->emb_ok = 1;
+        return DMR_BS_ACTION_END;
+    }
 
     note_dmr_bs_voice_sync(state, ctx);
 
@@ -933,8 +950,15 @@ dmrBSBootstrap(dsd_opts* opts, dsd_state* state) {
 
     dmr_sm_emit_voice_sync(opts, state, ctx.internalslot);
 
+    const uint32_t carrier_seq = state->carrier_seq;
     read_dmr_bs_ambe_segment_stream(opts, state, ctx.ambe_fr2, 90, 18, 18, NULL);
     read_dmr_bs_ambe_segment_stream(opts, state, ctx.ambe_fr3, 108, 36, 0, NULL);
+    if (state->carrier_seq != carrier_seq) {
+        /* The burst's second half came after the carrier boundary (issue #575): the burst is dropped, as in the loop. */
+        drop_dmr_bs_carrier_left(opts, state);
+        dmr_confidence_reset(state);
+        return;
+    }
 
     if (opts->use_dsp_output == 1) {
         write_dmr_bs_dsp_output(opts, state, ctx.internalslot);

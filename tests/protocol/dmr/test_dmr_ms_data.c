@@ -60,6 +60,9 @@ static int g_sbrc_calls;
 static int g_voice_sync_calls;
 static int g_sm_tick_calls;
 static int g_qr_ok = 1;
+/* The read that adopts a retune its capture recorded, where the carrier boundary moves the carrier count
+   (dsd_engine_carrier_boundary(), issue #575); SIZE_MAX for none. A skip over it counts too. */
+static size_t g_boundary_at = SIZE_MAX;
 
 static void
 reset_fixture(void) {
@@ -90,6 +93,7 @@ reset_fixture(void) {
     g_voice_sync_calls = 0;
     g_sm_tick_calls = 0;
     g_qr_ok = 1;
+    g_boundary_at = SIZE_MAX;
     DSD_MEMSET(g_stream, 0, sizeof(g_stream));
     DSD_MEMSET(g_data_sync_payload, 0, sizeof(g_data_sync_payload));
     DSD_MEMSET(g_data_sync_reliability, 0, sizeof(g_data_sync_reliability));
@@ -100,8 +104,10 @@ int
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 get_dibit_and_analog_signal(dsd_opts* opts, dsd_state* state, int* out_analog_signal) {
     (void)opts;
-    (void)state;
     (void)out_analog_signal;
+    if (g_stream_index == g_boundary_at && state != NULL) {
+        state->carrier_seq++;
+    }
     assert(g_stream_index < (sizeof(g_stream) / sizeof(g_stream[0])));
     return g_stream[g_stream_index++] & 3;
 }
@@ -123,7 +129,9 @@ void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 skipDibit(dsd_opts* opts, dsd_state* state, int count) {
     (void)opts;
-    (void)state;
+    if (g_boundary_at >= g_stream_index && g_boundary_at < g_stream_index + (size_t)count && state != NULL) {
+        state->carrier_seq++;
+    }
     g_skip_calls++;
     g_skip_total += count;
     g_stream_index += (size_t)count;
@@ -594,6 +602,87 @@ test_ms_colour_code_stays_unknown_until_the_embedded_code_decodes(void) {
     assert(state.color_code == 11);
 }
 
+/* Issue #575: the carrier boundary moved the carrier count (a replay read adopting a recorded retune) while a voice
+   superframe was collected. The sixth burst assembles the embedded LC from the four before it, which belong to the
+   carrier left whether the boundary came inside the sixth burst's read or in the other slot's burst skipped before it:
+   decoding it would publish the old call after the boundary ended it. The burst read across or after the move is
+   dropped with the rest of the superframe, as on a sync loss. */
+static void
+test_ms_voice_superframe_split_by_a_carrier_boundary_is_dropped(void) {
+    static const size_t boundaries[2] = {1152U + 100U, 1100U}; /* inside the sixth burst; inside the skip before it */
+    for (size_t b = 0; b < 2U; b++) {
+        static dsd_opts opts;
+        static dsd_state state;
+        reset_fixture();
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        load_voice_stream();
+        opts.floating_point = 1;
+        opts.pulse_digi_out_channels = 1;
+        g_boundary_at = boundaries[b];
+
+        dmrMS(&opts, &state);
+
+        assert(state.carrier_seq == 1U);
+        assert(g_data_burst_calls == 0);
+        assert(g_sbrc_calls == 0);
+        assert(g_process_mbe_calls == 12);
+        assert(g_late_entry_calls == 4);
+        assert(state.dmr_stereo == 0);
+        assert(state.dmr_ms_mode == 0);
+    }
+}
+
+/* The burst the frame sync found: its live second half comes after the move, so nothing in it decodes and the voice
+   cycle does not start on it. */
+static void
+test_ms_bootstrap_split_by_a_carrier_boundary_is_dropped(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static int payload[90];
+    reset_fixture();
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    prepare_state(&state, payload);
+    load_voice_stream();
+    opts.floating_point = 0;
+    opts.pulse_digi_out_channels = 1;
+    g_boundary_at = 30U;
+
+    dmrMSBootstrap(&opts, &state);
+
+    assert(state.carrier_seq == 1U);
+    assert(g_process_mbe_calls == 0);
+    assert(g_play_ss3_calls == 0);
+    assert(g_late_entry_calls == 0);
+    assert(g_skip_calls == 0);
+    assert(g_stream_index == 54U);
+    assert(state.dmr_stereo == 0);
+    assert(state.dmr_ms_mode == 0);
+}
+
+/* A data burst whose live half came after the move: its slot type, read whole before the move once the boundary falls in
+   the second half's payload, would publish the carrier left's colour code after the boundary forgot it. */
+static void
+test_ms_data_split_by_a_carrier_boundary_is_dropped(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static int payload[90];
+    reset_fixture();
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    prepare_state(&state, payload);
+    load_live_half();
+    g_boundary_at = 20U;
+
+    dmrMSData(&opts, &state);
+
+    assert(state.carrier_seq == 1U);
+    assert(g_data_sync_calls == 0);
+    assert(g_stream_index == 264U);
+    assert(state.dmr_stereo == 0);
+    assert(state.dmr_ms_mode == 0);
+    assert(state.directmode == 0);
+}
+
 int
 main(void) {
     test_ms_data_collects_payload_and_cleans_state();
@@ -603,6 +692,9 @@ main(void) {
     test_ms_bootstrap_uses_cached_payload_then_enters_voice_cycle();
     test_ms_bootstrap_plays_short_on_one_channel();
     test_ms_colour_code_stays_unknown_until_the_embedded_code_decodes();
+    test_ms_voice_superframe_split_by_a_carrier_boundary_is_dropped();
+    test_ms_bootstrap_split_by_a_carrier_boundary_is_dropped();
+    test_ms_data_split_by_a_carrier_boundary_is_dropped();
     DSD_FPRINTF(stdout, "DMR_MS_DATA: OK\n");
     return 0;
 }

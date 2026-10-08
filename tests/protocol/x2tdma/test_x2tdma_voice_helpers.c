@@ -21,14 +21,17 @@
 #include "dsd-neo/core/state_fwd.h"
 #include "x2tdma_frame.h"
 
-static int g_get_queue[512];
+static int g_get_queue[2048];
 static int g_get_len;
 static int g_get_pos;
 static int g_skip_calls;
 static int g_skip_total;
 static int g_mbe_calls;
-static int g_mbe_first_bit[8];
+static int g_mbe_first_bit[32];
 static int g_play_calls[4];
+/* The read that adopts a retune its capture recorded, where the carrier boundary moves the carrier count
+   (dsd_engine_carrier_boundary(), issue #575); -1 for none. */
+static int g_boundary_at = -1;
 
 static void
 reset_stubs(void) {
@@ -40,6 +43,7 @@ reset_stubs(void) {
     g_skip_calls = 0;
     g_skip_total = 0;
     g_mbe_calls = 0;
+    g_boundary_at = -1;
 }
 
 static int
@@ -71,8 +75,10 @@ append_sync(const char sync[25], int inverted) {
 int
 get_dibit_and_analog_signal(dsd_opts* opts, dsd_state* state, int* out_analog_signal) {
     (void)opts;
-    (void)state;
     (void)out_analog_signal;
+    if (g_get_pos == g_boundary_at && state != NULL) {
+        state->carrier_seq++;
+    }
     assert(g_get_pos < g_get_len);
     return g_get_queue[g_get_pos++];
 }
@@ -346,12 +352,65 @@ test_slot_iteration_voice_and_data_state(void) {
     assert(g_skip_total == 54);
 }
 
+/* A whole voice superframe: six slots on slot 0's voice sync, the first from the frame sync's buffer. */
+static void
+prepare_voice_superframe(int dibits[144]) {
+    DSD_MEMSET(dibits, 0, sizeof(int) * 144U);
+    set_slot_sync(dibits, X2TDMA_BS_VOICE_SYNC, 0);
+    prepare_stream_after_slot(X2TDMA_BS_VOICE_SYNC, 0);
+    for (int j = 1; j < 6; j++) {
+        append_zeros(54 + 12 + 36 + 18);
+        append_sync(X2TDMA_BS_VOICE_SYNC, 0);
+        prepare_stream_after_slot(X2TDMA_BS_VOICE_SYNC, 0);
+    }
+}
+
+/* Issue #575: the carrier boundary moved the carrier count while the superframe was read (a replay read adopting a
+   recorded retune). The call's encryption, assembled from the slots' signalling, is published only after the sixth slot,
+   so signalling read whole before the move would label the carrier left's call after the boundary ended it; the slot
+   read across the move would decode AMBE frames read before it. From that slot on, nothing decodes or publishes, as on
+   a sync loss. */
+static void
+test_voice_superframe_split_by_a_carrier_boundary_publishes_nothing(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static int dibits[144];
+    dsd_call_snapshot call;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.floating_point = 0;
+    opts.pulse_digi_out_channels = 2;
+    state.synctype = DSD_SYNC_X2TDMA_VOICE_POS;
+    reset_stubs();
+    prepare_voice_superframe(dibits);
+    state.dibit_buf_p = dibits + 144;
+    processX2TDMAvoice(&opts, &state);
+    assert(g_mbe_calls == 18);
+    assert(dsd_call_state_get(&state, 0, &call) > 0);
+    assert(call.crypto != DSD_CALL_CRYPTO_UNKNOWN);
+
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.synctype = DSD_SYNC_X2TDMA_VOICE_POS;
+    reset_stubs();
+    prepare_voice_superframe(dibits);
+    state.dibit_buf_p = dibits + 144;
+    /* Inside the sixth slot's second AMBE half: its first frame and its signalling were read before the move. */
+    g_boundary_at = 90 + (4 * 234) + 144 + 10;
+    processX2TDMAvoice(&opts, &state);
+    assert(state.carrier_seq == 1U);
+    assert(g_mbe_calls == 15);
+    assert(dsd_call_state_get(&state, 0, &call) > 0);
+    assert(call.crypto == DSD_CALL_CRYPTO_UNKNOWN);
+}
+
 int
 main(void) {
     test_slot_light_and_mute_helpers();
     test_signaling_extracts_lc_mi_and_encryption_fields();
     test_voice_frame_dispatch_gates_first_frame_and_mute();
     test_slot_iteration_voice_and_data_state();
+    test_voice_superframe_split_by_a_carrier_boundary_publishes_nothing();
     printf("X2TDMA_VOICE_HELPERS: OK\n");
     return 0;
 }

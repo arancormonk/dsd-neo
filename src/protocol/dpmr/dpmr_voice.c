@@ -447,6 +447,7 @@ processdPMRvoice(dsd_opts* opts, dsd_state* state) {
     DSD_MEMSET(ctx.CCHDataHammingCorrected, 1, sizeof(ctx.CCHDataHammingCorrected));
     DSD_MEMSET(ctx.CCHDataCRC, 1, sizeof(ctx.CCHDataCRC));
 
+    const uint32_t carrier_seq = state->carrier_seq;
     dpmr_read_first_cch(opts, state, &ctx);
     dpmr_read_tch_group(opts, state, &ctx, 0);
 
@@ -454,6 +455,14 @@ processdPMRvoice(dsd_opts* opts, dsd_state* state) {
     dpmr_read_second_cch(opts, state, &ctx);
 
     dpmr_read_tch_group(opts, state, &ctx, 4);
+    if (state->carrier_seq != carrier_seq) {
+        /* The carrier boundary moved the carrier count while the two frames were read (issue #575). Nothing decodes
+           before both are in, so the first frame's CCH and the channel code, read whole before the move, would publish
+           the carrier left's call and colour code after the boundary ended that call and forgot the code: the pair is
+           dropped, as on a sync loss, with no CRC to report. */
+        DSD_FPRINTF(stderr, "\n");
+        return 0;
+    }
 
     /* Evidence is noted before anything is published, so the frame that completes a weak
      * streak still publishes itself rather than waiting for the next one. */

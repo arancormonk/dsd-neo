@@ -40,6 +40,9 @@ static int g_last_voice;
 static uint8_t g_dibit_stream[182];
 static uint8_t g_dibit_reliab_stream[182];
 static size_t g_dibit_stream_pos;
+/* The read that adopts a retune its capture recorded, where the carrier boundary moves the carrier count
+   (dsd_engine_carrier_boundary(), issue #575); SIZE_MAX for none. */
+static size_t g_boundary_at = SIZE_MAX;
 static uint8_t g_last_sacch_bit;
 static uint8_t g_last_sacch_reliab;
 static uint8_t g_last_facch_bit;
@@ -118,6 +121,7 @@ reset_state(void) {
     DSD_MEMSET(g_dibit_stream, 0, sizeof(g_dibit_stream));
     DSD_MEMSET(g_dibit_reliab_stream, 255, sizeof(g_dibit_reliab_stream));
     g_dibit_stream_pos = 0U;
+    g_boundary_at = SIZE_MAX;
     g_last_sacch_bit = 0;
     g_last_sacch_reliab = 0;
     g_last_facch_bit = 0;
@@ -146,7 +150,9 @@ nxdn_descramble_with_seed(uint8_t dibits[], int len, uint16_t seed) {
 int
 getDibitSoft(dsd_opts* opts, dsd_state* state, dsd_dibit_soft_t* out_soft) {
     (void)opts;
-    (void)state;
+    if (g_dibit_stream_pos == g_boundary_at && state != NULL) {
+        state->carrier_seq++;
+    }
     uint8_t dibit = 0U;
     uint8_t reliab = 255U;
     if (g_dibit_stream_pos < (sizeof(g_dibit_stream) / sizeof(g_dibit_stream[0]))) {
@@ -600,6 +606,46 @@ test_short_crc_confirms_only_when_repeated(void) {
     return rc;
 }
 
+/* Issue #575: the carrier boundary moved the carrier count while the frame was read (a replay read adopting a recorded
+   retune). Everything after the LICH decodes only once all 174 dibits are in, so a SACCH segment read whole before the
+   move, possibly the one completing a superframe, would decode after the boundary ended that carrier's calls: the frame
+   is dropped, with the SACCH segments gathered, as on a sync loss. */
+static int
+test_frame_split_by_a_carrier_boundary_is_dropped(void) {
+    int rc = 0;
+
+    reset_state();
+    g_state.nxdn_sacch_frame_segment[0][0] = 0;
+    g_state.nxdn_sacch_frame_segcrc[0] = 0;
+    prepare_frame_stream(0x32U, 0);
+    g_boundary_at = 150U; /* past the SACCH and the first FACCH1 */
+    nxdn_frame(&g_opts, &g_state);
+    rc |= expect_int("split frame moved the carrier count", (int)g_state.carrier_seq, 1);
+    rc |= expect_int("split frame read whole", (int)g_dibit_stream_pos, 182);
+    rc |= expect_int("split frame decodes no SACCH", g_sacch_calls, 0);
+    rc |= expect_int("split frame decodes no FACCH1", g_facch_calls, 0);
+    rc |= expect_int("split frame plays no voice", g_voice_calls, 0);
+    rc |= expect_int("split frame drops the SACCH segments", g_state.nxdn_sacch_frame_segment[0][0], 1);
+    rc |= expect_int("split frame drops the SACCH segment CRCs", g_state.nxdn_sacch_frame_segcrc[0], 1);
+    rc |= expect_int("split frame leaves no carrier", g_state.carrier, 0);
+
+    /* The move inside the LICH read: the frame is dropped the same way. */
+    reset_state();
+    prepare_frame_stream(0x32U, 0);
+    g_boundary_at = 4U;
+    nxdn_frame(&g_opts, &g_state);
+    rc |= expect_int("LICH split frame decodes no SACCH", g_sacch_calls, 0);
+    rc |= expect_int("LICH split frame plays no voice", g_voice_calls, 0);
+
+    /* No move: the same frame decodes. */
+    reset_state();
+    prepare_frame_stream(0x32U, 0);
+    nxdn_frame(&g_opts, &g_state);
+    rc |= expect_int("whole frame decodes its SACCH", g_sacch_calls, 1);
+    rc |= expect_int("whole frame plays its voice", g_voice_calls, 1);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -612,6 +658,7 @@ main(void) {
     rc |= test_lfsr_and_scanner_state();
     rc |= test_unconfirmed_frame_is_inert();
     rc |= test_short_crc_confirms_only_when_repeated();
+    rc |= test_frame_split_by_a_carrier_boundary_is_dropped();
     dsd_decode_clock_use_system();
 
     if (rc == 0) {

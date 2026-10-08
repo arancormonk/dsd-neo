@@ -35,6 +35,11 @@ processDSTAR(dsd_opts* opts, dsd_state* state) {
     dstar_confirm_begin_frame(state);
     dstar_confirm_note_evidence(state, DSTAR_EVIDENCE_WEAK);
 
+    /* The superframe belongs to one carrier (issue #575): its slow data decodes only after the last voice frame, so a
+       header, text or position message read whole before the carrier boundary moved the carrier count (a replay read
+       adopting a recorded retune) would publish the carrier left's station after the boundary ended its call. From the
+       voice frame read across or after the move, the superframe is dropped, slow data and all, as on a sync loss. */
+    const uint32_t carrier_seq = state->carrier_seq;
     //20 voice and 19 slow data frames (20th is frame sync)
     for (j = 0; j < 21; j++) {
 
@@ -49,6 +54,9 @@ processDSTAR(dsd_opts* opts, dsd_state* state) {
             ambe_fr[*w][*x].reliability = dsd_two_level_symbol_reliability(opts, state, symbol);
             w++;
             x++;
+        }
+        if (state->carrier_seq != carrier_seq) {
+            break;
         }
 
         processMbeFrameSoft(opts, state, NULL, ambe_fr, NULL);

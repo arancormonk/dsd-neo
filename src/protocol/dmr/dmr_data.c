@@ -322,6 +322,7 @@ dmr_data_sync(dsd_opts* opts, dsd_state* state) {
     dmr_data_sync_init_ctx(&ctx, opts, state);
     char debug_line[192];
     debug_line[0] = '\0';
+    const uint32_t carrier_seq = state->carrier_seq;
 
     if (dmr_data_collect_cach(&ctx)) {
         dmr_data_collect_first_half(&ctx);
@@ -329,10 +330,18 @@ dmr_data_sync(dsd_opts* opts, dsd_state* state) {
         dmr_data_collect_sync(&ctx);
         if (dmr_data_collect_slot_type_suffix(&ctx)) {
             dmr_data_collect_second_half(&ctx);
-            if (opts->dmr_debug_burst != 0) {
-                (void)dmr_debug_format_burst(debug_line, sizeof(debug_line), state, state->currentslot, ctx.burst);
+            if (state->carrier_seq != carrier_seq) {
+                /* The carrier boundary moved while the burst's live half was read (issue #575): the CACH read before
+                   it may complete a short LC of the carrier left, which would decode after the boundary ended that
+                   carrier's calls. Nothing in the burst dispatches, and what earlier bursts gathered goes, as on a
+                   sync loss; a carrier left is not a burst FEC error. */
+                dmr_reset_blocks(opts, state);
+            } else {
+                if (opts->dmr_debug_burst != 0) {
+                    (void)dmr_debug_format_burst(debug_line, sizeof(debug_line), state, state->currentslot, ctx.burst);
+                }
+                dmr_data_dispatch_burst(&ctx);
             }
-            dmr_data_dispatch_burst(&ctx);
         }
     }
 
