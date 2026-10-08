@@ -1511,7 +1511,7 @@ test_sdrtrunk_json_voice_wav_is_pcm16_scale(void) {
     mbe_parms cur, prev, prev_enhanced;
     mbe_initMbeParms(&cur, &prev, &prev_enhanced);
     int peak = 0;
-    for (int frame = 0; frame < 2; frame++) {
+    for (size_t frame = 0; frame < 2U; frame++) {
         char ambe_d[49] = {0};
         float audio[160] = {0};
         mbe_process_result result;
@@ -1519,7 +1519,7 @@ test_sdrtrunk_json_voice_wav_is_pcm16_scale(void) {
                          mbe_decodeAmbe3600x2450Frame((const char (*)[24])ambe_fr, ambe_d, &result), 0);
         rc |= expect_true("sdrtrunk pcm16 reference synthesis",
                           mbe_processAmbe2450Dataf(audio, &result, ambe_d, &cur, &prev, &prev_enhanced) >= 0);
-        mbe_floattoshort(audio, want + (frame * 160));
+        mbe_floattoshort(audio, want + (frame * 160U));
     }
     for (int i = 0; i < 320; i++) {
         const int magnitude = want[i] < 0 ? -want[i] : want[i];
