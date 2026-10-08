@@ -165,17 +165,22 @@ Item {
             name: model.name
             metaText: {
                 // A notice row's payload (the SMS body, the GPS string) is its
-                // meta line; identity only where it exists.
+                // meta line; identity only where it exists. The access code and
+                // the frequency sit where a call row puts them.
                 if (model.kind === 1) {
                     var parts = [];
                     if (model.tg > 0)
                         parts.push("TG " + model.tg);
                     if (model.src > 0 || model.srcName)
                         parts.push("SRC " + Util.sourceText(model.src, model.srcName));
+                    if (model.accessCode.length > 0)
+                        parts.push(model.accessCode);
                     if (model.detail.length > 0)
                         parts.push(model.detail);
                     if (model.channel.length > 0 && model.channel !== model.name)
                         parts.push(model.channel);
+                    if (model.freqHz > 0)
+                        parts.push(Util.fmtMhz(model.freqHz));
                     return parts.length > 0 ? parts.join(" · ") : qsTr("data message");
                 }
                 // "encrypted" states what the call was, nothing more: whether it was
@@ -191,6 +196,10 @@ Item {
                     meta.push("TG " + model.tg);
                 if (model.src > 0 || model.srcName)
                     meta.push("SRC " + Util.sourceText(model.src, model.srcName));
+                // The code the call's carrier was confirmed on ("CC 1", "NAC 293"),
+                // which belongs with the ids that name the call.
+                if (model.accessCode.length > 0)
+                    meta.push(model.accessCode);
                 if (model.enc)
                     meta.push(qsTr("encrypted"));
                 if (model.durationSecs >= 0)
@@ -200,6 +209,10 @@ Item {
                 // question the same way.
                 if (model.channel.length > 0 && model.channel !== model.name)
                     meta.push(model.channel);
+                // The frequency closes the line: the least of these on a phone,
+                // so it is the first thing the elide takes.
+                if (model.freqHz > 0)
+                    meta.push(Util.fmtMhz(model.freqHz));
                 return meta.join(" · ");
             }
             rightText: model.timeText
@@ -218,7 +231,10 @@ Item {
                 emergency: model.emergency,
                 enc: model.enc,
                 durationSecs: model.durationSecs,
-                detail: model.detail
+                detail: model.detail,
+                freqHz: model.freqHz,
+                accessCode: model.accessCode,
+                accessCodeText: model.accessCodeText
             })
         }
     }
@@ -228,6 +244,7 @@ Item {
     }
     HistoryDetailSheet {
         id: detailSheet
+        objectName: "historyDetailSheet"
     }
 
     // Keeps the newest call in view for a reader parked at the top of the log.

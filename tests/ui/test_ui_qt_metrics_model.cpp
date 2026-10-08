@@ -706,6 +706,56 @@ test_options_readiness() {
 }
 
 /*
+ * Issue #575: whether the input in force is an I/Q replay, which the spectrum reads to offer no tuning. It is the core
+ * predicate on the same options snapshot as radioInput, and it notifies the control group with tunerControlled, the
+ * other reason a tune is refused.
+ */
+static void
+test_replay_input() {
+    static dsd_opts opts;
+    static dsd_state state;
+    initOpts(&opts);
+    initState(&state);
+    dsd_qt::MetricsModel model;
+    int controls = 0;
+    QObject::connect(&model, &dsd_qt::MetricsModel::controlChanged, [&]() { ++controls; });
+
+    opts.audio_in_type = AUDIO_IN_RTL;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl");
+    model.refresh(&opts, &state);
+    expect("a live tuner is not a replay", model.radioInput() && !model.replayInput());
+
+    int before = controls;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "iqreplay:capture.iq.json");
+    model.refresh(&opts, &state);
+    expect("an iqreplay spec on the RTL input is a replay", model.radioInput() && model.replayInput());
+    expect("the predicate agrees", model.replayInput() == (dsd_opts_input_is_iq_replay(&opts) != 0));
+    expect("a replay notifies the control group", controls > before);
+
+    /* The replay flag the RTL stream keeps in its own copy is not the predicate: only the input in force counts. */
+    opts.iq_replay_active = 1;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl");
+    before = controls;
+    model.refresh(&opts, &state);
+    expect("leaving the replay clears it", !model.replayInput());
+    expect("and notifies the control group", controls > before);
+    opts.iq_replay_active = 0;
+
+    /* A spec string under a non-radio input type is no replay: nothing is being tuned at all. */
+    opts.audio_in_type = AUDIO_IN_WAV;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "iqreplay:capture.iq.json");
+    model.refresh(&opts, &state);
+    expect("audio input is not a replay", !model.radioInput() && !model.replayInput());
+
+    opts.audio_in_type = AUDIO_IN_RTL;
+    model.refresh(&opts, &state);
+    expect("replaying again", model.replayInput());
+    model.clear();
+    expect("a cleared model reports no replay", !model.replayInput());
+    freeState(&state);
+}
+
+/*
  * Why the rotation is staying on the row on air, and how long is left (#508).
  *
  * The countdown is published in tenths of a second rather than milliseconds on
@@ -1363,6 +1413,7 @@ main(int argc, char** argv) {
     test_scan_row();
     test_rigctl_audio_passband();
     test_options_readiness();
+    test_replay_input();
     test_decode_clock_readings();
     test_temporary_lockout_metrics();
     test_call_skip_metrics();

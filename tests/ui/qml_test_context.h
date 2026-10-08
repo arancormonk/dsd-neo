@@ -1191,6 +1191,9 @@ class CallLogStore : public QAbstractListModel {
         QString channel;
         QString sourceName;
         qint64 session = 0;
+        qint64 freqHz = 0;
+        QString accessCode;
+        QString accessCodeText;
     };
 
     int
@@ -1271,6 +1274,9 @@ class CallLogStore : public QAbstractListModel {
             case CallHistoryModel::DetailRole: return row.detail;
             case CallHistoryModel::ChannelRole: return row.channel;
             case CallHistoryModel::SessionRole: return row.session;
+            case CallHistoryModel::FreqHzRole: return row.freqHz;
+            case CallHistoryModel::AccessCodeRole: return row.accessCode;
+            case CallHistoryModel::AccessCodeTextRole: return row.accessCodeText;
             default: return {};
         }
     }
@@ -1292,7 +1298,10 @@ class CallLogStore : public QAbstractListModel {
                 {CallHistoryModel::KindRole, "kind"},
                 {CallHistoryModel::DetailRole, "detail"},
                 {CallHistoryModel::ChannelRole, "channel"},
-                {CallHistoryModel::SessionRole, "session"}};
+                {CallHistoryModel::SessionRole, "session"},
+                {CallHistoryModel::FreqHzRole, "freqHz"},
+                {CallHistoryModel::AccessCodeRole, "accessCode"},
+                {CallHistoryModel::AccessCodeTextRole, "accessCodeText"}};
     }
 
     /**
@@ -1357,6 +1366,34 @@ class CallLogStore : public QAbstractListModel {
         m_rows[0].channel = channel;
         const QModelIndex idx = index(0);
         Q_EMIT dataChanged(idx, idx, {CallHistoryModel::ChannelRole});
+        return name;
+    }
+
+    /**
+     * @brief Prepend one call with ids @p tg / @p src heard on @p channel, at @p freqHz under access code
+     * @p accessCode (long form @p accessCodeText), as the model's rows carry them (issue #575).
+     * @return The row's name, so a test can find that one row.
+     */
+    Q_INVOKABLE QString
+    pushTuned(qulonglong tg, qulonglong src, const QString& channel, qint64 freqHz, const QString& accessCode,
+              const QString& accessCodeText) {
+        const QString name = push(QStringLiteral("TODAY"));
+        tuneNewest(tg, src, channel, freqHz, accessCode, accessCodeText);
+        return name;
+    }
+
+    /**
+     * @brief The same, as a data/control notice carrying @p detail: notice rows keep their own meta rules.
+     * @return The row's name.
+     */
+    Q_INVOKABLE QString
+    pushTunedNotice(qulonglong tg, qulonglong src, const QString& detail, const QString& channel, qint64 freqHz,
+                    const QString& accessCode, const QString& accessCodeText) {
+        const QString name = push(QStringLiteral("TODAY"));
+        m_rows[0].kind = CallHistoryModel::KindNotice;
+        m_rows[0].detail = detail;
+        m_rows[0].durationSecs = -1;
+        tuneNewest(tg, src, channel, freqHz, accessCode, accessCodeText);
         return name;
     }
 
@@ -1435,6 +1472,25 @@ class CallLogStore : public QAbstractListModel {
     void sessionChanged();
 
   private:
+    /* Stamps the newest row with its ids, channel, frequency and access code, and announces every role it set. */
+    void
+    tuneNewest(qulonglong tg, qulonglong src, const QString& channel, qint64 freqHz, const QString& accessCode,
+               const QString& accessCodeText) {
+        StoreRow& row = m_rows[0];
+        row.tg = tg;
+        row.src = src;
+        row.channel = channel;
+        row.freqHz = freqHz;
+        row.accessCode = accessCode;
+        row.accessCodeText = accessCodeText;
+        const QModelIndex idx = index(0);
+        Q_EMIT dataChanged(idx, idx,
+                           {CallHistoryModel::KindRole, CallHistoryModel::DetailRole,
+                            CallHistoryModel::DurationSecsRole, CallHistoryModel::TgRole, CallHistoryModel::SrcRole,
+                            CallHistoryModel::ChannelRole, CallHistoryModel::FreqHzRole,
+                            CallHistoryModel::AccessCodeRole, CallHistoryModel::AccessCodeTextRole});
+    }
+
     QList<StoreRow> m_rows;
     QString m_systemName = QStringLiteral("Test Site");
     QString m_sessionUid = QStringLiteral("test-system");
@@ -2254,6 +2310,8 @@ class Setup : public QObject {
         metrics[QStringLiteral("heldTg")] = 0;
         metrics[QStringLiteral("carrierLock")] = false;
         metrics[QStringLiteral("radioInput")] = true;
+        // Whether the input in force is an I/Q replay (issue #575): live input at rest, so tuning stays offered.
+        metrics[QStringLiteral("replayInput")] = false;
         metrics[QStringLiteral("streamActive")] = false;
         metrics[QStringLiteral("snrValid")] = false;
         metrics[QStringLiteral("snrDb")] = 0.0;

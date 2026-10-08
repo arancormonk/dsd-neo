@@ -1084,6 +1084,9 @@ MetricsModel::refresh(const dsd_opts* opts_snapshot, const dsd_state* snapshot) 
      * it steps targets from the engine loop and a release cannot clear it, so an
      * affordance gated only on the other two offers a tune the scan then undoes. */
     next.tuner_controlled = next.trunking_enabled || next.scanner_mode || (opts_snapshot->trunk_scan_enabled != 0);
+    /* An I/Q replay refuses every tune and the tuner release (issue #575): the predicate app-control refuses on, read
+     * from the same snapshot as radio_input, so a view never offers a tune the command queue then turns down. */
+    next.replay_input = dsd_opts_input_is_iq_replay(opts_snapshot) != 0;
 
     /* Sync is held for a moment after the last synced frame rather than sampled;
      * the hold decays on its own rather than being cleared on a retune. See

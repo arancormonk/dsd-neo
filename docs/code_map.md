@@ -1191,9 +1191,10 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
     (`ui_cmd_refuse_replay_tune()`), where they used to report a tune that never landed. The tap's refusal comes ahead
     of its tuner-owner gates, whose toasts point at a release; every refusal of the tap, the owner gates included, is a
     failed command with its reason toasted, as the frequency entry's are. Qt and the control API learn it from the
-    toast: they see only whether the command was queued. `svc_rtl_stop_locked()` clears the replay centre the
-    tuned-frequency reading follows (see IO, "I/Q replay tuned frequency"). Tests: `APP_COMMAND_QUEUE`,
-    `UI_MENU_SERVICES`.
+    toast: they see only whether the command was queued. Qt's Spectrum screen offers none of them during a replay
+    (`MetricsModel::replayInput`; see UI, Qt, "Tuned frequency, call codes and replay tuning on screen").
+    `svc_rtl_stop_locked()` clears the replay centre the tuned-frequency reading follows (see IO, "I/Q replay tuned
+    frequency"). Tests: `APP_COMMAND_QUEUE`, `UI_MENU_SERVICES`.
   - Bootstrap retains only positional playback filenames in argv storage, preserving argument indexes with empty
     placeholders. State snapshots exclude argv ownership; teardown securely erases retained strings.
   - Retained results: talkgroup export and decryption completions are kept as the latest result
@@ -3648,6 +3649,23 @@ Qt Quick frontend (`src/ui/qt`):
     (start, push stamp, slot), as `srcNameWhen` does. A kind or value that does not fit the ring's `uint8_t` and
     `uint16_t` loads as unknown. Older builds ignore the keys.
   - Tests: `UI_QT_CALL_HISTORY_MODEL`, `UI_QT_CALL_HISTORY_MERGE`, `APP_CONTROL_ACCESS_CODE_VIEW`.
+- Tuned frequency, call codes and replay tuning on screen (issue #575; `qml/MonitorScreen.qml`,
+  `qml/HistoryScreen.qml`, `qml/HistoryDetailSheet.qml`, `qml/HomeScreen.qml`, `qml/SpectrumScreen.qml`).
+  - Signal strip: its first reading is `FREQ` (`monitorFreq`), `Util.fmtMhz(metrics.centerFreqHz)` while that is above
+    0, in every mode: the tuned frequency, a scan target's park frequency, or the voice channel a trunked target
+    follows. The scan header (`scanTargetHeader`) is unchanged, because on a phone it would elide the target's name.
+  - Rows: a voice row's meta line puts the `accessCode` role right after the ids and `Util.fmtMhz(freqHz)` last, after
+    the channel, so the elide takes the frequency first. History notice rows place them the same way around their
+    detail; the monitor's notice rows still show only their detail. The record every details sheet opens with (monitor,
+    History, Home's recent activity) carries `freqHz`, `accessCode` and `accessCodeText`, and the sheet adds the long
+    code text and "Frequency …" after the radio ID, which keeps the indexes of the lines before it.
+  - Replay: `MetricsModel::replayInput` (`controlChanged`, beside `tunerControlled`) is `dsd_opts_input_is_iq_replay()`
+    on the snapshot `radioInput` reads, the predicate app-control refuses tunes on. The Spectrum screen is view-only
+    while it holds, whatever the session's intent, so `tuneTo()`, the tap, the rail, stepping and "Go to" do nothing.
+    It hides "Explore from here", closes that button's confirm and an open "Go to" sheet when a replay begins, and
+    shows "An I/Q replay cannot retune." in the button's place, the refusal's own words.
+  - Tests: `UI_QT_METRICS_MODEL` (`test_replay_input()`), `UI_QT_QML_CALL_LISTS` (`tst_monitor_scan_target.qml`,
+    `tst_monitor_recent_calls.qml`, `tst_call_log_follow.qml`, `tst_spectrum_screen.qml`, `tst_back_modals.qml`).
 - Received tone or code (issues #522, #523): `MetricsModel` publishes the `rxTone*` group (`rxToneVisible`,
   `rxToneStatus`, `rxToneText`, `rxToneKind`, `rxToneTenthsHz`, `rxToneDcsCode`, `rxToneDcsInverted`,
   `rxToneDcsAliasCode`, `rxToneDcsAliasInverted`, `rxToneCarrier`) with its own `rxToneChanged` signal, filled from
