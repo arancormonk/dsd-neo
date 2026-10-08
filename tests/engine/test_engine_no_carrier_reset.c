@@ -3603,6 +3603,53 @@ test_dmr_mfid_clear_runs_on_the_decode_clock_without_trunking(void) {
  * dsd_engine_reset_no_carrier_state(), the reset channel_scan_commit() runs on a -Y row change. Trunk scan keeps the
  * DMR colour code with the DMR confidence lock, and the RAN, which its per-target snapshot saves and restores.
  */
+/*
+ * Issue #575: a confirmation gate's evidence is per-transmission, and the no-carrier pass restarts every gate so that
+ * the next carrier proves itself again. A carrier boundary reaches the next carrier without that pass (an accepted
+ * tune, a source change, a replay's recorded retune), so it restarts them itself, as it drops the DMR gate's lock with
+ * the colour code: the calls it ended were the transmissions that evidence vouched for. It also moves the carrier
+ * count the buffering decoders watch.
+ */
+static int
+test_carrier_boundary_restarts_the_evidence(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    state->nxdn_confirmed = 1;
+    state->nxdn_confirm_weak_streak = 1;
+    state->dpmr_confirmed = 1;
+    state->dpmr_cch_evidence = 1;
+    state->dpmr_cch_evidence_symbolcnt = 99U;
+    state->dstar_confirmed = 1;
+    state->m17_confirmed = 1;
+    state->provoice_confirmed = 1;
+    state->ysf_fich_confirmed = 1;
+    state->p25_p1_nid_evidence = 1;
+    state->p25_p1_nid_evidence_symbolcnt = 99U;
+    const uint32_t carrier_seq = state->carrier_seq;
+
+    dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, 0);
+
+    rc |= expect_true("evidence: the boundary restarts the NXDN gate",
+                      state->nxdn_confirmed == 0 && state->nxdn_confirm_weak_streak == 0);
+    rc |= expect_true("evidence: the boundary restarts the dPMR gate and its CCH evidence",
+                      state->dpmr_confirmed == 0 && state->dpmr_cch_evidence == 0
+                          && state->dpmr_cch_evidence_symbolcnt == 0U);
+    rc |= expect_true("evidence: the boundary restarts the D-STAR gate", state->dstar_confirmed == 0);
+    rc |= expect_true("evidence: the boundary restarts the M17 gate", state->m17_confirmed == 0);
+    rc |= expect_true("evidence: the boundary restarts the ProVoice gate", state->provoice_confirmed == 0);
+    rc |= expect_true("evidence: the boundary restarts the YSF FICH verdict", state->ysf_fich_confirmed == 0);
+    rc |= expect_true("evidence: the boundary drops the Phase 1 NID's evidence",
+                      state->p25_p1_nid_evidence == 0 && state->p25_p1_nid_evidence_symbolcnt == 0U);
+    rc |= expect_true("evidence: the boundary moves the carrier count", state->carrier_seq == carrier_seq + 1U);
+
+    free_test_runtime(opts, state);
+    return rc;
+}
+
 static int
 test_carrier_boundary_forgets_the_access_codes(void) {
     dsd_opts* opts = NULL;
@@ -5859,6 +5906,7 @@ main(void) {
     rc |= test_dmr_stale_follow_clear_runs_on_the_decode_clock();
     rc |= test_dmr_mfid_clear_runs_on_the_decode_clock_without_trunking();
     rc |= test_carrier_boundary_forgets_the_access_codes();
+    rc |= test_carrier_boundary_restarts_the_evidence();
 #ifdef DSD_NEO_TEST_RTL_WRAP
     rc |= test_rx_tone_rigctl_scan_step();
     rc |= test_rigctl_reconnect_forgets_the_legacy_tune_cache();

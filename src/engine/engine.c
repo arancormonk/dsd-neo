@@ -2442,6 +2442,24 @@ carrier_boundary_release_followed(dsd_opts* opts, dsd_state* state, dsd_carrier_
     dsd_engine_release_tuned_call_state(opts, state);
 }
 
+/* With its codes, step 3 forgets the evidence that vouched for the carrier's transmissions: every confirmation gate's
+   is per-transmission, and the no-carrier pass restarts each so that the next carrier proves itself again, as the
+   forget drops the DMR gate's lock with the colour code. A carrier boundary reaches the next carrier without that pass,
+   and the calls it just ended were the transmissions the evidence vouched for. */
+static void
+carrier_boundary_forget_evidence(dsd_state* state) {
+    nxdn_confirm_reset(state);
+    dpmr_confirm_reset(state);
+    state->dpmr_cch_evidence = 0;
+    state->dpmr_cch_evidence_symbolcnt = 0;
+    dstar_confirm_reset(state);
+    m17_confirm_reset(state);
+    provoice_confirm_reset(state);
+    state->ysf_fich_confirmed = 0;
+    state->p25_p1_nid_evidence = 0;
+    state->p25_p1_nid_evidence_symbolcnt = 0;
+}
+
 void
 dsd_engine_carrier_boundary(dsd_opts* opts, dsd_state* state, dsd_carrier_boundary_kind kind, int guard_held) {
     if (!opts || !state) {
@@ -2450,6 +2468,7 @@ dsd_engine_carrier_boundary(dsd_opts* opts, dsd_state* state, dsd_carrier_bounda
     carrier_boundary_release_followed(opts, state, kind, guard_held);
     no_carrier_finalize_canonical_calls(opts, state, 1);
     dsd_engine_forget_carrier_codes(state);
+    carrier_boundary_forget_evidence(state);
     dsd_engine_forget_untrunked_carrier_state(opts, state);
     state->carrier_seq++;
 }

@@ -59,7 +59,9 @@ typedef enum {
  *     on its control channel without tuning (the caller's change is the move) and the shared release drops
  *     trunk_is_tuned and the voice channel frequencies (dsd_engine_release_tuned_call_state()).
  *  2. The calls heard on the carrier left end, as a hop, and commit, while the live codes are still that carrier's.
- *  3. The carrier's codes go (dsd_engine_forget_carrier_codes(): p2_cc_verified and the NAC with them, never p2_cc).
+ *  3. The carrier's codes go (dsd_engine_forget_carrier_codes(): p2_cc_verified and the NAC with them, never p2_cc),
+ *     with the evidence that vouched for its transmissions: every confirmation gate restarts, as the no-carrier pass
+ *     restarts them, so the next carrier proves itself again.
  *  4. With trunking off, what the trunking-off no-carrier pass forgets of it goes too
  *     (dsd_engine_forget_untrunked_carrier_state()).
  *  5. state->carrier_seq moves, so a decoder that buffered the left carrier's bursts drops them.
