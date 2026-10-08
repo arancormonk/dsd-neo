@@ -4701,11 +4701,11 @@ stage_dmr_data_burst(dsd_state* state, unsigned int cc, unsigned int burst) {
         DSD_FPRINTF(stderr, "stage_dmr_data_burst: no Golay(20,8) codeword\n");
     }
     DSD_MEMSET(state->dmr_stereo_payload, 0, sizeof state->dmr_stereo_payload);
-    for (unsigned int i = 0U; i < 5U; i++) {
+    for (size_t i = 0U; i < 5U; i++) {
         state->dmr_stereo_payload[61U + i] = (slot_type[2U * i] << 1) | slot_type[(2U * i) + 1U];
         state->dmr_stereo_payload[90U + i] = (slot_type[10U + (2U * i)] << 1) | slot_type[11U + (2U * i)];
     }
-    for (unsigned int i = 0U; i < 24U; i++) {
+    for (size_t i = 0U; i < 24U; i++) {
         state->dmr_stereo_payload[66U + i] = DMR_BS_DATA_SYNC[i] == '3' ? 3 : 1;
     }
     state->dmr_stereo = 1;
