@@ -697,7 +697,16 @@ The `Linux • RelWithDebInfo • ctest (x86-64-v3, fast-math, clang)` check enf
   UDP, TCP; not an RTL-family, symbol-file or null input), `dsd_opts_rigctl_live()` a connected rigctl peer (`-U` on
   with a socket, socket 0 included) and `dsd_opts_rigctl_peer_demodulates()` both together, a peer whose demodulator
   DSD-neo hears (issue #621): the squelch's input kind, the rigctl passband rule, the engine's rigctl legs and
-  app-control's analog width view and follow all key on these.
+  app-control's analog width view and follow all key on these. `dsd_opts_tuned_freq_hz()` is the frequency the
+  receiver is tuned to, as every frontend reads it (the terminal `FRQ:` field, the Qt `centerFreqHz`, the Android
+  notification; issue #575): 0 off a radio input, rigctl on an audio input included (`rtlsdr_center_freq` holds a
+  made-up 850 MHz until DSD-neo tunes the peer, the legacy rigctl `-Y` scan never writes it, and a change made on the
+  peer is invisible), else the I/Q replay centre the decoder last read (`iq_replay_center_freq`) when there is one,
+  else `rtlsdr_center_freq`; the replay read paths store that centre through `dsd_opts_note_iq_replay_center()`. The
+  decoded readings (SiteSheet CC/VC, `dsd_app_vc_freq()`/`dsd_app_cc_freq()`, the trunk `Frequency:` lines) stay on
+  their decoded values. `dsd_opts_input_is_iq_replay()` says whether the input in
+  force is an I/Q replay (an RTL input with an `iqreplay` spec), from the input type and device string rather than
+  `iq_replay_active`, which an input switch does not clear. Tests: `CORE_OPTS_TUNED_FREQ`.
 - API note (runtime sink changes, `<dsd-neo/core/audio.h>`): `dsd_audio_ensure_analog_output()` and
   `dsd_audio_ensure_digital_output()` open the sink a new receive family writes to (the raw monitor stream; the digital
   voice stream, plus the raw stream for ProVoice and `-8`) with the parameters `openAudioOutput()` uses, when the
@@ -812,10 +821,12 @@ The `Linux • RelWithDebInfo • ctest (x86-64-v3, fast-math, clang)` check enf
     replay's stamps keep ageing; wall time returns to real time. Each replay sample moves media time to its own capture
     time as it reaches symbol processing (`dsd_decode_clock_batch_media_ns()` over the batch tag's span): the symbol
     cache's pop, and the one-sample readers (the analog monitor, M17, EDACS analog) through
-    `dsd_rtl_stream_metrics_hook_replay_advance_decode_clock()`. Unit tests step decode time on the TEST source
-    (`docs/testing.md`, "Decode time in unit tests"). Tests: `RUNTIME_DECODE_CLOCK` (the sources, the anchor floor and
-    ceiling, `dsd_decode_clock_batch_media_ns()`, the leave's continuity), `RTL_SYMBOL_REPLAY_CLOCK`,
-    `ENGINE_REPLAY_DECODE_CLOCK`, and the leave in `ENGINE_NO_CARRIER_RESET` and `APP_COMMAND_QUEUE`.
+    `dsd_rtl_stream_metrics_hook_replay_advance_decode_clock()`, which also reports the centre the batch was captured
+    on through its optional `center_hz_out` (issue #575; see IO, "I/Q replay tuned frequency"). Unit tests step
+    decode time on the TEST source (`docs/testing.md`, "Decode time in unit tests"). Tests: `RUNTIME_DECODE_CLOCK`
+    (the sources, the anchor floor and ceiling, `dsd_decode_clock_batch_media_ns()`, the leave's continuity),
+    `RTL_SYMBOL_REPLAY_CLOCK`, `ENGINE_REPLAY_DECODE_CLOCK`, and the leave in `ENGINE_NO_CARRIER_RESET` and
+    `APP_COMMAND_QUEUE`.
   - Analog channel contract shared by the CLI, config, app commands, scan rows and the demodulator
     (`include/dsd-neo/runtime/analog_channel.h`, `src/runtime/analog_channel.c`): `dsd_analog_demod` (FM = 0,
     AM = 1), `dsd_rx_family`, per-kind width ranges and defaults (NFM 8000–25000 Hz, default 16000; AM
@@ -899,9 +910,9 @@ The `Linux • RelWithDebInfo • ctest (x86-64-v3, fast-math, clang)` check enf
     on (`output_rate_for_family`, told whether the CQPSK state is a trunk-scan target's own choice, which stands over
     `DSD_NEO_CQPSK` there, issue #583), and what the I/Q replay batch the decoder's last read took its samples from ran
     on (`replay_batch`, `dsd_rtl_stream_replay_batch`: generation, output kind, channel profile, symbol rate and
-    levels, and the media span, output count and first sample's index the decode clock runs on; decoder thread only,
-    while the stream is open; issue #572); the engine installs
-    `rtl_stream_request_analog_profile()`, `rtl_stream_request_digital_family_landing()`,
+    levels, the media span, output count and first sample's index the decode clock runs on, and the channel centre
+    the batch was captured on, issue #575; decoder thread only, while the stream is open; issue #572); the engine
+    installs `rtl_stream_request_analog_profile()`, `rtl_stream_request_digital_family_landing()`,
     `rtl_stream_get_analog_profile()`, `rtl_stream_analog_family_active()`, `rtl_stream_family_landing_after_pending()`,
     `rtl_stream_output_rate_for_family()` and `rtl_stream_get_replay_batch()` behind them. It also hands the
     demodulator a whole squelch setting (`set_channel_squelch_setting`, `rtl_stream_set_channel_squelch_setting()`;
@@ -1123,6 +1134,16 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
     restarted UDP input (`apply_cfg_note_reopen()`); its WAV reopen refuses a pipe or device. The queue answers the
     runtime's controls-pending query (`dsd_app_commands_pending()`). Tests: `APP_COMMAND_QUEUE`, `RUNTIME_CONFIG_APPLY`,
     `UI_MENU_SERVICES`, `UI_TCP_AUDIO_CONNECT`.
+  - Replay tuning (issue #575): an I/Q replay plays the tuning its capture recorded and defers every other retune
+    unseen, so while the input in force is a replay (`dsd_opts_input_is_iq_replay()`) `MANUAL_TUNE` (the Spectrum
+    tap), `RTL_SET_FREQ` (the terminal menu's frequency row, Qt's frequency entry) and `TUNER_RELEASE`
+    (`CommandBridge::releaseTuner()`) are refused as failed commands with the toast "An I/Q replay cannot retune."
+    (`ui_cmd_refuse_replay_tune()`), where they used to report a tune that never landed. The tap's refusal comes ahead
+    of its tuner-owner gates, whose toasts point at a release; every refusal of the tap, the owner gates included, is a
+    failed command with its reason toasted, as the frequency entry's are. Qt and the control API learn it from the
+    toast: they see only whether the command was queued. `svc_rtl_stop_locked()` clears the replay centre the
+    tuned-frequency reading follows (see IO, "I/Q replay tuned frequency"). Tests: `APP_COMMAND_QUEUE`,
+    `UI_MENU_SERVICES`.
   - Bootstrap retains only positional playback filenames in argv storage, preserving argument indexes with empty
     placeholders. State snapshots exclude argv ownership; teardown securely erases retained strings.
   - Retained results: talkgroup export and decryption completions are kept as the latest result
@@ -2072,7 +2093,9 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   dropped. The cache keeps the batch's media span with its samples, and each sample it hands out runs the decode
   clock's media time to that sample's capture time (`rtl_symbol_cache_pop()`), so a decode window reads the same time
   whatever the batch boundaries; a live read's samples move nothing, and the matched-filter seam's hand-backs never
-  pass through the pop. Tests: `RTL_SYMBOL_CACHE_GENERATION`, `RTL_SYMBOL_REPLAY_CLOCK`.
+  pass through the pop. The cache keeps the batch's capture centre too (`rtl_symbol_cache_center_hz`, 0 after a live
+  read), which its readers publish into `opts->iq_replay_center_freq` after each sample they take (issue #575; see IO,
+  "I/Q replay tuned frequency"). Tests: `RTL_SYMBOL_CACHE_GENERATION`, `RTL_SYMBOL_REPLAY_CLOCK`.
 - `dsd_symbol.c` owns the open-loop FSK symbol grid. Only the inter-frame sync search moves it, by a whole sample at
   a time, on the first zero crossing latched in the previous symbol — a bang-bang loop on one unfiltered sample
   index, and between frames the only thing tracking the sampling instant across a call. Issue #444 documents how
@@ -3059,11 +3082,11 @@ Notes:
       `m17.c`, `edacs-fme.c`, the analog monitor). So the demod never starts a block while the decoder runs, and a
       request, clear or snapshot the decoder makes lands at the start of the next block.
     - The batch tag (`rtl_stream_replay_batch` in `rtl_stream_c.h`: chunk sequence, output generation, the published
-      output kind, channel profile, symbol rate and levels, output rate, media start and duration, output count) of
-      the batch the last read took samples from, with their place in it, is what `rtl_stream_get_replay_batch()`
-      returns, on the decoder thread while the stream is open. The symbol cache labels what it reads from it, through
-      the runtime metrics hook (see DSP), so it keeps the first batch after a change, and runs the decode clock on its
-      media span, sample by sample (see Runtime).
+      output kind, channel profile, symbol rate and levels, output rate, media start and duration, output count, and
+      the channel centre the chunk was captured on) of the batch the last read took samples from, with their place in
+      it, is what `rtl_stream_get_replay_batch()` returns, on the decoder thread while the stream is open. The symbol
+      cache labels what it reads from it, through the runtime metrics hook (see DSP), so it keeps the first batch after
+      a change, and runs the decode clock on its media span, sample by sample (see Runtime).
     - Lock order: `replay_eof_m`, then `output.ready_m`. The locked sections use the unlocked ring helpers.
 
     Tests: `IO_RTL_REPLAY_DETERMINISM` (greedy fast, slow and realtime readers with the same requests deliver the same
@@ -3104,6 +3127,30 @@ Notes:
     block and nothing discarded; a decoder stalled at a RESET or a rewind loses nothing; the demod taking the purge
     flag keeps the next chunk; a purge a stop left untaken does not reach the next replay; the reset plans of a hop
     and a hop back; bounded stops at an event boundary and at a rewind).
+  - I/Q replay tuned frequency (issue #575). A replayed RETUNE moves the demod, but `opts->rtlsdr_center_freq` keeps
+    the capture's opening centre: a live retune is deferred during a replay before it writes the field, and the DMR,
+    NXDN, EDACS and P25/DMR trunking paths read it as the control or current channel, so moving it would change how a
+    replay decodes. The reading follows the capture instead:
+    - `demod_replay_batch_tag()` tags each batch with `controller.last_applied_freq_hz`, which the opening settings
+      and a loop rewind set (`controller_apply_replay_settings()`) and a replayed RETUNE moves
+      (`rtl_replay_on_retune_event()`). Each is applied on an idle pipeline (above), so the centre in force when the
+      demod tags a block is the one its chunk was captured on. The engine's metrics adapter copies it into
+      `dsd_rtl_stream_replay_batch::center_frequency_hz`.
+    - The decoder thread writes it into `dsd_opts::iq_replay_center_freq` wherever a replay sample runs the decode
+      clock: the symbol cache keeps the batch centre beside its media span (`rtl_symbol_cache_center_hz`) and its
+      readers (the FSK sample read and the CQPSK fast path) publish it after each sample they take; the one-sample
+      readers (the analog monitor, M17, EDACS analog) get it from
+      `dsd_rtl_stream_metrics_hook_replay_advance_decode_clock()`. Each notes it through
+      `dsd_opts_note_iq_replay_center()`, which stores only a nonzero centre; a live read writes nothing and costs
+      nothing new, and a live fill drops the centre a replay fill left in the cache.
+    - It lives in the caller's options, not the RTL orchestrator's copy, and does not key on `iq_replay_active`. Every
+      stop of the stream clears it (`svc_rtl_stop_locked()`, which each app-control stop, restart, input switch and
+      rollback runs; the engine's own open and close in `engine.c`), so a live radio that replaces a replay reads its
+      own centre again.
+    - Readers go through `dsd_opts_tuned_freq_hz()` (see Core). Tests: `IO_RTL_REPLAY_DETERMINISM` (every leg's batch
+      centres follow the capture layout's RETUNEs; a looping capture's opening centre, the RETUNE's, and the opening
+      one again after the rewind), `RUNTIME_RTL_STREAM_METRICS_HOOKS`, `ENGINE_RTL_STREAM_METRICS_HOOKS_INSTALL`,
+      `RTL_SYMBOL_REPLAY_CLOCK`, `UI_MENU_SERVICES`, `ENGINE_RUN_SETUP`.
   - I/Q replay end to end (issue #572). With the pacing and events above, the streaming front end (see DSP) and the
     decode clock on the capture's time (see Runtime), a replay without `-T` or `-Y` prints the same decoder output on
     every run, fast or realtime, however the decoder is scheduled, capture-time timestamps included

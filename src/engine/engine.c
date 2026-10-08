@@ -2500,9 +2500,12 @@ live_scanner_apply_audio_gain(dsd_opts* opts, dsd_state* state) {
 }
 
 #ifdef USE_RADIO
+/* The engine's own stream open. A replay centre an earlier run left (an embedding host's reused options) is not this
+   stream's: it starts with none, which the first replay read sets (issue #575). */
 static int
 live_scanner_start_rtl_if_needed(dsd_opts* opts, dsd_state* state) {
     if (opts->audio_in_type == AUDIO_IN_RTL) {
+        opts->iq_replay_center_freq = 0U;
         if (state->rtl_ctx == NULL) {
             if (rtl_stream_create(opts, &state->rtl_ctx) < 0) {
                 LOG_ERROR("Failed to create radio stream.\n");
@@ -2893,13 +2896,15 @@ dsd_engine_cleanup_close_wavs(dsd_opts* opts, dsd_state* state) {
 }
 
 static void
-dsd_engine_cleanup_close_radio(const dsd_opts* opts, dsd_state* state) {
+dsd_engine_cleanup_close_radio(dsd_opts* opts, dsd_state* state) {
 #ifdef USE_RADIO
     if (opts->rtl_started == 1 && state->rtl_ctx) {
         rtl_stream_stop(state->rtl_ctx);
         rtl_stream_destroy(state->rtl_ctx);
         state->rtl_ctx = NULL;
     }
+    /* The replay centre goes with the stream (issue #575), as at app-control's stop. */
+    opts->iq_replay_center_freq = 0U;
 #else
     UNUSED(opts);
     UNUSED(state);

@@ -221,23 +221,27 @@ tone_and_noise_payload(size_t complex_samples) {
 
 namespace {
 /* A chunk the replay reader hands the demod as one block: its bytes, the capture time of its first sample in complex
- * samples, the samples a MUTE omitted included, and whether a RESET (or the start) comes before it. */
+ * samples, the samples a MUTE omitted included, whether a RESET (or the start) comes before it, and the channel centre
+ * it was captured on, the last RETUNE's (or the capture's opening centre). */
 struct LayoutChunk {
     uint64_t bytes;
     uint64_t media_start;
     int epoch_start;
+    uint32_t center_hz;
 };
 } // namespace
 
 /* The chunks a replay of @p capture_bytes with @p events delivers, from the capture layout alone: the reader reads a
  * chunk (kChunkBytes) at a time, cut short at the next event and at the end, a MUTE moves the media timeline on by what it omitted,
- * and a RESET starts the chunk after it on a new filter epoch. */
+ * a RESET starts the chunk after it on a new filter epoch, and a RETUNE moves the centre the chunks after it were
+ * captured on. */
 static std::vector<LayoutChunk>
 capture_layout(size_t capture_bytes, const std::vector<CaptureEvent>& events) {
     std::vector<LayoutChunk> chunks;
     uint64_t offset = 0U;
     uint64_t media = 0U;
     int epoch_start = 1;
+    uint32_t center_hz = (uint32_t)kFirstCenterHz;
     std::vector<CaptureEvent>::const_iterator next = events.begin();
     while (offset < capture_bytes) {
         for (; next != events.end() && next->offset <= offset; ++next) {
@@ -245,6 +249,8 @@ capture_layout(size_t capture_bytes, const std::vector<CaptureEvent>& events) {
                 media += next->value / 2U;
             } else if (next->kind == DSD_IQ_EVENT_RESET) {
                 epoch_start = 1;
+            } else if (next->kind == DSD_IQ_EVENT_RETUNE) {
+                center_hz = (uint32_t)next->value;
             }
         }
         uint64_t bytes = kChunkBytes;
@@ -254,7 +260,7 @@ capture_layout(size_t capture_bytes, const std::vector<CaptureEvent>& events) {
         if (capture_bytes - offset < bytes) {
             bytes = capture_bytes - offset;
         }
-        chunks.push_back(LayoutChunk{bytes, media, epoch_start});
+        chunks.push_back(LayoutChunk{bytes, media, epoch_start, center_hz});
         epoch_start = 0;
         offset += bytes;
         media += bytes / 2U;
@@ -444,12 +450,14 @@ struct EventCounts {
     uint32_t resets;
 };
 
-/* One batch the decoder read, as its tag tells it: the chunk, and the capture time of its first sample and of its end,
- * both from the per-sample formula the decoder runs its clock on (dsd_decode_clock_batch_media_ns()). */
+/* One batch the decoder read, as its tag tells it: the chunk, the capture time of its first sample and of its end, both
+ * from the per-sample formula the decoder runs its clock on (dsd_decode_clock_batch_media_ns()), and the centre it was
+ * captured on. */
 struct BatchMedia {
     uint64_t chunk_sequence;
     uint64_t first_ns;
     uint64_t end_ns;
+    uint32_t center_hz;
 };
 
 /* What a leg delivered, and what the pipeline did on the way. */
@@ -535,11 +543,11 @@ note_batch_start(Signature* sig, uint64_t* batch_sequence, int got) {
     *batch_sequence = tag.chunk_sequence;
     sig->batch_starts.push_back(sig->samples);
     sig->batch_starts.push_back(tag.media_start_ns);
-    sig->batch_media.push_back(
-        BatchMedia{tag.chunk_sequence,
-                   dsd_decode_clock_batch_media_ns(tag.media_start_ns, tag.media_duration_ns, tag.output_count, 0U),
-                   dsd_decode_clock_batch_media_ns(tag.media_start_ns, tag.media_duration_ns, tag.output_count,
-                                                   tag.output_count)});
+    sig->batch_media.push_back(BatchMedia{
+        tag.chunk_sequence,
+        dsd_decode_clock_batch_media_ns(tag.media_start_ns, tag.media_duration_ns, tag.output_count, 0U),
+        dsd_decode_clock_batch_media_ns(tag.media_start_ns, tag.media_duration_ns, tag.output_count, tag.output_count),
+        tag.center_frequency_hz});
 }
 
 static int
@@ -735,6 +743,25 @@ expect_media_follows_layout(const char* label, const Signature& sig, const std::
     return rc;
 }
 
+/* Issue #575: each batch's tag carries the centre its chunk was captured on, the layout's, so a reading of the tuned
+ * frequency follows the capture's RETUNEs exactly, batch by batch. */
+static int
+expect_centres_follow_layout(const char* label, const Signature& sig, const std::vector<LayoutChunk>& layout) {
+    int rc = 0;
+    char what[200];
+    for (const BatchMedia& batch : sig.batch_media) {
+        DSD_SNPRINTF(what, sizeof(what), "%s: centre of chunk %llu's batch", label,
+                     (unsigned long long)batch.chunk_sequence);
+        if (batch.chunk_sequence < 1U || batch.chunk_sequence > layout.size()) {
+            DSD_FPRINTF(stderr, "FAIL: %s: the capture has no such chunk\n", what);
+            rc = 1;
+            continue;
+        }
+        rc |= expect_u64_eq(what, batch.center_hz, layout[batch.chunk_sequence - 1U].center_hz);
+    }
+    return rc;
+}
+
 /* One leg on its own: it ended, its requests landed, it applied every event, and it delivered every sample of every
  * chunk, with no block discarded and no output cut short. */
 static int
@@ -785,7 +812,8 @@ signatures_equal(const Signature& a, const Signature& b) {
     for (size_t i = 0; i < a.batch_media.size(); i++) {
         if (a.batch_media[i].chunk_sequence != b.batch_media[i].chunk_sequence
             || a.batch_media[i].first_ns != b.batch_media[i].first_ns
-            || a.batch_media[i].end_ns != b.batch_media[i].end_ns) {
+            || a.batch_media[i].end_ns != b.batch_media[i].end_ns
+            || a.batch_media[i].center_hz != b.batch_media[i].center_hz) {
             return 0;
         }
     }
@@ -821,6 +849,7 @@ expect_legs_agree(const char* capture, const char* metadata_path, const std::vec
         char label[96];
         DSD_SNPRINTF(label, sizeof(label), "%s leg %s", capture, legs[i].name);
         rc |= expect_media_follows_layout(label, sigs[i], layout, events);
+        rc |= expect_centres_follow_layout(label, sigs[i], layout);
         if (i > 0U && !signatures_equal(sigs[i], sigs[0])) {
             DSD_FPRINTF(stderr, "FAIL: %s: leg %s delivered a different stream from leg %s\n", capture, legs[i].name,
                         legs[0].name);
@@ -952,7 +981,7 @@ tag_matches_its_chunk(const rtl_stream_replay_batch& tag) {
     return tag.output_count == outputs[tag.chunk_sequence - 1U] && tag.media_start_ns == start_ns
            && tag.media_duration_ns == end_ns - start_ns && tag.output_kind == RTL_STREAM_OUTPUT_FSK_DISCRIMINATOR
            && tag.symbol_rate_hz == 4800 && tag.output_rate_hz == (int)(kCaptureRateHz / kDecimation)
-           && tag.output_generation == rtl_stream_output_generation();
+           && tag.output_generation == rtl_stream_output_generation() && tag.center_frequency_hz == kFirstCenterHz;
 }
 
 /* Check the tag after a read of @p got samples: a new batch is the next chunk's, read from its start, and every read
@@ -1575,6 +1604,107 @@ test_replay_boundary_waits_for_a_stalled_decoder(void) {
 }
 
 namespace {
+/* test_replay_batch_centre_follows_retunes_and_rewinds(): a decoder that reads a looping replay until it gets samples of
+ * chunk stop_sequence's batch, checking each read's tag against the chunk's centre in the capture layout. */
+struct CentreReader {
+    RtlSdrContext* ctx = nullptr;
+    const std::vector<LayoutChunk>* layout = nullptr;
+    uint64_t stop_sequence = 0U;
+    std::vector<uint64_t> sequences_read; /* each batch's chunk, in the order read */
+    int wrong_centres = 0;
+    char first_wrong[200] = {0};
+    std::atomic<int> done{0};
+};
+} // namespace
+
+static DSD_THREAD_RETURN_TYPE
+centre_reader_fn(void* arg) {
+    CentreReader* reader = static_cast<CentreReader*>(arg);
+    const std::vector<LayoutChunk>& layout = *reader->layout;
+    float buf[512];
+    for (;;) {
+        int got = 0;
+        if (rtl_stream_read(reader->ctx, buf, 512U, &got) != 0) {
+            break;
+        }
+        rtl_stream_replay_batch tag;
+        if (got <= 0 || rtl_stream_get_replay_batch(&tag) != 0) {
+            continue;
+        }
+        if (reader->sequences_read.empty() || reader->sequences_read.back() != tag.chunk_sequence) {
+            reader->sequences_read.push_back(tag.chunk_sequence);
+        }
+        /* The loop's chunks repeat the capture's, pass after pass. */
+        const uint32_t want = layout[(size_t)((tag.chunk_sequence - 1U) % layout.size())].center_hz;
+        if (tag.center_frequency_hz != want && reader->wrong_centres++ == 0) {
+            DSD_SNPRINTF(reader->first_wrong, sizeof(reader->first_wrong), "chunk %llu's batch: centre %u, want %u",
+                         (unsigned long long)tag.chunk_sequence, (unsigned)tag.center_frequency_hz, (unsigned)want);
+        }
+        if (tag.chunk_sequence >= reader->stop_sequence) {
+            break;
+        }
+    }
+    reader->done.store(1, std::memory_order_release);
+    DSD_THREAD_RETURN;
+}
+
+/* Issue #575: the batch tag carries the centre the samples were captured on. A looping capture of two chunks with a
+ * RETUNE and a RESET between them: chunk 1 carries the opening centre, chunk 2 the RETUNE's, and after the rewind the
+ * second pass's first chunk (3) the opening centre again, then its second (4) the RETUNE's once more. */
+static int
+test_replay_batch_centre_follows_retunes_and_rewinds(void) {
+    std::vector<LayoutChunk> layout;
+    char metadata_path[DSD_TEST_PATH_MAX];
+    if (make_retune_capture(2U, &layout, metadata_path, sizeof(metadata_path)) != 0) {
+        return 1;
+    }
+    int rc = expect_u64_eq("batch centre: the capture's chunks", (uint64_t)layout.size(), 2U);
+    if (rc != 0) {
+        return rc;
+    }
+    rc |= expect_u64_eq("batch centre: the layout's first chunk", layout[0].center_hz, kFirstCenterHz);
+    rc |= expect_u64_eq("batch centre: the layout's second chunk", layout[1].center_hz, kSecondCenterHz);
+    std::unique_ptr<dsd_opts> opts;
+    RtlSdrContext* ctx = NULL;
+    if (start_replay_reporting(metadata_path, 0, 1, 1, &opts, &ctx) != 0) {
+        return 1;
+    }
+    CentreReader reader;
+    reader.ctx = ctx;
+    reader.layout = &layout;
+    reader.stop_sequence = 4U;
+    dsd_thread_t thread;
+    if (dsd_thread_create(&thread, centre_reader_fn, &reader) != 0) {
+        rc |= expect_true("batch centre: the decoder thread started", 0);
+    } else {
+        if (!wait_for_int(&reader.done, 1, 10000U)) {
+            rc |= expect_true("batch centre: the decoder reached the second pass's second chunk within 10 s", 0);
+            dsd_exitflag_store(1);
+        }
+        (void)dsd_thread_join(thread);
+    }
+    const rtl_stream_test_replay_state state = replay_state();
+    (void)stop_replay(ctx);
+    dsd_exitflag_store(0);
+    if (reader.wrong_centres != 0) {
+        DSD_FPRINTF(stderr, "FAIL: batch centre: %d reads had the wrong centre (first: %s)\n", reader.wrong_centres,
+                    reader.first_wrong);
+        rc = 1;
+    }
+    const std::vector<uint64_t> want_sequences = {1U, 2U, 3U, 4U};
+    if (reader.sequences_read != want_sequences) {
+        DSD_FPRINTF(stderr, "FAIL: batch centre: the decoder read the batches of chunks");
+        for (uint64_t sequence : reader.sequences_read) {
+            DSD_FPRINTF(stderr, " %llu", (unsigned long long)sequence);
+        }
+        DSD_FPRINTF(stderr, ", want 1 2 3 4\n");
+        rc = 1;
+    }
+    rc |= expect_true("batch centre: the replay rewound", state.replay_loop_restart_count >= 1U);
+    return rc;
+}
+
+namespace {
 /* test_replay_purge_the_demod_takes_keeps_the_next_chunk(). */
 struct PurgeRace {
     std::atomic<int> top_holds{0};              /* holds of the demod at the top of its loop after the first block */
@@ -1937,6 +2067,7 @@ main(void) {
     rc |= test_replay_without_output_ends();
     rc |= test_replay_reader_start_failure_at_the_first_demand_wait();
     rc |= test_replay_boundary_waits_for_a_stalled_decoder();
+    rc |= test_replay_batch_centre_follows_retunes_and_rewinds();
     rc |= test_replay_purge_the_demod_takes_keeps_the_next_chunk();
     rc |= test_replay_purge_a_stop_left_does_not_reach_the_next_replay();
     rc |= test_replay_reset_after_a_retune_resets_from_the_old_centre();

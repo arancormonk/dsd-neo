@@ -499,7 +499,8 @@ ui_render_rtl_input_source(dsd_opts* opts, dsd_state* state) {
         ui_print_squelch_field(opts, state);
         printw(" DSP-BW: %i kHz;", opts->rtl_dsp_bw_khz);
         ui_print_analog_channel_field(opts, state);
-        printw(" FRQ: %i;", opts->rtlsdr_center_freq);
+        /* The tuned frequency, which follows an I/Q replay's recorded retunes (issue #575). */
+        printw(" FRQ: %u;", (unsigned int)dsd_opts_tuned_freq_hz(opts));
         ui_print_rtl_auto_ppm_status();
         if (!soapy_input && opts->rtl_udp_port != 0) {
             printw("\n| External RTL Tuning on UDP: %s:%i", opts->rtl_udp_bindaddr, opts->rtl_udp_port);

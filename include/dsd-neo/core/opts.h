@@ -351,6 +351,11 @@ struct dsd_opts {
     uint8_t iq_replay_active;     /* 1 while replay stream is active */
     uint8_t iq_replay_rate_mode;  /* DSD_IQ_REPLAY_RATE_* */
     uint8_t iq_capture_format;    /* DSD_IQ_FORMAT_* */
+    /* During an I/Q replay, the channel centre in Hz the samples being decoded were captured on: the replay batch tag's,
+       which a recorded RETUNE moves (issue #575). 0 when none. The decoder thread writes it from the read path, as it
+       does rtl_pwr, a live read never does, and every stop of the RTL stream clears it. rtlsdr_center_freq keeps the
+       capture's opening centre meanwhile; read the tuned frequency through dsd_opts_tuned_freq_hz(). */
+    uint32_t iq_replay_center_freq;
 
     // Strings and paths (large trailing arrays)
     char pa_input_idx[100];
@@ -791,6 +796,64 @@ dsd_opts_input_upsample_factor(const dsd_opts* opts) {
 static inline int
 dsd_opts_input_is_radio(const dsd_opts* opts) {
     return (opts != NULL && opts->audio_in_type == AUDIO_IN_RTL) ? 1 : 0;
+}
+
+/**
+ * @brief Return the frequency in Hz the receiver is tuned to, as every frontend reads it; 0 when there is none to show.
+ *
+ * During an I/Q replay it is the centre the samples being decoded were captured on (`iq_replay_center_freq`), which
+ * follows the capture's recorded RETUNEs (issue #575). `rtlsdr_center_freq` keeps the capture's opening centre then:
+ * the replay defers every live retune before the field is written, and the trunking paths read it as the control or
+ * current channel, so moving it would change how a replay decodes. Otherwise it is `rtlsdr_center_freq`, the centre
+ * DSD-neo tuned the radio to.
+ *
+ * Off a radio input it is 0, rigctl on an audio input included: `rtlsdr_center_freq` holds a made-up 850 MHz default
+ * until DSD-neo tunes the peer (initOpts()), the legacy rigctl `-Y` scan never writes it, and a frequency changed on the
+ * peer itself is invisible here.
+ *
+ * @param opts Decoder options (may be NULL).
+ * @return The tuned frequency in Hz; 0 off a radio input and for NULL.
+ */
+static inline uint32_t
+dsd_opts_tuned_freq_hz(const dsd_opts* opts) {
+    if (!dsd_opts_input_is_radio(opts)) {
+        return 0U;
+    }
+    return opts->iq_replay_center_freq != 0U ? opts->iq_replay_center_freq : opts->rtlsdr_center_freq;
+}
+
+/**
+ * @brief Note the centre the I/Q replay sample the decoder just read was captured on, for dsd_opts_tuned_freq_hz().
+ *
+ * Every read path that runs the decode clock on a replay sample calls it, on the decoder thread (issue #575): the
+ * symbol cache's readers with the cached batch's centre, the one-sample readers with the centre
+ * dsd_rtl_stream_metrics_hook_replay_advance_decode_clock() reported. A centre of 0 (a live read, or no batch) leaves
+ * the reading as it was.
+ *
+ * @param opts Decoder options (may be NULL).
+ * @param center_hz Capture centre in Hz of the sample just read; 0 for none.
+ */
+static inline void
+dsd_opts_note_iq_replay_center(dsd_opts* opts, uint32_t center_hz) {
+    if (opts != NULL && center_hz != 0U) {
+        opts->iq_replay_center_freq = center_hz;
+    }
+}
+
+/**
+ * @brief Return 1 while the input in force is an I/Q replay (`--iq-replay`), 0 otherwise.
+ *
+ * A replay plays the tuning its capture recorded and defers every other retune unseen, so app-control refuses manual
+ * tunes and the tuner release during one (issue #575). It reads the input type and device string the session runs,
+ * never `iq_replay_active`, which an input switch does not clear and the RTL stream sets in its own copy of the
+ * options.
+ *
+ * @param opts Decoder options (may be NULL).
+ * @return 1 for an RTL-family input whose device is an `iqreplay` spec; 0 otherwise and for NULL.
+ */
+static inline int
+dsd_opts_input_is_iq_replay(const dsd_opts* opts) {
+    return (dsd_opts_input_is_radio(opts) && dsd_opts_audio_in_dev_is_iqreplay_spec(opts->audio_in_dev)) ? 1 : 0;
 }
 
 /**

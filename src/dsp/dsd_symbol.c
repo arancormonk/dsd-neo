@@ -962,13 +962,14 @@ rtl_symbol_cache_reset_pending(dsd_state* state) {
     rtl_symbol_cache_publish_pending(state);
 }
 
-/* No media span: the cached samples came from a live read, which carries none. */
+/* No media span and no capture centre: the cached samples came from a live read, which carries neither. */
 static inline void
 rtl_symbol_cache_clear_media(dsd_state* state) {
     state->rtl_symbol_cache_media_start_ns = 0U;
     state->rtl_symbol_cache_media_duration_ns = 0U;
     state->rtl_symbol_cache_media_count = 0U;
     state->rtl_symbol_cache_media_first_index = 0U;
+    state->rtl_symbol_cache_center_hz = 0U;
 }
 
 /* An I/Q replay's sample reaches symbol processing at its own capture time (issue #572): the decode clock's media time
@@ -1093,7 +1094,9 @@ dsd_symbol_test_rtl_cache_and_center_contract(int out_values[10]) {
  * before the first sample is taken (RTL_SYMBOL_CACHE_REFRESH). A batch the stream has moved on from since it was
  * published (a flush the decoder asked for) is still dropped: the pop checks the batch's generation, and the caller's
  * refresh drops a cache whose labels the stream no longer carries. The batch's media span goes with its samples, so
- * each one the cache hands out runs the decode clock to its own capture time (rtl_symbol_cache_pop()).
+ * each one the cache hands out runs the decode clock to its own capture time (rtl_symbol_cache_pop()), and so does the
+ * centre it was captured on, which the reader notes with each sample (dsd_opts_note_iq_replay_center(), issue #575; a
+ * live fill holds none).
  *
  * A batch of the monitor output is dropped, as a live read's is: that output is read one sample at a time outside the
  * cache, and the refresh tells a move off a direct output by the kind the cache still holds.
@@ -1126,6 +1129,7 @@ rtl_symbol_cache_fill_replay_batch(dsd_state* state, int got, const dsd_rtl_stre
     state->rtl_symbol_cache_media_duration_ns = batch->media_duration_ns;
     state->rtl_symbol_cache_media_count = batch->output_count;
     state->rtl_symbol_cache_media_first_index = batch->first_index;
+    state->rtl_symbol_cache_center_hz = batch->center_frequency_hz;
     rtl_symbol_cache_publish_pending(state);
     if (batch->generation != read_generation || batch->output_kind != output_kind
         || batch_channel_profile != channel_profile || batch_symbol_rate_hz != symbol_rate_hz
@@ -2171,6 +2175,7 @@ symbol_read_sample_rtl(dsd_opts* opts, dsd_state* state, float* sample_out, symb
         /* The cache checks each sample's batch against this generation. */
         work->rtl_sample_generation = work->rtl_stream_generation;
         opts->rtl_pwr = dsd_rtl_stream_io_hook_return_pwr(state);
+        dsd_opts_note_iq_replay_center(opts, state->rtl_symbol_cache_center_hz);
         return 1;
     }
     int got = 0;
@@ -2179,7 +2184,11 @@ symbol_read_sample_rtl(dsd_opts* opts, dsd_state* state, float* sample_out, symb
         return 0;
     }
     work->rtl_sample_generation = dsd_rtl_stream_metrics_hook_stream_generation();
-    (void)dsd_rtl_stream_metrics_hook_replay_advance_decode_clock();
+    /* An I/Q replay's sample runs the decode clock to its capture time (issue #572) and notes the centre it was captured
+       on (issue #575). */
+    uint32_t replay_center_hz = 0U;
+    (void)dsd_rtl_stream_metrics_hook_replay_advance_decode_clock(&replay_center_hz);
+    dsd_opts_note_iq_replay_center(opts, replay_center_hz);
     opts->rtl_pwr = dsd_rtl_stream_io_hook_return_pwr(state);
     if (!work->rtl_symbol_rate_output && !work->cqpsk_symbol_rate && !work->rtl_fsk_discriminator_output) {
         *sample_out *= opts->rtl_volume_multiplier;
@@ -2501,6 +2510,7 @@ symbol_try_rtl_symbol_rate_fast_path(dsd_opts* opts, dsd_state* state, symbol_wo
         return 0;
     }
     opts->rtl_pwr = dsd_rtl_stream_io_hook_return_pwr(state);
+    dsd_opts_note_iq_replay_center(opts, state->rtl_symbol_cache_center_hz);
     state->lastsample = work->sample;
     /* One sample per symbol here, which the measurement recognises as a grid with no
        sub-symbol structure to report on. */

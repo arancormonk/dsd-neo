@@ -2055,6 +2055,7 @@ test_manual_tune_trunking_gate_and_reacquisition(void) {
     rc |= expect_int("manual tune under trunking drained", dsd_app_drain_cmds(&opts, &state), 1);
     rc |= expect_int("manual tune under trunking never reaches the tuner", g_io_control_tune_calls, 0);
     rc |= expect_contains("manual tune under trunking explains itself", state.ui_msg, "Trunking active");
+    rc |= expect_int("manual tune under trunking is a failed command", dsd_app_command_test_last_failed(), 1);
     rc |= expect_int("manual tune under trunking leaves the trunker tuned", opts.trunk_is_tuned, 1);
     rc |= expect_true("manual tune under trunking leaves the VC", state.p25_vc_freq[0] == 852000000L);
     freeState(&state);
@@ -2072,7 +2073,21 @@ test_manual_tune_trunking_gate_and_reacquisition(void) {
     rc |= expect_int("manual tune under the scanner drained", dsd_app_drain_cmds(&opts, &state), 1);
     rc |= expect_int("manual tune under the scanner never reaches the tuner", g_io_control_tune_calls, 0);
     rc |= expect_contains("manual tune under the scanner explains itself", state.ui_msg, "Scanner active");
+    rc |= expect_int("manual tune under the scanner is a failed command", dsd_app_command_test_last_failed(), 1);
     opts.scanner_mode = 0;
+    freeState(&state);
+
+    /* The trunk scan is the third owner, refused the same way. */
+    init_test_context(&opts, &state);
+    opts.trunk_scan_enabled = 1;
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    rc |= expect_int("manual tune under the trunk scan queued",
+                     dsd_app_command_set_u32(DSD_APP_CMD_MANUAL_TUNE, 853125000U), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("manual tune under the trunk scan drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("manual tune under the trunk scan never reaches the tuner", g_io_control_tune_calls, 0);
+    rc |= expect_contains("manual tune under the trunk scan explains itself", state.ui_msg, "Trunk scan active");
+    rc |= expect_int("manual tune under the trunk scan is a failed command", dsd_app_command_test_last_failed(), 1);
+    opts.trunk_scan_enabled = 0;
     freeState(&state);
 
     init_test_context(&opts, &state);
@@ -2086,6 +2101,7 @@ test_manual_tune_trunking_gate_and_reacquisition(void) {
     rc |= expect_int("manual tune reaches the tuner once", g_io_control_tune_calls, 1);
     rc |= expect_true("manual tune targets the tapped frequency", g_io_control_tune_freq == 853125000L);
     rc |= expect_contains("manual tune reports applied", state.ui_msg, "Applied: tuned -> 853125000 Hz");
+    rc |= expect_int("an applied manual tune is no failed command", dsd_app_command_test_last_failed(), 0);
     rc |= expect_call_phase("manual tune ends canonical slot 1", &state, 0U, DSD_CALL_PHASE_ENDED);
     rc |= expect_call_phase("manual tune ends canonical slot 2", &state, 1U, DSD_CALL_PHASE_ENDED);
     rc |= expect_int("manual tune clears trunk tuned", opts.trunk_is_tuned, 0);
@@ -2255,6 +2271,92 @@ test_tuner_release(void) {
                      DSD_APP_COMMAND_SUBMIT_REJECTED);
     rc |= expect_int("release rejects an i32 payload", dsd_app_command_set_i32(DSD_APP_CMD_TUNER_RELEASE, 1),
                      DSD_APP_COMMAND_SUBMIT_REJECTED);
+
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    return rc;
+}
+
+/* A radio input of @p audio_in_dev, an I/Q replay ("iqreplay:...") or a live device. */
+static void
+init_radio_context(dsd_opts* opts, dsd_state* state, const char* audio_in_dev) {
+    init_test_context(opts, state);
+    opts->audio_in_type = AUDIO_IN_RTL;
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof(opts->audio_in_dev), "%s", audio_in_dev);
+}
+
+/*
+ * Issue #575: an I/Q replay plays the tuning its capture recorded and defers every other retune unseen, so a tap, the
+ * menu's frequency and the tuner release are refused while the input in force is a replay, with the reason, as a failed
+ * command: none reaches the tuner, and the release leaves trunking where it was. On a live radio the same commands go
+ * through.
+ */
+static int
+test_replay_refuses_tunes_and_release(void) {
+    static const char kReason[] = "An I/Q replay cannot retune.";
+    static const char kReplay[] = "iqreplay:capture.iq.json";
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+
+#ifdef USE_RADIO
+    char what[128];
+
+    static const struct {
+        int cmd;
+        const char* tag;
+    } tunes[] = {
+        {DSD_APP_CMD_MANUAL_TUNE, "manual tune"},
+        {DSD_APP_CMD_RTL_SET_FREQ, "rtl set freq"},
+    };
+
+    for (size_t i = 0; i < sizeof(tunes) / sizeof(tunes[0]); i++) {
+        init_radio_context(&opts, &state, kReplay);
+        reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+        DSD_SNPRINTF(what, sizeof(what), "%s during a replay", tunes[i].tag);
+        rc |= expect_int(what, dsd_app_command_set_u32(tunes[i].cmd, 853125000U), DSD_APP_COMMAND_SUBMIT_QUEUED);
+        rc |= expect_int(what, dsd_app_drain_cmds(&opts, &state), 1);
+        rc |= expect_int(what, g_io_control_tune_calls, 0);
+        rc |= expect_contains(what, state.ui_msg, kReason);
+        rc |= expect_int(what, dsd_app_command_test_last_failed(), 1);
+        freeState(&state);
+
+        init_radio_context(&opts, &state, "rtl:0");
+        reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+        DSD_SNPRINTF(what, sizeof(what), "%s on a live radio", tunes[i].tag);
+        rc |= expect_int(what, dsd_app_command_set_u32(tunes[i].cmd, 853125000U), DSD_APP_COMMAND_SUBMIT_QUEUED);
+        rc |= expect_int(what, dsd_app_drain_cmds(&opts, &state), 1);
+        rc |= expect_int(what, g_io_control_tune_calls, 1);
+        rc |= expect_true(what, strstr(state.ui_msg, kReason) == NULL);
+        rc |= expect_int(what, dsd_app_command_test_last_failed(), 0);
+        freeState(&state);
+    }
+#endif
+
+    init_radio_context(&opts, &state, kReplay);
+    seed_active_p25_voice(&opts, &state, 851000000L, 852000000L, 1201);
+    opts.scanner_mode = 1;
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    rc |= expect_int("release during a replay queued", dsd_app_command_action(DSD_APP_CMD_TUNER_RELEASE),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("release during a replay drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_contains("release during a replay explains itself", state.ui_msg, kReason);
+    rc |= expect_int("release during a replay fails", dsd_app_command_test_last_failed(), 1);
+    rc |= expect_int("release during a replay keeps trunking", opts.trunk_enable, 1);
+    rc |= expect_int("release during a replay keeps the scanner", opts.scanner_mode, 1);
+    rc |= expect_int("release during a replay keeps trunk tuned", opts.trunk_is_tuned, 1);
+    rc |= expect_true("release during a replay keeps the VC", state.p25_vc_freq[0] == 852000000L);
+    rc |= expect_int("release during a replay never touches the tuner", g_io_control_tune_calls, 0);
+    freeState(&state);
+
+    init_radio_context(&opts, &state, "rtl:0");
+    seed_active_p25_voice(&opts, &state, 851000000L, 852000000L, 1201);
+    rc |= expect_int("release on a live radio queued", dsd_app_command_action(DSD_APP_CMD_TUNER_RELEASE),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("release on a live radio drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("release on a live radio clears trunking", opts.trunk_enable, 0);
+    rc |= expect_int("release on a live radio is no failed command", dsd_app_command_test_last_failed(), 0);
+    rc |= expect_contains("release on a live radio explains itself", state.ui_msg, "Automatic tuning stopped");
+    freeState(&state);
 
     reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
     return rc;
@@ -16852,6 +16954,7 @@ main(void) {
     rc |= test_retune_commands_clear_received_tone();
 #endif
     rc |= test_tuner_release();
+    rc |= test_replay_refuses_tunes_and_release();
     rc |= test_scan_hold_avoid_commands();
     rc |= test_scan_row_keys_commands();
 #endif

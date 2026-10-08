@@ -262,8 +262,11 @@ edacs_read_sample_rtl(dsd_opts* opts, dsd_state* state, short* out, uint8_t* fla
         dsd_request_shutdown(opts, state);
         return 0;
     }
-    /* An I/Q replay's sample runs the decode clock to its capture time (issue #572). */
-    (void)dsd_rtl_stream_metrics_hook_replay_advance_decode_clock();
+    /* An I/Q replay's sample runs the decode clock to its capture time (issue #572) and notes the centre it was
+       captured on (issue #575). */
+    uint32_t replay_center_hz = 0U;
+    (void)dsd_rtl_stream_metrics_hook_replay_advance_decode_clock(&replay_center_hz);
+    dsd_opts_note_iq_replay_center(opts, replay_center_hz);
     /* EDACS keeps the stream on the digital family, so this is the FSK discriminator output, which the modem
        scales to a +/-30000 peak: it fits int16 as it is. The monitor's volume trim is not applied (nor is it to
        any FSK direct output, symbol_read_sample_rtl()): doubled, the upper half of the waveform clipped before the

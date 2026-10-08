@@ -32,6 +32,11 @@ test_init_opts_clears_trunk_scan_targets_csv(void) {
         DSD_FPRINTF(stderr, "initOpts did not default show_keys to redacted\n");
         return 21;
     }
+    /* Issue #575: no replay centre until a replay sample reaches the decoder. */
+    if (opts.iq_replay_center_freq != 0U) {
+        DSD_FPRINTF(stderr, "initOpts did not clear iq_replay_center_freq\n");
+        return 22;
+    }
     return 0;
 }
 

@@ -203,13 +203,16 @@ dsd_rtl_stream_metrics_hook_replay_batch(dsd_rtl_stream_replay_batch* out) {
 }
 
 int
-dsd_rtl_stream_metrics_hook_replay_advance_decode_clock(void) {
+dsd_rtl_stream_metrics_hook_replay_advance_decode_clock(uint32_t* center_hz_out) {
     dsd_rtl_stream_replay_batch batch;
     if (dsd_rtl_stream_metrics_hook_replay_batch(&batch) != 1) {
         return 0;
     }
     dsd_decode_clock_set_media_ns(dsd_decode_clock_batch_media_ns(batch.media_start_ns, batch.media_duration_ns,
                                                                   batch.output_count, batch.first_index));
+    if (center_hz_out) {
+        *center_hz_out = batch.center_frequency_hz;
+    }
     return 1;
 }
 

@@ -1072,8 +1072,10 @@ MetricsModel::refresh(const dsd_opts* opts_snapshot, const dsd_state* snapshot) 
      * is pointing it. Both come from the same options snapshot as radio_input,
      * so a frame never mixes a center from one generation with a gate from
      * another. Scanner mode counts alongside trunking: it owns the tuner too,
-     * stepping the channel map once the hangtime expires. */
-    next.center_freq_hz = next.radio_input ? static_cast<double>(opts_snapshot->rtlsdr_center_freq) : 0.0;
+     * stepping the channel map once the hangtime expires. The centre follows an
+     * I/Q replay's recorded retunes (issue #575), and reads 0 off a radio input,
+     * as radio_input does (dsd_opts_tuned_freq_hz()). */
+    next.center_freq_hz = static_cast<double>(dsd_opts_tuned_freq_hz(opts_snapshot));
     next.channel_bandwidth_hz = next.radio_input ? metrics.channel_bandwidth_hz : 0;
     fillAnalogChannel(next, opts_snapshot, snapshot, metrics);
     next.trunking_enabled = opts_snapshot->trunk_enable != 0;

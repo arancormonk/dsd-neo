@@ -280,6 +280,7 @@ init_opts_runtime_and_network_defaults(dsd_opts* opts) {
     opts->iq_replay_loop = 0;
     opts->iq_replay_active = 0;
     opts->iq_replay_rate_mode = DSD_IQ_REPLAY_RATE_FAST;
+    opts->iq_replay_center_freq = 0U;
     opts->iq_capture_format = 1; /* DSD_IQ_FORMAT_CU8 */
     opts->iq_capture_max_bytes = 0;
     opts->iq_capture_path[0] = '\0';

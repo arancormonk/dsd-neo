@@ -1050,6 +1050,19 @@ test_rtl_and_soapy_input_source_rendering(void) {
     assert_capture_contains("| Auto PPM: Off");
     assert_capture_contains("| External RTL Tuning on UDP: 127.0.0.1:5555");
 
+    /* Issue #575: an I/Q replay's recorded RETUNEs leave rtlsdr_center_freq on the capture's opening centre; the field
+     * reads the centre the samples being decoded were captured on, and the tuned centre again once there is none. */
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "iqreplay:capture.iq.json");
+    opts.iq_replay_center_freq = 851500000U;
+    reset_printw_capture();
+    ui_render_rtl_input_source(&opts, &state);
+    assert_capture_contains(" FRQ: 851500000;");
+    opts.iq_replay_center_freq = 0U;
+    reset_printw_capture();
+    ui_render_rtl_input_source(&opts, &state);
+    assert_capture_contains(" FRQ: 851012500;");
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "rtl");
+
     /* Squelch off is the default every documented example uses. Printed as a
      * number it read as a threshold that had been applied. */
     opts.rtl_squelch_level = 0.0;
@@ -1113,11 +1126,14 @@ test_rtl_and_soapy_input_source_rendering(void) {
     opts.rtl_gain_value = 0;
     opts.rtl_dsp_bw_khz = 12;
     DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "soapy:driver=rtlsdr");
+    /* A SoapySDR centre above 2^31 Hz prints as itself, not as a negative number. */
+    opts.rtlsdr_center_freq = 2400000000U;
     reset_printw_capture();
     ui_render_rtl_input_source(&opts, &state);
     assert_capture_contains("| SoapySDR: driver=rtlsdr;");
     assert_capture_contains(" G: AGC;");
     assert_capture_contains(" DSP-BW: 12 kHz;");
+    assert_capture_contains(" FRQ: 2400000000;");
 
     DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "soapy");
     reset_printw_capture();

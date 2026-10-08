@@ -1715,6 +1715,22 @@ main(int argc, char** argv) {
     expect("the scanner is not trunking", !model.trunkingEnabled());
     opts.scanner_mode = 0;
 
+    /* Issue #575: the centre follows an I/Q replay's recorded RETUNEs, which leave rtlsdr_center_freq on the capture's
+     * opening centre: the replay centre the decoder last read wins while there is one. */
+    model.refresh(&opts, &state);
+    expect("a radio reads its tuned centre", std::fabs(model.centerFreqHz() - 769768750.0) < 0.5);
+    char live_dev[sizeof opts.audio_in_dev];
+    DSD_SNPRINTF(live_dev, sizeof live_dev, "%s", opts.audio_in_dev);
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "iqreplay:capture.iq.json");
+    opts.iq_replay_center_freq = 769893750U;
+    model.refresh(&opts, &state);
+    expect("a replay reads the centre its samples were captured on",
+           std::fabs(model.centerFreqHz() - 769893750.0) < 0.5);
+    opts.iq_replay_center_freq = 0U;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", live_dev);
+    model.refresh(&opts, &state);
+    expect("with no replay centre the tuned centre reads again", std::fabs(model.centerFreqHz() - 769768750.0) < 0.5);
+
     /* Scan hold and avoids (#380) read whichever rotation is running. Plain trunking
      * follows one system and is not a rotation, so the controls have nothing to act on. */
     model.refresh(&opts, &state);

@@ -207,6 +207,32 @@ test_non_radio_input_reports_no_centre(void) {
     free(opts);
 }
 
+/* Issue #575: during an I/Q replay the centre is the one the samples being decoded were captured on, which a recorded
+   RETUNE moves while rtlsdr_center_freq keeps the capture's opening centre (dsd_opts_tuned_freq_hz()). */
+static void
+test_replay_reports_the_capture_centre(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    assert(opts != NULL);
+    opts->audio_in_type = AUDIO_IN_RTL;
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof(opts->audio_in_dev), "%s", "iqreplay:capture.iq.json");
+    opts->rtlsdr_center_freq = 851012500U;
+    opts->iq_replay_center_freq = 851500000U;
+
+    dsd_app_notification_publish_opts(opts);
+
+    dsd_app_notification_status status;
+    assert(dsd_app_notification_get(&status) == 1);
+    assert(status.radio_input == 1U);
+    assert(status.center_freq_hz == 851500000);
+
+    /* Without a replay centre the tuned one reads again. */
+    opts->iq_replay_center_freq = 0U;
+    dsd_app_notification_publish_opts(opts);
+    assert(dsd_app_notification_get(&status) == 1);
+    assert(status.center_freq_hz == 851012500);
+    free(opts);
+}
+
 /* The record's two halves are published by separate calls, and the opts half is the one
    that runs first -- dsd_telemetry_publish_both_and_redraw() publishes opts, then the whole
    snapshot body, then state. So there is a window at the start of every session in which
@@ -774,6 +800,7 @@ main(void) {
     test_sync_label_hold_runs_on_real_time();
     test_publish_opts_carries_radio_and_trunking();
     test_non_radio_input_reports_no_centre();
+    test_replay_reports_the_capture_centre();
     test_opts_only_publish_keeps_the_no_slot_sentinel();
     test_revision_advances_on_each_publish();
     test_null_arguments_are_safe();

@@ -5089,6 +5089,17 @@ add_test(
     COMMAND dsd-neo_test_core_p25_bandplan_seed
 )
 
+# Issue #575: the tuned-frequency resolver and the I/Q replay predicate (header-only)
+add_executable(
+    dsd-neo_test_core_opts_tuned_freq
+    core/test_core_opts_tuned_freq.c
+)
+target_include_directories(
+    dsd-neo_test_core_opts_tuned_freq
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+add_test(NAME CORE_OPTS_TUNED_FREQ COMMAND dsd-neo_test_core_opts_tuned_freq)
+
 add_executable(dsd-neo_test_core_channel_label core/test_core_channel_label.c)
 target_include_directories(
     dsd-neo_test_core_channel_label

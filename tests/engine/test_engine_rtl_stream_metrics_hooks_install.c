@@ -319,12 +319,13 @@ rtl_stream_get_replay_batch(rtl_stream_replay_batch* out) {
     out->media_duration_ns = 21333333ULL;
     out->output_count = 99U;
     out->first_index = 17U;
+    out->center_frequency_hz = 851012500U;
     return g_replay_batch_result;
 }
 
 /* The replay batch the decoder's last read took its samples from reaches DSP with the fields it labels a symbol cache
- * with and the media span it runs the decode clock on; no replay batch is none. Called with the engine's table
- * installed. */
+ * with, the media span it runs the decode clock on and the centre it was captured on (issue #575); no replay batch is
+ * none. Called with the engine's table installed. */
 static void
 test_replay_batch_hook(void) {
     dsd_rtl_stream_replay_batch batch = {0};
@@ -340,13 +341,14 @@ test_replay_batch_hook(void) {
     assert(batch.media_duration_ns == 21333333ULL);
     assert(batch.output_count == 99U);
     assert(batch.first_index == 17U);
+    assert(batch.center_frequency_hz == 851012500U);
     g_replay_batch_result = -1;
     assert(dsd_rtl_stream_metrics_hook_replay_batch(&batch) == 0);
     assert(g_replay_batch_calls == 2);
     assert(batch.generation == 0U && batch.output_kind == 0 && batch.channel_profile == 0);
     assert(batch.symbol_rate_hz == 0 && batch.levels == 0);
     assert(batch.media_start_ns == 0U && batch.media_duration_ns == 0U && batch.output_count == 0U);
-    assert(batch.first_index == 0U);
+    assert(batch.first_index == 0U && batch.center_frequency_hz == 0U);
 }
 
 int

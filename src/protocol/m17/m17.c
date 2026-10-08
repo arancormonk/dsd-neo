@@ -2033,8 +2033,11 @@ m17_str_read_block_rtl(dsd_opts* opts, dsd_state* state, m17_encoder_input* in, 
                 dsd_request_shutdown(opts, state);
                 return M17_STR_READ_STOP;
             }
-            /* An I/Q replay's sample runs the decode clock to its capture time (issue #572). */
-            (void)dsd_rtl_stream_metrics_hook_replay_advance_decode_clock();
+            /* An I/Q replay's sample runs the decode clock to its capture time (issue #572) and notes the centre it
+               was captured on (issue #575). */
+            uint32_t replay_center_hz = 0U;
+            (void)dsd_rtl_stream_metrics_hook_replay_advance_decode_clock(&replay_center_hz);
+            dsd_opts_note_iq_replay_center(opts, replay_center_hz);
             if (gated < 0) {
                 gated = dsd_squelch_stream_gate_running(opts, state);
             }

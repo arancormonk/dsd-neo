@@ -1510,7 +1510,8 @@ svc_rtl_restart(dsd_opts* opts, dsd_state* state) {
 /* Stop and destroy any existing stream context. An I/Q replay stopped here restarts from the capture's first sample, if
    at all, so its decode time can no longer follow the capture: the decode clock goes back to the system clock with the
    stream stopped (issue #572). When the input is still that replay, the restart replays it on the system clock, which
-   is logged once, at the leave. */
+   is logged once, at the leave. The replay centre the decoder last read goes with the stream (issue #575): every stop,
+   restart, input switch and rollback comes here, so a live radio that replaces the replay reads its own centre. */
 static void
 svc_rtl_stop_locked(dsd_opts* opts, dsd_state* state) {
     if (state->rtl_ctx) {
@@ -1520,6 +1521,7 @@ svc_rtl_stop_locked(dsd_opts* opts, dsd_state* state) {
     }
     opts->rtl_started = 0;
     opts->rtl_needs_restart = 0;
+    opts->iq_replay_center_freq = 0U;
     const int leaves_replay = dsd_decode_clock_source() == DSD_DECODE_CLOCK_REPLAY;
     dsd_engine_decode_clock_leave_replay(opts, state);
     if (leaves_replay && opts->audio_in_type == AUDIO_IN_RTL && opts->iq_replay_requested

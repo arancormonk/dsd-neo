@@ -13,6 +13,10 @@
  * its own capture time, whatever the batch boundaries. A call-state heal decision 1199 and 1201 symbols after an
  * unverified terminator, either side of the 250 ms heal window, then comes out the same for every batch size, and
  * right. The analog monitor, read one sample at a time outside the cache, moves the clock per sample too.
+ *
+ * Each batch also carries the centre it was captured on (issue #575), a different one per batch here: every replay
+ * sample that reaches symbol processing, through the cache or one at a time, publishes its batch's centre into
+ * opts->iq_replay_center_freq, which the tuned-frequency reading follows; a live sample leaves it alone.
  */
 
 #include <dsd-neo/core/call_state.h>
@@ -64,6 +68,29 @@ capture_media_ns(uint64_t n) {
     return (n * 1000000000ULL) / (uint64_t)kSymbolRateHz;
 }
 
+/* The centre the batch starting at capture sample @p batch_first was captured on: a different one for each batch. */
+static uint32_t
+batch_centre_hz(uint64_t batch_first) {
+    return 851000000U + (uint32_t)(batch_first / g_batch_samples) * 12500U;
+}
+
+/* The fake front end's published profile: the CQPSK symbols on the P25 CQPSK channel, the FSK discriminator on the C4FM
+   one, both at 4800 symbols/s, and none for the monitor. */
+static int
+fake_channel_profile(void) {
+    if (g_output_kind == RTL_STREAM_OUTPUT_SYMBOL_CQPSK) {
+        return RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK;
+    }
+    return g_output_kind == RTL_STREAM_OUTPUT_FSK_DISCRIMINATOR ? RTL_STREAM_CHANNEL_PROFILE_P25_C4FM : 0;
+}
+
+static int
+fake_symbol_rate_hz(void) {
+    return (g_output_kind == RTL_STREAM_OUTPUT_SYMBOL_CQPSK || g_output_kind == RTL_STREAM_OUTPUT_FSK_DISCRIMINATOR)
+               ? kSymbolRateHz
+               : 0;
+}
+
 /* Media time the decode clock should read once sample @p n has reached symbol processing: its place in its batch, on
    the batch's span. */
 static uint64_t
@@ -97,13 +124,14 @@ fake_rtl_read(void* rtl_ctx, float* out, size_t count, int* out_got) {
     g_last_batch = (dsd_rtl_stream_replay_batch){
         .generation = 1U,
         .output_kind = g_output_kind,
-        .channel_profile = g_output_kind == RTL_STREAM_OUTPUT_SYMBOL_CQPSK ? RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK : 0,
-        .symbol_rate_hz = g_output_kind == RTL_STREAM_OUTPUT_SYMBOL_CQPSK ? kSymbolRateHz : 0,
+        .channel_profile = fake_channel_profile(),
+        .symbol_rate_hz = fake_symbol_rate_hz(),
         .levels = 4,
         .media_start_ns = start,
         .media_duration_ns = capture_media_ns(batch_first + g_batch_samples) - start,
         .output_count = g_batch_samples,
         .first_index = index,
+        .center_frequency_hz = batch_centre_hz(batch_first),
     };
     g_have_batch = 1;
     g_last_read_first = g_next_sample;
@@ -134,15 +162,14 @@ fake_output_kind(void) {
 
 static int
 fake_symbol_profile(int* out_symbol_rate_hz, int* out_levels, int* out_channel_profile) {
-    const int cqpsk = g_output_kind == RTL_STREAM_OUTPUT_SYMBOL_CQPSK;
     if (out_symbol_rate_hz) {
-        *out_symbol_rate_hz = cqpsk ? kSymbolRateHz : 0;
+        *out_symbol_rate_hz = fake_symbol_rate_hz();
     }
     if (out_levels) {
         *out_levels = 4;
     }
     if (out_channel_profile) {
-        *out_channel_profile = cqpsk ? RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK : 0;
+        *out_channel_profile = fake_channel_profile();
     }
     return 0;
 }
@@ -276,7 +303,7 @@ test_heal_decision_does_not_depend_on_batches(dsd_opts* opts, dsd_state* state) 
 }
 
 /* The analog monitor is read one sample at a time outside the cache (symbol_read_sample_rtl()): each read runs the
-   clock to the capture time of the sample it returned. */
+   clock to the capture time of the sample it returned, and publishes the centre its batch was captured on. */
 static void
 test_monitor_reads_run_the_clock(dsd_opts* opts, dsd_state* state) {
     reset_replay(opts, state, RTL_STREAM_OUTPUT_AUDIO_MONITOR, 37U);
@@ -291,14 +318,89 @@ test_monitor_reads_run_the_clock(dsd_opts* opts, dsd_state* state) {
             g_failures++;
             return;
         }
+        if (opts->iq_replay_center_freq != batch_centre_hz(g_last_read_first)) {
+            DSD_FPRINTF(stderr, "FAIL: monitor symbol %d: the replay centre reads %u, want %u (sample %llu)\n", i,
+                        opts->iq_replay_center_freq, batch_centre_hz(g_last_read_first),
+                        (unsigned long long)g_last_read_first);
+            g_failures++;
+            return;
+        }
     }
     check("the monitor read samples one at a time", g_next_sample > 40U && g_next_sample == g_last_read_first + 1U);
 }
 
-/* A live read carries no batch, so it moves nothing: the decode clock stays where it was. */
+/* Issue #575: a replay sample the symbol cache hands out publishes the centre its batch was captured on, on the CQPSK
+   fast path and on the FSK discriminator's sample reads alike. Every read takes samples of one batch, so the sample just
+   handed out came from the last read's batch. */
+static void
+test_cached_reads_publish_the_centre(dsd_opts* opts, dsd_state* state) {
+    static const struct {
+        int output_kind;
+        const char* name;
+    } kOutputs[] = {
+        {RTL_STREAM_OUTPUT_SYMBOL_CQPSK, "CQPSK symbols"},
+        {RTL_STREAM_OUTPUT_FSK_DISCRIMINATOR, "FSK discriminator"},
+    };
+
+    for (size_t k = 0; k < sizeof(kOutputs) / sizeof(kOutputs[0]); k++) {
+        reset_replay(opts, state, kOutputs[k].output_kind, 37U);
+        for (int i = 0; i < 400; i++) {
+            (void)getSymbol(opts, state, 0);
+            const uint32_t want = batch_centre_hz(g_last_read_first);
+            if (opts->iq_replay_center_freq != want) {
+                DSD_FPRINTF(stderr, "FAIL: %s symbol %d: the replay centre reads %u, want %u (sample %llu)\n",
+                            kOutputs[k].name, i, opts->iq_replay_center_freq, want,
+                            (unsigned long long)g_last_read_first);
+                g_failures++;
+                break;
+            }
+        }
+        char label[96];
+        DSD_SNPRINTF(label, sizeof(label), "%s: the reads crossed several batches", kOutputs[k].name);
+        check(label, g_next_sample > 4U * 37U);
+    }
+}
+
+/* A live read carries no batch, so it moves nothing: the decode clock stays where it was, and so does the replay centre,
+   through the cache and one sample at a time alike. */
 static void
 test_live_reads_leave_the_clock(dsd_opts* opts, dsd_state* state) {
-    reset_replay(opts, state, RTL_STREAM_OUTPUT_SYMBOL_CQPSK, 512U);
+    static const int kOutputs[] = {RTL_STREAM_OUTPUT_SYMBOL_CQPSK, RTL_STREAM_OUTPUT_AUDIO_MONITOR};
+    for (size_t k = 0; k < sizeof(kOutputs) / sizeof(kOutputs[0]); k++) {
+        reset_replay(opts, state, kOutputs[k], 512U);
+        opts->iq_replay_center_freq = 123456789U;
+        dsd_rtl_stream_metrics_hooks hooks = {
+            .output_rate_hz = fake_output_rate_hz,
+            .output_kind = fake_output_kind,
+            .symbol_profile = fake_symbol_profile,
+            .stream_generation = fake_stream_generation,
+        };
+        dsd_rtl_stream_metrics_hooks_set(&hooks);
+        for (int i = 0; i < 200; i++) {
+            (void)getSymbol(opts, state, 0);
+        }
+        check("live samples leave the decode clock at its anchor",
+              dsd_decode_now_mono_ns() == (uint64_t)kAnchorS * 1000000000ULL);
+        check("live samples leave the replay centre alone", opts->iq_replay_center_freq == 123456789U);
+        check("the live case read samples", g_next_sample > 0U);
+        install_fake_replay();
+    }
+}
+
+/* A live read after replay reads on the same decoder state (a replay stopped, a live radio started) fills the cache with
+   no centre: the replay batch's centre the cache held goes, so a live sample never publishes it again over the reading.
+   The state is not wiped between the two, so the cache comes to the live fill holding the replay centre. */
+static void
+test_live_fill_after_a_replay_fill_drops_its_centre(dsd_opts* opts, dsd_state* state) {
+    reset_replay(opts, state, RTL_STREAM_OUTPUT_SYMBOL_CQPSK, 37U);
+    /* Two whole batches, one symbol a sample: the cache ends empty, holding the second batch's centre. */
+    for (int i = 0; i < 2 * 37; i++) {
+        (void)getSymbol(opts, state, 0);
+    }
+    check("the replay reads published the second batch's centre", opts->iq_replay_center_freq == batch_centre_hz(37U));
+    check("the replay reads emptied the cache", state->rtl_symbol_cache_pos == state->rtl_symbol_cache_len);
+    check("the cache holds the replay centre", state->rtl_symbol_cache_center_hz == batch_centre_hz(37U));
+
     dsd_rtl_stream_metrics_hooks hooks = {
         .output_rate_hz = fake_output_rate_hz,
         .output_kind = fake_output_kind,
@@ -306,11 +408,14 @@ test_live_reads_leave_the_clock(dsd_opts* opts, dsd_state* state) {
         .stream_generation = fake_stream_generation,
     };
     dsd_rtl_stream_metrics_hooks_set(&hooks);
-    for (int i = 0; i < 600; i++) {
+    opts->iq_replay_center_freq = 123456789U;
+    const uint64_t live_first = g_next_sample;
+    for (int i = 0; i < 100; i++) {
         (void)getSymbol(opts, state, 0);
     }
-    check("live samples leave the decode clock at its anchor",
-          dsd_decode_now_mono_ns() == (uint64_t)kAnchorS * 1000000000ULL);
+    check("the live fill read samples", g_next_sample > live_first);
+    check("the live fill drops the replay centre", state->rtl_symbol_cache_center_hz == 0U);
+    check("live samples after replay samples leave the replay centre alone", opts->iq_replay_center_freq == 123456789U);
     install_fake_replay();
 }
 
@@ -322,7 +427,9 @@ main(void) {
 
     test_heal_decision_does_not_depend_on_batches(&opts, &state);
     test_monitor_reads_run_the_clock(&opts, &state);
+    test_cached_reads_publish_the_centre(&opts, &state);
     test_live_reads_leave_the_clock(&opts, &state);
+    test_live_fill_after_a_replay_fill_drops_its_centre(&opts, &state);
 
     dsd_decode_clock_use_system();
     dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){0});

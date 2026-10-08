@@ -811,6 +811,9 @@ struct dsd_state {
     uint64_t rtl_symbol_cache_media_duration_ns;
     uint32_t rtl_symbol_cache_media_count;
     uint32_t rtl_symbol_cache_media_first_index;
+    /* The centre in Hz that batch was captured on, which each sample the cache hands out publishes as
+       dsd_opts::iq_replay_center_freq (issue #575); 0, as after a live read, publishes nothing. */
+    uint32_t rtl_symbol_cache_center_hz;
     int rtl_fsk_sps_num;
     int rtl_fsk_sps_den;
     int rtl_fsk_sps_accum;

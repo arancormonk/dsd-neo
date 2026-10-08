@@ -1197,6 +1197,41 @@ test_replay_restart_notice(void) {
     return rc;
 }
 
+/* Issue #575: every stop clears the replay centre the decoder last read (svc_rtl_stop_locked()), so once a live radio
+ * replaces the replay the tuned-frequency reading is the centre DSD-neo tuned it to again, not the capture's. A restart
+ * whose start fails has stopped the replay all the same. */
+static int
+test_stop_clears_the_replay_centre(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.iq_replay_requested = 1;
+    opts.rtlsdr_center_freq = 851012500U;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "%s", "iqreplay:capture.iq.json");
+    opts.iq_replay_center_freq = 851500000U;
+    reset_rtl_restart_stubs();
+    g_rtl_create_result = 0;
+    g_rtl_start_result = 0;
+    int rc = expect_int("the replay reads its centre", (int)dsd_opts_tuned_freq_hz(&opts), 851500000);
+
+    opts.iq_replay_requested = 0;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "%s", "rtl:0:851.0125M");
+    rc |= expect_int("restart onto a live radio starts", svc_rtl_restart_locked(&opts, &state), 0);
+    rc |= expect_int("the stop clears the replay centre", (int)opts.iq_replay_center_freq, 0);
+    rc |= expect_int("the live radio reads its tuned centre", (int)dsd_opts_tuned_freq_hz(&opts), 851012500);
+
+    opts.iq_replay_center_freq = 851500000U;
+    g_rtl_start_result = -1;
+    rc |= expect_int("a restart whose start fails", svc_rtl_restart_locked(&opts, &state), -1);
+    rc |= expect_int("a failed restart's stop clears the replay centre too", (int)opts.iq_replay_center_freq, 0);
+
+    state.rtl_ctx = NULL;
+    reset_rtl_restart_stubs();
+    return rc;
+}
+
 static int
 test_locked_restarts(void) {
     static dsd_opts opts;
@@ -2649,6 +2684,7 @@ main(void) {
     rc |= test_rtl_restart_quiesces_p25_retunes();
     rc |= test_locked_restarts();
     rc |= test_replay_restart_notice();
+    rc |= test_stop_clears_the_replay_centre();
     rc |= test_describe_start_failure();
     rc |= test_describe_monitor_return_refusal();
     rc |= test_airspy_input_analog_width();

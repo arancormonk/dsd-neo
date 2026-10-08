@@ -416,6 +416,18 @@ ui_set_toast(dsd_state* state, int ttl_s, const char* fmt, ...) {
     state->ui_msg_expire = dsd_realtime_time() + ttl_s;
 }
 
+/* An I/Q replay plays the tuning its capture recorded and defers every other retune unseen (issue #575), so a tune or a
+   tuner release asked of it would be reported as done and never land. Returns 1, with the reason toasted, while the
+   input in force is a replay (dsd_opts_input_is_iq_replay()); the caller fails the command. */
+static int
+ui_cmd_refuse_replay_tune(const dsd_opts* opts, dsd_state* state) {
+    if (!dsd_opts_input_is_iq_replay(opts)) {
+        return 0;
+    }
+    ui_set_toast(state, 3, "An I/Q replay cannot retune.");
+    return 1;
+}
+
 static int
 ui_reconfigure_output_for_input_policy(dsd_opts* opts, dsd_state* state) {
     if (dsd_audio_reconfigure_output_for_input_policy(opts) != 0) {
@@ -1823,6 +1835,9 @@ ui_cmd_handle_rtl_set_freq(dsd_opts* opts, dsd_state* state, const struct dsd_ap
     uint32_t v = 0;
     int result = UI_CMD_APPLY_COMPLETED;
     if (state && ui_cmd_parse_u32_payload(c, &v)) {
+        if (ui_cmd_refuse_replay_tune(opts, state)) {
+            return UI_CMD_APPLY_FAILED;
+        }
         if (opts->trunk_scan_enabled) {
             ui_set_toast(state, 3, "Trunk scan active: frequency control disabled");
             return UI_CMD_APPLY_FAILED;
@@ -1882,6 +1897,12 @@ ui_cmd_handle_manual_tune(dsd_opts* opts, dsd_state* state, const struct dsd_app
     if (!state || !ui_cmd_parse_u32_payload(c, &v)) {
         return result;
     }
+    /* Every refusal below is a failed command with its reason toasted, as the frequency entry's are
+     * (ui_cmd_handle_rtl_set_freq()). The replay's comes ahead of the owner gates: their toasts point at a release,
+     * which a replay refuses too. */
+    if (ui_cmd_refuse_replay_tune(opts, state)) {
+        return UI_CMD_APPLY_FAILED;
+    }
     /* Either automatic controller owns the tuner. Trunking parks on a control
      * channel; conventional scanner mode steps the channel map on its own once
      * trunk_hangtime expires (no_carrier_step_scanner_mode_if_needed()), so a
@@ -1889,11 +1910,11 @@ ui_cmd_handle_manual_tune(dsd_opts* opts, dsd_state* state, const struct dsd_app
      * a refusal, because the toast would have claimed it worked. */
     if (opts->trunk_enable) {
         ui_set_toast(state, 3, "Trunking active: tap-to-tune disabled");
-        return result;
+        return UI_CMD_APPLY_FAILED;
     }
     if (opts->scanner_mode) {
         ui_set_toast(state, 3, "Scanner active: tap-to-tune disabled");
-        return result;
+        return UI_CMD_APPLY_FAILED;
     }
     /* The third owner, and the one a release cannot clear (see apply_tuner_release):
      * dsd_trunk_scan_hook_tick() runs on every engine iteration and steps targets on
@@ -1901,7 +1922,7 @@ ui_cmd_handle_manual_tune(dsd_opts* opts, dsd_state* state, const struct dsd_app
      * owner engine_trunk_tuning_owner_active() actually gates dispatch on. */
     if (opts->trunk_scan_enabled) {
         ui_set_toast(state, 3, "Trunk scan active: tap-to-tune disabled");
-        return result;
+        return UI_CMD_APPLY_FAILED;
     }
     int rc = svc_rtl_set_freq(opts, state, v);
     result = ui_cmd_apply_status_from_tune_rc(rc);
@@ -4542,11 +4563,18 @@ apply_cmd_eye_spectrum(dsd_opts* opts, dsd_state* state, const struct dsd_app_co
  * engine_trunk_tuning_owner_active()) and is deliberately untouched: it owns live
  * scan hooks that clearing a flag would not tear down, and it is only reachable
  * from a frontend that passes --trunk-scan.
+ *
+ * Refused during an I/Q replay (issue #575): it hands the tuner over to manual
+ * tunes, which a replay refuses, so it would only stop the decoder following the
+ * capture's trunking while the capture's recorded retunes went on.
  */
 static int
 apply_tuner_release(dsd_opts* opts, dsd_state* state) {
     if (!state) {
         return UI_CMD_APPLY_COMPLETED;
+    }
+    if (ui_cmd_refuse_replay_tune(opts, state)) {
+        return UI_CMD_APPLY_FAILED;
     }
     opts->trunk_enable = 0;
     opts->scanner_mode = 0;

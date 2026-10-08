@@ -4014,11 +4014,15 @@ rtl_replay_wait_event_boundary(void* user) {
 }
 
 /* The tag of a replay block's batch, but for its generation and count, which the publication fills in: the chunk it
- * took and the profile and output it ran on, as the decoder reads them through the published mirrors. */
+ * took and the profile and output it ran on, as the decoder reads them through the published mirrors, and the centre
+ * the chunk was captured on (issue #575). A replayed RETUNE moves last_applied_freq_hz (rtl_replay_on_retune_event()),
+ * and the opening settings and a loop rewind set it (controller_apply_replay_settings()), each on an idle pipeline, with
+ * every batch before it read: so the centre in force now is the one this block's chunk was captured on. */
 static rtl_stream_replay_batch
 demod_replay_batch_tag(const DemodInputSpan* span, const struct output_state* o) {
     rtl_stream_replay_batch tag = {};
     tag.chunk_sequence = span->chunk.sequence;
+    tag.center_frequency_hz = controller.last_applied_freq_hz.load(std::memory_order_acquire);
     tag.output_kind = g_pub_output_kind.load(std::memory_order_relaxed);
     tag.channel_profile = g_pub_channel_profile.load(std::memory_order_relaxed);
     tag.symbol_rate_hz = g_pub_symbol_rate.load(std::memory_order_relaxed);
