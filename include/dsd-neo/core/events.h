@@ -143,7 +143,19 @@ void dsd_event_stage_clear(dsd_state* state, uint8_t slot);
 void write_event_to_log_file(const dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t swrite,
                              const char* event_string);
 void watchdog_event_history(dsd_opts* opts, dsd_state* state, uint8_t slot);
+/**
+ * Render the slot's canonical call into its staged row, opening the call's epoch first (committing the outgoing epoch's
+ * staged row as it stands) when no sync has opened it yet.
+ */
 void watchdog_event_current(const dsd_opts* opts, dsd_state* state, uint8_t slot);
+/**
+ * Attach a note (internal_str: a lockout, a skip) to the slot's canonical call and render it.
+ *
+ * The call's epoch is opened first, so a note written right after a protocol observed a new call lands on that call's
+ * row rather than on the outgoing epoch's. Use this rather than writing Items[0].internal_str and calling
+ * watchdog_event_current(). Callers must not hold an event-history transaction.
+ */
+void dsd_event_note_current_call(dsd_opts* opts, dsd_state* state, uint8_t slot, const char* note);
 void dsd_event_sync_slot(dsd_opts* opts, dsd_state* state, uint8_t slot);
 int dsd_event_emit_call_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_snapshot* call,
                                const char* detail);

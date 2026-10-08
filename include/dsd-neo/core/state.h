@@ -182,7 +182,19 @@ typedef struct {
     // named is ordinary -- so the emptiness alone cannot serve as "ask again", or a later render
     // of the same epoch would stamp whichever channel the scanner has since hopped to.
     uint8_t channel_label_resolved;
-    uint32_t channel;  // If this occurs on a trunking channel, which channel
+    uint32_t channel; // If this occurs on a trunking channel, which channel
+    // Frequency in Hz the call was heard on, or 0 when unknown. The call's own frequency (a grant's
+    // channel, the followed voice channel) whenever the call has one; otherwise the receiver's tuned
+    // frequency, taken once, on the epoch's first render while the call is active, and kept for the
+    // rest of the epoch. A row is never given the tuner reading after its call has ended.
+    int64_t freq_hz;
+    // Which access code access_code is, a dsd_access_code_kind (<dsd-neo/core/access_code.h>);
+    // DSD_ACCESS_CODE_NONE (0) when none is known. Refreshed from the decoder while the call is
+    // active, never erased there by an unknown reading, and frozen once the call has ended.
+    uint8_t access_code_kind;
+    // The colour code, NAC, RAN or CAN the call was heard with; meaningful only when
+    // access_code_kind is not DSD_ACCESS_CODE_NONE.
+    uint16_t access_code;
     time_t event_time; //time event occurred
     // Wall-clock time the transmission this row describes began, or 0 when unknown.
     // event_time is restamped as last-activity on every render pass, so by commit it

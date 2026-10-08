@@ -140,10 +140,11 @@ nxdn_trunk_diag_log_missing_channel_once(const dsd_opts* opts, dsd_state* state,
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-watchdog_event_current(const dsd_opts* opts, dsd_state* state, uint8_t slot) {
+dsd_event_note_current_call(dsd_opts* opts, dsd_state* state, uint8_t slot, const char* note) {
     (void)opts;
     (void)state;
     (void)slot;
+    (void)note;
 }
 
 static char g_datacall_event[80];

@@ -12,6 +12,7 @@
 #include <assert.h>
 #include <dsd-neo/api/api.h>
 #include <dsd-neo/app_control/frontend_runtime.h>
+#include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
@@ -476,6 +477,37 @@ test_feed(void) {
     dsd_telemetry_publish_both_and_redraw(opts, state);
     assert(await_line(c, "event", "\"alias\":\"Late Alias\"", 3000U));
     assert(strstr(g_line, "\"update\":true") != NULL && strstr(g_line, "\"t_name\":\"Dispatch\"") != NULL);
+
+    /* A row carries the frequency it was heard on and its access code (issue #575), and a row that learns them in
+       place -- a reacquired segment filling what the first never decoded -- is sent again. */
+    Event_History* staged = &state->event_history_s[0].Event_History_Items[0];
+    staged->freq_hz = 851012500;
+    staged->access_code_kind = (uint8_t)DSD_ACCESS_CODE_NAC;
+    staged->access_code = 0x293U;
+    commit_event(state, "Tuned", 12U);
+    dsd_telemetry_publish_both_and_redraw(opts, state);
+    assert(await_line(c, "event", "\"t_name\":\"Tuned\"", 3000U));
+    assert(strstr(g_line, "\"channel\":0,\"freq_hz\":851012500,\"access_code_kind\":2,\"access_code\":659,") != NULL);
+    staged->freq_hz = 0;
+    staged->access_code_kind = (uint8_t)DSD_ACCESS_CODE_NONE;
+    staged->access_code = 0U;
+    commit_event(state, "Untuned", 13U);
+    dsd_telemetry_publish_both_and_redraw(opts, state);
+    assert(await_line(c, "event", "\"t_name\":\"Untuned\"", 3000U));
+    assert(strstr(g_line, "\"freq_hz\":0,\"access_code_kind\":0,\"access_code\":0,") != NULL);
+    Event_History* untuned = &state->event_history_s[0].Event_History_Items[1];
+    assert(strcmp(untuned->t_name, "Untuned") == 0);
+    untuned->freq_hz = 852000000;
+    state->event_history_s[0].commit_rev++;
+    dsd_telemetry_publish_both_and_redraw(opts, state);
+    assert(await_line(c, "event", "\"freq_hz\":852000000", 3000U));
+    assert(strstr(g_line, "\"update\":true") != NULL && strstr(g_line, "\"t_name\":\"Untuned\"") != NULL);
+    untuned->access_code_kind = (uint8_t)DSD_ACCESS_CODE_RAN;
+    untuned->access_code = 23U;
+    state->event_history_s[0].commit_rev++;
+    dsd_telemetry_publish_both_and_redraw(opts, state);
+    assert(await_line(c, "event", "\"access_code_kind\":3,\"access_code\":23", 3000U));
+    assert(strstr(g_line, "\"update\":true") != NULL && strstr(g_line, "\"t_name\":\"Untuned\"") != NULL);
 
     /* A one-shot get reads the cached record. */
     send_str(c, "{\"id\":2,\"cmd\":\"get\",\"what\":\"status\"}\n");

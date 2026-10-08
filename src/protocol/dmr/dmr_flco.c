@@ -1019,14 +1019,9 @@ dmr_flco_slot_can_decrypt(const dmr_flco_ctx* ctx) {
 
 static void
 dmr_flco_emit_enc_lockout_event(dmr_flco_ctx* ctx) {
-    dsd_event_history_transaction transaction;
-    dsd_event_history_transaction_begin(ctx->state, &transaction);
-    DSD_SNPRINTF(ctx->state->event_history_s[ctx->slot].Event_History_Items[0].internal_str,
-                 sizeof(ctx->state->event_history_s[ctx->slot].Event_History_Items[0].internal_str),
-                 "Target: %d; has been locked out; Encryption Lock Out Enabled.", ctx->target);
-    dsd_event_history_mark_dirty(&ctx->state->event_history_s[ctx->slot]);
-    dsd_event_history_transaction_end(&transaction);
-    watchdog_event_current(ctx->opts, ctx->state, ctx->slot);
+    char note[128];
+    DSD_SNPRINTF(note, sizeof note, "Target: %d; has been locked out; Encryption Lock Out Enabled.", ctx->target);
+    dsd_event_note_current_call(ctx->opts, ctx->state, ctx->slot, note);
 }
 
 // Arm the ledger for a corroborated, undecryptable encrypted transmission and force the

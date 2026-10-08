@@ -585,7 +585,9 @@ dsd_rdio_meta_fields_from_event(const Event_History* event, dsd_rdio_meta_fields
     }
     out->talkgroup = event->target_id;
     out->source = event->source_id;
-    out->freq_hz = event->channel;
+    // The frequency the call was heard on. Never event->channel: that is a trunk channel number,
+    // an LCN or a dPMR colour code, not Hz. A frequency the sidecar's field cannot hold is unknown.
+    out->freq_hz = (event->freq_hz > 0 && event->freq_hz <= (int64_t)UINT32_MAX) ? (uint32_t)event->freq_hz : 0U;
     out->encrypted = event->enc ? 1 : 0;
     out->short_name = event->sysid_string;
 

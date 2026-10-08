@@ -11,6 +11,7 @@
 * 2025-05 DSD-FME Florida Man Edition
 *-----------------------------------------------------------------------------*/
 
+#include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/channel_label.h>
@@ -93,6 +94,9 @@ init_event_history(Event_History_I* event_struct, uint8_t start, uint8_t stop) {
         event_struct->Event_History_Items[i].channel_label[0] = '\0';
         event_struct->Event_History_Items[i].channel_label_resolved = 0;
         event_struct->Event_History_Items[i].channel = 0;
+        event_struct->Event_History_Items[i].freq_hz = 0;
+        event_struct->Event_History_Items[i].access_code_kind = (uint8_t)DSD_ACCESS_CODE_NONE;
+        event_struct->Event_History_Items[i].access_code = 0;
         event_struct->Event_History_Items[i].event_time = 0;
         event_struct->Event_History_Items[i].event_start_time = 0;
 
@@ -159,6 +163,10 @@ push_event_history(Event_History_I* event_struct) {
         event_struct->Event_History_Items[i].channel_label_resolved =
             event_struct->Event_History_Items[i - 1].channel_label_resolved;
         event_struct->Event_History_Items[i].channel = event_struct->Event_History_Items[i - 1].channel;
+        event_struct->Event_History_Items[i].freq_hz = event_struct->Event_History_Items[i - 1].freq_hz;
+        event_struct->Event_History_Items[i].access_code_kind =
+            event_struct->Event_History_Items[i - 1].access_code_kind;
+        event_struct->Event_History_Items[i].access_code = event_struct->Event_History_Items[i - 1].access_code;
         event_struct->Event_History_Items[i].event_time = event_struct->Event_History_Items[i - 1].event_time;
         event_struct->Event_History_Items[i].event_start_time =
             event_struct->Event_History_Items[i - 1].event_start_time;
@@ -580,8 +588,6 @@ static void
 watchdog_event_capture_render_env(const dsd_state* state, uint8_t slot, const dsd_call_snapshot* call,
                                   dsd_call_event_render_env* env) {
     env->mfid = slot == 0U ? state->dmr_fid : state->dmr_fidR;
-    env->nxdn_grant_chan = state->nxdn_grant_chan;
-    env->nxdn_grant_freq = state->nxdn_grant_freq;
     env->ea_mode = state->ea_mode;
     env->edacs_a_bits = state->edacs_a_bits;
     env->edacs_f_bits = state->edacs_f_bits;
@@ -721,6 +727,18 @@ watchdog_event_merge_identity_fields(Event_History* retained, const Event_Histor
     }
     if (retained->channel == 0U && staged->channel != 0U) {
         retained->channel = staged->channel;
+    }
+    // The frequency and access code the transmission was heard with fill in only when the first
+    // segment never learned them: by the time a reacquired segment merges, the receiver may have
+    // moved on, and the segment's own readings may describe the next carrier. Kind and code move
+    // together, since a code means nothing without its kind.
+    if (retained->freq_hz == 0 && staged->freq_hz != 0) {
+        retained->freq_hz = staged->freq_hz;
+    }
+    if (retained->access_code_kind == (uint8_t)DSD_ACCESS_CODE_NONE
+        && staged->access_code_kind != (uint8_t)DSD_ACCESS_CODE_NONE) {
+        retained->access_code_kind = staged->access_code_kind;
+        retained->access_code = staged->access_code;
     }
     if (retained->gi < 0 && staged->gi >= 0) {
         retained->gi = staged->gi;
@@ -1076,6 +1094,11 @@ typedef struct {
     uint32_t sys_id4;
     uint32_t sys_id5;
     uint32_t channel;
+    /* The frequency the call was heard on and its access code, as the row records them; see
+     * watchdog_event_current_load_tuning() for the rules. */
+    int64_t freq_hz;
+    uint8_t access_code_kind;
+    uint16_t access_code;
     uint8_t enc;
     uint8_t emergency;
     uint8_t priority;
@@ -1364,9 +1387,18 @@ watchdog_event_current_load_labels(const dsd_state* state, watchdog_event_curren
 // resolves it and every later render of that epoch copies the staged row's answer back. Under -Y
 // the scanner advances lcn_freq_roll before the call ends and the row is rendered once more on the
 // finalize pass, so asking again would relabel a finished transmission with a channel it was never
-// heard on. The staged row is cleared between epochs -- retire_staged_row(),
-// history_authoritative() and finalize_ended() all init it -- so a resolved answer is always this
-// epoch's own.
+// heard on.
+//
+// The staged row holds this epoch's answer only when the slot's lifecycle has opened the rendered
+// call's epoch (staged_is_own). On that canonical path the row is cleared between epochs --
+// retire_staged_row(), history_authoritative() and finalize_ended() all init it -- and every
+// canonical render opens the epoch before it renders: dsd_event_sync_slot(),
+// watchdog_event_current(), dsd_event_note_current_call() and a canonical call notice. A notice for
+// a call that is not the slot's canonical one -- the P25 encryption lockout's synthetic snapshot for
+// a grant -- renders with no lifecycle, into a blank row
+// (watchdog_event_emit_noncanonical_notice()). The flag keeps any render whose lifecycle does not
+// own the row from reusing another call's answer; such a render resolves the label live, as a data
+// notice does.
 //
 // The verdict is carried by its own flag rather than inferred from a non-empty label, because an
 // unnamed scan-list row resolves to an empty label and that is an answer too: a -Y list with only
@@ -1376,8 +1408,8 @@ watchdog_event_current_load_labels(const dsd_state* state, watchdog_event_curren
 // that would then silently re-resolve.
 static void
 watchdog_event_current_load_channel_label(const dsd_opts* opts, const dsd_state* state, const Event_History* staged,
-                                          watchdog_event_current_ctx* ctx) {
-    if (staged != NULL && staged->channel_label_resolved != 0U) {
+                                          int staged_is_own, watchdog_event_current_ctx* ctx) {
+    if (staged_is_own && staged != NULL && staged->channel_label_resolved != 0U) {
         DSD_SNPRINTF(ctx->channel_label, sizeof(ctx->channel_label), "%s", staged->channel_label);
         ctx->channel_label_resolved = 1U;
         return;
@@ -1386,9 +1418,72 @@ watchdog_event_current_load_channel_label(const dsd_opts* opts, const dsd_state*
     ctx->channel_label_resolved = 1U;
 }
 
+// The frequency the call was heard on and the access code it was heard with, resolved per render
+// against the staged row, which holds what earlier renders of this epoch decided -- when it is this
+// epoch's own (staged_is_own; see load_channel_label() above). Otherwise its frequency and code
+// describe another call, so neither is reused, and the render reads only the call's own frequency
+// and the live receiver, as a data notice does.
+//
+// Frequency. The call's own frequency -- one its message carried, or the voice channel a trunking
+// receiver followed -- names the carrier exactly and is taken on every render, in any phase. Without
+// one, the receiver's tuned frequency is asked exactly once, on the epoch's first render while the
+// call is active, and later renders copy the staged answer back, as the channel label is pinned.
+// Asking again while the call is still live would label it with the next channel, in two windows:
+// a typed -Y row's queued tune writes rtlsdr_center_freq (rtl_sdr_fm.cpp) before
+// channel_scan_commit() ends the outgoing calls, and app-control command handlers render the
+// still-live call in between; and trunk_scan_switch_to() restores the next target's decoder state
+// before it retunes. An epoch first rendered after its end takes no tuner reading at all: by then
+// the receiver may be on the next channel, and unknown is safer than wrong. Playing back files
+// (--playfiles), the tuner is not what the recording was heard on, so it is never asked.
+//
+// Access code. While the call is active, a valid live code replaces the staged one, so a colour
+// code that locks after the call opened still lands; a sentinel (DMR 16, a P25 nac cleared by a
+// no-carrier pass, an NXDN RAN of (unsigned)-1) means "nothing decoded now" and never erases a
+// known code. Once the call has ended the code is frozen, known or unknown: a held drop-verdict or
+// finalize pass can run after a -Y hop or a trunk-scan snapshot restore, and must not label the
+// call with the next carrier's code. A staged code is reused only when its kind is the one the
+// call's protocol carries. Under --playfiles no code is taken: the SDRTrunk JSON reader writes
+// dmr_color_code = 0 for every file, which describes no carrier.
+static void
+watchdog_event_current_load_tuning(const dsd_opts* opts, const dsd_state* state, const dsd_call_snapshot* call,
+                                   const Event_History* staged, int staged_is_own, watchdog_event_current_ctx* ctx) {
+    ctx->freq_hz = 0;
+    ctx->access_code_kind = (uint8_t)DSD_ACCESS_CODE_NONE;
+    ctx->access_code = 0U;
+    if (call == NULL || call->epoch == 0U) {
+        return;
+    }
+    if (!staged_is_own) {
+        staged = NULL;
+    }
+    const int live = call->phase == DSD_CALL_PHASE_ACTIVE && opts->playfiles == 0;
+
+    if (call->frequency_hz > 0) {
+        ctx->freq_hz = call->frequency_hz;
+    } else if (staged != NULL && staged->freq_hz != 0) {
+        ctx->freq_hz = staged->freq_hz;
+    } else if (live) {
+        ctx->freq_hz = (int64_t)dsd_opts_tuned_freq_hz(opts);
+    }
+
+    const uint8_t protocol_kind = (uint8_t)dsd_access_code_kind_for_protocol(call->protocol);
+    if (staged != NULL && protocol_kind != (uint8_t)DSD_ACCESS_CODE_NONE && staged->access_code_kind == protocol_kind) {
+        ctx->access_code_kind = staged->access_code_kind;
+        ctx->access_code = staged->access_code;
+    }
+    uint8_t live_kind = (uint8_t)DSD_ACCESS_CODE_NONE;
+    uint16_t live_code = 0U;
+    if (live
+        && dsd_access_code_current(state, call->protocol, call->service_options, call->has_service_metadata, &live_kind,
+                                   &live_code)) {
+        ctx->access_code_kind = live_kind;
+        ctx->access_code = live_code;
+    }
+}
+
 static void
 watchdog_event_current_update_item(const dsd_opts* opts, dsd_state* state, uint8_t slot, Event_History* item,
-                                   const watchdog_event_current_ctx* ctx, time_t now) {
+                                   const watchdog_event_current_ctx* ctx, time_t now, int staged_is_own) {
     item->write = 0;
     item->crc_invalid = ctx->crc_invalid;
     dsd_event_history_item_set_metadata(item, ctx->crc_invalid ? DSD_EVENT_SEVERITY_WARNING : ctx->severity,
@@ -1415,6 +1510,18 @@ watchdog_event_current_update_item(const dsd_opts* opts, dsd_state* state, uint8
     item->source_id = ctx->source_id;
     item->target_id = ctx->target_id;
     item->channel = ctx->channel;
+    item->freq_hz = ctx->freq_hz;
+    item->access_code_kind = ctx->access_code_kind;
+    item->access_code = ctx->access_code;
+    // Of what this function writes, the start stamp is the one value a render reuses from the staged
+    // row (event_time is re-derived below, or under --playfiles left as the file reader stamped the
+    // row for the recording), and that row is this epoch's only when staged_is_own (see
+    // load_channel_label()). A notice for a call that is not the slot's canonical one renders over
+    // another epoch's staged row, whose stamp is when that other call started: the notice starts from
+    // its own call instead, or not at all when that call has no start of its own.
+    if (!staged_is_own) {
+        item->event_start_time = 0;
+    }
     if (opts->playfiles == 0) {
         item->event_time = now;
         if (ctx->call_elapsed_valid) {
@@ -1422,7 +1529,8 @@ watchdog_event_current_update_item(const dsd_opts* opts, dsd_state* state, uint8
             // from two independently truncated clocks makes the stamp jitter by a
             // second between renders, and the committed value is whatever the last
             // render happened to say. The retire/commit paths clear the staged row
-            // between epochs, so a nonzero stamp is always this epoch's own.
+            // between epochs and the line above drops another epoch's, so a nonzero
+            // stamp here is always this epoch's own.
             if (item->event_start_time == 0) {
                 item->event_start_time = now - (time_t)ctx->call_elapsed_s;
             }
@@ -1620,14 +1728,21 @@ watchdog_event_current_build_event_nxdn(const watchdog_event_current_ctx* ctx, c
                      sys_string, ctx->target_id, ctx->source_id, ctx->sys_id3);
     }
 
-    if (ctx->env.nxdn_grant_chan != 0) {
-        char ch_str[96];
-        if (ctx->env.nxdn_grant_freq != 0) {
-            DSD_SNPRINTF(ch_str, sizeof(ch_str), "CH: %u; FREQ: %.6lf MHz; ", ctx->env.nxdn_grant_chan,
-                         (double)ctx->env.nxdn_grant_freq / 1000000.0);
-        } else {
-            DSD_SNPRINTF(ch_str, sizeof(ch_str), "CH: %u; ", ctx->env.nxdn_grant_chan);
-        }
+    // The call's own channel and the row's own frequency, never the last grant decoded: that is
+    // global, and a duplicate assignment for another call decoded while tuned, or a -Y control-channel
+    // row's last grant carried onto a conventional row, would name another call's channel here. The
+    // NXDN VCALL names a channel only for a grant the receiver followed.
+    char ch_str[96];
+    ch_str[0] = '\0';
+    if (ctx->channel != 0U && ctx->freq_hz > 0) {
+        DSD_SNPRINTF(ch_str, sizeof(ch_str), "CH: %u; FREQ: %.6lf MHz; ", ctx->channel,
+                     (double)ctx->freq_hz / 1000000.0);
+    } else if (ctx->channel != 0U) {
+        DSD_SNPRINTF(ch_str, sizeof(ch_str), "CH: %u; ", ctx->channel);
+    } else if (ctx->freq_hz > 0) {
+        DSD_SNPRINTF(ch_str, sizeof(ch_str), "FREQ: %.6lf MHz; ", (double)ctx->freq_hz / 1000000.0);
+    }
+    if (ch_str[0] != '\0') {
         watchdog_event_str_append(event_string, event_size, ch_str);
     }
 
@@ -1780,6 +1895,9 @@ watchdog_event_ctx_from_row(const dsd_call_event_render_env* env, const Event_Hi
     ctx->key_id = item->enc_key;
     ctx->mi = item->mi;
     ctx->channel = item->channel;
+    ctx->freq_hz = item->freq_hz;
+    ctx->access_code_kind = item->access_code_kind;
+    ctx->access_code = item->access_code;
     ctx->sys_id1 = item->sys_id1;
     ctx->sys_id2 = item->sys_id2;
     ctx->sys_id3 = item->sys_id3;
@@ -1997,7 +2115,11 @@ watchdog_event_current_impl(const dsd_opts* opts, dsd_state* state, uint8_t slot
 
     watchdog_event_current_apply_protocol_metadata(state, &candidate, &ctx);
     watchdog_event_current_load_labels(state, &ctx);
-    watchdog_event_current_load_channel_label(opts, state, &candidate, &ctx);
+    // Rendered with the slot's lifecycle on the epoch it has opened, the staged row is this call's;
+    // otherwise it is another epoch's, and its label, frequency, code and start stamp are not reused.
+    const int staged_is_own = lifecycle != NULL && effective_call != NULL && lifecycle->epoch == effective_call->epoch;
+    watchdog_event_current_load_channel_label(opts, state, &candidate, staged_is_own, &ctx);
+    watchdog_event_current_load_tuning(opts, state, effective_call, &candidate, staged_is_own, &ctx);
 
     const char* sys_string = dsd_synctype_to_string(ctx.protocol);
 
@@ -2007,7 +2129,7 @@ watchdog_event_current_impl(const dsd_opts* opts, dsd_state* state, uint8_t slot
     (void)dsd_format_local_datetime(now, DSD_LOCAL_DATETIME_TIME_COLON, timestr, sizeof timestr);
     (void)dsd_format_local_datetime(now, DSD_LOCAL_DATETIME_DATE_HYPHEN, datestr, sizeof datestr);
 
-    watchdog_event_current_update_item(opts, state, slot, &candidate, &ctx, now);
+    watchdog_event_current_update_item(opts, state, slot, &candidate, &ctx, now, staged_is_own);
 
     char event_string[2000];
     DSD_MEMSET(event_string, 0, sizeof(event_string));
@@ -2029,18 +2151,58 @@ watchdog_event_current_impl(const dsd_opts* opts, dsd_state* state, uint8_t slot
     /* stack buffers; no free */
 }
 
+// A render outside dsd_event_sync_slot() -- the DMR P_CLEAR release, or a note through
+// dsd_event_note_current_call() -- can run after a protocol observed a new epoch but before any
+// sync opened it: D-STAR's header and DMR's tuned voice sync observe without syncing, and the
+// control pump runs app-control commands right after the frame. Rendering then would draw the new
+// call over the outgoing epoch's staged row, and the next sync would commit that row as the
+// outgoing epoch's: the outgoing call loses its row and the new call gets two. So the epoch is
+// opened first, as the sync does, committing the outgoing row as it stands. The history step can
+// commit a row and sound an alert, which is why it takes the mutable options the render's own
+// finalize pass already uses.
+static void
+watchdog_event_current_open_and_render(dsd_opts* opts, dsd_state* state, uint8_t slot, const char* note) {
+    dsd_call_state_ext* ext = dsd_call_state_ext_get(state, 0);
+    if (!ext) {
+        if (note != NULL) {
+            // No canonical call to open or render: the note stays on the staged row.
+            dsd_event_history_transaction transaction;
+            dsd_event_history_transaction_begin(state, &transaction);
+            DSD_SNPRINTF(state->event_history_s[slot].Event_History_Items[0].internal_str,
+                         sizeof(state->event_history_s[slot].Event_History_Items[0].internal_str), "%s", note);
+            dsd_event_history_mark_dirty(&state->event_history_s[slot]);
+            dsd_event_history_transaction_end(&transaction);
+        }
+        return;
+    }
+    dsd_call_state_ext_lock(ext);
+    watchdog_event_history_impl(opts, state, slot, &ext->calls.slots[slot], &ext->events[slot]);
+    if (note != NULL) {
+        Event_History_I* event_struct = &state->event_history_s[slot];
+        DSD_SNPRINTF(event_struct->Event_History_Items[0].internal_str,
+                     sizeof(event_struct->Event_History_Items[0].internal_str), "%s", note);
+        dsd_event_history_mark_dirty(event_struct);
+    }
+    watchdog_event_current_impl(opts, state, slot, &ext->calls.slots[slot], &ext->events[slot], 1);
+    dsd_call_state_ext_unlock(ext);
+}
+
 void
 watchdog_event_current(const dsd_opts* opts, dsd_state* state, uint8_t slot) {
     if (!opts || !state || !state->event_history_s || slot > 1U) {
         return;
     }
-    dsd_call_state_ext* ext = dsd_call_state_ext_get(state, 0);
-    if (!ext) {
+    // The render path below already writes through opts on its finalize pass; the const is the
+    // historical signature the protocol hook table carries.
+    watchdog_event_current_open_and_render((dsd_opts*)opts, state, slot, NULL);
+}
+
+void
+dsd_event_note_current_call(dsd_opts* opts, dsd_state* state, uint8_t slot, const char* note) {
+    if (!opts || !state || !state->event_history_s || slot > 1U || !note) {
         return;
     }
-    dsd_call_state_ext_lock(ext);
-    watchdog_event_current_impl(opts, state, slot, &ext->calls.slots[slot], &ext->events[slot], 1);
-    dsd_call_state_ext_unlock(ext);
+    watchdog_event_current_open_and_render(opts, state, slot, note);
 }
 
 void
@@ -2152,6 +2314,41 @@ watchdog_event_notice_already_committed(const dsd_call_state_ext* ext, const dsd
     return ext == NULL && watchdog_event_notice_matches_history(event_struct, call, detail);
 }
 
+// A notice for a call that is not the slot's canonical one -- the P25 encryption lockout's synthetic
+// snapshot for a grant the slot's call does not match -- describes a call with no staged row of its
+// own. Row 0 is the canonical call's staged row, so the notice renders into a blank row and pushes
+// it, and the canonical row is put back exactly as it was, as a data notice does. Rendering over the
+// canonical row gave the notice that call's alias, GPS and text, and retiring it afterwards cleared
+// the canonical call's row: P25 handle_enc() ends that call right after the notice, so its first
+// render then came after its end and its row committed with no access code, no tuned frequency and
+// no enrichment.
+//
+// The canonical commit path's side effects stay with the canonical call: the notice rotates no WAV
+// and sounds no end alert, whatever finalize the caller asked for -- the recording and the end
+// belong to the slot's call, which this notice does not end -- and it leaves the YSF and D-STAR
+// slow-data scratch alone, which feeds the canonical call's row. Under --playfiles the blank row
+// keeps the event_time the file reader stamped on the staged row for the recording being played,
+// which a render there does not restamp.
+static void
+watchdog_event_emit_noncanonical_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_snapshot* call,
+                                        const char* detail) {
+    Event_History_I* event_struct = &state->event_history_s[slot];
+    Event_History canonical_row;
+    DSD_MEMCPY(&canonical_row, &event_struct->Event_History_Items[0], sizeof(canonical_row));
+    init_event_history(event_struct, 0, 1);
+    Event_History* item = &event_struct->Event_History_Items[0];
+    if (opts->playfiles != 0) {
+        item->event_time = canonical_row.event_time;
+    }
+    watchdog_event_current_impl(opts, state, slot, call, NULL, 0);
+    DSD_SNPRINTF(item->internal_str, sizeof(item->internal_str), "%s", detail);
+    write_event_to_log_file(opts, state, slot, watchdog_event_should_write_slot(state), item->event_string);
+    item->write = 1;
+    push_event_history(event_struct);
+    DSD_MEMCPY(&event_struct->Event_History_Items[0], &canonical_row, sizeof(canonical_row));
+    dsd_event_history_mark_dirty(event_struct);
+}
+
 static int
 dsd_event_emit_call_notice_impl(dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_snapshot* call,
                                 const char* detail, int finalize_call) {
@@ -2171,6 +2368,12 @@ dsd_event_emit_call_notice_impl(dsd_opts* opts, dsd_state* state, uint8_t slot, 
     if (ext != NULL && watchdog_event_notice_matches_canonical(&ext->calls.slots[slot], call)) {
         canonical_lifecycle = lifecycle;
         watchdog_event_history_authoritative(opts, state, slot, call, canonical_lifecycle);
+    }
+    if (canonical_lifecycle == NULL) {
+        watchdog_event_emit_noncanonical_notice(opts, state, slot, call, detail);
+        watchdog_event_notice_mark_handled(lifecycle, call);
+        watchdog_event_unlock_if_present(ext);
+        return 1;
     }
     watchdog_event_current_impl(opts, state, slot, call, canonical_lifecycle, 0);
     DSD_SNPRINTF(event_struct->Event_History_Items[0].internal_str,
@@ -2520,6 +2723,18 @@ dsd_event_emit_data_notice_impl(dsd_opts* opts, dsd_state* state, uint8_t slot, 
     // question is answered either way, empty label included, so the row says so.
     (void)dsd_channel_label_current(opts, state, item->channel_label, sizeof(item->channel_label));
     item->channel_label_resolved = 1U;
+    // Live for the same reason: the notice's own frequency when the PDU named one, else the tuned
+    // frequency, and the carrier's access code. Neither is taken playing back files, where the
+    // decoder state describes no carrier (see watchdog_event_current_load_tuning()).
+    if (observation->frequency_hz > 0) {
+        item->freq_hz = observation->frequency_hz;
+    } else if (opts->playfiles == 0) {
+        item->freq_hz = (int64_t)dsd_opts_tuned_freq_hz(opts);
+    }
+    if (opts->playfiles == 0) {
+        (void)dsd_access_code_current(state, observation->protocol, observation->service_options,
+                                      observation->has_service_metadata, &item->access_code_kind, &item->access_code);
+    }
     item->event_time = dsd_decode_time();
     DSD_SNPRINTF(item->src_str, sizeof(item->src_str), "%s", observation->source_text);
     DSD_SNPRINTF(item->tgt_str, sizeof(item->tgt_str), "%s", observation->target_text);

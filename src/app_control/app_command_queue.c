@@ -5991,15 +5991,8 @@ tg_lockout_report(dsd_opts* opts, dsd_state* state, unsigned int tg) {
 }
 
 static void
-slot_block_note_event(const dsd_opts* opts, dsd_state* state, uint8_t slot, const char* text) {
-    const int eh_slot = slot == 0 ? 0 : 1;
-    dsd_event_history_transaction transaction;
-    dsd_event_history_transaction_begin(state, &transaction);
-    DSD_SNPRINTF(state->event_history_s[eh_slot].Event_History_Items[0].internal_str,
-                 sizeof state->event_history_s[eh_slot].Event_History_Items[0].internal_str, "%s", text);
-    dsd_event_history_mark_dirty(&state->event_history_s[eh_slot]);
-    dsd_event_history_transaction_end(&transaction);
-    watchdog_event_current(opts, state, eh_slot);
+slot_block_note_event(dsd_opts* opts, dsd_state* state, uint8_t slot, const char* text) {
+    dsd_event_note_current_call(opts, state, slot == 0 ? 0U : 1U, text);
 }
 
 static int

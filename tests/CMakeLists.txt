@@ -1124,6 +1124,18 @@ dsd_neo_add_public_header_smoke_test(
   C
 )
 dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_core_access_code
+  HEADERS_PUBLIC_CORE_ACCESS_CODE
+  dsd-neo/core/access_code.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_core_access_code_cxx
+  HEADERS_PUBLIC_CORE_ACCESS_CODE_CXX
+  dsd-neo/core/access_code.h
+  CXX
+)
+dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_core_talkgroup_policy
   HEADERS_PUBLIC_CORE_TALKGROUP_POLICY
   dsd-neo/core/talkgroup_policy.h
@@ -5107,6 +5119,15 @@ target_include_directories(
 )
 target_link_libraries(dsd-neo_test_core_channel_label PRIVATE dsd-neo_core)
 add_test(NAME CORE_CHANNEL_LABEL COMMAND dsd-neo_test_core_channel_label)
+
+# Issue #575: the access code a call history row records, per protocol
+add_executable(dsd-neo_test_core_access_code core/test_core_access_code.c)
+target_include_directories(
+    dsd-neo_test_core_access_code
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(dsd-neo_test_core_access_code PRIVATE dsd-neo_core)
+add_test(NAME CORE_ACCESS_CODE COMMAND dsd-neo_test_core_access_code)
 
 add_executable(
     dsd-neo_test_core_state_trunk_lcn_avoid

@@ -2365,14 +2365,10 @@ nxdn_vcall_run_enc_lockout(dsd_opts* opts, dsd_state* state, const struct nxdn_v
 
     if (dsd_enc_lockout_note(state, info->destination_id, is_group, (int)state->nxdn_cipher_type,
                              (int)state->nxdn_key)) {
-        dsd_event_history_transaction transaction;
-        dsd_event_history_transaction_begin(state, &transaction);
-        DSD_SNPRINTF(state->event_history_s[0].Event_History_Items[0].internal_str,
-                     sizeof(state->event_history_s[0].Event_History_Items[0].internal_str),
-                     "Target: %d; has been locked out; Encryption Lock Out Enabled.", info->destination_id);
-        dsd_event_history_mark_dirty(&state->event_history_s[0]);
-        dsd_event_history_transaction_end(&transaction);
-        watchdog_event_current(opts, state, 0);
+        char note[128];
+        DSD_SNPRINTF(note, sizeof note, "Target: %d; has been locked out; Encryption Lock Out Enabled.",
+                     info->destination_id);
+        dsd_event_note_current_call(opts, state, 0U, note);
     }
 
     // Deliberately unconditional (the event above fires once per lock, the

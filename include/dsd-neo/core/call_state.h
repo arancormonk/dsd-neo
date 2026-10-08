@@ -253,8 +253,6 @@ typedef struct {
  * missed and leave a stale verdict vouching for the wrong row.
  */
 typedef struct {
-    uint16_t nxdn_grant_chan;
-    long nxdn_grant_freq;
     unsigned int mfid;
     int ea_mode;
     int edacs_a_bits;

@@ -35,6 +35,7 @@ target_sources(
         util/key_set.c
         util/scan_profile.c
         util/channel_label.c
+        util/access_code.c
         util/enc_lockout.c
         util/dsd_events.c
         util/dsd_event_staging.c
