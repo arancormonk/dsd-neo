@@ -3092,12 +3092,13 @@ apply_manual_return_to_cc(dsd_opts* opts, dsd_state* state) {
     if (!state) {
         return UI_CMD_APPLY_COMPLETED;
     }
-    if (opts->trunk_enable != 1 || (state->trunk_cc_freq == 0 && state->p25_cc_freq == 0)) {
-        return UI_CMD_APPLY_COMPLETED;
-    }
-    /* A retune the user asked for, refused as a tap is (issue #575). */
+    /* A retune the user asked for, refused as a tap is (issue #575), ahead of the cases with nothing to return to, so a
+       replay never reports it done. */
     if (ui_cmd_refuse_replay_tune(opts, state)) {
         return UI_CMD_APPLY_FAILED;
+    }
+    if (opts->trunk_enable != 1 || (state->trunk_cc_freq == 0 && state->p25_cc_freq == 0)) {
+        return UI_CMD_APPLY_COMPLETED;
     }
     return run_manual_retune_guarded(opts, state, apply_manual_return_to_cc_locked);
 }

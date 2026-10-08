@@ -4421,6 +4421,26 @@ test_replay_refuses_channel_cycle_and_return_cc(void) {
         }
         freeState(&state);
 
+        /* With trunking off, or with trunking on before the session has a control channel, a live radio has nothing to
+           return to and the command does nothing; a replay refuses it first all the same, so it never reads as done. */
+        for (int trunked = 0; trunked < 2; trunked++) {
+            init_radio_context(&opts, &state, replay ? kReplay : "rtl:0");
+            opts.trunk_enable = trunked;
+            state.trunk_cc_freq = 0;
+            state.p25_cc_freq = 0;
+            state.ui_msg[0] = '\0';
+            reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+            reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_OK);
+            DSD_SNPRINTF(what, sizeof(what), "return to CC %s with %s", where,
+                         trunked ? "no control channel yet" : "trunking off");
+            rc |= expect_int(what, dsd_app_command_action(DSD_APP_CMD_RETURN_CC), DSD_APP_COMMAND_SUBMIT_QUEUED);
+            rc |= expect_int(what, dsd_app_drain_cmds(&opts, &state), 1);
+            rc |= expect_int(what, g_cc_tune_calls + g_io_control_tune_calls, 0);
+            rc |= expect_int(what, strstr(state.ui_msg, kReason) != NULL ? 1 : 0, replay);
+            rc |= expect_int(what, dsd_app_command_test_last_failed(), replay);
+            freeState(&state);
+        }
+
         init_radio_context(&opts, &state, replay ? kReplay : "rtl:0");
         seed_active_p25_voice(&opts, &state, 855000000L, 856000000L, 3201);
         state.lcn_freq_count = 2;
