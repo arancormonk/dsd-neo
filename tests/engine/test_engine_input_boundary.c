@@ -32,6 +32,7 @@
 #include <dsd-neo/protocol/nxdn/nxdn_lfsr.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/runtime/analog_channel.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -231,8 +232,12 @@ __wrap_getFrameSync(dsd_opts* opts, dsd_state* state) {
                    state->matched_filter.raw_count == 36 && state->matched_filter.replay == 36);
             expect("the same stream keeps its acquisition proof",
                    state->profile_proof_valid == 1 && state->profile_proof_symbolcnt == 4800U);
-            /* Now a command replaced the stream. */
+            /* Now a command replaced the stream, whose grants named a voice frequency within the last ten seconds, so
+               no pass forgets it as stale (issue #575). */
             state->dstar_confirmed = 1;
+            state->dmr_color_code = 5U;
+            state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = 851012500L;
+            state->last_cc_sync_time = dsd_decode_time();
             state->input_boundary = 1;
             state->input_interrupted = 1;
             return DSD_SYNC_NONE;
@@ -241,6 +246,16 @@ __wrap_getFrameSync(dsd_opts* opts, dsd_state* state) {
                    call_phase(state, &reason) == DSD_CALL_PHASE_ENDED && reason == DSD_CALL_END_EXPLICIT);
             expect("the new stream inherits no confirmation", state->dstar_confirmed == 0);
             expect("the boundary is consumed", state->input_boundary == 0);
+            /* The old stream's call commits as a teardown before noCarrier() forgets what that stream decoded, so its
+               row keeps the colour code it was heard with in every field (issue #575). */
+            expect("the replaced stream's call commits with its colour code",
+                   state->event_history_s[0].Event_History_Items[1].target_id == 1234U
+                       && state->event_history_s[0].Event_History_Items[1].sys_id2 == 5U);
+            expect("the new stream inherits no colour code", state->dmr_color_code == 16U);
+            expect("the new stream inherits no voice frequency the old one's grants named",
+                   state->trunk_vc_freq[0] == 0 && state->trunk_vc_freq[1] == 0);
+            state->trunk_vc_freq[0] = 851012500L;
+            state->last_cc_sync_time = dsd_decode_time();
             expect("nothing of the old stream is replayed into the new one",
                    state->matched_filter.raw_count == 0 && state->matched_filter.replay == 0
                        && state->matched_filter.kind == 0 && state->matched_filter.raw[0] == 0.0f);
@@ -252,6 +267,7 @@ __wrap_getFrameSync(dsd_opts* opts, dsd_state* state) {
         case 4:
             expect("a plain pass ends the call as a fade",
                    call_phase(state, &reason) == DSD_CALL_PHASE_ENDED && reason == DSD_CALL_END_SYNC_LOSS);
+            expect("a plain pass keeps a recent grant's voice frequency", state->trunk_vc_freq[0] == 851012500L);
             /* A sync, whose frame is followed by a switch drained in the synced loop. */
             begin_call(state);
             state->dstar_confirmed = 1;

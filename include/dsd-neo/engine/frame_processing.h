@@ -31,6 +31,12 @@ void dsd_engine_reset_no_carrier_state(dsd_opts* opts, dsd_state* state);
  * `p2_cc` itself. The no-carrier reset runs it outside trunk scan, whose per-target snapshots keep these; app-control
  * runs it on every accepted retune the user asks for to another carrier, which can sync before any no-carrier pass. */
 void dsd_engine_forget_carrier_codes(dsd_state* state);
+/** With trunking off, forget what the carrier on air left beyond its codes (issue #575): what the trunking-off
+ * no-carrier pass forgets of it (the P25 voice frequencies a grant update wrote, the DMR rest channel and branding, the
+ * NXDN site and channel plan) and the DMR grants' voice frequencies (`trunk_vc_freq[]`). A retune to another carrier
+ * runs it after the outgoing calls are committed, since the next carrier can sync a call before that pass. With trunking
+ * on these belong to the system the receiver follows, and nothing changes. */
+void dsd_engine_forget_untrunked_carrier_state(const dsd_opts* opts, dsd_state* state);
 
 #ifdef __cplusplus
 }

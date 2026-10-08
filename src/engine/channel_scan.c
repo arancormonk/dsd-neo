@@ -293,6 +293,7 @@ channel_scan_commit(dsd_opts* opts, dsd_state* state, channel_scan* scan) {
     /* End calls with the outgoing row's keys and label still installed. */
     channel_scan_end_calls(opts, state);
     dsd_engine_reset_no_carrier_state(opts, state);
+    dsd_engine_forget_untrunked_carrier_state(opts, state); // the next row is another carrier (issue #575)
     if (dsd_scan_mode_enter(opts, state, scan->mode) != 0) {
         scan->retry = 1;
         return -1;

@@ -3680,6 +3680,24 @@ test_carrier_boundary_forgets_the_access_codes(void) {
                       state->p2_cc_verified == 0U && state->p2_cc == 0x293ULL);
     dsd_engine_forget_carrier_codes(NULL);
 
+    /* With trunking off a retune also forgets the voice frequencies the carrier's grants named, as the trunking-off
+       no-carrier pass does, and the DMR grants'; with trunking on they are the followed system's and stay. */
+    for (int trunked = 0; trunked < 2; trunked++) {
+        opts->trunk_enable = trunked;
+        state->p25_vc_freq[0] = state->p25_vc_freq[1] = 851012500L;
+        state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = 851012500L;
+        dsd_engine_forget_untrunked_carrier_state(opts, state);
+        const long want = trunked ? 851012500L : 0L;
+        rc |= expect_true(trunked ? "access-codes: trunking keeps the P25 voice frequencies"
+                                  : "access-codes: the untrunked forget drops the P25 voice frequencies",
+                          state->p25_vc_freq[0] == want && state->p25_vc_freq[1] == want);
+        rc |= expect_true(trunked ? "access-codes: trunking keeps the trunk voice frequencies"
+                                  : "access-codes: the untrunked forget drops the trunk voice frequencies",
+                          state->trunk_vc_freq[0] == want && state->trunk_vc_freq[1] == want);
+    }
+    opts->trunk_enable = 0;
+    dsd_engine_forget_untrunked_carrier_state(NULL, state);
+
     free_test_runtime(opts, state);
     return rc;
 }
@@ -4139,12 +4157,20 @@ test_rx_tone_resets_on_legacy_scan_step(void) {
     noCarrier(opts, state);
     rc |= expect_true("rx-tone-no-step-keeps-tone",
                       g_rtl_tune_calls == 0 && state->lcn_freq_roll == 0 && state->analog_rx.ctcss_tenths_hz == 1318);
+    state->trunk_vc_freq[0] = 946012500L;
+    noCarrier(opts, state);
+    rc |= expect_true("legacy-no-step-keeps-trunk-vc-freq",
+                      g_rtl_tune_calls == 0 && state->trunk_vc_freq[0] == 946012500L);
 
-    /* The hangtime runs out: the step retunes and the tone is gone. */
-    state->last_cc_sync_time = time(NULL) - 11;
+    /* The hangtime runs out: the step retunes and the tone is gone, with the voice frequencies the old channel's grants
+       named (issue #575), which a pass that does not step keeps. Under the ten seconds after which every pass forgets
+       them as stale. */
+    state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = 946012500L;
+    state->last_cc_sync_time = time(NULL) - 2;
     noCarrier(opts, state);
     rc |= expect_true("rx-tone-step-retuned", g_rtl_tune_calls == 1 && state->lcn_freq_roll == 1);
     rc |= expect_true("rx-tone-step-clears-tone", rx_tone_publication_cleared(state, generation));
+    rc |= expect_true("legacy-step-clears-trunk-vc-freq", state->trunk_vc_freq[0] == 0 && state->trunk_vc_freq[1] == 0);
     free_test_runtime(opts, state);
     return rc;
 }

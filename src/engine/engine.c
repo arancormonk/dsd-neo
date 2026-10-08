@@ -2091,6 +2091,17 @@ no_carrier_reset_non_trunk_fields_if_needed(const dsd_opts* opts, dsd_state* sta
     state->dmr_site_parms[0] = '\0';
 }
 
+void
+dsd_engine_forget_untrunked_carrier_state(const dsd_opts* opts, dsd_state* state) {
+    if (!opts || !state || opts->trunk_enable != 0) {
+        return;
+    }
+    no_carrier_reset_non_trunk_fields_if_needed(opts, state);
+    /* With trunking off only a DMR grant writes these, naming a channel the carrier that announced it carries. */
+    state->trunk_vc_freq[0] = 0;
+    state->trunk_vc_freq[1] = 0;
+}
+
 static void
 no_carrier_reset_last_call_display(dsd_state* state) {
     UNUSED(state);
@@ -2478,6 +2489,10 @@ no_carrier_run(dsd_opts* opts, dsd_state* state, int guard_held) {
     no_carrier_return_to_control_channel_if_needed(opts, state, now, guard_held);
     no_carrier_finalize_canonical_calls(opts, state, scanner_retuned);
     dsd_engine_reset_no_carrier_state(opts, state);
+    if (scanner_retuned) {
+        /* The untyped step moved to another channel: its grants' voice frequencies go too (issue #575). */
+        dsd_engine_forget_untrunked_carrier_state(opts, state);
+    }
 }
 
 void
@@ -2764,6 +2779,8 @@ dsd_engine_end_input_boundary(dsd_opts* opts, dsd_state* state) {
     }
     state->input_boundary = 0;
     no_carrier_finalize_canonical_calls(opts, state, 1);
+    /* noCarrier() has forgotten the codes; the voice frequencies the old stream's grants named go too (issue #575). */
+    dsd_engine_forget_untrunked_carrier_state(opts, state);
     dsd_frame_sync_reset_acquisition(opts, state, opts->trunk_scan_enabled != 1);
     init_rrc_filter_memory();
     dsd_symbol_matched_filter_reset(state);

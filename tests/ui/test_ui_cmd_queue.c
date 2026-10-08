@@ -4623,6 +4623,25 @@ test_accepted_retunes_forget_the_carrier_codes(void) {
         rc |= expect_int(what, g_io_control_tune_calls, 1);
         rc |= expect_carrier_codes(what, &state, accepted);
         freeState(&state);
+
+        /* The candidate leg: under trunking a candidate is the system's own control channel; with trunking off the
+           candidate list is no system the receiver follows, so its next entry is another carrier. */
+        for (int trunked = 1; trunked >= 0; trunked--) {
+            init_radio_context(&opts, &state, "rtl:0");
+            opts.trunk_enable = trunked;
+            opts.p25_prefer_candidates = 1;
+            rc |= expect_int("candidate seeded", p25_cc_add_candidate(&state, 857000000L, 1), 1);
+            seed_carrier_codes(&state);
+            reset_io_control_tune_stub(accepted ? RTL_STREAM_TUNE_OK : RTL_STREAM_TUNE_DEFERRED);
+            reset_cc_tune_stub(accepted ? DSD_TRUNK_TUNE_RESULT_OK : DSD_TRUNK_TUNE_RESULT_DEFERRED);
+            DSD_SNPRINTF(what, sizeof what, "%s %s candidate cycle", accepted ? "accepted" : "deferred",
+                         trunked ? "trunked" : "untrunked");
+            rc |= expect_int(what, dsd_app_command_action(DSD_APP_CMD_CHANNEL_CYCLE), DSD_APP_COMMAND_SUBMIT_QUEUED);
+            rc |= expect_int(what, dsd_app_drain_cmds(&opts, &state), 1);
+            rc |= expect_int(what, g_io_control_tune_calls + g_cc_tune_calls, 1);
+            rc |= expect_carrier_codes(what, &state, accepted && !trunked);
+            freeState(&state);
+        }
     }
 
     reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
@@ -4674,6 +4693,101 @@ test_tune_away_commits_the_outgoing_call_first(void) {
         rc |= expect_true(what, state.nxdn_last_ran == (unsigned int)-1);
         freeState(&state);
     }
+    return rc;
+}
+#endif
+
+#ifdef USE_RADIO
+/* A P25 voice frequency, and a DMR grant's, the carrier on air left. */
+static void
+seed_frequency_caches(dsd_state* state) {
+    state->p25_vc_freq[0] = state->p25_vc_freq[1] = 851012500L;
+    state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = 851012500L;
+}
+
+static int
+expect_frequency_caches(const char* what, const dsd_state* state, int cleared) {
+    char tag[160];
+    const long want = cleared ? 0L : 851012500L;
+    DSD_SNPRINTF(tag, sizeof tag, "%s: P25 voice frequencies", what);
+    int rc = expect_true(tag, state->p25_vc_freq[0] == want && state->p25_vc_freq[1] == want);
+    DSD_SNPRINTF(tag, sizeof tag, "%s: trunk voice frequencies", what);
+    rc |= expect_true(tag, state->trunk_vc_freq[0] == want && state->trunk_vc_freq[1] == want);
+    return rc;
+}
+
+/*
+ * Issue #575: with trunking off, the P25 voice frequency a grant update wrote names a channel on the carrier that
+ * carried it, and the trunking-off no-carrier pass forgets it. A retune to another carrier can sync a P25 call before
+ * that pass, which took the old frequency (p25_sm_conventional_frequency()) over the tuner's: a tune from 851.0125 to
+ * 853.125 MHz whose next call recorded 851.0125. The retune forgets it, with the DMR grant's, as that pass does; with
+ * trunking on they belong to the system and stay.
+ */
+static int
+test_tune_away_clears_the_untrunked_frequency_caches(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+
+    init_radio_context(&opts, &state, "rtl:0");
+    opts.trunk_enable = 0;
+    opts.rtlsdr_center_freq = 851012500U;
+    seed_frequency_caches(&state);
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    post_u32(DSD_APP_CMD_RTL_SET_FREQ, 853125000U);
+    rc |= expect_int("untrunked frequency entry drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_frequency_caches("untrunked frequency entry", &state, 1);
+    opts.rtlsdr_center_freq = 853125000U; /* where the tuner went */
+    state.synctype = state.lastsynctype = DSD_SYNC_P25P1_POS;
+    p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
+    rc |= expect_int("a P25 call after the entry is published",
+                     p25_sm_emit_ptt_call(&opts, &state, 0, 4600, 0, 4601, 1, 0), 1);
+    const Event_History* row = &state.event_history_s[0].Event_History_Items[0];
+    rc |= expect_int("a P25 call after the entry is another", (int)row->target_id, 4600);
+    rc |= expect_true("a P25 call after the entry records the new tuner frequency", row->freq_hz == 853125000);
+    freeState(&state);
+
+    init_radio_context(&opts, &state, "rtl:0");
+    opts.trunk_enable = 0;
+    state.lcn_freq_count = 2;
+    state.lcn_freq_roll = 0;
+    state.trunk_lcn_freq[0] = 857000000L;
+    state.trunk_lcn_freq[1] = 858000000L;
+    seed_frequency_caches(&state);
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    rc |= expect_int("conventional channel cycle queued", dsd_app_command_action(DSD_APP_CMD_CHANNEL_CYCLE),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("conventional channel cycle drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_frequency_caches("conventional channel cycle", &state, 1);
+    freeState(&state);
+
+    init_radio_context(&opts, &state, "rtl:0");
+    opts.trunk_enable = 0;
+    opts.p25_prefer_candidates = 1;
+    rc |= expect_int("candidate seeded", p25_cc_add_candidate(&state, 857000000L, 1), 1);
+    seed_frequency_caches(&state);
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_OK);
+    rc |= expect_int("untrunked candidate cycle queued", dsd_app_command_action(DSD_APP_CMD_CHANNEL_CYCLE),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("untrunked candidate cycle drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_frequency_caches("untrunked candidate cycle", &state, 1);
+    freeState(&state);
+
+    /* A frequency entry under trunking that picks no P25 control channel leaves the system's frequencies. */
+    init_radio_context(&opts, &state, "rtl:0");
+    opts.trunk_enable = 1;
+    opts.frame_p25p1 = 0;
+    opts.frame_p25p2 = 0;
+    seed_frequency_caches(&state);
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    post_u32(DSD_APP_CMD_RTL_SET_FREQ, 853125000U);
+    rc |= expect_int("trunked frequency entry drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_frequency_caches("trunked frequency entry", &state, 0);
+    freeState(&state);
+
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_OK);
     return rc;
 }
 #endif
@@ -17384,6 +17498,7 @@ main(void) {
     rc |= test_accepted_retunes_forget_the_carrier_codes();
 #ifdef USE_RADIO
     rc |= test_tune_away_commits_the_outgoing_call_first();
+    rc |= test_tune_away_clears_the_untrunked_frequency_caches();
 #endif
     rc |= test_return_cc_keeps_the_dmr_decode_gate();
     rc |= test_scan_row_keys_commands();

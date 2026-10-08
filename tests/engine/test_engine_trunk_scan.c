@@ -13078,6 +13078,12 @@ dsd_engine_reset_no_carrier_state(dsd_opts* opts, dsd_state* state) {
     (void)state;
 }
 
+void
+dsd_engine_forget_untrunked_carrier_state(const dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    (void)state;
+}
+
 /* Coordinator tests stub DSP; acquisition contents are covered by FRAME_SYNC_INTERNAL_HELPERS.
    The received-tone reset is mirrored from the real function (issue #522), so a switch that
    stopped calling it, or restored a target's tone after it, shows up here. */

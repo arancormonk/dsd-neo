@@ -1332,14 +1332,16 @@ ui_end_calls(dsd_opts* opts, dsd_state* state) {
 
 /* An accepted retune the user asked for to another carrier, which can sync before any no-carrier pass ends the
    reception (issue #575): the calls heard on the carrier it leaves end and commit first, with the codes that carrier
-   decoded, and then those codes go (dsd_engine_forget_carrier_codes()). A retune within the system -- the return to the
-   control channel, the skip and lockout returns, the P25 control channel picks and cycles, a trunked channel cycle --
-   does not run it: the system's codes stay valid there, as under automatic trunk following, and the DMR decode gate
-   they carry keeps dispatching the control channel's bursts. */
+   decoded and the frequencies it named, and then those go -- the codes (dsd_engine_forget_carrier_codes()), and with
+   trunking off the voice frequencies its grants named (dsd_engine_forget_untrunked_carrier_state()). A retune within a
+   system under trunking -- the return to the control channel, the skip and lockout returns, the P25 control channel
+   picks and candidate cycles, a trunked channel cycle -- does not run it: the system's codes stay valid there, as under
+   automatic trunk following, and the DMR decode gate they carry keeps dispatching the control channel's bursts. */
 static void
 ui_leave_carrier(dsd_opts* opts, dsd_state* state) {
     ui_end_calls(opts, state);
     dsd_engine_forget_carrier_codes(state);
+    dsd_engine_forget_untrunked_carrier_state(opts, state);
 }
 
 #ifdef USE_RADIO
@@ -3168,6 +3170,11 @@ try_manual_candidate_cycle_locked(dsd_opts* opts, dsd_state* state, int p25_live
     }
 
     reset_call_tracking(opts, state, 0);
+    if (opts->trunk_enable != 1) {
+        /* With trunking off the candidate list is no system the receiver follows: the next entry is another carrier
+           (issue #575). */
+        ui_leave_carrier(opts, state);
+    }
     LOG_INFO("Candidate Cycle: tuning to %.06lf MHz\n", (double)cand / 1000000);
     mark_cc_sync(state, 1);
     set_cc_symbol_timing(opts, state, sym_rate);

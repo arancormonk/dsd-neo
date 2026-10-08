@@ -797,10 +797,14 @@ test_config_reopen_on_another_frequency_forgets_the_carrier_codes(void) {
 
     int rc = 0;
     seed_carrier_codes(state);
+    state->p25_vc_freq[0] = 851012500L;
+    state->trunk_vc_freq[0] = 851012500L;
     dsd_app_command_submit(DSD_APP_CMD_CONFIG_APPLY, &cfg, sizeof cfg);
     (void)dsd_app_drain_cmds(opts, state);
     rc |= expect_true("same-frequency reopen ran", strstr(opts->audio_in_dev, ":30:") != NULL);
     rc |= expect_carrier_codes("same-frequency reopen keeps the codes", state, 0);
+    rc |= expect_true("same-frequency reopen keeps the frequency caches",
+                      state->p25_vc_freq[0] == 851012500L && state->trunk_vc_freq[0] == 851012500L);
 
     DSD_SNPRINTF(cfg.rtl_freq, sizeof cfg.rtl_freq, "%s", "460.125M");
     seed_carrier_codes(state);
@@ -808,6 +812,8 @@ test_config_reopen_on_another_frequency_forgets_the_carrier_codes(void) {
     (void)dsd_app_drain_cmds(opts, state);
     rc |= expect_true("reopen on another frequency ran", opts->rtlsdr_center_freq == 460125000U);
     rc |= expect_carrier_codes("reopen on another frequency forgets the codes", state, 1);
+    rc |= expect_true("reopen on another frequency forgets the untrunked frequency caches",
+                      state->p25_vc_freq[0] == 0 && state->trunk_vc_freq[0] == 0);
 
     free_test_runtime(&runtime);
     return rc;
