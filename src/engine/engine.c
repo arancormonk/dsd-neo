@@ -2460,6 +2460,54 @@ carrier_boundary_forget_evidence(dsd_state* state) {
     state->p25_p1_nid_evidence_symbolcnt = 0;
 }
 
+/* With its codes and evidence, step 3 drops every multi-frame assembly the decoders keep in dsd_state that can publish
+   an identity or a code, as the no-carrier pass drops them: a boundary between frames leaves each half-built, and the
+   next carrier's next piece could complete it with the carrier left's pieces (an NXDN SACCH superframe whose fourth
+   segment passes its own CRC publishes the old talkgroup and source at the new frequency). Decoders that hold a frame's
+   or superframe's pieces locally drop them through the carrier count instead. */
+static void
+carrier_boundary_forget_assemblies(dsd_opts* opts, dsd_state* state) {
+    /* NXDN: the SACCH superframe and the alias blocks. */
+    DSD_MEMSET(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
+    DSD_MEMSET(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
+    state->nxdn_part_of_frame = 0;
+    state->nxdn_sf = 0;
+    state->nxdn_alias_block_number = 0;
+    DSD_MEMSET(state->nxdn_alias_block_segment, 0, sizeof(state->nxdn_alias_block_segment));
+    state->nxdn_alias_arib_total_segments = 0;
+    state->nxdn_alias_arib_seen_mask = 0;
+    DSD_MEMSET(state->nxdn_alias_arib_segments, 0, sizeof(state->nxdn_alias_arib_segments));
+    /* DMR: data blocks, short LC (CACH) fragments, Capacity Plus CSBK blocks and data headers, as on a sync loss; the
+       embedded LC, late-entry MI and talker alias fragments; and the alias shown for the call that ended. */
+    dmr_reset_blocks(opts, state);
+    state->dmr_cach_counter = 0;
+    DSD_MEMSET(state->dmr_embedded_signalling, 0, sizeof(state->dmr_embedded_signalling));
+    DSD_MEMSET(state->late_entry_mi_fragment, 0, sizeof(state->late_entry_mi_fragment));
+    DSD_MEMSET(state->dmr_alias_format, 0, sizeof(state->dmr_alias_format));
+    DSD_MEMSET(state->dmr_alias_block_len, 0, sizeof(state->dmr_alias_block_len));
+    DSD_MEMSET(state->dmr_alias_char_size, 0, sizeof(state->dmr_alias_char_size));
+    DSD_MEMSET(state->dmr_alias_block_segment, 0, sizeof(state->dmr_alias_block_segment));
+    DSD_MEMSET(state->generic_talker_alias, 0, sizeof(state->generic_talker_alias));
+    /* P25: Phase 2 MAC fragments and the Phase 1 talker aliases carried over several link control words. */
+    DSD_MEMSET(state->p25_mac_frag, 0, sizeof(state->p25_mac_frag));
+    DSD_MEMSET(state->p25_apx_alias_rx, 0, sizeof(state->p25_apx_alias_rx));
+    DSD_MEMSET(state->p25_l3h_alias_phase1, 0, sizeof(state->p25_l3h_alias_phase1));
+    /* dPMR: the superframe part the next frame's identity half is read against. */
+    opts->dPMR_next_part_of_superframe = 0;
+    /* M17: the LSF from LICH chunks, the packet and the signature. */
+    DSD_MEMSET(state->m17_lsf, 0, sizeof(state->m17_lsf));
+    DSD_MEMSET(state->m17_pkt, 0, sizeof(state->m17_pkt));
+    state->m17_pbc_ct = 0;
+    state->m17_signature_advertised = 0;
+    DSD_MEMSET(state->m17_signature_digest, 0, sizeof(state->m17_signature_digest));
+    DSD_MEMSET(state->m17_signature, 0, sizeof(state->m17_signature));
+    state->m17_signature_received_mask = 0;
+    state->m17_signature_complete = 0;
+    state->m17_signature_bad_sequence = 0;
+    /* YSF: the text assembled frame by frame. */
+    DSD_MEMSET(state->ysf_txt, 0, sizeof(state->ysf_txt));
+}
+
 void
 dsd_engine_carrier_boundary(dsd_opts* opts, dsd_state* state, dsd_carrier_boundary_kind kind, int guard_held) {
     if (!opts || !state) {
@@ -2469,6 +2517,7 @@ dsd_engine_carrier_boundary(dsd_opts* opts, dsd_state* state, dsd_carrier_bounda
     no_carrier_finalize_canonical_calls(opts, state, 1);
     dsd_engine_forget_carrier_codes(state);
     carrier_boundary_forget_evidence(state);
+    carrier_boundary_forget_assemblies(opts, state);
     dsd_engine_forget_untrunked_carrier_state(opts, state);
     state->carrier_seq++;
 }

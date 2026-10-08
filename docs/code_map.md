@@ -1204,7 +1204,8 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   - Replay tuning (issue #575): an I/Q replay plays the tuning its capture recorded and defers every other retune
     unseen, so while the input in force is a replay (`dsd_opts_input_is_iq_replay()`) `MANUAL_TUNE` (the Spectrum tap),
     `RTL_SET_FREQ` (the terminal menu's frequency row, Qt's frequency entry), `TUNER_RELEASE`
-    (`CommandBridge::releaseTuner()`), `RETURN_CC` (when there is a control channel to return to) and `CHANNEL_CYCLE`
+    (`CommandBridge::releaseTuner()`), `RETURN_CC` (refused ahead of its no-op cases, trunking off or no control
+    channel yet, so it never reads as done) and `CHANNEL_CYCLE`
     (every leg: LCN, P25 candidate, `-Y` row, trunk-scan target) are refused as failed commands with the toast "An I/Q
     replay cannot retune." (`ui_cmd_refuse_replay_tune()`), where they used to report a tune that never landed or fail
     on the backend's deferred result with no reason given. Scan hold and avoid, skip and lockout are not refused: their
@@ -3385,7 +3386,9 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   scrambled FACCH or SACCH, `process_FACCHs()`/`process_SACCHs()`, or an ESS, `p25p2_process_ess()`, all through
   `p25p2_note_seed_proven()`; it proves the seed `p25p2_process_frame_scramble()` descrambled the buffered superframe
   with, so the seed in force is proven only while it is still that one: a broadcast decoded from an earlier burst of the
-  same buffer may have replaced it), or a network status broadcast that passed its CRC named it
+  same buffer may have replaced it; when the proof is first set it renders both slots before the burst's MAC PDU is
+  dispatched, since that burst may carry the MAC_END_PTT that ends its call and an ended call no longer reads the live
+  NAC), or a network status broadcast that passed its CRC named it
   (`p25p2_vpdu_apply_nsb_identity()`). Under `-F` an XCCH MAC_SIGNAL that failed its CRC still reaches the VPDU decoder,
   which `p25p2_xcch_validate_sacch_crc()` allows, so the signal handler passes the verdict through
   (`process_MAC_VPDU_crc()`): such a broadcast may still name the system, as before, but proves no NAC. Every other
@@ -3413,7 +3416,14 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
      (`p25p1_apply_nac_update()`) while the frame still dispatches; `noCarrier()` resets it too. With them goes the
      evidence that vouched for the carrier's transmissions (`carrier_boundary_forget_evidence()`): the NXDN, dPMR (with
      its CCH evidence), D-STAR, M17 and ProVoice confirmation gates restart, the YSF FICH verdict and the Phase 1 NID's
-     evidence go, as the no-carrier pass restarts them, so the next carrier proves itself again.
+     evidence go, as the no-carrier pass restarts them, so the next carrier proves itself again. And every multi-frame
+     assembly that can publish an identity or a code goes too (`carrier_boundary_forget_assemblies()`), as the
+     no-carrier pass drops them, since the next carrier's next piece could complete one with the carrier left's pieces:
+     the NXDN SACCH superframe (segments, CRC marks, part) and alias blocks; the DMR data blocks, short LC fragments and
+     Capacity Plus blocks (`dmr_reset_blocks()`), embedded LC, late-entry MI and talker alias, with the alias shown; the
+     P25 MAC fragments and Phase 1 talker aliases; the dPMR superframe part; the M17 LSF chunks, packet and signature;
+     the YSF text. D-STAR slow data, X2-TDMA signalling and P25 link control live within one superframe or frame, which
+     the carrier count covers.
   4. With trunking off, `dsd_engine_forget_untrunked_carrier_state()` forgets what the carrier left beyond its codes:
      what the trunking-off no-carrier pass forgets (`no_carrier_reset_non_trunk_fields_if_needed()`: the P25 voice
      frequencies a grant update wrote, which `p25_sm_conventional_frequency()` gives a call over the tuner's, the DMR
@@ -3423,8 +3433,11 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   The carrier count guards every decoder that reads more of the air after a unit is whole and before it decodes or
   publishes that unit: a replay read that adopts a recorded retune runs the boundary inside such a read, and the unit
   read whole before it would decode after the boundary ended its calls. Each notes `carrier_seq` where it starts reading
-  and, if it moved before the decode, drops what it collected, as on a sync loss, without reporting a decode error. A
-  unit whose own symbols straddle the move is mixed, and its FEC or CRC decides, as for any noise. Guarded:
+  and, if it moved before the decode, drops what it collected, as on a sync loss, without reporting a decode error.
+  Nothing after the drop confirms or publishes for that frame: YSF does not set its FICH verdict from the carrier left's
+  FICH, and `processFrame()` reports any frame whose handler saw the count move as `DSD_FRAME_VERDICT_UNPRODUCTIVE`,
+  whatever the handler made of it, so the SPS hunt is not told a dropped frame proved anything. A unit whose own symbols
+  straddle the move is mixed, and its FEC or CRC decides, as for any noise. Guarded:
   - P25 Phase 2 `processP2()`: the four-burst buffer (`p2_dibit_buffer()`); a boundary between buffers drops the slots'
     ESS fragments, partial voice superframe and staged rekey (`p25p2_forget_carrier_left()`).
   - P25 Phase 1: `processLDU1()` (link control, read by the seventh voice frame), `processLDU2()` (encryption sync),
@@ -3493,7 +3506,7 @@ Tests: `DMR_FLCO_PRIVACY_MODES`, `DMR_MS_DATA`, `NXDN_ELEMENT_BOUNDS`, `NXDN_DEP
 `UI_MENU_SERVICES`; the decoders' carrier-count guards: `P25_P2_RELIABILITY`, `P25_P1_LDU1_HELPERS`,
 `P25_P1_LDU2_HELPERS`, `P25_P1_HDU_HELPERS`, `P25_P1_TDULC`, `P25_P1_MDPU_HELPERS`, `DMR_BS_SYNC_TIMES`,
 `DMR_DATA_SYNC`, `DMR_MS_DATA`, `NXDN_FRAME_ROUTING`, `DPMR_VOICE_BRIDGE`, `DSTAR_PROCESS`, `X2TDMA_VOICE_HELPERS`,
-`YSF_DCH_DECODE`, `EDACS_FRAME_VERDICT`.
+`YSF_DCH_DECODE`, `EDACS_FRAME_VERDICT`, `ENGINE_PROTOCOL_DISPATCH` (a split frame's verdict).
 
 Key public headers (selection):
 

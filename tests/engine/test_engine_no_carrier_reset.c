@@ -3650,6 +3650,93 @@ test_carrier_boundary_restarts_the_evidence(void) {
     return rc;
 }
 
+/*
+ * Issue #575: a carrier boundary between frames leaves every multi-frame assembly the decoders keep in dsd_state
+ * half-built, and the next carrier's next piece can complete it: an NXDN SACCH superframe whose fourth segment passes its
+ * own CRC publishes the carrier left's talkgroup and source at the new frequency, and confirms the new carrier on it.
+ * The boundary drops each assembly that can publish an identity or a code, as the no-carrier pass does: the NXDN SACCH
+ * superframe and alias blocks, the DMR data blocks, short LC fragments, embedded LC, late-entry MI and talker alias, the
+ * P25 MAC fragments and talker aliases, the dPMR superframe part, the M17 LSF chunks, packet and signature, and the
+ * YSF text.
+ */
+static int
+test_carrier_boundary_discards_partial_assemblies(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    for (int part = 0; part < 3; part++) {
+        DSD_MEMSET(state->nxdn_sacch_frame_segment[part], 0, sizeof(state->nxdn_sacch_frame_segment[part]));
+        state->nxdn_sacch_frame_segcrc[part] = 0;
+    }
+    state->nxdn_part_of_frame = 2;
+    state->nxdn_alias_block_number = 2;
+    state->nxdn_alias_block_segment[0][0][0] = 'A';
+    state->nxdn_alias_arib_total_segments = 3;
+    state->nxdn_alias_arib_seen_mask = 1;
+    state->nxdn_alias_arib_segments[0][0] = 7;
+    DSD_MEMSET(state->dmr_cach_fragment, 0, sizeof(state->dmr_cach_fragment));
+    state->dmr_cach_counter = 2;
+    state->data_block_counter[0] = 3;
+    state->data_header_valid[0] = 1;
+    state->dmr_embedded_signalling[0][1][0] = 1;
+    state->late_entry_mi_fragment[0][1][0] = 5U;
+    state->dmr_alias_format[0] = 1;
+    state->dmr_alias_block_len[0] = 4;
+    state->dmr_alias_char_size[0] = 7;
+    state->dmr_alias_block_segment[0][0][0][0] = 1;
+    DSD_SNPRINTF(state->generic_talker_alias[0], sizeof(state->generic_talker_alias[0]), "%s", "OLD ALIAS");
+    DSD_MEMSET(state->p25_mac_frag, 0x5A, sizeof(state->p25_mac_frag));
+    DSD_MEMSET(state->p25_apx_alias_rx, 0x5A, sizeof(state->p25_apx_alias_rx));
+    DSD_MEMSET(state->p25_l3h_alias_phase1, 0x5A, sizeof(state->p25_l3h_alias_phase1));
+    opts->dPMR_next_part_of_superframe = 2;
+    state->m17_lsf[0] = 1;
+    state->m17_pkt[0] = 1;
+    state->m17_pbc_ct = 3;
+    state->m17_signature[0] = 1;
+    state->m17_signature_received_mask = 3;
+    state->m17_signature_complete = 1;
+    state->ysf_txt[0][0] = 'T';
+
+    dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, 0);
+
+    int nxdn_cleared = state->nxdn_part_of_frame == 0;
+    for (int part = 0; part < 4; part++) {
+        nxdn_cleared &= state->nxdn_sacch_frame_segcrc[part] == 1 && state->nxdn_sacch_frame_segment[part][0] == 1;
+    }
+    rc |= expect_true("assemblies: the boundary drops the NXDN SACCH superframe", nxdn_cleared);
+    rc |= expect_true("assemblies: the boundary drops the NXDN alias blocks",
+                      state->nxdn_alias_block_number == 0 && state->nxdn_alias_block_segment[0][0][0] == 0
+                          && state->nxdn_alias_arib_total_segments == 0 && state->nxdn_alias_arib_seen_mask == 0
+                          && state->nxdn_alias_arib_segments[0][0] == 0);
+    rc |= expect_true("assemblies: the boundary drops the DMR short LC fragments and data blocks",
+                      state->dmr_cach_fragment[0][0] == 1 && state->dmr_cach_counter == 0
+                          && state->data_block_counter[0] == 1 && state->data_header_valid[0] == 0);
+    rc |= expect_true("assemblies: the boundary drops the DMR embedded LC and late-entry MI",
+                      state->dmr_embedded_signalling[0][1][0] == 0 && state->late_entry_mi_fragment[0][1][0] == 0U);
+    rc |= expect_true("assemblies: the boundary drops the DMR talker alias and the alias shown",
+                      state->dmr_alias_format[0] == 0 && state->dmr_alias_block_len[0] == 0
+                          && state->dmr_alias_char_size[0] == 0 && state->dmr_alias_block_segment[0][0][0][0] == 0
+                          && state->generic_talker_alias[0][0] == '\0');
+    const unsigned char* mac = (const unsigned char*)state->p25_mac_frag;
+    const unsigned char* apx = (const unsigned char*)state->p25_apx_alias_rx;
+    const unsigned char* l3h = (const unsigned char*)state->p25_l3h_alias_phase1;
+    rc |= expect_true("assemblies: the boundary drops the P25 MAC fragments and talker aliases",
+                      mac[0] == 0 && apx[0] == 0 && l3h[0] == 0);
+    rc |=
+        expect_true("assemblies: the boundary drops the dPMR superframe part", opts->dPMR_next_part_of_superframe == 0);
+    rc |= expect_true("assemblies: the boundary drops the M17 LSF chunks, packet and signature",
+                      state->m17_lsf[0] == 0 && state->m17_pkt[0] == 0 && state->m17_pbc_ct == 0
+                          && state->m17_signature[0] == 0 && state->m17_signature_received_mask == 0
+                          && state->m17_signature_complete == 0);
+    rc |= expect_true("assemblies: the boundary drops the YSF text", state->ysf_txt[0][0] == 0);
+
+    free_test_runtime(opts, state);
+    return rc;
+}
+
 static int
 test_carrier_boundary_forgets_the_access_codes(void) {
     dsd_opts* opts = NULL;
@@ -5907,6 +5994,7 @@ main(void) {
     rc |= test_dmr_mfid_clear_runs_on_the_decode_clock_without_trunking();
     rc |= test_carrier_boundary_forgets_the_access_codes();
     rc |= test_carrier_boundary_restarts_the_evidence();
+    rc |= test_carrier_boundary_discards_partial_assemblies();
 #ifdef DSD_NEO_TEST_RTL_WRAP
     rc |= test_rx_tone_rigctl_scan_step();
     rc |= test_rigctl_reconnect_forgets_the_legacy_tune_cache();
