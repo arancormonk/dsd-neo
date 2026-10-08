@@ -1402,8 +1402,9 @@ run_fed_superframe(dsd_opts* opts, dsd_state* state, const uint8_t duids[4], int
     for (int i = 0; i < 4; i++) {
         seed_duid_bits(i, duids[i]);
     }
-    for (int i = 0; i < (int)sizeof g_dibit_feed; i++) {
-        g_dibit_feed[i] = (uint8_t)((p2bit[i * 2] << 1) | p2bit[(i * 2) + 1]);
+    for (size_t i = 0; i < sizeof g_dibit_feed; i++) {
+        const size_t bit = i * 2U;
+        g_dibit_feed[i] = (uint8_t)((p2bit[bit] << 1) | p2bit[bit + 1U]);
     }
     state->p2_wacn = 1;
     state->p2_sysid = 1;

@@ -8,10 +8,12 @@
 
 #include <assert.h>
 #include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/sync_patterns.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/vocoder.h>
 #include <stdio.h>
 #include <string.h>
@@ -76,10 +78,10 @@ int
 get_dibit_and_analog_signal(dsd_opts* opts, dsd_state* state, int* out_analog_signal) {
     (void)opts;
     (void)out_analog_signal;
-    if (g_get_pos == g_boundary_at && state != NULL) {
+    if (g_boundary_at >= 0 && g_get_pos == g_boundary_at && state != NULL) {
         state->carrier_seq++;
     }
-    assert(g_get_pos < g_get_len);
+    assert(g_get_pos >= 0 && g_get_pos < g_get_len);
     return g_get_queue[g_get_pos++];
 }
 

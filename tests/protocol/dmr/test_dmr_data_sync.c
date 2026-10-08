@@ -105,7 +105,7 @@ int
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 getDibitSoft(dsd_opts* opts, dsd_state* state, dsd_dibit_soft_t* out_soft) {
     (void)opts;
-    if (g_live_dibit_index == g_boundary_at && state != NULL) {
+    if (g_boundary_at >= 0 && g_live_dibit_index == g_boundary_at && state != NULL) {
         state->carrier_seq++;
     }
     int index = g_live_dibit_index;
