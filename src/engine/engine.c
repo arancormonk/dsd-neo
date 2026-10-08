@@ -2411,32 +2411,44 @@ no_carrier_finalize_canonical_calls(dsd_opts* opts, dsd_state* state, int retune
     }
 }
 
+/* Whether a boundary of @p kind can run while the P25 or DMR state machine ticks, so that it must hold the P25 SM tick
+   guard: a tune, a source change or an input switch, which a trunking session can make. A scan step runs under
+   conventional scanning and a replay retune with trunking off, where neither recovery tick runs
+   (dsd_trunk_p25_recovery_allowed(), dsd_trunk_dmr_recovery_allowed()), no state machine follows a voice channel, and
+   the caller's hold is not known (a replay retune runs inside a sample read, possibly under processFrame()'s). */
+static int
+carrier_boundary_takes_guard(dsd_carrier_boundary_kind kind) {
+    return kind == DSD_CARRIER_BOUNDARY_TUNE || kind == DSD_CARRIER_BOUNDARY_SOURCE
+           || kind == DSD_CARRIER_BOUNDARY_INPUT_SWITCH;
+}
+
 /* Step 1 of the carrier boundary: the voice channel a trunking state machine followed, if one is held, is released while
    its calls are still active (dsd_engine_carrier_boundary()). The state machine comes to rest on its control channel
    without tuning, as trunk scan hands a carrier back (trunk_scan_release_active_carrier()); the P25 release flushes
    the partial Phase 2 superframe, which the 8 kHz int16 mixer plays only for an active call on a talkgroup the hold or
    policy allows. The shared release then drops trunk_is_tuned and the voice channel frequencies, so
-   dsd_opts_trunk_vc_followed() stamps no frequency of the assignment left behind. */
+   dsd_opts_trunk_vc_followed() stamps no frequency of the assignment left behind. The caller holds the P25 SM tick
+   guard whenever a state machine can be ticking (carrier_boundary_takes_guard()), so the inspection below and the
+   teardown run inside the same hold as the watchdog's writes. */
 static void
-carrier_boundary_release_followed(dsd_opts* opts, dsd_state* state, dsd_carrier_boundary_kind kind, int guard_held) {
-    /* A replay retune runs inside a sample read, where the P25 SM tick guard's holder is not known, and only with
-       trunking off, where no state machine follows a voice channel; trunk scan hands its carriers back itself. */
-    const int release_machines = kind != DSD_CARRIER_BOUNDARY_REPLAY_RETUNE && opts->trunk_scan_enabled != 1;
-    p25_sm_ctx_t* p25 = p25_sm_get_ctx();
-    dmr_sm_ctx_t* dmr = dmr_sm_get_ctx();
-    const int p25_tuned = release_machines && p25_sm_get_state(p25) == P25_SM_TUNED;
-    const int dmr_tuned = release_machines && dmr->state == DMR_SM_TUNED;
+carrier_boundary_release_followed(dsd_opts* opts, dsd_state* state, dsd_carrier_boundary_kind kind) {
+    /* Trunk scan hands its carriers back itself. */
+    const int release_machines = carrier_boundary_takes_guard(kind) && opts->trunk_scan_enabled != 1;
+    int p25_tuned = 0;
+    int dmr_tuned = 0;
+    p25_sm_ctx_t* p25 = NULL;
+    dmr_sm_ctx_t* dmr = NULL;
+    if (release_machines) {
+        p25 = p25_sm_get_ctx();
+        dmr = dmr_sm_get_ctx();
+        p25_tuned = p25_sm_get_state(p25) == P25_SM_TUNED;
+        dmr_tuned = dmr->state == DMR_SM_TUNED;
+    }
     if (opts->trunk_is_tuned != 1 && !p25_tuned && !dmr_tuned) {
         return;
     }
     if (p25_tuned) {
-        if (!guard_held) {
-            p25_sm_tick_guard_enter();
-        }
         p25_sm_abandon_carrier(p25, opts, state, "carrier-boundary");
-        if (!guard_held) {
-            p25_sm_tick_guard_leave();
-        }
     }
     if (dmr_tuned) {
         dmr_sm_abandon_carrier(dmr, opts, state, "carrier-boundary");
@@ -2515,13 +2527,23 @@ dsd_engine_carrier_boundary(dsd_opts* opts, dsd_state* state, dsd_carrier_bounda
     if (!opts || !state) {
         return;
     }
-    carrier_boundary_release_followed(opts, state, kind, guard_held);
+    /* The watchdog's ticks write the state machines, the followed assignment and the call state under the P25 SM tick
+       guard, so a boundary that can run beside them holds it from the first inspection through the last step: the
+       caller's hold (@p guard_held), or one taken here. The guard is not re-entrant. */
+    const int take_guard = carrier_boundary_takes_guard(kind) && !guard_held;
+    if (take_guard) {
+        p25_sm_tick_guard_enter();
+    }
+    carrier_boundary_release_followed(opts, state, kind);
     no_carrier_finalize_canonical_calls(opts, state, 1);
     dsd_engine_forget_carrier_codes(state);
     carrier_boundary_forget_evidence(state);
     carrier_boundary_forget_assemblies(opts, state);
     dsd_engine_forget_untrunked_carrier_state(opts, state);
     state->carrier_seq++;
+    if (take_guard) {
+        p25_sm_tick_guard_leave();
+    }
 }
 
 /* FNV-1a over @p text, never 0, which stands for no source. */

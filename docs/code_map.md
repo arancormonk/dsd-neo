@@ -3341,12 +3341,17 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
     DMR grant in `dmr_csbk.c` writes it for display while the receiver stays put, so it names another channel. The
     P25 conventional voice publication (`p25_sm_conventional_frequency()`), which runs only with trunking off, never
     reads it.
-  - P25 `p25_vc_freq[]` either way (the conventional publication and the ESS epoch): followed, it is the voice
-    channel; with trunking off every writer is target-matched, writing only for a grant or grant update that names
-    the target of a call active on this carrier (`p25p2_vpdu_update_playback_if_match()`, used by both MFID90
-    regroup grants too, the VPDU telephone and SNDCP data grants, and `p25_telephone_update_nontrunk_vc_freq()` in
-    `p25p1_pdu_trunking.c`), and `noCarrier()` clears it with trunking off. So with trunking off a call takes only a
-    frequency a grant update naming its own target (or an earlier call's on the same carrier) wrote.
+  - P25 `p25_vc_freq[]` while trunking (the ESS epoch): followed, it is the voice channel. With trunking off a grant's
+    frequency belongs to the call whose target it named, and to no other: every trunking-off writer is target-matched,
+    writing only for a grant or grant update that names the target of a call active on this carrier
+    (`p25p2_vpdu_update_playback_if_match()`, used by both MFID90 regroup grants too, the VPDU telephone and SNDCP
+    data grants, and `p25_telephone_update_nontrunk_vc_freq()` in `p25p1_pdu_trunking.c`), and each keeps the
+    frequency with that target, per slot whose active call has it (`p25_conventional_grant_note()`:
+    `p25_conventional_grant_freq[]`/`_target[]`). The Phase 2 writer fills both slots' `p25_vc_freq[]`, so the
+    conventional publication (`p25_sm_conventional_frequency()`) and the ESS epoch read the pair instead
+    (`p25_conventional_grant_frequency()`), and a call takes it only when it has that target: a second talkgroup on
+    the carrier, or an ESS epoch that names none, takes none and its row falls back to the tuned frequency.
+    `noCarrier()` and the carrier boundary clear both with trunking off.
   - The DMR trunk SM's voice-sync publication stamps its own tuned `vc_freq_hz`. The NXDN VCALL names the last
     grant's channel (`nxdn_grant_chan`) only when that grant's frequency is the followed one, since a duplicate
     assignment decoded while tuned moves it without moving the receiver.
@@ -3399,15 +3404,19 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
 - Trunk scan skips both resets (`preserve_scan_state`): the per-target snapshot saves and restores the DMR colour code
   with its confidence lock, the RAN with its stand-in mark, and `p2_cc` with its proof.
 - `dsd_engine_carrier_boundary()` (`<dsd-neo/engine/frame_processing.h>`) is the one carrier boundary: every place the
-  receiver leaves a carrier for another runs it, and no caller open-codes any part of it. Its order is fixed:
+  receiver leaves a carrier for another runs it, and no caller open-codes any part of it. A tune, a source change or an
+  input switch can run beside the watchdog's ticks, so the boundary holds the P25 SM tick guard from its first
+  inspection of the state machines through its last step, taking it when the caller does not hold it (`guard_held`
+  must be exact: the guard is not re-entrant); a scan step and a replay retune run where no recovery tick runs,
+  inspect no state machine and take none. Its order is fixed:
   1. The voice channel a trunking state machine followed, if one is held, is released while its calls are still active
      (`carrier_boundary_release_followed()`): the P25 or DMR state machine comes to rest on its control channel without
      tuning, as trunk scan hands a carrier back (the P25 release flushes the partial Phase 2 superframe, which the 8 kHz
      int16 mixer plays only for an active call on a talkgroup the hold or policy allows), and the shared
      `dsd_engine_release_tuned_call_state()` drops `trunk_is_tuned` and the voice channel frequencies, so
-     `dsd_opts_trunk_vc_followed()` stamps no frequency of the assignment left behind. A replay retune releases no
-     state machine: it runs only with trunking off and inside a sample read, where the P25 SM tick guard's holder is
-     not known; every other caller says whether it holds that guard.
+     `dsd_opts_trunk_vc_followed()` stamps no frequency of the assignment left behind. A scan step and a replay retune
+     release no state machine: conventional scanning and trunking off exclude both recovery ticks, so none follows a
+     voice channel, and a replay retune runs inside a sample read, where the guard's holder is not known.
   2. The outgoing calls end, as a hop, and commit (`no_carrier_finalize_canonical_calls()`), while the live codes are
      still that carrier's.
   3. `dsd_engine_forget_carrier_codes()` forgets the codes: the DMR colour code with its confidence lock, the RAN with
@@ -3426,7 +3435,8 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
      the carrier count covers.
   4. With trunking off, `dsd_engine_forget_untrunked_carrier_state()` forgets what the carrier left beyond its codes:
      what the trunking-off no-carrier pass forgets (`no_carrier_reset_non_trunk_fields_if_needed()`: the P25 voice
-     frequencies a grant update wrote, which `p25_sm_conventional_frequency()` gives a call over the tuner's, the DMR
+     frequencies a grant update wrote, which `p25_sm_conventional_frequency()` gives the call it named over the
+     tuner's, the DMR
      rest channel and branding, the NXDN site and channel plan) and the DMR grants' `trunk_vc_freq[]`.
   5. `state->carrier_seq` moves, so a decoder that buffered the left carrier's bursts drops them (see below).
 

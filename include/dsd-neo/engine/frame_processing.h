@@ -67,10 +67,17 @@ typedef enum {
  *  4. With trunking off, what the trunking-off no-carrier pass forgets of it goes too
  *     (dsd_engine_forget_untrunked_carrier_state()).
  *  5. state->carrier_seq moves, so a decoder that buffered the left carrier's bursts drops them.
- * @p guard_held says whether the caller holds the P25 SM tick guard, which the P25 release takes otherwise. A replay
- * retune releases no state machine: it runs only with trunking off, where none follows a voice channel, and inside a
- * sample read, where the guard's holder is not known. Exempt, and never routed here: retunes within a system under
- * trunking, trunk-scan target switches, and retunes an external controller makes over the RTL UDP port. Decoder
+ * @p guard_held is 1 exactly when the calling thread holds the P25 SM tick guard and 0 when it does not; the guard is not
+ * re-entrant, so the value must be exact. A tune, a source change or an input switch can run beside the watchdog's
+ * ticks, which write the state machines, the followed assignment and the call state under that guard: the boundary then
+ * holds it from its first inspection through its last step, taking it when the caller does not hold it. A scan step and
+ * a replay retune run where no P25 or DMR recovery tick runs (conventional scanning, trunking off), inspect no state
+ * machine and take no guard: a replay retune runs inside a sample read, whose caller may hold it (processFrame()).
+ * Callers: the tune services (svc_rtl_set_freq() 0, svc_rtl_set_freq_locked() 1), the stream start
+ * (dsd_engine_note_stream_source(): svc_rtl_start_locked() 1, the engine's own start 0), the channel cycles (1 when
+ * run_manual_retune_guarded() took the guard), a config apply and a RadioReference import (1, guarded commands), the
+ * engine's input switch (0), the scan steps and the replay hook. Exempt, and never routed here: retunes within a system
+ * under trunking, trunk-scan target switches, and retunes an external controller makes over the RTL UDP port. Decoder
  * thread. */
 void dsd_engine_carrier_boundary(dsd_opts* opts, dsd_state* state, dsd_carrier_boundary_kind kind, int guard_held);
 

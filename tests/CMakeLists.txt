@@ -6059,6 +6059,11 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
             "-Wl,--wrap=dsd_audio_reconfigure_output_for_input_policy"
             "-Wl,--wrap=SetScanRowModulation"
             "-Wl,--wrap=RigctlMarkSessionPassband"
+            "-Wl,--wrap=p25_sm_get_ctx"
+            "-Wl,--wrap=dmr_sm_get_ctx"
+            "-Wl,--wrap=p25_sm_abandon_carrier"
+            "-Wl,--wrap=dmr_sm_abandon_carrier"
+            "-Wl,--wrap=dsd_engine_release_tuned_call_state"
             "-Wl,--start-group"
             dsd-neo_engine
             "-Wl,--end-group"

@@ -32,8 +32,10 @@
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
+#include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/protocol/nxdn/nxdn_lfsr.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
+#include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/exitflag.h>
@@ -478,6 +480,123 @@ __wrap_getFrameSync(dsd_opts* opts, dsd_state* state) {
     }
 }
 
+/*
+ * Issue #575: the watchdog writes the P25 state machine, the followed assignment and the call state under the P25 SM
+ * tick guard. An input switch, a tune or a source change during live trunking runs the carrier boundary beside its
+ * ticks, so the boundary holds the guard from the state machines' inspection through the teardown: taken when the
+ * caller does not hold it, kept (never taken again: it is not re-entrant) when the caller does. Each state machine
+ * access the boundary makes is checked for the hold while it is watched.
+ */
+static int g_watch_tick_guard = 0;
+static int g_sm_calls_guarded = 0;
+static int g_sm_calls_unguarded = 0;
+
+static void
+note_sm_call_guard(void) {
+    if (!g_watch_tick_guard) {
+        return;
+    }
+    if (p25_sm_tick_guard_try_enter()) {
+        p25_sm_tick_guard_leave();
+        g_sm_calls_unguarded++;
+    } else {
+        g_sm_calls_guarded++;
+    }
+}
+
+// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+p25_sm_ctx_t* __real_p25_sm_get_ctx(void);
+// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+p25_sm_ctx_t* __wrap_p25_sm_get_ctx(void);
+// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+dmr_sm_ctx_t* __real_dmr_sm_get_ctx(void);
+// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+dmr_sm_ctx_t* __wrap_dmr_sm_get_ctx(void);
+// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+void __real_p25_sm_abandon_carrier(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reason);
+// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+void __wrap_p25_sm_abandon_carrier(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reason);
+// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+void __real_dmr_sm_abandon_carrier(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reason);
+// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+void __wrap_dmr_sm_abandon_carrier(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reason);
+// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+void __real_dsd_engine_release_tuned_call_state(dsd_opts* opts, dsd_state* state);
+// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+void __wrap_dsd_engine_release_tuned_call_state(dsd_opts* opts, dsd_state* state);
+
+p25_sm_ctx_t*
+// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+__wrap_p25_sm_get_ctx(void) {
+    note_sm_call_guard();
+    return __real_p25_sm_get_ctx();
+}
+
+dmr_sm_ctx_t*
+// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+__wrap_dmr_sm_get_ctx(void) {
+    note_sm_call_guard();
+    return __real_dmr_sm_get_ctx();
+}
+
+void
+// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+__wrap_p25_sm_abandon_carrier(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reason) {
+    note_sm_call_guard();
+    __real_p25_sm_abandon_carrier(ctx, opts, state, reason);
+}
+
+void
+// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+__wrap_dmr_sm_abandon_carrier(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reason) {
+    note_sm_call_guard();
+    __real_dmr_sm_abandon_carrier(ctx, opts, state, reason);
+}
+
+void
+// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+__wrap_dsd_engine_release_tuned_call_state(dsd_opts* opts, dsd_state* state) {
+    note_sm_call_guard();
+    __real_dsd_engine_release_tuned_call_state(opts, state);
+}
+
+static void
+check_the_boundary_holds_the_tick_guard(dsd_opts* opts, dsd_state* state) {
+    for (int caller_holds = 0; caller_holds < 2; caller_holds++) {
+        p25_sm_ctx_t* p25 = p25_sm_get_ctx();
+        dmr_sm_ctx_t* dmr = dmr_sm_get_ctx();
+        p25->state = P25_SM_TUNED;
+        dmr->state = DMR_SM_TUNED;
+        opts->trunk_enable = 1;
+        opts->trunk_is_tuned = 1;
+        g_sm_calls_guarded = 0;
+        g_sm_calls_unguarded = 0;
+        if (caller_holds) {
+            p25_sm_tick_guard_enter();
+        }
+        g_watch_tick_guard = 1;
+        dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_INPUT_SWITCH, caller_holds);
+        g_watch_tick_guard = 0;
+        expect(caller_holds ? "under the caller's hold, the boundary inspects and tears down only inside it"
+                            : "the boundary takes the guard before it inspects the state machines and holds it through "
+                              "the teardown",
+               g_sm_calls_unguarded == 0 && g_sm_calls_guarded >= 5);
+        expect("the boundary left both followed voice channels",
+               p25_sm_get_state(p25) != P25_SM_TUNED && dmr->state != DMR_SM_TUNED && opts->trunk_is_tuned == 0);
+        const int guard_free = p25_sm_tick_guard_try_enter();
+        if (guard_free) {
+            p25_sm_tick_guard_leave();
+        }
+        if (caller_holds) {
+            expect("the caller's hold is kept", guard_free == 0);
+            p25_sm_tick_guard_leave();
+        } else {
+            expect("the hold the boundary took is released", guard_free == 1);
+        }
+    }
+    opts->trunk_enable = 0;
+}
+
 int
 main(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
@@ -500,6 +619,7 @@ main(void) {
     expect("a failed fallback ended the session", g_step == 9 && dsd_exitflag_load() == 1);
     expect("the failed fallback switched", g_switch_calls == 4);
     expect("the failed fallback asked the peer nothing", g_rowmod_calls == 1 && g_session_marks == 1);
+    check_the_boundary_holds_the_tick_guard(opts, state);
 
     freeState(state);
     free(state);
