@@ -3616,14 +3616,19 @@ BLOCK_END:
 
 static void
 p25p2_vpdu_apply_nsb_identity(dsd_state* state, int lwacn, int lsysid, int lcolorcode) {
-    if (!state || state->p2_hardset != 0) {
+    if (!state || (lwacn == 0 && lsysid == 0)) {
         return;
     }
-    if (lwacn == 0 && lsysid == 0) {
-        return;
-    }
-    if (p25_update_system_identity(state, (unsigned long long)lwacn, (unsigned long long)lsysid)) {
+    if (state->p2_hardset == 0
+        && p25_update_system_identity(state, (unsigned long long)lwacn, (unsigned long long)lsysid)) {
+        if (state->p2_cc != (unsigned long long)lcolorcode) {
+            state->p2_cc_verified = 0U;
+        }
         state->p2_cc = lcolorcode;
+    }
+    // A CRC-checked broadcast naming the descrambler's NAC proves it on this carrier (issue #575).
+    if (state->p2_cc == (unsigned long long)lcolorcode) {
+        state->p2_cc_verified = 1U;
     }
 }
 

@@ -1668,7 +1668,8 @@ test_p25_event_string_keeps_full_prefix_after_sprintf_hardening(void) {
 
     state.lastsynctype = DSD_SYNC_P25P2_POS;
     state.nac = 0x293;
-    state.p2_cc = 0x293ULL; /* a Phase 2 call's NAC is the one its descrambler runs on */
+    state.p2_cc = 0x293ULL;    /* a Phase 2 call's NAC is the one its descrambler runs on, */
+    state.p2_cc_verified = 1U; /* proven on this carrier */
     state.p2_wacn = 0x45564U;
     state.p2_sysid = 0x006U;
     state.p2_rfssid = 10U;
@@ -3004,7 +3005,8 @@ test_scanner_mode_row_carries_channel_label(void) {
 
     state.lastsynctype = DSD_SYNC_P25P2_POS;
     state.nac = 0x293;
-    state.p2_cc = 0x293ULL; /* a Phase 2 call's NAC is the one its descrambler runs on */
+    state.p2_cc = 0x293ULL;    /* a Phase 2 call's NAC is the one its descrambler runs on, */
+    state.p2_cc_verified = 1U; /* proven on this carrier */
     state.p2_wacn = 0x45564U;
     state.p2_sysid = 0x006U;
     state.p2_rfssid = 10U;
@@ -3078,7 +3080,8 @@ test_channel_label_coexists_with_policy_label(void) {
 
     state.lastsynctype = DSD_SYNC_P25P2_POS;
     state.nac = 0x293;
-    state.p2_cc = 0x293ULL; /* a Phase 2 call's NAC is the one its descrambler runs on */
+    state.p2_cc = 0x293ULL;    /* a Phase 2 call's NAC is the one its descrambler runs on, */
+    state.p2_cc_verified = 1U; /* proven on this carrier */
     state.p2_wacn = 0x45564U;
     state.p2_sysid = 0x006U;
     state.p2_rfssid = 10U;
@@ -3108,7 +3111,8 @@ test_unlabelled_row_string_is_unchanged(void) {
 
     state.lastsynctype = DSD_SYNC_P25P2_POS;
     state.nac = 0x293;
-    state.p2_cc = 0x293ULL; /* a Phase 2 call's NAC is the one its descrambler runs on */
+    state.p2_cc = 0x293ULL;    /* a Phase 2 call's NAC is the one its descrambler runs on, */
+    state.p2_cc_verified = 1U; /* proven on this carrier */
     state.p2_wacn = 0x45564U;
     state.p2_sysid = 0x006U;
     state.p2_rfssid = 10U;
@@ -3771,14 +3775,23 @@ test_unknown_p25_and_m17_codes_render_as_dashes(void) {
 
     reset_fixture(&opts, &state, event_history);
     state.p2_cc = 0x293ULL;
+    state.p2_cc_verified = 1U;
     set_p25_site(&state);
     item = render_svc_row(&opts, &state, event_history, DSD_SYNC_P25P2_POS, 0U, 0U);
     rc |= expect_str_eq("P25p2 NAC long sysid", item->sysid_string, "P25_45564006293_10_10");
     rc |= expect_has_substr("P25p2 NAC long event", item->event_string, "NAC: 293; NET_STS: 45564:006:10.10; ");
     reset_fixture(&opts, &state, event_history);
     state.p2_cc = 0x293ULL;
+    state.p2_cc_verified = 1U;
     item = render_svc_row(&opts, &state, event_history, DSD_SYNC_P25P2_NEG, 0U, 0U);
     rc |= expect_str_eq("P25p2 NAC sysid", item->sysid_string, "P25_293");
+    /* A seed no burst on this carrier has proven (-X, or another carrier's) is no NAC the call was heard with. */
+    reset_fixture(&opts, &state, event_history);
+    state.p2_cc = 0x293ULL;
+    item = render_svc_row(&opts, &state, event_history, DSD_SYNC_P25P2_POS, 0U, 0U);
+    rc |= expect_access_code("P25p2 unproven seed has no code", item, DSD_ACCESS_CODE_NONE, 0U);
+    rc |= expect_str_eq("P25p2 unproven seed sysid", item->sysid_string, "P25_---");
+    rc |= expect_has_substr("P25p2 unproven seed event", item->event_string, "NAC: ---; ");
 
     reset_fixture(&opts, &state, event_history);
     item = render_svc_row(&opts, &state, event_history, DSD_SYNC_M17_LSF_POS, 0x13U, 0U);

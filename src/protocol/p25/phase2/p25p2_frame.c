@@ -372,6 +372,13 @@ p2_dibit_buffer(dsd_opts* opts, dsd_state* state) {
     }
 }
 
+/* A burst descrambled with the seed (WACN, SYSID, p2_cc) passed its Reed-Solomon check, which bits descrambled with a
+   wrong seed fail: p2_cc is the NAC this carrier runs on (issue #575). */
+static void
+p25p2_note_seed_proven(dsd_state* state) {
+    state->p2_cc_verified = 1U;
+}
+
 static void
 process_Frame_Scramble(dsd_opts* opts, const dsd_state* state) {
     UNUSED(opts);
@@ -578,6 +585,7 @@ process_FACCHs(dsd_opts* opts, dsd_state* state) {
     if (ec >= 0) {
         state->p25_p2_rs_facch_ok++;
         state->p25_p2_rs_facch_corr += (unsigned int)ec;
+        p25p2_note_seed_proven(state);
         /* Feedback: RS OK */
 #ifdef USE_RADIO
         dsd_rtl_stream_metrics_hook_p25p2_err_update(state->currentslot, 1, 0, 0, 0, 0);
@@ -693,6 +701,7 @@ process_SACCHs(dsd_opts* opts, dsd_state* state) {
     if (ec >= 0) {
         state->p25_p2_rs_sacch_ok++;
         state->p25_p2_rs_sacch_corr += (unsigned int)ec;
+        p25p2_note_seed_proven(state);
         /* Feedback: RS OK */
 #ifdef USE_RADIO
         dsd_rtl_stream_metrics_hook_p25p2_err_update(state->currentslot, 0, 0, 1, 0, 0);
@@ -1390,6 +1399,8 @@ p25p2_process_ess(dsd_opts* opts, dsd_state* state, int defer_rekey) {
     if (result.accepted) {
         state->p25_p2_rs_ess_ok++;
         state->p25_p2_rs_ess_corr += (unsigned int)result.corrections;
+        // The ESS is read from the descrambled 4V/2V bits.
+        p25p2_note_seed_proven(state);
         if (!defer_rekey || !p25p2_ess_stage_rekey(state, &result)) {
             p25p2_ess_apply_result(opts, state, state->currentslot, &result);
         }

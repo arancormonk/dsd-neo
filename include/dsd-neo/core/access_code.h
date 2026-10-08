@@ -18,7 +18,10 @@
  * - P25 Phase 1 `nac`: the BCH(63,16) network identifier; 0 between carriers. `p25p1_valid_decoded_nac()` refuses
  *   NAC 0x000 and 0xFFF, so a carrier whose NID decodes either leaves `nac` at 0.
  * - P25 Phase 2 `p2_cc`: the NAC the Phase 2 descrambler runs on (from the network status broadcast or the Phase 1
- *   NID, or set by hand). A Phase 2 call decodes only when it is right, so the descrambling itself proves it.
+ *   NID, or set by hand), taken only while `p2_cc_verified` says this carrier proved it: a burst descrambled with it (a
+ *   scrambled FACCH or SACCH, or an ESS) passed its Reed-Solomon check, or a checked network status broadcast named
+ *   it. A call carried by unscrambled FACCH/SACCH never tests the seed, so a value -X or another carrier left is no NAC
+ *   until then; the mark goes at every carrier boundary.
  * - NXDN `nxdn_last_ran`: the CRC-checked CAC, FACCH2/UDCH or SACCH, or a CRC-checked site information message's site
  *   code (Table 6.3-4); (unsigned)-1 until one decodes, and between transmissions. The field also holds values that
  *   are not a RAN, which the terminal shows in its place: an IDAS (Type-D) carrier's SCCH area bit or site type (the

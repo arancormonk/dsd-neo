@@ -1015,6 +1015,7 @@ init_state_p25_and_trunk_defaults(dsd_state* state) {
     state->p2_wacn = 0;
     state->p2_sysid = 0;
     state->p2_cc = 0;
+    state->p2_cc_verified = 0U;
     state->p2_siteid = 0;
     state->p2_rfssid = 0;
     state->p2_hardset = 0;

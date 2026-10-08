@@ -75,6 +75,7 @@ typedef struct {
     unsigned long long p2_wacn;
     unsigned long long p2_sysid;
     unsigned long long p2_cc;
+    uint8_t p2_cc_verified;
     unsigned long long p2_siteid;
     unsigned long long p2_rfssid;
     long int p25_cc_freq;
@@ -1576,6 +1577,7 @@ trunk_scan_save_p25_identity_snapshot(const dsd_state* state, dsd_trunk_scan_sna
     snapshot->p2_wacn = state->p2_wacn;
     snapshot->p2_sysid = state->p2_sysid;
     snapshot->p2_cc = state->p2_cc;
+    snapshot->p2_cc_verified = state->p2_cc_verified;
     snapshot->p2_siteid = state->p2_siteid;
     snapshot->p2_rfssid = state->p2_rfssid;
     snapshot->p25_cc_freq = state->p25_cc_freq;
@@ -1625,6 +1627,7 @@ trunk_scan_restore_p25_identity_snapshot(dsd_state* state, const dsd_trunk_scan_
     state->p2_wacn = snapshot->p2_wacn;
     state->p2_sysid = snapshot->p2_sysid;
     state->p2_cc = snapshot->p2_cc;
+    state->p2_cc_verified = snapshot->p2_cc_verified;
     state->p2_siteid = snapshot->p2_siteid;
     state->p2_rfssid = snapshot->p2_rfssid;
     state->p25_cc_freq = snapshot->p25_cc_freq;

@@ -61,6 +61,7 @@ reset_sources(dsd_state* state) {
     state->dmr_color_code = 16U;
     state->nac = 0;
     state->p2_cc = 0ULL;
+    state->p2_cc_verified = 0U;
     state->nxdn_last_ran = (unsigned int)-1;
     state->nxdn_last_ran_stand_in = 0U;
     state->dpmr_color_code = -1;
@@ -139,6 +140,10 @@ test_p25_phase2_reads_p2_cc_only(dsd_state* state) {
     int rc = 0;
     reset_sources(state);
     state->p2_cc = 0x293ULL;
+    /* The descrambler's seed is a received NAC only once a burst descrambled with it, or a network status broadcast,
+     * proved it on this carrier: -X, or another carrier, may have left it (issue #575). */
+    rc |= expect_none("P25p2 unproven p2_cc", state, DSD_SYNC_P25P2_POS, 0U, 0U);
+    state->p2_cc_verified = 1U;
     rc |= expect_code("P25p2 p2_cc 293", state, DSD_SYNC_P25P2_POS, 0U, 0U, 1, DSD_ACCESS_CODE_NAC, 0x293U);
     /* The Phase 1 nac is not a Phase 2 call's code. */
     state->p2_cc = 0ULL;

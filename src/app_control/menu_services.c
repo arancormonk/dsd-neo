@@ -256,6 +256,7 @@ svc_set_p2_params(dsd_state* state, unsigned long long wacn, unsigned long long 
     state->p2_wacn = (wacn > 0xFFFFF) ? 0xFFFFF : wacn;
     state->p2_sysid = (sysid > 0xFFF) ? 0xFFF : sysid;
     state->p2_cc = (cc > 0xFFF) ? 0xFFF : cc;
+    state->p2_cc_verified = 0U; // a seed set by hand proves nothing until a burst decodes with it (issue #575)
     state->p2_hardset = (state->p2_wacn != 0 && state->p2_sysid != 0 && state->p2_cc != 0) ? 1 : 0;
 }
 

@@ -1984,6 +1984,7 @@ main(void) {
         rc |= expect_eq_long("p2 rejected nsb preserves wacn", (long)state.p2_wacn, 0x11111);
         rc |= expect_eq_long("p2 rejected nsb preserves sysid", (long)state.p2_sysid, 0x222);
         rc |= expect_eq_long("p2 rejected nsb preserves nac", (long)state.p2_cc, 0x333);
+        rc |= expect_eq_long("p2 rejected nsb proves no nac", state.p2_cc_verified, 0);
     }
 
     // Case K: P2 abbreviated NSB with unknown IDEN keeps identity metadata but
@@ -2025,6 +2026,8 @@ main(void) {
         rc |= expect_eq_long("p2 unknown-iden nsb wacn", (long)state.p2_wacn, 0xABCDE);
         rc |= expect_eq_long("p2 unknown-iden nsb sysid", (long)state.p2_sysid, 0x123);
         rc |= expect_eq_long("p2 unknown-iden nsb nac", (long)state.p2_cc, 0x055);
+        // Issue #575: the checked broadcast names the NAC on this carrier, so the seed is proven.
+        rc |= expect_eq_long("p2 nsb proves the nac", state.p2_cc_verified, 1);
         rc |= expect_eq_long("p2 unknown-iden nsb lra", state.p25_site_lra, 0x05);
         rc |= expect_eq_long("p2 unknown-iden nsb lra valid", state.p25_site_lra_valid, 1);
         rc |= expect_eq_long("p2 unknown-iden nsb clears stale iden", state.p25_iden_fdma[iden].populated, 0);

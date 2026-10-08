@@ -62,7 +62,9 @@ access_code_read_p25(const dsd_state* state, int protocol, uint16_t* value) {
         *value = (uint16_t)state->nac;
         return 1;
     }
-    if (!access_code_valid_nac(state->p2_cc)) {
+    /* The seed is a received NAC only once a burst descrambled with it, or a network status broadcast, proved it on this
+     * carrier. */
+    if (state->p2_cc_verified == 0U || !access_code_valid_nac(state->p2_cc)) {
         return 0;
     }
     *value = (uint16_t)state->p2_cc;

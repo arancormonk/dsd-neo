@@ -3619,7 +3619,12 @@ test_carrier_boundary_forgets_the_access_codes(void) {
     state->dmr_color_code = 7U;
     state->dpmr_color_code = 12;
     state->nxdn_last_ran = 21U;
+    state->p2_cc = 0x293ULL;
+    state->p2_cc_verified = 1U;
     noCarrier(opts, state);
+    /* The Phase 2 seed is the descrambling key and stays; its proof on this carrier goes. */
+    rc |= expect_true("access-codes: noCarrier forgets the Phase 2 seed's proof", state->p2_cc_verified == 0U);
+    rc |= expect_true("access-codes: noCarrier keeps the Phase 2 seed", state->p2_cc == 0x293ULL);
     rc |= expect_true("access-codes: noCarrier forgets the DMR colour code", state->dmr_color_code == 16U);
     rc |= expect_true("access-codes: noCarrier forgets the dPMR colour code", state->dpmr_color_code == -1);
     rc |= expect_true("access-codes: noCarrier forgets the NXDN RAN", state->nxdn_last_ran == (unsigned int)-1);
@@ -3627,7 +3632,9 @@ test_carrier_boundary_forgets_the_access_codes(void) {
     state->dmr_color_code = 9U;
     state->dpmr_color_code = 33;
     state->nxdn_last_ran = 0U; /* RAN 0 is a legal code, so "forgotten" is -1, not 0. */
+    state->p2_cc_verified = 1U;
     dsd_engine_reset_no_carrier_state(opts, state);
+    rc |= expect_true("access-codes: the shared reset forgets the Phase 2 seed's proof", state->p2_cc_verified == 0U);
     rc |= expect_true("access-codes: the shared reset forgets the DMR colour code", state->dmr_color_code == 16U);
     rc |= expect_true("access-codes: the shared reset forgets the dPMR colour code", state->dpmr_color_code == -1);
     rc |= expect_true("access-codes: the shared reset forgets the NXDN RAN", state->nxdn_last_ran == (unsigned int)-1);
@@ -3638,7 +3645,10 @@ test_carrier_boundary_forgets_the_access_codes(void) {
     state->dmr_confidence_color_code = 5;
     state->dpmr_color_code = 12;
     state->nxdn_last_ran = 21U;
+    state->p2_cc_verified = 1U;
     noCarrier(opts, state);
+    rc |= expect_true("access-codes: trunk scan keeps the Phase 2 seed's proof its target snapshot carries",
+                      state->p2_cc_verified == 1U);
     rc |= expect_true("access-codes: trunk scan keeps the DMR colour code with its lock",
                       state->dmr_color_code == 5U && state->dmr_confidence_locked == 1
                           && state->dmr_confidence_color_code == 5);

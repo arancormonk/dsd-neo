@@ -1540,6 +1540,7 @@ no_carrier_clear_stale_p25_return_hints_after_generic_activity(const dsd_opts* o
     }
 
     state->p2_cc = 0;
+    state->p2_cc_verified = 0U;
     state->p2_wacn = 0;
     state->p2_sysid = 0;
     state->p2_rfssid = 0;
@@ -2048,6 +2049,9 @@ no_carrier_reset_decode_state(dsd_state* state, int preserve_scan_state) {
          * VCALL would otherwise read the previous transmission's RAN. On a control channel the CRC-gated CAC sets it
          * again at once. */
         state->nxdn_last_ran = (unsigned int)-1;
+        /* The Phase 2 seed's proof is the carrier's too: the next carrier's bursts, or a network status broadcast, prove it
+         * again. p2_cc itself is the descrambling key and stays. */
+        state->p2_cc_verified = 0U;
     }
 }
 

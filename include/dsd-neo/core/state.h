@@ -603,6 +603,12 @@ struct dsd_state {
     unsigned long long int p2_wacn;
     unsigned long long int p2_sysid;
     unsigned long long int p2_cc; //p1 NAC
+    /* 1 once p2_cc is proven on the carrier being decoded: a burst descrambled with it (a scrambled FACCH or SACCH, or an
+     * ESS) passed its Reed-Solomon check, or a CRC-checked network status broadcast named it. Only then is p2_cc a
+     * Phase 2 call's received NAC (issue #575): a call carried by unscrambled FACCH/SACCH never tests the seed, which
+     * -X or another carrier may have left. 0 at every carrier boundary and whenever p2_cc changes; p2_cc itself, the
+     * descrambling key, is never reset for it. */
+    uint8_t p2_cc_verified;
     unsigned long long int p2_siteid;
     unsigned long long int p2_rfssid;
     long int p25_cc_freq;        // P25 control-channel frequency from network status

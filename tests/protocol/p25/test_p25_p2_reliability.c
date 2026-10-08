@@ -1243,6 +1243,81 @@ test_duid_abort_resolves_staged_rekey(void) {
     return rc;
 }
 
+/* One superframe of four bursts with the given DUID codewords, on a site whose seed is set. */
+static void
+run_seeded_superframe(dsd_opts* opts, dsd_state* state, const uint8_t duids[4]) {
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    p25_p2_frame_reset();
+    reset_ess_stubs();
+    reset_playback_stub();
+    state->p2_wacn = 1;
+    state->p2_sysid = 1;
+    state->p2_cc = 0x123;
+    for (int i = 0; i < 4; i++) {
+        seed_duid_bits(i, duids[i]);
+    }
+    p25p2_process_duid(opts, state);
+}
+
+/*
+ * Issue #575: p2_cc is the NAC a Phase 2 call was heard with only once a burst descrambled with it passed its
+ * Reed-Solomon check -- a scrambled FACCH (DUID 9) or SACCH (DUID 3), or an ESS, which bits descrambled with a wrong
+ * seed fail. An unscrambled FACCH (DUID 15) or SACCH (DUID 12) never tests the seed, however well it decodes, and a
+ * scrambled burst that fails its check proves nothing either.
+ */
+static int
+test_seed_proof_needs_a_descrambled_burst(void) {
+    printf("Test 32: only a descrambled burst that decodes proves the seed... ");
+    static dsd_opts opts;
+    static dsd_state state;
+    static const uint8_t unscrambled[4] = {0xFFU, 0xC6U, 0xFFU, 0xC6U};
+    static const uint8_t scrambled_facch[4] = {0x9AU, 0x9AU, 0x9AU, 0x9AU};
+    static const uint8_t scrambled_sacch[4] = {0x39U, 0x39U, 0x39U, 0x39U};
+    int rc = 0;
+
+    reset_xcch_stubs();
+    run_seeded_superframe(&opts, &state, unscrambled);
+    rc |= expect_int("unscrambled bursts decode", g_facch_mac_calls > 0 && g_sacch_mac_calls > 0, 1);
+    rc |= expect_int("unscrambled bursts prove nothing", state.p2_cc_verified, 0);
+
+    reset_xcch_stubs();
+    g_facch_min_success = 99;
+    g_sacch_min_success = 99;
+    run_seeded_superframe(&opts, &state, scrambled_facch);
+    rc |= expect_int("failed scrambled FACCH proves nothing", state.p2_cc_verified, 0);
+    run_seeded_superframe(&opts, &state, scrambled_sacch);
+    rc |= expect_int("failed scrambled SACCH proves nothing", state.p2_cc_verified, 0);
+
+    reset_xcch_stubs();
+    run_seeded_superframe(&opts, &state, scrambled_facch);
+    rc |= expect_int("scrambled FACCH decodes", g_facch_mac_calls > 0, 1);
+    rc |= expect_int("scrambled FACCH proves the seed", state.p2_cc_verified, 1);
+    reset_xcch_stubs();
+    run_seeded_superframe(&opts, &state, scrambled_sacch);
+    rc |= expect_int("scrambled SACCH proves the seed", state.p2_cc_verified, 1);
+
+    prepare_ess_soft_inputs(&state);
+    reset_ess_stubs();
+    g_ess_hard_rc = -1;
+    p25p2_process_ess(&opts, &state, 0);
+    rc |= expect_int("failed ESS proves nothing", state.p2_cc_verified, 0);
+    prepare_ess_soft_inputs(&state);
+    reset_ess_stubs();
+    g_ess_hard_rc = 0;
+    p25p2_process_ess(&opts, &state, 0);
+    rc |= expect_int("ESS proves the seed", state.p2_cc_verified, 1);
+
+    reset_xcch_stubs();
+    reset_ess_stubs();
+    if (rc == 0) {
+        printf("PASS\n");
+    } else {
+        printf("FAIL\n");
+    }
+    return rc;
+}
+
 static void
 prepare_lcch_release_duids(void) {
     p25_p2_frame_reset();
@@ -1478,6 +1553,7 @@ main(void) {
     failures += test_duid_abort_resolves_staged_rekey();
     failures += test_duid_lcch_release_defers_during_vc_grace();
     failures += test_duid_lcch_release_tears_down_after_vc_grace();
+    failures += test_seed_proof_needs_a_descrambled_burst();
 
     printf("\n%d test(s) failed\n", failures);
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
