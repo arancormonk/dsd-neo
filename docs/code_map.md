@@ -1200,16 +1200,19 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
     runtime's controls-pending query (`dsd_app_commands_pending()`). Tests: `APP_COMMAND_QUEUE`, `RUNTIME_CONFIG_APPLY`,
     `UI_MENU_SERVICES`, `UI_TCP_AUDIO_CONNECT`.
   - Replay tuning (issue #575): an I/Q replay plays the tuning its capture recorded and defers every other retune
-    unseen, so while the input in force is a replay (`dsd_opts_input_is_iq_replay()`) `MANUAL_TUNE` (the Spectrum
-    tap), `RTL_SET_FREQ` (the terminal menu's frequency row, Qt's frequency entry) and `TUNER_RELEASE`
-    (`CommandBridge::releaseTuner()`) are refused as failed commands with the toast "An I/Q replay cannot retune."
-    (`ui_cmd_refuse_replay_tune()`), where they used to report a tune that never landed. The tap's refusal comes ahead
-    of its tuner-owner gates, whose toasts point at a release; every refusal of the tap, the owner gates included, is a
-    failed command with its reason toasted, as the frequency entry's are. Qt and the control API learn it from the
-    toast: they see only whether the command was queued. Qt's Spectrum screen offers none of them during a replay
-    (`MetricsModel::replayInput`; see UI, Qt, "Tuned frequency, call codes and replay tuning on screen").
-    `svc_rtl_stop_locked()` clears the replay centre the tuned-frequency reading follows (see IO, "I/Q replay tuned
-    frequency"). Tests: `APP_COMMAND_QUEUE`, `UI_MENU_SERVICES`.
+    unseen, so while the input in force is a replay (`dsd_opts_input_is_iq_replay()`) `MANUAL_TUNE` (the Spectrum tap),
+    `RTL_SET_FREQ` (the terminal menu's frequency row, Qt's frequency entry), `TUNER_RELEASE`
+    (`CommandBridge::releaseTuner()`), `RETURN_CC` (when there is a control channel to return to) and `CHANNEL_CYCLE`
+    (every leg: LCN, P25 candidate, `-Y` row, trunk-scan target) are refused as failed commands with the toast "An I/Q
+    replay cannot retune." (`ui_cmd_refuse_replay_tune()`), where they used to report a tune that never landed or fail
+    on the backend's deferred result with no reason given. Scan hold and avoid, skip and lockout are not refused: their
+    main effect is on the scan or the decoder. The tap's refusal comes ahead of its tuner-owner gates, whose toasts
+    point at a release; every refusal of the tap, the owner gates included, is a failed command with its reason toasted,
+    as the frequency entry's are. Qt and the control API learn it from the toast: they see only whether the command was
+    queued. Qt's Spectrum screen offers none of them during a replay (`MetricsModel::replayInput`; see UI, Qt, "Tuned
+    frequency, call codes and replay tuning on screen"). `svc_rtl_stop_locked()` clears the replay centre the
+    tuned-frequency reading follows (see IO, "I/Q replay tuned frequency"). Tests: `APP_COMMAND_QUEUE`,
+    `UI_MENU_SERVICES`.
   - Bootstrap retains only positional playback filenames in argv storage, preserving argument indexes with empty
     placeholders. State snapshots exclude argv ownership; teardown securely erases retained strings.
   - Retained results: talkgroup export and decryption completions are kept as the latest result

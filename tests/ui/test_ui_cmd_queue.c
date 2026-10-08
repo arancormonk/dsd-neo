@@ -4336,6 +4336,91 @@ test_scan_hold_avoid_commands(void) {
     reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_OK);
     return rc;
 }
+
+/*
+ * Issue #575: the return to the control channel and the channel cycle (the next LCN, P25 candidate or -Y row) are
+ * retunes the user asks for, so an I/Q replay refuses them as it refuses a tap, with the reason, as a failed command:
+ * none reaches the tuner. A session never runs --trunk-scan on a replay (trunk scan refuses that input at start and
+ * refuses input switches), but the refusal sits ahead of the cycle's trunk-scan leg too, and the hold and avoid, which
+ * act on the scan itself, still reach the coordinator. On a live radio the same commands go through.
+ */
+static int
+test_replay_refuses_channel_cycle_and_return_cc(void) {
+    static const char kReason[] = "An I/Q replay cannot retune.";
+    static const char kReplay[] = "iqreplay:capture.iq.json";
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+
+    for (int replay = 1; replay >= 0; replay--) {
+        const char* where = replay ? "during a replay" : "on a live radio";
+        char what[128];
+
+        init_radio_context(&opts, &state, replay ? kReplay : "rtl:0");
+        seed_active_p25_voice(&opts, &state, 851000000L, 852000000L, 1201);
+        reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+        reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_OK);
+        DSD_SNPRINTF(what, sizeof(what), "return to CC %s", where);
+        rc |= expect_int(what, dsd_app_command_action(DSD_APP_CMD_RETURN_CC), DSD_APP_COMMAND_SUBMIT_QUEUED);
+        rc |= expect_int(what, dsd_app_drain_cmds(&opts, &state), 1);
+        rc |= expect_int(what, g_cc_tune_calls + g_io_control_tune_calls, replay ? 0 : 1);
+        rc |= expect_int(what, strstr(state.ui_msg, kReason) != NULL ? 1 : 0, replay);
+        rc |= expect_int(what, dsd_app_command_test_last_failed(), replay);
+        if (replay) {
+            rc |= expect_int(what, opts.trunk_is_tuned, 1);
+            rc |= expect_true(what, state.p25_vc_freq[0] == 852000000L);
+        }
+        freeState(&state);
+
+        init_radio_context(&opts, &state, replay ? kReplay : "rtl:0");
+        seed_active_p25_voice(&opts, &state, 855000000L, 856000000L, 3201);
+        state.lcn_freq_count = 2;
+        state.lcn_freq_roll = 0;
+        state.trunk_lcn_freq[0] = 857000000L;
+        state.trunk_lcn_freq[1] = 858000000L;
+        reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+        reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_OK);
+        DSD_SNPRINTF(what, sizeof(what), "channel cycle %s", where);
+        rc |= expect_int(what, dsd_app_command_action(DSD_APP_CMD_CHANNEL_CYCLE), DSD_APP_COMMAND_SUBMIT_QUEUED);
+        rc |= expect_int(what, dsd_app_drain_cmds(&opts, &state), 1);
+        rc |= expect_int(what, g_cc_tune_calls + g_io_control_tune_calls, replay ? 0 : 1);
+        rc |= expect_int(what, strstr(state.ui_msg, kReason) != NULL ? 1 : 0, replay);
+        rc |= expect_int(what, dsd_app_command_test_last_failed(), replay);
+        rc |= expect_int(what, state.lcn_freq_roll, replay ? 0 : 1);
+        freeState(&state);
+
+        init_radio_context(&opts, &state, replay ? kReplay : "rtl:0");
+        opts.trunk_scan_enabled = 1;
+        dsd_trunk_scan_hooks hooks = {0};
+        hooks.control = fake_scan_control;
+        dsd_trunk_scan_hooks_set(&hooks);
+        g_scan_control_calls = 0;
+        g_scan_control_result = 0;
+        DSD_SNPRINTF(what, sizeof(what), "trunk-scan next target %s", where);
+        rc |= expect_int(what, dsd_app_command_action(DSD_APP_CMD_CHANNEL_CYCLE), DSD_APP_COMMAND_SUBMIT_QUEUED);
+        rc |= expect_int(what, dsd_app_drain_cmds(&opts, &state), 1);
+        rc |= expect_int(what, g_scan_control_calls, replay ? 0 : 1);
+        rc |= expect_int(what, strstr(state.ui_msg, kReason) != NULL ? 1 : 0, replay);
+        rc |= expect_int(what, dsd_app_command_test_last_failed(), replay);
+        g_scan_control_result = 1;
+        DSD_SNPRINTF(what, sizeof(what), "trunk-scan hold %s", where);
+        rc |= expect_int(what, dsd_app_command_action(DSD_APP_CMD_SCAN_HOLD_TOGGLE), DSD_APP_COMMAND_SUBMIT_QUEUED);
+        rc |= expect_int(what, dsd_app_drain_cmds(&opts, &state), 1);
+        rc |= expect_int(what, g_scan_control_last_op, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE);
+        rc |= expect_int(what, dsd_app_command_test_last_failed(), 0);
+        g_scan_control_result = 0;
+        DSD_SNPRINTF(what, sizeof(what), "trunk-scan avoid %s", where);
+        rc |= expect_int(what, dsd_app_command_action(DSD_APP_CMD_SCAN_AVOID), DSD_APP_COMMAND_SUBMIT_QUEUED);
+        rc |= expect_int(what, dsd_app_drain_cmds(&opts, &state), 1);
+        rc |= expect_int(what, g_scan_control_last_op, DSD_TRUNK_SCAN_CONTROL_AVOID_ACTIVE);
+        dsd_trunk_scan_hooks_set(NULL);
+        freeState(&state);
+    }
+
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_OK);
+    return rc;
+}
 #endif
 
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
@@ -16956,6 +17041,7 @@ main(void) {
     rc |= test_tuner_release();
     rc |= test_replay_refuses_tunes_and_release();
     rc |= test_scan_hold_avoid_commands();
+    rc |= test_replay_refuses_channel_cycle_and_return_cc();
     rc |= test_scan_row_keys_commands();
 #endif
 #ifdef DSD_NEO_TEST_AUDIO_ENSURE_WRAP

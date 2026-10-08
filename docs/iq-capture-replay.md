@@ -253,10 +253,13 @@ dsd-neo -fM --iq-replay tests/fixtures/iq/am_airband_real.iq.json --iq-replay-ra
 - `--iq-loop` rewinds the event cursor and replay timing so the event schedule repeats each pass. A pass that handed
   the demodulator no samples is not rewound: the replay logs a warning and ends there, as it does at the end without
   `--iq-loop`.
-- Only the metadata-scheduled replay events retune a replay. A manual tune, a frequency entry and the tuner release are
-  refused during one, from the terminal, Qt/Android and the control API alike, with "An I/Q replay cannot retune.",
-  rather than reported as a tune that never lands; the retunes trunking and the conventional scanner ask for are
-  ignored, as described above.
+- Only the metadata-scheduled replay events retune a replay. The retunes a user asks for are refused during one, from
+  the terminal, Qt/Android and the control API alike, with "An I/Q replay cannot retune.", as a failed command rather
+  than a tune that never lands: a manual tune, a frequency entry, the tuner release, the return to the control
+  channel (`return_cc`), and the channel cycle (`channel_cycle`: the next LCN, P25 control channel candidate or `-Y`
+  row; `--trunk-scan` refuses a replay input altogether). Commands whose main effect is not a retune still act: the
+  scan hold and avoid, skip and lockout. The retunes trunking and the conventional scanner ask for are ignored, as
+  described above.
 - The tuned frequency the frontends show (the terminal `FRQ:` field, the `FREQ` reading that opens the Qt/Android
   Monitor screen's signal strip, the Qt Spectrum label, the Android notification) follows the capture's recorded
   `RETUNE` events: it reads the centre the samples being decoded were captured on, the capture's opening centre until

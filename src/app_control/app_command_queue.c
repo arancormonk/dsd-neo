@@ -3083,6 +3083,10 @@ apply_manual_return_to_cc(dsd_opts* opts, dsd_state* state) {
     if (opts->trunk_enable != 1 || (state->trunk_cc_freq == 0 && state->p25_cc_freq == 0)) {
         return UI_CMD_APPLY_COMPLETED;
     }
+    /* A retune the user asked for, refused as a tap is (issue #575). */
+    if (ui_cmd_refuse_replay_tune(opts, state)) {
+        return UI_CMD_APPLY_FAILED;
+    }
     return run_manual_retune_guarded(opts, state, apply_manual_return_to_cc_locked);
 }
 
@@ -6288,6 +6292,11 @@ apply_cmd_channel_cycle(dsd_opts* opts, dsd_state* state, const struct dsd_app_c
     }
     if (!state) {
         return 1;
+    }
+    // Every leg below is a retune the user asked for -- the next target, -Y row, P25 candidate or LCN -- refused during
+    // an I/Q replay as a tap is (issue #575).
+    if (ui_cmd_refuse_replay_tune(opts, state)) {
+        return UI_CMD_APPLY_FAILED;
     }
     // Under --trunk-scan "next" means the next target. Walking the parked target's own
     // LCN list here would retune under the coordinator's feet and be snapshotted as if
