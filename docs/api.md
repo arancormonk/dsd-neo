@@ -238,7 +238,7 @@ not the history from before.
 | Field | Meaning |
 | --- | --- |
 | `systype`, `subtype` | Protocol and message kind. |
-| `sys_id1..5`, `sysid_string` | System identity (P25 WACN:SYS:CC:SITE:RFSS, NAC, DMR color code, NXDN RAN, ...). |
+| `sys_id1..5`, `sysid_string` | System identity (P25 WACN:SYS:CC:SITE:RFSS, NAC, DMR color code, NXDN RAN, ...). `sysid_string` prints `--` for a DMR or dPMR color code or an NXDN RAN that never decoded (`DMR_CC_--`, `NXDN_RAN_--`), and for an NXDN value that is not a RAN (an IDAS area, DCR's fixed 7); the numeric ids keep the decoder's raw value. |
 | `source_id`, `target_id` | Source and target/group identifiers. |
 | `src_str`, `tgt_str` | Text identities (M17, YSF, D-STAR, dPMR callsigns). |
 | `t_name`, `s_name`, `t_mode`, `s_mode` | Group/source names and modes from the imported CSVs. |

@@ -588,54 +588,59 @@ The `Linux • RelWithDebInfo • ctest (x86-64-v3, fast-math, clang)` check enf
   sibling store with the same shape (`dsd_state_trunk_lcn_keys_*`), swapped by `dsd_scan_keys_enter()`/
   `dsd_scan_keys_leave()` in `src/core/util/key_set.c`, and are likewise never deep-copied into the UI snapshot.
 - API note (call history rows, issue #575): every `Event_History` row records the frequency its call was heard on
-  (`freq_hz`, Hz, 0 unknown) and its access code (`access_code_kind`, a `dsd_access_code_kind`, and `access_code`;
-  zero means none, so a memset-zero row reads as unknown). `<dsd-neo/core/access_code.h>`
-  (`src/core/util/access_code.c`, outside `state.h` so app-control views can name the kinds) pins the kinds (NONE 0,
-  COLOR_CODE 1, NAC 2, RAN 3, CAN 4; the Qt store persists them), maps a protocol to its kind
-  (`dsd_access_code_kind_for_protocol()`) and reads the live code from state the protocol set only from checked
-  content (`dsd_access_code_current()`; the header names each check): DMR `dmr_color_code` 0..15, P25 Phase 1 `nac`
-  only and Phase 2 `p2_cc` only (0x001..0xFFE; no fallback between them, since a Phase 1 NID of 0x000/0xFFF leaves
-  `nac` 0 beside a stale `p2_cc`), NXDN `nxdn_last_ran` < 64 unless `nxdn_last_ran_stand_in` marks it as a value the
-  terminal shows where the RAN goes but that is none (an IDAS area bit or site type, DCR's fixed 7; see Protocols),
-  dPMR `dpmr_color_code` 0..63, M17 the service options' low nibble once the call has service metadata.
-  `watchdog_event_current_load_tuning()` in `dsd_events.c` applies two per-row rules on every voice render, against the
-  staged row: the frequency is the call's own `frequency_hz` whenever it has one, else the staged value, else -- only
-  on an ACTIVE render outside `--playfiles` -- `dsd_opts_tuned_freq_hz()`, so the tuner is
-  pinned at the epoch's first active render as the channel label is (a typed `-Y` row's queued tune writes
-  `rtlsdr_center_freq` before `channel_scan_commit()` ends the outgoing calls, and `trunk_scan_switch_to()` restores
-  the next target's state before it retunes); the access code is refreshed from a valid live reading while the call
-  is ACTIVE (a sentinel never erases a known code), frozen once it has ENDED (a held finalize pass may run after a
-  hop), reused only when its kind is the protocol's, and never taken under `--playfiles`. Staged values -- these two,
-  the channel label and the row's start stamp -- are reused only when the slot's lifecycle has opened the call's
-  epoch, and every canonical render opens it first: `dsd_event_sync_slot()`, `watchdog_event_current()` and
+  (`freq_hz`, Hz, 0 unknown) and its access code (`access_code_kind`, a `dsd_access_code_kind`, and `access_code`; zero
+  means none, so a memset-zero row reads as unknown). `<dsd-neo/core/access_code.h>` (`src/core/util/access_code.c`,
+  outside `state.h` so app-control views can name the kinds) pins the kinds (NONE 0, COLOR_CODE 1, NAC 2, RAN 3, CAN 4;
+  the Qt store persists them), maps a protocol to its kind (`dsd_access_code_kind_for_protocol()`) and reads the live
+  code from state the protocol set only from checked content (`dsd_access_code_current()`; the header names each check):
+  DMR `dmr_color_code` 0..15, P25 Phase 1 `nac` only and Phase 2 `p2_cc` only (0x001..0xFFE; no fallback between them,
+  since a Phase 1 NID of 0x000/0xFFF leaves `nac` 0 beside a stale `p2_cc`), NXDN `nxdn_last_ran` < 64 unless
+  `nxdn_last_ran_stand_in` marks it as a value the terminal shows where the RAN goes but that is none (an IDAS area bit
+  or site type, DCR's fixed 7; see Protocols), dPMR `dpmr_color_code` 0..63, M17 the service options' low nibble once
+  the call has service metadata. `watchdog_event_current_load_tuning()` in `dsd_events.c` applies two per-row rules on
+  every voice render, against the staged row: the frequency is the call's own `frequency_hz` whenever it has one, else
+  the staged value, else -- only on an ACTIVE render outside `--playfiles` -- `dsd_opts_tuned_freq_hz()`, so the tuner
+  is pinned at the epoch's first active render as the channel label is (a typed `-Y` row's queued tune writes
+  `rtlsdr_center_freq` before `channel_scan_commit()` ends the outgoing calls, and `trunk_scan_switch_to()` restores the
+  next target's state before it retunes); the access code is refreshed from a valid live reading while the call is
+  ACTIVE (a sentinel never erases a known code), frozen once it has ENDED (a held finalize pass may run after a hop),
+  reused only when its kind is the protocol's, and never taken under `--playfiles`. Staged values -- these two, the
+  channel label and the row's start stamp -- are reused only when the slot's lifecycle has opened the call's epoch, and
+  every canonical render opens it first: `dsd_event_sync_slot()`, `watchdog_event_current()` and
   `dsd_event_note_current_call()` all run the history step before they render, so a render that follows a protocol's
-  unsynced observation no longer draws the new call over the outgoing epoch's row, which the next sync committed as
-  the outgoing call's (two rows for the new call, none for a staged outgoing one). The window is DMR's:
+  unsynced observation no longer draws the new call over the outgoing epoch's row, which the next sync committed as the
+  outgoing call's (two rows for the new call, none for a staged outgoing one). The window is DMR's:
   `prepare_dmr_bs_voice_slot()` observes the tuned call through the trunk SM's voice sync, a burst can end the
   superframe before its post-skip sync, and the control pump runs between `processFrame()` and the next
   `getFrameSync()`; D-STAR's `processDSTAR()` syncs after every voice frame. Notes for the slot's call (the DMR/NXDN
   encryption lockout, an operator's slot lockout or skip) go through `dsd_event_note_current_call()`, never a raw
-  `Items[0].internal_str` write, and it declines when the slot has no call to carry the note (none observed, or one
-  that ended and committed its row). Detail a protocol decodes without naming its call -- D-STAR slow-data text and
-  APRS, the NXDN alias and DCR call sign memory -- reaches a row only through `dsd_event_set_open_call_detail()`, which
-  writes it only while the slot's call is ACTIVE and its epoch is open, and `dsd_event_enrich_*()` declines a row-0
-  write while the call's epoch is not yet open (the live alias display and the call's CRC verdict still follow).
-  Detail decoded before any call for the transmission was observed used to be committed at the next epoch open as a
-  detail-only row with no summary, or to land on a previous call that had ended but not yet committed; declined detail
-  lands when it repeats. One case remains: while the previous call is still ACTIVE, a direct writer's detail for the
-  next transmission still lands on the previous call's row, since none of these messages names its call. The
-  protocols still write their display scratch (`dstar_txt`, `dstar_gps`, `generic_talker_alias`) as before; with no
-  orphan commit running `watchdog_event_reset_post_push()` at the next call's open, D-STAR text and position decoded
-  before that call was observed now stay on screen through it. A notice for a non-canonical call (the P25 lockout's
-  synthetic snapshot, `watchdog_event_emit_noncanonical_notice()`) renders into a blank row and restores the
-  canonical staged row byte for byte, as a data notice does: no other call's label, frequency, code, start, alias,
-  GPS or text, no WAV rotation or end alert, and the canonical call keeps its row. Data notices read both live (the
-  notice's own frequency first). A reacquisition merge only fills an unknown frequency or code (kind and value
-  together). The NXDN event line names the call's own `channel` and the row's
-  `freq_hz`, never the global last grant (`nxdn_grant_chan`/`_freq`, which left the render env). The rdio-scanner
-  sidecar's `freq` is `freq_hz` (clamped to `uint32_t`, still 0 below 1 MHz); it was the channel number before. The
-  control API's event rows carry `freq_hz`, `access_code_kind` and `access_code`, folded into the row fingerprint.
-  Tests: `CORE_ACCESS_CODE`, `CORE_CALL_ALERT_HISTORY`, `RUNTIME_RDIO_EXPORT`, `API_SERVER`.
+  `Items[0].internal_str` write, and it declines when the slot has no call to carry the note (none observed, or one that
+  ended and committed its row). Detail a protocol decodes without naming its call -- D-STAR slow-data text and APRS, the
+  NXDN alias and DCR call sign memory -- reaches a row only through `dsd_event_set_open_call_detail()`, which writes it
+  only while the slot's call is ACTIVE and its epoch is open, and `dsd_event_enrich_*()` declines a row-0 write while
+  the call's epoch is not yet open (the live alias display and the call's CRC verdict still follow). Detail decoded
+  before any call for the transmission was observed used to be committed at the next epoch open as a detail-only row
+  with no summary, or to land on a previous call that had ended but not yet committed; declined detail lands when it
+  repeats. One case remains: while the previous call is still ACTIVE, a direct writer's detail for the next transmission
+  still lands on the previous call's row, since none of these messages names its call. The protocols still write their
+  display scratch (`dstar_txt`, `dstar_gps`, `generic_talker_alias`) as before; with no orphan commit running
+  `watchdog_event_reset_post_push()` at the next call's open, D-STAR text and position decoded before that call was
+  observed now stay on screen through it. A notice for a non-canonical call (the P25 lockout's synthetic snapshot,
+  `watchdog_event_emit_noncanonical_notice()`) renders into a blank row and restores the canonical staged row byte for
+  byte, as a data notice does: no other call's label, frequency, code, start, alias, GPS or text, no WAV rotation or end
+  alert, and the canonical call keeps its row. Data notices read both live (the notice's own frequency first). A
+  reacquisition merge only fills an unknown frequency or code (kind and value together). The system identity string
+  (`sysid_string`, which also names WAV files and the rdio-scanner `short_name`) and the event line print `--` for a DMR
+  colour code, NXDN RAN or dPMR colour code still at its sentinel (`DMR_CC_--`, `NXDN_RAN_--`, `DPMR_CC_--`, `CC: --;`,
+  `RAN: --;`; `watchdog_event_code_text()`), and for an NXDN stand-in, whose mark the render env carries beside the row
+  (`nxdn_ran_stand_in`, so a merge's re-render prints what the value is); the numeric sys ids keep the raw value, since
+  0 is a code. In `watchdog_event_merge_system_identity()` the sentinel, not 0, is the missing code: a reacquired
+  segment that decoded one fills it (0 included, taking its stand-in mark), and a decoded code is never replaced. The
+  NXDN event line names the call's own `channel` and the row's `freq_hz`, never the global last grant
+  (`nxdn_grant_chan`/`_freq`, which left the render env). The rdio-scanner sidecar's `freq` is `freq_hz` (clamped to
+  `uint32_t`, still 0 below 1 MHz); it was the channel number before. The control API's event rows carry `freq_hz`,
+  `access_code_kind` and `access_code`, folded into the row fingerprint. Tests: `CORE_ACCESS_CODE`,
+  `CORE_CALL_ALERT_HISTORY`, `RUNTIME_RDIO_EXPORT`, `API_SERVER`.
 - API note: text arriving as UTF-16 code units (DMR UDT/SMS, talker aliases) is decoded with
   `<dsd-neo/core/utf16.h>` and printed one scalar value at a time through `dsd_unicode_fput_scalar()` in
   `<dsd-neo/runtime/unicode.h>`. Never pass a code unit to `%lc`: a lone surrogate has no encoding, and the

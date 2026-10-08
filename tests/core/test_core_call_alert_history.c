@@ -3588,6 +3588,175 @@ test_reacquisition_merge_fills_frequency_and_code_only(void) {
     return rc;
 }
 
+// Render one active call of `protocol` into the staged row with the decoder holding the given codes.
+static const Event_History*
+render_code_row(dsd_opts* opts, dsd_state* state, Event_History_I event_history[2], int protocol) {
+    assert(observe_test_call(state, 0U, protocol, DSD_CALL_KIND_GROUP_VOICE, 51002U, 41001U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+    watchdog_event_current(opts, state, 0);
+    return &event_history[0].Event_History_Items[0];
+}
+
+// A code the decoder never decoded reads as its sentinel -- DMR 16, NXDN (unsigned)-1, dPMR -1, which every carrier
+// boundary now leaves (issue #575) -- and the system identity string and the event line print "--" for it, as the
+// terminal does, rather than the sentinel. NXDN's stand-ins (an IDAS area bit or site type, DCR's fixed 7) are no RAN
+// either. The numeric sys ids keep the raw value: 0 is a code.
+static int
+test_unknown_access_codes_render_as_dashes(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    int rc = 0;
+
+    reset_fixture(&opts, &state, event_history);
+    state.dmr_color_code = 16U;
+    const Event_History* item = render_code_row(&opts, &state, event_history, DSD_SYNC_DMR_BS_VOICE_POS);
+    rc |= expect_str_eq("unknown DMR CC sysid", item->sysid_string, "DMR_CC_--");
+    rc |= expect_has_substr("unknown DMR CC event", item->event_string, "SRC: 00041001; CC: --; ");
+    rc |= expect_int("unknown DMR CC keeps its numeric id", (int)item->sys_id2, 16);
+
+    reset_fixture(&opts, &state, event_history);
+    state.dmr_color_code = 16U;
+    state.dmr_t3_syscode = 0xABCU;
+    item = render_code_row(&opts, &state, event_history, DSD_SYNC_DMR_MS_VOICE);
+    rc |= expect_str_eq("unknown DMR CC sysid with system code", item->sysid_string, "DMR_ABC_CC_--");
+    rc |= expect_has_substr("unknown DMR CC event with system code", item->event_string, "CC: --; SYS: ABC;");
+
+    reset_fixture(&opts, &state, event_history);
+    state.dmr_color_code = 0U;
+    item = render_code_row(&opts, &state, event_history, DSD_SYNC_DMR_BS_VOICE_POS);
+    rc |= expect_str_eq("DMR CC 0 sysid", item->sysid_string, "DMR_CC_0");
+    rc |= expect_has_substr("DMR CC 0 event", item->event_string, "CC: 00; ");
+
+    reset_fixture(&opts, &state, event_history);
+    state.nxdn_last_ran = (unsigned int)-1;
+    item = render_code_row(&opts, &state, event_history, DSD_SYNC_NXDN_POS);
+    rc |= expect_str_eq("unknown NXDN RAN sysid", item->sysid_string, "NXDN_RAN_--");
+    rc |= expect_has_substr("unknown NXDN RAN event", item->event_string, "SRC: 00041001; RAN: --; ");
+    rc |= expect_u64("unknown NXDN RAN keeps its numeric id", item->sys_id3, 0xFFFFFFFFU);
+
+    reset_fixture(&opts, &state, event_history);
+    state.nxdn_last_ran = (unsigned int)-1;
+    state.nxdn_location_site_code = 3U;
+    state.nxdn_location_sys_code = 12U;
+    item = render_code_row(&opts, &state, event_history, DSD_SYNC_NXDN_NEG);
+    rc |= expect_str_eq("unknown NXDN RAN sysid with site", item->sysid_string, "NXDN_12_3_RAN_--");
+    rc |= expect_has_substr("unknown NXDN RAN event with site", item->event_string, "RAN: --; SYS: 12.3; ");
+
+    reset_fixture(&opts, &state, event_history);
+    state.nxdn_last_ran = 7U;
+    state.nxdn_last_ran_stand_in = 1U;
+    item = render_code_row(&opts, &state, event_history, DSD_SYNC_NXDN_POS);
+    rc |= expect_str_eq("DCR stand-in sysid", item->sysid_string, "NXDN_RAN_--");
+    rc |= expect_has_substr("DCR stand-in event", item->event_string, "RAN: --; ");
+    rc |= expect_int("DCR stand-in keeps its numeric id", (int)item->sys_id3, 7);
+
+    reset_fixture(&opts, &state, event_history);
+    state.nxdn_last_ran = 0U;
+    item = render_code_row(&opts, &state, event_history, DSD_SYNC_NXDN_POS);
+    rc |= expect_str_eq("NXDN RAN 0 sysid", item->sysid_string, "NXDN_RAN_0");
+    rc |= expect_has_substr("NXDN RAN 0 event", item->event_string, "RAN: 00; ");
+
+    reset_fixture(&opts, &state, event_history);
+    state.dpmr_color_code = -1;
+    item = render_code_row(&opts, &state, event_history, DSD_SYNC_DPMR_FS2_POS);
+    rc |= expect_str_eq("unknown dPMR CC sysid", item->sysid_string, "DPMR_CC_--");
+    reset_fixture(&opts, &state, event_history);
+    state.dpmr_color_code = 0;
+    item = render_code_row(&opts, &state, event_history, DSD_SYNC_DPMR_FS2_POS);
+    rc |= expect_str_eq("dPMR CC 0 sysid", item->sysid_string, "DPMR_CC_0");
+
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+// One transmission in two segments: the first decoded `first_code`, the reacquired one `second_code`. Returns the
+// merged row.
+static const Event_History*
+merge_code_segments(dsd_opts* opts, dsd_state* state, Event_History_I event_history[2], int protocol,
+                    unsigned int first_code, uint8_t first_stand_in, unsigned int second_code) {
+    const int nxdn = DSD_SYNC_IS_NXDN(protocol);
+    if (nxdn) {
+        state->nxdn_last_ran = first_code;
+        state->nxdn_last_ran_stand_in = first_stand_in;
+    } else {
+        state->dmr_color_code = first_code;
+    }
+    assert(
+        observe_test_call(state, 0U, protocol, DSD_CALL_KIND_GROUP_VOICE, 100U, 201U, 0U, 0U, DSD_CALL_BOUNDARY_BEGIN)
+        == 1);
+    dsd_event_sync_slot(opts, state, 0U);
+    assert(end_test_call(state, 0U, DSD_CALL_END_SYNC_LOSS) == 1);
+    dsd_event_sync_slot(opts, state, 0U);
+
+    if (nxdn) {
+        state->nxdn_last_ran = second_code;
+        state->nxdn_last_ran_stand_in = 0U;
+    } else {
+        state->dmr_color_code = second_code;
+    }
+    assert(observe_test_call(state, 0U, protocol, DSD_CALL_KIND_GROUP_VOICE, 100U, 201U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_CONTINUE)
+           == 1);
+    dsd_event_sync_slot(opts, state, 0U);
+    assert(end_test_call(state, 0U, DSD_CALL_END_SYNC_LOSS) == 1);
+    dsd_event_sync_slot(opts, state, 0U);
+    assert(committed_history_rows(&event_history[0]) == 1);
+    return &event_history[0].Event_History_Items[1];
+}
+
+// A reacquired segment that decoded the code fills a system identity the first segment rendered without one, 0
+// included (a code for DMR and NXDN alike); a segment that decoded none never replaces one, 0 included.
+static int
+test_reacquisition_merge_upgrades_an_unknown_system_code(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    int rc = 0;
+
+    reset_fixture(&opts, &state, event_history);
+    const Event_History* merged =
+        merge_code_segments(&opts, &state, event_history, DSD_SYNC_DMR_BS_VOICE_POS, 16U, 0U, 5U);
+    rc |= expect_int("merge fills an unknown DMR CC", (int)merged->sys_id2, 5);
+    rc |= expect_str_eq("merged DMR sysid names the code", merged->sysid_string, "DMR_CC_5");
+    rc |= expect_has_substr("merged DMR event names the code", merged->event_string, "CC: 05; ");
+
+    reset_fixture(&opts, &state, event_history);
+    merged = merge_code_segments(&opts, &state, event_history, DSD_SYNC_DMR_BS_VOICE_POS, 16U, 0U, 0U);
+    rc |= expect_int("merge fills an unknown DMR CC with 0", (int)merged->sys_id2, 0);
+    rc |= expect_str_eq("merged DMR sysid names CC 0", merged->sysid_string, "DMR_CC_0");
+    rc |= expect_has_substr("merged DMR event names CC 0", merged->event_string, "CC: 00; ");
+
+    reset_fixture(&opts, &state, event_history);
+    merged = merge_code_segments(&opts, &state, event_history, DSD_SYNC_DMR_BS_VOICE_POS, 0U, 0U, 16U);
+    rc |= expect_int("an undecoded segment keeps DMR CC 0", (int)merged->sys_id2, 0);
+    rc |= expect_str_eq("an undecoded segment keeps the DMR sysid", merged->sysid_string, "DMR_CC_0");
+    rc |= expect_has_substr("an undecoded segment keeps the DMR event code", merged->event_string, "CC: 00; ");
+
+    reset_fixture(&opts, &state, event_history);
+    merged = merge_code_segments(&opts, &state, event_history, DSD_SYNC_NXDN_POS, (unsigned int)-1, 0U, 0U);
+    rc |= expect_int("merge fills an unknown NXDN RAN with 0", (int)merged->sys_id3, 0);
+    rc |= expect_str_eq("merged NXDN sysid names RAN 0", merged->sysid_string, "NXDN_RAN_0");
+    rc |= expect_has_substr("merged NXDN event names RAN 0", merged->event_string, "RAN: 00; ");
+
+    reset_fixture(&opts, &state, event_history);
+    merged = merge_code_segments(&opts, &state, event_history, DSD_SYNC_NXDN_POS, 0U, 0U, (unsigned int)-1);
+    rc |= expect_int("an undecoded segment keeps NXDN RAN 0", (int)merged->sys_id3, 0);
+    rc |= expect_str_eq("an undecoded segment keeps the NXDN sysid", merged->sysid_string, "NXDN_RAN_0");
+
+    // The first segment's stand-in mark was left by an earlier DCR transmission beside an undecoded RAN; the RAN the
+    // reacquired segment decoded is one.
+    reset_fixture(&opts, &state, event_history);
+    merged = merge_code_segments(&opts, &state, event_history, DSD_SYNC_NXDN_POS, (unsigned int)-1, 1U, 5U);
+    rc |= expect_int("merge fills an unknown NXDN RAN", (int)merged->sys_id3, 5);
+    rc |= expect_str_eq("merged NXDN sysid names the RAN", merged->sysid_string, "NXDN_RAN_5");
+    rc |= expect_has_substr("merged NXDN event names the RAN", merged->event_string, "RAN: 05; ");
+
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
 // A data notice is rendered once, while the receiver is still on the carrier that delivered it, so it reads the
 // frequency and code live: its own frequency when the PDU named one, else the tuner's.
 static int
@@ -6431,6 +6600,8 @@ main(void) {
     rc |= test_staged_access_code_of_another_kind_is_not_reused();
     rc |= test_invalid_live_access_code_never_erases_a_known_one();
     rc |= test_reacquisition_merge_fills_frequency_and_code_only();
+    rc |= test_unknown_access_codes_render_as_dashes();
+    rc |= test_reacquisition_merge_upgrades_an_unknown_system_code();
     rc |= test_data_notice_carries_frequency_and_access_code();
     rc |= test_playfiles_rows_take_no_tuner_value_or_code();
     rc |= test_nxdn_row_names_only_its_own_channel();
