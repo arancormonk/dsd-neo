@@ -634,12 +634,13 @@ The `Linux • RelWithDebInfo • ctest (x86-64-v3, fast-math, clang)` check enf
   colour code, NXDN RAN or dPMR colour code still at its sentinel (`DMR_CC_--`, `NXDN_RAN_--`, `DPMR_CC_--`, `CC: --;`,
   `RAN: --;`; `watchdog_event_code_text()`), and for an NXDN stand-in, whose mark the render env carries beside the row
   (`nxdn_ran_stand_in`, so a merge's re-render prints what the value is); the numeric sys ids keep the raw value, since
-  0 is a code. In `watchdog_event_merge_system_identity()` the sentinel, not 0, is the missing code: a reacquired
-  segment that decoded one fills it (0 included, taking its stand-in mark), and a decoded code is never replaced. The
-  NXDN event line names the call's own `channel` and the row's `freq_hz`, never the global last grant
-  (`nxdn_grant_chan`/`_freq`, which left the render env). The rdio-scanner sidecar's `freq` is `freq_hz` (clamped to
-  `uint32_t`, still 0 below 1 MHz); it was the channel number before. The control API's event rows carry `freq_hz`,
-  `access_code_kind` and `access_code`, folded into the row fingerprint. Tests: `CORE_ACCESS_CODE`,
+  0 is a code. The dPMR event line's `CC:` is the row's decoded colour code (its access code), not the call's `channel`,
+  which `dpmr_publish_call()` sets to 0 for an undecoded code. In `watchdog_event_merge_system_identity()` the sentinel,
+  not 0, is the missing code: a reacquired segment that decoded one fills it (0 included, taking its stand-in mark), and
+  a decoded code is never replaced. The NXDN event line names the call's own `channel` and the row's `freq_hz`, never
+  the global last grant (`nxdn_grant_chan`/`_freq`, which left the render env). The rdio-scanner sidecar's `freq` is
+  `freq_hz` (clamped to `uint32_t`, still 0 below 1 MHz); it was the channel number before. The control API's event rows
+  carry `freq_hz`, `access_code_kind` and `access_code`, folded into the row fingerprint. Tests: `CORE_ACCESS_CODE`,
   `CORE_CALL_ALERT_HISTORY`, `RUNTIME_RDIO_EXPORT`, `API_SERVER`.
 - API note: text arriving as UTF-16 code units (DMR UDT/SMS, talker aliases) is decoded with
   `<dsd-neo/core/utf16.h>` and printed one scalar value at a time through `dsd_unicode_fput_scalar()` in

@@ -3671,6 +3671,37 @@ test_unknown_access_codes_render_as_dashes(void) {
     return rc;
 }
 
+// The dPMR event line names the row's decoded colour code. It used to print the call's channel, which the protocol
+// sets to 0 when no colour code decoded, so an unknown code read as CC 0 (issue #575). The channel field is untouched.
+static int
+test_dpmr_event_line_prints_the_decoded_colour_code(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    int rc = 0;
+
+    reset_fixture(&opts, &state, event_history);
+    state.dpmr_color_code = -1;
+    const Event_History* item = render_code_row(&opts, &state, event_history, DSD_SYNC_DPMR_FS2_POS);
+    rc |= expect_has_substr("undecoded dPMR CC event", item->event_string, "TEST CC: --; TGT: ");
+    rc |= expect_no_substr("undecoded dPMR CC is not CC 0", item->event_string, "CC: 00");
+    rc |= expect_int("undecoded dPMR CC row channel", (int)item->channel, 0);
+
+    reset_fixture(&opts, &state, event_history);
+    state.dpmr_color_code = 0;
+    item = render_code_row(&opts, &state, event_history, DSD_SYNC_DPMR_FS2_POS);
+    rc |= expect_has_substr("dPMR CC 0 event", item->event_string, "TEST CC: 00; TGT: ");
+
+    reset_fixture(&opts, &state, event_history);
+    state.dpmr_color_code = 42;
+    item = render_code_row(&opts, &state, event_history, DSD_SYNC_DPMR_FS2_POS);
+    rc |= expect_has_substr("dPMR CC 42 event", item->event_string, "TEST CC: 42; TGT: ");
+    rc |= expect_int("dPMR row channel stays the call's", (int)item->channel, 0);
+
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
 // One transmission in two segments: the first decoded `first_code`, the reacquired one `second_code`. Returns the
 // merged row.
 static const Event_History*
@@ -6601,6 +6632,7 @@ main(void) {
     rc |= test_invalid_live_access_code_never_erases_a_known_one();
     rc |= test_reacquisition_merge_fills_frequency_and_code_only();
     rc |= test_unknown_access_codes_render_as_dashes();
+    rc |= test_dpmr_event_line_prints_the_decoded_colour_code();
     rc |= test_reacquisition_merge_upgrades_an_unknown_system_code();
     rc |= test_data_notice_carries_frequency_and_access_code();
     rc |= test_playfiles_rows_take_no_tuner_value_or_code();

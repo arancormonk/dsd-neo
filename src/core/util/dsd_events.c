@@ -1681,8 +1681,13 @@ watchdog_event_current_build_event_m17(const watchdog_event_current_ctx* ctx, co
 static void
 watchdog_event_current_build_event_dpmr(const watchdog_event_current_ctx* ctx, const char* datestr, const char* timestr,
                                         const char* sys_string, char* event_string, size_t event_size) {
-    DSD_SNPRINTF(event_string, event_size, "%s %s %s CC: %02u; TGT: %s; SRC: %s; ", datestr, timestr, sys_string,
-                 ctx->channel, ctx->tgt_str, ctx->src_str);
+    // The row's decoded colour code, not the call's channel: the protocol sets the channel to 0 when no colour code
+    // decoded, which would read as CC 0 (issue #575).
+    char cc_buf[12];
+    const char* cc = watchdog_event_code_text(
+        cc_buf, sizeof cc_buf, ctx->access_code_kind == (uint8_t)DSD_ACCESS_CODE_COLOR_CODE, ctx->access_code, 1);
+    DSD_SNPRINTF(event_string, event_size, "%s %s %s CC: %s; TGT: %s; SRC: %s; ", datestr, timestr, sys_string, cc,
+                 ctx->tgt_str, ctx->src_str);
     if (ctx->enc) {
         watchdog_event_str_append(event_string, event_size, "Scrambler Enc; ");
     }
