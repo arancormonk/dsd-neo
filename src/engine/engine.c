@@ -2078,6 +2078,8 @@ no_carrier_reset_non_trunk_fields_if_needed(const dsd_opts* opts, dsd_state* sta
     }
     state->p25_vc_freq[0] = 0;
     state->p25_vc_freq[1] = 0;
+    DSD_MEMSET(state->p25_conventional_grant_freq, 0, sizeof(state->p25_conventional_grant_freq));
+    DSD_MEMSET(state->p25_conventional_grant_target, 0, sizeof(state->p25_conventional_grant_target));
     state->dmr_rest_channel = -1;
     state->nxdn_location_site_code = 0;
     state->nxdn_location_sys_code = 0;

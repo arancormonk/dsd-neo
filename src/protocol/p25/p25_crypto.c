@@ -190,6 +190,22 @@ p25_crypto_phase1_ess_continues_ended_call(dsd_state* state) {
     return 1;
 }
 
+/* The ESS carries no frequency, so the call it opens takes this carrier's (issue #575). With trunking on that is the
+ * voice channel the receiver followed (p25_vc_freq[], else trunk_vc_freq[] while followed). With trunking off a grant's
+ * frequency belongs to the call whose target it named, so the call takes only one a grant update naming its own
+ * @p target left (p25_conventional_grant_frequency()); a call opened without one takes none, and its row falls back to
+ * the tuned frequency. Never trunk_vc_freq[] then: a DMR grant writes it for display, naming another channel. */
+static int64_t
+p25_crypto_phase1_epoch_frequency(const dsd_opts* opts, const dsd_state* state, uint32_t target) {
+    if (opts == NULL || opts->trunk_enable == 0) {
+        return p25_conventional_grant_frequency(state, 0, target);
+    }
+    if (state->p25_vc_freq[0] != 0) {
+        return state->p25_vc_freq[0];
+    }
+    return dsd_opts_trunk_vc_followed(opts) ? state->trunk_vc_freq[0] : 0;
+}
+
 static int
 p25_crypto_ensure_phase1_call(const dsd_opts* opts, dsd_state* state) {
     dsd_call_snapshot call;
@@ -205,19 +221,10 @@ p25_crypto_ensure_phase1_call(const dsd_opts* opts, dsd_state* state) {
         return 0;
     }
 
-    /* The ESS carries no frequency, so the call takes this carrier's (issue #575). p25_vc_freq[] is that: the voice
-     * channel a trunking receiver followed, and with trunking off only a grant naming a call active on this carrier
-     * writes it (noCarrier() clears it). trunk_vc_freq[] only while followed: with trunking off a DMR grant writes it
-     * for display, naming another channel. */
-    int64_t frequency_hz = state->p25_vc_freq[0];
-    if (frequency_hz == 0 && dsd_opts_trunk_vc_followed(opts)) {
-        frequency_hz = state->trunk_vc_freq[0];
-    }
     dsd_call_observation observation = {
         .protocol = p25_crypto_phase1_protocol(state),
         .slot = 0U,
         .kind = DSD_CALL_KIND_VOICE,
-        .frequency_hz = frequency_hz,
     };
     // On a tuned assignment whose ESS resolves before any LCW/voice evidence,
     // the grant already names this call. Beginning identity-less here splits
@@ -235,6 +242,7 @@ p25_crypto_ensure_phase1_call(const dsd_opts* opts, dsd_state* state) {
         observation.ota_target_id = assignment_target;
         observation.policy_target_id = assignment_policy_target;
     }
+    observation.frequency_hz = p25_crypto_phase1_epoch_frequency(opts, state, assignment_target);
     const int began = dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) > 0;
     if (began && state->p25_p1_identity_pending) {
         state->p25_p1_identity_epoch_started = 1;

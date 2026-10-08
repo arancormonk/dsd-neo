@@ -2073,7 +2073,8 @@ test_conventional_anonymous_activity_preserves_service_options(void) {
 static int
 test_conventional_voice_takes_only_its_own_grant_frequency(void) {
     int fail = 0;
-    for (int which = 0; which < 2; which++) {
+    static const char* const cases[3] = {"own grant update", "DMR leftover", "another call's grant update"};
+    for (int which = 0; which < 3; which++) {
         reset_test_state();
         g_opts.trunk_enable = 0;
         g_state.p25_cc_freq = 0;
@@ -2084,22 +2085,29 @@ test_conventional_voice_takes_only_its_own_grant_frequency(void) {
         if (which == 0) {
             /* As a grant update naming this call's target leaves it. */
             g_state.p25_vc_freq[0] = 851012500L;
+            g_state.p25_conventional_grant_freq[0] = 851012500L;
+            g_state.p25_conventional_grant_target[0] = 1000U;
             want = 851012500L;
-        } else {
+        } else if (which == 1) {
             g_state.trunk_vc_freq[0] = g_state.trunk_vc_freq[1] = 852012500L;
+        } else {
+            /* As a grant update naming another call, TG 2000, leaves them: not this call's frequency. */
+            g_state.p25_vc_freq[0] = g_state.p25_vc_freq[1] = 851012500L;
+            g_state.p25_conventional_grant_freq[0] = 851012500L;
+            g_state.p25_conventional_grant_target[0] = 2000U;
         }
         dsd_call_snapshot call = {0};
         if (!p25_sm_emit_active_call(&g_opts, &g_state, 0, 1000, 0, 123, 1, 0)
             || dsd_call_state_get(&g_state, 0U, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE
             || call.frequency_hz != want) {
             DSD_FPRINTF(stderr, "FAIL: Conventional call frequency %lld, expected %ld (%s)\n",
-                        (long long)call.frequency_hz, want, which == 0 ? "own grant update" : "DMR leftover");
+                        (long long)call.frequency_hz, want, cases[which]);
             fail = 1;
         }
         if (!p25_sm_emit_active(&g_opts, &g_state, 0) || dsd_call_state_get(&g_state, 0U, &call) <= 0
             || call.frequency_hz != want) {
             DSD_FPRINTF(stderr, "FAIL: Anonymous conventional activity frequency %lld, expected %ld (%s)\n",
-                        (long long)call.frequency_hz, want, which == 0 ? "own grant update" : "DMR leftover");
+                        (long long)call.frequency_hz, want, cases[which]);
             fail = 1;
         }
     }

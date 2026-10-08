@@ -6326,16 +6326,40 @@ typedef struct {
     int64_t frequency_hz;
 } p25_sm_conventional_call_t;
 
+void
+p25_conventional_grant_note(dsd_state* state, uint32_t target, long int freq) {
+    if (!state || target == 0U || freq == 0) {
+        return;
+    }
+    for (int slot = 0; slot < 2; slot++) {
+        dsd_call_snapshot call;
+        if (dsd_call_state_get(state, (uint8_t)slot, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+            && call.ota_target_id == (uint64_t)target) {
+            state->p25_conventional_grant_freq[slot] = freq;
+            state->p25_conventional_grant_target[slot] = target;
+        }
+    }
+}
+
+int64_t
+p25_conventional_grant_frequency(const dsd_state* state, int slot, uint32_t target) {
+    if (!state || slot < 0 || slot > 1 || target == 0U || state->p25_conventional_grant_target[slot] != target) {
+        return 0;
+    }
+    return (int64_t)state->p25_conventional_grant_freq[slot];
+}
+
 /* The voice message carries no frequency (issue #575). This path runs only with trunking off
  * (p25_sm_emit_voice_start_event() drops voice with trunking on and no assignment, and an assignment publishes through
- * the SM's slot observation instead), where nothing is followed, so the call takes only a frequency a grant update
- * naming its own target (or an earlier call's on this carrier) wrote: every trunking-off writer of p25_vc_freq[]
- * requires the grant's target to be a call active on this carrier (p25p2_vpdu.c, p25p1_pdu_trunking.c), and
- * noCarrier() clears it with trunking off. Never trunk_vc_freq[]: with trunking off only a DMR grant writes it, for
+ * the SM's slot observation instead), where nothing is followed, so the call takes only the frequency a grant update
+ * naming its own target wrote (p25_conventional_grant_note(), from the trunking-off writers in p25p2_vpdu.c and
+ * p25p1_pdu_trunking.c; noCarrier() and the carrier boundary clear it with trunking off): never another call's, which
+ * p25_vc_freq[] may hold for either slot. Never trunk_vc_freq[]: with trunking off only a DMR grant writes it, for
  * display, naming another channel. */
 static int64_t
-p25_sm_conventional_frequency(const dsd_state* state, int slot, int64_t fallback_hz) {
-    return state->p25_vc_freq[slot] != 0 ? (int64_t)state->p25_vc_freq[slot] : fallback_hz;
+p25_sm_conventional_frequency(const dsd_state* state, int slot, uint32_t target, int64_t fallback_hz) {
+    const int64_t own = p25_conventional_grant_frequency(state, slot, target);
+    return own != 0 ? own : fallback_hz;
 }
 
 static int
@@ -6348,7 +6372,7 @@ p25_sm_conventional_identified_call(const dsd_state* state, const p25_sm_event_t
     }
     call->source = p25_call_positive_id(p25_sm_conventional_source(state, ev, slot));
     call->protocol = p25_sm_conventional_protocol(state);
-    call->frequency_hz = p25_sm_conventional_frequency(state, slot, 0);
+    call->frequency_hz = p25_sm_conventional_frequency(state, slot, call->target, 0);
     if (call->is_group) {
         call->group_id = call->target;
     } else {
@@ -6370,7 +6394,7 @@ p25_sm_conventional_anonymous_call(const dsd_state* state, int slot, p25_sm_conv
     call->is_group = active_call.kind == DSD_CALL_KIND_GROUP_VOICE;
     call->source = active_call.ota_source_id <= UINT32_MAX ? (uint32_t)active_call.ota_source_id : 0U;
     call->protocol = active_call.protocol;
-    call->frequency_hz = p25_sm_conventional_frequency(state, slot, active_call.frequency_hz);
+    call->frequency_hz = p25_sm_conventional_frequency(state, slot, call->target, active_call.frequency_hz);
     if (call->is_group) {
         call->group_id = call->target;
     } else {

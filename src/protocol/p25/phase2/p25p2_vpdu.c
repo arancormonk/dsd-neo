@@ -511,8 +511,10 @@ p25p2_mac_handle_indiv(const struct p25p2_mac_result* res, dsd_opts* opts, dsd_s
     }
 }
 
+/* With trunking off, a grant update naming @p target, a call active on this carrier: its voice channel frequency, kept
+   with that target for the call's own publication (p25_conventional_grant_note(), issue #575). */
 static inline void
-p25_set_playback_vc_freq(const dsd_opts* opts, dsd_state* state, long int freq) {
+p25_set_playback_vc_freq(const dsd_opts* opts, dsd_state* state, uint32_t target, long int freq) {
     if (!opts || !state || opts->trunk_enable != 0) {
         return;
     }
@@ -522,6 +524,7 @@ p25_set_playback_vc_freq(const dsd_opts* opts, dsd_state* state, long int freq) 
     } else {
         state->p25_vc_freq[0] = state->p25_vc_freq[1] = freq;
     }
+    p25_conventional_grant_note(state, target, freq);
 }
 
 static inline void
@@ -733,7 +736,7 @@ p25p2_vpdu_update_playback_if_match(const dsd_opts* opts, dsd_state* state, int 
         return;
     }
     if (p25p2_vpdu_active_target_matches(state, (uint64_t)(uint32_t)group)) {
-        p25_set_playback_vc_freq(opts, state, freq);
+        p25_set_playback_vc_freq(opts, state, (uint32_t)group, freq);
     }
 }
 
@@ -1400,7 +1403,7 @@ p25p2_vpdu_iter_block_05(p25p2_vpdu_ctx* ctx) {
                                    /*policy_encrypted*/ -1, /*policy_data*/ -1);
         }
         if (opts->trunk_enable == 0 && p25p2_vpdu_active_target_matches(state, target)) {
-            p25_set_playback_vc_freq(opts, state, freq);
+            p25_set_playback_vc_freq(opts, state, (uint32_t)target, freq);
         }
     }
 

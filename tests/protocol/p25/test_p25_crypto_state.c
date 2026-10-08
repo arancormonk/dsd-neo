@@ -920,10 +920,11 @@ test_slot_local_transition_purge_and_mi_refresh(void) {
     return rc;
 }
 
-/* Issue #575: an ESS that opens a Phase 1 call carries no frequency. With trunking off it takes p25_vc_freq[], which
- * only a grant naming a call active on this carrier writes then (and noCarrier() clears), so it names this carrier;
- * never trunk_vc_freq[], which a DMR grant decoded with trunking off leaves behind for display. A trunking receiver's
- * call takes the voice channel it followed. */
+/* Issue #575: an ESS that opens a Phase 1 call carries no frequency. With trunking off a grant's frequency belongs to
+ * the call whose target it named, and the ESS opens a call that names none: it takes neither a grant frequency another
+ * call's grant left in p25_vc_freq[] nor trunk_vc_freq[], which a DMR grant decoded with trunking off leaves behind for
+ * display, and its row falls back to the tuned frequency. A trunking receiver's call takes the voice channel it
+ * followed. */
 static int
 test_phase1_resolution_stamps_only_this_carriers_frequency(void) {
     static dsd_opts opts;
@@ -934,12 +935,15 @@ test_phase1_resolution_stamps_only_this_carriers_frequency(void) {
 
     reset_fixture(&opts, &state);
     state.synctype = DSD_SYNC_P25P1_POS;
+    /* As a grant update naming another call, TG 0x4567, leaves them. */
     state.p25_vc_freq[0] = 851012500L;
+    state.p25_conventional_grant_freq[0] = 851012500L;
+    state.p25_conventional_grant_target[0] = 0x4567U;
     state.trunk_vc_freq[0] = 852012500L;
     rc |= expect_int("trunking-off P1 ESS resolves clear",
                      p25_crypto_resolve(&opts, &state, DSD_P25_CRYPTO_PHASE1, 0, 0x80, 0, 0, 0), DSD_P25_CRYPTO_CLEAR);
     rc |= expect_int("trunking-off P1 ESS opens a call", dsd_call_state_get(&state, 0U, &call), 1);
-    rc |= expect_int("trunking-off P1 ESS takes this carrier's grant frequency", call.frequency_hz, 851012500L);
+    rc |= expect_int("trunking-off P1 ESS takes no other call's grant frequency", call.frequency_hz, 0);
 
     reset_fixture(&opts, &state);
     state.synctype = DSD_SYNC_P25P1_POS;

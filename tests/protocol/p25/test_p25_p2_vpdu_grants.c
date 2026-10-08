@@ -780,6 +780,58 @@ test_trunking_off_conventional_call_takes_only_its_own_grant_frequency(void) {
     return rc;
 }
 
+/* Issue #575: with trunking off, the frequency a grant update names belongs to the call whose target it named, and to
+ * no other. Two calls on one carrier, nothing cleared between them: TG 0x4567's grant names 851.125 MHz, and TG
+ * 0x7777, opening on the other slot and later on the first, receives no grant of its own, so it takes none (its row
+ * falls back to the tuned frequency on a radio input). The Phase 2 writer fills both slots' p25_vc_freq[], which the
+ * second call used to read. */
+static int
+test_trunking_off_second_call_takes_no_grant_frequency_of_the_first(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    unsigned long long int MAC[24];
+    dsd_call_snapshot call = {0};
+    int rc = 0;
+
+    dsd_state_ext_free_all(&state);
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+    opts.trunk_enable = 0;
+    opts.trunk_tune_group_calls = 1;
+    state.synctype = state.lastsynctype = DSD_SYNC_P25P2_POS;
+    seed_fdma_iden(&state, 1, 1, 170200000L, 100);
+    p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
+
+    rc |= expect_true("two calls: the first call opens",
+                      p25_sm_emit_active_call(&opts, &state, 0, 0x4567, 0, 0x010203, 1, 0) == 1);
+    DSD_MEMSET(MAC, 0, sizeof MAC);
+    MAC[1] = 0xA3;
+    MAC[2] = 0x90;
+    MAC[5] = 0x10;
+    MAC[6] = 0x0A; /* channel 0x100A -> 851.125 MHz */
+    MAC[7] = 0x45;
+    MAC[8] = 0x67;
+    process_MAC_VPDU(&opts, &state, 0, P25_MAC_PDU_ACTIVE, MAC);
+    (void)p25_sm_emit_active_call(&opts, &state, 0, 0x4567, 0, 0x010203, 1, 0);
+    rc |= expect_true("two calls: the first call is still active", copy_call(&state, 0U, &call));
+    rc |=
+        expect_eq_long("two calls: the first call carries its own grant frequency", (long)call.frequency_hz, 851125000);
+
+    (void)p25_sm_emit_active_call(&opts, &state, 1, 0x7777, 0, 0x020304, 1, 0);
+    rc |= expect_true("two calls: the second call opens on the other slot", copy_call(&state, 1U, &call));
+    rc |= expect_eq_long("two calls: the second call takes no frequency the first one's grant named",
+                         (long)call.frequency_hz, 0);
+
+    (void)dsd_call_state_end_ex(&state, 0U, 0.0, DSD_CALL_END_EXPLICIT);
+    (void)p25_sm_emit_active_call(&opts, &state, 0, 0x7777, 0, 0x020304, 1, 0);
+    rc |= expect_true("two calls: the second talkgroup opens on the first slot", copy_call(&state, 0U, &call));
+    rc |= expect_eq_long("two calls: there it takes none of the first one's grant either", (long)call.frequency_hz, 0);
+
+    p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -797,6 +849,7 @@ main(void) {
     rc |= test_inband_encrypted_voice_starts_classification_deadline();
     rc |= test_private_voice_ignores_regroup_clear_key_collision();
     rc |= test_trunking_off_conventional_call_takes_only_its_own_grant_frequency();
+    rc |= test_trunking_off_second_call_takes_no_grant_frequency_of_the_first();
 
     // Case A: MFID 0x90, opcode A3 (Group Regroup Channel Grant - Implicit)
     {

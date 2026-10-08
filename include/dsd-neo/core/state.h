@@ -661,6 +661,11 @@ struct dsd_state {
     uint8_t dmr_data_target_is_group[2];
     // P25 trunking freq storage
     long int p25_vc_freq[2];
+    /* With trunking off, the voice channel frequency a grant update named for the target of a call active on this
+       carrier, kept per slot with that target (issue #575): a call takes it only when it has that target, never another
+       call's (p25_conventional_grant_frequency()). */
+    long int p25_conventional_grant_freq[2];
+    uint32_t p25_conventional_grant_target[2];
     long int trunk_vc_freq[2]; // generic trunk-owner voice-channel frequencies
     // Trunking LCNs and maps
     long int trunk_lcn_freq[DSD_TRUNK_LCN_EMBEDDED];

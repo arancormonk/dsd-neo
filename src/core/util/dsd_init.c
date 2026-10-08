@@ -1009,6 +1009,16 @@ init_state_trunk_scan_publication(dsd_state* state) {
     state->scan_timing.visit_deadline_m = -1.0;
 }
 
+/* The voice channel frequencies, and with trunking off the one a grant update named for its call's target (issue
+   #575). */
+static void
+init_state_p25_voice_channel_freqs(dsd_state* state) {
+    state->p25_vc_freq[0] = 0;
+    state->p25_vc_freq[1] = 0;
+    DSD_MEMSET(state->p25_conventional_grant_freq, 0, sizeof(state->p25_conventional_grant_freq));
+    DSD_MEMSET(state->p25_conventional_grant_target, 0, sizeof(state->p25_conventional_grant_target));
+}
+
 static void
 init_state_p25_and_trunk_defaults(dsd_state* state) {
     //P2 variables
@@ -1065,8 +1075,7 @@ init_state_p25_and_trunk_defaults(dsd_state* state) {
     state->p25_cc_freq = 0;
     state->p25_last_cc_msg_time = 0;
     state->p25_last_cc_msg_time_m = 0.0;
-    state->p25_vc_freq[0] = 0;
-    state->p25_vc_freq[1] = 0;
+    init_state_p25_voice_channel_freqs(state);
 
     init_state_p25_patch_defaults(state);
     dsd_enc_lockout_init(state);
