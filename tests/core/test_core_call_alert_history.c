@@ -4097,6 +4097,10 @@ test_playfiles_rows_take_no_tuner_value_or_code(void) {
     int rc = expect_int("playfiles row commits", committed_history_rows(&event_history[0]), 1);
     rc |= expect_i64("playfiles row takes no tuner value", row->freq_hz, 0);
     rc |= expect_access_code("playfiles row takes no code", row, DSD_ACCESS_CODE_NONE, 0U);
+    // Issue #575: the text names the row's code too, so the reader's fabricated 0 prints as no code, not CC 0.
+    rc |= expect_str_eq("playfiles row sysid names no code", row->sysid_string, "DMR_CC_--");
+    rc |= expect_has_substr("playfiles row event names no code", row->event_string, "SRC: 00000201; CC: --; ");
+    rc |= expect_no_substr("playfiles row event is not CC 0", row->event_string, "CC: 00");
 
     state.lastsynctype = DSD_SYNC_DMR_BS_DATA_POS;
     assert(emit_test_data_notice(&opts, &state, 1234U, 5678U, "Data;", 0U) == 0);

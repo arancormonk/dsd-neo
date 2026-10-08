@@ -238,7 +238,7 @@ not the history from before.
 | Field | Meaning |
 | --- | --- |
 | `systype`, `subtype` | Protocol and message kind. |
-| `sys_id1..5`, `sysid_string` | System identity (P25 WACN:SYS:CC:SITE:RFSS, NAC, DMR color code, NXDN RAN, ...). `sysid_string` prints `--` for a DMR or dPMR color code, an NXDN RAN or an M17 CAN that never decoded (`DMR_CC_--`, `NXDN_RAN_--`, `M17_CAN_--`), and for an NXDN value that is not a RAN (an IDAS area, DCR's fixed 7); a P25 NAC the call was not heard with prints `---`, three wide like the code (`P25_---`, `P25_45564006---_10_10`). The P25, M17 and dPMR codes there are the row's `access_code`; the numeric ids keep the decoder's raw value. |
+| `sys_id1..5`, `sysid_string` | System identity (P25 WACN:SYS:CC:SITE:RFSS, NAC, DMR color code, NXDN RAN, ...). `sysid_string` prints `--` for a DMR or dPMR color code, an NXDN RAN or an M17 CAN that never decoded (`DMR_CC_--`, `NXDN_RAN_--`, `M17_CAN_--`), and for an NXDN value that is not a RAN (an IDAS area, DCR's fixed 7); a P25 NAC the call was not heard with prints `---`, three wide like the code (`P25_---`, `P25_45564006---_10_10`). The DMR, P25, M17 and dPMR codes there are the row's `access_code` (so `--playfiles`, which takes none, prints `DMR_CC_--`); the numeric ids keep the decoder's raw value. |
 | `source_id`, `target_id` | Source and target/group identifiers. |
 | `src_str`, `tgt_str` | Text identities (M17, YSF, D-STAR, dPMR callsigns). |
 | `t_name`, `s_name`, `t_mode`, `s_mode` | Group/source names and modes from the imported CSVs. |
