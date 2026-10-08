@@ -11,6 +11,7 @@
 #include <dsd-neo/app_control/frontend_runtime.h>
 #include <dsd-neo/app_control/rx_tone_view.h>
 #include <dsd-neo/app_control/scan_row_view.h>
+#include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/airspy_config.h>
 #include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/audio.h>
@@ -4424,6 +4425,154 @@ test_replay_refuses_channel_cycle_and_return_cc(void) {
 #endif
 
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
+/* The codes the carrier on air decoded, and the Phase 2 seed it proved. */
+static void
+seed_carrier_codes(dsd_state* state) {
+    state->dmr_color_code = 7U;
+    state->dmr_confidence_locked = 1;
+    state->dmr_confidence_color_code = 7;
+    state->nxdn_last_ran = 21U;
+    state->dpmr_color_code = 12;
+    state->p2_cc = 0x293ULL;
+    state->p2_cc_verified = 1U;
+}
+
+/* Forgotten, as the carrier boundary forgets them, or kept; the Phase 2 seed, the descrambling key, stays either way. */
+static int
+expect_carrier_codes(const char* what, const dsd_state* state, int forgotten) {
+    char tag[160];
+    int rc = 0;
+    DSD_SNPRINTF(tag, sizeof tag, "%s: DMR colour code", what);
+    rc |= expect_int(tag, (int)state->dmr_color_code, forgotten ? 16 : 7);
+    DSD_SNPRINTF(tag, sizeof tag, "%s: DMR confidence lock", what);
+    rc |= expect_int(tag, (int)state->dmr_confidence_locked, forgotten ? 0 : 1);
+    DSD_SNPRINTF(tag, sizeof tag, "%s: NXDN RAN", what);
+    rc |= expect_true(tag, state->nxdn_last_ran == (forgotten ? (unsigned int)-1 : 21U));
+    DSD_SNPRINTF(tag, sizeof tag, "%s: dPMR colour code", what);
+    rc |= expect_int(tag, state->dpmr_color_code, forgotten ? -1 : 12);
+    DSD_SNPRINTF(tag, sizeof tag, "%s: Phase 2 seed proof", what);
+    rc |= expect_int(tag, (int)state->p2_cc_verified, forgotten ? 0 : 1);
+    DSD_SNPRINTF(tag, sizeof tag, "%s: Phase 2 seed", what);
+    rc |= expect_true(tag, state->p2_cc == 0x293ULL);
+    return rc;
+}
+
+#ifdef USE_RADIO
+/* A Phase 2 call opened and synced on slot 0, as an unscrambled MAC_PTT opens one. */
+static const Event_History*
+observe_phase2_call(dsd_opts* opts, dsd_state* state, uint32_t target) {
+    const dsd_call_observation observation = {
+        .protocol = DSD_SYNC_P25P2_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = target,
+        .policy_target_id = target,
+        .ota_source_id = target + 1U,
+    };
+    (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN);
+    dsd_event_sync_slot(opts, state, 0U);
+    return &state->event_history_s[0].Event_History_Items[0];
+}
+#endif
+
+/*
+ * Issue #575: an accepted retune the user asks for moves the receiver to another carrier, which can sync before any
+ * no-carrier pass forgets the codes the previous one decoded. The tune forgets them itself, as the carrier boundary
+ * does (dsd_engine_forget_carrier_codes()): a Phase 2 call on the new carrier records no NAC until that carrier proves
+ * the seed. A refused or failed tune leaves the receiver, and the codes, where they were.
+ */
+static int
+test_accepted_retunes_forget_the_carrier_codes(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+
+#ifdef USE_RADIO
+    init_radio_context(&opts, &state, "rtl:0");
+    seed_carrier_codes(&state);
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    const Event_History* row = observe_phase2_call(&opts, &state, 4100U);
+    rc |= expect_true("verified reception records its NAC",
+                      row->access_code_kind == (uint8_t)DSD_ACCESS_CODE_NAC && row->access_code == 0x293U);
+    post_u32(DSD_APP_CMD_MANUAL_TUNE, 853125000U);
+    rc |= expect_int("accepted tap drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("accepted tap reaches the tuner", g_io_control_tune_calls, 1);
+    rc |= expect_carrier_codes("accepted tap", &state, 1);
+    row = observe_phase2_call(&opts, &state, 4200U);
+    rc |= expect_int("a Phase 2 call after the tap is another", (int)row->target_id, 4200);
+    rc |= expect_true("a Phase 2 call after the tap records no NAC",
+                      row->access_code_kind == (uint8_t)DSD_ACCESS_CODE_NONE);
+    freeState(&state);
+
+    init_radio_context(&opts, &state, "rtl:0");
+    seed_carrier_codes(&state);
+    reset_io_control_tune_stub(-1);
+    post_u32(DSD_APP_CMD_MANUAL_TUNE, 853125000U);
+    rc |= expect_int("failed tap drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_carrier_codes("failed tap", &state, 0);
+    freeState(&state);
+
+    init_radio_context(&opts, &state, "rtl:0");
+    seed_carrier_codes(&state);
+    opts.trunk_enable = 1;
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    post_u32(DSD_APP_CMD_MANUAL_TUNE, 853125000U);
+    rc |= expect_int("refused tap drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("refused tap never tunes", g_io_control_tune_calls, 0);
+    rc |= expect_carrier_codes("refused tap", &state, 0);
+    freeState(&state);
+
+    init_radio_context(&opts, &state, "rtl:0");
+    seed_carrier_codes(&state);
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_TIMEOUT);
+    post_u32(DSD_APP_CMD_RTL_SET_FREQ, 853125000U);
+    rc |= expect_int("accepted frequency entry drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_carrier_codes("accepted frequency entry", &state, 1);
+    freeState(&state);
+
+    init_radio_context(&opts, &state, "rtl:0");
+    seed_carrier_codes(&state);
+    reset_io_control_tune_stub(-1);
+    post_u32(DSD_APP_CMD_RTL_SET_FREQ, 853125000U);
+    rc |= expect_int("failed frequency entry drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_carrier_codes("failed frequency entry", &state, 0);
+    freeState(&state);
+#endif
+
+    for (int accepted = 1; accepted >= 0; accepted--) {
+        char what[96];
+        init_radio_context(&opts, &state, "rtl:0");
+        seed_active_p25_voice(&opts, &state, 851000000L, 852000000L, 1201);
+        seed_carrier_codes(&state);
+        reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+        reset_cc_tune_stub(accepted ? DSD_TRUNK_TUNE_RESULT_OK : DSD_TRUNK_TUNE_RESULT_DEFERRED);
+        DSD_SNPRINTF(what, sizeof what, "%s return to CC", accepted ? "accepted" : "deferred");
+        rc |= expect_int(what, dsd_app_command_action(DSD_APP_CMD_RETURN_CC), DSD_APP_COMMAND_SUBMIT_QUEUED);
+        rc |= expect_int(what, dsd_app_drain_cmds(&opts, &state), 1);
+        rc |= expect_carrier_codes(what, &state, accepted);
+        freeState(&state);
+
+        init_radio_context(&opts, &state, "rtl:0");
+        seed_active_p25_voice(&opts, &state, 855000000L, 856000000L, 3201);
+        state.lcn_freq_count = 2;
+        state.lcn_freq_roll = 0;
+        state.trunk_lcn_freq[0] = 857000000L;
+        state.trunk_lcn_freq[1] = 858000000L;
+        seed_carrier_codes(&state);
+        reset_io_control_tune_stub(accepted ? RTL_STREAM_TUNE_OK : RTL_STREAM_TUNE_DEFERRED);
+        reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_OK);
+        DSD_SNPRINTF(what, sizeof what, "%s channel cycle", accepted ? "accepted" : "deferred");
+        rc |= expect_int(what, dsd_app_command_action(DSD_APP_CMD_CHANNEL_CYCLE), DSD_APP_COMMAND_SUBMIT_QUEUED);
+        rc |= expect_int(what, dsd_app_drain_cmds(&opts, &state), 1);
+        rc |= expect_carrier_codes(what, &state, accepted);
+        freeState(&state);
+    }
+
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_OK);
+    return rc;
+}
+
 /*
  * Per-row keys through the command queue: a channel cycle onto a keyed row
  * installs its set, a runtime key import while parked lands in the globals
@@ -17042,6 +17191,7 @@ main(void) {
     rc |= test_replay_refuses_tunes_and_release();
     rc |= test_scan_hold_avoid_commands();
     rc |= test_replay_refuses_channel_cycle_and_return_cc();
+    rc |= test_accepted_retunes_forget_the_carrier_codes();
     rc |= test_scan_row_keys_commands();
 #endif
 #ifdef DSD_NEO_TEST_AUDIO_ENSURE_WRAP

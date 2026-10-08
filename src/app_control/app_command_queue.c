@@ -1806,6 +1806,7 @@ static int
 ui_cmd_handle_p25_cc_selection(dsd_opts* opts, dsd_state* state, uint32_t hz) {
     const dsd_trunk_tune_result result = p25_sm_select_control_channel(p25_sm_get_ctx(), opts, state, (long)hz);
     if (dsd_trunk_tune_result_is_ok(result)) {
+        dsd_engine_forget_carrier_codes(state); // a control channel the user picked: a new carrier (issue #575)
         ui_set_toast(state, 3, "%s: P25 control channel -> %u Hz",
                      result == DSD_TRUNK_TUNE_RESULT_PENDING ? "Accepted (pending)" : "Applied", hz);
         return UI_CMD_APPLY_COMPLETED;
@@ -1886,8 +1887,10 @@ ui_cmd_handle_rtl_set_freq(dsd_opts* opts, dsd_state* state, const struct dsd_ap
         result = ui_cmd_apply_status_from_tune_rc(rc);
         if (rc == 0 || rc == RTL_STREAM_TUNE_TIMEOUT) {
             /* A new channel: the tone heard on the old one goes now, not when the analog tap
-               next notices the stream moved (issue #522). */
+               next notices the stream moved (issue #522), and so do the codes it decoded, which the
+               next carrier could otherwise inherit before any no-carrier pass (issue #575). */
             dsd_analog_rx_reset(state);
+            dsd_engine_forget_carrier_codes(state);
         }
         const int stop_scanner = ui_cmd_leave_typed_scan_after_tune(opts, state, rc);
         ui_cmd_rtl_set_freq_toast(state, rc, v, stop_scanner);
@@ -1951,6 +1954,8 @@ ui_cmd_handle_manual_tune(dsd_opts* opts, dsd_state* state, const struct dsd_app
          * manual return-to-CC path order this — never on the failure path. */
         dsd_frame_sync_reset_mod_state();
         dsd_analog_rx_reset(state);
+        /* The new carrier can sync before any no-carrier pass forgets the old one's codes (issue #575). */
+        dsd_engine_forget_carrier_codes(state);
         reset_call_tracking(opts, state, 1);
         if (rc == 0) {
             ui_set_toast(state, 3, "Applied: tuned -> %u Hz", v);
@@ -2997,8 +3002,10 @@ request_manual_tune(dsd_opts* opts, dsd_state* state, long int freq, int p25_cc_
     if (accepted) {
         /* The radio is moving (issue #522). With rigctl on PCM input nothing else reports this
            hop: io_control does not advance the trunk-tuning generation, and there is no RTL
-           stream generation to move, so the tone heard on the old channel goes here. */
+           stream generation to move, so the tone heard on the old channel goes here, and so do the
+           codes it decoded, which the next carrier could inherit before any no-carrier pass (issue #575). */
         dsd_analog_rx_reset(state);
+        dsd_engine_forget_carrier_codes(state);
         return 1;
     }
     LOG_WARN("WARNING: %s tune to %ld Hz was not accepted (result=%d); preserving decoder state\n",
@@ -3710,7 +3717,8 @@ cfg_is_live_airspy(const dsdneoUserConfig* cfg, const char* old_device, int old_
  * none having run before), or the live Airspy path failed, which fails the apply.
  */
 static int
-apply_cfg_radio_input(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg, const ui_cfg_rollback* before) {
+apply_cfg_radio_input_tuned(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg,
+                            const ui_cfg_rollback* before) {
     const ui_radio_input* in = &before->input;
     if (!cfg_is_live_airspy(cfg, in->audio_in_dev, in->audio_in_type)) {
         apply_cfg_live_rtl_ppm_request(opts, cfg, in->audio_in_type);
@@ -3733,6 +3741,20 @@ apply_cfg_radio_input(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* 
         rc = svc_airspy_apply_config_locked(opts, state, &cfg->airspy, &tuning);
     }
     apply_cfg_live_rtl_ppm_request(opts, cfg, in->audio_in_type);
+    return rc;
+}
+
+/* apply_cfg_radio_input_tuned(), then the codes the old carrier decoded go when the radio input is on another centre
+   (issue #575): a reopen on the config's frequency, or the live Airspy retune, keeps the input a radio input, so no
+   input boundary or no-carrier pass ends the reception before the next carrier syncs. A start that failed put the old
+   centre back, and its codes stay. */
+static int
+apply_cfg_radio_input(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg, const ui_cfg_rollback* before) {
+    const int rc = apply_cfg_radio_input_tuned(opts, state, cfg, before);
+    if (before->input.audio_in_type == AUDIO_IN_RTL && opts->audio_in_type == AUDIO_IN_RTL
+        && opts->rtlsdr_center_freq != before->input.rtlsdr_center_freq) {
+        dsd_engine_forget_carrier_codes(state);
+    }
     return rc;
 }
 #endif
@@ -5353,11 +5375,12 @@ rr_apply_files(dsd_opts* opts, dsd_state* state, const dsd_app_rr_apply_payload*
    returning -1 when neither owns the tuner. 0 is applied and
    RTL_STREAM_TUNE_TIMEOUT is accepted-pending; anything else is a session that
    cannot retune (WAV, stdin, UDP, symbol file), which the preview already warned
-   about and which must not fail the whole apply. */
-static void
+   about and which must not fail the whole apply. Returns 1 when the tune was
+   accepted (applied or pending), 0 otherwise. */
+static int
 rr_apply_tune(dsd_opts* opts, const dsd_state* state, const dsd_app_rr_apply_payload* p) {
     if (p->tune_hz == 0U) {
-        return;
+        return 0;
     }
     /* io_control_set_freq() takes a long, which is 32-bit signed under the
        win-msvc-* presets while the payload carries a full uint32_t (and
@@ -5369,10 +5392,11 @@ rr_apply_tune(dsd_opts* opts, const dsd_state* state, const dsd_app_rr_apply_pay
        rejects it. */
 #if LONG_MAX < UINT32_MAX
     if (p->tune_hz > (uint32_t)LONG_MAX) {
-        return;
+        return 0;
     }
 #endif
-    (void)io_control_set_freq(opts, state, (long int)p->tune_hz);
+    const int rc = io_control_set_freq(opts, state, (long int)p->tune_hz);
+    return rc == RTL_STREAM_TUNE_OK || rc == RTL_STREAM_TUNE_TIMEOUT;
 }
 
 /* The session was just re-pointed at a different system, so the old system's CC
@@ -5431,7 +5455,11 @@ apply_rr_import(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* 
        reads it, so the simulcast override needs a second publish, and a re-apply
        onto an already-matching mode needs the first one. */
     (void)decode_mode_republish(opts, state, mode);
-    rr_apply_tune(opts, state, &p);
+    if (rr_apply_tune(opts, state, &p)) {
+        /* The receiver moved to the imported system's channel, which can sync before any no-carrier pass forgets
+           the codes the old one decoded (issue #575). */
+        dsd_engine_forget_carrier_codes(state);
+    }
     rr_apply_reacquire(opts, state);
 
     if (files_rc != UI_CMD_APPLY_COMPLETED) {

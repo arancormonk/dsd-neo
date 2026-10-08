@@ -3657,6 +3657,27 @@ test_carrier_boundary_forgets_the_access_codes(void) {
     rc |= expect_true("access-codes: trunk scan still forgets the dPMR colour code", state->dpmr_color_code == -1);
     opts->trunk_scan_enabled = 0;
 
+    /* The forget both paths share, which app-control also runs on an accepted retune the user asks for: the DMR
+       colour code goes with the confidence lock it pairs with, the NXDN RAN with its stand-in mark, and the Phase 2
+       seed's proof without the seed. */
+    state->dmr_color_code = 5U;
+    state->dmr_confidence_locked = 1;
+    state->dmr_confidence_color_code = 5;
+    state->dpmr_color_code = 12;
+    state->nxdn_last_ran = 21U;
+    state->nxdn_last_ran_stand_in = 1U;
+    state->p2_cc = 0x293ULL;
+    state->p2_cc_verified = 1U;
+    dsd_engine_forget_carrier_codes(state);
+    rc |= expect_true("access-codes: the forget drops the DMR colour code with its lock",
+                      state->dmr_color_code == 16U && state->dmr_confidence_locked == 0);
+    rc |= expect_true("access-codes: the forget drops the NXDN RAN with its stand-in mark",
+                      state->nxdn_last_ran == (unsigned int)-1 && state->nxdn_last_ran_stand_in == 0U);
+    rc |= expect_true("access-codes: the forget drops the dPMR colour code", state->dpmr_color_code == -1);
+    rc |= expect_true("access-codes: the forget drops the seed's proof and keeps the seed",
+                      state->p2_cc_verified == 0U && state->p2_cc == 0x293ULL);
+    dsd_engine_forget_carrier_codes(NULL);
+
     free_test_runtime(opts, state);
     return rc;
 }

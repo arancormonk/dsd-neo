@@ -541,6 +541,81 @@ test_apply_requests_the_tune(void) {
     freeState(&state);
     return rc;
 }
+
+static void
+seed_carrier_codes(dsd_state* state) {
+    state->dmr_color_code = 5U;
+    state->nxdn_last_ran = 9U;
+    state->nxdn_last_ran_stand_in = 1U;
+    state->dpmr_color_code = 33;
+    state->p2_cc = 0x293U;
+    state->p2_cc_verified = 1U;
+}
+
+static int
+expect_carrier_codes(const char* what, const dsd_state* state, int forgotten) {
+    char label[96];
+    int rc = 0;
+    DSD_SNPRINTF(label, sizeof label, "%s: DMR colour code", what);
+    rc |= expect_int(label, (int)state->dmr_color_code, forgotten ? 16 : 5);
+    DSD_SNPRINTF(label, sizeof label, "%s: NXDN RAN", what);
+    rc |= expect_int(label, (int)state->nxdn_last_ran, forgotten ? -1 : 9);
+    DSD_SNPRINTF(label, sizeof label, "%s: NXDN stand-in mark", what);
+    rc |= expect_int(label, (int)state->nxdn_last_ran_stand_in, forgotten ? 0 : 1);
+    DSD_SNPRINTF(label, sizeof label, "%s: dPMR colour code", what);
+    rc |= expect_int(label, state->dpmr_color_code, forgotten ? -1 : 33);
+    DSD_SNPRINTF(label, sizeof label, "%s: Phase 2 seed proof", what);
+    rc |= expect_int(label, (int)state->p2_cc_verified, forgotten ? 0 : 1);
+    /* The seed itself stays: a later carrier proves it again before it names a NAC. */
+    DSD_SNPRINTF(label, sizeof label, "%s: Phase 2 seed", what);
+    rc |= expect_int(label, (int)state->p2_cc, 0x293);
+    return rc;
+}
+
+/* Issue #575: an import that moves the receiver to its system's channel forgets the codes the old carrier decoded,
+   which the new one could otherwise inherit before any no-carrier pass; an import that does not move it keeps them. */
+static int
+test_apply_tune_forgets_the_carrier_codes(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    dsd_app_rr_apply_payload p;
+
+    init_test_context(&opts, &state);
+    DSD_MEMSET(&p, 0, sizeof p);
+    p.decode_mode = (int32_t)DSDCFG_MODE_TDMA;
+    p.trunking = 1U;
+    p.tune_hz = 851012500U;
+
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    seed_carrier_codes(&state);
+    rc |= expect_int("tuned import queued", dsd_app_command_set_rr_apply(&p), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("tuned import drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_carrier_codes("tuned import", &state, 1);
+
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_TIMEOUT);
+    seed_carrier_codes(&state);
+    rc |= expect_int("pending import queued", dsd_app_command_set_rr_apply(&p), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("pending import drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_carrier_codes("pending import", &state, 1);
+
+    reset_io_control_tune_stub(-1);
+    seed_carrier_codes(&state);
+    rc |= expect_int("untuned import queued", dsd_app_command_set_rr_apply(&p), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("untuned import drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_carrier_codes("untuned import", &state, 0);
+
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    p.tune_hz = 0U;
+    seed_carrier_codes(&state);
+    rc |= expect_int("tuneless import queued", dsd_app_command_set_rr_apply(&p), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("tuneless import drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("tuneless import asks no tune", g_io_control_tune_calls, 0);
+    rc |= expect_carrier_codes("tuneless import", &state, 0);
+
+    freeState(&state);
+    return rc;
+}
 #endif
 
 int
@@ -559,6 +634,7 @@ main(void) {
     rc |= test_rr_account_set();
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
     rc |= test_apply_requests_the_tune();
+    rc |= test_apply_tune_forgets_the_carrier_codes();
 #endif
     if (rc == 0) {
         printf("APP_CONTROL_RR_APPLY: OK\n");

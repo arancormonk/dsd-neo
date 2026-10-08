@@ -2035,24 +2035,36 @@ no_carrier_reset_decode_state(dsd_state* state, int preserve_scan_state) {
     set_spaces(state->ftype, 13);
     state->errs = 0;
     state->errs2 = 0;
-    /* Trunk scan keeps the carrier identity below in each target's snapshot, which saves and restores it. */
+    /* Trunk scan keeps the carrier identity in each target's snapshot, which saves and restores it. */
     if (!preserve_scan_state) {
-        dmr_confidence_reset(state);
-        /* The colour code is read as this carrier's (issue #575), so it goes back to "not decoded" (16, as initState()
-         * leaves it) with the lock. BS mode rewrites it when the gate relocks, before any burst is dispatched, but MS
-         * mode has no lock: a call opens before its embedded code decodes, and a failed QR(16,7,6) decode writes
-         * nothing, so the previous carrier's code would label it. Here rather than in dmr_confidence_reset(), whose
-         * BS burst-error callers stay on the same carrier. */
-        state->dmr_color_code = 16U;
-        /* The NXDN RAN likewise ((unsigned)-1, as initState() leaves it; RAN 0 is a legal code). The SACCH writes it
-         * only once the transmission is confirmed, and confirmation restarts here, so a call opening on its FACCH1
-         * VCALL would otherwise read the previous transmission's RAN. On a control channel the CRC-gated CAC sets it
-         * again at once. */
-        state->nxdn_last_ran = (unsigned int)-1;
-        /* The Phase 2 seed's proof is the carrier's too: the next carrier's bursts, or a network status broadcast, prove it
-         * again. p2_cc itself is the descrambling key and stays. */
-        state->p2_cc_verified = 0U;
+        dsd_engine_forget_carrier_codes(state);
     }
+}
+
+void
+dsd_engine_forget_carrier_codes(dsd_state* state) {
+    if (!state) {
+        return;
+    }
+    dmr_confidence_reset(state);
+    /* The colour code is read as this carrier's (issue #575), so it goes back to "not decoded" (16, as initState()
+     * leaves it) with the lock. BS mode rewrites it when the gate relocks, before any burst is dispatched, but MS mode
+     * has no lock: a call opens before its embedded code decodes, and a failed QR(16,7,6) decode writes nothing, so the
+     * previous carrier's code would label it. Here rather than in dmr_confidence_reset(), whose BS burst-error callers
+     * stay on the same carrier. */
+    state->dmr_color_code = 16U;
+    /* The NXDN RAN likewise ((unsigned)-1, as initState() leaves it; RAN 0 is a legal code), with its stand-in mark. The
+     * SACCH writes it only once the transmission is confirmed, and confirmation restarts at a no-carrier pass, so a call
+     * opening on its FACCH1 VCALL would otherwise read the previous transmission's RAN. On a control channel the
+     * CRC-gated CAC sets it again at once. */
+    state->nxdn_last_ran = (unsigned int)-1;
+    state->nxdn_last_ran_stand_in = 0U;
+    /* The dPMR colour code, which only the confirmed path publishes; the no-carrier pass also resets it with the
+     * confirmation evidence (no_carrier_reset_call_strings_and_dpmr()). */
+    state->dpmr_color_code = -1;
+    /* The Phase 2 seed's proof is the carrier's too: the next carrier's bursts, or a network status broadcast, prove it
+     * again. p2_cc itself is the descrambling key and stays. */
+    state->p2_cc_verified = 0U;
 }
 
 static void

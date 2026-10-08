@@ -3336,9 +3336,9 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
     the SM's own calls. The notice renders before the release returns the tuner to the control channel, so on a
     radio input the live tuner reads the same channel; off one (an audio input with a rigctl peer), where the tuner
     reads nothing, the grant is the only source.
-- `dmr_color_code` goes back to 16 ("not decoded") at the carrier boundary where `no_carrier_reset_decode_state()`
-  runs `dmr_confidence_reset()`, in `noCarrier()` and in `dsd_engine_reset_no_carrier_state()` (which
-  `channel_scan_commit()` runs). BS mode rewrites it at the confidence relock before any burst is dispatched; DMR MS
+- `dmr_color_code` goes back to 16 ("not decoded") at the carrier boundary, with `dmr_confidence_reset()`, in
+  `dsd_engine_forget_carrier_codes()`, which `no_carrier_reset_decode_state()` runs in `noCarrier()` and in
+  `dsd_engine_reset_no_carrier_state()` (which `channel_scan_commit()` runs). BS mode rewrites it at the confidence relock before any burst is dispatched; DMR MS
   mode has no lock, so without the reset a call opening before its embedded code decodes, or after a failed
   QR(16,7,6), took the previous carrier's code. It is reset there rather than inside `dmr_confidence_reset()`, whose
   BS burst-error callers in `dmr_bs.c` stay on the same carrier.
@@ -3369,6 +3369,18 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   reset changes `p2_cc`; `p2_cc` itself is the descrambling key and is never reset for it.
 - Trunk scan skips both resets (`preserve_scan_state`): the per-target snapshot saves and restores the DMR colour code
   with its confidence lock, the RAN with its stand-in mark, and `p2_cc` with its proof.
+- `dsd_engine_forget_carrier_codes()` (`<dsd-neo/engine/frame_processing.h>`) is that boundary's one forget: the DMR
+  colour code with its confidence lock, the RAN with its stand-in mark, the dPMR colour code, and the seed's proof
+  (never `p2_cc`). App-control runs it on every retune the user asks for that is accepted (applied or pending), since
+  the next carrier can sync before any no-carrier pass: `MANUAL_TUNE`, `RTL_SET_FREQ` (and the P25 control channel it
+  picks under P25 trunking, `ui_cmd_handle_p25_cc_selection()`), `request_manual_tune()` (return to the control
+  channel, the P25 candidate and LCN cycles, and the skip and lockout returns), a RadioReference import's tune
+  (`rr_apply_tune()`), and a config apply that leaves the radio input on another centre (`apply_cfg_radio_input()`: a
+  reopen on the config's frequency or the live Airspy retune). A refused, deferred or failed tune keeps the codes,
+  since the receiver stayed. Not run there: an input switch, which ends the reception through `input_boundary` and
+  `noCarrier()`; a `-Y` row step, whose commit runs the shared reset; a trunk-following retune within one system and
+  a trunk-scan target switch, whose snapshots carry the codes; and the tuner release, trunking toggles and rigctl
+  reconnect, which retune nothing.
 - `dpmr_color_code` is set only in `dpmr_publish_call()`, after `dpmr_confirm_is_confirmed()`, from a decoded
   `ColorCode[0]`, with or without a caller identity; the ID printer only prints.
   `no_carrier_reset_call_strings_and_dpmr()` resets it to -1 with the confirmation evidence.
@@ -3378,7 +3390,8 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
 
 Tests: `DMR_FLCO_PRIVACY_MODES`, `DMR_MS_DATA`, `NXDN_ELEMENT_BOUNDS`, `NXDN_DEPERM_PRIMITIVES`, `P25_SM_UNIFIED_CORE`,
 `P25_CRYPTO_STATE`, `P25_P1_LOCKOUT_EVENTS`, `DPMR_VOICE_BRIDGE`, `ENGINE_NO_CARRIER_RESET`, `ENGINE_TRUNK_SCAN`,
-`CORE_ACCESS_CODE`, `UI_NCURSES_PRINTER_HELPERS`, `UI_QT_METRICS_MODEL`.
+`CORE_ACCESS_CODE`, `UI_NCURSES_PRINTER_HELPERS`, `UI_QT_METRICS_MODEL`, `APP_COMMAND_QUEUE`, `APP_P25_CC_SELECTION`,
+`APP_CONTROL_RR_APPLY`, `RUNTIME_CONFIG_APPLY`, `UI_MENU_AIRSPY_CONFIG_FAILURE`, `UI_MENU_AIRSPY_CONFIG_TUNING`.
 
 Key public headers (selection):
 

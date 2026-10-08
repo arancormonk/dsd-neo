@@ -744,6 +744,75 @@ test_config_reapply_converts_rtl_squelch_from_db(void) {
     return rc;
 }
 
+/*
+ * Issue #575: a config that reopens the running RTL input on another frequency puts the receiver on another carrier,
+ * which can sync before any no-carrier pass, so the codes the old carrier decoded go. A reopen on the same frequency
+ * (here for a new gain) stays on the carrier and keeps them.
+ */
+static void
+seed_carrier_codes(dsd_state* state) {
+    state->dmr_color_code = 5U;
+    state->nxdn_last_ran = 9U;
+    state->nxdn_last_ran_stand_in = 1U;
+    state->dpmr_color_code = 33;
+    state->p2_cc = 0x293U;
+    state->p2_cc_verified = 1U;
+}
+
+static int
+expect_carrier_codes(const char* what, const dsd_state* state, int forgotten) {
+    const int kept = state->dmr_color_code == 5U && state->nxdn_last_ran == 9U && state->nxdn_last_ran_stand_in == 1U
+                     && state->dpmr_color_code == 33 && state->p2_cc_verified == 1U;
+    const int gone = state->dmr_color_code == 16U && state->nxdn_last_ran == (unsigned int)-1
+                     && state->nxdn_last_ran_stand_in == 0U && state->dpmr_color_code == -1
+                     && state->p2_cc_verified == 0U;
+    return expect_true(what, (forgotten ? gone : kept) && state->p2_cc == 0x293U);
+}
+
+static int
+test_config_reopen_on_another_frequency_forgets_the_carrier_codes(void) {
+    test_runtime runtime;
+    if (alloc_test_runtime(&runtime) != 0) {
+        return 1;
+    }
+    dsd_opts* opts = runtime.opts;
+    dsd_state* state = runtime.state;
+
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->rtlsdr_center_freq = 851375000U;
+    opts->rtl_gain_value = 22;
+    opts->rtl_dsp_bw_khz = 24;
+    opts->rtl_volume_multiplier = 2;
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "rtl:0:851375000:22:0:24:0:2");
+
+    dsdneoUserConfig cfg;
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_input = 1;
+    cfg.input_source = DSDCFG_INPUT_RTL;
+    cfg.rtl_device = 0;
+    DSD_SNPRINTF(cfg.rtl_freq, sizeof cfg.rtl_freq, "%s", "851375000");
+    cfg.rtl_gain = 30;
+    cfg.rtl_bw_khz = 24;
+    cfg.rtl_volume = 2;
+
+    int rc = 0;
+    seed_carrier_codes(state);
+    dsd_app_command_submit(DSD_APP_CMD_CONFIG_APPLY, &cfg, sizeof cfg);
+    (void)dsd_app_drain_cmds(opts, state);
+    rc |= expect_true("same-frequency reopen ran", strstr(opts->audio_in_dev, ":30:") != NULL);
+    rc |= expect_carrier_codes("same-frequency reopen keeps the codes", state, 0);
+
+    DSD_SNPRINTF(cfg.rtl_freq, sizeof cfg.rtl_freq, "%s", "460.125M");
+    seed_carrier_codes(state);
+    dsd_app_command_submit(DSD_APP_CMD_CONFIG_APPLY, &cfg, sizeof cfg);
+    (void)dsd_app_drain_cmds(opts, state);
+    rc |= expect_true("reopen on another frequency ran", opts->rtlsdr_center_freq == 460125000U);
+    rc |= expect_carrier_codes("reopen on another frequency forgets the codes", state, 1);
+
+    free_test_runtime(&runtime);
+    return rc;
+}
+
 /* The engine maps the runtime squelch hook onto the same demod setter the config path calls. */
 static void
 forward_row_squelch_to_demod(double mean_power) {
@@ -3353,6 +3422,7 @@ main(void) {
 #ifdef DSD_NEO_TEST_RTL_WRAP
     rc |= test_config_reapply_converts_rtl_squelch_from_db();
     rc |= test_config_reapply_under_row_squelch_keeps_the_row();
+    rc |= test_config_reopen_on_another_frequency_forgets_the_carrier_codes();
 #endif
 #endif
     return rc ? 1 : 0;
