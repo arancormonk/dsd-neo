@@ -3396,20 +3396,22 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   voice frequencies a grant update wrote, which `p25_sm_conventional_frequency()` gives a call over the tuner's, the DMR
   rest channel and branding, the NXDN site and channel plan) and the DMR grants' `trunk_vc_freq[]`. Every accepted
   retune to another carrier follows one rule: the outgoing calls end and commit first, while the live values are still
-  that carrier's, then the codes go, then (trunking off) that state. App-control runs it through `ui_leave_carrier()`
-  (`ui_end_calls()`; under trunking `ui_leave_followed_assignment()`, which brings the P25 or DMR state machine that
-  followed a voice channel to rest on its control channel without tuning, as trunk scan hands a carrier back, and runs
-  the shared `dsd_engine_release_tuned_call_state()`, so `trunk_is_tuned` and the voice channel frequencies go and
-  `dsd_opts_trunk_vc_followed()` stamps no frequency of the assignment left behind; then both forgets) for
-  `MANUAL_TUNE`, `RTL_SET_FREQ` when it does not pick a P25 control channel, a channel cycle with trunking off (its LCN
-  list and its P25 candidate list name no system the receiver follows), a RadioReference import's tune
-  (`rr_apply_tune()`), and a config apply that leaves the radio input on another centre (`apply_cfg_radio_input()`: a
-  reopen on the config's frequency, or the live Airspy retune). The engine runs it at a `-Y` row commit
-  (`channel_scan_commit()`: `channel_scan_end_calls()`, the shared reset, the untrunked forget), at the untyped `-Y`
-  step (the step, `no_carrier_finalize_canonical_calls()`, the shared reset, the untrunked forget), and at an input
-  switch (`noCarrier()`, then `dsd_engine_end_input_boundary()` with the untrunked forget). A refused, deferred or
-  failed tune keeps everything, since the receiver stayed. A retune within a system under trunking does not run either
-  forget: the return to the control channel, the skip and lockout returns, the P25 control channel pick
+  that carrier's, then the codes go, then (trunking off) that state. App-control runs it through `ui_leave_carrier()`:
+  under trunking first `ui_leave_followed_assignment()`, while the followed channel's calls are still active, which
+  brings the P25 or DMR state machine that followed a voice channel to rest on its control channel without tuning, as
+  trunk scan hands a carrier back (the P25 release flushes the partial Phase 2 superframe, which the 8 kHz int16 mixer
+  plays only for an active call on a talkgroup the hold or policy allows), and runs the shared
+  `dsd_engine_release_tuned_call_state()`, so `trunk_is_tuned` and the voice channel frequencies go and
+  `dsd_opts_trunk_vc_followed()` stamps no frequency of the assignment left behind; then `ui_end_calls()` for any call
+  left; then both forgets. It does so for `MANUAL_TUNE`, `RTL_SET_FREQ` when it does not pick a P25 control channel, a
+  channel cycle with trunking off (its LCN list and its P25 candidate list name no system the receiver follows), a
+  RadioReference import's tune (`rr_apply_tune()`), and a config apply that leaves the radio input on another centre
+  (`apply_cfg_radio_input()`: a reopen on the config's frequency, or the live Airspy retune). The engine runs it at a
+  `-Y` row commit (`channel_scan_commit()`: `channel_scan_end_calls()`, the shared reset, the untrunked forget), at the
+  untyped `-Y` step (the step, `no_carrier_finalize_canonical_calls()`, the shared reset, the untrunked forget), and at
+  an input switch (`noCarrier()`, then `dsd_engine_end_input_boundary()` with the untrunked forget). A refused, deferred
+  or failed tune keeps everything, since the receiver stayed. A retune within a system under trunking does not run
+  either forget: the return to the control channel, the skip and lockout returns, the P25 control channel pick
   (`ui_cmd_handle_p25_cc_selection()`) and candidate cycle, and a channel cycle with trunking on, whose list is the
   system's own channels. The system's codes stay valid there, as under automatic trunk following, and the DMR decode
   gate keeps dispatching the control channel's bursts: forgetting it made the first CSBK after a return pending, and

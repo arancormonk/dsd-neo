@@ -6677,6 +6677,7 @@ if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
             "LINKER:--wrap=dsd_trunk_tuning_hook_tune_to_cc"
             "LINKER:--wrap=io_control_set_freq"
             "LINKER:--wrap=dmr_data_burst_handler"
+            "LINKER:--wrap=dsd_audio_write"
             "LINKER:--wrap=dsd_tg_policy_call_skip_arm"
             "LINKER:--wrap=dsd_audio_ensure_analog_output"
             "LINKER:--wrap=dsd_audio_ensure_digital_output"

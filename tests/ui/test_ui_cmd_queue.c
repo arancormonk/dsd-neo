@@ -40,6 +40,7 @@
 #include <dsd-neo/io/rtl_stream_fwd.h>
 #include <dsd-neo/io/udp_input.h>
 #include <dsd-neo/platform/atomic_compat.h>
+#include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/posix_compat.h>
@@ -58,6 +59,7 @@
 #include <dsd-neo/runtime/input_failure.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/net_audio_input_hooks.h>
+#include <dsd-neo/runtime/p25_optional_hooks.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
@@ -105,6 +107,9 @@ static int g_skip_arm_refused = 0;
 /* DMR data bursts dispatched past the decode gate, counted while armed (issue #575). */
 static int g_dmr_burst_handler_armed = 0;
 static int g_dmr_burst_handler_calls = 0;
+/* Digital audio frames the mixer wrote, counted while armed (issue #575). */
+static int g_audio_write_armed = 0;
+static size_t g_audio_write_frames = 0U;
 /* TCP audio connect and Pulse input open: the real functions unless a test arms a result. */
 static int g_tcp_connect_stub_armed = 0;
 static int g_tcp_connect_stub_rc = 0;
@@ -161,6 +166,8 @@ void __real_dmr_data_burst_handler(dsd_opts* opts, dsd_state* state, uint8_t inf
                                    const uint8_t* reliab98);
 void __wrap_dmr_data_burst_handler(dsd_opts* opts, dsd_state* state, uint8_t info[196], uint8_t databurst,
                                    const uint8_t* reliab98);
+int __real_dsd_audio_write(dsd_audio_stream* stream, const int16_t* buffer, size_t frames);
+int __wrap_dsd_audio_write(dsd_audio_stream* stream, const int16_t* buffer, size_t frames);
 dsd_trunk_tune_result __wrap_dsd_trunk_tuning_hook_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq,
                                                               int ted_sps, uint64_t* out_request_id);
 int __real_dsd_tg_policy_call_skip_arm(dsd_state* state, uint32_t id, uint32_t src, int fallback, double now_mono_s);
@@ -259,6 +266,16 @@ __wrap_dmr_data_burst_handler(dsd_opts* opts, dsd_state* state, uint8_t info[196
         return;
     }
     g_dmr_burst_handler_calls++;
+}
+
+/* Digital audio the mixer let through (issue #575): counted, and written for real unless a test armed the count. */
+int
+__wrap_dsd_audio_write(dsd_audio_stream* stream, const int16_t* buffer, size_t frames) {
+    if (!g_audio_write_armed) {
+        return __real_dsd_audio_write(stream, buffer, frames);
+    }
+    g_audio_write_frames += frames;
+    return 0;
 }
 
 dsd_trunk_tune_result
@@ -4842,6 +4859,72 @@ test_trunked_tune_away_leaves_the_followed_assignment(void) {
     dmr_sm_init_ctx(dmr, &opts, &state);
     freeState(&state);
 
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    return rc;
+}
+#endif
+
+#ifdef USE_RADIO
+/*
+ * Issue #575: a trunked retune to another carrier releases the Phase 2 voice channel it followed while that channel's
+ * calls are still active, and the release flushes the partial superframe buffered for them
+ * (p25_sm_abandon_carrier()). Under a talkgroup hold the 8 kHz int16 mixer plays that tail only for an active call on
+ * the held talkgroup (dsd_audio_call_target()): a call ended before the release has no talkgroup, and the mixer
+ * dropped the tail.
+ */
+static int
+test_trunked_tune_away_flushes_the_followed_tail_first(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    static int fake_stream;
+
+    init_radio_context(&opts, &state, "rtl:0");
+    seed_active_p25_voice(&opts, &state, 851000000L, 852000000L, 1201);
+    opts.trunk_tune_group_calls = 1;
+    state.trunk_chan_map[0x1234] = 852000000L;
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){.tune_to_freq_request = stub_tune_to_freq_ok});
+    p25_sm_ctx_t* sm = p25_sm_get_ctx();
+    p25_sm_init_ctx(sm, &opts, &state);
+    p25_sm_event_t ev = p25_sm_ev_group_grant(0x1234, 852000000L, 1201, 1202, 0);
+    p25_sm_event(sm, &opts, &state, &ev);
+    ev = p25_sm_ev_active_call(0, 1201, 0, 1202, 1, 0);
+    p25_sm_event(sm, &opts, &state, &ev);
+    rc |= expect_int("the P25 SM follows the voice channel", p25_sm_get_state(sm), P25_SM_TUNED);
+    sm->vc_is_tdma = 1;
+    /* The entry picks no P25 control channel: it moves the receiver to another carrier. */
+    opts.frame_p25p1 = 0;
+    opts.frame_p25p2 = 0;
+    state.tg_hold = 1201U;
+    state.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
+    opts.floating_point = 0;
+    opts.pulse_digi_rate_out = 8000;
+    opts.audio_out = 1;
+    opts.audio_out_type = 0;
+    opts.audio_out_stream = (dsd_audio_stream*)(void*)&fake_stream;
+    for (int frame = 0; frame < 18; frame++) {
+        for (int i = 0; i < 160; i++) {
+            state.s_l4[frame][i] = 1000;
+        }
+    }
+    state.voice_counter[0] = 18; /* a full superframe of voice buffered for slot 0 */
+    dsd_p25_optional_hooks hooks = {0};
+    hooks.p25p2_flush_partial_audio = dsd_p25p2_flush_partial_audio;
+    dsd_p25_optional_hooks_set(hooks);
+    g_audio_write_frames = 0U;
+    g_audio_write_armed = 1;
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    post_u32(DSD_APP_CMD_RTL_SET_FREQ, 853125000U);
+    rc |= expect_int("trunked frequency entry drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("the P25 SM rests on its control channel", p25_sm_get_state(sm), P25_SM_ON_CC);
+    rc |= expect_true("the held talkgroup's buffered tail plays", g_audio_write_frames > 0U);
+
+    g_audio_write_armed = 0;
+    dsd_p25_optional_hooks_set((dsd_p25_optional_hooks){0});
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+    opts.audio_out_stream = NULL;
+    p25_sm_init_ctx(sm, &opts, &state);
+    freeState(&state);
     reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
     return rc;
 }
@@ -17555,6 +17638,7 @@ main(void) {
     rc |= test_tune_away_commits_the_outgoing_call_first();
     rc |= test_tune_away_clears_the_untrunked_frequency_caches();
     rc |= test_trunked_tune_away_leaves_the_followed_assignment();
+    rc |= test_trunked_tune_away_flushes_the_followed_tail_first();
 #endif
     rc |= test_return_cc_keeps_the_dmr_decode_gate();
     rc |= test_scan_row_keys_commands();

@@ -1362,18 +1362,20 @@ ui_leave_followed_assignment(dsd_opts* opts, dsd_state* state, int guard_held) {
 }
 
 /* An accepted retune the user asked for to another carrier, which can sync before any no-carrier pass ends the
-   reception (issue #575): the calls heard on the carrier it leaves end and commit first, with the codes that carrier
-   decoded and the frequencies it named; under trunking the assignment it followed is left
-   (ui_leave_followed_assignment()); then the codes go (dsd_engine_forget_carrier_codes()), and with trunking off the
-   voice frequencies its grants named (dsd_engine_forget_untrunked_carrier_state()). A retune within a system under
-   trunking -- the return to the control channel, the skip and lockout returns, the P25 control channel picks and
-   candidate cycles, a trunked channel cycle -- does not run it: the system's codes stay valid there, as under automatic
-   trunk following, and the DMR decode gate they carry keeps dispatching the control channel's bursts. @p guard_held
-   says whether the caller holds the P25 SM tick guard. */
+   reception (issue #575). Under trunking the assignment it followed is left first (ui_leave_followed_assignment()),
+   while that voice channel's calls are still active: the release flushes the partial superframe buffered for them,
+   which the mixer plays only for an active call on a talkgroup the hold or policy allows. Then every call heard on the
+   carrier it leaves ends and commits (ui_end_calls()), with the codes that carrier decoded and the frequencies it named,
+   and only then do those go: the codes (dsd_engine_forget_carrier_codes()), and with trunking off the voice
+   frequencies its grants named (dsd_engine_forget_untrunked_carrier_state()). A retune within a system under trunking
+   -- the return to the control channel, the skip and lockout returns, the P25 control channel picks and candidate
+   cycles, a trunked channel cycle -- does not run it: the system's codes stay valid there, as under automatic trunk
+   following, and the DMR decode gate they carry keeps dispatching the control channel's bursts. @p guard_held says
+   whether the caller holds the P25 SM tick guard. */
 static void
 ui_leave_carrier(dsd_opts* opts, dsd_state* state, int guard_held) {
-    ui_end_calls(opts, state);
     ui_leave_followed_assignment(opts, state, guard_held);
+    ui_end_calls(opts, state);
     dsd_engine_forget_carrier_codes(state);
     dsd_engine_forget_untrunked_carrier_state(opts, state);
 }
