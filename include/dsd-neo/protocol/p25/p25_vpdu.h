@@ -52,6 +52,19 @@ typedef enum {
 void process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, p25_mac_pdu_type pdu_type,
                       unsigned long long int mac[24]);
 
+/**
+ * @brief process_MAC_VPDU() with the PDU's CRC verdict.
+ *
+ * @param crc_ok 0 for a MAC_SIGNAL that failed its CRC and reaches here only
+ *               because -F relaxes the check (p25p2_xcch_validate_sacch_crc()).
+ *               Nothing that proves the carrier's identity -- a network status
+ *               broadcast's NAC, which marks the Phase 2 seed proven
+ *               (p2_cc_verified) -- is taken from such a PDU (issue #575).
+ *               process_MAC_VPDU() passes 1.
+ */
+void process_MAC_VPDU_crc(dsd_opts* opts, dsd_state* state, int type, p25_mac_pdu_type pdu_type,
+                          unsigned long long int mac[24], int crc_ok);
+
 #ifdef __cplusplus
 }
 #endif

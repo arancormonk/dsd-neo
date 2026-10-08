@@ -570,6 +570,7 @@ typedef struct {
     int skip_rest;
     int end_pdu;
     int iter_idx;
+    int crc_ok; /* 0: a MAC_SIGNAL -F let through with a failed CRC (process_MAC_VPDU_crc()) */
 } p25p2_vpdu_ctx;
 
 static void p25p2_vpdu_emit_json(const p25p2_vpdu_ctx* ctx);
@@ -3614,8 +3615,10 @@ BLOCK_END:
     ctx->iter_idx = i;
 }
 
+/* @p crc_ok is the broadcast's CRC verdict (process_MAC_VPDU_crc()): one that failed its CRC under -F may still name
+   the system, as it always could, but proves no NAC. */
 static void
-p25p2_vpdu_apply_nsb_identity(dsd_state* state, int lwacn, int lsysid, int lcolorcode) {
+p25p2_vpdu_apply_nsb_identity(dsd_state* state, int lwacn, int lsysid, int lcolorcode, int crc_ok) {
     if (!state || (lwacn == 0 && lsysid == 0)) {
         return;
     }
@@ -3626,8 +3629,8 @@ p25p2_vpdu_apply_nsb_identity(dsd_state* state, int lwacn, int lsysid, int lcolo
         }
         state->p2_cc = lcolorcode;
     }
-    // A CRC-checked broadcast naming the descrambler's NAC proves it on this carrier (issue #575).
-    if (state->p2_cc == (unsigned long long)lcolorcode) {
+    // A broadcast that passed its CRC naming the descrambler's NAC proves it on this carrier (issue #575).
+    if (crc_ok && state->p2_cc == (unsigned long long)lcolorcode) {
         state->p2_cc_verified = 1U;
     }
 }
@@ -3640,7 +3643,8 @@ p25p2_vpdu_note_nsb_system_tdma(dsd_state* state) {
 }
 
 static void
-p25p2_vpdu_accept_nsb_cc(const dsd_opts* opts, dsd_state* state, int lwacn, int lsysid, int lcolorcode, int seed_lcn0) {
+p25p2_vpdu_accept_nsb_cc(const dsd_opts* opts, dsd_state* state, int lwacn, int lsysid, int lcolorcode, int seed_lcn0,
+                         int crc_ok) {
     const long neigh[1] = {state->p25_cc_freq};
     p25_cc_record_neighbor_frequencies(opts, state, neigh, 1);
     p25p2_vpdu_note_nsb_system_tdma(state);
@@ -3648,7 +3652,7 @@ p25p2_vpdu_accept_nsb_cc(const dsd_opts* opts, dsd_state* state, int lwacn, int 
 
     // Only update system identity and potentially reset IDEN tables when values
     // are sane (non-zero) and we have a valid frequency mapping.
-    p25p2_vpdu_apply_nsb_identity(state, lwacn, lsysid, lcolorcode);
+    p25p2_vpdu_apply_nsb_identity(state, lwacn, lsysid, lcolorcode, crc_ok);
 
     if (seed_lcn0 && (state->trunk_lcn_freq[0] == 0 || state->trunk_lcn_freq[0] != state->p25_cc_freq)) {
         state->trunk_lcn_freq[0] = state->p25_cc_freq;
@@ -3695,11 +3699,11 @@ p25p2_vpdu_iter_block_47(p25p2_vpdu_ctx* ctx) {
         int accepted_cc = p25_cc_update_primary_from_network_status(opts, state, cc_freq);
         const int cc_metadata_allowed = accepted_cc || !p25_cc_update_is_voice_tuned(opts);
         if (cc_metadata_allowed) {
-            p25p2_vpdu_apply_nsb_identity(state, lwacn, lsysid, lcolorcode);
+            p25p2_vpdu_apply_nsb_identity(state, lwacn, lsysid, lcolorcode, ctx->crc_ok);
             p25_store_site_lra(state, (uint8_t)lra);
         }
         if (accepted_cc) {
-            p25p2_vpdu_accept_nsb_cc(opts, state, lwacn, lsysid, lcolorcode, 1);
+            p25p2_vpdu_accept_nsb_cc(opts, state, lwacn, lsysid, lcolorcode, 1, ctx->crc_ok);
         } else {
             p25p2_vpdu_log_rejected_nsb_cc("P25 NSB", cc_freq, channel);
         }
@@ -3747,11 +3751,11 @@ p25p2_vpdu_iter_block_48(p25p2_vpdu_ctx* ctx) {
         int accepted_cc = p25_cc_update_primary_from_network_status(opts, state, nf1);
         const int cc_metadata_allowed = accepted_cc || !p25_cc_update_is_voice_tuned(opts);
         if (cc_metadata_allowed) {
-            p25p2_vpdu_apply_nsb_identity(state, lwacn, lsysid, lcolorcode);
+            p25p2_vpdu_apply_nsb_identity(state, lwacn, lsysid, lcolorcode, ctx->crc_ok);
             p25_store_site_lra(state, (uint8_t)lra);
         }
         if (accepted_cc) {
-            p25p2_vpdu_accept_nsb_cc(opts, state, lwacn, lsysid, lcolorcode, 0);
+            p25p2_vpdu_accept_nsb_cc(opts, state, lwacn, lsysid, lcolorcode, 0, ctx->crc_ok);
         } else {
             p25p2_vpdu_log_rejected_nsb_cc("P25 NSB-EXT", nf1, channelt);
         }
@@ -5674,6 +5678,12 @@ p25p2_vpdu_print_payload(const dsd_opts* opts, const unsigned long long int mac[
 void
 process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, p25_mac_pdu_type pdu_type,
                  unsigned long long int mac[24]) {
+    process_MAC_VPDU_crc(opts, state, type, pdu_type, mac, 1);
+}
+
+void
+process_MAC_VPDU_crc(dsd_opts* opts, dsd_state* state, int type, p25_mac_pdu_type pdu_type,
+                     unsigned long long int mac[24], int crc_ok) {
     unsigned long long int mac_octets[P25P2_MAC_STAGING_OCTETS] = {0};
     for (int bi = 0; bi < P25P2_MAC_OCTETS; bi++) {
         mac_octets[bi] = mac[bi] & 0xFFu;
@@ -5709,6 +5719,7 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, p25_mac_pdu_type pd
         .skip_rest = 0,
         .end_pdu = 0,
         .iter_idx = 0,
+        .crc_ok = crc_ok != 0,
     };
 
     p25p2_vpdu_emit_json(&ctx);

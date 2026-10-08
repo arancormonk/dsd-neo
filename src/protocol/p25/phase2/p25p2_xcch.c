@@ -506,7 +506,7 @@ p25p2_xcch_handle_sacch_mac_signal(dsd_opts* opts, dsd_state* state, unsigned lo
         DSD_FPRINTF(stderr, "CRC16 ERR ");
     }
     DSD_FPRINTF(stderr, "%s", KYEL);
-    process_MAC_VPDU(opts, state, 1, P25_MAC_PDU_SIGNAL, smac);
+    process_MAC_VPDU_crc(opts, state, 1, P25_MAC_PDU_SIGNAL, smac, err == 0);
     DSD_FPRINTF(stderr, "%s", KNRM);
 }
 

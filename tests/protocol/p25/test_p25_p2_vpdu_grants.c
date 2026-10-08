@@ -2035,6 +2035,47 @@ main(void) {
         rc |= expect_eq_long("p2 unknown-iden nsb clears pending", state.p25_pending_announcement_count, 0);
     }
 
+    // Issue #575: under -F an LCCH MAC_SIGNAL that failed its CRC still reaches the VPDU decoder. A network status
+    // broadcast in it proves nothing: the seed it names stays unproven until a broadcast that passed its CRC names it,
+    // abbreviated or extended.
+    for (int extended = 0; extended < 2; extended++) {
+        static dsd_opts opts;
+        static dsd_state state;
+        unsigned long long int MAC[24] = {0};
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&state, 0, sizeof state);
+        p25_sm_release(p25_sm_get_ctx(), &opts, &state, "explicit-release");
+
+        state.p2_wacn = 0xABCDE;
+        state.p2_sysid = 0x123;
+        state.p2_cc = 0x055;
+        state.p2_cc_verified = 0U;
+        MAC[1] = extended ? 0xFB : 0x7B;
+        MAC[2] = 0x05; // LRA
+        MAC[3] = 0xAB;
+        MAC[4] = 0xCD;
+        MAC[5] = 0xE1;
+        MAC[6] = 0x23;
+        MAC[7] = 0x80;
+        MAC[8] = 0x0A; // unknown IDEN 8
+        if (extended) {
+            MAC[9] = 0x80;
+            MAC[10] = 0x0A;
+            MAC[12] = 0x00;
+            MAC[13] = 0x55; // NAC
+        } else {
+            MAC[11] = 0x55; // NAC
+        }
+
+        process_MAC_VPDU_crc(&opts, &state, 1, P25_MAC_PDU_SIGNAL, MAC, 0);
+        rc |= expect_eq_long(extended ? "p2 failed-crc nsb-ext proves no nac" : "p2 failed-crc nsb proves no nac",
+                             state.p2_cc_verified, 0);
+        process_MAC_VPDU_crc(&opts, &state, 1, P25_MAC_PDU_SIGNAL, MAC, 1);
+        rc |= expect_eq_long(extended ? "p2 checked nsb-ext proves the nac" : "p2 checked nsb proves the nac",
+                             state.p2_cc_verified, 1);
+        rc |= expect_eq_long("p2 nsb keeps the seed", (long)state.p2_cc, 0x055);
+    }
+
     // Case L: P2 extended NSB with unknown IDEN keeps identity metadata but
     // does not promote the unresolved channel to current CC.
     {
