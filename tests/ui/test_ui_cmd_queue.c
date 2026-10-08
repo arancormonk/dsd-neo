@@ -4529,6 +4529,23 @@ test_accepted_retunes_forget_the_carrier_codes(void) {
                       row->access_code_kind == (uint8_t)DSD_ACCESS_CODE_NONE);
     freeState(&state);
 
+    /* The Phase 1 NAC goes with them: a NID whose BCH-decoded NAC is the reserved 000 or FFF leaves state->nac as it
+       was, so a Phase 1 call on the new carrier would record the old carrier's NAC. */
+    init_radio_context(&opts, &state, "rtl:0");
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    state.nac = 0x293;
+    row = observe_call(&opts, &state, DSD_SYNC_P25P1_POS, 4400U);
+    rc |= expect_true("a Phase 1 reception records its NAC",
+                      row->access_code_kind == (uint8_t)DSD_ACCESS_CODE_NAC && row->access_code == 0x293U);
+    post_u32(DSD_APP_CMD_MANUAL_TUNE, 853125000U);
+    rc |= expect_int("accepted tap drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("accepted tap forgets the Phase 1 NAC", state.nac, 0);
+    row = observe_call(&opts, &state, DSD_SYNC_P25P1_POS, 4500U);
+    rc |= expect_int("a Phase 1 call after the tap is another", (int)row->target_id, 4500);
+    rc |= expect_true("a Phase 1 call after the tap records no NAC",
+                      row->access_code_kind == (uint8_t)DSD_ACCESS_CODE_NONE);
+    freeState(&state);
+
     init_radio_context(&opts, &state, "rtl:0");
     seed_carrier_codes(&state);
     reset_io_control_tune_stub(-1);

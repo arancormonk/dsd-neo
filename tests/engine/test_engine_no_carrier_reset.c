@@ -3666,9 +3666,11 @@ test_carrier_boundary_forgets_the_access_codes(void) {
     state->dpmr_color_code = 12;
     state->nxdn_last_ran = 21U;
     state->nxdn_last_ran_stand_in = 1U;
+    state->nac = 0x293;
     state->p2_cc = 0x293ULL;
     state->p2_cc_verified = 1U;
     dsd_engine_forget_carrier_codes(state);
+    rc |= expect_true("access-codes: the forget drops the Phase 1 NAC", state->nac == 0);
     rc |= expect_true("access-codes: the forget drops the DMR colour code with its lock",
                       state->dmr_color_code == 16U && state->dmr_confidence_locked == 0);
     rc |= expect_true("access-codes: the forget drops the NXDN RAN with its stand-in mark",
