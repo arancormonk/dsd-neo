@@ -18,6 +18,7 @@
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -31,6 +32,7 @@ typedef struct {
     void (*eot_cc)(dsd_opts* opts, dsd_state* state);
     void (*no_carrier)(dsd_opts* opts, dsd_state* state);
     int (*scan_visit_should_yield)(const dsd_opts* opts, dsd_state* state);
+    void (*replay_retune)(dsd_opts* opts, dsd_state* state);
 } dsd_frame_sync_hooks;
 
 void dsd_frame_sync_hooks_set(dsd_frame_sync_hooks hooks);
@@ -46,6 +48,12 @@ void dsd_frame_sync_hook_no_carrier(dsd_opts* opts, dsd_state* state);
  * when a long decoder loop must unwind so the engine can advance the scan. Does not
  * retune or release call state. Call on the decoder thread under its existing SM guard. */
 int dsd_frame_sync_hook_scan_visit_should_yield(const dsd_opts* opts, dsd_state* state);
+
+/** Note the I/Q replay centre the sample just read was captured on (dsd_opts_note_iq_replay_center()), and, when that
+ * adopts a new centre over another one -- a retune the capture recorded -- run the replay-retune hook before the sample
+ * is returned to the protocol, so nothing the new carrier carries is decoded on the old one's state (issue #575). Read
+ * paths call it on the decoder thread after each replay sample; it costs one compare unless the centre moved. */
+void dsd_frame_sync_note_replay_center(dsd_opts* opts, dsd_state* state, uint32_t center_hz);
 
 #ifdef __cplusplus
 }

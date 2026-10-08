@@ -19,8 +19,10 @@
  * IO_RIGCTL_CONTROL the real requests).
  */
 
+#include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/audio_input_switch.h>
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/events.h>
 #include <dsd-neo/core/frame.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
@@ -34,6 +36,7 @@
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/exitflag.h>
+#include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -80,10 +83,18 @@ LFSRN(const char* buffer_in, char* buffer_out, dsd_state* state) {
     (void)state;
 }
 
-/* A frame on the input in use; a switch the command pump then drains replaces the stream under the synced loop. */
+/* A frame on the input in use; a switch the command pump then drains replaces the stream under the synced loop. The
+   replay phase's frame instead carries a recorded retune (decode_frame_across_a_recorded_retune()). */
+static void decode_frame_across_a_recorded_retune(dsd_opts* opts, dsd_state* state);
+static int g_in_frame_retune = 0;
+
 void
 processFrame(dsd_opts* opts, dsd_state* state) {
-    (void)opts;
+    if (g_in_frame_retune) {
+        decode_frame_across_a_recorded_retune(opts, state);
+        g_in_frame_retune = 0;
+        return;
+    }
     g_process_frame_calls++;
     state->input_boundary = 1;
 }
@@ -212,48 +223,84 @@ __wrap_dsd_audio_switch_input(dsd_opts* opts, dsd_state* state, const dsd_audio_
 }
 
 /*
- * Issue #575: an I/Q replay plays the retunes its capture recorded, which move the centre the decoder notes on the read
- * path (dsd_opts_note_iq_replay_center()) and nothing else. With trunking off a recorded retune is another
- * conventional carrier, so the decoder loop ends the reception across it as an accepted live retune does: the outgoing
- * call ends and commits first, with the colour code it was heard with, and then the codes go. With trunking on it is
- * the system following itself, and nothing changes. Each pass is a hunt read that left for a queued command, so no
- * noCarrier() runs between them and only the move ends anything.
+ * Issue #575: an I/Q replay plays the retunes its capture recorded, which the read path adopts as the centre of the
+ * sample it just read (dsd_frame_sync_note_replay_center()). With trunking off a recorded retune is another
+ * conventional carrier, so the reception ends across it as at an accepted live retune, right where the read adopts the
+ * new centre and before that sample reaches the protocol: a retune can land inside a frame, whose decoding goes on
+ * publishing calls before the next frame-sync return. The outgoing call ends and commits with the colour code it was
+ * heard with; the incoming one, decoded after the adoption in the same frame, carries the new carrier's frequency and
+ * code, and nothing ends it later. With trunking on a recorded retune is the system following itself, and nothing
+ * changes. Each frame-sync pass here is a hunt read that left for a queued command, so no noCarrier() runs between
+ * them.
  */
 static int g_replay_step = 0;
 
+static void
+begin_call_with_target(dsd_state* state, uint32_t target) {
+    dsd_call_observation call = dsd_call_observation_data(DSD_SYNC_DMR_BS_VOICE_POS, 0U, 5678U, target);
+    call.kind = DSD_CALL_KIND_GROUP_VOICE;
+    call.policy_target_id = target;
+    expect("a call begins", dsd_call_state_observe(state, &call, DSD_CALL_BOUNDARY_BEGIN) > 0);
+}
+
+static uint32_t
+slot0_target(const dsd_state* state) {
+    dsd_call_snapshot call;
+    DSD_MEMSET(&call, 0, sizeof call);
+    return dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+               ? (uint32_t)call.ota_target_id
+               : 0U;
+}
+
+/* The frame the in-frame retune lands in: its later samples are the new carrier's. The read that takes the first of
+   them adopts the new centre, and the frame then decodes the incoming call on a radio input. */
+static void
+decode_frame_across_a_recorded_retune(dsd_opts* opts, dsd_state* state) {
+    opts->audio_in_type = AUDIO_IN_RTL;
+    dsd_frame_sync_note_replay_center(opts, state, 860000000U);
+    expect("the read that adopts the new centre ends the outgoing call", slot0_target(state) == 0U);
+    expect("the outgoing call commits with the colour code it was heard with",
+           state->event_history_s[0].Event_History_Items[1].target_id == 1234U
+               && state->event_history_s[0].Event_History_Items[1].sys_id2 == 5U);
+    expect("the incoming carrier starts with no colour code", state->dmr_color_code == 16U);
+    state->dmr_color_code = 9U;
+    begin_call_with_target(state, 4321U);
+    dsd_event_sync_slot(opts, state, 0U);
+    opts->audio_in_type = AUDIO_IN_NULL;
+}
+
 static int
 replay_retune_step(dsd_opts* opts, dsd_state* state) {
-    uint8_t reason = 0U;
     g_replay_step++;
     state->input_interrupted = 1;
+    const Event_History* staged = &state->event_history_s[0].Event_History_Items[0];
     switch (g_replay_step) {
         case 1:
             begin_call(state);
             state->dmr_color_code = 5U;
-            dsd_opts_note_iq_replay_center(opts, 851012500U);
+            dsd_frame_sync_note_replay_center(opts, state, 851012500U);
             return DSD_SYNC_NONE;
         case 2:
-            expect("a replay's first centre ends nothing", call_phase(state, &reason) == DSD_CALL_PHASE_ACTIVE);
+            expect("a replay's first centre ends nothing", slot0_target(state) == 1234U);
             expect("a replay's first centre forgets nothing", state->dmr_color_code == 5U);
-            dsd_opts_note_iq_replay_center(opts, 853125000U);
-            return DSD_SYNC_NONE;
+            g_in_frame_retune = 1;
+            return DSD_SYNC_DMR_BS_VOICE_POS;
         case 3:
-            expect("a recorded retune is consumed", opts->iq_replay_center_moved == 0U);
-            expect("a recorded conventional retune ends the call",
-                   call_phase(state, &reason) == DSD_CALL_PHASE_ENDED && reason == DSD_CALL_END_EXPLICIT);
-            expect("the outgoing call commits with the colour code it was heard with",
-                   state->event_history_s[0].Event_History_Items[1].target_id == 1234U
-                       && state->event_history_s[0].Event_History_Items[1].sys_id2 == 5U);
-            expect("the next carrier inherits no colour code", state->dmr_color_code == 16U);
-            /* Trunking on: a recorded retune is the system following itself. */
-            opts->trunk_enable = 1;
-            begin_call(state);
-            state->dmr_color_code = 7U;
-            dsd_opts_note_iq_replay_center(opts, 851012500U);
+            expect("the frame across the retune was processed", g_in_frame_retune == 0);
+            expect("the incoming call is open", slot0_target(state) == 4321U);
+            expect("the incoming call carries the new carrier's frequency",
+                   staged->target_id == 4321U && staged->freq_hz == 860000000);
+            expect("the incoming call carries the new carrier's colour code",
+                   staged->access_code_kind == (uint8_t)DSD_ACCESS_CODE_COLOR_CODE && staged->access_code == 9U);
             return DSD_SYNC_NONE;
         case 4:
-            expect("a recorded trunked retune is consumed", opts->iq_replay_center_moved == 0U);
-            expect("a recorded trunked retune ends nothing", call_phase(state, &reason) == DSD_CALL_PHASE_ACTIVE);
+            expect("no late cleanup ends the incoming call", slot0_target(state) == 4321U);
+            expect("no late cleanup erases the incoming colour code", state->dmr_color_code == 9U);
+            /* Trunking on: a recorded retune is the system following itself. */
+            opts->trunk_enable = 1;
+            state->dmr_color_code = 7U;
+            dsd_frame_sync_note_replay_center(opts, state, 851012500U);
+            expect("a recorded trunked retune ends nothing", slot0_target(state) == 4321U);
             expect("a recorded trunked retune forgets nothing", state->dmr_color_code == 7U);
             opts->trunk_enable = 0;
             dsd_opts_forget_iq_replay_center(opts);

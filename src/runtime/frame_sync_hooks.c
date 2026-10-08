@@ -5,6 +5,9 @@
 
 #include <dsd-neo/runtime/frame_sync_hooks.h>
 
+#include <dsd-neo/core/opts.h>
+#include <stdint.h>
+
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 
@@ -18,6 +21,13 @@ dsd_frame_sync_hook_scan_visit_should_yield(const dsd_opts* opts, dsd_state* sta
 void
 dsd_frame_sync_hooks_set(dsd_frame_sync_hooks hooks) {
     g_frame_sync_hooks = hooks;
+}
+
+void
+dsd_frame_sync_note_replay_center(dsd_opts* opts, dsd_state* state, uint32_t center_hz) {
+    if (dsd_opts_note_iq_replay_center(opts, center_hz) && g_frame_sync_hooks.replay_retune) {
+        g_frame_sync_hooks.replay_retune(opts, state);
+    }
 }
 
 void

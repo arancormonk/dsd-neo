@@ -41,6 +41,7 @@
 #include <dsd-neo/runtime/control_pump.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/exitflag.h>
+#include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/net_audio_input_hooks.h>
 #include <dsd-neo/runtime/shutdown.h>
@@ -2175,7 +2176,7 @@ symbol_read_sample_rtl(dsd_opts* opts, dsd_state* state, float* sample_out, symb
         /* The cache checks each sample's batch against this generation. */
         work->rtl_sample_generation = work->rtl_stream_generation;
         opts->rtl_pwr = dsd_rtl_stream_io_hook_return_pwr(state);
-        dsd_opts_note_iq_replay_center(opts, state->rtl_symbol_cache_center_hz);
+        dsd_frame_sync_note_replay_center(opts, state, state->rtl_symbol_cache_center_hz);
         return 1;
     }
     int got = 0;
@@ -2188,7 +2189,7 @@ symbol_read_sample_rtl(dsd_opts* opts, dsd_state* state, float* sample_out, symb
        on (issue #575). */
     uint32_t replay_center_hz = 0U;
     (void)dsd_rtl_stream_metrics_hook_replay_advance_decode_clock(&replay_center_hz);
-    dsd_opts_note_iq_replay_center(opts, replay_center_hz);
+    dsd_frame_sync_note_replay_center(opts, state, replay_center_hz);
     opts->rtl_pwr = dsd_rtl_stream_io_hook_return_pwr(state);
     if (!work->rtl_symbol_rate_output && !work->cqpsk_symbol_rate && !work->rtl_fsk_discriminator_output) {
         *sample_out *= opts->rtl_volume_multiplier;
@@ -2510,7 +2511,7 @@ symbol_try_rtl_symbol_rate_fast_path(dsd_opts* opts, dsd_state* state, symbol_wo
         return 0;
     }
     opts->rtl_pwr = dsd_rtl_stream_io_hook_return_pwr(state);
-    dsd_opts_note_iq_replay_center(opts, state->rtl_symbol_cache_center_hz);
+    dsd_frame_sync_note_replay_center(opts, state, state->rtl_symbol_cache_center_hz);
     state->lastsample = work->sample;
     /* One sample per symbol here, which the measurement recognises as a grid with no
        sub-symbol structure to report on. */

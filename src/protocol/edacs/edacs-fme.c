@@ -47,6 +47,7 @@
 #include <dsd-neo/runtime/colors.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/exitflag.h>
+#include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/net_audio_input_hooks.h>
 #include <dsd-neo/runtime/rigctl_query_hooks.h>
@@ -266,7 +267,7 @@ edacs_read_sample_rtl(dsd_opts* opts, dsd_state* state, short* out, uint8_t* fla
        captured on (issue #575). */
     uint32_t replay_center_hz = 0U;
     (void)dsd_rtl_stream_metrics_hook_replay_advance_decode_clock(&replay_center_hz);
-    dsd_opts_note_iq_replay_center(opts, replay_center_hz);
+    dsd_frame_sync_note_replay_center(opts, state, replay_center_hz);
     /* EDACS keeps the stream on the digital family, so this is the FSK discriminator output, which the modem
        scales to a +/-30000 peak: it fits int16 as it is. The monitor's volume trim is not applied (nor is it to
        any FSK direct output, symbol_read_sample_rtl()): doubled, the upper half of the waveform clipped before the

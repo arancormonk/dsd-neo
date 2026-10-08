@@ -64,21 +64,26 @@ test_tuned_freq_radio_input(void) {
 }
 
 /* The replay read paths note each sample's capture centre (dsd_opts_note_iq_replay_center()): a centre is stored, and
-   none (0: a live read) leaves the reading as it was. */
+   none (0: a live read) leaves the reading as it was. It says when the decoder adopted a new centre over another, a
+   retune the capture recorded (issue #575): never for no centre, the same one or a stream's first. */
 static void
 test_note_iq_replay_center(void) {
-    dsd_opts_note_iq_replay_center(NULL, 851500000U);
+    assert(dsd_opts_note_iq_replay_center(NULL, 851500000U) == 0);
 
     dsd_opts* opts = make_opts(AUDIO_IN_RTL, "iqreplay:capture.iq.json");
-    dsd_opts_note_iq_replay_center(opts, 0U);
+    assert(dsd_opts_note_iq_replay_center(opts, 0U) == 0);
     assert(opts->iq_replay_center_freq == 0U);
-    dsd_opts_note_iq_replay_center(opts, 851500000U);
+    assert(dsd_opts_note_iq_replay_center(opts, 851500000U) == 0);
     assert(opts->iq_replay_center_freq == 851500000U);
     assert(dsd_opts_tuned_freq_hz(opts) == 851500000U);
-    dsd_opts_note_iq_replay_center(opts, 0U);
+    assert(dsd_opts_note_iq_replay_center(opts, 851500000U) == 0);
+    assert(dsd_opts_note_iq_replay_center(opts, 0U) == 0);
     assert(opts->iq_replay_center_freq == 851500000U);
-    dsd_opts_note_iq_replay_center(opts, 851625000U);
+    assert(dsd_opts_note_iq_replay_center(opts, 851625000U) == 1);
     assert(dsd_opts_tuned_freq_hz(opts) == 851625000U);
+    dsd_opts_forget_iq_replay_center(opts);
+    assert(opts->iq_replay_center_freq == 0U);
+    assert(dsd_opts_note_iq_replay_center(opts, 851500000U) == 0);
     free(opts);
 }
 

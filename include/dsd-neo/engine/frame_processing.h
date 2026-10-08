@@ -37,6 +37,15 @@ void dsd_engine_forget_carrier_codes(dsd_state* state);
  * runs it after the outgoing calls are committed, since the next carrier can sync a call before that pass. With trunking
  * on these belong to the system the receiver follows, and nothing changes. */
 void dsd_engine_forget_untrunked_carrier_state(const dsd_opts* opts, dsd_state* state);
+/** An I/Q replay's retune the capture recorded, which the read path adopted (dsd_frame_sync_note_replay_center()),
+ * before it returns the first sample the new carrier carries (issue #575). With trunking off it is another
+ * conventional carrier, the boundary an accepted live retune is: the outgoing calls end and commit as a hop, while the
+ * live codes are still the carrier's they were heard on, and then the codes go
+ * (dsd_engine_forget_carrier_codes()) with the untrunked state (dsd_engine_forget_untrunked_carrier_state()). With
+ * trunking on it is the system following itself, and under trunk scan a target switch whose snapshots carry the codes:
+ * nothing changes. The frame-sync hook runs it on the decoder thread from inside a sample read, where no call-state
+ * lock is held: the read paths run in protocol and frame-sync code, never under the call-state or event-layer lock. */
+void dsd_engine_leave_replay_carrier(dsd_opts* opts, dsd_state* state);
 
 #ifdef __cplusplus
 }
