@@ -14,6 +14,7 @@
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/core/vocoder.h>
 #include <dsd-neo/platform/posix_compat.h>
+#include <dsd-neo/protocol/p25/p25.h>
 #include <dsd-neo/protocol/p25/p25p2_frame.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
@@ -388,17 +389,30 @@ process_FACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int* bits) {
     g_facch_mac_last_opcode = (bits[0] << 2) | (bits[1] << 1) | bits[2];
 }
 
-/* Dibit acquisition */
+/* Dibit acquisition. While a feed is set, the reads return its dibits in turn, as processP2() collects a superframe;
+   the read at g_dibit_feed_boundary_at adopts a retune its capture recorded, where the carrier boundary moves the
+   carrier count (dsd_engine_carrier_boundary(), issue #575). */
+static uint8_t g_dibit_feed[700];
+static int g_dibit_feed_active = 0;
+static int g_dibit_feed_pos = 0;
+static int g_dibit_feed_boundary_at = -1;
+
 int
 getDibitSoft(dsd_opts* opts, dsd_state* state, dsd_dibit_soft_t* out_soft) {
     (void)opts;
-    (void)state;
+    int dibit = 0;
+    if (g_dibit_feed_active && g_dibit_feed_pos < (int)sizeof g_dibit_feed) {
+        if (g_dibit_feed_pos == g_dibit_feed_boundary_at && state) {
+            state->carrier_seq++;
+        }
+        dibit = g_dibit_feed[g_dibit_feed_pos++];
+    }
     if (out_soft) {
         out_soft->reliability = 128;
         out_soft->llr[0] = -128;
         out_soft->llr[1] = -128;
     }
-    return 0;
+    return dibit;
 }
 
 static void
@@ -1366,6 +1380,98 @@ test_seed_proof_needs_a_descrambled_burst(void) {
     return rc;
 }
 
+/* processP2() reading the superframe the feed holds, with the carrier boundary at read @p boundary_at (-1: none). */
+static void
+read_fed_superframe(dsd_opts* opts, dsd_state* state, int boundary_at) {
+    g_dibit_feed_pos = 0;
+    g_dibit_feed_boundary_at = boundary_at;
+    g_dibit_feed_active = 1;
+    processP2(opts, state);
+    g_dibit_feed_active = 0;
+}
+
+/* A superframe of four bursts with the given DUID codewords, fed to processP2() on a site whose seed is set. */
+static void
+run_fed_superframe(dsd_opts* opts, dsd_state* state, const uint8_t duids[4], int boundary_at) {
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    p25_p2_frame_reset();
+    reset_ess_stubs();
+    reset_playback_stub();
+    reset_xcch_stubs();
+    for (int i = 0; i < 4; i++) {
+        seed_duid_bits(i, duids[i]);
+    }
+    for (int i = 0; i < (int)sizeof g_dibit_feed; i++) {
+        g_dibit_feed[i] = (uint8_t)((p2bit[i * 2] << 1) | p2bit[(i * 2) + 1]);
+    }
+    state->p2_wacn = 1;
+    state->p2_sysid = 1;
+    state->p2_cc = 0x123;
+    read_fed_superframe(opts, state, boundary_at);
+}
+
+/*
+ * Issue #575: processP2() collects four bursts before any of them decodes. A replay read that adopts a retune its
+ * capture recorded runs the carrier boundary inside that collection; the bursts read before it belong to the carrier
+ * left, and decoding them afterwards would open the call the boundary just ended and prove the seed for the carrier
+ * the receiver moved to. The superframe is dropped whole, as on a sync loss. A boundary between superframes drops what
+ * the slots gathered on the carrier left: ESS fragments, a partial voice superframe and a staged rekey.
+ */
+static int
+test_superframe_split_by_a_carrier_boundary_is_dropped(void) {
+    printf("Test 33: a superframe the carrier boundary splits is dropped... ");
+    static dsd_opts opts;
+    static dsd_state state;
+    static const uint8_t scrambled_facch[4] = {0x9AU, 0x9AU, 0x9AU, 0x9AU};
+    int rc = 0;
+
+    run_fed_superframe(&opts, &state, scrambled_facch, -1);
+    rc |= expect_int("whole superframe decodes its FACCHs", g_facch_mac_calls, 4);
+    rc |= expect_int("whole superframe proves the seed", (int)state.p2_cc_verified, 1);
+
+    run_fed_superframe(&opts, &state, scrambled_facch, 400);
+    rc |= expect_int("split superframe decodes no FACCH", g_facch_calls, 0);
+    rc |= expect_int("split superframe opens no call", g_facch_mac_calls, 0);
+    rc |= expect_int("split superframe proves nothing", (int)state.p2_cc_verified, 0);
+    rc |= expect_int("split superframe leaves the stereo mark", state.dmr_stereo, 0);
+
+    /* The boundary at the first read: nothing of the carrier left was collected, but the superframe still straddles
+       the move as far as the decoder can tell, and goes too. */
+    run_fed_superframe(&opts, &state, scrambled_facch, 0);
+    rc |= expect_int("superframe split at its first read decodes nothing", g_facch_mac_calls, 0);
+
+    /* Between superframes: the next one decodes, and what the slots gathered before the move is gone. */
+    run_fed_superframe(&opts, &state, scrambled_facch, -1);
+    state.fourv_counter[0] = 2;
+    state.voice_counter[0] = 7;
+    state.p25_p2_rekey[0].pending = 1U;
+    state.carrier_seq++;
+    reset_xcch_stubs();
+    read_fed_superframe(&opts, &state, -1);
+    rc |= expect_int("next superframe decodes", g_facch_mac_calls, 4);
+    rc |= expect_int("ESS fragments of the carrier left go", state.fourv_counter[0], 0);
+    rc |= expect_int("partial voice superframe of the carrier left goes", state.voice_counter[0], 0);
+    rc |= expect_int("staged rekey of the carrier left goes", (int)state.p25_p2_rekey[0].pending, 0);
+
+    /* No move: the slots keep what they gathered. */
+    state.fourv_counter[0] = 2;
+    state.voice_counter[0] = 7;
+    reset_xcch_stubs();
+    read_fed_superframe(&opts, &state, -1);
+    rc |= expect_int("same carrier keeps the ESS fragments", state.fourv_counter[0], 2);
+    rc |= expect_int("same carrier keeps the partial voice superframe", state.voice_counter[0], 7);
+
+    reset_xcch_stubs();
+    reset_ess_stubs();
+    if (rc == 0) {
+        printf("PASS\n");
+    } else {
+        printf("FAIL\n");
+    }
+    return rc;
+}
+
 static void
 prepare_lcch_release_duids(void) {
     p25_p2_frame_reset();
@@ -1602,6 +1708,7 @@ main(void) {
     failures += test_duid_lcch_release_defers_during_vc_grace();
     failures += test_duid_lcch_release_tears_down_after_vc_grace();
     failures += test_seed_proof_needs_a_descrambled_burst();
+    failures += test_superframe_split_by_a_carrier_boundary_is_dropped();
 
     printf("\n%d test(s) failed\n", failures);
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});

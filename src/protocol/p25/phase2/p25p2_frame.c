@@ -285,6 +285,12 @@ static struct {
     int valid;
 } s_descramble_seed;
 
+/* The carrier count (state->carrier_seq) the last superframe was collected on, once one was (issue #575). */
+static struct {
+    uint32_t seq;
+    int valid;
+} s_superframe_carrier;
+
 /* Per-bit soft metrics for captured 700 dibits (1400 bits). */
 int16_t p2llr[1400] = {0};  /* bit LLRs before descramble */
 int16_t p2xllr[1400] = {0}; /* bit LLRs after descramble */
@@ -344,8 +350,9 @@ p25_p2_frame_reset(void) {
     DSD_MEMSET(p2_duid, 0, sizeof(p2_duid));
     duid_decoded = -1;
 
-    // Nothing in the buffers was descrambled with any seed now (issue #575).
+    // Nothing in the buffers was descrambled with any seed now, or collected on any carrier (issue #575).
     DSD_MEMSET(&s_descramble_seed, 0, sizeof(s_descramble_seed));
+    DSD_MEMSET(&s_superframe_carrier, 0, sizeof(s_superframe_carrier));
 
     // Reset ESS buffers (stale ESS_A/ESS_B from previous channel corrupts new channel)
     DSD_MEMSET(ess_a, 0, sizeof(ess_a));
@@ -1803,10 +1810,39 @@ p25p2_process_duid(dsd_opts* opts, dsd_state* state) {
     p25p2_duid_fallback_release(opts, state);
 }
 
+/* The receiver left the carrier the slots gathered on (issue #575): the ESS fragments, the partial voice superframe and
+   any staged rekey go, as the no-carrier pass drops them on a sync loss. */
+static void
+p25p2_forget_carrier_left(dsd_state* state) {
+    state->p2_is_lcch = 0;
+    for (int slot = 0; slot < 2; slot++) {
+        state->fourv_counter[slot] = 0;
+        state->voice_counter[slot] = 0;
+        DSD_MEMSET(&state->p25_p2_rekey[slot], 0, sizeof(state->p25_p2_rekey[slot]));
+    }
+}
+
 void
 processP2(dsd_opts* opts, dsd_state* state) {
     state->dmr_stereo = 1;
+    /* A superframe belongs to one carrier (issue #575). What the slots gathered over superframes of a carrier the
+       receiver has since left goes before this one is collected; a superframe the carrier boundary split while it was
+       collected (a replay read adopting a recorded retune) is dropped whole, as on a sync loss: its bursts read before
+       the boundary would otherwise decode after it, reopening the calls it ended and proving the seed on the carrier
+       the receiver moved to. */
+    if (s_superframe_carrier.valid && s_superframe_carrier.seq != state->carrier_seq) {
+        p25p2_forget_carrier_left(state);
+    }
+    const uint32_t carrier_seq = state->carrier_seq;
     p2_dibit_buffer(opts, state);
+    s_superframe_carrier.seq = state->carrier_seq;
+    s_superframe_carrier.valid = 1;
+    if (state->carrier_seq != carrier_seq) {
+        p25p2_forget_carrier_left(state);
+        state->dmr_stereo = 0;
+        DSD_FPRINTF(stderr, "\n");
+        return;
+    }
 
     //look at our ISCH values and determine location in superframe before running frame scramble
     for (framing_counter = 0; framing_counter < 4; framing_counter++) {
