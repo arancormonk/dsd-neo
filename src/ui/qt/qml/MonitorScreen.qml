@@ -1230,8 +1230,17 @@ Item {
                         width: ListView.view.width
                         name: model.name
                         metaText: {
-                            if (model.kind === 1)
-                                return model.detail.length > 0 ? model.detail : qsTr("data message");
+                            // A notice keeps its payload first, the pane being too
+                            // narrow for its ids, then names what every row names: the
+                            // access code, and the frequency last (issue #575).
+                            if (model.kind === 1) {
+                                var parts = [model.detail.length > 0 ? model.detail : qsTr("data message")];
+                                if (model.accessCode.length > 0)
+                                    parts.push(model.accessCode);
+                                if (model.freqHz > 0)
+                                    parts.push(Util.fmtMhz(model.freqHz));
+                                return parts.join(" · ");
+                            }
                             // Same meta rules as the history row: a zero talkgroup is
                             // not printed, the access code follows the ids, the channel
                             // follows the duration unless it is already the name, and

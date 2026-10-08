@@ -159,14 +159,37 @@ Item {
             compare(sheet.detailLines[radio + 2], "")
         }
 
-        // A notice row on the monitor keeps showing only its payload.
-        function test_03i_a_recent_notice_row_shows_only_its_detail() {
+        // A notice row on the monitor names what every row names (issue #575): its payload,
+        // or "data message" when it has none, then the access code it was heard with, and
+        // the frequency last. One with neither reads exactly as it did. The details sheet
+        // spells both out, as it does for a call.
+        function test_03i_a_recent_notice_row_shows_its_payload_code_and_frequency() {
             var name = callHistory.pushTunedNotice(4001, 7001, "GPS 40.1 -75.2", "Fire Dispatch", 851012500,
                                                    "NAC 293", "Network access code 293")
             tc.list.positionViewAtBeginning()
             var row = null
             tryVerify(function () { row = tc.list.itemAtIndex(0); return row !== null && row.name === name },
                       5000, "the notice row is not on top")
+            compare(row.metaText, "GPS 40.1 -75.2 · NAC 293 · 851.0125 MHz")
+
+            waitForRendering(row)
+            mouseClick(row, row.width / 2, row.height / 2)
+            var sheet = findChild(screenLoader.item, "monitorHistoryDetail")
+            tryCompare(sheet, "visible", true)
+            verify(sheet.detailLines.indexOf("Network access code 293") >= 0, "no code line: " + sheet.detailLines)
+            verify(sheet.detailLines.indexOf("Frequency 851.0125 MHz") >= 0, "no frequency line: " + sheet.detailLines)
+            sheet.visible = false
+
+            var bare = callHistory.pushTunedNotice(4001, 7001, "", "", 851012500, "CC 1", "Color code 1")
+            tc.list.positionViewAtBeginning()
+            tryVerify(function () { row = tc.list.itemAtIndex(0); return row !== null && row.name === bare },
+                      5000, "the payload-less notice row is not on top")
+            compare(row.metaText, "data message · CC 1 · 851.0125 MHz")
+
+            var plain = callHistory.pushTunedNotice(4001, 7001, "GPS 40.1 -75.2", "", 0, "", "")
+            tc.list.positionViewAtBeginning()
+            tryVerify(function () { row = tc.list.itemAtIndex(0); return row !== null && row.name === plain },
+                      5000, "the plain notice row is not on top")
             compare(row.metaText, "GPS 40.1 -75.2")
         }
 

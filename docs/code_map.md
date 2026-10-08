@@ -3691,9 +3691,10 @@ Qt Quick frontend (`src/ui/qt`):
     follows. The scan header (`scanTargetHeader`) is unchanged, because on a phone it would elide the target's name.
   - Rows: a voice row's meta line puts the `accessCode` role right after the ids and `Util.fmtMhz(freqHz)` last, after
     the channel, so the elide takes the frequency first. History notice rows place them the same way around their
-    detail; the monitor's notice rows still show only their detail. The record every details sheet opens with (monitor,
-    History, Home's recent activity) carries `freqHz`, `accessCode` and `accessCodeText`, and the sheet adds the long
-    code text and "Frequency …" after the radio ID, which keeps the indexes of the lines before it.
+    detail; the monitor's notice rows keep their detail (or "data message") first, then the code, then the frequency.
+    The record every details sheet opens with (monitor, History, Home's recent activity) carries `freqHz`, `accessCode`
+    and `accessCodeText`, and the sheet adds the long code text and "Frequency …" after the radio ID, which keeps the
+    indexes of the lines before it.
   - Replay: `MetricsModel::replayInput` (`controlChanged`, beside `tunerControlled`) is `dsd_opts_input_is_iq_replay()`
     on the snapshot `radioInput` reads, the predicate app-control refuses tunes on. The Spectrum screen is view-only
     while it holds, whatever the session's intent, so `tuneTo()`, the tap, the rail, stepping and "Go to" do nothing.
