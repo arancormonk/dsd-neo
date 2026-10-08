@@ -75,7 +75,6 @@ typedef struct {
     unsigned long long p2_wacn;
     unsigned long long p2_sysid;
     unsigned long long p2_cc;
-    uint8_t p2_cc_verified;
     unsigned long long p2_siteid;
     unsigned long long p2_rfssid;
     long int p25_cc_freq;
@@ -169,6 +168,7 @@ typedef struct {
     uint16_t p25_patch_key[8];
     uint16_t p25_patch_wgid[8][8];
     uint16_t p25_ga_tg[512];
+    uint8_t p2_cc_verified; /* p2_cc proven on the target's carrier (issue #575) */
     uint8_t p25_prot_valid;
     uint8_t p25_prot_algid;
     uint8_t p25_cc_prot_valid;
