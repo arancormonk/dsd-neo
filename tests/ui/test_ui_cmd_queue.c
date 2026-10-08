@@ -118,6 +118,14 @@ static size_t g_audio_write_frames = 0U;
  * decode mode starts from init_decode_mode_context(); main() checks this once every case has run.
  */
 static int g_ensure_off_null_calls;
+/* A stand-in digital sink a case installs as opts->audio_out_stream to count what the mixer writes. The real digital
+ * helper keeps an open stream and opens nothing (dsd_audio_ensure_digital_output()), so a digital call that finds it
+ * in place, with no raw sink wanted, is the one sink call that case may legitimately make: counted here, for the case
+ * to check exactly, and not as a sink-safety violation. */
+static const void* g_ensure_fake_digital_sink;
+static int g_ensure_fake_digital_sink_calls;
+static int g_ensure_analog_calls;
+static int g_ensure_digital_calls;
 #endif
 /* TCP audio connect and Pulse input open: the real functions unless a test arms a result. */
 static int g_tcp_connect_stub_armed = 0;
@@ -4947,9 +4955,12 @@ run_trunked_tune_away_with_a_held_tail(const char* what, int import) {
     g_audio_write_frames = 0U;
     g_audio_write_armed = 1;
     reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
-#ifdef DSD_NEO_TEST_AUDIO_ENSURE_WRAP
-    const int off_null_before = g_ensure_off_null_calls;
-#endif
+    /* The stand-in sink is the session's digital output: the import's decode-mode apply asks for it, and finds it open.
+       This case is built only where the sink helpers are wrapped (DSD_NEO_TEST_IO_CONTROL_WRAP comes with
+       DSD_NEO_TEST_AUDIO_ENSURE_WRAP), so every call is counted. */
+    g_ensure_fake_digital_sink = &fake_stream;
+    g_ensure_fake_digital_sink_calls = 0;
+    const int analog_before = g_ensure_analog_calls;
     if (import) {
         dsd_app_rr_apply_payload p;
         DSD_MEMSET(&p, 0, sizeof p);
@@ -4963,11 +4974,14 @@ run_trunked_tune_away_with_a_held_tail(const char* what, int import) {
     }
     DSD_SNPRINTF(tag, sizeof tag, "%s drained", what);
     rc |= expect_int(tag, dsd_app_drain_cmds(&opts, &state), 1);
-#ifdef DSD_NEO_TEST_AUDIO_ENSURE_WRAP
-    /* The import's decode-mode apply asks the sink helpers for the stream this case plays to. This case is built only
-       where they are wrapped (DSD_NEO_TEST_IO_CONTROL_WRAP comes with DSD_NEO_TEST_AUDIO_ENSURE_WRAP), so nothing opened. */
-    g_ensure_off_null_calls = off_null_before;
-#endif
+    g_ensure_fake_digital_sink = NULL;
+    /* Exactly the sink calls each command makes: the import's decode-mode apply asks once for the digital output the
+       new mode plays to, which is the stand-in already open; a frequency entry asks for none. Any other sink call,
+       an analog one included, stays a sink-safety violation main() reports. */
+    DSD_SNPRINTF(tag, sizeof tag, "%s asks for the open digital sink only", what);
+    rc |= expect_int(tag, g_ensure_fake_digital_sink_calls, import ? 1 : 0);
+    DSD_SNPRINTF(tag, sizeof tag, "%s asks for no analog sink", what);
+    rc |= expect_int(tag, g_ensure_analog_calls - analog_before, 0);
     DSD_SNPRINTF(tag, sizeof tag, "%s: the P25 SM rests on its control channel", what);
     rc |= expect_int(tag, p25_sm_get_state(sm), P25_SM_ON_CC);
     DSD_SNPRINTF(tag, sizeof tag, "%s: the held talkgroup's buffered tail plays", what);
@@ -7983,16 +7997,21 @@ test_replay_kept_by_a_failed_stop(void) {
 #endif
 
 #ifdef DSD_NEO_TEST_AUDIO_ENSURE_WRAP
-/* The sink helpers a decode-mode change calls, recorded instead of run (every build, radio or not). */
-static int g_ensure_analog_calls;
-static int g_ensure_digital_calls;
+/* g_ensure_analog_calls and g_ensure_digital_calls, the sink helpers a decode-mode change calls, recorded instead of
+   run (every build, radio or not), are defined with the other test state at the top of the file. */
 /* The output layout in the options when the digital sink was last asked for: the one a stream opened there gets. */
 static int g_ensure_digital_channels;
 static int g_ensure_digital_rate;
 /* g_ensure_off_null_calls is defined with the other test state at the top of the file. */
 
 static void
-note_ensure_output(const dsd_opts* opts, const char* helper) {
+note_ensure_output(const dsd_opts* opts, const char* helper, int digital) {
+    if (digital && g_ensure_fake_digital_sink != NULL
+        && (const void*)opts->audio_out_stream == g_ensure_fake_digital_sink && opts->frame_provoice != 1
+        && opts->monitor_input_audio != 1) {
+        g_ensure_fake_digital_sink_calls++;
+        return;
+    }
     if (opts->audio_out_type != 9) {
         g_ensure_off_null_calls++;
         DSD_FPRINTF(stderr, "%s reached with audio_out_type %d; start the case from init_decode_mode_context()\n",
@@ -8007,14 +8026,14 @@ int __wrap_dsd_audio_ensure_digital_output(dsd_opts* opts);
 
 int
 __wrap_dsd_audio_ensure_analog_output(dsd_opts* opts) {
-    note_ensure_output(opts, "dsd_audio_ensure_analog_output()");
+    note_ensure_output(opts, "dsd_audio_ensure_analog_output()", 0);
     g_ensure_analog_calls++;
     return 0;
 }
 
 int
 __wrap_dsd_audio_ensure_digital_output(dsd_opts* opts) {
-    note_ensure_output(opts, "dsd_audio_ensure_digital_output()");
+    note_ensure_output(opts, "dsd_audio_ensure_digital_output()", 1);
     g_ensure_digital_calls++;
     g_ensure_digital_channels = opts->pulse_digi_out_channels;
     g_ensure_digital_rate = opts->pulse_digi_rate_out;
