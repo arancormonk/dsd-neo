@@ -672,6 +672,13 @@ The `Linux • RelWithDebInfo • ctest (x86-64-v3, fast-math, clang)` check enf
   M17 is outside talkgroup policy (callsign addresses). DMR and P25 Phase 2 MBE capture save in
   `mbe_finalize_slot_left/right()` before `mbe_post_left/right_audio()` recomputes the slot mute flags, so the
   first frame after a mute change (reverse mute included) follows the previous frame's state.
+- Invariant (vocoder PCM scale, `<dsd-neo/core/vocoder.h>`): mbelib-neo's float PCM is int16 / 7
+  (`mbe_floattoshort()` multiplies by 7), and from 2.3 it synthesizes speech at that reference level. The voice
+  buffers (`audio_out_temp_buf`/`R` and their `f_l`/`f_r`/`f_l4`/`f_r4` copies) hold int16-scale samples, which the
+  short output's fixed and auto gain, the float auto-gain `agf()` and the WAV writers expect, so every caller of an
+  `mbe_process*f` API scales the frame it gets with `dsd_mbe_float_to_pcm16_scale()`: `store_process_result()` in
+  `dsd_mbe.c` for the vocoder's own paths, SDRTrunk JSON playback in `dsd_file.c` and YSF V/D2 in `ysf.c`. A new
+  call site does the same. Silence from `mbe_synthesizeSilencef()` is zero and needs none.
 - API note (analog receive options, `<dsd-neo/core/opts.h>`): `analog_demod` (`dsd_analog_demod`) is set by the
   decode presets (and restored with the scan-settings snapshot when a typed row is left); no width, CLI or menu code
   writes it directly. The analog preset selects FM, the AM preset (`DSDCFG_MODE_AM`, `-fM`, issue #524) selects AM,
@@ -3654,7 +3661,7 @@ Optional feature interface targets (compile definitions + include paths; stubbed
 External dependencies (resolved via CMake):
 
 - Required: OpenSSL 3.x libcrypto; LibSndFile; an audio backend (PulseAudio by default, PortAudio on Windows); MBE
-  vocoder (`mbe-neo` 2.2+).
+  vocoder (`mbe-neo` 2.3+).
 - Terminal frontend: curses (ncursesw/PDCurses), enabled by default with `DSD_ENABLE_TERMINAL_UI=ON`.
 - Optional: RTL‑SDR, SoapySDR >= 0.8.1, CODEC2, libcurl >= 7.56.0.
 

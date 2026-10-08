@@ -311,6 +311,7 @@ store_expected_process_status(int ret, float audio[160], int* errs, int* errs2, 
         err_str[0] = '\0';
         return;
     }
+    dsd_mbe_float_to_pcm16_scale(audio);
     store_expected_decode_status(ret, errs, errs2, result);
     mbe_formatProcessResult(err_str, err_str_size, result);
 }
@@ -1874,6 +1875,10 @@ test_process_mbe_frame_dstar_header_voice_decodes_as_ambe2400(void) {
         mbe_setThreadRngSeed(599U + (uint32_t)f);
         int ret = mbe_processAmbe3600x2450Framef(ambe2450_audio[f], &result, (const char (*)[24])frames[f], ambe_d,
                                                  &ref_cur, &ref_prev, &ref_prev_enhanced);
+        // Compared on the scale of the reference, which the vocoder's int16 scaling applies to.
+        if (ret >= 0) {
+            dsd_mbe_float_to_pcm16_scale(ambe2450_audio[f]);
+        }
         if (ret >= 0 && audio_frames_differ(ambe2450_audio[f], ref_audio[f])) {
             ambe2450_differs = 1;
         }
@@ -3284,6 +3289,10 @@ run_provoice_library_parity(int soft_path) {
             p25_result.flags &= ~MBE_PROCESS_FLAG_PROVOICE;
             p25_ret = mbe_processImbe4400Dataf(p25_audio, &p25_result, imbe_d, &p25_cur, &p25_prev, &p25_prev_enhanced);
         }
+        // Compared on the scale of the reference, which the vocoder's int16 scaling applies to.
+        if (p25_ret >= 0) {
+            dsd_mbe_float_to_pcm16_scale(p25_audio);
+        }
 
         mbe_setThreadRngSeed(seed);
         if (soft_path) {
@@ -3658,6 +3667,10 @@ run_dstar_library_parity(int soft_path, int synctype) {
             bare_result.flags &= ~MBE_PROCESS_FLAG_C0_VALID;
             bare_ret =
                 mbe_processAmbe2400Dataf(bare_audio, &bare_result, ambe_d, &bare_cur, &bare_prev, &bare_prev_enhanced);
+        }
+        // Compared on the scale of the reference, which the vocoder's int16 scaling applies to.
+        if (bare_ret >= 0) {
+            dsd_mbe_float_to_pcm16_scale(bare_audio);
         }
 
         mbe_setThreadRngSeed(seed);

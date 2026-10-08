@@ -171,6 +171,7 @@ store_process_result(int ret, float* aout_buf, int* errs, int* errs2, char* err_
         return ret;
     }
 
+    dsd_mbe_float_to_pcm16_scale(aout_buf);
     store_mbe_result(errs, errs2, err_str, err_str_size, result);
     return ret;
 }

@@ -50,6 +50,24 @@ void dsd_mbe_log_ambe_soft_frame(dsd_opts* opts, dsd_state* state, dsd_vocoder_s
 
 void playMbeFiles(dsd_opts* opts, dsd_state* state, int argc, char** argv);
 
+/**
+ * mbelib-neo's float PCM is int16 / 7: mbe_floattoshort() multiplies by 7. The synthesized-voice buffers hold
+ * int16-scale samples, which the output gain, auto-gain and WAV stages expect, so each frame mbelib-neo
+ * synthesizes is scaled by this once, as it arrives.
+ */
+#define DSD_MBE_PCM16_PER_FLOAT 7.0f
+
+/** Scale one 160-sample frame of mbelib-neo float PCM to the int16 scale of the voice buffers. */
+static inline void
+dsd_mbe_float_to_pcm16_scale(float* samples) {
+    if (!samples) {
+        return;
+    }
+    for (int i = 0; i < 160; i++) {
+        samples[i] *= DSD_MBE_PCM16_PER_FLOAT;
+    }
+}
+
 /** Purge queued/working audio and vocoder history for one logical voice slot. */
 void dsd_mbe_purge_slot_audio(dsd_state* state, int slot);
 
