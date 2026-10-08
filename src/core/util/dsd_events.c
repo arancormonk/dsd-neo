@@ -708,6 +708,41 @@ watchdog_event_format_dpmr_sysid(char* out, size_t cap, uint8_t access_code_kind
                                           access_code_kind == (uint8_t)DSD_ACCESS_CODE_COLOR_CODE, access_code, 0));
 }
 
+// A P25 NAC as the system identity and the event line print it, from the row's access code: three hex digits, or
+// "---" when the row has none. Three wide either way, so the long identity form keeps its field positions. The NAC
+// sys id (sys_id3) is the live nac, else p2_cc, which on a Phase 1 call may be another carrier's p2_cc; the access code
+// reads the one the call's phase carries (dsd_access_code_current()).
+static const char*
+watchdog_event_nac_text(char* buf, size_t cap, uint8_t access_code_kind, uint16_t access_code) {
+    if (access_code_kind != (uint8_t)DSD_ACCESS_CODE_NAC) {
+        return "---";
+    }
+    DSD_SNPRINTF(buf, cap, "%03X", (unsigned)access_code);
+    return buf;
+}
+
+static void
+watchdog_event_format_p25_sysid(char* out, size_t cap, const uint32_t sys_id[5], uint8_t access_code_kind,
+                                uint16_t access_code) {
+    char nac_buf[8];
+    const char* nac = watchdog_event_nac_text(nac_buf, sizeof nac_buf, access_code_kind, access_code);
+    if (sys_id[0] != 0U) {
+        DSD_SNPRINTF(out, cap, "P25_%05X%03X%s_%u_%u", (unsigned)sys_id[0], (unsigned)sys_id[1], nac,
+                     (unsigned)sys_id[3], (unsigned)sys_id[4]);
+    } else {
+        DSD_SNPRINTF(out, cap, "P25_%s", nac);
+    }
+}
+
+// M17's CAN rides in the call's service options, which the row's access code holds once they were observed.
+static void
+watchdog_event_format_m17_sysid(char* out, size_t cap, uint8_t access_code_kind, uint16_t access_code) {
+    char can_buf[12];
+    DSD_SNPRINTF(out, cap, "M17_CAN_%s",
+                 watchdog_event_code_text(can_buf, sizeof can_buf, access_code_kind == (uint8_t)DSD_ACCESS_CODE_CAN,
+                                          access_code, 0));
+}
+
 // Depth of the row this slot last committed, or 0 when it can no longer be located.
 // push_event_history() copies row 0 into row 1, so immediately after a commit the row
 // sits at index 1 and every push since -- including interleaved data or system notices --
@@ -767,9 +802,20 @@ watchdog_event_crypto_rank(const Event_History* item) {
 }
 
 // Rebuilds the system identity string of a row whose identity names its access code -- DMR and NXDN from its merged
-// ids, dPMR from its merged access code -- and returns 1; 0 for any other protocol.
+// ids, dPMR and M17 from its merged access code, P25 from both -- and returns 1; 0 for any other protocol.
 static int
 watchdog_event_rebuild_code_sysid(Event_History* row, const dsd_call_event_render_env* env) {
+    if (DSD_SYNC_IS_P25(row->systype)) {
+        const uint32_t sys_id[5] = {row->sys_id1, row->sys_id2, row->sys_id3, row->sys_id4, row->sys_id5};
+        watchdog_event_format_p25_sysid(row->sysid_string, sizeof(row->sysid_string), sys_id, row->access_code_kind,
+                                        row->access_code);
+        return 1;
+    }
+    if (DSD_SYNC_IS_M17(row->systype)) {
+        watchdog_event_format_m17_sysid(row->sysid_string, sizeof(row->sysid_string), row->access_code_kind,
+                                        row->access_code);
+        return 1;
+    }
     if (DSD_SYNC_IS_DMR(row->systype)) {
         watchdog_event_format_dmr_sysid(row->sysid_string, sizeof(row->sysid_string), row->sys_id1, row->sys_id2);
         return 1;
@@ -1433,11 +1479,10 @@ watchdog_event_current_apply_ysf(dsd_state* state, Event_History* item, watchdog
     DSD_SNPRINTF(ctx->sysid_string, sizeof(ctx->sysid_string), "%s", "YSF");
 }
 
+// The system identity string is set after the tuning load (watchdog_event_current_apply_code_identity()).
 static void
 watchdog_event_current_apply_m17(const dsd_state* state, watchdog_event_current_ctx* ctx) {
     ctx->sys_id1 = ctx->svc_opts & 0xFU;
-
-    DSD_SNPRINTF(ctx->sysid_string, sizeof(ctx->sysid_string), "M17_CAN_%d", ctx->sys_id1);
     (void)state;
 }
 
@@ -1447,11 +1492,18 @@ watchdog_event_current_apply_dstar(const dsd_state* state, watchdog_event_curren
     (void)state;
 }
 
-// Run after watchdog_event_current_load_tuning(): dPMR's identity is the row's access code, so the string a merge
-// rebuilds from the merged code (watchdog_event_rebuild_code_sysid()) and the event line agree with it.
+// Run after watchdog_event_current_load_tuning(): the P25, M17 and dPMR identities name the row's access code, so the
+// string a merge rebuilds from the merged row (watchdog_event_rebuild_code_sysid()) and the event line agree with it.
 static void
-watchdog_event_current_apply_dpmr(watchdog_event_current_ctx* ctx) {
-    if (DSD_SYNC_IS_DPMR(ctx->protocol)) {
+watchdog_event_current_apply_code_identity(watchdog_event_current_ctx* ctx) {
+    if (DSD_SYNC_IS_P25(ctx->protocol)) {
+        const uint32_t sys_id[5] = {ctx->sys_id1, ctx->sys_id2, ctx->sys_id3, ctx->sys_id4, ctx->sys_id5};
+        watchdog_event_format_p25_sysid(ctx->sysid_string, sizeof(ctx->sysid_string), sys_id, ctx->access_code_kind,
+                                        ctx->access_code);
+    } else if (DSD_SYNC_IS_M17(ctx->protocol)) {
+        watchdog_event_format_m17_sysid(ctx->sysid_string, sizeof(ctx->sysid_string), ctx->access_code_kind,
+                                        ctx->access_code);
+    } else if (DSD_SYNC_IS_DPMR(ctx->protocol)) {
         watchdog_event_format_dpmr_sysid(ctx->sysid_string, sizeof(ctx->sysid_string), ctx->access_code_kind,
                                          ctx->access_code);
     }
@@ -1708,8 +1760,11 @@ watchdog_event_current_build_event_text_ids(const watchdog_event_current_ctx* ct
 static void
 watchdog_event_current_build_event_m17(const watchdog_event_current_ctx* ctx, const char* datestr, const char* timestr,
                                        const char* sys_string, char* event_string, size_t event_size) {
-    DSD_SNPRINTF(event_string, event_size, "%s %s %s TGT: %s SRC: %s CAN: %02u;", datestr, timestr, sys_string,
-                 ctx->tgt_str, ctx->src_str, ctx->sys_id1);
+    char can_buf[12];
+    const char* can = watchdog_event_code_text(
+        can_buf, sizeof can_buf, ctx->access_code_kind == (uint8_t)DSD_ACCESS_CODE_CAN, ctx->access_code, 1);
+    DSD_SNPRINTF(event_string, event_size, "%s %s %s TGT: %s SRC: %s CAN: %s;", datestr, timestr, sys_string,
+                 ctx->tgt_str, ctx->src_str, can);
 }
 
 static void
@@ -1835,13 +1890,15 @@ watchdog_event_append_ess_crypto(const watchdog_event_current_ctx* ctx, char* ev
 static void
 watchdog_event_current_build_event_p25(const watchdog_event_current_ctx* ctx, const char* datestr, const char* timestr,
                                        const char* sys_string, char* event_string, size_t event_size) {
+    char nac_buf[8];
+    const char* nac = watchdog_event_nac_text(nac_buf, sizeof nac_buf, ctx->access_code_kind, ctx->access_code);
     if (ctx->sys_id1) {
-        DSD_SNPRINTF(event_string, event_size, "%s %s %s TGT: %08d; SRC: %08d; NAC: %03X; NET_STS: %05X:%03X:%d.%d; ",
-                     datestr, timestr, sys_string, ctx->target_id, ctx->source_id, ctx->sys_id3, ctx->sys_id1,
-                     ctx->sys_id2, ctx->sys_id4, ctx->sys_id5);
+        DSD_SNPRINTF(event_string, event_size, "%s %s %s TGT: %08d; SRC: %08d; NAC: %s; NET_STS: %05X:%03X:%d.%d; ",
+                     datestr, timestr, sys_string, ctx->target_id, ctx->source_id, nac, ctx->sys_id1, ctx->sys_id2,
+                     ctx->sys_id4, ctx->sys_id5);
     } else {
-        DSD_SNPRINTF(event_string, event_size, "%s %s %s TGT: %08d; SRC: %08d; NAC: %03X; ", datestr, timestr,
-                     sys_string, ctx->target_id, ctx->source_id, ctx->sys_id3);
+        DSD_SNPRINTF(event_string, event_size, "%s %s %s TGT: %08d; SRC: %08d; NAC: %s; ", datestr, timestr, sys_string,
+                     ctx->target_id, ctx->source_id, nac);
     }
 
     watchdog_event_append_ess_crypto(ctx, event_string, event_size);
@@ -2274,7 +2331,7 @@ watchdog_event_current_impl(const dsd_opts* opts, dsd_state* state, uint8_t slot
     const int staged_is_own = lifecycle != NULL && effective_call != NULL && lifecycle->epoch == effective_call->epoch;
     watchdog_event_current_load_channel_label(opts, state, &candidate, staged_is_own, &ctx);
     watchdog_event_current_load_tuning(opts, state, effective_call, &candidate, staged_is_own, &ctx);
-    watchdog_event_current_apply_dpmr(&ctx);
+    watchdog_event_current_apply_code_identity(&ctx);
 
     const char* sys_string = dsd_synctype_to_string(ctx.protocol);
 

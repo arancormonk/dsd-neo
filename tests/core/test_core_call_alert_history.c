@@ -1668,6 +1668,7 @@ test_p25_event_string_keeps_full_prefix_after_sprintf_hardening(void) {
 
     state.lastsynctype = DSD_SYNC_P25P2_POS;
     state.nac = 0x293;
+    state.p2_cc = 0x293ULL; /* a Phase 2 call's NAC is the one its descrambler runs on */
     state.p2_wacn = 0x45564U;
     state.p2_sysid = 0x006U;
     state.p2_rfssid = 10U;
@@ -3003,6 +3004,7 @@ test_scanner_mode_row_carries_channel_label(void) {
 
     state.lastsynctype = DSD_SYNC_P25P2_POS;
     state.nac = 0x293;
+    state.p2_cc = 0x293ULL; /* a Phase 2 call's NAC is the one its descrambler runs on */
     state.p2_wacn = 0x45564U;
     state.p2_sysid = 0x006U;
     state.p2_rfssid = 10U;
@@ -3076,6 +3078,7 @@ test_channel_label_coexists_with_policy_label(void) {
 
     state.lastsynctype = DSD_SYNC_P25P2_POS;
     state.nac = 0x293;
+    state.p2_cc = 0x293ULL; /* a Phase 2 call's NAC is the one its descrambler runs on */
     state.p2_wacn = 0x45564U;
     state.p2_sysid = 0x006U;
     state.p2_rfssid = 10U;
@@ -3105,6 +3108,7 @@ test_unlabelled_row_string_is_unchanged(void) {
 
     state.lastsynctype = DSD_SYNC_P25P2_POS;
     state.nac = 0x293;
+    state.p2_cc = 0x293ULL; /* a Phase 2 call's NAC is the one its descrambler runs on */
     state.p2_wacn = 0x45564U;
     state.p2_sysid = 0x006U;
     state.p2_rfssid = 10U;
@@ -3697,6 +3701,156 @@ test_dpmr_event_line_prints_the_decoded_colour_code(void) {
     item = render_code_row(&opts, &state, event_history, DSD_SYNC_DPMR_FS2_POS);
     rc |= expect_has_substr("dPMR CC 42 event", item->event_string, "TEST CC: 42; TGT: ");
     rc |= expect_int("dPMR row channel stays the call's", (int)item->channel, 0);
+
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+// Render one active call of `protocol` with the given service options into the staged row.
+static const Event_History*
+render_svc_row(dsd_opts* opts, dsd_state* state, Event_History_I event_history[2], int protocol, uint16_t svc,
+               uint8_t has_svc) {
+    const dsd_call_observation observation = {
+        .protocol = protocol,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 51002U,
+        .policy_target_id = 51002U,
+        .ota_source_id = 41001U,
+        .service_options = svc,
+        .has_service_metadata = has_svc,
+        .observed_m = g_observed_m,
+    };
+    g_observed_m += 0.1;
+    assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    watchdog_event_current(opts, state, 0);
+    return &event_history[0].Event_History_Items[0];
+}
+
+static void
+set_p25_site(dsd_state* state) {
+    state->p2_wacn = 0x45564U;
+    state->p2_sysid = 0x006U;
+    state->p2_rfssid = 10U;
+    state->p2_siteid = 10U;
+}
+
+// The P25 NAC and the M17 CAN in the system identity string and the event line follow the row's access code, as the
+// other protocols' codes do: a Phase 1 call takes nac only, so a p2_cc an earlier Phase 2 carrier left is no code of
+// its, and an M17 call names a CAN only once its service options were observed. An unknown NAC prints "---", three
+// wide like the hex code, so the long form keeps its field positions. The numeric sys ids keep the raw value.
+static int
+test_unknown_p25_and_m17_codes_render_as_dashes(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    int rc = 0;
+
+    reset_fixture(&opts, &state, event_history);
+    state.nac = 0;
+    state.p2_cc = 0x293ULL;
+    const Event_History* item = render_svc_row(&opts, &state, event_history, DSD_SYNC_P25P1_POS, 0U, 0U);
+    rc |= expect_access_code("P25p1 with nac 0 has no code", item, DSD_ACCESS_CODE_NONE, 0U);
+    rc |= expect_str_eq("P25p1 unknown NAC sysid", item->sysid_string, "P25_---");
+    rc |= expect_has_substr("P25p1 unknown NAC event", item->event_string, "SRC: 00041001; NAC: ---; ");
+    rc |= expect_int("P25p1 unknown NAC keeps its numeric id", (int)item->sys_id3, 0x293);
+
+    reset_fixture(&opts, &state, event_history);
+    state.nac = 0;
+    state.p2_cc = 0x293ULL;
+    set_p25_site(&state);
+    item = render_svc_row(&opts, &state, event_history, DSD_SYNC_P25P1_NEG, 0U, 0U);
+    rc |= expect_str_eq("P25p1 unknown NAC long sysid", item->sysid_string, "P25_45564006---_10_10");
+    rc |= expect_has_substr("P25p1 unknown NAC long event", item->event_string, "NAC: ---; NET_STS: 45564:006:10.10; ");
+
+    reset_fixture(&opts, &state, event_history);
+    state.nac = 0x293;
+    item = render_svc_row(&opts, &state, event_history, DSD_SYNC_P25P1_POS, 0U, 0U);
+    rc |= expect_str_eq("P25p1 NAC sysid", item->sysid_string, "P25_293");
+    rc |= expect_has_substr("P25p1 NAC event", item->event_string, "NAC: 293; ");
+
+    reset_fixture(&opts, &state, event_history);
+    state.p2_cc = 0x293ULL;
+    set_p25_site(&state);
+    item = render_svc_row(&opts, &state, event_history, DSD_SYNC_P25P2_POS, 0U, 0U);
+    rc |= expect_str_eq("P25p2 NAC long sysid", item->sysid_string, "P25_45564006293_10_10");
+    rc |= expect_has_substr("P25p2 NAC long event", item->event_string, "NAC: 293; NET_STS: 45564:006:10.10; ");
+    reset_fixture(&opts, &state, event_history);
+    state.p2_cc = 0x293ULL;
+    item = render_svc_row(&opts, &state, event_history, DSD_SYNC_P25P2_NEG, 0U, 0U);
+    rc |= expect_str_eq("P25p2 NAC sysid", item->sysid_string, "P25_293");
+
+    reset_fixture(&opts, &state, event_history);
+    item = render_svc_row(&opts, &state, event_history, DSD_SYNC_M17_LSF_POS, 0x13U, 0U);
+    rc |= expect_str_eq("M17 without service options sysid", item->sysid_string, "M17_CAN_--");
+    rc |= expect_has_substr("M17 without service options event", item->event_string, " CAN: --;");
+
+    reset_fixture(&opts, &state, event_history);
+    item = render_svc_row(&opts, &state, event_history, DSD_SYNC_M17_LSF_POS, 0x13U, 1U);
+    rc |= expect_str_eq("M17 CAN sysid", item->sysid_string, "M17_CAN_3");
+    rc |= expect_has_substr("M17 CAN event", item->event_string, " CAN: 03;");
+
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+// One segment of a transmission whose access code rides in the observation or in the decoder state, then the
+// reacquired segment after a sync loss. Returns the merged row.
+static const Event_History*
+merge_observed_segments(dsd_opts* opts, dsd_state* state, Event_History_I event_history[2], int protocol,
+                        uint8_t first_has_svc, int first_nac, uint8_t second_has_svc, int second_nac) {
+    dsd_call_observation observation = {
+        .protocol = protocol,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 100U,
+        .policy_target_id = 100U,
+        .ota_source_id = 201U,
+        .service_options = 0x13U,
+        .has_service_metadata = first_has_svc,
+        .observed_m = g_observed_m,
+    };
+    g_observed_m += 0.1;
+    state->nac = first_nac;
+    assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    dsd_event_sync_slot(opts, state, 0U);
+    assert(end_test_call(state, 0U, DSD_CALL_END_SYNC_LOSS) == 1);
+    dsd_event_sync_slot(opts, state, 0U);
+
+    observation.has_service_metadata = second_has_svc;
+    observation.observed_m = g_observed_m;
+    g_observed_m += 0.1;
+    state->nac = second_nac;
+    assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE) == 1);
+    dsd_event_sync_slot(opts, state, 0U);
+    assert(end_test_call(state, 0U, DSD_CALL_END_SYNC_LOSS) == 1);
+    dsd_event_sync_slot(opts, state, 0U);
+    assert(committed_history_rows(&event_history[0]) == 1);
+    return &event_history[0].Event_History_Items[1];
+}
+
+// A reacquired segment that decoded the NAC or the CAN fills the row's access code, and the system identity string and
+// the event line name it.
+static int
+test_reacquisition_merge_names_a_p25_or_m17_code(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    int rc = 0;
+
+    reset_fixture(&opts, &state, event_history);
+    state.p2_cc = 0x293ULL; /* left by an earlier Phase 2 carrier: no code of this Phase 1 call's */
+    const Event_History* merged =
+        merge_observed_segments(&opts, &state, event_history, DSD_SYNC_P25P1_POS, 1U, 0, 1U, 0x2A1);
+    rc |= expect_access_code("merge fills the NAC", merged, DSD_ACCESS_CODE_NAC, 0x2A1U);
+    rc |= expect_str_eq("merged P25 sysid names the NAC", merged->sysid_string, "P25_2A1");
+    rc |= expect_has_substr("merged P25 event names the NAC", merged->event_string, "NAC: 2A1; ");
+
+    reset_fixture(&opts, &state, event_history);
+    merged = merge_observed_segments(&opts, &state, event_history, DSD_SYNC_M17_STR_POS, 0U, 0, 1U, 0);
+    rc |= expect_access_code("merge fills the CAN", merged, DSD_ACCESS_CODE_CAN, 3U);
+    rc |= expect_str_eq("merged M17 sysid names the CAN", merged->sysid_string, "M17_CAN_3");
+    rc |= expect_has_substr("merged M17 event names the CAN", merged->event_string, " CAN: 03;");
 
     dsd_state_ext_free_all(&state);
     return rc;
@@ -6708,6 +6862,8 @@ main(void) {
     rc |= test_reacquisition_merge_upgrades_an_unknown_system_code();
     rc |= test_reacquisition_merge_names_a_dpmr_code_in_the_system_identity();
     rc |= test_reacquisition_merge_keeps_the_code_and_takes_a_later_system_id();
+    rc |= test_unknown_p25_and_m17_codes_render_as_dashes();
+    rc |= test_reacquisition_merge_names_a_p25_or_m17_code();
     rc |= test_data_notice_carries_frequency_and_access_code();
     rc |= test_playfiles_rows_take_no_tuner_value_or_code();
     rc |= test_nxdn_row_names_only_its_own_channel();
