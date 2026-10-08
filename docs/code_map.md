@@ -3405,13 +3405,17 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   `dsd_opts_trunk_vc_followed()` stamps no frequency of the assignment left behind; then `ui_end_calls()` for any call
   left; then both forgets. It does so for `MANUAL_TUNE`, `RTL_SET_FREQ` when it does not pick a P25 control channel, a
   channel cycle with trunking off (its LCN list and its P25 candidate list name no system the receiver follows), a
-  RadioReference import's tune (`rr_apply_tune()`), and a config apply that leaves the radio input on another centre
-  (`apply_cfg_radio_input()`: a reopen on the config's frequency, or the live Airspy retune). The engine runs it at a
-  `-Y` row commit (`channel_scan_commit()`: `channel_scan_end_calls()`, the shared reset, the untrunked forget), at the
-  untyped `-Y` step (the step, `no_carrier_finalize_canonical_calls()`, the shared reset, the untrunked forget), and at
-  an input switch (`noCarrier()`, then `dsd_engine_end_input_boundary()` with the untrunked forget). A refused, deferred
-  or failed tune keeps everything, since the receiver stayed. A retune within a system under trunking does not run
-  either forget: the return to the control channel, the skip and lockout returns, the P25 control channel pick
+  RadioReference import's tune (`rr_apply_tune()`), and a config apply that leaves the radio input on another carrier
+  (`apply_cfg_radio_input()`): another source (`ui_radio_source_changed()`: another kind of device, a replay for a live
+  radio or the reverse, another RTL-SDR index, rtl_tcp server, Airspy serial, SoapySDR device or capture) or another
+  tuned frequency as `dsd_opts_tuned_freq_hz()` reads it (a reopen on the config's frequency, the live Airspy retune, a
+  replay that recorded a retune replaced by a live radio on its opening centre); the same source reopened for its gain,
+  PPM, bandwidth, squelch or volume stays on its carrier. The engine runs it at a `-Y` row commit
+  (`channel_scan_commit()`: `channel_scan_end_calls()`, the shared reset, the untrunked forget), at the untyped `-Y`
+  step (the step, `no_carrier_finalize_canonical_calls()`, the shared reset, the untrunked forget), and at an input
+  switch (`noCarrier()`, then `dsd_engine_end_input_boundary()` with the untrunked forget). A refused, deferred or
+  failed tune keeps everything, since the receiver stayed. A retune within a system under trunking does not run either
+  forget: the return to the control channel, the skip and lockout returns, the P25 control channel pick
   (`ui_cmd_handle_p25_cc_selection()`) and candidate cycle, and a channel cycle with trunking on, whose list is the
   system's own channels. The system's codes stay valid there, as under automatic trunk following, and the DMR decode
   gate keeps dispatching the control channel's bursts: forgetting it made the first CSBK after a return pending, and

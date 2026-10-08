@@ -1434,6 +1434,9 @@ typedef struct {
     char soapy_gains[sizeof(((dsd_opts*)0)->soapy_gains)];
     int soapy_bandwidth_hz;
     dsd_input_failure failure;
+    /* The frequency the receiver was tuned to (dsd_opts_tuned_freq_hz()): during a replay, the centre its capture
+       recorded last. Read only to tell a carrier boundary (issue #575); nothing puts it back. */
+    uint32_t tuned_freq_hz;
 } ui_radio_input;
 
 static void
@@ -1451,6 +1454,7 @@ ui_capture_radio_input(const dsd_opts* opts, const dsd_state* state, ui_radio_in
     out->rtltcp_portno = opts->rtltcp_portno;
     out->rtl_dev_index = opts->rtl_dev_index;
     out->rtlsdr_center_freq = opts->rtlsdr_center_freq;
+    out->tuned_freq_hz = dsd_opts_tuned_freq_hz(opts);
     out->rtl_dsp_bw_khz = opts->rtl_dsp_bw_khz;
     out->rtl_gain_value = opts->rtl_gain_value;
     out->rtlsdr_ppm_error = opts->rtlsdr_ppm_error;
@@ -3807,15 +3811,72 @@ apply_cfg_radio_input_tuned(dsd_opts* opts, dsd_state* state, const dsdneoUserCo
     return rc;
 }
 
-/* apply_cfg_radio_input_tuned(), then the radio input on another centre leaves the old carrier (issue #575): a reopen
-   on the config's frequency, or the live Airspy retune, keeps the input a radio input, so no input boundary or
-   no-carrier pass ends the reception before the next carrier syncs. A start that failed put the old centre back, and
-   its calls and codes stay. */
+/* The kind of radio source a device spec names (issue #575). */
+typedef enum {
+    UI_RADIO_SOURCE_NONE = 0,
+    UI_RADIO_SOURCE_RTL,
+    UI_RADIO_SOURCE_RTLTCP,
+    UI_RADIO_SOURCE_AIRSPY,
+    UI_RADIO_SOURCE_SOAPY,
+    UI_RADIO_SOURCE_REPLAY,
+} ui_radio_source_kind;
+
+static ui_radio_source_kind
+ui_radio_source_kind_of(const char* dev) {
+    if (dsd_opts_audio_in_dev_is_iqreplay_spec(dev)) {
+        return UI_RADIO_SOURCE_REPLAY;
+    }
+    if (dsd_opts_audio_in_dev_is_rtltcp_spec(dev)) {
+        return UI_RADIO_SOURCE_RTLTCP;
+    }
+    if (dsd_opts_audio_in_dev_is_rtl_spec(dev)) {
+        return UI_RADIO_SOURCE_RTL;
+    }
+    if (dsd_opts_audio_in_dev_is_airspy_spec(dev)) {
+        return UI_RADIO_SOURCE_AIRSPY;
+    }
+    if (dsd_opts_audio_in_dev_is_soapy_spec(dev)) {
+        return UI_RADIO_SOURCE_SOAPY;
+    }
+    return UI_RADIO_SOURCE_NONE;
+}
+
+/* Whether the radio input a config apply left runs another source than the one @p before ran (issue #575): another
+   kind of device, a replay for a live radio or the reverse, another RTL-SDR index, rtl_tcp server, Airspy serial,
+   SoapySDR device or capture. The same source reopened for its gain, PPM, bandwidth, squelch or volume is not. */
+static int
+ui_radio_source_changed(const ui_radio_input* before, const dsd_opts* opts) {
+    const ui_radio_source_kind kind = ui_radio_source_kind_of(opts->audio_in_dev);
+    if (kind != ui_radio_source_kind_of(before->audio_in_dev)) {
+        return 1;
+    }
+    switch (kind) {
+        case UI_RADIO_SOURCE_RTL: return before->rtl_dev_index != opts->rtl_dev_index;
+        case UI_RADIO_SOURCE_RTLTCP:
+            return before->rtltcp_portno != opts->rtltcp_portno
+                   || strncmp(before->rtltcp_hostname, opts->rtltcp_hostname, sizeof before->rtltcp_hostname) != 0;
+        case UI_RADIO_SOURCE_AIRSPY:
+            return strncmp(before->airspy.serial, opts->airspy.serial, sizeof before->airspy.serial) != 0;
+        case UI_RADIO_SOURCE_SOAPY:
+        case UI_RADIO_SOURCE_REPLAY:
+            return strncmp(before->audio_in_dev, opts->audio_in_dev, sizeof before->audio_in_dev) != 0;
+        case UI_RADIO_SOURCE_NONE: return 0;
+    }
+    return 0;
+}
+
+/* apply_cfg_radio_input_tuned(), then a radio input on another carrier leaves the old one (issue #575). The input stays
+   a radio input, so no input boundary or no-carrier pass ends the reception before the next carrier syncs. The carrier
+   changed when the source changed (ui_radio_source_changed()) or the tuned frequency did, read as every frontend reads
+   it (dsd_opts_tuned_freq_hz()): a reopen on the config's frequency, the live Airspy retune, or a replay that recorded a
+   retune replaced by a live radio on the replay's opening centre. A start that failed put the old input back, and its
+   calls and codes stay; the same source reopened for a new gain stays on its carrier. */
 static int
 apply_cfg_radio_input(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg, const ui_cfg_rollback* before) {
     const int rc = apply_cfg_radio_input_tuned(opts, state, cfg, before);
     if (before->input.audio_in_type == AUDIO_IN_RTL && opts->audio_in_type == AUDIO_IN_RTL
-        && opts->rtlsdr_center_freq != before->input.rtlsdr_center_freq) {
+        && (ui_radio_source_changed(&before->input, opts)
+            || dsd_opts_tuned_freq_hz(opts) != before->input.tuned_freq_hz)) {
         ui_leave_carrier(opts, state, 1); // a config apply runs under the P25 SM tick guard
     }
     return rc;
