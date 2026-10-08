@@ -229,10 +229,11 @@ read_capture_file(const char* path, char* out, size_t out_sz) {
     if (!f) {
         return -1;
     }
-    size_t n = fread(out, 1, out_sz - 1, f);
-    out[n] = '\0';
+    /* Zeroed first, so whatever fread() leaves is terminated without indexing the buffer by its count. */
+    DSD_MEMSET(out, 0, out_sz);
+    const int failed = fread(out, 1, out_sz - 1, f) == 0 && ferror(f) != 0;
     fclose(f);
-    return 0;
+    return failed ? -1 : 0;
 }
 
 static void
