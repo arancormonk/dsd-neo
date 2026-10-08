@@ -3699,6 +3699,13 @@ test_carrier_boundary_discards_partial_assemblies(void) {
     state->m17_signature_received_mask = 3;
     state->m17_signature_complete = 1;
     state->ysf_txt[0][0] = 'T';
+    /* Phase 2: the ESS_B a 2V burst would decode, and the crypto of the call that ended. */
+    state->ess_b[0][0] = 1;
+    state->ess_b_llr[0][0] = 900;
+    state->fourv_counter[0] = 2;
+    state->payload_algid = 0x84;
+    state->payload_keyid = 0x1234;
+    state->payload_miP = 0x0102030405060708ULL;
 
     dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, 0);
 
@@ -3732,6 +3739,11 @@ test_carrier_boundary_discards_partial_assemblies(void) {
                           && state->m17_signature[0] == 0 && state->m17_signature_received_mask == 0
                           && state->m17_signature_complete == 0);
     rc |= expect_true("assemblies: the boundary drops the YSF text", state->ysf_txt[0][0] == 0);
+    rc |= expect_true("assemblies: the boundary drops the Phase 2 ESS_B and marks it the carrier left's",
+                      state->ess_b[0][0] == 0 && state->ess_b_llr[0][0] == 0 && state->fourv_counter[0] == 0
+                          && state->p25_p2_ess_b_stale[0] == 1U && state->p25_p2_ess_b_stale[1] == 1U);
+    rc |= expect_true("assemblies: the boundary drops the ended call's P25 crypto",
+                      state->payload_algid == 0 && state->payload_keyid == 0 && state->payload_miP == 0ULL);
 
     free_test_runtime(opts, state);
     return rc;

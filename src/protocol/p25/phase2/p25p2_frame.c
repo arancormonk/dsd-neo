@@ -622,7 +622,10 @@ process_FACCHs(dsd_opts* opts, dsd_state* state) {
     if (ec >= 0) {
         state->p25_p2_rs_facch_ok++;
         state->p25_p2_rs_facch_corr += (unsigned int)ec;
-        p25p2_note_seed_proven(opts, state);
+        /* Only a decode that kept its parity check proves the seed: soft erasures can use all of it up (issue #575). */
+        if (!used_dynamic_erasure) {
+            p25p2_note_seed_proven(opts, state);
+        }
         /* Feedback: RS OK */
 #ifdef USE_RADIO
         dsd_rtl_stream_metrics_hook_p25p2_err_update(state->currentslot, 1, 0, 0, 0, 0);
@@ -738,7 +741,10 @@ process_SACCHs(dsd_opts* opts, dsd_state* state) {
     if (ec >= 0) {
         state->p25_p2_rs_sacch_ok++;
         state->p25_p2_rs_sacch_corr += (unsigned int)ec;
-        p25p2_note_seed_proven(opts, state);
+        /* Only a decode that kept its parity check proves the seed: soft erasures can use all of it up (issue #575). */
+        if (!used_dynamic_erasure) {
+            p25p2_note_seed_proven(opts, state);
+        }
         /* Feedback: RS OK */
 #ifdef USE_RADIO
         dsd_rtl_stream_metrics_hook_p25p2_err_update(state->currentslot, 0, 0, 1, 0, 0);
@@ -957,6 +963,7 @@ p25p2_collect_ess_b_fragment(dsd_state* state) {
         DSD_MEMSET(state->ess_b[slot], 0, sizeof(state->ess_b[slot]));
         DSD_MEMSET(state->ess_b_llr[slot], 0, sizeof(state->ess_b_llr[slot]));
     }
+    state->p25_p2_ess_b_stale[slot] = 0U;
     for (int i = 0; i < 24; i++) {
         int out = i + (state->fourv_counter[slot] * 24);
         int in = i + 148 + vc_counter;
@@ -1106,8 +1113,10 @@ p25p2_ess_load_payload_and_parity(dsd_state* state, int payload[96], int parity[
     }
 }
 
+/* Returns 1 when the ESS decodes, with @p soft_depth the soft erasures the decode needed (0 for a hard decode). */
 static int
-p25p2_ess_decode_with_soft_erasures(dsd_state* state, int payload[96], int parity[168], int* ec) {
+p25p2_ess_decode_with_soft_erasures(dsd_state* state, int payload[96], int parity[168], int* ec, int* soft_depth) {
+    *soft_depth = 0;
     *ec = ez_rs28_ess(payload, parity, NULL, 0);
     if (*ec >= 0 && *ec < 15) {
         return 1;
@@ -1127,6 +1136,7 @@ p25p2_ess_decode_with_soft_erasures(dsd_state* state, int payload[96], int parit
         DSD_MEMCPY(parity, original_parity, sizeof(original_parity));
         *ec = ez_rs28_ess(payload, parity, erasures, n);
         if (*ec >= 0) {
+            *soft_depth = n;
             state->p25_p2_soft_ess_ok++;
             if ((unsigned int)n > state->p25_p2_soft_ess_max_depth) {
                 state->p25_p2_soft_ess_max_depth = (unsigned int)n;
@@ -1170,6 +1180,8 @@ typedef struct {
     int keyid;
     int corrections;
     int accepted;
+    /* Soft erasures the decode needed; 0 for a hard decode, which checked every parity symbol. */
+    int soft_depth;
 } p25p2_ess_result;
 
 static p25p2_ess_result
@@ -1179,7 +1191,8 @@ p25p2_ess_decode(dsd_state* state) {
     p25p2_ess_load_payload_and_parity(state, payload, parity);
 
     p25p2_ess_result result = {.corrections = 69};
-    result.accepted = p25p2_ess_decode_with_soft_erasures(state, payload, parity, &result.corrections);
+    result.accepted =
+        p25p2_ess_decode_with_soft_erasures(state, payload, parity, &result.corrections, &result.soft_depth);
     result.algid = p25p2_ess_algid_from_payload(payload);
     p25p2_ess_payload_to_hex(payload, &result.essb_hex1, &result.essb_hex2);
     result.keyid = (int)((result.essb_hex1 >> 8) & 0xFFFF);
@@ -1425,6 +1438,11 @@ p25p2_resolve_deferred_rekeys_on_abort(dsd_opts* opts, dsd_state* state) {
 
 void
 p25p2_process_ess(dsd_opts* opts, dsd_state* state, int defer_rekey) {
+    /* The slot's ESS_B is the carrier left's (p25p2_frame_forget_carrier(), issue #575): nothing to decode until a 4V
+       burst on this carrier collects a fragment. */
+    if (state->currentslot >= 0 && state->currentslot < 2 && state->p25_p2_ess_b_stale[state->currentslot]) {
+        return;
+    }
     const p25p2_ess_result result = p25p2_ess_decode(state);
 
     DSD_FPRINTF(stderr, "%s", KYEL);
@@ -1436,8 +1454,12 @@ p25p2_process_ess(dsd_opts* opts, dsd_state* state, int defer_rekey) {
     if (result.accepted) {
         state->p25_p2_rs_ess_ok++;
         state->p25_p2_rs_ess_corr += (unsigned int)result.corrections;
-        // The ESS is read from the descrambled 4V/2V bits.
-        p25p2_note_seed_proven(opts, state);
+        /* The ESS is read from the descrambled 4V/2V bits, so a decode that checked its parity proves the seed. One
+           that leaned on soft erasures did not check it: erasing all 28 parity symbols always succeeds, whatever seed
+           the bits were descrambled with (issue #575). */
+        if (result.soft_depth == 0) {
+            p25p2_note_seed_proven(opts, state);
+        }
         if (!defer_rekey || !p25p2_ess_stage_rekey(state, &result)) {
             p25p2_ess_apply_result(opts, state, state->currentslot, &result);
         }
@@ -1819,15 +1841,22 @@ p25p2_process_duid(dsd_opts* opts, dsd_state* state) {
     p25p2_duid_fallback_release(opts, state);
 }
 
-/* The receiver left the carrier the slots gathered on (issue #575): the ESS fragments, the partial voice superframe and
-   any staged rekey go, as the no-carrier pass drops them on a sync loss. */
-static void
-p25p2_forget_carrier_left(dsd_state* state) {
+void
+p25p2_frame_forget_carrier(dsd_state* state) {
+    if (!state) {
+        return;
+    }
     state->p2_is_lcch = 0;
     for (int slot = 0; slot < 2; slot++) {
         state->fourv_counter[slot] = 0;
         state->voice_counter[slot] = 0;
         DSD_MEMSET(&state->p25_p2_rekey[slot], 0, sizeof(state->p25_p2_rekey[slot]));
+        /* With weak ESS_A symbols a 2V burst's decode erases all of the parity and returns whatever ESS_B it holds, so
+           the carrier left's would come back as the new carrier's ALG/KID/MI: it goes, and stays unread until a 4V
+           burst on the new carrier collects a fragment. */
+        DSD_MEMSET(state->ess_b[slot], 0, sizeof(state->ess_b[slot]));
+        DSD_MEMSET(state->ess_b_llr[slot], 0, sizeof(state->ess_b_llr[slot]));
+        state->p25_p2_ess_b_stale[slot] = 1U;
     }
 }
 
@@ -1840,14 +1869,14 @@ processP2(dsd_opts* opts, dsd_state* state) {
        the boundary would otherwise decode after it, reopening the calls it ended and proving the seed on the carrier
        the receiver moved to. */
     if (s_superframe_carrier.valid && s_superframe_carrier.seq != state->carrier_seq) {
-        p25p2_forget_carrier_left(state);
+        p25p2_frame_forget_carrier(state);
     }
     const uint32_t carrier_seq = state->carrier_seq;
     p2_dibit_buffer(opts, state);
     s_superframe_carrier.seq = state->carrier_seq;
     s_superframe_carrier.valid = 1;
     if (state->carrier_seq != carrier_seq) {
-        p25p2_forget_carrier_left(state);
+        p25p2_frame_forget_carrier(state);
         state->dmr_stereo = 0;
         DSD_FPRINTF(stderr, "\n");
         return;

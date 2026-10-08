@@ -64,6 +64,7 @@
 #include <dsd-neo/protocol/p25/p25_crypto.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/protocol/p25/p25p2_frame.h>
 #include <dsd-neo/protocol/provoice/provoice.h>
 #include <dsd-neo/runtime/airspy_config.h>
 #include <dsd-neo/runtime/analog_channel.h>
@@ -2520,6 +2521,21 @@ carrier_boundary_forget_assemblies(dsd_opts* opts, dsd_state* state) {
     state->m17_signature_bad_sequence = 0;
     /* YSF: the text assembled frame by frame. */
     DSD_MEMSET(state->ysf_txt, 0, sizeof(state->ysf_txt));
+    /* P25 Phase 2: the slots' ESS_B, which a 2V burst ahead of any 4V burst would decode as the new carrier's
+       ALG/KID/MI, the partial voice superframe and any staged rekey. And the ended calls' P25 crypto (ALG, KID, MI with
+       its LFSR state): the next carrier's calls key their own. */
+    p25p2_frame_forget_carrier(state);
+    p25_crypto_reset_slot(state, 0);
+    p25_crypto_reset_slot(state, 1);
+}
+
+void
+dsd_engine_forget_carrier_decoding(dsd_opts* opts, dsd_state* state) {
+    if (!opts || !state) {
+        return;
+    }
+    carrier_boundary_forget_evidence(state);
+    carrier_boundary_forget_assemblies(opts, state);
 }
 
 void
@@ -2537,8 +2553,7 @@ dsd_engine_carrier_boundary(dsd_opts* opts, dsd_state* state, dsd_carrier_bounda
     carrier_boundary_release_followed(opts, state, kind);
     no_carrier_finalize_canonical_calls(opts, state, 1);
     dsd_engine_forget_carrier_codes(state);
-    carrier_boundary_forget_evidence(state);
-    carrier_boundary_forget_assemblies(opts, state);
+    dsd_engine_forget_carrier_decoding(opts, state);
     dsd_engine_forget_untrunked_carrier_state(opts, state);
     state->carrier_seq++;
     if (take_guard) {

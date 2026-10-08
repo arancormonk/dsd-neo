@@ -1248,6 +1248,9 @@ struct dsd_state {
     int ess_b[2][96];       //external storage for ESS_B fragments
     int16_t ess_b_llr[2][96];
     int fourv_counter[2]; //external reference counter for ESS_B fragment collection
+    /* The slot's ESS_B is the carrier left's (issue #575): set by p25p2_frame_forget_carrier(), cleared when the slot's
+       next 4V burst collects a fragment. A 2V burst decodes no ESS while it is set. */
+    uint8_t p25_p2_ess_b_stale[2];
     int voice_counter[2]; //external reference counter for 18V x 2 P25p2 Superframe
     int p2_is_lcch;       //flag to tell us when a frame is lcch and not sacch
     // Authoritative P25 voice crypto classification. Slot 0 is also used by P25 Phase 1.

@@ -38,6 +38,15 @@ void dsd_engine_forget_carrier_codes(dsd_state* state);
  * these belong to the system the receiver follows, and nothing changes. */
 void dsd_engine_forget_untrunked_carrier_state(const dsd_opts* opts, dsd_state* state);
 
+/** Forget what the decoders gathered on the carrier on air (issue #575): every confirmation gate's evidence, which
+ * vouched for that carrier's transmissions, and every multi-frame assembly that could publish an identity or a code
+ * (the NXDN SACCH superframe and alias, the DMR short LC, embedded LC, late-entry MI, talker alias and data blocks, the
+ * P25 MAC fragments, talker aliases, Phase 2 ESS_B, partial voice superframe and staged rekey, and the ended calls' P25
+ * crypto, the dPMR superframe part, the M17 LSF chunks, packet and signature, the YSF text): the next carrier's pieces
+ * could otherwise complete or reuse them. The carrier boundary runs it, and so does a trunk-scan target switch, which
+ * moves the tuner without the boundary: the target snapshots carry the codes, never these. */
+void dsd_engine_forget_carrier_decoding(dsd_opts* opts, dsd_state* state);
+
 /** What changed the carrier a carrier boundary leaves (issue #575). */
 typedef enum {
     /* An accepted tune the user asked for to another carrier: a tap, a frequency entry, a channel cycle over a list no

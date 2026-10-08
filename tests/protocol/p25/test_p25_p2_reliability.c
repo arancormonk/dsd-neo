@@ -1360,6 +1360,19 @@ test_seed_proof_needs_a_descrambled_burst(void) {
     run_seeded_superframe(&opts, &state, scrambled_sacch);
     rc |= expect_int("scrambled SACCH proves the seed", state.p2_cc_verified, 1);
 
+    /* A scrambled burst that decodes only once soft erasures are added checked less of its parity than its fixed
+       erasures leave, possibly none of it: it still decodes, but proves nothing. */
+    reset_xcch_stubs();
+    g_facch_min_success = 19; /* one dynamic erasure past the 18 fixed */
+    run_seeded_superframe(&opts, &state, scrambled_facch);
+    rc |= expect_int("soft-erasure scrambled FACCH decodes", g_facch_mac_calls > 0, 1);
+    rc |= expect_int("soft-erasure scrambled FACCH proves nothing", state.p2_cc_verified, 0);
+    reset_xcch_stubs();
+    g_sacch_min_success = 12; /* one dynamic erasure past the 11 fixed */
+    run_seeded_superframe(&opts, &state, scrambled_sacch);
+    rc |= expect_int("soft-erasure scrambled SACCH decodes", g_sacch_mac_calls > 0, 1);
+    rc |= expect_int("soft-erasure scrambled SACCH proves nothing", state.p2_cc_verified, 0);
+
     prepare_ess_soft_inputs(&state);
     reset_ess_stubs();
     g_ess_hard_rc = -1;
@@ -1371,6 +1384,15 @@ test_seed_proof_needs_a_descrambled_burst(void) {
     g_ess_hard_rc = 0;
     p25p2_process_ess(&opts, &state, 0);
     rc |= expect_int("ESS proves the seed", state.p2_cc_verified, 1);
+    prepare_ess_soft_inputs(&state);
+    descramble_with_site_seed(&opts, &state);
+    reset_ess_stubs();
+    g_ess_hard_rc = -1;
+    g_ess_soft_min_success = 1;
+    g_ess_soft_success_rc = 0;
+    p25p2_process_ess(&opts, &state, 0);
+    rc |= expect_int("soft-erasure ESS decodes", g_ess_soft_calls > 0 && state.p25_p2_rs_ess_ok == 1U, 1);
+    rc |= expect_int("soft-erasure ESS proves nothing", state.p2_cc_verified, 0);
 
     /* A burst decoded from a buffer descrambled with another seed proves that seed, not the one in force now. */
     reset_xcch_stubs();
