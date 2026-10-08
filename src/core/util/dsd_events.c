@@ -810,23 +810,12 @@ watchdog_event_merge_channel_label(Event_History* retained, const Event_History*
     retained->channel_label_resolved = 1U;
 }
 
-// Scalar identity a later segment may only fill in, never overwrite: the first segment that
-// decoded a value is as authoritative as any later one.
+// The frequency and access code the transmission was heard with fill in only when the first
+// segment never learned them: by the time a reacquired segment merges, the receiver may have
+// moved on, and the segment's own readings may describe the next carrier. Kind and code move
+// together, since a code means nothing without its kind.
 static void
-watchdog_event_merge_identity_fields(Event_History* retained, const Event_History* staged) {
-    if (retained->source_id == 0U && staged->source_id != 0U) {
-        retained->source_id = staged->source_id;
-    }
-    if (retained->target_id == 0U && staged->target_id != 0U) {
-        retained->target_id = staged->target_id;
-    }
-    if (retained->channel == 0U && staged->channel != 0U) {
-        retained->channel = staged->channel;
-    }
-    // The frequency and access code the transmission was heard with fill in only when the first
-    // segment never learned them: by the time a reacquired segment merges, the receiver may have
-    // moved on, and the segment's own readings may describe the next carrier. Kind and code move
-    // together, since a code means nothing without its kind.
+watchdog_event_merge_tuning(Event_History* retained, const Event_History* staged) {
     if (retained->freq_hz == 0 && staged->freq_hz != 0) {
         retained->freq_hz = staged->freq_hz;
     }
@@ -835,12 +824,10 @@ watchdog_event_merge_identity_fields(Event_History* retained, const Event_Histor
         retained->access_code_kind = staged->access_code_kind;
         retained->access_code = staged->access_code;
     }
-    if (retained->gi < 0 && staged->gi >= 0) {
-        retained->gi = staged->gi;
-    }
-    if (retained->svc == 0U && staged->svc != 0U) {
-        retained->svc = staged->svc;
-    }
+}
+
+static void
+watchdog_event_merge_stamps(Event_History* retained, const Event_History* staged) {
     // The committed row's start is its stamp of record: frontends key their own
     // mirrors on it, so a reacquired segment may fill a missing start but never
     // move one — not forward (its epoch began later than the transmission), and
@@ -858,6 +845,29 @@ watchdog_event_merge_identity_fields(Event_History* retained, const Event_Histor
     if (staged->event_time > retained->event_time) {
         retained->event_time = staged->event_time;
     }
+}
+
+// Scalar identity a later segment may only fill in, never overwrite: the first segment that
+// decoded a value is as authoritative as any later one.
+static void
+watchdog_event_merge_identity_fields(Event_History* retained, const Event_History* staged) {
+    if (retained->source_id == 0U && staged->source_id != 0U) {
+        retained->source_id = staged->source_id;
+    }
+    if (retained->target_id == 0U && staged->target_id != 0U) {
+        retained->target_id = staged->target_id;
+    }
+    if (retained->channel == 0U && staged->channel != 0U) {
+        retained->channel = staged->channel;
+    }
+    watchdog_event_merge_tuning(retained, staged);
+    if (retained->gi < 0 && staged->gi >= 0) {
+        retained->gi = staged->gi;
+    }
+    if (retained->svc == 0U && staged->svc != 0U) {
+        retained->svc = staged->svc;
+    }
+    watchdog_event_merge_stamps(retained, staged);
     watchdog_event_merge_text(retained->src_str, staged->src_str, sizeof(retained->src_str));
     watchdog_event_merge_text(retained->tgt_str, staged->tgt_str, sizeof(retained->tgt_str));
     watchdog_event_merge_text(retained->t_name, staged->t_name, sizeof(retained->t_name));
@@ -2495,8 +2505,8 @@ watchdog_event_notice_already_committed(const dsd_call_state_ext* ext, const dsd
 // keeps the event_time the file reader stamped on the staged row for the recording being played,
 // which a render there does not restamp.
 static void
-watchdog_event_emit_noncanonical_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_snapshot* call,
-                                        const char* detail) {
+watchdog_event_emit_noncanonical_notice(const dsd_opts* opts, dsd_state* state, uint8_t slot,
+                                        const dsd_call_snapshot* call, const char* detail) {
     Event_History_I* event_struct = &state->event_history_s[slot];
     Event_History canonical_row;
     DSD_MEMCPY(&canonical_row, &event_struct->Event_History_Items[0], sizeof(canonical_row));
@@ -2514,33 +2524,13 @@ watchdog_event_emit_noncanonical_notice(dsd_opts* opts, dsd_state* state, uint8_
     dsd_event_history_mark_dirty(event_struct);
 }
 
-static int
-dsd_event_emit_call_notice_impl(dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_snapshot* call,
-                                const char* detail, int finalize_call) {
-    if (!opts || !state || !state->event_history_s || !call || call->epoch == 0U || !detail || slot > 1U) {
-        return -1;
-    }
-    dsd_call_state_ext* ext = dsd_call_state_ext_get(state, 0);
-    watchdog_event_lock_if_present(ext);
-    dsd_call_event_lifecycle* lifecycle = ext ? &ext->events[slot] : NULL;
+// A notice for the slot's canonical call, rendered over its own staged row. Caller holds the call-state lock.
+static void
+watchdog_event_emit_canonical_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_snapshot* call,
+                                     const char* detail, dsd_call_event_lifecycle* lifecycle, int finalize_call) {
     Event_History_I* event_struct = &state->event_history_s[slot];
-    if (watchdog_event_notice_already_committed(ext, lifecycle, event_struct, call, detail)) {
-        watchdog_event_unlock_if_present(ext);
-        return 0;
-    }
-
-    dsd_call_event_lifecycle* canonical_lifecycle = NULL;
-    if (ext != NULL && watchdog_event_notice_matches_canonical(&ext->calls.slots[slot], call)) {
-        canonical_lifecycle = lifecycle;
-        watchdog_event_history_authoritative(opts, state, slot, call, canonical_lifecycle);
-    }
-    if (canonical_lifecycle == NULL) {
-        watchdog_event_emit_noncanonical_notice(opts, state, slot, call, detail);
-        watchdog_event_notice_mark_handled(lifecycle, call);
-        watchdog_event_unlock_if_present(ext);
-        return 1;
-    }
-    watchdog_event_current_impl(opts, state, slot, call, canonical_lifecycle, 0);
+    watchdog_event_history_authoritative(opts, state, slot, call, lifecycle);
+    watchdog_event_current_impl(opts, state, slot, call, lifecycle, 0);
     DSD_SNPRINTF(event_struct->Event_History_Items[0].internal_str,
                  sizeof(event_struct->Event_History_Items[0].internal_str), "%s", detail);
     dsd_event_history_mark_dirty(event_struct);
@@ -2550,17 +2540,36 @@ dsd_event_emit_call_notice_impl(dsd_opts* opts, dsd_state* state, uint8_t slot, 
     // unconditionally would give one transmission two rows and leave the first one orphaned.
     // The commit path keeps the notice detail: internal_str is merged progressively, so the
     // detail that just fired supersedes whatever the row carried.
-    (void)watchdog_event_commit_staged_row(opts, state, event_struct, slot, canonical_lifecycle,
-                                           call->kind == DSD_CALL_KIND_DATA, finalize_call,
-                                           finalize_call ? DSD_EVENT_END_FINAL : DSD_EVENT_END_NONE);
-    watchdog_event_notice_mark_handled(lifecycle, call);
-    if (canonical_lifecycle != NULL) {
-        // committed_seq/committed_epoch are maintained by the commit path itself; only the
-        // end-of-epoch marker is this function's to set.
-        if (call->phase == DSD_CALL_PHASE_ENDED) {
-            canonical_lifecycle->ended_committed = 1U;
-        }
+    (void)watchdog_event_commit_staged_row(opts, state, event_struct, slot, lifecycle, call->kind == DSD_CALL_KIND_DATA,
+                                           finalize_call, finalize_call ? DSD_EVENT_END_FINAL : DSD_EVENT_END_NONE);
+    // committed_seq/committed_epoch are maintained by the commit path itself; only the
+    // end-of-epoch marker is this function's to set.
+    if (call->phase == DSD_CALL_PHASE_ENDED) {
+        lifecycle->ended_committed = 1U;
     }
+}
+
+static int
+dsd_event_emit_call_notice_impl(dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_snapshot* call,
+                                const char* detail, int finalize_call) {
+    if (!opts || !state || !state->event_history_s || !call || call->epoch == 0U || !detail || slot > 1U) {
+        return -1;
+    }
+    dsd_call_state_ext* ext = dsd_call_state_ext_get(state, 0);
+    watchdog_event_lock_if_present(ext);
+    dsd_call_event_lifecycle* lifecycle = ext ? &ext->events[slot] : NULL;
+    const Event_History_I* event_struct = &state->event_history_s[slot];
+    if (watchdog_event_notice_already_committed(ext, lifecycle, event_struct, call, detail)) {
+        watchdog_event_unlock_if_present(ext);
+        return 0;
+    }
+
+    if (ext != NULL && watchdog_event_notice_matches_canonical(&ext->calls.slots[slot], call)) {
+        watchdog_event_emit_canonical_notice(opts, state, slot, call, detail, lifecycle, finalize_call);
+    } else {
+        watchdog_event_emit_noncanonical_notice(opts, state, slot, call, detail);
+    }
+    watchdog_event_notice_mark_handled(lifecycle, call);
     watchdog_event_unlock_if_present(ext);
     return 1;
 }
@@ -2621,6 +2630,49 @@ dsd_event_enrich_mark_crc(dsd_call_state_ext* ext, dsd_call_snapshot* call, Even
     }
 }
 
+// Where an enrichment of the epoch lands. Caller holds the call-state lock.
+typedef enum {
+    DSD_EVENT_ENRICH_TARGET_ROW = 0,  // the epoch's own row, at the index returned beside it
+    DSD_EVENT_ENRICH_TARGET_NONE,     // the epoch committed a row that can no longer be located
+    DSD_EVENT_ENRICH_TARGET_UNOPENED, // the call was observed but no sync has opened its epoch yet
+} dsd_event_enrich_target;
+
+static dsd_event_enrich_target
+dsd_event_enrich_find_row(const dsd_state* state, uint8_t slot, uint64_t epoch,
+                          const dsd_call_event_lifecycle* lifecycle, uint8_t* history_index) {
+    *history_index = 0U;
+    // Once this epoch's row has been committed the row has to be located by push sequence: an
+    // interleaved data or system notice pushes it deeper than index 1. The test is on
+    // committed_epoch rather than the lifecycle's current epoch, so an epoch that never pushed a
+    // row of its own cannot enrich an older epoch's row that committed_seq still points at.
+    if (lifecycle->committed_valid && lifecycle->committed_epoch == epoch) {
+        *history_index = watchdog_event_committed_row_index(&state->event_history_s[slot], lifecycle);
+        return *history_index != 0U ? DSD_EVENT_ENRICH_TARGET_ROW : DSD_EVENT_ENRICH_TARGET_NONE;
+    }
+    if (lifecycle->epoch == epoch && lifecycle->ended_committed) {
+        // Committed but not locatable (the row aged out of the ring, or a context restore
+        // invalidated the reference). Enriching row 0 would write into an unrelated staged row.
+        return DSD_EVENT_ENRICH_TARGET_NONE;
+    }
+    return lifecycle->epoch == epoch ? DSD_EVENT_ENRICH_TARGET_ROW : DSD_EVENT_ENRICH_TARGET_UNOPENED;
+}
+
+// The call has been observed but no sync has opened its epoch yet, so row 0 is still the
+// outgoing epoch's staged row -- or blank, and written here it would commit at the epoch
+// open as a detail-only row. The row declines; the live alias display and the call's CRC
+// verdict still follow the call, as they did. Aliases and positions repeat, and the next
+// one lands on the call's own row. Caller holds the call-state lock.
+static void
+dsd_event_enrich_unopened(dsd_state* state, uint8_t slot, dsd_call_state_ext* ext, dsd_call_snapshot* call,
+                          const char* value, dsd_event_enrichment_kind kind) {
+    if (kind == DSD_EVENT_ENRICH_ALIAS) {
+        DSD_SNPRINTF(state->generic_talker_alias[slot], sizeof(state->generic_talker_alias[slot]), "%s", value);
+    }
+    if (state->event_crc_invalid[slot]) {
+        dsd_event_enrich_mark_call_crc(ext, call);
+    }
+}
+
 static int
 dsd_event_enrich_epoch(dsd_state* state, uint8_t slot, uint64_t epoch, const char* value,
                        dsd_event_enrichment_kind kind) {
@@ -2633,39 +2685,17 @@ dsd_event_enrich_epoch(dsd_state* state, uint8_t slot, uint64_t epoch, const cha
     }
     dsd_call_state_ext_lock(ext);
     dsd_call_snapshot* call = &ext->calls.slots[slot];
-    const dsd_call_event_lifecycle* lifecycle = &ext->events[slot];
     if (call->epoch != epoch) {
         dsd_call_state_ext_unlock(ext);
         return 0;
     }
-    // Once this epoch's row has been committed the row has to be located by push sequence: an
-    // interleaved data or system notice pushes it deeper than index 1. The test is on
-    // committed_epoch rather than the lifecycle's current epoch, so an epoch that never pushed a
-    // row of its own cannot enrich an older epoch's row that committed_seq still points at.
     uint8_t history_index = 0U;
-    if (lifecycle->committed_valid && lifecycle->committed_epoch == epoch) {
-        history_index = watchdog_event_committed_row_index(&state->event_history_s[slot], lifecycle);
-        if (history_index == 0U) {
-            dsd_call_state_ext_unlock(ext);
-            return 0;
-        }
-    } else if (lifecycle->epoch == epoch && lifecycle->ended_committed) {
-        // Committed but not locatable (the row aged out of the ring, or a context restore
-        // invalidated the reference). Enriching row 0 would write into an unrelated staged row.
-        dsd_call_state_ext_unlock(ext);
-        return 0;
-    } else if (lifecycle->epoch != epoch) {
-        // The call has been observed but no sync has opened its epoch yet, so row 0 is still the
-        // outgoing epoch's staged row -- or blank, and written here it would commit at the epoch
-        // open as a detail-only row. The row declines; the live alias display and the call's CRC
-        // verdict still follow the call, as they did. Aliases and positions repeat, and the next
-        // one lands on the call's own row.
-        if (kind == DSD_EVENT_ENRICH_ALIAS) {
-            DSD_SNPRINTF(state->generic_talker_alias[slot], sizeof(state->generic_talker_alias[slot]), "%s", value);
-        }
-        if (state->event_crc_invalid[slot]) {
-            dsd_event_enrich_mark_call_crc(ext, call);
-        }
+    const dsd_event_enrich_target target =
+        dsd_event_enrich_find_row(state, slot, epoch, &ext->events[slot], &history_index);
+    if (target == DSD_EVENT_ENRICH_TARGET_UNOPENED) {
+        dsd_event_enrich_unopened(state, slot, ext, call, value, kind);
+    }
+    if (target != DSD_EVENT_ENRICH_TARGET_ROW) {
         dsd_call_state_ext_unlock(ext);
         return 0;
     }

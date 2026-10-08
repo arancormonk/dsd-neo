@@ -357,7 +357,7 @@ test_cached_reads_publish_the_centre(dsd_opts* opts, dsd_state* state) {
         }
         char label[96];
         DSD_SNPRINTF(label, sizeof(label), "%s: the reads crossed several batches", kOutputs[k].name);
-        check(label, g_next_sample > 4U * 37U);
+        check(label, g_next_sample > (uint64_t)4U * g_batch_samples);
     }
 }
 

@@ -1830,25 +1830,54 @@ ui_cmd_leave_typed_scan_after_tune(dsd_opts* opts, dsd_state* state, int result)
     return 1;
 }
 
+/* The frequency entry's refusals, each toasted: a replay, a trunk scan owning the tuner, a frequency out of range.
+   Returns 1 with the command status in *status when the entry is refused. */
+static int
+ui_cmd_rtl_set_freq_refused(const dsd_opts* opts, dsd_state* state, uint32_t v, int* status) {
+    if (ui_cmd_refuse_replay_tune(opts, state)) {
+        *status = UI_CMD_APPLY_FAILED;
+        return 1;
+    }
+    if (opts->trunk_scan_enabled) {
+        ui_set_toast(state, 3, "Trunk scan active: frequency control disabled");
+        *status = UI_CMD_APPLY_FAILED;
+        return 1;
+    }
+    if (v == 0
+#if LONG_MAX < UINT32_MAX
+        || v > (uint32_t)LONG_MAX
+#endif
+    ) {
+        ui_set_toast(state, 3, "Invalid frequency");
+        *status = UI_CMD_APPLY_INVALID_PAYLOAD;
+        return 1;
+    }
+    return 0;
+}
+
+/* The toast a frequency entry's tune leaves, from svc_rtl_set_freq()'s result. */
+static void
+ui_cmd_rtl_set_freq_toast(dsd_state* state, int rc, uint32_t v, int stop_scanner) {
+    if (rc == 0) {
+        ui_set_toast(state, 3, "Applied: RTL frequency -> %u Hz%s", v, stop_scanner ? " (scanner stopped)" : "");
+    } else if (rc == RTL_STREAM_TUNE_TIMEOUT) {
+        ui_set_toast(state, 3, "Accepted: RTL frequency -> %u Hz (pending)%s", v,
+                     stop_scanner ? " (scanner stopped)" : "");
+    } else if (ui_rc_is_not_supported(rc)) {
+        ui_set_toast(state, 3, "Unsupported: frequency control not available on active backend");
+    } else {
+        ui_set_toast(state, 4, "Failed: RTL frequency -> %u Hz", v);
+    }
+}
+
 static int
 ui_cmd_handle_rtl_set_freq(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     uint32_t v = 0;
     int result = UI_CMD_APPLY_COMPLETED;
     if (state && ui_cmd_parse_u32_payload(c, &v)) {
-        if (ui_cmd_refuse_replay_tune(opts, state)) {
-            return UI_CMD_APPLY_FAILED;
-        }
-        if (opts->trunk_scan_enabled) {
-            ui_set_toast(state, 3, "Trunk scan active: frequency control disabled");
-            return UI_CMD_APPLY_FAILED;
-        }
-        if (v == 0
-#if LONG_MAX < UINT32_MAX
-            || v > (uint32_t)LONG_MAX
-#endif
-        ) {
-            ui_set_toast(state, 3, "Invalid frequency");
-            return UI_CMD_APPLY_INVALID_PAYLOAD;
+        int refused_status = UI_CMD_APPLY_FAILED;
+        if (ui_cmd_rtl_set_freq_refused(opts, state, v, &refused_status)) {
+            return refused_status;
         }
         if (manual_frequency_selects_p25_cc(opts, state)) {
             return ui_cmd_handle_p25_cc_selection(opts, state, v);
@@ -1861,16 +1890,7 @@ ui_cmd_handle_rtl_set_freq(dsd_opts* opts, dsd_state* state, const struct dsd_ap
             dsd_analog_rx_reset(state);
         }
         const int stop_scanner = ui_cmd_leave_typed_scan_after_tune(opts, state, rc);
-        if (rc == 0) {
-            ui_set_toast(state, 3, "Applied: RTL frequency -> %u Hz%s", v, stop_scanner ? " (scanner stopped)" : "");
-        } else if (rc == RTL_STREAM_TUNE_TIMEOUT) {
-            ui_set_toast(state, 3, "Accepted: RTL frequency -> %u Hz (pending)%s", v,
-                         stop_scanner ? " (scanner stopped)" : "");
-        } else if (ui_rc_is_not_supported(rc)) {
-            ui_set_toast(state, 3, "Unsupported: frequency control not available on active backend");
-        } else {
-            ui_set_toast(state, 4, "Failed: RTL frequency -> %u Hz", v);
-        }
+        ui_cmd_rtl_set_freq_toast(state, rc, v, stop_scanner);
     }
     return result;
 }

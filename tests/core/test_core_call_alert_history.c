@@ -388,7 +388,8 @@ expect_every_line_stamped(const char* label, const char* buf, const char* stamp)
 static int
 event_history_item_equal(const Event_History* lhs, const Event_History* rhs) {
     return lhs->write == rhs->write && lhs->color_pair == rhs->color_pair && lhs->severity == rhs->severity
-           && lhs->category == rhs->category && lhs->systype == rhs->systype && lhs->subtype == rhs->subtype
+           && lhs->category == rhs->category && lhs->crc_invalid == rhs->crc_invalid && lhs->systype == rhs->systype
+           && lhs->subtype == rhs->subtype && lhs->emergency == rhs->emergency && lhs->priority == rhs->priority
            && lhs->sys_id1 == rhs->sys_id1 && lhs->sys_id2 == rhs->sys_id2 && lhs->sys_id3 == rhs->sys_id3
            && lhs->sys_id4 == rhs->sys_id4 && lhs->sys_id5 == rhs->sys_id5 && lhs->gi == rhs->gi && lhs->enc == rhs->enc
            && lhs->enc_alg == rhs->enc_alg && lhs->enc_key == rhs->enc_key && lhs->mi == rhs->mi && lhs->svc == rhs->svc
@@ -403,7 +404,7 @@ event_history_item_equal(const Event_History* lhs, const Event_History* rhs) {
            && lhs->channel_label_resolved == rhs->channel_label_resolved && lhs->channel == rhs->channel
            && lhs->freq_hz == rhs->freq_hz && lhs->access_code_kind == rhs->access_code_kind
            && lhs->access_code == rhs->access_code && lhs->event_time == rhs->event_time
-           && memcmp(lhs->pdu, rhs->pdu, sizeof lhs->pdu) == 0
+           && lhs->event_start_time == rhs->event_start_time && memcmp(lhs->pdu, rhs->pdu, sizeof lhs->pdu) == 0
            && memcmp(lhs->sysid_string, rhs->sysid_string, sizeof lhs->sysid_string) == 0
            && memcmp(lhs->alias, rhs->alias, sizeof lhs->alias) == 0
            && memcmp(lhs->gps_s, rhs->gps_s, sizeof lhs->gps_s) == 0
@@ -861,9 +862,8 @@ test_noncanonical_notice_leaves_the_canonical_staged_row_alone(void) {
     const Event_History* notice = &event_history[0].Event_History_Items[1];
     rc |= expect_int("notice row is the synthetic call's", (int)notice->target_id, 200);
     rc |= expect_str_eq("notice row does not inherit the canonical call's alias", notice->alias, "");
-    // Both rows are byte copies of what the event layer wrote, so padding bytes have defined values.
     rc |= expect_int("canonical staged row is untouched by the notice",
-                     memcmp(&before, &event_history[0].Event_History_Items[0], sizeof before) == 0 ? 1 : 0, 1);
+                     event_history_item_equal(&before, &event_history[0].Event_History_Items[0]), 1);
 
     // The canonical call ends, as handle_enc() ends it right after the notice.
     assert(end_test_call(&state, 0U, DSD_CALL_END_EXPLICIT) == 1);

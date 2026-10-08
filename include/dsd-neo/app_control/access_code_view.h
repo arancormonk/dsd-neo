@@ -18,7 +18,6 @@
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_APP_CONTROL_ACCESS_CODE_VIEW_H_
 #define DSD_NEO_INCLUDE_DSD_NEO_APP_CONTROL_ACCESS_CODE_VIEW_H_
 
-#include <dsd-neo/core/access_code.h>
 #include <stddef.h>
 #include <stdint.h>
 

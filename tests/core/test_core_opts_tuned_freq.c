@@ -14,8 +14,8 @@
 
 #include <assert.h>
 #include <dsd-neo/core/opts.h>
-#include <stdint.h>
 #include <stdlib.h>
+#include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 
 static dsd_opts*
@@ -28,11 +28,11 @@ make_opts(int audio_in_type, const char* audio_in_dev) {
     return opts;
 }
 
+/* An audio input (a rigctl peer's audio included) carries no tuner reading, a stale replay centre neither. */
 static void
-test_tuned_freq(void) {
+test_tuned_freq_audio_input(void) {
     assert(dsd_opts_tuned_freq_hz(NULL) == 0U);
 
-    /* An audio input (a rigctl peer's audio included) carries no tuner reading, a stale replay centre neither. */
     dsd_opts* opts = make_opts(AUDIO_IN_PULSE, "pulse");
     assert(dsd_opts_tuned_freq_hz(opts) == 0U);
     opts->iq_replay_center_freq = 851500000U;
@@ -40,9 +40,12 @@ test_tuned_freq(void) {
     opts->audio_in_type = AUDIO_IN_WAV;
     assert(dsd_opts_tuned_freq_hz(opts) == 0U);
     free(opts);
+}
 
+static void
+test_tuned_freq_radio_input(void) {
     /* A live radio input reads the centre DSD-neo tuned it to. */
-    opts = make_opts(AUDIO_IN_RTL, "rtl:0");
+    dsd_opts* opts = make_opts(AUDIO_IN_RTL, "rtl:0");
     assert(dsd_opts_tuned_freq_hz(opts) == 851012500U);
 
     /* During a replay the centre the samples being decoded were captured on wins, and once the replay stops (0) the
@@ -120,7 +123,8 @@ test_trunk_vc_followed(void) {
 
 int
 main(void) {
-    test_tuned_freq();
+    test_tuned_freq_audio_input();
+    test_tuned_freq_radio_input();
     test_note_iq_replay_center();
     test_input_is_iq_replay();
     test_trunk_vc_followed();

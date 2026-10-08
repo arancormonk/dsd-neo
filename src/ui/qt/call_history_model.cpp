@@ -448,9 +448,9 @@ notice_summary(const Event_History* item) {
 
 /** @brief The frequency and access code a ring item was heard with; 0 for whatever is unknown. */
 struct ItemCarrier {
-    qint64 freqHz;
-    int codeKind;
-    int code;
+    qint64 freqHz = 0;
+    int codeKind = 0;
+    int code = 0;
 };
 
 ItemCarrier
