@@ -7,6 +7,7 @@
  * Focused checks for the no-iconv NXDN alias text fallback.
  */
 
+#include <dsd-neo/core/events.h>
 #include <dsd-neo/protocol/nxdn/nxdn_alias_decode.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -17,6 +18,16 @@
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wmissing-prototypes"
 #endif
+
+// The fallback decode runs without the event layer; with no history attached nothing is written.
+int
+dsd_event_set_open_call_detail(dsd_state* state, uint8_t slot, dsd_event_detail_field field, const char* value) {
+    (void)state;
+    (void)slot;
+    (void)field;
+    (void)value;
+    return 0;
+}
 
 static int
 expect_str(const char* tag, const char* got, const char* want) {

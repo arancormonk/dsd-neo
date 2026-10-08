@@ -9,6 +9,7 @@
  */
 
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -701,10 +702,27 @@ test_pich_tch_dcr_csm_alias_state(void) {
     state.nxdn_dcr_sf_message_type = 0x01U;
     make_csm_trellis(trellis, csm_digits);
 
+    /* A CSM decoded before any call is observed: the live display takes it, the history row does not. */
     nxdn_handle_pich_tch(&opts, &state, trellis, m_data, 0x123U, 0x123U, 0x08U);
     rc |= expect_str("pich-csm-alias", state.generic_talker_alias[0], "CSM 123456789");
+    rc |= expect_str("pich-csm-no-call-event-alias", histories[0].Event_History_Items[0].alias, "");
+    rc |= expect_int("pich-csm-no-call-event-revision", (int)histories[0].revision, 0);
+
+    /* Once the call is open the repeat lands on its row, with the "; " suffix. */
+    const dsd_call_observation observation = {
+        .protocol = DSD_SYNC_NXDN_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 777U,
+        .policy_target_id = 777U,
+        .ota_source_id = 777U,
+    };
+    rc |= expect_int("pich-csm-call-opens", dsd_call_state_observe(&state, &observation, DSD_CALL_BOUNDARY_BEGIN), 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    const uint64_t revision = histories[0].revision;
+    nxdn_handle_pich_tch(&opts, &state, trellis, m_data, 0x123U, 0x123U, 0x08U);
     rc |= expect_str("pich-csm-event-alias", histories[0].Event_History_Items[0].alias, "CSM 123456789; ");
-    rc |= expect_int("pich-csm-event-revision", (int)histories[0].revision, 1);
+    rc |= expect_int("pich-csm-event-revision", (int)(histories[0].revision - revision), 1);
 
     DSD_SNPRINTF(state.generic_talker_alias[0], sizeof(state.generic_talker_alias[0]), "%s", "KEEP");
     DSD_SNPRINTF(histories[0].Event_History_Items[0].alias, sizeof(histories[0].Event_History_Items[0].alias), "%s",
@@ -714,6 +732,7 @@ test_pich_tch_dcr_csm_alias_state(void) {
     nxdn_handle_pich_tch(&opts, &state, trellis, m_data, 0x123U, 0x123U, 0x08U);
     rc |= expect_str("pich-non-sb0-keeps-alias", state.generic_talker_alias[0], "KEEP");
     rc |= expect_str("pich-non-sb0-keeps-event-alias", histories[0].Event_History_Items[0].alias, "KEEP; ");
+    dsd_state_ext_free_all(&state);
     return rc;
 }
 

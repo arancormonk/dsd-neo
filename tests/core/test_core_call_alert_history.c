@@ -895,10 +895,12 @@ committed_rows_for_target(const Event_History_I* history, uint32_t target_id) {
 
 // A render outside dsd_event_sync_slot() -- the DMR and NXDN lockout notes, an operator's slot lockout or skip pumped
 // between frames, the DMR P_CLEAR release -- can run after a protocol observed a new epoch but before any sync opened
-// it: D-STAR's header and DMR's tuned voice sync observe without syncing, and the control pump runs right after the
-// frame. Rendering the new call over the outgoing epoch's staged row let the next sync commit that row as the outgoing
-// epoch's: the new call got two rows, and an outgoing call still staged lost its own. One transmission leaves one row,
-// the outgoing call keeps its own, and a note for the new call lands on the new call's row.
+// it: DMR's prepare_dmr_bs_voice_slot() observes the tuned call through the trunk SM's voice sync, a burst can end the
+// superframe before its post-skip sync, and the control pump runs between processFrame() and the next getFrameSync().
+// (D-STAR's header is not such a window: processDSTAR() syncs after every voice frame.) Rendering the new call over
+// the outgoing epoch's staged row let the next sync commit that row as the outgoing epoch's: the new call got two rows,
+// and an outgoing call still staged lost its own. One transmission leaves one row, the outgoing call keeps its own,
+// and a note for the new call lands on the new call's row.
 static int
 test_lone_render_before_the_epoch_opens_keeps_one_row_per_call(void) {
     static dsd_opts opts;
@@ -950,6 +952,212 @@ test_lone_render_before_the_epoch_opens_keeps_one_row_per_call(void) {
         rc |= expect_str_eq(label, event_history[0].Event_History_Items[2].internal_str, "");
         dsd_state_ext_free_all(&state);
     }
+    return rc;
+}
+
+// Rows pushed into the slot's ring since the fixture reset: every call commit, merge excepted, and every notice.
+static uint64_t
+pushed_rows(const Event_History_I* history) {
+    return history->push_seq;
+}
+
+// Detail decoded for a call that has not been observed yet -- a D-STAR text or APRS block whose RF header failed its
+// CRC, an NXDN alias ahead of the VCALL -- has no row to go to. Written into the blank staged row anyway, it was
+// committed at the next epoch open as a detail-only row with no summary (a blank history entry with a Text:/GPS:
+// line, an empty -J line followed by unstamped detail lines), and the call it belonged to lacked it. Detail now
+// reaches a row only through an open, active call; the slow data or alias repeats, and lands once the call is open.
+static int
+test_detail_before_the_call_opens_leaves_no_orphan_row(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+
+    // Call A is committed, which blanks the staged row.
+    assert(observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 100U, 101U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    assert(end_test_call(&state, 0U, DSD_CALL_END_EXPLICIT) == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    int rc = expect_u64("call A commits one row", pushed_rows(&event_history[0]), 1U);
+
+    // No call is open: a protocol's detail is declined.
+    rc |= expect_int("text with no open call is declined",
+                     dsd_event_set_open_call_detail(&state, 0U, DSD_EVENT_DETAIL_TEXT, "CQ CQ"), 0);
+    rc |= expect_int("GPS with no open call is declined",
+                     dsd_event_set_open_call_detail(&state, 0U, DSD_EVENT_DETAIL_GPS, "APRS - Lat: 41d"), 0);
+    rc |= expect_int("alias with no open call is declined",
+                     dsd_event_set_open_call_detail(&state, 0U, DSD_EVENT_DETAIL_ALIAS, "CSM 123; "), 0);
+    rc |= expect_str_eq("the staged row stays blank", event_history[0].Event_History_Items[0].text_message, "");
+
+    // Call B is observed but no sync has opened its epoch: enrichment for B is declined too.
+    assert(observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 200U, 201U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+    dsd_call_snapshot call_b;
+    assert(dsd_call_state_get(&state, 0U, &call_b) == 1);
+    rc |= expect_int("enrichment before the epoch opens is declined",
+                     dsd_event_enrich_gps(&state, 0U, call_b.epoch, "APRS - Lat: 41d"), 0);
+    rc |= expect_int("direct detail before the epoch opens is declined",
+                     dsd_event_set_open_call_detail(&state, 0U, DSD_EVENT_DETAIL_TEXT, "CQ CQ"), 0);
+
+    // The sync opens B's epoch and leaves no detail-only row behind.
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_u64("opening B pushes no orphan row", pushed_rows(&event_history[0]), 1U);
+
+    // The detail repeats once B is open and lands on B's own row.
+    rc |= expect_int("enrichment of the open call lands",
+                     dsd_event_enrich_gps(&state, 0U, call_b.epoch, "APRS - Lat: 41d"), 1);
+    rc |= expect_int("direct detail for the open call lands",
+                     dsd_event_set_open_call_detail(&state, 0U, DSD_EVENT_DETAIL_TEXT, "CQ CQ"), 1);
+    assert(end_test_call(&state, 0U, DSD_CALL_END_EXPLICIT) == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    const Event_History* row_b = &event_history[0].Event_History_Items[1];
+    rc |= expect_u64("A and B leave two rows", pushed_rows(&event_history[0]), 2U);
+    rc |= expect_int("the newest row is B's", (int)row_b->target_id, 200);
+    rc |= expect_str_eq("B's row carries its GPS", row_b->gps_s, "APRS - Lat: 41d");
+    rc |= expect_str_eq("B's row carries its text", row_b->text_message, "CQ CQ");
+    rc |= expect_int("A's row is next", (int)event_history[0].Event_History_Items[2].target_id, 100);
+    rc |= expect_str_eq("A's row carries none of B's detail", event_history[0].Event_History_Items[2].gps_s, "");
+
+    // Enrichment still reaches the call's committed row once it ended and committed.
+    rc |= expect_int("late enrichment reaches B's committed row", dsd_event_enrich_text(&state, 0U, call_b.epoch, "73"),
+                     1);
+    rc |= expect_str_eq("late text on the committed row", event_history[0].Event_History_Items[1].text_message, "73");
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+// Enrichment that names a call whose epoch no sync has opened yet is declined even when the staged row is not blank:
+// that row is still the outgoing call's, and taking the new call's alias or position would commit them on the
+// outgoing call's row. Covered with the outgoing call ended but not yet committed, and with it still active when the
+// new call's identity forks the epoch.
+static int
+test_enrichment_before_the_epoch_opens_spares_the_outgoing_row(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    int rc = 0;
+
+    for (int outgoing_ended = 0; outgoing_ended < 2; outgoing_ended++) {
+        const char* name = outgoing_ended ? "outgoing ended" : "outgoing active";
+        char label[128];
+        reset_fixture(&opts, &state, event_history);
+        assert(observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 100U, 101U, 0U, 0U,
+                                 DSD_CALL_BOUNDARY_BEGIN)
+               == 1);
+        dsd_event_sync_slot(&opts, &state, 0U);
+        if (outgoing_ended) {
+            assert(end_test_call(&state, 0U, DSD_CALL_END_EXPLICIT) == 1);
+        }
+        const Event_History* staged = &event_history[0].Event_History_Items[0];
+        DSD_SNPRINTF(label, sizeof label, "%s: the staged row is the outgoing call's", name);
+        rc |= expect_int(label, (int)staged->target_id, 100);
+
+        // Call B, with a different identity, is observed with no sync after it.
+        assert(observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 200U, 201U, 0U, 0U,
+                                 DSD_CALL_BOUNDARY_BEGIN)
+               == 1);
+        dsd_call_snapshot call_b;
+        assert(dsd_call_state_get(&state, 0U, &call_b) == 1);
+        DSD_SNPRINTF(label, sizeof label, "%s: B's alias is declined", name);
+        rc |= expect_int(label, dsd_event_enrich_alias(&state, 0U, call_b.epoch, "Unit 201"), 0);
+        DSD_SNPRINTF(label, sizeof label, "%s: B's position is declined", name);
+        rc |= expect_int(label, dsd_event_enrich_gps(&state, 0U, call_b.epoch, "LIP: 22.5S 45.0W"), 0);
+        DSD_SNPRINTF(label, sizeof label, "%s: the outgoing staged alias stays empty", name);
+        rc |= expect_str_eq(label, staged->alias, "");
+        DSD_SNPRINTF(label, sizeof label, "%s: the outgoing staged GPS stays empty", name);
+        rc |= expect_str_eq(label, staged->gps_s, "");
+
+        // The sync opens B's epoch and commits the outgoing row.
+        dsd_event_sync_slot(&opts, &state, 0U);
+        const Event_History* row_a = &event_history[0].Event_History_Items[1];
+        DSD_SNPRINTF(label, sizeof label, "%s: the outgoing call commits its row", name);
+        rc |= expect_int(label, (int)row_a->target_id, 100);
+        DSD_SNPRINTF(label, sizeof label, "%s: the outgoing row carries none of B's alias", name);
+        rc |= expect_str_eq(label, row_a->alias, "");
+        DSD_SNPRINTF(label, sizeof label, "%s: the outgoing row carries none of B's GPS", name);
+        rc |= expect_str_eq(label, row_a->gps_s, "");
+        dsd_state_ext_free_all(&state);
+    }
+    return rc;
+}
+
+// Direct detail goes only to an active call's row. A call that has ended but not committed yet -- its finalize pass
+// still to run -- is over: detail decoded now belongs to whatever keyed up next, not to the ended call's row. While
+// the ended call is still active, detail cannot be told apart from the next transmission's, since neither the D-STAR
+// slow data nor the NXDN alias names its call; that window closes when the next call is observed.
+static int
+test_direct_detail_skips_an_ended_call(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+
+    assert(observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 100U, 101U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    assert(end_test_call(&state, 0U, DSD_CALL_END_EXPLICIT) == 1);
+    int rc = expect_int("detail after the call ended is declined",
+                        dsd_event_set_open_call_detail(&state, 0U, DSD_EVENT_DETAIL_GPS, "APRS - Lat: 41d"), 0);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_u64("the ended call commits one row", pushed_rows(&event_history[0]), 1U);
+    rc |= expect_str_eq("the ended call's row carries no later detail", event_history[0].Event_History_Items[1].gps_s,
+                        "");
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+// A note for the slot's call (a lockout, a skip) is declined when no call is there to carry it: no call at all, or a
+// call that ended and committed. Written into the blank staged row, it became a note-only row at the next epoch open.
+static int
+test_note_without_an_authoritative_call_leaves_no_orphan_row(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    int rc = 0;
+
+    // No call has ever been observed on the slot.
+    reset_fixture(&opts, &state, event_history);
+    dsd_event_note_current_call(&opts, &state, 0U, "Target: 100; call skipped.");
+    rc |= expect_str_eq("no call: the note is declined", event_history[0].Event_History_Items[0].internal_str, "");
+    assert(observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 300U, 301U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    assert(end_test_call(&state, 0U, DSD_CALL_END_EXPLICIT) == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_u64("no call: only the next call's row", pushed_rows(&event_history[0]), 1U);
+    rc |= expect_str_eq("no call: the next call's row carries no note",
+                        event_history[0].Event_History_Items[1].internal_str, "");
+
+    // The slot's call ended and committed.
+    reset_fixture(&opts, &state, event_history);
+    assert(observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 100U, 101U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    assert(end_test_call(&state, 0U, DSD_CALL_END_EXPLICIT) == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    dsd_event_note_current_call(&opts, &state, 0U, "Target: 100; has been locked out; Session Only.");
+    rc |=
+        expect_str_eq("committed call: the note is declined", event_history[0].Event_History_Items[0].internal_str, "");
+    assert(observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 300U, 301U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |=
+        expect_u64("committed call: opening the next call pushes no note-only row", pushed_rows(&event_history[0]), 1U);
+
+    // An active call takes the note, as before.
+    dsd_event_note_current_call(&opts, &state, 0U, "Target: 300; call skipped.");
+    assert(end_test_call(&state, 0U, DSD_CALL_END_EXPLICIT) == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_str_eq("active call: the note lands on its row", event_history[0].Event_History_Items[1].internal_str,
+                        "Target: 300; call skipped.");
+    dsd_state_ext_free_all(&state);
     return rc;
 }
 
@@ -6177,6 +6385,10 @@ main(void) {
     rc |= test_noncanonical_notice_stamps_its_own_start();
     rc |= test_noncanonical_notice_leaves_the_canonical_staged_row_alone();
     rc |= test_lone_render_before_the_epoch_opens_keeps_one_row_per_call();
+    rc |= test_detail_before_the_call_opens_leaves_no_orphan_row();
+    rc |= test_enrichment_before_the_epoch_opens_spares_the_outgoing_row();
+    rc |= test_direct_detail_skips_an_ended_call();
+    rc |= test_note_without_an_authoritative_call_leaves_no_orphan_row();
     rc |= test_event_state_snapshot_copy_accepts_aliased_state();
     rc |= test_end_only_data_call_does_not_emit_voice_end_alert();
     rc |= test_data_only_data_call_emits_one_data_alert();

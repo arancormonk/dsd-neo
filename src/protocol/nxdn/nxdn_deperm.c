@@ -371,14 +371,11 @@ nxdn_handle_dcr_csm_alias(const dsd_opts* opts, dsd_state* state, const uint8_t*
     if (nxdn_dcr_decode_csm_alias(trellis_buf, csm_alias, sizeof(csm_alias))) {
         DSD_FPRINTF(stderr, "\n Call Sign Memory: %s; ", csm_alias + 4);
         DSD_SNPRINTF(state->generic_talker_alias[0], sizeof(state->generic_talker_alias[0]), "%s", csm_alias);
-        if (state->event_history_s != NULL) {
-            dsd_event_history_transaction transaction;
-            dsd_event_history_transaction_begin(state, &transaction);
-            DSD_SNPRINTF(state->event_history_s[0].Event_History_Items[0].alias,
-                         sizeof(state->event_history_s[0].Event_History_Items[0].alias), "%s; ", csm_alias);
-            dsd_event_history_mark_dirty(&state->event_history_s[0]);
-            dsd_event_history_transaction_end(&transaction);
-        }
+        // The display takes the call sign either way; the history row only through the open call, since
+        // a CSM decoded ahead of the SACCH2 SB0 observation has no row of its own yet.
+        char row_alias[sizeof(csm_alias) + 2U];
+        DSD_SNPRINTF(row_alias, sizeof(row_alias), "%s; ", csm_alias);
+        (void)dsd_event_set_open_call_detail(state, 0U, DSD_EVENT_DETAIL_ALIAS, row_alias);
     } else if (opts->payload == 1) {
         DSD_FPRINTF(stderr, "\n Call Sign Memory: decode error; ");
     }

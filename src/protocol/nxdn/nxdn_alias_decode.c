@@ -42,14 +42,11 @@ nxdn_alias_publish(dsd_state* state, const char* alias) {
         return;
     }
     DSD_SNPRINTF(state->generic_talker_alias[0], sizeof(state->generic_talker_alias[0]), "%s", alias);
-    if (state->event_history_s != NULL) {
-        dsd_event_history_transaction transaction;
-        dsd_event_history_transaction_begin(state, &transaction);
-        DSD_SNPRINTF(state->event_history_s[0].Event_History_Items[0].alias,
-                     sizeof(state->event_history_s[0].Event_History_Items[0].alias), "%s; ", alias);
-        dsd_event_history_mark_dirty(&state->event_history_s[0]);
-        dsd_event_history_transaction_end(&transaction);
-    }
+    // The display takes the alias either way; the history row only through the open call, since an
+    // alias decoded ahead of the VCALL has no row of its own yet (it repeats once the call is open).
+    char row_alias[sizeof(state->generic_talker_alias[0]) + 2U];
+    DSD_SNPRINTF(row_alias, sizeof(row_alias), "%s; ", alias);
+    (void)dsd_event_set_open_call_detail(state, 0U, DSD_EVENT_DETAIL_ALIAS, row_alias);
 }
 
 static void

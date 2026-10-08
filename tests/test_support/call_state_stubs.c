@@ -312,6 +312,28 @@ dsd_event_enrich_gps(dsd_state* state, uint8_t slot, uint64_t epoch, const char*
     return 1;
 }
 
+// The open-call detail write, against the stub call: written while the slot's call is active, declined otherwise.
+int
+dsd_event_set_open_call_detail(dsd_state* state, uint8_t slot, dsd_event_detail_field field, const char* value) {
+    dsd_call_snapshot call;
+    if (state == NULL || state->event_history_s == NULL || slot >= DSD_CALL_STATE_SLOT_COUNT || value == NULL) {
+        return -1;
+    }
+    if (dsd_call_state_get(state, slot, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE) {
+        return 0;
+    }
+    Event_History* item = &state->event_history_s[slot].Event_History_Items[0];
+    if (field == DSD_EVENT_DETAIL_ALIAS) {
+        DSD_SNPRINTF(item->alias, sizeof(item->alias), "%s", value);
+    } else if (field == DSD_EVENT_DETAIL_GPS) {
+        DSD_SNPRINTF(item->gps_s, sizeof(item->gps_s), "%s", value);
+    } else {
+        DSD_SNPRINTF(item->text_message, sizeof(item->text_message), "%s", value);
+    }
+    state->event_history_s[slot].revision++;
+    return 1;
+}
+
 int
 dsd_call_state_note_key_selection(dsd_state* state, uint8_t slot, uint64_t epoch, dsd_call_key_source source,
                                   int signaled_id, int effective_id, int available, int fallback) {

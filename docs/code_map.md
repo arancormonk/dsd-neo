@@ -607,15 +607,29 @@ The `Linux • RelWithDebInfo • ctest (x86-64-v3, fast-math, clang)` check enf
   the channel label and the row's start stamp -- are reused only when the slot's lifecycle has opened the call's
   epoch, and every canonical render opens it first: `dsd_event_sync_slot()`, `watchdog_event_current()` and
   `dsd_event_note_current_call()` all run the history step before they render, so a render that follows a protocol's
-  unsynced observation (D-STAR's header, DMR's tuned voice sync) no longer draws the new call over the outgoing
-  epoch's row, which the next sync committed as the outgoing call's (two rows for the new call, none for a staged
-  outgoing one). Notes for the slot's call (the DMR/NXDN encryption lockout, an operator's slot lockout or skip) go
-  through `dsd_event_note_current_call()`, never a raw `Items[0].internal_str` write. A notice for a non-canonical call
-  (the P25 lockout's synthetic snapshot, `watchdog_event_emit_noncanonical_notice()`) renders into a blank row and
-  restores the canonical staged row byte for byte, as a data notice does: no other call's label, frequency, code,
-  start, alias, GPS or text, no WAV rotation or end alert, and the canonical call keeps its row. Data notices read
-  both live (the notice's own frequency first). A reacquisition merge only fills an unknown
-  frequency or code (kind and value together). The NXDN event line names the call's own `channel` and the row's
+  unsynced observation no longer draws the new call over the outgoing epoch's row, which the next sync committed as
+  the outgoing call's (two rows for the new call, none for a staged outgoing one). The window is DMR's:
+  `prepare_dmr_bs_voice_slot()` observes the tuned call through the trunk SM's voice sync, a burst can end the
+  superframe before its post-skip sync, and the control pump runs between `processFrame()` and the next
+  `getFrameSync()`; D-STAR's `processDSTAR()` syncs after every voice frame. Notes for the slot's call (the DMR/NXDN
+  encryption lockout, an operator's slot lockout or skip) go through `dsd_event_note_current_call()`, never a raw
+  `Items[0].internal_str` write, and it declines when the slot has no call to carry the note (none observed, or one
+  that ended and committed its row). Detail a protocol decodes without naming its call -- D-STAR slow-data text and
+  APRS, the NXDN alias and DCR call sign memory -- reaches a row only through `dsd_event_set_open_call_detail()`, which
+  writes it only while the slot's call is ACTIVE and its epoch is open, and `dsd_event_enrich_*()` declines a row-0
+  write while the call's epoch is not yet open (the live alias display and the call's CRC verdict still follow).
+  Detail decoded before any call for the transmission was observed used to be committed at the next epoch open as a
+  detail-only row with no summary, or to land on a previous call that had ended but not yet committed; declined detail
+  lands when it repeats. One case remains: while the previous call is still ACTIVE, a direct writer's detail for the
+  next transmission still lands on the previous call's row, since none of these messages names its call. The
+  protocols still write their display scratch (`dstar_txt`, `dstar_gps`, `generic_talker_alias`) as before; with no
+  orphan commit running `watchdog_event_reset_post_push()` at the next call's open, D-STAR text and position decoded
+  before that call was observed now stay on screen through it. A notice for a non-canonical call (the P25 lockout's
+  synthetic snapshot, `watchdog_event_emit_noncanonical_notice()`) renders into a blank row and restores the
+  canonical staged row byte for byte, as a data notice does: no other call's label, frequency, code, start, alias,
+  GPS or text, no WAV rotation or end alert, and the canonical call keeps its row. Data notices read both live (the
+  notice's own frequency first). A reacquisition merge only fills an unknown frequency or code (kind and value
+  together). The NXDN event line names the call's own `channel` and the row's
   `freq_hz`, never the global last grant (`nxdn_grant_chan`/`_freq`, which left the render env). The rdio-scanner
   sidecar's `freq` is `freq_hz` (clamped to `uint32_t`, still 0 below 1 MHz); it was the channel number before. The
   control API's event rows carry `freq_hz`, `access_code_kind` and `access_code`, folded into the row fingerprint.

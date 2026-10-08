@@ -2153,8 +2153,10 @@ watchdog_event_current_impl(const dsd_opts* opts, dsd_state* state, uint8_t slot
 
 // A render outside dsd_event_sync_slot() -- the DMR P_CLEAR release, or a note through
 // dsd_event_note_current_call() -- can run after a protocol observed a new epoch but before any
-// sync opened it: D-STAR's header and DMR's tuned voice sync observe without syncing, and the
-// control pump runs app-control commands right after the frame. Rendering then would draw the new
+// sync opened it. DMR is the window: prepare_dmr_bs_voice_slot() observes the tuned call through
+// the trunk SM's voice sync, a burst can then end the superframe before its post-skip sync, and the
+// control pump runs app-control commands between processFrame() and the next getFrameSync(). (D-STAR
+// is not one: processDSTAR() syncs after every voice frame.) Rendering then would draw the new
 // call over the outgoing epoch's staged row, and the next sync would commit that row as the
 // outgoing epoch's: the outgoing call loses its row and the new call gets two. So the epoch is
 // opened first, as the sync does, committing the outgoing row as it stands. The history step can
@@ -2164,26 +2166,23 @@ static void
 watchdog_event_current_open_and_render(dsd_opts* opts, dsd_state* state, uint8_t slot, const char* note) {
     dsd_call_state_ext* ext = dsd_call_state_ext_get(state, 0);
     if (!ext) {
-        if (note != NULL) {
-            // No canonical call to open or render: the note stays on the staged row.
-            dsd_event_history_transaction transaction;
-            dsd_event_history_transaction_begin(state, &transaction);
-            DSD_SNPRINTF(state->event_history_s[slot].Event_History_Items[0].internal_str,
-                         sizeof(state->event_history_s[slot].Event_History_Items[0].internal_str), "%s", note);
-            dsd_event_history_mark_dirty(&state->event_history_s[slot]);
-            dsd_event_history_transaction_end(&transaction);
-        }
+        // No call has been observed: nothing to render, and no call to carry a note.
         return;
     }
     dsd_call_state_ext_lock(ext);
-    watchdog_event_history_impl(opts, state, slot, &ext->calls.slots[slot], &ext->events[slot]);
-    if (note != NULL) {
+    const dsd_call_snapshot* call = &ext->calls.slots[slot];
+    dsd_call_event_lifecycle* lifecycle = &ext->events[slot];
+    watchdog_event_history_impl(opts, state, slot, call, lifecycle);
+    // A note is the slot's call's: with no call to carry it -- none observed, or one that ended and
+    // already committed its row -- it is declined. Written into the blank staged row, it became a
+    // note-only row when the next epoch opened.
+    if (note != NULL && watchdog_event_call_is_authoritative(call, lifecycle)) {
         Event_History_I* event_struct = &state->event_history_s[slot];
         DSD_SNPRINTF(event_struct->Event_History_Items[0].internal_str,
                      sizeof(event_struct->Event_History_Items[0].internal_str), "%s", note);
         dsd_event_history_mark_dirty(event_struct);
     }
-    watchdog_event_current_impl(opts, state, slot, &ext->calls.slots[slot], &ext->events[slot], 1);
+    watchdog_event_current_impl(opts, state, slot, call, lifecycle, 1);
     dsd_call_state_ext_unlock(ext);
 }
 
@@ -2203,6 +2202,52 @@ dsd_event_note_current_call(dsd_opts* opts, dsd_state* state, uint8_t slot, cons
         return;
     }
     watchdog_event_current_open_and_render(opts, state, slot, note);
+}
+
+// Under the call-state lock: 1 when the slot's staged row belongs to its canonical call, open and
+// active -- the call is ACTIVE and the lifecycle has opened its epoch.
+static int
+watchdog_event_slot_call_is_open(const dsd_call_snapshot* call, const dsd_call_event_lifecycle* lifecycle) {
+    return call->epoch != 0U && call->phase == DSD_CALL_PHASE_ACTIVE && lifecycle->epoch == call->epoch;
+}
+
+// Detail a protocol decodes without naming the call it belongs to -- D-STAR slow-data text and
+// APRS, the NXDN alias and DCR call sign memory -- reaches a row only through the slot's open call.
+// Decoded before any call for the transmission was observed (an RF header that failed its CRC,
+// late entry, an alias ahead of the VCALL), the detail has no row: written into the blank staged
+// row it was committed, when the next epoch opened, as a detail-only row with no summary, and the
+// call it belonged to lacked it. Decoded after the slot's call ended, it belongs to whatever keyed
+// up next, not to the ended call's row. Opening the epoch first would not help either way, since no
+// call for the transmission has been observed. Slow data and aliases repeat, so declined detail
+// lands once the call is open. While the previous call is still active, the next transmission's
+// detail cannot be told apart from its own: none of these messages names its call.
+int
+dsd_event_set_open_call_detail(dsd_state* state, uint8_t slot, dsd_event_detail_field field, const char* value) {
+    if (!state || !state->event_history_s || slot > 1U || !value
+        || (field != DSD_EVENT_DETAIL_ALIAS && field != DSD_EVENT_DETAIL_GPS && field != DSD_EVENT_DETAIL_TEXT)) {
+        return -1;
+    }
+    dsd_call_state_ext* ext = dsd_call_state_ext_get(state, 0);
+    if (!ext) {
+        return 0;
+    }
+    dsd_call_state_ext_lock(ext);
+    if (!watchdog_event_slot_call_is_open(&ext->calls.slots[slot], &ext->events[slot])) {
+        dsd_call_state_ext_unlock(ext);
+        return 0;
+    }
+    Event_History_I* event_struct = &state->event_history_s[slot];
+    Event_History* item = &event_struct->Event_History_Items[0];
+    if (field == DSD_EVENT_DETAIL_ALIAS) {
+        DSD_SNPRINTF(item->alias, sizeof(item->alias), "%s", value);
+    } else if (field == DSD_EVENT_DETAIL_GPS) {
+        DSD_SNPRINTF(item->gps_s, sizeof(item->gps_s), "%s", value);
+    } else {
+        DSD_SNPRINTF(item->text_message, sizeof(item->text_message), "%s", value);
+    }
+    dsd_event_history_mark_dirty(event_struct);
+    dsd_call_state_ext_unlock(ext);
+    return 1;
 }
 
 void
@@ -2433,17 +2478,23 @@ dsd_event_enrich_apply(dsd_state* state, uint8_t slot, Event_History* item, cons
     }
 }
 
-// Caller holds the call-state lock. Enrichment may precede the first render of its epoch,
-// so an unrelated staged row must not be marked along with the canonical call.
+// Caller holds the call-state lock. The known CRC failure belongs to the transmission, so the
+// canonical call is marked whether or not a row takes the enrichment.
 static void
-dsd_event_enrich_mark_crc(dsd_call_state_ext* ext, dsd_call_snapshot* call, Event_History* item,
-                          const dsd_call_event_lifecycle* lifecycle, uint8_t history_index) {
+dsd_event_enrich_mark_call_crc(dsd_call_state_ext* ext, dsd_call_snapshot* call) {
     if (!call->crc_invalid) {
         call->crc_invalid = 1;
         call->revision = call->revision == UINT64_MAX ? 1U : call->revision + 1U;
         ext->calls.revision = ext->calls.revision == UINT64_MAX ? 1U : ext->calls.revision + 1U;
     }
-    if (!item->crc_invalid && (history_index != 0U || lifecycle->epoch == call->epoch)) {
+}
+
+// Caller holds the call-state lock, and item is the epoch's own row: its committed row, or the
+// staged row once the lifecycle has opened the epoch (dsd_event_enrich_epoch() declines otherwise).
+static void
+dsd_event_enrich_mark_crc(dsd_call_state_ext* ext, dsd_call_snapshot* call, Event_History* item) {
+    dsd_event_enrich_mark_call_crc(ext, call);
+    if (!item->crc_invalid) {
         item->crc_invalid = 1;
         dsd_event_history_item_set_metadata(item, DSD_EVENT_SEVERITY_WARNING, (dsd_event_category)item->category);
         watchdog_event_mark_crc(item->event_string, sizeof(item->event_string));
@@ -2483,11 +2534,25 @@ dsd_event_enrich_epoch(dsd_state* state, uint8_t slot, uint64_t epoch, const cha
         // invalidated the reference). Enriching row 0 would write into an unrelated staged row.
         dsd_call_state_ext_unlock(ext);
         return 0;
+    } else if (lifecycle->epoch != epoch) {
+        // The call has been observed but no sync has opened its epoch yet, so row 0 is still the
+        // outgoing epoch's staged row -- or blank, and written here it would commit at the epoch
+        // open as a detail-only row. The row declines; the live alias display and the call's CRC
+        // verdict still follow the call, as they did. Aliases and positions repeat, and the next
+        // one lands on the call's own row.
+        if (kind == DSD_EVENT_ENRICH_ALIAS) {
+            DSD_SNPRINTF(state->generic_talker_alias[slot], sizeof(state->generic_talker_alias[slot]), "%s", value);
+        }
+        if (state->event_crc_invalid[slot]) {
+            dsd_event_enrich_mark_call_crc(ext, call);
+        }
+        dsd_call_state_ext_unlock(ext);
+        return 0;
     }
     Event_History* item = &state->event_history_s[slot].Event_History_Items[history_index];
     dsd_event_enrich_apply(state, slot, item, value, kind);
     if (state->event_crc_invalid[slot]) {
-        dsd_event_enrich_mark_crc(ext, call, item, lifecycle, history_index);
+        dsd_event_enrich_mark_crc(ext, call, item);
     }
     if (history_index != 0U) {
         // Late enrichment landed on a committed row, not the staged one.
