@@ -7173,7 +7173,10 @@ target_link_libraries(dsd-neo_test_p25_p2_lfsr PRIVATE dsd-neo_proto_p25)
 add_test(NAME P25_P2_LFSR COMMAND dsd-neo_test_p25_p2_lfsr)
 
 # P25 Phase 2 ESS across a carrier boundary, through the real RS(63,35) decoder (issue #575)
-add_executable(dsd-neo_test_p25_p2_ess_carrier protocol/p25/test_p25_p2_ess_carrier.c)
+add_executable(
+    dsd-neo_test_p25_p2_ess_carrier
+    protocol/p25/test_p25_p2_ess_carrier.c
+)
 target_include_directories(
     dsd-neo_test_p25_p2_ess_carrier
     PRIVATE
