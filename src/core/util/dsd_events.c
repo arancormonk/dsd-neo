@@ -673,6 +673,41 @@ watchdog_event_code_text(char* buf, size_t cap, int known, uint32_t value, int t
     return buf;
 }
 
+// The system identity strings of the protocols whose identity names an access code, built from a row's own values, so
+// the live render and a merge spell them alike.
+static void
+watchdog_event_format_dmr_sysid(char* out, size_t cap, uint32_t syscode, uint32_t cc) {
+    char cc_buf[12];
+    const char* cc_text = watchdog_event_code_text(cc_buf, sizeof cc_buf, watchdog_event_dmr_cc_known(cc), cc, 0);
+    if (syscode != 0U) {
+        DSD_SNPRINTF(out, cap, "DMR_%X_CC_%s", (unsigned)syscode, cc_text);
+    } else {
+        DSD_SNPRINTF(out, cap, "DMR_CC_%s", cc_text);
+    }
+}
+
+static void
+watchdog_event_format_nxdn_sysid(char* out, size_t cap, uint32_t site_code, uint32_t sys_code, uint32_t ran,
+                                 uint8_t stand_in) {
+    char ran_buf[12];
+    const char* ran_text =
+        watchdog_event_code_text(ran_buf, sizeof ran_buf, watchdog_event_nxdn_ran_known(ran, stand_in), ran, 0);
+    if (site_code != 0U) {
+        DSD_SNPRINTF(out, cap, "NXDN_%u_%u_RAN_%s", (unsigned)sys_code, (unsigned)site_code, ran_text);
+    } else {
+        DSD_SNPRINTF(out, cap, "NXDN_RAN_%s", ran_text);
+    }
+}
+
+// dPMR's identity is its colour code alone, the row's access code: the event line prints the same code.
+static void
+watchdog_event_format_dpmr_sysid(char* out, size_t cap, uint8_t access_code_kind, uint16_t access_code) {
+    char cc_buf[12];
+    DSD_SNPRINTF(out, cap, "DPMR_CC_%s",
+                 watchdog_event_code_text(cc_buf, sizeof cc_buf,
+                                          access_code_kind == (uint8_t)DSD_ACCESS_CODE_COLOR_CODE, access_code, 0));
+}
+
 // Depth of the row this slot last committed, or 0 when it can no longer be located.
 // push_event_history() copies row 0 into row 1, so immediately after a commit the row
 // sits at index 1 and every push since -- including interleaved data or system notices --
@@ -731,17 +766,25 @@ watchdog_event_crypto_rank(const Event_History* item) {
     return item->enc_alg != 0U ? 3 : 2;
 }
 
-// Whether a row's system identity names its access code (see watchdog_event_dmr_cc_known()); 1 for a protocol whose
-// identity carries none.
+// Rebuilds the system identity string of a row whose identity names its access code -- DMR and NXDN from its merged
+// ids, dPMR from its merged access code -- and returns 1; 0 for any other protocol.
 static int
-watchdog_event_row_code_known(const Event_History* row, const dsd_call_event_render_env* env) {
+watchdog_event_rebuild_code_sysid(Event_History* row, const dsd_call_event_render_env* env) {
     if (DSD_SYNC_IS_DMR(row->systype)) {
-        return watchdog_event_dmr_cc_known(row->sys_id2);
+        watchdog_event_format_dmr_sysid(row->sysid_string, sizeof(row->sysid_string), row->sys_id1, row->sys_id2);
+        return 1;
     }
     if (DSD_SYNC_IS_NXDN(row->systype)) {
-        return watchdog_event_nxdn_ran_known(row->sys_id3, env != NULL ? env->nxdn_ran_stand_in : 0U);
+        watchdog_event_format_nxdn_sysid(row->sysid_string, sizeof(row->sysid_string), row->sys_id1, row->sys_id2,
+                                         row->sys_id3, env != NULL ? env->nxdn_ran_stand_in : 0U);
+        return 1;
     }
-    return 1;
+    if (DSD_SYNC_IS_DPMR(row->systype)) {
+        watchdog_event_format_dpmr_sysid(row->sysid_string, sizeof(row->sysid_string), row->access_code_kind,
+                                         row->access_code);
+        return 1;
+    }
+    return 0;
 }
 
 // System identity: the numeric ids drive both the rendered string and every structured consumer,
@@ -753,7 +796,9 @@ watchdog_event_row_code_known(const Event_History* row, const dsd_call_event_ren
 // the missing value there: 0 is a code. A segment that decoded a code fills a sentinel, with 0 too; a code the row
 // already has is never replaced, 0 included, just as the row's access code never is; and a segment that decoded none
 // never replaces anything. The NXDN stand-in mark travels with the value in the render envs, so the re-render prints
-// what the value is. The staged string is not taken when it would print "--" for a code the row knows.
+// what the value is. For these protocols, and dPMR, whose identity is the access code the identity-field merge has
+// already filled, the string is rebuilt from the merged row rather than taken from either segment: one segment may
+// have decoded the code and the other a system code or site.
 static void
 watchdog_event_merge_system_identity(Event_History* retained, const Event_History* staged,
                                      dsd_call_event_render_env* retained_env,
@@ -784,8 +829,7 @@ watchdog_event_merge_system_identity(Event_History* retained, const Event_Histor
             sys_ids_upgraded = 1;
         }
     }
-    if (sys_ids_upgraded && !watchdog_event_row_code_known(staged, staged_env)
-        && watchdog_event_row_code_known(retained, retained_env)) {
+    if (watchdog_event_rebuild_code_sysid(retained, retained_env)) {
         return;
     }
     if (sys_ids_upgraded) {
@@ -1369,14 +1413,7 @@ watchdog_event_current_init_base(const dsd_state* state, uint8_t slot, const dsd
     if (DSD_SYNC_IS_DMR(ctx->protocol)) {
         ctx->sys_id1 = state->dmr_t3_syscode;
         ctx->sys_id2 = state->dmr_color_code;
-        char cc_buf[12];
-        const char* cc =
-            watchdog_event_code_text(cc_buf, sizeof cc_buf, watchdog_event_dmr_cc_known(ctx->sys_id2), ctx->sys_id2, 0);
-        if (ctx->sys_id1) {
-            DSD_SNPRINTF(ctx->sysid_string, sizeof(ctx->sysid_string), "DMR_%X_CC_%s", ctx->sys_id1, cc);
-        } else {
-            DSD_SNPRINTF(ctx->sysid_string, sizeof(ctx->sysid_string), "DMR_CC_%s", cc);
-        }
+        watchdog_event_format_dmr_sysid(ctx->sysid_string, sizeof(ctx->sysid_string), ctx->sys_id1, ctx->sys_id2);
     }
 }
 
@@ -1385,17 +1422,8 @@ watchdog_event_current_apply_nxdn(const dsd_state* state, watchdog_event_current
     ctx->sys_id1 = state->nxdn_location_site_code;
     ctx->sys_id2 = state->nxdn_location_sys_code;
     ctx->sys_id3 = state->nxdn_last_ran;
-
-    char ran_buf[12];
-    const char* ran = watchdog_event_code_text(ran_buf, sizeof ran_buf,
-                                               watchdog_event_nxdn_ran_known(ctx->sys_id3, ctx->env.nxdn_ran_stand_in),
-                                               ctx->sys_id3, 0);
-    if (ctx->sys_id1) {
-        DSD_SNPRINTF(ctx->sysid_string, sizeof(ctx->sysid_string), "NXDN_%d_%d_RAN_%s", ctx->sys_id2, ctx->sys_id1,
-                     ran);
-    } else {
-        DSD_SNPRINTF(ctx->sysid_string, sizeof(ctx->sysid_string), "NXDN_RAN_%s", ran);
-    }
+    watchdog_event_format_nxdn_sysid(ctx->sysid_string, sizeof(ctx->sysid_string), ctx->sys_id1, ctx->sys_id2,
+                                     ctx->sys_id3, ctx->env.nxdn_ran_stand_in);
 }
 
 static void
@@ -1419,13 +1447,13 @@ watchdog_event_current_apply_dstar(const dsd_state* state, watchdog_event_curren
     (void)state;
 }
 
+// Run after watchdog_event_current_load_tuning(): dPMR's identity is the row's access code, so the string a merge
+// rebuilds from the merged code (watchdog_event_rebuild_code_sysid()) and the event line agree with it.
 static void
-watchdog_event_current_apply_dpmr(const dsd_state* state, watchdog_event_current_ctx* ctx) {
-    // -1 is "none decoded on this carrier" (issue #575); the colour-code map yields 0..63.
-    if (state->dpmr_color_code < 0 || state->dpmr_color_code > 63) {
-        DSD_SNPRINTF(ctx->sysid_string, sizeof(ctx->sysid_string), "%s", "DPMR_CC_--");
-    } else {
-        DSD_SNPRINTF(ctx->sysid_string, sizeof(ctx->sysid_string), "DPMR_CC_%d", state->dpmr_color_code);
+watchdog_event_current_apply_dpmr(watchdog_event_current_ctx* ctx) {
+    if (DSD_SYNC_IS_DPMR(ctx->protocol)) {
+        watchdog_event_format_dpmr_sysid(ctx->sysid_string, sizeof(ctx->sysid_string), ctx->access_code_kind,
+                                         ctx->access_code);
     }
 }
 
@@ -1472,10 +1500,6 @@ watchdog_event_current_apply_protocol_metadata(dsd_state* state, Event_History* 
 
     if (DSD_SYNC_IS_DSTAR(ctx->protocol)) {
         watchdog_event_current_apply_dstar(state, ctx);
-    }
-
-    if (DSD_SYNC_IS_DPMR(ctx->protocol)) {
-        watchdog_event_current_apply_dpmr(state, ctx);
     }
 
     if (DSD_SYNC_IS_EDACS(ctx->protocol)) {
@@ -2250,6 +2274,7 @@ watchdog_event_current_impl(const dsd_opts* opts, dsd_state* state, uint8_t slot
     const int staged_is_own = lifecycle != NULL && effective_call != NULL && lifecycle->epoch == effective_call->epoch;
     watchdog_event_current_load_channel_label(opts, state, &candidate, staged_is_own, &ctx);
     watchdog_event_current_load_tuning(opts, state, effective_call, &candidate, staged_is_own, &ctx);
+    watchdog_event_current_apply_dpmr(&ctx);
 
     const char* sys_string = dsd_synctype_to_string(ctx.protocol);
 

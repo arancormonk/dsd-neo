@@ -637,10 +637,13 @@ The `Linux • RelWithDebInfo • ctest (x86-64-v3, fast-math, clang)` check enf
   0 is a code. The dPMR event line's `CC:` is the row's decoded colour code (its access code), not the call's `channel`,
   which `dpmr_publish_call()` sets to 0 for an undecoded code. In `watchdog_event_merge_system_identity()` the sentinel,
   not 0, is the missing code: a reacquired segment that decoded one fills it (0 included, taking its stand-in mark), and
-  a decoded code is never replaced. The NXDN event line names the call's own `channel` and the row's `freq_hz`, never
-  the global last grant (`nxdn_grant_chan`/`_freq`, which left the render env). The rdio-scanner sidecar's `freq` is
-  `freq_hz` (clamped to `uint32_t`, still 0 below 1 MHz); it was the channel number before. The control API's event rows
-  carry `freq_hz`, `access_code_kind` and `access_code`, folded into the row fingerprint. Tests: `CORE_ACCESS_CODE`,
+  a decoded code is never replaced. The DMR, NXDN and dPMR strings are then rebuilt from the merged row
+  (`watchdog_event_rebuild_code_sysid()`), so a code one segment decoded and a system code or site only the other
+  decoded both appear. dPMR's string is the row's access code (`DPMR_CC_<code>`), set after the tuning load on a live
+  render too. The NXDN event line names the call's own `channel` and the row's `freq_hz`, never the global last grant
+  (`nxdn_grant_chan`/`_freq`, which left the render env). The rdio-scanner sidecar's `freq` is `freq_hz` (clamped to
+  `uint32_t`, still 0 below 1 MHz); it was the channel number before. The control API's event rows carry `freq_hz`,
+  `access_code_kind` and `access_code`, folded into the row fingerprint. Tests: `CORE_ACCESS_CODE`,
   `CORE_CALL_ALERT_HISTORY`, `RUNTIME_RDIO_EXPORT`, `API_SERVER`.
 - API note: text arriving as UTF-16 code units (DMR UDT/SMS, talker aliases) is decoded with
   `<dsd-neo/core/utf16.h>` and printed one scalar value at a time through `dsd_unicode_fput_scalar()` in

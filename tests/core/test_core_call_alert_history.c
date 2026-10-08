@@ -3702,18 +3702,36 @@ test_dpmr_event_line_prints_the_decoded_colour_code(void) {
     return rc;
 }
 
-// One transmission in two segments: the first decoded `first_code`, the reacquired one `second_code`. Returns the
-// merged row.
-static const Event_History*
-merge_code_segments(dsd_opts* opts, dsd_state* state, Event_History_I event_history[2], int protocol,
-                    unsigned int first_code, uint8_t first_stand_in, unsigned int second_code) {
-    const int nxdn = DSD_SYNC_IS_NXDN(protocol);
-    if (nxdn) {
-        state->nxdn_last_ran = first_code;
-        state->nxdn_last_ran_stand_in = first_stand_in;
+// What one segment of a transmission decoded: its access code (DMR colour code, NXDN RAN or dPMR colour code, each
+// at its own sentinel when undecoded), NXDN's stand-in mark, and the system ids beside it.
+typedef struct {
+    int code;
+    uint8_t stand_in;
+    uint32_t dmr_syscode;
+    uint16_t nxdn_site_code;
+    uint32_t nxdn_sys_code;
+} code_segment;
+
+static void
+set_code_segment(dsd_state* state, int protocol, const code_segment* segment) {
+    if (DSD_SYNC_IS_NXDN(protocol)) {
+        state->nxdn_last_ran = (unsigned int)segment->code;
+        state->nxdn_last_ran_stand_in = segment->stand_in;
+        state->nxdn_location_site_code = segment->nxdn_site_code;
+        state->nxdn_location_sys_code = segment->nxdn_sys_code;
+    } else if (DSD_SYNC_IS_DPMR(protocol)) {
+        state->dpmr_color_code = segment->code;
     } else {
-        state->dmr_color_code = first_code;
+        state->dmr_color_code = (unsigned int)segment->code;
+        state->dmr_t3_syscode = segment->dmr_syscode;
     }
+}
+
+// One transmission in two segments, the second reacquiring the first after a sync loss. Returns the merged row.
+static const Event_History*
+merge_segments(dsd_opts* opts, dsd_state* state, Event_History_I event_history[2], int protocol,
+               const code_segment* first, const code_segment* second) {
+    set_code_segment(state, protocol, first);
     assert(
         observe_test_call(state, 0U, protocol, DSD_CALL_KIND_GROUP_VOICE, 100U, 201U, 0U, 0U, DSD_CALL_BOUNDARY_BEGIN)
         == 1);
@@ -3721,12 +3739,7 @@ merge_code_segments(dsd_opts* opts, dsd_state* state, Event_History_I event_hist
     assert(end_test_call(state, 0U, DSD_CALL_END_SYNC_LOSS) == 1);
     dsd_event_sync_slot(opts, state, 0U);
 
-    if (nxdn) {
-        state->nxdn_last_ran = second_code;
-        state->nxdn_last_ran_stand_in = 0U;
-    } else {
-        state->dmr_color_code = second_code;
-    }
+    set_code_segment(state, protocol, second);
     assert(observe_test_call(state, 0U, protocol, DSD_CALL_KIND_GROUP_VOICE, 100U, 201U, 0U, 0U,
                              DSD_CALL_BOUNDARY_CONTINUE)
            == 1);
@@ -3735,6 +3748,65 @@ merge_code_segments(dsd_opts* opts, dsd_state* state, Event_History_I event_hist
     dsd_event_sync_slot(opts, state, 0U);
     assert(committed_history_rows(&event_history[0]) == 1);
     return &event_history[0].Event_History_Items[1];
+}
+
+// The same, for segments that differ only in their access code.
+static const Event_History*
+merge_code_segments(dsd_opts* opts, dsd_state* state, Event_History_I event_history[2], int protocol,
+                    unsigned int first_code, uint8_t first_stand_in, unsigned int second_code) {
+    const code_segment first = {.code = (int)first_code, .stand_in = first_stand_in};
+    const code_segment second = {.code = (int)second_code};
+    return merge_segments(opts, state, event_history, protocol, &first, &second);
+}
+
+// A dPMR row's system identity is its colour code. A reacquired segment that decoded the code the first one did not
+// fills the row's access code, and the system identity string follows it, as the event line does.
+static int
+test_reacquisition_merge_names_a_dpmr_code_in_the_system_identity(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+    const code_segment first = {.code = -1};
+    const code_segment second = {.code = 9};
+    const Event_History* merged = merge_segments(&opts, &state, event_history, DSD_SYNC_DPMR_FS2_POS, &first, &second);
+    int rc = expect_access_code("merge fills the dPMR colour code", merged, DSD_ACCESS_CODE_COLOR_CODE, 9U);
+    rc |= expect_has_substr("merged dPMR event names the code", merged->event_string, "TEST CC: 09; TGT: ");
+    rc |= expect_str_eq("merged dPMR sysid names the code", merged->sysid_string, "DPMR_CC_9");
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+// A reacquired segment can decode a system id the first one did not while missing the code the first one decoded.
+// The row keeps the code and takes the system id, and its system identity string names both.
+static int
+test_reacquisition_merge_keeps_the_code_and_takes_a_later_system_id(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    int rc = 0;
+
+    reset_fixture(&opts, &state, event_history);
+    const code_segment dmr_first = {.code = 3};
+    const code_segment dmr_second = {.code = 16, .dmr_syscode = 0xABCU};
+    const Event_History* merged =
+        merge_segments(&opts, &state, event_history, DSD_SYNC_DMR_BS_VOICE_POS, &dmr_first, &dmr_second);
+    rc |= expect_int("DMR merge keeps the colour code", (int)merged->sys_id2, 3);
+    rc |= expect_int("DMR merge takes the system code", (int)merged->sys_id1, 0xABC);
+    rc |= expect_str_eq("merged DMR sysid names both", merged->sysid_string, "DMR_ABC_CC_3");
+    rc |= expect_has_substr("merged DMR event names both", merged->event_string, "CC: 03; SYS: ABC;");
+
+    reset_fixture(&opts, &state, event_history);
+    const code_segment nxdn_first = {.code = 5};
+    const code_segment nxdn_second = {.code = -1, .nxdn_site_code = 3U, .nxdn_sys_code = 12U};
+    merged = merge_segments(&opts, &state, event_history, DSD_SYNC_NXDN_POS, &nxdn_first, &nxdn_second);
+    rc |= expect_int("NXDN merge keeps the RAN", (int)merged->sys_id3, 5);
+    rc |= expect_int("NXDN merge takes the site code", (int)merged->sys_id1, 3);
+    rc |= expect_str_eq("merged NXDN sysid names both", merged->sysid_string, "NXDN_12_3_RAN_5");
+    rc |= expect_has_substr("merged NXDN event names both", merged->event_string, "RAN: 05; SYS: 12.3;");
+
+    dsd_state_ext_free_all(&state);
+    return rc;
 }
 
 // A reacquired segment that decoded the code fills a system identity the first segment rendered without one, 0
@@ -6634,6 +6706,8 @@ main(void) {
     rc |= test_unknown_access_codes_render_as_dashes();
     rc |= test_dpmr_event_line_prints_the_decoded_colour_code();
     rc |= test_reacquisition_merge_upgrades_an_unknown_system_code();
+    rc |= test_reacquisition_merge_names_a_dpmr_code_in_the_system_identity();
+    rc |= test_reacquisition_merge_keeps_the_code_and_takes_a_later_system_id();
     rc |= test_data_notice_carries_frequency_and_access_code();
     rc |= test_playfiles_rows_take_no_tuner_value_or_code();
     rc |= test_nxdn_row_names_only_its_own_channel();
