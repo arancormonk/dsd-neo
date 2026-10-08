@@ -1508,7 +1508,7 @@ test_sdrtrunk_json_voice_wav_is_pcm16_scale(void) {
         ambe_fr[map->low_row][map->low_col] = (char)(dibit & 1U);
     }
     short want[320];
-    mbe_parms cur, prev, prev_enhanced;
+    static mbe_parms cur, prev, prev_enhanced;
     mbe_initMbeParms(&cur, &prev, &prev_enhanced);
     int peak = 0;
     for (size_t frame = 0; frame < 2U; frame++) {
