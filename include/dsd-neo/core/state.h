@@ -1034,6 +1034,11 @@ struct dsd_state {
     unsigned int dmr_color_code;
     unsigned int dmr_t3_syscode;
     unsigned int nxdn_last_ran;
+    /* 1 while nxdn_last_ran holds a value that is not a decoded RAN, which the terminal shows in its place: an IDAS
+     * (Type-D) carrier's SCCH area bit or site type, or the fixed 7 a DCR transmission is given. 0 once a RAN field
+     * (CAC, FACCH2/UDCH, SACCH, site information) writes it. Every write of a value sets it (the (unsigned)-1 resets
+     * need not), and only a RAN is read as the carrier's access code (issue #575). */
+    uint8_t nxdn_last_ran_stand_in;
     unsigned int nxdn_cipher_type;
     unsigned int nxdn_key;
 

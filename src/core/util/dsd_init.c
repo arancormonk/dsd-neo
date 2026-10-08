@@ -800,6 +800,7 @@ init_state_protocol_defaults_a(dsd_state* state) {
     state->debug_mode = 0;
 
     state->nxdn_last_ran = -1;
+    state->nxdn_last_ran_stand_in = 0U;
     state->nxdn_confirmed = 0;
     state->nxdn_confirm_weak_streak = 0;
     state->nxdn_confirm_frame_evidence = 0;

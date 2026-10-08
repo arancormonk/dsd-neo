@@ -264,6 +264,7 @@ nxdn_handle_sacch_non_superframe(dsd_opts* opts, dsd_state* state, const uint8_t
         nxdn_confirm_note_evidence(state, NXDN_EVIDENCE_WEAK);
         if (nxdn_confirm_is_confirmed(state)) {
             state->nxdn_last_ran = nxdn_ran_from_trellis(trellis_buf);
+            state->nxdn_last_ran_stand_in = 0U;
         }
         state->nxdn_part_of_frame = 3;
         DSD_FPRINTF(stderr, "PF 1/1");
@@ -306,6 +307,7 @@ nxdn_handle_sacch_superframe(dsd_opts* opts, dsd_state* state, const uint8_t* tr
         if (nxdn_confirm_is_confirmed(state)) {
             const int ran = nxdn_ran_from_trellis(trellis_buf);
             state->nxdn_ran = state->nxdn_last_ran = ran;
+            state->nxdn_last_ran_stand_in = 0U;
         }
         state->nxdn_sf = sf;
         state->nxdn_part_of_frame = part_of_frame;
@@ -508,6 +510,7 @@ nxdn_handle_facch2_udch(dsd_opts* opts, dsd_state* state, const uint8_t* trellis
     if (crc == check) {
         nxdn_confirm_note_evidence(state, NXDN_EVIDENCE_STRONG);
         state->nxdn_last_ran = (unsigned int)ran;
+        state->nxdn_last_ran_stand_in = 0U;
         nxdn_print_last_ran(state);
         state->nxdn_part_of_frame = 3 - sf;
     } else {
@@ -627,6 +630,7 @@ nxdn_handle_cac(dsd_opts* opts, dsd_state* state, const uint8_t* trellis_buf, co
         nxdn_confirm_note_evidence(state, NXDN_EVIDENCE_STRONG);
         state->data_header_format[0] = 2;
         state->nxdn_last_ran = nxdn_ran_from_trellis(trellis_buf);
+        state->nxdn_last_ran_stand_in = 0U;
     }
 
     DSD_FPRINTF(stderr, "%s", KYEL);
@@ -738,7 +742,10 @@ nxdn_update_sacch2_identity_state(const dsd_opts* opts, dsd_state* state, const 
         return;
     }
 
+    /* DCR carries no RAN: the 7 stands in for one so the terminal and the event line show something, and is never
+     * read as an access code (issue #575). */
     state->nxdn_last_ran = 7;
+    state->nxdn_last_ran_stand_in = 1U;
     if (nxdn_dcr_is_sb0_message_type(fields->sf_mes)) {
         const dsd_call_observation observation = {
             .protocol = DSD_SYNC_NXDN_POS,

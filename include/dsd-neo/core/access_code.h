@@ -11,17 +11,21 @@
  * kinds and reads the live code for a protocol. It stays out of `state.h` so app-control's public views, which may
  * not include `state.h` or `opts.h`, can name the kinds.
  *
- * Every source the reader takes comes from CRC- or FEC-gated content, cleared or reset to a sentinel between
- * carriers:
+ * Each source the reader takes is set only from content the protocol checked, as below, and is cleared or reset to a
+ * sentinel between carriers:
  * - DMR `dmr_color_code`: the slot type's Golay(20,8) (behind the BS colour-code lock) or the MS embedded
  *   signalling's QR(16,7,6); 16 until one decodes, and back to 16 at every carrier boundary.
  * - P25 Phase 1 `nac`: the BCH(63,16) network identifier; 0 between carriers. `p25p1_valid_decoded_nac()` refuses
  *   NAC 0x000 and 0xFFF, so a carrier whose NID decodes either leaves `nac` at 0.
  * - P25 Phase 2 `p2_cc`: the NAC the Phase 2 descrambler runs on (from the network status broadcast or the Phase 1
  *   NID, or set by hand). A Phase 2 call decodes only when it is right, so the descrambling itself proves it.
- * - NXDN `nxdn_last_ran`: the CRC-checked CAC, FACCH2/UDCH or SACCH; (unsigned)-1 until one decodes, and between
- *   transmissions.
- * - dPMR `dpmr_color_code`: set only on the confirmed path; -1 between carriers.
+ * - NXDN `nxdn_last_ran`: the CRC-checked CAC, FACCH2/UDCH or SACCH, or a CRC-checked site information message's site
+ *   code (Table 6.3-4); (unsigned)-1 until one decodes, and between transmissions. The field also holds values that
+ *   are not a RAN, which the terminal shows in its place: an IDAS (Type-D) carrier's SCCH area bit or site type (the
+ *   site type behind the SCCH's 7-bit CRC alone), and the fixed 7 a DCR transmission is given. The protocol marks
+ *   those with `nxdn_last_ran_stand_in`, and the reader takes none of them: neither carrier has an access code.
+ * - dPMR `dpmr_color_code`: the channel code's exact match in the colour-code table, set only once the transmission
+ *   is confirmed; -1 between carriers.
  * - M17 CAN: the low four bits of the call's service options, which the CRC-checked LSF carries; only once the call
  *   has service metadata.
  */

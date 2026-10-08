@@ -1202,6 +1202,7 @@ nxdn_location_id_handler(dsd_state* state, uint32_t location_id, uint8_t type) {
     //type 0 is for current site, type 1 is for adjacent sites
     if (type == 0) {
         state->nxdn_last_ran = site_code % 64; //Table 6.3-4 RAN for Trunked Radio Systems
+        state->nxdn_last_ran_stand_in = 0U;
         if (site_code != 0) {
             state->nxdn_location_site_code = site_code;
         }
@@ -2569,7 +2570,9 @@ nxdn_scch_prepare_type_d(dsd_state* state, const struct nxdn_scch_info* info) {
          * hold cannot rest on one (issue #398). */
         return;
     }
+    /* The area bit, which the terminal shows as "IDAS - Area" where the RAN goes; not a RAN (issue #575). */
     state->nxdn_last_ran = info->area;
+    state->nxdn_last_ran_stand_in = 1U;
     state->last_cc_sync_time = info->now;
     state->last_cc_sync_time_m = dsd_decode_now_mono_s();
 }
@@ -2601,7 +2604,9 @@ nxdn_scch_handle_site_id(dsd_state* state, const struct nxdn_scch_info* info) {
     }
     state->nxdn_location_site_code = info->sitet;
     state->nxdn_location_sys_code = info->sitet;
+    /* Likewise shown where the RAN goes, and likewise not one (issue #575). */
     state->nxdn_last_ran = info->sitet;
+    state->nxdn_last_ran_stand_in = 1U;
 }
 
 static int

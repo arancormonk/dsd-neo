@@ -62,6 +62,8 @@ reset_sources(dsd_state* state) {
     state->nac = 0;
     state->p2_cc = 0ULL;
     state->nxdn_last_ran = (unsigned int)-1;
+    state->nxdn_last_ran_stand_in = 0U;
+    DSD_SNPRINTF(state->nxdn_location_category, sizeof state->nxdn_location_category, "%s", " ");
     state->dpmr_color_code = -1;
 }
 
@@ -164,6 +166,31 @@ test_nxdn_ran(dsd_state* state) {
     return rc;
 }
 
+/* nxdn_last_ran also holds values that are not a RAN, which the terminal shows in its place: an IDAS (Type-D)
+ * carrier's SCCH area bit or site type, and the 7 a DCR transmission is given. The protocol marks them with
+ * nxdn_last_ran_stand_in, and neither carrier has an access code; a conventional NXDN carrier's RAN still reads. */
+static int
+test_nxdn_stand_ins_are_not_rans(dsd_state* state) {
+    int rc = 0;
+    reset_sources(state);
+    DSD_SNPRINTF(state->nxdn_location_category, sizeof state->nxdn_location_category, "%s", "Type-D");
+    state->nxdn_last_ran = 1U;
+    state->nxdn_last_ran_stand_in = 1U;
+    rc |= expect_none("IDAS area bit", state, DSD_SYNC_NXDN_POS, 0U, 0U);
+    state->nxdn_last_ran = 3U;
+    rc |= expect_none("IDAS site type", state, DSD_SYNC_NXDN_NEG, 0U, 0U);
+
+    reset_sources(state);
+    state->nxdn_last_ran = 7U;
+    state->nxdn_last_ran_stand_in = 1U;
+    rc |= expect_none("DCR stand-in 7", state, DSD_SYNC_NXDN_POS, 0U, 0U);
+
+    reset_sources(state);
+    state->nxdn_last_ran = 7U;
+    rc |= expect_code("conventional NXDN RAN 7", state, DSD_SYNC_NXDN_POS, 0U, 0U, 1, DSD_ACCESS_CODE_RAN, 7U);
+    return rc;
+}
+
 static int
 test_dpmr_colour_code(dsd_state* state) {
     int rc = 0;
@@ -234,6 +261,7 @@ main(void) {
     rc |= test_p25_phase1_reads_nac_only(state);
     rc |= test_p25_phase2_reads_p2_cc_only(state);
     rc |= test_nxdn_ran(state);
+    rc |= test_nxdn_stand_ins_are_not_rans(state);
     rc |= test_dpmr_colour_code(state);
     rc |= test_m17_can(state);
     rc |= test_codeless_protocols(state);

@@ -66,8 +66,9 @@ access_code_read(const dsd_state* state, int protocol, uint16_t service_options,
         return 1;
     }
     if (DSD_SYNC_IS_NXDN(protocol)) {
-        /* (unsigned)-1 is "no RAN decoded yet"; a RAN is six bits. */
-        if (state->nxdn_last_ran >= 64U) {
+        /* (unsigned)-1 is "no RAN decoded yet"; a RAN is six bits. An IDAS (Type-D) carrier's area bit or site type,
+         * or DCR's fixed 7, stands in for one and is no access code. */
+        if (state->nxdn_last_ran >= 64U || state->nxdn_last_ran_stand_in != 0U) {
             return 0;
         }
         *value = (uint16_t)state->nxdn_last_ran;

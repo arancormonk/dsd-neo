@@ -8,6 +8,7 @@
  */
 
 #include <assert.h>
+#include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
@@ -1801,6 +1802,75 @@ test_type_d_scch_publishes_crypto_fragments(void) {
     return rc;
 }
 
+/* The NXDN access code a call history row takes from the state now (issue #575): RAN `want_ran` when `want_valid`,
+ * else none. */
+static int
+expect_nxdn_access_code(const char* tag, const dsd_state* state, int want_valid, uint16_t want_ran) {
+    uint8_t kind = 0xA5U;
+    uint16_t value = 0xBEEFU;
+    const int valid = dsd_access_code_current(state, DSD_SYNC_NXDN_POS, 0U, 0U, &kind, &value);
+    const uint8_t want_kind = want_valid ? (uint8_t)DSD_ACCESS_CODE_RAN : (uint8_t)DSD_ACCESS_CODE_NONE;
+    const uint16_t want_value = want_valid ? want_ran : 0U;
+    if (valid != want_valid || kind != want_kind || value != want_value) {
+        DSD_FPRINTF(stderr, "%s: got valid=%d kind=%u value=%u want valid=%d kind=%u value=%u\n", tag, valid,
+                    (unsigned)kind, (unsigned)value, want_valid, (unsigned)want_kind, (unsigned)want_value);
+        return 1;
+    }
+    return 0;
+}
+
+/* An IDAS (Type-D) carrier's SCCH writes its area bit, and a site ID message its site type, where the RAN goes, and
+ * the terminal labels them "IDAS - Area". Neither is a RAN, so the carrier has no access code; a RAN a site
+ * information message carries afterwards is one again (issue #575). */
+static int
+test_type_d_scch_values_are_not_access_codes(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    uint8_t message[32];
+    uint8_t bits[96];
+    if (!opts || !state) {
+        DSD_FPRINTF(stderr, "alloc-failed: %s%s\n", !opts ? "dsd_opts" : "", !state ? " dsd_state" : "");
+        free(state);
+        free(opts);
+        return 1;
+    }
+    state->nxdn_last_ran = (unsigned int)-1;
+    /* The SCCH writes the area only once the transmission is confirmed (issue #398). */
+    state->nxdn_confirmed = 1;
+
+    int rc = 0;
+    DSD_MEMSET(message, 0, sizeof(message));
+    message[2] = 1U;                          /* area bit */
+    write_bits_u64(message, 13U, 2046U, 11U); /* Idle Repeater Message */
+    NXDN_decode_scch(opts, state, message, 1U);
+    rc |= expect_string("type-d-area-category", state->nxdn_location_category, "Type-D");
+    rc |= expect_int("type-d-area-written", (int)state->nxdn_last_ran, 1);
+    rc |= expect_nxdn_access_code("type-d-area-no-access-code", state, 0, 0U);
+
+    /* The site ID message writes its site type there, CRC-7 alone or not. */
+    state->nxdn_confirmed = 0;
+    DSD_MEMSET(message, 0, sizeof(message));
+    write_bits_u64(message, 3U, 2U, 5U);      /* site type: Middle */
+    write_bits_u64(message, 8U, 17U, 5U);     /* site code */
+    write_bits_u64(message, 13U, 2041U, 11U); /* Site ID Message */
+    NXDN_decode_scch(opts, state, message, 1U);
+    rc |= expect_int("type-d-site-type-written", (int)state->nxdn_last_ran, 2);
+    rc |= expect_nxdn_access_code("type-d-site-type-no-access-code", state, 0, 0U);
+
+    /* A site information message's site code is the RAN (Table 6.3-4). */
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    set_message_type(bits, 0x19U);
+    write_bits_u64(bits, 8U, (1U << 12U) | 0x234U, 24U);
+    NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+    rc |= expect_int("type-d-then-site-info-ran", (int)state->nxdn_last_ran, 0x34);
+    rc |= expect_nxdn_access_code("type-d-then-site-info-access-code", state, 1, 0x34U);
+
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    return rc;
+}
+
 static int
 test_arib_tx_release_uses_shifted_fields_and_clears_call(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
@@ -2099,6 +2169,7 @@ main(void) {
     rc |= test_vcall_aes_keyloader_and_iv_signal();
     rc |= test_vcall_aes_key_flag_drives_crypto_state();
     rc |= test_type_d_scch_publishes_crypto_fragments();
+    rc |= test_type_d_scch_values_are_not_access_codes();
     rc |= test_arib_tx_release_uses_shifted_fields_and_clears_call();
     rc |= test_assignment_group_grant_anchors_tunes_and_loads_scrambler();
     rc |= test_assignment_data_gate_and_duplicate_release();

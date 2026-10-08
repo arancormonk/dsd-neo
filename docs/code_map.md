@@ -592,13 +592,15 @@ The `Linux • RelWithDebInfo • ctest (x86-64-v3, fast-math, clang)` check enf
   zero means none, so a memset-zero row reads as unknown). `<dsd-neo/core/access_code.h>`
   (`src/core/util/access_code.c`, outside `state.h` so app-control views can name the kinds) pins the kinds (NONE 0,
   COLOR_CODE 1, NAC 2, RAN 3, CAN 4; the Qt store persists them), maps a protocol to its kind
-  (`dsd_access_code_kind_for_protocol()`) and reads the live code from CRC/FEC-gated state
-  (`dsd_access_code_current()`): DMR `dmr_color_code` 0..15, P25 Phase 1 `nac` only and Phase 2 `p2_cc` only
-  (0x001..0xFFE; no fallback between them, since a Phase 1 NID of 0x000/0xFFF leaves `nac` 0 beside a stale `p2_cc`),
-  NXDN `nxdn_last_ran` < 64, dPMR `dpmr_color_code` 0..63, M17 the service options' low nibble once the call has
-  service metadata. `watchdog_event_current_load_tuning()` in `dsd_events.c` applies two per-row rules on every voice
-  render, against the staged row: the frequency is the call's own `frequency_hz` whenever it has one, else the
-  staged value, else -- only on an ACTIVE render outside `--playfiles` -- `dsd_opts_tuned_freq_hz()`, so the tuner is
+  (`dsd_access_code_kind_for_protocol()`) and reads the live code from state the protocol set only from checked
+  content (`dsd_access_code_current()`; the header names each check): DMR `dmr_color_code` 0..15, P25 Phase 1 `nac`
+  only and Phase 2 `p2_cc` only (0x001..0xFFE; no fallback between them, since a Phase 1 NID of 0x000/0xFFF leaves
+  `nac` 0 beside a stale `p2_cc`), NXDN `nxdn_last_ran` < 64 unless `nxdn_last_ran_stand_in` marks it as a value the
+  terminal shows where the RAN goes but that is none (an IDAS area bit or site type, DCR's fixed 7; see Protocols),
+  dPMR `dpmr_color_code` 0..63, M17 the service options' low nibble once the call has service metadata.
+  `watchdog_event_current_load_tuning()` in `dsd_events.c` applies two per-row rules on every voice render, against the
+  staged row: the frequency is the call's own `frequency_hz` whenever it has one, else the staged value, else -- only
+  on an ACTIVE render outside `--playfiles` -- `dsd_opts_tuned_freq_hz()`, so the tuner is
   pinned at the epoch's first active render as the channel label is (a typed `-Y` row's queued tune writes
   `rtlsdr_center_freq` before `channel_scan_commit()` ends the outgoing calls, and `trunk_scan_switch_to()` restores
   the next target's state before it retunes); the access code is refreshed from a valid live reading while the call
@@ -3321,14 +3323,26 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   once the transmission is confirmed, and `nxdn_confirm_reset()` restarts confirmation at every no-carrier pass, so a
   call opening on its FACCH1 VCALL read the previous transmission's RAN; on a control channel the CRC-gated CAC sets
   it again at once. The `LIMAZULUTWEAKS` reset in `noCarrier()` and the legacy `-Y` step's reset remain.
+- `nxdn_last_ran` also holds values that are not a RAN, which the terminal shows in its place: the IDAS (Type-D) SCCH's
+  area bit (`nxdn_scch_prepare_type_d()`, confirmed transmissions only) and a site ID message's site type
+  (`nxdn_scch_handle_site_id()`, behind the SCCH's 7-bit CRC alone), and the fixed 7 the DCR SACCH2 gives a confirmed
+  transmission (`nxdn_update_sacch2_identity_state()`). Every write of a value sets `nxdn_last_ran_stand_in` beside it
+  (the `(unsigned)-1` resets need not, since no reader takes -1): 1 for those three, 0 for the RAN fields (CAC,
+  FACCH2/UDCH, SACCH, and the site information message's site code), so `dsd_access_code_current()` gives an IDAS or DCR
+  call no access code, and a RAN decoded afterwards reads again. The flag marks the value rather than the carrier:
+  `nxdn_location_category` "Type-D", which labels the terminal's "IDAS - Area", is set by any SCCH that passes its CRC,
+  noise included, and kept across carriers with trunking on, so it could hide a real RAN; and no state marks a DCR
+  carrier (`nxdn_dcr_sf_message_type` drops to 0xFF on every SACCH2 CRC failure and survives the carrier boundary). The
+  site ID write stays ungated, since gating it on confirmation would change what the terminal shows on an unconfirmed
+  IDAS carrier and no access code reads it now.
 - Trunk scan skips both resets (`preserve_scan_state`): the per-target snapshot saves and restores the DMR colour code
-  with its confidence lock, and the RAN.
+  with its confidence lock, and the RAN with its stand-in mark.
 - `dpmr_color_code` is set only in `dpmr_publish_call()`, after `dpmr_confirm_is_confirmed()`, from a decoded
   `ColorCode[0]`, with or without a caller identity; the ID printer only prints.
   `no_carrier_reset_call_strings_and_dpmr()` resets it to -1 with the confirmation evidence.
 
-Tests: `DMR_FLCO_PRIVACY_MODES`, `DMR_MS_DATA`, `NXDN_ELEMENT_BOUNDS`, `P25_SM_UNIFIED_CORE`, `P25_CRYPTO_STATE`,
-`DPMR_VOICE_BRIDGE`, `ENGINE_NO_CARRIER_RESET`.
+Tests: `DMR_FLCO_PRIVACY_MODES`, `DMR_MS_DATA`, `NXDN_ELEMENT_BOUNDS`, `NXDN_DEPERM_PRIMITIVES`, `P25_SM_UNIFIED_CORE`,
+`P25_CRYPTO_STATE`, `DPMR_VOICE_BRIDGE`, `ENGINE_NO_CARRIER_RESET`, `ENGINE_TRUNK_SCAN`, `CORE_ACCESS_CODE`.
 
 Key public headers (selection):
 

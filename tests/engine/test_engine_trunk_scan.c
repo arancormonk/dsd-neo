@@ -4110,6 +4110,8 @@ test_nxdn_state_isolated_per_target(void) {
     }
 
     seed_nxdn_identity(&state, 12, 461012500, 7U, 0x25U, 3, "Type-C", 1, 96, 12, 4);
+    /* The first target's value is a stand-in (an IDAS area bit, DCR's 7), not a RAN (issue #575). */
+    state.nxdn_last_ran_stand_in = 1U;
     trunk_scan_test_set_now(0.26);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 1) {
@@ -4119,8 +4121,13 @@ test_nxdn_state_isolated_per_target(void) {
     /* A never-visited target must come back with the "no RAN decoded" sentinel, not a
      * fabricated RAN 0. */
     test_rc |= expect_nxdn_identity("fresh target", &state, 0, 0, (unsigned int)-1, 0U, 0, " ", 0, 0, 0, 0);
+    if (state.nxdn_last_ran_stand_in != 0U) {
+        DSD_FPRINTF(stderr, "fresh target took the first target's stand-in mark\n");
+        test_rc = 1;
+    }
 
     seed_nxdn_identity(&state, 34, 462037500, 9U, 0x44U, 5, "Type-C", 2, 110, 25, 6);
+    state.nxdn_last_ran_stand_in = 0U; /* the second target's RAN 9 is one */
     trunk_scan_test_set_now(0.52);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 0) {
@@ -4128,6 +4135,10 @@ test_nxdn_state_isolated_per_target(void) {
         test_rc = 1;
     }
     test_rc |= expect_nxdn_identity("restored target", &state, 12, 461012500, 7U, 0x25U, 3, "Type-C", 1, 96, 12, 4);
+    if (state.nxdn_last_ran_stand_in != 1U) {
+        DSD_FPRINTF(stderr, "restored target lost its stand-in mark, so its value would read as a RAN\n");
+        test_rc = 1;
+    }
 
     dsd_engine_trunk_scan_shutdown(&opts, &state);
     trunk_scan_test_clear_now();
