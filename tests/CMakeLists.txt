@@ -5386,14 +5386,23 @@ if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
     )
 endif()
 
-add_executable(dsd-neo_test_core_audio_activity core/test_core_audio_activity.c)
+# The stamp's own source with DSD_NEO_TEST_HOOKS, which brings in its test clock seam; the shipped core has none.
+add_executable(
+    dsd-neo_test_core_audio_activity
+    core/test_core_audio_activity.c
+    ${PROJECT_SOURCE_DIR}/src/core/audio/audio_activity.c
+)
 target_include_directories(
     dsd-neo_test_core_audio_activity
     PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src
 )
+target_compile_definitions(
+    dsd-neo_test_core_audio_activity
+    PRIVATE DSD_NEO_TEST_HOOKS
+)
 target_link_libraries(
     dsd-neo_test_core_audio_activity
-    PRIVATE dsd-neo_core dsd-neo_platform
+    PRIVATE dsd-neo_test_decode_clock dsd-neo_platform
 )
 add_test(NAME CORE_AUDIO_ACTIVITY COMMAND dsd-neo_test_core_audio_activity)
 
@@ -9808,6 +9817,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_cach.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_bs.c
     ${PROJECT_SOURCE_DIR}/src/runtime/frame_sync_hooks.c
+    ${PROJECT_SOURCE_DIR}/src/core/audio/dmr_mix_media.c
 )
 target_include_directories(
     dsd-neo_test_dmr_bs_sync_times

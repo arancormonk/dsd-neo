@@ -4,6 +4,8 @@
  */
 
 #include <dsd-neo/core/analog_tone.h>
+#include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/audio_activity.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/channel_mode.h>
 #include <dsd-neo/core/events.h>
@@ -3749,6 +3751,71 @@ test_carrier_boundary_discards_partial_assemblies(void) {
     return rc;
 }
 
+/*
+ * Issue #574: the no-carrier reset drops the audio staged for the DMR stereo mixes, and with it each slot's fresh-media
+ * mark. The first mix of the next DMR loop, a skipped burst's with nothing decoded yet, plays the zeroed buffers and must
+ * not stamp audible audio for media the reset threw away; media staged after it stamps as ever. noCarrier() runs the
+ * shared reset, dsd_engine_reset_no_carrier_state(), which a -Y row change also runs on its own.
+ */
+static int
+test_no_carrier_reset_discards_the_dmr_mix_media(void) {
+    int rc = 0;
+    dsd_audio_activity_arm();
+    for (int path = 0; path < 2; path++) {
+        for (int floating_point = 1; floating_point >= 0; floating_point--) {
+            dsd_opts* opts = NULL;
+            dsd_state* state = NULL;
+            if (init_test_runtime(&opts, &state) != 0) {
+                return 1;
+            }
+            opts->audio_out = 1;
+            opts->audio_out_type = 8;
+            opts->floating_point = floating_point;
+            opts->pulse_digi_out_channels = 2;
+            opts->slot1_on = 1;
+            opts->slot2_on = 1;
+            const unsigned int media = DSD_DMR_MIX_MEDIA_FLOAT | DSD_DMR_MIX_MEDIA_SHORT;
+            dsd_audio_dmr_mix_media_staged(0, media);
+            dsd_audio_dmr_mix_media_staged(1, media);
+
+            if (path == 0) {
+                noCarrier(opts, state);
+            } else {
+                dsd_engine_reset_no_carrier_state(opts, state);
+            }
+
+            state->synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+            char tag[128];
+            const char* reset = path == 0 ? "noCarrier" : "the shared reset";
+            const char* mix = floating_point ? "FS3" : "SS3";
+            uint64_t stamp = 0U;
+            dsd_audio_activity_reset();
+            if (floating_point) {
+                playSynthesizedVoiceFS3(opts, state);
+            } else {
+                playSynthesizedVoiceSS3(opts, state);
+            }
+            dsd_audio_activity_read(&stamp, NULL);
+            DSD_SNPRINTF(tag, sizeof(tag), "dmr mix media: %s %s after %s stamps nothing", mix, "mix", reset);
+            rc |= expect_true(tag, stamp == 0U);
+
+            dsd_audio_dmr_mix_media_staged(0, media);
+            dsd_audio_activity_reset();
+            if (floating_point) {
+                playSynthesizedVoiceFS3(opts, state);
+            } else {
+                playSynthesizedVoiceSS3(opts, state);
+            }
+            dsd_audio_activity_read(&stamp, NULL);
+            DSD_SNPRINTF(tag, sizeof(tag), "dmr mix media: %s stamps media staged after %s", mix, reset);
+            rc |= expect_true(tag, stamp != 0U);
+            free_test_runtime(opts, state);
+        }
+    }
+    dsd_audio_activity_reset();
+    return rc;
+}
+
 static int
 test_carrier_boundary_forgets_the_access_codes(void) {
     dsd_opts* opts = NULL;
@@ -6007,6 +6074,7 @@ main(void) {
     rc |= test_carrier_boundary_forgets_the_access_codes();
     rc |= test_carrier_boundary_restarts_the_evidence();
     rc |= test_carrier_boundary_discards_partial_assemblies();
+    rc |= test_no_carrier_reset_discards_the_dmr_mix_media();
 #ifdef DSD_NEO_TEST_RTL_WRAP
     rc |= test_rx_tone_rigctl_scan_step();
     rc |= test_rigctl_reconnect_forgets_the_legacy_tune_cache();

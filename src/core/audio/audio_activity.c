@@ -11,22 +11,32 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#ifdef DSD_NEO_TEST_HOOKS
 #include "audio_activity_internal.h"
+#endif
 
 static dsd_atomic_u64 g_audio_activity_armed = {0U};
 /* The stamp in real-time monotonic milliseconds, 0 for none. */
 static dsd_atomic_u64 g_audio_activity_stamp_ms = {0U};
-/* Tests only (dsd_audio_activity_set_clock_for_test()); NULL in production. */
-static dsd_audio_activity_clock_fn g_audio_activity_clock = NULL;
 
-static uint64_t
-audio_activity_now_ms(void) {
-    return g_audio_activity_clock != NULL ? g_audio_activity_clock() : dsd_realtime_mono_ms();
-}
+#ifdef DSD_NEO_TEST_HOOKS
+/* The clock the test seam sets (dsd_audio_activity_set_clock_for_test()); NULL reads the real one. */
+static dsd_audio_activity_clock_fn g_audio_activity_clock = NULL;
 
 void
 dsd_audio_activity_set_clock_for_test(dsd_audio_activity_clock_fn clock) {
     g_audio_activity_clock = clock;
+}
+#endif
+
+static uint64_t
+audio_activity_now_ms(void) {
+#ifdef DSD_NEO_TEST_HOOKS
+    if (g_audio_activity_clock != NULL) {
+        return g_audio_activity_clock();
+    }
+#endif
+    return dsd_realtime_mono_ms();
 }
 
 void
