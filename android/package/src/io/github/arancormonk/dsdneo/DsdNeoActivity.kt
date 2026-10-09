@@ -41,6 +41,11 @@ import org.qtproject.qt.android.bindings.QtActivity
  * service for the decoder, so the process is retained, the block persists, and everything
  * queued behind the main thread — the service's own callbacks included — times out into
  * "DSD-neo isn't responding".
+ *
+ * The Activity also forwards its lifecycle and input to [ScreenSupport] for the screen
+ * modes, each as a one-line delegation: creation and destruction; the start, stop, pause,
+ * top-resumed, focus and multi-window callbacks; touch events (a tap that brightens a
+ * dimmed screen is swallowed); and keys, generic motion and Back as interaction.
  */
 class DsdNeoActivity : QtActivity() {
     private var backCallback: OnBackInvokedCallback? = null

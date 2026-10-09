@@ -25,6 +25,14 @@ interface ScreenPolicyView {
     val armed: Boolean
     val snoozed: Boolean
 
+    /**
+     * Whether a sample's new audio could wake the screen as things stand: Off between calls, a session, the activity
+     * not visible, armed, and the screen off. The rest of the wake rule is the sample's own (the audio's age, a snooze
+     * that audio may end) and the caller's verdict, so the glue asks Android for that verdict only while this holds.
+     * [ScreenPolicy.sample] judges every wake through this same property, so the two cannot drift apart.
+     */
+    val wakeVerdictNeeded: Boolean
+
     /** Whether a foreground-loss sequence has started and not yet ended by DSD-neo being in front again. */
     val lossSequenceOpen: Boolean
 
@@ -76,8 +84,8 @@ interface ScreenPolicyView {
  * records its stamp, a changed stamp without an age (-1: none, expired or reset) records the stamp and nothing else,
  * and a sample without a stamp (no readable record) changes nothing. The policy is the only keeper of the last
  * stamp. A wake ([wakeSerial] advancing) needs that new audio to be at most [WAKE_MAX_AGE_MS] old, Off mode, a
- * session, the activity not visible, armed, not snoozed, the screen off, and the caller's [wakeAllowed] verdict. A
- * blocked wake still counts as audio.
+ * session, the activity not visible, armed, not snoozed, the screen off, and the caller's [wakeAllowed] verdict; the
+ * conditions that do not depend on the sample are [wakeVerdictNeeded]. A blocked wake still counts as audio.
  *
  * Arming means DSD-neo was the app in front when the display went off. Only the first foreground-loss callback of a
  * sequence decides it (focus, top-resumed, paused or stopped, whichever Android delivers first), from whether DSD-neo
@@ -174,6 +182,9 @@ class ScreenPolicy(private val clock: () -> Long) : ScreenPolicyView {
     private val between: Boolean
         get() = session != null && (mode == Mode.DIM_BETWEEN_CALLS || mode == Mode.OFF_BETWEEN_CALLS)
 
+    override val wakeVerdictNeeded: Boolean
+        get() = session != null && mode == Mode.OFF_BETWEEN_CALLS && !visible && armed && !interactive
+
     fun configure(modeCode: Int, delaySeconds: Int) = step { now ->
         val newMode = Mode.fromCode(modeCode)
         val newDelay = sanitizeDelaySeconds(delaySeconds)
@@ -232,9 +243,7 @@ class ScreenPolicy(private val clock: () -> Long) : ScreenPolicyView {
             snoozed = false
         }
         lastAudio = if (previous == null) heardAt else maxOf(previous, heardAt)
-        if (ageMs <= WAKE_MAX_AGE_MS && mode == Mode.OFF_BETWEEN_CALLS && !visible && armed && !snoozed &&
-            !interactive && wakeAllowed
-        ) {
+        if (ageMs <= WAKE_MAX_AGE_MS && wakeVerdictNeeded && !snoozed && wakeAllowed) {
             wakeSerial++
         }
     }

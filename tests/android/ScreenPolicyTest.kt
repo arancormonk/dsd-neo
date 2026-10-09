@@ -1043,6 +1043,67 @@ private fun systemAndAlwaysOnMatchToday() {
     check(always.wakes == 0L)
 }
 
+private fun wakeVerdictNeededExactlyWhereAWakeCanFire() {
+    // Each state is built fresh three times: to read the property, and to deliver a fresh call with the verdict allowed
+    // and refused. The glue reads Android's verdict only where the property holds, so it must hold wherever a wake can
+    // fire and nowhere else.
+    val states: List<Pair<String, () -> PolicyRig>> = listOf(
+        "System, armed asleep" to { PolicyRig(mode = SYSTEM).armedAsleep() },
+        "Always on, armed asleep" to { PolicyRig(mode = ALWAYS_ON).armedAsleep() },
+        "Dim, armed asleep" to { PolicyRig(mode = DIM).armedAsleep() },
+        "Off, in front with the screen on" to { PolicyRig().apply { front(); session(); quiet() } },
+        "Off, armed with the screen off but still visible" to {
+            PolicyRig().apply {
+                front()
+                session()
+                quiet()
+                policy.topResumedChanged(false, false)
+                policy.screenOff()
+                check(policy.armed && policy.visible && !policy.interactive)
+            }
+        },
+        "Off, armed after its own wake (screen on)" to { PolicyRig().armedAsleep().apply { ownWake() } },
+        "Off, unarmed with the screen off" to {
+            PolicyRig().apply {
+                front()
+                session()
+                quiet()
+                policy.topResumedChanged(false, true)
+                policy.focusChanged(false, true)
+                policy.paused(true)
+                policy.stopped(true)
+                policy.screenOff()
+                check(!policy.armed && !policy.visible && !policy.interactive)
+            }
+        },
+        "Off, armed asleep without a session" to { PolicyRig().armedAsleep().apply { policy.sessionEnded() } },
+        "Off, armed asleep" to { PolicyRig().armedAsleep() },
+    )
+    for ((name, build) in states) {
+        val needed = name == "Off, armed asleep"
+        check(build().policy.wakeVerdictNeeded == needed) { "$name: verdict needed should be $needed" }
+        val allowed = build()
+        allowed.audio(wakeAllowed = true)
+        check((allowed.wakes > 0L) == needed) { "$name: a fresh call allowed to wake wakes exactly where it is needed" }
+        val refused = build()
+        refused.audio(wakeAllowed = false)
+        check(refused.wakes == 0L) { "$name: a refused verdict never wakes" }
+    }
+}
+
+private fun aSnoozeStillNeedsTheVerdict() {
+    // A sample can end a snooze before it judges its wake, so a snoozed policy that is otherwise ready still asks.
+    val rig = PolicyRig().snoozedAsleep()
+    check(rig.policy.wakeVerdictNeeded)
+    rig.advance(1_000)
+    rig.audio()
+    check(rig.wakes == 0L && rig.policy.snoozed) { "audio inside the delay continues the snooze" }
+    rig.advance(DELAY_MS)
+    check(rig.policy.snoozed && rig.policy.wakeVerdictNeeded)
+    rig.audio()
+    check(rig.wakes == 1L && !rig.policy.snoozed) { "audio a full delay later ends the snooze and wakes in one sample" }
+}
+
 private fun wakeAllowedOnlyInNormalAudioModeWithoutDoNotDisturb() {
     // AudioManager modes and NotificationManager interruption filters, as Android numbers them.
     check(ScreenPolicy.AUDIO_MODE_NORMAL == 0)
@@ -1144,6 +1205,8 @@ fun main() {
     dimNeverWakes()
     withoutASessionNothingDimsOrHolds()
     systemAndAlwaysOnMatchToday()
+    wakeVerdictNeededExactlyWhereAWakeCanFire()
+    aSnoozeStillNeedsTheVerdict()
     wakeAllowedOnlyInNormalAudioModeWithoutDoNotDisturb()
     delaySanitising()
     modeCodes()

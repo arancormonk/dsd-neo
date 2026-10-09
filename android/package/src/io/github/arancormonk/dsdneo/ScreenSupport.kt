@@ -40,7 +40,7 @@ import kotlin.math.abs
  *   [onFocusChanged], [onMultiWindowChanged], [dispatchTouch] and [userInteraction]. Callbacks from an activity
  *   instance other than the attached one are ignored.
  * - The decoder service: [statusTick] on every running poll tick, [statusStopped] wherever the poll stops.
- * - The screen broadcasts: screen on, screen off and user present.
+ * - The screen broadcasts: screen on, screen off and user present, on an exported receiver (see [bind]).
  *
  * Before the screen-off broadcast and each callback that can lose the foreground, a synchronous status sample goes
  * straight to the controller, so audio that began since the last poll is known when the policy judges a snooze or an
@@ -228,7 +228,8 @@ object ScreenSupport {
             return
         }
         bind(context)
-        feed.onTick(running = true, sessionId = sessionId, status = status, wakeAllowed = wakeAllowed())
+        val verdict = controller.state.wakeVerdictNeeded && wakeAllowed()
+        feed.onTick(running = true, sessionId = sessionId, status = status, wakeAllowed = verdict)
         applyWindow()
     }
 
@@ -279,7 +280,9 @@ object ScreenSupport {
             addAction(Intent.ACTION_USER_PRESENT)
         }
         try {
-            ContextCompat.registerReceiver(app, receiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
+            // Exported on purpose: all three actions are <protected-broadcast>s that only system-side senders can send,
+            // and USER_PRESENT comes from SystemUI, not the system uid, so a not-exported receiver would never get it.
+            ContextCompat.registerReceiver(app, receiver, filter, ContextCompat.RECEIVER_EXPORTED)
             receiverRegistered = true
         } catch (e: RuntimeException) {
             // Left unregistered so the next entry point tries again, rather than running without screen events; the
@@ -299,7 +302,10 @@ object ScreenSupport {
 
     private fun interactive(): Boolean = power?.isInteractive ?: true
 
-    /** D5: a call may wake the screen only in the normal audio mode with no Do Not Disturb filter. */
+    /**
+     * D5: a call may wake the screen only in the normal audio mode with no Do Not Disturb filter. Two binder reads on
+     * the main thread, so callers ask only while the policy's wakeVerdictNeeded says a sample could wake.
+     */
     private fun wakeAllowed(): Boolean {
         val audioMode = audio?.mode ?: return false
         val filter = notifications?.currentInterruptionFilter ?: return false
@@ -338,7 +344,7 @@ object ScreenSupport {
             return
         }
         val status = DecoderStatus.parse(record) ?: return
-        controller.sample(status.audibleStamp, status.audibleAgeMs, wakeAllowed())
+        controller.sample(status.audibleStamp, status.audibleAgeMs, controller.state.wakeVerdictNeeded && wakeAllowed())
         applyWindow()
     }
 
