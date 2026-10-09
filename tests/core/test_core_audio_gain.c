@@ -853,8 +853,13 @@ test_play_synthesized_voice_stamps_what_it_writes(void) {
 
     static dsd_opts opts;
     static dsd_state state;
-    static short out[8];
-    static float out_float[8];
+
+    /* The slot-off row clears the first 100 samples of both buffers and rewinds their write pointers there, the
+     * pre-roll dsd_init.c leaves ahead of the write pointer, so each fixture holds that many. */
+    enum { PSV_PREROLL_SAMPLES = 100 };
+
+    static short out[PSV_PREROLL_SAMPLES];
+    static float out_float[PSV_PREROLL_SAMPLES];
     int rc = 0;
     dsd_audio_activity_arm();
     dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){.blast = psv_count_udp_blast});
