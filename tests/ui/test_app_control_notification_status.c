@@ -49,8 +49,9 @@ enum {
 };
 
 /* The record test_encode_matches_expected_record_field_order() publishes, as the encoder must write it.
-   tests/android/DecoderStatusTest.kt parses the same literal as its golden v3 record: keep the two byte-identical, so
-   the C encoder and the Kotlin reader pin one format between them. */
+   tests/android/DecoderStatusTest.kt parses the same literal as its golden v3 record. The two must stay byte-identical,
+   so the C encoder and the Kotlin reader pin one format between them: tests/android/run_jvm_tests.py's decoder_status
+   suite reads both and fails when they differ, so keep this a #define of adjacent plain string literals. */
 #define NOTIFICATION_GOLDEN_V3_RECORD                                                                                  \
     "v3\tP25p2\t1\t0\t1\t851006250\t851012500\t851500000\t0\t5000000000\t250"                                          \
     "\t2\tRiverside Fire\t51023\t7654321\t51023\t1\t170\t4660\t1500\t1\t3"                                             \

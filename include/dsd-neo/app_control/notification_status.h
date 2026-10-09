@@ -61,8 +61,10 @@ typedef struct {
      * milliseconds, or 0 for none (see <dsd-neo/core/audio_activity.h>). The value is its own identity, so a reader
      * that sees it change knows new audio was heard.
      *
-     * Not part of the published record: dsd_app_notification_get() reads it on every call, published record or not,
-     * together with @c audible_age_ms from one dsd_audio_activity_read(), so the two always describe the same stamp.
+     * Not stored by the publishers: dsd_app_notification_publish_state() and dsd_app_notification_publish_opts() never
+     * write it, and the published snapshot they fill leaves it 0. dsd_app_notification_get() reads it on every call,
+     * whether anything has been published or not, together with @c audible_age_ms from one dsd_audio_activity_read(),
+     * so the two always describe the same stamp; dsd_app_notification_encode() writes both into the record it encodes.
      * It stays 0 unless dsd_app_notification_encode() has armed the stamp.
      */
     uint64_t audible_stamp;
@@ -143,8 +145,8 @@ enum {
  * and an embedded tab would invent a field and desynchronise everything after it.
  *
  * Arms the audible-audio stamp (dsd_audio_activity_arm()) whenever it is given a buffer,
- * record or not: the Android service's poll is the only caller and the stamp's only
- * reader, so desktop, CLI and API-only sessions never turn it on.
+ * even before anything has been published: the Android service's poll is the only caller
+ * and the stamp's only reader, so desktop, CLI and API-only sessions never turn it on.
  *
  * @return Characters written excluding the NUL, or 0 when nothing is published, @p out is
  *         NULL, or @p out_size cannot hold the whole record. Never truncates -- a partial

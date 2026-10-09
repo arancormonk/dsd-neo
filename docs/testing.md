@@ -78,15 +78,16 @@ suspected RAS is marked as a failed check rather than asserted to be corrupted o
 typed live commands and legacy live commands, in both slots. `UI_KEY_CLEANUP` observes production volatile erasure
 while handler and TYT buffers are still alive.
 
-`UI_QT_ANDROID_HOST` runs Android host lifecycle publication with a desktop transport fixture. The `ANDROID_*_JVM`
-tests run production Android Kotlin on the plain JVM, without an Android build or emulator, one suite of
-`tests/android/run_jvm_tests.py` each (`--suite <name>`, repeatable; all suites by default): `ANDROID_LOCATION_JVM`
-runs the location broker and geocoder queue with deterministic platform stubs, and `ANDROID_DECODER_STATUS_JVM` runs
+`UI_QT_ANDROID_HOST` runs Android host lifecycle publication with a desktop transport fixture. The `ANDROID_*_JVM` tests
+run production Android Kotlin on the plain JVM, without an Android build or emulator, one suite of
+`tests/android/run_jvm_tests.py` each (`--suite <name>`, repeatable; all suites by default): `ANDROID_LOCATION_JVM` runs
+the location broker and geocoder queue with deterministic platform stubs, and `ANDROID_DECODER_STATUS_JVM` runs
 `DecoderStatus.kt`, the notification status record's reader, with no stubs. Each suite compiles its own files, and the
 CTest entries share a resource lock so two Kotlin compiles never run at once. `DecoderStatusTest.kt` parses the same
-golden v3 record literal that `APP_CONTROL_NOTIFICATION_STATUS` makes the C encoder write; change the two together.
-The runner uses `kotlinc` or a cached Gradle Kotlin compiler plus Java; missing tools skip the CTest entries. Android
-CI runs `python3 tests/android/run_jvm_tests.py --require-tools` after its APK build, when the compiler is cached. Qt
+golden v3 record literal that `APP_CONTROL_NOTIFICATION_STATUS` makes the C encoder write; the `decoder_status` suite
+reads both literals before compiling (and before looking for the tools) and fails when they differ. The runner uses
+`kotlinc` or a cached Gradle Kotlin compiler plus Java; missing tools skip the CTest entries. Android CI runs
+`python3 tests/android/run_jvm_tests.py --require-tools` after its APK build, when the compiler is cached. Qt
 persistence tests use disposable directories and do not require a writable home on Linux.
 
 `CORE_MBE_FILE_IO` checks decrypted AMBE payloads, not merely output-file existence. Its NXDN vectors come

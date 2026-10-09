@@ -3,8 +3,9 @@ package io.github.arancormonk.dsdneo
 
 /**
  * The record test_encode_matches_expected_record_field_order() in tests/ui/test_app_control_notification_status.c makes
- * the C encoder write, as NOTIFICATION_GOLDEN_V3_RECORD. Keep the two byte-identical: they are how the encoder and this
- * reader pin one format between them.
+ * the C encoder write, as NOTIFICATION_GOLDEN_V3_RECORD. The two must stay byte-identical, so the encoder and this
+ * reader pin one format between them: run_jvm_tests.py's decoder_status suite reads both before compiling and fails
+ * when they differ, so keep this a `private const val GOLDEN_V3 =` of concatenated plain literals.
  */
 private const val GOLDEN_V3 =
     "v3\tP25p2\t1\t0\t1\t851006250\t851012500\t851500000\t0\t5000000000\t250" +
