@@ -17,10 +17,10 @@
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/threading.h>
-#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include "core/audio/audio_activity_internal.h"
+#include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 
 static uint64_t g_now_ms = 0U;

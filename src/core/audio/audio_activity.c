@@ -11,6 +11,8 @@
 #include <dsd-neo/runtime/decode_clock.h>
 #include <stddef.h>
 #include <stdint.h>
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/platform/audio.h"
 
 #ifdef DSD_NEO_TEST_HOOKS
 #include "audio_activity_internal.h"
