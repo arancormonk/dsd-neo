@@ -78,8 +78,9 @@ typedef struct {
  * A no-op until something has called dsd_app_notification_get() at least once. Deriving
  * the record is not free -- the voice-channel chain copies the recent-activity snapshot
  * under the canonical call-state lock -- and these publishers hang off the telemetry
- * hook, which fires at protocol frame rate on the decode thread of every frontend. Only
- * the Android service reads the record, so a run with no reader pays one atomic load.
+ * hook, which fires at protocol frame rate on the decode thread of every frontend. The
+ * record's readers are the Android service and, while a client is connected, the JSON
+ * API feed, so a run with no reader pays one atomic load.
  */
 void dsd_app_notification_publish_state(const dsd_state* state);
 

@@ -34,8 +34,12 @@ static atomic_int g_mu_state = 0; /* 0=uninit, 1=initing, 2=init */
    at the DMR/P25p2/D-STAR/M17/EDACS sites, so tens of times a second -- and deriving the
    record is not cheap: dsd_app_vc_freq() alone copies the whole recent-activity snapshot
    under the canonical call-state lock whenever no voice frequency is cached, which is
-   every publish of a conventional or not-yet-tuned session. The only reader in the tree
-   is the Android service's 1 Hz poll, so a desktop run must not pay for any of it. */
+   every publish of a conventional or not-yet-tuned session. Two readers arm it: the
+   Android JNI accessor, through dsd_app_notification_encode() (the service's 1 Hz poll
+   and ScreenSupport's synchronous samples), and the JSON API feed's status and system
+   topics (src/api/api_feed.c), which call get() only while an API client is connected.
+   A run with neither, such as a desktop or CLI session with no API client, must not pay
+   for any of it. */
 static atomic_int g_wanted = 0;
 
 /* The sync-hold decay, sharing DSD_APP_SYNC_HOLD_S and the real-time clock with the Qt panel
@@ -369,8 +373,8 @@ dsd_app_notification_encode(char* out, size_t out_size) {
     /* The Android JNI accessor nativeNotificationStatus() is the only caller (from the service's status poll and from
        ScreenSupport's synchronous samples), and the only reader of the audible-audio stamp, so this is where the stamp
        turns on -- on the first poll, which comes before the engine has published anything. Not in get(): the
-       API feed and the desktop frontends read through get() and never look at the stamp, and a session nobody reads it
-       from must keep every audio writer at its unarmed cost of one load. */
+       JSON API feed reads through get() and never looks at the stamp, and a session nobody reads it from must
+       keep every audio writer at its unarmed cost of one load. */
     dsd_audio_activity_arm();
 
     dsd_app_notification_status status;
