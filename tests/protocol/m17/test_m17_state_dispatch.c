@@ -2823,7 +2823,8 @@ test_stream_voice_audio_honors_mute_on_every_output(void) {
                 if (out_type == 1) {
                     fd = dsd_test_mkstemp(path, sizeof(path), "dsdneo_m17_mute");
                     if (fd < 0) {
-                        err |= expect_int("m17 mute: raw output temp file", fd >= 0, 1);
+                        DSD_FPRINTF(stderr, "m17 mute: could not create the raw output temp file\n");
+                        err |= 1;
                         dsd_state_ext_free_all(state);
                         continue;
                     }
@@ -2936,7 +2937,8 @@ test_stream_voice_audio_stamps_what_it_plays(void) {
                 if (out_type == 1) {
                     fd = dsd_test_mkstemp(path, sizeof(path), "dsdneo_m17_stamp");
                     if (fd < 0) {
-                        err |= expect_int("m17 stamp: raw output temp file", fd >= 0, 1);
+                        DSD_FPRINTF(stderr, "m17 stamp: could not create the raw output temp file\n");
+                        err |= 1;
                         dsd_state_ext_free_all(state);
                         continue;
                     }
