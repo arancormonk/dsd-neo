@@ -156,18 +156,25 @@ private fun row04NewSessionStartsAndPrimesOnItsFirstSample() {
     rig.advance(1_000)
     rig.policy.sessionStarted(SESSION)
     check(rig.policy.session == SESSION && rig.policy.lastStart == rig.now)
-    rig.policy.sample(500uL, 0, true) // A stamp from before this session.
-    check(rig.policy.lastStamp == 500uL && rig.policy.lastAudio == null) { "the first sample only records the stamp" }
+    // The native stamp resets at every session end, so audio the first look reports was played in this session.
+    rig.policy.sample(500uL, 0, true)
+    check(rig.policy.lastStamp == 500uL && rig.policy.lastAudio == rig.now) { "the first sample counts its audio" }
+    rig.advance(1_000)
     rig.policy.sample(501uL, 0, true)
     check(rig.policy.lastAudio == rig.now)
+    // A first look with no age records the stamp and nothing else.
+    val none = PolicyRig()
+    none.front()
+    none.policy.sessionStarted(SESSION)
+    none.policy.sample(500uL, -1, true)
+    check(none.policy.lastStamp == 500uL && none.policy.lastAudio == null) { "a first sample with no age is no audio" }
     // A new id clears a snooze, restarts the delay and primes again, even with the screen off.
     val snoozed = PolicyRig().snoozedAsleep()
     snoozed.advance(2_000)
     snoozed.policy.sessionStarted(SESSION + 1)
     check(snoozed.policy.session == SESSION + 1 && !snoozed.policy.snoozed && snoozed.policy.lastStart == snoozed.now)
-    val heard = snoozed.policy.lastAudio
     snoozed.audio()
-    check(snoozed.policy.lastAudio == heard && snoozed.wakes == 0L) { "a new session's first sample is never activity" }
+    check(snoozed.policy.lastAudio == snoozed.now && snoozed.wakes == 0L) { "a new session's first sample never wakes" }
     snoozed.audio()
     check(snoozed.policy.lastAudio == snoozed.now && snoozed.wakes == 1L)
 }
@@ -591,13 +598,64 @@ private fun aSampleWithoutARecordChangesNothing() {
     rig.advance(1_000)
     rig.policy.sample(null, -1, true)
     check(rig.policy.lastStamp == stamp && rig.policy.lastAudio == heard && rig.wakes == 1L)
-    // Nor does it take a new session's first look: the first readable record still only primes.
+    // Nor does it take a new session's first look: the first readable record is still the one that never wakes.
     rig.policy.sessionStarted(SESSION + 1)
     rig.policy.sample(null, -1, true)
     rig.policy.sample(stamp + 1uL, 0, true)
-    check(rig.policy.lastStamp == stamp + 1uL && rig.policy.lastAudio == heard && rig.wakes == 1L)
+    check(rig.policy.lastStamp == stamp + 1uL && rig.policy.lastAudio == rig.now && rig.wakes == 1L)
+    rig.advance(1_000)
     rig.policy.sample(stamp + 2uL, 0, true)
-    check(rig.policy.lastAudio == rig.now)
+    check(rig.policy.lastAudio == rig.now && rig.wakes == 2L)
+}
+
+private fun aPowerPressBeforeTheFirstReadableSampleSnoozesTheCall() {
+    // The service polls before the engine publishes, so the session's first running poll finds no record. A call is
+    // already playing when Power is pressed, before any readable sample: the glue's synchronous sample before the first
+    // loss callback is the session's first readable one. It never wakes, but the audio it reports is this session's
+    // (the native stamp resets at every session end), so the sleep it ends is engaged and snoozes, and the call's next
+    // block cannot wake the screen.
+    val rig = PolicyRig()
+    rig.front()
+    rig.policy.sessionStarted(SESSION)
+    rig.policy.sample(null, -1, true) // The first running poll: no record yet.
+    rig.advance(2_000)
+    val call = 5_000uL
+    var asked = 0
+    val verdict = { asked++; true }
+    rig.policy.sample(call, 300, verdict) // Before the first loss callback: the first readable sample.
+    val heardAt = rig.now - 300
+    rig.policy.topResumedChanged(false, false)
+    rig.policy.sample(call, 300, verdict) // Each later synchronous sample sees the same stamp.
+    rig.policy.focusChanged(false, false)
+    rig.policy.sample(call, 300, verdict)
+    rig.policy.paused(false)
+    rig.policy.sample(call, 300, verdict)
+    rig.policy.stopped(false, verdict)
+    rig.policy.sample(call, 300, verdict)
+    rig.policy.screenOff()
+    check(rig.policy.armed && rig.policy.snoozed) { "Power during the call snoozes, though the first sample saw it" }
+    check(rig.wakes == 0L && asked == 0) { "the first readable sample never wakes, and asks nothing" }
+    check(rig.policy.lastStamp == call && rig.policy.lastAudio == heardAt) { "its audio counts from when it was heard" }
+    rig.advance(1_000)
+    rig.audio() // The call's next block, at the next poll.
+    check(rig.wakes == 0L && rig.policy.snoozed) { "the continuing call does not wake the screen" }
+    rig.advance(DELAY_MS)
+    rig.audio()
+    check(rig.wakes == 1L && !rig.policy.snoozed) { "a call after a full quiet delay wakes" }
+    // A first readable sample with no age (no stamp, or an expired one) heard nothing: no snooze, and a call wakes.
+    for (stamp in listOf(0uL, 5_000uL)) {
+        val quiet = PolicyRig()
+        quiet.front()
+        quiet.policy.sessionStarted(SESSION)
+        quiet.policy.sample(null, -1, true)
+        quiet.advance(2_000)
+        quiet.policy.sample(stamp, -1, true)
+        check(quiet.policy.lastStamp == stamp && quiet.policy.lastAudio == null) { "stamp $stamp, age -1: no audio" }
+        quiet.sleep()
+        check(quiet.policy.armed && !quiet.policy.snoozed) { "stamp $stamp, age -1: no snooze" }
+        quiet.audio()
+        check(quiet.wakes == 1L) { "stamp $stamp, age -1: the next call wakes" }
+    }
 }
 
 // ---- Histories ----
@@ -1440,6 +1498,7 @@ fun main() {
     housekeepingClearsTheSnoozeAfterAFullQuietDelay()
     aSnoozeEndsOnlyWhenTheNewAudioFollowsAFullQuietDelay()
     aSampleWithoutARecordChangesNothing()
+    aPowerPressBeforeTheFirstReadableSampleSnoozesTheCall()
     splitScreenFocusedVersusUnfocused()
     unfocusedSplitScreenSleepDoesNotArm()
     homeWithTheScreenOnThenOff()

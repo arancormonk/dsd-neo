@@ -85,14 +85,15 @@ interface ScreenPolicyView {
  *
  * Engagement is audible audio, a touch, a session or foreground start, or a setting change within the last
  * [delaySeconds]. New audible audio is a changed stamp with an age of zero or more; the first readable sample of a
- * session only records its stamp, a changed stamp without an age (-1: none, expired or reset) records the stamp and
- * nothing else, and a sample without a stamp (no readable record) changes nothing. The policy is the only keeper of the
- * last stamp. A wake ([wakeSerial] advancing) needs that new audio to be at most [WAKE_MAX_AGE_MS] old, Off mode, a
- * session, the activity not visible, armed, not snoozed, the screen off, and the caller's [wakeAllowed] verdict, which
- * is asked for last and only then, since it costs the glue two binder calls; the conditions that do not depend on the
- * sample are [wakeVerdictNeeded]. A blocked wake still counts as audio. Audio that would wake but for the activity
- * still being visible (the display went off in front, and Android has not stopped DSD-neo yet) is held for [stopped],
- * which judges it the same way once the activity is gone, its age then included.
+ * session takes its stamp as new (the native stamp resets at every session end) and counts its audio, but never wakes;
+ * a changed stamp without an age (-1: none, expired or reset) records the stamp and nothing else, and a sample without
+ * a stamp (no readable record) changes nothing. The policy is the only keeper of the last stamp. A wake ([wakeSerial]
+ * advancing) needs that new audio to be at most [WAKE_MAX_AGE_MS] old, Off mode, a session, the activity not visible,
+ * armed, not snoozed, the screen off, and the caller's [wakeAllowed] verdict, which is asked for last and only then,
+ * since it costs the glue two binder calls; the conditions that do not depend on the sample are [wakeVerdictNeeded]. A
+ * blocked wake still counts as audio. Audio that would wake but for the activity still being visible (the display went
+ * off in front, and Android has not stopped DSD-neo yet) is held for [stopped], which judges it the same way once the
+ * activity is gone, its age then included.
  *
  * Arming means DSD-neo was the app in front when the display went off. Only the first foreground-loss callback of a
  * sequence decides it (focus, top-resumed, paused or stopped, whichever Android delivers first), from whether DSD-neo
@@ -178,7 +179,7 @@ class ScreenPolicy(private val clock: () -> Long) : ScreenPolicyView {
     override var lastConfig: Long? = null
         private set
 
-    /** Whether this session's first readable sample has been taken (it only records the stamp). */
+    /** Whether this session's first readable sample has been taken (its audio counts but never wakes). */
     private var primed = false
 
     /**
@@ -247,13 +248,12 @@ class ScreenPolicy(private val clock: () -> Long) : ScreenPolicyView {
         if (session == null || stamp == null) {
             return@step
         }
-        if (!primed) {
-            // Whatever the stamp says, it was there before this session's first look.
-            primed = true
-            lastStamp = stamp
-            return@step
-        }
-        if (stamp == lastStamp) {
+        // The session's first look takes its stamp as new: the native stamp resets at every session end, so audio it
+        // reports (age 0 or more) was played in this session, and counts, so a sleep it ends snoozes. It never wakes,
+        // though: with no earlier look, it cannot tell a new call from one already playing.
+        val first = !primed
+        primed = true
+        if (!first && stamp == lastStamp) {
             return@step
         }
         lastStamp = stamp
@@ -268,7 +268,7 @@ class ScreenPolicy(private val clock: () -> Long) : ScreenPolicyView {
             snoozed = false
         }
         lastAudio = if (previous == null) heardAt else maxOf(previous, heardAt)
-        if (ageMs > WAKE_MAX_AGE_MS) {
+        if (first || ageMs > WAKE_MAX_AGE_MS) {
             return@step
         }
         if (wakeVerdictNeeded) {

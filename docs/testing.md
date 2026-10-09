@@ -89,9 +89,10 @@ them fails the compile, then `ScreenLocks.kt` on its own against a `PowerManager
 `ScreenPolicyTest.kt` takes the policy through each row of its transition table and through whole histories on an
 injected clock: sleeping in front with either callback order, split screen, an own wake whose screen goes off on time or
 late, an own wake followed by use in front (after an unlock, or with no lock screen) whose next sleep arms afresh, the
-power snooze and the synchronous sample before it, a stamp delivered late or with age -1, a call heard after the screen
-went off in front but before the activity stopped (woken at the stop), Android's verdict asked only for a sample that
-would wake, and the `AudioManager` and Do Not Disturb mapping; `ScreenControllerTest.kt` the make-before-break order,
+power snooze and the synchronous sample before it (the session's first readable one included, which counts but never
+wakes), a stamp delivered late or with age -1, a call heard after the screen went off in front but before the activity
+stopped (woken at the stop), Android's verdict asked only for a sample that would wake, and the `AudioManager` and Do
+Not Disturb mapping; `ScreenControllerTest.kt` the make-before-break order,
 lease renewal, wake refusal and which screen-on is DSD-neo's own wake (none after a refused pulse); `StatusFeedTest.kt`
 that the verdict is handed on unasked; `ScreenTouchTest.kt` the gesture latch and the TalkBack exception. Each suite
 compiles its own files, each build in a suite its own set, and the CTest entries share a resource lock so two Kotlin

@@ -4464,8 +4464,11 @@ main thread only. The decision is pure Kotlin with no `android.*` import, run on
   by time alone. Time is an injected millisecond clock; nothing in it reads a system clock. `Mode` codes 0-3 are a
   contract with Qt's `AppPrefs::ScreenMode` and are persisted, so never renumber them, and `DELAY_CHOICES_SECONDS`
   matches `kScreenDelayChoices` in `app_prefs.cpp` (default 30). The policy is the only keeper of the last audible-audio
-  stamp: the first readable sample of a session only primes it and never counts as activity, a changed stamp with age -1
-  records the stamp and nothing else, and a sample with no stamp (no readable record) changes nothing.
+  stamp. The first readable sample of a session takes its stamp as new: `dsd_app_notification_reset()` clears the native
+  stamp at every session end, so audio it reports (age 0 or more) was played in this session. That audio counts for
+  engagement and the snooze, so Power pressed during a call before the first readable poll still snoozes, but it never
+  wakes. A changed stamp with age -1 records the stamp and nothing else, and a sample with no stamp (no readable record)
+  changes nothing.
   `wakeVerdictNeeded` (Off between calls, a session, the activity not visible, armed, the screen off by the broadcasts)
   is the predicate every wake is judged through. Android's verdict reaches the policy as a supplier, which it asks last,
   at most once, and only for a sample that would otherwise wake (new audio no more than 2 s old, not snoozed,

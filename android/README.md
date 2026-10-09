@@ -680,8 +680,9 @@ Timing:
   Android has stopped DSD-neo, wakes the screen once Android stops it, if the
   audio is no more than 2 s old by then.
 - The first readable status of a session, usually from the second read (the
-  first only wakes the status publishers), only notes where the audio stands:
-  audio played before it never counts (the start itself counts for the delay).
+  first only wakes the status publishers), never wakes the screen. The audio it
+  reports was played in this session, so it counts for the delay and for a
+  power-button snooze.
 
 In Off between calls, new audible audio turns the screen on only when:
 
