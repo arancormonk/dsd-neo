@@ -635,6 +635,132 @@ longer than a quick test; it also keeps the phone from discharging into the
 dongle. Bias-tee power for an external LNA comes out of the same budget — the UI
 exposes it as a checkbox on the USB source, and it is off by default.
 
+### Screen
+
+Settings → Listening → **Screen** sets what the display does while DSD-neo is
+open. The row appears only where the host supports it (the Android app):
+
+- **System default** — the phone's own screen timeout, as if DSD-neo set
+  nothing.
+- **Always on** — the screen stays on while DSD-neo is on screen, listening or
+  not. This is what the old **Keep screen awake** switch did.
+- **Dim between calls** — while listening, the screen dims to minimum
+  brightness after the delay with no audible audio or touch, and audio or a tap
+  brightens it. While DSD-neo is on screen it never turns off, and it never
+  wakes.
+- **Off between calls** — while listening, the screen stays on through audible
+  audio and for the delay after it, then dims and is left to the phone's own
+  timeout. New audible audio turns it back on, under the wake rules below.
+
+**Dim after** (or **Turn off after**, in Off between calls) sets the delay for
+the two between-calls modes: 10 s, 30 s, 1 min, 2 min or 5 min, 30 s by default.
+With the decoder stopped, both modes behave like System default.
+
+**Audible** means audio DSD-neo actually plays. A muted Monitor, a slot that is
+switched off, a blocked, locked-out or skipped talkgroup, and an encrypted call
+with no usable key never count, and neither do tones. Whatever DSD-neo does
+play counts, including encrypted audio it plays because a setting unmuted it.
+On the analog monitor (FM or AM) a channel counts while its carrier is open and
+passes the tone filter (CTCSS/DCS); with the squelch off the monitor plays all
+the time, so it always counts. An EDACS analog call counts while its squelch is
+open.
+
+Timing:
+
+- The delay runs from the last audible audio, touch, decoder start, return to
+  DSD-neo, or change to these settings.
+- In Off between calls the screen goes dark at the later of two points: the end
+  of the delay, and the phone's own screen timeout after the last touch or the
+  last automatic wake. On the lock screen Android applies its own, shorter
+  timeout.
+- The decoder's status is read once a second, so a wake follows the audio by up
+  to a second. Audio more than 2 s old when it is read never wakes the screen.
+- The first status read after a start only notes where the audio stands: audio
+  played before it never counts (the start itself counts for the delay).
+
+In Off between calls, new audible audio turns the screen on only when:
+
+- DSD-neo was the app in front, with focus, when the display went off. A
+  decoder behind another app never wakes the screen, nor does the unfocused
+  side of split screen.
+- No phone or VoIP call is active or ringing, and Do Not Disturb is off (any of
+  its modes blocks wakes).
+- Wakes are not snoozed. Turning the screen off with the power button within
+  the delay after audible audio snoozes them until a full delay passes with no
+  audible audio. Touches and starts never snooze.
+
+A wake only turns the screen on: DSD-neo does not show itself over the lock
+screen, so a locked phone wakes to its lock screen. The screen then stays on
+through the audio and the delay after it, and goes off on the lock screen's
+timeout; a phone left alone wakes again for the next call. Turning the screen on
+yourself, unlocking, or keeping the screen on after a wake longer than an
+untouched one would stay on (more than 5 s past both the end of DSD-neo's hold
+and the phone's timeout counted from the wake), for example by touching the lock
+screen, stops wakes until DSD-neo is back in front and the display goes off
+there again.
+
+Dimming happens only while DSD-neo's window has focus and is not in split screen
+or another multi-window mode, because the brightness an app sets applies to the
+whole display. Otherwise the screen stays on undimmed (Dim) or goes off on the
+phone's timer (Off). The first tap on a dimmed screen only brightens it: the
+whole gesture is swallowed, so the tap does not press what is under it. With
+TalkBack's touch exploration on, a touch still brightens the screen but is never
+swallowed.
+
+If Android refuses a wake and the screen stays off, Settings → Diagnostics
+records "Screen wake refused by Android; calls cannot turn the screen on" once
+per session, and DSD-neo makes no further wake attempt until a full delay passes
+with no audible audio.
+
+Two platform limits are accepted rather than solved:
+
+- Android delivers lifecycle callbacks asynchronously. Home followed quickly by
+  Power, with the Home processed late on the main thread, looks exactly like
+  DSD-neo going to sleep in front, so later calls wake the screen.
+- Quick use of the secure camera from the lock screen soon after a wake gives
+  DSD-neo no callback at all, so the next call wakes the screen again.
+
+The wake is a `SCREEN_BRIGHT_WAKE_LOCK` with `ACQUIRE_CAUSES_WAKEUP`, which
+works at targetSdk 36 without any permission beyond `WAKE_LOCK`. AOSP's
+`REQUIRE_TURN_SCREEN_ON_PERMISSION` compatibility change is not enabled at
+targetSdk 36; a target SDK bump that enables it will need
+`android.permission.TURN_SCREEN_ON` in the manifest and the user's grant, or
+every wake is refused.
+
+An install that used **Keep screen awake** reads as **Always on** (switch on) or
+**System default** (switch off) until a mode is chosen. The old setting is never
+rewritten, so an older build finds the switch as it was.
+
+`ANDROID_SCREEN_POLICY_JVM` runs the policy on the JVM, and `UI_QT_PERSISTENCE`
+and `UI_QT_QML_CALL_LISTS` the settings. What only a phone shows, verify on a
+device, with a source that has known calls (an I/Q replay works):
+
+- System default and Always on behave as the phone and the old switch did, with
+  and without a session.
+- Dim between calls: the screen dims after the delay with no audio; a call or a
+  tap brightens it; the first tap presses nothing; it never turns off.
+- Off between calls: the screen stays on through a call and the delay, then
+  goes off at the later of the delay and the phone's timeout; the next call
+  wakes it to the lock screen within about a second, and again after the screen
+  times out untouched.
+- Each delay choice, with a phone timeout shorter and longer than the delay.
+- Power pressed during or just after a call snoozes wakes until a full delay of
+  quiet; pressed after a quiet delay, it does not.
+- Swipe, PIN and no screen lock: what each wake shows; unlocking stops wakes
+  until DSD-neo is in front again.
+- Touching the lock screen after a wake, so it stays on past its timeout, stops
+  further wakes.
+- Split screen: no dimming; the unfocused side never arms wakes.
+- Rotation while dimmed, while the screen is held on, and before a sleep:
+  nothing sticks or resets.
+- TalkBack: a touch on a dimmed screen brightens it and still acts.
+- Do Not Disturb, and a phone or VoIP call: no wakes.
+- Mute on the Monitor: nothing counts as audible, so no wakes, and the screen
+  dims and goes off as between calls.
+- Leaving DSD-neo (Home, Recents, another app) before the display goes off: no
+  wakes.
+- Migration from a build with Keep screen awake on, and off.
+
 ## Vendored third-party code
 
 `third_party/` carries trimmed snapshots of two upstream projects. They are **not**
@@ -767,7 +893,8 @@ Emergency calls carry an EMERGENCY badge on the monitor (including the other TDM
 slot), recent calls, and history. The notification title prefixes the lead call
 with EMERGENCY. Native notification records and `DecoderStatus.kt` use wire v3:
 each of the two slot records ends with emergency and priority (11 slot fields),
-and the header carries the audible-audio stamp and its age at indices 9 and 10.
+and the header carries the audible-audio stamp and its age at indices 9 and 10,
+which the screen modes read (see [Screen](#screen)).
 Call-history JSON stores `"em": true` only for emergency rows; older history
 without that optional key remains readable. Emergency indication persists when
 later fragments enrich a history row. The notification channel remains

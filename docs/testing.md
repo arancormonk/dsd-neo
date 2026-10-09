@@ -81,14 +81,39 @@ while handler and TYT buffers are still alive.
 `UI_QT_ANDROID_HOST` runs Android host lifecycle publication with a desktop transport fixture. The `ANDROID_*_JVM` tests
 run production Android Kotlin on the plain JVM, without an Android build or emulator, one suite of
 `tests/android/run_jvm_tests.py` each (`--suite <name>`, repeatable; all suites by default): `ANDROID_LOCATION_JVM` runs
-the location broker and geocoder queue with deterministic platform stubs, and `ANDROID_DECODER_STATUS_JVM` runs
-`DecoderStatus.kt`, the notification status record's reader, with no stubs. Each suite compiles its own files, and the
-CTest entries share a resource lock so two Kotlin compiles never run at once. `DecoderStatusTest.kt` parses the same
-golden v3 record literal that `APP_CONTROL_NOTIFICATION_STATUS` makes the C encoder write; the `decoder_status` suite
-reads both literals before compiling (and before looking for the tools) and fails when they differ. The runner uses
-`kotlinc` or a cached Gradle Kotlin compiler plus Java; missing tools skip the CTest entries. Android CI runs
-`python3 tests/android/run_jvm_tests.py --require-tools` after its APK build, when the compiler is cached. Qt
-persistence tests use disposable directories and do not require a writable home on Linux.
+the location broker and geocoder queue with deterministic platform stubs, `ANDROID_DECODER_STATUS_JVM` runs
+`DecoderStatus.kt`, the notification status record's reader, with no stubs, and `ANDROID_SCREEN_POLICY_JVM` (the
+`screen` suite) runs the screen modes' policy and pure adapters (`ScreenPolicy.kt`, `ScreenController.kt`,
+`StatusFeed.kt`, `ActivitySlot.kt`, with `DecoderStatus.kt`) with no stubs at all, so an `android.*` import in any of
+them fails the compile, then `ScreenLocks.kt` on its own against a `PowerManager` stub that models reference counting.
+`ScreenPolicyTest.kt` takes the policy through each row of its transition table and through whole histories on an
+injected clock: sleeping in front with either callback order, split screen, an own wake whose screen goes off on time or
+late, the power snooze and the synchronous sample before it, a stamp delivered late or with age -1, and the
+`AudioManager` and Do Not Disturb mapping; `ScreenControllerTest.kt` the make-before-break order, lease renewal and wake
+refusal; `ScreenTouchTest.kt` the gesture latch and the TalkBack exception. Each suite compiles its own files, each
+build in a suite its own set, and the CTest entries share a resource lock so two Kotlin compiles never run at once.
+`DecoderStatusTest.kt` parses the same golden v3 record literal that `APP_CONTROL_NOTIFICATION_STATUS` makes the C
+encoder write; the `decoder_status` suite reads both literals before compiling (and before looking for the tools) and
+fails when they differ. The runner uses `kotlinc` or a cached Gradle Kotlin compiler plus Java; missing tools skip the
+CTest entries. Android CI runs `python3 tests/android/run_jvm_tests.py --require-tools` after its APK build, when the
+compiler is cached. Qt persistence tests use disposable directories and do not require a writable home on Linux.
+
+The audible-audio stamp (`<dsd-neo/core/audio_activity.h>`, issue #574) is tested where each writer emits, and every
+writer case asserts both the captured output and the stamp, so audio that plays without stamping, or a stamp with
+nothing played, fails. `CORE_AUDIO_ACTIVITY` covers the API: an unarmed note reads no clock and stores nothing, arming,
+the age and its 60 s expiry, reset, and a writer, reader and resetter racing (run it under the `tsan-debug` preset too).
+`CORE_AUDIO2_HELPERS` drives the mixers with stubbed gates, the DMR fresh-media marks included (a repeated mix with
+nothing new, muted media beside an idle slot, a discard); `CORE_MBE_TRANSFORM_CONTEXT` the real vocoder into the real
+FS3 and SS3 mixes (its clear, encrypted, reverse-mute, unmute and forced-clear matrix, skipped bursts, decoded all-zero
+samples, a talkgroup hold); `CORE_AUDIO_GAIN` the legacy short output; `P25_P2_MIXER_GATE` FS4 and SS18, partial flushes
+included, and that the beeper never stamps; `M17_STATE_DISPATCH` the Codec2 writers on every output type;
+`EDACS_GRANT_TUNE_MATRIX` the EDACS emitter and whole analog calls under each squelch; `DSP_SYMBOL_REPLAY` the analog
+monitor (the tone policy, the auto squelch's per-sample gate, a retune, and the `-8` source monitor, which never
+stamps); `DMR_BS_SYNC_TIMES` and `ENGINE_NO_CARRIER_RESET` the discards. The stamp runs on the real-time clock, so
+`CORE_AUDIO_ACTIVITY` and `APP_CONTROL_NOTIFICATION_STATUS` hold its time through
+`dsd_audio_activity_set_clock_for_test()` (module-private, built only with `DSD_NEO_TEST_HOOKS`) rather than the decode
+clock's TEST source. `APP_CONTROL_NOTIFICATION_STATUS` also checks the v3 record's stamp and age fields and that only
+`dsd_app_notification_encode()` arms the stamp.
 
 `CORE_MBE_FILE_IO` checks decrypted AMBE payloads, not merely output-file existence. Its NXDN vectors come
 from [NXDN TS 1-D v1.3](https://www.qsl.net/kb9mwr/projects/dv/nxdn/NXDN-TS-1-D_v0103.pdf),

@@ -45,7 +45,8 @@ import org.qtproject.qt.android.bindings.QtActivity
  * The Activity also forwards its lifecycle and input to [ScreenSupport] for the screen
  * modes, each as a one-line delegation: creation and destruction; the start, stop, pause,
  * top-resumed, focus and multi-window callbacks; touch events (a tap that brightens a
- * dimmed screen is swallowed); and keys, generic motion and Back as interaction.
+ * dimmed screen is swallowed, except under TalkBack's touch exploration, where it
+ * brightens and passes through); and keys, generic motion and Back as interaction.
  */
 class DsdNeoActivity : QtActivity() {
     private var backCallback: OnBackInvokedCallback? = null
@@ -110,7 +111,7 @@ class DsdNeoActivity : QtActivity() {
         ScreenSupport.onFocusChanged(this, hasFocus)
     }
 
-    // A tap on a dimmed screen only brightens it: its whole gesture is swallowed.
+    // A tap on a dimmed screen only brightens it: its whole gesture is swallowed (never under touch exploration).
     override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
         if (ScreenSupport.dispatchTouch(this, ev)) return true
         return super.dispatchTouchEvent(ev)
