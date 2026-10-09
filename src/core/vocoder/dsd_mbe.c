@@ -1607,10 +1607,8 @@ static void
 mbe_post_stage_slot_silence(dsd_state* state, int slot) {
     if (slot == 0) {
         DSD_MEMSET(state->s_l, 0, sizeof(state->s_l));
-        DSD_MEMSET(state->s_lu, 0, sizeof(state->s_lu));
     } else {
         DSD_MEMSET(state->s_r, 0, sizeof(state->s_r));
-        DSD_MEMSET(state->s_ru, 0, sizeof(state->s_ru));
     }
 }
 
@@ -1639,6 +1637,7 @@ mbe_post_left_audio(dsd_opts* opts, dsd_state* state, const mbe_frame_ctx_t* fra
     const int dmr_mono_active = mbe_post_dmr_mono_active(opts, state);
     if (dmr_mono_active && !mbe_dmr_output_slot_enabled(opts, state, 0)) {
         state->dmr_encL = 1;
+        mbe_post_stage_slot_silence(state, 0);
         return;
     }
     if ((!dmr_mono_active && !mbe_post_stereo_active(opts, state)) || state->currentslot != 0) {
@@ -1684,6 +1683,7 @@ mbe_post_right_audio(dsd_opts* opts, dsd_state* state, const mbe_frame_ctx_t* fr
     const int dmr_mono_active = mbe_post_dmr_mono_active(opts, state);
     if (dmr_mono_active && !mbe_dmr_output_slot_enabled(opts, state, 1)) {
         state->dmr_encR = 1;
+        mbe_post_stage_slot_silence(state, 1);
         return;
     }
     if ((!dmr_mono_active && !mbe_post_stereo_active(opts, state)) || state->currentslot != 1) {

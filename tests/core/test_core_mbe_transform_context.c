@@ -2713,10 +2713,10 @@ dmr_mix_tag_slots(dsd_state* state) {
     }
 }
 
-/* Issue #574: both stereo DMR mixes, the float FS3 and the short SS3, play a slot exactly when the vocoder's verdict
- * after reverse mute (-q) leaves it audible, which for SS3 is exactly when the vocoder staged its short samples.
- * Without -q a clear slot plays and an encrypted one without a key does not, unless the encrypted-audio unmute is on
- * (dmr_mute_encL/R 0), which plays it too; -q swaps clear and encrypted whatever that unmute says. Under forced privacy
+/* Issue #574: both stereo DMR mixes, the float FS3 and the short SS3, follow the vocoder's slot verdict after reverse
+ * mute (-q). Without -q a clear slot plays and an encrypted one without a key does not; -q swaps them. With the
+ * encrypted-audio mute flag off (dmr_mute_encL/R 0: the user's unmute toggle, or any key load) FS3 also plays an
+ * encrypted slot it cannot decrypt, while SS3 keeps it muted; under -q that flag follows the verdict. Under forced privacy
  * (Baofeng AP, CSI EE, the Kenwood scrambler) the vocoder clears the slot's encryption flag before -q flips it, so the
  * call plays without -q and not with it, whether or not the voice carries the encryption bit. Each channel is checked
  * for the slot it carries: its own when audible, the audible companion's when muted (the mixes mirror one audible
@@ -2755,7 +2755,8 @@ dmr_mix_check_row(int mode, int reverse_mute, int unmute_encrypted, int floating
     int audible[2];
     for (int slot = 0; slot < 2; slot++) {
         const int clear = so[slot] == 0;
-        audible[slot] = mode != 0 ? !reverse_mute : (reverse_mute ? !clear : (clear || unmute_encrypted));
+        audible[slot] =
+            mode != 0 ? !reverse_mute : (reverse_mute ? !clear : (clear || (unmute_encrypted && floating_point)));
     }
     const int any = audible[0] || audible[1];
     const int want_left = audible[0] ? 1 : (audible[1] ? 2 : 0);
@@ -2792,6 +2793,60 @@ test_dmr_stereo_mixes_follow_vocoder_slot_verdict(void) {
                 }
             }
         }
+    }
+    return rc;
+}
+
+/* Issue #574: a Vertex Standard call (ALG 0x07) with a mapped keystream plays in both mixes. The vocoder applies the
+ * keystream, clears the slot's encryption flag and also the encryption bit of the service options, so the mixes
+ * follow it. */
+static int
+test_dmr_stereo_mixes_play_a_vertex_keystream_call(void) {
+    int rc = 0;
+    for (int floating_point = 1; floating_point >= 0; floating_point--) {
+        dsd_opts* opts = dmr_mix_new_opts(floating_point, 0);
+        dsd_state* state = calloc(1, sizeof(*state));
+        if (!opts || !state) {
+            free(opts);
+            free(state);
+            return 1;
+        }
+        initState(state);
+        state->synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+        state->dmrburstL = 16;
+        state->dmrburstR = 16;
+        // One mapped keystream of all-zero bits: applying it leaves the voice as decoded.
+        state->vertex_ks_count = 1;
+        state->vertex_ks_key[0] = 0x123456ULL;
+        state->vertex_ks_mod[0] = 49;
+        state->R = 0x123456ULL;
+        state->RR = 0x123456ULL;
+        state->payload_algid = 0x07;
+        state->payload_algidR = 0x07;
+        state->dmr_so = 0x40;
+        state->dmr_soR = 0x40;
+        for (int slot = 0; slot < 2; slot++) {
+            for (int frame = 0; frame < 3; frame++) {
+                dmr_mix_stage_frame(opts, state, slot, frame);
+            }
+        }
+        const char* mix = floating_point ? "FS3" : "SS3";
+        char tag[96];
+        DSD_SNPRINTF(tag, sizeof(tag), "vertex %s slot flags cleared", mix);
+        rc |= expect_eq_int(tag, state->dmr_encL == 0 && state->dmr_encR == 0, 1);
+        DSD_SNPRINTF(tag, sizeof(tag), "vertex %s service-options encryption bits cleared", mix);
+        rc |= expect_eq_int(tag, (state->dmr_so & 0x40) == 0 && (state->dmr_soR & 0x40) == 0, 1);
+        dmr_mix_tag_slots(state);
+        dmr_mix_run(opts, state);
+        DSD_SNPRINTF(tag, sizeof(tag), "vertex %s blocks", mix);
+        rc |= expect_eq_int(tag, g_dmr_mix_blocks, 3);
+        DSD_SNPRINTF(tag, sizeof(tag), "vertex %s left channel carries slot 1", mix);
+        rc |= expect_eq_int(tag, g_dmr_mix_signs[0], 1);
+        DSD_SNPRINTF(tag, sizeof(tag), "vertex %s right channel carries slot 2", mix);
+        rc |= expect_eq_int(tag, g_dmr_mix_signs[1], 2);
+        freeState(state);
+        free(state);
+        free(opts);
     }
     return rc;
 }
@@ -2863,6 +2918,44 @@ test_dmr_muted_slot_stages_silence_not_its_last_frame(void) {
         rc |= expect_eq_int(tag, g_dmr_mix_blocks, 3);
         DSD_SNPRINTF(tag, sizeof(tag), "%s held muted slot plays silence, not its last frame", name);
         rc |= expect_eq_int(tag, g_dmr_mix_signs[0] | g_dmr_mix_signs[1], 0);
+        freeState(state);
+        free(state);
+        free(opts);
+    }
+    return rc;
+}
+
+/* Issue #574: with DMR mono output (--dmr-mono) the vocoder mutes the slot that is not playing and stages silence for
+ * it, as for any muted slot, so its last short frame is never copied into the mix again. */
+static int
+test_dmr_mono_disabled_slot_stages_silence(void) {
+    int rc = 0;
+    for (int slot = 0; slot < 2; slot++) {
+        dsd_opts* opts = dmr_mix_new_opts(0, 0);
+        dsd_state* state = calloc(1, sizeof(*state));
+        if (!opts || !state) {
+            free(opts);
+            free(state);
+            return 1;
+        }
+        initState(state);
+        opts->dmr_mono = 1;
+        state->synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+        state->dmr_mono_slot = (short)slot;
+        const short* staged = slot == 0 ? state->s_l : state->s_r;
+        const char* name = slot == 0 ? "slot 1" : "slot 2";
+        char tag[96];
+
+        dmr_mix_stage_frame(opts, state, slot, 0);
+        DSD_SNPRINTF(tag, sizeof(tag), "dmr mono %s playing stages samples", name);
+        rc |= expect_eq_int(tag, dmr_mix_any_nonzero_s16(staged, 160), 1);
+
+        state->dmr_mono_slot = (short)(slot ^ 1);
+        dmr_mix_stage_frame(opts, state, slot, 1);
+        DSD_SNPRINTF(tag, sizeof(tag), "dmr mono %s off is muted", name);
+        rc |= expect_eq_int(tag, slot == 0 ? state->dmr_encL : state->dmr_encR, 1);
+        DSD_SNPRINTF(tag, sizeof(tag), "dmr mono %s off stages silence", name);
+        rc |= expect_eq_int(tag, dmr_mix_any_nonzero_s16(staged, 160), 0);
         freeState(state);
         free(state);
         free(opts);
@@ -4372,6 +4465,8 @@ main(void) {
     rc |= test_process_mbe_frame_dmr_post_decode_gates_override_enc_flags();
     rc |= test_dmr_stereo_mixes_follow_vocoder_slot_verdict();
     rc |= test_dmr_muted_slot_stages_silence_not_its_last_frame();
+    rc |= test_dmr_stereo_mixes_play_a_vertex_keystream_call();
+    rc |= test_dmr_mono_disabled_slot_stages_silence();
     rc |= test_process_mbe_frame_dmr_aes_stream_advances_slot_state();
     rc |= test_process_mbe_frame_activation_gate_and_wide_kid();
     rc |= test_process_mbe_frame_hard_p25p2_right_stages_audio();

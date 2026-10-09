@@ -743,14 +743,17 @@ suite runs under this compiler.
   the raw fd alike, and EDACS analog and M17 Codec2 voice also stop while slot 1 is switched off. The P25 Phase 2
   short mix (SS18) applies the slot switches before its output policy, as FS4 does, so a muted companion never
   mirrors a switched-off slot into both channels. The float (FS3) and short (SS3) DMR mixes start each slot from the
-  vocoder's verdict (`dmr_encL/R` with `dmr_mute_encL/R`, after its forced clear and reverse mute); without reverse
-  mute or forced clear (Baofeng AP, CSI EE, Kenwood scrambler, `dsd_key_dmr_forced_clear()`) SS3 also mutes a slot
-  whose service options say encrypted when no loaded key decrypts it, unless the encrypted-audio unmute
-  (`dmr_mute_encL/R` 0) is on, which both mixes and the vocoder honour. A slot the vocoder mutes stages silence in
-  `s_l`/`s_r`, so no mix replays an earlier frame; a talkgroup hold that unmutes such a slot plays silence in SS3,
-  while FS3 plays the float frames the vocoder always stages. DMR and P25 Phase 2 MBE
-  capture save in `mbe_finalize_slot_left/right()` before `mbe_post_left/right_audio()` recomputes the slot mute
-  flags, so the first frame after a mute change (reverse mute included) follows the previous frame's state.
+  vocoder's verdict, `dmr_encL/R` as `mbe_post_left/right_audio()` leave it: set when the slot is encrypted and no
+  loaded key decrypts it (a mapped Vertex keystream decrypts), cleared under forced clear (Baofeng AP, CSI EE, Kenwood
+  scrambler, `dsd_key_dmr_forced_clear()`), flipped by reverse mute (`-q`). They differ over the encrypted-audio mute
+  flag `dmr_mute_encL/R`, which is 0 after the user's toggle of all mutes, after any key load
+  (`dsd_key_apply_mute_policy()`) and after the vocoder's talkgroup key autoload or AES keystream: the vocoder then
+  stages a flagged slot and FS3 plays it, undecryptable or not, while SS3 keeps any flagged slot muted. A slot the
+  vocoder mutes (flagged with the flag on, or a DMR mono slot not playing) stages silence in `s_l`/`s_r`, so no mix
+  replays an earlier frame; a talkgroup hold that unmutes such a slot plays silence in SS3, while FS3 plays the float
+  frames the vocoder always stages. DMR and P25 Phase 2 MBE capture save in `mbe_finalize_slot_left/right()` before
+  `mbe_post_left/right_audio()` recomputes the slot mute flags, so the first frame after a mute change (reverse mute
+  included) follows the previous frame's state.
 - Invariant (vocoder PCM scale, `<dsd-neo/core/vocoder.h>`): mbelib-neo's float PCM is int16 / 7
   (`mbe_floattoshort()` multiplies by 7), and from 2.3 it synthesizes speech at that reference level. The voice
   buffers (`audio_out_temp_buf`/`R` and their `f_l`/`f_r`/`f_l4`/`f_r4` copies) hold int16-scale samples, which the

@@ -675,8 +675,12 @@ test_dmr_ss3_decrypt_hold_and_copy_policy_helpers(void) {
     opts.dmr_mute_encL = 1;
     opts.dmr_mute_encR = 1;
 
+    // SS3 follows the vocoder's slot flags (issue #574): the vocoder flags a slot encrypted when the service options
+    // carry the encryption bit and no loaded key decrypts it, and clears the flag when one does.
     state.dmr_so = 0x40;
     state.dmr_soR = 0x40;
+    state.dmr_encL = 1;
+    state.dmr_encR = 1;
     dsd_dmr_ss3_init_enc_flags(&opts, &state, &encL, &encR);
 
     int rc = 0;
@@ -686,6 +690,8 @@ test_dmr_ss3_decrypt_hold_and_copy_policy_helpers(void) {
     g_dmr_missing_alg_key_allowed[0] = 1;
     state.payload_algidR = 0x81;
     g_dmr_voice_slot_allowed[1] = 1;
+    state.dmr_encL = 0;
+    state.dmr_encR = 0;
     dsd_dmr_ss3_init_enc_flags(&opts, &state, &encL, &encR);
     rc |= expect_int("ss3 missing-alg key unmutes left", encL, 0);
     rc |= expect_int("ss3 explicit voice key unmutes right", encR, 0);
@@ -697,16 +703,17 @@ test_dmr_ss3_decrypt_hold_and_copy_policy_helpers(void) {
     rc |= expect_int("ss3 forced privacy unmutes left", encL, 0);
     rc |= expect_int("ss3 forced privacy unmutes right", encR, 0);
 
-    // Issue #574: with the encrypted-audio unmute the vocoder stages a slot it cannot decrypt, and SS3 plays it as
-    // FS3 does.
+    // Issue #574: the encrypted-audio mute flag is 0 after the user's unmute toggle and after any key load. The
+    // vocoder then stages a slot it flagged encrypted and FS3 plays it, but SS3 keeps it muted, so loading a key does
+    // not unmute every call that key cannot decrypt.
     state.baofeng_ap = 0;
     state.dmr_encL = 1;
     state.dmr_encR = 1;
     opts.dmr_mute_encL = 0;
     opts.dmr_mute_encR = 0;
     dsd_dmr_ss3_init_enc_flags(&opts, &state, &encL, &encR);
-    rc |= expect_int("ss3 encrypted-audio unmute plays undecryptable left", encL, 0);
-    rc |= expect_int("ss3 encrypted-audio unmute plays undecryptable right", encR, 0);
+    rc |= expect_int("ss3 keeps undecryptable left muted with encrypted audio unmuted", encL, 1);
+    rc |= expect_int("ss3 keeps undecryptable right muted with encrypted audio unmuted", encR, 1);
     dsd_dmr_init_slot_mute_flags(&opts, &state, &encL, &encR);
     rc |= expect_int("fs3 encrypted-audio unmute plays undecryptable left", encL, 0);
     rc |= expect_int("fs3 encrypted-audio unmute plays undecryptable right", encR, 0);

@@ -409,7 +409,7 @@ p25p2_s16_frames_have_audio(short frames[18][160]) {
 }
 
 // Baofeng AP and CSI EE unmute a slot whatever its flags say, a mixer override older than the vocoder's forced clear
-// for them (SS3 then read only the encryption bit of the service options, which the vocoder never clears). It never
+// for them (SS3 then read only the encryption bit of the service options, which forced clear leaves set). It never
 // overrides reverse mute (-q): the vocoder applies forced clear first and -q then mutes the call, so the s16 path
 // stages none of it and neither mixer may play it.
 static inline int
@@ -417,31 +417,28 @@ dmr_forced_privacy_unmute_enabled(const dsd_opts* opts, const dsd_state* state) 
     return opts->reverse_mute != 1 && ((state->baofeng_ap == 1) || (state->csi_ee == 1));
 }
 
-// Whether the stereo DMR mixes start a slot muted. First the Baofeng AP / CSI EE override above (never under -q);
-// otherwise the vocoder's verdict after its forced clear and reverse mute: muted when the slot is flagged encrypted
-// while encrypted audio is muted, which is exactly when the vocoder stages no s16 samples for it (processAudio()).
+// The stereo DMR mixes start each slot from the vocoder's verdict, dmr_encL/R as mbe_post_left/right_audio() leave
+// it: set when the slot is encrypted and no loaded key decrypts it (a mapped Vertex keystream counts as decrypting),
+// cleared under forced clear, and flipped by reverse mute (-q). The Baofeng AP / CSI EE override above comes first.
+//
+// The mixes differ over the encrypted-audio mute flag, dmr_mute_encL/R. It is 0 after the user's toggle of all
+// mutes, after any key load (dsd_key_apply_mute_policy()) and after the vocoder's talkgroup key autoload or AES
+// keystream; -q sets it with the verdict. While it is 0 the vocoder still runs a slot it flagged encrypted through
+// the short path, and FS3 plays the slot (undecryptable garble, as it long has). SS3 does not: a slot flagged
+// encrypted stays muted whatever the flag says, so a key load cannot unmute every call those keys do not decrypt.
 static int
-dmr_slot_mixer_muted(const dsd_opts* opts, const dsd_state* state, int slot) {
+dmr_slot_flagged_encrypted(const dsd_opts* opts, const dsd_state* state, int slot) {
     if (dmr_forced_privacy_unmute_enabled(opts, state)) {
         return 0;
     }
-    const int enc = (slot == 0) ? state->dmr_encL : state->dmr_encR;
-    const int mute = (slot == 0) ? opts->dmr_mute_encL : opts->dmr_mute_encR;
-    return (enc != 0 && mute != 0) ? 1 : 0;
+    return ((slot == 0) ? state->dmr_encL : state->dmr_encR) != 0 ? 1 : 0;
 }
 
-// SS3's own crypto mute: the service options mark the slot encrypted and no loaded key decrypts it.
+// FS3's verdict: flagged encrypted while encrypted audio is muted.
 static int
-dmr_ss3_slot_undecryptable(const dsd_state* state, int slot) {
-    const int enc_bit = ((slot == 0 ? state->dmr_so : state->dmr_soR) >> 6) & 0x1;
-    if (!enc_bit) {
-        return 0;
-    }
-    const int algid = (slot == 0) ? state->payload_algid : state->payload_algidR;
-    const int can_decrypt =
-        (algid == 0) ? dsd_dmr_missing_alg_key_can_decrypt(state, slot)
-                     : dsd_dmr_voice_slot_can_decrypt(state, slot, algid, (slot == 0) ? state->R : state->RR);
-    return can_decrypt ? 0 : 1;
+dmr_slot_mixer_muted(const dsd_opts* opts, const dsd_state* state, int slot) {
+    const int mute = (slot == 0) ? opts->dmr_mute_encL : opts->dmr_mute_encR;
+    return (dmr_slot_flagged_encrypted(opts, state, slot) && mute != 0) ? 1 : 0;
 }
 
 DSD_AUDIO2_INTERNAL void
@@ -664,23 +661,9 @@ dsd_write_s16_wav_18_blocks(const dsd_opts* opts, short stereo_sf[18][320], int 
 
 DSD_AUDIO2_INTERNAL void
 dsd_dmr_ss3_init_enc_flags(const dsd_opts* opts, const dsd_state* state, int* encL, int* encR) {
-    // SS3 plays the short samples the vocoder staged, so it starts from the slot verdict FS3 reads: a slot the vocoder
-    // muted (reverse mute included) has nothing staged to play. Under reverse mute and under forced clear that verdict
-    // is the whole answer: -q mutes clear calls and unmutes encrypted ones, which the encryption bit cannot tell.
-    *encL = dmr_slot_mixer_muted(opts, state, 0);
-    *encR = dmr_slot_mixer_muted(opts, state, 1);
-    if (opts->reverse_mute == 1 || dsd_key_dmr_forced_clear(state)) {
-        return;
-    }
-    // Otherwise, while encrypted audio is muted, SS3 also mutes a slot the service options mark encrypted that no
-    // loaded key decrypts. The encrypted-audio unmute (dmr_mute_encL/R 0) lifts it, as it lifts the vocoder's mute:
-    // the vocoder then stages the slot and both mixes play it.
-    if (opts->dmr_mute_encL != 0 && dmr_ss3_slot_undecryptable(state, 0)) {
-        *encL = 1;
-    }
-    if (opts->dmr_mute_encR != 0 && dmr_ss3_slot_undecryptable(state, 1)) {
-        *encR = 1;
-    }
+    // The vocoder's flag alone, whatever the encrypted-audio mute flag says (see dmr_slot_flagged_encrypted()).
+    *encL = dmr_slot_flagged_encrypted(opts, state, 0);
+    *encR = dmr_slot_flagged_encrypted(opts, state, 1);
 }
 
 DSD_AUDIO2_INTERNAL void
@@ -1307,11 +1290,11 @@ playSynthesizedVoiceSS3(dsd_opts* opts, dsd_state* state) {
     unsigned long TGL = dsd_audio_call_target(state, 0U);
     unsigned long TGR = dsd_audio_call_target(state, 1U);
 
-    // A held talkgroup unmutes its slot even when the vocoder muted it (encrypted with no key, or clear under -q).
-    // FS3 then plays the float frames the vocoder always stages; SS3 plays the slot's short samples, which the vocoder
-    // stages only for an audible slot and otherwise leaves silent (mbe_post_stage_slot_silence()), so here a held
-    // muted slot plays silence. Staging short samples for a muted slot would run the short path's gain on audio the
-    // vocoder judged muted, for a rare combination.
+    // A held talkgroup unmutes its slot even when the vocoder muted it (encrypted with no key while encrypted audio is
+    // muted, or clear under -q). FS3 then plays the float frames the vocoder always stages; SS3 plays the slot's short
+    // samples, which the vocoder stages only for a slot it did not mute and otherwise leaves silent
+    // (mbe_post_stage_slot_silence()), so here a held muted slot plays silence. Staging short samples for a muted slot
+    // would run the short path's gain on audio the vocoder judged muted, for a rare combination.
     dsd_dmr_apply_tg_hold_and_slot_preference_ss3(opts, state, TGL, TGR, &encL, &encR);
     // Apply the final policy after Hold so a temporary avoid cannot be unmuted again.
     (void)dsd_audio_group_gate_dual(opts, state, TGL, TGR, encL, encR, &encL, &encR);
