@@ -8,7 +8,7 @@ private class RecordingScreen : StatusFeed.Screen {
         calls += "start $id"
     }
 
-    override fun sample(stamp: ULong, ageMs: Long, wakeAllowed: Boolean) {
+    override fun sample(stamp: ULong?, ageMs: Long, wakeAllowed: Boolean) {
         calls += "sample $stamp $ageMs $wakeAllowed"
     }
 
@@ -59,14 +59,14 @@ private fun aDuplicateSessionIdStartsOnce() {
 private fun aNullStatusSamplesAsNoChange() {
     val screen = RecordingScreen()
     val feed = StatusFeed(screen)
-    // Before any readable record: the wire's "nothing audible" (stamp 0, age -1).
+    // No readable record: a sample with no stamp, before any record and after one alike. The feed keeps no stamp of
+    // its own to replay; the policy owns the last one.
     feed.onTick(true, 4L, null, true)
-    check(screen.take() == listOf("start 4", "sample 0 -1 true"))
+    check(screen.take() == listOf("start 4", "sample null -1 true"))
     feed.onTick(true, 4L, status(77uL, 300), true)
     check(screen.take() == listOf("sample 77 300 true"))
-    // After one: the last stamp again, with no age, so the policy sees no change but still renews a held lease.
     feed.onTick(true, 4L, null, false)
-    check(screen.take() == listOf("sample 77 -1 false"))
+    check(screen.take() == listOf("sample null -1 false"))
     feed.onTick(true, 4L, status(77uL, 2_300), true)
     check(screen.take() == listOf("sample 77 2300 true"))
 }
@@ -133,9 +133,62 @@ private fun theFeedDrivesTheControllerLease() {
     feed.onTick(true, 1L, null, true)
     // Taken at the start, then renewed by each of the eight polls.
     check(renewals.size == 9 && renewals.last() == now) { "renewed on every poll: $renewals" }
-    check(controller.policy.lastAudio == now - 6_000) { "only the new stamp was activity" }
+    check(controller.state.lastAudio == now - 6_000) { "only the new stamp was activity" }
     feed.onTerminated()
-    check(released == 1 && !controller.policy.outputs.holdLease)
+    check(released == 1 && !controller.state.outputs.holdLease)
+}
+
+private fun aSynchronousSampleThenAnUnreadableTickReplaysNothing() {
+    var now = 5_000_000L
+    var pulses = 0
+    val controller = ScreenController(
+        { now },
+        object : ScreenController.Effects {
+            override fun setKeepScreenOn(on: Boolean) {}
+
+            override fun setDimmed(dimmed: Boolean) {}
+
+            override fun renewLease() {}
+
+            override fun releaseLease() {}
+
+            override fun pulseWake(): Boolean {
+                pulses++
+                return true
+            }
+
+            override fun schedule(atMs: Long?) {}
+        },
+    )
+    val feed = StatusFeed(controller)
+    controller.configure(3, 30)
+    controller.started()
+    controller.topResumedChanged(true, true)
+    controller.focusChanged(true, true)
+    feed.onTick(true, 1L, status(10uL, -1), true)
+    feed.onTick(true, 1L, status(10uL, -1), true)
+    now += 30_000
+    controller.tick()
+    // Asleep in front: armed.
+    controller.topResumedChanged(false, false)
+    controller.focusChanged(false, false)
+    controller.paused(false)
+    controller.stopped(false)
+    controller.screenOff()
+    check(controller.state.armed && pulses == 0)
+    // During a phone call (wakes blocked) a call's audio starts; the glue's synchronous sample sees it first, straight
+    // through the controller.
+    now += 1_000
+    controller.sample(11uL, 100, false)
+    val heard = controller.state.lastAudio
+    check(pulses == 0 && heard == now - 100)
+    // The next poll's record is unreadable, and the one after reads that same audio again, with wakes allowed.
+    now += 500
+    feed.onTick(true, 1L, null, true)
+    check(controller.state.lastStamp == 11uL) { "an unreadable tick must not put back an older stamp" }
+    now += 500
+    feed.onTick(true, 1L, status(11uL, 1_100), true)
+    check(pulses == 0 && controller.state.lastAudio == heard) { "the same audio again is not a new call" }
 }
 
 fun main() {
@@ -144,5 +197,6 @@ fun main() {
     aNullStatusSamplesAsNoChange()
     everyTerminationEndsTheSessionOnce()
     theFeedDrivesTheControllerLease()
+    aSynchronousSampleThenAnUnreadableTickReplaysNothing()
     println("PASS: status feed samples every running tick, starts each session once and ends it once")
 }

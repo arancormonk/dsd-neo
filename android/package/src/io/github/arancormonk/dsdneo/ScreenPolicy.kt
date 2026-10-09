@@ -5,6 +5,55 @@
 
 package io.github.arancormonk.dsdneo
 
+/** A [ScreenPolicy]'s state, read-only: what [ScreenController.state] hands out, so nothing bypasses the effects. */
+interface ScreenPolicyView {
+    val mode: ScreenPolicy.Mode
+    val delaySeconds: Int
+
+    /** The running decoder session's id, or null with none. */
+    val session: Long?
+
+    // Where DSD-neo's activity stands.
+    val visible: Boolean
+    val focused: Boolean
+    val top: Boolean
+    val multiWindow: Boolean
+
+    /** Whether the screen is on, as the screen-on and screen-off broadcasts (and a refused wake) last said. */
+    val interactive: Boolean
+
+    val armed: Boolean
+    val snoozed: Boolean
+
+    /** Whether a foreground-loss sequence has started and not yet ended by DSD-neo being in front again. */
+    val lossSequenceOpen: Boolean
+
+    /** When DSD-neo's own wake turned the screen on, until the next screen-off; and the phone's timeout then. */
+    val wakeAt: Long?
+    val wakeTimeoutMs: Long
+
+    /** When the lease output last went from held to released. */
+    val leaseReleasedAt: Long?
+
+    /** The last audible-audio stamp this session has seen; the policy is its only keeper. */
+    val lastStamp: ULong?
+    val lastAudio: Long?
+    val lastTouch: Long?
+    val lastStart: Long?
+    val lastConfig: Long?
+
+    /** Whether the touch gesture in progress began on a dimmed screen, so every event of it is swallowed. */
+    val swallowing: Boolean
+
+    /** Advances once per wake the glue should carry out. */
+    val wakeSerial: Long
+
+    val outputs: ScreenPolicy.Outputs
+
+    /** The next instant an output changes by time alone, or null. */
+    val deadline: Long?
+}
+
 /**
  * What the screen should do between calls: keep it on, dim it, hold it on with DSD-neo's own lease, or wake it for a
  * new call. Plain Kotlin with no Android types, so it runs on the JVM; [ScreenController] applies its outputs.
@@ -24,8 +73,9 @@ package io.github.arancormonk.dsdneo
  *
  * Engagement is audible audio, a touch, a session or foreground start, or a setting change within the last
  * [delaySeconds]. New audible audio is a changed stamp with an age of zero or more; the first sample of a session only
- * records its stamp, and a changed stamp without an age (-1: none, expired or reset) records the stamp and nothing
- * else. A wake ([wakeSerial] advancing) needs that new audio to be at most [WAKE_MAX_AGE_MS] old, Off mode, a
+ * records its stamp, a changed stamp without an age (-1: none, expired or reset) records the stamp and nothing else,
+ * and a sample without a stamp (no readable record) changes nothing. The policy is the only keeper of the last
+ * stamp. A wake ([wakeSerial] advancing) needs that new audio to be at most [WAKE_MAX_AGE_MS] old, Off mode, a
  * session, the activity not visible, armed, not snoozed, the screen off, and the caller's [wakeAllowed] verdict. A
  * blocked wake still counts as audio.
  *
@@ -40,7 +90,8 @@ package io.github.arancormonk.dsdneo
  * comes no later than `max(leaseReleasedAt, wakeAt + screen-off timeout) + OWN_WAKE_GRACE_MS` (a lease still held at
  * that off counts as released by it); a later off means someone used the phone.
  *
- * A screen-off (or arming loss) while audio is engaged snoozes: no wakes until a full delay passes without audio.
+ * A screen-off (or arming loss) while audio is engaged snoozes: no wakes until a full delay passes without audio,
+ * judged by when audio was heard rather than when a poll reported it.
  * Touches and starts never snooze. The glue takes a synchronous status sample just before those callbacks so audio
  * that began between polls is known.
  *
@@ -51,7 +102,7 @@ package io.github.arancormonk.dsdneo
  * - Quick use of the secure camera from the lock screen, inside the window an own wake's screen is expected to stay
  *   on, gives DSD-neo no callback at all; arming survives it, and the next call wakes the screen again.
  */
-class ScreenPolicy(private val clock: () -> Long) {
+class ScreenPolicy(private val clock: () -> Long) : ScreenPolicyView {
     /** The screen modes. The codes are a contract with Qt's `AppPrefs::ScreenMode`; never renumber them. */
     enum class Mode(val code: Int) {
         SYSTEM(0),
@@ -68,74 +119,56 @@ class ScreenPolicy(private val clock: () -> Long) {
 
     data class Outputs(val keepScreenOn: Boolean, val dimmed: Boolean, val holdLease: Boolean)
 
-    var mode = Mode.SYSTEM
+    override var mode = Mode.SYSTEM
         private set
-    var delaySeconds = DEFAULT_DELAY_SECONDS
+    override var delaySeconds = DEFAULT_DELAY_SECONDS
         private set
     private val delayMs: Long get() = delaySeconds * 1_000L
-
-    /** The running decoder session's id, or null with none. */
-    var session: Long? = null
+    override var session: Long? = null
         private set
-
-    // Where DSD-neo's activity stands.
-    var visible = false
+    override var visible = false
         private set
-    var focused = false
+    override var focused = false
         private set
-    var top = false
+    override var top = false
         private set
-    var multiWindow = false
+    override var multiWindow = false
         private set
-
-    /** Whether the screen is on, as the screen-on and screen-off broadcasts last said. */
-    var interactive = true
+    override var interactive = true
         private set
-
-    var armed = false
+    override var armed = false
         private set
-    var snoozed = false
+    override var snoozed = false
         private set
-
-    /** Whether a foreground-loss sequence has started and not yet ended by regaining the foreground. */
-    var lossSequenceOpen = false
+    override var lossSequenceOpen = false
         private set
-
-    /** When DSD-neo's own wake turned the screen on, until the next screen-off; and the phone's timeout then. */
-    var wakeAt: Long? = null
+    override var wakeAt: Long? = null
         private set
-    var wakeTimeoutMs = 0L
+    override var wakeTimeoutMs = 0L
         private set
-
-    /** When the lease output last went from held to released. */
-    var leaseReleasedAt: Long? = null
+    override var leaseReleasedAt: Long? = null
         private set
-
-    var lastStamp: ULong? = null
+    override var lastStamp: ULong? = null
         private set
-    var lastAudio: Long? = null
+    override var lastAudio: Long? = null
         private set
-    var lastTouch: Long? = null
+    override var lastTouch: Long? = null
         private set
-    var lastStart: Long? = null
+    override var lastStart: Long? = null
         private set
-    var lastConfig: Long? = null
+    override var lastConfig: Long? = null
         private set
 
     /** Whether this session's first sample has been taken (it only records the stamp). */
     private var primed = false
 
-    /** Whether the touch gesture in progress began on a dimmed screen, so every event of it is swallowed. */
-    var swallowing = false
+    override var swallowing = false
         private set
-
-    /** Advances once per wake the glue should carry out. */
-    var wakeSerial = 0L
+    override var wakeSerial = 0L
         private set
-
-    var outputs = Outputs(keepScreenOn = false, dimmed = false, holdLease = false)
+    override var outputs = Outputs(keepScreenOn = false, dimmed = false, holdLease = false)
         private set
-    var deadline: Long? = null
+    override var deadline: Long? = null
         private set
 
     private val between: Boolean
@@ -171,10 +204,11 @@ class ScreenPolicy(private val clock: () -> Long) {
 
     /**
      * One status poll (or the glue's synchronous sample): [stamp] identifies the last audible audio and [ageMs] is how
-     * long ago it was heard, or -1 for none. Ignored outside a session.
+     * long ago it was heard, or -1 for none. A null [stamp] means no readable record, and changes nothing. Ignored
+     * outside a session.
      */
-    fun sample(stamp: ULong, ageMs: Long, wakeAllowed: Boolean) = step { now ->
-        if (session == null) {
+    fun sample(stamp: ULong?, ageMs: Long, wakeAllowed: Boolean) = step { now ->
+        if (session == null || stamp == null) {
             return@step
         }
         if (!primed) {
@@ -191,7 +225,13 @@ class ScreenPolicy(private val clock: () -> Long) {
             return@step
         }
         val heardAt = now - ageMs
-        lastAudio = lastAudio?.let { maxOf(it, heardAt) } ?: heardAt
+        val previous = lastAudio
+        // A snooze ends only if this audio was heard a full delay after the last: judged by when it was heard, not
+        // when the poll ran, so audio a poll reports late still continues the run of calls.
+        if (snoozed && (previous == null || heardAt >= previous + delayMs)) {
+            snoozed = false
+        }
+        lastAudio = if (previous == null) heardAt else maxOf(previous, heardAt)
         if (ageMs <= WAKE_MAX_AGE_MS && mode == Mode.OFF_BETWEEN_CALLS && !visible && armed && !snoozed &&
             !interactive && wakeAllowed
         ) {
@@ -352,12 +392,12 @@ class ScreenPolicy(private val clock: () -> Long) {
     }
 
     /**
-     * Runs one input: housekeeping, the change, housekeeping again, then the outputs. The leading housekeeping lets a
-     * snooze end at the input that first finds a full quiet delay behind it, before the change judges a wake.
+     * Runs one input: the change, then housekeeping, then the outputs. Housekeeping ends a snooze once audio is no
+     * longer engaged. No change reads the snooze before it except [sample], which judges it by when its new audio was
+     * heard before it judges a wake, so a poll that arrives after the delay cannot end a snooze its own audio extends.
      */
     private fun <T> step(change: (now: Long) -> T): T {
         val now = clock()
-        settleSnooze(now)
         val result = change(now)
         settleSnooze(now)
         val next = outputsAt(now)

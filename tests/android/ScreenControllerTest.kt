@@ -52,7 +52,7 @@ private class ControllerRig(mode: Int = OFF) {
         controller.configure(mode, 30)
     }
 
-    val policy: ScreenPolicy get() = controller.policy
+    val policy: ScreenPolicyView get() = controller.state
 
     fun front() {
         controller.started()
@@ -135,6 +135,29 @@ private fun keepOnIsSetBeforeTheLeaseIsReleased() {
         val release = calls.indexOf("release")
         check(keepOn >= 0 && release > keepOn) { "mode $mode: make before break, got $calls" }
     }
+}
+
+private fun theLeaseIsTakenBeforeKeepOnIsCleared() {
+    for (mode in listOf(DIM, ALWAYS_ON)) {
+        val rig = ControllerRig(mode = mode)
+        rig.front()
+        rig.session()
+        check(rig.policy.outputs.keepScreenOn)
+        rig.effects.take()
+        rig.controller.configure(OFF, 30)
+        val calls = rig.effects.take()
+        val renew = calls.indexOf("renew")
+        val keepOff = calls.indexOf("keepOn=false")
+        check(renew >= 0 && keepOff > renew) { "mode $mode to Off: make before break, got $calls" }
+    }
+}
+
+private fun theStateIsReadOnly() {
+    val rig = ControllerRig(mode = OFF)
+    check(rig.controller.state !is ScreenPolicy) { "the glue must not reach the policy past the effects" }
+    rig.front()
+    rig.session()
+    check(rig.controller.state.outputs.holdLease && rig.controller.state.session == SESSION)
 }
 
 private fun aHeldLeaseIsRenewedOnEverySample() {
@@ -259,6 +282,8 @@ private fun touchDelegatesInOneCall() {
 fun main() {
     effectsApplyOnlyOnChange()
     keepOnIsSetBeforeTheLeaseIsReleased()
+    theLeaseIsTakenBeforeKeepOnIsCleared()
+    theStateIsReadOnly()
     aHeldLeaseIsRenewedOnEverySample()
     theLeaseIsReleasedAtOnce()
     aRefusedWakeIsFedBackAndNotRetried()

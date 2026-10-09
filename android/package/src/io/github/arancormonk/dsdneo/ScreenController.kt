@@ -9,11 +9,12 @@ package io.github.arancormonk.dsdneo
  * Runs a [ScreenPolicy] and carries its outputs out through [Effects], so the Android glue stays one-line delegations.
  * Main thread only, like the policy.
  *
- * After every event it applies what changed and nothing else, in a make-before-break order: the keep-on flag and the
- * dimming first, then the lease taken or released, so the screen is never left with neither. A held lease is renewed
- * on every [sample], since each renewal only lasts a few seconds. When the policy asks for a wake the controller
- * pulses once and, if the screen stayed off, tells the policy so it stops trying until the calls go quiet. It keeps
- * one [Effects.schedule] request in step with the policy's deadline.
+ * After every event it applies what changed and nothing else, make-before-break in both directions: a keep-on flag
+ * being set goes first, then a lease being taken, then a keep-on flag being cleared, the dimming, and last a lease
+ * being released, so a switch between the flag and the lease never leaves the screen with neither. A held lease is
+ * renewed on every [sample], since each renewal only lasts a few seconds. When the policy asks for a wake the
+ * controller pulses once and, if the screen stayed off, tells the policy so it stops trying until the calls go quiet.
+ * It keeps one [Effects.schedule] request in step with the policy's deadline.
  */
 class ScreenController(clock: () -> Long, private val effects: Effects) : StatusFeed.Screen {
     /** What the controller asks of the platform. Each is called only when its value changes, except [renewLease]. */
@@ -35,7 +36,10 @@ class ScreenController(clock: () -> Long, private val effects: Effects) : Status
         fun schedule(atMs: Long?)
     }
 
-    val policy = ScreenPolicy(clock)
+    private val policy = ScreenPolicy(clock)
+
+    /** The policy's state, read-only; every change goes through this controller, so the effects never drift. */
+    val state: ScreenPolicyView = object : ScreenPolicyView by policy {}
 
     private var applied = policy.outputs
     private var scheduled: Long? = null
@@ -47,7 +51,7 @@ class ScreenController(clock: () -> Long, private val effects: Effects) : Status
 
     override fun sessionEnded() = after { policy.sessionEnded() }
 
-    override fun sample(stamp: ULong, ageMs: Long, wakeAllowed: Boolean) {
+    override fun sample(stamp: ULong?, ageMs: Long, wakeAllowed: Boolean) {
         policy.sample(stamp, ageMs, wakeAllowed)
         apply(renew = true)
     }
@@ -96,14 +100,18 @@ class ScreenController(clock: () -> Long, private val effects: Effects) : Status
 
     private fun apply(renew: Boolean = false) {
         val next = policy.outputs
-        if (next.keepScreenOn != applied.keepScreenOn) {
-            effects.setKeepScreenOn(next.keepScreenOn)
-        }
-        if (next.dimmed != applied.dimmed) {
-            effects.setDimmed(next.dimmed)
+        // Whatever keeps the screen on is put in place before whatever else kept it on goes away.
+        if (next.keepScreenOn && !applied.keepScreenOn) {
+            effects.setKeepScreenOn(true)
         }
         if (next.holdLease && (renew || !applied.holdLease)) {
             effects.renewLease()
+        }
+        if (!next.keepScreenOn && applied.keepScreenOn) {
+            effects.setKeepScreenOn(false)
+        }
+        if (next.dimmed != applied.dimmed) {
+            effects.setDimmed(next.dimmed)
         }
         if (!next.holdLease && applied.holdLease) {
             effects.releaseLease()

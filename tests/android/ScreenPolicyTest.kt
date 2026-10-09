@@ -553,6 +553,38 @@ private fun housekeepingClearsTheSnoozeAfterAFullQuietDelay() {
     check(late.wakes == 1L && !late.policy.snoozed)
 }
 
+private fun aSnoozeEndsOnlyWhenTheNewAudioFollowsAFullQuietDelay() {
+    // The last audio and the off at L. The next poll comes 200 ms after L + delay, but the audio it reports was heard
+    // 900 ms before it: at L + 29.3 s, inside the delay. The run of calls never went quiet, so the snooze holds.
+    val rig = PolicyRig().snoozedAsleep()
+    val lastHeard = rig.policy.lastAudio!!
+    rig.advance(DELAY_MS + 200)
+    rig.audio(ageMs = 900)
+    check(rig.wakes == 0L && rig.policy.snoozed) { "audio heard inside the delay continues the snooze" }
+    check(rig.policy.lastAudio == lastHeard + DELAY_MS - 700)
+    // Audio heard a full delay after that ends it, and wakes.
+    rig.advance(DELAY_MS)
+    rig.audio(ageMs = 900)
+    check(rig.wakes == 1L && !rig.policy.snoozed)
+}
+
+private fun aSampleWithoutARecordChangesNothing() {
+    val rig = PolicyRig().armedAsleep()
+    val stamp = rig.audio(ageMs = 100)
+    check(rig.wakes == 1L)
+    val heard = rig.policy.lastAudio
+    rig.advance(1_000)
+    rig.policy.sample(null, -1, true)
+    check(rig.policy.lastStamp == stamp && rig.policy.lastAudio == heard && rig.wakes == 1L)
+    // Nor does it take a new session's first look: the first readable record still only primes.
+    rig.policy.sessionStarted(SESSION + 1)
+    rig.policy.sample(null, -1, true)
+    rig.policy.sample(stamp + 1uL, 0, true)
+    check(rig.policy.lastStamp == stamp + 1uL && rig.policy.lastAudio == heard && rig.wakes == 1L)
+    rig.policy.sample(stamp + 2uL, 0, true)
+    check(rig.policy.lastAudio == rig.now)
+}
+
 // ---- Histories ----
 
 private fun splitScreenFocusedVersusUnfocused() {
@@ -1089,6 +1121,8 @@ fun main() {
     row23TickAtTheDeadlineDimsAndReleases()
     row24DestroyedForgetsTheWindow()
     housekeepingClearsTheSnoozeAfterAFullQuietDelay()
+    aSnoozeEndsOnlyWhenTheNewAudioFollowsAFullQuietDelay()
+    aSampleWithoutARecordChangesNothing()
     splitScreenFocusedVersusUnfocused()
     unfocusedSplitScreenSleepDoesNotArm()
     homeWithTheScreenOnThenOff()

@@ -11,24 +11,26 @@ package io.github.arancormonk.dsdneo
  * Every running tick feeds a sample, even when only the audio's age moved or the record did not change at all,
  * because the policy's lease is renewed per sample. A session id the feed has not seen starts a session. Every path
  * that stops the poll ends the session through [onTerminated], which acts once however many of them run.
+ *
+ * The feed keeps no stamp of its own: the policy is the only keeper of the last one. So a synchronous sample the glue
+ * sends straight to the controller (before a screen-off or an arming loss) can never be undone by a later tick.
  */
 class StatusFeed(private val screen: Screen) {
     /** Where the feed delivers; [ScreenController] in the app. */
     interface Screen {
         fun sessionStarted(id: Long)
 
-        fun sample(stamp: ULong, ageMs: Long, wakeAllowed: Boolean)
+        fun sample(stamp: ULong?, ageMs: Long, wakeAllowed: Boolean)
 
         fun sessionEnded()
     }
 
     private var session: Long? = null
-    private var stamp: ULong? = null
 
     /**
      * One poll tick. While [running], starts [sessionId] if it is new and samples [status]. A null status (absent or
-     * unreadable) samples as no change: the last stamp fed with no age, or before any readable record the wire's own
-     * "nothing audible" (stamp 0, age -1). A tick that is not running ends the session.
+     * unreadable) samples with no stamp, which the policy takes as no change. A tick that is not running ends the
+     * session.
      */
     fun onTick(running: Boolean, sessionId: Long, status: DecoderStatus?, wakeAllowed: Boolean) {
         if (!running) {
@@ -37,12 +39,9 @@ class StatusFeed(private val screen: Screen) {
         }
         if (sessionId != session) {
             session = sessionId
-            stamp = null
             screen.sessionStarted(sessionId)
         }
-        val sampled = status?.audibleStamp ?: stamp ?: 0uL
-        stamp = sampled
-        screen.sample(sampled, status?.audibleAgeMs ?: -1L, wakeAllowed)
+        screen.sample(status?.audibleStamp, status?.audibleAgeMs ?: -1L, wakeAllowed)
     }
 
     /** The poll stopped. Ends the session once; later calls do nothing until a running tick starts one again. */
@@ -51,7 +50,6 @@ class StatusFeed(private val screen: Screen) {
             return
         }
         session = null
-        stamp = null
         screen.sessionEnded()
     }
 }
