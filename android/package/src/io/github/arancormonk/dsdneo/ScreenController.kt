@@ -14,9 +14,10 @@ package io.github.arancormonk.dsdneo
  * being released, so a switch between the flag and the lease never leaves the screen with neither. A held lease is
  * renewed on every [sample], since each renewal only lasts a few seconds. When the policy asks for a wake the
  * controller pulses once and, if the screen stayed off, tells the policy so it stops trying until the calls go quiet.
+ * It decides which screen-on is DSD-neo's own wake: the first within [OWN_WAKE_SETTLE_MS] of a pulse Android accepted.
  * It keeps one [Effects.schedule] request in step with the policy's deadline.
  */
-class ScreenController(clock: () -> Long, private val effects: Effects) : StatusFeed.Screen {
+class ScreenController(private val clock: () -> Long, private val effects: Effects) : StatusFeed.Screen {
     /** What the controller asks of the platform. Each is called only when its value changes, except [renewLease]. */
     interface Effects {
         fun setKeepScreenOn(on: Boolean)
@@ -44,6 +45,9 @@ class ScreenController(clock: () -> Long, private val effects: Effects) : Status
     private var applied = policy.outputs
     private var scheduled: Long? = null
     private var pulsedSerial = policy.wakeSerial
+
+    /** When the last pulse Android accepted went out, until the screen-on it causes; null with none. */
+    private var pulsedAt: Long? = null
 
     fun configure(modeCode: Int, delaySeconds: Int) = after { policy.configure(modeCode, delaySeconds) }
 
@@ -79,7 +83,17 @@ class ScreenController(clock: () -> Long, private val effects: Effects) : Status
         return swallow
     }
 
-    fun screenOn(ours: Boolean, screenOffTimeoutMs: Long) = after { policy.screenOn(ours, screenOffTimeoutMs) }
+    /**
+     * The screen came on, with the phone's [screenOffTimeoutMs]. It is DSD-neo's own wake only within
+     * [OWN_WAKE_SETTLE_MS] of a pulse Android accepted, and only the first screen-on after it; any other screen-on,
+     * one right after a refused pulse included, is someone else's and disarms.
+     */
+    fun screenOn(screenOffTimeoutMs: Long) = after {
+        val pulsed = pulsedAt
+        pulsedAt = null
+        val ours = pulsed != null && clock() - pulsed < OWN_WAKE_SETTLE_MS
+        policy.screenOn(ours, screenOffTimeoutMs)
+    }
 
     fun screenOff() = after { policy.screenOff() }
 
@@ -119,8 +133,11 @@ class ScreenController(clock: () -> Long, private val effects: Effects) : Status
         applied = next
         if (policy.wakeSerial != pulsedSerial) {
             pulsedSerial = policy.wakeSerial
+            pulsedAt = clock()
             if (!effects.pulseWake()) {
-                // The refusal changes the policy's state, so its outputs and deadline are applied from there.
+                // The screen stayed off, so no screen-on to come is this pulse's: the next one disarms (D7). The
+                // refusal changes the policy's state, so its outputs and deadline are applied from there.
+                pulsedAt = null
                 policy.wakeRefused()
                 apply()
                 return
@@ -131,5 +148,10 @@ class ScreenController(clock: () -> Long, private val effects: Effects) : Status
             scheduled = deadline
             effects.schedule(deadline)
         }
+    }
+
+    companion object {
+        /** How long after a pulse a screen-on still counts as DSD-neo's own wake. */
+        const val OWN_WAKE_SETTLE_MS = 2_000L
     }
 }

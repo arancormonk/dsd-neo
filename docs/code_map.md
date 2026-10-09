@@ -4484,10 +4484,12 @@ main thread only. The decision is pure Kotlin with no `android.*` import, run on
   `wakeAllowed(audioMode, interruptionFilter)` allows a wake only in `MODE_NORMAL` with the filter `ALL` (or `UNKNOWN`);
   any other mode, a newer one included, blocks it. The two platform limits the README lists are documented in its KDoc.
 - `ScreenController.kt`: runs the policy and carries its outputs out through `Effects`, only on a change and
-  make-before-break (a keep-on flag being set, then a lease being taken, then a flag being cleared, the dimming, a
-  lease being released), renews a held lease on every sample, pulses once per `wakeSerial` step and turns a pulse
-  that left the screen off into `wakeRefused()`, and keeps one scheduled tick in step with the deadline. `state` is a
-  read-only view of the policy, so nothing bypasses the effects.
+  make-before-break (a keep-on flag being set, then a lease being taken, then a flag being cleared, the dimming, a lease
+  being released), renews a held lease on every sample, pulses once per `wakeSerial` step and turns a pulse that left
+  the screen off into `wakeRefused()`, and keeps one scheduled tick in step with the deadline. It decides which
+  screen-on is DSD-neo's own wake: only the first within `OWN_WAKE_SETTLE_MS` (2 s) of a pulse Android accepted. A
+  refused pulse leaves none, so the next screen-on is someone else's and disarms. `state` is a read-only view of the
+  policy, so nothing bypasses the effects.
 - `StatusFeed.kt`: the service's status poll as the policy sees it. Every running tick samples, even an unchanged
   record (a held lease is renewed per sample); a new session id starts a session; every path that stops the poll ends
   it, once. It keeps no stamp, so a synchronous sample the glue sends straight to the controller is never undone by a
@@ -4511,14 +4513,13 @@ The Android glue only delegates:
   configure, attach or tick. Before the screen-off broadcast and each callback that can lose the foreground it takes a
   synchronous sample (`DsdNative.nativeNotificationStatus()`), only for the session the poll is feeding
   (`DecoderService.runningSessionId()`). It hands every sample the supplier that reads the audio mode and interruption
-  filter for `wakeAllowed()`, both binder calls on the main thread, so they run only when the policy asks. A screen-on
-  broadcast within 2 s of its own pulse is its own wake, and it reads the phone's timeout
-  (`Settings.System.SCREEN_OFF_TIMEOUT`, 30 s when unreadable) then. The controller's clock is
-  `SystemClock.uptimeMillis`, the base `Handler.postAtTime()` schedules the tick on. Effects land on the attached
-  activity's window (`FLAG_KEEP_SCREEN_ON`; `screenBrightness` 0.01 or `BRIGHTNESS_OVERRIDE_NONE`), written only where
-  they differ from the live attributes and re-applied after each activity callback, poll tick and synchronous sample,
-  since Qt may replace them. A refused wake logs "Screen wake refused by Android; calls cannot turn the screen on" once
-  per session, to logcat and as a host diagnostic.
+  filter for `wakeAllowed()`, both binder calls on the main thread, so they run only when the policy asks. Each
+  screen-on broadcast goes to the controller with the phone's timeout (`Settings.System.SCREEN_OFF_TIMEOUT`, 30 s when
+  unreadable). The controller's clock is `SystemClock.uptimeMillis`, the base `Handler.postAtTime()` schedules the tick
+  on. Effects land on the attached activity's window (`FLAG_KEEP_SCREEN_ON`; `screenBrightness` 0.01 or
+  `BRIGHTNESS_OVERRIDE_NONE`), written only where they differ from the live attributes and re-applied after each
+  activity callback, poll tick and synchronous sample, since Qt may replace them. A refused wake logs "Screen wake
+  refused by Android; calls cannot turn the screen on" once per session, to logcat and as a host diagnostic.
 - `ScreenLocks.kt`: the two screen wake locks, created once and not reference-counted, so one release undoes any
   number of renewals. The lease `dsd-neo:screen` (`SCREEN_BRIGHT_WAKE_LOCK`, acquired for 10 s and renewed by each
   sample while wanted) holds the screen on in Off between calls; it has no `ON_AFTER_RELEASE`, so on release the

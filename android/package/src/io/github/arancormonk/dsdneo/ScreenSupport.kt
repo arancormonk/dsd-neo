@@ -53,9 +53,6 @@ object ScreenSupport {
     private const val DIM_BRIGHTNESS = 0.01f
     private const val BRIGHTNESS_TOLERANCE = 0.001f
 
-    /** How long after a wake pulse a screen-on broadcast still counts as DSD-neo's own wake. */
-    private const val WAKE_SETTLE_MS = 2_000L
-
     /** The phone's screen-off timeout when the setting cannot be read: Android's default. */
     private const val DEFAULT_SCREEN_OFF_TIMEOUT_MS = 30_000L
 
@@ -78,9 +75,6 @@ object ScreenSupport {
     /** The window state the controller last asked for, re-applied against the live window on every sample. */
     private var keepScreenOn = false
     private var dimmed = false
-
-    /** Whether a screen-on broadcast now would be the answer to our own wake pulse. */
-    private var wakeInFlight = false
 
     /** Whether a refused wake was reported, and for which session: a refusal is reported once per session. */
     private var refusalReported = false
@@ -107,9 +101,6 @@ object ScreenSupport {
 
         override fun pulseWake(): Boolean {
             val screen = screenLocks() ?: return false
-            wakeInFlight = true
-            main.removeCallbacks(settleWake)
-            main.postDelayed(settleWake, WAKE_SETTLE_MS)
             val on = screen.pulseWake()
             if (!on) {
                 reportRefusal()
@@ -129,7 +120,6 @@ object ScreenSupport {
     private val controller = ScreenController(SystemClock::uptimeMillis, Platform)
     private val feed = StatusFeed(controller)
     private val tick = Runnable { controller.tick() }
-    private val settleWake = Runnable { wakeInFlight = false }
 
     /** Android's wake verdict for the policy, which asks it only for a sample that would otherwise wake. */
     private val wakeVerdict: () -> Boolean = { wakeAllowed() }
@@ -137,7 +127,7 @@ object ScreenSupport {
     private val receiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             when (intent.action) {
-                Intent.ACTION_SCREEN_ON -> screenOn()
+                Intent.ACTION_SCREEN_ON -> controller.screenOn(screenOffTimeoutMs())
                 Intent.ACTION_SCREEN_OFF -> screenOff()
                 Intent.ACTION_USER_PRESENT -> controller.userPresent()
             }
@@ -320,13 +310,6 @@ object ScreenSupport {
     private fun screenOffTimeoutMs(): Long {
         val resolver = settings ?: return DEFAULT_SCREEN_OFF_TIMEOUT_MS
         return Settings.System.getLong(resolver, Settings.System.SCREEN_OFF_TIMEOUT, DEFAULT_SCREEN_OFF_TIMEOUT_MS)
-    }
-
-    private fun screenOn() {
-        val ours = wakeInFlight
-        wakeInFlight = false
-        main.removeCallbacks(settleWake)
-        controller.screenOn(ours, screenOffTimeoutMs())
     }
 
     private fun screenOff() {
