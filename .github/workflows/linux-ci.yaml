@@ -340,9 +340,11 @@ jobs:
   # The same suite built by Clang, the toolchain of the macOS DMG, which treats
   # fast-math more aggressively than GCC: it folds bit tests on floats it computed
   # or took as arguments, turns divisions into approximate reciprocals and
-  # reassociates loop sums. With -Werror, -Wnan-infinity-disabled also makes any
-  # NaN or infinity test left in fast-math code a build error, so a dead guard
-  # cannot land. That diagnostic needs a current Clang (Ubuntu 24.04's default
+  # reassociates loop sums. With -Werror, -Wnan-infinity-disabled makes isnan()/isinf()
+  # builtins and NaN/infinity constants in fast-math code a build error. Hand-written
+  # bit tests can fold away silently; only runtime tests fed NaN or infinity catch
+  # those dead guards, another reason to run the suite under this compiler.
+  # That diagnostic needs a current Clang (Ubuntu 24.04's default
   # Clang 18 lacks it), hence the Arch container the v4 job below also uses, and
   # a probe that fails the job if the compiler stops enforcing it.
   optimized-v3-ctest-clang:
@@ -380,15 +382,21 @@ jobs:
           set -euo pipefail
           /usr/lib/ld-linux-x86-64.so.2 --help | grep -F 'x86-64-v3 (supported'
 
-      # The job exists to enforce -Wnan-infinity-disabled; fail if this Clang
-      # accepts a NaN test under fast-math instead of passing without checking.
+      # Require a working compiler and the specific -Wnan-infinity-disabled
+      # diagnostic; an unrelated compile failure must not satisfy the probe.
       - name: Require Clang to reject NaN tests under fast-math
         run: |
           set -euo pipefail
           clang --version
           printf 'int probe(double x) { return __builtin_isnan(x); }\n' > "$RUNNER_TEMP/nan_probe.c"
-          if clang -ffast-math -Werror -c "$RUNNER_TEMP/nan_probe.c" -o "$RUNNER_TEMP/nan_probe.o"; then
+          clang -Werror -c "$RUNNER_TEMP/nan_probe.c" -o "$RUNNER_TEMP/nan_probe.o"
+          if clang -ffast-math -Werror -c "$RUNNER_TEMP/nan_probe.c" -o "$RUNNER_TEMP/nan_probe.o" 2> "$RUNNER_TEMP/nan_probe.err"; then
             echo "::error::this Clang does not diagnose NaN tests under fast-math (-Wnan-infinity-disabled)" >&2
+            exit 1
+          fi
+          if ! grep -F -e "-Wnan-infinity-disabled" "$RUNNER_TEMP/nan_probe.err"; then
+            cat "$RUNNER_TEMP/nan_probe.err" >&2
+            echo "::error::the fast-math NaN probe failed without -Wnan-infinity-disabled" >&2
             exit 1
           fi
 

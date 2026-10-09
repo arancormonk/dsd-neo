@@ -556,8 +556,11 @@ constants, and Clang also folds an integer bit test on a float it computed or re
 - Tests that feed NaN or infinity, or check results with `std::isnan()`, compile their own sources with IEEE
   semantics (the block near the top of `tests/CMakeLists.txt`), leaving the code under test on the build's flags.
 
-The `Linux • RelWithDebInfo • ctest (x86-64-v3, fast-math, clang)` check enforces the first point: with `-Werror`, Clang's
-`-Wnan-infinity-disabled` makes any NaN or infinity test left in fast-math code a build error.
+The `Linux • RelWithDebInfo • ctest (x86-64-v3, fast-math, clang)` check enforces the first point for builtin/constant
+forms: with `-Werror`, Clang's `-Wnan-infinity-disabled` makes `isnan()`/`isinf()` builtins and NaN/infinity constants
+in fast-math code a build error. Clang can silently fold hand-written bit tests on floats it computed or received
+by value; only runtime tests that feed the guard a NaN or infinity catch those dead guards, another reason the
+suite runs under this compiler.
 
 ## Core
 
