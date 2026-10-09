@@ -20,6 +20,13 @@ dsd_audio_dmr_mix_media_staged(int slot, unsigned int kind) {
 }
 
 void
+dsd_audio_dmr_mix_media_silenced(int slot, unsigned int kind) {
+    if (slot == 0 || slot == 1) {
+        s_dmr_mix_media[slot] &= ~kind;
+    }
+}
+
+void
 dsd_audio_dmr_mix_media_discard(int slot) {
     if (slot == 0 || slot == 1) {
         s_dmr_mix_media[slot] = 0U;

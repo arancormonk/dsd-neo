@@ -3089,7 +3089,8 @@ dmr_mix_any_nonzero_s16(const short* samples, size_t n) {
 
 /* Issue #574: a DMR slot the vocoder mutes stages silence, never its last frame. The stereo mixes copy each slot's
  * short frame into their superframe buffers every frame, and SS3 still plays a muted slot that a talkgroup hold
- * unmutes: an unrefreshed frame would replay the last call audio staged on that slot. */
+ * unmutes: an unrefreshed frame would replay the last call audio staged on that slot. The silence also retires the
+ * clear frame's media mark, so SS3 does not stamp the silence it plays; a clear frame staged after it marks again. */
 static int
 test_dmr_muted_slot_stages_silence_not_its_last_frame(void) {
     int rc = 0;
@@ -3144,6 +3145,25 @@ test_dmr_muted_slot_stages_silence_not_its_last_frame(void) {
         rc |= expect_eq_int(tag, g_dmr_mix_blocks, 3);
         DSD_SNPRINTF(tag, sizeof(tag), "%s held muted slot plays silence, not its last frame", name);
         rc |= expect_eq_int(tag, g_dmr_mix_signs[0] | g_dmr_mix_signs[1], 0);
+        DSD_SNPRINTF(tag, sizeof(tag), "%s held muted slot stamps none of the silence it plays", name);
+        rc |= expect_eq_int(tag, dmr_stamp_noted(), 0);
+
+        // The call turns clear again: its next frame replaces the silence and is media once more.
+        if (slot == 0) {
+            state->dmr_so = 0;
+        } else {
+            state->dmr_soR = 0;
+        }
+        for (int frame = 0; frame < 2; frame++) {
+            dmr_mix_stage_frame(opts, state, slot, frame);
+        }
+        DSD_SNPRINTF(tag, sizeof(tag), "%s clear again", name);
+        rc |= expect_eq_int(tag, slot == 0 ? state->dmr_encL : state->dmr_encR, 0);
+        dmr_mix_run(opts, state);
+        DSD_SNPRINTF(tag, sizeof(tag), "%s held slot clear again plays its frames", name);
+        rc |= expect_eq_int(tag, g_dmr_mix_blocks == 3 && (g_dmr_mix_signs[0] | g_dmr_mix_signs[1]) != 0, 1);
+        DSD_SNPRINTF(tag, sizeof(tag), "%s held slot clear again stamps", name);
+        rc |= expect_eq_int(tag, dmr_stamp_noted(), 1);
         freeState(state);
         free(state);
         free(opts);

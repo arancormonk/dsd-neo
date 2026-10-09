@@ -1603,13 +1603,17 @@ mbe_post_apply_forced_clear_gate(const dsd_state* state, int16_t* enc) {
 }
 
 // A muted slot stages silence: the stereo mixes copy each slot's short frame into their superframe buffers every
-// frame, and a frame left unrefreshed would replay the last one staged on that slot.
+// frame, and a frame left unrefreshed would replay the last one staged on that slot. The silence replaces the short
+// media staged on the slot, so it retires the slot's SHORT mark for the stamp (dsd_audio_dmr_mix_media_silenced()).
 static void
 mbe_post_stage_slot_silence(dsd_state* state, int slot) {
     if (slot == 0) {
         DSD_MEMSET(state->s_l, 0, sizeof(state->s_l));
     } else {
         DSD_MEMSET(state->s_r, 0, sizeof(state->s_r));
+    }
+    if (dsd_audio_activity_armed()) {
+        dsd_audio_dmr_mix_media_silenced(slot, DSD_DMR_MIX_MEDIA_SHORT);
     }
 }
 

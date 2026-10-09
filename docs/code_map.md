@@ -780,23 +780,25 @@ suite runs under this compiler.
   `-6` raw WAV, the static and per-call WAV writers, and the output helpers below the writers
   (`dsd_output_*_block(s)()`, `dsd_audio_write()`, the UDP blasters), which cannot tell where a block came from. FS3 and
   SS3 run on a timer of bursts, skipped ones included, and replay each slot's buffers whether or not anything new was
-  decoded into them, so the vocoder marks fresh media per slot (`dsd_audio_dmr_mix_media_staged()`/`_discard()`/
-  `_take()` in `<dsd-neo/core/audio.h>`, `src/core/audio/dmr_mix_media.c`; DMR synctypes only, only while armed, decoder
-  thread only): FLOAT where `mbe_post_left/right_audio()` copy a decoded frame into `f_l`/`f_r`, SHORT where the short
-  path writes `s_l`/`s_r`, never for the silence staged for a muted slot. Each mix takes both slots' marks and stamps
-  only for an unmuted slot holding its own kind, so under a talkgroup hold of a slot the vocoder muted FS3 stamps the
-  float frames it plays and SS3, playing silence, does not. Slot purges (`dsd_mbe_purge_slot_audio()`), `initState()`,
-  the engine's no-carrier reset and the end of the DMR BS loop (`finalize_dmr_bs()`) discard the marks. EDACS analog
-  stamps a triplet only when the squelch the call runs opened on it: the dynamic squelch heard a sample (the per-run
-  marking `edacs_process_analog_triplet()` already applies, returned), the level squelch's power test
-  (`pwr > call->sql`) passed, or the call runs none; a closed triplet is still written but never stamps. The analog
-  monitor stamps analog reception only: the FM or AM monitor (`dsd_analog_monitor_tap_active()`), never the `-8` source
-  monitor during digital decoding, with the tap's carrier open now and the tone policy passing it
-  (`symbol_unsynced_carrier_active()`), a sink to write to (the local raw stream or UDP), and under the auto squelch at
-  least one sample its own gate hears, so the fade-out written after the gate closes does not count and an unmodulated
-  carrier does. Tests: `CORE_AUDIO_ACTIVITY`, `CORE_AUDIO2_HELPERS`, `CORE_MBE_TRANSFORM_CONTEXT`, `CORE_AUDIO_GAIN`,
-  `P25_P2_MIXER_GATE`, `M17_STATE_DISPATCH`, `EDACS_GRANT_TUNE_MATRIX`, `DSP_SYMBOL_REPLAY`, `DMR_BS_SYNC_TIMES`,
-  `ENGINE_NO_CARRIER_RESET` (see `docs/testing.md`).
+  decoded into them, so the vocoder marks fresh media per slot (`dsd_audio_dmr_mix_media_staged()`/`_silenced()`/
+  `_discard()`/`_take()` in `<dsd-neo/core/audio.h>`, `src/core/audio/dmr_mix_media.c`; DMR synctypes only, only while
+  armed, decoder thread only): FLOAT where `mbe_post_left/right_audio()` copy a decoded frame into `f_l`/`f_r`, SHORT
+  where the short path writes `s_l`/`s_r`, never for the silence staged for a muted slot. That silence replaces the
+  slot's short frame, so it retires the slot's SHORT mark: the mark says short media was staged after the slot's last
+  silence, which the frames the mix plays still hold, and a muted burst over an unmixed clear one leaves none. Each mix
+  takes both slots' marks and stamps only for an unmuted slot holding its own kind, so under a talkgroup hold of a slot
+  the vocoder muted FS3 stamps the float frames it plays and SS3, playing silence, does not. Slot purges
+  (`dsd_mbe_purge_slot_audio()`), `initState()`, the engine's no-carrier reset and the end of the DMR BS loop
+  (`finalize_dmr_bs()`) discard the marks. EDACS analog stamps a triplet only when the squelch the call runs opened on
+  it: the dynamic squelch heard a sample (the per-run marking `edacs_process_analog_triplet()` already applies,
+  returned), the level squelch's power test (`pwr > call->sql`) passed, or the call runs none; a closed triplet is still
+  written but never stamps. The analog monitor stamps analog reception only: the FM or AM monitor
+  (`dsd_analog_monitor_tap_active()`), never the `-8` source monitor during digital decoding, with the tap's carrier
+  open now and the tone policy passing it (`symbol_unsynced_carrier_active()`), a sink to write to (the local raw stream
+  or UDP), and under the auto squelch at least one sample its own gate hears, so the fade-out written after the gate
+  closes does not count and an unmodulated carrier does. Tests: `CORE_AUDIO_ACTIVITY`, `CORE_AUDIO2_HELPERS`,
+  `CORE_MBE_TRANSFORM_CONTEXT`, `CORE_AUDIO_GAIN`, `P25_P2_MIXER_GATE`, `M17_STATE_DISPATCH`, `EDACS_GRANT_TUNE_MATRIX`,
+  `DSP_SYMBOL_REPLAY`, `DMR_BS_SYNC_TIMES`, `ENGINE_NO_CARRIER_RESET` (see `docs/testing.md`).
 - Invariant (vocoder PCM scale, `<dsd-neo/core/vocoder.h>`): mbelib-neo's float PCM is int16 / 7
   (`mbe_floattoshort()` multiplies by 7), and from 2.3 it synthesizes speech at that reference level. The voice
   buffers (`audio_out_temp_buf`/`R` and their `f_l`/`f_r`/`f_l4`/`f_r4` copies) hold int16-scale samples, which the
