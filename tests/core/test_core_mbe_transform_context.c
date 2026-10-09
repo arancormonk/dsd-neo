@@ -3023,6 +3023,73 @@ test_dmr_mixes_stamp_vocoder_media(void) {
     return rc;
 }
 
+/* Issue #574: SS3 stamps only what a channel it emits carries. Its output policy can copy one slot over the other: a
+ * slot preferred over its companion (by a talkgroup hold, or as the only one on a voice burst) plays on both channels,
+ * so the companion's fresh frames it overwrote stamp nothing when the preferred slot staged no media of its own. The
+ * mono sink mixes the same buffers after that copy and follows the same rule. */
+enum { DMR_SS3_STAGE_NONE = 0, DMR_SS3_STAGE_CLEAR, DMR_SS3_STAGE_MUTED };
+
+static int
+test_dmr_ss3_stamps_the_slot_each_channel_carries(void) {
+    static const struct {
+        const char* tag;
+        int hold; // Both slots on the held talkgroup; else no hold and only slot 1 on a voice burst.
+        int stage[2];
+        int want_stamp;
+    } cases[] = {
+        {"hold prefers slot 1, muted by the vocoder, over clear slot 2",
+         1,
+         {DMR_SS3_STAGE_MUTED, DMR_SS3_STAGE_CLEAR},
+         0},
+        {"slot 1's voice burst preferred, nothing new on it, over clear slot 2",
+         0,
+         {DMR_SS3_STAGE_NONE, DMR_SS3_STAGE_CLEAR},
+         0},
+        {"hold prefers clear slot 1 over muted slot 2", 1, {DMR_SS3_STAGE_CLEAR, DMR_SS3_STAGE_MUTED}, 1},
+        {"slot 1's voice burst preferred, clear, over clear slot 2", 0, {DMR_SS3_STAGE_CLEAR, DMR_SS3_STAGE_CLEAR}, 1},
+    };
+
+    int rc = 0;
+    for (int channels = 2; channels >= 1; channels--) {
+        for (size_t c = 0U; c < sizeof(cases) / sizeof(cases[0]); c++) {
+            dmr_stamp_fixture fx;
+            if (!dmr_stamp_fixture_open(&fx, 0)) {
+                return 1;
+            }
+            fx.opts->pulse_digi_out_channels = channels;
+            if (cases[c].hold) {
+                rc |= expect_eq_int("dmr ss3 copy held call 1", dmr_stamp_seed_group_call(fx.state, 0, 123U), 1);
+                rc |= expect_eq_int("dmr ss3 copy held call 2", dmr_stamp_seed_group_call(fx.state, 1, 123U), 1);
+                fx.state->tg_hold = 123U;
+            } else {
+                fx.state->dmrburstR = 0;
+            }
+            for (int slot = 0; slot < 2; slot++) {
+                if (cases[c].stage[slot] == DMR_SS3_STAGE_NONE) {
+                    continue;
+                }
+                const int so = cases[c].stage[slot] == DMR_SS3_STAGE_MUTED ? 0x40 : 0;
+                if (slot == 0) {
+                    fx.state->dmr_so = so;
+                } else {
+                    fx.state->dmr_soR = so;
+                }
+                dmr_stamp_stage_burst(&fx, slot);
+            }
+            dmr_mix_run(fx.opts, fx.state);
+            char tag[192];
+            DSD_SNPRINTF(tag, sizeof(tag), "dmr ss3 copy %s, %d channel(s): plays", cases[c].tag, channels);
+            rc |= expect_eq_int(tag, g_dmr_mix_blocks, 3);
+            DSD_SNPRINTF(tag, sizeof(tag), "dmr ss3 copy %s, %d channel(s): audio emitted", cases[c].tag, channels);
+            rc |= expect_eq_int(tag, (g_dmr_mix_signs[0] | g_dmr_mix_signs[1]) != 0, cases[c].want_stamp);
+            DSD_SNPRINTF(tag, sizeof(tag), "dmr ss3 copy %s, %d channel(s): stamp", cases[c].tag, channels);
+            rc |= expect_eq_int(tag, dmr_stamp_noted(), cases[c].want_stamp);
+            dmr_stamp_fixture_close(&fx);
+        }
+    }
+    return rc;
+}
+
 /* Issue #574: a Vertex Standard call (ALG 0x07) with a mapped keystream plays in both mixes. The vocoder applies the
  * keystream, clears the slot's encryption flag and also the encryption bit of the service options, so the mixes
  * follow it. */
@@ -4713,6 +4780,7 @@ main(void) {
     rc |= test_dmr_stereo_mixes_follow_vocoder_slot_verdict();
     rc |= test_dmr_mixes_stamp_vocoder_media();
     rc |= test_dmr_muted_slot_stages_silence_not_its_last_frame();
+    rc |= test_dmr_ss3_stamps_the_slot_each_channel_carries();
     rc |= test_dmr_stereo_mixes_play_a_vertex_keystream_call();
     rc |= test_dmr_mono_disabled_slot_stages_silence();
     rc |= test_process_mbe_frame_dmr_aes_stream_advances_slot_state();

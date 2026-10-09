@@ -771,23 +771,24 @@ suite runs under this compiler.
   store per block. `dsd_audio_activity_read()` loads the word once (acquire) and ages that same value, -1 when it is 0
   or older than `DSD_AUDIO_ACTIVITY_MAX_AGE_MS` (60 s); `dsd_audio_activity_reset()` clears it and leaves it armed.
   Writers run on the decoder thread; arm, read and reset are safe from any thread. Stamped, in `dsd_audio2.c`: FS3 and
-  SS3 (by the DMR media marks below), FS4 (a frame popped from an unmuted slot's ring, `l_ok`/`r_ok`), SS18 (the filled
-  extent of its unmuted slots, which the P25 Phase 2 partial flushes reach too), and FS, FM, SS and MS (each decoded
-  frame they play; MS only when it loaded one); the legacy short output `playSynthesizedVoice()` (`dsd_audio.c`,
-  SDRTrunk JSON playback included, past its delay); the M17 Codec2 writers `m17_write_decoded_audio_single()`/`_pair()`
-  (after `m17_can_emit_audio()`); EDACS analog voice (`edacs_emit_analog_audio()`); and the analog monitor sink
-  (`symbol_write_unsynced_audio()` in `dsd_symbol.c`). Never stamped: the beeper's tones, the M17 baseband monitor, the
-  `-6` raw WAV, the static and per-call WAV writers, and the output helpers below the writers
-  (`dsd_output_*_block(s)()`, `dsd_audio_write()`, the UDP blasters), which cannot tell where a block came from. FS3 and
-  SS3 run on a timer of bursts, skipped ones included, and replay each slot's buffers whether or not anything new was
-  decoded into them, so the vocoder marks fresh media per slot (`dsd_audio_dmr_mix_media_staged()`/`_silenced()`/
-  `_discard()`/`_take()` in `<dsd-neo/core/audio.h>`, `src/core/audio/dmr_mix_media.c`; DMR synctypes only, only while
-  armed, decoder thread only): FLOAT where `mbe_post_left/right_audio()` copy a decoded frame into `f_l`/`f_r`, SHORT
-  where the short path writes `s_l`/`s_r`, never for the silence staged for a muted slot. That silence replaces the
-  slot's short frame, so it retires the slot's SHORT mark: the mark says short media was staged after the slot's last
-  silence, which the frames the mix plays still hold, and a muted burst over an unmixed clear one leaves none. Each mix
-  takes both slots' marks and stamps only for an unmuted slot holding its own kind, so under a talkgroup hold of a slot
-  the vocoder muted FS3 stamps the float frames it plays and SS3, playing silence, does not. Slot purges
+  SS3 (by the DMR media marks below), FS4 (a frame popped from an unmuted slot's ring, `l_ok`/`r_ok`), SS18 (an unmuted
+  slot that filled blocks of the superframe, `voice_counter`, and that a channel it emits carries; the P25 Phase 2
+  partial flushes reach it too), and FS, FM, SS and MS (each decoded frame they play; MS only when it loaded one); the
+  legacy short output `playSynthesizedVoice()` (`dsd_audio.c`, SDRTrunk JSON playback included, past its delay); the M17
+  Codec2 writers `m17_write_decoded_audio_single()`/`_pair()` (after `m17_can_emit_audio()`); EDACS analog voice
+  (`edacs_emit_analog_audio()`); and the analog monitor sink (`symbol_write_unsynced_audio()` in `dsd_symbol.c`). Never
+  stamped: the beeper's tones, the M17 baseband monitor, the `-6` raw WAV, the static and per-call WAV writers, and the
+  output helpers below the writers (`dsd_output_*_block(s)()`, `dsd_audio_write()`, the UDP blasters), which cannot tell
+  where a block came from. FS3 and SS3 run on a timer of bursts, skipped ones included, and replay each slot's buffers
+  whether or not anything new was decoded into them, so the vocoder marks fresh media per slot
+  (`dsd_audio_dmr_mix_media_staged()`/`_silenced()`/`_discard()`/`_take()` in `<dsd-neo/core/audio.h>`,
+  `src/core/audio/dmr_mix_media.c`; DMR synctypes only, only while armed, decoder thread only): FLOAT where
+  `mbe_post_left/right_audio()` copy a decoded frame into `f_l`/`f_r`, SHORT where the short path writes `s_l`/`s_r`,
+  never for the silence staged for a muted slot. That silence replaces the slot's short frame, so it retires the slot's
+  SHORT mark: the mark says short media was staged after the slot's last silence, which the frames the mix plays still
+  hold, and a muted burst over an unmixed clear one leaves none. Each mix takes both slots' marks and stamps only for an
+  unmuted slot holding its own kind that a channel it emits carries, so under a talkgroup hold of a slot the vocoder
+  muted FS3 stamps the float frames it plays and SS3, playing silence, does not. Slot purges
   (`dsd_mbe_purge_slot_audio()`), `initState()`, the engine's no-carrier reset and the end of the DMR BS loop
   (`finalize_dmr_bs()`) discard the marks. EDACS analog stamps a triplet only when the squelch the call runs opened on
   it: the dynamic squelch heard a sample (the per-run marking `edacs_process_analog_triplet()` already applies,

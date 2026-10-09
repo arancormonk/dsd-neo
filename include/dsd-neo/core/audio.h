@@ -109,12 +109,13 @@ void playSynthesizedVoiceSS18(dsd_opts* opts, dsd_state* state); // short stereo
  *
  * The float (FS3) and short (SS3) DMR mixes run on a timer of bursts, skipped ones included, and replay each slot's
  * buffers whether or not anything was decoded into them, so they note the audible-audio stamp
- * (<dsd-neo/core/audio_activity.h>) only for a slot whose gates pass and that holds media of their kind: FLOAT when the
- * vocoder copied a decoded frame into `f_l`/`f_r`, SHORT when it ran the short path into `s_l`/`s_r` (never the silence
- * a muted slot stages). The silence a muted slot stages replaces its short frame, so it retires that slot's SHORT flag:
- * the flag then says media was staged after the slot's last silence, which the frames the mixes play still hold. Each
- * mix takes both slots' flags; a path that discards the staged audio clears them. Kept only while the stamp is armed.
- * Process-wide, decoder thread only.
+ * (<dsd-neo/core/audio_activity.h>) only for a slot whose gates pass, that a channel they emit carries (SS3's output
+ * policy may copy one slot over the other) and that holds media of their kind: FLOAT when the vocoder copied a decoded
+ * frame into `f_l`/`f_r`, SHORT when it ran the short path into `s_l`/`s_r` (never the silence a muted slot stages).
+ * The silence a muted slot stages replaces its short frame, so it retires that slot's SHORT flag: the flag then says
+ * media was staged after the slot's last silence, which the frames the mixes play still hold. Each mix takes both
+ * slots' flags; a path that discards the staged audio clears them. Kept only while the stamp is armed. Process-wide,
+ * decoder thread only.
  */
 enum { DSD_DMR_MIX_MEDIA_FLOAT = 1, DSD_DMR_MIX_MEDIA_SHORT = 2 };
 

@@ -29,6 +29,8 @@
 static unsigned char g_audio_capture[2048];
 static size_t g_audio_capture_bytes = 0;
 static int g_audio_capture_calls = 0;
+/* Whether any call since reset_capture() carried a non-zero byte, not only the first one captured above. */
+static int g_audio_capture_nonzero = 0;
 
 static int
 expect_eq(const char* tag, int got, int want) {
@@ -63,6 +65,9 @@ capture_blast(const dsd_opts* opts, dsd_state* state, size_t bytes, const void* 
     (void)opts;
     (void)state;
     g_audio_capture_calls++;
+    for (size_t i = 0U; data != NULL && i < bytes && !g_audio_capture_nonzero; i++) {
+        g_audio_capture_nonzero = ((const unsigned char*)data)[i] != 0U;
+    }
     if (g_audio_capture_calls == 1 && data && bytes <= sizeof(g_audio_capture)) {
         DSD_MEMCPY(g_audio_capture, data, bytes);
         g_audio_capture_bytes = bytes;
@@ -74,6 +79,7 @@ reset_capture(void) {
     DSD_MEMSET(g_audio_capture, 0, sizeof(g_audio_capture));
     g_audio_capture_bytes = 0;
     g_audio_capture_calls = 0;
+    g_audio_capture_nonzero = 0;
 }
 
 static void
@@ -1157,6 +1163,71 @@ test_ss18_stamps_its_filled_extent(void) {
     return rc;
 }
 
+/* Issue #574: SS18 stamps only what a channel it emits carries. Its output policy can copy one slot over the other: a
+   slot preferred over its companion (by a talkgroup hold over two voice bursts, or as the only one on a voice burst)
+   plays on both channels, so when it filled no block of this superframe it plays silence over the companion's filled
+   blocks, and that stamps nothing. Its own filled blocks stamp. */
+static int
+test_ss18_stamps_the_slot_each_channel_carries(void) {
+    static const struct {
+        const char* tag;
+        int hold;
+        int filled_slot;
+        int want_audio;
+    } cases[] = {
+        {"hold prefers empty slot 1 over filled slot 2", 1, 1, 0},
+        {"slot 1's voice burst preferred, empty, over filled slot 2", 0, 1, 0},
+        {"hold prefers filled slot 1 over empty slot 2", 1, 0, 1},
+        {"slot 1's voice burst preferred, filled, over empty slot 2", 0, 0, 1},
+    };
+
+    static dsd_opts opts;
+    static dsd_state st;
+    int rc = 0;
+    for (size_t c = 0U; c < sizeof(cases) / sizeof(cases[0]); c++) {
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&st, 0, sizeof(st));
+        reset_capture();
+        opts.audio_out = 1;
+        opts.audio_out_type = 8;
+        opts.slot1_on = 1;
+        opts.slot2_on = 1;
+        st.dmrburstL = 21;
+        if (cases[c].hold) {
+            rc |= expect_eq("ss18 copy seed left call", seed_group_call(&st, 0U, 100), 1);
+            rc |= expect_eq("ss18 copy seed right call", seed_group_call(&st, 1U, 100), 1);
+            st.tg_hold = 100;
+            st.dmrburstR = 21;
+        }
+        for (int slot = 0; slot < 2; slot++) {
+            st.p25_p2_audio_allowed[slot] = 1;
+            st.p25_crypto_state[slot] = DSD_P25_CRYPTO_CLEAR;
+        }
+        const int filled = cases[c].filled_slot;
+        st.voice_counter[filled] = 5;
+        for (int j = 0; j < 5; j++) {
+            for (int i = 0; i < 160; i++) {
+                if (filled == 0) {
+                    st.s_l4[j][i] = 1234;
+                } else {
+                    st.s_r4[j][i] = 1234;
+                }
+            }
+        }
+        stamp_clear();
+        playSynthesizedVoiceSS18(&opts, &st);
+        char tag[128];
+        DSD_SNPRINTF(tag, sizeof(tag), "ss18 copy %s: plays", cases[c].tag);
+        rc |= expect_eq(tag, g_audio_capture_calls > 0, 1);
+        DSD_SNPRINTF(tag, sizeof(tag), "ss18 copy %s: audio emitted", cases[c].tag);
+        rc |= expect_eq(tag, g_audio_capture_nonzero, cases[c].want_audio);
+        DSD_SNPRINTF(tag, sizeof(tag), "ss18 copy %s: stamp", cases[c].tag);
+        rc |= expect_eq(tag, stamp_noted(), cases[c].want_audio);
+        dsd_state_ext_free_all(&st);
+    }
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -1237,6 +1308,7 @@ main(void) {
     dsd_audio_activity_arm();
     rc |= test_fs4_stamps_frames_of_audible_slots();
     rc |= test_ss18_stamps_its_filled_extent();
+    rc |= test_ss18_stamps_the_slot_each_channel_carries();
     dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
 
     return rc;
