@@ -75,8 +75,6 @@ static int g_sf_write_short_calls;
 static short g_sf_written[18 * 320];
 static size_t g_sf_written_count;
 static int g_record_policy_blocked[2];
-static int g_dmr_missing_alg_key_allowed[2];
-static int g_dmr_voice_slot_allowed[2];
 static int g_gate_mono_forced_enc = -1;
 static int g_gate_dual_forced_enc_l = -1;
 static int g_gate_dual_forced_enc_r = -1;
@@ -304,26 +302,6 @@ dsd_write(int fd, const void* buf, size_t count) {
     return (ssize_t)count;
 }
 
-int
-dsd_dmr_missing_alg_key_can_decrypt(const dsd_state* state, int slot) {
-    (void)state;
-    if (slot < 0 || slot > 1) {
-        return 0;
-    }
-    return g_dmr_missing_alg_key_allowed[slot];
-}
-
-int
-dsd_dmr_voice_slot_can_decrypt(const dsd_state* state, int slot, int algid, unsigned long long r_key) {
-    (void)state;
-    (void)algid;
-    (void)r_key;
-    if (slot < 0 || slot > 1) {
-        return 0;
-    }
-    return g_dmr_voice_slot_allowed[slot];
-}
-
 static void
 reset_sink_capture(void) {
     g_audio_write_calls = 0;
@@ -339,14 +317,6 @@ reset_sink_capture(void) {
     g_sf_write_short_calls = 0;
     g_sf_written_count = 0;
     DSD_MEMSET(g_sf_written, 0, sizeof(g_sf_written));
-}
-
-static void
-reset_dmr_decrypt_capture(void) {
-    g_dmr_missing_alg_key_allowed[0] = 0;
-    g_dmr_missing_alg_key_allowed[1] = 0;
-    g_dmr_voice_slot_allowed[0] = 0;
-    g_dmr_voice_slot_allowed[1] = 0;
 }
 
 static void
@@ -671,7 +641,6 @@ test_dmr_ss3_decrypt_hold_and_copy_policy_helpers(void) {
     int encR = -1;
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
-    reset_dmr_decrypt_capture();
     // Encrypted audio muted, the session default (initOpts()); 0 is the encrypted-audio unmute.
     opts.dmr_mute_encL = 1;
     opts.dmr_mute_encR = 1;
@@ -688,17 +657,13 @@ test_dmr_ss3_decrypt_hold_and_copy_policy_helpers(void) {
     rc |= expect_int("ss3 missing keys keep left muted", encL, 1);
     rc |= expect_int("ss3 missing keys keep right muted", encR, 1);
 
-    g_dmr_missing_alg_key_allowed[0] = 1;
-    state.payload_algidR = 0x81;
-    g_dmr_voice_slot_allowed[1] = 1;
+    // A loaded key decrypts both slots, so the vocoder clears their flags and SS3 follows them.
     state.dmr_encL = 0;
     state.dmr_encR = 0;
     dsd_dmr_ss3_init_enc_flags(&opts, &state, &encL, &encR);
-    rc |= expect_int("ss3 missing-alg key unmutes left", encL, 0);
-    rc |= expect_int("ss3 explicit voice key unmutes right", encR, 0);
+    rc |= expect_int("ss3 follows the vocoder's cleared left flag", encL, 0);
+    rc |= expect_int("ss3 follows the vocoder's cleared right flag", encR, 0);
 
-    reset_dmr_decrypt_capture();
-    state.payload_algidR = 0;
     // Bit set and no keys again, so both slots are flagged encrypted and only the forced-privacy override unmutes them.
     state.dmr_encL = 1;
     state.dmr_encR = 1;
