@@ -20,6 +20,7 @@
  */
 
 #include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/audio_activity.h>
 #include <dsd-neo/core/input_level.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
@@ -1471,6 +1472,29 @@ symbol_monitor_sink_write(const void* ctx, const short* samples, size_t count) {
     }
 }
 
+static inline int symbol_unsynced_carrier_active(const dsd_opts* opts, const dsd_state* state);
+
+/* Whether the block the monitor sink is about to play is analog reception the app plays (issue #574): the FM or AM
+   monitor's, not the -8 source monitor's during digital decoding, on the carrier the tap holds open with the tone
+   policy passing it (symbol_unsynced_carrier_active()), and under the auto squelch with at least one sample its own
+   gate hears, so the fade-out the sink writes after the gate closes is not. Provenance, never level: an unmodulated
+   carrier counts. Asked only while the audible-audio stamp is armed. */
+static int
+symbol_unsynced_block_audible(const dsd_opts* opts, const dsd_state* state, unsigned int analog_block) {
+    if (!dsd_analog_monitor_tap_active(opts) || !symbol_unsynced_carrier_active(opts, state)) {
+        return 0;
+    }
+    if (!dsd_squelch_flags_in_force(opts, state)) {
+        return 1;
+    }
+    for (unsigned int i = 0; i < analog_block; i++) {
+        if (dsd_squelch_gate_open(opts, state, state->analog_out_flags[i])) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 /* The block goes to the monitor sink at the analog sink rate (issue #633): as it is when it already runs at that rate,
    converted otherwise. */
 static inline void
@@ -1478,6 +1502,9 @@ symbol_write_unsynced_audio(const dsd_opts* opts, dsd_state* state, unsigned int
     const symbol_monitor_sink sink = {opts, state};
     const int sink_hz = dsd_opts_analog_sink_rate_hz(opts);
     const int has_sink = (opts->audio_out_type == 0 && opts->audio_raw_out) || opts->audio_out_type == 8;
+    if (dsd_audio_activity_armed() && has_sink && symbol_unsynced_block_audible(opts, state, analog_block)) {
+        dsd_audio_activity_note();
+    }
     /* Synchronous playback can hold the decoder for the block's playing time; that is not
        time spent waiting for input, which received-tone detection measures (issue #522). */
     dsd_analog_rx_playback_begin(state);

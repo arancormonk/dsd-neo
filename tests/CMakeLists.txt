@@ -283,6 +283,18 @@ target_include_directories(
 # buffer span shows up as a test failure instead of a quiet decode regression.
 target_compile_definitions(dsd-neo_test_bit_packing PRIVATE DSD_NEO_TEST_HOOKS)
 
+# The analog monitor in dsd_symbol.c notes the audible-audio stamp (issue #574), which dsd-neo_core holds; tests that
+# link the DSP archive without core take this copy of it.
+add_library(
+    dsd-neo_test_audio_activity
+    OBJECT
+    ${PROJECT_SOURCE_DIR}/src/core/audio/audio_activity.c
+)
+target_include_directories(
+    dsd-neo_test_audio_activity
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+
 add_library(
     dsd-neo_test_p25_shims
     STATIC
@@ -348,6 +360,7 @@ function(dsd_neo_link_dsp_test target_name)
     else()
         target_link_libraries(${target_name} PRIVATE dsd-neo_dsp)
     endif()
+    target_link_libraries(${target_name} PRIVATE dsd-neo_test_audio_activity)
 
     if(ARGN)
         target_link_libraries(${target_name} PRIVATE ${ARGN})
@@ -5373,10 +5386,23 @@ if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
     )
 endif()
 
+add_executable(dsd-neo_test_core_audio_activity core/test_core_audio_activity.c)
+target_include_directories(
+    dsd-neo_test_core_audio_activity
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src
+)
+target_link_libraries(
+    dsd-neo_test_core_audio_activity
+    PRIVATE dsd-neo_core dsd-neo_platform
+)
+add_test(NAME CORE_AUDIO_ACTIVITY COMMAND dsd-neo_test_core_audio_activity)
+
 add_executable(
     dsd-neo_test_core_audio2_helpers
     core/test_core_audio2_helpers.c
     ${PROJECT_SOURCE_DIR}/src/core/audio/dsd_audio2.c
+    ${PROJECT_SOURCE_DIR}/src/core/audio/audio_activity.c
+    ${PROJECT_SOURCE_DIR}/src/core/audio/dmr_mix_media.c
 )
 target_include_directories(
     dsd-neo_test_core_audio2_helpers
@@ -5493,6 +5519,7 @@ target_link_libraries(
     dsd-neo_test_dsp_symbol_replay
     PRIVATE
         dsd-neo_dsp_private_test_support
+        dsd-neo_test_audio_activity
         dsd-neo_test_support
         ${DSD_NEO_TEST_MATH_LIB}
         ${LIBSNDFILE_LIBRARIES}
@@ -10963,6 +10990,7 @@ target_link_libraries(
     dsd-neo_test_frame_sync_internal_helpers
     PRIVATE
         dsd-neo_dsp_private_test_support
+        dsd-neo_test_audio_activity
         ${DSD_NEO_TEST_MATH_LIB}
         ${LIBSNDFILE_LIBRARIES}
 )

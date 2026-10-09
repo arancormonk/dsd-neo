@@ -13,6 +13,7 @@
 #include <dsd-neo/core/bit_packing.h>
 
 #include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/audio_activity.h>
 #include <dsd-neo/core/audio_filters.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/constants.h>
@@ -674,6 +675,9 @@ m17_write_decoded_audio_single(const dsd_opts* opts, dsd_state* state, const sho
     if (!m17_can_emit_audio(opts, state)) {
         return;
     }
+    if (dsd_audio_activity_armed()) {
+        dsd_audio_activity_note();
+    }
 
     if (opts->audio_out_type == 0) {
         dsd_audio_write(opts->audio_out_stream, samples, nsam);
@@ -698,6 +702,9 @@ m17_write_decoded_audio_pair(const dsd_opts* opts, dsd_state* state, const short
                              size_t nsam, const char* log_ctx) {
     if (!m17_can_emit_audio(opts, state)) {
         return;
+    }
+    if (dsd_audio_activity_armed()) {
+        dsd_audio_activity_note();
     }
 
     if (opts->audio_out_type == 0) {

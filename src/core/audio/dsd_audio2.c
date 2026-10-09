@@ -12,6 +12,7 @@
  *-----------------------------------------------------------------------------*/
 
 #include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/audio_activity.h>
 #include <dsd-neo/core/audio_filters.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/constants.h>
@@ -229,19 +230,24 @@ dsd_output_s16_blocks(dsd_opts* opts, dsd_state* state, const short* const* bloc
     }
 }
 
-static void
+// Returns 1 when it loaded a decoded frame (160 samples, or 960 upsampled), 0 when @p len holds none.
+static int
 dsd_load_short_mono_samples(short* dst, size_t len, const short* current_frame, short** history_ptr) {
     if (len == 160) {
         for (size_t j = 0; j < len; j++) {
             dst[j] = current_frame[j];
         }
-    } else if (len == 960) {
+        return 1;
+    }
+    if (len == 960) {
         *history_ptr -= 960;
         for (size_t j = 0; j < len; j++) {
             dst[j] = **history_ptr;
             (*history_ptr)++;
         }
+        return 1;
     }
+    return 0;
 }
 
 // The static WAV (-w) is a recording: a slot whose talkgroup allows audio but
@@ -406,6 +412,17 @@ p25p2_s16_frames_have_audio(short frames[18][160]) {
         }
     }
     return 0;
+}
+
+// The audible-audio stamp for a DMR mix (issue #574), called while armed with each slot's final mute flags: the mix
+// takes both slots' staged media, and stamps when an unmuted slot held media of @p kind and the output is on.
+static void
+dsd_dmr_mix_note_audible(const dsd_opts* opts, int encL, int encR, unsigned int kind) {
+    const unsigned int left = dsd_audio_dmr_mix_media_take(0);
+    const unsigned int right = dsd_audio_dmr_mix_media_take(1);
+    if (opts->audio_out == 1 && ((!encL && (left & kind) != 0U) || (!encR && (right & kind) != 0U))) {
+        dsd_audio_activity_note();
+    }
 }
 
 // Baofeng AP and CSI EE unmute a slot whatever its flags say, a mixer override older than the vocoder's forced clear
@@ -582,6 +599,18 @@ dsd_fs4_mix_interleaved_frames(float lf[4][160], float rf[4][160], int encL, int
         int r_muted = (encR || !r_ok[j]) ? 1 : 0;
         audio_mix_interleave_stereo_f32(lf[j], rf[j], 160, l_muted, r_muted, stereo[j]);
     }
+}
+
+// Whether FS4 plays a slot's decoded audio (issue #574): a frame it popped from an unmuted slot's ring. Popped frames
+// fill the passes from the first, which FS4 always plays.
+static int
+dsd_fs4_any_frame_audible(int encL, int encR, const int* l_ok, const int* r_ok) {
+    for (int j = 0; j < 4; j++) {
+        if ((!encL && l_ok[j]) || (!encR && r_ok[j])) {
+            return 1;
+        }
+    }
+    return 0;
 }
 
 DSD_AUDIO2_INTERNAL void
@@ -1041,6 +1070,9 @@ playSynthesizedVoiceFS3(dsd_opts* opts, dsd_state* state) {
     // Apply whitelist/TG-hold gating shared with other mixers.
     (void)dsd_audio_group_gate_dual(opts, state, TGL, TGR, encL, encR, &encL, &encR);
     dsd_dmr_apply_mono_slot_gate(opts, state, &encL, &encR);
+    if (dsd_audio_activity_armed()) {
+        dsd_dmr_mix_note_audible(opts, encL, encR, DSD_DMR_MIX_MEDIA_FLOAT);
+    }
 
     //run autogain on the f_ buffers
     agf(opts, state, state->f_l4[0], 0);
@@ -1131,6 +1163,9 @@ playSynthesizedVoiceFS4(dsd_opts* opts, dsd_state* state) {
     if (encL && encR) {
         goto END_FS4;
     }
+    if (dsd_audio_activity_armed() && opts->audio_out == 1 && dsd_fs4_any_frame_audible(encL, encR, l_ok, r_ok)) {
+        dsd_audio_activity_note();
+    }
 
     // If output is mono, mix active channels into one buffer per frame span
     if (opts->pulse_digi_out_channels == 1) {
@@ -1174,6 +1209,9 @@ playSynthesizedVoiceFS(dsd_opts* opts, dsd_state* state) {
 
     agf(opts, state, state->f_l, 0);
     if (!encL) {
+        if (dsd_audio_activity_armed() && opts->audio_out == 1) {
+            dsd_audio_activity_note();
+        }
         audio_mono_to_stereo_f32(state->f_l, stereo_samp1, 160);
         audio_apply_gain_f32(stereo_samp1, 320, 0.5f);
         dsd_output_float_block(opts, state, stereo_samp1, 160, 2);
@@ -1191,6 +1229,9 @@ playSynthesizedVoiceFM(dsd_opts* opts, dsd_state* state) {
     encL = dsd_fdma_apply_group_gate(opts, state, TGL, encL);
 
     if (!encL && opts->slot1_on != 0) {
+        if (dsd_audio_activity_armed() && opts->audio_out == 1) {
+            dsd_audio_activity_note();
+        }
         if (opts->audio_out == 1 && opts->pulse_digi_out_channels == 2) {
             float stereo[320];
             audio_mono_to_stereo_f32(state->f_l, stereo, 160);
@@ -1222,7 +1263,10 @@ playSynthesizedVoiceMS(dsd_opts* opts, dsd_state* state) {
     const int muted = dsd_audio_mono_output_muted(opts, state);
 
     if (opts->slot1_on != 0 && !muted) {
-        dsd_load_short_mono_samples(mono_samp, len, state->s_l, &state->audio_out_buf_p);
+        const int loaded = dsd_load_short_mono_samples(mono_samp, len, state->s_l, &state->audio_out_buf_p);
+        if (dsd_audio_activity_armed() && loaded && opts->audio_out == 1) {
+            dsd_audio_activity_note();
+        }
         if (opts->use_hpf_d == 1) {
             hpf_dL(state, mono_samp, (int)len);
         }
@@ -1261,6 +1305,9 @@ playSynthesizedVoiceSS(dsd_opts* opts, dsd_state* state) {
     }
     audio_mono_to_stereo_s16(state->s_l, stereo_samp1, 160);
     if (!encL) {
+        if (dsd_audio_activity_armed() && opts->audio_out == 1) {
+            dsd_audio_activity_note();
+        }
         dsd_output_s16_block(opts, state, stereo_samp1, 160, 2);
         if (opts->wav_out_f != NULL && opts->static_wav_file == 1
             && dsd_static_wav_slot_recordable(opts, state, source_slot)) {
@@ -1303,6 +1350,9 @@ playSynthesizedVoiceSS3(dsd_opts* opts, dsd_state* state) {
     (void)dsd_audio_group_gate_dual(opts, state, TGL, TGR, encL, encR, &encL, &encR);
     dsd_apply_slot_hard_mute_flags(opts, &encL, &encR);
     dsd_dmr_apply_mono_slot_gate(opts, state, &encL, &encR);
+    if (dsd_audio_activity_armed()) {
+        dsd_dmr_mix_note_audible(opts, encL, encR, DSD_DMR_MIX_MEDIA_SHORT);
+    }
     dsd_hpf_short_triplet_if_enabled(opts, state);
     const int copy_right_to_left = dsd_ss3_should_copy_right_to_left(opts, state, encL, encR);
     const int wav_mask =
@@ -1405,6 +1455,9 @@ playSynthesizedVoiceSS18(dsd_opts* opts, dsd_state* state) {
     }
     if (!encR && state->voice_counter[1] > filled_blocks) {
         filled_blocks = state->voice_counter[1];
+    }
+    if (dsd_audio_activity_armed() && opts->audio_out == 1 && filled_blocks > 0) {
+        dsd_audio_activity_note();
     }
 
     dsd_interleave_s16_18_blocks(state, stereo_sf);

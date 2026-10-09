@@ -25,6 +25,7 @@
  *-----------------------------------------------------------------------------*/
 
 #include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/audio_activity.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dibit.h>
@@ -569,10 +570,11 @@ edacs_analog_input_rate_hz(const dsd_opts* opts) {
 /* One block through the chain under the dynamic squelch (issue #625): each run of samples the gate heard, or did not,
    goes through with its own playing flag, so the AGC adapts to exactly the samples heard and holds while the gate is
    closed (as the monitor's symbol_process_unsynced_audio_runs() does); then the closed samples are silenced, as the
-   level squelch's zeroed I/Q silences a closed block. */
-static void
+   level squelch's zeroed I/Q silences a closed block. Returns 1 when the gate heard any sample of the block. */
+static int
 edacs_process_analog_block_runs(const dsd_opts* opts, dsd_state* state, short* block, const uint8_t* sql_flags,
                                 dsd_analog_audio_source source, int rate_hz, unsigned int playing, unsigned int reset) {
+    int any_heard = 0;
     unsigned int start = 0U;
     while (start < (unsigned int)EDACS_ANALOG_BLOCK_SAMPLES) {
         const int heard = (sql_flags[start] & DSD_SQUELCH_FLAG_CLOSED) == 0;
@@ -583,6 +585,7 @@ edacs_process_analog_block_runs(const dsd_opts* opts, dsd_state* state, short* b
         }
         (void)dsd_analog_audio_process_s(opts, state, DSD_ANALOG_AUDIO_CHAIN_EDACS, block + start, end - start, source,
                                          rate_hz, (heard ? playing : 0U) | reset);
+        any_heard |= heard;
         reset = 0U;
         start = end;
     }
@@ -591,31 +594,35 @@ edacs_process_analog_block_runs(const dsd_opts* opts, dsd_state* state, short* b
             block[i] = 0;
         }
     }
+    return any_heard;
 }
 
 /* The analog voice chain (voice band-pass, legacy filters, then a fixed gain or the AGC) over the three blocks in
    order. The symbol register is built from the raw first block before this, so decoding never sees the filters. On an
    RTL input EDACS reads the FSK discriminator output; a call the talkgroup gate mutes does not move the AGC, and
    @p first_of_call starts the chain over for another channel's call. With @p sql_flags (2880, the dynamic squelch's)
-   the closed samples hold the AGC and play silence; NULL plays every sample. */
-static void
+   the closed samples hold the AGC and play silence; NULL plays every sample. Returns 1 when any sample plays: one the
+   dynamic squelch heard, or any at all without @p sql_flags. */
+static int
 edacs_process_analog_triplet(const dsd_opts* opts, dsd_state* state, short* analog1, short* analog2, short* analog3,
                              const uint8_t* sql_flags, int first_of_call, int rate_hz) {
     const dsd_analog_audio_source source =
         opts->audio_in_type == AUDIO_IN_RTL ? DSD_ANALOG_AUDIO_SOURCE_RTL_FSK : DSD_ANALOG_AUDIO_SOURCE_PCM16;
     const unsigned int flags = edacs_analog_call_muted(opts, state) ? 0U : DSD_ANALOG_AUDIO_PLAYING;
     short* blocks[3] = {analog1, analog2, analog3};
+    int any_heard = sql_flags == NULL;
     for (int i = 0; i < 3; i++) {
         const unsigned int reset = (first_of_call && i == 0) ? DSD_ANALOG_AUDIO_RESET : 0U;
         if (sql_flags) {
-            edacs_process_analog_block_runs(opts, state, blocks[i],
-                                            sql_flags + ((size_t)i * EDACS_ANALOG_BLOCK_SAMPLES), source, rate_hz,
-                                            flags, reset);
+            any_heard |= edacs_process_analog_block_runs(opts, state, blocks[i],
+                                                         sql_flags + ((size_t)i * EDACS_ANALOG_BLOCK_SAMPLES), source,
+                                                         rate_hz, flags, reset);
             continue;
         }
         (void)dsd_analog_audio_process_s(opts, state, DSD_ANALOG_AUDIO_CHAIN_EDACS, blocks[i], 960U, source, rate_hz,
                                          flags | reset);
     }
+    return any_heard;
 }
 
 // The mixers write to no output type while muted (audio_out 0) or with slot 1 switched off, so neither do these.
@@ -685,12 +692,15 @@ edacs_analog_call_muted(const dsd_opts* opts, const dsd_state* state) {
 
 void
 edacs_emit_analog_audio(dsd_opts* opts, dsd_state* state, const short* analog1, const short* analog2,
-                        const short* analog3) {
+                        const short* analog3, int squelch_open) {
     if (!edacs_analog_triplet_args_valid(opts, state, analog1, analog2, analog3)) {
         return;
     }
     if (edacs_analog_call_muted(opts, state)) {
         return;
+    }
+    if (dsd_audio_activity_armed() && squelch_open && edacs_analog_output_enabled(opts)) {
+        dsd_audio_activity_note();
     }
     if (edacs_should_emit_pulse_audio(opts)) {
         edacs_emit_pulse_audio(opts, analog1, analog2, analog3);
@@ -1147,11 +1157,12 @@ edacs_analog_play_triplet(dsd_opts* opts, dsd_state* state, edacs_analog_ctx* ca
     const int rate_hz = dsd_rate_converter_output_hz(&call->conv);
 
     edacs_reset_digitize_overflow(state);
-    edacs_process_analog_triplet(opts, state, analog1, analog2, analog3,
-                                 call->sql_kind == EDACS_ANALOG_SQL_GATE ? sql_flags : NULL, call->first_of_call,
-                                 rate_hz);
+    const int heard = edacs_process_analog_triplet(opts, state, analog1, analog2, analog3,
+                                                   call->sql_kind == EDACS_ANALOG_SQL_GATE ? sql_flags : NULL,
+                                                   call->first_of_call, rate_hz);
     call->first_of_call = 0;
-    edacs_emit_analog_audio(opts, state, analog1, analog2, analog3);
+    edacs_emit_analog_audio(opts, state, analog1, analog2, analog3,
+                            call->sql_kind == EDACS_ANALOG_SQL_LEVEL ? pwr > call->sql : heard);
     (void)dsd_call_state_update_media(state, 0U, 1, 0.0);
 
     opts->rtl_pwr = pwr;

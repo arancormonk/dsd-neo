@@ -20,6 +20,7 @@
  */
 
 #include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/audio_activity.h>
 #include <dsd-neo/core/audio_filters.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/opts.h>
@@ -948,6 +949,9 @@ playSynthesizedVoice(dsd_opts* opts, dsd_state* state) {
     }
 
     if (state->audio_out_idx > opts->delay) {
+        if (dsd_audio_activity_armed() && opts->audio_out == 1) {
+            dsd_audio_activity_note();
+        }
         if (opts->audio_out == 1 && opts->audio_out_type == 1) {
             ssize_t written = dsd_write(opts->audio_out_fd, (state->audio_out_buf_p - state->audio_out_idx),
                                         (size_t)state->audio_out_idx * sizeof(short));

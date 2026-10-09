@@ -4,6 +4,7 @@
  */
 
 #include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/audio_activity.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/opts.h>
@@ -13,6 +14,7 @@
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/runtime/udp_audio_hooks.h>
 #include <errno.h>
 #include <math.h>
 #include <sndfile.h>
@@ -815,6 +817,111 @@ test_play_synthesized_voice_drops_blocked_talkgroup(void) {
     return rc;
 }
 
+static int g_psv_udp_blasts;
+
+static void
+psv_count_udp_blast(const dsd_opts* opts, dsd_state* state, size_t nsam, const void* data) {
+    (void)opts;
+    (void)state;
+    (void)nsam;
+    (void)data;
+    g_psv_udp_blasts++;
+}
+
+/* Issue #574: the legacy short output, which SDRTrunk JSON playback uses, stamps audible audio when it writes its
+ * pending samples, on the raw fd and on UDP; nothing is stamped for a muted output, slot 1 switched off, a blocked
+ * talkgroup or samples still under the output delay. */
+static int
+test_play_synthesized_voice_stamps_what_it_writes(void) {
+    static const struct {
+        const char* tag;
+        int out_type;
+        int audio_out;
+        int slot1_on;
+        int blocked;
+        int delay;
+        int want;
+    } cases[] = {
+        {"fd write", 1, 1, 1, 0, 2, 1},
+        {"udp write", 8, 1, 1, 0, 2, 1},
+        {"fd output muted", 1, 0, 1, 0, 2, 0},
+        {"udp output muted", 8, 0, 1, 0, 2, 0},
+        {"slot 1 switched off", 1, 1, 0, 0, 2, 0},
+        {"blocked talkgroup", 1, 1, 1, 1, 2, 0},
+        {"samples under the delay", 1, 1, 1, 0, 8, 0},
+    };
+
+    static dsd_opts opts;
+    static dsd_state state;
+    static short out[8];
+    static float out_float[8];
+    int rc = 0;
+    dsd_audio_activity_arm();
+    dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){.blast = psv_count_udp_blast});
+    for (size_t c = 0U; c < sizeof(cases) / sizeof(cases[0]); c++) {
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&state, 0, sizeof state);
+        char path[DSD_AUDIO_TEST_PATH_MAX] = {0};
+        int fd = -1;
+        if (cases[c].out_type == 1) {
+            fd = create_temp_file_fd("dsdneo_audio_stamp", path, sizeof path);
+            if (fd < 0) {
+                rc = 1;
+                continue;
+            }
+        }
+        opts.slot1_on = cases[c].slot1_on;
+        opts.audio_out = cases[c].audio_out;
+        opts.audio_out_type = cases[c].out_type;
+        opts.audio_out_fd = fd;
+        opts.delay = cases[c].delay;
+        state.mbe_file_type = 3;
+        state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+        DSD_MEMSET(out, 0, sizeof(out));
+        DSD_MEMSET(out_float, 0, sizeof(out_float));
+        state.audio_out_buf = out;
+        state.audio_out_float_buf = out_float;
+        state.audio_out_buf_p = out + 4;
+        state.audio_out_float_buf_p = out_float + 4;
+        state.audio_out_idx = 4;
+        if (cases[c].blocked) {
+            rc |= expect_int_eq("stamp blocked row", dsd_tg_policy_set_mode(&state, 123, 123, "B"), 0);
+            const dsd_call_observation call = {.protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+                                               .slot = 0U,
+                                               .kind = DSD_CALL_KIND_GROUP_VOICE,
+                                               .ota_target_id = 123U,
+                                               .policy_target_id = 123U,
+                                               .ota_source_id = 1U};
+            rc |=
+                expect_int_eq("stamp blocked call", dsd_call_state_observe(&state, &call, DSD_CALL_BOUNDARY_BEGIN), 1);
+        }
+        g_psv_udp_blasts = 0;
+        dsd_audio_activity_reset();
+
+        playSynthesizedVoice(&opts, &state);
+
+        int written = g_psv_udp_blasts;
+        if (fd >= 0) {
+            dsd_stat_t st;
+            DSD_MEMSET(&st, 0, sizeof(st));
+            written = dsd_fstat(fd, &st) == 0 && st.st_size > 0 ? 1 : 0;
+            (void)dsd_close(fd);
+            (void)remove(path);
+        }
+        uint64_t stamp = 0U;
+        dsd_audio_activity_read(&stamp, NULL);
+        char tag[96];
+        DSD_SNPRINTF(tag, sizeof(tag), "legacy output %s: written", cases[c].tag);
+        rc |= expect_int_eq(tag, written, cases[c].want);
+        DSD_SNPRINTF(tag, sizeof(tag), "legacy output %s: stamp", cases[c].tag);
+        rc |= expect_int_eq(tag, stamp != 0U, cases[c].want);
+        dsd_state_ext_free_all(&state);
+    }
+    dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
+    dsd_audio_activity_reset();
+    return rc;
+}
+
 static int
 test_play_synthesized_voice_bad_fd_drops_pending_pcm(void) {
     static dsd_opts opts = {0};
@@ -1194,6 +1301,7 @@ main(void) {
     rc |= test_play_synthesized_voice_fd_writes_pending_pcm_and_resets_index();
     rc |= test_play_synthesized_voice_drops_blocked_talkgroup();
     rc |= test_play_synthesized_voice_bad_fd_drops_pending_pcm();
+    rc |= test_play_synthesized_voice_stamps_what_it_writes();
     rc |= test_drain_audio_output_guards_and_fd_sink();
     rc |= test_drain_audio_output_drains_all_local_streams();
     rc |= test_reconfigure_drains_sync_output_before_policy_close();

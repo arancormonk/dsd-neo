@@ -2642,6 +2642,8 @@ no_carrier_reset_m17_and_sample_buffers(dsd_state* state) {
     DSD_MEMSET(state->f_r, 0.0f, sizeof(state->f_r));
     DSD_MEMSET(state->f_l4, 0.0f, sizeof(state->f_l4));
     DSD_MEMSET(state->f_r4, 0.0f, sizeof(state->f_r4));
+    dsd_audio_dmr_mix_media_discard(0);
+    dsd_audio_dmr_mix_media_discard(1);
     DSD_MEMSET(state->s_l, 0, sizeof(state->s_l));
     DSD_MEMSET(state->s_r, 0, sizeof(state->s_r));
     DSD_MEMSET(state->s_l4, 0, sizeof(state->s_l4));

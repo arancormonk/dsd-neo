@@ -309,6 +309,11 @@ playSynthesizedVoiceSS3(dsd_opts* opts, dsd_state* state) {
     g_play_ss3_calls++;
 }
 
+void
+dsd_audio_dmr_mix_media_discard(int slot) {
+    (void)slot;
+}
+
 int
 dsd_telemetry_is_active(void) {
     return 1;

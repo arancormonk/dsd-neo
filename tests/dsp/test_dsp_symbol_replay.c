@@ -9,6 +9,7 @@
 #include <assert.h>
 #include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/audio_activity.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/frontend_types.h>
 #include <dsd-neo/core/opts.h>
@@ -3984,6 +3985,128 @@ test_auto_squelch_gates_each_sample(void) {
     dsd_state_ext_free_all(&state);
 }
 
+/* Issue #574: the analog monitor stamps audible audio for a block of analog reception it writes to its sink: on the
+   FM or AM monitor (never the -8 source monitor during digital decoding), with the tap's carrier open and the tone
+   policy passing it, and under the auto squelch with at least one sample its own gate hears -- whatever the audio's
+   level, so an unmodulated carrier counts and the fade-out written after the gate closes does not. */
+static int g_monitor_stamp_failures = 0;
+
+static void
+monitor_stamp_expect(int written, int want_written, int want_stamp, const char* what) {
+    uint64_t stamp = 0U;
+    dsd_audio_activity_read(&stamp, NULL);
+    const int stamped = stamp != 0U;
+    if (written != want_written || stamped != want_stamp) {
+        DSD_FPRINTF(stderr, "FAIL: monitor %s: written %d want %d, stamp %d want %d\n", what, written, want_written,
+                    stamped, want_stamp);
+        g_monitor_stamp_failures++;
+    }
+}
+
+static void
+monitor_tone_block_expect(dsd_opts* opts, dsd_state* state, int want_written, int want_stamp, const char* what) {
+    const int before = g_monitor_blocks;
+    dsd_audio_activity_reset();
+    feed_tone_blocks(opts, state, 1);
+    monitor_stamp_expect(g_monitor_blocks - before, want_written, want_stamp, what);
+}
+
+static void
+monitor_flagged_block_expect(dsd_opts* opts, dsd_state* state, float value, unsigned int open1, unsigned int reopen,
+                             int want_written, int want_stamp, const char* what) {
+    const int before = g_monitor_blocks;
+    dsd_audio_activity_reset();
+    feed_flagged_block(opts, state, value, open1, reopen);
+    monitor_stamp_expect(g_monitor_blocks - before, want_written, want_stamp, what);
+}
+
+static void
+test_monitor_stamps_analog_reception(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    dsd_audio_activity_arm();
+    g_monitor_stamp_failures = 0;
+
+    /* The FM monitor on an RTL stream under the level squelch (the receiver power held at 1.0). */
+    install_fake_rtl_hooks(1);
+    init_analog_monitor_fixture(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    start_monitor_capture(&opts);
+    dsd_trunk_tuning_requests_reset();
+    monitor_tone_block_expect(&opts, &state, 1, 1, "fm carrier");
+    opts.rtl_squelch_level = 2.0;
+    monitor_tone_block_expect(&opts, &state, 0, 0, "level squelch closed");
+    opts.rtl_squelch_level = 0.0;
+    monitor_tone_block_expect(&opts, &state, 1, 1, "level squelch open again");
+    opts.audio_out = 0;
+    monitor_tone_block_expect(&opts, &state, 0, 0, "output muted");
+    opts.audio_out = 1;
+    opts.audio_out_type = 1;
+    monitor_tone_block_expect(&opts, &state, 0, 0, "raw fd output, which the monitor does not feed");
+    opts.audio_out_type = 8;
+    monitor_tone_block_expect(&opts, &state, 1, 1, "udp output again");
+
+    /* A retune: nothing while it is in flight, nor from the block its completion straddles. */
+    const uint64_t request = dsd_trunk_tuning_request_begin();
+    monitor_tone_block_expect(&opts, &state, 0, 0, "retune in flight");
+    dsd_trunk_tuning_request_complete(request, DSD_TRUNK_TUNE_RESULT_OK);
+    monitor_tone_block_expect(&opts, &state, 0, 0, "block a retune straddles");
+    monitor_tone_block_expect(&opts, &state, 1, 1, "block after the retune");
+    dsd_trunk_tuning_requests_reset();
+
+    /* The -8 source monitor during digital decoding plays the input it hears, but that is no analog reception. */
+    opts.analog_only = 0;
+    monitor_tone_block_expect(&opts, &state, 1, 0, "-8 source monitor");
+    monitor_tone_block_expect(&opts, &state, 1, 0, "-8 source monitor again");
+    opts.analog_only = 1;
+
+    /* The AM monitor: its carrier counts as the FM monitor's does. */
+    set_monitor_kind(&opts, DSD_ANALOG_DEMOD_AM);
+    feed_tone_blocks(&opts, &state, 1);
+    monitor_tone_block_expect(&opts, &state, 1, 1, "am carrier");
+    set_monitor_kind(&opts, DSD_ANALOG_DEMOD_FM);
+    dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
+    dsd_state_ext_free_all(&state);
+
+    /* The tone policy: nothing while it checks the reception, nor once it rejects it; an allowed one stamps. */
+    for (int allowed = 0; allowed <= 1; allowed++) {
+        install_fake_rtl_hooks(0);
+        init_analog_monitor_fixture(&opts, &state);
+        set_tone_policy(&opts, DSD_TONE_FILTER_ALLOW, allowed ? "100.0" : "67.0");
+        start_monitor_capture(&opts);
+        monitor_tone_block_expect(&opts, &state, 0, 0, "tone policy checking");
+        feed_tone_blocks(&opts, &state, 30);
+        assert(state.analog_rx.gate == (allowed ? DSD_ANALOG_TONE_GATE_ALLOWED : DSD_ANALOG_TONE_GATE_REJECTED));
+        monitor_tone_block_expect(&opts, &state, allowed, allowed,
+                                  allowed ? "tone policy allowed" : "tone policy rejected");
+        opts.analog_tone_filter = DSD_TONE_FILTER_OFF;
+        dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
+        dsd_state_ext_free_all(&state);
+    }
+
+    /* The auto squelch: each sample carries its gate. */
+    install_fake_rtl_hooks(1);
+    init_analog_monitor_fixture(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.rtl_squelch_mode = DSD_SQUELCH_MODE_AUTO;
+    opts.rtl_squelch_margin_db = 10;
+    opts.rtl_squelch_level = 2.0; /* above rtl_pwr: the level squelch would close */
+    g_chain_removes_tone = 0;
+    start_monitor_capture(&opts);
+    dsd_trunk_tuning_requests_reset();
+    feed_flagged_block(&opts, &state, 0.0f, 960U, 960U);
+    monitor_flagged_block_expect(&opts, &state, 0.0f, 960U, 960U, 1, 1, "unmodulated carrier, every sample open");
+    monitor_flagged_block_expect(&opts, &state, 1000.0f, 200U, 900U, 1, 1, "open, closed, open again");
+    monitor_flagged_block_expect(&opts, &state, 1000.0f, 0U, 960U, 1, 0, "fade-out after the gate closed");
+    monitor_flagged_block_expect(&opts, &state, 1000.0f, 0U, 960U, 0, 0, "gate closed");
+    g_chain_removes_tone = 1;
+    dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
+    install_fake_rtl_hooks(0);
+    dsd_state_ext_free_all(&state);
+    dsd_audio_activity_reset();
+    assert(g_monitor_stamp_failures == 0);
+}
+
 /* Push @p seconds of an SDR program's FM output through the monitor's sample path. */
 static void
 push_tap(dsd_opts* opts, dsd_state* state, pcm_tap* src, pcm_tap_kind kind, double cnr_db, double seconds) {
@@ -4992,6 +5115,7 @@ main(void) {
     test_tone_policy_check_is_no_scan_activity();
     test_chain_playing_follows_the_sink();
     test_auto_squelch_gates_each_sample();
+    test_monitor_stamps_analog_reception();
     test_pcm_noise_squelch_gates_each_sample();
     test_pcm_noise_squelch_follows_the_passband();
     test_pcm_noise_squelch_no_band_keeps_the_block_edge();
