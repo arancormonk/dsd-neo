@@ -1458,10 +1458,9 @@ symbol_unsynced_audio_allowed(const dsd_opts* opts, const dsd_state* state) {
 typedef struct {
     const dsd_opts* opts;
     dsd_state* state;
-    /* Non-NULL only while the audible-audio stamp is armed and the block is analog reception an output takes
-       (symbol_write_unsynced_audio(), issue #574): the first write that hands the output samples notes the stamp and
-       clears it. */
-    int* stamp_pending;
+    /* Nonzero only while the audible-audio stamp is armed and the block is analog reception an output takes
+       (symbol_write_unsynced_audio(), issue #574): each write that hands the output samples notes the stamp. */
+    int stamp;
 } symbol_monitor_sink;
 
 /* The monitor sink: the local raw stream or the UDP analog socket. The audible-audio stamp is noted here, where samples
@@ -1469,8 +1468,7 @@ typedef struct {
 static void
 symbol_monitor_sink_write(const void* ctx, const short* samples, size_t count) {
     const symbol_monitor_sink* sink = (const symbol_monitor_sink*)ctx;
-    if (sink->stamp_pending != NULL && *sink->stamp_pending && count > 0U) {
-        *sink->stamp_pending = 0;
+    if (sink->stamp && count > 0U) {
         dsd_audio_activity_note();
     }
     if (sink->opts->audio_out_type == 0 && sink->opts->audio_raw_out) {
@@ -1508,17 +1506,13 @@ symbol_unsynced_block_audible(const dsd_opts* opts, const dsd_state* state, unsi
    converted otherwise. */
 static inline void
 symbol_write_unsynced_audio(const dsd_opts* opts, dsd_state* state, unsigned int analog_block, int block_hz) {
-    int stamp_pending = 0;
-    symbol_monitor_sink sink = {opts, state, NULL};
+    /* The stamp follows the shared output rule, which for the monitor is the sink below: it feeds no raw fd. The sink
+       notes it when it writes samples (symbol_monitor_sink_write()). */
+    const int stamp = dsd_audio_activity_armed() && dsd_audio_activity_output_plays(opts, opts->audio_raw_out, 0)
+                      && symbol_unsynced_block_audible(opts, state, analog_block);
+    const symbol_monitor_sink sink = {opts, state, stamp};
     const int sink_hz = dsd_opts_analog_sink_rate_hz(opts);
     const int has_sink = (opts->audio_out_type == 0 && opts->audio_raw_out) || opts->audio_out_type == 8;
-    /* The stamp follows the shared output rule, which for the monitor is the sink above: it feeds no raw fd. The sink
-       notes it when it writes samples (symbol_monitor_sink_write()). */
-    if (dsd_audio_activity_armed() && dsd_audio_activity_output_plays(opts, opts->audio_raw_out, 0)
-        && symbol_unsynced_block_audible(opts, state, analog_block)) {
-        stamp_pending = 1;
-        sink.stamp_pending = &stamp_pending;
-    }
     /* Synchronous playback can hold the decoder for the block's playing time; that is not
        time spent waiting for input, which received-tone detection measures (issue #522). */
     dsd_analog_rx_playback_begin(state);
