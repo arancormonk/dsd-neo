@@ -2716,11 +2716,11 @@ dmr_mix_tag_slots(dsd_state* state) {
 /* Issue #574: both stereo DMR mixes, the float FS3 and the short SS3, follow the vocoder's slot verdict after reverse
  * mute (-q). Without -q a clear slot plays and an encrypted one without a key does not; -q swaps them. With the
  * encrypted-audio mute flag off (dmr_mute_encL/R 0: the user's unmute toggle, or any key load) FS3 also plays an
- * encrypted slot it cannot decrypt, while SS3 keeps it muted; under -q that flag follows the verdict. Under forced privacy
- * (Baofeng AP, CSI EE, the Kenwood scrambler) the vocoder clears the slot's encryption flag before -q flips it, so the
- * call plays without -q and not with it, whether or not the voice carries the encryption bit. Each channel is checked
- * for the slot it carries: its own when audible, the audible companion's when muted (the mixes mirror one audible
- * slot into both channels). */
+ * encrypted slot it cannot decrypt, while SS3 keeps it muted; under -q that flag follows the verdict. Under forced
+ * privacy (Baofeng AP, CSI EE, the Kenwood scrambler) the vocoder clears the slot's encryption flag before -q flips
+ * it, so the call plays without -q and not with it, whether or not the voice carries the encryption bit. Each channel
+ * is checked for the slot it carries: its own when audible, the audible companion's when muted (the mixes mirror one
+ * audible slot into both channels). */
 static const char* const k_dmr_mix_modes[] = {"clear/encrypted", "baofeng_ap", "csi_ee", "ken_sc"};
 
 // One row: @p mode indexes k_dmr_mix_modes, @p so holds each slot's service options.

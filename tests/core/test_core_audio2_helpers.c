@@ -698,6 +698,9 @@ test_dmr_ss3_decrypt_hold_and_copy_policy_helpers(void) {
 
     reset_dmr_decrypt_capture();
     state.payload_algidR = 0;
+    // Bit set and no keys again, so both slots are flagged encrypted and only the forced-privacy override unmutes them.
+    state.dmr_encL = 1;
+    state.dmr_encR = 1;
     state.baofeng_ap = 1;
     dsd_dmr_ss3_init_enc_flags(&opts, &state, &encL, &encR);
     rc |= expect_int("ss3 forced privacy unmutes left", encL, 0);

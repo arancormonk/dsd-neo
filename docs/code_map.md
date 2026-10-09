@@ -747,8 +747,10 @@ suite runs under this compiler.
   loaded key decrypts it (a mapped Vertex keystream decrypts), cleared under forced clear (Baofeng AP, CSI EE, Kenwood
   scrambler, `dsd_key_dmr_forced_clear()`), flipped by reverse mute (`-q`). They differ over the encrypted-audio mute
   flag `dmr_mute_encL/R`, which is 0 after the user's toggle of all mutes, after any key load
-  (`dsd_key_apply_mute_policy()`) and after the vocoder's talkgroup key autoload or AES keystream: the vocoder then
-  stages a flagged slot and FS3 plays it, undecryptable or not, while SS3 keeps any flagged slot muted. A slot the
+  (`dsd_key_apply_mute_policy()`, or a scan row's or trunk-scan target's direct keys through
+  `scan_option_apply_mute_dmr()`) and after the vocoder's talkgroup key autoload or AES keystream: the vocoder then
+  stages a flagged slot and FS3 plays it, undecryptable or not, while SS3 keeps a flagged slot muted unless a
+  talkgroup hold unmutes it, and then plays the short samples the vocoder staged, as it always has. A slot the
   vocoder mutes (flagged with the flag on, or a DMR mono slot not playing) stages silence in `s_l`/`s_r`, so no mix
   replays an earlier frame; a talkgroup hold that unmutes such a slot plays silence in SS3, while FS3 plays the float
   frames the vocoder always stages. DMR and P25 Phase 2 MBE capture save in `mbe_finalize_slot_left/right()` before
