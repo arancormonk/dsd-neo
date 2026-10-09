@@ -62,7 +62,7 @@ class ScreenController(clock: () -> Long, private val effects: Effects) : Status
 
     fun paused(interactive: Boolean) = after { policy.paused(interactive) }
 
-    fun stopped(interactive: Boolean) = after { policy.stopped(interactive) }
+    fun stopped(interactive: Boolean, wakeAllowed: () -> Boolean) = after { policy.stopped(interactive, wakeAllowed) }
 
     fun started() = after { policy.started() }
 

@@ -90,7 +90,9 @@ interface ScreenPolicyView {
  * last stamp. A wake ([wakeSerial] advancing) needs that new audio to be at most [WAKE_MAX_AGE_MS] old, Off mode, a
  * session, the activity not visible, armed, not snoozed, the screen off, and the caller's [wakeAllowed] verdict, which
  * is asked for last and only then, since it costs the glue two binder calls; the conditions that do not depend on the
- * sample are [wakeVerdictNeeded]. A blocked wake still counts as audio.
+ * sample are [wakeVerdictNeeded]. A blocked wake still counts as audio. Audio that would wake but for the activity
+ * still being visible (the display went off in front, and Android has not stopped DSD-neo yet) is held for [stopped],
+ * which judges it the same way once the activity is gone, its age then included.
  *
  * Arming means DSD-neo was the app in front when the display went off. Only the first foreground-loss callback of a
  * sequence decides it (focus, top-resumed, paused or stopped, whichever Android delivers first), from whether DSD-neo
@@ -179,6 +181,13 @@ class ScreenPolicy(private val clock: () -> Long) : ScreenPolicyView {
     /** Whether this session's first readable sample has been taken (it only records the stamp). */
     private var primed = false
 
+    /**
+     * When the newest audio was heard that would have woken the screen but for DSD-neo still being visible: armed and
+     * asleep in Off between calls, before Android stopped the activity. [stopped] judges it again; null for none. A
+     * change of arming, the screen coming on, and a session starting or ending drop it.
+     */
+    private var heldAudio: Long? = null
+
     override var swallowing = false
         private set
     override var wakeSerial = 0L
@@ -191,8 +200,12 @@ class ScreenPolicy(private val clock: () -> Long) : ScreenPolicyView {
     private val between: Boolean
         get() = session != null && (mode == Mode.DIM_BETWEEN_CALLS || mode == Mode.OFF_BETWEEN_CALLS)
 
+    /** Off between calls with a session, armed and the screen off: a wake waits only on the activity being gone. */
+    private val armedAsleep: Boolean
+        get() = session != null && mode == Mode.OFF_BETWEEN_CALLS && armed && !interactive
+
     override val wakeVerdictNeeded: Boolean
-        get() = session != null && mode == Mode.OFF_BETWEEN_CALLS && !visible && armed && !interactive
+        get() = armedAsleep && !visible
 
     fun configure(modeCode: Int, delaySeconds: Int) = step { now ->
         val newMode = Mode.fromCode(modeCode)
@@ -210,6 +223,7 @@ class ScreenPolicy(private val clock: () -> Long) : ScreenPolicyView {
             session = id
             primed = false
             snoozed = false
+            heldAudio = null
             lastStart = now
         }
     }
@@ -220,6 +234,7 @@ class ScreenPolicy(private val clock: () -> Long) : ScreenPolicyView {
     fun sessionEnded() = step {
         session = null
         snoozed = false
+        heldAudio = null
     }
 
     /**
@@ -253,9 +268,14 @@ class ScreenPolicy(private val clock: () -> Long) : ScreenPolicyView {
             snoozed = false
         }
         lastAudio = if (previous == null) heardAt else maxOf(previous, heardAt)
-        // The verdict last: it is asked only once everything else says this sample wakes.
-        if (ageMs <= WAKE_MAX_AGE_MS && wakeVerdictNeeded && !snoozed && wakeAllowed()) {
-            wakeSerial++
+        if (ageMs > WAKE_MAX_AGE_MS) {
+            return@step
+        }
+        if (wakeVerdictNeeded) {
+            wakeUnlessBlocked(wakeAllowed)
+        } else if (armedAsleep) {
+            // The display went off in front, but Android has not stopped DSD-neo yet: the stop judges this audio.
+            heldAudio = heldAudio?.let { maxOf(it, heardAt) } ?: heardAt
         }
     }
 
@@ -288,10 +308,20 @@ class ScreenPolicy(private val clock: () -> Long) : ScreenPolicyView {
         top = false
     }
 
-    fun stopped(interactive: Boolean) = step { now ->
+    /**
+     * The activity stopped. Audio heard while the display went off in front but the activity was still visible (see
+     * [sample]) is judged now as any wake: at most [WAKE_MAX_AGE_MS] old by now, not snoozed, and [wakeAllowed], asked
+     * only then. Read after the loss, so a stop that arms afresh judges nothing heard before it.
+     */
+    fun stopped(interactive: Boolean, wakeAllowed: () -> Boolean) = step { now ->
         loss(now, interactive)
         visible = false
         top = false
+        val held = heldAudio
+        heldAudio = null
+        if (held != null && now - held <= WAKE_MAX_AGE_MS && wakeVerdictNeeded) {
+            wakeUnlessBlocked(wakeAllowed)
+        }
     }
 
     fun started() = step { now -> regain(now) }
@@ -346,6 +376,7 @@ class ScreenPolicy(private val clock: () -> Long) : ScreenPolicyView {
      */
     fun screenOn(ours: Boolean, screenOffTimeoutMs: Long) = step { now ->
         interactive = true
+        heldAudio = null
         if (!ours) {
             setArmed(false)
         } else if (armed) {
@@ -411,11 +442,20 @@ class ScreenPolicy(private val clock: () -> Long) : ScreenPolicyView {
 
     /**
      * Arms afresh, or disarms. Either way no arming an own wake carried is left, so that wake's window goes as well:
-     * [screenOff] judges by it only an arming the wake carried, never one set after it.
+     * [screenOff] judges by it only an arming the wake carried, never one set after it. Audio held for the stop goes
+     * too: it was heard under the old arming.
      */
     private fun setArmed(armed: Boolean) {
         this.armed = armed
+        heldAudio = null
         forgetWake()
+    }
+
+    /** A wake, unless snoozed or Android refuses: the verdict is asked last, and only then. */
+    private fun wakeUnlessBlocked(wakeAllowed: () -> Boolean) {
+        if (!snoozed && wakeAllowed()) {
+            wakeSerial++
+        }
     }
 
     private fun forgetWake() {

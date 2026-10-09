@@ -4464,14 +4464,17 @@ main thread only. The decision is pure Kotlin with no `android.*` import, run on
   `wakeVerdictNeeded` (Off between calls, a session, the activity not visible, armed, the screen off by the broadcasts)
   is the predicate every wake is judged through. Android's verdict reaches the policy as a supplier, which it asks last,
   at most once, and only for a sample that would otherwise wake (new audio no more than 2 s old, not snoozed,
-  `wakeVerdictNeeded`): no read for a sample with no record, an unchanged stamp, stale audio or a snooze. Arming
-  (DSD-neo was in front when the display went off) is decided only by the first foreground-loss callback of a sequence
-  (focus, top-resumed, pause or stop, whichever Android delivers first), from whether the activity was top-resumed and
-  focused just before it and the screen already off; regaining the foreground ends the sequence and clears the arming
-  and any snooze. The policy's own screen state follows only the screen broadcasts and a refused wake (a loss callback
-  judges arming from the live `isInteractive` the glue passes with it), so the sample taken just before a screen-off
-  cannot wake a screen the user has just turned off; a screen-on DSD-neo did not cause, or `USER_PRESENT`, disarms at
-  once. After DSD-neo's own wake the arming it carried survives the next screen-off only if that off comes no later than
+  `wakeVerdictNeeded`): no read for a sample with no record, an unchanged stamp, stale audio or a snooze. Audio that
+  would wake but for the activity still being visible (armed with the screen off, before Android stops DSD-neo) is held,
+  and `stopped()` judges it the same way once the activity is gone, at most 2 s old by then; a change of arming, a
+  screen-on and a session change drop it. Arming (DSD-neo was in front when the display went off) is decided only by the
+  first foreground-loss callback of a sequence (focus, top-resumed, pause or stop, whichever Android delivers first),
+  from whether the activity was top-resumed and focused just before it and the screen already off; regaining the
+  foreground ends the sequence and clears the arming and any snooze. The policy's own screen state follows only the
+  screen broadcasts and a refused wake (a loss callback judges arming from the live `isInteractive` the glue passes with
+  it), so the sample taken just before a screen-off cannot wake a screen the user has just turned off; a screen-on
+  DSD-neo did not cause, or `USER_PRESENT`, disarms at once. After DSD-neo's own wake the arming it carried survives the
+  next screen-off only if that off comes no later than
   `max(leaseReleasedAt, wakeAt + screen-off timeout) + OWN_WAKE_GRACE_MS` (5 s), a lease still held at that off counting
   as released by it. That window judges only an arming the wake carried: an own screen-on records `wakeAt` only while
   armed, and the screen-off, every disarm and every fresh arming (an unlock, a regain, the first loss of a new sequence)

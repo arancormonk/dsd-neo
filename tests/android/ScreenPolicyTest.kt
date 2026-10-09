@@ -23,6 +23,9 @@ private val NOTHING = Outputs(keepScreenOn = false, dimmed = false, holdLease = 
 private fun ScreenPolicy.sample(stamp: ULong?, ageMs: Long, wakeAllowed: Boolean) =
     sample(stamp, ageMs) { wakeAllowed }
 
+/** A stop with a fixed verdict, which the policy asks for as it would ask Android. */
+private fun ScreenPolicy.stopped(interactive: Boolean) = stopped(interactive) { true }
+
 /** One policy on a hand-driven clock, with the event sequences the histories share. */
 private class PolicyRig(mode: Int = OFF, delaySeconds: Int = DELAY_S) {
     var now = 1_000_000L
@@ -916,6 +919,106 @@ private fun audioBetweenPollsSnoozesThroughTheSyncSample() {
     check(late.wakes == 0L)
 }
 
+private fun aCallHeardWhileTheScreenGoesOffInFrontWakesAtTheStop() {
+    // The display goes off with DSD-neo in front: a first loss callback arms and the screen-off broadcast lands, but
+    // Android has not stopped the activity yet. A short call heard in that window cannot wake a screen that is still
+    // visible, and later polls only see its stamp again, so the stop judges it as any wake.
+    val windows = listOf<Pair<String, (ScreenPolicy) -> Unit>>(
+        "focus, then the broadcast" to {
+            it.focusChanged(false, false)
+            it.screenOff()
+        },
+        "the broadcast, then top-resumed" to {
+            it.screenOff()
+            it.topResumedChanged(false, false)
+        },
+        "top-resumed and paused, then the broadcast" to {
+            it.topResumedChanged(false, false)
+            it.paused(false)
+            it.screenOff()
+        },
+    )
+    /** Armed in [window], still visible, with a short call heard 300 ms before the poll that read it. */
+    fun heardInTheWindow(window: (ScreenPolicy) -> Unit, mode: Int = OFF): Pair<PolicyRig, ULong> {
+        val rig = PolicyRig(mode = mode)
+        rig.front()
+        rig.session()
+        rig.quiet()
+        window(rig.policy)
+        check(rig.policy.armed && rig.policy.visible && !rig.policy.interactive)
+        rig.advance(200)
+        val stamp = rig.audio(ageMs = 300)
+        check(rig.wakes == 0L) { "no wake while still visible" }
+        return rig to stamp
+    }
+    for ((name, window) in windows) {
+        val (rig, stamp) = heardInTheWindow(window)
+        rig.advance(1_000)
+        rig.policy.sample(stamp, 1_300, true) // The next poll: the same call, already over.
+        var asked = 0
+        rig.policy.stopped(false) { asked++; true }
+        check(rig.wakes == 1L && asked == 1) { "$name: the stop wakes for the call, asking Android once" }
+        rig.advance(1_000)
+        rig.policy.sample(stamp, 2_300, true)
+        check(rig.wakes == 1L) { "$name: and only once" }
+    }
+    val window = windows.first().second
+    // At most 2 s old by the stop, like any wake.
+    val (onTime, _) = heardInTheWindow(window)
+    onTime.advance(1_700)
+    onTime.policy.stopped(false)
+    check(onTime.wakes == 1L) { "heard exactly 2 s before the stop" }
+    val (late, _) = heardInTheWindow(window)
+    late.advance(1_701)
+    var asked = 0
+    late.policy.stopped(false) { asked++; true }
+    check(late.wakes == 0L && asked == 0) { "heard more than 2 s before the stop" }
+    // Android's verdict, asked only now.
+    val (refused, _) = heardInTheWindow(window)
+    asked = 0
+    refused.policy.stopped(false) { asked++; false }
+    check(refused.wakes == 0L && asked == 1 && refused.policy.lastAudio != null) { "refused" }
+    // Anything that disarms in the window: another screen-on, then off again, or an unlock.
+    val (screenOn, _) = heardInTheWindow(window)
+    screenOn.policy.screenOn(false, TIMEOUT_MS)
+    screenOn.policy.screenOff()
+    screenOn.policy.stopped(false)
+    check(screenOn.wakes == 0L && !screenOn.policy.armed) { "a screen-on DSD-neo did not cause disarms" }
+    val (unlocked, _) = heardInTheWindow(window)
+    unlocked.policy.userPresent()
+    unlocked.policy.stopped(false)
+    check(unlocked.wakes == 0L) { "an unlock disarms" }
+    // Only Off between calls wakes.
+    val (dim, _) = heardInTheWindow(window, mode = DIM)
+    dim.policy.stopped(false)
+    check(dim.wakes == 0L) { "Dim" }
+    // A call heard before the screen-off broadcast is the snooze's: the off snoozes and the stop wakes nothing.
+    val early = PolicyRig()
+    early.front()
+    early.session()
+    early.quiet()
+    early.policy.focusChanged(false, false)
+    early.audio(ageMs = 100)
+    early.policy.screenOff()
+    asked = 0
+    early.policy.stopped(false) { asked++; true }
+    check(early.policy.snoozed && early.wakes == 0L && asked == 0) { "audio before the off snoozes" }
+    // With no call in the window the stop asks nothing.
+    val quiet = PolicyRig()
+    quiet.front()
+    quiet.session()
+    quiet.quiet()
+    window(quiet.policy)
+    asked = 0
+    quiet.policy.stopped(false) { asked++; true }
+    check(quiet.wakes == 0L && asked == 0) { "nothing heard" }
+    // A new session drops a call heard in the old one.
+    val (restarted, _) = heardInTheWindow(window)
+    restarted.policy.sessionStarted(SESSION + 1)
+    restarted.policy.stopped(false)
+    check(restarted.wakes == 0L) { "a new session" }
+}
+
 private fun bothCallbackOrdersArmWhenSleepingEligible() {
     val orders = listOf<Pair<String, (ScreenPolicy) -> Unit>>(
         "focus first" to {
@@ -1349,6 +1452,7 @@ fun main() {
     duplicateSessionStartDuringASnoozeIsANoOp()
     powerDuringAudioSnoozesButNotDuringATouchOrAQuietStart()
     audioBetweenPollsSnoozesThroughTheSyncSample()
+    aCallHeardWhileTheScreenGoesOffInFrontWakesAtTheStop()
     bothCallbackOrdersArmWhenSleepingEligible()
     quickLockScreenTouchDuringTheLease()
     powerDuringALongWokenCallKeepsTheArming()

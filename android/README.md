@@ -676,6 +676,9 @@ Timing:
   wake). On most phones the lock screen applies its own, shorter timeout.
 - The decoder's status is read once a second, so a wake follows the audio by up
   to a second. Audio more than 2 s old when it is read never wakes the screen.
+- Audio heard just after the screen goes off with DSD-neo in front, before
+  Android has stopped DSD-neo, wakes the screen once Android stops it, if the
+  audio is no more than 2 s old by then.
 - The first readable status of a session, usually from the second read (the
   first only wakes the status publishers), only notes where the audio stands:
   audio played before it never counts (the start itself counts for the delay).

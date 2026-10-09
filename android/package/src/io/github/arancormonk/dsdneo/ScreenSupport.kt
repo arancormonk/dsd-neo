@@ -181,10 +181,13 @@ object ScreenSupport {
         controller.started()
     }
 
-    /** The caller skips a stop that is part of a configuration change. */
+    /**
+     * The caller skips a stop that is part of a configuration change. The policy may wake here, for a call heard while
+     * the display went off in front, so the stop carries the verdict too.
+     */
     fun onStop(activity: Activity) = fromActivity(activity, "onStop") {
         sampleNow()
-        controller.stopped(interactive())
+        controller.stopped(interactive(), wakeVerdict)
     }
 
     fun onPause(activity: Activity) = fromActivity(activity, "onPause") {

@@ -12,6 +12,9 @@ private const val SESSION = 7L
 private fun ScreenController.sample(stamp: ULong?, ageMs: Long, wakeAllowed: Boolean) =
     sample(stamp, ageMs) { wakeAllowed }
 
+/** A stop with a fixed verdict, which the policy asks for as it would ask Android. */
+private fun ScreenController.stopped(interactive: Boolean) = stopped(interactive) { true }
+
 /** Records every effect in order; pulseWake() answers as Android would after the wake lock. */
 private class RecordingEffects : ScreenController.Effects {
     private val calls = mutableListOf<String>()
@@ -284,6 +287,23 @@ private fun theVerdictReachesThePolicyUnasked() {
     check(asked == 1 && rig.effects.take() == listOf("pulse"))
 }
 
+private fun theStopPulsesForACallHeardWhileStillVisible() {
+    val rig = ControllerRig(mode = OFF)
+    rig.front()
+    rig.session()
+    rig.quiet()
+    rig.controller.focusChanged(false, false)
+    rig.controller.screenOff()
+    rig.effects.take()
+    rig.now += 200
+    rig.audio(ageMs = 300)
+    check("pulse" !in rig.effects.take()) { "no pulse while still visible" }
+    rig.now += 500
+    rig.controller.paused(false)
+    rig.controller.stopped(false)
+    check(rig.effects.take().contains("pulse")) { "the stop pulses for it" }
+}
+
 private fun touchDelegatesInOneCall() {
     val rig = ControllerRig(mode = DIM)
     rig.front()
@@ -307,6 +327,7 @@ fun main() {
     anAcceptedWakeHoldsTheLeaseOnceTheScreenIsOn()
     aTickAlwaysReschedulesWhatIsLeft()
     theVerdictReachesThePolicyUnasked()
+    theStopPulsesForACallHeardWhileStillVisible()
     touchDelegatesInOneCall()
     println("PASS: screen controller idempotence, make before break, renewal, immediate release and wake refusal")
 }

@@ -9,6 +9,9 @@ private fun StatusFeed.onTick(running: Boolean, sessionId: Long, status: Decoder
 private fun ScreenController.sample(stamp: ULong?, ageMs: Long, wakeAllowed: Boolean) =
     sample(stamp, ageMs) { wakeAllowed }
 
+/** A stop with a fixed verdict, which the policy asks for as it would ask Android. */
+private fun ScreenController.stopped(interactive: Boolean) = stopped(interactive) { true }
+
 /** Records each delivery, with the verdict the sample would get if asked. */
 private class RecordingScreen : StatusFeed.Screen {
     private val calls = mutableListOf<String>()
