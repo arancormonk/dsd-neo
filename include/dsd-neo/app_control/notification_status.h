@@ -145,8 +145,10 @@ enum {
  * and an embedded tab would invent a field and desynchronise everything after it.
  *
  * Arms the audible-audio stamp (dsd_audio_activity_arm()) whenever it is given a buffer,
- * even before anything has been published: the Android service's poll is the only caller
- * and the stamp's only reader, so desktop, CLI and API-only sessions never turn it on.
+ * even before anything has been published. Its one caller is the Android JNI accessor
+ * nativeNotificationStatus(), from the decoder service's status poll and ScreenSupport's
+ * synchronous samples, which makes it the stamp's one reader: desktop, CLI and API-only
+ * sessions never turn the stamp on.
  *
  * @return Characters written excluding the NUL, or 0 when nothing is published, @p out is
  *         NULL, or @p out_size cannot hold the whole record. Never truncates -- a partial

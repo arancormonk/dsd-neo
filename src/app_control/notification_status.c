@@ -366,8 +366,9 @@ dsd_app_notification_encode(char* out, size_t out_size) {
         return 0;
     }
 
-    /* The Android service's poll is the only caller, and the only reader of the audible-audio stamp, so this is where
-       the stamp turns on -- on the first poll, which comes before the engine has published anything. Not in get(): the
+    /* The Android JNI accessor nativeNotificationStatus() is the only caller (from the service's status poll and from
+       ScreenSupport's synchronous samples), and the only reader of the audible-audio stamp, so this is where the stamp
+       turns on -- on the first poll, which comes before the engine has published anything. Not in get(): the
        API feed and the desktop frontends read through get() and never look at the stamp, and a session nobody reads it
        from must keep every audio writer at its unarmed cost of one load. */
     dsd_audio_activity_arm();

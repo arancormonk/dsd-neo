@@ -756,16 +756,17 @@ suite runs under this compiler.
   frames the vocoder always stages. DMR and P25 Phase 2 MBE capture save in `mbe_finalize_slot_left/right()` before
   `mbe_post_left/right_audio()` recomputes the slot mute flags, so the first frame after a mute change (reverse mute
   included) follows the previous frame's state.
-- Invariant (audible-audio stamp, `<dsd-neo/core/audio_activity.h>`, `src/core/audio/audio_activity.c`, issue #574):
-  one process-wide atomic word says when the decoder last emitted audio the app plays, in real-time monotonic
-  milliseconds (`dsd_realtime_mono_ms()`: it drives the Android screen, not a decode decision), 0 for none. Each writer
-  of decoded or analog audio notes it (`dsd_audio_activity_note()`) at its own final emit decision: after every gate it
-  applies (crypto and keys, forced clear, reverse mute, unmute overrides, talkgroup policy, slot switches, DMR mono, the
-  mute) and before it picks the output type, so the local stream, UDP and the raw fd count alike. It notes provenance,
-  never amplitude: a block counts when it carries decoded media, or squelch-open analog reception, from a slot whose
-  gates pass, so valid all-zero decoded PCM counts and silence padding or a muted slot never does. The stamp is off
-  until `dsd_audio_activity_arm()`, which only `dsd_app_notification_encode()` calls (the Android service's status
-  poll, the stamp's one reader; see App-Control), and then stays armed for the process. Every writer asks
+- Invariant (audible-audio stamp, `<dsd-neo/core/audio_activity.h>`, `src/core/audio/audio_activity.c`, issue #574): one
+  process-wide atomic word says when the decoder last emitted audio the app plays, in real-time monotonic milliseconds
+  (`dsd_realtime_mono_ms()`: it drives the Android screen, not a decode decision), 0 for none. Each writer of decoded or
+  analog audio notes it (`dsd_audio_activity_note()`) at its own final emit decision: after every gate it applies
+  (crypto and keys, forced clear, reverse mute, unmute overrides, talkgroup policy, slot switches, DMR mono, the mute)
+  and before it picks the output type, so the local stream, UDP and the raw fd count alike. It notes provenance, never
+  amplitude: a block counts when it carries decoded media, or squelch-open analog reception, from a slot whose gates
+  pass, so valid all-zero decoded PCM counts and silence padding or a muted slot never does. The stamp is off until
+  `dsd_audio_activity_arm()`, which only `dsd_app_notification_encode()` calls (its one caller is the Android JNI
+  accessor `nativeNotificationStatus()`, from the service's status poll and `ScreenSupport`'s synchronous samples, so it
+  is the stamp's one reader; see App-Control), and then stays armed for the process. Every writer asks
   `dsd_audio_activity_armed()`, one relaxed load, first, so a desktop, CLI or API session adds no scan, clock read or
   store per block. `dsd_audio_activity_read()` loads the word once (acquire) and ages that same value, -1 when it is 0
   or older than `DSD_AUDIO_ACTIVITY_MAX_AGE_MS` (60 s); `dsd_audio_activity_reset()` clears it and leaves it armed.
@@ -777,20 +778,20 @@ suite runs under this compiler.
   (after `m17_can_emit_audio()`); EDACS analog voice (`edacs_emit_analog_audio()`); and the analog monitor sink
   (`symbol_write_unsynced_audio()` in `dsd_symbol.c`). Never stamped: the beeper's tones, the M17 baseband monitor, the
   `-6` raw WAV, the static and per-call WAV writers, and the output helpers below the writers
-  (`dsd_output_*_block(s)()`, `dsd_audio_write()`, the UDP blasters), which cannot tell where a block came from. FS3
-  and SS3 run on a timer of bursts, skipped ones included, and replay each slot's buffers whether or not anything new
-  was decoded into them, so the vocoder marks fresh media per slot (`dsd_audio_dmr_mix_media_staged()`/`_discard()`/
-  `_take()` in `<dsd-neo/core/audio.h>`, `src/core/audio/dmr_mix_media.c`; DMR synctypes only, only while armed,
-  decoder thread only): FLOAT where `mbe_post_left/right_audio()` copy a decoded frame into `f_l`/`f_r`, SHORT where
-  the short path writes `s_l`/`s_r`, never for the silence staged for a muted slot. Each mix takes both slots' marks
-  and stamps only for an unmuted slot holding its own kind, so under a talkgroup hold of a slot the vocoder muted FS3
-  stamps the float frames it plays and SS3, playing silence, does not. Slot purges (`dsd_mbe_purge_slot_audio()`),
-  `initState()`, the engine's no-carrier reset and the end of the DMR BS loop (`finalize_dmr_bs()`) discard the marks.
-  EDACS analog stamps a triplet only when the squelch the call runs opened on it: the dynamic squelch heard a sample
-  (the per-run marking `edacs_process_analog_triplet()` already applies, returned), the level squelch's power test
-  (`pwr > call->sql`) passed, or the call runs none; a closed triplet is still written but never stamps.
-  The analog monitor stamps analog reception only: the FM or AM monitor (`dsd_analog_monitor_tap_active()`), never
-  the `-8` source monitor during digital decoding, with the tap's carrier open now and the tone policy passing it
+  (`dsd_output_*_block(s)()`, `dsd_audio_write()`, the UDP blasters), which cannot tell where a block came from. FS3 and
+  SS3 run on a timer of bursts, skipped ones included, and replay each slot's buffers whether or not anything new was
+  decoded into them, so the vocoder marks fresh media per slot (`dsd_audio_dmr_mix_media_staged()`/`_discard()`/
+  `_take()` in `<dsd-neo/core/audio.h>`, `src/core/audio/dmr_mix_media.c`; DMR synctypes only, only while armed, decoder
+  thread only): FLOAT where `mbe_post_left/right_audio()` copy a decoded frame into `f_l`/`f_r`, SHORT where the short
+  path writes `s_l`/`s_r`, never for the silence staged for a muted slot. Each mix takes both slots' marks and stamps
+  only for an unmuted slot holding its own kind, so under a talkgroup hold of a slot the vocoder muted FS3 stamps the
+  float frames it plays and SS3, playing silence, does not. Slot purges (`dsd_mbe_purge_slot_audio()`), `initState()`,
+  the engine's no-carrier reset and the end of the DMR BS loop (`finalize_dmr_bs()`) discard the marks. EDACS analog
+  stamps a triplet only when the squelch the call runs opened on it: the dynamic squelch heard a sample (the per-run
+  marking `edacs_process_analog_triplet()` already applies, returned), the level squelch's power test
+  (`pwr > call->sql`) passed, or the call runs none; a closed triplet is still written but never stamps. The analog
+  monitor stamps analog reception only: the FM or AM monitor (`dsd_analog_monitor_tap_active()`), never the `-8` source
+  monitor during digital decoding, with the tap's carrier open now and the tone policy passing it
   (`symbol_unsynced_carrier_active()`), a sink to write to (the local raw stream or UDP), and under the auto squelch at
   least one sample its own gate hears, so the fade-out written after the gate closes does not count and an unmodulated
   carrier does. Tests: `CORE_AUDIO_ACTIVITY`, `CORE_AUDIO2_HELPERS`, `CORE_MBE_TRANSFORM_CONTEXT`, `CORE_AUDIO_GAIN`,
@@ -1897,16 +1898,16 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   center_freq_hz, lead_slot, audible_stamp in unsigned decimal, audible_age_ms in signed decimal with -1 for none), then
   11 fields per slot (state, name, tg_text, src_text, tg_id, enc, algid, kid, elapsed_ms, emergency, priority). Text
   fields have control characters replaced with spaces, and a record that does not fit is dropped (0), never truncated.
-  The Android service's status poll is its one caller (`nativeNotificationStatus()` in `android/dsdneo_jni.cpp`), and
-  `DecoderStatus.kt` parses the record; change both together, the version included. The audible pair (issue #574) is not
-  stored by the publishers: every `get()` reads it afresh from one `dsd_audio_activity_read()`, so the age is that of
-  the stamp beside it, and `encode()` is what arms the stamp (see Core), whenever it is given a buffer, so from the
-  first poll, before anything is published; `get()` alone, which the API feed uses, never does.
-  `dsd_app_notification_reset()` (from `dsd_app_frontend_runtime_stop()`) clears the published status and the stamp,
-  which stays armed. `DecoderStatus.sameDisplay()` compares all but the audible pair, so the service re-posts the
-  notification only when what it shows changed, while every running poll tick still feeds the screen policy (see
-  "Android screen modes" under Build Targets). Tests: `APP_CONTROL_NOTIFICATION_STATUS` (the v3 field order, the pair
-  before any audio and after a note, the unsigned stamp, the reset, only `encode()` arming), and
+  `nativeNotificationStatus()` in `android/dsdneo_jni.cpp` is its one caller, from the Android service's status poll and
+  `ScreenSupport`'s synchronous samples, and `DecoderStatus.kt` parses the record; change both together, the version
+  included. The audible pair (issue #574) is not stored by the publishers: every `get()` reads it afresh from one
+  `dsd_audio_activity_read()`, so the age is that of the stamp beside it, and `encode()` is what arms the stamp (see
+  Core), whenever it is given a buffer, so from the first poll, before anything is published; `get()` alone, which the
+  API feed uses, never does. `dsd_app_notification_reset()` (from `dsd_app_frontend_runtime_stop()`) clears the
+  published status and the stamp, which stays armed. `DecoderStatus.sameDisplay()` compares all but the audible pair, so
+  the service re-posts the notification only when what it shows changed, while every running poll tick still feeds the
+  screen policy (see "Android screen modes" under Build Targets). Tests: `APP_CONTROL_NOTIFICATION_STATUS` (the v3 field
+  order, the pair before any audio and after a note, the unsigned stamp, the reset, only `encode()` arming), and
   `ANDROID_DECODER_STATUS_JVM`, which parses the same golden v3 record.
 - Build files: `src/app_control/CMakeLists.txt`
 
@@ -4452,19 +4453,28 @@ call must wake the screen. Every class below (`android/package/src/io/github/ara
 main thread only. The decision is pure Kotlin with no `android.*` import, run on the JVM by `ANDROID_SCREEN_POLICY_JVM`:
 
 - `ScreenPolicy.kt`: the state machine. Each input (the settings, session start and end, a status sample, focus,
-  top-resumed, pause, stop, start, destroy, multi-window, a touch or other interaction, screen on and off, user
-  present, a refused wake, a tick) runs one step: the change, then the snooze housekeeping, then the outputs
-  `keepScreenOn` (the window flag), `dimmed` (the brightness override) and `holdLease`, and the next `deadline` at
-  which an output changes by time alone. Time is an injected millisecond clock; nothing in it reads a system clock.
-  `Mode` codes 0-3 are a contract with Qt's `AppPrefs::ScreenMode` and are persisted, so never renumber them, and
-  `DELAY_CHOICES_SECONDS` matches `kScreenDelayChoices` in `app_prefs.cpp` (default 30). The policy is the only
-  keeper of the last audible-audio stamp: the first readable sample of a session only primes it and never counts as
-  activity, a changed stamp with age -1 records the stamp and nothing else, and a sample with no stamp (no readable
-  record) changes nothing. `wakeVerdictNeeded` (Off between calls, a session, the activity not visible, armed, the
-  screen off by the broadcasts) is the one predicate both the wake rule in `sample()` and the glue's platform reads
-  use. `wakeAllowed(audioMode, interruptionFilter)` allows a wake only in `MODE_NORMAL` with the filter `ALL` (or
-  `UNKNOWN`); any other mode, a newer one included, blocks it. The two platform limits the README lists are documented
-  in its KDoc.
+  top-resumed, pause, stop, start, destroy, multi-window, a touch or other interaction, screen on and off, user present,
+  a refused wake, a tick) runs one step: the change, then the snooze housekeeping, then the outputs `keepScreenOn` (the
+  window flag), `dimmed` (the brightness override) and `holdLease`, and the next `deadline` at which an output changes
+  by time alone. Time is an injected millisecond clock; nothing in it reads a system clock. `Mode` codes 0-3 are a
+  contract with Qt's `AppPrefs::ScreenMode` and are persisted, so never renumber them, and `DELAY_CHOICES_SECONDS`
+  matches `kScreenDelayChoices` in `app_prefs.cpp` (default 30). The policy is the only keeper of the last audible-audio
+  stamp: the first readable sample of a session only primes it and never counts as activity, a changed stamp with age -1
+  records the stamp and nothing else, and a sample with no stamp (no readable record) changes nothing.
+  `wakeVerdictNeeded` (Off between calls, a session, the activity not visible, armed, the screen off by the broadcasts)
+  is the one predicate both the wake rule in `sample()` and the glue's platform reads use. Arming (DSD-neo was in front
+  when the display went off) is decided only by the first foreground-loss callback of a sequence (focus, top-resumed,
+  pause or stop, whichever Android delivers first), from whether the activity was top-resumed and focused just before it
+  and the screen already off; regaining the foreground ends the sequence and clears the arming and any snooze. The
+  policy's own screen state follows only the screen broadcasts and a refused wake (a loss callback judges arming from
+  the live `isInteractive` the glue passes with it), so the sample taken just before a screen-off cannot wake a screen
+  the user has just turned off; a screen-on DSD-neo did not cause, or `USER_PRESENT`, disarms at once. After DSD-neo's
+  own wake the arming survives the next screen-off only if it comes no later than
+  `max(leaseReleasedAt, wakeAt + screen-off timeout) + OWN_WAKE_GRACE_MS` (5 s), a lease still held at that off counting
+  as released by it; in a between-calls mode with a session, a screen-off or an arming loss while audio is engaged
+  (within the delay of the last audio) snoozes wakes until a full delay passes without audio.
+  `wakeAllowed(audioMode, interruptionFilter)` allows a wake only in `MODE_NORMAL` with the filter `ALL` (or `UNKNOWN`);
+  any other mode, a newer one included, blocks it. The two platform limits the README lists are documented in its KDoc.
 - `ScreenController.kt`: runs the policy and carries its outputs out through `Effects`, only on a change and
   make-before-break (a keep-on flag being set, then a lease being taken, then a flag being cleared, the dimming, a
   lease being released), renews a held lease on every sample, pulses once per `wakeSerial` step and turns a pulse
@@ -4487,10 +4497,11 @@ The Android glue only delegates:
   `touch()` names; a key's `ACTION_DOWN`, generic motion and Back count as interaction and are never swallowed);
   `DecoderService`'s 1 s status poll (`statusTick()` on every running tick, `statusStopped()` from the poll's two ending
   tails and `stopStatusPolling()`, which every teardown runs); and a receiver for `SCREEN_ON`, `SCREEN_OFF` and
-  `USER_PRESENT`, registered exported because the three are protected broadcasts and `USER_PRESENT` comes from SystemUI,
-  not the system uid (a failed registration is retried on the next configure, attach or tick). Before the screen-off
-  broadcast and each callback that can lose the foreground it takes a synchronous sample
-  (`DsdNative.nativeNotificationStatus()`), only for the session the poll is feeding
+  `USER_PRESENT`, registered exported. Exporting is needed because `USER_PRESENT` comes from SystemUI, not the system
+  uid, so a not-exported receiver never gets it and the unlock would never disarm; it is safe because all three actions
+  are protected broadcasts that only system-side senders can send. A failed registration is retried on the next
+  configure, attach or tick. Before the screen-off broadcast and each callback that can lose the foreground it takes a
+  synchronous sample (`DsdNative.nativeNotificationStatus()`), only for the session the poll is feeding
   (`DecoderService.runningSessionId()`). It reads the audio mode and interruption filter for `wakeAllowed()` only while
   `wakeVerdictNeeded` holds, since both are binder calls on the main thread. A screen-on broadcast within 2 s of its own
   pulse is its own wake, and it reads the phone's timeout (`Settings.System.SCREEN_OFF_TIMEOUT`, 30 s when unreadable)

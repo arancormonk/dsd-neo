@@ -658,12 +658,12 @@ With the decoder stopped, both modes behave like System default.
 
 **Audible** means audio DSD-neo actually plays. A muted Monitor, a slot that is
 switched off, a blocked, locked-out or skipped talkgroup, and an encrypted call
-with no usable key never count, and neither do tones. Whatever DSD-neo does
-play counts, including encrypted audio it plays because a setting unmuted it.
-On the analog monitor (FM or AM) a channel counts while its carrier is open and
-passes the tone filter (CTCSS/DCS); with the squelch off the monitor plays all
-the time, so it always counts. An EDACS analog call counts while its squelch is
-open.
+with no usable key (unless a setting plays it anyway) never count, and neither
+do tones. On the analog monitor (FM or AM) a channel counts while its carrier is
+open and passes the tone filter (CTCSS/DCS); with the squelch off and no tone
+filter the monitor plays all the time, so it always counts. An EDACS analog call
+counts while its squelch is open, and all the time when the call runs no
+squelch.
 
 Timing:
 
@@ -671,12 +671,14 @@ Timing:
   DSD-neo, or change to these settings.
 - In Off between calls the screen goes dark at the later of two points: the end
   of the delay, and the phone's own screen timeout after the last touch or the
-  last automatic wake. On the lock screen Android applies its own, shorter
-  timeout.
+  last automatic wake (Android counts a wake as user activity: on an API 34
+  emulator the screen went off 15 s, the phone's timeout, after an automatic
+  wake). On most phones the lock screen applies its own, shorter timeout.
 - The decoder's status is read once a second, so a wake follows the audio by up
   to a second. Audio more than 2 s old when it is read never wakes the screen.
-- The first status read after a start only notes where the audio stands: audio
-  played before it never counts (the start itself counts for the delay).
+- The first readable status of a session, usually from the second read (the
+  first only wakes the status publishers), only notes where the audio stands:
+  audio played before it never counts (the start itself counts for the delay).
 
 In Off between calls, new audible audio turns the screen on only when:
 
@@ -691,13 +693,15 @@ In Off between calls, new audible audio turns the screen on only when:
 
 A wake only turns the screen on: DSD-neo does not show itself over the lock
 screen, so a locked phone wakes to its lock screen. The screen then stays on
-through the audio and the delay after it, and goes off on the lock screen's
-timeout; a phone left alone wakes again for the next call. Turning the screen on
-yourself, unlocking, or keeping the screen on after a wake longer than an
-untouched one would stay on (more than 5 s past both the end of DSD-neo's hold
-and the phone's timeout counted from the wake), for example by touching the lock
-screen, stops wakes until DSD-neo is back in front and the display goes off
-there again.
+through the audio and the delay after it, and then goes off on the phone's timer
+(on most phones, the lock screen's own shorter timeout); a phone left alone
+wakes again for the next call. Turning the screen on yourself or unlocking stops
+wakes at once. After a wake, so does a screen that goes off more than 5 s after
+the later of two points: the end of DSD-neo's hold, and the wake plus the
+phone's screen timeout setting. The lock screen's own timeout plays no part;
+keeping the screen on by touching the lock screen is what can push the
+screen-off that late. Either way, wakes stay stopped until DSD-neo is back in
+front and the display goes off there again.
 
 Dimming happens only while DSD-neo's window has focus and is not in split screen
 or another multi-window mode, because the brightness an app sets applies to the
@@ -720,12 +724,14 @@ Two platform limits are accepted rather than solved:
 - Quick use of the secure camera from the lock screen soon after a wake gives
   DSD-neo no callback at all, so the next call wakes the screen again.
 
-The wake is a `SCREEN_BRIGHT_WAKE_LOCK` with `ACQUIRE_CAUSES_WAKEUP`, which
-works at targetSdk 36 without any permission beyond `WAKE_LOCK`. AOSP's
-`REQUIRE_TURN_SCREEN_ON_PERMISSION` compatibility change is not enabled at
-targetSdk 36; a target SDK bump that enables it will need
-`android.permission.TURN_SCREEN_ON` in the manifest and the user's grant, or
-every wake is refused.
+The wake is a `SCREEN_BRIGHT_WAKE_LOCK` with `ACQUIRE_CAUSES_WAKEUP`. At
+targetSdk 36 it needs no permission beyond `WAKE_LOCK`: on an API 34 emulator
+the platform logged "Allowing device wake-up without
+android.permission.TURN_SCREEN_ON" for this app and turned the screen on. AOSP's
+`REQUIRE_TURN_SCREEN_ON_PERMISSION` compatibility change is not enabled for apps
+targeting SDK 36, as of Android 16 (API 36); a target SDK bump that enables it
+will need `android.permission.TURN_SCREEN_ON` in the manifest and the user's
+grant, or every wake is refused.
 
 An install that used **Keep screen awake** reads as **Always on** (switch on) or
 **System default** (switch off) until a mode is chosen. The old setting is never
@@ -748,8 +754,9 @@ device, with a source that has known calls (an I/Q replay works):
   quiet; pressed after a quiet delay, it does not.
 - Swipe, PIN and no screen lock: what each wake shows; unlocking stops wakes
   until DSD-neo is in front again.
-- Touching the lock screen after a wake, so it stays on past its timeout, stops
-  further wakes.
+- Keep touching the lock screen after a wake until it stays on more than 5 s
+  past both DSD-neo's hold and the phone's timeout from the wake: further wakes
+  stop; a shorter touch does not stop them.
 - Split screen: no dimming; the unfocused side never arms wakes.
 - Rotation while dimmed, while the screen is held on, and before a sleep:
   nothing sticks or resets.
