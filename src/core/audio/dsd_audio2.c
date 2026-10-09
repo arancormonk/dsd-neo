@@ -430,8 +430,7 @@ dmr_slot_mixer_muted(const dsd_opts* opts, const dsd_state* state, int slot) {
     return (enc != 0 && mute != 0) ? 1 : 0;
 }
 
-// SS3's own crypto mute without reverse mute: the service options mark the slot encrypted and no loaded key decrypts
-// it. It holds even with the encrypted mute toggled off, when the vocoder still stages the undecryptable audio.
+// SS3's own crypto mute: the service options mark the slot encrypted and no loaded key decrypts it.
 static int
 dmr_ss3_slot_undecryptable(const dsd_state* state, int slot) {
     const int enc_bit = ((slot == 0 ? state->dmr_so : state->dmr_soR) >> 6) & 0x1;
@@ -673,10 +672,13 @@ dsd_dmr_ss3_init_enc_flags(const dsd_opts* opts, const dsd_state* state, int* en
     if (opts->reverse_mute == 1 || dsd_key_dmr_forced_clear(state)) {
         return;
     }
-    if (dmr_ss3_slot_undecryptable(state, 0)) {
+    // Otherwise, while encrypted audio is muted, SS3 also mutes a slot the service options mark encrypted that no
+    // loaded key decrypts. The encrypted-audio unmute (dmr_mute_encL/R 0) lifts it, as it lifts the vocoder's mute:
+    // the vocoder then stages the slot and both mixes play it.
+    if (opts->dmr_mute_encL != 0 && dmr_ss3_slot_undecryptable(state, 0)) {
         *encL = 1;
     }
-    if (dmr_ss3_slot_undecryptable(state, 1)) {
+    if (opts->dmr_mute_encR != 0 && dmr_ss3_slot_undecryptable(state, 1)) {
         *encR = 1;
     }
 }
@@ -1305,6 +1307,11 @@ playSynthesizedVoiceSS3(dsd_opts* opts, dsd_state* state) {
     unsigned long TGL = dsd_audio_call_target(state, 0U);
     unsigned long TGR = dsd_audio_call_target(state, 1U);
 
+    // A held talkgroup unmutes its slot even when the vocoder muted it (encrypted with no key, or clear under -q).
+    // FS3 then plays the float frames the vocoder always stages; SS3 plays the slot's short samples, which the vocoder
+    // stages only for an audible slot and otherwise leaves silent (mbe_post_stage_slot_silence()), so here a held
+    // muted slot plays silence. Staging short samples for a muted slot would run the short path's gain on audio the
+    // vocoder judged muted, for a rare combination.
     dsd_dmr_apply_tg_hold_and_slot_preference_ss3(opts, state, TGL, TGR, &encL, &encR);
     // Apply the final policy after Hold so a temporary avoid cannot be unmuted again.
     (void)dsd_audio_group_gate_dual(opts, state, TGL, TGR, encL, encR, &encL, &encR);

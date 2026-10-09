@@ -2715,65 +2715,80 @@ dmr_mix_tag_slots(dsd_state* state) {
 
 /* Issue #574: both stereo DMR mixes, the float FS3 and the short SS3, play a slot exactly when the vocoder's verdict
  * after reverse mute (-q) leaves it audible, which for SS3 is exactly when the vocoder staged its short samples.
- * Without -q a clear slot plays and an encrypted one without a key does not; -q swaps them. Under forced privacy
+ * Without -q a clear slot plays and an encrypted one without a key does not, unless the encrypted-audio unmute is on
+ * (dmr_mute_encL/R 0), which plays it too; -q swaps clear and encrypted whatever that unmute says. Under forced privacy
  * (Baofeng AP, CSI EE, the Kenwood scrambler) the vocoder clears the slot's encryption flag before -q flips it, so the
  * call plays without -q and not with it, whether or not the voice carries the encryption bit. Each channel is checked
  * for the slot it carries: its own when audible, the audible companion's when muted (the mixes mirror one audible
  * slot into both channels). */
+static const char* const k_dmr_mix_modes[] = {"clear/encrypted", "baofeng_ap", "csi_ee", "ken_sc"};
+
+// One row: @p mode indexes k_dmr_mix_modes, @p so holds each slot's service options.
+static int
+dmr_mix_check_row(int mode, int reverse_mute, int unmute_encrypted, int floating_point, const int so[2]) {
+    dsd_opts* opts = dmr_mix_new_opts(floating_point, reverse_mute);
+    dsd_state* state = calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return 1;
+    }
+    opts->dmr_mute_encL = unmute_encrypted ? 0 : 1;
+    opts->dmr_mute_encR = unmute_encrypted ? 0 : 1;
+    initState(state);
+    state->synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    state->dmrburstL = 16;
+    state->dmrburstR = 16;
+    state->baofeng_ap = mode == 1 ? 1 : 0;
+    state->csi_ee = mode == 2 ? 1 : 0;
+    state->ken_sc = mode == 3 ? 1 : 0;
+    state->dmr_so = so[0];
+    state->dmr_soR = so[1];
+    for (int slot = 0; slot < 2; slot++) {
+        for (int frame = 0; frame < 3; frame++) {
+            dmr_mix_stage_frame(opts, state, slot, frame);
+        }
+    }
+    dmr_mix_tag_slots(state);
+    dmr_mix_run(opts, state);
+
+    int audible[2];
+    for (int slot = 0; slot < 2; slot++) {
+        const int clear = so[slot] == 0;
+        audible[slot] = mode != 0 ? !reverse_mute : (reverse_mute ? !clear : (clear || unmute_encrypted));
+    }
+    const int any = audible[0] || audible[1];
+    const int want_left = audible[0] ? 1 : (audible[1] ? 2 : 0);
+    const int want_right = audible[1] ? 2 : (audible[0] ? 1 : 0);
+    char tag[128];
+    DSD_SNPRINTF(tag, sizeof(tag), "dmr mix %s %s so=0x%02X/0x%02X reverse_mute=%d unmute_encrypted=%d",
+                 k_dmr_mix_modes[mode], floating_point ? "FS3" : "SS3", so[0], so[1], reverse_mute, unmute_encrypted);
+    char check[192];
+    int rc = 0;
+    DSD_SNPRINTF(check, sizeof(check), "%s blocks", tag);
+    rc |= expect_eq_int(check, g_dmr_mix_blocks, any ? 3 : 0);
+    DSD_SNPRINTF(check, sizeof(check), "%s left channel slot signs", tag);
+    rc |= expect_eq_int(check, g_dmr_mix_signs[0], want_left);
+    DSD_SNPRINTF(check, sizeof(check), "%s right channel slot signs", tag);
+    rc |= expect_eq_int(check, g_dmr_mix_signs[1], want_right);
+    freeState(state);
+    free(state);
+    free(opts);
+    return rc;
+}
+
 static int
 test_dmr_stereo_mixes_follow_vocoder_slot_verdict(void) {
-    static const char* const modes[] = {"clear/encrypted", "baofeng_ap", "csi_ee", "ken_sc"};
     static const int service_options[][2] = {{0x00, 0x00}, {0x40, 0x40}, {0x00, 0x40}, {0x40, 0x00}};
     int rc = 0;
     for (int mode = 0; mode < 4; mode++) {
         for (int reverse_mute = 0; reverse_mute <= 1; reverse_mute++) {
-            for (int floating_point = 1; floating_point >= 0; floating_point--) {
-                for (size_t so = 0U; so < sizeof(service_options) / sizeof(service_options[0]); so++) {
-                    dsd_opts* opts = dmr_mix_new_opts(floating_point, reverse_mute);
-                    dsd_state* state = calloc(1, sizeof(*state));
-                    if (!opts || !state) {
-                        free(opts);
-                        free(state);
-                        return 1;
+            for (int unmute_encrypted = 0; unmute_encrypted <= 1; unmute_encrypted++) {
+                for (int floating_point = 1; floating_point >= 0; floating_point--) {
+                    for (size_t so = 0U; so < sizeof(service_options) / sizeof(service_options[0]); so++) {
+                        rc |= dmr_mix_check_row(mode, reverse_mute, unmute_encrypted, floating_point,
+                                                service_options[so]);
                     }
-                    initState(state);
-                    state->synctype = DSD_SYNC_DMR_BS_VOICE_POS;
-                    state->dmrburstL = 16;
-                    state->dmrburstR = 16;
-                    state->baofeng_ap = mode == 1 ? 1 : 0;
-                    state->csi_ee = mode == 2 ? 1 : 0;
-                    state->ken_sc = mode == 3 ? 1 : 0;
-                    state->dmr_so = service_options[so][0];
-                    state->dmr_soR = service_options[so][1];
-                    for (int slot = 0; slot < 2; slot++) {
-                        for (int frame = 0; frame < 3; frame++) {
-                            dmr_mix_stage_frame(opts, state, slot, frame);
-                        }
-                    }
-                    dmr_mix_tag_slots(state);
-                    dmr_mix_run(opts, state);
-
-                    int audible[2];
-                    for (int slot = 0; slot < 2; slot++) {
-                        audible[slot] = mode != 0 ? !reverse_mute : ((service_options[so][slot] == 0) != reverse_mute);
-                    }
-                    const int any = audible[0] || audible[1];
-                    const int want_left = audible[0] ? 1 : (audible[1] ? 2 : 0);
-                    const int want_right = audible[1] ? 2 : (audible[0] ? 1 : 0);
-                    char tag[128];
-                    DSD_SNPRINTF(tag, sizeof(tag), "dmr mix %s %s so=0x%02X/0x%02X reverse_mute=%d", modes[mode],
-                                 floating_point ? "FS3" : "SS3", service_options[so][0], service_options[so][1],
-                                 reverse_mute);
-                    char check[160];
-                    DSD_SNPRINTF(check, sizeof(check), "%s blocks", tag);
-                    rc |= expect_eq_int(check, g_dmr_mix_blocks, any ? 3 : 0);
-                    DSD_SNPRINTF(check, sizeof(check), "%s left channel slot signs", tag);
-                    rc |= expect_eq_int(check, g_dmr_mix_signs[0], want_left);
-                    DSD_SNPRINTF(check, sizeof(check), "%s right channel slot signs", tag);
-                    rc |= expect_eq_int(check, g_dmr_mix_signs[1], want_right);
-                    freeState(state);
-                    free(state);
-                    free(opts);
                 }
             }
         }
