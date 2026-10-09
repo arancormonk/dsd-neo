@@ -148,7 +148,7 @@ private fun theFeedDrivesTheControllerLease() {
                 released++
             }
 
-            override fun pulseWake(): Boolean = true
+            override fun pulseWake(): ScreenWake = ScreenWake.WOKE
 
             override fun schedule(atMs: Long?) {}
         },
@@ -188,9 +188,9 @@ private fun aSynchronousSampleThenAnUnreadableTickReplaysNothing() {
 
             override fun releaseLease() {}
 
-            override fun pulseWake(): Boolean {
+            override fun pulseWake(): ScreenWake {
                 pulses++
-                return true
+                return ScreenWake.WOKE
             }
 
             override fun schedule(atMs: Long?) {}

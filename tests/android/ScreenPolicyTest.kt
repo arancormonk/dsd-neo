@@ -754,6 +754,31 @@ private fun userScreenOnDisarmsAtOnce() {
     check(rig.wakes == 1L)
 }
 
+private fun aWakeOverAScreenAlreadyOnLeavesItsBroadcastToDisarm() {
+    // The user, another app or a notification turns the screen on while armed, and a status tick with a call runs
+    // before that screen-on broadcast: the policy asks for a wake, the controller finds the screen on and reports no
+    // refusal, and the screen still counts as off, with no lease, until the broadcast. That screen-on is not DSD-neo's,
+    // so it disarms (D7).
+    val rig = PolicyRig().armedAsleep()
+    rig.audio()
+    check(rig.wakes == 1L && rig.policy.armed && !rig.policy.interactive && !rig.policy.snoozed)
+    check(!rig.policy.outputs.holdLease) { "no lease before the broadcast" }
+    rig.advance(1_000)
+    rig.audio()
+    check(rig.wakes == 2L && !rig.policy.outputs.holdLease) { "a call before the broadcast asks again, still no lease" }
+    rig.advance(200)
+    rig.policy.screenOn(false, TIMEOUT_MS)
+    check(rig.policy.interactive && !rig.policy.armed && rig.policy.wakeAt == null && !rig.policy.outputs.holdLease)
+    rig.advance(1_000)
+    rig.audio()
+    check(rig.wakes == 2L && !rig.policy.outputs.holdLease) { "disarmed: no later call wakes or holds the screen" }
+    rig.advance(TIMEOUT_MS)
+    rig.policy.screenOff()
+    rig.advance(DELAY_MS)
+    rig.audio()
+    check(rig.wakes == 2L) { "the screen going off again does not re-arm" }
+}
+
 private fun unlockDisarmsAtOnceAndReleasesWhileStillInteractive() {
     val rig = PolicyRig().armedAsleep()
     rig.audio()
@@ -1704,6 +1729,7 @@ fun main() {
     unfocusedSplitScreenSleepDoesNotArm()
     homeWithTheScreenOnThenOff()
     userScreenOnDisarmsAtOnce()
+    aWakeOverAScreenAlreadyOnLeavesItsBroadcastToDisarm()
     unlockDisarmsAtOnceAndReleasesWhileStillInteractive()
     ownWakeOffOnTimeStaysArmed()
     lateOffAfterALockScreenTouchDisarms()

@@ -84,8 +84,9 @@ run production Android Kotlin on the plain JVM, without an Android build or emul
 the location broker and geocoder queue with deterministic platform stubs, `ANDROID_DECODER_STATUS_JVM` runs
 `DecoderStatus.kt`, the notification status record's reader, with no stubs, and `ANDROID_SCREEN_POLICY_JVM` (the
 `screen` suite) runs the screen modes' policy and pure adapters (`ScreenPolicy.kt`, `ScreenController.kt`,
-`StatusFeed.kt`, `ActivitySlot.kt`, with `DecoderStatus.kt`) with no stubs at all, so an `android.*` import in any of
-them fails the compile, then `ScreenLocks.kt` on its own against a `PowerManager` stub that models reference counting.
+`ScreenWake.kt`, `StatusFeed.kt`, `ActivitySlot.kt`, with `DecoderStatus.kt`) with no stubs at all, so an `android.*`
+import in any of them fails the compile, then `ScreenLocks.kt` (with `ScreenWake.kt`) on its own against a
+`PowerManager` stub that models reference counting and the screen's interactive state.
 `ScreenPolicyTest.kt` takes the policy through each row of its transition table and through whole histories on an
 injected clock: sleeping in front with either callback order, split screen, an own wake whose screen goes off on time or
 late, an own wake followed by use in front (after an unlock, or with no lock screen) whose next sleep arms afresh, the
@@ -93,8 +94,11 @@ power snooze and the synchronous sample before it (the session's first readable 
 wakes), a stamp delivered late or with age -1, a call heard after the screen went off in front but before the activity
 stopped, on either side of the first loss callback and of the screen-off broadcast (woken by the last of the stop and
 the broadcast, and never snoozed by an off it followed), Android's verdict asked only for a sample that would wake, and
-the `AudioManager` and Do Not Disturb mapping; `ScreenControllerTest.kt` the make-before-break order,
-lease renewal, wake refusal and which screen-on is DSD-neo's own wake (none after a refused pulse); `StatusFeedTest.kt`
+the `AudioManager` and Do Not Disturb mapping, and a wake asked for over a screen someone else turned on, whose
+broadcast then disarms; `ScreenControllerTest.kt` the make-before-break order, lease renewal, wake refusal and which
+screen-on is DSD-neo's own wake (none after a refused pulse, nor after a wake that found the screen already on before
+its broadcast, while an own pulse's pending screen-on keeps its claim); `ScreenLocksTest.kt` that a screen already on
+is never pulsed; `StatusFeedTest.kt`
 that the verdict is handed on unasked; `ScreenTouchTest.kt` the gesture latch and the TalkBack exception. Each suite
 compiles its own files, each build in a suite its own set, and the CTest entries share a resource lock so two Kotlin
 compiles never run at once. `DecoderStatusTest.kt` parses the same golden v3 record literal that

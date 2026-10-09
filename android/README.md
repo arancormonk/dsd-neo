@@ -702,7 +702,10 @@ through the audio and the delay after it, and then goes off on the phone's timer
 (on most phones, the lock screen's own shorter timeout); a phone left alone
 wakes again for the next call. Anything other than DSD-neo's own wake that turns
 the screen on stops wakes at once: you, another app or a notification, an
-incoming call, or on some phones plugging in the charger. So does unlocking.
+incoming call, or on some phones plugging in the charger. So does unlocking. A
+call that arrives in the moment between such a screen-on and Android telling
+DSD-neo of it changes nothing: DSD-neo finds the screen already on, leaves it
+alone, and does not count that screen-on as its own.
 After a wake, so does a screen that goes off more than 5 s after the later of
 two points: the end of DSD-neo's hold, and the wake plus the phone's screen
 timeout setting. The lock screen's own timeout plays no part; keeping the screen

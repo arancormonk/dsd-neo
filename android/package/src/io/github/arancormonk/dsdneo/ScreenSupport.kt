@@ -99,13 +99,13 @@ object ScreenSupport {
             locks?.releaseLease()
         }
 
-        override fun pulseWake(): Boolean {
-            val screen = screenLocks() ?: return false
-            val on = screen.pulseWake()
-            if (!on) {
+        override fun pulseWake(): ScreenWake {
+            val screen = screenLocks() ?: return ScreenWake.REFUSED
+            val result = screen.pulseWake()
+            if (result == ScreenWake.REFUSED) {
                 reportRefusal()
             }
-            return on
+            return result
         }
 
         override fun schedule(atMs: Long?) {

@@ -807,9 +807,10 @@ suite runs under this compiler.
   at least one sample its own gate hears, so the fade-out written after the gate closes does not count and an
   unmodulated carrier does. The block's verdict is taken before the write, but the stamp is noted in the sink's write
   callback (`symbol_monitor_sink_write()`) when it hands the output samples, so a block the sink's converter mutes
-  (`DSD_ANALOG_SINK_MUTED`: a rate it cannot take, no memory for it) stamps nothing. Tests: `CORE_AUDIO_ACTIVITY`, `CORE_AUDIO2_HELPERS`,
-  `CORE_MBE_TRANSFORM_CONTEXT`, `CORE_AUDIO_GAIN`, `P25_P2_MIXER_GATE`, `M17_STATE_DISPATCH`, `EDACS_GRANT_TUNE_MATRIX`,
-  `DSP_SYMBOL_REPLAY`, `DMR_BS_SYNC_TIMES`, `ENGINE_NO_CARRIER_RESET` (see `docs/testing.md`).
+  (`DSD_ANALOG_SINK_MUTED`: a rate it cannot take, no memory for it) stamps nothing. Tests: `CORE_AUDIO_ACTIVITY`,
+  `CORE_AUDIO2_HELPERS`, `CORE_MBE_TRANSFORM_CONTEXT`, `CORE_AUDIO_GAIN`, `P25_P2_MIXER_GATE`, `M17_STATE_DISPATCH`,
+  `EDACS_GRANT_TUNE_MATRIX`, `DSP_SYMBOL_REPLAY`, `DMR_BS_SYNC_TIMES`, `ENGINE_NO_CARRIER_RESET` (see
+  `docs/testing.md`).
 - Invariant (vocoder PCM scale, `<dsd-neo/core/vocoder.h>`): mbelib-neo's float PCM is int16 / 7
   (`mbe_floattoshort()` multiplies by 7), and from 2.3 it synthesizes speech at that reference level. The voice
   buffers (`audio_out_temp_buf`/`R` and their `f_l`/`f_r`/`f_l4`/`f_r4` copies) hold int16-scale samples, which the
@@ -4512,12 +4513,17 @@ main thread only. The decision is pure Kotlin with no `android.*` import, run on
   are documented in its KDoc.
 - `ScreenController.kt`: runs the policy and carries its outputs out through `Effects`, only on a change and
   make-before-break (a keep-on flag being set, then a lease being taken, then a flag being cleared, the dimming, a lease
-  being released), renews a held lease on every sample, pulses once per `wakeSerial` step and turns a pulse that left
-  the screen off into `wakeRefused()`, and keeps one scheduled tick in step with the deadline. Its `stopped()` and
-  `screenOff()` take the verdict supplier as `sample()` does, since either can judge held audio. It decides which
-  screen-on is DSD-neo's own wake: only the first within `OWN_WAKE_SETTLE_MS` (2 s) of a pulse Android accepted. A
-  refused pulse leaves none, so the next screen-on is someone else's and disarms. `state` is a read-only view of the
-  policy, so nothing bypasses the effects.
+  being released), renews a held lease on every sample, asks for one pulse per `wakeSerial` step and turns a pulse that
+  left the screen off into `wakeRefused()`, and keeps one scheduled tick in step with the deadline. Its `stopped()` and
+  `screenOff()` take the verdict supplier as `sample()` does, since either can judge held audio. `Effects.pulseWake()`
+  answers with a `ScreenWake` (`ScreenWake.kt`, plain Kotlin): `WOKE`, `ALREADY_ON` or `REFUSED`. It decides which
+  screen-on is DSD-neo's own wake: only the first within `OWN_WAKE_SETTLE_MS` (2 s) of a pulse that answered `WOKE`. A
+  refused pulse leaves none, so the next screen-on is someone else's and disarms. `ALREADY_ON` is the screen turned on
+  before its broadcast reached DSD-neo, as when the user or a notification turns it on and a status tick with a call
+  runs before the queued `SCREEN_ON`: the policy, which counts the screen on only by that broadcast, still asks for a
+  wake. Nothing was pulsed, so the controller claims nothing and tells the policy nothing; the broadcast then disarms
+  as any foreign screen-on does (D7). An own pulse whose screen-on is still to come keeps the claim it made, dated from
+  that pulse. `state` is a read-only view of the policy, so nothing bypasses the effects.
 - `StatusFeed.kt`: the service's status poll as the policy sees it. Every running tick samples, even an unchanged
   record (a held lease is renewed per sample); a new session id starts a session; every path that stops the poll ends
   it, once. It keeps no stamp, so a synchronous sample the glue sends straight to the controller is never undone by a
@@ -4555,7 +4561,9 @@ The Android glue only delegates:
   screen goes off on the phone's timer. The window flag cannot do that: the window manager's own lock for it carries
   `ON_AFTER_RELEASE`, so clearing the flag counts as user activity. The wake pulse `dsd-neo:screen-wake`
   (`SCREEN_BRIGHT_WAKE_LOCK | ACQUIRE_CAUSES_WAKEUP`, 1 s) turns the screen on; Android offers no way to turn it off.
-  This is the one file that names the deprecated levels.
+  `pulseWake()` reads `isInteractive` before the pulse: a screen already on is not pulsed (`ALREADY_ON`); otherwise
+  it pulses and answers `WOKE` or `REFUSED` by `isInteractive` after. This is the one file that names the deprecated
+  levels.
 
 Qt side: `AppPrefs` stores `screenMode` (`listen/screenMode`) and `screenDelaySec` (`listen/screenDelaySec`) under
 one `screenPolicyChanged` signal, with the offered delays as the CONSTANT `screenDelayChoices`. A stored value off
@@ -4566,7 +4574,7 @@ Android host overrides both. `qt_ui.cpp` applies the pair at startup and on ever
 `screenModeRow` and, for the two between-calls modes only, `screenDelayRow` ("Dim after", or "Turn off after" in Off
 between calls), both through the `screenChoices` `ChoiceSheet` and hidden unless `screenPolicySupported`. Tests:
 `ANDROID_SCREEN_POLICY_JVM` (`ScreenPolicyTest.kt`, `ScreenControllerTest.kt`, `ScreenTouchTest.kt`,
-`StatusFeedTest.kt`, `ActivitySlotTest.kt`; `ScreenLocksTest.kt` against a `PowerManager` stub),
+`StatusFeedTest.kt`, `ActivitySlotTest.kt`; `ScreenLocksTest.kt` against a `PowerManager` stub, with `ScreenWake.kt`),
 `UI_QT_PERSISTENCE` (`test_screen_policy_prefs()`), `UI_QT_QML_CALL_LISTS` (`tst_settings_screen_policy.qml`) and
 `UI_QT_ANDROID_HOST`.
 

@@ -32,7 +32,7 @@ private class TouchRig {
 
             override fun releaseLease() {}
 
-            override fun pulseWake(): Boolean = true
+            override fun pulseWake(): ScreenWake = ScreenWake.WOKE
 
             override fun schedule(atMs: Long?) {}
         },

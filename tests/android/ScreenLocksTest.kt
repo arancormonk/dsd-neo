@@ -48,18 +48,31 @@ private fun aPulseWakesWithAOneSecondLockAndReportsTheScreen() {
     val power = PowerManager()
     val locks = ScreenLocks(power)
     val wake = power.created[1]
-    check(locks.pulseWake()) { "the screen came on" }
+    check(locks.pulseWake() == ScreenWake.WOKE) { "the screen came on" }
     check(wake.acquireTimeouts == listOf(1_000L) && power.created[0].acquireTimeouts.isEmpty())
     val refused = PowerManager().apply { wakeupRefused = true }
-    check(!ScreenLocks(refused).pulseWake()) { "a refused wake reports the screen still off" }
-    // Pulses repeat without piling up holds.
-    repeat(3) { locks.pulseWake() }
-    check(wake.count == 1)
+    check(ScreenLocks(refused).pulseWake() == ScreenWake.REFUSED) { "a refused wake reports the screen still off" }
+    // Pulses repeat without piling up holds, each over a screen gone off again.
+    repeat(3) {
+        power.isInteractive = false
+        check(locks.pulseWake() == ScreenWake.WOKE)
+    }
+    check(wake.count == 1 && wake.acquireTimeouts.size == 4)
+}
+
+private fun aScreenAlreadyOnIsNotPulsed() {
+    // Someone else turned the screen on and its broadcast has not reached DSD-neo yet: no pulse goes out.
+    val power = PowerManager().apply { isInteractive = true }
+    val locks = ScreenLocks(power)
+    val wake = power.created[1]
+    check(locks.pulseWake() == ScreenWake.ALREADY_ON) { "a screen already on is reported as such" }
+    check(wake.acquireTimeouts.isEmpty() && !wake.isHeld) { "no pulse over a screen already on" }
 }
 
 fun main() {
     bothLocksAreCreatedOnceAndNotReferenceCounted()
     renewalsThenOneReleaseFreeTheLease()
     aPulseWakesWithAOneSecondLockAndReportsTheScreen()
-    println("PASS: screen locks are non-counted, the lease has no ON_AFTER_RELEASE, the pulse wakes for 1 s")
+    aScreenAlreadyOnIsNotPulsed()
+    println("PASS: screen locks are non-counted, the lease has no ON_AFTER_RELEASE, the pulse wakes for 1 s when off")
 }

@@ -120,14 +120,15 @@ SUITES = {
         checks=(golden_records_match,),
     ),
     # The screen policy and the pure adapters around it compile with no stubs at all, so an android.* import in any of
-    # them fails the build. ScreenLocks, the one wrapper over the platform's wake locks, builds apart against a
-    # PowerManager stub that models reference counting.
+    # them fails the build. ScreenLocks, the one wrapper over the platform's wake locks, builds apart, with the pure
+    # ScreenWake it answers with, against a PowerManager stub that models reference counting.
     "screen": Suite(
         builds=(
             Build(
                 sources=(
                     "ScreenPolicy.kt",
                     "ScreenController.kt",
+                    "ScreenWake.kt",
                     "StatusFeed.kt",
                     "ActivitySlot.kt",
                     "DecoderStatus.kt",
@@ -140,7 +141,11 @@ SUITES = {
                     "ActivitySlotTest.kt",
                 ),
             ),
-            Build(sources=("ScreenLocks.kt",), tests=("ScreenLocksTest.kt",), stubs=("PowerManager.kt",)),
+            Build(
+                sources=("ScreenLocks.kt", "ScreenWake.kt"),
+                tests=("ScreenLocksTest.kt",),
+                stubs=("PowerManager.kt",),
+            ),
         ),
     ),
 }

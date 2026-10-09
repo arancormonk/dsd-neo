@@ -37,10 +37,17 @@ class ScreenLocks(private val powerManager: PowerManager) {
         }
     }
 
-    /** Turns the screen on; returns whether it is interactive right after, false when Android refused the wake. */
-    fun pulseWake(): Boolean {
+    /**
+     * Turns the screen on: [ScreenWake.WOKE] when it is interactive right after, [ScreenWake.REFUSED] when Android
+     * refused the wake. A screen already on is not pulsed at all ([ScreenWake.ALREADY_ON]): this call did not turn it
+     * on, so its screen-on must not pass for this call's wake.
+     */
+    fun pulseWake(): ScreenWake {
+        if (powerManager.isInteractive) {
+            return ScreenWake.ALREADY_ON
+        }
         wake.acquire(WAKE_PULSE_MS)
-        return powerManager.isInteractive
+        return if (powerManager.isInteractive) ScreenWake.WOKE else ScreenWake.REFUSED
     }
 
     companion object {

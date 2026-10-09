@@ -18,10 +18,16 @@ private fun ScreenController.stopped(interactive: Boolean) = stopped(interactive
 /** A screen-off broadcast with a fixed verdict, which the policy asks for as it would ask Android. */
 private fun ScreenController.screenOff() = screenOff { true }
 
-/** Records every effect in order; pulseWake() answers as Android would after the wake lock. */
+/**
+ * Records every effect in order; pulseWake() answers as Android would: the screen found already on, woken by the
+ * wake lock, or left off.
+ */
 private class RecordingEffects : ScreenController.Effects {
     private val calls = mutableListOf<String>()
     var interactiveAfterPulse = true
+
+    /** The screen is on before the pulse: someone else turned it on, or an own pulse did, its broadcast to come. */
+    var screenAlreadyOn = false
 
     override fun setKeepScreenOn(on: Boolean) {
         calls += "keepOn=$on"
@@ -39,9 +45,13 @@ private class RecordingEffects : ScreenController.Effects {
         calls += "release"
     }
 
-    override fun pulseWake(): Boolean {
+    override fun pulseWake(): ScreenWake {
         calls += "pulse"
-        return interactiveAfterPulse
+        return when {
+            screenAlreadyOn -> ScreenWake.ALREADY_ON
+            interactiveAfterPulse -> ScreenWake.WOKE
+            else -> ScreenWake.REFUSED
+        }
     }
 
     override fun schedule(atMs: Long?) {
@@ -281,6 +291,49 @@ private fun aScreenOnIsOursOnlyJustAfterAnAcceptedPulse() {
     check(!none.policy.armed) { "a screen-on with no pulse" }
 }
 
+private fun aScreenFoundOnBeforeItsBroadcastIsNotOurWake() {
+    // The user, another app or a notification turns the screen on while DSD-neo is armed, and a status tick with a new
+    // call runs before that screen-on broadcast does: the policy still counts the screen off and asks for a wake, but
+    // the screen is already on, so nothing is pulsed and nothing is claimed. The broadcast then disarms (D7).
+    val settle = ScreenController.OWN_WAKE_SETTLE_MS
+    val rig = ControllerRig(mode = OFF).armedAsleep()
+    rig.effects.screenAlreadyOn = true
+    rig.audio()
+    check(rig.effects.take() == listOf("pulse")) { "the wake is asked for and nothing else follows" }
+    check(rig.policy.armed && !rig.policy.snoozed && !rig.policy.interactive) { "a screen found on is no refusal" }
+    rig.now += 200
+    rig.controller.screenOn(30_000)
+    check(!rig.policy.armed && rig.policy.wakeAt == null) { "the screen-on that follows is someone else's and disarms" }
+    check(!rig.policy.outputs.holdLease && "renew" !in rig.effects.take()) { "and takes no lease" }
+    rig.now += 1_000
+    rig.audio()
+    check("pulse" !in rig.effects.take()) { "and no later call asks for a wake" }
+    // An own pulse whose screen-on is still to come keeps its claim when the next call finds that screen on, and the
+    // claim still dates from that pulse: the second ask adds none.
+    val own = ControllerRig(mode = OFF).armedAsleep()
+    own.audio()
+    check(own.effects.take() == listOf("pulse"))
+    val pulsedAt = own.now
+    own.effects.screenAlreadyOn = true
+    own.now += 1_000
+    own.audio()
+    check(own.effects.take() == listOf("pulse") && own.policy.armed)
+    own.now = pulsedAt + settle - 1
+    own.controller.screenOn(30_000)
+    check(own.policy.armed && own.policy.wakeAt == own.now && own.policy.outputs.holdLease) {
+        "the pulse's own screen-on keeps the arming"
+    }
+    val stale = ControllerRig(mode = OFF).armedAsleep()
+    stale.audio()
+    val staleAt = stale.now
+    stale.effects.screenAlreadyOn = true
+    stale.now += 1_000
+    stale.audio()
+    stale.now = staleAt + settle
+    stale.controller.screenOn(30_000)
+    check(!stale.policy.armed) { "a screen found on renews no claim: 2 s after the pulse the screen-on is foreign" }
+}
+
 private fun anAcceptedWakeHoldsTheLeaseOnceTheScreenIsOn() {
     val rig = ControllerRig(mode = OFF).armedAsleep()
     rig.audio()
@@ -381,6 +434,7 @@ fun main() {
     theLeaseIsReleasedAtOnce()
     aRefusedWakeIsFedBackAndNotRetried()
     aScreenOnIsOursOnlyJustAfterAnAcceptedPulse()
+    aScreenFoundOnBeforeItsBroadcastIsNotOurWake()
     anAcceptedWakeHoldsTheLeaseOnceTheScreenIsOn()
     aTickAlwaysReschedulesWhatIsLeft()
     theVerdictReachesThePolicyUnasked()
