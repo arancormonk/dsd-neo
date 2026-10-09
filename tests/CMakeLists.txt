@@ -14912,9 +14912,16 @@ if(Python3_Interpreter_FOUND)
             ${CMAKE_CURRENT_SOURCE_DIR}/android/run_jvm_tests.py --suite
             decoder_status
     )
+    add_test(
+        NAME ANDROID_SCREEN_POLICY_JVM
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/android/run_jvm_tests.py --suite screen
+    )
     set_tests_properties(
         ANDROID_LOCATION_JVM
         ANDROID_DECODER_STATUS_JVM
+        ANDROID_SCREEN_POLICY_JVM
         PROPERTIES
             SKIP_RETURN_CODE 77
             TIMEOUT 90

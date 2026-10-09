@@ -79,29 +79,69 @@ def golden_records_match():
     )
 
 
-class Suite(NamedTuple):
+class Build(NamedTuple):
     sources: tuple  # Production files under APP_SOURCES.
     tests: tuple  # Test files beside this script; each one's main() runs, in this order.
-    stubs: bool  # Whether the Android platform stubs in stubs/ compile with it.
+    # Android platform stubs from stubs/ that compile with it. A build with none has no android.* classes at all, so an
+    # Android import in its sources fails the compile.
+    stubs: tuple = ()
+
+
+class Suite(NamedTuple):
+    builds: tuple  # Each compiles on its own and runs its tests, in this order.
     # Source checks run before anything compiles, and without the tools: each returns None or what is wrong.
     checks: tuple = ()
 
 
-# Each suite compiles its own file set on its own, so one suite's stubs never stand in for platform classes another
-# suite's sources must not touch.
+# Each build compiles its own file set on its own, so one build's stubs never stand in for platform classes another
+# build's sources must not touch.
 SUITES = {
     # The location broker and geocoder queue, against deterministic platform stubs.
     "location": Suite(
-        sources=("LocationSupport.kt",),
-        tests=("LocationGeocodeQueueTest.kt", "LocationSupportTest.kt"),
-        stubs=True,
+        builds=(
+            Build(
+                sources=("LocationSupport.kt",),
+                tests=("LocationGeocodeQueueTest.kt", "LocationSupportTest.kt"),
+                stubs=(
+                    "Activity.kt",
+                    "Context.kt",
+                    "JSONObject.kt",
+                    "Location.kt",
+                    "Manifest.kt",
+                    "Os.kt",
+                    "PackageManager.kt",
+                ),
+            ),
+        ),
     ),
     # The notification status record's reader. Plain Kotlin with no Android imports, so no stubs.
     "decoder_status": Suite(
-        sources=("DecoderStatus.kt",),
-        tests=("DecoderStatusTest.kt",),
-        stubs=False,
+        builds=(Build(sources=("DecoderStatus.kt",), tests=("DecoderStatusTest.kt",)),),
         checks=(golden_records_match,),
+    ),
+    # The screen policy and the pure adapters around it compile with no stubs at all, so an android.* import in any of
+    # them fails the build. ScreenLocks, the one wrapper over the platform's wake locks, builds apart against a
+    # PowerManager stub that models reference counting.
+    "screen": Suite(
+        builds=(
+            Build(
+                sources=(
+                    "ScreenPolicy.kt",
+                    "ScreenController.kt",
+                    "StatusFeed.kt",
+                    "ActivitySlot.kt",
+                    "DecoderStatus.kt",
+                ),
+                tests=(
+                    "ScreenPolicyTest.kt",
+                    "ScreenControllerTest.kt",
+                    "ScreenTouchTest.kt",
+                    "StatusFeedTest.kt",
+                    "ActivitySlotTest.kt",
+                ),
+            ),
+            Build(sources=("ScreenLocks.kt",), tests=("ScreenLocksTest.kt",), stubs=("PowerManager.kt",)),
+        ),
     ),
 }
 
@@ -125,11 +165,13 @@ def cached_compiler():
     return jars
 
 
-def run_suite(name, suite, java, kotlinc, cached):
+def run_build(name, build, java, kotlinc, cached):
     app = REPO / APP_SOURCES
-    files = [*(app / source for source in suite.sources), *(HERE / test for test in suite.tests)]
-    if suite.stubs:
-        files += sorted((HERE / "stubs").glob("*.kt"))
+    files = [
+        *(app / source for source in build.sources),
+        *(HERE / test for test in build.tests),
+        *(HERE / "stubs" / stub for stub in build.stubs),
+    ]
     with tempfile.TemporaryDirectory(prefix=f"dsd-{name}-tests-") as directory:
         output = Path(directory) / "tests.jar"
         if kotlinc:
@@ -140,9 +182,14 @@ def run_suite(name, suite, java, kotlinc, cached):
             compiler = [java, "-cp", classpath, "org.jetbrains.kotlin.cli.jvm.K2JVMCompiler", "-no-stdlib", "-no-reflect", "-classpath", classpath]
             runtime = os.pathsep.join((str(output), classpath))
         subprocess.run([*compiler, *map(str, files), "-d", str(output)], check=True)
-        for test in suite.tests:
+        for test in build.tests:
             # Top-level functions in Foo.kt compile into the class FooKt.
             subprocess.run([java, "-cp", runtime, f"{PACKAGE}.{Path(test).stem}Kt"], check=True, timeout=30)
+
+
+def run_suite(name, suite, java, kotlinc, cached):
+    for build in suite.builds:
+        run_build(name, build, java, kotlinc, cached)
 
 
 def main():
