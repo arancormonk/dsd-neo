@@ -6,6 +6,7 @@
 /* The audible-audio stamp (issue #574): see <dsd-neo/core/audio_activity.h>. */
 
 #include <dsd-neo/core/audio_activity.h>
+#include <dsd-neo/core/opts.h>
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <stddef.h>
@@ -83,4 +84,21 @@ dsd_audio_activity_read(uint64_t* stamp, int32_t* age_ms) {
 void
 dsd_audio_activity_reset(void) {
     dsd_atomic_u64_store_release(&g_audio_activity_stamp_ms, 0U);
+}
+
+int
+dsd_audio_activity_output_plays(const dsd_opts* opts, const dsd_audio_stream* stream, int fd_takes_block) {
+    if (opts == NULL || opts->audio_out != 1) {
+        return 0;
+    }
+    if (opts->audio_out_type == 0) {
+        return stream != NULL;
+    }
+    if (opts->audio_out_type == 8) {
+        return 1;
+    }
+    if (opts->audio_out_type == 1) {
+        return fd_takes_block != 0;
+    }
+    return 0;
 }

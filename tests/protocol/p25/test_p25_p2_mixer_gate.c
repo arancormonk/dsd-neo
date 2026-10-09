@@ -1228,6 +1228,61 @@ test_ss18_stamps_the_slot_each_channel_carries(void) {
     return rc;
 }
 
+/* Issue #574: FS4 and SS18 stamp only what an output receives. The null output (-o null, which keeps output type 9 once
+   unmuted) and a local stream that is not open receive nothing, so a frame the mix would play stamps nothing. */
+static int
+test_p25p2_mixers_stamp_nothing_no_output_takes(void) {
+    static const struct {
+        const char* tag;
+        int out_type;
+    } outputs[] = {
+        {"null output", 9},
+        {"local stream not open", 0},
+    };
+
+    static dsd_opts opts;
+    static dsd_state st;
+    int rc = 0;
+    for (int ss18 = 0; ss18 <= 1; ss18++) {
+        for (size_t o = 0U; o < sizeof(outputs) / sizeof(outputs[0]); o++) {
+            DSD_MEMSET(&opts, 0, sizeof(opts));
+            DSD_MEMSET(&st, 0, sizeof(st));
+            reset_capture();
+            opts.audio_out = 1;
+            opts.audio_out_type = outputs[o].out_type;
+            opts.audio_out_stream = NULL;
+            opts.pulse_digi_out_channels = 2;
+            opts.slot1_on = 1;
+            opts.slot2_on = 1;
+            opts.audio_gain = 25;
+            st.aout_gain = 49.0f;
+            st.aout_gainR = 49.0f;
+            st.p25_p2_audio_allowed[0] = 1;
+            st.p25_p2_audio_allowed[1] = 1;
+            st.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
+            st.p25_crypto_state[1] = DSD_P25_CRYPTO_CLEAR;
+            stamp_clear();
+            if (ss18) {
+                st.dmrburstL = 21;
+                st.voice_counter[0] = 9;
+                playSynthesizedVoiceSS18(&opts, &st);
+            } else {
+                float frame[160];
+                fill_f32_frame(frame, 0.0f);
+                st.synctype = DSD_SYNC_P25P2_POS;
+                rc |= expect_eq("fs4 no-output push", p25_p2_audio_ring_push(&st, 0, frame), 1);
+                playSynthesizedVoiceFS4(&opts, &st);
+            }
+            char tag[128];
+            DSD_SNPRINTF(tag, sizeof(tag), "%s %s: blocks", ss18 ? "ss18" : "fs4", outputs[o].tag);
+            rc |= expect_eq(tag, g_audio_capture_calls, 0);
+            DSD_SNPRINTF(tag, sizeof(tag), "%s %s: stamp", ss18 ? "ss18" : "fs4", outputs[o].tag);
+            rc |= expect_eq(tag, stamp_noted(), 0);
+        }
+    }
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -1309,6 +1364,7 @@ main(void) {
     rc |= test_fs4_stamps_frames_of_audible_slots();
     rc |= test_ss18_stamps_its_filled_extent();
     rc |= test_ss18_stamps_the_slot_each_channel_carries();
+    rc |= test_p25p2_mixers_stamp_nothing_no_output_takes();
     dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
 
     return rc;

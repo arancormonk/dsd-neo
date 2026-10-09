@@ -1782,6 +1782,73 @@ test_fdma_mixers_stamp_what_they_play(void) {
     return rc;
 }
 
+/* Issue #574: a mix stamps audible audio only when an output receives its blocks (dsd_output_*_block()): the local
+   stream while it is open, UDP, or the raw fd, in either sample format. The null output (-o null, which keeps output
+   type 9 once unmuted) and a local stream that is not open receive nothing, so they stamp nothing. */
+static int
+test_mixers_stamp_only_what_an_output_takes(void) {
+    static const struct {
+        const char* tag;
+        int out_type;
+        int stream_open;
+        int want;
+    } outputs[] = {
+        {"local stream", 0, 1, 1}, {"local stream not open", 0, 0, 0}, {"udp", 8, 1, 1},
+        {"raw fd", 1, 1, 1},       {"null output", 9, 1, 0},
+    };
+
+    static const char* const mixers[] = {"fs3", "ss3", "fs", "fm", "ss", "ms"};
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    for (size_t m = 0U; m < sizeof(mixers) / sizeof(mixers[0]); m++) {
+        for (size_t o = 0U; o < sizeof(outputs) / sizeof(outputs[0]); o++) {
+            DSD_MEMSET(&opts, 0, sizeof(opts));
+            DSD_MEMSET(&state, 0, sizeof(state));
+            reset_sink_capture();
+            reset_gate_capture();
+            opts.audio_out = 1;
+            opts.audio_out_type = outputs[o].out_type;
+            opts.audio_out_stream = outputs[o].stream_open ? (dsd_audio_stream*)&opts : NULL;
+            opts.audio_out_fd = 42;
+            opts.slot1_on = 1;
+            opts.slot2_on = 1;
+            opts.floating_point = (m == 0U || m == 2U || m == 3U) ? 1 : 0;
+            opts.pulse_digi_out_channels = (m == 3U || m == 5U) ? 1 : 2;
+            g_audio_write_channels = opts.pulse_digi_out_channels;
+            if (m < 2U) {
+                state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+                dsd_audio_dmr_mix_media_discard(0);
+                dsd_audio_dmr_mix_media_discard(1);
+                dsd_audio_dmr_mix_media_staged(0, m == 0U ? DSD_DMR_MIX_MEDIA_FLOAT : DSD_DMR_MIX_MEDIA_SHORT);
+            } else {
+                state.synctype = DSD_SYNC_P25P1_POS;
+                state.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
+                state.payload_algid = 0x80;
+                state.audio_out_idx = 160;
+            }
+            stamp_clear();
+            switch (m) {
+                case 0: playSynthesizedVoiceFS3(&opts, &state); break;
+                case 1: playSynthesizedVoiceSS3(&opts, &state); break;
+                case 2: playSynthesizedVoiceFS(&opts, &state); break;
+                case 3: playSynthesizedVoiceFM(&opts, &state); break;
+                case 4: playSynthesizedVoiceSS(&opts, &state); break;
+                default: playSynthesizedVoiceMS(&opts, &state); break;
+            }
+            const int received = g_audio_write_calls + g_udp_blast_calls + g_dsd_write_calls;
+            char tag[96];
+            DSD_SNPRINTF(tag, sizeof(tag), "%s %s: an output receives blocks", mixers[m], outputs[o].tag);
+            rc |= expect_int(tag, received > 0, outputs[o].want);
+            DSD_SNPRINTF(tag, sizeof(tag), "%s %s: stamp", mixers[m], outputs[o].tag);
+            rc |= expect_int(tag, stamp_noted(), outputs[o].want);
+        }
+    }
+    g_audio_write_channels = 2;
+    reset_gate_capture();
+    return rc;
+}
+
 static int
 test_silent_s16_helper(void) {
     short all_zero[4] = {0, 0, 0, 0};
@@ -2129,5 +2196,6 @@ main(void) {
     rc |= test_silent_s16_helper();
     rc |= test_dmr_mixes_stamp_only_fresh_audible_slots();
     rc |= test_fdma_mixers_stamp_what_they_play();
+    rc |= test_mixers_stamp_only_what_an_output_takes();
     return rc;
 }

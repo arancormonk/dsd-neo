@@ -949,7 +949,8 @@ playSynthesizedVoice(dsd_opts* opts, dsd_state* state) {
     }
 
     if (state->audio_out_idx > opts->delay) {
-        if (dsd_audio_activity_armed() && opts->audio_out == 1) {
+        // Stamped only when an output below receives the samples: the local stream while open, the raw fd or UDP.
+        if (dsd_audio_activity_armed() && dsd_audio_activity_output_plays(opts, opts->audio_out_stream, 1)) {
             dsd_audio_activity_note();
         }
         if (opts->audio_out == 1 && opts->audio_out_type == 1) {

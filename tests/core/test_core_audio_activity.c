@@ -8,12 +8,16 @@
  * milliseconds, read whole with its age, cleared by reset, and coherent while one thread notes, another reads and a
  * third resets.
  *
- * The stamp is process-wide and arming is for good, so the unarmed checks run first.
+ * The stamp is process-wide and arming is for good, so the unarmed checks run first. The output rule every writer
+ * stamps under, dsd_audio_activity_output_plays(), is a pure read of the options and is checked on its own.
  */
 
 #include <dsd-neo/core/audio_activity.h>
+#include <dsd-neo/core/opts.h>
 #include <dsd-neo/platform/atomic_compat.h>
+#include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/threading.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include "core/audio/audio_activity_internal.h"
@@ -234,6 +238,48 @@ test_concurrent_note_read_reset(void) {
     return rc;
 }
 
+/* An output receives a block when it is on and of a type the writer serves: the local stream (0) while the writer's
+   stream is open, UDP (8), or the raw fd (1) where the writer writes that block. The null output (9) and any other
+   type receive nothing, whatever audio_out says; a muted output (audio_out 0) receives nothing on any type. */
+static int
+test_output_plays_follows_the_output_type(void) {
+    static const struct {
+        const char* tag;
+        int audio_out;
+        int out_type;
+        int stream_open;
+        int fd_takes_block;
+        int want;
+    } cases[] = {
+        {"local stream", 1, 0, 1, 0, 1},
+        {"local stream not open", 1, 0, 0, 1, 0},
+        {"udp", 1, 8, 0, 0, 1},
+        {"raw fd the writer writes", 1, 1, 0, 1, 1},
+        {"raw fd the writer does not write", 1, 1, 1, 0, 0},
+        {"null output", 1, 9, 1, 1, 0},
+        {"an unknown type", 1, 2, 1, 1, 0},
+        {"negative type", 1, -1, 1, 1, 0},
+        {"muted local stream", 0, 0, 1, 1, 0},
+        {"muted udp", 0, 8, 1, 1, 0},
+        {"muted raw fd", 0, 1, 1, 1, 0},
+        {"audio_out 2", 2, 8, 1, 1, 0},
+    };
+
+    static dsd_opts opts;
+    static int stream_token;
+    int rc = 0;
+    for (size_t c = 0U; c < sizeof(cases) / sizeof(cases[0]); c++) {
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        opts.audio_out = cases[c].audio_out;
+        opts.audio_out_type = cases[c].out_type;
+        const dsd_audio_stream* stream = cases[c].stream_open ? (const dsd_audio_stream*)&stream_token : NULL;
+        rc |= expect_int(cases[c].tag, dsd_audio_activity_output_plays(&opts, stream, cases[c].fd_takes_block),
+                         cases[c].want);
+    }
+    rc |= expect_int("no options", dsd_audio_activity_output_plays(NULL, (const dsd_audio_stream*)&stream_token, 1), 0);
+    return rc;
+}
+
 int
 main(void) {
     dsd_audio_activity_set_clock_for_test(test_clock);
@@ -243,6 +289,7 @@ main(void) {
     rc |= test_stamp_expires_after_a_minute();
     rc |= test_reset_clears_and_out_pointers_are_optional();
     rc |= test_concurrent_note_read_reset();
+    rc |= test_output_plays_follows_the_output_type();
     if (rc == 0) {
         DSD_FPRINTF(stdout, "CORE_AUDIO_ACTIVITY: OK\n");
     }

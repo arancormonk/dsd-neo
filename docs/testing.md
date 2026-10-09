@@ -106,8 +106,10 @@ persistence tests use disposable directories and do not require a writable home 
 
 The audible-audio stamp (`<dsd-neo/core/audio_activity.h>`, issue #574) is tested where each writer emits, and every
 writer case asserts both the captured output and the stamp, so audio that plays without stamping, or a stamp with
-nothing played, fails. `CORE_AUDIO_ACTIVITY` covers the API: an unarmed note reads no clock and stores nothing, arming,
-the age and its 60 s expiry, reset, and a writer, reader and resetter racing (run it under the `tsan-debug` preset too).
+nothing played, fails. Each writer family also has negative controls for the null output (type 9 with `audio_out` 1,
+as an unmuted `-o null` session runs) and a local stream that is not open. `CORE_AUDIO_ACTIVITY` covers the API: an
+unarmed note reads no clock and stores nothing, arming, the age and its 60 s expiry, reset, a writer, reader and
+resetter racing (run it under the `tsan-debug` preset too), and the shared output rule every writer stamps under.
 `CORE_AUDIO2_HELPERS` drives the mixers with stubbed gates, the DMR fresh-media marks included (a repeated mix with
 nothing new, muted media beside an idle slot, a discard); `CORE_MBE_TRANSFORM_CONTEXT` the real vocoder into the real
 FS3 and SS3 mixes (its clear, encrypted, reverse-mute, unmute and forced-clear matrix, skipped bursts, decoded all-zero

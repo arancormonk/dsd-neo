@@ -3988,7 +3988,8 @@ test_auto_squelch_gates_each_sample(void) {
 /* Issue #574: the analog monitor stamps audible audio for a block of analog reception it writes to its sink: on the
    FM or AM monitor (never the -8 source monitor during digital decoding), with the tap's carrier open and the tone
    policy passing it, and under the auto squelch with at least one sample its own gate hears -- whatever the audio's
-   level, so an unmodulated carrier counts and the fade-out written after the gate closes does not. */
+   level, so an unmodulated carrier counts and the fade-out written after the gate closes does not. Only a sink that
+   takes the block counts: the local stream while open, or UDP; never the raw fd or the null output. */
 static int g_monitor_stamp_failures = 0;
 
 static void
@@ -4043,6 +4044,12 @@ test_monitor_stamps_analog_reception(void) {
     opts.audio_out = 1;
     opts.audio_out_type = 1;
     monitor_tone_block_expect(&opts, &state, 0, 0, "raw fd output, which the monitor does not feed");
+    /* The null output (-o null keeps output type 9 once unmuted) and a local stream that is not open take nothing. */
+    opts.audio_out_type = 9;
+    monitor_tone_block_expect(&opts, &state, 0, 0, "null output");
+    opts.audio_out_type = 0;
+    opts.audio_raw_out = NULL;
+    monitor_tone_block_expect(&opts, &state, 0, 0, "local stream not open");
     opts.audio_out_type = 8;
     monitor_tone_block_expect(&opts, &state, 1, 1, "udp output again");
 

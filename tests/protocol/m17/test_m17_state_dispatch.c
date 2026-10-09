@@ -2946,6 +2946,8 @@ test_stream_voice_audio_stamps_what_it_plays(void) {
                 g_audio_event_count = 0;
                 g_audio_events[0] = '\0';
                 g_audio_wrap_on = out_type == 0;
+                /* The local stream is open; the wrap takes its writes. */
+                opts->audio_out_stream = out_type == 0 ? (dsd_audio_stream*)&g_audio_wrap_on : NULL;
 #endif
                 dsd_audio_activity_reset();
 
@@ -2981,6 +2983,73 @@ test_stream_voice_audio_stamps_what_it_plays(void) {
                 reset_audio_fakes();
                 dsd_state_ext_free_all(state);
             }
+        }
+    }
+    dsd_audio_activity_reset();
+    return err;
+}
+#endif
+
+#ifdef USE_CODEC2
+/* Issue #574: Codec2 voice stamps only what an output receives. The null output (-o null, which keeps output type 9 once
+   unmuted) and a local stream that is not open receive nothing from either writer (the 3200 pair, the 1600 single), so
+   a frame that would play stamps nothing. */
+static int
+test_stream_voice_audio_stamps_nothing_no_output_takes(void) {
+    static const struct {
+        const char* tag;
+        uint8_t dt;
+    } formats[] = {
+        {"3200", 2U},
+        {"1600", 3U},
+    };
+
+    static const struct {
+        const char* tag;
+        int out_type;
+    } outputs[] = {
+        {"null output", 9},
+        {"local stream not open", 0},
+    };
+
+    static const uint8_t payload_bytes[16] = {0x60U, 0x61U, 0x62U, 0x63U, 0x64U, 0x65U, 0x66U, 0x67U,
+                                              0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U};
+    uint8_t payload_bits[128];
+    uint8_t processed_bits[128];
+    bytes_to_bits(payload_bytes, payload_bits, sizeof(payload_bytes));
+
+    dsd_opts* opts = &g_opts;
+    dsd_state* state = &g_state;
+    int err = 0;
+    dsd_audio_activity_arm();
+    for (size_t f = 0U; f < sizeof(formats) / sizeof(formats[0]); f++) {
+        for (size_t o = 0U; o < sizeof(outputs) / sizeof(outputs[0]); o++) {
+            DSD_MEMSET(opts, 0, sizeof(*opts));
+            DSD_MEMSET(state, 0, sizeof(*state));
+            reset_audio_fakes();
+            install_fake_udp_audio();
+            opts->slot1_on = 1;
+            opts->audio_out = 1;
+            opts->audio_out_type = outputs[o].out_type;
+            opts->audio_out_stream = NULL;
+            opts->audio_out_fd = -1;
+            state->m17_str_dt = formats[f].dt;
+            state->m17_can_en = -1;
+            m17_confirm_note_evidence(state, M17_EVIDENCE_STRONG);
+            dsd_audio_activity_reset();
+
+            /* With no stream, the platform's own write refuses the block, as it does in a session. */
+            (void)m17_dispatch_stream_payload(opts, state, payload_bits, M17_REF_STREAM_FN, processed_bits);
+
+            uint64_t stamp = 0U;
+            dsd_audio_activity_read(&stamp, NULL);
+            char label[128];
+            DSD_SNPRINTF(label, sizeof(label), "m17 %s %s: udp blocks", formats[f].tag, outputs[o].tag);
+            err |= expect_int(label, g_udp_audio_calls, 0);
+            DSD_SNPRINTF(label, sizeof(label), "m17 %s %s: stamp", formats[f].tag, outputs[o].tag);
+            err |= expect_int(label, stamp != 0U, 0);
+            reset_audio_fakes();
+            dsd_state_ext_free_all(state);
         }
     }
     dsd_audio_activity_reset();
@@ -3644,6 +3713,7 @@ main(void) {
     err |= test_stream_voice_audio_gate_suppresses_udp_when_slot_disabled();
     err |= test_stream_voice_audio_honors_mute_on_every_output();
     err |= test_stream_voice_audio_stamps_what_it_plays();
+    err |= test_stream_voice_audio_stamps_nothing_no_output_takes();
 #endif
     err |= test_bert_payload_locks_from_default_state_and_continues();
     err |= test_bert_payload_resyncs_after_error_threshold();

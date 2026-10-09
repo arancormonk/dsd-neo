@@ -675,7 +675,7 @@ m17_write_decoded_audio_single(const dsd_opts* opts, dsd_state* state, const sho
     if (!m17_can_emit_audio(opts, state)) {
         return;
     }
-    if (dsd_audio_activity_armed()) {
+    if (dsd_audio_activity_armed() && dsd_audio_activity_output_plays(opts, opts->audio_out_stream, 1)) {
         dsd_audio_activity_note();
     }
 
@@ -703,7 +703,7 @@ m17_write_decoded_audio_pair(const dsd_opts* opts, dsd_state* state, const short
     if (!m17_can_emit_audio(opts, state)) {
         return;
     }
-    if (dsd_audio_activity_armed()) {
+    if (dsd_audio_activity_armed() && dsd_audio_activity_output_plays(opts, opts->audio_out_stream, 1)) {
         dsd_audio_activity_note();
     }
 

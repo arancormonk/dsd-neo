@@ -659,11 +659,11 @@ With the decoder stopped, both modes behave like System default.
 **Audible** means audio DSD-neo actually plays. A muted Monitor, a slot that is
 switched off, a blocked, locked-out or skipped talkgroup, and an encrypted call
 with no usable key (unless a setting plays it anyway) never count, and neither
-do tones. On the analog monitor (FM or AM) a channel counts while its carrier is
-open and passes the tone filter (CTCSS/DCS); with the squelch off and no tone
-filter the monitor plays all the time, so it always counts. An EDACS analog call
-counts while its squelch is open, and all the time when the call runs no
-squelch.
+do tones or audio with no output to play it on (the `null` output). On the
+analog monitor (FM or AM) a channel counts while its carrier is open and passes
+the tone filter (CTCSS/DCS); with the squelch off and no tone filter the monitor
+plays all the time, so it always counts. An EDACS analog call counts while its
+squelch is open, and all the time when the call runs no squelch.
 
 Timing:
 

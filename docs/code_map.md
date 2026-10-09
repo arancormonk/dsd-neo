@@ -760,10 +760,15 @@ suite runs under this compiler.
   process-wide atomic word says when the decoder last emitted audio the app plays, in real-time monotonic milliseconds
   (`dsd_realtime_mono_ms()`: it drives the Android screen, not a decode decision), 0 for none. Each writer of decoded or
   analog audio notes it (`dsd_audio_activity_note()`) at its own final emit decision: after every gate it applies
-  (crypto and keys, forced clear, reverse mute, unmute overrides, talkgroup policy, slot switches, DMR mono, the mute)
-  and before it picks the output type, so the local stream, UDP and the raw fd count alike. It notes provenance, never
-  amplitude: a block counts when it carries decoded media, or squelch-open analog reception, from a slot whose gates
-  pass, so valid all-zero decoded PCM counts and silence padding or a muted slot never does. The stamp is off until
+  (crypto and keys, forced clear, reverse mute, unmute overrides, talkgroup policy, slot switches, DMR mono, the mute),
+  and only when an output receives the block. Every writer asks the same rule for that,
+  `dsd_audio_activity_output_plays(opts, stream, fd_takes_block)`: the output on (`audio_out` 1) and of a type the
+  writer serves, the local stream (type 0) while the stream it writes is open (`audio_out_stream` for decoded voice,
+  `audio_raw_out` for analog), UDP (type 8), or the raw fd (type 1) where the writer writes that block. So the local
+  stream, UDP and the raw fd count alike, and the null output (type 9: `-o null`, which keeps that type once unmuted,
+  and the M17 UDP frame output) never stamps. It notes provenance, never amplitude: a block counts when it carries
+  decoded media, or squelch-open analog reception, from a slot whose gates pass, so valid all-zero decoded PCM counts
+  and silence padding or a muted slot never does. The stamp is off until
   `dsd_audio_activity_arm()`, which only `dsd_app_notification_encode()` calls (its one caller is the Android JNI
   accessor `nativeNotificationStatus()`, from the service's status poll and `ScreenSupport`'s synchronous samples, so it
   is the stamp's one reader; see App-Control), and then stays armed for the process. Every writer asks
@@ -790,14 +795,15 @@ suite runs under this compiler.
   unmuted slot holding its own kind that a channel it emits carries, so under a talkgroup hold of a slot the vocoder
   muted FS3 stamps the float frames it plays and SS3, playing silence, does not. Slot purges
   (`dsd_mbe_purge_slot_audio()`), `initState()`, the engine's no-carrier reset and the end of the DMR BS loop
-  (`finalize_dmr_bs()`) discard the marks. EDACS analog stamps a triplet only when an output writes it
-  (`edacs_analog_output_writes()`: the local stream, UDP, or the raw fd with 16-bit output) and the squelch the call
+  (`finalize_dmr_bs()`) discard the marks. EDACS analog stamps a triplet only when an output receives it
+  (`edacs_analog_output_writes()`: slot 1 on, then the shared rule on `audio_raw_out`, the raw fd taking 16-bit output
+  only) and the squelch the call
   runs opened on it: the dynamic squelch heard a sample (the per-run marking `edacs_process_analog_triplet()` already
   applies, returned), the level squelch's power test (`pwr > call->sql`) passed, or the call runs none; a closed triplet
   is still written but never stamps. The analog monitor stamps analog reception only: the FM or AM monitor
   (`dsd_analog_monitor_tap_active()`), never the `-8` source monitor during digital decoding, with the tap's carrier
-  open now and the tone policy passing it (`symbol_unsynced_carrier_active()`), a sink to write to (the local raw stream
-  or UDP), and under the auto squelch at least one sample its own gate hears, so the fade-out written after the gate
+  open now and the tone policy passing it (`symbol_unsynced_carrier_active()`), a sink that receives it (the shared rule
+  on `audio_raw_out`: the local raw stream while open, or UDP; the monitor feeds no raw fd), and under the auto squelch at least one sample its own gate hears, so the fade-out written after the gate
   closes does not count and an unmodulated carrier does. Tests: `CORE_AUDIO_ACTIVITY`, `CORE_AUDIO2_HELPERS`,
   `CORE_MBE_TRANSFORM_CONTEXT`, `CORE_AUDIO_GAIN`, `P25_P2_MIXER_GATE`, `M17_STATE_DISPATCH`, `EDACS_GRANT_TUNE_MATRIX`,
   `DSP_SYMBOL_REPLAY`, `DMR_BS_SYNC_TIMES`, `ENGINE_NO_CARRIER_RESET` (see `docs/testing.md`).
@@ -3449,7 +3455,8 @@ Notes:
     (`m17_write_decoded_audio_single()`/`_pair()` in `src/protocol/m17/m17.c`) play only through
     `m17_can_emit_audio()`: the output unmuted (`audio_out` 1, the mixers' rule), slot 1 on, a clear or decrypted
     payload and a CAN the CAN filter allows, on the local stream, UDP and the raw fd alike; they note the audible-audio
-    stamp there (see Core). Tests: `M17_STATE_DISPATCH`.
+    stamp there when an output receives the block, never on the null output or a local stream that is not open (see
+    Core). Tests: `M17_STATE_DISPATCH`.
 
 EDACS analog voice (`edacs_analog()` in `src/protocol/edacs/edacs-fme.c`) runs at 48 kHz (`EDACS_ANALOG_RATE_HZ`,
 issue #633): the release register reads every 5th sample as a 9600-baud symbol, the per-call WAV opens at it and the
@@ -3463,8 +3470,9 @@ the call, since the radio reads the previous channel again. The converter starts
 triplet or between two, and the PCM staging held from before the call is dropped when it ends. A triplet plays
 (`edacs_emit_analog_audio()`) only past the talkgroup gate, and only while the output is unmuted (`audio_out` 1) and
 slot 1 is on, on the local stream, UDP and the raw fd alike (`edacs_analog_output_enabled()`, the mixers' rule); it
-notes the audible-audio stamp only when one of them writes it (the raw fd takes 16-bit output only) and the squelch the
-call runs opened on it (see Core). Tests:
+notes the audible-audio stamp only when one of them receives it (the shared output rule: the raw fd takes 16-bit output
+only, and the null output or a local stream that is not open receives nothing) and the squelch the call runs opened on
+it (see Core). Tests:
 `EDACS_GRANT_TUNE_MATRIX` (the `analog-633` cases, with golden hashes of a 48 kHz call's audio, WAVs and stdout; the
 emitter's outputs and stamp under each gate, squelch, output type and sample format).
 

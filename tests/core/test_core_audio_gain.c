@@ -830,7 +830,8 @@ psv_count_udp_blast(const dsd_opts* opts, dsd_state* state, size_t nsam, const v
 
 /* Issue #574: the legacy short output, which SDRTrunk JSON playback uses, stamps audible audio when it writes its
  * pending samples, on the raw fd and on UDP; nothing is stamped for a muted output, slot 1 switched off, a blocked
- * talkgroup or samples still under the output delay. */
+ * talkgroup or samples still under the output delay, nor where no output receives them: the null output (-o null,
+ * which keeps output type 9 once unmuted) and a local stream that is not open. */
 static int
 test_play_synthesized_voice_stamps_what_it_writes(void) {
     static const struct {
@@ -849,6 +850,8 @@ test_play_synthesized_voice_stamps_what_it_writes(void) {
         {"slot 1 switched off", 1, 1, 0, 0, 2, 0},
         {"blocked talkgroup", 1, 1, 1, 1, 2, 0},
         {"samples under the delay", 1, 1, 1, 0, 8, 0},
+        {"null output", 9, 1, 1, 0, 2, 0},
+        {"local stream not open", 0, 1, 1, 0, 2, 0},
     };
 
     static dsd_opts opts;

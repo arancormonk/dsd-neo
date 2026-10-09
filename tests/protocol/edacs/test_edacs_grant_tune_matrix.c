@@ -1700,6 +1700,8 @@ test_edacs_analog_emit_stamps_open_reception(void) {
             opts.audio_out = cases[c].audio_out;
             opts.slot1_on = cases[c].slot1_on;
             opts.audio_out_type = out_types[o];
+            /* The local stream is open; the capture takes its writes. */
+            opts.audio_raw_out = out_types[o] == 0 ? (dsd_audio_stream*)&g_audio_write_capture : NULL;
             edacs_install_udp_output_hooks();
             if (cases[c].blocked) {
                 const dsd_call_observation call = {.protocol = DSD_SYNC_EDACS_POS,
@@ -1763,17 +1765,19 @@ test_edacs_analog_emit_stamps_open_reception(void) {
     return rc;
 }
 
-/* Issue #574: an open triplet stamps only where an output writes it. The raw fd takes 16-bit samples only, so with float
-   output selected (floating_point 1) it writes nothing and nothing stamps, while the local stream and UDP write and
-   stamp in either format; an output type none of the three serves writes and stamps nothing either. */
+/* Issue #574: an open triplet stamps only where an output receives it. The raw fd takes 16-bit samples only, so with
+   float output selected (floating_point 1) it writes nothing and nothing stamps, while the local stream and UDP write
+   and stamp in either format; an output type none of the three serves (the null output, 9) writes and stamps nothing
+   either, nor does a local stream that is not open, whose writes the platform refuses. */
 static int
 test_edacs_analog_stamp_follows_the_writer(void) {
     static const struct {
         int out_type;
         int floating_point;
+        int stream_open;
         int want_blocks;
     } cases[] = {
-        {0, 0, 3}, {0, 1, 3}, {1, 0, 3}, {1, 1, 0}, {8, 0, 3}, {8, 1, 3}, {9, 0, 0},
+        {0, 0, 1, 3}, {0, 1, 1, 3}, {0, 0, 0, 0}, {1, 0, 1, 3}, {1, 1, 1, 0}, {8, 0, 1, 3}, {8, 1, 1, 3}, {9, 0, 1, 0},
     };
 
     static dsd_opts opts;
@@ -1791,6 +1795,8 @@ test_edacs_analog_stamp_follows_the_writer(void) {
         opts.slot1_on = 1;
         opts.audio_out_type = cases[c].out_type;
         opts.floating_point = cases[c].floating_point;
+        /* An open local stream's writes go to the capture; with none, the platform's own write refuses them. */
+        opts.audio_raw_out = cases[c].stream_open ? (dsd_audio_stream*)&g_audio_write_capture : NULL;
         edacs_install_udp_output_hooks();
         char raw_path[DSD_TEST_PATH_MAX];
         int raw_fd = -1;
@@ -1803,7 +1809,7 @@ test_edacs_analog_stamp_follows_the_writer(void) {
             opts.audio_out_fd = raw_fd;
         }
         g_audio_write_count = 0;
-        g_audio_write_capture = cases[c].out_type == 0;
+        g_audio_write_capture = cases[c].out_type == 0 && cases[c].stream_open;
         dsd_audio_activity_reset();
 
         edacs_emit_analog_audio(&opts, &state, analog1, analog2, analog3, 1);
@@ -1823,9 +1829,10 @@ test_edacs_analog_stamp_follows_the_writer(void) {
         dsd_audio_activity_read(&stamp, NULL);
         const int want_stamp = cases[c].want_blocks > 0;
         if (blocks != cases[c].want_blocks || (stamp != 0U) != want_stamp) {
-            DSD_FPRINTF(stderr, "output %d, floating point %d: %d blocks (want %d), stamp %d (want %d)\n",
-                        cases[c].out_type, cases[c].floating_point, blocks, cases[c].want_blocks, stamp != 0U,
-                        want_stamp);
+            DSD_FPRINTF(stderr,
+                        "output %d, floating point %d, stream open %d: %d blocks (want %d), stamp %d (want %d)\n",
+                        cases[c].out_type, cases[c].floating_point, cases[c].stream_open, blocks, cases[c].want_blocks,
+                        stamp != 0U, want_stamp);
         }
         rc |= edacs_expect(blocks == cases[c].want_blocks, "analog-stamp-writer", "blocks",
                            "the triplet reaches each output that takes its format");

@@ -8,10 +8,11 @@
  * @brief The audible-audio stamp: when the decoder last emitted audio the app plays (issue #574).
  *
  * Each writer of decoded or analog audio notes the stamp at its own final emit decision, after every gate it applies
- * (crypto and keys, forced clear, reverse mute, unmute overrides, talkgroup policy, slot switches, DMR mono, the mute)
- * and before it picks the output type (local stream, UDP, raw fd). It notes provenance, never amplitude: a block counts
- * when it carries decoded media, or squelch-open analog reception, from a slot whose gates pass, so valid all-zero
- * decoded audio counts and silence padding or a muted slot never does.
+ * (crypto and keys, forced clear, reverse mute, unmute overrides, talkgroup policy, slot switches, DMR mono, the mute),
+ * and only when an output receives the block (dsd_audio_activity_output_plays()): the local stream, UDP and the raw fd
+ * count alike, the null output never. It notes provenance, never amplitude: a block counts when it carries decoded
+ * media, or squelch-open analog reception, from a slot whose gates pass, so valid all-zero decoded audio counts and
+ * silence padding or a muted slot never does.
  *
  * The stamp is off until a reader arms it, and stays armed until the process exits. Every writer asks
  * dsd_audio_activity_armed() first, so an unarmed session does no added work per block: no scan, no clock read, no
@@ -25,6 +26,8 @@
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_CORE_AUDIO_ACTIVITY_H_
 #define DSD_NEO_INCLUDE_DSD_NEO_CORE_AUDIO_ACTIVITY_H_
 
+#include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/platform/audio.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -57,6 +60,24 @@ void dsd_audio_activity_read(uint64_t* stamp, int32_t* age_ms);
 
 /** @brief Clear the stamp to 0 (none). Leaves it armed. Any thread. */
 void dsd_audio_activity_reset(void);
+
+/**
+ * @brief Whether an output receives a writer's block: the one output condition under which every writer notes the
+ * stamp, whatever its own gates.
+ *
+ * The output must be on (audio_out 1) and of a type the writer serves: the local stream (type 0) while @p stream is
+ * open, UDP (type 8), or the raw fd (type 1) when @p fd_takes_block. The null output (type 9: -o null, which keeps that
+ * type once unmuted, and the M17 UDP frame output) and any other type receive nothing. A pure read of @p opts; writers
+ * ask it only while the stamp is armed.
+ *
+ * @param opts           Decoder options; NULL receives nothing.
+ * @param stream         The local stream the writer writes on type 0: audio_out_stream for decoded voice, audio_raw_out
+ *                       for analog audio.
+ * @param fd_takes_block Nonzero when the writer writes this block to the raw fd on type 1 (some take 16-bit samples
+ *                       only, and the analog monitor feeds no fd at all).
+ * @return 1 when an output receives the block, else 0.
+ */
+int dsd_audio_activity_output_plays(const dsd_opts* opts, const dsd_audio_stream* stream, int fd_takes_block);
 
 #ifdef __cplusplus
 } /* extern "C" */

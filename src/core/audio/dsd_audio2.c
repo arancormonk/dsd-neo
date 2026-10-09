@@ -440,16 +440,23 @@ p25p2_s16_frames_have_audio(short frames[18][160]) {
     return 0;
 }
 
+// Whether an output receives a mix's blocks (issue #574), the stamp's output condition: every mix writes through
+// dsd_output_*_block(), which feed the local stream while it is open, UDP, and the raw fd in either sample format.
+static int
+dsd_mix_output_plays(const dsd_opts* opts) {
+    return dsd_audio_activity_output_plays(opts, opts->audio_out_stream, 1);
+}
+
 // The audible-audio stamp for a DMR mix (issue #574), called while armed with each slot's final mute flags and the
 // output policy's copy decisions: the mix takes both slots' staged media, and stamps when a channel it emits carries an
-// unmuted slot that held media of @p kind, and the output is on.
+// unmuted slot that held media of @p kind, and an output receives the mix.
 static void
 dsd_dmr_mix_note_audible(const dsd_opts* opts, int encL, int encR, int copy_right_to_left, int copy_left_to_right,
                          unsigned int kind) {
     const unsigned int left = dsd_audio_dmr_mix_media_take(0);
     const unsigned int right = dsd_audio_dmr_mix_media_take(1);
     const int fresh[2] = {(left & kind) != 0U, (right & kind) != 0U};
-    if (opts->audio_out == 1
+    if (dsd_mix_output_plays(opts)
         && dsd_stereo_mix_carries_fresh(encL, encR, copy_right_to_left, copy_left_to_right, fresh)) {
         dsd_audio_activity_note();
     }
@@ -1194,7 +1201,7 @@ playSynthesizedVoiceFS4(dsd_opts* opts, dsd_state* state) {
     if (encL && encR) {
         goto END_FS4;
     }
-    if (dsd_audio_activity_armed() && opts->audio_out == 1 && dsd_fs4_any_frame_audible(encL, encR, l_ok, r_ok)) {
+    if (dsd_audio_activity_armed() && dsd_mix_output_plays(opts) && dsd_fs4_any_frame_audible(encL, encR, l_ok, r_ok)) {
         dsd_audio_activity_note();
     }
 
@@ -1240,7 +1247,7 @@ playSynthesizedVoiceFS(dsd_opts* opts, dsd_state* state) {
 
     agf(opts, state, state->f_l, 0);
     if (!encL) {
-        if (dsd_audio_activity_armed() && opts->audio_out == 1) {
+        if (dsd_audio_activity_armed() && dsd_mix_output_plays(opts)) {
             dsd_audio_activity_note();
         }
         audio_mono_to_stereo_f32(state->f_l, stereo_samp1, 160);
@@ -1260,7 +1267,7 @@ playSynthesizedVoiceFM(dsd_opts* opts, dsd_state* state) {
     encL = dsd_fdma_apply_group_gate(opts, state, TGL, encL);
 
     if (!encL && opts->slot1_on != 0) {
-        if (dsd_audio_activity_armed() && opts->audio_out == 1) {
+        if (dsd_audio_activity_armed() && dsd_mix_output_plays(opts)) {
             dsd_audio_activity_note();
         }
         if (opts->audio_out == 1 && opts->pulse_digi_out_channels == 2) {
@@ -1295,7 +1302,7 @@ playSynthesizedVoiceMS(dsd_opts* opts, dsd_state* state) {
 
     if (opts->slot1_on != 0 && !muted) {
         const int loaded = dsd_load_short_mono_samples(mono_samp, len, state->s_l, &state->audio_out_buf_p);
-        if (dsd_audio_activity_armed() && loaded && opts->audio_out == 1) {
+        if (dsd_audio_activity_armed() && loaded && dsd_mix_output_plays(opts)) {
             dsd_audio_activity_note();
         }
         if (opts->use_hpf_d == 1) {
@@ -1336,7 +1343,7 @@ playSynthesizedVoiceSS(dsd_opts* opts, dsd_state* state) {
     }
     audio_mono_to_stereo_s16(state->s_l, stereo_samp1, 160);
     if (!encL) {
-        if (dsd_audio_activity_armed() && opts->audio_out == 1) {
+        if (dsd_audio_activity_armed() && dsd_mix_output_plays(opts)) {
             dsd_audio_activity_note();
         }
         dsd_output_s16_block(opts, state, stereo_samp1, 160, 2);
@@ -1487,7 +1494,7 @@ playSynthesizedVoiceSS18(dsd_opts* opts, dsd_state* state) {
     if (!encR && state->voice_counter[1] > filled_blocks) {
         filled_blocks = state->voice_counter[1];
     }
-    if (dsd_audio_activity_armed() && opts->audio_out == 1) {
+    if (dsd_audio_activity_armed() && dsd_mix_output_plays(opts)) {
         // Fresh media is what a slot filled this superframe. The extent above counts every unmuted slot's blocks,
         // but a channel the policy copied over carries its companion's, so only the slots routed to a channel count.
         const int fresh[2] = {state->voice_counter[0] > 0, state->voice_counter[1] > 0};
