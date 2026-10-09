@@ -353,6 +353,11 @@ jobs:
     timeout-minutes: 30
     container:
       image: archlinux:base-devel@sha256:51dd3d24f7fba779e7c471caeee7804c50e8c134ad948e19685a1c83a42facc3
+      # Pulled before any step runs, so a login step cannot cover it: authenticate the pull itself.
+      # A fork PR has no secrets; the runner then skips the login and pulls anonymously.
+      credentials:
+        username: ${{ secrets.DOCKERHUB_USERNAME }}
+        password: ${{ secrets.DOCKERHUB_TOKEN }}
     defaults:
       run:
         shell: bash
@@ -651,6 +656,19 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      - name: Login to Docker Hub (optional)
+        # The Arch toolchain image below is pulled with `docker` inside a step, so it
+        # needs a login of its own (the job container credentials do not cover it).
+        # Only on trusted contexts (not forked PRs), where the secrets exist.
+        if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f
+        continue-on-error: true
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        with:
+          username: ${{ env.DOCKERHUB_USERNAME }}
+          password: ${{ env.DOCKERHUB_TOKEN }}
       - name: Run scan-build under Arch toolchain
         run: |
           bash tools/ci_arch_toolchain.sh bash -lc '
@@ -692,6 +710,11 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: archlinux:base-devel@sha256:51dd3d24f7fba779e7c471caeee7804c50e8c134ad948e19685a1c83a42facc3
+      # Pulled before any step runs, so a login step cannot cover it: authenticate the pull itself.
+      # A fork PR has no secrets; the runner then skips the login and pulls anonymously.
+      credentials:
+        username: ${{ secrets.DOCKERHUB_USERNAME }}
+        password: ${{ secrets.DOCKERHUB_TOKEN }}
     defaults:
       run:
         shell: bash
@@ -896,6 +919,11 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: archlinux:base-devel@sha256:51dd3d24f7fba779e7c471caeee7804c50e8c134ad948e19685a1c83a42facc3
+      # Pulled before any step runs, so a login step cannot cover it: authenticate the pull itself.
+      # A fork PR has no secrets; the runner then skips the login and pulls anonymously.
+      credentials:
+        username: ${{ secrets.DOCKERHUB_USERNAME }}
+        password: ${{ secrets.DOCKERHUB_TOKEN }}
     env:
       AUR_MAKEPKG_USER: aurbuilder
     defaults:
@@ -1075,6 +1103,11 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: archlinux:base-devel@sha256:51dd3d24f7fba779e7c471caeee7804c50e8c134ad948e19685a1c83a42facc3
+      # Pulled before any step runs, so a login step cannot cover it: authenticate the pull itself.
+      # A fork PR has no secrets; the runner then skips the login and pulls anonymously.
+      credentials:
+        username: ${{ secrets.DOCKERHUB_USERNAME }}
+        password: ${{ secrets.DOCKERHUB_TOKEN }}
     env:
       AUR_MAKEPKG_USER: aurbuilder
     defaults:
@@ -1511,6 +1544,19 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Login to Docker Hub (optional)
+        # The Arch toolchain image below is pulled with `docker` inside a step, so it
+        # needs a login of its own (the job container credentials do not cover it).
+        # Only on trusted contexts (not forked PRs), where the secrets exist.
+        if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f
+        continue-on-error: true
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        with:
+          username: ${{ env.DOCKERHUB_USERNAME }}
+          password: ${{ env.DOCKERHUB_TOKEN }}
       - name: Compute PR changed files
         if: github.event_name == 'pull_request'
         id: changed
@@ -1567,6 +1613,19 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Login to Docker Hub (optional)
+        # The Arch toolchain image below is pulled with `docker` inside a step, so it
+        # needs a login of its own (the job container credentials do not cover it).
+        # Only on trusted contexts (not forked PRs), where the secrets exist.
+        if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f
+        continue-on-error: true
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        with:
+          username: ${{ env.DOCKERHUB_USERNAME }}
+          password: ${{ env.DOCKERHUB_TOKEN }}
       - name: Install PR diff dependencies
         if: github.event_name == 'pull_request'
         run: sudo apt-get update && sudo apt-get install -y ripgrep
@@ -1635,6 +1694,19 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Login to Docker Hub (optional)
+        # The Arch toolchain image below is pulled with `docker` inside a step, so it
+        # needs a login of its own (the job container credentials do not cover it).
+        # Only on trusted contexts (not forked PRs), where the secrets exist.
+        if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f
+        continue-on-error: true
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        with:
+          username: ${{ env.DOCKERHUB_USERNAME }}
+          password: ${{ env.DOCKERHUB_TOKEN }}
       - name: Install PR diff dependencies
         if: github.event_name == 'pull_request'
         run: sudo apt-get update && sudo apt-get install -y ripgrep
