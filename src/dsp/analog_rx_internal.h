@@ -117,6 +117,9 @@ typedef struct {
     /** 1 while, not locked, the detector holds a candidate it has not confirmed yet (the DCS detector's
         dsd_analog_dcs::candidate_age; issue #527); 0 from every other detector. */
     int candidate;
+    /** 1 while a CTCSS lock rests on transmitter tone error alone (issue #643): the detector's own rules for a tone on
+        its value (within 0.5 Hz) did not confirm it, or no longer hold it (dsd_analog_ctcss::main_confirmed). */
+    int off_value;
 } dsd_analog_rx_report;
 
 /**
@@ -149,6 +152,12 @@ typedef struct {
     double share;      /**< the tone's share of the raw input's full-band power (0..1) */
     double recent_rho; /**< rho over the newest 100 ms at the locked frequency, when locked */
     double harmonic;   /**< phase-locked (2f, 3f) power over the candidate's; computed only when needed */
+    int span;          /**< sub-blocks the measured window held */
+    /** Variance of est_hz in Hz^2 (issue #643), computed only when the tone-error gate needs it: < 0 until then. */
+    double est_var_hz2;
+    /** 1 when every sub-block of the window carries the bin's tone (ctcss_window_stationary()), 0 when not, -1 until
+        the tone-error gate needs it. */
+    int stationary;
 } dsd_analog_ctcss_hop;
 
 /** @brief A tone the acquisition tracks from hop to hop, one per acquisition window. */
@@ -159,7 +168,24 @@ typedef struct {
         reference a lock on index starts from */
     double prev_hz;
     int run; /**< consecutive hops that qualified index */
+    /** Of those, the consecutive newest ones that qualified it on its value, within 0.5 Hz (issue #643): the run the
+        detector's on-value rules alone would have. */
+    int narrow_run;
 } dsd_analog_ctcss_cand;
+
+/** @brief Per-tone gates and factors, computed once when the detector is configured (issue #643). */
+typedef struct {
+    /** How far an estimate may sit off the table value and still be the tone: 0.8 Hz, or 0.5 % where that is more. */
+    double tolerance_hz[DSD_CTCSS_TONE_COUNT];
+    /** The snap and hold gate: the tolerance, or half the distance to the nearest neighbour where that is less. */
+    double gate_hz[DSD_CTCSS_TONE_COUNT];
+    /** The on-value rules' gate: 0.8 Hz, or half the distance to the nearest neighbour where that is less. */
+    double on_value_gate_hz[DSD_CTCSS_TONE_COUNT];
+    /** FM discriminator noise density at the tone over the band average, never below 1. */
+    double noise_shape[DSD_CTCSS_TONE_COUNT];
+    /** The other tone of a close pair (only 150.0 and 151.4 Hz have one), or -1. */
+    int close_neighbour[DSD_CTCSS_TONE_COUNT];
+} dsd_analog_ctcss_tables;
 
 /**
  * @brief CTCSS detector working state (a correlator bin per supported tone).
@@ -189,19 +215,38 @@ typedef struct {
     int ring_head;  /**< next ring slot to write; the oldest sub-block once the ring is full */
     int ring_count; /**< sub-blocks in the ring, up to DSD_ANALOG_CTCSS_LONG_WINDOW */
     int fresh;      /**< sub-blocks closed since the last reset or loss, up to DSD_ANALOG_CTCSS_LONG_WINDOW */
-    int state;      /**< dsd_analog_tone_state: ACQUIRING, LOCKED or NONE */
-    int locked;     /**< table index of the locked tone, or -1 */
+    /** fresh as the on-value rules count it (issue #643): since the last reset or the loss of a lock they held, so a
+        lock that rested on tone error alone, which they never had, starts no late window over for them. */
+    int main_fresh;
+    int state;  /**< dsd_analog_tone_state: ACQUIRING, LOCKED or NONE */
+    int locked; /**< table index of the locked tone, or -1 */
     double locked_hz;
     /** The reverse burst check's reference: locked_hz as it stood two hops ago, or on the first
         hop after a lock the candidate's estimate from the hop before the lock (prev_hz).
         Either comes from a window that ends no later than the older sub-block of each pair the
         check compares. */
     double burst_ref_hz;
-    dsd_analog_ctcss_cand cand;            /**< what the 250 ms window has been qualifying */
-    dsd_analog_ctcss_cand long_cand;       /**< what the late acquisition window has been qualifying */
-    int fail_run;                          /**< consecutive hops the locked tone failed its hold */
-    int holdoff;                           /**< hops left before a tone may lock again (after a reverse burst) */
-    int64_t open_samples;                  /**< unfrozen samples since the last reset, for the no-tone verdict */
+    dsd_analog_ctcss_cand cand;      /**< what the 250 ms window has been qualifying */
+    dsd_analog_ctcss_cand long_cand; /**< what the late acquisition window has been qualifying */
+    int fail_run;                    /**< consecutive hops the locked tone failed its hold */
+    /** How far off its table value the locked tone was confirmed, the most of the lock and later confirmations: what
+        sizes the hold (issue #643). */
+    double lock_offset_hz;
+    /** 1 while the on-value rules confirm the lock: it was locked, or since confirmed, from a run of hops within
+        0.5 Hz, and the on-value hold has not failed DSD_ANALOG_CTCSS_LOSE_HOPS hops in a row since. */
+    int main_confirmed;
+    int main_fail_run; /**< consecutive held hops the on-value hold would have failed */
+    /** 1 once the on-value rules would have lost the lock that is still held (main_fail_run ran out), until it is
+        confirmed again or lost. */
+    int main_lost;
+    /** 1 once the on-value rules' own verdict, with no lock of theirs, is NONE -- they lost a lock, or read no tone after
+        DSD_ANALOG_CTCSS_NO_TONE_MS of carrier -- until a reset: what a lock that rests on tone error alone returns to
+        when it is lost. */
+    int main_none;
+    dsd_analog_ctcss_tables tables;
+    int holdoff;          /**< hops left before a tone may lock again (after a reverse burst) */
+    int wide_holdoff;     /**< the same for the tone-error rules alone, after a burst on a lock that rested on them */
+    int64_t open_samples; /**< unfrozen samples since the last reset, for the no-tone verdict */
     float wide[DSD_ANALOG_CTCSS_WIDE_MAX]; /**< the ring's wide-stream samples, circular */
     int wide_len;                          /**< ring length in samples (LONG_WINDOW * sub_len) */
     int wide_pos;                          /**< next write position; the oldest sample once the ring is full */
@@ -209,6 +254,12 @@ typedef struct {
 } dsd_analog_ctcss;
 
 extern const dsd_analog_rx_detector_ops dsd_analog_ctcss_ops;
+
+/**
+ * @brief Test entry point: measure @p bin over the newest @p span sub-blocks the way an acquisition window does, the
+ * estimate's variance and the window's stationarity included (both are otherwise computed only when needed).
+ */
+void dsd_analog_ctcss_measure_span(const dsd_analog_ctcss* det, int span, int bin, dsd_analog_ctcss_hop* out);
 
 /** @brief DCS bit rate, bit/s. */
 #define DSD_ANALOG_DCS_BAUD              134.4

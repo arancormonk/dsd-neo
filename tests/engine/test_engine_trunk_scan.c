@@ -54,6 +54,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "analog_tone_policy.h"
 #include "test_support.h"
 #include "trunk_scan_internal.h"
 #include "trunk_scan_test_support.h"
@@ -10991,6 +10992,130 @@ test_nfm_target_tone_check_leaves_no_hold(void) {
     return test_rc;
 }
 
+/* --- Issue #643: a tone named off its value through the real tone policy --- */
+
+/* One phase of what the detectors publish for the carrier on air: from @p from_s on, the tone state, the CTCSS tone
+ * (tenths of a hertz) or DCS code it locked, whether that CTCSS tone rests on tone error alone, and whether the DCS
+ * detector holds a candidate. */
+typedef struct {
+    double from_s;
+    int tone_state;
+    int tone_kind;
+    int ctcss_tenths_hz;
+    int ctcss_off_value;
+    int dcs_code;
+    int dcs_candidate;
+} off_value_phase;
+
+/* Runs the target's own tone policy over 20 ms reads of @p phases and publishes its verdict before each 100 ms tick,
+ * to @p end_s or until the scan leaves target 0. Returns the tick time at which it left, or -1.0 if it never did;
+ * @p gate_out gets the policy's last verdict. */
+static double
+run_off_value_phases(dsd_opts* opts, dsd_state* state, const off_value_phase* phases, size_t count, double end_s,
+                     int* gate_out) {
+    dsd_analog_tone_policy policy;
+    dsd_analog_tone_policy_init(&policy);
+    (void)dsd_analog_tone_policy_configure(&policy, opts->analog_tone_filter, &opts->analog_tone_set);
+    int gate = policy.gate;
+    double left_s = -1.0;
+    for (int read = 0; (read * 0.02) < end_s - 1e-9; read++) {
+        const double t = read * 0.02;
+        size_t k = 0;
+        while (k + 1U < count && t >= phases[k + 1U].from_s - 1e-9) {
+            k++;
+        }
+        dsd_analog_rx_publication rx;
+        DSD_MEMSET(&rx, 0, sizeof(rx));
+        rx.carrier_open = 1;
+        rx.tone_state = phases[k].tone_state;
+        rx.tone_kind = phases[k].tone_kind;
+        rx.ctcss_tenths_hz = phases[k].ctcss_tenths_hz;
+        rx.ctcss_off_value = phases[k].ctcss_off_value;
+        rx.dcs_candidate = phases[k].dcs_candidate;
+        if (rx.tone_kind == DSD_ANALOG_TONE_KIND_DCS) {
+            int code = -1;
+            int inverted = -1;
+            if (dsd_dcs_canonical(phases[k].dcs_code, 0, &code, &inverted) != 0) {
+                DSD_FPRINTF(stderr, "no canonical name for DCS %03o\n", (unsigned)phases[k].dcs_code);
+                *gate_out = -1;
+                return 0.0;
+            }
+            rx.dcs_code = code;
+            rx.dcs_inverted = inverted;
+        }
+        gate = dsd_analog_tone_policy_step(&policy, &rx, 960U, 48000);
+        if ((read + 1) % 5 == 0) {
+            publish_tone_gate(state, gate);
+            trunk_scan_test_set_now((read + 1) * 0.02);
+            dsd_engine_trunk_scan_tick(opts, state);
+            if (dsd_engine_trunk_scan_active_index(state) != 0U) {
+                left_s = (read + 1) * 0.02;
+                break;
+            }
+        }
+    }
+    *gate_out = gate;
+    return left_s;
+}
+
+/* A tone named off its value that the target's list does not pass (issue #643) may not make the scan leave before the
+ * tone check's window ends: the detector names it while its on-value rules may still confirm another tone. An unlisted
+ * 254.1 Hz named off its value at 300 ms, then the listed 100.0 Hz at 700 ms, keeps the target and ends allowed; the
+ * same 254.1 Hz on its value leaves at the next tick. Under a DCS allow list the extended window holds for a code
+ * confirmed at 1,000 ms beside an off-value CTCSS lock. */
+static int
+test_nfm_target_off_value_tone_waits_for_the_window(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    static const char* const k_targets[2] = {
+        "fire,nfm-conventional,154430000,,250,2000,,--tone-allow 100.0\n"
+        "dmr,dmr-conventional,461000000,,250,250,\n",
+        "fire,nfm-conventional,154430000,,250,2000,,--tone-allow D023N\n"
+        "dmr,dmr-conventional,461000000,,250,250,\n",
+    };
+    int test_rc = 0;
+    for (int dcs = 0; dcs < 2; dcs++) {
+        for (int off_value = 1; off_value >= 0; off_value--) {
+            if (nfm_targets_init(k_targets[dcs], &opts, &state, dir, sizeof dir, target_path, sizeof target_path)
+                != 0) {
+                return 1;
+            }
+            const off_value_phase ctcss_phases[3] = {
+                {0.0, DSD_ANALOG_TONE_STATE_ACQUIRING, DSD_ANALOG_TONE_KIND_NONE, 0, 0, 0, 0},
+                {0.3, DSD_ANALOG_TONE_STATE_LOCKED, DSD_ANALOG_TONE_KIND_CTCSS, 2541, off_value, 0, 0},
+                {0.7, DSD_ANALOG_TONE_STATE_LOCKED, DSD_ANALOG_TONE_KIND_CTCSS, 1000, 0, 0, 0},
+            };
+            const off_value_phase dcs_phases[3] = {
+                {0.0, DSD_ANALOG_TONE_STATE_ACQUIRING, DSD_ANALOG_TONE_KIND_NONE, 0, 0, 0, 1},
+                {0.3, DSD_ANALOG_TONE_STATE_LOCKED, DSD_ANALOG_TONE_KIND_CTCSS, 1500, off_value, 0, 1},
+                {1.0, DSD_ANALOG_TONE_STATE_LOCKED, DSD_ANALOG_TONE_KIND_DCS, 0, 0, 0023, 0},
+            };
+            int gate = -1;
+            const double left_s = run_off_value_phases(&opts, &state, dcs ? dcs_phases : ctcss_phases, 3U, 1.5, &gate);
+            if (off_value) {
+                if (left_s >= 0.0 || gate != DSD_ANALOG_TONE_GATE_ALLOWED) {
+                    DSD_FPRINTF(stderr, "%s list, off-value tone: left at %.2f s, gate %d; want kept, allowed\n",
+                                dcs ? "DCS" : "CTCSS", left_s, gate);
+                    test_rc = 1;
+                }
+                test_rc |=
+                    expect_scan_timing(&state, "off-value then allowed", DSD_SCAN_STAY_CARRIER, 3.50, 250U, 2000U);
+            } else if (fabs(left_s - 0.4) > 1e-6) {
+                DSD_FPRINTF(stderr, "%s list, on-value tone: left at %.2f s, want 0.40 s\n", dcs ? "DCS" : "CTCSS",
+                            left_s);
+                test_rc = 1;
+            }
+            dsd_engine_trunk_scan_shutdown(&opts, &state);
+            cleanup_paths(dir, target_path, NULL);
+            DSD_MEMSET(&state.analog_rx, 0, sizeof(state.analog_rx));
+        }
+    }
+    trunk_scan_test_clear_now();
+    return test_rc;
+}
+
 /* A check that begins while the idle dwell is disarmed -- by the hold that earlier allowed traffic earned, or by the
  * operator's hold, just released -- leaves it disarmed no longer than a quiet channel would (issue #527): the first
  * tick of the check at which neither hold is on arms it, so a check its carrier ends before a verdict adds none of its
@@ -13127,6 +13252,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_nfm_target_rejection_that_ended_advances);
     rc |= run_with_default_tune_hook(test_nfm_target_tone_check_leaves_no_hold);
     rc |= run_with_default_tune_hook(test_nfm_target_tone_check_arms_a_disarmed_dwell);
+    rc |= run_with_default_tune_hook(test_nfm_target_off_value_tone_waits_for_the_window);
     rc |= run_with_default_tune_hook(test_am_target_carrier_ignores_the_tone_filter);
     rc |= run_with_default_tune_hook(test_nfm_target_rejection_with_a_refused_alternate);
     rc |= run_with_default_tune_hook(test_nfm_target_rejection_moves_to_a_same_frequency_target);

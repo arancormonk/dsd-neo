@@ -385,6 +385,8 @@ DPMR_DIBIT_TO_LEVEL = {1: 3.0, 0: 1.0, 2: -1.0, 3: -3.0}
 ANALOG_CTCSS_SYNTH = [
     ("nfm_ctcss_synth_1000", 5221000, 2.0, 100.0, None),
     ("nfm_ctcss_synth_670", 5220670, 2.0, 67.0, None),
+    # A transmitter 0.4 % high on 150.0 Hz, within its encoder's 0.5 % (issue #643): reads 150.0.
+    ("nfm_ctcss_synth_1506", 5221506, 2.0, 150.6, None),
     ("nfm_ctcss_synth_drop", 5221001, 2.5, 100.0, 1.2),
     ("nfm_notone_synth", 5220000, 2.0, None, None),
 ]

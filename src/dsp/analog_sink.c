@@ -206,9 +206,10 @@ analog_sink_lane_prepare(const dsd_opts* opts, analog_sink_ext* ext, analog_sink
     return DSD_ANALOG_SINK_WROTE;
 }
 
-/* Converts @p buf and hands the samples to @p write, at most DSD_ANALOG_SINK_CHUNK at a time. */
+/* Converts @p buf and hands the samples, scaled by @p gain, to @p write, at most DSD_ANALOG_SINK_CHUNK at a time. A
+   gain of 1.0 leaves every converted sample exactly as it was. */
 static void
-analog_sink_emit(analog_sink_ext* ext, analog_sink_lane* lane, const float* buf, size_t n,
+analog_sink_emit(analog_sink_ext* ext, analog_sink_lane* lane, const float* buf, size_t n, double gain,
                  dsd_analog_sink_write_fn write, const void* ctx) {
     size_t pos = 0;
     while (pos < n) {
@@ -220,7 +221,7 @@ analog_sink_emit(analog_sink_ext* ext, analog_sink_lane* lane, const float* buf,
         }
         pos += consumed;
         for (int i = 0; i < got; i++) {
-            ext->out_s[i] = analog_sink_to_i16(ext->out_f[i]);
+            ext->out_s[i] = analog_sink_to_i16((float)(gain * (double)ext->out_f[i]));
         }
         if (got > 0) {
             write(ctx, ext->out_s, (size_t)got);
@@ -230,7 +231,7 @@ analog_sink_emit(analog_sink_ext* ext, analog_sink_lane* lane, const float* buf,
 
 int
 dsd_analog_sink_write(const dsd_opts* opts, dsd_state* state, dsd_analog_sink sink, const float* buf, size_t n,
-                      int block_hz, int sink_hz, dsd_analog_sink_write_fn write, const void* ctx) {
+                      double gain, int block_hz, int sink_hz, dsd_analog_sink_write_fn write, const void* ctx) {
     if (block_hz == sink_hz) {
         return DSD_ANALOG_SINK_NATIVE;
     }
@@ -252,7 +253,7 @@ dsd_analog_sink_write(const dsd_opts* opts, dsd_state* state, dsd_analog_sink si
     if (prepared != DSD_ANALOG_SINK_WROTE) {
         return prepared;
     }
-    analog_sink_emit(ext, lane, buf, n, write, ctx);
+    analog_sink_emit(ext, lane, buf, n, gain, write, ctx);
     lane->written = 1;
     return DSD_ANALOG_SINK_WROTE;
 }

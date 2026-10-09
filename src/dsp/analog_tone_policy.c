@@ -161,10 +161,20 @@ policy_window_ended(const dsd_analog_tone_policy* policy, const dsd_analog_rx_pu
     return !dcs_extends || policy->window_us >= (int64_t)DSD_ANALOG_TONE_WINDOW_DCS_MS * 1000;
 }
 
+/* A confirmed value the list does not pass that rests on transmitter tone error alone (issue #643): an off-value CTCSS
+   tone, which the detector names while its on-value rules may still confirm another. It may not close the gate before
+   the window ends. */
+static int
+policy_off_value_reject(const dsd_analog_tone_policy* policy, const dsd_analog_rx_publication* rx) {
+    return rx->tone_kind == DSD_ANALOG_TONE_KIND_CTCSS && rx->ctcss_off_value && !policy_passes(policy, rx);
+}
+
 static void
 policy_step_pending(dsd_analog_tone_policy* policy, const dsd_analog_rx_publication* rx) {
     if (policy_confirmed(rx)) {
-        policy_judge_value(policy, rx);
+        if (!policy_off_value_reject(policy, rx) || policy_window_ended(policy, rx)) {
+            policy_judge_value(policy, rx);
+        }
         return;
     }
     if (policy_window_ended(policy, rx)) {
@@ -178,6 +188,14 @@ policy_step_pending(dsd_analog_tone_policy* policy, const dsd_analog_rx_publicat
 static void
 policy_step_allowed(dsd_analog_tone_policy* policy, const dsd_analog_rx_publication* rx) {
     if (policy_confirmed(rx)) {
+        if (policy_off_value_reject(policy, rx)) {
+            /* One resting on tone error alone is checked again, from a fresh window, as a lost value is. */
+            policy->gate = DSD_ANALOG_TONE_GATE_PENDING;
+            policy_clear_value(policy);
+            policy->window_us = 0;
+            policy->window_rem = 0;
+            return;
+        }
         /* Another value, or the same one: judged afresh, so a blocked or unlisted one closes the gate. */
         policy_judge_value(policy, rx);
         return;

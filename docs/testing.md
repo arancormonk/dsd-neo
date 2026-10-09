@@ -560,11 +560,13 @@ symbol, and one sample more where that lands on a multiple of the decimation).
 #### Received tone (CTCSS) on the analog monitor
 
 `DECODE_IQ_ANALOG_CTCSS_1000`, `_670`, `_DROP` and `_NOTONE` (issue #522) replay synthetic NFM under `-fA -o null`, so
-they also show detection needs neither audio output nor a tone policy. The fixtures (`nfm_ctcss_synth_1000`,
-`nfm_ctcss_synth_670`, `nfm_ctcss_synth_drop`, `nfm_notone_synth`) are built offline by
-`python3 tools/build_iq_fixtures.py --derived-only`: voice-band audio (noise limited to 300-3000 Hz, gated into
-syllables) plus a 600 Hz-deviation sine at the named tone, through the existing `remodulate()`, with receiver noise
-added at baseband. Each asserts the `Received tone:` log line and, as its negative half, that no other tone was ever
+they also show detection needs neither audio output nor a tone policy; `_1506` (issue #643) replays 150.6 Hz, a
+transmitter 0.4 % high on 150.0 Hz, which must read `CTCSS 150.0 Hz` and never `none` or 151.4 Hz. The fixtures
+(`nfm_ctcss_synth_1000`, `nfm_ctcss_synth_670`, `nfm_ctcss_synth_1506`, `nfm_ctcss_synth_drop`, `nfm_notone_synth`) are
+built offline by `python3 tools/build_iq_fixtures.py --derived-only`: voice-band audio (noise limited to 300-3000 Hz,
+gated into syllables) plus a 600 Hz-deviation sine at the named tone, through the existing `remodulate()`, with
+receiver noise added at baseband. Each asserts the `Received tone:` log line and, as its negative half, that no other
+tone was ever
 reported; CMake regexes have no negative lookahead, so "any other tone" is spelled out as every value that is not the
 expected one. The drop fixture stops its tone at 1.2 s under a live carrier and must log `CTCSS 100.0 Hz` then `none`.
 Each case's expected line appears only once the replay has run long enough to reach its verdict, so a replay that
@@ -743,6 +745,69 @@ identical results), and they are the numbers the user guide quotes:
   254.1 Hz, where a high voice with weak harmonics holds near a table tone), and the transmitter-filtered model once
   (at 254.1 Hz). The 250 ms window alone locked the 233.6 Hz and the filtered 254.1 Hz voice too; without the check
   that the newest 250 ms still carry the tone, the late windows would lock another five unfiltered and one filtered.
+- Transmitter tone error (issue #643). `DSP_ANALOG_CTCSS_TONE_ERROR` pins, at every rate:
+  - 150.6 Hz (a radio 0.4 % high on 150.0 Hz, as the reporter's were) read as 150.0 Hz at +20 and +30 dB and clean, from
+    a carrier's start before any `none` and after 300 ms of noise, held 3 s and never read as 151.4 Hz, and 150.8 Hz as
+    151.4 Hz; at +10 dB 150.6 Hz never reads 151.4 Hz;
+  - every tone from 127.3 Hz up 0.4 % off its value (below 125 Hz that is within 0.5 Hz, on its value), and the pair
+    0.6 Hz off, at +20 dB, within the off-value lock bounds (`DSD_ANALOG_CTCSS_OFF_VALUE_LOCK_P95_MS`, 500 ms, and
+    `_CEILING_MS`, 650 ms) and never another tone (the long-run sweep below covers every tone from 100 Hz);
+  - 150.70 Hz, the pair's midpoint, and 150.68 and 150.72 Hz, naming neither;
+  - the estimate's precision against what it claims, with white and f^2 noise, at every span the detector uses: |z| > 3
+    on at most 0.5 % of the stationary hops, and the non-stationary ones left at 0.5 Hz;
+  - the review cases, each against what the detector did before: a tone the on-value rules acquire beside a voice line
+    near another tone is confirmed when it was and kept, a tone that moves within its tolerance is kept and hands over
+    to the on-value tone that follows, and a 150.6 Hz onset after noise never names 151.4 Hz;
+  - an off-value lock keeps the DCS candidate published, and five receptions of the sweeps below, where a voice line's
+    off-value lock coming and going delayed or lost the real tone and a hop the wider hold kept dropped a held tone,
+    lock and hold exactly as the on-value rules alone do, as does a tone their late windows were already agreeing on
+    when an off-value lock came first (250.72 Hz beside 242.32 Hz: confirmed on its value at 500 ms, not a hop later),
+    and the loss of an off-value lock under a chattering carrier returns to the NONE they had already reached.
+
+  `test_150_and_151_4_hold_only_their_own_side` in `DSP_ANALOG_CTCSS` was rewritten for nearest-tone naming: a locked
+  tone moved nearer the other tone of the pair is still dropped within the moved-off bound, and the other tone is then
+  named, being nearest and within 0.5 % of it, where nothing was before. `DSP_ANALOG_TONE_POLICY` pins the off-value
+  deferral (pending to the window's end, rejected there, a passing one allowed at once, a fresh window after a pass, the
+  DCS extension under it), and `ENGINE_TRUNK_SCAN` runs the real policy on two scan targets: an unlisted 254.1 Hz named
+  off its value at 300 ms, then the listed 100.0 Hz at 700 ms, keeps the target and ends allowed, and the same 254.1 Hz
+  on its value leaves at the next tick; likewise for a DCS list beside an off-value CTCSS lock.
+
+  The long-run sweeps ran the old and the new detector on the same seeds through an offline driver (the same
+  generators and core, at -O2), every run compared publication by publication, with each rule the change added
+  counted as it fired. Of about 6,300,000 runs, every one in which no added rule fired published exactly what the
+  old detector did; the rest are below.
+  - Lock (1,000,000 starts per condition at 0 dB, on the value and 0.2 Hz off; 100,000 at +10 dB on the value and
+    0.35 Hz off; 100,000 from a carrier's start; the pair's rows of 100,000 at 0 dB and 20,000 at +10 dB on the value,
+    0.2 and 0.35 Hz toward the other): p95 the same or lower on every row, none past 700 ms inside the contract, the
+    other tone of the pair named on the same starts as before.
+  - Loss (400,000 stops at 0 and +10 dB, 24,000 under a flickering carrier): p50, p95 and the slowest the same; at most
+    9 more stops in 100,000 past 350 ms, none past 800 ms.
+  - Off-table carriers, two hours each at 0 dB (68.2, 161.0, 166.7 and 152.6 Hz, at 48 and 8 kHz): identical, and at
+    +30 dB nothing; every tone set just past its gate at +30 dB never named it.
+  - The midpoint, 150.64 to 150.76 Hz in 0.01 Hz steps at +10 to +60 dB, 2,000 starts each: never the far side;
+    150.70 Hz names nothing at any level; at +40 dB and up 150.68-150.72 Hz names neither, where the analog oracle's
+    exclusive 0.5 % rule leaves 150.643-150.75 Hz unlabelled. Two hours of 150.70 Hz at 0 dB read the pair as often
+    as before (about 2,950 times an hour, the old detector's own rate there), at +20 dB never.
+  - Off-value lock: 810,000 starts from a carrier's start at +20 dB and up, every tone from 100 Hz 0.4 % off: p95 402
+    ms (499 ms for the pair), the slowest 553 ms; at +10 dB 150.6 Hz p95 753 ms, all within 1 s, and 250.3 Hz 0.4 %
+    high p95 503 ms; at 0 dB 150.6 Hz p95 1.56 s, 250.3 and 254.1 Hz 0.4 % high p95 1.05 s. Every other-tone read is
+    one the old detector made too (at 0 dB 150.6 Hz still reads 151.4 Hz on about one start in five, on the on-value
+    rules).
+  - Precision, 4.6 million hops at 250, 400, 500 and 600 ms with white and f^2 noise: |z| > 3 on 0.04-0.43 % of the
+    stationary hops of each cell, mean z^2 0.36-0.82; onset windows that pass the stationarity test, 0.38-0.42 % at
+    250 ms (3,400 windows each), 0.42 and 0.44 % over all spans.
+  - Talk-off: 20 hours of each speech model with no tone locked the same tones as often as before (4.45 and 0.80 an
+    hour at this level, with no noise); 150,000 onsets under speech 10 dB above the tone: none later or another tone,
+    78 sooner; 3.4 hours of every tone held under such speech: the same 1,259 relocks. A tone beside a stronger steady
+    line near another tone (250,000 receptions): the real tone confirmed when it was before on every one, and the
+    line's own tone named on 74 % of them (62 % before), 1.3 s of 2.35 (1.2 before).
+  - DCS, 1,000,000 code starts at +10 dB and 200,000 each at +3 dB through 75 and 750 us de-emphasis: no added rule
+    fired, every publication and allow-list verdict the same; the CTCSS detector's own state locked on a code's
+    waveform on 2 of the 1,400,000, as before.
+  - The capture from issue #643, replayed under `-fA --nfm-bandwidth-hz 15000 --squelch noise+3`: `CTCSS 150.0 Hz` 46
+    times, `none` 20 and 151.4 Hz once (before: 3, 40 and 1); the 151.4 Hz is the old detector's too, at a
+    transmitter's end of message, where its tone runs up to 151.3 Hz for 150 ms. Through the core alone, all 28
+    receptions of 0.6 s or more lock 150.0 Hz (p50 380 ms, the slowest 540 ms), never `none` first (before: none).
 
 Detection runs on the FM monitor only (issue #524), DCS (issue #523) as well as CTCSS. `DSP_SYMBOL_REPLAY` feeds the
 same CTCSS-bearing monitor blocks, and the same D023N-bearing ones, through the tap on the FM monitor, where they lock,
@@ -1141,6 +1206,7 @@ write or two).
 | `--analog-probe-{min,max}-{dbc,dbfs} HZ:DB` | Bounds on a probe's level; each also adds the probe. |
 | `--analog-max-tone-lock-ms MS` | Upper bound on `tone_lock_ms`, the stream time of the first received-tone lock. Fails as not measured when no tone locked. |
 | `--analog-max-delivery-error-pct PCT` | How far the length of the delivered audio strays from the input its blocks span, at the sink rate (issue #633). Measured on audio input, where each block spans 960 samples at the monitor's rate; fails as not measured otherwise. |
+| `--analog-raw-wav-min-rms-dbfs DB` | Lower bound on the RMS level of the run's `-6` raw WAV (issue #643), which this option has the host record: it adds `-6 FILE` for a private temporary file, reads the WAV back when live processing ends (closing it first, which the engine would only do after the stop hook), prints `ANALOG RAW WAV: frames=N rate_hz=R rms_dbfs=X peak_dbfs=Y clip=C` after the `ANALOG METRIC:` line, and removes the file at exit. Fails as not measured when the WAV holds no frames. |
 | `--analog-scan-row ROW` | Enter row `ROW` of the `-C` channel map before the replay, the way the conventional scanner commits it (its class, then its own options), and print `Scan row applied: ROW <class>; width <W>; squelch <S>`, each with `(row)` when the row sets it. I/Q replay cannot retune, so one row is all a run visits (issue #526). |
 | `--analog-iq-gain-db DB` | Replay a copy of the capture with every sample scaled by `DB` about the cu8 midpoint: the same air, noise included, as a receiver with that much more (or less) gain records it. It works on the committed fixtures only (`tests/fixtures/iq`, opened by their directory entries there, never by a path from the command line or a sidecar). The copy goes to a private temporary directory the host removes at exit, and the host prints `capture scaled by +10.0 dB, N of M bytes clipped`; it stops (exit 2) when more than one byte in a thousand would clip, or when the capture is not a committed fixture. The auto squelch's `_HOT` cases use it, so a hotter receiver costs no committed fixture. |
 
@@ -1159,10 +1225,11 @@ it. Sub-audible tones 20-30 Hz apart need a longer, phase-continuous window than
 When live processing ends the host prints `ANALOG METRIC:` (`rate_hz`, `total_ms`, `captured_ms`, `audible_ms`,
 `first_audible_ms`, `rms_dbfs`, `peak_dbfs`, `clip`, `inband_db`, `tone_hz`, `tone_dbfs`, `tone_snr_db`, and the
 received-tone fields `tone`, `tone_lock_ms` and `tone_lock_pct` described under [Analog A/B](#analog-ab); `NA` where
-a value was not measured), one `ANALOG PROBE:` line per probe, and then `ANALOG AUDIO OK`, or one
-`ANALOG AUDIO FAIL:` line per missed bound and exit status 1. Without bounds it only reports, which is how
-`tools/replay_ab.sh --metric analog` uses it. Every bound is absolute and per case, so "narrower is cleaner" becomes
-two cases with their own limits, not a comparison between runs. Measured on the commit that added them:
+a value was not measured), the `ANALOG RAW WAV:` line when the run recorded one, one `ANALOG PROBE:` line per probe,
+and then `ANALOG AUDIO OK`, or one `ANALOG AUDIO FAIL:` line per missed bound and exit status 1. Without bounds it
+only reports, which is how `tools/replay_ab.sh --metric analog` uses it. Every bound is absolute and per case, so
+"narrower is cleaner" becomes two cases with their own limits, not a comparison between runs. Measured on the commit
+that added them:
 
 | Case | Fixture | Measured (default monitor filters) | Bounds |
 | --- | --- | --- | --- |
@@ -1184,6 +1251,8 @@ two cases with their own limits, not a comparison between runs. Measured on the 
 | `DECODE_IQ_ANALOG_NFM_REAL_SQUELCH_B_SMOKE` | `nfm_squelch_real_b`, `-n 50`, audible from -40 dBFS | captured 4000 ms, audible 3100 ms, in-band 25.5 dB | captured ≥ 3900, audible ≥ 2500, in-band ≥ 20 |
 | `DECODE_IQ_ANALOG_PARITY_NFM_REAL` | `nfm_ctcss_real` under `-fA` (default chain) | RMS -23.9 dBFS, no clipping: the level `dmr_voice` decodes to (-24.9 dBFS RMS) within 1 dB | captured ≥ 5800, RMS -27.9 to -21.9 dBFS (DMR voice ±3 dB), clip 0 |
 | `DECODE_IQ_ANALOG_PARITY_AM_REAL` | `am_airband_real` under `-fM` (default chain) | RMS -23.9 dBFS, no clipping | captured ≥ 7800, `PARITY_NFM_REAL`'s window, clip 0 |
+| `DECODE_IQ_ANALOG_RAW_WAV_NFM_REAL` | `nfm_ctcss_real` under `-fA`, the `-6` raw WAV (issue #643) | raw WAV RMS -28.9 dBFS, peak -13.9 dBFS, no clipping: the monitor's 1/pi-scale samples at the level a PCM input at the reference has (before the fix: every sample 0) | raw WAV RMS ≥ -32 dBFS |
+| `DECODE_IQ_ANALOG_RAW_WAV_AM_REAL` | `am_airband_real` under `-fM`, the `-6` raw WAV | raw WAV RMS -18.3 dBFS, peak -4.5 dBFS, no clipping (before the fix: -117.8 dBFS, samples of -1, 0 and 1) | raw WAV RMS ≥ -21.5 dBFS |
 | `DECODE_IQ_ANALOG_SOURCE_MONITOR_FIXED` | `p25p1_c4fm_vc` under `-fs -8 -n 50` (the source monitor during digital decoding) | captured 3000 ms, peak -9.9 dBFS, no clipping (main: 141440 clipped samples, -0.03 dBFS RMS) | captured ≥ 2900, peak ≤ -6 dBFS, clip 0 |
 | `DECODE_IQ_ANALOG_NO_MOD_AUTO_SWITCH` | `am_airband_real` under `-fA` (monitor path only, not AM reception) | total and captured 8000 ms, no CQPSK symbols (before the fix: total 751 ms, captured 0 to 20 ms, CQPSK warning) | captured ≥ 7800 ms, total 7800 to 8200 ms |
 | `DECODE_IQ_ANALOG_REAL_CTCSS_1514` | `nfm_ctcss_real` | tone 151.4, first lock at 300 ms, locked 88.67% | tone lock ≤ 400 ms; tone 151.4 and no other tone logged |
@@ -1241,6 +1310,7 @@ a missed bound), the named `ANALOG AUDIO FAIL:` line, an `ANALOG METRIC:` line (
 | `DECODE_IQ_ANALOG_NEG_TONE_LOCK_NOT_MEASURED` | a 400 ms tone-lock bound on `nfm_notone_synth`, where no tone locks | tone lock ms "not measured" |
 | `DECODE_IQ_ANALOG_NEG_AM_TONE_THROUGH_FM` | `DECODE_IQ_ANALOG_AM_TONE`'s 25 dB tone SNR floor on `am_tone_synth` under `-fA` (the FM monitor) | tone SNR, measured at -21.4 dB: the AM case's tone is the AM detector's |
 | `DECODE_IQ_ANALOG_NEG_PARITY_FIXED` | `DECODE_IQ_ANALOG_PARITY_NFM_REAL`'s window on `nfm_ctcss_real` at `-n 50` | RMS, measured at -32.8 dBFS: the parity holds only with the AGC |
+| `DECODE_IQ_ANALOG_NEG_RAW_WAV_RMS` | a -20 dBFS raw WAV floor on `nfm_ctcss_real` under `-fA` (-28.9 dBFS) | raw WAV RMS dBFS, read back from a WAV that holds frames |
 | `DECODE_IQ_ANALOG_NEG_LAST_AUDIBLE` | the level burst (`nfm_burst_synth`, `--squelch -28`) with a 520 ms last-audible bound | last audible ms, measured at 540, while the first-audible bound holds |
 
 When a later change adds a bound or a new kind of check to the host, add a negative control beside it.
@@ -1279,6 +1349,7 @@ carrier inside the passband (5 kHz up, a variant fixture that is not committed) 
 | `am_adjacent_synth` | synthetic, seed 5242 | the same plus an unmodulated carrier 8.333 kHz up at -6 dB (the next 8.33 kHz airband channel) |
 | `nfm_ctcss_synth_1000` | synthetic, seed 5221000 | 2 s: voice-band audio at up to 4 kHz deviation plus CTCSS 100.0 Hz at 600 Hz deviation, receiver noise at baseband (#522) |
 | `nfm_ctcss_synth_670` | synthetic, seed 5220670 | the same with CTCSS 67.0 Hz |
+| `nfm_ctcss_synth_1506` | synthetic, seed 5221506 | the same with 150.6 Hz: a transmitter 0.4 % high on CTCSS 150.0 Hz, within its encoder's 0.5 % (#643) |
 | `nfm_ctcss_synth_drop` | synthetic, seed 5221001 | 2.5 s: CTCSS 100.0 Hz that stops at 1.2 s while the carrier and voice carry on |
 | `nfm_notone_synth` | synthetic, seed 5220000 | 2 s: the same voice and noise with no tone |
 | `nfm_dcs_synth_023n` | synthetic, seed 5230023 | 2 s: the same voice and noise plus DCS D023N at 600 Hz deviation, NRZ low-passed below 300 Hz (#523) |

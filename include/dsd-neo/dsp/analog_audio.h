@@ -61,6 +61,29 @@ typedef enum {
  */
 double dsd_analog_audio_source_gain(dsd_analog_audio_source source);
 
+/** The reference signal's peak in RTL monitor audio at the default `vol` 2: 1 kHz at 3 kHz deviation is
+    2 pi 3000 / 48000 = 0.3927 rad, 0.125 after the monitor's 1/pi output scale, and the AM detector puts 50% at
+    0.25 x 0.5 = 0.125; the trim doubles either. */
+#define DSD_ANALOG_AUDIO_RTL_MONITOR_REFERENCE 0.25
+
+/**
+ * @brief The scale that puts @p source's samples at int16 scale, where the -6 raw WAV records them (issue #643).
+ *
+ * RTL monitor audio, FM or AM, runs at the monitor's 1/pi output scale, where speech is about +/-0.25 and would round
+ * to 0 or +/-1: it is scaled by DSD_ANALOG_AUDIO_REFERENCE_PEAK / DSD_ANALOG_AUDIO_RTL_MONITOR_REFERENCE (32924), so
+ * its reference signal lands at the level a PCM input at the reference has. The RTL FSK discriminator output and PCM
+ * input are at int16 scale already: 1.0, which writes them exactly as they are. Unlike the source gain, it ignores
+ * `-n` and the AGC: the raw WAV is the input before the monitor's filters and gain stage.
+ *
+ * Inline, so the tests that replace analog_audio.c with their own copy still get it.
+ */
+static inline double
+dsd_analog_audio_int16_scale(dsd_analog_audio_source source) {
+    return source == DSD_ANALOG_AUDIO_SOURCE_RTL_MONITOR
+               ? DSD_ANALOG_AUDIO_REFERENCE_PEAK / DSD_ANALOG_AUDIO_RTL_MONITOR_REFERENCE
+               : 1.0;
+}
+
 /** Whether an analog gain setting (`-n`, dsd_opts::audio_gainA) asks for the AGC: 0, or anything not above it. */
 static inline int
 dsd_analog_gain_is_auto(float gain) {

@@ -5056,7 +5056,8 @@ target_link_libraries(
 add_test(NAME DSP_ANALOG_VOICE COMMAND dsd-neo_test_dsp_analog_voice)
 
 # The analog monitor's audio chain (issue #518): source gains, fixed gain and AGC,
-# band choice, legacy filter flags, resets and the state-extension slot.
+# band choice, legacy filter flags, resets and the state-extension slot; and the -6
+# raw WAV's int16 scale (issue #643).
 add_executable(dsd-neo_test_dsp_analog_audio dsp/test_dsp_analog_audio.c)
 target_include_directories(
     dsd-neo_test_dsp_analog_audio
@@ -6241,10 +6242,14 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/file/p25_bandplan_csv.c
     ${PROJECT_SOURCE_DIR}/src/core/util/key_set.c
     ${PROJECT_SOURCE_DIR}/src/protocol/nxdn/nxdn_trunk_diag.c
+    ${PROJECT_SOURCE_DIR}/src/dsp/analog_tone_policy.c
 )
 target_include_directories(
     dsd-neo_test_engine_trunk_scan
-    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/engine
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/engine
+        ${PROJECT_SOURCE_DIR}/src/dsp
 )
 target_compile_definitions(
     dsd-neo_test_engine_trunk_scan
@@ -8849,6 +8854,28 @@ dsd_neo_link_dsp_test(dsd-neo_test_dsp_analog_ctcss ${DSD_NEO_TEST_MATH_LIB})
 add_test(NAME DSP_ANALOG_CTCSS COMMAND dsd-neo_test_dsp_analog_ctcss)
 set_tests_properties(DSP_ANALOG_CTCSS PROPERTIES TIMEOUT 300)
 
+# CTCSS transmitter tone error (issue #643) through the pure analog receive core: 150.6 Hz read as
+# 150.0 Hz, every tone 0.4 % off its value, the 150.0/151.4 Hz midpoint, the estimate's precision
+# against what it claims, and the cases where a tone the on-value rules acquire must not be pre-empted
+# by one that rests on tone error.
+add_executable(
+    dsd-neo_test_dsp_analog_ctcss_tone_error
+    dsp/test_dsp_analog_ctcss_tone_error.c
+)
+target_include_directories(
+    dsd-neo_test_dsp_analog_ctcss_tone_error
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/dsp
+        ${PROJECT_SOURCE_DIR}/tests/dsp
+)
+dsd_neo_link_dsp_test(dsd-neo_test_dsp_analog_ctcss_tone_error ${DSD_NEO_TEST_MATH_LIB})
+add_test(
+    NAME DSP_ANALOG_CTCSS_TONE_ERROR
+    COMMAND dsd-neo_test_dsp_analog_ctcss_tone_error
+)
+set_tests_properties(DSP_ANALOG_CTCSS_TONE_ERROR PROPERTIES TIMEOUT 300)
+
 # The auto squelch's classifier, floor and gate (issue #518 follow-up): plan constants
 # against the design model, noise and carriers, learning, no false opens on noise at
 # every margin, floor tracking and relearning, seeding, the per-channel cache, and the
@@ -9077,7 +9104,7 @@ add_test(
 add_executable(dsd-neo_bench_dsp EXCLUDE_FROM_ALL dsp/bench_dsp.cpp)
 target_include_directories(
     dsd-neo_bench_dsp
-    PRIVATE ${PROJECT_SOURCE_DIR}/include
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/dsp
 )
 dsd_neo_link_dsp_test(dsd-neo_bench_dsp ${DSD_NEO_TEST_MATH_LIB})
 
@@ -12917,6 +12944,14 @@ if(DSD_HAS_RADIO)
         "Received tone: CTCSS 67\\.0 Hz"
         "Received tone: (none|DCS|CTCSS ([0-9]|[0-57-9][0-9]|6[0-689]|[0-9][0-9][0-9])\\.[0-9] Hz|CTCSS 67\\.[1-9] Hz)"
     )
+    # A transmitter 0.4 % high on 150.0 Hz (issue #643): 150.6 Hz reads 150.0, never none first, never 151.4.
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_ANALOG_CTCSS_1506
+        nfm_ctcss_synth_1506
+        -fA
+        "Received tone: CTCSS 150\\.0 Hz"
+        "Received tone: (none|DCS|CTCSS ([0-9]|[0-9][0-9]|[02-9][0-9][0-9]|1[0-46-9][0-9]|15[1-9])\\.[0-9] Hz|CTCSS 150\\.[1-9] Hz)"
+    )
     # The tone stops at 1.2 s while the carrier and voice carry on: 100.0, then none.
     dsd_neo_add_iq_decode_test(
         DECODE_IQ_ANALOG_CTCSS_DROP
@@ -13828,6 +13863,26 @@ if(DSD_HAS_RADIO)
         ""
         "${_analog_off_path}"
     )
+    # The -6 raw WAV on radio input (issue #643): the monitor's samples, at its 1/pi
+    # output scale, are written at the level a PCM input at the reference has, so the
+    # off-air excerpts record audibly: nfm_ctcss_real -28.9 dBFS RMS (-13.9 dBFS peak)
+    # and am_airband_real -18.3 dBFS (-4.5 dBFS peak), unclipped. Written unscaled they
+    # rounded to digital silence: all zero, and -117.8 dBFS (+/-1 LSB). Each bound sits
+    # about 3 dB under its level; DECODE_IQ_ANALOG_NEG_RAW_WAV_RMS shows a missed one fails.
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_RAW_WAV_NFM_REAL
+        nfm_ctcss_real
+        "-fA --analog-raw-wav-min-rms-dbfs -32"
+        ""
+        "${_analog_off_path}"
+    )
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_RAW_WAV_AM_REAL
+        am_airband_real
+        "-fM --analog-raw-wav-min-rms-dbfs -21.5"
+        ""
+        "${_analog_off_path}"
+    )
     # The -8 source monitor under digital decoding plays the FSK discriminator output,
     # which is normalised to +/-30000. The fixed gain used to scale it as RTL monitor
     # audio (12000x at -n 50) and clipped every sample (141440 clipped, -0.03 dBFS RMS);
@@ -14516,6 +14571,15 @@ if(DSD_HAS_RADIO)
         nfm_ctcss_real
         "-fA -n 50 ${_analog_speech_parity}"
         "ANALOG AUDIO FAIL: RMS dBFS -[0-9]+[.][0-9]+ [(]limit -27[.]90[)]"
+    )
+    # The raw WAV bound (issue #643) above what nfm_ctcss_real records (-28.9 dBFS RMS)
+    # fails on the level read back from a -6 WAV that holds frames; "not measured" does
+    # not count.
+    dsd_neo_add_analog_replay_fail_test(
+        DECODE_IQ_ANALOG_NEG_RAW_WAV_RMS
+        nfm_ctcss_real
+        "-fA --analog-raw-wav-min-rms-dbfs -20"
+        "ANALOG RAW WAV: frames=[1-9][0-9]* .*ANALOG AUDIO FAIL: raw WAV RMS dBFS -[0-9]+[.][0-9]+ [(]limit -20[.]00[)]"
     )
     # The auto squelch's burst bounds under a fixed threshold, on the hot copy: -35 dB
     # sits 2.5 dB over the burst's noise at its own level (the gate opens on noise at

@@ -75,6 +75,8 @@ The benchmark target includes:
 - FSK discriminator reset/steady-state cases.
 - CQPSK stage cases for band-edge FLL, Gardner, differential phasor, Costas, and full demod chains.
 - Full demod cases for C4FM audio monitor, FSK discriminator output, and CQPSK P25P1/P25P2.
+- The analog receive core (sub-audible front end, CTCSS and DCS detectors) on a tone on its value, a tone off it,
+  noise alone, and a tone beside a voice.
 
 The RTL benchmark target includes:
 
@@ -101,6 +103,14 @@ The analog channel filter cases (`channel_lpf_48k_analog_16k`,
 at 78,125 Hz, which is what the analog monitor ran at that forced rate before
 the width-driven design. Paired with `channel_lpf_78k_analog_16k`, it is the
 before/after comparison for that rate under `--filter channel_lpf`.
+
+The analog receive core cases (`analog_rx_core_ctcss_on_value`, `_off_value`,
+`_noise`, `_voice`; issue #643) run `dsd_analog_rx_core_process()` over 200 ms
+of 48 kHz monitor audio a call, in the tap's 20 ms reads, the detectors running
+on from call to call over a 10 s loop: 100.0 Hz, 150.6 Hz (read as 150.0 Hz off
+its value), noise with no tone (acquisition on every hop), and 100.0 Hz beside a
+pitch sweeping 85-255 Hz. They report profile `analog`, variant `ctcss`, one item
+per sample.
 
 ## Comparing Runs
 

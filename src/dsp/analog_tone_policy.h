@@ -17,11 +17,14 @@
  *
  *   PENDING   a confirmed value: allow list, listed -> ALLOWED, else REJECTED; block list, listed -> REJECTED,
  *             else ALLOWED. Nothing confirmed when the window ends: allow -> REJECTED, block -> ALLOWED ("no tone").
+ *             An off-value CTCSS tone (dsd_analog_rx_publication::ctcss_off_value, issue #643) the list does not pass
+ *             is judged only when the window ends: until then the detector may still confirm another value on its own
+ *             rules, and a scanner must not leave the reception on a tone that rests on tone error alone.
  *             The window runs on to at most DSD_ANALOG_TONE_WINDOW_DCS_MS while the list holds a DCS code and the DCS
  *             detector holds a candidate code (dsd_analog_rx_publication::dcs_candidate).
  *   ALLOWED   allow list: a confirmed value it does not list -> REJECTED; the value lost (after the detector's own
  *             hysteresis) -> PENDING with a fresh window. Block list: a confirmed listed value -> REJECTED; a loss
- *             keeps ALLOWED.
+ *             keeps ALLOWED. Either list: an off-value CTCSS tone it does not pass -> PENDING with a fresh window.
  *   REJECTED  kept for the rest of the reception, except that a newly confirmed value the list passes -> ALLOWED.
  *             Another confirmed value it does not pass keeps REJECTED but becomes its reason (a "no tone" rejection
  *             that later hears an unlisted tone names that tone).

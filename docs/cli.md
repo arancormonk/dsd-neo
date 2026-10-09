@@ -218,7 +218,10 @@ Windows console runs:
 ## Recording & Files
 
 - `-6 <file>` Save raw audio WAV (48k/mono): the input before the monitor's filters, converted to 48 kHz when it runs
-  at another rate (see "The analog outputs" under Inputs). Large files (≈360 MB/hour)
+  at another rate (see "The analog outputs" under Inputs). On radio input the analog monitor's audio is saved at the
+  level a PCM input at the reference has: a 1 kHz tone at 3 kHz deviation, or AM at 50% modulation, peaks at -12 dBFS
+  at the default RTL `vol` of 2, whatever `-n` is, so open-squelch FM noise can clip. Audio input, and the FSK
+  discriminator output digital decoding reads on radio input, are saved as they are. Large files (≈360 MB/hour)
 - `-w <file>` Save decoded audio to a single WAV (mutually exclusive with `-P`)
 - `-P` Per‑call WAV saving (auto‑named files in a folder; mutually exclusive with `-w`)
 - Recordings (`-w`, `-P`, `-d`) follow each talkgroup's `record` policy: a lockout (`B`/`DE`), avoid, skip, an
@@ -954,11 +957,13 @@ tone setting, and it runs with `-o null` too. Muting by tone is the separate
 [tone filter](#tone-filter-ctcssdcs-receive-policy).
 
 - Supported tones: the standard 50-tone EIA/TIA table, 67.0-254.1 Hz (67.0, 69.3, 71.9 ... 250.3, 254.1), and 150.0 Hz,
-  which many radios offer as a 51st. A tone is confirmed only from estimates within 0.5 Hz of a table value, and a
-  confirmed tone is held only while it stays within 0.8 Hz of it -- 0.7 Hz for 150.0 and 151.4 Hz, which sit 1.4 Hz
-  apart, so no estimate is ever within reach of both. Any other frequency within the sub-audible band, such as 68.2 Hz,
-  reads as no tone rather than as its nearest neighbour, and a confirmed tone that moves off the table is dropped within
-  about half a second. Near 0 dB in-band a noisy estimate can still confirm a neighbour for 200-260 ms before the same
+  which many radios offer as a 51st. A tone is confirmed from estimates within 0.5 Hz of a table value, or further off
+  by a transmitter's tone error (below), and a confirmed tone is held only while it stays within 0.8 Hz of it, or 0.5 %
+  of it from 162.2 Hz up while its estimate is steady enough to say so -- 0.7 Hz for 150.0 and 151.4 Hz, which sit 1.4
+  Hz apart, so no estimate is ever within reach of both. Any other frequency within the sub-audible band, such as 68.2
+  Hz, reads as no tone rather than as its nearest neighbour, and a confirmed tone that moves off the table is dropped
+  within about half a second. Near 0 dB in-band a noisy estimate can still confirm a neighbour for 200-260 ms before
+  the same
   check drops it: over two hours of a continuous 0 dB carrier in offline seed sweeps, 68.2 Hz read as 67.0 or 69.3 Hz
   about ten times an hour and 161.0 or 166.7 Hz as a neighbour two or three times an hour; from 3 dB up 68.2 and 161.0
   Hz never did. 150.0 and 151.4 Hz are confirmed only after one more agreeing estimate while the estimate leans more
@@ -975,8 +980,18 @@ tone setting, and it runs with `-o null` too. Muting by tone is the separate
 - Transmitter tone error: a tone slightly off its table value still reads as that value. Over 10,000 seeded starts
   each, tones of the standard table 0.2 and 0.35 Hz off were confirmed within 400 ms at 10 dB in-band tone-to-noise on
   all starts and on all but 1 (the slowest at 331 and 424 ms), and 0.2 Hz off at 0 dB on 98 starts in 100 (the slowest
-  at 553 ms); 150.0 and 151.4 Hz set off toward each other take a little longer (above). A tone
-  about 0.5 Hz or more off is confirmed late or not at all, and then reads `none`.
+  at 553 ms); 150.0 and 151.4 Hz set off toward each other take a little longer (above). Encoders are specified to
+  0.5 % of their tone, and some radios run near that: the ones in issue #643 sent 150.6 Hz for 150.0. A tone up to 0.5 %
+  off its table value (never past half the distance to its neighbour) reads as that value once a steady measurement of
+  250 ms or longer places it there precisely enough, and no tone on its value is being confirmed instead: 150.6 Hz reads
+  `CTCSS 150.0 Hz`, 150.8 Hz reads 151.4 Hz, and a tone midway between them (150.68-150.72 Hz) reads neither. Below 100
+  Hz, where 0.5 % is less than 0.5 Hz, nothing changes. How soon depends on the level: from the start of a
+  transmission at 20 dB in-band or better, 95 % of tones 0.4 % off are confirmed by the eighth 50 ms step, about 400
+  ms (about 500 ms for 150.0 and 151.4 Hz, which need one more agreeing estimate while they lean toward each other),
+  and every one within 650 ms; at 10 dB 150.6 Hz is confirmed in about 750 ms on 95 % of starts and within 1 s on all
+  of them; at 0 dB in about 1.6 s on 95 %. A
+  tone further off than its tolerance still reads `none`. The tone filter waits for its window to end before it rejects
+  a transmission on a tone confirmed off its value (see [Tone filter](#tone-filter-ctcssdcs-receive-policy)).
 - What is shown: the terminal's Call Info section carries an `Rx tone:` line (compact view too), and the Qt/Android
   monitor a `RECEIVED TONE` row. Both read `CTCSS 100.0 Hz` once a tone is confirmed, `detecting` while a carrier is
   being evaluated, `none` when the carrier carries no supported tone, and an em dash with no carrier (a hyphen on a
@@ -1073,7 +1088,11 @@ tone setting, and it runs with `-o null` too. Muting by tone is the separate
   is indistinguishable from that tone in the time allowed and can be reported briefly. It is rare on transmitted voice
   (which the transmitter high-passes at 300 Hz) and most likely near the top of the table. In offline seed sweeps, two
   hours of unfiltered speech with no tone locked a tone three times (233.6, 241.8 and 254.1 Hz), and the same speech
-  high-passed as a transmitter does once (254.1 Hz).
+  high-passed as a transmitter does once (254.1 Hz). Allowing for tone error added no talk-off on speech: 20 hours of
+  each speech model locked the same tones, the same number of times, as before. A voice holding its pitch within
+  0.5 % of a table tone is another matter, being exactly what a transmitter off its value sends: of 250,000 offline
+  receptions of a tone beside a stronger steady line near another table tone, those that named the line's tone rose
+  from 62 % to 74 %, while the real tone was confirmed exactly when it was before.
 
 ### Received code (DCS) on the analog monitor
 
@@ -1222,10 +1241,17 @@ setting, shown apart from what is received, and it is off by default: then the o
   supported code's word once and is waiting for the second reading that confirms it, since a code at 3 dB can take up
   to the DCS lock ceiling (1,500 ms) to confirm. A CTCSS-only list, and a carrier with no such candidate, keep 800 ms:
   noise and speech with no code raise one at 800 ms on 1 to 3 receptions in 100, which then wait on average another
-  250 ms.
+  250 ms. A tone confirmed off its table value by transmitter tone error (see
+  [Received tone](#received-tone-ctcss-on-the-analog-monitor)) that the list does not pass is judged only when the
+  window ends, at 800 ms or at the end of a DCS extension: until then the detector can still confirm another tone on
+  its value, which is then judged as ever. So a scanner never leaves a transmission on such a tone before the window
+  has run, and allow rejects an unlisted one, and block a listed one, that much later. One the list passes is judged
+  at once.
 - After the verdict the detectors keep listening for the whole transmission. Allow: the allowed tone lost (after the
   detector's own hold-over) mutes again and starts a fresh window, and an unlisted tone or code confirmed rejects it,
-  while another listed one keeps it passing. Block: a blocked tone or code confirmed later rejects traffic that was
+  while another listed one keeps it passing. Either list: a tone confirmed off its value that the list does not pass
+  mutes passing traffic again and starts a fresh window, as a lost tone does, rather than rejecting it at once. Block: a
+  blocked tone or code confirmed later rejects traffic that was
   passing, and losing a tone keeps a pass. A rejection holds until the carrier has been gone for the 200 ms hangover,
   except that a tone or code the list passes, confirmed later, lets the traffic through; another the list does not pass
   keeps it rejected and becomes its reason, so a rejection for want of a tone that later hears an unlisted tone reads

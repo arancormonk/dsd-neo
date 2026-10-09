@@ -92,17 +92,45 @@ enum { DSD_ANALOG_RX_TAP_READ_MS = 20 };
  * value, one in 9,500 set 0.2 Hz toward the other and one in 1,400 set 0.35 Hz toward it, and at
  * +10 dB on none of 20,000 starts set 0.35 Hz toward it. The third hop costs those tones lock
  * time: at 0 dB in-band the p95 is about 350 ms on the table value and 390 ms set 0.2 Hz toward
- * the other. A voice whose fundamental holds on a table tone can lock that tone (talk-off):
+ * the other. A tone further off between the pair names the nearer one once its estimate is
+ * precise enough to say so (issue #643, below): 150.6 Hz names 150.0, 150.8 Hz 151.4, and 150.70 Hz
+ * neither, nor at +40 dB and up anything from 150.68 to 150.72 Hz; over 130,000 starts from 150.64
+ * to 150.76 Hz at +10 to +60 dB none named the tone on the far side of the midpoint. A voice whose fundamental holds on a table tone can lock that tone (talk-off):
  * under transmitter-filtered speech 10 dB above the tone, twice in 50,000 onsets a voice holding
  * 254.1 Hz locked it for 150-250 ms, once in place of the real tone, and over two hours of
  * seeded speech with no tone the unfiltered speech model locked a tone three times (233.6, 241.8
- * and 254.1 Hz) and the transmitter-filtered one once (254.1 Hz).
+ * and 254.1 Hz) and the transmitter-filtered one once (254.1 Hz). Allowing for transmitter tone
+ * error (issue #643) adds none of that: over 20 hours of each speech model with no tone every lock
+ * is the same as before, and of 150,000 onsets under speech 10 dB above the tone none locks later
+ * or names another tone (78 lock sooner). A steady
+ * line within 0.5 % of a table tone does name it now, as a transmitter off its value would: of
+ * 250,000 receptions of a tone beside a stronger line near another tone, those naming the line's
+ * tone rose from 62 % to 74 %, the real tone confirmed exactly when it was before.
  */
 enum {
     DSD_ANALOG_CTCSS_LOCK_P95_MS = 400,
     DSD_ANALOG_CTCSS_LOCK_CEILING_MS = 700,
     DSD_ANALOG_CTCSS_LOSS_P95_MS = 350,
     DSD_ANALOG_CTCSS_LOSS_CEILING_MS = 800,
+};
+
+/**
+ * @brief CTCSS timing for a tone off its table value by transmitter tone error (issue #643), in sample time.
+ *
+ * A tone more than 0.5 Hz off its value -- up to 0.5 % of it, never past its gate -- is confirmed only from a window
+ * that carries it throughout and measures it precisely enough, and only once the late acquisition windows exist, eight
+ * sub-blocks after the carrier opens (401.6 ms at the slowest sub-block rounding, 44.1 kHz input), so that no tone on
+ * its value can still be on its way. From a carrier's start, at +20 dB in-band or better, such a tone locks within
+ * DSD_ANALOG_CTCSS_OFF_VALUE_LOCK_P95_MS on 95 % of starts and within DSD_ANALOG_CTCSS_OFF_VALUE_LOCK_CEILING_MS on
+ * every start of the sweeps (docs/testing.md "Transmitter tone error"): over 810,000 starts of every tone from 100 Hz
+ * up 0.4 % off its value (150.0 and 151.4 Hz 0.6 Hz off), p95 402 ms -- 499 ms for 150.0 and 151.4 Hz, which need a
+ * third agreeing hop while they lean toward each other -- and the slowest 553 ms. Lower, it locks once the late windows
+ * have measured it precisely enough: at +10 dB 150.6 Hz on 95 % of starts within 753 ms, all within 1 s; at 0 dB, 95 %
+ * within 1.6 s. The tone policy rejects on such a tone only when its window ends (DSD_ANALOG_TONE_WINDOW_MS).
+ */
+enum {
+    DSD_ANALOG_CTCSS_OFF_VALUE_LOCK_P95_MS = 500,
+    DSD_ANALOG_CTCSS_OFF_VALUE_LOCK_CEILING_MS = 650,
 };
 
 /**
@@ -225,6 +253,10 @@ enum {
  * contract, 10 of the 12 of 8,000 did. Noise and speech with no code raised one at 800 ms on 1 to 3 receptions in 100
  * (2.8% of 14,000 noise receptions at 48 and 78.125 kHz, 1.3% of unfiltered and 2.8% of transmitter-filtered speech),
  * which the policy then decided on average 250 ms later.
+ *
+ * A CTCSS tone confirmed off its table value by transmitter tone error (dsd_analog_rx_publication::ctcss_off_value,
+ * issue #643) that the list does not pass decides nothing before the window ends, since the detector may still confirm
+ * another tone on its value; one the list passes is judged at once, and the DCS candidate stays published beside it.
  */
 enum { DSD_ANALOG_TONE_WINDOW_MS = 800, DSD_ANALOG_TONE_WINDOW_DCS_MS = 1600 };
 

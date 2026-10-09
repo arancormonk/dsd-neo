@@ -6,9 +6,10 @@
 /*
  * The CTCSS/DCS receive policy (issue #527) in sample time, with the detectors' verdicts injected as the tap would
  * publish them: disabled, allow and block, each against a matching value, a nonmatching one, no tone, a value outside
- * the standard sets, acquisition, loss and reacquisition, a late blocked value, and a carrier drop or retune. The
- * window is bounded: nothing is ever rejected before a value is confirmed or the window ends, and the window's end is
- * pinned to the read that crosses it at several rates and read sizes.
+ * the standard sets, acquisition, loss and reacquisition, a late blocked value, a carrier drop or retune, and a tone
+ * named off its value (issue #643), whose rejection waits for the window's end. The window is bounded: nothing is ever
+ * rejected before a value is confirmed or the window ends, and the window's end is pinned to the read that crosses it
+ * at several rates and read sizes.
  */
 
 #include <assert.h>
@@ -56,6 +57,14 @@ rx_ctcss(int tenths_hz) {
     dsd_analog_rx_publication rx = rx_carrier(DSD_ANALOG_TONE_STATE_LOCKED);
     rx.tone_kind = DSD_ANALOG_TONE_KIND_CTCSS;
     rx.ctcss_tenths_hz = tenths_hz;
+    return rx;
+}
+
+/* A tone the detector names off its value, by transmitter tone error alone (issue #643). */
+static dsd_analog_rx_publication
+rx_ctcss_off_value(int tenths_hz) {
+    dsd_analog_rx_publication rx = rx_ctcss(tenths_hz);
+    rx.ctcss_off_value = 1;
     return rx;
 }
 
@@ -403,6 +412,111 @@ test_dcs_extension(void) {
     assert(feed_ms(&policy, candidate, 20) == DSD_ANALOG_TONE_GATE_REJECTED);
 }
 
+/* An off-value tone the list does not pass may not close the gate before the window ends (issue #643): the detector
+   names it while its on-value rules may still confirm another tone, so it stays pending, an on-value tone confirmed in
+   the window is judged as ever, and alone it is rejected as the window ends, naming that tone. */
+static void
+test_off_value_reject_waits_for_the_window(void) {
+    dsd_analog_tone_policy policy;
+    policy_with(&policy, DSD_TONE_FILTER_ALLOW, "100.0");
+    hold_ms(&policy, rx_carrier(DSD_ANALOG_TONE_STATE_ACQUIRING), 300, DSD_ANALOG_TONE_GATE_PENDING);
+    hold_ms(&policy, rx_ctcss_off_value(2541), 400, DSD_ANALOG_TONE_GATE_PENDING);
+    assert(feed_ms(&policy, rx_ctcss(1000), 20) == DSD_ANALOG_TONE_GATE_ALLOWED);
+    assert(policy.no_tone == 0 && policy.value_ctcss == 1000);
+
+    /* Alone: pending to the read that ends the window, rejected on it. */
+    policy_with(&policy, DSD_TONE_FILTER_ALLOW, "100.0");
+    hold_ms(&policy, rx_carrier(DSD_ANALOG_TONE_STATE_ACQUIRING), 300, DSD_ANALOG_TONE_GATE_PENDING);
+    hold_ms(&policy, rx_ctcss_off_value(2541), 500, DSD_ANALOG_TONE_GATE_PENDING);
+    assert(feed_ms(&policy, rx_ctcss_off_value(2541), 20) == DSD_ANALOG_TONE_GATE_REJECTED);
+    assert(policy.no_tone == 0 && policy.value_kind == DSD_ANALOG_TONE_KIND_CTCSS && policy.value_ctcss == 2541);
+    /* A listed tone confirmed after the rejection still passes. */
+    assert(feed_ms(&policy, rx_ctcss(1000), 20) == DSD_ANALOG_TONE_GATE_ALLOWED);
+
+    /* Present from the window's first read too. */
+    policy_with(&policy, DSD_TONE_FILTER_ALLOW, "100.0");
+    hold_ms(&policy, rx_ctcss_off_value(1500), 800, DSD_ANALOG_TONE_GATE_PENDING);
+    assert(feed_ms(&policy, rx_ctcss_off_value(1500), 20) == DSD_ANALOG_TONE_GATE_REJECTED);
+
+    /* An on-value tone the list does not pass is still rejected at once. */
+    policy_with(&policy, DSD_TONE_FILTER_ALLOW, "100.0");
+    hold_ms(&policy, rx_ctcss_off_value(2541), 300, DSD_ANALOG_TONE_GATE_PENDING);
+    assert(feed_ms(&policy, rx_ctcss(2541), 20) == DSD_ANALOG_TONE_GATE_REJECTED);
+
+    /* A block list waits the same way before rejecting a listed off-value tone. */
+    policy_with(&policy, DSD_TONE_FILTER_BLOCK, "150.0");
+    hold_ms(&policy, rx_ctcss_off_value(1500), 800, DSD_ANALOG_TONE_GATE_PENDING);
+    assert(feed_ms(&policy, rx_ctcss_off_value(1500), 20) == DSD_ANALOG_TONE_GATE_REJECTED);
+    assert(policy.no_tone == 0 && policy.value_ctcss == 1500);
+}
+
+/* An off-value tone the list passes is judged at once, on either list. */
+static void
+test_off_value_pass_is_judged_at_once(void) {
+    dsd_analog_tone_policy policy;
+    policy_with(&policy, DSD_TONE_FILTER_ALLOW, "150.0");
+    hold_ms(&policy, rx_carrier(DSD_ANALOG_TONE_STATE_ACQUIRING), 300, DSD_ANALOG_TONE_GATE_PENDING);
+    assert(feed_ms(&policy, rx_ctcss_off_value(1500), 20) == DSD_ANALOG_TONE_GATE_ALLOWED);
+    assert(policy.no_tone == 0 && policy.value_ctcss == 1500);
+    hold_ms(&policy, rx_ctcss_off_value(1500), 3000, DSD_ANALOG_TONE_GATE_ALLOWED);
+    /* Confirmed by the on-value rules later: still allowed. */
+    hold_ms(&policy, rx_ctcss(1500), 200, DSD_ANALOG_TONE_GATE_ALLOWED);
+
+    policy_with(&policy, DSD_TONE_FILTER_BLOCK, "D023N");
+    assert(feed_ms(&policy, rx_ctcss_off_value(1500), 20) == DSD_ANALOG_TONE_GATE_ALLOWED);
+    assert(policy.no_tone == 0);
+}
+
+/* Allowed, then an off-value tone the list does not pass: checked again from a fresh window, as a lost value is. */
+static void
+test_off_value_reject_after_a_pass(void) {
+    dsd_analog_tone_policy policy;
+    policy_with(&policy, DSD_TONE_FILTER_ALLOW, "100.0");
+    assert(feed_ms(&policy, rx_ctcss(1000), 1200) == DSD_ANALOG_TONE_GATE_ALLOWED);
+    assert(feed_ms(&policy, rx_ctcss_off_value(2541), 20) == DSD_ANALOG_TONE_GATE_PENDING);
+    assert(policy.value_kind == DSD_ANALOG_TONE_KIND_NONE);
+    hold_ms(&policy, rx_ctcss_off_value(2541), 780, DSD_ANALOG_TONE_GATE_PENDING);
+    assert(feed_ms(&policy, rx_ctcss_off_value(2541), 20) == DSD_ANALOG_TONE_GATE_REJECTED);
+    assert(policy.value_ctcss == 2541);
+
+    /* The listed tone confirmed again within the fresh window passes again. */
+    policy_with(&policy, DSD_TONE_FILTER_ALLOW, "100.0");
+    assert(feed_ms(&policy, rx_ctcss(1000), 200) == DSD_ANALOG_TONE_GATE_ALLOWED);
+    assert(feed_ms(&policy, rx_ctcss_off_value(2541), 20) == DSD_ANALOG_TONE_GATE_PENDING);
+    hold_ms(&policy, rx_ctcss_off_value(2541), 400, DSD_ANALOG_TONE_GATE_PENDING);
+    assert(feed_ms(&policy, rx_ctcss(1000), 20) == DSD_ANALOG_TONE_GATE_ALLOWED);
+
+    /* A block list's pass on another tone does the same. */
+    policy_with(&policy, DSD_TONE_FILTER_BLOCK, "254.1");
+    assert(feed_ms(&policy, rx_ctcss(1000), 200) == DSD_ANALOG_TONE_GATE_ALLOWED);
+    assert(feed_ms(&policy, rx_ctcss_off_value(2541), 20) == DSD_ANALOG_TONE_GATE_PENDING);
+    hold_ms(&policy, rx_ctcss_off_value(2541), 780, DSD_ANALOG_TONE_GATE_PENDING);
+    assert(feed_ms(&policy, rx_ctcss_off_value(2541), 20) == DSD_ANALOG_TONE_GATE_REJECTED);
+}
+
+/* The DCS extension still applies under an off-value CTCSS lock that keeps the DCS candidate visible: a code confirmed
+   in it is judged, and without one the off-value tone is rejected as the extension ends. */
+static void
+test_off_value_keeps_the_dcs_extension(void) {
+    dsd_analog_rx_publication off_value = rx_ctcss_off_value(1500);
+    off_value.dcs_candidate = 1;
+
+    dsd_analog_tone_policy policy;
+    policy_with(&policy, DSD_TONE_FILTER_ALLOW, "D023N");
+    hold_ms(&policy, off_value, 1000, DSD_ANALOG_TONE_GATE_PENDING);
+    assert(feed_ms(&policy, rx_dcs(0023, 0), 20) == DSD_ANALOG_TONE_GATE_ALLOWED);
+
+    policy_with(&policy, DSD_TONE_FILTER_ALLOW, "D023N");
+    hold_ms(&policy, off_value, 1600, DSD_ANALOG_TONE_GATE_PENDING);
+    assert(feed_ms(&policy, off_value, 20) == DSD_ANALOG_TONE_GATE_REJECTED);
+    assert(policy.no_tone == 0 && policy.value_ctcss == 1500);
+
+    /* A CTCSS-only list keeps 800 ms. */
+    policy_with(&policy, DSD_TONE_FILTER_ALLOW, "100.0");
+    hold_ms(&policy, off_value, 800, DSD_ANALOG_TONE_GATE_PENDING);
+    assert(feed_ms(&policy, off_value, 20) == DSD_ANALOG_TONE_GATE_REJECTED);
+}
+
 /* Matching goes by the DCS signal: a listed D023I passes a received D047N, the name the detector gives that signal. */
 static void
 test_dcs_match_by_signal(void) {
@@ -485,6 +599,10 @@ main(void) {
     test_rejected_reason_follows_the_value();
     test_window_in_sample_time();
     test_dcs_extension();
+    test_off_value_reject_waits_for_the_window();
+    test_off_value_pass_is_judged_at_once();
+    test_off_value_reject_after_a_pass();
+    test_off_value_keeps_the_dcs_extension();
     test_dcs_match_by_signal();
     test_reconfigure();
     test_reconfigure_same_signals();

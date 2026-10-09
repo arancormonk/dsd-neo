@@ -39,7 +39,10 @@
 #include <dsd-neo/runtime/ring.h>
 #include <stdint.h>
 #include <vector>
+#include "analog_rx_internal.h"
 #include "dsd-neo/core/safe_api.h"
+#include "dsd-neo/core/state.h"
+#include "dsd-neo/core/state_fwd.h"
 
 #if defined(__x86_64__) || defined(_M_X64)
 extern "C" int simd_hb_decim2_complex_sse2(const float* in, int in_len, float* out, float* hist_i, float* hist_q,
@@ -1273,6 +1276,84 @@ bench_full_demod(const BenchOptions& opts) {
     return ran;
 }
 
+/* One analog receive core case: lines (Hz, amplitude) and a voice-like line wandering 85-255 Hz, in white noise at
+   snr_db in the sub-audible band against a 0.1 tone. */
+struct AnalogRxSignal {
+    double tone_hz;
+    double voice_amp;
+    double snr_db;
+};
+
+/*
+ * The analog receive core (src/dsp/analog_rx.c: the sub-audible front end and the CTCSS and DCS detectors) over 200 ms
+ * of 48 kHz monitor audio a call, in the 20 ms reads the tap makes (issue #643): a tone on its value, one off it by
+ * transmitter tone error (150.6 Hz, read as 150.0), noise alone (acquisition every hop), and a tone beside a voice. The
+ * input repeats every 10 s, a whole number of cycles of every line in it, so the detector runs on in steady state.
+ */
+static int
+bench_one_analog_rx(const BenchOptions& opts, const char* name, const AnalogRxSignal& sig) {
+    constexpr int kRate = 48000;
+    constexpr int kRead = kRate / 50;
+    constexpr int kReadsPerCall = 10;
+    constexpr int kLoop = kRate * 10;
+    constexpr double kTwoPi = 6.28318530717958647692;
+    std::vector<float> in((size_t)kLoop);
+    uint32_t seed = 0x643u;
+    const double tone_power = 0.1 * 0.1 / 2.0;
+    const double sigma = std::sqrt(tone_power / std::pow(10.0, sig.snr_db / 10.0) * (kRate / 2.0) / 290.0);
+    double voice_phase = 0.0;
+    for (int n = 0; n < kLoop; n++) {
+        const double t = (double)n / kRate;
+        double v = sigma * std::sqrt(3.0) * (double)next_lcg_float(&seed);
+        if (sig.tone_hz > 0.0) {
+            v += 0.1 * std::cos(kTwoPi * sig.tone_hz * t);
+        }
+        if (sig.voice_amp > 0.0) {
+            /* A triangle sweep 85-255 Hz every 2 s, with a second harmonic a quarter as strong. */
+            const double ph = std::fmod(t, 2.0);
+            const double f = 85.0 + (170.0 * (ph < 1.0 ? ph : 2.0 - ph));
+            voice_phase += kTwoPi * f / kRate;
+            v += sig.voice_amp * (std::cos(voice_phase) + (0.25 * std::cos(2.0 * voice_phase)));
+        }
+        in[(size_t)n] = (float)v;
+    }
+    dsd_analog_rx_core* core = (dsd_analog_rx_core*)std::calloc(1, sizeof(dsd_analog_rx_core));
+    if (!core) {
+        DSD_FPRINTF(stderr, "analog receive core allocation failed\n");
+        return 0;
+    }
+    dsd_analog_rx_core_init(core);
+    size_t pos = 0;
+    BenchMeta meta;
+    meta.rate_hz = kRate;
+    meta.profile = "analog";
+    meta.variant = "ctcss";
+    const int ran = run_case(
+        opts, name, "sample", (double)(kRead * kReadsPerCall),
+        [&]() -> float {
+            for (int r = 0; r < kReadsPerCall; r++) {
+                dsd_analog_rx_core_process(core, in.data() + pos, kRead, kRate, 1);
+                pos = (pos + kRead) % (size_t)kLoop;
+            }
+            dsd_analog_rx_publication pub;
+            dsd_analog_rx_core_publish(core, &pub);
+            return (float)(pub.tone_state + pub.ctcss_tenths_hz);
+        },
+        &meta);
+    std::free(core);
+    return ran;
+}
+
+static int
+bench_analog_rx(const BenchOptions& opts) {
+    int ran = 0;
+    ran += bench_one_analog_rx(opts, "analog_rx_core_ctcss_on_value", AnalogRxSignal{100.0, 0.0, 20.0});
+    ran += bench_one_analog_rx(opts, "analog_rx_core_ctcss_off_value", AnalogRxSignal{150.6, 0.0, 20.0});
+    ran += bench_one_analog_rx(opts, "analog_rx_core_ctcss_noise", AnalogRxSignal{0.0, 0.0, 0.0});
+    ran += bench_one_analog_rx(opts, "analog_rx_core_ctcss_voice", AnalogRxSignal{100.0, 0.2, 20.0});
+    return ran;
+}
+
 } /* namespace */
 
 int
@@ -1300,6 +1381,7 @@ main(int argc, char** argv) {
     ran += bench_carrier_loops(opts);
     ran += bench_cqpsk_stages(opts);
     ran += bench_full_demod(opts);
+    ran += bench_analog_rx(opts);
 
     if (opts.case_filter && ran == 0) {
         DSD_FPRINTF(stderr, "No benchmark case matched '%s'. Use --list to see available cases.\n", opts.case_filter);

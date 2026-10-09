@@ -19,6 +19,7 @@
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
+#include <float.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -113,6 +114,25 @@ test_source_gains(void) {
     CHECK(dsd_analog_gain_is_auto(NAN), "NaN is auto");
     CHECK(!dsd_analog_gain_is_auto(1.0f), "1 is fixed");
     CHECK(!dsd_analog_gain_is_auto(50.0f), "50 is fixed");
+}
+
+/* The -6 raw WAV's int16 scale (issue #643): RTL monitor audio, FM or AM, goes to the level a PCM input at the
+   reference has (its 0.25 reference to the 8231 reference peak); the FSK discriminator output and PCM are at int16
+   scale already and go through exactly as they are. The source gains, which test_source_gains() pins, stay as they
+   were. */
+static void
+test_int16_scale(void) {
+    CHECK(fabs(DSD_ANALOG_AUDIO_RTL_MONITOR_REFERENCE - 0.25) < 1e-12, "RTL monitor reference %g",
+          DSD_ANALOG_AUDIO_RTL_MONITOR_REFERENCE);
+    const double rtl = dsd_analog_audio_int16_scale(DSD_ANALOG_AUDIO_SOURCE_RTL_MONITOR);
+    CHECK(fabs(rtl - 32924.0) <= 1e-9 * 32924.0, "RTL monitor scale %.9g", rtl);
+    CHECK(fabs((DSD_ANALOG_AUDIO_RTL_MONITOR_REFERENCE * rtl) - DSD_ANALOG_AUDIO_REFERENCE_PEAK) < 1e-9,
+          "RTL monitor reference lands at %.9g", DSD_ANALOG_AUDIO_RTL_MONITOR_REFERENCE * rtl);
+    /* Exactly 1: no double but 1.0 lies within DBL_EPSILON / 4 of it, so the samples are written unchanged. */
+    const double fsk = dsd_analog_audio_int16_scale(DSD_ANALOG_AUDIO_SOURCE_RTL_FSK);
+    const double pcm = dsd_analog_audio_int16_scale(DSD_ANALOG_AUDIO_SOURCE_PCM16);
+    CHECK(fabs(fsk - 1.0) < DBL_EPSILON / 4.0, "RTL FSK scale %.17g", fsk);
+    CHECK(fabs(pcm - 1.0) < DBL_EPSILON / 4.0, "PCM scale %.17g", pcm);
 }
 
 /* The fixed gain takes each source's reference to the -12 dBFS reference peak at -n 50 and scales with N / 50. */
@@ -570,6 +590,7 @@ test_slot_lifetime_and_args(void) {
 int
 main(void) {
     test_source_gains();
+    test_int16_scale();
     test_fixed_gain();
     test_fixed_gain_through_bandpass();
     test_auto_gain();

@@ -1107,7 +1107,8 @@ test_lock_follows_a_tone_off_the_table(void) {
 /*
  * The snap: the nearest tone whose gate holds the estimate, the gate's edge included. 150.0 and
  * 151.4 Hz get 0.7 Hz, half the distance between them, and an estimate midway, where their gates
- * meet, snaps to neither however its distances round; every other tone keeps 0.8 Hz.
+ * meet, snaps to neither however its distances round; every other tone keeps 0.8 Hz, or 0.5 % of
+ * itself from 160 Hz up.
  */
 static void
 test_snap_gates(void) {
@@ -1126,6 +1127,14 @@ test_snap_gates(void) {
     assert(dsd_analog_ctcss_snap_index(100.8) == i1000);
     assert(dsd_analog_ctcss_snap_index(99.2) == i1000);
     assert(dsd_analog_ctcss_snap_index(100.81) == -1);
+    /* From 160 Hz up the gate is 0.5 % of the tone (issue #643): 1.2705 Hz at 254.1, 0.811 Hz at 162.2. */
+    const int i2541 = dsd_ctcss_tone_index(2541);
+    const int i1622 = dsd_ctcss_tone_index(1622);
+    assert(i2541 >= 0 && i1622 >= 0);
+    assert(dsd_analog_ctcss_snap_index(254.1 + 1.27) == i2541);
+    assert(dsd_analog_ctcss_snap_index(254.1 + 1.28) == -1);
+    assert(dsd_analog_ctcss_snap_index(162.2 + 0.81) == i1622);
+    assert(dsd_analog_ctcss_snap_index(162.2 + 0.82) == -1);
 }
 
 /*
@@ -1183,38 +1192,110 @@ test_tone_150_loss_and_burst(void) {
     check_loss_contract("CTCSS 150.0 Hz loss on a 180 degree reverse burst", times, count);
 }
 
+/* What a run that moves a locked tone published, block by block: when the tone it started on locked and was dropped,
+   when another tone was first named after the drop, and whether the first tone came back or a third tone was named. */
+typedef struct {
+    int64_t first_lock;  /**< first block end with the start tone locked */
+    int64_t drop;        /**< first block end, after first_lock, without the start tone locked */
+    int64_t named_other; /**< first block end, after the drop, with @p other_tenths locked */
+    int64_t back;        /**< first block end, after the drop, with the start tone locked again */
+    int64_t third;       /**< first block end with any tone but those two locked */
+    int final_state;
+} move_trace;
+
+static move_trace
+run_move(signal_src* src, int64_t total, int block, int start_tenths, int other_tenths) {
+    move_trace t = {-1, -1, -1, -1, -1, 0};
+    float buf[4096];
+    assert(block > 0 && block <= (int)(sizeof(buf) / sizeof(buf[0])));
+    for (int64_t n = 0; n < total; n += block) {
+        const int m = (total - n) < block ? (int)(total - n) : block;
+        for (int i = 0; i < m; i++) {
+            buf[i] = src->next(src, n + i);
+        }
+        assert(dsd_analog_rx_core_process(&g_core, buf, m, (int)src->fs, 1) == 1);
+        const observation o = observe(&g_core);
+        const int locked = o.state == DSD_ANALOG_TONE_STATE_LOCKED ? o.tenths : 0;
+        if (locked == start_tenths && t.first_lock < 0) {
+            t.first_lock = n + m;
+        }
+        if (t.first_lock >= 0 && t.drop < 0 && locked != start_tenths) {
+            t.drop = n + m;
+        }
+        if (t.drop >= 0 && locked == other_tenths && t.named_other < 0) {
+            t.named_other = n + m;
+        }
+        if (t.drop >= 0 && locked == start_tenths && t.back < 0) {
+            t.back = n + m;
+        }
+        if (locked != 0 && locked != start_tenths && locked != other_tenths && t.third < 0) {
+            t.third = n + m;
+        }
+        t.final_state = o.state;
+    }
+    return t;
+}
+
 /*
  * 150.0 and 151.4 Hz hold within 0.7 Hz of their value, half the distance between them, not the
- * 0.8 Hz every other tone gets (ctcss_gate_hz()): a locked one that moves to within 0.8 Hz of it
- * but nearer the other tone -- 150.76 and 150.64 Hz -- is dropped as a tone moved off the table
- * is, and the other, whose 0.5 Hz acquisition gate the new frequency misses, never locks.
+ * 0.8 Hz every other tone gets (dsd_analog_ctcss_tables::gate_hz): a locked one that moves to within
+ * 0.8 Hz of it but nearer the other tone -- 150.76 and 150.64 Hz -- is dropped as a tone moved off
+ * the table is. The other tone is then the nearest, 0.64 Hz off its value, which a transmitter's tone
+ * error explains (issue #643): it is named once the late windows have refilled since the drop, at
+ * +60 dB within the lock ceiling of the drop, and at +20 dB, where 0.64 Hz sits at the edge of what
+ * the estimate's precision allows, named or left at "none" as these seeds have it. Never the first
+ * tone again, and never a third. Beside them: 150.80 and 150.60 Hz, 0.6 Hz off the other tone, are
+ * named at +30 dB; 150.72 and 150.68 Hz, 0.02 Hz from where the gates meet, are named as neither even
+ * at +60 dB.
  */
 static void
 test_150_and_151_4_hold_only_their_own_side(void) {
-    static const double moves[][2] = {{150.0, 150.76}, {151.4, 150.64}};
-    static const double snrs[] = {60.0, 20.0};
-    for (int m = 0; m < 2; m++) {
-        for (int s = 0; s < 2; s++) {
-            for (int ri = 0; ri < RATE_COUNT; ri++) {
-                const int fs = k_rates[ri];
-                dsd_analog_rx_core_init(&g_core);
-                signal_src src;
-                signal_init(&src, fs, 7272ULL + (uint64_t)(m * 7 + s * 3 + ri), moves[m][0], snrs[s]);
-                src.tone_on = 0;
-                src.move_at = ms_to_samples(fs, 1000.0 + (double)(13 * m));
-                src.move_hz = moves[m][1];
-                const run_result r = run_signal(&g_core, &src, src.move_at + ms_to_samples(fs, 2000.0), fs / 1000,
-                                                (int)lround(moves[m][0] * 10.0));
-                assert(r.first_lock >= 0 && r.first_lock < src.move_at);
-                assert(r.first_unlocked > src.move_at);
-                const double lost_ms = samples_to_ms(fs, r.first_unlocked - src.move_at);
-                if (lost_ms > (double)MOVED_OFF_BOUND_MS || r.first_wrong >= 0) {
-                    DSD_FPRINTF(stderr, "held past the gate: fs=%d %.2f->%.2f -> %.0f ms, wrong=%lld\n", fs,
-                                moves[m][0], moves[m][1], lost_ms, (long long)r.first_wrong);
+    static const struct {
+        double from_hz;
+        double to_hz;
+        double snr_db;
+        int named; /**< 1 = the other tone must be named, 0 = nothing may be, -1 = either, as the seeds have it */
+    } rows[] = {
+        {150.0, 150.76, 60.0, 1}, {151.4, 150.64, 60.0, 1}, {150.0, 150.76, 20.0, -1}, {151.4, 150.64, 20.0, -1},
+        {150.0, 150.80, 30.0, 1}, {151.4, 150.60, 30.0, 1}, {150.0, 150.72, 60.0, 0},  {151.4, 150.68, 60.0, 0},
+    };
+
+    for (size_t row = 0; row < sizeof(rows) / sizeof(rows[0]); row++) {
+        /* The original four rows keep the seeds they were pinned on. */
+        const int m = rows[row].from_hz < 151.0 ? 0 : 1;
+        const int s = rows[row].snr_db > 50.0 ? 0 : 1;
+        for (int ri = 0; ri < RATE_COUNT; ri++) {
+            const int fs = k_rates[ri];
+            dsd_analog_rx_core_init(&g_core);
+            signal_src src;
+            signal_init(&src, fs, 7272ULL + (uint64_t)(m * 7 + s * 3 + ri) + (row >= 4 ? 1000ULL * row : 0ULL),
+                        rows[row].from_hz, rows[row].snr_db);
+            src.tone_on = 0;
+            src.move_at = ms_to_samples(fs, 1000.0 + (double)(13 * m));
+            src.move_hz = rows[row].to_hz;
+            const int from = (int)lround(rows[row].from_hz * 10.0);
+            const int to = from == 1500 ? 1514 : 1500;
+            const move_trace t = run_move(&src, src.move_at + ms_to_samples(fs, 2000.0), fs / 1000, from, to);
+            assert(t.first_lock >= 0 && t.first_lock < src.move_at);
+            assert(t.drop > src.move_at);
+            const double lost_ms = samples_to_ms(fs, t.drop - src.move_at);
+            const double named_ms = t.named_other >= 0 ? samples_to_ms(fs, t.named_other - t.drop) : -1.0;
+            if (lost_ms > (double)MOVED_OFF_BOUND_MS || t.back >= 0 || t.third >= 0) {
+                DSD_FPRINTF(stderr, "held past the gate: fs=%d %.2f->%.2f -> %.0f ms, back=%lld third=%lld\n", fs,
+                            rows[row].from_hz, rows[row].to_hz, lost_ms, (long long)t.back, (long long)t.third);
+            }
+            assert(lost_ms <= (double)MOVED_OFF_BOUND_MS);
+            assert(t.back < 0 && t.third < 0);
+            if (rows[row].named == 1) {
+                if (!(named_ms >= 0.0 && named_ms <= (double)DSD_ANALOG_CTCSS_LOCK_CEILING_MS)) {
+                    DSD_FPRINTF(stderr, "other tone not named: fs=%d %.2f->%.2f snr=%.0f -> %.0f ms\n", fs,
+                                rows[row].from_hz, rows[row].to_hz, rows[row].snr_db, named_ms);
                 }
-                assert(lost_ms <= (double)MOVED_OFF_BOUND_MS);
-                assert(r.locks == 1 && r.first_wrong < 0);
-                assert(r.final_state == DSD_ANALOG_TONE_STATE_NONE);
+                assert(named_ms >= 0.0 && named_ms <= (double)DSD_ANALOG_CTCSS_LOCK_CEILING_MS);
+            } else if (rows[row].named == 0) {
+                assert(t.named_other < 0 && t.final_state == DSD_ANALOG_TONE_STATE_NONE);
+            } else {
+                assert(t.named_other >= 0 || t.final_state == DSD_ANALOG_TONE_STATE_NONE);
             }
         }
     }
