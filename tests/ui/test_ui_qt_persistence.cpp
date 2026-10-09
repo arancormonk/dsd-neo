@@ -430,6 +430,106 @@ test_units_preference() {
     expect("switching back to imperial persists", !restored.metricUnits());
 }
 
+/* Issue #574: the screen mode and its delay, which replaced the keep-awake switch.
+ * The mode codes are a contract with the Android policy (ScreenPolicy.Mode). */
+void
+test_screen_policy_prefs() {
+    QSettings stored(QSettings::IniFormat, QSettings::UserScope, "dsd-neo", "dsd-neo-app");
+    const QString modeKey = QStringLiteral("listen/screenMode");
+    const QString delayKey = QStringLiteral("listen/screenDelaySec");
+    const QString legacyKey = QStringLiteral("listen/keepAwake");
+    stored.remove(modeKey);
+    stored.remove(delayKey);
+    stored.remove(legacyKey);
+
+    static_assert(AppPrefs::ScreenSystem == 0 && AppPrefs::ScreenAlwaysOn == 1 && AppPrefs::ScreenDimBetweenCalls == 2
+                      && AppPrefs::ScreenOffBetweenCalls == 3,
+                  "screen mode codes are a contract with ScreenPolicy.Mode");
+    expect("screen mode is a registered enum", AppPrefs::staticMetaObject.indexOfEnumerator("ScreenMode") >= 0);
+    {
+        AppPrefs prefs;
+        int changes = 0;
+        QObject::connect(&prefs, &AppPrefs::screenPolicyChanged, &prefs, [&changes]() { ++changes; });
+        expect("the keep-awake preference is gone", prefs.metaObject()->indexOfProperty("keepScreenAwake") == -1);
+        expect("screen delay choices are the policy's",
+               prefs.screenDelayChoices() == QVariantList({10, 30, 60, 120, 300}));
+        expect("screen mode defaults to the system's", prefs.screenMode() == AppPrefs::ScreenSystem);
+        expect("screen delay defaults to 30 s", prefs.screenDelaySec() == 30);
+
+        /* Migration on read: an install that had the switch on keeps the screen on. */
+        stored.setValue(legacyKey, true);
+        expect("legacy keep-awake on reads as Always on", prefs.screenMode() == AppPrefs::ScreenAlwaysOn);
+        stored.setValue(legacyKey, false);
+        expect("legacy keep-awake off reads as System default", prefs.screenMode() == AppPrefs::ScreenSystem);
+        stored.setValue(legacyKey, true);
+        expect("migrating writes nothing", !stored.contains(modeKey));
+        expect("migrating does not notify", changes == 0);
+
+        /* Choosing what the migration already shows is not a change. */
+        prefs.setScreenMode(AppPrefs::ScreenAlwaysOn);
+        expect("choosing the migrated mode is not a change", changes == 0 && !stored.contains(modeKey));
+        prefs.setScreenMode(AppPrefs::ScreenDimBetweenCalls);
+        expect("a new mode reads back", prefs.screenMode() == AppPrefs::ScreenDimBetweenCalls);
+        expect("a new mode notifies once", changes == 1);
+        expect("a new mode lands on the new key", stored.value(modeKey).toInt() == AppPrefs::ScreenDimBetweenCalls);
+        expect("the legacy key is left for a downgrade", stored.value(legacyKey).toBool());
+        prefs.setScreenMode(AppPrefs::ScreenDimBetweenCalls);
+        expect("a repeated mode does not notify", changes == 1);
+        prefs.setScreenMode(9);
+        expect("an out-of-range mode is written as System default",
+               prefs.screenMode() == AppPrefs::ScreenSystem && stored.value(modeKey).toInt() == AppPrefs::ScreenSystem);
+        expect("the out-of-range write notifies once", changes == 2);
+        prefs.setScreenMode(AppPrefs::ScreenDimBetweenCalls);
+        expect("the mode can be chosen again", changes == 3);
+
+        prefs.setScreenDelaySec(120);
+        expect("a listed delay is kept", prefs.screenDelaySec() == 120);
+        expect("a new delay notifies once", changes == 4);
+        prefs.setScreenDelaySec(120);
+        expect("a repeated delay does not notify", changes == 4);
+        prefs.setScreenDelaySec(45);
+        expect("an off-list delay is written as 30 s",
+               prefs.screenDelaySec() == 30 && stored.value(delayKey).toInt() == 30);
+        expect("the off-list write notifies once", changes == 5);
+        prefs.setScreenDelaySec(30);
+        expect("re-choosing the corrected delay does not notify", changes == 5);
+        prefs.setScreenDelaySec(120);
+        expect("the delay can be chosen again", changes == 6);
+    }
+    {
+        AppPrefs reloaded;
+        expect("screen mode persists across instances", reloaded.screenMode() == AppPrefs::ScreenDimBetweenCalls);
+        expect("screen delay persists across instances", reloaded.screenDelaySec() == 120);
+        expect("the stored mode wins over the legacy key",
+               stored.value(legacyKey).toBool() && reloaded.screenMode() != AppPrefs::ScreenAlwaysOn);
+
+        int changes = 0;
+        QObject::connect(&reloaded, &AppPrefs::screenPolicyChanged, &reloaded, [&changes]() { ++changes; });
+        /* A damaged or hand-edited file reads as the defaults, never as a mode the
+         * policy has no branch for. */
+        stored.setValue(modeKey, 9);
+        expect("an out-of-range stored mode reads as System default", reloaded.screenMode() == AppPrefs::ScreenSystem);
+        stored.setValue(modeKey, QStringLiteral("abc"));
+        expect("an unparsable stored mode reads as System default", reloaded.screenMode() == AppPrefs::ScreenSystem);
+        stored.setValue(delayKey, 45);
+        expect("an off-list stored delay reads as 30 s", reloaded.screenDelaySec() == 30);
+        stored.setValue(delayKey, QStringLiteral("abc"));
+        expect("an unparsable stored delay reads as 30 s", reloaded.screenDelaySec() == 30);
+        expect("reading damaged values does not notify", changes == 0);
+
+        /* The setters compare with what is stored, so the corrective write lands. */
+        reloaded.setScreenMode(AppPrefs::ScreenSystem);
+        expect("a corrective mode write replaces the damage",
+               stored.value(modeKey).toString() == QStringLiteral("0") && changes == 1);
+        reloaded.setScreenDelaySec(30);
+        expect("a corrective delay write replaces the damage",
+               stored.value(delayKey).toString() == QStringLiteral("30") && changes == 2);
+    }
+    stored.remove(modeKey);
+    stored.remove(delayKey);
+    stored.remove(legacyKey);
+}
+
 void
 test_migration_write_failure() {
     const QString store = QStringLiteral("saved_systems.json");
@@ -661,6 +761,7 @@ main(int argc, char** argv) {
     test_saved_systems();
     test_saved_systems_csv_fields();
     test_app_prefs();
+    test_screen_policy_prefs();
     test_units_preference();
     test_migration_write_failure();
     test_foundation_persistence();

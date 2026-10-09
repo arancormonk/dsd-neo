@@ -184,12 +184,16 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
         scanLists->clearCsvPath(gone);
     }
 
-    // The keep-awake preference is storage; the effect is the host's (an Android
-    // window flag). Re-asserted here on every process start because the platform
-    // recreates the window without consulting anyone's QSettings.
-    host->setKeepScreenAwake(prefs->keepScreenAwake());
-    QObject::connect(prefs, &AppPrefs::keepScreenAwakeChanged, host,
-                     [host, prefs]() { host->setKeepScreenAwake(prefs->keepScreenAwake()); });
+    // The screen preferences are storage; the policy is the host's (#574). It
+    // runs in the platform layer because Qt's event loop is stopped exactly when
+    // the policy must act: with the screen off, when a call has to wake it.
+    // Re-asserted here on every process start because the platform keeps no copy
+    // of anyone's QSettings.
+    const auto applyScreenPolicy = [host, prefs]() {
+        host->setScreenPolicy(prefs->screenMode(), prefs->screenDelaySec());
+    };
+    applyScreenPolicy();
+    QObject::connect(prefs, &AppPrefs::screenPolicyChanged, host, applyScreenPolicy);
 
     /* Register the C++ types QML instantiates before loading their importers. */
     // WP-D4: cancellation observes pointer, keyboard and shortcut input.

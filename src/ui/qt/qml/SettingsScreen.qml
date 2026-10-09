@@ -19,6 +19,27 @@ Item {
     readonly property bool lockoutSessionRunning: decoderHost.sessionState === 2
     readonly property bool lockoutEditable: !lockoutPending && (decoderHost.sessionState === 0 || decoderHost.sessionState === 4 || (lockoutSessionRunning && metrics.optionsKnown))
 
+    // Issue #574. In AppPrefs::ScreenMode code order, so a choice's index is its
+    // code: 0 System default, 1 Always on, 2 Dim between calls, 3 Off between calls.
+    readonly property var screenModeNames: [qsTr("System default"), qsTr("Always on"), qsTr("Dim between calls"), qsTr("Off between calls")]
+    // Only the two between-calls modes wait for a delay.
+    readonly property bool screenDelayShown: decoderHost.screenPolicySupported && prefs.screenMode >= 2
+    readonly property string screenModeSubtitle: {
+        var delay = screenDelayText(prefs.screenDelaySec);
+        var mode = prefs.screenMode;
+        var detail = mode === 1 ? qsTr("Stays on while DSD-neo is open")
+            : mode === 2 ? qsTr("While listening, dims after %1 without audio. Audio or a tap brightens it.").arg(delay)
+            : mode === 3 ? qsTr("While listening, dims after %1 without audio, then turns off. Audio turns it back on if DSD-neo was on screen when it went off.").arg(delay)
+            : qsTr("Follows your phone's screen timeout");
+        return qsTr("%1 · %2").arg(screenModeNames[mode] || screenModeNames[0]).arg(detail);
+    }
+
+    function screenDelayText(seconds) {
+        if (seconds < 60)
+            return qsTr("%1 seconds").arg(seconds);
+        return seconds === 60 ? qsTr("1 minute") : qsTr("%1 minutes").arg(seconds / 60);
+    }
+
     onLiveLockoutPersistenceChanged: {
         if (lockoutPending && liveLockoutPersistence === requestedLockoutPersistence) {
             lockoutPending = false;
@@ -305,10 +326,11 @@ Item {
                     }
 
                     ToggleRow {
+                        objectName: "backgroundListeningToggle"
                         title: qsTr("Keep listening in background")
                         subtitle: qsTr("Notification controls are available when permission is allowed")
                         checked: prefs.backgroundListening
-                        showDivider: decoderHost.keepScreenAwakeSupported || decoderHost.localDeviceBrokered
+                        showDivider: decoderHost.screenPolicySupported || decoderHost.localDeviceBrokered
                         onToggled: function (state) {
                             prefs.backgroundListening = state;
                             var host = decoderHost;
@@ -321,24 +343,42 @@ Item {
 
                     // WP-S2: opt-in applies only to hosts that broker local USB devices.
                     ToggleRow {
+                        objectName: "autoStartOnAttachToggle"
                         visible: decoderHost.localDeviceBrokered
                         title: qsTr("Start when a dongle is attached")
                         subtitle: qsTr("Resume the last USB system or scan list")
                         checked: prefs.autoStartOnAttach
-                        showDivider: decoderHost.keepScreenAwakeSupported
+                        showDivider: decoderHost.screenPolicySupported
                         onToggled: function (state) {
                             prefs.autoStartOnAttach = state;
                         }
                     }
 
-                    ToggleRow {
-                        // Hidden where the host cannot honor it: a switch that
-                        // persists but changes nothing reads as broken.
-                        visible: decoderHost.keepScreenAwakeSupported
-                        title: qsTr("Keep screen awake")
-                        checked: prefs.keepScreenAwake
-                        onToggled: function (state) {
-                            prefs.keepScreenAwake = state;
+                    // Issue #574. Both rows are hidden where the host cannot honor
+                    // them: a setting that persists but changes nothing reads as broken.
+                    DisclosureRow {
+                        objectName: "screenModeRow"
+                        visible: decoderHost.screenPolicySupported
+                        title: qsTr("Screen")
+                        subtitle: screen.screenModeSubtitle
+                        showDivider: screen.screenDelayShown
+                        onTapped: screenChoices.open(title, screen.screenModeNames, function (index) {
+                            prefs.screenMode = index;
+                        })
+                    }
+
+                    DisclosureRow {
+                        objectName: "screenDelayRow"
+                        visible: screen.screenDelayShown
+                        title: prefs.screenMode === 3 ? qsTr("Turn off after") : qsTr("Dim after")
+                        subtitle: screen.screenDelayText(prefs.screenDelaySec)
+                        onTapped: {
+                            var seconds = prefs.screenDelayChoices;
+                            screenChoices.open(title, seconds.map(function (value) {
+                                return screen.screenDelayText(value);
+                            }), function (index) {
+                                prefs.screenDelaySec = seconds[index];
+                            });
                         }
                     }
                 }
@@ -633,5 +673,12 @@ Item {
                 }
             }
         }
+    }
+
+    // The Screen and delay rows' choices.
+    ChoiceSheet {
+        id: screenChoices
+        objectName: "screenChoices"
+        choiceObjectNamePrefix: "screenChoice"
     }
 }
