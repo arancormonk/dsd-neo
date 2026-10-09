@@ -107,7 +107,7 @@ jobs:
             libusb-1.0-0-dev libfftw3-dev libblas-dev liblapack-dev gfortran \
             libcodec2-dev librtlsdr-dev libsoapysdr-dev libairspy-dev libcurl4-openssl-dev libexpat1-dev
 
-      # ANDROID_LOCATION_JVM compiles Kotlin. The x86-64 runner image has Java and
+      # The ANDROID_*_JVM tests compile Kotlin. The x86-64 runner image has Java and
       # kotlinc; the arm64 one has only Java, so the pinned compiler is fetched
       # wherever kotlinc is missing.
       - name: Install the Kotlin compiler where the image lacks it
@@ -195,7 +195,7 @@ jobs:
             build-essential cmake ninja-build pkg-config git ripgrep \
             libsndfile1-dev libssl-dev
 
-      # ANDROID_LOCATION_JVM compiles Kotlin. The x86-64 runner image has Java and
+      # The ANDROID_*_JVM tests compile Kotlin. The x86-64 runner image has Java and
       # kotlinc; the arm64 one has only Java, so the pinned compiler is fetched
       # wherever kotlinc is missing.
       - name: Install the Kotlin compiler where the image lacks it

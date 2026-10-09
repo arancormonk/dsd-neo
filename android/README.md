@@ -765,8 +765,9 @@ identity through the existing controller lifecycle. Unknown fields are omitted;
 the row is hidden when no identity fields are available.
 Emergency calls carry an EMERGENCY badge on the monitor (including the other TDMA
 slot), recent calls, and history. The notification title prefixes the lead call
-with EMERGENCY. Native notification records and `DecoderStatus.kt` use wire v2:
-each of the two slot records appends emergency and priority (11 slot fields).
+with EMERGENCY. Native notification records and `DecoderStatus.kt` use wire v3:
+each of the two slot records ends with emergency and priority (11 slot fields),
+and the header carries the audible-audio stamp and its age at indices 9 and 10.
 Call-history JSON stores `"em": true` only for emergency rows; older history
 without that optional key remains readable. Emergency indication persists when
 later fragments enrich a history row. The notification channel remains

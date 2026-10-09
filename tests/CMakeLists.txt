@@ -283,8 +283,9 @@ target_include_directories(
 # buffer span shows up as a test failure instead of a quiet decode regression.
 target_compile_definitions(dsd-neo_test_bit_packing PRIVATE DSD_NEO_TEST_HOOKS)
 
-# The analog monitor in dsd_symbol.c notes the audible-audio stamp (issue #574), which dsd-neo_core holds; tests that
-# link the DSP archive without core take this copy of it.
+# The analog monitor in dsd_symbol.c notes the audible-audio stamp (issue #574), and app-control's notification record
+# reads and arms it; dsd-neo_core holds it, so tests that link the DSP archive or compile notification_status.c without
+# core take this copy of it.
 add_library(
     dsd-neo_test_audio_activity
     OBJECT
@@ -2771,16 +2772,25 @@ add_test(
     COMMAND dsd-neo_test_app_control_scan_row_edit
 )
 
+# The audible-audio stamp's own source with DSD_NEO_TEST_HOOKS, so the golden record can set its clock (issue #574).
 add_executable(
     dsd-neo_test_app_control_notification_status
     ui/test_app_control_notification_status.c
     ${PROJECT_SOURCE_DIR}/src/app_control/notification_status.c
     ${PROJECT_SOURCE_DIR}/src/app_control/call_view.c
+    ${PROJECT_SOURCE_DIR}/src/core/audio/audio_activity.c
     ${PROJECT_SOURCE_DIR}/src/core/util/synctype.c
 )
 target_include_directories(
     dsd-neo_test_app_control_notification_status
-    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/app_control
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src
+        ${PROJECT_SOURCE_DIR}/src/app_control
+)
+target_compile_definitions(
+    dsd-neo_test_app_control_notification_status
+    PRIVATE DSD_NEO_TEST_HOOKS
 )
 target_link_libraries(
     dsd-neo_test_app_control_notification_status
@@ -4200,7 +4210,10 @@ target_compile_definitions(
 )
 target_link_libraries(
     dsd-neo_test_app_control_snapshot_event_history
-    PRIVATE dsd-neo_test_call_state_support dsd-neo_platform
+    PRIVATE
+        dsd-neo_test_call_state_support
+        dsd-neo_test_audio_activity
+        dsd-neo_platform
 )
 target_link_libraries(
     dsd-neo_test_app_control_snapshot_event_history
@@ -4226,7 +4239,10 @@ target_include_directories(
 )
 target_link_libraries(
     dsd-neo_test_app_control_opts_snapshot
-    PRIVATE dsd-neo_test_call_state_support dsd-neo_platform
+    PRIVATE
+        dsd-neo_test_call_state_support
+        dsd-neo_test_audio_activity
+        dsd-neo_platform
 )
 add_test(
     NAME APP_CONTROL_OPTS_SNAPSHOT
@@ -14880,15 +14896,29 @@ endif()
 
 find_package(Python3 QUIET COMPONENTS Interpreter)
 if(Python3_Interpreter_FOUND)
+    # Production Android Kotlin on the JVM, one CTest per suite of run_jvm_tests.py. Each compiles Kotlin, which is
+    # memory-hungry, so they never run at once.
     add_test(
         NAME ANDROID_LOCATION_JVM
         COMMAND
             ${Python3_EXECUTABLE}
-            ${CMAKE_CURRENT_SOURCE_DIR}/android/run_location_tests.py
+            ${CMAKE_CURRENT_SOURCE_DIR}/android/run_jvm_tests.py --suite
+            location
+    )
+    add_test(
+        NAME ANDROID_DECODER_STATUS_JVM
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/android/run_jvm_tests.py --suite
+            decoder_status
     )
     set_tests_properties(
         ANDROID_LOCATION_JVM
-        PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 90
+        ANDROID_DECODER_STATUS_JVM
+        PROPERTIES
+            SKIP_RETURN_CODE 77
+            TIMEOUT 90
+            RESOURCE_LOCK android_kotlin_jvm
     )
     add_test(
         NAME ANDROID_DIAGNOSTICS_SHARE_PATHS

@@ -78,11 +78,16 @@ suspected RAS is marked as a failed check rather than asserted to be corrupted o
 typed live commands and legacy live commands, in both slots. `UI_KEY_CLEANUP` observes production volatile erasure
 while handler and TYT buffers are still alive.
 
-`UI_QT_ANDROID_HOST` runs Android host lifecycle publication with a desktop transport fixture. `ANDROID_LOCATION_JVM`
-runs the production Kotlin location broker and geocoder queue with deterministic platform stubs, without an Android
-build or emulator. It uses `kotlinc` or a cached Gradle Kotlin compiler plus Java; missing tools skip the CTest entry.
-Android CI runs `python3 tests/android/run_location_tests.py --require-tools` after its APK build, when the compiler
-is cached. Qt persistence tests use disposable directories and do not require a writable home on Linux.
+`UI_QT_ANDROID_HOST` runs Android host lifecycle publication with a desktop transport fixture. The `ANDROID_*_JVM`
+tests run production Android Kotlin on the plain JVM, without an Android build or emulator, one suite of
+`tests/android/run_jvm_tests.py` each (`--suite <name>`, repeatable; all suites by default): `ANDROID_LOCATION_JVM`
+runs the location broker and geocoder queue with deterministic platform stubs, and `ANDROID_DECODER_STATUS_JVM` runs
+`DecoderStatus.kt`, the notification status record's reader, with no stubs. Each suite compiles its own files, and the
+CTest entries share a resource lock so two Kotlin compiles never run at once. `DecoderStatusTest.kt` parses the same
+golden v3 record literal that `APP_CONTROL_NOTIFICATION_STATUS` makes the C encoder write; change the two together.
+The runner uses `kotlinc` or a cached Gradle Kotlin compiler plus Java; missing tools skip the CTest entries. Android
+CI runs `python3 tests/android/run_jvm_tests.py --require-tools` after its APK build, when the compiler is cached. Qt
+persistence tests use disposable directories and do not require a writable home on Linux.
 
 `CORE_MBE_FILE_IO` checks decrypted AMBE payloads, not merely output-file existence. Its NXDN vectors come
 from [NXDN TS 1-D v1.3](https://www.qsl.net/kb9mwr/projects/dv/nxdn/NXDN-TS-1-D_v0103.pdf),
@@ -2136,14 +2141,14 @@ running.
 
 Some tests drive an external tool: two `TOOLS_*` tests need ripgrep,
 `TOOLS_GCC_FANALYZER` needs GNU GCC's analyzer under the name `gcc`,
-`TOOLS_IWYU` needs git and Python, and `ANDROID_LOCATION_JVM` needs Java and the
-Kotlin compiler. Without its tool such a test skips, and passes, on a developer
-machine. Every CI job that runs the suite sets `DSD_NEO_REQUIRE_TEST_TOOLS=1`,
-which turns that skip into a failure, and installs what its runner image lacks:
-ripgrep everywhere, Homebrew's GCC as `gcc` for the macOS test step, Java and
-Kotlin in the Clang container, and the pinned Kotlin compiler
-(`KOTLIN_COMPILER_VERSION` and `KOTLIN_COMPILER_SHA256` in
-`tools/ci-dependency-pins.env`) on the arm64 legs.
+`TOOLS_IWYU` needs git and Python, and the `ANDROID_*_JVM` tests need Java and
+the Kotlin compiler. Without its tool such a test skips, and passes, on a
+developer machine. Every CI job that runs the suite sets
+`DSD_NEO_REQUIRE_TEST_TOOLS=1`, which turns that skip into a failure, and
+installs what its runner image lacks: ripgrep everywhere, Homebrew's GCC as
+`gcc` for the macOS test step, Java and Kotlin in the Clang container, and the
+pinned Kotlin compiler (`KOTLIN_COMPILER_VERSION` and `KOTLIN_COMPILER_SHA256`
+in `tools/ci-dependency-pins.env`) on the arm64 legs.
 
 A job skipped by an `if:` still reports its check, as a success. A required job
 that only runs on pull requests therefore lives in a workflow that only pull

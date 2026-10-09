@@ -56,6 +56,18 @@ typedef struct {
      * name different units at the same instant. See dsd_app_lead_slot().
      */
     int8_t lead_slot;
+    /**
+     * @brief The audible-audio stamp: when the decoder last emitted audio the app plays, in real-time monotonic
+     * milliseconds, or 0 for none (see <dsd-neo/core/audio_activity.h>). The value is its own identity, so a reader
+     * that sees it change knows new audio was heard.
+     *
+     * Not part of the published record: dsd_app_notification_get() reads it on every call, published record or not,
+     * together with @c audible_age_ms from one dsd_audio_activity_read(), so the two always describe the same stamp.
+     * It stays 0 unless dsd_app_notification_encode() has armed the stamp.
+     */
+    uint64_t audible_stamp;
+    /** Milliseconds since @c audible_stamp; -1 when there is none or it is older than DSD_AUDIO_ACTIVITY_MAX_AGE_MS. */
+    int32_t audible_age_ms;
 } dsd_app_notification_status;
 
 /**
@@ -77,11 +89,13 @@ void dsd_app_notification_publish_opts(const dsd_opts* opts);
  *
  * Safe from any thread, and from any number of them concurrently -- unlike the snapshot
  * accessors. Zeroes @p out when nothing has been published yet, except for @c lead_slot,
- * which is left at its -1 "no slot" sentinel rather than at a zero that names slot 0.
+ * which is left at its -1 "no slot" sentinel rather than at a zero that names slot 0, and
+ * the audible-audio pair, which every call reads afresh (0 and -1 when there is none).
  *
  * Also arms the publishers, which stay dormant until a reader has asked once. The first
  * call therefore reports nothing on a session that is already decoding; the next one, a
- * poll interval later, has a record.
+ * poll interval later, has a record. It does not arm the audible-audio stamp; only
+ * dsd_app_notification_encode() does.
  *
  * @return 1 when @p out holds a published status, 0 otherwise.
  */
@@ -95,6 +109,9 @@ int dsd_app_notification_get(dsd_app_notification_status* out);
  * dsd_app_frontend_runtime_start(), so without this a second session's first poll would
  * render the previous session's last call for as long as a poll interval.
  *
+ * Clears the audible-audio stamp too (dsd_audio_activity_reset()), for the same reason;
+ * it stays armed.
+ *
  * Called from dsd_app_frontend_runtime_stop(). Safe from any thread.
  */
 void dsd_app_notification_reset(void);
@@ -103,11 +120,11 @@ enum {
     /**
      * @brief Comfortably larger than any record the encoder produces.
      *
-     * The worst case is less than 1400 bytes: the fixed header, plus two slots each
-     * carrying a full-length @c name (@ref DSD_APP_CALL_NAME_SIZE), @c tg_text and
-     * @c src_text alongside their numeric fields. Rounded well past that, because a
-     * record that outgrows this buffer is not truncated -- it is dropped, and the
-     * notification would silently stop updating.
+     * The worst case is less than 1400 bytes: the fixed header, its audible stamp up to
+     * 20 digits, plus two slots each carrying a full-length @c name
+     * (@ref DSD_APP_CALL_NAME_SIZE), @c tg_text and @c src_text alongside their numeric
+     * fields. Rounded well past that, because a record that outgrows this buffer is not
+     * truncated -- it is dropped, and the notification would silently stop updating.
      */
     DSD_APP_NOTIFICATION_RECORD_SIZE = 2048,
 };
@@ -115,9 +132,19 @@ enum {
 /**
  * @brief Encode the latest status as one versioned, tab-separated record.
  *
+ * Version "v3", 33 fields: an 11-field header -- version, protocol, radio_input, trunking,
+ * trunk_tuned, cc_freq_hz, vc_freq_hz, center_freq_hz, lead_slot, audible_stamp (unsigned
+ * decimal), audible_age_ms (signed decimal, -1 for none) -- then 11 fields per slot:
+ * state, name, tg_text, src_text, tg_id, enc, algid, kid, elapsed_ms, emergency, priority.
+ * android/.../DecoderStatus.kt reads it; change both together, version included.
+ *
  * One record per call so a reader cannot tear its view across fields. Text fields have
  * control characters replaced with spaces: they arrive from CSV imports and off the air,
  * and an embedded tab would invent a field and desynchronise everything after it.
+ *
+ * Arms the audible-audio stamp (dsd_audio_activity_arm()) whenever it is given a buffer,
+ * record or not: the Android service's poll is the only caller and the stamp's only
+ * reader, so desktop, CLI and API-only sessions never turn it on.
  *
  * @return Characters written excluding the NUL, or 0 when nothing is published, @p out is
  *         NULL, or @p out_size cannot hold the whole record. Never truncates -- a partial
