@@ -695,13 +695,17 @@ A wake only turns the screen on: DSD-neo does not show itself over the lock
 screen, so a locked phone wakes to its lock screen. The screen then stays on
 through the audio and the delay after it, and then goes off on the phone's timer
 (on most phones, the lock screen's own shorter timeout); a phone left alone
-wakes again for the next call. Turning the screen on yourself or unlocking stops
-wakes at once. After a wake, so does a screen that goes off more than 5 s after
-the later of two points: the end of DSD-neo's hold, and the wake plus the
-phone's screen timeout setting. The lock screen's own timeout plays no part;
-keeping the screen on by touching the lock screen is what can push the
-screen-off that late. Either way, wakes stay stopped until DSD-neo is back in
-front and the display goes off there again.
+wakes again for the next call. Anything other than DSD-neo's own wake that turns
+the screen on stops wakes at once: you, another app or a notification, an
+incoming call, or on some phones plugging in the charger. So does unlocking.
+After a wake, so does a screen that goes off more than 5 s after the later of
+two points: the end of DSD-neo's hold, and the wake plus the phone's screen
+timeout setting. The lock screen's own timeout plays no part; keeping the screen
+on by touching the lock screen is what can push the screen-off that late. Either
+way, wakes stay stopped until DSD-neo is back in front and the display goes off
+there again. That sleep in front arms wakes afresh, however long DSD-neo was in
+use after the wake (or, on a phone with no screen lock, after the wake showed
+it).
 
 Dimming happens only while DSD-neo's window has focus and is not in split screen
 or another multi-window mode, because the brightness an app sets applies to the
@@ -754,6 +758,11 @@ device, with a source that has known calls (an I/Q replay works):
   quiet; pressed after a quiet delay, it does not.
 - Swipe, PIN and no screen lock: what each wake shows; unlocking stops wakes
   until DSD-neo is in front again.
+- Wake, then unlock, use DSD-neo and let it time out in front: the next call
+  wakes the screen. With no screen lock, use DSD-neo after the wake shows it,
+  then let it time out: the next call wakes.
+- A screen-on DSD-neo did not cause (the power button, a notification, a
+  charger plug-in where the phone turns the screen on for it) stops wakes.
 - Keep touching the lock screen after a wake until it stays on more than 5 s
   past both DSD-neo's hold and the phone's timeout from the wake: further wakes
   stop; a shorter touch does not stop them.
