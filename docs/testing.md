@@ -88,7 +88,8 @@ the location broker and geocoder queue with deterministic platform stubs, `ANDRO
 them fails the compile, then `ScreenLocks.kt` on its own against a `PowerManager` stub that models reference counting.
 `ScreenPolicyTest.kt` takes the policy through each row of its transition table and through whole histories on an
 injected clock: sleeping in front with either callback order, split screen, an own wake whose screen goes off on time or
-late, the power snooze and the synchronous sample before it, a stamp delivered late or with age -1, and the
+late, an own wake followed by use in front (after an unlock, or with no lock screen) whose next sleep arms afresh, the
+power snooze and the synchronous sample before it, a stamp delivered late or with age -1, and the
 `AudioManager` and Do Not Disturb mapping; `ScreenControllerTest.kt` the make-before-break order, lease renewal and wake
 refusal; `ScreenTouchTest.kt` the gesture latch and the TalkBack exception. Each suite compiles its own files, each
 build in a suite its own set, and the CTest entries share a resource lock so two Kotlin compiles never run at once.

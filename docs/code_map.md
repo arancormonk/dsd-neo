@@ -4469,10 +4469,13 @@ main thread only. The decision is pure Kotlin with no `android.*` import, run on
   policy's own screen state follows only the screen broadcasts and a refused wake (a loss callback judges arming from
   the live `isInteractive` the glue passes with it), so the sample taken just before a screen-off cannot wake a screen
   the user has just turned off; a screen-on DSD-neo did not cause, or `USER_PRESENT`, disarms at once. After DSD-neo's
-  own wake the arming survives the next screen-off only if it comes no later than
+  own wake the arming it carried survives the next screen-off only if that off comes no later than
   `max(leaseReleasedAt, wakeAt + screen-off timeout) + OWN_WAKE_GRACE_MS` (5 s), a lease still held at that off counting
-  as released by it; in a between-calls mode with a session, a screen-off or an arming loss while audio is engaged
-  (within the delay of the last audio) snoozes wakes until a full delay passes without audio.
+  as released by it. That window judges only an arming the wake carried: an own screen-on records `wakeAt` only while
+  armed, and the screen-off, every disarm and every fresh arming (an unlock, a regain, the first loss of a new sequence)
+  clear it, so a later sleep in front after an unlock, or on a phone with no lock screen whose regain can land on either
+  side of the wake's broadcast, arms afresh. In a between-calls mode with a session, a screen-off or an arming loss
+  while audio is engaged (within the delay of the last audio) snoozes wakes until a full delay passes without audio.
   `wakeAllowed(audioMode, interruptionFilter)` allows a wake only in `MODE_NORMAL` with the filter `ALL` (or `UNKNOWN`);
   any other mode, a newer one included, blocks it. The two platform limits the README lists are documented in its KDoc.
 - `ScreenController.kt`: runs the policy and carries its outputs out through `Effects`, only on a change and

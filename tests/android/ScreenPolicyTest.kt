@@ -356,6 +356,14 @@ private fun row12OwnScreenOnRecordsTheWake() {
     rig.policy.screenOn(true, 15_000)
     check(rig.policy.interactive && rig.policy.wakeAt == rig.now && rig.policy.wakeTimeoutMs == 15_000L)
     check(rig.policy.armed && rig.policy.outputs.holdLease)
+    // With nothing armed (DSD-neo already back in front, on a phone with no lock screen) the wake carries no arming,
+    // so it keeps no window.
+    val front = PolicyRig().armedAsleep()
+    front.audio()
+    front.front()
+    front.policy.screenOn(true, 15_000)
+    check(front.policy.interactive && !front.policy.armed)
+    check(front.policy.wakeAt == null && front.policy.wakeTimeoutMs == 0L)
 }
 
 private fun row13UserScreenOnDisarmsAtOnce() {
@@ -725,6 +733,91 @@ private fun lateOffAfterALockScreenTouchDisarms() {
     rig.advance(60_000)
     rig.audio()
     check(rig.wakes == 1L) { "someone used the phone: no more wakes" }
+}
+
+private fun unlockUseAndSleepInFrontAfterAnOwnWakeArmsAfresh() {
+    // A 60 s phone timeout: in front, the screen goes off 60 s after the last touch, 30 s after DSD-neo's release and
+    // long after the own wake's window. Both broadcast orders, since the loss callbacks usually come first.
+    val timeoutMs = 60_000L
+    val sleeps = listOf<Pair<String, (ScreenPolicy) -> Unit>>(
+        "loss first" to {
+            it.topResumedChanged(false, false)
+            it.focusChanged(false, false)
+            it.paused(false)
+            it.stopped(false)
+            it.screenOff()
+        },
+        "broadcast first" to {
+            it.screenOff()
+            it.topResumedChanged(false, false)
+            it.focusChanged(false, false)
+            it.paused(false)
+            it.stopped(false)
+        },
+    )
+    for ((name, sleep) in sleeps) {
+        val rig = PolicyRig().armedAsleep()
+        rig.audio()
+        check(rig.wakes == 1L)
+        rig.ownWake(timeoutMs)
+        // The user unlocks 10 s after the wake, DSD-neo comes back in front, and they use it for two minutes.
+        rig.advance(10_000)
+        rig.policy.userPresent()
+        rig.advance(500)
+        rig.front()
+        repeat(12) {
+            rig.advance(10_000)
+            rig.policy.userInteraction()
+        }
+        // Then they leave it in front: the delay runs out, then the phone's timeout from the last touch.
+        rig.quiet()
+        rig.advance(timeoutMs - DELAY_MS)
+        sleep(rig.policy)
+        check(rig.policy.armed && !rig.policy.snoozed) { "$name: DSD-neo was in front when the display went off" }
+        check(rig.policy.wakeAt == null) { "$name: an arming set after the wake keeps no wake window" }
+        rig.advance(60_000)
+        rig.audio()
+        check(rig.wakes == 2L) { "$name: the next call wakes" }
+    }
+}
+
+private fun withoutALockScreenAWakeShowsDsdNeoAndTheNextSleepArms() {
+    // With no lock screen a wake brings DSD-neo straight back to the front, and the screen-on broadcast can land on
+    // either side of that. Either way nothing is armed in front, so the wake carries no arming and keeps no window.
+    val timeoutMs = 60_000L
+    val wakes = listOf<Pair<String, (PolicyRig) -> Unit>>(
+        "broadcast after the regain" to {
+            it.front()
+            it.advance(100)
+            it.ownWake(timeoutMs)
+        },
+        "broadcast before the regain" to {
+            it.ownWake(timeoutMs)
+            it.advance(100)
+            it.front()
+        },
+    )
+    for ((name, wake) in wakes) {
+        val rig = PolicyRig().armedAsleep()
+        rig.audio()
+        check(rig.wakes == 1L)
+        rig.advance(100)
+        wake(rig)
+        check(rig.policy.interactive && rig.policy.visible && !rig.policy.armed) { "$name: in front, nothing armed" }
+        check(rig.policy.wakeAt == null) { "$name: a wake that carried no arming keeps no window" }
+        // The user touches DSD-neo now and then for two minutes, then leaves it to time out in front.
+        repeat(12) {
+            rig.advance(10_000)
+            rig.policy.userInteraction()
+        }
+        rig.quiet()
+        rig.advance(timeoutMs - DELAY_MS)
+        rig.sleep()
+        check(rig.policy.armed && !rig.policy.snoozed) { "$name: DSD-neo was in front when the display went off" }
+        rig.advance(60_000)
+        rig.audio()
+        check(rig.wakes == 2L) { "$name: the next call wakes" }
+    }
 }
 
 private fun duplicateSessionStartDuringASnoozeIsANoOp() {
@@ -1191,6 +1284,8 @@ fun main() {
     unlockDisarmsAtOnceAndReleasesWhileStillInteractive()
     ownWakeOffOnTimeStaysArmed()
     lateOffAfterALockScreenTouchDisarms()
+    unlockUseAndSleepInFrontAfterAnOwnWakeArmsAfresh()
+    withoutALockScreenAWakeShowsDsdNeoAndTheNextSleepArms()
     duplicateSessionStartDuringASnoozeIsANoOp()
     powerDuringAudioSnoozesButNotDuringATouchOrAQuietStart()
     audioBetweenPollsSnoozesThroughTheSyncSample()
