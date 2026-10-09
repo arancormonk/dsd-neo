@@ -111,9 +111,11 @@ interface ScreenPolicyView {
  * loss of a new sequence. So an arming from a later sleep in front is judged like any other.
  *
  * A screen-off (or arming loss) while audio is engaged snoozes: no wakes until a full delay passes without audio,
- * judged by when audio was heard rather than when a poll reported it.
- * Touches and starts never snooze. The glue takes a synchronous status sample just before those callbacks so audio
- * that began between polls is known.
+ * judged by when audio was heard rather than when a poll reported it. The snooze is judged as of the moment the display
+ * went off: the screen-off broadcast, or an arming loss that comes before it. Audio that begins after that broadcast is
+ * never its snooze: an arming loss that follows the broadcast leaves the snooze as the broadcast judged it, and holds
+ * that audio for [stopped] as it holds a call heard after an arming loss. Touches and starts never snooze. The glue
+ * takes a synchronous status sample just before those callbacks so audio that began between polls is known.
  *
  * Two platform limits are accepted rather than solved:
  * - Lifecycle callbacks are delivered asynchronously. A Home press followed quickly by Power, processed late on the
@@ -183,9 +185,11 @@ class ScreenPolicy(private val clock: () -> Long) : ScreenPolicyView {
     private var primed = false
 
     /**
-     * When the newest audio was heard that would have woken the screen but for DSD-neo still being visible: armed and
-     * asleep in Off between calls, before Android stopped the activity. [stopped] judges it again; null for none. A
-     * change of arming, the screen coming on, and a session starting or ending drop it.
+     * When the newest audio was heard that would have woken the screen but for DSD-neo still being visible
+     * ([asleepInFront]): the screen off in Off between calls, before Android stopped the activity, armed or with the
+     * arming still to be judged. [stopped] judges it again; null for none. A change of arming drops it, except the
+     * arming loss after a screen-off broadcast that came first, which keeps the audio heard since that off; the screen
+     * coming on, and a session starting or ending, drop it too.
      */
     private var heldAudio: Long? = null
 
@@ -201,12 +205,20 @@ class ScreenPolicy(private val clock: () -> Long) : ScreenPolicyView {
     private val between: Boolean
         get() = session != null && (mode == Mode.DIM_BETWEEN_CALLS || mode == Mode.OFF_BETWEEN_CALLS)
 
-    /** Off between calls with a session, armed and the screen off: a wake waits only on the activity being gone. */
-    private val armedAsleep: Boolean
-        get() = session != null && mode == Mode.OFF_BETWEEN_CALLS && armed && !interactive
+    /** Off between calls with a session and the screen off, by the broadcasts. */
+    private val offAsleep: Boolean
+        get() = session != null && mode == Mode.OFF_BETWEEN_CALLS && !interactive
 
     override val wakeVerdictNeeded: Boolean
-        get() = armedAsleep && !visible
+        get() = offAsleep && armed && !visible
+
+    /**
+     * Asleep in Off between calls with DSD-neo still visible: armed (the display went off in front and Android has not
+     * stopped the activity yet), or with no loss callback yet to judge the arming after a screen-off broadcast that
+     * came first. New audio then would wake but for the activity, so it is held for [stopped].
+     */
+    private val asleepInFront: Boolean
+        get() = offAsleep && visible && (armed || !lossSequenceOpen)
 
     fun configure(modeCode: Int, delaySeconds: Int) = step { now ->
         val newMode = Mode.fromCode(modeCode)
@@ -273,7 +285,7 @@ class ScreenPolicy(private val clock: () -> Long) : ScreenPolicyView {
         }
         if (wakeVerdictNeeded) {
             wakeUnlessBlocked(wakeAllowed)
-        } else if (armedAsleep) {
+        } else if (asleepInFront) {
             // The display went off in front, but Android has not stopped DSD-neo yet: the stop judges this audio.
             heldAudio = heldAudio?.let { maxOf(it, heardAt) } ?: heardAt
         }
@@ -311,7 +323,8 @@ class ScreenPolicy(private val clock: () -> Long) : ScreenPolicyView {
     /**
      * The activity stopped. Audio heard while the display went off in front but the activity was still visible (see
      * [sample]) is judged now as any wake: at most [WAKE_MAX_AGE_MS] old by now, not snoozed, and [wakeAllowed], asked
-     * only then. Read after the loss, so a stop that arms afresh judges nothing heard before it.
+     * only then. Read after the loss, so a stop that arms afresh judges only audio heard since a screen-off broadcast
+     * that came before it.
      */
     fun stopped(interactive: Boolean, wakeAllowed: () -> Boolean) = step { now ->
         loss(now, interactive)
@@ -426,15 +439,26 @@ class ScreenPolicy(private val clock: () -> Long) : ScreenPolicyView {
         lossSequenceOpen = false
     }
 
-    /** A foreground-loss callback; only the first of a sequence judges arming, from the state just before it. */
+    /**
+     * A foreground-loss callback; only the first of a sequence judges arming, from the state just before it. An arming
+     * loss judges the snooze by the audio heard up to the moment the display went off: up to now when no screen-off
+     * broadcast came yet, or up to that broadcast, which judged it already. Audio heard after that broadcast began
+     * after the display went off, so it never snoozes, and the arming keeps it for [stopped].
+     */
     private fun loss(now: Long, interactive: Boolean) {
         if (lossSequenceOpen) {
             return
         }
         lossSequenceOpen = true
         if (top && focused && !interactive) {
-            setArmed(true)
-            snoozed = between && audioEngagedAt(now)
+            if (this.interactive) {
+                setArmed(true)
+                snoozed = between && audioEngagedAt(now)
+            } else {
+                val sinceOff = heldAudio
+                setArmed(true)
+                heldAudio = sinceOff
+            }
         } else {
             setArmed(false)
         }

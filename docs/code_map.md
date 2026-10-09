@@ -4473,9 +4473,10 @@ main thread only. The decision is pure Kotlin with no `android.*` import, run on
   is the predicate every wake is judged through. Android's verdict reaches the policy as a supplier, which it asks last,
   at most once, and only for a sample that would otherwise wake (new audio no more than 2 s old, not snoozed,
   `wakeVerdictNeeded`): no read for a sample with no record, an unchanged stamp, stale audio or a snooze. Audio that
-  would wake but for the activity still being visible (armed with the screen off, before Android stops DSD-neo) is held,
-  and `stopped()` judges it the same way once the activity is gone, at most 2 s old by then; a change of arming, a
-  screen-on and a session change drop it. Arming (DSD-neo was in front when the display went off) is decided only by the
+  would wake but for the activity still being visible (the screen off before Android stops DSD-neo, armed, or with the
+  arming still to be judged after a screen-off broadcast that came first) is held, and `stopped()` judges it the same
+  way once the activity is gone, at most 2 s old by then; a change of arming (except the arming loss after a broadcast
+  that came first, which keeps it), a screen-on and a session change drop it. Arming (DSD-neo was in front when the display went off) is decided only by the
   first foreground-loss callback of a sequence (focus, top-resumed, pause or stop, whichever Android delivers first),
   from whether the activity was top-resumed and focused just before it and the screen already off; regaining the
   foreground ends the sequence and clears the arming and any snooze. The policy's own screen state follows only the
@@ -4489,6 +4490,9 @@ main thread only. The decision is pure Kotlin with no `android.*` import, run on
   clear it, so a later sleep in front after an unlock, or on a phone with no lock screen whose regain can land on either
   side of the wake's broadcast, arms afresh. In a between-calls mode with a session, a screen-off or an arming loss
   while audio is engaged (within the delay of the last audio) snoozes wakes until a full delay passes without audio.
+  The snooze is judged as of the moment the display went off: the screen-off broadcast, or an arming loss that comes
+  before it. An arming loss after the broadcast leaves the snooze as the broadcast judged it, so a call that begins
+  after the broadcast is never snoozed by it, and is held for `stopped()` like a call heard after an arming loss.
   `wakeAllowed(audioMode, interruptionFilter)` allows a wake only in `MODE_NORMAL` with the filter `ALL` (or `UNKNOWN`);
   any other mode, a newer one included, blocks it. The two platform limits the README lists are documented in its KDoc.
 - `ScreenController.kt`: runs the policy and carries its outputs out through `Effects`, only on a change and

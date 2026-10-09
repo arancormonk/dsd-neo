@@ -676,9 +676,9 @@ Timing:
   wake). On most phones the lock screen applies its own, shorter timeout.
 - The decoder's status is read once a second, so a wake follows the audio by up
   to a second. Audio more than 2 s old when it is read never wakes the screen.
-- Audio heard just after the screen goes off with DSD-neo in front, before
-  Android has stopped DSD-neo, wakes the screen once Android stops it, if the
-  audio is no more than 2 s old by then.
+- Audio heard just after Android announces the screen-off with DSD-neo in
+  front, before Android has stopped DSD-neo, wakes the screen once Android stops
+  it, if the audio is no more than 2 s old by then.
 - The first readable status of a session, usually from the second read (the
   first only wakes the status publishers), never wakes the screen. The audio it
   reports was played in this session, so it counts for the delay and for a
@@ -693,7 +693,8 @@ In Off between calls, new audible audio turns the screen on only when:
   its modes blocks wakes).
 - Wakes are not snoozed. Turning the screen off with the power button within
   the delay after audible audio snoozes them until a full delay passes with no
-  audible audio. Touches and starts never snooze.
+  audible audio. A call that begins after Android announces the screen-off is
+  never snoozed by it. Touches and starts never snooze.
 
 A wake only turns the screen on: DSD-neo does not show itself over the lock
 screen, so a locked phone wakes to its lock screen. The screen then stays on

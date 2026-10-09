@@ -1077,6 +1077,89 @@ private fun aCallHeardWhileTheScreenGoesOffInFrontWakesAtTheStop() {
     check(restarted.wakes == 0L) { "a new session" }
 }
 
+private fun aCallBeginningAfterTheScreenOffBroadcastIsNeverItsSnooze() {
+    // The screen-off broadcast can land before any foreground-loss callback. With nothing heard for a while, that off
+    // snoozes nothing. A call that begins after it, which the glue's synchronous sample before the first loss callback
+    // reports, began after the display went off: the arming that loss decides must not snooze it, and the stop judges
+    // it for a wake as it would a call heard after an arming loss.
+    val firstLosses = listOf<Pair<String, (ScreenPolicy) -> Unit>>(
+        "focus" to { it.focusChanged(false, false) },
+        "top-resumed" to { it.topResumedChanged(false, false) },
+        "paused" to { it.paused(false) },
+    )
+    /** Asleep in front of a quiet session after the broadcast, with a call heard 100 ms after it: [call]'s stamp. */
+    fun offThenCall(mode: Int = OFF): Pair<PolicyRig, ULong> {
+        val rig = PolicyRig(mode = mode)
+        rig.front()
+        rig.session()
+        rig.quiet()
+        rig.policy.screenOff()
+        check(!rig.policy.snoozed && !rig.policy.armed && !rig.policy.interactive && rig.policy.visible)
+        rig.advance(200)
+        val call = rig.audio(ageMs = 100)
+        check(rig.wakes == 0L) { "no wake while still in front" }
+        return rig to call
+    }
+    for ((name, firstLoss) in firstLosses) {
+        val (rig, call) = offThenCall()
+        firstLoss(rig.policy)
+        check(rig.policy.armed && !rig.policy.snoozed) { "$name: a call that began after the off is not snoozed" }
+        rig.advance(500)
+        rig.policy.sample(call, 600, true) // The stop's sample: the same call, already over.
+        var asked = 0
+        rig.policy.stopped(false) { asked++; true }
+        check(rig.wakes == 1L && asked == 1) { "$name: the stop wakes for the call, asking Android once" }
+        rig.advance(1_000)
+        rig.policy.sample(call, 1_600, true)
+        check(rig.wakes == 1L) { "$name: and only once" }
+    }
+    // The stop as the first loss callback arms and wakes in one step.
+    val (stopFirst, _) = offThenCall()
+    var asked = 0
+    stopFirst.policy.stopped(false) { asked++; true }
+    check(stopFirst.policy.armed && !stopFirst.policy.snoozed) { "stop first: armed, not snoozed" }
+    check(stopFirst.wakes == 1L && asked == 1) { "stop first: the stop wakes for the call" }
+    // A call that goes on past a stop more than 2 s after it was heard: the stop leaves it, and its next block wakes
+    // the screen, as the off never snoozed it.
+    val (goesOn, _) = offThenCall()
+    goesOn.policy.focusChanged(false, false)
+    goesOn.advance(1_901)
+    asked = 0
+    goesOn.policy.stopped(false) { asked++; true }
+    check(goesOn.wakes == 0L && asked == 0) { "heard more than 2 s before the stop" }
+    goesOn.advance(1_000)
+    goesOn.audio()
+    check(goesOn.wakes == 1L && !goesOn.policy.snoozed) { "the call's next block wakes" }
+    // Only Off between calls holds the call for the stop.
+    val (dim, _) = offThenCall(mode = DIM)
+    dim.policy.focusChanged(false, false)
+    dim.policy.stopped(false)
+    check(dim.policy.armed && dim.wakes == 0L) { "Dim" }
+    // A first loss that does not arm (the screen back on when it lands) drops the call.
+    val (screenBack, _) = offThenCall()
+    screenBack.policy.focusChanged(false, true)
+    asked = 0
+    screenBack.policy.stopped(false) { asked++; true }
+    check(!screenBack.policy.armed && screenBack.wakes == 0L && asked == 0) { "a first loss that does not arm" }
+    // Audio heard before the broadcast is that off's: it snoozes, the first loss keeps the snooze, and a call after
+    // the off continues it, so the stop wakes nothing and asks nothing.
+    val before = PolicyRig()
+    before.front()
+    before.session()
+    before.quiet()
+    before.advance(700)
+    before.audio(ageMs = 300)
+    before.policy.screenOff()
+    check(before.policy.snoozed && !before.policy.armed) { "audio before the off snoozes" }
+    before.advance(200)
+    before.audio(ageMs = 100)
+    before.policy.focusChanged(false, false)
+    check(before.policy.armed && before.policy.snoozed) { "the arming loss keeps the snooze the off judged" }
+    asked = 0
+    before.policy.stopped(false) { asked++; true }
+    check(before.wakes == 0L && asked == 0) { "snoozed: the stop wakes nothing" }
+}
+
 private fun bothCallbackOrdersArmWhenSleepingEligible() {
     val orders = listOf<Pair<String, (ScreenPolicy) -> Unit>>(
         "focus first" to {
@@ -1402,6 +1485,12 @@ private fun theVerdictIsAskedOnlyForASampleThatWouldWake() {
             policy.focusChanged(false, false)
             policy.screenOff()
         },
+        "the screen off before any loss callback" to PolicyRig().apply {
+            front()
+            session()
+            quiet()
+            policy.screenOff()
+        },
         "Dim" to PolicyRig(mode = DIM).armedAsleep(),
         "unlocked" to PolicyRig().armedAsleep().apply { policy.userPresent() },
     )
@@ -1512,6 +1601,7 @@ fun main() {
     powerDuringAudioSnoozesButNotDuringATouchOrAQuietStart()
     audioBetweenPollsSnoozesThroughTheSyncSample()
     aCallHeardWhileTheScreenGoesOffInFrontWakesAtTheStop()
+    aCallBeginningAfterTheScreenOffBroadcastIsNeverItsSnooze()
     bothCallbackOrdersArmWhenSleepingEligible()
     quickLockScreenTouchDuringTheLease()
     powerDuringALongWokenCallKeepsTheArming()
