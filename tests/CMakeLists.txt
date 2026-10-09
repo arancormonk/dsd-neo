@@ -283,6 +283,19 @@ target_include_directories(
 # buffer span shows up as a test failure instead of a quiet decode regression.
 target_compile_definitions(dsd-neo_test_bit_packing PRIVATE DSD_NEO_TEST_HOOKS)
 
+# The analog monitor in dsd_symbol.c notes the audible-audio stamp (issue #574), and app-control's notification record
+# reads and arms it; dsd-neo_core holds it, so tests that link the DSP archive or compile notification_status.c without
+# core take this copy of it.
+add_library(
+    dsd-neo_test_audio_activity
+    OBJECT
+    ${PROJECT_SOURCE_DIR}/src/core/audio/audio_activity.c
+)
+target_include_directories(
+    dsd-neo_test_audio_activity
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+
 add_library(
     dsd-neo_test_p25_shims
     STATIC
@@ -348,6 +361,7 @@ function(dsd_neo_link_dsp_test target_name)
     else()
         target_link_libraries(${target_name} PRIVATE dsd-neo_dsp)
     endif()
+    target_link_libraries(${target_name} PRIVATE dsd-neo_test_audio_activity)
 
     if(ARGN)
         target_link_libraries(${target_name} PRIVATE ${ARGN})
@@ -2758,16 +2772,25 @@ add_test(
     COMMAND dsd-neo_test_app_control_scan_row_edit
 )
 
+# The audible-audio stamp's own source with DSD_NEO_TEST_HOOKS, so the golden record can set its clock (issue #574).
 add_executable(
     dsd-neo_test_app_control_notification_status
     ui/test_app_control_notification_status.c
     ${PROJECT_SOURCE_DIR}/src/app_control/notification_status.c
     ${PROJECT_SOURCE_DIR}/src/app_control/call_view.c
+    ${PROJECT_SOURCE_DIR}/src/core/audio/audio_activity.c
     ${PROJECT_SOURCE_DIR}/src/core/util/synctype.c
 )
 target_include_directories(
     dsd-neo_test_app_control_notification_status
-    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/app_control
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src
+        ${PROJECT_SOURCE_DIR}/src/app_control
+)
+target_compile_definitions(
+    dsd-neo_test_app_control_notification_status
+    PRIVATE DSD_NEO_TEST_HOOKS
 )
 target_link_libraries(
     dsd-neo_test_app_control_notification_status
@@ -4187,7 +4210,10 @@ target_compile_definitions(
 )
 target_link_libraries(
     dsd-neo_test_app_control_snapshot_event_history
-    PRIVATE dsd-neo_test_call_state_support dsd-neo_platform
+    PRIVATE
+        dsd-neo_test_call_state_support
+        dsd-neo_test_audio_activity
+        dsd-neo_platform
 )
 target_link_libraries(
     dsd-neo_test_app_control_snapshot_event_history
@@ -4213,7 +4239,10 @@ target_include_directories(
 )
 target_link_libraries(
     dsd-neo_test_app_control_opts_snapshot
-    PRIVATE dsd-neo_test_call_state_support dsd-neo_platform
+    PRIVATE
+        dsd-neo_test_call_state_support
+        dsd-neo_test_audio_activity
+        dsd-neo_platform
 )
 add_test(
     NAME APP_CONTROL_OPTS_SNAPSHOT
@@ -5373,10 +5402,32 @@ if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
     )
 endif()
 
+# The stamp's own source with DSD_NEO_TEST_HOOKS, which brings in its test clock seam; the shipped core has none.
+add_executable(
+    dsd-neo_test_core_audio_activity
+    core/test_core_audio_activity.c
+    ${PROJECT_SOURCE_DIR}/src/core/audio/audio_activity.c
+)
+target_include_directories(
+    dsd-neo_test_core_audio_activity
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src
+)
+target_compile_definitions(
+    dsd-neo_test_core_audio_activity
+    PRIVATE DSD_NEO_TEST_HOOKS
+)
+target_link_libraries(
+    dsd-neo_test_core_audio_activity
+    PRIVATE dsd-neo_test_decode_clock dsd-neo_platform
+)
+add_test(NAME CORE_AUDIO_ACTIVITY COMMAND dsd-neo_test_core_audio_activity)
+
 add_executable(
     dsd-neo_test_core_audio2_helpers
     core/test_core_audio2_helpers.c
     ${PROJECT_SOURCE_DIR}/src/core/audio/dsd_audio2.c
+    ${PROJECT_SOURCE_DIR}/src/core/audio/audio_activity.c
+    ${PROJECT_SOURCE_DIR}/src/core/audio/dmr_mix_media.c
 )
 target_include_directories(
     dsd-neo_test_core_audio2_helpers
@@ -5493,6 +5544,7 @@ target_link_libraries(
     dsd-neo_test_dsp_symbol_replay
     PRIVATE
         dsd-neo_dsp_private_test_support
+        dsd-neo_test_audio_activity
         dsd-neo_test_support
         ${DSD_NEO_TEST_MATH_LIB}
         ${LIBSNDFILE_LIBRARIES}
@@ -9781,6 +9833,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_cach.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_bs.c
     ${PROJECT_SOURCE_DIR}/src/runtime/frame_sync_hooks.c
+    ${PROJECT_SOURCE_DIR}/src/core/audio/dmr_mix_media.c
 )
 target_include_directories(
     dsd-neo_test_dmr_bs_sync_times
@@ -10769,6 +10822,7 @@ target_link_libraries(dsd-neo_test_edacs_grant_policy PRIVATE dsd-neo_core)
 add_test(NAME EDACS_GRANT_POLICY COMMAND dsd-neo_test_edacs_grant_policy)
 
 # This matrix drives eot_cc(); it must not call real skipDibit from the unit-test fixture.
+# The local-output wrap counts the analog blocks EDACS writes there (issue #574).
 if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
     add_executable(
         dsd-neo_test_edacs_grant_tune_matrix
@@ -10798,6 +10852,7 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
             "-Wl,--wrap=close_and_rename_wav_file"
             "-Wl,--wrap=close_and_rename_wav_file_ex"
             "-Wl,--wrap=open_wav_file"
+            "-Wl,--wrap=dsd_audio_write"
     )
     add_test(
         NAME EDACS_GRANT_TUNE_MATRIX
@@ -10961,6 +11016,7 @@ target_link_libraries(
     dsd-neo_test_frame_sync_internal_helpers
     PRIVATE
         dsd-neo_dsp_private_test_support
+        dsd-neo_test_audio_activity
         ${DSD_NEO_TEST_MATH_LIB}
         ${LIBSNDFILE_LIBRARIES}
 )
@@ -14840,15 +14896,36 @@ endif()
 
 find_package(Python3 QUIET COMPONENTS Interpreter)
 if(Python3_Interpreter_FOUND)
+    # Production Android Kotlin on the JVM, one CTest per suite of run_jvm_tests.py. Each compiles Kotlin, which is
+    # memory-hungry, so they never run at once.
     add_test(
         NAME ANDROID_LOCATION_JVM
         COMMAND
             ${Python3_EXECUTABLE}
-            ${CMAKE_CURRENT_SOURCE_DIR}/android/run_location_tests.py
+            ${CMAKE_CURRENT_SOURCE_DIR}/android/run_jvm_tests.py --suite
+            location
+    )
+    add_test(
+        NAME ANDROID_DECODER_STATUS_JVM
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/android/run_jvm_tests.py --suite
+            decoder_status
+    )
+    add_test(
+        NAME ANDROID_SCREEN_POLICY_JVM
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/android/run_jvm_tests.py --suite screen
     )
     set_tests_properties(
         ANDROID_LOCATION_JVM
-        PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 90
+        ANDROID_DECODER_STATUS_JVM
+        ANDROID_SCREEN_POLICY_JVM
+        PROPERTIES
+            SKIP_RETURN_CODE 77
+            TIMEOUT 90
+            RESOURCE_LOCK android_kotlin_jvm
     )
     add_test(
         NAME ANDROID_DIAGNOSTICS_SHARE_PATHS

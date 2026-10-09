@@ -5,6 +5,7 @@
 
 #include <dsd-neo/core/airspy_config.h>
 #include <dsd-neo/core/analog_tone.h>
+#include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/init.h>
@@ -553,6 +554,8 @@ init_state_core_buffers(dsd_state* state) {
     //set float temp buffer to baseline
     DSD_MEMSET(state->f_l4, 0.0f, sizeof(state->f_l4));
     DSD_MEMSET(state->f_r4, 0.0f, sizeof(state->f_r4));
+    dsd_audio_dmr_mix_media_discard(0);
+    dsd_audio_dmr_mix_media_discard(1);
 
     //zero out the short sample storage buffers
     DSD_MEMSET(state->s_l, 0, sizeof(state->s_l));

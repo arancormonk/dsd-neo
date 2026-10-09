@@ -103,9 +103,9 @@ must move together with `ARCHLINUX_BASE_DEVEL_IMAGE` in
 when any of them differs.
 
 `KOTLIN_COMPILER_VERSION` and `KOTLIN_COMPILER_SHA256` pin the Kotlin compiler
-that the arm64 ctest legs download for `ANDROID_LOCATION_JVM`, since their runner
-image ships Java but no Kotlin. Move both together, taking the digest from the
-release's `kotlin-compiler-<version>.zip.sha256` and checking it against the
+that the arm64 ctest legs download for the `ANDROID_*_JVM` tests, since their
+runner image ships Java but no Kotlin. Move both together, taking the digest from
+the release's `kotlin-compiler-<version>.zip.sha256` and checking it against the
 downloaded archive; `tools/check_workflow_download_pins.sh` fails if a workflow
 unpacks the compiler without checking it against `KOTLIN_COMPILER_SHA256`.
 

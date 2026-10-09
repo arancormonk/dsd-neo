@@ -78,6 +78,9 @@ static unsigned int g_confidence_voice_burst_calls;
 static dmr_confidence_result g_confidence_result = DMR_CONFIDENCE_LOCKED;
 static int g_voice_slot_open = 1;
 static int g_any_voice_open = 0;
+/* Whether the vocoder stub stages decoded media for the stereo mixes, as the vocoder does while the audible-audio stamp
+   is armed (issue #574). */
+static int g_stage_mix_media = 0;
 
 static void
 reset_spies(void) {
@@ -119,6 +122,7 @@ reset_spies(void) {
     g_confidence_result = DMR_CONFIDENCE_LOCKED;
     g_voice_slot_open = 1;
     g_any_voice_open = 0;
+    g_stage_mix_media = 0;
     exitflag = 0;
 }
 
@@ -293,6 +297,9 @@ processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe
         g_sm_voice_sync_calls_at_first_mbe = g_sm_voice_sync_calls;
     }
     g_process_mbe_calls++;
+    if (g_stage_mix_media) {
+        dsd_audio_dmr_mix_media_staged(state->currentslot, DSD_DMR_MIX_MEDIA_FLOAT | DSD_DMR_MIX_MEDIA_SHORT);
+    }
 }
 
 void
@@ -761,6 +768,37 @@ test_bs_bootstrap_split_by_a_carrier_boundary_is_dropped(void) {
     assert(g_confidence_reset_calls == 1U);
 }
 
+/* Issue #574: the loop's end drops the audio staged for the stereo mixes, and with it each slot's fresh-media mark. The
+   slot 1 burst decoded here never reached a mix (the mixes follow slot 2's bursts), and slot 2 still held a mark from
+   before the loop: the first mix of the next loop, a skipped burst's with nothing decoded yet, would otherwise stamp
+   audible audio for buffers that now hold zeros. A mix stamps only for the marks it takes
+   (dsd_audio_dmr_mix_media_take()); the mixes themselves are stubs here. */
+static void
+test_bs_loop_end_discards_the_mix_media(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    opts.floating_point = 1;
+    opts.pulse_digi_rate_out = 8000;
+    state.currentslot = 0;
+    state.dmr_color_code = 16;
+    load_single_burst_stream(0, DMR_BS_VOICE_SYNC);
+    g_any_voice_open = 1;
+    g_stage_mix_media = 1;
+    dsd_audio_dmr_mix_media_discard(0);
+    dsd_audio_dmr_mix_media_staged(1, DSD_DMR_MIX_MEDIA_FLOAT | DSD_DMR_MIX_MEDIA_SHORT);
+
+    dmrBS(&opts, &state);
+
+    assert(g_process_mbe_calls == 3U);
+    assert(g_play_fs3_calls == 0U && g_play_ss3_calls == 0U);
+    assert(dsd_audio_dmr_mix_media_take(0) == 0U);
+    assert(dsd_audio_dmr_mix_media_take(1) == 0U);
+    g_stage_mix_media = 0;
+}
+
 static int
 yield_after_one_second(const dsd_opts* opts, dsd_state* state) {
     (void)opts;
@@ -808,6 +846,7 @@ main(void) {
     test_bs_bootstrap_prefetched_voice_runs_first_frame_path();
     test_bs_burst_split_by_a_carrier_boundary_is_dropped();
     test_bs_bootstrap_split_by_a_carrier_boundary_is_dropped();
+    test_bs_loop_end_discards_the_mix_media();
     dsd_decode_clock_use_system();
     printf("DMR BS sync times: OK\n");
     return 0;

@@ -12,6 +12,7 @@
  */
 
 #include <assert.h>
+#include <dsd-neo/core/audio_activity.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
@@ -74,8 +75,6 @@ static int g_sf_write_short_calls;
 static short g_sf_written[18 * 320];
 static size_t g_sf_written_count;
 static int g_record_policy_blocked[2];
-static int g_dmr_missing_alg_key_allowed[2];
-static int g_dmr_voice_slot_allowed[2];
 static int g_gate_mono_forced_enc = -1;
 static int g_gate_dual_forced_enc_l = -1;
 static int g_gate_dual_forced_enc_r = -1;
@@ -303,26 +302,6 @@ dsd_write(int fd, const void* buf, size_t count) {
     return (ssize_t)count;
 }
 
-int
-dsd_dmr_missing_alg_key_can_decrypt(const dsd_state* state, int slot) {
-    (void)state;
-    if (slot < 0 || slot > 1) {
-        return 0;
-    }
-    return g_dmr_missing_alg_key_allowed[slot];
-}
-
-int
-dsd_dmr_voice_slot_can_decrypt(const dsd_state* state, int slot, int algid, unsigned long long r_key) {
-    (void)state;
-    (void)algid;
-    (void)r_key;
-    if (slot < 0 || slot > 1) {
-        return 0;
-    }
-    return g_dmr_voice_slot_allowed[slot];
-}
-
 static void
 reset_sink_capture(void) {
     g_audio_write_calls = 0;
@@ -338,14 +317,6 @@ reset_sink_capture(void) {
     g_sf_write_short_calls = 0;
     g_sf_written_count = 0;
     DSD_MEMSET(g_sf_written, 0, sizeof(g_sf_written));
-}
-
-static void
-reset_dmr_decrypt_capture(void) {
-    g_dmr_missing_alg_key_allowed[0] = 0;
-    g_dmr_missing_alg_key_allowed[1] = 0;
-    g_dmr_voice_slot_allowed[0] = 0;
-    g_dmr_voice_slot_allowed[1] = 0;
 }
 
 static void
@@ -670,29 +641,55 @@ test_dmr_ss3_decrypt_hold_and_copy_policy_helpers(void) {
     int encR = -1;
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
-    reset_dmr_decrypt_capture();
+    // Encrypted audio muted, the session default (initOpts()); 0 is the encrypted-audio unmute.
+    opts.dmr_mute_encL = 1;
+    opts.dmr_mute_encR = 1;
 
+    // SS3 follows the vocoder's slot flags (issue #574): the vocoder flags a slot encrypted when the service options
+    // carry the encryption bit and no loaded key decrypts it, and clears the flag when one does.
     state.dmr_so = 0x40;
     state.dmr_soR = 0x40;
-    dsd_dmr_ss3_init_enc_flags(&state, &encL, &encR);
+    state.dmr_encL = 1;
+    state.dmr_encR = 1;
+    dsd_dmr_ss3_init_enc_flags(&opts, &state, &encL, &encR);
 
     int rc = 0;
     rc |= expect_int("ss3 missing keys keep left muted", encL, 1);
     rc |= expect_int("ss3 missing keys keep right muted", encR, 1);
 
-    g_dmr_missing_alg_key_allowed[0] = 1;
-    state.payload_algidR = 0x81;
-    g_dmr_voice_slot_allowed[1] = 1;
-    dsd_dmr_ss3_init_enc_flags(&state, &encL, &encR);
-    rc |= expect_int("ss3 missing-alg key unmutes left", encL, 0);
-    rc |= expect_int("ss3 explicit voice key unmutes right", encR, 0);
+    // A loaded key decrypts both slots, so the vocoder clears their flags and SS3 follows them.
+    state.dmr_encL = 0;
+    state.dmr_encR = 0;
+    dsd_dmr_ss3_init_enc_flags(&opts, &state, &encL, &encR);
+    rc |= expect_int("ss3 follows the vocoder's cleared left flag", encL, 0);
+    rc |= expect_int("ss3 follows the vocoder's cleared right flag", encR, 0);
 
-    reset_dmr_decrypt_capture();
-    state.payload_algidR = 0;
+    // Bit set and no keys again, so both slots are flagged encrypted and only the forced-privacy override unmutes them.
+    state.dmr_encL = 1;
+    state.dmr_encR = 1;
     state.baofeng_ap = 1;
-    dsd_dmr_ss3_init_enc_flags(&state, &encL, &encR);
+    dsd_dmr_ss3_init_enc_flags(&opts, &state, &encL, &encR);
     rc |= expect_int("ss3 forced privacy unmutes left", encL, 0);
     rc |= expect_int("ss3 forced privacy unmutes right", encR, 0);
+
+    // Issue #574: the encrypted-audio mute flag is 0 after the user's unmute toggle and after any key load. The
+    // vocoder then stages a slot it flagged encrypted and FS3 plays it, but SS3 keeps it muted, so loading a key does
+    // not unmute every call that key cannot decrypt.
+    state.baofeng_ap = 0;
+    state.dmr_encL = 1;
+    state.dmr_encR = 1;
+    opts.dmr_mute_encL = 0;
+    opts.dmr_mute_encR = 0;
+    dsd_dmr_ss3_init_enc_flags(&opts, &state, &encL, &encR);
+    rc |= expect_int("ss3 keeps undecryptable left muted with encrypted audio unmuted", encL, 1);
+    rc |= expect_int("ss3 keeps undecryptable right muted with encrypted audio unmuted", encR, 1);
+    dsd_dmr_init_slot_mute_flags(&opts, &state, &encL, &encR);
+    rc |= expect_int("fs3 encrypted-audio unmute plays undecryptable left", encL, 0);
+    rc |= expect_int("fs3 encrypted-audio unmute plays undecryptable right", encR, 0);
+    state.dmr_encL = 0;
+    state.dmr_encR = 0;
+    opts.dmr_mute_encL = 1;
+    opts.dmr_mute_encR = 1;
 
     state.baofeng_ap = 0;
     state.tg_hold = 999;
@@ -1035,6 +1032,47 @@ test_ss18_keeps_legit_silence_inside_filled_extent(void) {
 
     int rc = 0;
     rc |= expect_int("ss18 silence inside extent still emits all filled blocks", g_udp_blast_calls, 9);
+    return rc;
+}
+
+/* Issue #574: SS18 applies the per-slot hard gate FS4 applies (slot1_on/slot2_on), so a switched-off slot's clear
+   audio is never played, not even through the duplication a crypto-muted companion slot triggers. */
+static int
+test_ss18_switched_off_slot_stays_silent_beside_muted_companion(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    for (int off = 0; off < 2; off++) {
+        const int muted = off ^ 1;
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        reset_sink_capture();
+        reset_gate_capture();
+        opts.audio_out = 1;
+        opts.audio_out_type = 8; // UDP sink counts one blast per emitted block
+        opts.slot1_on = off == 0 ? 0 : 1;
+        opts.slot2_on = off == 1 ? 0 : 1;
+        opts.slot_preference = 2;
+        state.p25_p2_audio_allowed[0] = 1;
+        state.p25_p2_audio_allowed[1] = 1;
+        state.p25_crypto_state[off] = DSD_P25_CRYPTO_CLEAR;
+        state.p25_crypto_state[muted] = DSD_P25_CRYPTO_BLOCKED;
+        state.dmrburstL = 21;
+        state.dmrburstR = 21;
+        state.voice_counter[off] = 18;
+        short (*clear)[160] = off == 0 ? state.s_l4 : state.s_r4;
+        for (int j = 0; j < 18; j++) {
+            for (int i = 0; i < 160; i++) {
+                clear[j][i] = 100;
+            }
+        }
+
+        playSynthesizedVoiceSS18(&opts, &state);
+
+        rc |= expect_int(off == 0 ? "ss18 slot 1 off beside a crypto-muted slot 2 plays nothing"
+                                  : "ss18 slot 2 off beside a crypto-muted slot 1 plays nothing",
+                         g_udp_blast_calls, 0);
+    }
     return rc;
 }
 
@@ -1527,6 +1565,290 @@ test_mono_voice_preserves_samples_in_configured_output(void) {
     return rc;
 }
 
+/* Issue #574: whether the code under test noted the audible-audio stamp since stamp_clear(). main() arms it. */
+static void
+stamp_clear(void) {
+    dsd_audio_activity_reset();
+}
+
+static int
+stamp_noted(void) {
+    uint64_t stamp = 0U;
+    dsd_audio_activity_read(&stamp, NULL);
+    return stamp != 0U;
+}
+
+/* What a DMR mix row stages for a slot: nothing, the mix's own kind of media, or only the other mix's kind. */
+enum { STAGE_NONE = 0, STAGE_OWN = 1, STAGE_OTHER = 2 };
+
+typedef struct {
+    const char* tag;
+    int staged[2];
+    int enc[2];
+    int slot_on[2];
+    int mono_slot; /* -1: DMR mono off */
+    int gate_mute_left;
+    int audio_out;
+    int want_blocks;
+    int want_stamp;
+} dmr_stamp_row;
+
+/* Issue #574: the DMR mixes run on a timer of bursts, skipped ones included, and replay each slot's buffers whatever
+   was decoded into them, so they stamp audible audio only for a slot holding media of their own kind (FLOAT for FS3,
+   SHORT for SS3) staged since the last mix, whose every gate passes. The staged samples here are all zero: valid
+   decoded silence counts all the same. */
+static int
+run_dmr_stamp_row(const dmr_stamp_row* row, int floating_point, int channels) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_sink_capture();
+    reset_gate_capture();
+    opts.audio_out = row->audio_out;
+    opts.audio_out_type = 8;
+    opts.floating_point = floating_point;
+    opts.pulse_digi_out_channels = channels;
+    opts.slot1_on = row->slot_on[0];
+    opts.slot2_on = row->slot_on[1];
+    opts.dmr_mute_encL = 1;
+    opts.dmr_mute_encR = 1;
+    state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    state.dmr_encL = row->enc[0];
+    state.dmr_encR = row->enc[1];
+    if (row->mono_slot >= 0) {
+        opts.dmr_mono = 1;
+        state.dmr_mono_slot = (short)row->mono_slot;
+    }
+    g_gate_dual_forced_enc_l = row->gate_mute_left ? 1 : -1;
+    const unsigned int own = floating_point ? DSD_DMR_MIX_MEDIA_FLOAT : DSD_DMR_MIX_MEDIA_SHORT;
+    const unsigned int other = floating_point ? DSD_DMR_MIX_MEDIA_SHORT : DSD_DMR_MIX_MEDIA_FLOAT;
+    for (int slot = 0; slot < 2; slot++) {
+        dsd_audio_dmr_mix_media_discard(slot);
+        if (row->staged[slot] != STAGE_NONE) {
+            dsd_audio_dmr_mix_media_staged(slot, row->staged[slot] == STAGE_OWN ? own : other);
+        }
+    }
+    stamp_clear();
+    if (floating_point) {
+        playSynthesizedVoiceFS3(&opts, &state);
+    } else {
+        playSynthesizedVoiceSS3(&opts, &state);
+    }
+    char tag[160];
+    DSD_SNPRINTF(tag, sizeof(tag), "%s %dch %s: blocks", floating_point ? "fs3" : "ss3", channels, row->tag);
+    int rc = expect_int(tag, g_udp_blast_calls, row->want_blocks);
+    DSD_SNPRINTF(tag, sizeof(tag), "%s %dch %s: stamp", floating_point ? "fs3" : "ss3", channels, row->tag);
+    rc |= expect_int(tag, stamp_noted(), row->want_stamp);
+    reset_gate_capture();
+    return rc;
+}
+
+static int
+test_dmr_mixes_stamp_only_fresh_audible_slots(void) {
+    static const dmr_stamp_row rows[] = {
+        {"clear slot 1 media", {STAGE_OWN, STAGE_NONE}, {0, 0}, {1, 1}, -1, 0, 1, 3, 1},
+        {"clear slot 2 media", {STAGE_NONE, STAGE_OWN}, {0, 0}, {1, 1}, -1, 0, 1, 3, 1},
+        {"slot 2 media beside a muted slot 1", {STAGE_OWN, STAGE_OWN}, {1, 0}, {1, 1}, -1, 0, 1, 3, 1},
+        {"no media staged (a skipped burst)", {STAGE_NONE, STAGE_NONE}, {0, 0}, {1, 1}, -1, 0, 1, 3, 0},
+        {"muted media beside an idle slot", {STAGE_OWN, STAGE_NONE}, {1, 0}, {1, 1}, -1, 0, 1, 3, 0},
+        {"only the other mix's media", {STAGE_OTHER, STAGE_OTHER}, {0, 0}, {1, 1}, -1, 0, 1, 3, 0},
+        {"slot 1 switched off", {STAGE_OWN, STAGE_NONE}, {0, 0}, {0, 1}, -1, 0, 1, 3, 0},
+        {"DMR mono playing slot 2", {STAGE_OWN, STAGE_NONE}, {0, 0}, {1, 1}, 1, 0, 1, 3, 0},
+        {"DMR mono playing slot 1", {STAGE_OWN, STAGE_NONE}, {0, 0}, {1, 1}, 0, 0, 1, 3, 1},
+        {"talkgroup gate mutes slot 1", {STAGE_OWN, STAGE_NONE}, {0, 0}, {1, 1}, -1, 1, 1, 3, 0},
+        {"output muted", {STAGE_OWN, STAGE_OWN}, {0, 0}, {1, 1}, -1, 0, 0, 0, 0},
+    };
+    int rc = 0;
+    for (int floating_point = 1; floating_point >= 0; floating_point--) {
+        for (int channels = 1; channels <= 2; channels++) {
+            for (size_t r = 0U; r < sizeof(rows) / sizeof(rows[0]); r++) {
+                rc |= run_dmr_stamp_row(&rows[r], floating_point, channels);
+            }
+        }
+    }
+
+    /* Each mix takes the flags: a second mix with nothing staged since (the skipped-burst path's) stamps nothing, nor
+       does one after the muted output took them, nor one after the staged audio was discarded. */
+    static const dmr_stamp_row clear = {"clear", {STAGE_OWN, STAGE_NONE}, {0, 0}, {1, 1}, -1, 0, 1, 3, 1};
+    static dsd_opts opts;
+    static dsd_state state;
+    for (int floating_point = 1; floating_point >= 0; floating_point--) {
+        const char* mix = floating_point ? "fs3" : "ss3";
+        const unsigned int own = floating_point ? DSD_DMR_MIX_MEDIA_FLOAT : DSD_DMR_MIX_MEDIA_SHORT;
+        char tag[96];
+        rc |= run_dmr_stamp_row(&clear, floating_point, 2);
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        opts.audio_out = 1;
+        opts.audio_out_type = 8;
+        opts.floating_point = floating_point;
+        opts.pulse_digi_out_channels = 2;
+        opts.slot1_on = 1;
+        opts.slot2_on = 1;
+        state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+        for (int step = 0; step < 3; step++) {
+            if (step == 1) {
+                dsd_audio_dmr_mix_media_staged(0, own);
+                opts.audio_out = 0;
+                if (floating_point) {
+                    playSynthesizedVoiceFS3(&opts, &state);
+                } else {
+                    playSynthesizedVoiceSS3(&opts, &state);
+                }
+                opts.audio_out = 1;
+            } else if (step == 2) {
+                dsd_audio_dmr_mix_media_staged(0, own);
+                dsd_audio_dmr_mix_media_staged(1, own);
+                dsd_audio_dmr_mix_media_discard(0);
+                dsd_audio_dmr_mix_media_discard(1);
+            }
+            reset_sink_capture();
+            stamp_clear();
+            if (floating_point) {
+                playSynthesizedVoiceFS3(&opts, &state);
+            } else {
+                playSynthesizedVoiceSS3(&opts, &state);
+            }
+            static const char* const steps[] = {"a repeat mix with nothing new",
+                                                "a mix after a muted one took the media",
+                                                "a mix after the staged audio was discarded"};
+            DSD_SNPRINTF(tag, sizeof(tag), "%s %s: blocks", mix, steps[step]);
+            rc |= expect_int(tag, g_udp_blast_calls, 3);
+            DSD_SNPRINTF(tag, sizeof(tag), "%s %s: stamp", mix, steps[step]);
+            rc |= expect_int(tag, stamp_noted(), 0);
+        }
+    }
+    return rc;
+}
+
+/* Issue #574: the FDMA mixers are called once per decoded frame, so each stamps audible audio when it plays its frame:
+   clear or decryptable, its talkgroup allowed, slot 1 on and the output unmuted. Valid all-zero decoded audio counts;
+   the short mono mix with no frame loaded plays nothing and stamps nothing. */
+static int
+test_fdma_mixers_stamp_what_they_play(void) {
+    static const struct {
+        const char* tag;
+        int crypto_muted;
+        int gate_muted;
+        int slot1_on;
+        int audio_out;
+        int frames;
+        int want;
+    } cases[] = {
+        {"clear frame", 0, 0, 1, 1, 160, 1},       {"crypto-muted frame", 1, 0, 1, 1, 160, 0},
+        {"blocked talkgroup", 0, 1, 1, 1, 160, 0}, {"slot 1 switched off", 0, 0, 0, 1, 160, 0},
+        {"output muted", 0, 0, 1, 0, 160, 0},      {"no frame loaded", 0, 0, 1, 1, 0, 0},
+    };
+
+    static const char* const mixers[] = {"fs", "fm", "ss", "ms"};
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    for (int m = 0; m < 4; m++) {
+        for (size_t c = 0U; c < sizeof(cases) / sizeof(cases[0]); c++) {
+            if (cases[c].frames == 0 && m != 3) {
+                continue; // Only the short mono mix reads a frame length.
+            }
+            DSD_MEMSET(&opts, 0, sizeof(opts));
+            DSD_MEMSET(&state, 0, sizeof(state));
+            reset_sink_capture();
+            reset_gate_capture();
+            opts.audio_out = cases[c].audio_out;
+            opts.audio_out_type = 8;
+            opts.slot1_on = cases[c].slot1_on;
+            opts.floating_point = m < 2 ? 1 : 0;
+            opts.pulse_digi_out_channels = (m == 0 || m == 2) ? 2 : 1;
+            state.synctype = DSD_SYNC_P25P1_POS;
+            state.p25_crypto_state[0] = cases[c].crypto_muted ? DSD_P25_CRYPTO_BLOCKED : DSD_P25_CRYPTO_CLEAR;
+            state.payload_algid = cases[c].crypto_muted ? 0x81 : 0x80;
+            state.audio_out_idx = cases[c].frames;
+            g_gate_mono_forced_enc = cases[c].gate_muted ? 1 : -1;
+            stamp_clear();
+            switch (m) {
+                case 0: playSynthesizedVoiceFS(&opts, &state); break;
+                case 1: playSynthesizedVoiceFM(&opts, &state); break;
+                case 2: playSynthesizedVoiceSS(&opts, &state); break;
+                default: playSynthesizedVoiceMS(&opts, &state); break;
+            }
+            char tag[96];
+            DSD_SNPRINTF(tag, sizeof(tag), "%s %s: blocks", mixers[m], cases[c].tag);
+            rc |= expect_int(tag, g_udp_blast_calls, cases[c].want);
+            DSD_SNPRINTF(tag, sizeof(tag), "%s %s: stamp", mixers[m], cases[c].tag);
+            rc |= expect_int(tag, stamp_noted(), cases[c].want);
+        }
+    }
+    reset_gate_capture();
+    return rc;
+}
+
+/* Issue #574: a mix stamps audible audio only when an output receives its blocks (dsd_output_*_block()): the local
+   stream while it is open, UDP, or the raw fd, in either sample format. The null output (-o null, which keeps output
+   type 9 once unmuted) and a local stream that is not open receive nothing, so they stamp nothing. */
+static int
+test_mixers_stamp_only_what_an_output_takes(void) {
+    static const struct {
+        const char* tag;
+        int out_type;
+        int stream_open;
+        int want;
+    } outputs[] = {
+        {"local stream", 0, 1, 1}, {"local stream not open", 0, 0, 0}, {"udp", 8, 1, 1},
+        {"raw fd", 1, 1, 1},       {"null output", 9, 1, 0},
+    };
+
+    static const char* const mixers[] = {"fs3", "ss3", "fs", "fm", "ss", "ms"};
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    for (size_t m = 0U; m < sizeof(mixers) / sizeof(mixers[0]); m++) {
+        for (size_t o = 0U; o < sizeof(outputs) / sizeof(outputs[0]); o++) {
+            DSD_MEMSET(&opts, 0, sizeof(opts));
+            DSD_MEMSET(&state, 0, sizeof(state));
+            reset_sink_capture();
+            reset_gate_capture();
+            opts.audio_out = 1;
+            opts.audio_out_type = outputs[o].out_type;
+            opts.audio_out_stream = outputs[o].stream_open ? (dsd_audio_stream*)&opts : NULL;
+            opts.audio_out_fd = 42;
+            opts.slot1_on = 1;
+            opts.slot2_on = 1;
+            opts.floating_point = (m == 0U || m == 2U || m == 3U) ? 1 : 0;
+            opts.pulse_digi_out_channels = (m == 3U || m == 5U) ? 1 : 2;
+            g_audio_write_channels = opts.pulse_digi_out_channels;
+            if (m < 2U) {
+                state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+                dsd_audio_dmr_mix_media_discard(0);
+                dsd_audio_dmr_mix_media_discard(1);
+                dsd_audio_dmr_mix_media_staged(0, m == 0U ? DSD_DMR_MIX_MEDIA_FLOAT : DSD_DMR_MIX_MEDIA_SHORT);
+            } else {
+                state.synctype = DSD_SYNC_P25P1_POS;
+                state.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
+                state.payload_algid = 0x80;
+                state.audio_out_idx = 160;
+            }
+            stamp_clear();
+            switch (m) {
+                case 0: playSynthesizedVoiceFS3(&opts, &state); break;
+                case 1: playSynthesizedVoiceSS3(&opts, &state); break;
+                case 2: playSynthesizedVoiceFS(&opts, &state); break;
+                case 3: playSynthesizedVoiceFM(&opts, &state); break;
+                case 4: playSynthesizedVoiceSS(&opts, &state); break;
+                default: playSynthesizedVoiceMS(&opts, &state); break;
+            }
+            const int received = g_audio_write_calls + g_udp_blast_calls + g_dsd_write_calls;
+            char tag[96];
+            DSD_SNPRINTF(tag, sizeof(tag), "%s %s: an output receives blocks", mixers[m], outputs[o].tag);
+            rc |= expect_int(tag, received > 0, outputs[o].want);
+            DSD_SNPRINTF(tag, sizeof(tag), "%s %s: stamp", mixers[m], outputs[o].tag);
+            rc |= expect_int(tag, stamp_noted(), outputs[o].want);
+        }
+    }
+    g_audio_write_channels = 2;
+    reset_gate_capture();
+    return rc;
+}
+
 static int
 test_silent_s16_helper(void) {
     short all_zero[4] = {0, 0, 0, 0};
@@ -1846,6 +2168,7 @@ test_ss3_hold_respects_policy_mute(void) {
 int
 main(void) {
     int rc = 0;
+    dsd_audio_activity_arm();
     rc |= test_p25_and_nxdn_decrypt_gate_helpers();
     rc |= test_output_helpers_dispatch_to_configured_sinks();
     rc |= test_output_block_helpers_skip_silent_trailing_blocks();
@@ -1857,6 +2180,7 @@ main(void) {
     rc |= test_p25p2_ss18_slot_preference_and_copy_policy_helpers();
     rc |= test_ss18_partial_superframe_skips_zero_blocks_and_duplicates_clear_slot();
     rc |= test_ss18_keeps_legit_silence_inside_filled_extent();
+    rc |= test_ss18_switched_off_slot_stays_silent_beside_muted_companion();
     rc |= test_fs4_mono_mixer_averages_available_unmuted_slots();
     rc |= test_short_dmr_mono_honors_slot_controls_and_one_channel_output();
     rc |= test_float_playback_orchestrators_emit_expected_blocks();
@@ -1870,5 +2194,8 @@ main(void) {
     rc |= test_x2_mono_voice_uses_playing_slot();
     rc |= test_ss3_hold_respects_policy_mute();
     rc |= test_silent_s16_helper();
+    rc |= test_dmr_mixes_stamp_only_fresh_audible_slots();
+    rc |= test_fdma_mixers_stamp_what_they_play();
+    rc |= test_mixers_stamp_only_what_an_output_takes();
     return rc;
 }

@@ -229,6 +229,14 @@ class ImportOnlyHost : public dsd_qt::DecoderHost {
     bool usbReady = false;
     int usbRequests = 0;
 
+    // Issue #574: the Settings screen's Screen rows gate on this capability.
+    bool
+    screenPolicySupported() const override {
+        return screenPolicy;
+    }
+
+    bool screenPolicy = false;
+
     bool acceptStart = false;
     bool startRunning = false;
 
@@ -1931,6 +1939,25 @@ class Setup : public QObject {
         m_engine->rootContext()->setContextProperty(QStringLiteral("decoderHost"), m_host_readings);
     }
 
+    /**
+     * @brief Claim or deny the screen policy (#574) on every host a case can use.
+     *
+     * The map and both lifecycle hosts all answer, so it holds with or without
+     * useLifecycleHost(). Production reads it as a CONSTANT, so set it before
+     * loading the screen under test.
+     */
+    Q_INVOKABLE void
+    setScreenPolicySupported(bool supported) {
+        m_import_host->screenPolicy = supported;
+        m_initializing_host->screenPolicy = supported;
+        m_host[QStringLiteral("screenPolicySupported")] = supported;
+        m_host_readings->insert(QStringLiteral("screenPolicySupported"), supported);
+        QQmlContext* ctx = m_engine->rootContext();
+        if (ctx->contextProperty(QStringLiteral("decoderHost")).value<QObject*>() == m_host_readings) {
+            ctx->setContextProperty(QStringLiteral("decoderHost"), m_host_readings);
+        }
+    }
+
     /** @brief Publish a live/idle host so cases can exercise session-only actions. */
     Q_INVOKABLE void
     setHostRunning(bool running) {
@@ -2231,7 +2258,10 @@ class Setup : public QObject {
         prefs[QStringLiteral("onboardingDone")] = true;
         prefs[QStringLiteral("backgroundListening")] = false;
         prefs[QStringLiteral("notificationExplained")] = true;
-        prefs[QStringLiteral("keepScreenAwake")] = false;
+        /* Issue #574: AppPrefs' defaults, System default and 30 s. */
+        prefs[QStringLiteral("screenMode")] = 0;
+        prefs[QStringLiteral("screenDelaySec")] = 30;
+        prefs[QStringLiteral("screenDelayChoices")] = QVariantList({10, 30, 60, 120, 300});
         prefs[QStringLiteral("skipEncrypted")] = false;
         prefs[QStringLiteral("persistTgLockouts")] = true;
         /* The radio defaults the settings screen and the explore setup edit.
@@ -2523,9 +2553,9 @@ class Setup : public QObject {
         /* Why the last session stopped, empty while nothing has failed. */
         host[QStringLiteral("failureText")] = QString();
         /* The Android-only capabilities the settings screen hides rows on: a
-         * desktop host brokers no USB device and cannot hold the screen awake,
+         * desktop host brokers no USB device and applies no screen policy,
          * which is the arrangement this offscreen run matches. */
-        host[QStringLiteral("keepScreenAwakeSupported")] = false;
+        host[QStringLiteral("screenPolicySupported")] = false;
         host[QStringLiteral("localDeviceBrokered")] = false;
         host[QStringLiteral("localDeviceSource")] = QStringLiteral("usb");
         host[QStringLiteral("localDeviceSerial")] = QString();

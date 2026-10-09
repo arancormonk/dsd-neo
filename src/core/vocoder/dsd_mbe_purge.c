@@ -3,6 +3,7 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/vocoder.h>
 #include <dsd-neo/runtime/p25_p2_audio_ring.h>
@@ -33,6 +34,7 @@ dsd_mbe_purge_slot_audio(dsd_state* state, int slot) {
     p25_p2_audio_ring_reset(state, slot);
     dsd_mbe_reset_slot_parameters(state, slot);
     state->voice_counter[slot] = 0;
+    dsd_audio_dmr_mix_media_discard(slot);
 
     if (slot == 0) {
         DSD_MEMSET(state->audio_out_temp_buf, 0, sizeof(state->audio_out_temp_buf));

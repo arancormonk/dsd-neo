@@ -105,6 +105,30 @@ void playSynthesizedVoiceSS3(dsd_opts* opts, dsd_state* state); // short stereo 
 void playSynthesizedVoiceSS18(dsd_opts* opts, dsd_state* state); // short stereo mix 18V Superframe
 
 /**
+ * @brief Decoded media the vocoder staged for a DMR slot since the stereo mixes last ran (issue #574).
+ *
+ * The float (FS3) and short (SS3) DMR mixes run on a timer of bursts, skipped ones included, and replay each slot's
+ * buffers whether or not anything was decoded into them, so they note the audible-audio stamp
+ * (<dsd-neo/core/audio_activity.h>) only for a slot whose gates pass, that a channel they emit carries (SS3's output
+ * policy may copy one slot over the other) and that holds media of their kind: FLOAT when the vocoder copied a decoded
+ * frame into `f_l`/`f_r`, SHORT when it ran the short path into `s_l`/`s_r` (never the silence a muted slot stages).
+ * The silence a muted slot stages replaces its short frame, so it retires that slot's SHORT flag: the flag then says
+ * media was staged after the slot's last silence, which the frames the mixes play still hold. Each mix takes both
+ * slots' flags; a path that discards the staged audio clears them. Kept only while the stamp is armed. Process-wide,
+ * decoder thread only.
+ */
+enum { DSD_DMR_MIX_MEDIA_FLOAT = 1, DSD_DMR_MIX_MEDIA_SHORT = 2 };
+
+/** @brief The vocoder staged decoded media of @p kind (DSD_DMR_MIX_MEDIA_*) for DMR slot @p slot (0 or 1). */
+void dsd_audio_dmr_mix_media_staged(int slot, unsigned int kind);
+/** @brief The vocoder staged silence over DMR slot @p slot's (0 or 1) frame of @p kind: retires those flags. */
+void dsd_audio_dmr_mix_media_silenced(int slot, unsigned int kind);
+/** @brief The staged audio of DMR slot @p slot (0 or 1) was discarded: it holds no fresh media. */
+void dsd_audio_dmr_mix_media_discard(int slot);
+/** @brief A mix takes DMR slot @p slot's (0 or 1) media: returns its DSD_DMR_MIX_MEDIA_* bits and clears them. */
+unsigned int dsd_audio_dmr_mix_media_take(int slot);
+
+/**
  * @brief Play one synthesized voice frame using the configured sample format and channel count.
  *
  * Selects short or float output from `opts->floating_point` and mono or

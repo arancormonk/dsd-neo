@@ -5,6 +5,8 @@ ModalSheet {
     id: sheet
     property var choices: []
     property var chooseAction: null
+    // When set, choice button i is named prefix + i, so a test can tap the real one.
+    property string choiceObjectNamePrefix: ""
     function open(title, values, action) {
         accessibleName = title;
         choices = values;
@@ -24,6 +26,7 @@ ModalSheet {
         OutlineButton {
             required property var modelData
             required property int index
+            objectName: sheet.choiceObjectNamePrefix.length > 0 ? sheet.choiceObjectNamePrefix + index : ""
             width: parent.width
             text: modelData
             onClicked: {

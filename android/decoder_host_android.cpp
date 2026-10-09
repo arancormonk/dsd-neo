@@ -38,12 +38,7 @@ constexpr const char* kServiceClass = "io/github/arancormonk/dsdneo/DecoderServi
 constexpr const char* kSupportClass = "io/github/arancormonk/dsdneo/AppSupport";
 constexpr const char* kLocationClass = "io/github/arancormonk/dsdneo/LocationSupport";
 constexpr const char* kUsbClass = "io/github/arancormonk/dsdneo/UsbSourceManager";
-
-/* android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON. Namespace scope,
- * not function-local: QJniObject::callMethod takes its arguments by forwarding
- * reference, which odr-uses the constant, and the keep-awake lambda below has
- * no capture-default to pick a local up with. */
-constexpr int kFlagKeepScreenOn = 128;
+constexpr const char* kScreenClass = "io/github/arancormonk/dsdneo/ScreenSupport";
 
 /* The Qt-free phase enum and the Q_ENUM QML binds to have to stay in lockstep; the
  * mapping below hands one straight to the other. */
@@ -268,23 +263,17 @@ DecoderHostAndroid::requestLocalDeviceAccessForSource(const QString& source, con
 }
 
 void
-DecoderHostAndroid::setKeepScreenAwake(bool on) {
-    /* The flag belongs to the Activity's window and must be flipped on the Android
-     * main thread, not the Qt one. */
-    QNativeInterface::QAndroidApplication::runOnAndroidMainThread([on]() -> QVariant {
-        QJniObject activity = android_context();
-        if (!activity.isValid()) {
+DecoderHostAndroid::setScreenPolicy(int mode, int delaySeconds) {
+    /* ScreenSupport owns the screen state and touches the Activity's window, so it
+     * runs on the Android main thread, not the Qt one. */
+    QNativeInterface::QAndroidApplication::runOnAndroidMainThread([mode, delaySeconds]() -> QVariant {
+        QJniObject context = android_context();
+        if (!context.isValid()) {
             return {};
         }
-        QJniObject window = activity.callObjectMethod("getWindow", "()Landroid/view/Window;");
-        if (!window.isValid()) {
-            return {};
-        }
-        if (on) {
-            window.callMethod<void>("addFlags", "(I)V", kFlagKeepScreenOn);
-        } else {
-            window.callMethod<void>("clearFlags", "(I)V", kFlagKeepScreenOn);
-        }
+        // Must match ScreenSupport.kt: @JvmStatic fun configure(context: Context, mode: Int, delaySeconds: Int)
+        QJniObject::callStaticMethod<void>(kScreenClass, "configure", "(Landroid/content/Context;II)V",
+                                           context.object(), static_cast<jint>(mode), static_cast<jint>(delaySeconds));
         return {};
     });
 }

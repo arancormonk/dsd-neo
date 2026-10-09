@@ -7,7 +7,9 @@
 
 #include <QLatin1String>
 #include <QVariant>
+#include <algorithm>
 #include <cmath>
+#include <iterator>
 #include "realtime_clock.h"
 
 namespace dsd_qt {
@@ -20,7 +22,11 @@ constexpr const char kAppearance[] = "ui/appearance";
 constexpr const char kMetricUnits[] = "ui/metricUnits";
 constexpr const char kOnboardingDone[] = "ui/onboardingDone";
 constexpr const char kBackgroundListening[] = "listen/background";
-constexpr const char kKeepScreenAwake[] = "listen/keepAwake";
+constexpr const char kScreenMode[] = "listen/screenMode";
+constexpr const char kScreenDelaySec[] = "listen/screenDelaySec";
+// The keep-awake switch the screen mode replaced (#574). Read only, to migrate an
+// install that never chose a mode; never written, so a downgrade finds it intact.
+constexpr const char kLegacyKeepAwake[] = "listen/keepAwake";
 constexpr const char kSkipEncrypted[] = "decode/skipEncrypted";
 constexpr const char kPersistTgLockouts[] = "decode/persistTgLockouts";
 constexpr const char kHangtimeSec[] = "decode/hangtimeSec";
@@ -82,6 +88,45 @@ sane_explore_source_type(const QString& type) {
 int
 sane_explore_port(int port) {
     return (port >= 1 && port <= 65535) ? port : 1234;
+}
+
+// The delays the settings offer, in seconds. Must match ScreenPolicy.kt's
+// DELAY_CHOICES_SECONDS and DEFAULT_DELAY_SECONDS.
+constexpr int kScreenDelayChoices[] = {10, 30, 60, 120, 300};
+constexpr int kDefaultScreenDelaySec = 30;
+
+/** @brief @p raw if it holds a ScreenMode code, else System default; text that is not a number included. */
+int
+sane_screen_mode(const QVariant& raw) {
+    bool ok = false;
+    const int mode = raw.toInt(&ok);
+    return (ok && mode >= AppPrefs::ScreenSystem && mode <= AppPrefs::ScreenOffBetweenCalls) ? mode
+                                                                                             : AppPrefs::ScreenSystem;
+}
+
+/** @brief @p raw if it holds one of the offered delays, else the default; text that is not a number included. */
+int
+sane_screen_delay(const QVariant& raw) {
+    bool ok = false;
+    const int seconds = raw.toInt(&ok);
+    const bool offered = ok
+                         && std::any_of(std::begin(kScreenDelayChoices), std::end(kScreenDelayChoices),
+                                        [seconds](int choice) { return choice == seconds; });
+    return offered ? seconds : kDefaultScreenDelaySec;
+}
+
+/**
+ * @brief Whether writing @p next would change what is stored as @p stored.
+ *
+ * Compares with the raw stored value, per the rule above: a stored value that
+ * is out of range or not a number differs from every clean value, so the
+ * corrective write lands.
+ */
+bool
+stored_int_differs(const QVariant& stored, int next) {
+    bool ok = false;
+    const int value = stored.toInt(&ok);
+    return !ok || value != next;
 }
 
 } // namespace
@@ -199,21 +244,55 @@ AppPrefs::setBackgroundListening(bool on) {
     Q_EMIT backgroundListeningChanged();
 }
 
-bool
-AppPrefs::keepScreenAwake() const {
-    return m_settings.value(QLatin1String(kKeepScreenAwake), false).toBool();
+int
+AppPrefs::screenMode() const {
+    const QVariant stored = m_settings.value(QLatin1String(kScreenMode));
+    if (stored.isValid()) {
+        return sane_screen_mode(stored);
+    }
+    // Never chosen: carry the old switch over. Reading only — the new key is
+    // written when the user picks a mode, and the old one never is.
+    return m_settings.value(QLatin1String(kLegacyKeepAwake), false).toBool() ? ScreenAlwaysOn : ScreenSystem;
 }
 
 void
-AppPrefs::setKeepScreenAwake(bool on) {
-    if (on == keepScreenAwake()) {
+AppPrefs::setScreenMode(int mode) {
+    const int next = sane_screen_mode(mode);
+    const QVariant stored = m_settings.value(QLatin1String(kScreenMode));
+    // With no stored mode, what the user sees is the migrated one: choosing it
+    // again is not a change.
+    if (stored.isValid() ? !stored_int_differs(stored, next) : next == screenMode()) {
         return;
     }
-    // Storage only. The platform effect (the Android window flag) is applied by
+    // Storage only. The platform effect (the Android screen policy) is applied by
     // the DecoderHost the shared UI wires this preference to — this layer stays
     // free of platform APIs.
-    m_settings.setValue(QLatin1String(kKeepScreenAwake), on);
-    Q_EMIT keepScreenAwakeChanged();
+    m_settings.setValue(QLatin1String(kScreenMode), next);
+    Q_EMIT screenPolicyChanged();
+}
+
+int
+AppPrefs::screenDelaySec() const {
+    return sane_screen_delay(m_settings.value(QLatin1String(kScreenDelaySec), kDefaultScreenDelaySec));
+}
+
+void
+AppPrefs::setScreenDelaySec(int seconds) {
+    const int next = sane_screen_delay(seconds);
+    if (!stored_int_differs(m_settings.value(QLatin1String(kScreenDelaySec), kDefaultScreenDelaySec), next)) {
+        return;
+    }
+    m_settings.setValue(QLatin1String(kScreenDelaySec), next);
+    Q_EMIT screenPolicyChanged();
+}
+
+QVariantList
+AppPrefs::screenDelayChoices() const {
+    QVariantList choices;
+    for (const int choice : kScreenDelayChoices) {
+        choices.append(choice);
+    }
+    return choices;
 }
 
 bool

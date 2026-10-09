@@ -10,9 +10,11 @@
 #include <assert.h>
 #include <dsd-neo/app_control/call_view.h>
 #include <dsd-neo/app_control/notification_status.h>
+#include <dsd-neo/core/audio_activity.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/parse.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -24,6 +26,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "core/audio/audio_activity_internal.h"
 
 /* The record's shape, spelled out rather than left as a bare total: DecoderStatus.kt
    mirrors it as HEADER_FIELDS/SLOT_FIELDS, and a field added on one side without the
@@ -31,10 +34,65 @@
    silently stops updating, with nothing logged on either side of JNI. Split the same way
    the Kotlin constants are so the two read as the same statement. */
 enum {
-    NOTIFICATION_HEADER_FIELDS = 9, /**< version, protocol, 3 flags, 3 frequencies, lead slot. */
-    NOTIFICATION_SLOT_FIELDS = 11,  /**< state, name, tg, src, tg_id, enc, algid, kid, elapsed, emergency, priority. */
+    /** version, protocol, 3 flags, 3 frequencies, lead slot, audible stamp, audible age. */
+    NOTIFICATION_HEADER_FIELDS = 11,
+    NOTIFICATION_SLOT_FIELDS = 11, /**< state, name, tg, src, tg_id, enc, algid, kid, elapsed, emergency, priority. */
     NOTIFICATION_TOTAL_FIELDS = NOTIFICATION_HEADER_FIELDS + NOTIFICATION_SLOT_FIELDS * DSD_CALL_STATE_SLOT_COUNT,
 };
+
+/* Header fields read by index: the record grew at the end of its header, so a walk that counts up to "the last header
+   field" would land somewhere else after the next change. */
+enum {
+    NOTIFICATION_FIELD_LEAD_SLOT = 8,
+    NOTIFICATION_FIELD_AUDIBLE_STAMP = 9,
+    NOTIFICATION_FIELD_AUDIBLE_AGE = 10,
+};
+
+/* The record test_encode_matches_expected_record_field_order() publishes, as the encoder must write it.
+   tests/android/DecoderStatusTest.kt parses the same literal as its golden v3 record. The two must stay byte-identical,
+   so the C encoder and the Kotlin reader pin one format between them: tests/android/run_jvm_tests.py's decoder_status
+   suite reads both and fails when they differ, so keep this a #define of adjacent plain string literals. */
+#define NOTIFICATION_GOLDEN_V3_RECORD                                                                                  \
+    "v3\tP25p2\t1\t0\t1\t851006250\t851012500\t851500000\t0\t5000000000\t250"                                          \
+    "\t2\tRiverside Fire\t51023\t7654321\t51023\t1\t170\t4660\t1500\t1\t3"                                             \
+    "\t0\t\t\t\t0\t0\t0\t0\t0\t0\t0"
+
+/* The audible-audio stamp's clock while a test holds it (dsd_audio_activity_set_clock_for_test()). */
+static uint64_t g_audio_now_ms = 0U;
+
+static uint64_t
+audio_test_clock(void) {
+    return g_audio_now_ms;
+}
+
+/* Copies field @p index (0-based) of the tab-separated @p record into @p out. Returns 1 when the record has that field
+   and it fits, else 0. */
+static int
+record_field(const char* record, int index, char* out, size_t out_size) {
+    const char* start = record;
+    for (int field = 0; field < index; field++) {
+        start = strchr(start, '\t');
+        if (start == NULL) {
+            return 0;
+        }
+        start++;
+    }
+    const char* end = strchr(start, '\t');
+    const size_t len = (end != NULL) ? (size_t)(end - start) : strlen(start);
+    if (len + 1U > out_size) {
+        return 0;
+    }
+    DSD_MEMCPY(out, start, len);
+    out[len] = '\0';
+    return 1;
+}
+
+/* Whether field @p index of @p record reads exactly @p want. */
+static int
+record_field_is(const char* record, int index, const char* want) {
+    char field[DSD_APP_NOTIFICATION_RECORD_SIZE];
+    return record_field(record, index, field, sizeof(field)) && strcmp(field, want) == 0;
+}
 
 static dsd_state*
 make_state(void) {
@@ -78,6 +136,31 @@ test_get_before_any_publish_reports_nothing(void) {
        rendering straight from the struct would headline slot 0 on a process that has
        published nothing at all. */
     assert(status.lead_slot == -1);
+    /* No audible audio yet: no stamp, and the age's "none" sentinel rather than an age of 0. */
+    assert(status.audible_stamp == 0U);
+    assert(status.audible_age_ms == -1);
+}
+
+/* Only the Android poll reads the record through the encoder, and only it turns the audible-audio stamp on: the API
+   feed and the desktop frontends read through get(), and a session none of them watches must keep doing no stamp work
+   per audio block. Arming is for the life of the process, so this runs before anything here encodes, and before
+   anything publishes. */
+static void
+test_only_encode_arms_the_audible_stamp(void) {
+    dsd_app_notification_status status;
+    (void)dsd_app_notification_get(&status);
+    (void)dsd_app_notification_get(&status);
+    assert(dsd_audio_activity_armed() == 0);
+    dsd_audio_activity_note();
+    (void)dsd_app_notification_get(&status);
+    assert(status.audible_stamp == 0U);
+    assert(status.audible_age_ms == -1);
+
+    /* The service starts polling before the engine publishes anything, so its first poll arms the stamp even though it
+       has no record to hand back yet. */
+    char record[DSD_APP_NOTIFICATION_RECORD_SIZE];
+    assert(dsd_app_notification_encode(record, sizeof(record)) == 0);
+    assert(dsd_audio_activity_armed() == 1);
 }
 
 static void
@@ -256,10 +339,11 @@ test_opts_only_publish_keeps_the_no_slot_sentinel(void) {
     assert(status.slots[1].state == DSD_APP_CALL_LINE_NONE);
     assert(status.lead_slot == -1);
 
-    /* And through the encoder, which passes lead_slot out verbatim. */
+    /* And through the encoder, which passes lead_slot out verbatim. By index: the audible age beside it also reads -1
+       with no audio, so a search for the text would pass on the wrong field. */
     char record[DSD_APP_NOTIFICATION_RECORD_SIZE];
     assert(dsd_app_notification_encode(record, sizeof(record)) > 0);
-    assert(strstr(record, "\t-1\t") != NULL);
+    assert(record_field_is(record, NOTIFICATION_FIELD_LEAD_SLOT, "-1"));
 }
 
 static void
@@ -310,17 +394,11 @@ test_lead_slot_is_published_and_survives_encoding(void) {
     assert(dsd_app_notification_get(&status) == 1);
     assert(status.lead_slot == 1);
 
-    /* And it reaches the reader: the field sits at the end of the header, ahead of the
-       first slot's state. */
+    /* And it reaches the reader: the field sits after the three frequencies, ahead of the
+       audible-audio pair. */
     char record[DSD_APP_NOTIFICATION_RECORD_SIZE];
     assert(dsd_app_notification_encode(record, sizeof(record)) > 0);
-    const char* eighth = record;
-    for (int field = 0; field < NOTIFICATION_HEADER_FIELDS - 1; field++) {
-        eighth = strchr(eighth, '\t');
-        assert(eighth != NULL);
-        eighth++;
-    }
-    assert(eighth[0] == '1' && eighth[1] == '\t');
+    assert(record_field_is(record, NOTIFICATION_FIELD_LEAD_SLOT, "1"));
 
     assert(dsd_call_state_end(state, 1U, dsd_decode_now_mono_s()) == 1);
     dsd_app_notification_publish_state(state);
@@ -329,13 +407,7 @@ test_lead_slot_is_published_and_survives_encoding(void) {
     assert(status.slots[0].state == DSD_APP_CALL_LINE_ACTIVE);
     assert(status.lead_slot == 0);
     assert(dsd_app_notification_encode(record, sizeof(record)) > 0);
-    eighth = record;
-    for (int field = 0; field < NOTIFICATION_HEADER_FIELDS - 1; field++) {
-        eighth = strchr(eighth, '\t');
-        assert(eighth != NULL);
-        eighth++;
-    }
-    assert(eighth[0] == '0' && eighth[1] == '\t');
+    assert(record_field_is(record, NOTIFICATION_FIELD_LEAD_SLOT, "0"));
 
     destroy_state(state);
 }
@@ -379,11 +451,66 @@ test_encode_has_version_and_field_count(void) {
     char record[1024];
     const size_t written = dsd_app_notification_encode(record, sizeof(record));
     assert(written > 0);
-    assert(strncmp(record, "v2\t", 3) == 0);
+    assert(strncmp(record, "v3\t", 3) == 0);
     assert(count_fields(record) == (size_t)NOTIFICATION_TOTAL_FIELDS);
     /* One line: a newline would break the reader's single-record assumption. */
     assert(strchr(record, '\n') == NULL);
     destroy_state(state);
+}
+
+/* Publishes an opts half, which is all get() needs to report a record. */
+static void
+publish_any_opts(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    assert(opts != NULL);
+    dsd_app_notification_publish_opts(opts);
+    free(opts);
+}
+
+/* A record with no audible audio behind it: no stamp, and the age's "none" sentinel, on the struct and on the wire. */
+static void
+test_audible_pair_reads_none_before_any_audio(void) {
+    dsd_app_notification_reset();
+    publish_any_opts();
+
+    dsd_app_notification_status status;
+    DSD_MEMSET(&status, 0xAB, sizeof(status));
+    assert(dsd_app_notification_get(&status) == 1);
+    assert(status.audible_stamp == 0U);
+    assert(status.audible_age_ms == -1);
+
+    char record[DSD_APP_NOTIFICATION_RECORD_SIZE];
+    assert(dsd_app_notification_encode(record, sizeof(record)) > 0);
+    assert(record_field_is(record, NOTIFICATION_FIELD_AUDIBLE_STAMP, "0"));
+    assert(record_field_is(record, NOTIFICATION_FIELD_AUDIBLE_AGE, "-1"));
+}
+
+/* Audible audio noted while armed: the record carries the stamp it stored and that stamp's age. */
+static void
+test_audible_pair_follows_a_note(void) {
+    publish_any_opts();
+    assert(dsd_audio_activity_armed() == 1);
+    dsd_audio_activity_note();
+    uint64_t noted = 0U;
+    dsd_audio_activity_read(&noted, NULL);
+    assert(noted > 0U);
+
+    dsd_app_notification_status status;
+    DSD_MEMSET(&status, 0xAB, sizeof(status));
+    assert(dsd_app_notification_get(&status) == 1);
+    assert(status.audible_stamp == noted);
+    assert(status.audible_age_ms >= 0 && status.audible_age_ms <= DSD_AUDIO_ACTIVITY_MAX_AGE_MS);
+
+    char record[DSD_APP_NOTIFICATION_RECORD_SIZE];
+    assert(dsd_app_notification_encode(record, sizeof(record)) > 0);
+    char want[32];
+    DSD_SNPRINTF(want, sizeof(want), "%llu", (unsigned long long)noted);
+    assert(record_field_is(record, NOTIFICATION_FIELD_AUDIBLE_STAMP, want));
+    char age_text[32];
+    assert(record_field(record, NOTIFICATION_FIELD_AUDIBLE_AGE, age_text, sizeof(age_text)));
+    long age = -1;
+    assert(dsd_parse_long_strict(age_text, 10, 0L, (long)DSD_AUDIO_ACTIVITY_MAX_AGE_MS, &age) == 0);
+    assert(count_fields(record) == (size_t)NOTIFICATION_TOTAL_FIELDS);
 }
 
 static void
@@ -549,12 +676,22 @@ test_encode_rejects_a_short_buffer(void) {
     - name and tg_text differ because a CSV-imported group name is staged on the slot's
       history row below; without one, dsd_app_slot_call_view() (call_view.c) makes name
       fall back to tg_text verbatim, which would make that swap invisible.
-   Every field except elapsed_ms is otherwise a deterministic function of the inputs set
-   here; elapsed_ms is wall-clock-derived (time since the call epoch opened), so it is
-   read back from the published status rather than guessed, to keep the comparison from
-   flaking. */
+    - lead_slot=0, audible_stamp=5000000000, audible_age_ms=250 and slot 0's state=2:
+      the header's last three numbers and the first slot field all differ. The stamp
+      sits past 2^32, so a 32-bit conversion anywhere would show too.
+   Both clocks the record reads are held for the test -- the decode clock that ages the
+   call (elapsed_ms) and the audible-audio stamp's -- so every field is a fixed function
+   of the inputs set here, and the whole record is a literal,
+   NOTIFICATION_GOLDEN_V3_RECORD, that the Kotlin reader's test parses as well. */
 static void
 test_encode_matches_expected_record_field_order(void) {
+    /* 1000 s, then 1.5 s later: both exact in a double, so elapsed_ms is exactly 1500. */
+    const uint64_t t0_ns = 1000000000000ULL;
+    dsd_decode_clock_use_test(t0_ns);
+    dsd_audio_activity_set_clock_for_test(audio_test_clock);
+    g_audio_now_ms = 5000000000ULL;
+    dsd_audio_activity_note();
+
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
     assert(opts != NULL);
     opts->audio_in_type = AUDIO_IN_RTL;
@@ -597,7 +734,9 @@ test_encode_matches_expected_record_field_order(void) {
     crypto.observed_m = dsd_decode_now_mono_s();
     assert(dsd_call_state_update_crypto(state, 0U, &crypto) > 0);
 
+    dsd_decode_clock_test_set_ns(t0_ns + 1500000000ULL);
     dsd_app_notification_publish_state(state);
+    g_audio_now_ms = 5000000250ULL;
 
     dsd_app_notification_status status;
     assert(dsd_app_notification_get(&status) == 1);
@@ -606,23 +745,54 @@ test_encode_matches_expected_record_field_order(void) {
     assert(status.slots[0].kid == 0x1234U);
     assert(strcmp(status.slots[0].name, "Riverside Fire") == 0);
     assert(strcmp(status.slots[0].tg_text, "51023") == 0);
+    assert(status.slots[0].elapsed_ms == 1500U);
+    assert(status.audible_stamp == 5000000000ULL);
+    assert(status.audible_age_ms == 250);
 
     char expected[DSD_APP_NOTIFICATION_RECORD_SIZE];
-    const int n = DSD_SNPRINTF(expected, sizeof(expected),
-                               "v2\t%s\t%u\t%u\t%u\t%lld\t%lld\t%lld\t%d"
-                               "\t%d\t%s\t%s\t%s\t%llu\t%u\t%u\t%u\t%u\t%u\t%u"
-                               "\t%d\t%s\t%s\t%s\t%llu\t%u\t%u\t%u\t%u\t%u\t%u",
-                               "P25p2", 1U, 0U, 1U, 851006250LL, 851012500LL, 851500000LL, 0, DSD_APP_CALL_LINE_ACTIVE,
-                               "Riverside Fire", "51023", "7654321", 51023ULL, 1U, 0xAAU, 0x1234U,
-                               (unsigned)status.slots[0].elapsed_ms, 1U, 3U, DSD_APP_CALL_LINE_NONE, "", "", "", 0ULL,
-                               0U, 0U, 0U, 0U, 0U, 0U);
+    const int n =
+        DSD_SNPRINTF(expected, sizeof(expected),
+                     "v3\t%s\t%u\t%u\t%u\t%lld\t%lld\t%lld\t%d\t%llu\t%ld"
+                     "\t%d\t%s\t%s\t%s\t%llu\t%u\t%u\t%u\t%u\t%u\t%u"
+                     "\t%d\t%s\t%s\t%s\t%llu\t%u\t%u\t%u\t%u\t%u\t%u",
+                     "P25p2", 1U, 0U, 1U, 851006250LL, 851012500LL, 851500000LL, 0, 5000000000ULL, 250L,
+                     DSD_APP_CALL_LINE_ACTIVE, "Riverside Fire", "51023", "7654321", 51023ULL, 1U, 0xAAU, 0x1234U,
+                     1500U, 1U, 3U, DSD_APP_CALL_LINE_NONE, "", "", "", 0ULL, 0U, 0U, 0U, 0U, 0U, 0U);
     assert(n > 0 && (size_t)n < sizeof(expected));
 
     char record[DSD_APP_NOTIFICATION_RECORD_SIZE];
     assert(dsd_app_notification_encode(record, sizeof(record)) > 0);
     assert(strcmp(record, expected) == 0);
+    /* The same record, pinned as the literal the Kotlin side reads. */
+    assert(strcmp(record, NOTIFICATION_GOLDEN_V3_RECORD) == 0);
 
+    dsd_audio_activity_set_clock_for_test(NULL);
+    dsd_audio_activity_reset();
+    dsd_decode_clock_use_system();
     destroy_state(state);
+}
+
+/* The stamp is unsigned on the wire: the largest one must print as itself, not as the -1 a signed conversion makes of
+   it. DecoderStatusTest.kt reads the same value back as ULong.MAX_VALUE. */
+static void
+test_encode_writes_the_audible_stamp_unsigned(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    assert(opts != NULL);
+    dsd_app_notification_publish_opts(opts);
+    free(opts);
+
+    dsd_audio_activity_set_clock_for_test(audio_test_clock);
+    g_audio_now_ms = UINT64_MAX;
+    dsd_audio_activity_note();
+
+    char record[DSD_APP_NOTIFICATION_RECORD_SIZE];
+    assert(dsd_app_notification_encode(record, sizeof(record)) > 0);
+    assert(record_field_is(record, NOTIFICATION_FIELD_AUDIBLE_STAMP, "18446744073709551615"));
+    assert(record_field_is(record, NOTIFICATION_FIELD_AUDIBLE_AGE, "0"));
+    assert(count_fields(record) == (size_t)NOTIFICATION_TOTAL_FIELDS);
+
+    dsd_audio_activity_set_clock_for_test(NULL);
+    dsd_audio_activity_reset();
 }
 
 /* Below: the multi-consumer property itself. Every test above drives publish and get
@@ -751,10 +921,12 @@ test_reset_forgets_the_published_status(void) {
     state->synctype = DSD_SYNC_P25P2_POS;
     state->trunk_vc_freq[0] = 851012500L;
     dsd_app_notification_publish_state(state);
+    dsd_audio_activity_note();
 
     dsd_app_notification_status before;
     assert(dsd_app_notification_get(&before) == 1);
     assert(before.protocol[0] != '\0');
+    assert(before.audible_stamp != 0U);
 
     dsd_app_notification_reset();
 
@@ -769,6 +941,14 @@ test_reset_forgets_the_published_status(void) {
     assert(after.protocol[0] == '\0');
     assert(after.vc_freq_hz == 0);
     assert(after.slots[0].state == DSD_APP_CALL_LINE_NONE);
+    /* The audible-audio stamp goes with the session too, or the next session's first record would report the previous
+       one's last audio as recent. It stays armed: the reader that armed it is still polling. */
+    assert(after.audible_stamp == 0U);
+    assert(after.audible_age_ms == -1);
+    uint64_t stamp = 1U;
+    dsd_audio_activity_read(&stamp, NULL);
+    assert(stamp == 0U);
+    assert(dsd_audio_activity_armed() == 1);
 
     /* And the encoder, the only thing the service actually reads, has nothing to give. */
     char record[DSD_APP_NOTIFICATION_RECORD_SIZE];
@@ -794,6 +974,7 @@ int
 main(void) {
     arm_publishers();
     test_get_before_any_publish_reports_nothing();
+    test_only_encode_arms_the_audible_stamp();
     test_publish_state_carries_protocol_and_call();
     test_unsynced_publishes_empty_protocol();
     test_sync_label_is_held_across_a_frame_with_no_sync();
@@ -806,6 +987,8 @@ main(void) {
     test_null_arguments_are_safe();
     test_lead_slot_is_published_and_survives_encoding();
     test_encode_has_version_and_field_count();
+    test_audible_pair_reads_none_before_any_audio();
+    test_audible_pair_follows_a_note();
     test_encode_sanitises_control_characters();
     test_encode_replaces_a_lone_continuation_byte();
     test_encode_drops_a_truncated_trailing_sequence();
@@ -814,6 +997,7 @@ main(void) {
     test_encode_round_trips_a_long_group_name();
     test_encode_rejects_a_short_buffer();
     test_encode_matches_expected_record_field_order();
+    test_encode_writes_the_audible_stamp_unsigned();
     test_concurrent_publish_and_get_never_tears();
     test_reset_forgets_the_published_status();
     printf("APP_CONTROL_NOTIFICATION_STATUS ok\n");

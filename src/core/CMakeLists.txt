@@ -8,6 +8,8 @@ target_compile_definitions(
 target_sources(
     dsd-neo_core
     PRIVATE
+        audio/audio_activity.c
+        audio/dmr_mix_media.c
         audio/dsd_audio.c
         audio/dsd_audio_input_switch.c
         audio/dsd_audio2.c

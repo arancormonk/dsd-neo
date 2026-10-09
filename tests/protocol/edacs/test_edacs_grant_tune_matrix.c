@@ -16,6 +16,7 @@
  * an analog call on a fake RTL stream and check when its squelch ends it.
  */
 
+#include <dsd-neo/core/audio_activity.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
@@ -26,6 +27,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/dsp/rate_converter.h>
+#include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/protocol/edacs/edacs.h>
@@ -51,6 +53,7 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "edacs_internal.h"
+#include "test_support.h"
 
 typedef struct {
     const char* name;
@@ -135,6 +138,14 @@ SNDFILE* __wrap_close_and_rename_wav_file_ex(SNDFILE* wav_file, const dsd_opts* 
 // NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
 SNDFILE* __wrap_open_wav_file(char* dir, char* temp_filename, size_t temp_filename_size, uint16_t sample_rate,
                               uint8_t ext);
+// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+int __real_dsd_audio_write(dsd_audio_stream* stream, const int16_t* buffer, size_t frames);
+// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+int __wrap_dsd_audio_write(dsd_audio_stream* stream, const int16_t* buffer, size_t frames);
+
+/* Issue #574: the blocks written to the local output while g_audio_write_capture is set. */
+static int g_audio_write_capture = 0;
+static int g_audio_write_count = 0;
 
 void
 // NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
@@ -191,6 +202,16 @@ __wrap_open_wav_file(char* dir, char* temp_filename, size_t temp_filename_size, 
     (void)ext;
     g_open_wav_count++;
     return (SNDFILE*)&g_wav_sentinel;
+}
+
+int
+// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+__wrap_dsd_audio_write(dsd_audio_stream* stream, const int16_t* buffer, size_t frames) {
+    if (!g_audio_write_capture) {
+        return __real_dsd_audio_write(stream, buffer, frames);
+    }
+    g_audio_write_count++;
+    return (int)frames;
 }
 
 static dsd_trunk_tune_result
@@ -1486,8 +1507,9 @@ edacs_run_analog_loop_helper_cases(void) {
     DSD_MEMSET(&state, 0, sizeof(state));
     opts.audio_out = 1;
     opts.audio_out_type = 8;
+    opts.slot1_on = 1;
     edacs_install_udp_output_hooks();
-    edacs_emit_analog_audio(&opts, &state, out1, out2, out3);
+    edacs_emit_analog_audio(&opts, &state, out1, out2, out3, 1);
     rc |= edacs_expect(g_udp_blast_count == 3, "analog-helpers", "udp-output", "UDP output emitted three blocks");
     rc |= edacs_expect(g_udp_blast_bytes[0] == 1920U && g_udp_blast_bytes[1] == 1920U && g_udp_blast_bytes[2] == 1920U,
                        "analog-helpers", "udp-output", "UDP output emitted 960 short samples per block");
@@ -1502,10 +1524,11 @@ edacs_run_analog_loop_helper_cases(void) {
         DSD_MEMSET(&opts, 0, sizeof(opts));
         DSD_MEMSET(&state, 0, sizeof(state));
         opts.audio_out_type = 1;
+        opts.audio_out = 1;
         opts.floating_point = 0;
         opts.slot1_on = 1;
         opts.audio_out_fd = raw_fd;
-        edacs_emit_analog_audio(&opts, &state, out1, out2, out3);
+        edacs_emit_analog_audio(&opts, &state, out1, out2, out3, 1);
         dsd_stat_t st;
         DSD_MEMSET(&st, 0, sizeof(st));
         rc |= edacs_expect(dsd_fstat(raw_fd, &st) == 0 && (long long)st.st_size == 5760LL, "analog-helpers",
@@ -1589,6 +1612,7 @@ test_edacs_analog_media_honors_talkgroup_policy(void) {
         DSD_MEMSET(&state, 0, sizeof(state));
         opts.audio_out = 1;
         opts.audio_out_type = 8;
+        opts.slot1_on = 1;
         edacs_install_udp_output_hooks();
         const dsd_call_observation call = {.protocol = DSD_SYNC_EDACS_POS,
                                            .slot = 0U,
@@ -1602,7 +1626,7 @@ test_edacs_analog_media_honors_talkgroup_policy(void) {
             rc |= edacs_expect(dsd_tg_policy_set_mode(&state, 321, 321, "B") == 0, "analog-policy", "row",
                                "blocked the analog talkgroup");
         }
-        edacs_emit_analog_audio(&opts, &state, analog1, analog2, analog3);
+        edacs_emit_analog_audio(&opts, &state, analog1, analog2, analog3, 1);
         rc |= edacs_expect(g_udp_blast_count == (blocked ? 0 : 3), "analog-policy", "audio",
                            blocked ? "blocked analog call is not played" : "allowed analog call plays");
 
@@ -1636,6 +1660,265 @@ test_edacs_analog_media_honors_talkgroup_policy(void) {
         }
         (void)remove(wav_path);
         dsd_state_ext_free_all(&state);
+    }
+    edacs_reset_audio_hook_state();
+    return rc;
+}
+
+/* Issue #574: EDACS analog voice stamps audible audio when it emits a triplet carrying squelch-open samples, after its
+   talkgroup, mute and slot gates and before it picks the output: the local stream, the raw fd and UDP alike. A triplet
+   whose every sample the squelch closed is still written, as silence, and stamps nothing. */
+static int
+test_edacs_analog_emit_stamps_open_reception(void) {
+    static const struct {
+        const char* tag;
+        int squelch_open;
+        int blocked;
+        int audio_out;
+        int slot1_on;
+        int want_blocks;
+        int want_stamp;
+    } cases[] = {
+        {"open triplet", 1, 0, 1, 1, 3, 1},      {"closed triplet", 0, 0, 1, 1, 3, 0},
+        {"blocked talkgroup", 1, 1, 1, 1, 0, 0}, {"muted", 1, 0, 0, 1, 0, 0},
+        {"slot off", 1, 0, 1, 0, 0, 0},
+    };
+
+    static const int out_types[] = {0, 1, 8};
+    static dsd_opts opts;
+    static dsd_state state;
+    static short analog1[960];
+    static short analog2[960];
+    static short analog3[960];
+    int rc = 0;
+    dsd_audio_activity_arm();
+    for (size_t o = 0U; o < sizeof(out_types) / sizeof(out_types[0]); o++) {
+        for (size_t c = 0U; c < sizeof(cases) / sizeof(cases[0]); c++) {
+            edacs_reset_audio_hook_state();
+            DSD_MEMSET(&opts, 0, sizeof(opts));
+            DSD_MEMSET(&state, 0, sizeof(state));
+            opts.audio_out = cases[c].audio_out;
+            opts.slot1_on = cases[c].slot1_on;
+            opts.audio_out_type = out_types[o];
+            /* The local stream is open; the capture takes its writes. */
+            opts.audio_raw_out = out_types[o] == 0 ? (dsd_audio_stream*)&g_audio_write_capture : NULL;
+            edacs_install_udp_output_hooks();
+            if (cases[c].blocked) {
+                const dsd_call_observation call = {.protocol = DSD_SYNC_EDACS_POS,
+                                                   .slot = 0U,
+                                                   .kind = DSD_CALL_KIND_GROUP_VOICE,
+                                                   .ota_target_id = 321U,
+                                                   .policy_target_id = 321U,
+                                                   .ota_source_id = 1234U};
+                rc |= edacs_expect(dsd_call_state_observe(&state, &call, DSD_CALL_BOUNDARY_BEGIN) == 1, "analog-stamp",
+                                   "call", "seeded the analog call");
+                rc |= edacs_expect(dsd_tg_policy_set_mode(&state, 321, 321, "B") == 0, "analog-stamp", "row",
+                                   "blocked the analog talkgroup");
+            }
+            char raw_path[DSD_TEST_PATH_MAX];
+            int raw_fd = -1;
+            if (out_types[o] == 1) {
+                raw_fd = dsd_test_mkstemp(raw_path, sizeof(raw_path), "dsdneo_edacs_stamp");
+                if (raw_fd < 0) {
+                    rc |= edacs_expect(0, "analog-stamp", "fd", "created temporary raw output");
+                    dsd_state_ext_free_all(&state);
+                    continue;
+                }
+                opts.audio_out_fd = raw_fd;
+            }
+            g_audio_write_count = 0;
+            g_audio_write_capture = out_types[o] == 0;
+            dsd_audio_activity_reset();
+
+            edacs_emit_analog_audio(&opts, &state, analog1, analog2, analog3, cases[c].squelch_open);
+
+            g_audio_write_capture = 0;
+            int blocks = 0;
+            if (out_types[o] == 0) {
+                blocks = g_audio_write_count;
+            } else if (out_types[o] == 8) {
+                blocks = g_udp_blast_count;
+            } else {
+                dsd_stat_t st;
+                DSD_MEMSET(&st, 0, sizeof(st));
+                if (dsd_fstat(raw_fd, &st) == 0) {
+                    blocks = (int)((long long)st.st_size / (long long)(960U * sizeof(short)));
+                }
+                (void)dsd_close(raw_fd);
+                (void)remove(raw_path);
+            }
+            uint64_t stamp = 0U;
+            dsd_audio_activity_read(&stamp, NULL);
+            if (blocks != cases[c].want_blocks || (stamp != 0U) != cases[c].want_stamp) {
+                DSD_FPRINTF(stderr, "output %d %s: %d blocks (want %d), stamp %d (want %d)\n", out_types[o],
+                            cases[c].tag, blocks, cases[c].want_blocks, stamp != 0U, cases[c].want_stamp);
+            }
+            rc |= edacs_expect(blocks == cases[c].want_blocks, "analog-stamp", cases[c].tag,
+                               "the triplet reaches the output its gates allow");
+            rc |= edacs_expect((stamp != 0U) == cases[c].want_stamp, "analog-stamp", cases[c].tag,
+                               "only an emitted triplet with open samples stamps");
+            dsd_state_ext_free_all(&state);
+        }
+    }
+    edacs_reset_audio_hook_state();
+    dsd_audio_activity_reset();
+    return rc;
+}
+
+/* Issue #574: an open triplet stamps only where an output receives it. The raw fd takes 16-bit samples only, so with
+   float output selected (floating_point 1) it writes nothing and nothing stamps, while the local stream and UDP write
+   and stamp in either format; an output type none of the three serves (the null output, 9) writes and stamps nothing
+   either, nor does a local stream that is not open, whose writes the platform refuses. */
+static int
+test_edacs_analog_stamp_follows_the_writer(void) {
+    static const struct {
+        int out_type;
+        int floating_point;
+        int stream_open;
+        int want_blocks;
+    } cases[] = {
+        {0, 0, 1, 3}, {0, 1, 1, 3}, {0, 0, 0, 0}, {1, 0, 1, 3}, {1, 1, 1, 0}, {8, 0, 1, 3}, {8, 1, 1, 3}, {9, 0, 1, 0},
+    };
+
+    static dsd_opts opts;
+    static dsd_state state;
+    static short analog1[960];
+    static short analog2[960];
+    static short analog3[960];
+    int rc = 0;
+    dsd_audio_activity_arm();
+    for (size_t c = 0U; c < sizeof(cases) / sizeof(cases[0]); c++) {
+        edacs_reset_audio_hook_state();
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        opts.audio_out = 1;
+        opts.slot1_on = 1;
+        opts.audio_out_type = cases[c].out_type;
+        opts.floating_point = cases[c].floating_point;
+        /* An open local stream's writes go to the capture; with none, the platform's own write refuses them. */
+        opts.audio_raw_out = cases[c].stream_open ? (dsd_audio_stream*)&g_audio_write_capture : NULL;
+        edacs_install_udp_output_hooks();
+        char raw_path[DSD_TEST_PATH_MAX];
+        int raw_fd = -1;
+        if (cases[c].out_type == 1) {
+            raw_fd = dsd_test_mkstemp(raw_path, sizeof(raw_path), "dsdneo_edacs_writer");
+            if (raw_fd < 0) {
+                rc |= edacs_expect(0, "analog-stamp-writer", "fd", "created temporary raw output");
+                continue;
+            }
+            opts.audio_out_fd = raw_fd;
+        }
+        g_audio_write_count = 0;
+        g_audio_write_capture = cases[c].out_type == 0 && cases[c].stream_open;
+        dsd_audio_activity_reset();
+
+        edacs_emit_analog_audio(&opts, &state, analog1, analog2, analog3, 1);
+
+        g_audio_write_capture = 0;
+        int blocks = g_audio_write_count + g_udp_blast_count;
+        if (raw_fd >= 0) {
+            dsd_stat_t st;
+            DSD_MEMSET(&st, 0, sizeof(st));
+            if (dsd_fstat(raw_fd, &st) == 0) {
+                blocks += (int)((long long)st.st_size / (long long)(960U * sizeof(short)));
+            }
+            (void)dsd_close(raw_fd);
+            (void)remove(raw_path);
+        }
+        uint64_t stamp = 0U;
+        dsd_audio_activity_read(&stamp, NULL);
+        const int want_stamp = cases[c].want_blocks > 0;
+        if (blocks != cases[c].want_blocks || (stamp != 0U) != want_stamp) {
+            DSD_FPRINTF(stderr,
+                        "output %d, floating point %d, stream open %d: %d blocks (want %d), stamp %d (want %d)\n",
+                        cases[c].out_type, cases[c].floating_point, cases[c].stream_open, blocks, cases[c].want_blocks,
+                        stamp != 0U, want_stamp);
+        }
+        rc |= edacs_expect(blocks == cases[c].want_blocks, "analog-stamp-writer", "blocks",
+                           "the triplet reaches each output that takes its format");
+        rc |= edacs_expect((stamp != 0U) == want_stamp, "analog-stamp-writer", "stamp",
+                           "only a triplet some output writes stamps");
+        dsd_state_ext_free_all(&state);
+    }
+    edacs_reset_audio_hook_state();
+    dsd_audio_activity_reset();
+    return rc;
+}
+
+/* Issue #574: the mixers write to no output type while muted (audio_out 0) or while slot 1 is switched off
+   (dsd_output_*_block() and the mono mixers), so each of EDACS's analog outputs -- the local stream, the raw fd and the
+   UDP socket -- applies both, as one rule. */
+static int
+test_edacs_analog_output_honors_mute_and_slot(void) {
+    static const struct {
+        const char* tag;
+        int audio_out;
+        int slot1_on;
+    } gates[] = {
+        {"on", 1, 1},
+        {"muted", 0, 1},
+        {"slot off", 1, 0},
+    };
+
+    static dsd_opts opts;
+    static dsd_state state;
+    static short analog1[960];
+    static short analog2[960];
+    static short analog3[960];
+    for (int i = 0; i < 960; i++) {
+        analog1[i] = (short)(11 + i);
+        analog2[i] = (short)(22 + i);
+        analog3[i] = (short)(33 + i);
+    }
+    static const int out_types[] = {0, 1, 8};
+    int rc = 0;
+    for (size_t o = 0U; o < sizeof(out_types) / sizeof(out_types[0]); o++) {
+        for (size_t g = 0U; g < sizeof(gates) / sizeof(gates[0]); g++) {
+            edacs_reset_audio_hook_state();
+            DSD_MEMSET(&opts, 0, sizeof(opts));
+            DSD_MEMSET(&state, 0, sizeof(state));
+            opts.audio_out = gates[g].audio_out;
+            opts.slot1_on = gates[g].slot1_on;
+            opts.audio_out_type = out_types[o];
+            edacs_install_udp_output_hooks();
+            char raw_path[DSD_TEST_PATH_MAX];
+            int raw_fd = -1;
+            if (out_types[o] == 1) {
+                raw_fd = dsd_test_mkstemp(raw_path, sizeof(raw_path), "dsdneo_edacs_gate");
+                if (raw_fd < 0) {
+                    rc |= edacs_expect(0, "analog-574", "gate", "created temporary raw output");
+                    continue;
+                }
+                opts.audio_out_fd = raw_fd;
+            }
+            g_audio_write_count = 0;
+            g_audio_write_capture = out_types[o] == 0;
+
+            edacs_emit_analog_audio(&opts, &state, analog1, analog2, analog3, 1);
+
+            g_audio_write_capture = 0;
+            int blocks = 0;
+            if (out_types[o] == 0) {
+                blocks = g_audio_write_count;
+            } else if (out_types[o] == 8) {
+                blocks = g_udp_blast_count;
+            } else {
+                dsd_stat_t st;
+                DSD_MEMSET(&st, 0, sizeof(st));
+                if (dsd_fstat(raw_fd, &st) == 0) {
+                    blocks = (int)((long long)st.st_size / (long long)(960U * sizeof(short)));
+                }
+                (void)dsd_close(raw_fd);
+                (void)remove(raw_path);
+            }
+            const int want = gates[g].audio_out == 1 && gates[g].slot1_on == 1 ? 3 : 0;
+            if (blocks != want) {
+                DSD_FPRINTF(stderr, "output %d %s: %d blocks, want %d\n", out_types[o], gates[g].tag, blocks, want);
+            }
+            rc |= edacs_expect(blocks == want, "analog-574", gates[g].tag,
+                               "each analog output plays only while unmuted with slot 1 on");
+            dsd_state_ext_free_all(&state);
+        }
     }
     edacs_reset_audio_hook_state();
     return rc;
@@ -1837,6 +2120,7 @@ edacs_prepare_tcp_analog_call(int rate_hz, dsd_trunk_tune_result tune_result) {
     g_opts.tcp_in_ctx = (tcp_input_ctx*)&g_edacs_tcp_token;
     g_opts.audio_out = 1;
     g_opts.audio_out_type = 8;
+    g_opts.slot1_on = 1;
     edacs_install_net_audio_hooks();
     edacs_install_udp_output_hooks();
     return &call;
@@ -1984,6 +2268,8 @@ static long g_call_blip_len = 0;
 static int g_call_status_active = 1;
 static unsigned int g_call_rate_hz = 48000U;
 static uint32_t g_call_noise = 1U;
+/* An open carrier with no modulation: silence up to g_call_drop. */
+static int g_call_unmodulated = 0;
 static long g_call_blasted = 0;
 static long g_call_loud_after_close = 0;
 static long g_call_loud_before_drop = 0;
@@ -2003,6 +2289,9 @@ edacs_call_flag(long i) {
 static float
 edacs_call_sample(long i) {
     if (i < g_call_drop) {
+        if (g_call_unmodulated) {
+            return 0.0f;
+        }
         return 8000.0f * (float)sin(2.0 * 3.14159265358979323846 * 1000.0 * (double)i / (double)g_call_rate_hz);
     }
     g_call_noise = (g_call_noise * 1664525U) + 1013904223U;
@@ -2093,6 +2382,7 @@ edacs_run_analog_call(int mode) {
     g_opts.audio_in_type = AUDIO_IN_RTL;
     g_opts.audio_out = 1;
     g_opts.audio_out_type = 8;
+    g_opts.slot1_on = 1;
     g_opts.rtl_squelch_mode = mode;
     g_opts.rtl_squelch_margin_db = 10;
     g_opts.rtl_squelch_level = mode == DSD_SQUELCH_MODE_LEVEL ? dB_to_pwr(-60.0) : 0.0;
@@ -2161,6 +2451,7 @@ edacs_call_defaults(long drop, unsigned int rate_hz) {
     g_call_blip_len = 0;
     g_call_status_active = 1;
     g_call_rate_hz = rate_hz;
+    g_call_unmodulated = 0;
 }
 
 /* Under AUTO and NOISE an analog call ends on the gate within the level squelch's time of its carrier dropping, at
@@ -2203,6 +2494,46 @@ edacs_run_analog_call_release_cases(void) {
             }
         }
     }
+    return rc;
+}
+
+/* Issue #574: through a whole analog call the stamp follows the squelch the call runs, never the audio's level: a
+   granted channel whose every sample the dynamic squelch closes (an empty channel) stamps nothing, nor does one whose
+   power stays under the level squelch, while an open carrier with no modulation stamps as a modulated one does. */
+static int
+edacs_run_analog_call_stamp_cases(void) {
+    static const struct {
+        const char* tag;
+        int mode;
+        long drop_triplets;
+        int unmodulated;
+        int want_stamp;
+    } cases[] = {
+        {"empty channel under the dynamic squelch", DSD_SQUELCH_MODE_AUTO, 0, 0, 0},
+        {"empty channel under the level squelch", DSD_SQUELCH_MODE_LEVEL, 0, 0, 0},
+        {"unmodulated carrier under the dynamic squelch", DSD_SQUELCH_MODE_AUTO, 4, 1, 1},
+        {"unmodulated carrier under the level squelch", DSD_SQUELCH_MODE_LEVEL, 4, 1, 1},
+        {"modulated carrier under the dynamic squelch", DSD_SQUELCH_MODE_AUTO, 4, 0, 1},
+    };
+
+    int rc = 0;
+    dsd_audio_activity_arm();
+    for (size_t c = 0U; c < sizeof(cases) / sizeof(cases[0]); c++) {
+        edacs_call_defaults(cases[c].drop_triplets * EDACS_ANALOG_TRIPLET_SAMPLES, 48000U);
+        g_call_unmodulated = cases[c].unmodulated;
+        dsd_audio_activity_reset();
+        const edacs_call_result call = edacs_run_analog_call(cases[c].mode);
+        uint64_t stamp = 0U;
+        dsd_audio_activity_read(&stamp, NULL);
+        rc |= edacs_expect(call.released, "analog-call-stamp", cases[c].tag, "the call ended on its squelch");
+        if ((stamp != 0U) != cases[c].want_stamp) {
+            DSD_FPRINTF(stderr, "  %s: stamp %d, want %d\n", cases[c].tag, stamp != 0U, cases[c].want_stamp);
+        }
+        rc |= edacs_expect((stamp != 0U) == cases[c].want_stamp, "analog-call-stamp", cases[c].tag,
+                           "the call stamps exactly when its squelch opened");
+    }
+    edacs_call_defaults(0, 48000U);
+    dsd_audio_activity_reset();
     return rc;
 }
 
@@ -2555,6 +2886,9 @@ main(void) {
     rc |= edacs_run_helper_contract_cases();
     rc |= edacs_run_analog_loop_helper_cases();
     rc |= test_edacs_analog_media_honors_talkgroup_policy();
+    rc |= test_edacs_analog_output_honors_mute_and_slot();
+    rc |= test_edacs_analog_emit_stamps_open_reception();
+    rc |= test_edacs_analog_stamp_follows_the_writer();
     rc |= edacs_run_analog_sql_helper_cases();
     rc |= edacs_run_converted_collect_cases();
     rc |= edacs_run_analog_call_cases();
@@ -2564,6 +2898,7 @@ main(void) {
 #ifdef USE_RADIO
     rc |= edacs_run_analog_call_release_cases();
     rc |= edacs_run_analog_call_disturbance_cases();
+    rc |= edacs_run_analog_call_stamp_cases();
     rc |= edacs_run_analog_call_real_tracker_cases();
     rc |= edacs_run_rtl_rate_switch_case();
     rc |= edacs_run_tune_completion_race_case();

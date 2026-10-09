@@ -668,6 +668,8 @@ finalize_dmr_bs(dsd_opts* opts, dsd_state* state, const dmr_bs_ctx* ctx) {
     DSD_MEMSET(state->f_r4, 0.0f, sizeof(state->f_r4));
     DSD_MEMSET(state->s_l4, 0, sizeof(state->s_l4));
     DSD_MEMSET(state->s_r4, 0, sizeof(state->s_r4));
+    dsd_audio_dmr_mix_media_discard(0);
+    dsd_audio_dmr_mix_media_discard(1);
 
     if (ctx->tact_okay != 1 || ctx->emb_ok != 1) {
         DSD_FPRINTF(stderr, "%s ", ctx->timestr);

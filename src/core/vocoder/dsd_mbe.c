@@ -20,6 +20,7 @@
  */
 
 #include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/audio_activity.h>
 #include <dsd-neo/core/bit_packing.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
@@ -1596,8 +1597,33 @@ mbe_post_apply_p25p2_metadata_gate(const dsd_state* state, int16_t* enc) {
 
 static void
 mbe_post_apply_forced_clear_gate(const dsd_state* state, int16_t* enc) {
-    if (state->baofeng_ap == 1 || state->csi_ee == 1 || state->ken_sc == 1) {
+    if (dsd_key_dmr_forced_clear(state)) {
         *enc = 0;
+    }
+}
+
+// A muted slot stages silence: the stereo mixes copy each slot's short frame into their superframe buffers every
+// frame, and a frame left unrefreshed would replay the last one staged on that slot. The silence replaces the short
+// media staged on the slot, so it retires the slot's SHORT mark for the stamp (dsd_audio_dmr_mix_media_silenced()).
+static void
+mbe_post_stage_slot_silence(dsd_state* state, int slot) {
+    if (slot == 0) {
+        DSD_MEMSET(state->s_l, 0, sizeof(state->s_l));
+    } else {
+        DSD_MEMSET(state->s_r, 0, sizeof(state->s_r));
+    }
+    if (dsd_audio_activity_armed()) {
+        dsd_audio_dmr_mix_media_silenced(slot, DSD_DMR_MIX_MEDIA_SHORT);
+    }
+}
+
+// Decoded media a DMR slot staged for the stereo mixes' audible-audio stamp (dsd_audio_dmr_mix_media_staged(), issue
+// #574); called only while the stamp is armed. P25 Phase 2 stages through here as well, but its mixes go by the audio
+// ring and the voice counters instead.
+static void
+mbe_post_note_dmr_mix_media(const dsd_state* state, int slot, unsigned int kind) {
+    if (DSD_SYNC_IS_DMR(state->synctype)) {
+        dsd_audio_dmr_mix_media_staged(slot, kind);
     }
 }
 
@@ -1626,6 +1652,7 @@ mbe_post_left_audio(dsd_opts* opts, dsd_state* state, const mbe_frame_ctx_t* fra
     const int dmr_mono_active = mbe_post_dmr_mono_active(opts, state);
     if (dmr_mono_active && !mbe_dmr_output_slot_enabled(opts, state, 0)) {
         state->dmr_encL = 1;
+        mbe_post_stage_slot_silence(state, 0);
         return;
     }
     if ((!dmr_mono_active && !mbe_post_stereo_active(opts, state)) || state->currentslot != 0) {
@@ -1641,10 +1668,20 @@ mbe_post_left_audio(dsd_opts* opts, dsd_state* state, const mbe_frame_ctx_t* fra
     mbe_post_apply_reverse_mute(opts, &state->dmr_encL, &opts->dmr_mute_encL);
 
     state->debug_audio_errors += state->errs2;
-    if ((state->dmr_encL == 0 || opts->dmr_mute_encL == 0) && opts->floating_point == 0) {
-        processAudio(opts, state);
+    if (state->dmr_encL == 0 || opts->dmr_mute_encL == 0) {
+        if (opts->floating_point == 0) {
+            processAudio(opts, state);
+            if (dsd_audio_activity_armed()) {
+                mbe_post_note_dmr_mix_media(state, 0, DSD_DMR_MIX_MEDIA_SHORT);
+            }
+        }
+    } else {
+        mbe_post_stage_slot_silence(state, 0);
     }
     DSD_MEMCPY(state->f_l, state->audio_out_temp_buf, sizeof(state->f_l));
+    if (dsd_audio_activity_armed()) {
+        mbe_post_note_dmr_mix_media(state, 0, DSD_DMR_MIX_MEDIA_FLOAT);
+    }
 }
 
 static void
@@ -1667,6 +1704,7 @@ mbe_post_right_audio(dsd_opts* opts, dsd_state* state, const mbe_frame_ctx_t* fr
     const int dmr_mono_active = mbe_post_dmr_mono_active(opts, state);
     if (dmr_mono_active && !mbe_dmr_output_slot_enabled(opts, state, 1)) {
         state->dmr_encR = 1;
+        mbe_post_stage_slot_silence(state, 1);
         return;
     }
     if ((!dmr_mono_active && !mbe_post_stereo_active(opts, state)) || state->currentslot != 1) {
@@ -1682,10 +1720,20 @@ mbe_post_right_audio(dsd_opts* opts, dsd_state* state, const mbe_frame_ctx_t* fr
     mbe_post_apply_reverse_mute(opts, &state->dmr_encR, &opts->dmr_mute_encR);
 
     state->debug_audio_errorsR += state->errs2R;
-    if ((state->dmr_encR == 0 || opts->dmr_mute_encR == 0) && opts->floating_point == 0) {
-        processAudioR(opts, state);
+    if (state->dmr_encR == 0 || opts->dmr_mute_encR == 0) {
+        if (opts->floating_point == 0) {
+            processAudioR(opts, state);
+            if (dsd_audio_activity_armed()) {
+                mbe_post_note_dmr_mix_media(state, 1, DSD_DMR_MIX_MEDIA_SHORT);
+            }
+        }
+    } else {
+        mbe_post_stage_slot_silence(state, 1);
     }
     DSD_MEMCPY(state->f_r, state->audio_out_temp_bufR, sizeof(state->f_r));
+    if (dsd_audio_activity_armed()) {
+        mbe_post_note_dmr_mix_media(state, 1, DSD_DMR_MIX_MEDIA_FLOAT);
+    }
 }
 
 static void

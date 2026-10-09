@@ -20,6 +20,7 @@
 #include <QSettings>
 #include <QString>
 #include <QTimer>
+#include <QVariantList>
 #include <QtGlobal>
 
 namespace dsd_qt {
@@ -40,7 +41,12 @@ class AppPrefs : public QObject {
                    notificationExplainedChanged)
     Q_PROPERTY(bool backgroundListening READ backgroundListening WRITE setBackgroundListening NOTIFY
                    backgroundListeningChanged)
-    Q_PROPERTY(bool keepScreenAwake READ keepScreenAwake WRITE setKeepScreenAwake NOTIFY keepScreenAwakeChanged)
+    /* How the screen behaves while the app is open (#574). One signal for both:
+     * the host takes them as a single policy, so a change to either re-applies the
+     * pair. The delay matters only to the two between-calls modes. */
+    Q_PROPERTY(int screenMode READ screenMode WRITE setScreenMode NOTIFY screenPolicyChanged)
+    Q_PROPERTY(int screenDelaySec READ screenDelaySec WRITE setScreenDelaySec NOTIFY screenPolicyChanged)
+    Q_PROPERTY(QVariantList screenDelayChoices READ screenDelayChoices CONSTANT)
     Q_PROPERTY(bool skipEncrypted READ skipEncrypted WRITE setSkipEncrypted NOTIFY skipEncryptedChanged)
     Q_PROPERTY(bool persistTgLockouts READ persistTgLockouts WRITE setPersistTgLockouts NOTIFY persistTgLockoutsChanged)
     Q_PROPERTY(double hangtimeSec READ hangtimeSec WRITE setHangtimeSec NOTIFY hangtimeSecChanged)
@@ -67,6 +73,17 @@ class AppPrefs : public QObject {
     /** @brief Appearance follows the OS by default; see the settings screen. */
     enum Appearance { FollowSystem = 0, Light = 1, Dark = 2 };
     Q_ENUM(Appearance)
+
+    /**
+     * @brief The screen modes the settings screen offers (#574).
+     *
+     * The codes are a contract with the Android policy's `ScreenPolicy.Mode`
+     * (android/package/src/io/github/arancormonk/dsdneo/ScreenPolicy.kt), which
+     * receives them unchanged through DecoderHost::setScreenPolicy(). They are
+     * also persisted. Never renumber them.
+     */
+    enum ScreenMode { ScreenSystem = 0, ScreenAlwaysOn = 1, ScreenDimBetweenCalls = 2, ScreenOffBetweenCalls = 3 };
+    Q_ENUM(ScreenMode)
 
     explicit AppPrefs(QObject* parent = nullptr);
     ~AppPrefs() override;
@@ -103,8 +120,21 @@ class AppPrefs : public QObject {
     bool backgroundListening() const;
     void setBackgroundListening(bool on);
 
-    bool keepScreenAwake() const;
-    void setKeepScreenAwake(bool on);
+    /**
+     * @brief The stored ScreenMode, or System default if the stored value is not one.
+     *
+     * An install that never chose a mode reads the switch this replaced: keep-awake
+     * on reads as Always on. Reading never writes.
+     */
+    int screenMode() const;
+    void setScreenMode(int mode);
+
+    /** @brief Seconds without audio before a between-calls mode acts; one of screenDelayChoices(), else 30. */
+    int screenDelaySec() const;
+    void setScreenDelaySec(int seconds);
+
+    /** @brief The delays offered, in seconds; the same list as ScreenPolicy's DELAY_CHOICES_SECONDS. */
+    QVariantList screenDelayChoices() const;
 
     bool persistTgLockouts() const;
     void setPersistTgLockouts(bool on);
@@ -168,7 +198,7 @@ class AppPrefs : public QObject {
     void onboardingDoneChanged();
     void notificationExplainedChanged();
     void backgroundListeningChanged();
-    void keepScreenAwakeChanged();
+    void screenPolicyChanged();
     void skipEncryptedChanged();
     void persistTgLockoutsChanged();
     void hangtimeSecChanged();

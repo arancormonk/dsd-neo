@@ -39,7 +39,7 @@ class DecoderHost : public QObject {
     Q_PROPERTY(bool localDeviceBrokered READ localDeviceBrokered CONSTANT)
     Q_PROPERTY(bool localDeviceReady READ localDeviceReady NOTIFY localDeviceChanged)
     Q_PROPERTY(QString localDeviceStatus READ localDeviceStatus NOTIFY localDeviceChanged)
-    Q_PROPERTY(bool keepScreenAwakeSupported READ keepScreenAwakeSupported CONSTANT)
+    Q_PROPERTY(bool screenPolicySupported READ screenPolicySupported CONSTANT)
     Q_PROPERTY(bool locationSupported READ locationSupported CONSTANT)
     Q_PROPERTY(bool shareSupported READ shareSupported CONSTANT)
     Q_PROPERTY(int localDeviceFailureKind READ localDeviceFailureKind NOTIFY localDeviceChanged)
@@ -220,13 +220,13 @@ class DecoderHost : public QObject {
     }
 
     /**
-     * @brief Whether setKeepScreenAwake() does anything on this platform.
+     * @brief Whether setScreenPolicy() does anything on this platform.
      *
-     * The Settings screen hides the toggle when it does not: a switch that
-     * persists but changes nothing is worse than no switch.
+     * The Settings screen hides the Screen rows when it does not: a setting that
+     * persists but changes nothing is worse than no setting.
      */
     virtual bool
-    keepScreenAwakeSupported() const {
+    screenPolicySupported() const {
         return false;
     }
 
@@ -386,16 +386,21 @@ class DecoderHost : public QObject {
     requestLocalDeviceAccess() {}
 
     /**
-     * @brief Keep the display from sleeping while the app is foreground.
+     * @brief Hand the platform the screen policy the user chose (#574).
      *
-     * A platform concern, not a UI one: on Android it is a window flag that has
-     * to be flipped on the Android main thread. The shared UI wires the persisted
-     * preference to this at startup and on every toggle; hosts with no such
-     * concept ignore it (see keepScreenAwakeSupported()).
+     * @param mode An AppPrefs::ScreenMode code.
+     * @param delaySeconds One of AppPrefs::screenDelayChoices().
+     *
+     * A platform concern, not a UI one: on Android the policy has to act while
+     * Qt's event loop is stopped (a call wakes a screen that is off), so it lives
+     * in the platform layer. The shared UI wires the persisted preferences to this
+     * at startup and on every change; hosts with no such concept ignore it (see
+     * screenPolicySupported()).
      */
     virtual void
-    setKeepScreenAwake(bool on) {
-        (void)on;
+    setScreenPolicy(int mode, int delaySeconds) {
+        (void)mode;
+        (void)delaySeconds;
     }
 
   Q_SIGNALS:

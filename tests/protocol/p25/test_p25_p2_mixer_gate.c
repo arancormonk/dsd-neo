@@ -12,6 +12,7 @@
  */
 
 #include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/audio_activity.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
@@ -28,6 +29,8 @@
 static unsigned char g_audio_capture[2048];
 static size_t g_audio_capture_bytes = 0;
 static int g_audio_capture_calls = 0;
+/* Whether any call since reset_capture() carried a non-zero byte, not only the first one captured above. */
+static int g_audio_capture_nonzero = 0;
 
 static int
 expect_eq(const char* tag, int got, int want) {
@@ -62,6 +65,9 @@ capture_blast(const dsd_opts* opts, dsd_state* state, size_t bytes, const void* 
     (void)opts;
     (void)state;
     g_audio_capture_calls++;
+    for (size_t i = 0U; data != NULL && i < bytes && !g_audio_capture_nonzero; i++) {
+        g_audio_capture_nonzero = ((const unsigned char*)data)[i] != 0U;
+    }
     if (g_audio_capture_calls == 1 && data && bytes <= sizeof(g_audio_capture)) {
         DSD_MEMCPY(g_audio_capture, data, bytes);
         g_audio_capture_bytes = bytes;
@@ -73,6 +79,7 @@ reset_capture(void) {
     DSD_MEMSET(g_audio_capture, 0, sizeof(g_audio_capture));
     g_audio_capture_bytes = 0;
     g_audio_capture_calls = 0;
+    g_audio_capture_nonzero = 0;
 }
 
 static void
@@ -991,6 +998,291 @@ run_beeper_short_mono_case(void) {
     return rc;
 }
 
+/* Issue #574: whether the code under test noted the audible-audio stamp since stamp_clear(). main() arms it. */
+static void
+stamp_clear(void) {
+    dsd_audio_activity_reset();
+}
+
+static int
+stamp_noted(void) {
+    uint64_t stamp = 0U;
+    dsd_audio_activity_read(&stamp, NULL);
+    return stamp != 0U;
+}
+
+/* Issue #574: FS4 stamps audible audio when it plays a frame popped from a slot whose gates pass -- the slot's
+   p25_p2_audio_allowed flag, its switch, its talkgroup and crypto, the mute -- and frames of decoded silence count.
+   It runs on every TS, rings empty or not: a pass that pops nothing for an audible slot plays silence, unstamped. */
+static int
+test_fs4_stamps_frames_of_audible_slots(void) {
+    static const struct {
+        const char* tag;
+        int pushed[2];
+        int allowed[2];
+        int slot_on[2];
+        int blocked_left;
+        int audio_out;
+        int channels;
+        int want_stamp;
+    } cases[] = {
+        {"slot 1 frame", {1, 0}, {1, 1}, {1, 1}, 0, 1, 2, 1},
+        {"slot 2 frame", {0, 1}, {1, 1}, {1, 1}, 0, 1, 2, 1},
+        {"slot 1 frame, mono output", {1, 0}, {1, 1}, {1, 1}, 0, 1, 1, 1},
+        {"slot 1 frame not allowed", {1, 0}, {0, 1}, {1, 1}, 0, 1, 2, 0},
+        {"slot 2 frame beside a disallowed slot 1 frame", {1, 1}, {0, 1}, {1, 1}, 0, 1, 2, 1},
+        {"slot 1 frame, slot 1 switched off", {1, 0}, {1, 1}, {0, 1}, 0, 1, 2, 0},
+        {"slot 1 frame, slot 1 crypto blocked", {1, 0}, {1, 1}, {1, 1}, 1, 1, 2, 0},
+        {"no frame popped", {0, 0}, {1, 1}, {1, 1}, 0, 1, 2, 0},
+        {"slot 1 frame, output muted", {1, 0}, {1, 1}, {1, 1}, 0, 0, 2, 0},
+    };
+
+    static dsd_opts opts;
+    static dsd_state st;
+    int rc = 0;
+    for (size_t c = 0U; c < sizeof(cases) / sizeof(cases[0]); c++) {
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&st, 0, sizeof(st));
+        reset_capture();
+        opts.audio_out = cases[c].audio_out;
+        opts.audio_out_type = 8;
+        opts.pulse_digi_out_channels = cases[c].channels;
+        opts.slot1_on = cases[c].slot_on[0];
+        opts.slot2_on = cases[c].slot_on[1];
+        opts.audio_gain = 25;
+        st.synctype = DSD_SYNC_P25P2_POS;
+        st.aout_gain = 49.0f;
+        st.aout_gainR = 49.0f;
+        for (int slot = 0; slot < 2; slot++) {
+            st.p25_p2_audio_allowed[slot] = cases[c].allowed[slot];
+            st.p25_crypto_state[slot] = DSD_P25_CRYPTO_CLEAR;
+            if (cases[c].pushed[slot]) {
+                float frame[160];
+                fill_f32_frame(frame, 0.0f);
+                rc |= expect_eq("fs4 stamp push", p25_p2_audio_ring_push(&st, slot, frame), 1);
+            }
+        }
+        if (cases[c].blocked_left) {
+            st.payload_algid = 0x81;
+            st.p25_crypto_state[0] = DSD_P25_CRYPTO_BLOCKED;
+        }
+        stamp_clear();
+        playSynthesizedVoiceFS4(&opts, &st);
+        char tag[128];
+        DSD_SNPRINTF(tag, sizeof(tag), "fs4 %s: plays", cases[c].tag);
+        rc |= expect_eq(tag, g_audio_capture_calls >= 1, cases[c].audio_out);
+        DSD_SNPRINTF(tag, sizeof(tag), "fs4 %s: stamp", cases[c].tag);
+        rc |= expect_eq(tag, stamp_noted(), cases[c].want_stamp);
+    }
+    return rc;
+}
+
+/* Issue #574: SS18 stamps audible audio when the superframe extent its audible slots filled is not empty: the blocks
+   it always plays, all-zero decoded ones included. A disallowed or switched-off slot's frames, the zero tail past the
+   extent and a muted output stamp nothing; neither does a partial flush the crypto gate rejects, which never reaches
+   SS18, while an allowed flush stamps through SS18. */
+static int
+test_ss18_stamps_its_filled_extent(void) {
+    static const struct {
+        const char* tag;
+        int allowed_left;
+        int slot1_on;
+        int audio_out;
+        int want_blocks;
+        int want_stamp;
+    } cases[] = {
+        {"9 decoded zero blocks", 1, 1, 1, 9, 1},
+        {"slot 1 not allowed", 0, 1, 1, 0, 0},
+        {"slot 1 switched off", 1, 0, 1, 0, 0},
+        {"output muted", 1, 1, 0, 0, 0},
+    };
+
+    static dsd_opts opts;
+    static dsd_state st;
+    int rc = 0;
+    for (size_t c = 0U; c < sizeof(cases) / sizeof(cases[0]); c++) {
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&st, 0, sizeof(st));
+        reset_capture();
+        opts.audio_out = cases[c].audio_out;
+        opts.audio_out_type = 8;
+        opts.slot1_on = cases[c].slot1_on;
+        opts.slot2_on = 1;
+        st.dmrburstL = 21;
+        st.p25_p2_audio_allowed[0] = cases[c].allowed_left;
+        st.p25_p2_audio_allowed[1] = 1;
+        st.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
+        st.p25_crypto_state[1] = DSD_P25_CRYPTO_CLEAR;
+        st.voice_counter[0] = 9;
+        stamp_clear();
+        playSynthesizedVoiceSS18(&opts, &st);
+        char tag[128];
+        DSD_SNPRINTF(tag, sizeof(tag), "ss18 %s: blocks", cases[c].tag);
+        rc |= expect_eq(tag, g_audio_capture_calls, cases[c].want_blocks);
+        DSD_SNPRINTF(tag, sizeof(tag), "ss18 %s: stamp", cases[c].tag);
+        rc |= expect_eq(tag, stamp_noted(), cases[c].want_stamp);
+    }
+
+    for (int rejected = 1; rejected >= 0; rejected--) {
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&st, 0, sizeof(st));
+        reset_capture();
+        opts.audio_out = 1;
+        opts.audio_out_type = 8;
+        opts.floating_point = 0;
+        opts.pulse_digi_rate_out = 8000;
+        opts.slot1_on = 1;
+        opts.slot2_on = 1;
+        st.dmrburstL = 21;
+        st.s_l4[0][0] = 321;
+        st.voice_counter[0] = 5;
+        st.p25_p2_audio_allowed[0] = 1;
+        st.p25_crypto_state[0] = rejected ? DSD_P25_CRYPTO_BLOCKED : DSD_P25_CRYPTO_CLEAR;
+        st.payload_algid = rejected ? 0x81 : 0x80;
+        stamp_clear();
+        dsd_p25p2_flush_partial_audio_slot(&opts, &st, 0);
+        const char* what = rejected ? "ss18 rejected partial flush" : "ss18 allowed partial flush";
+        char tag[128];
+        DSD_SNPRINTF(tag, sizeof(tag), "%s: blocks", what);
+        rc |= expect_eq(tag, g_audio_capture_calls, rejected ? 0 : 5);
+        DSD_SNPRINTF(tag, sizeof(tag), "%s: stamp", what);
+        rc |= expect_eq(tag, stamp_noted(), rejected ? 0 : 1);
+    }
+
+    /* The beeper plays tones, never decoded audio. */
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&st, 0, sizeof(st));
+    reset_capture();
+    opts.audio_out = 1;
+    opts.audio_out_type = 8;
+    opts.pulse_digi_out_channels = 2;
+    stamp_clear();
+    beeper(&opts, &st, 0, 40, 86, 1);
+    rc |= expect_eq("beeper plays", g_audio_capture_calls >= 1, 1);
+    rc |= expect_eq("beeper stamps nothing", stamp_noted(), 0);
+    return rc;
+}
+
+/* Issue #574: SS18 stamps only what a channel it emits carries. Its output policy can copy one slot over the other: a
+   slot preferred over its companion (by a talkgroup hold over two voice bursts, or as the only one on a voice burst)
+   plays on both channels, so when it filled no block of this superframe it plays silence over the companion's filled
+   blocks, and that stamps nothing. Its own filled blocks stamp. */
+static int
+test_ss18_stamps_the_slot_each_channel_carries(void) {
+    static const struct {
+        const char* tag;
+        int hold;
+        int filled_slot;
+        int want_audio;
+    } cases[] = {
+        {"hold prefers empty slot 1 over filled slot 2", 1, 1, 0},
+        {"slot 1's voice burst preferred, empty, over filled slot 2", 0, 1, 0},
+        {"hold prefers filled slot 1 over empty slot 2", 1, 0, 1},
+        {"slot 1's voice burst preferred, filled, over empty slot 2", 0, 0, 1},
+    };
+
+    static dsd_opts opts;
+    static dsd_state st;
+    int rc = 0;
+    for (size_t c = 0U; c < sizeof(cases) / sizeof(cases[0]); c++) {
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&st, 0, sizeof(st));
+        reset_capture();
+        opts.audio_out = 1;
+        opts.audio_out_type = 8;
+        opts.slot1_on = 1;
+        opts.slot2_on = 1;
+        st.dmrburstL = 21;
+        if (cases[c].hold) {
+            rc |= expect_eq("ss18 copy seed left call", seed_group_call(&st, 0U, 100), 1);
+            rc |= expect_eq("ss18 copy seed right call", seed_group_call(&st, 1U, 100), 1);
+            st.tg_hold = 100;
+            st.dmrburstR = 21;
+        }
+        for (int slot = 0; slot < 2; slot++) {
+            st.p25_p2_audio_allowed[slot] = 1;
+            st.p25_crypto_state[slot] = DSD_P25_CRYPTO_CLEAR;
+        }
+        const int filled = cases[c].filled_slot;
+        st.voice_counter[filled] = 5;
+        for (int j = 0; j < 5; j++) {
+            for (int i = 0; i < 160; i++) {
+                if (filled == 0) {
+                    st.s_l4[j][i] = 1234;
+                } else {
+                    st.s_r4[j][i] = 1234;
+                }
+            }
+        }
+        stamp_clear();
+        playSynthesizedVoiceSS18(&opts, &st);
+        char tag[128];
+        DSD_SNPRINTF(tag, sizeof(tag), "ss18 copy %s: plays", cases[c].tag);
+        rc |= expect_eq(tag, g_audio_capture_calls > 0, 1);
+        DSD_SNPRINTF(tag, sizeof(tag), "ss18 copy %s: audio emitted", cases[c].tag);
+        rc |= expect_eq(tag, g_audio_capture_nonzero, cases[c].want_audio);
+        DSD_SNPRINTF(tag, sizeof(tag), "ss18 copy %s: stamp", cases[c].tag);
+        rc |= expect_eq(tag, stamp_noted(), cases[c].want_audio);
+        dsd_state_ext_free_all(&st);
+    }
+    return rc;
+}
+
+/* Issue #574: FS4 and SS18 stamp only what an output receives. The null output (-o null, which keeps output type 9 once
+   unmuted) and a local stream that is not open receive nothing, so a frame the mix would play stamps nothing. */
+static int
+test_p25p2_mixers_stamp_nothing_no_output_takes(void) {
+    static const struct {
+        const char* tag;
+        int out_type;
+    } outputs[] = {
+        {"null output", 9},
+        {"local stream not open", 0},
+    };
+
+    static dsd_opts opts;
+    static dsd_state st;
+    int rc = 0;
+    for (int ss18 = 0; ss18 <= 1; ss18++) {
+        for (size_t o = 0U; o < sizeof(outputs) / sizeof(outputs[0]); o++) {
+            DSD_MEMSET(&opts, 0, sizeof(opts));
+            DSD_MEMSET(&st, 0, sizeof(st));
+            reset_capture();
+            opts.audio_out = 1;
+            opts.audio_out_type = outputs[o].out_type;
+            opts.audio_out_stream = NULL;
+            opts.pulse_digi_out_channels = 2;
+            opts.slot1_on = 1;
+            opts.slot2_on = 1;
+            opts.audio_gain = 25;
+            st.aout_gain = 49.0f;
+            st.aout_gainR = 49.0f;
+            st.p25_p2_audio_allowed[0] = 1;
+            st.p25_p2_audio_allowed[1] = 1;
+            st.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
+            st.p25_crypto_state[1] = DSD_P25_CRYPTO_CLEAR;
+            stamp_clear();
+            if (ss18) {
+                st.dmrburstL = 21;
+                st.voice_counter[0] = 9;
+                playSynthesizedVoiceSS18(&opts, &st);
+            } else {
+                float frame[160];
+                fill_f32_frame(frame, 0.0f);
+                st.synctype = DSD_SYNC_P25P2_POS;
+                rc |= expect_eq("fs4 no-output push", p25_p2_audio_ring_push(&st, 0, frame), 1);
+                playSynthesizedVoiceFS4(&opts, &st);
+            }
+            char tag[128];
+            DSD_SNPRINTF(tag, sizeof(tag), "%s %s: blocks", ss18 ? "ss18" : "fs4", outputs[o].tag);
+            rc |= expect_eq(tag, g_audio_capture_calls, 0);
+            DSD_SNPRINTF(tag, sizeof(tag), "%s %s: stamp", ss18 ? "ss18" : "fs4", outputs[o].tag);
+            rc |= expect_eq(tag, stamp_noted(), 0);
+        }
+    }
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -1068,6 +1360,11 @@ main(void) {
     rc |= run_short_stereo_dmr3_playback_case();
     rc |= run_beeper_float_stereo_case();
     rc |= run_beeper_short_mono_case();
+    dsd_audio_activity_arm();
+    rc |= test_fs4_stamps_frames_of_audible_slots();
+    rc |= test_ss18_stamps_its_filled_extent();
+    rc |= test_ss18_stamps_the_slot_each_channel_carries();
+    rc |= test_p25p2_mixers_stamp_nothing_no_output_takes();
     dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
 
     return rc;

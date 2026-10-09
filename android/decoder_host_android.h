@@ -129,9 +129,9 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
 
     void shareDiagnostics(const QString& text, const QString& title) override;
 
-    /** @brief True: FLAG_KEEP_SCREEN_ON on the Activity window is available. */
+    /** @brief True: ScreenSupport applies the screen policy on Android. */
     bool
-    keepScreenAwakeSupported() const override {
+    screenPolicySupported() const override {
         return true;
     }
 
@@ -140,7 +140,7 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     bool moveToBackground() override;
     void refresh() override;
     void requestLocalDeviceAccess() override;
-    void setKeepScreenAwake(bool on) override;
+    void setScreenPolicy(int mode, int delaySeconds) override;
 
     /** @brief Materialize a replay document into durable app-private storage; returns "" on failure. */
     QString importContentUri(const QString& reference, const QString& fileName) override;

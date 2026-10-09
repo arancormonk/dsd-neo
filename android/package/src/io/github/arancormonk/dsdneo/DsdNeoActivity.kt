@@ -6,7 +6,9 @@
 package io.github.arancormonk.dsdneo
 
 import android.content.Intent
+import android.content.res.Configuration
 import android.view.KeyEvent
+import android.view.MotionEvent
 import android.view.ViewTreeObserver
 import android.os.Bundle
 import android.os.Build
@@ -39,6 +41,12 @@ import org.qtproject.qt.android.bindings.QtActivity
  * service for the decoder, so the process is retained, the block persists, and everything
  * queued behind the main thread — the service's own callbacks included — times out into
  * "DSD-neo isn't responding".
+ *
+ * The Activity also forwards its lifecycle and input to [ScreenSupport] for the screen
+ * modes, each as a one-line delegation: creation and destruction; the start, stop, pause,
+ * top-resumed, focus and multi-window callbacks; touch events (a tap that brightens a
+ * dimmed screen is swallowed, except under TalkBack's touch exploration, where it
+ * brightens and passes through); and keys, generic motion and Back as interaction.
  */
 class DsdNeoActivity : QtActivity() {
     private var backCallback: OnBackInvokedCallback? = null
@@ -47,8 +55,9 @@ class DsdNeoActivity : QtActivity() {
     // WP-S2: intents carry only a validated USB attachment, never start options.
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        ScreenSupport.attach(this)
         if (Build.VERSION.SDK_INT >= 33) {
-            val callback = OnBackInvokedCallback { AppSupport.requestBack() }
+            val callback = OnBackInvokedCallback { ScreenSupport.userInteraction(this); AppSupport.requestBack() }
             backCallback = callback
             onBackInvokedDispatcher.registerOnBackInvokedCallback(OnBackInvokedDispatcher.PRIORITY_OVERLAY, callback)
         }
@@ -70,10 +79,55 @@ class DsdNeoActivity : QtActivity() {
         AppSupport.refreshNotificationPermission()
     }
 
+    // The screen modes: every lifecycle and input callback that matters to them goes to ScreenSupport.
+    override fun onStart() {
+        super.onStart()
+        ScreenSupport.onStart(this)
+    }
+
+    override fun onPause() {
+        super.onPause()
+        ScreenSupport.onPause(this)
+    }
+
+    // A stop that is part of a configuration change is followed at once by a start; it is not a loss.
+    override fun onStop() {
+        super.onStop()
+        if (!isChangingConfigurations) ScreenSupport.onStop(this)
+    }
+
+    override fun onTopResumedActivityChanged(isTopResumedActivity: Boolean) {
+        super.onTopResumedActivityChanged(isTopResumedActivity)
+        ScreenSupport.onTopResumedChanged(this, isTopResumedActivity)
+    }
+
+    override fun onMultiWindowModeChanged(isInMultiWindowMode: Boolean, newConfig: Configuration) {
+        super.onMultiWindowModeChanged(isInMultiWindowMode, newConfig)
+        ScreenSupport.onMultiWindowChanged(this, isInMultiWindowMode)
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        ScreenSupport.onFocusChanged(this, hasFocus)
+    }
+
+    // A tap on a dimmed screen only brightens it: its whole gesture is swallowed (never under touch exploration).
+    override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+        if (ScreenSupport.dispatchTouch(this, ev)) return true
+        return super.dispatchTouchEvent(ev)
+    }
+
+    // Mouse, hover and scroll count as interaction, like keys in dispatchKeyEvent; neither is ever swallowed.
+    override fun dispatchGenericMotionEvent(ev: MotionEvent): Boolean {
+        ScreenSupport.userInteraction(this)
+        return super.dispatchGenericMotionEvent(ev)
+    }
+
     // Qt also translates hardware Back into a key/close event. Consume that
     // path here so each physical press reaches the shell exactly once. Gesture
     // Back uses the dispatcher above; QML dismisses the IME before navigation.
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (event.action == KeyEvent.ACTION_DOWN) ScreenSupport.userInteraction(this)
         if (event.keyCode == KeyEvent.KEYCODE_BACK) {
             if (event.action == KeyEvent.ACTION_UP && !event.isCanceled) AppSupport.requestBack()
             return true
@@ -82,7 +136,7 @@ class DsdNeoActivity : QtActivity() {
     }
 
     @Deprecated("Legacy Back dispatch for API 29–32")
-    override fun onBackPressed() { AppSupport.requestBack() }
+    override fun onBackPressed() { ScreenSupport.userInteraction(this); AppSupport.requestBack() }
 
 
     // WP-D3: location permission and Activity lifetime.
@@ -97,6 +151,7 @@ class DsdNeoActivity : QtActivity() {
     }
 
     override fun onDestroy() {
+        ScreenSupport.detach(this)
         keyboardObserver?.let { window.decorView.viewTreeObserver.removeOnGlobalLayoutListener(it) }
         keyboardObserver = null
         if (Build.VERSION.SDK_INT >= 33) {

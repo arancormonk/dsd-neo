@@ -24,7 +24,7 @@ data class SlotCall(
 }
 
 /**
- * The decoder's status as the notification needs it.
+ * The decoder's status as the notification needs it, plus when audible audio was last heard.
  *
  * Parsed from one record rather than assembled from several calls, so every field
  * describes the same moment.
@@ -39,6 +39,14 @@ data class DecoderStatus(
     val centerFreqHz: Long,
     val slots: List<SlotCall>,
     val leadSlotIndex: Int,
+    /**
+     * When the decoder last emitted audio the app plays, in the native real-time monotonic
+     * milliseconds, or 0 for none. Only its changes mean anything here: a new value is new
+     * audio. Unsigned on the wire, as `uint64_t` is natively.
+     */
+    val audibleStamp: ULong,
+    /** Milliseconds since [audibleStamp] as of the poll; -1 when there is none or it is over a minute old. */
+    val audibleAgeMs: Long,
 ) {
     /**
      * The slot whose call should headline, or null when nothing is on the air.
@@ -51,14 +59,25 @@ data class DecoderStatus(
     val leadSlot: SlotCall?
         get() = slots.getOrNull(leadSlotIndex)?.takeIf { it.hasContent }
 
+    /**
+     * Whether [other] renders the same notification: equal in every field but the
+     * audible-audio pair. The service re-posts on this rather than on a changed record,
+     * because the pair is for the screen policy and its age moves every second while audio
+     * is recent; comparing records would re-post an unchanged notification each poll.
+     */
+    fun sameDisplay(other: DecoderStatus?): Boolean =
+        other != null && copy(audibleStamp = other.audibleStamp, audibleAgeMs = other.audibleAgeMs) == other
+
     companion object {
         const val LINE_NONE = 0
         const val LINE_IDLE = 1
         const val LINE_ACTIVE = 2
         const val LINE_ENDED = 3
 
-        private const val VERSION = "v2"
-        private const val HEADER_FIELDS = 9
+        // v3 put the audible-audio stamp and its age at header indices 9 and 10, after the
+        // lead slot (index 8); the slots follow at 11 and 22.
+        private const val VERSION = "v3"
+        private const val HEADER_FIELDS = 11
         private const val SLOT_FIELDS = 11
         private const val SLOT_COUNT = 2
         private const val TOTAL_FIELDS = HEADER_FIELDS + SLOT_FIELDS * SLOT_COUNT
@@ -94,6 +113,9 @@ data class DecoderStatus(
                     // -1 when no slot has anything to show; getOrNull() in leadSlot turns
                     // that (and any out-of-range value) back into "nothing on the air".
                     leadSlotIndex = f[8].toInt(),
+                    // uint64_t on the wire, so ULong as for tgId below; a sign or overflow throws.
+                    audibleStamp = f[9].toULong(),
+                    audibleAgeMs = f[10].toLong(),
                     slots = (0 until SLOT_COUNT).map { slot ->
                         val b = HEADER_FIELDS + slot * SLOT_FIELDS
                         SlotCall(

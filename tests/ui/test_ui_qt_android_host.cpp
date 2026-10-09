@@ -4,6 +4,7 @@
 #include <QJsonValue>
 #include <QString>
 #include <QStringList>
+#include <QVariant>
 #include <QtGlobal>
 #include <cstdio>
 #include <initializer_list>
@@ -101,7 +102,7 @@ void
 DecoderHostAndroid::requestLocalDeviceAccess() {}
 
 void
-DecoderHostAndroid::setKeepScreenAwake(bool) {}
+DecoderHostAndroid::setScreenPolicy(int, int) {}
 
 QString
 DecoderHostAndroid::importContentUri(const QString&, const QString&) {
@@ -129,6 +130,9 @@ main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
     using namespace dsd_android;
     DecoderHostAndroid host;
+    /* Settings shows the Screen rows only where the host applies them (#574). */
+    check(host.screenPolicySupported(), "the Android host applies the screen policy");
+    check(host.property("screenPolicySupported").toBool(), "QML reads the screen policy support");
     retained_record() = {{"sessionId", 40}, {"state", "IDLE"}};
     host.refresh();
     for (const int session : {41, 42}) {

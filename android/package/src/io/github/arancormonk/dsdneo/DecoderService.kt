@@ -568,18 +568,21 @@ class DecoderService : Service() {
      * [lastStatusRecord] parsed, and the only input [buildNotification] renders.
      *
      * Parsed once where the record changes rather than once per notification build: a
-     * build happens on every phase update too, and re-splitting 27 fields to render the
+     * build happens on every phase update too, and re-splitting the record to render the
      * same status again is work for nothing. Kept in step with [lastStatusRecord] — both
-     * are written together and cleared together.
+     * are written together and cleared together — so after every tick it holds that
+     * tick's status, audible-audio age included, whether or not the tick re-posted.
      */
     private var lastStatus: DecoderStatus? = null
 
     /**
-     * Re-reads the published status once a second, re-posting only on a change.
+     * Re-reads the published status once a second, re-posting only when what the
+     * notification shows changed, and feeds every running tick to the screen policy.
      *
      * Re-posts itself from the tail and only while RUNNING, so the loop unwinds on its
      * own the moment a session ends or a stop lands — there is no timer left pointing at
-     * a service that has been told to go away.
+     * a service that has been told to go away. Both tails that end the loop end the
+     * screen policy's session too, as [stopStatusPolling] does.
      */
     private val statusPoll = object : Runnable {
         override fun run() {
@@ -600,6 +603,7 @@ class DecoderService : Service() {
                     // been called, so the service really is on its way down.
                     updateNotification(getString(R.string.decoder_stopping))
                 }
+                ScreenSupport.statusStopped()
                 return
             }
             val record = try {
@@ -611,21 +615,38 @@ class DecoderService : Service() {
                 // second for the rest of the session. The notification keeps whatever it
                 // last rendered.
                 Log.e(TAG, "status accessor unavailable; stopping status polling", e)
+                ScreenSupport.statusStopped()
                 return
             }
+            var displayChanged = false
             if (record != lastStatusRecord) {
+                val previous = lastStatus
+                val wasUnreadable = lastStatusRecord != null && previous == null
+                val status = DecoderStatus.parse(record)
                 lastStatusRecord = record
-                lastStatus = DecoderStatus.parse(record)
-                if (record != null && lastStatus == null) {
+                lastStatus = status
+                if (record != null && status == null && !wasUnreadable) {
                     // A record this build cannot read — a field added on one side of JNI
                     // without the other, or a version it does not know. Silent otherwise:
                     // the notification would render the phase wording for the rest of the
-                    // session with nothing on either side saying why.
+                    // session with nothing on either side saying why. Once per run of
+                    // unreadable records: the audible-audio age changes the record every
+                    // second, and the first line already says all there is to say.
                     Log.w(TAG, "unreadable status record; notification limited to phase text")
                 }
-                // Only when the record itself changed, which on a quiet channel is
-                // almost never. A live call does re-render each second — its elapsed_ms
-                // advances — but setOnlyAlertOnce keeps every one of those silent.
+                // The record changes every second while audio is recent — its audible-audio
+                // age advances — but that pair is for the screen policy, not the shade, so
+                // re-post only when what the notification shows changed, which on a quiet
+                // channel is almost never. A record turning unreadable or readable again
+                // counts: the notification swaps between the phase wording and the status.
+                // A live call does re-render each second — its elapsed_ms advances — but
+                // setOnlyAlertOnce keeps every one of those silent.
+                displayChanged = if (status == null) previous != null else !status.sameDisplay(previous)
+            }
+            // Every tick, changed record or not: the screen policy's lease is renewed per sample, and
+            // [lastStatus] holds this tick's status either way.
+            ScreenSupport.statusTick(this@DecoderService, synchronized(lock) { sessionId }, lastStatus)
+            if (displayChanged) {
                 updateNotification(currentStatusText())
             }
             statusHandler.postDelayed(this, STATUS_POLL_MS)
@@ -640,7 +661,12 @@ class DecoderService : Service() {
 
     /**
      * Stops the loop and forgets the cached record, so the notification falls back to the
-     * phase wording rather than freezing on the last call it saw.
+     * phase wording rather than freezing on the last call it saw, and ends the screen
+     * policy's session.
+     *
+     * Every deliberate teardown comes through here first: [onDestroy], [stopDecoding] and
+     * [stopForegroundCompat] (and so [failStart] and [stopIfIdle]). The poll's own two
+     * tails end the screen session themselves; ending it twice is harmless.
      *
      * Safe against a tick that is already queued: the poll runs on the main looper, and
      * every caller of this is on the main thread too, so removeCallbacks() cannot race
@@ -650,6 +676,7 @@ class DecoderService : Service() {
         statusHandler.removeCallbacks(statusPoll)
         lastStatusRecord = null
         lastStatus = null
+        ScreenSupport.statusStopped()
     }
 
     private fun stopForegroundCompat() {
@@ -837,6 +864,9 @@ class DecoderService : Service() {
         /** Service-side view of the lifecycle, for UI status text. */
         @JvmStatic
         fun stateName(): String = synchronized(lock) { state.name }
+
+        /** The running session's id, or null unless RUNNING; for the screen policy's synchronous samples. */
+        fun runningSessionId(): Long? = synchronized(lock) { if (state == State.RUNNING) sessionId else null }
 
         /**
          * Why the last start was abandoned, or "" if none was. Read by the Qt host when
