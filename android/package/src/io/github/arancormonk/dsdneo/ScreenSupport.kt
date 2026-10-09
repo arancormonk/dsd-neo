@@ -312,9 +312,10 @@ object ScreenSupport {
         return Settings.System.getLong(resolver, Settings.System.SCREEN_OFF_TIMEOUT, DEFAULT_SCREEN_OFF_TIMEOUT_MS)
     }
 
+    /** The policy may wake here, for a call begun after an arming loss saw the screen off, so it takes the verdict. */
     private fun screenOff() {
         sampleNow()
-        controller.screenOff()
+        controller.screenOff(wakeVerdict)
     }
 
     /**

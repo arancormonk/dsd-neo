@@ -4481,32 +4481,37 @@ main thread only. The decision is pure Kotlin with no `android.*` import, run on
   is the predicate every wake is judged through. Android's verdict reaches the policy as a supplier, which it asks last,
   at most once, and only for a sample that would otherwise wake (new audio no more than 2 s old, not snoozed,
   `wakeVerdictNeeded`): no read for a sample with no record, an unchanged stamp, stale audio or a snooze. Audio that
-  would wake but for the activity still being visible (the screen off before Android stops DSD-neo, armed, or with the
-  arming still to be judged after a screen-off broadcast that came first) is held, and `stopped()` judges it the same
-  way once the activity is gone, at most 2 s old by then; a change of arming (except the arming loss after a broadcast
-  that came first, which keeps it), a screen-on and a session change drop it. Arming (DSD-neo was in front when the display went off) is decided only by the
-  first foreground-loss callback of a sequence (focus, top-resumed, pause or stop, whichever Android delivers first),
-  from whether the activity was top-resumed and focused just before it and the screen already off; regaining the
-  foreground ends the sequence and clears the arming and any snooze. The policy's own screen state follows only the
-  screen broadcasts and a refused wake (a loss callback judges arming from the live `isInteractive` the glue passes with
-  it), so the sample taken just before a screen-off cannot wake a screen the user has just turned off; a screen-on
-  DSD-neo did not cause, or `USER_PRESENT`, disarms at once. After DSD-neo's own wake the arming it carried survives the
-  next screen-off only if that off comes no later than
-  `max(leaseReleasedAt, wakeAt + screen-off timeout) + OWN_WAKE_GRACE_MS` (5 s), a lease still held at that off counting
-  as released by it. That window judges only an arming the wake carried: an own screen-on records `wakeAt` only while
-  armed, and the screen-off, every disarm and every fresh arming (an unlock, a regain, the first loss of a new sequence)
-  clear it, so a later sleep in front after an unlock, or on a phone with no lock screen whose regain can land on either
-  side of the wake's broadcast, arms afresh. In a between-calls mode with a session, a screen-off or an arming loss
-  while audio is engaged (within the delay of the last audio) snoozes wakes until a full delay passes without audio.
-  The snooze is judged as of the moment the display went off: the screen-off broadcast, or an arming loss that comes
-  before it. An arming loss after the broadcast leaves the snooze as the broadcast judged it, so a call that begins
-  after the broadcast is never snoozed by it, and is held for `stopped()` like a call heard after an arming loss.
-  `wakeAllowed(audioMode, interruptionFilter)` allows a wake only in `MODE_NORMAL` with the filter `ALL` (or `UNKNOWN`);
-  any other mode, a newer one included, blocks it. The two platform limits the README lists are documented in its KDoc.
+  would wake but for an event of the same off still to come is held: the stop (armed with the screen off while DSD-neo
+  is still visible), the first loss callback (after a screen-off broadcast that came first), or the screen-off broadcast
+  (after an arming loss that saw the screen off). `stopped()` and `screenOff()` judge it the same way once nothing is
+  pending, at most 2 s old by then, so the last of those events wakes; a change of arming (except the arming loss after
+  a broadcast that came first, which keeps it), a screen-on and a session change drop it. Arming (DSD-neo was in front
+  when the display went off) is decided only by the first foreground-loss callback of a sequence (focus, top-resumed,
+  pause or stop, whichever Android delivers first), from whether the activity was top-resumed and focused just before it
+  and the screen already off; regaining the foreground ends the sequence and clears the arming and any snooze. The
+  policy's own screen state follows only the screen broadcasts and a refused wake (a loss callback judges arming from
+  the live `isInteractive` the glue passes with it), so the sample taken just before a screen-off cannot wake a screen
+  the user has just turned off (it can only be held, for the broadcast to judge); a screen-on DSD-neo did not cause, or
+  `USER_PRESENT`, disarms at once. After DSD-neo's own wake the arming it carried survives the next screen-off only if
+  that off comes no later than `max(leaseReleasedAt, wakeAt + screen-off timeout) + OWN_WAKE_GRACE_MS` (5 s), a lease
+  still held at that off counting as released by it. That window judges only an arming the wake carried: an own
+  screen-on records `wakeAt` only while armed, and the screen-off, every disarm and every fresh arming (an unlock, a
+  regain, the first loss of a new sequence) clear it, so a later sleep in front after an unlock, or on a phone with no
+  lock screen whose regain can land on either side of the wake's broadcast, arms afresh. In a between-calls mode with a
+  session, a screen-off while audio is engaged (within the delay of the last audio) snoozes wakes until a full delay
+  passes without audio. Each off is judged once, as of the moment the display went off, by whichever comes first: an
+  arming loss that sees the screen already off, or the screen-off broadcast. The other one for the same off neither
+  judges again nor adds a snooze (`offJudgedAtLoss` carries a loss's judgment to its late broadcast), so a call that
+  begins after the first is never that off's snooze, and is held for a wake. Where no arming loss comes for an off
+  (DSD-neo not in front, such as on the lock screen after its own wake, when Power is pressed during a call) the
+  broadcast alone judges it. `wakeAllowed(audioMode, interruptionFilter)` allows a wake only in `MODE_NORMAL` with the
+  filter `ALL` (or `UNKNOWN`); any other mode, a newer one included, blocks it. The two platform limits the README lists
+  are documented in its KDoc.
 - `ScreenController.kt`: runs the policy and carries its outputs out through `Effects`, only on a change and
   make-before-break (a keep-on flag being set, then a lease being taken, then a flag being cleared, the dimming, a lease
   being released), renews a held lease on every sample, pulses once per `wakeSerial` step and turns a pulse that left
-  the screen off into `wakeRefused()`, and keeps one scheduled tick in step with the deadline. It decides which
+  the screen off into `wakeRefused()`, and keeps one scheduled tick in step with the deadline. Its `stopped()` and
+  `screenOff()` take the verdict supplier as `sample()` does, since either can judge held audio. It decides which
   screen-on is DSD-neo's own wake: only the first within `OWN_WAKE_SETTLE_MS` (2 s) of a pulse Android accepted. A
   refused pulse leaves none, so the next screen-on is someone else's and disarms. `state` is a read-only view of the
   policy, so nothing bypasses the effects.
@@ -4532,10 +4537,11 @@ The Android glue only delegates:
   are protected broadcasts that only system-side senders can send. A failed registration is retried on the next
   configure, attach or tick. Before the screen-off broadcast and each callback that can lose the foreground it takes a
   synchronous sample (`DsdNative.nativeNotificationStatus()`), only for the session the poll is feeding
-  (`DecoderService.runningSessionId()`). It hands every sample the supplier that reads the audio mode and interruption
-  filter for `wakeAllowed()`, both binder calls on the main thread, so they run only when the policy asks. Each
-  screen-on broadcast goes to the controller with the phone's timeout (`Settings.System.SCREEN_OFF_TIMEOUT`, 30 s when
-  unreadable). The controller's clock is `SystemClock.uptimeMillis`, the base `Handler.postAtTime()` schedules the tick
+  (`DecoderService.runningSessionId()`). It hands every sample, the stop and the screen-off the supplier that reads the
+  audio mode and interruption filter for `wakeAllowed()`, both binder calls on the main thread, so they run only when
+  the policy asks. Each screen-on broadcast goes to the controller with the phone's timeout
+  (`Settings.System.SCREEN_OFF_TIMEOUT`, 30 s when unreadable). The controller's clock is `SystemClock.uptimeMillis`,
+  the base `Handler.postAtTime()` schedules the tick
   on. Effects land on the attached activity's window (`FLAG_KEEP_SCREEN_ON`; `screenBrightness` 0.01 or
   `BRIGHTNESS_OVERRIDE_NONE`), written only where they differ from the live attributes and re-applied after each
   activity callback, poll tick and synchronous sample, since Qt may replace them. A refused wake logs "Screen wake

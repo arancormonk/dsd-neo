@@ -95,7 +95,8 @@ class ScreenController(private val clock: () -> Long, private val effects: Effec
         policy.screenOn(ours, screenOffTimeoutMs)
     }
 
-    fun screenOff() = after { policy.screenOff() }
+    /** The screen went off. The policy may wake here, for a call held until this broadcast, so it takes the verdict. */
+    fun screenOff(wakeAllowed: () -> Boolean) = after { policy.screenOff(wakeAllowed) }
 
     fun userPresent() = after { policy.userPresent() }
 

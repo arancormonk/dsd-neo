@@ -15,6 +15,9 @@ private fun ScreenController.sample(stamp: ULong?, ageMs: Long, wakeAllowed: Boo
 /** A stop with a fixed verdict, which the policy asks for as it would ask Android. */
 private fun ScreenController.stopped(interactive: Boolean) = stopped(interactive) { true }
 
+/** A screen-off broadcast with a fixed verdict, which the policy asks for as it would ask Android. */
+private fun ScreenController.screenOff() = screenOff { true }
+
 /** Records every effect in order; pulseWake() answers as Android would after the wake lock. */
 private class RecordingEffects : ScreenController.Effects {
     private val calls = mutableListOf<String>()
@@ -336,6 +339,27 @@ private fun theStopPulsesForACallHeardWhileStillVisible() {
     check(rig.effects.take().contains("pulse")) { "the stop pulses for it" }
 }
 
+private fun theLateBroadcastPulsesForACallHeardAfterTheArmingLoss() {
+    // Every loss callback, the stop included, lands before the screen-off broadcast; a call heard in between began
+    // after the arming loss saw the screen off, so the broadcast pulses for it, asking Android then.
+    val rig = ControllerRig(mode = OFF)
+    rig.front()
+    rig.session()
+    rig.quiet()
+    rig.controller.topResumedChanged(false, false)
+    rig.controller.focusChanged(false, false)
+    rig.controller.paused(false)
+    rig.controller.stopped(false)
+    rig.effects.take()
+    rig.now += 200
+    rig.audio(ageMs = 100)
+    check("pulse" !in rig.effects.take()) { "no pulse before the broadcast" }
+    var asked = 0
+    rig.controller.screenOff { asked++; true }
+    check(rig.effects.take().contains("pulse") && asked == 1) { "the late broadcast pulses for it" }
+    check(!rig.controller.state.snoozed) { "and does not snooze it" }
+}
+
 private fun touchDelegatesInOneCall() {
     val rig = ControllerRig(mode = DIM)
     rig.front()
@@ -361,6 +385,7 @@ fun main() {
     aTickAlwaysReschedulesWhatIsLeft()
     theVerdictReachesThePolicyUnasked()
     theStopPulsesForACallHeardWhileStillVisible()
+    theLateBroadcastPulsesForACallHeardAfterTheArmingLoss()
     touchDelegatesInOneCall()
     println("PASS: screen controller idempotence, make before break, renewal, immediate release and wake refusal")
 }

@@ -26,6 +26,9 @@ private fun ScreenPolicy.sample(stamp: ULong?, ageMs: Long, wakeAllowed: Boolean
 /** A stop with a fixed verdict, which the policy asks for as it would ask Android. */
 private fun ScreenPolicy.stopped(interactive: Boolean) = stopped(interactive) { true }
 
+/** A screen-off broadcast with a fixed verdict, which the policy asks for as it would ask Android. */
+private fun ScreenPolicy.screenOff() = screenOff { true }
+
 /** One policy on a hand-driven clock, with the event sequences the histories share. */
 private class PolicyRig(mode: Int = OFF, delaySeconds: Int = DELAY_S) {
     var now = 1_000_000L
@@ -957,7 +960,8 @@ private fun audioBetweenPollsSnoozesThroughTheSyncSample() {
     check(unsynced.policy.armed && !unsynced.policy.snoozed)
     // Audio that starts after the loss callbacks but before the screen-off broadcast: the sample the glue takes before
     // screenOff() finds it. Until that broadcast the policy still counts the screen as on, so that sample cannot wake
-    // the screen the user has just turned off; the off then snoozes.
+    // the screen the user has just turned off. The arming loss saw the screen off and judged that off, so the call
+    // began after it: the late broadcast does not snooze it, and, the activity being gone already, wakes for it.
     val late = PolicyRig()
     late.front()
     late.session()
@@ -970,11 +974,30 @@ private fun audioBetweenPollsSnoozesThroughTheSyncSample() {
     late.advance(200)
     late.audio(ageMs = 100)
     check(late.wakes == 0L)
-    late.policy.screenOff()
-    check(late.policy.snoozed && late.policy.armed)
+    var asked = 0
+    late.policy.screenOff { asked++; true }
+    check(!late.policy.snoozed && late.policy.armed && late.wakes == 1L && asked == 1)
+    late.ownWake()
     late.advance(1_000)
     late.audio()
-    check(late.wakes == 0L)
+    check(late.wakes == 1L && !late.policy.snoozed)
+    // Audio before the loss callbacks is still that off's: the arming loss snoozes, and the late broadcast keeps it.
+    val loud = PolicyRig()
+    loud.front()
+    loud.session()
+    loud.quiet()
+    loud.advance(700)
+    loud.audio(ageMs = 300)
+    loud.policy.topResumedChanged(false, false)
+    loud.policy.focusChanged(false, false)
+    loud.policy.paused(false)
+    loud.policy.stopped(false)
+    check(loud.policy.armed && loud.policy.snoozed)
+    loud.advance(200)
+    loud.audio(ageMs = 100)
+    asked = 0
+    loud.policy.screenOff { asked++; true }
+    check(loud.policy.snoozed && loud.policy.armed && loud.wakes == 0L && asked == 0)
 }
 
 private fun aCallHeardWhileTheScreenGoesOffInFrontWakesAtTheStop() {
@@ -1050,7 +1073,8 @@ private fun aCallHeardWhileTheScreenGoesOffInFrontWakesAtTheStop() {
     val (dim, _) = heardInTheWindow(window, mode = DIM)
     dim.policy.stopped(false)
     check(dim.wakes == 0L) { "Dim" }
-    // A call heard before the screen-off broadcast is the snooze's: the off snoozes and the stop wakes nothing.
+    // A call heard before the screen-off broadcast but after the arming loss saw the screen off began after that off:
+    // the late broadcast does not snooze it, and the stop wakes for it.
     val early = PolicyRig()
     early.front()
     early.session()
@@ -1060,7 +1084,18 @@ private fun aCallHeardWhileTheScreenGoesOffInFrontWakesAtTheStop() {
     early.policy.screenOff()
     asked = 0
     early.policy.stopped(false) { asked++; true }
-    check(early.policy.snoozed && early.wakes == 0L && asked == 0) { "audio before the off snoozes" }
+    check(!early.policy.snoozed && early.wakes == 1L && asked == 1) { "audio after the arming loss wakes" }
+    // A call heard before the arming loss is that off's: the loss snoozes, and the stop wakes nothing.
+    val before = PolicyRig()
+    before.front()
+    before.session()
+    before.quiet()
+    before.audio(ageMs = 100)
+    before.policy.focusChanged(false, false)
+    before.policy.screenOff()
+    asked = 0
+    before.policy.stopped(false) { asked++; true }
+    check(before.policy.snoozed && before.wakes == 0L && asked == 0) { "audio before the arming loss snoozes" }
     // With no call in the window the stop asks nothing.
     val quiet = PolicyRig()
     quiet.front()
@@ -1158,6 +1193,83 @@ private fun aCallBeginningAfterTheScreenOffBroadcastIsNeverItsSnooze() {
     asked = 0
     before.policy.stopped(false) { asked++; true }
     check(before.wakes == 0L && asked == 0) { "snoozed: the stop wakes nothing" }
+}
+
+private fun aCallBeginningAfterAnArmingLossIsNeverTheLateBroadcastsSnooze() {
+    // Power in front: the arming loss callback can land before the screen-off broadcast, and it already sees the
+    // screen off. That loss judges the off's snooze; a call that begins after it began after the display went off, so
+    // the late broadcast for the same off neither re-judges the snooze nor adds one, and the call wakes the screen once
+    // the activity is gone and the screen is off by the broadcast, whichever of the two comes last.
+    /** Armed in front by a focus loss that saw the screen off, a quiet session, then a call heard 100 ms after it. */
+    fun lossThenCall(): Pair<PolicyRig, ULong> {
+        val rig = PolicyRig()
+        rig.front()
+        rig.session()
+        rig.quiet()
+        rig.policy.focusChanged(false, false)
+        check(rig.policy.armed && !rig.policy.snoozed && rig.policy.interactive && rig.policy.visible)
+        rig.advance(200)
+        val call = rig.audio(ageMs = 100)
+        check(rig.wakes == 0L) { "no wake before the broadcast" }
+        return rig to call
+    }
+    // The broadcast, then the stop.
+    val (rig, call) = lossThenCall()
+    rig.policy.screenOff()
+    check(rig.policy.armed && !rig.policy.snoozed) { "the late broadcast does not snooze a call after the arming loss" }
+    check(rig.wakes == 0L) { "still visible: no wake at the broadcast" }
+    rig.advance(500)
+    rig.policy.sample(call, 600, true) // The stop's sample: the same call, already over.
+    var asked = 0
+    rig.policy.stopped(false) { asked++; true }
+    check(rig.wakes == 1L && asked == 1) { "the stop wakes for the call, asking Android once" }
+    rig.advance(1_000)
+    rig.policy.sample(call, 1_600, true)
+    check(rig.wakes == 1L) { "and only once" }
+    // The stop before the broadcast: the broadcast is the last of the two, so it wakes for the call.
+    val (stopFirst, _) = lossThenCall()
+    asked = 0
+    stopFirst.policy.stopped(false) { asked++; true }
+    check(stopFirst.wakes == 0L && asked == 0) { "the screen still counts as on at the stop: no wake yet" }
+    stopFirst.policy.screenOff { asked++; true }
+    check(!stopFirst.policy.snoozed && stopFirst.wakes == 1L && asked == 1) { "the late broadcast wakes for the call" }
+    // A call that goes on is not snoozed either: its next block wakes the screen.
+    val (goesOn, _) = lossThenCall()
+    goesOn.policy.paused(false)
+    goesOn.policy.screenOff()
+    goesOn.advance(1_901)
+    goesOn.policy.stopped(false)
+    check(goesOn.wakes == 0L) { "heard more than 2 s before the stop" }
+    goesOn.advance(1_000)
+    goesOn.audio()
+    check(goesOn.wakes == 1L && !goesOn.policy.snoozed) { "the call's next block wakes" }
+    // Power during audio still snoozes in either order: the first of the loss and the broadcast judges it, and the
+    // second keeps that snooze.
+    val orders = listOf<Pair<String, (ScreenPolicy) -> Unit>>(
+        "loss first" to {
+            it.focusChanged(false, false)
+            it.screenOff()
+        },
+        "broadcast first" to {
+            it.screenOff()
+            it.focusChanged(false, false)
+        },
+    )
+    for ((name, order) in orders) {
+        val loud = PolicyRig()
+        loud.front()
+        loud.session()
+        loud.quiet()
+        loud.audio()
+        loud.advance(1_000)
+        order(loud.policy)
+        check(loud.policy.armed && loud.policy.snoozed) { "$name: Power during audio snoozes" }
+        loud.advance(200)
+        loud.audio(ageMs = 100)
+        asked = 0
+        loud.policy.stopped(false) { asked++; true }
+        check(loud.wakes == 0L && asked == 0) { "$name: the snooze holds through the call" }
+    }
 }
 
 private fun bothCallbackOrdersArmWhenSleepingEligible() {
@@ -1602,6 +1714,7 @@ fun main() {
     audioBetweenPollsSnoozesThroughTheSyncSample()
     aCallHeardWhileTheScreenGoesOffInFrontWakesAtTheStop()
     aCallBeginningAfterTheScreenOffBroadcastIsNeverItsSnooze()
+    aCallBeginningAfterAnArmingLossIsNeverTheLateBroadcastsSnooze()
     bothCallbackOrdersArmWhenSleepingEligible()
     quickLockScreenTouchDuringTheLease()
     powerDuringALongWokenCallKeepsTheArming()
