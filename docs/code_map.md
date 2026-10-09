@@ -742,11 +742,13 @@ suite runs under this compiler.
   (`dsd_output_*_block()`): the mute (`audio_out` 0, which leaves the output open) silences the local stream, UDP and
   the raw fd alike, and EDACS analog and M17 Codec2 voice also stop while slot 1 is switched off. The P25 Phase 2
   short mix (SS18) applies the slot switches before its output policy, as FS4 does, so a muted companion never
-  mirrors a switched-off slot into both channels. Under DMR forced clear (Baofeng AP, CSI EE, Kenwood scrambler) the
-  float (FS3) and short (SS3) DMR mixes both take the vocoder's slot verdict (`dmr_encL/R` with `dmr_mute_encL/R`,
-  after its forced clear and reverse mute), so reverse mute silences such a call on both paths. DMR and P25 Phase 2
-  MBE capture save in `mbe_finalize_slot_left/right()` before `mbe_post_left/right_audio()` recomputes the slot mute flags, so the
-  first frame after a mute change (reverse mute included) follows the previous frame's state.
+  mirrors a switched-off slot into both channels. The float (FS3) and short (SS3) DMR mixes start each slot from the
+  vocoder's verdict (`dmr_encL/R` with `dmr_mute_encL/R`, after its forced clear and reverse mute); without reverse
+  mute or forced clear (Baofeng AP, CSI EE, Kenwood scrambler, `dsd_key_dmr_forced_clear()`) SS3 also mutes a slot
+  whose service options say encrypted when no loaded key decrypts it. A slot the vocoder mutes stages silence in
+  `s_l`/`s_r`, so no mix replays an earlier frame, not even one a talkgroup hold unmutes. DMR and P25 Phase 2 MBE
+  capture save in `mbe_finalize_slot_left/right()` before `mbe_post_left/right_audio()` recomputes the slot mute
+  flags, so the first frame after a mute change (reverse mute included) follows the previous frame's state.
 - Invariant (vocoder PCM scale, `<dsd-neo/core/vocoder.h>`): mbelib-neo's float PCM is int16 / 7
   (`mbe_floattoshort()` multiplies by 7), and from 2.3 it synthesizes speech at that reference level. The voice
   buffers (`audio_out_temp_buf`/`R` and their `f_l`/`f_r`/`f_l4`/`f_r4` copies) hold int16-scale samples, which the

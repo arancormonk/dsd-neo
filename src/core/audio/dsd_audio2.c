@@ -408,13 +408,6 @@ p25p2_s16_frames_have_audio(short frames[18][160]) {
     return 0;
 }
 
-// Forced clear: Baofeng AP, CSI EE and the Kenwood scrambler decode every DMR voice frame with a static key, and
-// the vocoder clears the slot's encryption flag for them (mbe_post_apply_forced_clear_gate()).
-static inline int
-dmr_forced_clear_enabled(const dsd_state* state) {
-    return state->baofeng_ap == 1 || state->csi_ee == 1 || state->ken_sc == 1;
-}
-
 // Baofeng AP and CSI EE unmute a slot whatever its flags say, a mixer override older than the vocoder's forced clear
 // for them (SS3 then read only the encryption bit of the service options, which the vocoder never clears). It never
 // overrides reverse mute (-q): the vocoder applies forced clear first and -q then mutes the call, so the s16 path
@@ -424,16 +417,32 @@ dmr_forced_privacy_unmute_enabled(const dsd_opts* opts, const dsd_state* state) 
     return opts->reverse_mute != 1 && ((state->baofeng_ap == 1) || (state->csi_ee == 1));
 }
 
-// The vocoder's verdict on a DMR slot after its forced clear and reverse mute: processAudio() stages the slot's s16
-// samples unless the slot is flagged encrypted while encrypted audio is muted.
+// Whether the stereo DMR mixes start a slot muted. First the Baofeng AP / CSI EE override above (never under -q);
+// otherwise the vocoder's verdict after its forced clear and reverse mute: muted when the slot is flagged encrypted
+// while encrypted audio is muted, which is exactly when the vocoder stages no s16 samples for it (processAudio()).
 static int
-dmr_slot_vocoder_muted(const dsd_opts* opts, const dsd_state* state, int slot) {
+dmr_slot_mixer_muted(const dsd_opts* opts, const dsd_state* state, int slot) {
     if (dmr_forced_privacy_unmute_enabled(opts, state)) {
         return 0;
     }
     const int enc = (slot == 0) ? state->dmr_encL : state->dmr_encR;
     const int mute = (slot == 0) ? opts->dmr_mute_encL : opts->dmr_mute_encR;
     return (enc != 0 && mute != 0) ? 1 : 0;
+}
+
+// SS3's own crypto mute without reverse mute: the service options mark the slot encrypted and no loaded key decrypts
+// it. It holds even with the encrypted mute toggled off, when the vocoder still stages the undecryptable audio.
+static int
+dmr_ss3_slot_undecryptable(const dsd_state* state, int slot) {
+    const int enc_bit = ((slot == 0 ? state->dmr_so : state->dmr_soR) >> 6) & 0x1;
+    if (!enc_bit) {
+        return 0;
+    }
+    const int algid = (slot == 0) ? state->payload_algid : state->payload_algidR;
+    const int can_decrypt =
+        (algid == 0) ? dsd_dmr_missing_alg_key_can_decrypt(state, slot)
+                     : dsd_dmr_voice_slot_can_decrypt(state, slot, algid, (slot == 0) ? state->R : state->RR);
+    return can_decrypt ? 0 : 1;
 }
 
 DSD_AUDIO2_INTERNAL void
@@ -450,8 +459,8 @@ dsd_dmr_apply_mono_slot_gate(const dsd_opts* opts, const dsd_state* state, int* 
 
 DSD_AUDIO2_INTERNAL void
 dsd_dmr_init_slot_mute_flags(const dsd_opts* opts, const dsd_state* state, int* encL, int* encR) {
-    *encL = dmr_slot_vocoder_muted(opts, state, 0);
-    *encR = dmr_slot_vocoder_muted(opts, state, 1);
+    *encL = dmr_slot_mixer_muted(opts, state, 0);
+    *encR = dmr_slot_mixer_muted(opts, state, 1);
     dsd_dmr_apply_mono_slot_gate(opts, state, encL, encR);
 }
 
@@ -656,32 +665,19 @@ dsd_write_s16_wav_18_blocks(const dsd_opts* opts, short stereo_sf[18][320], int 
 
 DSD_AUDIO2_INTERNAL void
 dsd_dmr_ss3_init_enc_flags(const dsd_opts* opts, const dsd_state* state, int* encL, int* encR) {
-    // Forced clear is settled in the vocoder, whose verdict FS3 reads: SS3 takes it as well, so every forced mode is
-    // heard alike on both paths and reverse mute silences it on both.
-    if (dmr_forced_clear_enabled(state)) {
-        *encL = dmr_slot_vocoder_muted(opts, state, 0);
-        *encR = dmr_slot_vocoder_muted(opts, state, 1);
+    // SS3 plays the short samples the vocoder staged, so it starts from the slot verdict FS3 reads: a slot the vocoder
+    // muted (reverse mute included) has nothing staged to play. Under reverse mute and under forced clear that verdict
+    // is the whole answer: -q mutes clear calls and unmutes encrypted ones, which the encryption bit cannot tell.
+    *encL = dmr_slot_mixer_muted(opts, state, 0);
+    *encR = dmr_slot_mixer_muted(opts, state, 1);
+    if (opts->reverse_mute == 1 || dsd_key_dmr_forced_clear(state)) {
         return;
     }
-
-    *encL = (state->dmr_so >> 6) & 0x1;
-    *encR = (state->dmr_soR >> 6) & 0x1;
-
-    if (*encL) {
-        const int can_decrypt = (state->payload_algid == 0)
-                                    ? dsd_dmr_missing_alg_key_can_decrypt(state, 0)
-                                    : dsd_dmr_voice_slot_can_decrypt(state, 0, state->payload_algid, state->R);
-        if (can_decrypt) {
-            *encL = 0;
-        }
+    if (dmr_ss3_slot_undecryptable(state, 0)) {
+        *encL = 1;
     }
-    if (*encR) {
-        const int can_decrypt = (state->payload_algidR == 0)
-                                    ? dsd_dmr_missing_alg_key_can_decrypt(state, 1)
-                                    : dsd_dmr_voice_slot_can_decrypt(state, 1, state->payload_algidR, state->RR);
-        if (can_decrypt) {
-            *encR = 0;
-        }
+    if (dmr_ss3_slot_undecryptable(state, 1)) {
+        *encR = 1;
     }
 }
 

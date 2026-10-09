@@ -2623,92 +2623,234 @@ test_process_mbe_frame_dmr_post_decode_gates_override_enc_flags(void) {
     return rc;
 }
 
-static int g_forced_clear_blasts = 0;
+/* What a stereo DMR mix emitted: its blocks, and per channel the signs its samples took (1 positive, 2 negative). */
+static int g_dmr_mix_blocks = 0;
+static int g_dmr_mix_signs[2];
 
 static void
-forced_clear_count_blast(const dsd_opts* opts, dsd_state* state, size_t nsam, const void* data) {
-    (void)opts;
+dmr_mix_capture_blast(const dsd_opts* opts, dsd_state* state, size_t nsam, const void* data) {
     (void)state;
-    (void)nsam;
-    (void)data;
-    g_forced_clear_blasts++;
+    g_dmr_mix_blocks++;
+    if (data == NULL) {
+        return;
+    }
+    const size_t width = opts->floating_point ? sizeof(float) : sizeof(short);
+    for (size_t i = 0U; i < nsam / width; i++) {
+        const float v = opts->floating_point ? ((const float*)data)[i] : (float)((const short*)data)[i];
+        if (v > 1e-6f) {
+            g_dmr_mix_signs[i & 1U] |= 1;
+        } else if (v < -1e-6f) {
+            g_dmr_mix_signs[i & 1U] |= 2;
+        }
+    }
 }
 
-/* Issue #574: forced privacy (Baofeng AP, CSI EE, the Kenwood scrambler) decodes every frame with a static key, and
- * the vocoder clears the slot's encryption flag before reverse mute (-q) flips it: without -q the call is staged and
- * heard, with -q it is muted and the s16 path never stages its samples. Both stereo DMR mixers follow that verdict,
- * the float FS3 and the s16 SS3 alike, whether or not the voice carries the encryption bit: a slot pair's three
- * frames play without -q and nothing plays with it. */
-static int
-test_dmr_forced_clear_mixers_follow_vocoder_reverse_mute(void) {
-    static const char* const modes[] = {"baofeng_ap", "csi_ee", "ken_sc"};
-    static const int service_options[] = {0x00, 0x40};
+static void
+dmr_mix_run(dsd_opts* opts, dsd_state* state) {
+    dsd_udp_audio_hooks hooks = {0};
+    hooks.blast = dmr_mix_capture_blast;
+    g_dmr_mix_blocks = 0;
+    g_dmr_mix_signs[0] = 0;
+    g_dmr_mix_signs[1] = 0;
+    dsd_udp_audio_hooks_set(hooks);
+    if (opts->floating_point) {
+        playSynthesizedVoiceFS3(opts, state);
+    } else {
+        playSynthesizedVoiceSS3(opts, state);
+    }
+    dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
+}
+
+static dsd_opts*
+dmr_mix_new_opts(int floating_point, int reverse_mute) {
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    if (opts) {
+        initOpts(opts);
+        opts->audio_out = 1;
+        opts->audio_out_type = 8;
+        opts->use_hpf_d = 0;
+        opts->floating_point = floating_point;
+        opts->reverse_mute = reverse_mute;
+    }
+    return opts;
+}
+
+// One frame through the vocoder on @p slot, staged as the DMR BS voice burst stages it for the stereo mixes.
+static void
+dmr_mix_stage_frame(dsd_opts* opts, dsd_state* state, int slot, int frame) {
     char imbe_fr[8][23] = {{0}};
     char ambe_fr[4][24] = {{0}};
     char imbe7100_fr[7][24] = {{0}};
     ambe_fr[0][2] = 1;
     ambe_fr[2][15] = 1;
-    dsd_udp_audio_hooks hooks = {0};
-    hooks.blast = forced_clear_count_blast;
+    state->currentslot = slot;
+    processMbeFrame(opts, state, imbe_fr, ambe_fr, imbe7100_fr);
+    if (slot == 0) {
+        DSD_MEMCPY(state->f_l4[frame], state->audio_out_temp_buf, sizeof(state->f_l4[frame]));
+        DSD_MEMCPY(state->s_l4[frame], state->s_l, sizeof(state->s_l4[frame]));
+    } else {
+        DSD_MEMCPY(state->f_r4[frame], state->audio_out_temp_bufR, sizeof(state->f_r4[frame]));
+        DSD_MEMCPY(state->s_r4[frame], state->s_r, sizeof(state->s_r4[frame]));
+    }
+}
 
+static short
+dmr_mix_abs_s16(short v) {
+    return v < -32767 ? (short)32767 : (short)(v < 0 ? -v : v);
+}
+
+// Marks what each slot staged by sign, slot 1 positive and slot 2 negative, so the mix shows which slot each channel
+// carries. Samples the vocoder never staged stay zero.
+static void
+dmr_mix_tag_slots(dsd_state* state) {
+    for (int j = 0; j < 3; j++) {
+        for (int i = 0; i < 160; i++) {
+            state->f_l4[j][i] = fabsf(state->f_l4[j][i]);
+            state->f_r4[j][i] = -fabsf(state->f_r4[j][i]);
+            state->s_l4[j][i] = dmr_mix_abs_s16(state->s_l4[j][i]);
+            state->s_r4[j][i] = (short)-dmr_mix_abs_s16(state->s_r4[j][i]);
+        }
+    }
+}
+
+/* Issue #574: both stereo DMR mixes, the float FS3 and the short SS3, play a slot exactly when the vocoder's verdict
+ * after reverse mute (-q) leaves it audible, which for SS3 is exactly when the vocoder staged its short samples.
+ * Without -q a clear slot plays and an encrypted one without a key does not; -q swaps them. Under forced privacy
+ * (Baofeng AP, CSI EE, the Kenwood scrambler) the vocoder clears the slot's encryption flag before -q flips it, so the
+ * call plays without -q and not with it, whether or not the voice carries the encryption bit. Each channel is checked
+ * for the slot it carries: its own when audible, the audible companion's when muted (the mixes mirror one audible
+ * slot into both channels). */
+static int
+test_dmr_stereo_mixes_follow_vocoder_slot_verdict(void) {
+    static const char* const modes[] = {"clear/encrypted", "baofeng_ap", "csi_ee", "ken_sc"};
+    static const int service_options[][2] = {{0x00, 0x00}, {0x40, 0x40}, {0x00, 0x40}, {0x40, 0x00}};
     int rc = 0;
-    for (int mode = 0; mode < 3; mode++) {
+    for (int mode = 0; mode < 4; mode++) {
         for (int reverse_mute = 0; reverse_mute <= 1; reverse_mute++) {
             for (int floating_point = 1; floating_point >= 0; floating_point--) {
                 for (size_t so = 0U; so < sizeof(service_options) / sizeof(service_options[0]); so++) {
-                    dsd_opts* opts = calloc(1, sizeof(*opts));
+                    dsd_opts* opts = dmr_mix_new_opts(floating_point, reverse_mute);
                     dsd_state* state = calloc(1, sizeof(*state));
                     if (!opts || !state) {
                         free(opts);
                         free(state);
                         return 1;
                     }
-                    initOpts(opts);
                     initState(state);
-                    opts->audio_out = 1;
-                    opts->audio_out_type = 8;
-                    opts->floating_point = floating_point;
-                    opts->reverse_mute = reverse_mute;
                     state->synctype = DSD_SYNC_DMR_BS_VOICE_POS;
-                    state->baofeng_ap = mode == 0 ? 1 : 0;
-                    state->csi_ee = mode == 1 ? 1 : 0;
-                    state->ken_sc = mode == 2 ? 1 : 0;
-                    state->dmr_so = service_options[so];
-                    state->dmr_soR = service_options[so];
+                    state->dmrburstL = 16;
+                    state->dmrburstR = 16;
+                    state->baofeng_ap = mode == 1 ? 1 : 0;
+                    state->csi_ee = mode == 2 ? 1 : 0;
+                    state->ken_sc = mode == 3 ? 1 : 0;
+                    state->dmr_so = service_options[so][0];
+                    state->dmr_soR = service_options[so][1];
                     for (int slot = 0; slot < 2; slot++) {
-                        state->currentslot = slot;
                         for (int frame = 0; frame < 3; frame++) {
-                            processMbeFrame(opts, state, imbe_fr, ambe_fr, imbe7100_fr);
-                            // Staged as the DMR BS voice burst stages each frame for the stereo mixers.
-                            if (slot == 0) {
-                                DSD_MEMCPY(state->f_l4[frame], state->audio_out_temp_buf, sizeof(state->f_l4[frame]));
-                                DSD_MEMCPY(state->s_l4[frame], state->s_l, sizeof(state->s_l4[frame]));
-                            } else {
-                                DSD_MEMCPY(state->f_r4[frame], state->audio_out_temp_bufR, sizeof(state->f_r4[frame]));
-                                DSD_MEMCPY(state->s_r4[frame], state->s_r, sizeof(state->s_r4[frame]));
-                            }
+                            dmr_mix_stage_frame(opts, state, slot, frame);
                         }
                     }
+                    dmr_mix_tag_slots(state);
+                    dmr_mix_run(opts, state);
 
-                    g_forced_clear_blasts = 0;
-                    dsd_udp_audio_hooks_set(hooks);
-                    if (floating_point) {
-                        playSynthesizedVoiceFS3(opts, state);
-                    } else {
-                        playSynthesizedVoiceSS3(opts, state);
+                    int audible[2];
+                    for (int slot = 0; slot < 2; slot++) {
+                        audible[slot] = mode != 0 ? !reverse_mute : ((service_options[so][slot] == 0) != reverse_mute);
                     }
-                    dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
-
-                    char tag[96];
-                    DSD_SNPRINTF(tag, sizeof(tag), "forced clear %s %s so=0x%02X reverse_mute=%d blocks", modes[mode],
-                                 floating_point ? "FS3" : "SS3", service_options[so], reverse_mute);
-                    rc |= expect_eq_int(tag, g_forced_clear_blasts, reverse_mute ? 0 : 3);
+                    const int any = audible[0] || audible[1];
+                    const int want_left = audible[0] ? 1 : (audible[1] ? 2 : 0);
+                    const int want_right = audible[1] ? 2 : (audible[0] ? 1 : 0);
+                    char tag[128];
+                    DSD_SNPRINTF(tag, sizeof(tag), "dmr mix %s %s so=0x%02X/0x%02X reverse_mute=%d", modes[mode],
+                                 floating_point ? "FS3" : "SS3", service_options[so][0], service_options[so][1],
+                                 reverse_mute);
+                    char check[160];
+                    DSD_SNPRINTF(check, sizeof(check), "%s blocks", tag);
+                    rc |= expect_eq_int(check, g_dmr_mix_blocks, any ? 3 : 0);
+                    DSD_SNPRINTF(check, sizeof(check), "%s left channel slot signs", tag);
+                    rc |= expect_eq_int(check, g_dmr_mix_signs[0], want_left);
+                    DSD_SNPRINTF(check, sizeof(check), "%s right channel slot signs", tag);
+                    rc |= expect_eq_int(check, g_dmr_mix_signs[1], want_right);
                     freeState(state);
                     free(state);
                     free(opts);
                 }
             }
         }
+    }
+    return rc;
+}
+
+static int
+dmr_mix_any_nonzero_s16(const short* samples, size_t n) {
+    for (size_t i = 0U; i < n; i++) {
+        if (samples[i] != 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* Issue #574: a DMR slot the vocoder mutes stages silence, never its last frame. The stereo mixes copy each slot's
+ * short frame into their superframe buffers every frame, and SS3 still plays a muted slot that a talkgroup hold
+ * unmutes: an unrefreshed frame would replay the last call audio staged on that slot. */
+static int
+test_dmr_muted_slot_stages_silence_not_its_last_frame(void) {
+    int rc = 0;
+    for (int slot = 0; slot < 2; slot++) {
+        dsd_opts* opts = dmr_mix_new_opts(0, 0);
+        dsd_state* state = calloc(1, sizeof(*state));
+        if (!opts || !state) {
+            free(opts);
+            free(state);
+            return 1;
+        }
+        initState(state);
+        state->synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+        const short* staged = slot == 0 ? state->s_l : state->s_r;
+        const char* name = slot == 0 ? "slot 1" : "slot 2";
+        char tag[96];
+
+        dmr_mix_stage_frame(opts, state, slot, 0);
+        DSD_SNPRINTF(tag, sizeof(tag), "%s clear frame stages samples", name);
+        rc |= expect_eq_int(tag, dmr_mix_any_nonzero_s16(staged, 160), 1);
+
+        // The slot's call turns encrypted with no key loaded, and a talkgroup hold covers it.
+        if (slot == 0) {
+            state->dmr_so = 0x40;
+        } else {
+            state->dmr_soR = 0x40;
+        }
+        const dsd_call_observation call = {.protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+                                           .slot = (uint8_t)slot,
+                                           .kind = DSD_CALL_KIND_GROUP_VOICE,
+                                           .ota_target_id = 123U,
+                                           .policy_target_id = 123U,
+                                           .ota_source_id = 1U};
+        (void)dsd_call_state_observe(state, &call, DSD_CALL_BOUNDARY_BEGIN);
+        dsd_call_snapshot held;
+        DSD_SNPRINTF(tag, sizeof(tag), "%s held call is active", name);
+        rc |= expect_eq_int(tag,
+                            dsd_call_state_get(state, (uint8_t)slot, &held) > 0 && held.phase == DSD_CALL_PHASE_ACTIVE
+                                && held.ota_target_id == 123U,
+                            1);
+        state->tg_hold = 123U;
+        for (int frame = 0; frame < 3; frame++) {
+            dmr_mix_stage_frame(opts, state, slot, frame);
+        }
+        DSD_SNPRINTF(tag, sizeof(tag), "%s encrypted frame is muted", name);
+        rc |= expect_eq_int(tag, slot == 0 ? state->dmr_encL : state->dmr_encR, 1);
+        DSD_SNPRINTF(tag, sizeof(tag), "%s muted frame stages silence", name);
+        rc |= expect_eq_int(tag, dmr_mix_any_nonzero_s16(staged, 160), 0);
+
+        dmr_mix_run(opts, state);
+        DSD_SNPRINTF(tag, sizeof(tag), "%s held muted slot emits its blocks", name);
+        rc |= expect_eq_int(tag, g_dmr_mix_blocks, 3);
+        DSD_SNPRINTF(tag, sizeof(tag), "%s held muted slot plays silence, not its last frame", name);
+        rc |= expect_eq_int(tag, g_dmr_mix_signs[0] | g_dmr_mix_signs[1], 0);
+        freeState(state);
+        free(state);
+        free(opts);
     }
     return rc;
 }
@@ -4213,7 +4355,8 @@ main(void) {
     rc |= test_process_mbe_frame_dmr_reverse_mute_preserves_p25_override();
     rc |= test_process_mbe_frame_dmr_missing_alg_key_unmutes_slots();
     rc |= test_process_mbe_frame_dmr_post_decode_gates_override_enc_flags();
-    rc |= test_dmr_forced_clear_mixers_follow_vocoder_reverse_mute();
+    rc |= test_dmr_stereo_mixes_follow_vocoder_slot_verdict();
+    rc |= test_dmr_muted_slot_stages_silence_not_its_last_frame();
     rc |= test_process_mbe_frame_dmr_aes_stream_advances_slot_state();
     rc |= test_process_mbe_frame_activation_gate_and_wide_kid();
     rc |= test_process_mbe_frame_hard_p25p2_right_stages_audio();

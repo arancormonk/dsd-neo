@@ -1596,8 +1596,21 @@ mbe_post_apply_p25p2_metadata_gate(const dsd_state* state, int16_t* enc) {
 
 static void
 mbe_post_apply_forced_clear_gate(const dsd_state* state, int16_t* enc) {
-    if (state->baofeng_ap == 1 || state->csi_ee == 1 || state->ken_sc == 1) {
+    if (dsd_key_dmr_forced_clear(state)) {
         *enc = 0;
+    }
+}
+
+// A muted slot stages silence: the stereo mixes copy each slot's short frame into their superframe buffers every
+// frame, and a frame left unrefreshed would replay the last one staged on that slot.
+static void
+mbe_post_stage_slot_silence(dsd_state* state, int slot) {
+    if (slot == 0) {
+        DSD_MEMSET(state->s_l, 0, sizeof(state->s_l));
+        DSD_MEMSET(state->s_lu, 0, sizeof(state->s_lu));
+    } else {
+        DSD_MEMSET(state->s_r, 0, sizeof(state->s_r));
+        DSD_MEMSET(state->s_ru, 0, sizeof(state->s_ru));
     }
 }
 
@@ -1641,8 +1654,12 @@ mbe_post_left_audio(dsd_opts* opts, dsd_state* state, const mbe_frame_ctx_t* fra
     mbe_post_apply_reverse_mute(opts, &state->dmr_encL, &opts->dmr_mute_encL);
 
     state->debug_audio_errors += state->errs2;
-    if ((state->dmr_encL == 0 || opts->dmr_mute_encL == 0) && opts->floating_point == 0) {
-        processAudio(opts, state);
+    if (state->dmr_encL == 0 || opts->dmr_mute_encL == 0) {
+        if (opts->floating_point == 0) {
+            processAudio(opts, state);
+        }
+    } else {
+        mbe_post_stage_slot_silence(state, 0);
     }
     DSD_MEMCPY(state->f_l, state->audio_out_temp_buf, sizeof(state->f_l));
 }
@@ -1682,8 +1699,12 @@ mbe_post_right_audio(dsd_opts* opts, dsd_state* state, const mbe_frame_ctx_t* fr
     mbe_post_apply_reverse_mute(opts, &state->dmr_encR, &opts->dmr_mute_encR);
 
     state->debug_audio_errorsR += state->errs2R;
-    if ((state->dmr_encR == 0 || opts->dmr_mute_encR == 0) && opts->floating_point == 0) {
-        processAudioR(opts, state);
+    if (state->dmr_encR == 0 || opts->dmr_mute_encR == 0) {
+        if (opts->floating_point == 0) {
+            processAudioR(opts, state);
+        }
+    } else {
+        mbe_post_stage_slot_silence(state, 1);
     }
     DSD_MEMCPY(state->f_r, state->audio_out_temp_bufR, sizeof(state->f_r));
 }
