@@ -6,6 +6,7 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/init.h>
@@ -23,6 +24,7 @@
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/protocol/nxdn/nxdn_lfsr.h>
+#include <dsd-neo/runtime/udp_audio_hooks.h>
 #include <errno.h>
 #include <math.h>
 #include <mbelib-neo/mbelib.h>
@@ -2621,6 +2623,96 @@ test_process_mbe_frame_dmr_post_decode_gates_override_enc_flags(void) {
     return rc;
 }
 
+static int g_forced_clear_blasts = 0;
+
+static void
+forced_clear_count_blast(const dsd_opts* opts, dsd_state* state, size_t nsam, const void* data) {
+    (void)opts;
+    (void)state;
+    (void)nsam;
+    (void)data;
+    g_forced_clear_blasts++;
+}
+
+/* Issue #574: forced privacy (Baofeng AP, CSI EE, the Kenwood scrambler) decodes every frame with a static key, and
+ * the vocoder clears the slot's encryption flag before reverse mute (-q) flips it: without -q the call is staged and
+ * heard, with -q it is muted and the s16 path never stages its samples. Both stereo DMR mixers follow that verdict,
+ * the float FS3 and the s16 SS3 alike, whether or not the voice carries the encryption bit: a slot pair's three
+ * frames play without -q and nothing plays with it. */
+static int
+test_dmr_forced_clear_mixers_follow_vocoder_reverse_mute(void) {
+    static const char* const modes[] = {"baofeng_ap", "csi_ee", "ken_sc"};
+    static const int service_options[] = {0x00, 0x40};
+    char imbe_fr[8][23] = {{0}};
+    char ambe_fr[4][24] = {{0}};
+    char imbe7100_fr[7][24] = {{0}};
+    ambe_fr[0][2] = 1;
+    ambe_fr[2][15] = 1;
+    dsd_udp_audio_hooks hooks = {0};
+    hooks.blast = forced_clear_count_blast;
+
+    int rc = 0;
+    for (int mode = 0; mode < 3; mode++) {
+        for (int reverse_mute = 0; reverse_mute <= 1; reverse_mute++) {
+            for (int floating_point = 1; floating_point >= 0; floating_point--) {
+                for (size_t so = 0U; so < sizeof(service_options) / sizeof(service_options[0]); so++) {
+                    dsd_opts* opts = calloc(1, sizeof(*opts));
+                    dsd_state* state = calloc(1, sizeof(*state));
+                    if (!opts || !state) {
+                        free(opts);
+                        free(state);
+                        return 1;
+                    }
+                    initOpts(opts);
+                    initState(state);
+                    opts->audio_out = 1;
+                    opts->audio_out_type = 8;
+                    opts->floating_point = floating_point;
+                    opts->reverse_mute = reverse_mute;
+                    state->synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+                    state->baofeng_ap = mode == 0 ? 1 : 0;
+                    state->csi_ee = mode == 1 ? 1 : 0;
+                    state->ken_sc = mode == 2 ? 1 : 0;
+                    state->dmr_so = service_options[so];
+                    state->dmr_soR = service_options[so];
+                    for (int slot = 0; slot < 2; slot++) {
+                        state->currentslot = slot;
+                        for (int frame = 0; frame < 3; frame++) {
+                            processMbeFrame(opts, state, imbe_fr, ambe_fr, imbe7100_fr);
+                            // Staged as the DMR BS voice burst stages each frame for the stereo mixers.
+                            if (slot == 0) {
+                                DSD_MEMCPY(state->f_l4[frame], state->audio_out_temp_buf, sizeof(state->f_l4[frame]));
+                                DSD_MEMCPY(state->s_l4[frame], state->s_l, sizeof(state->s_l4[frame]));
+                            } else {
+                                DSD_MEMCPY(state->f_r4[frame], state->audio_out_temp_bufR, sizeof(state->f_r4[frame]));
+                                DSD_MEMCPY(state->s_r4[frame], state->s_r, sizeof(state->s_r4[frame]));
+                            }
+                        }
+                    }
+
+                    g_forced_clear_blasts = 0;
+                    dsd_udp_audio_hooks_set(hooks);
+                    if (floating_point) {
+                        playSynthesizedVoiceFS3(opts, state);
+                    } else {
+                        playSynthesizedVoiceSS3(opts, state);
+                    }
+                    dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
+
+                    char tag[96];
+                    DSD_SNPRINTF(tag, sizeof(tag), "forced clear %s %s so=0x%02X reverse_mute=%d blocks", modes[mode],
+                                 floating_point ? "FS3" : "SS3", service_options[so], reverse_mute);
+                    rc |= expect_eq_int(tag, g_forced_clear_blasts, reverse_mute ? 0 : 3);
+                    freeState(state);
+                    free(state);
+                    free(opts);
+                }
+            }
+        }
+    }
+    return rc;
+}
+
 static int
 test_process_mbe_frame_dmr_aes_stream_advances_slot_state(void) {
     int rc = 0;
@@ -4121,6 +4213,7 @@ main(void) {
     rc |= test_process_mbe_frame_dmr_reverse_mute_preserves_p25_override();
     rc |= test_process_mbe_frame_dmr_missing_alg_key_unmutes_slots();
     rc |= test_process_mbe_frame_dmr_post_decode_gates_override_enc_flags();
+    rc |= test_dmr_forced_clear_mixers_follow_vocoder_reverse_mute();
     rc |= test_process_mbe_frame_dmr_aes_stream_advances_slot_state();
     rc |= test_process_mbe_frame_activation_gate_and_wide_kid();
     rc |= test_process_mbe_frame_hard_p25p2_right_stages_audio();

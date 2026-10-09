@@ -660,9 +660,11 @@ m17_can_matches_state(const dsd_state* state) {
 }
 
 #ifdef USE_CODEC2
+// The mute (audio_out 0, which leaves the output open) silences every output type, as it does for the mixers
+// (dsd_output_*_block()).
 static int
 m17_can_emit_audio(const dsd_opts* opts, const dsd_state* state) {
-    return (opts->slot1_on == 1 && (state->m17_enc == 0 || state->m17_payload_decrypted != 0U)
+    return (opts->audio_out == 1 && opts->slot1_on == 1 && (state->m17_enc == 0 || state->m17_payload_decrypted != 0U)
             && m17_can_matches_state(state));
 }
 

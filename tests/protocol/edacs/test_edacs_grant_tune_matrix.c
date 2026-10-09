@@ -26,6 +26,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/dsp/rate_converter.h>
+#include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/protocol/edacs/edacs.h>
@@ -51,6 +52,7 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "edacs_internal.h"
+#include "test_support.h"
 
 typedef struct {
     const char* name;
@@ -135,6 +137,14 @@ SNDFILE* __wrap_close_and_rename_wav_file_ex(SNDFILE* wav_file, const dsd_opts* 
 // NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
 SNDFILE* __wrap_open_wav_file(char* dir, char* temp_filename, size_t temp_filename_size, uint16_t sample_rate,
                               uint8_t ext);
+// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+int __real_dsd_audio_write(dsd_audio_stream* stream, const int16_t* buffer, size_t frames);
+// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+int __wrap_dsd_audio_write(dsd_audio_stream* stream, const int16_t* buffer, size_t frames);
+
+/* Issue #574: the blocks written to the local output while g_audio_write_capture is set. */
+static int g_audio_write_capture = 0;
+static int g_audio_write_count = 0;
 
 void
 // NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
@@ -191,6 +201,16 @@ __wrap_open_wav_file(char* dir, char* temp_filename, size_t temp_filename_size, 
     (void)ext;
     g_open_wav_count++;
     return (SNDFILE*)&g_wav_sentinel;
+}
+
+int
+// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+__wrap_dsd_audio_write(dsd_audio_stream* stream, const int16_t* buffer, size_t frames) {
+    if (!g_audio_write_capture) {
+        return __real_dsd_audio_write(stream, buffer, frames);
+    }
+    g_audio_write_count++;
+    return (int)frames;
 }
 
 static dsd_trunk_tune_result
@@ -1486,6 +1506,7 @@ edacs_run_analog_loop_helper_cases(void) {
     DSD_MEMSET(&state, 0, sizeof(state));
     opts.audio_out = 1;
     opts.audio_out_type = 8;
+    opts.slot1_on = 1;
     edacs_install_udp_output_hooks();
     edacs_emit_analog_audio(&opts, &state, out1, out2, out3);
     rc |= edacs_expect(g_udp_blast_count == 3, "analog-helpers", "udp-output", "UDP output emitted three blocks");
@@ -1502,6 +1523,7 @@ edacs_run_analog_loop_helper_cases(void) {
         DSD_MEMSET(&opts, 0, sizeof(opts));
         DSD_MEMSET(&state, 0, sizeof(state));
         opts.audio_out_type = 1;
+        opts.audio_out = 1;
         opts.floating_point = 0;
         opts.slot1_on = 1;
         opts.audio_out_fd = raw_fd;
@@ -1589,6 +1611,7 @@ test_edacs_analog_media_honors_talkgroup_policy(void) {
         DSD_MEMSET(&state, 0, sizeof(state));
         opts.audio_out = 1;
         opts.audio_out_type = 8;
+        opts.slot1_on = 1;
         edacs_install_udp_output_hooks();
         const dsd_call_observation call = {.protocol = DSD_SYNC_EDACS_POS,
                                            .slot = 0U,
@@ -1636,6 +1659,85 @@ test_edacs_analog_media_honors_talkgroup_policy(void) {
         }
         (void)remove(wav_path);
         dsd_state_ext_free_all(&state);
+    }
+    edacs_reset_audio_hook_state();
+    return rc;
+}
+
+/* Issue #574: the mixers write to no output type while muted (audio_out 0) or while slot 1 is switched off
+   (dsd_output_*_block() and the mono mixers), so each of EDACS's analog outputs -- the local stream, the raw fd and the
+   UDP socket -- applies both, as one rule. */
+static int
+test_edacs_analog_output_honors_mute_and_slot(void) {
+    static const struct {
+        const char* tag;
+        int audio_out;
+        int slot1_on;
+    } gates[] = {
+        {"on", 1, 1},
+        {"muted", 0, 1},
+        {"slot off", 1, 0},
+    };
+
+    static dsd_opts opts;
+    static dsd_state state;
+    static short analog1[960];
+    static short analog2[960];
+    static short analog3[960];
+    for (int i = 0; i < 960; i++) {
+        analog1[i] = (short)(11 + i);
+        analog2[i] = (short)(22 + i);
+        analog3[i] = (short)(33 + i);
+    }
+    static const int out_types[] = {0, 1, 8};
+    int rc = 0;
+    for (size_t o = 0U; o < sizeof(out_types) / sizeof(out_types[0]); o++) {
+        for (size_t g = 0U; g < sizeof(gates) / sizeof(gates[0]); g++) {
+            edacs_reset_audio_hook_state();
+            DSD_MEMSET(&opts, 0, sizeof(opts));
+            DSD_MEMSET(&state, 0, sizeof(state));
+            opts.audio_out = gates[g].audio_out;
+            opts.slot1_on = gates[g].slot1_on;
+            opts.audio_out_type = out_types[o];
+            edacs_install_udp_output_hooks();
+            char raw_path[DSD_TEST_PATH_MAX];
+            int raw_fd = -1;
+            if (out_types[o] == 1) {
+                raw_fd = dsd_test_mkstemp(raw_path, sizeof(raw_path), "dsdneo_edacs_gate");
+                if (raw_fd < 0) {
+                    rc |= edacs_expect(0, "analog-574", "gate", "created temporary raw output");
+                    continue;
+                }
+                opts.audio_out_fd = raw_fd;
+            }
+            g_audio_write_count = 0;
+            g_audio_write_capture = out_types[o] == 0;
+
+            edacs_emit_analog_audio(&opts, &state, analog1, analog2, analog3);
+
+            g_audio_write_capture = 0;
+            int blocks = 0;
+            if (out_types[o] == 0) {
+                blocks = g_audio_write_count;
+            } else if (out_types[o] == 8) {
+                blocks = g_udp_blast_count;
+            } else {
+                dsd_stat_t st;
+                DSD_MEMSET(&st, 0, sizeof(st));
+                if (dsd_fstat(raw_fd, &st) == 0) {
+                    blocks = (int)((long long)st.st_size / (long long)(960U * sizeof(short)));
+                }
+                (void)dsd_close(raw_fd);
+                (void)remove(raw_path);
+            }
+            const int want = gates[g].audio_out == 1 && gates[g].slot1_on == 1 ? 3 : 0;
+            if (blocks != want) {
+                DSD_FPRINTF(stderr, "output %d %s: %d blocks, want %d\n", out_types[o], gates[g].tag, blocks, want);
+            }
+            rc |= edacs_expect(blocks == want, "analog-574", gates[g].tag,
+                               "each analog output plays only while unmuted with slot 1 on");
+            dsd_state_ext_free_all(&state);
+        }
     }
     edacs_reset_audio_hook_state();
     return rc;
@@ -1837,6 +1939,7 @@ edacs_prepare_tcp_analog_call(int rate_hz, dsd_trunk_tune_result tune_result) {
     g_opts.tcp_in_ctx = (tcp_input_ctx*)&g_edacs_tcp_token;
     g_opts.audio_out = 1;
     g_opts.audio_out_type = 8;
+    g_opts.slot1_on = 1;
     edacs_install_net_audio_hooks();
     edacs_install_udp_output_hooks();
     return &call;
@@ -2093,6 +2196,7 @@ edacs_run_analog_call(int mode) {
     g_opts.audio_in_type = AUDIO_IN_RTL;
     g_opts.audio_out = 1;
     g_opts.audio_out_type = 8;
+    g_opts.slot1_on = 1;
     g_opts.rtl_squelch_mode = mode;
     g_opts.rtl_squelch_margin_db = 10;
     g_opts.rtl_squelch_level = mode == DSD_SQUELCH_MODE_LEVEL ? dB_to_pwr(-60.0) : 0.0;
@@ -2555,6 +2659,7 @@ main(void) {
     rc |= edacs_run_helper_contract_cases();
     rc |= edacs_run_analog_loop_helper_cases();
     rc |= test_edacs_analog_media_honors_talkgroup_policy();
+    rc |= test_edacs_analog_output_honors_mute_and_slot();
     rc |= edacs_run_analog_sql_helper_cases();
     rc |= edacs_run_converted_collect_cases();
     rc |= edacs_run_analog_call_cases();

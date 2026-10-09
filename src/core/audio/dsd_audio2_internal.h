@@ -42,7 +42,7 @@ DSD_AUDIO2_INTERNAL void dsd_dmr_apply_mono_slot_gate(const dsd_opts* opts, cons
                                                       int* encR);
 DSD_AUDIO2_INTERNAL void dsd_duplicate_active_float_slot_to_stereo(float* a, float* b, float* c, int encL, int encR,
                                                                    int* outL, int* outR);
-DSD_AUDIO2_INTERNAL void dsd_dmr_ss3_init_enc_flags(const dsd_state* state, int* encL, int* encR);
+DSD_AUDIO2_INTERNAL void dsd_dmr_ss3_init_enc_flags(const dsd_opts* opts, const dsd_state* state, int* encL, int* encR);
 DSD_AUDIO2_INTERNAL void dsd_dmr_apply_tg_hold_and_slot_preference_ss3(dsd_opts* opts, const dsd_state* state,
                                                                        unsigned long TGL, unsigned long TGR, int* encL,
                                                                        int* encR);

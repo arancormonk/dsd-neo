@@ -10769,6 +10769,7 @@ target_link_libraries(dsd-neo_test_edacs_grant_policy PRIVATE dsd-neo_core)
 add_test(NAME EDACS_GRANT_POLICY COMMAND dsd-neo_test_edacs_grant_policy)
 
 # This matrix drives eot_cc(); it must not call real skipDibit from the unit-test fixture.
+# The local-output wrap counts the analog blocks EDACS writes there (issue #574).
 if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
     add_executable(
         dsd-neo_test_edacs_grant_tune_matrix
@@ -10798,6 +10799,7 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
             "-Wl,--wrap=close_and_rename_wav_file"
             "-Wl,--wrap=close_and_rename_wav_file_ex"
             "-Wl,--wrap=open_wav_file"
+            "-Wl,--wrap=dsd_audio_write"
     )
     add_test(
         NAME EDACS_GRANT_TUNE_MATRIX

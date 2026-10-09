@@ -674,7 +674,7 @@ test_dmr_ss3_decrypt_hold_and_copy_policy_helpers(void) {
 
     state.dmr_so = 0x40;
     state.dmr_soR = 0x40;
-    dsd_dmr_ss3_init_enc_flags(&state, &encL, &encR);
+    dsd_dmr_ss3_init_enc_flags(&opts, &state, &encL, &encR);
 
     int rc = 0;
     rc |= expect_int("ss3 missing keys keep left muted", encL, 1);
@@ -683,14 +683,14 @@ test_dmr_ss3_decrypt_hold_and_copy_policy_helpers(void) {
     g_dmr_missing_alg_key_allowed[0] = 1;
     state.payload_algidR = 0x81;
     g_dmr_voice_slot_allowed[1] = 1;
-    dsd_dmr_ss3_init_enc_flags(&state, &encL, &encR);
+    dsd_dmr_ss3_init_enc_flags(&opts, &state, &encL, &encR);
     rc |= expect_int("ss3 missing-alg key unmutes left", encL, 0);
     rc |= expect_int("ss3 explicit voice key unmutes right", encR, 0);
 
     reset_dmr_decrypt_capture();
     state.payload_algidR = 0;
     state.baofeng_ap = 1;
-    dsd_dmr_ss3_init_enc_flags(&state, &encL, &encR);
+    dsd_dmr_ss3_init_enc_flags(&opts, &state, &encL, &encR);
     rc |= expect_int("ss3 forced privacy unmutes left", encL, 0);
     rc |= expect_int("ss3 forced privacy unmutes right", encR, 0);
 
@@ -1035,6 +1035,47 @@ test_ss18_keeps_legit_silence_inside_filled_extent(void) {
 
     int rc = 0;
     rc |= expect_int("ss18 silence inside extent still emits all filled blocks", g_udp_blast_calls, 9);
+    return rc;
+}
+
+/* Issue #574: SS18 applies the per-slot hard gate FS4 applies (slot1_on/slot2_on), so a switched-off slot's clear
+   audio is never played, not even through the duplication a crypto-muted companion slot triggers. */
+static int
+test_ss18_switched_off_slot_stays_silent_beside_muted_companion(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    for (int off = 0; off < 2; off++) {
+        const int muted = off ^ 1;
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        reset_sink_capture();
+        reset_gate_capture();
+        opts.audio_out = 1;
+        opts.audio_out_type = 8; // UDP sink counts one blast per emitted block
+        opts.slot1_on = off == 0 ? 0 : 1;
+        opts.slot2_on = off == 1 ? 0 : 1;
+        opts.slot_preference = 2;
+        state.p25_p2_audio_allowed[0] = 1;
+        state.p25_p2_audio_allowed[1] = 1;
+        state.p25_crypto_state[off] = DSD_P25_CRYPTO_CLEAR;
+        state.p25_crypto_state[muted] = DSD_P25_CRYPTO_BLOCKED;
+        state.dmrburstL = 21;
+        state.dmrburstR = 21;
+        state.voice_counter[off] = 18;
+        short (*clear)[160] = off == 0 ? state.s_l4 : state.s_r4;
+        for (int j = 0; j < 18; j++) {
+            for (int i = 0; i < 160; i++) {
+                clear[j][i] = 100;
+            }
+        }
+
+        playSynthesizedVoiceSS18(&opts, &state);
+
+        rc |= expect_int(off == 0 ? "ss18 slot 1 off beside a crypto-muted slot 2 plays nothing"
+                                  : "ss18 slot 2 off beside a crypto-muted slot 1 plays nothing",
+                         g_udp_blast_calls, 0);
+    }
     return rc;
 }
 
@@ -1857,6 +1898,7 @@ main(void) {
     rc |= test_p25p2_ss18_slot_preference_and_copy_policy_helpers();
     rc |= test_ss18_partial_superframe_skips_zero_blocks_and_duplicates_clear_slot();
     rc |= test_ss18_keeps_legit_silence_inside_filled_extent();
+    rc |= test_ss18_switched_off_slot_stays_silent_beside_muted_companion();
     rc |= test_fs4_mono_mixer_averages_available_unmuted_slots();
     rc |= test_short_dmr_mono_honors_slot_controls_and_one_channel_output();
     rc |= test_float_playback_orchestrators_emit_expected_blocks();

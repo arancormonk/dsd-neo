@@ -1036,6 +1036,7 @@ test_stream_voice_3200_dispatch_routes_pair_audio_to_udp(void) {
     install_fake_udp_audio();
 
     opts->slot1_on = 1;
+    opts->audio_out = 1;
     opts->audio_out_type = 8;
     state->m17_str_dt = 2U;
     state->m17_can_en = -1;
@@ -1075,6 +1076,7 @@ test_stream_voice_1600_dispatch_routes_single_audio_to_udp(void) {
     install_fake_udp_audio();
 
     opts->slot1_on = 1;
+    opts->audio_out = 1;
     opts->audio_out_type = 8;
     state->m17_str_dt = 3U;
     state->m17_can_en = -1;
@@ -1112,6 +1114,7 @@ test_stream_voice_audio_gate_suppresses_udp_when_slot_disabled(void) {
     install_fake_udp_audio();
 
     opts->slot1_on = 0;
+    opts->audio_out = 1;
     opts->audio_out_type = 8;
     state->m17_str_dt = 2U;
     state->m17_can_en = -1;
@@ -2766,6 +2769,104 @@ test_packet_encoder_end_drains_on_a_local_output(void) {
 }
 #endif
 
+#ifdef USE_CODEC2
+/* Issue #574: the Monitor's mute sets audio_out to 0 and leaves the output open, and the mixers then write nothing to
+   any output type (dsd_output_*_block()). Decoded Codec2 voice follows the same rule on the local stream, UDP and the
+   raw fd, for the 3200 payload (two frames) and the 1600 payload (one frame). */
+static int
+test_stream_voice_audio_honors_mute_on_every_output(void) {
+    static const struct {
+        const char* tag;
+        uint8_t dt;
+        int blocks;
+        size_t block_bytes;
+    } formats[] = {
+        {"3200", 2U, 2, 160U * sizeof(short)},
+        {"1600", 3U, 1, 320U * sizeof(short)},
+    };
+
+    static const int out_types[] = {
+#ifdef DSD_NEO_TEST_AUDIO_WRAP
+        0,
+#endif
+        1,
+        8,
+    };
+    /* A 1600 payload carries arbitrary data in its second half; zeros there keep it out of the packet printer. */
+    static const uint8_t payload_bytes[16] = {0x60U, 0x61U, 0x62U, 0x63U, 0x64U, 0x65U, 0x66U, 0x67U,
+                                              0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U};
+    uint8_t payload_bits[128];
+    uint8_t processed_bits[128];
+    bytes_to_bits(payload_bytes, payload_bits, sizeof(payload_bytes));
+
+    dsd_opts* opts = &g_opts;
+    dsd_state* state = &g_state;
+    int err = 0;
+    for (size_t f = 0U; f < sizeof(formats) / sizeof(formats[0]); f++) {
+        for (size_t o = 0U; o < sizeof(out_types) / sizeof(out_types[0]); o++) {
+            for (int audio_out = 1; audio_out >= 0; audio_out--) {
+                const int out_type = out_types[o];
+                DSD_MEMSET(opts, 0, sizeof(*opts));
+                DSD_MEMSET(state, 0, sizeof(*state));
+                reset_audio_fakes();
+                install_fake_udp_audio();
+                opts->slot1_on = 1;
+                opts->audio_out = audio_out;
+                opts->audio_out_type = out_type;
+                state->m17_str_dt = formats[f].dt;
+                state->m17_can_en = -1;
+                m17_confirm_note_evidence(state, M17_EVIDENCE_STRONG);
+
+                char path[DSD_TEST_PATH_MAX];
+                int fd = -1;
+                if (out_type == 1) {
+                    fd = dsd_test_mkstemp(path, sizeof(path), "dsdneo_m17_mute");
+                    if (fd < 0) {
+                        err |= expect_int("m17 mute: raw output temp file", fd >= 0, 1);
+                        dsd_state_ext_free_all(state);
+                        continue;
+                    }
+                    opts->audio_out_fd = fd;
+                }
+#ifdef DSD_NEO_TEST_AUDIO_WRAP
+                g_audio_event_count = 0;
+                g_audio_events[0] = '\0';
+                g_audio_wrap_on = out_type == 0;
+#endif
+
+                (void)m17_dispatch_stream_payload(opts, state, payload_bits, M17_REF_STREAM_FN, processed_bits);
+
+                int written = 0;
+                if (out_type == 8) {
+                    written = g_udp_audio_calls;
+                } else if (out_type == 1) {
+                    dsd_stat_t st;
+                    DSD_MEMSET(&st, 0, sizeof(st));
+                    if (dsd_fstat(fd, &st) == 0) {
+                        written = (int)((size_t)st.st_size / formats[f].block_bytes);
+                    }
+                    (void)dsd_close(fd);
+                    (void)remove(path);
+                }
+#ifdef DSD_NEO_TEST_AUDIO_WRAP
+                if (out_type == 0) {
+                    written = g_audio_event_count;
+                }
+                g_audio_wrap_on = 0;
+#endif
+                char label[96];
+                DSD_SNPRINTF(label, sizeof(label), "m17 %s voice blocks on output %d with audio_out %d", formats[f].tag,
+                             out_type, audio_out);
+                err |= expect_int(label, written, audio_out ? formats[f].blocks : 0);
+                reset_audio_fakes();
+                dsd_state_ext_free_all(state);
+            }
+        }
+    }
+    return err;
+}
+#endif
+
 /* Issue #625: the VOX's two decisions. A read is heard on the stream's gate while one runs, on the level squelch
    otherwise; past 10 closed reads, at a LICH superframe boundary, the transmitter unkeys. */
 static int
@@ -3420,6 +3521,7 @@ main(void) {
     err |= test_stream_voice_3200_dispatch_routes_pair_audio_to_udp();
     err |= test_stream_voice_1600_dispatch_routes_single_audio_to_udp();
     err |= test_stream_voice_audio_gate_suppresses_udp_when_slot_disabled();
+    err |= test_stream_voice_audio_honors_mute_on_every_output();
 #endif
     err |= test_bert_payload_locks_from_default_state_and_continues();
     err |= test_bert_payload_resyncs_after_error_threshold();

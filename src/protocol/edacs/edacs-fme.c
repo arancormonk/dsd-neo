@@ -618,9 +618,15 @@ edacs_process_analog_triplet(const dsd_opts* opts, dsd_state* state, short* anal
     }
 }
 
+// The mixers write to no output type while muted (audio_out 0) or with slot 1 switched off, so neither do these.
+static int
+edacs_analog_output_enabled(const dsd_opts* opts) {
+    return opts->audio_out == 1 && opts->slot1_on == 1;
+}
+
 static int
 edacs_should_emit_pulse_audio(const dsd_opts* opts) {
-    return opts->audio_out == 1 && opts->audio_out_type == 0 && opts->slot1_on == 1;
+    return edacs_analog_output_enabled(opts) && opts->audio_out_type == 0;
 }
 
 static void
@@ -632,7 +638,7 @@ edacs_emit_pulse_audio(dsd_opts* opts, const short* analog1, const short* analog
 
 static int
 edacs_should_emit_udp_audio(const dsd_opts* opts) {
-    return opts->audio_out == 1 && opts->audio_out_type == 8;
+    return edacs_analog_output_enabled(opts) && opts->audio_out_type == 8;
 }
 
 static void
@@ -645,7 +651,7 @@ edacs_emit_udp_audio(const dsd_opts* opts, dsd_state* state, const short* analog
 
 static int
 edacs_should_emit_fd_audio(const dsd_opts* opts) {
-    return opts->audio_out_type == 1 && opts->floating_point == 0 && opts->slot1_on == 1;
+    return edacs_analog_output_enabled(opts) && opts->audio_out_type == 1 && opts->floating_point == 0;
 }
 
 static void

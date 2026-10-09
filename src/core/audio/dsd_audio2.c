@@ -408,9 +408,32 @@ p25p2_s16_frames_have_audio(short frames[18][160]) {
     return 0;
 }
 
+// Forced clear: Baofeng AP, CSI EE and the Kenwood scrambler decode every DMR voice frame with a static key, and
+// the vocoder clears the slot's encryption flag for them (mbe_post_apply_forced_clear_gate()).
 static inline int
-dmr_forced_privacy_unmute_enabled(const dsd_state* state) {
-    return state && ((state->baofeng_ap == 1) || (state->csi_ee == 1));
+dmr_forced_clear_enabled(const dsd_state* state) {
+    return state->baofeng_ap == 1 || state->csi_ee == 1 || state->ken_sc == 1;
+}
+
+// Baofeng AP and CSI EE unmute a slot whatever its flags say, a mixer override older than the vocoder's forced clear
+// for them (SS3 then read only the encryption bit of the service options, which the vocoder never clears). It never
+// overrides reverse mute (-q): the vocoder applies forced clear first and -q then mutes the call, so the s16 path
+// stages none of it and neither mixer may play it.
+static inline int
+dmr_forced_privacy_unmute_enabled(const dsd_opts* opts, const dsd_state* state) {
+    return opts->reverse_mute != 1 && ((state->baofeng_ap == 1) || (state->csi_ee == 1));
+}
+
+// The vocoder's verdict on a DMR slot after its forced clear and reverse mute: processAudio() stages the slot's s16
+// samples unless the slot is flagged encrypted while encrypted audio is muted.
+static int
+dmr_slot_vocoder_muted(const dsd_opts* opts, const dsd_state* state, int slot) {
+    if (dmr_forced_privacy_unmute_enabled(opts, state)) {
+        return 0;
+    }
+    const int enc = (slot == 0) ? state->dmr_encL : state->dmr_encR;
+    const int mute = (slot == 0) ? opts->dmr_mute_encL : opts->dmr_mute_encR;
+    return (enc != 0 && mute != 0) ? 1 : 0;
 }
 
 DSD_AUDIO2_INTERNAL void
@@ -427,11 +450,8 @@ dsd_dmr_apply_mono_slot_gate(const dsd_opts* opts, const dsd_state* state, int* 
 
 DSD_AUDIO2_INTERNAL void
 dsd_dmr_init_slot_mute_flags(const dsd_opts* opts, const dsd_state* state, int* encL, int* encR) {
-    const int forced_dmr_privacy = dmr_forced_privacy_unmute_enabled(state);
-    int l_is_enc = state->dmr_encL != 0;
-    int r_is_enc = state->dmr_encR != 0;
-    *encL = (forced_dmr_privacy || !l_is_enc || opts->dmr_mute_encL == 0) ? 0 : 1;
-    *encR = (forced_dmr_privacy || !r_is_enc || opts->dmr_mute_encR == 0) ? 0 : 1;
+    *encL = dmr_slot_vocoder_muted(opts, state, 0);
+    *encR = dmr_slot_vocoder_muted(opts, state, 1);
     dsd_dmr_apply_mono_slot_gate(opts, state, encL, encR);
 }
 
@@ -635,25 +655,30 @@ dsd_write_s16_wav_18_blocks(const dsd_opts* opts, short stereo_sf[18][320], int 
 }
 
 DSD_AUDIO2_INTERNAL void
-dsd_dmr_ss3_init_enc_flags(const dsd_state* state, int* encL, int* encR) {
+dsd_dmr_ss3_init_enc_flags(const dsd_opts* opts, const dsd_state* state, int* encL, int* encR) {
+    // Forced clear is settled in the vocoder, whose verdict FS3 reads: SS3 takes it as well, so every forced mode is
+    // heard alike on both paths and reverse mute silences it on both.
+    if (dmr_forced_clear_enabled(state)) {
+        *encL = dmr_slot_vocoder_muted(opts, state, 0);
+        *encR = dmr_slot_vocoder_muted(opts, state, 1);
+        return;
+    }
+
     *encL = (state->dmr_so >> 6) & 0x1;
     *encR = (state->dmr_soR >> 6) & 0x1;
-    const int forced_dmr_privacy = dmr_forced_privacy_unmute_enabled(state);
 
     if (*encL) {
-        const int can_decrypt =
-            forced_dmr_privacy
-            || ((state->payload_algid == 0) ? dsd_dmr_missing_alg_key_can_decrypt(state, 0)
-                                            : dsd_dmr_voice_slot_can_decrypt(state, 0, state->payload_algid, state->R));
+        const int can_decrypt = (state->payload_algid == 0)
+                                    ? dsd_dmr_missing_alg_key_can_decrypt(state, 0)
+                                    : dsd_dmr_voice_slot_can_decrypt(state, 0, state->payload_algid, state->R);
         if (can_decrypt) {
             *encL = 0;
         }
     }
     if (*encR) {
-        const int can_decrypt = forced_dmr_privacy
-                                || ((state->payload_algidR == 0)
-                                        ? dsd_dmr_missing_alg_key_can_decrypt(state, 1)
-                                        : dsd_dmr_voice_slot_can_decrypt(state, 1, state->payload_algidR, state->RR));
+        const int can_decrypt = (state->payload_algidR == 0)
+                                    ? dsd_dmr_missing_alg_key_can_decrypt(state, 1)
+                                    : dsd_dmr_voice_slot_can_decrypt(state, 1, state->payload_algidR, state->RR);
         if (can_decrypt) {
             *encR = 0;
         }
@@ -1279,7 +1304,7 @@ playSynthesizedVoiceSS3(dsd_opts* opts, dsd_state* state) {
     DSD_MEMSET(stereo_samp2, 0, sizeof(stereo_samp2));
     DSD_MEMSET(stereo_samp3, 0, sizeof(stereo_samp3));
 
-    dsd_dmr_ss3_init_enc_flags(state, &encL, &encR);
+    dsd_dmr_ss3_init_enc_flags(opts, state, &encL, &encR);
 
     unsigned long TGL = dsd_audio_call_target(state, 0U);
     unsigned long TGR = dsd_audio_call_target(state, 1U);
@@ -1341,9 +1366,12 @@ playSynthesizedVoiceSS18(dsd_opts* opts, dsd_state* state) {
     short stereo_sf[18][320]; //8k 2-channel stereo interleave mix for full superframe
     DSD_MEMSET(stereo_sf, 0, sizeof(stereo_sf));
 
-    // Per-slot audio gating (P25p2): start from per-slot allowed flags,
-    // then apply whitelist/TG-hold rules shared with other mixers.
+    // Per-slot audio gating (P25p2): start from per-slot allowed flags and the
+    // slot on/off switches, as FS4 does, then apply whitelist/TG-hold rules
+    // shared with other mixers. A switched-off slot must be muted before the
+    // output policy below, or a muted companion would copy it into both ears.
     dsd_set_p25p2_slot_mute_flags(state, &encL, &encR);
+    dsd_apply_slot_hard_mute_flags(opts, &encL, &encR);
 
     unsigned long TGL = dsd_audio_call_target(state, 0U);
     unsigned long TGR = dsd_audio_call_target(state, 1U);
