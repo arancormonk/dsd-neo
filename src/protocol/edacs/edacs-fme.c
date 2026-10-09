@@ -661,6 +661,13 @@ edacs_should_emit_fd_audio(const dsd_opts* opts) {
     return edacs_analog_output_enabled(opts) && opts->audio_out_type == 1 && opts->floating_point == 0;
 }
 
+// Whether any output below writes the triplet, each with its own format rule (the raw fd takes 16-bit output only): the
+// audible-audio stamp follows only a written triplet.
+static int
+edacs_analog_output_writes(const dsd_opts* opts) {
+    return edacs_should_emit_pulse_audio(opts) || edacs_should_emit_udp_audio(opts) || edacs_should_emit_fd_audio(opts);
+}
+
 static void
 edacs_emit_fd_audio_block(int fd, const short* block, const char* label) {
     if (dsd_write(fd, block, (size_t)960u * sizeof(short)) < 0) {
@@ -699,7 +706,7 @@ edacs_emit_analog_audio(dsd_opts* opts, dsd_state* state, const short* analog1, 
     if (edacs_analog_call_muted(opts, state)) {
         return;
     }
-    if (dsd_audio_activity_armed() && squelch_open && edacs_analog_output_enabled(opts)) {
+    if (dsd_audio_activity_armed() && squelch_open && edacs_analog_output_writes(opts)) {
         dsd_audio_activity_note();
     }
     if (edacs_should_emit_pulse_audio(opts)) {

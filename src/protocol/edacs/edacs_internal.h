@@ -79,7 +79,8 @@ size_t edacs_gate_hold_samples(int rate_hz);
 int edacs_gate_count(size_t run, size_t hold);
 /* Play a triplet on the outputs its talkgroup, mute and slot gates allow. @p squelch_open says whether the squelch the
    call runs opened on any of it, which the audible-audio stamp (<dsd-neo/core/audio_activity.h>) follows: the dynamic
-   squelch hearing any sample, the level squelch's power test, every triplet with no squelch. */
+   squelch hearing any sample, the level squelch's power test, every triplet with no squelch. The stamp is noted only
+   when an output writes the triplet; the raw fd takes 16-bit output only. */
 void edacs_emit_analog_audio(dsd_opts* opts, dsd_state* state, const short* analog1, const short* analog2,
                              const short* analog3, int squelch_open);
 int edacs_build_static_wav_block(const short* src, short* out, size_t out_count);

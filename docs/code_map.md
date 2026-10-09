@@ -790,10 +790,11 @@ suite runs under this compiler.
   unmuted slot holding its own kind that a channel it emits carries, so under a talkgroup hold of a slot the vocoder
   muted FS3 stamps the float frames it plays and SS3, playing silence, does not. Slot purges
   (`dsd_mbe_purge_slot_audio()`), `initState()`, the engine's no-carrier reset and the end of the DMR BS loop
-  (`finalize_dmr_bs()`) discard the marks. EDACS analog stamps a triplet only when the squelch the call runs opened on
-  it: the dynamic squelch heard a sample (the per-run marking `edacs_process_analog_triplet()` already applies,
-  returned), the level squelch's power test (`pwr > call->sql`) passed, or the call runs none; a closed triplet is still
-  written but never stamps. The analog monitor stamps analog reception only: the FM or AM monitor
+  (`finalize_dmr_bs()`) discard the marks. EDACS analog stamps a triplet only when an output writes it
+  (`edacs_analog_output_writes()`: the local stream, UDP, or the raw fd with 16-bit output) and the squelch the call
+  runs opened on it: the dynamic squelch heard a sample (the per-run marking `edacs_process_analog_triplet()` already
+  applies, returned), the level squelch's power test (`pwr > call->sql`) passed, or the call runs none; a closed triplet
+  is still written but never stamps. The analog monitor stamps analog reception only: the FM or AM monitor
   (`dsd_analog_monitor_tap_active()`), never the `-8` source monitor during digital decoding, with the tap's carrier
   open now and the tone policy passing it (`symbol_unsynced_carrier_active()`), a sink to write to (the local raw stream
   or UDP), and under the auto squelch at least one sample its own gate hears, so the fade-out written after the gate
@@ -3462,9 +3463,10 @@ the call, since the radio reads the previous channel again. The converter starts
 triplet or between two, and the PCM staging held from before the call is dropped when it ends. A triplet plays
 (`edacs_emit_analog_audio()`) only past the talkgroup gate, and only while the output is unmuted (`audio_out` 1) and
 slot 1 is on, on the local stream, UDP and the raw fd alike (`edacs_analog_output_enabled()`, the mixers' rule); it
-notes the audible-audio stamp only when the squelch the call runs opened on it (see Core). Tests:
+notes the audible-audio stamp only when one of them writes it (the raw fd takes 16-bit output only) and the squelch the
+call runs opened on it (see Core). Tests:
 `EDACS_GRANT_TUNE_MATRIX` (the `analog-633` cases, with golden hashes of a 48 kHz call's audio, WAVs and stdout; the
-emitter's outputs and stamp under each gate and squelch).
+emitter's outputs and stamp under each gate, squelch, output type and sample format).
 
 P25 manual control-channel selection lives in `src/protocol/p25/p25_cc_selection.c`. The Frequency command routes
 active single-system P25 sessions here; the module holds the watchdog guard through the runtime CC tuning hook,

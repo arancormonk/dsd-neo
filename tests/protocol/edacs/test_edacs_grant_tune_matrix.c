@@ -1763,6 +1763,81 @@ test_edacs_analog_emit_stamps_open_reception(void) {
     return rc;
 }
 
+/* Issue #574: an open triplet stamps only where an output writes it. The raw fd takes 16-bit samples only, so with float
+   output selected (floating_point 1) it writes nothing and nothing stamps, while the local stream and UDP write and
+   stamp in either format; an output type none of the three serves writes and stamps nothing either. */
+static int
+test_edacs_analog_stamp_follows_the_writer(void) {
+    static const struct {
+        int out_type;
+        int floating_point;
+        int want_blocks;
+    } cases[] = {
+        {0, 0, 3}, {0, 1, 3}, {1, 0, 3}, {1, 1, 0}, {8, 0, 3}, {8, 1, 3}, {9, 0, 0},
+    };
+
+    static dsd_opts opts;
+    static dsd_state state;
+    static short analog1[960];
+    static short analog2[960];
+    static short analog3[960];
+    int rc = 0;
+    dsd_audio_activity_arm();
+    for (size_t c = 0U; c < sizeof(cases) / sizeof(cases[0]); c++) {
+        edacs_reset_audio_hook_state();
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        opts.audio_out = 1;
+        opts.slot1_on = 1;
+        opts.audio_out_type = cases[c].out_type;
+        opts.floating_point = cases[c].floating_point;
+        edacs_install_udp_output_hooks();
+        char raw_path[DSD_TEST_PATH_MAX];
+        int raw_fd = -1;
+        if (cases[c].out_type == 1) {
+            raw_fd = dsd_test_mkstemp(raw_path, sizeof(raw_path), "dsdneo_edacs_writer");
+            if (raw_fd < 0) {
+                rc |= edacs_expect(0, "analog-stamp-writer", "fd", "created temporary raw output");
+                continue;
+            }
+            opts.audio_out_fd = raw_fd;
+        }
+        g_audio_write_count = 0;
+        g_audio_write_capture = cases[c].out_type == 0;
+        dsd_audio_activity_reset();
+
+        edacs_emit_analog_audio(&opts, &state, analog1, analog2, analog3, 1);
+
+        g_audio_write_capture = 0;
+        int blocks = g_audio_write_count + g_udp_blast_count;
+        if (raw_fd >= 0) {
+            dsd_stat_t st;
+            DSD_MEMSET(&st, 0, sizeof(st));
+            if (dsd_fstat(raw_fd, &st) == 0) {
+                blocks += (int)((long long)st.st_size / (long long)(960U * sizeof(short)));
+            }
+            (void)dsd_close(raw_fd);
+            (void)remove(raw_path);
+        }
+        uint64_t stamp = 0U;
+        dsd_audio_activity_read(&stamp, NULL);
+        const int want_stamp = cases[c].want_blocks > 0;
+        if (blocks != cases[c].want_blocks || (stamp != 0U) != want_stamp) {
+            DSD_FPRINTF(stderr, "output %d, floating point %d: %d blocks (want %d), stamp %d (want %d)\n",
+                        cases[c].out_type, cases[c].floating_point, blocks, cases[c].want_blocks, stamp != 0U,
+                        want_stamp);
+        }
+        rc |= edacs_expect(blocks == cases[c].want_blocks, "analog-stamp-writer", "blocks",
+                           "the triplet reaches each output that takes its format");
+        rc |= edacs_expect((stamp != 0U) == want_stamp, "analog-stamp-writer", "stamp",
+                           "only a triplet some output writes stamps");
+        dsd_state_ext_free_all(&state);
+    }
+    edacs_reset_audio_hook_state();
+    dsd_audio_activity_reset();
+    return rc;
+}
+
 /* Issue #574: the mixers write to no output type while muted (audio_out 0) or while slot 1 is switched off
    (dsd_output_*_block() and the mono mixers), so each of EDACS's analog outputs -- the local stream, the raw fd and the
    UDP socket -- applies both, as one rule. */
@@ -2806,6 +2881,7 @@ main(void) {
     rc |= test_edacs_analog_media_honors_talkgroup_policy();
     rc |= test_edacs_analog_output_honors_mute_and_slot();
     rc |= test_edacs_analog_emit_stamps_open_reception();
+    rc |= test_edacs_analog_stamp_follows_the_writer();
     rc |= edacs_run_analog_sql_helper_cases();
     rc |= edacs_run_converted_collect_cases();
     rc |= edacs_run_analog_call_cases();
