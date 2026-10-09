@@ -577,11 +577,12 @@ class DecoderService : Service() {
 
     /**
      * Re-reads the published status once a second, re-posting only when what the
-     * notification shows changed.
+     * notification shows changed, and feeds every running tick to the screen policy.
      *
      * Re-posts itself from the tail and only while RUNNING, so the loop unwinds on its
      * own the moment a session ends or a stop lands — there is no timer left pointing at
-     * a service that has been told to go away.
+     * a service that has been told to go away. Both tails that end the loop end the
+     * screen policy's session too, as [stopStatusPolling] does.
      */
     private val statusPoll = object : Runnable {
         override fun run() {
@@ -602,6 +603,7 @@ class DecoderService : Service() {
                     // been called, so the service really is on its way down.
                     updateNotification(getString(R.string.decoder_stopping))
                 }
+                ScreenSupport.statusStopped()
                 return
             }
             val record = try {
@@ -613,8 +615,10 @@ class DecoderService : Service() {
                 // second for the rest of the session. The notification keeps whatever it
                 // last rendered.
                 Log.e(TAG, "status accessor unavailable; stopping status polling", e)
+                ScreenSupport.statusStopped()
                 return
             }
+            var displayChanged = false
             if (record != lastStatusRecord) {
                 val previous = lastStatus
                 val wasUnreadable = lastStatusRecord != null && previous == null
@@ -637,10 +641,13 @@ class DecoderService : Service() {
                 // counts: the notification swaps between the phase wording and the status.
                 // A live call does re-render each second — its elapsed_ms advances — but
                 // setOnlyAlertOnce keeps every one of those silent.
-                val displayChanged = if (status == null) previous != null else !status.sameDisplay(previous)
-                if (displayChanged) {
-                    updateNotification(currentStatusText())
-                }
+                displayChanged = if (status == null) previous != null else !status.sameDisplay(previous)
+            }
+            // Every tick, changed record or not: the screen policy's lease is renewed per sample, and
+            // [lastStatus] holds this tick's status either way.
+            ScreenSupport.statusTick(this@DecoderService, synchronized(lock) { sessionId }, lastStatus)
+            if (displayChanged) {
+                updateNotification(currentStatusText())
             }
             statusHandler.postDelayed(this, STATUS_POLL_MS)
         }
@@ -654,7 +661,12 @@ class DecoderService : Service() {
 
     /**
      * Stops the loop and forgets the cached record, so the notification falls back to the
-     * phase wording rather than freezing on the last call it saw.
+     * phase wording rather than freezing on the last call it saw, and ends the screen
+     * policy's session.
+     *
+     * Every deliberate teardown comes through here first: [onDestroy], [stopDecoding] and
+     * [stopForegroundCompat] (and so [failStart] and [stopIfIdle]). The poll's own two
+     * tails end the screen session themselves; ending it twice is harmless.
      *
      * Safe against a tick that is already queued: the poll runs on the main looper, and
      * every caller of this is on the main thread too, so removeCallbacks() cannot race
@@ -664,6 +676,7 @@ class DecoderService : Service() {
         statusHandler.removeCallbacks(statusPoll)
         lastStatusRecord = null
         lastStatus = null
+        ScreenSupport.statusStopped()
     }
 
     private fun stopForegroundCompat() {
@@ -851,6 +864,9 @@ class DecoderService : Service() {
         /** Service-side view of the lifecycle, for UI status text. */
         @JvmStatic
         fun stateName(): String = synchronized(lock) { state.name }
+
+        /** The running session's id, or null unless RUNNING; for the screen policy's synchronous samples. */
+        fun runningSessionId(): Long? = synchronized(lock) { if (state == State.RUNNING) sessionId else null }
 
         /**
          * Why the last start was abandoned, or "" if none was. Read by the Qt host when
