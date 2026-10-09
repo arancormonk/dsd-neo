@@ -131,6 +131,9 @@ object ScreenSupport {
     private val tick = Runnable { controller.tick() }
     private val settleWake = Runnable { wakeInFlight = false }
 
+    /** Android's wake verdict for the policy, which asks it only for a sample that would otherwise wake. */
+    private val wakeVerdict: () -> Boolean = { wakeAllowed() }
+
     private val receiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             when (intent.action) {
@@ -228,8 +231,7 @@ object ScreenSupport {
             return
         }
         bind(context)
-        val verdict = controller.state.wakeVerdictNeeded && wakeAllowed()
-        feed.onTick(running = true, sessionId = sessionId, status = status, wakeAllowed = verdict)
+        feed.onTick(running = true, sessionId = sessionId, status = status, wakeAllowed = wakeVerdict)
         applyWindow()
     }
 
@@ -304,7 +306,7 @@ object ScreenSupport {
 
     /**
      * D5: a call may wake the screen only in the normal audio mode with no Do Not Disturb filter. Two binder reads on
-     * the main thread, so callers ask only while the policy's wakeVerdictNeeded says a sample could wake.
+     * the main thread, so only the policy asks, through [wakeVerdict], and only for a sample that would otherwise wake.
      */
     private fun wakeAllowed(): Boolean {
         val audioMode = audio?.mode ?: return false
@@ -344,7 +346,7 @@ object ScreenSupport {
             return
         }
         val status = DecoderStatus.parse(record) ?: return
-        controller.sample(status.audibleStamp, status.audibleAgeMs, controller.state.wakeVerdictNeeded && wakeAllowed())
+        controller.sample(status.audibleStamp, status.audibleAgeMs, wakeVerdict)
         applyWindow()
     }
 

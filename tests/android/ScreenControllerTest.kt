@@ -8,6 +8,10 @@ private const val SYSTEM = 0
 private const val DELAY_MS = 30_000L
 private const val SESSION = 7L
 
+/** A sample with a fixed verdict, which the policy asks for as it would ask Android. */
+private fun ScreenController.sample(stamp: ULong?, ageMs: Long, wakeAllowed: Boolean) =
+    sample(stamp, ageMs) { wakeAllowed }
+
 /** Records every effect in order; pulseWake() answers as Android would after the wake lock. */
 private class RecordingEffects : ScreenController.Effects {
     private val calls = mutableListOf<String>()
@@ -267,6 +271,19 @@ private fun aTickAlwaysReschedulesWhatIsLeft() {
     check(rig.effects.take() == listOf("dimmed=true", "release"))
 }
 
+private fun theVerdictReachesThePolicyUnasked() {
+    // The controller hands the glue's verdict to the policy as it is, so Android is asked only for a waking sample.
+    var asked = 0
+    val allowed = { asked++; true }
+    val rig = ControllerRig(mode = OFF).armedAsleep()
+    rig.now += 1_000
+    rig.controller.sample(rig.policy.lastStamp, 0, allowed)
+    rig.controller.sample(null, -1, allowed)
+    check(asked == 0 && rig.effects.take().isEmpty())
+    rig.controller.sample(9_000uL, 0, allowed)
+    check(asked == 1 && rig.effects.take() == listOf("pulse"))
+}
+
 private fun touchDelegatesInOneCall() {
     val rig = ControllerRig(mode = DIM)
     rig.front()
@@ -289,6 +306,7 @@ fun main() {
     aRefusedWakeIsFedBackAndNotRetried()
     anAcceptedWakeHoldsTheLeaseOnceTheScreenIsOn()
     aTickAlwaysReschedulesWhatIsLeft()
+    theVerdictReachesThePolicyUnasked()
     touchDelegatesInOneCall()
     println("PASS: screen controller idempotence, make before break, renewal, immediate release and wake refusal")
 }

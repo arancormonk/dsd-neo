@@ -51,7 +51,7 @@ class ScreenController(clock: () -> Long, private val effects: Effects) : Status
 
     override fun sessionEnded() = after { policy.sessionEnded() }
 
-    override fun sample(stamp: ULong?, ageMs: Long, wakeAllowed: Boolean) {
+    override fun sample(stamp: ULong?, ageMs: Long, wakeAllowed: () -> Boolean) {
         policy.sample(stamp, ageMs, wakeAllowed)
         apply(renew = true)
     }

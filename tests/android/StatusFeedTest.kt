@@ -1,6 +1,15 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 package io.github.arancormonk.dsdneo
 
+/** A tick with a fixed verdict, which the policy asks for as it would ask Android. */
+private fun StatusFeed.onTick(running: Boolean, sessionId: Long, status: DecoderStatus?, wakeAllowed: Boolean) =
+    onTick(running, sessionId, status) { wakeAllowed }
+
+/** A sample with a fixed verdict, which the policy asks for as it would ask Android. */
+private fun ScreenController.sample(stamp: ULong?, ageMs: Long, wakeAllowed: Boolean) =
+    sample(stamp, ageMs) { wakeAllowed }
+
+/** Records each delivery, with the verdict the sample would get if asked. */
 private class RecordingScreen : StatusFeed.Screen {
     private val calls = mutableListOf<String>()
 
@@ -8,8 +17,8 @@ private class RecordingScreen : StatusFeed.Screen {
         calls += "start $id"
     }
 
-    override fun sample(stamp: ULong?, ageMs: Long, wakeAllowed: Boolean) {
-        calls += "sample $stamp $ageMs $wakeAllowed"
+    override fun sample(stamp: ULong?, ageMs: Long, wakeAllowed: () -> Boolean) {
+        calls += "sample $stamp $ageMs ${wakeAllowed()}"
     }
 
     override fun sessionEnded() {
@@ -91,6 +100,27 @@ private fun everyTerminationEndsTheSessionOnce() {
     check(screen.take() == listOf("start 5", "sample 1 0 true"))
     feed.onTerminated()
     check(screen.take() == listOf("end"))
+}
+
+private fun theFeedHandsOnTheVerdictUnasked() {
+    // The verdict costs the glue two binder calls, so the feed passes it on as it is and never asks it itself.
+    var asked = 0
+    val allowed = { asked++; true }
+    var received: (() -> Boolean)? = null
+    val feed = StatusFeed(
+        object : StatusFeed.Screen {
+            override fun sessionStarted(id: Long) {}
+
+            override fun sample(stamp: ULong?, ageMs: Long, wakeAllowed: () -> Boolean) {
+                received = wakeAllowed
+            }
+
+            override fun sessionEnded() {}
+        },
+    )
+    feed.onTick(true, 6L, status(5uL, 0), allowed)
+    feed.onTick(true, 6L, null, allowed)
+    check(received === allowed && asked == 0)
 }
 
 private fun theFeedDrivesTheControllerLease() {
@@ -196,6 +226,7 @@ fun main() {
     aDuplicateSessionIdStartsOnce()
     aNullStatusSamplesAsNoChange()
     everyTerminationEndsTheSessionOnce()
+    theFeedHandsOnTheVerdictUnasked()
     theFeedDrivesTheControllerLease()
     aSynchronousSampleThenAnUnreadableTickReplaysNothing()
     println("PASS: status feed samples every running tick, starts each session once and ends it once")

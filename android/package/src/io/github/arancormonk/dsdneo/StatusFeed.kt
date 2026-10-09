@@ -20,7 +20,7 @@ class StatusFeed(private val screen: Screen) {
     interface Screen {
         fun sessionStarted(id: Long)
 
-        fun sample(stamp: ULong?, ageMs: Long, wakeAllowed: Boolean)
+        fun sample(stamp: ULong?, ageMs: Long, wakeAllowed: () -> Boolean)
 
         fun sessionEnded()
     }
@@ -30,9 +30,10 @@ class StatusFeed(private val screen: Screen) {
     /**
      * One poll tick. While [running], starts [sessionId] if it is new and samples [status]. A null status (absent or
      * unreadable) samples with no stamp, which the policy takes as no change. A tick that is not running ends the
-     * session.
+     * session. [wakeAllowed] goes to the sample as it is, never asked here: the policy asks it only for a sample that
+     * would wake.
      */
-    fun onTick(running: Boolean, sessionId: Long, status: DecoderStatus?, wakeAllowed: Boolean) {
+    fun onTick(running: Boolean, sessionId: Long, status: DecoderStatus?, wakeAllowed: () -> Boolean) {
         if (!running) {
             onTerminated()
             return

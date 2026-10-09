@@ -28,8 +28,8 @@ interface ScreenPolicyView {
     /**
      * Whether a sample's new audio could wake the screen as things stand: Off between calls, a session, the activity
      * not visible, armed, and the screen off. The rest of the wake rule is the sample's own (the audio's age, a snooze
-     * that audio may end) and the caller's verdict, so the glue asks Android for that verdict only while this holds.
-     * [ScreenPolicy.sample] judges every wake through this same property, so the two cannot drift apart.
+     * that audio may end) and Android's verdict, which [ScreenPolicy.sample] asks for last, only for a sample that
+     * would otherwise wake. Every wake is judged through this same property.
      */
     val wakeVerdictNeeded: Boolean
 
@@ -88,8 +88,9 @@ interface ScreenPolicyView {
  * session only records its stamp, a changed stamp without an age (-1: none, expired or reset) records the stamp and
  * nothing else, and a sample without a stamp (no readable record) changes nothing. The policy is the only keeper of the
  * last stamp. A wake ([wakeSerial] advancing) needs that new audio to be at most [WAKE_MAX_AGE_MS] old, Off mode, a
- * session, the activity not visible, armed, not snoozed, the screen off, and the caller's [wakeAllowed] verdict; the
- * conditions that do not depend on the sample are [wakeVerdictNeeded]. A blocked wake still counts as audio.
+ * session, the activity not visible, armed, not snoozed, the screen off, and the caller's [wakeAllowed] verdict, which
+ * is asked for last and only then, since it costs the glue two binder calls; the conditions that do not depend on the
+ * sample are [wakeVerdictNeeded]. A blocked wake still counts as audio.
  *
  * Arming means DSD-neo was the app in front when the display went off. Only the first foreground-loss callback of a
  * sequence decides it (focus, top-resumed, paused or stopped, whichever Android delivers first), from whether DSD-neo
@@ -224,9 +225,10 @@ class ScreenPolicy(private val clock: () -> Long) : ScreenPolicyView {
     /**
      * One status poll (or the glue's synchronous sample): [stamp] identifies the last audible audio and [ageMs] is how
      * long ago it was heard, or -1 for none. A null [stamp] means no readable record, and changes nothing. Ignored
-     * outside a session.
+     * outside a session. [wakeAllowed] is Android's verdict (D5), asked at most once and only for audio that would
+     * otherwise wake the screen.
      */
-    fun sample(stamp: ULong?, ageMs: Long, wakeAllowed: Boolean) = step { now ->
+    fun sample(stamp: ULong?, ageMs: Long, wakeAllowed: () -> Boolean) = step { now ->
         if (session == null || stamp == null) {
             return@step
         }
@@ -251,7 +253,8 @@ class ScreenPolicy(private val clock: () -> Long) : ScreenPolicyView {
             snoozed = false
         }
         lastAudio = if (previous == null) heardAt else maxOf(previous, heardAt)
-        if (ageMs <= WAKE_MAX_AGE_MS && wakeVerdictNeeded && !snoozed && wakeAllowed) {
+        // The verdict last: it is asked only once everything else says this sample wakes.
+        if (ageMs <= WAKE_MAX_AGE_MS && wakeVerdictNeeded && !snoozed && wakeAllowed()) {
             wakeSerial++
         }
     }

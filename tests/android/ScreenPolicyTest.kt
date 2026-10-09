@@ -19,6 +19,10 @@ private const val TIMEOUT_MS = 30_000L
 
 private val NOTHING = Outputs(keepScreenOn = false, dimmed = false, holdLease = false)
 
+/** A sample with a fixed verdict, which the policy asks for as it would ask Android. */
+private fun ScreenPolicy.sample(stamp: ULong?, ageMs: Long, wakeAllowed: Boolean) =
+    sample(stamp, ageMs) { wakeAllowed }
+
 /** One policy on a hand-driven clock, with the event sequences the histories share. */
 private class PolicyRig(mode: Int = OFF, delaySeconds: Int = DELAY_S) {
     var now = 1_000_000L
@@ -1197,6 +1201,62 @@ private fun aSnoozeStillNeedsTheVerdict() {
     check(rig.wakes == 1L && !rig.policy.snoozed) { "audio a full delay later ends the snooze and wakes in one sample" }
 }
 
+private fun theVerdictIsAskedOnlyForASampleThatWouldWake() {
+    // Android's verdict costs the glue two binder calls on the main thread, so the policy asks for it last: only once
+    // everything else says this sample wakes.
+    var asked = 0
+    val allowed = { asked++; true }
+    val rig = PolicyRig().armedAsleep()
+    check(rig.policy.wakeVerdictNeeded)
+    rig.advance(1_000)
+    rig.policy.sample(null, -1, allowed) // No readable record.
+    check(asked == 0) { "a sample with no record asks nothing" }
+    rig.policy.sample(rig.policy.lastStamp, 0, allowed)
+    check(asked == 0) { "an unchanged stamp asks nothing" }
+    rig.policy.sample(9_000uL, -1, allowed)
+    check(asked == 0) { "a changed stamp without an age asks nothing" }
+    rig.policy.sample(9_001uL, ScreenPolicy.WAKE_MAX_AGE_MS + 1, allowed)
+    check(asked == 0 && rig.wakes == 0L) { "audio too old to wake asks nothing" }
+    rig.policy.sample(9_002uL, ScreenPolicy.WAKE_MAX_AGE_MS, allowed)
+    check(asked == 1 && rig.wakes == 1L) { "a waking sample asks exactly once" }
+    // Snoozed by audio inside the delay: the sample cannot end the snooze, so it asks nothing.
+    val snoozed = PolicyRig().snoozedAsleep()
+    snoozed.advance(1_000)
+    asked = 0
+    snoozed.policy.sample(9_003uL, 0, allowed)
+    check(asked == 0 && snoozed.policy.snoozed && snoozed.wakes == 0L) { "a snoozed sample asks nothing" }
+    // A session's first readable sample only primes.
+    val primed = PolicyRig().armedAsleep()
+    primed.policy.sessionStarted(SESSION + 1)
+    asked = 0
+    primed.policy.sample(9_004uL, 0, allowed)
+    check(asked == 0 && primed.wakes == 0L) { "priming asks nothing" }
+    // Nowhere a wake cannot fire: in front, armed but still visible, Dim, and after an unlock.
+    val notNeeded: List<Pair<String, PolicyRig>> = listOf(
+        "in front" to PolicyRig().apply { front(); session(); quiet() },
+        "armed, still visible" to PolicyRig().apply {
+            front()
+            session()
+            quiet()
+            policy.focusChanged(false, false)
+            policy.screenOff()
+        },
+        "Dim" to PolicyRig(mode = DIM).armedAsleep(),
+        "unlocked" to PolicyRig().armedAsleep().apply { policy.userPresent() },
+    )
+    for ((name, state) in notNeeded) {
+        asked = 0
+        state.advance(1_000)
+        state.policy.sample(9_005uL, 0, allowed)
+        check(asked == 0 && state.wakes == 0L) { "$name: asks nothing" }
+    }
+    // Refused: asked once, no wake, and the audio still counts.
+    val refused = PolicyRig().armedAsleep()
+    asked = 0
+    refused.policy.sample(9_006uL, 0) { asked++; false }
+    check(asked == 1 && refused.wakes == 0L && refused.policy.lastAudio == refused.now)
+}
+
 private fun wakeAllowedOnlyInNormalAudioModeWithoutDoNotDisturb() {
     // AudioManager modes and NotificationManager interruption filters, as Android numbers them.
     check(ScreenPolicy.AUDIO_MODE_NORMAL == 0)
@@ -1302,6 +1362,7 @@ fun main() {
     systemAndAlwaysOnMatchToday()
     wakeVerdictNeededExactlyWhereAWakeCanFire()
     aSnoozeStillNeedsTheVerdict()
+    theVerdictIsAskedOnlyForASampleThatWouldWake()
     wakeAllowedOnlyInNormalAudioModeWithoutDoNotDisturb()
     delaySanitising()
     modeCodes()

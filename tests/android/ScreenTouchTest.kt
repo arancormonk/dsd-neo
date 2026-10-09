@@ -11,6 +11,10 @@ import io.github.arancormonk.dsdneo.ScreenPolicy.Companion.ACTION_UP
 // MotionEvent.ACTION_OUTSIDE: not part of a touch gesture the gate knows by name.
 private const val ACTION_OUTSIDE = 4
 
+/** A sample with a fixed verdict, which the policy asks for as it would ask Android. */
+private fun ScreenController.sample(stamp: ULong?, ageMs: Long, wakeAllowed: Boolean) =
+    sample(stamp, ageMs) { wakeAllowed }
+
 /** The activity's dispatchTouchEvent decision, through the controller, on a Dim-mode screen. */
 private class TouchRig {
     var now = 3_000_000L
