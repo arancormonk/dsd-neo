@@ -4832,6 +4832,19 @@ push_sink_samples(dsd_opts* opts, dsd_state* state, int n) {
     }
 }
 
+/* Issue #574: whether the audible-audio stamp holds a note since its last reset is @p want; a FAIL line names @p what
+   when it is not. */
+static int
+sink_stamp_is(int want, const char* what) {
+    uint64_t stamp = 0U;
+    dsd_audio_activity_read(&stamp, NULL);
+    const int stamped = stamp != 0U;
+    if (stamped != want) {
+        DSD_FPRINTF(stderr, "FAIL: %s: stamp %d want %d\n", what, stamped, want);
+    }
+    return stamped == want;
+}
+
 /* A monitor at @p in_hz with the UDP socket and a -6 raw WAV capturing. */
 static void
 start_mixed_rate_case(dsd_opts* opts, dsd_state* state, int audio_in_type, int in_hz, char* raw_path,
@@ -4933,52 +4946,68 @@ test_provisional_rate_keeps_the_block(void) {
 }
 
 /* A rate the converter cannot take (below 1 kHz) is not written at the wrong speed: the analog outputs stay silent,
-   with one error naming the rate. 1 kHz converts. */
+   with one error naming the rate, and the audible-audio stamp (issue #574) notes nothing, as no output received a
+   sample. 1 kHz converts, plays and stamps. */
 static void
 test_unconvertible_rate_stays_silent(void) {
     static dsd_opts opts;
     static dsd_state state;
     char raw_path[DSD_TEST_PATH_MAX];
+    dsd_audio_activity_arm();
     start_mixed_rate_case(&opts, &state, AUDIO_IN_WAV, 999, raw_path, sizeof(raw_path));
+    dsd_audio_activity_reset();
     g_analog_output_errors_seen = 0;
     push_sink_samples(&opts, &state, 3 * 960);
     assert(g_sink_len == 0U && g_analog_output_errors_seen == 1);
+    assert(sink_stamp_is(0, "999 Hz, muted at the sink"));
     assert(finish_mixed_rate_case(&opts, &state, raw_path) == 0);
 
     start_mixed_rate_case(&opts, &state, AUDIO_IN_WAV, 1000, raw_path, sizeof(raw_path));
+    dsd_audio_activity_reset();
     push_sink_samples(&opts, &state, 960);
     assert(g_sink_len == sink_outputs(1000, 960U) && g_sink_len == (size_t)960U * 48U);
+    assert(sink_stamp_is(1, "1 kHz, converted and written"));
     assert(finish_mixed_rate_case(&opts, &state, raw_path) == (sf_count_t)(960 * 48));
+    dsd_audio_activity_reset();
 }
 
 /* With no memory for the converters, a block to convert is muted with one error for its rate: the same rate does not
-   say it again, another rate or a later session does. Once the memory is there, blocks convert again. */
+   say it again, another rate or a later session does. Once the memory is there, blocks convert again. A muted block
+   notes no audible audio (issue #574); a converted one does. */
 static void
 test_sink_allocation_failure_is_said_once_per_rate(void) {
     static dsd_opts opts;
     static dsd_state state;
     char raw_path[DSD_TEST_PATH_MAX];
+    dsd_audio_activity_arm();
     start_mixed_rate_case(&opts, &state, AUDIO_IN_WAV, 44100, raw_path, sizeof(raw_path));
+    dsd_audio_activity_reset();
     dsd_analog_sink_test_fail_alloc(1);
     g_analog_output_errors_seen = 0;
     push_sink_samples(&opts, &state, 2 * 960);
     assert(g_sink_len == 0U && g_analog_output_errors_seen == 1);
+    assert(sink_stamp_is(0, "44.1 kHz, no memory to convert"));
     dsd_opts_apply_input_sample_rate(&opts, 96000);
     g_tone_fs = 96000.0;
     push_sink_samples(&opts, &state, 960);
     assert(g_sink_len == 0U && g_analog_output_errors_seen == 2);
+    assert(sink_stamp_is(0, "96 kHz, no memory to convert"));
     dsd_analog_sink_test_fail_alloc(0);
     push_sink_samples(&opts, &state, 960);
     assert(g_sink_len == 480U && g_analog_output_errors_seen == 2);
+    assert(sink_stamp_is(1, "96 kHz, memory back, converted and written"));
     assert(finish_mixed_rate_case(&opts, &state, raw_path) == 480);
 
     /* A later decoder session at a rate an earlier one named says it again. */
     start_mixed_rate_case(&opts, &state, AUDIO_IN_WAV, 96000, raw_path, sizeof(raw_path));
+    dsd_audio_activity_reset();
     dsd_analog_sink_test_fail_alloc(1);
     push_sink_samples(&opts, &state, 960);
     assert(g_sink_len == 0U && g_analog_output_errors_seen == 3);
+    assert(sink_stamp_is(0, "a later session at 96 kHz, no memory to convert"));
     dsd_analog_sink_test_fail_alloc(0);
     assert(finish_mixed_rate_case(&opts, &state, raw_path) == 0);
+    dsd_audio_activity_reset();
 }
 
 #ifdef USE_RADIO

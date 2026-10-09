@@ -118,7 +118,8 @@ companion, on stereo and mono output); `CORE_AUDIO_GAIN` the legacy short output
 partial flushes and a slot SS18's output policy copies over its companion included, and that the beeper never stamps;
 `M17_STATE_DISPATCH` the Codec2 writers on every output type; `EDACS_GRANT_TUNE_MATRIX` the EDACS emitter on each output
 type and sample format, and whole analog calls under each squelch; `DSP_SYMBOL_REPLAY` the analog monitor (the tone
-policy, the auto squelch's per-sample gate, a retune, and the `-8` source monitor, which never stamps);
+policy, the auto squelch's per-sample gate, a retune, the `-8` source monitor, which never stamps, and a block the
+sink's converter mutes, at a rate it cannot take or with no memory, which never stamps either);
 `DMR_BS_SYNC_TIMES` and `ENGINE_NO_CARRIER_RESET` the discards. The stamp runs on the real-time clock, so
 `CORE_AUDIO_ACTIVITY` and `APP_CONTROL_NOTIFICATION_STATUS` hold its time through
 `dsd_audio_activity_set_clock_for_test()` (module-private, built only with `DSD_NEO_TEST_HOOKS`) rather than the decode

@@ -803,8 +803,11 @@ suite runs under this compiler.
   is still written but never stamps. The analog monitor stamps analog reception only: the FM or AM monitor
   (`dsd_analog_monitor_tap_active()`), never the `-8` source monitor during digital decoding, with the tap's carrier
   open now and the tone policy passing it (`symbol_unsynced_carrier_active()`), a sink that receives it (the shared rule
-  on `audio_raw_out`: the local raw stream while open, or UDP; the monitor feeds no raw fd), and under the auto squelch at least one sample its own gate hears, so the fade-out written after the gate
-  closes does not count and an unmodulated carrier does. Tests: `CORE_AUDIO_ACTIVITY`, `CORE_AUDIO2_HELPERS`,
+  on `audio_raw_out`: the local raw stream while open, or UDP; the monitor feeds no raw fd), and under the auto squelch
+  at least one sample its own gate hears, so the fade-out written after the gate closes does not count and an
+  unmodulated carrier does. The block's verdict is taken before the write, but the stamp is noted in the sink's write
+  callback (`symbol_monitor_sink_write()`) when it hands the output samples, so a block the sink's converter mutes
+  (`DSD_ANALOG_SINK_MUTED`: a rate it cannot take, no memory for it) stamps nothing. Tests: `CORE_AUDIO_ACTIVITY`, `CORE_AUDIO2_HELPERS`,
   `CORE_MBE_TRANSFORM_CONTEXT`, `CORE_AUDIO_GAIN`, `P25_P2_MIXER_GATE`, `M17_STATE_DISPATCH`, `EDACS_GRANT_TUNE_MATRIX`,
   `DSP_SYMBOL_REPLAY`, `DMR_BS_SYNC_TIMES`, `ENGINE_NO_CARRIER_RESET` (see `docs/testing.md`).
 - Invariant (vocoder PCM scale, `<dsd-neo/core/vocoder.h>`): mbelib-neo's float PCM is int16 / 7
