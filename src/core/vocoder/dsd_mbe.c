@@ -1612,14 +1612,15 @@ mbe_post_stage_slot_silence(dsd_state* state, int slot) {
     } else {
         DSD_MEMSET(state->s_r, 0, sizeof(state->s_r));
     }
+    state->mbe_short_silenced[slot ? 1 : 0] = 1U;
     if (dsd_audio_activity_armed()) {
         dsd_audio_dmr_mix_media_silenced(slot, DSD_DMR_MIX_MEDIA_SHORT);
     }
 }
 
 // Decoded media a DMR slot staged for the stereo mixes' audible-audio stamp (dsd_audio_dmr_mix_media_staged(), issue
-// #574); called only while the stamp is armed. P25 Phase 2 stages through here as well, but its mixes go by the audio
-// ring and the voice counters instead.
+// #574); called only while the stamp is armed. P25 Phase 2 stages through here as well, but its playout reads the
+// provenance from dsd_state::mbe_short_silenced instead (issue #651).
 static void
 mbe_post_note_dmr_mix_media(const dsd_state* state, int slot, unsigned int kind) {
     if (DSD_SYNC_IS_DMR(state->synctype)) {
@@ -1671,6 +1672,7 @@ mbe_post_left_audio(dsd_opts* opts, dsd_state* state, const mbe_frame_ctx_t* fra
     if (state->dmr_encL == 0 || opts->dmr_mute_encL == 0) {
         if (opts->floating_point == 0) {
             processAudio(opts, state);
+            state->mbe_short_silenced[0] = 0U;
             if (dsd_audio_activity_armed()) {
                 mbe_post_note_dmr_mix_media(state, 0, DSD_DMR_MIX_MEDIA_SHORT);
             }
@@ -1723,6 +1725,7 @@ mbe_post_right_audio(dsd_opts* opts, dsd_state* state, const mbe_frame_ctx_t* fr
     if (state->dmr_encR == 0 || opts->dmr_mute_encR == 0) {
         if (opts->floating_point == 0) {
             processAudioR(opts, state);
+            state->mbe_short_silenced[1] = 0U;
             if (dsd_audio_activity_armed()) {
                 mbe_post_note_dmr_mix_media(state, 1, DSD_DMR_MIX_MEDIA_SHORT);
             }
@@ -1738,16 +1741,20 @@ mbe_post_right_audio(dsd_opts* opts, dsd_state* state, const mbe_frame_ctx_t* fr
 
 static void
 mbe_post_other_process_audio(const dsd_opts* opts, dsd_state* state, int is_p25p2) {
+    const int slot = (is_p25p2 && state->currentslot == 1) ? 1 : 0;
     state->debug_audio_errors += state->errs2;
     if ((opts->audio_out != 1 && !(opts->wav_out_f != NULL && opts->static_wav_file == 1))
         || opts->floating_point != 0) {
+        // The slot's short frame is left as it was: it holds no sample of this frame.
+        state->mbe_short_silenced[slot] = 1U;
         return;
     }
-    if (is_p25p2 && state->currentslot == 1) {
+    if (slot == 1) {
         processAudioR(opts, state);
     } else {
         processAudio(opts, state);
     }
+    state->mbe_short_silenced[slot] = 0U;
 }
 
 static int
@@ -1811,10 +1818,20 @@ mbe_post_mono_left_audio(const dsd_opts* opts, dsd_state* state) {
     }
 }
 
+// The slot whose per-call WAV a frame on the mono post path belongs to: DMR mono's playing slot, and a P25 Phase 2
+// frame's own timeslot whatever opts->dmr_stereo says (issue #651); every other mono source is slot 0.
+static int
+mbe_post_mono_wav_slot(const dsd_opts* opts, const dsd_state* state) {
+    if (state->currentslot != 1) {
+        return 0;
+    }
+    return (mbe_post_dmr_mono_active(opts, state) || DSD_SYNC_IS_P25P2(state->synctype)) ? 1 : 0;
+}
+
 static int
 mbe_post_allow_mono_wav(const dsd_opts* opts, const dsd_state* state) {
     const int dmr_mono_active = mbe_post_dmr_mono_active(opts, state);
-    const int slot = (dmr_mono_active && state->currentslot == 1) ? 1 : 0;
+    const int slot = mbe_post_mono_wav_slot(opts, state);
     if (opts->static_wav_file != 0) {
         return 0;
     }
@@ -1844,6 +1861,18 @@ mbe_post_allow_stereo_slot_wav(const dsd_opts* opts, const dsd_state* state, int
 
 // X2-TDMA and D-STAR never classify crypto into the DMR slot flags the full
 // record gate reads, so their WAV answers to the talkgroup policy alone.
+// The mono post path's per-call WAV: slot 2's for DMR mono playing slot 2, and for a P25 Phase 2 slot-2 frame whatever
+// opts->dmr_stereo says (issue #651).
+static void
+mbe_post_write_mono_wav(dsd_opts* opts, dsd_state* state) {
+    if ((mbe_post_dmr_mono_active(opts, state) && state->dmr_mono_slot == 1)
+        || (DSD_SYNC_IS_P25P2(state->synctype) && state->currentslot == 1)) {
+        writeSynthesizedVoiceR(opts, state);
+    } else {
+        writeSynthesizedVoice(opts, state);
+    }
+}
+
 static void
 mbe_post_wav_outputs(dsd_opts* opts, dsd_state* state) {
     if (DSD_SYNC_IS_X2TDMA(state->synctype)) {
@@ -1861,11 +1890,7 @@ mbe_post_wav_outputs(dsd_opts* opts, dsd_state* state) {
     }
 
     if (mbe_post_allow_mono_wav(opts, state)) {
-        if (mbe_post_dmr_mono_active(opts, state) && state->dmr_mono_slot == 1) {
-            writeSynthesizedVoiceR(opts, state);
-        } else {
-            writeSynthesizedVoice(opts, state);
-        }
+        mbe_post_write_mono_wav(opts, state);
     }
     if (mbe_post_allow_stereo_slot_wav(opts, state, 0)) {
         writeSynthesizedVoice(opts, state);
@@ -1877,6 +1902,8 @@ mbe_post_wav_outputs(dsd_opts* opts, dsd_state* state) {
 
 static void
 mbe_post_audio_and_recording(dsd_opts* opts, dsd_state* state, const mbe_frame_ctx_t* frame_ctx) {
+    // Until a branch below stages this frame's short samples, the current slot's short frame is not this frame's.
+    state->mbe_short_silenced[state->currentslot == 1 ? 1 : 0] = 1U;
     if (mbe_post_uses_mono_left_staging(state)) {
         mbe_post_mono_left_audio(opts, state);
     } else {

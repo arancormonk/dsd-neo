@@ -767,8 +767,12 @@ struct dsd_state {
     float f_l4[4][160]; //quad sample for up to a P25p2 4V
     float f_r4[4][160]; //quad sample for up to a P25p2 4V
     //new stereo short sample storage
-    short s_l[160];      //single sample left
-    short s_r[160];      //single sample right
+    short s_l[160]; //single sample left
+    short s_r[160]; //single sample right
+    /* Per slot: 1 when the vocoder left the current frame's short samples out of s_l/s_r (it staged silence, or
+       skipped short staging), 0 when processAudio()/processAudioR() staged them there. The P25 Phase 2 playout reads
+       it to tell decoded audio from silence (issue #651). */
+    uint8_t mbe_short_silenced[2];
     short s_l4[18][160]; //quad sample for up to a P25p2 4V
     short s_r4[18][160]; //quad sample for up to a P25p2 4V
     //new stereo short sample storage tapped from 48_k internal upsampling
