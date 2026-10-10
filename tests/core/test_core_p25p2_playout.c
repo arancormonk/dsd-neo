@@ -1126,7 +1126,8 @@ run_static_wav_case(const char* what, int blocked_slot, int companion, int left_
     int rc = 0;
     const int fd = dsd_test_mkstemp(path, sizeof(path), "dsd_p25p2_wav");
     if (fd < 0) {
-        return expect_int("wav temp file", fd >= 0, 1);
+        DSD_FPRINTF(stderr, "FAIL wav temp file: dsd_test_mkstemp returned %d\n", fd);
+        return 1;
     }
     (void)dsd_close(fd);
     SF_INFO info;
@@ -1663,7 +1664,8 @@ test_live_policy_leaves_recordability(void) {
     int rc = 0;
     const int fd = dsd_test_mkstemp(path, sizeof(path), "dsd_p25p2_wav");
     if (fd < 0) {
-        return expect_int("wav temp file", fd >= 0, 1);
+        DSD_FPRINTF(stderr, "FAIL wav temp file: dsd_test_mkstemp returned %d\n", fd);
+        return 1;
     }
     (void)dsd_close(fd);
     SF_INFO info;

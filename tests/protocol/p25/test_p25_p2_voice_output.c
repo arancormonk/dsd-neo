@@ -611,7 +611,8 @@ test_partial_flush_with_hpf_and_static_wav(void) {
     int rc = 0;
     const int fd = dsd_test_mkstemp(path, sizeof(path), "dsd_p25p2_out");
     if (fd < 0) {
-        return expect_int("wav temp file", fd >= 0, 1);
+        DSD_FPRINTF(stderr, "FAIL wav temp file: dsd_test_mkstemp returned %d\n", fd);
+        return 1;
     }
     (void)dsd_close(fd);
     setup(0, 2);
