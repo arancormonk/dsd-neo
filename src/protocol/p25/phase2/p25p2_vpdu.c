@@ -5598,6 +5598,11 @@ p25p2_vpdu_consume_multifragment_continuation(p25p2_vpdu_ctx* ctx) {
 static int
 p25p2_vpdu_consume_fragment_segment(p25p2_vpdu_ctx* ctx) {
     int opcode = (int)ctx->mac[1 + ctx->len_a];
+    // A superframe whose slot parity is unknown: an assembly is per slot, so a fragment could join the wrong one.
+    if (p25p2_window_slot_unproven() && (p25p2_vpdu_is_standard_multifragment_base(opcode) || opcode == 0x10)) {
+        DSD_FPRINTF(stderr, "\n MAC multi-fragment [%02X] dropped: unaligned superframe", opcode);
+        return 1;
+    }
     if (p25p2_vpdu_is_standard_multifragment_base(opcode)) {
         return p25p2_vpdu_consume_multifragment_base(ctx, opcode);
     }

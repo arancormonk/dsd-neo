@@ -230,29 +230,9 @@ p25p2_xcch_close_slot_mbe_out(dsd_opts* opts, dsd_state* state, int slot) {
 }
 
 static void
-p25p2_xcch_flush_partial_audio_on_hangtime(dsd_opts* opts, dsd_state* state, int slot) {
-    int audio_allowed[2];
-
-    if (!opts || !state) {
-        return;
-    }
-
-    audio_allowed[0] = state->p25_p2_audio_allowed[0];
-    audio_allowed[1] = state->p25_p2_audio_allowed[1];
-
-    // Flush before MAC_HANGTIME changes burst 21 to 22, so the flushed
-    // superframe is still attributed to the active transmission. Unlike release,
-    // hangtime stays on the VC, so restore the existing audio gates after the
-    // flush -- the flush helper repoints them at the slot it is draining.
-    dsd_p25p2_flush_partial_audio_slot(opts, state, slot);
-
-    state->p25_p2_audio_allowed[0] = audio_allowed[0];
-    state->p25_p2_audio_allowed[1] = audio_allowed[1];
-}
-
-static void
 p25p2_xcch_handle_mac_hangtime_slot(dsd_opts* opts, dsd_state* state, int slot) {
-    p25p2_xcch_flush_partial_audio_on_hangtime(opts, state, slot);
+    // The transmission is over: its playout stream closes and what it queued still plays (issue #651).
+    dsd_p25p2_flush_partial_audio_slot(opts, state, slot);
     p25p2_xcch_set_slot_burst(state, slot, 22);
     p25p2_xcch_close_slot_mbe_out(opts, state, slot);
 }
@@ -349,7 +329,6 @@ p25p2_xcch_log_slot_encryption(const dsd_opts* opts, dsd_state* state, int slot)
 static void
 p25p2_xcch_reset_ptt_slot_state(dsd_state* state, int slot) {
     state->fourv_counter[slot] = 0;
-    state->voice_counter[slot] = 0;
     p25p2_xcch_set_slot_drop(state, slot, 256);
 }
 
@@ -389,7 +368,6 @@ p25p2_xcch_handle_end_slot(dsd_opts* opts, dsd_state* state, int slot, int clear
     }
     dsd_p25p2_flush_partial_audio_slot(opts, state, slot);
     state->fourv_counter[slot] = 0;
-    state->voice_counter[slot] = 0;
     p25p2_xcch_set_slot_drop(state, slot, 256);
     p25p2_xcch_set_slot_burst(state, slot, 23);
 
@@ -440,7 +418,6 @@ p25p2_xcch_reset_idle_slot_facch(dsd_state* state, uint8_t slot) {
     p25_crypto_reset_slot(state, slot);
     p25p2_xcch_set_slot_burst(state, slot, 24);
     state->fourv_counter[slot] = 0;
-    state->voice_counter[slot] = 0;
 }
 
 static int

@@ -814,6 +814,8 @@ struct dsd_state {
      * 5.2 days at 4800 symbols/s, which is undefined behaviour and aborts a UBSan build
      * (#395). Readers must treat it as wrapping -- compare differences, never magnitudes. */
     uint32_t symbolcnt;
+    uint32_t
+        datascope_symbolcnt_mark; /* symbolcnt at the datascope's last refresh: the refresh never resets symbolcnt */
     int symbolc;
     uint8_t symbol_replay_format;         /* DSD_SYMBOL_REPLAY_FORMAT_* */
     uint8_t symbol_replay_header_checked; /* header probe already done for current symbol file */
@@ -1261,8 +1263,7 @@ struct dsd_state {
     /* The slot's ESS_B is the carrier left's (issue #575): set by p25p2_frame_forget_carrier(), cleared when the slot's
        next 4V burst collects a fragment. A 2V burst decodes no ESS while it is set. */
     uint8_t p25_p2_ess_b_stale[2];
-    int voice_counter[2]; //external reference counter for 18V x 2 P25p2 Superframe
-    int p2_is_lcch;       //flag to tell us when a frame is lcch and not sacch
+    int p2_is_lcch; //flag to tell us when a frame is lcch and not sacch
     // Authoritative P25 voice crypto classification. Slot 0 is also used by P25 Phase 1.
     dsd_p25_crypto_state p25_crypto_state[2];
     // Retained Phase 1 carrier requires the next transmission's LCW identity before media or lockout.

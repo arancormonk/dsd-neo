@@ -111,8 +111,6 @@ p25_mpdu_context_init(P25MpduContext* ctx) {
 static void
 p25_mpdu_prepare_state(dsd_opts* opts, dsd_state* state) {
     state->p25_p1_duid_mpdu++;
-    state->voice_counter[0] = 0;
-    state->voice_counter[1] = 0;
     DSD_MEMSET(state->s_l4, 0, sizeof(state->s_l4));
     DSD_MEMSET(state->s_r4, 0, sizeof(state->s_r4));
     opts->slot_preference = 2;

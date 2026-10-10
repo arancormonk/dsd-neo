@@ -12,6 +12,7 @@
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/p25p2_playout.h>
 #include <dsd-neo/core/scan_profile.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -44,6 +45,7 @@
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
+#include <dsd-neo/runtime/udp_audio_hooks.h>
 #include <math.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -83,6 +85,45 @@ fake_rtl_fsk_output_kind(void) {
 #endif
 
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
+static int g_p25p2_blocks = 0;
+
+static void
+count_p25p2_block(const dsd_opts* opts, dsd_state* state, size_t bytes, const void* data) {
+    (void)opts;
+    (void)state;
+    (void)bytes;
+    (void)data;
+    g_p25p2_blocks++;
+}
+
+/* One clear P25 Phase 2 frame queued for slot 1's active call, with its blocks counted through the UDP hook. */
+static void
+stage_p25p2_frame(dsd_opts* opts, dsd_state* state) {
+    const dsd_call_observation observation = {
+        .protocol = DSD_SYNC_P25P2_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 100U,
+        .policy_target_id = 100U,
+        .ota_source_id = 1000U,
+    };
+    (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN);
+    opts->audio_out = 1;
+    opts->audio_out_type = 8;
+    opts->pulse_digi_rate_out = 8000;
+    opts->pulse_digi_out_channels = 2;
+    state->p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
+    state->p25_p2_audio_allowed[0] = 1;
+    for (int i = 0; i < 160; i++) {
+        state->s_l[i] = 1000;
+    }
+    state->mbe_short_silenced[0] = 0U;
+    dsd_p25p2_playout_reset(state, -1);
+    dsd_p25p2_playout_stage(opts, state, 0, 0, 1U, NULL);
+    g_p25p2_blocks = 0;
+    dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){.blast = count_p25p2_block});
+}
+
 static int g_check_p25_tick_guard = 0;
 
 static int
@@ -766,6 +807,27 @@ __wrap_SetScanRowModulation(dsd_socket_t sockfd, int kind, int bandwidth) {
 }
 
 // NOLINTEND(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+#endif
+
+#if defined(DSD_NEO_TEST_RTL_WRAP)
+/* Issue #651: the watchdog holding the tick guard for exactly one try-enter (the no-carrier drain's) and letting go
+   before the next (the return to the control channel's). GNU ld --wrap puts it there. */
+static int g_guard_busy_once = 0;
+
+// NOLINTBEGIN(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp,misc-use-internal-linkage)
+int __real_p25_sm_tick_guard_try_enter(void);
+int __wrap_p25_sm_tick_guard_try_enter(void);
+
+int
+__wrap_p25_sm_tick_guard_try_enter(void) {
+    if (g_guard_busy_once) {
+        g_guard_busy_once = 0;
+        return 0;
+    }
+    return __real_p25_sm_tick_guard_try_enter();
+}
+
+// NOLINTEND(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp,misc-use-internal-linkage)
 #endif
 
 static int
@@ -4389,6 +4451,52 @@ test_rx_tone_resets_on_legacy_scan_step(void) {
 }
 #endif
 
+#if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
+/* Issue #651: a no-carrier pass that finds the guard taken leaves the playout to the next pass, and with it the
+   return to the control channel (which would turn both slots on): the next pass drains the queued frame under the
+   user's switches (both off here) before it returns, so nothing plays. */
+static int
+test_p25_nocarrier_deferred_drain_keeps_the_switches(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    reset_rtl_profile_fakes();
+    g_rtl_output_rate = 96000;
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->trunk_enable = 1;
+    opts->trunk_is_tuned = 1;
+    opts->mod_qpsk = 1;
+    opts->slot1_on = 0;
+    opts->slot2_on = 0;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    state->p25_cc_freq = 769868750;
+    state->trunk_cc_freq = 769868750;
+    state->p25_cc_is_tdma = 0;
+    state->p25_p2_active_slot = 0;
+    state->lastsynctype = DSD_SYNC_P25P1_POS;
+    state->last_cc_sync_time = time(NULL) - 11;
+    state->last_vc_sync_time = time(NULL) - 11;
+    state->p25_vc_freq[0] = 771056250;
+    state->p25_vc_freq[1] = 771056250;
+    stage_p25p2_frame(opts, state);
+
+    int rc = 0;
+    g_guard_busy_once = 1;
+    noCarrier(opts, state);
+    rc |= expect_true("p25-nocarrier-deferred-drain-keeps-frame", dsd_p25p2_playout_level(state, 0) == 1);
+    rc |= expect_true("p25-nocarrier-deferred-drain-keeps-switches", opts->slot1_on == 0 && opts->slot2_on == 0);
+    noCarrier(opts, state);
+    rc |= expect_true("p25-nocarrier-deferred-drain-plays-nothing", g_p25p2_blocks == 0);
+    rc |= expect_true("p25-nocarrier-deferred-drain-empties", dsd_p25p2_playout_level(state, 0) == 0);
+    g_guard_busy_once = 0;
+    dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
+    free_test_runtime(opts, state);
+    return rc;
+}
+#endif
+
 int
 main(void) {
     int rc = 0;
@@ -5192,6 +5300,7 @@ main(void) {
     }
 
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
+    rc |= test_p25_nocarrier_deferred_drain_keeps_the_switches();
     free_test_runtime(opts, state);
     if (init_test_runtime(&opts, &state) != 0) {
         return 1;
@@ -5286,9 +5395,15 @@ main(void) {
     state->p25_p1_validated_rf_mod = 1;
     state->p25_p1_nid_evidence = 1;
     state->p25_p1_nid_evidence_symbolcnt = 4321U;
+    /* Issue #651: a Phase 2 frame still queued as the carrier drops, both slots switched off by the user. The return to
+       the control channel below turns both slots on for it; the frame drains first, under the user's switches. */
+    stage_p25p2_frame(opts, state);
 
     noCarrier(opts, state);
 
+    rc |= expect_true("p25-rtl-nocarrier-drains-under-user-switches", g_p25p2_blocks == 0);
+    rc |= expect_true("p25-rtl-nocarrier-empties-playout", dsd_p25p2_playout_level(state, 0) == 0);
+    dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
     rc |= expect_true("p25-rtl-nocarrier-cc-retune", g_rtl_tune_calls == 1 && g_rtl_tune_freq == 769868750U);
     /* Issue #423: which modulation carried the last validated P25p1 frame is system knowledge,
      * not acquisition state, so losing the carrier must not erase it -- otherwise every fade

@@ -29,6 +29,7 @@
 #include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/p25p2_playout.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/scan_profile.h>
@@ -3106,6 +3107,9 @@ apply_manual_return_to_cc(dsd_opts* opts, dsd_state* state) {
 static int
 apply_user_block_transition_locked(dsd_opts* opts, dsd_state* state, int p25_live, const char* tune_reason,
                                    const char* sm_source) {
+    // The calls end below before the P25 Phase 2 playout drains: what it queued for them plays under the verdict the
+    // block just set, taken while they are still active (issue #651).
+    dsd_p25p2_playout_note_policy(opts, state);
     long cc_freq = 0;
     dsd_trunk_tune_result tune_result = DSD_TRUNK_TUNE_RESULT_FAILED;
     uint64_t request_id = 0U;
@@ -7677,9 +7681,33 @@ apply_cmd_scoped(dsd_opts* opts, dsd_state* state, const struct dsd_app_command*
     return rigctl_refused ? UI_CMD_APPLY_FAILED : result;
 }
 
+/* A command that can change what the talkgroup policy lets an active call play: the policy store, the hold or the
+   allow list. */
+static int
+command_changes_call_verdict(const struct dsd_app_command* c) {
+    return command_writes_policy_store(c)
+           || (c
+               && (c->id == DSD_APP_CMD_TG_HOLD_TOGGLE || c->id == DSD_APP_CMD_TG_HOLD_SET
+                   || c->id == DSD_APP_CMD_TRUNK_WLIST_TOGGLE));
+}
+
+/* A command that changes what the P25 Phase 2 playout reads as it plays: a call's verdict, or a slot switch (with the
+   vocoder output buffers a slot switched off rewinds). */
+static int
+command_feeds_playout(const struct dsd_app_command* c) {
+    return command_changes_call_verdict(c)
+           || (c
+               && (c->id == DSD_APP_CMD_SLOT1_TOGGLE || c->id == DSD_APP_CMD_SLOT2_TOGGLE
+                   || c->id == DSD_APP_CMD_SLOTS_ONOFF_SET));
+}
+
 static int
 apply_cmd(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
-    const int guarded = command_writes_policy_store(c);
+    /* What the P25 Phase 2 playout reads changes under the tick guard, which the watchdog's release holds from the
+       verdict it takes before its return tune to the drain after it. A call's new verdict is taken before the guard is
+       free again: what the playout queued for an active call plays under the verdict the command left, also when the
+       call ends before the next emission (issue #651). */
+    const int guarded = command_feeds_playout(c);
     if (guarded) {
         if (!p25_sm_tick_guard_try_enter()) {
 #ifdef DSD_NEO_TEST_HOOKS
@@ -7690,6 +7718,9 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     }
     const int result = apply_cmd_scoped(opts, state, c, guarded);
     if (guarded) {
+        if (state && command_changes_call_verdict(c)) {
+            dsd_p25p2_playout_note_policy(opts, state);
+        }
         p25_sm_tick_guard_leave();
     }
     return result;

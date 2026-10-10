@@ -42,3 +42,16 @@ p25p2_retune_token_changed(const p25p2_retune_token* since) {
     return now.tune_generation != since->tune_generation || now.pending_request != since->pending_request
            || now.frame_reset_generation != since->frame_reset_generation;
 }
+
+/* Set while a superframe whose position is unproven is dispatched. */
+static int s_window_slot_unproven = 0;
+
+void
+p25p2_window_set_slot_unproven(int unproven) {
+    s_window_slot_unproven = unproven ? 1 : 0;
+}
+
+int
+p25p2_window_slot_unproven(void) {
+    return s_window_slot_unproven;
+}

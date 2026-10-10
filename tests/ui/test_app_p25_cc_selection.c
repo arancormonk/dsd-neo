@@ -7,6 +7,7 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/p25p2_playout.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -16,6 +17,7 @@
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_frequency.h>
+#include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25_vpdu.h>
 #include <dsd-neo/runtime/config.h>
@@ -23,6 +25,7 @@
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
+#include <dsd-neo/runtime/udp_audio_hooks.h>
 #include <limits.h>
 #include <math.h>
 #include <stdint.h>
@@ -275,6 +278,164 @@ test_selection(dsd_opts* opts, dsd_state* state, int voice, int cc_type) {
     start_voice(opts, state);
     p25_sm_release(p25_sm_get_ctx(), opts, state, "test-return");
     assert(return_calls == 1 && last_freq == CC_B);
+    freeState(state);
+}
+
+static int blasts;
+
+static void
+count_blast(const dsd_opts* opts, dsd_state* state, size_t bytes, const void* data) {
+    (void)opts;
+    (void)state;
+    (void)bytes;
+    (void)data;
+    blasts++;
+}
+
+/* Frames the P25 Phase 2 playout queued for both slots' calls, one per slot, playable on the UDP output. */
+static void
+queue_voice(dsd_opts* opts, dsd_state* state) {
+    opts->audio_out = 1;
+    opts->audio_out_type = 8;
+    opts->floating_point = 0;
+    opts->pulse_digi_rate_out = 8000;
+    opts->slot1_on = opts->slot2_on = 1;
+    for (int slot = 0; slot < 2; slot++) {
+        state->p25_crypto_state[slot] = DSD_P25_CRYPTO_CLEAR;
+        state->p25_p2_audio_allowed[slot] = 1;
+        state->mbe_short_silenced[slot] = 0;
+    }
+    for (int i = 0; i < 160; i++) {
+        state->s_l[i] = 1000;
+        state->s_r[i] = 2000;
+    }
+    dsd_p25p2_playout_reset(state, -1);
+    dsd_p25p2_playout_stage(opts, state, 0, 0, 1U, NULL);
+    dsd_p25p2_playout_stage(opts, state, 1, 0, 1U, NULL);
+    assert(dsd_p25p2_playout_level(state, 0) == 1 && dsd_p25p2_playout_level(state, 1) == 1);
+    blasts = 0;
+    dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){.blast = count_blast});
+}
+
+/* A manual control-channel selection abandons the voice channel with what the P25 Phase 2 playout holds: the queued
+ * frames are discarded, not played after the move, and a no-carrier that follows before any other Phase 2 window finds
+ * nothing to play either (issue #651). */
+static void
+test_selection_discards_queued_voice(dsd_opts* opts, dsd_state* state) {
+    setup(opts, state);
+    start_voice(opts, state);
+    queue_voice(opts, state);
+    select_cc(opts, state, CC_B);
+    assert(state->p25_cc_freq == CC_B);
+    assert(dsd_p25p2_playout_level(state, 0) == 0 && dsd_p25p2_playout_level(state, 1) == 0);
+    assert(blasts == 0);
+    noCarrier(opts, state);
+    assert(blasts == 0);
+    dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
+    freeState(state);
+}
+
+/* A talkgroup hold set while the P25 Phase 2 playout holds frames of calls on other talkgroups, then the carrier drops
+ * before another emission: the no-carrier pass ends the calls before it drains, and the frames play under the hold,
+ * so they stay silent (issue #651). */
+static void
+test_no_carrier_honours_a_new_hold(dsd_opts* opts, dsd_state* state) {
+    setup(opts, state);
+    start_voice(opts, state);
+    queue_voice(opts, state);
+    const uint32_t held = 4321U;
+    assert(dsd_app_command_submit(DSD_APP_CMD_TG_HOLD_SET, &held, sizeof held) == DSD_APP_COMMAND_SUBMIT_QUEUED);
+    assert(dsd_app_drain_cmds(opts, state) == 1);
+    assert(state->tg_hold == held);
+    noCarrier(opts, state);
+    assert(blasts == 0);
+    assert(dsd_p25p2_playout_level(state, 0) == 0 && dsd_p25p2_playout_level(state, 1) == 0);
+    dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
+    freeState(state);
+
+    /* A hold no command set: the no-carrier pass takes the verdict before it ends the calls. */
+    setup(opts, state);
+    start_voice(opts, state);
+    queue_voice(opts, state);
+    state->tg_hold = held;
+    noCarrier(opts, state);
+    assert(blasts == 0);
+    dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
+    freeState(state);
+
+    /* The watchdog holds the tick guard as the carrier drops: that pass ends the calls without draining, and the next
+       one drains under the verdict the hold command left. */
+    setup(opts, state);
+    start_voice(opts, state);
+    queue_voice(opts, state);
+    assert(dsd_app_command_submit(DSD_APP_CMD_TG_HOLD_SET, &held, sizeof held) == DSD_APP_COMMAND_SUBMIT_QUEUED);
+    assert(dsd_app_drain_cmds(opts, state) == 1);
+    assert(p25_sm_tick_guard_try_enter());
+    noCarrier(opts, state);
+    p25_sm_tick_guard_leave();
+    assert(dsd_p25p2_playout_level(state, 0) == 1);
+    noCarrier(opts, state);
+    assert(blasts == 0);
+    assert(dsd_p25p2_playout_level(state, 0) == 0);
+    dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
+    freeState(state);
+}
+
+/* Return to CC leaves the voice channel with what the P25 Phase 2 playout holds: the queued frames are discarded, not
+ * played on the control channel, and a no-carrier that follows before any other Phase 2 window finds nothing to play
+ * (issue #651). */
+static void
+test_return_to_cc_discards_queued_voice(dsd_opts* opts, dsd_state* state) {
+    setup(opts, state);
+    start_voice(opts, state);
+    queue_voice(opts, state);
+    assert(dsd_app_command_submit(DSD_APP_CMD_RETURN_CC, NULL, 0) == DSD_APP_COMMAND_SUBMIT_QUEUED);
+    assert(dsd_app_drain_cmds(opts, state) == 1);
+    assert(p25_sm_get_ctx()->state != P25_SM_TUNED);
+    assert(dsd_p25p2_playout_level(state, 0) == 0 && dsd_p25p2_playout_level(state, 1) == 0);
+    assert(blasts == 0);
+    noCarrier(opts, state);
+    assert(blasts == 0);
+    dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
+    freeState(state);
+}
+
+/* The allow list turned on while the P25 Phase 2 playout holds frames of calls on unlisted talkgroups, then the calls
+ * end before another emission (the no-carrier pass, with the watchdog holding the tick guard, ends them without
+ * draining): the next pass drains them under the allow list the command left, so they stay silent (issue #651). */
+static void
+test_allow_list_mutes_queued_voice(dsd_opts* opts, dsd_state* state) {
+    setup(opts, state);
+    start_voice(opts, state);
+    queue_voice(opts, state);
+    assert(opts->trunk_use_allow_list == 0);
+    assert(dsd_app_command_submit(DSD_APP_CMD_TRUNK_WLIST_TOGGLE, NULL, 0) == DSD_APP_COMMAND_SUBMIT_QUEUED);
+    assert(dsd_app_drain_cmds(opts, state) == 1);
+    assert(opts->trunk_use_allow_list == 1);
+    assert(p25_sm_tick_guard_try_enter());
+    noCarrier(opts, state);
+    p25_sm_tick_guard_leave();
+    dsd_call_snapshot call;
+    assert(dsd_call_state_get(state, 0, &call) == 1 && call.phase != DSD_CALL_PHASE_ACTIVE);
+    assert(dsd_p25p2_playout_level(state, 0) == 1);
+    noCarrier(opts, state);
+    assert(blasts == 0);
+    assert(dsd_p25p2_playout_level(state, 0) == 0 && dsd_p25p2_playout_level(state, 1) == 0);
+    dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
+    freeState(state);
+}
+
+/* The carrier drops while the P25 Phase 2 playout holds the calls' last frames: they play, both slots side by side,
+ * before the no-carrier reset empties the queues (issue #651). */
+static void
+test_no_carrier_plays_queued_voice(dsd_opts* opts, dsd_state* state) {
+    setup(opts, state);
+    start_voice(opts, state);
+    queue_voice(opts, state);
+    noCarrier(opts, state);
+    assert(blasts == 1);
+    assert(dsd_p25p2_playout_level(state, 0) == 0 && dsd_p25p2_playout_level(state, 1) == 0);
+    dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
     freeState(state);
 }
 
@@ -628,6 +789,11 @@ main(void) {
             test_selection(opts, state, voice, type);
         }
     }
+    test_selection_discards_queued_voice(opts, state);
+    test_no_carrier_plays_queued_voice(opts, state);
+    test_no_carrier_honours_a_new_hold(opts, state);
+    test_allow_list_mutes_queued_voice(opts, state);
+    test_return_to_cc_discards_queued_voice(opts, state);
     test_rejected(opts, state, DSD_TRUNK_TUNE_RESULT_FAILED);
     test_rejected(opts, state, DSD_TRUNK_TUNE_RESULT_DEFERRED);
     test_pending(opts, state, 0, 0);

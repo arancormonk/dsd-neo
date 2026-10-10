@@ -25,6 +25,8 @@ void dsd_audio_maybe_reset_output_ring_right(dsd_state* state);
 int dsd_mix_output_plays(const dsd_opts* opts);
 /* Write a 320-sample stereo block to the static WAV with the channels in @p mask (bit 0 left, bit 1 right) silent. */
 void dsd_write_masked_stereo_wav_block(const dsd_opts* opts, const short* block, int mask, const char* context);
+/* beeper()'s tone, sounded now: the P25 Phase 2 playout sounds an alert it held back with it. */
+void dsd_beeper_emit(dsd_opts* opts, dsd_state* state, int lr, int id, int ad, int len);
 
 /* Mono output verdict for the active slot 0 call, shared by the short mono path
  * and the legacy short output: the talkgroup gate plus the live P25 Phase 1

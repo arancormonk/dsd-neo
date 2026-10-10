@@ -3356,20 +3356,10 @@ frame_sync_sps_hunt_note_handler_consumption(dsd_state* state) {
     uint32_t consumed = state->symbolcnt - state->sps_hunt_symbolcnt_mark;
     if (consumed > (uint32_t)INT_MAX) {
         /* symbolcnt went backwards, so an unrelated subsystem zeroed it rather than a
-         * handler having consumed 4 billion symbols: nxdn_reset_after_cac_fail(),
-         * initState() on an in-process restart, and print_datascope() on each refresh.
-         * Credit nothing; the mark below re-anchors the measurement on the next call.
-         *
-         * The datascope is the only one of the three that can zero it faster than handlers
-         * consume -- once every opts->ssize symbols after the count passes
-         * 4800/opts->scoperate, so a few hundred symbols apart -- which means an interval
-         * that really did decode a frame can straddle a reset and be credited nothing.
-         * That is accepted here rather than worked around: nothing in the tree ever sets
-         * opts->datascope to 1, so the display is unreachable and the overlap is latent,
-         * and a missed credit costs only the debit, leaving the hunt on the undebited
-         * dwell it had before #390 rather than mis-crediting anything. Wiring the
-         * datascope back to a switch means giving its reset a form this can tell apart
-         * from a rollover. */
+         * handler having consumed 4 billion symbols: nxdn_reset_after_cac_fail(), or
+         * initState() on an in-process restart. Credit nothing; the mark below re-anchors
+         * the measurement on the next call. (The datascope times its refresh from its own
+         * mark and leaves the count running.) */
         consumed = 0;
     }
     if (proven) {

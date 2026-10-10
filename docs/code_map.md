@@ -741,8 +741,8 @@ suite runs under this compiler.
   M17 is outside talkgroup policy (callsign addresses). Writers outside the mixers follow the mixers' output rule
   (`dsd_output_*_block()`): the mute (`audio_out` 0, which leaves the output open) silences the local stream, UDP and
   the raw fd alike, and EDACS analog and M17 Codec2 voice also stop while slot 1 is switched off. The P25 Phase 2
-  short mix (SS18) applies the slot switches before its output policy, as FS4 does, so a muted companion never
-  mirrors a switched-off slot into both channels. The float (FS3) and short (SS3) DMR mixes start each slot from the
+  playout reads the slot switches before it routes, so a muted companion never mirrors a switched-off slot into both
+  channels. The float (FS3) and short (SS3) DMR mixes start each slot from the
   vocoder's verdict, `dmr_encL/R` as `mbe_post_left/right_audio()` leave it: set when the slot is encrypted and no
   loaded key decrypts it (a mapped Vertex keystream decrypts), cleared under forced clear (Baofeng AP, CSI EE, Kenwood
   scrambler, `dsd_key_dmr_forced_clear()`), flipped by reverse mute (`-q`). They differ over the encrypted-audio mute
@@ -756,6 +756,103 @@ suite runs under this compiler.
   frames the vocoder always stages. DMR and P25 Phase 2 MBE capture save in `mbe_finalize_slot_left/right()` before
   `mbe_post_left/right_audio()` recomputes the slot mute flags, so the first frame after a mute change (reverse mute
   included) follows the previous frame's state.
+- Invariant (P25 Phase 2 voice playout, `<dsd-neo/core/p25p2_playout.h>`, `src/core/audio/p25p2_playout.c`, issue
+  #651): both output formats play P25 Phase 2 voice through one staging and one mixer. The frame decoder queues each
+  frame its decode gate admits on the slot's queue right after the vocoder (`dsd_p25p2_playout_stage()`): in short
+  output the slot's `s_l`/`s_r` as the vocoder staged them, or zeros marked not fresh when
+  `dsd_state::mbe_short_silenced` says the vocoder left them out; in float output (`-y`) the mbelib frame through
+  `agf()`. A frame the gate mutes closes the slot's stream (`_note_muted()`). After each timeslot the decoder reports
+  what it carried for its slot (`_burst_done()`: 4V, 2V, SACCH, OTHER for a FACCH or LCCH in a voice position, LOST),
+  and after slot 2's timeslot of each pair it runs the emission (`_pair_done()`).
+  - Timing. A physical superframe carries 18 frames per slot, but the 4V/2V order rotates per slot and transmission,
+    so the two slots' bursts are out of step by up to two frames. The emission plays as many blocks as every open
+    stream has ready (with none open, what the closed ones hold): a slot running ahead keeps at most 2 frames of carry,
+    both slots play side by side at the air rate, and a slot END never replays its companion. A queue past 20 entries
+    plays out regardless (a safety bound, not part of the timing). A placeholder resolved to 2 frames or repaid fill
+    leaves removed entries inside a queue; a push that finds the queue full reclaims them first, so no decoded frame
+    loses its place to them. A queue full of live entries (barriers of successive streams and their frames) while the
+    companion's placeholder holds every level at zero makes room the same way as a last resort (`make_room()`: both
+    slots' placeholders resolve as four and blocks play): a decoded frame is never dropped. Every entry carries the pair it belongs to (`pair_clock`, advanced by each
+    `_pair_done()`): a stream that opens while the companion still holds entries of earlier pairs (behind a
+    placeholder, or a carry) starts behind a barrier entry, and sits out each block in which the companion plays an
+    entry of an earlier pair, so its first frames play beside the companion's frames of its own pair. Two barriers at
+    the heads resolve in pair order (the earlier goes, the later still waits), and a slot's level
+    (`dsd_p25p2_playout_level()`) walks both queues as the emission pairs them, waits included.
+  - Streams. A stream is open only while its slot's canonical call is ACTIVE with the epoch the stream began with
+    (checked at stage, `_burst_done()` and `_pair_done()`); an epoch change or an ended call closes it, and its queued
+    frames still play. PTT and MAC repeats within one epoch change nothing.
+  - Fill. A voice burst an open stream misses (a DUID error, a FACCH in its place, a timeslot an abort or a missed sync
+    skipped) queues silence in its place: 2 frames at the slot's 2V pair and 4 elsewhere, once the 2V pair is proven
+    (a decoded 2V, or 4V at the other four pairs). Before that, in the stream's first superframe covered from pair 0, a
+    missing pair that could be the 2V waits as a placeholder (four entries or none: a queue too full to take four
+    leaves the pair out), which holds its slot, and through the emission rule the companion, until a proof or the
+    superframe's end settles it; afterwards the pair the first superframe gave 2 is provisional and fills at once. A fill that turns out mis-sized becomes debt (`fill_debt`), repaid only through fill,
+    never by dropping decoded audio. Five consecutive missed voice bursts close a stream. A DUID read as SACCH at a
+    voice position counts as a lost voice burst. A stream closed after all five voice pairs of a superframe it covered
+    from pair 0, before that superframe's SACCH (an END in the companion's SACCH), resolves its placeholders by the
+    18-frame rule first.
+  - Verdicts. A burst's output verdict (talkgroup block and hold, `p25_crypto_audio_output_permitted()`, static-WAV
+    recordability) is fixed when its first frame is queued, from the decision the decode gate took for the burst
+    (`dsd_p25p2_decode_audio_allowed_verdict()`), so a tail played after END keeps its own call's verdict. While a
+    frame's call is still ACTIVE with the frame's epoch, emission also requires the slot's current talkgroup verdict,
+    and after the call ended the last one taken while it was active: a Skip, lockout or policy edit mutes what was
+    queued before it, in the release drain too. That verdict decides only whether a queued frame plays; its static-WAV
+    recordability stays as queued. The playout evaluates no policy as it plays: the current verdict is the decode
+    gate's decision for the call's latest burst (`dsd_p25p2_playout_stage_decided()`, kept with the epoch and key the
+    gate judged the call on), or the one taken (`dsd_p25p2_playout_note_policy()`) by every path
+    that changes a verdict or ends the calls before the playout drains, and each emission checks, cheaply
+    (`dsd_p25p2_playout_policy_key()`), whether anything a waiting call's verdict reads moved since (its source named
+    by signaling, a patch change, a policy row learned from an alias, the hold, the allow list, or the decode clock's
+    next second as a bound for anything that runs out with time), taking its verdict again if so. The paths that
+    note: a user block
+    (`apply_user_block_transition_locked()`), the SM release before its return tune (whose engine hook ends the calls),
+    the carrier boundary and the no-carrier pass. Every command that can change a call's verdict (a policy-store
+    write, a hold change or the allow-list toggle, `apply_cmd()`) makes the change under the tick guard and takes the
+    new verdict before it leaves the guard, so the change never lands inside a watchdog release, and a drain the
+    no-carrier pass has to leave to its next pass still plays under it. A verdict is taken from one snapshot of the
+    call (its epoch and policy evaluation alike): the no-carrier pass may end the calls on the decoder thread while the
+    watchdog holds the guard, and a call ended in between keeps the verdict last taken for it. A new call on a slot
+    first hands the previous call's verdict to the frames that call still has queued
+    (`dsd_p25p2_playout_entry::live`). The slot switches are read at emission; both off mutes everything, a hold
+    included.
+  - Output. Routing comes from content: two audible slots play as stereo, one plays in both ears; one-channel output
+    averages two (`audio_mix_mono_from_slots_s16()`/`_f32()`) and plays one alone. Short output runs the digital
+    high-pass (`use_hpf_d`) per slot over exactly the blocks played; the static WAV records each played stereo block,
+    silent in a channel whose source frame is not recordable, and skips a block with none. At an output rate other
+    than 8 kHz nothing is written, but the queues still empty. Every emission ends with the housekeeping SS18 and FS4
+    used to do: `dsd_audio_maybe_reset_output_ring_left/right()` and zeroed `audio_out_idx/R`, since
+    `processAudio(R)` and the upsampler advance the vocoder's output pointers per frame.
+  - When audio plays or goes. `_drain()` plays everything queued and closes both streams: in the release hook
+    `dsd_p25p2_flush_partial_audio()` (drain, then reset) once the return-to-CC tune is accepted, in
+    `p25_sm_abandon_carrier()`, `p25p2_teardown_call()`, `dsd_engine_forget_carrier_decoding()` (the carrier boundary
+    and a trunk-scan target switch) and the no-carrier pass. `_reset()` discards (`_discard()` where an alert may be
+    waiting): on manual CC selection, when the user leaves a followed voice channel for the control channel (Return
+    to CC, a candidate cycle: `p25_sm_on_external_cc_tune()`), at the conventional idle expiry, and after one of those
+    drains (`p25p2_frame_forget_carrier()`, the no-carrier pass). `_close()` (`dsd_p25p2_flush_partial_audio_slot()`:
+    slot END, IDLE, HANGTIME, MAC Release) closes one slot's stream and never plays or discards. Crypto purges reset
+    only the vocoder's state.
+  - Alerts. `beeper()` for a slot whose queue still holds audio (an END with frames still to play) hands the alert to
+    the playout (`dsd_p25p2_playout_defer_alert()`): it sounds right after the block in which the last entry queued
+    before it left (played, or discarded), in order per slot, so an end-of-call tone follows the call's last frames.
+    A played entry counts as gone only once its block is written, removed entries left at a queue's head are let go
+    before the check, and alerts sound only from the playout's own steps (after a block, `_pair_done()`, `_drain()`,
+    `_discard()`), never on the raising side; an alert stays queued until its tone is out, so one raised meanwhile
+    waits behind it. Past `DSD_P25P2_PLAYOUT_ALERTS` waiting on a slot (far more than a
+    superframe's call events), an alert is dropped rather than sounded early. Alerts can be raised outside the tick
+    guard (a held VOICE_END from the frame-sync pass), so the entry counts they compare and the alert queues sit behind
+    the playout's own lock.
+  - Serialization. Every entry point runs on the decoder thread inside `processFrame()`, which holds the P25 SM tick
+    guard, or in SM and engine code holding that guard. The no-carrier pass takes the calls' verdicts, drains and resets
+    it under the guard, taken when free, before it ends the calls or a return to the control channel turns both slots
+    on (`no_carrier_drain_playout()`): a pass that finds the guard taken leaves the playout to the next pass, and the
+    return to the control channel with it while the playout still holds audio
+    (`dsd_p25p2_playout_holds_audio()`, readable from any thread). Frame sync's no-sync release
+    (`p25_sm_release_from_frame_sync()`, outside `processFrame()`) takes the guard the same way, or leaves the release
+    to the next no-sync pass. Commands that change what the playout reads (a call's verdict, the slot switches and
+    the output buffers a switched-off slot rewinds: `command_feeds_playout()`) apply under the guard. The playout lives
+    in `dsd_state` outside the ranges UI snapshots copy.
+  - Left to their issues: `-y` static WAV, gain and agf (#652), the HPF (#653), crypto-mute verdicts (#655).
+  Tests: `CORE_P25P2_PLAYOUT`, `P25_P2_VOICE_OUTPUT`, `P25_P2_MIXER_GATE`.
 - Invariant (audible-audio stamp, `<dsd-neo/core/audio_activity.h>`, `src/core/audio/audio_activity.c`, issue #574): one
   process-wide atomic word says when the decoder last emitted audio the app plays, in real-time monotonic milliseconds
   (`dsd_realtime_mono_ms()`: it drives the Android screen, not a decode decision), 0 for none. Each writer of decoded or
@@ -776,9 +873,9 @@ suite runs under this compiler.
   store per block. `dsd_audio_activity_read()` loads the word once (acquire) and ages that same value, -1 when it is 0
   or older than `DSD_AUDIO_ACTIVITY_MAX_AGE_MS` (60 s); `dsd_audio_activity_reset()` clears it and leaves it armed.
   Writers run on the decoder thread; arm, read and reset are safe from any thread. Stamped, in `dsd_audio2.c`: FS3 and
-  SS3 (by the DMR media marks below), FS4 (a frame popped from an unmuted slot's ring, `l_ok`/`r_ok`), SS18 (an unmuted
-  slot that filled blocks of the superframe, `voice_counter`, and that a channel it emits carries; the P25 Phase 2
-  partial flushes reach it too), and FS, FM, SS and MS (each decoded frame they play; MS only when it loaded one); the
+  SS3 (by the DMR media marks below), and FS, FM, SS and MS (each decoded frame they play; MS only when it loaded one);
+  the P25 Phase 2 playout (`p25p2_playout.c`: once per emission, when a played block carries an audible frame the
+  vocoder did not silence; its drains reach it too); the
   legacy short output `playSynthesizedVoice()` (`dsd_audio.c`, SDRTrunk JSON playback included, past its delay); the M17
   Codec2 writers `m17_write_decoded_audio_single()`/`_pair()` (after `m17_can_emit_audio()`); EDACS analog voice
   (`edacs_emit_analog_audio()`); and the analog monitor sink (`symbol_write_unsynced_audio()` in `dsd_symbol.c`). Never
@@ -3489,6 +3586,50 @@ do, also when the request completed inside the call. A learned CC type identifie
 (`DSD_STATE_EXT_PROTO_P25_CC_SELECTION`) retains the site-specific cache requirement across no-carrier resets,
 while network band plans and user settings survive.
 
+P25 Phase 2 voice dispatch (`src/protocol/p25/phase2/p25p2_frame.c`, issue #651). A `processP2()` window is four
+timeslots, 700 dibits after a 20-dibit sync, 180 dibits each. `p2_scramble_offset` is the superframe timeslot (mod 12)
+of window timeslot 0 and `ts_counter` (0-3) indexes the window, so a timeslot's pair is
+`((p2_scramble_offset + ts_counter) % 12) / 2` (`p25p2_pair_index()`): pairs 0-4 are voice positions, pair 5 is the
+SACCH, and the slot is the timeslot's parity. A FACCH MAC belongs to its burst's slot, a SACCH MAC to the other slot.
+
+- Window position (`p25p2_window_position()`). Each window is measured against the previous one on the same carrier and
+  retune token by `state->symbolcnt`: a distance of exactly the sync is contiguous (start = previous + 4); the sync
+  plus whole timeslots is a missed sync that skipped them (the start advances and the skipped timeslots retire as lost
+  through `p25p2_retire_timeslots()`; 12 or more close the voice streams instead). A decoded channel-1 I-ISCH wins over
+  continuity, and a disagreement closes the streams. Without one, continuity sets the descrambler offset, which a
+  window with no I-ISCH used to keep from the previous window, 4 timeslots stale. A window that closes the streams
+  this way (unproven windows included) breaks the playout's timeline (`dsd_p25p2_playout_break()`: tails still queued
+  play, and what follows starts a later pair, so a stream opening beside such a tail waits behind it), and promotes a
+  deferred rekey before its bursts decode: the pair it waited for will not complete.
+- A window nothing locates (no I-ISCH and no continuity, the first after a tune included) is unproven: its 4V/2V,
+  FACCH and SACCH bursts are not dispatched, since a CRC proves a MAC payload, not which slot it belongs to. LCCH
+  (DUID 13/4) still is, but both slots' pending MAC assemblies are discarded and the VPDU drops the window's fragment
+  segments (`p25p2_window_slot_unproven()`).
+- Retune token (`p25p2_retune.c`): `dsd_trunk_tuning_generation()`, `dsd_trunk_tuning_pending_request()` and the
+  frame-reset generation `p25_p2_frame_reset()` bumps. `p25p2_process_duid()` snapshots it per window and stops as
+  soon as a dispatch, a post-timeslot (whose rekey commit can lock out and return to the CC) or a retirement changes
+  it, and `processP2()` dispatches nothing of a window whose missed-sync retirement changed it; the XCCH MAC handlers return right after a `process_MAC_VPDU()` that changed it, and the VPDU segment loop stops
+  after such a segment. So nothing of the old channel's PDU acts on the new assignment, and `p25_p2_frame_reset()`
+  zeroing the dispatch's `ts_counter` can no longer replay timeslots as phantom 4V bursts. The DUID-13 LCCH timeout
+  re-evaluates its release verdict after the burst's MAC PDU (`p25p2_duid_lcch_release_due()`).
+- Voice. Each processed voice burst gets a serial, and the decode gate's decision for it (`p25p2_prepare_voice_crypto()`,
+  the ESS enable) becomes the playout's burst verdict (see Core). After slot 2's timeslot of every pair the pair plays,
+  then deferred rekeys commit, whatever the output format or rate. A pair that retirement completes (a missed sync's
+  skipped timeslots, or an abort's) plays and commits the same way, before the next voice burst decodes. An abort
+  retires the aborting timeslot and the rest of the window as lost, then commits pending rekeys.
+- Timeouts. The LCCH timeout and the no-voice fallback release first and tear the call down
+  (`p25p2_teardown_call()`) only once the receiver has left the voice channel (`p25p2_release_then_teardown()`): a
+  return the tuner refuses or defers keeps the channel with its gates, crypto and voice streams.
+- Flush entry points. The release hook `dsd_p25p2_flush_partial_audio()` runs from
+  `p25_release_return_to_cc_accepted()` only once the return-to-CC tune is accepted (OK or PENDING), so a FAILED or
+  DEFERRED attempt that keeps the voice channel never splits a pair, and from `p25_sm_abandon_carrier()`.
+  `dsd_p25p2_flush_partial_audio_slot()` closes one slot's stream. Manual CC selection (`p25_cc_selection.c`)
+  discards the playout before `p25_p2_frame_reset()`.
+
+Tests: `P25_P2_VOICE_OUTPUT` (end to end through the DUID dispatch, against a tagging stand-in vocoder),
+`P25_P2_RELIABILITY` (window position, retirement, unproven windows, the retune token), `P25_P2_VPDU_GRANTS`,
+`P25_P2_XCCH_HELPERS`, `APP_P25_CC_SELECTION`.
+
 Call frequency and access-code provenance (issue #575). A call's canonical `frequency_hz` and the live access codes
 (`dmr_color_code`, `dpmr_color_code`, `nxdn_last_ran`) are read as describing the carrier the call is decoded on, so:
 
@@ -3583,8 +3724,9 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   inspect no state machine and take none. Its order is fixed:
   1. The voice channel a trunking state machine followed, if one is held, is released while its calls are still active
      (`carrier_boundary_release_followed()`): the P25 or DMR state machine comes to rest on its control channel without
-     tuning, as trunk scan hands a carrier back (the P25 release flushes the partial Phase 2 superframe, which the 8 kHz
-     int16 mixer plays only for an active call on a talkgroup the hold or policy allows), and the shared
+     tuning, as trunk scan hands a carrier back (the P25 release drains the Phase 2 playout: each queued frame plays
+     with the verdict it was decoded with, and, while its call is active, the talkgroup policy's current one), and the
+     shared
      `dsd_engine_release_tuned_call_state()` drops `trunk_is_tuned` and the voice channel frequencies, so
      `dsd_opts_trunk_vc_followed()` stamps no frequency of the assignment left behind. A scan step and a replay retune
      release no state machine: conventional scanning and trunking off exclude both recovery ticks, so none follows a
@@ -3603,7 +3745,8 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
      the NXDN SACCH superframe (segments, CRC marks, part) and alias blocks; the DMR data blocks, short LC fragments and
      Capacity Plus blocks (`dmr_reset_blocks()`), embedded LC, late-entry MI and talker alias, with the alias shown; the
      P25 MAC fragments and Phase 1 talker aliases; the Phase 2 slots' ESS_B with its reliabilities (marked stale, see
-     `p2_cc` above), partial voice superframe and staged rekey (`p25p2_frame_forget_carrier()`); the ended calls' P25
+     `p2_cc` above), Phase 2 voice streams (the playout drained first, then reset) and staged rekey
+     (`p25p2_frame_forget_carrier()`); the ended calls' P25
      crypto (`p25_crypto_reset_slot()`: ALG, KID, MI and the LFSR state that steps it); the dPMR superframe part; the
      M17 LSF chunks, packet and signature; the YSF text. The evidence and assemblies together are
      `dsd_engine_forget_carrier_decoding()`, which a trunk-scan target switch runs as well. D-STAR slow data, X2-TDMA
@@ -3625,7 +3768,7 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   whatever the handler made of it, so the SPS hunt is not told a dropped frame proved anything. A unit whose own symbols
   straddle the move is mixed, and its FEC or CRC decides, as for any noise. Guarded:
   - P25 Phase 2 `processP2()`: the four-burst buffer (`p2_dibit_buffer()`); a boundary between buffers drops the slots'
-    ESS fragments, partial voice superframe and staged rekey (`p25p2_frame_forget_carrier()`).
+    ESS fragments, voice streams and staged rekey (`p25p2_frame_forget_carrier()`).
   - P25 Phase 1: `processLDU1()` (link control, read by the seventh voice frame), `processLDU2()` (encryption sync),
     `processHDU()` and `processTDULC()` (decoded before their trailing symbols, published after), `processMPDU()` (the
     header, read before its data blocks).

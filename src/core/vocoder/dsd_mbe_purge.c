@@ -33,7 +33,6 @@ dsd_mbe_purge_slot_audio(dsd_state* state, int slot) {
 
     p25_p2_audio_ring_reset(state, slot);
     dsd_mbe_reset_slot_parameters(state, slot);
-    state->voice_counter[slot] = 0;
     dsd_audio_dmr_mix_media_discard(slot);
 
     if (slot == 0) {

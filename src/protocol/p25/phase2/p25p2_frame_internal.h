@@ -44,6 +44,11 @@ typedef struct {
 p25p2_retune_token p25p2_retune_token_now(void);
 /* p25_p2_frame_reset() calls this: the reset is part of the token. */
 void p25p2_retune_note_frame_reset(void);
+
+/* Whether the superframe being dispatched has an unproven position (no channel-1 I-ISCH and no symbol continuity):
+   its slot parity is a guess, so the VPDU drops multi-fragment segments, which assemble per slot (issue #651). */
+void p25p2_window_set_slot_unproven(int unproven);
+int p25p2_window_slot_unproven(void);
 /* Non-zero when the receiver retuned since @p since was taken. */
 int p25p2_retune_token_changed(const p25p2_retune_token* since);
 

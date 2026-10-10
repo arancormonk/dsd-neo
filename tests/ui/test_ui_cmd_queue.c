@@ -24,6 +24,7 @@
 #include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/p25p2_playout.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/scan_profile.h>
 #include <dsd-neo/core/source_alias.h>
@@ -4943,12 +4944,15 @@ run_trunked_tune_away_with_a_held_tail(const char* what, int import) {
     opts.audio_out = 1;
     opts.audio_out_type = 0;
     opts.audio_out_stream = (dsd_audio_stream*)(void*)&fake_stream;
-    for (int frame = 0; frame < 18; frame++) {
-        for (int i = 0; i < 160; i++) {
-            state.s_l4[frame][i] = 1000;
-        }
+    /* A full superframe of voice queued in the P25 Phase 2 playout for slot 0, under the hold (issue #651). */
+    for (int i = 0; i < 160; i++) {
+        state.s_l[i] = 1000;
     }
-    state.voice_counter[0] = 18; /* a full superframe of voice buffered for slot 0 */
+    state.mbe_short_silenced[0] = 0;
+    dsd_p25p2_playout_reset(&state, -1);
+    for (int frame = 0; frame < 18; frame++) {
+        dsd_p25p2_playout_stage(&opts, &state, 0, frame / 4, (uint32_t)(frame / 4) + 1U, NULL);
+    }
     dsd_p25_optional_hooks hooks = {0};
     hooks.p25p2_flush_partial_audio = dsd_p25p2_flush_partial_audio;
     dsd_p25_optional_hooks_set(hooks);

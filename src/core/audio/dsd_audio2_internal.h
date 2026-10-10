@@ -42,11 +42,5 @@ DSD_AUDIO2_INTERNAL void dsd_dmr_apply_tg_hold_and_slot_preference_ss3(dsd_opts*
                                                                        int* encR);
 DSD_AUDIO2_INTERNAL void dsd_dmr_apply_stereo_output_policy_ss3(const dsd_opts* opts, dsd_state* state, int encL,
                                                                 int encR);
-DSD_AUDIO2_INTERNAL void dsd_p25p2_apply_slot_preference_ss18(dsd_opts* opts, const dsd_state* state, unsigned long TGL,
-                                                              unsigned long TGR);
-DSD_AUDIO2_INTERNAL void dsd_p25p2_apply_stereo_output_policy_ss18(const dsd_opts* opts, dsd_state* state, int encL,
-                                                                   int encR);
-DSD_AUDIO2_INTERNAL void dsd_fs4_mix_mono_frames(float lf[4][160], float rf[4][160], int encL, int encR, int l_ok[4],
-                                                 int r_ok[4], float mono[4][160]);
 
 #endif // DSD_NEO_SRC_CORE_AUDIO_DSD_AUDIO2_INTERNAL_H

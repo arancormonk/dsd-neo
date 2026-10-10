@@ -5875,6 +5875,7 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
             "-Wl,--wrap=rtl_stream_request_fsk_reacquire"
             "-Wl,--wrap=rtl_stream_tune"
             "-Wl,--wrap=rtl_stream_tune_tagged"
+            "-Wl,--wrap=p25_sm_tick_guard_try_enter"
             ${LIBS}
             dsd-neo_feature_radio
             dsd-neo_test_support
@@ -10591,12 +10592,29 @@ add_test(
 add_executable(dsd-neo_test_core_p25p2_playout core/test_core_p25p2_playout.c)
 target_include_directories(
     dsd-neo_test_core_p25p2_playout
-    PRIVATE ${PROJECT_SOURCE_DIR}/include
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/tests/test_support
 )
 target_link_libraries(
     dsd-neo_test_core_p25p2_playout
-    PRIVATE dsd-neo_core dsd-neo_runtime
+    PRIVATE dsd-neo_core dsd-neo_runtime dsd-neo_test_support
 )
+# A call that ends while its verdict is taken, and a patch going stale while the gate evaluates: GNU ld --wrap puts
+# the change right after the look or the evaluation, so those cases exist only where the wrap links, like the other
+# wrap tests.
+if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
+    target_link_options(
+        dsd-neo_test_core_p25p2_playout
+        PRIVATE
+            "LINKER:--wrap=dsd_call_state_get"
+            "LINKER:--wrap=dsd_tg_policy_evaluate_group_call"
+    )
+    target_compile_definitions(
+        dsd-neo_test_core_p25p2_playout
+        PRIVATE DSD_TEST_WRAP_CALL_STATE
+    )
+endif()
 add_test(NAME CORE_P25P2_PLAYOUT COMMAND dsd-neo_test_core_p25p2_playout)
 
 # P25 SM diagnostic log records
@@ -11230,6 +11248,25 @@ add_test(
     NAME P25_P2_RELEASE_PARTIAL_AUDIO
     COMMAND dsd-neo_test_p25_p2_release_partial_audio
 )
+
+# P25 Phase 2 voice output end to end: every frame plays once, in order, both slots side by side (issue #651)
+add_executable(
+    dsd-neo_test_p25_p2_voice_output
+    protocol/p25/test_p25_p2_voice_output.c
+)
+target_include_directories(
+    dsd-neo_test_p25_p2_voice_output
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/protocol/p25/phase2
+        ${PROJECT_SOURCE_DIR}/tests/test_support
+        ${_PUBLIC_INCLUDES}
+)
+target_link_libraries(
+    dsd-neo_test_p25_p2_voice_output
+    PRIVATE dsd-neo_proto_p25 dsd-neo_test_support
+)
+add_test(NAME P25_P2_VOICE_OUTPUT COMMAND dsd-neo_test_p25_p2_voice_output)
 
 # P25 Tier 3 production dispatch (Protection Parameter, Time/Date, status)
 add_executable(

@@ -12,12 +12,14 @@
 
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/p25p2_playout.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/core/vocoder.h>
-#include <dsd-neo/runtime/p25_p2_audio_ring.h>
+#include <dsd-neo/protocol/p25/p25p2_frame.h>
+#include <dsd-neo/runtime/udp_audio_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <time.h>
@@ -28,14 +30,11 @@
 #include "p25p2_frame_internal.h"
 
 static int g_open_mbe_calls[2];
-static int g_fs4_calls = 0;
-static int g_fs4_pending_at_call = 0;
-static int g_fs4_keyid_at_call = 0;
-static int g_fs4_ring_count_at_call = 0;
-static int g_ss18_calls = 0;
-static int g_ss18_pending_at_call = 0;
-static int g_ss18_keyid_at_call = 0;
-static int g_ss18_voice_count_at_call = 0;
+// Blocks the playout emitted, and the slot-0 crypto tuple when the first one played.
+static int g_out_calls = 0;
+static int g_out_pending_at_call = 0;
+static int g_out_keyid_at_call = 0;
+static int g_out_first_sample = 0;
 
 // Expose the P25p2 2V handler under test
 void process_2V(dsd_opts* opts, dsd_state* state);
@@ -49,15 +48,9 @@ void closeMbeOutFile(dsd_opts* opts, dsd_state* state);
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 void closeMbeOutFileR(dsd_opts* opts, dsd_state* state);
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-void dsd_p25p2_flush_partial_audio_slot(dsd_opts* opts, dsd_state* state, int slot);
-// NOLINTNEXTLINE(misc-use-internal-linkage)
 void rotate_symbol_out_file(dsd_opts* opts, dsd_state* state);
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 void watchdog_event_history(dsd_opts* opts, dsd_state* state, uint8_t slot);
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-void playSynthesizedVoiceFS4(dsd_opts* opts, dsd_state* state);
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-void playSynthesizedVoiceSS18(dsd_opts* opts, dsd_state* state);
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 void watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot);
 // NOLINTNEXTLINE(misc-use-internal-linkage)
@@ -126,13 +119,6 @@ closeMbeOutFileR(dsd_opts* opts, dsd_state* state) {
 }
 
 void
-dsd_p25p2_flush_partial_audio_slot(dsd_opts* opts, dsd_state* state, int slot) {
-    (void)opts;
-    (void)state;
-    (void)slot;
-}
-
-void
 rotate_symbol_out_file(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
@@ -145,23 +131,15 @@ watchdog_event_history(dsd_opts* opts, dsd_state* state, uint8_t slot) {
     (void)slot;
 }
 
-void
-playSynthesizedVoiceFS4(dsd_opts* opts, dsd_state* state) {
-    (void)opts;
-    g_fs4_calls++;
-    g_fs4_pending_at_call = state->p25_p2_rekey[0].pending;
-    g_fs4_keyid_at_call = state->payload_keyid;
-    g_fs4_ring_count_at_call = state->p25_p2_audio_ring_count[0];
-    p25_p2_audio_ring_reset(state, -1);
-}
-
-void
-playSynthesizedVoiceSS18(dsd_opts* opts, dsd_state* state) {
-    (void)opts;
-    g_ss18_calls++;
-    g_ss18_pending_at_call = state->p25_p2_rekey[0].pending;
-    g_ss18_keyid_at_call = state->payload_keyid;
-    g_ss18_voice_count_at_call = state->voice_counter[0];
+static void
+capture_output(const dsd_opts* opts, dsd_state* state, size_t bytes, const void* data) {
+    if (g_out_calls == 0) {
+        g_out_pending_at_call = state->p25_p2_rekey[0].pending;
+        g_out_keyid_at_call = state->payload_keyid;
+        g_out_first_sample =
+            (opts->floating_point == 0 && data && bytes >= sizeof(short)) ? ((const short*)data)[0] : 0;
+    }
+    g_out_calls++;
 }
 
 void
@@ -363,6 +341,8 @@ seed_group_call(dsd_state* state, uint8_t slot, uint64_t target) {
 
 static void
 reset_state(dsd_opts* opts, dsd_state* st) {
+    // Each case starts from a fresh frame decoder too: the timeslot cases below advance its burst offsets.
+    p25_p2_frame_reset();
     dsd_state_ext_free_all(st);
     DSD_MEMSET(opts, 0, sizeof *opts);
     DSD_MEMSET(st, 0, sizeof *st);
@@ -385,14 +365,10 @@ reset_mbe_calls(void) {
     DSD_MEMSET(g_mbe_keyid, 0, sizeof(g_mbe_keyid));
     g_open_mbe_calls[0] = 0;
     g_open_mbe_calls[1] = 0;
-    g_fs4_calls = 0;
-    g_fs4_pending_at_call = 0;
-    g_fs4_keyid_at_call = 0;
-    g_fs4_ring_count_at_call = 0;
-    g_ss18_calls = 0;
-    g_ss18_pending_at_call = 0;
-    g_ss18_keyid_at_call = 0;
-    g_ss18_voice_count_at_call = 0;
+    g_out_calls = 0;
+    g_out_pending_at_call = 0;
+    g_out_keyid_at_call = 0;
+    g_out_first_sample = 0;
 }
 
 static void
@@ -419,6 +395,7 @@ main(void) {
     int rc = 0;
     static dsd_opts opts;
     static dsd_state st;
+    dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){.blast = capture_output});
 
     // Slot 0: audio gated off -> expect 0 MBE calls (first-subframe gating active)
     reset_state(&opts, &st);
@@ -503,12 +480,17 @@ main(void) {
     rc |= expect_eq("rejected slot clear ESS: gate stays closed", st.p25_p2_audio_allowed[0], 0);
 
     // A decryptable Phase 2 identity change belongs to the next crypto
-    // stream. The final two frames and the completed output superframe must
-    // retain the current tuple until the paired-timeslot drain has run.
+    // stream. The final two frames must keep the current tuple, and the
+    // playout must emit them before the deferred identity is promoted at the
+    // end of the timeslot pair (issue #651).
     reset_state(&opts, &st);
     opts.trunk_tune_enc_calls = 0;
     opts.floating_point = 1;
     opts.pulse_digi_rate_out = 8000;
+    opts.audio_out = 1;
+    opts.audio_out_type = 8;
+    opts.slot1_on = 1;
+    opts.slot2_on = 1;
     st.currentslot = 0;
     st.p25_crypto_state[0] = DSD_P25_CRYPTO_DECRYPTABLE;
     st.p25_p2_audio_allowed[0] = 1;
@@ -518,9 +500,6 @@ main(void) {
     st.R = 0x1122334455667788ULL;
     st.dmr_so = 0x40;
     st.dmrburstL = 21;
-    st.voice_counter[0] = 16;
-    st.p25_p2_audio_ring_count[0] = 2;
-    st.s_l4[0][0] = 101;
     st.s_l[0] = 202;
     set_ess_metadata(&st, 0, 0xAA, 0x1002, 0x1112131415161718ULL);
     reset_mbe_calls();
@@ -532,29 +511,32 @@ main(void) {
     rc |= expect_eq("slot0 rekey boundary: second frame old keyid", g_mbe_keyid[1], 0x1001);
     rc |= expect_eq("slot0 rekey boundary: metadata held", st.payload_keyid, 0x1001);
     rc |= expect_eq("slot0 rekey boundary: transition pending", st.p25_p2_rekey[0].pending, 1);
-    rc |= expect_eq("slot0 rekey boundary: superframe completed", st.voice_counter[0], 18);
-    rc |= expect_eq("slot0 rekey boundary: prior int16 preserved", st.s_l4[0][0], 101);
-    rc |= expect_eq("slot0 rekey boundary: queued audio preserved", st.p25_p2_audio_ring_count[0], 3);
+    rc |= expect_eq("slot0 rekey boundary: both frames queued", dsd_p25p2_playout_level(&st, 0), 2);
 
+    p25p2_duid_post_timeslot(&opts, &st, 0, 0);
+    rc |= expect_eq("slot0 rekey slot-1 timeslot: nothing played before the pair completes", g_out_calls, 0);
+    rc |= expect_eq("slot0 rekey slot-1 timeslot: transition still pending", st.p25_p2_rekey[0].pending, 1);
     p25p2_duid_post_timeslot(&opts, &st, 1, 1);
-    rc |= expect_eq("slot0 rekey SACCH drain: fs4 calls", g_fs4_calls, 1);
-    rc |= expect_eq("slot0 rekey SACCH drain: pending during output", g_fs4_pending_at_call, 1);
-    rc |= expect_eq("slot0 rekey SACCH drain: old key during output", g_fs4_keyid_at_call, 0x1001);
-    rc |= expect_eq("slot0 rekey SACCH drain: queued boundary audio", g_fs4_ring_count_at_call, 3);
+    rc |= expect_eq("slot0 rekey pair end: both frames played", g_out_calls, 2);
+    rc |= expect_eq("slot0 rekey pair end: pending during output", g_out_pending_at_call, 1);
+    rc |= expect_eq("slot0 rekey pair end: old key during output", g_out_keyid_at_call, 0x1001);
+    rc |= expect_eq("slot0 rekey commit: playout emptied", dsd_p25p2_playout_level(&st, 0), 0);
     rc |= expect_eq("slot0 rekey commit: transition cleared", st.p25_p2_rekey[0].pending, 0);
     rc |= expect_eq("slot0 rekey commit: algid promoted", st.payload_algid, 0xAA);
     rc |= expect_eq("slot0 rekey commit: keyid promoted", st.payload_keyid, 0x1002);
     rc |= expect_eq("slot0 rekey commit: mi promoted", st.payload_miP == 0x1112131415161718ULL, 1);
-    rc |= expect_eq("slot0 rekey commit: queued audio purged", st.p25_p2_audio_ring_count[0], 0);
-    rc |= expect_eq("slot0 rekey commit: int16 state purged", st.s_l4[0][0], 0);
+    rc |= expect_eq("slot0 rekey commit: float ring purged", st.p25_p2_audio_ring_count[0], 0);
 
-    // The int16 output path must also drain a partial superframe before a
-    // deferred identity is promoted. A missed 4V burst can leave only the two
-    // terminal 2V frames buffered here.
+    // The int16 output path plays the same way: the burst's two frames are
+    // emitted under the old identity before it is promoted.
     reset_state(&opts, &st);
     opts.trunk_tune_enc_calls = 0;
     opts.floating_point = 0;
     opts.pulse_digi_rate_out = 8000;
+    opts.audio_out = 1;
+    opts.audio_out_type = 8;
+    opts.slot1_on = 1;
+    opts.slot2_on = 1;
     st.currentslot = 0;
     st.p25_crypto_state[0] = DSD_P25_CRYPTO_DECRYPTABLE;
     st.p25_p2_audio_allowed[0] = 1;
@@ -569,19 +551,19 @@ main(void) {
     reset_mbe_calls();
     process_2V(&opts, &st);
     rc |= expect_eq("slot0 partial int16 rekey: transition pending", st.p25_p2_rekey[0].pending, 1);
-    rc |= expect_eq("slot0 partial int16 rekey: two frames buffered", st.voice_counter[0], 2);
+    rc |= expect_eq("slot0 partial int16 rekey: two frames queued", dsd_p25p2_playout_level(&st, 0), 2);
     rc |= expect_eq("slot0 partial int16 rekey: metadata held", st.payload_keyid, 0x2001);
 
+    p25p2_duid_post_timeslot(&opts, &st, 0, 0);
     p25p2_duid_post_timeslot(&opts, &st, 1, 1);
-    rc |= expect_eq("slot0 partial int16 drain: SS18 calls", g_ss18_calls, 1);
-    rc |= expect_eq("slot0 partial int16 drain: pending during output", g_ss18_pending_at_call, 1);
-    rc |= expect_eq("slot0 partial int16 drain: old key during output", g_ss18_keyid_at_call, 0x2001);
-    rc |= expect_eq("slot0 partial int16 drain: buffered frame count", g_ss18_voice_count_at_call, 2);
+    rc |= expect_eq("slot0 partial int16 drain: both frames played", g_out_calls, 2);
+    rc |= expect_eq("slot0 partial int16 drain: the old stream's samples", g_out_first_sample, 303);
+    rc |= expect_eq("slot0 partial int16 drain: pending during output", g_out_pending_at_call, 1);
+    rc |= expect_eq("slot0 partial int16 drain: old key during output", g_out_keyid_at_call, 0x2001);
     rc |= expect_eq("slot0 partial int16 commit: transition cleared", st.p25_p2_rekey[0].pending, 0);
     rc |= expect_eq("slot0 partial int16 commit: algid promoted", st.payload_algid, 0xAA);
     rc |= expect_eq("slot0 partial int16 commit: keyid promoted", st.payload_keyid, 0x2002);
-    rc |= expect_eq("slot0 partial int16 commit: counter reset", st.voice_counter[0], 0);
-    rc |= expect_eq("slot0 partial int16 commit: old buffer purged", st.s_l4[0][0], 0);
+    rc |= expect_eq("slot0 partial int16 commit: playout emptied", dsd_p25p2_playout_level(&st, 0), 0);
 
     // Slot 0: stale allowed gate, encrypted/no key, lockout enabled -> no decode.
     reset_state(&opts, &st);
@@ -934,28 +916,28 @@ main(void) {
     rc |= expect_eq("slot1 clear algid overrides svc: mbe calls", g_mbe_calls, 2);
     rc |= expect_eq("slot1 clear algid overrides svc: gate open", st.p25_p2_audio_allowed[1], 1);
 
-    // Regression: a muted slot (encryption-lockout companion call) must not
-    // advance its SS18 voice counter. The output trigger fires when either
-    // counter reaches 18 and resets both, so a locked-out companion advancing
-    // its counter forces early, zero-padded superframe emission that pauses
-    // the clear slot's audio at the encrypted call's boundaries.
+    // Regression: a muted slot (encryption-lockout companion call) queues
+    // nothing and leaves the clear slot's queued frames alone, so it can
+    // neither force an early emission nor pause the clear slot's audio at the
+    // encrypted call's boundaries.
     reset_state(&opts, &st);
     opts.trunk_tune_enc_calls = 0;
     st.currentslot = 1;
     st.p25_p2_audio_allowed[1] = 0;
     st.p25_crypto_state[1] = DSD_P25_CRYPTO_BLOCKED;
     st.dmr_soR = 0x40;
-    st.voice_counter[0] = 7; // clear companion call is mid-superframe
+    dsd_p25p2_playout_reset(&st, -1);
+    for (int frame = 0; frame < 4; frame++) {
+        dsd_p25p2_playout_stage(&opts, &st, 0, 0, 1U, NULL); // clear companion call is mid-superframe
+    }
     reset_mbe_calls();
     process_2V(&opts, &st);
-    rc |= expect_eq("locked-out slot1 keeps voice counter frozen", st.voice_counter[1], 0);
-    rc |= expect_eq("locked-out slot1 leaves clear slot0 counter alone", st.voice_counter[0], 7);
-    rc |= expect_eq("locked-out slot1 buffers stay silent", st.s_r4[0][0], 0);
+    rc |= expect_eq("locked-out slot1 queues nothing", dsd_p25p2_playout_level(&st, 1), 0);
+    rc |= expect_eq("locked-out slot1 leaves clear slot0 frames alone", dsd_p25p2_playout_level(&st, 0), 4);
 
-    // Documented trade-off of the frozen counter: when the slot un-mutes
-    // mid-superframe it resumes writing at its frozen index instead of the
-    // companion's phase (same as a call starting on a previously idle slot),
-    // and the clear companion's counter is still untouched.
+    // When the slot un-mutes mid-superframe its frames queue at once, in
+    // their own slot's order; the clear companion's frames are untouched
+    // (issue #651: no silence is inserted later in the unmuted stream).
     st.p25_p2_audio_allowed[1] = 1;
     st.p25_crypto_state[1] = DSD_P25_CRYPTO_CLEAR;
     st.dmr_soR = 0;
@@ -963,9 +945,10 @@ main(void) {
     reset_mbe_calls();
     process_2V(&opts, &st);
     rc |= expect_eq("unmuted slot1 decodes voice again", g_mbe_calls, 2);
-    rc |= expect_eq("unmuted slot1 resumes counter at frozen index", st.voice_counter[1], 2);
-    rc |= expect_eq("unmuted slot1 still leaves clear slot0 counter alone", st.voice_counter[0], 7);
+    rc |= expect_eq("unmuted slot1 queues its frames", dsd_p25p2_playout_level(&st, 1), 2);
+    rc |= expect_eq("unmuted slot1 still leaves clear slot0 frames alone", dsd_p25p2_playout_level(&st, 0), 4);
 
+    dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
     dsd_state_ext_free_all(&st);
     return rc;
 }

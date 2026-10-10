@@ -496,9 +496,8 @@ test_sps_hunt_consumption_is_exact_across_the_symbolcnt_wrap(void) {
     assert(state.sps_hunt_counter == 980);
     assert(state.sps_hunt_symbolcnt_mark == 4U);
 
-    /* A reset to zero (nxdn_reset_after_cac_fail(), initState(), print_datascope()) looks
-     * like a backwards jump and buys the profile nothing; the mark re-anchors for the next
-     * call. */
+    /* A reset to zero (nxdn_reset_after_cac_fail(), initState()) looks like a backwards
+     * jump and buys the profile nothing; the mark re-anchors for the next call. */
     reset(&opts, &state);
     state.sps_hunt_counter = 1000;
     state.sps_hunt_symbolcnt_mark = 5000U;

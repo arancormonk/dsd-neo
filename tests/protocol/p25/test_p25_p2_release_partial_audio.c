@@ -4,23 +4,25 @@
  */
 
 /*
- * P25 Phase 2: ensure partial SS18 audio is flushed on release.
+ * P25 Phase 2: what the voice playout still holds plays when the receiver leaves the channel.
  *
- * Short P25p2 calls can end before a full 18-frame superframe is available for
- * playSynthesizedVoiceSS18(), causing the buffered audio to be dropped when
- * returning to the control channel. Verify that p25_sm_release() triggers a
- * best-effort flush that clears the buffered short frames so short calls are
- * still audible.
+ * A short call can end with frames still queued (a slot runs up to two frames ahead of its companion). Verify that
+ * p25_sm_release() and a capped departure drain the playout through the real flush, so the tail is heard, while a
+ * voice end only closes the slot's stream and leaves its frames to play in time order (issue #651).
  */
 
+#include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/p25p2_playout.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/p25_optional_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
+#include <dsd-neo/runtime/udp_audio_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -116,6 +118,18 @@ test_return_request(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
     return DSD_TRUNK_TUNE_RESULT_OK;
 }
 
+/* The return the engine installs: it releases the tuned call state, ending the canonical calls, before the release's
+   playout drain runs. */
+static dsd_trunk_tune_result
+return_request_ending_calls(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
+    (void)opts;
+    (void)request_id;
+    g_return_to_cc_called++;
+    (void)dsd_call_state_end(state, 0U, dsd_decode_now_mono_s());
+    (void)dsd_call_state_end(state, 1U, dsd_decode_now_mono_s());
+    return DSD_TRUNK_TUNE_RESULT_OK;
+}
+
 static void
 install_trunk_tuning_hooks(void) {
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){
@@ -126,39 +140,56 @@ install_trunk_tuning_hooks(void) {
 }
 
 static int g_p25p2_flush_called = 0;
-static int g_p25p2_slot_flush_called = 0;
+static int g_blocks = 0;
+static int g_first_left = 0;
+static int g_first_right = 0;
 
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-dsd_p25p2_flush_partial_audio(dsd_opts* opts, dsd_state* state) {
-    (void)opts;
+// The release hook, counted and ordered, around the real flush.
+static void
+counting_flush(dsd_opts* opts, dsd_state* state) {
     g_p25p2_flush_called++;
     record_end_order('F');
-    if (!state) {
-        return;
-    }
-    state->voice_counter[0] = 0;
-    state->voice_counter[1] = 0;
-    DSD_MEMSET(state->s_l4, 0, sizeof(state->s_l4));
-    DSD_MEMSET(state->s_r4, 0, sizeof(state->s_r4));
-}
-
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-dsd_p25p2_flush_partial_audio_slot(dsd_opts* opts, dsd_state* state, int slot) {
-    (void)opts;
-    g_p25p2_slot_flush_called++;
-    record_end_order('F');
-    if (state && slot >= 0 && slot < 2) {
-        state->voice_counter[slot] = 0;
-    }
+    dsd_p25p2_flush_partial_audio(opts, state);
 }
 
 static void
 install_p25_optional_hooks(void) {
     dsd_p25_optional_hooks hooks = {0};
-    hooks.p25p2_flush_partial_audio = dsd_p25p2_flush_partial_audio;
+    hooks.p25p2_flush_partial_audio = counting_flush;
     dsd_p25_optional_hooks_set(hooks);
+}
+
+static void
+capture_blast(const dsd_opts* opts, dsd_state* state, size_t bytes, const void* data) {
+    (void)opts;
+    (void)state;
+    if (g_blocks == 0 && data && bytes >= 2U * sizeof(short)) {
+        g_first_left = ((const short*)data)[0];
+        g_first_right = ((const short*)data)[1];
+    }
+    g_blocks++;
+}
+
+static void
+reset_capture(void) {
+    g_blocks = 0;
+    g_first_left = 0;
+    g_first_right = 0;
+}
+
+// One admitted frame per slot, its samples all @p left (slot 1) and @p right (slot 2).
+static void
+queue_frames(dsd_opts* opts, dsd_state* state, short left, short right, uint32_t serial) {
+    state->p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
+    state->p25_crypto_state[1] = DSD_P25_CRYPTO_CLEAR;
+    for (int i = 0; i < 160; i++) {
+        state->s_l[i] = left;
+        state->s_r[i] = right;
+    }
+    state->mbe_short_silenced[0] = 0U;
+    state->mbe_short_silenced[1] = 0U;
+    dsd_p25p2_playout_stage(opts, state, 0, 0, serial, NULL);
+    dsd_p25p2_playout_stage(opts, state, 1, 0, serial, NULL);
 }
 
 static int
@@ -187,6 +218,10 @@ main(void) {
     opts.pulse_digi_rate_out = 8000;
     opts.slot1_on = 1;
     opts.slot2_on = 1;
+    opts.audio_out = 1;
+    opts.audio_out_type = 8;
+    dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){.blast = capture_blast});
+    dsd_p25p2_playout_reset(&st, -1);
 
     // Establish a TDMA VC context so the SM release path executes P25p2 logic.
     st.p25_cc_freq = 851000000;
@@ -226,35 +261,38 @@ main(void) {
                                    .is_group = 1});
     rc |= expect_eq_int("PTT accepted", p25_sm_emit_ptt_call(&opts, &st, 0, 1234, 0, 5678, 1, 0), 1);
 
-    g_p25p2_slot_flush_called = 0;
+    // A voice end closes the slot's stream; its queued frame stays to play in time order with the companion.
+    queue_frames(&opts, &st, 77, -77, 1U);
+    reset_capture();
     g_end_order_len = 0U;
     g_end_order[0] = '\0';
     g_track_end_order = 1;
     rc |= expect_eq_int("explicit end accepted", p25_sm_emit_end_call_at(&opts, &st, 0, 1234, 5678, 0.0), 1);
     g_track_end_order = 0;
-    rc |= expect_eq_int("slot flush called on voice end", g_p25p2_slot_flush_called, 1);
-    rc |= expect_eq_int("voice end sync follows slot flush", strcmp(g_end_order, "FE"), 0);
+    rc |= expect_eq_int("voice end closes the slot's stream", st.p25p2_playout.slot[0].open, 0);
+    rc |= expect_eq_int("voice end keeps the slot's queued frame", dsd_p25p2_playout_level(&st, 0), 1);
+    rc |= expect_eq_int("voice end plays nothing out of turn", g_blocks, 0);
+    rc |= expect_eq_int("voice end syncs the call event", strcmp(g_end_order, "E"), 0);
+    dsd_p25p2_playout_reset(&st, -1);
 
-    // Simulate a short call that buffered some audio but ended before the
-    // normal SS18 playback cadence. Also simulate gates already cleared.
-    st.s_l4[0][0] = 123;
-    st.s_r4[0][0] = -456;
-    st.voice_counter[0] = 1;
-    st.voice_counter[1] = 1;
+    // A short call ends with frames still queued, its gates already cleared.
+    queue_frames(&opts, &st, 123, -456, 2U);
     st.p25_p2_audio_allowed[0] = 0;
     st.p25_p2_audio_allowed[1] = 0;
 
     g_return_to_cc_called = 0;
     g_p25p2_flush_called = 0;
+    reset_capture();
     p25_sm_release(p25_sm_get_ctx(), &opts, &st, "explicit-release");
     rc |= expect_eq_int("return_to_cc called", g_return_to_cc_called, 1);
     rc |= expect_eq_int("flush called", g_p25p2_flush_called, 1);
 
-    // Flush should clear buffered samples and reset counters.
-    rc |= expect_eq_int("s_l4 cleared", st.s_l4[0][0], 0);
-    rc |= expect_eq_int("s_r4 cleared", st.s_r4[0][0], 0);
-    rc |= expect_eq_int("voice_counter[0] reset", st.voice_counter[0], 0);
-    rc |= expect_eq_int("voice_counter[1] reset", st.voice_counter[1], 0);
+    // The flush plays the queued tail, both slots together, and leaves the playout empty.
+    rc |= expect_eq_int("release plays the queued tail", g_blocks, 1);
+    rc |= expect_eq_int("release tail left", g_first_left, 123);
+    rc |= expect_eq_int("release tail right", g_first_right, -456);
+    rc |= expect_eq_int("release empties slot 1", dsd_p25p2_playout_level(&st, 0), 0);
+    rc |= expect_eq_int("release empties slot 2", dsd_p25p2_playout_level(&st, 1), 0);
 
     // A capped departure flushes before ending the call, without tuning back to the CC.
     st.p25_last_cc_msg_time_m = dsd_decode_now_mono_s();
@@ -267,10 +305,8 @@ main(void) {
                                    .svc_bits = 0,
                                    .is_group = 1});
     rc |= expect_eq_int("capped PTT accepted", p25_sm_emit_ptt_call(&opts, &st, 0, 4321, 0, 8765, 1, 0), 1);
-    st.s_l4[0][0] = 123;
-    st.s_r4[0][0] = -456;
-    st.voice_counter[0] = 1;
-    st.voice_counter[1] = 1;
+    queue_frames(&opts, &st, 321, -654, 3U);
+    reset_capture();
     g_p25p2_flush_called = 0;
     g_return_to_cc_called = 0;
     g_end_order_len = 0U;
@@ -281,13 +317,42 @@ main(void) {
     rc |= expect_eq_int("cap flushes partial audio", g_p25p2_flush_called, 1);
     rc |= expect_eq_int("cap flush precedes call end", strcmp(g_end_order, "FE"), 0);
     rc |= expect_eq_int("cap does not return to CC", g_return_to_cc_called, 0);
-    rc |= expect_eq_int("cap clears left audio", st.s_l4[0][0], 0);
-    rc |= expect_eq_int("cap clears right audio", st.s_r4[0][0], 0);
+    rc |= expect_eq_int("cap plays the queued tail", g_blocks, 1);
+    rc |= expect_eq_int("cap tail left", g_first_left, 321);
+    rc |= expect_eq_int("cap tail right", g_first_right, -654);
+    rc |= expect_eq_int("cap empties slot 1", dsd_p25p2_playout_level(&st, 0), 0);
+    rc |= expect_eq_int("cap empties slot 2", dsd_p25p2_playout_level(&st, 1), 0);
     p25_sm_abandon_carrier(p25_sm_get_ctx(), &opts, &st, "idle-visit-limit");
     rc |= expect_eq_int("idle cap does not flush again", g_p25p2_flush_called, 1);
 
+    // A call blocked after its frames were queued, then released through a return that ends the calls before the
+    // drain: its tail stays silent beside the companion's (issue #651).
+    st.p25_last_cc_msg_time_m = dsd_decode_now_mono_s();
+    p25_sm_event(p25_sm_get_ctx(), &opts, &st,
+                 &(p25_sm_event_t){.type = P25_SM_EV_GRANT,
+                                   .slot = -1,
+                                   .channel = ch_tdma + 4,
+                                   .tg = 5555,
+                                   .src = 6666,
+                                   .svc_bits = 0,
+                                   .is_group = 1});
+    rc |= expect_eq_int("blocked release PTT accepted", p25_sm_emit_ptt_call(&opts, &st, 0, 5555, 0, 6666, 1, 0), 1);
+    queue_frames(&opts, &st, 555, -555, 4U);
+    rc |= expect_eq_int("blocked release lockout applied", dsd_tg_policy_set_mode(&st, 5555, 5555, "B"), 0);
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){.tune_to_freq_request = test_tune_request,
+                                                        .tune_to_cc_request = test_tune_request,
+                                                        .return_to_cc_request = return_request_ending_calls});
+    reset_capture();
+    g_return_to_cc_called = 0;
+    p25_sm_release(p25_sm_get_ctx(), &opts, &st, "blocked-release");
+    rc |= expect_eq_int("blocked release returned to CC", g_return_to_cc_called, 1);
+    rc |= expect_eq_int("blocked release plays the companion alone", g_blocks, 1);
+    rc |= expect_eq_int("blocked release keeps the blocked tail silent (left)", g_first_left, -555);
+    rc |= expect_eq_int("blocked release keeps the blocked tail silent (right)", g_first_right, -555);
+
     dsd_p25_optional_hooks_set((dsd_p25_optional_hooks){0});
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+    dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
     dsd_state_ext_free_all(&st);
     return rc;
 }

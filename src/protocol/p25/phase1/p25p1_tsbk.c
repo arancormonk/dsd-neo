@@ -74,8 +74,6 @@ tsbk_prepare_frame_state(dsd_opts* opts, dsd_state* state) {
     state->p25_p1_duid_tsbk++;
 
     // Reset counters and buffers to avoid carryover from voice paths.
-    state->voice_counter[0] = 0;
-    state->voice_counter[1] = 0;
     DSD_MEMSET(state->s_l4, 0, sizeof(state->s_l4));
     DSD_MEMSET(state->s_r4, 0, sizeof(state->s_r4));
     opts->slot_preference = 2;
