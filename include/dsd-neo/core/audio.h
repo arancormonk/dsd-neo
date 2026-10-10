@@ -210,6 +210,8 @@ void audio_mix_interleave_stereo_s16(const short* left, const short* right, size
 /** @brief Mix two float channels with mute flags into mono output. */
 void audio_mix_mono_from_slots_f32(const float* left, const float* right, size_t n, int l_on, int r_on,
                                    float* mono_out);
+/** @brief Mix two int16 channels with mute flags into mono output (the average when both are on). */
+void audio_mix_mono_from_slots_s16(const short* left, const short* right, size_t n, int l_on, int r_on, short* out);
 
 /** @brief Return 1 when P25p2 decode should queue audio for the slot under decrypt and media policy. */
 int dsd_p25p2_decode_audio_allowed(const dsd_opts* opts, const dsd_state* state, int slot, int alg);

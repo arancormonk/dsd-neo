@@ -56,3 +56,21 @@ audio_mix_mono_from_slots_f32(const float* left, const float* right, size_t n, i
         }
     }
 }
+
+void
+audio_mix_mono_from_slots_s16(const short* left, const short* right, size_t n, int l_on, int r_on, short* out) {
+    if (!left || !right || !out) {
+        return;
+    }
+    for (size_t i = 0; i < n; i++) {
+        if (l_on && r_on) {
+            out[i] = (short)(((int)left[i] + (int)right[i]) / 2);
+        } else if (l_on) {
+            out[i] = left[i];
+        } else if (r_on) {
+            out[i] = right[i];
+        } else {
+            out[i] = 0;
+        }
+    }
+}

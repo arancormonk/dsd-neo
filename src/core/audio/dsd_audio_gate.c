@@ -17,6 +17,7 @@
 #include <dsd-neo/core/key_presence.h>
 #include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/p25p2_playout.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
@@ -327,39 +328,85 @@ dsd_p25p2_media_decision_allows_audio(const dsd_tg_policy_decision* decision) {
     return 1;
 }
 
-int
-dsd_p25p2_decode_audio_allowed(const dsd_opts* opts, const dsd_state* state, int slot, int alg) {
-    dsd_tg_policy_decision decision;
-    uint32_t target = 0;
-    uint32_t source = 0;
+// The policy part of a P25 Phase 2 output verdict from one decision (issue #651): what the mixers' talkgroup gate
+// (dsd_audio_group_gate_slot()) and the record gate (dsd_audio_record_policy_blocks()) answer for it. For P25 both
+// evaluate the call exactly as the decode gate does, so one decision serves all three.
+static void
+dsd_p25p2_verdict_from_decision(const dsd_tg_policy_decision* decision, dsd_p25p2_playout_verdict* verdict) {
+    const int allowlist_blocked = (decision->block_reasons & DSD_TG_POLICY_BLOCK_ALLOWLIST) != 0u;
+    verdict->hold = dsd_audio_hold_overrides_policy(decision) ? 1U : 0U;
+    verdict->blocked = (!verdict->hold && (!decision->audio_allowed || allowlist_blocked)) ? 1U : 0U;
+    verdict->recordable = (verdict->hold || (decision->record_allowed && !allowlist_blocked)) ? 1U : 0U;
+}
 
+// The decision on a slot's active call, private or group, as the decode gate evaluates it. 0 when it evaluated one.
+static int
+dsd_p25p2_slot_policy_decision(const dsd_opts* opts, const dsd_state* state, int slot,
+                               dsd_tg_policy_decision* decision) {
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(state, (uint8_t)slot, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE
+        || call.ota_target_id > UINT32_MAX || call.ota_source_id > UINT32_MAX) {
+        return -1;
+    }
+    const uint32_t target = (uint32_t)call.ota_target_id;
+    const uint32_t source = (uint32_t)call.ota_source_id;
+    if (call.kind == DSD_CALL_KIND_PRIVATE_VOICE) {
+        return dsd_tg_policy_evaluate_private_call(opts, state, source, target, 0, 0, decision) == 0 ? 0 : -1;
+    }
+    uint32_t policy_target = dsd_audio_p25_policy_target_for_slot(state, slot, target);
+    if (dsd_tg_policy_evaluate_group_call(opts, state, policy_target, source, 0, 0, decision) != 0) {
+        return -1;
+    }
+    (void)dsd_tg_policy_apply_ota_final_blocks(opts, state, target, policy_target, source, decision);
+    return 0;
+}
+
+int
+dsd_p25p2_decode_audio_allowed_verdict(const dsd_opts* opts, const dsd_state* state, int slot, int alg,
+                                       dsd_p25p2_playout_verdict* verdict, int* verdict_valid) {
+    dsd_tg_policy_decision decision;
+
+    if (verdict_valid) {
+        *verdict_valid = 0;
+    }
     if (!state || slot < 0 || slot > 1) {
         return 0;
     }
     if (!dsd_p25p2_slot_crypto_permits_audio(opts, state, slot, alg)) {
         return 0;
     }
-
-    dsd_call_snapshot call;
-    if (dsd_call_state_get(state, (uint8_t)slot, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE
-        || call.ota_target_id > UINT32_MAX || call.ota_source_id > UINT32_MAX) {
+    if (dsd_p25p2_slot_policy_decision(opts, state, slot, &decision) != 0) {
         return 0;
     }
-    target = (uint32_t)call.ota_target_id;
-    source = (uint32_t)call.ota_source_id;
-    if (call.kind == DSD_CALL_KIND_PRIVATE_VOICE) {
-        if (dsd_tg_policy_evaluate_private_call(opts, state, source, target, 0, 0, &decision) == 0) {
-            return dsd_p25p2_media_decision_allows_audio(&decision);
-        }
-    } else {
-        uint32_t policy_target = dsd_audio_p25_policy_target_for_slot(state, slot, target);
-        if (dsd_tg_policy_evaluate_group_call(opts, state, policy_target, source, 0, 0, &decision) == 0) {
-            (void)dsd_tg_policy_apply_ota_final_blocks(opts, state, target, policy_target, source, &decision);
-            return dsd_p25p2_media_decision_allows_audio(&decision);
+    if (verdict) {
+        dsd_p25p2_verdict_from_decision(&decision, verdict);
+        if (verdict_valid) {
+            *verdict_valid = 1;
         }
     }
+    return dsd_p25p2_media_decision_allows_audio(&decision);
+}
 
-    return 0;
+int
+dsd_p25p2_decode_audio_allowed(const dsd_opts* opts, const dsd_state* state, int slot, int alg) {
+    return dsd_p25p2_decode_audio_allowed_verdict(opts, state, slot, alg, NULL, NULL);
+}
+
+void
+dsd_p25p2_playout_policy_verdict(const dsd_opts* opts, const dsd_state* state, int slot,
+                                 dsd_p25p2_playout_verdict* out) {
+    dsd_tg_policy_decision decision;
+    if (!out) {
+        return;
+    }
+    out->blocked = 0U;
+    out->hold = 0U;
+    out->crypto_ok = 0U;
+    out->recordable = 1U;
+    if (!opts || !state || slot < 0 || slot > 1 || dsd_p25p2_slot_policy_decision(opts, state, slot, &decision) != 0) {
+        return;
+    }
+    dsd_p25p2_verdict_from_decision(&decision, out);
 }
 
 // A private call is judged on its endpoints; a group call on its policy target

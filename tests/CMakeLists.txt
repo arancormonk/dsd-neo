@@ -1163,6 +1163,18 @@ dsd_neo_add_public_header_smoke_test(
   CXX
 )
 dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_core_p25p2_playout
+  HEADERS_PUBLIC_CORE_P25P2_PLAYOUT
+  dsd-neo/core/p25p2_playout.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_core_p25p2_playout_cxx
+  HEADERS_PUBLIC_CORE_P25P2_PLAYOUT_CXX
+  dsd-neo/core/p25p2_playout.h
+  CXX
+)
+dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_core_talkgroup_policy
   HEADERS_PUBLIC_CORE_TALKGROUP_POLICY
   dsd-neo/core/talkgroup_policy.h
@@ -10574,6 +10586,18 @@ add_test(
     NAME P25_P2_GRANT_SITE_GATE
     COMMAND dsd-neo_test_p25_p2_grant_site_gate
 )
+
+# P25 Phase 2 voice playout: per-slot queues played per burst pair in both formats (issue #651)
+add_executable(dsd-neo_test_core_p25p2_playout core/test_core_p25p2_playout.c)
+target_include_directories(
+    dsd-neo_test_core_p25p2_playout
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_core_p25p2_playout
+    PRIVATE dsd-neo_core dsd-neo_runtime
+)
+add_test(NAME CORE_P25P2_PLAYOUT COMMAND dsd-neo_test_core_p25p2_playout)
 
 # P25 SM diagnostic log records
 add_executable(dsd-neo_test_p25_sm_diag_log protocol/p25/test_p25_sm_diag_log.c)

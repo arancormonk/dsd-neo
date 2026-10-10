@@ -116,7 +116,7 @@ dsd_is_all_zero_s16(const short* buf, size_t n) {
     return 1;
 }
 
-DSD_AUDIO2_INTERNAL void
+void
 dsd_audio_maybe_reset_output_ring_left(dsd_state* state) {
     if (state->audio_out_idx2 >= 800000) {
         state->audio_out_float_buf_p = state->audio_out_float_buf + 100;
@@ -127,7 +127,7 @@ dsd_audio_maybe_reset_output_ring_left(dsd_state* state) {
     }
 }
 
-DSD_AUDIO2_INTERNAL void
+void
 dsd_audio_maybe_reset_output_ring_right(dsd_state* state) {
     if (state->audio_out_idx2R >= 800000) {
         state->audio_out_float_buf_pR = state->audio_out_float_bufR + 100;
@@ -178,7 +178,7 @@ dsd_audio_reset_short_lr_working_state(dsd_state* state) {
     dsd_audio_maybe_reset_output_ring_right(state);
 }
 
-DSD_AUDIO2_INTERNAL void
+void
 dsd_output_float_block(dsd_opts* opts, dsd_state* state, const float* samples, size_t frames, int channels) {
     if (opts->audio_out != 1 || !samples || frames == 0) {
         return;
@@ -192,7 +192,7 @@ dsd_output_float_block(dsd_opts* opts, dsd_state* state, const float* samples, s
     }
 }
 
-DSD_AUDIO2_INTERNAL void
+void
 dsd_output_s16_block(dsd_opts* opts, dsd_state* state, const short* samples, size_t frames, int channels) {
     if (opts->audio_out != 1 || !samples || frames == 0) {
         return;
@@ -325,7 +325,7 @@ dsd_stereo_wav_channel_mask(const dsd_opts* opts, const dsd_state* state, int en
     return (mask != 0 && !heard) ? -1 : mask;
 }
 
-static void
+void
 dsd_write_masked_stereo_wav_block(const dsd_opts* opts, const short* block, int mask, const char* context) {
     if (mask == 0) {
         dsd_audio_write_wav_short_block(opts->wav_out_f, block, 320, context);
@@ -442,7 +442,7 @@ p25p2_s16_frames_have_audio(short frames[18][160]) {
 
 // Whether an output receives a mix's blocks (issue #574), the stamp's output condition: every mix writes through
 // dsd_output_*_block(), which feed the local stream while it is open, UDP, and the raw fd in either sample format.
-static int
+int
 dsd_mix_output_plays(const dsd_opts* opts) {
     return dsd_audio_activity_output_plays(opts, opts->audio_out_stream, 1);
 }
@@ -532,21 +532,6 @@ dsd_duplicate_active_float_slot_to_stereo(float* a, float* b, float* c, int encL
             c[i + 0] = c[i + 1];
         }
         *outL = 0;
-    }
-}
-
-static void
-dsd_mix_mono_from_slots_s16(const short* left, const short* right, size_t n, int l_on, int r_on, short* mono_out) {
-    for (size_t i = 0; i < n; i++) {
-        if (l_on && r_on) {
-            mono_out[i] = (short)(((int)left[i] + (int)right[i]) / 2);
-        } else if (l_on) {
-            mono_out[i] = left[i];
-        } else if (r_on) {
-            mono_out[i] = right[i];
-        } else {
-            mono_out[i] = 0;
-        }
     }
 }
 
@@ -1411,9 +1396,9 @@ playSynthesizedVoiceSS3(dsd_opts* opts, dsd_state* state) {
         short mono1[160], mono2[160], mono3[160];
         int l_on = !encL;
         int r_on = !encR;
-        dsd_mix_mono_from_slots_s16(state->s_l4[0], state->s_r4[0], 160, l_on, r_on, mono1);
-        dsd_mix_mono_from_slots_s16(state->s_l4[1], state->s_r4[1], 160, l_on, r_on, mono2);
-        dsd_mix_mono_from_slots_s16(state->s_l4[2], state->s_r4[2], 160, l_on, r_on, mono3);
+        audio_mix_mono_from_slots_s16(state->s_l4[0], state->s_r4[0], 160, l_on, r_on, mono1);
+        audio_mix_mono_from_slots_s16(state->s_l4[1], state->s_r4[1], 160, l_on, r_on, mono2);
+        audio_mix_mono_from_slots_s16(state->s_l4[2], state->s_r4[2], 160, l_on, r_on, mono3);
         const short* mono_blocks[] = {mono1, mono2, mono3};
         dsd_output_s16_blocks(opts, state, mono_blocks, 3, 160, 1, 0);
     } else {

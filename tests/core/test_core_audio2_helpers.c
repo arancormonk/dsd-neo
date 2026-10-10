@@ -139,6 +139,24 @@ audio_mix_interleave_stereo_s16(const short* left, const short* right, size_t n,
     }
 }
 
+void
+audio_mix_mono_from_slots_s16(const short* left, const short* right, size_t n, int l_on, int r_on, short* out) {
+    if (out == NULL) {
+        return;
+    }
+    for (size_t i = 0; i < n; i++) {
+        if (l_on && r_on && left && right) {
+            out[i] = (short)(((int)left[i] + (int)right[i]) / 2);
+        } else if (l_on && left) {
+            out[i] = left[i];
+        } else if (r_on && right) {
+            out[i] = right[i];
+        } else {
+            out[i] = 0;
+        }
+    }
+}
+
 sf_count_t
 sf_write_short(SNDFILE* sndfile, const short* ptr, sf_count_t items) {
     (void)sndfile;

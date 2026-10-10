@@ -18,6 +18,7 @@
 
 #include <dsd-neo/core/input_level.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/p25p2_playout.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
 
@@ -1282,6 +1283,9 @@ struct dsd_state {
     dsd_p25_p2_rekey_state p25_p2_rekey[2];
     // P25p2 per-slot audio gating (set on MAC_PTT/ACTIVE, cleared on MAC_END/IDLE/SIGNAL)
     int p25_p2_audio_allowed[2];
+    /* P25 Phase 2 voice playout: per-slot queues played per burst pair in both output formats (issue #651).
+       Decoder-thread private; ui_snapshot skips it. */
+    dsd_p25p2_playout p25p2_playout;
     // P25p2 small output jitter buffers (per-slot ring of decoded 20 ms frames)
     // Depth DSD_P25_P2_AUDIO_RING_DEPTH to match drain behavior (~80 ms max at depth=4)
     float p25_p2_audio_ring[2][DSD_P25_P2_AUDIO_RING_DEPTH][160];

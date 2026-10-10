@@ -25,17 +25,11 @@ DSD_AUDIO2_INTERNAL int dsd_p25_algid_can_decrypt(const dsd_state* state);
 DSD_AUDIO2_INTERNAL int dsd_nxdn_can_decrypt(const dsd_state* state);
 DSD_AUDIO2_INTERNAL int dsd_is_all_zero_s16(const short* buf, size_t n);
 
-DSD_AUDIO2_INTERNAL void dsd_output_float_block(dsd_opts* opts, dsd_state* state, const float* samples, size_t frames,
-                                                int channels);
-DSD_AUDIO2_INTERNAL void dsd_output_s16_block(dsd_opts* opts, dsd_state* state, const short* samples, size_t frames,
-                                              int channels);
 DSD_AUDIO2_INTERNAL void dsd_output_float_blocks(dsd_opts* opts, dsd_state* state, const float* const* blocks,
                                                  size_t block_count, size_t frames, int channels, int skip_silent);
 DSD_AUDIO2_INTERNAL void dsd_output_s16_blocks(dsd_opts* opts, dsd_state* state, const short* const* blocks,
                                                size_t block_count, size_t frames, int channels, int skip_silent);
 
-DSD_AUDIO2_INTERNAL void dsd_audio_maybe_reset_output_ring_left(dsd_state* state);
-DSD_AUDIO2_INTERNAL void dsd_audio_maybe_reset_output_ring_right(dsd_state* state);
 DSD_AUDIO2_INTERNAL void dsd_dmr_init_slot_mute_flags(const dsd_opts* opts, const dsd_state* state, int* encL,
                                                       int* encR);
 DSD_AUDIO2_INTERNAL void dsd_dmr_apply_mono_slot_gate(const dsd_opts* opts, const dsd_state* state, int* encL,
