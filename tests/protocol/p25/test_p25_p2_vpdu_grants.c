@@ -832,6 +832,65 @@ test_trunking_off_second_call_takes_no_grant_frequency_of_the_first(void) {
     return rc;
 }
 
+// A MAC PDU carries a grant then a MAC Release (9 + 7 octets in one FACCH). Once the grant retunes, the PDU's later
+// segments describe the channel left: the Release must not close audio or reset crypto against the new assignment
+// (issue #651). Without the grant, the same Release runs.
+static int
+test_grant_retune_stops_later_segments(void) {
+    int rc = 0;
+    for (int with_grant = 0; with_grant < 2; with_grant++) {
+        static dsd_opts opts;
+        static dsd_state state;
+        unsigned long long int MAC[24] = {0};
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&state, 0, sizeof state);
+        opts.trunk_enable = 1;
+        opts.trunk_tune_group_calls = 1;
+        state.p25_cc_freq = 851000000;
+        state.trunk_cc_freq = 851000000;
+        seed_fdma_iden(&state, 1, 1, 170200000, 100);
+        state.currentslot = 1;
+        state.p25_crypto_state[1] = DSD_P25_CRYPTO_CLEAR;
+        state.p25_p2_audio_allowed[1] = 1;
+        p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
+        const uint64_t generation_before = dsd_trunk_tuning_generation();
+
+        int at = 1;
+        if (with_grant) {
+            MAC[at++] = 0x40; // group voice channel grant (abbreviated)
+            MAC[at++] = 0x00; // clear, priority 0
+            MAC[at++] = 0x10; // iden 1
+            MAC[at++] = 0x0A; // channel 0x00A
+            MAC[at++] = 0x12; // group 0x1234
+            MAC[at++] = 0x34;
+            MAC[at++] = 0x00; // source 0x000042
+            MAC[at++] = 0x00;
+            MAC[at++] = 0x42;
+        }
+        MAC[at++] = 0x31; // MAC Release
+        MAC[at++] = 0x80; // forced
+        MAC[at++] = 0x00;
+        MAC[at++] = 0x12;
+        MAC[at++] = 0x34;
+        MAC[at++] = 0x02;
+        MAC[at++] = 0x93;
+
+        process_MAC_VPDU(&opts, &state, 0, P25_MAC_PDU_ACTIVE, MAC);
+
+        if (with_grant) {
+            rc |= expect_true("grant+release grant tuned", dsd_trunk_tuning_generation() != generation_before);
+            rc |=
+                expect_eq_long("grant+release release skipped crypto", state.p25_crypto_state[1], DSD_P25_CRYPTO_CLEAR);
+            rc |= expect_eq_long("grant+release release skipped gate", state.p25_p2_audio_allowed[1], 1);
+        } else {
+            rc |= expect_eq_long("release alone resets crypto", state.p25_crypto_state[1], DSD_P25_CRYPTO_UNKNOWN);
+            rc |= expect_eq_long("release alone closes gate", state.p25_p2_audio_allowed[1], 0);
+        }
+        dsd_state_ext_free_all(&state);
+    }
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -845,6 +904,7 @@ main(void) {
     const long cc = 851000000;                          // non-zero CC freq enables tuning
 
     rc |= test_harris_a4_grg_state_management();
+    rc |= test_grant_retune_stops_later_segments();
     rc |= test_motorola_extended_function_supergroup_state();
     rc |= test_inband_encrypted_voice_starts_classification_deadline();
     rc |= test_private_voice_ignores_regroup_clear_key_collision();

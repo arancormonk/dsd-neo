@@ -34,6 +34,7 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/secret_redaction.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "p25p2_frame_internal.h"
 
 static int
 p25p2_xcch_slot_valid(int slot) {
@@ -572,8 +573,13 @@ p25p2_xcch_handle_sacch_mac_idle(dsd_opts* opts, dsd_state* state, uint8_t slot,
 
     DSD_FPRINTF(stderr, " MAC_IDLE ");
     DSD_FPRINTF(stderr, "%s", KYEL);
+    const p25p2_retune_token token = p25p2_retune_token_now();
     process_MAC_VPDU(opts, state, 1, P25_MAC_PDU_IDLE, smac);
     DSD_FPRINTF(stderr, "%s", KNRM);
+    // A retune the PDU accepted left this channel: nothing below may act on the assignment it moved to (issue #651).
+    if (p25p2_retune_token_changed(&token)) {
+        return;
+    }
 
     p25_sm_emit_idle_at(opts, state, slot, idle_observed_m);
     p25p2_xcch_clear_idle_metadata_if_stale(state, slot, idle_observed_m, 0);
@@ -596,7 +602,12 @@ p25p2_xcch_handle_sacch_mac_active(dsd_opts* opts, dsd_state* state, uint8_t slo
 
     DSD_FPRINTF(stderr, " MAC_ACTIVE ");
     DSD_FPRINTF(stderr, "%s", KYEL);
+    const p25p2_retune_token token = p25p2_retune_token_now();
     process_MAC_VPDU(opts, state, 1, P25_MAC_PDU_ACTIVE, smac);
+    if (p25p2_retune_token_changed(&token)) {
+        DSD_FPRINTF(stderr, "%s", KNRM);
+        return;
+    }
 
     state->p25_p2_last_mac_active[slot] = dsd_decode_time();
     state->p25_p2_last_mac_active_m[slot] = dsd_decode_now_mono_s();
@@ -698,8 +709,12 @@ p25p2_xcch_handle_facch_mac_idle(dsd_opts* opts, dsd_state* state, uint8_t slot,
 
     DSD_FPRINTF(stderr, " MAC_IDLE ");
     DSD_FPRINTF(stderr, "%s", KYEL);
+    const p25p2_retune_token token = p25p2_retune_token_now();
     process_MAC_VPDU(opts, state, 0, P25_MAC_PDU_IDLE, fmac);
     DSD_FPRINTF(stderr, "%s", KNRM);
+    if (p25p2_retune_token_changed(&token)) {
+        return;
+    }
 
     p25_sm_emit_idle_at(opts, state, slot, idle_observed_m);
     p25p2_xcch_clear_idle_metadata_if_stale(state, slot, idle_observed_m, 1);
@@ -719,8 +734,12 @@ p25p2_xcch_handle_facch_mac_active(dsd_opts* opts, dsd_state* state, uint8_t slo
 
     DSD_FPRINTF(stderr, " MAC_ACTIVE ");
     DSD_FPRINTF(stderr, "%s", KYEL);
+    const p25p2_retune_token token = p25p2_retune_token_now();
     process_MAC_VPDU(opts, state, 0, P25_MAC_PDU_ACTIVE, fmac);
     DSD_FPRINTF(stderr, "%s", KNRM);
+    if (p25p2_retune_token_changed(&token)) {
+        return;
+    }
 
     if (!p25p2_xcch_emit_active(opts, state, 0, slot, fmac)) {
         return;

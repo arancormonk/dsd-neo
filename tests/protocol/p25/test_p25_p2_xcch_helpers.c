@@ -38,6 +38,9 @@ static int g_vpdu_entry_lasttg[2];
 static int g_vpdu_entry_lastsrc[2];
 static int g_vpdu_grant_newer_slot;
 static int g_vpdu_enc_pending_slot;
+/* Set to have process_MAC_VPDU() accept a retune, which moves the retune token (issue #651). */
+static int g_vpdu_retunes;
+static uint32_t g_retune_epoch;
 static unsigned long long int g_vpdu_mac[24];
 static int g_ptt_count[2];
 static uint8_t g_ptt_signatures[8][P25_SM_PTT_SIGNATURE_BYTES];
@@ -162,6 +165,9 @@ process_MAC_VPDU_crc(dsd_opts* opts, dsd_state* state, int type, p25_mac_pdu_typ
     }
     if (g_vpdu_grant_newer_slot >= 0 && g_vpdu_grant_newer_slot <= 1) {
         g_slot_grant_newer[g_vpdu_grant_newer_slot] = 1;
+    }
+    if (g_vpdu_retunes) {
+        g_retune_epoch++;
     }
     if (state && g_vpdu_enc_pending_slot >= 0 && g_vpdu_enc_pending_slot <= 1) {
         const int slot = g_vpdu_enc_pending_slot;
@@ -542,9 +548,23 @@ dsd_p25p2_flush_partial_audio_slot(dsd_opts* opts, dsd_state* state, int slot) {
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 
+p25p2_retune_token
+p25p2_retune_token_now(void) {
+    p25p2_retune_token token = {0};
+    token.frame_reset_generation = g_retune_epoch;
+    return token;
+}
+
+int
+p25p2_retune_token_changed(const p25p2_retune_token* since) {
+    return since && since->frame_reset_generation != g_retune_epoch;
+}
+
 static void
 reset_stubs(void) {
     g_audio_allow = 1;
+    g_vpdu_retunes = 0;
+    g_retune_epoch = 0U;
     g_crc12_result = 0;
     g_crc16_result = 0;
     g_vpdu_count = 0;
@@ -1646,6 +1666,62 @@ test_voice_counter_reset_helpers(void) {
     return rc;
 }
 
+// A MAC PDU that accepted a retune (a grant, a return to the control channel) left the channel the burst was collected
+// on: the MAC_ACTIVE and MAC_IDLE handlers then stop, publishing no activity, MAC timestamps, idle or gate change for
+// the assignment the receiver moved to (issue #651).
+static int
+test_mac_handlers_stop_after_vpdu_retune(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    unsigned long long int mac[24];
+    int rc = 0;
+
+    reset_stubs();
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.currentslot = 0;
+    seed_call(&state, 0U, DSD_CALL_KIND_GROUP_VOICE, 0x2468U, 0xABCDEFU);
+    state.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
+    state.p25_p2_audio_allowed[0] = 1;
+    fill_mac(mac, 0x80, 0, 0xABCDEF, 0x2468);
+    g_vpdu_retunes = 1;
+    p25p2_xcch_handle_facch_mac_active(&opts, &state, 0, mac);
+    rc |= expect_int("facch active retune vpdu ran", g_vpdu_count, 1);
+    rc |= expect_int("facch active retune no activity", g_active_count[0], 0);
+    rc |= expect_int("facch active retune gate kept", state.p25_p2_audio_allowed[0], 1);
+
+    reset_stubs();
+    g_vpdu_retunes = 1;
+    state.p25_p2_last_mac_active_m[1] = 0.0;
+    state.p25_p2_last_mac_active[1] = 0;
+    p25p2_xcch_handle_sacch_mac_active(&opts, &state, 1, mac);
+    rc |= expect_int("sacch active retune vpdu ran", g_vpdu_count, 1);
+    rc |= expect_int("sacch active retune no activity", g_active_count[1], 0);
+    rc |= expect_int("sacch active retune no mac stamp", state.p25_p2_last_mac_active_m[1] > 0.0 ? 1 : 0, 0);
+
+    reset_stubs();
+    g_vpdu_retunes = 1;
+    state.p25_p2_audio_allowed[0] = 1;
+    // The FACCH idle closes its slot before the PDU runs (old-channel effects); only what follows the PDU stops.
+    p25p2_xcch_handle_facch_mac_idle(&opts, &state, 0, mac);
+    rc |= expect_int("facch idle retune no idle", g_idle_count[0], 0);
+
+    reset_stubs();
+    g_vpdu_retunes = 1;
+    state.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
+    state.p25_p2_audio_allowed[0] = 1;
+    p25p2_xcch_handle_sacch_mac_idle(&opts, &state, 0, mac);
+    rc |= expect_int("sacch idle retune no idle", g_idle_count[0], 0);
+    rc |= expect_int("sacch idle retune crypto kept", state.p25_crypto_state[0], DSD_P25_CRYPTO_CLEAR);
+    rc |= expect_int("sacch idle retune gate kept", state.p25_p2_audio_allowed[0], 1);
+
+    // Without a retune the same handlers run to the end.
+    reset_stubs();
+    p25p2_xcch_handle_facch_mac_active(&opts, &state, 0, mac);
+    rc |= expect_int("facch active no retune activity", g_active_count[0], 1);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -1659,6 +1735,7 @@ main(void) {
     rc |= test_facch_active_end_hangtime_and_invalid_slot_guards();
     rc |= test_encrypted_voice_user_stays_locked_through_mac_active();
     rc |= test_voice_counter_reset_helpers();
+    rc |= test_mac_handlers_stop_after_vpdu_retune();
 
     if (rc != 0) {
         return 1;

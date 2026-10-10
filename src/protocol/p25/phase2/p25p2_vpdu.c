@@ -48,6 +48,7 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "p25p2_frame_internal.h"
 
 static inline void dsd_append(char* dst, size_t dstsz, const char* src);
 
@@ -5731,6 +5732,7 @@ process_MAC_VPDU_crc(dsd_opts* opts, dsd_state* state, int type, p25_mac_pdu_typ
         ctx.end_pdu = 1;
     }
 
+    const p25p2_retune_token token = p25p2_retune_token_now();
     for (int segment_idx = 0; !ctx.end_pdu && segment_idx < mac_res.segment_count; segment_idx++) {
         ctx.skip_rest = 0;
         ctx.iter_idx = segment_idx;
@@ -5739,6 +5741,11 @@ process_MAC_VPDU_crc(dsd_opts* opts, dsd_state* state, int type, p25_mac_pdu_typ
         }
         if (!p25p2_vpdu_consume_fragment_segment(&ctx)) {
             p25p2_vpdu_dispatch_blocks(&ctx);
+        }
+        // A segment that retuned (a grant, a return to the control channel) left this channel: the PDU's later
+        // segments describe the one left, so none of them may act on the new assignment (issue #651).
+        if (p25p2_retune_token_changed(&token)) {
+            break;
         }
     }
 

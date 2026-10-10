@@ -17,6 +17,7 @@
 #include <dsd-neo/protocol/p25/p25.h>
 #include <dsd-neo/protocol/p25/p25p2_frame.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -388,11 +389,15 @@ ez_rs28_ess(int* payload, int* parity, const int* erasures, int n_erasures) {
     return -1;
 }
 
-/* MAC PDU handlers */
+/* MAC PDU handlers. A hook set on the SACCH one runs as its MAC PDU does: a grant accepted inside it, for one. */
+static void (*g_sacch_mac_hook)(dsd_opts* opts, dsd_state* state) = NULL;
+
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int* bits) {
-    (void)opts;
+    if (g_sacch_mac_hook) {
+        g_sacch_mac_hook(opts, state);
+    }
     mac_stub_end_calls(state);
     g_sacch_mac_calls++;
     g_sacch_mac_last_opcode = (bits[0] << 2) | (bits[1] << 1) | bits[2];
@@ -487,6 +492,7 @@ reset_xcch_stubs(void) {
     g_sacch_mac_last_opcode = -1;
     g_isch_lookup_result = -1;
     DSD_MEMSET(g_isch_last_reliab, 0, sizeof(g_isch_last_reliab));
+    g_sacch_mac_hook = NULL;
 }
 
 static void
@@ -1672,6 +1678,111 @@ test_duid_lcch_release_tears_down_after_vc_grace(void) {
     return rc;
 }
 
+/* A grant accepted inside a burst's MAC PDU retunes: the engine runs p25_p2_frame_reset() for a TDMA voice channel,
+   which here the hook does once. */
+static int g_retune_hook_fired = 0;
+
+static void
+sacch_hook_retune_once(dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    (void)state;
+    if (!g_retune_hook_fired) {
+        g_retune_hook_fired = 1;
+        p25_p2_frame_reset();
+    }
+}
+
+/* An assignment accepted on the tuned TDMA carrier (its idle slot): no retune, but the grant refreshes the carrier's
+   voice and tune times, as p25_grant_refresh_reused_carrier_watchdogs() does. */
+static void
+sacch_hook_reused_carrier_grant_once(dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    if (!g_retune_hook_fired && state) {
+        g_retune_hook_fired = 1;
+        state->last_vc_sync_time = dsd_decode_time();
+        state->p25_last_vc_tune_time = dsd_decode_time();
+        state->last_vc_sync_time_m = dsd_decode_now_mono_s();
+        state->p25_last_vc_tune_time_m = dsd_decode_now_mono_s();
+    }
+}
+
+/* A retune accepted inside a burst ends the superframe's dispatch (issue #651): p25_p2_frame_reset() zeroes the loop's
+   timeslot counter and the bit buffers, and the rest of the window used to replay as phantom 4V bursts (all-zero
+   DUIDs decode as 4V), publishing voice activity against the new assignment. */
+static int
+test_retune_inside_dispatch_stops_the_window(void) {
+    printf("Test 40: retune inside dispatch stops the window... ");
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_xcch_stubs();
+    prepare_lcch_release_duids();
+    state.p2_wacn = 1;
+    state.p2_sysid = 1;
+    state.p2_cc = 0x123;
+    state.currentslot = 0;
+    g_retune_hook_fired = 0;
+    g_sacch_mac_hook = sacch_hook_retune_once;
+
+    p25p2_process_duid(&opts, &state);
+
+    int rc = 0;
+    rc |= expect_int("retune one burst dispatched", g_sacch_mac_calls, 1);
+    rc |= expect_int("retune no phantom 4V slot1", state.fourv_counter[0], 0);
+    rc |= expect_int("retune no phantom 4V slot2", state.fourv_counter[1], 0);
+    rc |= expect_int("retune no phantom voice time", state.last_vc_sync_time != 0, 0);
+    printf(rc == 0 ? "PASS\n" : "FAIL\n");
+    g_sacch_mac_hook = NULL;
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+/* An aged LCCH whose own MAC PDU accepted a retune or an assignment on the tuned carrier must not then tear down and
+   release on the verdict computed before the burst (issue #651). */
+static int
+test_lcch_timeout_reevaluated_after_its_mac_pdu(void) {
+    printf("Test 41: LCCH timeout re-evaluated after its MAC PDU... ");
+    int rc = 0;
+    for (int variant = 0; variant < 2; variant++) {
+        static dsd_opts opts;
+        static dsd_state state;
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        reset_xcch_stubs();
+        reset_playback_stub();
+        prepare_lcch_release_duids();
+
+        time_t now = time(NULL);
+        opts.floating_point = 0;
+        opts.pulse_digi_rate_out = 8000;
+        opts.trunk_enable = 1;
+        opts.trunk_is_tuned = 1;
+        opts.trunk_hangtime = 1;
+        state.currentslot = 0;
+        seed_p25p2_call(&state, 0U, 4100U, 5100U, 0x00U, 0U, 0U);
+        state.last_vc_sync_time = now - 10;
+        state.p25_last_vc_tune_time = now - 10;
+        set_p25_vc_grace("0.25");
+        g_retune_hook_fired = 0;
+        g_sacch_mac_hook = (variant == 0) ? sacch_hook_retune_once : sacch_hook_reused_carrier_grant_once;
+
+        p25p2_process_duid(&opts, &state);
+        set_p25_vc_grace(NULL);
+
+        const char* const tags[2][3] = {
+            {"retune no release force", "retune call kept", "retune not released"},
+            {"reused grant no release force", "reused grant call kept", "reused grant not released"}};
+        rc |= expect_int(tags[variant][0], state.p25_sm_force_release, 0);
+        rc |= expect_call_state(tags[variant][1], &state, 0U, DSD_CALL_PHASE_ACTIVE, 4100U, 5100U, 0U, 0U);
+        rc |= expect_int(tags[variant][2], opts.trunk_is_tuned, 1);
+        g_sacch_mac_hook = NULL;
+        dsd_state_ext_free_all(&state);
+    }
+    printf(rc == 0 ? "PASS\n" : "FAIL\n");
+    return rc;
+}
+
 int
 main(void) {
     int failures = 0;
@@ -1806,6 +1917,8 @@ main(void) {
     failures += test_duid_abort_resolves_staged_rekey();
     failures += test_duid_lcch_release_defers_during_vc_grace();
     failures += test_duid_lcch_release_tears_down_after_vc_grace();
+    failures += test_retune_inside_dispatch_stops_the_window();
+    failures += test_lcch_timeout_reevaluated_after_its_mac_pdu();
     failures += test_seed_proof_needs_a_descrambled_burst();
     failures += test_superframe_split_by_a_carrier_boundary_is_dropped();
     failures += test_seed_proof_reaches_the_call_its_burst_ends();
