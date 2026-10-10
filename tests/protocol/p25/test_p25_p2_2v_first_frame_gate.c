@@ -525,7 +525,6 @@ main(void) {
     rc |= expect_eq("slot0 rekey commit: algid promoted", st.payload_algid, 0xAA);
     rc |= expect_eq("slot0 rekey commit: keyid promoted", st.payload_keyid, 0x1002);
     rc |= expect_eq("slot0 rekey commit: mi promoted", st.payload_miP == 0x1112131415161718ULL, 1);
-    rc |= expect_eq("slot0 rekey commit: float ring purged", st.p25_p2_audio_ring_count[0], 0);
 
     // The int16 output path plays the same way: the burst's two frames are
     // emitted under the old identity before it is promoted.
@@ -575,7 +574,6 @@ main(void) {
     process_2V(&opts, &st);
     rc |= expect_eq("slot0 encrypted lockout: mbe calls", g_mbe_calls, 0);
     rc |= expect_eq("slot0 encrypted lockout: gate closed", st.p25_p2_audio_allowed[0], 0);
-    rc |= expect_eq("slot0 encrypted lockout: ring flushed", st.p25_p2_audio_ring_count[0], 0);
 
     // Slot 0: service-option ENC before ESS completion mutes voice but must
     // not reset ESS_B collection; ALGID may still resolve to a loaded key.
@@ -600,8 +598,6 @@ main(void) {
     st.p25_crypto_state[1] = DSD_P25_CRYPTO_CLEAR;
     st.p25_p2_audio_allowed[0] = 1;
     st.p25_p2_audio_allowed[1] = 1;
-    st.p25_p2_audio_ring_count[0] = 2;
-    st.p25_p2_audio_ring_count[1] = 3;
     st.s_l4[0][0] = 11;
     st.s_r4[0][0] = 22;
     st.dmr_so = 0x40;
@@ -613,10 +609,8 @@ main(void) {
     rc |=
         expect_eq("slot0 clear-to-encrypted: pending state", st.p25_crypto_state[0], DSD_P25_CRYPTO_ENCRYPTED_PENDING);
     rc |= expect_eq("slot0 clear-to-encrypted: gate closed", st.p25_p2_audio_allowed[0], 0);
-    rc |= expect_eq("slot0 clear-to-encrypted: ring purged", st.p25_p2_audio_ring_count[0], 0);
     rc |= expect_eq("slot0 clear-to-encrypted: int16 purged", st.s_l4[0][0], 0);
     rc |= expect_eq("slot0 clear-to-encrypted: companion gate preserved", st.p25_p2_audio_allowed[1], 1);
-    rc |= expect_eq("slot0 clear-to-encrypted: companion ring preserved", st.p25_p2_audio_ring_count[1], 3);
     rc |= expect_eq("slot0 clear-to-encrypted: companion int16 preserved", st.s_r4[0][0], 22);
 
     // Follow mode still classifies an in-band encrypted indication before ESS.
@@ -816,7 +810,6 @@ main(void) {
     process_2V(&opts, &st);
     rc |= expect_eq("slot1 encrypted lockout: mbe calls", g_mbe_calls, 0);
     rc |= expect_eq("slot1 encrypted lockout: gate closed", st.p25_p2_audio_allowed[1], 0);
-    rc |= expect_eq("slot1 encrypted lockout: ring flushed", st.p25_p2_audio_ring_count[1], 0);
 
     // Slot 1: same pre-ESS service-option mute must preserve fragment index.
     reset_state(&opts, &st);

@@ -829,8 +829,8 @@ suite runs under this compiler.
     waiting): on manual CC selection, when the user leaves a followed voice channel for the control channel (Return
     to CC, a candidate cycle: `p25_sm_on_external_cc_tune()`), at the conventional idle expiry, and after one of those
     drains (`p25p2_frame_forget_carrier()`, the no-carrier pass). `_close()` (`dsd_p25p2_flush_partial_audio_slot()`:
-    slot END, IDLE, HANGTIME, MAC Release) closes one slot's stream and never plays or discards. Crypto purges reset
-    only the vocoder's state.
+    slot END, IDLE, HANGTIME, MAC Release, an LCCH that failed its CRC, the SM's slot media closes and a moved target's
+    slot) closes one slot's stream and never plays or discards. Crypto purges reset only the vocoder's state.
   - Alerts. `beeper()` for a slot whose queue still holds audio (an END with frames still to play) hands the alert to
     the playout (`dsd_p25p2_playout_defer_alert()`): it sounds right after the block in which the last entry queued
     before it left (played, or discarded), in order per slot, so an end-of-call tone follows the call's last frames.
@@ -841,6 +841,9 @@ suite runs under this compiler.
     superframe's call events), an alert is dropped rather than sounded early. Alerts can be raised outside the tick
     guard (a held VOICE_END from the frame-sync pass), so the entry counts they compare and the alert queues sit behind
     the playout's own lock.
+  - Trunking never reads what the output holds: a slot occupies the carrier by its audio gate and MAC recency alone
+    (`p25_voice_slot_retains_carrier()`, `frame_sync_p25_slot_activity()`, the VPDU and LCCH occupancy checks), the
+    same in either output format. The jitter ring that once stood in for activity, with `--p25-ring-hold`, is gone.
   - Serialization. Every entry point runs on the decoder thread inside `processFrame()`, which holds the P25 SM tick
     guard, or in SM and engine code holding that guard. The no-carrier pass takes the calls' verdicts, drains and resets
     it under the guard, taken when free, before it ends the calls or a return to the control channel turns both slots

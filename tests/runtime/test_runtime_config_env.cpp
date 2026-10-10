@@ -130,7 +130,6 @@ unset_all_runtime_env(void) {
         "DSD_NEO_P25_MIN_FOLLOW_DWELL",
         "DSD_NEO_P25P1_ERR_HOLD_PCT",
         "DSD_NEO_P25P1_ERR_HOLD_S",
-        "DSD_NEO_P25_RING_HOLD",
         "DSD_NEO_P25_SOFT_ERASURE_THRESHOLD",
         "DSD_NEO_P25_SOFT_HARD_OVERRIDE",
         "DSD_NEO_P25_VC_GRACE",
@@ -1073,7 +1072,6 @@ test_protocol_env_knobs(void) {
     setenv("DSD_NEO_P25_GRANT_TIMEOUT", "4.0", 1);
     setenv("DSD_NEO_P25_CC_GRACE", "6.0", 1);
     setenv("DSD_NEO_P25_VC_GRACE", "1.0", 1);
-    setenv("DSD_NEO_P25_RING_HOLD", "1.5", 1);
     setenv("DSD_NEO_P25_MAC_HOLD", "2.5", 1);
     setenv("DSD_NEO_P25_VOICE_HOLD", "1.0", 1);
 
@@ -1144,14 +1142,6 @@ test_protocol_env_knobs(void) {
         return rc;
     }
     rc = expect_double_close(cfg->p25_vc_grace_s, 1.0, 1e-9, 1117, "p25_vc_grace_s");
-    if (rc != 0) {
-        return rc;
-    }
-    rc = expect_int_eq(cfg->p25_ring_hold_is_set, 1, 1118, "p25_ring_hold_is_set");
-    if (rc != 0) {
-        return rc;
-    }
-    rc = expect_double_close(cfg->p25_ring_hold_s, 1.5, 1e-9, 1119, "p25_ring_hold_s");
     if (rc != 0) {
         return rc;
     }
@@ -1277,7 +1267,6 @@ test_protocol_env_knobs(void) {
     unsetenv("DSD_NEO_P25_GRANT_TIMEOUT");
     unsetenv("DSD_NEO_P25_CC_GRACE");
     unsetenv("DSD_NEO_P25_VC_GRACE");
-    unsetenv("DSD_NEO_P25_RING_HOLD");
     unsetenv("DSD_NEO_P25_MAC_HOLD");
     unsetenv("DSD_NEO_P25_VOICE_HOLD");
 

@@ -1638,13 +1638,11 @@ main(void) {
     assert(s19g.p25_crypto_state[0] == DSD_P25_CRYPTO_CLEAR);
 
     s19g.p25_p2_audio_allowed[0] = 1;
-    s19g.p25_p2_audio_ring_count[0] = 1;
     s19g.s_l4[0][0] = 321;
     p25_sm_event(&ctx19g, &o19g, &s19g, &duplicate_clear);
     assert(ctx19g.grant_count == 1U);
     assert(s19g.p25_crypto_state[0] == DSD_P25_CRYPTO_CLEAR);
     assert(s19g.p25_p2_audio_allowed[0] == 1);
-    assert(s19g.p25_p2_audio_ring_count[0] == 1);
     assert(s19g.s_l4[0][0] == 321);
 
     // An implicit duplicate update (no service options) carries no
@@ -1659,7 +1657,6 @@ main(void) {
     assert(ctx19g.slots[0].svc_bits == 0x00);
     assert(s19g.p25_crypto_state[0] == DSD_P25_CRYPTO_CLEAR);
     assert(s19g.p25_p2_audio_allowed[0] == 1);
-    assert(s19g.p25_p2_audio_ring_count[0] == 1);
     assert(s19g.s_l4[0][0] == 321);
 
     // A duplicate whose valid service options genuinely change the
@@ -1745,7 +1742,6 @@ main(void) {
     s19k.payload_keyid = 0x1001;
     s19k.payload_miP = 0x0102030405060708ULL;
     s19k.p25_p2_audio_allowed[0] = 1;
-    s19k.p25_p2_audio_ring_count[0] = 1;
     s19k.s_l4[0][0] = 987;
     p25_patch_set_kas(&s19k, 5701, 0, 0x81, 1);
 
@@ -1758,7 +1754,6 @@ main(void) {
     assert(s19k.payload_keyid == 0);
     assert(s19k.payload_miP == 0ULL);
     assert(s19k.p25_p2_audio_allowed[0] == 0);
-    assert(s19k.p25_p2_audio_ring_count[0] == 0);
     assert(s19k.s_l4[0][0] == 0);
 
     // An implicit duplicate (no service options) carries no override evidence
@@ -1766,7 +1761,6 @@ main(void) {
     // demoting the classified-clear slot back to encryption-pending and
     // purging audio on every service-less update.
     s19k.p25_p2_audio_allowed[0] = 1;
-    s19k.p25_p2_audio_ring_count[0] = 1;
     s19k.s_l4[0][0] = 654;
     p25_sm_event_t duplicate_regroup_unknown = p25_sm_ev_group_grant(tdma_slot0_ch, 0, 5701, 6701, P25_SM_SVC_UNKNOWN);
     p25_sm_event(&ctx19k, &o19k, &s19k, &duplicate_regroup_unknown);
@@ -1776,14 +1770,12 @@ main(void) {
     assert(ctx19k.slots[0].svc_bits == 0x40);
     assert(s19k.p25_crypto_state[0] == DSD_P25_CRYPTO_CLEAR);
     assert(s19k.p25_p2_audio_allowed[0] == 1);
-    assert(s19k.p25_p2_audio_ring_count[0] == 1);
     assert(s19k.s_l4[0][0] == 654);
 
     // The same encrypted duplicate must return to pending if KEY=0 is
     // replaced by a non-clear regroup key. Service options alone cannot
     // reveal this transition, so retain and compare override provenance.
     s19k.p25_p2_audio_allowed[0] = 1;
-    s19k.p25_p2_audio_ring_count[0] = 1;
     s19k.s_l4[0][0] = 789;
     p25_patch_set_kas(&s19k, 5701, 0x2002, 0x81, 2);
     p25_sm_event(&ctx19k, &o19k, &s19k, &duplicate_regroup_encrypted);
@@ -1793,7 +1785,6 @@ main(void) {
     assert(ctx19k.slots[0].crypto_attempt_m > 0.0);
     assert(s19k.p25_crypto_state[0] == DSD_P25_CRYPTO_ENCRYPTED_PENDING);
     assert(s19k.p25_p2_audio_allowed[0] == 0);
-    assert(s19k.p25_p2_audio_ring_count[0] == 0);
     assert(s19k.s_l4[0][0] == 0);
 
     // Expiry of the KEY=0 entry is the same provenance transition even when
@@ -1845,7 +1836,6 @@ main(void) {
     assert(s19h.p25_crypto_state[0] == DSD_P25_CRYPTO_CLEAR);
 
     s19h.p25_p2_audio_allowed[0] = 1;
-    s19h.p25_p2_audio_ring_count[0] = 1;
     s19h.s_l4[0][0] = 654;
     p25_sm_event(&ctx19h, &o19h, &s19h, &duplicate_fdma_clear);
     assert(g_result_tune_to_freq_calls == 1);
@@ -1853,7 +1843,6 @@ main(void) {
     assert(ctx19h.slots[0].svc_bits == 0x00);
     assert(s19h.p25_crypto_state[0] == DSD_P25_CRYPTO_CLEAR);
     assert(s19h.p25_p2_audio_allowed[0] == 1);
-    assert(s19h.p25_p2_audio_ring_count[0] == 1);
     assert(s19h.s_l4[0][0] == 654);
 
     // An in-band encrypted indication after clear voice starts a fresh,
@@ -2003,8 +1992,6 @@ main(void) {
     s19c.p25_crypto_state[0] = DSD_P25_CRYPTO_ENCRYPTED_PENDING;
     s19c.p25_crypto_state[1] = DSD_P25_CRYPTO_CLEAR;
     s19c.p25_p2_audio_allowed[1] = 1;
-    s19c.p25_p2_audio_ring_count[0] = 2;
-    s19c.p25_p2_audio_ring_count[1] = 3;
     s19c.s_l4[0][0] = 111;
     s19c.s_r4[0][0] = 222;
 
@@ -2030,8 +2017,6 @@ main(void) {
     assert(ctx19c.slots[0].grant_active == 0);
     assert(ctx19c.slots[1].voice_active == 1);
     assert(s19c.p25_crypto_state[0] == DSD_P25_CRYPTO_UNKNOWN);
-    assert(s19c.p25_p2_audio_ring_count[0] == 0);
-    assert(s19c.p25_p2_audio_ring_count[1] == 3);
     assert(s19c.s_l4[0][0] == 0);
     assert(s19c.s_r4[0][0] == 222);
 
@@ -2048,7 +2033,6 @@ main(void) {
     s19i.p25_vc_freq[0] = s19i.p25_vc_freq[1] = 851000000;
     s19i.trunk_vc_freq[0] = s19i.trunk_vc_freq[1] = 851000000;
     s19i.p25_crypto_state[0] = DSD_P25_CRYPTO_ENCRYPTED_PENDING;
-    s19i.p25_p2_audio_ring_count[0] = 2;
     s19i.s_l4[0][0] = 333;
 
     p25_sm_ctx_t ctx19i;
@@ -2075,7 +2059,6 @@ main(void) {
     assert(ctx19i.slots[1].grant_active == 1);
     assert(ctx19i.slots[1].data_call == 1);
     assert(s19i.p25_crypto_state[0] == DSD_P25_CRYPTO_UNKNOWN);
-    assert(s19i.p25_p2_audio_ring_count[0] == 0);
     assert(s19i.s_l4[0][0] == 0);
 
     // 28) A Phase 1 classification timeout with no companion returns to the
@@ -2091,7 +2074,6 @@ main(void) {
     s19d.p25_vc_freq[0] = s19d.p25_vc_freq[1] = 851125000;
     s19d.trunk_vc_freq[0] = s19d.trunk_vc_freq[1] = 851125000;
     s19d.p25_crypto_state[0] = DSD_P25_CRYPTO_ENCRYPTED_PENDING;
-    s19d.p25_p2_audio_ring_count[0] = 2;
     s19d.s_l4[0][0] = 111;
 
     p25_sm_ctx_t ctx19d;
@@ -2112,7 +2094,6 @@ main(void) {
     assert(ctx19d.state == P25_SM_ON_CC);
     assert(o19d.trunk_is_tuned == 0);
     assert(s19d.p25_crypto_state[0] == DSD_P25_CRYPTO_UNKNOWN);
-    assert(s19d.p25_p2_audio_ring_count[0] == 0);
     assert(s19d.s_l4[0][0] == 0);
 
 #ifdef USE_RADIO

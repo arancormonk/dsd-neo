@@ -25,7 +25,6 @@
 #include <dsd-neo/protocol/p25/p25p2_mac_parse.h>
 #include <dsd-neo/runtime/colors.h>
 #include <dsd-neo/runtime/decode_clock.h>
-#include <dsd-neo/runtime/p25_p2_audio_ring.h>
 #include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -421,7 +420,7 @@ p25p2_xcch_reset_idle_slot_facch(dsd_state* state, uint8_t slot) {
 }
 
 static int
-p25p2_xcch_validate_sacch_crc(const dsd_opts* opts, dsd_state* state, const int payload[180],
+p25p2_xcch_validate_sacch_crc(dsd_opts* opts, dsd_state* state, const int payload[180],
                               const unsigned long long int smac[24], int opcode, uint8_t slot, int* abort_processing) {
     int err = -2;
 
@@ -445,7 +444,7 @@ p25p2_xcch_validate_sacch_crc(const dsd_opts* opts, dsd_state* state, const int 
             DSD_FPRINTF(stderr, " CRC16 ERR L");
             if (opcode == 0x0) {
                 p25p2_xcch_set_slot_audio_allowed(opts, state, slot, 0);
-                p25_p2_audio_ring_reset(state, slot);
+                dsd_p25p2_flush_partial_audio_slot(opts, state, slot);
             }
             state->p2_is_lcch = 0;
             *abort_processing = 1;
@@ -696,7 +695,6 @@ p25p2_xcch_handle_facch_mac_idle(dsd_opts* opts, dsd_state* state, uint8_t slot,
     p25_sm_emit_idle_at(opts, state, slot, idle_observed_m);
     p25p2_xcch_clear_idle_metadata_if_stale(state, slot, idle_observed_m, 1);
     p25p2_xcch_set_slot_audio_allowed(opts, state, slot, 0);
-    p25_p2_audio_ring_reset(state, slot);
 }
 
 static void

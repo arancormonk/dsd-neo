@@ -795,23 +795,9 @@ run_service_metric_display_cases(void) {
 static int
 run_p2_gate_helper_cases(void) {
     DSD_MEMSET(&g_runtime_config, 0, sizeof(g_runtime_config));
-    g_runtime_config.p25_ring_hold_s = 1.25;
     g_runtime_config.p25_mac_hold_s = 4.5;
-
-    double ring_hold = 0.0;
-    double mac_hold = 0.0;
-    ui_get_p2_hold_windows(&ring_hold, &mac_hold);
-    assert(ring_hold == 1.25);
-    assert(mac_hold == 4.5);
-
-    assert(ui_clamp_p2_ring_fill(-2) == 0);
-    assert(ui_clamp_p2_ring_fill(2) == 2);
-    assert(ui_clamp_p2_ring_fill(99) == DSD_P25_P2_AUDIO_RING_DEPTH);
-
-    assert(ui_p2_ring_recent(0, 0.2, 0.75) == 0);
-    assert(ui_p2_ring_recent(1, -0.1, 0.75) == 0);
-    assert(ui_p2_ring_recent(1, 0.8, 0.75) == 0);
-    assert(ui_p2_ring_recent(1, 0.75, 0.75) == 1);
+    const double mac_hold = ui_get_p2_mac_hold();
+    assert(mac_hold > 4.4999 && mac_hold < 4.5001);
 
     static dsd_opts opts;
     static dsd_state state;
@@ -819,15 +805,14 @@ run_p2_gate_helper_cases(void) {
     DSD_MEMSET(&state, 0, sizeof(state));
     opts.trunk_hangtime = 2.0;
 
-    assert(ui_p2_slot_active(&opts, &state, 0, 5.0, 0.0, 0.75, 3.0) == 0);
+    assert(ui_p2_slot_active(&opts, &state, 0, 5.0, 0.0, 3.0) == 0);
     state.p25_p2_audio_allowed[0] = 1;
-    assert(ui_p2_slot_active(&opts, &state, 0, 5.0, 0.0, 0.75, 3.0) == 1);
-    assert(ui_p2_slot_active(&opts, &state, 0, 5.0, 3.0, 0.75, 3.0) == 0);
-    state.p25_p2_audio_ring_count[0] = 1;
-    assert(ui_p2_slot_active(&opts, &state, 0, 0.5, 3.0, 0.75, 3.0) == 1);
+    assert(ui_p2_slot_active(&opts, &state, 0, 5.0, 0.0, 3.0) == 1);
+    assert(ui_p2_slot_active(&opts, &state, 0, 5.0, 3.0, 3.0) == 0);
+    assert(ui_p2_slot_active(&opts, &state, 0, 0.5, 3.0, 3.0) == 1);
     state.p25_p2_audio_allowed[0] = 0;
-    state.p25_p2_audio_ring_count[0] = 0;
-    assert(ui_p2_slot_active(&opts, &state, 0, 2.5, 9.0, 0.75, 3.0) == 1);
+    assert(ui_p2_slot_active(&opts, &state, 0, 2.5, 9.0, 3.0) == 1);
+    assert(ui_p2_slot_active(&opts, &state, 0, -1.0, 0.0, 3.0) == 0);
 
     return 0;
 }

@@ -24,7 +24,6 @@
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/p25_optional_hooks.h>
-#include <dsd-neo/runtime/p25_p2_audio_ring.h>
 #include <dsd-neo/runtime/rigctl_query_hooks.h>
 #ifdef USE_RADIO
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
@@ -1755,7 +1754,7 @@ p25_grant_clear_moved_target_slots(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state*
         p25_grant_clear_policy_slot(state, s);
         if (state) {
             state->p25_p2_audio_allowed[s] = 0;
-            p25_p2_audio_ring_reset(state, s);
+            dsd_p25p2_flush_partial_audio_slot(opts, state, s);
             p25_crypto_reset_slot(state, s);
         }
     }
@@ -2963,7 +2962,6 @@ p25_voice_close_slot_media(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, 
     }
     if (state) {
         p25_voice_flush_partial_audio(ctx, opts, state, slot);
-        p25_p2_audio_ring_reset(state, slot);
         p25_voice_close_slot_output(opts, state, slot);
         p25_voice_clear_state_source(state, slot);
         p25_crypto_reset_slot(state, slot);
@@ -2983,7 +2981,6 @@ p25_voice_close_slot_media_preserve_grant(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd
     }
     if (state) {
         p25_voice_flush_partial_audio(ctx, opts, state, slot);
-        p25_p2_audio_ring_reset(state, slot);
         p25_voice_close_slot_output(opts, state, slot);
         state->p25_p2_audio_allowed[slot] = 0;
     }
@@ -2998,7 +2995,6 @@ p25_voice_close_slot_media_preserve_crypto(p25_sm_ctx_t* ctx, dsd_opts* opts, ds
     }
     if (state) {
         p25_voice_flush_partial_audio(ctx, opts, state, slot);
-        p25_p2_audio_ring_reset(state, slot);
         p25_voice_close_slot_output(opts, state, slot);
         p25_voice_clear_state_source_preserve_crypto(state, slot);
     }
@@ -3868,7 +3864,7 @@ p25_voice_slot_retains_carrier(const p25_sm_ctx_t* ctx, const dsd_state* state, 
     if (slot_ctx->voice_active || p25_voice_slot_assignment_pending(slot_ctx)) {
         return 1;
     }
-    return state && (state->p25_p2_audio_allowed[slot] || state->p25_p2_audio_ring_count[slot] > 0) ? 1 : 0;
+    return state && state->p25_p2_audio_allowed[slot] ? 1 : 0;
 }
 
 static int

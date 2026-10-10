@@ -45,7 +45,6 @@
 #define DSD_TRUNK_FREQ_MAX_HZ  2147483647L
 
 enum DSD_ATTR_PACKED {
-    DSD_P25_P2_AUDIO_RING_DEPTH = 4,
     DSD_P25_MAC_FRAGMENT_MAX_OCTETS = 256,
     DSD_TRUNK_CHAN_MAP_SIZE = 0xFFFF,
     /* Scan-list slots stored inline in dsd_state. Protocol fixed-slot writers raw-index
@@ -1287,12 +1286,6 @@ struct dsd_state {
     /* P25 Phase 2 voice playout: per-slot queues played per burst pair in both output formats (issue #651).
        Decoder-thread private; ui_snapshot skips it. */
     dsd_p25p2_playout p25p2_playout;
-    // P25p2 small output jitter buffers (per-slot ring of decoded 20 ms frames)
-    // Depth DSD_P25_P2_AUDIO_RING_DEPTH to match drain behavior (~80 ms max at depth=4)
-    float p25_p2_audio_ring[2][DSD_P25_P2_AUDIO_RING_DEPTH][160];
-    int p25_p2_audio_ring_head[2]; // pop index
-    int p25_p2_audio_ring_tail[2]; // push index
-    int p25_p2_audio_ring_count[2];
     // P25p2 currently active voice slot (0 or 1), -1 when unknown/idle
     int p25_p2_active_slot;
     // P25p2 recent MAC_ACTIVE/PTT timestamps per slot (guards early bounce)

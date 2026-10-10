@@ -35,7 +35,6 @@
 #include <dsd-neo/runtime/colors.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_clock.h>
-#include <dsd-neo/runtime/p25_p2_audio_ring.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -934,7 +933,6 @@ p25p2_vpdu_try_group_candidates(dsd_opts* opts, dsd_state* state, const p25p2_vp
 static void
 p25p2_vpdu_gate_slot_audio(dsd_state* state, int slot) {
     state->p25_p2_audio_allowed[slot] = 0;
-    p25_p2_audio_ring_reset(state, slot);
 }
 
 static double
@@ -992,11 +990,10 @@ p25p2_vpdu_other_slot_audio_with_history(const dsd_state* state, int slot, doubl
                                          state->p25_p2_last_mac_active[other_slot], nowm, noww);
     int recent_voice = p25p2_vpdu_recent_voice_active(state, voice_hold_s);
     int recent_mac = (state->p25_p2_last_mac_active[other_slot] != 0 && dt_mac <= mac_hold_s) ? 1 : 0;
-    return state->p25_p2_audio_allowed[other_slot] || (state->p25_p2_audio_ring_count[other_slot] > 0) || recent_mac
-           || recent_voice;
+    return state->p25_p2_audio_allowed[other_slot] || recent_mac || recent_voice;
 }
 
-// Whether either logical slot still looks occupied: gated or buffered audio,
+// Whether either logical slot still looks occupied: gated audio,
 // MAC activity inside the hold window, or recent voice on the carrier. A
 // Deny/Queued response heard in a voice channel's signaling answers some
 // unit's request; releasing the carrier over one while a call -- or the

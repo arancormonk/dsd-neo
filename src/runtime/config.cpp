@@ -88,7 +88,6 @@ config_snapshot_equals_block_a(const dsdneoRuntimeConfig& lhs, const dsdneoRunti
     CONFIG_EQ_FIELD(p25_grant_timeout_s);
     CONFIG_EQ_FIELD(p25_cc_grace_s);
     CONFIG_EQ_FIELD(p25_vc_grace_s);
-    CONFIG_EQ_FIELD(p25_ring_hold_s);
     CONFIG_EQ_FIELD(p25_mac_hold_s);
     CONFIG_EQ_FIELD(p25_voice_hold_s);
     CONFIG_EQ_FIELD(p25_min_follow_dwell_s);
@@ -156,7 +155,6 @@ config_snapshot_equals_block_b(const dsdneoRuntimeConfig& lhs, const dsdneoRunti
     CONFIG_EQ_FIELD(p25_grant_timeout_is_set);
     CONFIG_EQ_FIELD(p25_cc_grace_is_set);
     CONFIG_EQ_FIELD(p25_vc_grace_is_set);
-    CONFIG_EQ_FIELD(p25_ring_hold_is_set);
     CONFIG_EQ_FIELD(p25_mac_hold_is_set);
     CONFIG_EQ_FIELD(p25_voice_hold_is_set);
     CONFIG_EQ_FIELD(p25_wd_ms_is_set);
@@ -535,7 +533,6 @@ config_init_defaults(dsdneoRuntimeConfig& c) {
     c.p25_grant_timeout_s = 3.0;
     c.p25_cc_grace_s = 5.0;
     c.p25_vc_grace_s = 0.75;
-    c.p25_ring_hold_s = 0.75;
     c.p25_mac_hold_s = 0.75;
     c.p25_voice_hold_s = 0.75;
     c.p25_wd_ms = 0; /* 0 => dynamic default selected by caller */
@@ -724,9 +721,6 @@ config_init_dmr_and_p25(dsdneoRuntimeConfig& c) {
 
     const char* p25_vcg = getenv("DSD_NEO_P25_VC_GRACE");
     c.p25_vc_grace_is_set = env_parse_double_range(p25_vcg, 0.0, 10.0, &c.p25_vc_grace_s);
-
-    const char* p25_rh = getenv("DSD_NEO_P25_RING_HOLD");
-    c.p25_ring_hold_is_set = env_parse_double_range(p25_rh, 0.0, 5.0, &c.p25_ring_hold_s);
 
     const char* p25_mh = getenv("DSD_NEO_P25_MAC_HOLD");
     c.p25_mac_hold_is_set = env_parse_double_range(p25_mh, 0.0, 10.0, &c.p25_mac_hold_s);

@@ -1069,8 +1069,6 @@ seed_teardown_dirty_state(dsd_state* state) {
     state->p25_p2_audio_allowed[1] = 0;
     state->p25_crypto_state[0] = DSD_P25_CRYPTO_BLOCKED;
     state->p25_crypto_state[1] = DSD_P25_CRYPTO_BLOCKED;
-    state->p25_p2_audio_ring_count[0] = 2;
-    state->p25_p2_audio_ring_count[1] = 3;
     state->p25p2_playout.slot[0].open = 1U;
     state->p25p2_playout.slot[0].phase_2v = 3;
     state->p25p2_playout.slot[1].open = 1U;
@@ -1096,8 +1094,6 @@ expect_teardown_common_reset(const dsd_state* state) {
     rc |= expect_int("teardown gate right", state->p25_p2_audio_allowed[1], 0);
     rc |= expect_int("teardown crypto left", state->p25_crypto_state[0], DSD_P25_CRYPTO_UNKNOWN);
     rc |= expect_int("teardown crypto right", state->p25_crypto_state[1], DSD_P25_CRYPTO_UNKNOWN);
-    rc |= expect_int("teardown ring left", state->p25_p2_audio_ring_count[0], 0);
-    rc |= expect_int("teardown ring right", state->p25_p2_audio_ring_count[1], 0);
     rc |= expect_int("teardown playout left closed", state->p25p2_playout.slot[0].open, 0);
     rc |= expect_int("teardown playout left phase reset", state->p25p2_playout.slot[0].phase_2v, -1);
     rc |= expect_int("teardown playout left empty", dsd_p25p2_playout_level(state, 0), 0);

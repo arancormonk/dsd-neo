@@ -1767,8 +1767,10 @@ test_elapsed_seconds_prefers_monotonic_then_wall_time(void) {
     assert(frame_sync_elapsed_seconds(12.5, (time_t)20, 0.0, (time_t)0) > 1.0e8);
 }
 
+/* A slot is active while its MAC signalling is fresh, or while its audio gate is open until the voice sync is a
+   hangtime old. What the output still holds counts for nothing (issue #651: the P25 Phase 2 playout drains it). */
 static void
-test_p25_slot_activity_honors_ring_and_hangtime(void) {
+test_p25_slot_activity_honors_gate_mac_and_hangtime(void) {
     static dsd_opts opts;
     static dsd_state state;
     int left_active = 0;
@@ -1778,17 +1780,21 @@ test_p25_slot_activity_honors_ring_and_hangtime(void) {
     opts.trunk_hangtime = 2.0f;
     state.p25_p2_last_mac_active_m[0] = 99.8;
     state.p25_p2_last_mac_active_m[1] = 95.0;
-    state.p25_p2_audio_ring_count[0] = 1;
     state.p25_p2_audio_allowed[1] = 1;
-    frame_sync_p25_slot_activity(&opts, &state, (time_t)100, 100.0, 0.75, 0.75, 1.0, &left_active, &right_active);
+    frame_sync_p25_slot_activity(&opts, &state, (time_t)100, 100.0, 0.75, 1.0, &left_active, &right_active);
     assert(left_active == 1);
     assert(right_active == 1);
 
     left_active = 0;
     right_active = 0;
-    frame_sync_p25_slot_activity(&opts, &state, (time_t)100, 100.0, 0.75, 0.75, 2.0, &left_active, &right_active);
+    frame_sync_p25_slot_activity(&opts, &state, (time_t)100, 100.0, 0.75, 2.0, &left_active, &right_active);
     assert(left_active == 1);
     assert(right_active == 0);
+
+    state.p25_p2_last_mac_active_m[0] = 90.0;
+    left_active = 1;
+    frame_sync_p25_slot_activity(&opts, &state, (time_t)100, 100.0, 0.75, 1.0, &left_active, &right_active);
+    assert(left_active == 0);
 }
 
 static void
@@ -3304,7 +3310,7 @@ main(void) {
     test_the_2400_4_proof_suppression_is_scoped_to_its_arming_protocols();
     test_the_2400_4_proof_suppression_survives_symbolcnt_rollover();
     test_elapsed_seconds_prefers_monotonic_then_wall_time();
-    test_p25_slot_activity_honors_ring_and_hangtime();
+    test_p25_slot_activity_honors_gate_mac_and_hangtime();
     test_hamming_helpers_find_best_patterns();
 #ifdef USE_RADIO
     test_sps_hunt_restores_learned_p25p1_cqpsk();

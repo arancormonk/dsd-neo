@@ -1168,15 +1168,6 @@ cli_parse_airspy_option(int argc, char** argv, int i, dsd_opts* opts) {
             LOG_INFO("NOTICE: P25: MAC hold set to %.2fs (CLI).\n", v);                                                \
             continue;                                                                                                  \
         }                                                                                                              \
-        if (strcmp(argv[i], "--p25-ring-hold") == 0 && i + 1 < argc) {                                                 \
-            double v = 0.0;                                                                                            \
-            DSD_CLI_PARSE_DOUBLE_OR_RETURN("--p25-ring-hold", DSD_PARSE_ARGS_NEXT_ARG(), v);                           \
-            char buf[32];                                                                                              \
-            DSD_SNPRINTF(buf, sizeof buf, "%.3f", v);                                                                  \
-            dsd_setenv("DSD_NEO_P25_RING_HOLD", buf, 1);                                                               \
-            LOG_INFO("NOTICE: P25: Ring hold set to %.2fs (CLI).\n", v);                                               \
-            continue;                                                                                                  \
-        }                                                                                                              \
         if (strcmp(argv[i], "--p25-cc-grace") == 0 && i + 1 < argc) {                                                  \
             double v = 0.0;                                                                                            \
             DSD_CLI_PARSE_DOUBLE_OR_RETURN("--p25-cc-grace", DSD_PARSE_ARGS_NEXT_ARG(), v);                            \

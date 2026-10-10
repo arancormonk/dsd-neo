@@ -166,7 +166,6 @@ typedef struct dsdneoRuntimeConfig {
     double p25_grant_timeout_s;
     double p25_cc_grace_s;
     double p25_vc_grace_s;
-    double p25_ring_hold_s;
     double p25_mac_hold_s;
     double p25_voice_hold_s;
 
@@ -255,7 +254,6 @@ typedef struct dsdneoRuntimeConfig {
     int p25_grant_timeout_is_set;
     int p25_cc_grace_is_set;
     int p25_vc_grace_is_set;
-    int p25_ring_hold_is_set;
     int p25_mac_hold_is_set;
     int p25_voice_hold_is_set;
     int p25_wd_ms_is_set;

@@ -34,7 +34,6 @@
 #include <dsd-neo/runtime/colors.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_clock.h>
-#include <dsd-neo/runtime/p25_p2_audio_ring.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/telemetry.h>
 #include <limits.h>
@@ -105,7 +104,6 @@ p25p2_teardown_call(dsd_opts* opts, dsd_state* state) {
     p25_sm_clear_rejected_slot(state, 1);
     p25_crypto_reset_slot(state, 0);
     p25_crypto_reset_slot(state, 1);
-    p25_p2_audio_ring_reset(state, -1);
     dsd_p25p2_playout_reset(state, -1);
     state->p25_p2_last_mac_active[0] = 0;
     state->p25_p2_last_mac_active[1] = 0;
@@ -1813,8 +1811,8 @@ p25p2_duid_post_timeslot(dsd_opts* opts, dsd_state* state, int timeslot_index, i
     }
 }
 
-// A slot still occupies the carrier when its gate is open, it holds buffered
-// audio, or its MAC signaling is fresh inside the hold window. The audio gate
+// A slot still occupies the carrier when its gate is open or its MAC signaling
+// is fresh inside the hold window. The audio gate
 // alone cannot say "idle": an encryption-lockout-suppressed transmission
 // keeps its gate closed for its whole life while MAC_PTT/ACTIVE repeats prove
 // the site is still transmitting on the slot -- the same signals the LCCH
@@ -1824,7 +1822,7 @@ p25p2_duid_post_timeslot(dsd_opts* opts, dsd_state* state, int timeslot_index, i
 // runs unguarded.
 static int
 p25p2_frame_slot_recently_occupied(const dsd_state* state, int slot, double mac_hold_s) {
-    if (state->p25_p2_audio_allowed[slot] || state->p25_p2_audio_ring_count[slot] > 0) {
+    if (state->p25_p2_audio_allowed[slot]) {
         return 1;
     }
     return (state->p25_p2_last_mac_active_m[slot] > 0.0)

@@ -161,7 +161,6 @@ Tip: If paths or names contain spaces, wrap them in single quotes.
 - `--p25-min-follow-dwell <s>` minimum follow dwell after first voice
 - `--p25-grant-voice-timeout <s>` max seconds from grant to voice before returning
 - `--p25-mac-hold <s>` keep MAC activity eligible for audio for this many seconds after the last MAC
-- `--p25-ring-hold <s>` ring gate window (seconds) used when deciding whether a slot still has recent audio activity
 - `--p25-cc-grace <s>` CC hunt grace window; delay hunting for a new control channel by this many seconds after loss
 - `--p25-force-release-extra <s>` safety‑net extra seconds beyond hangtime
 - `--p25-force-release-margin <s>` safety‑net hard margin seconds beyond extra
@@ -1919,7 +1918,6 @@ P25 trunking timing
 - `DSD_NEO_P25_MIN_FOLLOW_DWELL=<seconds>` — minimum follow dwell after first voice
 - `DSD_NEO_P25_GRANT_VOICE_TO=<seconds>` — grant‑to‑voice timeout
 - `DSD_NEO_P25_MAC_HOLD=<seconds>` — keep MAC activity eligible for audio (also via `--p25-mac-hold`)
-- `DSD_NEO_P25_RING_HOLD=<seconds>` — ring gate window for recent audio activity (also via `--p25-ring-hold`)
 - `DSD_NEO_P25_VOICE_HOLD=<seconds>` — voice activity hold window
 - `DSD_NEO_P25_CC_GRACE=<seconds>` — CC hunt grace window (also via `--p25-cc-grace`)
 - `DSD_NEO_P25_FORCE_RELEASE_EXTRA=<seconds>` — safety‑net extra beyond hangtime

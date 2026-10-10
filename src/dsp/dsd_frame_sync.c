@@ -3552,23 +3552,19 @@ frame_sync_elapsed_seconds(double nowm, time_t now, double mono_stamp, time_t wa
     return 1e9;
 }
 
+// A slot is active while its audio gate is open, until the voice sync is a hangtime old, or while its MAC signalling
+// is fresh. What the output still holds is no activity: the P25 Phase 2 playout drains it in either format (issue
+// #651).
 void
 frame_sync_p25_slot_activity(const dsd_opts* opts, const dsd_state* state, time_t now, double nowm, double mac_hold,
-                             double ring_hold, double dt, int* left_active, int* right_active) {
+                             double dt, int* left_active, int* right_active) {
     double l_dmac =
         frame_sync_elapsed_seconds(nowm, now, state->p25_p2_last_mac_active_m[0], state->p25_p2_last_mac_active[0]);
     double r_dmac =
         frame_sync_elapsed_seconds(nowm, now, state->p25_p2_last_mac_active_m[1], state->p25_p2_last_mac_active[1]);
-    int l_ring = (state->p25_p2_audio_ring_count[0] > 0) && (l_dmac <= ring_hold);
-    int r_ring = (state->p25_p2_audio_ring_count[1] > 0) && (r_dmac <= ring_hold);
-    int left_has_audio = state->p25_p2_audio_allowed[0] || l_ring;
-    int right_has_audio = state->p25_p2_audio_allowed[1] || r_ring;
-    if (dt >= opts->trunk_hangtime) {
-        left_has_audio = l_ring;
-        right_has_audio = r_ring;
-    }
-    *left_active = left_has_audio || (l_dmac <= mac_hold);
-    *right_active = right_has_audio || (r_dmac <= mac_hold);
+    const int gates_count = dt < opts->trunk_hangtime;
+    *left_active = (gates_count && state->p25_p2_audio_allowed[0]) || (l_dmac <= mac_hold);
+    *right_active = (gates_count && state->p25_p2_audio_allowed[1]) || (r_dmac <= mac_hold);
 }
 
 static void
@@ -3588,11 +3584,10 @@ frame_sync_no_sync_try_p25_release(dsd_opts* opts, dsd_state* state, time_t now)
     }
     double vc_grace = cfg_hold ? cfg_hold->p25_vc_grace_s : 0.75;
     int is_p2_vc = (state->p25_p2_active_slot != -1);
-    double ring_hold = cfg_hold ? cfg_hold->p25_ring_hold_s : 0.75;
     double mac_hold = cfg_hold ? cfg_hold->p25_mac_hold_s : 0.75;
     int left_active = 0;
     int right_active = 0;
-    frame_sync_p25_slot_activity(opts, state, now, fallback_nowm, mac_hold, ring_hold, dt, &left_active, &right_active);
+    frame_sync_p25_slot_activity(opts, state, now, fallback_nowm, mac_hold, dt, &left_active, &right_active);
     int both_slots_idle = (!is_p2_vc) ? 1 : !(left_active || right_active);
     if (dt >= opts->trunk_hangtime && both_slots_idle && dt_since_tune >= vc_grace) {
         dsd_frame_sync_hook_p25_sm_release(opts, state);
