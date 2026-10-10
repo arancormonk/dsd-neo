@@ -12,7 +12,6 @@
  * 2022-09 DSD-FME Florida Man Edition
  *-----------------------------------------------------------------------------*/
 
-#include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dibit.h>
@@ -20,6 +19,7 @@
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/key_presence.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/p25p2_playout.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/core/vocoder.h>
@@ -34,7 +34,6 @@
 #include <dsd-neo/runtime/colors.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_clock.h>
-#include <dsd-neo/runtime/p25_p2_audio_ring.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/telemetry.h>
 #include <limits.h>
@@ -54,23 +53,33 @@ extern int16_t p2xllr[1400];
 extern int ess_a[2][168];
 extern int16_t ess_a_llr[2][168];
 
-static int
-p25_p2_s16_frames_have_audio(short frames[18][160]) {
-    for (int j = 0; j < 18; j++) {
-        for (int i = 0; i < 160; i++) {
-            if (frames[j][i] != 0) {
-                return 1;
-            }
-        }
+/* The voice burst being decoded, for the playout's per-burst verdict, and the policy verdict the decode gate already
+   evaluated for it, if any (issue #651): the playout then needs no second policy evaluation. */
+static uint32_t s_burst_serial = 0U;
+
+static struct {
+    uint32_t serial;
+    int slot;
+    int valid;
+    dsd_p25p2_burst_decision decision;
+} s_burst_verdict;
+
+static void
+p25p2_note_burst_verdict(int slot, const dsd_p25p2_burst_decision* decision) {
+    s_burst_verdict.valid = decision != NULL;
+    s_burst_verdict.serial = s_burst_serial;
+    s_burst_verdict.slot = slot;
+    if (decision) {
+        s_burst_verdict.decision = *decision;
     }
-    return 0;
 }
 
-static int
-p25p2_next_voice_slot(dsd_state* state, int slot) {
-    int idx = state->voice_counter[slot] % 18;
-    state->voice_counter[slot]++;
-    return idx;
+static const dsd_p25p2_burst_decision*
+p25p2_burst_verdict_for(int slot) {
+    if (s_burst_verdict.valid && s_burst_verdict.serial == s_burst_serial && s_burst_verdict.slot == slot) {
+        return &s_burst_verdict.decision;
+    }
+    return NULL;
 }
 
 // Clear per-slot audio gates, small audio rings, encryption indicators, and
@@ -81,23 +90,10 @@ p25p2_teardown_call(dsd_opts* opts, dsd_state* state) {
     if (!state) {
         return;
     }
-    // Flush any partial superframe worth of decoded audio so short calls
-    // (or late-entry captures that end before a full superframe) still
-    // produce audible output in int16 mode.
-    if (opts && opts->floating_point == 0 && opts->pulse_digi_rate_out == 8000) {
-        int has_l = p25_p2_s16_frames_have_audio(state->s_l4);
-        int has_r = p25_p2_s16_frames_have_audio(state->s_r4);
-        if (has_l || has_r) {
-            // At teardown, slot gates may already be cleared by MAC_END/IDLE.
-            // The s_l4/s_r4 buffers only contain decoded audio when a slot was
-            // allowed at decode time, so use buffer presence as the playback
-            // gate here to avoid dropping the tail of short clear calls.
-            state->p25_p2_audio_allowed[0] = has_l ? 1 : 0;
-            state->p25_p2_audio_allowed[1] = has_r ? 1 : 0;
-            playSynthesizedVoiceSS18(opts, state);
-        }
-        state->voice_counter[0] = 0;
-        state->voice_counter[1] = 0;
+    // Play what both slots still hold before the gates and crypto go: each queued frame carries the verdict it was
+    // decoded with, so the tail of a short call plays in either output format (issue #651).
+    if (opts) {
+        dsd_p25p2_playout_drain(opts, state);
     }
 
     state->p25_p2_audio_allowed[0] = 0;
@@ -108,11 +104,7 @@ p25p2_teardown_call(dsd_opts* opts, dsd_state* state) {
     p25_sm_clear_rejected_slot(state, 1);
     p25_crypto_reset_slot(state, 0);
     p25_crypto_reset_slot(state, 1);
-    p25_p2_audio_ring_reset(state, -1);
-    // Clear buffered short audio frames to avoid replaying stale samples on
-    // subsequent short calls that never reach the normal SS18 playback path.
-    DSD_MEMSET(state->s_l4, 0, sizeof(state->s_l4));
-    DSD_MEMSET(state->s_r4, 0, sizeof(state->s_r4));
+    dsd_p25p2_playout_reset(state, -1);
     state->p25_p2_last_mac_active[0] = 0;
     state->p25_p2_last_mac_active[1] = 0;
     state->p25_p2_last_end_ptt[0] = 0;
@@ -270,7 +262,9 @@ static char ambe_fr2[4][24] = {0};
 static char ambe_fr3[4][24] = {0};
 static char ambe_fr4[4][24] = {0};
 
-static int ts_counter = 0;         //timeslot counter for time slots 0-11
+/* The timeslot being dispatched within the four a processP2() call collects (0-3). It is not a superframe position:
+   that is (p2_scramble_offset + ts_counter) % 12. */
+static int ts_counter = 0;
 int p2bit[4320] = {0};             //4320
 static uint8_t p2lbit[8640] = {0}; //bits generated by LFSR scrambler, doubling up for offset roll-over
 static int p2xbit[4320] = {0};     //bits xored from p2bit and p2lbit
@@ -322,13 +316,47 @@ p25p2_soft_bit_from_abs_bit(int abs_bit) {
     return dsd_vocoder_soft_bit_from_hard_llr(p2xbit[abs_bit], p2xllr[abs_bit]);
 }
 
+/* The token taken when p25p2_process_duid() began dispatching the collected superframe. */
+static p25p2_retune_token s_window_token;
+
+/* Window continuity (issue #651). A window is the four timeslots processP2() collects after a 20-dibit sync; the next
+   one starts 4 timeslots later unless a missed sync skipped some, which the symbol count measures (180 dibits a
+   timeslot). */
+enum {
+    P25P2_SYNC_DIBITS = 20,
+    P25P2_TIMESLOT_DIBITS = 180,
+    P25P2_WINDOW_DIBITS = 700,
+};
+
+static struct {
+    int valid;
+    uint32_t carrier_seq;
+    p25p2_retune_token token;
+    int start;           /* superframe timeslot of the window's timeslot 0 */
+    uint32_t end_symbol; /* dsd_state::symbolcnt after its last dibit */
+} s_prev_window;
+
+/* A channel-1 I-ISCH in the window being collected set p2_scramble_offset. */
+static int s_isch_located = 0;
+
+static int
+p25p2_timeslot_mod12(int timeslot) {
+    return ((timeslot % 12) + 12) % 12;
+}
+
 // Reset all P25P2 frame processing global state variables.
 // This must be called when tuning to a new P25P2 voice channel to clear stale
 // data from the previous channel that would otherwise cause decode failures.
 // The issue manifests as: first P25P2 tune works, but subsequent voice channel
 // grants fail to lock with tanking EVM/SNR until retune to P25P1 control channel.
+//
+// A tune accepted while a superframe is dispatched runs this from inside the dispatch loop, whose loop variable is
+// ts_counter: the token change it makes is what stops that loop (issue #651).
 void
 p25_p2_frame_reset(void) {
+    p25p2_retune_note_frame_reset();
+    s_prev_window.valid = 0;
+    s_isch_located = 0;
     // Reset counters
     ts_counter = 0;
     vc_counter = 0;
@@ -788,10 +816,13 @@ p25p2_process_isch(dsd_opts* opts, dsd_state* state, int framing_index) {
             //relative position to the only chan 1 we should see
             if (chan_num == 1 && isch_loc == 0) {
                 state->p2_scramble_offset = 12 - framing_counter;
+                s_isch_located = 1;
             } else if (chan_num == 1 && isch_loc == 1) {
                 state->p2_scramble_offset = 4 - framing_counter;
+                s_isch_located = 1;
             } else if (chan_num == 1 && isch_loc == 2) {
                 state->p2_scramble_offset = 8 - framing_counter;
+                s_isch_located = 1;
             }
 
         } else {
@@ -897,7 +928,11 @@ p25p2_prepare_voice_crypto(dsd_opts* opts, dsd_state* state) {
     }
     if (p25_crypto_audio_permitted(opts, state, slot)) {
         const int alg = (slot == 0) ? state->payload_algid : state->payload_algidR;
-        state->p25_p2_audio_allowed[slot] = dsd_p25p2_decode_audio_allowed(opts, state, slot, alg);
+        dsd_p25p2_burst_decision decision;
+        int decision_valid = 0;
+        state->p25_p2_audio_allowed[slot] =
+            dsd_p25p2_decode_audio_allowed_verdict(opts, state, slot, alg, &decision, &decision_valid);
+        p25p2_note_burst_verdict(slot, decision_valid ? &decision : NULL);
     }
     p25p2_audio_gate_diag(opts, state, "prepare-voice");
 }
@@ -981,73 +1016,12 @@ p25p2_increment_fourv_counter(dsd_state* state) {
     }
 }
 
-// Wrap only the slot this burst writes. The output stage resets both counters
-// after playback, so a companion counter sitting at a full 18 is a completed
-// superframe still waiting for the next odd-boundary output check — zeroing it
-// here discards it unplayed. With a muted lockout call occupying the other
-// slot, that companion burst runs this reset between the clear slot's
-// superframe completing and the output boundary that would have played it,
-// silencing the clear call for its entire transmission; an idle companion
-// (no voice bursts) never triggered it, which is why only shared-channel
-// calls lost audio.
-static void
-p25p2_reset_voice_counters_if_needed(dsd_state* state) {
-    const int slot = state->currentslot;
-    if ((slot == 0 || slot == 1) && state->voice_counter[slot] >= 18) {
-        state->voice_counter[slot] = 0;
-    }
-}
-
-static void
-p25p2_store_decoded_voice_frame(dsd_state* state, int frame_index, int push_ring) {
-    if (state->currentslot == 0) {
-        int vc_idx = p25p2_next_voice_slot(state, 0);
-        DSD_MEMCPY(state->f_l4[frame_index], state->audio_out_temp_buf, sizeof(state->audio_out_temp_buf));
-        DSD_MEMCPY(state->s_l4[vc_idx], state->s_l, sizeof(state->s_l));
-        DSD_MEMCPY(state->s_l4u[frame_index], state->s_lu, sizeof(state->s_lu));
-        if (push_ring) {
-            p25_p2_audio_ring_push(state, 0, state->f_l4[frame_index]);
-        }
-        return;
-    }
-    int vc_idx = p25p2_next_voice_slot(state, 1);
-    DSD_MEMCPY(state->f_r4[frame_index], state->audio_out_temp_bufR, sizeof(state->audio_out_temp_bufR));
-    DSD_MEMCPY(state->s_r4[vc_idx], state->s_r, sizeof(state->s_r));
-    DSD_MEMCPY(state->s_r4u[frame_index], state->s_ru, sizeof(state->s_ru));
-    if (push_ring) {
-        p25_p2_audio_ring_push(state, 1, state->f_r4[frame_index]);
-    }
-}
-
-static void
-p25p2_zero_voice_frame(dsd_state* state, int frame_index) {
-    // Muted frames must not advance voice_counter: the SS18 output trigger
-    // fires when either slot's counter reaches a full superframe and then
-    // resets both, so a slot that contributes no audible audio (e.g. an
-    // encryption-lockout companion call) advancing its counter de-phases the
-    // clear slot's cadence and forces early, zero-padded superframe emission.
-    // Accepted trade-off: a slot that un-mutes mid-superframe resumes writing
-    // at its frozen index rather than the companion's phase, skewing its audio
-    // within that one superframe until the shared reset realigns both slots.
-    // This matches how an idle slot behaves when a call starts on it
-    // mid-superframe (its counter is equally stale), which is exactly the
-    // "muted companion is indistinguishable from an idle slot" policy.
-    // Because the counter is frozen, vc_idx is constant for the superframe and
-    // only that one s_l4/s_r4 block is re-zeroed here; the other 17 keep stale
-    // pre-mute audio. That is safe only because every downstream consumer
-    // (dsd_p25p2_apply_stereo_output_policy_ss18 and
-    // dsd_audio_reset_short_stereo_working_state) memsets the muted channel
-    // before copying/reusing it -- if that ever changes, this function must
-    // zero the full 18-block extent instead of one slot.
-    if (state->currentslot == 0) {
-        int vc_idx = state->voice_counter[0] % 18;
-        DSD_MEMSET(state->f_l4[frame_index], 0, sizeof(state->f_l4[frame_index]));
-        DSD_MEMSET(state->s_l4[vc_idx], 0, sizeof(state->s_l4[0]));
-        return;
-    }
-    int vc_idx = state->voice_counter[1] % 18;
-    DSD_MEMSET(state->f_r4[frame_index], 0, sizeof(state->f_r4[frame_index]));
-    DSD_MEMSET(state->s_r4[vc_idx], 0, sizeof(state->s_r4[0]));
+/* The superframe pair (0-5) of the timeslot being dispatched: (p2_scramble_offset + ts_counter) % 12 is its
+   superframe timeslot, and a pair is the two slots' timeslots 2b and 2b+1. Pairs 0-4 carry voice, pair 5 the SACCH. */
+static int
+p25p2_pair_index(const dsd_state* state) {
+    const int timeslot = (((state->p2_scramble_offset % 12) + 12) + ts_counter) % 12;
+    return timeslot / 2;
 }
 
 static void
@@ -1064,28 +1038,34 @@ p25p2_open_mbe_for_ready_slot(dsd_opts* opts, dsd_state* state, int slot) {
     }
 }
 
+// Synthesize one frame of the burst and queue it for the slot's playout, or note the gated frame, which closes the
+// slot's stream: a muted slot plays nothing and fills nothing (issue #651).
 static void
-p25p2_decode_and_store_voice_frame(dsd_opts* opts, dsd_state* state, dsd_vocoder_soft_bit ambe_soft[4][24],
-                                   int frame_index, int push_ring) {
+p25p2_decode_and_store_voice_frame(dsd_opts* opts, dsd_state* state, dsd_vocoder_soft_bit ambe_soft[4][24]) {
     int slot = state->currentslot;
     if (slot != 0 && slot != 1) {
-        p25p2_zero_voice_frame(state, frame_index);
         return;
     }
     if (!p25_crypto_audio_permitted(opts, state, slot) || !state->p25_p2_audio_allowed[slot]) {
         dsd_mbe_log_ambe_soft_frame(opts, state, ambe_soft);
-        p25p2_zero_voice_frame(state, frame_index);
+        dsd_p25p2_playout_note_muted(state, slot);
         return;
     }
     p25p2_open_mbe_for_ready_slot(opts, state, slot);
     processMbeFrameSoft(opts, state, NULL, ambe_soft, NULL);
-    p25p2_store_decoded_voice_frame(state, frame_index, push_ring);
+    dsd_p25p2_playout_stage_decided(opts, state, slot, p25p2_pair_index(state), s_burst_serial,
+                                    p25p2_burst_verdict_for(slot));
 }
+
+/* What the timeslot being dispatched carried for its slot, for dsd_p25p2_playout_burst_done(). */
+static dsd_p25p2_burst_kind s_ts_kind = DSD_P25P2_BURST_LOST;
 
 static void
 process_4V(dsd_opts* opts, dsd_state* state) {
     dsd_vocoder_soft_bit ambe_soft[4][4][24] = {{{{0}}}};
 
+    s_burst_serial++;
+    s_ts_kind = DSD_P25P2_BURST_4V;
     p25p2_prepare_voice_crypto(opts, state);
     p25p2_emit_voice_activity(opts, state);
     p25p2_unpack_voice_frames(4, ambe_soft);
@@ -1095,12 +1075,10 @@ process_4V(dsd_opts* opts, dsd_state* state) {
     if (opts->payload == 1) {
         DSD_FPRINTF(stderr, "\n");
     }
-    p25p2_reset_voice_counters_if_needed(state);
 
-    p25p2_decode_and_store_voice_frame(opts, state, ambe_soft[0], 0, 1);
-    p25p2_decode_and_store_voice_frame(opts, state, ambe_soft[1], 1, 0);
-    p25p2_decode_and_store_voice_frame(opts, state, ambe_soft[2], 2, 0);
-    p25p2_decode_and_store_voice_frame(opts, state, ambe_soft[3], 3, 0);
+    for (int frame = 0; frame < 4; frame++) {
+        p25p2_decode_and_store_voice_frame(opts, state, ambe_soft[frame]);
+    }
 }
 
 /* The ESS helpers take the burst's slot, which p25p2_process_ess() checked once (0 or 1), and never re-read
@@ -1248,8 +1226,13 @@ p25p2_ess_maybe_enable_audio_slot(const dsd_opts* opts, dsd_state* state, int sl
     if (crypto == DSD_P25_CRYPTO_UNKNOWN || crypto == DSD_P25_CRYPTO_ENCRYPTED_PENDING) {
         return;
     }
-    if (dsd_p25p2_decode_audio_allowed(opts, state, slot, alg)) {
+    dsd_p25p2_burst_decision decision;
+    int decision_valid = 0;
+    if (dsd_p25p2_decode_audio_allowed_verdict(opts, state, slot, alg, &decision, &decision_valid)) {
         state->p25_p2_audio_allowed[slot] = 1;
+    }
+    if (decision_valid) {
+        p25p2_note_burst_verdict(slot, &decision);
     }
 }
 
@@ -1414,24 +1397,32 @@ p25p2_has_deferred_rekeys(const dsd_state* state) {
     return state && (state->p25_p2_rekey[0].pending || state->p25_p2_rekey[1].pending);
 }
 
+/* Timeslots that passed without being dispatched (the rest of a window a second DUID error aborted, or a window a
+   missed sync skipped) retire as lost: each slot's open stream fills its missed voice burst in place and every
+   completed pair plays, so the two slots stay on the air timeline (issue #651). As after a dispatched pair, a deferred
+   rekey is promoted once its pair has played, before the next voice burst decodes. @p first is a superframe
+   timeslot. */
 static void
-p25p2_resolve_deferred_rekeys_on_abort(dsd_opts* opts, dsd_state* state) {
+p25p2_retire_timeslots(dsd_opts* opts, dsd_state* state, int first, int count) {
+    for (int i = 0; i < count; i++) {
+        const int timeslot = ((first + i) % 12 + 12) % 12;
+        const int slot = timeslot & 1;
+        dsd_p25p2_playout_burst_done(opts, state, slot, timeslot / 2, DSD_P25P2_BURST_LOST);
+        if (slot == 1) {
+            dsd_p25p2_playout_pair_done(opts, state);
+            p25p2_commit_deferred_rekeys(opts, state);
+        }
+    }
+}
+
+/* A rekey whose pair will not complete (an abort, or a window that broke continuity) is promoted at once: the pairs
+   before the boundary already played or stay queued as PCM, and applying the identity purges the abandoned old-key
+   vocoder state before subsequent voice decodes. */
+static void
+p25p2_resolve_deferred_rekeys(dsd_opts* opts, dsd_state* state) {
     if (!p25p2_has_deferred_rekeys(state)) {
         return;
     }
-
-    if (opts && opts->pulse_digi_rate_out == 8000) {
-        if (opts->floating_point == 1) {
-            playSynthesizedVoiceFS4(opts, state);
-        } else if (opts->floating_point == 0) {
-            playSynthesizedVoiceSS18(opts, state);
-            state->voice_counter[0] = 0;
-            state->voice_counter[1] = 0;
-        }
-    }
-
-    // If no output path is active, applying the identity still purges the
-    // abandoned old-key buffers before subsequent voice can be decoded.
     p25p2_commit_deferred_rekeys(opts, state);
 }
 
@@ -1512,6 +1503,8 @@ void
 process_2V(dsd_opts* opts, dsd_state* state) {
     dsd_vocoder_soft_bit ambe_soft[4][4][24] = {{{{0}}}};
 
+    s_burst_serial++;
+    s_ts_kind = DSD_P25P2_BURST_2V;
     p25p2_prepare_voice_crypto(opts, state);
     p25p2_emit_voice_activity(opts, state);
     p25p2_unpack_voice_frames(2, ambe_soft);
@@ -1522,9 +1515,8 @@ process_2V(dsd_opts* opts, dsd_state* state) {
         DSD_FPRINTF(stderr, "\n");
     }
 
-    p25p2_reset_voice_counters_if_needed(state);
-    p25p2_decode_and_store_voice_frame(opts, state, ambe_soft[0], 0, 0);
-    p25p2_decode_and_store_voice_frame(opts, state, ambe_soft[1], 1, 1);
+    p25p2_decode_and_store_voice_frame(opts, state, ambe_soft[0]);
+    p25p2_decode_and_store_voice_frame(opts, state, ambe_soft[1]);
     p25p2_post_2v_reset_crypto_state(state);
 }
 
@@ -1605,25 +1597,40 @@ p25p2_duid_set_channel_label_and_sacch(dsd_opts* opts, dsd_state* state) {
     return 1;
 }
 
+// Whether an LCCH burst on a tuned carrier has outlived its voice: the hangtime passed with no voice, the carrier is
+// past its tune grace, and (trunking) neither slot's MAC signalling is fresh.
 static int
-p25p2_duid_compute_pending_release(dsd_opts* opts, dsd_state* state, time_t now) {
+p25p2_duid_lcch_idle_past_hangtime(const dsd_opts* opts, const dsd_state* state, time_t now) {
     if (duid_decoded != 13 || opts->trunk_is_tuned != 1 || ((now - state->last_vc_sync_time) <= opts->trunk_hangtime)) {
         return 0;
     }
-
     double vc_grace = p25p2_frame_vc_grace_s(0.75);
     double dt_since_tune = (state->p25_last_vc_tune_time != 0) ? (double)(now - state->p25_last_vc_tune_time) : 1e9;
-    if (dt_since_tune < vc_grace) {
+    return dt_since_tune >= vc_grace;
+}
+
+// The trunking LCCH release verdict: idle past the hangtime with neither slot's MAC signalling fresh. Pure, so the
+// LCCH branch can ask it again once the burst's MAC PDU has run (issue #651).
+static int
+p25p2_duid_lcch_release_due(const dsd_opts* opts, const dsd_state* state, time_t now) {
+    if (opts->trunk_enable != 1 || !p25p2_duid_lcch_idle_past_hangtime(opts, state, now)) {
         return 0;
     }
-
     double mac_hold = p25p2_frame_mac_hold_s(0.75);
     int left_mac_active = (state->p25_p2_last_mac_active_m[0] > 0.0)
                           && (dsd_decode_now_mono_s() - state->p25_p2_last_mac_active_m[0]) <= mac_hold;
     int right_mac_active = (state->p25_p2_last_mac_active_m[1] > 0.0)
                            && (dsd_decode_now_mono_s() - state->p25_p2_last_mac_active_m[1]) <= mac_hold;
+    return !(left_mac_active || right_mac_active);
+}
+
+static int
+p25p2_duid_compute_pending_release(dsd_opts* opts, dsd_state* state, time_t now) {
+    if (!p25p2_duid_lcch_idle_past_hangtime(opts, state, now)) {
+        return 0;
+    }
     if (opts->trunk_enable == 1) {
-        return !(left_mac_active || right_mac_active);
+        return p25p2_duid_lcch_release_due(opts, state, now);
     }
 
     const double ended_m = dsd_decode_now_mono_s();
@@ -1634,10 +1641,7 @@ p25p2_duid_compute_pending_release(dsd_opts* opts, dsd_state* state, time_t now)
     }
     state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
     (void)dsd_recent_activity_clear_all(state);
-    state->voice_counter[0] = 0;
-    state->voice_counter[1] = 0;
-    DSD_MEMSET(state->s_l4, 0, sizeof(state->s_l4));
-    DSD_MEMSET(state->s_r4, 0, sizeof(state->s_r4));
+    dsd_p25p2_playout_discard(opts, state);
     opts->trunk_is_tuned = 0;
     return 0;
 }
@@ -1647,10 +1651,7 @@ p25p2_duid_clear_idle_state(const dsd_opts* opts, dsd_state* state, time_t now) 
     UNUSED(now);
     if (duid_decoded == 13 && opts->trunk_is_tuned == 0
         && dsd_recent_activity_expire(state, 0U, DSD_RECENT_ACTIVITY_TTL_MS) > 0) {
-        state->voice_counter[0] = 0;
-        state->voice_counter[1] = 0;
-        DSD_MEMSET(state->s_l4, 0, sizeof(state->s_l4));
-        DSD_MEMSET(state->s_r4, 0, sizeof(state->s_r4));
+        dsd_p25p2_playout_reset(state, -1);
     }
 }
 
@@ -1662,45 +1663,92 @@ p25p2_duid_refresh_recent_voice(const dsd_opts* opts, dsd_state* state, time_t n
     }
 }
 
+/* Whether the window being dispatched knows its superframe position: a channel-1 I-ISCH decoded in it, or its symbol
+   distance from the previous window proved where it starts (issue #651). Without it the slot parity and the
+   descrambler offset are guesses, and no slot-attributed burst may act. */
+static int s_window_proven = 1;
+
+// A voice burst (DUID 0: 4V, 6: 2V), decoded only on a site whose descrambler seed is set.
+static void
+p25p2_duid_dispatch_voice(dsd_opts* opts, dsd_state* state, time_t now, int valid_site) {
+    if (duid_decoded == 0) {
+        DSD_FPRINTF(stderr, " 4V %d", state->fourv_counter[state->currentslot] + 1);
+    } else {
+        DSD_FPRINTF(stderr, " 2V");
+    }
+    if (!valid_site) {
+        return;
+    }
+    p25p2_duid_refresh_recent_voice(opts, state, now);
+    if (duid_decoded == 0) {
+        process_4V(opts, state);
+    } else {
+        process_2V(opts, state);
+    }
+}
+
+// Return to the control channel, and tear the call down only once the receiver has left the voice channel: a return
+// the tuner refuses or defers (or a reacquire the state machine holds the channel for) keeps the channel, and with it
+// the slots' gates, crypto and queued voice (issue #651).
+static void
+p25p2_release_then_teardown(dsd_opts* opts, dsd_state* state, const char* reason) {
+    p25_sm_release(NULL, opts, state, reason);
+    if (opts->trunk_is_tuned == 1 && p25_sm_get_state(p25_sm_get_ctx()) == P25_SM_TUNED) {
+        return;
+    }
+    p25p2_teardown_call(opts, state);
+}
+
+// An LCCH (DUID 13). The verdict computed before the burst is stale once its MAC PDU ran: a retune it accepted moved
+// the receiver (the token), and an assignment it accepted on this carrier refreshed the voice and tune times the
+// verdict reads. Release only if it still holds (issue #651).
+static void
+p25p2_duid_dispatch_lcch(dsd_opts* opts, dsd_state* state, time_t now, int p2_pending_release) {
+    s_ts_kind = DSD_P25P2_BURST_OTHER;
+    state->p2_is_lcch = 1;
+    p25p2_process_sacchc(opts, state, ts_counter);
+    if (p2_pending_release && !p25p2_retune_token_changed(&s_window_token)
+        && p25p2_duid_lcch_release_due(opts, state, now)) {
+        p25p2_release_then_teardown(opts, state, "p2-lcch-timeout");
+    }
+}
+
 static void DSD_ATTR_USED
 p25p2_duid_dispatch(dsd_opts* opts, dsd_state* state, time_t now, int p2_pending_release, int* err_counter) {
     int valid_site = p25p2_duid_has_valid_site(state);
+    s_ts_kind = DSD_P25P2_BURST_LOST;
+    if (!s_window_proven && duid_decoded != 13 && duid_decoded != 4) {
+        // Voice, FACCH and SACCH name their slot by the timeslot parity this window cannot prove: a CRC proves a MAC
+        // payload, not which slot it belongs to.
+        DSD_FPRINTF(stderr, " (unaligned)");
+        return;
+    }
     switch (duid_decoded) {
         case 0:
-            DSD_FPRINTF(stderr, " 4V %d", state->fourv_counter[state->currentslot] + 1);
-            if (valid_site) {
-                p25p2_duid_refresh_recent_voice(opts, state, now);
-                process_4V(opts, state);
-            }
-            break;
-        case 6:
-            DSD_FPRINTF(stderr, " 2V");
-            if (valid_site) {
-                p25p2_duid_refresh_recent_voice(opts, state, now);
-                process_2V(opts, state);
-            }
-            break;
+        case 6: p25p2_duid_dispatch_voice(opts, state, now, valid_site); break;
         case 3:
+            s_ts_kind = DSD_P25P2_BURST_SACCH;
             if (valid_site) {
                 process_SACCHs(opts, state);
             }
             break;
-        case 12: p25p2_process_sacchc(opts, state, ts_counter); break;
-        case 15: p25p2_process_facchc(opts, state, ts_counter); break;
+        case 12:
+            s_ts_kind = DSD_P25P2_BURST_SACCH;
+            p25p2_process_sacchc(opts, state, ts_counter);
+            break;
+        case 15:
+            s_ts_kind = DSD_P25P2_BURST_OTHER;
+            p25p2_process_facchc(opts, state, ts_counter);
+            break;
         case 9:
+            s_ts_kind = DSD_P25P2_BURST_OTHER;
             if (valid_site) {
                 process_FACCHs(opts, state);
             }
             break;
-        case 13:
-            state->p2_is_lcch = 1;
-            p25p2_process_sacchc(opts, state, ts_counter);
-            if (p2_pending_release) {
-                p25p2_teardown_call(opts, state);
-                p25_sm_release(NULL, opts, state, "p2-lcch-timeout");
-            }
-            break;
+        case 13: p25p2_duid_dispatch_lcch(opts, state, now, p2_pending_release); break;
         case 4:
+            s_ts_kind = DSD_P25P2_BURST_OTHER;
             if (valid_site) {
                 state->p2_is_lcch = 1;
                 process_SACCHs(opts, state);
@@ -1719,42 +1767,19 @@ p25p2_duid_should_abort(dsd_opts* opts, dsd_state* state, int err_counter) {
         return 0;
     }
 
-    p25p2_resolve_deferred_rekeys_on_abort(opts, state);
+    // The aborting timeslot and the rest of the window pass undispatched: they retire as lost.
+    p25p2_retire_timeslots(opts, state, state->p2_scramble_offset + ts_counter, 4 - ts_counter);
+    p25p2_resolve_deferred_rekeys(opts, state);
     state->p2_is_lcch = 0;
     state->fourv_counter[0] = 0;
     state->fourv_counter[1] = 0;
-    state->voice_counter[0] = 0;
-    state->voice_counter[1] = 0;
-    return 1;
-}
-
-static int
-p25p2_duid_output_float_pair(dsd_opts* opts, dsd_state* state, int sacch_status, int output_pair) {
-    if (!output_pair || opts->floating_point != 1 || opts->pulse_digi_rate_out != 8000
-        || (sacch_status != 0 && !p25p2_has_deferred_rekeys(state))) {
-        return 0;
-    }
-    playSynthesizedVoiceFS4(opts, state);
-    return 1;
-}
-
-static int
-p25p2_duid_output_short_pair(dsd_opts* opts, dsd_state* state, int output_pair) {
-    const int output_ready =
-        state->voice_counter[0] >= 18 || state->voice_counter[1] >= 18 || p25p2_has_deferred_rekeys(state);
-    if (!output_pair || !output_ready || opts->floating_point != 0 || opts->pulse_digi_rate_out != 8000) {
-        return 0;
-    }
-    playSynthesizedVoiceSS18(opts, state);
-    state->voice_counter[0] = 0;
-    state->voice_counter[1] = 0;
     return 1;
 }
 
 void
 p25p2_duid_post_timeslot(dsd_opts* opts, dsd_state* state, int timeslot_index, int sacch_status) {
     ts_counter = timeslot_index;
-    const int output_pair = (ts_counter & 1) != 0;
+    UNUSED(sacch_status);
 
     dsd_event_sync_slot(opts, state, 0);
     dsd_event_sync_slot(opts, state, 1);
@@ -1765,14 +1790,19 @@ p25p2_duid_post_timeslot(dsd_opts* opts, dsd_state* state, int timeslot_index, i
 
     vc_counter = vc_counter + 360;
 
-    int audio_drained = p25p2_duid_output_float_pair(opts, state, sacch_status, output_pair);
-    audio_drained |= p25p2_duid_output_short_pair(opts, state, output_pair);
-    if (audio_drained) {
-        // Both logical slots have reached the output stage. Promote any ESS
-        // identity changes only now so their purge cannot discard or decrypt
-        // the completed boundary superframe with the next stream.
+    // The playout learns what this timeslot carried for its slot; after slot 2's timeslot the pair is complete and
+    // plays (issue #651).
+    const int slot = state->currentslot;
+    if (slot == 0 || slot == 1) {
+        dsd_p25p2_playout_burst_done(opts, state, slot, p25p2_pair_index(state), s_ts_kind);
+    }
+    if (slot == 1) {
+        dsd_p25p2_playout_pair_done(opts, state);
+        // The pair's frames have played: promote any ESS identity change only now, so its purge cannot reach the
+        // audio decoded under the old one. Every pair commits, whatever the output format or rate.
         p25p2_commit_deferred_rekeys(opts, state);
     }
+    s_ts_kind = DSD_P25P2_BURST_LOST;
 
     if (state->currentslot == 0) {
         state->currentslot = 1;
@@ -1781,8 +1811,8 @@ p25p2_duid_post_timeslot(dsd_opts* opts, dsd_state* state, int timeslot_index, i
     }
 }
 
-// A slot still occupies the carrier when its gate is open, it holds buffered
-// audio, or its MAC signaling is fresh inside the hold window. The audio gate
+// A slot still occupies the carrier when its gate is open or its MAC signaling
+// is fresh inside the hold window. The audio gate
 // alone cannot say "idle": an encryption-lockout-suppressed transmission
 // keeps its gate closed for its whole life while MAC_PTT/ACTIVE repeats prove
 // the site is still transmitting on the slot -- the same signals the LCCH
@@ -1792,7 +1822,7 @@ p25p2_duid_post_timeslot(dsd_opts* opts, dsd_state* state, int timeslot_index, i
 // runs unguarded.
 static int
 p25p2_frame_slot_recently_occupied(const dsd_state* state, int slot, double mac_hold_s) {
-    if (state->p25_p2_audio_allowed[slot] || state->p25_p2_audio_ring_count[slot] > 0) {
+    if (state->p25_p2_audio_allowed[slot]) {
         return 1;
     }
     return (state->p25_p2_last_mac_active_m[slot] > 0.0)
@@ -1814,8 +1844,7 @@ p25p2_duid_fallback_release(dsd_opts* opts, dsd_state* state) {
     double vc_grace = p25p2_frame_vc_grace_s(0.75);
     if (no_recent_voice && both_slots_idle && dt_since_tune >= vc_grace) {
         state->p25_sm_force_release = 1;
-        p25p2_teardown_call(opts, state);
-        p25_sm_release(NULL, opts, state, "p2-duid-timeout");
+        p25p2_release_then_teardown(opts, state, "p2-duid-timeout");
     }
 }
 
@@ -1824,6 +1853,7 @@ p25p2_process_duid(dsd_opts* opts, dsd_state* state) {
     vc_counter = 0;
     int err_counter = 0;
     const time_t now = dsd_decode_time();
+    s_window_token = p25p2_retune_token_now();
 
     for (ts_counter = 0; ts_counter < 4; ts_counter++) {
         duid_decoded = -2;
@@ -1834,11 +1864,21 @@ p25p2_process_duid(dsd_opts* opts, dsd_state* state) {
         int p2_pending_release = p25p2_duid_compute_pending_release(opts, state, now);
         p25p2_duid_clear_idle_state(opts, state, now);
         p25p2_duid_dispatch(opts, state, now, p2_pending_release, &err_counter);
+        // A retune accepted by this burst (a grant, a return to the control channel) left the channel these bursts
+        // were collected on; p25_p2_frame_reset() may also have zeroed the loop variable and the bit buffers, which
+        // would otherwise replay the remaining timeslots as phantom 4V bursts (issue #651).
+        if (p25p2_retune_token_changed(&s_window_token)) {
+            return;
+        }
         if (p25p2_duid_should_abort(opts, state, err_counter)) {
             return;
         }
 
         p25p2_duid_post_timeslot(opts, state, ts_counter, sacch_status);
+        // A deferred rekey committed after the timeslot can lock the call out and return to the control channel.
+        if (p25p2_retune_token_changed(&s_window_token)) {
+            return;
+        }
     }
 
     p25p2_duid_fallback_release(opts, state);
@@ -1850,9 +1890,10 @@ p25p2_frame_forget_carrier(dsd_state* state) {
         return;
     }
     state->p2_is_lcch = 0;
+    // What the playout still holds was decoded on the carrier left; the engine's carrier boundary has drained it.
+    dsd_p25p2_playout_reset(state, -1);
     for (int slot = 0; slot < 2; slot++) {
         state->fourv_counter[slot] = 0;
-        state->voice_counter[slot] = 0;
         DSD_MEMSET(&state->p25_p2_rekey[slot], 0, sizeof(state->p25_p2_rekey[slot]));
         /* With weak ESS_A symbols a 2V burst's decode erases all of the parity and returns whatever ESS_B it holds, so
            the carrier left's would come back as the new carrier's ALG/KID/MI: it goes, and stays unread until a 4V
@@ -1863,8 +1904,61 @@ p25p2_frame_forget_carrier(dsd_state* state) {
     }
 }
 
+/* Where the window just collected sits in the superframe (issue #651). Its symbol distance from the previous window
+   on this carrier says whether a missed sync skipped timeslots, and how many; a decoded channel-1 I-ISCH says where it
+   starts. Returns 1 when the position is proven: by the ISCH, or (no ISCH decoded) by continuity, which then sets the
+   descrambler offset the stale ISCH value would otherwise leave 4 timeslots behind. Skipped timeslots to retire come
+   back in @p retire_first (superframe timeslot) and @p retire_count. A displacement nothing explains, or an ISCH start
+   that contradicts continuity, breaks the playout's timeline (both streams close, so nothing fills across the gap, and
+   what follows starts a later pair) and sets @p broken: the pair a deferred rekey waits for will not complete. */
+static int
+p25p2_window_position(dsd_state* state, uint32_t entry_symbol, int* retire_first, int* retire_count, int* broken) {
+    *retire_first = 0;
+    *retire_count = 0;
+    int expected = -1;
+    int close_streams = 0;
+    if (s_prev_window.valid && s_prev_window.carrier_seq == state->carrier_seq
+        && !p25p2_retune_token_changed(&s_prev_window.token)) {
+        const uint32_t delta = entry_symbol - s_prev_window.end_symbol;
+        if (delta == P25P2_SYNC_DIBITS) {
+            expected = p25p2_timeslot_mod12(s_prev_window.start + 4);
+        } else if (delta > P25P2_SYNC_DIBITS && ((delta - P25P2_SYNC_DIBITS) % P25P2_TIMESLOT_DIBITS) == 0U) {
+            const uint32_t skipped = (delta - P25P2_SYNC_DIBITS) / P25P2_TIMESLOT_DIBITS;
+            expected = p25p2_timeslot_mod12(s_prev_window.start + 4 + (int)(skipped % 12U));
+            if (skipped >= 12U) {
+                close_streams = 1;
+            } else {
+                *retire_first = p25p2_timeslot_mod12(s_prev_window.start + 4);
+                *retire_count = (int)skipped;
+            }
+        } else {
+            close_streams = 1;
+        }
+    }
+    int proven = s_isch_located;
+    if (proven) {
+        if (expected >= 0 && p25p2_timeslot_mod12(state->p2_scramble_offset) != expected) {
+            close_streams = 1;
+            *retire_count = 0;
+        }
+    } else if (expected >= 0) {
+        state->p2_scramble_offset = expected;
+        proven = 1;
+    }
+    if (!proven) {
+        close_streams = 1;
+        *retire_count = 0;
+    }
+    if (close_streams) {
+        dsd_p25p2_playout_break(state);
+    }
+    *broken = close_streams;
+    return proven;
+}
+
 void
 processP2(dsd_opts* opts, dsd_state* state) {
+    const uint32_t entry_symbol = state->symbolcnt;
     state->dmr_stereo = 1;
     /* A superframe belongs to one carrier (issue #575). What the slots gathered over superframes of a carrier the
        receiver has since left goes before this one is collected; a superframe the carrier boundary split while it was
@@ -1886,9 +1980,21 @@ processP2(dsd_opts* opts, dsd_state* state) {
     }
 
     //look at our ISCH values and determine location in superframe before running frame scramble
+    s_isch_located = 0;
     for (framing_counter = 0; framing_counter < 4; framing_counter++) {
         //run ISCH in here so we know when to start descramble offset
         p25p2_process_isch(opts, state, framing_counter);
+    }
+    const p25p2_retune_token window_token = p25p2_retune_token_now();
+    int retire_first = 0;
+    int retire_count = 0;
+    int broken = 0;
+    s_window_proven = p25p2_window_position(state, entry_symbol, &retire_first, &retire_count, &broken);
+    p25p2_window_set_slot_unproven(!s_window_proven);
+    if (!s_window_proven) {
+        // A MAC assembly continued from a window whose slot parity is unknown could complete against the wrong
+        // slot: none is kept, and the VPDU drops this window's fragments.
+        DSD_MEMSET(state->p25_mac_frag, 0, sizeof(state->p25_mac_frag));
     }
 
     //set initial current slot depending on offset value
@@ -1901,8 +2007,30 @@ processP2(dsd_opts* opts, dsd_state* state) {
     //frame_scramble runs lfsr and creates an array of unscrambled bits to pull from
     p25p2_process_frame_scramble(opts, state);
 
+    // Timeslots a missed sync skipped play as lost before this window's bursts; after a break in continuity a deferred
+    // rekey is promoted before them. A rekey promoted either way can lock the call out and leave the channel, and then
+    // nothing of this window dispatches.
+    if (broken) {
+        p25p2_resolve_deferred_rekeys(opts, state);
+    }
+    if (retire_count > 0) {
+        p25p2_retire_timeslots(opts, state, retire_first, retire_count);
+    }
+
     //process DUID will run through all collected frames and handle them appropriately
-    p25p2_process_duid(opts, state);
+    if (!p25p2_retune_token_changed(&window_token)) {
+        p25p2_process_duid(opts, state);
+    }
+
+    // The next window measures its position from this one, unless this one's position was a guess or a retune
+    // moved the receiver while it was dispatched.
+    s_prev_window.valid = s_window_proven && !p25p2_retune_token_changed(&window_token);
+    s_prev_window.carrier_seq = state->carrier_seq;
+    s_prev_window.token = window_token;
+    s_prev_window.start = p25p2_timeslot_mod12(state->p2_scramble_offset);
+    s_prev_window.end_symbol = entry_symbol + P25P2_WINDOW_DIBITS;
+    s_window_proven = 1;
+    p25p2_window_set_slot_unproven(0);
 
     state->dmr_stereo = 0;
     state->p2_is_lcch = 0;

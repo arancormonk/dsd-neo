@@ -8,6 +8,7 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/p25p2_playout.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -15,9 +16,12 @@
 #include <dsd-neo/core/vocoder.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/protocol/p25/p25.h>
+#include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25p2_frame.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
+#include <dsd-neo/runtime/udp_audio_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -42,12 +46,18 @@ test_tune_request(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, 
     return freq > 0 ? DSD_TRUNK_TUNE_RESULT_OK : DSD_TRUNK_TUNE_RESULT_FAILED;
 }
 
+/* What the tuner answers a return to the control channel. */
+static dsd_trunk_tune_result g_return_result = DSD_TRUNK_TUNE_RESULT_OK;
+
+static int g_return_calls = 0;
+
 static dsd_trunk_tune_result
 test_return_request(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
     (void)opts;
     (void)state;
     (void)request_id;
-    return DSD_TRUNK_TUNE_RESULT_OK;
+    g_return_calls++;
+    return g_return_result;
 }
 
 static void
@@ -123,12 +133,11 @@ static int g_sacch_mac_calls = 0;
 static int g_sacch_mac_last_opcode = -1;
 static int g_isch_lookup_result = -1;
 static uint8_t g_isch_last_reliab[40] = {0};
-static int g_ss18_calls = 0;
-static int g_ss18_allowed_l = -1;
-static int g_ss18_allowed_r = -1;
-static int g_ss18_pending_at_call = -1;
-static int g_ss18_keyid_at_call = -1;
-static int g_ss18_voice_count_at_call = -1;
+/* Blocks the Phase 2 playout emitted, and the slot-0 crypto tuple and first sample when the first one played. */
+static int g_out_calls = 0;
+static int g_out_pending_at_call = -1;
+static int g_out_keyid_at_call = -1;
+static int g_out_first_left = 0;
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
@@ -188,31 +197,15 @@ closeMbeOutFileR(dsd_opts* opts, dsd_state* state) {
     (void)state;
 }
 
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-playSynthesizedVoiceFS4(dsd_opts* opts, dsd_state* state) {
+static void
+capture_output(const dsd_opts* opts, dsd_state* state, size_t bytes, const void* data) {
     (void)opts;
-    (void)state;
-}
-
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-playSynthesizedVoiceSS18(dsd_opts* opts, dsd_state* state) {
-    (void)opts;
-    g_ss18_calls++;
-    g_ss18_allowed_l = state ? state->p25_p2_audio_allowed[0] : -1;
-    g_ss18_allowed_r = state ? state->p25_p2_audio_allowed[1] : -1;
-    g_ss18_pending_at_call = state ? state->p25_p2_rekey[0].pending : -1;
-    g_ss18_keyid_at_call = state ? state->payload_keyid : -1;
-    g_ss18_voice_count_at_call = state ? state->voice_counter[0] : -1;
-}
-
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-dsd_p25p2_flush_partial_audio_slot(dsd_opts* opts, dsd_state* state, int slot) {
-    (void)opts;
-    (void)state;
-    (void)slot;
+    if (g_out_calls == 0) {
+        g_out_pending_at_call = state ? state->p25_p2_rekey[0].pending : -1;
+        g_out_keyid_at_call = state ? state->payload_keyid : -1;
+        g_out_first_left = (data && bytes >= sizeof(short)) ? ((const short*)data)[0] : 0;
+    }
+    g_out_calls++;
 }
 
 void
@@ -329,10 +322,18 @@ p25_lfsr128_slot(dsd_state* state, int slot) {
     g_lfsr128_last_slot = slot;
 }
 
+/* Set to 0 while a fed window is read: the window's first ISCH then decodes as channel 1's first I-ISCH, which proves
+   the window's position in the superframe (issue #651: a window whose position nothing proves dispatches no
+   slot-attributed burst). -1 otherwise. */
+static int g_isch_feed_calls = -1;
+
 int
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 isch_lookup(uint64_t isch) {
     (void)isch;
+    if (g_isch_feed_calls >= 0) {
+        return (g_isch_feed_calls++ == 0) ? ((1 << 5) | (0 << 3)) : -1;
+    }
     return g_isch_lookup_result;
 }
 
@@ -388,11 +389,17 @@ ez_rs28_ess(int* payload, int* parity, const int* erasures, int n_erasures) {
     return -1;
 }
 
-/* MAC PDU handlers */
+/* MAC PDU handlers. A hook set on the SACCH one runs as its MAC PDU does: a grant accepted inside it, for one. The
+   FACCH one sees the state its burst dispatches in. */
+static void (*g_sacch_mac_hook)(dsd_opts* opts, dsd_state* state) = NULL;
+static void (*g_facch_mac_hook)(dsd_opts* opts, dsd_state* state) = NULL;
+
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int* bits) {
-    (void)opts;
+    if (g_sacch_mac_hook) {
+        g_sacch_mac_hook(opts, state);
+    }
     mac_stub_end_calls(state);
     g_sacch_mac_calls++;
     g_sacch_mac_last_opcode = (bits[0] << 2) | (bits[1] << 1) | bits[2];
@@ -401,7 +408,9 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int* bits) {
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 process_FACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int* bits) {
-    (void)opts;
+    if (g_facch_mac_hook) {
+        g_facch_mac_hook(opts, state);
+    }
     mac_stub_end_calls(state);
     g_facch_mac_calls++;
     g_facch_mac_last_opcode = (bits[0] << 2) | (bits[1] << 1) | bits[2];
@@ -424,6 +433,9 @@ getDibitSoft(dsd_opts* opts, dsd_state* state, dsd_dibit_soft_t* out_soft) {
             state->carrier_seq++;
         }
         dibit = g_dibit_feed[g_dibit_feed_pos++];
+        if (state) {
+            state->symbolcnt++; /* as the symbol reader counts every dibit */
+        }
     }
     if (out_soft) {
         out_soft->reliability = 128;
@@ -487,16 +499,28 @@ reset_xcch_stubs(void) {
     g_sacch_mac_last_opcode = -1;
     g_isch_lookup_result = -1;
     DSD_MEMSET(g_isch_last_reliab, 0, sizeof(g_isch_last_reliab));
+    g_sacch_mac_hook = NULL;
+    g_facch_mac_hook = NULL;
 }
 
 static void
 reset_playback_stub(void) {
-    g_ss18_calls = 0;
-    g_ss18_allowed_l = -1;
-    g_ss18_allowed_r = -1;
-    g_ss18_pending_at_call = -1;
-    g_ss18_keyid_at_call = -1;
-    g_ss18_voice_count_at_call = -1;
+    g_out_calls = 0;
+    g_out_pending_at_call = -1;
+    g_out_keyid_at_call = -1;
+    g_out_first_left = 0;
+}
+
+/* The int16 output the playout writes, captured through the UDP blast hook. */
+static void
+enable_captured_output(dsd_opts* opts) {
+    opts->floating_point = 0;
+    opts->pulse_digi_rate_out = 8000;
+    opts->audio_out = 1;
+    opts->audio_out_type = 8;
+    opts->slot1_on = 1;
+    opts->slot2_on = 1;
+    dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){.blast = capture_output});
 }
 
 static void
@@ -528,19 +552,6 @@ expect_int(const char* tag, int got, int want) {
     if (got != want) {
         DSD_FPRINTF(stderr, "%s: got %d want %d\n", tag, got, want);
         return 1;
-    }
-    return 0;
-}
-
-static int
-expect_s16_clear(const char* tag, short frames[18][160]) {
-    for (int j = 0; j < 18; j++) {
-        for (int i = 0; i < 160; i++) {
-            if (frames[j][i] != 0) {
-                DSD_FPRINTF(stderr, "%s: frame[%d][%d] remained %d\n", tag, j, i, frames[j][i]);
-                return 1;
-            }
-        }
     }
     return 0;
 }
@@ -1058,10 +1069,10 @@ seed_teardown_dirty_state(dsd_state* state) {
     state->p25_p2_audio_allowed[1] = 0;
     state->p25_crypto_state[0] = DSD_P25_CRYPTO_BLOCKED;
     state->p25_crypto_state[1] = DSD_P25_CRYPTO_BLOCKED;
-    state->p25_p2_audio_ring_count[0] = 2;
-    state->p25_p2_audio_ring_count[1] = 3;
-    state->voice_counter[0] = 7;
-    state->voice_counter[1] = 9;
+    state->p25p2_playout.slot[0].open = 1U;
+    state->p25p2_playout.slot[0].phase_2v = 3;
+    state->p25p2_playout.slot[1].open = 1U;
+    state->p25p2_playout.slot[1].fill_debt = 2;
     state->p25_p2_last_mac_active[0] = 111;
     state->p25_p2_last_mac_active[1] = 222;
     state->p25_p2_last_end_ptt[0] = 333;
@@ -1083,10 +1094,12 @@ expect_teardown_common_reset(const dsd_state* state) {
     rc |= expect_int("teardown gate right", state->p25_p2_audio_allowed[1], 0);
     rc |= expect_int("teardown crypto left", state->p25_crypto_state[0], DSD_P25_CRYPTO_UNKNOWN);
     rc |= expect_int("teardown crypto right", state->p25_crypto_state[1], DSD_P25_CRYPTO_UNKNOWN);
-    rc |= expect_int("teardown ring left", state->p25_p2_audio_ring_count[0], 0);
-    rc |= expect_int("teardown ring right", state->p25_p2_audio_ring_count[1], 0);
-    rc |= expect_int("teardown voice counter left", state->voice_counter[0], 0);
-    rc |= expect_int("teardown voice counter right", state->voice_counter[1], 0);
+    rc |= expect_int("teardown playout left closed", state->p25p2_playout.slot[0].open, 0);
+    rc |= expect_int("teardown playout left phase reset", state->p25p2_playout.slot[0].phase_2v, -1);
+    rc |= expect_int("teardown playout left empty", dsd_p25p2_playout_level(state, 0), 0);
+    rc |= expect_int("teardown playout right closed", state->p25p2_playout.slot[1].open, 0);
+    rc |= expect_int("teardown playout right debt reset", state->p25p2_playout.slot[1].fill_debt, 0);
+    rc |= expect_int("teardown playout right empty", dsd_p25p2_playout_level(state, 1), 0);
     rc |= expect_int("teardown mac active left", (int)state->p25_p2_last_mac_active[0], 0);
     rc |= expect_int("teardown mac active right", (int)state->p25_p2_last_mac_active[1], 0);
     rc |= expect_int("teardown end ptt left", (int)state->p25_p2_last_end_ptt[0], 0);
@@ -1109,25 +1122,31 @@ test_teardown_flushes_partial_int16_audio_and_resets_call_state(void) {
     DSD_MEMSET(&state, 0, sizeof(state));
     reset_playback_stub();
 
-    opts.floating_point = 0;
-    opts.pulse_digi_rate_out = 8000;
+    enable_captured_output(&opts);
     seed_teardown_dirty_state(&state);
-    state.s_l4[2][17] = 123;
-    state.s_r4[4][31] = -234;
+    /* One frame each slot admitted while its call was clear, still queued when the call tears down. */
+    state.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
+    state.p25_crypto_state[1] = DSD_P25_CRYPTO_CLEAR;
+    for (int i = 0; i < 160; i++) {
+        state.s_l[i] = 123;
+        state.s_r[i] = -234;
+    }
+    dsd_p25p2_playout_stage(&opts, &state, 0, 2, 1U, NULL);
+    dsd_p25p2_playout_stage(&opts, &state, 1, 2, 1U, NULL);
+    state.p25_crypto_state[0] = DSD_P25_CRYPTO_BLOCKED;
+    state.p25_crypto_state[1] = DSD_P25_CRYPTO_BLOCKED;
 
     p25p2_teardown_call(&opts, &state);
 
     int rc = 0;
-    rc |= expect_int("teardown playback calls", g_ss18_calls, 1);
-    rc |= expect_int("teardown playback gate left", g_ss18_allowed_l, 1);
-    rc |= expect_int("teardown playback gate right", g_ss18_allowed_r, 1);
+    rc |= expect_int("teardown plays the queued frames", g_out_calls, 1);
+    rc |= expect_int("teardown plays the admitted audio", g_out_first_left, 123);
     rc |= expect_teardown_common_reset(&state);
     rc |= expect_call_state("teardown retains left call until release", &state, 0U, DSD_CALL_PHASE_ACTIVE, 4100U, 5100U,
                             1U, 5U);
     rc |= expect_call_state("teardown retains right call until release", &state, 1U, DSD_CALL_PHASE_ACTIVE, 4200U,
                             5200U, 1U, 6U);
-    rc |= expect_s16_clear("teardown clear left short audio", state.s_l4);
-    rc |= expect_s16_clear("teardown clear right short audio", state.s_r4);
+    dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
 
     if (rc == 0) {
         printf("PASS\n");
@@ -1147,17 +1166,15 @@ test_teardown_without_partial_int16_audio_skips_playback_but_clears_state(void) 
     DSD_MEMSET(&state, 0, sizeof(state));
     reset_playback_stub();
 
-    opts.floating_point = 0;
-    opts.pulse_digi_rate_out = 8000;
+    enable_captured_output(&opts);
     seed_teardown_dirty_state(&state);
 
     p25p2_teardown_call(&opts, &state);
 
     int rc = 0;
-    rc |= expect_int("teardown no-audio playback calls", g_ss18_calls, 0);
-    rc |= expect_int("teardown no-audio playback left unchanged", g_ss18_allowed_l, -1);
-    rc |= expect_int("teardown no-audio playback right unchanged", g_ss18_allowed_r, -1);
+    rc |= expect_int("teardown no-audio playback calls", g_out_calls, 0);
     rc |= expect_teardown_common_reset(&state);
+    dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
     rc |= expect_call_state("no-audio teardown retains left call until release", &state, 0U, DSD_CALL_PHASE_ACTIVE,
                             4100U, 5100U, 1U, 5U);
     rc |= expect_call_state("no-audio teardown retains right call until release", &state, 1U, DSD_CALL_PHASE_ACTIVE,
@@ -1191,8 +1208,7 @@ test_duid_invalid_burst_aborts_without_reopening_crypto(void) {
     state.p25_crypto_state[1] = DSD_P25_CRYPTO_BLOCKED;
     state.fourv_counter[0] = 3;
     state.fourv_counter[1] = 4;
-    state.voice_counter[0] = 5;
-    state.voice_counter[1] = 6;
+    dsd_p25p2_playout_reset(&state, -1);
     seed_duid_bits(0, 0x03U);
     seed_duid_bits(1, 0x03U);
 
@@ -1208,8 +1224,10 @@ test_duid_invalid_burst_aborts_without_reopening_crypto(void) {
     rc |= expect_int("invalid abort state right sticky", state.p25_crypto_state[1], DSD_P25_CRYPTO_BLOCKED);
     rc |= expect_int("invalid abort fourv left", state.fourv_counter[0], 0);
     rc |= expect_int("invalid abort fourv right", state.fourv_counter[1], 0);
-    rc |= expect_int("invalid abort voice left", state.voice_counter[0], 0);
-    rc |= expect_int("invalid abort voice right", state.voice_counter[1], 0);
+    /* The aborted window's timeslots retire through the playout: both slots reached the window's last pair. */
+    rc |= expect_int("invalid abort retires slot 1's timeslots", state.p25p2_playout.slot[0].cur_pair, 1);
+    rc |= expect_int("invalid abort retires slot 2's timeslots", state.p25p2_playout.slot[1].cur_pair, 1);
+    rc |= expect_int("invalid abort retired the last timeslot", state.p25p2_playout.slot[1].cur_pair_done, 1);
     if (rc == 0) {
         printf("PASS\n");
     } else {
@@ -1220,7 +1238,7 @@ test_duid_invalid_burst_aborts_without_reopening_crypto(void) {
 
 static int
 test_duid_abort_resolves_staged_rekey(void) {
-    printf("Test 28: DUID abort drains and resolves a staged rekey... ");
+    printf("Test 28: DUID abort plays the retired pair and then resolves a staged rekey... ");
     static dsd_opts opts;
     static dsd_state state;
     DSD_MEMSET(&opts, 0, sizeof(opts));
@@ -1230,9 +1248,10 @@ test_duid_abort_resolves_staged_rekey(void) {
     reset_xcch_stubs();
     reset_playback_stub();
 
-    opts.floating_point = 0;
-    opts.pulse_digi_rate_out = 8000;
+    enable_captured_output(&opts);
     opts.trunk_tune_enc_calls = 0;
+    dsd_p25p2_playout_reset(&state, -1);
+    seed_p25p2_call(&state, 0U, 4100U, 5100U, 0x40U, 0U, 4U);
     state.currentslot = 0;
     state.p2_wacn = 1;
     state.p2_cc = 0x123;
@@ -1256,17 +1275,17 @@ test_duid_abort_resolves_staged_rekey(void) {
     p25p2_process_duid(&opts, &state);
 
     int rc = 0;
-    rc |= expect_int("abort rekey partial drain calls", g_ss18_calls, 1);
-    rc |= expect_int("abort rekey pending during drain", g_ss18_pending_at_call, 1);
-    rc |= expect_int("abort rekey old key during drain", g_ss18_keyid_at_call, 0x2468);
-    // The 2V frames here are muted (slot gate closed), and muted frames no
-    // longer advance voice_counter, so the drain sees an empty buffer.
-    rc |= expect_int("abort rekey partial frame count", g_ss18_voice_count_at_call, 0);
+    // The 2V's two frames, decoded under the old identity, play when the abort retires the pair; only then is the
+    // new identity promoted.
+    rc |= expect_int("abort rekey plays the 2V frames", g_out_calls, 2);
+    rc |= expect_int("abort rekey plays the old stream's audio", g_out_first_left, 321);
+    rc |= expect_int("abort rekey pending during output", g_out_pending_at_call, 1);
+    rc |= expect_int("abort rekey old key during output", g_out_keyid_at_call, 0x2468);
     rc |= expect_int("abort rekey transition cleared", state.p25_p2_rekey[0].pending, 0);
     rc |= expect_int("abort rekey alg promoted", state.payload_algid, 0xAA);
     rc |= expect_int("abort rekey key promoted", state.payload_keyid, 0x1357);
-    rc |= expect_int("abort rekey voice left reset", state.voice_counter[0], 0);
-    rc |= expect_int("abort rekey voice right reset", state.voice_counter[1], 0);
+    rc |= expect_int("abort rekey playout emptied", dsd_p25p2_playout_level(&state, 0), 0);
+    dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
     if (rc == 0) {
         printf("PASS\n");
     } else {
@@ -1426,7 +1445,23 @@ read_fed_superframe(dsd_opts* opts, dsd_state* state, int boundary_at) {
     g_dibit_feed_pos = 0;
     g_dibit_feed_boundary_at = boundary_at;
     g_dibit_feed_active = 1;
+    g_isch_feed_calls = 0;
     processP2(opts, state);
+    g_isch_feed_calls = -1;
+    g_dibit_feed_active = 0;
+}
+
+/* The fed window again as the next one read on the carrier, @p gap dibits after the previous window ended (its sync
+   alone is 20), with its ISCH decoded or not (issue #651). */
+static void
+read_fed_window(dsd_opts* opts, dsd_state* state, uint32_t gap, int isch_located) {
+    state->symbolcnt += gap;
+    g_dibit_feed_pos = 0;
+    g_dibit_feed_boundary_at = -1;
+    g_dibit_feed_active = 1;
+    g_isch_feed_calls = isch_located ? 0 : -1;
+    processP2(opts, state);
+    g_isch_feed_calls = -1;
     g_dibit_feed_active = 0;
 }
 
@@ -1485,23 +1520,25 @@ test_superframe_split_by_a_carrier_boundary_is_dropped(void) {
     /* Between superframes: the next one decodes, and what the slots gathered before the move is gone. */
     run_fed_superframe(&opts, &state, scrambled_facch, -1);
     state.fourv_counter[0] = 2;
-    state.voice_counter[0] = 7;
+    state.p25p2_playout.slot[0].open = 1U;
+    state.p25p2_playout.slot[0].phase_2v = 2;
     state.p25_p2_rekey[0].pending = 1U;
     state.carrier_seq++;
     reset_xcch_stubs();
     read_fed_superframe(&opts, &state, -1);
     rc |= expect_int("next superframe decodes", g_facch_mac_calls, 4);
     rc |= expect_int("ESS fragments of the carrier left go", state.fourv_counter[0], 0);
-    rc |= expect_int("partial voice superframe of the carrier left goes", state.voice_counter[0], 0);
+    rc |= expect_int("voice stream of the carrier left goes", state.p25p2_playout.slot[0].open, 0);
+    rc |= expect_int("voice phase of the carrier left goes", state.p25p2_playout.slot[0].phase_2v, -1);
     rc |= expect_int("staged rekey of the carrier left goes", (int)state.p25_p2_rekey[0].pending, 0);
 
     /* No move: the slots keep what they gathered. */
     state.fourv_counter[0] = 2;
-    state.voice_counter[0] = 7;
+    state.p25p2_playout.slot[0].phase_2v = 2;
     reset_xcch_stubs();
     read_fed_superframe(&opts, &state, -1);
     rc |= expect_int("same carrier keeps the ESS fragments", state.fourv_counter[0], 2);
-    rc |= expect_int("same carrier keeps the partial voice superframe", state.voice_counter[0], 7);
+    rc |= expect_int("same carrier keeps the voice phase", state.p25p2_playout.slot[0].phase_2v, 2);
 
     reset_xcch_stubs();
     reset_ess_stubs();
@@ -1672,6 +1709,431 @@ test_duid_lcch_release_tears_down_after_vc_grace(void) {
     return rc;
 }
 
+/* A grant accepted inside a burst's MAC PDU retunes: the engine runs p25_p2_frame_reset() for a TDMA voice channel,
+   which here the hook does once. */
+static int g_retune_hook_fired = 0;
+
+static void
+sacch_hook_retune_once(dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    (void)state;
+    if (!g_retune_hook_fired) {
+        g_retune_hook_fired = 1;
+        p25_p2_frame_reset();
+    }
+}
+
+/* An assignment accepted on the tuned TDMA carrier (its idle slot): no retune, but the grant refreshes the carrier's
+   voice and tune times, as p25_grant_refresh_reused_carrier_watchdogs() does. */
+static void
+sacch_hook_reused_carrier_grant_once(dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    if (!g_retune_hook_fired && state) {
+        g_retune_hook_fired = 1;
+        state->last_vc_sync_time = dsd_decode_time();
+        state->p25_last_vc_tune_time = dsd_decode_time();
+        state->last_vc_sync_time_m = dsd_decode_now_mono_s();
+        state->p25_last_vc_tune_time_m = dsd_decode_now_mono_s();
+    }
+}
+
+/* A retune accepted inside a burst ends the superframe's dispatch (issue #651): p25_p2_frame_reset() zeroes the loop's
+   timeslot counter and the bit buffers, and the rest of the window used to replay as phantom 4V bursts (all-zero
+   DUIDs decode as 4V), publishing voice activity against the new assignment. */
+static int
+test_retune_inside_dispatch_stops_the_window(void) {
+    printf("Test 40: retune inside dispatch stops the window... ");
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_xcch_stubs();
+    prepare_lcch_release_duids();
+    state.p2_wacn = 1;
+    state.p2_sysid = 1;
+    state.p2_cc = 0x123;
+    state.currentslot = 0;
+    g_retune_hook_fired = 0;
+    g_sacch_mac_hook = sacch_hook_retune_once;
+
+    p25p2_process_duid(&opts, &state);
+
+    int rc = 0;
+    rc |= expect_int("retune one burst dispatched", g_sacch_mac_calls, 1);
+    rc |= expect_int("retune no phantom 4V slot1", state.fourv_counter[0], 0);
+    rc |= expect_int("retune no phantom 4V slot2", state.fourv_counter[1], 0);
+    rc |= expect_int("retune no phantom voice time", state.last_vc_sync_time != 0, 0);
+    printf(rc == 0 ? "PASS\n" : "FAIL\n");
+    g_sacch_mac_hook = NULL;
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+/* An aged LCCH whose own MAC PDU accepted a retune or an assignment on the tuned carrier must not then tear down and
+   release on the verdict computed before the burst (issue #651). */
+static int
+test_lcch_timeout_reevaluated_after_its_mac_pdu(void) {
+    printf("Test 41: LCCH timeout re-evaluated after its MAC PDU... ");
+    int rc = 0;
+    for (int variant = 0; variant < 2; variant++) {
+        static dsd_opts opts;
+        static dsd_state state;
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        reset_xcch_stubs();
+        reset_playback_stub();
+        prepare_lcch_release_duids();
+
+        time_t now = time(NULL);
+        opts.floating_point = 0;
+        opts.pulse_digi_rate_out = 8000;
+        opts.trunk_enable = 1;
+        opts.trunk_is_tuned = 1;
+        opts.trunk_hangtime = 1;
+        state.currentslot = 0;
+        seed_p25p2_call(&state, 0U, 4100U, 5100U, 0x00U, 0U, 0U);
+        state.last_vc_sync_time = now - 10;
+        state.p25_last_vc_tune_time = now - 10;
+        set_p25_vc_grace("0.25");
+        g_retune_hook_fired = 0;
+        g_sacch_mac_hook = (variant == 0) ? sacch_hook_retune_once : sacch_hook_reused_carrier_grant_once;
+
+        p25p2_process_duid(&opts, &state);
+        set_p25_vc_grace(NULL);
+
+        const char* const tags[2][3] = {
+            {"retune no release force", "retune call kept", "retune not released"},
+            {"reused grant no release force", "reused grant call kept", "reused grant not released"}};
+        rc |= expect_int(tags[variant][0], state.p25_sm_force_release, 0);
+        rc |= expect_call_state(tags[variant][1], &state, 0U, DSD_CALL_PHASE_ACTIVE, 4100U, 5100U, 0U, 0U);
+        rc |= expect_int(tags[variant][2], opts.trunk_is_tuned, 1);
+        g_sacch_mac_hook = NULL;
+        dsd_state_ext_free_all(&state);
+    }
+    printf(rc == 0 ? "PASS\n" : "FAIL\n");
+    return rc;
+}
+
+/* Issue #651: where a window sits in the superframe follows from the symbol count since the previous window on the
+   carrier. A window whose ISCH failed descrambles at the timeslot continuity proves, not at the previous window's
+   offset; whole timeslots a missed sync skipped advance it; a displacement no whole number of timeslots explains
+   proves nothing, and a window nothing proves dispatches no slot-attributed burst until an ISCH locates one again. */
+static int
+test_window_position_follows_the_symbol_count(void) {
+    printf("Test 42: window position follows the symbol count between windows... ");
+    static dsd_opts opts;
+    static dsd_state state;
+    static const uint8_t scrambled_facch[4] = {0x9AU, 0x9AU, 0x9AU, 0x9AU};
+    int rc = 0;
+
+    run_fed_superframe(&opts, &state, scrambled_facch, -1);
+    rc |= expect_int("located window starts the superframe", state.p2_scramble_offset % 12, 0);
+    rc |= expect_int("located window dispatches its FACCHs", g_facch_mac_calls, 4);
+
+    reset_xcch_stubs();
+    read_fed_window(&opts, &state, 20U, 0);
+    rc |= expect_int("contiguous window without ISCH sits 4 timeslots on", state.p2_scramble_offset, 4);
+    rc |= expect_int("contiguous window dispatches its FACCHs", g_facch_mac_calls, 4);
+
+    reset_xcch_stubs();
+    read_fed_window(&opts, &state, 20U + 720U, 0);
+    rc |= expect_int("a missed window skips 4 timeslots", state.p2_scramble_offset, 0);
+    rc |= expect_int("after a missed window the FACCHs dispatch", g_facch_mac_calls, 4);
+
+    reset_xcch_stubs();
+    read_fed_window(&opts, &state, 20U + 180U, 0);
+    rc |= expect_int("reacquired a timeslot late: odd start", state.p2_scramble_offset, 5);
+    rc |= expect_int("odd start begins on slot 2", (int)state.currentslot, 1);
+    rc |= expect_int("odd start dispatches its FACCHs", g_facch_mac_calls, 4);
+
+    reset_xcch_stubs();
+    read_fed_window(&opts, &state, 20U + 7U, 0);
+    rc |= expect_int("unexplained displacement dispatches no FACCH", g_facch_mac_calls, 0);
+    reset_xcch_stubs();
+    read_fed_window(&opts, &state, 20U, 0);
+    rc |= expect_int("nothing to measure from after it", g_facch_mac_calls, 0);
+    reset_xcch_stubs();
+    read_fed_window(&opts, &state, 20U, 1);
+    rc |= expect_int("an ISCH locates the window again", g_facch_mac_calls, 4);
+
+    reset_xcch_stubs();
+    printf(rc == 0 ? "PASS\n" : "FAIL\n");
+    return rc;
+}
+
+/* Issue #651: the timeslots of a window a missed sync skipped retire as lost, so an open voice stream fills each voice
+   burst it missed in place, and the pairs they complete play: here slot 1's pairs 2 and 3 (4 frames each) and, in the
+   window read, its pair 4 (its 2V, 2 frames) taken by a FACCH. */
+static int
+test_missed_window_fills_in_place(void) {
+    printf("Test 43: a missed window's voice bursts fill in place... ");
+    static dsd_opts opts;
+    static dsd_state state;
+    static const uint8_t scrambled_facch[4] = {0x9AU, 0x9AU, 0x9AU, 0x9AU};
+    int rc = 0;
+
+    run_fed_superframe(&opts, &state, scrambled_facch, -1);
+    reset_playback_stub();
+    enable_captured_output(&opts);
+    seed_p25p2_call(&state, 0U, 4100U, 5100U, 0x00U, 0U, 0U);
+    dsd_call_snapshot call;
+    rc |= expect_int("missed window call", dsd_call_state_get(&state, 0U, &call) > 0, 1);
+    state.p25_p2_audio_allowed[0] = 1;
+    state.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
+    dsd_p25p2_playout_slot* stream = &state.p25p2_playout.slot[0];
+    stream->open = 1U;
+    stream->epoch = call.epoch;
+    stream->phase_2v = 4;
+    stream->phase_proven = 1U;
+    stream->provisional = -1;
+    stream->verdict = (dsd_p25p2_playout_verdict){0U, 0U, 1U, 1U};
+    stream->cur_pair = 1;
+    stream->cur_pair_done = 1U;
+    state.p25p2_playout.slot[1].cur_pair = -1;
+    state.p25p2_playout.slot[1].phase_2v = -1;
+    state.p25p2_playout.slot[1].provisional = -1;
+
+    reset_xcch_stubs();
+    read_fed_window(&opts, &state, 20U + 720U, 0);
+    rc |= expect_int("missed window plays its lost bursts as silence", g_out_calls, 4 + 4 + 2);
+    rc |= expect_int("missed window silence", g_out_first_left, 0);
+    rc |= expect_int("missed window stream stays open", stream->open, 1);
+
+    dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
+    reset_xcch_stubs();
+    dsd_state_ext_free_all(&state);
+    printf(rc == 0 ? "PASS\n" : "FAIL\n");
+    return rc;
+}
+
+/* Issue #651: a window nothing locates still dispatches its LCCH (unscrambled, it decodes without the offset), but no
+   MAC message assembled across windows may complete in it: the slot it would complete against is a guess. */
+static int
+test_unproven_window_keeps_lcch_drops_assemblies(void) {
+    printf("Test 44: an unproven window keeps its LCCH and drops pending assemblies... ");
+    static dsd_opts opts;
+    static dsd_state state;
+    static const uint8_t lcch[4] = {0xD1U, 0xD1U, 0xD1U, 0xD1U};
+    int rc = 0;
+
+    run_fed_superframe(&opts, &state, lcch, -1);
+    const int located_calls = g_sacch_mac_calls;
+    rc |= expect_int("located LCCH window dispatches", located_calls > 0, 1);
+    state.p25_mac_frag[0].active = 1U;
+    state.p25_mac_frag[0].collected = 7U;
+    state.p25_mac_frag[1].active = 1U;
+    state.p25_mac_frag[1].collected = 9U;
+
+    reset_xcch_stubs();
+    read_fed_window(&opts, &state, 20U + 7U, 0);
+    rc |= expect_int("unproven window still dispatches its LCCH", g_sacch_mac_calls, located_calls);
+    rc |= expect_int("unproven window drops slot 1's assembly", state.p25_mac_frag[0].active, 0);
+    rc |= expect_int("unproven window drops slot 2's assembly", state.p25_mac_frag[1].active, 0);
+
+    reset_xcch_stubs();
+    printf(rc == 0 ? "PASS\n" : "FAIL\n");
+    return rc;
+}
+
+/* Issue #651: an LCCH timeout releases to the control channel before it tears the call down. A return the tuner
+   refuses keeps the voice channel, and with it the slots' gates, crypto, calls and voice streams; the release stays
+   latched for the next tick. */
+static int
+test_lcch_timeout_refused_return_keeps_the_channel(void) {
+    printf("Test 45: LCCH timeout with a refused return keeps the voice channel... ");
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_xcch_stubs();
+    reset_playback_stub();
+    prepare_lcch_release_duids();
+
+    time_t now = time(NULL);
+    opts.floating_point = 0;
+    opts.pulse_digi_rate_out = 8000;
+    opts.trunk_enable = 1;
+    opts.trunk_is_tuned = 1;
+    opts.trunk_hangtime = 1;
+    state.currentslot = 0;
+    seed_p25p2_call(&state, 0U, 4100U, 5100U, 0x00U, 0U, 0U);
+    state.p25_p2_audio_allowed[0] = 1;
+    state.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
+    dsd_p25p2_playout_reset(&state, -1);
+    dsd_p25p2_playout_stage(&opts, &state, 0, 0, 1U, NULL);
+    state.last_vc_sync_time = now - 10;
+    state.p25_last_vc_tune_time = now - 10;
+    set_p25_vc_grace("0.25");
+    p25_sm_ctx_t* sm = p25_sm_get_ctx();
+    p25_sm_init_ctx(sm, &opts, &state);
+    sm->state = P25_SM_TUNED;
+    sm->vc_is_tdma = 1;
+    sm->vc_freq_hz = 852000000;
+    state.p25_cc_freq = 851000000;
+    g_return_result = DSD_TRUNK_TUNE_RESULT_FAILED;
+
+    p25p2_process_duid(&opts, &state);
+    g_return_result = DSD_TRUNK_TUNE_RESULT_OK;
+    set_p25_vc_grace(NULL);
+
+    int rc = 0;
+    rc |= expect_int("refused return keeps the channel tuned", opts.trunk_is_tuned, 1);
+    rc |= expect_int("refused return stays latched", state.p25_sm_force_release, 1);
+    rc |= expect_int("refused return keeps the gate", state.p25_p2_audio_allowed[0], 1);
+    rc |= expect_int("refused return keeps the crypto", state.p25_crypto_state[0], DSD_P25_CRYPTO_CLEAR);
+    rc |= expect_int("refused return keeps the voice stream", state.p25p2_playout.slot[0].open, 1);
+    rc |= expect_call_state("refused return keeps the call", &state, 0U, DSD_CALL_PHASE_ACTIVE, 4100U, 5100U, 0U, 0U);
+    p25_sm_init_ctx(sm, &opts, &state);
+    reset_xcch_stubs();
+    printf(rc == 0 ? "PASS\n" : "FAIL\n");
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+/* A tuned TDMA voice channel whose @p slot carries a call that claims encrypted service, assigned in the state machine,
+   with a rekey staged to an algorithm it holds no key for: once promoted, encryption lockout releases the channel, the
+   companion slot being idle. */
+static void
+arm_lockout_release(dsd_opts* opts, dsd_state* state, int slot) {
+    opts->trunk_enable = 1;
+    opts->trunk_is_tuned = 1;
+    opts->trunk_tune_enc_calls = 0;
+    opts->trunk_tune_group_calls = 1;
+    state->lastsynctype = DSD_SYNC_P25P2_POS;
+    state->p25_cc_freq = 851000000;
+    seed_p25p2_call(state, (uint8_t)slot, 5678U, 9000U, 0x40U, 0U, 0U);
+    p25_sm_ctx_t* sm = p25_sm_get_ctx();
+    p25_sm_init_ctx(sm, opts, state);
+    sm->state = P25_SM_TUNED;
+    sm->vc_is_tdma = 1;
+    sm->vc_freq_hz = 852000000;
+    sm->config.hangtime_s = 2.0;
+    sm->t_tune_m = 1.0;
+    sm->t_voice_m = 1.0;
+    sm->slots[slot].grant_active = 1;
+    sm->slots[slot].freq_hz = sm->vc_freq_hz;
+    sm->slots[slot].channel = 0x2000 | slot;
+    sm->slots[slot].target_id = 5678;
+    sm->slots[slot].ota_tg = 5678;
+    sm->slots[slot].tg = 5678;
+    sm->slots[slot].is_group = 1;
+    state->p25_p2_rekey[slot].pending = 1U;
+    state->p25_p2_rekey[slot].algid = 0x84U;
+    state->p25_p2_rekey[slot].keyid = 0x2710U;
+    state->p25_p2_rekey[slot].mi = 0x1111222233334444ULL;
+}
+
+static int g_rekey_pending_at_first_facch = -1;
+
+static void
+facch_hook_note_rekey(dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    if (g_rekey_pending_at_first_facch < 0) {
+        g_rekey_pending_at_first_facch = state->p25_p2_rekey[0].pending;
+    }
+}
+
+/* Issue #651: a pair that retiring the timeslots a missed sync skipped completes promotes a deferred rekey there, as a
+   dispatched pair does, so the next window's first burst decodes under the new identity. A promotion that locks its
+   call out and returns to the control channel ends the window: nothing of it dispatches on the channel left. */
+static int
+test_retired_pair_promotes_a_deferred_rekey(void) {
+    printf("Test 46: a retired pair promotes a deferred rekey... ");
+    static dsd_opts opts;
+    static dsd_state state;
+    static const uint8_t scrambled_facch[4] = {0x9AU, 0x9AU, 0x9AU, 0x9AU};
+    int rc = 0;
+
+    // Slot 1's last burst of an odd window staged a rekey to clear; slot 2's timeslot that completes the pair is missed.
+    run_fed_superframe(&opts, &state, scrambled_facch, -1);
+    reset_xcch_stubs();
+    read_fed_window(&opts, &state, 20U + 180U, 0);
+    rc |= expect_int("rekey window starts odd", state.p2_scramble_offset, 5);
+    state.payload_algid = 0xAA;
+    state.payload_keyid = 0x1234;
+    state.p25_p2_rekey[0].pending = 1U;
+    state.p25_p2_rekey[0].algid = 0x80U;
+    state.p25_p2_rekey[0].keyid = 0U;
+    state.p25_p2_rekey[0].mi = 0ULL;
+    reset_xcch_stubs();
+    g_rekey_pending_at_first_facch = -1;
+    g_facch_mac_hook = facch_hook_note_rekey;
+    read_fed_window(&opts, &state, 20U + 180U, 0);
+    rc |= expect_int("the missed timeslot completes the pair", state.p2_scramble_offset, 10);
+    rc |= expect_int("the rekey is promoted before the next burst", g_rekey_pending_at_first_facch, 0);
+    rc |= expect_int("the promoted identity", state.payload_algid, 0x80);
+    rc |= expect_int("the window dispatches", g_facch_mac_calls, 4);
+    dsd_state_ext_free_all(&state);
+
+    // Slot 2's staged rekey locks its call out; with slot 1 idle the channel is released to the control channel.
+    run_fed_superframe(&opts, &state, scrambled_facch, -1);
+    reset_xcch_stubs();
+    read_fed_window(&opts, &state, 20U + 180U, 0);
+    arm_lockout_release(&opts, &state, 1);
+    reset_xcch_stubs();
+    g_return_calls = 0;
+    read_fed_window(&opts, &state, 20U + 180U, 0);
+    rc |= expect_int("the lockout returns to the control channel", g_return_calls, 1);
+    rc |= expect_int("nothing of the window dispatches after", g_facch_mac_calls, 0);
+
+    p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
+    reset_xcch_stubs();
+    dsd_state_ext_free_all(&state);
+    printf(rc == 0 ? "PASS\n" : "FAIL\n");
+    return rc;
+}
+
+/* Slot 1's rekey to clear staged by the last burst of an odd window read after a fed superframe (issue #651). */
+static void
+stage_rekey_after_an_odd_window(dsd_opts* opts, dsd_state* state, const uint8_t duids[4]) {
+    run_fed_superframe(opts, state, duids, -1);
+    reset_xcch_stubs();
+    read_fed_window(opts, state, 20U + 180U, 0);
+    state->payload_algid = 0xAA;
+    state->payload_keyid = 0x1234;
+    state->p25_p2_rekey[0].pending = 1U;
+    state->p25_p2_rekey[0].algid = 0x80U;
+    state->p25_p2_rekey[0].keyid = 0U;
+    state->p25_p2_rekey[0].mi = 0ULL;
+    reset_xcch_stubs();
+    g_rekey_pending_at_first_facch = -1;
+    g_facch_mac_hook = facch_hook_note_rekey;
+}
+
+/* Issue #651: a window that breaks continuity (a displacement no whole number of timeslots explains) leaves the pair a
+   deferred rekey waits for unfinished: the rekey is promoted before the window's first burst decodes, whether an ISCH
+   locates that window or only a later one, and the playout's timeline breaks there. */
+static int
+test_broken_continuity_promotes_a_deferred_rekey(void) {
+    printf("Test 47: a break in continuity promotes a deferred rekey... ");
+    static dsd_opts opts;
+    static dsd_state state;
+    static const uint8_t scrambled_facch[4] = {0x9AU, 0x9AU, 0x9AU, 0x9AU};
+    int rc = 0;
+
+    stage_rekey_after_an_odd_window(&opts, &state, scrambled_facch);
+    const uint32_t clock_before = state.p25p2_playout.pair_clock;
+    read_fed_window(&opts, &state, 20U + 7U, 1);
+    rc |= expect_int("the located window dispatches", g_facch_mac_calls, 4);
+    // Its two pairs, after the break the playout marks: what it queues starts a later pair than any tail before it.
+    rc |= expect_int("the break starts a later pair", (int)(state.p25p2_playout.pair_clock - clock_before), 3);
+    rc |= expect_int("its first burst decodes under the new identity", g_rekey_pending_at_first_facch, 0);
+    rc |= expect_int("the promoted identity", state.payload_algid, 0x80);
+    dsd_state_ext_free_all(&state);
+
+    stage_rekey_after_an_odd_window(&opts, &state, scrambled_facch);
+    read_fed_window(&opts, &state, 20U + 7U, 0);
+    rc |= expect_int("the unproven window dispatches no FACCH", g_facch_mac_calls, 0);
+    read_fed_window(&opts, &state, 20U, 1);
+    rc |= expect_int("the next located window dispatches", g_facch_mac_calls, 4);
+    rc |= expect_int("its first burst decodes under the new identity", g_rekey_pending_at_first_facch, 0);
+
+    reset_xcch_stubs();
+    dsd_state_ext_free_all(&state);
+    printf(rc == 0 ? "PASS\n" : "FAIL\n");
+    return rc;
+}
+
 int
 main(void) {
     int failures = 0;
@@ -1806,9 +2268,17 @@ main(void) {
     failures += test_duid_abort_resolves_staged_rekey();
     failures += test_duid_lcch_release_defers_during_vc_grace();
     failures += test_duid_lcch_release_tears_down_after_vc_grace();
+    failures += test_retune_inside_dispatch_stops_the_window();
+    failures += test_lcch_timeout_reevaluated_after_its_mac_pdu();
     failures += test_seed_proof_needs_a_descrambled_burst();
     failures += test_superframe_split_by_a_carrier_boundary_is_dropped();
     failures += test_seed_proof_reaches_the_call_its_burst_ends();
+    failures += test_window_position_follows_the_symbol_count();
+    failures += test_missed_window_fills_in_place();
+    failures += test_unproven_window_keeps_lcch_drops_assemblies();
+    failures += test_lcch_timeout_refused_return_keeps_the_channel();
+    failures += test_retired_pair_promotes_a_deferred_rekey();
+    failures += test_broken_continuity_promotes_a_deferred_rekey();
 
     printf("\n%d test(s) failed\n", failures);
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});

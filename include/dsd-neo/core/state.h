@@ -18,6 +18,7 @@
 
 #include <dsd-neo/core/input_level.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/p25p2_playout.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
 
@@ -44,7 +45,6 @@
 #define DSD_TRUNK_FREQ_MAX_HZ  2147483647L
 
 enum DSD_ATTR_PACKED {
-    DSD_P25_P2_AUDIO_RING_DEPTH = 4,
     DSD_P25_MAC_FRAGMENT_MAX_OCTETS = 256,
     DSD_TRUNK_CHAN_MAP_SIZE = 0xFFFF,
     /* Scan-list slots stored inline in dsd_state. Protocol fixed-slot writers raw-index
@@ -767,8 +767,12 @@ struct dsd_state {
     float f_l4[4][160]; //quad sample for up to a P25p2 4V
     float f_r4[4][160]; //quad sample for up to a P25p2 4V
     //new stereo short sample storage
-    short s_l[160];      //single sample left
-    short s_r[160];      //single sample right
+    short s_l[160]; //single sample left
+    short s_r[160]; //single sample right
+    /* Per slot: 1 when the vocoder left the current frame's short samples out of s_l/s_r (it staged silence, or
+       skipped short staging), 0 when processAudio()/processAudioR() staged them there. The P25 Phase 2 playout reads
+       it to tell decoded audio from silence (issue #651). */
+    uint8_t mbe_short_silenced[2];
     short s_l4[18][160]; //quad sample for up to a P25p2 4V
     short s_r4[18][160]; //quad sample for up to a P25p2 4V
     //new stereo short sample storage tapped from 48_k internal upsampling
@@ -809,6 +813,8 @@ struct dsd_state {
      * 5.2 days at 4800 symbols/s, which is undefined behaviour and aborts a UBSan build
      * (#395). Readers must treat it as wrapping -- compare differences, never magnitudes. */
     uint32_t symbolcnt;
+    uint32_t
+        datascope_symbolcnt_mark; /* symbolcnt at the datascope's last refresh: the refresh never resets symbolcnt */
     int symbolc;
     uint8_t symbol_replay_format;         /* DSD_SYMBOL_REPLAY_FORMAT_* */
     uint8_t symbol_replay_header_checked; /* header probe already done for current symbol file */
@@ -1256,8 +1262,7 @@ struct dsd_state {
     /* The slot's ESS_B is the carrier left's (issue #575): set by p25p2_frame_forget_carrier(), cleared when the slot's
        next 4V burst collects a fragment. A 2V burst decodes no ESS while it is set. */
     uint8_t p25_p2_ess_b_stale[2];
-    int voice_counter[2]; //external reference counter for 18V x 2 P25p2 Superframe
-    int p2_is_lcch;       //flag to tell us when a frame is lcch and not sacch
+    int p2_is_lcch; //flag to tell us when a frame is lcch and not sacch
     // Authoritative P25 voice crypto classification. Slot 0 is also used by P25 Phase 1.
     dsd_p25_crypto_state p25_crypto_state[2];
     // Retained Phase 1 carrier requires the next transmission's LCW identity before media or lockout.
@@ -1278,12 +1283,9 @@ struct dsd_state {
     dsd_p25_p2_rekey_state p25_p2_rekey[2];
     // P25p2 per-slot audio gating (set on MAC_PTT/ACTIVE, cleared on MAC_END/IDLE/SIGNAL)
     int p25_p2_audio_allowed[2];
-    // P25p2 small output jitter buffers (per-slot ring of decoded 20 ms frames)
-    // Depth DSD_P25_P2_AUDIO_RING_DEPTH to match drain behavior (~80 ms max at depth=4)
-    float p25_p2_audio_ring[2][DSD_P25_P2_AUDIO_RING_DEPTH][160];
-    int p25_p2_audio_ring_head[2]; // pop index
-    int p25_p2_audio_ring_tail[2]; // push index
-    int p25_p2_audio_ring_count[2];
+    /* P25 Phase 2 voice playout: per-slot queues played per burst pair in both output formats (issue #651).
+       Decoder-thread private; ui_snapshot skips it. */
+    dsd_p25p2_playout p25p2_playout;
     // P25p2 currently active voice slot (0 or 1), -1 when unknown/idle
     int p25_p2_active_slot;
     // P25p2 recent MAC_ACTIVE/PTT timestamps per slot (guards early bounce)

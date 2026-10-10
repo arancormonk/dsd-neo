@@ -40,6 +40,7 @@ target_sources(
         p25_lsd.c
         phase1/p25p1_mbf34.c
         phase2/p25p2_frame.c
+        phase2/p25p2_retune.c
         phase2/p25p2_scramble.c
         phase2/p25p2_mac_tables.c
         phase2/p25p2_mac_parse.c

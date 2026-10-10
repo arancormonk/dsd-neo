@@ -2,6 +2,7 @@
 /* Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com> */
 
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/p25p2_playout.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -110,6 +111,8 @@ p25_sm_select_control_channel(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* stat
         p25_sm_clear_manual_selection_calls(ctx, opts, state);
         dsd_mbe_purge_slot_audio(state, 0);
         dsd_mbe_purge_slot_audio(state, 1);
+        // The user left the channel: what the Phase 2 playout queued there is dropped, not played (issue #651).
+        dsd_p25p2_playout_discard(opts, state);
         p25_p2_frame_reset();
         p25_sm_forget_selected_site(ctx, state);
         selection->require_site_cache = 1;

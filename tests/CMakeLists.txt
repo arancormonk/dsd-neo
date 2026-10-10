@@ -693,12 +693,6 @@ dsd_neo_add_public_header_smoke_test(
   C
 )
 dsd_neo_add_public_header_smoke_test(
-  dsd-neo_test_headers_public_runtime_p25_p2_audio_ring
-  HEADERS_PUBLIC_RUNTIME_P25_P2_AUDIO_RING
-  dsd-neo/runtime/p25_p2_audio_ring.h
-  C
-)
-dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_runtime_rtl_stream_io_hooks
   HEADERS_PUBLIC_RUNTIME_RTL_STREAM_IO_HOOKS
   dsd-neo/runtime/rtl_stream_io_hooks.h
@@ -1160,6 +1154,18 @@ dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_core_access_code_cxx
   HEADERS_PUBLIC_CORE_ACCESS_CODE_CXX
   dsd-neo/core/access_code.h
+  CXX
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_core_p25p2_playout
+  HEADERS_PUBLIC_CORE_P25P2_PLAYOUT
+  dsd-neo/core/p25p2_playout.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_core_p25p2_playout_cxx
+  HEADERS_PUBLIC_CORE_P25P2_PLAYOUT_CXX
+  dsd-neo/core/p25p2_playout.h
   CXX
 )
 dsd_neo_add_public_header_smoke_test(
@@ -2155,23 +2161,6 @@ target_include_directories(
 )
 target_link_libraries(dsd-neo_test_runtime_control_pump PRIVATE dsd-neo_runtime)
 add_test(NAME RUNTIME_CONTROL_PUMP COMMAND dsd-neo_test_runtime_control_pump)
-
-add_executable(
-    dsd-neo_test_runtime_p25_p2_audio_ring
-    runtime/test_runtime_p25_p2_audio_ring.c
-)
-target_include_directories(
-    dsd-neo_test_runtime_p25_p2_audio_ring
-    PRIVATE ${PROJECT_SOURCE_DIR}/include
-)
-target_link_libraries(
-    dsd-neo_test_runtime_p25_p2_audio_ring
-    PRIVATE dsd-neo_runtime
-)
-add_test(
-    NAME RUNTIME_P25_P2_AUDIO_RING
-    COMMAND dsd-neo_test_runtime_p25_p2_audio_ring
-)
 
 if(DSD_ENABLE_TERMINAL_UI)
     add_executable(
@@ -5863,6 +5852,7 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
             "-Wl,--wrap=rtl_stream_request_fsk_reacquire"
             "-Wl,--wrap=rtl_stream_tune"
             "-Wl,--wrap=rtl_stream_tune_tagged"
+            "-Wl,--wrap=p25_sm_tick_guard_try_enter"
             ${LIBS}
             dsd-neo_feature_radio
             dsd-neo_test_support
@@ -10575,6 +10565,35 @@ add_test(
     COMMAND dsd-neo_test_p25_p2_grant_site_gate
 )
 
+# P25 Phase 2 voice playout: per-slot queues played per burst pair in both formats (issue #651)
+add_executable(dsd-neo_test_core_p25p2_playout core/test_core_p25p2_playout.c)
+target_include_directories(
+    dsd-neo_test_core_p25p2_playout
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/tests/test_support
+)
+target_link_libraries(
+    dsd-neo_test_core_p25p2_playout
+    PRIVATE dsd-neo_core dsd-neo_runtime dsd-neo_test_support
+)
+# A call that ends while its verdict is taken, and a patch going stale while the gate evaluates: GNU ld --wrap puts
+# the change right after the look or the evaluation, so those cases exist only where the wrap links, like the other
+# wrap tests.
+if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
+    target_link_options(
+        dsd-neo_test_core_p25p2_playout
+        PRIVATE
+            "LINKER:--wrap=dsd_call_state_get"
+            "LINKER:--wrap=dsd_tg_policy_evaluate_group_call"
+    )
+    target_compile_definitions(
+        dsd-neo_test_core_p25p2_playout
+        PRIVATE DSD_TEST_WRAP_CALL_STATE
+    )
+endif()
+add_test(NAME CORE_P25P2_PLAYOUT COMMAND dsd-neo_test_core_p25p2_playout)
+
 # P25 SM diagnostic log records
 add_executable(dsd-neo_test_p25_sm_diag_log protocol/p25/test_p25_sm_diag_log.c)
 target_include_directories(
@@ -10631,18 +10650,6 @@ target_include_directories(
 )
 target_link_libraries(dsd-neo_test_p25_sm_tags_ring PRIVATE dsd-neo_proto_p25)
 add_test(NAME P25_SM_TAGS_RING COMMAND dsd-neo_test_p25_sm_tags_ring)
-
-# P25p2 audio jitter ring helpers
-add_executable(
-    dsd-neo_test_p25_p2_audio_ring
-    protocol/p25/test_p25_p2_audio_ring.c
-)
-target_include_directories(
-    dsd-neo_test_p25_p2_audio_ring
-    PRIVATE ${PROJECT_SOURCE_DIR}/include
-)
-target_link_libraries(dsd-neo_test_p25_p2_audio_ring PRIVATE dsd-neo_runtime)
-add_test(NAME P25_P2_AUDIO_RING COMMAND dsd-neo_test_p25_p2_audio_ring)
 
 # P25 traffic-carrier reassignment and stale-update validation
 add_executable(
@@ -11206,6 +11213,25 @@ add_test(
     NAME P25_P2_RELEASE_PARTIAL_AUDIO
     COMMAND dsd-neo_test_p25_p2_release_partial_audio
 )
+
+# P25 Phase 2 voice output end to end: every frame plays once, in order, both slots side by side (issue #651)
+add_executable(
+    dsd-neo_test_p25_p2_voice_output
+    protocol/p25/test_p25_p2_voice_output.c
+)
+target_include_directories(
+    dsd-neo_test_p25_p2_voice_output
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/protocol/p25/phase2
+        ${PROJECT_SOURCE_DIR}/tests/test_support
+        ${_PUBLIC_INCLUDES}
+)
+target_link_libraries(
+    dsd-neo_test_p25_p2_voice_output
+    PRIVATE dsd-neo_proto_p25 dsd-neo_test_support
+)
+add_test(NAME P25_P2_VOICE_OUTPUT COMMAND dsd-neo_test_p25_p2_voice_output)
 
 # P25 Tier 3 production dispatch (Protection Parameter, Time/Date, status)
 add_executable(

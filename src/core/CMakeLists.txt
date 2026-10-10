@@ -17,6 +17,7 @@ target_sources(
         audio/dsd_audio_gate.c
         audio/gain.c
         audio/mix.c
+        audio/p25p2_playout.c
         audio/convert.c
         audio/dsd_upsample.c
         vocoder/keyring.c

@@ -11,8 +11,22 @@
 #include <dsd-neo/core/state_fwd.h>
 
 #include <sndfile.h>
+#include <stddef.h>
 
 void dsd_audio_write_wav_short_block(SNDFILE* file, const short* samples, sf_count_t sample_count, const char* context);
+
+/* dsd_audio2.c output primitives the mixers share with the P25 Phase 2 playout (p25p2_playout.c, issue #651). */
+void dsd_output_float_block(dsd_opts* opts, dsd_state* state, const float* samples, size_t frames, int channels);
+void dsd_output_s16_block(dsd_opts* opts, dsd_state* state, const short* samples, size_t frames, int channels);
+/* Wrap the vocoder's output buffer pointers before they run past their allocation, as every mixer pass does. */
+void dsd_audio_maybe_reset_output_ring_left(dsd_state* state);
+void dsd_audio_maybe_reset_output_ring_right(dsd_state* state);
+/* Whether an output receives a mix's blocks (issue #574, the audible-audio stamp's output condition). */
+int dsd_mix_output_plays(const dsd_opts* opts);
+/* Write a 320-sample stereo block to the static WAV with the channels in @p mask (bit 0 left, bit 1 right) silent. */
+void dsd_write_masked_stereo_wav_block(const dsd_opts* opts, const short* block, int mask, const char* context);
+/* beeper()'s tone, sounded now: the P25 Phase 2 playout sounds an alert it held back with it. */
+void dsd_beeper_emit(dsd_opts* opts, dsd_state* state, int lr, int id, int ad, int len);
 
 /* Mono output verdict for the active slot 0 call, shared by the short mono path
  * and the legacy short output: the talkgroup gate plus the live P25 Phase 1

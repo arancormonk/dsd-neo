@@ -509,7 +509,6 @@ matrix_flow_explicit_end(matrix_fixture* fixture, int event_slot) {
     p25_sm_event_t ev = p25_sm_ev_ptt(event_slot);
     matrix_send_event(fixture, &ev);
     fixture->state->p25_p2_audio_allowed[event_slot] = 1;
-    fixture->state->p25_p2_audio_ring_count[event_slot] = 3;
     ev = p25_sm_ev_end(event_slot);
     matrix_send_event(fixture, &ev);
 }

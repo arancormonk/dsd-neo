@@ -89,7 +89,6 @@ void playSynthesizedVoiceFS(dsd_opts* opts, dsd_state* state); // float stereo m
 /** @brief Play synthesized voice (float stereo mix 3v2 DMR). */
 void playSynthesizedVoiceFS3(dsd_opts* opts, dsd_state* state); // float stereo mix 3v2 DMR
 /** @brief Play synthesized voice (float stereo mix 4v2 P25p2). */
-void playSynthesizedVoiceFS4(dsd_opts* opts, dsd_state* state); // float stereo mix 4v2 P25p2
 /** @brief Play float mono voice, duplicating samples when the configured output is stereo. */
 void playSynthesizedVoiceFM(dsd_opts* opts, dsd_state* state); // float mono
 
@@ -102,7 +101,6 @@ void playSynthesizedVoiceSS(dsd_opts* opts, dsd_state* state); // short stereo m
 /** @brief Play synthesized voice (short stereo mix 3v2 DMR). */
 void playSynthesizedVoiceSS3(dsd_opts* opts, dsd_state* state); // short stereo mix 3v2 DMR
 /** @brief Play synthesized voice (short stereo mix 18V superframe). */
-void playSynthesizedVoiceSS18(dsd_opts* opts, dsd_state* state); // short stereo mix 18V Superframe
 
 /**
  * @brief Decoded media the vocoder staged for a DMR slot since the stereo mixes last ran (issue #574).
@@ -210,6 +208,8 @@ void audio_mix_interleave_stereo_s16(const short* left, const short* right, size
 /** @brief Mix two float channels with mute flags into mono output. */
 void audio_mix_mono_from_slots_f32(const float* left, const float* right, size_t n, int l_on, int r_on,
                                    float* mono_out);
+/** @brief Mix two int16 channels with mute flags into mono output (the average when both are on). */
+void audio_mix_mono_from_slots_s16(const short* left, const short* right, size_t n, int l_on, int r_on, short* out);
 
 /** @brief Return 1 when P25p2 decode should queue audio for the slot under decrypt and media policy. */
 int dsd_p25p2_decode_audio_allowed(const dsd_opts* opts, const dsd_state* state, int slot, int alg);
@@ -237,9 +237,9 @@ int dsd_dmr_apply_forced_algid(dsd_state* state);
  */
 int dsd_dmr_classify_algid(const dsd_state* state, int slot, int so);
 
-/** @brief Flush partially buffered P25p2 SS18 audio on call end/release. */
+/** @brief Release hook: play everything the P25 Phase 2 playout holds, then empty it (either output format). */
 void dsd_p25p2_flush_partial_audio(dsd_opts* opts, dsd_state* state);
-/** @brief Flush partially buffered P25p2 SS18 audio for one slot while preserving the other slot. */
+/** @brief A P25 Phase 2 slot's transmission ended: close its playout stream; its queued frames still play. */
 void dsd_p25p2_flush_partial_audio_slot(dsd_opts* opts, dsd_state* state, int slot);
 
 /** @brief Talkgroup/whitelist/TG-hold gating for mono mix (enc flags 0=unmuted,1=muted). */

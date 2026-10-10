@@ -12,6 +12,7 @@
 #include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/p25_cqpsk_dibit.h>
+#include <dsd-neo/core/p25p2_playout.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -627,6 +628,7 @@ init_state_sync_and_stream_defaults(dsd_state* state) {
     set_spaces(state->fsubtype, 14);
     set_spaces(state->ftype, 13);
     state->symbolcnt = 0;
+    state->datascope_symbolcnt_mark = 0;
     state->symbolc = 0; //
     state->symbol_replay_format = DSD_SYMBOL_REPLAY_FORMAT_UNKNOWN;
     state->symbol_replay_header_checked = 0;
@@ -834,8 +836,7 @@ init_state_protocol_defaults_a(dsd_state* state) {
     DSD_MEMSET(state->ess_b_llr, 0, sizeof(state->ess_b_llr));
     state->fourv_counter[0] = 0;
     state->fourv_counter[1] = 0;
-    state->voice_counter[0] = 0;
-    state->voice_counter[1] = 0;
+    dsd_p25p2_playout_reset(state, -1);
     state->p25_crypto_state[0] = DSD_P25_CRYPTO_UNKNOWN;
     state->p25_crypto_state[1] = DSD_P25_CRYPTO_UNKNOWN;
     DSD_MEMSET(state->p25_p2_rekey, 0, sizeof(state->p25_p2_rekey));

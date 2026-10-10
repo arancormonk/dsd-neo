@@ -425,6 +425,44 @@ test_reader_wraps_ring_buffers_before_store(void) {
     return rc;
 }
 
+/* The datascope refreshes on its own mark and leaves dsd_state::symbolcnt running: other readers measure spans with
+   it, P25 Phase 2 window continuity among them (issue #651). */
+static int
+test_datascope_leaves_the_symbol_count_running(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    if (!init_state_buffers(&state)) {
+        DSD_FPRINTF(stderr, "failed to allocate state buffers\n");
+        return 1;
+    }
+    set_standard_thresholds(&state);
+    state.synctype = DSD_SYNC_P25P1_POS;
+    state.lastsynctype = -1;
+    opts.datascope = 1;
+    opts.scoperate = 15;
+    opts.ssize = 4;
+    state.symbolcnt = 1000U;
+    g_next_dibit = 0;
+
+    dsd_dibit_soft_t soft;
+    for (int i = 0; i < 8; i++) {
+        (void)getDibitSoft(&opts, &state, &soft);
+    }
+
+    int rc = 0;
+    if (state.symbolcnt != 1000U || state.datascope_symbolcnt_mark != 1000U) {
+        DSD_FPRINTF(stderr, "datascope refresh count=%u mark=%u, want 1000 and 1000\n", (unsigned)state.symbolcnt,
+                    (unsigned)state.datascope_symbolcnt_mark);
+        rc = 1;
+    }
+
+    free_state_buffers(&state);
+    return rc;
+}
+
 static int
 test_get_dibit_soft_falls_back_to_hard_dibit(void) {
     static dsd_opts opts;
@@ -731,6 +769,7 @@ main(void) {
     rc |= test_symbol_bin_replay_throttle_paces_from_timing_rate();
     rc |= test_reader_wraps_ring_buffers_before_store();
     rc |= test_get_dibit_soft_falls_back_to_hard_dibit();
+    rc |= test_datascope_leaves_the_symbol_count_running();
     rc |= test_direct_symbol_capture_writer_formats();
     rc |= test_digitize_public_threshold_paths();
     rc |= test_reader_apis_and_soft_symbol_ring();

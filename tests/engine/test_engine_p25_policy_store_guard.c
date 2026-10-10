@@ -9,6 +9,7 @@
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/p25p2_playout.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/scan_profile.h>
 #include <dsd-neo/core/state.h>
@@ -117,7 +118,7 @@ read_policy(const dsd_opts* opts, const dsd_state* state) {
     dsd_tg_policy_decision decision;
     dsd_tg_policy_table_version(state, &view.context, &view.generation);
     if (dsd_tg_policy_evaluate_group_call(opts, state, 1234, 42, 0, 0, &decision) == 0) {
-        view.allowed = decision.audio_allowed;
+        view.allowed = decision.audio_allowed && !(decision.block_reasons & DSD_TG_POLICY_BLOCK_ALLOWLIST);
     }
     return view;
 }
@@ -204,10 +205,13 @@ seed_call(void) {
     int rc = expect(p25_sm_emit_active_call(&g_opts, &g_state, 0, 1234, 0, 42, 1, 0), "seed voice accepted");
     rc |= expect(ctx->state == P25_SM_TUNED && ctx->vc_is_tdma, "seed follows TDMA");
     g_state.p25_p2_audio_allowed[0] = 1;
-    g_state.voice_counter[0] = 1;
+    /* One admitted frame waits in the P25 Phase 2 playout (issue #651). */
     for (int i = 0; i < 160; ++i) {
-        g_state.s_l4[0][i] = 1000;
+        g_state.s_l[i] = 1000;
     }
+    g_state.mbe_short_silenced[0] = 0;
+    dsd_p25p2_playout_reset(&g_state, -1);
+    dsd_p25p2_playout_stage(&g_opts, &g_state, 0, 0, 1U, NULL);
     g_state.ui_msg[0] = '\0';
     return rc;
 }
@@ -295,6 +299,12 @@ submit_phase(void) {
             return dsd_app_command_set_tg_listen(&edit);
         }
         case 8: return dsd_app_command_set_u8(DSD_APP_CMD_LOCKOUT_SLOT, 0);
+        /* A hold and the allow list change the verdict outside the store, under the guard too (issue #651). */
+        case 9: return dsd_app_command_set_u32(DSD_APP_CMD_TG_HOLD_SET, 4321U);
+        case 10: return dsd_app_command_submit(DSD_APP_CMD_TRUNK_WLIST_TOGGLE, NULL, 0);
+        /* The slot switches the playout reads as it plays, with the output buffers a switched-off slot rewinds. */
+        case 12: return dsd_app_command_submit(DSD_APP_CMD_SLOT1_TOGGLE, NULL, 0);
+        case 13: return dsd_app_command_set_i32(DSD_APP_CMD_SLOTS_ONOFF_SET, 2);
         default: return -1;
     }
 }
@@ -365,6 +375,10 @@ check_postcondition(policy_view before, policy_view baseline) {
         case 8:
             return expect(!dsd_tg_policy_session_avoid_contains(&g_state, 1234) && g_state.ui_msg[0] == '\0',
                           "lockout after release adds no avoid and emits no toast");
+        case 9: return expect(g_state.tg_hold == 4321U && !after.allowed, "hold on another talkgroup blocks target");
+        case 10: return expect(g_opts.trunk_use_allow_list == 1 && !after.allowed, "allow list blocks unlisted target");
+        case 12: return expect(g_opts.slot1_on == 0 && g_opts.slot2_on == 1, "slot 1 switched off");
+        case 13: return expect(g_opts.slot1_on == 0 && g_opts.slot2_on == 1, "slot mask leaves slot 2 only");
         default: return 1;
     }
 }
@@ -384,6 +398,42 @@ run_phase(void) {
         rc |= expect(g_flush.flushes == 1 && !g_flush.failures, "flushes == 1 && !failures");
         rc |= check_postcondition(before, baseline);
     }
+    cleanup(&row);
+    return rc;
+}
+
+static int g_release_flushes;
+static int g_release_flush_unguarded;
+
+static void
+record_guard_flush(dsd_opts* opts, dsd_state* state) {
+    ++g_release_flushes;
+    if (p25_sm_tick_guard_try_enter()) {
+        g_release_flush_unguarded = 1;
+        p25_sm_tick_guard_leave();
+    }
+    dsd_p25p2_flush_partial_audio(opts, state);
+}
+
+/* The frame-sync no-sync release drains the P25 Phase 2 playout like any release, outside processFrame(): it runs
+   under the tick guard, and a pass that finds the guard taken (a watchdog tick) leaves it to the next pass (issue
+   #651). */
+static int
+test_frame_sync_release_takes_the_guard(void) {
+    dsd_scan_row_profile row = {0};
+    g_phase = 11;
+    int rc = setup();
+    dsd_p25_optional_hooks_set((dsd_p25_optional_hooks){.p25p2_flush_partial_audio = record_guard_flush});
+    g_release_flushes = 0;
+    g_release_flush_unguarded = 0;
+    rc |= expect(p25_sm_tick_guard_try_enter(), "the test holds the guard");
+    dsd_frame_sync_hook_p25_sm_release(&g_opts, &g_state);
+    p25_sm_tick_guard_leave();
+    rc |= expect(g_release_flushes == 0 && p25_sm_get_ctx()->state == P25_SM_TUNED, "a held guard defers the release");
+    dsd_frame_sync_hook_p25_sm_release(&g_opts, &g_state);
+    rc |= expect(g_release_flushes == 1, "the next pass releases");
+    rc |= expect(!g_release_flush_unguarded, "the release drains under the guard");
+    rc |= expect(g_flush.audio_blocks > 0, "the queued frame plays");
     cleanup(&row);
     return rc;
 }
@@ -410,7 +460,11 @@ main(void) {
     int rc = write_csv(g_block_csv, "id,mode,name\n1234,B,Blocked\n");
     rc |= write_csv(g_allow_csv, "id,mode,name\n1234,A,Row\n");
     if (!rc) {
-        for (g_phase = 1; g_phase <= 8; ++g_phase) {
+        for (g_phase = 1; g_phase <= 10; ++g_phase) {
+            rc |= run_phase();
+        }
+        rc |= test_frame_sync_release_takes_the_guard();
+        for (g_phase = 12; g_phase <= 13; ++g_phase) {
             rc |= run_phase();
         }
     }

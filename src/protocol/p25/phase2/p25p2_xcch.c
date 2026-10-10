@@ -25,7 +25,6 @@
 #include <dsd-neo/protocol/p25/p25p2_mac_parse.h>
 #include <dsd-neo/runtime/colors.h>
 #include <dsd-neo/runtime/decode_clock.h>
-#include <dsd-neo/runtime/p25_p2_audio_ring.h>
 #include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -34,6 +33,7 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/secret_redaction.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "p25p2_frame_internal.h"
 
 static int
 p25p2_xcch_slot_valid(int slot) {
@@ -229,29 +229,9 @@ p25p2_xcch_close_slot_mbe_out(dsd_opts* opts, dsd_state* state, int slot) {
 }
 
 static void
-p25p2_xcch_flush_partial_audio_on_hangtime(dsd_opts* opts, dsd_state* state, int slot) {
-    int audio_allowed[2];
-
-    if (!opts || !state) {
-        return;
-    }
-
-    audio_allowed[0] = state->p25_p2_audio_allowed[0];
-    audio_allowed[1] = state->p25_p2_audio_allowed[1];
-
-    // Flush before MAC_HANGTIME changes burst 21 to 22, so the flushed
-    // superframe is still attributed to the active transmission. Unlike release,
-    // hangtime stays on the VC, so restore the existing audio gates after the
-    // flush -- the flush helper repoints them at the slot it is draining.
-    dsd_p25p2_flush_partial_audio_slot(opts, state, slot);
-
-    state->p25_p2_audio_allowed[0] = audio_allowed[0];
-    state->p25_p2_audio_allowed[1] = audio_allowed[1];
-}
-
-static void
 p25p2_xcch_handle_mac_hangtime_slot(dsd_opts* opts, dsd_state* state, int slot) {
-    p25p2_xcch_flush_partial_audio_on_hangtime(opts, state, slot);
+    // The transmission is over: its playout stream closes and what it queued still plays (issue #651).
+    dsd_p25p2_flush_partial_audio_slot(opts, state, slot);
     p25p2_xcch_set_slot_burst(state, slot, 22);
     p25p2_xcch_close_slot_mbe_out(opts, state, slot);
 }
@@ -348,7 +328,6 @@ p25p2_xcch_log_slot_encryption(const dsd_opts* opts, dsd_state* state, int slot)
 static void
 p25p2_xcch_reset_ptt_slot_state(dsd_state* state, int slot) {
     state->fourv_counter[slot] = 0;
-    state->voice_counter[slot] = 0;
     p25p2_xcch_set_slot_drop(state, slot, 256);
 }
 
@@ -388,7 +367,6 @@ p25p2_xcch_handle_end_slot(dsd_opts* opts, dsd_state* state, int slot, int clear
     }
     dsd_p25p2_flush_partial_audio_slot(opts, state, slot);
     state->fourv_counter[slot] = 0;
-    state->voice_counter[slot] = 0;
     p25p2_xcch_set_slot_drop(state, slot, 256);
     p25p2_xcch_set_slot_burst(state, slot, 23);
 
@@ -439,11 +417,10 @@ p25p2_xcch_reset_idle_slot_facch(dsd_state* state, uint8_t slot) {
     p25_crypto_reset_slot(state, slot);
     p25p2_xcch_set_slot_burst(state, slot, 24);
     state->fourv_counter[slot] = 0;
-    state->voice_counter[slot] = 0;
 }
 
 static int
-p25p2_xcch_validate_sacch_crc(const dsd_opts* opts, dsd_state* state, const int payload[180],
+p25p2_xcch_validate_sacch_crc(dsd_opts* opts, dsd_state* state, const int payload[180],
                               const unsigned long long int smac[24], int opcode, uint8_t slot, int* abort_processing) {
     int err = -2;
 
@@ -467,7 +444,7 @@ p25p2_xcch_validate_sacch_crc(const dsd_opts* opts, dsd_state* state, const int 
             DSD_FPRINTF(stderr, " CRC16 ERR L");
             if (opcode == 0x0) {
                 p25p2_xcch_set_slot_audio_allowed(opts, state, slot, 0);
-                p25_p2_audio_ring_reset(state, slot);
+                dsd_p25p2_flush_partial_audio_slot(opts, state, slot);
             }
             state->p2_is_lcch = 0;
             *abort_processing = 1;
@@ -572,8 +549,13 @@ p25p2_xcch_handle_sacch_mac_idle(dsd_opts* opts, dsd_state* state, uint8_t slot,
 
     DSD_FPRINTF(stderr, " MAC_IDLE ");
     DSD_FPRINTF(stderr, "%s", KYEL);
+    const p25p2_retune_token token = p25p2_retune_token_now();
     process_MAC_VPDU(opts, state, 1, P25_MAC_PDU_IDLE, smac);
     DSD_FPRINTF(stderr, "%s", KNRM);
+    // A retune the PDU accepted left this channel: nothing below may act on the assignment it moved to (issue #651).
+    if (p25p2_retune_token_changed(&token)) {
+        return;
+    }
 
     p25_sm_emit_idle_at(opts, state, slot, idle_observed_m);
     p25p2_xcch_clear_idle_metadata_if_stale(state, slot, idle_observed_m, 0);
@@ -596,7 +578,12 @@ p25p2_xcch_handle_sacch_mac_active(dsd_opts* opts, dsd_state* state, uint8_t slo
 
     DSD_FPRINTF(stderr, " MAC_ACTIVE ");
     DSD_FPRINTF(stderr, "%s", KYEL);
+    const p25p2_retune_token token = p25p2_retune_token_now();
     process_MAC_VPDU(opts, state, 1, P25_MAC_PDU_ACTIVE, smac);
+    if (p25p2_retune_token_changed(&token)) {
+        DSD_FPRINTF(stderr, "%s", KNRM);
+        return;
+    }
 
     state->p25_p2_last_mac_active[slot] = dsd_decode_time();
     state->p25_p2_last_mac_active_m[slot] = dsd_decode_now_mono_s();
@@ -698,13 +685,16 @@ p25p2_xcch_handle_facch_mac_idle(dsd_opts* opts, dsd_state* state, uint8_t slot,
 
     DSD_FPRINTF(stderr, " MAC_IDLE ");
     DSD_FPRINTF(stderr, "%s", KYEL);
+    const p25p2_retune_token token = p25p2_retune_token_now();
     process_MAC_VPDU(opts, state, 0, P25_MAC_PDU_IDLE, fmac);
     DSD_FPRINTF(stderr, "%s", KNRM);
+    if (p25p2_retune_token_changed(&token)) {
+        return;
+    }
 
     p25_sm_emit_idle_at(opts, state, slot, idle_observed_m);
     p25p2_xcch_clear_idle_metadata_if_stale(state, slot, idle_observed_m, 1);
     p25p2_xcch_set_slot_audio_allowed(opts, state, slot, 0);
-    p25_p2_audio_ring_reset(state, slot);
 }
 
 static void
@@ -719,8 +709,12 @@ p25p2_xcch_handle_facch_mac_active(dsd_opts* opts, dsd_state* state, uint8_t slo
 
     DSD_FPRINTF(stderr, " MAC_ACTIVE ");
     DSD_FPRINTF(stderr, "%s", KYEL);
+    const p25p2_retune_token token = p25p2_retune_token_now();
     process_MAC_VPDU(opts, state, 0, P25_MAC_PDU_ACTIVE, fmac);
     DSD_FPRINTF(stderr, "%s", KNRM);
+    if (p25p2_retune_token_changed(&token)) {
+        return;
+    }
 
     if (!p25p2_xcch_emit_active(opts, state, 0, slot, fmac)) {
         return;

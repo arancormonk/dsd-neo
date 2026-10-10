@@ -11,6 +11,7 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/p25p2_playout.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -279,7 +280,7 @@ test_clear_regroup_override_survives_voice_burst(void) {
 
 // A regroup's KEY=0 clear policy expires 20 s after its last update, on the decode clock. Without
 // -T, an encrypted-service voice burst on a member talkgroup 20 s after the update still runs the
-// vocoder (both frames decode and advance the slot's voice counter). The same burst 21 s after it
+// vocoder (both frames decode and queue in the slot's playout). The same burst 21 s after it
 // is gated: crypto goes pending, the audio gate closes, and no frame decodes. Each burst starts
 // from a fresh call, and T is far from any platform clock reading.
 static int
@@ -309,11 +310,11 @@ run_regroup_clear_key_burst_at(uint64_t age_s, dsd_p25_crypto_state* crypto, int
     state.dmr_so = 0x40;
     state.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
     state.p25_p2_audio_allowed[0] = 1;
-    state.voice_counter[0] = 0;
+    dsd_p25p2_playout_reset(&state, -1);
     process_2V(&opts, &state);
     *crypto = state.p25_crypto_state[0];
     *audio_allowed = state.p25_p2_audio_allowed[0];
-    *decoded = state.voice_counter[0];
+    *decoded = dsd_p25p2_playout_level(&state, 0);
     dsd_decode_clock_use_system();
     dsd_state_ext_free_all(&state);
     return 0;
@@ -805,13 +806,11 @@ test_enc_key_identity_change_reemits_lockout(void) {
     return rc;
 }
 
-// SS18 playback triggers when either slot's voice counter completes a full
-// 18-frame superframe, checked only at odd-timeslot output boundaries. A
-// companion voice burst (the muted lockout call) runs between the clear
-// slot's superframe completing and that boundary; its per-burst counter wrap
-// must not zero the clear slot's completed-but-unplayed superframe, or the
-// clear call plays nothing for its entire transmission. The wrap still
-// applies to the burst's own slot.
+// A companion voice burst (the muted lockout call) that runs between the
+// clear slot's frames and their emission must leave the clear slot's queued
+// frames alone: the shared 18-frame counter this replaced once zeroed them on
+// its wrap, and the clear call played nothing for its whole transmission. The
+// gated burst queues nothing for its own slot (issue #651).
 static int
 test_companion_voice_burst_preserves_clear_superframe(void) {
     static dsd_opts opts;
@@ -821,27 +820,25 @@ test_companion_voice_burst_preserves_clear_superframe(void) {
 
     int rc = 0;
 
-    // Slot 0's clear superframe is complete and awaiting the output boundary;
-    // slot 1 carries the muted locked-out call (BLOCKED, gate closed) and its
-    // burst arrives first.
+    // Slot 0's clear frames wait for their emission; slot 1 carries the muted
+    // locked-out call (BLOCKED, gate closed) and its burst arrives first.
     state.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
     state.p25_p2_audio_allowed[0] = 1;
     state.p25_crypto_state[1] = DSD_P25_CRYPTO_BLOCKED;
     state.p25_p2_audio_allowed[1] = 0;
-    state.voice_counter[0] = 18;
-    state.voice_counter[1] = 3;
+    dsd_p25p2_playout_reset(&state, -1);
+    for (int frame = 0; frame < 4; frame++) {
+        dsd_p25p2_playout_stage(&opts, &state, 0, 0, 1U, NULL);
+    }
     state.currentslot = 1;
 
     process_2V(&opts, &state);
-    rc |= expect_eq("companion burst: clear superframe preserved", state.voice_counter[0], 18);
-    rc |= expect_eq("companion burst: muted counter frozen", state.voice_counter[1], 3);
+    rc |= expect_eq("companion burst: clear frames preserved", dsd_p25p2_playout_level(&state, 0), 4);
+    rc |= expect_eq("companion burst: muted slot queues nothing", dsd_p25p2_playout_level(&state, 1), 0);
 
-    // The wrap still applies to the slot the burst writes: a full counter on
-    // the burst's own slot wraps before its frames store.
-    state.voice_counter[1] = 18;
     process_2V(&opts, &state);
-    rc |= expect_eq("own slot: full counter wrapped", state.voice_counter[1], 0);
-    rc |= expect_eq("own slot: clear superframe still preserved", state.voice_counter[0], 18);
+    rc |= expect_eq("second muted burst: clear frames still preserved", dsd_p25p2_playout_level(&state, 0), 4);
+    rc |= expect_eq("second muted burst: muted slot still empty", dsd_p25p2_playout_level(&state, 1), 0);
 
     dsd_state_ext_free_all(&state);
     return rc;

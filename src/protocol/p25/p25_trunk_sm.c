@@ -11,6 +11,7 @@
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/p25p2_playout.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
@@ -23,7 +24,6 @@
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/p25_optional_hooks.h>
-#include <dsd-neo/runtime/p25_p2_audio_ring.h>
 #include <dsd-neo/runtime/rigctl_query_hooks.h>
 #ifdef USE_RADIO
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
@@ -800,6 +800,9 @@ p25_sm_on_external_cc_tune(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, 
     // the radio still moved, so the acquisition gate is re-armed either way.
     if (ctx->state == P25_SM_TUNED) {
         p25_sm_clear_manual_selection_calls(ctx, opts, state);
+        // The receiver left the voice channel on the user's word (Return to CC, a candidate cycle): what the Phase 2
+        // playout queued there is dropped, not played on the control channel or ahead of the next call (issue #651).
+        dsd_p25p2_playout_discard(opts, state);
     }
     // The same handoff the no-carrier and scan retunes use: grants stay gated
     // until the pending tune completes and a CC block decodes after that
@@ -1751,7 +1754,7 @@ p25_grant_clear_moved_target_slots(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state*
         p25_grant_clear_policy_slot(state, s);
         if (state) {
             state->p25_p2_audio_allowed[s] = 0;
-            p25_p2_audio_ring_reset(state, s);
+            dsd_p25p2_flush_partial_audio_slot(opts, state, s);
             p25_crypto_reset_slot(state, s);
         }
     }
@@ -2959,7 +2962,6 @@ p25_voice_close_slot_media(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, 
     }
     if (state) {
         p25_voice_flush_partial_audio(ctx, opts, state, slot);
-        p25_p2_audio_ring_reset(state, slot);
         p25_voice_close_slot_output(opts, state, slot);
         p25_voice_clear_state_source(state, slot);
         p25_crypto_reset_slot(state, slot);
@@ -2979,7 +2981,6 @@ p25_voice_close_slot_media_preserve_grant(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd
     }
     if (state) {
         p25_voice_flush_partial_audio(ctx, opts, state, slot);
-        p25_p2_audio_ring_reset(state, slot);
         p25_voice_close_slot_output(opts, state, slot);
         state->p25_p2_audio_allowed[slot] = 0;
     }
@@ -2994,7 +2995,6 @@ p25_voice_close_slot_media_preserve_crypto(p25_sm_ctx_t* ctx, dsd_opts* opts, ds
     }
     if (state) {
         p25_voice_flush_partial_audio(ctx, opts, state, slot);
-        p25_p2_audio_ring_reset(state, slot);
         p25_voice_close_slot_output(opts, state, slot);
         p25_voice_clear_state_source_preserve_crypto(state, slot);
     }
@@ -3864,7 +3864,7 @@ p25_voice_slot_retains_carrier(const p25_sm_ctx_t* ctx, const dsd_state* state, 
     if (slot_ctx->voice_active || p25_voice_slot_assignment_pending(slot_ctx)) {
         return 1;
     }
-    return state && (state->p25_p2_audio_allowed[slot] || state->p25_p2_audio_ring_count[slot] > 0) ? 1 : 0;
+    return state && state->p25_p2_audio_allowed[slot] ? 1 : 0;
 }
 
 static int
@@ -4643,16 +4643,17 @@ static int
 p25_release_return_to_cc_accepted(const p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int had_force_release,
                                   double* out_tune_start_m, dsd_trunk_tune_result* out_tune_result,
                                   uint64_t* out_request_id) {
-    if (ctx->vc_is_tdma && opts && state) {
-        dsd_p25_optional_hook_p25p2_flush_partial_audio(opts, state);
-    }
-
     *out_tune_start_m = dsd_decode_now_mono_s();
     p25_sm_diagf(opts, state, ctx, "release_cc_attempt",
                  "freq=%ld ch=0x%04X tg=%d force=%d tdma=%d data=%d cc_tdma=%d cc_sps=%d",
                  state ? ((state->p25_cc_freq != 0) ? state->p25_cc_freq : state->trunk_cc_freq) : 0,
                  ctx->vc_channel & 0xFFFF, ctx->vc_tg, had_force_release, ctx->vc_is_tdma, ctx->vc_data_call,
                  state ? state->p25_cc_is_tdma : 0, cc_ted_sps(opts, state));
+    // The return tune may end the calls (the engine's hook releases the tuned call state) before the drain below:
+    // the Phase 2 playout takes their talkgroup verdict while they are still active (issue #651).
+    if (ctx->vc_is_tdma && opts && state) {
+        dsd_p25p2_playout_note_policy(opts, state);
+    }
     dsd_trunk_tune_result tune_result = dsd_trunk_tuning_hook_return_to_cc(opts, state, out_request_id);
     if (out_tune_result) {
         *out_tune_result = tune_result;
@@ -4660,6 +4661,12 @@ p25_release_return_to_cc_accepted(const p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_s
     if (dsd_trunk_tune_result_is_ok(tune_result)) {
         p25_sm_diagf(opts, state, ctx, "release_cc_result", "result=%s tune_start_m=%.3f",
                      p25_tune_result_name(tune_result), *out_tune_start_m);
+        // The receiver is leaving the voice channel: what the Phase 2 playout holds plays now. Each queued frame
+        // carries the verdict it was decoded with, so this need not run before the attempt; a failed or deferred
+        // attempt keeps the channel and must not split a pair whose second burst is still to come (issue #651).
+        if (ctx->vc_is_tdma && opts && state) {
+            dsd_p25_optional_hook_p25p2_flush_partial_audio(opts, state);
+        }
         return 1;
     }
 

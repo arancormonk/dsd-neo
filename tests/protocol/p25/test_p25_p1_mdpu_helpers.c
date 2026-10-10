@@ -284,8 +284,6 @@ test_prepare_state_resets_mpdu_frame_context(void) {
 
     opts.slot_preference = 1;
     state.p25_p1_duid_mpdu = 41;
-    state.voice_counter[0] = 7;
-    state.voice_counter[1] = 8;
     state.s_l4[0][0] = 11;
     state.s_r4[0][0] = 12;
     state.currentslot = 1;
@@ -304,8 +302,6 @@ test_prepare_state_resets_mpdu_frame_context(void) {
 
     int rc = 0;
     rc |= expect_int("mpdu counter increment", (int)state.p25_p1_duid_mpdu, 42);
-    rc |= expect_int("left voice counter reset", state.voice_counter[0], 0);
-    rc |= expect_int("right voice counter reset", state.voice_counter[1], 0);
     rc |= expect_int("left 4v samples reset", state.s_l4[0][0], 0);
     rc |= expect_int("right 4v samples reset", state.s_r4[0][0], 0);
     rc |= expect_int("slot preference set", opts.slot_preference, 2);

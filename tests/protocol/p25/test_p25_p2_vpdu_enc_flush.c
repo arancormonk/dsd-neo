@@ -7,6 +7,7 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/p25p2_playout.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/talkgroup_policy.h>
@@ -153,8 +154,6 @@ main(void) {
     st.currentslot = 0;             // so VPDU slot=0 for FACCH
     st.p25_p2_audio_allowed[0] = 1; // will be gated
     st.p25_p2_audio_allowed[1] = 1; // other slot active
-    st.p25_p2_audio_ring_count[0] = 2;
-    st.p25_p2_audio_ring_count[1] = 1;
     g_return_to_cc_called = 0;
 
     // Pre-mark TG as already DE to skip event emission branches in VPDU
@@ -172,8 +171,6 @@ main(void) {
     process_MAC_VPDU(&opts, &st, /*type FACCH*/ 0, P25_MAC_PDU_ACTIVE, MAC);
 
     rc |= expect_eq("slot0 muted", st.p25_p2_audio_allowed[0], 0);
-    rc |= expect_eq("slot0 ring flushed", st.p25_p2_audio_ring_count[0], 0);
-    rc |= expect_eq("slot1 ring kept", st.p25_p2_audio_ring_count[1], 1);
     rc |= expect_eq("no release", g_return_to_cc_called, 0);
 
     // Scenario 2: a repeated indication cannot reopen the pending slot. Release
@@ -181,14 +178,11 @@ main(void) {
     st.currentslot = 0;
     st.p25_p2_audio_allowed[0] = 1;
     st.p25_p2_audio_allowed[1] = 0; // other idle
-    st.p25_p2_audio_ring_count[0] = 0;
-    st.p25_p2_audio_ring_count[1] = 0;
     g_return_to_cc_called = 0;
 
     process_MAC_VPDU(&opts, &st, 0, P25_MAC_PDU_ACTIVE, MAC);
 
     rc |= expect_eq("slot0 muted again", st.p25_p2_audio_allowed[0], 0);
-    rc |= expect_eq("slot0 ring remains empty", st.p25_p2_audio_ring_count[0], 0);
     rc |= expect_eq("classification does not release early", g_return_to_cc_called, 0);
     rc |= expect_eq("slot0 remains pending", st.p25_crypto_state[0], DSD_P25_CRYPTO_ENCRYPTED_PENDING);
 
@@ -208,8 +202,6 @@ main(void) {
     st.p25_crypto_state[0] = DSD_P25_CRYPTO_UNKNOWN;
     st.p25_p2_audio_allowed[0] = 1;
     st.p25_p2_audio_allowed[1] = 0;
-    st.p25_p2_audio_ring_count[0] = 1;
-    st.p25_p2_audio_ring_count[1] = 0;
     st.p25_p2_last_mac_active[1] = time(NULL);
     st.p25_p2_last_mac_active_m[1] = dsd_decode_now_mono_s();
     g_return_to_cc_called = 0;
@@ -217,7 +209,6 @@ main(void) {
     process_MAC_VPDU(&opts, &st, 0, P25_MAC_PDU_ACTIVE, MAC);
 
     rc |= expect_eq("unit slot0 muted", st.p25_p2_audio_allowed[0], 0);
-    rc |= expect_eq("unit slot0 ring flushed", st.p25_p2_audio_ring_count[0], 0);
     rc |= expect_eq("unit recent other slot avoids release", g_return_to_cc_called, 0);
 
     // Scenario 4: an explicit clear KAS key on an active regroup overrides the
@@ -235,19 +226,16 @@ main(void) {
     st.currentslot = 0;
     st.p25_crypto_state[0] = DSD_P25_CRYPTO_UNKNOWN;
     st.p25_p2_audio_allowed[0] = 0;
-    st.p25_p2_audio_ring_count[0] = 0;
 
     process_MAC_VPDU(&opts, &st, 0, P25_MAC_PDU_ACTIVE, MAC);
 
     rc |= expect_eq("late clear regroup member classified", st.p25_crypto_state[0], DSD_P25_CRYPTO_CLEAR);
 
     st.p25_p2_audio_allowed[0] = 1;
-    st.p25_p2_audio_ring_count[0] = 2;
     process_MAC_VPDU(&opts, &st, 0, P25_MAC_PDU_ACTIVE, MAC);
 
     rc |= expect_eq("clear regroup member remains clear", st.p25_crypto_state[0], DSD_P25_CRYPTO_CLEAR);
     rc |= expect_eq("clear regroup member gate remains open", st.p25_p2_audio_allowed[0], 1);
-    rc |= expect_eq("clear regroup member ring preserved", st.p25_p2_audio_ring_count[0], 2);
 
     // Scenario 5: MAC Release drains a short int16 tail while crypto readiness
     // is still authoritative, invalidates the released slot's PTT marker, and
@@ -304,21 +292,26 @@ main(void) {
     st.p25_crypto_state[1] = DSD_P25_CRYPTO_CLEAR;
     st.p25_p2_audio_allowed[0] = 1;
     st.p25_p2_audio_allowed[1] = 1;
-    st.p25_p2_audio_ring_count[0] = 0;
-    st.p25_p2_audio_ring_count[1] = 1;
-    st.voice_counter[0] = 1;
-    st.s_l4[0][0] = 321;
+    // One admitted frame of the released call waits in the Phase 2 playout (issue #651).
+    DSD_MEMSET(st.s_l, 0, sizeof st.s_l);
+    st.s_l[0] = 321;
+    st.mbe_short_silenced[0] = 0;
+    dsd_p25p2_playout_reset(&st, -1);
+    dsd_p25p2_playout_stage(&opts, &st, 0, 0, 1U, NULL);
     g_return_to_cc_called = 0;
     reset_audio_capture();
 
     process_MAC_VPDU(&opts, &st, 0, P25_MAC_PDU_ACTIVE, MAC);
 
+    // MAC Release only closes the slot's stream: its tail plays in time order with the companion, at the pair's end.
+    rc |= expect_eq("MAC Release emits nothing out of turn", g_audio_capture_calls, 0);
+    rc |= expect_eq("MAC Release keeps the queued tail", dsd_p25p2_playout_level(&st, 0), 1);
+    dsd_p25p2_playout_pair_done(&opts, &st);
     rc |= expect_eq("MAC Release tail emitted", g_audio_capture_calls > 0, 1);
     rc |= expect_eq("MAC Release tail left sample", g_first_audio_block[0], 321);
-    // The companion slot is masked during the tail flush, so its channel
-    // mirrors the flushed slot; the companion's own audio is never emitted.
-    rc |= expect_eq("MAC Release tail right mirrors flushed slot", g_first_audio_block[1], 321);
-    rc |= expect_eq("MAC Release tail drained", st.s_l4[0][0], 0);
+    // The companion has nothing queued, so the released slot plays in both ears.
+    rc |= expect_eq("MAC Release tail right mirrors the released slot", g_first_audio_block[1], 321);
+    rc |= expect_eq("MAC Release tail drained", dsd_p25p2_playout_level(&st, 0), 0);
     rc |= expect_eq("MAC Release crypto reset after flush", st.p25_crypto_state[0], DSD_P25_CRYPTO_UNKNOWN);
     rc |= expect_eq("MAC Release retains active companion", g_return_to_cc_called, 0);
     rc |= expect_eq("MAC Release invalidates released PTT marker", sm->slots[0].ptt_signature_valid, 0);
@@ -338,11 +331,10 @@ main(void) {
     rc |= expect_eq("MAC Release follow-up starts new epoch", released_call.epoch == released_epoch + 1U, 1);
 
     // Scenario 6: a MAC Release for a slot whose crypto classification refuses
-    // audio (encryption lockout) must not emit the slot's stale buffered tail:
-    // those samples predate the mute, and playing them would both surface
-    // refused audio and wedge extra blocks into the audible companion's output
-    // stream. The tail is dropped, the buffer blanked, and the companion keeps
-    // the carrier.
+    // audio (encryption lockout) must not emit refused audio: a frame queued
+    // while the slot's crypto refused output keeps that verdict, so the
+    // emission after the release drops it instead of wedging it into the
+    // audible companion's output stream, and the companion keeps the carrier.
     DSD_MEMSET(MAC, 0, sizeof MAC);
     MAC[1] = 0x31;
     opts.trunk_tune_enc_calls = 0;
@@ -353,16 +345,16 @@ main(void) {
     st.p25_p2_audio_allowed[1] = 1;
     st.p25_p2_last_mac_active[1] = time(NULL);
     st.p25_p2_last_mac_active_m[1] = dsd_decode_now_mono_s();
-    st.voice_counter[0] = 1;
-    st.s_l4[0][0] = 321;
+    dsd_p25p2_playout_reset(&st, -1);
+    dsd_p25p2_playout_stage(&opts, &st, 0, 0, 2U, NULL);
     g_return_to_cc_called = 0;
     reset_audio_capture();
 
     process_MAC_VPDU(&opts, &st, 0, P25_MAC_PDU_ACTIVE, MAC);
+    dsd_p25p2_playout_pair_done(&opts, &st);
 
     rc |= expect_eq("lockout MAC Release emits no tail", g_audio_capture_calls, 0);
-    rc |= expect_eq("lockout MAC Release blanks stale tail", st.s_l4[0][0], 0);
-    rc |= expect_eq("lockout MAC Release resets stale counter", st.voice_counter[0], 0);
+    rc |= expect_eq("lockout MAC Release consumes the refused frame", dsd_p25p2_playout_level(&st, 0), 0);
     rc |= expect_eq("lockout MAC Release keeps companion tuned", g_return_to_cc_called, 0);
     rc |= expect_eq("lockout MAC Release keeps companion gate", st.p25_p2_audio_allowed[1], 1);
 

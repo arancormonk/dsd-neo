@@ -9,6 +9,7 @@
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/p25p2_playout.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -336,8 +337,6 @@ test_begin_and_sticky_unknown(void) {
     reset_fixture(&opts, &state);
 
     state.p25_p2_audio_allowed[0] = 1;
-    state.p25_p2_audio_ring_count[0] = 2;
-    state.p25_p2_audio_ring_count[1] = 3;
     state.fourv_counter[0] = 2;
     state.ess_b[0][0] = 1;
     state.s_l4[0][0] = 111;
@@ -348,8 +347,6 @@ test_begin_and_sticky_unknown(void) {
     int rc = 0;
     rc |= expect_int("encrypted grant pending", state.p25_crypto_state[0], DSD_P25_CRYPTO_ENCRYPTED_PENDING);
     rc |= expect_int("encrypted grant gate", state.p25_p2_audio_allowed[0], 0);
-    rc |= expect_int("encrypted grant ring purged", state.p25_p2_audio_ring_count[0], 0);
-    rc |= expect_int("encrypted grant companion ring preserved", state.p25_p2_audio_ring_count[1], 3);
     rc |= expect_int("encrypted grant int16 tail purged", state.s_l4[0][0], 0);
     rc |= expect_int("encrypted grant companion tail preserved", state.s_r4[0][0], 222);
     rc |= expect_int("encrypted grant ESS index preserved", state.fourv_counter[0], 2);
@@ -828,8 +825,6 @@ test_slot_local_transition_purge_and_mi_refresh(void) {
     state.payload_algidR = 0x80;
     state.p25_p2_audio_allowed[0] = 1;
     state.p25_p2_audio_allowed[1] = 1;
-    state.p25_p2_audio_ring_count[0] = 2;
-    state.p25_p2_audio_ring_count[1] = 3;
     state.audio_out_temp_buf[0] = 1.0f;
     state.audio_out_temp_bufR[0] = 2.0f;
     state.f_l4[0][0] = 3.0f;
@@ -838,8 +833,9 @@ test_slot_local_transition_purge_and_mi_refresh(void) {
     state.s_r4[0][0] = 6;
     state.s_l4u[0][0] = 7;
     state.s_r4u[0][0] = 8;
-    state.voice_counter[0] = 9;
-    state.voice_counter[1] = 10;
+    /* A frame the P25 Phase 2 playout already admitted on slot 1 (issue #651). */
+    const dsd_p25p2_playout_verdict admitted = {0U, 0U, 1U, 1U};
+    dsd_p25p2_playout_stage(&opts, &state, 0, 0, 1U, &admitted);
     state.fourv_counter[0] = 2;
     state.ess_b[0][0] = 1;
     state.audio_out_float_buf[0] = 9.0f;
@@ -851,16 +847,14 @@ test_slot_local_transition_purge_and_mi_refresh(void) {
     rc |= expect_int("clear-to-blocked transition",
                      p25_crypto_resolve(&opts, &state, DSD_P25_CRYPTO_PHASE2, 0, 0x81, 0x4000, 0x4444, 300),
                      DSD_P25_CRYPTO_BLOCKED);
-    rc |= expect_int("transition purges selected float ring", state.p25_p2_audio_ring_count[0], 0);
-    rc |= expect_int("transition preserves companion float ring", state.p25_p2_audio_ring_count[1], 3);
     rc |= expect_int("transition purges selected float frame", state.f_l4[0][0] == 0.0f, 1);
     rc |= expect_int("transition preserves companion float frame", state.f_r4[0][0] == 4.0f, 1);
     rc |= expect_int("transition purges selected int16 tail", state.s_l4[0][0], 0);
     rc |= expect_int("transition preserves companion int16 tail", state.s_r4[0][0], 6);
     rc |= expect_int("transition purges selected upsample tail", state.s_l4u[0][0], 0);
     rc |= expect_int("transition preserves companion upsample tail", state.s_r4u[0][0], 8);
-    rc |= expect_int("transition purges selected voice counter", state.voice_counter[0], 0);
-    rc |= expect_int("transition preserves companion voice counter", state.voice_counter[1], 10);
+    /* The purge resets the vocoder's working state; admitted playout audio and stream timing stay (issue #651). */
+    rc |= expect_int("transition keeps admitted playout audio", dsd_p25p2_playout_level(&state, 0), 1);
     rc |= expect_int("transition preserves ESS index", state.fourv_counter[0], 2);
     rc |= expect_int("transition preserves ESS bits", state.ess_b[0][0], 1);
     rc |= expect_int("transition purges selected dynamic float lead",
@@ -875,8 +869,6 @@ test_slot_local_transition_purge_and_mi_refresh(void) {
     state.payload_algid = 0x81;
     state.payload_keyid = 0x4000;
     state.payload_miP = 0x5000ULL;
-    state.p25_p2_audio_ring_count[0] = 2;
-    state.voice_counter[0] = 7;
     state.s_l4[0][0] = 13;
     state.DMRvcL = 14;
     state.bit_counterL = 15;
@@ -885,8 +877,7 @@ test_slot_local_transition_purge_and_mi_refresh(void) {
     rc |= expect_int("MI refresh remains decryptable",
                      p25_crypto_resolve(&opts, &state, DSD_P25_CRYPTO_PHASE2, 0, 0x81, 0x4000, 0x5001, 300),
                      DSD_P25_CRYPTO_DECRYPTABLE);
-    rc |= expect_int("MI refresh preserves queued ring", state.p25_p2_audio_ring_count[0], 2);
-    rc |= expect_int("MI refresh preserves voice cadence", state.voice_counter[0], 7);
+    rc |= expect_int("MI refresh keeps admitted playout audio", dsd_p25p2_playout_level(&state, 0), 1);
     rc |= expect_int("MI refresh preserves int16 audio", state.s_l4[0][0], 13);
     rc |= expect_int("P2 MI refresh preserves crypto voice counter", state.DMRvcL, 14);
     rc |= expect_int("P2 MI refresh preserves crypto bit counter", state.bit_counterL, 15);
@@ -905,12 +896,10 @@ test_slot_local_transition_purge_and_mi_refresh(void) {
     rc |= expect_int("P1 MI refresh resets RC4 position", state.dropL, 267);
     rc |= expect_int("P1 MI refresh clears keystream", state.ks_octetL[0], 0);
 
-    state.p25_p2_audio_ring_count[0] = 1;
     state.s_l4[0][0] = 14;
     rc |= expect_int("key identity change remains decryptable",
                      p25_crypto_resolve(&opts, &state, DSD_P25_CRYPTO_PHASE2, 0, 0x81, 0x4001, 0x5003, 300),
                      DSD_P25_CRYPTO_DECRYPTABLE);
-    rc |= expect_int("key identity change purges ring", state.p25_p2_audio_ring_count[0], 0);
     rc |= expect_int("key identity change purges int16 tail", state.s_l4[0][0], 0);
 
     free(state.audio_out_float_buf);

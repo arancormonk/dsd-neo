@@ -35,7 +35,6 @@
 #include <dsd-neo/runtime/colors.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_clock.h>
-#include <dsd-neo/runtime/p25_p2_audio_ring.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -48,6 +47,7 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "p25p2_frame_internal.h"
 
 static inline void dsd_append(char* dst, size_t dstsz, const char* src);
 
@@ -933,7 +933,6 @@ p25p2_vpdu_try_group_candidates(dsd_opts* opts, dsd_state* state, const p25p2_vp
 static void
 p25p2_vpdu_gate_slot_audio(dsd_state* state, int slot) {
     state->p25_p2_audio_allowed[slot] = 0;
-    p25_p2_audio_ring_reset(state, slot);
 }
 
 static double
@@ -991,11 +990,10 @@ p25p2_vpdu_other_slot_audio_with_history(const dsd_state* state, int slot, doubl
                                          state->p25_p2_last_mac_active[other_slot], nowm, noww);
     int recent_voice = p25p2_vpdu_recent_voice_active(state, voice_hold_s);
     int recent_mac = (state->p25_p2_last_mac_active[other_slot] != 0 && dt_mac <= mac_hold_s) ? 1 : 0;
-    return state->p25_p2_audio_allowed[other_slot] || (state->p25_p2_audio_ring_count[other_slot] > 0) || recent_mac
-           || recent_voice;
+    return state->p25_p2_audio_allowed[other_slot] || recent_mac || recent_voice;
 }
 
-// Whether either logical slot still looks occupied: gated or buffered audio,
+// Whether either logical slot still looks occupied: gated audio,
 // MAC activity inside the hold window, or recent voice on the carrier. A
 // Deny/Queued response heard in a voice channel's signaling answers some
 // unit's request; releasing the carrier over one while a call -- or the
@@ -5597,6 +5595,11 @@ p25p2_vpdu_consume_multifragment_continuation(p25p2_vpdu_ctx* ctx) {
 static int
 p25p2_vpdu_consume_fragment_segment(p25p2_vpdu_ctx* ctx) {
     int opcode = (int)ctx->mac[1 + ctx->len_a];
+    // A superframe whose slot parity is unknown: an assembly is per slot, so a fragment could join the wrong one.
+    if (p25p2_window_slot_unproven() && (p25p2_vpdu_is_standard_multifragment_base(opcode) || opcode == 0x10)) {
+        DSD_FPRINTF(stderr, "\n MAC multi-fragment [%02X] dropped: unaligned superframe", opcode);
+        return 1;
+    }
     if (p25p2_vpdu_is_standard_multifragment_base(opcode)) {
         return p25p2_vpdu_consume_multifragment_base(ctx, opcode);
     }
@@ -5731,6 +5734,7 @@ process_MAC_VPDU_crc(dsd_opts* opts, dsd_state* state, int type, p25_mac_pdu_typ
         ctx.end_pdu = 1;
     }
 
+    const p25p2_retune_token token = p25p2_retune_token_now();
     for (int segment_idx = 0; !ctx.end_pdu && segment_idx < mac_res.segment_count; segment_idx++) {
         ctx.skip_rest = 0;
         ctx.iter_idx = segment_idx;
@@ -5739,6 +5743,11 @@ process_MAC_VPDU_crc(dsd_opts* opts, dsd_state* state, int type, p25_mac_pdu_typ
         }
         if (!p25p2_vpdu_consume_fragment_segment(&ctx)) {
             p25p2_vpdu_dispatch_blocks(&ctx);
+        }
+        // A segment that retuned (a grant, a return to the control channel) left this channel: the PDU's later
+        // segments describe the one left, so none of them may act on the new assignment (issue #651).
+        if (p25p2_retune_token_changed(&token)) {
+            break;
         }
     }
 

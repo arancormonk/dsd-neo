@@ -122,7 +122,7 @@ _Static_assert(UI_SNAPSHOT_FIELD_END(trunk_lcn_freq_ext_capacity) <= offsetof(ds
                "trunk_lcn_freq_ext must sit before the audio_out_idx..lastsample copy range");
 /* ui_snapshot_copy_trunk_lcn_freq_ext() writes lcn_freq_count/lcn_freq_roll on its clamp
  * paths, so the range that carries them has to be copied first or the clamp is undone. */
-_Static_assert(offsetof(dsd_state, lcn_freq_count) >= offsetof(dsd_state, p25_p2_audio_ring_count)
+_Static_assert(offsetof(dsd_state, lcn_freq_count) >= offsetof(dsd_state, p25_p2_active_slot)
                    && UI_SNAPSHOT_FIELD_END(lcn_freq_roll) <= UI_SNAPSHOT_FIELD_END(dstar_gps),
                "lcn_freq_count/roll must ride the range copied before the scan-list tail");
 /* The per-row name store is a second heap allocation with the same hazard, and it sits
@@ -264,7 +264,7 @@ ui_snapshot_copy_render_state(dsd_state* dst, const dsd_state* src) {
     UI_SNAPSHOT_COPY_RANGE(dst, src, input_sample_buffer, directmode);
     UI_SNAPSHOT_COPY_RANGE(dst, src, dmr_alias_format, DMRvcR);
     UI_SNAPSHOT_COPY_RANGE(dst, src, octet_counter, p25_p2_audio_allowed);
-    UI_SNAPSHOT_COPY_RANGE(dst, src, p25_p2_audio_ring_count, dstar_gps);
+    UI_SNAPSHOT_COPY_RANGE(dst, src, p25_p2_active_slot, dstar_gps);
     ui_snapshot_copy_trunk_lcn_freq_ext(dst, src);
     ui_snapshot_copy_trunk_lcn_name(dst, src);
     ui_snapshot_copy_trunk_lcn_avoid(dst, src);

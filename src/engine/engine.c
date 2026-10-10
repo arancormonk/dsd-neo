@@ -17,6 +17,7 @@
 #include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/p25p2_playout.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/source_alias.h>
@@ -2224,8 +2225,6 @@ no_carrier_reset_dmr_data_blocks(dsd_state* state) {
     }
     state->fourv_counter[0] = 0;
     state->fourv_counter[1] = 0;
-    state->voice_counter[0] = 0;
-    state->voice_counter[1] = 0;
 }
 
 static void
@@ -2534,6 +2533,9 @@ dsd_engine_forget_carrier_decoding(dsd_opts* opts, dsd_state* state) {
     if (!opts || !state) {
         return;
     }
+    // Frames the P25 Phase 2 playout queued on the carrier left play before it is forgotten: each carries the verdict
+    // it was decoded with (issue #651).
+    dsd_p25p2_playout_drain(opts, state);
     carrier_boundary_forget_evidence(state);
     carrier_boundary_forget_assemblies(opts, state);
 }
@@ -2550,6 +2552,9 @@ dsd_engine_carrier_boundary(dsd_opts* opts, dsd_state* state, dsd_carrier_bounda
     if (take_guard) {
         p25_sm_tick_guard_enter();
     }
+    // The calls end below before the P25 Phase 2 playout drains (step 3): it takes their talkgroup verdict while they
+    // are still active (issue #651).
+    dsd_p25p2_playout_note_policy(opts, state);
     carrier_boundary_release_followed(opts, state, kind);
     no_carrier_finalize_canonical_calls(opts, state, 1);
     dsd_engine_forget_carrier_codes(state);
@@ -2655,6 +2660,25 @@ no_carrier_reset_m17_and_sample_buffers(dsd_state* state) {
     DSD_MEMSET(state->static_ks_counter, 0, sizeof(state->static_ks_counter));
 }
 
+/* The no-carrier pass's part in the P25 Phase 2 playout (issue #651): the carrier is gone, so what the playout still
+   holds plays now and its queues reset, under the talkgroup verdict the calls have while they are still active and
+   under the slot switches the user set. So it runs before this pass ends the calls or a return to the control channel
+   turns both slots on. The watchdog's release drains the playout too, under the tick guard, so this runs only under the
+   guard: a pass that finds it taken leaves the playout to the next pass (whose verdicts the calls' last ones taken
+   still hold), as the recovery tick does. Returns 0 when it left audio for the next pass. */
+static int
+no_carrier_drain_playout(dsd_opts* opts, dsd_state* state, int guard_held) {
+    if (!guard_held && !p25_sm_tick_guard_try_enter()) {
+        return !dsd_p25p2_playout_holds_audio(state);
+    }
+    dsd_p25p2_playout_note_policy(opts, state);
+    dsd_p25p2_flush_partial_audio(opts, state);
+    if (!guard_held) {
+        p25_sm_tick_guard_leave();
+    }
+    return 1;
+}
+
 static void
 no_carrier_run(dsd_opts* opts, dsd_state* state, int guard_held) {
     const time_t now = dsd_decode_time();
@@ -2689,7 +2713,10 @@ no_carrier_run(dsd_opts* opts, dsd_state* state, int guard_held) {
          * hop reason. A pending tune must not close them as sync loss first. */
         return;
     }
-    no_carrier_return_to_control_channel_if_needed(opts, state, now, guard_held);
+    // A drain left to the next pass takes the return to the control channel with it: the return turns both slots on.
+    if (no_carrier_drain_playout(opts, state, guard_held)) {
+        no_carrier_return_to_control_channel_if_needed(opts, state, now, guard_held);
+    }
     if (scanner_retuned) {
         /* The untyped step moved to another channel: the carrier boundary (issue #575). */
         dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_SCAN_STEP, guard_held);

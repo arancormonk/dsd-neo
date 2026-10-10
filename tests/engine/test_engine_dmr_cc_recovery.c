@@ -11,6 +11,7 @@
 #include <dsd-neo/core/frame.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/p25p2_playout.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -722,10 +723,13 @@ seed_skip_watchdog_call(void) {
         expect(p25_sm_emit_active_call(&g_opts, &g_state, 0, 1234, 0, 42, 1, 0), "watchdog fixture voice accepted");
     rc |= expect(ctx->state == P25_SM_TUNED && ctx->vc_is_tdma, "watchdog fixture follows TDMA");
     g_state.p25_p2_audio_allowed[0] = 1;
-    g_state.voice_counter[0] = 1;
+    /* One admitted frame waits in the P25 Phase 2 playout (issue #651). */
     for (int i = 0; i < 160; ++i) {
-        g_state.s_l4[0][i] = 1000;
+        g_state.s_l[i] = 1000;
     }
+    g_state.mbe_short_silenced[0] = 0;
+    dsd_p25p2_playout_reset(&g_state, -1);
+    dsd_p25p2_playout_stage(&g_opts, &g_state, 0, 0, 1U, NULL);
     g_skip_flush.pause_flush = g_skip_flush.entered = g_skip_flush.resume = 0;
     g_skip_flush.skip_started = g_skip_flush.skip_waited = 0;
     g_skip_flush.flushes = g_skip_flush.blocked = g_skip_flush.allowed = g_skip_flush.failures =
@@ -759,7 +763,7 @@ watchdog_call_skip_phases(void) {
             rc |= expect(dsd_app_drain_cmds(&g_opts, &g_state) == 1, "watchdog skip drained");
             rc |= expect(dsd_tg_policy_call_skip_active(&g_state, 1234, dsd_decode_now_mono_s()),
                          "watchdog skip armed before release");
-            rc |= expect(p25_sm_get_ctx()->state == P25_SM_TUNED && g_state.s_l4[0][0] != 0,
+            rc |= expect(p25_sm_get_ctx()->state == P25_SM_TUNED && dsd_p25p2_playout_level(&g_state, 0) > 0,
                          "refused Skip preserves releasable buffered carrier");
             g_result = DSD_TRUNK_TUNE_RESULT_OK;
         }
@@ -1112,6 +1116,45 @@ visit_hook_defers_tuning_until_decoder_unwinds(void) {
     return rc;
 }
 
+/* Issue #651: a Skip or a lockout the tuner accepts ends the calls before the P25 Phase 2 playout drains, in the
+   no-carrier pass of the return to the control channel. What the playout queued for the blocked call stays muted
+   then: the block's verdict is taken while the call is still active. */
+static int
+user_block_mutes_queued_voice(void) {
+    int rc = 0;
+    for (int lockout = 0; lockout < 2; lockout++) {
+        if (setup(0.0f)) {
+            cleanup();
+            return 1;
+        }
+        dsd_engine_trunk_scan_shutdown(&g_opts, &g_state);
+        g_opts.trunk_scan_enabled = 0;
+        dsd_app_frontend_runtime_start(&g_opts, &g_state);
+        // The tuner accepts the return to the control channel.
+        dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){
+            .tune_to_freq_request = vc_tune, .tune_to_cc_request = cc_tune, .return_to_cc_request = return_to_cc});
+        dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){.blast = skip_audio_sink});
+        rc |= seed_skip_watchdog_call();
+        rc |= expect(dsd_p25p2_playout_level(&g_state, 0) == 1, "user block fixture queues a frame");
+        // A Phase 1 control channel the return tunes to through the trunk tuning hook.
+        g_state.p25_cc_is_tdma = 0;
+        g_result = DSD_TRUNK_TUNE_RESULT_OK;
+        rc |= expect(dsd_app_command_set_u8(lockout ? DSD_APP_CMD_LOCKOUT_SLOT : DSD_APP_CMD_SKIP_SLOT, 0) > 0,
+                     "user block queued");
+        rc |= expect(dsd_app_drain_cmds(&g_opts, &g_state) == 1, "user block drained");
+        rc |= expect(g_skip_flush.audio_blocks == 0, lockout ? "lockout keeps the locked-out call's queued frame silent"
+                                                             : "skip keeps the skipped call's queued frame silent");
+        dsd_call_snapshot call;
+        rc |= expect(dsd_call_state_get(&g_state, 0, &call) > 0 && call.phase == DSD_CALL_PHASE_ENDED,
+                     "user block ends the call");
+        rc |= expect(dsd_p25p2_playout_level(&g_state, 0) == 0, "user block consumes the muted frame");
+        dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
+        dsd_app_frontend_runtime_stop();
+        cleanup();
+    }
+    return rc;
+}
+
 int
 main(void) {
     (void)dsd_test_unsetenv("DSD_NEO_DMR_HANGTIME");
@@ -1129,6 +1172,7 @@ main(void) {
     rc |= pending_probe_dwell();
     rc |= watchdog_ownership_thread();
     rc |= watchdog_call_skip_phases();
+    rc |= user_block_mutes_queued_voice();
     rc |= probe_grant_and_missing_anchor();
     rc |= cap_plus_idle_preserves_hangtime();
     rc |= hunt_fade_and_avoids();

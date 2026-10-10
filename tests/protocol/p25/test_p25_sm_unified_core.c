@@ -2864,16 +2864,13 @@ test_tdma_single_slot_end_retains_carrier(void) {
     // Simulate what xcch.c does: enable audio on PTT
     g_state.p25_p2_audio_allowed[0] = 1;
 
-    // Simulate audio in the ring buffer (jitter buffer has samples)
-    g_state.p25_p2_audio_ring_count[0] = 5;
-
     // Verify slot 1 never had activity
     if (ctx.slots[1].last_active_m != 0.0) {
         DSD_FPRINTF(stderr, "FAIL: Expected slot 1 last_active_m=0 (never active)\n");
         return 1;
     }
 
-    // END arrives while the decoder gate and jitter ring still contain media.
+    // END arrives while the decoder gate is still open.
     ev = p25_sm_ev_end(0);
     p25_sm_event(&ctx, &g_opts, &g_state, &ev);
 
@@ -2887,11 +2884,6 @@ test_tdma_single_slot_end_retains_carrier(void) {
     // Verify the SM cleared audio_allowed for slot 0
     if (g_state.p25_p2_audio_allowed[0] != 0) {
         DSD_FPRINTF(stderr, "FAIL: Expected audio_allowed[0]=0 after END, got %d\n", g_state.p25_p2_audio_allowed[0]);
-        return 1;
-    }
-
-    if (g_state.p25_p2_audio_ring_count[0] != 0) {
-        DSD_FPRINTF(stderr, "FAIL: Expected slot 0 jitter ring cleanup at END\n");
         return 1;
     }
 

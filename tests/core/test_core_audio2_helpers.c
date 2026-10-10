@@ -15,6 +15,7 @@
 #include <dsd-neo/core/audio_activity.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/p25p2_playout.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <sndfile.h>
@@ -37,7 +38,6 @@
 #include "dsd-neo/platform/audio.h"
 #include "dsd-neo/platform/file_compat.h"
 #include "dsd-neo/runtime/log.h"
-#include "dsd-neo/runtime/p25_p2_audio_ring.h"
 #include "dsd-neo/runtime/udp_audio_hooks.h"
 
 void
@@ -90,18 +90,6 @@ mbe_floattoshort(const float* in, short* out) {
     }
 }
 
-int
-p25_p2_audio_ring_pop(dsd_state* state, int slot, float* out160) {
-    (void)state;
-    (void)slot;
-    if (out160 != NULL) {
-        for (size_t i = 0; i < 160U; i++) {
-            out160[i] = 0.0f;
-        }
-    }
-    return 0;
-}
-
 void
 hpf_dL(dsd_state* state, short* input, int len) {
     (void)state;
@@ -137,6 +125,61 @@ audio_mix_interleave_stereo_s16(const short* left, const short* right, size_t n,
         stereo_out[(i * 2U) + 0U] = (encL || left == NULL) ? 0 : left[i];
         stereo_out[(i * 2U) + 1U] = (encR || right == NULL) ? 0 : right[i];
     }
+}
+
+void
+audio_mix_mono_from_slots_s16(const short* left, const short* right, size_t n, int l_on, int r_on, short* out) {
+    if (out == NULL) {
+        return;
+    }
+    for (size_t i = 0; i < n; i++) {
+        if (l_on && r_on && left && right) {
+            out[i] = (short)(((int)left[i] + (int)right[i]) / 2);
+        } else if (l_on && left) {
+            out[i] = left[i];
+        } else if (r_on && right) {
+            out[i] = right[i];
+        } else {
+            out[i] = 0;
+        }
+    }
+}
+
+// The P25 Phase 2 flush entry points in dsd_audio2.c hand over to the playout, which this target does not link.
+void
+dsd_p25p2_playout_drain(dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    (void)state;
+}
+
+void
+dsd_p25p2_playout_reset(dsd_state* state, int slot) {
+    (void)state;
+    (void)slot;
+}
+
+void
+dsd_p25p2_playout_close(dsd_state* state, int slot) {
+    (void)state;
+    (void)slot;
+}
+
+void
+dsd_p25p2_playout_discard(dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    (void)state;
+}
+
+// No queued P25 Phase 2 audio here: beeper() sounds every alert at once.
+int
+dsd_p25p2_playout_defer_alert(const dsd_opts* opts, dsd_state* state, int slot, int id, int ad, int len) {
+    (void)opts;
+    (void)state;
+    (void)slot;
+    (void)id;
+    (void)ad;
+    (void)len;
+    return 0;
 }
 
 sf_count_t
@@ -866,247 +909,6 @@ test_dmr_ss3_muted_companion_burst_hint_matrix(void) {
             }
         }
     }
-    return rc;
-}
-
-static int
-test_p25p2_ss18_slot_preference_and_copy_policy_helpers(void) {
-    static dsd_opts opts;
-    static dsd_state state;
-    DSD_MEMSET(&opts, 0, sizeof(opts));
-    DSD_MEMSET(&state, 0, sizeof(state));
-
-    int rc = 0;
-    state.tg_hold = 111;
-    dsd_p25p2_apply_slot_preference_ss18(&opts, &state, 111, 222);
-    rc |= expect_int("ss18 tg hold left enables slot1", opts.slot1_on, 1);
-    rc |= expect_int("ss18 tg hold left preference", opts.slot_preference, 0);
-
-    opts.slot2_on = 0;
-    state.tg_hold = 222;
-    dsd_p25p2_apply_slot_preference_ss18(&opts, &state, 111, 222);
-    rc |= expect_int("ss18 tg hold right enables slot2", opts.slot2_on, 1);
-    rc |= expect_int("ss18 tg hold right preference", opts.slot_preference, 1);
-
-    state.tg_hold = 333;
-    dsd_p25p2_apply_slot_preference_ss18(&opts, &state, 111, 222);
-    rc |= expect_int("ss18 tg hold mismatch sets dual preference", opts.slot_preference, 2);
-
-    DSD_MEMSET(state.s_l4, 0, sizeof(state.s_l4));
-    DSD_MEMSET(state.s_r4, 0, sizeof(state.s_r4));
-    state.s_l4[0][0] = 10;
-    state.s_r4[0][0] = 20;
-    opts.slot1_on = 0;
-    opts.slot2_on = 1;
-    state.payload_algid = 0x81;
-    state.p25_crypto_state[0] = DSD_P25_CRYPTO_BLOCKED;
-    dsd_p25p2_apply_stereo_output_policy_ss18(&opts, &state, 1, 0);
-    rc |= expect_int("ss18 locked-out left still receives right-to-left copy", state.s_l4[0][0], 20);
-    rc |= expect_int("ss18 right retained when left lockout", state.s_r4[0][0], 20);
-
-    state.s_l4[0][0] = 10;
-    state.s_r4[0][0] = 20;
-    state.R = 0x12345678ULL;
-    state.p25_crypto_state[0] = DSD_P25_CRYPTO_DECRYPTABLE;
-    dsd_p25p2_apply_stereo_output_policy_ss18(&opts, &state, 1, 0);
-    rc |= expect_int("ss18 keyed left allows right-to-left copy", state.s_l4[0][0], 20);
-
-    state.s_l4[0][1] = 30;
-    state.s_r4[0][1] = 40;
-    opts.slot1_on = 1;
-    opts.slot2_on = 0;
-    state.payload_algidR = 0x84;
-    state.aes_key_loaded[1] = 0;
-    state.p25_crypto_state[1] = DSD_P25_CRYPTO_BLOCKED;
-    dsd_p25p2_apply_stereo_output_policy_ss18(&opts, &state, 0, 1);
-    rc |= expect_int("ss18 locked-out right still receives left-to-right copy", state.s_r4[0][1], 30);
-
-    state.s_l4[0][1] = 30;
-    state.s_r4[0][1] = 40;
-    state.aes_key_loaded[1] = 1;
-    state.p25_crypto_state[1] = DSD_P25_CRYPTO_DECRYPTABLE;
-    dsd_p25p2_apply_stereo_output_policy_ss18(&opts, &state, 0, 1);
-    rc |= expect_int("ss18 keyed right allows left-to-right copy", state.s_r4[0][1], 30);
-
-    // Regression: an enc-locked-out companion with an active voice burst hint
-    // (dmrburst 21 on both slots) must not hold the muted channel silent.
-    DSD_MEMSET(state.s_l4, 0, sizeof(state.s_l4));
-    DSD_MEMSET(state.s_r4, 0, sizeof(state.s_r4));
-    opts.slot1_on = 1;
-    opts.slot2_on = 1;
-    opts.slot_preference = 2;
-    state.dmrburstL = 21;
-    state.dmrburstR = 21;
-    state.s_l4[0][0] = 12;
-    state.s_r4[0][0] = 99;
-    dsd_p25p2_apply_stereo_output_policy_ss18(&opts, &state, 0, 1);
-    rc |= expect_int("ss18 dual-burst enc right companion duplicates left", state.s_r4[0][0], 12);
-
-    DSD_MEMSET(state.s_l4, 0, sizeof(state.s_l4));
-    DSD_MEMSET(state.s_r4, 0, sizeof(state.s_r4));
-    state.s_l4[0][0] = 99;
-    state.s_r4[0][0] = 34;
-    dsd_p25p2_apply_stereo_output_policy_ss18(&opts, &state, 1, 0);
-    rc |= expect_int("ss18 dual-burst enc left companion duplicates right", state.s_l4[0][0], 34);
-
-    return rc;
-}
-
-static int
-test_ss18_partial_superframe_skips_zero_blocks_and_duplicates_clear_slot(void) {
-    static dsd_opts opts;
-    static dsd_state state;
-    DSD_MEMSET(&opts, 0, sizeof(opts));
-    DSD_MEMSET(&state, 0, sizeof(state));
-    reset_sink_capture();
-    reset_gate_capture();
-
-    // Clear call on slot 1, encryption-lockout companion call on slot 2, and a
-    // partially filled superframe (9 of 18 blocks) as produced by a flush or an
-    // early emission at the companion call's boundary.
-    opts.audio_out = 1;
-    opts.audio_out_type = 8; // UDP sink counts one blast per emitted block
-    opts.slot1_on = 1;
-    opts.slot2_on = 1;
-    opts.slot_preference = 2;
-    state.p25_p2_audio_allowed[0] = 1;
-    state.p25_p2_audio_allowed[1] = 0;
-    state.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
-    state.p25_crypto_state[1] = DSD_P25_CRYPTO_BLOCKED;
-    state.dmrburstL = 21;
-    state.dmrburstR = 21;
-    state.voice_counter[0] = 9; // clear slot filled 9 blocks before the flush
-    for (int j = 0; j < 9; j++) {
-        for (int i = 0; i < 160; i++) {
-            state.s_l4[j][i] = 100;
-        }
-    }
-
-    playSynthesizedVoiceSS18(&opts, &state);
-
-    int rc = 0;
-    // Zero tail blocks must not play as inserted silence.
-    rc |= expect_int("ss18 partial superframe emits only filled blocks", g_udp_blast_calls, 9);
-    rc |= expect_size("ss18 emitted block is a full stereo frame", g_udp_blast_bytes, 320U * sizeof(short));
-    short last_block[2] = {0, 0};
-    DSD_MEMCPY(last_block, g_udp_blast_data, sizeof(last_block));
-    rc |= expect_int("ss18 clear slot present in left channel", last_block[0], 100);
-    rc |= expect_int("ss18 locked-out companion channel mirrors clear slot", last_block[1], 100);
-    rc |= expect_int("ss18 working buffers reset after playback", state.s_l4[0][0], 0);
-    return rc;
-}
-
-static int
-test_ss18_keeps_legit_silence_inside_filled_extent(void) {
-    static dsd_opts opts;
-    static dsd_state state;
-    DSD_MEMSET(&opts, 0, sizeof(opts));
-    DSD_MEMSET(&state, 0, sizeof(state));
-    reset_sink_capture();
-    reset_gate_capture();
-
-    // A clear call whose decoded audio contains a genuinely all-zero block
-    // (block 4) inside the filled extent: that block is real silence in the
-    // call timeline and must still be emitted; only the never-filled tail
-    // blocks past the extent are dropped.
-    opts.audio_out = 1;
-    opts.audio_out_type = 8; // UDP sink counts one blast per emitted block
-    opts.slot1_on = 1;
-    opts.slot2_on = 1;
-    opts.slot_preference = 2;
-    state.p25_p2_audio_allowed[0] = 1;
-    state.p25_p2_audio_allowed[1] = 0;
-    state.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
-    state.dmrburstL = 21;
-    state.voice_counter[0] = 9;
-    for (int j = 0; j < 9; j++) {
-        if (j == 4) {
-            continue; // decoded silence: block stays all zero
-        }
-        for (int i = 0; i < 160; i++) {
-            state.s_l4[j][i] = 100;
-        }
-    }
-
-    playSynthesizedVoiceSS18(&opts, &state);
-
-    int rc = 0;
-    rc |= expect_int("ss18 silence inside extent still emits all filled blocks", g_udp_blast_calls, 9);
-    return rc;
-}
-
-/* Issue #574: SS18 applies the per-slot hard gate FS4 applies (slot1_on/slot2_on), so a switched-off slot's clear
-   audio is never played, not even through the duplication a crypto-muted companion slot triggers. */
-static int
-test_ss18_switched_off_slot_stays_silent_beside_muted_companion(void) {
-    static dsd_opts opts;
-    static dsd_state state;
-    int rc = 0;
-    for (int off = 0; off < 2; off++) {
-        const int muted = off ^ 1;
-        DSD_MEMSET(&opts, 0, sizeof(opts));
-        DSD_MEMSET(&state, 0, sizeof(state));
-        reset_sink_capture();
-        reset_gate_capture();
-        opts.audio_out = 1;
-        opts.audio_out_type = 8; // UDP sink counts one blast per emitted block
-        opts.slot1_on = off == 0 ? 0 : 1;
-        opts.slot2_on = off == 1 ? 0 : 1;
-        opts.slot_preference = 2;
-        state.p25_p2_audio_allowed[0] = 1;
-        state.p25_p2_audio_allowed[1] = 1;
-        state.p25_crypto_state[off] = DSD_P25_CRYPTO_CLEAR;
-        state.p25_crypto_state[muted] = DSD_P25_CRYPTO_BLOCKED;
-        state.dmrburstL = 21;
-        state.dmrburstR = 21;
-        state.voice_counter[off] = 18;
-        short (*clear)[160] = off == 0 ? state.s_l4 : state.s_r4;
-        for (int j = 0; j < 18; j++) {
-            for (int i = 0; i < 160; i++) {
-                clear[j][i] = 100;
-            }
-        }
-
-        playSynthesizedVoiceSS18(&opts, &state);
-
-        rc |= expect_int(off == 0 ? "ss18 slot 1 off beside a crypto-muted slot 2 plays nothing"
-                                  : "ss18 slot 2 off beside a crypto-muted slot 1 plays nothing",
-                         g_udp_blast_calls, 0);
-    }
-    return rc;
-}
-
-static int
-test_fs4_mono_mixer_averages_available_unmuted_slots(void) {
-    float lf[4][160];
-    float rf[4][160];
-    float mono[4][160];
-    int l_ok[4] = {1, 0, 1, 1};
-    int r_ok[4] = {1, 1, 0, 1};
-    DSD_MEMSET(lf, 0, sizeof(lf));
-    DSD_MEMSET(rf, 0, sizeof(rf));
-    DSD_MEMSET(mono, 0, sizeof(mono));
-    for (int j = 0; j < 4; j++) {
-        lf[j][0] = (float)(10 + j);
-        rf[j][0] = (float)(20 + j);
-    }
-
-    int rc = 0;
-    dsd_fs4_mix_mono_frames(lf, rf, 0, 0, l_ok, r_ok, mono);
-    rc |= expect_float("fs4 mono averages both slots", mono[0][0], 15.0f);
-    rc |= expect_float("fs4 mono uses right-only frame", mono[1][0], 21.0f);
-    rc |= expect_float("fs4 mono uses left-only frame", mono[2][0], 12.0f);
-    rc |= expect_float("fs4 mono averages final frame", mono[3][0], 18.0f);
-
-    DSD_MEMSET(mono, 0, sizeof(mono));
-    dsd_fs4_mix_mono_frames(lf, rf, 1, 0, l_ok, r_ok, mono);
-    rc |= expect_float("fs4 mono left-muted uses right", mono[0][0], 20.0f);
-    rc |= expect_float("fs4 mono left-muted no available right stays zero", mono[2][0], 0.0f);
-
-    DSD_MEMSET(mono, 0, sizeof(mono));
-    dsd_fs4_mix_mono_frames(lf, rf, 0, 1, l_ok, r_ok, mono);
-    rc |= expect_float("fs4 mono right-muted uses left", mono[0][0], 10.0f);
-    rc |= expect_float("fs4 mono right-muted no available left stays zero", mono[1][0], 0.0f);
     return rc;
 }
 
@@ -1908,8 +1710,8 @@ test_static_wav_honors_record_policy_stereo(void) {
     static dsd_opts opts;
     static dsd_state state;
     int rc = 0;
-    for (int p25 = 0; p25 <= 1; ++p25) {
-        const size_t blocks = p25 ? 18U : 3U;
+    {
+        const size_t blocks = 3U;
         for (int blocked_slot = 0; blocked_slot < 2; ++blocked_slot) {
             DSD_MEMSET(&opts, 0, sizeof(opts));
             DSD_MEMSET(&state, 0, sizeof(state));
@@ -1923,14 +1725,7 @@ test_static_wav_honors_record_policy_stereo(void) {
             opts.static_wav_file = 1;
             g_gate_dual_forced_enc_l = 0;
             g_gate_dual_forced_enc_r = 0;
-            if (p25) {
-                state.synctype = DSD_SYNC_P25P2_POS;
-                state.p25_p2_audio_allowed[0] = state.p25_p2_audio_allowed[1] = 1;
-                state.p25_crypto_state[0] = state.p25_crypto_state[1] = DSD_P25_CRYPTO_CLEAR;
-                state.voice_counter[0] = state.voice_counter[1] = 18;
-            } else {
-                state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
-            }
+            state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
             for (size_t j = 0; j < blocks; j++) {
                 for (size_t i = 0; i < 160U; i++) {
                     state.s_l4[j][i] = 1111;
@@ -1938,11 +1733,7 @@ test_static_wav_honors_record_policy_stereo(void) {
                 }
             }
             g_record_policy_blocked[blocked_slot] = 1;
-            if (p25) {
-                playSynthesizedVoiceSS18(&opts, &state);
-            } else {
-                playSynthesizedVoiceSS3(&opts, &state);
-            }
+            playSynthesizedVoiceSS3(&opts, &state);
             short played[2] = {0, 0};
             DSD_MEMCPY(played, g_udp_blast_data, sizeof(played));
             rc |= expect_int("record-blocked slot still plays", played[blocked_slot], blocked_slot ? 2222 : 1111);
@@ -1975,25 +1766,14 @@ test_static_wav_honors_record_policy_stereo(void) {
         opts.static_wav_file = 1;
         g_gate_dual_forced_enc_l = 0;
         g_gate_dual_forced_enc_r = 1;
-        if (p25) {
-            state.synctype = DSD_SYNC_P25P2_POS;
-            state.p25_p2_audio_allowed[0] = state.p25_p2_audio_allowed[1] = 1;
-            state.p25_crypto_state[0] = state.p25_crypto_state[1] = DSD_P25_CRYPTO_CLEAR;
-            state.voice_counter[0] = 18;
-        } else {
-            state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
-        }
+        state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
         for (size_t j = 0; j < blocks; j++) {
             for (size_t i = 0; i < 160U; i++) {
                 state.s_l4[j][i] = 1111;
             }
         }
         g_record_policy_blocked[0] = 1;
-        if (p25) {
-            playSynthesizedVoiceSS18(&opts, &state);
-        } else {
-            playSynthesizedVoiceSS3(&opts, &state);
-        }
+        playSynthesizedVoiceSS3(&opts, &state);
         rc |= expect_int("record-blocked sole audible slot still plays", g_udp_blast_calls > 0, 1);
         int wav_silent = 1;
         for (size_t i = 0; i < g_sf_written_count; i++) {
@@ -2013,8 +1793,8 @@ test_static_wav_follows_stereo_routing(void) {
     static dsd_opts opts;
     static dsd_state state;
     int rc = 0;
-    for (int p25 = 0; p25 <= 1; ++p25) {
-        const size_t blocks = p25 ? 18U : 3U;
+    {
+        const size_t blocks = 3U;
         for (int scenario = 0; scenario < 2; ++scenario) {
             DSD_MEMSET(&opts, 0, sizeof(opts));
             DSD_MEMSET(&state, 0, sizeof(state));
@@ -2029,16 +1809,9 @@ test_static_wav_follows_stereo_routing(void) {
             opts.static_wav_file = 1;
             g_gate_dual_forced_enc_l = 0;
             g_gate_dual_forced_enc_r = 0;
-            if (p25) {
-                state.synctype = DSD_SYNC_P25P2_POS;
-                state.p25_p2_audio_allowed[0] = state.p25_p2_audio_allowed[1] = 1;
-                state.p25_crypto_state[0] = state.p25_crypto_state[1] = DSD_P25_CRYPTO_CLEAR;
-                state.voice_counter[0] = state.voice_counter[1] = 18;
-            } else {
-                state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
-            }
+            state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
             if (scenario == 1) {
-                state.dmrburstR = p25 ? 21 : 16;
+                state.dmrburstR = 16;
             }
             for (size_t j = 0; j < blocks; j++) {
                 for (size_t i = 0; i < 160U; i++) {
@@ -2047,11 +1820,7 @@ test_static_wav_follows_stereo_routing(void) {
                 }
             }
             g_record_policy_blocked[1] = 1;
-            if (p25) {
-                playSynthesizedVoiceSS18(&opts, &state);
-            } else {
-                playSynthesizedVoiceSS3(&opts, &state);
-            }
+            playSynthesizedVoiceSS3(&opts, &state);
             short played[2] = {0, 0};
             DSD_MEMCPY(played, g_udp_blast_data, sizeof(played));
             rc |= expect_int("mirrored mix plays the second slot", played[0] == 2222 && played[1] == 2222, 1);
@@ -2177,11 +1946,6 @@ main(void) {
     rc |= test_dmr_ss3_decrypt_hold_and_copy_policy_helpers();
     rc |= test_dmr_ss3_enc_locked_companion_duplicates_clear_slot();
     rc |= test_dmr_ss3_muted_companion_burst_hint_matrix();
-    rc |= test_p25p2_ss18_slot_preference_and_copy_policy_helpers();
-    rc |= test_ss18_partial_superframe_skips_zero_blocks_and_duplicates_clear_slot();
-    rc |= test_ss18_keeps_legit_silence_inside_filled_extent();
-    rc |= test_ss18_switched_off_slot_stays_silent_beside_muted_companion();
-    rc |= test_fs4_mono_mixer_averages_available_unmuted_slots();
     rc |= test_short_dmr_mono_honors_slot_controls_and_one_channel_output();
     rc |= test_float_playback_orchestrators_emit_expected_blocks();
     rc |= test_audio_gate_target_preserves_p25_ota_identity();

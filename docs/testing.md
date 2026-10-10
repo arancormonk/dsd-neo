@@ -108,6 +108,15 @@ Kotlin compiler plus Java; missing tools skip the CTest entries. Android CI runs
 `python3 tests/android/run_jvm_tests.py --require-tools` after its APK build, when the compiler is cached. Qt
 persistence tests use disposable directories and do not require a writable home on Linux.
 
+The P25 Phase 2 voice playout (issue #651) is tested end to end by `P25_P2_VOICE_OUTPUT`: timeslots run through the real
+DUID dispatch with seeded DUIDs and `p2_scramble_offset`, and a stand-in `processMbeFrameSoft()` tags every frame (each
+short sample holds a per-slot sequence number; the float frame carries it in the signs of its first 16 samples, which
+the float gain keeps). Each case reads every block from the UDP blast hook and checks that both slots play every frame
+once, in order, side by side, and as each timeslot pair completes. It uses only interfaces the decoder had before the
+playout, so it also runs against the earlier mixers, where it fails. A MAC message that has to arrive between two
+timeslots of a window comes from the stand-in vocoder's hook. `CORE_P25P2_PLAYOUT` drives the playout's API directly
+(the fill rule over every 2V position, epochs, verdicts, routing, the static WAV through a real libsndfile file).
+
 The audible-audio stamp (`<dsd-neo/core/audio_activity.h>`, issue #574) is tested where each writer emits, and every
 writer case asserts both the captured output and the stamp, so audio that plays without stamping, or a stamp with
 nothing played, fails. Each writer family also has negative controls for the null output (type 9 with `audio_out` 1,
@@ -118,8 +127,10 @@ resetter racing (run it under the `tsan-debug` preset too), and the shared outpu
 nothing new, muted media beside an idle slot, a discard); `CORE_MBE_TRANSFORM_CONTEXT` the real vocoder into the real
 FS3 and SS3 mixes (its clear, encrypted, reverse-mute, unmute and forced-clear matrix, skipped bursts, decoded all-zero
 samples, a talkgroup hold, a muted burst over a clear one not yet mixed, and a slot SS3's output policy copies over its
-companion, on stereo and mono output); `CORE_AUDIO_GAIN` the legacy short output; `P25_P2_MIXER_GATE` FS4 and SS18,
-partial flushes and a slot SS18's output policy copies over its companion included, and that the beeper never stamps;
+companion, on stereo and mono output); `CORE_AUDIO_GAIN` the legacy short output; `P25_P2_MIXER_GATE` the P25 Phase 2
+playout under the real gates in both formats (a slot with frames heard whichever slot a hold or the last burst would
+have preferred, the release flush, a slot END flush that only closes the stream) and that the beeper never stamps;
+`CORE_P25P2_PLAYOUT` that the vocoder's mute silence never stamps;
 `M17_STATE_DISPATCH` the Codec2 writers on every output type; `EDACS_GRANT_TUNE_MATRIX` the EDACS emitter on each output
 type and sample format, and whole analog calls under each squelch; `DSP_SYMBOL_REPLAY` the analog monitor (the tone
 policy, the auto squelch's per-sample gate, a retune, the `-8` source monitor, which never stamps, and a block the

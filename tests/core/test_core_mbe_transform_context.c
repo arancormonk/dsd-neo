@@ -2282,6 +2282,131 @@ test_process_mbe_frame_trunked_mono_bs_fallback_gates_to_granted_slot(void) {
     return rc;
 }
 
+// A P25 Phase 2 frame on slot 2 is recorded into slot 2's per-call WAV whatever opts->dmr_stereo says (issue #651):
+// with dmr_stereo 0 (an AUTO config applied over a -fr session) the mono post path wrote the slot-1 buffer into slot
+// 1's file and left slot 2's file empty.
+static int
+test_process_mbe_frame_p25p2_mono_path_records_slot2_wav(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    static mbe_parms cur;
+    static mbe_parms prev;
+    static mbe_parms prev_enhanced;
+    static mbe_parms cur2;
+    static mbe_parms prev2;
+    static mbe_parms prev_enhanced2;
+    char ambe_fr[4][24] = {{0}};
+    char wav_path_l[1024];
+    char wav_path_r[1024];
+    SNDFILE* wav_out_l = create_wav_temp(wav_path_l, sizeof(wav_path_l), "p25p2_mono_wav_l");
+    SNDFILE* wav_out_r = create_wav_temp(wav_path_r, sizeof(wav_path_r), "p25p2_mono_wav_r");
+
+    ambe_fr[0][11] = 1;
+    ambe_fr[2][20] = 1;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    opts.dmr_stereo = 0;
+    opts.dmr_stereo_wav = 1;
+    opts.static_wav_file = 0;
+    opts.wav_out_f = wav_out_l;
+    opts.wav_out_fR = wav_out_r;
+    init_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
+    state.synctype = DSD_SYNC_P25P2_POS;
+    state.dmr_stereo = 1;
+    state.p25_p2_audio_allowed[1] = 1;
+    state.p25_crypto_state[1] = DSD_P25_CRYPTO_CLEAR;
+    state.currentslot = 1;
+    processMbeFrame(&opts, &state, NULL, ambe_fr, NULL);
+
+    if (wav_out_l) {
+        sf_write_sync(wav_out_l);
+        rc |= expect_eq_int("p25p2-mono slot1 wav untouched", (int)sf_seek(wav_out_l, 0, SEEK_END), 0);
+        rc |= expect_eq_int("p25p2-mono slot1 wav close", sf_close(wav_out_l), 0);
+        (void)remove(wav_path_l);
+        opts.wav_out_f = NULL;
+    } else {
+        rc |= 1;
+    }
+    if (wav_out_r) {
+        sf_write_sync(wav_out_r);
+        rc |= expect_eq_int("p25p2-mono slot2 wav frames", (int)sf_seek(wav_out_r, 0, SEEK_END), 160);
+        rc |= expect_eq_int("p25p2-mono slot2 wav close", sf_close(wav_out_r), 0);
+        (void)remove(wav_path_r);
+        opts.wav_out_fR = NULL;
+    } else {
+        rc |= 1;
+    }
+    return rc;
+}
+
+// dsd_state::mbe_short_silenced says whether the current frame's short samples are in s_l/s_r (issue #651): 0 after
+// processAudio(R) staged them, 1 when the vocoder staged silence or skipped short staging.
+static int
+test_process_mbe_frame_p25p2_short_staging_provenance(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    static mbe_parms cur;
+    static mbe_parms prev;
+    static mbe_parms prev_enhanced;
+    static mbe_parms cur2;
+    static mbe_parms prev2;
+    static mbe_parms prev_enhanced2;
+    static short out_s[2][2048];
+    static float out_f[2][2048];
+    char ambe_fr[4][24] = {{0}};
+    ambe_fr[0][11] = 1;
+    ambe_fr[2][20] = 1;
+
+    // Stereo post path, clear slot 2: staged, so audio.
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    opts.dmr_stereo = 1;
+    opts.audio_out = 1;
+    opts.dmr_mute_encL = 1;
+    opts.dmr_mute_encR = 1;
+    init_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
+    state.audio_out_buf = out_s[0];
+    state.audio_out_bufR = out_s[1];
+    state.audio_out_buf_p = out_s[0] + 100;
+    state.audio_out_buf_pR = out_s[1] + 100;
+    state.audio_out_float_buf = out_f[0];
+    state.audio_out_float_bufR = out_f[1];
+    state.audio_out_float_buf_p = out_f[0] + 100;
+    state.audio_out_float_buf_pR = out_f[1] + 100;
+    state.aout_max_buf_p = state.aout_max_buf;
+    state.aout_max_buf_pR = state.aout_max_bufR;
+    state.synctype = DSD_SYNC_P25P2_POS;
+    state.p2_wacn = 1;
+    state.p2_sysid = 1;
+    state.p2_cc = 1;
+    state.payload_algidR = 0x80;
+    state.mbe_short_silenced[1] = 1U;
+    state.currentslot = 1;
+    processMbeFrame(&opts, &state, NULL, ambe_fr, NULL);
+    rc |= expect_eq_int("p25p2 clear slot2 short staged", state.mbe_short_silenced[1], 0);
+
+    // The vocoder mutes an encrypted slot it cannot decrypt: silence, so not audio.
+    state.payload_algidR = 0x84;
+    processMbeFrame(&opts, &state, NULL, ambe_fr, NULL);
+    rc |= expect_eq_int("p25p2 encrypted slot2 short silenced", state.mbe_short_silenced[1], 1);
+
+    // Mono post path (dmr_stereo 0) with every output off: short staging is skipped, so not this frame's audio.
+    opts.dmr_stereo = 0;
+    opts.audio_out = 0;
+    state.payload_algidR = 0x80;
+    state.p25_p2_audio_allowed[1] = 1;
+    state.mbe_short_silenced[1] = 0U;
+    processMbeFrame(&opts, &state, NULL, ambe_fr, NULL);
+    rc |= expect_eq_int("p25p2 mono skipped short staging", state.mbe_short_silenced[1], 1);
+
+    // Mono post path with output on: staged.
+    opts.audio_out = 1;
+    processMbeFrame(&opts, &state, NULL, ambe_fr, NULL);
+    rc |= expect_eq_int("p25p2 mono short staged", state.mbe_short_silenced[1], 0);
+    return rc;
+}
+
 static int
 test_process_mbe_frame_dmr_rc4_transforms_left_and_right_slots(void) {
     int rc = 0;
@@ -4771,6 +4896,8 @@ main(void) {
     rc |= test_process_mbe_frame_p25p1_capture_honors_reverse_mute();
     rc |= test_process_mbe_frame_hard_dmr_left_stages_audio();
     rc |= test_process_mbe_frame_trunked_mono_bs_fallback_gates_to_granted_slot();
+    rc |= test_process_mbe_frame_p25p2_mono_path_records_slot2_wav();
+    rc |= test_process_mbe_frame_p25p2_short_staging_provenance();
     rc |= test_process_mbe_frame_dmr_rc4_transforms_left_and_right_slots();
     rc |= test_process_mbe_frame_mixed_clear_and_bp();
     rc |= test_process_mbe_frame_dmr_reverse_mute_preserves_p25_override();

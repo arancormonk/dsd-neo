@@ -116,7 +116,7 @@ void frame_sync_ensure_enabled_sps_profile(const dsd_opts* opts, dsd_state* stat
 int frame_sync_no_sync_sps_hunt(const dsd_opts* opts, dsd_state* state);
 double frame_sync_elapsed_seconds(double nowm, time_t now, double mono_stamp, time_t wall_stamp);
 void frame_sync_p25_slot_activity(const dsd_opts* opts, const dsd_state* state, time_t now, double nowm,
-                                  double mac_hold, double ring_hold, double dt, int* left_active, int* right_active);
+                                  double mac_hold, double dt, int* left_active, int* right_active);
 #ifdef USE_RADIO
 double frame_sync_active_profile_snr_db(const dsd_opts* opts, const dsd_state* state);
 #endif

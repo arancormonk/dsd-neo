@@ -984,57 +984,29 @@ ui_print_p25_trunk_metrics(const dsd_opts* opts, const dsd_state* state) {
     return lines;
 }
 
-static int
-ui_clamp_p2_ring_fill(int fill) {
-    if (fill < 0) {
-        return 0;
-    }
-    if (fill > DSD_P25_P2_AUDIO_RING_DEPTH) {
-        return DSD_P25_P2_AUDIO_RING_DEPTH;
-    }
-    return fill;
-}
-
-static void
-ui_get_p2_hold_windows(double* ring_hold, double* mac_hold) {
-    *ring_hold = 0.75;
-    *mac_hold = 3.0;
+static double
+ui_get_p2_mac_hold(void) {
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
-    if (cfg) {
-        *ring_hold = cfg->p25_ring_hold_s;
-        *mac_hold = cfg->p25_mac_hold_s;
-    }
+    return cfg ? cfg->p25_mac_hold_s : 3.0;
 }
 
+// The slot activity the SM gate weighs: an open audio gate until the voice sync is a hangtime old, or fresh MAC
+// signalling.
 static int
-ui_p2_ring_recent(int ring_count, double dmac, double ring_hold) {
-    return (ring_count > 0) && (dmac >= 0.0) && (dmac <= ring_hold);
-}
-
-static int
-ui_p2_slot_active(const dsd_opts* opts, const dsd_state* state, int slot, double dmac, double dt, double ring_hold,
-                  double mac_hold) {
-    int ring_recent = ui_p2_ring_recent(state->p25_p2_audio_ring_count[slot], dmac, ring_hold);
-    int has_audio = state->p25_p2_audio_allowed[slot] || ring_recent;
-    if (opts && dt >= opts->trunk_hangtime) {
-        has_audio = ring_recent;
-    }
+ui_p2_slot_active(const dsd_opts* opts, const dsd_state* state, int slot, double dmac, double dt, double mac_hold) {
     if (dmac >= 0.0 && dmac <= mac_hold) {
         return 1;
     }
-    return has_audio;
+    if (opts && dt >= opts->trunk_hangtime) {
+        return 0;
+    }
+    return state->p25_p2_audio_allowed[slot] ? 1 : 0;
 }
 
 static int
 ui_print_p25p2_slot_line(const dsd_state* state) {
     int act = state->p25_p2_active_slot;
-    int lfill = ui_clamp_p2_ring_fill(state->p25_p2_audio_ring_count[0]);
-    int rfill = ui_clamp_p2_ring_fill(state->p25_p2_audio_ring_count[1]);
-    printw("| P2 slot: %s; jitter S1:%d/%d S2:%d/%d\n",
-           (act == 0)   ? "1"
-           : (act == 1) ? "2"
-                        : "-",
-           lfill, DSD_P25_P2_AUDIO_RING_DEPTH, rfill, DSD_P25_P2_AUDIO_RING_DEPTH);
+    printw("| P2 slot: %s\n", (act == 0) ? "1" : (act == 1) ? "2" : "-");
     return 1;
 }
 
@@ -1045,14 +1017,12 @@ ui_print_p25p2_gate_line(const dsd_opts* opts, const dsd_state* state) {
     double r_dmac = (state->p25_p2_last_mac_active[1] != 0) ? (double)(now - state->p25_p2_last_mac_active[1]) : -1.0;
     double dt = (state->last_vc_sync_time != 0) ? (double)(now - state->last_vc_sync_time) : -1.0;
     double dt_tune = (state->p25_last_vc_tune_time != 0) ? (double)(now - state->p25_last_vc_tune_time) : -1.0;
-    double ring_hold = 0.75;
-    double mac_hold = 3.0;
-    ui_get_p2_hold_windows(&ring_hold, &mac_hold);
-    int l_act = ui_p2_slot_active(opts, state, 0, l_dmac, dt, ring_hold, mac_hold);
-    int r_act = ui_p2_slot_active(opts, state, 1, r_dmac, dt, ring_hold, mac_hold);
-    printw("| SM Gate: L[a=%d rc=%d dMAC=%4.1fs act=%d]  R[a=%d rc=%d dMAC=%4.1fs act=%d]  dt=%4.1fs tune=%4.1fs\n",
-           state->p25_p2_audio_allowed[0] ? 1 : 0, state->p25_p2_audio_ring_count[0], l_dmac, l_act,
-           state->p25_p2_audio_allowed[1] ? 1 : 0, state->p25_p2_audio_ring_count[1], r_dmac, r_act, dt, dt_tune);
+    const double mac_hold = ui_get_p2_mac_hold();
+    int l_act = ui_p2_slot_active(opts, state, 0, l_dmac, dt, mac_hold);
+    int r_act = ui_p2_slot_active(opts, state, 1, r_dmac, dt, mac_hold);
+    printw("| SM Gate: L[a=%d dMAC=%4.1fs act=%d]  R[a=%d dMAC=%4.1fs act=%d]  dt=%4.1fs tune=%4.1fs\n",
+           state->p25_p2_audio_allowed[0] ? 1 : 0, l_dmac, l_act, state->p25_p2_audio_allowed[1] ? 1 : 0, r_dmac, r_act,
+           dt, dt_tune);
     return 1;
 }
 

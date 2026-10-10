@@ -39,8 +39,15 @@ p25_sm_release_from_frame_sync(dsd_opts* opts, dsd_state* state) {
     if (!dsd_trunk_p25_recovery_allowed(opts, state)) {
         return;
     }
+    /* Frame sync runs outside processFrame()'s hold on the tick guard, and a release drains the P25 Phase 2 playout
+       and ends calls the watchdog's tick reads too: it runs under the guard. A no-sync pass that finds the guard taken
+       leaves the release to the next one (issue #651). */
+    if (!p25_sm_tick_guard_try_enter()) {
+        return;
+    }
     state->p25_sm_force_release = 1;
     p25_sm_release(p25_sm_get_ctx(), opts, state, "frame-sync-no-sync");
+    p25_sm_tick_guard_leave();
 }
 
 static void
