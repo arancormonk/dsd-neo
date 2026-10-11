@@ -8,8 +8,12 @@
  * Compare against an independent existing burst before using generated codewords.
  */
 
+#include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/fec/bptc.h>
 #include <dsd-neo/platform/file_compat.h>
@@ -89,6 +93,21 @@ expect_rows(const char* path, int expected, const char* src, const char* lat, co
     return 1;
 }
 
+// A clean voice call on slot 1, so a failed USBD that reached the LIP decoder would enrich it and mark it.
+static void
+open_clean_call(dsd_opts* opts, dsd_state* state) {
+    dsd_call_observation observation;
+    DSD_MEMSET(&observation, 0, sizeof observation);
+    observation.protocol = DSD_SYNC_DMR_BS_VOICE_POS;
+    observation.slot = 1U;
+    observation.kind = DSD_CALL_KIND_GROUP_VOICE;
+    observation.ota_target_id = 2002U;
+    observation.policy_target_id = 2002U;
+    observation.ota_source_id = 218U;
+    (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE);
+    dsd_event_sync_slot(opts, state, 1U);
+}
+
 static int
 run_cases(dsd_opts* opts, dsd_state* state, const char* path) {
     // Same LIP vector as CORE_GPS_LRRP_CRC_GATING: 22.5 S, 45 W, hash 218, speed 20.
@@ -100,18 +119,20 @@ run_cases(dsd_opts* opts, dsd_state* state, const char* path) {
         good[80 + i] = (uint8_t)((crc >> (15U - i)) & 1U);
     }
 
+    // decodes: strict CRC publishes no failed DMR data, so a failed USBD is not decoded at all; -F decodes it marked.
     static const struct {
         int aggressive;
         int relaxed;
         int corrupt;
         uint8_t reserved[3];
         int rows;
+        int decodes;
         const char* tag;
     } cases[] = {
-        {1, 0, 0, {0, 0, 0}, 1, "Strict clean USBD"},
-        {1, 0, 1, {0, 0, 0}, 0, "Strict CRC-failed USBD"},
-        {0, 1, 1, {0, 0, 1}, 0, "Relaxed RAS CRC-failed USBD"},
-        {0, 1, 0, {0, 0, 0}, 1, "Relaxed clean USBD"},
+        {1, 0, 0, {0, 0, 0}, 1, 1, "Strict clean USBD"},
+        {1, 0, 1, {0, 0, 0}, 0, 0, "Strict CRC-failed USBD"},
+        {0, 1, 1, {0, 0, 1}, 0, 1, "Relaxed RAS CRC-failed USBD"},
+        {0, 1, 0, {0, 0, 0}, 1, 1, "Relaxed clean USBD"},
     };
 
     char clean_gps[sizeof state->dmr_embedded_gps[1]];
@@ -143,6 +164,9 @@ run_cases(dsd_opts* opts, dsd_state* state, const char* path) {
         state->data_conf_data[1] = 0;
         state->data_header_format[1] = 1;
         DSD_MEMSET(state->dmr_embedded_gps[1], 0, sizeof state->dmr_embedded_gps[1]);
+        if (!cases[i].decodes) {
+            open_clean_call(opts, state);
+        }
         dmr_data_burst_handler(opts, state, info, 0x0B, NULL);
         if (state->event_crc_invalid[1] != 0) {
             DSD_FPRINTF(stderr, "\n%s: CRC flag was not restored\n", cases[i].tag);
@@ -159,6 +183,14 @@ run_cases(dsd_opts* opts, dsd_state* state, const char* path) {
                 return 12;
             }
             DSD_MEMCPY(clean_gps, gps, sizeof clean_gps);
+        } else if (!cases[i].decodes) {
+            dsd_call_snapshot call;
+            if (gps[0] != '\0' || dsd_call_state_get(state, 1U, &call) <= 0 || call.crc_invalid != 0U
+                || state->event_history_s[1].Event_History_Items[0].gps_s[0] != '\0') {
+                DSD_FPRINTF(stderr, "\n%s: a strict CRC failure was decoded or marked the call: %s\n", cases[i].tag,
+                            gps);
+                return 12 + (int)i * 3;
+            }
         } else if (memcmp(gps, clean_gps, sizeof clean_gps) != 0) {
             DSD_FPRINTF(stderr, "\n%s: decoded GPS state changed: %s\n", cases[i].tag, gps);
             return 12 + (int)i * 3;
@@ -197,8 +229,20 @@ main(void) {
     opts->lrrp_file_output = 1;
     opts->use_dsp_output = 0;
     opts->payload = 0;
+    state->event_history_s = calloc(2, sizeof(Event_History_I));
+    if (state->event_history_s == NULL) {
+        remove(path);
+        free(opts);
+        free(state);
+        return 104;
+    }
+    for (int slot = 0; slot < 2; ++slot) {
+        init_event_history(&state->event_history_s[slot], 0, 255);
+    }
     int rc = run_cases(opts, state, path);
     remove(path);
+    dsd_state_ext_free_all(state);
+    free(state->event_history_s);
     free(opts);
     free(state);
     if (rc == 0) {

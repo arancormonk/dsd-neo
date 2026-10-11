@@ -25,6 +25,14 @@ extern "C" {
 #endif
 
 void dmr_talker_alias_lc_header(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t* lc_bits);
+/**
+ * @brief Abandon a slot's partly assembled DMR talker alias after a fragment failed its checksum.
+ *
+ * Clears the header's format and character size, so later blocks are refused until a checked header arrives, and
+ * zeroes the alias bits already assembled, so a later decode cannot pick up text from before the failure. The alias
+ * already displayed and recorded on the call is kept.
+ */
+void dmr_talker_alias_lc_invalidate(dsd_state* state, uint8_t slot);
 void dmr_talker_alias_lc_blocks(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t block_num,
                                 const uint8_t* lc_bits);
 void dmr_talker_alias_lc_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t block_num, uint8_t char_size,

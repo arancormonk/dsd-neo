@@ -2,6 +2,7 @@
 /* Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com> */
 #include <dsd-neo/core/bit_packing.h>
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/crc_provenance.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
@@ -126,7 +127,8 @@ test_ras_call(dsd_opts* opts, dsd_state* state, int stereo) {
     CHECK(dsd_call_state_get(state, (uint8_t)stereo, &call) > 0);
     CHECK(call.phase == DSD_CALL_PHASE_ACTIVE);
     CHECK(call.ota_source_id == 1001 && call.ota_target_id == 2002);
-    CHECK(call.crc_invalid == 1);
+    // RAS is unverified, not failed: it keeps its own bit so the row renders [RAS] at normal severity.
+    CHECK(call.crc_invalid == DSD_CRC_RAS_UNVERIFIED);
     CHECK(dsd_call_state_get(state, (uint8_t)!stereo, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE);
     CHECK(state->event_crc_invalid[0] == 0 && state->event_crc_invalid[1] == 0);
     return failed;
@@ -183,6 +185,11 @@ main(void) {
     failed |= test_gps_scope(&opts, &state, path, 0, 1);
     failed |= test_gps_scope(&opts, &state, path, 0, 0);
     failed |= test_gps_scope(&opts, &state, path, 1, 0);
+    // Provenance is a bitmask now: RAS alone, and RAS with a failure, must fold through the mono collapse and
+    // gate the -L row exactly as a failure does.
+    failed |= test_gps_scope(&opts, &state, path, 0, DSD_CRC_RAS_UNVERIFIED);
+    failed |= test_gps_scope(&opts, &state, path, DSD_CRC_RAS_UNVERIFIED, 0);
+    failed |= test_gps_scope(&opts, &state, path, 0, (uint8_t)(DSD_CRC_FAILED | DSD_CRC_RAS_UNVERIFIED));
     dsd_state_ext_free_all(&state);
     (void)remove(path);
     return failed;

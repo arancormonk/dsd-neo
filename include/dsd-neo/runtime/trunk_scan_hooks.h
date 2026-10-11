@@ -109,7 +109,10 @@ void dsd_trunk_scan_hook_tick(dsd_opts* opts, dsd_state* state);
  * installed, and ignored by the coordinator unless the parked target is of the
  * matching conventional type. Only call these with identity that has already
  * cleared the protocol's FEC/CRC gate, and pass the corroborated encryption
- * classification rather than a single frame's raw cipher field.
+ * classification rather than a single frame's raw cipher field. One deliberate
+ * exception: under -F a DMR voice LC accepted by the RAS heuristic counts as
+ * checked, because RAS systems never let the standard CRC verify and -F opts
+ * into that acceptance; without it a scanned RAS repeater would never hold.
  */
 void dsd_trunk_scan_hook_dmr_conventional_activity(const dsd_opts* opts, const dsd_state* state, uint32_t target,
                                                    uint32_t source, int is_private, int encrypted, int data_call);

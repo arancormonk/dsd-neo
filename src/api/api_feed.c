@@ -26,6 +26,7 @@
 #include <dsd-neo/app_control/scan_row_view.h>
 #include <dsd-neo/app_control/telemetry_observers.h>
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/crc_provenance.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
@@ -177,7 +178,9 @@ encode_event_row(dsd_json_writer* w, const Event_History* e, int slot, uint64_t 
     (void)dsd_json_kv_i64(w, "subtype", e->subtype);
     (void)dsd_json_kv_i64(w, "severity", e->severity);
     (void)dsd_json_kv_i64(w, "category", e->category);
-    (void)dsd_json_kv_i64(w, "crc_invalid", e->crc_invalid);
+    // Two flags rather than the raw bits: crc_invalid kept its meaning (a check failed) when RAS was split out.
+    (void)dsd_json_kv_i64(w, "crc_invalid", dsd_crc_is_failed(e->crc_invalid) ? 1 : 0);
+    (void)dsd_json_kv_i64(w, "crc_ras", (e->crc_invalid & DSD_CRC_RAS_UNVERIFIED) != 0U ? 1 : 0);
     (void)dsd_json_kv_u64(w, "sys_id1", e->sys_id1);
     (void)dsd_json_kv_u64(w, "sys_id2", e->sys_id2);
     (void)dsd_json_kv_u64(w, "sys_id3", e->sys_id3);

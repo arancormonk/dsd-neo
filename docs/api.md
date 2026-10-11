@@ -217,7 +217,7 @@ slot with nothing to show is omitted. The fields are documented in
 ```json
 {"type":"event","seq":31,"update":false,"row":{
   "slot":0,"push":42,"ring":"9314705728061123445","systype":0,"subtype":27,
-  "severity":2,"category":2,"crc_invalid":0,"sys_id1":0,"sys_id2":0,
+  "severity":2,"category":2,"crc_invalid":0,"crc_ras":0,"sys_id1":0,"sys_id2":0,
   "sys_id3":659,"sys_id4":0,"sys_id5":0,"sysid_string":"P25_293","gi":0,
   "emergency":0,"priority":0,"enc":0,"enc_alg":128,"enc_key":0,"mi":"0","svc":0,
   "source_id":1,"target_id":1,"src_str":"","tgt_str":"","t_name":"1",
@@ -238,6 +238,8 @@ not the history from before.
 | Field | Meaning |
 | --- | --- |
 | `systype`, `subtype` | Protocol and message kind. |
+| `severity`, `category` | Protocol-neutral classification the frontends colour by. `severity`: `1` debug, `2` info, `3` warning, `4` error (`0` unclassified). `category`: `1` status, `2` voice, `3` data, `4` control, `5` system (`0` unclassified). |
+| `crc_invalid`, `crc_ras` | CRC provenance, each `0` or `1`. `crc_invalid`: a CRC or checksum the row's content depends on failed and the content was accepted anyway (`-F`, or DMR's separate relaxed-CRC configuration); the row is marked `[CRC ERR]` and has warning severity. `crc_ras`: DMR content the Motorola RAS heuristic accepted under `-F`, whose standard CRC could not be verified; marked `[RAS]` when `crc_invalid` is `0`, with the row's ordinary severity. Both can be `1`. `0`/`0` is not a verification guarantee for every protocol. A row whose provenance changes after it committed (a later failure on the same call) is sent again with `"update":true`. |
 | `sys_id1..5`, `sysid_string` | System identity (P25 WACN:SYS:CC:SITE:RFSS, NAC, DMR color code, NXDN RAN, ...). `sysid_string` prints `--` for a DMR or dPMR color code, an NXDN RAN or an M17 CAN that never decoded (`DMR_CC_--`, `NXDN_RAN_--`, `M17_CAN_--`), and for an NXDN value that is not a RAN (an IDAS area, DCR's fixed 7); a P25 NAC the call was not heard with prints `---`, three wide like the code (`P25_---`, `P25_45564006---_10_10`). The DMR, P25, M17 and dPMR codes there are the row's `access_code` (so `--playfiles`, which takes none, prints `DMR_CC_--`); the numeric ids keep the decoder's raw value. |
 | `source_id`, `target_id` | Source and target/group identifiers. |
 | `src_str`, `tgt_str` | Text identities (M17, YSF, D-STAR, dPMR callsigns). |

@@ -15,6 +15,7 @@
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/channel_label.h>
+#include <dsd-neo/core/crc_provenance.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
@@ -244,7 +245,7 @@ watchdog_event_write_log_detail(FILE* event_log_file, const char* stamp, const c
         return;
     }
     // Unstamped, the line keeps its leading space so it still reads as a continuation.
-    DSD_FPRINTF(event_log_file, "%s %s%s%s \n", stamp, crc_invalid ? "[CRC ERR] " : "", label, value);
+    DSD_FPRINTF(event_log_file, "%s %s%s%s \n", stamp, dsd_crc_marker(crc_invalid), label, value);
 }
 
 // Which detail lines this entry writes: the caller's selection, else every non-empty field.
@@ -976,7 +977,7 @@ watchdog_event_merge_staged_into(Event_History* retained, const Event_History* s
         retained->priority = staged->priority;
     }
     retained->crc_invalid |= staged->crc_invalid;
-    if (retained->crc_invalid) {
+    if (dsd_crc_is_failed(retained->crc_invalid)) {
         dsd_event_history_item_set_metadata(retained, DSD_EVENT_SEVERITY_WARNING,
                                             (dsd_event_category)retained->category);
     }
@@ -1681,8 +1682,8 @@ watchdog_event_current_update_item(const dsd_opts* opts, dsd_state* state, uint8
                                    const watchdog_event_current_ctx* ctx, time_t now, int staged_is_own) {
     item->write = 0;
     item->crc_invalid = ctx->crc_invalid;
-    dsd_event_history_item_set_metadata(item, ctx->crc_invalid ? DSD_EVENT_SEVERITY_WARNING : ctx->severity,
-                                        ctx->category);
+    dsd_event_history_item_set_metadata(
+        item, dsd_crc_is_failed(ctx->crc_invalid) ? DSD_EVENT_SEVERITY_WARNING : ctx->severity, ctx->category);
     if (ctx->protocol != DSD_SYNC_NONE) {
         item->systype = ctx->protocol;
     } else {
@@ -1990,14 +1991,32 @@ watchdog_event_sys_label(const char* label, const char* sys_string, char* buf, s
     return buf;
 }
 
-// Keep the timestamp parseable and the failure visible even when the payload fills the row.
+// Swap the row's provenance marker for the one new_flags call for, right after the timestamp. Keep the timestamp
+// parseable and the marker visible even when the payload fills the row.
+//
+// old_flags are the bits the row was rendered with, so the only text removed is the marker those bits put there. A
+// scan channel label sits in the same place on an unmarked row ("... 00:00:00 [RAS] DMR ..."), and guessing at the
+// text instead would strip an operator's "[RAS]" label.
 static void
-watchdog_event_mark_crc(char* text, size_t cap) {
-    static const char marker[] = "[CRC ERR] ";
+watchdog_event_mark_crc(char* text, size_t cap, uint8_t old_flags, uint8_t new_flags) {
+    const char* old_marker = dsd_crc_marker(old_flags);
+    const char* new_marker = dsd_crc_marker(new_flags);
+    if (strcmp(old_marker, new_marker) == 0) {
+        return;
+    }
     const size_t prefix = k_watchdog_event_stamp_len + 1U;
-    const size_t marker_len = sizeof(marker) - 1U;
-    const size_t len = strlen(text);
-    if (len < prefix || cap <= prefix + marker_len) {
+    const size_t old_len = strlen(old_marker);
+    const size_t marker_len = strlen(new_marker);
+    size_t len = strnlen(text, cap);
+    if (len >= cap || len < prefix || cap <= prefix + marker_len) {
+        return;
+    }
+    if (old_len != 0U && len - prefix >= old_len && strncmp(text + prefix, old_marker, old_len) == 0) {
+        // Shift the tail and its terminator left over the old marker.
+        DSD_MEMMOVE(text + prefix, text + prefix + old_len, len - prefix - old_len + 1U);
+        len -= old_len;
+    }
+    if (marker_len == 0U) {
         return;
     }
     size_t rest = len - prefix;
@@ -2005,7 +2024,7 @@ watchdog_event_mark_crc(char* text, size_t cap) {
         rest = cap - prefix - marker_len - 1U;
     }
     DSD_MEMMOVE(text + prefix + marker_len, text + prefix, rest);
-    DSD_MEMCPY(text + prefix, marker, marker_len);
+    DSD_MEMCPY(text + prefix, new_marker, marker_len);
     text[prefix + marker_len + rest] = '\0';
 }
 
@@ -2035,9 +2054,8 @@ watchdog_event_current_build_event_string(const watchdog_event_current_ctx* ctx,
     } else if (DSD_SYNC_IS_NXDN(ctx->protocol)) {
         watchdog_event_current_build_event_nxdn(ctx, datestr, timestr, sys, event_string, event_size);
     }
-    if (ctx->crc_invalid) {
-        watchdog_event_mark_crc(event_string, event_size);
-    }
+    // A fresh string carries no marker yet.
+    watchdog_event_mark_crc(event_string, event_size, 0U, ctx->crc_invalid);
 }
 
 static void
@@ -2691,12 +2709,12 @@ dsd_event_enrich_apply(dsd_state* state, uint8_t slot, Event_History* item, cons
     }
 }
 
-// Caller holds the call-state lock. The known CRC failure belongs to the transmission, so the
-// canonical call is marked whether or not a row takes the enrichment.
+// Caller holds the call-state lock. The enrichment's CRC provenance belongs to the transmission,
+// so the canonical call takes its bits whether or not a row takes the enrichment.
 static void
-dsd_event_enrich_mark_call_crc(dsd_call_state_ext* ext, dsd_call_snapshot* call) {
-    if (!call->crc_invalid) {
-        call->crc_invalid = 1;
+dsd_event_enrich_mark_call_crc(dsd_call_state_ext* ext, dsd_call_snapshot* call, uint8_t crc_flags) {
+    if ((uint8_t)(crc_flags & ~call->crc_invalid) != 0U) {
+        call->crc_invalid |= crc_flags;
         call->revision = call->revision == UINT64_MAX ? 1U : call->revision + 1U;
         ext->calls.revision = ext->calls.revision == UINT64_MAX ? 1U : ext->calls.revision + 1U;
     }
@@ -2704,13 +2722,18 @@ dsd_event_enrich_mark_call_crc(dsd_call_state_ext* ext, dsd_call_snapshot* call)
 
 // Caller holds the call-state lock, and item is the epoch's own row: its committed row, or the
 // staged row once the lifecycle has opened the epoch (dsd_event_enrich_epoch() declines otherwise).
+// A committed row is never rendered again, so the marker is swapped in place: a failure arriving
+// on a [RAS] row turns it into a [CRC ERR] row rather than leaving the weaker marker behind.
 static void
-dsd_event_enrich_mark_crc(dsd_call_state_ext* ext, dsd_call_snapshot* call, Event_History* item) {
-    dsd_event_enrich_mark_call_crc(ext, call);
-    if (!item->crc_invalid) {
-        item->crc_invalid = 1;
-        dsd_event_history_item_set_metadata(item, DSD_EVENT_SEVERITY_WARNING, (dsd_event_category)item->category);
-        watchdog_event_mark_crc(item->event_string, sizeof(item->event_string));
+dsd_event_enrich_mark_crc(dsd_call_state_ext* ext, dsd_call_snapshot* call, Event_History* item, uint8_t crc_flags) {
+    dsd_event_enrich_mark_call_crc(ext, call, crc_flags);
+    const uint8_t old_flags = item->crc_invalid;
+    if ((uint8_t)(crc_flags & ~old_flags) != 0U) {
+        item->crc_invalid = (uint8_t)(old_flags | crc_flags);
+        if (dsd_crc_is_failed(item->crc_invalid)) {
+            dsd_event_history_item_set_metadata(item, DSD_EVENT_SEVERITY_WARNING, (dsd_event_category)item->category);
+        }
+        watchdog_event_mark_crc(item->event_string, sizeof(item->event_string), old_flags, item->crc_invalid);
     }
 }
 
@@ -2753,7 +2776,7 @@ dsd_event_enrich_unopened(dsd_state* state, uint8_t slot, dsd_call_state_ext* ex
         DSD_SNPRINTF(state->generic_talker_alias[slot], sizeof(state->generic_talker_alias[slot]), "%s", value);
     }
     if (state->event_crc_invalid[slot]) {
-        dsd_event_enrich_mark_call_crc(ext, call);
+        dsd_event_enrich_mark_call_crc(ext, call, state->event_crc_invalid[slot]);
     }
 }
 
@@ -2786,7 +2809,7 @@ dsd_event_enrich_epoch(dsd_state* state, uint8_t slot, uint64_t epoch, const cha
     Event_History* item = &state->event_history_s[slot].Event_History_Items[history_index];
     dsd_event_enrich_apply(state, slot, item, value, kind);
     if (state->event_crc_invalid[slot]) {
-        dsd_event_enrich_mark_crc(ext, call, item);
+        dsd_event_enrich_mark_crc(ext, call, item, state->event_crc_invalid[slot]);
     }
     if (history_index != 0U) {
         // Late enrichment landed on a committed row, not the staged one.
@@ -3008,9 +3031,9 @@ dsd_event_emit_data_notice_impl(dsd_opts* opts, dsd_state* state, uint8_t slot, 
 
     Event_History* item = &event_struct->Event_History_Items[0];
     item->write = 1;
-    item->crc_invalid = state->event_crc_invalid[slot] != 0U;
-    dsd_event_history_item_set_metadata(item, item->crc_invalid ? DSD_EVENT_SEVERITY_WARNING : DSD_EVENT_SEVERITY_INFO,
-                                        category);
+    item->crc_invalid = state->event_crc_invalid[slot];
+    dsd_event_history_item_set_metadata(
+        item, dsd_crc_is_failed(item->crc_invalid) ? DSD_EVENT_SEVERITY_WARNING : DSD_EVENT_SEVERITY_INFO, category);
     item->systype = observation->protocol;
     item->subtype = DSD_EVENT_SUBTYPE_EXPLICIT_DATA;
     item->gi = -1;
@@ -3051,9 +3074,7 @@ dsd_event_emit_data_notice_impl(dsd_opts* opts, dsd_state* state, uint8_t slot, 
     (void)dsd_format_local_datetime(item->event_time, DSD_LOCAL_DATETIME_DATE_HYPHEN, datestr, sizeof datestr);
     watchdog_event_render_notice_line(datestr, timestr, item->channel_label, notice, item->event_string,
                                       sizeof(item->event_string));
-    if (item->crc_invalid) {
-        watchdog_event_mark_crc(item->event_string, sizeof(item->event_string));
-    }
+    watchdog_event_mark_crc(item->event_string, sizeof(item->event_string), 0U, item->crc_invalid);
 
     write_event_to_log_file(opts, state, slot, 0U, item->event_string);
     push_event_history(event_struct);
@@ -3061,9 +3082,9 @@ dsd_event_emit_data_notice_impl(dsd_opts* opts, dsd_state* state, uint8_t slot, 
     dsd_event_history_mark_dirty(event_struct);
     dsd_event_history_transaction_end(&transaction);
 
-    dsd_frame_logf(
-        opts, "FRAME DATA %sslot=%d src=%llu dst=%llu %s", state->event_crc_invalid[slot] ? "[CRC ERR] " : "", slot + 1,
-        (unsigned long long)observation->ota_source_id, (unsigned long long)observation->ota_target_id, notice);
+    dsd_frame_logf(opts, "FRAME DATA %sslot=%d src=%llu dst=%llu %s", dsd_crc_marker(state->event_crc_invalid[slot]),
+                   slot + 1, (unsigned long long)observation->ota_source_id,
+                   (unsigned long long)observation->ota_target_id, notice);
 
     if (dsd_call_alert_event_enabled(opts->call_alert, opts->call_alert_events, DSD_CALL_ALERT_EVENT_DATA)) {
         beeper(opts, state, slot, 80, 20, 3);

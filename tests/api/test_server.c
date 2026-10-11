@@ -13,6 +13,7 @@
 #include <dsd-neo/api/api.h>
 #include <dsd-neo/app_control/frontend_runtime.h>
 #include <dsd-neo/core/access_code.h>
+#include <dsd-neo/core/crc_provenance.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
@@ -508,6 +509,27 @@ test_feed(void) {
     dsd_telemetry_publish_both_and_redraw(opts, state);
     assert(await_line(c, "event", "\"access_code_kind\":3,\"access_code\":23", 3000U));
     assert(strstr(g_line, "\"update\":true") != NULL && strstr(g_line, "\"t_name\":\"Untuned\"") != NULL);
+
+    /* CRC provenance (discussion #602) goes out as two 0/1 flags -- crc_invalid, a check failed; crc_ras, only the DMR
+       RAS heuristic accepted it -- and a row whose bits change in place is sent again. */
+    assert(strstr(g_line, "\"crc_invalid\":0,\"crc_ras\":0,") != NULL);
+
+    static const struct {
+        uint8_t bits;
+        const char* json;
+    } crc_cases[] = {
+        {DSD_CRC_RAS_UNVERIFIED, "\"crc_invalid\":0,\"crc_ras\":1,"},
+        {DSD_CRC_FAILED | DSD_CRC_RAS_UNVERIFIED, "\"crc_invalid\":1,\"crc_ras\":1,"},
+        {DSD_CRC_FAILED, "\"crc_invalid\":1,\"crc_ras\":0,"},
+    };
+
+    for (size_t i = 0; i < sizeof crc_cases / sizeof crc_cases[0]; i++) {
+        untuned->crc_invalid = crc_cases[i].bits;
+        state->event_history_s[0].commit_rev++;
+        dsd_telemetry_publish_both_and_redraw(opts, state);
+        assert(await_line(c, "event", crc_cases[i].json, 3000U));
+        assert(strstr(g_line, "\"update\":true") != NULL && strstr(g_line, "\"t_name\":\"Untuned\"") != NULL);
+    }
 
     /* A one-shot get reads the cached record. */
     send_str(c, "{\"id\":2,\"cmd\":\"get\",\"what\":\"status\"}\n");

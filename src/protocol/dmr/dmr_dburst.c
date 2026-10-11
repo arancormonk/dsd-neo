@@ -18,6 +18,7 @@
 //TODO: Test UDT NMEA and LIP Decoders with Real World Samples (if/when available)
 
 #include <dsd-neo/core/bit_packing.h>
+#include <dsd-neo/core/crc_provenance.h>
 #include <dsd-neo/core/gps.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
@@ -30,6 +31,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include "dmr_crc_provenance.h"
 #include "dmr_dburst_profile.h"
 #include "dmr_r34_internal.h"
 #include "dsd-neo/core/opts_fwd.h"
@@ -70,6 +72,7 @@ typedef struct {
     uint8_t bptc_reserved_bits;
     uint8_t is_ras;
     uint32_t crc_original_validity;
+    uint8_t crc_flags; // DSD_CRC_* bits for this burst, set once its CRC and RAS verdicts are final
 
     uint32_t crcmask;
     uint8_t crclen;
@@ -351,6 +354,10 @@ dmr_dburst_handle_bptc(dmr_data_burst_ctx* ctx) {
     if (ctx->is_ras == 1) {
         // Retain the standard CRC verdict separately from the RAS acceptance heuristic.
         ctx->crc_correct = 1;
+        if (ctx->databurst == 0x07 && ctx->state->data_conf_data[ctx->slot] == 1) {
+            // The CRC9 verdict stays "not verified" for the location gates, but the event marker reads it as RAS.
+            ctx->state->data_block_crc_valid[ctx->slot][ctx->blockcounter] = DMR_DATA_BLOCK_CRC_RAS;
+        }
     }
 
     if (ctx->databurst == 0x04 || ctx->databurst == 0x06) {
@@ -729,7 +736,10 @@ dmr_dburst_handle_usbd(dmr_data_burst_ctx* ctx) {
     }
     DSD_FPRINTF(stderr, "[%1X]", tail4 & 0xF);
 
-    if (ctx->usbd_st == 0) {
+    // Strict CRC publishes no failed DMR data, the same gate dmr_block.c applies; -F decodes it marked.
+    const int crc_rejected =
+        ctx->crc_correct == 0 && ctx->opts->aggressive_framesync != 0 && !ctx->opts->dmr_crc_relaxed_default;
+    if (ctx->usbd_st == 0 && !crc_rejected) {
         lip_protocol_decoder(ctx->opts, ctx->state, ctx->dmr_pdu_bits);
     }
 }
@@ -754,13 +764,13 @@ dmr_dburst_dispatch_by_type(dmr_data_burst_ctx* ctx) {
             // remains in data_block_crc_valid; acceptance is not an integrity verdict.
             ctx->state->data_header_valid[ctx->slot] =
                 (uint8_t)(ctx->crc_correct != 0 && ctx->irrecoverable_errors == 0);
-            ctx->state->data_header_crc_invalid[ctx->slot] = (uint8_t)(ctx->crc_original_validity == 0);
+            ctx->state->data_header_crc_invalid[ctx->slot] = ctx->crc_flags;
             dmr_block_assembler(ctx->opts, ctx->state, ctx->dmr_pdu, ctx->pdu_len, ctx->databurst, 2);
             break;
         case 0x05: dmr_block_assembler(ctx->opts, ctx->state, ctx->dmr_pdu, ctx->pdu_len, ctx->databurst, 2); break;
         case 0x06:
-            dmr_dheader(ctx->opts, ctx->state, ctx->dmr_pdu, ctx->dmr_pdu_bits, ctx->crc_original_validity,
-                        ctx->irrecoverable_errors);
+            dmr_dheader_classified(ctx->opts, ctx->state, ctx->dmr_pdu, ctx->dmr_pdu_bits, ctx->crc_flags,
+                                   ctx->irrecoverable_errors);
             break;
         case 0x07:
             dmr_block_assembler(ctx->opts, ctx->state, ctx->dmr_pdu, ctx->pdu_len, ctx->databurst, ctx->is_udt ? 3 : 1);
@@ -845,11 +855,16 @@ dmr_data_burst_handler(dsd_opts* opts, dsd_state* state, uint8_t info[196], uint
         return;
     }
 
-    const uint8_t saved_crc_invalid = state->event_crc_invalid[ctx.slot];
     // MBC continuation bursts have no independent CRC; their aggregate is checked by the assembler.
-    if (ctx.databurst != 0x05 && (ctx.is_ras || ctx.crc_correct == 0)) {
-        state->event_crc_invalid[ctx.slot] = 1;
+    if (ctx.databurst != 0x05) {
+        if (ctx.is_ras) {
+            ctx.crc_flags = DSD_CRC_RAS_UNVERIFIED;
+        } else if (ctx.crc_correct == 0) {
+            ctx.crc_flags = DSD_CRC_FAILED;
+        }
     }
+    const uint8_t saved_crc_invalid = state->event_crc_invalid[ctx.slot];
+    state->event_crc_invalid[ctx.slot] = (uint8_t)(saved_crc_invalid | ctx.crc_flags);
     dmr_dburst_dispatch_by_type(&ctx);
     state->event_crc_invalid[ctx.slot] = saved_crc_invalid;
     dmr_dburst_finalize_status(&ctx);

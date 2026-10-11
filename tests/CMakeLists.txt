@@ -1157,6 +1157,18 @@ dsd_neo_add_public_header_smoke_test(
   CXX
 )
 dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_core_crc_provenance
+  HEADERS_PUBLIC_CORE_CRC_PROVENANCE
+  dsd-neo/core/crc_provenance.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_core_crc_provenance_cxx
+  HEADERS_PUBLIC_CORE_CRC_PROVENANCE_CXX
+  dsd-neo/core/crc_provenance.h
+  CXX
+)
+dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_core_p25p2_playout
   HEADERS_PUBLIC_CORE_P25P2_PLAYOUT
   dsd-neo/core/p25p2_playout.h
@@ -9637,7 +9649,12 @@ target_link_libraries(
 )
 add_test(NAME DMR_UDT_UTF16_TEXT COMMAND dsd-neo_test_dmr_udt_utf16_text)
 
-add_executable(dsd-neo_test_dmr_event_crc protocol/dmr/test_dmr_event_crc.c)
+add_executable(
+    dsd-neo_test_dmr_event_crc
+    protocol/dmr/test_dmr_event_crc.c
+    test_support/dmr_bptc_test_encoder.c
+    test_support/dmr_rs_test_encoder.c
+)
 target_include_directories(
     dsd-neo_test_dmr_event_crc
     PRIVATE ${PROJECT_SOURCE_DIR}/include
@@ -9679,6 +9696,24 @@ target_link_libraries(
 add_test(
     NAME DMR_FLCO_MONO_CRC_SCOPE
     COMMAND dsd-neo_test_dmr_flco_mono_crc_scope
+)
+
+# DMR embedded LC: a checksum-failed alias/GPS applies nothing and abandons the alias; a failed LC holds no scan (#602)
+add_executable(
+    dsd-neo_test_dmr_embedded_lc_checksum
+    protocol/dmr/test_dmr_embedded_lc_checksum.c
+)
+target_include_directories(
+    dsd-neo_test_dmr_embedded_lc_checksum
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_dmr_embedded_lc_checksum
+    PRIVATE dsd-neo_proto_dmr dsd-neo_test_support
+)
+add_test(
+    NAME DMR_EMBEDDED_LC_CHECKSUM
+    COMMAND dsd-neo_test_dmr_embedded_lc_checksum
 )
 
 add_executable(
