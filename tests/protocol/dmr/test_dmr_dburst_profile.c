@@ -4,6 +4,7 @@
  */
 
 #include <dsd-neo/core/bit_packing.h>
+#include <dsd-neo/core/crc_provenance.h>
 
 #include <dsd-neo/core/gps.h>
 #include <dsd-neo/core/opts.h>
@@ -18,6 +19,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include "dmr_crc_provenance.h"
 #include "dmr_dburst_profile.h"
 #include "dmr_r34_internal.h"
 #include "dsd-neo/core/safe_api.h"
@@ -30,7 +32,8 @@ static uint32_t g_flco_last_crc_correct;
 static int g_cspdu_calls;
 static uint32_t g_cspdu_last_crc_correct;
 static int g_dheader_calls;
-static uint32_t g_dheader_last_crc_correct;
+static uint8_t g_dheader_last_crc_flags;
+static uint8_t g_dheader_last_scope;
 static int g_block_assembler_calls;
 static uint8_t g_block_assembler_last_len;
 static uint8_t g_block_assembler_last_burst;
@@ -61,7 +64,8 @@ reset_handler_counters(void) {
     g_cspdu_calls = 0;
     g_cspdu_last_crc_correct = 0;
     g_dheader_calls = 0;
-    g_dheader_last_crc_correct = 0;
+    g_dheader_last_crc_flags = 0;
+    g_dheader_last_scope = 0;
     g_block_assembler_calls = 0;
     g_block_assembler_last_len = 0;
     g_block_assembler_last_burst = 0;
@@ -247,15 +251,15 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
 }
 
 void
-dmr_dheader(dsd_opts* opts, dsd_state* state, uint8_t dheader[], uint8_t dheader_bits[], uint32_t CRCCorrect,
-            uint32_t IrrecoverableErrors) {
+dmr_dheader_classified(dsd_opts* opts, dsd_state* state, uint8_t* dheader, uint8_t* dheader_bits, uint8_t crc_flags,
+                       uint32_t IrrecoverableErrors) {
     (void)opts;
-    (void)state;
     (void)dheader;
     (void)dheader_bits;
     (void)IrrecoverableErrors;
     g_dheader_calls++;
-    g_dheader_last_crc_correct = CRCCorrect;
+    g_dheader_last_crc_flags = crc_flags;
+    g_dheader_last_scope = state->event_crc_invalid[state->currentslot & 1];
 }
 
 void
@@ -458,7 +462,7 @@ test_handler_dispatch_paths(void) {
     dmr_data_burst_handler(&opts, &state, info, 0x06U, NULL);
     rc |= expect_u8("data-header-call", (uint8_t)g_dheader_calls, 1U);
     rc |= expect_u8("data-header-keeps-head", state.data_p_head[1], 1U);
-    rc |= expect_u8("data-header-crc-fails-with-stub-mask", (uint8_t)g_dheader_last_crc_correct, 0U);
+    rc |= expect_u8("data-header-crc-fails-with-stub-mask", g_dheader_last_crc_flags, DSD_CRC_FAILED);
 
     prepare_handler_state(&opts, &state, info, 0x07U, 0U, 1U, 0);
     dmr_data_burst_handler(&opts, &state, info, 0x07U, NULL);
@@ -492,6 +496,17 @@ test_handler_dispatch_paths(void) {
     dmr_data_burst_handler(&opts, &state, info, 0x0BU, NULL);
     rc |= expect_u8("usbd-lip-call", (uint8_t)g_lip_calls, 1U);
     rc |= expect_str("usbd-subtype", state.fsubtype, " USBD ");
+
+    // The stub CRC fails every USBD: strict mode publishes no failed DMR data, mixed mode follows the data gates.
+    prepare_handler_state(&opts, &state, info, 0x0BU, 0U, 1U, 0);
+    opts.aggressive_framesync = 1;
+    dmr_data_burst_handler(&opts, &state, info, 0x0BU, NULL);
+    rc |= expect_u8("usbd-strict-crc-fail-no-lip", (uint8_t)g_lip_calls, 0U);
+    prepare_handler_state(&opts, &state, info, 0x0BU, 0U, 1U, 0);
+    opts.aggressive_framesync = 1;
+    opts.dmr_crc_relaxed_default = 1;
+    dmr_data_burst_handler(&opts, &state, info, 0x0BU, NULL);
+    rc |= expect_u8("usbd-relaxed-default-lip", (uint8_t)g_lip_calls, 1U);
 
     prepare_handler_state(&opts, &state, info, 0xEBU, 0U, 1U, 0);
     dmr_data_burst_handler(&opts, &state, info, 0xEBU, NULL);
@@ -550,13 +565,33 @@ test_bptc_ras_and_usbd_services(void) {
     g_bptc_reserved[2] = 1U;
     dmr_data_burst_handler(&opts, &state, info, 0x06U, NULL);
     rc |= expect_u8("ras-data-header-call", (uint8_t)g_dheader_calls, 1U);
+    rc |= expect_u8("ras-data-header-classified-ras", g_dheader_last_crc_flags, DSD_CRC_RAS_UNVERIFIED);
+    rc |= expect_u8("ras-data-header-scope", g_dheader_last_scope, DSD_CRC_RAS_UNVERIFIED);
+
+    // The header is classified by its own burst, never by an inherited scope, and the outer bit survives dispatch.
+    prepare_handler_state(&opts, &state, info, 0x06U, 0U, 1U, 0);
+    g_bptc_reserved[2] = 1U;
+    state.event_crc_invalid[1] = DSD_CRC_FAILED;
+    dmr_data_burst_handler(&opts, &state, info, 0x06U, NULL);
+    rc |= expect_u8("ras-header-under-failed-scope-classified-ras", g_dheader_last_crc_flags, DSD_CRC_RAS_UNVERIFIED);
+    rc |= expect_u8("ras-header-under-failed-scope-sees-both", g_dheader_last_scope,
+                    (uint8_t)(DSD_CRC_FAILED | DSD_CRC_RAS_UNVERIFIED));
+    rc |= expect_u8("ras-header-outer-scope-restored", state.event_crc_invalid[1], DSD_CRC_FAILED);
+
+    prepare_handler_state(&opts, &state, info, 0x04U, 0U, 1U, 0);
+    g_bptc_reserved[2] = 1U;
+    dmr_data_burst_handler(&opts, &state, info, 0x04U, NULL);
+    rc |= expect_u8("ras-mbc-header-provenance", state.data_header_crc_invalid[1], DSD_CRC_RAS_UNVERIFIED);
+    prepare_handler_state(&opts, &state, info, 0x04U, 0U, 1U, 0);
+    dmr_data_burst_handler(&opts, &state, info, 0x04U, NULL);
+    rc |= expect_u8("failed-mbc-header-provenance", state.data_header_crc_invalid[1], DSD_CRC_FAILED);
 
     prepare_handler_state(&opts, &state, info, 0x06U, 0U, 1U, 0);
     g_bptc_reserved[2] = 1U;
     write_byte_bits(g_bptc_bits, 8U, 0x68U);
     dmr_data_burst_handler(&opts, &state, info, 0x06U, NULL);
     rc |= expect_u8("ras-disabled-by-proprietary-header-call", (uint8_t)g_dheader_calls, 1U);
-    rc |= expect_u8("ras-disabled-crc-stays-failed", (uint8_t)g_dheader_last_crc_correct, 0U);
+    rc |= expect_u8("ras-disabled-crc-stays-failed", g_dheader_last_crc_flags, DSD_CRC_FAILED);
 
     prepare_handler_state(&opts, &state, info, 0x0BU, 0U, 1U, 0);
     write_byte_bits(g_bptc_bits, 0U, 0x90U);

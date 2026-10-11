@@ -149,7 +149,7 @@ typedef struct {
     uint8_t color_pair;  //this value corresponds to which color pair the line should be in ncurses
     uint8_t severity;    // neutral event severity for non-terminal frontends
     uint8_t category;    // neutral event category for non-terminal frontends
-    uint8_t crc_invalid; // Known failed CRC; zero does not imply verification.
+    uint8_t crc_invalid; // DSD_CRC_* provenance bits (crc_provenance.h); zero does not imply verification.
     int8_t systype;      //indentifier of which decoded system type this is from (P25, DMR, etc)
     int8_t subtype;      //subtype of systpe (VLC, TLC, PDU data, System Event, etc)
     uint32_t sys_id1;    //sys_id1 through 5 will be a hierarchy of system identifiers
@@ -641,9 +641,10 @@ struct dsd_state {
     time_t slco_sfrag_last[2];
     //event history itemized per slot
     Event_History_I* event_history_s;
-    // Decoder-thread-only scoped failure context; dispatch must save and restore each slot.
+    // Decoder-thread-only scoped DSD_CRC_* provenance bits (crc_provenance.h) for the content being decoded;
+    // dispatch ORs its bits in and must save and restore each slot.
     uint8_t event_crc_invalid[2];
-    // DMR header-chain failure retained until the protocol resets the assembly.
+    // DMR header-chain DSD_CRC_* bits (failed, or RAS-accepted), retained until the protocol resets the assembly.
     uint8_t data_header_crc_invalid[2];
     // Codec2 contexts (NULL when codec2 unavailable; unconditional for ABI stability)
     struct CODEC2* codec2_3200; // M17 fullrate
@@ -1168,7 +1169,9 @@ struct dsd_state {
         [2][24 * 128]; //unified pdu 'superframe' //[slot][byte] -- increased capacity to 127(+1) full rate blocks
     uint8_t cap_plus_csbk_bits[2][12 * 8 * 8]; //CSBK Cap+ FL initial and appended block bit storage, by slot
     uint8_t cap_plus_block_num[2];             //received block number storage -- per timeslot
-    uint8_t data_block_crc_valid[2][127];      //flag each individual block as good crc on confirmed data
+    // Per-block CRC verdict on confirmed data: 1 good, 0 failed, DMR_DATA_BLOCK_CRC_RAS (2) a confirmed block whose
+    // CRC9 failed but the RAS heuristic accepted under -F. Block 0 is the header and only ever holds 0 or 1.
+    uint8_t data_block_crc_valid[2][127];
     // Confirmed data sequence tracking (DBSN expected per slot)
     uint8_t data_dbsn_expected[2];
     uint8_t data_dbsn_have[2];

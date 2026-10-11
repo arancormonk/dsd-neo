@@ -269,12 +269,22 @@ Windows console runs:
   P25 Phase 2 and X2-TDMA rows `[S1]`/`[S2]`, while FDMA rows carry no slot tag.
   DMR and P25 Phase 1 data accepted with a failed header, packet, or confirmed-block CRC under `-F`
   carry `[CRC ERR]` after the timestamp, on both the event and its detail lines. History exposes these
-  as warnings. Strict CRC mode does not publish these failed data PDUs, including MNIS, UDT and
+  as warnings. Strict CRC mode does not publish these failed data PDUs, including MNIS, UDT, USBD and
   encrypted-PDU notices. DMR's separate relaxed-CRC configuration follows the same marking policy.
-  Suspected RAS voice events also retain the marker through delayed commits and reacquisition.
-  The marker means a CRC check failed, not that every decoded field is wrong: RAS can intentionally
-  alter the check. Absence of the marker is not a universal verification guarantee for every protocol.
-  A `-L` location file never receives a row from a PDU that would carry this marker.
+  DMR content that only the Motorola RAS heuristic accepted under `-F` (the burst line shows `-RAS`)
+  carries `[RAS]` instead: RAS systems alter the standard CRC on purpose, so it could not be verified,
+  but nothing is known to have failed, and the row keeps its ordinary severity and colour. This covers
+  voice calls (including a call reached through a RAS-accepted grant), data headers, confirmed blocks,
+  MBC/UDT and USBD. A transmission that also fails a check renders `[CRC ERR]`, which outranks `[RAS]`;
+  both markers stay on a voice row through delayed commits and reacquisition. `[CRC ERR]` means a CRC
+  check failed, not that every decoded field is wrong. Absence of either marker is not a universal
+  verification guarantee for every protocol. Each `-J` line carries the marker its row had when the
+  line was written. A failure that reaches an already committed row through late detail (an alias or
+  position decoded after the row committed) updates history and the API feed but appends nothing to
+  `-J`; a reacquired transmission that merges into the row appends its `Reacquired:` continuation with
+  the merged row's marker. A DMR embedded talker alias or GPS LC whose checksum failed is never applied.
+  A `-L` location file never receives a position decoded from a PDU that would carry either marker
+  (see `-L`).
 
   ```text
   2026-04-30 09:12:04 [Fire Dispatch] P25p1 TGT: 00050061; SRC: 00001234;
@@ -282,6 +292,7 @@ Windows console runs:
   2026-04-30 09:12:11 TMS SRC: 1234; DST: 42; Slot 1;
   2026-04-30 09:12:11 Text: MEET AT THE NORTH GATE
   2026-04-30 09:12:15 [CRC ERR] MNIS TGT: 42; SRC: 1234; IP ID: 5501;
+  2026-04-30 09:12:18 [RAS] DMR TGT: 00000200; SRC: 00004321; Slot 2;
   2026-04-30 09:12:20 DMR TGT: 00000100; SRC: 00000000; Slot 1;
   2026-04-30 09:12:20 Reacquired: DMR TGT: 00000100; SRC: 00004321; Slot 1;
   ```
@@ -307,9 +318,11 @@ DirWatch modes keep the WAV and JSON files because the watcher needs stable file
   PDUs (LRRP, LOCN, LIP, UDT NMEA), DMR voice-LC embedded GPS, and P25 Phase 1 data PDUs reaching
   the IP/UDP LRRP ports; P25 Harris/APX voice-LC GPS and NXDN are unchanged. Under `-F`, CRC-failed
   data still decodes on screen and reaches history / the `-J` log marked `[CRC ERR]`, with LRRP
-  position tokens shown as suppressed and no location row appended. Bursts accepted by the RAS
-  heuristic under `-F` are also excluded because their CRC could not be verified; the burst line
-  shows `-RAS`.
+  position tokens shown as suppressed (`CRC ERR`) and no location row appended. Bursts accepted by the
+  RAS heuristic under `-F` are also excluded because their CRC could not be verified; the burst line
+  shows `-RAS`, history marks them `[RAS]`, and a withheld LRRP position reads `suppressed (RAS)`. An
+  embedded GPS row names the source of the call it rode on, so under `-F` a checked position can carry
+  the source ID of a RAS-accepted voice header.
 - `--lrrp-extra-port <n>` Also decode UDP port `<n>` as LRRP. Repeatable, at most 8 ports.
   The registered location port 4001 is always decoded; this adds ports a system uses
   instead of it, which would otherwise be reported as `Unknown UDP Port`. Ports the decoder

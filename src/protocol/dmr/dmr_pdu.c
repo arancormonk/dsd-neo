@@ -12,6 +12,7 @@
 
 #include <dsd-neo/core/bit_packing.h>
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/crc_provenance.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/gps.h>
 #include <dsd-neo/core/opts.h>
@@ -1465,7 +1466,8 @@ dmr_lrrp_compute_scaled(const dmr_lrrp_parse_result* best) {
 }
 
 static void
-dmr_lrrp_print_details(const dmr_lrrp_parse_result* best, const dmr_lrrp_scaled* s, uint8_t pdu_crc_ok) {
+dmr_lrrp_print_details(const dmr_lrrp_parse_result* best, const dmr_lrrp_scaled* s, uint8_t pdu_crc_ok,
+                       const char* suppressed_label) {
     if (best->year) {
         DSD_FPRINTF(stderr, "\n Time: %04d.%02d.%02d %02d:%02d:%02d", best->year, best->month, best->day, best->hour,
                     best->minute, best->second);
@@ -1473,7 +1475,7 @@ dmr_lrrp_print_details(const dmr_lrrp_parse_result* best, const dmr_lrrp_scaled*
     if (best->have_pos && pdu_crc_ok) {
         DSD_FPRINTF(stderr, "\n Lat: %.5lf Lon: %.5lf (%.5lf, %.5lf)", s->lat, s->lon, s->lat, s->lon);
     } else if (best->have_pos && !pdu_crc_ok) {
-        DSD_FPRINTF(stderr, "\n Position: (suppressed; CRC ERR)");
+        DSD_FPRINTF(stderr, "\n Position: (suppressed; %s)", suppressed_label);
     }
     if (best->have_rad) {
         DSD_FPRINTF(stderr, "\n Radius: %.2lfm", s->rad);
@@ -1517,30 +1519,32 @@ dmr_lrrp_write_file_if_needed(const dsd_opts* opts, const dmr_lrrp_parse_result*
     fclose(pFile);
 }
 
-static void
-dmr_lrrp_build_summary(char* out, size_t out_sz, const dmr_lrrp_parse_result* best, const dmr_lrrp_scaled* s,
-                       uint32_t source, uint32_t dest, uint8_t is_request, uint8_t is_response, uint8_t lrrp_type,
-                       uint8_t pdu_crc_ok) {
-    if (best->have_pos && pdu_crc_ok) {
-        DSD_SNPRINTF(out, out_sz, "LRRP SRC: %0d; (%lf, %lf)", source, s->lat, s->lon);
-    } else if (best->have_pos && !pdu_crc_ok) {
-        DSD_SNPRINTF(out, out_sz, "LRRP SRC: %0d; Position suppressed (CRC ERR);", source);
-    } else if (is_request) {
-        DSD_SNPRINTF(out, out_sz, "LRRP SRC: %0d; Request from TGT: %d;", source, dest);
-    } else if (is_response) {
-        DSD_SNPRINTF(out, out_sz, "LRRP SRC: %0d; Response to TGT: %d;", source, dest);
-    } else {
-        DSD_SNPRINTF(out, out_sz, "LRRP SRC: %0d; Unknown Format %02X; TGT: %d;", source, lrrp_type, dest);
-    }
-}
-
 typedef struct {
     uint32_t source;
     uint32_t dest;
     uint8_t is_request;
     uint8_t is_response;
     uint8_t lrrp_type;
+    const char* suppressed_label; // why a position is withheld: "CRC ERR", or "RAS" for RAS-only provenance
 } dmr_lrrp_emit_context;
+
+static void
+dmr_lrrp_build_summary(char* out, size_t out_sz, const dmr_lrrp_parse_result* best, const dmr_lrrp_scaled* s,
+                       const dmr_lrrp_emit_context* ctx, uint8_t pdu_crc_ok) {
+    const uint32_t source = ctx->source;
+    const uint32_t dest = ctx->dest;
+    if (best->have_pos && pdu_crc_ok) {
+        DSD_SNPRINTF(out, out_sz, "LRRP SRC: %0d; (%lf, %lf)", source, s->lat, s->lon);
+    } else if (best->have_pos && !pdu_crc_ok) {
+        DSD_SNPRINTF(out, out_sz, "LRRP SRC: %0d; Position suppressed (%s);", source, ctx->suppressed_label);
+    } else if (ctx->is_request) {
+        DSD_SNPRINTF(out, out_sz, "LRRP SRC: %0d; Request from TGT: %d;", source, dest);
+    } else if (ctx->is_response) {
+        DSD_SNPRINTF(out, out_sz, "LRRP SRC: %0d; Response to TGT: %d;", source, dest);
+    } else {
+        DSD_SNPRINTF(out, out_sz, "LRRP SRC: %0d; Unknown Format %02X; TGT: %d;", source, ctx->lrrp_type, dest);
+    }
+}
 
 // A zero-length message reaches here with an empty `best`: no details print,
 // nothing is written to the LRRP file, and the summary is chosen by the type
@@ -1550,7 +1554,7 @@ dmr_lrrp_emit_payload(const dsd_opts* opts, dsd_state* state, uint8_t slot, cons
                       uint8_t pdu_crc_ok, const dmr_lrrp_emit_context* ctx) {
     dmr_lrrp_scaled s = dmr_lrrp_compute_scaled(best);
     DSD_FPRINTF(stderr, "%s", KYEL);
-    dmr_lrrp_print_details(best, &s, pdu_crc_ok);
+    dmr_lrrp_print_details(best, &s, pdu_crc_ok, ctx->suppressed_label);
     dmr_lrrp_write_file_if_needed(opts, best, &s, pdu_crc_ok, ctx->source);
 
     char lrrpstr[100];
@@ -1559,8 +1563,7 @@ dmr_lrrp_emit_payload(const dsd_opts* opts, dsd_state* state, uint8_t slot, cons
     lrrpstr[0] = '\0';
     velstr[0] = '\0';
     degstr[0] = '\0';
-    dmr_lrrp_build_summary(lrrpstr, sizeof lrrpstr, best, &s, ctx->source, ctx->dest, ctx->is_request, ctx->is_response,
-                           ctx->lrrp_type, pdu_crc_ok);
+    dmr_lrrp_build_summary(lrrpstr, sizeof lrrpstr, best, &s, ctx, pdu_crc_ok);
     if (best->vel_set) {
         DSD_SNPRINTF(velstr, sizeof velstr, " %.2lf km/h", best->velocity_mph * 1.60934);
     }
@@ -1617,7 +1620,11 @@ dmr_lrrp(const dsd_opts* opts, dsd_state* state, uint16_t len, uint32_t source, 
     if (!source) {
         source = (uint32_t)state->dmr_lrrp_source[state->currentslot];
     }
-    dmr_lrrp_emit_context emit_ctx = {source, dest, is_request, is_response, lrrp_type};
+    // The caller's scope says why the PDU is unverified: a RAS-accepted header alone is not a failed check.
+    const uint8_t scope = state->event_crc_invalid[slot & 1U];
+    const char* suppressed_label =
+        (!dsd_crc_is_failed(scope) && (scope & DSD_CRC_RAS_UNVERIFIED) != 0U) ? "RAS" : "CRC ERR";
+    dmr_lrrp_emit_context emit_ctx = {source, dest, is_request, is_response, lrrp_type, suppressed_label};
     dmr_lrrp_emit_payload(opts, state, slot, &best, pdu_crc_ok, &emit_ctx);
     DSD_FPRINTF(stderr, "%s", KNRM);
 }

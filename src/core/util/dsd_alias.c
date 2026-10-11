@@ -1060,6 +1060,22 @@ dmr_talker_alias_lc_header(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8
     dmr_talker_alias_lc_decode(opts, state, slot, 0, char_size, max_chars);
 }
 
+// The talker alias's span of dmr_pdu_sf, in bit entries: a 7-bit header carries 49 bits and each of the three
+// blocks 56 (the 8- and 16-bit layouts start a bit earlier and end inside it). The rest of the buffer belongs to
+// the data assembler.
+enum { DMR_TALKER_ALIAS_SF_BITS = 49 + (3 * 56) };
+
+void
+dmr_talker_alias_lc_invalidate(dsd_state* state, uint8_t slot) {
+    if (state == NULL || slot > 1U) {
+        return;
+    }
+    state->dmr_alias_format[slot] = 0;
+    state->dmr_alias_block_len[slot] = 0;
+    state->dmr_alias_char_size[slot] = 0;
+    DSD_MEMSET(state->dmr_pdu_sf[slot], 0, DMR_TALKER_ALIAS_SF_BITS);
+}
+
 void
 dmr_talker_alias_lc_blocks(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t block_num, const uint8_t* lc_bits) {
     uint8_t char_size = state->dmr_alias_char_size[slot];

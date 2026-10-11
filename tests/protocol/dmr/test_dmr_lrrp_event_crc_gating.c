@@ -2,6 +2,7 @@
 /* Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com> */
 /* Issue #550: LOCN and IP/UDP LRRP location rows honor the dispatch CRC verdict. */
 
+#include <dsd-neo/core/crc_provenance.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/gps.h>
 #include <dsd-neo/core/opts.h>
@@ -221,22 +222,35 @@ run_cases(dsd_opts* opts, dsd_state* state, const char* path) {
     for (size_t i = 0; i < sizeof ports / sizeof ports[0]; ++i) {
         uint8_t packet[64];
         uint16_t len = build_ipv4_udp_lrrp(packet, ports[i]);
-        for (int invalid = 1; invalid >= 0; --invalid) {
+
+        // RAS-accepted content is withheld from -L like a failure, but its label says why: nothing failed.
+        static const struct {
+            uint8_t scope;
+            const char* tag;
+            const char* expected;
+        } scopes[] = {
+            {DSD_CRC_FAILED, "CRC-invalid", "Position suppressed (CRC ERR)"},
+            {DSD_CRC_RAS_UNVERIFIED, "RAS", "Position suppressed (RAS)"},
+            {DSD_CRC_FAILED | DSD_CRC_RAS_UNVERIFIED, "RAS+CRC-invalid", "Position suppressed (CRC ERR)"},
+            {0U, "clean", "(11.250000, 45.000000)"},
+        };
+
+        for (size_t c = 0; c < sizeof scopes / sizeof scopes[0]; ++c) {
             if (!truncate_output(path)) {
                 return 100;
             }
             char tag[64];
-            DSD_SNPRINTF(tag, sizeof tag, "UDP/%u %s", (unsigned)ports[i], invalid ? "CRC-invalid" : "clean");
-            state->event_crc_invalid[0] = invalid;
+            DSD_SNPRINTF(tag, sizeof tag, "UDP/%u %s", (unsigned)ports[i], scopes[c].tag);
+            state->event_crc_invalid[0] = scopes[c].scope;
             state->dmr_lrrp_gps[0][0] = '\0';
             decode_ip_pdu(opts, state, len, packet);
-            if (!expect_rows(path, !invalid, "00000111", "11.25000", "45.00000", tag)) {
-                return 5 + (int)i * 4 + (1 - invalid) * 2;
+            if (!expect_rows(path, scopes[c].scope == 0U, "00000111", "11.25000", "45.00000", tag)) {
+                return 30 + (int)(i * 8U + c * 2U);
             }
-            const char* expected = invalid ? "Position suppressed (CRC ERR)" : "(11.250000, 45.000000)";
-            if (!strstr(state->dmr_lrrp_gps[0], expected)) {
-                DSD_FPRINTF(stderr, "\n%s: missing '%s' in state: %s\n", tag, expected, state->dmr_lrrp_gps[0]);
-                return 6 + (int)i * 4 + (1 - invalid) * 2;
+            if (!strstr(state->dmr_lrrp_gps[0], scopes[c].expected)) {
+                DSD_FPRINTF(stderr, "\n%s: missing '%s' in state: %s\n", tag, scopes[c].expected,
+                            state->dmr_lrrp_gps[0]);
+                return 31 + (int)(i * 8U + c * 2U);
             }
         }
     }

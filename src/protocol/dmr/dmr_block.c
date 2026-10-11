@@ -15,6 +15,7 @@
 
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/constants.h>
+#include <dsd-neo/core/crc_provenance.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/gps.h>
 #include <dsd-neo/core/opts.h>
@@ -32,6 +33,7 @@
 #include <string.h>
 #include "dmr_ars.h"
 #include "dmr_block_crypto.h"
+#include "dmr_crc_provenance.h"
 #include "dmr_pdu_internal.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -571,10 +573,17 @@ dmr_dheader_arms_assembler(const dmr_dheader_fields* f) {
     return 1;
 }
 
-//hopefully a more simplified (or logical) version...once you get past all the variables
 void
 dmr_dheader(dsd_opts* opts, dsd_state* state, uint8_t dheader[], uint8_t dheader_bits[], uint32_t CRCCorrect,
             uint32_t IrrecoverableErrors) {
+    dmr_dheader_classified(opts, state, dheader, dheader_bits, (uint8_t)(CRCCorrect == 1 ? 0U : DSD_CRC_FAILED),
+                           IrrecoverableErrors);
+}
+
+//hopefully a more simplified (or logical) version...once you get past all the variables
+void
+dmr_dheader_classified(dsd_opts* opts, dsd_state* state, uint8_t* dheader, uint8_t* dheader_bits, uint8_t crc_flags,
+                       uint32_t IrrecoverableErrors) {
     uint8_t slot = state->currentslot;
     uint8_t inherited_poc = state->data_block_poc[slot];
     dmr_dheader_fields f;
@@ -590,7 +599,7 @@ dmr_dheader(dsd_opts* opts, dsd_state* state, uint8_t dheader[], uint8_t dheader
         return;
     }
 
-    if (!(CRCCorrect == 1 || opts->aggressive_framesync == 0 || opts->dmr_crc_relaxed_default)) {
+    if (!(crc_flags == 0U || opts->aggressive_framesync == 0 || opts->dmr_crc_relaxed_default)) {
         dmr_dheader_reset_irrecoverable(state, slot);
         DSD_FPRINTF(stderr, "%s", KNRM);
         return;
@@ -612,7 +621,7 @@ dmr_dheader(dsd_opts* opts, dsd_state* state, uint8_t dheader[], uint8_t dheader
         // --dmr-tg-key-csv lookup degrades to unmapped rather than to the wrong talkgroup.
         state->dmr_data_target_is_group[slot] = 0;
     }
-    state->data_header_crc_invalid[slot] |= (uint8_t)(CRCCorrect != 1);
+    state->data_header_crc_invalid[slot] |= crc_flags;
     state->data_block_crc_valid[slot][0] = (uint8_t)(state->data_header_crc_invalid[slot] == 0);
     const uint8_t saved_crc_invalid = state->event_crc_invalid[slot];
     state->event_crc_invalid[slot] |= state->data_header_crc_invalid[slot];
@@ -645,7 +654,7 @@ dmr_dheader(dsd_opts* opts, dsd_state* state, uint8_t dheader[], uint8_t dheader
         // also admits headers under the relaxed-CRC options, and an unverified identity would
         // park the coordinator on noise; the standard header carries no encryption field, so the
         // encrypted flag is 0 (the MFID-specific ENC bit lives in the dpf 15 header excluded here).
-        if (CRCCorrect == 1) {
+        if (crc_flags == 0U) {
             dsd_trunk_scan_hook_dmr_conventional_activity(opts, state, f.target, f.source, (f.gi == 0) ? 1 : 0, 0, 1);
         }
     }
@@ -654,7 +663,7 @@ dmr_dheader(dsd_opts* opts, dsd_state* state, uint8_t dheader[], uint8_t dheader
     DSD_FPRINTF(stderr, "%s", KNRM);
 }
 
-static void dmr_udt_decoder(dsd_opts* opts, dsd_state* state, const uint8_t* block_bytes, uint32_t CRCCorrect);
+static void dmr_udt_decoder(dsd_opts* opts, dsd_state* state, const uint8_t* block_bytes, uint8_t crc_flags);
 
 typedef struct {
     dsd_opts* opts;
@@ -1036,14 +1045,14 @@ dmr_udt_finalize(dmr_udt_ctx* ctx) {
 }
 
 static void DSD_ATTR_USED
-dmr_udt_decoder(dsd_opts* opts, dsd_state* state, const uint8_t* block_bytes, uint32_t CRCCorrect) {
+dmr_udt_decoder(dsd_opts* opts, dsd_state* state, const uint8_t* block_bytes, uint8_t crc_flags) {
     dmr_udt_ctx ctx;
-    if (CRCCorrect != 1 && opts->aggressive_framesync != 0 && !opts->dmr_crc_relaxed_default) {
+    if (crc_flags != 0U && opts->aggressive_framesync != 0 && !opts->dmr_crc_relaxed_default) {
         return;
     }
     const uint8_t slot = (uint8_t)(state->currentslot & 1);
     const uint8_t saved_crc_invalid = state->event_crc_invalid[slot];
-    state->event_crc_invalid[slot] |= (uint8_t)(CRCCorrect != 1);
+    state->event_crc_invalid[slot] |= crc_flags;
     dmr_udt_prepare_context(&ctx, opts, state, block_bytes);
     dmr_udt_decode_format(&ctx);
     dmr_udt_finalize(&ctx);
@@ -1227,11 +1236,12 @@ dmr_block_type1_handle_encrypted_notice(dmr_block_assembler_ctx* ctx) {
     (void)dsd_event_emit_data_notice(ctx->opts, ctx->state, ctx->slot, &observation, enc_str);
 }
 
+// DSD_CRC_* bits for the confirmed blocks' CRC9 verdicts: a failed or missing block is a failure, a block the RAS
+// heuristic accepted is RAS. An unconfirmed packet has no per-block check.
 static uint8_t DSD_ATTR_USED
-dmr_block_type1_lrrp_crc_ok(const dsd_state* state, uint8_t slot) {
-    uint8_t pdu_crc_ok = 1;
+dmr_block_type1_block_crc_flags(const dsd_state* state, uint8_t slot) {
     if (!state->data_conf_data[slot]) {
-        return pdu_crc_ok;
+        return 0U;
     }
 
     int start = state->data_p_head[slot] ? 2 : 1;
@@ -1240,16 +1250,19 @@ dmr_block_type1_lrrp_crc_ok(const dsd_state* state, uint8_t slot) {
         end = 126;
     }
     if (end < start) {
-        return 0;
+        return DSD_CRC_FAILED;
     }
 
+    uint8_t flags = 0U;
     for (int bi = start; bi <= end; bi++) {
-        if (state->data_block_crc_valid[slot][bi] != 1) {
-            pdu_crc_ok = 0;
-            break;
+        const uint8_t verdict = state->data_block_crc_valid[slot][bi];
+        if (verdict == DMR_DATA_BLOCK_CRC_RAS) {
+            flags |= DSD_CRC_RAS_UNVERIFIED;
+        } else if (verdict != 1U) {
+            flags |= DSD_CRC_FAILED;
         }
     }
-    return pdu_crc_ok;
+    return flags;
 }
 
 static void
@@ -1447,9 +1460,10 @@ dmr_block_type1_handle_sap(dmr_block_assembler_ctx* ctx) {
 
 static void
 dmr_block_type1_process_payload(dmr_block_assembler_ctx* ctx) {
-    const uint8_t crc_invalid = (uint8_t)(!ctx->crc_correct || ctx->state->data_header_crc_invalid[ctx->slot]
-                                          || !dmr_block_type1_lrrp_crc_ok(ctx->state, ctx->slot));
-    if (crc_invalid && ctx->opts->aggressive_framesync != 0 && !ctx->opts->dmr_crc_relaxed_default) {
+    const uint8_t crc_invalid =
+        (uint8_t)((ctx->crc_correct ? 0U : DSD_CRC_FAILED) | ctx->state->data_header_crc_invalid[ctx->slot]
+                  | dmr_block_type1_block_crc_flags(ctx->state, ctx->slot));
+    if (crc_invalid != 0U && ctx->opts->aggressive_framesync != 0 && !ctx->opts->dmr_crc_relaxed_default) {
         return;
     }
     const uint8_t saved_crc_invalid = ctx->state->event_crc_invalid[ctx->slot];
@@ -1652,8 +1666,21 @@ dmr_block_type2_update_crc(dmr_block_assembler_ctx* ctx) {
     }
 }
 
+// DSD_CRC_* bits for an assembled MBC/UDT: the continuation's CRC16, plus the header's own provenance when its CRC
+// did not check (a RAS-accepted header stays RAS rather than turning into a failure here).
+static uint8_t
+dmr_block_type2_crc_flags(const dmr_block_assembler_ctx* ctx) {
+    uint8_t flags = ctx->mbc_crc_good[1] ? 0U : DSD_CRC_FAILED;
+    if (!ctx->mbc_crc_good[0]) {
+        const uint8_t header = ctx->state->data_header_crc_invalid[ctx->slot];
+        flags |= header != 0U ? header : DSD_CRC_FAILED;
+    }
+    return flags;
+}
+
 static void
 dmr_block_type2_dispatch(dmr_block_assembler_ctx* ctx) {
+    const uint8_t crc_flags = dmr_block_type2_crc_flags(ctx);
     if (!ctx->is_udt && !ctx->pf) {
         // A RAS-accepted MBC header may still be followed by a checked continuation. Keep
         // that existing decode path without promoting its stored header CRC to a match.
@@ -1661,13 +1688,13 @@ dmr_block_type2_dispatch(dmr_block_assembler_ctx* ctx) {
                                   || (ctx->opts->aggressive_framesync == 0 && ctx->mbc_crc_good[1]
                                       && ctx->state->data_header_valid[ctx->slot]);
         const uint8_t saved_crc_invalid = ctx->state->event_crc_invalid[ctx->slot];
-        ctx->state->event_crc_invalid[ctx->slot] |= (uint8_t)(!ctx->crc_correct);
+        ctx->state->event_crc_invalid[ctx->slot] |= crc_flags;
         dmr_cspdu(ctx->opts, ctx->state, ctx->dmr_pdu_sf_bits, ctx->state->dmr_pdu_sf[ctx->slot], accepted,
                   accepted ? 0U : ctx->irrecoverable_errors);
         ctx->state->event_crc_invalid[ctx->slot] = saved_crc_invalid;
     }
     if (ctx->is_udt && !ctx->pf) {
-        dmr_udt_decoder(ctx->opts, ctx->state, ctx->state->dmr_pdu_sf[ctx->slot], ctx->crc_correct);
+        dmr_udt_decoder(ctx->opts, ctx->state, ctx->state->dmr_pdu_sf[ctx->slot], crc_flags);
     }
 }
 

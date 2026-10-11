@@ -15,6 +15,8 @@
  * radio or rigctl backends.
  */
 
+#include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/crc_provenance.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -680,6 +682,89 @@ dmr_run_auto_init_and_idle_hunting_case(void) {
 }
 
 static int
+dmr_call_crc_flags(uint8_t slot, uint8_t* flags) {
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(&g_state, slot, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE) {
+        return 0;
+    }
+    *flags = call.crc_invalid;
+    return 1;
+}
+
+// A grant decoded inside a RAS-accepted CSBK/MBC names the call it sends the receiver to, but that call is only
+// published at voice sync -- later, and outside the burst's CRC scope. Its provenance has to travel with the grant
+// (discussion #602), including to a voice slot other than the control slot it arrived on.
+static int
+dmr_run_grant_crc_provenance_case(const dmr_grant_case* grant) {
+    const char* flow = "grant-crc-provenance";
+    const char* script = "ok";
+    dmr_reset_hooks();
+    g_hooks.tune_results[0] = DSD_TRUNK_TUNE_RESULT_OK;
+    g_hooks.tune_results[1] = DSD_TRUNK_TUNE_RESULT_OK;
+    g_hooks.tune_count = 2;
+    g_hooks.return_results[0] = DSD_TRUNK_TUNE_RESULT_OK;
+    g_hooks.return_count = 1;
+    dmr_install_hooks();
+    dmr_setup_fixture(grant);
+
+    int rc = 0;
+    g_state.currentslot = 0;
+    g_state.event_crc_invalid[0] = DSD_CRC_RAS_UNVERIFIED;
+    dmr_sm_event_t ev = dmr_case_grant_event(grant, 1201, 0);
+    dmr_sm_event(&g_ctx, &g_opts, &g_state, &ev);
+    g_state.event_crc_invalid[0] = 0;
+    rc |= dmr_expect(g_ctx.state == DMR_SM_TUNED, grant->name, flow, script, "RAS grant tuned");
+    rc |= dmr_expect(g_ctx.vc_crc_flags == DSD_CRC_RAS_UNVERIFIED, grant->name, flow, script,
+                     "RAS grant provenance captured");
+
+    // A clean repeat of the same grant changes nothing it stored.
+    ev = dmr_case_grant_event(grant, 1201, 0);
+    dmr_sm_event(&g_ctx, &g_opts, &g_state, &ev);
+    rc |= dmr_expect(g_ctx.vc_crc_flags == DSD_CRC_RAS_UNVERIFIED, grant->name, flow, script,
+                     "duplicate grant keeps provenance");
+
+    ev = dmr_sm_ev_voice_sync(1);
+    dmr_sm_event(&g_ctx, &g_opts, &g_state, &ev);
+    uint8_t flags = 0xFFU;
+    rc |= dmr_expect(dmr_call_crc_flags(1U, &flags) && flags == DSD_CRC_RAS_UNVERIFIED, grant->name, flow, script,
+                     "voice-slot call published RAS");
+    rc |= dmr_expect(g_state.event_crc_invalid[0] == 0 && g_state.event_crc_invalid[1] == 0, grant->name, flow, script,
+                     "publication scope restored");
+
+    ev = dmr_sm_ev_release(-1);
+    dmr_sm_event(&g_ctx, &g_opts, &g_state, &ev);
+    dmr_age_hangtime();
+    dmr_sm_tick_ctx(&g_ctx, &g_opts, &g_state);
+    rc |= dmr_expect(g_ctx.state == DMR_SM_ON_CC, grant->name, flow, script, "released to control channel");
+    rc |= dmr_expect(g_ctx.vc_crc_flags == 0, grant->name, flow, script, "release clears provenance");
+
+    // A clean grant afterwards publishes a clean call.
+    ev = dmr_case_grant_event(grant, 1202, 0);
+    dmr_sm_event(&g_ctx, &g_opts, &g_state, &ev);
+    rc |= dmr_expect(g_ctx.state == DMR_SM_TUNED && g_ctx.vc_crc_flags == 0, grant->name, flow, script,
+                     "clean grant carries no provenance");
+    ev = dmr_sm_ev_voice_sync(0);
+    dmr_sm_event(&g_ctx, &g_opts, &g_state, &ev);
+    flags = 0xFFU;
+    rc |= dmr_expect(dmr_call_crc_flags(0U, &flags) && flags == 0, grant->name, flow, script,
+                     "clean grant publishes a clean call");
+
+    // A RAS grant whose tune is refused stores nothing, provenance included.
+    dmr_reset_hooks();
+    g_hooks.tune_results[0] = DSD_TRUNK_TUNE_RESULT_DEFERRED;
+    g_hooks.tune_count = 1;
+    dmr_install_hooks();
+    dmr_setup_fixture(grant);
+    g_state.event_crc_invalid[0] = DSD_CRC_RAS_UNVERIFIED;
+    ev = dmr_case_grant_event(grant, 1203, 0);
+    dmr_sm_event(&g_ctx, &g_opts, &g_state, &ev);
+    g_state.event_crc_invalid[0] = 0;
+    rc |= dmr_expect(g_ctx.state == DMR_SM_ON_CC && g_ctx.vc_crc_flags == 0, grant->name, flow, "deferred",
+                     "refused grant stores no provenance");
+    return rc;
+}
+
+static int
 dmr_run_rejected_grant_contracts(void) {
     const char* flow = "rejected-grants";
     const char* script = "no-tune";
@@ -835,6 +920,7 @@ main(void) {
         }
         rc |= dmr_run_active_without_terminal_case(&g_grants[g]);
         rc |= dmr_run_duplicate_grant_case(&g_grants[g]);
+        rc |= dmr_run_grant_crc_provenance_case(&g_grants[g]);
         rc |= dmr_run_retune_after_release_case(&g_grants[g]);
         rc |= dmr_run_data_sync_disabled_case(&g_grants[g]);
 

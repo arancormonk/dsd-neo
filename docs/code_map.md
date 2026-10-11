@@ -590,6 +590,22 @@ suite runs under this compiler.
   released by `dsd_state_trunk_lcn_free()`. Per-row key sets (key-file or direct-key columns, `-Y` only) live in a
   sibling store with the same shape (`dsd_state_trunk_lcn_keys_*`), swapped by `dsd_scan_keys_enter()`/
   `dsd_scan_keys_leave()` in `src/core/util/key_set.c`, and are likewise never deep-copied into the UI snapshot.
+- API note (CRC provenance, discussion #602): `<dsd-neo/core/crc_provenance.h>` defines the bits that
+  `dsd_state::event_crc_invalid` (the decoder-thread scope a dispatcher ORs its bits into and restores),
+  `dsd_state::data_header_crc_invalid`, `dsd_call_snapshot::crc_invalid` and `Event_History::crc_invalid` carry:
+  `DSD_CRC_FAILED` (1, a check failed; the value P25 and DMR scopes have always ORed in) and `DSD_CRC_RAS_UNVERIFIED`
+  (2, DMR content only the Motorola RAS heuristic accepted under `-F`). The bits accumulate per transmission and are
+  never cleared by another writer. Every gate tests `!= 0` (not verified: `-L` rows, strict publication), so RAS stays
+  out of location files; only renderers tell the bits apart, through `dsd_crc_marker()` (`[CRC ERR] ` outranks
+  `[RAS] `) and `dsd_crc_is_failed()` (the only bit that raises severity to WARNING). `watchdog_event_mark_crc()` swaps
+  a row's marker given the bits it was rendered with, so a failure reaching a committed `[RAS]` row through enrichment
+  replaces the marker in place and a scan channel labelled `[RAS]` is never stripped; `-J` keeps the marker each line
+  was written with. DMR hands the verdict on explicitly: the burst handler classifies each burst once (`crc_flags`,
+  RAS or FAILED; the MBC continuation 0x05 has no check of its own), passes it to `dmr_dheader_classified()`
+  (`src/protocol/dmr/dmr_crc_provenance.h`; `dmr_dheader()` maps a 0/1 verdict), stores RAS-accepted confirmed blocks
+  as `DMR_DATA_BLOCK_CRC_RAS` in `data_block_crc_valid`, and folds them back into bits for the packet
+  (`dmr_block_type1_block_crc_flags()`, `dmr_block_type2_crc_flags()` for MBC/UDT). A trunk grant's provenance rides in
+  `dmr_sm_ctx_t::vc_crc_flags` to the call `handle_voice_sync()` publishes later, outside the burst's scope.
 - API note (call history rows, issue #575): every `Event_History` row records the frequency its call was heard on
   (`freq_hz`, Hz, 0 unknown) and its access code (`access_code_kind`, a `dsd_access_code_kind`, and `access_code`; zero
   means none, so a memset-zero row reads as unknown). `<dsd-neo/core/access_code.h>` (`src/core/util/access_code.c`,
@@ -622,7 +638,11 @@ suite runs under this compiler.
   its call -- D-STAR slow-data text and APRS, the NXDN alias and DCR call sign memory -- reaches a row only through
   `dsd_event_set_open_call_detail()`, which writes it only while the slot's call is ACTIVE and its epoch is open, and
   `dsd_event_enrich_*()` declines a row-0 write while the call's epoch is not yet open (the live alias display and the
-  call's CRC verdict still follow). Detail decoded before any call for the transmission was observed used to be
+  call's CRC verdict still follow). DMR embedded talker alias and GPS LCs reach enrichment only when their 5-bit
+  checksum passed (`dmr_flco.c`, all modes): a failed one still claims its FLCO, so it is never read as a voice LC, but
+  applies nothing, and a failed alias fragment abandons the slot's assembly through `dmr_talker_alias_lc_invalidate()`
+  (`<dsd-neo/core/embedded_alias.h>`), which clears the header format and zeroes the alias span of `dmr_pdu_sf`.
+  Detail decoded before any call for the transmission was observed used to be
   committed at the next epoch open as a detail-only row with no summary, or to land on a previous call that had ended
   but not yet committed; declined detail lands when it repeats. One case remains: while the previous call is still
   ACTIVE, a direct writer's detail for the next transmission still lands on the previous call's row, since none of these
@@ -1339,9 +1359,11 @@ the implementations from `dsd_engine_trunk_scan_init()` and clears them again on
 - `dsd_trunk_scan_hook_tick()` — step the rotation; called from the engine decode loop
 - `dsd_trunk_scan_hook_dmr_conventional_activity()` / `dsd_trunk_scan_hook_nxdn_conventional_activity()` /
   `dsd_trunk_scan_hook_p25_conventional_activity()` — report decoded conventional activity so the parked target keeps
-  its park. Pass only identity that has already cleared the protocol's FEC/CRC gate; the coordinator runs it through
-  the talkgroup policy before refreshing the hold, and ignores it unless the parked target is of the matching
-  conventional family. P25 reports voice starts only, not PDU data, and treats decryptable calls as clear for this policy.
+  its park. Pass only identity that has already cleared the protocol's FEC/CRC gate (DMR's `dmr_flco()` reports only
+  an LC whose check passed; under `-F` a RAS-accepted voice LC counts, so a scanned RAS repeater holds); the
+  coordinator runs it through the talkgroup policy before refreshing the hold, and ignores it unless the parked target
+  is of the matching conventional family. P25 reports voice starts only, not PDU data, and treats decryptable calls
+  as clear for this policy.
   Phase 2 XCCH reports only after MAC_PTT crypto resolution; Phase 1 late joins use the decoded service encryption
   bit while crypto classification is unknown. `p25_sm_note_conventional_activity()` rejects stale/unidentified calls.
 - `dsd_trunk_scan_hook_active_chan_csv()` — the parked target's channel-map path, which `opts->chan_in_file` cannot

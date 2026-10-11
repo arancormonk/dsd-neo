@@ -413,6 +413,7 @@ dmr_sm_clear_released_carrier(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* stat
     ctx->vc_slot = -1;
     ctx->vc_is_group = 0;
     ctx->vc_identity_published = 0;
+    ctx->vc_crc_flags = 0;
     ctx->t_tune_m = 0.0;
     ctx->t_voice_m = 0.0;
 
@@ -543,6 +544,8 @@ handle_grant(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const dmr_sm_e
     ctx->vc_slot = (ev->slot >= 0 && ev->slot <= 1) ? ev->slot : -1;
     ctx->vc_is_group = ev->is_group != 0;
     ctx->vc_identity_published = 0;
+    // Grants are dispatched synchronously from inside the CSBK/MBC burst's CRC scope.
+    ctx->vc_crc_flags = state->event_crc_invalid[state->currentslot & 1];
     ctx->t_tune_m = now_m;
     ctx->t_voice_m = 0.0;
     ctx->cc_acquiring = 0;
@@ -613,7 +616,11 @@ handle_voice_sync(dmr_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, int
             .frequency_hz = ctx->vc_freq_hz,
             .observed_m = now_m,
         };
-        if (dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE) >= 0) {
+        const uint8_t saved_crc_invalid = state->event_crc_invalid[s];
+        state->event_crc_invalid[s] = (uint8_t)(saved_crc_invalid | ctx->vc_crc_flags);
+        const int observed = dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE);
+        state->event_crc_invalid[s] = saved_crc_invalid;
+        if (observed >= 0) {
             ctx->vc_identity_published = 1;
         }
     }

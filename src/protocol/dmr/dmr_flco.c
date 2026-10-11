@@ -265,11 +265,30 @@ dmr_flco_store_flco_and_normalize(dmr_flco_ctx* ctx) {
     }
 }
 
+// An embedded LC's only integrity check is its 5-bit checksum; clean FEC alone does not vouch for the payload. The
+// alias and GPS handlers below still claim their FLCOs (is_alias/is_gps) when the checksum fails, so the bytes are
+// never read as a voice LC, but they apply nothing: a failed fragment would otherwise put text or a position on a
+// call whose identity was checked, and mark the whole call failed with it. Alias and GPS repeat every superframe
+// cycle, so a checked copy follows. This holds under -F too, whose relaxation covers CSBK and data, not embedded LC.
+static int
+dmr_flco_embedded_checksum_ok(const dmr_flco_ctx* ctx, const char* what) {
+    if (ctx->CRCCorrect == 1U) {
+        return 1;
+    }
+    DSD_FPRINTF(stderr, " %s (checksum ERR; ignored)", what);
+    return 0;
+}
+
 static void
 dmr_flco_handle_alias_header(dmr_flco_ctx* ctx) {
     if (!ctx->protected_lc && (ctx->fid == 0 || ctx->fid == 0x68) && ctx->type == 3 && ctx->flco == 0x04) {
         ctx->is_alias = 1;
-        dmr_talker_alias_lc_header(ctx->opts, ctx->state, ctx->slot, ctx->lc_bits);
+        if (dmr_flco_embedded_checksum_ok(ctx, "Talker Alias Header")) {
+            dmr_talker_alias_lc_header(ctx->opts, ctx->state, ctx->slot, ctx->lc_bits);
+        } else {
+            // The header sets how every later block is read; a new one arrived and could not be trusted.
+            dmr_talker_alias_lc_invalidate(ctx->state, ctx->slot);
+        }
     }
 }
 
@@ -278,7 +297,12 @@ dmr_flco_handle_alias_blocks(dmr_flco_ctx* ctx) {
     if (!ctx->protected_lc && (ctx->fid == 0 || ctx->fid == 0x68) && ctx->type == 3 && ctx->flco > 0x04
         && ctx->flco < 0x08) {
         ctx->is_alias = 1;
-        dmr_talker_alias_lc_blocks(ctx->opts, ctx->state, ctx->slot, ctx->flco - 5, ctx->lc_bits);
+        if (dmr_flco_embedded_checksum_ok(ctx, "Talker Alias Block")) {
+            dmr_talker_alias_lc_blocks(ctx->opts, ctx->state, ctx->slot, ctx->flco - 5, ctx->lc_bits);
+        } else {
+            // A later block decodes everything before it, including this missing segment.
+            dmr_talker_alias_lc_invalidate(ctx->state, ctx->slot);
+        }
     }
 }
 
@@ -286,7 +310,9 @@ static void
 dmr_flco_handle_embedded_gps(dmr_flco_ctx* ctx) {
     if (!ctx->protected_lc && (ctx->fid == 0 || ctx->fid == 0x68) && ctx->type == 3 && ctx->flco == 0x08) {
         ctx->is_gps = 1;
-        dmr_embedded_gps(ctx->opts, ctx->state, ctx->lc_bits);
+        if (dmr_flco_embedded_checksum_ok(ctx, "Embedded GPS")) {
+            dmr_embedded_gps(ctx->opts, ctx->state, ctx->lc_bits);
+        }
     }
 }
 
@@ -1368,8 +1394,12 @@ dmr_flco_run(dmr_flco_ctx* ctx) {
         dmr_flco_print_regular_header(ctx);
         dmr_flco_print_call_class(ctx);
         const int is_private = dmr_flco_call_kind(ctx) == DSD_CALL_KIND_PRIVATE_VOICE;
-        dsd_trunk_scan_hook_dmr_conventional_activity(ctx->opts, ctx->state, ctx->target, ctx->source, is_private,
-                                                      (ctx->so & 0x40U) != 0U, 0);
+        // The scan hold takes only identity that cleared its check. CRCCorrect is also 1 for a RAS-accepted LC
+        // under -F; that exception is deliberate (trunk_scan_hooks.h), so a scanned RAS repeater still holds.
+        if (ctx->CRCCorrect == 1U) {
+            dsd_trunk_scan_hook_dmr_conventional_activity(ctx->opts, ctx->state, ctx->target, ctx->source, is_private,
+                                                          (ctx->so & 0x40U) != 0U, 0);
+        }
         dmr_flco_print_emergency_flag(ctx);
         if (ctx->type != 2U && ctx->CRCCorrect == 1U) {
             dmr_flco_publish_voice(ctx);

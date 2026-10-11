@@ -89,6 +89,9 @@ typedef struct {
     int vc_slot;
     int vc_is_group;
     int vc_identity_published;
+    // DSD_CRC_* bits of the CSBK or MBC that granted this channel (a RAS grant under -F). The grant's identity is
+    // published later, at voice sync and outside that burst's scope, so its provenance travels with it.
+    uint8_t vc_crc_flags;
 
     // Timing (monotonic only)
     double t_tune_m;    // Time of last VC tune

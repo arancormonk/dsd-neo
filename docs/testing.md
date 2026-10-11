@@ -31,8 +31,13 @@ ctest --preset dev-debug --output-on-failure
 
 `DMR_EVENT_CRC` exercises real header, assembler, application decoder, history and event-file paths:
 strict rejection, marked relaxed recovery, header-chain failures, encrypted notices, UDT text detail
-lines, a BPTC-encoded RAS-shaped header, slot isolation and clean subsequent packets. Its unchanged
-MNIS LRRP vector comes from [DSD-FME issue 283](https://github.com/lwvmobile/dsd-fme/issues/283).
+lines, slot isolation and clean subsequent packets. Its RAS cases build BPTC-encoded bursts with the RAS
+reserved bits (a data header, UDT, a DPF 15 chain, confirmed rate-1/2 blocks, an MBC grant whose header and
+continuation both go through the real burst handler, so its channel-learning notice carries the MBC's
+provenance, and a voice LC header) and pin the exact provenance bits: `[RAS]` at ordinary severity for RAS
+alone, `[CRC ERR]` once any check fails, and no RAS at all under the separate relaxed-CRC configuration,
+which never runs the heuristic. Its unchanged MNIS LRRP vector comes from
+[DSD-FME issue 283](https://github.com/lwvmobile/dsd-fme/issues/283).
 The 46 received octets end in CRC `0FE81D14`; the two extra zero octets in that issue's dump are buffer
 fill. The former CRC span computes `FF38D9C7`, while the corrected span matches the transmitted value.
 A one-bit payload mutation must not publish in strict mode. With `-F` and `-L`, the clean captured MNIS
@@ -43,10 +48,16 @@ packet must append exactly one location row, while the CRC32-failed packet must 
 CRC-failed location rows, with slot isolation and both file date formats; the LIP vectors follow
 TS 102 361-4 Table 6.79 and TS 100 392-18-1 Table 6.1. `DMR_USBD_LIP_LRRP_CRC` runs
 BPTC-encoded USBD LIP bursts through the real burst handler in strict and relaxed/RAS modes, checking
-decoded coordinates, file rows, unchanged state strings and CRC-flag restoration. `DMR_FLCO_MONO_CRC_SCOPE`
-covers the mono-mode CRC carry, and `DMR_LIP_CARRIERS` covers UDT and UDP-carried LIP.
+decoded coordinates, file rows, CRC-flag restoration, and that strict mode decodes no CRC-failed USBD and
+leaves an active call unmarked. `DMR_FLCO_MONO_CRC_SCOPE` covers the mono-mode CRC carry for every
+provenance value, and `DMR_LIP_CARRIERS` covers UDT and UDP-carried LIP. `DMR_EMBEDDED_LC_CHECKSUM` checks,
+under strict CRC, `-F` and the relaxed-CRC configuration, that an embedded talker alias or GPS LC whose 5-bit
+checksum failed applies nothing and marks nothing, abandons the alias being assembled (so old text cannot
+reappear over a later gap), and that an LC which failed its check refreshes no scan hold.
+`DMR_T3_SM_RETURN_TO_CC_MATRIX` carries a RAS grant's provenance to the call it publishes at voice sync, on
+either slot, and clears it on release.
 `DMR_LRRP_EVENT_CRC_GATING` checks LOCN (including the short-data entry point) and UDP ports 4001/49198
-against the event CRC verdict, including the LRRP suppression summary and clean rows.
+against the event CRC verdict, including the LRRP suppression summary (`CRC ERR` or `RAS`) and clean rows.
 `DMR_LRRP_CRC_GATING` remains the token-level counterpart over `dmr_pdu.c`. `FEC_BPTC_RS` and
 `DMR_LC_RS_VERDICT` pin RS(12,9) rejection of root-less, multiple-root and residual-syndrome words.
 
@@ -66,11 +77,17 @@ with a passing packet CRC32. Those domains are distinct in
 §§6.2–6.4, and independently in
 [SDRTrunk's confirmed blocks](https://github.com/DSheirer/sdrtrunk/blob/master/src/main/java/io/github/dsheirer/module/decode/p25/phase1/message/pdu/block/ConfirmedDataBlock.java).
 `CORE_CALL_ALERT_HISTORY` covers marker placement, warning severity, long notices, detail lines and
-delayed/reacquired voice history. Strict suppression is decoder policy, not a specification requirement
-for passive-receiver user interfaces. A failed standard CRC can also be intentional:
+delayed/reacquired voice history, plus the `[RAS]` marker and its escalation: a failure on a RAS call
+swaps the staged row's marker on re-render and a committed row's in place (also at full row capacity),
+a reacquired failure merges into a RAS row as `[CRC ERR]` with a matching `Reacquired:` line, a scan
+channel labelled `[RAS]` is never taken for a marker, and late detail appends nothing to `-J`. `API_SERVER`
+pins the feed's `crc_invalid`/`crc_ras` flags. Strict suppression is decoder policy, not a specification
+requirement for passive-receiver user interfaces. A failed standard CRC can also be intentional:
 [Motorola's private-CRC patent](https://patents.google.com/patent/US8914699B2/en) and
 [independent RAS documentation](https://cwh050.mywikis.wiki/wiki/Restricted_Access_to_System) explain why
-suspected RAS is marked as a failed check rather than asserted to be corrupted or authenticated.
+suspected RAS is marked `[RAS]` -- unverified, neither asserted to be corrupted nor authenticated -- rather
+than as a failed check. On a RAS system every header fails the standard check, so marking them as
+failures would leave the marker no signal (discussion #602).
 
 ### Known-key MBE playback
 

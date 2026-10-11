@@ -7,6 +7,7 @@
 #include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/constants.h>
+#include <dsd-neo/core/crc_provenance.h>
 #include <dsd-neo/core/csv_import.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
@@ -7043,6 +7044,184 @@ test_crc_invalid_enrichment_marks_voice(void) {
     return rc;
 }
 
+static int
+count_substr(const char* haystack, const char* needle) {
+    int count = 0;
+    const size_t step = strlen(needle);
+    for (const char* at = strstr(haystack, needle); at != NULL; at = strstr(at + step, needle)) {
+        count++;
+    }
+    return count;
+}
+
+static int
+count_lines(const char* text) {
+    int lines = 0;
+    for (const char* at = text; *at != '\0'; at++) {
+        lines += *at == '\n';
+    }
+    return lines;
+}
+
+// RAS provenance (discussion #602): a RAS-accepted call is marked [RAS] at its ordinary severity, and a failure later
+// in the same transmission swaps that for [CRC ERR] -- on the staged row by re-rendering, on a committed row in place.
+static int
+test_crc_ras_marker_and_escalation(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+    char path[DSD_TEST_PATH_MAX];
+    int fd = dsd_test_mkstemp(path, sizeof path, "crc-ras-events");
+    assert(fd >= 0);
+    int rc = expect_int("ras event log closes", dsd_close(fd), 0);
+    DSD_SNPRINTF(opts.event_out_file, sizeof opts.event_out_file, "%s", path);
+    const int both = DSD_CRC_FAILED | DSD_CRC_RAS_UNVERIFIED;
+    const Event_History* staged = &event_history[0].Event_History_Items[0];
+    Event_History* committed = &event_history[0].Event_History_Items[1];
+    dsd_call_snapshot call;
+
+    // A RAS-accepted call: [RAS] on the staged row, informational, so the terminal keeps the voice colour.
+    state.event_crc_invalid[0] = DSD_CRC_RAS_UNVERIFIED;
+    assert(observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 100U, 200U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+    state.event_crc_invalid[0] = 0U;
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_has_substr("RAS call marks its staged row", staged->event_string, "00:00:00 [RAS] ");
+    rc |= expect_int("RAS staged row is not a failure", strstr(staged->event_string, "[CRC ERR]") != NULL, 0);
+    rc |= expect_int("RAS staged row informational", staged->severity, DSD_EVENT_SEVERITY_INFO);
+    rc |= expect_int("RAS staged row bits", staged->crc_invalid, DSD_CRC_RAS_UNVERIFIED);
+
+    // A failed check on the same transmission -- here a repeated crypto header that adds only the failure bit --
+    // must land on a RAS-only call and escalate the row.
+    const dsd_call_crypto_update crypto = {
+        .classification = DSD_CALL_CRYPTO_ENCRYPTED, .algid = 0x24, .kid = 7, .mi = 0x12345678};
+    assert(dsd_call_state_update_crypto(&state, 0U, &crypto) == 1);
+    state.event_crc_invalid[0] = DSD_CRC_RAS_UNVERIFIED;
+    assert(dsd_call_state_update_crypto(&state, 0U, &crypto) == 1);
+    state.event_crc_invalid[0] = DSD_CRC_FAILED;
+    assert(dsd_call_state_update_crypto(&state, 0U, &crypto) == 1);
+    state.event_crc_invalid[0] = 0U;
+    assert(dsd_call_state_get(&state, 0U, &call) == 1);
+    rc |= expect_int("failure lands on a RAS call", call.crc_invalid, both);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_int("escalated staged row has one failure marker", count_substr(staged->event_string, "[CRC ERR]"), 1);
+    rc |= expect_int("escalated staged row drops RAS marker", strstr(staged->event_string, "[RAS]") != NULL, 0);
+    rc |= expect_int("escalated staged row warns", staged->severity, DSD_EVENT_SEVERITY_WARNING);
+    assert(end_test_call(&state, 0U, DSD_CALL_END_TERMINATOR) == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_int("escalated row commits failed", committed->crc_invalid, both);
+    rc |= expect_int("escalated committed row has one failure marker",
+                     count_substr(committed->event_string, "[CRC ERR]"), 1);
+
+    // A committed [RAS] row: its -J entry and detail lines say [RAS]. A later failure swaps the history row's marker
+    // in place; -J keeps what was written when the row committed and gains no line.
+    state.event_crc_invalid[0] = DSD_CRC_RAS_UNVERIFIED;
+    assert(observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 500U, 900U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    assert(dsd_call_state_get(&state, 0U, &call) == 1);
+    assert(dsd_event_enrich_gps(&state, 0U, call.epoch, "ras position") == 1);
+    state.event_crc_invalid[0] = 0U;
+    assert(end_test_call(&state, 0U, DSD_CALL_END_SYNC_LOSS) == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_has_substr("RAS row commits marked", committed->event_string, "00:00:00 [RAS] ");
+    rc |= expect_int("RAS committed row informational", committed->severity, DSD_EVENT_SEVERITY_INFO);
+    char log[16384] = {0};
+    rc |= expect_int("ras event log reads", read_event_log(path, log, sizeof log), 0);
+    rc |= expect_has_substr("-J marks the RAS row", log, "00:00:00 [RAS] TEST TGT: 00000500");
+    rc |= expect_has_substr("-J marks the RAS detail line", log, "[RAS] GPS: ras position");
+    const int lines_before = count_lines(log);
+    state.event_crc_invalid[0] = DSD_CRC_FAILED;
+    assert(dsd_event_enrich_gps(&state, 0U, call.epoch, "failed position") == 1);
+    state.event_crc_invalid[0] = 0U;
+    rc |= expect_int("late failure swaps the committed marker", count_substr(committed->event_string, "[CRC ERR]"), 1);
+    rc |= expect_int("late failure leaves no RAS marker", strstr(committed->event_string, "[RAS]") != NULL, 0);
+    rc |= expect_has_substr("late failure keeps the stamp first", committed->event_string, "00:00:00 [CRC ERR] TEST");
+    rc |= expect_int("late failure warns", committed->severity, DSD_EVENT_SEVERITY_WARNING);
+    rc |= expect_int("late failure accumulates bits", committed->crc_invalid, both);
+    DSD_MEMSET(log, 0, sizeof log);
+    rc |= expect_int("ras event log rereads", read_event_log(path, log, sizeof log), 0);
+    rc |= expect_int("late escalation appends nothing to -J", count_lines(log), lines_before);
+
+    // A RAS transmission that drops and is reacquired with a failed check merges into its row as a failure, and the
+    // continuation -J appends for the reacquired segment carries the merged row's [CRC ERR].
+    state.event_crc_invalid[0] = DSD_CRC_RAS_UNVERIFIED;
+    assert(observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 800U, 903U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+    state.event_crc_invalid[0] = 0U;
+    dsd_event_sync_slot(&opts, &state, 0U);
+    assert(end_test_call(&state, 0U, DSD_CALL_END_SYNC_LOSS) == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    state.event_crc_invalid[0] = DSD_CRC_FAILED;
+    assert(observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 800U, 903U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+    state.event_crc_invalid[0] = 0U;
+    dsd_event_sync_slot(&opts, &state, 0U);
+    assert(end_test_call(&state, 0U, DSD_CALL_END_TERMINATOR) == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_has_substr("reacquired failure merges into the RAS row", committed->event_string,
+                            "00:00:00 [CRC ERR] TEST TGT: 00000800");
+    rc |= expect_int(
+        "merged row has one marker",
+        count_substr(committed->event_string, "[CRC ERR]") + count_substr(committed->event_string, "[RAS]"), 1);
+    rc |= expect_int("merged row warns", committed->severity, DSD_EVENT_SEVERITY_WARNING);
+    rc |= expect_int("merged row bits", committed->crc_invalid, both);
+    DSD_MEMSET(log, 0, sizeof log);
+    rc |= expect_int("reacquired event log reads", read_event_log(path, log, sizeof log), 0);
+    rc |= expect_has_substr("-J first segment stays [RAS]", log, "00:00:00 [RAS] TEST TGT: 00000800");
+    rc |=
+        expect_has_substr("-J continuation carries the merged marker", log, "Reacquired: [CRC ERR] TEST TGT: 00000800");
+
+    // At full capacity the swap keeps the stamp and the terminator and truncates the tail.
+    state.event_crc_invalid[0] = DSD_CRC_RAS_UNVERIFIED;
+    assert(observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 600U, 901U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+    state.event_crc_invalid[0] = 0U;
+    dsd_event_sync_slot(&opts, &state, 0U);
+    assert(dsd_call_state_get(&state, 0U, &call) == 1);
+    assert(end_test_call(&state, 0U, DSD_CALL_END_SYNC_LOSS) == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    const size_t cap = sizeof committed->event_string;
+    static const char ras_prefix[] = "2026-04-30 00:00:00 [RAS] ";
+    DSD_SNPRINTF(committed->event_string, cap, "%s", ras_prefix);
+    DSD_MEMSET(committed->event_string + sizeof ras_prefix - 1U, 'Y', cap - sizeof ras_prefix);
+    committed->event_string[cap - 1U] = '\0';
+    state.event_crc_invalid[0] = DSD_CRC_FAILED;
+    assert(dsd_event_enrich_gps(&state, 0U, call.epoch, "full row position") == 1);
+    state.event_crc_invalid[0] = 0U;
+    rc |= expect_int("full row swaps the marker",
+                     strncmp(committed->event_string, "2026-04-30 00:00:00 [CRC ERR] YYYY", 34) == 0, 1);
+    rc |= expect_int("full row stays terminated at capacity", (int)strnlen(committed->event_string, cap),
+                     (int)(cap - 1U));
+    rc |= expect_int("full row leaves no RAS marker", strstr(committed->event_string, "[RAS]") != NULL, 0);
+
+    // A scan channel named "RAS" renders where the marker goes; an unmarked row's label is never taken for one.
+    assert(observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 700U, 902U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    assert(dsd_call_state_get(&state, 0U, &call) == 1);
+    assert(end_test_call(&state, 0U, DSD_CALL_END_SYNC_LOSS) == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_int("labelled row starts clean", committed->crc_invalid, 0);
+    DSD_SNPRINTF(committed->event_string, cap, "%s", "2026-04-30 00:00:00 [RAS] DMR TGT: 00000700; ");
+    state.event_crc_invalid[0] = DSD_CRC_FAILED;
+    assert(dsd_event_enrich_gps(&state, 0U, call.epoch, "labelled position") == 1);
+    state.event_crc_invalid[0] = 0U;
+    rc |= expect_has_substr("channel label survives the marker", committed->event_string,
+                            "00:00:00 [CRC ERR] [RAS] DMR TGT: 00000700;");
+
+    remove(path);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -7052,6 +7231,7 @@ main(void) {
     rc |= test_crc_invalid_data_notice_isolation();
     rc |= test_crc_invalid_voice_delayed_and_reacquired();
     rc |= test_crc_invalid_enrichment_marks_voice();
+    rc |= test_crc_ras_marker_and_escalation();
 
     rc |= test_event_history_revision_primitives();
     rc |= test_watchdog_current_marks_only_semantic_changes();

@@ -639,7 +639,7 @@ dsd_call_state_observe(dsd_state* state, const dsd_call_observation* observation
     }
     snapshot->phase = DSD_CALL_PHASE_ACTIVE;
     call_state_apply_observation(snapshot, observation);
-    snapshot->crc_invalid |= state->event_crc_invalid[observation->slot] != 0U;
+    snapshot->crc_invalid |= state->event_crc_invalid[observation->slot];
     snapshot->updated_m = now_m;
     snapshot->ended_m = 0.0;
     snapshot->revision = call_state_next_nonzero(snapshot->revision);
@@ -684,8 +684,10 @@ call_state_update_crypto(dsd_state* state, uint8_t slot, const dsd_call_crypto_u
         dsd_call_state_ext_unlock(ext);
         return 0;
     }
-    const uint8_t crc_invalid = (uint8_t)(state->event_crc_invalid[slot] != 0U);
-    if (!call_state_crypto_differs(snapshot, update) && (!crc_invalid || snapshot->crc_invalid)) {
+    // Provenance bits accumulate: an update that adds none (a clean repeat, or RAS on a call already marked RAS)
+    // changes nothing, but a failure arriving on a RAS-only call still has to land.
+    const uint8_t crc_invalid = state->event_crc_invalid[slot];
+    if (!call_state_crypto_differs(snapshot, update) && (uint8_t)(crc_invalid & ~snapshot->crc_invalid) == 0U) {
         // A retained ended call is re-described by every carrier repeat.
         // Bumping the revision for an identical snapshot makes consumers that
         // poll on revision churn once per repeat for no observable change.
