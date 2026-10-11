@@ -19,6 +19,7 @@
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/fec/block_codes.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/rdio_export.h>
 #include <errno.h>
 #include <mbelib-neo/mbelib.h>
@@ -2458,6 +2459,46 @@ test_mbe_out_attached_handle_is_written_as_is(void) {
     return rc;
 }
 
+/* A handle a caller attached keeps its frames, but the frame it takes still ends the other slot's capture when that
+   capture is another protocol's: the P25 segment does not run on across the YSF frame. */
+static int
+test_mbe_out_attached_handle_retires_the_other_slot(void) {
+    int rc = 0;
+    char dir[DSD_TEST_PATH_MAX];
+    if (!dsd_test_mkdtemp(dir, sizeof dir, "dsdneo_mbe_attached")) {
+        return 1;
+    }
+    static dsd_opts opts;
+    static dsd_state state;
+    mbe_out_test_reset(&opts, &state, dir);
+    char ambe[49] = {0};
+    char imbe[88] = {0};
+    state.synctype = DSD_SYNC_P25P2_POS;
+    dsd_mbe_out_write(&opts, &state, 1, DSD_MBE_OUT_FORMAT_AMBE, ambe);
+    rc |= expect_true("P25 Phase 2 slot 2 capture created", opts.mbe_out_fR != NULL);
+
+    FILE* out = tmpfile();
+    if (!out) {
+        closeMbeOutFileR(&opts, &state);
+        remove_dir_tree(dir);
+        return 1;
+    }
+    opts.mbe_out_f = out;
+    state.synctype = DSD_SYNC_YSF_POS;
+    state.ysf_fich_confirmed = 1;
+    dsd_mbe_out_write(&opts, &state, 0, DSD_MBE_OUT_FORMAT_IMBE, imbe);
+    rc |= expect_true("attached handle kept", opts.mbe_out_f == out);
+    rc |= expect_true("the other protocol's slot 2 capture closed", opts.mbe_out_fR == NULL);
+    fflush(out);
+    (void)fseek(out, 0, SEEK_END);
+    rc |= expect_true("attached handle took the record", ftell(out) == 12);
+    fclose(out);
+    opts.mbe_out_f = NULL;
+    closeMbeOutFileR(&opts, &state);
+    remove_dir_tree(dir);
+    return rc;
+}
+
 /* A folder that refuses files costs one creation attempt a second and one error per run of failures. */
 static int
 test_mbe_out_failed_creation_is_throttled_and_logged_once(void) {
@@ -2479,9 +2520,9 @@ test_mbe_out_failed_creation_is_throttled_and_logged_once(void) {
         remove_dir_tree(dir);
         return 1;
     }
+    const double before = dsd_realtime_mono_s();
     dsd_mbe_out_write(&opts, &state, 0, DSD_MBE_OUT_FORMAT_AMBE, ambe);
     const double retry_at = opts.mbe_out_retry_at;
-    dsd_mbe_out_write(&opts, &state, 0, DSD_MBE_OUT_FORMAT_AMBE, ambe);
     /* The retry time passes: one more attempt, still failing, still no second error. */
     opts.mbe_out_retry_at = 0.0;
     dsd_mbe_out_write(&opts, &state, 0, DSD_MBE_OUT_FORMAT_AMBE, ambe);
@@ -2490,7 +2531,7 @@ test_mbe_out_failed_creation_is_throttled_and_logged_once(void) {
     (void)dsd_test_capture_stderr_read(&cap, log, sizeof log);
 
     rc |= expect_true("failed creation leaves no handle", opts.mbe_out_f == NULL);
-    rc |= expect_true("failed creation sets a retry time", retry_at > 0.0);
+    rc |= expect_true("failed creation sets a retry time ahead", retry_at > before + 0.5);
     rc |= expect_int("failed creation reported", opts.mbe_out_fail_logged, 1);
     int reports = 0;
     for (const char* p = strstr(log, "couldn't create an MBE capture"); p != NULL;
@@ -2499,7 +2540,12 @@ test_mbe_out_failed_creation_is_throttled_and_logged_once(void) {
     }
     rc |= expect_int("one error for the run of failures", reports, 1);
 
+    /* The folder appears, but the retry time is still ahead: the frame waits for it rather than creating the file. */
     (void)dsd_mkdir(missing, 0700);
+    opts.mbe_out_retry_at = dsd_realtime_mono_s() + 3600.0;
+    dsd_mbe_out_write(&opts, &state, 0, DSD_MBE_OUT_FORMAT_AMBE, ambe);
+    rc |= expect_true("creation waits for the retry time", opts.mbe_out_f == NULL);
+
     opts.mbe_out_retry_at = 0.0;
     dsd_mbe_out_write(&opts, &state, 0, DSD_MBE_OUT_FORMAT_AMBE, ambe);
     rc |= expect_true("creation succeeds once the folder exists", opts.mbe_out_f != NULL);
@@ -3450,6 +3496,7 @@ main(void) {
     rc |= test_mbe_out_refuses_unconfirmed_and_carrier_crossing_frames();
     rc |= test_mbe_out_rotates_on_owner_and_format();
     rc |= test_mbe_out_attached_handle_is_written_as_is();
+    rc |= test_mbe_out_attached_handle_retires_the_other_slot();
     rc |= test_mbe_out_failed_creation_is_throttled_and_logged_once();
     rc |= test_mbe_out_close_protocol_closes_only_its_own();
     rc |= test_truncated_reads_fail();

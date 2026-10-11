@@ -800,11 +800,11 @@ mbe_out_frame_owner(const dsd_opts* opts, const dsd_state* state, int slot, dsd_
 static int
 mbe_out_slot_ready(dsd_opts* opts, dsd_state* state, int slot, int owner, dsd_mbe_out_format format) {
     const mbe_out_slot s = mbe_out_slot_view(opts, slot);
+    const mbe_out_slot other = mbe_out_slot_view(opts, 1 - slot);
+    mbe_out_retire_if_other(opts, state, &other, owner, format);
     if (*s.handle != NULL && *s.owner == 0) {
         return 1;
     }
-    const mbe_out_slot other = mbe_out_slot_view(opts, 1 - slot);
-    mbe_out_retire_if_other(opts, state, &other, owner, format);
     mbe_out_retire_if_other(opts, state, &s, owner, format);
     if (*s.handle != NULL) {
         return 1;
