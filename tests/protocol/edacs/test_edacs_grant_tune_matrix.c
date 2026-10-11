@@ -131,10 +131,11 @@ void __wrap_watchdog_event_history(dsd_opts* opts, dsd_state* state, uint8_t slo
 void __wrap_watchdog_event_current(const dsd_opts* opts, dsd_state* state, uint8_t slot);
 // NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
 SNDFILE* __wrap_close_and_rename_wav_file(SNDFILE* wav_file, const dsd_opts* opts, const char* wav_out_filename,
-                                          const char* dir, const Event_History_I* event_struct);
+                                          const char* dir, const Event_History_I* event_struct, time_t opened);
 // NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
 SNDFILE* __wrap_close_and_rename_wav_file_ex(SNDFILE* wav_file, const dsd_opts* opts, const char* wav_out_filename,
-                                             const char* dir, const Event_History_I* event_struct, int export_call);
+                                             const char* dir, const Event_History_I* event_struct, time_t opened,
+                                             int export_call);
 // NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
 SNDFILE* __wrap_open_wav_file(char* dir, char* temp_filename, size_t temp_filename_size, uint16_t sample_rate,
                               uint8_t ext);
@@ -174,12 +175,13 @@ __wrap_watchdog_event_current(const dsd_opts* opts, dsd_state* state, uint8_t sl
 SNDFILE*
 // NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
 __wrap_close_and_rename_wav_file(SNDFILE* wav_file, const dsd_opts* opts, const char* wav_out_filename, const char* dir,
-                                 const Event_History_I* event_struct) {
+                                 const Event_History_I* event_struct, time_t opened) {
     (void)wav_file;
     (void)opts;
     (void)wav_out_filename;
     (void)dir;
     (void)event_struct;
+    (void)opened;
     g_close_wav_count++;
     return NULL;
 }
@@ -187,9 +189,10 @@ __wrap_close_and_rename_wav_file(SNDFILE* wav_file, const dsd_opts* opts, const 
 SNDFILE*
 // NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
 __wrap_close_and_rename_wav_file_ex(SNDFILE* wav_file, const dsd_opts* opts, const char* wav_out_filename,
-                                    const char* dir, const Event_History_I* event_struct, int export_call) {
+                                    const char* dir, const Event_History_I* event_struct, time_t opened,
+                                    int export_call) {
     (void)export_call;
-    return __wrap_close_and_rename_wav_file(wav_file, opts, wav_out_filename, dir, event_struct);
+    return __wrap_close_and_rename_wav_file(wav_file, opts, wav_out_filename, dir, event_struct, opened);
 }
 
 SNDFILE*

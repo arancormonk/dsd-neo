@@ -23,6 +23,7 @@
 #include <dsd-neo/protocol/edacs/edacs_afs.h>
 #include <dsd-neo/runtime/call_alert.h>
 #include <dsd-neo/runtime/decode_clock.h>
+#include <dsd-neo/runtime/rdio_export.h>
 #include <math.h>
 #include <stdarg.h>
 #include <stddef.h>
@@ -142,6 +143,82 @@ static int g_close_wav_export_count;
 static void* g_open_wav_result;
 static double g_observed_m;
 
+// What each WAV close saw: the last activity of the staged row the rename and the rdio-scanner export read, and, once a
+// test arms g_close_wav_export_dir, the sidecar the real exporter wrote from that row at that moment.
+#define CLOSE_WAV_CAPTURE_MAX 8
+#define CLOSE_WAV_SECONDS     2
+
+typedef struct {
+    time_t event_time;
+    char sidecar[1024];
+} close_wav_capture;
+
+static close_wav_capture g_close_wav_captures[CLOSE_WAV_CAPTURE_MAX];
+static int g_close_wav_capture_count;
+static char g_close_wav_export_dir[DSD_TEST_PATH_MAX];
+
+// A mono 16-bit WAV of @p seconds of silence, written as raw bytes: the alt-tag build of this file has no libsndfile.
+static int
+write_silent_pcm16_wav(const char* path, uint32_t sample_rate, uint32_t seconds) {
+    FILE* fp = dsd_fopen_private(path, "wb");
+    if (fp == NULL) {
+        return -1;
+    }
+    const uint32_t data_bytes = sample_rate * seconds * 2U;
+    const uint32_t fields[] = {36U + data_bytes, 16U,         0x00010001U, sample_rate,
+                               sample_rate * 2U, 0x00100002U, data_bytes};
+    unsigned char header[44];
+    DSD_MEMCPY(header, "RIFF", 4);
+    DSD_MEMCPY(header + 8, "WAVEfmt ", 8);
+    DSD_MEMCPY(header + 36, "data", 4);
+    const size_t offsets[] = {4U, 16U, 20U, 24U, 28U, 32U, 40U};
+    for (size_t i = 0; i < sizeof offsets / sizeof offsets[0]; i++) {
+        for (size_t b = 0; b < 4U; b++) {
+            header[offsets[i] + b] = (unsigned char)((fields[i] >> (8U * b)) & 0xFFU);
+        }
+    }
+    int rc = fwrite(header, 1, sizeof header, fp) == sizeof header ? 0 : -1;
+    const unsigned char zeros[1024] = {0};
+    for (uint32_t left = data_bytes; rc == 0 && left > 0U;) {
+        const size_t chunk = left < sizeof zeros ? (size_t)left : sizeof zeros;
+        rc = fwrite(zeros, 1, chunk, fp) == chunk ? 0 : -1;
+        left -= (uint32_t)chunk;
+    }
+    if (fclose(fp) != 0) {
+        rc = -1;
+    }
+    return rc;
+}
+
+// Export the closing recording through the real rdio-scanner exporter, as close_and_rename_wav_file_ex() does, and
+// keep the sidecar it wrote.
+static void
+close_wav_export_sidecar(const dsd_opts* opts, const Event_History_I* event_struct, time_t opened, int index,
+                         close_wav_capture* capture) {
+    char name[32];
+    char wav_path[DSD_TEST_PATH_MAX];
+    char json_path[DSD_TEST_PATH_MAX];
+    DSD_SNPRINTF(name, sizeof name, "close_%d.wav", index);
+    if (dsd_test_path_join(wav_path, sizeof wav_path, g_close_wav_export_dir, name) != 0) {
+        return;
+    }
+    DSD_SNPRINTF(name, sizeof name, "close_%d.json", index);
+    if (dsd_test_path_join(json_path, sizeof json_path, g_close_wav_export_dir, name) != 0) {
+        return;
+    }
+    if (write_silent_pcm16_wav(wav_path, 8000U, CLOSE_WAV_SECONDS) == 0
+        && dsd_rdio_export_call(opts, event_struct, wav_path, opened) == 0) {
+        FILE* f = fopen(json_path, "rb");
+        if (f != NULL) {
+            const size_t n = fread(capture->sidecar, 1, sizeof capture->sidecar - 1U, f);
+            capture->sidecar[n] = '\0';
+            (void)fclose(f);
+        }
+    }
+    (void)remove(json_path);
+    (void)remove(wav_path);
+}
+
 SNDFILE*
 open_wav_file(char* dir, char* temp_filename, size_t temp_filename_size, uint16_t sample_rate, uint8_t ext) {
     UNUSED(dir);
@@ -155,15 +232,22 @@ open_wav_file(char* dir, char* temp_filename, size_t temp_filename_size, uint16_
 
 SNDFILE*
 close_and_rename_wav_file_ex(SNDFILE* wav_file, const dsd_opts* opts, const char* wav_out_filename, const char* dir,
-                             const Event_History_I* event_struct, int export_call) {
+                             const Event_History_I* event_struct, time_t opened, int export_call) {
     UNUSED(wav_file);
-    UNUSED(opts);
     UNUSED(wav_out_filename);
     UNUSED(dir);
-    UNUSED(event_struct);
     g_close_wav_count++;
     if (export_call) {
         g_close_wav_export_count++;
+    }
+    if (event_struct != NULL && g_close_wav_capture_count < CLOSE_WAV_CAPTURE_MAX) {
+        const int index = g_close_wav_capture_count++;
+        close_wav_capture* capture = &g_close_wav_captures[index];
+        capture->event_time = event_struct->Event_History_Items[0].event_time;
+        capture->sidecar[0] = '\0';
+        if (export_call && opts != NULL && g_close_wav_export_dir[0] != '\0') {
+            close_wav_export_sidecar(opts, event_struct, opened, index, capture);
+        }
     }
     return NULL;
 }
@@ -249,6 +333,9 @@ reset_fixture(dsd_opts* opts, dsd_state* state, Event_History_I event_history[2]
     g_close_wav_count = 0;
     g_open_wav_result = NULL;
     g_observed_m = 1.0;
+    DSD_MEMSET(g_close_wav_captures, 0, sizeof g_close_wav_captures);
+    g_close_wav_capture_count = 0;
+    g_close_wav_export_dir[0] = '\0';
 }
 
 static int
@@ -4565,6 +4652,123 @@ test_end_alert_due_runs_on_the_decode_clock(void) {
     return rc;
 }
 
+// Observe the slot's call again within its epoch, on the store's own clock.
+static int
+continue_unstamped_call(dsd_state* state, uint64_t target_id, uint64_t source_id) {
+    const dsd_call_observation observation = {
+        .protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = target_id,
+        .policy_target_id = target_id,
+        .ota_source_id = source_id,
+    };
+    return dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE);
+}
+
+static int
+expect_close_sidecar(const char* label, const close_wav_capture* capture, uint32_t talkgroup, time_t start) {
+    char want[96];
+    DSD_SNPRINTF(want, sizeof want, "\"start_time\": %lld,", (long long)start);
+    int rc = expect_has_substr(label, capture->sidecar, want);
+    DSD_SNPRINTF(want, sizeof want, "\"stop_time\": %lld,", (long long)start + CLOSE_WAV_SECONDS);
+    rc |= expect_has_substr(label, capture->sidecar, want);
+    DSD_SNPRINTF(want, sizeof want, "\"talkgroup\": %u,", talkgroup);
+    rc |= expect_has_substr(label, capture->sidecar, want);
+    return rc;
+}
+
+// The rdio-scanner sidecar is written as the WAV closes, from the row the closing segment staged, and files the
+// recording at the segment's start. The row's event_time is its last activity, which by then is the end (#673). Driven
+// through the real event layer for each way a recording closes: a call's end, a reacquired segment merged into the
+// transmission's row, and a new call taking the slot from one still running. Offsets are quarter seconds so the decode
+// clock's seconds are exact.
+static int
+test_rdio_sidecar_files_each_recording_at_its_start(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    static max_align_t wav_sentinel;
+    reset_fixture(&opts, &state, event_history);
+    state.lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    opts.wav_out_f = (SNDFILE*)&wav_sentinel;
+    g_open_wav_result = &wav_sentinel;
+    opts.rdio_mode = DSD_RDIO_MODE_DIRWATCH;
+    if (!dsd_test_mkdtemp(g_close_wav_export_dir, sizeof g_close_wav_export_dir, "dsdneo_rdio_close")) {
+        DSD_FPRINTF(stderr, "dsd_test_mkdtemp failed for the rdio sidecar test\n");
+        return 1;
+    }
+    const time_t t0_s = (time_t)ALERT_TEST_DECODE_T0_S;
+    dsd_decode_clock_use_test(ALERT_TEST_DECODE_T0_NS);
+
+    // Call A runs 4.75 s and fades.
+    int rc = expect_int("call A begins", observe_unstamped_call(&state, 100U, 200U), 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    alert_decode_clock_at_ms(4750U);
+    rc |= expect_int("call A fades", dsd_call_state_end_ex(&state, 0U, 0.0, DSD_CALL_END_SYNC_LOSS), 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_int("call A's end closes its recording", g_close_wav_capture_count, 1);
+    rc |= expect_u64("call A's row ends at its last activity", (uint64_t)g_close_wav_captures[0].event_time,
+                     (uint64_t)(t0_s + 4));
+    rc |= expect_close_sidecar("call end", &g_close_wav_captures[0], 100U, t0_s);
+
+    // A quarter second later, inside the reacquisition window, the transmission resumes for 3 s.
+    alert_decode_clock_at_ms(5000U);
+    rc |= expect_int("segment reacquires the transmission", observe_unstamped_call(&state, 0U, 0U), 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    alert_decode_clock_at_ms(8000U);
+    rc |= expect_int("segment fades", dsd_call_state_end_ex(&state, 0U, 0.0, DSD_CALL_END_SYNC_LOSS), 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_int("segment merges into the transmission's row", committed_history_rows(&event_history[0]), 1);
+    rc |= expect_u64("merged row keeps the transmission's start",
+                     (uint64_t)event_history[0].Event_History_Items[1].event_start_time, (uint64_t)t0_s);
+    rc |= expect_int("segment closes its own recording", g_close_wav_capture_count, 2);
+    rc |= expect_u64("segment's row ends at its last activity", (uint64_t)g_close_wav_captures[1].event_time,
+                     (uint64_t)(t0_s + 8));
+    rc |= expect_close_sidecar("reacquired segment", &g_close_wav_captures[1], 100U, t0_s + 5);
+
+    // Call B takes the slot after the window and runs 4 s; it is still running when call C begins. The epoch change
+    // commits B's row as last rendered, so B is rendered again after it has run.
+    alert_decode_clock_at_ms(10000U);
+    rc |= expect_int("call B begins", observe_unstamped_call(&state, 300U, 400U), 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    alert_decode_clock_at_ms(14000U);
+    rc |= expect_int("call B continues", continue_unstamped_call(&state, 300U, 400U), 0);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    alert_decode_clock_at_ms(15000U);
+    rc |= expect_int("call C begins", observe_unstamped_call(&state, 500U, 600U), 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_int("call C closes call B's recording", g_close_wav_capture_count, 3);
+    rc |= expect_u64("call B's row ends at its last render", (uint64_t)g_close_wav_captures[2].event_time,
+                     (uint64_t)(t0_s + 14));
+    rc |= expect_close_sidecar("epoch transition", &g_close_wav_captures[2], 300U, t0_s + 10);
+    // Each close reopens the slot's WAV and stamps when it did.
+    rc |= expect_u64("the reopened WAV is stamped with its open time", (uint64_t)opts.wav_out_open_time,
+                     (uint64_t)(t0_s + 15));
+
+    // With recording off, call D takes the slot from C (no recording to close), and recording is switched on 3 s in,
+    // stamped as svc_enable_per_call_wav() stamps it (UI_MENU_SERVICES pins that). The WAV holds only what followed,
+    // so its sidecar starts when it opened, not when D did.
+    alert_decode_clock_at_ms(20000U);
+    opts.wav_out_f = NULL;
+    rc |= expect_int("call D begins", observe_unstamped_call(&state, 700U, 800U), 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    alert_decode_clock_at_ms(23000U);
+    opts.wav_out_f = (SNDFILE*)&wav_sentinel;
+    opts.wav_out_open_time = dsd_decode_time();
+    alert_decode_clock_at_ms(26000U);
+    rc |= expect_int("call D ends", dsd_call_state_end_ex(&state, 0U, 0.0, DSD_CALL_END_TERMINATOR), 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_int("call D's end closes the late recording", g_close_wav_capture_count, 4);
+    rc |= expect_close_sidecar("recording switched on mid-call", &g_close_wav_captures[3], 700U, t0_s + 23);
+
+    dsd_decode_clock_use_system();
+    (void)dsd_test_rmdir(g_close_wav_export_dir);
+    g_close_wav_export_dir[0] = '\0';
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
 // An identity-less audible row faded by a sync loss is held, not dropped, for one reacquisition
 // window on the decode clock, and dropped once decode time alone has passed its due time.
 static int
@@ -6931,6 +7135,7 @@ main(void) {
     rc |= test_unreliable_terminator_modes_keep_audible_identityless_rows();
     rc |= test_end_alert_deadline_matches_reacquire_window();
     rc |= test_end_alert_due_runs_on_the_decode_clock();
+    rc |= test_rdio_sidecar_files_each_recording_at_its_start();
     rc |= test_drop_hold_due_runs_on_the_decode_clock();
     rc |= test_unverified_terminator_heal_window_is_tight();
     rc |= test_crypto_only_voice_epoch_commits_row();

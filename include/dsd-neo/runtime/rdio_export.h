@@ -16,6 +16,8 @@
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state.h>
 
+#include <time.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -50,12 +52,19 @@ const char* dsd_rdio_mode_to_string(int mode);
  * Uses trunk-recorder compatible JSON metadata sidecars for DirWatch, and
  * optionally performs API upload when built with libcurl.
  *
+ * The sidecar's start_time is the call's start (the staged row's event_start_time), or @p opened
+ * when the recording was opened after that, as when per-call WAV is switched on mid-call. A row
+ * with no start falls back to its event_time, unadjusted, then to the decode clock. stop_time is
+ * start_time plus the WAV's length.
+ *
  * @param opts Decoder options with rdio settings.
  * @param event_struct Event metadata for this call.
  * @param wav_path Final renamed WAV file path.
+ * @param opened Decode time the WAV was opened, or 0 when unknown.
  * @return 0 when work completed (or mode disabled), -1 on export failure.
  */
-int dsd_rdio_export_call(const dsd_opts* opts, const Event_History_I* event_struct, const char* wav_path);
+int dsd_rdio_export_call(const dsd_opts* opts, const Event_History_I* event_struct, const char* wav_path,
+                         time_t opened);
 
 /**
  * Drain queued rdio API uploads and stop the background worker.

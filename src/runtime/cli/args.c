@@ -38,6 +38,7 @@
 #include <dsd-neo/runtime/cli.h>
 #include <dsd-neo/runtime/colors.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/path_policy.h>
@@ -2631,6 +2632,8 @@ cli_report_short_opt_error(int c, int argc, char** argv) {
                 open_wav_file(opts->wav_out_dir, opts->wav_out_file, sizeof opts->wav_out_file, 8000, 0);              \
             opts->wav_out_fR =                                                                                         \
                 open_wav_file(opts->wav_out_dir, opts->wav_out_fileR, sizeof opts->wav_out_fileR, 8000, 0);            \
+            opts->wav_out_open_time = dsd_decode_time();                                                               \
+            opts->wav_out_open_timeR = opts->wav_out_open_time;                                                        \
             opts->dmr_stereo_wav = 1;                                                                                  \
             break;                                                                                                     \
         case '7':                                                                                                      \

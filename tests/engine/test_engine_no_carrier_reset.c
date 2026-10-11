@@ -9,6 +9,7 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/channel_mode.h>
 #include <dsd-neo/core/events.h>
+#include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/opts.h>
@@ -39,6 +40,7 @@
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/decode_mode.h>
+#include <dsd-neo/runtime/rdio_export.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
@@ -47,6 +49,7 @@
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <dsd-neo/runtime/udp_audio_hooks.h>
 #include <math.h>
+#include <sndfile.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -3525,6 +3528,117 @@ test_fsk_reacquire_cooldown_runs_across_a_replay_leave(void) {
 }
 #endif
 
+/* The files a per-call WAV directory holds: the newest sidecar's name, and every name, for cleanup. */
+typedef struct {
+    const char* dir;
+    char sidecar[DSD_TEST_PATH_MAX];
+    int sidecars;
+} replay_leave_listing;
+
+static int
+replay_leave_find_sidecar(const char* name, void* user) {
+    replay_leave_listing* listing = (replay_leave_listing*)user;
+    const size_t len = strlen(name);
+    if (len > 5U && strcmp(name + len - 5U, ".json") == 0) {
+        listing->sidecars++;
+        (void)dsd_test_path_join(listing->sidecar, sizeof listing->sidecar, listing->dir, name);
+    }
+    return 0;
+}
+
+static int
+replay_leave_remove_file(const char* name, void* user) {
+    char path[DSD_TEST_PATH_MAX];
+    if (dsd_test_path_join(path, sizeof path, (const char*)user, name) == 0) {
+        (void)remove(path);
+    }
+    return 0;
+}
+
+/*
+ * Issue #673: leaving a replay mid-run (an app-control stream restart or input switch) ends the calls decoded on it and
+ * closes their per-call recordings while decode time is still the capture's. The capture here is dated ahead of the
+ * device's clock, and per-call WAV was switched on 2 s into the call, so the WAV holds only what followed: its
+ * rdio-scanner sidecar starts when the recording did, on the capture's clock. Closed after the clock was back on the
+ * system's, the open stamp would have been pulled back to now, behind the call's own start, and the sidecar would
+ * have claimed the call's first 2 s.
+ */
+static int
+test_replay_leave_exports_recordings_on_the_capture_clock(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    char dir[DSD_TEST_PATH_MAX];
+    if (!dsd_test_mkdtemp(dir, sizeof dir, "dsdneo_replay_leave_rdio")) {
+        DSD_FPRINTF(stderr, "replay leave export: dsd_test_mkdtemp failed\n");
+        free_test_runtime(opts, state);
+        return 1;
+    }
+    DSD_SNPRINTF(opts->wav_out_dir, sizeof opts->wav_out_dir, "%s", dir);
+    opts->rdio_mode = DSD_RDIO_MODE_DIRWATCH;
+    opts->dmr_stereo_wav = 1;
+    const time_t capture_s = (time_t)4102444800LL; /* 2100-01-01T00:00:00Z, ahead of any device clock */
+    dsd_decode_clock_use_replay((int64_t)capture_s);
+
+    dsd_call_observation observation = {0};
+    observation.protocol = DSD_SYNC_DMR_BS_VOICE_POS;
+    observation.slot = 0U;
+    observation.kind = DSD_CALL_KIND_GROUP_VOICE;
+    observation.ota_target_id = 1201U;
+    observation.policy_target_id = 1201U;
+    observation.ota_source_id = 42U;
+    int rc = expect_true("replay leave export: the call begins",
+                         dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    dsd_event_sync_slot(opts, state, 0U);
+
+    /* 2 s in, per-call WAV is switched on, stamped as svc_enable_per_call_wav() stamps it, and records 1 s. */
+    dsd_decode_clock_set_media_ns(2ULL * 1000000000ULL);
+    opts->wav_out_f = open_wav_file(opts->wav_out_dir, opts->wav_out_file, sizeof opts->wav_out_file, 8000, 0);
+    opts->wav_out_open_time = dsd_decode_time();
+    static const short silence[8000];
+    rc |= expect_true("replay leave export: the recording opens and records",
+                      opts->wav_out_f != NULL && sf_write_short(opts->wav_out_f, silence, 8000) == 8000);
+    dsd_decode_clock_set_media_ns(3ULL * 1000000000ULL);
+    rc |= expect_true("replay leave export: the call goes on",
+                      dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE) == 0);
+    dsd_event_sync_slot(opts, state, 0U);
+
+    /* The stream is stopped to restart it. */
+    dsd_engine_decode_clock_leave_replay(opts, state);
+    rc |= expect_true("replay leave export: the decode clock is the system's",
+                      dsd_decode_clock_source() == DSD_DECODE_CLOCK_SYSTEM);
+    rc |= expect_true("replay leave export: the call's row is committed on the capture's clock",
+                      state->event_history_s[0].Event_History_Items[1].event_start_time == capture_s);
+
+    replay_leave_listing listing;
+    DSD_MEMSET(&listing, 0, sizeof listing);
+    listing.dir = dir;
+    (void)dsd_dir_list(dir, replay_leave_find_sidecar, &listing);
+    rc |= expect_true("replay leave export: the recording is exported once", listing.sidecars == 1);
+    char body[2048] = {0};
+    FILE* f = listing.sidecars == 1 ? fopen(listing.sidecar, "rb") : NULL;
+    if (f != NULL) {
+        body[fread(body, 1, sizeof body - 1U, f)] = '\0';
+        (void)fclose(f);
+    }
+    char want[64];
+    DSD_SNPRINTF(want, sizeof want, "\"start_time\": %lld,", (long long)capture_s + 2LL);
+    rc |= expect_true("replay leave export: the sidecar starts when the recording did", strstr(body, want) != NULL);
+    DSD_SNPRINTF(want, sizeof want, "\"stop_time\": %lld,", (long long)capture_s + 3LL);
+    rc |= expect_true("replay leave export: and stops 1 s later", strstr(body, want) != NULL);
+
+    if (opts->wav_out_f != NULL) {
+        opts->wav_out_f = close_wav_file(opts->wav_out_f);
+    }
+    (void)dsd_dir_list(dir, replay_leave_remove_file, dir);
+    (void)dsd_test_rmdir(dir);
+    dsd_decode_clock_use_system();
+    free_test_runtime(opts, state);
+    return rc;
+}
+
 /* The manufacturer and branding a Hytera XPT control channel leaves on the state. */
 static void
 seed_xpt_identity(dsd_state* state) {
@@ -6204,6 +6318,7 @@ main(void) {
     rc |= test_allowed_traffic_holds_the_legacy_scan_before_its_block_ends();
     rc |= test_tone_check_leaves_no_hangtime_tail();
 #endif
+    rc |= test_replay_leave_exports_recordings_on_the_capture_clock();
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
     rc |= test_rx_tone_resets_on_legacy_scan_step();
     rc |= test_typed_scan_nfm_row_tone_rejection_steps();

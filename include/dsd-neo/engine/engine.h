@@ -65,7 +65,9 @@ int dsd_engine_decode_clock_enter_replay(dsd_opts* opts, dsd_state* state);
 /**
  * Put the decode clock back on the system clock, and rebase the init stamps onto it, once the replay no longer feeds
  * the decoder: at the end of the run, and when app-control stops the stream to restart it or switches the input
- * away from it. Decode-mono time goes on from the capture time the replay reached (dsd_decode_clock_use_system()), so
+ * away from it. First ends each slot's call (DSD_CALL_END_EXPLICIT) and commits it while decode time is still the
+ * capture's, so its history row and its per-call recording and rdio-scanner sidecar are closed on the clock they were
+ * stamped on. Decode-mono time goes on from the capture time the replay reached (dsd_decode_clock_use_system()), so
  * every stamp the replay took keeps ageing; wall time jumps forward to real time. A replay restarted that way runs on
  * the system clock. Does nothing unless the REPLAY source is selected. Decoder thread, with the replay stream stopped
  * or no longer read.

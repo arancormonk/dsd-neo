@@ -430,6 +430,8 @@ open_recording_outputs_if_needed(dsd_opts* opts, dsd_state* state) {
         }
         opts->wav_out_f = open_wav_file(opts->wav_out_dir, opts->wav_out_file, sizeof opts->wav_out_file, 8000, 0);
         opts->wav_out_fR = open_wav_file(opts->wav_out_dir, opts->wav_out_fileR, sizeof opts->wav_out_fileR, 8000, 0);
+        opts->wav_out_open_time = dsd_decode_time();
+        opts->wav_out_open_timeR = opts->wav_out_open_time;
     } else if (opts->static_wav_file == 1 && opts->wav_out_f == NULL && opts->wav_out_file[0] != '\0') {
         openWavOutFileLR(opts, state);
     }
@@ -3164,11 +3166,11 @@ dsd_engine_cleanup_close_wavs(dsd_opts* opts, dsd_state* state) {
     if (opts->static_wav_file == 0) {
         if (opts->wav_out_f != NULL) {
             opts->wav_out_f = close_and_rename_wav_file(opts->wav_out_f, opts, opts->wav_out_file, opts->wav_out_dir,
-                                                        &state->event_history_s[0]);
+                                                        &state->event_history_s[0], opts->wav_out_open_time);
         }
         if (opts->wav_out_fR != NULL) {
             opts->wav_out_fR = close_and_rename_wav_file(opts->wav_out_fR, opts, opts->wav_out_fileR, opts->wav_out_dir,
-                                                         &state->event_history_s[1]);
+                                                         &state->event_history_s[1], opts->wav_out_open_timeR);
         }
         return;
     }
@@ -3538,6 +3540,17 @@ void
 dsd_engine_decode_clock_leave_replay(dsd_opts* opts, dsd_state* state) {
     if (dsd_decode_clock_source() != DSD_DECODE_CLOCK_REPLAY) {
         return;
+    }
+    /* The replay no longer feeds the decoder, so the calls decoded on it are over. End and commit them while decode
+       time is still the capture's (issue #673): their rows, and the per-call recordings and rdio-scanner sidecars a
+       commit closes, are then stamped on the clock they were decoded on, and each slot's WAV reopens empty. A call the
+       run's end already finalized, or a slot with none, has nothing left to end. */
+    if (opts && state && state->event_history_s) {
+        const double ended_m = dsd_decode_now_mono_s();
+        for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
+            (void)dsd_call_state_end_ex(state, (uint8_t)slot, ended_m, DSD_CALL_END_EXPLICIT);
+            dsd_event_sync_slot(opts, state, (uint8_t)slot);
+        }
     }
     dsd_decode_clock_use_system();
     dsd_state_rebase_decode_timestamps(opts, state);

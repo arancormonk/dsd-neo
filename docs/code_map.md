@@ -652,8 +652,17 @@ suite runs under this compiler.
   positions; an unknown CAN prints `--` (`M17_CAN_--`, `CAN: --;`). The NXDN event line names the call's own `channel`
   and the row's `freq_hz`, never the global last grant (`nxdn_grant_chan`/`_freq`, which left the render env). The
   rdio-scanner sidecar's `freq` is `freq_hz` (clamped to `uint32_t`, still 0 below 1 MHz); it was the channel number
-  before. The control API's event rows carry `freq_hz`, `access_code_kind` and `access_code`, folded into the row
-  fingerprint. Tests: `CORE_ACCESS_CODE`, `CORE_CALL_ALERT_HISTORY`, `RUNTIME_RDIO_EXPORT`, `API_SERVER`.
+  before. Its `start_time` is the closing segment's `event_start_time`, or the WAV's open stamp when that is later
+  (per-call WAV switched on mid-call). Every per-call WAV open sets `opts->wav_out_open_time`/`wav_out_open_timeR`
+  from the decode clock, and the close passes the stamp to `dsd_rdio_export_call()`.
+  `dsd_state_rebase_decode_timestamps()` pulls a stamp that is ahead of now back to now, which covers the `-P` open
+  while arguments are parsed, before a replay moves the clock. `event_time` is the row's last activity, the segment's
+  end by the time its WAV closes. It is only the fallback for a row with no start (a `--playfiles` row, whose stamp is
+  on the file's clock, so the open time is not compared with it), and decode time comes after that. `stop_time` adds
+  the WAV length to the start (`RUNTIME_RDIO_EXPORT`, `CORE_MBE_FILE_IO`, `CORE_INIT_STATE`, `UI_MENU_SERVICES`, and
+  `CORE_CALL_ALERT_HISTORY` through the real event layer). The WAV name stays on `event_time`. The control API's
+  event rows carry `freq_hz`, `access_code_kind` and `access_code`, folded into the row fingerprint. Tests:
+  `CORE_ACCESS_CODE`, `CORE_CALL_ALERT_HISTORY`, `RUNTIME_RDIO_EXPORT`, `API_SERVER`.
 - API note: text arriving as UTF-16 code units (DMR UDT/SMS, talker aliases) is decoded with
   `<dsd-neo/core/utf16.h>` and printed one scalar value at a time through `dsd_unicode_fput_scalar()` in
   `<dsd-neo/runtime/unicode.h>`. Never pass a code unit to `%lc`: a lone surrogate has no encoding, and the
@@ -1058,7 +1067,10 @@ suite runs under this compiler.
     at the end of the run, when app-control stops the stream to restart it (`svc_rtl_stop_locked()`; the replay it
     restarts runs on SYSTEM, which it logs once at that leave when the input is still the replay), and when the input
     moves away from it (`ui_input_left()` in `app_command_queue.c`: an input switch, a stop of playback, a config
-    apply that moves the input). Decode-mono time goes on from the capture
+    apply that moves the input). Before the switch the leave ends each slot's call (`DSD_CALL_END_EXPLICIT`) and syncs
+    the slot. The call's row, and the per-call recording and rdio-scanner sidecar a commit closes, are then stamped on
+    the capture's clock (#673), and each WAV reopens empty. A call the run's end already finalized has nothing left to
+    end. Decode-mono time goes on from the capture
     time the replay reached (a SYSTEM offset over the platform monotonic clock, set only by leaving REPLAY), so the
     replay's stamps keep ageing; wall time returns to real time. Each replay sample moves media time to its own capture
     time as it reaches symbol processing (`dsd_decode_clock_batch_media_ns()` over the batch tag's span): the symbol

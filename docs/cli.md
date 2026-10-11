@@ -295,6 +295,10 @@ segment still closes, names, and exports its own recording. A flapping call ther
 referencing several recordings and several rdio uploads. Empty segments (44-byte WAVs) are deleted rather than exported,
 so brief flaps cost nothing.
 
+Each rdio-scanner sidecar's `start_time` is when its segment began, or when the WAV was opened if per-call WAV was
+switched on partway through the call. `stop_time` is that plus the recording's length in whole seconds, and the API
+upload sends the same values. The WAV file name keeps the time of the segment's last activity.
+
 For rdio-scanner API uploads that should not persist on disk, use API-only mode with a RAM-backed per-call WAV directory
 and post-upload deletion, for example `-7 /dev/shm/dsd-neo-rdio -P --rdio-mode api --rdio-api-delete-after-upload`.
 Rdio API uploads do not follow HTTP redirects; use the final trusted HTTP/HTTPS endpoint directly.

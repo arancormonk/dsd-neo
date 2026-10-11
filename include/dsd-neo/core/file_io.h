@@ -21,6 +21,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <time.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -55,8 +56,13 @@ SNDFILE* open_wav_file(char* dir, char* temp_filename, size_t temp_filename_size
 void openWavOutFileRaw(dsd_opts* opts, dsd_state* state);
 void openSymbolOutFile(dsd_opts* opts, dsd_state* state);
 SNDFILE* close_wav_file(SNDFILE* wav_file);
+/**
+ * Close a per-call WAV, name it from the slot's staged row and export it to rdio-scanner.
+ * `opened` is the decode time the file was opened (opts->wav_out_open_time or wav_out_open_timeR),
+ * 0 when unknown; see dsd_rdio_export_call().
+ */
 SNDFILE* close_and_rename_wav_file(SNDFILE* wav_file, const dsd_opts* opts, const char* wav_out_filename,
-                                   const char* dir, const Event_History_I* event_struct);
+                                   const char* dir, const Event_History_I* event_struct, time_t opened);
 /**
  * As close_and_rename_wav_file(), but with the rdio-scanner export gated by `export_call`.
  * The event layer's drop path rotates the recording of an epoch that gets no history row or log
@@ -64,7 +70,8 @@ SNDFILE* close_and_rename_wav_file(SNDFILE* wav_file, const dsd_opts* opts, cons
  * nothing local to correlate against.
  */
 SNDFILE* close_and_rename_wav_file_ex(SNDFILE* wav_file, const dsd_opts* opts, const char* wav_out_filename,
-                                      const char* dir, const Event_History_I* event_struct, int export_call);
+                                      const char* dir, const Event_History_I* event_struct, time_t opened,
+                                      int export_call);
 void closeMbeOutFile(dsd_opts* opts, dsd_state* state);
 void closeMbeOutFileR(dsd_opts* opts, dsd_state* state);
 void closeSymbolOutFile(dsd_opts* opts, dsd_state* state);
