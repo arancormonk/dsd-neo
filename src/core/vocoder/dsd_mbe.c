@@ -1932,30 +1932,55 @@ mbe_capture_slot_verdict_allows(const dsd_opts* opts, const dsd_state* state, in
     return state->dmr_encL == 0 || opts->dmr_mute_encL == 0;
 }
 
+// The FDMA save points that read no slot verdict: live P25 Phase 1 keeps its speaker rule (reverse mute (-q) keeps a
+// clear call out of the capture as it keeps it off the speakers), ProVoice and D-STAR the record policy alone. D-STAR
+// publishes on slot 0 whatever slot a TDMA decode left current.
+static void
+mbe_capture_fdma_frame(dsd_opts* opts, dsd_state* state, const mbe_frame_ctx_t* frame_ctx) {
+    if (!dsd_mbe_out_enabled(opts, 0) || !mbe_record_policy_allows(opts, state, 0)) {
+        return;
+    }
+    if (frame_ctx->capture == MBE_CAPTURE_P25P1) {
+        if (!dsd_audio_p25p1_live_voice(state) || p25_crypto_audio_output_permitted(opts, state, 0)) {
+            dsd_mbe_out_write(opts, state, 0, DSD_MBE_OUT_FORMAT_IMBE, frame_ctx->imbe_d);
+        }
+    } else if (frame_ctx->capture == MBE_CAPTURE_PROVOICE) {
+        dsd_mbe_out_write(opts, state, 0, DSD_MBE_OUT_FORMAT_IMBE, frame_ctx->imbe_d);
+    } else {
+        dsd_mbe_out_write(opts, state, 0, DSD_MBE_OUT_FORMAT_DSTAR, frame_ctx->ambe_d);
+    }
+}
+
+// The AMBE 2450 save points that read the slot verdict the post stage just classified: NXDN (and the frames YSF and
+// scrambled dPMR decode through it) on slot 1, and the DMR / P25 Phase 2 / clear dPMR slot path on its slot.
+static void
+mbe_capture_verdict_frame(dsd_opts* opts, dsd_state* state, const mbe_frame_ctx_t* frame_ctx) {
+    const int slot = frame_ctx->capture == MBE_CAPTURE_SLOT_RIGHT ? 1 : 0;
+    if (!dsd_mbe_out_enabled(opts, slot)) {
+        return;
+    }
+    if (frame_ctx->capture == MBE_CAPTURE_NXDN) {
+        if ((state->dmr_encL == 0 || opts->dmr_mute_encL == 0) && mbe_record_policy_allows(opts, state, 0)) {
+            dsd_mbe_out_write(opts, state, 0, DSD_MBE_OUT_FORMAT_AMBE, frame_ctx->ambe_d);
+        }
+        return;
+    }
+    // YSF is FDMA: it publishes on slot 0 even when a TDMA decode left currentslot at 1.
+    const int policy_slot = (slot == 1 && !DSD_SYNC_IS_YSF(state->synctype)) ? 1 : 0;
+    if (mbe_dmr_output_slot_enabled(opts, state, slot) && mbe_capture_slot_verdict_allows(opts, state, slot)
+        && mbe_record_policy_allows(opts, state, policy_slot)) {
+        dsd_mbe_out_write(opts, state, slot, DSD_MBE_OUT_FORMAT_AMBE, frame_ctx->ambe_d);
+    }
+}
+
 // MBE capture (-d) of the frame, after the post stage classified its slot verdict and before staging: each save point
 // keeps its own crypto condition and adds the talkgroup record policy (issue #661).
 static void
 mbe_capture_frame(dsd_opts* opts, dsd_state* state, const mbe_frame_ctx_t* frame_ctx) {
     switch (frame_ctx->capture) {
         case MBE_CAPTURE_P25P1:
-            // A live P25 frame reached the vocoder with crypto permitted; reverse mute
-            // (-q) still keeps a clear call out of the capture as it keeps it off the speakers.
-            if (dsd_mbe_out_enabled(opts, 0) && mbe_record_policy_allows(opts, state, 0)
-                && (!dsd_audio_p25p1_live_voice(state) || p25_crypto_audio_output_permitted(opts, state, 0))) {
-                dsd_mbe_out_write(opts, state, 0, DSD_MBE_OUT_FORMAT_IMBE, frame_ctx->imbe_d);
-            }
-            break;
         case MBE_CAPTURE_PROVOICE:
-            if (dsd_mbe_out_enabled(opts, 0) && mbe_record_policy_allows(opts, state, 0)) {
-                dsd_mbe_out_write(opts, state, 0, DSD_MBE_OUT_FORMAT_IMBE, frame_ctx->imbe_d);
-            }
-            break;
-        case MBE_CAPTURE_DSTAR:
-            // D-STAR publishes on slot 0 whatever slot a TDMA decode left current.
-            if (dsd_mbe_out_enabled(opts, 0) && mbe_record_policy_allows(opts, state, 0)) {
-                dsd_mbe_out_write(opts, state, 0, DSD_MBE_OUT_FORMAT_DSTAR, frame_ctx->ambe_d);
-            }
-            break;
+        case MBE_CAPTURE_DSTAR: mbe_capture_fdma_frame(opts, state, frame_ctx); break;
         case MBE_CAPTURE_X2:
             if (dsd_mbe_out_enabled(opts, 0)
                 && mbe_record_policy_allows(opts, state, state->currentslot == 1 ? 1 : 0)) {
@@ -1963,27 +1988,8 @@ mbe_capture_frame(dsd_opts* opts, dsd_state* state, const mbe_frame_ctx_t* frame
             }
             break;
         case MBE_CAPTURE_NXDN:
-            if (dsd_mbe_out_enabled(opts, 0) && (state->dmr_encL == 0 || opts->dmr_mute_encL == 0)
-                && mbe_record_policy_allows(opts, state, 0)) {
-                dsd_mbe_out_write(opts, state, 0, DSD_MBE_OUT_FORMAT_AMBE, frame_ctx->ambe_d);
-            }
-            break;
         case MBE_CAPTURE_SLOT_LEFT:
-            if (dsd_mbe_out_enabled(opts, 0) && mbe_dmr_output_slot_enabled(opts, state, 0)
-                && mbe_capture_slot_verdict_allows(opts, state, 0) && mbe_record_policy_allows(opts, state, 0)) {
-                dsd_mbe_out_write(opts, state, 0, DSD_MBE_OUT_FORMAT_AMBE, frame_ctx->ambe_d);
-            }
-            break;
-        case MBE_CAPTURE_SLOT_RIGHT: {
-            // YSF is FDMA: it publishes on slot 0 even when a TDMA decode left currentslot at 1.
-            const int policy_slot = DSD_SYNC_IS_YSF(state->synctype) ? 0 : 1;
-            if (dsd_mbe_out_enabled(opts, 1) && mbe_dmr_output_slot_enabled(opts, state, 1)
-                && mbe_capture_slot_verdict_allows(opts, state, 1)
-                && mbe_record_policy_allows(opts, state, policy_slot)) {
-                dsd_mbe_out_write(opts, state, 1, DSD_MBE_OUT_FORMAT_AMBE, frame_ctx->ambe_d);
-            }
-            break;
-        }
+        case MBE_CAPTURE_SLOT_RIGHT: mbe_capture_verdict_frame(opts, state, frame_ctx); break;
         case MBE_CAPTURE_NONE:
         default: break;
     }

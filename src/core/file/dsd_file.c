@@ -652,54 +652,91 @@ mbe_out_join_path(char* out, size_t out_size, const char* dir, const char* file)
     return (n < 0 || (size_t)n >= out_size) ? -1 : 0;
 }
 
+/* One slot's capture fields, so the code below reads a slot without a choice per field. */
+typedef struct {
+    int slot;
+    FILE** handle;
+    short* open_flag;
+    int* owner;
+    int* format;
+    double* retry_at;
+    int* fail_logged;
+    char* name;
+    size_t name_size;
+} mbe_out_slot;
+
+static mbe_out_slot
+mbe_out_slot_view(dsd_opts* opts, int slot) {
+    if (slot == 1) {
+        return (mbe_out_slot){1,
+                              &opts->mbe_out_fR,
+                              &opts->mbe_outR,
+                              &opts->mbe_out_ownerR,
+                              &opts->mbe_out_formatR,
+                              &opts->mbe_out_retry_atR,
+                              &opts->mbe_out_fail_loggedR,
+                              opts->mbe_out_fileR,
+                              sizeof opts->mbe_out_fileR};
+    }
+    return (mbe_out_slot){0,
+                          &opts->mbe_out_f,
+                          &opts->mbe_out,
+                          &opts->mbe_out_owner,
+                          &opts->mbe_out_format,
+                          &opts->mbe_out_retry_at,
+                          &opts->mbe_out_fail_logged,
+                          opts->mbe_out_file,
+                          sizeof opts->mbe_out_file};
+}
+
 static void
-mbe_out_creation_failed(dsd_opts* opts, int slot, const char* what) {
-    double* retry_at = slot == 1 ? &opts->mbe_out_retry_atR : &opts->mbe_out_retry_at;
-    int* logged = slot == 1 ? &opts->mbe_out_fail_loggedR : &opts->mbe_out_fail_logged;
-    *retry_at = dsd_realtime_mono_s() + MBE_OUT_RETRY_INTERVAL_S;
-    if (!*logged) {
-        LOG_ERROR("\nError, couldn't create an MBE capture for slot %d: %s\n", slot + 1, what);
-        *logged = 1;
+mbe_out_creation_failed(const mbe_out_slot* s, const char* what) {
+    *s->retry_at = dsd_realtime_mono_s() + MBE_OUT_RETRY_INTERVAL_S;
+    if (!*s->fail_logged) {
+        LOG_ERROR("\nError, couldn't create an MBE capture for slot %d: %s\n", s->slot + 1, what);
+        *s->fail_logged = 1;
     }
 }
 
-/* Create slot's capture for owner in format: a new name in the folder, never one another file holds. */
-static int
-mbe_out_create(dsd_opts* opts, dsd_state* state, int slot, int owner, dsd_mbe_out_format format) {
-    const double retry_at = slot == 1 ? opts->mbe_out_retry_atR : opts->mbe_out_retry_at;
-    if (retry_at > 0.0 && dsd_realtime_mono_s() < retry_at) {
-        return 0;
-    }
-    const char* ext = mbe_out_format_ext(format);
-    if (ext == NULL) {
-        return 0;
-    }
-
+/* A new file in the folder under a name no other file holds: a name taken in the same second is another capture, never
+   truncated, so the next nonce is tried. NULL, with the failure recorded, when none can be created. */
+static FILE*
+mbe_out_open_new_file(dsd_opts* opts, const mbe_out_slot* s, const char* ext) {
     char timestr[7];
     char datestr[9];
     (void)dsd_format_local_datetime(dsd_decode_time(), DSD_LOCAL_DATETIME_TIME_COMPACT, timestr, sizeof timestr);
     (void)dsd_format_local_datetime(dsd_decode_time(), DSD_LOCAL_DATETIME_DATE_COMPACT, datestr, sizeof datestr);
 
-    char* name = slot == 1 ? opts->mbe_out_fileR : opts->mbe_out_file;
-    const size_t name_size = slot == 1 ? sizeof opts->mbe_out_fileR : sizeof opts->mbe_out_file;
-    FILE* fp = NULL;
-    for (int attempt = 0; attempt < MBE_OUT_CREATE_ATTEMPTS && fp == NULL; attempt++) {
+    for (int attempt = 0; attempt < MBE_OUT_CREATE_ATTEMPTS; attempt++) {
         //random element of filename, so two files won't overwrite one another
         const uint16_t random_number = dsd_nonce_u16();
-        DSD_SNPRINTF(name, name_size, "%s_%s_%04X_S%d%s", datestr, timestr, random_number, slot + 1, ext);
-        if (mbe_out_join_path(opts->mbe_out_path, sizeof opts->mbe_out_path, opts->mbe_out_dir, name) != 0) {
-            mbe_out_creation_failed(opts, slot, "the folder path is too long");
-            return 0;
+        DSD_SNPRINTF(s->name, s->name_size, "%s_%s_%04X_S%d%s", datestr, timestr, random_number, s->slot + 1, ext);
+        if (mbe_out_join_path(opts->mbe_out_path, sizeof opts->mbe_out_path, opts->mbe_out_dir, s->name) != 0) {
+            mbe_out_creation_failed(s, "the folder path is too long");
+            return NULL;
         }
-        /* Binary: MBE frames are raw bytes, which a text-mode stream on Windows would rewrite (LF to CRLF). Exclusive:
-           a name taken in the same second is another capture, never truncated. */
-        fp = dsd_fopen_private(opts->mbe_out_path, "wbx");
-        if (fp == NULL && errno != EEXIST) {
+        /* Binary: MBE frames are raw bytes, which a text-mode stream on Windows would rewrite (LF to CRLF). */
+        FILE* fp = dsd_fopen_private(opts->mbe_out_path, "wbx");
+        if (fp != NULL) {
+            return fp;
+        }
+        if (errno != EEXIST) {
             break;
         }
     }
+    mbe_out_creation_failed(s, opts->mbe_out_path);
+    return NULL;
+}
+
+/* Create slot's capture for owner in format. */
+static int
+mbe_out_create(dsd_opts* opts, dsd_state* state, const mbe_out_slot* s, int owner, dsd_mbe_out_format format) {
+    if (*s->retry_at > 0.0 && dsd_realtime_mono_s() < *s->retry_at) {
+        return 0;
+    }
+    const char* ext = mbe_out_format_ext(format);
+    FILE* fp = ext ? mbe_out_open_new_file(opts, s, ext) : NULL;
     if (fp == NULL) {
-        mbe_out_creation_failed(opts, slot, opts->mbe_out_path);
         return 0;
     }
 
@@ -714,21 +751,12 @@ mbe_out_create(dsd_opts* opts, dsd_state* state, int slot, int owner, dsd_mbe_ou
     /* Fully buffered output to reduce syscall overhead */
     configure_file_stream_buffer(fp, _IOFBF, (size_t)64u * 1024u);
     DSD_FPRINTF(fp, "%s", ext);
-    if (slot == 1) {
-        opts->mbe_out_fR = fp;
-        opts->mbe_outR = 1;
-        opts->mbe_out_ownerR = owner;
-        opts->mbe_out_formatR = (int)format;
-        opts->mbe_out_retry_atR = 0.0;
-        opts->mbe_out_fail_loggedR = 0;
-    } else {
-        opts->mbe_out_f = fp;
-        opts->mbe_out = 1;
-        opts->mbe_out_owner = owner;
-        opts->mbe_out_format = (int)format;
-        opts->mbe_out_retry_at = 0.0;
-        opts->mbe_out_fail_logged = 0;
-    }
+    *s->handle = fp;
+    *s->open_flag = 1;
+    *s->owner = owner;
+    *s->format = (int)format;
+    *s->retry_at = 0.0;
+    *s->fail_logged = 0;
     return 1;
 }
 
@@ -741,51 +769,57 @@ mbe_out_close_slot(dsd_opts* opts, dsd_state* state, int slot) {
     }
 }
 
-void
-dsd_mbe_out_write(dsd_opts* opts, dsd_state* state, int slot, dsd_mbe_out_format format, const char* bits) {
-    if (!opts || !state || !bits || (slot != 0 && slot != 1) || mbe_out_format_ext(format) == NULL) {
-        return;
+/* Close a capture the writer created whose owner or format is not the frame's. */
+static void
+mbe_out_retire_if_other(dsd_opts* opts, dsd_state* state, const mbe_out_slot* s, int owner, dsd_mbe_out_format format) {
+    if (*s->handle != NULL && *s->owner != 0 && (*s->owner != owner || *s->format != (int)format)) {
+        mbe_out_close_slot(opts, state, s->slot);
     }
+}
+
+/* The frame's owner when it may be written to slot's capture at all, 0 when not. */
+static int
+mbe_out_frame_owner(const dsd_opts* opts, const dsd_state* state, int slot, dsd_mbe_out_format format) {
     /* IMBE has no slot 2 record writer: no protocol carries IMBE on a second TDMA slot. */
-    if (slot == 1 && format == DSD_MBE_OUT_FORMAT_IMBE) {
-        return;
-    }
-    if (!dsd_mbe_out_enabled(opts, slot)) {
-        return;
+    if ((slot != 0 && slot != 1) || mbe_out_format_ext(format) == NULL
+        || (slot == 1 && format == DSD_MBE_OUT_FORMAT_IMBE) || !dsd_mbe_out_enabled(opts, slot)) {
+        return 0;
     }
     /* What was read after the carrier boundary moved the count belongs to no capture of either carrier. */
     if (state->frame_dispatch_active && state->carrier_seq != state->frame_dispatch_carrier_seq) {
-        return;
+        return 0;
     }
     const int protocol = dsd_mbe_out_frame_protocol(state);
-    if (!mbe_out_protocol_confirmed(state, protocol)) {
+    return mbe_out_protocol_confirmed(state, protocol) ? dsd_mbe_out_owner_of(protocol) : 0;
+}
+
+/* Slot's capture ready for a frame of owner in format: a capture of another owner or format, on this slot or the
+   other, belongs to what came before this frame and closes (a TDMA pair, DMR or P25 Phase 2, shares owner and format
+   and stays); then one is created if none is open. A handle a caller attached is used as it is. */
+static int
+mbe_out_slot_ready(dsd_opts* opts, dsd_state* state, int slot, int owner, dsd_mbe_out_format format) {
+    const mbe_out_slot s = mbe_out_slot_view(opts, slot);
+    if (*s.handle != NULL && *s.owner == 0) {
+        return 1;
+    }
+    const mbe_out_slot other = mbe_out_slot_view(opts, 1 - slot);
+    mbe_out_retire_if_other(opts, state, &other, owner, format);
+    mbe_out_retire_if_other(opts, state, &s, owner, format);
+    if (*s.handle != NULL) {
+        return 1;
+    }
+    return opts->mbe_out_dir[0] != 0 && mbe_out_create(opts, state, &s, owner, format);
+}
+
+void
+dsd_mbe_out_write(dsd_opts* opts, dsd_state* state, int slot, dsd_mbe_out_format format, const char* bits) {
+    if (!opts || !state || !bits) {
         return;
     }
-    const int owner = dsd_mbe_out_owner_of(protocol);
-    FILE* const open_handle = slot == 1 ? opts->mbe_out_fR : opts->mbe_out_f;
-    const int open_owner = slot == 1 ? opts->mbe_out_ownerR : opts->mbe_out_owner;
-
-    if (open_handle == NULL || open_owner != 0) {
-        /* A capture of another owner or format on the other slot belongs to what came before this frame: a TDMA pair
-           (DMR, P25 Phase 2) shares owner and format and stays, anything else ends here. */
-        const int other = 1 - slot;
-        FILE* const other_handle = other == 1 ? opts->mbe_out_fR : opts->mbe_out_f;
-        const int other_owner = other == 1 ? opts->mbe_out_ownerR : opts->mbe_out_owner;
-        const int other_format = other == 1 ? opts->mbe_out_formatR : opts->mbe_out_format;
-        if (other_handle != NULL && other_owner != 0 && (other_owner != owner || other_format != (int)format)) {
-            mbe_out_close_slot(opts, state, other);
-        }
-        const int open_format = slot == 1 ? opts->mbe_out_formatR : opts->mbe_out_format;
-        if (open_handle != NULL && (open_owner != owner || open_format != (int)format)) {
-            mbe_out_close_slot(opts, state, slot);
-        }
-        if ((slot == 1 ? opts->mbe_out_fR : opts->mbe_out_f) == NULL) {
-            if (opts->mbe_out_dir[0] == 0 || !mbe_out_create(opts, state, slot, owner, format)) {
-                return;
-            }
-        }
+    const int owner = mbe_out_frame_owner(opts, state, slot, format);
+    if (owner == 0 || !mbe_out_slot_ready(opts, state, slot, owner, format)) {
+        return;
     }
-
     if (format == DSD_MBE_OUT_FORMAT_IMBE) {
         saveImbe4400Data(opts, state, bits);
     } else if (slot == 1) {
@@ -983,6 +1017,27 @@ wav_file_get_size_or_negative(const char* filename) {
 /* Bounded retries on a final name another recording already holds. */
 #define WAV_PUBLISH_ATTEMPTS 8
 
+/* Publish the recording at @p from under @p to, never over another file: a final name another recording holds draws
+   another number (issue #661). 1 once published; 0 on any other failure, the recording still under @p from. */
+static int
+wav_publish_noreplace(const char* from, char* to, size_t to_size, const char* dir, wav_rename_metadata* metadata) {
+    for (int attempt = 0; attempt < WAV_PUBLISH_ATTEMPTS; attempt++) {
+        int source_left = 0;
+        if (dsd_rename_noreplace(from, to, &source_left) == 0) {
+            if (source_left) {
+                LOG_WARN("Recording %s published, but its temp name %s could not be removed\n", to, from);
+            }
+            return 1;
+        }
+        if (errno != EEXIST) {
+            return 0;
+        }
+        metadata->random_number = dsd_nonce_u16();
+        wav_rename_build_final_filename(to, to_size, dir, metadata);
+    }
+    return 0;
+}
+
 SNDFILE*
 close_and_rename_wav_file_ex(SNDFILE* wav_file, const dsd_opts* opts, const char* wav_out_filename, const char* dir,
                              const Event_History_I* event_struct, time_t opened, int export_call) {
@@ -1010,26 +1065,8 @@ close_and_rename_wav_file_ex(SNDFILE* wav_file, const dsd_opts* opts, const char
         return wav_file;
     }
 
-    /* Never over an earlier recording (issue #661): a name another file holds draws another number, and any other
-       failure keeps the recording under its temp name, as before. */
-    int published = 0;
-    for (int attempt = 0; attempt < WAV_PUBLISH_ATTEMPTS && !published; attempt++) {
-        int source_left = 0;
-        if (dsd_rename_noreplace(wav_out_filename, new_filename, &source_left) == 0) {
-            published = 1;
-            if (source_left) {
-                LOG_WARN("Recording %s published, but its temp name %s could not be removed\n", new_filename,
-                         wav_out_filename);
-            }
-            break;
-        }
-        if (errno != EEXIST) {
-            break;
-        }
-        metadata.random_number = dsd_nonce_u16();
-        wav_rename_build_final_filename(new_filename, sizeof(new_filename), dir, &metadata);
-    }
-    if (!published) {
+    /* Never over an earlier recording (issue #661); any failure but a taken name keeps the temp file, as before. */
+    if (!wav_publish_noreplace(wav_out_filename, new_filename, sizeof(new_filename), dir, &metadata)) {
         LOG_ERROR("Error - could not rename wav file %s -> %s\n", wav_out_filename, new_filename);
         return NULL;
     }
