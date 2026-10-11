@@ -380,17 +380,32 @@ play_ambe_file_frame(dsd_opts* opts, dsd_state* state, char ambe_d[49], char fil
     return 0;
 }
 
+/* Which save point the frame reached: the frame is captured by mbe_capture_frame() once the post stage has classified
+   its slot verdict, so the capture follows this frame's verdict, not the previous frame's (issue #661). */
+typedef enum {
+    MBE_CAPTURE_NONE = 0,
+    MBE_CAPTURE_P25P1,
+    MBE_CAPTURE_PROVOICE,
+    MBE_CAPTURE_DSTAR,
+    MBE_CAPTURE_X2,
+    MBE_CAPTURE_NXDN,
+    MBE_CAPTURE_SLOT_LEFT,
+    MBE_CAPTURE_SLOT_RIGHT,
+} mbe_capture_point;
+
 typedef struct {
     char imbe_d[88];
     char ambe_d[49];
     int vertex_ks_applied_l;
     int vertex_ks_applied_r;
+    mbe_capture_point capture;
 } mbe_frame_ctx_t;
 
 static void
 mbe_prepare_frame_state(dsd_state* state, mbe_frame_ctx_t* frame_ctx, const dsd_call_snapshot* call) {
     frame_ctx->vertex_ks_applied_l = 0;
     frame_ctx->vertex_ks_applied_r = 0;
+    frame_ctx->capture = MBE_CAPTURE_NONE;
 
     (void)dsd_dmr_apply_forced_algid(state);
 
@@ -661,13 +676,7 @@ mbe_process_p25p1(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], dsd_voc
 
     //increment vc counter by one.
     state->p25vc++;
-
-    // A live P25 frame reached the vocoder with crypto permitted; reverse mute
-    // (-q) still keeps a clear call out of the capture as it keeps it off the speakers.
-    if (opts->mbe_out_f != NULL && mbe_record_policy_allows(opts, state, 0)
-        && (!dsd_audio_p25p1_live_voice(state) || p25_crypto_audio_output_permitted(opts, state, 0))) {
-        saveImbe4400Data(opts, state, frame_ctx->imbe_d);
-    }
+    frame_ctx->capture = MBE_CAPTURE_P25P1;
 }
 
 static void
@@ -697,10 +706,7 @@ mbe_process_provoice(dsd_opts* opts, dsd_state* state, char imbe7100_fr[7][24],
     if (DSD_SYNC_IS_P25P1(state->synctype)) {
         update_p25_p1_voice_err_hist(state);
     }
-
-    if (opts->mbe_out_f != NULL && mbe_record_policy_allows(opts, state, 0)) {
-        saveImbe4400Data(opts, state, frame_ctx->imbe_d);
-    }
+    frame_ctx->capture = MBE_CAPTURE_PROVOICE;
 }
 
 static void
@@ -722,21 +728,18 @@ mbe_process_dstar(dsd_opts* opts, dsd_state* state, char ambe_fr[4][24], dsd_voc
     if (dsd_frame_detail_enabled(opts)) {
         PrintAMBEData(opts, state, frame_ctx->ambe_d);
     }
-    // D-STAR publishes on slot 0 whatever slot a TDMA decode left current.
-    if (opts->mbe_out_f != NULL && mbe_record_policy_allows(opts, state, 0)) {
-        saveAmbe2450Data(opts, state, frame_ctx->ambe_d);
-    }
+    frame_ctx->capture = MBE_CAPTURE_DSTAR;
 }
 
 static void
-mbe_save_x2_frame(dsd_opts* opts, dsd_state* state, char ambe_d[49]) {
+mbe_save_x2_frame(dsd_opts* opts, dsd_state* state, const char* ambe_d) {
     /* X2 records both timeslots in one interleaved .amb stream. */
     int saved_errs2 = state->errs2;
 
     if (state->currentslot == 1) {
         state->errs2 = state->errs2R;
     }
-    saveAmbe2450Data(opts, state, ambe_d);
+    dsd_mbe_out_write(opts, state, 0, DSD_MBE_OUT_FORMAT_AMBE, ambe_d);
     state->errs2 = saved_errs2;
 }
 
@@ -776,9 +779,7 @@ mbe_process_x2(dsd_opts* opts, dsd_state* state, char ambe_fr[4][24], dsd_vocode
     if (dsd_frame_detail_enabled(opts)) {
         PrintAMBEData(opts, state, frame_ctx->ambe_d);
     }
-    if (opts->mbe_out_f != NULL && mbe_record_policy_allows(opts, state, state->currentslot == 1 ? 1 : 0)) {
-        mbe_save_x2_frame(opts, state, frame_ctx->ambe_d);
-    }
+    frame_ctx->capture = MBE_CAPTURE_X2;
 }
 
 static void
@@ -924,10 +925,6 @@ mbe_finalize_slot_left(dsd_opts* opts, dsd_state* state, char ambe_d[49], mbe_pr
     if (dsd_frame_detail_enabled(opts)) {
         PrintAMBEData(opts, state, ambe_d);
     }
-    if (mbe_dmr_output_slot_enabled(opts, state, 0) && opts->mbe_out_f != NULL
-        && (state->dmr_encL == 0 || opts->dmr_mute_encL == 0) && mbe_record_policy_allows(opts, state, 0)) {
-        saveAmbe2450Data(opts, state, ambe_d);
-    }
 }
 
 static void
@@ -939,12 +936,6 @@ mbe_finalize_slot_right(dsd_opts* opts, dsd_state* state, char ambe_d[49], mbe_p
     p25p2_record_voice_err(state, state->errs2R);
     if (dsd_frame_detail_enabled(opts)) {
         PrintAMBEData(opts, state, ambe_d);
-    }
-    // YSF is FDMA: it publishes on slot 0 even when a TDMA decode left currentslot at 1.
-    const int policy_slot = DSD_SYNC_IS_YSF(state->synctype) ? 0 : 1;
-    if (mbe_dmr_output_slot_enabled(opts, state, 1) && opts->mbe_out_fR != NULL
-        && (state->dmr_encR == 0 || opts->dmr_mute_encR == 0) && mbe_record_policy_allows(opts, state, policy_slot)) {
-        saveAmbe2450DataR(opts, state, ambe_d);
     }
 }
 
@@ -985,11 +976,7 @@ mbe_process_nxdn(dsd_opts* opts, dsd_state* state, char ambe_fr[4][24], dsd_voco
     if (dsd_frame_detail_enabled(opts)) {
         PrintAMBEData(opts, state, frame_ctx->ambe_d);
     }
-
-    if (opts->mbe_out_f != NULL && (state->dmr_encL == 0 || opts->dmr_mute_encL == 0)
-        && mbe_record_policy_allows(opts, state, 0)) {
-        saveAmbe2450Data(opts, state, frame_ctx->ambe_d);
-    }
+    frame_ctx->capture = MBE_CAPTURE_NXDN;
 }
 
 static void
@@ -1530,6 +1517,7 @@ mbeslot_process_left(dsd_opts* opts, dsd_state* state, char ambe_fr[4][24], dsd_
     mbe_slot_apply_straight_ks_left(state, frame_ctx->ambe_d);
     (void)dsd_mbe_strip_ambe_context_if_changed(decoded_ambe_d, frame_ctx->ambe_d, &ambe_result);
     mbe_finalize_slot_left(opts, state, frame_ctx->ambe_d, &ambe_result);
+    frame_ctx->capture = MBE_CAPTURE_SLOT_LEFT;
 }
 
 static void
@@ -1558,6 +1546,7 @@ mbeslot_process_right(dsd_opts* opts, dsd_state* state, char ambe_fr[4][24], dsd
     mbe_slot_apply_straight_ks_right(state, frame_ctx->ambe_d);
     (void)dsd_mbe_strip_ambe_context_if_changed(decoded_ambe_d, frame_ctx->ambe_d, &ambe_result);
     mbe_finalize_slot_right(opts, state, frame_ctx->ambe_d, &ambe_result);
+    frame_ctx->capture = MBE_CAPTURE_SLOT_RIGHT;
 }
 
 static void
@@ -1648,16 +1637,23 @@ mbe_post_stereo_active(const dsd_opts* opts, const dsd_state* state) {
     return opts->dmr_stereo == 1 || (DSD_SYNC_IS_DMR(state->synctype) && state->dmr_stereo == 1);
 }
 
-static void
-mbe_post_left_audio(dsd_opts* opts, dsd_state* state, const mbe_frame_ctx_t* frame_ctx) {
+/* What the post stage does with a slot for this frame: nothing, silence (a DMR mono slot not playing), or the frame
+   under the verdict its classification set. */
+typedef enum {
+    MBE_POST_SLOT_SKIP = 0,
+    MBE_POST_SLOT_MONO_OFF,
+    MBE_POST_SLOT_ACTIVE,
+} mbe_post_slot_class;
+
+static mbe_post_slot_class
+mbe_post_left_classify(dsd_opts* opts, dsd_state* state, const mbe_frame_ctx_t* frame_ctx) {
     const int dmr_mono_active = mbe_post_dmr_mono_active(opts, state);
     if (dmr_mono_active && !mbe_dmr_output_slot_enabled(opts, state, 0)) {
         state->dmr_encL = 1;
-        mbe_post_stage_slot_silence(state, 0);
-        return;
+        return MBE_POST_SLOT_MONO_OFF;
     }
     if ((!dmr_mono_active && !mbe_post_stereo_active(opts, state)) || state->currentslot != 0) {
-        return;
+        return MBE_POST_SLOT_SKIP;
     }
 
     int enc_bit = (state->dmr_so >> 6) & 0x1;
@@ -1667,6 +1663,18 @@ mbe_post_left_audio(dsd_opts* opts, dsd_state* state, const mbe_frame_ctx_t* fra
     mbe_post_apply_p25p2_metadata_gate(state, &state->dmr_encL);
     mbe_post_apply_forced_clear_gate(state, &state->dmr_encL);
     mbe_post_apply_reverse_mute(opts, &state->dmr_encL, &opts->dmr_mute_encL);
+    return MBE_POST_SLOT_ACTIVE;
+}
+
+static void
+mbe_post_left_stage(dsd_opts* opts, dsd_state* state, mbe_post_slot_class slot_class) {
+    if (slot_class == MBE_POST_SLOT_MONO_OFF) {
+        mbe_post_stage_slot_silence(state, 0);
+        return;
+    }
+    if (slot_class != MBE_POST_SLOT_ACTIVE) {
+        return;
+    }
 
     state->debug_audio_errors += state->errs2;
     if (state->dmr_encL == 0 || opts->dmr_mute_encL == 0) {
@@ -1701,16 +1709,15 @@ mbe_post_right_apply_decryptability(dsd_state* state, const mbe_frame_ctx_t* fra
     }
 }
 
-static void
-mbe_post_right_audio(dsd_opts* opts, dsd_state* state, const mbe_frame_ctx_t* frame_ctx) {
+static mbe_post_slot_class
+mbe_post_right_classify(dsd_opts* opts, dsd_state* state, const mbe_frame_ctx_t* frame_ctx) {
     const int dmr_mono_active = mbe_post_dmr_mono_active(opts, state);
     if (dmr_mono_active && !mbe_dmr_output_slot_enabled(opts, state, 1)) {
         state->dmr_encR = 1;
-        mbe_post_stage_slot_silence(state, 1);
-        return;
+        return MBE_POST_SLOT_MONO_OFF;
     }
     if ((!dmr_mono_active && !mbe_post_stereo_active(opts, state)) || state->currentslot != 1) {
-        return;
+        return MBE_POST_SLOT_SKIP;
     }
 
     int enc_bit = (state->dmr_soR >> 6) & 0x1;
@@ -1720,6 +1727,18 @@ mbe_post_right_audio(dsd_opts* opts, dsd_state* state, const mbe_frame_ctx_t* fr
     mbe_post_apply_p25p2_metadata_gate(state, &state->dmr_encR);
     mbe_post_apply_forced_clear_gate(state, &state->dmr_encR);
     mbe_post_apply_reverse_mute(opts, &state->dmr_encR, &opts->dmr_mute_encR);
+    return MBE_POST_SLOT_ACTIVE;
+}
+
+static void
+mbe_post_right_stage(dsd_opts* opts, dsd_state* state, mbe_post_slot_class slot_class) {
+    if (slot_class == MBE_POST_SLOT_MONO_OFF) {
+        mbe_post_stage_slot_silence(state, 1);
+        return;
+    }
+    if (slot_class != MBE_POST_SLOT_ACTIVE) {
+        return;
+    }
 
     state->debug_audio_errorsR += state->errs2R;
     if (state->dmr_encR == 0 || opts->dmr_mute_encR == 0) {
@@ -1900,15 +1919,91 @@ mbe_post_wav_outputs(dsd_opts* opts, dsd_state* state) {
     }
 }
 
+// A slot frame records as its per-call WAV does (dsd_audio_record_slot_allows_audio()): P25 Phase 2 by the P25 rule,
+// reverse mute included, in every preset; DMR and dPMR by the slot verdict the post stage just classified.
+static int
+mbe_capture_slot_verdict_allows(const dsd_opts* opts, const dsd_state* state, int slot) {
+    if (DSD_SYNC_IS_P25P2(state->synctype)) {
+        return state->p25_p2_audio_allowed[slot] != 0 && p25_crypto_audio_output_permitted(opts, state, slot);
+    }
+    if (slot == 1) {
+        return state->dmr_encR == 0 || opts->dmr_mute_encR == 0;
+    }
+    return state->dmr_encL == 0 || opts->dmr_mute_encL == 0;
+}
+
+// MBE capture (-d) of the frame, after the post stage classified its slot verdict and before staging: each save point
+// keeps its own crypto condition and adds the talkgroup record policy (issue #661).
+static void
+mbe_capture_frame(dsd_opts* opts, dsd_state* state, const mbe_frame_ctx_t* frame_ctx) {
+    switch (frame_ctx->capture) {
+        case MBE_CAPTURE_P25P1:
+            // A live P25 frame reached the vocoder with crypto permitted; reverse mute
+            // (-q) still keeps a clear call out of the capture as it keeps it off the speakers.
+            if (dsd_mbe_out_enabled(opts, 0) && mbe_record_policy_allows(opts, state, 0)
+                && (!dsd_audio_p25p1_live_voice(state) || p25_crypto_audio_output_permitted(opts, state, 0))) {
+                dsd_mbe_out_write(opts, state, 0, DSD_MBE_OUT_FORMAT_IMBE, frame_ctx->imbe_d);
+            }
+            break;
+        case MBE_CAPTURE_PROVOICE:
+            if (dsd_mbe_out_enabled(opts, 0) && mbe_record_policy_allows(opts, state, 0)) {
+                dsd_mbe_out_write(opts, state, 0, DSD_MBE_OUT_FORMAT_IMBE, frame_ctx->imbe_d);
+            }
+            break;
+        case MBE_CAPTURE_DSTAR:
+            // D-STAR publishes on slot 0 whatever slot a TDMA decode left current.
+            if (dsd_mbe_out_enabled(opts, 0) && mbe_record_policy_allows(opts, state, 0)) {
+                dsd_mbe_out_write(opts, state, 0, DSD_MBE_OUT_FORMAT_DSTAR, frame_ctx->ambe_d);
+            }
+            break;
+        case MBE_CAPTURE_X2:
+            if (dsd_mbe_out_enabled(opts, 0)
+                && mbe_record_policy_allows(opts, state, state->currentslot == 1 ? 1 : 0)) {
+                mbe_save_x2_frame(opts, state, frame_ctx->ambe_d);
+            }
+            break;
+        case MBE_CAPTURE_NXDN:
+            if (dsd_mbe_out_enabled(opts, 0) && (state->dmr_encL == 0 || opts->dmr_mute_encL == 0)
+                && mbe_record_policy_allows(opts, state, 0)) {
+                dsd_mbe_out_write(opts, state, 0, DSD_MBE_OUT_FORMAT_AMBE, frame_ctx->ambe_d);
+            }
+            break;
+        case MBE_CAPTURE_SLOT_LEFT:
+            if (dsd_mbe_out_enabled(opts, 0) && mbe_dmr_output_slot_enabled(opts, state, 0)
+                && mbe_capture_slot_verdict_allows(opts, state, 0) && mbe_record_policy_allows(opts, state, 0)) {
+                dsd_mbe_out_write(opts, state, 0, DSD_MBE_OUT_FORMAT_AMBE, frame_ctx->ambe_d);
+            }
+            break;
+        case MBE_CAPTURE_SLOT_RIGHT: {
+            // YSF is FDMA: it publishes on slot 0 even when a TDMA decode left currentslot at 1.
+            const int policy_slot = DSD_SYNC_IS_YSF(state->synctype) ? 0 : 1;
+            if (dsd_mbe_out_enabled(opts, 1) && mbe_dmr_output_slot_enabled(opts, state, 1)
+                && mbe_capture_slot_verdict_allows(opts, state, 1)
+                && mbe_record_policy_allows(opts, state, policy_slot)) {
+                dsd_mbe_out_write(opts, state, 1, DSD_MBE_OUT_FORMAT_AMBE, frame_ctx->ambe_d);
+            }
+            break;
+        }
+        case MBE_CAPTURE_NONE:
+        default: break;
+    }
+}
+
 static void
 mbe_post_audio_and_recording(dsd_opts* opts, dsd_state* state, const mbe_frame_ctx_t* frame_ctx) {
     // Until a branch below stages this frame's short samples, the current slot's short frame is not this frame's.
     state->mbe_short_silenced[state->currentslot == 1 ? 1 : 0] = 1U;
     if (mbe_post_uses_mono_left_staging(state)) {
+        mbe_capture_frame(opts, state, frame_ctx);
         mbe_post_mono_left_audio(opts, state);
     } else {
-        mbe_post_left_audio(opts, state, frame_ctx);
-        mbe_post_right_audio(opts, state, frame_ctx);
+        // Both slot verdicts are classified before the capture saves the frame, then the slots stage: staging reads no
+        // verdict of the other slot and classification reads nothing staging writes, so the order changes no output.
+        const mbe_post_slot_class left = mbe_post_left_classify(opts, state, frame_ctx);
+        const mbe_post_slot_class right = mbe_post_right_classify(opts, state, frame_ctx);
+        mbe_capture_frame(opts, state, frame_ctx);
+        mbe_post_left_stage(opts, state, left);
+        mbe_post_right_stage(opts, state, right);
         mbe_post_other_audio(opts, state);
     }
     mbe_post_wav_outputs(opts, state);

@@ -508,6 +508,16 @@ ysf_write_bypassed_call_wav(dsd_opts* opts, dsd_state* state) {
     }
 }
 
+// V/D2's MBE capture (-d), for the same reason and under the same record policy as its per-call WAV: the frame never
+// reaches the vocoder's capture stage (issue #661).
+static void
+ysf_capture_bypassed_frame(dsd_opts* opts, dsd_state* state, const char ambe_d[49]) {
+    int allow = 0;
+    if (dsd_mbe_out_enabled(opts, 0) && dsd_audio_record_policy_gate_slot(opts, state, 0, &allow) == 0 && allow) {
+        dsd_mbe_out_write(opts, state, 0, DSD_MBE_OUT_FORMAT_AMBE, ambe_d);
+    }
+}
+
 static void
 ysf_emit_audio_from_temp(dsd_opts* opts, dsd_state* state, bool bypassed_vocoder) {
     if (opts->floating_point == 0) {
@@ -758,6 +768,10 @@ ysf_handle_vd_type2(dsd_opts* opts, dsd_state* state, const ysf_fich_info* info)
         state->errs2 = 0;
 
         ysf_read_type2_vech_bits(opts, state, vech_bits);
+        /* A voice block read across the carrier boundary is dropped with the rest of the frame, as V/D1 drops it. */
+        if (ysf_carrier_left(state, info)) {
+            return;
+        }
         ysf_build_type2_ambe(vech_bits, temp, ambe_d);
 
         state->errs2 = vech_bits[103];
@@ -786,6 +800,7 @@ ysf_handle_vd_type2(dsd_opts* opts, dsd_state* state, const ysf_fich_info* info)
             PrintAMBEData(opts, state, ambe_d);
         }
 
+        ysf_capture_bypassed_frame(opts, state, ambe_d);
         ysf_emit_audio_from_temp(opts, state, true);
     }
     if (ysf_carrier_left(state, info)) {
@@ -822,8 +837,8 @@ ysf_read_full_rate_imbe_raw(dsd_opts* opts, dsd_state* state, uint8_t imbe_raw[1
     }
 }
 
-static void
-ysf_decode_full_rate_voice_slot(dsd_opts* opts, dsd_state* state) {
+static bool
+ysf_decode_full_rate_voice_slot(dsd_opts* opts, dsd_state* state, const ysf_fich_info* info) {
     uint8_t imbe_raw[144];
     uint8_t imbe_vch[144];
     char imbe_fr[8][23];
@@ -834,6 +849,10 @@ ysf_decode_full_rate_voice_slot(dsd_opts* opts, dsd_state* state) {
     DSD_MEMSET(imbe_fr, 0, sizeof(imbe_fr));
 
     ysf_read_full_rate_imbe_raw(opts, state, imbe_raw);
+    /* A voice slot read across the carrier boundary is dropped with the rest of the frame, as V/D1 drops it. */
+    if (ysf_carrier_left(state, info)) {
+        return false;
+    }
     dsd_ysf_unpack_full_rate_imbe(imbe_raw, imbe_vch, imbe_fr);
 
     state->synctype = DSD_SYNC_P25P1_POS;
@@ -841,6 +860,7 @@ ysf_decode_full_rate_voice_slot(dsd_opts* opts, dsd_state* state) {
     state->synctype = synctype;
 
     ysf_emit_audio_from_temp(opts, state, false);
+    return true;
 }
 
 static void
@@ -855,7 +875,9 @@ ysf_handle_full_rate_voice(dsd_opts* opts, dsd_state* state, const ysf_fich_info
     }
 
     for (int i = 0; i < voice_slots; i++) {
-        ysf_decode_full_rate_voice_slot(opts, state);
+        if (!ysf_decode_full_rate_voice_slot(opts, state, info)) {
+            return;
+        }
     }
 
     if (is_csd3 && !ysf_carrier_left(state, info)) {
@@ -956,6 +978,16 @@ processYSF(dsd_opts* opts, dsd_state* state) {
     info.carrier_seq = state->carrier_seq;
     ysf_parse_fich(opts, state, &info, &last_dt, &last_fi);
     ysf_print_fich_summary(opts, &info);
+    if (info.err == 0 && !ysf_carrier_left(state, &info)) {
+        /* Confirmed as soon as the FICH verifies, so this frame's own voice is captured (issue #661); the verdict
+           below reads the flag as before. */
+        state->ysf_fich_confirmed = 1;
+        /* A verified header or terminator bounds the transmission: its capture ends here, even when the terminator
+           of the one before it was lost. */
+        if (info.fi == 0U || info.fi == 2U) {
+            dsd_mbe_out_close_protocol(opts, state, DSD_MBE_OUT_SLOT1, DSD_SYNC_YSF_POS);
+        }
+    }
 
     ysf_update_call_lifecycle(opts, state, &info);
     ysf_dispatch_payload(opts, state, &info);

@@ -91,14 +91,6 @@ typedef struct {
     char timestr[9];
 } dmr_bs_bootstrap_ctx;
 
-static int
-dmr_bs_output_slot_enabled(const dsd_opts* opts, const dsd_state* state, int slot) {
-    if (opts->dmr_mono != 1 || !DSD_SYNC_IS_DMR(state->synctype)) {
-        return 1;
-    }
-    return state->dmr_mono_slot == slot;
-}
-
 /*
  * Mark dmrBS helper roots used by the public decoder entrypoint. CodeQL's
  * manual C/C++ database can miss this local call chain and report all children.
@@ -294,15 +286,11 @@ handle_dmr_bs_data_sync(dsd_opts* opts, dsd_state* state, dmr_bs_ctx* ctx) {
 
     if (ctx->internalslot == 0) {
         ctx->vc1 = 7;
-        if (opts->mbe_out_f != NULL) {
-            closeMbeOutFile(opts, state);
-        }
+        dsd_mbe_out_close_protocol(opts, state, DSD_MBE_OUT_SLOT1, state->synctype);
     }
     if (ctx->internalslot == 1) {
         ctx->vc2 = 7;
-        if (opts->mbe_out_fR != NULL) {
-            closeMbeOutFileR(opts, state);
-        }
+        dsd_mbe_out_close_protocol(opts, state, DSD_MBE_OUT_SLOT2, state->synctype);
     }
 
     dmr_data_sync(opts, state);
@@ -405,17 +393,11 @@ prepare_dmr_bs_voice_slot(dsd_opts* opts, dsd_state* state, const dmr_bs_ctx* ct
         vc = ctx->vc1;
         DSD_SNPRINTF(light, 18, "%s", " [SLOT1]  slot2  ");
         dmr_sm_emit_voice_sync(opts, state, 0);
-        if (dmr_bs_output_slot_enabled(opts, state, 0) && (opts->mbe_out_dir[0] != 0) && (opts->mbe_out_f == NULL)) {
-            openMbeOutFile(opts, state);
-        }
     } else {
         state->dmrburstR = 16;
         vc = ctx->vc2;
         DSD_SNPRINTF(light, 18, "%s", "  slot1  [SLOT2] ");
         dmr_sm_emit_voice_sync(opts, state, 1);
-        if (dmr_bs_output_slot_enabled(opts, state, 1) && (opts->mbe_out_dir[0] != 0) && (opts->mbe_out_fR == NULL)) {
-            openMbeOutFileR(opts, state);
-        }
     }
 
     if (opts->inverted_dmr == 0) {
@@ -657,12 +639,7 @@ finalize_dmr_bs(dsd_opts* opts, dsd_state* state, const dmr_bs_ctx* ctx) {
     state->errs2R = 0;
     state->errs2 = 0;
 
-    if (opts->mbe_out_f != NULL) {
-        closeMbeOutFile(opts, state);
-    }
-    if (opts->mbe_out_fR != NULL) {
-        closeMbeOutFileR(opts, state);
-    }
+    dsd_mbe_out_close_protocol(opts, state, DSD_MBE_OUT_BOTH, state->synctype);
 
     DSD_MEMSET(state->f_l4, 0.0f, sizeof(state->f_l4));
     DSD_MEMSET(state->f_r4, 0.0f, sizeof(state->f_r4));
@@ -759,18 +736,11 @@ collect_dmr_bs_bootstrap_prefetched_voice(const dsd_state* state, dmr_bs_bootstr
 }
 
 static void
-prepare_dmr_bs_bootstrap_slot_output(dsd_opts* opts, dsd_state* state, uint8_t internalslot, char light[18],
-                                     char polarity[3]) {
+prepare_dmr_bs_bootstrap_slot_output(const dsd_opts* opts, uint8_t internalslot, char light[18], char polarity[3]) {
     if (internalslot == 0) {
         DSD_SNPRINTF(light, 18, "%s", " [SLOT1]  slot2  ");
-        if (dmr_bs_output_slot_enabled(opts, state, 0) && (opts->mbe_out_dir[0] != 0) && (opts->mbe_out_f == NULL)) {
-            openMbeOutFile(opts, state);
-        }
     } else {
         DSD_SNPRINTF(light, 18, "%s", "  slot1  [SLOT2] ");
-        if (dmr_bs_output_slot_enabled(opts, state, 1) && (opts->mbe_out_dir[0] != 0) && (opts->mbe_out_fR == NULL)) {
-            openMbeOutFileR(opts, state);
-        }
     }
 
     if (opts->inverted_dmr == 0) {
@@ -789,7 +759,7 @@ process_dmr_bs_bootstrap_voice_if_open(dsd_opts* opts, dsd_state* state, dmr_bs_
 
     char polarity[3];
     char light[18];
-    prepare_dmr_bs_bootstrap_slot_output(opts, state, ctx->internalslot, light, polarity);
+    prepare_dmr_bs_bootstrap_slot_output(opts, ctx->internalslot, light, polarity);
 
     DSD_FPRINTF(stderr, "%s ", ctx->timestr);
     if (state->dmr_color_code != 16) {

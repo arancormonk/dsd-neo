@@ -10,6 +10,7 @@
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/events.h>
+#include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
@@ -132,6 +133,21 @@ processMbeFrameSoft(dsd_opts* opts, dsd_state* state, dsd_vocoder_soft_bit imbe_
     assert(mbe_frame_calls < DSTAR_VOICE_FRAMES);
     DSD_MEMCPY(captured_ambe_frames[mbe_frame_calls], ambe_fr, sizeof(captured_ambe_frames[0]));
     mbe_frame_calls++;
+}
+
+/* A verified header ends the capture of the transmission before it (issue #661). */
+static int capture_close_calls;
+static int capture_close_voice_frames_before = -1;
+static int capture_close_synctype = -1;
+
+void
+dsd_mbe_out_close_protocol(dsd_opts* opts, dsd_state* state, int slot_mask, int synctype) {
+    (void)opts;
+    (void)state;
+    assert(slot_mask == DSD_MBE_OUT_SLOT1);
+    capture_close_calls++;
+    capture_close_voice_frames_before = mbe_frame_calls;
+    capture_close_synctype = synctype;
 }
 
 void
@@ -370,9 +386,16 @@ test_passing_header_confirms_the_voice_frame_behind_it(void) {
     opts.pulse_digi_out_channels = 1;
     reset_counters();
 
+    capture_close_calls = 0;
+    capture_close_voice_frames_before = -1;
+    state.synctype = DSD_SYNC_DSTAR_HD_NEG;
     header_decode_soft_result = 1;
     assert(processDSTAR_HD(&opts, &state) == 1);
     assert(state.dstar_confirmed == 1);
+    /* It also ends the capture before any voice frame of its own superframe is written (issue #661). */
+    assert(capture_close_calls == 1);
+    assert(capture_close_voice_frames_before == 0);
+    assert(capture_close_synctype == DSD_SYNC_DSTAR_HD_NEG);
 }
 
 /* A failed header leaves the transmission unproved: the superframe it consumed anyway is
@@ -387,10 +410,13 @@ test_failed_header_leaves_the_transmission_pending(void) {
     opts.pulse_digi_out_channels = 1;
     reset_counters();
 
+    capture_close_calls = 0;
     header_decode_soft_result = 0;
     assert(processDSTAR_HD(&opts, &state) == 0);
     assert(state.dstar_confirmed == 0);
     assert(state.dstar_confirm_weak_streak == 1);
+    /* A header that fails its CRC bounds nothing: the capture goes on. */
+    assert(capture_close_calls == 0);
     header_decode_soft_result = 1;
 }
 

@@ -44,6 +44,10 @@ static char g_read_word_bits[6];
 static char g_read_parity_bits[4];
 static char g_soft_hamming_output[10];
 
+/* The capture opener of the revision before issue #661, kept with its counter so this harness also links and runs
+   against it: the first frame written creates the capture now, so dispatching an IMBE opens nothing. */
+void openMbeOutFile(dsd_opts* opts, dsd_state* state);
+
 void
 openMbeOutFile(dsd_opts* opts, dsd_state* state) {
     (void)state;
@@ -349,7 +353,7 @@ test_ldu_imbe_skip_and_encryption_flag(void) {
     state.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
     process_imbe_or_skip_non_standard(&opts, &state, imbe_fr, imbe_soft_fr);
     rc |= expect_int("standard c0 dispatched", g_vocoder_calls, 3);
-    rc |= expect_int("classified voice opens recording", g_open_mbe_calls, 1);
+    rc |= expect_int("classified voice leaves the recording to its first frame", g_open_mbe_calls, 0);
 
     state.payload_algid = 0x80;
     state.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;

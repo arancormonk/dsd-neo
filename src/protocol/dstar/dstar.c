@@ -6,6 +6,7 @@
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/events.h>
+#include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/vocoder.h>
 #include <dsd-neo/protocol/dstar/dstar.h>
@@ -105,6 +106,8 @@ processDSTAR_HD(dsd_opts* opts, dsd_state* state) {
         /* A CRC-16/X.25 over 39 octets: proof on its own, and it opens the transmission the
          * voice superframe below belongs to. */
         dstar_confirm_note_evidence(state, DSTAR_EVIDENCE_STRONG);
+        /* The capture of the transmission before it ends here (issue #661). */
+        dsd_mbe_out_close_protocol(opts, state, DSD_MBE_OUT_SLOT1, state->synctype);
     }
     (void)processDSTAR(opts, state);
     return header_ok;

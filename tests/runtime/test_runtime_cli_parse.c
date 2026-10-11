@@ -168,6 +168,58 @@ test_help_returns_one_shot_and_does_not_exit(void) {
     return 0;
 }
 
+/* Issue #661: a -d or -7 folder that does not fit its buffer is refused, before anything is created, never cut to the
+   name of some other folder. One that fits exactly is taken as given. */
+static int
+test_folder_options_refuse_paths_that_do_not_fit(void) {
+    int rc = 0;
+    static const char opt_d[] = "-d";
+    static const char opt_7[] = "-7";
+    const char* options[] = {opt_d, opt_7};
+    for (size_t i = 0; i < 2U; i++) {
+        dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+        dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+        if (!opts || !state) {
+            free(opts);
+            free(state);
+            return 1;
+        }
+        initOpts(opts);
+        initState(state);
+        const size_t limit = i == 0U ? sizeof opts->mbe_out_dir : sizeof opts->wav_out_dir;
+        /* A path one byte too long, under a folder that does not exist, so a cut copy would be created if taken. */
+        char* path = (char*)malloc(limit + 1U);
+        if (!path) {
+            freeState(state);
+            free(opts);
+            free(state);
+            return 1;
+        }
+        DSD_MEMSET(path, 'a', limit);
+        DSD_MEMCPY(path, "dsdneo_no_such_dir/", 19U);
+        path[limit] = '\0';
+
+        char arg0[] = "dsd-neo";
+        char arg1[3];
+        DSD_SNPRINTF(arg1, sizeof arg1, "%s", options[i]);
+        char* argv[] = {arg0, arg1, path, NULL};
+        int argc_effective = 0;
+        int exit_rc = 0;
+        char err[512];
+        const int parsed = parse_args_capture_stderr(3, argv, opts, state, &argc_effective, &exit_rc, err, sizeof err);
+        if (parsed != DSD_PARSE_ERROR || exit_rc != 1 || strstr(err, "folder path is longer") == NULL) {
+            DSD_FPRINTF(stderr, "%s with a %zu-byte path: rc=%d exit=%d\n%s\n", options[i], limit, parsed, exit_rc,
+                        err);
+            rc = 1;
+        }
+        free(path);
+        freeState(state);
+        free(opts);
+        free(state);
+    }
+    return rc;
+}
+
 static int
 test_invalid_option_returns_error_and_does_not_exit(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
@@ -9584,6 +9636,7 @@ main(void) {
     rc |= test_force_conflicts_and_explicit_off_options();
     rc |= test_help_returns_one_shot_and_does_not_exit();
     rc |= test_invalid_option_returns_error_and_does_not_exit();
+    rc |= test_folder_options_refuse_paths_that_do_not_fit();
     rc |= test_unknown_option_returns_error_and_does_not_exit();
     rc |= test_frontend_terminal_option_sets_terminal_kind();
     rc |= test_analog_monitor_defaults_and_gain();

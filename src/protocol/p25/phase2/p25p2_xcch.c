@@ -15,6 +15,7 @@
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/p25/p25_cc_activity.h>
 #include <dsd-neo/protocol/p25/p25_crc.h>
 #include <dsd-neo/protocol/p25/p25_crypto.h>
@@ -217,15 +218,7 @@ p25p2_xcch_reset_slot_gain(const dsd_opts* opts, dsd_state* state, int slot) {
 
 static void
 p25p2_xcch_close_slot_mbe_out(dsd_opts* opts, dsd_state* state, int slot) {
-    if (slot == 0) {
-        if (opts->mbe_out_f != NULL) {
-            closeMbeOutFile(opts, state);
-        }
-    } else {
-        if (opts->mbe_out_fR != NULL) {
-            closeMbeOutFileR(opts, state);
-        }
-    }
+    dsd_mbe_out_close_protocol(opts, state, slot == 0 ? DSD_MBE_OUT_SLOT1 : DSD_MBE_OUT_SLOT2, DSD_SYNC_P25P2_POS);
 }
 
 static void

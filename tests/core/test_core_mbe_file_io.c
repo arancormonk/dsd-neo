@@ -38,6 +38,7 @@
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/platform/file_compat.h"
 #include "dsd-neo/platform/platform.h"
+#include "dsd-neo/platform/posix_compat.h"
 #include "test_support.h"
 
 static int
@@ -258,6 +259,87 @@ file_size_or_negative(const char* path) {
     long size = ftell(f);
     fclose(f);
     return size;
+}
+
+typedef struct {
+    int count;
+    char last[256];
+} dir_count_ctx;
+
+static int
+count_dir_entry(const char* name, void* user) {
+    dir_count_ctx* ctx = (dir_count_ctx*)user;
+    ctx->count++;
+    DSD_SNPRINTF(ctx->last, sizeof ctx->last, "%s", name);
+    return 0;
+}
+
+static int
+count_dir_files(const char* dir) {
+    dir_count_ctx ctx;
+    DSD_MEMSET(&ctx, 0, sizeof ctx);
+    if (dsd_dir_list(dir, count_dir_entry, &ctx) != 0) {
+        return -1;
+    }
+    return ctx.count;
+}
+
+/* Remove every regular file in dir, then dir. */
+static int
+remove_dir_files_cb(const char* name, void* user) {
+    const char* dir = (const char*)user;
+    char path[DSD_TEST_PATH_MAX];
+    DSD_SNPRINTF(path, sizeof path, "%s%c%s", dir, dsd_test_path_sep(), name);
+    (void)remove(path);
+    return 0;
+}
+
+static void
+remove_dir_tree(const char* dir) {
+    (void)dsd_dir_list(dir, remove_dir_files_cb, (void*)dir);
+    (void)remove_dir(dir);
+}
+
+typedef struct {
+    char names[8][256];
+    long sizes[8];
+    int count;
+    const char* dir;
+} dir_files_ctx;
+
+static int
+collect_dir_file(const char* name, void* user) {
+    dir_files_ctx* ctx = (dir_files_ctx*)user;
+    if (ctx->count >= 8) {
+        return 1;
+    }
+    DSD_SNPRINTF(ctx->names[ctx->count], sizeof ctx->names[0], "%s", name);
+    char path[DSD_TEST_PATH_MAX * 2];
+    DSD_SNPRINTF(path, sizeof path, "%s/%s", ctx->dir, name);
+    ctx->sizes[ctx->count] = file_size_or_negative(path);
+    ctx->count++;
+    return 0;
+}
+
+/* How many files in dir end in ext, and the bytes they hold together. */
+static int
+count_capture_files(const char* dir, const char* ext, long* total_size) {
+    dir_files_ctx ctx;
+    DSD_MEMSET(&ctx, 0, sizeof ctx);
+    ctx.dir = dir;
+    (void)dsd_dir_list(dir, collect_dir_file, &ctx);
+    int count = 0;
+    long total = 0;
+    for (int i = 0; i < ctx.count; i++) {
+        if (has_suffix(ctx.names[i], ext)) {
+            count++;
+            total += ctx.sizes[i];
+        }
+    }
+    if (total_size) {
+        *total_size = total;
+    }
+    return count;
 }
 
 static int
@@ -1387,8 +1469,10 @@ test_sdrtrunk_json_invalid_numeric_fields_reset_to_zero(void) {
     return rc;
 }
 
+/* Issue #661: a protocol token creates no capture; the first voice frame recorded under it does. A token with no voice
+   behind it leaves the folder empty. */
 static int
-test_sdrtrunk_json_protocol_opens_and_closes_mbe_out_file(void) {
+test_sdrtrunk_json_protocol_token_alone_creates_no_capture(void) {
     int rc = 0;
     char dir[DSD_TEST_PATH_MAX];
     static dsd_opts opts;
@@ -1406,26 +1490,66 @@ test_sdrtrunk_json_protocol_opens_and_closes_mbe_out_file(void) {
     DSD_MEMSET(history, 0, sizeof history);
     DSD_SNPRINTF(opts.mbe_out_dir, sizeof opts.mbe_out_dir, "%s%c", dir, dsd_test_path_sep());
     opts.playfiles = 1;
-    state.tgcount = 3;
-    state.tg[2][1] = 4;
     state.event_history_s = history;
 
     rc |= run_sdrtrunk_json(json, &opts, &state);
-    rc |= expect_int("sdrtrunk mbe close clears flag", opts.mbe_out, 0);
-    rc |= expect_true("sdrtrunk mbe close clears handle", opts.mbe_out_f == NULL);
-    rc |= expect_true("sdrtrunk mbe filename suffix", has_suffix(opts.mbe_out_file, "_S1.amb"));
-    rc |= expect_int("sdrtrunk mbe resets tgcount", state.tgcount, 0);
-    rc |= expect_int("sdrtrunk mbe resets tg table", state.tg[2][1], 0);
+    rc |= expect_int("sdrtrunk token only: no capture flag", opts.mbe_out, 0);
+    rc |= expect_true("sdrtrunk token only: no handle", opts.mbe_out_f == NULL);
+    rc |= expect_int("sdrtrunk token only: folder empty", count_dir_files(dir), 0);
 
-    char header[8];
-    if (read_file_prefix(opts.mbe_out_path, header, sizeof header) != 0) {
-        rc = 1;
-    } else {
-        rc |= expect_true("sdrtrunk mbe header", strcmp(header, ".amb") == 0);
+    remove_dir_tree(dir);
+    return rc;
+}
+
+/* A second protocol token in one file starts a capture of its own, in its own format, even before any dispatch has
+   ever run (the frame's protocol is the token's). */
+static int
+test_sdrtrunk_json_second_protocol_gets_its_own_capture(void) {
+    int rc = 0;
+    char dir[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I history[2];
+    static const char json_formats[] =
+        "{\"version\":\"2\",\"protocol\":\"APCO25-PHASE1\",\"call_type\":\"GROUP\",\"encrypted\":\"false\","
+        "\"hex\":\"000000000000000000000000000000000000\",\"protocol\":\"DMR\",\"hex\":\"000000000000000000\"}";
+    static const char json_owners[] =
+        "{\"version\":\"2\",\"protocol\":\"DMR\",\"call_type\":\"GROUP\",\"encrypted\":\"false\","
+        "\"hex\":\"000000000000000000\",\"protocol\":\"APCO25-PHASE2\",\"hex\":\"000000000000000000\"}";
+
+    if (!dsd_test_mkdtemp(dir, sizeof dir, "dsdneo_sdrtrunk_two")) {
+        return 1;
     }
+    long size = 0;
 
-    (void)remove(opts.mbe_out_path);
-    (void)remove_dir(dir);
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+    DSD_MEMSET(history, 0, sizeof history);
+    DSD_SNPRINTF(opts.mbe_out_dir, sizeof opts.mbe_out_dir, "%s", dir);
+    opts.playfiles = 1;
+    opts.floating_point = 1;
+    state.event_history_s = history;
+    rc |= run_sdrtrunk_json(json_formats, &opts, &state);
+    rc |= expect_true("sdrtrunk two formats: closed at eof", opts.mbe_out_f == NULL);
+    rc |= expect_int("sdrtrunk two formats: one imb", count_capture_files(dir, ".imb", &size), 1);
+    rc |= expect_true("sdrtrunk two formats: imb holds the imbe record", size == 4 + 12);
+    rc |= expect_int("sdrtrunk two formats: one amb", count_capture_files(dir, ".amb", &size), 1);
+    rc |= expect_true("sdrtrunk two formats: amb holds the ambe record", size == 4 + 8);
+    remove_dir_tree(dir);
+    (void)dsd_mkdir(dir, 0700);
+
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+    DSD_MEMSET(history, 0, sizeof history);
+    DSD_SNPRINTF(opts.mbe_out_dir, sizeof opts.mbe_out_dir, "%s", dir);
+    opts.playfiles = 1;
+    opts.floating_point = 1;
+    state.event_history_s = history;
+    rc |= run_sdrtrunk_json(json_owners, &opts, &state);
+    rc |= expect_int("sdrtrunk two owners: two amb", count_capture_files(dir, ".amb", &size), 2);
+    rc |= expect_true("sdrtrunk two owners: one record each", size == 2 * (4 + 8));
+
+    remove_dir_tree(dir);
     return rc;
 }
 
@@ -2012,18 +2136,57 @@ test_sdrtrunk_nxdn_missing_context_and_sacch_alignment(void) {
     return rc;
 }
 
+/* An IMBE record as saveImbe4400Data() writes it: the error count and eleven packed bytes, LF, CR and Ctrl-Z among
+ * them, as in the AMBE probe. */
+static const unsigned char kBinaryProbeImbe[12] = {0x0A, 0x0D, 0x0A, 0x1A, 0x0A, 0x00,
+                                                   0xFF, 0x01, 0x0D, 0x0A, 0x1A, 0x80};
+
+static void
+binary_probe_imbe_bits(char* imbe_d) {
+    for (int byte = 0; byte < 11; byte++) {
+        for (int bit = 0; bit < 8; bit++) {
+            imbe_d[(byte * 8) + bit] = (char)((kBinaryProbeImbe[1 + byte] >> (7 - bit)) & 1U);
+        }
+    }
+}
+
 static int
-test_open_mbe_out_file_creates_slot_files_and_closes(void) {
+expect_imbe_file_bytes(const char* label, const char* path) {
+    unsigned char bytes[16];
+    size_t got = 0;
+    if (read_file_exact(path, bytes, sizeof bytes, &got) != 0) {
+        return 1;
+    }
+    int ok = got == sizeof bytes && memcmp(bytes, ".imb", 4) == 0
+             && memcmp(bytes + 4, kBinaryProbeImbe, sizeof kBinaryProbeImbe) == 0;
+    return expect_true(label, ok);
+}
+
+static void
+mbe_out_test_reset(dsd_opts* opts, dsd_state* state, const char* dir) {
+    DSD_MEMSET(opts, 0, sizeof *opts);
+    DSD_MEMSET(state, 0, sizeof *state);
+    if (dir) {
+        DSD_SNPRINTF(opts->mbe_out_dir, sizeof opts->mbe_out_dir, "%s", dir);
+    }
+    state->frame_dispatch_synctype = DSD_SYNC_NONE;
+}
+
+/* Issue #661: the capture writer creates each slot's file with its first frame, in the folder (-d without a trailing
+   separator included), in the frame's record format, and the closers clear what it recorded. */
+static int
+test_mbe_out_write_creates_slot_files_and_closes(void) {
     int rc = 0;
 
     struct {
         int synctype;
+        dsd_mbe_out_format format;
         const char* suffix;
         const char* header;
     } slot1_cases[] = {
-        {DSD_SYNC_P25P1_POS, "_S1.imb", ".imb"},
-        {DSD_SYNC_DSTAR_VOICE_POS, "_S1.dmb", ".dmb"},
-        {DSD_SYNC_DMR_BS_VOICE_POS, "_S1.amb", ".amb"},
+        {DSD_SYNC_P25P1_POS, DSD_MBE_OUT_FORMAT_IMBE, "_S1.imb", ".imb"},
+        {DSD_SYNC_DSTAR_VOICE_POS, DSD_MBE_OUT_FORMAT_DSTAR, "_S1.dmb", ".dmb"},
+        {DSD_SYNC_DMR_BS_VOICE_POS, DSD_MBE_OUT_FORMAT_AMBE, "_S1.amb", ".amb"},
     };
 
     char dir[DSD_TEST_PATH_MAX];
@@ -2035,53 +2198,62 @@ test_open_mbe_out_file_creates_slot_files_and_closes(void) {
     for (size_t i = 0; i < sizeof slot1_cases / sizeof slot1_cases[0]; i++) {
         static dsd_opts opts;
         static dsd_state state;
-        DSD_MEMSET(&opts, 0, sizeof opts);
-        DSD_MEMSET(&state, 0, sizeof state);
-        DSD_SNPRINTF(opts.mbe_out_dir, sizeof opts.mbe_out_dir, "%s%c", dir, dsd_test_path_sep());
+        mbe_out_test_reset(&opts, &state, dir);
         state.synctype = slot1_cases[i].synctype;
         state.tgcount = 7;
         state.tg[3][2] = 9;
 
-        openMbeOutFile(&opts, &state);
-        rc |= expect_int("slot1 open flag", opts.mbe_out, 1);
-        char probe_bits[49];
-        binary_probe_ambe_bits(probe_bits);
-        state.errs2 = kBinaryProbeFrame[0];
-        if (opts.mbe_out_f) {
-            saveAmbe2450Data(&opts, &state, probe_bits);
+        rc |= expect_true("slot1 capture enabled by the folder", dsd_mbe_out_enabled(&opts, 0));
+        rc |= expect_true("slot1 no file before the first frame", opts.mbe_out_f == NULL);
+        char bits[88];
+        DSD_MEMSET(bits, 0, sizeof bits);
+        if (slot1_cases[i].format == DSD_MBE_OUT_FORMAT_IMBE) {
+            binary_probe_imbe_bits(bits);
+            state.errs2 = kBinaryProbeImbe[0];
+        } else {
+            binary_probe_ambe_bits(bits);
+            state.errs2 = kBinaryProbeFrame[0];
         }
+        dsd_mbe_out_write(&opts, &state, 0, slot1_cases[i].format, bits);
+        rc |= expect_int("slot1 open flag", opts.mbe_out, 1);
         rc |= expect_true("slot1 file handle opened", opts.mbe_out_f != NULL);
+        rc |= expect_int("slot1 owner", opts.mbe_out_owner, dsd_mbe_out_owner_of(slot1_cases[i].synctype));
+        rc |= expect_int("slot1 format", opts.mbe_out_format, (int)slot1_cases[i].format);
         rc |= expect_true("slot1 filename suffix", has_suffix(opts.mbe_out_file, slot1_cases[i].suffix));
-        rc |= expect_true("slot1 path contains filename", strstr(opts.mbe_out_path, opts.mbe_out_file) != NULL);
+        char want_path[DSD_TEST_PATH_MAX * 2];
+        DSD_SNPRINTF(want_path, sizeof want_path, "%s/%s", dir, opts.mbe_out_file);
+        rc |= expect_true("slot1 file inside the folder", strcmp(opts.mbe_out_path, want_path) == 0);
         rc |= expect_int("slot1 tgcount reset", state.tgcount, 0);
         rc |= expect_int("slot1 tg table reset", state.tg[3][2], 0);
 
         closeMbeOutFile(&opts, &state);
         rc |= expect_int("slot1 close clears flag", opts.mbe_out, 0);
         rc |= expect_true("slot1 close clears handle", opts.mbe_out_f == NULL);
+        rc |= expect_int("slot1 close clears owner", opts.mbe_out_owner, 0);
+        rc |= expect_int("slot1 close clears format", opts.mbe_out_format, DSD_MBE_OUT_FORMAT_NONE);
 
-        rc |= expect_mbe_file_bytes("slot1 header and binary frame", opts.mbe_out_path, slot1_cases[i].header);
+        if (slot1_cases[i].format == DSD_MBE_OUT_FORMAT_IMBE) {
+            rc |= expect_imbe_file_bytes("slot1 header and binary imbe record", opts.mbe_out_path);
+        } else {
+            rc |= expect_mbe_file_bytes("slot1 header and binary frame", opts.mbe_out_path, slot1_cases[i].header);
+        }
         (void)remove(opts.mbe_out_path);
     }
 
     static dsd_opts opts;
     static dsd_state state;
-    DSD_MEMSET(&opts, 0, sizeof opts);
-    DSD_MEMSET(&state, 0, sizeof state);
-    DSD_SNPRINTF(opts.mbe_out_dir, sizeof opts.mbe_out_dir, "%s%c", dir, dsd_test_path_sep());
+    mbe_out_test_reset(&opts, &state, dir);
     state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
     state.tgcount = 5;
     state.tg[4][3] = 8;
 
-    openMbeOutFileR(&opts, &state);
-    rc |= expect_int("slot2 open flag", opts.mbe_outR, 1);
     char probe_bits[49];
     binary_probe_ambe_bits(probe_bits);
     state.errs2R = kBinaryProbeFrame[0];
-    if (opts.mbe_out_fR) {
-        saveAmbe2450DataR(&opts, &state, probe_bits);
-    }
+    dsd_mbe_out_write(&opts, &state, 1, DSD_MBE_OUT_FORMAT_AMBE, probe_bits);
+    rc |= expect_int("slot2 open flag", opts.mbe_outR, 1);
     rc |= expect_true("slot2 file handle opened", opts.mbe_out_fR != NULL);
+    rc |= expect_true("slot2 leaves slot1 alone", opts.mbe_out_f == NULL);
     rc |= expect_true("slot2 filename suffix", has_suffix(opts.mbe_out_fileR, "_S2.amb"));
     rc |= expect_true("slot2 path contains filename", strstr(opts.mbe_out_path, opts.mbe_out_fileR) != NULL);
     rc |= expect_int("slot2 tgcount reset", state.tgcount, 0);
@@ -2094,6 +2266,292 @@ test_open_mbe_out_file_creates_slot_files_and_closes(void) {
     rc |= expect_mbe_file_bytes("slot2 header and binary frame", opts.mbe_out_path, ".amb");
     (void)remove(opts.mbe_out_path);
     (void)remove_dir(dir);
+    return rc;
+}
+
+/* A folder given with its trailing separator gets no second one. */
+static int
+test_mbe_out_folder_with_separator_is_not_doubled(void) {
+    int rc = 0;
+    char dir[DSD_TEST_PATH_MAX];
+    if (!dsd_test_mkdtemp(dir, sizeof dir, "dsdneo_mbe_sep")) {
+        return 1;
+    }
+    static dsd_opts opts;
+    static dsd_state state;
+    mbe_out_test_reset(&opts, &state, NULL);
+    DSD_SNPRINTF(opts.mbe_out_dir, sizeof opts.mbe_out_dir, "%s/", dir);
+    state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    char bits[49] = {0};
+    dsd_mbe_out_write(&opts, &state, 0, DSD_MBE_OUT_FORMAT_AMBE, bits);
+    char want_path[DSD_TEST_PATH_MAX * 2];
+    DSD_SNPRINTF(want_path, sizeof want_path, "%s/%s", dir, opts.mbe_out_file);
+    rc |= expect_true("separator not doubled", strcmp(opts.mbe_out_path, want_path) == 0);
+    closeMbeOutFile(&opts, &state);
+    rc |= expect_int("one file in the folder", count_dir_files(dir), 1);
+    remove_dir_tree(dir);
+    return rc;
+}
+
+/* What the writer refuses creates nothing: a frame read across a carrier boundary during its dispatch, and a YSF frame
+   before a FICH has verified the transmission on this carrier. */
+static int
+test_mbe_out_refuses_unconfirmed_and_carrier_crossing_frames(void) {
+    int rc = 0;
+    char dir[DSD_TEST_PATH_MAX];
+    if (!dsd_test_mkdtemp(dir, sizeof dir, "dsdneo_mbe_refuse")) {
+        return 1;
+    }
+    static dsd_opts opts;
+    static dsd_state state;
+    char bits[49] = {0};
+
+    mbe_out_test_reset(&opts, &state, dir);
+    state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    state.frame_dispatch_active = 1;
+    state.frame_dispatch_synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    state.frame_dispatch_carrier_seq = 4U;
+    state.carrier_seq = 5U;
+    dsd_mbe_out_write(&opts, &state, 0, DSD_MBE_OUT_FORMAT_AMBE, bits);
+    rc |= expect_true("carrier-crossing frame creates nothing", opts.mbe_out_f == NULL);
+
+    mbe_out_test_reset(&opts, &state, dir);
+    state.synctype = DSD_SYNC_YSF_POS;
+    state.ysf_fich_confirmed = 0;
+    dsd_mbe_out_write(&opts, &state, 0, DSD_MBE_OUT_FORMAT_AMBE, bits);
+    rc |= expect_true("unconfirmed ysf frame creates nothing", opts.mbe_out_f == NULL);
+    /* Borrowing the NXDN decoder changes nothing: the dispatch says YSF. */
+    state.synctype = DSD_SYNC_NXDN_POS;
+    state.frame_dispatch_active = 1;
+    state.frame_dispatch_synctype = DSD_SYNC_YSF_POS;
+    dsd_mbe_out_write(&opts, &state, 0, DSD_MBE_OUT_FORMAT_AMBE, bits);
+    rc |= expect_true("unconfirmed borrowed ysf frame creates nothing", opts.mbe_out_f == NULL);
+    rc |= expect_int("nothing in the folder", count_dir_files(dir), 0);
+
+    state.ysf_fich_confirmed = 1;
+    dsd_mbe_out_write(&opts, &state, 0, DSD_MBE_OUT_FORMAT_AMBE, bits);
+    rc |= expect_true("confirmed ysf frame creates the capture", opts.mbe_out_f != NULL);
+    rc |= expect_int("borrowed frame owned by ysf", opts.mbe_out_owner, dsd_mbe_out_owner_of(DSD_SYNC_YSF_POS));
+    closeMbeOutFile(&opts, &state);
+    remove_dir_tree(dir);
+    return rc;
+}
+
+/* A capture holds one owner's frames in one format: a frame of another format or owner closes it, on either slot,
+   before the next capture is created. A TDMA pair of one owner and format stays open side by side. */
+static int
+test_mbe_out_rotates_on_owner_and_format(void) {
+    int rc = 0;
+    char dir[DSD_TEST_PATH_MAX];
+    if (!dsd_test_mkdtemp(dir, sizeof dir, "dsdneo_mbe_rotate")) {
+        return 1;
+    }
+    static dsd_opts opts;
+    static dsd_state state;
+    char ambe[49] = {0};
+    char imbe[88] = {0};
+    long size = 0;
+
+    /* YSF V/D2 then full rate: one .amb, one .imb. */
+    mbe_out_test_reset(&opts, &state, dir);
+    state.synctype = DSD_SYNC_YSF_POS;
+    state.ysf_fich_confirmed = 1;
+    dsd_mbe_out_write(&opts, &state, 0, DSD_MBE_OUT_FORMAT_AMBE, ambe);
+    dsd_mbe_out_write(&opts, &state, 0, DSD_MBE_OUT_FORMAT_AMBE, ambe);
+    dsd_mbe_out_write(&opts, &state, 0, DSD_MBE_OUT_FORMAT_IMBE, imbe);
+    rc |= expect_int("format change: open capture is imbe", opts.mbe_out_format, DSD_MBE_OUT_FORMAT_IMBE);
+    closeMbeOutFile(&opts, &state);
+    rc |= expect_int("format change: one amb", count_capture_files(dir, ".amb", &size), 1);
+    rc |= expect_true("format change: amb holds two records", size == 4 + (2 * 8));
+    rc |= expect_int("format change: one imb", count_capture_files(dir, ".imb", &size), 1);
+    rc |= expect_true("format change: imb holds one record", size == 4 + 12);
+    remove_dir_tree(dir);
+    (void)dsd_mkdir(dir, 0700);
+
+    /* DMR then NXDN, both AMBE: two files. */
+    mbe_out_test_reset(&opts, &state, dir);
+    state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    dsd_mbe_out_write(&opts, &state, 0, DSD_MBE_OUT_FORMAT_AMBE, ambe);
+    state.synctype = DSD_SYNC_NXDN_POS;
+    dsd_mbe_out_write(&opts, &state, 0, DSD_MBE_OUT_FORMAT_AMBE, ambe);
+    rc |=
+        expect_int("owner change: open capture is nxdn's", opts.mbe_out_owner, dsd_mbe_out_owner_of(DSD_SYNC_NXDN_POS));
+    closeMbeOutFile(&opts, &state);
+    rc |= expect_int("owner change: two amb files", count_capture_files(dir, ".amb", NULL), 2);
+    remove_dir_tree(dir);
+    (void)dsd_mkdir(dir, 0700);
+
+    /* DMR slots 1 and 2 side by side. */
+    mbe_out_test_reset(&opts, &state, dir);
+    state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    dsd_mbe_out_write(&opts, &state, 0, DSD_MBE_OUT_FORMAT_AMBE, ambe);
+    dsd_mbe_out_write(&opts, &state, 1, DSD_MBE_OUT_FORMAT_AMBE, ambe);
+    dsd_mbe_out_write(&opts, &state, 0, DSD_MBE_OUT_FORMAT_AMBE, ambe);
+    rc |= expect_true("dmr pair: both slots open", opts.mbe_out_f != NULL && opts.mbe_out_fR != NULL);
+    closeMbeOutFile(&opts, &state);
+    closeMbeOutFileR(&opts, &state);
+    rc |= expect_int("dmr pair: two files", count_capture_files(dir, ".amb", NULL), 2);
+    remove_dir_tree(dir);
+    (void)dsd_mkdir(dir, 0700);
+
+    /* P25 Phase 2 slot 2, then Phase 1 (IMBE on slot 1), then Phase 2 slot 2 again: the Phase 1 frame retires the
+       slot 2 capture, so the second Phase 2 burst starts a new one. */
+    mbe_out_test_reset(&opts, &state, dir);
+    state.synctype = DSD_SYNC_P25P2_POS;
+    dsd_mbe_out_write(&opts, &state, 1, DSD_MBE_OUT_FORMAT_AMBE, ambe);
+    char first_slot2[1024];
+    DSD_SNPRINTF(first_slot2, sizeof first_slot2, "%s", opts.mbe_out_fileR);
+    state.synctype = DSD_SYNC_P25P1_POS;
+    dsd_mbe_out_write(&opts, &state, 0, DSD_MBE_OUT_FORMAT_IMBE, imbe);
+    rc |= expect_true("phase change: slot 2 retired", opts.mbe_out_fR == NULL);
+    state.synctype = DSD_SYNC_P25P2_POS;
+    dsd_mbe_out_write(&opts, &state, 1, DSD_MBE_OUT_FORMAT_AMBE, ambe);
+    rc |= expect_true("phase change: imb retired by the amb burst", opts.mbe_out_f == NULL);
+    rc |= expect_true("phase change: fresh slot 2 capture", opts.mbe_out_fR != NULL);
+    closeMbeOutFileR(&opts, &state);
+    rc |= expect_int("phase change: two amb", count_capture_files(dir, ".amb", NULL), 2);
+    rc |= expect_int("phase change: one imb", count_capture_files(dir, ".imb", NULL), 1);
+    remove_dir_tree(dir);
+    (void)dsd_mkdir(dir, 0700);
+
+    /* P25 Phase 2 slot 2, then YSF on slot 1: another owner retires the slot 2 capture. */
+    mbe_out_test_reset(&opts, &state, dir);
+    state.synctype = DSD_SYNC_P25P2_POS;
+    dsd_mbe_out_write(&opts, &state, 1, DSD_MBE_OUT_FORMAT_AMBE, ambe);
+    state.synctype = DSD_SYNC_YSF_POS;
+    state.ysf_fich_confirmed = 1;
+    dsd_mbe_out_write(&opts, &state, 0, DSD_MBE_OUT_FORMAT_AMBE, ambe);
+    rc |= expect_true("owner change: slot 2 retired", opts.mbe_out_fR == NULL);
+    closeMbeOutFile(&opts, &state);
+    rc |= expect_int("owner change: two amb", count_capture_files(dir, ".amb", NULL), 2);
+    remove_dir_tree(dir);
+    return rc;
+}
+
+/* A handle a caller attached (owner 0) takes every frame as it is: never rotated, never replaced. */
+static int
+test_mbe_out_attached_handle_is_written_as_is(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    mbe_out_test_reset(&opts, &state, NULL);
+    FILE* out = tmpfile();
+    if (!out) {
+        return 1;
+    }
+    opts.mbe_out_f = out;
+    char ambe[49] = {0};
+    char imbe[88] = {0};
+    state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    dsd_mbe_out_write(&opts, &state, 0, DSD_MBE_OUT_FORMAT_AMBE, ambe);
+    state.synctype = DSD_SYNC_P25P1_POS;
+    dsd_mbe_out_write(&opts, &state, 0, DSD_MBE_OUT_FORMAT_IMBE, imbe);
+    rc |= expect_true("attached handle kept", opts.mbe_out_f == out);
+    fflush(out);
+    (void)fseek(out, 0, SEEK_END);
+    rc |= expect_true("attached handle took both records", ftell(out) == 8 + 12);
+    fclose(out);
+    opts.mbe_out_f = NULL;
+    return rc;
+}
+
+/* A folder that refuses files costs one creation attempt a second and one error per run of failures. */
+static int
+test_mbe_out_failed_creation_is_throttled_and_logged_once(void) {
+    int rc = 0;
+    char dir[DSD_TEST_PATH_MAX];
+    if (!dsd_test_mkdtemp(dir, sizeof dir, "dsdneo_mbe_fail")) {
+        return 1;
+    }
+    char missing[DSD_TEST_PATH_MAX];
+    DSD_SNPRINTF(missing, sizeof missing, "%s/missing", dir);
+    static dsd_opts opts;
+    static dsd_state state;
+    mbe_out_test_reset(&opts, &state, missing);
+    state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    char ambe[49] = {0};
+
+    dsd_test_capture_stderr cap;
+    if (dsd_test_capture_stderr_begin(&cap, "dsdneo_mbe_fail_log") != 0) {
+        remove_dir_tree(dir);
+        return 1;
+    }
+    dsd_mbe_out_write(&opts, &state, 0, DSD_MBE_OUT_FORMAT_AMBE, ambe);
+    const double retry_at = opts.mbe_out_retry_at;
+    dsd_mbe_out_write(&opts, &state, 0, DSD_MBE_OUT_FORMAT_AMBE, ambe);
+    /* The retry time passes: one more attempt, still failing, still no second error. */
+    opts.mbe_out_retry_at = 0.0;
+    dsd_mbe_out_write(&opts, &state, 0, DSD_MBE_OUT_FORMAT_AMBE, ambe);
+    (void)dsd_test_capture_stderr_end(&cap);
+    char log[4096];
+    (void)dsd_test_capture_stderr_read(&cap, log, sizeof log);
+
+    rc |= expect_true("failed creation leaves no handle", opts.mbe_out_f == NULL);
+    rc |= expect_true("failed creation sets a retry time", retry_at > 0.0);
+    rc |= expect_int("failed creation reported", opts.mbe_out_fail_logged, 1);
+    int reports = 0;
+    for (const char* p = strstr(log, "couldn't create an MBE capture"); p != NULL;
+         p = strstr(p + 1, "couldn't create an MBE capture")) {
+        reports++;
+    }
+    rc |= expect_int("one error for the run of failures", reports, 1);
+
+    (void)dsd_mkdir(missing, 0700);
+    opts.mbe_out_retry_at = 0.0;
+    dsd_mbe_out_write(&opts, &state, 0, DSD_MBE_OUT_FORMAT_AMBE, ambe);
+    rc |= expect_true("creation succeeds once the folder exists", opts.mbe_out_f != NULL);
+    rc |= expect_int("success ends the run of failures", opts.mbe_out_fail_logged, 0);
+    closeMbeOutFile(&opts, &state);
+    remove_dir_tree(missing);
+    remove_dir_tree(dir);
+    return rc;
+}
+
+/* Each protocol's closer closes its own captures and a caller's attached handle, never another protocol's. */
+static int
+test_mbe_out_close_protocol_closes_only_its_own(void) {
+    int rc = 0;
+    char dir[DSD_TEST_PATH_MAX];
+    if (!dsd_test_mkdtemp(dir, sizeof dir, "dsdneo_mbe_close")) {
+        return 1;
+    }
+    static dsd_opts opts;
+    static dsd_state state;
+    char ambe[49] = {0};
+    mbe_out_test_reset(&opts, &state, dir);
+    state.synctype = DSD_SYNC_YSF_NEG;
+    state.ysf_fich_confirmed = 1;
+    dsd_mbe_out_write(&opts, &state, 0, DSD_MBE_OUT_FORMAT_AMBE, ambe);
+
+    static const int others[] = {DSD_SYNC_DPMR_FS1_POS, DSD_SYNC_NXDN_POS,        DSD_SYNC_DMR_BS_DATA_POS,
+                                 DSD_SYNC_DMR_MS_DATA,  DSD_SYNC_X2TDMA_DATA_POS, DSD_SYNC_EDACS_POS,
+                                 DSD_SYNC_P25P1_POS,    DSD_SYNC_P25P2_POS,       DSD_SYNC_DSTAR_HD_POS};
+    for (size_t i = 0; i < sizeof others / sizeof others[0]; i++) {
+        dsd_mbe_out_close_protocol(&opts, &state, DSD_MBE_OUT_BOTH, others[i]);
+    }
+    rc |= expect_true("ysf capture survives other protocols' closers", opts.mbe_out_f != NULL);
+    dsd_mbe_out_close_protocol(&opts, &state, DSD_MBE_OUT_BOTH, DSD_SYNC_YSF_POS);
+    rc |= expect_true("ysf closer closes it, either polarity", opts.mbe_out_f == NULL);
+
+    /* P25's closers act for both phases; ProVoice's capture is EDACS's to close. */
+    state.synctype = DSD_SYNC_P25P2_NEG;
+    dsd_mbe_out_write(&opts, &state, 1, DSD_MBE_OUT_FORMAT_AMBE, ambe);
+    dsd_mbe_out_close_protocol(&opts, &state, DSD_MBE_OUT_SLOT2, DSD_SYNC_P25P1_POS);
+    rc |= expect_true("p25 closer closes a phase 2 capture", opts.mbe_out_fR == NULL);
+    state.synctype = DSD_SYNC_PROVOICE_POS;
+    char imbe[88] = {0};
+    dsd_mbe_out_write(&opts, &state, 0, DSD_MBE_OUT_FORMAT_IMBE, imbe);
+    dsd_mbe_out_close_protocol(&opts, &state, DSD_MBE_OUT_SLOT1, DSD_SYNC_EDACS_NEG);
+    rc |= expect_true("edacs closer closes a provoice capture", opts.mbe_out_f == NULL);
+
+    FILE* attached = tmpfile();
+    if (attached) {
+        opts.mbe_out_f = attached;
+        opts.mbe_out = 1;
+        dsd_mbe_out_close_protocol(&opts, &state, DSD_MBE_OUT_SLOT1, DSD_SYNC_NXDN_POS);
+        rc |= expect_true("any closer closes an attached handle", opts.mbe_out_f == NULL);
+    }
+    remove_dir_tree(dir);
     return rc;
 }
 
@@ -2973,7 +3431,8 @@ main(void) {
     rc |= test_sdrtrunk_json_dmr_replay_oversized_key_id_ignores_a_matching_map_row();
     rc |= test_sdrtrunk_json_p25p2_encryption_metadata_updates_event();
     rc |= test_sdrtrunk_json_invalid_numeric_fields_reset_to_zero();
-    rc |= test_sdrtrunk_json_protocol_opens_and_closes_mbe_out_file();
+    rc |= test_sdrtrunk_json_protocol_token_alone_creates_no_capture();
+    rc |= test_sdrtrunk_json_second_protocol_gets_its_own_capture();
     rc |= test_sdrtrunk_json_hex_voice_writes_unencrypted_mbe_records();
     rc |= test_sdrtrunk_json_voice_wav_is_pcm16_scale();
     rc |= test_sdrtrunk_json_wav_honors_talkgroup_policy();
@@ -2983,7 +3442,13 @@ main(void) {
     rc |= test_sdrtrunk_nxdn_published_voice_vectors();
     rc |= test_sdrtrunk_nxdn_missing_context_and_sacch_alignment();
     rc |= test_sdrtrunk_dmr_capture_and_late_entry();
-    rc |= test_open_mbe_out_file_creates_slot_files_and_closes();
+    rc |= test_mbe_out_write_creates_slot_files_and_closes();
+    rc |= test_mbe_out_folder_with_separator_is_not_doubled();
+    rc |= test_mbe_out_refuses_unconfirmed_and_carrier_crossing_frames();
+    rc |= test_mbe_out_rotates_on_owner_and_format();
+    rc |= test_mbe_out_attached_handle_is_written_as_is();
+    rc |= test_mbe_out_failed_creation_is_throttled_and_logged_once();
+    rc |= test_mbe_out_close_protocol_closes_only_its_own();
     rc |= test_truncated_reads_fail();
     rc |= test_open_mbe_in_file_classifies_cookies();
     rc |= test_open_mbe_in_file_accepts_sdrtrunk_extension();

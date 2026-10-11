@@ -80,9 +80,6 @@ process_imbe_or_skip_non_standard(dsd_opts* opts, dsd_state* state, char imbe_fr
         DSD_MEMSET(state->audio_out_temp_buf, 0, sizeof(state->audio_out_temp_buf));
         return;
     }
-    if (opts->mbe_out_dir[0] != 0 && opts->mbe_out_f == NULL) {
-        openMbeOutFile(opts, state);
-    }
     processMbeFrameSoft(opts, state, imbe_soft_fr, NULL, NULL);
 }
 

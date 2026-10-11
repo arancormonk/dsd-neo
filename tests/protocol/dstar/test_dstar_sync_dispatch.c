@@ -32,6 +32,10 @@ reset_calls(void) {
     voice_calls = 0;
 }
 
+/* The capture opener the dispatcher called on every sync before issue #661, kept with its counter so this harness also
+   links and runs against that revision: the dispatcher opens nothing now, the first frame written creates the capture. */
+void openMbeOutFile(dsd_opts* opts, dsd_state* state);
+
 void
 openMbeOutFile(dsd_opts* opts, dsd_state* state) {
     (void)opts;
@@ -109,7 +113,8 @@ test_voice_dispatch(void) {
         assert(state.currentslot == 0);
 
         assert(strcmp(state.fsubtype, " VOICE        ") == 0);
-        assert(open_calls == 1);
+        /* The first frame written creates the capture; the sync opens nothing (issue #661). */
+        assert(open_calls == 0);
         assert(voice_calls == 1);
         assert(header_calls == 0);
     }

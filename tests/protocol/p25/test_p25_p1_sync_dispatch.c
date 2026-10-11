@@ -83,6 +83,10 @@ printFrameInfo(dsd_opts* opts, dsd_state* state) {
     (void)state;
 }
 
+/* The capture opener of the revision before issue #661, kept with its counter so this harness also links and runs
+   against it: the first frame written creates the capture now. */
+void openMbeOutFile(dsd_opts* opts, dsd_state* state);
+
 void
 openMbeOutFile(dsd_opts* opts, dsd_state* state) {
     (void)state;
@@ -102,6 +106,19 @@ closeMbeOutFileR(dsd_opts* opts, dsd_state* state) {
     (void)state;
     ++g_close_mbe_r_calls;
     opts->mbe_out_fR = NULL;
+}
+
+/* P25 closes only its own captures (issue #661); the owner filter is tested in CORE_MBE_FILE_IO. This counts the
+   closes as the closers above do. */
+void
+dsd_mbe_out_close_protocol(dsd_opts* opts, dsd_state* state, int slot_mask, int synctype) {
+    assert(DSD_SYNC_IS_P25(synctype));
+    if ((slot_mask & DSD_MBE_OUT_SLOT1) != 0 && opts->mbe_out_f != NULL) {
+        closeMbeOutFile(opts, state);
+    }
+    if ((slot_mask & DSD_MBE_OUT_SLOT2) != 0 && opts->mbe_out_fR != NULL) {
+        closeMbeOutFileR(opts, state);
+    }
 }
 
 void
@@ -394,13 +411,18 @@ test_p25p1_mbe_output_and_resume_side_effects(void) {
 
     DSD_SNPRINTF(opts.mbe_out_dir, sizeof(opts.mbe_out_dir), "captures");
     opts.mbe_out_f = (FILE*)0x1;
+    opts.mbe_out_fR = (FILE*)0x2;
     g_test_duid = 0x0U;
 
     dsd_dispatch_handle_p25p1(&opts, &state);
 
+    /* A Phase 1 header ends the P25 capture on both slots: a Phase 2 slot 2 segment left on the carrier is over
+       (issue #661). */
     assert(g_close_mbe_calls == 1);
+    assert(g_close_mbe_r_calls == 1);
     assert(g_open_mbe_calls == 0);
     assert(opts.mbe_out_f == NULL);
+    assert(opts.mbe_out_fR == NULL);
     assert(state.lastp25type == 2);
 
     DSD_MEMSET(&opts, 0, sizeof(opts));

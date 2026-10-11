@@ -41,11 +41,25 @@ static int g_retune_during_handler = 0;
    (dsd_engine_carrier_boundary(), issue #575). */
 static int g_boundary_during_handler = 0;
 static dsd_state* g_dispatch_state = NULL;
+/* The dispatch context a handler saw (issue #661). */
+static int g_seen_dispatch_active = -1;
+static int g_seen_dispatch_synctype = -2;
+static uint32_t g_seen_dispatch_carrier_seq = 0xFFFFFFFFU;
+/* The handler borrows another protocol's decoder, as YSF and scrambled dPMR do. */
+static int g_borrow_synctype_during_handler = 0;
 
 static dsd_frame_verdict
 record_handler(int handler_id) {
     assert(g_called_handler == TEST_HANDLER_NONE);
     g_called_handler = handler_id;
+    if (g_dispatch_state != NULL) {
+        g_seen_dispatch_active = g_dispatch_state->frame_dispatch_active;
+        g_seen_dispatch_synctype = g_dispatch_state->frame_dispatch_synctype;
+        g_seen_dispatch_carrier_seq = g_dispatch_state->frame_dispatch_carrier_seq;
+        if (g_borrow_synctype_during_handler) {
+            g_dispatch_state->synctype = DSD_SYNC_NXDN_POS;
+        }
+    }
     if (g_retune_during_handler) {
         dsd_trunk_tuning_generation_advance();
     }
@@ -255,9 +269,38 @@ check_verdict_default_is_productive(void) {
     _Static_assert(DSD_FRAME_VERDICT_WITHHELD == 3, "the DSP layer matches WITHHELD as the literal 3");
 }
 
+/* Issue #661: a handler runs inside a dispatch context naming the frame's protocol and carrier, which a borrowed decoder
+   leaves alone, and which ends with the dispatch. */
+static void
+check_dispatch_context(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts != NULL);
+    assert(state != NULL);
+    state->synctype = DSD_SYNC_YSF_NEG;
+    state->carrier_seq = 7U;
+    state->frame_dispatch_synctype = DSD_SYNC_NONE;
+    g_called_handler = TEST_HANDLER_NONE;
+    g_handler_verdict = DSD_FRAME_VERDICT_PRODUCTIVE;
+    g_dispatch_state = state;
+    g_borrow_synctype_during_handler = 1;
+    processFrame(opts, state);
+    g_borrow_synctype_during_handler = 0;
+    g_dispatch_state = NULL;
+    assert(g_called_handler == TEST_HANDLER_YSF);
+    assert(g_seen_dispatch_active == 1);
+    assert(g_seen_dispatch_synctype == DSD_SYNC_YSF_NEG);
+    assert(g_seen_dispatch_carrier_seq == 7U);
+    assert(state->synctype == DSD_SYNC_NXDN_POS);
+    assert(state->frame_dispatch_active == 0);
+    free(state);
+    free(opts);
+}
+
 int
 main(void) {
     check_public_handler_table();
+    check_dispatch_context();
     check_verdict_default_is_productive();
     run_dispatch_case(DSD_SYNC_NXDN_POS, TEST_HANDLER_NXDN);
     run_dispatch_case_verdict(DSD_SYNC_NXDN_POS, TEST_HANDLER_NXDN, DSD_FRAME_VERDICT_UNPRODUCTIVE, 0);

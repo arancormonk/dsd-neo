@@ -1659,7 +1659,12 @@ if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
     )
     target_link_libraries(
         dsd-neo_test_ysf_dch_decode
-        PRIVATE "-Wl,--start-group" dsd-neo_proto_ysf "-Wl,--end-group" ${LIBS}
+        PRIVATE
+            "-Wl,--start-group"
+            dsd-neo_proto_ysf
+            "-Wl,--end-group"
+            ${LIBS}
+            dsd-neo_test_support
     )
     target_link_options(
         dsd-neo_test_ysf_dch_decode
@@ -1669,6 +1674,39 @@ if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
             -Wl,--wrap=mbe_processAmbe2450Dataf
     )
     add_test(NAME YSF_DCH_DECODE COMMAND dsd-neo_test_ysf_dch_decode)
+
+    # The same harness with the real vocoder (issue #661): the frames YSF decodes through the borrowed NXDN and P25
+    # Phase 1 decoders reach MBE capture.
+    add_executable(
+        dsd-neo_test_ysf_mbe_capture
+        protocol/ysf/test_ysf_dch_decode.c
+    )
+    target_compile_definitions(
+        dsd-neo_test_ysf_mbe_capture
+        PRIVATE DSD_YSF_TEST_REAL_VOCODER=1
+    )
+    target_include_directories(
+        dsd-neo_test_ysf_mbe_capture
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/protocol/ysf
+    )
+    target_link_libraries(
+        dsd-neo_test_ysf_mbe_capture
+        PRIVATE
+            "-Wl,--start-group"
+            dsd-neo_proto_ysf
+            "-Wl,--end-group"
+            ${LIBS}
+            dsd-neo_test_support
+    )
+    target_link_options(
+        dsd-neo_test_ysf_mbe_capture
+        PRIVATE
+            -Wl,--wrap=get_dibit_and_analog_signal
+            -Wl,--wrap=mbe_processAmbe2450Dataf
+    )
+    add_test(NAME YSF_MBE_CAPTURE COMMAND dsd-neo_test_ysf_mbe_capture)
 endif()
 
 add_executable(
@@ -13170,6 +13208,128 @@ if(DSD_HAS_RADIO)
         DECODE_IQ_ANALOG_CTCSS_1000_NFM_8K
         DECODE_IQ_ANALOG_CTCSS_1000_NFM_25K
         PROPERTIES LABELS "iq-decode;analog"
+    )
+
+    # MBE capture (-d), issue #661: tests/iq_mbe_capture_check.cmake replays a fixture with -d <dir>/caps (no
+    # trailing separator) and checks the files it leaves: inside the folder, each headed by its own extension and
+    # holding whole records, at least one, as a capture created by its first frame does. Frame counts are lower bounds:
+    # the frames a replay captures are fixed for a build, not across them (docs/testing.md "Replay determinism").
+    function(dsd_neo_add_iq_mbe_capture_test test_name fixture mode expected)
+        cmake_parse_arguments(_cap "" "EXT;FILES;MIN_FILES;MIN_FRAMES" "" ${ARGN})
+        add_test(
+            NAME ${test_name}
+            COMMAND
+                ${CMAKE_COMMAND} "-DDSD_BIN=$<TARGET_FILE:dsd-neo>"
+                "-DMODE=${mode}"
+                "-DFIXTURE=${_DSD_NEO_IQ_FIXTURE_DIR}/${fixture}.iq.json"
+                "-DEXPECTED=${expected}"
+                "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/mbe_capture/${test_name}"
+                "-DEXT=${_cap_EXT}" "-DFILES=${_cap_FILES}"
+                "-DMIN_FILES=${_cap_MIN_FILES}"
+                "-DMIN_FRAMES=${_cap_MIN_FRAMES}" -P
+                "${CMAKE_CURRENT_SOURCE_DIR}/iq_mbe_capture_check.cmake"
+        )
+        set_tests_properties(
+            ${test_name}
+            PROPERTIES LABELS "iq-decode;mbe-capture" TIMEOUT 120
+        )
+    endfunction()
+
+    dsd_neo_add_iq_mbe_capture_test(
+        DECODE_IQ_MBE_CAPTURE_DMR
+        dmr_voice
+        -fs
+        "Color Code=02"
+        EXT .amb
+        FILES 1
+        MIN_FRAMES 18
+    )
+    # The clear call under -q: every frame muted, so nothing is captured, not even its first frame.
+    dsd_neo_add_iq_mbe_capture_test(
+        DECODE_IQ_MBE_CAPTURE_DMR_REVERSE_MUTE
+        dmr_voice
+        "-fs -q"
+        "Color Code=02"
+        FILES 0
+    )
+    dsd_neo_add_iq_mbe_capture_test(
+        DECODE_IQ_MBE_CAPTURE_DSTAR
+        dstar
+        -fd
+        "SRC: KB7WUK"
+        EXT .dmb
+        MIN_FILES 1
+        MIN_FRAMES 100
+    )
+    dsd_neo_add_iq_mbe_capture_test(
+        DECODE_IQ_MBE_CAPTURE_NXDN48
+        nxdn48
+        -fi
+        "Src=901"
+        EXT .amb
+        MIN_FILES 1
+        MIN_FRAMES 180
+    )
+    dsd_neo_add_iq_mbe_capture_test(
+        DECODE_IQ_MBE_CAPTURE_P25P1
+        p25p1_c4fm_vc
+        -f1
+        "Group Voice Channel User"
+        EXT .imb
+        MIN_FILES 1
+        MIN_FRAMES 60
+    )
+    dsd_neo_add_iq_mbe_capture_test(
+        DECODE_IQ_MBE_CAPTURE_PROVOICE
+        provoice
+        "-fp -Z"
+        "IMBE [0-9A-F]+ err = "
+        EXT .imb
+        MIN_FILES 1
+        MIN_FRAMES 128
+    )
+    dsd_neo_add_iq_mbe_capture_test(
+        DECODE_IQ_MBE_CAPTURE_DPMR
+        dpmr_synth
+        -fm
+        "Src=7654321"
+        EXT .amb
+        MIN_FILES 1
+        MIN_FRAMES 185
+    )
+    # YSF V/D2 decodes straight through mbelib; its frames are captured once a FICH has verified the transmission.
+    dsd_neo_add_iq_mbe_capture_test(
+        DECODE_IQ_MBE_CAPTURE_YSF
+        ysf
+        -fy
+        "V/D2 RID Mode Repeater CC"
+        EXT .amb
+        MIN_FILES 1
+        MIN_FRAMES 160
+    )
+    # Receiver noise under dPMR alone: false FS2 syncs synthesize nothing, so they leave no file.
+    dsd_neo_add_iq_mbe_capture_test(
+        DECODE_IQ_MBE_CAPTURE_NOISE_DPMR
+        noise_floor
+        -fm
+        "Total audio errors: 0"
+        FILES 0
+    )
+    # AUTO cases check what holds whatever the hunt's phase (docs/testing.md): every file is well formed and holds
+    # at least one frame, and YSF is captured at all.
+    dsd_neo_add_iq_mbe_capture_test(
+        DECODE_IQ_MBE_CAPTURE_NOISE_AUTO
+        noise_floor
+        -fa
+        "Total audio errors"
+    )
+    dsd_neo_add_iq_mbe_capture_test(
+        DECODE_IQ_MBE_CAPTURE_YSF_AUTO
+        ysf
+        -fa
+        "V/D2 RID Mode Repeater CC"
+        EXT .amb
+        MIN_FILES 1
     )
 
     # Restart safety: bootstrap + engine lifecycle twice inside one process, the

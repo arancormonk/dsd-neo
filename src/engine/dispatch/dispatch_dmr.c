@@ -42,21 +42,10 @@ dmr_set_slot_lights(dsd_state* state) {
     DSD_SNPRINTF(state->slot2light, sizeof(state->slot2light), " slot2 ");
 }
 
+/* A DMR data burst ends DMR's capture segments; another protocol's capture is not DMR's to close (issue #661). */
 static void
-dmr_open_mbe_out_if_needed(dsd_opts* opts, dsd_state* state) {
-    if ((opts->mbe_out_dir[0] != 0) && (opts->mbe_out_f == NULL)) {
-        openMbeOutFile(opts, state);
-    }
-}
-
-static void
-dmr_close_mbe_out_if_open(dsd_opts* opts, dsd_state* state) {
-    if (opts->mbe_out_f != NULL) {
-        closeMbeOutFile(opts, state);
-    }
-    if (opts->mbe_out_fR != NULL) {
-        closeMbeOutFileR(opts, state);
-    }
+dmr_close_mbe_out(dsd_opts* opts, dsd_state* state) {
+    dsd_mbe_out_close_protocol(opts, state, DSD_MBE_OUT_BOTH, state->synctype);
 }
 
 /*
@@ -68,7 +57,6 @@ dmr_close_mbe_out_if_open(dsd_opts* opts, dsd_state* state) {
  */
 static dsd_frame_verdict
 dmr_bootstrap_ms_if_enabled(dsd_opts* opts, dsd_state* state) {
-    dmr_open_mbe_out_if_needed(opts, state);
     if (opts->trunk_enable == 0) {
         dmrMSBootstrap(opts, state);
         return DSD_FRAME_VERDICT_PRODUCTIVE;
@@ -115,8 +103,9 @@ dmr_handle_voice(dsd_opts* opts, dsd_state* state) {
 
 static dsd_frame_verdict
 dmr_handle_ms_data(dsd_opts* opts, dsd_state* state) {
-    dmr_close_mbe_out_if_open(opts, state);
     if (opts->trunk_enable == 0) {
+        /* Only a data burst the decoder reads ends a capture: under trunking the burst is withheld unread. */
+        dmr_close_mbe_out(opts, state);
         dmrMSData(opts, state);
         return DSD_FRAME_VERDICT_PRODUCTIVE;
     }
@@ -126,13 +115,13 @@ dmr_handle_ms_data(dsd_opts* opts, dsd_state* state) {
 static void
 dmr_handle_other_data(dsd_opts* opts, dsd_state* state) {
     if (opts->dmr_stereo == 0) {
-        dmr_close_mbe_out_if_open(opts, state);
+        dmr_close_mbe_out(opts, state);
         state->err_str[0] = 0;
         dmr_set_slot_lights(state);
         dmr_data_sync(opts, state);
     }
     if (opts->dmr_stereo == 1) {
-        dmr_close_mbe_out_if_open(opts, state);
+        dmr_close_mbe_out(opts, state);
         state->dmr_stereo = 0;
         dmr_set_slot_lights(state);
         dmr_data_sync(opts, state);

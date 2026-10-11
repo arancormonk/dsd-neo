@@ -36,17 +36,12 @@ dsd_dispatch_handle_x2tdma(dsd_opts* opts, dsd_state* state) {
     }
 
     if (state->synctype == DSD_SYNC_X2TDMA_VOICE_NEG || state->synctype == DSD_SYNC_X2TDMA_VOICE_POS) {
-        if ((opts->mbe_out_dir[0] != 0) && (opts->mbe_out_f == NULL)) {
-            openMbeOutFile(opts, state);
-        }
         DSD_SNPRINTF(state->fsubtype, sizeof(state->fsubtype), " VOICE        ");
         processX2TDMAvoice(opts, state);
         return DSD_FRAME_VERDICT_PRODUCTIVE;
     }
 
-    if (opts->mbe_out_f != NULL) {
-        closeMbeOutFile(opts, state);
-    }
+    dsd_mbe_out_close_protocol(opts, state, DSD_MBE_OUT_SLOT1, state->synctype);
     state->err_str[0] = 0;
     processX2TDMAdata(opts, state);
     const uint8_t slot = (uint8_t)(state->currentslot == 1 ? 1 : 0);

@@ -184,6 +184,10 @@ printFrameSync(const dsd_opts* opts, const dsd_state* state, const char* framety
     DSD_SNPRINTF(g_last_frame_type, sizeof(g_last_frame_type), "%s", frametype);
 }
 
+/* The capture opener of the revision before issue #661, kept so this harness also links and runs against it: the
+   first frame written creates the capture now, so a voice frame opens nothing here. */
+void openMbeOutFile(dsd_opts* opts, dsd_state* state);
+
 void
 openMbeOutFile(dsd_opts* opts, dsd_state* state) {
     (void)state;
@@ -194,6 +198,16 @@ void
 closeMbeOutFile(dsd_opts* opts, dsd_state* state) {
     (void)state;
     opts->mbe_out_f = NULL;
+}
+
+/* NXDN closes only its own capture (issue #661); the owner filter is tested in CORE_MBE_FILE_IO, and this counts the
+   close as the closer above does. */
+void
+dsd_mbe_out_close_protocol(dsd_opts* opts, dsd_state* state, int slot_mask, int synctype) {
+    (void)synctype;
+    if ((slot_mask & DSD_MBE_OUT_SLOT1) != 0 && opts->mbe_out_f != NULL) {
+        closeMbeOutFile(opts, state);
+    }
 }
 
 void
@@ -507,8 +521,10 @@ test_lfsr_and_scanner_state(void) {
 
     reset_state();
     DSD_SNPRINTF(g_opts.mbe_out_dir, sizeof(g_opts.mbe_out_dir), "%s", "mbe");
-    rc |= expect_int("voice opens mbe file route", route_frame(0x32U), 1);
-    rc |= expect_int("voice opened mbe file", g_opts.mbe_out_f == stdout, 1);
+    rc |= expect_int("voice route", route_frame(0x32U), 1);
+    /* The vocoder creates the capture with the first frame it records (issue #661). */
+    rc |= expect_int("voice frame opens no mbe file", g_opts.mbe_out_f == NULL, 1);
+    g_opts.mbe_out_f = stdout;
     g_opts.frame_nxdn48 = 1;
     g_active_nxdn_variant = DSD_NXDN_VARIANT_48;
     rc |= expect_int("nxdn48 data closes mbe file route", route_frame(0x01U), 1);
@@ -562,7 +578,7 @@ test_unconfirmed_frame_is_inert(void) {
     g_stub_facch_ok = 1;
     rc |= expect_int("confirmed voice frame routed", route_frame(0x32U), 1);
     rc |= expect_int("confirmed synthesizes voice", g_voice_calls, 1);
-    rc |= expect_int("confirmed opens mbe file", g_opts.mbe_out_f == stdout, 1);
+    rc |= expect_int("confirmed leaves the mbe file to its first frame", g_opts.mbe_out_f == NULL, 1);
     rc |= expect_int("confirmed extends scanner hold", g_state.last_cc_sync_time > 1000, 1);
 
     return rc;

@@ -25,9 +25,6 @@ dsd_dispatch_handle_dstar(dsd_opts* opts, dsd_state* state) {
     /* FDMA voice is slot 0. The shared vocoder, record and audio paths read
      * currentslot, which a DMR, P25 Phase 2 or X2-TDMA decode may have left at 1. */
     state->currentslot = 0;
-    if ((opts->mbe_out_dir[0] != 0) && (opts->mbe_out_f == NULL)) {
-        openMbeOutFile(opts, state);
-    }
 
     if (state->synctype == DSD_SYNC_DSTAR_VOICE_POS || state->synctype == DSD_SYNC_DSTAR_VOICE_NEG) {
         DSD_SNPRINTF(state->fsubtype, sizeof(state->fsubtype), " VOICE        ");

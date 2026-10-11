@@ -67,6 +67,18 @@ struct dsd_opts {
     SF_INFO* audio_out_file_info;
     FILE* mbe_out_f;
     FILE* mbe_out_fR; //second slot on a TDMA system
+    /* MBE capture runtime state beside the handles it describes (issue #661), never a user setting: the realtime
+       monotonic second before which a failed creation is not retried, the open capture's owner (dsd_mbe_out_owner_of();
+       0 for a handle the capture writer did not create) and record format (dsd_mbe_out_format), and whether the current
+       run of failed creations has been reported. */
+    double mbe_out_retry_at;
+    double mbe_out_retry_atR;
+    int mbe_out_owner;
+    int mbe_out_ownerR;
+    int mbe_out_format;
+    int mbe_out_formatR;
+    int mbe_out_fail_logged;
+    int mbe_out_fail_loggedR;
     FILE* symbol_out_f;
     FILE* frame_log_f;                    // optional frame-trace sink
     FILE* p25_sm_log_f;                   // optional P25 state-machine diagnostic sink

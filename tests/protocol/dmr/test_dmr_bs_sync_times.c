@@ -258,6 +258,11 @@ dsd_fopen_private(const char* path, const char* mode) {
     return NULL;
 }
 
+/* The capture openers of the revision before issue #661, kept with their counters so this harness also links and runs
+   against it: the first frame written creates the capture now, so a voice burst opens nothing here. */
+void openMbeOutFile(dsd_opts* opts, dsd_state* state);
+void openMbeOutFileR(dsd_opts* opts, dsd_state* state);
+
 void
 openMbeOutFile(dsd_opts* opts, dsd_state* state) {
     (void)state;
@@ -284,6 +289,19 @@ closeMbeOutFileR(dsd_opts* opts, dsd_state* state) {
     (void)state;
     g_close_right_calls++;
     opts->mbe_out_fR = NULL;
+}
+
+/* DMR closes only its own captures (issue #661); the owner filter is tested in CORE_MBE_FILE_IO, and this counts the
+   closes as the closers above do. */
+void
+dsd_mbe_out_close_protocol(dsd_opts* opts, dsd_state* state, int slot_mask, int synctype) {
+    (void)synctype;
+    if ((slot_mask & DSD_MBE_OUT_SLOT1) != 0 && opts->mbe_out_f != NULL) {
+        closeMbeOutFile(opts, state);
+    }
+    if ((slot_mask & DSD_MBE_OUT_SLOT2) != 0 && opts->mbe_out_fR != NULL) {
+        closeMbeOutFileR(opts, state);
+    }
 }
 
 void
@@ -531,6 +549,9 @@ test_bs_slot2_voice_routes_right_channel_and_post_skip_hooks(void) {
     opts.pulse_digi_rate_out = 8000;
     opts.frontend_kind = DSD_FRONTEND_TERMINAL;
     DSD_SNPRINTF(opts.mbe_out_dir, sizeof(opts.mbe_out_dir), "%s", "captures");
+    /* The slot 2 capture the first frame created (issue #661): the burst opens nothing, and the end of the stream
+       closes it. */
+    opts.mbe_out_fR = (FILE*)(uintptr_t)1;
     state.currentslot = 1;
     state.dmr_color_code = 16;
     load_single_burst_stream(1, DMR_BS_VOICE_SYNC);
@@ -539,7 +560,7 @@ test_bs_slot2_voice_routes_right_channel_and_post_skip_hooks(void) {
     dmrBS(&opts, &state);
 
     assert(state.dmrburstR == 16);
-    assert(g_open_right_calls == 1U);
+    assert(g_open_right_calls == 0U);
     assert(g_open_left_calls == 0U);
     assert(g_close_right_calls == 1U);
     assert(g_close_left_calls == 0U);
@@ -679,6 +700,8 @@ test_bs_bootstrap_prefetched_voice_runs_first_frame_path(void) {
     opts.floating_point = 1;
     opts.pulse_digi_rate_out = 8000;
     DSD_SNPRINTF(opts.mbe_out_dir, sizeof(opts.mbe_out_dir), "%s", "captures");
+    /* The slot 2 capture its first frame created (issue #661). */
+    opts.mbe_out_fR = (FILE*)(uintptr_t)1;
     state.currentslot = 1;
     state.dmr_color_code = 16;
     state.dmr_payload_p = g_bootstrap_payload + 90U;
@@ -695,7 +718,7 @@ test_bs_bootstrap_prefetched_voice_runs_first_frame_path(void) {
     assert(g_sm_voice_sync_last_slot == 1);
     assert(g_cach_calls >= 1U);
     assert(g_late_entry_calls >= 1U);
-    assert(g_open_right_calls == 1U);
+    assert(g_open_right_calls == 0U);
     assert(g_close_right_calls >= 1U);
     assert(g_play_fs3_calls >= 1U);
     assert(state.last_vc_sync_time > 0);

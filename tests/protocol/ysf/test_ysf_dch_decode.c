@@ -11,6 +11,7 @@
 #include <assert.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
+#include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -28,8 +29,13 @@
 #include <string.h>
 
 #include "dsd-neo/core/opts_fwd.h"
+#ifdef DSD_YSF_TEST_REAL_VOCODER
+/* The real-vocoder build (YSF_MBE_CAPTURE) runs only its capture cases; the stubbed-vocoder cases stay compiled. */
+#pragma GCC diagnostic ignored "-Wunused-function"
+#endif
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "test_support.h"
 #include "ysf_frame.h"
 #include "ysf_internal.h"
 
@@ -43,7 +49,7 @@ int __wrap_mbe_processAmbe2450Dataf(float* aout_buf, mbe_process_result* result,
                                     mbe_parms* cur_mp, mbe_parms* prev_mp,
                                     mbe_parms* prev_mp_enhanced); // NOLINT(misc-use-internal-linkage)
 
-static uint8_t g_dibit_stream[512];
+static uint8_t g_dibit_stream[4096];
 static size_t g_dibit_stream_len;
 static size_t g_dibit_stream_pos;
 /* The read that adopts a retune its capture recorded, where the carrier boundary moves the carrier count
@@ -54,6 +60,9 @@ static int g_process_mbe_call_count;
 static int g_process_mbe_synctype[5];
 static int g_process_mbe_ambe_nonnull[5];
 static int g_mbe_inbound_errs2[5];
+/* The AMBE frame each stubbed mbelib call decoded, and the call that fails (-1: none), for the V/D2 capture. */
+static char g_mbe_ambe[5][49];
+static int g_mbe_fail_at = -1;
 
 static void
 begin_test_ysf_call(dsd_state* state) {
@@ -79,7 +88,10 @@ __wrap_get_dibit_and_analog_signal(dsd_opts* opts, dsd_state* state, int* out_an
     (void)opts;
     (void)out_analog_signal;
     if (g_dibit_stream_pos == g_boundary_at && state != NULL) {
+        /* As dsd_engine_carrier_boundary() does: the count moves and the carrier's YSF confirmation goes with it
+           (carrier_boundary_forget_evidence()). */
         state->carrier_seq++;
+        state->ysf_fich_confirmed = 0;
     }
     if (g_dibit_stream_pos >= g_dibit_stream_len) {
         return 0;
@@ -140,13 +152,17 @@ int
 // NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
 __wrap_mbe_processAmbe2450Dataf(float* aout_buf, mbe_process_result* result, const char ambe_d[49], mbe_parms* cur_mp,
                                 mbe_parms* prev_mp, mbe_parms* prev_mp_enhanced) {
-    (void)ambe_d;
     (void)cur_mp;
     (void)prev_mp;
     (void)prev_mp_enhanced;
 
     assert(g_mbe_call_count < 5);
     g_mbe_inbound_errs2[g_mbe_call_count] = result->total_errors;
+    DSD_MEMCPY(g_mbe_ambe[g_mbe_call_count], ambe_d, sizeof(g_mbe_ambe[0]));
+    if (g_mbe_call_count == g_mbe_fail_at) {
+        g_mbe_call_count++;
+        return -1;
+    }
     result->total_errors = 4 + g_mbe_call_count;
     result->protected_errors = result->total_errors;
     for (size_t i = 0; i < 160U; i++) {
@@ -317,6 +333,23 @@ make_fich_bits_for_vd_type2(uint8_t fich_bits[48]) {
     set_bits_msb(fich_bits, 18U, 3U, 1U); // mr
     set_bits_msb(fich_bits, 21U, 1U, 0U); // vp
     set_bits_msb(fich_bits, 22U, 2U, 2U); // dt: V/D Type 2
+    set_bits_msb(fich_bits, 24U, 1U, 0U); // st
+    set_bits_msb(fich_bits, 25U, 7U, 0U); // sc
+    append_ysf_crc(fich_bits);
+}
+
+static void
+make_fich_bits_for_full_rate_voice(uint8_t fich_bits[48]) {
+    DSD_MEMSET(fich_bits, 0, 48U);
+    set_bits_msb(fich_bits, 0U, 2U, 1U);  // fi: communication channel
+    set_bits_msb(fich_bits, 4U, 2U, 0U);  // cm: group/CQ
+    set_bits_msb(fich_bits, 6U, 2U, 0U);  // bn
+    set_bits_msb(fich_bits, 8U, 2U, 0U);  // bt
+    set_bits_msb(fich_bits, 10U, 3U, 1U); // fn: not the CSD3 frame
+    set_bits_msb(fich_bits, 13U, 3U, 5U); // ft
+    set_bits_msb(fich_bits, 18U, 3U, 1U); // mr
+    set_bits_msb(fich_bits, 21U, 1U, 0U); // vp
+    set_bits_msb(fich_bits, 22U, 2U, 3U); // dt: voice full rate
     set_bits_msb(fich_bits, 24U, 1U, 0U); // st
     set_bits_msb(fich_bits, 25U, 7U, 0U); // sc
     append_ysf_crc(fich_bits);
@@ -1122,8 +1155,380 @@ test_process_ysf_vd_type2_writes_call_wav_under_record_policy(void) {
     }
 }
 
+/* Issue #661: MBE capture of YSF frames. */
+static char g_capture_dir[DSD_TEST_PATH_MAX];
+
+typedef struct {
+    int count;
+    char name[256];
+} capture_dir_ctx;
+
+static int
+capture_dir_entry(const char* name, void* user) {
+    capture_dir_ctx* ctx = (capture_dir_ctx*)user;
+    ctx->count++;
+    DSD_SNPRINTF(ctx->name, sizeof ctx->name, "%s", name);
+    return 0;
+}
+
+static int
+remove_capture_dir_entry(const char* name, void* user) {
+    char path[DSD_TEST_PATH_MAX * 2];
+    DSD_SNPRINTF(path, sizeof path, "%s%c%s", (const char*)user, dsd_test_path_sep(), name);
+    (void)remove(path);
+    return 0;
+}
+
+static void
+capture_dir_begin(dsd_opts* opts, const char* prefix) {
+    assert(dsd_test_mkdtemp(g_capture_dir, sizeof g_capture_dir, prefix) != NULL);
+    DSD_SNPRINTF(opts->mbe_out_dir, sizeof opts->mbe_out_dir, "%s", g_capture_dir);
+}
+
+static void
+capture_dir_end(void) {
+    (void)dsd_dir_list(g_capture_dir, remove_capture_dir_entry, (void*)g_capture_dir);
+    (void)dsd_test_rmdir(g_capture_dir);
+}
+
+static int
+capture_dir_count(char* name, size_t name_size) {
+    capture_dir_ctx ctx;
+    DSD_MEMSET(&ctx, 0, sizeof ctx);
+    (void)dsd_dir_list(g_capture_dir, capture_dir_entry, &ctx);
+    if (name) {
+        DSD_SNPRINTF(name, name_size, "%s", ctx.name);
+    }
+    return ctx.count;
+}
+
+static size_t
+read_capture_file(const char* name, unsigned char* out, size_t out_size) {
+    char path[DSD_TEST_PATH_MAX * 2];
+    DSD_SNPRINTF(path, sizeof path, "%s%c%s", g_capture_dir, dsd_test_path_sep(), name);
+    FILE* f = fopen(path, "rb");
+    assert(f != NULL);
+    size_t n = fread(out, 1, out_size, f);
+    fclose(f);
+    return n;
+}
+
+static void
+append_vd_type2_frame(int corrupt_fich_crc) {
+    uint8_t fich_bits[48];
+    uint8_t fich_input[100];
+    uint8_t dch2[100];
+    make_fich_bits_for_vd_type2(fich_bits);
+    encode_fich_input(fich_bits, corrupt_fich_crc, 0, fich_input);
+    encode_dch_payload_to_input("VD2SRC4444", 10U, dch2, 96U, 5U, 0);
+    append_dibits_to_stream(fich_input, 100U);
+    for (size_t block = 0; block < 5U; block++) {
+        append_dibits_to_stream(&dch2[block * 20U], 20U);
+        append_type2_vech_dibits((block % 2U) == 0U ? 1U : 0U);
+    }
+}
+
+static void
+reset_ysf_stream(void) {
+    DSD_MEMSET(g_dibit_stream, 0, sizeof(g_dibit_stream));
+    g_dibit_stream_len = 0;
+    g_dibit_stream_pos = 0;
+    g_mbe_call_count = 0;
+    g_process_mbe_call_count = 0;
+    g_mbe_fail_at = -1;
+}
+
+#ifndef DSD_YSF_TEST_REAL_VOCODER
+/* V/D2 decodes straight through mbelib: each block is captured after the vocoder settled its error count (0 for a
+   block mbelib refused), in the record format -r reads back. */
+static void
+test_process_ysf_vd_type2_captures_each_block(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    InitAllFecFunction();
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_ysf_stream();
+    opts.floating_point = 1;
+    state.synctype = DSD_SYNC_YSF_POS;
+    capture_dir_begin(&opts, "dsdneo_ysf_vd2_capture");
+    g_mbe_fail_at = 3;
+
+    append_vd_type2_frame(0);
+    processYSF(&opts, &state);
+    assert(g_mbe_call_count == 5);
+    closeMbeOutFile(&opts, &state);
+
+    char name[256];
+    assert(capture_dir_count(name, sizeof name) == 1);
+    unsigned char bytes[64];
+    const size_t n = read_capture_file(name, bytes, sizeof bytes);
+    assert(n == 4U + (5U * 8U));
+    assert(memcmp(bytes, ".amb", 4) == 0);
+    for (int block = 0; block < 5; block++) {
+        const unsigned char* rec = &bytes[4 + (block * 8)];
+        assert(rec[0] == (block == 3 ? 0U : (unsigned char)(4 + block)));
+        unsigned char want[7];
+        DSD_MEMSET(want, 0, sizeof want);
+        for (int i = 0; i < 48; i++) {
+            want[i / 8] = (unsigned char)((want[i / 8] << 1) | (unsigned char)(g_mbe_ambe[block][i] & 1));
+        }
+        want[6] = (unsigned char)g_mbe_ambe[block][48];
+        assert(memcmp(&rec[1], want, sizeof want) == 0);
+    }
+    capture_dir_end();
+    dsd_state_ext_free_all(&state);
+}
+
+/* A FICH that failed lays the payload out from the last one that passed, possibly an earlier transmission's: nothing
+   is captured until a FICH verifies this transmission, its own frame included, and then the fallback frames are. */
+static void
+test_process_ysf_capture_waits_for_a_verified_fich(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    InitAllFecFunction();
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.floating_point = 1;
+    state.synctype = DSD_SYNC_YSF_POS;
+
+    /* An earlier transmission leaves V/D2 as the fallback layout; its carrier then dropped. */
+    reset_ysf_stream();
+    append_vd_type2_frame(0);
+    processYSF(&opts, &state);
+    state.ysf_fich_confirmed = 0;
+
+    capture_dir_begin(&opts, "dsdneo_ysf_fich_capture");
+    reset_ysf_stream();
+    append_vd_type2_frame(1);
+    processYSF(&opts, &state);
+    assert(g_mbe_call_count == 5);
+    assert(capture_dir_count(NULL, 0) == 0);
+
+    reset_ysf_stream();
+    append_vd_type2_frame(0);
+    processYSF(&opts, &state);
+    reset_ysf_stream();
+    append_vd_type2_frame(1);
+    processYSF(&opts, &state);
+    closeMbeOutFile(&opts, &state);
+
+    char name[256];
+    assert(capture_dir_count(name, sizeof name) == 1);
+    unsigned char bytes[128];
+    assert(read_capture_file(name, bytes, sizeof bytes) == 4U + (10U * 8U));
+    capture_dir_end();
+    dsd_state_ext_free_all(&state);
+}
+
+/* A verified header or terminator bounds the transmission: the capture ends there. */
+static void
+test_process_ysf_header_and_terminator_end_the_capture(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t fich_bits[48];
+    uint8_t fich_input[100];
+    uint8_t dch0[180];
+    uint8_t dch1[180];
+    InitAllFecFunction();
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.floating_point = 1;
+    state.synctype = DSD_SYNC_YSF_POS;
+    capture_dir_begin(&opts, "dsdneo_ysf_end_capture");
+    encode_dch_payload_to_input("TERMDST001TERMSRC002", 20U, dch0, 176U, 9U, 0);
+    encode_dch_payload_to_input("TERMUPL003TERMDNL004", 20U, dch1, 176U, 9U, 0);
+
+    for (int header = 1; header >= 0; --header) {
+        reset_ysf_stream();
+        append_vd_type2_frame(0);
+        processYSF(&opts, &state);
+        assert(opts.mbe_out_f != NULL);
+
+        reset_ysf_stream();
+        if (header) {
+            make_fich_bits_for_full_rate_data(fich_bits);
+        } else {
+            make_fich_bits_for_terminator(fich_bits);
+        }
+        encode_fich_input(fich_bits, 0, 0, fich_input);
+        append_dibits_to_stream(fich_input, 100U);
+        append_interleaved_full_rate_dch_blocks(dch0, dch1);
+        processYSF(&opts, &state);
+        assert(opts.mbe_out_f == NULL);
+    }
+    assert(capture_dir_count(NULL, 0) == 2);
+    capture_dir_end();
+    dsd_state_ext_free_all(&state);
+}
+
+/* Issue #661: a voice block read across the carrier boundary is dropped with the rest of the frame, as V/D1 drops it,
+   in V/D2 and in full rate alike. */
+static void
+test_process_ysf_voice_split_by_a_carrier_boundary_drops_the_rest(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t fich_bits[48];
+    uint8_t fich_input[100];
+    InitAllFecFunction();
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.floating_point = 1;
+    reset_ysf_stream();
+    append_vd_type2_frame(0);
+    /* Inside the third block's VeCH. */
+    g_boundary_at = 100U + (2U * 72U) + 20U + 10U;
+    (void)processYSF(&opts, &state);
+    g_boundary_at = SIZE_MAX;
+    assert(state.carrier_seq == 1U);
+    assert(g_mbe_call_count == 2);
+    dsd_state_ext_free_all(&state);
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.floating_point = 1;
+    reset_ysf_stream();
+    make_fich_bits_for_full_rate_voice(fich_bits);
+    encode_fich_input(fich_bits, 0, 0, fich_input);
+    append_dibits_to_stream(fich_input, 100U);
+    uint8_t zeros[72];
+    DSD_MEMSET(zeros, 0, sizeof zeros);
+    for (int slot = 0; slot < 5; slot++) {
+        append_dibits_to_stream(zeros, sizeof zeros);
+    }
+    /* Inside the third voice slot. */
+    g_boundary_at = 100U + (2U * 72U) + 30U;
+    (void)processYSF(&opts, &state);
+    g_boundary_at = SIZE_MAX;
+    assert(state.carrier_seq == 1U);
+    assert(g_process_mbe_call_count == 2);
+    dsd_state_ext_free_all(&state);
+}
+#else
+/* Built with the real vocoder (YSF_MBE_CAPTURE): the frames YSF hands the borrowed NXDN and P25 Phase 1 decoders are
+   captured, V/D1 in AMBE records and full rate in IMBE records. Driven through processYSF(), which knows no dispatch,
+   as on the revision before issue #661, where nothing of either was captured. */
+static void
+append_vd_type1_frame(void) {
+    uint8_t fich_bits[48];
+    uint8_t fich_input[100];
+    uint8_t dch[180];
+    make_fich_bits_for_vd_type1(fich_bits);
+    encode_fich_input(fich_bits, 0, 0, fich_input);
+    encode_dch_payload_to_input("VD1DST0001VD1SRC0002", 20U, dch, 176U, 9U, 0);
+    append_dibits_to_stream(fich_input, 100U);
+    append_vd_type1_blocks(dch, 1U);
+}
+
+static void
+append_full_rate_voice_frame(void) {
+    uint8_t fich_bits[48];
+    uint8_t fich_input[100];
+    make_fich_bits_for_full_rate_voice(fich_bits);
+    encode_fich_input(fich_bits, 0, 0, fich_input);
+    append_dibits_to_stream(fich_input, 100U);
+    uint8_t zeros[72];
+    DSD_MEMSET(zeros, 0, sizeof zeros);
+    for (int slot = 0; slot < 5; slot++) {
+        append_dibits_to_stream(zeros, sizeof zeros);
+    }
+}
+
+static void
+test_process_ysf_borrowed_decoder_frames_are_captured(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    InitAllFecFunction();
+
+    for (int full_rate = 0; full_rate <= 1; full_rate++) {
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        static mbe_parms cur, prev, prev_enhanced, cur2, prev2, prev_enhanced2;
+        mbe_initMbeParms(&cur, &prev, &prev_enhanced);
+        mbe_initMbeParms(&cur2, &prev2, &prev_enhanced2);
+        state.cur_mp = &cur;
+        state.prev_mp = &prev;
+        state.prev_mp_enhanced = &prev_enhanced;
+        state.cur_mp2 = &cur2;
+        state.prev_mp2 = &prev2;
+        state.prev_mp_enhanced2 = &prev_enhanced2;
+        opts.floating_point = 1;
+        state.synctype = DSD_SYNC_YSF_POS;
+        capture_dir_begin(&opts, "dsdneo_ysf_borrowed_capture");
+        reset_ysf_stream();
+        if (full_rate) {
+            append_full_rate_voice_frame();
+        } else {
+            append_vd_type1_frame();
+        }
+        processYSF(&opts, &state);
+        closeMbeOutFile(&opts, &state);
+
+        char name[256];
+        assert(capture_dir_count(name, sizeof name) == 1);
+        unsigned char bytes[128];
+        const size_t n = read_capture_file(name, bytes, sizeof bytes);
+        const size_t record = full_rate ? 12U : 8U;
+        assert(memcmp(bytes, full_rate ? ".imb" : ".amb", 4) == 0);
+        assert(n > 4U && ((n - 4U) % record) == 0U);
+        assert((n - 4U) / record == (full_rate ? 5U : 4U));
+        capture_dir_end();
+        dsd_state_ext_free_all(&state);
+    }
+}
+
+/* Under processFrame()'s dispatch context the borrowed frames belong to YSF: one capture owner, rotated on the format
+   change from V/D1 to full rate, and nothing before a FICH has verified the transmission. */
+static void
+test_process_ysf_borrowed_frames_belong_to_ysf(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    InitAllFecFunction();
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    static mbe_parms cur, prev, prev_enhanced, cur2, prev2, prev_enhanced2;
+    mbe_initMbeParms(&cur, &prev, &prev_enhanced);
+    mbe_initMbeParms(&cur2, &prev2, &prev_enhanced2);
+    state.cur_mp = &cur;
+    state.prev_mp = &prev;
+    state.prev_mp_enhanced = &prev_enhanced;
+    state.cur_mp2 = &cur2;
+    state.prev_mp2 = &prev2;
+    state.prev_mp_enhanced2 = &prev_enhanced2;
+    opts.floating_point = 1;
+    capture_dir_begin(&opts, "dsdneo_ysf_owner_capture");
+    state.synctype = DSD_SYNC_YSF_POS;
+    state.frame_dispatch_active = 1;
+    state.frame_dispatch_synctype = DSD_SYNC_YSF_POS;
+    state.frame_dispatch_carrier_seq = state.carrier_seq;
+
+    reset_ysf_stream();
+    append_vd_type1_frame();
+    processYSF(&opts, &state);
+    assert(opts.mbe_out_f != NULL);
+    assert(opts.mbe_out_owner == dsd_mbe_out_owner_of(DSD_SYNC_YSF_NEG));
+    assert(opts.mbe_out_format == DSD_MBE_OUT_FORMAT_AMBE);
+
+    reset_ysf_stream();
+    append_full_rate_voice_frame();
+    processYSF(&opts, &state);
+    assert(opts.mbe_out_owner == dsd_mbe_out_owner_of(DSD_SYNC_YSF_NEG));
+    assert(opts.mbe_out_format == DSD_MBE_OUT_FORMAT_IMBE);
+    closeMbeOutFile(&opts, &state);
+    assert(capture_dir_count(NULL, 0) == 2);
+    capture_dir_end();
+    dsd_state_ext_free_all(&state);
+}
+#endif
+
 int
 main(void) {
+#ifdef DSD_YSF_TEST_REAL_VOCODER
+    test_process_ysf_borrowed_decoder_frames_are_captured();
+    test_process_ysf_borrowed_frames_belong_to_ysf();
+    return 0;
+#else
     test_dch_csd1_tracks_destination_and_source();
     test_dch_rid_mode_preserves_target_and_source_state();
     test_dch_csd2_tracks_uplink_and_downlink();
@@ -1143,7 +1548,12 @@ main(void) {
     test_process_ysf_terminator_enriches_identity_before_call_end();
     test_process_ysf_ehr_voice_leaves_call_wav_to_vocoder();
     test_process_ysf_vd_type2_writes_call_wav_under_record_policy();
+    test_process_ysf_vd_type2_captures_each_block();
+    test_process_ysf_capture_waits_for_a_verified_fich();
+    test_process_ysf_header_and_terminator_end_the_capture();
+    test_process_ysf_voice_split_by_a_carrier_boundary_drops_the_rest();
     return 0;
+#endif
 }
 
 // NOLINTEND(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp,misc-use-internal-linkage)

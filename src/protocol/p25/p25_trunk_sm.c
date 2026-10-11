@@ -2944,15 +2944,9 @@ p25_voice_close_slot_output(dsd_opts* opts, dsd_state* state, int slot) {
     if (!opts) {
         return;
     }
-    if (slot == 0) {
-        if (opts->mbe_out_f != NULL) {
-            closeMbeOutFile(opts, state);
-        }
-        return;
-    }
-    if (opts->mbe_out_fR != NULL) {
-        closeMbeOutFileR(opts, state);
-    }
+    /* The state machine also runs from the watchdog, outside any dispatch: it names P25 (either phase) itself, so it
+       never closes another protocol's capture (issue #661). */
+    dsd_mbe_out_close_protocol(opts, state, slot == 0 ? DSD_MBE_OUT_SLOT1 : DSD_MBE_OUT_SLOT2, DSD_SYNC_P25P2_POS);
 }
 
 static void

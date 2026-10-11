@@ -2637,7 +2637,12 @@ cli_report_short_opt_error(int c, int argc, char** argv) {
             opts->dmr_stereo_wav = 1;                                                                                  \
             break;                                                                                                     \
         case '7':                                                                                                      \
-            /* Set custom directory for per-call WAV saving */                                                         \
+            /* Set custom directory for per-call WAV saving; one that does not fit is refused, never cut short. */     \
+            if (strlen(optarg) >= sizeof opts->wav_out_dir) {                                                          \
+                LOG_ERROR("-7: the folder path is longer than %d bytes\n", (int)(sizeof opts->wav_out_dir - 1U));      \
+                cli_set_exit_rc(out_exit_rc, 1);                                                                       \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             DSD_STRNCPY(opts->wav_out_dir, optarg, 511);                                                               \
             opts->wav_out_dir[511] = '\0';                                                                             \
             LOG_INFO("NOTICE: Per-call WAV directory set to: %s\n", opts->wav_out_dir);                                \
@@ -2684,6 +2689,12 @@ cli_report_short_opt_error(int c, int argc, char** argv) {
             opts->audio_out_dev[1023] = '\0';                                                                          \
             break;                                                                                                     \
         case 'd':                                                                                                      \
+            /* A folder that does not fit is refused, never silently cut to another folder (issue #661). */            \
+            if (strlen(optarg) >= sizeof opts->mbe_out_dir) {                                                          \
+                LOG_ERROR("-d: the folder path is longer than %d bytes\n", (int)(sizeof opts->mbe_out_dir - 1U));      \
+                cli_set_exit_rc(out_exit_rc, 1);                                                                       \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             DSD_STRNCPY(opts->mbe_out_dir, optarg, 1023);                                                              \
             opts->mbe_out_dir[1023] = '\0';                                                                            \
             if (dsd_stat_path(opts->mbe_out_dir, &st) == -1) {                                                         \
