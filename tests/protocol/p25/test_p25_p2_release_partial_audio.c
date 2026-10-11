@@ -69,7 +69,7 @@ closeMbeOutFileR(dsd_opts* opts, dsd_state* state) {
 /* The protocol-scoped closer the P25 code calls (issue #661): closing through the closers above keeps this harness from
    linking the real capture writer. */
 void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
+// NOLINTNEXTLINE(misc-use-internal-linkage): stands in for the core's closer at link time.
 dsd_mbe_out_close_protocol(dsd_opts* opts, dsd_state* state, int slot_mask, int synctype) {
     (void)synctype;
     if ((slot_mask & DSD_MBE_OUT_SLOT1) != 0 && opts->mbe_out_f != NULL) {

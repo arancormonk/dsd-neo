@@ -36,19 +36,19 @@ static int g_nonce_count;
 static int g_nonce_pos;
 static const uint16_t k_nonce_after_script = 0x7777U;
 
-// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage): ld --wrap names.
 uint16_t __wrap_dsd_nonce_u16(void);
-// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage): ld --wrap names.
 time_t __wrap_dsd_decode_time(void);
 
 uint16_t
-// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage): ld --wrap names.
 __wrap_dsd_nonce_u16(void) {
     return g_nonce_pos < g_nonce_count ? g_nonces[g_nonce_pos++] : k_nonce_after_script;
 }
 
 time_t
-// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage): ld --wrap names.
 __wrap_dsd_decode_time(void) {
     return k_decode_time;
 }
