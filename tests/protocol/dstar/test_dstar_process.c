@@ -396,7 +396,7 @@ test_passing_header_confirms_the_voice_frame_behind_it(void) {
     /* It also ends the capture before any voice frame of its own superframe is written (issue #661). */
     assert(capture_close_calls == 1);
     assert(capture_close_voice_frames_before == 0);
-    assert(capture_close_synctype == DSD_SYNC_DSTAR_HD_NEG);
+    assert(DSD_SYNC_IS_DSTAR(capture_close_synctype));
 }
 
 /* A failed header leaves the transmission unproved: the superframe it consumed anyway is

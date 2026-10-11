@@ -40,7 +40,7 @@ dsd_dispatch_handle_x2tdma(dsd_opts* opts, dsd_state* state) {
         return DSD_FRAME_VERDICT_PRODUCTIVE;
     }
 
-    dsd_mbe_out_close_protocol(opts, state, DSD_MBE_OUT_SLOT1, state->synctype);
+    dsd_mbe_out_close_protocol(opts, state, DSD_MBE_OUT_SLOT1, DSD_SYNC_X2TDMA_DATA_POS);
     state->err_str[0] = 0;
     processX2TDMAdata(opts, state);
     const uint8_t slot = (uint8_t)(state->currentslot == 1 ? 1 : 0);

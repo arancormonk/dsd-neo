@@ -107,7 +107,7 @@ test_edacs_dispatch_closes_mbe_output(void) {
     assert(dsd_dispatch_handle_edacs(&opts, &state) == DSD_FRAME_VERDICT_PRODUCTIVE);
 
     assert(close_calls == 1);
-    assert(close_protocol_synctype == DSD_SYNC_EDACS_NEG);
+    assert(DSD_SYNC_IS_EDACS(close_protocol_synctype));
     assert(edacs_calls == 1);
     assert(opts.mbe_out_f == NULL);
 }

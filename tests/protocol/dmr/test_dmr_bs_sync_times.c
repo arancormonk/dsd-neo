@@ -14,6 +14,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/sync_patterns.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/core/vocoder.h>
 #include <dsd-neo/crypto/dmr_keystream.h>
@@ -293,11 +294,11 @@ closeMbeOutFileR(dsd_opts* opts, dsd_state* state) {
     opts->mbe_out_fR = NULL;
 }
 
-/* DMR closes only its own captures (issue #661); the owner filter is tested in CORE_MBE_FILE_IO, and this counts the
-   closes as the closers above do. */
+/* DMR closes only its own captures, named as DMR whatever state->synctype holds (issue #661); the owner filter is
+   tested in CORE_MBE_FILE_IO, and this counts the closes as the closers above do. */
 void
 dsd_mbe_out_close_protocol(dsd_opts* opts, dsd_state* state, int slot_mask, int synctype) {
-    (void)synctype;
+    assert(DSD_SYNC_IS_DMR(synctype));
     if ((slot_mask & DSD_MBE_OUT_SLOT1) != 0 && opts->mbe_out_f != NULL) {
         closeMbeOutFile(opts, state);
     }
@@ -306,10 +307,16 @@ dsd_mbe_out_close_protocol(dsd_opts* opts, dsd_state* state, int slot_mask, int 
     }
 }
 
+/* The vocoder's writer creates a slot's capture with the first frame it records (issue #661). */
 void
 processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe_fr[4][24], char imbe7100_fr[7][24]) {
-    (void)opts;
-    (void)state;
+    if (opts->mbe_out_dir[0] != 0) {
+        if (state->currentslot == 1 && opts->mbe_out_fR == NULL) {
+            opts->mbe_out_fR = (FILE*)(uintptr_t)1;
+        } else if (state->currentslot == 0 && opts->mbe_out_f == NULL) {
+            opts->mbe_out_f = (FILE*)(uintptr_t)1;
+        }
+    }
     (void)imbe_fr;
     (void)ambe_fr;
     (void)imbe7100_fr;
@@ -551,9 +558,8 @@ test_bs_slot2_voice_routes_right_channel_and_post_skip_hooks(void) {
     opts.pulse_digi_rate_out = 8000;
     opts.frontend_kind = DSD_FRONTEND_TERMINAL;
     DSD_SNPRINTF(opts.mbe_out_dir, sizeof(opts.mbe_out_dir), "%s", "captures");
-    /* The slot 2 capture the first frame created (issue #661): the burst opens nothing, and the end of the stream
-       closes it. */
-    opts.mbe_out_fR = (FILE*)(uintptr_t)1;
+    /* No capture is open: the burst opens nothing, its first frame creates the slot 2 capture, and the end of the stream
+       closes it (issue #661). */
     state.currentslot = 1;
     state.dmr_color_code = 16;
     load_single_burst_stream(1, DMR_BS_VOICE_SYNC);
@@ -702,8 +708,7 @@ test_bs_bootstrap_prefetched_voice_runs_first_frame_path(void) {
     opts.floating_point = 1;
     opts.pulse_digi_rate_out = 8000;
     DSD_SNPRINTF(opts.mbe_out_dir, sizeof(opts.mbe_out_dir), "%s", "captures");
-    /* The slot 2 capture its first frame created (issue #661). */
-    opts.mbe_out_fR = (FILE*)(uintptr_t)1;
+    /* No capture is open: the bootstrap opens nothing, and its first frame creates the slot 2 capture (issue #661). */
     state.currentslot = 1;
     state.dmr_color_code = 16;
     state.dmr_payload_p = g_bootstrap_payload + 90U;

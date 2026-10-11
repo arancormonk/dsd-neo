@@ -569,12 +569,12 @@ nxdn_process_voice_and_mbe(dsd_opts* opts, dsd_state* state, const nxdn_frame_ct
         return;
     }
     const dsd_nxdn_variant variant = dsd_frame_sync_active_nxdn_variant(opts, state);
-    /* NXDN's own capture only (issue #661). */
+    /* NXDN's own capture only (issue #661), named as NXDN: a failed CAC run can have reset state->synctype by now. */
     if (variant == DSD_NXDN_VARIANT_96 && (dsd_decode_time() - state->last_vc_sync_time) > 1) {
-        dsd_mbe_out_close_protocol(opts, state, DSD_MBE_OUT_SLOT1, state->synctype);
+        dsd_mbe_out_close_protocol(opts, state, DSD_MBE_OUT_SLOT1, DSD_SYNC_NXDN_POS);
     }
     if (variant == DSD_NXDN_VARIANT_48) {
-        dsd_mbe_out_close_protocol(opts, state, DSD_MBE_OUT_SLOT1, state->synctype);
+        dsd_mbe_out_close_protocol(opts, state, DSD_MBE_OUT_SLOT1, DSD_SYNC_NXDN_POS);
     }
 }
 

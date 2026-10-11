@@ -41,10 +41,11 @@ dmr_set_slot_lights(dsd_state* state) {
     DSD_SNPRINTF(state->slot2light, sizeof(state->slot2light), " slot2 ");
 }
 
-/* A DMR data burst ends DMR's capture segments; another protocol's capture is not DMR's to close (issue #661). */
+/* A DMR data burst ends DMR's capture segments; another protocol's capture is not DMR's to close (issue #661). Each
+   closer names its protocol itself, whatever state->synctype holds by then. */
 static void
 dmr_close_mbe_out(dsd_opts* opts, dsd_state* state) {
-    dsd_mbe_out_close_protocol(opts, state, DSD_MBE_OUT_BOTH, state->synctype);
+    dsd_mbe_out_close_protocol(opts, state, DSD_MBE_OUT_BOTH, DSD_SYNC_DMR_BS_DATA_POS);
 }
 
 /*

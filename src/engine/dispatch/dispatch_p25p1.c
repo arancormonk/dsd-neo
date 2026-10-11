@@ -237,7 +237,7 @@ p25p1_decode_nid_and_duid(dsd_opts* opts, dsd_state* state) {
    close. */
 static void
 p25p1_close_mbe_out(dsd_opts* opts, dsd_state* state) {
-    dsd_mbe_out_close_protocol(opts, state, DSD_MBE_OUT_BOTH, state->synctype);
+    dsd_mbe_out_close_protocol(opts, state, DSD_MBE_OUT_BOTH, DSD_SYNC_P25P1_POS);
 }
 
 static void

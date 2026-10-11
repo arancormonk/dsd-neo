@@ -86,6 +86,8 @@ static int g_stub_sacch_ok;
 static int g_stub_scch_ok;
 static int g_stub_cac_ok;
 static int g_stub_facch_ok;
+/* The CAC that makes the eleventh failure in a row: the real deperm resets the sync state, synctype included. */
+static int g_stub_cac_resets_sync;
 
 static void
 nxdn_stub_note_crc(dsd_state* state, int crc_ok, nxdn_evidence evidence) {
@@ -118,6 +120,7 @@ reset_state(void) {
     g_stub_scch_ok = 0;
     g_stub_cac_ok = 1;
     g_stub_facch_ok = 1;
+    g_stub_cac_resets_sync = 0;
     DSD_MEMSET(g_dibit_stream, 0, sizeof(g_dibit_stream));
     DSD_MEMSET(g_dibit_reliab_stream, 255, sizeof(g_dibit_reliab_stream));
     g_dibit_stream_pos = 0U;
@@ -201,12 +204,11 @@ closeMbeOutFile(dsd_opts* opts, dsd_state* state) {
     opts->mbe_out_f = NULL;
 }
 
-/* NXDN closes only its own capture (issue #661); the owner filter is tested in CORE_MBE_FILE_IO, and this counts the
-   close as the closer above does. */
+/* NXDN closes only its own capture (issue #661). The owner filter itself is tested in CORE_MBE_FILE_IO; the capture
+   here is an NXDN one, so a close named for any other protocol leaves it open, as the real filter would. */
 void
 dsd_mbe_out_close_protocol(dsd_opts* opts, dsd_state* state, int slot_mask, int synctype) {
-    (void)synctype;
-    if ((slot_mask & DSD_MBE_OUT_SLOT1) != 0 && opts->mbe_out_f != NULL) {
+    if (DSD_SYNC_IS_NXDN(synctype) && (slot_mask & DSD_MBE_OUT_SLOT1) != 0 && opts->mbe_out_f != NULL) {
         closeMbeOutFile(opts, state);
     }
 }
@@ -235,6 +237,9 @@ void
 nxdn_deperm_cac_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[300], const uint8_t reliab[300]) {
     (void)opts;
     nxdn_stub_note_crc(state, g_stub_cac_ok, NXDN_EVIDENCE_STRONG);
+    if (g_stub_cac_resets_sync) {
+        state->synctype = DSD_SYNC_NONE;
+    }
     g_cac_calls++;
     g_last_cac_bit = bits[0];
     g_last_cac_reliab = reliab[0];
@@ -530,6 +535,18 @@ test_lfsr_and_scanner_state(void) {
     g_active_nxdn_variant = DSD_NXDN_VARIANT_48;
     rc |= expect_int("nxdn48 data closes mbe file route", route_frame(0x01U), 1);
     rc |= expect_int("nxdn48 data closed mbe file", g_opts.mbe_out_f == NULL, 1);
+
+    /* The CAC that resets the sync state after a run of failures still ends NXDN's capture. */
+    reset_state();
+    g_opts.mbe_out_f = stdout;
+    g_opts.frame_nxdn48 = 1;
+    g_active_nxdn_variant = DSD_NXDN_VARIANT_48;
+    g_state.synctype = DSD_SYNC_NXDN_POS;
+    g_stub_cac_ok = 0;
+    g_stub_cac_resets_sync = 1;
+    rc |= expect_int("nxdn48 sync-resetting cac route", route_frame(0x01U), 1);
+    rc |= expect_int("nxdn48 sync-resetting cac reset the synctype", g_state.synctype, DSD_SYNC_NONE);
+    rc |= expect_int("nxdn48 sync-resetting cac closed mbe file", g_opts.mbe_out_f == NULL, 1);
 
     reset_state();
     g_opts.mbe_out_f = stdout;

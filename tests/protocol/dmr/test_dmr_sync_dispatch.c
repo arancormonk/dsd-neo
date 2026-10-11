@@ -292,7 +292,7 @@ test_ms_data_routes_to_ms_data(void) {
     assert(data_sync_calls == 0);
     assert(close_left_calls == 1);
     assert(close_right_calls == 1);
-    assert(close_protocol_synctype == DSD_SYNC_DMR_MS_DATA);
+    assert(DSD_SYNC_IS_DMR(close_protocol_synctype));
 }
 
 /* Issue #661: under trunking an MS voice sync is withheld unread, and so opens no capture, and an MS data burst is
@@ -462,7 +462,7 @@ test_bs_data_routes_to_data_sync(void) {
     assert(ms_data_calls == 0);
     assert(close_left_calls == 1);
     assert(close_right_calls == 1);
-    assert(close_protocol_synctype == DSD_SYNC_DMR_BS_DATA_NEG);
+    assert(DSD_SYNC_IS_DMR(close_protocol_synctype));
 }
 
 int

@@ -161,7 +161,7 @@ test_data_dispatch(void) {
         assert(print_calls == 1);
         assert(open_calls == 0);
         assert(close_calls == 1);
-        assert(close_protocol_synctype == data_synctypes[i]);
+        assert(DSD_SYNC_IS_X2TDMA(close_protocol_synctype));
         assert(voice_calls == 0);
         assert(data_calls == 1);
     }

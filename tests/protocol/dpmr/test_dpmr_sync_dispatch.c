@@ -118,7 +118,7 @@ test_dispatch_close_only_syncs(void) {
     dsd_dispatch_handle_dpmr(&opts, &state);
     assert(state.currentslot == 0);
     assert(g_close_calls == 1);
-    assert(g_close_protocol_synctype == DSD_SYNC_DPMR_FS1_POS);
+    assert(DSD_SYNC_IS_DPMR(g_close_protocol_synctype));
     assert(g_voice_calls == 0);
 
     state.synctype = DSD_SYNC_DPMR_FS3_NEG;

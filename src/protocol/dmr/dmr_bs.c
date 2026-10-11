@@ -18,6 +18,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/sync_patterns.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/core/vocoder.h>
 #include <dsd-neo/crypto/dmr_keystream.h>
@@ -285,11 +286,11 @@ handle_dmr_bs_data_sync(dsd_opts* opts, dsd_state* state, dmr_bs_ctx* ctx) {
 
     if (ctx->internalslot == 0) {
         ctx->vc1 = 7;
-        dsd_mbe_out_close_protocol(opts, state, DSD_MBE_OUT_SLOT1, state->synctype);
+        dsd_mbe_out_close_protocol(opts, state, DSD_MBE_OUT_SLOT1, DSD_SYNC_DMR_BS_DATA_POS);
     }
     if (ctx->internalslot == 1) {
         ctx->vc2 = 7;
-        dsd_mbe_out_close_protocol(opts, state, DSD_MBE_OUT_SLOT2, state->synctype);
+        dsd_mbe_out_close_protocol(opts, state, DSD_MBE_OUT_SLOT2, DSD_SYNC_DMR_BS_DATA_POS);
     }
 
     dmr_data_sync(opts, state);
@@ -638,7 +639,7 @@ finalize_dmr_bs(dsd_opts* opts, dsd_state* state, const dmr_bs_ctx* ctx) {
     state->errs2R = 0;
     state->errs2 = 0;
 
-    dsd_mbe_out_close_protocol(opts, state, DSD_MBE_OUT_BOTH, state->synctype);
+    dsd_mbe_out_close_protocol(opts, state, DSD_MBE_OUT_BOTH, DSD_SYNC_DMR_BS_DATA_POS);
 
     DSD_MEMSET(state->f_l4, 0.0f, sizeof(state->f_l4));
     DSD_MEMSET(state->f_r4, 0.0f, sizeof(state->f_r4));
