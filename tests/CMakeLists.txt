@@ -5638,6 +5638,27 @@ add_test(
     COMMAND dsd-neo_test_core_mbe_transform_context
 )
 
+# Issue #656: crypto transforms stay with the protocol that owns the voice; keystream reads stay in the keystream.
+add_executable(
+    dsd-neo_test_core_mbe_crypto_scope
+    core/test_core_mbe_crypto_scope.c
+)
+target_include_directories(
+    dsd-neo_test_core_mbe_crypto_scope
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${_PUBLIC_INCLUDES}
+)
+target_link_libraries(
+    dsd-neo_test_core_mbe_crypto_scope
+    PRIVATE
+        dsd-neo_core
+        dsd-neo_proto_nxdn
+        dsd-neo_proto_dmr
+        dsd-neo_feature_codec2
+        dsd-neo_test_support
+        ${LIBS}
+)
+add_test(NAME CORE_MBE_CRYPTO_SCOPE COMMAND dsd-neo_test_core_mbe_crypto_scope)
+
 add_executable(
     dsd-neo_test_core_straight_keystream_validation
     core/test_core_straight_keystream_validation.c

@@ -196,7 +196,7 @@ dmr_ms_apply_keystream(dsd_state* state, dmr_ms_voice_frames* frames) {
 
 static void
 dmr_ms_process_single_mbe(dsd_opts* opts, dsd_state* state, char ambe_fr[4][24], size_t frame_idx) {
-    processMbeFrame(opts, state, NULL, ambe_fr, NULL);
+    processMbeFrame(opts, state, DSD_VOICE_PROTOCOL_DMR, NULL, ambe_fr, NULL);
     DSD_MEMCPY(state->f_l4[frame_idx], state->audio_out_temp_buf, sizeof(state->audio_out_temp_buf));
     DSD_MEMCPY(state->s_l4[frame_idx], state->s_l, sizeof(state->s_l));
     DSD_MEMCPY(state->s_l4u[frame_idx], state->s_lu, sizeof(state->s_lu));

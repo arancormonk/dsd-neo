@@ -86,8 +86,9 @@ dsd_two_level_symbol_reliability(const dsd_opts* opts, const dsd_state* state, f
 /* The soft path is ProVoice's only way into the vocoder: no processMbeFrame stub exists, so a hard call fails to
  * link. */
 void
-processMbeFrameSoft(dsd_opts* opts, dsd_state* state, dsd_vocoder_soft_bit imbe_fr[8][23],
+processMbeFrameSoft(dsd_opts* opts, dsd_state* state, dsd_voice_protocol protocol, dsd_vocoder_soft_bit imbe_fr[8][23],
                     dsd_vocoder_soft_bit ambe_fr[4][24], dsd_vocoder_soft_bit imbe7100_fr[7][24]) {
+    assert(protocol == DSD_VOICE_PROTOCOL_PROVOICE);
     (void)opts;
     (void)state;
     assert(imbe_fr == NULL);

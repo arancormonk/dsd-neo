@@ -62,7 +62,7 @@ processDSTAR(dsd_opts* opts, dsd_state* state) {
             break;
         }
 
-        processMbeFrameSoft(opts, state, NULL, ambe_fr, NULL);
+        processMbeFrameSoft(opts, state, DSD_VOICE_PROTOCOL_DSTAR, NULL, ambe_fr, NULL);
         dsd_play_synthesized_voice(opts, state);
 
         if (j != 20) {

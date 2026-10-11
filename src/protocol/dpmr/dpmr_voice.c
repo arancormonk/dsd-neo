@@ -421,7 +421,7 @@ dpmr_play_voice_frames(dsd_opts* opts, dsd_state* state, char ambe_fr[NB_OF_DPMR
             }
 
             for (uint32_t i = start; i < end; i++) {
-                processMbeFrame(opts, state, NULL, ambe_fr[i], NULL);
+                processMbeFrame(opts, state, DSD_VOICE_PROTOCOL_DPMR, NULL, ambe_fr[i], NULL);
                 if (opts->floating_point == 0) {
                     playSynthesizedVoiceMS(opts, state);
                 }

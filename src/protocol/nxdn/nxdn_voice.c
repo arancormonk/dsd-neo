@@ -73,9 +73,9 @@ nxdn_voice(dsd_opts* opts, dsd_state* state, int voice, uint8_t dbuf[182], const
             }
         }
         if (dbuf_reliab != NULL) {
-            processMbeFrameSoft(opts, state, NULL, ambe_soft_fr, NULL);
+            processMbeFrameSoft(opts, state, DSD_VOICE_PROTOCOL_NXDN, NULL, ambe_soft_fr, NULL);
         } else {
-            processMbeFrame(opts, state, NULL, ambe_fr, NULL);
+            processMbeFrame(opts, state, DSD_VOICE_PROTOCOL_NXDN, NULL, ambe_fr, NULL);
         }
 
         DSD_MEMCPY(state->f_l, state->audio_out_temp_buf, sizeof(state->f_l));

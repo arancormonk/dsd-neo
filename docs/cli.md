@@ -1787,6 +1787,13 @@ Out-of-range decimal keys are rejected without changing the installed key.
   `-H`/`-R` legacy menu entries) can disarm the keyloader and be overwritten by a keyed hop. The typed
   `KEY_DIRECT_SET`/`DECRYPTION_APPLY` frontend entry points instead update the global baseline beneath an
   active keyed row; the row keeps its effective keys. See [decryption scope](decryption-profiles.md).
+- Each key option applies only to the protocol whose voice it decrypts, so one decoder (the default AUTO preset, a
+  scan, or `-fa`) can carry keys for several systems: DMR privacy (`-b`, `-H` as a Hytera BP key, `-4`), the vendor
+  scramblers (`-!`, `-@`, `-5`, `-9`, `-A`, `-2`, `--dmr-baofeng-pc5`) and `--dmr-force-algid` act on DMR voice only;
+  the scrambler `-R` (and `-4 -R`) on NXDN and scrambled dPMR; P25 ALG IDs on P25 Phase 1 and 2 (and on DMR, which
+  carries them). Clear dPMR, P25 Phase 2 and YSF voice is never put through another protocol's key. The generic `-S`
+  keystream applies to DMR, P25 Phase 2 and clear dPMR voice. A P25 or DMR frame that would need keystream past what
+  was generated for it (a long call whose MI never refreshes) is muted instead of being played with a wrong keystream.
 - Force key over identifiers: `-4` (DMR BP/NXDN scrambler), `-0` (DMR RC4 when PI/LE missing),
   `--dmr-force-algid <hex>` (DMR ALGID when PI/LE missing; a fallback only — an ALG ID or KEY ID
   received over the air via PI header/LE always takes precedence; `-M` is reserved for M17 in DSD-neo).
