@@ -95,6 +95,32 @@ test_init_stamps_and_rebase_share_one_list(void) {
     return rc;
 }
 
+/* Issue #673: the per-call WAV open stamps start at 0 (none opened yet). A WAV opened on the system clock before the
+   engine moved the decode clock back onto a replay's capture (-P opens while the arguments are parsed) has recorded
+   nothing yet, so the rebase pulls its stamp back to now; a stamp behind now is a real open time and stays. */
+static int
+test_rebase_pulls_wav_open_stamps_back_to_now(void) {
+    static dsd_opts opts;
+    dsd_decode_clock_use_test(5000ULL * 1000000000ULL);
+    opts.wav_out_open_time = 1;
+    opts.wav_out_open_timeR = 2;
+    initOpts(&opts);
+    int rc = 0;
+    if (opts.wav_out_open_time != 0 || opts.wav_out_open_timeR != 0) {
+        DSD_FPRINTF(stderr, "initOpts left a per-call WAV open stamp\n");
+        rc = 40;
+    }
+    opts.wav_out_open_time = 9000;
+    opts.wav_out_open_timeR = 4000;
+    dsd_state_rebase_decode_timestamps(&opts, NULL);
+    if (rc == 0 && (opts.wav_out_open_time != 5000 || opts.wav_out_open_timeR != 4000)) {
+        DSD_FPRINTF(stderr, "the rebase did not pull an open stamp ahead of now back, or moved one behind it\n");
+        rc = 41;
+    }
+    dsd_decode_clock_use_system();
+    return rc;
+}
+
 /* Each initState() ring has an identity of its own, nonzero and shared by its two slots, and keeps it through a reset
    of its rows (its push stamps go on counting there). The Qt call history tells by it a capture's rows decoded again
    in a fresh state from the rows it already read. */
@@ -151,6 +177,10 @@ main(void) {
     int rebase_rc = test_init_stamps_and_rebase_share_one_list();
     if (rebase_rc != 0) {
         return rebase_rc;
+    }
+    int wav_open_rc = test_rebase_pulls_wav_open_stamps_back_to_now();
+    if (wav_open_rc != 0) {
+        return wav_open_rc;
     }
 
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));

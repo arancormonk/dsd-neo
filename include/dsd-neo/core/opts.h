@@ -73,6 +73,10 @@ struct dsd_opts {
     time_t symbol_out_file_creation_time; //time the symbol out file was created
     SNDFILE* wav_out_f;
     SNDFILE* wav_out_fR;
+    // Decode time the per-call WAV in wav_out_f / wav_out_fR was opened, 0 before the first open. A recording switched
+    // on after its call began holds only what followed, so its rdio-scanner sidecar starts here, not at the call's start.
+    time_t wav_out_open_time;
+    time_t wav_out_open_timeR;
     SNDFILE* wav_out_raw;
     double rtl_pwr;
     dsd_audio_stream* audio_in_stream;   /* Primary audio input stream */

@@ -9,6 +9,7 @@
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/platform/threading.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/rdio_export.h>
 #include <errno.h>
 #include <limits.h>
@@ -359,6 +360,21 @@ read_file(const char* path, char* out, size_t out_size) {
     return 0;
 }
 
+// The sidecar's start_time and stop_time are exactly @p start and @p stop. Returns non-zero, after printing the body,
+// when either differs.
+static int
+expect_sidecar_times(const char* label, const char* body, long long start, long long stop) {
+    char want_start[64];
+    char want_stop[64];
+    DSD_SNPRINTF(want_start, sizeof(want_start), "\"start_time\": %lld,", start);
+    DSD_SNPRINTF(want_stop, sizeof(want_stop), "\"stop_time\": %lld,", stop);
+    if (!body || !strstr(body, want_start) || !strstr(body, want_stop)) {
+        DSD_FPRINTF(stderr, "%s: sidecar should carry %s %s\n%s\n", label, want_start, want_stop, body ? body : "");
+        return 1;
+    }
+    return 0;
+}
+
 #if defined(USE_CURL) && !DSD_PLATFORM_WIN_NATIVE
 typedef struct {
     dsd_socket_t listen_sock;
@@ -368,7 +384,52 @@ typedef struct {
     int saw_request;
     unsigned int accept_timeout_ms;
     char response[512];
+    // The upload's "meta" part (the sidecar JSON), or "" when the request carried none.
+    char meta[4096];
 } rdio_test_http_server;
+
+// Find @p needle in the first @p hay_len bytes of @p hay. The request is not a string: the WAV in its "audio" part,
+// which comes before "meta", holds NUL bytes.
+static const char*
+rdio_test_find_bytes(const char* hay, size_t hay_len, const char* needle) {
+    const size_t needle_len = strlen(needle);
+    if (needle_len == 0U || hay_len < needle_len) {
+        return NULL;
+    }
+    for (size_t i = 0; i + needle_len <= hay_len; i++) {
+        if (memcmp(hay + i, needle, needle_len) == 0) {
+            return hay + i;
+        }
+    }
+    return NULL;
+}
+
+// Copy the body of the request's "meta" multipart part into server->meta.
+static void
+rdio_test_capture_meta_part(rdio_test_http_server* server, const char* request, size_t used) {
+    server->meta[0] = '\0';
+    const char* part = rdio_test_find_bytes(request, used, "name=\"meta\"");
+    if (!part) {
+        return;
+    }
+    const size_t part_off = (size_t)(part - request);
+    const char* body = rdio_test_find_bytes(part, used - part_off, "\r\n\r\n");
+    if (!body) {
+        return;
+    }
+    body += 4;
+    const size_t body_off = (size_t)(body - request);
+    const char* end = rdio_test_find_bytes(body, used - body_off, "\r\n--");
+    if (!end) {
+        return;
+    }
+    size_t len = (size_t)(end - body);
+    if (len >= sizeof(server->meta)) {
+        len = sizeof(server->meta) - 1U;
+    }
+    DSD_MEMCPY(server->meta, body, len);
+    server->meta[len] = '\0';
+}
 
 static int
 rdio_test_content_length(const char* headers) {
@@ -459,6 +520,7 @@ rdio_test_http_server_thread(void* arg) {
             break;
         }
     }
+    rdio_test_capture_meta_part(server, request, used);
 
     const char default_response[] = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK";
     const char* response = server->response[0] ? server->response : default_response;
@@ -635,6 +697,8 @@ test_dirwatch_sidecar_generation(void) {
     opts->rdio_upload_timeout_ms = 5000;
     opts->rdio_upload_retries = 1;
 
+    // A 12-second call: the row's start, and its last activity, which by the time the WAV closes is the call's end.
+    hist->Event_History_Items[0].event_start_time = (time_t)1699999988;
     hist->Event_History_Items[0].event_time = (time_t)1700000000;
     hist->Event_History_Items[0].target_id = 1201;
     hist->Event_History_Items[0].source_id = 660045;
@@ -646,7 +710,7 @@ test_dirwatch_sidecar_generation(void) {
                  "P25_TEST");
     DSD_SNPRINTF(hist->Event_History_Items[0].t_name, sizeof(hist->Event_History_Items[0].t_name), "%s", "FIRE DISP");
 
-    if (dsd_rdio_export_call(opts, hist, wav_path) != 0) {
+    if (dsd_rdio_export_call(opts, hist, wav_path, 0) != 0) {
         DSD_FPRINTF(stderr, "dsd_rdio_export_call failed\n");
         free(hist);
         free(opts);
@@ -665,9 +729,10 @@ test_dirwatch_sidecar_generation(void) {
         return 1;
     }
 
-    int rc = 0;
-    if (!strstr(body, "\"start_time\": 1700000000")) {
-        DSD_FPRINTF(stderr, "sidecar missing start_time\n%s\n", body);
+    // The call is filed by its start. The dummy WAV has no RIFF header, so it adds no length to stop_time.
+    int rc = expect_sidecar_times("dirwatch sidecar", body, 1699999988LL, 1699999988LL);
+    if (strstr(body, "\"start_time\": 1700000000")) {
+        DSD_FPRINTF(stderr, "sidecar start_time is the call's end\n%s\n", body);
         rc = 1;
     }
     if (!strstr(body, "\"talkgroup\": 1201")) {
@@ -738,7 +803,7 @@ test_mode_off_no_sidecar(void) {
     hist->Event_History_Items[0].target_id = 1;
 
     int rc = 0;
-    if (dsd_rdio_export_call(opts, hist, wav_path) != 0) {
+    if (dsd_rdio_export_call(opts, hist, wav_path, 0) != 0) {
         DSD_FPRINTF(stderr, "mode off should return success\n");
         rc = 1;
     }
@@ -791,10 +856,11 @@ test_duration_uses_wav_samplerate(void) {
     opts->rdio_mode = DSD_RDIO_MODE_DIRWATCH;
     opts->rdio_system_id = 48;
 
+    hist->Event_History_Items[0].event_start_time = (time_t)1699999990;
     hist->Event_History_Items[0].event_time = (time_t)1700000000;
     hist->Event_History_Items[0].target_id = 1201;
 
-    if (dsd_rdio_export_call(opts, hist, wav_path) != 0) {
+    if (dsd_rdio_export_call(opts, hist, wav_path, 0) != 0) {
         DSD_FPRINTF(stderr, "dsd_rdio_export_call failed for 48k wav\n");
         free(hist);
         free(opts);
@@ -813,11 +879,8 @@ test_duration_uses_wav_samplerate(void) {
         return 1;
     }
 
-    int rc = 0;
-    if (!strstr(body, "\"stop_time\": 1700000002")) {
-        DSD_FPRINTF(stderr, "stop_time should reflect 2-second 48k recording\n%s\n", body);
-        rc = 1;
-    }
+    // stop_time is the start plus the 2-second 48k recording.
+    int rc = expect_sidecar_times("48k recording", body, 1699999990LL, 1699999992LL);
 
     (void)remove(json_path);
     (void)remove(wav_path);
@@ -863,10 +926,11 @@ test_duration_skips_extra_wav_chunks(void) {
     opts->rdio_mode = DSD_RDIO_MODE_DIRWATCH;
     opts->rdio_system_id = 48;
 
+    hist->Event_History_Items[0].event_start_time = (time_t)1700000090;
     hist->Event_History_Items[0].event_time = (time_t)1700000100;
     hist->Event_History_Items[0].target_id = 1202;
 
-    if (dsd_rdio_export_call(opts, hist, wav_path) != 0) {
+    if (dsd_rdio_export_call(opts, hist, wav_path, 0) != 0) {
         DSD_FPRINTF(stderr, "dsd_rdio_export_call failed for chunked wav\n");
         free(hist);
         free(opts);
@@ -885,11 +949,8 @@ test_duration_skips_extra_wav_chunks(void) {
         return 1;
     }
 
-    int rc = 0;
-    if (!strstr(body, "\"stop_time\": 1700000103")) {
-        DSD_FPRINTF(stderr, "stop_time should skip extra WAV chunks and use 3-second duration\n%s\n", body);
-        rc = 1;
-    }
+    // The extra chunks are skipped: stop_time is the start plus the 3-second recording.
+    int rc = expect_sidecar_times("chunked recording", body, 1700000090LL, 1700000093LL);
 
     (void)remove(json_path);
     (void)remove(wav_path);
@@ -943,7 +1004,7 @@ test_duration_rejects_invalid_wav_format_values(void) {
             rc = 1;
             break;
         }
-        if (dsd_rdio_export_call(&opts, &hist, wav_path) != 0) {
+        if (dsd_rdio_export_call(&opts, &hist, wav_path, 0) != 0) {
             DSD_FPRINTF(stderr, "export failed for invalid wav duration case %zu\n", i);
             (void)remove(wav_path);
             rc = 1;
@@ -1014,7 +1075,7 @@ test_duration_uses_zero_for_missing_or_truncated_wav(void) {
             rc = 1;
             break;
         }
-        if (dsd_rdio_export_call(&opts, &hist, wav_path) != 0) {
+        if (dsd_rdio_export_call(&opts, &hist, wav_path, 0) != 0) {
             DSD_FPRINTF(stderr, "export failed for unreadable wav duration case %zu\n", i);
             (void)remove(wav_path);
             rc = 1;
@@ -1074,19 +1135,19 @@ test_export_guards_and_invalid_mode_are_noops(void) {
     hist.Event_History_Items[0].target_id = 2;
 
     int rc = 0;
-    if (dsd_rdio_export_call(NULL, &hist, wav_path) == 0) {
+    if (dsd_rdio_export_call(NULL, &hist, wav_path, 0) == 0) {
         DSD_FPRINTF(stderr, "export accepted null opts\n");
         rc = 1;
     }
-    if (dsd_rdio_export_call(&opts, &hist, NULL) == 0) {
+    if (dsd_rdio_export_call(&opts, &hist, NULL, 0) == 0) {
         DSD_FPRINTF(stderr, "export accepted null wav path\n");
         rc = 1;
     }
-    if (dsd_rdio_export_call(&opts, &hist, "") == 0) {
+    if (dsd_rdio_export_call(&opts, &hist, "", 0) == 0) {
         DSD_FPRINTF(stderr, "export accepted empty wav path\n");
         rc = 1;
     }
-    if (dsd_rdio_export_call(&opts, &hist, wav_path) != 0) {
+    if (dsd_rdio_export_call(&opts, &hist, wav_path, 0) != 0) {
         DSD_FPRINTF(stderr, "invalid rdio mode should be treated as disabled\n");
         rc = 1;
     }
@@ -1132,7 +1193,7 @@ test_missing_talkgroup_rejects_sidecar(void) {
     hist.Event_History_Items[0].event_time = (time_t)1700000300;
 
     int rc = 0;
-    if (dsd_rdio_export_call(&opts, &hist, wav_path) == 0) {
+    if (dsd_rdio_export_call(&opts, &hist, wav_path, 0) == 0) {
         DSD_FPRINTF(stderr, "export accepted missing talkgroup\n");
         rc = 1;
     }
@@ -1184,7 +1245,7 @@ test_sidecar_escapes_strings_and_tgt_fallback(void) {
     DSD_SNPRINTF(hist.Event_History_Items[0].sysid_string, sizeof(hist.Event_History_Items[0].sysid_string),
                  "SYS \"Q\"\\R\b\f\r");
 
-    if (dsd_rdio_export_call(&opts, &hist, wav_path) != 0) {
+    if (dsd_rdio_export_call(&opts, &hist, wav_path, 0) != 0) {
         DSD_FPRINTF(stderr, "export failed for escaped string sidecar\n");
         (void)remove(wav_path);
         remove_empty_dir(dir_template);
@@ -1267,7 +1328,7 @@ test_sidecar_private_fallback_and_malformed_wav_duration(void) {
     hist.Event_History_Items[0].target_id = 77;
     hist.Event_History_Items[0].gi = 1;
 
-    if (dsd_rdio_export_call(&opts, &hist, wav_path) != 0) {
+    if (dsd_rdio_export_call(&opts, &hist, wav_path, 0) != 0) {
         DSD_FPRINTF(stderr, "export failed for private fallback sidecar\n");
         (void)remove(wav_path);
         remove_empty_dir(dir_template);
@@ -1345,7 +1406,7 @@ test_sidecar_channel_label_fallback(void) {
     DSD_SNPRINTF(hist.Event_History_Items[0].channel_label, sizeof(hist.Event_History_Items[0].channel_label), "%s",
                  "Fire Dispatch");
 
-    if (dsd_rdio_export_call(&opts, &hist, wav_path) != 0) {
+    if (dsd_rdio_export_call(&opts, &hist, wav_path, 0) != 0) {
         DSD_FPRINTF(stderr, "export failed for channel label sidecar\n");
         (void)remove(wav_path);
         remove_empty_dir(dir_template);
@@ -1372,9 +1433,11 @@ test_sidecar_channel_label_fallback(void) {
     return rc;
 }
 
-// Export one row's sidecar into a fresh directory and return the sidecar's body in @p body, or -1.
+// Export one row's sidecar into a fresh directory and return the sidecar's body in @p body, or -1. The recording is an
+// 8 kHz WAV @p wav_seconds long, or with 0 a file with no RIFF header, which adds no length to stop_time, and was
+// opened at decode time @p opened (0: unknown).
 static int
-export_sidecar_body(const Event_History_I* hist, char* body, size_t body_size) {
+export_sidecar_body(const Event_History_I* hist, int wav_seconds, time_t opened, char* body, size_t body_size) {
     char dir_template[DSD_TEST_PATH_MAX] = {0};
     if (!dsd_test_mkdtemp(dir_template, sizeof(dir_template), "dsdneo_rdio_export_freq")) {
         DSD_FPRINTF(stderr, "mkdtemp failed: %s\n", strerror(errno));
@@ -1388,7 +1451,7 @@ export_sidecar_body(const Event_History_I* hist, char* body, size_t body_size) {
         remove_empty_dir(dir_template);
         return -1;
     }
-    if (write_dummy_wav(wav_path) != 0) {
+    if ((wav_seconds > 0 ? write_pcm16_mono_wav(wav_path, 8000, wav_seconds) : write_dummy_wav(wav_path)) != 0) {
         remove_empty_dir(dir_template);
         return -1;
     }
@@ -1396,7 +1459,7 @@ export_sidecar_body(const Event_History_I* hist, char* body, size_t body_size) {
     DSD_MEMSET(&opts, 0, sizeof(opts));
     opts.rdio_mode = DSD_RDIO_MODE_DIRWATCH;
     int rc = 0;
-    if (dsd_rdio_export_call(&opts, hist, wav_path) != 0 || read_file(json_path, body, body_size) != 0) {
+    if (dsd_rdio_export_call(&opts, hist, wav_path, opened) != 0 || read_file(json_path, body, body_size) != 0) {
         DSD_FPRINTF(stderr, "export failed for frequency sidecar\n");
         rc = -1;
     }
@@ -1434,7 +1497,7 @@ test_sidecar_freq_comes_from_the_row_frequency(void) {
         hist.Event_History_Items[0].channel = cases[i].channel;
         hist.Event_History_Items[0].freq_hz = cases[i].freq_hz;
         char body[4096];
-        if (export_sidecar_body(&hist, body, sizeof body) != 0) {
+        if (export_sidecar_body(&hist, 0, 0, body, sizeof body) != 0) {
             return 1;
         }
         if (!strstr(body, cases[i].want)) {
@@ -1442,6 +1505,54 @@ test_sidecar_freq_comes_from_the_row_frequency(void) {
             rc = 1;
         }
     }
+    return rc;
+}
+
+// start_time is when the recording began: the row's event_start_time, or the WAV's open time when per-call WAV was
+// switched on after the call began. The row's event_time is its last activity -- the call's end once the WAV closes --
+// and is only a fallback for a row with no start of its own, as a --playfiles row is, whose event_time comes from the
+// played file and is on that file's clock, so the open time does not move it. A row with neither takes the decode
+// clock. stop_time is always the start plus the recording, never a fallback stamp moved back by it: a played file's
+// stamp need not be an end.
+static int
+test_sidecar_start_time_sources(void) {
+    static Event_History_I hist;
+    const time_t decode_now = (time_t)1700000900;
+
+    struct {
+        const char* label;
+        time_t event_start_time;
+        time_t event_time;
+        time_t opened;
+        time_t want_start;
+    } cases[] = {
+        {"call start", (time_t)1700000810, (time_t)1700000830, 0, (time_t)1700000810},
+        {"recording opened before the call", (time_t)1700000810, (time_t)1700000830, (time_t)1700000700,
+         (time_t)1700000810},
+        {"recording opened mid-call", (time_t)1700000810, (time_t)1700000830, (time_t)1700000822, (time_t)1700000822},
+        {"no start: last activity", 0, (time_t)1700000830, 0, (time_t)1700000830},
+        {"no start: open time does not move a played file's stamp", 0, (time_t)1600000000, (time_t)1700000822,
+         (time_t)1600000000},
+        {"negative start: last activity", (time_t)-5, (time_t)1700000830, 0, (time_t)1700000830},
+        {"neither stamp: decode clock", 0, 0, 0, decode_now},
+    };
+
+    dsd_decode_clock_use_test((uint64_t)decode_now * UINT64_C(1000000000));
+    int rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        DSD_MEMSET(&hist, 0, sizeof(hist));
+        hist.Event_History_Items[0].event_start_time = cases[i].event_start_time;
+        hist.Event_History_Items[0].event_time = cases[i].event_time;
+        hist.Event_History_Items[0].target_id = 1201;
+        char body[4096];
+        if (export_sidecar_body(&hist, 2, cases[i].opened, body, sizeof body) != 0) {
+            rc = 1;
+            break;
+        }
+        rc |= expect_sidecar_times(cases[i].label, body, (long long)cases[i].want_start,
+                                   (long long)cases[i].want_start + 2LL);
+    }
+    dsd_decode_clock_use_system();
     return rc;
 }
 
@@ -1491,11 +1602,12 @@ test_api_shutdown_drains_queue(void) {
     DSD_SNPRINTF(opts->rdio_api_key, sizeof(opts->rdio_api_key), "%s", "test-key");
     opts->rdio_api_key[sizeof(opts->rdio_api_key) - 1] = '\0';
 
+    hist->Event_History_Items[0].event_start_time = (time_t)1699999985;
     hist->Event_History_Items[0].event_time = (time_t)1700000000;
     hist->Event_History_Items[0].target_id = 1201;
 
     int rc = 0;
-    if (dsd_rdio_export_call(opts, hist, wav_path) != 0) {
+    if (dsd_rdio_export_call(opts, hist, wav_path, 0) != 0) {
         DSD_FPRINTF(stderr, "api enqueue path failed\n");
         rc = 1;
     }
@@ -1503,9 +1615,12 @@ test_api_shutdown_drains_queue(void) {
     dsd_rdio_upload_shutdown();
     dsd_rdio_upload_shutdown();
 
-    if (!file_exists(json_path)) {
+    char body[4096];
+    if (read_file(json_path, body, sizeof(body)) != 0) {
         DSD_FPRINTF(stderr, "sidecar missing after API shutdown drain\n");
         rc = 1;
+    } else {
+        rc |= expect_sidecar_times("API shutdown drain sidecar", body, 1699999985LL, 1699999986LL);
     }
 
     (void)remove(json_path);
@@ -1573,11 +1688,12 @@ test_api_delete_after_successful_upload(void) {
     DSD_SNPRINTF(opts->rdio_api_key, sizeof(opts->rdio_api_key), "%s", "test-key");
     opts->rdio_api_key[sizeof(opts->rdio_api_key) - 1] = '\0';
 
+    hist->Event_History_Items[0].event_start_time = (time_t)1699999985;
     hist->Event_History_Items[0].event_time = (time_t)1700000000;
     hist->Event_History_Items[0].target_id = 1201;
 
     int rc = 0;
-    if (dsd_rdio_export_call(opts, hist, wav_path) != 0) {
+    if (dsd_rdio_export_call(opts, hist, wav_path, 0) != 0) {
         DSD_FPRINTF(stderr, "api enqueue path failed\n");
         rc = 1;
     }
@@ -1592,6 +1708,8 @@ test_api_delete_after_successful_upload(void) {
         DSD_FPRINTF(stderr, "test HTTP server did not receive a complete upload\n");
         rc = 1;
     }
+    // API-only mode leaves no sidecar on disk; the uploaded meta part is the call's record.
+    rc |= expect_sidecar_times("API upload meta part", server.meta, 1699999985LL, 1699999986LL);
     if (file_exists(wav_path)) {
         DSD_FPRINTF(stderr, "WAV should be deleted after successful API upload\n");
         (void)remove(wav_path);
@@ -1603,6 +1721,105 @@ test_api_delete_after_successful_upload(void) {
         rc = 1;
     }
 
+    remove_empty_dir(dir_template);
+    dsd_socket_cleanup();
+    free(hist);
+    free(opts);
+    return rc;
+#endif
+}
+
+// With DirWatch and API both on, the upload's meta part is the sidecar DirWatch leaves on disk, byte for byte, so
+// rdio-scanner files the call at its start whichever way it arrives.
+static int
+test_api_meta_part_matches_dirwatch_sidecar(void) {
+#if !defined(USE_CURL) || DSD_PLATFORM_WIN_NATIVE
+    return 0;
+#else
+    char dir_template[DSD_TEST_PATH_MAX] = {0};
+    if (!dsd_test_mkdtemp(dir_template, sizeof(dir_template), "dsdneo_rdio_export_api_meta")) {
+        DSD_FPRINTF(stderr, "mkdtemp failed: %s\n", strerror(errno));
+        return 1;
+    }
+
+    char wav_path[DSD_TEST_PATH_MAX] = {0};
+    char json_path[DSD_TEST_PATH_MAX] = {0};
+    if (dsd_test_path_join(wav_path, sizeof(wav_path), dir_template, "call_api_meta.wav") != 0
+        || dsd_test_path_join(json_path, sizeof(json_path), dir_template, "call_api_meta.json") != 0) {
+        DSD_FPRINTF(stderr, "path join failed\n");
+        remove_empty_dir(dir_template);
+        return 1;
+    }
+
+    if (write_pcm16_mono_wav(wav_path, 8000, 2) != 0) {
+        remove_empty_dir(dir_template);
+        return 1;
+    }
+
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    Event_History_I* hist = (Event_History_I*)calloc(1, sizeof(*hist));
+    if (!opts || !hist) {
+        DSD_FPRINTF(stderr, "allocation failed\n");
+        free(hist);
+        free(opts);
+        (void)remove(wav_path);
+        remove_empty_dir(dir_template);
+        return 1;
+    }
+
+    rdio_test_http_server server;
+    char api_url[128] = {0};
+    if (rdio_test_http_server_start(&server, api_url, sizeof(api_url)) != 0) {
+        free(hist);
+        free(opts);
+        (void)remove(wav_path);
+        remove_empty_dir(dir_template);
+        return 1;
+    }
+
+    opts->rdio_mode = DSD_RDIO_MODE_BOTH;
+    opts->rdio_system_id = 48;
+    opts->rdio_upload_timeout_ms = 5000;
+    opts->rdio_upload_retries = 1;
+    DSD_SNPRINTF(opts->rdio_api_url, sizeof(opts->rdio_api_url), "%s", api_url);
+    DSD_SNPRINTF(opts->rdio_api_key, sizeof(opts->rdio_api_key), "%s", "test-key");
+
+    hist->Event_History_Items[0].event_start_time = (time_t)1699999970;
+    hist->Event_History_Items[0].event_time = (time_t)1700000000;
+    hist->Event_History_Items[0].target_id = 1201;
+
+    int rc = 0;
+    if (dsd_rdio_export_call(opts, hist, wav_path, 0) != 0) {
+        DSD_FPRINTF(stderr, "both-mode export failed\n");
+        rc = 1;
+    }
+
+    dsd_rdio_upload_shutdown();
+
+    if (dsd_thread_join(server.thread) != 0) {
+        DSD_FPRINTF(stderr, "server thread join failed\n");
+        rc = 1;
+    }
+    if (server.rc != 0) {
+        DSD_FPRINTF(stderr, "test HTTP server did not receive a complete upload\n");
+        rc = 1;
+    }
+
+    char body[4096];
+    if (read_file(json_path, body, sizeof(body)) != 0) {
+        DSD_FPRINTF(stderr, "DirWatch sidecar missing in both mode\n");
+        rc = 1;
+    } else {
+        rc |= expect_sidecar_times("both-mode DirWatch sidecar", body, 1699999970LL, 1699999972LL);
+        if (strcmp(server.meta, body) != 0) {
+            DSD_FPRINTF(stderr, "uploaded meta part differs from the DirWatch sidecar\nmeta:\n%s\nsidecar:\n%s\n",
+                        server.meta, body);
+            rc = 1;
+        }
+    }
+
+    (void)remove(json_path);
+    (void)remove(wav_path);
     remove_empty_dir(dir_template);
     dsd_socket_cleanup();
     free(hist);
@@ -1691,12 +1908,13 @@ test_api_upload_does_not_follow_redirect(void) {
     DSD_SNPRINTF(opts->rdio_api_key, sizeof(opts->rdio_api_key), "%s", "test-key");
     opts->rdio_api_key[sizeof(opts->rdio_api_key) - 1] = '\0';
 
+    hist->Event_History_Items[0].event_start_time = (time_t)1699999985;
     hist->Event_History_Items[0].event_time = (time_t)1700000000;
     hist->Event_History_Items[0].target_id = 1201;
 
     /* Queue one API upload, then drain the worker before checking server observations. */
     int rc = 0;
-    if (dsd_rdio_export_call(opts, hist, wav_path) != 0) {
+    if (dsd_rdio_export_call(opts, hist, wav_path, 0) != 0) {
         DSD_FPRINTF(stderr, "api enqueue path failed\n");
         rc = 1;
     }
@@ -1747,8 +1965,10 @@ main(void) {
     rc |= test_sidecar_private_fallback_and_malformed_wav_duration();
     rc |= test_sidecar_channel_label_fallback();
     rc |= test_sidecar_freq_comes_from_the_row_frequency();
+    rc |= test_sidecar_start_time_sources();
     rc |= test_api_shutdown_drains_queue();
     rc |= test_api_delete_after_successful_upload();
+    rc |= test_api_meta_part_matches_dirwatch_sidecar();
     rc |= test_api_upload_does_not_follow_redirect();
     return rc;
 }

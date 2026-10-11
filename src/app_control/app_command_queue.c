@@ -6454,9 +6454,9 @@ static int
 ui_cmd_handle_wav_stop(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     (void)c;
     opts->wav_out_f = close_and_rename_wav_file(opts->wav_out_f, opts, opts->wav_out_file, opts->wav_out_dir,
-                                                state ? &state->event_history_s[0] : NULL);
+                                                state ? &state->event_history_s[0] : NULL, opts->wav_out_open_time);
     opts->wav_out_fR = close_and_rename_wav_file(opts->wav_out_fR, opts, opts->wav_out_fileR, opts->wav_out_dir,
-                                                 state ? &state->event_history_s[1] : NULL);
+                                                 state ? &state->event_history_s[1] : NULL, opts->wav_out_open_timeR);
     opts->wav_out_file[0] = 0;
     opts->wav_out_fileR[0] = 0;
     opts->dmr_stereo_wav = 0;

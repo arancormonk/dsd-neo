@@ -50,6 +50,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include "services.h"
 
 #include <dsd-neo/core/opts_fwd.h>
@@ -852,6 +853,22 @@ test_mute_and_protocol_inversion_toggles(void) {
     rc |= expect_int("m17 protocol inversion toggled independently", opts.inverted_m17, 0);
     rc |= expect_int("ysf inversion unchanged by specific toggles", opts.inverted_ysf, 0);
 
+    return rc;
+}
+
+// Per-call WAV switched on mid-call holds only what follows, so each recording is stamped with the decode time it was
+// opened; the rdio-scanner sidecar starts there rather than at the call's start (#673).
+static int
+test_enable_per_call_wav_stamps_open_time(void) {
+    static dsd_opts opts;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_SNPRINTF(opts.wav_out_dir, sizeof(opts.wav_out_dir), "%s", ".");
+    const time_t opened = (time_t)1700000123;
+    dsd_decode_clock_use_test((uint64_t)opened * UINT64_C(1000000000));
+    (void)svc_enable_per_call_wav(&opts, NULL);
+    int rc = expect_int("slot 1 per-call WAV stamped with its open time", opts.wav_out_open_time == opened, 1);
+    rc |= expect_int("slot 2 per-call WAV stamped with its open time", opts.wav_out_open_timeR == opened, 1);
+    dsd_decode_clock_use_system();
     return rc;
 }
 
@@ -2743,6 +2760,7 @@ main(void) {
     int rc = 0;
     rc |= test_source_alias_services();
     rc |= test_mute_and_protocol_inversion_toggles();
+    rc |= test_enable_per_call_wav_stamps_open_time();
     rc |= test_lrrp_event_log_and_history_state();
     rc |= test_p2_trunking_and_slot_controls();
     rc |= test_payload_symbol_and_pulse_state();

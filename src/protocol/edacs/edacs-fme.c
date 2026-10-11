@@ -873,9 +873,10 @@ edacs_prepare_voice_wav_output(dsd_opts* opts, dsd_state* state, int is_digital)
     }
 
     opts->wav_out_f = close_and_rename_wav_file(opts->wav_out_f, opts, opts->wav_out_file, opts->wav_out_dir,
-                                                &state->event_history_s[0]);
+                                                &state->event_history_s[0], opts->wav_out_open_time);
     opts->wav_out_f =
         open_wav_file(opts->wav_out_dir, opts->wav_out_file, sizeof opts->wav_out_file, EDACS_ANALOG_RATE_HZ, 0);
+    opts->wav_out_open_time = dsd_decode_time();
 }
 
 static int

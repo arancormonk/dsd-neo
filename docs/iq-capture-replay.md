@@ -157,7 +157,8 @@ or realtime. These replays are outside it altogether:
   sample. When an interactive frontend restarts the stream (a gain, device or DSP bandwidth change, or a stream
   restart) or switches the input away, the decode clock goes back to the system clock, and a replay that starts again
   within the same run decodes on the system clock. A restart that replays the same capture logs this once, as "IQ
-  replay restarted mid-run; decode timestamps now follow the system clock."
+  replay restarted mid-run; decode timestamps now follow the system clock." Any call in progress ends first, on the
+  capture's clock: its history row, per-call WAV and rdio-scanner sidecar keep the capture's times.
 - **A replay on a reused decoder state.** Only a run on a decoder state no earlier run has used moves onto the
   capture's clock. An embedding host can run again on the state its last run used: the Android service does when a
   start races the previous run's teardown. A replay started as that run's input then decodes on the system clock, and

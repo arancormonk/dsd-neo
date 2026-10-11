@@ -137,6 +137,9 @@ init_opts_output_defaults(dsd_opts* opts) {
     opts->frame_log_write_error_reported = 0;
     opts->p25_sm_log_open_error_reported = 0;
     opts->p25_sm_log_write_error_reported = 0;
+    /* No per-call WAV is open yet; set before the rebase below, which clamps these. */
+    opts->wav_out_open_time = 0;
+    opts->wav_out_open_timeR = 0;
     /* symbol_out_file_creation_time, on the list the engine's replay rebase shares. */
     dsd_state_rebase_decode_timestamps(opts, NULL);
     opts->symbol_out_file_is_auto = 0;
@@ -446,6 +449,15 @@ dsd_state_rebase_decode_timestamps(dsd_opts* opts, dsd_state* state) {
     const time_t now = dsd_decode_time();
     if (opts) {
         opts->symbol_out_file_creation_time = now;
+        /* A per-call WAV cannot have been opened after now. One opened on the system clock before the decode clock
+           moved back onto a replay's capture (-P opens while the arguments are parsed) has recorded nothing yet, so it
+           takes the capture's now; a stamp already behind now is a real open time and stays. */
+        if (opts->wav_out_open_time > now) {
+            opts->wav_out_open_time = now;
+        }
+        if (opts->wav_out_open_timeR > now) {
+            opts->wav_out_open_timeR = now;
+        }
     }
     if (state) {
         state->last_cc_sync_time = now;

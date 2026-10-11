@@ -2570,9 +2570,9 @@ test_close_and_rename_wav_removes_header_only_files(void) {
     }
 
     rc |= expect_true("close rename null filename rejects",
-                      close_and_rename_wav_file(NULL, NULL, NULL, dir, NULL) == NULL);
+                      close_and_rename_wav_file(NULL, NULL, NULL, dir, NULL, 0) == NULL);
     rc |= expect_true("close rename empty filename rejects",
-                      close_and_rename_wav_file(NULL, NULL, "", dir, NULL) == NULL);
+                      close_and_rename_wav_file(NULL, NULL, "", dir, NULL, 0) == NULL);
 
     char path[DSD_TEST_PATH_MAX];
     DSD_MEMSET(path, 0, sizeof path);
@@ -2580,7 +2580,7 @@ test_close_and_rename_wav_removes_header_only_files(void) {
     rc |= expect_true("close rename source wav opened", wav != NULL);
     if (wav) {
         rc |= expect_true("close rename header-only returns null",
-                          close_and_rename_wav_file(wav, NULL, path, dir, NULL) == NULL);
+                          close_and_rename_wav_file(wav, NULL, path, dir, NULL, 0) == NULL);
         rc |= expect_true("close rename header-only removed source", file_size_or_negative(path) < 0);
     }
 
@@ -2617,7 +2617,7 @@ test_close_and_rename_wav_preserves_nonempty_event_file(void) {
         DSD_SNPRINTF(item->tgt_str, sizeof item->tgt_str, "%s", "TGTUNIT");
 
         rc |= expect_true("close rename nonempty returns null",
-                          close_and_rename_wav_file(wav, NULL, path, dir, &history) == NULL);
+                          close_and_rename_wav_file(wav, NULL, path, dir, &history, 0) == NULL);
         rc |= expect_true("close rename nonempty removed temp source", file_size_or_negative(path) < 0);
 
         char renamed[DSD_TEST_PATH_MAX];
@@ -2665,7 +2665,7 @@ test_close_and_rename_wav_numeric_and_failure_paths(void) {
         DSD_SNPRINTF(item->sysid_string, sizeof item->sysid_string, "%s", "SYS-N");
 
         rc |= expect_true("numeric rename returns null",
-                          close_and_rename_wav_file(wav, NULL, path, dir, &history) == NULL);
+                          close_and_rename_wav_file(wav, NULL, path, dir, &history, 0) == NULL);
         rc |= expect_true("numeric rename removed temp source", file_size_or_negative(path) < 0);
 
         char renamed[DSD_TEST_PATH_MAX];
@@ -2691,7 +2691,7 @@ test_close_and_rename_wav_numeric_and_failure_paths(void) {
         char missing_dir[DSD_TEST_PATH_MAX];
         DSD_SNPRINTF(missing_dir, sizeof missing_dir, "%s%cmissing", dir, dsd_test_path_sep());
         rc |= expect_true("rename failure returns null",
-                          close_and_rename_wav_file(wav, NULL, fail_path, missing_dir, NULL) == NULL);
+                          close_and_rename_wav_file(wav, NULL, fail_path, missing_dir, NULL, 0) == NULL);
         rc |= expect_true("rename failure keeps original temp wav", file_size_or_negative(fail_path) > 44);
     }
 
@@ -2701,8 +2701,10 @@ test_close_and_rename_wav_numeric_and_failure_paths(void) {
     return rc;
 }
 
+// The sidecar files a recording at its call's start (event_start_time), or at the WAV's open time when per-call WAV
+// was switched on after the call began; close_and_rename_wav_file() hands the exporter that open time.
 static int
-test_close_and_rename_wav_exports_rdio_sidecar(void) {
+close_and_rename_rdio_case(const char* label, time_t opened, time_t want_start) {
     int rc = 0;
     char dir[DSD_TEST_PATH_MAX];
     if (!dsd_test_mkdtemp(dir, sizeof dir, "dsdneo_wav_rdio")) {
@@ -2727,6 +2729,8 @@ test_close_and_rename_wav_exports_rdio_sidecar(void) {
         opts.rdio_upload_retries = 1;
 
         Event_History* item = &history.Event_History_Items[0];
+        // A 10-second call, closed at its end: event_time is the row's last activity.
+        item->event_start_time = (time_t)1700001990;
         item->event_time = (time_t)1700002000;
         item->gi = 0;
         item->source_id = 660045U;
@@ -2738,10 +2742,12 @@ test_close_and_rename_wav_exports_rdio_sidecar(void) {
         DSD_SNPRINTF(item->sysid_string, sizeof item->sysid_string, "%s", "P25_TEST");
         DSD_SNPRINTF(item->t_name, sizeof item->t_name, "%s", "FIRE DISP");
 
-        rc |=
-            expect_true("rdio rename returns null", close_and_rename_wav_file(wav, &opts, path, dir, &history) == NULL);
+        rc |= expect_true("rdio rename returns null",
+                          close_and_rename_wav_file(wav, &opts, path, dir, &history, opened) == NULL);
         rc |= expect_true("rdio rename removed temp source", file_size_or_negative(path) < 0);
 
+        // The file is still named for the row's last activity (event_time); only the sidecar files the call by
+        // its start.
         char renamed[DSD_TEST_PATH_MAX];
         rc |= expect_true("rdio rename creates event filename",
                           find_wav_rename_output_for_numeric_event(renamed, sizeof renamed, dir, item));
@@ -2752,7 +2758,12 @@ test_close_and_rename_wav_exports_rdio_sidecar(void) {
                 || read_file_prefix(sidecar, body, sizeof body) != 0) {
                 rc = 1;
             } else {
-                rc |= expect_true("rdio sidecar start time", strstr(body, "\"start_time\": 1700002000") != NULL);
+                // Four samples round down to no length, so the recording stops where it starts.
+                char want[64];
+                DSD_SNPRINTF(want, sizeof want, "\"start_time\": %lld,", (long long)want_start);
+                rc |= expect_true(label, strstr(body, want) != NULL);
+                DSD_SNPRINTF(want, sizeof want, "\"stop_time\": %lld,", (long long)want_start);
+                rc |= expect_true(label, strstr(body, want) != NULL);
                 rc |= expect_true("rdio sidecar talkgroup", strstr(body, "\"talkgroup\": 1201") != NULL);
                 rc |=
                     expect_true("rdio sidecar talkgroup tag", strstr(body, "\"talkgroup_tag\": \"FIRE DISP\"") != NULL);
@@ -2770,6 +2781,15 @@ test_close_and_rename_wav_exports_rdio_sidecar(void) {
 
     (void)remove(path);
     (void)remove_dir(dir);
+    return rc;
+}
+
+static int
+test_close_and_rename_wav_exports_rdio_sidecar(void) {
+    int rc = close_and_rename_rdio_case("recording opened before the call starts at the call", (time_t)1700001900,
+                                        (time_t)1700001990);
+    rc |= close_and_rename_rdio_case("recording opened mid-call starts when it opened", (time_t)1700001995,
+                                     (time_t)1700001995);
     return rc;
 }
 
