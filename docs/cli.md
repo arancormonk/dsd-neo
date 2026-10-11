@@ -267,12 +267,12 @@ Windows console runs:
   DMR, P25 Phase 2, NXDN, dPMR, X2-TDMA, YSF V/D1 and V/D2) or `.dmb` (D-STAR AMBE 2400); `-r` plays them back.
   Files are capture segments: a frame of another protocol or format, a call end the protocol signals, a lost
   carrier, a retune and a trunk-scan switch each end the open capture, and the next frame starts another. Two-slot
-  protocols write one file per slot (`_S1`, `_S2`); X2-TDMA writes both slots into one. A frame is saved by the same
-  verdict as its audio, its own and not the previous frame's: the slot's encrypted-audio and reverse-mute (`-q`)
-  verdict for DMR, dPMR, NXDN and YSF V/D1; the P25 rule (crypto and `-q`) for P25 Phase 1 and Phase 2, as their
-  per-call WAVs use; talkgroup policy alone for X2-TDMA, D-STAR, ProVoice, YSF V/D2 and full rate; and for SDRTrunk
-  JSON playback, slot 1's policy once playback's own decode and crypto checks pass. YSF frames are captured once a
-  FICH has verified the transmission on the carrier.
+  protocols write one file per slot (`_S1`, `_S2`); X2-TDMA writes both slots into one. Each frame is saved by its
+  own verdict, not the previous frame's: the slot's encrypted-audio and reverse-mute (`-q`) verdict for DMR, dPMR,
+  NXDN and YSF V/D1; the P25 rule (crypto and `-q`) for P25 Phase 1 and Phase 2, as their per-call WAVs use;
+  talkgroup policy alone for X2-TDMA, D-STAR, ProVoice, YSF V/D2 and full rate, so YSF full-rate frames are captured
+  even where `-q` mutes their audio; and for SDRTrunk JSON playback, slot 1's policy once playback's own decode and
+  crypto checks pass. YSF frames are captured once a FICH has verified the transmission on the carrier.
 - `-J <file>` Append event log output. Every line starts with a `YYYY-MM-DD HH:MM:SS` stamp, so the file
   filters, sorts and splits by time with ordinary line tools. An event's detail lines (`Text:` for a decoded
   text message, `Talker Alias:`, `GPS:`, `DSD-neo:` for a decoder notice) follow its line and repeat that
@@ -347,8 +347,8 @@ DirWatch modes keep the WAV and JSON files because the watcher needs stable file
 - `-Q <file>` Write structured DSP or M17 stream data to `./DSP/<file>`
 - `-q` Reverse mute: mute clear audio, unmute encrypted audio. It applies to live DMR and P25 decoding. With integer
   stereo output (the AUTO default), NXDN, dPMR and YSF voice decoded through the vocoder's DMR slot path follows it
-  too; YSF V/D2 and float output (`-y`) do not. SDRTrunk JSON playback ignores it. WAV recordings and MBE capture
-  (`-d`) follow what it mutes, frame by frame.
+  too; YSF V/D2 and float output (`-y`) do not. SDRTrunk JSON playback ignores it. WAV recordings follow what it
+  mutes. MBE capture (`-d`) follows it frame by frame where `-d` lists reverse mute in a protocol's verdict.
 
 ## IQ Capture And Replay
 
