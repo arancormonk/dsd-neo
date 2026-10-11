@@ -1667,7 +1667,7 @@ mbe_post_left_classify(dsd_opts* opts, dsd_state* state, const mbe_frame_ctx_t* 
 }
 
 static void
-mbe_post_left_stage(dsd_opts* opts, dsd_state* state, mbe_post_slot_class slot_class) {
+mbe_post_left_stage(const dsd_opts* opts, dsd_state* state, mbe_post_slot_class slot_class) {
     if (slot_class == MBE_POST_SLOT_MONO_OFF) {
         mbe_post_stage_slot_silence(state, 0);
         return;
@@ -1731,7 +1731,7 @@ mbe_post_right_classify(dsd_opts* opts, dsd_state* state, const mbe_frame_ctx_t*
 }
 
 static void
-mbe_post_right_stage(dsd_opts* opts, dsd_state* state, mbe_post_slot_class slot_class) {
+mbe_post_right_stage(const dsd_opts* opts, dsd_state* state, mbe_post_slot_class slot_class) {
     if (slot_class == MBE_POST_SLOT_MONO_OFF) {
         mbe_post_stage_slot_silence(state, 1);
         return;
