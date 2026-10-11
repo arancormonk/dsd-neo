@@ -1547,7 +1547,7 @@ test_sdrtrunk_json_second_protocol_gets_its_own_capture(void) {
     state.event_history_s = history;
     rc |= run_sdrtrunk_json(json_owners, &opts, &state);
     rc |= expect_int("sdrtrunk two owners: two amb", count_capture_files(dir, ".amb", &size), 2);
-    rc |= expect_true("sdrtrunk two owners: one record each", size == 2 * (4 + 8));
+    rc |= expect_true("sdrtrunk two owners: one record each", size == 2L * (4 + 8));
 
     remove_dir_tree(dir);
     return rc;

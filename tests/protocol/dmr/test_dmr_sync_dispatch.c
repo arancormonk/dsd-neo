@@ -48,6 +48,7 @@ reset_calls(void) {
 
 /* The capture opener the dispatcher called before issue #661, kept with its counter so this harness also links and
    runs against that revision: the dispatcher opens nothing now, the first frame written creates the capture. */
+// NOLINTNEXTLINE(misc-use-internal-linkage): main's dispatcher links against this stub.
 void openMbeOutFile(dsd_opts* opts, dsd_state* state);
 
 void

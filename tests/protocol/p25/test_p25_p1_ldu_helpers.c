@@ -46,6 +46,7 @@ static char g_soft_hamming_output[10];
 
 /* The capture opener of the revision before issue #661, kept with its counter so this harness also links and runs
    against it: the first frame written creates the capture now, so dispatching an IMBE opens nothing. */
+// NOLINTNEXTLINE(misc-use-internal-linkage): main's dispatcher links against this stub.
 void openMbeOutFile(dsd_opts* opts, dsd_state* state);
 
 void

@@ -40,6 +40,7 @@ closeMbeOutFile(dsd_opts* opts, dsd_state* state) {
 
 /* The capture opener the dispatcher called on every FS2 sync before issue #661, kept with its counter so this harness
    also links and runs against that revision: the dispatcher opens nothing now, the first frame written creates it. */
+// NOLINTNEXTLINE(misc-use-internal-linkage): main's dispatcher links against this stub.
 void openMbeOutFile(dsd_opts* opts, dsd_state* state);
 
 void

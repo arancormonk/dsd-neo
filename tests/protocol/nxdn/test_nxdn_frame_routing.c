@@ -186,6 +186,7 @@ printFrameSync(const dsd_opts* opts, const dsd_state* state, const char* framety
 
 /* The capture opener of the revision before issue #661, kept so this harness also links and runs against it: the
    first frame written creates the capture now, so a voice frame opens nothing here. */
+// NOLINTNEXTLINE(misc-use-internal-linkage): main's dispatcher links against this stub.
 void openMbeOutFile(dsd_opts* opts, dsd_state* state);
 
 void

@@ -260,7 +260,9 @@ dsd_fopen_private(const char* path, const char* mode) {
 
 /* The capture openers of the revision before issue #661, kept with their counters so this harness also links and runs
    against it: the first frame written creates the capture now, so a voice burst opens nothing here. */
+// NOLINTNEXTLINE(misc-use-internal-linkage): main's dispatcher links against this stub.
 void openMbeOutFile(dsd_opts* opts, dsd_state* state);
+// NOLINTNEXTLINE(misc-use-internal-linkage): main's dispatcher links against this stub.
 void openMbeOutFileR(dsd_opts* opts, dsd_state* state);
 
 void
