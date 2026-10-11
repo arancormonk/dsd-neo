@@ -97,8 +97,8 @@ Tip: If you run with no arguments and no config is loaded, `dsd-neo` starts the 
 - Set sample rate: `-s <rate>` (WAV/TCP/UDP; 48k or 96k typical). A WAV file's header rate holds for that file only:
   an input switch away from it (Input > Switch source in the terminal UI) opens the next file, UDP or TCP input at the
   `-s` rate again (Pulse opens at its own capture rate, as at startup).
-- The analog outputs always run at 48 kHz: the analog and source monitor (local audio and the UDP analog stream), the
-  `-6` raw WAV and EDACS analog voice. Audio input at another rate is converted, so it plays at the input's speed.
+- The analog outputs always run at 48 kHz: the analog and source monitor (local audio, the UDP analog stream, and
+  `-o -` in the analog monitor modes), the `-6` raw WAV and EDACS analog voice. Audio input at another rate is converted, so it plays at the input's speed.
   8, 9.6, 12, 16 and 24 kHz input reaches the decoder at 48 kHz already. Any other rate from 1 kHz to 768 kHz (44.1,
   22.05, 32, 96 kHz, ...) is converted on the way out, exactly for the usual rates and within 250 ppm for any other,
   while decoding runs at the input's own rate as before. At a rate outside that range the analog outputs stay silent
@@ -130,7 +130,11 @@ Tip: If paths or names contain spaces, wrap them in single quotes.
 - Null (no audio): `-o null`
 - UDP audio out (raw PCM): `-o udp[:host:port]` (default 127.0.0.1:23456). See `docs/network-audio.md`.
 - M17 UDP/IP frame out: `-o m17udp[:host:port]` (default 127.0.0.1:17000)
-- stdout (raw decoded audio): `-o -` (see `docs/network-audio.md`)
+- stdout (raw decoded audio): `-o -` (see `docs/network-audio.md`). In the analog monitor modes (`-fA`, `-fM`) it
+  carries the monitor's 48 kHz mono audio. A reader that goes away (`-o - | head`) or a write that fails costs stdout
+  audio one logged error: decoding, recording (`-w`, `-P`) and trunk following carry on.
+- A local sound device that fails mid-session (a PulseAudio or PipeWire restart, a device error) is reopened behind the
+  scenes, with one line in the log when it fails and one when it plays again.
 
 ## Display & UI
 
@@ -406,7 +410,9 @@ Notes
   before, and up to 18 dB more where the old default filter (see `-v`) cut it.
 - `-nm` Enable the DMR single-slot mono decoder without changing the active decode preset.
 - `-z <0|1|2>` TDMA slot preference (0 = slot 1, 1 = slot 2, 2 = auto)
-- `-8` Monitor the source audio (helpful when mixing analog/digital)
+- `-8` Monitor the source audio (helpful when mixing analog/digital). It plays on a sound device or UDP (port + 2);
+  with `-o -` while decoding digital modes it is not written to stdout, which carries the decoded voice, and a warning
+  says so at startup.
 - `-V <0|1|2|3>` TDMA voice synthesis (0 = off; 1 = slot 1; 2 = slot 2; 3 = both; default 3)
 - `-y` Use experimental float audio output
 - P25 Phase 2 voice plays as each timeslot pair completes (every 60 ms of air time), in integer and `-y` float output

@@ -529,6 +529,37 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
     elsewhere; `none` → `audio_null.c` discard/silence backend; `aaudio` → Android). Exactly one
     backend translation unit is compiled per build; the shared last-error store lives in
     `src/platform/audio_error_internal.h`
+  - Output device recovery (issue #659): PulseAudio and PortAudio close a device whose write fails and reopen it
+    behind the same `dsd_audio_stream*`, so no caller's handle goes stale and a sound-server restart costs a gap. The
+    shared state machine is `src/platform/audio_output_recovery.h` (no clock or lock of its own): the first failure
+    after healthy playback retries on the next attempt, each further failure of a reopen or of the first writes after
+    one doubles the wait from 250 ms to 4 s, the wait resets only after a reopened device has taken writes for 2 s,
+    and an episode counts as recovered only at a write the device took, never one only queued. A failed async device
+    drops its queued audio, `dsd_audio_write()` fails without queueing while it is down, and `dsd_audio_drain()`
+    fails at once. PulseAudio async streams: the pump owns `handle` after open, frees a failed one and reopens from
+    its own thread (waiting interruptibly by stop, answering a drain at once), so the decoder never blocks on a
+    reconnect. PortAudio async streams: the pump marks the device down and touches no handle after that; the writer's
+    thread, which opened it, closes and reopens it at the next write that finds a reopen due, since host APIs want a
+    stream closed where it was made (WASAPI's COM objects). Blocking streams of both reopen on the writer's thread at
+    the next write that finds a reopen due; every failure and retry is timed after the blocking call. `dsd_audio_output_health_get()` reports failures, recoveries,
+    whether the device is down and the latest reason; AAudio (which recycles a disconnected device itself) and the null
+    backend report zeros. The reopen finds the device by the name the stream was opened with; PortAudio does not
+    refresh its device list, so it finds the same device again. PortAudio keeps its streams on an unlocked global
+    list, so every open, start, stop, abort, close, initialize and terminate takes one process-wide lifecycle lock
+    (the pumps stop and restart a stream to drain it). `PLATFORM_AUDIO_PULSE_HELPERS` drives the Pulse recovery over
+    a fake `pa_simple` and a fake clock; `PLATFORM_AUDIO_PORTAUDIO_RECOVERY` runs the PortAudio pump thread and locks
+    over a fake PortAudio (built wherever `portaudio.h` is found) and checks that every open and close runs on the
+    opening thread and that no two overlap
+  - Whole-frame descriptor writes (issue #659): `dsd_write_frames()` in `file_compat.h` finishes interrupted and short
+    writes, returns `DSD_WRITE_FRAMES_WOULD_BLOCK` at once when a non-blocking descriptor is full at a frame boundary,
+    waits (`poll()`, POSIX only, at most 250 ms in all, an interrupted wait going on only for what is left of it) only to
+    finish a frame a short count left half written, and treats a write of 0 as EIO. A closed reader is EPIPE, never a
+    SIGPIPE: POSIX blocks SIGPIPE in the calling thread around the write and consumes the one the write raised on that
+    thread (`sigtimedwait()` with no wait, or `sigwait()` once `sigpending()` shows it where there is no
+    `sigtimedwait()`), leaving one that was already pending; Darwin, which raises a write's SIGPIPE on the process,
+    sets `F_SETNOSIGPIPE` on the descriptor instead.
+    The loop is `src/platform/write_frames.c` behind an ops table (`write_frames_internal.h`), which
+    `PLATFORM_WRITE_FRAMES` drives with scripted writers as well as real pipes
   - Socket readiness: `dsd_socket_wait()` in `include/dsd-neo/platform/sockets.h` waits for a socket to become
     readable and/or writable (`poll()` on POSIX, `select()` on Windows), reporting end of stream and errors as ready
     so the next `recv()`/`send()` returns them. Servers poll non-blocking sockets with it rather than receive
@@ -596,6 +627,26 @@ suite runs under this compiler.
   checked out on an unchanged carrier, a verified YSF header or terminator, a verified D-STAR header; the engine closes
   both at no-carrier, shutdown and in `dsd_engine_forget_carrier_decoding()` (carrier boundary, trunk-scan switch).
   `dsd_mbe_out_enabled()` (folder set or handle attached) gates every capture path before any record gate runs.
+- Invariant (audio sinks, `<dsd-neo/core/audio_sink.h>`, `src/core/audio/audio_sink.c`, issue #659): every writer of
+  decoded or analog audio applies its own gates and picks the output type, then writes the local device streams only
+  through `dsd_audio_sink_write_device()` and the `-o -` descriptor only through `dsd_audio_sink_write_fd()`: the
+  mixers and P25 Phase 2 playout (`dsd_output_*_block()`), the beeper, `playSynthesizedVoice()`, M17 (decoded voice and
+  the encoder's `-8` baseband), EDACS analog voice and the analog monitor sink. The device path reads the stream's
+  `dsd_audio_output_health_get()` after each write and logs each failure episode once, at most one failure line a
+  minute per stream (`DIGITAL`, `RAW`) with a count of those held back, and one line when the reopened device plays
+  again; `closeAudioOutput()` resets it. It never opens a stream the session did not (a NULL stream writes nothing).
+  The descriptor path writes whole frames (`dsd_write_frames()`): a failed write logs one error and turns that
+  descriptor's audio off for the rest of the session (decoding, recording and the other outputs carry on; the engine
+  resets it when it binds `-o -`); a full non-blocking descriptor drops the rest of the block whole, with one warning
+  and a count at most once a minute after it; a blocking one (the usual pipe) blocks as any pipe does.
+  `dsd_audio_sink_monitor_takes_fd()`: the analog monitor writes `-o -` only in the analog-only modes, where no
+  digital writer shares the stream (48 kHz mono s16le); the `-8` source monitor during digital decoding does not, and
+  the engine warns once at startup when `-o -` and `-8` meet outside the M17 encoders. The CLI ignores SIGPIPE in the
+  branch that installs its SIGINT/SIGTERM handlers (never under `DSD_NEO_NO_SIGNAL_HANDLERS`; nothing in the process
+  starts a child that would inherit it), rigctl sends with `MSG_NOSIGNAL`, and the UDP blasters report send failures
+  once per run, at most a line a minute per socket. Decoder thread only. Tests: `CORE_AUDIO_SINK`,
+  `PLATFORM_WRITE_FRAMES`, `PLATFORM_AUDIO_PULSE_HELPERS`, `PLATFORM_AUDIO_PORTAUDIO_RECOVERY`,
+  `IO_UDP_SOCKET_BACKENDS`, `DSP_SYMBOL_REPLAY`, and the `DECODE_IQ_STDOUT_*` end-to-end cases.
 - `src/core/file/dsd_file.c` reads SDRTrunk JSON MBE exports. Its file-local crypto context owns NXDN SACCH
   position/session tracking and DMR AES late-entry context; playback does not call protocol-layer state-mutating
   IV expansion. Voice bits are FEC-decoded before decryption and then passed to the normal vocoder/output path.
@@ -928,7 +979,8 @@ suite runs under this compiler.
   and only when an output receives the block. Every writer asks the same rule for that,
   `dsd_audio_activity_output_plays(opts, stream, fd_takes_block)`: the output on (`audio_out` 1) and of a type the
   writer serves, the local stream (type 0) while the stream it writes is open (`audio_out_stream` for decoded voice,
-  `audio_raw_out` for analog), UDP (type 8), or the raw fd (type 1) where the writer writes that block. So the local
+  `audio_raw_out` for analog), UDP (type 8), or the raw fd (type 1) where the writer writes that block (the analog
+  monitor only in the analog-only modes, `dsd_audio_sink_monitor_takes_fd()`). So the local
   stream, UDP and the raw fd count alike, and the null output (type 9: `-o null`, which keeps that type once unmuted,
   and the M17 UDP frame output) never stamps. It notes provenance, never amplitude: a block counts when it carries
   decoded media, or squelch-open analog reception, from a slot whose gates pass, so valid all-zero decoded PCM counts
@@ -967,8 +1019,8 @@ suite runs under this compiler.
   is still written but never stamps. The analog monitor stamps analog reception only: the FM or AM monitor
   (`dsd_analog_monitor_tap_active()`), never the `-8` source monitor during digital decoding, with the tap's carrier
   open now and the tone policy passing it (`symbol_unsynced_carrier_active()`), a sink that receives it (the shared rule
-  on `audio_raw_out`: the local raw stream while open, or UDP; the monitor feeds no raw fd), and under the auto squelch
-  at least one sample its own gate hears, so the fade-out written after the gate closes does not count and an
+  on `audio_raw_out`: the local raw stream while open, UDP, or the raw fd in the analog-only modes), and under the auto
+  squelch at least one sample its own gate hears, so the fade-out written after the gate closes does not count and an
   unmodulated carrier does. The block's verdict is taken before the write, but the stamp is noted in the sink's write
   callback (`symbol_monitor_sink_write()`) when it hands the output samples, so a block the sink's converter mutes
   (`DSD_ANALOG_SINK_MUTED`: a rate it cannot take, no memory for it) stamps nothing. Tests: `CORE_AUDIO_ACTIVITY`,
