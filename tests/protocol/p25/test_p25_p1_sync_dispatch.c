@@ -447,12 +447,19 @@ test_p25p1_mbe_output_and_resume_side_effects(void) {
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
     reset_stub_state();
+    /* A capture a caller attached, with no -d folder: the terminator still ends it on both slots. */
+    opts.mbe_out_f = (FILE*)0x1;
+    opts.mbe_out_fR = (FILE*)0x2;
     opts.resume = 1;
     state.numtdulc = 1;
     g_test_duid = 0xFU;
 
     dsd_dispatch_handle_p25p1(&opts, &state);
 
+    assert(g_close_mbe_calls == 1);
+    assert(g_close_mbe_r_calls == 1);
+    assert(opts.mbe_out_f == NULL);
+    assert(opts.mbe_out_fR == NULL);
     assert(g_resume_calls == 1);
     assert(state.numtdulc == 2);
     assert(state.lastp25type == 0);

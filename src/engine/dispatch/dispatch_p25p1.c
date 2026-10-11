@@ -252,9 +252,7 @@ p25p1_handle_hdu(dsd_opts* opts, dsd_state* state) {
         printFrameInfo(opts, state);
         DSD_FPRINTF(stderr, " HDU\n");
     }
-    if (opts->mbe_out_dir[0] != 0) {
-        p25p1_close_mbe_out(opts, state);
-    }
+    p25p1_close_mbe_out(opts, state);
 
     mbe_initMbeParms(state->cur_mp, state->prev_mp, state->prev_mp_enhanced);
     state->lastp25type = 2;
@@ -305,9 +303,7 @@ p25p1_handle_tdulc(dsd_opts* opts, dsd_state* state) {
         printFrameInfo(opts, state);
         DSD_FPRINTF(stderr, " TDULC\n");
     }
-    if (opts->mbe_out_dir[0] != 0) {
-        p25p1_close_mbe_out(opts, state);
-    }
+    p25p1_close_mbe_out(opts, state);
 
     mbe_initMbeParms(state->cur_mp, state->prev_mp, state->prev_mp_enhanced);
     state->lastp25type = 0;
@@ -330,9 +326,7 @@ p25p1_handle_tdu(dsd_opts* opts, dsd_state* state) {
         printFrameInfo(opts, state);
         DSD_FPRINTF(stderr, " TDU\n");
     }
-    if (opts->mbe_out_dir[0] != 0) {
-        p25p1_close_mbe_out(opts, state);
-    }
+    p25p1_close_mbe_out(opts, state);
 
     mbe_initMbeParms(state->cur_mp, state->prev_mp, state->prev_mp_enhanced);
     state->lastp25type = 0;
@@ -349,9 +343,7 @@ p25p1_handle_tsbk(dsd_opts* opts, dsd_state* state) {
         printFrameInfo(opts, state);
         DSD_FPRINTF(stderr, " TSBK");
     }
-    if (opts->mbe_out_dir[0] != 0) {
-        p25p1_close_mbe_out(opts, state);
-    }
+    p25p1_close_mbe_out(opts, state);
     if (opts->resume > 0) {
         resumeScan(opts, state);
     }
@@ -369,9 +361,7 @@ p25p1_handle_mpdu(dsd_opts* opts, dsd_state* state) {
         printFrameInfo(opts, state);
         DSD_FPRINTF(stderr, " MPDU\n");
     }
-    if (opts->mbe_out_dir[0] != 0) {
-        p25p1_close_mbe_out(opts, state);
-    }
+    p25p1_close_mbe_out(opts, state);
     if (opts->resume > 0) {
         resumeScan(opts, state);
     }
