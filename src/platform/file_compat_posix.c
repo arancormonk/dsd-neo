@@ -329,7 +329,6 @@ dsd_rename_noreplace_by_link(const char* from, const char* to, int* out_source_l
         if (unlink(from) != 0 && out_source_left) {
             *out_source_left = 1;
         }
-        dsd_fsync_parent_dir_best_effort(to);
         return 0;
     }
     const int err = errno;
@@ -348,11 +347,7 @@ dsd_rename_noreplace_by_link(const char* from, const char* to, int* out_source_l
     if (errno != ENOENT) {
         return -1;
     }
-    if (rename(from, to) != 0) {
-        return -1;
-    }
-    dsd_fsync_parent_dir_best_effort(to);
-    return 0;
+    return rename(from, to) != 0 ? -1 : 0;
 }
 
 int
@@ -366,7 +361,6 @@ dsd_rename_noreplace(const char* from, const char* to, int* out_source_left) {
     }
 #if defined(__linux__) && defined(SYS_renameat2)
     if (syscall(SYS_renameat2, AT_FDCWD, from, AT_FDCWD, to, (unsigned int)RENAME_NOREPLACE) == 0) {
-        dsd_fsync_parent_dir_best_effort(to);
         return 0;
     }
     if (!dsd_rename_unsupported_errno(errno)) {
@@ -374,7 +368,6 @@ dsd_rename_noreplace(const char* from, const char* to, int* out_source_left) {
     }
 #elif defined(__APPLE__) && defined(RENAME_EXCL)
     if (renamex_np(from, to, RENAME_EXCL) == 0) {
-        dsd_fsync_parent_dir_best_effort(to);
         return 0;
     }
     if (!dsd_rename_unsupported_errno(errno)) {
