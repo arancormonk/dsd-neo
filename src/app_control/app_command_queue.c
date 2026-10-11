@@ -7701,13 +7701,24 @@ command_feeds_playout(const struct dsd_app_command* c) {
                    || c->id == DSD_APP_CMD_SLOTS_ONOFF_SET));
 }
 
+/* A command that opens, closes or publishes a per-call, static or raw WAV. The watchdog's release publishes and reopens
+   the per-call WAVs through the event layer, and its playout drain writes the static WAV, both under the tick guard, so
+   these commands take it too (issue #661). Commands that reach the WAVs only through the event layer hold its call-state
+   lock, as the watchdog's event processing does. */
+static int
+command_touches_wav_outputs(const struct dsd_app_command* c) {
+    return c
+           && (c->id == DSD_APP_CMD_WAV_START || c->id == DSD_APP_CMD_WAV_STOP || c->id == DSD_APP_CMD_WAV_TOGGLE
+               || c->id == DSD_APP_CMD_WAV_STATIC_OPEN || c->id == DSD_APP_CMD_WAV_RAW_OPEN);
+}
+
 static int
 apply_cmd(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     /* What the P25 Phase 2 playout reads changes under the tick guard, which the watchdog's release holds from the
        verdict it takes before its return tune to the drain after it. A call's new verdict is taken before the guard is
        free again: what the playout queued for an active call plays under the verdict the command left, also when the
        call ends before the next emission (issue #651). */
-    const int guarded = command_feeds_playout(c);
+    const int guarded = command_feeds_playout(c) || command_touches_wav_outputs(c);
     if (guarded) {
         if (!p25_sm_tick_guard_try_enter()) {
 #ifdef DSD_NEO_TEST_HOOKS

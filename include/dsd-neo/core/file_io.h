@@ -49,8 +49,40 @@ int readAmbe2450Data(dsd_opts* opts, dsd_state* state, char* ambe_d);
  */
 void read_sdrtrunk_json_format(dsd_opts* opts, dsd_state* state);
 void openMbeInFile(dsd_opts* opts, dsd_state* state);
-void openMbeOutFile(dsd_opts* opts, dsd_state* state);
-void openMbeOutFileR(dsd_opts* opts, dsd_state* state);
+
+/** Record format of an MBE capture (-d) file; its 4-byte header and its extension name it. */
+typedef enum {
+    DSD_MBE_OUT_FORMAT_NONE = 0,
+    DSD_MBE_OUT_FORMAT_IMBE = 1,  /**< .imb: IMBE 4400 records (P25 Phase 1, ProVoice, YSF full rate) */
+    DSD_MBE_OUT_FORMAT_AMBE = 2,  /**< .amb: AMBE 2450 records */
+    DSD_MBE_OUT_FORMAT_DSTAR = 3, /**< .dmb: D-STAR AMBE 2400 frames in AMBE records */
+} dsd_mbe_out_format;
+
+/** Slot masks for dsd_mbe_out_close_protocol(): the slot 1 and slot 2 capture files. */
+#define DSD_MBE_OUT_SLOT1 1
+#define DSD_MBE_OUT_SLOT2 2
+#define DSD_MBE_OUT_BOTH  3
+
+/**
+ * MBE capture (-d), issue #661. A capture file holds one owner's frames in one record format: the capture writer
+ * creates it in opts->mbe_out_dir with the first frame written to it, and closes it for a frame of another owner or
+ * format (on either slot) before it creates the next one. A handle a caller attached itself (owner 0) is written as it
+ * is. The owner groups the synctypes of one protocol: P25 Phase 1 and 2 share one (their formats keep them apart) and
+ * EDACS shares one with ProVoice.
+ */
+int dsd_mbe_out_owner_of(int synctype);
+/** The protocol a frame belongs to: the synctype processFrame() is dispatching, else state->synctype. */
+int dsd_mbe_out_frame_protocol(const dsd_state* state);
+/** Whether slot (0 or 1) captures at all: -d is set, or a handle is open. Callers test it before any capture gate. */
+int dsd_mbe_out_enabled(const dsd_opts* opts, int slot);
+/**
+ * Write one frame (bits as the vocoder holds them: 88 IMBE or 49 AMBE) to slot's capture, creating it if need be.
+ * Refuses a frame read across a carrier boundary during its dispatch, and a YSF frame before a FICH has verified the
+ * transmission on this carrier. The caller has already applied the frame's own output and record gates.
+ */
+void dsd_mbe_out_write(dsd_opts* opts, dsd_state* state, int slot, dsd_mbe_out_format format, const char* bits);
+/** Close the captures in slot_mask that belong to synctype's owner, or that a caller attached (owner 0). */
+void dsd_mbe_out_close_protocol(dsd_opts* opts, dsd_state* state, int slot_mask, int synctype);
 void openWavOutFileLR(dsd_opts* opts, dsd_state* state);
 SNDFILE* open_wav_file(char* dir, char* temp_filename, size_t temp_filename_size, uint16_t sample_rate, uint8_t ext);
 void openWavOutFileRaw(dsd_opts* opts, dsd_state* state);

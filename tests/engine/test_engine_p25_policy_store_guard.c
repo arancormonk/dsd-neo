@@ -6,6 +6,7 @@
 #include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/frontend_runtime.h>
 #include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
@@ -438,6 +439,101 @@ test_frame_sync_release_takes_the_guard(void) {
     return rc;
 }
 
+/* Issue #661: the watchdog's release publishes and reopens the per-call WAVs and its playout drain writes the static
+   WAV, under the tick guard. A command that opens, closes or publishes a WAV waits for the guard, as a policy command
+   does: each one here finds the guard held, counts one wait, and applies once it is free. */
+static int g_wav_guard_stalled;
+static int g_wav_guard_baseline;
+
+static int
+remove_wav_guard_file(const char* name, void* user) {
+    char path[DSD_TEST_PATH_MAX * 2];
+    DSD_SNPRINTF(path, sizeof path, "%s/%s", (const char*)user, name);
+    (void)remove(path);
+    return 0;
+}
+
+static DSD_THREAD_RETURN_TYPE
+release_guard_once_waited(void* opaque) {
+    (void)opaque;
+    const double deadline = dsd_realtime_mono_s() + 10.0;
+    while (dsd_app_command_test_policy_guard_waits() <= g_wav_guard_baseline) {
+        if (dsd_realtime_mono_s() >= deadline) {
+            g_wav_guard_stalled = 1; /* Fixture failure, never evidence of contention. */
+            break;
+        }
+        dsd_thread_yield();
+    }
+    p25_sm_tick_guard_leave();
+    DSD_THREAD_RETURN;
+}
+
+static int
+drain_wav_command_under_held_guard(int cmd_id, const char* path, const char* label) {
+    int rc = expect(p25_sm_tick_guard_try_enter(), "the test holds the guard");
+    g_wav_guard_stalled = 0;
+    g_wav_guard_baseline = dsd_app_command_test_policy_guard_waits();
+    const int queued = path ? dsd_app_command_set_string(cmd_id, path) : dsd_app_command_submit(cmd_id, NULL, 0);
+    rc |= expect(queued > 0, label);
+    dsd_thread_t releaser;
+    const int started = dsd_thread_create(&releaser, release_guard_once_waited, NULL) == 0;
+    if (!started) {
+        p25_sm_tick_guard_leave();
+    }
+    const int drained = dsd_app_drain_cmds(&g_opts, &g_state);
+    if (started) {
+        dsd_thread_join(releaser);
+    }
+    rc |= expect(started, "releaser started");
+    rc |= expect(drained == 1, "one wav command drained");
+    rc |= expect(!g_wav_guard_stalled, "releaser did not reach fixture stall bound");
+    rc |= expect(dsd_app_command_test_policy_guard_waits() == g_wav_guard_baseline + 1, label);
+    return rc;
+}
+
+static int
+test_wav_commands_take_the_guard(void) {
+    dsd_scan_row_profile row = {0};
+    g_phase = 14;
+    int rc = setup();
+    char dir[DSD_TEST_PATH_MAX];
+    if (!dsd_test_mkdtemp(dir, sizeof dir, "dsd_wav_guard")) {
+        cleanup(&row);
+        return 1;
+    }
+    DSD_SNPRINTF(g_opts.wav_out_dir, sizeof g_opts.wav_out_dir, "%s", dir);
+
+    rc |= drain_wav_command_under_held_guard(DSD_APP_CMD_WAV_START, NULL, "per-call wav start waits for the guard");
+    rc |= expect(g_opts.dmr_stereo_wav == 1 && g_opts.wav_out_f != NULL, "per-call wav started");
+    rc |= drain_wav_command_under_held_guard(DSD_APP_CMD_WAV_STOP, NULL, "per-call wav stop waits for the guard");
+    rc |= expect(g_opts.wav_out_f == NULL && g_opts.wav_out_fR == NULL, "per-call wav stopped");
+    rc |= drain_wav_command_under_held_guard(DSD_APP_CMD_WAV_TOGGLE, NULL, "per-call wav toggle waits for the guard");
+    rc |= expect(g_opts.wav_out_f != NULL, "per-call wav toggled on");
+    rc |= drain_wav_command_under_held_guard(DSD_APP_CMD_WAV_STOP, NULL, "per-call wav stop waits for the guard");
+
+    char static_path[DSD_TEST_PATH_MAX * 2];
+    char raw_path[DSD_TEST_PATH_MAX * 2];
+    DSD_SNPRINTF(static_path, sizeof static_path, "%s/static.wav", dir);
+    DSD_SNPRINTF(raw_path, sizeof raw_path, "%s/raw.wav", dir);
+    rc |= drain_wav_command_under_held_guard(DSD_APP_CMD_WAV_STATIC_OPEN, static_path,
+                                             "static wav open waits for the guard");
+    rc |= expect(g_opts.wav_out_f != NULL, "static wav opened");
+    rc |= drain_wav_command_under_held_guard(DSD_APP_CMD_WAV_RAW_OPEN, raw_path, "raw wav open waits for the guard");
+    rc |= expect(g_opts.wav_out_raw != NULL, "raw wav opened");
+    if (g_opts.wav_out_f != NULL) {
+        g_opts.wav_out_f = close_wav_file(g_opts.wav_out_f);
+    }
+    if (g_opts.wav_out_raw != NULL) {
+        g_opts.wav_out_raw = close_wav_file(g_opts.wav_out_raw);
+    }
+    (void)remove(static_path);
+    (void)remove(raw_path);
+    (void)dsd_dir_list(dir, remove_wav_guard_file, dir);
+    rc |= expect(dsd_test_rmdir(dir) == 0, "wav guard folder removed");
+    cleanup(&row);
+    return rc;
+}
+
 static int
 write_csv(char* path, const char* content) {
     const int fd = dsd_test_mkstemp(path, DSD_TEST_PATH_MAX, "dsd_policy_guard");
@@ -467,6 +563,7 @@ main(void) {
         for (g_phase = 12; g_phase <= 13; ++g_phase) {
             rc |= run_phase();
         }
+        rc |= test_wav_commands_take_the_guard();
     }
     (void)remove(g_block_csv);
     (void)remove(g_allow_csv);

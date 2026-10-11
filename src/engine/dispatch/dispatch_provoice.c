@@ -3,13 +3,10 @@
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-#include <dsd-neo/core/file_io.h>
-#include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/engine/protocol_dispatch.h>
 #include <dsd-neo/protocol/provoice/provoice.h>
-#include <stddef.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -32,9 +29,6 @@ dsd_dispatch_handle_provoice(dsd_opts* opts, dsd_state* state) {
     /* FDMA voice is slot 0. The shared vocoder, record and audio paths read
      * currentslot, which a DMR, P25 Phase 2 or X2-TDMA decode may have left at 1. */
     state->currentslot = 0;
-    if ((opts->mbe_out_dir[0] != 0) && (opts->mbe_out_f == NULL)) {
-        openMbeOutFile(opts, state);
-    }
     DSD_SNPRINTF(state->fsubtype, sizeof(state->fsubtype), " VOICE        ");
     return processProVoice(opts, state) != 0 ? DSD_FRAME_VERDICT_PRODUCTIVE : DSD_FRAME_VERDICT_UNPRODUCTIVE;
 }

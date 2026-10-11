@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: ISC
 #include <dsd-neo/core/dibit.h>
-#include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/vocoder.h>
@@ -79,9 +78,6 @@ process_imbe_or_skip_non_standard(dsd_opts* opts, dsd_state* state, char imbe_fr
         dsd_mbe_log_imbe_soft_frame(opts, state, imbe_soft_fr);
         DSD_MEMSET(state->audio_out_temp_buf, 0, sizeof(state->audio_out_temp_buf));
         return;
-    }
-    if (opts->mbe_out_dir[0] != 0 && opts->mbe_out_f == NULL) {
-        openMbeOutFile(opts, state);
     }
     processMbeFrameSoft(opts, state, imbe_soft_fr, NULL, NULL);
 }

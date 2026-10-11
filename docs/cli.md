@@ -222,13 +222,16 @@ Windows console runs:
   at the default RTL `vol` of 2, whatever `-n` is, so open-squelch FM noise can clip. Audio input, and the FSK
   discriminator output digital decoding reads on radio input, are saved as they are. Large files (≈360 MB/hour)
 - `-w <file>` Save decoded audio to a single WAV (mutually exclusive with `-P`)
-- `-P` Per‑call WAV saving (auto‑named files in a folder; mutually exclusive with `-w`)
+- `-P` Per‑call WAV saving (auto‑named files in a folder; mutually exclusive with `-w`). A finished call is
+  published under a name no other recording holds: a name already taken draws another number, so an earlier
+  recording is never replaced. That holds outright where the filesystem offers a no-replace rename or hard links;
+  on one with neither, the name is claimed with an empty file first, which another program can see for a moment.
 - Recordings (`-w`, `-P`, `-d`) follow each talkgroup's `record` policy: a lockout (`B`/`DE`), avoid, skip, an
   allow-list or Hold miss, or `record=off` keeps the call out of the per-call WAV, the static WAV and MBE capture,
   live and in SDRTrunk JSON playback. A matching Hold (`-I`) overrides a row's lockout or `record=off`, as it does
   for audio; avoids and skips still apply. The static WAV holds only what is heard: on a two-slot mix a record-blocked
   slot's channel is written silent while the other slot is still written.
-- `-7 <dir>` Set folder for per‑call WAVs (use before `-P`)
+- `-7 <dir>` Set folder for per‑call WAVs (use before `-P`). A path longer than 511 bytes is refused.
 - `--rdio-mode <off|dirwatch|api|both>` Enable rdio-scanner export from finalized per-call WAV calls
 - `--rdio-system-id <N>` Set rdio-scanner system ID (required for API upload mode)
 - `--rdio-api-url <url>` Set rdio-scanner API base URL (default `http://127.0.0.1:3000`)
@@ -257,7 +260,19 @@ Windows console runs:
   version or record size is rejected rather than reinterpreted as headerless data. Remove the headerless reader after
   those captures are migrated or their support window ends. Neither stored format carries the NXDN symbol rate, so NXDN
   capture replay requires `-fi` or `-fn` instead of `-fa`.
-- `-d <dir>` Save raw MBE vocoder frames in this folder
+- `-d <dir>` Save raw MBE vocoder frames in this folder, with or without a trailing separator (created if missing;
+  a path longer than 1023 bytes is refused). A capture file is created by the first frame written to it, so a call
+  none of whose frames may be recorded leaves no file. Each file holds one protocol's frames in one record format,
+  named by its 4-byte header and extension: `.imb` (IMBE: P25 Phase 1, ProVoice, YSF full rate), `.amb` (AMBE 2450:
+  DMR, P25 Phase 2, NXDN, dPMR, X2-TDMA, YSF V/D1 and V/D2) or `.dmb` (D-STAR AMBE 2400); `-r` plays them back.
+  Files are capture segments: a frame of another protocol or format, a call end the protocol signals, a lost
+  carrier, a retune and a trunk-scan switch each end the open capture, and the next frame starts another. Two-slot
+  protocols write one file per slot (`_S1`, `_S2`); X2-TDMA writes both slots into one. Each frame is saved by its
+  own verdict, not the previous frame's: the slot's encrypted-audio and reverse-mute (`-q`) verdict for DMR, dPMR,
+  NXDN and YSF V/D1; the P25 rule (crypto and `-q`) for P25 Phase 1 and Phase 2, as their per-call WAVs use;
+  talkgroup policy alone for X2-TDMA, D-STAR, ProVoice, YSF V/D2 and full rate, so YSF full-rate frames are captured
+  even where `-q` mutes their audio; and for SDRTrunk JSON playback, slot 1's policy once playback's own decode and
+  crypto checks pass. YSF frames are captured once a FICH has verified the transmission on the carrier.
 - `-J <file>` Append event log output. Every line starts with a `YYYY-MM-DD HH:MM:SS` stamp, so the file
   filters, sorts and splits by time with ordinary line tools. An event's detail lines (`Text:` for a decoded
   text message, `Talker Alias:`, `GPS:`, `DSD-neo:` for a decoder notice) follow its line and repeat that
@@ -332,8 +347,8 @@ DirWatch modes keep the WAV and JSON files because the watcher needs stable file
 - `-Q <file>` Write structured DSP or M17 stream data to `./DSP/<file>`
 - `-q` Reverse mute: mute clear audio, unmute encrypted audio. It applies to live DMR and P25 decoding. With integer
   stereo output (the AUTO default), NXDN, dPMR and YSF voice decoded through the vocoder's DMR slot path follows it
-  too; YSF V/D2 and float output (`-y`) do not. SDRTrunk JSON playback ignores it. WAV recordings and P25 Phase 1
-  MBE capture follow what it mutes.
+  too; YSF V/D2 and float output (`-y`) do not. SDRTrunk JSON playback ignores it. WAV recordings follow what it
+  mutes. MBE capture (`-d`) follows it frame by frame where `-d` lists reverse mute in a protocol's verdict.
 
 ## IQ Capture And Replay
 

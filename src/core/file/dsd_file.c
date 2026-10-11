@@ -41,14 +41,17 @@
 #include <dsd-neo/crypto/nxdn_keystream.h>
 #include <dsd-neo/crypto/rc4.h>
 #include <dsd-neo/fec/dmr_late_entry.h>
+#include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/nonce.h>
 #include <dsd-neo/platform/posix_compat.h>
+#include <dsd-neo/platform/threading.h>
 #include <dsd-neo/protocol/p25/p25p1_const.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/rdio_export.h>
+#include <errno.h>
 #include <limits.h>
 #include <mbelib-neo/mbelib.h>
 #include <sndfile.h>
@@ -63,6 +66,7 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "dsd-neo/platform/platform.h"
 
 void
 saveImbe4400Data(dsd_opts* opts, const dsd_state* state, const char* imbe_d) {
@@ -517,6 +521,8 @@ closeMbeOutFile(dsd_opts* opts, dsd_state* state) {
             fclose(opts->mbe_out_f);
             opts->mbe_out_f = NULL;
             opts->mbe_out = 0;
+            opts->mbe_out_owner = 0;
+            opts->mbe_out_format = DSD_MBE_OUT_FORMAT_NONE;
             LOG_INFO("NOTICE: \nClosing MBE out file 1.\n");
         }
     }
@@ -533,130 +539,348 @@ closeMbeOutFileR(dsd_opts* opts, dsd_state* state) {
             fclose(opts->mbe_out_fR);
             opts->mbe_out_fR = NULL;
             opts->mbe_outR = 0;
+            opts->mbe_out_ownerR = 0;
+            opts->mbe_out_formatR = DSD_MBE_OUT_FORMAT_NONE;
             LOG_INFO("NOTICE: \nClosing MBE out file 2.\n");
         }
     }
 }
 
-void
-openMbeOutFile(dsd_opts* opts, dsd_state* state) {
+/* Owner ids for dsd_mbe_out_owner_of(); 0 is a handle the capture writer did not create. */
+enum {
+    MBE_OUT_OWNER_P25 = 1,
+    MBE_OUT_OWNER_DMR,
+    MBE_OUT_OWNER_X2TDMA,
+    MBE_OUT_OWNER_DSTAR,
+    MBE_OUT_OWNER_NXDN,
+    MBE_OUT_OWNER_DPMR,
+    MBE_OUT_OWNER_YSF,
+    MBE_OUT_OWNER_EDACS,
+    MBE_OUT_OWNER_M17,
+    MBE_OUT_OWNER_NONE_SYNC,
+    MBE_OUT_OWNER_OTHER_BASE = 1000,
+};
 
-    int i, j;
-    char ext[5];
-    char timestr[7]; //stack buffer for time string
-    char datestr[9]; //stack buffer for date string
+/* Bounded retries on a name some other file already holds (a same-second nonce collision). */
+#define MBE_OUT_CREATE_ATTEMPTS  8
+/* A creation that failed is not retried for this long, so a folder that refuses files costs one attempt a second. */
+#define MBE_OUT_RETRY_INTERVAL_S 1.0
 
-    //random element of filename, so two files won't overwrite one another
-    uint16_t random_number = dsd_nonce_u16();
+int
+dsd_mbe_out_owner_of(int synctype) {
+    if (DSD_SYNC_IS_P25(synctype)) {
+        return MBE_OUT_OWNER_P25;
+    }
+    if (DSD_SYNC_IS_X2TDMA(synctype)) {
+        return MBE_OUT_OWNER_X2TDMA;
+    }
+    if (DSD_SYNC_IS_DSTAR(synctype)) {
+        return MBE_OUT_OWNER_DSTAR;
+    }
+    if (DSD_SYNC_IS_DMR(synctype)) {
+        return MBE_OUT_OWNER_DMR;
+    }
+    if (DSD_SYNC_IS_DPMR(synctype)) {
+        return MBE_OUT_OWNER_DPMR;
+    }
+    if (DSD_SYNC_IS_NXDN(synctype)) {
+        return MBE_OUT_OWNER_NXDN;
+    }
+    if (DSD_SYNC_IS_YSF(synctype)) {
+        return MBE_OUT_OWNER_YSF;
+    }
+    if (DSD_SYNC_IS_EDACS(synctype)) {
+        return MBE_OUT_OWNER_EDACS;
+    }
+    if (DSD_SYNC_IS_M17(synctype)) {
+        return MBE_OUT_OWNER_M17;
+    }
+    if (synctype < 0) {
+        return MBE_OUT_OWNER_NONE_SYNC;
+    }
+    return MBE_OUT_OWNER_OTHER_BASE + synctype;
+}
 
+int
+dsd_mbe_out_frame_protocol(const dsd_state* state) {
+    if (!state) {
+        return DSD_SYNC_NONE;
+    }
+    return state->frame_dispatch_active ? state->frame_dispatch_synctype : state->synctype;
+}
+
+int
+dsd_mbe_out_enabled(const dsd_opts* opts, int slot) {
+    if (!opts || (slot != 0 && slot != 1)) {
+        return 0;
+    }
+    return opts->mbe_out_dir[0] != 0 || (slot == 1 ? opts->mbe_out_fR : opts->mbe_out_f) != NULL;
+}
+
+/* YSF decodes the payload of a frame whose FICH failed from the last FICH that passed, possibly on an earlier
+   transmission, so a YSF frame is captured only once a FICH has verified this one on this carrier. Every other
+   protocol hands the vocoder only what its own gates accepted. */
+static int
+mbe_out_protocol_confirmed(const dsd_state* state, int protocol) {
+    if (DSD_SYNC_IS_YSF(protocol)) {
+        return state->ysf_fich_confirmed != 0;
+    }
+    return 1;
+}
+
+static const char*
+mbe_out_format_ext(dsd_mbe_out_format format) {
+    switch (format) {
+        case DSD_MBE_OUT_FORMAT_IMBE: return ".imb";
+        case DSD_MBE_OUT_FORMAT_AMBE: return ".amb";
+        case DSD_MBE_OUT_FORMAT_DSTAR: return ".dmb";
+        case DSD_MBE_OUT_FORMAT_NONE:
+        default: return NULL;
+    }
+}
+
+/* Folder and file name joined with a separator unless the folder already ends in one (-d caps and -d caps/ alike).
+   Windows also takes '/' and treats a drive ("C:") as a place of its own. -1 when the path does not fit. */
+static int
+mbe_out_join_path(char* out, size_t out_size, const char* dir, const char* file) {
+    const size_t len = strlen(dir);
+    const char last = len > 0U ? dir[len - 1U] : '\0';
+    int has_separator = last == '/';
+#if DSD_PLATFORM_WIN_NATIVE
+    has_separator = has_separator || last == '\\' || last == ':';
+#endif
+    const int n = DSD_SNPRINTF(out, out_size, "%s%s%s", dir, (len == 0U || has_separator) ? "" : "/", file);
+    return (n < 0 || (size_t)n >= out_size) ? -1 : 0;
+}
+
+/* One slot's capture fields, so the code below reads a slot without a choice per field. */
+typedef struct {
+    int slot;
+    FILE** handle;
+    short* open_flag;
+    int* owner;
+    int* format;
+    double* retry_at;
+    int* fail_logged;
+    char* name;
+    size_t name_size;
+} mbe_out_slot;
+
+static mbe_out_slot
+mbe_out_slot_view(dsd_opts* opts, int slot) {
+    if (slot == 1) {
+        return (mbe_out_slot){1,
+                              &opts->mbe_out_fR,
+                              &opts->mbe_outR,
+                              &opts->mbe_out_ownerR,
+                              &opts->mbe_out_formatR,
+                              &opts->mbe_out_retry_atR,
+                              &opts->mbe_out_fail_loggedR,
+                              opts->mbe_out_fileR,
+                              sizeof opts->mbe_out_fileR};
+    }
+    return (mbe_out_slot){0,
+                          &opts->mbe_out_f,
+                          &opts->mbe_out,
+                          &opts->mbe_out_owner,
+                          &opts->mbe_out_format,
+                          &opts->mbe_out_retry_at,
+                          &opts->mbe_out_fail_logged,
+                          opts->mbe_out_file,
+                          sizeof opts->mbe_out_file};
+}
+
+static void
+mbe_out_creation_failed(const mbe_out_slot* s, const char* what) {
+    *s->retry_at = dsd_realtime_mono_s() + MBE_OUT_RETRY_INTERVAL_S;
+    if (!*s->fail_logged) {
+        LOG_ERROR("\nError, couldn't create an MBE capture for slot %d: %s\n", s->slot + 1, what);
+        *s->fail_logged = 1;
+    }
+}
+
+/* A new file in the folder under a name no other file holds: a name taken in the same second is another capture, never
+   truncated, so the next nonce is tried. NULL, with the failure recorded, when none can be created. */
+static FILE*
+mbe_out_open_new_file(dsd_opts* opts, const mbe_out_slot* s, const char* ext) {
+    char timestr[7];
+    char datestr[9];
     (void)dsd_format_local_datetime(dsd_decode_time(), DSD_LOCAL_DATETIME_TIME_COMPACT, timestr, sizeof timestr);
     (void)dsd_format_local_datetime(dsd_decode_time(), DSD_LOCAL_DATETIME_DATE_COMPACT, datestr, sizeof datestr);
 
-    //phase 1 and provoice
-    if (DSD_SYNC_IS_P25P1(state->synctype) || DSD_SYNC_IS_PROVOICE(state->synctype)) {
-        DSD_SNPRINTF(ext, sizeof ext, "%s", ".imb");
+    for (int attempt = 0; attempt < MBE_OUT_CREATE_ATTEMPTS; attempt++) {
+        //random element of filename, so two files won't overwrite one another
+        const uint16_t random_number = dsd_nonce_u16();
+        DSD_SNPRINTF(s->name, s->name_size, "%s_%s_%04X_S%d%s", datestr, timestr, random_number, s->slot + 1, ext);
+        if (mbe_out_join_path(opts->mbe_out_path, sizeof opts->mbe_out_path, opts->mbe_out_dir, s->name) != 0) {
+            mbe_out_creation_failed(s, "the folder path is too long");
+            return NULL;
+        }
+        /* Binary: MBE frames are raw bytes, which a text-mode stream on Windows would rewrite (LF to CRLF). */
+        FILE* fp = dsd_fopen_private(opts->mbe_out_path, "wbx");
+        if (fp != NULL) {
+            return fp;
+        }
+        if (errno != EEXIST) {
+            break;
+        }
     }
-    //d-star
-    else if (DSD_SYNC_IS_DSTAR(state->synctype)) {
-        DSD_SNPRINTF(ext, sizeof ext, "%s", ".dmb"); //new dstar file extension to make it read in and process properly
+    mbe_out_creation_failed(s, opts->mbe_out_path);
+    return NULL;
+}
+
+/* Create slot's capture for owner in format. */
+static int
+mbe_out_create(dsd_opts* opts, dsd_state* state, const mbe_out_slot* s, int owner, dsd_mbe_out_format format) {
+    if (*s->retry_at > 0.0 && dsd_realtime_mono_s() < *s->retry_at) {
+        return 0;
     }
-    //dmr, nxdn, phase 2, x2-tdma
-    else {
-        DSD_SNPRINTF(ext, sizeof ext, "%s", ".amb");
+    const char* ext = mbe_out_format_ext(format);
+    FILE* fp = ext ? mbe_out_open_new_file(opts, s, ext) : NULL;
+    if (fp == NULL) {
+        return 0;
     }
 
     //reset talkgroup id buffer
-    for (i = 0; i < 12; i++) {
-        for (j = 0; j < 25; j++) {
+    for (int i = 0; i < 12; i++) {
+        for (int j = 0; j < 25; j++) {
             state->tg[j][i] = 0;
         }
     }
-
     state->tgcount = 0;
 
-    DSD_SNPRINTF(opts->mbe_out_file, sizeof opts->mbe_out_file, "%s_%s_%04X_S1%s", datestr, timestr, random_number,
-                 ext);
+    /* Fully buffered output to reduce syscall overhead */
+    configure_file_stream_buffer(fp, _IOFBF, (size_t)64u * 1024u);
+    DSD_FPRINTF(fp, "%s", ext);
+    *s->handle = fp;
+    *s->open_flag = 1;
+    *s->owner = owner;
+    *s->format = (int)format;
+    *s->retry_at = 0.0;
+    *s->fail_logged = 0;
+    return 1;
+}
 
-    DSD_SNPRINTF(opts->mbe_out_path, sizeof opts->mbe_out_path, "%s%s", opts->mbe_out_dir, opts->mbe_out_file);
-
-    /* Binary: MBE frames are raw bytes, which a text-mode stream on Windows would rewrite (LF to CRLF). */
-    opts->mbe_out_f = dsd_fopen_private(opts->mbe_out_path, "wb");
-    if (opts->mbe_out_f == NULL) {
-        LOG_ERROR("\nError, couldn't open %s for slot 1\n", opts->mbe_out_path);
+static void
+mbe_out_close_slot(dsd_opts* opts, dsd_state* state, int slot) {
+    if (slot == 1) {
+        closeMbeOutFileR(opts, state);
     } else {
-        opts->mbe_out = 1;
-        /* Fully buffered output to reduce syscall overhead */
-        configure_file_stream_buffer(opts->mbe_out_f, _IOFBF, (size_t)64u * 1024u);
-        DSD_FPRINTF(opts->mbe_out_f, "%s", ext);
+        closeMbeOutFile(opts, state);
     }
+}
 
-    /* header write will be flushed later on close */
-    /* stack buffers; no free */
+/* Close a capture the writer created whose owner or format is not the frame's. */
+static void
+mbe_out_retire_if_other(dsd_opts* opts, dsd_state* state, const mbe_out_slot* s, int owner, dsd_mbe_out_format format) {
+    if (*s->handle != NULL && *s->owner != 0 && (*s->owner != owner || *s->format != (int)format)) {
+        mbe_out_close_slot(opts, state, s->slot);
+    }
+}
+
+/* The frame's owner when it may be written to slot's capture at all, 0 when not. */
+static int
+mbe_out_frame_owner(const dsd_opts* opts, const dsd_state* state, int slot, dsd_mbe_out_format format) {
+    /* IMBE has no slot 2 record writer: no protocol carries IMBE on a second TDMA slot. */
+    if ((slot != 0 && slot != 1) || mbe_out_format_ext(format) == NULL
+        || (slot == 1 && format == DSD_MBE_OUT_FORMAT_IMBE) || !dsd_mbe_out_enabled(opts, slot)) {
+        return 0;
+    }
+    /* What was read after the carrier boundary moved the count belongs to no capture of either carrier. */
+    if (state->frame_dispatch_active && state->carrier_seq != state->frame_dispatch_carrier_seq) {
+        return 0;
+    }
+    const int protocol = dsd_mbe_out_frame_protocol(state);
+    return mbe_out_protocol_confirmed(state, protocol) ? dsd_mbe_out_owner_of(protocol) : 0;
+}
+
+/* Slot's capture ready for a frame of owner in format: a capture of another owner or format, on this slot or the
+   other, belongs to what came before this frame and closes (a TDMA pair, DMR or P25 Phase 2, shares owner and format
+   and stays); then one is created if none is open. A handle a caller attached is used as it is. */
+static int
+mbe_out_slot_ready(dsd_opts* opts, dsd_state* state, int slot, int owner, dsd_mbe_out_format format) {
+    const mbe_out_slot s = mbe_out_slot_view(opts, slot);
+    const mbe_out_slot other = mbe_out_slot_view(opts, 1 - slot);
+    mbe_out_retire_if_other(opts, state, &other, owner, format);
+    if (*s.handle != NULL && *s.owner == 0) {
+        return 1;
+    }
+    mbe_out_retire_if_other(opts, state, &s, owner, format);
+    if (*s.handle != NULL) {
+        return 1;
+    }
+    return opts->mbe_out_dir[0] != 0 && mbe_out_create(opts, state, &s, owner, format);
 }
 
 void
-openMbeOutFileR(dsd_opts* opts, dsd_state* state) {
-
-    int i, j;
-    char ext[5];
-    char timestr[7]; //stack buffer for time string
-    char datestr[9]; //stack buffer for date string
-
-    //random element of filename, so two files won't overwrite one another
-    uint16_t random_number = dsd_nonce_u16();
-
-    (void)dsd_format_local_datetime(dsd_decode_time(), DSD_LOCAL_DATETIME_TIME_COMPACT, timestr, sizeof timestr);
-    (void)dsd_format_local_datetime(dsd_decode_time(), DSD_LOCAL_DATETIME_DATE_COMPACT, datestr, sizeof datestr);
-
-    //phase 1 and provoice
-    if (DSD_SYNC_IS_P25P1(state->synctype) || DSD_SYNC_IS_PROVOICE(state->synctype)) {
-        DSD_SNPRINTF(ext, sizeof ext, "%s", ".imb");
+dsd_mbe_out_write(dsd_opts* opts, dsd_state* state, int slot, dsd_mbe_out_format format, const char* bits) {
+    if (!opts || !state || !bits) {
+        return;
     }
-    //d-star
-    else if (DSD_SYNC_IS_DSTAR(state->synctype)) {
-        DSD_SNPRINTF(ext, sizeof ext, "%s", ".dmb"); //new dstar file extension to make it read in and process properly
+    const int owner = mbe_out_frame_owner(opts, state, slot, format);
+    if (owner == 0 || !mbe_out_slot_ready(opts, state, slot, owner, format)) {
+        return;
     }
-    //dmr, nxdn, phase 2, x2-tdma
-    else {
-        DSD_SNPRINTF(ext, sizeof ext, "%s", ".amb");
-    }
-
-    //reset talkgroup id buffer
-    for (i = 0; i < 12; i++) {
-        for (j = 0; j < 25; j++) {
-            state->tg[j][i] = 0;
-        }
-    }
-
-    state->tgcount = 0;
-
-    DSD_SNPRINTF(opts->mbe_out_fileR, sizeof opts->mbe_out_fileR, "%s_%s_%04X_S2%s", datestr, timestr, random_number,
-                 ext);
-
-    DSD_SNPRINTF(opts->mbe_out_path, sizeof opts->mbe_out_path, "%s%s", opts->mbe_out_dir, opts->mbe_out_fileR);
-
-    opts->mbe_out_fR = dsd_fopen_private(opts->mbe_out_path, "wb");
-    if (opts->mbe_out_fR == NULL) {
-        LOG_ERROR("\nError, couldn't open %s for slot 2\n", opts->mbe_out_path);
+    if (format == DSD_MBE_OUT_FORMAT_IMBE) {
+        saveImbe4400Data(opts, state, bits);
+    } else if (slot == 1) {
+        saveAmbe2450DataR(opts, state, bits);
     } else {
-        opts->mbe_outR = 1;
-        /* Fully buffered output to reduce syscall overhead */
-        configure_file_stream_buffer(opts->mbe_out_fR, _IOFBF, (size_t)64u * 1024u);
-        DSD_FPRINTF(opts->mbe_out_fR, "%s", ext);
+        saveAmbe2450Data(opts, state, bits);
     }
+}
 
-    /* header write will be flushed later on close */
-    /* stack buffers; no free */
+void
+dsd_mbe_out_close_protocol(dsd_opts* opts, dsd_state* state, int slot_mask, int synctype) {
+    if (!opts) {
+        return;
+    }
+    const int owner = dsd_mbe_out_owner_of(synctype);
+    if ((slot_mask & DSD_MBE_OUT_SLOT1) != 0 && opts->mbe_out_f != NULL
+        && (opts->mbe_out_owner == 0 || opts->mbe_out_owner == owner)) {
+        closeMbeOutFile(opts, state);
+    }
+    if ((slot_mask & DSD_MBE_OUT_SLOT2) != 0 && opts->mbe_out_fR != NULL
+        && (opts->mbe_out_ownerR == 0 || opts->mbe_out_ownerR == owner)) {
+        closeMbeOutFileR(opts, state);
+    }
 }
 
 //temp filename should not have the .wav extension, will be renamed with one after event is closed
+/* Per-call WAV temp names are unique by construction (issue #661): libsndfile's SFM_RDWR appends to a file that
+   already exists, so a name opened twice would mix two calls. The token tells processes apart (64 random bits drawn
+   once; collision-resistant, not unique), the sequence this process's files. */
+static uint64_t s_wav_temp_token;
+/* 0 = not drawn, 1 = drawing, 2 = drawn. */
+static atomic_int s_wav_temp_token_state = 0;
+static dsd_atomic_u64 s_wav_temp_seq;
+
+static uint64_t
+wav_temp_token(void) {
+    if (atomic_load(&s_wav_temp_token_state) != 2) {
+        int expected = 0;
+        if (atomic_compare_exchange_strong(&s_wav_temp_token_state, &expected, 1)) {
+            uint64_t token = 0;
+            dsd_nonce_fill(&token, sizeof token);
+            s_wav_temp_token = token;
+            atomic_store(&s_wav_temp_token_state, 2);
+        } else {
+            while (atomic_load(&s_wav_temp_token_state) != 2) {
+                dsd_thread_yield();
+            }
+        }
+    }
+    return s_wav_temp_token;
+}
+
 SNDFILE*
 open_wav_file(char* dir, char* temp_filename, size_t temp_filename_size, uint16_t sample_rate, uint8_t ext) {
     if (temp_filename == NULL || temp_filename_size == 0) {
         return NULL;
     }
 
-    uint16_t random_number = dsd_nonce_u16();
+    const unsigned long long token = (unsigned long long)wav_temp_token();
+    const unsigned long long seq = (unsigned long long)dsd_atomic_u64_fetch_add_relaxed(&s_wav_temp_seq, 1U);
     char datestr[9];
     char timestr[7];
     (void)dsd_format_local_datetime(dsd_decode_time(), DSD_LOCAL_DATETIME_DATE_COMPACT, datestr, sizeof datestr);
@@ -664,11 +888,11 @@ open_wav_file(char* dir, char* temp_filename, size_t temp_filename_size, uint16_
 
     int written = 0;
     if (ext == 0) {
-        written =
-            DSD_SNPRINTF(temp_filename, temp_filename_size, "%s/TEMP_%s_%s_%04X", dir, datestr, timestr, random_number);
+        written = DSD_SNPRINTF(temp_filename, temp_filename_size, "%s/TEMP_%s_%s_%016llX_%llu", dir, datestr, timestr,
+                               token, seq);
     } else {
-        written = DSD_SNPRINTF(temp_filename, temp_filename_size, "%s/TEMP_%s_%s_%04X.wav", dir, datestr, timestr,
-                               random_number);
+        written = DSD_SNPRINTF(temp_filename, temp_filename_size, "%s/TEMP_%s_%s_%016llX_%llu.wav", dir, datestr,
+                               timestr, token, seq);
     }
     if (written < 0 || (size_t)written >= temp_filename_size) {
         LOG_ERROR("Error - wav output temp filename is too long\n");
@@ -791,6 +1015,30 @@ wav_file_get_size_or_negative(const char* filename) {
     return size;
 }
 
+/* Bounded retries on a final name another recording already holds. */
+#define WAV_PUBLISH_ATTEMPTS 8
+
+/* Publish the recording at @p from under @p to, never over another file: a final name another recording holds draws
+   another number (issue #661). 1 once published; 0 on any other failure, the recording still under @p from. */
+static int
+wav_publish_noreplace(const char* from, char* to, size_t to_size, const char* dir, wav_rename_metadata* metadata) {
+    for (int attempt = 0; attempt < WAV_PUBLISH_ATTEMPTS; attempt++) {
+        int source_left = 0;
+        if (dsd_rename_noreplace(from, to, &source_left) == 0) {
+            if (source_left) {
+                LOG_WARN("Recording %s published, but its temp name %s could not be removed\n", to, from);
+            }
+            return 1;
+        }
+        if (errno != EEXIST) {
+            return 0;
+        }
+        metadata->random_number = dsd_nonce_u16();
+        wav_rename_build_final_filename(to, to_size, dir, metadata);
+    }
+    return 0;
+}
+
 SNDFILE*
 close_and_rename_wav_file_ex(SNDFILE* wav_file, const dsd_opts* opts, const char* wav_out_filename, const char* dir,
                              const Event_History_I* event_struct, time_t opened, int export_call) {
@@ -818,7 +1066,8 @@ close_and_rename_wav_file_ex(SNDFILE* wav_file, const dsd_opts* opts, const char
         return wav_file;
     }
 
-    if (rename(wav_out_filename, new_filename) != 0) {
+    /* Never over an earlier recording (issue #661); any failure but a taken name keeps the temp file, as before. */
+    if (!wav_publish_noreplace(wav_out_filename, new_filename, sizeof(new_filename), dir, &metadata)) {
         LOG_ERROR("Error - could not rename wav file %s -> %s\n", wav_out_filename, new_filename);
         return NULL;
     }
@@ -1471,8 +1720,8 @@ ambe2_str_to_decode(dsd_opts* opts, dsd_state* state, const char* ambe_str, cons
     }
 
     if (decode_audio_is_allowed(is_enc, ks_available)) {
-        if (opts->mbe_out_f != NULL && sdrtrunk_json_record_allowed(opts, state)) {
-            saveAmbe2450Data(opts, state, ambe_d);
+        if (dsd_mbe_out_enabled(opts, 0) && sdrtrunk_json_record_allowed(opts, state)) {
+            dsd_mbe_out_write(opts, state, 0, DSD_MBE_OUT_FORMAT_AMBE, ambe_d);
         }
         run_decode_audio_output_path(opts, state);
     }
@@ -1524,8 +1773,8 @@ imbe_str_to_decode(dsd_opts* opts, dsd_state* state, const char* imbe_str, const
     }
 
     if (decode_audio_is_allowed(is_enc, ks_available)) {
-        if (opts->mbe_out_f != NULL && sdrtrunk_json_record_allowed(opts, state)) {
-            saveImbe4400Data(opts, state, imbe_d);
+        if (dsd_mbe_out_enabled(opts, 0) && sdrtrunk_json_record_allowed(opts, state)) {
+            dsd_mbe_out_write(opts, state, 0, DSD_MBE_OUT_FORMAT_IMBE, imbe_d);
         }
         run_decode_audio_output_path(opts, state);
     }
@@ -1784,8 +2033,7 @@ sdrtrunk_json_handle_version(const dsd_opts* opts, const char* token, char** str
 }
 
 static int
-sdrtrunk_json_handle_protocol(dsd_opts* opts, dsd_state* state, const char* token, char** str_saveptr,
-                              sdrtrunk_json_context* ctx) {
+sdrtrunk_json_handle_protocol(dsd_state* state, const char* token, char** str_saveptr, sdrtrunk_json_context* ctx) {
     if (strncmp("protocol", token, 8) != 0) {
         return 0;
     }
@@ -1795,10 +2043,8 @@ sdrtrunk_json_handle_protocol(dsd_opts* opts, dsd_state* state, const char* toke
         return 1;
     }
     DSD_FPRINTF(stderr, "\n Protocol: %s", value);
+    /* The capture, if any, is created by the first voice frame recorded under this protocol (issue #661). */
     sdrtrunk_json_set_protocol(value, state, ctx);
-    if (state->synctype != DSD_SYNC_NONE && opts->mbe_out_dir[0] != 0 && opts->mbe_out_f == NULL) {
-        openMbeOutFile(opts, state);
-    }
     return 1;
 }
 
@@ -2343,7 +2589,7 @@ static void
 sdrtrunk_json_process_token(dsd_opts* opts, dsd_state* state, sdrtrunk_json_context* ctx, const char* token,
                             char** str_saveptr) {
     (void)sdrtrunk_json_handle_version(opts, token, str_saveptr, ctx);
-    (void)sdrtrunk_json_handle_protocol(opts, state, token, str_saveptr, ctx);
+    (void)sdrtrunk_json_handle_protocol(state, token, str_saveptr, ctx);
     (void)sdrtrunk_json_handle_call_type(token, str_saveptr, ctx);
     (void)sdrtrunk_json_handle_encrypted(token, str_saveptr, ctx);
     if (ctx->protocol == 3) {

@@ -1228,6 +1228,24 @@ Known gaps and caveats:
   registered `-fA` case fails on that warning (`NOT_EXPECTED`); `tools/replay_ab.sh` leaves such repeats out (its
   `off_path` column). An AM case on this excerpt (`-fM`) carries the same guard.
 
+
+### MBE capture checks (issue #661)
+
+`DECODE_IQ_MBE_CAPTURE_*` (CTest labels `iq-decode` and `mbe-capture`) replay a voice fixture with
+`-d <dir>/caps`, given without a trailing separator, through `tests/iq_mbe_capture_check.cmake`. Like the decode
+runner it requires exit code 0, the decode regex and no sanitizer report first, so a run that never decoded cannot
+pass a check for missing files. Then every file in `caps/` must carry its extension's 4-byte header and hold whole
+records, at least one (a capture is created by its first frame), nothing named `caps*` may sit beside the folder,
+and each case pins a file count or minimum frame count. Frame counts are lower bounds, because what a replay
+captures is fixed for one build, not across builds. The AUTO cases (`-fa`) assert only what holds whatever the hunt's
+phase: every file is well formed, and YSF is captured at all. The runner removes its work folder, failing or not.
+
+Name collisions are pinned with GNU ld `--wrap` in `CORE_MBE_OUT_COLLISION`: `dsd_nonce_u16()` and
+`dsd_decode_time()` return fixed values, so the test knows in advance the capture name and the per-call WAV final
+name the code will try, creates a file there, and checks that it keeps its bytes while the recording lands under the
+next number. `YSF_MBE_CAPTURE` compiles `test_ysf_dch_decode.c` again with `DSD_YSF_TEST_REAL_VOCODER`, linking the
+real vocoder in place of the `processMbeFrame` stub, so the V/D1 and full-rate frames YSF hands the borrowed NXDN and
+P25 Phase 1 decoders reach the capture writer.
 ### Analog monitor audio checks
 
 The `DECODE_IQ_ANALOG_*` audio cases (CTest labels `iq-decode` and `analog`, radio builds only) check what the analog

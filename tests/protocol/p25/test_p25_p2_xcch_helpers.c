@@ -478,6 +478,21 @@ closeMbeOutFileR(dsd_opts* opts, dsd_state* state) {
     opts->mbe_out_fR = NULL;
 }
 
+/* The XCCH closes P25's slot captures through the protocol-scoped closer (issue #661); the owner filter is tested in
+   CORE_MBE_FILE_IO, and this counts the closes as the closers above do. */
+void
+dsd_mbe_out_close_protocol(dsd_opts* opts, dsd_state* state, int slot_mask, int synctype) {
+    if (!DSD_SYNC_IS_P25(synctype)) {
+        return;
+    }
+    if ((slot_mask & DSD_MBE_OUT_SLOT1) != 0 && opts->mbe_out_f != NULL) {
+        closeMbeOutFile(opts, state);
+    }
+    if ((slot_mask & DSD_MBE_OUT_SLOT2) != 0 && opts->mbe_out_fR != NULL) {
+        closeMbeOutFileR(opts, state);
+    }
+}
+
 void
 dsd_p25p2_flush_partial_audio(dsd_opts* opts, dsd_state* state) {
     (void)opts;

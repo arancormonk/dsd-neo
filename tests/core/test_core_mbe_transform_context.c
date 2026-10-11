@@ -4865,6 +4865,250 @@ test_process_mbe_frame_x2_slot2_uses_right_error_state_and_stages_audio(void) {
     return rc;
 }
 
+/* Issue #661: MBE capture saves a frame by that frame's own verdict, classified before the save, not by the verdict
+   the previous frame on the slot left (or the 0 a carrier reset leaves). Each case runs frames through the real
+   vocoder into an attached capture and checks how many records each frame added. */
+typedef struct {
+    const char* tag;
+    int synctype;
+    int slot;
+    int stereo;
+    int reverse_mute;
+    int so_first;  /* service options of the first frame (0x40: encrypted) */
+    int so_second; /* and of the second */
+    long want_after_first;
+    long want_after_second;
+} capture_verdict_case;
+
+static long
+capture_records(FILE* out, long record) {
+    (void)fflush(out);
+    (void)fseek(out, 0, SEEK_END);
+    return ftell(out) / record;
+}
+
+static int
+run_capture_verdict_case(const capture_verdict_case* c) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static mbe_parms cur;
+    static mbe_parms prev;
+    static mbe_parms prev_enhanced;
+    static mbe_parms cur2;
+    static mbe_parms prev2;
+    static mbe_parms prev_enhanced2;
+    char ambe_fr[4][24] = {{0}};
+    ambe_fr[0][0] = 1;
+    ambe_fr[2][9] = 1;
+
+    FILE* out = tmpfile();
+    if (!out) {
+        return 1;
+    }
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    opts.floating_point = 1;
+    opts.slot1_on = 1;
+    opts.slot2_on = 1;
+    opts.dmr_stereo = c->stereo;
+    opts.reverse_mute = c->reverse_mute;
+    /* The defaults: encrypted audio muted on both slots. */
+    opts.dmr_mute_encL = 1;
+    opts.dmr_mute_encR = 1;
+    if (c->slot == 1) {
+        opts.mbe_out_fR = out;
+    } else {
+        opts.mbe_out_f = out;
+    }
+    init_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
+    state.synctype = c->synctype;
+    state.lastsynctype = c->synctype;
+    state.currentslot = c->slot;
+    state.dmr_stereo = c->stereo;
+    /* A carrier reset left the slot verdicts clear. */
+    state.dmr_encL = 0;
+    state.dmr_encR = 0;
+    /* P25 Phase 2: a clear call its decode gate admits, on a system whose identity is known. */
+    state.p25_crypto_state[c->slot] = DSD_P25_CRYPTO_CLEAR;
+    state.p25_p2_audio_allowed[c->slot] = 1;
+    state.p2_wacn = 0xBEE00;
+    state.p2_sysid = 0x123;
+    state.p2_cc = 0x456;
+
+    int rc = 0;
+    if (c->slot == 1) {
+        state.dmr_soR = c->so_first;
+    } else {
+        state.dmr_so = c->so_first;
+    }
+    processMbeFrame(&opts, &state, NULL, ambe_fr, NULL);
+    const long after_first = capture_records(out, 8);
+    if (c->slot == 1) {
+        state.dmr_soR = c->so_second;
+    } else {
+        state.dmr_so = c->so_second;
+    }
+    processMbeFrame(&opts, &state, NULL, ambe_fr, NULL);
+    const long after_second = capture_records(out, 8);
+    if (after_first != c->want_after_first || after_second != c->want_after_second) {
+        DSD_FPRINTF(stderr, "capture verdict %s: records %ld then %ld (want %ld then %ld)\n", c->tag, after_first,
+                    after_second, c->want_after_first, c->want_after_second);
+        rc = 1;
+    }
+    fclose(out);
+    opts.mbe_out_f = NULL;
+    opts.mbe_out_fR = NULL;
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+static int
+test_process_mbe_frame_capture_follows_each_frames_verdict(void) {
+    static const capture_verdict_case cases[] = {
+        /* -q mutes a clear call: none of its frames, the first included, is captured. */
+        {"dmr slot 1 clear under -q", DSD_SYNC_DMR_BS_VOICE_POS, 0, 1, 1, 0x00, 0x00, 0, 0},
+        {"dmr slot 2 clear under -q", DSD_SYNC_DMR_BS_VOICE_POS, 1, 1, 1, 0x00, 0x00, 0, 0},
+        /* An encrypted call without a key, starting after a carrier reset. */
+        {"dmr slot 1 encrypted after reset", DSD_SYNC_DMR_BS_VOICE_POS, 0, 1, 0, 0x40, 0x40, 0, 0},
+        {"dmr slot 2 encrypted after reset", DSD_SYNC_DMR_BS_VOICE_POS, 1, 1, 0, 0x40, 0x40, 0, 0},
+        /* A clear call after an encrypted one on the slot keeps its first frame. */
+        {"dmr slot 1 clear after encrypted", DSD_SYNC_DMR_BS_VOICE_POS, 0, 1, 0, 0x40, 0x00, 0, 1},
+        {"dmr slot 2 clear after encrypted", DSD_SYNC_DMR_BS_VOICE_POS, 1, 1, 0, 0x40, 0x00, 0, 1},
+        /* P25 Phase 2 records by its own rule in every preset: -q keeps a clear call out, stereo or not. */
+        {"p25p2 slot 1 clear under -q, stereo off", DSD_SYNC_P25P2_POS, 0, 0, 1, 0x00, 0x00, 0, 0},
+        {"p25p2 slot 2 clear under -q, stereo off", DSD_SYNC_P25P2_POS, 1, 0, 1, 0x00, 0x00, 0, 0},
+        {"p25p2 slot 1 clear under -q, stereo on", DSD_SYNC_P25P2_POS, 0, 1, 1, 0x00, 0x00, 0, 0},
+        {"p25p2 slot 2 clear, stereo off", DSD_SYNC_P25P2_POS, 1, 0, 0, 0x00, 0x00, 1, 2},
+        {"p25p2 slot 1 clear, stereo on", DSD_SYNC_P25P2_POS, 0, 1, 0, 0x00, 0x00, 1, 2},
+    };
+    int rc = 0;
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        rc |= run_capture_verdict_case(&cases[i]);
+    }
+    return rc;
+}
+
+typedef struct {
+    int count;
+    int with_suffix;
+    const char* suffix;
+} capture_dir_ctx;
+
+static int
+count_capture_dir_entry(const char* name, void* user) {
+    capture_dir_ctx* ctx = (capture_dir_ctx*)user;
+    ctx->count++;
+    const size_t n = strlen(name);
+    const size_t k = strlen(ctx->suffix);
+    if (n >= k && strcmp(name + n - k, ctx->suffix) == 0) {
+        ctx->with_suffix++;
+    }
+    return 0;
+}
+
+static int
+remove_capture_dir_entry(const char* name, void* user) {
+    char path[DSD_TEST_PATH_MAX * 2];
+    DSD_SNPRINTF(path, sizeof path, "%s%c%s", (const char*)user, dsd_test_path_sep(), name);
+    (void)remove(path);
+    return 0;
+}
+
+static void
+remove_capture_dir(const char* dir) {
+    (void)dsd_dir_list(dir, remove_capture_dir_entry, (void*)dir);
+    (void)dsd_test_rmdir(dir);
+}
+
+/* Issue #661: the writer creates the capture with the vocoder's first frame. A frame YSF decoded through the borrowed
+   NXDN decoder belongs to YSF's capture, a real NXDN frame to its own; X2 records both slots in one file; DMR mono
+   writes only the slot it plays, into that slot's file. */
+static int
+test_process_mbe_frame_capture_files_follow_the_frame(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static mbe_parms cur;
+    static mbe_parms prev;
+    static mbe_parms prev_enhanced;
+    static mbe_parms cur2;
+    static mbe_parms prev2;
+    static mbe_parms prev_enhanced2;
+    char ambe_fr[4][24] = {{0}};
+    ambe_fr[0][0] = 1;
+    ambe_fr[2][9] = 1;
+    int rc = 0;
+
+    char dir[DSD_TEST_PATH_MAX];
+    if (!dsd_test_mkdtemp(dir, sizeof dir, "dsdneo_capture_owner")) {
+        return 1;
+    }
+
+    /* YSF V/D1 (NXDN decoder borrowed), then real NXDN. */
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    opts.floating_point = 1;
+    DSD_SNPRINTF(opts.mbe_out_dir, sizeof opts.mbe_out_dir, "%s", dir);
+    init_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
+    state.ysf_fich_confirmed = 1;
+    state.frame_dispatch_active = 1;
+    state.frame_dispatch_synctype = DSD_SYNC_YSF_POS;
+    state.synctype = DSD_SYNC_NXDN_POS;
+    processMbeFrame(&opts, &state, NULL, ambe_fr, NULL);
+    rc |= expect_eq_int("borrowed frame captured by ysf", opts.mbe_out_owner, dsd_mbe_out_owner_of(DSD_SYNC_YSF_NEG));
+    state.frame_dispatch_synctype = DSD_SYNC_NXDN_POS;
+    processMbeFrame(&opts, &state, NULL, ambe_fr, NULL);
+    rc |=
+        expect_eq_int("real nxdn frame captured by nxdn", opts.mbe_out_owner, dsd_mbe_out_owner_of(DSD_SYNC_NXDN_NEG));
+    closeMbeOutFile(&opts, &state);
+    capture_dir_ctx ctx = {0, 0, ".amb"};
+    (void)dsd_dir_list(dir, count_capture_dir_entry, &ctx);
+    rc |= expect_eq_int("ysf and nxdn captures apart", ctx.with_suffix, 2);
+    dsd_state_ext_free_all(&state);
+    remove_capture_dir(dir);
+    (void)dsd_mkdir(dir, 0700);
+
+    /* X2: slot 1 and slot 2 frames, one file. */
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    opts.floating_point = 1;
+    DSD_SNPRINTF(opts.mbe_out_dir, sizeof opts.mbe_out_dir, "%s", dir);
+    init_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
+    state.synctype = DSD_SYNC_X2TDMA_VOICE_POS;
+    state.currentslot = 0;
+    processMbeFrame(&opts, &state, NULL, ambe_fr, NULL);
+    state.currentslot = 1;
+    processMbeFrame(&opts, &state, NULL, ambe_fr, NULL);
+    rc |= expect_eq_int("x2 writes no slot 2 file", opts.mbe_out_fR == NULL ? 1 : 0, 1);
+    closeMbeOutFile(&opts, &state);
+    capture_dir_ctx x2_ctx = {0, 0, "_S1.amb"};
+    (void)dsd_dir_list(dir, count_capture_dir_entry, &x2_ctx);
+    rc |= expect_eq_int("x2 one file for both slots", x2_ctx.count, 1);
+    rc |= expect_eq_int("x2 file is slot 1's", x2_ctx.with_suffix, 1);
+    dsd_state_ext_free_all(&state);
+    remove_capture_dir(dir);
+    (void)dsd_mkdir(dir, 0700);
+
+    /* DMR mono playing slot 2: a slot 1 frame writes nothing, a slot 2 frame creates the slot 2 file. */
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    opts.floating_point = 1;
+    opts.dmr_mono = 1;
+    DSD_SNPRINTF(opts.mbe_out_dir, sizeof opts.mbe_out_dir, "%s", dir);
+    init_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
+    state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    state.dmr_mono_slot = 1;
+    state.currentslot = 0;
+    processMbeFrame(&opts, &state, NULL, ambe_fr, NULL);
+    rc |= expect_eq_int("dmr mono: slot not played creates nothing", opts.mbe_out_f == NULL ? 1 : 0, 1);
+    state.currentslot = 1;
+    processMbeFrame(&opts, &state, NULL, ambe_fr, NULL);
+    rc |= expect_eq_int("dmr mono: played slot creates its file", opts.mbe_out_fR != NULL ? 1 : 0, 1);
+    closeMbeOutFileR(&opts, &state);
+    capture_dir_ctx mono_ctx = {0, 0, "_S2.amb"};
+    (void)dsd_dir_list(dir, count_capture_dir_entry, &mono_ctx);
+    rc |= expect_eq_int("dmr mono: one file", mono_ctx.count, 1);
+    rc |= expect_eq_int("dmr mono: slot 2's", mono_ctx.with_suffix, 1);
+    dsd_state_ext_free_all(&state);
+    remove_capture_dir(dir);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -4894,6 +5138,8 @@ main(void) {
     rc |= test_process_mbe_frame_x2_dstar_wav_honors_talkgroup_policy();
     rc |= test_process_mbe_frame_mbe_capture_honors_record_policy();
     rc |= test_process_mbe_frame_p25p1_capture_honors_reverse_mute();
+    rc |= test_process_mbe_frame_capture_follows_each_frames_verdict();
+    rc |= test_process_mbe_frame_capture_files_follow_the_frame();
     rc |= test_process_mbe_frame_hard_dmr_left_stages_audio();
     rc |= test_process_mbe_frame_trunked_mono_bs_fallback_gates_to_granted_slot();
     rc |= test_process_mbe_frame_p25p2_mono_path_records_slot2_wav();

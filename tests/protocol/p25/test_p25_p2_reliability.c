@@ -7,6 +7,7 @@
 
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dibit.h>
+#include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/p25p2_playout.h>
 #include <dsd-neo/core/state.h>
@@ -195,6 +196,20 @@ void
 closeMbeOutFileR(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
+}
+
+/* The protocol-scoped closer the P25 code calls (issue #661): closing through the closers above keeps this harness from
+   linking the real capture writer. */
+void
+// NOLINTNEXTLINE(misc-use-internal-linkage): stands in for the core's closer at link time.
+dsd_mbe_out_close_protocol(dsd_opts* opts, dsd_state* state, int slot_mask, int synctype) {
+    (void)synctype;
+    if ((slot_mask & DSD_MBE_OUT_SLOT1) != 0 && opts->mbe_out_f != NULL) {
+        closeMbeOutFile(opts, state);
+    }
+    if ((slot_mask & DSD_MBE_OUT_SLOT2) != 0 && opts->mbe_out_fR != NULL) {
+        closeMbeOutFileR(opts, state);
+    }
 }
 
 static void

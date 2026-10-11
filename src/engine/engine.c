@@ -2540,6 +2540,8 @@ dsd_engine_forget_carrier_decoding(dsd_opts* opts, dsd_state* state) {
     dsd_p25p2_playout_drain(opts, state);
     carrier_boundary_forget_evidence(state);
     carrier_boundary_forget_assemblies(opts, state);
+    // A capture never spans carriers: what the next carrier carries starts its own (issue #661).
+    no_carrier_close_mbe_outputs_if_needed(opts, state);
 }
 
 void

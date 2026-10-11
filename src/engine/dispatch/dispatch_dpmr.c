@@ -7,7 +7,6 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
-#include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/frame_sync.h>
@@ -84,9 +83,6 @@ dpmr_handle_voice_frame(dsd_opts* opts, dsd_state* state) {
         }
     }
 
-    if ((opts->mbe_out_dir[0] != 0) && (opts->mbe_out_f == NULL)) {
-        openMbeOutFile(opts, state);
-    }
     DSD_SNPRINTF(state->fsubtype, sizeof(state->fsubtype), " VOICE        ");
 
     if (processdPMRvoice(opts, state) > 0) {
@@ -120,9 +116,7 @@ dsd_dispatch_handle_dpmr(dsd_opts* opts, dsd_state* state) {
         /* dPMR Frame Sync 1 */
         dpmr_end_call(opts, state, DSD_CALL_END_EXPLICIT);
         DSD_FPRINTF(stderr, "dPMR Frame Sync 1 ");
-        if (opts->mbe_out_f != NULL) {
-            closeMbeOutFile(opts, state);
-        }
+        dsd_mbe_out_close_protocol(opts, state, DSD_MBE_OUT_SLOT1, DSD_SYNC_DPMR_FS1_POS);
     } else if ((state->synctype == DSD_SYNC_DPMR_FS2_POS) || (state->synctype == DSD_SYNC_DPMR_FS2_NEG)) {
         /* dPMR Frame Sync 2 */
         return dpmr_handle_voice_frame(opts, state);
@@ -130,16 +124,12 @@ dsd_dispatch_handle_dpmr(dsd_opts* opts, dsd_state* state) {
         /* dPMR Frame Sync 3 */
         dpmr_end_call(opts, state, DSD_CALL_END_TERMINATOR);
         DSD_FPRINTF(stderr, "dPMR Frame Sync 3 ");
-        if (opts->mbe_out_f != NULL) {
-            closeMbeOutFile(opts, state);
-        }
+        dsd_mbe_out_close_protocol(opts, state, DSD_MBE_OUT_SLOT1, DSD_SYNC_DPMR_FS1_POS);
     } else if ((state->synctype == DSD_SYNC_DPMR_FS4_POS) || (state->synctype == DSD_SYNC_DPMR_FS4_NEG)) {
         /* dPMR Frame Sync 4 */
         dpmr_end_call(opts, state, DSD_CALL_END_EXPLICIT);
         DSD_FPRINTF(stderr, "dPMR Frame Sync 4 ");
-        if (opts->mbe_out_f != NULL) {
-            closeMbeOutFile(opts, state);
-        }
+        dsd_mbe_out_close_protocol(opts, state, DSD_MBE_OUT_SLOT1, DSD_SYNC_DPMR_FS1_POS);
     }
     //dPMR
     return DSD_FRAME_VERDICT_PRODUCTIVE;

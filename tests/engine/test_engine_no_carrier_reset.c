@@ -3828,6 +3828,49 @@ test_carrier_boundary_restarts_the_evidence(void) {
     return rc;
 }
 
+/* Issue #661: a capture never spans carriers. The boundary closes both MBE captures, so what the next carrier carries
+   starts its own. */
+static int
+test_carrier_boundary_closes_mbe_captures(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    FILE* left = tmpfile();
+    FILE* right = tmpfile();
+    if (!left || !right) {
+        if (left) {
+            (void)fclose(left);
+        }
+        if (right) {
+            (void)fclose(right);
+        }
+        free_test_runtime(opts, state);
+        return 1;
+    }
+    opts->mbe_out_f = left;
+    opts->mbe_out = 1;
+    opts->mbe_out_fR = right;
+    opts->mbe_outR = 1;
+
+    dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, 0);
+
+    rc |= expect_true("capture: the boundary closes slot 1's", opts->mbe_out_f == NULL && opts->mbe_out == 0);
+    rc |= expect_true("capture: the boundary closes slot 2's", opts->mbe_out_fR == NULL && opts->mbe_outR == 0);
+    if (opts->mbe_out_f != NULL) {
+        (void)fclose(opts->mbe_out_f);
+        opts->mbe_out_f = NULL;
+    }
+    if (opts->mbe_out_fR != NULL) {
+        (void)fclose(opts->mbe_out_fR);
+        opts->mbe_out_fR = NULL;
+    }
+    free_test_runtime(opts, state);
+    return rc;
+}
+
 /*
  * Issue #575: a carrier boundary between frames leaves every multi-frame assembly the decoders keep in dsd_state
  * half-built, and the next carrier's next piece can complete it: an NXDN SACCH superframe whose fourth segment passes its
@@ -6302,6 +6345,7 @@ main(void) {
     rc |= test_dmr_mfid_clear_runs_on_the_decode_clock_without_trunking();
     rc |= test_carrier_boundary_forgets_the_access_codes();
     rc |= test_carrier_boundary_restarts_the_evidence();
+    rc |= test_carrier_boundary_closes_mbe_captures();
     rc |= test_carrier_boundary_discards_partial_assemblies();
     rc |= test_no_carrier_reset_discards_the_dmr_mix_media();
 #ifdef DSD_NEO_TEST_RTL_WRAP

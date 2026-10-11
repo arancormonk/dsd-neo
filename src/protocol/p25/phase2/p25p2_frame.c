@@ -1024,20 +1024,6 @@ p25p2_pair_index(const dsd_state* state) {
     return timeslot / 2;
 }
 
-static void
-p25p2_open_mbe_for_ready_slot(dsd_opts* opts, dsd_state* state, int slot) {
-    if (!opts || !state || slot < 0 || slot > 1 || !p25_crypto_audio_permitted(opts, state, slot)
-        || !state->p25_p2_audio_allowed[slot] || opts->mbe_out_dir[0] == 0) {
-        return;
-    }
-    if (slot == 0 && opts->mbe_out_f == NULL) {
-        openMbeOutFile(opts, state);
-    }
-    if (slot == 1 && opts->mbe_out_fR == NULL) {
-        openMbeOutFileR(opts, state);
-    }
-}
-
 // Synthesize one frame of the burst and queue it for the slot's playout, or note the gated frame, which closes the
 // slot's stream: a muted slot plays nothing and fills nothing (issue #651).
 static void
@@ -1051,7 +1037,6 @@ p25p2_decode_and_store_voice_frame(dsd_opts* opts, dsd_state* state, dsd_vocoder
         dsd_p25p2_playout_note_muted(state, slot);
         return;
     }
-    p25p2_open_mbe_for_ready_slot(opts, state, slot);
     processMbeFrameSoft(opts, state, NULL, ambe_soft, NULL);
     dsd_p25p2_playout_stage_decided(opts, state, slot, p25p2_pair_index(state), s_burst_serial,
                                     p25p2_burst_verdict_for(slot));
@@ -1558,26 +1543,15 @@ p25p2_duid_is_lch_data_unit(void) {
     return duid_decoded != 3 && duid_decoded != 12 && duid_decoded != 13 && duid_decoded != 4;
 }
 
-static void
-p25p2_duid_maybe_open_mbe(dsd_opts* opts, dsd_state* state, int slot) {
-    if (duid_decoded != 0 && duid_decoded != 6) {
-        return;
-    }
-
-    p25p2_open_mbe_for_ready_slot(opts, state, slot);
-}
-
 static int
 p25p2_duid_set_channel_label_and_sacch(dsd_opts* opts, dsd_state* state) {
     if (p25p2_duid_is_lch_data_unit()) {
         if (state->currentslot == 0) {
             DSD_FPRINTF(stderr, "LCH 0 ");
-            p25p2_duid_maybe_open_mbe(opts, state, 0);
             return 0;
         }
         if (state->currentslot == 1) {
             DSD_FPRINTF(stderr, "LCH 1 ");
-            p25p2_duid_maybe_open_mbe(opts, state, 1);
             return 0;
         }
     }

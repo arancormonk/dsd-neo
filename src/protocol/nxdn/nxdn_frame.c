@@ -556,9 +556,6 @@ nxdn_process_voice_and_mbe(dsd_opts* opts, dsd_state* state, const nxdn_frame_ct
      * channel. Synthesize only once the frame body has passed a CRC; a real call confirms
      * on its first FACCH, or within two frames of SACCH (issue #398). */
     if (ctx->voice && nxdn_confirm_is_confirmed(state)) {
-        if ((opts->mbe_out_dir[0] != 0) && (opts->mbe_out_f == NULL)) {
-            openMbeOutFile(opts, state);
-        }
         state->last_vc_sync_time = dsd_decode_time();
         state->last_vc_sync_time_m = dsd_decode_now_mono_s();
         if (state->M == 1 && dsd_key_scalar_present(state, 0)) {
@@ -572,11 +569,12 @@ nxdn_process_voice_and_mbe(dsd_opts* opts, dsd_state* state, const nxdn_frame_ct
         return;
     }
     const dsd_nxdn_variant variant = dsd_frame_sync_active_nxdn_variant(opts, state);
+    /* NXDN's own capture only (issue #661), named as NXDN: a failed CAC run can have reset state->synctype by now. */
     if (variant == DSD_NXDN_VARIANT_96 && (dsd_decode_time() - state->last_vc_sync_time) > 1) {
-        closeMbeOutFile(opts, state);
+        dsd_mbe_out_close_protocol(opts, state, DSD_MBE_OUT_SLOT1, DSD_SYNC_NXDN_POS);
     }
     if (variant == DSD_NXDN_VARIANT_48) {
-        closeMbeOutFile(opts, state);
+        dsd_mbe_out_close_protocol(opts, state, DSD_MBE_OUT_SLOT1, DSD_SYNC_NXDN_POS);
     }
 }
 

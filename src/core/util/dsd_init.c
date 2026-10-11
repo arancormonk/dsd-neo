@@ -107,6 +107,14 @@ init_opts_output_defaults(dsd_opts* opts) {
     opts->mbe_out_path[0] = 0;
     opts->mbe_out_f = NULL;
     opts->mbe_out_fR = NULL; //second slot on a TDMA system
+    opts->mbe_out_retry_at = 0.0;
+    opts->mbe_out_retry_atR = 0.0;
+    opts->mbe_out_owner = 0;
+    opts->mbe_out_ownerR = 0;
+    opts->mbe_out_format = 0;
+    opts->mbe_out_formatR = 0;
+    opts->mbe_out_fail_logged = 0;
+    opts->mbe_out_fail_loggedR = 0;
     opts->audio_gain = 0;
     opts->audio_gainR = 0;
     opts->audio_gainA = 0.0f; //0 = auto (the analog AGC); 1 - 100 fixed, 50 = reference level
@@ -654,6 +662,9 @@ init_state_sync_and_stream_defaults(dsd_state* state) {
     state->symbol_capture_soft_records = 0;
     state->rf_mod = 0;
     state->lastsynctype = DSD_SYNC_NONE;
+    state->frame_dispatch_active = 0;
+    state->frame_dispatch_synctype = DSD_SYNC_NONE;
+    state->frame_dispatch_carrier_seq = 0U;
     state->p25_cqpsk_dibit_map_idx = DSD_P25_CQPSK_DIBIT_MAP_IDENTITY;
     state->lastp25type = 0;
     state->offset = 0;

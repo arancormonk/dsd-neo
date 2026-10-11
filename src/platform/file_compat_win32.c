@@ -11,6 +11,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <io.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <windows.h>
@@ -123,7 +124,33 @@ dsd_private_open_flags(const char* mode) {
 
     flags |= (strchr(mode, '+') != NULL) ? _O_RDWR : _O_WRONLY;
     flags |= (strchr(mode, 'b') != NULL) ? _O_BINARY : _O_TEXT;
+    if (strchr(mode, 'x') != NULL) {
+        /* C11's exclusive create: only a "w" mode creates, and an existing file is left untouched (EEXIST). */
+        if (mode[0] != 'w') {
+            errno = EINVAL;
+            return -1;
+        }
+        flags |= _O_EXCL;
+    }
     return flags;
+}
+
+/* The mode for the stream over an opened descriptor: _fdopen() has no use for 'x', the descriptor already exists. */
+static int
+dsd_private_stream_mode(const char* mode, char* out, size_t out_size) {
+    size_t n = 0;
+    for (const char* p = mode; *p != '\0'; ++p) {
+        if (*p == 'x') {
+            continue;
+        }
+        if (n + 1U >= out_size) {
+            errno = EINVAL;
+            return -1;
+        }
+        out[n++] = *p;
+    }
+    out[n] = '\0';
+    return 0;
 }
 
 FILE*
@@ -147,6 +174,10 @@ dsd_fopen_private_ex(const char* path, const char* mode, int* out_opened) {
     if (flags < 0) {
         return NULL;
     }
+    char stream_mode[8];
+    if (dsd_private_stream_mode(mode, stream_mode, sizeof stream_mode) != 0) {
+        return NULL;
+    }
 
     int fd = _open(path, flags, _S_IREAD | _S_IWRITE);
     if (fd < 0) {
@@ -157,7 +188,7 @@ dsd_fopen_private_ex(const char* path, const char* mode, int* out_opened) {
         *out_opened = 1;
     }
 
-    FILE* fp = _fdopen(fd, mode);
+    FILE* fp = _fdopen(fd, stream_mode);
     if (!fp) {
         int saved_errno = errno ? errno : EINVAL;
         _close(fd);
@@ -298,6 +329,28 @@ dsd_replace_file_with_temp(const char* tmp_path, const char* final_path) {
         return -1;
     }
     return 0;
+}
+
+int
+dsd_rename_noreplace(const char* from, const char* to, int* out_source_left) {
+    if (out_source_left) {
+        *out_source_left = 0;
+    }
+    if (!from || from[0] == '\0' || !to || to[0] == '\0') {
+        errno = EINVAL;
+        return -1;
+    }
+    /* The CRT's rename() refuses an existing destination and keeps the CRT's own path conversion (the UTF-8 locale the
+       runtime selects included), which MoveFileExA() would not. It reports that refusal as EACCES, the errno of every
+       other denial too, so the native error the same call left tells them apart. */
+    _doserrno = 0;
+    if (rename(from, to) == 0) {
+        return 0;
+    }
+    const int saved = errno;
+    const unsigned long native = (unsigned long)_doserrno;
+    errno = (native == ERROR_ALREADY_EXISTS || native == ERROR_FILE_EXISTS) ? EEXIST : saved;
+    return -1;
 }
 
 static int

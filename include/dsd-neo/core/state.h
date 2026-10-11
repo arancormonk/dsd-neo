@@ -1618,6 +1618,13 @@ struct dsd_state {
        carrier. A decoder that buffers several bursts or frames before it decodes them notes it when collection starts,
        and drops what it buffered, as on a sync loss, when it moved meanwhile: those bursts belong to the carrier left. */
     uint32_t carrier_seq;
+    /* The frame processFrame() is dispatching (issue #661): its synctype, which a decoder borrowing another protocol's
+       vocoder (YSF, scrambled dPMR) leaves alone while it changes synctype, and carrier_seq when dispatch began.
+       frame_dispatch_active is 0 outside a dispatch. MBE capture attributes a frame to this protocol, and refuses one
+       read across a carrier boundary. */
+    int frame_dispatch_active;
+    int frame_dispatch_synctype;
+    uint32_t frame_dispatch_carrier_seq;
     /* The radio source the stream last started on, as dsd_engine_note_stream_source() keys it; 0 before any start. */
     uint64_t carrier_source_key;
     int input_fallback_pending;

@@ -23,6 +23,7 @@ int dsd_dispatch_matches_x2tdma(int synctype);
 dsd_frame_verdict dsd_dispatch_handle_x2tdma(dsd_opts* opts, dsd_state* state);
 
 static int close_calls;
+static int close_protocol_synctype = DSD_SYNC_NONE;
 static int data_calls;
 static int open_calls;
 static int print_calls;
@@ -31,6 +32,7 @@ static int voice_calls;
 static void
 reset_calls(void) {
     close_calls = 0;
+    close_protocol_synctype = DSD_SYNC_NONE;
     data_calls = 0;
     open_calls = 0;
     print_calls = 0;
@@ -44,6 +46,11 @@ printFrameInfo(dsd_opts* opts, dsd_state* state) {
     print_calls++;
 }
 
+/* The capture opener the dispatcher called on every sync before issue #661, kept with its counter so this harness also
+   links and runs against that revision: the dispatcher opens nothing now, the first frame written creates the capture. */
+// NOLINTNEXTLINE(misc-use-internal-linkage): main's dispatcher links against this stub.
+void openMbeOutFile(dsd_opts* opts, dsd_state* state);
+
 void
 openMbeOutFile(dsd_opts* opts, dsd_state* state) {
     (void)opts;
@@ -56,6 +63,16 @@ closeMbeOutFile(dsd_opts* opts, dsd_state* state) {
     (void)state;
     close_calls++;
     opts->mbe_out_f = NULL;
+}
+
+/* X2 closes only its own capture (issue #661); the owner filter is tested in CORE_MBE_FILE_IO. This records the
+   protocol the dispatcher names and counts the close as the closer above does. */
+void
+dsd_mbe_out_close_protocol(dsd_opts* opts, dsd_state* state, int slot_mask, int synctype) {
+    close_protocol_synctype = synctype;
+    if ((slot_mask & DSD_MBE_OUT_SLOT1) != 0 && opts->mbe_out_f != NULL) {
+        closeMbeOutFile(opts, state);
+    }
 }
 
 void
@@ -113,7 +130,8 @@ test_voice_dispatch(void) {
         assert(state.nac == 0);
         assert(strcmp(state.fsubtype, " VOICE        ") == 0);
         assert(print_calls == 1);
-        assert(open_calls == 1);
+        /* The first frame written creates the capture; the sync opens nothing (issue #661). */
+        assert(open_calls == 0);
         assert(close_calls == 0);
         assert(voice_calls == 1);
         assert(data_calls == 0);
@@ -143,6 +161,7 @@ test_data_dispatch(void) {
         assert(print_calls == 1);
         assert(open_calls == 0);
         assert(close_calls == 1);
+        assert(DSD_SYNC_IS_X2TDMA(close_protocol_synctype));
         assert(voice_calls == 0);
         assert(data_calls == 1);
     }

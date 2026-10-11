@@ -30,6 +30,7 @@ static int ms_bootstrap_calls;
 static int ms_data_calls;
 static int open_left_calls;
 static int rc_calls;
+static int close_protocol_synctype = DSD_SYNC_NONE;
 
 static void
 reset_calls(void) {
@@ -42,7 +43,13 @@ reset_calls(void) {
     ms_data_calls = 0;
     open_left_calls = 0;
     rc_calls = 0;
+    close_protocol_synctype = DSD_SYNC_NONE;
 }
+
+/* The capture opener the dispatcher called before issue #661, kept with its counter so this harness also links and
+   runs against that revision: the dispatcher opens nothing now, the first frame written creates the capture. */
+// NOLINTNEXTLINE(misc-use-internal-linkage): main's dispatcher links against this stub.
+void openMbeOutFile(dsd_opts* opts, dsd_state* state);
 
 void
 openMbeOutFile(dsd_opts* opts, dsd_state* state) {
@@ -63,6 +70,20 @@ closeMbeOutFileR(dsd_opts* opts, dsd_state* state) {
     (void)state;
     close_right_calls++;
     opts->mbe_out_fR = NULL;
+}
+
+/* The dispatcher closes DMR's captures through the protocol-scoped closer (issue #661); the owner filter itself is
+   tested in CORE_MBE_FILE_IO. This records the protocol it names and counts the closes as the closers above do. */
+
+void
+dsd_mbe_out_close_protocol(dsd_opts* opts, dsd_state* state, int slot_mask, int synctype) {
+    close_protocol_synctype = synctype;
+    if ((slot_mask & DSD_MBE_OUT_SLOT1) != 0 && opts->mbe_out_f != NULL) {
+        closeMbeOutFile(opts, state);
+    }
+    if ((slot_mask & DSD_MBE_OUT_SLOT2) != 0 && opts->mbe_out_fR != NULL) {
+        closeMbeOutFileR(opts, state);
+    }
 }
 
 void
@@ -176,7 +197,8 @@ test_bs_voice_routes_to_mono_bootstrap(void) {
     assert(strcmp(state.slot1light, " slot1 ") == 0);
     assert(strcmp(state.slot2light, " slot2 ") == 0);
     assert(state.nac == 0);
-    assert(open_left_calls == 1);
+    /* The first frame written creates the capture; a voice sync opens nothing (issue #661). */
+    assert(open_left_calls == 0);
     assert(ms_bootstrap_calls == 1);
     assert(bs_bootstrap_calls == 0);
 }
@@ -270,6 +292,37 @@ test_ms_data_routes_to_ms_data(void) {
     assert(data_sync_calls == 0);
     assert(close_left_calls == 1);
     assert(close_right_calls == 1);
+    assert(DSD_SYNC_IS_DMR(close_protocol_synctype));
+}
+
+/* Issue #661: under trunking an MS voice sync is withheld unread, and so opens no capture, and an MS data burst is
+   withheld unread too, so it does not end a capture the decoder is writing. */
+static void
+test_trunked_ms_paths_leave_captures_alone(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_calls();
+
+    DSD_SNPRINTF(opts.mbe_out_dir, sizeof(opts.mbe_out_dir), "%s", "out");
+    opts.dmr_stereo = 1;
+    opts.trunk_enable = 1;
+    state.synctype = DSD_SYNC_DMR_MS_VOICE;
+    assert(dsd_dispatch_handle_dmr(&opts, &state) == DSD_FRAME_VERDICT_WITHHELD);
+    assert(open_left_calls == 0);
+    assert(opts.mbe_out_f == NULL);
+
+    reset_calls();
+    opts.mbe_out_f = stdout;
+    opts.mbe_out_fR = stderr;
+    state.synctype = DSD_SYNC_DMR_MS_DATA;
+    assert(dsd_dispatch_handle_dmr(&opts, &state) == DSD_FRAME_VERDICT_WITHHELD);
+    assert(ms_data_calls == 0);
+    assert(close_left_calls == 0);
+    assert(close_right_calls == 0);
+    assert(opts.mbe_out_f == stdout);
+    assert(opts.mbe_out_fR == stderr);
 }
 
 /* #392: trunking declines the direct-mode paths, and a declined path reads no symbols. The
@@ -409,6 +462,7 @@ test_bs_data_routes_to_data_sync(void) {
     assert(ms_data_calls == 0);
     assert(close_left_calls == 1);
     assert(close_right_calls == 1);
+    assert(DSD_SYNC_IS_DMR(close_protocol_synctype));
 }
 
 int
@@ -417,6 +471,7 @@ main(void) {
     test_synctype_helpers();
     test_branding_update();
     test_bs_voice_routes_to_mono_bootstrap();
+    test_trunked_ms_paths_leave_captures_alone();
     test_ms_voice_routes_to_single_slot_bootstrap();
     test_trunked_bs_voice_in_mono_mode_defers_mbe_open_to_bs_bootstrap();
     test_stereo_voice_routes_by_synctype();
