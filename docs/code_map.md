@@ -509,7 +509,15 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   - Private file opens: `dsd_fopen_private()` creates a written file owner-only; `dsd_fopen_private_ex()` also says
     whether it opened the path, which for a write mode creates or empties it before the stream over the descriptor is
     made, so an open whose `fdopen()` fails still reports the file it emptied (issue #578: the I/Q capture writer).
-    Open raw bytes with a `b` mode: on Windows a text-mode stream writes every LF as CRLF
+    Open raw bytes with a `b` mode: on Windows a text-mode stream writes every LF as CRLF. An `x` after a write mode
+    (`"wbx"`, C11's) creates exclusively: an existing file fails with EEXIST and keeps its bytes (issue #661: MBE
+    capture names)
+  - No-replace rename: `dsd_rename_noreplace()` never writes over an existing name (EEXIST, both files kept):
+    `renameat2(RENAME_NOREPLACE)` on Linux, `renamex_np(RENAME_EXCL)` on macOS, else a hard link and an unlink (whose
+    fallback, `dsd_rename_noreplace_by_link()` in `src/platform/file_compat_internal.h`, tests reach directly), and on
+    a filesystem with neither a check then a rename, which only another process can race; Windows keeps the CRT's
+    `rename()`, which refuses an existing name, and reports that refusal (`_doserrno` exists) as EEXIST (issue #661:
+    per-call WAV publication)
   - Win32 wrappers keep the POSIX contract callers rely on: errno values, never raw `GetLastError()` codes (the
     thread scheduling and condition calls map them; affinity and realtime priority return ENOSYS where the platform
     has no such control), ENOENT for a missing file from `dsd_fopen_existing_regular_file()`, and temp files
@@ -568,6 +576,25 @@ suite runs under this compiler.
 - Target: `dsd-neo_core`
 - Responsibilities: cross-protocol glue (audio output helpers, vocoder glue, frame helpers, GPS, file import),
   misc/util
+- Invariant (MBE capture, `-d`, issue #661; `<dsd-neo/core/file_io.h>`): decoders write capture frames only through
+  `dsd_mbe_out_write()`, which creates a slot's capture file (exclusively, `"wbx"`, retrying a taken name with another
+  nonce) with the first frame written to it, in the folder whether or not it ends in a separator; there are no
+  openers. A capture is owned by `dsd_mbe_out_owner_of()` of the frame's protocol, `dsd_mbe_out_frame_protocol()`: the
+  synctype `processFrame()` dispatched (`dsd_state::frame_dispatch_*`, set around `handle_frame`), else
+  `state->synctype` (SDRTrunk JSON playback, tests), so YSF and scrambled dPMR frames decoded under a borrowed NXDN or
+  P25 Phase 1 synctype stay YSF's and dPMR's. P25 Phase 1 and 2 share an owner (their formats keep them apart), as
+  EDACS and ProVoice do. A frame of another owner or `dsd_mbe_out_format` closes the slot's capture, and the other
+  slot's when that one differs too, so a TDMA pair of one owner and format stays open side by side. The writer refuses
+  a frame read across a carrier boundary during its dispatch (`frame_dispatch_carrier_seq`) and a YSF frame before
+  `ysf_fich_confirmed`, which `processYSF()` sets as soon as a FICH verifies. A handle a caller attached (owner 0) is
+  written as is. A failed creation is retried once a second (realtime clock) and logged once per run of failures.
+  Closes: protocol closers call `dsd_mbe_out_close_protocol()`, which closes only their own protocol's captures (or an
+  attached handle): DMR data and finalize (MS data only when trunking does not withhold it), dPMR FS1/3/4, NXDN
+  non-voice, X2-TDMA data, P25 Phase 1 header, terminators and control (both slots), the P25 state machine and Phase 2
+  XCCH per slot (naming P25 themselves, since the watchdog runs outside any dispatch), EDACS after a control frame
+  checked out on an unchanged carrier, a verified YSF header or terminator, a verified D-STAR header; the engine closes
+  both at no-carrier, shutdown and in `dsd_engine_forget_carrier_decoding()` (carrier boundary, trunk-scan switch).
+  `dsd_mbe_out_enabled()` (folder set or handle attached) gates every capture path before any record gate runs.
 - `src/core/file/dsd_file.c` reads SDRTrunk JSON MBE exports. Its file-local crypto context owns NXDN SACCH
   position/session tracking and DMR AES late-entry context; playback does not call protocol-layer state-mutating
   IV expansion. Voice bits are FEC-decoded before decryption and then passed to the normal vocoder/output path.
@@ -674,7 +701,14 @@ suite runs under this compiler.
   rdio-scanner sidecar's `freq` is `freq_hz` (clamped to `uint32_t`, still 0 below 1 MHz); it was the channel number
   before. Its `start_time` is the closing segment's `event_start_time`, or the WAV's open stamp when that is later
   (per-call WAV switched on mid-call). Every per-call WAV open sets `opts->wav_out_open_time`/`wav_out_open_timeR`
-  from the decode clock, and the close passes the stamp to `dsd_rdio_export_call()`.
+  from the decode clock, and the close passes the stamp to `dsd_rdio_export_call()`. A per-call WAV's temp name
+  carries a per-process random token and a sequence number (`open_wav_file()`), so libsndfile's `SFM_RDWR` never
+  appends a second call to a file; the close publishes it with `dsd_rename_noreplace()` (`<dsd-neo/platform/
+  file_compat.h>`), drawing another number for a final name another recording holds, and keeps the temp file on any
+  other failure (issue #661). Every publication is serialized: the decoder and the watchdog publish under the P25 SM
+  tick guard or the event layer's call-state lock, and the WAV app commands (start, stop, toggle, static and raw open)
+  take the tick guard in `apply_cmd()`, so the no-replace rename's check-then-rename fallback (a filesystem without
+  hard links) only races another process.
   `dsd_state_rebase_decode_timestamps()` pulls a stamp that is ahead of now back to now, which covers the `-P` open
   while arguments are parsed, before a replay moves the clock. `event_time` is the row's last activity, the segment's
   end by the time its WAV closes. It is only the fallback for a row with no start (a `--playfiles` row, whose stamp is
@@ -759,10 +793,10 @@ suite runs under this compiler.
   Per-call WAV writers use `dsd_audio_record_gate_mono()` (slot crypto, P25 reverse mute and policy), or
   `dsd_audio_record_policy_gate_slot()` (policy alone, on the slot the protocol publishes) where the decode path
   settles crypto without setting the DMR slot flags: X2-TDMA, D-STAR, YSF V/D2, EDACS analog and SDRTrunk JSON
-  playback (YSF EHR and full-rate frames go through the vocoder's full record gate). Every MBE capture save point (`src/core/vocoder/dsd_mbe.c`, JSON playback in `dsd_file.c`) applies the
-  same policy gate; live P25 Phase 1 capture also applies the P25 speaker rule, and
-  `dsd_audio_p25p1_live_voice()` tells a live P25 call from a protocol borrowing the Phase 1 decoder (YSF full
-  rate). The static WAV writes only recordable slots: the mono paths ask about the slot being played (X2-TDMA may
+  playback (YSF EHR and full-rate frames go through the vocoder's full record gate). Every MBE capture save point (`mbe_capture_frame()` in `src/core/vocoder/dsd_mbe.c`, YSF V/D2 in `ysf.c`, JSON
+  playback in `dsd_file.c`) applies the same policy gate; live P25 Phase 1 and P25 Phase 2 capture also apply the P25
+  speaker rule (Phase 2 with `p25_p2_audio_allowed`, as its per-call WAV does), and `dsd_audio_p25p1_live_voice()`
+  tells a live P25 call from a protocol borrowing the Phase 1 decoder (YSF full rate). The static WAV writes only recordable slots: the mono paths ask about the slot being played (X2-TDMA may
   play slot 1), and the stereo mixes write silent any channel whose routed source slot, as the output policy
   mirrors it, is record-blocked (`dsd_stereo_wav_channel_mask()`). The vocoder writes each MBE frame's per-call
   WAV block; YSF writes only its V/D2 frames, which decode straight through mbelib. FDMA dispatchers (NXDN, YSF, D-STAR, ProVoice, dPMR) set
@@ -782,9 +816,10 @@ suite runs under this compiler.
   talkgroup hold unmutes it, and then plays the short samples the vocoder staged, as it always has. A slot the
   vocoder mutes (flagged with the flag on, or a DMR mono slot not playing) stages silence in `s_l`/`s_r`, so no mix
   replays an earlier frame; a talkgroup hold that unmutes such a slot plays silence in SS3, while FS3 plays the float
-  frames the vocoder always stages. DMR and P25 Phase 2 MBE capture save in `mbe_finalize_slot_left/right()` before
-  `mbe_post_left/right_audio()` recomputes the slot mute flags, so the first frame after a mute change (reverse mute
-  included) follows the previous frame's state.
+  frames the vocoder always stages. MBE capture saves a frame after the post stage has classified its slots and before
+  it stages them (`mbe_post_{left,right}_classify()`, `mbe_capture_frame()`, `mbe_post_{left,right}_stage()`), so each
+  frame is captured by its own verdict, reverse mute included, never the one the previous frame left (issue #661).
+  Classification reads nothing staging writes, so the order changes no output.
 - Invariant (P25 Phase 2 voice playout, `<dsd-neo/core/p25p2_playout.h>`, `src/core/audio/p25p2_playout.c`, issue
   #651): both output formats play P25 Phase 2 voice through one staging and one mixer. The frame decoder queues each
   frame its decode gate admits on the slot's queue right after the vocoder (`dsd_p25p2_playout_stage()`): in short

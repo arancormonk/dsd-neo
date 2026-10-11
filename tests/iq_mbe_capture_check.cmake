@@ -11,7 +11,14 @@
 # Expected -D inputs: DSD_BIN, MODE, FIXTURE, EXPECTED, WORK_DIR.
 # Optional: EXT (".amb", ".imb" or ".dmb": every file's), RECORD (record bytes, 8 or 12), FILES (exact file count),
 # MIN_FILES, MIN_FRAMES (records over all files).
-foreach(_var DSD_BIN MODE FIXTURE EXPECTED WORK_DIR)
+foreach(
+    _var
+    DSD_BIN
+    MODE
+    FIXTURE
+    EXPECTED
+    WORK_DIR
+)
     if(NOT DEFINED ${_var})
         message(FATAL_ERROR "iq_mbe_capture_check: missing -D${_var}")
     endif()
@@ -19,6 +26,12 @@ endforeach()
 
 file(REMOVE_RECURSE "${WORK_DIR}")
 file(MAKE_DIRECTORY "${WORK_DIR}")
+
+# Every failure removes the work folder first: a test leaves no files behind, passing or not.
+function(_capture_fail text)
+    file(REMOVE_RECURSE "${WORK_DIR}")
+    message(FATAL_ERROR "iq_mbe_capture_check: ${text}")
+endfunction()
 
 separate_arguments(_mode_args UNIX_COMMAND "${MODE}")
 
@@ -38,21 +51,18 @@ if(
         MATCHES
         "AddressSanitizer|ThreadSanitizer|UndefinedBehaviorSanitizer|LeakSanitizer|runtime error:"
 )
-    message(
-        FATAL_ERROR
-        "iq_mbe_capture_check: sanitizer report detected:\n${_all}"
+    _capture_fail(
+        "sanitizer report detected:\n${_all}"
     )
 endif()
 if(NOT "${_rc}" STREQUAL "0")
-    message(
-        FATAL_ERROR
-        "iq_mbe_capture_check: dsd-neo exited with '${_rc}' (expected 0)\n${_all}"
+    _capture_fail(
+        "dsd-neo exited with '${_rc}' (expected 0)\n${_all}"
     )
 endif()
 if(NOT "${_all}" MATCHES "${EXPECTED}")
-    message(
-        FATAL_ERROR
-        "iq_mbe_capture_check: expected payload /${EXPECTED}/ not found in output\n${_all}"
+    _capture_fail(
+        "expected payload /${EXPECTED}/ not found in output\n${_all}"
     )
 endif()
 
@@ -65,9 +75,8 @@ file(
 )
 list(REMOVE_ITEM _beside "caps")
 if(_beside)
-    message(
-        FATAL_ERROR
-        "iq_mbe_capture_check: captures written beside the folder: ${_beside}"
+    _capture_fail(
+        "captures written beside the folder: ${_beside}"
     )
 endif()
 
@@ -81,15 +90,17 @@ foreach(_file IN LISTS _files)
     get_filename_component(_ext "${_file}" LAST_EXT)
     string(HEX "${_ext}" _ext_hex)
     if(NOT "${_header}" STREQUAL "${_ext_hex}")
-        message(
-            FATAL_ERROR
-            "iq_mbe_capture_check: ${_file}: header ${_header} does not name its extension ${_ext}"
+        _capture_fail(
+        "${_file}: header ${_header} does not name its extension ${_ext}"
         )
     endif()
-    if(DEFINED EXT AND NOT "${EXT}" STREQUAL "" AND NOT "${_ext}" STREQUAL "${EXT}")
-        message(
-            FATAL_ERROR
-            "iq_mbe_capture_check: ${_file}: expected a ${EXT} capture"
+    if(
+        DEFINED EXT
+        AND NOT "${EXT}" STREQUAL ""
+        AND NOT "${_ext}" STREQUAL "${EXT}"
+    )
+        _capture_fail(
+        "${_file}: expected a ${EXT} capture"
         )
     endif()
     set(_record 8)
@@ -102,24 +113,25 @@ foreach(_file IN LISTS _files)
     math(EXPR _body "${_size} - 4")
     math(EXPR _rest "${_body} % ${_record}")
     if(_body LESS_EQUAL 0 OR NOT _rest EQUAL 0)
-        message(
-            FATAL_ERROR
-            "iq_mbe_capture_check: ${_file}: ${_size} bytes is not a header and whole ${_record}-byte records"
+        _capture_fail(
+        "${_file}: ${_size} bytes is not a header and whole ${_record}-byte records"
         )
     endif()
     math(EXPR _frames "${_frames} + ${_body} / ${_record}")
 endforeach()
 
 if(DEFINED FILES AND NOT "${FILES}" STREQUAL "" AND NOT _count EQUAL FILES)
-    message(
-        FATAL_ERROR
-        "iq_mbe_capture_check: ${_count} capture files (expected ${FILES}): ${_files}\n${_all}"
+    _capture_fail(
+        "${_count} capture files (expected ${FILES}): ${_files}\n${_all}"
     )
 endif()
-if(DEFINED MIN_FILES AND NOT "${MIN_FILES}" STREQUAL "" AND _count LESS MIN_FILES)
-    message(
-        FATAL_ERROR
-        "iq_mbe_capture_check: ${_count} capture files (expected at least ${MIN_FILES})\n${_all}"
+if(
+    DEFINED MIN_FILES
+    AND NOT "${MIN_FILES}" STREQUAL ""
+    AND _count LESS MIN_FILES
+)
+    _capture_fail(
+        "${_count} capture files (expected at least ${MIN_FILES})\n${_all}"
     )
 endif()
 if(
@@ -127,9 +139,8 @@ if(
     AND NOT "${MIN_FRAMES}" STREQUAL ""
     AND _frames LESS MIN_FRAMES
 )
-    message(
-        FATAL_ERROR
-        "iq_mbe_capture_check: ${_frames} captured frames (expected at least ${MIN_FRAMES})\n${_all}"
+    _capture_fail(
+        "${_frames} captured frames (expected at least ${MIN_FRAMES})\n${_all}"
     )
 endif()
 message(STATUS "iq_mbe_capture_check: ${_count} files, ${_frames} frames")

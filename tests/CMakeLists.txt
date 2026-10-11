@@ -11658,9 +11658,7 @@ add_executable(
 )
 target_include_directories(
     dsd-neo_test_platform_file_compat
-    PRIVATE
-        ${PROJECT_SOURCE_DIR}/include
-        ${PROJECT_SOURCE_DIR}/src/platform
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/platform
 )
 target_link_libraries(
     dsd-neo_test_platform_file_compat
@@ -13248,7 +13246,13 @@ if(DSD_HAS_RADIO)
     # holding whole records, at least one, as a capture created by its first frame does. Frame counts are lower bounds:
     # the frames a replay captures are fixed for a build, not across them (docs/testing.md "Replay determinism").
     function(dsd_neo_add_iq_mbe_capture_test test_name fixture mode expected)
-        cmake_parse_arguments(_cap "" "EXT;FILES;MIN_FILES;MIN_FRAMES" "" ${ARGN})
+        cmake_parse_arguments(
+            _cap
+            ""
+            "EXT;FILES;MIN_FILES;MIN_FRAMES"
+            ""
+            ${ARGN}
+        )
         add_test(
             NAME ${test_name}
             COMMAND
