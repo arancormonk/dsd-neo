@@ -1497,6 +1497,7 @@ test_sdrtrunk_json_protocol_token_alone_creates_no_capture(void) {
     rc |= expect_true("sdrtrunk token only: no handle", opts.mbe_out_f == NULL);
     rc |= expect_int("sdrtrunk token only: folder empty", count_dir_files(dir), 0);
 
+    dsd_state_ext_free_all(&state);
     remove_dir_tree(dir);
     return rc;
 }
@@ -1537,6 +1538,7 @@ test_sdrtrunk_json_second_protocol_gets_its_own_capture(void) {
     rc |= expect_true("sdrtrunk two formats: amb holds the ambe record", size == 4 + 8);
     remove_dir_tree(dir);
     (void)dsd_mkdir(dir, 0700);
+    dsd_state_ext_free_all(&state);
 
     DSD_MEMSET(&opts, 0, sizeof opts);
     DSD_MEMSET(&state, 0, sizeof state);
@@ -1549,6 +1551,7 @@ test_sdrtrunk_json_second_protocol_gets_its_own_capture(void) {
     rc |= expect_int("sdrtrunk two owners: two amb", count_capture_files(dir, ".amb", &size), 2);
     rc |= expect_true("sdrtrunk two owners: one record each", size == 2L * (4 + 8));
 
+    dsd_state_ext_free_all(&state);
     remove_dir_tree(dir);
     return rc;
 }
