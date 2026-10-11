@@ -12,8 +12,12 @@
 #include <stdio.h>
 #include <string.h>
 
+#include <locale.h>
+#include <sys/stat.h>
+
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/platform/platform.h"
+#include "file_compat_internal.h"
 #include "test_support.h"
 #if !DSD_PLATFORM_WIN_NATIVE
 #include <unistd.h>
@@ -629,6 +633,177 @@ expect_rejects_symlink(void) {
 }
 #endif
 
+static int
+write_text_file(const char* path, const char* text) {
+    FILE* fp = dsd_fopen_private(path, "wb");
+    if (!fp) {
+        return 1;
+    }
+    int ok = fputs(text, fp) >= 0;
+    ok = fclose(fp) == 0 && ok;
+    return ok ? 0 : 1;
+}
+
+static int
+file_text_is(const char* path, const char* text) {
+    FILE* fp = fopen(path, "rb");
+    if (!fp) {
+        return 0;
+    }
+    char buf[64];
+    size_t n = fread(buf, 1, sizeof buf - 1U, fp);
+    buf[n] = '\0';
+    (void)fclose(fp);
+    return strcmp(buf, text) == 0;
+}
+
+static int
+file_exists(const char* path) {
+    FILE* fp = fopen(path, "rb");
+    if (!fp) {
+        return 0;
+    }
+    (void)fclose(fp);
+    return 1;
+}
+
+/* Issue #661: "x" after a write mode creates exclusively. An existing file fails with EEXIST and keeps its bytes, so a
+   capture whose name is taken never truncates an earlier one. */
+static int
+expect_private_exclusive_create(void) {
+    const char* name = "dsd_neo_private_exclusive_test.tmp";
+    (void)remove(name);
+    int ok = 1;
+    int opened = -1;
+    FILE* fp = dsd_fopen_private_ex(name, "wbx", &opened);
+    ok = ok && fp != NULL && opened == 1;
+    if (fp) {
+        ok = fputs("keep", fp) >= 0 && ok;
+        ok = fclose(fp) == 0 && ok;
+    }
+    opened = -1;
+    errno = 0;
+    fp = dsd_fopen_private_ex(name, "wbx", &opened);
+    ok = ok && fp == NULL && errno == EEXIST && opened == 0;
+    if (fp) {
+        (void)fclose(fp);
+    }
+    ok = ok && file_text_is(name, "keep");
+    errno = 0;
+    fp = dsd_fopen_private(name, "ax");
+    ok = ok && fp == NULL && errno == EINVAL;
+    if (fp) {
+        (void)fclose(fp);
+    }
+    fp = dsd_fopen_private(name, "wx+");
+    ok = ok && fp == NULL && errno == EEXIST;
+    if (fp) {
+        (void)fclose(fp);
+    }
+    (void)remove(name);
+    return ok ? 0 : 1;
+}
+
+/* Issue #661: a no-replace rename never writes over an existing name: EEXIST, both files as they were. */
+static int
+expect_rename_noreplace_in(const char* dir) {
+    char from[512];
+    char taken[512];
+    char to[512];
+    DSD_SNPRINTF(from, sizeof from, "%s%sdsd_neo_noreplace_from.tmp", dir, dir[0] ? "/" : "");
+    DSD_SNPRINTF(taken, sizeof taken, "%s%sdsd_neo_noreplace_taken.tmp", dir, dir[0] ? "/" : "");
+    DSD_SNPRINTF(to, sizeof to, "%s%sdsd_neo_noreplace_to.tmp", dir, dir[0] ? "/" : "");
+    (void)remove(from);
+    (void)remove(taken);
+    (void)remove(to);
+    if (write_text_file(from, "from") != 0 || write_text_file(taken, "taken") != 0) {
+        (void)remove(from);
+        (void)remove(taken);
+        return 1;
+    }
+    int ok = 1;
+    int left = -1;
+    errno = 0;
+    ok = ok && dsd_rename_noreplace(from, taken, &left) == -1 && errno == EEXIST && left == 0;
+    ok = ok && file_text_is(from, "from") && file_text_is(taken, "taken");
+    left = -1;
+    ok = ok && dsd_rename_noreplace(from, to, &left) == 0 && left == 0;
+    ok = ok && !file_exists(from) && file_text_is(to, "from");
+    (void)remove(from);
+    (void)remove(taken);
+    (void)remove(to);
+    return ok ? 0 : 1;
+}
+
+static int
+expect_rename_noreplace(void) {
+    int rc = 0;
+    errno = 0;
+    rc |= dsd_rename_noreplace(NULL, "x", NULL) == -1 && errno == EINVAL ? 0 : 1;
+    errno = 0;
+    rc |= dsd_rename_noreplace("x", "", NULL) == -1 && errno == EINVAL ? 0 : 1;
+    rc |= expect_rename_noreplace_in("");
+    return rc;
+}
+
+/* The same in a directory whose name is not ASCII, under the UTF-8 locale the runtime selects (a CRT that cannot take
+   one, such as MinGW's msvcrt, skips the case). */
+static int
+expect_rename_noreplace_non_ascii_dir(void) {
+#if DSD_PLATFORM_WIN_NATIVE
+    if (setlocale(LC_CTYPE, ".UTF8") == NULL) {
+        return 0;
+    }
+#endif
+    const char* dir = "dsd_neo_noreplace_\xC3\xBC";
+    (void)dsd_mkdir(dir, 0700);
+    int rc = expect_rename_noreplace_in(dir);
+    rc |= dsd_test_rmdir(dir) == 0 ? 0 : 1;
+#if DSD_PLATFORM_WIN_NATIVE
+    (void)setlocale(LC_CTYPE, "C");
+#endif
+    return rc;
+}
+
+#if !DSD_PLATFORM_WIN_NATIVE
+/* The hard-link fallback: EEXIST on a taken name, and a link whose source cannot be unlinked still publishes, reporting
+   the source left behind. */
+static int
+expect_rename_noreplace_link_fallback(void) {
+    const char* src_dir = "dsd_neo_noreplace_link_src";
+    const char* dst_dir = "dsd_neo_noreplace_link_dst";
+    const char* from = "dsd_neo_noreplace_link_src/f.tmp";
+    const char* to = "dsd_neo_noreplace_link_dst/f.tmp";
+    (void)remove(from);
+    (void)remove(to);
+    (void)dsd_mkdir(src_dir, 0700);
+    (void)dsd_mkdir(dst_dir, 0700);
+    int ok = write_text_file(from, "data") == 0 && write_text_file(to, "taken") == 0;
+    int left = -1;
+    errno = 0;
+    ok = ok && dsd_rename_noreplace_by_link(from, to, &left) == -1 && errno == EEXIST && left == 0;
+    ok = ok && file_text_is(from, "data") && file_text_is(to, "taken");
+    (void)remove(to);
+    if (geteuid() != 0) {
+        /* A read-only source directory: the link lands, the unlink cannot. */
+        ok = ok && chmod(src_dir, 0500) == 0;
+        left = -1;
+        ok = ok && dsd_rename_noreplace_by_link(from, to, &left) == 0 && left == 1;
+        ok = ok && file_text_is(to, "data") && file_text_is(from, "data");
+        (void)chmod(src_dir, 0700);
+    }
+    left = -1;
+    (void)remove(to);
+    ok = ok && dsd_rename_noreplace_by_link(from, to, &left) == 0 && left == 0;
+    ok = ok && !file_exists(from) && file_text_is(to, "data");
+    (void)remove(from);
+    (void)remove(to);
+    ok = dsd_test_rmdir(src_dir) == 0 && ok;
+    ok = dsd_test_rmdir(dst_dir) == 0 && ok;
+    return ok ? 0 : 1;
+}
+#endif
+
 int
 main(void) {
     int rc = 0;
@@ -652,8 +827,12 @@ main(void) {
     rc |= expect_private_temp_rejects_invalid_arguments();
     rc |= expect_replace_rejects_invalid_arguments_and_missing_tmp();
     rc |= expect_null_device_is_readable();
+    rc |= expect_private_exclusive_create();
+    rc |= expect_rename_noreplace();
+    rc |= expect_rename_noreplace_non_ascii_dir();
 #if !DSD_PLATFORM_WIN_NATIVE
     rc |= expect_rejects_symlink();
+    rc |= expect_rename_noreplace_link_fallback();
 #endif
     return rc;
 }

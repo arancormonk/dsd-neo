@@ -11587,7 +11587,9 @@ add_executable(
 )
 target_include_directories(
     dsd-neo_test_platform_file_compat
-    PRIVATE ${PROJECT_SOURCE_DIR}/include
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/platform
 )
 target_link_libraries(
     dsd-neo_test_platform_file_compat

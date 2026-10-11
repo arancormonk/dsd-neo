@@ -122,7 +122,9 @@ int dsd_fchmod(int fd, int mode);
  * @brief Open a file for writing/appending with owner-only permissions when created.
  *
  * Supports standard write/append modes such as "w", "wb", "a", "ab", "w+",
- * and "a+". Read-only modes fall back to normal fopen semantics.
+ * and "a+". Read-only modes fall back to normal fopen semantics. An "x" after a
+ * write mode ("wx", "wbx") creates the file exclusively, as C11 fopen() does:
+ * the open fails with EEXIST when @p path already exists, which is left untouched.
  *
  * @param path  File path.
  * @param mode  fopen-compatible mode string.
@@ -170,6 +172,24 @@ FILE* dsd_fopen_private_temp_for_replace(const char* final_path, char* tmp_path,
  * @return 0 on success, -1 on error with errno set.
  */
 int dsd_replace_file_with_temp(const char* tmp_path, const char* final_path);
+
+/**
+ * @brief Rename @p from to @p to unless @p to already exists.
+ *
+ * Never replaces an existing @p to: the call fails with EEXIST and leaves both files as they were. The rename is
+ * atomic where the platform and filesystem offer a no-replace rename (Linux renameat2(RENAME_NOREPLACE), macOS
+ * renamex_np(RENAME_EXCL), a hard link then an unlink on other POSIX systems; Windows' rename() refuses an existing
+ * name). On a POSIX filesystem that supports neither (no no-replace rename, no hard links) it checks @p to and then
+ * renames: two processes renaming onto the same name at the same instant can still race there, one process cannot.
+ *
+ * @param from              Existing file.
+ * @param to                New name, in the same directory as @p from.
+ * @param out_source_left   Optional. Set to 1 when @p to was created but @p from could not be removed afterwards (a
+ *                          hard link whose unlink failed): the call still succeeds, and @p from names the same file.
+ *                          Set to 0 otherwise.
+ * @return 0 on success, -1 on error with errno set (EEXIST when @p to exists).
+ */
+int dsd_rename_noreplace(const char* from, const char* to, int* out_source_left);
 
 /**
  * @brief Resolve a user-supplied local file name to an existing file in the current directory.

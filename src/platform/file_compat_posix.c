@@ -19,6 +19,11 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#if defined(__linux__)
+#include <sys/syscall.h>
+#endif
+
+#include "file_compat_internal.h"
 
 int
 dsd_fileno(FILE* fp) {
@@ -85,7 +90,34 @@ dsd_private_open_flags(const char* mode) {
     }
 
     flags |= (strchr(mode, '+') != NULL) ? O_RDWR : O_WRONLY;
+    if (strchr(mode, 'x') != NULL) {
+        /* C11's exclusive create: only a "w" mode creates, and an existing file is left untouched (EEXIST). */
+        if (mode[0] != 'w') {
+            errno = EINVAL;
+            return -1;
+        }
+        flags |= O_EXCL;
+    }
     return flags;
+}
+
+/* The mode for the stream over an opened descriptor: fdopen() has no use for 'x', the descriptor already exists, and
+   not every C library accepts it there. */
+static int
+dsd_private_stream_mode(const char* mode, char* out, size_t out_size) {
+    size_t n = 0;
+    for (const char* p = mode; *p != '\0'; ++p) {
+        if (*p == 'x') {
+            continue;
+        }
+        if (n + 1U >= out_size) {
+            errno = EINVAL;
+            return -1;
+        }
+        out[n++] = *p;
+    }
+    out[n] = '\0';
+    return 0;
 }
 
 FILE*
@@ -109,6 +141,10 @@ dsd_fopen_private_ex(const char* path, const char* mode, int* out_opened) {
     if (flags < 0) {
         return NULL;
     }
+    char stream_mode[8];
+    if (dsd_private_stream_mode(mode, stream_mode, sizeof stream_mode) != 0) {
+        return NULL;
+    }
 
     int fd = open(path, flags, (mode_t)0600);
     if (fd < 0) {
@@ -119,7 +155,7 @@ dsd_fopen_private_ex(const char* path, const char* mode, int* out_opened) {
         *out_opened = 1;
     }
 
-    FILE* fp = fdopen(fd, mode);
+    FILE* fp = fdopen(fd, stream_mode);
     if (!fp) {
         int saved_errno = errno ? errno : EINVAL;
         close(fd);
@@ -263,6 +299,89 @@ dsd_replace_file_with_temp(const char* tmp_path, const char* final_path) {
     }
     dsd_fsync_parent_dir_best_effort(final_path);
     return 0;
+}
+
+#ifndef RENAME_NOREPLACE
+#define RENAME_NOREPLACE (1U << 0)
+#endif
+
+/* The filesystem cannot do what was asked (a rename flag, a hard link), as opposed to refusing this rename. */
+static int
+dsd_rename_unsupported_errno(int err) {
+    if (err == EINVAL || err == ENOSYS || err == ENOTSUP) {
+        return 1;
+    }
+#if defined(EOPNOTSUPP) && EOPNOTSUPP != ENOTSUP
+    if (err == EOPNOTSUPP) {
+        return 1;
+    }
+#endif
+    return 0;
+}
+
+int
+dsd_rename_noreplace_by_link(const char* from, const char* to, int* out_source_left) {
+    if (out_source_left) {
+        *out_source_left = 0;
+    }
+    if (link(from, to) == 0) {
+        /* @p to names the file now; a source name that will not go names it too, and the caller is told. */
+        if (unlink(from) != 0 && out_source_left) {
+            *out_source_left = 1;
+        }
+        dsd_fsync_parent_dir_best_effort(to);
+        return 0;
+    }
+    const int err = errno;
+    /* EPERM is how Linux FAT and exFAT refuse a hard link; anything else refused this link, not links. */
+    if (err != EPERM && !dsd_rename_unsupported_errno(err)) {
+        errno = err;
+        return -1;
+    }
+    /* No hard links here: look, then rename. Only another process renaming onto the same name between the two can
+       still be replaced; one process's renames are not concurrent. */
+    struct stat st;
+    if (lstat(to, &st) == 0) {
+        errno = EEXIST;
+        return -1;
+    }
+    if (errno != ENOENT) {
+        return -1;
+    }
+    if (rename(from, to) != 0) {
+        return -1;
+    }
+    dsd_fsync_parent_dir_best_effort(to);
+    return 0;
+}
+
+int
+dsd_rename_noreplace(const char* from, const char* to, int* out_source_left) {
+    if (out_source_left) {
+        *out_source_left = 0;
+    }
+    if (!from || from[0] == '\0' || !to || to[0] == '\0') {
+        errno = EINVAL;
+        return -1;
+    }
+#if defined(__linux__) && defined(SYS_renameat2)
+    if (syscall(SYS_renameat2, AT_FDCWD, from, AT_FDCWD, to, (unsigned int)RENAME_NOREPLACE) == 0) {
+        dsd_fsync_parent_dir_best_effort(to);
+        return 0;
+    }
+    if (!dsd_rename_unsupported_errno(errno)) {
+        return -1;
+    }
+#elif defined(__APPLE__) && defined(RENAME_EXCL)
+    if (renamex_np(from, to, RENAME_EXCL) == 0) {
+        dsd_fsync_parent_dir_best_effort(to);
+        return 0;
+    }
+    if (!dsd_rename_unsupported_errno(errno)) {
+        return -1;
+    }
+#endif
+    return dsd_rename_noreplace_by_link(from, to, out_source_left);
 }
 
 static int
