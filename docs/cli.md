@@ -268,11 +268,11 @@ Windows console runs:
   Files are capture segments: a frame of another protocol or format, a call end the protocol signals, a lost
   carrier, a retune and a trunk-scan switch each end the open capture, and the next frame starts another. Two-slot
   protocols write one file per slot (`_S1`, `_S2`); X2-TDMA writes both slots into one. Each frame is saved by its
-  own verdict, not the previous frame's: the slot's encrypted-audio and reverse-mute (`-q`) verdict for DMR, dPMR,
-  NXDN and YSF V/D1; the P25 rule (crypto and `-q`) for P25 Phase 1 and Phase 2, as their per-call WAVs use;
-  talkgroup policy alone for X2-TDMA, D-STAR, ProVoice, YSF V/D2 and full rate, so YSF full-rate frames are captured
-  even where `-q` mutes their audio; and for SDRTrunk JSON playback, slot 1's policy once playback's own decode and
-  crypto checks pass. YSF frames are captured once a FICH has verified the transmission on the carrier.
+  own verdict, not the previous frame's, the one that decides its audio and its per-call WAV: encryption judged by
+  the protocol that owns the call (DMR, P25 Phase 1 and Phase 2, NXDN, dPMR), the encrypted-audio mute and reverse
+  mute (`-q`), plus talkgroup policy; X2-TDMA, D-STAR, ProVoice and YSF (all three voice modes) classify no
+  encryption, so policy alone decides theirs; and for SDRTrunk JSON playback, slot 1's policy once playback's own
+  decode and crypto checks pass. YSF frames are captured once a FICH has verified the transmission on the carrier.
 - `-J <file>` Append event log output. Every line starts with a `YYYY-MM-DD HH:MM:SS` stamp, so the file
   filters, sorts and splits by time with ordinary line tools. An event's detail lines (`Text:` for a decoded
   text message, `Talker Alias:`, `GPS:`, `DSD-neo:` for a decoder notice) follow its line and repeat that
@@ -345,10 +345,10 @@ DirWatch modes keep the WAV and JSON files because the watcher needs stable file
   only applies to ports that would otherwise be unknown. Config key: `mode.dmr_lrrp_ports`
   (comma-separated); a CLI list replaces the config list.
 - `-Q <file>` Write structured DSP or M17 stream data to `./DSP/<file>`
-- `-q` Reverse mute: mute clear audio, unmute encrypted audio. It applies to live DMR and P25 decoding. With integer
-  stereo output (the AUTO default), NXDN, dPMR and YSF voice decoded through the vocoder's DMR slot path follows it
-  too; YSF V/D2 and float output (`-y`) do not. SDRTrunk JSON playback ignores it. WAV recordings follow what it
-  mutes. MBE capture (`-d`) follows it frame by frame where `-d` lists reverse mute in a protocol's verdict.
+- `-q` Reverse mute: mute clear audio, play encrypted audio, whether or not a loaded key decrypts it. It applies to
+  the protocols whose encryption the decoder classifies, DMR, P25 (encrypted P25 without a key plays only while
+  encrypted calls are followed), NXDN and dPMR, in both output formats; YSF, D-STAR, X2-TDMA and ProVoice are not
+  affected. SDRTrunk JSON playback ignores it. WAV recordings and MBE capture (`-d`) follow what it mutes.
 
 ## IQ Capture And Replay
 
@@ -1753,6 +1753,9 @@ Examples
 By default, DSD-neo redacts radio keys and keystream material in logs and terminal status. Add `--show-keys` to reveal
 those values for the current CLI run only. Successful direct-key loading itself does not emit diagnostics.
 The `-b`, `-H`, `-R`, and `-1` options accept zero as a supplied key and arm decryption; encrypted-lockout still controls audibility.
+A key load leaves the DMR encrypted-audio mute as it is: a call the key decrypts plays, one it cannot decrypt stays
+muted (turn "Mute encrypted audio" off to hear undecryptable audio). It turns the P25 unmute override off, as before,
+so undecodable P25 audio stays muted.
 Presence is retained separately from the numeric value, including all-zero RC4 and AES keys, across startup,
 live key commands and scoped scan-key restoration. Entering zero supplies a key; omitting the option starts without one.
 Out-of-range decimal keys are rejected without changing the installed key.

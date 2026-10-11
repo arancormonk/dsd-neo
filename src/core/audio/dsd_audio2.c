@@ -16,14 +16,12 @@
 #include <dsd-neo/core/audio_filters.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/constants.h>
-#include <dsd-neo/core/key_presence.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/p25p2_playout.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/file_compat.h>
-#include <dsd-neo/protocol/p25/p25_crypto.h>
 #include <dsd-neo/runtime/udp_audio_hooks.h>
 #include <limits.h>
 #include <math.h>
@@ -364,67 +362,25 @@ dsd_write_static_wav_from_mono(dsd_opts* opts, const short* mono_samp, size_t le
     dsd_audio_write_wav_short_block(opts->wav_out_f, ss, 320, "dsd_write_static_wav_from_mono");
 }
 
-DSD_AUDIO2_INTERNAL int
-dsd_p25_algid_is_encrypted(const dsd_state* state) {
-    return DSD_SYNC_IS_P25P1(state->synctype) && state->payload_algid != 0 && state->payload_algid != 0x80;
-}
-
-DSD_AUDIO2_INTERNAL int
-dsd_p25_algid_can_decrypt(const dsd_state* state) {
-    int algid = state->payload_algid;
-    if (algid == 0xAA || algid == 0x81 || algid == 0x9F) {
-        return dsd_key_scalar_present(state, 0);
-    }
-    if (algid == 0x84 || algid == 0x89) {
-        return state->aes_key_loaded[0] == 1;
-    }
-    return 0;
-}
-
-DSD_AUDIO2_INTERNAL int
-dsd_nxdn_can_decrypt(const dsd_state* state) {
-    if (state->nxdn_cipher_type == 0x1 || state->nxdn_cipher_type == 0x2) {
-        return dsd_key_scalar_present(state, 0);
-    }
-    if (state->nxdn_cipher_type == 0x3) {
-        return state->aes_key_loaded[0] == 1;
-    }
-    return 0;
-}
-
+// The FDMA mixers' encryption verdict on the frame they play: the one the vocoder judged it by, from the protocol that
+// owns the call (dsd_voice_crypto_audible(), issue #655), so the float and short outputs, the per-call WAV and the MBE
+// capture agree, the user's encrypted-audio mute and reverse mute (-q) included.
 static int
-dsd_p25p1_live_crypto_gate_applies(const dsd_state* state) {
-    return DSD_SYNC_IS_P25P1(state->synctype) && state->mbe_file_type != 3;
+dsd_fdma_crypto_muted(const dsd_opts* opts, const dsd_state* state) {
+    return dsd_voice_crypto_audible(opts, state, dsd_mono_source_slot(state)) ? 0 : 1;
 }
 
-static int
-dsd_fdma_crypto_muted(const dsd_opts* opts, const dsd_state* state, int include_nxdn) {
-    if (DSD_SYNC_IS_P25P1(state->synctype)) {
-        return dsd_p25p1_live_crypto_gate_applies(state) && !p25_crypto_audio_output_permitted(opts, state, 0);
-    }
-
-    int muted = dsd_p25_algid_is_encrypted(state) || (include_nxdn && state->nxdn_cipher_type != 0);
-    if (!muted) {
-        return 0;
-    }
-
-    const int can_p25 =
-        dsd_p25_algid_can_decrypt(state) || (state->payload_algid == 0x83 && dsd_key_scalar_present(state, 0));
-    return (can_p25 || (include_nxdn && dsd_nxdn_can_decrypt(state))) ? 0 : 1;
-}
-
+// The talkgroup gate on top: a hold decides the policy only, so it never clears the crypto mute (issue #655).
 static int
 dsd_fdma_apply_group_gate(const dsd_opts* opts, const dsd_state* state, unsigned long tg, int muted) {
     (void)dsd_audio_group_gate_mono(opts, state, tg, muted, &muted);
-    if (dsd_p25p1_live_crypto_gate_applies(state) && !p25_crypto_audio_output_permitted(opts, state, 0)) {
-        return 1;
-    }
     return muted;
 }
 
 int
 dsd_audio_mono_output_muted(const dsd_opts* opts, const dsd_state* state) {
-    return dsd_fdma_apply_group_gate(opts, state, dsd_audio_call_target(state, dsd_mono_source_slot(state)), 0);
+    return dsd_fdma_apply_group_gate(opts, state, dsd_audio_call_target(state, dsd_mono_source_slot(state)),
+                                     dsd_fdma_crypto_muted(opts, state));
 }
 
 // Whether an output receives a mix's blocks (issue #574), the stamp's output condition: every mix writes through
@@ -449,39 +405,25 @@ dsd_dmr_mix_note_audible(const dsd_opts* opts, int encL, int encR, int copy_righ
     }
 }
 
-// Baofeng AP and CSI EE unmute a slot whatever its flags say, a mixer override older than the vocoder's forced clear
-// for them (SS3 then read only the encryption bit of the service options, which forced clear leaves set). It never
-// overrides reverse mute (-q): the vocoder applies forced clear first and -q then mutes the call, so the s16 path
-// stages none of it and neither mixer may play it.
+// Baofeng AP and CSI EE unmute a slot whatever its verdict says, a mixer override older than the vocoder's forced
+// clear for them. It never overrides reverse mute (-q).
 static inline int
 dmr_forced_privacy_unmute_enabled(const dsd_opts* opts, const dsd_state* state) {
     return opts->reverse_mute != 1 && ((state->baofeng_ap == 1) || (state->csi_ee == 1));
 }
 
-// The stereo DMR mixes start each slot from the vocoder's verdict, dmr_encL/R as mbe_post_left/right_audio() leave
-// it: set when the slot is encrypted and no loaded key decrypts it (a mapped Vertex keystream counts as decrypting),
-// cleared under forced clear, and flipped by reverse mute (-q). The Baofeng AP / CSI EE override above comes first.
-//
-// The mixes differ over the encrypted-audio mute flag, dmr_mute_encL/R. It is 0 after the user's toggle of all
-// mutes, after any key load (dsd_key_apply_mute_policy(), or a scan row's or trunk-scan target's direct keys through
-// scan_option_apply_mute_dmr()) and after the vocoder's talkgroup key autoload or AES keystream; -q sets it with the
-// verdict. While it is 0 the vocoder still runs a slot it flagged encrypted through the short path, and FS3 plays the
-// slot (undecryptable garble, as it long has). SS3 does not: a slot flagged encrypted starts muted whatever the flag
-// says, so a key load cannot unmute every call those keys do not decrypt. A talkgroup hold on that slot still unmutes
-// it, and SS3 then plays the short samples the vocoder staged for it (mute flag 0, no key), as it always has.
+// Both stereo DMR mixes, the float FS3 and the short SS3, start each slot from the vocoder's verdict on the slot's last
+// frame (dsd_state::mbe_slot_muted, issue #655): muted when it is encrypted and no key decrypts it while the user's
+// encrypted-audio mute is on, when reverse mute (-q) finds it clear, or when DMR mono does not play the slot. The
+// encrypted-audio mute is the user's alone (no key load or decode writes it), so both mixes honor it alike, as the
+// per-call WAV and the MBE capture do. The vocoder stages silence for a slot it mutes, so neither replays an older
+// frame. The Baofeng AP / CSI EE override above comes first.
 static int
-dmr_slot_flagged_encrypted(const dsd_opts* opts, const dsd_state* state, int slot) {
+dmr_slot_mixer_muted(const dsd_opts* opts, const dsd_state* state, int slot) {
     if (dmr_forced_privacy_unmute_enabled(opts, state)) {
         return 0;
     }
-    return ((slot == 0) ? state->dmr_encL : state->dmr_encR) != 0 ? 1 : 0;
-}
-
-// FS3's verdict: flagged encrypted while encrypted audio is muted.
-static int
-dmr_slot_mixer_muted(const dsd_opts* opts, const dsd_state* state, int slot) {
-    const int mute = (slot == 0) ? opts->dmr_mute_encL : opts->dmr_mute_encR;
-    return (dmr_slot_flagged_encrypted(opts, state, slot) && mute != 0) ? 1 : 0;
+    return state->mbe_slot_muted[slot == 1 ? 1 : 0] != 0 ? 1 : 0;
 }
 
 DSD_AUDIO2_INTERNAL void
@@ -545,9 +487,9 @@ dsd_hpf_short_triplet_if_enabled(const dsd_opts* opts, dsd_state* state) {
 
 DSD_AUDIO2_INTERNAL void
 dsd_dmr_ss3_init_enc_flags(const dsd_opts* opts, const dsd_state* state, int* encL, int* encR) {
-    // The vocoder's flag alone, whatever the encrypted-audio mute flag says (see dmr_slot_flagged_encrypted()).
-    *encL = dmr_slot_flagged_encrypted(opts, state, 0);
-    *encR = dmr_slot_flagged_encrypted(opts, state, 1);
+    // The vocoder's verdict, as FS3 starts from it (see dmr_slot_mixer_muted()).
+    *encL = dmr_slot_mixer_muted(opts, state, 0);
+    *encR = dmr_slot_mixer_muted(opts, state, 1);
 }
 
 DSD_AUDIO2_INTERNAL void
@@ -559,12 +501,11 @@ dsd_dmr_apply_tg_hold_and_slot_preference_ss3(dsd_opts* opts, const dsd_state* s
     if (state->tg_hold != 0 && state->tg_hold != TGR) {
         *encR = 1;
     }
+    // A held talkgroup's slot keeps its verdict: the hold decides the talkgroup policy, never encryption (issue #655).
     if (state->tg_hold != 0 && state->tg_hold == TGL) {
-        *encL = 0;
         opts->slot1_on = 1;
         opts->slot_preference = 0;
     } else if (state->tg_hold != 0 && state->tg_hold == TGR) {
-        *encR = 0;
         opts->slot2_on = 1;
         opts->slot_preference = 1;
     } else {
@@ -688,7 +629,7 @@ playSynthesizedVoiceFS3(dsd_opts* opts, dsd_state* state) {
 
     //TODO: add option to bypass enc with a toggle as well
 
-    // DMR per-slot ENC gating: derive from decoder-side flags and user policy.
+    // DMR per-slot gating: the vocoder's verdict on each slot (crypto, the user's encrypted-audio mute, -q, DMR mono).
     dsd_dmr_init_slot_mute_flags(opts, state, &encL, &encR);
 
     //CHEAT: Using the slot on/off, use that to set encL or encR back on
@@ -756,26 +697,17 @@ FS3_END:
 //float stereo mix -- when using Float Stereo Output, we need to send P25p1, DMR MS/Simplex, DStar, and YSF here
 void
 playSynthesizedVoiceFS(dsd_opts* opts, dsd_state* state) {
-    const int is_p25p1 = DSD_SYNC_IS_P25P1(state->synctype);
-    int encL = is_p25p1 ? (p25_crypto_audio_output_permitted(opts, state, 0) ? 0 : 1)
-                        : (dsd_p25_algid_is_encrypted(state) ? 1 : 0);
+    int encL = dsd_fdma_crypto_muted(opts, state);
     float stereo_samp1[320]; //8k 2-channel stereo interleave mix
 
     DSD_MEMSET(stereo_samp1, 0.0f, sizeof(stereo_samp1));
-    if (!is_p25p1 && encL
-        && (dsd_p25_algid_can_decrypt(state) || (state->payload_algid == 0x83 && state->aes_key_loaded[0] == 1))) {
-        encL = 0;
-    }
 
     if (opts->slot1_on == 0) {
         encL = 1;
     }
 
     unsigned long TGL = dsd_audio_call_target(state, dsd_mono_source_slot(state));
-    (void)dsd_audio_group_gate_mono(opts, state, TGL, encL, &encL);
-    if (is_p25p1 && !p25_crypto_audio_output_permitted(opts, state, 0)) {
-        encL = 1;
-    }
+    encL = dsd_fdma_apply_group_gate(opts, state, TGL, encL);
 
     agf(opts, state, state->f_l, 0);
     if (!encL) {
@@ -792,7 +724,7 @@ playSynthesizedVoiceFS(dsd_opts* opts, dsd_state* state) {
 void
 playSynthesizedVoiceFM(dsd_opts* opts, dsd_state* state) {
     agf(opts, state, state->f_l, 0);
-    int encL = dsd_fdma_crypto_muted(opts, state, 1);
+    int encL = dsd_fdma_crypto_muted(opts, state);
 
     unsigned long TGL = dsd_audio_call_target(state, dsd_mono_source_slot(state));
 
@@ -827,9 +759,8 @@ playSynthesizedVoiceMS(dsd_opts* opts, dsd_state* state) {
     short* mono_samp = mono_samp_buf;
     DSD_MEMSET(mono_samp, 0, len * sizeof(short));
 
-    // Crypto is settled before samples reach s_l (the MBE post-processing only
-    // fills it for audible calls), but the talkgroup gate and reverse mute are
-    // not, so apply them here as the float and stereo paths do.
+    // The vocoder stages s_l only for a frame its verdict lets play; the same verdict and the talkgroup gate apply
+    // here, as in the float and stereo paths.
     const int muted = dsd_audio_mono_output_muted(opts, state);
 
     if (opts->slot1_on != 0 && !muted) {
@@ -857,7 +788,7 @@ playSynthesizedVoiceMS(dsd_opts* opts, dsd_state* state) {
 //Stereo Mix - Short (SB16LE) -- When Playing Short FDMA samples when setup for stereo output
 void
 playSynthesizedVoiceSS(dsd_opts* opts, dsd_state* state) {
-    int encL = dsd_fdma_crypto_muted(opts, state, 0);
+    int encL = dsd_fdma_crypto_muted(opts, state);
     short stereo_samp1[320]; //8k 2-channel stereo interleave mix
     DSD_MEMSET(stereo_samp1, 0, sizeof(stereo_samp1));
 
@@ -909,12 +840,7 @@ playSynthesizedVoiceSS3(dsd_opts* opts, dsd_state* state) {
     unsigned long TGL = dsd_audio_call_target(state, 0U);
     unsigned long TGR = dsd_audio_call_target(state, 1U);
 
-    // A held talkgroup unmutes its slot even when the vocoder muted it (encrypted with no key while encrypted audio is
-    // muted, or clear under -q). FS3 then plays the float frames the vocoder always stages; SS3 plays the slot's short
-    // samples, which the vocoder stages only for a slot it did not mute and otherwise leaves silent
-    // (mbe_post_stage_slot_silence()), so here a held muted slot plays silence. Staging short samples for a muted slot
-    // would run the short path's gain on audio the vocoder judged muted, for a rare combination. A slot flagged
-    // encrypted that the vocoder still staged (encrypted-audio mute flag 0, no key) plays those samples under a hold.
+    // A hold mutes the slots not carrying the held talkgroup; the held one keeps the vocoder's verdict (issue #655).
     dsd_dmr_apply_tg_hold_and_slot_preference_ss3(opts, state, TGL, TGR, &encL, &encR);
     // Apply the final policy after Hold so a temporary avoid cannot be unmuted again.
     (void)dsd_audio_group_gate_dual(opts, state, TGL, TGR, encL, encR, &encL, &encR);

@@ -36,6 +36,7 @@
 #include <dsd-neo/core/vocoder.h>
 #include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/platform/platform.h>
+#include <dsd-neo/protocol/dpmr/dpmr.h>
 #include <dsd-neo/protocol/dpmr/dpmr_data.h>
 #include <dsd-neo/runtime/colors.h>
 #include <stdbool.h>
@@ -326,9 +327,35 @@ dpmr_print_ids(const dsd_state* state) {
     }
 }
 
+/* Which halves of the frame are scrambled (issue #655), in order: a half whose CCH CRC-7 passed by its own Version (3
+ * is scrambled), and the transmission learns it; a half whose CRC failed by the transmission's last verified half, or,
+ * when none has verified yet, by the other half of this frame if that one passed; with neither, the half is unverified
+ * and plays nothing (a transmission boundary leaves confirmation standing, so a scrambled call after a clear one must
+ * not play its first undecodable halves as clear). Unverified bits never decide it: a failed half reading Version 3
+ * does not scramble a clear call, and one reading 0 does not unscramble a scrambled one. */
+void
+dpmr_resolve_half_scrambling(dsd_state* state) {
+    dPMRVoiceFS2Frame_t* f = &state->dPMRVoiceFS2Frame;
+    for (int o = 0; o < NB_OF_DPMR_VOICE_FRAME_TO_DECODE; o++) {
+        if (f->CCHDataCrcOk[o] != 0U) {
+            state->dpmr_scrambled = (f->Version[o] == 3U) ? 2U : 1U;
+        }
+        uint8_t known = state->dpmr_scrambled;
+        if (known == 0U) {
+            for (int other = 0; other < NB_OF_DPMR_VOICE_FRAME_TO_DECODE; other++) {
+                if (other != o && f->CCHDataCrcOk[other] != 0U) {
+                    known = (f->Version[other] == 3U) ? 2U : 1U;
+                    break;
+                }
+            }
+        }
+        f->Scrambled[o] = known == 2U ? DPMR_HALF_SCRAMBLED : known == 1U ? DPMR_HALF_CLEAR : DPMR_HALF_UNVERIFIED;
+    }
+}
+
 static void DSD_ATTR_USED
 dpmr_print_scrambler_state(const dsd_opts* opts, const dsd_state* state) {
-    if (state->dPMRVoiceFS2Frame.Version[0] != 3) {
+    if (state->dPMRVoiceFS2Frame.Scrambled[0] != DPMR_HALF_SCRAMBLED) {
         return;
     }
     DSD_FPRINTF(stderr, "%s", KRED);
@@ -369,11 +396,16 @@ dpmr_publish_call(dsd_opts* opts, dsd_state* state) {
     };
     (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE);
 
+    /* A frame no verified half speaks for since the transmission's boundary leaves the call's classification alone. */
+    if (state->dPMRVoiceFS2Frame.Scrambled[0] == DPMR_HALF_UNVERIFIED) {
+        dsd_event_sync_slot(opts, state, 0U);
+        return;
+    }
     dsd_call_crypto_update crypto = {
         .classification = DSD_CALL_CRYPTO_CLEAR,
         .audio_permitted = 1U,
     };
-    if (state->dPMRVoiceFS2Frame.Version[0] == 3U) {
+    if (state->dPMRVoiceFS2Frame.Scrambled[0] == DPMR_HALF_SCRAMBLED) {
         crypto.classification =
             dsd_key_scalar_present(state, 0) ? DSD_CALL_CRYPTO_DECRYPTABLE : DSD_CALL_CRYPTO_ENCRYPTED;
         crypto.audio_permitted = dsd_key_scalar_present(state, 0);
@@ -405,16 +437,18 @@ dpmr_play_voice_frames(dsd_opts* opts, dsd_state* state, char ambe_fr[NB_OF_DPMR
             end = 8;
         }
 
+        if (state->dPMRVoiceFS2Frame.Scrambled[o] == DPMR_HALF_UNVERIFIED) {
+            continue;
+        }
         int realsynctype = state->synctype;
         if ((state->dPMRVoiceFS2Frame.CommunicationMode[o] == 0) || (state->dPMRVoiceFS2Frame.CommunicationMode[o] == 1)
             || (state->dPMRVoiceFS2Frame.CommunicationMode[o] == 5)) {
-            if (state->dPMRVoiceFS2Frame.Version[o] == 3) {
+            /* Each half is scrambled or clear on its own (issue #655): a scrambled half decodes through the NXDN
+             * scrambler, and the verdict the vocoder and mixers take from nxdn_cipher_type follows it half by half. */
+            const int scrambled = state->dPMRVoiceFS2Frame.Scrambled[o] == DPMR_HALF_SCRAMBLED;
+            state->nxdn_cipher_type = scrambled ? 0x01 : 0x00;
+            if (scrambled) {
                 state->synctype = DSD_SYNC_NXDN_POS;
-                state->nxdn_cipher_type = 0x01;
-                state->dmr_encL = 1;
-            }
-            if (dsd_key_scalar_present(state, 0)) {
-                state->dmr_encL = 0;
             }
             if (opts->payload == 1) {
                 DSD_FPRINTF(stderr, "\n FN %d/4", state->dPMRVoiceFS2Frame.FrameNumbering[o] + 1);
@@ -469,6 +503,7 @@ processdPMRvoice(dsd_opts* opts, dsd_state* state) {
     dpmr_confirm_begin_frame(state);
     dpmr_decode_cch_frames(state, &ctx);
     dpmr_note_cch_evidence(state, &ctx);
+    dpmr_resolve_half_scrambling(state);
 
     dpmr_extract_superframe_part(&ctx, &part);
     dpmr_update_superframe_part(opts, state, &part);

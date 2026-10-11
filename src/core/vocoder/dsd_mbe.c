@@ -40,7 +40,6 @@
 #include <dsd-neo/crypto/dmr_keystream.h>
 #include <dsd-neo/crypto/rc4.h>
 #include <dsd-neo/protocol/nxdn/nxdn_lfsr.h>
-#include <dsd-neo/protocol/p25/p25_crypto.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/shutdown.h>
@@ -398,6 +397,16 @@ typedef struct {
     char ambe_d[49];
     int vertex_ks_applied_l;
     int vertex_ks_applied_r;
+    /* A keyed transform the slot path ran on this frame beyond what dsd_dmr_voice_slot_can_decrypt() covers: Basic or
+       Hytera Privacy (forced with -4 too), or the generic -S keystream. */
+    int slot_keyed[2];
+    /* The generic -S keystream ran on the slot: it clears the slot's service options and ALG ID on every frame, so
+       the next frame of the burst arrives with no encryption evidence left to judge. */
+    int straight_ks[2];
+    /* The slot's service options and ALG ID as the frame arrived, before a transform (-S, a Vertex keystream) clears
+       them: the encryption evidence the verdict judges (issue #655). */
+    int frame_so;
+    int frame_algid;
     mbe_capture_point capture;
 } mbe_frame_ctx_t;
 
@@ -405,12 +414,18 @@ static void
 mbe_prepare_frame_state(dsd_state* state, mbe_frame_ctx_t* frame_ctx, const dsd_call_snapshot* call) {
     frame_ctx->vertex_ks_applied_l = 0;
     frame_ctx->vertex_ks_applied_r = 0;
+    frame_ctx->slot_keyed[0] = 0;
+    frame_ctx->slot_keyed[1] = 0;
+    frame_ctx->straight_ks[0] = 0;
+    frame_ctx->straight_ks[1] = 0;
     frame_ctx->capture = MBE_CAPTURE_NONE;
 
     (void)dsd_dmr_apply_forced_algid(state);
 
     const int slot = (state->currentslot == 1) ? 1 : 0;
     const int algid = (slot == 0) ? state->payload_algid : state->payload_algidR;
+    frame_ctx->frame_so = (slot == 0) ? state->dmr_so : state->dmr_soR;
+    frame_ctx->frame_algid = algid;
 
     // Unchanged gate: no ALG ID means the BP/HBP TG autoload owns the slot, and 0x80 stays with
     // the scrambler path.
@@ -884,22 +899,26 @@ mbe_hash_tg_for_key(uint32_t tg) {
     return hash & 0xFFFF;
 }
 
-static void
+static int
 mbe_slot_apply_straight_ks_left(dsd_state* state, char ambe_d[49]) {
     if (state->straight_ks == 1 && state->straight_mod > 0) {
         state->dmr_so = 0;
         state->payload_algid = 0;
         straight_mod_xor_apply_frame49(state, state->currentslot, ambe_d);
+        return 1;
     }
+    return 0;
 }
 
-static void
+static int
 mbe_slot_apply_straight_ks_right(dsd_state* state, char ambe_d[49]) {
     if (state->straight_ks == 1 && state->straight_mod > 0) {
         state->dmr_soR = 0;
         state->payload_algidR = 0;
         straight_mod_xor_apply_frame49(state, state->currentslot, ambe_d);
+        return 1;
     }
+    return 0;
 }
 
 static int
@@ -980,7 +999,7 @@ mbe_process_nxdn(dsd_opts* opts, dsd_state* state, char ambe_fr[4][24], dsd_voco
 }
 
 static void
-mbeslot_left_autoload_keys(dsd_opts* opts, dsd_state* state) {
+mbeslot_left_autoload_keys(dsd_state* state) {
     if (state->M == 0 && state->payload_algid == 0) {
         dsd_call_snapshot call;
         uint32_t target = dsd_call_state_get(state, 0U, &call) > 0 && call.ota_target_id <= UINT32_MAX
@@ -992,7 +1011,6 @@ mbeslot_left_autoload_keys(dsd_opts* opts, dsd_state* state) {
             state->K1 = state->H = state->rkey_array[hash] & 0xFFFFFFFFFF; //doesn't exceed 40-bit limit
             state->K2 = state->K3 = state->K4 = 0ULL;
             state->hytera_key_segments = 1U;
-            opts->dmr_mute_encL = 0;
             (void)dsd_call_state_note_key_selection(state, 0, call.epoch, DSD_CALL_KEY_DESTINATION, call.kid,
                                                     (int)target, 1, 0);
         }
@@ -1000,7 +1018,7 @@ mbeslot_left_autoload_keys(dsd_opts* opts, dsd_state* state) {
 }
 
 static void
-mbeslot_right_autoload_keys(dsd_opts* opts, dsd_state* state) {
+mbeslot_right_autoload_keys(dsd_state* state) {
     if (state->M == 0 && state->payload_algidR == 0) {
         dsd_call_snapshot call;
         uint32_t target = dsd_call_state_get(state, 1U, &call) > 0 && call.ota_target_id <= UINT32_MAX
@@ -1012,7 +1030,6 @@ mbeslot_right_autoload_keys(dsd_opts* opts, dsd_state* state) {
             state->K1 = state->H = state->rkey_array[hash] & 0xFFFFFFFFFF;
             state->K2 = state->K3 = state->K4 = 0ULL;
             state->hytera_key_segments = 1U;
-            opts->dmr_mute_encR = 0;
             (void)dsd_call_state_note_key_selection(state, 1, call.epoch, DSD_CALL_KEY_DESTINATION, call.kid,
                                                     (int)target, 1, 0);
         }
@@ -1024,11 +1041,13 @@ mbeslot_left_apply_basic_privacy(dsd_state* state, mbe_frame_ctx_t* frame_ctx) {
     if ((dsd_key_basic_present(state) && state->dmr_so & 0x40 && state->payload_keyid == 0 && state->dmr_fid == 0x10)
         || (dsd_key_basic_present(state) && state->M == 1)) {
         (void)dmr_basic_privacy_apply_frame49(state->K, frame_ctx->ambe_d);
+        frame_ctx->slot_keyed[0] = 1;
     }
 
     if ((dsd_key_hytera_present(state) && state->dmr_so & 0x40 && state->payload_keyid == 0 && state->dmr_fid == 0x68)
         || (dsd_key_hytera_present(state) && state->M == 1)) {
         (void)hytera_bp_apply_frame49(state->K1, state->K2, state->K3, state->K4, &state->DMRvcL, frame_ctx->ambe_d);
+        frame_ctx->slot_keyed[0] = 1;
     }
 }
 
@@ -1037,12 +1056,14 @@ mbeslot_right_apply_basic_privacy(dsd_state* state, mbe_frame_ctx_t* frame_ctx) 
     if ((dsd_key_basic_present(state) && state->dmr_soR & 0x40 && state->payload_keyidR == 0 && state->dmr_fidR == 0x10)
         || (dsd_key_basic_present(state) && state->M == 1)) {
         (void)dmr_basic_privacy_apply_frame49(state->K, frame_ctx->ambe_d);
+        frame_ctx->slot_keyed[1] = 1;
     }
 
     if ((dsd_key_hytera_present(state) && state->dmr_soR & 0x40 && state->payload_keyidR == 0
          && state->dmr_fidR == 0x68)
         || (dsd_key_hytera_present(state) && state->M == 1)) {
         (void)hytera_bp_apply_frame49(state->K1, state->K2, state->K3, state->K4, &state->DMRvcR, frame_ctx->ambe_d);
+        frame_ctx->slot_keyed[1] = 1;
     }
 }
 
@@ -1327,7 +1348,6 @@ mbeslot_left_apply_aes_and_streams(dsd_opts* opts, dsd_state* state, mbe_frame_c
 
     mbeslot_left_apply_keystream_bits(state, frame_ctx->ambe_d);
     state->DMRvcL++;
-    opts->dmr_mute_encL = 0; //clear left-slot mute state
 }
 
 static void
@@ -1348,7 +1368,6 @@ mbeslot_right_apply_aes_and_streams(dsd_opts* opts, dsd_state* state, mbe_frame_
 
     mbeslot_right_apply_keystream_bits(state, frame_ctx->ambe_d);
     state->DMRvcR++;
-    opts->dmr_mute_encR = 0; //clear right-slot mute state
 }
 
 static void
@@ -1506,7 +1525,7 @@ mbeslot_process_left(dsd_opts* opts, dsd_state* state, char ambe_fr[4][24], dsd_
     char decoded_ambe_d[49];
     DSD_MEMCPY(decoded_ambe_d, frame_ctx->ambe_d, sizeof(decoded_ambe_d));
 
-    mbeslot_left_autoload_keys(opts, state);
+    mbeslot_left_autoload_keys(state);
     mbeslot_left_apply_basic_privacy(state, frame_ctx);
     mbeslot_left_apply_vertex_standard(state, frame_ctx);
     mbeslot_left_apply_des(state, frame_ctx);
@@ -1514,7 +1533,10 @@ mbeslot_process_left(dsd_opts* opts, dsd_state* state, char ambe_fr[4][24], dsd_
     mbeslot_left_apply_rc4(state, frame_ctx);
     mbeslot_left_apply_p25p2_rc4(state, frame_ctx);
     mbe_apply_vendor_overlays(state, frame_ctx->ambe_d);
-    mbe_slot_apply_straight_ks_left(state, frame_ctx->ambe_d);
+    if (mbe_slot_apply_straight_ks_left(state, frame_ctx->ambe_d)) {
+        frame_ctx->slot_keyed[0] = 1;
+        frame_ctx->straight_ks[0] = 1;
+    }
     (void)dsd_mbe_strip_ambe_context_if_changed(decoded_ambe_d, frame_ctx->ambe_d, &ambe_result);
     mbe_finalize_slot_left(opts, state, frame_ctx->ambe_d, &ambe_result);
     frame_ctx->capture = MBE_CAPTURE_SLOT_LEFT;
@@ -1535,7 +1557,7 @@ mbeslot_process_right(dsd_opts* opts, dsd_state* state, char ambe_fr[4][24], dsd
     char decoded_ambe_d[49];
     DSD_MEMCPY(decoded_ambe_d, frame_ctx->ambe_d, sizeof(decoded_ambe_d));
 
-    mbeslot_right_autoload_keys(opts, state);
+    mbeslot_right_autoload_keys(state);
     mbeslot_right_apply_basic_privacy(state, frame_ctx);
     mbeslot_right_apply_vertex_standard(state, frame_ctx);
     mbeslot_right_apply_des(state, frame_ctx);
@@ -1543,7 +1565,10 @@ mbeslot_process_right(dsd_opts* opts, dsd_state* state, char ambe_fr[4][24], dsd
     mbeslot_right_apply_rc4(state, frame_ctx);
     mbeslot_right_apply_p25p2_rc4(state, frame_ctx);
     mbe_apply_vendor_overlays(state, frame_ctx->ambe_d);
-    mbe_slot_apply_straight_ks_right(state, frame_ctx->ambe_d);
+    if (mbe_slot_apply_straight_ks_right(state, frame_ctx->ambe_d)) {
+        frame_ctx->slot_keyed[1] = 1;
+        frame_ctx->straight_ks[1] = 1;
+    }
     (void)dsd_mbe_strip_ambe_context_if_changed(decoded_ambe_d, frame_ctx->ambe_d, &ambe_result);
     mbe_finalize_slot_right(opts, state, frame_ctx->ambe_d, &ambe_result);
     frame_ctx->capture = MBE_CAPTURE_SLOT_RIGHT;
@@ -1560,34 +1585,6 @@ mbe_process_slot_traffic(dsd_opts* opts, dsd_state* state, char ambe_fr[4][24],
     if (state->currentslot == 1) //&& opts->dmr_stereo == 1
     {
         mbeslot_process_right(opts, state, ambe_fr, ambe_soft_fr, frame_ctx);
-    }
-}
-
-static void
-mbe_post_apply_reverse_mute(const dsd_opts* opts, int16_t* enc, int16_t* mute_flag) {
-    if (opts->reverse_mute != 1) {
-        return;
-    }
-    if (*enc == 0) {
-        *enc = 1;
-        *mute_flag = 1;
-    } else {
-        *enc = 0;
-        *mute_flag = 0;
-    }
-}
-
-static void
-mbe_post_apply_p25p2_metadata_gate(const dsd_state* state, int16_t* enc) {
-    if (DSD_SYNC_IS_P25P2(state->synctype) && (state->p2_wacn == 0 || state->p2_sysid == 0 || state->p2_cc == 0)) {
-        *enc = 1;
-    }
-}
-
-static void
-mbe_post_apply_forced_clear_gate(const dsd_state* state, int16_t* enc) {
-    if (dsd_key_dmr_forced_clear(state)) {
-        *enc = 0;
     }
 }
 
@@ -1617,19 +1614,43 @@ mbe_post_note_dmr_mix_media(const dsd_state* state, int slot, unsigned int kind)
     }
 }
 
-static void
-mbe_post_left_apply_decryptability(dsd_state* state, const mbe_frame_ctx_t* frame_ctx) {
-    if (state->payload_algid == 0) {
-        if (dsd_dmr_missing_alg_key_can_decrypt(state, 0)) {
-            state->dmr_encL = 0;
-        }
-        return;
+// The DMR classification of the current slot's frame (issue #655), from the encryption evidence it arrived with: the
+// privacy bit of the service options or an ALG ID other than clear. A mapped Vertex keystream clears the bit, so both
+// are read from before the frame's transforms. The -S keystream clears both on every frame, leaving the burst's later
+// frames nothing to judge: a frame it ran on counts as an encrypted call it decrypted, so -q treats the whole burst
+// alike. Decryptable when a loaded key decrypts the ALG ID (dsd_dmr_voice_slot_can_decrypt(); with no ALG ID, the
+// loaded scalar, Basic or Hytera material the LC and PI classification also count, dsd_dmr_missing_alg_key_can_decrypt()),
+// when the frame got a keyed transform (Basic or Hytera Privacy, forced with -4 too, a mapped Vertex keystream), or
+// under forced clear (Baofeng AP, CSI EE, Kenwood scrambler, static keys forced onto every frame).
+static dsd_voice_crypto_class
+mbe_dmr_slot_crypto_class(const dsd_state* state, int slot, const mbe_frame_ctx_t* frame_ctx) {
+    if (frame_ctx->straight_ks[slot]) {
+        return DSD_VOICE_CRYPTO_DECRYPTABLE;
     }
+    const int algid = frame_ctx->frame_algid;
+    if ((frame_ctx->frame_so & 0x40) == 0 && (algid == 0 || algid == 0x80)) {
+        return DSD_VOICE_CRYPTO_CLEAR;
+    }
+    const int vertex = (slot == 0) ? frame_ctx->vertex_ks_applied_l : frame_ctx->vertex_ks_applied_r;
+    int decryptable = frame_ctx->slot_keyed[slot] || vertex == 1 || dsd_key_dmr_forced_clear(state);
+    if (!decryptable) {
+        decryptable = (algid == 0)
+                          ? dsd_dmr_missing_alg_key_can_decrypt(state, slot)
+                          : dsd_dmr_voice_slot_can_decrypt(state, slot, algid, (slot == 0) ? state->R : state->RR);
+    }
+    return decryptable ? DSD_VOICE_CRYPTO_DECRYPTABLE : DSD_VOICE_CRYPTO_UNDECRYPTABLE;
+}
 
-    if (dsd_dmr_voice_slot_can_decrypt(state, 0, state->payload_algid, state->R)
-        || (state->payload_algid == 0x07 && frame_ctx->vertex_ks_applied_l == 1)) {
-        state->dmr_encL = 0;
+// The verdict on the current slot's frame, judged by the protocol that owns the call (issue #655): DMR here, from the
+// keystream this frame got; every other protocol by dsd_voice_crypto_audible(), which the FDMA mixers ask too. The
+// DMR service options and ALG ID decide DMR alone: a P25 call's own classification, NXDN's cipher, and YSF or
+// scrambled dPMR decoding through a borrowed decoder are judged by their own protocol.
+static int
+mbe_frame_slot_muted(const dsd_opts* opts, const dsd_state* state, int slot, const mbe_frame_ctx_t* frame_ctx) {
+    if (DSD_SYNC_IS_DMR(dsd_voice_frame_owner(state))) {
+        return !dsd_voice_crypto_class_audible(opts, slot, mbe_dmr_slot_crypto_class(state, slot, frame_ctx));
     }
+    return !dsd_voice_crypto_audible(opts, state, slot);
 }
 
 static int
@@ -1638,7 +1659,7 @@ mbe_post_stereo_active(const dsd_opts* opts, const dsd_state* state) {
 }
 
 /* What the post stage does with a slot for this frame: nothing, silence (a DMR mono slot not playing), or the frame
-   under the verdict its classification set. */
+   under the verdict mbe_frame_slot_muted() set. */
 typedef enum {
     MBE_POST_SLOT_SKIP = 0,
     MBE_POST_SLOT_MONO_OFF,
@@ -1646,23 +1667,15 @@ typedef enum {
 } mbe_post_slot_class;
 
 static mbe_post_slot_class
-mbe_post_left_classify(dsd_opts* opts, dsd_state* state, const mbe_frame_ctx_t* frame_ctx) {
+mbe_post_slot_classify(const dsd_opts* opts, dsd_state* state, int slot) {
     const int dmr_mono_active = mbe_post_dmr_mono_active(opts, state);
-    if (dmr_mono_active && !mbe_dmr_output_slot_enabled(opts, state, 0)) {
-        state->dmr_encL = 1;
+    if (dmr_mono_active && !mbe_dmr_output_slot_enabled(opts, state, slot)) {
+        state->mbe_slot_muted[slot] = 1U;
         return MBE_POST_SLOT_MONO_OFF;
     }
-    if ((!dmr_mono_active && !mbe_post_stereo_active(opts, state)) || state->currentslot != 0) {
+    if ((!dmr_mono_active && !mbe_post_stereo_active(opts, state)) || state->currentslot != slot) {
         return MBE_POST_SLOT_SKIP;
     }
-
-    int enc_bit = (state->dmr_so >> 6) & 0x1;
-    state->dmr_encL = (enc_bit == 1 || (state->payload_algid != 0 && state->payload_algid != 0x80)) ? 1 : 0;
-
-    mbe_post_left_apply_decryptability(state, frame_ctx);
-    mbe_post_apply_p25p2_metadata_gate(state, &state->dmr_encL);
-    mbe_post_apply_forced_clear_gate(state, &state->dmr_encL);
-    mbe_post_apply_reverse_mute(opts, &state->dmr_encL, &opts->dmr_mute_encL);
     return MBE_POST_SLOT_ACTIVE;
 }
 
@@ -1677,7 +1690,7 @@ mbe_post_left_stage(const dsd_opts* opts, dsd_state* state, mbe_post_slot_class 
     }
 
     state->debug_audio_errors += state->errs2;
-    if (state->dmr_encL == 0 || opts->dmr_mute_encL == 0) {
+    if (state->mbe_slot_muted[0] == 0) {
         if (opts->floating_point == 0) {
             processAudio(opts, state);
             state->mbe_short_silenced[0] = 0U;
@@ -1695,42 +1708,6 @@ mbe_post_left_stage(const dsd_opts* opts, dsd_state* state, mbe_post_slot_class 
 }
 
 static void
-mbe_post_right_apply_decryptability(dsd_state* state, const mbe_frame_ctx_t* frame_ctx) {
-    if (state->payload_algidR == 0) {
-        if (dsd_dmr_missing_alg_key_can_decrypt(state, 1)) {
-            state->dmr_encR = 0;
-        }
-        return;
-    }
-
-    if (dsd_dmr_voice_slot_can_decrypt(state, 1, state->payload_algidR, state->RR)
-        || (state->payload_algidR == 0x07 && frame_ctx->vertex_ks_applied_r == 1)) {
-        state->dmr_encR = 0;
-    }
-}
-
-static mbe_post_slot_class
-mbe_post_right_classify(dsd_opts* opts, dsd_state* state, const mbe_frame_ctx_t* frame_ctx) {
-    const int dmr_mono_active = mbe_post_dmr_mono_active(opts, state);
-    if (dmr_mono_active && !mbe_dmr_output_slot_enabled(opts, state, 1)) {
-        state->dmr_encR = 1;
-        return MBE_POST_SLOT_MONO_OFF;
-    }
-    if ((!dmr_mono_active && !mbe_post_stereo_active(opts, state)) || state->currentslot != 1) {
-        return MBE_POST_SLOT_SKIP;
-    }
-
-    int enc_bit = (state->dmr_soR >> 6) & 0x1;
-    state->dmr_encR = (enc_bit == 1 || (state->payload_algidR != 0 && state->payload_algidR != 0x80)) ? 1 : 0;
-
-    mbe_post_right_apply_decryptability(state, frame_ctx);
-    mbe_post_apply_p25p2_metadata_gate(state, &state->dmr_encR);
-    mbe_post_apply_forced_clear_gate(state, &state->dmr_encR);
-    mbe_post_apply_reverse_mute(opts, &state->dmr_encR, &opts->dmr_mute_encR);
-    return MBE_POST_SLOT_ACTIVE;
-}
-
-static void
 mbe_post_right_stage(const dsd_opts* opts, dsd_state* state, mbe_post_slot_class slot_class) {
     if (slot_class == MBE_POST_SLOT_MONO_OFF) {
         mbe_post_stage_slot_silence(state, 1);
@@ -1741,7 +1718,7 @@ mbe_post_right_stage(const dsd_opts* opts, dsd_state* state, mbe_post_slot_class
     }
 
     state->debug_audio_errorsR += state->errs2R;
-    if (state->dmr_encR == 0 || opts->dmr_mute_encR == 0) {
+    if (state->mbe_slot_muted[1] == 0) {
         if (opts->floating_point == 0) {
             processAudioR(opts, state);
             state->mbe_short_silenced[1] = 0U;
@@ -1776,22 +1753,18 @@ mbe_post_other_process_audio(const dsd_opts* opts, dsd_state* state, int is_p25p
     state->mbe_short_silenced[slot] = 0U;
 }
 
+// The mono post path plays the frame when the verdict on its slot lets it (issue #655): YSF full rate, decoded through
+// the P25 Phase 1 decoder, is judged as YSF, not by a P25 classification its session never made.
 static int
-mbe_post_other_is_allowed(const dsd_opts* opts, const dsd_state* state, int is_p25p2) {
+mbe_post_other_is_allowed(const dsd_state* state, int is_p25p2) {
     if (!is_p25p2) {
-        if (DSD_SYNC_IS_X2TDMA(state->synctype)) {
-            return 1;
-        }
-        if (DSD_SYNC_IS_P25P1(state->synctype)) {
-            return p25_crypto_audio_permitted(opts, state, 0);
-        }
-        return (opts->unmute_encrypted_p25 == 1 || state->dmr_encL == 0);
+        return state->mbe_slot_muted[state->currentslot == 1 ? 1 : 0] == 0;
     }
 
     if (state->currentslot != 0 && state->currentslot != 1) {
         return 0;
     }
-    return state->p25_p2_audio_allowed[state->currentslot] != 0;
+    return state->mbe_slot_muted[state->currentslot] == 0;
 }
 
 static void
@@ -1810,7 +1783,7 @@ mbe_post_other_audio(const dsd_opts* opts, dsd_state* state) {
     }
 
     int is_p25p2 = DSD_SYNC_IS_P25P2(state->synctype);
-    if (mbe_post_other_is_allowed(opts, state, is_p25p2)) {
+    if (mbe_post_other_is_allowed(state, is_p25p2)) {
         mbe_post_other_process_audio(opts, state, is_p25p2);
     }
 
@@ -1878,8 +1851,8 @@ mbe_post_allow_stereo_slot_wav(const dsd_opts* opts, const dsd_state* state, int
     return (dsd_audio_record_gate_mono(opts, state, &allow_wav) == 0 && allow_wav) ? 1 : 0;
 }
 
-// X2-TDMA and D-STAR never classify crypto into the DMR slot flags the full
-// record gate reads, so their WAV answers to the talkgroup policy alone.
+// X2-TDMA and D-STAR classify no encryption, so their WAV (mbe_post_wav_outputs()) answers to the talkgroup policy
+// alone.
 // The mono post path's per-call WAV: slot 2's for DMR mono playing slot 2, and for a P25 Phase 2 slot-2 frame whatever
 // opts->dmr_stereo says (issue #651).
 static void
@@ -1919,29 +1892,24 @@ mbe_post_wav_outputs(dsd_opts* opts, dsd_state* state) {
     }
 }
 
-// A slot frame records as its per-call WAV does (dsd_audio_record_slot_allows_audio()): P25 Phase 2 by the P25 rule,
-// reverse mute included, in every preset; DMR and dPMR by the slot verdict the post stage just classified.
+// A frame records as its per-call WAV does (dsd_audio_record_slot_allows_audio()): by the verdict
+// mbe_frame_slot_muted() just set on its slot, the protocol's own crypto rule, the user's encrypted-audio mute and
+// reverse mute included (issue #655).
 static int
-mbe_capture_slot_verdict_allows(const dsd_opts* opts, const dsd_state* state, int slot) {
-    if (DSD_SYNC_IS_P25P2(state->synctype)) {
-        return state->p25_p2_audio_allowed[slot] != 0 && p25_crypto_audio_output_permitted(opts, state, slot);
-    }
-    if (slot == 1) {
-        return state->dmr_encR == 0 || opts->dmr_mute_encR == 0;
-    }
-    return state->dmr_encL == 0 || opts->dmr_mute_encL == 0;
+mbe_capture_slot_verdict_allows(const dsd_state* state, int slot) {
+    return state->mbe_slot_muted[slot == 1 ? 1 : 0] == 0;
 }
 
-// The FDMA save points that read no slot verdict: live P25 Phase 1 keeps its speaker rule (reverse mute (-q) keeps a
-// clear call out of the capture as it keeps it off the speakers), ProVoice and D-STAR the record policy alone. D-STAR
-// publishes on slot 0 whatever slot a TDMA decode left current.
+// The FDMA save points: the IMBE frames of the P25 Phase 1 decoder (live P25, and YSF full rate, judged as YSF) by the
+// frame's verdict, ProVoice and D-STAR by the record policy alone. D-STAR publishes on slot 0 whatever slot a TDMA
+// decode left current.
 static void
 mbe_capture_fdma_frame(dsd_opts* opts, dsd_state* state, const mbe_frame_ctx_t* frame_ctx) {
     if (!dsd_mbe_out_enabled(opts, 0) || !mbe_record_policy_allows(opts, state, 0)) {
         return;
     }
     if (frame_ctx->capture == MBE_CAPTURE_P25P1) {
-        if (!dsd_audio_p25p1_live_voice(state) || p25_crypto_audio_output_permitted(opts, state, 0)) {
+        if (mbe_capture_slot_verdict_allows(state, state->currentslot)) {
             dsd_mbe_out_write(opts, state, 0, DSD_MBE_OUT_FORMAT_IMBE, frame_ctx->imbe_d);
         }
     } else if (frame_ctx->capture == MBE_CAPTURE_PROVOICE) {
@@ -1960,14 +1928,14 @@ mbe_capture_verdict_frame(dsd_opts* opts, dsd_state* state, const mbe_frame_ctx_
         return;
     }
     if (frame_ctx->capture == MBE_CAPTURE_NXDN) {
-        if ((state->dmr_encL == 0 || opts->dmr_mute_encL == 0) && mbe_record_policy_allows(opts, state, 0)) {
+        if (mbe_capture_slot_verdict_allows(state, state->currentslot) && mbe_record_policy_allows(opts, state, 0)) {
             dsd_mbe_out_write(opts, state, 0, DSD_MBE_OUT_FORMAT_AMBE, frame_ctx->ambe_d);
         }
         return;
     }
     // YSF is FDMA: it publishes on slot 0 even when a TDMA decode left currentslot at 1.
     const int policy_slot = (slot == 1 && !DSD_SYNC_IS_YSF(state->synctype)) ? 1 : 0;
-    if (mbe_dmr_output_slot_enabled(opts, state, slot) && mbe_capture_slot_verdict_allows(opts, state, slot)
+    if (mbe_dmr_output_slot_enabled(opts, state, slot) && mbe_capture_slot_verdict_allows(state, slot)
         && mbe_record_policy_allows(opts, state, policy_slot)) {
         dsd_mbe_out_write(opts, state, slot, DSD_MBE_OUT_FORMAT_AMBE, frame_ctx->ambe_d);
     }
@@ -1997,16 +1965,20 @@ mbe_capture_frame(dsd_opts* opts, dsd_state* state, const mbe_frame_ctx_t* frame
 
 static void
 mbe_post_audio_and_recording(dsd_opts* opts, dsd_state* state, const mbe_frame_ctx_t* frame_ctx) {
+    const int slot = state->currentslot == 1 ? 1 : 0;
     // Until a branch below stages this frame's short samples, the current slot's short frame is not this frame's.
-    state->mbe_short_silenced[state->currentslot == 1 ? 1 : 0] = 1U;
+    state->mbe_short_silenced[slot] = 1U;
+    // The frame's one verdict (issue #655), after its keystream and before anything reads it: capture, short staging,
+    // the per-call WAV, and the mixers that play it.
+    state->mbe_slot_muted[slot] = (uint8_t)mbe_frame_slot_muted(opts, state, slot, frame_ctx);
     if (mbe_post_uses_mono_left_staging(state)) {
         mbe_capture_frame(opts, state, frame_ctx);
         mbe_post_mono_left_audio(opts, state);
     } else {
-        // Both slot verdicts are classified before the capture saves the frame, then the slots stage: staging reads no
-        // verdict of the other slot and classification reads nothing staging writes, so the order changes no output.
-        const mbe_post_slot_class left = mbe_post_left_classify(opts, state, frame_ctx);
-        const mbe_post_slot_class right = mbe_post_right_classify(opts, state, frame_ctx);
+        // Both slots are classified before the capture saves the frame (a DMR mono slot not playing is muted), then
+        // the slots stage: staging reads no verdict of the other slot and classification reads nothing staging writes.
+        const mbe_post_slot_class left = mbe_post_slot_classify(opts, state, 0);
+        const mbe_post_slot_class right = mbe_post_slot_classify(opts, state, 1);
         mbe_capture_frame(opts, state, frame_ctx);
         mbe_post_left_stage(opts, state, left);
         mbe_post_right_stage(opts, state, right);

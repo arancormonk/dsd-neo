@@ -2219,6 +2219,8 @@ no_carrier_reset_dmr_data_blocks(dsd_state* state) {
     state->data_ks_start[1] = 0;
     state->dmr_encL = 0;
     state->dmr_encR = 0;
+    state->mbe_slot_muted[0] = 0;
+    state->mbe_slot_muted[1] = 0;
     state->dmrburstL = 17;
     state->dmrburstR = 17;
     for (short i = 0; i < 4; i++) {
@@ -2370,7 +2372,8 @@ no_carrier_clear_stale_follow_state_if_needed(dsd_opts* opts, dsd_state* state, 
 static void
 no_carrier_reset_call_strings_and_dpmr(dsd_opts* opts, dsd_state* state) {
     opts->dPMR_next_part_of_superframe = 0;
-    DSD_MEMSET(state->dPMRVoiceFS2Frame.Version, 0, 8);
+    DSD_MEMSET(state->dPMRVoiceFS2Frame.Version, 0, sizeof(state->dPMRVoiceFS2Frame.Version));
+    DSD_MEMSET(state->dPMRVoiceFS2Frame.Scrambled, 0, sizeof(state->dPMRVoiceFS2Frame.Scrambled));
     /* Evidence is per-transmission: the next carrier proves itself again (issue #407). */
     dpmr_confirm_reset(state);
     state->dpmr_cch_evidence = 0;

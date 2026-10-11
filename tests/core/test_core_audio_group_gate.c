@@ -226,9 +226,9 @@ test_call_skip_mutes_slot(dsd_opts* opts, dsd_state* st) {
     return rc;
 }
 
-// Reverse mute (-q) keeps a clear P25 call out of the per-call WAV as it keeps it
-// out of the speakers, on Phase 1 and on each Phase 2 slot; a decryptable call
-// still records.
+// Reverse mute (-q) keeps a clear P25 call off the speakers and out of the per-call WAV, on Phase 1 and on each Phase 2
+// slot; a decryptable call still plays and records. The verdict is P25's own rule, by the protocol that owns the frame
+// (dsd_voice_crypto_audible(), issue #655); the record gate reads what the vocoder stored from it.
 static int
 test_p25_record_gate_honors_reverse_mute(dsd_opts* opts, dsd_state* st) {
     int rc = 0;
@@ -244,9 +244,15 @@ test_p25_record_gate_honors_reverse_mute(dsd_opts* opts, dsd_state* st) {
                     st->currentslot = slot;
                     st->p25_crypto_state[slot] = crypto ? DSD_P25_CRYPTO_DECRYPTABLE : DSD_P25_CRYPTO_CLEAR;
                     st->p25_p2_audio_allowed[slot] = 1;
+                    st->p2_wacn = 0xBEE00;
+                    st->p2_sysid = 0x123;
+                    st->p2_cc = 0x456;
                     rc |=
                         expect_eq("p25 record call",
                                   seed_call(st, (uint8_t)slot, synctype, DSD_CALL_KIND_GROUP_VOICE, 123, 123, 456), 1);
+                    const int audible = dsd_voice_crypto_audible(opts, st, slot);
+                    rc |= expect_eq("p25 verdict", audible, !(reverse && !crypto));
+                    st->mbe_slot_muted[slot] = (uint8_t)!audible;
                     int record = -1;
                     rc |= expect_eq("p25 record gate", dsd_audio_record_gate_mono(opts, st, &record), 0);
                     rc |= expect_eq(reverse && !crypto ? "reverse mute keeps clear p25 out of the wav"
@@ -259,10 +265,10 @@ test_p25_record_gate_honors_reverse_mute(dsd_opts* opts, dsd_state* st) {
     return rc;
 }
 
-// The P25 recording rule is for P25 calls: YSF full rate borrows the Phase 1
-// decoder (synctype P25P1) for a YSF call that has no P25 crypto state, and its
-// WAV still records; the P25-only unmute override does not reopen a DMR slot
-// that reverse mute (or encryption) muted.
+// The P25 rule is for P25 calls (issue #655): YSF full rate borrows the Phase 1 decoder (synctype P25P1) for a YSF
+// call that has no P25 crypto state, and is judged as YSF, which classifies no encryption, so -q does not mute it and
+// its WAV records; scrambled dPMR borrows the NXDN decoder and is judged by its own scrambling; the P25-only unmute
+// override does not reopen a DMR slot the vocoder muted.
 static int
 test_record_gate_protocol_boundaries(dsd_opts* opts, dsd_state* st) {
     int rc = 0;
@@ -271,19 +277,56 @@ test_record_gate_protocol_boundaries(dsd_opts* opts, dsd_state* st) {
     rc |= expect_eq("ysf reuse call", seed_call(st, 0U, DSD_SYNC_YSF_POS, DSD_CALL_KIND_GROUP_VOICE, 0, 0, 0), 1);
     st->synctype = DSD_SYNC_P25P1_POS;
     opts->reverse_mute = 1;
+    rc |= expect_eq("ysf reuse owner", dsd_voice_frame_owner(st), DSD_SYNC_YSF_POS);
+    rc |= expect_eq("ysf full rate through the p25 decoder plays", dsd_voice_crypto_audible(opts, st, 0), 1);
+    // In a dispatch the frame's protocol decides, whatever the call says.
+    st->frame_dispatch_active = 1;
+    st->frame_dispatch_synctype = DSD_SYNC_YSF_NEG;
+    rc |= expect_eq("ysf dispatch owner", dsd_voice_frame_owner(st), DSD_SYNC_YSF_NEG);
+    rc |= expect_eq("ysf dispatched full rate plays", dsd_voice_crypto_audible(opts, st, 0), 1);
+    st->frame_dispatch_active = 0;
     int record = -1;
     rc |= expect_eq("ysf reuse record gate", dsd_audio_record_gate_mono(opts, st, &record), 0);
     rc |= expect_eq("ysf full rate through the p25 decoder still records", record, 1);
 
     DSD_MEMSET(opts, 0, sizeof(*opts));
     reset_state(st);
+    opts->dmr_mute_encL = 1;
+    st->frame_dispatch_active = 1;
+    st->frame_dispatch_synctype = DSD_SYNC_DPMR_FS2_POS;
+    st->synctype = DSD_SYNC_NXDN_POS;
+    st->nxdn_cipher_type = 0x01;
+    rc |= expect_eq("scrambled dpmr without key muted", dsd_voice_crypto_audible(opts, st, 0), 0);
+    st->R = 1234;
+    rc |= expect_eq("scrambled dpmr with key plays", dsd_voice_crypto_audible(opts, st, 0), 1);
+    st->R = 0;
+    opts->dmr_mute_encL = 0;
+    rc |= expect_eq("scrambled dpmr with encrypted audio unmuted plays", dsd_voice_crypto_audible(opts, st, 0), 1);
+    opts->dmr_mute_encL = 1;
+    st->nxdn_cipher_type = 0;
+    st->synctype = DSD_SYNC_DPMR_FS2_POS;
+    rc |= expect_eq("clear dpmr half plays", dsd_voice_crypto_audible(opts, st, 0), 1);
+    opts->reverse_mute = 1;
+    rc |= expect_eq("clear dpmr half muted by -q", dsd_voice_crypto_audible(opts, st, 0), 0);
+    st->frame_dispatch_active = 0;
+
+    // SDRTrunk JSON playback admits its own frames: no live P25 classification applies.
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    reset_state(st);
+    st->synctype = DSD_SYNC_P25P2_POS;
+    st->mbe_file_type = 3;
+    rc |= expect_eq("json playback plays", dsd_voice_crypto_audible(opts, st, 1), 1);
+
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    reset_state(st);
     rc |= expect_eq("dmr muted call",
                     seed_call(st, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 123, 123, 456), 1);
     st->synctype = DSD_SYNC_DMR_BS_VOICE_POS;
-    st->dmr_encL = 1;
+    st->mbe_slot_muted[0] = 1;
     opts->dmr_mute_encL = 1;
     opts->unmute_encrypted_p25 = 1;
     record = -1;
+    rc |= expect_eq("dmr muted verdict", dsd_voice_crypto_audible(opts, st, 0), 0);
     rc |= expect_eq("dmr muted record gate", dsd_audio_record_gate_mono(opts, st, &record), 0);
     rc |= expect_eq("p25 unmute override leaves a muted dmr slot unrecorded", record, 0);
     return rc;
@@ -428,7 +471,8 @@ main(void) {
         rc |= expect_eq("case3-outR", outR, 0);
     }
 
-    // Case 3b: Encrypted baseline stays muted unless matching TG hold force-unmutes.
+    // Case 3b: Encrypted baseline stays muted, held or not: a hold decides the talkgroup policy, never encryption
+    // (issue #655), as P25 and the record gate already had it.
     DSD_MEMSET(opts, 0, sizeof(*opts));
     reset_state(st);
     rc |= expect_eq("case3b-seed-a", seed_policy_group(st, 410U, "A", "BASELINE"), 0);
@@ -438,7 +482,11 @@ main(void) {
         rc |= expect_eq("case3b-out-a", outL, 1);
         st->tg_hold = 410U;
         rc |= expect_eq("case3b-ret-b", dsd_audio_group_gate_mono(opts, st, 410UL, 1, &outL), 0);
-        rc |= expect_eq("case3b-out-b", outL, 0);
+        rc |= expect_eq("case3b-out-b", outL, 1);
+        int outR = -1;
+        rc |= expect_eq("case3b-ret-c", dsd_audio_group_gate_dual(opts, st, 410UL, 410UL, 1, 0, &outL, &outR), 0);
+        rc |= expect_eq("case3b-out-c-left", outL, 1);
+        rc |= expect_eq("case3b-out-c-right", outR, 0);
     }
 
     // Defensive API contract checks.
@@ -455,7 +503,7 @@ main(void) {
     st->synctype = DSD_SYNC_DMR_BS_VOICE_POS;
     rc |= expect_eq("case4-call",
                     seed_call(st, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 500U, 500U, 501U), 1);
-    st->dmr_encL = 0;
+    st->mbe_slot_muted[0] = 0;
     rc |= expect_eq("case4-seed-a", seed_policy_group(st, 500U, "B", "REC-BLOCK"), 0);
     {
         int allow = -1;
@@ -469,7 +517,7 @@ main(void) {
     st->synctype = DSD_SYNC_DMR_BS_VOICE_POS;
     rc |= expect_eq("case4b-call",
                     seed_call(st, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 520U, 520U, 521U), 1);
-    st->dmr_encL = 0;
+    st->mbe_slot_muted[0] = 0;
     rc |= expect_eq("case4b-append", append_policy_group(st, 520U, "A", "REC-OFF", 1, 0, 1), 0);
     {
         int out = -1;
@@ -486,14 +534,17 @@ main(void) {
     st->synctype = DSD_SYNC_DMR_BS_VOICE_POS;
     rc |= expect_eq("case4c-call",
                     seed_call(st, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 530U, 530U, 531U), 1);
-    st->dmr_encL = 0;
+    st->mbe_slot_muted[0] = 0;
     rc |= expect_eq("case4c-append", append_policy_group(st, 530U, "A", "MEDIA-OFF", 0, 0, 0), 0);
     {
         int out = -1;
         int allow = -1;
         st->tg_hold = 530U;
-        rc |= expect_eq("case4c-aud-ret-a", dsd_audio_group_gate_mono(opts, st, 530UL, 1, &out), 0);
+        rc |= expect_eq("case4c-aud-ret-a", dsd_audio_group_gate_mono(opts, st, 530UL, 0, &out), 0);
         rc |= expect_eq("case4c-aud-out-a", out, 0);
+        // The hold passes the policy but keeps a mute the caller brought in (crypto, a slot switch).
+        rc |= expect_eq("case4c-aud-ret-a-muted", dsd_audio_group_gate_mono(opts, st, 530UL, 1, &out), 0);
+        rc |= expect_eq("case4c-aud-out-a-muted", out, 1);
         rc |= expect_eq("case4c-rec-ret-a", dsd_audio_record_gate_mono(opts, st, &allow), 0);
         rc |= expect_eq("case4c-rec-allow-a", allow, 1);
         st->tg_hold = 531U;
@@ -513,8 +564,8 @@ main(void) {
                     seed_call(st, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 600U, 600U, 602U), 1);
     rc |= expect_eq("case5-right-call",
                     seed_call(st, 1U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 601U, 601U, 603U), 1);
-    st->dmr_encL = 1;
-    st->dmr_encR = 0;
+    st->mbe_slot_muted[0] = 1;
+    st->mbe_slot_muted[1] = 0;
     rc |= expect_eq("case5-seed-a", seed_policy_group(st, 601U, "A", "RIGHT-ONLY"), 0);
     {
         int allow = -1;
@@ -522,7 +573,8 @@ main(void) {
         rc |= expect_eq("case5-rec-allow", allow, 1);
     }
 
-    // Case 5b: Slot-specific DMR encrypted-mute flags gate recording baseline.
+    // Case 5b: The slot's verdict gates the recording baseline; the encrypted-audio mute flags reach it only through
+    // the verdict the vocoder computed (issue #655).
     DSD_MEMSET(opts, 0, sizeof(*opts));
     reset_state(st);
     st->synctype = DSD_SYNC_DMR_BS_VOICE_POS;
@@ -530,14 +582,14 @@ main(void) {
     st->currentslot = 1;
     rc |= expect_eq("case5b-call",
                     seed_call(st, 1U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 611U, 611U, 612U), 1);
-    st->dmr_encR = 1;
+    st->mbe_slot_muted[1] = 1;
     rc |= expect_eq("case5b-seed-a", seed_policy_group(st, 611U, "A", "ENC-RIGHT"), 0);
     {
         int allow = -1;
-        opts->dmr_mute_encR = 1;
+        opts->dmr_mute_encR = 0;
         rc |= expect_eq("case5b-rec-ret-a", dsd_audio_record_gate_mono(opts, st, &allow), 0);
         rc |= expect_eq("case5b-rec-allow-a", allow, 0);
-        opts->dmr_mute_encR = 0;
+        st->mbe_slot_muted[1] = 0;
         rc |= expect_eq("case5b-rec-ret-b", dsd_audio_record_gate_mono(opts, st, &allow), 0);
         rc |= expect_eq("case5b-rec-allow-b", allow, 1);
     }

@@ -1577,8 +1577,8 @@ test_ui_aes_key_command_clears_manual_hytera_fields(void) {
     rc |= expect_int_eq("UI AES disables keyloader", state->keyloader, 0);
     rc |= expect_int_eq("UI AES clears slot 0 payload key ID", state->payload_keyid, 0);
     rc |= expect_int_eq("UI AES clears slot 1 payload key ID", state->payload_keyidR, 0);
-    rc |= expect_int_eq("UI AES unmutes encrypted left", opts->dmr_mute_encL, 0);
-    rc |= expect_int_eq("UI AES unmutes encrypted right", opts->dmr_mute_encR, 0);
+    rc |= expect_int_eq("UI AES leaves encrypted left muted", opts->dmr_mute_encL, 1);
+    rc |= expect_int_eq("UI AES leaves encrypted right muted", opts->dmr_mute_encR, 1);
 
     free_test_runtime(&runtime);
     return rc;
@@ -1632,8 +1632,8 @@ test_ui_aes_key_command_handles_zero_and_short_payloads(void) {
     rc |= expect_u64_eq("zero AES clears Hytera K1", state->K1, 0ULL);
     rc |= expect_int_eq("zero AES clears Hytera segment count", (int)state->hytera_key_segments, 0);
     rc |= expect_int_eq("zero AES clears keyloader", state->keyloader, 0);
-    rc |= expect_int_eq("zero AES unmutes encrypted left", opts->dmr_mute_encL, 0);
-    rc |= expect_int_eq("zero AES unmutes encrypted right", opts->dmr_mute_encR, 0);
+    rc |= expect_int_eq("zero AES leaves encrypted left muted", opts->dmr_mute_encL, 1);
+    rc |= expect_int_eq("zero AES leaves encrypted right muted", opts->dmr_mute_encR, 1);
 
     free_test_runtime(&runtime);
     return rc;
@@ -1697,8 +1697,8 @@ test_ui_hytera_key_command_records_segment_variants(void) {
     rc |= expect_int_eq("zero Hytera command is drained", applied, 1);
     rc |= expect_int_eq("zero Hytera remains a supplied legacy segment", (int)state->hytera_key_segments, 1);
     rc |= expect_int_eq("zero Hytera clears keyloader", state->keyloader, 0);
-    rc |= expect_int_eq("zero Hytera unmutes encrypted left", opts->dmr_mute_encL, 0);
-    rc |= expect_int_eq("zero Hytera unmutes encrypted right", opts->dmr_mute_encR, 0);
+    rc |= expect_int_eq("zero Hytera leaves encrypted left muted", opts->dmr_mute_encL, 1);
+    rc |= expect_int_eq("zero Hytera leaves encrypted right muted", opts->dmr_mute_encR, 1);
 
     p.H = 0x10ULL;
     p.K1 = 0x11ULL;
@@ -1820,8 +1820,8 @@ test_ui_basic_key_commands_reset_payload_mute_state(void) {
     rc |= expect_int_eq("basic key clears keyloader", state->keyloader, 0);
     rc |= expect_int_eq("basic key clears left payload key ID", state->payload_keyid, 0);
     rc |= expect_int_eq("basic key clears right payload key ID", state->payload_keyidR, 0);
-    rc |= expect_int_eq("basic key unmutes encrypted left", opts->dmr_mute_encL, 0);
-    rc |= expect_int_eq("basic key unmutes encrypted right", opts->dmr_mute_encR, 0);
+    rc |= expect_int_eq("basic key leaves encrypted left muted", opts->dmr_mute_encL, 1);
+    rc |= expect_int_eq("basic key leaves encrypted right muted", opts->dmr_mute_encR, 1);
 
     state->keyloader = 1;
     state->payload_keyid = 9;
@@ -1835,8 +1835,8 @@ test_ui_basic_key_commands_reset_payload_mute_state(void) {
     rc |= expect_int_eq("scrambler key command is drained", applied, 1);
     rc |= expect_int_eq("scrambler key command sets R", (int)state->R, (int)scrambler);
     rc |= expect_int_eq("scrambler key clears keyloader", state->keyloader, 0);
-    rc |= expect_int_eq("scrambler key unmutes encrypted left", opts->dmr_mute_encL, 0);
-    rc |= expect_int_eq("scrambler key unmutes encrypted right", opts->dmr_mute_encR, 0);
+    rc |= expect_int_eq("scrambler key leaves encrypted left muted", opts->dmr_mute_encL, 1);
+    rc |= expect_int_eq("scrambler key leaves encrypted right muted", opts->dmr_mute_encR, 1);
 
     DSD_MEMSET(state->static_ks_bits, 0, sizeof state->static_ks_bits);
     state->ken_sc = 0;
@@ -1875,8 +1875,8 @@ test_ui_basic_key_commands_reset_payload_mute_state(void) {
     rc |= expect_int_eq("RC4/DES key clears keyloader", state->keyloader, 0);
     rc |= expect_int_eq("RC4/DES key clears left payload key ID", state->payload_keyid, 0);
     rc |= expect_int_eq("RC4/DES key clears right payload key ID", state->payload_keyidR, 0);
-    rc |= expect_int_eq("RC4/DES key unmutes encrypted left", opts->dmr_mute_encL, 0);
-    rc |= expect_int_eq("RC4/DES key unmutes encrypted right", opts->dmr_mute_encR, 0);
+    rc |= expect_int_eq("RC4/DES key leaves encrypted left muted", opts->dmr_mute_encL, 1);
+    rc |= expect_int_eq("RC4/DES key leaves encrypted right muted", opts->dmr_mute_encR, 1);
 
     free_test_runtime(&runtime);
     return rc;

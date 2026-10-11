@@ -3944,9 +3944,10 @@ target_decryption_mute_policy(dsd_trunk_scan_target_runtime* rt) {
                        && (scalar->basic_key_present || scalar->scalar_key_present[0] || scalar->scalar_key_present[1]
                            || scalar->aes_key_loaded[0] || scalar->hytera_key_segments);
     rt->profile->values.present &= ~(DSD_SCAN_OPT_MUTE_DMR | DSD_SCAN_OPT_MUTE_P25);
+    /* The DMR encrypted-audio mute stays the session's: a call the target's key decrypts plays by the vocoder's
+       verdict (issue #655). */
     if (direct) {
-        rt->profile->values.present |= DSD_SCAN_OPT_MUTE_DMR | DSD_SCAN_OPT_MUTE_P25;
-        rt->profile->values.mute_dmr = 0;
+        rt->profile->values.present |= DSD_SCAN_OPT_MUTE_P25;
     }
 }
 

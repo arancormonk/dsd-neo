@@ -247,16 +247,11 @@ int dsd_audio_group_gate_mono(const dsd_opts* opts, const dsd_state* state, unsi
 /** @brief Talkgroup/whitelist/TG-hold gating for dual/slot mix (enc flags 0=unmuted,1=muted). */
 int dsd_audio_group_gate_dual(const dsd_opts* opts, const dsd_state* state, unsigned long tgL, unsigned long tgR,
                               int encL_in, int encR_in, int* encL_out, int* encR_out);
-/** @brief Mono per-call WAV gate combining decrypt state with TG/allow-list/TG-hold policy. */
-int dsd_audio_record_gate_mono(const dsd_opts* opts, const dsd_state* state, int* allow_out);
 /**
- * @brief Non-zero when the current Phase 1 voice frame belongs to a live P25 call.
- *
- * Excludes SDRTrunk JSON playback and a protocol that borrows the Phase 1 decoder
- * (YSF full rate runs its IMBE frames with synctype P25P1 for a YSF call).
- * Recording applies the P25 speaker rule, reverse mute included, only then.
+ * @brief Mono per-call WAV gate: the vocoder's verdict on the current slot's frame (dsd_state::mbe_slot_muted) and
+ * the TG/allow-list/TG-hold policy. Called by the vocoder after it judged the frame.
  */
-int dsd_audio_p25p1_live_voice(const dsd_state* state);
+int dsd_audio_record_gate_mono(const dsd_opts* opts, const dsd_state* state, int* allow_out);
 /**
  * @brief WAV gate for TG/allow-list/TG-hold policy alone, on the call in @p slot.
  *
@@ -267,6 +262,48 @@ int dsd_audio_p25p1_live_voice(const dsd_state* state);
  * with no active call is allowed.
  */
 int dsd_audio_record_policy_gate_slot(const dsd_opts* opts, const dsd_state* state, int slot, int* allow_out);
+
+/** @brief How a voice frame stands toward encryption, after the keystream the vocoder applied to it (issue #655). */
+typedef enum {
+    DSD_VOICE_CRYPTO_CLEAR = 0,     /**< Not encrypted (or no encryption is classified for the protocol). */
+    DSD_VOICE_CRYPTO_DECRYPTABLE,   /**< Encrypted, and the key the vocoder applied decrypts it. */
+    DSD_VOICE_CRYPTO_UNDECRYPTABLE, /**< Encrypted, and no loaded key decrypts it. */
+} dsd_voice_crypto_class;
+
+/**
+ * @brief The user's rule on a classified voice frame: 1 when it plays.
+ *
+ * Reverse mute (-q) plays an encrypted frame, decryptable or not, and mutes a clear one. Otherwise a frame plays
+ * unless it is undecryptable while the slot's encrypted-audio mute (dmr_mute_encL/R) is on.
+ */
+int dsd_voice_crypto_class_audible(const dsd_opts* opts, int slot, dsd_voice_crypto_class cls);
+
+/**
+ * @brief The protocol that owns the voice frame being decoded.
+ *
+ * The protocol processFrame() dispatched (YSF and scrambled dPMR keep theirs while they decode through the NXDN or
+ * P25 Phase 1 decoder), else state->synctype.
+ */
+int dsd_voice_frame_owner(const dsd_state* state);
+
+/**
+ * @brief The NXDN-family classification of the current frame: NXDN, and dPMR, whose bridge sets nxdn_cipher_type 1
+ * for a scrambled half and 0 for a clear one. Decryptable when the vocoder applies a keystream to it (a scalar key for
+ * ciphers 1 and 2 or under forced privacy, an AES key for cipher 3).
+ */
+dsd_voice_crypto_class dsd_nxdn_voice_crypto_class(const dsd_state* state);
+
+/**
+ * @brief The encryption verdict on the voice frame on @p slot, by the protocol that owns it: 1 when it plays.
+ *
+ * One verdict for every output (issue #655): P25 Phase 1 and Phase 2 by the P25 rule
+ * (p25_crypto_audio_output_permitted(), Phase 2 also needs its decode gate); NXDN and dPMR by
+ * dsd_nxdn_voice_crypto_class() and dsd_voice_crypto_class_audible() on slot 0; DMR by the vocoder's verdict on the
+ * slot's last frame (dsd_state::mbe_slot_muted), since it depends on the keystream that frame got. Protocols with no
+ * encryption classified here (YSF, D-STAR, X2-TDMA, ProVoice), no protocol, and SDRTrunk JSON playback, which checks
+ * crypto itself, always play. The FDMA mixers call it for the frame they play; the vocoder stores it per slot.
+ */
+int dsd_voice_crypto_audible(const dsd_opts* opts, const dsd_state* state, int slot);
 
 /**
  * @brief Key material the DMR/P25 voice ALGID @p algid requires.
