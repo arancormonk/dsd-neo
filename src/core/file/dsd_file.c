@@ -66,6 +66,7 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "dsd-neo/platform/platform.h"
 
 void
 saveImbe4400Data(dsd_opts* opts, const dsd_state* state, const char* imbe_d) {

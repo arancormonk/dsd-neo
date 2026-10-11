@@ -19,7 +19,6 @@
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/platform/file_compat.h>
-#include <errno.h>
 #include <sndfile.h>
 #include <stdint.h>
 #include <stdio.h>

@@ -7,7 +7,6 @@
 #include "dsd-neo/core/state_fwd.h"
 
 #include <assert.h>
-#include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>

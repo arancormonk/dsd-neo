@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: ISC
 #include <dsd-neo/core/dibit.h>
-#include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/vocoder.h>

@@ -12,7 +12,6 @@
  */
 
 #include <dsd-neo/core/dibit.h>
-#include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/vocoder.h>
 #include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/protocol/p25/p25_status_symbol.h>

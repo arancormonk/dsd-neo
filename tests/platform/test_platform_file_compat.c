@@ -12,14 +12,15 @@
 #include <stdio.h>
 #include <string.h>
 
-#include <locale.h>
 #include <sys/stat.h>
 
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/platform/platform.h"
 #include "file_compat_internal.h"
 #include "test_support.h"
-#if !DSD_PLATFORM_WIN_NATIVE
+#if DSD_PLATFORM_WIN_NATIVE
+#include <locale.h>
+#else
 #include <unistd.h>
 #endif
 
