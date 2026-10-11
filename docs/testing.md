@@ -148,7 +148,7 @@ companion, on stereo and mono output); `CORE_AUDIO_GAIN` the legacy short output
 playout under the real gates in both formats (a slot with frames heard whichever slot a hold or the last burst would
 have preferred, the release flush, a slot END flush that only closes the stream) and that the beeper never stamps;
 `CORE_P25P2_PLAYOUT` that the vocoder's mute silence never stamps;
-`M17_STATE_DISPATCH` the Codec2 writers on every output type; `EDACS_GRANT_TUNE_MATRIX` the EDACS emitter on each output
+`M17_STATE_DISPATCH` Codec2 voice through the mixers on every output type; `EDACS_GRANT_TUNE_MATRIX` the EDACS emitter on each output
 type and sample format, and whole analog calls under each squelch; `DSP_SYMBOL_REPLAY` the analog monitor (the tone
 policy, the auto squelch's per-sample gate, a retune, the `-8` source monitor, which never stamps, and a block the
 sink's converter mutes, at a rate it cannot take or with no memory, which never stamps either);
@@ -1571,6 +1571,16 @@ channel rate: EDACS converts what it reads to 48 kHz (issue #633). For the encod
 | `DSP_SQUELCH_AUTO_DEMOD` | The 9600/2 FSK path runs the tracker: PROVOICE at 24 and 48 kHz, no filter at 12 and 16 kHz. Its flags match a reference tracker, NOISE gives the same flags, and the FSK output is unchanged. Other FSK profiles run none. The encoder's monitor runs it; the gate closes within `DSD_SQUELCH_CLOSE_DELAY_MS` at every window phase (72 ms at worst there). |
 | `DECODE_IQ_M17_ENCODER_VOX_SQL_{AUTO,NOISE}_NOISE_FLOOR`, `_LEVEL_KEYS` | Ten seconds of receiver noise never key `-fZ` VOX under auto or noise (each keyed on the first frame before); a level the noise clears keys it. |
 | `APP_CONTROL_SQUELCH_VIEW`, `RUNTIME_SQUELCH`, `ENGINE_RUN_SETUP` | The readouts (`EDACS analog calls`, the encoder's tracker reading, `off: no radio input` on audio input), the policy helpers, and the startup notices. |
+
+#### M17 voice output (issue #658, regression cases)
+
+| Case | What it pins |
+| --- | --- |
+| `M17_STATE_DISPATCH` output-format case | Both payloads (two 160-sample codec frames at 3200, one 320-sample frame at 1600) play as two 160-frame blocks in each format: s16 or f32, mono or stereo, on UDP and, through the `dsd_audio_write` wrap (GNU and Clang off Apple), on a local stream. The wrap copies frames x channels samples as a backend reads them, so under ASan a short buffer is a report; on a two-channel stream both channels carry the decoded frame. `-g 3` triples the samples `-g 1` passes through. The existing UDP, mute and stamp cases now count 1600's two blocks and stage into initialised output buffers. |
+| `CORE_AUDIO2_HELPERS` decoded-PCM case | `dsd_audio_play_decoded_pcm16()` against gates stubbed to mute: a forced talkgroup mute, a blocked record policy and a stale NXDN cipher with no key never mute a settled frame in any format, channel count or sink; a 330-sample buffer plays two frames; the slot 1 switch and the mute still apply; the static WAV records what slot 1 plays in both formats and the per-call WAV every frame; a state with no output history plays nothing; the public mixers keep the policy verdict. |
+| `CORE_AUDIO_GAIN` agf case | At a gain index of 50 (`-g 50`) `agf()` gives finite samples within ±1, the first block as at 49.5, on either slot. |
+| `RUNTIME_CLI_PARSE` encoder-rate case | `-fZ` opens the digital output at 8 kHz mono; `-fB` and `-fP` keep 48 kHz. |
+| `DECODE_IQ_M17_VOICE_OUTPUT` (Codec2 builds) | The M17 fixture on stdout: `-fz` whole s16 frames, `-fz -y` twice its bytes, `-fa` twice, `-fa -y` four times; `-g 1` and `-g 50` differ. |
 
 #### Auto squelch replay cases
 

@@ -78,7 +78,7 @@ int dsd_audio_ensure_analog_output(dsd_opts* opts);
 int dsd_audio_ensure_digital_output(dsd_opts* opts);
 
 /** @brief Write synthesized mono voice samples for slot 1. */
-void writeSynthesizedVoice(dsd_opts* opts, dsd_state* state);
+void writeSynthesizedVoice(const dsd_opts* opts, dsd_state* state);
 /** @brief Write synthesized mono voice samples for slot 2. */
 void writeSynthesizedVoiceR(dsd_opts* opts, dsd_state* state);
 /** @brief Write synthesized mono mixed voice samples. */
@@ -134,6 +134,22 @@ unsigned int dsd_audio_dmr_mix_media_take(int slot);
  * null arguments produce no output.
  */
 void dsd_play_synthesized_voice(dsd_opts* opts, dsd_state* state);
+
+/**
+ * @brief Play 8 kHz mono voice a decoder synthesized itself through the digital voice output (issue #658).
+ *
+ * For a decoder outside the vocoder whose own gates passed the audio (M17's Codec2 voice: outside talkgroup policy, with
+ * its own crypto and CAN gates); call it only for audio those gates pass. Each whole 160-sample frame of @p pcm is staged
+ * in the vocoder buffers as an MBE frame is and goes through the mono mixer dsd_play_synthesized_voice() picks for the
+ * output format and channel count: the short gain stage (processAudio(): the fixed `-g` gain or the auto gain, and the
+ * upsampler above 8 kHz) and high-pass, or the float auto gain, then mono-to-stream channel expansion and the s16 or f32
+ * sink format. The slot 1 switch and the mute still apply; talkgroup policy and the FDMA crypto rules do not. The per-call
+ * WAV (`-P`) takes each frame after the short gain, and the static WAV (`-w`) what slot 1 plays. A trailing partial frame
+ * is dropped, never read past. Decoder thread only.
+ *
+ * @param count Samples in @p pcm.
+ */
+void dsd_audio_play_decoded_pcm16(const dsd_opts* opts, dsd_state* state, const short* pcm, size_t count);
 
 /** @brief Apply float-domain gain to 160-sample block for given slot. */
 void agf(const dsd_opts* opts, dsd_state* state, float samp[160], int slot); // float gain control

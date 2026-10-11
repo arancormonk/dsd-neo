@@ -12989,6 +12989,23 @@ if(DSD_HAS_RADIO)
         "LID: [0-9A-F][0-9A-F][0-9A-F][0-9A-F] FF83DF1732094ED1"
     )
     dsd_neo_add_iq_decode_test(DECODE_IQ_M17 m17 -fz "SRC: N0CALL")
+    # Issue #658: M17's decoded Codec2 voice follows the output format on stdout (s16/f32, mono/stereo) and the fixed
+    # gain. Only a Codec2 build decodes the voice.
+    if(DSD_HAS_CODEC2)
+        add_test(
+            NAME DECODE_IQ_M17_VOICE_OUTPUT
+            COMMAND
+                ${CMAKE_COMMAND} "-DDSD_BIN=$<TARGET_FILE:dsd-neo>"
+                "-DFIXTURE=${_DSD_NEO_IQ_FIXTURE_DIR}/m17.iq.json"
+                "-DEXPECTED=SRC: N0CALL"
+                "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/m17_voice_output" -P
+                "${CMAKE_CURRENT_SOURCE_DIR}/iq_m17_voice_output_check.cmake"
+        )
+        set_tests_properties(
+            DECODE_IQ_M17_VOICE_OUTPUT
+            PROPERTIES LABELS "iq-decode" TIMEOUT 300
+        )
+    endif()
 
     # Auto must not be pinned on its starting profile by syncs no protocol turns into a
     # frame (issue #388). Both fixtures are shorter than one full hunt rotation, so the

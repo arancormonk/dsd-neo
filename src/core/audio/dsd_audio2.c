@@ -38,7 +38,7 @@
 #include "dsd_audio_internal.h"
 
 static void
-write_s16_audio(dsd_opts* opts, const int16_t* buf, size_t frames) {
+write_s16_audio(const dsd_opts* opts, const int16_t* buf, size_t frames) {
     if (opts->audio_out_stream) {
         dsd_audio_write(opts->audio_out_stream, buf, frames);
     }
@@ -58,7 +58,7 @@ dsd_audio_call_target(const dsd_state* state, uint8_t slot) {
 
 /* Convert float audio to int16 and write using the abstraction layer */
 static void
-write_float_audio(dsd_opts* opts, const float* buf, size_t frames) {
+write_float_audio(const dsd_opts* opts, const float* buf, size_t frames) {
     if (!opts->audio_out_stream || !buf) {
         return;
     }
@@ -178,7 +178,7 @@ dsd_audio_reset_short_lr_working_state(dsd_state* state) {
 }
 
 void
-dsd_output_float_block(dsd_opts* opts, dsd_state* state, const float* samples, size_t frames, int channels) {
+dsd_output_float_block(const dsd_opts* opts, dsd_state* state, const float* samples, size_t frames, int channels) {
     if (opts->audio_out != 1 || !samples || frames == 0) {
         return;
     }
@@ -192,7 +192,7 @@ dsd_output_float_block(dsd_opts* opts, dsd_state* state, const float* samples, s
 }
 
 void
-dsd_output_s16_block(dsd_opts* opts, dsd_state* state, const short* samples, size_t frames, int channels) {
+dsd_output_s16_block(const dsd_opts* opts, dsd_state* state, const short* samples, size_t frames, int channels) {
     if (opts->audio_out != 1 || !samples || frames == 0) {
         return;
     }
@@ -206,8 +206,8 @@ dsd_output_s16_block(dsd_opts* opts, dsd_state* state, const short* samples, siz
 }
 
 DSD_AUDIO2_INTERNAL void
-dsd_output_float_blocks(dsd_opts* opts, dsd_state* state, const float* const* blocks, size_t block_count, size_t frames,
-                        int channels, int skip_silent) {
+dsd_output_float_blocks(const dsd_opts* opts, dsd_state* state, const float* const* blocks, size_t block_count,
+                        size_t frames, int channels, int skip_silent) {
     size_t samples_per_block = frames * (size_t)channels;
     for (size_t i = 0; i < block_count; i++) {
         if (skip_silent && dsd_is_all_zero_f(blocks[i], samples_per_block)) {
@@ -218,8 +218,8 @@ dsd_output_float_blocks(dsd_opts* opts, dsd_state* state, const float* const* bl
 }
 
 DSD_AUDIO2_INTERNAL void
-dsd_output_s16_blocks(dsd_opts* opts, dsd_state* state, const short* const* blocks, size_t block_count, size_t frames,
-                      int channels, int skip_silent) {
+dsd_output_s16_blocks(const dsd_opts* opts, dsd_state* state, const short* const* blocks, size_t block_count,
+                      size_t frames, int channels, int skip_silent) {
     size_t samples_per_block = frames * (size_t)channels;
     for (size_t i = 0; i < block_count; i++) {
         if (skip_silent && dsd_is_all_zero_s16(blocks[i], samples_per_block)) {
@@ -344,7 +344,7 @@ dsd_write_masked_stereo_wav_block(const dsd_opts* opts, const short* block, int 
 }
 
 static void
-dsd_write_static_wav_from_mono(dsd_opts* opts, const short* mono_samp, size_t len) {
+dsd_write_static_wav_from_mono(const dsd_opts* opts, const short* mono_samp, size_t len) {
     if (opts->wav_out_f == NULL || opts->static_wav_file != 1) {
         return;
     }
@@ -671,6 +671,7 @@ dsd_p25p2_flush_partial_audio_slot(dsd_opts* opts, dsd_state* state, int slot) {
 
 //float stereo mix 3v2 DMR
 void
+// cppcheck-suppress constParameterPointer -- signature fixed by dsd-neo/core/audio.h, shared with the other mixers
 playSynthesizedVoiceFS3(dsd_opts* opts, dsd_state* state) {
 
     //NOTE: This runs once for every two timeslots, if we are in the BS voice loop
@@ -753,15 +754,19 @@ FS3_END:
     dsd_audio_reset_float_mix_working_state(state);
 }
 
-//float stereo mix -- when using Float Stereo Output, we need to send P25p1, DMR MS/Simplex, DStar, and YSF here
-void
-playSynthesizedVoiceFS(dsd_opts* opts, dsd_state* state) {
+// The mono mixers below (FS, FM, MS, SS) play a frame whose verdict is either the policy's or settled (issue #658).
+// The vocoder's frames take theirs from talkgroup policy and the FDMA and P25 crypto rules, as the public mixers always
+// have. A frame a decoder synthesized and gated itself (dsd_audio_play_decoded_pcm16(): M17's Codec2 voice, outside
+// talkgroup policy) arrives settled: only the slot 1 switch and the mute (in dsd_output_*_block()) still stop it, and the
+// short mixers' static WAV records it without asking the record policy. Everything after the verdict (gain, high-pass,
+// channel expansion, sample format, audible-audio stamp) is the same for both.
+
+// FS's policy verdict: 1 when the frame is muted.
+static int
+dsd_float_stereo_policy_muted(const dsd_opts* opts, const dsd_state* state) {
     const int is_p25p1 = DSD_SYNC_IS_P25P1(state->synctype);
     int encL = is_p25p1 ? (p25_crypto_audio_output_permitted(opts, state, 0) ? 0 : 1)
                         : (dsd_p25_algid_is_encrypted(state) ? 1 : 0);
-    float stereo_samp1[320]; //8k 2-channel stereo interleave mix
-
-    DSD_MEMSET(stereo_samp1, 0.0f, sizeof(stereo_samp1));
     if (!is_p25p1 && encL
         && (dsd_p25_algid_can_decrypt(state) || (state->payload_algid == 0x83 && state->aes_key_loaded[0] == 1))) {
         encL = 0;
@@ -776,6 +781,15 @@ playSynthesizedVoiceFS(dsd_opts* opts, dsd_state* state) {
     if (is_p25p1 && !p25_crypto_audio_output_permitted(opts, state, 0)) {
         encL = 1;
     }
+    return encL;
+}
+
+static void
+dsd_play_float_stereo(const dsd_opts* opts, dsd_state* state, int settled) {
+    const int encL = settled ? (opts->slot1_on == 0) : dsd_float_stereo_policy_muted(opts, state);
+    float stereo_samp1[320]; //8k 2-channel stereo interleave mix
+
+    DSD_MEMSET(stereo_samp1, 0.0f, sizeof(stereo_samp1));
 
     agf(opts, state, state->f_l, 0);
     if (!encL) {
@@ -789,14 +803,22 @@ playSynthesizedVoiceFS(dsd_opts* opts, dsd_state* state) {
     dsd_audio_reset_float_mix_working_state(state);
 }
 
+//float stereo mix -- when using Float Stereo Output, we need to send P25p1, DMR MS/Simplex, DStar, and YSF here
 void
-playSynthesizedVoiceFM(dsd_opts* opts, dsd_state* state) {
+// cppcheck-suppress constParameterPointer -- signature fixed by dsd-neo/core/audio.h, shared with the other mixers
+playSynthesizedVoiceFS(dsd_opts* opts, dsd_state* state) {
+    dsd_play_float_stereo(opts, state, 0);
+}
+
+static void
+dsd_play_float_mono(const dsd_opts* opts, dsd_state* state, int settled) {
     agf(opts, state, state->f_l, 0);
-    int encL = dsd_fdma_crypto_muted(opts, state, 1);
-
-    unsigned long TGL = dsd_audio_call_target(state, dsd_mono_source_slot(state));
-
-    encL = dsd_fdma_apply_group_gate(opts, state, TGL, encL);
+    int encL = 0;
+    if (!settled) {
+        encL = dsd_fdma_crypto_muted(opts, state, 1);
+        unsigned long TGL = dsd_audio_call_target(state, dsd_mono_source_slot(state));
+        encL = dsd_fdma_apply_group_gate(opts, state, TGL, encL);
+    }
 
     if (!encL && opts->slot1_on != 0) {
         if (dsd_audio_activity_armed() && dsd_mix_output_plays(opts)) {
@@ -815,9 +837,15 @@ playSynthesizedVoiceFM(dsd_opts* opts, dsd_state* state) {
     DSD_MEMSET(state->audio_out_temp_buf, 0.0f, sizeof(state->audio_out_temp_buf));
 }
 
-// Mono source, formatted for the device opened at startup (which stays stereo in AUTO/mixed scans).
 void
-playSynthesizedVoiceMS(dsd_opts* opts, dsd_state* state) {
+// cppcheck-suppress constParameterPointer -- signature fixed by dsd-neo/core/audio.h, shared with the other mixers
+playSynthesizedVoiceFM(dsd_opts* opts, dsd_state* state) {
+    dsd_play_float_mono(opts, state, 0);
+}
+
+// Mono source, formatted for the device opened at startup (which stays stereo in AUTO/mixed scans).
+static void
+dsd_play_short_mono(const dsd_opts* opts, dsd_state* state, int settled) {
     size_t len = state->audio_out_idx;
     if (len > 960) {
         len = 960; // clamp to buffer capacity
@@ -830,7 +858,7 @@ playSynthesizedVoiceMS(dsd_opts* opts, dsd_state* state) {
     // Crypto is settled before samples reach s_l (the MBE post-processing only
     // fills it for audible calls), but the talkgroup gate and reverse mute are
     // not, so apply them here as the float and stereo paths do.
-    const int muted = dsd_audio_mono_output_muted(opts, state);
+    const int muted = settled ? 0 : dsd_audio_mono_output_muted(opts, state);
 
     if (opts->slot1_on != 0 && !muted) {
         const int loaded = dsd_load_short_mono_samples(mono_samp, len, state->s_l, &state->audio_out_buf_p);
@@ -847,17 +875,23 @@ playSynthesizedVoiceMS(dsd_opts* opts, dsd_state* state) {
         } else {
             dsd_output_s16_block(opts, state, mono_samp, len, 1);
         }
-        if (dsd_static_wav_slot_recordable(opts, state, dsd_mono_source_slot(state))) {
+        if (settled || dsd_static_wav_slot_recordable(opts, state, dsd_mono_source_slot(state))) {
             dsd_write_static_wav_from_mono(opts, mono_samp, len);
         }
     }
     dsd_audio_reset_short_mono_left_working_state(state);
 }
 
-//Stereo Mix - Short (SB16LE) -- When Playing Short FDMA samples when setup for stereo output
 void
-playSynthesizedVoiceSS(dsd_opts* opts, dsd_state* state) {
-    int encL = dsd_fdma_crypto_muted(opts, state, 0);
+// cppcheck-suppress constParameterPointer -- signature fixed by dsd-neo/core/audio.h, shared with the other mixers
+playSynthesizedVoiceMS(dsd_opts* opts, dsd_state* state) {
+    dsd_play_short_mono(opts, state, 0);
+}
+
+//Stereo Mix - Short (SB16LE) -- When Playing Short FDMA samples when setup for stereo output
+static void
+dsd_play_short_stereo(const dsd_opts* opts, dsd_state* state, int settled) {
+    int encL = settled ? 0 : dsd_fdma_crypto_muted(opts, state, 0);
     short stereo_samp1[320]; //8k 2-channel stereo interleave mix
     DSD_MEMSET(stereo_samp1, 0, sizeof(stereo_samp1));
 
@@ -866,9 +900,10 @@ playSynthesizedVoiceSS(dsd_opts* opts, dsd_state* state) {
     }
 
     const uint8_t source_slot = dsd_mono_source_slot(state);
-    unsigned long TGL = dsd_audio_call_target(state, source_slot);
-
-    encL = dsd_fdma_apply_group_gate(opts, state, TGL, encL);
+    if (!settled) {
+        unsigned long TGL = dsd_audio_call_target(state, source_slot);
+        encL = dsd_fdma_apply_group_gate(opts, state, TGL, encL);
+    }
 
     if (opts->use_hpf_d == 1) {
         hpf_dL(state, state->s_l, 160);
@@ -880,11 +915,74 @@ playSynthesizedVoiceSS(dsd_opts* opts, dsd_state* state) {
         }
         dsd_output_s16_block(opts, state, stereo_samp1, 160, 2);
         if (opts->wav_out_f != NULL && opts->static_wav_file == 1
-            && dsd_static_wav_slot_recordable(opts, state, source_slot)) {
+            && (settled || dsd_static_wav_slot_recordable(opts, state, source_slot))) {
             dsd_audio_write_wav_short_block(opts->wav_out_f, stereo_samp1, 320, "processAudioDMRslot");
         }
     }
     dsd_audio_reset_short_lr_working_state(state);
+}
+
+void
+// cppcheck-suppress constParameterPointer -- signature fixed by dsd-neo/core/audio.h, shared with the other mixers
+playSynthesizedVoiceSS(dsd_opts* opts, dsd_state* state) {
+    dsd_play_short_stereo(opts, state, 0);
+}
+
+// One 160-sample frame of decoded 8 kHz voice, staged as the vocoder stages its own (issue #658).
+static void
+dsd_play_decoded_pcm16_frame(const dsd_opts* opts, dsd_state* state, const short* pcm) {
+    short frame[160];
+    DSD_MEMCPY(frame, pcm, sizeof(frame));
+    const int float_out = opts->floating_point == 1;
+    // The float mixers run no high-pass yet (#653). A decoder that hands its PCM here filtered it before in either
+    // format (M17 did), so the float output filters the frame itself; the short mixers filter after their gain.
+    if (float_out && opts->use_hpf_d == 1) {
+        hpf_dL(state, frame, 160);
+    }
+    for (size_t i = 0; i < 160; i++) {
+        state->audio_out_temp_buf[i] = (float)frame[i];
+    }
+    if (float_out) {
+        DSD_MEMCPY(state->f_l, state->audio_out_temp_buf, sizeof(state->f_l));
+    } else {
+        // The short mono mixer plays the samples processAudio() counted since the last mix: a frame another path staged
+        // and never mixed (a mode switch mid-frame) is not this one's.
+        state->audio_out_idx = 0;
+        processAudio(opts, state);
+    }
+    // The per-call WAV takes the frame after the short gain, as the vocoder and YSF V/D2 write theirs.
+    if (opts->wav_out_f != NULL && opts->dmr_stereo_wav == 1) {
+        writeSynthesizedVoice(opts, state);
+    }
+    // Interim, until the float mixers write the static WAV (#652): a float session records the filtered frame, as M17
+    // recorded -y -w before. The short mixers write their own.
+    if (float_out && opts->slot1_on != 0) {
+        dsd_write_static_wav_from_mono(opts, frame, 160);
+    }
+    if (float_out) {
+        if (opts->pulse_digi_out_channels == 2) {
+            dsd_play_float_stereo(opts, state, 1);
+        } else if (opts->pulse_digi_out_channels == 1) {
+            dsd_play_float_mono(opts, state, 1);
+        }
+    } else {
+        if (opts->pulse_digi_out_channels == 2) {
+            dsd_play_short_stereo(opts, state, 1);
+        } else if (opts->pulse_digi_out_channels == 1) {
+            dsd_play_short_mono(opts, state, 1);
+        }
+    }
+}
+
+void
+dsd_audio_play_decoded_pcm16(const dsd_opts* opts, dsd_state* state, const short* pcm, size_t count) {
+    // initState() sets these up; a state without them has nowhere to stage a frame.
+    if (!opts || !state || !pcm || !state->audio_out_buf_p || !state->aout_max_buf_p) {
+        return;
+    }
+    for (size_t offset = 0; offset + 160 <= count; offset += 160) {
+        dsd_play_decoded_pcm16_frame(opts, state, pcm + offset);
+    }
 }
 
 //short stereo mix 3v2 DMR
@@ -987,7 +1085,7 @@ soft_tonef(float samp[160], int n, int ID, int AD) {
 }
 
 static void
-dsd_beeper_output_samples(dsd_opts* opts, dsd_state* state, const float* samp_f, const float* samp_fs,
+dsd_beeper_output_samples(const dsd_opts* opts, dsd_state* state, const float* samp_f, const float* samp_fs,
                           const short* samp_s, const short* samp_ss) {
     if (opts->floating_point == 1) {
         if (opts->pulse_digi_out_channels == 2) {
@@ -1005,6 +1103,7 @@ dsd_beeper_output_samples(dsd_opts* opts, dsd_state* state, const float* samp_f,
 }
 
 void
+// cppcheck-suppress constParameterPointer -- signature fixed by dsd-neo/core/audio.h
 beeper(dsd_opts* opts, dsd_state* state, int lr, int id, int ad, int len) {
     // An alert for a P25 Phase 2 slot whose playout still holds audio sounds after that audio (issue #651).
     if (dsd_p25p2_playout_defer_alert(opts, state, lr, id, ad, len)) {
@@ -1014,7 +1113,7 @@ beeper(dsd_opts* opts, dsd_state* state, int lr, int id, int ad, int len) {
 }
 
 void
-dsd_beeper_emit(dsd_opts* opts, dsd_state* state, int lr, int id, int ad, int len) {
+dsd_beeper_emit(const dsd_opts* opts, dsd_state* state, int lr, int id, int ad, int len) {
     UNUSED(state);
     int i, j, n;
     //use lr as left or right channel designation in stereo config

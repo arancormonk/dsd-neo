@@ -13,8 +13,6 @@
 #include <dsd-neo/core/bit_packing.h>
 
 #include <dsd-neo/core/audio.h>
-#include <dsd-neo/core/audio_activity.h>
-#include <dsd-neo/core/audio_filters.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dibit.h>
@@ -661,119 +659,16 @@ m17_can_matches_state(const dsd_state* state) {
 }
 
 #ifdef USE_CODEC2
-// The mute (audio_out 0, which leaves the output open) silences every output type, as it does for the mixers
-// (dsd_output_*_block()).
-static int
-m17_can_emit_audio(const dsd_opts* opts, const dsd_state* state) {
-    return (opts->audio_out == 1 && opts->slot1_on == 1 && (state->m17_enc == 0 || state->m17_payload_decrypted != 0U)
-            && m17_can_matches_state(state));
-}
-
+/* Decoded Codec2 voice plays through the digital voice output the other modes use (issue #658): the mixers apply the
+   slot 1 switch, the mute, the gain, the high-pass, the stream's channel count and sample format, and write the WAVs.
+   M17 is outside talkgroup policy, so it settles its own gates here: an encrypted stream plays only once decrypted, and
+   only a CAN the filter allows plays. @p nsam is the decoder's real output: 160 samples per 3200 frame, 320 at 1600. */
 static void
-m17_write_decoded_audio_single(const dsd_opts* opts, dsd_state* state, const short* samples, size_t nsam,
-                               const char* log_ctx) {
-    if (!m17_can_emit_audio(opts, state)) {
+m17_play_codec2_voice(const dsd_opts* opts, dsd_state* state, const short* samples, size_t nsam) {
+    if ((state->m17_enc != 0 && state->m17_payload_decrypted == 0U) || !m17_can_matches_state(state)) {
         return;
     }
-    if (dsd_audio_activity_armed() && dsd_audio_activity_output_plays(opts, opts->audio_out_stream, 1)) {
-        dsd_audio_activity_note();
-    }
-
-    if (opts->audio_out_type == 0) {
-        dsd_audio_write(opts->audio_out_stream, samples, nsam);
-        return;
-    }
-
-    if (opts->audio_out_type == 8) {
-        dsd_udp_audio_hook_blast(opts, state, nsam * sizeof(short), (short*)samples);
-        return;
-    }
-
-    if (opts->audio_out_type == 1) {
-        const ssize_t written = dsd_write(opts->audio_out_fd, samples, nsam * sizeof(short));
-        if (written < 0) {
-            LOG_WARN("%s: failed to write %zu-byte audio block", log_ctx, nsam * sizeof(short));
-        }
-    }
-}
-
-static void
-m17_write_decoded_audio_pair(const dsd_opts* opts, dsd_state* state, const short* first, const short* second,
-                             size_t nsam, const char* log_ctx) {
-    if (!m17_can_emit_audio(opts, state)) {
-        return;
-    }
-    if (dsd_audio_activity_armed() && dsd_audio_activity_output_plays(opts, opts->audio_out_stream, 1)) {
-        dsd_audio_activity_note();
-    }
-
-    if (opts->audio_out_type == 0) {
-        dsd_audio_write(opts->audio_out_stream, first, nsam);
-        dsd_audio_write(opts->audio_out_stream, second, nsam);
-        return;
-    }
-
-    if (opts->audio_out_type == 8) {
-        dsd_udp_audio_hook_blast(opts, state, nsam * sizeof(short), (short*)first);
-        dsd_udp_audio_hook_blast(opts, state, nsam * sizeof(short), (short*)second);
-        return;
-    }
-
-    if (opts->audio_out_type == 1) {
-        ssize_t written = dsd_write(opts->audio_out_fd, first, nsam * sizeof(short));
-        if (written < 0) {
-            LOG_WARN("%s: failed to write first %zu-byte audio block", log_ctx, nsam * sizeof(short));
-        }
-        written = dsd_write(opts->audio_out_fd, second, nsam * sizeof(short));
-        if (written < 0) {
-            LOG_WARN("%s: failed to write second %zu-byte audio block", log_ctx, nsam * sizeof(short));
-        }
-    }
-}
-
-static void
-m17_write_static_stereo_wav(const short* mono, int count, SNDFILE* wav_out_f) {
-    short stereo[320 * 2];
-    for (int i = 0; i < count; i++) {
-        stereo[((size_t)i * 2) + 0] = mono[i];
-        stereo[((size_t)i * 2) + 1] = mono[i];
-    }
-    m17_write_wav_short_block(wav_out_f, stereo, ((sf_count_t)count) * 2, "M17 static stereo WAV");
-}
-
-static void
-m17_maybe_write_wav_single(const dsd_opts* opts, const dsd_state* state, const short* samples, int count) {
-    if (opts->wav_out_f == NULL || (state->m17_enc != 0 && state->m17_payload_decrypted == 0U)) {
-        return;
-    }
-
-    if (opts->dmr_stereo_wav == 1) {
-        m17_write_wav_short_block(opts->wav_out_f, samples, count, "M17 WAV single");
-        return;
-    }
-
-    if (opts->static_wav_file == 1) {
-        m17_write_static_stereo_wav(samples, count, opts->wav_out_f);
-    }
-}
-
-static void
-m17_maybe_write_wav_pair(const dsd_opts* opts, const dsd_state* state, const short* first, const short* second,
-                         int count) {
-    if (opts->wav_out_f == NULL || (state->m17_enc != 0 && state->m17_payload_decrypted == 0U)) {
-        return;
-    }
-
-    if (opts->dmr_stereo_wav == 1) {
-        m17_write_wav_short_block(opts->wav_out_f, first, count, "M17 WAV pair first");
-        m17_write_wav_short_block(opts->wav_out_f, second, count, "M17 WAV pair second");
-        return;
-    }
-
-    if (opts->static_wav_file == 1) {
-        m17_write_static_stereo_wav(first, count, opts->wav_out_f);
-        m17_write_static_stereo_wav(second, count, opts->wav_out_f);
-    }
+    dsd_audio_play_decoded_pcm16(opts, state, samples, nsam);
 }
 #endif
 
@@ -799,12 +694,7 @@ M17processCodec2_1600(const dsd_opts* opts, dsd_state* state, const uint8_t* pay
     short samp1[320];
     codec2_decode(state->codec2_1600, samp1, voice1);
 
-    if (opts->use_hpf_d == 1) {
-        hpf_dL(state, samp1, nsam);
-    }
-
-    m17_write_decoded_audio_single(opts, state, samp1, nsam, "M17processCodec2_1600");
-    m17_maybe_write_wav_single(opts, state, samp1, (int)nsam);
+    m17_play_codec2_voice(opts, state, samp1, nsam);
 
 #endif
 
@@ -831,7 +721,7 @@ M17processCodec2_1600(const dsd_opts* opts, dsd_state* state, const uint8_t* pay
 }
 
 static void
-// cppcheck-suppress constParameterPointer ; state is mutable when USE_CODEC2 enables HPF state updates
+// cppcheck-suppress constParameterPointer ; state is mutable when USE_CODEC2 stages the decoded voice for output
 M17processCodec2_3200(const dsd_opts* opts, dsd_state* state, const uint8_t* payload) {
     unsigned char voice1[8];
     unsigned char voice2[8];
@@ -856,13 +746,8 @@ M17processCodec2_3200(const dsd_opts* opts, dsd_state* state, const uint8_t* pay
     codec2_decode(state->codec2_3200, samp1, voice1);
     codec2_decode(state->codec2_3200, samp2, voice2);
 
-    if (opts->use_hpf_d == 1) {
-        hpf_dL(state, samp1, nsam);
-        hpf_dL(state, samp2, nsam);
-    }
-
-    m17_write_decoded_audio_pair(opts, state, samp1, samp2, nsam, "M17processCodec2_3200");
-    m17_maybe_write_wav_pair(opts, state, samp1, samp2, (int)nsam);
+    m17_play_codec2_voice(opts, state, samp1, nsam);
+    m17_play_codec2_voice(opts, state, samp2, nsam);
 
 #endif
 }

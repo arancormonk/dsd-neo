@@ -3108,7 +3108,8 @@ cli_report_short_opt_error(int c, int argc, char** argv) {
                 cli_decode_timing_source = CLI_TIMING_SOURCE_PRESET;                                                   \
             } else if (optarg[0] == 'Z') {                                                                             \
                 opts->m17encoder = 1;                                                                                  \
-                opts->pulse_digi_rate_out = 48000;                                                                     \
+                /* The digital stream plays the decoded 8 kHz voice monitor; -8's baseband goes to the raw stream. */  \
+                opts->pulse_digi_rate_out = 8000;                                                                      \
                 opts->pulse_digi_out_channels = 1;                                                                     \
                 opts->use_lpf = 0;                                                                                     \
                 opts->use_hpf = 0;                                                                                     \

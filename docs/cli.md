@@ -1743,6 +1743,12 @@ Input, squelch and VOX
   full output cannot drop them. At shutdown it lets everything queued play before the output closes, a VOX unkey's
   end included. The packet encoder (`-fP`) ends the same way.
 
+Monitor
+
+- Without `-8` the stream encoder decodes each frame it sends and plays the voice on the digital output, opened at
+  8 kHz mono, as a received M17 call plays: with `-g`, `-y` and the high-pass. With `-8` the 48 kHz transmit baseband
+  plays on the analog output instead. Give `-8` after `-fZ`: an `-f` selector turns it off.
+
 Examples
 
 - `dsd-neo -fZ -M M17:9:DSD-NEO:ARANCORMO -i pulse -6 m17signal.wav -8 --frontend terminal`

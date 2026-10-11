@@ -57,13 +57,17 @@ agf_effective_gain(const dsd_opts* opts, const dsd_state* state) {
     return gain;
 }
 
+// The divisor at a gain index of 50, where -g 50 (or a reset to it) leaves it, is 0: agf() turned a frame's zero
+// samples into NaN there. The floor is the divisor one step below, at 49.5, which -g 50 then plays as.
+#define AGF_MIN_DECIMATION (384.0f * 0.5f)
+
 static inline float
 agf_slot_decimation(const dsd_state* state, int slot, float fallback) {
     if (slot == 0) {
-        return 384.0f * (50.0f - state->aout_gain);
+        return fmaxf(384.0f * (50.0f - state->aout_gain), AGF_MIN_DECIMATION);
     }
     if (slot == 1) {
-        return 384.0f * (50.0f - state->aout_gainR);
+        return fmaxf(384.0f * (50.0f - state->aout_gainR), AGF_MIN_DECIMATION);
     }
     return fallback;
 }

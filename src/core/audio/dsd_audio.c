@@ -852,7 +852,7 @@ processAudioR(const dsd_opts* opts, dsd_state* state) {
 }
 
 void
-writeSynthesizedVoice(dsd_opts* opts, dsd_state* state) {
+writeSynthesizedVoice(const dsd_opts* opts, dsd_state* state) {
     int n;
     short aout_buf[160];
     short* aout_buf_p;

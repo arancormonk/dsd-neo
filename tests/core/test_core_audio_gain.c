@@ -442,6 +442,43 @@ test_agf_scales_nonzero_float_block_and_updates_slot_gain(void) {
     return rc;
 }
 
+/* Issue #658: -g 50 leaves the gain index at 50, where agf()'s divisor was 0 and a frame's zero samples came out NaN
+   (and the rest at the clip). The divisor's floor is the step below, so a frame's first block at -g 50 plays as at
+   49.5, on either slot; from there the index adapts as it does anywhere else. */
+static int
+test_agf_at_top_gain_index_stays_finite(void) {
+    static dsd_opts opts = {0};
+    static dsd_state state = {0};
+    static dsd_state reference = {0};
+    int rc = 0;
+    for (int slot = 0; slot <= 1; slot++) {
+        opts.audio_gain = 50.0f;
+        state.aout_gain = 50.0f;
+        state.aout_gainR = 50.0f;
+        reference.aout_gain = 49.5f;
+        reference.aout_gainR = 49.5f;
+        float samp[160];
+        float want[160];
+        for (int i = 0; i < 160; i++) {
+            samp[i] = (i % 4 == 0) ? 0.0f : (float)((i % 7) - 3) * 10.0f;
+            want[i] = samp[i];
+        }
+        agf(&opts, &state, samp, slot);
+        agf(&opts, &reference, want, slot);
+        int finite = 1;
+        int matches = 1;
+        for (int i = 0; i < 160; i++) {
+            finite &= isfinite(samp[i]) && samp[i] <= 1.0f && samp[i] >= -1.0f;
+            if (i < 20) {
+                matches &= fabsf(samp[i] - want[i]) < 1e-6f;
+            }
+        }
+        rc |= expect_true(slot == 0 ? "agf -g 50 left stays finite" : "agf -g 50 right stays finite", finite);
+        rc |= expect_true(slot == 0 ? "agf -g 50 left plays as 49.5" : "agf -g 50 right plays as 49.5", matches);
+    }
+    return rc;
+}
+
 static int
 test_process_audio_native_left_clamps_and_tracks_output(void) {
     static dsd_opts opts = {0};
@@ -1299,6 +1336,7 @@ main(void) {
     rc |= test_upsample_repeats_into_selected_slot_buffer();
     rc |= test_manual_analog_gain_helper();
     rc |= test_agf_scales_nonzero_float_block_and_updates_slot_gain();
+    rc |= test_agf_at_top_gain_index_stays_finite();
     rc |= test_process_audio_native_left_clamps_and_tracks_output();
     rc |= test_process_audio_native_right_clamps_and_tracks_output();
     rc |= test_process_audio_auto_gain_ramps_from_peak_history();

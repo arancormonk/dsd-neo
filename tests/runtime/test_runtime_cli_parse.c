@@ -9629,10 +9629,52 @@ test_tg_lockout_persistence_flags(void) {
     return rc;
 }
 
+/* Issue #658: the stream encoder's digital output plays its decoded 8 kHz Codec2 monitor, so -fZ opens it at 8 kHz, mono;
+   -8's 48 kHz baseband goes to the raw stream. The BERT and packet encoders decode no voice and keep 48 kHz. */
+static int
+test_m17_encoder_digital_output_rates(void) {
+    static const struct {
+        const char* selector;
+        int rate;
+    } cases[] = {{"-fZ", 8000}, {"-fB", 48000}, {"-fP", 48000}};
+
+    int rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; ++i) {
+        dsd_opts* opts = calloc(1, sizeof(*opts));
+        dsd_state* state = calloc(1, sizeof(*state));
+        if (!opts || !state) {
+            free(opts);
+            free(state);
+            return 1;
+        }
+        initOpts(opts);
+        initState(state);
+        char name[] = "dsd-neo";
+        char selector[8] = {0};
+        DSD_SNPRINTF(selector, sizeof selector, "%s", cases[i].selector);
+        char* argv[] = {name, selector, NULL};
+        int effective = 0;
+        int exit_rc = -1;
+        const int parsed = dsd_parse_args(2, argv, opts, state, &effective, &exit_rc);
+        if (parsed != DSD_PARSE_CONTINUE || opts->pulse_digi_rate_out != cases[i].rate
+            || opts->pulse_digi_out_channels != 1) {
+            DSD_FPRINTF(stderr, "%s digital output: rc=%d rate=%d channels=%d, want rate %d mono\n", cases[i].selector,
+                        parsed, opts->pulse_digi_rate_out, opts->pulse_digi_out_channels, cases[i].rate);
+            rc = 1;
+        }
+        close_parse_outputs(opts);
+        freeState(state);
+        free(state);
+        free(opts);
+    }
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
     rc |= test_api_options();
+    rc |= test_m17_encoder_digital_output_rates();
     rc |= test_force_conflicts_and_explicit_off_options();
     rc |= test_help_returns_one_shot_and_does_not_exit();
     rc |= test_invalid_option_returns_error_and_does_not_exit();
