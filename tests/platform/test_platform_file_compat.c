@@ -767,6 +767,20 @@ expect_rename_noreplace_non_ascii_dir(void) {
 }
 
 #if !DSD_PLATFORM_WIN_NATIVE
+/* Whether the filesystem holding @p dir takes hard links: some (FAT-like, some FUSE) do not, and the fallback then
+   claims the name instead. */
+static int
+dir_takes_hard_links(const char* dir) {
+    char a[256];
+    char b[256];
+    DSD_SNPRINTF(a, sizeof a, "%s/link_probe.a", dir);
+    DSD_SNPRINTF(b, sizeof b, "%s/link_probe.b", dir);
+    int ok = write_text_file(a, "p") == 0 && link(a, b) == 0;
+    (void)remove(b);
+    (void)remove(a);
+    return ok;
+}
+
 /* The hard-link fallback: EEXIST on a taken name, and a link whose source cannot be unlinked still publishes, reporting
    the source left behind. */
 static int
@@ -785,8 +799,9 @@ expect_rename_noreplace_link_fallback(void) {
     ok = ok && dsd_rename_noreplace_by_link(from, to, &left) == -1 && errno == EEXIST && left == 0;
     ok = ok && file_text_is(from, "data") && file_text_is(to, "taken");
     (void)remove(to);
-    if (geteuid() != 0) {
-        /* A read-only source directory: the link lands, the unlink cannot. */
+    if (geteuid() != 0 && dir_takes_hard_links(src_dir)) {
+        /* A read-only source directory: the link lands, the unlink cannot. Without hard links there is no link to land
+           (the rename onto the claim fails like the unlink), so this needs them. */
         ok = ok && chmod(src_dir, 0500) == 0;
         left = -1;
         ok = ok && dsd_rename_noreplace_by_link(from, to, &left) == 0 && left == 1;
