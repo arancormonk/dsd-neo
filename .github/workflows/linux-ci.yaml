@@ -105,7 +105,8 @@ jobs:
             build-essential cmake ninja-build pkg-config git ripgrep \
             libsndfile1-dev libpulse-dev libncurses-dev \
             libusb-1.0-0-dev libfftw3-dev libblas-dev liblapack-dev gfortran \
-            libcodec2-dev librtlsdr-dev libsoapysdr-dev libairspy-dev libcurl4-openssl-dev libexpat1-dev
+            libcodec2-dev librtlsdr-dev libsoapysdr-dev libairspy-dev libcurl4-openssl-dev libexpat1-dev \
+            portaudio19-dev
 
       # The ANDROID_*_JVM tests compile Kotlin. The x86-64 runner image has Java and
       # kotlinc; the arm64 one has only Java, so the pinned compiler is fetched
@@ -1377,7 +1378,7 @@ jobs:
             build-essential clang cmake ninja-build pkg-config git ccache ripgrep \
             libsndfile1-dev libpulse-dev libncurses-dev \
             libusb-1.0-0-dev libfftw3-dev libblas-dev liblapack-dev \
-            gfortran libcurl4-openssl-dev libexpat1-dev
+            gfortran libcurl4-openssl-dev libexpat1-dev portaudio19-dev
 
       - name: Prepare ccache environment
         run: |

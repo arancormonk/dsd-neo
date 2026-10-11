@@ -48,6 +48,7 @@ static size_t g_response_count;
 static size_t g_response_index;
 static dsd_socket_t g_create_result;
 static int g_send_result;
+static int g_last_send_flags = -1;
 static int g_resolve_result;
 static int g_connect_result;
 static int g_resolve_count;
@@ -238,7 +239,7 @@ dsd_socket_setsockopt(dsd_socket_t sock, int level, int optname, const void* opt
 int
 dsd_socket_send(dsd_socket_t sock, const void* buf, size_t len, int flags) {
     (void)sock;
-    (void)flags;
+    g_last_send_flags = flags;
     assert(g_command_count < MAX_COMMANDS);
     size_t copy_len = len;
     if (copy_len >= sizeof(g_commands[g_command_count])) {
@@ -411,6 +412,10 @@ test_setfreq_success_failure_and_cache(void) {
     assert(SetFreq(100, 851012500L));
     assert(g_command_count == 1);
     assert(strcmp(g_commands[0], "F 851012500\n") == 0);
+#ifdef MSG_NOSIGNAL
+    /* A rigctl server that went away costs a failed send, never a SIGPIPE (issue #659). */
+    assert(g_last_send_flags == MSG_NOSIGNAL);
+#endif
 
     assert(SetFreq(100, 851012500L));
     assert(g_command_count == 1);

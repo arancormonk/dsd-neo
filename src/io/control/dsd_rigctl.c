@@ -52,6 +52,15 @@
 static bool Send(dsd_socket_t sockfd, const char* buf);
 static bool Recv(dsd_socket_t sockfd, char* buf);
 static void rigctl_peer_forget(dsd_socket_t sockfd);
+/* A rigctl server that has gone away must cost a failed send, never a SIGPIPE: an embedded host that keeps the default
+   disposition (DSD_NEO_NO_SIGNAL_HANDLERS) would die of it. Linux takes the flag per send; where it is missing the
+   process that owns its signals ignores SIGPIPE (engine), and Windows has no such signal. */
+#ifdef MSG_NOSIGNAL
+#define DSD_RIGCTL_SEND_FLAGS MSG_NOSIGNAL
+#else
+#define DSD_RIGCTL_SEND_FLAGS 0
+#endif
+
 static void connect_apply_options(dsd_socket_t sockfd);
 static void connect_note_address(const char* host, int port, const struct sockaddr_in* addr);
 
@@ -218,7 +227,7 @@ Send(dsd_socket_t sockfd, const char* buf) {
         return false;
     }
     const size_t len = strlen(buf);
-    const int n = dsd_socket_send(sockfd, buf, len, 0);
+    const int n = dsd_socket_send(sockfd, buf, len, DSD_RIGCTL_SEND_FLAGS);
     return n >= 0 && (size_t)n == len;
 }
 
