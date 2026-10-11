@@ -28,6 +28,7 @@
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/platform/timing.h>
 #include <memory>
+#include <utility>
 #include <vector>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -187,7 +188,10 @@ cf32_payload(size_t complex_count) {
 
 /* Replays @p metadata_path to its end with @p squelch_level in force (0: off), logging every demod block. */
 static int
-replay_and_log(const char* metadata_path, double squelch_level, BlockLog* log) {
+replay_and_log(const char* metadata_path, double squelch_level, BlockLog* out_log) {
+    /* The hooks retain their context globally. Own it until the stream has stopped and both hooks are cleared;
+     * the caller's log is only an output destination, never a retained stack address. */
+    std::unique_ptr<BlockLog> log(new BlockLog());
     std::unique_ptr<dsd_opts> opts(new dsd_opts());
     DSD_MEMSET(opts.get(), 0, sizeof(dsd_opts));
     opts->audio_in_type = AUDIO_IN_RTL;
@@ -197,8 +201,8 @@ replay_and_log(const char* metadata_path, double squelch_level, BlockLog* log) {
     DSD_SNPRINTF(opts->iq_replay_path, sizeof(opts->iq_replay_path), "%s", metadata_path);
     DSD_SNPRINTF(opts->audio_in_dev, sizeof(opts->audio_in_dev), "iqreplay:%s", metadata_path);
 
-    rtl_stream_test_set_replay_block_hook(block_log_hook, log);
-    rtl_stream_test_set_replay_stage_hook(block_power_stage, log);
+    rtl_stream_test_set_replay_block_hook(block_log_hook, log.get());
+    rtl_stream_test_set_replay_stage_hook(block_power_stage, log.get());
     RtlSdrContext* ctx = NULL;
     int rc = 0;
     if (rtl_stream_create(opts.get(), &ctx) != 0 || !ctx || rtl_stream_start(ctx) != 0) {
@@ -225,6 +229,7 @@ replay_and_log(const char* metadata_path, double squelch_level, BlockLog* log) {
     }
     rtl_stream_test_set_replay_stage_hook(NULL, NULL);
     rtl_stream_test_set_replay_block_hook(NULL, NULL);
+    *out_log = std::move(*log);
     return rc;
 }
 

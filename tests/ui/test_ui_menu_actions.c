@@ -2535,7 +2535,9 @@ static int
 test_scan_row_scope_chooser(void) {
     static dsd_opts opts;
     static dsd_state state;
-    UiCtx ctx = make_ctx(&opts, &state);
+    /* Choosers and prompts retain this context between callbacks, as they do the menu's static context. */
+    static UiCtx ctx;
+    ctx = make_ctx(&opts, &state);
     int rc = 0;
     opts.audio_in_type = AUDIO_IN_RTL;
     dsd_test_scan_labels_input_type(AUDIO_IN_RTL);

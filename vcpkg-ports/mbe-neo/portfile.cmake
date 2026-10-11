@@ -3,8 +3,8 @@
 vcpkg_from_github(
     OUT_SOURCE_PATH SOURCE_PATH
     REPO arancormonk/mbelib-neo
-    REF fae6f38da48b56e284375b174537ad8beb7b5eba
-    SHA512 234e69cb418000313ed09683909588f22c204fb42b8c1b234e4b066a8bba53edacbfb1e66fd9d172b7723c2a2422fcf30bb14f18a0536940eacf522f3f0ec580
+    REF c2d0b801238cd6b23e0d533e1dd8453362c61e88
+    SHA512 e53f8b6f3696036cc44211f01835c87d77dcfabe80eeadd97c89556f0d7071820fcbb811d7f962149d4db9847c668aa34138da08f00fdf95af7db64bfbfe9d44
 )
 
 vcpkg_cmake_configure(
