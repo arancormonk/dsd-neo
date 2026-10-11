@@ -160,6 +160,7 @@ typedef struct {
     unsigned int dmr_so;
     unsigned int dmr_fidR;
     unsigned int dmr_soR;
+    uint8_t dmr_le_vendor[2];
     unsigned int dmr_t3_syscode;
     char dmr_site_parms[200];
     char dmr_branding[20];
@@ -1809,6 +1810,7 @@ trunk_scan_save_dmr_snapshot(const dsd_state* state, dsd_trunk_scan_snapshot* sn
     snapshot->dmr_so = state->dmr_so;
     snapshot->dmr_fidR = state->dmr_fidR;
     snapshot->dmr_soR = state->dmr_soR;
+    DSD_MEMCPY(snapshot->dmr_le_vendor, state->dmr_le_vendor, sizeof(snapshot->dmr_le_vendor));
     snapshot->dmr_t3_syscode = state->dmr_t3_syscode;
     trunk_scan_save_dmr_confidence_snapshot(state, snapshot);
     DSD_MEMCPY(snapshot->dmr_branding, state->dmr_branding, sizeof(snapshot->dmr_branding));
@@ -1835,6 +1837,7 @@ trunk_scan_restore_dmr_snapshot(dsd_state* state, const dsd_trunk_scan_snapshot*
     state->dmr_so = snapshot->dmr_so;
     state->dmr_fidR = snapshot->dmr_fidR;
     state->dmr_soR = snapshot->dmr_soR;
+    DSD_MEMCPY(state->dmr_le_vendor, snapshot->dmr_le_vendor, sizeof(state->dmr_le_vendor));
     state->dmr_t3_syscode = snapshot->dmr_t3_syscode;
     trunk_scan_restore_dmr_confidence_snapshot(state, snapshot);
     DSD_MEMCPY(state->dmr_branding, snapshot->dmr_branding, sizeof(state->dmr_branding));

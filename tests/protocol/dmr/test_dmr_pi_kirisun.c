@@ -353,7 +353,10 @@ test_pi_kirisun_slot0_sets_fields_and_le_mode(void) {
     assert(state.payload_algid == 0x36);
     assert(state.payload_mi == 0x11223344ULL);
     assert(state.payload_keyid == (uint8_t)((0x36U * 0x000001U) & 0xFFU));
-    assert(opts.dmr_le == 3);
+    // Issue #657: the mode is the slot's call's; the user's setting stays as set.
+    assert(state.dmr_le_vendor[0] == DMR_LE_VENDOR_KIRISUN_ENC);
+    assert(state.dmr_le_vendor[1] == DMR_LE_VENDOR_NONE);
+    assert(opts.dmr_le == 0);
 }
 
 static void
@@ -372,6 +375,7 @@ test_pi_kirisun_requires_crc_ok(void) {
     assert(state.payload_keyid == 0);
     assert(state.payload_mi == 0);
     assert(opts.dmr_le == 1);
+    assert(state.dmr_le_vendor[0] == DMR_LE_VENDOR_NONE);
 }
 
 static void
@@ -389,7 +393,9 @@ test_pi_kirisun_slot1_sets_fields_and_le_mode(void) {
     assert(state.payload_algidR == 0x37);
     assert(state.payload_miR == 0xAABBCCDDULL);
     assert(state.payload_keyidR == (uint8_t)((0x37U * 0x000009U) & 0xFFU));
-    assert(opts.dmr_le == 3);
+    assert(state.dmr_le_vendor[1] == DMR_LE_VENDOR_KIRISUN_ENC);
+    assert(state.dmr_le_vendor[0] == DMR_LE_VENDOR_NONE);
+    assert(opts.dmr_le == 0);
 }
 
 static void
@@ -407,7 +413,8 @@ test_pi_kirisun_generic_alg_sets_fields(void) {
     assert(state.payload_algid == 0x38);
     assert(state.payload_mi == 0x01020304ULL);
     assert(state.payload_keyid == (uint8_t)((0x38U * 0x000005U) & 0xFFU));
-    assert(opts.dmr_le == 3);
+    assert(state.dmr_le_vendor[0] == DMR_LE_VENDOR_KIRISUN_ENC);
+    assert(opts.dmr_le == 0);
 }
 
 static void
@@ -429,6 +436,7 @@ test_pi_irrecoverable_error_is_noop(void) {
     assert(state.last_vc_sync_time == 0);
     assert(state.last_cc_sync_time == 0);
     assert(opts.dmr_le == 1);
+    assert(state.dmr_le_vendor[0] == DMR_LE_VENDOR_NONE);
 }
 
 static void
@@ -597,7 +605,10 @@ test_pi_hytera_enhanced_checksum_sets_slot1_fields(void) {
     assert(state.payload_algidR == 0x02);
     assert(state.payload_keyidR == 0x34);
     assert(state.payload_miR == 0x0123456789ULL);
-    assert(opts.dmr_le == 2);
+    // Issue #657: Hytera Enhanced turns DMRA late entry off for this slot's call only.
+    assert(state.dmr_le_vendor[1] == DMR_LE_VENDOR_HYTERA_ENH);
+    assert(state.dmr_le_vendor[0] == DMR_LE_VENDOR_NONE);
+    assert(opts.dmr_le == 1);
 }
 
 static void
@@ -619,7 +630,8 @@ test_pi_hytera_slot0_checksum_key_and_error_paths(void) {
     assert(state.payload_algid == 0x02);
     assert(state.payload_keyid == 0x21);
     assert(state.payload_mi == 0x1032547698ULL);
-    assert(opts.dmr_le == 2);
+    assert(state.dmr_le_vendor[0] == DMR_LE_VENDOR_HYTERA_ENH);
+    assert(opts.dmr_le == 1);
 
     // A checksum-failed Hytera-shaped PI is one corrupt burst away from muting a clear call
     // with a fabricated ALGID/MI -- the caller dispatches on the MFID byte alone -- so the
@@ -636,6 +648,7 @@ test_pi_hytera_slot0_checksum_key_and_error_paths(void) {
     assert(state.payload_keyid == 0);
     assert(state.payload_mi == 0ULL);
     assert(opts.dmr_le == 1);
+    assert(state.dmr_le_vendor[0] == DMR_LE_VENDOR_NONE);
 }
 
 static void
@@ -715,6 +728,8 @@ test_hytera_refresh_advances_feedback_branch(void) {
     assert(state.payload_mi != 0x8000000000ULL);
 }
 
+// The Kirisun SB identifier is read only for a slot whose call verified Kirisun encryption (issue #657: the mode is
+// the slot's call's, set by its Kirisun PI or LC, never a session-wide opts->dmr_le).
 static void
 test_sbrc_kirisun_gate_rejects_non_kirisun_calls(void) {
     static dsd_opts opts;
@@ -722,11 +737,13 @@ test_sbrc_kirisun_gate_rejects_non_kirisun_calls(void) {
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
 
-    opts.dmr_le = 3;
+    opts.dmr_le = 1;
     state.currentslot = 1;
     state.dmr_soR = 0x40U;
     state.dmr_fidR = 0x10;
     state.payload_algidR = 0;
+    // Kirisun on the other slot only.
+    state.dmr_le_vendor[0] = DMR_LE_VENDOR_KIRISUN_ENC;
     load_single_burst_value(&state, 1, 0x008U);
 
     dmr_sbrc(&opts, &state, 0);
@@ -741,16 +758,19 @@ test_sbrc_kirisun_gate_accepts_kirisun_calls(void) {
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
 
-    opts.dmr_le = 3;
+    // A real sequence: the slot's CRC-verified Kirisun PI, then its single burst. -3 does not turn Kirisun's own
+    // identifier off, and nothing seeds the FID.
+    opts.dmr_le = 0;
     state.currentslot = 1;
-    state.dmr_soR = 0x40U;
-    state.dmr_fidR = 0x0A;
+    uint8_t pi[10] = {0x36, 0x0A, 0x40, 0x11, 0x22, 0x33, 0x44, 0x00, 0x00, 0x01};
+    dmr_pi(&opts, &state, pi, 1, 0);
     state.payload_algidR = 0;
     load_single_burst_value(&state, 1, 0x008U);
 
     dmr_sbrc(&opts, &state, 0);
 
     assert(state.payload_algidR == 0x35);
+    assert(opts.dmr_le == 0);
 }
 
 static void
@@ -760,7 +780,7 @@ test_sbrc_kirisun_gate_ignores_stale_kirisun_alg(void) {
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
 
-    opts.dmr_le = 3;
+    opts.dmr_le = 1;
     state.currentslot = 1;
     state.dmr_soR = 0x40U;
     state.dmr_fidR = 0x10;
@@ -886,6 +906,81 @@ test_sbrc_txi_commands(void) {
     }
 }
 
+/* Issue #657: vendor late-entry modes are the slot's call's and never rewrite the user's setting. With -3, Kirisun
+ * signalling on slot 1 leaves the DMRA identifiers off for the other slot's call (before, it set opts->dmr_le to 3 for
+ * the session, which turned standard SB parsing back on for every non-Kirisun call). */
+static void
+test_le_kirisun_leaves_user_setting_off(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    opts.dmr_le = 0;
+    state.currentslot = 0;
+    uint8_t pi[10] = {0x36, 0x0A, 0x40, 0x11, 0x22, 0x33, 0x44, 0x00, 0x00, 0x01};
+    dmr_pi(&opts, &state, pi, 1, 0);
+    assert(opts.dmr_le == 0);
+
+    state.currentslot = 1;
+    state.dmr_soR = 0x40U;
+    load_single_burst_value(&state, 1, (uint16_t)((0x44U << 3U) | 5U));
+    dmr_sbrc(&opts, &state, 0);
+    assert(state.payload_algidR == 0);
+    assert(state.payload_keyidR == 0);
+}
+
+/* Issue #657: Hytera Enhanced on slot 2 turns DMRA late entry off for that call only: slot 1 keeps parsing standard SB
+ * identifiers and collecting late-entry MI fragments, and the user's setting stays on (before, opts->dmr_le became 2
+ * for the session). */
+static void
+test_le_hytera_is_per_slot(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    opts.dmr_le = 1;
+    state.currentslot = 1;
+    state.RR = 0x123456789AULL;
+    uint8_t pi[10] = {0x02, 0x68, 0x34, 0x01, 0x23, 0x45, 0x67, 0x89, 0x00, 0x09};
+    dmr_pi(&opts, &state, pi, 1, 0);
+    assert(state.dmr_le_vendor[1] == DMR_LE_VENDOR_HYTERA_ENH);
+    assert(opts.dmr_le == 1);
+
+    state.currentslot = 0;
+    state.dmr_so = 0x40U;
+    load_single_burst_value(&state, 0, 0x094U);
+    dmr_sbrc(&opts, &state, 0);
+    assert(state.payload_algid == 0x24);
+    assert(state.payload_keyid == 0x12);
+
+    // Slot 2's own SB is not read as a DMRA identifier.
+    state.currentslot = 1;
+    const int algid_r = state.payload_algidR;
+    load_single_burst_value(&state, 1, (uint16_t)((0x44U << 3U) | 5U));
+    dmr_sbrc(&opts, &state, 0);
+    assert(state.payload_algidR == algid_r);
+
+    uint8_t fr[4][24];
+    DSD_MEMSET(fr, 0, sizeof(fr));
+    for (int i = 0; i < 4; i++) {
+        fr[3][i] = 1U;
+    }
+    state.currentslot = 0;
+    dmr_late_entry_mi_fragment(&opts, &state, 2U, fr, fr, fr);
+    assert(state.late_entry_mi_fragment[0][2][0] == 0xFU);
+    state.currentslot = 1;
+    dmr_late_entry_mi_fragment(&opts, &state, 2U, fr, fr, fr);
+    assert(state.late_entry_mi_fragment[1][2][0] == 0U);
+
+    // The slot's next call collects again once its mode is cleared with the call.
+    dmr_le_vendor_reset(&state, 1U);
+    dmr_late_entry_mi_fragment(&opts, &state, 2U, fr, fr, fr);
+    assert(state.late_entry_mi_fragment[1][2][0] == 0xFU);
+    dsd_state_ext_free_all(&state);
+}
+
 int
 main(void) {
     InitAllFecFunction();
@@ -919,6 +1014,8 @@ main(void) {
     test_sbrc_standard_slot1_encryption_identifier_guards();
     test_sbrc_reverse_channel_commands();
     test_sbrc_txi_commands();
+    test_le_kirisun_leaves_user_setting_off();
+    test_le_hytera_is_per_slot();
     printf("DMR PI Kirisun: OK\n");
     return 0;
 }

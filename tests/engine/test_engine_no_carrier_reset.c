@@ -3904,6 +3904,8 @@ test_carrier_boundary_discards_partial_assemblies(void) {
     state->data_header_valid[0] = 1;
     state->dmr_embedded_signalling[0][1][0] = 1;
     state->late_entry_mi_fragment[0][1][0] = 5U;
+    state->dmr_le_vendor[0] = DMR_LE_VENDOR_HYTERA_ENH;
+    state->dmr_le_vendor[1] = DMR_LE_VENDOR_KIRISUN_ENC;
     state->dmr_alias_format[0] = 1;
     state->dmr_alias_block_len[0] = 4;
     state->dmr_alias_char_size[0] = 7;
@@ -3944,6 +3946,9 @@ test_carrier_boundary_discards_partial_assemblies(void) {
                           && state->data_block_counter[0] == 1 && state->data_header_valid[0] == 0);
     rc |= expect_true("assemblies: the boundary drops the DMR embedded LC and late-entry MI",
                       state->dmr_embedded_signalling[0][1][0] == 0 && state->late_entry_mi_fragment[0][1][0] == 0U);
+    /* Issue #657: the calls end at the boundary, and with them each slot's vendor late-entry mode. */
+    rc |= expect_true("assemblies: the boundary drops the DMR vendor late-entry modes",
+                      state->dmr_le_vendor[0] == DMR_LE_VENDOR_NONE && state->dmr_le_vendor[1] == DMR_LE_VENDOR_NONE);
     rc |= expect_true("assemblies: the boundary drops the DMR talker alias and the alias shown",
                       state->dmr_alias_format[0] == 0 && state->dmr_alias_block_len[0] == 0
                           && state->dmr_alias_char_size[0] == 0 && state->dmr_alias_block_segment[0][0][0][0] == 0
@@ -4610,8 +4615,8 @@ test_rx_tone_resets_on_legacy_scan_step(void) {
 
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
 /* Issue #651: a no-carrier pass that finds the guard taken leaves the playout to the next pass, and with it the
-   return to the control channel (which would turn both slots on): the next pass drains the queued frame under the
-   user's switches (both off here) before it returns, so nothing plays. */
+   return to the control channel (which ends the calls): the next pass drains the queued frame under the user's
+   switches (both off here) before it returns, so nothing plays, and the return leaves the switches as set (#657). */
 static int
 test_p25_nocarrier_deferred_drain_keeps_the_switches(void) {
     dsd_opts* opts = NULL;
@@ -4646,6 +4651,7 @@ test_p25_nocarrier_deferred_drain_keeps_the_switches(void) {
     rc |= expect_true("p25-nocarrier-deferred-drain-keeps-switches", opts->slot1_on == 0 && opts->slot2_on == 0);
     noCarrier(opts, state);
     rc |= expect_true("p25-nocarrier-deferred-drain-plays-nothing", g_p25p2_blocks == 0);
+    rc |= expect_true("p25-nocarrier-return-keeps-switches", opts->slot1_on == 0 && opts->slot2_on == 0);
     rc |= expect_true("p25-nocarrier-deferred-drain-empties", dsd_p25p2_playout_level(state, 0) == 0);
     g_guard_busy_once = 0;
     dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
@@ -5552,8 +5558,9 @@ main(void) {
     state->p25_p1_validated_rf_mod = 1;
     state->p25_p1_nid_evidence = 1;
     state->p25_p1_nid_evidence_symbolcnt = 4321U;
-    /* Issue #651: a Phase 2 frame still queued as the carrier drops, both slots switched off by the user. The return to
-       the control channel below turns both slots on for it; the frame drains first, under the user's switches. */
+    /* Issue #651: a Phase 2 frame still queued as the carrier drops, both slots switched off by the user. The frame
+       drains first, under the user's switches, and the return to the control channel below leaves them as set (issue
+       #657: it used to turn both slots back on). */
     stage_p25p2_frame(opts, state);
 
     noCarrier(opts, state);
@@ -5580,7 +5587,7 @@ main(void) {
                       state->samplesPerSymbol == 20 && state->symbolCenter == 9);
     rc |= expect_true("p25-rtl-nocarrier-selects-four-level-profile",
                       state->sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_4800_4 && state->sps_hunt_counter == 0);
-    rc |= expect_true("p25-rtl-nocarrier-reenables-slots", opts->slot1_on == 1 && opts->slot2_on == 1);
+    rc |= expect_true("p25-rtl-nocarrier-keeps-slot-switches", opts->slot1_on == 0 && opts->slot2_on == 0);
     rc |= expect_true("p25-rtl-nocarrier-clear-tuned", opts->trunk_is_tuned == 0);
     rc |= expect_true("p25-rtl-nocarrier-clear-vc", state->p25_vc_freq[0] == 0 && state->p25_vc_freq[1] == 0);
     rc |= expect_true("p25-rtl-nocarrier-uses-return-grace",

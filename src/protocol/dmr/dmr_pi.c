@@ -52,7 +52,7 @@ dmr_pi_extract_mi40(const uint8_t pi_byte[]) {
 }
 
 static void
-dmr_pi_handle_kirisun(dsd_opts* opts, dsd_state* state, const uint8_t pi_byte[]) {
+dmr_pi_handle_kirisun(dsd_state* state, const uint8_t pi_byte[]) {
     const uint8_t alg = pi_byte[0];
     const uint8_t so = pi_byte[2];
     const uint32_t target = ((uint32_t)pi_byte[7] << 16U) | ((uint32_t)pi_byte[8] << 8U) | ((uint32_t)pi_byte[9] << 0U);
@@ -86,8 +86,8 @@ dmr_pi_handle_kirisun(dsd_opts* opts, dsd_state* state, const uint8_t pi_byte[])
     }
     DSD_FPRINTF(stderr, "%s", KNRM);
 
-    // Use Kirisun-specific LE handling for SB/MI refresh.
-    opts->dmr_le = 3;
+    // Kirisun-specific late-entry handling for this slot's call (issue #657: never the user's opts->dmr_le).
+    dmr_le_vendor_set(state, (uint8_t)(state->currentslot & 1), DMR_LE_VENDOR_KIRISUN_ENC);
 }
 
 static void
@@ -105,7 +105,7 @@ dmr_pi_hytera_print_key(const dsd_state* state, int show_keys) {
 }
 
 static void
-dmr_pi_handle_hytera(dsd_opts* opts, dsd_state* state, const uint8_t pi_byte[]) {
+dmr_pi_handle_hytera(const dsd_opts* opts, dsd_state* state, const uint8_t pi_byte[]) {
     DSD_FPRINTF(stderr, "%s ", KYEL);
     DSD_FPRINTF(stderr, "\n Slot %d", state->currentslot + 1);
     DSD_FPRINTF(stderr, " DMR PI H- ALG ID: %02X; KEY ID: %02X; MI(40): %02X%02X%02X%02X%02X;", pi_byte[0], pi_byte[2],
@@ -131,8 +131,9 @@ dmr_pi_handle_hytera(dsd_opts* opts, dsd_state* state, const uint8_t pi_byte[]) 
         DSD_FPRINTF(stderr, " Hytera Enhanced; ");
         dmr_pi_hytera_print_key(state, opts->show_keys);
 
-        //disable late entry for DMRA (hopefully, there aren't any systems running both DMRA and Hytera Enhanced mixed together)
-        opts->dmr_le = 2;
+        // No DMRA late entry for this slot's call: Hytera Enhanced carries its own MI (issue #657: per slot and per
+        // call, never the user's opts->dmr_le).
+        dmr_le_vendor_set(state, (uint8_t)(state->currentslot & 1), DMR_LE_VENDOR_HYTERA_ENH);
     } else {
         DSD_FPRINTF(stderr, "%s", KRED);
         DSD_FPRINTF(stderr, " (Checksum Err);");
@@ -279,7 +280,7 @@ dmr_pi(dsd_opts* opts, dsd_state* state, uint8_t PI_BYTE[], uint32_t CRCCorrect,
     dmr_pi_update_sync_times_if_tuned(opts, state);
 
     if (MFID == 0x0A && CRCCorrect == 1) { //Kirisun
-        dmr_pi_handle_kirisun(opts, state, PI_BYTE);
+        dmr_pi_handle_kirisun(state, PI_BYTE);
         dmr_pi_publish_crypto(opts, state);
         return;
     }

@@ -7691,14 +7691,15 @@ command_changes_call_verdict(const struct dsd_app_command* c) {
                    || c->id == DSD_APP_CMD_TRUNK_WLIST_TOGGLE));
 }
 
-/* A command that changes what the P25 Phase 2 playout reads as it plays: a call's verdict, or a slot switch (with the
-   vocoder output buffers a slot switched off rewinds). */
+/* A command that changes what the P25 Phase 2 playout reads as it plays: a call's verdict, a slot switch (with the
+   vocoder output buffers a slot switched off rewinds) or the slot preference. */
 static int
 command_feeds_playout(const struct dsd_app_command* c) {
     return command_changes_call_verdict(c)
            || (c
                && (c->id == DSD_APP_CMD_SLOT1_TOGGLE || c->id == DSD_APP_CMD_SLOT2_TOGGLE
-                   || c->id == DSD_APP_CMD_SLOTS_ONOFF_SET));
+                   || c->id == DSD_APP_CMD_SLOTS_ONOFF_SET || c->id == DSD_APP_CMD_SLOT_PREF_CYCLE
+                   || c->id == DSD_APP_CMD_SLOT_PREF_SET));
 }
 
 /* A command that opens, closes or publishes a per-call, static or raw WAV. The watchdog's release publishes and reopens

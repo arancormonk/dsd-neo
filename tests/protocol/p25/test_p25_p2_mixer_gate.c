@@ -162,6 +162,7 @@ playout_setup(dsd_opts* opts, dsd_state* st, int floating, int channels) {
     opts->pulse_digi_out_channels = channels;
     opts->slot1_on = 1;
     opts->slot2_on = 1;
+    opts->slot_preference = 2; // Auto: both audible slots play side by side
     opts->audio_gain = 25;
     st->aout_gain = 49.0f;
     st->aout_gainR = 49.0f;
@@ -650,6 +651,7 @@ run_short_stereo_dmr3_playback_case(void) {
     opts.audio_out_type = 8;
     opts.slot1_on = 1;
     opts.slot2_on = 1;
+    opts.slot_preference = 2; // Auto: both audible slots play side by side
     st.audio_out_idx = 160;
     st.audio_out_idxR = 160;
     st.audio_out_idx2 = 800000;

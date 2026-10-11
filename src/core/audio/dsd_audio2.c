@@ -16,6 +16,7 @@
 #include <dsd-neo/core/audio_filters.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/constants.h>
+#include <dsd-neo/core/dmr_enc_mute.h>
 #include <dsd-neo/core/key_presence.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/p25p2_playout.h>
@@ -462,11 +463,11 @@ dmr_forced_privacy_unmute_enabled(const dsd_opts* opts, const dsd_state* state) 
 // it: set when the slot is encrypted and no loaded key decrypts it (a mapped Vertex keystream counts as decrypting),
 // cleared under forced clear, and flipped by reverse mute (-q). The Baofeng AP / CSI EE override above comes first.
 //
-// The mixes differ over the encrypted-audio mute flag, dmr_mute_encL/R. It is 0 after the user's toggle of all
-// mutes, after any key load (dsd_key_apply_mute_policy(), or a scan row's or trunk-scan target's direct keys through
-// scan_option_apply_mute_dmr()) and after the vocoder's talkgroup key autoload or AES keystream; -q sets it with the
-// verdict. While it is 0 the vocoder still runs a slot it flagged encrypted through the short path, and FS3 plays the
-// slot (undecryptable garble, as it long has). SS3 does not: a slot flagged encrypted starts muted whatever the flag
+// The mixes differ over the encrypted-audio mute, dsd_dmr_slot_mute_enc(): the user's dmr_mute_encL/R, which is 0
+// after the user's toggle of all mutes and after any key load (dsd_key_apply_mute_policy(), or a scan row's or
+// trunk-scan target's direct keys through scan_option_apply_mute_dmr()), and reads 1 under -q, where the flipped flag
+// alone decides. Decoding never writes it (issue #657). While it is 0 the vocoder still runs a slot it flagged
+// encrypted through the short path, and FS3 plays the slot (undecryptable garble, as it long has). SS3 does not: a slot flagged encrypted starts muted whatever the flag
 // says, so a key load cannot unmute every call those keys do not decrypt. A talkgroup hold on that slot still unmutes
 // it, and SS3 then plays the short samples the vocoder staged for it (mute flag 0, no key), as it always has.
 static int
@@ -480,8 +481,7 @@ dmr_slot_flagged_encrypted(const dsd_opts* opts, const dsd_state* state, int slo
 // FS3's verdict: flagged encrypted while encrypted audio is muted.
 static int
 dmr_slot_mixer_muted(const dsd_opts* opts, const dsd_state* state, int slot) {
-    const int mute = (slot == 0) ? opts->dmr_mute_encL : opts->dmr_mute_encR;
-    return (dmr_slot_flagged_encrypted(opts, state, slot) && mute != 0) ? 1 : 0;
+    return (dmr_slot_flagged_encrypted(opts, state, slot) && dsd_dmr_slot_mute_enc(opts, slot)) ? 1 : 0;
 }
 
 DSD_AUDIO2_INTERNAL void
@@ -550,26 +550,63 @@ dsd_dmr_ss3_init_enc_flags(const dsd_opts* opts, const dsd_state* state, int* en
     *encR = dmr_slot_flagged_encrypted(opts, state, 1);
 }
 
-DSD_AUDIO2_INTERNAL void
-dsd_dmr_apply_tg_hold_and_slot_preference_ss3(dsd_opts* opts, const dsd_state* state, unsigned long TGL,
-                                              unsigned long TGR, int* encL, int* encR) {
+// The slot (0 or 1) a talkgroup hold names, or -1: slot 1 when both slots carry the held talkgroup.
+static int
+dsd_dmr_held_slot(const dsd_state* state, unsigned long TGL, unsigned long TGR) {
+    if (state->tg_hold == 0) {
+        return -1;
+    }
+    if (state->tg_hold == TGL) {
+        return 0;
+    }
+    return (state->tg_hold == TGR) ? 1 : -1;
+}
+
+// The slot preference a mix applies (issue #657): the slot a hold names, else the user's preference, where 2 and
+// anything else is Auto. Mixes read the preference and the slot switches and never write them, so what the user set is
+// what the menu, the API and the next mix see.
+DSD_AUDIO2_INTERNAL int
+dsd_tdma_effective_slot_preference(const dsd_opts* opts, int held_slot) {
+    if (held_slot == 0 || held_slot == 1) {
+        return held_slot;
+    }
+    return (opts->slot_preference == 0 || opts->slot_preference == 1) ? opts->slot_preference : 2;
+}
+
+// A hold mutes the slots not carrying the held talkgroup and unmutes the one that does; returns the preference the
+// mix applies. The slot switches are applied after the hold, so a held call on a switched-off slot stays silent.
+DSD_AUDIO2_INTERNAL int
+dsd_dmr_apply_tg_hold_ss3(const dsd_opts* opts, const dsd_state* state, unsigned long TGL, unsigned long TGR, int* encL,
+                          int* encR) {
+    const int held_slot = dsd_dmr_held_slot(state, TGL, TGR);
     if (state->tg_hold != 0 && state->tg_hold != TGL) {
         *encL = 1;
     }
     if (state->tg_hold != 0 && state->tg_hold != TGR) {
         *encR = 1;
     }
-    if (state->tg_hold != 0 && state->tg_hold == TGL) {
+    if (held_slot == 0) {
         *encL = 0;
-        opts->slot1_on = 1;
-        opts->slot_preference = 0;
-    } else if (state->tg_hold != 0 && state->tg_hold == TGR) {
+    } else if (held_slot == 1) {
         *encR = 0;
-        opts->slot2_on = 1;
-        opts->slot_preference = 1;
-    } else {
-        opts->slot_preference = 2;
     }
+    return dsd_tdma_effective_slot_preference(opts, held_slot);
+}
+
+// The preference's tie-break, the same in both DMR mixes: with both slots audible, the preferred slot fills both
+// channels while it carries voice. Returns that slot, or -1.
+static int
+dsd_dmr_preferred_slot_fills_both(const dsd_state* state, int pref, int encL, int encR) {
+    if (encL != 0 || encR != 0) {
+        return -1;
+    }
+    if (pref == 1 && state->dmrburstR == 16) {
+        return 1;
+    }
+    if (pref == 0 && state->dmrburstL == 16) {
+        return 0;
+    }
+    return -1;
 }
 
 // A muted companion slot must not hold its channel silent (the P25 Phase 2
@@ -578,7 +615,7 @@ dsd_dmr_apply_tg_hold_and_slot_preference_ss3(dsd_opts* opts, const dsd_state* s
 // it -- an audible slot mid-superframe is not always sitting on burst hint 16,
 // and gating duplication on the hint collapsed those spans into one ear.
 static int
-dsd_ss3_should_copy_right_to_left(const dsd_opts* opts, const dsd_state* state, int encL, int encR) {
+dsd_ss3_should_copy_right_to_left(const dsd_opts* opts, const dsd_state* state, int pref, int encL, int encR) {
     if (encR != 0) {
         return 0;
     }
@@ -591,7 +628,7 @@ dsd_ss3_should_copy_right_to_left(const dsd_opts* opts, const dsd_state* state, 
     if (opts->slot1_on == 0 && opts->slot2_on == 1) {
         return 1;
     }
-    if (opts->slot_preference == 1 && state->dmrburstR == 16) {
+    if (dsd_dmr_preferred_slot_fills_both(state, pref, encL, encR) == 1) {
         return 1;
     }
     if (state->dmrburstR == 16 && state->dmrburstL != 16) {
@@ -601,7 +638,7 @@ dsd_ss3_should_copy_right_to_left(const dsd_opts* opts, const dsd_state* state, 
 }
 
 static int
-dsd_ss3_should_copy_left_to_right(const dsd_opts* opts, const dsd_state* state, int encL, int encR) {
+dsd_ss3_should_copy_left_to_right(const dsd_opts* opts, const dsd_state* state, int pref, int encL, int encR) {
     if (encL != 0) {
         return 0;
     }
@@ -614,7 +651,7 @@ dsd_ss3_should_copy_left_to_right(const dsd_opts* opts, const dsd_state* state, 
     if (opts->slot1_on == 1 && opts->slot2_on == 0) {
         return 1;
     }
-    if (opts->slot_preference == 0 && state->dmrburstL == 16) {
+    if (dsd_dmr_preferred_slot_fills_both(state, pref, encL, encR) == 0) {
         return 1;
     }
     if (state->dmrburstL == 16 && state->dmrburstR != 16) {
@@ -624,16 +661,16 @@ dsd_ss3_should_copy_left_to_right(const dsd_opts* opts, const dsd_state* state, 
 }
 
 DSD_AUDIO2_INTERNAL void
-dsd_dmr_apply_stereo_output_policy_ss3(const dsd_opts* opts, dsd_state* state, int encL, int encR) {
+dsd_dmr_apply_stereo_output_policy_ss3(const dsd_opts* opts, dsd_state* state, int pref, int encL, int encR) {
     if (encL) {
         DSD_MEMSET(state->s_l4, 0, sizeof(state->s_l4));
     }
     if (encR) {
         DSD_MEMSET(state->s_r4, 0, sizeof(state->s_r4));
     }
-    if (dsd_ss3_should_copy_right_to_left(opts, state, encL, encR)) {
+    if (dsd_ss3_should_copy_right_to_left(opts, state, pref, encL, encR)) {
         DSD_MEMCPY(state->s_l4, state->s_r4, sizeof(state->s_l4));
-    } else if (dsd_ss3_should_copy_left_to_right(opts, state, encL, encR)) {
+    } else if (dsd_ss3_should_copy_left_to_right(opts, state, pref, encL, encR)) {
         DSD_MEMCPY(state->s_r4, state->s_l4, sizeof(state->s_r4));
     }
 }
@@ -691,25 +728,21 @@ playSynthesizedVoiceFS3(dsd_opts* opts, dsd_state* state) {
     // DMR per-slot ENC gating: derive from decoder-side flags and user policy.
     dsd_dmr_init_slot_mute_flags(opts, state, &encL, &encR);
 
-    //CHEAT: Using the slot on/off, use that to set encL or encR back on
-    //as a simple way to turn off voice synthesis in a particular slot
-    //its not really 'disabled', we just aren't playing it
-    if (opts->slot1_on == 0) {
-        encL = 1;
-    }
-    if (opts->slot2_on == 0) {
-        encR = 1;
-    }
-
     unsigned long TGL = dsd_audio_call_target(state, 0U);
     unsigned long TGR = dsd_audio_call_target(state, 1U);
 
     // Apply whitelist/TG-hold gating shared with other mixers.
     (void)dsd_audio_group_gate_dual(opts, state, TGL, TGR, encL, encR, &encL, &encR);
+    // The slot switches mute last, as in every mix: a hold never plays a switched-off slot (issue #657). The slot is not
+    // really disabled; it is decoded and not played.
+    dsd_apply_slot_hard_mute_flags(opts, &encL, &encR);
     dsd_dmr_apply_mono_slot_gate(opts, state, &encL, &encR);
+    // With both slots audible, the preferred one fills both channels while it carries voice, as in SS3.
+    const int fill = dsd_dmr_preferred_slot_fills_both(
+        state, dsd_tdma_effective_slot_preference(opts, dsd_dmr_held_slot(state, TGL, TGR)), encL, encR);
     if (dsd_audio_activity_armed()) {
-        // FS3 copies no slot over another: its duplication below only fills a muted slot's channel with the other.
-        dsd_dmr_mix_note_audible(opts, encL, encR, 0, 0, DSD_DMR_MIX_MEDIA_FLOAT);
+        // Besides that copy, FS3's duplication below only fills a muted slot's channel with the other.
+        dsd_dmr_mix_note_audible(opts, encL, encR, fill == 1, fill == 0, DSD_DMR_MIX_MEDIA_FLOAT);
     }
 
     //run autogain on the f_ buffers
@@ -719,6 +752,13 @@ playSynthesizedVoiceFS3(dsd_opts* opts, dsd_state* state) {
     agf(opts, state, state->f_r4[1], 1);
     agf(opts, state, state->f_l4[2], 0);
     agf(opts, state, state->f_r4[2], 1);
+
+    // After each slot's own gain, so the copy plays as the preferred slot does.
+    if (fill == 1) {
+        DSD_MEMCPY(state->f_l4, state->f_r4, sizeof(state->f_l4));
+    } else if (fill == 0) {
+        DSD_MEMCPY(state->f_r4, state->f_l4, sizeof(state->f_r4));
+    }
 
     //interleave left and right channels from the temp (float) buffer
     audio_mix_interleave_stereo_f32(state->f_l4[0], state->f_r4[0], 160, encL, encR, stereo_samp1);
@@ -767,13 +807,13 @@ playSynthesizedVoiceFS(dsd_opts* opts, dsd_state* state) {
         encL = 0;
     }
 
-    if (opts->slot1_on == 0) {
-        encL = 1;
-    }
-
     unsigned long TGL = dsd_audio_call_target(state, dsd_mono_source_slot(state));
     (void)dsd_audio_group_gate_mono(opts, state, TGL, encL, &encL);
     if (is_p25p1 && !p25_crypto_audio_output_permitted(opts, state, 0)) {
+        encL = 1;
+    }
+    // The slot switch mutes last: a hold never plays a switched-off slot (issue #657).
+    if (opts->slot1_on == 0) {
         encL = 1;
     }
 
@@ -861,14 +901,14 @@ playSynthesizedVoiceSS(dsd_opts* opts, dsd_state* state) {
     short stereo_samp1[320]; //8k 2-channel stereo interleave mix
     DSD_MEMSET(stereo_samp1, 0, sizeof(stereo_samp1));
 
-    if (opts->slot1_on == 0) {
-        encL = 1;
-    }
-
     const uint8_t source_slot = dsd_mono_source_slot(state);
     unsigned long TGL = dsd_audio_call_target(state, source_slot);
 
     encL = dsd_fdma_apply_group_gate(opts, state, TGL, encL);
+    // The slot switch mutes last: a hold never plays a switched-off slot (issue #657).
+    if (opts->slot1_on == 0) {
+        encL = 1;
+    }
 
     if (opts->use_hpf_d == 1) {
         hpf_dL(state, state->s_l, 160);
@@ -915,20 +955,22 @@ playSynthesizedVoiceSS3(dsd_opts* opts, dsd_state* state) {
     // (mbe_post_stage_slot_silence()), so here a held muted slot plays silence. Staging short samples for a muted slot
     // would run the short path's gain on audio the vocoder judged muted, for a rare combination. A slot flagged
     // encrypted that the vocoder still staged (encrypted-audio mute flag 0, no key) plays those samples under a hold.
-    dsd_dmr_apply_tg_hold_and_slot_preference_ss3(opts, state, TGL, TGR, &encL, &encR);
+    const int pref = dsd_dmr_apply_tg_hold_ss3(opts, state, TGL, TGR, &encL, &encR);
     // Apply the final policy after Hold so a temporary avoid cannot be unmuted again.
     (void)dsd_audio_group_gate_dual(opts, state, TGL, TGR, encL, encR, &encL, &encR);
+    // The slot switches mute last, as in every mix: a hold never plays a switched-off slot (issue #657).
     dsd_apply_slot_hard_mute_flags(opts, &encL, &encR);
     dsd_dmr_apply_mono_slot_gate(opts, state, &encL, &encR);
     dsd_hpf_short_triplet_if_enabled(opts, state);
     // The copies dsd_dmr_apply_stereo_output_policy_ss3() makes below, decided from the same flags.
-    const int copy_right_to_left = dsd_ss3_should_copy_right_to_left(opts, state, encL, encR);
-    const int copy_left_to_right = !copy_right_to_left && dsd_ss3_should_copy_left_to_right(opts, state, encL, encR);
+    const int copy_right_to_left = dsd_ss3_should_copy_right_to_left(opts, state, pref, encL, encR);
+    const int copy_left_to_right =
+        !copy_right_to_left && dsd_ss3_should_copy_left_to_right(opts, state, pref, encL, encR);
     if (dsd_audio_activity_armed()) {
         dsd_dmr_mix_note_audible(opts, encL, encR, copy_right_to_left, copy_left_to_right, DSD_DMR_MIX_MEDIA_SHORT);
     }
     const int wav_mask = dsd_stereo_wav_channel_mask(opts, state, encL, encR, copy_right_to_left, copy_left_to_right);
-    dsd_dmr_apply_stereo_output_policy_ss3(opts, state, encL, encR);
+    dsd_dmr_apply_stereo_output_policy_ss3(opts, state, pref, encL, encR);
 
     //at this point, if both channels are still flagged as enc, then we can skip all playback/writing functions
     if (encL && encR) {

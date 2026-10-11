@@ -23,6 +23,7 @@
 #include <dsd-neo/core/audio_activity.h>
 #include <dsd-neo/core/bit_packing.h>
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/dmr_enc_mute.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/key_presence.h>
@@ -398,6 +399,9 @@ typedef struct {
     char ambe_d[49];
     int vertex_ks_applied_l;
     int vertex_ks_applied_r;
+    // The slot's frame was decrypted with the talkgroup key autoload or the AES/stream keystream: its encrypted-audio
+    // mute is off for this frame only, never in dsd_opts (issue #657).
+    int key_unmute[2];
     mbe_capture_point capture;
 } mbe_frame_ctx_t;
 
@@ -405,6 +409,8 @@ static void
 mbe_prepare_frame_state(dsd_state* state, mbe_frame_ctx_t* frame_ctx, const dsd_call_snapshot* call) {
     frame_ctx->vertex_ks_applied_l = 0;
     frame_ctx->vertex_ks_applied_r = 0;
+    frame_ctx->key_unmute[0] = 0;
+    frame_ctx->key_unmute[1] = 0;
     frame_ctx->capture = MBE_CAPTURE_NONE;
 
     (void)dsd_dmr_apply_forced_algid(state);
@@ -980,7 +986,7 @@ mbe_process_nxdn(dsd_opts* opts, dsd_state* state, char ambe_fr[4][24], dsd_voco
 }
 
 static void
-mbeslot_left_autoload_keys(dsd_opts* opts, dsd_state* state) {
+mbeslot_left_autoload_keys(dsd_state* state, mbe_frame_ctx_t* frame_ctx) {
     if (state->M == 0 && state->payload_algid == 0) {
         dsd_call_snapshot call;
         uint32_t target = dsd_call_state_get(state, 0U, &call) > 0 && call.ota_target_id <= UINT32_MAX
@@ -992,7 +998,7 @@ mbeslot_left_autoload_keys(dsd_opts* opts, dsd_state* state) {
             state->K1 = state->H = state->rkey_array[hash] & 0xFFFFFFFFFF; //doesn't exceed 40-bit limit
             state->K2 = state->K3 = state->K4 = 0ULL;
             state->hytera_key_segments = 1U;
-            opts->dmr_mute_encL = 0;
+            frame_ctx->key_unmute[0] = 1;
             (void)dsd_call_state_note_key_selection(state, 0, call.epoch, DSD_CALL_KEY_DESTINATION, call.kid,
                                                     (int)target, 1, 0);
         }
@@ -1000,7 +1006,7 @@ mbeslot_left_autoload_keys(dsd_opts* opts, dsd_state* state) {
 }
 
 static void
-mbeslot_right_autoload_keys(dsd_opts* opts, dsd_state* state) {
+mbeslot_right_autoload_keys(dsd_state* state, mbe_frame_ctx_t* frame_ctx) {
     if (state->M == 0 && state->payload_algidR == 0) {
         dsd_call_snapshot call;
         uint32_t target = dsd_call_state_get(state, 1U, &call) > 0 && call.ota_target_id <= UINT32_MAX
@@ -1012,7 +1018,7 @@ mbeslot_right_autoload_keys(dsd_opts* opts, dsd_state* state) {
             state->K1 = state->H = state->rkey_array[hash] & 0xFFFFFFFFFF;
             state->K2 = state->K3 = state->K4 = 0ULL;
             state->hytera_key_segments = 1U;
-            opts->dmr_mute_encR = 0;
+            frame_ctx->key_unmute[1] = 1;
             (void)dsd_call_state_note_key_selection(state, 1, call.epoch, DSD_CALL_KEY_DESTINATION, call.kid,
                                                     (int)target, 1, 0);
         }
@@ -1327,7 +1333,7 @@ mbeslot_left_apply_aes_and_streams(dsd_opts* opts, dsd_state* state, mbe_frame_c
 
     mbeslot_left_apply_keystream_bits(state, frame_ctx->ambe_d);
     state->DMRvcL++;
-    opts->dmr_mute_encL = 0; //clear left-slot mute state
+    frame_ctx->key_unmute[0] = 1;
 }
 
 static void
@@ -1348,7 +1354,7 @@ mbeslot_right_apply_aes_and_streams(dsd_opts* opts, dsd_state* state, mbe_frame_
 
     mbeslot_right_apply_keystream_bits(state, frame_ctx->ambe_d);
     state->DMRvcR++;
-    opts->dmr_mute_encR = 0; //clear right-slot mute state
+    frame_ctx->key_unmute[1] = 1;
 }
 
 static void
@@ -1506,7 +1512,7 @@ mbeslot_process_left(dsd_opts* opts, dsd_state* state, char ambe_fr[4][24], dsd_
     char decoded_ambe_d[49];
     DSD_MEMCPY(decoded_ambe_d, frame_ctx->ambe_d, sizeof(decoded_ambe_d));
 
-    mbeslot_left_autoload_keys(opts, state);
+    mbeslot_left_autoload_keys(state, frame_ctx);
     mbeslot_left_apply_basic_privacy(state, frame_ctx);
     mbeslot_left_apply_vertex_standard(state, frame_ctx);
     mbeslot_left_apply_des(state, frame_ctx);
@@ -1535,7 +1541,7 @@ mbeslot_process_right(dsd_opts* opts, dsd_state* state, char ambe_fr[4][24], dsd
     char decoded_ambe_d[49];
     DSD_MEMCPY(decoded_ambe_d, frame_ctx->ambe_d, sizeof(decoded_ambe_d));
 
-    mbeslot_right_autoload_keys(opts, state);
+    mbeslot_right_autoload_keys(state, frame_ctx);
     mbeslot_right_apply_basic_privacy(state, frame_ctx);
     mbeslot_right_apply_vertex_standard(state, frame_ctx);
     mbeslot_right_apply_des(state, frame_ctx);
@@ -1563,18 +1569,25 @@ mbe_process_slot_traffic(dsd_opts* opts, dsd_state* state, char ambe_fr[4][24],
     }
 }
 
+// Reverse mute (-q) flips the slot's verdict and nothing else: under it the flipped flag alone decides
+// (dsd_dmr_slot_mute_enc() reads 1), so the user's encrypted-audio mute options stay as set (issue #657).
 static void
-mbe_post_apply_reverse_mute(const dsd_opts* opts, int16_t* enc, int16_t* mute_flag) {
+mbe_post_apply_reverse_mute(const dsd_opts* opts, int16_t* enc) {
     if (opts->reverse_mute != 1) {
         return;
     }
-    if (*enc == 0) {
-        *enc = 1;
-        *mute_flag = 1;
-    } else {
-        *enc = 0;
-        *mute_flag = 0;
+    *enc = (*enc == 0) ? 1 : 0;
+}
+
+// The encrypted-audio mute this frame's slot verdict is read with: the user's (1 under -q), off for a frame the
+// vocoder decrypted with the talkgroup key autoload or the AES/stream keystream unless -q is on. Frame-local, so a key
+// that decrypted one call never unmutes the next.
+static int
+mbe_frame_slot_mute_enc(const dsd_opts* opts, const mbe_frame_ctx_t* frame_ctx, int slot) {
+    if (opts->reverse_mute != 1 && frame_ctx->key_unmute[slot ? 1 : 0] != 0) {
+        return 0;
     }
+    return dsd_dmr_slot_mute_enc(opts, slot);
 }
 
 static void
@@ -1646,7 +1659,7 @@ typedef enum {
 } mbe_post_slot_class;
 
 static mbe_post_slot_class
-mbe_post_left_classify(dsd_opts* opts, dsd_state* state, const mbe_frame_ctx_t* frame_ctx) {
+mbe_post_left_classify(const dsd_opts* opts, dsd_state* state, const mbe_frame_ctx_t* frame_ctx) {
     const int dmr_mono_active = mbe_post_dmr_mono_active(opts, state);
     if (dmr_mono_active && !mbe_dmr_output_slot_enabled(opts, state, 0)) {
         state->dmr_encL = 1;
@@ -1662,12 +1675,13 @@ mbe_post_left_classify(dsd_opts* opts, dsd_state* state, const mbe_frame_ctx_t* 
     mbe_post_left_apply_decryptability(state, frame_ctx);
     mbe_post_apply_p25p2_metadata_gate(state, &state->dmr_encL);
     mbe_post_apply_forced_clear_gate(state, &state->dmr_encL);
-    mbe_post_apply_reverse_mute(opts, &state->dmr_encL, &opts->dmr_mute_encL);
+    mbe_post_apply_reverse_mute(opts, &state->dmr_encL);
     return MBE_POST_SLOT_ACTIVE;
 }
 
 static void
-mbe_post_left_stage(const dsd_opts* opts, dsd_state* state, mbe_post_slot_class slot_class) {
+mbe_post_left_stage(const dsd_opts* opts, dsd_state* state, const mbe_frame_ctx_t* frame_ctx,
+                    mbe_post_slot_class slot_class) {
     if (slot_class == MBE_POST_SLOT_MONO_OFF) {
         mbe_post_stage_slot_silence(state, 0);
         return;
@@ -1677,7 +1691,7 @@ mbe_post_left_stage(const dsd_opts* opts, dsd_state* state, mbe_post_slot_class 
     }
 
     state->debug_audio_errors += state->errs2;
-    if (state->dmr_encL == 0 || opts->dmr_mute_encL == 0) {
+    if (state->dmr_encL == 0 || !mbe_frame_slot_mute_enc(opts, frame_ctx, 0)) {
         if (opts->floating_point == 0) {
             processAudio(opts, state);
             state->mbe_short_silenced[0] = 0U;
@@ -1710,7 +1724,7 @@ mbe_post_right_apply_decryptability(dsd_state* state, const mbe_frame_ctx_t* fra
 }
 
 static mbe_post_slot_class
-mbe_post_right_classify(dsd_opts* opts, dsd_state* state, const mbe_frame_ctx_t* frame_ctx) {
+mbe_post_right_classify(const dsd_opts* opts, dsd_state* state, const mbe_frame_ctx_t* frame_ctx) {
     const int dmr_mono_active = mbe_post_dmr_mono_active(opts, state);
     if (dmr_mono_active && !mbe_dmr_output_slot_enabled(opts, state, 1)) {
         state->dmr_encR = 1;
@@ -1726,12 +1740,13 @@ mbe_post_right_classify(dsd_opts* opts, dsd_state* state, const mbe_frame_ctx_t*
     mbe_post_right_apply_decryptability(state, frame_ctx);
     mbe_post_apply_p25p2_metadata_gate(state, &state->dmr_encR);
     mbe_post_apply_forced_clear_gate(state, &state->dmr_encR);
-    mbe_post_apply_reverse_mute(opts, &state->dmr_encR, &opts->dmr_mute_encR);
+    mbe_post_apply_reverse_mute(opts, &state->dmr_encR);
     return MBE_POST_SLOT_ACTIVE;
 }
 
 static void
-mbe_post_right_stage(const dsd_opts* opts, dsd_state* state, mbe_post_slot_class slot_class) {
+mbe_post_right_stage(const dsd_opts* opts, dsd_state* state, const mbe_frame_ctx_t* frame_ctx,
+                     mbe_post_slot_class slot_class) {
     if (slot_class == MBE_POST_SLOT_MONO_OFF) {
         mbe_post_stage_slot_silence(state, 1);
         return;
@@ -1741,7 +1756,7 @@ mbe_post_right_stage(const dsd_opts* opts, dsd_state* state, mbe_post_slot_class
     }
 
     state->debug_audio_errorsR += state->errs2R;
-    if (state->dmr_encR == 0 || opts->dmr_mute_encR == 0) {
+    if (state->dmr_encR == 0 || !mbe_frame_slot_mute_enc(opts, frame_ctx, 1)) {
         if (opts->floating_point == 0) {
             processAudioR(opts, state);
             state->mbe_short_silenced[1] = 0U;
@@ -1922,14 +1937,13 @@ mbe_post_wav_outputs(dsd_opts* opts, dsd_state* state) {
 // A slot frame records as its per-call WAV does (dsd_audio_record_slot_allows_audio()): P25 Phase 2 by the P25 rule,
 // reverse mute included, in every preset; DMR and dPMR by the slot verdict the post stage just classified.
 static int
-mbe_capture_slot_verdict_allows(const dsd_opts* opts, const dsd_state* state, int slot) {
+mbe_capture_slot_verdict_allows(const dsd_opts* opts, const dsd_state* state, const mbe_frame_ctx_t* frame_ctx,
+                                int slot) {
     if (DSD_SYNC_IS_P25P2(state->synctype)) {
         return state->p25_p2_audio_allowed[slot] != 0 && p25_crypto_audio_output_permitted(opts, state, slot);
     }
-    if (slot == 1) {
-        return state->dmr_encR == 0 || opts->dmr_mute_encR == 0;
-    }
-    return state->dmr_encL == 0 || opts->dmr_mute_encL == 0;
+    const int enc = (slot == 1) ? state->dmr_encR : state->dmr_encL;
+    return enc == 0 || !mbe_frame_slot_mute_enc(opts, frame_ctx, slot);
 }
 
 // The FDMA save points that read no slot verdict: live P25 Phase 1 keeps its speaker rule (reverse mute (-q) keeps a
@@ -1960,14 +1974,15 @@ mbe_capture_verdict_frame(dsd_opts* opts, dsd_state* state, const mbe_frame_ctx_
         return;
     }
     if (frame_ctx->capture == MBE_CAPTURE_NXDN) {
-        if ((state->dmr_encL == 0 || opts->dmr_mute_encL == 0) && mbe_record_policy_allows(opts, state, 0)) {
+        if ((state->dmr_encL == 0 || !mbe_frame_slot_mute_enc(opts, frame_ctx, 0))
+            && mbe_record_policy_allows(opts, state, 0)) {
             dsd_mbe_out_write(opts, state, 0, DSD_MBE_OUT_FORMAT_AMBE, frame_ctx->ambe_d);
         }
         return;
     }
     // YSF is FDMA: it publishes on slot 0 even when a TDMA decode left currentslot at 1.
     const int policy_slot = (slot == 1 && !DSD_SYNC_IS_YSF(state->synctype)) ? 1 : 0;
-    if (mbe_dmr_output_slot_enabled(opts, state, slot) && mbe_capture_slot_verdict_allows(opts, state, slot)
+    if (mbe_dmr_output_slot_enabled(opts, state, slot) && mbe_capture_slot_verdict_allows(opts, state, frame_ctx, slot)
         && mbe_record_policy_allows(opts, state, policy_slot)) {
         dsd_mbe_out_write(opts, state, slot, DSD_MBE_OUT_FORMAT_AMBE, frame_ctx->ambe_d);
     }
@@ -2008,8 +2023,8 @@ mbe_post_audio_and_recording(dsd_opts* opts, dsd_state* state, const mbe_frame_c
         const mbe_post_slot_class left = mbe_post_left_classify(opts, state, frame_ctx);
         const mbe_post_slot_class right = mbe_post_right_classify(opts, state, frame_ctx);
         mbe_capture_frame(opts, state, frame_ctx);
-        mbe_post_left_stage(opts, state, left);
-        mbe_post_right_stage(opts, state, right);
+        mbe_post_left_stage(opts, state, frame_ctx, left);
+        mbe_post_right_stage(opts, state, frame_ctx, right);
         mbe_post_other_audio(opts, state);
     }
     mbe_post_wav_outputs(opts, state);

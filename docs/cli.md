@@ -405,9 +405,15 @@ Notes
   stepping below `1` goes back to auto. Since issue #518 a fixed `-n` plays RTL monitor audio about 9 dB louder than
   before, and up to 18 dB more where the old default filter (see `-v`) cut it.
 - `-nm` Enable the DMR single-slot mono decoder without changing the active decode preset.
-- `-z <0|1|2>` TDMA slot preference (0 = slot 1, 1 = slot 2, 2 = auto)
+- `-z <0|1|2>` TDMA slot preference (0 = slot 1, 1 = slot 2, 2 = auto). When both slots carry audible voice, the
+  preferred slot plays alone, in both ears (with one-channel output, alone); auto plays both. It applies to DMR and P25
+  Phase 2, in integer and `-y` float output, and stays as set: decoding never changes it. A talkgroup hold prefers the
+  held slot.
 - `-8` Monitor the source audio (helpful when mixing analog/digital)
-- `-V <0|1|2|3>` TDMA voice synthesis (0 = off; 1 = slot 1; 2 = slot 2; 3 = both; default 3)
+- `-V <0|1|2|3>` TDMA voice synthesis (0 = off; 1 = slot 1; 2 = slot 2; 3 = both; default 3). A switched-off slot
+  is not played on any audio output nor written to the static `-w` WAV, a call held with a talkgroup hold included,
+  and stays off until you switch it on: neither a hold nor a return to a P25 control channel turns it back on.
+  Per-call WAVs (`-P`) and MBE capture (`-d`) have their own gates and do not follow the switches.
 - `-y` Use experimental float audio output
 - P25 Phase 2 voice plays as each timeslot pair completes (every 60 ms of air time), in integer and `-y` float output
   alike: both slots side by side, every frame once, 18 frames per slot per 360 ms superframe. A slot whose call starts
@@ -1804,7 +1810,10 @@ Out-of-range decimal keys are rejected without changing the installed key.
   `-1` RC4/DES and `-R` scrambler keys, group files, force settings, CRC policy and conventional voice-gate intervals.
   See [scoped row options](csv-formats.md#scoped-row-options) for the supported switches and inheritance rules.
   The outer conventional command remains `-Y -C <file>`; `-Y` does not take a filename argument.
-- Disable DMR Late Entry IDs: `-3` (avoid false ENC)
+- Disable DMR Late Entry IDs: `-3` (avoid false ENC). It turns off the DMRA single-burst encryption identifiers and
+  reverse-channel parsing for the session; Kirisun and Hytera Enhanced signalling no longer turn them back on or off.
+  A Kirisun or Hytera Enhanced call changes late-entry handling for its own slot and call only: Kirisun reads its own
+  identifier (also under `-3`), and Hytera Enhanced skips DMRA late-entry MI collection.
 
 ## Tools & Extras
 

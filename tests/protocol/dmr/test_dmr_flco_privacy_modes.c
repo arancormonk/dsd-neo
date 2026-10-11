@@ -17,6 +17,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/fec/block_codes.h>
+#include <dsd-neo/fec/bptc.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/protocol/edacs/edacs_afs.h>
@@ -508,6 +509,8 @@ test_hytera_basic_key_output_uses_segment_count(void) {
     assert(strstr(out, "0000000123456789 ABCDEF0123456789 1111111111111111 2222222222222222") != NULL);
 }
 
+// Issue #657: a verified Kirisun LC sets its slot's late-entry mode for the call and leaves the user's setting (it
+// used to write opts->dmr_le, 3 or 0, for the rest of the session).
 static void
 test_kirisun_flco_sets_late_entry_mode(void) {
     static dsd_opts opts;
@@ -515,19 +518,30 @@ test_kirisun_flco_sets_late_entry_mode(void) {
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
 
+    opts.dmr_le = 1;
     uint8_t bits[80];
     uint32_t irr = 0;
     build_regular_flco(bits, 0x00U, 0x0AU, 0x40U, 1001U, 2002U);
     dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
-    assert(opts.dmr_le == 3);
+    assert(state.dmr_le_vendor[0] == DMR_LE_VENDOR_KIRISUN_ENC);
+    assert(state.dmr_le_vendor[1] == DMR_LE_VENDOR_NONE);
+    assert(opts.dmr_le == 1);
     assert(irr == 0);
 
-    opts.dmr_le = 3;
     irr = 0;
     build_regular_flco(bits, 0x00U, 0x0AU, 0x00U, 1001U, 2002U);
     dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
-    assert(opts.dmr_le == 0);
+    assert(state.dmr_le_vendor[0] == DMR_LE_VENDOR_KIRISUN_CLEAR);
+    assert(opts.dmr_le == 1);
     assert(irr == 0);
+
+    // An LC that failed its CRC is no evidence.
+    DSD_MEMSET(&state, 0, sizeof(state));
+    irr = 0;
+    build_regular_flco(bits, 0x00U, 0x0AU, 0x40U, 1001U, 2002U);
+    dmr_flco(&opts, &state, bits, 0U, &irr, 1U);
+    assert(state.dmr_le_vendor[0] == DMR_LE_VENDOR_NONE);
+    dsd_state_ext_free_all(&state);
 }
 
 // A Tier III talkgroup voice channel grant (CSBK opcode 49) naming logical channel `lpcn`.
@@ -732,7 +746,9 @@ test_hytera_enhanced_flco_uses_secondary_checksum(void) {
     dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
 
     assert(irr == 0);
-    assert(opts.dmr_le == 2);
+    // Issue #657: DMRA late entry off for this slot's call, never in the user's setting.
+    assert(state.dmr_le_vendor[0] == DMR_LE_VENDOR_HYTERA_ENH);
+    assert(opts.dmr_le == 0);
     assert((state.dmr_so & 0x40U) != 0U);
     assert(state.payload_algid == 0x02);
     assert(state.payload_keyid == 0x34);
@@ -898,6 +914,219 @@ assert_td_lc_slot_crypto_reset_metadata_retained(const dsd_state* state, unsigne
     assert(strcmp(state->dmr_lrrp_gps[slot], "lrrp") == 0);
     assert_call(state, (uint8_t)slot, DSD_CALL_PHASE_ENDED, DSD_CALL_KIND_GROUP_VOICE, slot == 0U ? 1001U : 3003U,
                 slot == 0U ? 2002U : 4004U);
+}
+
+// The single-burst codewords dmr_sbrc() reads: 0x008 (a Kirisun identifier) and 0x225 (DMRA ALG 5, KEY 0x44).
+static void
+load_single_burst(dsd_state* state, uint8_t slot, uint16_t sb_value) {
+    static const uint8_t k_008[16] = {0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 1, 0};
+    static const uint8_t k_225[16] = {0, 1, 0, 0, 0, 1, 0, 0, 1, 0, 1, 1, 0, 0, 0, 1};
+    const uint8_t* encoded = (sb_value == 0x008U) ? k_008 : k_225;
+    uint8_t data_matrix[32];
+    for (int i = 0; i < 16; i++) {
+        data_matrix[i] = encoded[i];
+        data_matrix[16 + i] = encoded[i];
+    }
+    for (int i = 0; i < 32; i++) {
+        state->dmr_embedded_signalling[slot][5][i + 8] =
+            data_matrix[DeInterleaveReverseChannelBptcPlacement[DeInterleaveReverseChannelBptc[i]]];
+    }
+}
+
+/* Issue #657: a verified Kirisun LC alone (no PI) arms the slot's Kirisun SB handling, on either slot and under -3. A
+ * Kirisun LC takes the unknown-LC path and publishes no service options, so the mode is the encryption evidence. A
+ * clear Kirisun LC reads neither Kirisun's identifier nor a DMRA one for its call. */
+static void
+test_kirisun_lc_arms_sb_handling(void) {
+    for (uint8_t slot = 0; slot < 2; slot++) {
+        static dsd_opts opts;
+        static dsd_state state;
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        opts.dmr_le = 0;
+        state.currentslot = slot;
+        uint8_t bits[80];
+        uint32_t irr = 0;
+        build_regular_flco(bits, 0x00U, 0x0AU, 0x40U, 1001U, 2002U);
+        dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
+        assert(state.dmr_le_vendor[slot] == DMR_LE_VENDOR_KIRISUN_ENC);
+        assert((slot == 0 ? state.dmr_so : state.dmr_soR) == 0U);
+        load_single_burst(&state, slot, 0x008U);
+        dmr_sbrc(&opts, &state, 0);
+        assert((slot == 0 ? state.payload_algid : state.payload_algidR) == 0x35);
+        assert(opts.dmr_le == 0);
+        dsd_state_ext_free_all(&state);
+
+        DSD_MEMSET(&state, 0, sizeof(state));
+        opts.dmr_le = 1;
+        state.currentslot = slot;
+        irr = 0;
+        build_regular_flco(bits, 0x00U, 0x0AU, 0x00U, 1001U, 2002U);
+        dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
+        assert(state.dmr_le_vendor[slot] == DMR_LE_VENDOR_KIRISUN_CLEAR);
+        if (slot == 0) {
+            state.dmr_so = 0x40U;
+        } else {
+            state.dmr_soR = 0x40U;
+        }
+        load_single_burst(&state, slot, 0x225U);
+        dmr_sbrc(&opts, &state, 0);
+        assert((slot == 0 ? state.payload_algid : state.payload_algidR) == 0);
+        dsd_state_ext_free_all(&state);
+
+        // A Kirisun call whose voice opened an identity-less epoch, its terminator missed: the next call's standard
+        // voice LC header specializes that epoch rather than opening its own, and still ends the Kirisun mode, so the
+        // new call's DMRA identifiers are read.
+        DSD_MEMSET(&state, 0, sizeof(state));
+        opts.dmr_le = 1;
+        state.currentslot = slot;
+        irr = 0;
+        build_regular_flco(bits, 0x00U, 0x0AU, 0x40U, 1001U, 2002U);
+        dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
+        const dsd_call_observation media_mark = {
+            .protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+            .slot = slot,
+            .kind = DSD_CALL_KIND_VOICE,
+        };
+        assert(dsd_call_state_observe(&state, &media_mark, DSD_CALL_BOUNDARY_BEGIN) > 0);
+        assert(dsd_call_state_update_media(&state, slot, 1, 0.0) > 0);
+        dsd_call_snapshot kirisun_call;
+        assert(dsd_call_state_get(&state, slot, &kirisun_call) > 0);
+        assert(state.dmr_le_vendor[slot] == DMR_LE_VENDOR_KIRISUN_ENC);
+        irr = 0;
+        build_regular_flco(bits, 0x00U, 0x00U, 0x40U, 3003U, 4004U);
+        dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
+        dsd_call_snapshot next_call;
+        assert(dsd_call_state_get(&state, slot, &next_call) > 0 && next_call.epoch == kirisun_call.epoch);
+        assert(state.dmr_le_vendor[slot] == DMR_LE_VENDOR_NONE);
+        load_single_burst(&state, slot, 0x225U);
+        dmr_sbrc(&opts, &state, 0);
+        assert((slot == 0 ? state.payload_algid : state.payload_algidR) == 0x25);
+        dsd_state_ext_free_all(&state);
+
+        // A standard voice LC header, the call's verified Kirisun PI, then the same call's embedded LCs: the mode
+        // stays, so no DMRA identifier overwrites the PI's ALG ID.
+        DSD_MEMSET(&state, 0, sizeof(state));
+        opts.dmr_le = 1;
+        state.currentslot = slot;
+        irr = 0;
+        build_regular_flco(bits, 0x00U, 0x00U, 0x40U, 5005U, 6006U);
+        dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
+        uint8_t pi[10] = {0x36, 0x0A, 0x40, 0x11, 0x22, 0x33, 0x44, 0x00, 0x00, 0x01};
+        dmr_pi(&opts, &state, pi, 1U, 0U);
+        assert(state.dmr_le_vendor[slot] == DMR_LE_VENDOR_KIRISUN_ENC);
+        assert(dsd_call_state_update_media(&state, slot, 1, 0.0) > 0);
+        irr = 0;
+        dmr_flco(&opts, &state, bits, 1U, &irr, 3U);
+        assert(state.dmr_le_vendor[slot] == DMR_LE_VENDOR_KIRISUN_ENC);
+        load_single_burst(&state, slot, 0x225U);
+        dmr_sbrc(&opts, &state, 0);
+        assert((slot == 0 ? state.payload_algid : state.payload_algidR) == 0x36);
+        dsd_state_ext_free_all(&state);
+    }
+}
+
+// Issue #657: the vendor late-entry mode lives with its call. A terminator clears it (an unverified one stashes it and
+// the heal restores it with the rest of the slot crypto), and a new transmission replacing the slot's active call
+// clears it; evidence decoded before any call was active (a PI after a lost voice LC header) survives the voice LC
+// that opens the call, and a header repeat of the same transmission keeps it.
+static void
+test_le_vendor_mode_follows_the_call(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t bits[80];
+    uint32_t irr = 0;
+
+    // Verified terminator: cleared, nothing to heal.
+    seed_td_lc_slot(&opts, &state, 0U);
+    state.dmr_le_vendor[0] = DMR_LE_VENDOR_HYTERA_ENH;
+    state.dmr_le_vendor[1] = DMR_LE_VENDOR_KIRISUN_ENC;
+    build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 1001U, 2002U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 2U);
+    assert(state.dmr_le_vendor[0] == DMR_LE_VENDOR_NONE);
+    assert(state.dmr_le_vendor[1] == DMR_LE_VENDOR_KIRISUN_ENC);
+
+    // Unverified terminator: cleared, and restored when the media mark heals the epoch.
+    seed_td_lc_slot(&opts, &state, 0U);
+    state.dmr_le_vendor[0] = DMR_LE_VENDOR_HYTERA_ENH;
+    irr = 0;
+    build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 1001U, 2002U);
+    dmr_flco(&opts, &state, bits, 0U, &irr, 2U);
+    assert(state.dmr_le_vendor[0] == DMR_LE_VENDOR_NONE);
+    const dsd_call_observation media_mark = {
+        .protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_VOICE,
+    };
+    assert(dsd_call_state_observe(&state, &media_mark, DSD_CALL_BOUNDARY_BEGIN) > 0);
+    assert(state.dmr_le_vendor[0] == DMR_LE_VENDOR_HYTERA_ENH);
+    dsd_state_ext_free_all(&state);
+
+    // Evidence before any call (a Hytera PI after a lost header) survives the voice LC header that opens the call,
+    // and a header repeat of the same transmission keeps it.
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.currentslot = 1;
+    state.dmr_le_vendor[1] = DMR_LE_VENDOR_HYTERA_ENH;
+    irr = 0;
+    build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 5005U, 6006U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
+    dsd_call_snapshot call;
+    assert(dsd_call_state_get(&state, 1U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE);
+    assert(state.dmr_le_vendor[1] == DMR_LE_VENDOR_HYTERA_ENH);
+    irr = 0;
+    dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
+    assert(state.dmr_le_vendor[1] == DMR_LE_VENDOR_HYTERA_ENH);
+
+    // Its voice runs, then the next transmission's header arrives with the terminator missed: a new epoch replaces
+    // the active call, and the mode was the old call's.
+    assert(dsd_call_state_update_media(&state, 1U, 1, 0.0) > 0);
+    irr = 0;
+    build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 7007U, 8008U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
+    dsd_call_snapshot next;
+    assert(dsd_call_state_get(&state, 1U, &next) > 0 && next.epoch != call.epoch);
+    assert(state.dmr_le_vendor[1] == DMR_LE_VENDOR_NONE);
+    dsd_state_ext_free_all(&state);
+
+    // Late entry into a Hytera Enhanced call: its vendor LC publishes no identity, so its voice runs on an
+    // identity-less epoch. The call's own standard embedded LC keeps the mode. With the terminator missed, the next
+    // call's voice LC header specializes that identity-less epoch rather than opening its own, and still ends the mode.
+    uint8_t hytera[9] = {0x02U, 0x68U, 0x34U, 0x01U, 0x23U, 0x45U, 0x67U, 0x89U, 0x09U};
+    const dsd_call_observation late_media = {
+        .protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_VOICE,
+    };
+    for (int embedded = 0; embedded <= 1; embedded++) {
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        state.currentslot = 0;
+        DSD_MEMSET(bits, 0, sizeof(bits));
+        for (size_t i = 0; i < sizeof(hytera) * 8U; i++) {
+            bits[i] = (uint8_t)((hytera[i / 8U] >> (7U - (i % 8U))) & 1U);
+        }
+        irr = 0;
+        dmr_flco(&opts, &state, bits, 1U, &irr, 3U);
+        assert(state.dmr_le_vendor[0] == DMR_LE_VENDOR_HYTERA_ENH);
+        assert(dsd_call_state_observe(&state, &late_media, DSD_CALL_BOUNDARY_BEGIN) > 0);
+        assert(dsd_call_state_update_media(&state, 0U, 1, 0.0) > 0);
+        dsd_call_snapshot hytera_call;
+        assert(dsd_call_state_get(&state, 0U, &hytera_call) > 0);
+        irr = 0;
+        if (embedded) {
+            build_regular_flco(bits, 0x00U, 0x68U, 0x40U, 1111U, 2222U);
+            dmr_flco(&opts, &state, bits, 1U, &irr, 3U);
+            assert(state.dmr_le_vendor[0] == DMR_LE_VENDOR_HYTERA_ENH);
+        } else {
+            build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 3333U, 4444U);
+            dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
+            dsd_call_snapshot after_header;
+            assert(dsd_call_state_get(&state, 0U, &after_header) > 0 && after_header.epoch == hytera_call.epoch);
+            assert(state.dmr_le_vendor[0] == DMR_LE_VENDOR_NONE);
+        }
+        dsd_state_ext_free_all(&state);
+    }
 }
 
 static void
@@ -2792,6 +3021,8 @@ main(void) {
     test_trunked_mono_bs_fallback_preserves_slot_context();
     test_hytera_basic_key_output_uses_segment_count();
     test_kirisun_flco_sets_late_entry_mode();
+    test_le_vendor_mode_follows_the_call();
+    test_kirisun_lc_arms_sb_handling();
     test_flco_canonical_crypto_uses_algorithm_aware_keys();
     test_unfollowed_grant_frequency_stays_off_the_voice_call();
     test_followed_voice_channel_frequency_reaches_the_voice_call();

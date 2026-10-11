@@ -132,6 +132,7 @@ setup(int floating, int channels) {
     g_opts.floating_point = floating;
     g_opts.slot1_on = 1;
     g_opts.slot2_on = 1;
+    g_opts.slot_preference = 2; // Auto: both audible slots play side by side
     g_state.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
     g_state.p25_crypto_state[1] = DSD_P25_CRYPTO_CLEAR;
     g_state.p25_p2_audio_allowed[0] = 1;
@@ -453,7 +454,8 @@ test_close_keeps_tail(void) {
     return rc;
 }
 
-/* The verdict: a blocked burst is not heard; a hold plays from a switched-off slot; both slots off mutes all. */
+/* The verdict: a blocked burst is not heard; a hold lifts the block but never a switched-off slot (issue #657), and
+   leaves the switch as set; both slots off mutes all. */
 static int
 test_verdicts(void) {
     int rc = 0;
@@ -482,17 +484,78 @@ test_verdicts(void) {
     }
     dsd_p25p2_playout_burst_done(&g_opts, &g_state, 0, 1, DSD_P25P2_BURST_4V);
     dsd_p25p2_playout_pair_done(&g_opts, &g_state);
-    rc |= expect_int("hold plays from off slot", g_block_count, 4);
+    rc |= expect_int("hold leaves a switched-off slot silent", g_block_count, 0);
     rc |= expect_int("hold leaves the switch", g_opts.slot1_on, 0);
 
-    g_opts.slot2_on = 0;
+    g_opts.slot1_on = 1;
     g_serial++;
     for (int f = 0; f < 4; f++) {
         dsd_p25p2_playout_stage(&g_opts, &g_state, 0, 2, g_serial, &held);
     }
     dsd_p25p2_playout_burst_done(&g_opts, &g_state, 0, 2, DSD_P25P2_BURST_4V);
     dsd_p25p2_playout_pair_done(&g_opts, &g_state);
+    rc |= expect_int("hold plays once the slot is on", g_block_count, 4);
+
+    g_opts.slot1_on = 0;
+    g_opts.slot2_on = 0;
+    g_serial++;
+    for (int f = 0; f < 4; f++) {
+        dsd_p25p2_playout_stage(&g_opts, &g_state, 0, 3, g_serial, &held);
+    }
+    dsd_p25p2_playout_burst_done(&g_opts, &g_state, 0, 3, DSD_P25P2_BURST_4V);
+    dsd_p25p2_playout_pair_done(&g_opts, &g_state);
     rc |= expect_int("both off mutes a hold", g_block_count, 4);
+    rc |= expect_int("both off leaves the switches", g_opts.slot1_on == 0 && g_opts.slot2_on == 0, 1);
+    return rc;
+}
+
+/* The slot preference (issue #657): with both slots audible, a decoded frame of the preferred slot plays in both ears
+   (one-channel output: alone) and the companion is not heard in that block; a lost burst's fill never wins the
+   tie-break, so that block plays as Auto does, both side by side. The preference is read, never written. */
+static int
+test_slot_preference(void) {
+    int rc = 0;
+    for (int pref = 0; pref <= 2; pref++) {
+        for (int channels = 2; channels >= 1; channels--) {
+            setup(0, channels);
+            g_opts.slot_preference = pref;
+            seed_call(&g_state, 0U, 100U, 1000U);
+            seed_call(&g_state, 1U, 200U, 2000U);
+            int tag0 = 1000;
+            int tag1 = 2000;
+            superframe(4, 4, &tag0, &tag1, -1); /* proves both 2V pairs */
+            superframe(4, 4, &tag0, &tag1, 2);  /* slot 1 loses its 4V at pair 2: blocks 8..11 of it are fill */
+            char tag[96];
+            DSD_SNPRINTF(tag, sizeof tag, "preference %d channels %d blocks", pref, channels);
+            rc |= expect_int(tag, g_block_count, 36);
+            for (int i = 0; i < g_block_count && i < 36; i++) {
+                const int fill0 = i >= 26 && i < 30;
+                const int left = fill0 ? 0 : 1000 + i;
+                const int right = 2000 + i;
+                // A fill block of the preferred slot plays as Auto does: side by side.
+                const int wins = (pref == 1) || (pref == 0 && !fill0);
+                int want_left = left;
+                int want_right = right;
+                if (pref == 0 && wins) {
+                    want_right = left;
+                } else if (pref == 1) {
+                    want_left = right;
+                }
+                if (channels == 1) {
+                    const int want = wins ? want_left : (left + right) / 2;
+                    DSD_SNPRINTF(tag, sizeof tag, "preference %d mono block %d", pref, i);
+                    rc |= expect_int(tag, g_blocks[i].left, want);
+                } else {
+                    DSD_SNPRINTF(tag, sizeof tag, "preference %d left block %d", pref, i);
+                    rc |= expect_int(tag, g_blocks[i].left, want_left);
+                    DSD_SNPRINTF(tag, sizeof tag, "preference %d right block %d", pref, i);
+                    rc |= expect_int(tag, g_blocks[i].right, want_right);
+                }
+            }
+            DSD_SNPRINTF(tag, sizeof tag, "preference %d kept", pref);
+            rc |= expect_int(tag, g_opts.slot_preference, pref);
+        }
+    }
     return rc;
 }
 
@@ -1837,6 +1900,7 @@ main(void) {
     rc |= test_mono_output();
     rc |= test_close_keeps_tail();
     rc |= test_verdicts();
+    rc |= test_slot_preference();
     rc |= test_float_output();
     rc |= test_other_rate_discards();
     rc |= test_buffer_wrap();

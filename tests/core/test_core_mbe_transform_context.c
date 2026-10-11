@@ -2611,11 +2611,13 @@ test_process_mbe_frame_dmr_reverse_mute_preserves_p25_override(void) {
     ambe_fr[0][2] = 1;
     ambe_fr[2][15] = 1;
 
+    // Issue #657: -q flips the frame's verdict and leaves the user's encrypted-audio mute options as set.
     DSD_MEMSET(&opts, 0, sizeof(opts));
     opts.floating_point = 1;
     opts.dmr_stereo = 1;
     opts.reverse_mute = 1;
     opts.unmute_encrypted_p25 = 1;
+    opts.dmr_mute_encL = 0;
     init_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
     state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
     state.currentslot = 0;
@@ -2623,7 +2625,7 @@ test_process_mbe_frame_dmr_reverse_mute_preserves_p25_override(void) {
     processMbeFrame(&opts, &state, imbe_fr, ambe_fr, imbe7100_fr);
 
     rc |= expect_eq_int("reverse-mute-left-enc", state.dmr_encL, 1);
-    rc |= expect_eq_int("reverse-mute-left-mute", opts.dmr_mute_encL, 1);
+    rc |= expect_eq_int("reverse-mute-left-keeps-mute-option", opts.dmr_mute_encL, 0);
     rc |= expect_eq_int("reverse-mute-left-preserves-p25-override", opts.unmute_encrypted_p25, 1);
     rc |= expect_eq_mem("reverse-mute-left-staged", state.f_l, state.audio_out_temp_buf, sizeof(state.f_l));
 
@@ -2631,6 +2633,7 @@ test_process_mbe_frame_dmr_reverse_mute_preserves_p25_override(void) {
     opts.floating_point = 1;
     opts.dmr_stereo = 1;
     opts.reverse_mute = 1;
+    opts.dmr_mute_encR = 1;
     init_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
     state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
     state.currentslot = 1;
@@ -2639,7 +2642,7 @@ test_process_mbe_frame_dmr_reverse_mute_preserves_p25_override(void) {
     processMbeFrame(&opts, &state, imbe_fr, ambe_fr, imbe7100_fr);
 
     rc |= expect_eq_int("reverse-mute-right-enc", state.dmr_encR, 0);
-    rc |= expect_eq_int("reverse-mute-right-mute", opts.dmr_mute_encR, 0);
+    rc |= expect_eq_int("reverse-mute-right-keeps-mute-option", opts.dmr_mute_encR, 1);
     rc |= expect_eq_int("reverse-mute-right-preserves-p25-override", opts.unmute_encrypted_p25, 0);
     rc |= expect_eq_mem("reverse-mute-right-staged", state.f_r, state.audio_out_temp_bufR, sizeof(state.f_r));
 
@@ -2941,6 +2944,171 @@ test_dmr_stereo_mixes_follow_vocoder_slot_verdict(void) {
     return rc;
 }
 
+static void remove_capture_dir(const char* dir);
+
+// Where the slot 1 MBE capture (-d) stands: its file's write position, or -1 while no frame created it.
+static long
+dmr_capture_position(const dsd_opts* opts) {
+    return opts->mbe_out_f ? ftell(opts->mbe_out_f) : -1L;
+}
+
+/* Issue #657: a call the vocoder decrypts (AES keystream, or the talkgroup key autoload) leaves the user's
+ * encrypted-audio mute options as set, so the next call on the slot, encrypted with a key that is not loaded, stays
+ * muted: FS3 and SS3 play nothing of it, the vocoder stages it as silence, its per-call WAV gate denies it and MBE
+ * capture (-d) writes none of its frames. Before, the decrypted call cleared dmr_mute_encL for the rest of the
+ * session. */
+static int
+dmr_decrypted_then_undecryptable_row(int floating_point, int autoload) {
+    dsd_opts* opts = dmr_mix_new_opts(floating_point, 0);
+    dsd_state* state = calloc(1, sizeof(*state));
+    char dir[DSD_TEST_PATH_MAX];
+    if (!opts || !state || !dsd_test_mkdtemp(dir, sizeof dir, "dsdneo_657_capture")) {
+        free(opts);
+        free(state);
+        return 1;
+    }
+    DSD_SNPRINTF(opts->mbe_out_dir, sizeof opts->mbe_out_dir, "%s", dir);
+    initState(state);
+    char tag[160];
+    int rc = 0;
+    const char* mix = floating_point ? "FS3" : "SS3";
+    const char* how = autoload ? "autoload" : "aes";
+    state->synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    state->dmrburstL = 16;
+    state->dmrburstR = 16;
+    // Slot 2 carries an encrypted call nothing decrypts, so it never plays and only slot 1 can.
+    state->dmr_encR = 1;
+    if (autoload) {
+        // Basic privacy (no ALG ID) on a talkgroup with a key row: the autoload loads the row's key.
+        const dsd_call_observation call = {
+            .protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+            .slot = 0U,
+            .kind = DSD_CALL_KIND_GROUP_VOICE,
+            .ota_target_id = 4242U,
+            .ota_source_id = 77U,
+        };
+        (void)dsd_call_state_observe(state, &call, DSD_CALL_BOUNDARY_BEGIN);
+        state->rkey_array[4242U] = 0x1122334455ULL;
+        state->dmr_so = 0x40;
+        state->dmr_fid = 0x10;
+    } else {
+        state->payload_algid = 0x24;
+        state->aes_key_loaded[0] = 1;
+        state->A1[0] = 0x0011223344556677ULL;
+        state->A2[0] = 0x8899AABBCCDDEEFFULL;
+        state->A3[0] = 0x1021324354657687ULL;
+        state->A4[0] = 0x98A9BACBDCEDFE0FULL;
+    }
+    for (int frame = 0; frame < 3; frame++) {
+        dmr_mix_stage_frame(opts, state, 0, frame);
+    }
+    dmr_mix_tag_slots(state);
+    dmr_mix_run(opts, state);
+    DSD_SNPRINTF(tag, sizeof(tag), "%s %s decrypted call plays", mix, how);
+    rc |= expect_eq_int(tag, g_dmr_mix_signs[0] & 1, 1);
+    DSD_SNPRINTF(tag, sizeof(tag), "%s %s decrypted call keeps mute options", mix, how);
+    rc |= expect_eq_int(tag, opts->dmr_mute_encL == 1 && opts->dmr_mute_encR == 1, 1);
+    const long captured = dmr_capture_position(opts);
+    DSD_SNPRINTF(tag, sizeof(tag), "%s %s decrypted call captured", mix, how);
+    rc |= expect_eq_int(tag, captured > 0L, 1);
+
+    // The next call on the slot: RC4 (ALG 0x21) with no key loaded.
+    if (autoload) {
+        (void)dsd_call_state_end(state, 0U, 0.0);
+        state->K = 0ULL;
+        state->K1 = 0ULL;
+        state->H = 0ULL;
+        state->hytera_key_segments = 0U;
+        state->rkey_array[4242U] = 0ULL;
+    }
+    state->payload_algid = 0x21;
+    state->dmr_so = 0x40;
+    state->R = 0ULL;
+    state->scalar_key_present[0] = 0;
+    state->aes_key_loaded[0] = 0;
+    for (int frame = 0; frame < 3; frame++) {
+        dmr_mix_stage_frame(opts, state, 0, frame);
+    }
+    DSD_SNPRINTF(tag, sizeof(tag), "%s %s undecryptable call flagged", mix, how);
+    rc |= expect_eq_int(tag, state->dmr_encL, 1);
+    DSD_SNPRINTF(tag, sizeof(tag), "%s %s undecryptable call not captured", mix, how);
+    rc |= expect_eq_int(tag, dmr_capture_position(opts) == captured, 1);
+    if (!floating_point) {
+        DSD_SNPRINTF(tag, sizeof(tag), "%s %s undecryptable call staged as silence", mix, how);
+        rc |= expect_eq_int(tag, state->mbe_short_silenced[0], 1);
+    }
+    int allow = -1;
+    state->currentslot = 0;
+    (void)dsd_audio_record_gate_mono(opts, state, &allow);
+    DSD_SNPRINTF(tag, sizeof(tag), "%s %s undecryptable call not recorded", mix, how);
+    rc |= expect_eq_int(tag, allow, 0);
+    dmr_mix_tag_slots(state);
+    dmr_mix_run(opts, state);
+    DSD_SNPRINTF(tag, sizeof(tag), "%s %s undecryptable call not heard", mix, how);
+    rc |= expect_eq_int(tag, g_dmr_mix_blocks, 0);
+    closeMbeOutFile(opts, state);
+    closeMbeOutFileR(opts, state);
+    freeState(state);
+    free(state);
+    free(opts);
+    remove_capture_dir(dir);
+    return rc;
+}
+
+/* Issue #657: reverse mute (-q) with the user's encrypted-audio mute off still mutes a clear call and plays an
+ * undecryptable one, in the vocoder's staging, MBE capture and the per-call WAV gate, without writing the option. */
+static int
+test_dmr_reverse_mute_with_mute_option_off(void) {
+    int rc = 0;
+    for (int encrypted = 0; encrypted <= 1; encrypted++) {
+        dsd_opts* opts = dmr_mix_new_opts(0, 1);
+        dsd_state* state = calloc(1, sizeof(*state));
+        char dir[DSD_TEST_PATH_MAX];
+        if (!opts || !state || !dsd_test_mkdtemp(dir, sizeof dir, "dsdneo_657_rmute")) {
+            free(opts);
+            free(state);
+            return 1;
+        }
+        DSD_SNPRINTF(opts->mbe_out_dir, sizeof opts->mbe_out_dir, "%s", dir);
+        opts->dmr_mute_encL = 0;
+        opts->dmr_mute_encR = 0;
+        initState(state);
+        state->synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+        state->dmr_so = encrypted ? 0x40 : 0x00;
+        dmr_mix_stage_frame(opts, state, 0, 0);
+        const char* what = encrypted ? "undecryptable" : "clear";
+        char tag[128];
+        DSD_SNPRINTF(tag, sizeof(tag), "-q mute option off: %s call staged", what);
+        rc |= expect_eq_int(tag, state->mbe_short_silenced[0], encrypted ? 0 : 1);
+        DSD_SNPRINTF(tag, sizeof(tag), "-q mute option off: %s call captured", what);
+        rc |= expect_eq_int(tag, dmr_capture_position(opts) > 0L, encrypted);
+        int allow = -1;
+        state->currentslot = 0;
+        (void)dsd_audio_record_gate_mono(opts, state, &allow);
+        DSD_SNPRINTF(tag, sizeof(tag), "-q mute option off: %s call recorded", what);
+        rc |= expect_eq_int(tag, allow, encrypted);
+        DSD_SNPRINTF(tag, sizeof(tag), "-q mute option off: %s call keeps the option", what);
+        rc |= expect_eq_int(tag, opts->dmr_mute_encL, 0);
+        closeMbeOutFile(opts, state);
+        freeState(state);
+        free(state);
+        free(opts);
+        remove_capture_dir(dir);
+    }
+    return rc;
+}
+
+static int
+test_dmr_decrypted_call_leaves_mute_options(void) {
+    int rc = 0;
+    for (int floating_point = 1; floating_point >= 0; floating_point--) {
+        for (int autoload = 0; autoload <= 1; autoload++) {
+            rc |= dmr_decrypted_then_undecryptable_row(floating_point, autoload);
+        }
+    }
+    return rc;
+}
+
 /* Issue #574: the DMR mixes stamp audible audio for the media the vocoder staged on a slot since they last ran, only
  * where that slot plays. dmr_stamp_case() builds a fresh state per case: @p setup stages and gates, the mix runs. */
 typedef struct {
@@ -3144,6 +3312,63 @@ test_dmr_mixes_stamp_vocoder_media(void) {
             rc |= dmr_stamp_case(c, floating_point);
         }
         rc |= dmr_stamp_held_muted_slot(floating_point);
+    }
+    return rc;
+}
+
+/* Issue #657: both DMR mixes read the slot switches and the slot preference and never write them. A hold on a
+ * switched-off slot's talkgroup leaves it silent (the switch mutes last); with both slots carrying clear voice, the
+ * preferred slot plays on both channels in either format, and Auto plays them side by side. Before, SS3 turned the held
+ * slot's switch back on and reset the preference to Auto every mix, and FS3 let the hold play the switched-off slot and
+ * never applied the preference. */
+static int
+dmr_mix_hold_and_preference_row(int floating_point, int hold, int pref) {
+    dmr_stamp_fixture fx;
+    if (!dmr_stamp_fixture_open(&fx, floating_point)) {
+        return 1;
+    }
+    const char* mix = floating_point ? "FS3" : "SS3";
+    char tag[160];
+    int rc = 0;
+    rc |= expect_eq_int("hold/preference slot 1 call", dmr_stamp_seed_group_call(fx.state, 0, 100U), 1);
+    rc |= expect_eq_int("hold/preference slot 2 call", dmr_stamp_seed_group_call(fx.state, 1, 200U), 1);
+    fx.opts->slot_preference = pref;
+    if (hold) {
+        fx.state->tg_hold = 100U;
+        fx.opts->slot1_on = 0;
+    }
+    dmr_stamp_stage_burst(&fx, 0);
+    dmr_stamp_stage_burst(&fx, 1);
+    dmr_mix_tag_slots(fx.state);
+    dmr_mix_run(fx.opts, fx.state);
+    if (hold) {
+        // Slot 2's talkgroup is not held and slot 1 is off: nothing plays.
+        DSD_SNPRINTF(tag, sizeof(tag), "%s hold on a switched-off slot plays nothing", mix);
+        rc |= expect_eq_int(tag, g_dmr_mix_blocks, 0);
+    } else {
+        const int want_left = (pref == 1) ? 2 : 1;
+        const int want_right = (pref == 0) ? 1 : 2;
+        DSD_SNPRINTF(tag, sizeof(tag), "%s preference %d left channel", mix, pref);
+        rc |= expect_eq_int(tag, g_dmr_mix_signs[0], want_left);
+        DSD_SNPRINTF(tag, sizeof(tag), "%s preference %d right channel", mix, pref);
+        rc |= expect_eq_int(tag, g_dmr_mix_signs[1], want_right);
+    }
+    DSD_SNPRINTF(tag, sizeof(tag), "%s hold=%d preference %d keeps the switches", mix, hold, pref);
+    rc |= expect_eq_int(tag, fx.opts->slot1_on == (hold ? 0 : 1) && fx.opts->slot2_on == 1, 1);
+    DSD_SNPRINTF(tag, sizeof(tag), "%s hold=%d preference %d keeps the preference", mix, hold, pref);
+    rc |= expect_eq_int(tag, fx.opts->slot_preference, pref);
+    dmr_stamp_fixture_close(&fx);
+    return rc;
+}
+
+static int
+test_dmr_mixes_keep_slot_switches_and_preference(void) {
+    int rc = 0;
+    for (int floating_point = 1; floating_point >= 0; floating_point--) {
+        for (int pref = 0; pref <= 2; pref++) {
+            rc |= dmr_mix_hold_and_preference_row(floating_point, 0, pref);
+        }
+        rc |= dmr_mix_hold_and_preference_row(floating_point, 1, 2);
     }
     return rc;
 }
@@ -3440,7 +3665,7 @@ test_process_mbe_frame_dmr_aes_stream_advances_slot_state(void) {
 
     rc |= expect_eq_int("aes-left-vc", state.DMRvcL, 1);
     rc |= expect_eq_int("aes-left-bit-counter", state.bit_counterL, 56);
-    rc |= expect_eq_int("aes-left-unmutes-slot", opts.dmr_mute_encL, 0);
+    rc |= expect_eq_int("aes-left-keeps-mute-option", opts.dmr_mute_encL, 1);
     rc |= expect_eq_int("aes-left-enc-cleared", state.dmr_encL, 0);
     rc |= expect_any_nonzero_u8("aes-left-keystream-ready", state.ks_octetL, sizeof(state.ks_octetL));
     rc |= expect_eq_mem("aes-left-staged", state.f_l, state.audio_out_temp_buf, sizeof(state.f_l));
@@ -3465,7 +3690,7 @@ test_process_mbe_frame_dmr_aes_stream_advances_slot_state(void) {
 
     rc |= expect_eq_int("aes-right-vc", state.DMRvcR, 1);
     rc |= expect_eq_int("aes-right-bit-counter", state.bit_counterR, 56);
-    rc |= expect_eq_int("aes-right-unmutes-slot", opts.dmr_mute_encR, 0);
+    rc |= expect_eq_int("aes-right-keeps-mute-option", opts.dmr_mute_encR, 1);
     rc |= expect_eq_int("aes-right-enc-cleared", state.dmr_encR, 0);
     rc |= expect_any_nonzero_u8("aes-right-keystream-ready", state.ks_octetR, sizeof(state.ks_octetR));
     rc |= expect_eq_mem("aes-right-staged", state.f_r, state.audio_out_temp_bufR, sizeof(state.f_r));
@@ -5151,6 +5376,9 @@ main(void) {
     rc |= test_process_mbe_frame_dmr_post_decode_gates_override_enc_flags();
     dsd_audio_activity_arm();
     rc |= test_dmr_stereo_mixes_follow_vocoder_slot_verdict();
+    rc |= test_dmr_decrypted_call_leaves_mute_options();
+    rc |= test_dmr_reverse_mute_with_mute_option_off();
+    rc |= test_dmr_mixes_keep_slot_switches_and_preference();
     rc |= test_dmr_mixes_stamp_vocoder_media();
     rc |= test_dmr_muted_slot_stages_silence_not_its_last_frame();
     rc |= test_dmr_ss3_stamps_the_slot_each_channel_carries();
