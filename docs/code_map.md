@@ -515,9 +515,10 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   - No-replace rename: `dsd_rename_noreplace()` never writes over an existing name (EEXIST, both files kept):
     `renameat2(RENAME_NOREPLACE)` on Linux, `renamex_np(RENAME_EXCL)` on macOS, else a hard link and an unlink (whose
     fallback, `dsd_rename_noreplace_by_link()` in `src/platform/file_compat_internal.h`, tests reach directly), and on
-    a filesystem with neither a check then a rename, which only another process can race; Windows keeps the CRT's
-    `rename()`, which refuses an existing name, and reports that refusal (`_doserrno` exists) as EEXIST (issue #661:
-    per-call WAV publication)
+    a filesystem with neither an exclusive create that claims the name, then a rename onto that empty claim
+    (`dsd_rename_noreplace_by_reservation()`, also tested directly), which only a process deleting the claim can
+    race (never a check then a rename); Windows keeps the CRT's `rename()`, which refuses an existing name, and reports
+    that refusal (`_doserrno` exists) as EEXIST (issue #661: per-call WAV publication)
   - Win32 wrappers keep the POSIX contract callers rely on: errno values, never raw `GetLastError()` codes (the
     thread scheduling and condition calls map them; affinity and realtime priority return ENOSYS where the platform
     has no such control), ENOENT for a missing file from `dsd_fopen_existing_regular_file()`, and temp files
@@ -707,8 +708,7 @@ suite runs under this compiler.
   file_compat.h>`), drawing another number for a final name another recording holds, and keeps the temp file on any
   other failure (issue #661). Every publication is serialized: the decoder and the watchdog publish under the P25 SM
   tick guard or the event layer's call-state lock, and the WAV app commands (start, stop, toggle, static and raw open)
-  take the tick guard in `apply_cmd()`, so the no-replace rename's check-then-rename fallback (a filesystem without
-  hard links) only races another process.
+  take the tick guard in `apply_cmd()`, so one process never publishes two recordings at once.
   `dsd_state_rebase_decode_timestamps()` pulls a stamp that is ahead of now back to now, which covers the `-P` open
   while arguments are parsed, before a replay moves the clock. `event_time` is the row's last activity, the segment's
   end by the time its WAV closes. It is only the fallback for a row with no start (a `--playfiles` row, whose stamp is

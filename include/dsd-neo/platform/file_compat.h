@@ -179,8 +179,9 @@ int dsd_replace_file_with_temp(const char* tmp_path, const char* final_path);
  * Never replaces an existing @p to: the call fails with EEXIST and leaves both files as they were. The rename is
  * atomic where the platform and filesystem offer a no-replace rename (Linux renameat2(RENAME_NOREPLACE), macOS
  * renamex_np(RENAME_EXCL), a hard link then an unlink on other POSIX systems; Windows' rename() refuses an existing
- * name). On a POSIX filesystem that supports neither (no no-replace rename, no hard links) it checks @p to and then
- * renames: two processes renaming onto the same name at the same instant can still race there, one process cannot.
+ * name). On a POSIX filesystem that supports neither (no no-replace rename, no hard links) it claims @p to with an
+ * exclusive create and renames onto that claim: @p to briefly exists as an empty file, and only a process that deletes
+ * the claim in between can still be replaced.
  *
  * @param from              Existing file.
  * @param to                New name, in the same directory as @p from.

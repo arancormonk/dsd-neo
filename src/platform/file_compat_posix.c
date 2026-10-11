@@ -320,6 +320,28 @@ dsd_rename_unsupported_errno(int err) {
 }
 
 int
+dsd_rename_noreplace_by_reservation(const char* from, const char* to) {
+    /* An exclusive create claims the name: of every creator, exactly one gets it, and one that finds it taken fails
+       with EEXIST. The rename then replaces only that claim, the empty file this call just made. */
+    int flags = O_WRONLY | O_CREAT | O_EXCL;
+#ifdef O_CLOEXEC
+    flags |= O_CLOEXEC;
+#endif
+    const int fd = open(to, flags, 0600);
+    if (fd < 0) {
+        return -1;
+    }
+    (void)close(fd);
+    if (rename(from, to) != 0) {
+        const int err = errno;
+        (void)unlink(to);
+        errno = err;
+        return -1;
+    }
+    return 0;
+}
+
+int
 dsd_rename_noreplace_by_link(const char* from, const char* to, int* out_source_left) {
     if (out_source_left) {
         *out_source_left = 0;
@@ -337,17 +359,8 @@ dsd_rename_noreplace_by_link(const char* from, const char* to, int* out_source_l
         errno = err;
         return -1;
     }
-    /* No hard links here: look, then rename. Only another process renaming onto the same name between the two can
-       still be replaced; one process's renames are not concurrent. */
-    struct stat st;
-    if (lstat(to, &st) == 0) {
-        errno = EEXIST;
-        return -1;
-    }
-    if (errno != ENOENT) {
-        return -1;
-    }
-    return rename(from, to) != 0 ? -1 : 0;
+    /* No hard links here either. */
+    return dsd_rename_noreplace_by_reservation(from, to);
 }
 
 int

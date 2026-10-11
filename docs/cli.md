@@ -225,7 +225,7 @@ Windows console runs:
 - `-P` Per‑call WAV saving (auto‑named files in a folder; mutually exclusive with `-w`). A finished call is
   published under a name no other recording holds: a name already taken draws another number, so an earlier
   recording is never replaced. That holds outright where the filesystem offers a no-replace rename or hard links;
-  on one with neither, two dsd-neo processes publishing the same name at the same moment can still collide.
+  on one with neither, the name is claimed with an empty file first, which another program can see for a moment.
 - Recordings (`-w`, `-P`, `-d`) follow each talkgroup's `record` policy: a lockout (`B`/`DE`), avoid, skip, an
   allow-list or Hold miss, or `record=off` keeps the call out of the per-call WAV, the static WAV and MBE capture,
   live and in SDRTrunk JSON playback. A matching Hold (`-I`) overrides a row's lockout or `record=off`, as it does

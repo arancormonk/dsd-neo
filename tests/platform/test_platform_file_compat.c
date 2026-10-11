@@ -803,6 +803,36 @@ expect_rename_noreplace_link_fallback(void) {
     ok = dsd_test_rmdir(dst_dir) == 0 && ok;
     return ok ? 0 : 1;
 }
+
+/* The fallback with no hard links: an exclusive create claims the name, so a taken name fails with EEXIST and keeps
+   both files, a free one is published, and a rename that fails takes its claim back. */
+static int
+expect_rename_noreplace_reservation_fallback(void) {
+    const char* dir = "dsd_neo_noreplace_claim";
+    const char* from = "dsd_neo_noreplace_claim/f.tmp";
+    const char* to = "dsd_neo_noreplace_claim/f.wav";
+    const char* missing = "dsd_neo_noreplace_claim/missing.tmp";
+    (void)remove(from);
+    (void)remove(to);
+    (void)dsd_mkdir(dir, 0700);
+    int ok = write_text_file(from, "data") == 0 && write_text_file(to, "taken") == 0;
+    errno = 0;
+    ok = ok && dsd_rename_noreplace_by_reservation(from, to) == -1 && errno == EEXIST;
+    ok = ok && file_text_is(from, "data") && file_text_is(to, "taken");
+
+    (void)remove(to);
+    ok = ok && dsd_rename_noreplace_by_reservation(from, to) == 0;
+    ok = ok && !file_exists(from) && file_text_is(to, "data");
+
+    (void)remove(to);
+    errno = 0;
+    ok = ok && dsd_rename_noreplace_by_reservation(missing, to) == -1 && errno == ENOENT;
+    ok = ok && !file_exists(to);
+    (void)remove(from);
+    (void)remove(to);
+    ok = dsd_test_rmdir(dir) == 0 && ok;
+    return ok ? 0 : 1;
+}
 #endif
 
 int
@@ -834,6 +864,7 @@ main(void) {
 #if !DSD_PLATFORM_WIN_NATIVE
     rc |= expect_rejects_symlink();
     rc |= expect_rename_noreplace_link_fallback();
+    rc |= expect_rename_noreplace_reservation_fallback();
 #endif
     return rc;
 }
