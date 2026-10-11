@@ -41,9 +41,11 @@
 #include <dsd-neo/crypto/nxdn_keystream.h>
 #include <dsd-neo/crypto/rc4.h>
 #include <dsd-neo/fec/dmr_late_entry.h>
+#include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/nonce.h>
 #include <dsd-neo/platform/posix_compat.h>
+#include <dsd-neo/platform/threading.h>
 #include <dsd-neo/protocol/p25/p25p1_const.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/exitflag.h>
@@ -810,13 +812,40 @@ dsd_mbe_out_close_protocol(dsd_opts* opts, dsd_state* state, int slot_mask, int 
 }
 
 //temp filename should not have the .wav extension, will be renamed with one after event is closed
+/* Per-call WAV temp names are unique by construction (issue #661): libsndfile's SFM_RDWR appends to a file that
+   already exists, so a name opened twice would mix two calls. The token tells processes apart (64 random bits drawn
+   once; collision-resistant, not unique), the sequence this process's files. */
+static uint64_t s_wav_temp_token;
+/* 0 = not drawn, 1 = drawing, 2 = drawn. */
+static atomic_int s_wav_temp_token_state = 0;
+static dsd_atomic_u64 s_wav_temp_seq;
+
+static uint64_t
+wav_temp_token(void) {
+    if (atomic_load(&s_wav_temp_token_state) != 2) {
+        int expected = 0;
+        if (atomic_compare_exchange_strong(&s_wav_temp_token_state, &expected, 1)) {
+            uint64_t token = 0;
+            dsd_nonce_fill(&token, sizeof token);
+            s_wav_temp_token = token;
+            atomic_store(&s_wav_temp_token_state, 2);
+        } else {
+            while (atomic_load(&s_wav_temp_token_state) != 2) {
+                dsd_thread_yield();
+            }
+        }
+    }
+    return s_wav_temp_token;
+}
+
 SNDFILE*
 open_wav_file(char* dir, char* temp_filename, size_t temp_filename_size, uint16_t sample_rate, uint8_t ext) {
     if (temp_filename == NULL || temp_filename_size == 0) {
         return NULL;
     }
 
-    uint16_t random_number = dsd_nonce_u16();
+    const unsigned long long token = (unsigned long long)wav_temp_token();
+    const unsigned long long seq = (unsigned long long)dsd_atomic_u64_fetch_add_relaxed(&s_wav_temp_seq, 1U);
     char datestr[9];
     char timestr[7];
     (void)dsd_format_local_datetime(dsd_decode_time(), DSD_LOCAL_DATETIME_DATE_COMPACT, datestr, sizeof datestr);
@@ -824,11 +853,11 @@ open_wav_file(char* dir, char* temp_filename, size_t temp_filename_size, uint16_
 
     int written = 0;
     if (ext == 0) {
-        written =
-            DSD_SNPRINTF(temp_filename, temp_filename_size, "%s/TEMP_%s_%s_%04X", dir, datestr, timestr, random_number);
+        written = DSD_SNPRINTF(temp_filename, temp_filename_size, "%s/TEMP_%s_%s_%016llX_%llu", dir, datestr, timestr,
+                               token, seq);
     } else {
-        written = DSD_SNPRINTF(temp_filename, temp_filename_size, "%s/TEMP_%s_%s_%04X.wav", dir, datestr, timestr,
-                               random_number);
+        written = DSD_SNPRINTF(temp_filename, temp_filename_size, "%s/TEMP_%s_%s_%016llX_%llu.wav", dir, datestr,
+                               timestr, token, seq);
     }
     if (written < 0 || (size_t)written >= temp_filename_size) {
         LOG_ERROR("Error - wav output temp filename is too long\n");
@@ -951,6 +980,9 @@ wav_file_get_size_or_negative(const char* filename) {
     return size;
 }
 
+/* Bounded retries on a final name another recording already holds. */
+#define WAV_PUBLISH_ATTEMPTS 8
+
 SNDFILE*
 close_and_rename_wav_file_ex(SNDFILE* wav_file, const dsd_opts* opts, const char* wav_out_filename, const char* dir,
                              const Event_History_I* event_struct, time_t opened, int export_call) {
@@ -978,7 +1010,26 @@ close_and_rename_wav_file_ex(SNDFILE* wav_file, const dsd_opts* opts, const char
         return wav_file;
     }
 
-    if (rename(wav_out_filename, new_filename) != 0) {
+    /* Never over an earlier recording (issue #661): a name another file holds draws another number, and any other
+       failure keeps the recording under its temp name, as before. */
+    int published = 0;
+    for (int attempt = 0; attempt < WAV_PUBLISH_ATTEMPTS && !published; attempt++) {
+        int source_left = 0;
+        if (dsd_rename_noreplace(wav_out_filename, new_filename, &source_left) == 0) {
+            published = 1;
+            if (source_left) {
+                LOG_WARN("Recording %s published, but its temp name %s could not be removed\n", new_filename,
+                         wav_out_filename);
+            }
+            break;
+        }
+        if (errno != EEXIST) {
+            break;
+        }
+        metadata.random_number = dsd_nonce_u16();
+        wav_rename_build_final_filename(new_filename, sizeof(new_filename), dir, &metadata);
+    }
+    if (!published) {
         LOG_ERROR("Error - could not rename wav file %s -> %s\n", wav_out_filename, new_filename);
         return NULL;
     }

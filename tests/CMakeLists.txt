@@ -5784,6 +5784,39 @@ else()
 endif()
 add_test(NAME CORE_MBE_FILE_IO COMMAND dsd-neo_test_core_mbe_file_io)
 
+# Issue #661: capture and per-call WAV names never land on a taken one. GNU ld --wrap pins the nonce and the decode time
+# so the colliding names are known in advance, as the other wrap tests do.
+if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
+    add_executable(
+        dsd-neo_test_core_mbe_out_collision
+        core/test_core_mbe_out_collision.c
+    )
+    target_include_directories(
+        dsd-neo_test_core_mbe_out_collision
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/tests/test_support
+    )
+    target_link_libraries(
+        dsd-neo_test_core_mbe_out_collision
+        PRIVATE
+            "-Wl,--start-group"
+            ${_DSD_RUNTIME_CLI_PARSE_LIBS}
+            "-Wl,--end-group"
+            ${LIBS}
+            dsd-neo_fec
+            dsd-neo_test_support
+    )
+    target_link_options(
+        dsd-neo_test_core_mbe_out_collision
+        PRIVATE -Wl,--wrap=dsd_nonce_u16 -Wl,--wrap=dsd_decode_time
+    )
+    add_test(
+        NAME CORE_MBE_OUT_COLLISION
+        COMMAND dsd-neo_test_core_mbe_out_collision
+    )
+endif()
+
 add_executable(dsd-neo_test_bit_packing_bounds core/test_bit_packing_bounds.c)
 target_include_directories(
     dsd-neo_test_bit_packing_bounds
