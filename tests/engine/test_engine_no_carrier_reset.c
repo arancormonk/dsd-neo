@@ -3597,7 +3597,7 @@ test_replay_leave_exports_recordings_on_the_capture_clock(void) {
     dsd_decode_clock_set_media_ns(2ULL * 1000000000ULL);
     opts->wav_out_f = open_wav_file(opts->wav_out_dir, opts->wav_out_file, sizeof opts->wav_out_file, 8000, 0);
     opts->wav_out_open_time = dsd_decode_time();
-    static const short silence[8000];
+    static const short silence[8000] = {0};
     rc |= expect_true("replay leave export: the recording opens and records",
                       opts->wav_out_f != NULL && sf_write_short(opts->wav_out_f, silence, 8000) == 8000);
     dsd_decode_clock_set_media_ns(3ULL * 1000000000ULL);
