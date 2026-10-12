@@ -81,9 +81,8 @@ elseif("${_sink}" STREQUAL "null")
     list(APPEND _compare_args --silent)
 endif()
 execute_process(
-    COMMAND
-        "${COMPARE_BIN}" "${WORK_DIR}/s16.raw" "${WORK_DIR}/f32.raw"
-        "${WORK_DIR}/s16.wav" "${WORK_DIR}/f32.wav" ${CHANNELS} ${_compare_args}
+    COMMAND "${COMPARE_BIN}" ${CHANNELS} ${_compare_args}
+    WORKING_DIRECTORY "${WORK_DIR}"
     RESULT_VARIABLE _cmp_rc
     OUTPUT_VARIABLE _cmp_out
     ERROR_VARIABLE _cmp_err

@@ -7,7 +7,9 @@
  * Comparator for tests/iq_float_output_check.cmake (issue #652): the same replay run once with 16-bit output and once
  * with float output (-y), each writing the digital voice stream to stdout (-o -) and a static WAV (-w).
  *
- *   dsd-neo_test_float_output_compare <s16 stream> <f32 stream> <s16 wav> <f32 wav> <channels> [flags]
+ *   dsd-neo_test_float_output_compare <channels> [flags]
+ *
+ * Run in the test's work directory. Only the four fixed regular files s16.raw, f32.raw, s16.wav and f32.wav are read.
  *
  * Passes when the float stream is the 16-bit stream written as f32 (every sample s16 / 32768, bit for bit, so none is
  * NaN or past full scale), the stream carries audio, and the two static WAVs are byte-identical and hold audio. With
@@ -22,13 +24,14 @@
 #include <string.h>
 
 #include "dsd-neo/core/safe_api.h"
+#include "dsd-neo/platform/file_compat.h"
 
 enum { WAV_HEADER_BYTES = 44 };
 
 static unsigned char*
 read_all(const char* path, size_t* len) {
     *len = 0;
-    FILE* f = fopen(path, "rb");
+    FILE* f = dsd_fopen_existing_regular_file(path, "rb");
     if (!f) {
         DSD_FPRINTF(stderr, "float output compare: cannot open %s\n", path);
         return NULL;
@@ -136,18 +139,18 @@ check_wavs(const unsigned char* a, size_t a_len, const unsigned char* b, size_t 
 
 int
 main(int argc, char** argv) {
-    if (argc < 6) {
+    if (argc < 2 || (strcmp(argv[1], "1") != 0 && strcmp(argv[1], "2") != 0)) {
         DSD_FPRINTF(stderr,
-                    "usage: %s <s16 stream> <f32 stream> <s16 wav> <f32 wav> <channels> [--both-ears] [--silent] "
+                    "usage: %s <channels: 1|2> [--both-ears] [--silent] "
                     "[--silent-wav]\n",
                     argv[0]);
         return 2;
     }
-    const int channels = (argv[5][0] == '2' && argv[5][1] == '\0') ? 2 : 1;
+    const int channels = argv[1][0] == '2' ? 2 : 1;
     int both_ears = 0;
     int silent = 0;
     int silent_wav = 0;
-    for (int i = 6; i < argc; i++) {
+    for (int i = 2; i < argc; i++) {
         if (strcmp(argv[i], "--both-ears") == 0) {
             both_ears = 1;
         } else if (strcmp(argv[i], "--silent") == 0) {
@@ -161,9 +164,10 @@ main(int argc, char** argv) {
     }
     size_t lens[4] = {0, 0, 0, 0};
     unsigned char* data[4] = {NULL, NULL, NULL, NULL};
+    static const char* const paths[4] = {"s16.raw", "f32.raw", "s16.wav", "f32.wav"};
     int rc = 0;
     for (int i = 0; i < 4; i++) {
-        data[i] = read_all(argv[1 + i], &lens[i]);
+        data[i] = read_all(paths[i], &lens[i]);
         if (!data[i]) {
             rc = 1;
         }

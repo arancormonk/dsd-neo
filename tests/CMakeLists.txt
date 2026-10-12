@@ -13377,9 +13377,9 @@ if(DSD_HAS_RADIO)
         dsd-neo_test_float_output_compare
         core/float_output_compare.c
     )
-    target_include_directories(
+    target_link_libraries(
         dsd-neo_test_float_output_compare
-        PRIVATE ${PROJECT_SOURCE_DIR}/include
+        PRIVATE dsd-neo_platform
     )
     function(
         dsd_neo_add_iq_float_output_test
