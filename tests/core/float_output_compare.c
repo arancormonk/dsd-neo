@@ -15,7 +15,7 @@
  * NaN or past full scale), the stream carries audio, and the two static WAVs are byte-identical and hold audio. With
  * --both-ears the stereo stream must carry the same sample in both channels throughout, and audio in them. With
  * --silent neither stream may hold a sample (both formats mute the same frames, or nothing plays: -o null), and with
- * --silent-wav the static WAVs only have to match: a muted call may record silence.
+ * --silent-wav the static WAVs must match and contain no nonzero samples; a fully muted call may leave only a header.
  */
 
 #include <stdint.h>
@@ -124,8 +124,9 @@ check_wavs(const unsigned char* a, size_t a_len, const unsigned char* b, size_t 
     for (size_t i = WAV_HEADER_BYTES; i < a_len; i++) {
         nonzero += (a[i] != 0U) ? 1U : 0U;
     }
-    if (a_len <= WAV_HEADER_BYTES || (nonzero == 0U && !silent_ok)) {
-        DSD_FPRINTF(stderr, "float output compare: the 16-bit static WAV holds no audio (%zu bytes)\n", a_len);
+    if (a_len < WAV_HEADER_BYTES || (silent_ok ? nonzero != 0U : nonzero == 0U)) {
+        DSD_FPRINTF(stderr, "float output compare: unexpected static WAV content (%zu bytes, silent expected %d)\n",
+                    a_len, silent_ok);
         return 1;
     }
     if (a_len != b_len || memcmp(a, b, a_len) != 0) {

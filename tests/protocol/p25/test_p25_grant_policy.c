@@ -228,7 +228,9 @@ main(void) {
     p25_sm_event(p25_sm_get_ctx(), &opts, &st, &patch_hold_active);
     rc |= expect_true("patch member hold canonical policy target",
                       active_call_matches(&st, 0U, DSD_CALL_KIND_GROUP_VOICE, 1400U, 1401U, 2400U));
-    int enc = 1;
+    // The hold passes the talkgroup policy (a hold on another talkgroup would mute it); it keeps the mute the
+    // caller came in with, so a clear frame stays audible (issue #655).
+    int enc = 0;
     rc |= expect_true("patch member hold audio gate call", dsd_audio_group_gate_mono(&opts, &st, 1400, enc, &enc) == 0);
     rc |= expect_true("patch member hold audio gate opens", enc == 0);
     st.tg_hold = 0;

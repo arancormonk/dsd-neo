@@ -16,6 +16,7 @@ target_sources(
         audio/dsd_audio2.c
         audio/dispatch.c
         audio/dsd_audio_gate.c
+        audio/voice_crypto.c
         audio/gain.c
         audio/mix.c
         audio/p25p2_playout.c

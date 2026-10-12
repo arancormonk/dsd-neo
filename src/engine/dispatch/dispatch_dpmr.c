@@ -115,6 +115,7 @@ dsd_dispatch_handle_dpmr(dsd_opts* opts, dsd_state* state) {
     if ((state->synctype == DSD_SYNC_DPMR_FS1_POS) || (state->synctype == DSD_SYNC_DPMR_FS1_NEG)) {
         /* dPMR Frame Sync 1 */
         dpmr_end_call(opts, state, DSD_CALL_END_EXPLICIT);
+        dpmr_scrambling_reset(state);
         DSD_FPRINTF(stderr, "dPMR Frame Sync 1 ");
         dsd_mbe_out_close_protocol(opts, state, DSD_MBE_OUT_SLOT1, DSD_SYNC_DPMR_FS1_POS);
     } else if ((state->synctype == DSD_SYNC_DPMR_FS2_POS) || (state->synctype == DSD_SYNC_DPMR_FS2_NEG)) {
@@ -123,11 +124,13 @@ dsd_dispatch_handle_dpmr(dsd_opts* opts, dsd_state* state) {
     } else if ((state->synctype == DSD_SYNC_DPMR_FS3_POS) || (state->synctype == DSD_SYNC_DPMR_FS3_NEG)) {
         /* dPMR Frame Sync 3 */
         dpmr_end_call(opts, state, DSD_CALL_END_TERMINATOR);
+        dpmr_scrambling_reset(state);
         DSD_FPRINTF(stderr, "dPMR Frame Sync 3 ");
         dsd_mbe_out_close_protocol(opts, state, DSD_MBE_OUT_SLOT1, DSD_SYNC_DPMR_FS1_POS);
     } else if ((state->synctype == DSD_SYNC_DPMR_FS4_POS) || (state->synctype == DSD_SYNC_DPMR_FS4_NEG)) {
         /* dPMR Frame Sync 4 */
         dpmr_end_call(opts, state, DSD_CALL_END_EXPLICIT);
+        dpmr_scrambling_reset(state);
         DSD_FPRINTF(stderr, "dPMR Frame Sync 4 ");
         dsd_mbe_out_close_protocol(opts, state, DSD_MBE_OUT_SLOT1, DSD_SYNC_DPMR_FS1_POS);
     }

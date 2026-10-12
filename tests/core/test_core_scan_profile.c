@@ -269,7 +269,8 @@ test_csv_import(void) {
     dsd_state_ext_free_all(state);
 
     /* Legacy key columns beside an options cell keep their key-only meaning: they never
-     * decide encrypted-audio muting, while the option text's own `-b` does. */
+     * decide encrypted-audio muting. The option text's own `-b` keeps undecodable P25 muted and
+     * leaves the DMR encrypted-audio mute to the session (issue #655). */
     write_file(path, "channel,frequency_hz,mode,single_key_dec,options\n"
                      "1,150000000,dmr,5,--no-force-key\n"
                      "2,150000001,dmr,,-b 5\n"
@@ -279,11 +280,11 @@ test_csv_import(void) {
     assert(state->lcn_freq_count == 3);
     assert(dsd_state_trunk_lcn_keys_get(state, 0)->scalars.K == 5);
     assert(dsd_state_trunk_lcn_keys_get(state, 1)->scalars.K == 5);
-    assert(!(dsd_channel_profile_get(state, 0)->values.present & DSD_SCAN_OPT_MUTE_DMR));
-    assert((dsd_channel_profile_get(state, 1)->values.present & DSD_SCAN_OPT_MUTE_DMR)
-           && dsd_channel_profile_get(state, 1)->values.mute_dmr == 0);
-    assert((dsd_channel_profile_get(state, 2)->values.present & DSD_SCAN_OPT_MUTE_DMR)
-           && dsd_channel_profile_get(state, 2)->values.mute_dmr == 0);
+    assert(!(dsd_channel_profile_get(state, 0)->values.present & (DSD_SCAN_OPT_MUTE_DMR | DSD_SCAN_OPT_MUTE_P25)));
+    for (size_t row = 1; row < 3; row++) {
+        assert(!(dsd_channel_profile_get(state, row)->values.present & DSD_SCAN_OPT_MUTE_DMR));
+        assert(dsd_channel_profile_get(state, row)->values.present & DSD_SCAN_OPT_MUTE_P25);
+    }
     dsd_state_trunk_lcn_free(state);
     dsd_state_ext_free_all(state);
     free(state);
@@ -332,12 +333,13 @@ test_legacy_columns_do_not_mute(void) {
     /* Direct option policy is independent of the legacy material merged beside it. */
     DSD_SECURE_ZERO(&parsed, sizeof(parsed));
     assert(dsd_scan_options_parse("-b 0", DSD_SCAN_MODE_DMR, 1, &parsed, error, sizeof(error)) == 0);
-    assert((parsed.values.present & DSD_SCAN_OPT_MUTE_DMR) && parsed.values.mute_dmr == 0);
+    assert(!(parsed.values.present & DSD_SCAN_OPT_MUTE_DMR) && (parsed.values.present & DSD_SCAN_OPT_MUTE_P25));
     assert(dsd_scan_options_merge_keys(&parsed, "", "", "0000001f00", "", error, sizeof(error)) == 0);
-    assert((parsed.values.present & DSD_SCAN_OPT_MUTE_DMR) && parsed.values.mute_dmr == 0);
+    assert(!(parsed.values.present & DSD_SCAN_OPT_MUTE_DMR) && (parsed.values.present & DSD_SCAN_OPT_MUTE_P25));
     assert(dsd_scan_profile_load(&parsed, 0, &profile, &keys) == 0);
     assert(dsd_scan_mode_options(opts, state, &profile->values) == 0);
-    assert(opts->dmr_mute_encL == 0 && opts->dmr_mute_encR == 0 && opts->unmute_encrypted_p25 == 0);
+    /* The row's key keeps undecodable P25 muted; the DMR encrypted-audio mute stays the session's (issue #655). */
+    assert(opts->dmr_mute_encL == 1 && opts->dmr_mute_encR == 1 && opts->unmute_encrypted_p25 == 0);
     dsd_scan_mode_leave(opts, state);
     assert(opts->dmr_mute_encL == 1 && opts->unmute_encrypted_p25 == 1);
     dsd_scan_profile_free(profile);

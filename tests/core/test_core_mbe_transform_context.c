@@ -2438,8 +2438,8 @@ test_process_mbe_frame_hard_dmr_left_stages_audio(void) {
     rc |= expect_eq_int("frame-hard-dmr errs2", state.errs2, expected_errs2);
     rc |= expect_eq_int("frame-hard-dmr status", strcmp(state.err_str, expected_err_str), 0);
     rc |= expect_eq_mem("frame-hard-dmr temp audio", state.audio_out_temp_buf, expected_audio, sizeof(expected_audio));
-    rc |= expect_eq_int("frame-hard-dmr enc flag", state.dmr_encL, 0);
-    rc |= expect_eq_int("frame-hard-dmr inactive right muted", state.dmr_encR, 1);
+    rc |= expect_eq_int("frame-hard-dmr enc flag", state.mbe_slot_muted[0], 0);
+    rc |= expect_eq_int("frame-hard-dmr inactive right muted", state.mbe_slot_muted[1], 1);
     rc |= expect_eq_int("frame-hard-dmr debug errors", state.debug_audio_errors, state.errs2);
 
     return rc;
@@ -2505,7 +2505,7 @@ test_process_mbe_frame_trunked_mono_bs_fallback_gates_to_granted_slot(void) {
     state.currentslot = 0;
     processMbeFrame(&opts, &state, owner_of(state.synctype), NULL, ambe_fr, NULL);
 
-    rc |= expect_eq_int("dmr-bs-fallback adjacent slot muted", state.dmr_encL, 1);
+    rc |= expect_eq_int("dmr-bs-fallback adjacent slot muted", state.mbe_slot_muted[0], 1);
     rc |= expect_eq_mem("dmr-bs-fallback adjacent slot not staged", state.s_l, silent_audio, sizeof(silent_audio));
     rc |= expect_eq_int("dmr-bs-fallback adjacent slot debug errors", state.debug_audio_errors, 0);
 
@@ -2526,7 +2526,7 @@ test_process_mbe_frame_trunked_mono_bs_fallback_gates_to_granted_slot(void) {
         // Float output (-y) stages the slot's short frame through the gain stage too (issue #652).
         rc |= expect_eq_int("dmr-bs-fallback staged right", staged, 1);
     }
-    rc |= expect_eq_int("dmr-bs-fallback enc flag", state.dmr_encR, 0);
+    rc |= expect_eq_int("dmr-bs-fallback enc flag", state.mbe_slot_muted[1], 0);
     rc |= expect_eq_int("dmr-bs-fallback debug errors", state.debug_audio_errorsR, state.errs2R);
 
     if (wav_out_l) {
@@ -2652,13 +2652,24 @@ test_process_mbe_frame_p25p2_short_staging_provenance(void) {
     state.p2_sysid = 1;
     state.p2_cc = 1;
     state.payload_algidR = 0x80;
+    state.p25_p2_audio_allowed[1] = 1;
+    state.p25_crypto_state[1] = DSD_P25_CRYPTO_CLEAR;
     state.mbe_short_silenced[1] = 1U;
     state.currentslot = 1;
     processMbeFrame(&opts, &state, owner_of(state.synctype), NULL, ambe_fr, NULL);
     rc |= expect_eq_int("p25p2 clear slot2 short staged", state.mbe_short_silenced[1], 0);
 
+    // Issue #655: the service options' encryption bit with ALGID 0x80 is a clear call by P25's classification, and
+    // P25 decides P25: the DMR service-options rule no longer silences it.
+    state.dmr_soR = 0x40;
+    state.mbe_short_silenced[1] = 1U;
+    processMbeFrame(&opts, &state, owner_of(state.synctype), NULL, ambe_fr, NULL);
+    rc |= expect_eq_int("p25p2 SO 0x40 ALGID 0x80 clear slot2 short staged", state.mbe_short_silenced[1], 0);
+    state.dmr_soR = 0;
+
     // The vocoder mutes an encrypted slot it cannot decrypt: silence, so not audio.
     state.payload_algidR = 0x84;
+    state.p25_crypto_state[1] = DSD_P25_CRYPTO_BLOCKED;
     processMbeFrame(&opts, &state, owner_of(state.synctype), NULL, ambe_fr, NULL);
     rc |= expect_eq_int("p25p2 encrypted slot2 short silenced", state.mbe_short_silenced[1], 1);
 
@@ -2666,6 +2677,7 @@ test_process_mbe_frame_p25p2_short_staging_provenance(void) {
     opts.dmr_stereo = 0;
     opts.audio_out = 0;
     state.payload_algidR = 0x80;
+    state.p25_crypto_state[1] = DSD_P25_CRYPTO_CLEAR;
     state.p25_p2_audio_allowed[1] = 1;
     state.mbe_short_silenced[1] = 0U;
     processMbeFrame(&opts, &state, owner_of(state.synctype), NULL, ambe_fr, NULL);
@@ -2742,7 +2754,7 @@ test_process_mbe_frame_dmr_rc4_transforms_left_and_right_slots(void) {
     rc |= expect_eq_int("dmr-rc4-left errs", state.errs, expected_errs);
     rc |= expect_eq_int("dmr-rc4-left errs2", state.errs2, expected_errs2);
     rc |= expect_eq_int("dmr-rc4-left status", strcmp(state.err_str, expected_err_str), 0);
-    rc |= expect_eq_int("dmr-rc4-left decryptable", state.dmr_encL, 0);
+    rc |= expect_eq_int("dmr-rc4-left decryptable", state.mbe_slot_muted[0], 0);
     rc |= expect_eq_mem("dmr-rc4-left temp audio", state.audio_out_temp_buf, expected_audio, sizeof(expected_audio));
 
     expected_errs = -1;
@@ -2793,7 +2805,7 @@ test_process_mbe_frame_dmr_rc4_transforms_left_and_right_slots(void) {
     rc |= expect_eq_int("dmr-rc4-right errs", state.errsR, expected_errs);
     rc |= expect_eq_int("dmr-rc4-right errs2", state.errs2R, expected_errs2);
     rc |= expect_eq_int("dmr-rc4-right status", strcmp(state.err_strR, expected_err_str), 0);
-    rc |= expect_eq_int("dmr-rc4-right decryptable", state.dmr_encR, 0);
+    rc |= expect_eq_int("dmr-rc4-right decryptable", state.mbe_slot_muted[1], 0);
     rc |= expect_eq_mem("dmr-rc4-right temp audio", state.audio_out_temp_bufR, expected_audio, sizeof(expected_audio));
 
     return rc;
@@ -2858,7 +2870,7 @@ test_process_mbe_frame_mixed_clear_and_bp(void) {
                     rc = 1;
                 }
             }
-            rc |= (slot ? state->dmr_encR : state->dmr_encL) != 0;
+            rc |= state->mbe_slot_muted[slot] != 0;
         }
     }
     if (rc) {
@@ -2904,8 +2916,9 @@ test_process_mbe_frame_dmr_reverse_mute_preserves_p25_override(void) {
 
     processMbeFrame(&opts, &state, owner_of(state.synctype), imbe_fr, ambe_fr, imbe7100_fr);
 
-    rc |= expect_eq_int("reverse-mute-left-enc", state.dmr_encL, 1);
-    rc |= expect_eq_int("reverse-mute-left-keeps-mute-option", opts.dmr_mute_encL, 0);
+    // -q mutes the clear call and writes no option (issue #655).
+    rc |= expect_eq_int("reverse-mute-left-enc", state.mbe_slot_muted[0], 1);
+    rc |= expect_eq_int("reverse-mute-left-mute", opts.dmr_mute_encL, 0);
     rc |= expect_eq_int("reverse-mute-left-preserves-p25-override", opts.unmute_encrypted_p25, 1);
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
@@ -2923,8 +2936,8 @@ test_process_mbe_frame_dmr_reverse_mute_preserves_p25_override(void) {
 
     processMbeFrame(&opts, &state, owner_of(state.synctype), imbe_fr, ambe_fr, imbe7100_fr);
 
-    rc |= expect_eq_int("reverse-mute-right-enc", state.dmr_encR, 0);
-    rc |= expect_eq_int("reverse-mute-right-keeps-mute-option", opts.dmr_mute_encR, 1);
+    rc |= expect_eq_int("reverse-mute-right-enc", state.mbe_slot_muted[1], 0);
+    rc |= expect_eq_int("reverse-mute-right-mute", opts.dmr_mute_encR, 1);
     rc |= expect_eq_int("reverse-mute-right-preserves-p25-override", opts.unmute_encrypted_p25, 0);
 
     return rc;
@@ -2954,6 +2967,8 @@ test_process_mbe_frame_dmr_missing_alg_key_unmutes_slots(void) {
     opts.audio_gain = 1.0f;
     opts.audio_gainR = 1.0f;
     opts.dmr_stereo = 1;
+    opts.dmr_mute_encL = 1;
+    opts.dmr_mute_encR = 1;
     init_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
     state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
     state.currentslot = 0;
@@ -2962,8 +2977,10 @@ test_process_mbe_frame_dmr_missing_alg_key_unmutes_slots(void) {
 
     processMbeFrame(&opts, &state, owner_of(state.synctype), imbe_fr, ambe_fr, imbe7100_fr);
 
-    rc |= expect_eq_int("missing-alg-left-unmuted", state.dmr_encL, 0);
-    rc |= expect_eq_int("missing-alg-left-mute-flag", opts.dmr_mute_encL, 0);
+    // No ALG ID: loaded scalar material counts as decrypting the call, as the LC and PI classification count it
+    // (dsd_dmr_missing_alg_key_can_decrypt()), with encrypted audio muted; the mute stays the user's.
+    rc |= expect_eq_int("missing-alg-left-unmuted", state.mbe_slot_muted[0], 0);
+    rc |= expect_eq_int("missing-alg-left-mute-flag", opts.dmr_mute_encL, 1);
     rc |= expect_eq_int("missing-alg-left-debug", state.debug_audio_errors, state.errs2);
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
@@ -2972,6 +2989,8 @@ test_process_mbe_frame_dmr_missing_alg_key_unmutes_slots(void) {
     opts.audio_gain = 1.0f;
     opts.audio_gainR = 1.0f;
     opts.dmr_stereo = 1;
+    opts.dmr_mute_encL = 1;
+    opts.dmr_mute_encR = 1;
     init_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
     state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
     state.currentslot = 1;
@@ -2980,8 +2999,8 @@ test_process_mbe_frame_dmr_missing_alg_key_unmutes_slots(void) {
 
     processMbeFrame(&opts, &state, owner_of(state.synctype), imbe_fr, ambe_fr, imbe7100_fr);
 
-    rc |= expect_eq_int("missing-alg-right-unmuted", state.dmr_encR, 0);
-    rc |= expect_eq_int("missing-alg-right-mute-flag", opts.dmr_mute_encR, 0);
+    rc |= expect_eq_int("missing-alg-right-unmuted", state.mbe_slot_muted[1], 0);
+    rc |= expect_eq_int("missing-alg-right-mute-flag", opts.dmr_mute_encR, 1);
     rc |= expect_eq_int("missing-alg-right-debug", state.debug_audio_errorsR, state.errs2R);
 
     return rc;
@@ -3019,7 +3038,7 @@ test_process_mbe_frame_dmr_post_decode_gates_override_enc_flags(void) {
 
     processMbeFrame(&opts, &state, owner_of(state.synctype), imbe_fr, ambe_fr, imbe7100_fr);
 
-    rc |= expect_eq_int("forced-clear-left-enc", state.dmr_encL, 0);
+    rc |= expect_eq_int("forced-clear-left-enc", state.mbe_slot_muted[0], 0);
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
     pass_through_voice_chain(&opts);
@@ -3035,7 +3054,8 @@ test_process_mbe_frame_dmr_post_decode_gates_override_enc_flags(void) {
 
     processMbeFrame(&opts, &state, owner_of(state.synctype), imbe_fr, ambe_fr, imbe7100_fr);
 
-    rc |= expect_eq_int("p25p2-metadata-gate-right-enc", state.dmr_encR, 1);
+    // P25 Phase 2 is judged by P25's rule: a call it has not classified clear or decryptable stays muted.
+    rc |= expect_eq_int("p25p2-metadata-gate-right-enc", state.mbe_slot_muted[1], 1);
     rc |= expect_eq_int("p25p2-metadata-gate-history-len", state.p25_p2_voice_err_hist_len, 50);
     rc |= expect_eq_int("p25p2-metadata-gate-history-pos", state.p25_p2_voice_err_hist_pos[1], 1);
 
@@ -3138,13 +3158,12 @@ dmr_mix_tag_slots(dsd_state* state) {
     }
 }
 
-/* Issue #574: the stereo DMR mix (SS3, in both output formats since #652) follows the vocoder's slot verdict after
- * reverse mute (-q). Without -q a clear slot plays and an encrypted one without a key does not; -q swaps them. With the
- * encrypted-audio mute flag off (dmr_mute_encL/R 0: the user's unmute toggle, or any key load) SS3 keeps an encrypted
- * slot it cannot decrypt muted; under -q that flag follows the verdict. Under forced
- * privacy (Baofeng AP, CSI EE, the Kenwood scrambler) the vocoder clears the slot's encryption flag before -q flips
- * it, so the call plays without -q and not with it, whether or not the voice carries the encryption bit. Each channel
- * is checked for the slot it carries: its own when audible, the audible companion's when muted (the mixes mirror one
+/* Issues #574 and #655: the shared stereo DMR mixer follows the vocoder's slot verdict in both output formats.
+ * Without -q a clear slot plays and an encrypted one without a key does not, unless the user turned the encrypted-audio
+ * mute off (dmr_mute_encL/R 0), which both mixes honor alike. -q plays an encrypted slot, decryptable or not, and mutes
+ * a clear one. Forced privacy (Baofeng AP, CSI EE, the Kenwood scrambler) decrypts a slot whose voice carries the
+ * encryption bit, so it plays with or without -q; a slot without the bit is clear, and -q mutes it. Each channel is
+ * checked for the slot it carries: its own when audible, the audible companion's when muted (the mixes mirror one
  * audible slot into both channels). */
 static const char* const k_dmr_mix_modes[] = {"clear/encrypted", "baofeng_ap", "csi_ee", "ken_sc"};
 
@@ -3180,7 +3199,9 @@ dmr_mix_check_row(int mode, int reverse_mute, int unmute_encrypted, int floating
     int audible[2];
     for (int slot = 0; slot < 2; slot++) {
         const int clear = so[slot] == 0;
-        audible[slot] = mode != 0 ? !reverse_mute : (reverse_mute ? !clear : clear);
+        // A forced mode decrypts an encrypted call, which -q then keeps audible as an encrypted call (issue #655).
+        const int decryptable = !clear && mode != 0;
+        audible[slot] = reverse_mute ? !clear : (clear || decryptable || unmute_encrypted);
     }
     const int any = audible[0] || audible[1];
     const int want_left = audible[0] ? 1 : (audible[1] ? 2 : 0);
@@ -3252,13 +3273,13 @@ dmr_decrypted_then_undecryptable_row(int floating_point, int autoload) {
     initState(state);
     char tag[160];
     int rc = 0;
-    const char* mix = floating_point ? "FS3" : "SS3";
+    const char* mix = floating_point ? "SS3 -y" : "SS3";
     const char* how = autoload ? "autoload" : "aes";
     state->synctype = DSD_SYNC_DMR_BS_VOICE_POS;
     state->dmrburstL = 16;
     state->dmrburstR = 16;
     // Slot 2 carries an encrypted call nothing decrypts, so it never plays and only slot 1 can.
-    state->dmr_encR = 1;
+    state->mbe_slot_muted[1] = 1;
     if (autoload) {
         // Basic privacy (no ALG ID) on a talkgroup with a key row: the autoload loads the row's key.
         const dsd_call_observation call = {
@@ -3311,7 +3332,7 @@ dmr_decrypted_then_undecryptable_row(int floating_point, int autoload) {
         dmr_mix_stage_frame(opts, state, 0, frame);
     }
     DSD_SNPRINTF(tag, sizeof(tag), "%s %s undecryptable call flagged", mix, how);
-    rc |= expect_eq_int(tag, state->dmr_encL, 1);
+    rc |= expect_eq_int(tag, state->mbe_slot_muted[0], 1);
     DSD_SNPRINTF(tag, sizeof(tag), "%s %s undecryptable call not captured", mix, how);
     rc |= expect_eq_int(tag, dmr_capture_position(opts) == captured, 1);
     if (!floating_point) {
@@ -3577,9 +3598,11 @@ dmr_stamp_held_muted_slot(int floating_point) {
 
     fx.state->dmr_so = 0x40;
     dmr_stamp_stage_burst(&fx, 0);
-    rc |= expect_eq_int("dmr stamp held slot muted by the vocoder", fx.state->dmr_encL, 1);
+    rc |= expect_eq_int("dmr stamp held slot muted by the vocoder", fx.state->mbe_slot_muted[0], 1);
     dmr_mix_run(fx.opts, fx.state);
-    rc |= dmr_stamp_check(mix, "held burst the vocoder muted", 3, 0);
+    // A hold decides the talkgroup policy, never encryption (issue #655): the held slot stays muted, and the idle
+    // companion is not the held talkgroup, so nothing plays.
+    rc |= dmr_stamp_check(mix, "held burst the vocoder muted", 0, 0);
     dmr_stamp_fixture_close(&fx);
     return rc;
 }
@@ -3607,7 +3630,7 @@ dmr_mix_hold_and_preference_row(int floating_point, int hold, int pref) {
     if (!dmr_stamp_fixture_open(&fx, floating_point)) {
         return 1;
     }
-    const char* mix = floating_point ? "FS3" : "SS3";
+    const char* mix = floating_point ? "SS3 -y" : "SS3";
     char tag[160];
     int rc = 0;
     rc |= expect_eq_int("hold/preference slot 1 call", dmr_stamp_seed_group_call(fx.state, 0, 100U), 1);
@@ -3667,10 +3690,11 @@ test_dmr_ss3_stamps_the_slot_each_channel_carries(void) {
         int stage[2];
         int want_stamp;
     } cases[] = {
-        {"hold prefers slot 1, muted by the vocoder, over clear slot 2",
+        // A hold never unmutes a slot the vocoder muted (issue #655), so clear slot 2 fills both channels.
+        {"hold on both slots, slot 1 muted by the vocoder, clear slot 2 plays",
          1,
          {DMR_SS3_STAGE_MUTED, DMR_SS3_STAGE_CLEAR},
-         0},
+         1},
         {"slot 1's voice burst preferred, nothing new on it, over clear slot 2",
          0,
          {DMR_SS3_STAGE_NONE, DMR_SS3_STAGE_CLEAR},
@@ -3756,7 +3780,7 @@ test_dmr_stereo_mixes_play_a_vertex_keystream_call(void) {
         const char* mix = floating_point ? "SS3 -y" : "SS3";
         char tag[96];
         DSD_SNPRINTF(tag, sizeof(tag), "vertex %s slot flags cleared", mix);
-        rc |= expect_eq_int(tag, state->dmr_encL == 0 && state->dmr_encR == 0, 1);
+        rc |= expect_eq_int(tag, state->mbe_slot_muted[0] == 0 && state->mbe_slot_muted[1] == 0, 1);
         DSD_SNPRINTF(tag, sizeof(tag), "vertex %s service-options encryption bits cleared", mix);
         rc |= expect_eq_int(tag, (state->dmr_so & 0x40) == 0 && (state->dmr_soR & 0x40) == 0, 1);
         dmr_mix_tag_slots(state);
@@ -3785,9 +3809,9 @@ dmr_mix_any_nonzero_s16(const short* samples, size_t n) {
 }
 
 /* Issue #574: a DMR slot the vocoder mutes stages silence, never its last frame. The stereo mixes copy each slot's
- * short frame into their superframe buffers every frame, and SS3 still plays a muted slot that a talkgroup hold
- * unmutes: an unrefreshed frame would replay the last call audio staged on that slot. The silence also retires the
- * clear frame's media mark, so SS3 does not stamp the silence it plays; a clear frame staged after it marks again. */
+ * short frame into their superframe buffers every frame, so an unrefreshed frame would replay the last call audio
+ * staged on that slot. A talkgroup hold no longer unmutes the slot (issue #655), so the held encrypted slot stays
+ * muted; the silence also retires the clear frame's media mark, and a clear frame staged after it marks again. */
 static int
 test_dmr_muted_slot_stages_silence_not_its_last_frame(void) {
     int rc = 0;
@@ -3833,13 +3857,14 @@ test_dmr_muted_slot_stages_silence_not_its_last_frame(void) {
             dmr_mix_stage_frame(opts, state, slot, frame);
         }
         DSD_SNPRINTF(tag, sizeof(tag), "%s encrypted frame is muted", name);
-        rc |= expect_eq_int(tag, slot == 0 ? state->dmr_encL : state->dmr_encR, 1);
+        rc |= expect_eq_int(tag, state->mbe_slot_muted[slot], 1);
         DSD_SNPRINTF(tag, sizeof(tag), "%s muted frame stages silence", name);
         rc |= expect_eq_int(tag, dmr_mix_any_nonzero_s16(staged, 160), 0);
 
+        // The hold decides the talkgroup policy only (issue #655): the held encrypted slot stays muted.
         dmr_mix_run(opts, state);
-        DSD_SNPRINTF(tag, sizeof(tag), "%s held muted slot emits its blocks", name);
-        rc |= expect_eq_int(tag, g_dmr_mix_blocks, 3);
+        DSD_SNPRINTF(tag, sizeof(tag), "%s held muted slot stays muted", name);
+        rc |= expect_eq_int(tag, g_dmr_mix_blocks, 0);
         DSD_SNPRINTF(tag, sizeof(tag), "%s held muted slot plays silence, not its last frame", name);
         rc |= expect_eq_int(tag, g_dmr_mix_signs[0] | g_dmr_mix_signs[1], 0);
         DSD_SNPRINTF(tag, sizeof(tag), "%s held muted slot stamps none of the silence it plays", name);
@@ -3855,12 +3880,61 @@ test_dmr_muted_slot_stages_silence_not_its_last_frame(void) {
             dmr_mix_stage_frame(opts, state, slot, frame);
         }
         DSD_SNPRINTF(tag, sizeof(tag), "%s clear again", name);
-        rc |= expect_eq_int(tag, slot == 0 ? state->dmr_encL : state->dmr_encR, 0);
+        rc |= expect_eq_int(tag, state->mbe_slot_muted[slot], 0);
         dmr_mix_run(opts, state);
         DSD_SNPRINTF(tag, sizeof(tag), "%s held slot clear again plays its frames", name);
         rc |= expect_eq_int(tag, g_dmr_mix_blocks == 3 && (g_dmr_mix_signs[0] | g_dmr_mix_signs[1]) != 0, 1);
         DSD_SNPRINTF(tag, sizeof(tag), "%s held slot clear again stamps", name);
         rc |= expect_eq_int(tag, dmr_stamp_noted(), 1);
+        freeState(state);
+        free(state);
+        free(opts);
+    }
+    return rc;
+}
+
+/* Issue #655: the generic -S keystream clears the slot's service options and ALG ID on every frame, so a burst's later
+ * frames arrive with no encryption evidence. Under -q every frame -S ran on counts as an encrypted call it decrypted:
+ * the whole burst stays audible on both slots, in both mixes, rather than the first frame alone. */
+static int
+test_dmr_straight_keystream_burst_stays_audible_under_reverse_mute(void) {
+    int rc = 0;
+    for (int floating_point = 1; floating_point >= 0; floating_point--) {
+        dsd_opts* opts = dmr_mix_new_opts(floating_point, 1);
+        dsd_state* state = calloc(1, sizeof(*state));
+        if (!opts || !state) {
+            free(opts);
+            free(state);
+            return 1;
+        }
+        initState(state);
+        state->synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+        state->dmrburstL = 16;
+        state->dmrburstR = 16;
+        // An all-zero keystream: applying it leaves the voice as decoded.
+        state->straight_ks = 1;
+        state->straight_mod = 49;
+        state->dmr_so = 0x40;
+        state->dmr_soR = 0x40;
+        state->payload_algid = 0x21;
+        state->payload_algidR = 0x21;
+        const char* mix = floating_point ? "SS3 -y" : "SS3";
+        char tag[128];
+        for (int slot = 0; slot < 2; slot++) {
+            for (int frame = 0; frame < 3; frame++) {
+                dmr_mix_stage_frame(opts, state, slot, frame);
+                DSD_SNPRINTF(tag, sizeof(tag), "-S -q %s slot %d frame %d audible", mix, slot + 1, frame + 1);
+                rc |= expect_eq_int(tag, state->mbe_slot_muted[slot], 0);
+            }
+        }
+        dmr_mix_tag_slots(state);
+        dmr_mix_run(opts, state);
+        DSD_SNPRINTF(tag, sizeof(tag), "-S -q %s blocks", mix);
+        rc |= expect_eq_int(tag, g_dmr_mix_blocks, 3);
+        DSD_SNPRINTF(tag, sizeof(tag), "-S -q %s left channel", mix);
+        rc |= expect_eq_int(tag, g_dmr_mix_signs[0], 1);
+        DSD_SNPRINTF(tag, sizeof(tag), "-S -q %s right channel", mix);
+        rc |= expect_eq_int(tag, g_dmr_mix_signs[1], 2);
         freeState(state);
         free(state);
         free(opts);
@@ -3896,7 +3970,7 @@ test_dmr_mono_disabled_slot_stages_silence(void) {
         state->dmr_mono_slot = (short)(slot ^ 1);
         dmr_mix_stage_frame(opts, state, slot, 1);
         DSD_SNPRINTF(tag, sizeof(tag), "dmr mono %s off is muted", name);
-        rc |= expect_eq_int(tag, slot == 0 ? state->dmr_encL : state->dmr_encR, 1);
+        rc |= expect_eq_int(tag, state->mbe_slot_muted[slot], 1);
         DSD_SNPRINTF(tag, sizeof(tag), "dmr mono %s off stages silence", name);
         rc |= expect_eq_int(tag, dmr_mix_any_nonzero_s16(staged, 160), 0);
         freeState(state);
@@ -3948,8 +4022,9 @@ test_process_mbe_frame_dmr_aes_stream_advances_slot_state(void) {
 
     rc |= expect_eq_int("aes-left-vc", state.DMRvcL, 1);
     rc |= expect_eq_int("aes-left-bit-counter", state.bit_counterL, 56);
+    // The keystream decrypts the slot; the user's encrypted-audio mute is left as it was (issue #655).
     rc |= expect_eq_int("aes-left-keeps-mute-option", opts.dmr_mute_encL, 1);
-    rc |= expect_eq_int("aes-left-enc-cleared", state.dmr_encL, 0);
+    rc |= expect_eq_int("aes-left-enc-cleared", state.mbe_slot_muted[0], 0);
     rc |= expect_any_nonzero_u8("aes-left-keystream-ready", state.ks_octetL, sizeof(state.ks_octetL));
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
@@ -3976,7 +4051,7 @@ test_process_mbe_frame_dmr_aes_stream_advances_slot_state(void) {
     rc |= expect_eq_int("aes-right-vc", state.DMRvcR, 1);
     rc |= expect_eq_int("aes-right-bit-counter", state.bit_counterR, 56);
     rc |= expect_eq_int("aes-right-keeps-mute-option", opts.dmr_mute_encR, 1);
-    rc |= expect_eq_int("aes-right-enc-cleared", state.dmr_encR, 0);
+    rc |= expect_eq_int("aes-right-enc-cleared", state.mbe_slot_muted[1], 0);
     rc |= expect_any_nonzero_u8("aes-right-keystream-ready", state.ks_octetR, sizeof(state.ks_octetR));
 
     return rc;
@@ -4138,6 +4213,7 @@ test_process_mbe_frame_hard_p25p2_right_stages_audio(void) {
     state.p2_sysid = 2;
     state.p2_cc = 3;
     state.p25_p2_audio_allowed[1] = 1;
+    state.p25_crypto_state[1] = DSD_P25_CRYPTO_CLEAR;
 
     processMbeFrame(&opts, &state, owner_of(state.synctype), imbe_fr, ambe_fr, imbe7100_fr);
 
@@ -4147,7 +4223,7 @@ test_process_mbe_frame_hard_p25p2_right_stages_audio(void) {
     rc |= expect_eq_int("frame-hard-p25p2-r status", strcmp(state.err_strR, expected_err_str), 0);
     rc |= expect_eq_mem("frame-hard-p25p2-r temp audio", state.audio_out_temp_bufR, expected_audio,
                         sizeof(expected_audio));
-    rc |= expect_eq_int("frame-hard-p25p2-r enc flag", state.dmr_encR, 0);
+    rc |= expect_eq_int("frame-hard-p25p2-r enc flag", state.mbe_slot_muted[1], 0);
     rc |= expect_eq_int("frame-hard-p25p2-r debug errors", state.debug_audio_errorsR, state.errs2R);
     rc |= expect_eq_int("frame-hard-p25p2-r history length", state.p25_p2_voice_err_hist_len, 50);
     rc |= expect_eq_int("frame-hard-p25p2-r history position", state.p25_p2_voice_err_hist_pos[1], 1);
@@ -5478,8 +5554,8 @@ run_capture_verdict_case(const capture_verdict_case* c) {
     state.currentslot = c->slot;
     state.dmr_stereo = c->stereo;
     /* A carrier reset left the slot verdicts clear. */
-    state.dmr_encL = 0;
-    state.dmr_encR = 0;
+    state.mbe_slot_muted[0] = 0;
+    state.mbe_slot_muted[1] = 0;
     /* P25 Phase 2: a clear call its decode gate admits, on a system whose identity is known. */
     state.p25_crypto_state[c->slot] = DSD_P25_CRYPTO_CLEAR;
     state.p25_p2_audio_allowed[c->slot] = 1;
@@ -5536,6 +5612,187 @@ test_process_mbe_frame_capture_follows_each_frames_verdict(void) {
     int rc = 0;
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
         rc |= run_capture_verdict_case(&cases[i]);
+    }
+    return rc;
+}
+
+/* Issue #655: one verdict per frame, judged by the protocol that owns the call, decides short staging and MBE capture
+   (and the per-call WAV and the mixers, which read the same dsd_state::mbe_slot_muted). The DMR service options and
+   ALG ID decide DMR alone; P25 is judged by its own classification; YSF and scrambled dPMR keep their own rules while
+   they decode through a borrowed NXDN or P25 Phase 1 decoder; -q classifies the transmission, so a call a key decrypts
+   stays audible; and the user's encrypted-audio mute is honored by every output alike. Each case runs one frame in
+   short output through the real vocoder, with an attached capture. */
+enum { OWNER_DMR = 0, OWNER_NXDN, OWNER_DPMR, OWNER_P25P1, OWNER_YSF, OWNER_PROVOICE };
+
+typedef struct {
+    const char* tag;
+    int owner;
+    int synctype; /* the decoder the frame runs through */
+    int stereo;   /* opts->dmr_stereo: no -f, -fa, -fs (1) or a mono preset such as -fn, -fm, -fy (0) */
+    int reverse_mute;
+    int unmute_encrypted; /* the user's toggle: dmr_mute_encL/R 0 */
+    int so;
+    int algid;
+    int nxdn_cipher;
+    unsigned long long scalar_key;
+    int basic_key;
+    int forced_privacy; /* -4 */
+    int p25_crypto;
+    int want_muted;
+} owner_verdict_case;
+
+static int
+owner_verdict_dispatch_synctype(int owner) {
+    switch (owner) {
+        case OWNER_NXDN: return DSD_SYNC_NXDN_POS;
+        case OWNER_DPMR: return DSD_SYNC_DPMR_FS2_POS;
+        case OWNER_P25P1: return DSD_SYNC_P25P1_POS;
+        case OWNER_YSF: return DSD_SYNC_YSF_POS;
+        case OWNER_PROVOICE: return DSD_SYNC_PROVOICE_POS;
+        case OWNER_DMR:
+        default: return DSD_SYNC_DMR_BS_VOICE_POS;
+    }
+}
+
+static int
+run_owner_verdict_case(const owner_verdict_case* c, int floating, int dispatched) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static mbe_parms cur;
+    static mbe_parms prev;
+    static mbe_parms prev_enhanced;
+    static mbe_parms cur2;
+    static mbe_parms prev2;
+    static mbe_parms prev_enhanced2;
+    static short out_s[2][2048];
+    static float out_f[2][2048];
+    char imbe_fr[8][23] = {{0}};
+    char ambe_fr[4][24] = {{0}};
+    char imbe7100_fr[7][24] = {{0}};
+    load_imbe7200_rows(k_p25p1_corrected_speech_rows, imbe_fr);
+    ambe_fr[0][11] = 1;
+    ambe_fr[2][20] = 1;
+    imbe7100_fr[0][3] = 1;
+    imbe7100_fr[4][9] = 1;
+
+    FILE* out = tmpfile();
+    if (!out) {
+        return 1;
+    }
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    opts.audio_out = 1;
+    opts.slot1_on = 1;
+    opts.slot2_on = 1;
+    opts.dmr_stereo = c->stereo;
+    opts.reverse_mute = (uint8_t)c->reverse_mute;
+    opts.dmr_mute_encL = c->unmute_encrypted ? 0 : 1;
+    opts.dmr_mute_encR = c->unmute_encrypted ? 0 : 1;
+    opts.trunk_tune_enc_calls = 1;
+    opts.mbe_out_f = out;
+    init_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
+    state.audio_out_buf = out_s[0];
+    state.audio_out_bufR = out_s[1];
+    state.audio_out_buf_p = out_s[0] + 100;
+    state.audio_out_buf_pR = out_s[1] + 100;
+    state.audio_out_float_buf = out_f[0];
+    state.audio_out_float_bufR = out_f[1];
+    state.audio_out_float_buf_p = out_f[0] + 100;
+    state.audio_out_float_buf_pR = out_f[1] + 100;
+    state.aout_max_buf_p = state.aout_max_buf;
+    state.aout_max_buf_pR = state.aout_max_bufR;
+    state.frame_dispatch_active = 1;
+    state.frame_dispatch_synctype = owner_verdict_dispatch_synctype(c->owner);
+    state.frame_dispatch_active = dispatched;
+    opts.floating_point = floating;
+    state.synctype = c->synctype;
+    state.lastsynctype = c->synctype;
+    state.currentslot = 0;
+    state.ysf_fich_confirmed = 1;
+    state.dmr_so = c->so;
+    state.payload_algid = c->algid;
+    state.dmr_fid = 0x10;
+    state.nxdn_cipher_type = c->nxdn_cipher;
+    state.R = c->scalar_key;
+    state.K = (unsigned long long)c->basic_key;
+    state.M = c->forced_privacy;
+    state.p25_crypto_state[0] = (dsd_p25_crypto_state)c->p25_crypto;
+    state.mbe_short_silenced[0] = 0U;
+
+    processMbeFrame(&opts, &state, owner_of(owner_verdict_dispatch_synctype(c->owner)), imbe_fr, ambe_fr, imbe7100_fr);
+
+    int rc = 0;
+    char tag[192];
+    DSD_SNPRINTF(tag, sizeof tag, "owner verdict %s: verdict", c->tag);
+    rc |= expect_eq_int(tag, state.mbe_slot_muted[0], c->want_muted);
+    DSD_SNPRINTF(tag, sizeof tag, "owner verdict %s: short staging", c->tag);
+    rc |= expect_eq_int(tag, state.mbe_short_silenced[0], c->want_muted);
+    (void)fflush(out);
+    (void)fseek(out, 0, SEEK_END);
+    DSD_SNPRINTF(tag, sizeof tag, "owner verdict %s: captured", c->tag);
+    rc |= expect_eq_int(tag, ftell(out) > 0, !c->want_muted);
+    DSD_SNPRINTF(tag, sizeof tag, "owner verdict %s: options untouched", c->tag);
+    rc |= expect_eq_int(
+        tag, opts.dmr_mute_encL == (c->unmute_encrypted ? 0 : 1) && opts.dmr_mute_encR == (c->unmute_encrypted ? 0 : 1),
+        1);
+    fclose(out);
+    opts.mbe_out_f = NULL;
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+static int
+test_process_mbe_frame_verdict_by_owning_protocol(void) {
+    enum { CLR = DSD_P25_CRYPTO_CLEAR, BLK = DSD_P25_CRYPTO_BLOCKED, UNK = DSD_P25_CRYPTO_UNKNOWN };
+
+    static const owner_verdict_case cases[] = {
+        /* NXDN in AUTO: its cipher decides, not DMR service options NXDN never sets (item 1). */
+        {"auto nxdn cipher 1 no key", OWNER_NXDN, DSD_SYNC_NXDN_POS, 1, 0, 0, 0, 0, 1, 0, 0, 0, UNK, 1},
+        {"auto nxdn cipher 1 keyed", OWNER_NXDN, DSD_SYNC_NXDN_POS, 1, 0, 0, 0, 0, 1, 1234, 0, 0, UNK, 0},
+        {"auto nxdn cipher 3 no key", OWNER_NXDN, DSD_SYNC_NXDN_POS, 1, 0, 0, 0, 0, 3, 0, 0, 0, UNK, 1},
+        {"auto nxdn clear with stale dmr so", OWNER_NXDN, DSD_SYNC_NXDN_POS, 1, 0, 0, 0x40, 0x21, 0, 0, 0, 0, UNK, 0},
+        {"auto nxdn encrypted unmuted by user", OWNER_NXDN, DSD_SYNC_NXDN_POS, 1, 0, 1, 0, 0, 1, 0, 0, 0, UNK, 0},
+        {"-fn nxdn cipher 1 no key", OWNER_NXDN, DSD_SYNC_NXDN_POS, 0, 0, 0, 0, 0, 1, 0, 0, 0, UNK, 1},
+        {"-fn nxdn clear under -q", OWNER_NXDN, DSD_SYNC_NXDN_POS, 0, 1, 0, 0, 0, 0, 0, 0, 0, UNK, 1},
+        {"-fn nxdn keyed under -q", OWNER_NXDN, DSD_SYNC_NXDN_POS, 0, 1, 0, 0, 0, 1, 1234, 0, 0, UNK, 0},
+        /* dPMR: a scrambled half decodes through the NXDN decoder and is judged as scrambled dPMR (items 1, 7). */
+        {"auto scrambled dpmr no key", OWNER_DPMR, DSD_SYNC_NXDN_POS, 1, 0, 0, 0, 0, 1, 0, 0, 0, UNK, 1},
+        {"auto scrambled dpmr keyed", OWNER_DPMR, DSD_SYNC_NXDN_POS, 1, 0, 0, 0, 0, 1, 1234, 0, 0, UNK, 0},
+        {"-fm clear dpmr half", OWNER_DPMR, DSD_SYNC_DPMR_FS2_POS, 0, 0, 0, 0, 0, 0, 0, 0, 0, UNK, 0},
+        {"auto clear dpmr half", OWNER_DPMR, DSD_SYNC_DPMR_FS2_POS, 1, 0, 0, 0, 0, 0, 0, 0, 0, UNK, 0},
+        /* P25 Phase 1: SO 0x40 with ALGID 0x80 is clear by P25's classification (item 2). */
+        {"p25p1 so 0x40 algid 0x80 clear, stereo", OWNER_P25P1, DSD_SYNC_P25P1_POS, 1, 0, 0, 0x40, 0x80, 0, 0, 0, 0,
+         CLR, 0},
+        {"p25p1 so 0x40 algid 0x80 clear, mono", OWNER_P25P1, DSD_SYNC_P25P1_POS, 0, 0, 0, 0x40, 0x80, 0, 0, 0, 0, CLR,
+         0},
+        {"p25p1 locked out, stereo", OWNER_P25P1, DSD_SYNC_P25P1_POS, 1, 0, 0, 0x40, 0x84, 0, 0, 0, 0, BLK, 1},
+        {"p25p1 clear under -q", OWNER_P25P1, DSD_SYNC_P25P1_POS, 1, 1, 0, 0, 0x80, 0, 0, 0, 0, CLR, 1},
+        /* YSF full rate and V/D1 borrow a decoder; YSF classifies no encryption, so they play (item 3). */
+        {"-fy ysf full rate", OWNER_YSF, DSD_SYNC_P25P1_POS, 0, 0, 0, 0, 0, 0, 0, 0, 0, UNK, 0},
+        {"-fy ysf full rate under -q", OWNER_YSF, DSD_SYNC_P25P1_POS, 0, 1, 0, 0, 0, 0, 0, 0, 0, UNK, 0},
+        {"auto ysf full rate with stale dmr so", OWNER_YSF, DSD_SYNC_P25P1_POS, 1, 0, 0, 0x40, 0x21, 0, 0, 0, 0, UNK,
+         0},
+        {"auto ysf v/d1 with stale nxdn cipher", OWNER_YSF, DSD_SYNC_NXDN_POS, 1, 0, 0, 0, 0, 1, 0, 0, 0, UNK, 0},
+        /* DMR: -q classifies the transmission (item 5), the user's unmute plays an undecryptable call (item 4). */
+        {"dmr keyed rc4 under -q", OWNER_DMR, DSD_SYNC_DMR_BS_VOICE_POS, 1, 1, 0, 0x40, 0x21, 0, 0x1234567890ULL, 0, 0,
+         UNK, 0},
+        {"dmr keyed rc4", OWNER_DMR, DSD_SYNC_DMR_BS_VOICE_POS, 1, 0, 0, 0x40, 0x21, 0, 0x1234567890ULL, 0, 0, UNK, 0},
+        {"dmr clear under -q", OWNER_DMR, DSD_SYNC_DMR_BS_VOICE_POS, 1, 1, 0, 0, 0, 0, 0, 0, 0, UNK, 1},
+        {"dmr undecryptable under -q", OWNER_DMR, DSD_SYNC_DMR_BS_VOICE_POS, 1, 1, 0, 0x40, 0x24, 0, 0, 0, 0, UNK, 0},
+        {"dmr undecryptable", OWNER_DMR, DSD_SYNC_DMR_BS_VOICE_POS, 1, 0, 0, 0x40, 0x24, 0, 0, 0, 0, UNK, 1},
+        {"dmr undecryptable unmuted by user", OWNER_DMR, DSD_SYNC_DMR_BS_VOICE_POS, 1, 0, 1, 0x40, 0x24, 0, 0, 0, 0,
+         UNK, 0},
+        /* Forced Basic Privacy (-4 -b) over a signalled ALG ID its key cannot match still plays what it decoded. */
+        {"dmr forced bp over alg 0x21", OWNER_DMR, DSD_SYNC_DMR_BS_VOICE_POS, 1, 0, 0, 0x40, 0x21, 0, 0, 5, 1, UNK, 0},
+        /* ProVoice classifies no encryption: -q never mutes it, in AUTO either. */
+        {"auto provoice under -q", OWNER_PROVOICE, DSD_SYNC_PROVOICE_POS, 1, 1, 0, 0x40, 0x21, 0, 0, 0, 0, UNK, 0},
+    };
+    int rc = 0;
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        for (int floating = 0; floating <= 1; floating++) {
+            for (int dispatched = 0; dispatched <= 1; dispatched++) {
+                rc |= run_owner_verdict_case(&cases[i], floating, dispatched);
+            }
+        }
     }
     return rc;
 }
@@ -5957,6 +6214,7 @@ main(void) {
     rc |= test_process_mbe_frame_mbe_capture_honors_record_policy();
     rc |= test_process_mbe_frame_p25p1_capture_honors_reverse_mute();
     rc |= test_process_mbe_frame_capture_follows_each_frames_verdict();
+    rc |= test_process_mbe_frame_verdict_by_owning_protocol();
     rc |= test_process_mbe_frame_capture_files_follow_the_frame();
     rc |= test_process_mbe_frame_hard_dmr_left_stages_audio();
     rc |= test_process_mbe_frame_trunked_mono_bs_fallback_gates_to_granted_slot();
@@ -5977,6 +6235,7 @@ main(void) {
     rc |= test_dmr_ss3_stamps_the_slot_each_channel_carries();
     rc |= test_dmr_stereo_mixes_play_a_vertex_keystream_call();
     rc |= test_dmr_mono_disabled_slot_stages_silence();
+    rc |= test_dmr_straight_keystream_burst_stays_audible_under_reverse_mute();
     rc |= test_process_mbe_frame_dmr_aes_stream_advances_slot_state();
     rc |= test_process_mbe_frame_activation_gate_and_wide_kid();
     rc |= test_process_mbe_frame_hard_p25p2_right_stages_audio();

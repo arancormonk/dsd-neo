@@ -356,23 +356,55 @@ static int
 test_p25_decrypt_gate_helpers(void) {
     static dsd_state state;
     DSD_MEMSET(&state, 0, sizeof(state));
-    state.synctype = DSD_SYNC_P25P1_POS;
 
     int rc = 0;
-    state.payload_algid = 0x80;
-    rc |= expect_int("p25 clear algid not encrypted", dsd_p25_algid_is_encrypted(&state), 0);
-    state.payload_algid = 0x81;
-    rc |= expect_int("p25 DES algid encrypted", dsd_p25_algid_is_encrypted(&state), 1);
-    rc |= expect_int("p25 DES without key blocked", dsd_p25_algid_can_decrypt(&state), 0);
-    state.R = 0x123456789ABCDEF0ULL;
-    rc |= expect_int("p25 DES with key allowed", dsd_p25_algid_can_decrypt(&state), 1);
+    rc |= expect_int("nxdn clear", dsd_nxdn_voice_crypto_class(&state), DSD_VOICE_CRYPTO_CLEAR);
+    state.nxdn_cipher_type = 0x1;
+    rc |= expect_int("nxdn scrambler without key", dsd_nxdn_voice_crypto_class(&state), DSD_VOICE_CRYPTO_UNDECRYPTABLE);
+    state.R = 0x44;
+    rc |= expect_int("nxdn scrambler with key", dsd_nxdn_voice_crypto_class(&state), DSD_VOICE_CRYPTO_DECRYPTABLE);
     state.R = 0;
-    state.payload_algid = 0x84;
-    rc |= expect_int("p25 AES without key blocked", dsd_p25_algid_can_decrypt(&state), 0);
+    state.nxdn_cipher_type = 0x2;
+    rc |= expect_int("nxdn DES without key", dsd_nxdn_voice_crypto_class(&state), DSD_VOICE_CRYPTO_UNDECRYPTABLE);
+    state.scalar_key_present[0] = 1;
+    rc |= expect_int("nxdn DES with zero key", dsd_nxdn_voice_crypto_class(&state), DSD_VOICE_CRYPTO_DECRYPTABLE);
+    state.scalar_key_present[0] = 0;
+    state.nxdn_cipher_type = 0x3;
+    rc |= expect_int("nxdn AES without key", dsd_nxdn_voice_crypto_class(&state), DSD_VOICE_CRYPTO_UNDECRYPTABLE);
     state.aes_key_loaded[0] = 1;
-    rc |= expect_int("p25 AES with key allowed", dsd_p25_algid_can_decrypt(&state), 1);
-    state.payload_algid = 0x22;
-    rc |= expect_int("p25 unsupported algid blocked", dsd_p25_algid_can_decrypt(&state), 0);
+    rc |= expect_int("nxdn AES with key", dsd_nxdn_voice_crypto_class(&state), DSD_VOICE_CRYPTO_DECRYPTABLE);
+    state.aes_key_loaded[0] = 0;
+    // Forced privacy (-4) runs the cipher 1 scrambler with the scalar key whatever cipher was signalled.
+    state.R = 0x44;
+    state.M = 1;
+    rc |= expect_int("nxdn AES under forced scrambler", dsd_nxdn_voice_crypto_class(&state),
+                     DSD_VOICE_CRYPTO_DECRYPTABLE);
+    state.M = 0;
+    state.nxdn_cipher_type = 0x7;
+    rc |= expect_int("nxdn unsupported cipher", dsd_nxdn_voice_crypto_class(&state), DSD_VOICE_CRYPTO_UNDECRYPTABLE);
+
+    // The user's rule: -q plays only encrypted frames, decryptable or not; otherwise an undecryptable frame plays
+    // only while the slot's encrypted-audio mute is off.
+    static dsd_opts opts;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    opts.dmr_mute_encL = 1;
+    opts.dmr_mute_encR = 1;
+    rc |= expect_int("rule clear plays", dsd_voice_crypto_class_audible(&opts, 0, DSD_VOICE_CRYPTO_CLEAR), 1);
+    rc |=
+        expect_int("rule decryptable plays", dsd_voice_crypto_class_audible(&opts, 0, DSD_VOICE_CRYPTO_DECRYPTABLE), 1);
+    rc |= expect_int("rule undecryptable muted",
+                     dsd_voice_crypto_class_audible(&opts, 0, DSD_VOICE_CRYPTO_UNDECRYPTABLE), 0);
+    opts.dmr_mute_encR = 0;
+    rc |= expect_int("rule undecryptable slot 2 unmuted",
+                     dsd_voice_crypto_class_audible(&opts, 1, DSD_VOICE_CRYPTO_UNDECRYPTABLE), 1);
+    rc |= expect_int("rule undecryptable slot 1 still muted",
+                     dsd_voice_crypto_class_audible(&opts, 0, DSD_VOICE_CRYPTO_UNDECRYPTABLE), 0);
+    opts.reverse_mute = 1;
+    rc |= expect_int("rule -q mutes clear", dsd_voice_crypto_class_audible(&opts, 1, DSD_VOICE_CRYPTO_CLEAR), 0);
+    rc |= expect_int("rule -q plays decryptable",
+                     dsd_voice_crypto_class_audible(&opts, 0, DSD_VOICE_CRYPTO_DECRYPTABLE), 1);
+    rc |= expect_int("rule -q plays undecryptable",
+                     dsd_voice_crypto_class_audible(&opts, 0, DSD_VOICE_CRYPTO_UNDECRYPTABLE), 1);
     return rc;
 }
 
@@ -676,6 +708,70 @@ test_output_ring_reset_helpers_preserve_below_threshold_and_clear_at_limit(void)
     return rc;
 }
 
+/* NXDN and dPMR use their own cipher classification in both shared FDMA mixers. Output format, stale DMR fields,
+ * and a borrowed codec cannot change the decision. */
+static int
+test_fdma_crypto_verdict_formats(void) {
+    static const struct {
+        int synctype;
+        int cipher;
+        int key;
+        int reverse;
+        int unmute;
+        int plays;
+    } cases[] = {
+        {DSD_SYNC_NXDN_POS, 1, 0, 0, 0, 0},        {DSD_SYNC_NXDN_POS, 1, 0, 0, 1, 1},
+        {DSD_SYNC_NXDN_POS, 0, 0, 1, 0, 0},        {DSD_SYNC_NXDN_POS, 1, 1234, 1, 0, 1},
+        {DSD_SYNC_DPMR_FS2_POS, 1, 0, 0, 0, 0},    {DSD_SYNC_DPMR_FS2_POS, 0, 0, 0, 0, 1},
+        {DSD_SYNC_DPMR_FS2_POS, 1, 1234, 1, 0, 1}, {DSD_SYNC_YSF_POS, 1, 0, 1, 0, 1},
+    };
+
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* state = calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return 1;
+    }
+    int rc = 0;
+    for (int floating = 0; floating <= 1; floating++) {
+        for (int channels = 1; channels <= 2; channels++) {
+            for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+                DSD_MEMSET(opts, 0, sizeof(*opts));
+                DSD_MEMSET(state, 0, sizeof(*state));
+                opts->audio_out = 1;
+                opts->audio_out_type = 8;
+                opts->slot1_on = 1;
+                opts->slot2_on = 1;
+                opts->floating_point = floating;
+                opts->pulse_digi_out_channels = channels;
+                opts->pulse_digi_rate_out = 8000;
+                opts->reverse_mute = (uint8_t)cases[i].reverse;
+                opts->dmr_mute_encL = cases[i].unmute ? 0 : 1;
+                state->synctype = cases[i].synctype;
+                state->nxdn_cipher_type = cases[i].cipher;
+                state->R = (unsigned long long)cases[i].key;
+                state->dmr_so = 0x40;
+                state->payload_algid = 0x21;
+                state->s_l[0] = 1234;
+                state->audio_out_idx = 160;
+                reset_sink_capture();
+                if (channels == 1) {
+                    playSynthesizedVoiceMS(opts, state);
+                } else {
+                    playSynthesizedVoiceSS(opts, state);
+                }
+                char tag[96];
+                DSD_SNPRINTF(tag, sizeof(tag), "fdma verdict case %zu format %d channels %d", i, floating, channels);
+                rc |= expect_int(tag, g_udp_blast_calls, cases[i].plays);
+            }
+        }
+    }
+    free(opts);
+    free(state);
+    return rc;
+}
+
 static int
 test_dmr_slot_mute_and_mono_gate_helpers(void) {
     static dsd_opts opts;
@@ -687,8 +783,8 @@ test_dmr_slot_mute_and_mono_gate_helpers(void) {
 
     opts.dmr_mute_encL = 1;
     opts.dmr_mute_encR = 1;
-    state.dmr_encL = 1;
-    state.dmr_encR = 0;
+    state.mbe_slot_muted[0] = 1;
+    state.mbe_slot_muted[1] = 0;
     dsd_dmr_ss3_init_enc_flags(&opts, &state, &encL, &encR);
 
     int rc = 0;
@@ -697,7 +793,7 @@ test_dmr_slot_mute_and_mono_gate_helpers(void) {
 
     state.baofeng_ap = 1;
     dsd_dmr_ss3_init_enc_flags(&opts, &state, &encL, &encR);
-    rc |= expect_int("forced privacy unmutes left", encL, 0);
+    rc |= expect_int("forced privacy cannot override left verdict", encL, 1);
     rc |= expect_int("forced privacy keeps right unmuted", encR, 0);
     state.baofeng_ap = 0;
 
@@ -737,46 +833,40 @@ test_dmr_ss3_decrypt_hold_and_copy_policy_helpers(void) {
     opts.dmr_mute_encL = 1;
     opts.dmr_mute_encR = 1;
 
-    // SS3 follows the vocoder's slot flags (issue #574): the vocoder flags a slot encrypted when the service options
-    // carry the encryption bit and no loaded key decrypts it, and clears the flag when one does.
-    state.dmr_so = 0x40;
-    state.dmr_soR = 0x40;
-    state.dmr_encL = 1;
-    state.dmr_encR = 1;
+    // Both output formats start from the vocoder's verdict on each slot (issue #655): muted when the slot is encrypted, no
+    // loaded key decrypts it and the user's encrypted-audio mute is on.
+    state.mbe_slot_muted[0] = 1;
+    state.mbe_slot_muted[1] = 1;
     dsd_dmr_ss3_init_enc_flags(&opts, &state, &encL, &encR);
 
     int rc = 0;
     rc |= expect_int("ss3 missing keys keep left muted", encL, 1);
     rc |= expect_int("ss3 missing keys keep right muted", encR, 1);
 
-    // A loaded key decrypts both slots, so the vocoder clears their flags and SS3 follows them.
-    state.dmr_encL = 0;
-    state.dmr_encR = 0;
+    // A loaded key decrypts both slots, so the vocoder's verdict plays them and SS3 follows it.
+    state.mbe_slot_muted[0] = 0;
+    state.mbe_slot_muted[1] = 0;
     dsd_dmr_ss3_init_enc_flags(&opts, &state, &encL, &encR);
-    rc |= expect_int("ss3 follows the vocoder's cleared left flag", encL, 0);
-    rc |= expect_int("ss3 follows the vocoder's cleared right flag", encR, 0);
+    rc |= expect_int("ss3 follows the vocoder's verdict left", encL, 0);
+    rc |= expect_int("ss3 follows the vocoder's verdict right", encR, 0);
 
-    // Bit set and no keys again, so both slots are flagged encrypted and only the forced-privacy override unmutes them.
-    state.dmr_encL = 1;
-    state.dmr_encR = 1;
+    // Both slots muted again: a forced-privacy setting cannot override their settled verdict.
+    state.mbe_slot_muted[0] = 1;
+    state.mbe_slot_muted[1] = 1;
     state.baofeng_ap = 1;
     dsd_dmr_ss3_init_enc_flags(&opts, &state, &encL, &encR);
-    rc |= expect_int("ss3 forced privacy unmutes left", encL, 0);
-    rc |= expect_int("ss3 forced privacy unmutes right", encR, 0);
+    rc |= expect_int("ss3 forced privacy cannot override left verdict", encL, 1);
+    rc |= expect_int("ss3 forced privacy cannot override right verdict", encR, 1);
 
-    // Issue #574: the encrypted-audio mute flag is 0 after the user's unmute toggle and after any key load. The vocoder
-    // then stages a slot it flagged encrypted, but SS3 keeps it muted (in both output formats, #652), so loading a key
-    // does not unmute every call that key cannot decrypt.
+    // The mix reads the verdict alone, not the encrypted-audio mute option already folded into it (issue #655).
     state.baofeng_ap = 0;
-    state.dmr_encL = 1;
-    state.dmr_encR = 1;
     opts.dmr_mute_encL = 0;
     opts.dmr_mute_encR = 0;
     dsd_dmr_ss3_init_enc_flags(&opts, &state, &encL, &encR);
-    rc |= expect_int("ss3 keeps undecryptable left muted with encrypted audio unmuted", encL, 1);
-    rc |= expect_int("ss3 keeps undecryptable right muted with encrypted audio unmuted", encR, 1);
-    state.dmr_encL = 0;
-    state.dmr_encR = 0;
+    rc |= expect_int("ss3 muted left verdict", encL, 1);
+    rc |= expect_int("ss3 muted right verdict", encR, 1);
+    state.mbe_slot_muted[0] = 0;
+    state.mbe_slot_muted[1] = 0;
     opts.dmr_mute_encL = 1;
     opts.dmr_mute_encR = 1;
 
@@ -795,16 +885,21 @@ test_dmr_ss3_decrypt_hold_and_copy_policy_helpers(void) {
     rc |= expect_int("ss3 tg hold mismatch applies auto", pref, 2);
     rc |= expect_int("ss3 tg hold mismatch keeps the preference", opts.slot_preference, -1);
 
+    // A hold decides the talkgroup policy only (issue #655): the held slot keeps the verdict it came in with, so a
+    // held encrypted call the vocoder muted stays muted, and a held clear one plays.
     encL = 1;
     encR = 1;
     state.tg_hold = 111;
     opts.slot_preference = 1;
     pref = dsd_dmr_apply_tg_hold_ss3(&opts, &state, 111, 222, &encL, &encR);
-    rc |= expect_int("ss3 tg hold left unmutes left", encL, 0);
+    rc |= expect_int("ss3 tg hold left preserves muted verdict", encL, 1);
     rc |= expect_int("ss3 tg hold left leaves slot1 off", opts.slot1_on, 0);
     rc |= expect_int("ss3 tg hold left prefers the held slot", pref, 0);
     rc |= expect_int("ss3 tg hold left keeps the preference", opts.slot_preference, 1);
 
+    encL = 0;
+    (void)dsd_dmr_apply_tg_hold_ss3(&opts, &state, 111, 222, &encL, &encR);
+    rc |= expect_int("ss3 tg hold left preserves audible verdict", encL, 0);
     state.tg_hold = 0;
     rc |= expect_int("no hold applies the user's preference",
                      dsd_dmr_apply_tg_hold_ss3(&opts, &state, 111, 222, &encL, &encR), 1);
@@ -825,7 +920,7 @@ test_dmr_ss3_decrypt_hold_and_copy_policy_helpers(void) {
     opts.dmr_mono = 0;
 
     encL = 1;
-    encR = 1;
+    encR = 0;
     opts.slot2_on = 0;
     state.tg_hold = 222;
     pref = dsd_dmr_apply_tg_hold_ss3(&opts, &state, 111, 222, &encL, &encR);
@@ -1265,8 +1360,8 @@ test_float_output_plays_the_short_mixers(void) {
     DSD_MEMSET(&state, 0, sizeof(state));
     opts.pulse_digi_out_channels = 2;
     state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
-    state.dmr_encL = 1;
-    state.dmr_encR = 1;
+    state.mbe_slot_muted[0] = 1;
+    state.mbe_slot_muted[1] = 1;
     fill_s16_frame(state.s_l4[0], 1000, 1000);
     fill_s16_frame(state.s_r4[0], 1000, 1000);
     reset_sink_capture();
@@ -1550,8 +1645,8 @@ run_dmr_stamp_row(const dmr_stamp_row* row, int floating_point, int channels) {
     opts.dmr_mute_encL = 1;
     opts.dmr_mute_encR = 1;
     state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
-    state.dmr_encL = row->enc[0];
-    state.dmr_encR = row->enc[1];
+    state.mbe_slot_muted[0] = (uint8_t)row->enc[0];
+    state.mbe_slot_muted[1] = (uint8_t)row->enc[1];
     if (row->mono_slot >= 0) {
         opts.dmr_mono = 1;
         state.dmr_mono_slot = (short)row->mono_slot;
@@ -2056,6 +2151,7 @@ main(void) {
     rc |= test_float_device_write_converts_in_bounded_chunks();
     rc |= test_output_block_helpers_skip_silent_trailing_blocks();
     rc |= test_output_ring_reset_helpers_preserve_below_threshold_and_clear_at_limit();
+    rc |= test_fdma_crypto_verdict_formats();
     rc |= test_dmr_slot_mute_and_mono_gate_helpers();
     rc |= test_dmr_ss3_decrypt_hold_and_copy_policy_helpers();
     rc |= test_dmr_ss3_enc_locked_companion_duplicates_clear_slot();

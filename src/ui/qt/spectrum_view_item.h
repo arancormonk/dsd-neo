@@ -25,7 +25,7 @@
 #include <QImage>
 #include <QList>
 #include <QObject>
-#include <QPointF>
+#include <QPointF> // IWYU pragma: keep -- complete element type for the Qt point buffer.
 #include <QQuickPaintedItem>
 #include <QtGlobal>
 #include <qrgb.h>

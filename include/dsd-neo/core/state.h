@@ -370,6 +370,11 @@ typedef struct {
     unsigned int FrameNumbering[NB_OF_DPMR_VOICE_FRAME_TO_DECODE];
     unsigned int CommunicationMode[NB_OF_DPMR_VOICE_FRAME_TO_DECODE];
     unsigned int Version[NB_OF_DPMR_VOICE_FRAME_TO_DECODE];
+    /* Per half (dpmr_resolve_half_scrambling(), issue #655): DPMR_HALF_CLEAR, DPMR_HALF_SCRAMBLED (Version 3), by the
+       half's own Version when its CRC-7 passed, else by the transmission's last verified half or this frame's other
+       one; DPMR_HALF_UNVERIFIED when no half has verified since the transmission's boundary: the bridge plays none of
+       it. Version itself is the raw field. */
+    unsigned int Scrambled[NB_OF_DPMR_VOICE_FRAME_TO_DECODE];
     unsigned int CommsFormat[NB_OF_DPMR_VOICE_FRAME_TO_DECODE];
     unsigned int EmergencyPriority[NB_OF_DPMR_VOICE_FRAME_TO_DECODE];
     unsigned int Reserved[NB_OF_DPMR_VOICE_FRAME_TO_DECODE];
@@ -779,6 +784,11 @@ struct dsd_state {
        skipped short staging), 0 when dsd_voice_stage_short_left/right() staged them there. The P25 Phase 2 playout
        reads it to tell decoded audio from silence (issue #651). */
     uint8_t mbe_short_silenced[2];
+    /* Per slot: the vocoder's verdict on the slot's last voice frame (issue #655), 1 when it is muted: by encryption
+       (judged by the protocol that owns the call, after the frame's keystream), the user's encrypted-audio mute,
+       reverse mute (-q), or DMR mono not playing the slot. Short staging, the per-call WAV, MBE capture and the DMR
+       mixes all read it, so they agree; see dsd_voice_crypto_audible() in <dsd-neo/core/audio.h>. */
+    uint8_t mbe_slot_muted[2];
     short s_l4[18][160]; //quad sample for up to a P25p2 4V
     short s_r4[18][160]; //quad sample for up to a P25p2 4V
     //new stereo short sample storage tapped from 48_k internal upsampling
@@ -1221,6 +1231,9 @@ struct dsd_state {
     uint8_t dpmr_confirmed;
     uint8_t dpmr_confirm_weak_streak;
     uint8_t dpmr_confirm_frame_evidence;
+    /* The scrambling the current dPMR transmission's last CRC-verified CCH half signalled (issue #655): 0 none yet,
+       1 clear, 2 scrambled (Version 3). A half whose CRC-7 failed takes it; a transmission boundary forgets it. */
+    uint8_t dpmr_scrambled;
 
     /* How recently a dPMR CCH CRC-7 passed, for the SPS hunt's profile accounting
      * (src/engine/dispatch/dispatch_dpmr.c). The flag, not the stamp, opens the window,
@@ -1264,6 +1277,8 @@ struct dsd_state {
     uint8_t nxdn_new_iv; //1 when a new IV comes in, else 0
     uint16_t nxdn_pn95_seed;
 
+    /* NXDN's (and P25 Phase 1's) own "encrypted and no key" flag for slot 0, kept for NXDN's lockout. The audio,
+       recording and capture verdict is mbe_slot_muted (issue #655); the vocoder no longer writes these. */
     short int dmr_encL;
     short int dmr_encR;
 

@@ -633,8 +633,9 @@ suite runs under this compiler.
 - Invariant (voice crypto ownership, issue #656; `<dsd-neo/core/vocoder.h>`): every caller of `processMbeFrame()` /
   `processMbeFrameSoft()` passes the `dsd_voice_protocol` that owns the frame. The codec path and the output stage still
   follow `state->synctype`, which YSF (NXDN and P25 Phase 1 decoders) and scrambled dPMR (NXDN decoder) borrow; the
-  owner alone decides which crypto transforms and key selection run. DMR: TG key autoload, BP, Hytera BP, Vertex, vendor
-  scramblers, `--dmr-force-algid` and every slot-path ALG ID. P25 Phase 2: only P25 DES/AES/RC4 (0x81, 0x84, 0x89, 0xAA)
+  owner alone decides which crypto transforms, key selection and encryption verdict apply. DMR: TG key autoload, BP,
+  Hytera BP, Vertex, vendor scramblers, `--dmr-force-algid` and every slot-path ALG ID. P25 Phase 2: only P25
+  DES/AES/RC4 (0x81, 0x84, 0x89, 0xAA)
   on the shared slot path. P25 Phase 1: multicrypt and RC4, and only it moves `p25vc`/`octet_counter`. NXDN and dPMR:
   the NXDN scrambler (signalled or forced `M == 1`) and cipher 2/3. YSF, D-STAR, X2-TDMA, ProVoice: none. The
   keyloader's ALG ID / KEY ID activation (`mbe_activate_keyloader_slot()`) runs for DMR and P25 only: NXDN voice loads
@@ -868,15 +869,14 @@ suite runs under this compiler.
 - API note (audio output and WAV gates, `<dsd-neo/core/audio.h>`): every voice output path applies the talkgroup
   gate (`dsd_audio_group_gate_mono()`/`_dual()`). The short mono path and the legacy short output that SDRTrunk JSON
   playback uses share `dsd_audio_mono_output_muted()` (module-private, `src/core/audio/dsd_audio_internal.h`), the
-  same gate plus live P25 Phase 1 crypto and reverse-mute rule as the stereo path; that P25 rule is
+  same gate and protocol-owned encryption verdict as the stereo path. P25 Phase 1's part of that verdict is
   `p25_crypto_audio_output_permitted()` in `<dsd-neo/protocol/p25/p25_crypto.h>`, shared with the record gate.
-  Per-call WAV writers use `dsd_audio_record_gate_mono()` (slot crypto, P25 reverse mute and policy), or
+  Per-call WAV writers use `dsd_audio_record_gate_mono()` (the vocoder's verdict on the slot's frame and policy), or
   `dsd_audio_record_policy_gate_slot()` (policy alone, on the slot the protocol publishes) where the decode path
-  settles crypto without setting the DMR slot flags: X2-TDMA, D-STAR, YSF V/D2, EDACS analog and SDRTrunk JSON
+  settles crypto itself: X2-TDMA, D-STAR, YSF V/D2, EDACS analog and SDRTrunk JSON
   playback (YSF EHR and full-rate frames go through the vocoder's full record gate). Every MBE capture save point (`mbe_capture_frame()` in `src/core/vocoder/dsd_mbe.c`, YSF V/D2 in `ysf.c`, JSON
-  playback in `dsd_file.c`) applies the same policy gate; live P25 Phase 1 and P25 Phase 2 capture also apply the P25
-  speaker rule (Phase 2 with `p25_p2_audio_allowed`, as its per-call WAV does), and `dsd_audio_p25p1_live_voice()`
-  tells a live P25 call from a protocol borrowing the Phase 1 decoder (YSF full rate). The static WAV writes only recordable slots: the mono paths ask about the slot being played (X2-TDMA may
+  playback in `dsd_file.c`) applies the same policy gate; the vocoder's save points also apply the frame's verdict
+  (below), which for P25 is the P25 speaker rule. The static WAV writes only recordable slots: the mono paths ask about the slot being played (X2-TDMA may
   play slot 1), and the stereo mixes write silent any channel whose routed source slot, as the output policy
   mirrors it, is record-blocked (`dsd_stereo_wav_channel_mask()`). The vocoder writes each MBE frame's per-call
   WAV block; YSF writes only its V/D2 frames, which decode straight through mbelib. FDMA dispatchers (NXDN, YSF, D-STAR, ProVoice, dPMR) set
@@ -891,23 +891,38 @@ suite runs under this compiler.
   and never writes them (issue #657): what the user set is what the menu, the API and the next frame see. The slot
   preference is applied as a tie-break in both formats: with both slots audible, the preferred slot fills both
   channels while it carries voice (DMR: `dsd_dmr_preferred_slot_fills_both()`, the slot a hold names standing in for
-  the preference; P25 Phase 2: a decoded frame of the preferred slot, never fill). The DMR stereo mix (SS3, in both
-  formats) starts each slot from the vocoder's verdict, `dmr_encL/R` as `mbe_post_left/right_audio()` leave it: set when
-  the slot is encrypted and no loaded key decrypts it (a mapped Vertex keystream decrypts), cleared under forced clear
-  (Baofeng AP, CSI EE, Kenwood scrambler, `dsd_key_dmr_forced_clear()`), flipped by reverse mute (`-q`). The
-  encrypted-audio mute, `dsd_dmr_slot_mute_enc()` (`<dsd-neo/core/dmr_enc_mute.h>`), reads the user's `dmr_mute_encL/R`,
-  which is 0 after the user's toggle of all mutes and after any key load (`dsd_key_apply_mute_policy()`, or a scan
-  row's or trunk-scan target's direct keys through `scan_option_apply_mute_dmr()`), and 1 under `-q`, where the flipped
-  flag alone decides. The vocoder's talkgroup key autoload and AES/stream keystream turn it off for the frame they
-  decrypt only (`mbe_frame_ctx_t::key_unmute`), so a key that decrypted one call never unmutes the next. While it is 0
-  the vocoder stages a flagged slot, but SS3 keeps that slot muted unless a talkgroup hold unmutes it, and then plays
-  the short samples the vocoder staged. The per-call WAV gate and MBE capture read the same rule. A slot the
-  vocoder mutes (flagged with the flag on, or a DMR mono slot not playing) stages silence in `s_l`/`s_r`, so no mix
-  replays an earlier frame; a talkgroup hold that unmutes such a slot plays that silence. MBE capture saves a frame
-  after the post stage has classified its slots and before it stages them (`mbe_post_{left,right}_classify()`,
-  `mbe_capture_frame()`, `mbe_post_{left,right}_stage()`), so each frame is captured by its own verdict, reverse mute
-  included, never the one the previous frame left (issue #661). Classification reads nothing staging writes, so the
-  order changes no output.
+  the preference; P25 Phase 2: a decoded frame of the preferred slot, never fill).
+- Invariant (encrypted-audio verdict, `src/core/audio/voice_crypto.c`, `<dsd-neo/core/audio.h>`, issue #655): each
+  vocoder frame gets one verdict after its keystream: `mbe_frame_slot_muted()` switches on the explicit
+  `mbe_frame_ctx_t::protocol` (`dsd_voice_protocol`) its caller supplied. The borrowed codec synctype never selects
+  its encryption rules. Mixers outside the vocoder resolve the owner through `dsd_voice_frame_owner()` (the
+  dispatched protocol, with the helper's fallback outside a dispatch) and ask `dsd_voice_crypto_audible()` for the
+  same rule. Live P25, NXDN and dPMR mixers preserve the vocoder's cached mute before consulting call metadata,
+  so a still-loaded key cannot revive an exhausted frame or stamp its silence as media. YSF V/D2 and SDRTrunk
+  stage independently and do not inherit that cached mute. `mbe_post_audio_and_recording()` stores the verdict per slot in `dsd_state::mbe_slot_muted` before short staging (`mbe_post_{left,right}_stage()` and the mono
+  post path), MBE capture (`mbe_capture_frame()`), the per-call WAV (`dsd_audio_record_gate_mono()`) and the shared
+  DMR mixer (SS3) consume it. FDMA output uses the same protocol-owned verdict in MS and SS, in both formats.
+  DMR is classified from the frame's service options and ALG ID, saved before a transform such as `-S` or a Vertex
+  keystream clears them. A loaded key for that ALG ID, a keyed transform applied to the frame (Basic or Hytera
+  Privacy, forced with `-4` too, `-S`, a mapped Vertex keystream), or forced clear (`dsd_key_dmr_forced_clear()`)
+  settles its decryptability in the frame classification; no mixer applies a forced-privacy unmute override.
+  P25 Phase 1 and Phase 2 use `p25_crypto_audio_output_permitted()`; Phase 2 also needs its decode gate. NXDN and
+  dPMR use `nxdn_cipher_type` and the key the vocoder applies
+  (`dsd_nxdn_voice_crypto_class()`; the dPMR bridge sets the cipher per half). YSF, D-STAR, X2-TDMA and ProVoice
+  classify no encryption. The user's class rule (`dsd_voice_crypto_class_audible()`) applies reverse mute (`-q`)
+  to the encrypted transmission, whether a key decrypts it or not, and mutes clear frames; otherwise an
+  undecryptable frame plays only while the slot's encrypted-audio mute (`dmr_mute_encL/R`, slot 0's for NXDN and
+  dPMR) is off. Protocols that classify no encryption and SDRTrunk JSON playback, which checks crypto itself, do
+  not take that reverse-mute rule. No key load (CLI, app-control, scan row or trunk-scan target) or decode path
+  writes the user's encrypted-audio mute, and reverse mute never rewrites it. A DMR mono slot not playing is muted
+  too. Keystream exhaustion (`mbe_frame_ctx_t::crypto_muted`) is a hard mute before the class and user options:
+  reverse mute, a loaded key and a talkgroup hold cannot make that frame audible or recordable. Muted slots stage
+  silence in `s_l`/`s_r` and retire their fresh-media marks, so a mixer cannot replay an earlier frame. A talkgroup
+  hold decides policy and the effective slot preference only: `dsd_audio_group_gate_*()` and the SS3 hold helper
+  preserve the incoming mute, the user's slot switches and stored preference. MBE capture saves each frame after
+  its own verdict and before staging (issue #661). The vocoder no longer writes `dmr_encL/R`; NXDN retains its own
+  classification there for lockout. P25 Phase 2 playout snapshots the P25 rule and actual staged-media provenance
+  per frame, so a queued muted frame remains silent.
 - Invariant (digital voice output formats, issue #652): integer and float (`-y`) output are one chain, not two. The
   vocoder runs the filter and gain once with `dsd_voice_chain_run()` (the fixed `-g`
   gain, or the auto gain: per slot, peaks toward 30000, `aout_gain`/`aout_gainR` carried from call to call, its peak
@@ -1022,13 +1037,12 @@ suite runs under this compiler.
     leaves the release to the next no-sync pass. Commands that change what the playout reads (a call's verdict, the
     slot switches and the output buffers a switched-off slot rewinds, the slot preference: `command_feeds_playout()`)
     apply under the guard. The playout lives in `dsd_state` outside the ranges UI snapshots copy.
-  - Left to its issue: crypto-mute verdicts (#655).
   Tests: `CORE_P25P2_PLAYOUT`, `P25_P2_VOICE_OUTPUT`, `P25_P2_MIXER_GATE`.
 - Invariant (audible-audio stamp, `<dsd-neo/core/audio_activity.h>`, `src/core/audio/audio_activity.c`, issue #574): one
   process-wide atomic word says when the decoder last emitted audio the app plays, in real-time monotonic milliseconds
   (`dsd_realtime_mono_ms()`: it drives the Android screen, not a decode decision), 0 for none. Each writer of decoded or
   analog audio notes it (`dsd_audio_activity_note()`) at its own final emit decision: after every gate it applies
-  (crypto and keys, forced clear, reverse mute, unmute overrides, talkgroup policy, slot switches, DMR mono, the mute),
+  (the protocol-owned crypto verdict, talkgroup policy, slot switches, DMR mono and the mute),
   and only when an output receives the block. Every writer asks the same rule for that,
   `dsd_audio_activity_output_plays(opts, stream, fd_takes_block)`: the output on (`audio_out` 1) and of a type the
   writer serves, the local stream (type 0) while the stream it writes is open (`audio_out_stream` for decoded voice,
@@ -1054,15 +1068,15 @@ suite runs under this compiler.
   (`edacs_emit_analog_audio()`); and the analog monitor sink (`symbol_write_unsynced_audio()` in `dsd_symbol.c`). Never
   stamped: the beeper's tones, the M17 baseband monitor, the `-6` raw WAV, the static and per-call WAV writers, and the
   output helpers below the writers (`dsd_output_*_block(s)()`, `dsd_audio_write()`, the UDP blasters), which cannot tell
-  where a block came from. SS3 runs on a timer of bursts, skipped ones included, and replay each slot's buffers
+  where a block came from. SS3 runs on a timer of bursts, skipped ones included, and replays each slot's buffers
   whether or not anything new was decoded into them, so the vocoder marks fresh media per slot
   (`dsd_audio_dmr_mix_media_staged()`/`_silenced()`/`_discard()`/`_take()` in `<dsd-neo/core/audio.h>`,
   `src/core/audio/dmr_mix_media.c`; DMR synctypes only, only while armed, decoder thread only): SHORT where the short
   path writes `s_l`/`s_r`, never for the silence staged for a muted slot. That silence replaces the slot's short frame,
   so it retires the slot's SHORT mark: the mark says short media was staged after the slot's last silence, which the
   frames the mix plays still hold, and a muted burst over an unmixed clear one leaves none. Each mix takes both slots'
-  marks and stamps only for an unmuted slot holding a mark that a channel it emits carries, so under a talkgroup hold of
-  a slot the vocoder muted SS3, playing silence, does not stamp. Slot purges (`dsd_mbe_purge_slot_audio()`),
+  marks and stamps only for an unmuted slot holding a mark that a channel it emits carries. A talkgroup hold
+  preserves the vocoder's mute, so it never makes a muted slot stamp. Slot purges (`dsd_mbe_purge_slot_audio()`),
   `initState()`, the engine's no-carrier reset and the end of the DMR BS loop (`finalize_dmr_bs()`) discard the marks.
   EDACS analog stamps a triplet only when an output receives it (`edacs_analog_output_writes()`: slot 1 on, then the
   shared rule on `audio_raw_out`, the raw fd taking 16-bit output only) and the squelch the call runs opened on it: the
@@ -4126,7 +4140,15 @@ Private per-protocol modules worth knowing about:
   maps that to `DSD_FRAME_VERDICT_PROFILE_PROVEN` (for two seconds after the last decode) or `UNPRODUCTIVE`, and the
   engine clears both through the exported `dpmr_confirm_reset()` in `<dsd-neo/protocol/dpmr/dpmr.h>`.
   `tests/protocol/dpmr/fixtures` holds the CCH reference vectors that prove the pipeline decodes correct dPMR, which
-  the off-air `dpmr` capture never established.
+  the off-air `dpmr` capture never established. The same CRC decides scrambling (issue #655):
+  `dpmr_resolve_half_scrambling()` reads a half's Version only when its CRC-7 passed, keeps it as the transmission's
+  `dsd_state::dpmr_scrambled`, and gives a failed half that value (or, with none yet, this frame's verified half);
+  `dPMRVoiceFS2Frame.Scrambled[]` holds the result, which the bridge (per half: NXDN scrambler and `nxdn_cipher_type`
+  1, or clear), the call's crypto classification and the terminal read; `Version[]` stays the raw field.
+  `dpmr_confirm_reset()`, initState() and the FS1/FS3/FS4 boundaries (`dpmr_scrambling_reset()`) forget it. A boundary
+  leaves confirmation standing, so a half no verified half speaks for since it (`DPMR_HALF_UNVERIFIED`) plays nothing
+  and leaves the call's classification alone, rather than playing a scrambled call's first undecodable halves as
+  clear.
 
 Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<name>/CMakeLists.txt`
 

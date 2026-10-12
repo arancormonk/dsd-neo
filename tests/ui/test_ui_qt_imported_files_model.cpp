@@ -45,7 +45,7 @@
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/runtime/scan_options.h>
-#include <initializer_list>
+#include <initializer_list> // IWYU pragma: keep -- braced range-for lists require this header.
 #include <qflags.h>
 #include <stdint.h>
 extern "C" {

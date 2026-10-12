@@ -5480,6 +5480,7 @@ add_executable(
     dsd-neo_test_core_audio2_helpers
     core/test_core_audio2_helpers.c
     ${PROJECT_SOURCE_DIR}/src/core/audio/dsd_audio2.c
+    ${PROJECT_SOURCE_DIR}/src/core/audio/voice_crypto.c
     ${PROJECT_SOURCE_DIR}/src/core/audio/audio_activity.c
     ${PROJECT_SOURCE_DIR}/src/core/audio/audio_sink.c
     ${PROJECT_SOURCE_DIR}/src/core/audio/dmr_mix_media.c

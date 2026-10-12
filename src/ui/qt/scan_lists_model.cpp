@@ -11,7 +11,7 @@
 #include <QUuid>
 #include <QVariantList>
 #include <Qt>
-#include <initializer_list>
+#include <initializer_list> // IWYU pragma: keep -- braced range-for lists require this header.
 #include <utility>
 #include "json_store.h"
 #include "realtime_clock.h"

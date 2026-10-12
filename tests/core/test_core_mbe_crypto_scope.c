@@ -11,6 +11,9 @@
  * transform the protocol it belongs to.
  */
 
+#include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/audio_activity.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
@@ -24,7 +27,9 @@
 #include <dsd-neo/crypto/des.h>
 #include <dsd-neo/crypto/dmr_keystream.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/runtime/udp_audio_hooks.h>
 #include <mbelib-neo/mbelib.h>
+#include <sndfile.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -938,6 +943,126 @@ test_keystream_muted_frame_stages_silence(void) {
     return rc;
 }
 
+/* A key still being loaded cannot overrule the verdict on a frame whose keystream ended. Exercise the actual FDMA
+   mixers: an exhausted frame writes no sink/static WAV and stamps no activity, even under hold, -q and unmute. */
+static int g_exhausted_sink_calls;
+static size_t g_exhausted_sink_bytes;
+
+static void
+capture_exhausted_sink(const dsd_opts* opts, dsd_state* state, size_t bytes, const void* data) {
+    (void)opts;
+    (void)state;
+    (void)data;
+    g_exhausted_sink_calls++;
+    g_exhausted_sink_bytes += bytes;
+}
+
+static void
+process_fdma_test_frame(dsd_voice_protocol protocol, int stereo) {
+    if (protocol == DSD_VOICE_PROTOCOL_P25P1) {
+        processMbeFrame(&g_opts, &g_state, protocol, g_imbe_fr[0], NULL, NULL);
+    } else {
+        processMbeFrame(&g_opts, &g_state, protocol, NULL, g_ambe_fr[0], NULL);
+    }
+    if (stereo) {
+        playSynthesizedVoiceSS(&g_opts, &g_state);
+    } else {
+        playSynthesizedVoiceMS(&g_opts, &g_state);
+    }
+}
+
+static int
+check_fdma_exhaustion_outputs(key_setup_fn setup, int p25, int stereo, int floating) {
+    const dsd_voice_protocol protocol = p25 ? DSD_VOICE_PROTOCOL_P25P1 : DSD_VOICE_PROTOCOL_NXDN;
+    reset_state(p25 ? DSD_SYNC_P25P1_POS : DSD_SYNC_NXDN_POS, 0);
+    setup(&g_state);
+    g_opts.audio_out = 1;
+    g_opts.audio_out_type = 8;
+    g_opts.pulse_digi_out_channels = 2;
+    g_opts.floating_point = floating;
+    g_opts.static_wav_file = 1;
+    g_opts.slot1_on = 1;
+    g_opts.reverse_mute = 1;
+    g_opts.unmute_encrypted_p25 = 1;
+    g_opts.dmr_mute_encL = 0;
+    g_state.tg_hold = 123;
+    const dsd_call_observation call = {
+        .protocol = g_state.synctype,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 123U,
+        .policy_target_id = 123U,
+    };
+    int rc = expect_int("exhaustion output call", dsd_call_state_observe(&g_state, &call, DSD_CALL_BOUNDARY_BEGIN), 1);
+    char path[DSD_TEST_PATH_MAX];
+    const int fd = dsd_test_mkstemp(path, sizeof(path), "dsdneo_exhausted_output");
+    if (fd < 0) {
+        return 1;
+    }
+    dsd_close(fd);
+    SF_INFO info = {0};
+    info.samplerate = 8000;
+    info.channels = 2;
+    info.format = SF_FORMAT_WAV | SF_FORMAT_PCM_16;
+    SNDFILE* wav = sf_open(path, SFM_WRITE, &info);
+    if (!wav) {
+        (void)remove(path);
+        return 1;
+    }
+    g_opts.wav_out_f = wav;
+    dsd_audio_activity_arm();
+    dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){.blast = capture_exhausted_sink});
+    for (int phase = 0; phase < 3; phase++) {
+        if (phase == 1) {
+            g_state.octet_counter = 240;
+            g_state.bit_counterL = 1568;
+        } else if (phase == 2) {
+            g_state.p25vc = 0;
+            g_state.nxdn_new_iv = 1;
+        }
+        const int audible = phase != 1;
+        const sf_count_t before = sf_seek(wav, 0, SEEK_CUR);
+        g_exhausted_sink_calls = 0;
+        g_exhausted_sink_bytes = 0;
+        dsd_audio_activity_reset();
+        process_fdma_test_frame(protocol, stereo);
+        uint64_t stamp = 0;
+        dsd_audio_activity_read(&stamp, NULL);
+        rc |= expect_int("exhaustion output verdict", g_state.mbe_slot_muted[0], !audible);
+        rc |= expect_int("exhaustion output UDP blocks", g_exhausted_sink_calls, audible);
+        rc |= expect_int("exhaustion output UDP format", (long long)g_exhausted_sink_bytes,
+                         audible ? (long long)(320U * (floating ? sizeof(float) : sizeof(short))) : 0);
+        rc |= expect_int("exhaustion output static WAV", sf_seek(wav, 0, SEEK_CUR) - before, audible ? 160 : 0);
+        rc |= expect_int("exhaustion output activity", stamp != 0, audible);
+    }
+    dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
+    g_opts.wav_out_f = NULL;
+    sf_close(wav);
+    DSD_MEMSET(&info, 0, sizeof(info));
+    wav = sf_open(path, SFM_READ, &info);
+    rc |= expect_int("exhaustion WAV reopens", wav != NULL, 1);
+    if (wav) {
+        rc |= expect_int("exhaustion WAV contains only admitted frames", info.frames, 320);
+        sf_close(wav);
+    }
+    (void)remove(path);
+    return rc;
+}
+
+static int
+test_keystream_exhaustion_blocks_fdma_outputs(void) {
+    static const key_setup_fn keys[] = {key_nxdn_cipher2, key_nxdn_cipher3, key_p1_aes128, key_p1_aes256};
+    int rc = 0;
+    for (size_t k = 0; k < sizeof(keys) / sizeof(keys[0]); k++) {
+        for (int stereo = 0; stereo < 2; stereo++) {
+            for (int floating = 0; floating < 2; floating++) {
+                rc |= check_fdma_exhaustion_outputs(keys[k], k >= 2, stereo, floating);
+            }
+        }
+    }
+    return rc;
+}
+
 /* An armed manual -S keystream still takes over a slot frame whose signalled cipher has run out of keystream, as it
    replaces the cipher on any other frame. */
 static int
@@ -1202,6 +1327,7 @@ main(void) {
     rc |= test_p25p2_aes_does_not_skip_dmr_silence_patterns();
     rc |= test_nxdn_cipher23_session_exhaustion();
     rc |= test_keystream_muted_frame_stages_silence();
+    rc |= test_keystream_exhaustion_blocks_fdma_outputs();
     rc |= test_manual_keystream_takes_over_exhausted_frame();
     rc |= test_file_playback_basic_privacy_stays_on_ambe2450();
 

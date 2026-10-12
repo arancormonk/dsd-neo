@@ -13,7 +13,6 @@
 
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
-#include <dsd-neo/core/dmr_enc_mute.h>
 #include <dsd-neo/core/key_material.h>
 #include <dsd-neo/core/key_presence.h>
 #include <dsd-neo/core/keyring.h>
@@ -496,6 +495,8 @@ dsd_audio_group_gate_slot(const dsd_opts* opts, const dsd_state* state, int slot
         return -1;
     }
 
+    // A hold decides the talkgroup policy, never encryption or the slot switches the caller folded into @p enc_in
+    // (issue #655): a matching hold passes the policy, and the slot keeps the mute it came in with.
     int enc = (enc_in != 0) ? 1 : 0;
     if (slot >= 0 && slot <= 1) {
         policy_tg = dsd_audio_p25_policy_target_for_slot(state, slot, ota_tg);
@@ -506,9 +507,8 @@ dsd_audio_group_gate_slot(const dsd_opts* opts, const dsd_state* state, int slot
     dsd_call_snapshot call;
     const int have_call = dsd_audio_call_for_target(state, slot, ota_tg, policy_tg, &call);
     if (dsd_audio_group_gate_decision(opts, state, have_call ? &call : NULL, ota_tg, policy_tg, &decision) == 0) {
-        if (dsd_audio_hold_overrides_policy(&decision)) {
-            enc = 0;
-        } else if (!decision.audio_allowed || (decision.block_reasons & DSD_TG_POLICY_BLOCK_ALLOWLIST) != 0u) {
+        if (!dsd_audio_hold_overrides_policy(&decision)
+            && (!decision.audio_allowed || (decision.block_reasons & DSD_TG_POLICY_BLOCK_ALLOWLIST) != 0u)) {
             enc = 1;
         }
     }
@@ -534,43 +534,14 @@ dsd_audio_group_gate_dual(const dsd_opts* opts, const dsd_state* state, unsigned
     return rc;
 }
 
-int
-dsd_audio_p25p1_live_voice(const dsd_state* state) {
-    if (!state || !DSD_SYNC_IS_P25P1(state->synctype) || state->mbe_file_type == 3) {
-        return 0;
-    }
-    dsd_call_snapshot call;
-    return !(dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
-             && !DSD_SYNC_IS_P25(call.protocol));
-}
-
+// The per-call WAV records what the speakers play: the vocoder's verdict on the slot's frame, judged by the protocol
+// that owns the call, the user's encrypted-audio mute and reverse mute (-q) included (issue #655).
 static int
 dsd_audio_record_slot_allows_audio(const dsd_opts* opts, const dsd_state* state, int slot) {
-    int enc = 0;
-    int dmr_unmute_slot = 0;
-
-    if (!opts || !state) {
+    if (!opts || !state || slot < 0 || slot > 1) {
         return 0;
     }
-
-    // P25 recording follows the speaker rule, reverse mute (-q) included, so a
-    // clear call that -q keeps off the speakers stays out of the per-call WAV.
-    if (DSD_SYNC_IS_P25P2(state->synctype)) {
-        return (state->p25_p2_audio_allowed[slot] != 0 && p25_crypto_audio_output_permitted(opts, state, slot)) ? 1 : 0;
-    }
-    if (dsd_audio_p25p1_live_voice(state)) {
-        return p25_crypto_audio_output_permitted(opts, state, 0);
-    }
-
-    enc = (slot == 1) ? state->dmr_encR : state->dmr_encL;
-    dmr_unmute_slot = !dsd_dmr_slot_mute_enc(opts, slot);
-    // The P25 unmute override is not a DMR control: DMR audio answers to its slot
-    // flags alone, and so does its recording.
-    const int p25_unmute = opts->unmute_encrypted_p25 == 1 && !DSD_SYNC_IS_DMR(state->synctype);
-    if (p25_unmute || enc == 0 || dmr_unmute_slot) {
-        return 1;
-    }
-    return 0;
+    return state->mbe_slot_muted[slot] == 0 ? 1 : 0;
 }
 
 static int

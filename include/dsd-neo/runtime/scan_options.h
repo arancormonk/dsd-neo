@@ -24,8 +24,8 @@ enum {
     DSD_SCAN_OPT_HEX_FILE = 1U << 9,
     DSD_SCAN_OPT_DEC_FILE = 1U << 10,
     DSD_SCAN_OPT_GROUP = 1U << 11,
-    /** The row decides DMR encrypted-audio muting. Set by `-b`/`-H`/`-1`/`-R` in the option text,
-     * so legacy single_key_dec/single_key_hex columns keep their key-only meaning. */
+    /** The row decides DMR encrypted-audio muting (`mute_dmr`), applied on entry and restored on exit. Direct keys
+     * (`-b`/`-H`/`-1`/`-R`) no longer set it: the vocoder's verdict plays what a key decrypts (issue #655). */
     DSD_SCAN_OPT_MUTE_DMR = 1U << 12,
     DSD_SCAN_OPT_DATA = 1U << 13,
     DSD_SCAN_OPT_ENC = 1U << 14,

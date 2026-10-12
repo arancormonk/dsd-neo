@@ -20,8 +20,6 @@
 #define DSD_AUDIO2_INTERNAL static
 #endif
 
-DSD_AUDIO2_INTERNAL int dsd_p25_algid_is_encrypted(const dsd_state* state);
-DSD_AUDIO2_INTERNAL int dsd_p25_algid_can_decrypt(const dsd_state* state);
 DSD_AUDIO2_INTERNAL int dsd_is_all_zero_s16(const short* buf, size_t n);
 DSD_AUDIO2_INTERNAL void dsd_write_float_audio_device(dsd_opts* opts, const float* buf, size_t frames, int channels);
 

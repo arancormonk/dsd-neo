@@ -17,6 +17,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/vocoder.h>
 #include <dsd-neo/fec/block_codes.h>
+#include <dsd-neo/protocol/dpmr/dpmr.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -34,7 +35,7 @@ static size_t g_mbe_calls;
 static int g_ms_calls;
 static int g_mbe_synctype[8];
 static int g_mbe_cipher[8];
-static int g_mbe_enc[8];
+static int g_mbe_scrambled[8];
 static unsigned long long g_mbe_mi[8];
 static int g_dibit_calls;
 /* The read that adopts a retune its capture recorded, where the carrier boundary moves the carrier count
@@ -47,7 +48,7 @@ reset_capture(void) {
     g_ms_calls = 0;
     DSD_MEMSET(g_mbe_synctype, 0, sizeof(g_mbe_synctype));
     DSD_MEMSET(g_mbe_cipher, 0, sizeof(g_mbe_cipher));
-    DSD_MEMSET(g_mbe_enc, 0, sizeof(g_mbe_enc));
+    DSD_MEMSET(g_mbe_scrambled, 0, sizeof(g_mbe_scrambled));
     DSD_MEMSET(g_mbe_mi, 0, sizeof(g_mbe_mi));
     g_dibit_calls = 0;
     g_boundary_at = -1;
@@ -84,7 +85,8 @@ processMbeFrame(dsd_opts* opts, dsd_state* state, dsd_voice_protocol protocol, c
     if (g_mbe_calls < (sizeof(g_mbe_synctype) / sizeof(g_mbe_synctype[0]))) {
         g_mbe_synctype[g_mbe_calls] = state->synctype;
         g_mbe_cipher[g_mbe_calls] = (int)state->nxdn_cipher_type;
-        g_mbe_enc[g_mbe_calls] = state->dmr_encL;
+        g_mbe_scrambled[g_mbe_calls] = (state->dPMRVoiceFS2Frame.Scrambled[0] == DPMR_HALF_SCRAMBLED
+                                        || state->dPMRVoiceFS2Frame.Scrambled[1] == DPMR_HALF_SCRAMBLED);
         g_mbe_mi[g_mbe_calls] = state->payload_miN;
     }
     g_mbe_calls++;
@@ -130,9 +132,11 @@ test_first_group_scrambler_bridge_mutes_without_key(void) {
     state.dPMRVoiceFS2Frame.FrameNumbering[0] = 0;
     state.dPMRVoiceFS2Frame.CommunicationMode[0] = 0;
     state.dPMRVoiceFS2Frame.Version[0] = 3;
+    state.dPMRVoiceFS2Frame.CCHDataCrcOk[0] = 1;
     state.dPMRVoiceFS2Frame.FrameNumbering[1] = 2;
     state.dPMRVoiceFS2Frame.CommunicationMode[1] = 2;
 
+    dpmr_resolve_half_scrambling(&state);
     dpmr_play_voice_frames(&opts, &state, ambe_fr);
 
     int rc = 0;
@@ -141,12 +145,11 @@ test_first_group_scrambler_bridge_mutes_without_key(void) {
     for (int i = 0; i < 4; i++) {
         rc |= expect_int("first-group-synctype", g_mbe_synctype[i], DSD_SYNC_NXDN_POS);
         rc |= expect_int("first-group-cipher", g_mbe_cipher[i], 1);
-        rc |= expect_int("first-group-muted", g_mbe_enc[i], 1);
         rc |= expect_u64("first-group-mi-reset", g_mbe_mi[i], 0ULL);
     }
     rc |= expect_int("first-group-synctype-restored", state.synctype, DSD_SYNC_DPMR_FS2_POS);
     rc |= expect_int("first-group-cipher-reset", (int)state.nxdn_cipher_type, 0);
-    rc |= expect_int("first-group-final-muted", state.dmr_encL, 1);
+    rc |= expect_int("first-group-transmission-scrambled", state.dpmr_scrambled, 2);
     return rc;
 }
 
@@ -169,7 +172,9 @@ test_second_group_scrambler_bridge_unmutes_with_key(void) {
     state.dPMRVoiceFS2Frame.FrameNumbering[1] = 0;
     state.dPMRVoiceFS2Frame.CommunicationMode[1] = 5;
     state.dPMRVoiceFS2Frame.Version[1] = 3;
+    state.dPMRVoiceFS2Frame.CCHDataCrcOk[1] = 1;
 
+    dpmr_resolve_half_scrambling(&state);
     dpmr_play_voice_frames(&opts, &state, ambe_fr);
 
     int rc = 0;
@@ -179,12 +184,86 @@ test_second_group_scrambler_bridge_unmutes_with_key(void) {
     for (int i = 0; i < 4; i++) {
         rc |= expect_int("second-group-synctype", g_mbe_synctype[i], DSD_SYNC_NXDN_POS);
         rc |= expect_int("second-group-cipher", g_mbe_cipher[i], 1);
-        rc |= expect_int("second-group-unmuted", g_mbe_enc[i], 0);
         rc |= expect_u64("second-group-mi-reset", g_mbe_mi[i], 0ULL);
     }
     rc |= expect_int("second-group-synctype-restored", state.synctype, DSD_SYNC_DPMR_FS3_POS);
     rc |= expect_int("second-group-cipher-reset", (int)state.nxdn_cipher_type, 0);
-    rc |= expect_int("second-group-final-unmuted", state.dmr_encL, 0);
+    return rc;
+}
+
+/* Issue #655: each half is scrambled or clear on its own, and only a half whose CCH CRC-7 passed says which. A clear
+ * half after a scrambled one decodes clear (no NXDN scrambler, synctype left dPMR); a failed half reading Version 3 in
+ * a clear transmission stays clear; a failed half after a verified scrambled one stays scrambled; a transmission
+ * boundary forgets the verdict, and a failed half then takes this frame's verified half, or, with none, plays nothing:
+ * confirmation outlives the boundary, so a scrambled call after a clear one never plays an undecodable half as clear. */
+static int
+bridge_run(dsd_state* state, unsigned v0, unsigned crc0, unsigned v1, unsigned crc1) {
+    static dsd_opts opts;
+    char ambe_fr[NB_OF_DPMR_VOICE_FRAME_TO_DECODE * 4][4][24];
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(ambe_fr, 0, sizeof(ambe_fr));
+    reset_capture();
+    state->synctype = DSD_SYNC_DPMR_FS2_POS;
+    state->dPMRVoiceFS2Frame.FrameNumbering[0] = 1;
+    state->dPMRVoiceFS2Frame.FrameNumbering[1] = 2;
+    state->dPMRVoiceFS2Frame.CommunicationMode[0] = 0;
+    state->dPMRVoiceFS2Frame.CommunicationMode[1] = 0;
+    state->dPMRVoiceFS2Frame.Version[0] = v0;
+    state->dPMRVoiceFS2Frame.Version[1] = v1;
+    state->dPMRVoiceFS2Frame.CCHDataCrcOk[0] = crc0;
+    state->dPMRVoiceFS2Frame.CCHDataCrcOk[1] = crc1;
+    dpmr_resolve_half_scrambling(state);
+    dpmr_play_voice_frames(&opts, state, ambe_fr);
+    return (int)g_mbe_calls;
+}
+
+static int
+expect_halves(const char* tag, int scrambled0, int scrambled1) {
+    char what[96];
+    int rc = 0;
+    for (int i = 0; i < 8; i++) {
+        const int scrambled = i < 4 ? scrambled0 : scrambled1;
+        DSD_SNPRINTF(what, sizeof(what), "%s frame %d cipher", tag, i);
+        rc |= expect_int(what, g_mbe_cipher[i], scrambled ? 1 : 0);
+        DSD_SNPRINTF(what, sizeof(what), "%s frame %d synctype", tag, i);
+        rc |= expect_int(what, g_mbe_synctype[i], scrambled ? DSD_SYNC_NXDN_POS : DSD_SYNC_DPMR_FS2_POS);
+    }
+    return rc;
+}
+
+static int
+test_scrambling_is_per_half_and_crc_verified(void) {
+    static dsd_state state;
+    DSD_MEMSET(&state, 0, sizeof(state));
+    int rc = 0;
+
+    rc |= expect_int("scrambled then clear calls", bridge_run(&state, 3U, 1U, 0U, 1U), 8);
+    rc |= expect_halves("scrambled then clear", 1, 0);
+    rc |= expect_int("scrambled then clear leaves clear", state.dpmr_scrambled, 1);
+    rc |= expect_int("next clear frame", bridge_run(&state, 0U, 1U, 0U, 1U), 8);
+    rc |= expect_halves("next clear frame", 0, 0);
+
+    rc |= expect_int("failed Version 3 in a clear call", bridge_run(&state, 3U, 0U, 0U, 1U), 8);
+    rc |= expect_halves("failed Version 3 in a clear call", 0, 0);
+
+    rc |= expect_int("verified scrambled", bridge_run(&state, 3U, 1U, 3U, 1U), 8);
+    rc |= expect_halves("verified scrambled", 1, 1);
+    rc |= expect_int("failed clear-looking halves in a scrambled call", bridge_run(&state, 0U, 0U, 0U, 0U), 8);
+    rc |= expect_halves("failed clear-looking halves in a scrambled call", 1, 1);
+
+    dpmr_scrambling_reset(&state);
+    rc |= expect_int("boundary forgets", state.dpmr_scrambled, 0);
+    rc |= expect_int("failed half before a verified scrambled one", bridge_run(&state, 0U, 0U, 3U, 1U), 8);
+    rc |= expect_halves("failed half before a verified scrambled one", 1, 1);
+    // A verified clear call, its end frame, then a call whose first frame fails both CRCs: nothing of it plays.
+    rc |= expect_int("verified clear call", bridge_run(&state, 0U, 1U, 0U, 1U), 8);
+    dpmr_scrambling_reset(&state);
+    rc |= expect_int("nothing verified since the boundary", bridge_run(&state, 0U, 0U, 3U, 0U), 0);
+    rc |= expect_int("nothing verified halves", (int)state.dPMRVoiceFS2Frame.Scrambled[0], DPMR_HALF_UNVERIFIED);
+    rc |= expect_int("nothing verified cipher reset", (int)state.nxdn_cipher_type, 0);
+    // Its next frame verifies one half: both play by it.
+    rc |= expect_int("then a verified scrambled half", bridge_run(&state, 0U, 0U, 3U, 1U), 8);
+    rc |= expect_halves("then a verified scrambled half", 1, 1);
     return rc;
 }
 
@@ -198,6 +277,8 @@ test_scrambler_secret_is_not_published_as_key_id(void) {
     state.synctype = DSD_SYNC_DPMR_FS2_POS;
     state.R = 0x12345ULL;
     state.dPMRVoiceFS2Frame.Version[0] = 3U;
+    state.dPMRVoiceFS2Frame.CCHDataCrcOk[0] = 1U;
+    dpmr_resolve_half_scrambling(&state);
     state.dPMRVoiceFS2Frame.ColorCode[0] = (unsigned int)(-1);
     /* Redaction, not the gate: publishing at all needs a proved transmission (#407). */
     state.dpmr_confirmed = 1;
@@ -502,7 +583,7 @@ test_process_dpmr_voice_zero_stream_updates_cch_and_dispatches_voice(void) {
     for (int i = 0; i < 8; i++) {
         rc |= expect_int("process-synctype", g_mbe_synctype[i], DSD_SYNC_DPMR_FS1_POS);
         rc |= expect_int("process-cipher", g_mbe_cipher[i], 0);
-        rc |= expect_int("process-clear-audio", g_mbe_enc[i], 0);
+        rc |= expect_int("process-clear-audio", g_mbe_scrambled[i], 0);
     }
 
     for (uint32_t i = 0; i < NB_OF_DPMR_VOICE_FRAME_TO_DECODE; i++) {
@@ -567,6 +648,7 @@ main(void) {
     rc |= test_first_group_scrambler_bridge_mutes_without_key();
     rc |= test_second_group_scrambler_bridge_unmutes_with_key();
     rc |= test_scrambler_secret_is_not_published_as_key_id();
+    rc |= test_scrambling_is_per_half_and_crc_verified();
     rc |= test_deinterleave_transposes_6x12_blocks();
     rc |= test_crc7_and_air_interface_id_helpers();
     rc |= test_superframe_part_updates_called_and_calling_ids();

@@ -4,7 +4,7 @@
  */
 
 #include <QChar>
-#include <initializer_list>
+#include <initializer_list> // IWYU pragma: keep -- braced range-for lists require this header.
 #include <qanystringview.h>
 #include <utility>
 #include "saved_systems_model.h"

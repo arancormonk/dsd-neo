@@ -8,7 +8,7 @@
 #
 # Expected -D inputs: DSD_BIN, COMPARE_BIN, MODE, FIXTURE, EXPECTED, WORK_DIR, CHANNELS.
 # Optional: BOTH_EARS (true: the stereo stream carries the same audio in both channels), SILENT (true: neither run
-# plays anything, and the static WAVs, which may hold only silence, still match), SINK ("null": both runs use -o null, so both streams are empty and the static WAVs are compared).
+# plays anything, and the static WAVs are empty or contain only silence and still match), SINK ("null": both runs use -o null, so both streams are empty and the static WAVs are compared).
 foreach(
     _var
     DSD_BIN

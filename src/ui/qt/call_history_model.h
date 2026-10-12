@@ -36,7 +36,7 @@
 #ifndef DSD_NEO_SRC_UI_QT_CALL_HISTORY_MODEL_H_
 #define DSD_NEO_SRC_UI_QT_CALL_HISTORY_MODEL_H_
 
-#include <QAbstractListModel>
+#include <QAbstractListModel> // IWYU pragma: keep -- public header for the base class.
 #include <QHash>
 #include <QJsonArray>
 #include <QList>
