@@ -855,7 +855,7 @@ ImportedFilesModel::load() {
     }
     const bool pruned = rows.size() != array.size();
     beginResetModel();
-    m_rows = rows;
+    m_rows = std::move(rows);
     endResetModel();
     Q_EMIT countChanged();
     if (pruned) {

@@ -4,7 +4,7 @@
 // Complete types are needed by inline Qt container and metatype instantiations.
 #include <QAbstractListModel>
 #include <QList>
-#include <QMap>
+#include <QMap> // IWYU pragma: keep -- complete map type for QVariantMap APIs and Qt metatypes.
 #include <QObject>
 #include <QSet>
 #include <QString>

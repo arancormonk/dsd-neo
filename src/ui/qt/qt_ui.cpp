@@ -5,7 +5,6 @@
 
 #include <QMap>
 #include <QVariantMap>
-#include <functional>
 #include "qt_ui.h"
 
 #include <QFontDatabase>

@@ -6,6 +6,7 @@
 #include "app_prefs.h"
 
 #include <QLatin1String>
+#include <QList>
 #include <QVariant>
 #include <algorithm>
 #include <cmath>
