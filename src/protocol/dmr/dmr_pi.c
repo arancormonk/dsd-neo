@@ -213,11 +213,15 @@ dmr_pi_handle_dmra_slot(dsd_state* state, const uint8_t pi_byte[], int slot_numb
 
 static void
 dmr_pi_handle_dmra(dsd_state* state, const uint8_t pi_byte[]) {
+    // This CRC-verified PI identifies standard DMRA encryption even when a lost terminator/header hid the call
+    // boundary. Its slot must resume standard SB/MI handling instead of keeping the previous vendor's mode.
     if (state->currentslot == 0) {
+        dmr_le_vendor_reset(state, 0U);
         dmr_pi_handle_dmra_slot(state, pi_byte, 1, &state->payload_algid, &state->payload_keyid, &state->payload_mi);
     }
 
     if (state->currentslot == 1) {
+        dmr_le_vendor_reset(state, 1U);
         dmr_pi_handle_dmra_slot(state, pi_byte, 2, &state->payload_algidR, &state->payload_keyidR, &state->payload_miR);
     }
 }

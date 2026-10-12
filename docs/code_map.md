@@ -3937,8 +3937,10 @@ Private per-protocol modules worth knowing about:
 - `src/protocol/dmr/dmr_enc_class.c` — per-slot privacy-bit hysteresis, and each slot's vendor late-entry mode
   (`dsd_state::dmr_le_vendor[]`, `DMR_LE_VENDOR_*` in `<dsd-neo/protocol/dmr/dmr.h>`, issue #657). A CRC-verified
   Kirisun PI or LC, or a checksum-verified Hytera Enhanced PI or LC, sets the slot's mode for its call; it is cleared
-  with the slot's crypto at the terminator (stashed and restored by the unverified-terminator heal), by a data header,
-  at the carrier boundary, on a retune and in the no-carrier reset, and is saved with each trunk-scan target.
+  with the slot's crypto at the terminator (stashed and restored by the unverified-terminator heal), by a verified DMRA
+  PI or a data header, at the carrier boundary, on a retune and in the no-carrier reset. A DMRA PI supersedes vendor
+  evidence even when a missed terminator or voice header hid the call boundary. Trunk-scan snapshots carry the mode
+  for failed-switch rollback, but each new target visit clears it instead of restoring a previous call's mode.
   `dmr_flco_publish_voice()` also clears it when a new transmission replaces the slot's active call: a voice LC header
   after that call carried voice (the BEGIN `dmr_flco_voice_boundary()` returns), which may specialize the identity-less
   epoch a Kirisun or Hytera Enhanced call runs on (their own LCs publish no identity) rather than open a new one, or an

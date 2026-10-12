@@ -17,6 +17,7 @@
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -981,6 +982,59 @@ test_le_hytera_is_per_slot(void) {
     dsd_state_ext_free_all(&state);
 }
 
+/* A verified DMRA PI supersedes a previous vendor's mode even when the old terminator and the new voice LC header
+ * were lost. Otherwise a Hytera call leaves MI collection off, and either vendor leaves standard SB parsing off,
+ * after the new call's PI already identified its standard encryption. Unverified PI bits cannot change that mode. */
+static void
+test_le_dmra_pi_replaces_stale_vendor_mode(void) {
+    uint8_t vendor_pi[2][10] = {
+        {0x36, 0x0A, 0x40, 0x11, 0x22, 0x33, 0x44, 0x00, 0x00, 0x01},
+        {0x02, 0x68, 0x34, 0x01, 0x23, 0x45, 0x67, 0x89, 0x00, 0x09},
+    };
+    uint8_t dmra_pi[10] = {0x01, 0x10, 0x03, 0x11, 0x22, 0x33, 0x44, 0x00, 0x00, 0x00};
+    uint8_t fr[4][24] = {{0}};
+    for (int i = 0; i < 4; i++) {
+        fr[3][i] = 1U;
+    }
+    for (int vendor = 0; vendor < 2; vendor++) {
+        const uint8_t mode = vendor == 0 ? DMR_LE_VENDOR_KIRISUN_ENC : DMR_LE_VENDOR_HYTERA_ENH;
+        for (int slot = 0; slot < 2; slot++) {
+            for (int enabled = 0; enabled < 2; enabled++) {
+                dsd_opts* opts = calloc(1, sizeof(*opts));
+                dsd_state* state = calloc(1, sizeof(*state));
+                assert(opts != NULL && state != NULL);
+                opts->dmr_le = enabled;
+                for (int s = 0; s < 2; s++) {
+                    state->currentslot = s;
+                    dmr_pi(opts, state, vendor_pi[vendor], 1U, 0U);
+                    assert(state->dmr_le_vendor[s] == mode);
+                }
+
+                state->currentslot = slot;
+                dmr_pi(opts, state, dmra_pi, 0U, 0U);
+                assert(state->dmr_le_vendor[slot] == mode);
+                dmr_pi(opts, state, dmra_pi, 1U, 1U);
+                assert(state->dmr_le_vendor[slot] == mode);
+                dmr_pi(opts, state, dmra_pi, 1U, 0U);
+                assert(state->dmr_le_vendor[slot] == DMR_LE_VENDOR_NONE);
+                assert(state->dmr_le_vendor[slot ^ 1] == mode);
+                assert(opts->dmr_le == enabled);
+
+                dmr_late_entry_mi_fragment(opts, state, 2U, fr, fr, fr);
+                assert(state->late_entry_mi_fragment[slot][2][0] == 0xFU);
+                load_single_burst_value(state, (uint8_t)slot, 0x225U);
+                dmr_sbrc(opts, state, 0);
+                assert((slot == 0 ? state->payload_algid : state->payload_algidR) == (enabled ? 0x25 : 0x21));
+                assert((slot == 0 ? state->payload_keyid : state->payload_keyidR) == (enabled ? 0x44 : 0x03));
+                assert(opts->dmr_le == enabled);
+                dsd_state_ext_free_all(state);
+                free(state);
+                free(opts);
+            }
+        }
+    }
+}
+
 int
 main(void) {
     InitAllFecFunction();
@@ -1016,6 +1070,7 @@ main(void) {
     test_sbrc_txi_commands();
     test_le_kirisun_leaves_user_setting_off();
     test_le_hytera_is_per_slot();
+    test_le_dmra_pi_replaces_stale_vendor_mode();
     printf("DMR PI Kirisun: OK\n");
     return 0;
 }

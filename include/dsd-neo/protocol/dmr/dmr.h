@@ -52,9 +52,9 @@ int dmr_enc_class_established_clear(const dsd_state* state, uint8_t slot);
 
 /* Vendor late-entry modes, per slot and per call (issue #657). Values stored in dsd_state.dmr_le_vendor[]. A
  * CRC-verified Kirisun PI or LC, or a checksum-verified Hytera Enhanced PI or LC, sets the slot's mode; the slot's
- * terminator, a new transmission replacing its active call, a data header, a carrier boundary, a retune and the
- * no-carrier reset clear it. dmr_le.c combines it with the user's late-entry setting (opts->dmr_le, 0 or 1), which
- * decoding never writes. */
+ * terminator, a new transmission replacing its active call, a verified DMRA PI, a data header, a carrier boundary,
+ * a retune, a new scan visit and the no-carrier reset clear it. dmr_le.c combines it with the user's late-entry setting
+ * (opts->dmr_le, 0 or 1), which decoding never writes. */
 enum {
     DMR_LE_VENDOR_NONE = 0,
     DMR_LE_VENDOR_KIRISUN_ENC = 1,   /* encrypted Kirisun: Kirisun SB handling, no standard SB/RC parsing */
