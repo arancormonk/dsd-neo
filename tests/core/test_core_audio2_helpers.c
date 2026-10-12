@@ -1121,7 +1121,8 @@ test_dmr_slot_preference_in_both_formats(void) {
                         rc |= expect_int("preferred integer DMR sample", sample, want);
                     }
                 }
-                rc |= expect_size("preferred DMR static WAV keeps three stereo blocks", g_sf_written_count, 3U * 320U);
+                rc |= expect_size("preferred DMR static WAV keeps three stereo blocks", g_sf_written_count,
+                                  (size_t)3U * 320U);
                 rc |= expect_int("preferred DMR static WAV left", g_sf_written[0], left);
                 rc |= expect_int("preferred DMR static WAV right", g_sf_written[1], right);
                 rc |= expect_int("DMR mix keeps the selected preference", opts.slot_preference, pref);
