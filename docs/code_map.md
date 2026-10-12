@@ -643,8 +643,10 @@ suite runs under this compiler.
   digital writer shares the stream (48 kHz mono s16le); the `-8` source monitor during digital decoding does not, and
   the engine warns once at startup when `-o -` and `-8` meet outside the M17 encoders. The CLI ignores SIGPIPE in the
   branch that installs its SIGINT/SIGTERM handlers (never under `DSD_NEO_NO_SIGNAL_HANDLERS`; nothing in the process
-  starts a child that would inherit it), rigctl sends with `MSG_NOSIGNAL`, and the UDP blasters report send failures
-  once per run, at most a line a minute per socket. Decoder thread only. Tests: `CORE_AUDIO_SINK`,
+  starts a child that would inherit it), rigctl sends with `MSG_NOSIGNAL` or protects each connected socket with
+  `SO_NOSIGPIPE` where supported (refusing a connection if setting it fails), and the UDP blasters report send failures
+  once per run, at most a line a minute per socket. A newly opened UDP socket starts fresh reporting; failed setup
+  closes and invalidates the socket. Decoder thread only. Tests: `CORE_AUDIO_SINK`,
   `PLATFORM_WRITE_FRAMES`, `PLATFORM_AUDIO_PULSE_HELPERS`, `PLATFORM_AUDIO_PORTAUDIO_RECOVERY`,
   `IO_UDP_SOCKET_BACKENDS`, `DSP_SYMBOL_REPLAY`, and the `DECODE_IQ_STDOUT_*` end-to-end cases.
 - `src/core/file/dsd_file.c` reads SDRTrunk JSON MBE exports. Its file-local crypto context owns NXDN SACCH

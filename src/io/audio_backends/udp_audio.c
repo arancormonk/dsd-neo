@@ -167,6 +167,8 @@ udp_socket_connect(dsd_opts* opts, dsd_state* state) {
     err = dsd_socket_setsockopt(opts->udp_sockfd, SOL_SOCKET, SO_BROADCAST, &broadcastEnable, sizeof(broadcastEnable));
     if (err != 0) {
         DSD_FPRINTF(stderr, " UDP Broadcast Set Error %d\n", err);
+        dsd_socket_close(opts->udp_sockfd);
+        opts->udp_sockfd = DSD_INVALID_SOCKET;
         return err;
     }
 
@@ -174,9 +176,12 @@ udp_socket_connect(dsd_opts* opts, dsd_state* state) {
     address.sin_family = AF_INET;
     if (dsd_socket_resolve(opts->udp_hostname, opts->udp_portno, &address) != 0) {
         DSD_FPRINTF(stderr, " UDP address resolve error for %s\n", opts->udp_hostname);
+        dsd_socket_close(opts->udp_sockfd);
+        opts->udp_sockfd = DSD_INVALID_SOCKET;
         return -1;
     }
 
+    DSD_MEMSET(&g_udp_report_digital, 0, sizeof(g_udp_report_digital));
     return 0;
 }
 
@@ -196,6 +201,8 @@ udp_socket_connectA(dsd_opts* opts, dsd_state* state) {
     err = dsd_socket_setsockopt(opts->udp_sockfdA, SOL_SOCKET, SO_BROADCAST, &broadcastEnable, sizeof(broadcastEnable));
     if (err != 0) {
         DSD_FPRINTF(stderr, " UDP Broadcast Set Error %d\n", err);
+        dsd_socket_close(opts->udp_sockfdA);
+        opts->udp_sockfdA = DSD_INVALID_SOCKET;
         return err;
     }
 
@@ -204,8 +211,11 @@ udp_socket_connectA(dsd_opts* opts, dsd_state* state) {
     //plus 2 to current port assignment for the analog port value
     if (dsd_socket_resolve(opts->udp_hostname, opts->udp_portno + 2, &addressA) != 0) {
         DSD_FPRINTF(stderr, " UDP address resolve error for %s\n", opts->udp_hostname);
+        dsd_socket_close(opts->udp_sockfdA);
+        opts->udp_sockfdA = DSD_INVALID_SOCKET;
         return -1;
     }
 
+    DSD_MEMSET(&g_udp_report_analog, 0, sizeof(g_udp_report_analog));
     return 0;
 }

@@ -228,7 +228,8 @@ test_udp_connect_failures(void) {
     reset_stubs();
     g_setsockopt_result = 7;
     assert(udp_socket_connect(&opts, &state) == 7);
-    assert(opts.udp_sockfd == 11);
+    assert(opts.udp_sockfd == DSD_INVALID_SOCKET);
+    assert(g_close_count == 1);
     assert(g_setsockopt_count == 1);
     assert(g_resolve_count == 0);
 
@@ -238,6 +239,8 @@ test_udp_connect_failures(void) {
     assert(g_resolve_count == 1);
     assert(strcmp(g_last_resolve_host, "239.1.2.3") == 0);
     assert(g_last_resolve_port == 23456);
+    assert(opts.udp_sockfd == DSD_INVALID_SOCKET);
+    assert(g_close_count == 1);
 
     reset_stubs();
     g_create_result = DSD_INVALID_SOCKET;
@@ -249,7 +252,8 @@ test_udp_connect_failures(void) {
     reset_stubs();
     g_setsockopt_result = 8;
     assert(udp_socket_connectA(&opts, &state) == 8);
-    assert(opts.udp_sockfdA == 11);
+    assert(opts.udp_sockfdA == DSD_INVALID_SOCKET);
+    assert(g_close_count == 1);
     assert(g_setsockopt_count == 1);
     assert(g_resolve_count == 0);
 
@@ -259,6 +263,8 @@ test_udp_connect_failures(void) {
     assert(g_resolve_count == 1);
     assert(strcmp(g_last_resolve_host, "239.1.2.3") == 0);
     assert(g_last_resolve_port == 23458);
+    assert(opts.udp_sockfdA == DSD_INVALID_SOCKET);
+    assert(g_close_count == 1);
     return 0;
 }
 
@@ -361,6 +367,15 @@ test_udp_send_failures_are_rate_limited(void) {
     g_sendto_result = 0;
     udp_socket_blasterA(&opts, &state, sizeof(payload), payload);
     assert(g_log_info_count == 2);
+
+    /* A new socket, including one reusing the same descriptor number, starts a new reporting session. Its first
+       failure must not inherit the old socket's minute-long suppression. */
+    assert(udp_socket_connect(&opts, &state) == 0);
+    assert(udp_socket_connectA(&opts, &state) == 0);
+    g_sendto_result = -1;
+    udp_socket_blaster(&opts, &state, sizeof(payload), payload);
+    udp_socket_blasterA(&opts, &state, sizeof(payload), payload);
+    assert(g_log_warn_count == 5);
     return 0;
 }
 
