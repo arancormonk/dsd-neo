@@ -66,7 +66,11 @@ class AirspyPackaging(unittest.TestCase):
         source = self.work / "package"
         source.mkdir()
         stage = self.work / "stage"
-        result = run(["cmake", f"-DREPO_DIR={ROOT}", f"-DSOURCE_DIR={source}",
+        fft_notices = self.work / "pffft-licenses"
+        fft_notices.mkdir()
+        for name in ("pffft-LICENSE.txt", "pffft-NOTICES.txt"):
+            (fft_notices / name).write_text("FFT notice fixture\n")
+        result = run(["cmake", f"-DPFFFT_LICENSE_DIR={fft_notices}", f"-DREPO_DIR={ROOT}", f"-DSOURCE_DIR={source}",
                       f"-DSTAGE_DIR={stage}", "-P", str(ROOT / "cmake/stage_android_package.cmake")])
         self.assert_success(result)
         notice = stage / "assets/doc/dsd-neo/licenses" / NOTICE

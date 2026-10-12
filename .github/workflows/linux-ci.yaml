@@ -957,7 +957,7 @@ jobs:
 
       - name: Install AUR tooling
         if: steps.aur_key.outputs.has_key == 'true'
-        run: pacman -Syu --noconfirm --needed git openssh
+        run: pacman -Syu --noconfirm --needed git openssh python
 
       - name: Create makepkg user
         if: steps.aur_key.outputs.has_key == 'true'
@@ -1035,6 +1035,12 @@ jobs:
           echo "pkgver=$new_pkgver" >> "$GITHUB_OUTPUT"
           echo "Computed pkgver from $ref ($(git rev-parse --short=7 "$ref")): $new_pkgver"
 
+      - name: Prepare pinned PFFFT source for AUR
+        if: steps.aur_up.outputs.available == 'true'
+        run: |
+          git show origin/main:tools/ci-dependency-pins.env > "$RUNNER_TEMP/aur-pffft-pins.env"
+          python3 tools/update_aur_pffft.py --pins "$RUNNER_TEMP/aur-pffft-pins.env" aur-package/PKGBUILD
+
       - name: Validate AUR VCS metadata
         if: steps.aur_up.outputs.available == 'true'
         run: |
@@ -1069,7 +1075,7 @@ jobs:
           current_pkgver=$(grep -E '^\s*pkgver=' PKGBUILD | sed 's/.*pkgver=//')
           echo "Current pkgver: $current_pkgver"
           echo "New pkgver: ${{ steps.pkgver.outputs.pkgver }}"
-          if [ "$current_pkgver" = "${{ steps.pkgver.outputs.pkgver }}" ]; then
+          if [ "$current_pkgver" = "${{ steps.pkgver.outputs.pkgver }}" ] && git diff --quiet -- PKGBUILD; then
             echo "needs_update=false" >> "$GITHUB_OUTPUT"
             echo "No update needed"
           else
@@ -1082,8 +1088,14 @@ jobs:
         run: |
           set -euo pipefail
           cd aur-package
+          current_pkgver=$(sed -n 's/^pkgver=//p' PKGBUILD | head -n1)
+          next_pkgrel=1
+          if [ "$current_pkgver" = "${{ steps.pkgver.outputs.pkgver }}" ]; then
+            current_pkgrel=$(sed -n 's/^pkgrel=//p' PKGBUILD | head -n1)
+            next_pkgrel=$((current_pkgrel + 1))
+          fi
           sed -i "s/^pkgver=.*/pkgver=${{ steps.pkgver.outputs.pkgver }}/" PKGBUILD
-          sed -i "s/^pkgrel=.*/pkgrel=1/" PKGBUILD
+          sed -i "s/^pkgrel=.*/pkgrel=$next_pkgrel/" PKGBUILD
           chown -R "$AUR_MAKEPKG_USER:$AUR_MAKEPKG_USER" .
           runuser -u "$AUR_MAKEPKG_USER" -- bash -lc "cd '$PWD' && makepkg --printsrcinfo > .SRCINFO"
 
@@ -1137,7 +1149,7 @@ jobs:
 
       - name: Install AUR tooling
         if: steps.aur_key.outputs.has_key == 'true'
-        run: pacman -Syu --noconfirm --needed git openssh curl
+        run: pacman -Syu --noconfirm --needed git openssh curl python
 
       - name: Create makepkg user
         if: steps.aur_key.outputs.has_key == 'true'
@@ -1224,8 +1236,10 @@ jobs:
           url="https://github.com/arancormonk/dsd-neo"
           license=('GPL-3.0-or-later')
           depends=(
-              'mbelib-neo'
+              'mbelib-neo>=2.3'
+              'mbelib-neo<3'
               'libsndfile'
+              'openssl'
               'ncurses'
               'libpulse'
               'rtl-sdr'
@@ -1257,6 +1271,10 @@ jobs:
           }
           PKGBUILD
 
+      - name: Prepare pinned PFFFT source for AUR
+        if: steps.aur_up.outputs.available == 'true'
+        run: python3 tools/update_aur_pffft.py aur-package/PKGBUILD
+
       - name: Check if update needed
         id: check
         if: steps.aur_up.outputs.available == 'true'
@@ -1269,7 +1287,7 @@ jobs:
           echo "New pkgver: ${{ steps.release_meta.outputs.pkgver }}"
           echo "New sha256: ${{ steps.release_meta.outputs.sha256 }}"
           if [ "$current_pkgver" = "${{ steps.release_meta.outputs.pkgver }}" ] &&
-             [ "$current_sha256" = "${{ steps.release_meta.outputs.sha256 }}" ]; then
+             [ "$current_sha256" = "${{ steps.release_meta.outputs.sha256 }}" ] && git diff --quiet -- PKGBUILD; then
             echo "needs_update=false" >> "$GITHUB_OUTPUT"
             echo "No update needed"
           else
@@ -1282,8 +1300,14 @@ jobs:
         run: |
           set -euo pipefail
           cd aur-package
+          current_pkgver=$(sed -n 's/^pkgver=//p' PKGBUILD | head -n1)
+          next_pkgrel=1
+          if [ "$current_pkgver" = "${{ steps.release_meta.outputs.pkgver }}" ]; then
+            current_pkgrel=$(sed -n 's/^pkgrel=//p' PKGBUILD | head -n1)
+            next_pkgrel=$((current_pkgrel + 1))
+          fi
           sed -i "s/^pkgver=.*/pkgver=${{ steps.release_meta.outputs.pkgver }}/" PKGBUILD
-          sed -i "s/^pkgrel=.*/pkgrel=1/" PKGBUILD
+          sed -i "s/^pkgrel=.*/pkgrel=$next_pkgrel/" PKGBUILD
           sed -i "s/^sha256sums=.*/sha256sums=('${{ steps.release_meta.outputs.sha256 }}')/" PKGBUILD
           chown -R "$AUR_MAKEPKG_USER:$AUR_MAKEPKG_USER" .
           runuser -u "$AUR_MAKEPKG_USER" -- bash -lc "cd '$PWD' && makepkg --printsrcinfo > .SRCINFO"

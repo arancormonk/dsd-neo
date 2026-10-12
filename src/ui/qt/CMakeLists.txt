@@ -171,7 +171,16 @@ qt_add_resources(
         "${PROJECT_SOURCE_DIR}/THIRD_PARTY.md"
         "${PROJECT_SOURCE_DIR}/src/ui/qt/fonts/IBMPlex-LICENSE.txt"
         "${PROJECT_SOURCE_DIR}/src/third_party/ezpwd/lesser.txt"
-        "${PROJECT_SOURCE_DIR}/src/third_party/pffft/COPYING"
+)
+
+qt_add_resources(
+    dsd-neo_ui_qt
+    "dsd_neo_pffft_notices"
+    PREFIX "/dsdneo/notices"
+    BASE "${DSD_PFFFT_LICENSE_DIR}"
+    FILES
+        "${DSD_PFFFT_LICENSE_DIR}/pffft-LICENSE.txt"
+        "${DSD_PFFFT_LICENSE_DIR}/pffft-NOTICES.txt"
 )
 
 # Qt's unprefixed `signals`/`slots`/`emit` macros collide with project C headers

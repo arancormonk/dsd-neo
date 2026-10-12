@@ -585,8 +585,8 @@ jobs:
           mkdir -p "$DOCDIR/licenses"
           cp -f LICENSE COPYRIGHT THIRD_PARTY.md "$DOCDIR/"
           cp -f src/third_party/ezpwd/lesser.txt "$DOCDIR/licenses/ezpwd-LGPL-2.1-or-later.txt"
-          cp -f src/third_party/pffft/COPYING "$DOCDIR/licenses/pffft-FFTPACK.txt"
-          for f in LICENSE COPYRIGHT THIRD_PARTY.md licenses/ezpwd-LGPL-2.1-or-later.txt licenses/pffft-FFTPACK.txt; do
+          cp -f build/dev-release/pffft-licenses/pffft-{LICENSE,NOTICES}.txt "$DOCDIR/licenses/"
+          for f in LICENSE COPYRIGHT THIRD_PARTY.md licenses/ezpwd-LGPL-2.1-or-later.txt licenses/pffft-LICENSE.txt licenses/pffft-NOTICES.txt; do
             if [ ! -f "$DOCDIR/$f" ]; then
               echo "ERROR: missing required license file $f in $DOCDIR" >&2
               exit 1
@@ -863,8 +863,26 @@ jobs:
           format: spdx-json
           output-file: ${{ steps.dmg.outputs.DMG_PATH }}.spdx.json
           artifact-name: ${{ steps.dmg.outputs.ART_NAME }}.spdx.json
-          upload-artifact: true
+          upload-artifact: false
           upload-release-assets: false
+
+      - name: Record pinned PFFFT in SBOM
+        shell: bash
+        env:
+          SBOM_PATH: ${{ steps.dmg.outputs.DMG_PATH }}.spdx.json
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            python tools/pffft_metadata.py --spdx "$SBOM_PATH"
+          else
+            python3 tools/pffft_metadata.py --spdx "$SBOM_PATH"
+          fi
+
+      - name: Upload enriched SBOM
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ steps.dmg.outputs.ART_NAME }}.spdx.json
+          path: ${{ steps.dmg.outputs.DMG_PATH }}.spdx.json
+          retention-days: 7
 
       - name: Attest artifact provenance
         if: startsWith(github.ref, 'refs/tags/')

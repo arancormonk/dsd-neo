@@ -122,6 +122,25 @@ grep -q 'contains a newline' "$WORK/refused.err" || fail "newline not reported: 
 git checkout -q -f --detach "$base"
 git clean -q -fdx
 
+# Pin/integration changes and deletion must keep the dependency scan enabled.
+mkdir -p cmake tools
+printf 'pin\n' > tools/ci-dependency-pins.env
+printf 'module\n' > cmake/Pffft.cmake
+git add -A
+git commit -q -m 'FFT pins'
+pins_head=$(git rev-parse HEAD)
+bash "$SCRIPT" --base "$base" --head "$pins_head" --out-dir "$WORK/pins" > /dev/null
+for path in tools/ci-dependency-pins.env cmake/Pffft.cmake; do
+  grep -qx "$path" "$WORK/pins/dependency_scan_targets.txt" || fail "pin input omitted: $path"
+done
+git rm -q cmake/Pffft.cmake
+git commit -q -m 'remove FFT integration'
+bash "$SCRIPT" --base "$pins_head" --head HEAD --out-dir "$WORK/deleted" > /dev/null
+grep -qx 'cmake/Pffft.cmake' "$WORK/deleted/dependency_scan_targets.txt" || fail 'deleted FFT input omitted'
+echo 'PASS FFT changes and deletions trigger dependency scanning'
+git checkout -q -f --detach "$base"
+git clean -q -fdx
+
 # A diff that fails fails the helper. Both commits resolve, so it gets past its ref
 # checks, but git diff rejects an invalid diff setting.
 git config diff.context notanumber

@@ -6,13 +6,13 @@
 #
 # Usage:
 #   cmake -DREPO_DIR=<repo> -DSOURCE_DIR=<android/package> -DSTAGE_DIR=<out> \
-#         -P cmake/stage_android_package.cmake
+#         -DPFFFT_LICENSE_DIR=<build>/pffft-licenses -P cmake/stage_android_package.cmake
 #
 # Run as a build step rather than at configure time so edits to android/package/ reach the
 # APK without re-running CMake. file(COPY) and configure_file(COPYONLY) both skip files
 # that are already current, so a no-op build does not make Gradle repackage.
 
-foreach(_required IN ITEMS REPO_DIR SOURCE_DIR STAGE_DIR)
+foreach(_required IN ITEMS REPO_DIR SOURCE_DIR STAGE_DIR PFFFT_LICENSE_DIR)
     if(NOT DEFINED ${_required})
         message(
             FATAL_ERROR
@@ -40,10 +40,11 @@ configure_file(
     "${_doc_dir}/licenses/ezpwd-LGPL-2.1-or-later.txt"
     COPYONLY
 )
-configure_file(
-    "${REPO_DIR}/src/third_party/pffft/COPYING"
-    "${_doc_dir}/licenses/pffft-FFTPACK.txt"
-    COPYONLY
+file(
+    COPY
+        "${PFFFT_LICENSE_DIR}/pffft-LICENSE.txt"
+        "${PFFFT_LICENSE_DIR}/pffft-NOTICES.txt"
+    DESTINATION "${_doc_dir}/licenses"
 )
 
 # Compiled into the Qt resource bundle (src/ui/qt/CMakeLists.txt), so every APK

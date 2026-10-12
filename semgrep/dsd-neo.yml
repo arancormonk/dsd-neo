@@ -604,6 +604,8 @@ rules:
       - pattern: '#include <ezpwd/...>'
       - pattern: '#include "pffft.h"'
       - pattern: '#include <pffft.h>'
+      - pattern: '#include "pffft/..."'
+      - pattern: '#include <pffft/...>'
 
   # Every clock read names its domain. The decode clock (dsd_decode_*) serves
   # decode decisions and decoded-output timestamps and follows the capture

@@ -140,13 +140,13 @@ ARGS=(
   --disable-version-check
   --no-git-ignore
   --exclude .deps-arch-toolchain
-  --exclude .deps-arch-toolchain/**
+  --exclude ".deps-arch-toolchain/**"
   --exclude src/third_party
-  --exclude src/third_party/**
+  --exclude "src/third_party/**"
   --exclude vcpkg_installed
-  --exclude vcpkg_installed/**
+  --exclude "vcpkg_installed/**"
   --exclude build
-  --exclude build/**
+  --exclude "build/**"
 )
 if [[ $STRICT -eq 1 ]]; then
   ARGS+=(--error)
@@ -159,6 +159,16 @@ for config in "${CONFIGS[@]}"; do
 done
 if [[ -n "${DSD_SEMGREP_SARIF_OUT:-}" ]]; then
   ARGS+=(--sarif --output "$DSD_SEMGREP_SARIF_OUT")
+fi
+
+# Honor a local PFFFT checkout even when it lives inside the source tree.
+analysis_cache="${DSD_ANALYSIS_BUILD_DIR:-build/dev-debug}/CMakeCache.txt"
+if [[ -f "$analysis_cache" ]]; then
+  pffft_source=$(sed -n 's/^DSD_PFFFT_SOURCE_DIR:INTERNAL=//p' "$analysis_cache")
+  if [[ -n "$pffft_source" ]]; then
+    pffft_relative="${pffft_source#"$ROOT_DIR/"}"
+    ARGS+=(--exclude "$pffft_relative" --exclude "$pffft_relative/**")
+  fi
 fi
 
 set +e

@@ -102,7 +102,7 @@ check_port() {
   local repo="$2"
   local ref_var="$3"
   local sha512_var="$4"
-  local portfile="vcpkg-ports/${port}/portfile.cmake"
+  local portfile="${5:-vcpkg-ports/${port}/portfile.cmake}"
   local want_ref="${!ref_var:-}"
   local want_sha512="${!sha512_var:-}"
   local port_repo=""
@@ -172,6 +172,7 @@ check_port() {
 }
 
 check_port "mbe-neo" "arancormonk/mbelib-neo" "MBELIB_NEO_SHA" "MBELIB_NEO_TARBALL_SHA512"
+check_port "mbe-neo" "arancormonk/pffft" "MBELIB_PFFFT_SHA" "MBELIB_PFFFT_TARBALL_SHA512" "vcpkg-ports/mbe-neo/pffft.cmake"
 check_port "codec2" "arancormonk/codec2" "CODEC2_SHA" "CODEC2_TARBALL_SHA512"
 check_port "rtlsdr" "arancormonk/rtl-sdr" "RTL_SDR_SHA" "RTL_SDR_TARBALL_SHA512"
 check_port "airspy" "airspy/airspyone_host" "AIRSPY_SHA" "AIRSPY_TARBALL_SHA512"

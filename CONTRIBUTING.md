@@ -148,3 +148,7 @@ Every pull request is reviewed for:
 - packaging and release impact
 
 Risky or broad changes should receive a second human review before merge.
+
+PFFFT sources are downloaded at a fixed revision instead of edited in-tree.
+Use `tools/update_pffft.py` for manual updates and follow the validation and
+offline-build instructions in [dependency management](docs/dependencies.md#pinned-pffft-source).
