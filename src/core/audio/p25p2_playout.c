@@ -29,18 +29,19 @@
  * edit mutes what was queued before it, also in the drain when the release leaves the channel. The current verdict is
  * the decode gate's decision for the call's latest burst, or the one a path that changes verdicts or ends the calls
  * took (dsd_p25p2_playout_note_policy()); emission only checks, cheaply, whether anything a waiting call's verdict
- * reads moved (dsd_p25p2_policy_key) and takes its verdict again then. The slot switches are read at emission. Float frames are gained
- * (agf) when queued.
+ * reads moved (dsd_p25p2_policy_key) and takes its verdict again then. The slot switches are read at emission.
+ * Frames are queued as the vocoder's voice chain left them (filtered and gained per slot, issue #653): the short
+ * samples it staged, or the float frame rescaled to [-1, 1).
  */
 
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/audio_activity.h>
-#include <dsd-neo/core/audio_filters.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/p25p2_playout.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/voice_chain.h>
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/protocol/p25/p25_crypto.h>
@@ -635,8 +636,9 @@ playout_diag(dsd_opts* opts, const dsd_state* state, int k, const int audible[2]
                     slot_level(&state->p25p2_playout, 1));
 }
 
-// Keep the vocoder's output buffers inside their allocation: processAudio() and the upsampler advance them per frame
-// and only a mixer's working-state reset wraps them (the mixers the playout replaced did it after every pass).
+// Keep the vocoder's output buffers inside their allocation: the short staging (dsd_voice_stage_short_left/right())
+// advances them per frame and only a mixer's working-state reset wraps them (the mixers the playout replaced did it
+// after every pass).
 static void
 housekeeping(dsd_state* state) {
     dsd_audio_maybe_reset_output_ring_left(state);
@@ -691,11 +693,6 @@ emit_block_short(dsd_opts* opts, dsd_state* state, dsd_p25p2_playout_entry* e[2]
     }
     if (e[1]) {
         DSD_MEMCPY(right, e[1]->pcm.s16, sizeof(right));
-    }
-    // The digital high-pass runs over exactly the blocks played, each slot on its own filter state.
-    if (opts->use_hpf_d == 1) {
-        hpf_dL(state, left, BLOCK_FRAMES);
-        hpf_dR(state, right, BLOCK_FRAMES);
     }
     short stereo[BLOCK_FRAMES * 2];
     audio_mix_interleave_stereo_s16(audible[0] ? left : right, audible[1] ? right : left, BLOCK_FRAMES, 0, 0, stereo);
@@ -1048,14 +1045,13 @@ take_burst_verdict(const dsd_opts* opts, dsd_state* state, int slot, dsd_p25p2_p
     }
 }
 
-// The frame the session's format plays: the float frame through agf(), or the short frame the vocoder staged (zeros,
-// not fresh, when it left the slot out).
+// The frame the session's format plays: the float frame, rescaled from the slot's voice chain output (issue #653), or
+// the short frame the vocoder staged from it (zeros, not fresh, when it left the slot out).
 static void
-copy_frame(const dsd_opts* opts, dsd_state* state, int slot, dsd_p25p2_playout_entry* e) {
+copy_frame(const dsd_opts* opts, const dsd_state* state, int slot, dsd_p25p2_playout_entry* e) {
     if (opts->floating_point == 1) {
-        DSD_MEMCPY(e->pcm.f32, (slot == 0) ? state->audio_out_temp_buf : state->audio_out_temp_bufR,
-                   sizeof(e->pcm.f32));
-        agf(opts, state, e->pcm.f32, slot);
+        dsd_voice_frame_to_float((slot == 0) ? state->audio_out_temp_buf : state->audio_out_temp_bufR, e->pcm.f32,
+                                 BLOCK_FRAMES);
         e->fresh = 1U;
     } else if (state->mbe_short_silenced[slot]) {
         e->fresh = 0U;

@@ -34,9 +34,15 @@ extern "C" {
  *         SPS hunt as proof its profile is the right one (#407).
  */
 int processdPMRvoice(dsd_opts* opts, dsd_state* state);
-/** @brief Core audio processing entry point (slot 1). */
+/**
+ * @brief Run the voice chain on the left frame (`audio_out_temp_buf`, slot 1's state) and stage it for the short
+ * mixers: dsd_voice_chain_run() then dsd_voice_stage_short_left() (<dsd-neo/core/voice_chain.h>).
+ *
+ * In-tree decoders call those two themselves (the chain on every frame, the staging only where the short output takes
+ * it); this stays for out-of-tree callers.
+ */
 void processAudio(const dsd_opts* opts, dsd_state* state);
-/** @brief Core audio processing entry point (slot 2 / right). */
+/** @brief processAudio() for the right frame (`audio_out_temp_bufR`) on slot 2's state. */
 void processAudioR(const dsd_opts* opts, dsd_state* state);
 
 /** @brief Open audio input stream based on opts. Returns 0 on success. */
@@ -135,8 +141,6 @@ unsigned int dsd_audio_dmr_mix_media_take(int slot);
  */
 void dsd_play_synthesized_voice(dsd_opts* opts, dsd_state* state);
 
-/** @brief Apply float-domain gain to 160-sample block for given slot. */
-void agf(const dsd_opts* opts, dsd_state* state, float samp[160], int slot); // float gain control
 /** @brief Apply the manual analog gain (`-n`, 0..100% as 0x..5x) to a short buffer: the M17 encoder's fixed input gain.
  *  The analog monitor's gain stage is dsd_analog_audio_process_f() (<dsd-neo/dsp/analog_audio.h>). */
 void analog_gain(const dsd_opts* opts, dsd_state* state, short* input, int len); // manual gain for analog paths

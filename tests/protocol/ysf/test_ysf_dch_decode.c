@@ -967,6 +967,9 @@ test_process_ysf_vd_type2_routes_dch2_voice_and_audio_errors(void) {
     g_dibit_stream_pos = 0;
     g_mbe_call_count = 0;
     opts.floating_point = 1;
+    // A fixed gain of 2 shows the bypassed frames go through the voice chain in float output too (issue #653).
+    opts.audio_gain = 2.0F;
+    opts.audio_gainR = 2.0F;
 
     make_fich_bits_for_vd_type2(fich_bits);
     encode_fich_input(fich_bits, 0, 0, fich_input);
@@ -993,9 +996,9 @@ test_process_ysf_vd_type2_routes_dch2_voice_and_audio_errors(void) {
     const dsd_call_snapshot call = get_test_ysf_call(&state);
     assert(strcmp(call.source_text, "VD2SRC4444") == 0);
     assert(strcmp(state.err_str, "========") == 0);
-    // The fifth stubbed frame (5.0), scaled to the int16 scale of the voice buffers.
-    assert(fabsf(state.f_l[0] - (5.0F * DSD_MBE_PCM16_PER_FLOAT)) <= 1e-6F);
-    assert(fabsf(state.f_l[159] - (5.0F * DSD_MBE_PCM16_PER_FLOAT)) <= 1e-6F);
+    // The fifth stubbed frame (5.0), scaled to the int16 scale of the voice buffers, then the chain's fixed gain.
+    assert(fabsf(state.f_l[0] - (2.0F * 5.0F * DSD_MBE_PCM16_PER_FLOAT)) <= 1e-6F);
+    assert(fabsf(state.f_l[159] - (2.0F * 5.0F * DSD_MBE_PCM16_PER_FLOAT)) <= 1e-6F);
 }
 
 static void

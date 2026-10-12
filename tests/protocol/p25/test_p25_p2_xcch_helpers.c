@@ -22,6 +22,7 @@
 #include <dsd-neo/protocol/p25/p25p2_mac_parse.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include "../../../src/protocol/p25/p25_trunk_sm_internal.h"
@@ -744,7 +745,8 @@ test_slot_ptt_and_end_helpers(void) {
     // A PTT repeat within the call changes nothing in the playout: its stream and frames stay (issue #651).
     rc |= expect_int("slot0 PTT keeps the playout stream", state.p25p2_playout.slot[0].open, 1);
     rc |= expect_int("slot0 PTT keeps the queued frames", state.p25p2_playout.slot[0].count, 7);
-    rc |= expect_int("slot0 gain reset", (int)state.aout_gain, 3);
+    // The voice chain's gain level carries across calls in both output formats (issue #653).
+    rc |= expect_int("slot0 gain kept", fabsf(state.aout_gain - 0.5F) < 1e-6F, 1);
     rc |= expect_int("slot0 enc emitted", g_enc_count[0], 1);
     rc |= expect_int("slot0 enc algid", g_enc_algid[0], 0x84);
     rc |= expect_int("slot0 lfsr", g_lfsr_count[0], 1);

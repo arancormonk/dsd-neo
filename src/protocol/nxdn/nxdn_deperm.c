@@ -1105,11 +1105,6 @@ nxdn_message_type_resets_call(uint8_t message_type) {
     return message_type == 0x08U || message_type == 0x11U || message_type == 0xE8U;
 }
 
-static int
-nxdn_message_type_resets_gain(uint8_t message_type) {
-    return message_type == 0x07U || nxdn_message_type_resets_call(message_type);
-}
-
 /*
  * Soft-decision FACCH depermute/decode path.
  * Uses per-bit reliability values to weight the convolution decoder.
@@ -1258,13 +1253,6 @@ nxdn_message_type(const dsd_opts* opts, dsd_state* state, uint8_t MessageType) {
         }
         DSD_MEMSET(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
         DSD_MEMSET(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
-    }
-
-    if (nxdn_message_type_resets_gain(MessageType)) {
-        //reset gain
-        if (opts->floating_point == 1) {
-            state->aout_gain = opts->audio_gain;
-        }
     }
 }
 

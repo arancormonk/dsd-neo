@@ -166,7 +166,8 @@ typedef struct dsd_p25p2_playout {
  * @brief Queue the frame the vocoder just synthesized for @p slot.
  *
  * Copies the slot's short frame (s_l/s_r, zeros when dsd_state::mbe_short_silenced says the vocoder left it out) or
- * its float frame (audio_out_temp_buf(R), through agf()), whichever the session's format plays. The first frame of
+ * its float frame (audio_out_temp_buf(R) rescaled to [-1, 1)), whichever the session's format plays; the vocoder's
+ * voice chain filtered and gained both (issue #653). The first frame of
  * a burst (@p burst_serial) fixes the burst's verdict: @p burst_verdict when the decode gate already evaluated the
  * policy for this burst, else one evaluation here. A frame whose slot's canonical call epoch differs from the open
  * stream's starts a new stream; the old stream's queued frames still play.

@@ -25,11 +25,9 @@
 #include <string.h>
 #include <sys/types.h>
 
-#include <mbelib-neo/mbelib.h>
 #include "core/audio/dsd_audio2_internal.h"
 #include "core/audio/dsd_audio_internal.h"
 #include "dsd-neo/core/audio.h"
-#include "dsd-neo/core/audio_filters.h"
 #include "dsd-neo/core/file_io.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -39,6 +37,10 @@
 #include "dsd-neo/platform/file_compat.h"
 #include "dsd-neo/runtime/log.h"
 #include "dsd-neo/runtime/udp_audio_hooks.h"
+
+/* The float mixers take the voice chain's int16-scale frames and only rescale them to [-1, 1) (issue #653): a test
+   frame that should play at x is staged as PCM16(x). */
+#define PCM16(x) ((x) * 32768.0f)
 
 void
 dsd_neo_log_write(dsd_neo_log_level_t level, const char* format, ...) {
@@ -79,30 +81,6 @@ static int g_gate_mono_forced_enc = -1;
 static int g_gate_dual_forced_enc_l = -1;
 static int g_gate_dual_forced_enc_r = -1;
 static unsigned long g_gate_mono_tg;
-
-void
-mbe_floattoshort(const float* in, short* out) {
-    if (in == NULL || out == NULL) {
-        return;
-    }
-    for (size_t i = 0; i < 160U; i++) {
-        out[i] = (short)in[i];
-    }
-}
-
-void
-hpf_dL(dsd_state* state, short* input, int len) {
-    (void)state;
-    (void)input;
-    (void)len;
-}
-
-void
-hpf_dR(dsd_state* state, short* input, int len) {
-    (void)state;
-    (void)input;
-    (void)len;
-}
 
 void
 audio_mono_to_stereo_s16(const short* in, short* out, size_t n) {
@@ -199,14 +177,6 @@ dsd_audio_write_wav_short_block(SNDFILE* file, const short* samples, sf_count_t 
     if (file != NULL && samples != NULL && sample_count > 0) {
         (void)sf_write_short(file, samples, sample_count);
     }
-}
-
-void
-agf(const dsd_opts* opts, dsd_state* state, float samp[160], int slot) {
-    (void)opts;
-    (void)state;
-    (void)samp;
-    (void)slot;
 }
 
 void
@@ -976,8 +946,8 @@ test_float_playback_orchestrators_emit_expected_blocks(void) {
     opts.pulse_digi_out_channels = 2;
     state.synctype = DSD_SYNC_P25P1_POS;
     state.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
-    state.f_l[0] = 0.5f;
-    state.f_l[1] = -0.25f;
+    state.f_l[0] = PCM16(0.5f);
+    state.f_l[1] = PCM16(-0.25f);
 
     int rc = 0;
     reset_sink_capture();
@@ -991,13 +961,13 @@ test_float_playback_orchestrators_emit_expected_blocks(void) {
     rc |= expect_float("fs clears temp working buffer", state.audio_out_temp_buf[0], 0.0f);
 
     opts.reverse_mute = 1;
-    state.f_l[0] = 0.75f;
+    state.f_l[0] = PCM16(0.75f);
     reset_sink_capture();
     playSynthesizedVoiceFS(&opts, &state);
     rc |= expect_int("fs reverse mute suppresses clear P25", g_udp_blast_calls, 0);
     opts.reverse_mute = 0;
 
-    state.f_l[0] = 0.75f;
+    state.f_l[0] = PCM16(0.75f);
     state.payload_algid = 0x81;
     state.R = 0;
     state.p25_crypto_state[0] = DSD_P25_CRYPTO_BLOCKED;
@@ -1008,13 +978,13 @@ test_float_playback_orchestrators_emit_expected_blocks(void) {
 
     opts.trunk_tune_enc_calls = 1;
     opts.unmute_encrypted_p25 = 1;
-    state.f_l[0] = 0.75f;
+    state.f_l[0] = PCM16(0.75f);
     reset_sink_capture();
     playSynthesizedVoiceFS(&opts, &state);
     rc |= expect_int("fs explicit P25 unmute emits undeciphered audio", g_udp_blast_calls, 1);
 
     opts.trunk_tune_enc_calls = 0;
-    state.f_l[0] = 0.75f;
+    state.f_l[0] = PCM16(0.75f);
     reset_sink_capture();
     playSynthesizedVoiceFS(&opts, &state);
     rc |= expect_int("fs P25 lockout probe overrides explicit unmute", g_udp_blast_calls, 0);
@@ -1022,7 +992,7 @@ test_float_playback_orchestrators_emit_expected_blocks(void) {
     opts.trunk_tune_enc_calls = 1;
 
     opts.reverse_mute = 1;
-    state.f_l[0] = 0.75f;
+    state.f_l[0] = PCM16(0.75f);
     reset_sink_capture();
     playSynthesizedVoiceFS(&opts, &state);
     rc |= expect_int("fs reverse mute emits encrypted P25", g_udp_blast_calls, 1);
@@ -1033,7 +1003,7 @@ test_float_playback_orchestrators_emit_expected_blocks(void) {
     opts.reverse_mute = 1;
     state.synctype = DSD_SYNC_P25P1_POS;
     state.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
-    state.f_l[0] = 0.625f;
+    state.f_l[0] = PCM16(0.625f);
     reset_sink_capture();
     playSynthesizedVoiceFM(&opts, &state);
     rc |= expect_int("fm reverse mute suppresses clear P25", g_udp_blast_calls, 0);
@@ -1043,7 +1013,7 @@ test_float_playback_orchestrators_emit_expected_blocks(void) {
     state.synctype = DSD_SYNC_P25P1_POS;
     state.mbe_file_type = 3;
     state.p25_crypto_state[0] = DSD_P25_CRYPTO_UNKNOWN;
-    state.f_l[0] = 0.625f;
+    state.f_l[0] = PCM16(0.625f);
     reset_sink_capture();
     playSynthesizedVoiceFM(&opts, &state);
     rc |= expect_int("sdrtrunk json P25 playback bypasses live crypto state", g_udp_blast_calls, 1);
@@ -1051,26 +1021,26 @@ test_float_playback_orchestrators_emit_expected_blocks(void) {
     rc |= expect_float("sdrtrunk json P25 playback sample", ((const float*)g_udp_blast_data)[0], 0.625f);
 
     state.payload_algid = 0x81;
-    state.f_l[0] = -0.5f;
+    state.f_l[0] = PCM16(-0.5f);
     reset_sink_capture();
     playSynthesizedVoiceFM(&opts, &state);
     rc |= expect_int("sdrtrunk json decrypted P25 bypasses live ALGID gate", g_udp_blast_calls, 1);
     rc |= expect_float("sdrtrunk json decrypted P25 sample", ((const float*)g_udp_blast_data)[0], -0.5f);
 
     state.mbe_file_type = 0;
-    state.f_l[0] = 0.75f;
+    state.f_l[0] = PCM16(0.75f);
     reset_sink_capture();
     playSynthesizedVoiceFM(&opts, &state);
     rc |= expect_int("live P25 unknown crypto remains muted", g_udp_blast_calls, 0);
 
     DSD_MEMSET(&state, 0, sizeof(state));
     opts.pulse_digi_out_channels = 1;
-    state.f_l4[0][0] = 0.25f;
-    state.f_r4[0][0] = 0.75f;
-    state.f_l4[1][0] = 0.5f;
-    state.f_r4[1][0] = 1.0f;
-    state.f_l4[2][0] = -0.25f;
-    state.f_r4[2][0] = 0.25f;
+    state.f_l4[0][0] = PCM16(0.25f);
+    state.f_r4[0][0] = PCM16(0.75f);
+    state.f_l4[1][0] = PCM16(0.5f);
+    state.f_r4[1][0] = PCM16(1.0f);
+    state.f_l4[2][0] = PCM16(-0.25f);
+    state.f_r4[2][0] = PCM16(0.25f);
     reset_sink_capture();
     playSynthesizedVoiceFS3(&opts, &state);
     const float* fs3_mono = (const float*)g_udp_blast_data;
@@ -1086,9 +1056,9 @@ test_float_playback_orchestrators_emit_expected_blocks(void) {
     state.synctype = DSD_SYNC_DMR_MS_VOICE;
     state.dmr_encL = 0;
     state.dmr_encR = 1;
-    state.f_l4[0][0] = 0.25f;
-    state.f_l4[1][0] = 0.5f;
-    state.f_l4[2][0] = -0.25f;
+    state.f_l4[0][0] = PCM16(0.25f);
+    state.f_l4[1][0] = PCM16(0.5f);
+    state.f_l4[2][0] = PCM16(-0.25f);
     reset_sink_capture();
     playSynthesizedVoiceFS3(&opts, &state);
     const float* dmr_mono_stereo = (const float*)g_udp_blast_data;
@@ -1103,8 +1073,8 @@ test_float_playback_orchestrators_emit_expected_blocks(void) {
     opts.slot2_on = 1;
     state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
     state.dmr_mono_slot = 0;
-    state.f_l4[2][0] = -0.5f;
-    state.f_r4[2][0] = 0.75f;
+    state.f_l4[2][0] = PCM16(-0.5f);
+    state.f_r4[2][0] = PCM16(0.75f);
     reset_sink_capture();
     playSynthesizedVoiceFS3(&opts, &state);
     const float* dmr_mono_left = (const float*)g_udp_blast_data;
@@ -1115,8 +1085,8 @@ test_float_playback_orchestrators_emit_expected_blocks(void) {
     DSD_MEMSET(&state, 0, sizeof(state));
     state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
     state.dmr_mono_slot = 1;
-    state.f_l4[2][0] = -0.25f;
-    state.f_r4[2][0] = 0.625f;
+    state.f_l4[2][0] = PCM16(-0.25f);
+    state.f_r4[2][0] = PCM16(0.625f);
     reset_sink_capture();
     playSynthesizedVoiceFS3(&opts, &state);
     const float* dmr_mono_right = (const float*)g_udp_blast_data;
@@ -1321,7 +1291,7 @@ test_mono_voice_preserves_samples_in_configured_output(void) {
                     history[i] = sample;
                     if (i < 160U) {
                         state->s_l[i] = sample;
-                        state->f_l[i] = value;
+                        state->f_l[i] = PCM16(value);
                     }
                     for (int channel = 0; channel < channels; channel++) {
                         size_t index = i * (size_t)channels + (size_t)channel;

@@ -29,6 +29,7 @@
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/core/vocoder.h>
+#include <dsd-neo/core/voice_chain.h>
 #include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/dsp/sps_filters.h>
@@ -1227,14 +1228,6 @@ static void
 no_carrier_rotate_symbol_output_if_needed(dsd_opts* opts, dsd_state* state) {
     if (opts->symbol_out_f && opts->symbol_out_file_is_auto == 1) {
         rotate_symbol_out_file(opts, state);
-    }
-}
-
-static void
-no_carrier_reset_floating_gain_if_needed(const dsd_opts* opts, dsd_state* state) {
-    if (opts->floating_point == 1) {
-        state->aout_gain = opts->audio_gain;
-        state->aout_gainR = opts->audio_gain;
     }
 }
 
@@ -2542,6 +2535,8 @@ dsd_engine_forget_carrier_decoding(dsd_opts* opts, dsd_state* state) {
     carrier_boundary_forget_assemblies(opts, state);
     // A capture never spans carriers: what the next carrier carries starts its own (issue #661).
     no_carrier_close_mbe_outputs_if_needed(opts, state);
+    // Nor does the digital voice high-pass's memory (issue #653).
+    dsd_voice_hpf_reset(state, -1);
 }
 
 void
@@ -2669,7 +2664,10 @@ no_carrier_reset_m17_and_sample_buffers(dsd_state* state) {
    under the slot switches the user set. So it runs before this pass ends the calls or a return to the control channel
    turns both slots on. The watchdog's release drains the playout too, under the tick guard, so this runs only under the
    guard: a pass that finds it taken leaves the playout to the next pass (whose verdicts the calls' last ones taken
-   still hold), as the recovery tick does. Returns 0 when it left audio for the next pass. */
+   still hold), as the recovery tick does. Returns 0 when it left audio for the next pass.
+
+   The voice chain's high-pass starts the next reception clear here too (issue #653), under the same guard: the
+   watchdog's crypto expiry purges a slot's filter state under it. Its gain level carries on. */
 static int
 no_carrier_drain_playout(dsd_opts* opts, dsd_state* state, int guard_held) {
     if (!guard_held && !p25_sm_tick_guard_try_enter()) {
@@ -2677,6 +2675,7 @@ no_carrier_drain_playout(dsd_opts* opts, dsd_state* state, int guard_held) {
     }
     dsd_p25p2_playout_note_policy(opts, state);
     dsd_p25p2_flush_partial_audio(opts, state);
+    dsd_voice_hpf_reset(state, -1);
     if (!guard_held) {
         p25_sm_tick_guard_leave();
     }
@@ -2701,7 +2700,6 @@ no_carrier_run(dsd_opts* opts, dsd_state* state, int guard_held) {
 #endif
 
     no_carrier_rotate_symbol_output_if_needed(opts, state);
-    no_carrier_reset_floating_gain_if_needed(opts, state);
 
 //only do it here on the tweaks
 #ifdef LIMAZULUTWEAKS
@@ -2767,16 +2765,23 @@ dsd_engine_reset_no_carrier_state(dsd_opts* opts, dsd_state* state) {
     no_carrier_reset_m17_and_sample_buffers(state);
 }
 
+// One voice chain gain serves both output formats (issue #653), so its setting and starting level do too.
 static int
 live_scanner_apply_audio_gain(dsd_opts* opts, dsd_state* state) {
-    if (opts->floating_point == 1) {
-        if (opts->audio_gain > 50.0f) {
-            opts->audio_gain = 50.0f;
-        }
-        if (opts->audio_gain < 0.0f) {
-            opts->audio_gain = 0.0f;
-        }
-    } else if (opts->audio_gain == 0) {
+    if (opts->audio_gain > 50.0f) {
+        opts->audio_gain = 50.0f;
+    }
+    if (opts->audio_gain < 0.0f) {
+        opts->audio_gain = 0.0f;
+    }
+    if (opts->audio_gainR > 50.0f) {
+        opts->audio_gainR = 50.0f;
+    }
+    if (opts->audio_gainR < 0.0f) {
+        opts->audio_gainR = 0.0f;
+    }
+    // Auto gain (0) starts at 15.
+    if (!(opts->audio_gain > 0.0f)) {
         state->aout_gain = 15.0f;
         state->aout_gainR = 15.0f;
     }

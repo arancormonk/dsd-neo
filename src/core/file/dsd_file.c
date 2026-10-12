@@ -35,6 +35,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/core/vocoder.h>
+#include <dsd-neo/core/voice_chain.h>
 #include <dsd-neo/crypto/aes.h>
 #include <dsd-neo/crypto/des.h>
 #include <dsd-neo/crypto/dmr_keystream.h>
@@ -1600,10 +1601,20 @@ sdrtrunk_json_record_allowed(const dsd_opts* opts, const dsd_state* state) {
     return dsd_audio_record_policy_gate_slot(opts, state, 0, &allow) == 0 && allow;
 }
 
+// Every synthesized frame, speech or silence, goes through the voice chain as soon as it is made, before the
+// decrypt-or-mute decision (issue #653), as the vocoder runs it: playback, the static WAV and the per-call WAV then
+// carry the same filtered, gained samples in both output formats, and a withheld frame still moves the filter and gain
+// on.
+static void
+sdrtrunk_chain_frame(const dsd_opts* opts, dsd_state* state) {
+    dsd_voice_chain_run(opts, state, 0, state->audio_out_temp_buf);
+}
+
+// The chained frame's consumers: the short staging only where the short output takes it.
 static void
 run_decode_audio_output_path(dsd_opts* opts, dsd_state* state) {
     if (opts->floating_point == 0) {
-        processAudio(opts, state);
+        dsd_voice_stage_short_left(opts, state);
     }
     const int record = sdrtrunk_json_record_allowed(opts, state);
     if (record && opts->wav_out_f != NULL && opts->dmr_stereo_wav == 1) {
@@ -1703,6 +1714,7 @@ ambe2_str_to_decode(dsd_opts* opts, dsd_state* state, const char* ambe_str, cons
 
     if (decode_ret < 0) {
         mbe_synthesizeSilencef(state->audio_out_temp_buf);
+        sdrtrunk_chain_frame(opts, state);
         if (decode_audio_is_allowed(is_enc, ks_available)) {
             run_decode_audio_output_path(opts, state);
         }
@@ -1714,6 +1726,7 @@ ambe2_str_to_decode(dsd_opts* opts, dsd_state* state, const char* ambe_str, cons
     int process_ret = mbe_processAmbe2450Dataf(state->audio_out_temp_buf, &result, ambe_d, state->cur_mp,
                                                state->prev_mp, state->prev_mp_enhanced);
     store_sdrtrunk_process_result(state, process_ret, &result);
+    sdrtrunk_chain_frame(opts, state);
 
     if (dsd_frame_detail_enabled(opts)) {
         PrintAMBEData(opts, state, ambe_d);
@@ -1756,6 +1769,7 @@ imbe_str_to_decode(dsd_opts* opts, dsd_state* state, const char* imbe_str, const
 
     if (decode_ret < 0) {
         mbe_synthesizeSilencef(state->audio_out_temp_buf);
+        sdrtrunk_chain_frame(opts, state);
         if (decode_audio_is_allowed(is_enc, ks_available)) {
             run_decode_audio_output_path(opts, state);
         }
@@ -1767,6 +1781,7 @@ imbe_str_to_decode(dsd_opts* opts, dsd_state* state, const char* imbe_str, const
     int process_ret = mbe_processImbe4400Dataf(state->audio_out_temp_buf, &result, imbe_d, state->cur_mp,
                                                state->prev_mp, state->prev_mp_enhanced);
     store_sdrtrunk_process_result(state, process_ret, &result);
+    sdrtrunk_chain_frame(opts, state);
 
     if (dsd_frame_detail_enabled(opts)) {
         PrintIMBEData(opts, state, imbe_d);

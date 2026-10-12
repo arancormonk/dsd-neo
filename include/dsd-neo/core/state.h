@@ -259,6 +259,16 @@ typedef struct {
 
 } HPFilter;
 
+/* One slot's digital voice high-pass (`-v 0x8`, issue #653): the transposed direct form II state of the 2nd-order
+   Butterworth section dsd_voice_hpf_process() runs on 8 kHz vocoder frames, and the reception it last ran for, so a new
+   call or protocol on the slot starts from clear state (<dsd-neo/core/voice_chain.h>). */
+typedef struct {
+    double s1;
+    double s2;
+    uint64_t call_epoch; /* The last nonzero call epoch the slot's frames belonged to; 0 before the first. */
+    int protocol_family; /* dsd_call_state_protocol_family() of the last frame; 0 before the first. */
+} dsd_voice_hpf_state;
+
 //end new filters
 
 /**
@@ -771,8 +781,8 @@ struct dsd_state {
     short s_l[160]; //single sample left
     short s_r[160]; //single sample right
     /* Per slot: 1 when the vocoder left the current frame's short samples out of s_l/s_r (it staged silence, or
-       skipped short staging), 0 when processAudio()/processAudioR() staged them there. The P25 Phase 2 playout reads
-       it to tell decoded audio from silence (issue #651). */
+       skipped short staging), 0 when dsd_voice_stage_short_left/right() staged them there. The P25 Phase 2 playout
+       reads it to tell decoded audio from silence (issue #651). */
     uint8_t mbe_short_silenced[2];
     short s_l4[18][160]; //quad sample for up to a P25p2 4V
     short s_r4[18][160]; //quad sample for up to a P25p2 4V
@@ -1220,9 +1230,9 @@ struct dsd_state {
     LPFilter RCFilter;
     HPFilter HRCFilter;
     LPFilter RCFilterL;
-    HPFilter HRCFilterL;
     LPFilter RCFilterR;
-    HPFilter HRCFilterR;
+    /* The digital voice high-pass per slot (0 left, 1 right); see dsd_voice_hpf_state. */
+    dsd_voice_hpf_state voice_hpf[2];
 
     int dpmr_color_code;
 

@@ -419,37 +419,14 @@ test_manual_analog_gain_helper(void) {
 }
 
 static int
-test_agf_scales_nonzero_float_block_and_updates_slot_gain(void) {
-    static dsd_opts opts = {0};
-    static dsd_state state = {0};
-    opts.audio_gain = 25.0f;
-    state.aout_gain = 49.0f;
-
-    float samp[160];
-    for (int i = 0; i < 160; i++) {
-        samp[i] = 384.0f;
-    }
-    agf(&opts, &state, samp, 0);
-
-    int rc = 0;
-    rc |= expect_float_close("agf first clipped sample", samp[0], 0.72f, 1e-5f);
-    rc |= expect_true("agf updates left gain", state.aout_gain < 49.0f);
-
-    float silent[160] = {0.0f};
-    float before_gain = state.aout_gain;
-    agf(&opts, &state, silent, 0);
-    rc |= expect_float_close("agf silence leaves gain", state.aout_gain, before_gain, 1e-6f);
-    return rc;
-}
-
-static int
 test_process_audio_native_left_clamps_and_tracks_output(void) {
     static dsd_opts opts = {0};
     static dsd_state state = {0};
     DSD_MEMSET(&opts, 0, sizeof opts);
     DSD_MEMSET(&state, 0, sizeof state);
 
-    opts.audio_gain = 1.0f;
+    // A fixed -g is a plain multiplier, the setting itself (issue #653).
+    opts.audio_gain = 2.0f;
     opts.pulse_digi_rate_out = 8000;
     state.aout_gain = 2.0f;
     static short out[200];
@@ -486,7 +463,7 @@ test_process_audio_native_right_clamps_and_tracks_output(void) {
     DSD_MEMSET(&opts, 0, sizeof opts);
     DSD_MEMSET(&state, 0, sizeof state);
 
-    opts.audio_gainR = 1.0f;
+    opts.audio_gainR = 3.0f;
     opts.pulse_digi_rate_out = 8000;
     state.aout_gainR = 3.0f;
     static short out[200];
@@ -1298,7 +1275,6 @@ main(void) {
     rc |= test_audio_mix_helpers_apply_channel_gates();
     rc |= test_upsample_repeats_into_selected_slot_buffer();
     rc |= test_manual_analog_gain_helper();
-    rc |= test_agf_scales_nonzero_float_block_and_updates_slot_gain();
     rc |= test_process_audio_native_left_clamps_and_tracks_output();
     rc |= test_process_audio_native_right_clamps_and_tracks_output();
     rc |= test_process_audio_auto_gain_ramps_from_peak_history();
